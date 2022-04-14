@@ -1,0 +1,81 @@
+#
+# Copyright [2021-present] [ahoo wang <ahoowang@qq.com> (https://github.com/Ahoo-Wang)].
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+name: Integration Test
+on: [ push, pull_request ]
+jobs:
+  cocache-core-test:
+    name: CoCache Core Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@master
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'adopt'
+          server-id: github
+          settings-path: ${{ github.workspace }}
+
+      - name: Test CoCache-Core
+        run: gradle cocache-core:clean cocache-core:check
+
+  cocache-spring-redis-test:
+    name: CoCache Spring Redis Test
+    needs: [ cocache-core-test ]
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout
+        uses: actions/checkout@master
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'adopt'
+          server-id: github
+          settings-path: ${{ github.workspace }}
+
+      - name: Test CoCache-Spring-Redis
+        run: gradle cocache-spring-redis:clean cocache-spring-redis:check
+
+  cocache-spring-boot-starter-test:
+    name: CoCache Spring Boot Starter Test
+    needs: [ cocache-core-test ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@master
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v3
+        with:
+          java-version: '8'
+          distribution: 'adopt'
+          server-id: github
+          settings-path: ${{ github.workspace }}
+
+      - name: Test CoCache-Spring-Boot-Starter
+        run: gradle cocache-spring-boot-starter:clean cocache-spring-boot-starter:check
