@@ -22,7 +22,7 @@ import me.ahoo.cache.distributed.DistributedCache;
 import me.ahoo.cache.eventbus.InvalidateEvent;
 import me.ahoo.cache.source.NoOpCacheSource;
 import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor;
-import me.ahoo.cosid.util.MockIdGenerator;
+import me.ahoo.cosid.test.MockIdGenerator;
 
 import lombok.SneakyThrows;
 import org.junit.jupiter.api.AfterEach;

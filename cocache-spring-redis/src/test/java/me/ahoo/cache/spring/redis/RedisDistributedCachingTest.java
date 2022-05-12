@@ -16,7 +16,7 @@ package me.ahoo.cache.spring.redis;
 import me.ahoo.cache.CacheValue;
 import me.ahoo.cache.TtlAt;
 import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor;
-import me.ahoo.cosid.util.MockIdGenerator;
+import me.ahoo.cosid.test.MockIdGenerator;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;

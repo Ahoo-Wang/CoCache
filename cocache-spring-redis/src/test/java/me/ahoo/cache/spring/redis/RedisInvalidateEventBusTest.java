@@ -18,7 +18,7 @@ import me.ahoo.cache.eventbus.GuavaInvalidateEventBus;
 import me.ahoo.cache.eventbus.InvalidateEvent;
 import me.ahoo.cache.eventbus.InvalidateSubscriber;
 import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor;
-import me.ahoo.cosid.util.MockIdGenerator;
+import me.ahoo.cosid.test.MockIdGenerator;
 
 import lombok.SneakyThrows;
 import org.junit.jupiter.api.AfterEach;
