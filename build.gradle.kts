@@ -40,7 +40,7 @@ ext {
     set("springCloudVersion", "2021.0.1")
     set("springfoxVersion", "3.0.0")
     set("jmhVersion", "1.34")
-    set("cosIdVersion", "1.10.0")
+    set("cosIdVersion", "1.14.3")
     set("junitPioneerVersion", "1.4.2")
     set("libraryProjects", libraryProjects)
 }
