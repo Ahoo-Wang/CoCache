@@ -18,7 +18,7 @@ import me.ahoo.cache.CoherentCache;
 import me.ahoo.cache.client.ClientSideCache;
 import me.ahoo.cache.converter.KeyConverter;
 import me.ahoo.cache.distributed.DistributedCache;
-import me.ahoo.cache.eventbus.GuavaInvalidateEventBus;
+import me.ahoo.cache.consistency.GuavaInvalidateEventBus;
 
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 

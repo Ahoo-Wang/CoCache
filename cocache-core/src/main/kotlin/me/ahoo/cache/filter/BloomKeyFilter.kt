@@ -10,29 +10,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.filter
 
-package me.ahoo.cache.spring.redis.codec;
-
-import me.ahoo.cache.consistency.InvalidateEvent;
+import com.google.common.hash.BloomFilter
+import me.ahoo.cache.KeyFilter
 
 /**
- * Messages .
+ * Bloom Cache Key Filter .
  *
  * @author ahoo wang
  */
-public final class InvalidateMessages {
-    public static final String DELIMITER = "@";
-    
-    public static String ofClientId(String clientId) {
-        return InvalidateEvent.TYPE + DELIMITER + clientId;
+class BloomKeyFilter(
+    /**
+     * The filter that has completed Key initialization.
+     * [BloomFilter.readFrom]
+     */
+    private val bloomFilter: BloomFilter<String>
+) : KeyFilter {
+    override fun notExist(key: String): Boolean {
+        return !bloomFilter.mightContain(key)
     }
-    
-    public static String getPublisherIdFromMessageBody(String msgBody) {
-        String[] typeWithPublisherId = msgBody.split(DELIMITER);
-        if (2 != typeWithPublisherId.length) {
-            throw new IllegalArgumentException("msgBody illegal:[" + msgBody + "].");
-        }
-        return typeWithPublisherId[1];
-    }
-    
 }

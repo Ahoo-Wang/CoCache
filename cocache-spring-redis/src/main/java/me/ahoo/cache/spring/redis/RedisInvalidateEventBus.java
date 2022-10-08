@@ -14,9 +14,9 @@
 package me.ahoo.cache.spring.redis;
 
 import me.ahoo.cache.KeyPrefix;
-import me.ahoo.cache.eventbus.InvalidateEvent;
-import me.ahoo.cache.eventbus.InvalidateEventBus;
-import me.ahoo.cache.eventbus.InvalidateSubscriber;
+import me.ahoo.cache.consistency.InvalidateEvent;
+import me.ahoo.cache.consistency.InvalidateEventBus;
+import me.ahoo.cache.consistency.InvalidateSubscriber;
 import me.ahoo.cache.spring.redis.codec.InvalidateMessages;
 
 import lombok.extern.slf4j.Slf4j;

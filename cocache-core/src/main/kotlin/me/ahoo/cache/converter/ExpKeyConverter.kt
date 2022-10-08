@@ -10,29 +10,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.converter
 
-package me.ahoo.cache.spring.redis.codec;
-
-import me.ahoo.cache.consistency.InvalidateEvent;
+import org.springframework.expression.Expression
+import org.springframework.expression.common.TemplateParserContext
+import org.springframework.expression.spel.standard.SpelExpressionParser
 
 /**
- * Messages .
+ * Expression Key Converter .
  *
  * @author ahoo wang
  */
-public final class InvalidateMessages {
-    public static final String DELIMITER = "@";
-    
-    public static String ofClientId(String clientId) {
-        return InvalidateEvent.TYPE + DELIMITER + clientId;
+class ExpKeyConverter<K>(override val keyPrefix: String, expression: String) : KeyConverter<K> {
+    private val expression: Expression
+
+    init {
+        this.expression =
+            SpelExpressionParser().parseExpression(expression, TemplateParserContext.TEMPLATE_EXPRESSION)
     }
-    
-    public static String getPublisherIdFromMessageBody(String msgBody) {
-        String[] typeWithPublisherId = msgBody.split(DELIMITER);
-        if (2 != typeWithPublisherId.length) {
-            throw new IllegalArgumentException("msgBody illegal:[" + msgBody + "].");
-        }
-        return typeWithPublisherId[1];
+
+    override fun asKey(sourceKey: K): String {
+        return keyPrefix + expression.getValue(sourceKey, String::class.java)
     }
-    
 }

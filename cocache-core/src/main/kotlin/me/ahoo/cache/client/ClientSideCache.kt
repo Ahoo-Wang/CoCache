@@ -10,29 +10,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.client
 
-package me.ahoo.cache.spring.redis.codec;
-
-import me.ahoo.cache.consistency.InvalidateEvent;
+import com.google.common.eventbus.Subscribe
+import me.ahoo.cache.Cache
+import me.ahoo.cache.consistency.InvalidateEvent
+import me.ahoo.cache.consistency.InvalidateSubscriber
 
 /**
- * Messages .
+ * Client Side Cache .
  *
  * @author ahoo wang
  */
-public final class InvalidateMessages {
-    public static final String DELIMITER = "@";
-    
-    public static String ofClientId(String clientId) {
-        return InvalidateEvent.TYPE + DELIMITER + clientId;
+interface ClientSideCache<V> : Cache<String, V>, InvalidateSubscriber {
+    /**
+     * clear all cache.
+     */
+    fun clear()
+
+    @Subscribe
+    override fun onInvalidate(invalidateEvent: InvalidateEvent) {
+        evict(invalidateEvent.key)
     }
-    
-    public static String getPublisherIdFromMessageBody(String msgBody) {
-        String[] typeWithPublisherId = msgBody.split(DELIMITER);
-        if (2 != typeWithPublisherId.length) {
-            throw new IllegalArgumentException("msgBody illegal:[" + msgBody + "].");
-        }
-        return typeWithPublisherId[1];
-    }
-    
 }

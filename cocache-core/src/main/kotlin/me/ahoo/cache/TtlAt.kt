@@ -10,29 +10,37 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache
 
-package me.ahoo.cache.spring.redis.codec;
-
-import me.ahoo.cache.consistency.InvalidateEvent;
+import me.ahoo.cache.util.CacheSecondClock
 
 /**
- * Messages .
+ * TtlAt .
  *
  * @author ahoo wang
  */
-public final class InvalidateMessages {
-    public static final String DELIMITER = "@";
-    
-    public static String ofClientId(String clientId) {
-        return InvalidateEvent.TYPE + DELIMITER + clientId;
-    }
-    
-    public static String getPublisherIdFromMessageBody(String msgBody) {
-        String[] typeWithPublisherId = msgBody.split(DELIMITER);
-        if (2 != typeWithPublisherId.length) {
-            throw new IllegalArgumentException("msgBody illegal:[" + msgBody + "].");
+interface TtlAt {
+    /**
+     * get time to live([java.time.temporal.ChronoUnit.SECONDS]).
+     *
+     * @return time to live
+     */
+    val ttlAt: Long
+    val isForever: Boolean
+        get() = isForever(ttlAt)
+    val isExpired: Boolean
+        get() = if (isForever) {
+            false
+        } else CacheSecondClock.INSTANCE.currentTime() > ttlAt
+
+    companion object {
+        fun isForever(ttlAt: Long): Boolean {
+            return FOREVER == ttlAt
         }
-        return typeWithPublisherId[1];
+
+        /**
+         * 9223372036854775807L.
+         */
+        const val FOREVER = Long.MAX_VALUE
     }
-    
 }

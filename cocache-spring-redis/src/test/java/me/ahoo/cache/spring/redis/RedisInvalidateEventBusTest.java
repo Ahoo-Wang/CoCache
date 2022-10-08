@@ -14,9 +14,9 @@
 package me.ahoo.cache.spring.redis;
 
 import me.ahoo.cache.CacheValue;
-import me.ahoo.cache.eventbus.GuavaInvalidateEventBus;
-import me.ahoo.cache.eventbus.InvalidateEvent;
-import me.ahoo.cache.eventbus.InvalidateSubscriber;
+import me.ahoo.cache.consistency.GuavaInvalidateEventBus;
+import me.ahoo.cache.consistency.InvalidateEvent;
+import me.ahoo.cache.consistency.InvalidateSubscriber;
 import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor;
 import me.ahoo.cosid.test.MockIdGenerator;
 

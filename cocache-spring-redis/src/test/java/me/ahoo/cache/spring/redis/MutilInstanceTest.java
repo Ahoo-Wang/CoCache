@@ -19,7 +19,7 @@ import me.ahoo.cache.client.MapClientSideCache;
 import me.ahoo.cache.converter.KeyConverter;
 import me.ahoo.cache.converter.ToStringKeyConverter;
 import me.ahoo.cache.distributed.DistributedCache;
-import me.ahoo.cache.eventbus.InvalidateEvent;
+import me.ahoo.cache.consistency.InvalidateEvent;
 import me.ahoo.cache.source.NoOpCacheSource;
 import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor;
 import me.ahoo.cosid.test.MockIdGenerator;

@@ -10,29 +10,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.join
 
-package me.ahoo.cache.spring.redis.codec;
-
-import me.ahoo.cache.consistency.InvalidateEvent;
+import me.ahoo.cache.CacheGetter
 
 /**
- * Messages .
+ * Simple Join Caching .
  *
  * @author ahoo wang
  */
-public final class InvalidateMessages {
-    public static final String DELIMITER = "@";
-    
-    public static String ofClientId(String clientId) {
-        return InvalidateEvent.TYPE + DELIMITER + clientId;
+class SimpleJoinCaching<K1, V1, K2, V2>(
+    private val firstCaching: CacheGetter<K1, V1>,
+    private val joinCaching: CacheGetter<K2, V2>,
+    override val extractJoinKey: ExtractJoinKey<V1, K2>
+) : JoinCache<K1, V1, K2, V2> {
+
+    override fun get(key: K1): JoinValue<V1, K2, V2>? {
+        val firstValue = firstCaching[key] ?: return null
+        val joinKey = extractJoinKey.extract(firstValue)
+        val secondValue = joinCaching[joinKey]
+        return JoinValue(firstValue, joinKey, secondValue)
     }
-    
-    public static String getPublisherIdFromMessageBody(String msgBody) {
-        String[] typeWithPublisherId = msgBody.split(DELIMITER);
-        if (2 != typeWithPublisherId.length) {
-            throw new IllegalArgumentException("msgBody illegal:[" + msgBody + "].");
-        }
-        return typeWithPublisherId[1];
-    }
-    
 }

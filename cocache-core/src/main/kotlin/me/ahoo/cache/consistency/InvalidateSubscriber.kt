@@ -10,29 +10,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.consistency
 
-package me.ahoo.cache.spring.redis.codec;
-
-import me.ahoo.cache.consistency.InvalidateEvent;
+import com.google.common.eventbus.Subscribe
 
 /**
- * Messages .
+ * InvalidateSubscriber .
  *
  * @author ahoo wang
  */
-public final class InvalidateMessages {
-    public static final String DELIMITER = "@";
-    
-    public static String ofClientId(String clientId) {
-        return InvalidateEvent.TYPE + DELIMITER + clientId;
-    }
-    
-    public static String getPublisherIdFromMessageBody(String msgBody) {
-        String[] typeWithPublisherId = msgBody.split(DELIMITER);
-        if (2 != typeWithPublisherId.length) {
-            throw new IllegalArgumentException("msgBody illegal:[" + msgBody + "].");
-        }
-        return typeWithPublisherId[1];
-    }
-    
+fun interface InvalidateSubscriber {
+    @Subscribe
+    fun onInvalidate(invalidateEvent: InvalidateEvent)
 }

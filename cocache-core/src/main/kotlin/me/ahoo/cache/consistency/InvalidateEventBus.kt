@@ -10,29 +10,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.consistency
 
-package me.ahoo.cache.spring.redis.codec;
-
-import me.ahoo.cache.consistency.InvalidateEvent;
+import me.ahoo.cache.distributed.DistributedClientId
 
 /**
- * Messages .
+ * Invalidate EventBus .
+ * Each L2 cache combination corresponds to one Eventbus.
  *
  * @author ahoo wang
  */
-public final class InvalidateMessages {
-    public static final String DELIMITER = "@";
-    
-    public static String ofClientId(String clientId) {
-        return InvalidateEvent.TYPE + DELIMITER + clientId;
-    }
-    
-    public static String getPublisherIdFromMessageBody(String msgBody) {
-        String[] typeWithPublisherId = msgBody.split(DELIMITER);
-        if (2 != typeWithPublisherId.length) {
-            throw new IllegalArgumentException("msgBody illegal:[" + msgBody + "].");
-        }
-        return typeWithPublisherId[1];
-    }
-    
+interface InvalidateEventBus : DistributedClientId {
+    fun publish(event: InvalidateEvent)
+    fun register(subscriber: InvalidateSubscriber)
+    fun unregister(subscriber: InvalidateSubscriber)
 }
