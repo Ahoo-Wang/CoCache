@@ -24,43 +24,44 @@ import org.junit.jupiter.api.Test
  */
 internal class GuavaClientSideCacheTest {
     var clientSideCaching = GuavaClientSideCache<String>()
+
     @Test
     fun get() {
-        val CACHE_KEY = "get"
-        Assertions.assertNull(clientSideCaching[CACHE_KEY])
+        val key = "get"
+        Assertions.assertNull(clientSideCaching[key])
     }
 
     @Test
     fun set() {
-        val CACHE_KEY = "set"
-        val CACHE_VALUE = "set"
-        clientSideCaching[CACHE_KEY] = CACHE_VALUE
-        Assertions.assertEquals(CACHE_VALUE, clientSideCaching[CACHE_KEY])
+        val key = "set"
+        val value = "set"
+        clientSideCaching[key] = value
+        Assertions.assertEquals(value, clientSideCaching[key])
     }
 
     @Test
     fun setMissing() {
-        val CACHE_KEY = "setMissing"
-        clientSideCaching[CACHE_KEY] = missingGuardValue()
-        Assertions.assertNull(clientSideCaching[CACHE_KEY])
-        Assertions.assertEquals(TtlAt.FOREVER, clientSideCaching.getExpireAt(CACHE_KEY))
+        val key = "setMissing"
+        clientSideCaching[key] = missingGuardValue()
+        Assertions.assertNull(clientSideCaching[key])
+        Assertions.assertEquals(TtlAt.FOREVER, clientSideCaching.getExpireAt(key))
     }
 
     @Test
     fun evict() {
-        val CACHE_KEY = "evict"
-        val CACHE_VALUE = "evict"
-        clientSideCaching[CACHE_KEY] = CACHE_VALUE
-        clientSideCaching.evict(CACHE_KEY)
-        Assertions.assertNull(clientSideCaching[CACHE_KEY])
+        val key = "evict"
+        val value = "evict"
+        clientSideCaching[key] = value
+        clientSideCaching.evict(key)
+        Assertions.assertNull(clientSideCaching[key])
     }
 
     @Test
     fun clear() {
-        val CACHE_KEY = "clear"
-        val CACHE_VALUE = "clear"
-        clientSideCaching[CACHE_KEY] = CACHE_VALUE
+        val key = "clear"
+        val value = "clear"
+        clientSideCaching[key] = value
         clientSideCaching.clear()
-        Assertions.assertNull(clientSideCaching[CACHE_KEY])
+        Assertions.assertNull(clientSideCaching[key])
     }
 }

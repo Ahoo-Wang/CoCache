@@ -10,22 +10,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.spring.redis.codec
 
-package me.ahoo.cache.spring.redis.codec;
-
-
-import me.ahoo.cache.CacheValue;
-
-import javax.annotation.Nonnull;
+import me.ahoo.cache.CacheValue
 
 /**
  * Codec Executor .
  *
  * @author ahoo wang
  */
-public interface CodecExecutor<V> {
-    
-    CacheValue<V> executeAndDecode(@Nonnull String key, long ttlAt);
-    
-    void executeAndEncode(@Nonnull String key, @Nonnull CacheValue<V> cacheValue);
+interface CodecExecutor<V> {
+    fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>
+    fun executeAndEncode(key: String, cacheValue: CacheValue<V>)
 }

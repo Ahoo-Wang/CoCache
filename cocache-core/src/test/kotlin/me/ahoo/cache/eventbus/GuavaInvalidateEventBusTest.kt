@@ -12,8 +12,6 @@
  */
 package me.ahoo.cache.eventbus
 
-import lombok.SneakyThrows
-import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.GuavaInvalidateEventBus
 import me.ahoo.cache.consistency.InvalidateEvent
 import me.ahoo.cache.consistency.InvalidateSubscriber
@@ -21,7 +19,6 @@ import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import javax.annotation.Nonnull
 
 /**
  * SimpleInvalidateEventBusTest .
@@ -29,31 +26,26 @@ import javax.annotation.Nonnull
  * @author ahoo wang
  */
 internal class GuavaInvalidateEventBusTest {
-    @SneakyThrows
     @Test
     fun publish() {
         val countDownLatch = CountDownLatch(1)
         val eventBus = GuavaInvalidateEventBus(CLIENT_ID)
-        val publishedEvent: InvalidateEvent = InvalidateEvent("publish", "")
-        val subscriber: InvalidateSubscriber = object : MapClientSideCache<Any?>() {
-            override fun onInvalidate(@Nonnull invalidateEvent: InvalidateEvent) {
-                super.onInvalidate(invalidateEvent)
-                Assertions.assertEquals(publishedEvent, invalidateEvent)
-                countDownLatch.countDown()
-            }
+        val publishedEvent = InvalidateEvent("publish", "")
+        val subscriber = InvalidateSubscriber { invalidateEvent ->
+            Assertions.assertEquals(publishedEvent, invalidateEvent)
+            countDownLatch.countDown()
         }
         eventBus.register(subscriber)
         eventBus.publish(publishedEvent)
         Assertions.assertTrue(countDownLatch.await(1, TimeUnit.SECONDS))
     }
 
-    @SneakyThrows
     @Test
     fun publishWhenNoLoop() {
         val countDownLatch = CountDownLatch(1)
         val eventBus = GuavaInvalidateEventBus(CLIENT_ID)
-        val publishedEvent: InvalidateEvent = InvalidateEvent("publishWhenNoLoop", CLIENT_ID)
-        val subscriber = InvalidateSubscriber { invalidateEvent: InvalidateEvent? ->
+        val publishedEvent = InvalidateEvent("publishWhenNoLoop", CLIENT_ID)
+        val subscriber = InvalidateSubscriber { invalidateEvent: InvalidateEvent ->
             Assertions.assertEquals(publishedEvent, invalidateEvent)
             countDownLatch.countDown()
         }
@@ -62,13 +54,12 @@ internal class GuavaInvalidateEventBusTest {
         Assertions.assertFalse(countDownLatch.await(1, TimeUnit.SECONDS))
     }
 
-    @SneakyThrows
     @Test
     fun unregister() {
         val countDownLatch = CountDownLatch(1)
         val eventBus = GuavaInvalidateEventBus(CLIENT_ID)
-        val publishedEvent: InvalidateEvent = InvalidateEvent("unregister", "")
-        val subscriber = InvalidateSubscriber { invalidateEvent: InvalidateEvent? ->
+        val publishedEvent = InvalidateEvent("unregister", "")
+        val subscriber = InvalidateSubscriber { invalidateEvent: InvalidateEvent ->
             Assertions.assertEquals(publishedEvent, invalidateEvent)
             countDownLatch.countDown()
         }

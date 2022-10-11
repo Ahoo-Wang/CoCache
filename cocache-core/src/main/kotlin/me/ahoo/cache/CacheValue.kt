@@ -38,17 +38,12 @@ data class CacheValue<V>(
         get() = missingGuardValue<Any>() == value
 
     companion object {
-        private const val MISSING_GUARD_STRING_VALUE = MissingGuard.STRING_VALUE
+        const val MISSING_GUARD_STRING_VALUE = MissingGuard.STRING_VALUE
         private val MISSING_GUARD_CACHE_VALUE: CacheValue<*> = forever(MissingGuard)
 
         @JvmStatic
         fun <V> forever(value: V): CacheValue<V> {
-            return of(value, TtlAt.FOREVER)
-        }
-
-        @JvmStatic
-        fun <V> of(value: V, ttlAt: Long): CacheValue<V> {
-            return CacheValue(value, ttlAt)
+            return CacheValue(value, TtlAt.FOREVER)
         }
 
         fun isMissingGuard(value: String): Boolean {
@@ -58,14 +53,17 @@ data class CacheValue<V>(
         fun isMissingGuard(value: Set<String>): Boolean {
             return if (value.isEmpty()) {
                 false
-            } else MISSING_GUARD_STRING_VALUE == value.stream()
-                .findFirst().get()
+            } else {
+                MISSING_GUARD_STRING_VALUE == value.first()
+            }
         }
 
-        fun isMissingGuard(value: Map<String?, String?>): Boolean {
+        fun isMissingGuard(value: Map<String, String>): Boolean {
             return if (value.isEmpty()) {
                 false
-            } else value.containsKey(MISSING_GUARD_STRING_VALUE)
+            } else {
+                value.containsKey(MISSING_GUARD_STRING_VALUE)
+            }
         }
 
         @JvmStatic

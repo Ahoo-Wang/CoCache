@@ -10,98 +10,66 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.spring.redis
 
-package me.ahoo.cache.spring.redis;
-
-import me.ahoo.cache.CacheValue;
-import me.ahoo.cache.TtlAt;
-import me.ahoo.cache.distributed.DistributedCache;
-import me.ahoo.cache.spring.redis.codec.CodecExecutor;
-import me.ahoo.cache.spring.redis.codec.InvalidateMessages;
-import me.ahoo.cache.util.CacheSecondClock;
-
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.StringRedisTemplate;
-
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
-import java.time.Instant;
+import me.ahoo.cache.CacheValue
+import me.ahoo.cache.TtlAt
+import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.spring.redis.codec.CodecExecutor
+import me.ahoo.cache.spring.redis.codec.InvalidateMessages
+import me.ahoo.cache.util.CacheSecondClock
+import org.springframework.data.redis.core.StringRedisTemplate
+import java.time.Instant
+import javax.annotation.Nonnull
 
 /**
  * Redis Distributed Cache.
  *
  * @author ahoo wang
  */
-@Slf4j
-public class RedisDistributedCache<V> implements DistributedCache<V> {
-    
-    public static final Long FOREVER = -1L;
-    public static final Long NOT_EXIST = -2L;
-    private final String clientId;
-    private final StringRedisTemplate redisTemplate;
-    private final CodecExecutor<V> codecExecutor;
-    
-    public RedisDistributedCache(String clientId,
-                                 StringRedisTemplate redisTemplate,
-                                 CodecExecutor<V> codecExecutor) {
-        this.clientId = clientId;
-        this.redisTemplate = redisTemplate;
-        this.codecExecutor = codecExecutor;
+class RedisDistributedCache<V>(
+    override val clientId: String,
+    val redisTemplate: StringRedisTemplate,
+    private val codecExecutor: CodecExecutor<V>
+) : DistributedCache<V> {
+    override fun getCache(@Nonnull key: String): CacheValue<V>? {
+        val ttlAt = getExpireAt(key) ?: return null
+        return codecExecutor.executeAndDecode(key, ttlAt)
     }
-    
-    @Override
-    public String getClientId() {
-        return clientId;
-    }
-    
-    public StringRedisTemplate getRedisTemplate() {
-        return redisTemplate;
-    }
-    
-    @Override
-    public CacheValue<V> getCache(@Nonnull String key) {
-        Long ttlAt = getExpireAt(key);
-        if (null == ttlAt) {
-            return null;
+
+    override fun getExpireAt(key: String): Long? {
+        val ttl = redisTemplate.getExpire(key)
+        if (NOT_EXIST == ttl) {
+            return null
         }
-        
-        return codecExecutor.executeAndDecode(key, ttlAt);
-    }
-    
-    @Nullable
-    @Override
-    public Long getExpireAt(String key) {
-        Long ttl = redisTemplate.getExpire(key);
-        if (NOT_EXIST.equals(ttl)) {
-            return null;
+        return if (FOREVER == ttl) {
+            TtlAt.FOREVER
+        } else {
+            CacheSecondClock.INSTANCE.currentTime() + ttl
         }
-        if (FOREVER.equals(ttl)) {
-            return TtlAt.FOREVER;
+    }
+
+    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>) {
+        codecExecutor.executeAndEncode(key, value)
+        if (!value.isForever) {
+            redisTemplate.expireAt(key, Instant.ofEpochSecond(value.ttlAt))
         }
-        return CacheSecondClock.INSTANCE.currentTime() + ttl;
+        publishInvalidateMessage(key)
     }
-    
-    @Override
-    public void setCache(@Nonnull String key, @Nonnull CacheValue<V> value) {
-        codecExecutor.executeAndEncode(key, value);
-        if (!value.isForever()) {
-            redisTemplate.expireAt(key, Instant.ofEpochSecond(value.getTtlAt()));
-        }
-        publishInvalidateMessage(key);
+
+    override fun evict(@Nonnull key: String) {
+        redisTemplate.delete(key)
+        publishInvalidateMessage(key)
     }
-    
-    
-    @Override
-    public void evict(@Nonnull String key) {
-        redisTemplate.delete(key);
-        publishInvalidateMessage(key);
+
+    private fun publishInvalidateMessage(key: String) {
+        redisTemplate.convertAndSend(key, InvalidateMessages.ofClientId(clientId))
     }
-    
-    protected void publishInvalidateMessage(String key) {
-        redisTemplate.convertAndSend(key, InvalidateMessages.ofClientId(getClientId()));
-    }
-    
-    @Override
-    public void close() {
+
+    override fun close() = Unit
+
+    companion object {
+        const val FOREVER = -1L
+        const val NOT_EXIST = -2L
     }
 }

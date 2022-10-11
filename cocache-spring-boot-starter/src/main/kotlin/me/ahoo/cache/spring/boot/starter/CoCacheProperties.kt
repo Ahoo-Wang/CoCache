@@ -10,27 +10,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.spring.boot.starter
 
-package me.ahoo.cache.spring.boot.starter;
-
-import me.ahoo.cache.CoCache;
-
-import org.springframework.boot.context.properties.ConfigurationProperties;
+import me.ahoo.cache.CoCache
+import org.springframework.boot.context.properties.ConfigurationProperties
+import org.springframework.boot.context.properties.ConstructorBinding
 
 /**
  * CoCache Properties .
  *
  * @author ahoo wang
  */
+@ConstructorBinding
 @ConfigurationProperties(prefix = CoCache.COCACHE)
-public class CoCacheProperties {
-    private boolean enabled = true;
-    
-    public boolean isEnabled() {
-        return enabled;
-    }
-    
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-    }
-}
+data class CoCacheProperties(val enabled: Boolean = true)

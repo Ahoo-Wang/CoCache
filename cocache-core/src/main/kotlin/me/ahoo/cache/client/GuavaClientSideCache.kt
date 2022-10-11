@@ -14,7 +14,6 @@ package me.ahoo.cache.client
 
 import com.google.common.cache.Cache
 import com.google.common.cache.CacheBuilder
-import com.google.common.cache.CacheBuilderSpec
 import me.ahoo.cache.CacheValue
 import javax.annotation.Nonnull
 
@@ -24,21 +23,15 @@ import javax.annotation.Nonnull
  * @author ahoo wang
  */
 class GuavaClientSideCache<V> @JvmOverloads constructor(
-    private val guavaCache: Cache<String?, CacheValue<V>?> = CacheBuilder.newBuilder().build()
+    private val guavaCache: Cache<String, CacheValue<V>> = CacheBuilder.newBuilder().build()
 ) : ClientSideCache<V> {
-    constructor(spec: String?) : this(CacheBuilder.from(spec!!).build<String?, CacheValue<V>?>()) {}
-    constructor(spec: CacheBuilderSpec?) : this(
-        CacheBuilder.from(
-            spec!!
-        ).build<String?, CacheValue<V>?>()
-    )
 
     override fun getCache(key: String): CacheValue<V>? {
         return guavaCache.getIfPresent(key)
     }
 
-    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>?) {
-        guavaCache.put(key, value!!)
+    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>) {
+        guavaCache.put(key, value)
     }
 
     override fun evict(@Nonnull key: String) {

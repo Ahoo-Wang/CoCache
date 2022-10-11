@@ -10,32 +10,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-package me.ahoo.cache.example.model;
+package me.ahoo.cache.example.model
 
 /**
  * User .
  *
  * @author ahoo wang
  */
-public class User {
-    public static final String CACHE_KEY_PREFIX = "user:";
-    private long id;
-    private String name;
-    
-    public long getId() {
-        return id;
-    }
-    
-    public void setId(long id) {
-        this.id = id;
-    }
-    
-    public String getName() {
-        return name;
-    }
-    
-    public void setName(String name) {
-        this.name = name;
+class User {
+    var id: Long = 0
+    var name: String? = null
+
+    companion object {
+        const val CACHE_KEY_PREFIX = "user:"
     }
 }

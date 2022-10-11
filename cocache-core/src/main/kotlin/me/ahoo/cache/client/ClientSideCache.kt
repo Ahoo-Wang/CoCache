@@ -12,24 +12,16 @@
  */
 package me.ahoo.cache.client
 
-import com.google.common.eventbus.Subscribe
 import me.ahoo.cache.Cache
-import me.ahoo.cache.consistency.InvalidateEvent
-import me.ahoo.cache.consistency.InvalidateSubscriber
 
 /**
  * Client Side Cache .
  *
  * @author ahoo wang
  */
-interface ClientSideCache<V> : Cache<String, V>, InvalidateSubscriber {
+interface ClientSideCache<V> : Cache<String, V> {
     /**
      * clear all cache.
      */
     fun clear()
-
-    @Subscribe
-    override fun onInvalidate(invalidateEvent: InvalidateEvent) {
-        evict(invalidateEvent.key)
-    }
 }

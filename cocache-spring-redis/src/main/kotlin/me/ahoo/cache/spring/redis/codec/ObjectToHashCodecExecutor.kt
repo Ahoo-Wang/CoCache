@@ -10,56 +10,43 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.spring.redis.codec
 
-package me.ahoo.cache.spring.redis.codec;
-
-import me.ahoo.cache.CacheValue;
-import me.ahoo.cache.util.CacheSecondClock;
-
-import org.springframework.data.redis.core.StringRedisTemplate;
-
-import javax.annotation.Nonnull;
-import java.util.Map;
+import me.ahoo.cache.CacheValue
+import me.ahoo.cache.CacheValue.Companion.missingGuard
+import me.ahoo.cache.util.CacheSecondClock
+import org.springframework.data.redis.core.StringRedisTemplate
 
 /**
  * ObjectToHashCodecExecutor .
  *
  * @author ahoo wang
  */
-public class ObjectToHashCodecExecutor<V> implements CodecExecutor<V> {
-    
-    private final MapConverter<V> mapConverter;
-    private final StringRedisTemplate redisTemplate;
-    
-    public ObjectToHashCodecExecutor(MapConverter<V> mapConverter, StringRedisTemplate redisTemplate) {
-        this.mapConverter = mapConverter;
-        this.redisTemplate = redisTemplate;
-    }
-    
-    @Override
-    public CacheValue<V> executeAndDecode(@Nonnull String key, @Nonnull long ttlAt) {
-        Map<String, String> value = redisTemplate.<String, String>opsForHash().entries(key);
-        
-        if (CacheValue.isMissingGuard(value)) {
-            return CacheValue.missingGuard();
+class ObjectToHashCodecExecutor<V>(
+    private val mapConverter: MapConverter<V>,
+    private val redisTemplate: StringRedisTemplate
+) : CodecExecutor<V> {
+    override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V> {
+        val value = redisTemplate.opsForHash<String, String>().entries(key)
+        return if (CacheValue.isMissingGuard(value)) {
+            missingGuard()
+        } else {
+            CacheValue(mapConverter.asValue(value), ttlAt)
         }
-        
-        return CacheValue.of(mapConverter.asValue(value), ttlAt);
     }
-    
-    @Override
-    public void executeAndEncode(@Nonnull String key, @Nonnull CacheValue<V> cacheValue) {
-        if (cacheValue.isMissingGuard()) {
-            redisTemplate.opsForHash().put(key, CacheValue.MISSING_GUARD_STRING_VALUE, String.valueOf(CacheSecondClock.INSTANCE.currentTime()));
-            return;
+
+    override fun executeAndEncode(key: String, cacheValue: CacheValue<V>) {
+        if (cacheValue.isMissingGuard) {
+            redisTemplate.opsForHash<Any, Any>()
+                .put(key, CacheValue.MISSING_GUARD_STRING_VALUE, CacheSecondClock.INSTANCE.currentTime().toString())
+            return
         }
-        redisTemplate.delete(key);
-        redisTemplate.opsForHash().putAll(key, mapConverter.asMap(cacheValue.getValue()));
+        redisTemplate.delete(key)
+        redisTemplate.opsForHash<Any, Any>().putAll(key, mapConverter.asMap(cacheValue.value))
     }
-    
+
     interface MapConverter<V> {
-        V asValue(Map<String, String> map);
-        
-        Map<String, String> asMap(V value);
+        fun asValue(map: Map<String, String>): V
+        fun asMap(value: V): Map<String, String>
     }
 }

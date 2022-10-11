@@ -13,6 +13,8 @@
 
 plugins {
     application
+    kotlin("jvm") version "1.7.20"
+    kotlin("plugin.spring") version "1.7.20"
 }
 
 java {
@@ -22,7 +24,7 @@ java {
 }
 
 application {
-    mainClass.set("me.ahoo.cosid.example.AppServer")
+    mainClass.set("me.ahoo.cosid.example.AppServerKt")
     applicationDefaultJvmArgs = listOf(
         "-Xms512M",
         "-Xmx512M",
@@ -31,7 +33,7 @@ application {
         "-Xss1m",
         "-server",
         "-XX:+UseG1GC",
-        "-Xlog:gc*:file=logs/${applicationName}-gc.log:time,tags:filecount=10,filesize=32M",
+        "-Xlog:gc*:file=logs/$applicationName-gc.log:time,tags:filecount=10,filesize=32M",
         "-XX:+HeapDumpOnOutOfMemoryError",
         "-XX:HeapDumpPath=data",
         "-Dcom.sun.management.jmxremote",
@@ -59,8 +61,6 @@ dependencies {
 
     implementation("com.google.guava:guava")
     implementation("org.springframework.boot:spring-boot-starter-web")
-    compileOnly("org.projectlombok:lombok:${rootProject.ext.get("lombokVersion")}")
-    annotationProcessor("org.projectlombok:lombok:${rootProject.ext.get("lombokVersion")}")
     annotationProcessor("org.springframework.boot:spring-boot-configuration-processor:${rootProject.ext.get("springBootVersion")}")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }

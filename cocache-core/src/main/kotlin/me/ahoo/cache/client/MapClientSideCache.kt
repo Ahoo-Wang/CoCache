@@ -29,8 +29,8 @@ class MapClientSideCache<V>(private val cacheMap: MutableMap<String, CacheValue<
         return cacheMap[key]
     }
 
-    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>?) {
-        if (missingGuardValue<Any>() == value!!.value) {
+    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>) {
+        if (missingGuardValue<Any>() == value.value) {
             cacheMap[key] = missingGuard()
             return
         }

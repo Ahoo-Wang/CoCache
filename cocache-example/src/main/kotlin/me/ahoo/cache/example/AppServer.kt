@@ -10,11 +10,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.example
 
-package me.ahoo.cache.example;
-
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.SpringApplication
+import org.springframework.boot.autoconfigure.SpringBootApplication
 
 /**
  * AppServer.
@@ -22,8 +21,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * @author ahoo wang
  */
 @SpringBootApplication
-public class AppServer {
-    public static void main(String[] args) {
-        SpringApplication.run(AppServer.class, args);
+object AppServer {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        SpringApplication.run(AppServer::class.java, *args)
     }
 }

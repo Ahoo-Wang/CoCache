@@ -22,8 +22,8 @@ import org.jetbrains.kotlin.gradle.plugin.KotlinPlatformJvmPlugin
 plugins {
     id("io.github.gradle-nexus.publish-plugin")
     id("io.gitlab.arturbosch.detekt").version("1.21.0")
-    kotlin("jvm") version "1.7.10"
-    id("org.jetbrains.dokka") version "1.7.10"
+    kotlin("jvm") version "1.7.20"
+    id("org.jetbrains.dokka") version "1.7.20"
     jacoco
 }
 
@@ -44,7 +44,6 @@ val publishProjects = subprojects - serverProjects
 val libraryProjects = publishProjects - bomProjects
 
 ext {
-    set("lombokVersion", "1.18.20")
     set("guavaVersion", "31.1-jre")
     set("springBootVersion", "2.7.3")
     set("springCloudVersion", "2021.0.3")
@@ -75,7 +74,6 @@ configure(bomProjects) {
         allowDependencies()
     }
 }
-
 
 configure(libraryProjects) {
     apply<DetektPlugin>()
@@ -145,11 +143,6 @@ configure(libraryProjects) {
     }
 
     dependencies {
-        val depLombok = "org.projectlombok:lombok:${rootProject.ext.get("lombokVersion")}"
-        this.add("compileOnly", depLombok)
-        this.add("annotationProcessor", depLombok)
-        this.add("testCompileOnly", depLombok)
-        this.add("testAnnotationProcessor", depLombok)
         add("api", platform(project(":cocache-dependencies")))
         add("implementation", "com.google.guava:guava")
         add("implementation", "org.slf4j:slf4j-api")
@@ -218,7 +211,7 @@ configure(publishProjects) {
         }
     }
     configure<SigningExtension> {
-        val isInCI = null != System.getenv("CI");
+        val isInCI = null != System.getenv("CI")
         if (isInCI) {
             val signingKeyId = System.getenv("SIGNING_KEYID")
             val signingKey = System.getenv("SIGNING_SECRETKEY")
@@ -252,7 +245,7 @@ tasks.register<JacocoReport>("codeCoverageReport") {
     }
     reports {
         xml.required.set(true)
-        html.outputLocation.set(file("${buildDir}/reports/jacoco/report.xml"))
+        html.outputLocation.set(file("$buildDir/reports/jacoco/report.xml"))
         csv.required.set(false)
         html.required.set(true)
         html.outputLocation.set(layout.buildDirectory.dir("reports/jacoco/"))

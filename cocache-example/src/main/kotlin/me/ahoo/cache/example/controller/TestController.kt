@@ -10,19 +10,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.example.controller
 
-package me.ahoo.cache.example.controller;
-
-import me.ahoo.cache.CoherentCache;
-import me.ahoo.cache.example.model.User;
-import me.ahoo.cosid.IdGenerator;
-
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
+import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.example.model.User
+import me.ahoo.cosid.IdGenerator
+import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PutMapping
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RestController
 
 /**
  * TestController .
@@ -31,26 +28,20 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("test")
-public class TestController {
-    private final CoherentCache<Long, User> userCaching;
-    private final IdGenerator idGenerator;
-    
-    public TestController(IdGenerator idGenerator,
-                          @Qualifier("userCache") CoherentCache<Long, User> userCaching) {
-        this.userCaching = userCaching;
-        this.idGenerator = idGenerator;
-    }
-    
+class TestController(
+    private val idGenerator: IdGenerator,
+    @param:Qualifier("userCache") private val userCaching: CoherentCache<Long, User>
+) {
     @GetMapping
-    public User get() {
-        return userCaching.get(1L);
+    fun get(): User? {
+        return userCaching[1L]
     }
-    
+
     @PutMapping
-    public void set() {
-        User user = new User();
-        user.setId(1L);
-        user.setName(idGenerator.generateAsString());
-        userCaching.set(user.getId(), user);
+    fun set() {
+        val user = User()
+        user.id = 1L
+        user.name = idGenerator.generateAsString()
+        userCaching[user.id] = user
     }
 }

@@ -10,66 +10,48 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.spring.redis.codec
 
-package me.ahoo.cache.spring.redis.codec;
-
-import me.ahoo.cache.CacheValue;
-
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.data.redis.core.StringRedisTemplate;
-
-import javax.annotation.Nonnull;
+import com.fasterxml.jackson.core.JsonProcessingException
+import com.fasterxml.jackson.databind.ObjectMapper
+import me.ahoo.cache.CacheValue
+import me.ahoo.cache.CacheValue.Companion.missingGuard
+import org.springframework.data.redis.core.StringRedisTemplate
 
 /**
  * ObjectToJsonCodecExecutor .
  *
  * @author ahoo wang
  */
-public class ObjectToJsonCodecExecutor<V> implements CodecExecutor<V> {
-    private final Class<V> valueType;
-    private final ObjectMapper objectMapper;
-    private final StringRedisTemplate redisTemplate;
-    
-    public ObjectToJsonCodecExecutor(Class<V> valueType, StringRedisTemplate redisTemplate, ObjectMapper objectMapper) {
-        this.valueType = valueType;
-        this.objectMapper = objectMapper;
-        this.redisTemplate = redisTemplate;
-    }
-    
-    @Override
-    public CacheValue<V> executeAndDecode(@Nonnull String key, long ttlAt) {
-        String value = redisTemplate.opsForValue().get(key);
-        
-        if (null == value) {
-            return null;
-        }
-        
-        if (CacheValue.isMissingGuard(value)) {
-            return CacheValue.missingGuard();
-        }
-        
-        try {
-            V typedValue = objectMapper.readValue(value, valueType);
-            return CacheValue.of(typedValue, ttlAt);
-        } catch (JsonProcessingException e) {
-            throw new IllegalArgumentException(e);
-        }
-
-    }
-    
-    @Override
-    public void executeAndEncode(@Nonnull String key, @Nonnull CacheValue<V> cacheValue) {
-        if (cacheValue.isMissingGuard()) {
-            redisTemplate.opsForValue().set(key, CacheValue.MISSING_GUARD_STRING_VALUE);
-            return;
-        }
-        try {
-            String jsonValue = objectMapper.writeValueAsString(cacheValue.getValue());
-            redisTemplate.opsForValue().set(key, jsonValue);
-        } catch (JsonProcessingException e) {
-            throw new IllegalArgumentException(e);
+class ObjectToJsonCodecExecutor<V>(
+    private val valueType: Class<V>,
+    private val redisTemplate: StringRedisTemplate,
+    private val objectMapper: ObjectMapper
+) : CodecExecutor<V> {
+    override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V> {
+        val value = redisTemplate.opsForValue()[key] ?: return missingGuard()
+        return if (CacheValue.isMissingGuard(value)) {
+            missingGuard()
+        } else {
+            try {
+                val typedValue = objectMapper.readValue(value, valueType)
+                CacheValue(typedValue, ttlAt)
+            } catch (e: JsonProcessingException) {
+                throw IllegalArgumentException(e)
+            }
         }
     }
 
+    override fun executeAndEncode(key: String, cacheValue: CacheValue<V>) {
+        if (cacheValue.isMissingGuard) {
+            redisTemplate.opsForValue()[key] = CacheValue.MISSING_GUARD_STRING_VALUE
+            return
+        }
+        try {
+            val jsonValue = objectMapper.writeValueAsString(cacheValue.value)
+            redisTemplate.opsForValue()[key] = jsonValue
+        } catch (e: JsonProcessingException) {
+            throw IllegalArgumentException(e)
+        }
+    }
 }

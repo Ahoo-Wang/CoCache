@@ -10,51 +10,33 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.spring.redis.codec
 
-package me.ahoo.cache.spring.redis.codec;
-
-
-import me.ahoo.cache.CacheValue;
-
-import org.springframework.data.redis.core.StringRedisTemplate;
-
-import javax.annotation.Nonnull;
-import java.util.Set;
+import me.ahoo.cache.CacheValue
+import me.ahoo.cache.CacheValue.Companion.missingGuard
+import org.springframework.data.redis.core.StringRedisTemplate
 
 /**
  * SetToSetCodecExecutor .
  *
  * @author ahoo wang
  */
-public class SetToSetCodecExecutor implements CodecExecutor<Set<String>> {
-    private final StringRedisTemplate redisTemplate;
-    
-    public SetToSetCodecExecutor(StringRedisTemplate redisTemplate) {
-        this.redisTemplate = redisTemplate;
-    }
-    
-    @Override
-    public CacheValue<Set<String>> executeAndDecode(@Nonnull String key, @Nonnull long ttlAt) {
-        Set<String> value = redisTemplate.opsForSet().members(key);
-        
-        if (null == value) {
-            return null;
+class SetToSetCodecExecutor(private val redisTemplate: StringRedisTemplate) : CodecExecutor<Set<String>> {
+    override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<Set<String>> {
+        val value = redisTemplate.opsForSet().members(key) ?: return missingGuard()
+        return if (CacheValue.isMissingGuard(value)) {
+            missingGuard()
+        } else {
+            CacheValue(value, ttlAt)
         }
-        
-        if (CacheValue.isMissingGuard(value)) {
-            return CacheValue.missingGuard();
-        }
-        return CacheValue.of(value, ttlAt);
     }
-    
-    @Override
-    public void executeAndEncode(@Nonnull String key, @Nonnull CacheValue<Set<String>> cacheValue) {
-        if (cacheValue.isMissingGuard()) {
-            redisTemplate.opsForSet().add(key, CacheValue.MISSING_GUARD_STRING_VALUE);
-            return;
+
+    override fun executeAndEncode(key: String, cacheValue: CacheValue<Set<String>>) {
+        if (cacheValue.isMissingGuard) {
+            redisTemplate.opsForSet().add(key, CacheValue.MISSING_GUARD_STRING_VALUE)
+            return
         }
-        redisTemplate.delete(key);
-        redisTemplate.opsForSet().add(key, cacheValue.getValue().toArray(new String[] {}));
+        redisTemplate.delete(key)
+        redisTemplate.opsForSet().add(key, *cacheValue.value.toTypedArray())
     }
-    
 }

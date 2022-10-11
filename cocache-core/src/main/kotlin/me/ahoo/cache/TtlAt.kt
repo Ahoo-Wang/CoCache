@@ -31,7 +31,9 @@ interface TtlAt {
     val isExpired: Boolean
         get() = if (isForever) {
             false
-        } else CacheSecondClock.INSTANCE.currentTime() > ttlAt
+        } else {
+            CacheSecondClock.INSTANCE.currentTime() > ttlAt
+        }
 
     companion object {
         fun isForever(ttlAt: Long): Boolean {

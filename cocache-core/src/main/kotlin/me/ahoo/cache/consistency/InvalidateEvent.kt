@@ -16,7 +16,7 @@ package me.ahoo.cache.consistency
  *
  * @author ahoo wang
  */
-data class InvalidateEvent (
+data class InvalidateEvent(
     /**
      * get cache key.
      *
@@ -29,4 +29,8 @@ data class InvalidateEvent (
      * @return publisherId
      */
     val publisherId: String
-)
+) {
+    companion object {
+        const val TYPE = "invalid"
+    }
+}

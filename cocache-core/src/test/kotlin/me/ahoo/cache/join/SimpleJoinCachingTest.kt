@@ -16,7 +16,6 @@ import me.ahoo.cache.CacheValue.Companion.forever
 import me.ahoo.cache.client.MapClientSideCache
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
-import javax.annotation.Nonnull
 
 /**
  * SimpleJoinCachingTest .
@@ -24,17 +23,13 @@ import javax.annotation.Nonnull
  * @author ahoo wang
  */
 internal class SimpleJoinCachingTest {
-    var orderCache = MapClientSideCache<Order?>()
+    var orderCache = MapClientSideCache<Order>()
     var orderAddressCache = MapClientSideCache<OrderAddress>()
-    var joinCaching: JoinCache<String?, Order?, String, OrderAddress> =
-        SimpleJoinCaching<String?, Order?, String, OrderAddress>(
-            orderCache, orderAddressCache, object : ExtractJoinKey<Order?, String?> {
-                @Nonnull
-                override fun extract(@Nonnull firstValue: Order): String {
-                    return firstValue.id!!
-                }
-            }
-        )
+    var joinCaching: JoinCache<String, Order, String, OrderAddress> =
+        SimpleJoinCaching(
+            orderCache,
+            orderAddressCache
+        ) { firstValue -> firstValue.id!! }
 
     @Test
     fun get() {
@@ -44,7 +39,7 @@ internal class SimpleJoinCachingTest {
         orderAddress.orderId = order.id
         orderCache.setCache(order.id!!, forever(order))
         orderAddressCache.setCache(order.id!!, forever(orderAddress))
-        val joinValue = joinCaching[order.id]
+        val joinValue = joinCaching[order.id!!]
         Assertions.assertNotNull(joinValue)
         Assertions.assertEquals(order, joinValue!!.firstValue)
         Assertions.assertEquals(order.id, joinValue.joinKey)

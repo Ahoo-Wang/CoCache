@@ -23,12 +23,13 @@ import org.junit.jupiter.api.Test
  */
 internal class MockDistributedCacheTest {
     private val distributedCaching = MockDistributedCache<String>(GuavaInvalidateEventBus(""))
+
     @Test
     fun get() {
-        val CACHE_KEY = "get"
-        val CACHE_VALUE = "get"
-        distributedCaching[CACHE_KEY] = CACHE_VALUE
-        Assertions.assertEquals(CACHE_VALUE, distributedCaching[CACHE_KEY])
+        val key = "get"
+        val value = "get"
+        distributedCaching[key] = value
+        Assertions.assertEquals(value, distributedCaching[key])
     }
 
     @Test

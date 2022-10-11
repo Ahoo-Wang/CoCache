@@ -1,4 +1,3 @@
-
 /*
  * Copyright [2021-present] [ahoo wang <ahoowang@qq.com> (https://github.com/Ahoo-Wang)].
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,11 +10,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.spring.redis.codec
+
+import me.ahoo.cache.consistency.InvalidateEvent
 
 /**
- * use pub/sub to notify client side cache invalidate.
+ * Messages .
  *
  * @author ahoo wang
  */
+object InvalidateMessages {
+    const val DELIMITER = "@"
+    fun ofClientId(clientId: String): String {
+        return InvalidateEvent.TYPE + DELIMITER + clientId
+    }
 
-package me.ahoo.cache.spring.redis;
+    fun getPublisherIdFromMessageBody(msgBody: String): String {
+        val typeWithPublisherId = msgBody.split(DELIMITER.toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
+        require(2 == typeWithPublisherId.size) { "msgBody illegal:[$msgBody]." }
+        return typeWithPublisherId[1]
+    }
+}

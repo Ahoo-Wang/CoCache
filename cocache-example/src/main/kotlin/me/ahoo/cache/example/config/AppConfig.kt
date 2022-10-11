@@ -10,32 +10,31 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.example.config
 
-package me.ahoo.cache.example.config;
-
-import me.ahoo.cache.CacheSource;
-import me.ahoo.cache.CoherentCache;
-import me.ahoo.cache.client.ClientSideCache;
-import me.ahoo.cache.client.GuavaClientSideCache;
-import me.ahoo.cache.client.MapClientSideCache;
-import me.ahoo.cache.converter.ExpKeyConverter;
-import me.ahoo.cache.converter.ToStringKeyConverter;
-import me.ahoo.cache.distributed.DistributedCache;
-import me.ahoo.cache.distributed.mock.MockDistributedCache;
-import me.ahoo.cache.consistency.GuavaInvalidateEventBus;
-import me.ahoo.cache.consistency.InvalidateEventBus;
-import me.ahoo.cache.example.model.User;
-import me.ahoo.cache.source.NoOpCacheSource;
-import me.ahoo.cache.spring.redis.RedisCoherentCacheBuilder;
-import me.ahoo.cache.spring.redis.RedisDistributedCache;
-import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor;
-import me.ahoo.cosid.IdGenerator;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+import com.fasterxml.jackson.databind.ObjectMapper
+import me.ahoo.cache.CacheSource
+import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.CoherentCache.Companion.builder
+import me.ahoo.cache.client.ClientSideCache
+import me.ahoo.cache.client.GuavaClientSideCache
+import me.ahoo.cache.client.MapClientSideCache
+import me.ahoo.cache.consistency.GuavaInvalidateEventBus
+import me.ahoo.cache.consistency.InvalidateEventBus
+import me.ahoo.cache.converter.ExpKeyConverter
+import me.ahoo.cache.converter.ToStringKeyConverter
+import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.distributed.mock.MockDistributedCache
+import me.ahoo.cache.example.model.User
+import me.ahoo.cache.source.NoOpCacheSource
+import me.ahoo.cache.spring.redis.RedisCoherentCacheBuilder
+import me.ahoo.cache.spring.redis.RedisDistributedCache
+import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor
+import me.ahoo.cosid.IdGenerator
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
+import org.springframework.data.redis.core.StringRedisTemplate
+import org.springframework.data.redis.listener.RedisMessageListenerContainer
 
 /**
  * AppConfig.
@@ -43,37 +42,42 @@ import org.springframework.data.redis.listener.RedisMessageListenerContainer;
  * @author ahoo wang
  */
 @Configuration
-public class AppConfig {
-    
+class AppConfig {
     @Bean("userCache")
-    public CoherentCache<Long, User> userCache(StringRedisTemplate redisTemplate,
-                                               RedisMessageListenerContainer redisMessageListenerContainer,
-                                               ObjectMapper objectMapper,
-                                               IdGenerator idGenerator) {
-        String clientId = idGenerator.generateAsString();
-        ObjectToJsonCodecExecutor<User> codecExecutor = new ObjectToJsonCodecExecutor<>(User.class, redisTemplate, objectMapper);
-        DistributedCache<User> distributedCaching = new RedisDistributedCache<>(clientId, redisTemplate, codecExecutor);
-        return new RedisCoherentCacheBuilder<Long, User>()
-            .keyConverter(new ExpKeyConverter<>(User.CACHE_KEY_PREFIX, "#{#root}"))
-            .cacheSource(new NoOpCacheSource<>())
-            .clientSideCaching(new GuavaClientSideCache<>())
+    fun userCache(
+        redisTemplate: StringRedisTemplate,
+        redisMessageListenerContainer: RedisMessageListenerContainer,
+        objectMapper: ObjectMapper,
+        idGenerator: IdGenerator
+    ): CoherentCache<Long, User> {
+        val clientId = idGenerator.generateAsString()
+        val codecExecutor = ObjectToJsonCodecExecutor(
+            User::class.java,
+            redisTemplate,
+            objectMapper
+        )
+        val distributedCaching: DistributedCache<User> = RedisDistributedCache(clientId, redisTemplate, codecExecutor)
+        return RedisCoherentCacheBuilder<Long, User>()
+            .keyConverter(ExpKeyConverter(User.CACHE_KEY_PREFIX, "#{#root}"))
+            .cacheSource(NoOpCacheSource.noOp())
+            .clientSideCaching(GuavaClientSideCache())
             .distributedCaching(distributedCaching)
             .listenerContainer(redisMessageListenerContainer)
-            .build();
+            .build()
     }
-    
+
     @Bean("mockCache")
-    public CoherentCache<String, String> mockCache(IdGenerator idGenerator) {
-        ClientSideCache<String> clientCaching = new MapClientSideCache<>();
-        InvalidateEventBus invalidateEventBus = new GuavaInvalidateEventBus(idGenerator.generateAsString());
-        MockDistributedCache<String> distributedCaching = new MockDistributedCache<>(invalidateEventBus);
-        CacheSource<String, String> cacheSource = new NoOpCacheSource<>();
-        return CoherentCache.<String, String>builder()
-            .keyConverter(new ToStringKeyConverter<>(""))
+    fun mockCache(idGenerator: IdGenerator): CoherentCache<String, String> {
+        val clientCaching: ClientSideCache<String> = MapClientSideCache()
+        val invalidateEventBus: InvalidateEventBus = GuavaInvalidateEventBus(idGenerator.generateAsString())
+        val distributedCaching = MockDistributedCache<String>(invalidateEventBus)
+        val cacheSource: CacheSource<String, String> = NoOpCacheSource.noOp()
+        return builder<String, String>()
+            .keyConverter(ToStringKeyConverter(""))
             .cacheSource(cacheSource)
             .clientSideCaching(clientCaching)
             .distributedCaching(distributedCaching)
             .invalidateEventBus(invalidateEventBus)
-            .build();
+            .build()
     }
 }

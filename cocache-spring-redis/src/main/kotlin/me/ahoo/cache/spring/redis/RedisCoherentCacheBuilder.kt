@@ -10,68 +10,65 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.spring.redis
 
-package me.ahoo.cache.spring.redis;
-
-import me.ahoo.cache.CacheSource;
-import me.ahoo.cache.CoherentCache;
-import me.ahoo.cache.client.ClientSideCache;
-import me.ahoo.cache.converter.KeyConverter;
-import me.ahoo.cache.distributed.DistributedCache;
-import me.ahoo.cache.consistency.GuavaInvalidateEventBus;
-
-import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+import me.ahoo.cache.CacheSource
+import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.CoherentCache.Companion.builder
+import me.ahoo.cache.client.ClientSideCache
+import me.ahoo.cache.consistency.GuavaInvalidateEventBus
+import me.ahoo.cache.converter.KeyConverter
+import me.ahoo.cache.distributed.DistributedCache
+import org.springframework.data.redis.listener.RedisMessageListenerContainer
 
 /**
  * Redis Coherent Cache Builder .
  *
  * @author ahoo wang
  */
-public class RedisCoherentCacheBuilder<K, V> {
-    private KeyConverter<K> keyConverter;
-    private CacheSource<K, V> cacheSource;
-    private ClientSideCache<V> clientSideCaching;
-    private DistributedCache<V> distributedCaching;
-    private RedisMessageListenerContainer listenerContainer;
-    
-    public RedisCoherentCacheBuilder() {
+class RedisCoherentCacheBuilder<K, V> {
+    private lateinit var keyConverter: KeyConverter<K>
+    private lateinit var cacheSource: CacheSource<K, V>
+    private lateinit var clientSideCaching: ClientSideCache<V>
+    private lateinit var distributedCaching: DistributedCache<V>
+    private lateinit var listenerContainer: RedisMessageListenerContainer
+    fun keyConverter(keyConverter: KeyConverter<K>): RedisCoherentCacheBuilder<K, V> {
+        this.keyConverter = keyConverter
+        return this
     }
-    
-    public RedisCoherentCacheBuilder<K, V> keyConverter(KeyConverter<K> keyConverter) {
-        this.keyConverter = keyConverter;
-        return this;
-    }
-    
-    public RedisCoherentCacheBuilder<K, V> cacheSource(CacheSource<K, V> cacheSource) {
-        this.cacheSource = cacheSource;
-        return this;
-    }
-    
-    public RedisCoherentCacheBuilder<K, V> clientSideCaching(ClientSideCache<V> clientSideCaching) {
-        this.clientSideCaching = clientSideCaching;
-        return this;
-    }
-    
-    public RedisCoherentCacheBuilder<K, V> distributedCaching(DistributedCache<V> distributedCaching) {
-        this.distributedCaching = distributedCaching;
-        return this;
-    }
-    
-    public RedisCoherentCacheBuilder<K, V> listenerContainer(RedisMessageListenerContainer listenerContainer) {
-        this.listenerContainer = listenerContainer;
-        return this;
-    }
-    
-    public CoherentCache<K, V> build() {
-        RedisInvalidateEventBus invalidateEventBus =
-            new RedisInvalidateEventBus(keyConverter.getKeyPrefix(), new GuavaInvalidateEventBus(distributedCaching.getClientId()), listenerContainer);
 
-        return CoherentCache.<K, V>builder()
+    fun cacheSource(cacheSource: CacheSource<K, V>): RedisCoherentCacheBuilder<K, V> {
+        this.cacheSource = cacheSource
+        return this
+    }
+
+    fun clientSideCaching(clientSideCaching: ClientSideCache<V>): RedisCoherentCacheBuilder<K, V> {
+        this.clientSideCaching = clientSideCaching
+        return this
+    }
+
+    fun distributedCaching(distributedCaching: DistributedCache<V>): RedisCoherentCacheBuilder<K, V> {
+        this.distributedCaching = distributedCaching
+        return this
+    }
+
+    fun listenerContainer(listenerContainer: RedisMessageListenerContainer): RedisCoherentCacheBuilder<K, V> {
+        this.listenerContainer = listenerContainer
+        return this
+    }
+
+    fun build(): CoherentCache<K, V> {
+        val invalidateEventBus = RedisInvalidateEventBus(
+            keyConverter.keyPrefix,
+            GuavaInvalidateEventBus(distributedCaching.clientId),
+            listenerContainer
+        )
+        return builder<K, V>()
             .keyConverter(keyConverter)
             .cacheSource(cacheSource)
             .clientSideCaching(clientSideCaching)
             .distributedCaching(distributedCaching)
             .invalidateEventBus(invalidateEventBus)
-            .build();
+            .build()
     }
 }

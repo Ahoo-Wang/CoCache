@@ -10,83 +10,67 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.spring.redis
 
-package me.ahoo.cache.spring.redis;
-
-import me.ahoo.cache.KeyPrefix;
-import me.ahoo.cache.consistency.InvalidateEvent;
-import me.ahoo.cache.consistency.InvalidateEventBus;
-import me.ahoo.cache.consistency.InvalidateSubscriber;
-import me.ahoo.cache.spring.redis.codec.InvalidateMessages;
-
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.connection.Message;
-import org.springframework.data.redis.connection.MessageListener;
-import org.springframework.data.redis.listener.PatternTopic;
-import org.springframework.data.redis.listener.RedisMessageListenerContainer;
-
-import java.nio.charset.StandardCharsets;
+import me.ahoo.cache.KeyPrefix
+import me.ahoo.cache.consistency.InvalidateEvent
+import me.ahoo.cache.consistency.InvalidateEventBus
+import me.ahoo.cache.consistency.InvalidateSubscriber
+import me.ahoo.cache.spring.redis.codec.InvalidateMessages
+import org.springframework.data.redis.connection.Message
+import org.springframework.data.redis.connection.MessageListener
+import org.springframework.data.redis.listener.PatternTopic
+import org.springframework.data.redis.listener.RedisMessageListenerContainer
+import org.springframework.lang.Nullable
+import java.nio.charset.StandardCharsets
 
 /**
  * Redis Invalidate EventBus .
  *
  * @author ahoo wang
  */
-@Slf4j
-public class RedisInvalidateEventBus implements InvalidateEventBus, KeyPrefix {
-    private final InvalidateEventBus actual;
-    private final RedisMessageListenerContainer listenerContainer;
-    private final String keyPrefix;
-    private final PatternTopic subscribeTopic;
-    private final MessageListener messageListener;
-    
-    public RedisInvalidateEventBus(String keyPrefix,
-                                   InvalidateEventBus actual,
-                                   RedisMessageListenerContainer listenerContainer) {
-        this.keyPrefix = keyPrefix;
-        this.subscribeTopic = PatternTopic.of(keyPrefix + "*");
-        this.actual = actual;
-        this.messageListener = new MessageListenerAdapter();
-        this.listenerContainer = listenerContainer;
-        this.listenerContainer.addMessageListener(messageListener, subscribeTopic);
+class RedisInvalidateEventBus(
+    override val keyPrefix: String,
+    actual: InvalidateEventBus,
+    listenerContainer: RedisMessageListenerContainer
+) : InvalidateEventBus, KeyPrefix {
+    private val actual: InvalidateEventBus
+    private val listenerContainer: RedisMessageListenerContainer
+    private val subscribeTopic: PatternTopic = PatternTopic.of("$keyPrefix*")
+    private val messageListener: MessageListener
+
+    init {
+        this.actual = actual
+        messageListener = MessageListenerAdapter()
+        this.listenerContainer = listenerContainer
+        this.listenerContainer.addMessageListener(messageListener, subscribeTopic)
     }
-    
-    @Override
-    public String getClientId() {
-        return actual.getClientId();
+
+    override val clientId: String
+        get() = actual.clientId
+
+    override fun publish(event: InvalidateEvent) {
+        actual.publish(event)
     }
-    
-    @Override
-    public void publish(InvalidateEvent event) {
-        actual.publish(event);
+
+    override fun register(subscriber: InvalidateSubscriber) {
+        actual.register(subscriber)
     }
-    
-    @Override
-    public void register(InvalidateSubscriber subscriber) {
-        actual.register(subscriber);
+
+    override fun unregister(subscriber: InvalidateSubscriber) {
+        actual.unregister(subscriber)
     }
-    
-    @Override
-    public void unregister(InvalidateSubscriber subscriber) {
-        actual.unregister(subscriber);
-    }
-    
-    @Override
-    public String getKeyPrefix() {
-        return keyPrefix;
-    }
-    
-    public class MessageListenerAdapter implements MessageListener {
-        @Override
-        public void onMessage(Message message, byte[] pattern) {
-            String key = new String(message.getChannel(), StandardCharsets.UTF_8);
-            if (!key.startsWith(getKeyPrefix())) {
-                return;
+
+    inner class MessageListenerAdapter : MessageListener {
+        override fun onMessage(message: Message, @Nullable pattern: ByteArray?) {
+            val key = String(message.channel, StandardCharsets.UTF_8)
+            if (!key.startsWith(keyPrefix)) {
+                return
             }
-            
-            String publisherId = InvalidateMessages.getPublisherIdFromMessageBody(new String(message.getBody(), StandardCharsets.UTF_8));
-            InvalidateEvent invalidateEvent = InvalidateEvent.of(key, publisherId);
-            publish(invalidateEvent);
+            val publisherId =
+                InvalidateMessages.getPublisherIdFromMessageBody(String(message.body, StandardCharsets.UTF_8))
+            val invalidateEvent = InvalidateEvent(key, publisherId)
+            publish(invalidateEvent)
         }
     }
 }

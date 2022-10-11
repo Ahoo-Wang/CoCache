@@ -12,15 +12,17 @@
  */
 package me.ahoo.cache
 
+import com.google.common.eventbus.Subscribe
 import me.ahoo.cache.CacheValue.Companion.missingGuard
 import me.ahoo.cache.client.ClientSideCache
 import me.ahoo.cache.client.MapClientSideCache
+import me.ahoo.cache.consistency.InvalidateEvent
 import me.ahoo.cache.consistency.InvalidateEventBus
+import me.ahoo.cache.consistency.InvalidateSubscriber
 import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.filter.NoOpKeyFilter
 import me.ahoo.cache.source.NoOpCacheSource.noOp
-import javax.annotation.Nonnull
 
 /**
  * Coherent cache .
@@ -32,7 +34,7 @@ class CoherentCache<K, V> protected constructor(
     private val cacheSource: CacheSource<K, V>,
     private val clientSideCaching: ClientSideCache<V>,
     private val distributedCaching: DistributedCache<V>
-) : Cache<K, V> {
+) : Cache<K, V>, InvalidateSubscriber {
     /*
     TODO Replace with real KeyFilter.
      */
@@ -63,7 +65,9 @@ class CoherentCache<K, V> protected constructor(
         if (null != cacheValue) {
             return if (cacheValue.isMissingGuard) {
                 null
-            } else cacheValue
+            } else {
+                cacheValue
+            }
         }
 
         /*
@@ -77,7 +81,9 @@ class CoherentCache<K, V> protected constructor(
             if (null != cacheValue) {
                 return if (cacheValue!!.isMissingGuard) {
                     null
-                } else cacheValue
+                } else {
+                    cacheValue
+                }
             }
             //region L0:Cache Source
             /*
@@ -94,34 +100,39 @@ class CoherentCache<K, V> protected constructor(
              * 0. Db 不存在该记录
              * 1. 穿透到 Db 回源
              **** 缓存空值 ***
-             */setCache(cacheKey, missingGuard<CacheValue<V>>())
+             */setCache(cacheKey, missingGuard())
             return null
         }
     }
 
-    private fun setCache(cacheKey: String, cacheValue: CacheValue<V>?) {
+    private fun setCache(cacheKey: String, cacheValue: CacheValue<V>) {
         clientSideCaching.setCache(cacheKey, cacheValue)
         distributedCaching.setCache(cacheKey, cacheValue)
     }
 
-    override fun setCache(@Nonnull key: K, @Nonnull value: CacheValue<V>?) {
+    override fun setCache(key: K, value: CacheValue<V>) {
         val cacheKey = keyConverter.asKey(key)
         setCache(cacheKey, value)
     }
 
-    override fun evict(@Nonnull key: K) {
+    override fun evict(key: K) {
         val cacheKey = keyConverter.asKey(key)
         clientSideCaching.evict(cacheKey)
         distributedCaching.evict(cacheKey)
     }
 
+    @Subscribe
+    override fun onInvalidate(invalidateEvent: InvalidateEvent) {
+        clientSideCaching.evict(invalidateEvent.key)
+    }
+
     class CoCachingBuilder<K, V> internal constructor() {
-        private var keyConverter: KeyConverter<K>? = null
+        private lateinit var keyConverter: KeyConverter<K>
         private var cacheSource = noOp<K, V>()
         private var clientSideCaching: ClientSideCache<V> = MapClientSideCache()
-        private var distributedCaching: DistributedCache<V>? = null
-        private var invalidateEventBus: InvalidateEventBus? = null
-        fun keyConverter(keyConverter: KeyConverter<K>?): CoCachingBuilder<K, V> {
+        private lateinit var distributedCaching: DistributedCache<V>
+        private lateinit var invalidateEventBus: InvalidateEventBus
+        fun keyConverter(keyConverter: KeyConverter<K>): CoCachingBuilder<K, V> {
             this.keyConverter = keyConverter
             return this
         }
@@ -136,19 +147,20 @@ class CoherentCache<K, V> protected constructor(
             return this
         }
 
-        fun distributedCaching(distributedCaching: DistributedCache<V>?): CoCachingBuilder<K, V> {
+        fun distributedCaching(distributedCaching: DistributedCache<V>): CoCachingBuilder<K, V> {
             this.distributedCaching = distributedCaching
             return this
         }
 
-        fun invalidateEventBus(invalidateEventBus: InvalidateEventBus?): CoCachingBuilder<K, V> {
+        fun invalidateEventBus(invalidateEventBus: InvalidateEventBus): CoCachingBuilder<K, V> {
             this.invalidateEventBus = invalidateEventBus
             return this
         }
 
         fun build(): CoherentCache<K, V> {
-            invalidateEventBus!!.register(clientSideCaching)
-            return CoherentCache(keyConverter!!, cacheSource, clientSideCaching, distributedCaching!!)
+            val coherentCache = CoherentCache(keyConverter, cacheSource, clientSideCaching, distributedCaching)
+            invalidateEventBus.register(coherentCache)
+            return coherentCache
         }
     }
 

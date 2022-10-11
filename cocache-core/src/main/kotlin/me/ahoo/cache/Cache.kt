@@ -16,7 +16,6 @@ package me.ahoo.cache
 import me.ahoo.cache.CacheValue.Companion.forever
 import me.ahoo.cache.CacheValue.Companion.missingGuard
 import me.ahoo.cache.CacheValue.Companion.missingGuardValue
-import me.ahoo.cache.CacheValue.Companion.of
 
 /**
  * Caching api.
@@ -56,7 +55,7 @@ interface Cache<K, V> : CacheGetter<K, V> {
     }
 
     operator fun set(key: K, ttlAt: Long, value: V) {
-        setCache(key, of(value, ttlAt))
+        setCache(key, CacheValue(value, ttlAt))
     }
 
     operator fun set(key: K, value: V) {
@@ -64,7 +63,7 @@ interface Cache<K, V> : CacheGetter<K, V> {
         setCache(key, cacheValue)
     }
 
-    fun setCache(key: K, value: CacheValue<V>?)
+    fun setCache(key: K, value: CacheValue<V>)
 
     /**
      * evict cache.

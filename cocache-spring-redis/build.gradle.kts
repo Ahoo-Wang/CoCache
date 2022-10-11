@@ -1,4 +1,3 @@
-
 dependencies {
     api(project(":cocache-core"))
     api("com.fasterxml.jackson.core:jackson-databind")

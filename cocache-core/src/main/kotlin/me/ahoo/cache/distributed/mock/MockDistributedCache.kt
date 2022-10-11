@@ -13,9 +13,9 @@
 package me.ahoo.cache.distributed.mock
 
 import me.ahoo.cache.CacheValue
-import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.consistency.InvalidateEvent
 import me.ahoo.cache.consistency.InvalidateEventBus
+import me.ahoo.cache.distributed.DistributedCache
 import java.util.concurrent.ConcurrentHashMap
 import javax.annotation.Nonnull
 
@@ -25,7 +25,7 @@ import javax.annotation.Nonnull
  * @author ahoo wang
  */
 class MockDistributedCache<V>(private val invalidateEventBus: InvalidateEventBus) : DistributedCache<V> {
-    private val cacheMap: ConcurrentHashMap<String, CacheValue<V>?> = ConcurrentHashMap()
+    private val cacheMap: ConcurrentHashMap<String, CacheValue<V>> = ConcurrentHashMap()
 
     override fun get(@Nonnull key: String): V? {
         val cacheValue = getCache(key) ?: return null
@@ -40,8 +40,8 @@ class MockDistributedCache<V>(private val invalidateEventBus: InvalidateEventBus
         return cacheMap[key]
     }
 
-    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>?) {
-        cacheMap[key] = value!!
+    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>) {
+        cacheMap[key] = value
         invalidateEventBus.publish(InvalidateEvent(key, clientId))
     }
 
@@ -50,7 +50,6 @@ class MockDistributedCache<V>(private val invalidateEventBus: InvalidateEventBus
         invalidateEventBus.publish(InvalidateEvent(key, clientId))
     }
 
-    @Throws(Exception::class)
     override fun close() {
         cacheMap.clear()
     }

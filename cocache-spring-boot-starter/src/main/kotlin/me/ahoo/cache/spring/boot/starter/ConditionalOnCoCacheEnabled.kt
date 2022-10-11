@@ -10,26 +10,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.spring.boot.starter
 
-package me.ahoo.cache.spring.boot.starter;
-
-import me.ahoo.cache.CoCache;
-
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
+import me.ahoo.cache.CoCache
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 
 /**
  * Conditional On CoCache Enabled.
  *
  * @author ahoo wang
  */
-@Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.TYPE, ElementType.METHOD})
-@ConditionalOnProperty(value = ConditionalOnCoCacheEnabled.ENABLED_KEY, matchIfMissing = true, havingValue = "true")
-public @interface ConditionalOnCoCacheEnabled {
-    String ENABLED_KEY = CoCache.COCACHE + EnabledSuffix.KEY;
+@ConditionalOnProperty(value = [ConditionalOnCoCacheEnabled.ENABLED_KEY], matchIfMissing = true, havingValue = "true")
+annotation class ConditionalOnCoCacheEnabled {
+    companion object {
+        const val ENABLED_KEY = CoCache.COCACHE + EnabledSuffix.KEY
+    }
 }

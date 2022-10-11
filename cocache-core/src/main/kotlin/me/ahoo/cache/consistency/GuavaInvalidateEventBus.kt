@@ -21,7 +21,8 @@ import org.slf4j.LoggerFactory
  * @author ahoo wang
  */
 class GuavaInvalidateEventBus @JvmOverloads constructor(
-    override val clientId: String, private val eventBus: EventBus = EventBus(
+    override val clientId: String,
+    private val eventBus: EventBus = EventBus(
         clientId
     )
 ) : InvalidateEventBus {

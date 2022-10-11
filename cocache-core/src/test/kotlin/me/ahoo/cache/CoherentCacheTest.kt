@@ -17,14 +17,13 @@ import me.ahoo.cache.CoherentCache.Companion.builder
 import me.ahoo.cache.client.ClientSideCache
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.GuavaInvalidateEventBus
+import me.ahoo.cache.consistency.InvalidateEvent
 import me.ahoo.cache.consistency.InvalidateEventBus
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.mock.MockDistributedCache
 import me.ahoo.cache.source.NoOpCacheSource.noOp
 import org.junit.jupiter.api.Assertions
-import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
-import reactor.core.publisher.Mono
 import java.util.*
 
 /**
@@ -37,52 +36,50 @@ internal class CoherentCacheTest {
     var invalidateEventBus: InvalidateEventBus = GuavaInvalidateEventBus(UUID.randomUUID().toString())
     var distributedCaching = MockDistributedCache<String>(invalidateEventBus)
     var cacheSource = noOp<String, String>()
-    var compositeCache = builder<String, String>().keyConverter(ToStringKeyConverter(""))
+    var coherentCache = builder<String, String>().keyConverter(ToStringKeyConverter(""))
         .cacheSource(cacheSource)
         .clientSideCaching(clientCaching)
         .distributedCaching(distributedCaching)
         .invalidateEventBus(invalidateEventBus)
         .build()
 
-    @Disabled
     @Test
     fun get() {
-        val CACHE_KEY = "get"
-        val CACHE_VALUE = forever(CACHE_KEY)
-        Assertions.assertNull(compositeCache[CACHE_KEY])
-        clientCaching.setCache(CACHE_KEY, CACHE_VALUE)
-        Assertions.assertEquals(CACHE_VALUE, clientCaching.getCache(CACHE_KEY))
-        compositeCache.setCache(CACHE_KEY, CACHE_VALUE)
-        Assertions.assertNull(clientCaching[CACHE_KEY])
+        val key = "get"
+        val value = forever(key)
+        Assertions.assertNull(coherentCache[key])
+        coherentCache.setCache(key, value)
+        Assertions.assertEquals(value, clientCaching.getCache(key))
     }
 
     @Test
     fun set() {
-        val CACHE_KEY = "set"
-        Assertions.assertNull(compositeCache[CACHE_KEY])
-        val CACHE_VALUE = forever(CACHE_KEY)
-        compositeCache.setCache(CACHE_KEY, CACHE_VALUE)
-        Assertions.assertEquals(CACHE_VALUE, clientCaching.getCache(CACHE_KEY))
+        val key = "set"
+        Assertions.assertNull(coherentCache[key])
+        val value = forever(key)
+        coherentCache.setCache(key, value)
+        Assertions.assertEquals(value, coherentCache.getCache(key))
     }
 
     @Test
     fun evict() {
-        val CACHE_KEY = "evict"
-        val CACHE_VALUE = forever(CACHE_KEY)
-        clientCaching.setCache(CACHE_KEY, CACHE_VALUE)
-        Assertions.assertEquals(CACHE_VALUE, clientCaching.getCache(CACHE_KEY))
-        compositeCache.evict(CACHE_KEY)
-        Assertions.assertNull(clientCaching[CACHE_KEY])
+        val key = "evict"
+        val value = forever(key)
+        coherentCache.setCache(key, value)
+        Assertions.assertEquals(value, coherentCache.getCache(key))
+        coherentCache.evict(key)
+        Assertions.assertNull(coherentCache[key])
     }
 
-    fun testGet() {
-//        Mono.just("fromClient")
-//            .switchIfEmpty(Mono.just("fromDistributed").materialize().doOnNext {
-//                if (it.isOnNext) {
-//                    clientCaching.setCache("key", CacheValue.forever(it.get()))
-//                }
-//            }.then())
+    @Test
+    fun onInvalidate() {
+        val key = "onInvalidate"
+        val value = forever(key)
+        coherentCache.setCache(key, value)
+        val event = InvalidateEvent(key, "")
+        coherentCache.onInvalidate(event)
+        Assertions.assertNull(clientCaching[key])
+        Assertions.assertNotNull(distributedCaching[key])
+        Assertions.assertNotNull(coherentCache[key])
     }
-
 }
-
