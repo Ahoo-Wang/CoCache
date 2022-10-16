@@ -20,7 +20,6 @@ import me.ahoo.cache.spring.redis.codec.InvalidateMessages
 import me.ahoo.cache.util.CacheSecondClock
 import org.springframework.data.redis.core.StringRedisTemplate
 import java.time.Instant
-import javax.annotation.Nonnull
 
 /**
  * Redis Distributed Cache.
@@ -29,10 +28,10 @@ import javax.annotation.Nonnull
  */
 class RedisDistributedCache<V>(
     override val clientId: String,
-    val redisTemplate: StringRedisTemplate,
+    private val redisTemplate: StringRedisTemplate,
     private val codecExecutor: CodecExecutor<V>
 ) : DistributedCache<V> {
-    override fun getCache(@Nonnull key: String): CacheValue<V>? {
+    override fun getCache(key: String): CacheValue<V>? {
         val ttlAt = getExpireAt(key) ?: return null
         return codecExecutor.executeAndDecode(key, ttlAt)
     }
@@ -49,7 +48,7 @@ class RedisDistributedCache<V>(
         }
     }
 
-    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>) {
+    override fun setCache(key: String, value: CacheValue<V>) {
         codecExecutor.executeAndEncode(key, value)
         if (!value.isForever) {
             redisTemplate.expireAt(key, Instant.ofEpochSecond(value.ttlAt))
@@ -57,7 +56,7 @@ class RedisDistributedCache<V>(
         publishInvalidateMessage(key)
     }
 
-    override fun evict(@Nonnull key: String) {
+    override fun evict(key: String) {
         redisTemplate.delete(key)
         publishInvalidateMessage(key)
     }

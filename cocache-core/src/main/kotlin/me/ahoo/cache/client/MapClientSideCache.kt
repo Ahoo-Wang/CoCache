@@ -16,7 +16,6 @@ import me.ahoo.cache.CacheValue
 import me.ahoo.cache.CacheValue.Companion.missingGuard
 import me.ahoo.cache.CacheValue.Companion.missingGuardValue
 import java.util.concurrent.ConcurrentHashMap
-import javax.annotation.Nonnull
 
 /**
  * Map Client Cache .
@@ -29,7 +28,7 @@ class MapClientSideCache<V>(private val cacheMap: MutableMap<String, CacheValue<
         return cacheMap[key]
     }
 
-    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>) {
+    override fun setCache(key: String, value: CacheValue<V>) {
         if (missingGuardValue<Any>() == value.value) {
             cacheMap[key] = missingGuard()
             return
@@ -37,7 +36,7 @@ class MapClientSideCache<V>(private val cacheMap: MutableMap<String, CacheValue<
         cacheMap[key] = value
     }
 
-    override fun evict(@Nonnull key: String) {
+    override fun evict(key: String) {
         cacheMap.remove(key)
     }
 

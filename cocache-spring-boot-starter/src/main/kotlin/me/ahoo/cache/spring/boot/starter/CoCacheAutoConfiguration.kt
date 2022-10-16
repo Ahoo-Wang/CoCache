@@ -34,9 +34,9 @@ class CoCacheAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnSingleCandidate(RedisConnectionFactory::class)
-    fun cocacheRedisMessageListenerContainer(connectionFactory: RedisConnectionFactory): RedisMessageListenerContainer {
+    fun cocacheRedisMessageListenerContainer(redisConnectionFactory: RedisConnectionFactory): RedisMessageListenerContainer {
         val container = RedisMessageListenerContainer()
-        container.connectionFactory = connectionFactory
+        container.setConnectionFactory(redisConnectionFactory)
         return container
     }
 }

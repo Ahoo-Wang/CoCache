@@ -17,7 +17,6 @@ import me.ahoo.cache.consistency.InvalidateEvent
 import me.ahoo.cache.consistency.InvalidateEventBus
 import me.ahoo.cache.distributed.DistributedCache
 import java.util.concurrent.ConcurrentHashMap
-import javax.annotation.Nonnull
 
 /**
  * Mock Distributed Caching .
@@ -27,7 +26,7 @@ import javax.annotation.Nonnull
 class MockDistributedCache<V>(private val invalidateEventBus: InvalidateEventBus) : DistributedCache<V> {
     private val cacheMap: ConcurrentHashMap<String, CacheValue<V>> = ConcurrentHashMap()
 
-    override fun get(@Nonnull key: String): V? {
+    override fun get(key: String): V? {
         val cacheValue = getCache(key) ?: return null
         if (cacheValue.isExpired) {
             evict(key)
@@ -40,12 +39,12 @@ class MockDistributedCache<V>(private val invalidateEventBus: InvalidateEventBus
         return cacheMap[key]
     }
 
-    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>) {
+    override fun setCache(key: String, value: CacheValue<V>) {
         cacheMap[key] = value
         invalidateEventBus.publish(InvalidateEvent(key, clientId))
     }
 
-    override fun evict(@Nonnull key: String) {
+    override fun evict(key: String) {
         cacheMap.remove(key)
         invalidateEventBus.publish(InvalidateEvent(key, clientId))
     }

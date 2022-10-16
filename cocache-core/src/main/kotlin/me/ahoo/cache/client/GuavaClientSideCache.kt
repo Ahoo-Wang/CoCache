@@ -15,14 +15,13 @@ package me.ahoo.cache.client
 import com.google.common.cache.Cache
 import com.google.common.cache.CacheBuilder
 import me.ahoo.cache.CacheValue
-import javax.annotation.Nonnull
 
 /**
  * Guava Client Side Cache .
  *
  * @author ahoo wang
  */
-class GuavaClientSideCache<V> @JvmOverloads constructor(
+class GuavaClientSideCache<V>(
     private val guavaCache: Cache<String, CacheValue<V>> = CacheBuilder.newBuilder().build()
 ) : ClientSideCache<V> {
 
@@ -30,11 +29,11 @@ class GuavaClientSideCache<V> @JvmOverloads constructor(
         return guavaCache.getIfPresent(key)
     }
 
-    override fun setCache(@Nonnull key: String, @Nonnull value: CacheValue<V>) {
+    override fun setCache(key: String, value: CacheValue<V>) {
         guavaCache.put(key, value)
     }
 
-    override fun evict(@Nonnull key: String) {
+    override fun evict(key: String) {
         guavaCache.invalidate(key)
     }
 

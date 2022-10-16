@@ -21,7 +21,6 @@ import org.springframework.data.redis.connection.Message
 import org.springframework.data.redis.connection.MessageListener
 import org.springframework.data.redis.listener.PatternTopic
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
-import org.springframework.lang.Nullable
 import java.nio.charset.StandardCharsets
 
 /**
@@ -62,7 +61,7 @@ class RedisInvalidateEventBus(
     }
 
     inner class MessageListenerAdapter : MessageListener {
-        override fun onMessage(message: Message, @Nullable pattern: ByteArray?) {
+        override fun onMessage(message: Message, pattern: ByteArray?) {
             val key = String(message.channel, StandardCharsets.UTF_8)
             if (!key.startsWith(keyPrefix)) {
                 return

@@ -20,12 +20,16 @@ import org.slf4j.LoggerFactory
  *
  * @author ahoo wang
  */
-class GuavaInvalidateEventBus @JvmOverloads constructor(
+class GuavaInvalidateEventBus(
     override val clientId: String,
     private val eventBus: EventBus = EventBus(
         clientId
     )
 ) : InvalidateEventBus {
+    companion object {
+        private val log = LoggerFactory.getLogger(GuavaInvalidateEventBus::class.java)
+    }
+
     private val noloop = true
 
     override fun publish(event: InvalidateEvent) {
@@ -47,9 +51,5 @@ class GuavaInvalidateEventBus @JvmOverloads constructor(
 
     override fun unregister(subscriber: InvalidateSubscriber) {
         eventBus.unregister(subscriber)
-    }
-
-    companion object {
-        private val log = LoggerFactory.getLogger(GuavaInvalidateEventBus::class.java)
     }
 }
