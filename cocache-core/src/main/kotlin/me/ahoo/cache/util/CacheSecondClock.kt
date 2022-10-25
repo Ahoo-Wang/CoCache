@@ -26,7 +26,7 @@ enum class CacheSecondClock(private val actual: SecondClock) : SecondClock, Runn
     private val secondTimer: Thread
 
     @Volatile
-    private var lastTime: Long = 0
+    private var lastTime: Long = actual.currentTime()
 
     init {
         secondTimer = startTimer()
