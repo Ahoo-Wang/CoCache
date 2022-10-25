@@ -16,7 +16,7 @@ package me.ahoo.cache.spring.redis.codec
 import me.ahoo.cache.CacheValue
 import me.ahoo.cache.TtlAt
 import me.ahoo.cosid.test.MockIdGenerator
-import org.hamcrest.MatcherAssert
+import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -55,7 +55,7 @@ abstract class CodecExecutorSpec<V> {
         val value = CacheValue.forever(createCacheValue())
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, TtlAt.FOREVER)
-        MatcherAssert.assertThat(actual, Matchers.equalTo(value))
+        assertThat(actual, Matchers.equalTo(value))
     }
 
     @Test
@@ -64,6 +64,6 @@ abstract class CodecExecutorSpec<V> {
         val value = CacheValue.missingGuard<CacheValue<V>>()
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, TtlAt.FOREVER)
-        MatcherAssert.assertThat(actual, Matchers.equalTo(value))
+        assertThat(actual, Matchers.equalTo(value))
     }
 }
