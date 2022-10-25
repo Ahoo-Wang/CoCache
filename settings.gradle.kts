@@ -13,7 +13,7 @@ buildscript {
         gradlePluginPortal()
     }
     dependencies {
-        classpath("me.champeau.jmh:jmh-gradle-plugin:0.6.7")
+        classpath("me.champeau.jmh:jmh-gradle-plugin:0.6.8")
         classpath("io.github.gradle-nexus:publish-plugin:1.1.0")
     }
 }
