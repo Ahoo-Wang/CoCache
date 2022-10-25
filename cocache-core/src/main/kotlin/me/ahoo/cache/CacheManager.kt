@@ -48,18 +48,7 @@ class CacheManager(private val cacheEvictedEventBus: CacheEvictedEventBus) {
     fun <K, V> getOrCreateCache(cacheConfig: CacheConfig<K, V>): CoherentCache<K, V> {
         @Suppress("UNCHECKED_CAST")
         return caches.computeIfAbsent(cacheConfig.cacheName) {
-            val cache = CoherentCache(
-                cacheConfig.cacheName,
-                cacheConfig.clientId,
-                cacheConfig.keyConverter,
-                cacheConfig.distributedCaching,
-                cacheConfig.clientSideCaching,
-                cacheEvictedEventBus,
-                cacheConfig.cacheSource,
-                cacheConfig.keyFilter
-            )
-            cacheEvictedEventBus.register(cache)
-            cache
+            createCache(cacheConfig)
         } as CoherentCache<K, V>
     }
 }
