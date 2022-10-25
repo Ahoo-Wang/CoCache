@@ -56,7 +56,6 @@ dependencies {
 
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 
-    implementation("io.springfox:springfox-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
 
     implementation("com.google.guava:guava")

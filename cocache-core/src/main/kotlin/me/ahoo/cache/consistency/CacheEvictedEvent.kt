@@ -12,17 +12,28 @@
  */
 package me.ahoo.cache.consistency
 
+import me.ahoo.cache.NamedCache
+
 /**
- * No Op Invalidate EventBus .
- *
+ * Cache evicted event.
  * @author ahoo wang
  */
-enum class NoOpInvalidateEventBus : InvalidateEventBus {
-    INSTANCE;
-
-    override fun publish(event: InvalidateEvent) = Unit
-    override fun register(subscriber: InvalidateSubscriber) = Unit
-    override fun unregister(subscriber: InvalidateSubscriber) = Unit
-    override val clientId: String
-        get() = ""
+data class CacheEvictedEvent(
+    override val cacheName: String,
+    /**
+     * get cache key.
+     *
+     * @return cache key
+     */
+    val key: String,
+    /**
+     * get publisher client ID [DistributedClientId.getClientId].
+     *
+     * @return publisherId
+     */
+    val publisherId: String
+) : NamedCache {
+    companion object {
+        const val TYPE = "evicted"
+    }
 }

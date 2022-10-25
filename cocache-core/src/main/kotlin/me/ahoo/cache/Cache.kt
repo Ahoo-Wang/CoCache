@@ -18,7 +18,7 @@ import me.ahoo.cache.CacheValue.Companion.missingGuard
 import me.ahoo.cache.CacheValue.Companion.missingGuardValue
 
 /**
- * Caching api.
+ * Cache api.
  *
  * @author ahoo wang
  */

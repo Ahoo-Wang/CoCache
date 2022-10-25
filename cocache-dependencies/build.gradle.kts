@@ -18,6 +18,7 @@ dependencies {
     constraints {
         api("com.google.guava:guava:${rootProject.ext.get("guavaVersion")}")
         api("org.junit-pioneer:junit-pioneer:${rootProject.ext.get("junitPioneerVersion")}")
-        api("io.springfox:springfox-boot-starter:${rootProject.ext.get("springfoxVersion")}")
+        api("org.hamcrest:hamcrest:${rootProject.ext.get("hamcrestVersion")}")
+        api("io.mockk:mockk:${rootProject.ext.get("mockkVersion")}")
     }
 }

@@ -16,7 +16,6 @@ import me.ahoo.cache.CacheValue
 import me.ahoo.cache.TtlAt
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.spring.redis.codec.CodecExecutor
-import me.ahoo.cache.spring.redis.codec.InvalidateMessages
 import me.ahoo.cache.util.CacheSecondClock
 import org.springframework.data.redis.core.StringRedisTemplate
 import java.time.Instant
@@ -27,9 +26,8 @@ import java.time.Instant
  * @author ahoo wang
  */
 class RedisDistributedCache<V>(
-    override val clientId: String,
     private val redisTemplate: StringRedisTemplate,
-    private val codecExecutor: CodecExecutor<V>
+    private val codecExecutor: CodecExecutor<V>,
 ) : DistributedCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
         val ttlAt = getExpireAt(key) ?: return null
@@ -53,16 +51,10 @@ class RedisDistributedCache<V>(
         if (!value.isForever) {
             redisTemplate.expireAt(key, Instant.ofEpochSecond(value.ttlAt))
         }
-        publishInvalidateMessage(key)
     }
 
     override fun evict(key: String) {
         redisTemplate.delete(key)
-        publishInvalidateMessage(key)
-    }
-
-    private fun publishInvalidateMessage(key: String) {
-        redisTemplate.convertAndSend(key, InvalidateMessages.ofClientId(clientId))
     }
 
     override fun close() = Unit

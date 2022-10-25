@@ -13,8 +13,6 @@
 package me.ahoo.cache.distributed.mock
 
 import me.ahoo.cache.CacheValue
-import me.ahoo.cache.consistency.InvalidateEvent
-import me.ahoo.cache.consistency.InvalidateEventBus
 import me.ahoo.cache.distributed.DistributedCache
 import java.util.concurrent.ConcurrentHashMap
 
@@ -23,17 +21,8 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * @author ahoo wang
  */
-class MockDistributedCache<V>(private val invalidateEventBus: InvalidateEventBus) : DistributedCache<V> {
+class MockDistributedCache<V> : DistributedCache<V> {
     private val cacheMap: ConcurrentHashMap<String, CacheValue<V>> = ConcurrentHashMap()
-
-    override fun get(key: String): V? {
-        val cacheValue = getCache(key) ?: return null
-        if (cacheValue.isExpired) {
-            evict(key)
-            return null
-        }
-        return cacheValue.value
-    }
 
     override fun getCache(key: String): CacheValue<V>? {
         return cacheMap[key]
@@ -41,18 +30,13 @@ class MockDistributedCache<V>(private val invalidateEventBus: InvalidateEventBus
 
     override fun setCache(key: String, value: CacheValue<V>) {
         cacheMap[key] = value
-        invalidateEventBus.publish(InvalidateEvent(key, clientId))
     }
 
     override fun evict(key: String) {
         cacheMap.remove(key)
-        invalidateEventBus.publish(InvalidateEvent(key, clientId))
     }
 
     override fun close() {
         cacheMap.clear()
     }
-
-    override val clientId: String
-        get() = invalidateEventBus.clientId
 }

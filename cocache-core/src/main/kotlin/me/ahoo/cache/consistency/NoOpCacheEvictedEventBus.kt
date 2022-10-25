@@ -12,14 +12,13 @@
  */
 package me.ahoo.cache.consistency
 
-import com.google.common.eventbus.Subscribe
-
 /**
- * InvalidateSubscriber .
+ * No Op Invalidate EventBus .
  *
  * @author ahoo wang
  */
-fun interface InvalidateSubscriber {
-    @Subscribe
-    fun onInvalidate(invalidateEvent: InvalidateEvent)
+object NoOpCacheEvictedEventBus : CacheEvictedEventBus {
+    override fun publish(event: CacheEvictedEvent) = Unit
+    override fun register(subscriber: CacheEvictedSubscriber) = Unit
+    override fun unregister(subscriber: CacheEvictedSubscriber) = Unit
 }

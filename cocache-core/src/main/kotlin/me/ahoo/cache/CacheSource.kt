@@ -12,6 +12,8 @@
  */
 package me.ahoo.cache
 
+import me.ahoo.cache.source.NoOpCacheSource
+
 /**
  * L0
  * Cache Source .
@@ -20,4 +22,11 @@ package me.ahoo.cache
  */
 interface CacheSource<K, V> {
     fun load(key: K): CacheValue<V>?
+
+    companion object {
+        fun <K, V> noOp(): CacheSource<K, V> {
+            @Suppress("UNCHECKED_CAST")
+            return NoOpCacheSource as CacheSource<K, V>
+        }
+    }
 }

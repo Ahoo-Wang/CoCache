@@ -21,7 +21,7 @@ import org.springframework.expression.spel.standard.SpelExpressionParser
  *
  * @author ahoo wang
  */
-class ExpKeyConverter<K>(override val keyPrefix: String, expression: String) : KeyConverter<K> {
+class ExpKeyConverter<K>(val keyPrefix: String, expression: String) : KeyConverter<K> {
     private val expression: Expression
 
     init {

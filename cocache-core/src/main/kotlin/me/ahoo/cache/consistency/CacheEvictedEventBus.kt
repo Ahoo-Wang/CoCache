@@ -11,26 +11,14 @@
  * limitations under the License.
  */
 package me.ahoo.cache.consistency
+
 /**
- * Invalidate Event .
+ * Cache Evicted EventBus .
  *
  * @author ahoo wang
  */
-data class InvalidateEvent(
-    /**
-     * get cache key.
-     *
-     * @return cache key
-     */
-    val key: String,
-    /**
-     * get publisher client ID [DistributedClientId.getClientId].
-     *
-     * @return publisherId
-     */
-    val publisherId: String
-) {
-    companion object {
-        const val TYPE = "invalid"
-    }
+interface CacheEvictedEventBus {
+    fun publish(event: CacheEvictedEvent)
+    fun register(subscriber: CacheEvictedSubscriber)
+    fun unregister(subscriber: CacheEvictedSubscriber)
 }

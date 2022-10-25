@@ -12,7 +12,7 @@
  */
 package me.ahoo.cache
 
-internal object MissingGuard {
+object MissingGuard {
     const val STRING_VALUE = "_nil_"
     override fun toString(): String {
         return STRING_VALUE
@@ -38,7 +38,6 @@ data class CacheValue<V>(
         get() = missingGuardValue<Any>() == value
 
     companion object {
-        const val MISSING_GUARD_STRING_VALUE = MissingGuard.STRING_VALUE
         private val MISSING_GUARD_CACHE_VALUE: CacheValue<*> = forever(MissingGuard)
 
         @JvmStatic
@@ -46,28 +45,8 @@ data class CacheValue<V>(
             return CacheValue(value, TtlAt.FOREVER)
         }
 
-        fun isMissingGuard(value: String): Boolean {
-            return MISSING_GUARD_STRING_VALUE == value
-        }
-
-        fun isMissingGuard(value: Set<String>): Boolean {
-            return if (value.isEmpty()) {
-                false
-            } else {
-                MISSING_GUARD_STRING_VALUE == value.first()
-            }
-        }
-
-        fun isMissingGuard(value: Map<String, String>): Boolean {
-            return if (value.isEmpty()) {
-                false
-            } else {
-                value.containsKey(MISSING_GUARD_STRING_VALUE)
-            }
-        }
-
         @JvmStatic
-        fun <V : CacheValue<*>?> missingGuard(): V {
+        fun <V : CacheValue<*>> missingGuard(): V {
             @Suppress("UNCHECKED_CAST")
             return MISSING_GUARD_CACHE_VALUE as V
         }
@@ -76,6 +55,26 @@ data class CacheValue<V>(
         fun <V> missingGuardValue(): V {
             @Suppress("UNCHECKED_CAST")
             return MissingGuard as V
+        }
+
+        fun isMissingGuard(value: String): Boolean {
+            return MissingGuard.STRING_VALUE == value
+        }
+
+        fun isMissingGuard(value: Set<String>): Boolean {
+            return if (value.isEmpty()) {
+                false
+            } else {
+                return value.contains(MissingGuard.STRING_VALUE)
+            }
+        }
+
+        fun isMissingGuard(value: Map<String, String>): Boolean {
+            return if (value.isEmpty()) {
+                false
+            } else {
+                value.containsKey(MissingGuard.STRING_VALUE)
+            }
         }
     }
 }

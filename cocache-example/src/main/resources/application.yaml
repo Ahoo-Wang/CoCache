@@ -8,19 +8,23 @@ spring:
 
 cosid:
   namespace: ${spring.application.name}
+  machine:
+    enabled: true
+    distributor:
+      type: redis
+    state-storage:
+      local:
+        state-location: ./cosid-machine-state/
   snowflake:
     enabled: true
-    machine:
-      distributor:
-        type: redis
-      state-storage:
-        local:
-          state-location: ./cosid-machine-state/
     share:
       clock-sync: true
       friendly: true
       converter:
         type: radix
+
+cocache:
+  enabled: true
 
 logging:
   level:

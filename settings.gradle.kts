@@ -5,6 +5,7 @@ include(":cocache-dependencies")
 include(":cocache-core")
 include(":cocache-spring-redis")
 include(":cocache-spring-boot-starter")
+include(":cocache-test")
 include(":cocache-example")
 
 buildscript {
@@ -16,3 +17,4 @@ buildscript {
         classpath("io.github.gradle-nexus:publish-plugin:1.1.0")
     }
 }
+

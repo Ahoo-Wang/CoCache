@@ -10,19 +10,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.source
 
-import me.ahoo.cache.CacheSource
+package me.ahoo.cache.test
+
 import me.ahoo.cache.CacheValue
+import me.ahoo.cache.TtlAt
+import me.ahoo.cache.distributed.DistributedCache
+import org.hamcrest.MatcherAssert.assertThat
+import org.hamcrest.Matchers.equalTo
+import org.junit.jupiter.api.Test
 
-/**
- * No Op Cache Source .
- *
- * @author ahoo wang
- */
-object NoOpCacheSource : CacheSource<Any, Any> {
+abstract class DistributedCacheSpec<V> : CacheSpec<String, V>() {
 
-    override fun load(key: Any): CacheValue<Any>? {
-        return null
+    abstract override fun createCache(): DistributedCache<V>
+
+    @Test
+    fun setMissing() {
+        val (key, value) = createCacheEntry()
+        cache[key] = CacheValue.missingGuardValue()
+        assertThat(cache.getCache(key)?.value, equalTo(CacheValue.missingGuardValue()))
+        assertThat(cache.getExpireAt(key), equalTo(TtlAt.FOREVER))
     }
 }

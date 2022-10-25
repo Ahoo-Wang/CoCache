@@ -10,24 +10,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.spring.redis.codec
+package me.ahoo.cache.consistency
 
-import me.ahoo.cache.consistency.InvalidateEvent
+import me.ahoo.cache.test.consistency.CacheEvictedEventBusSpec
+import org.junit.jupiter.api.Assertions
+import org.junit.jupiter.api.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
- * Messages .
+ * GuavaCacheEvictedEventBusTest .
  *
  * @author ahoo wang
  */
-object InvalidateMessages {
-    const val DELIMITER = "@"
-    fun ofClientId(clientId: String): String {
-        return InvalidateEvent.TYPE + DELIMITER + clientId
+internal class GuavaCacheEvictedEventBusTest : CacheEvictedEventBusSpec() {
+    override fun createCacheEvictedEventBus(): CacheEvictedEventBus {
+        return GuavaCacheEvictedEventBus()
     }
 
-    fun getPublisherIdFromMessageBody(msgBody: String): String {
-        val typeWithPublisherId = msgBody.split(DELIMITER.toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
-        require(2 == typeWithPublisherId.size) { "msgBody illegal:[$msgBody]." }
-        return typeWithPublisherId[1]
-    }
 }

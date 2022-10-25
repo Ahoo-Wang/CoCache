@@ -14,6 +14,7 @@ package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.CacheValue
 import me.ahoo.cache.CacheValue.Companion.missingGuard
+import me.ahoo.cache.MissingGuard
 import org.springframework.data.redis.core.StringRedisTemplate
 
 /**
@@ -33,7 +34,7 @@ class SetToSetCodecExecutor(private val redisTemplate: StringRedisTemplate) : Co
 
     override fun executeAndEncode(key: String, cacheValue: CacheValue<Set<String>>) {
         if (cacheValue.isMissingGuard) {
-            redisTemplate.opsForSet().add(key, CacheValue.MISSING_GUARD_STRING_VALUE)
+            redisTemplate.opsForSet().add(key, MissingGuard.STRING_VALUE)
             return
         }
         redisTemplate.delete(key)

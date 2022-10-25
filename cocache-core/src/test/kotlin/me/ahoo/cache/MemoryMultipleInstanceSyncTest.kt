@@ -10,6 +10,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache
 
 import me.ahoo.cache.client.ClientSideCache
@@ -20,16 +21,10 @@ import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.mock.MockDistributedCache
-import me.ahoo.cache.test.CoherentCacheSpec
+import me.ahoo.cache.test.MultipleInstanceSyncSpec
 import java.util.*
 
-/**
- * Coherent Cache Test .
- *
- * @author ahoo wang
- */
-internal class CoherentCacheTest : CoherentCacheSpec<String, String>() {
-
+class MemoryMultipleInstanceSyncTest : MultipleInstanceSyncSpec<String, String>() {
     override fun createKeyConverter(): KeyConverter<String> = ToStringKeyConverter("")
 
     override fun createClientSideCache(): ClientSideCache<String> = MapClientSideCache()
@@ -38,11 +33,10 @@ internal class CoherentCacheTest : CoherentCacheSpec<String, String>() {
 
     override fun createCacheEvictedEventBus(): CacheEvictedEventBus = GuavaCacheEvictedEventBus()
     override fun createCacheName(): String {
-        return "CoherentCacheTest"
+        return "MemoryMultipleInstanceSyncTest"
     }
 
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()
     }
-
 }

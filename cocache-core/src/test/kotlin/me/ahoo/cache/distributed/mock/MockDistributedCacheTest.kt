@@ -12,28 +12,23 @@
  */
 package me.ahoo.cache.distributed.mock
 
-import me.ahoo.cache.consistency.GuavaInvalidateEventBus
-import org.junit.jupiter.api.Assertions
-import org.junit.jupiter.api.Test
+import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.test.DistributedCacheSpec
+import java.util.*
 
 /**
  * Mock Distributed Caching Test .
  *
  * @author ahoo wang
  */
-internal class MockDistributedCacheTest {
-    private val distributedCaching = MockDistributedCache<String>(GuavaInvalidateEventBus(""))
+internal class MockDistributedCacheTest : DistributedCacheSpec<String>() {
 
-    @Test
-    fun get() {
-        val key = "get"
-        val value = "get"
-        distributedCaching[key] = value
-        Assertions.assertEquals(value, distributedCaching[key])
+    override fun createCache(): DistributedCache<String> {
+        return MockDistributedCache()
     }
 
-    @Test
-    fun evict() {
-        distributedCaching.evict("evict")
+    override fun createCacheEntry(): Pair<String, String> {
+        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
     }
+
 }

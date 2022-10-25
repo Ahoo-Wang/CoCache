@@ -12,47 +12,22 @@
  */
 package me.ahoo.cache.client
 
-import me.ahoo.cache.CacheValue.Companion.missingGuardValue
-import me.ahoo.cache.TtlAt
-import org.junit.jupiter.api.Assertions
-import org.junit.jupiter.api.Test
+import me.ahoo.cache.test.ClientSideCacheSpec
+import java.util.*
 
 /**
  * MapClientSideCachingTest .
  *
  * @author ahoo wang
  */
-internal class MapClientSideCacheTest {
-    var clientSideCaching = MapClientSideCache<String>()
+internal class MapClientSideCacheTest : ClientSideCacheSpec<String>() {
 
-    @Test
-    fun get() {
-        val key = "get"
-        Assertions.assertNull(clientSideCaching[key])
+    override fun createCache(): ClientSideCache<String> {
+        return MapClientSideCache()
     }
 
-    @Test
-    fun set() {
-        val key = "set"
-        val value = "set"
-        clientSideCaching[key] = value
-        Assertions.assertEquals(value, clientSideCaching[key])
+    override fun createCacheEntry(): Pair<String, String> {
+        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
     }
 
-    @Test
-    fun setMissing() {
-        val key = "setMissing"
-        clientSideCaching[key] = missingGuardValue()
-        Assertions.assertNull(clientSideCaching[key])
-        Assertions.assertEquals(TtlAt.FOREVER, clientSideCaching.getExpireAt(key))
-    }
-
-    @Test
-    fun evict() {
-        val key = "evict"
-        val value = "evict"
-        clientSideCaching[key] = value
-        clientSideCaching.evict(key)
-        Assertions.assertNull(clientSideCaching[key])
-    }
 }

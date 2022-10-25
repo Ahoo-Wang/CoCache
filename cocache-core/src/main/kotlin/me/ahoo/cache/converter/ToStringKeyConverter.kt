@@ -17,7 +17,7 @@ package me.ahoo.cache.converter
  *
  * @author ahoo wang
  */
-class ToStringKeyConverter<K>(override val keyPrefix: String) : KeyConverter<K> {
+class ToStringKeyConverter<K>(private val keyPrefix: String) : KeyConverter<K> {
 
     override fun asKey(sourceKey: K): String {
         return keyPrefix + sourceKey.toString()

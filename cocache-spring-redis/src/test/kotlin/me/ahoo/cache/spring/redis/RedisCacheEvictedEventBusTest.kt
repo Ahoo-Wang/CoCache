@@ -12,52 +12,53 @@
  */
 package me.ahoo.cache.spring.redis
 
-import me.ahoo.cache.distributed.DistributedCache
-import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor
-import me.ahoo.cache.test.DistributedCacheSpec
+import me.ahoo.cache.consistency.CacheEvictedEventBus
+import me.ahoo.cache.test.consistency.CacheEvictedEventBusSpec
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
 import org.springframework.data.redis.core.StringRedisTemplate
-import java.util.*
+import org.springframework.data.redis.listener.RedisMessageListenerContainer
 
 /**
- * RedisDistributedCachingTest .
+ * RedisCacheEvictedEventBusTest .
  *
  * @author ahoo wang
  */
-internal class RedisDistributedCachingTest : DistributedCacheSpec<String>() {
-    lateinit var stringRedisTemplate: StringRedisTemplate
-    lateinit var codecExecutor: StringToStringCodecExecutor
-    lateinit var lettuceConnectionFactory: LettuceConnectionFactory
+internal class RedisCacheEvictedEventBusTest : CacheEvictedEventBusSpec() {
 
-    override fun createCache(): DistributedCache<String> {
-        return RedisDistributedCache(
-            stringRedisTemplate,
-            codecExecutor
-        )
-    }
-
-    override fun createCacheEntry(): Pair<String, String> {
-        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
-    }
+    private lateinit var lettuceConnectionFactory: LettuceConnectionFactory
+    private lateinit var redisMessageListenerContainer: RedisMessageListenerContainer
 
     @BeforeEach
-    override fun setup() {
+    fun setup() {
         val redisStandaloneConfiguration = RedisStandaloneConfiguration()
         lettuceConnectionFactory = LettuceConnectionFactory(redisStandaloneConfiguration)
         lettuceConnectionFactory.afterPropertiesSet()
-        stringRedisTemplate = StringRedisTemplate(lettuceConnectionFactory)
-        stringRedisTemplate.afterPropertiesSet()
-        codecExecutor = StringToStringCodecExecutor(stringRedisTemplate)
-        super.setup()
+        redisMessageListenerContainer = RedisMessageListenerContainer()
+        redisMessageListenerContainer.setConnectionFactory(lettuceConnectionFactory)
+        redisMessageListenerContainer.afterPropertiesSet()
+        /*
+         **** Very important ****
+         */
+        redisMessageListenerContainer.start()
+    }
+
+    override fun createCacheEvictedEventBus(): CacheEvictedEventBus {
+        return RedisCacheEvictedEventBus(
+            redisTemplate = StringRedisTemplate(lettuceConnectionFactory),
+            listenerContainer = redisMessageListenerContainer
+        )
     }
 
     @AfterEach
     fun destroy() {
         if (null != lettuceConnectionFactory) {
             lettuceConnectionFactory.destroy()
+        }
+        if (null != redisMessageListenerContainer) {
+            redisMessageListenerContainer.destroy()
         }
     }
 }

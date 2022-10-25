@@ -16,6 +16,7 @@ import com.fasterxml.jackson.core.JsonProcessingException
 import com.fasterxml.jackson.databind.ObjectMapper
 import me.ahoo.cache.CacheValue
 import me.ahoo.cache.CacheValue.Companion.missingGuard
+import me.ahoo.cache.MissingGuard
 import org.springframework.data.redis.core.StringRedisTemplate
 
 /**
@@ -44,7 +45,7 @@ class ObjectToJsonCodecExecutor<V>(
 
     override fun executeAndEncode(key: String, cacheValue: CacheValue<V>) {
         if (cacheValue.isMissingGuard) {
-            redisTemplate.opsForValue()[key] = CacheValue.MISSING_GUARD_STRING_VALUE
+            redisTemplate.opsForValue()[key] = MissingGuard.STRING_VALUE
             return
         }
         try {

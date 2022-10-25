@@ -19,4 +19,4 @@ import me.ahoo.cache.Cache
  *
  * @author ahoo wang
  */
-interface DistributedCache<V> : Cache<String, V>, DistributedClientId, AutoCloseable
+interface DistributedCache<V> : Cache<String, V>, AutoCloseable

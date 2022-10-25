@@ -23,5 +23,5 @@ interface NamedCache {
      *
      * @return cache name
      */
-    val name: String
+    val cacheName: String
 }

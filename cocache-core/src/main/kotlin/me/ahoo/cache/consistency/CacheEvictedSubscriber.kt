@@ -10,15 +10,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache
+package me.ahoo.cache.consistency
+
+import me.ahoo.cache.NamedCache
 
 /**
- * Key Prefix .
- * Each [CoherentCache] should define a cache prefix.
+ * Cache Evicted Subscriber .
  *
  * @author ahoo wang
  */
-interface KeyPrefix {
-    val keyPrefix: String
-        get() = ""
+interface CacheEvictedSubscriber : NamedCache {
+    fun onEvicted(cacheEvictedEvent: CacheEvictedEvent)
 }

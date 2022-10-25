@@ -14,6 +14,7 @@ package me.ahoo.cache.example
 
 import org.springframework.boot.SpringApplication
 import org.springframework.boot.autoconfigure.SpringBootApplication
+import org.springframework.boot.runApplication
 
 /**
  * AppServer.
@@ -21,9 +22,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication
  * @author ahoo wang
  */
 @SpringBootApplication
-object AppServer {
-    @JvmStatic
-    fun main(args: Array<String>) {
-        SpringApplication.run(AppServer::class.java, *args)
-    }
+class AppServer
+
+fun main(args: Array<String>) {
+    runApplication<AppServer>(*args)
 }

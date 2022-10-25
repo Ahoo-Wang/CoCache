@@ -23,34 +23,28 @@ import org.junit.jupiter.api.Test
  * @author ahoo wang
  */
 internal class SimpleJoinCachingTest {
-    var orderCache = MapClientSideCache<Order>()
-    var orderAddressCache = MapClientSideCache<OrderAddress>()
-    var joinCaching: JoinCache<String, Order, String, OrderAddress> =
+    private val orderCache = MapClientSideCache<Order>()
+    private val orderAddressCache = MapClientSideCache<OrderAddress>()
+    private val joinCaching: JoinCache<String, Order, String, OrderAddress> =
         SimpleJoinCaching(
             orderCache,
             orderAddressCache
-        ) { firstValue -> firstValue.id!! }
+        ) { firstValue -> firstValue.id }
 
     @Test
     fun get() {
-        val order = Order()
-        order.id = "1"
-        val orderAddress = OrderAddress()
-        orderAddress.orderId = order.id
-        orderCache.setCache(order.id!!, forever(order))
-        orderAddressCache.setCache(order.id!!, forever(orderAddress))
-        val joinValue = joinCaching[order.id!!]
+        val order = Order("1")
+        val orderAddress = OrderAddress(order.id)
+        orderCache.setCache(order.id, forever(order))
+        orderAddressCache.setCache(order.id, forever(orderAddress))
+        val joinValue = joinCaching[order.id]
         Assertions.assertNotNull(joinValue)
         Assertions.assertEquals(order, joinValue!!.firstValue)
         Assertions.assertEquals(order.id, joinValue.joinKey)
         Assertions.assertEquals(orderAddress, joinValue.joinValue)
     }
 
-    class Order {
-        var id: String? = null
-    }
+    data class Order(val id: String)
 
-    class OrderAddress {
-        var orderId: String? = null
-    }
+    data class OrderAddress(val orderId: String)
 }

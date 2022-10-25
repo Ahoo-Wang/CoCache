@@ -1,13 +1,11 @@
 package me.ahoo.cache.converter
 
-import me.ahoo.cache.KeyPrefix
-
 /**
  * Key Converter.
  *
  * @author ahoo wang
  */
 @FunctionalInterface
-interface KeyConverter<K> : KeyPrefix {
+interface KeyConverter<K> {
     fun asKey(sourceKey: K): String
 }
