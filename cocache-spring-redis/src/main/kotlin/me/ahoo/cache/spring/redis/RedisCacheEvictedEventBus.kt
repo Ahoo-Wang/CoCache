@@ -64,25 +64,8 @@ class RedisCacheEvictedEventBus(
     }
 }
 
-class MessageListenerAdapter(private val subscriber: CacheEvictedSubscriber) : MessageListener {
+data class MessageListenerAdapter(private val subscriber: CacheEvictedSubscriber) : MessageListener {
     override fun onMessage(message: Message, pattern: ByteArray?) {
         EvictedEvents.fromMessage(message).let { subscriber.onEvicted(it) }
-    }
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is MessageListenerAdapter) return false
-
-        if (subscriber != other.subscriber) return false
-
-        return true
-    }
-
-    override fun hashCode(): Int {
-        return subscriber.hashCode()
-    }
-
-    override fun toString(): String {
-        return "MessageListenerAdapter(subscriber=$subscriber)"
     }
 }

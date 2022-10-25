@@ -58,26 +58,9 @@ class GuavaCacheEvictedEventBus(
     }
 }
 
-class CacheEvictedSubscriberAdapter(private val cacheEvictedSubscriber: CacheEvictedSubscriber) {
+data class CacheEvictedSubscriberAdapter(private val cacheEvictedSubscriber: CacheEvictedSubscriber) {
     @Subscribe
     fun subscribe(event: CacheEvictedEvent) {
         cacheEvictedSubscriber.onEvicted(event)
-    }
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is CacheEvictedSubscriberAdapter) return false
-
-        if (cacheEvictedSubscriber != other.cacheEvictedSubscriber) return false
-
-        return true
-    }
-
-    override fun hashCode(): Int {
-        return cacheEvictedSubscriber.hashCode()
-    }
-
-    override fun toString(): String {
-        return "CacheEvictedSubscriberAdapter(cacheEvictedSubscriber=$cacheEvictedSubscriber)"
     }
 }
