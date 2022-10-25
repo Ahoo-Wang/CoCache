@@ -57,10 +57,12 @@ data class CacheValue<V>(
             return MissingGuard as V
         }
 
+        @JvmStatic
         fun isMissingGuard(value: String): Boolean {
             return MissingGuard.STRING_VALUE == value
         }
 
+        @JvmStatic
         fun isMissingGuard(value: Set<String>): Boolean {
             return if (value.isEmpty()) {
                 false
@@ -69,6 +71,7 @@ data class CacheValue<V>(
             }
         }
 
+        @JvmStatic
         fun isMissingGuard(value: Map<String, String>): Boolean {
             return if (value.isEmpty()) {
                 false

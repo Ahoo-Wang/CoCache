@@ -24,6 +24,7 @@ interface CacheSource<K, V> {
     fun load(key: K): CacheValue<V>?
 
     companion object {
+        @JvmStatic
         fun <K, V> noOp(): CacheSource<K, V> {
             @Suppress("UNCHECKED_CAST")
             return NoOpCacheSource as CacheSource<K, V>

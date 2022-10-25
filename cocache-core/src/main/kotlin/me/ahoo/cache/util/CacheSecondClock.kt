@@ -55,6 +55,7 @@ enum class CacheSecondClock(private val actual: SecondClock) : SecondClock, Runn
         /**
          * Tolerate a one-second time limit.
          */
+        @JvmStatic
         val ONE_SECOND_PERIOD = Duration.ofSeconds(1).toNanos()
     }
 }
