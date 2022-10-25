@@ -23,7 +23,7 @@ object EvictedEvents {
         val cacheName = message.channel.decodeToString()
         val msgBody = message.body.decodeToString()
         val clientIdWithKey = msgBody.split(DELIMITER.toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
-        require(2 == clientIdWithKey.size) { "msgBody illegal:[$msgBody]." }
+        require(2 == clientIdWithKey.size) { "message illegal:[$msgBody]." }
         return CacheEvictedEvent(cacheName, clientIdWithKey[0], clientIdWithKey[1])
     }
 
