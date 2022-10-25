@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.LockSupport
 
 abstract class MultipleInstanceSyncSpec<K, V> {
     companion object {
@@ -115,7 +116,7 @@ abstract class MultipleInstanceSyncSpec<K, V> {
         currentCache[key] = value
         assertThat(currentCache.clientSideCaching[cacheKey], equalTo(value))
         assertThat(latch1.await(1, TimeUnit.SECONDS), equalTo(true))
-
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
         assertThat(otherCache.clientSideCaching[cacheKey], nullValue())
         assertThat(otherCache[key], equalTo(value))
         assertThat(otherCache.clientSideCaching[cacheKey], equalTo(value))
@@ -125,12 +126,14 @@ abstract class MultipleInstanceSyncSpec<K, V> {
         val nextValue = createCacheEntry().second
         currentCache[key] = nextValue
         assertThat(latch2.await(1, TimeUnit.SECONDS), equalTo(true))
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
         assertThat(otherCache.clientSideCaching[cacheKey], nullValue())
         //endregion
 
         currentCache.evict(key)
         assertThat(currentCache[key], nullValue())
         assertThat(latch3.await(1, TimeUnit.SECONDS), equalTo(true))
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
         assertThat(otherCache.clientSideCaching[cacheKey], nullValue())
         assertThat(otherCache[key], nullValue())
     }

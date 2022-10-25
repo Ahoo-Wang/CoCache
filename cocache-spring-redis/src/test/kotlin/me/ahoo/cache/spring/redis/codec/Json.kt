@@ -10,22 +10,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.spring.redis.codec
 
-import java.util.*
+import com.fasterxml.jackson.annotation.JsonAutoDetect
+import com.fasterxml.jackson.annotation.PropertyAccessor
+import com.fasterxml.jackson.core.JsonParser
+import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 
-/**
- * SetToSetCodecExecutorTest .
- *
- * @author ahoo wang
- */
-internal class SetToSetCodecExecutorTest : CodecExecutorSpec<Set<String>>() {
-
-    override fun createCodecExecutor(): CodecExecutor<Set<String>> {
-        return SetToSetCodecExecutor(stringRedisTemplate)
-    }
-
-    override fun createCacheValue(): Set<String> {
-        return setOf(UUID.randomUUID().toString(), UUID.randomUUID().toString())
+object Json : ObjectMapper(){
+    init {
+        setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY)
+        configure(JsonParser.Feature.IGNORE_UNDEFINED, true)
+        disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+        registerKotlinModule()
     }
 }

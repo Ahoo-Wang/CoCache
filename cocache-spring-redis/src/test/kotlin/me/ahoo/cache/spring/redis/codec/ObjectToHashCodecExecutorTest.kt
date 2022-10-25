@@ -10,22 +10,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.spring.redis.codec
 
 import java.util.*
 
-/**
- * SetToSetCodecExecutorTest .
- *
- * @author ahoo wang
- */
-internal class SetToSetCodecExecutorTest : CodecExecutorSpec<Set<String>>() {
+internal class ObjectToHashCodecExecutorTest : CodecExecutorSpec<Model>(),
+    ObjectToHashCodecExecutor.MapConverter<Model> {
 
-    override fun createCodecExecutor(): CodecExecutor<Set<String>> {
-        return SetToSetCodecExecutor(stringRedisTemplate)
+    override fun createCodecExecutor(): CodecExecutor<Model> {
+        return ObjectToHashCodecExecutor(this, stringRedisTemplate)
     }
 
-    override fun createCacheValue(): Set<String> {
-        return setOf(UUID.randomUUID().toString(), UUID.randomUUID().toString())
+    override fun createCacheValue(): Model {
+        return Model(UUID.randomUUID().toString())
+    }
+
+    override fun asValue(map: Map<String, String>): Model {
+        return Model(map["id"]!!)
+    }
+
+    override fun asMap(value: Model): Map<String, String> {
+        return mapOf("id" to value.id)
     }
 }
