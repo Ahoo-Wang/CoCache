@@ -1,5 +1,5 @@
 # CoCache
-Level 2 Distributed Cache Coherence Framework
+Level 2 Distributed Coherence Cache Framework
 
 [![License](https://img.shields.io/badge/license-Apache%202-4EB1BA.svg)](https://www.apache.org/licenses/LICENSE-2.0.html)
 [![GitHub release](https://img.shields.io/github/release/Ahoo-Wang/CoCache.svg)](https://github.com/Ahoo-Wang/CoCache/releases)
