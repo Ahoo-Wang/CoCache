@@ -19,6 +19,6 @@ dependencies {
         api("com.google.guava:guava:31.1-jre")
         api("org.junit-pioneer:junit-pioneer:1.4.2")
         api("org.hamcrest:hamcrest:2.2")
-        api("io.mockk:mockk:1.12.8")
+        api("io.mockk:mockk:1.13.2")
     }
 }
