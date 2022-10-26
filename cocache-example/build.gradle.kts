@@ -15,6 +15,7 @@ plugins {
     application
     kotlin("jvm") version "1.7.20"
     kotlin("plugin.spring") version "1.7.20"
+    kotlin("kapt")
 }
 
 java {
@@ -47,7 +48,7 @@ application {
 }
 
 dependencies {
-    implementation(platform(project(":cocache-dependencies")))
+    api(platform(project(":cocache-dependencies")))
     implementation("me.ahoo.cosid:cosid-spring-redis")
     implementation("me.ahoo.cosid:cosid-spring-boot-starter")
 
@@ -60,7 +61,7 @@ dependencies {
 
     implementation("com.google.guava:guava")
     implementation("org.springframework.boot:spring-boot-starter-web")
-    annotationProcessor("org.springframework.boot:spring-boot-configuration-processor:${rootProject.ext.get("springBootVersion")}")
+    kapt("org.springframework.boot:spring-boot-configuration-processor:2.7.5")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }
 

@@ -44,14 +44,7 @@ val publishProjects = subprojects - serverProjects
 val libraryProjects = publishProjects - bomProjects
 
 ext {
-    set("guavaVersion", "31.1-jre")
-    set("springBootVersion", "2.7.4")
-    set("springCloudVersion", "2021.0.4")
     set("jmhVersion", "1.34")
-    set("cosidVersion", "1.14.8")
-    set("hamcrestVersion", "2.2")
-    set("mockkVersion", "1.12.8")
-    set("junitPioneerVersion", "1.4.2")
     set("libraryProjects", libraryProjects)
 }
 
@@ -144,15 +137,14 @@ configure(libraryProjects) {
     }
 
     dependencies {
-        add("api", platform(project(":cocache-dependencies")))
-        add("implementation", "com.google.guava:guava")
-        add("implementation", "org.slf4j:slf4j-api")
-        add("testImplementation", "ch.qos.logback:logback-classic")
-        add("testImplementation", "org.hamcrest:hamcrest")
-        add("testImplementation", "io.mockk:mockk")
-        add("detektPlugins", "io.gitlab.arturbosch.detekt:detekt-formatting:1.21.0")
-        add("testImplementation", "org.junit.jupiter:junit-jupiter-api")
-        add("testRuntimeOnly", "org.junit.jupiter:junit-jupiter-engine")
+        api(platform(project(":cocache-dependencies")))
+        implementation("org.slf4j:slf4j-api")
+        testImplementation("ch.qos.logback:logback-classic")
+        testImplementation("org.hamcrest:hamcrest")
+        testImplementation("io.mockk:mockk")
+        testImplementation("org.junit.jupiter:junit-jupiter-api")
+        testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine")
+        detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.21.0")
     }
 }
 

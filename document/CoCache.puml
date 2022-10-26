@@ -11,11 +11,11 @@ actor User
 participant CoherentCache
 participant ClientSideCache
 participant DistributedCache
-queue InvalidateBus
+queue CacheEvictedEventBus
 
 CoherentCache++
-InvalidateBus++
-CoherentCache -> InvalidateBus : subscribe
+CacheEvictedEventBus++
+CoherentCache -> CacheEvictedEventBus : subscribe
 User -> CoherentCache : get(key)
 CoherentCache -> ClientSideCache++ : get(key)
 alt cache exist
