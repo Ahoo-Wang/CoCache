@@ -45,7 +45,6 @@ val publishProjects = subprojects - serverProjects
 val libraryProjects = publishProjects - bomProjects
 
 ext {
-    set("jmhVersion", "1.34")
     set("libraryProjects", libraryProjects)
 }
 
@@ -114,7 +113,6 @@ configure(libraryProjects) {
             excludes.set(jmhExcludes)
         }
 
-        jmhVersion.set(rootProject.ext.get("jmhVersion").toString())
         warmupIterations.set(1)
         iterations.set(1)
         resultFormat.set("json")
