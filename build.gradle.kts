@@ -24,6 +24,7 @@ plugins {
     id("io.gitlab.arturbosch.detekt").version("1.21.0")
     kotlin("jvm") version "1.7.20"
     id("org.jetbrains.dokka") version "1.7.20"
+    id("me.champeau.jmh")
     jacoco
 }
 
@@ -138,13 +139,17 @@ configure(libraryProjects) {
 
     dependencies {
         api(platform(project(":cocache-dependencies")))
+        detektPlugins(platform(project(":cocache-dependencies")))
+        jmh(platform(project(":cocache-dependencies")))
         implementation("org.slf4j:slf4j-api")
         testImplementation("ch.qos.logback:logback-classic")
         testImplementation("org.hamcrest:hamcrest")
         testImplementation("io.mockk:mockk")
         testImplementation("org.junit.jupiter:junit-jupiter-api")
         testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine")
-        detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.21.0")
+        detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting")
+        jmh("org.openjdk.jmh:jmh-core")
+        jmh("org.openjdk.jmh:jmh-generator-annprocess")
     }
 }
 

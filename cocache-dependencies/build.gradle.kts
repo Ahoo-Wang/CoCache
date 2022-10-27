@@ -20,5 +20,8 @@ dependencies {
         api("org.junit-pioneer:junit-pioneer:1.7.1")
         api("org.hamcrest:hamcrest:2.2")
         api("io.mockk:mockk:1.13.2")
+        api("org.openjdk.jmh:jmh-core:1.34")
+        api("org.openjdk.jmh:jmh-generator-annprocess:1.34")
+        api("io.gitlab.arturbosch.detekt:detekt-formatting:1.21.0")
     }
 }
