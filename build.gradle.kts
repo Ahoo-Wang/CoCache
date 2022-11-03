@@ -41,6 +41,7 @@ val serverProjects = setOf(
     project(":cocache-example")
 )
 
+val testProject = project(":cocache-test")
 val publishProjects = subprojects - serverProjects
 val libraryProjects = publishProjects - bomProjects
 
@@ -239,7 +240,9 @@ tasks.register<JacocoReport>("codeCoverageReport") {
     executionData(fileTree(project.rootDir.absolutePath).include("**/build/jacoco/*.exec"))
     libraryProjects.forEach {
         dependsOn(it.tasks.test)
-        sourceSets(it.sourceSets.main.get())
+        if (testProject != it) {
+            sourceSets(it.sourceSets.main.get())
+        }
     }
     reports {
         xml.required.set(true)

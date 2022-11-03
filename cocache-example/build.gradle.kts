@@ -49,9 +49,9 @@ application {
 
 dependencies {
     api(platform(project(":cocache-dependencies")))
+    kapt(platform(project(":cocache-dependencies")))
     implementation("me.ahoo.cosid:cosid-spring-redis")
     implementation("me.ahoo.cosid:cosid-spring-boot-starter")
-
     implementation(project(":cocache-spring-redis"))
     implementation(project(":cocache-spring-boot-starter"))
 
@@ -61,7 +61,7 @@ dependencies {
 
     implementation("com.google.guava:guava")
     implementation("org.springframework.boot:spring-boot-starter-web")
-    kapt("org.springframework.boot:spring-boot-configuration-processor:2.7.5")
+    kapt("org.springframework.boot:spring-boot-configuration-processor")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }
 
