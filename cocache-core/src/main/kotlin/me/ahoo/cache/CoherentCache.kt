@@ -38,7 +38,7 @@ class CoherentCache<K, V>(
     val clientSideCaching: ClientSideCache<V> = MapClientSideCache(),
     private val cacheEvictedEventBus: CacheEvictedEventBus,
     private val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
-    private val keyFilter: KeyFilter = NoOpKeyFilter,
+    private val keyFilter: KeyFilter = NoOpKeyFilter
 ) : Cache<K, V>, DistributedClientId, CacheEvictedSubscriber {
     companion object {
         private val log = LoggerFactory.getLogger(CoherentCache::class.java)

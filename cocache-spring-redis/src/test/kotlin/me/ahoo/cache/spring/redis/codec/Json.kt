@@ -20,7 +20,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 
-object Json : ObjectMapper(){
+object Json : ObjectMapper() {
     init {
         setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY)
         configure(JsonParser.Feature.IGNORE_UNDEFINED, true)

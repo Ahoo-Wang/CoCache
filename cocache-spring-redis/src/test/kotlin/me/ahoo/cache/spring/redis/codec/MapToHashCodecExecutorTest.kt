@@ -24,5 +24,4 @@ internal class MapToHashCodecExecutorTest : CodecExecutorSpec<Map<String, String
     override fun createCacheValue(): Map<String, String> {
         return mapOf(UUID.randomUUID().toString() to UUID.randomUUID().toString())
     }
-
 }

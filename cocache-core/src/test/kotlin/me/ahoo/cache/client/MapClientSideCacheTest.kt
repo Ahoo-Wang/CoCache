@@ -29,5 +29,4 @@ internal class MapClientSideCacheTest : ClientSideCacheSpec<String>() {
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()
     }
-
 }

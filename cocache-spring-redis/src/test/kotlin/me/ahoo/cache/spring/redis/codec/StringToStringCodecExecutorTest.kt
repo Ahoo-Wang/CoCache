@@ -34,5 +34,4 @@ internal class StringToStringCodecExecutorTest : CodecExecutorSpec<String>() {
         super.setup()
         codecExecutor = StringToStringCodecExecutor(stringRedisTemplate)
     }
-
 }

@@ -44,5 +44,4 @@ internal class CoherentCacheTest : CoherentCacheSpec<String, String>() {
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()
     }
-
 }

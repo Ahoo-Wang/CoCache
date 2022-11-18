@@ -27,7 +27,7 @@ import java.time.Instant
  */
 class RedisDistributedCache<V>(
     private val redisTemplate: StringRedisTemplate,
-    private val codecExecutor: CodecExecutor<V>,
+    private val codecExecutor: CodecExecutor<V>
 ) : DistributedCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
         val ttlAt = getExpireAt(key) ?: return null

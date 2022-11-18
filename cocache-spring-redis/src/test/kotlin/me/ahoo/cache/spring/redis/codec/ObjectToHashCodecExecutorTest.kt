@@ -15,7 +15,8 @@ package me.ahoo.cache.spring.redis.codec
 
 import java.util.*
 
-internal class ObjectToHashCodecExecutorTest : CodecExecutorSpec<Model>(),
+internal class ObjectToHashCodecExecutorTest :
+    CodecExecutorSpec<Model>(),
     ObjectToHashCodecExecutor.MapConverter<Model> {
 
     override fun createCodecExecutor(): CodecExecutor<Model> {

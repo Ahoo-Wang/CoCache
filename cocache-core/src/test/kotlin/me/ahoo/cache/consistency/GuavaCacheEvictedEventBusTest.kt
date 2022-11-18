@@ -13,10 +13,6 @@
 package me.ahoo.cache.consistency
 
 import me.ahoo.cache.test.consistency.CacheEvictedEventBusSpec
-import org.junit.jupiter.api.Assertions
-import org.junit.jupiter.api.Test
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 /**
  * GuavaCacheEvictedEventBusTest .
@@ -27,5 +23,4 @@ internal class GuavaCacheEvictedEventBusTest : CacheEvictedEventBusSpec() {
     override fun createCacheEvictedEventBus(): CacheEvictedEventBus {
         return GuavaCacheEvictedEventBus()
     }
-
 }

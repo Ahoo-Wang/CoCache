@@ -55,7 +55,7 @@ class AppConfig {
                 cacheName = "userCache",
                 clientId = clientId,
                 keyConverter = ExpKeyConverter(User.CACHE_KEY_PREFIX, "#{#root}"),
-                distributedCaching = distributedCaching,
+                distributedCaching = distributedCaching
             )
         )
     }
@@ -69,7 +69,7 @@ class AppConfig {
                 cacheName = "userCache",
                 clientId = clientId,
                 keyConverter = ToStringKeyConverter(""),
-                distributedCaching = distributedCaching,
+                distributedCaching = distributedCaching
             )
         )
     }
