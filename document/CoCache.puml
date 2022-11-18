@@ -16,27 +16,30 @@ queue CacheEvictedEventBus
 
 User++
 CoherentCache ++
-CacheEvictedEventBus ++
-
-CoherentCache -> CacheEvictedEventBus : subscribe
+CoherentCache -> CacheEvictedEventBus++ : subscribe
 User -> CoherentCache : get(key)
 CoherentCache -> ClientSideCache++ : get(key)
 alt cache exist
-    CoherentCache <-- ClientSideCache : cache
+    CoherentCache <-- ClientSideCache-- : cache
 else cache not exist
     CoherentCache -> DistributedCache++ : get(key)
-    CoherentCache <-- DistributedCache : cache
+    CoherentCache <-- DistributedCache-- : cache
     alt cache exist
-        CoherentCache -> ClientSideCache : setCache(key, value)
+        CoherentCache -> ClientSideCache++ : setCache(key, value)
+        ClientSideCache--
     else cache not exist
         CoherentCache -> CacheSource++ : load(key)
-        CoherentCache <-- CacheSource : source
+        CoherentCache <-- CacheSource-- : source
         alt source is not null
-            CoherentCache -> ClientSideCache : setCache(key, source)
-            CoherentCache -> DistributedCache : setCache(key, source)
+            CoherentCache -> ClientSideCache++ : setCache(key, source)
+            ClientSideCache--
+            CoherentCache -> DistributedCache++ : setCache(key, source)
+            DistributedCache--
         else source is null
-            CoherentCache -> ClientSideCache : setCache(key, missingGuard())
-            CoherentCache -> DistributedCache : setCache(key, missingGuard())
+            CoherentCache -> ClientSideCache++ : setCache(key, missingGuard())
+            ClientSideCache--
+            CoherentCache -> DistributedCache++ : setCache(key, missingGuard())
+            DistributedCache--
         end
     end
 end
