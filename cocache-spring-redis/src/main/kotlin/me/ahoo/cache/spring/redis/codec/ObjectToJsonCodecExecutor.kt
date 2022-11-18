@@ -34,12 +34,8 @@ class ObjectToJsonCodecExecutor<V>(
         return if (CacheValue.isMissingGuard(value)) {
             missingGuard()
         } else {
-            try {
-                val typedValue = objectMapper.readValue(value, valueType)
-                CacheValue(typedValue, ttlAt)
-            } catch (e: JsonProcessingException) {
-                throw IllegalArgumentException(e)
-            }
+            val typedValue = objectMapper.readValue(value, valueType)
+            CacheValue(typedValue, ttlAt)
         }
     }
 
@@ -48,11 +44,6 @@ class ObjectToJsonCodecExecutor<V>(
             redisTemplate.opsForValue()[key] = MissingGuard.STRING_VALUE
             return
         }
-        try {
-            val jsonValue = objectMapper.writeValueAsString(cacheValue.value)
-            redisTemplate.opsForValue()[key] = jsonValue
-        } catch (e: JsonProcessingException) {
-            throw IllegalArgumentException(e)
-        }
+        redisTemplate.opsForValue()[key] = objectMapper.writeValueAsString(cacheValue.value)
     }
 }
