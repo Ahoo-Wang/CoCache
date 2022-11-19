@@ -97,6 +97,7 @@ class CoherentCache<K, V>(
             val sourceCache = cacheSource.load(key)
             if (null != sourceCache) {
                 setCache(cacheKey, sourceCache)
+                cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
                 return sourceCache
             }
             //endregion

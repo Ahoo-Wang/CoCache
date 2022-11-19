@@ -35,6 +35,7 @@ else cache not exist
             ClientSideCache--
             CoherentCache -> DistributedCache++ : setCache(key, source)
             DistributedCache--
+            CoherentCache -> CacheEvictedEventBus : publish(CacheEvictedEvent)
         else source is null
             CoherentCache -> ClientSideCache++ : setCache(key, missingGuard())
             ClientSideCache--
