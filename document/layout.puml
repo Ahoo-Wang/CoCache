@@ -1,6 +1,7 @@
 @startuml
 
-!$watermark= "https://github.com/Ahoo-Wang/CoCache"
+skinparam hyperlinkColor grey
+!$watermark= "[[https://github.com/Ahoo-Wang/CoCache]]"
 
 header
 $watermark

@@ -17,5 +17,5 @@ Level 2 Distributed Coherence Cache Framework
 ## CoCache `Get` Sequence Diagram
 
 <p align="center" style="text-align:center">
-  <img src="document/CoCache-Get-Sequence-Diagram.png"/>
+  <img src="document/CoCache-Get-Sequence-Diagram.svg"/>
 </p>

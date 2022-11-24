@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?><!--
+  - Copyright [2021-present] [ahoo wang <ahoowang@qq.com> (https://github.com/Ahoo-Wang)].
+  - Licensed under the Apache License, Version 2.0 (the "License");
+  - you may not use this file except in compliance with the License.
+  - You may obtain a copy of the License at
+  -      http://www.apache.org/licenses/LICENSE-2.0
+  - Unless required by applicable law or agreed to in writing, software
+  - distributed under the License is distributed on an "AS IS" BASIS,
+  - WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  - See the License for the specific language governing permissions and
+  - limitations under the License.
+  -->
+
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" contentStyleType="text/css" height="992px" preserveAspectRatio="none" style="width:876px;height:992px;background:#FFFFFF;" version="1.1" viewBox="0 0 876 992" width="876px" zoomAndPan="magnify"><defs/><g><rect fill="none" height="42.9766" id="_title" style="stroke:none;stroke-width:1.0;" width="142" x="363.25" y="22.7773"/><text fill="#000000" font-family="sans-serif" font-size="14" font-weight="bold" lengthAdjust="spacing" textLength="61" x="403.75" y="41.3125">CoCache</text><text fill="#000000" font-family="sans-serif" font-size="14" font-weight="bold" lengthAdjust="spacing" text-decoration="underline" textLength="132" x="368.25" y="57.8008">Sequence Diagram</text><rect fill="#FFFFFF" height="729.4551" style="stroke:#181818;stroke-width:1.0;" width="10" x="18.5" y="158.2422"/><rect fill="#FFFFFF" height="729.4551" style="stroke:#181818;stroke-width:1.0;" width="10" x="107" y="158.2422"/><rect fill="#FFFFFF" height="53.6211" style="stroke:#181818;stroke-width:1.0;" width="10" x="326" y="238.1738"/><rect fill="#FFFFFF" height="30" style="stroke:#181818;stroke-width:1.0;" width="10" x="326" y="418.9922"/><rect fill="#FFFFFF" height="30" style="stroke:#181818;stroke-width:1.0;" width="10" x="326" y="576.1895"/><rect fill="#FFFFFF" height="30" style="stroke:#181818;stroke-width:1.0;" width="10" x="326" y="739.0762"/><rect fill="#FFFFFF" height="29.3105" style="stroke:#181818;stroke-width:1.0;" width="10" x="464.5" y="336.0605"/><rect fill="#FFFFFF" height="30" style="stroke:#181818;stroke-width:1.0;" width="10" x="464.5" y="635.5"/><rect fill="#FFFFFF" height="30" style="stroke:#181818;stroke-width:1.0;" width="10" x="464.5" y="798.3867"/><rect fill="#FFFFFF" height="29.3105" style="stroke:#181818;stroke-width:1.0;" width="10" x="592" y="493.2578"/><rect fill="#FFFFFF" height="708.1445" style="stroke:#181818;stroke-width:1.0;" width="10" x="739" y="179.5527"/><rect fill="none" height="597.2129" style="stroke:#000000;stroke-width:1.5;" width="837.5" x="22" y="253.1738"/><rect fill="none" height="463.0156" style="stroke:#000000;stroke-width:1.5;" width="817.5" x="32" y="380.3711"/><rect fill="none" height="298.8184" style="stroke:#000000;stroke-width:1.5;" width="797.5" x="42" y="537.5684"/><line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="23" x2="23" y1="148.2422" y2="896.6973"/><line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="112" x2="112" y1="148.2422" y2="896.6973"/><line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="330.5" x2="330.5" y1="148.2422" y2="896.6973"/><line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="469.5" x2="469.5" y1="148.2422" y2="896.6973"/><line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="596.5" x2="596.5" y1="148.2422" y2="896.6973"/><line style="stroke:#181818;stroke-width:0.5;stroke-dasharray:5.0,5.0;" x1="743.5" x2="743.5" y1="148.2422" y2="896.6973"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="31" x="5" y="145.2891">User</text><ellipse cx="23.5" cy="80.2539" fill="#E2E2F0" rx="8" ry="8" style="stroke:#181818;stroke-width:0.5;"/><path d="M23.5,88.2539 L23.5,115.2539 M10.5,96.2539 L36.5,96.2539 M23.5,115.2539 L10.5,130.2539 M23.5,115.2539 L36.5,130.2539 " fill="none" style="stroke:#181818;stroke-width:0.5;"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="31" x="5" y="909.2324">User</text><ellipse cx="23.5" cy="920.6855" fill="#E2E2F0" rx="8" ry="8" style="stroke:#181818;stroke-width:0.5;"/><path d="M23.5,928.6855 L23.5,955.6855 M10.5,936.6855 L36.5,936.6855 M23.5,955.6855 L10.5,970.6855 M23.5,955.6855 L36.5,970.6855 " fill="none" style="stroke:#181818;stroke-width:0.5;"/><rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="120" x="52" y="116.7539"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="106" x="59" y="137.2891">CoherentCache</text><rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="120" x="52" y="895.6973"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="106" x="59" y="916.2324">CoherentCache</text><rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="125" x="268.5" y="116.7539"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="111" x="275.5" y="137.2891">ClientSideCache</text><rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="125" x="268.5" y="895.6973"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="111" x="275.5" y="916.2324">ClientSideCache</text><rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="132" x="403.5" y="116.7539"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="118" x="410.5" y="137.2891">DistributedCache</text><rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="132" x="403.5" y="895.6973"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="118" x="410.5" y="916.2324">DistributedCache</text><rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="103" x="545.5" y="116.7539"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="89" x="552.5" y="137.2891">CacheSource</text><rect fill="#E2E2F0" height="30.4883" rx="2.5" ry="2.5" style="stroke:#181818;stroke-width:0.5;" width="103" x="545.5" y="895.6973"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="89" x="552.5" y="916.2324">CacheSource</text><path d="M663.5,121.7539 L824.5,121.7539 C829.5,121.7539 829.5,134.998 829.5,134.998 C829.5,134.998 829.5,148.2422 824.5,148.2422 L663.5,148.2422 C658.5,148.2422 658.5,134.998 658.5,134.998 C658.5,134.998 658.5,121.7539 663.5,121.7539 " fill="#E2E2F0" style="stroke:#181818;stroke-width:0.5;"/><path d="M824.5,121.7539 C819.5,121.7539 819.5,134.998 819.5,134.998 C819.5,148.2422 824.5,148.2422 824.5,148.2422 " fill="none" style="stroke:#181818;stroke-width:0.5;"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="151" x="663.5" y="140.2891">CacheEvictedEventBus</text><path d="M663.5,895.6973 L824.5,895.6973 C829.5,895.6973 829.5,908.9414 829.5,908.9414 C829.5,908.9414 829.5,922.1855 824.5,922.1855 L663.5,922.1855 C658.5,922.1855 658.5,908.9414 658.5,908.9414 C658.5,908.9414 658.5,895.6973 663.5,895.6973 " fill="#E2E2F0" style="stroke:#181818;stroke-width:0.5;"/><path d="M824.5,895.6973 C819.5,895.6973 819.5,908.9414 819.5,908.9414 C819.5,922.1855 824.5,922.1855 824.5,922.1855 " fill="none" style="stroke:#181818;stroke-width:0.5;"/><text fill="#000000" font-family="sans-serif" font-size="14" lengthAdjust="spacing" textLength="151" x="663.5" y="914.2324">CacheEvictedEventBus</text><rect fill="#FFFFFF" height="729.4551" style="stroke:#181818;stroke-width:1.0;" width="10" x="18.5" y="158.2422"/><rect fill="#FFFFFF" height="729.4551" style="stroke:#181818;stroke-width:1.0;" width="10" x="107" y="158.2422"/><rect fill="#FFFFFF" height="53.6211" style="stroke:#181818;stroke-width:1.0;" width="10" x="326" y="238.1738"/><rect fill="#FFFFFF" height="30" style="stroke:#181818;stroke-width:1.0;" width="10" x="326" y="418.9922"/><rect fill="#FFFFFF" height="30" style="stroke:#181818;stroke-width:1.0;" width="10" x="326" y="576.1895"/><rect fill="#FFFFFF" height="30" style="stroke:#181818;stroke-width:1.0;" width="10" x="326" y="739.0762"/><rect fill="#FFFFFF" height="29.3105" style="stroke:#181818;stroke-width:1.0;" width="10" x="464.5" y="336.0605"/><rect fill="#FFFFFF" height="30" style="stroke:#181818;stroke-width:1.0;" width="10" x="464.5" y="635.5"/><rect fill="#FFFFFF" height="30" style="stroke:#181818;stroke-width:1.0;" width="10" x="464.5" y="798.3867"/><rect fill="#FFFFFF" height="29.3105" style="stroke:#181818;stroke-width:1.0;" width="10" x="592" y="493.2578"/><rect fill="#FFFFFF" height="708.1445" style="stroke:#181818;stroke-width:1.0;" width="10" x="739" y="179.5527"/><polygon fill="#181818" points="727,175.5527,737,179.5527,727,183.5527,731,179.5527" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="117" x2="733" y1="179.5527" y2="179.5527"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="61" x="124" y="174.8105">subscribe</text><polygon fill="#181818" points="95,204.8633,105,208.8633,95,212.8633,99,208.8633" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="28.5" x2="101" y1="208.8633" y2="208.8633"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="50" x="35.5" y="204.1211">get(key)</text><polygon fill="#181818" points="314,234.1738,324,238.1738,314,242.1738,318,238.1738" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="117" x2="320" y1="238.1738" y2="238.1738"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="50" x="124" y="233.4316">get(key)</text><path d="M22,253.1738 L84,253.1738 L84,260.4844 L74,270.4844 L22,270.4844 L22,253.1738 " fill="#EEEEEE" style="stroke:#000000;stroke-width:1.5;"/><rect fill="none" height="597.2129" style="stroke:#000000;stroke-width:1.5;" width="837.5" x="22" y="253.1738"/><text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing" textLength="17" x="37" y="266.7422">alt</text><text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing" textLength="69" x="99" y="265.8086">[cache exist]</text><polygon fill="#181818" points="128,287.7949,118,291.7949,128,295.7949,124,291.7949" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="122" x2="330" y1="291.7949" y2="291.7949"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="36" x="134" y="287.0527">cache</text><line style="stroke:#000000;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="22" x2="859.5" y1="300.7949" y2="300.7949"/><text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing" textLength="91" x="27" y="311.4297">[cache not exist]</text><polygon fill="#181818" points="452.5,332.0605,462.5,336.0605,452.5,340.0605,456.5,336.0605" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="117" x2="458.5" y1="336.0605" y2="336.0605"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="50" x="124" y="331.3184">get(key)</text><polygon fill="#181818" points="128,361.3711,118,365.3711,128,369.3711,124,365.3711" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="122" x2="468.5" y1="365.3711" y2="365.3711"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="36" x="134" y="360.6289">cache</text><path d="M32,380.3711 L94,380.3711 L94,387.6816 L84,397.6816 L32,397.6816 L32,380.3711 " fill="#EEEEEE" style="stroke:#000000;stroke-width:1.5;"/><rect fill="none" height="463.0156" style="stroke:#000000;stroke-width:1.5;" width="817.5" x="32" y="380.3711"/><text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing" textLength="17" x="47" y="393.9395">alt</text><text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing" textLength="69" x="109" y="393.0059">[cache exist]</text><polygon fill="#181818" points="314,414.9922,324,418.9922,314,422.9922,318,418.9922" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="117" x2="320" y1="418.9922" y2="418.9922"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="128" x="124" y="414.25">setCache(key, value)</text><line style="stroke:#000000;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="32" x2="849.5" y1="457.9922" y2="457.9922"/><text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing" textLength="91" x="37" y="468.627">[cache not exist]</text><polygon fill="#181818" points="580,489.2578,590,493.2578,580,497.2578,584,493.2578" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="117" x2="586" y1="493.2578" y2="493.2578"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="57" x="124" y="488.5156">load(key)</text><polygon fill="#181818" points="128,518.5684,118,522.5684,128,526.5684,124,522.5684" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="122" x2="596" y1="522.5684" y2="522.5684"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="42" x="134" y="517.8262">source</text><path d="M42,537.5684 L104,537.5684 L104,544.8789 L94,554.8789 L42,554.8789 L42,537.5684 " fill="#EEEEEE" style="stroke:#000000;stroke-width:1.5;"/><rect fill="none" height="298.8184" style="stroke:#000000;stroke-width:1.5;" width="797.5" x="42" y="537.5684"/><text fill="#000000" font-family="sans-serif" font-size="13" font-weight="bold" lengthAdjust="spacing" textLength="17" x="57" y="551.1367">alt</text><text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing" textLength="107" x="119" y="550.2031">[source is not null]</text><polygon fill="#181818" points="314,572.1895,324,576.1895,314,580.1895,318,576.1895" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="117" x2="320" y1="576.1895" y2="576.1895"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="137" x="124" y="571.4473">setCache(key, source)</text><polygon fill="#181818" points="452.5,631.5,462.5,635.5,452.5,639.5,456.5,635.5" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="117" x2="458.5" y1="635.5" y2="635.5"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="137" x="124" y="630.7578">setCache(key, source)</text><polygon fill="#181818" points="727,690.8105,737,694.8105,727,698.8105,731,694.8105" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="117" x2="733" y1="694.8105" y2="694.8105"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="172" x="124" y="690.0684">publish(CacheEvictedEvent)</text><line style="stroke:#000000;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="42" x2="839.5" y1="703.8105" y2="703.8105"/><text fill="#000000" font-family="sans-serif" font-size="11" font-weight="bold" lengthAdjust="spacing" textLength="85" x="47" y="714.4453">[source is null]</text><polygon fill="#181818" points="314,735.0762,324,739.0762,314,743.0762,318,739.0762" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="117" x2="320" y1="739.0762" y2="739.0762"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="190" x="124" y="734.334">setCache(key, missingGuard())</text><polygon fill="#181818" points="452.5,794.3867,462.5,798.3867,452.5,802.3867,456.5,798.3867" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;" x1="117" x2="458.5" y1="798.3867" y2="798.3867"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="190" x="124" y="793.6445">setCache(key, missingGuard())</text><polygon fill="#181818" points="39.5,874.6973,29.5,878.6973,39.5,882.6973,35.5,878.6973" style="stroke:#181818;stroke-width:1.0;"/><line style="stroke:#181818;stroke-width:1.0;stroke-dasharray:2.0,2.0;" x1="33.5" x2="106" y1="878.6973" y2="878.6973"/><text fill="#000000" font-family="sans-serif" font-size="13" lengthAdjust="spacing" textLength="36" x="45.5" y="873.9551">cache</text><rect fill="none" height="11.7773" id="_title" style="stroke:none;stroke-width:1.0;" width="203" x="665.5" y="5"/><a href="https://github.com/Ahoo-Wang/CoCache" target="_top" title="https://github.com/Ahoo-Wang/CoCache" xlink:actuate="onRequest" xlink:href="https://github.com/Ahoo-Wang/CoCache" xlink:show="new" xlink:title="https://github.com/Ahoo-Wang/CoCache" xlink:type="simple"><text fill="#808080" font-family="sans-serif" font-size="10" lengthAdjust="spacing" text-decoration="underline" textLength="203" x="665.5" y="14.668">https://github.com/Ahoo-Wang/CoCache</text></a><rect fill="none" height="11.7773" id="_title" style="stroke:none;stroke-width:1.0;" width="203" x="332.75" y="973.1855"/><a href="https://github.com/Ahoo-Wang/CoCache" target="_top" title="https://github.com/Ahoo-Wang/CoCache" xlink:actuate="onRequest" xlink:href="https://github.com/Ahoo-Wang/CoCache" xlink:show="new" xlink:title="https://github.com/Ahoo-Wang/CoCache" xlink:type="simple"><text fill="#808080" font-family="sans-serif" font-size="10" lengthAdjust="spacing" text-decoration="underline" textLength="203" x="332.75" y="982.8535">https://github.com/Ahoo-Wang/CoCache</text></a><!--MD5=[98bc330fa97afc92742573e0bc4a6db4]
+@startuml
+
+!include layout.puml
+
+title
+CoCache
+__Sequence Diagram__
+end title
+
+actor User
+participant CoherentCache
+participant ClientSideCache
+participant DistributedCache
+participant CacheSource
+queue CacheEvictedEventBus
+
+User++
+CoherentCache ++
+CoherentCache -> CacheEvictedEventBus++ : subscribe
+User -> CoherentCache : get(key)
+CoherentCache -> ClientSideCache++ : get(key)
+alt cache exist
+    CoherentCache <- - ClientSideCache- - : cache
+else cache not exist
+    CoherentCache -> DistributedCache++ : get(key)
+    CoherentCache <- - DistributedCache- - : cache
+    alt cache exist
+        CoherentCache -> ClientSideCache++ : setCache(key, value)
+        ClientSideCache- -
+    else cache not exist
+        CoherentCache -> CacheSource++ : load(key)
+        CoherentCache <- - CacheSource- - : source
+        alt source is not null
+            CoherentCache -> ClientSideCache++ : setCache(key, source)
+            ClientSideCache- -
+            CoherentCache -> DistributedCache++ : setCache(key, source)
+            DistributedCache- -
+            CoherentCache -> CacheEvictedEventBus : publish(CacheEvictedEvent)
+        else source is null
+            CoherentCache -> ClientSideCache++ : setCache(key, missingGuard())
+            ClientSideCache- -
+            CoherentCache -> DistributedCache++ : setCache(key, missingGuard())
+            DistributedCache- -
+        end
+    end
+end
+
+User <- - CoherentCache : cache
+@enduml
+
+@startuml
+
+
+skinparam hyperlinkColor grey
+
+header
+[[https://github.com/Ahoo-Wang/CoCache]]
+endheader
+
+center footer [[https://github.com/Ahoo-Wang/CoCache]]
+
+
+title
+CoCache
+__Sequence Diagram__
+end title
+
+actor User
+participant CoherentCache
+participant ClientSideCache
+participant DistributedCache
+participant CacheSource
+queue CacheEvictedEventBus
+
+User++
+CoherentCache ++
+CoherentCache -> CacheEvictedEventBus++ : subscribe
+User -> CoherentCache : get(key)
+CoherentCache -> ClientSideCache++ : get(key)
+alt cache exist
+    CoherentCache <- - ClientSideCache- - : cache
+else cache not exist
+    CoherentCache -> DistributedCache++ : get(key)
+    CoherentCache <- - DistributedCache- - : cache
+    alt cache exist
+        CoherentCache -> ClientSideCache++ : setCache(key, value)
+        ClientSideCache- -
+    else cache not exist
+        CoherentCache -> CacheSource++ : load(key)
+        CoherentCache <- - CacheSource- - : source
+        alt source is not null
+            CoherentCache -> ClientSideCache++ : setCache(key, source)
+            ClientSideCache- -
+            CoherentCache -> DistributedCache++ : setCache(key, source)
+            DistributedCache- -
+            CoherentCache -> CacheEvictedEventBus : publish(CacheEvictedEvent)
+        else source is null
+            CoherentCache -> ClientSideCache++ : setCache(key, missingGuard())
+            ClientSideCache- -
+            CoherentCache -> DistributedCache++ : setCache(key, missingGuard())
+            DistributedCache- -
+        end
+    end
+end
+
+User <- - CoherentCache : cache
+@enduml
+
+PlantUML version 1.2022.12(Mon Oct 24 02:12:26 CST 2022)
+(GPL source distribution)
+Java Runtime: OpenJDK Runtime Environment
+JVM: OpenJDK 64-Bit Server VM
+Default Encoding: UTF-8
+Language: zh
+Country: CN
+--></g></svg>
