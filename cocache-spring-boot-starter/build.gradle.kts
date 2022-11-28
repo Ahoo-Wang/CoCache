@@ -1,5 +1,5 @@
 plugins {
-    kotlin("plugin.spring") version "1.7.21"
+    kotlin("plugin.spring") version "1.7.22"
     kotlin("kapt")
 }
 dependencies {
