@@ -12,7 +12,7 @@
  */
 
 dependencies {
-    api(platform("org.springframework.boot:spring-boot-dependencies:2.7.7"))
+    api(platform("org.springframework.boot:spring-boot-dependencies:3.0.1"))
     api(platform("org.springframework.cloud:spring-cloud-dependencies:2021.0.5"))
     api(platform("me.ahoo.cosid:cosid-bom:1.16.8"))
     constraints {
