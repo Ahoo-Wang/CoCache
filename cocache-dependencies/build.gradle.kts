@@ -17,7 +17,7 @@ dependencies {
     api(platform("me.ahoo.cosid:cosid-bom:1.16.9"))
     constraints {
         api("com.google.guava:guava:31.1-jre")
-        api("org.junit-pioneer:junit-pioneer:1.9.1")
+        api("org.junit-pioneer:junit-pioneer:2.0.0")
         api("org.hamcrest:hamcrest:2.2")
         api("io.mockk:mockk:1.13.4")
         api("org.openjdk.jmh:jmh-core:1.36")
