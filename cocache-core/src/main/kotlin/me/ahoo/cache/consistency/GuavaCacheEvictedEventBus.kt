@@ -23,7 +23,7 @@ import java.util.concurrent.ConcurrentHashMap
  * @author ahoo wang
  */
 class GuavaCacheEvictedEventBus(
-    private val eventBus: EventBus = EventBus()
+    private val eventBus: EventBus = EventBus(),
 ) : CacheEvictedEventBus {
     companion object {
         private val log = LoggerFactory.getLogger(GuavaCacheEvictedEventBus::class.java)

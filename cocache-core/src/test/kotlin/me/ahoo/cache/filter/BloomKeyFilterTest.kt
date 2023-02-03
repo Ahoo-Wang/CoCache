@@ -14,13 +14,8 @@
 package me.ahoo.cache.filter
 
 import com.google.common.hash.BloomFilter
-import com.google.common.hash.Funnel
-import com.google.common.hash.PrimitiveSink
-import me.ahoo.cosid.test.MockIdGenerator
-import org.junit.jupiter.api.Assertions.*
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers.*
-
 import org.junit.jupiter.api.Test
 import java.nio.charset.Charset
 import java.util.UUID
@@ -32,7 +27,7 @@ internal class BloomKeyFilterTest {
         val bloomFilter = BloomFilter.create<String>(
             { from, into -> into.putString(from, Charset.defaultCharset()) },
             1000,
-            0.01
+            0.01,
         )
         val filter = BloomKeyFilter(bloomFilter)
         val id = UUID.randomUUID().toString()

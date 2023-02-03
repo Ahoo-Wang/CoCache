@@ -22,7 +22,7 @@ import me.ahoo.cache.CacheValue
  * @author ahoo wang
  */
 class GuavaClientSideCache<V>(
-    private val guavaCache: Cache<String, CacheValue<V>> = CacheBuilder.newBuilder().build()
+    private val guavaCache: Cache<String, CacheValue<V>> = CacheBuilder.newBuilder().build(),
 ) : ClientSideCache<V> {
 
     override fun getCache(key: String): CacheValue<V>? {

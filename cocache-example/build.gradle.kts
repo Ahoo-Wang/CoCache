@@ -43,18 +43,15 @@ application {
         "-Dcom.sun.management.jmxremote.port=5555",
         "-Dspring.cloud.bootstrap.enabled=true",
         "-Dspring.cloud.bootstrap.location=config/bootstrap.yaml",
-        "-Dspring.config.location=file:./config/"
+        "-Dspring.config.location=file:./config/",
     )
 }
 
 dependencies {
     api(platform(project(":cocache-dependencies")))
     kapt(platform(project(":cocache-dependencies")))
-    implementation("me.ahoo.cosid:cosid-spring-redis")
-    implementation("me.ahoo.cosid:cosid-spring-boot-starter")
     implementation(project(":cocache-spring-redis"))
     implementation(project(":cocache-spring-boot-starter"))
-
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 
     implementation("org.springframework.boot:spring-boot-starter-actuator")

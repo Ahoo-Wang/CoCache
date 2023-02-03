@@ -15,7 +15,6 @@ package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.CacheValue
 import me.ahoo.cache.TtlAt
-import me.ahoo.cosid.test.MockIdGenerator
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers
 import org.junit.jupiter.api.AfterEach
@@ -24,6 +23,7 @@ import org.junit.jupiter.api.Test
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
 import org.springframework.data.redis.core.StringRedisTemplate
+import java.util.UUID
 
 abstract class CodecExecutorSpec<V> {
     lateinit var stringRedisTemplate: StringRedisTemplate
@@ -51,7 +51,7 @@ abstract class CodecExecutorSpec<V> {
 
     @Test
     fun executeAndEncode() {
-        val key = "executeAndDecode:" + MockIdGenerator.INSTANCE.generateAsString()
+        val key = "executeAndDecode:" + UUID.randomUUID().toString()
         val value = CacheValue.forever(createCacheValue())
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, TtlAt.FOREVER)
@@ -60,7 +60,7 @@ abstract class CodecExecutorSpec<V> {
 
     @Test
     fun executeAndEncodeMissing() {
-        val key = "executeAndDecodeWhenMissing:" + MockIdGenerator.INSTANCE.generateAsString()
+        val key = "executeAndDecodeWhenMissing:" + UUID.randomUUID().toString()
         val value = CacheValue.missingGuard<CacheValue<V>>()
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, TtlAt.FOREVER)

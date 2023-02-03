@@ -23,10 +23,10 @@ import me.ahoo.cache.distributed.mock.MockDistributedCache
 import me.ahoo.cache.example.model.User
 import me.ahoo.cache.spring.redis.RedisDistributedCache
 import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor
-import me.ahoo.cosid.IdGenerator
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.data.redis.core.StringRedisTemplate
+import java.util.UUID
 
 /**
  * AppConfig.
@@ -40,13 +40,12 @@ class AppConfig {
         redisTemplate: StringRedisTemplate,
         cacheManager: CacheManager,
         objectMapper: ObjectMapper,
-        idGenerator: IdGenerator
     ): CoherentCache<Long, User> {
-        val clientId = idGenerator.generateAsString()
+        val clientId = UUID.randomUUID().toString()
         val codecExecutor = ObjectToJsonCodecExecutor(
             User::class.java,
             redisTemplate,
-            objectMapper
+            objectMapper,
         )
 
         val distributedCaching: DistributedCache<User> = RedisDistributedCache(redisTemplate, codecExecutor)
@@ -55,22 +54,22 @@ class AppConfig {
                 cacheName = "userCache",
                 clientId = clientId,
                 keyConverter = ExpKeyConverter(User.CACHE_KEY_PREFIX, "#{#root}"),
-                distributedCaching = distributedCaching
-            )
+                distributedCaching = distributedCaching,
+            ),
         )
     }
 
     @Bean("mockCache")
-    fun mockCache(cacheManager: CacheManager, idGenerator: IdGenerator): CoherentCache<String, String> {
+    fun mockCache(cacheManager: CacheManager): CoherentCache<String, String> {
         val distributedCaching = MockDistributedCache<String>()
-        val clientId = idGenerator.generateAsString()
+        val clientId = UUID.randomUUID().toString()
         return cacheManager.getOrCreateCache(
             CacheConfig(
                 cacheName = "userCache",
                 clientId = clientId,
                 keyConverter = ToStringKeyConverter(""),
-                distributedCaching = distributedCaching
-            )
+                distributedCaching = distributedCaching,
+            ),
         )
     }
 }

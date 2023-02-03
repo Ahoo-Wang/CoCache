@@ -38,7 +38,7 @@ class CoherentCache<K, V>(
     val clientSideCaching: ClientSideCache<V> = MapClientSideCache(),
     private val cacheEvictedEventBus: CacheEvictedEventBus,
     private val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
-    private val keyFilter: KeyFilter = NoOpKeyFilter
+    private val keyFilter: KeyFilter = NoOpKeyFilter,
 ) : Cache<K, V>, DistributedClientId, CacheEvictedSubscriber {
     companion object {
         private val log = LoggerFactory.getLogger(CoherentCache::class.java)
@@ -141,7 +141,7 @@ class CoherentCache<K, V>(
                     cacheName,
                     clientId,
                     cacheEvictedEvent,
-                    cacheName
+                    cacheName,
                 )
             }
             return
@@ -155,7 +155,7 @@ class CoherentCache<K, V>(
                         "because it is self-published.",
                     cacheName,
                     clientId,
-                    cacheEvictedEvent
+                    cacheEvictedEvent,
                 )
             }
             return
@@ -165,7 +165,7 @@ class CoherentCache<K, V>(
                 "Cache Name[{}] - ClientId[{}] - onEvicted - CacheEvictedEvent:[{}]",
                 cacheName,
                 clientId,
-                cacheEvictedEvent
+                cacheEvictedEvent,
             )
         }
         clientSideCaching.evict(cacheEvictedEvent.key)

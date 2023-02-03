@@ -30,7 +30,7 @@ class StringToStringCodecExecutor(private val redisTemplate: StringRedisTemplate
         } else {
             CacheValue(
                 value,
-                ttlAt
+                ttlAt,
             )
         }
     }

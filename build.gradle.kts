@@ -30,15 +30,15 @@ plugins {
 
 val bomProjects = setOf(
     project(":cocache-bom"),
-    project(":cocache-dependencies")
+    project(":cocache-dependencies"),
 )
 
 val coreProjects = setOf(
-    project(":cocache-core")
+    project(":cocache-core"),
 )
 
 val serverProjects = setOf(
-    project(":cocache-example")
+    project(":cocache-example"),
 )
 
 val testProject = project(":cocache-test")
@@ -118,7 +118,7 @@ configure(libraryProjects) {
         resultFormat.set("json")
 
         var jmhMode = listOf(
-            "thrpt"
+            "thrpt",
         )
         if (project.hasProperty(jmhModeKey)) {
             jmhMode = project.properties[jmhModeKey].toString().split(delimiter)

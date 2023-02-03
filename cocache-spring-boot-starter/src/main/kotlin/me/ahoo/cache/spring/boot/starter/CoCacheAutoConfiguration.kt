@@ -48,7 +48,7 @@ class CoCacheAutoConfiguration {
     @ConditionalOnMissingBean
     fun cacheEvictedEventBus(
         redisTemplate: StringRedisTemplate,
-        cocacheRedisMessageListenerContainer: RedisMessageListenerContainer
+        cocacheRedisMessageListenerContainer: RedisMessageListenerContainer,
     ): CacheEvictedEventBus {
         return RedisCacheEvictedEventBus(redisTemplate, cocacheRedisMessageListenerContainer)
     }
