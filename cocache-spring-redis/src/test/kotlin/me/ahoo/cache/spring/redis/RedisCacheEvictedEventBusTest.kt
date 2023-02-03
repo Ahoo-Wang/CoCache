@@ -48,7 +48,7 @@ internal class RedisCacheEvictedEventBusTest : CacheEvictedEventBusSpec() {
     override fun createCacheEvictedEventBus(): CacheEvictedEventBus {
         return RedisCacheEvictedEventBus(
             redisTemplate = StringRedisTemplate(lettuceConnectionFactory),
-            listenerContainer = redisMessageListenerContainer
+            listenerContainer = redisMessageListenerContainer,
         )
     }
 

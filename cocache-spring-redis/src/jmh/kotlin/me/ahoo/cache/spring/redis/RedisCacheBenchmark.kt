@@ -42,7 +42,7 @@ open class RedisCacheBenchmark {
         val codecExecutor = StringToStringCodecExecutor(stringRedisTemplate)
         val distributedCache = RedisDistributedCache(
             stringRedisTemplate,
-            codecExecutor
+            codecExecutor,
         )
         val redisMessageListenerContainer = RedisMessageListenerContainer()
         redisMessageListenerContainer.setConnectionFactory(lettuceConnectionFactory)
@@ -53,7 +53,7 @@ open class RedisCacheBenchmark {
         redisMessageListenerContainer.start()
         val cacheEvictedEventBus = RedisCacheEvictedEventBus(
             redisTemplate = StringRedisTemplate(lettuceConnectionFactory),
-            listenerContainer = redisMessageListenerContainer
+            listenerContainer = redisMessageListenerContainer,
         )
         coherentCache = CoherentCache(
             "RedisCacheBenchmark",
@@ -61,7 +61,7 @@ open class RedisCacheBenchmark {
             ToStringKeyConverter(""),
             distributedCache,
             MapClientSideCache(),
-            cacheEvictedEventBus
+            cacheEvictedEventBus,
         )
 
         coherentCache.set(cacheKey, UUID.randomUUID().toString())

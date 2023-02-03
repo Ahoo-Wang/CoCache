@@ -56,14 +56,14 @@ class RedisMultipleInstanceSyncTest : MultipleInstanceSyncSpec<String, String>()
     override fun createDistributedCache(): DistributedCache<String> {
         return RedisDistributedCache(
             stringRedisTemplate,
-            codecExecutor
+            codecExecutor,
         )
     }
 
     override fun createCacheEvictedEventBus(): CacheEvictedEventBus {
         return RedisCacheEvictedEventBus(
             redisTemplate = StringRedisTemplate(lettuceConnectionFactory),
-            listenerContainer = redisMessageListenerContainer
+            listenerContainer = redisMessageListenerContainer,
         )
     }
 

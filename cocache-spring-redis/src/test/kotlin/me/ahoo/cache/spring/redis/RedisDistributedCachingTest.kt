@@ -35,7 +35,7 @@ internal class RedisDistributedCachingTest : DistributedCacheSpec<String>() {
     override fun createCache(): DistributedCache<String> {
         return RedisDistributedCache(
             stringRedisTemplate,
-            codecExecutor
+            codecExecutor,
         )
     }
 

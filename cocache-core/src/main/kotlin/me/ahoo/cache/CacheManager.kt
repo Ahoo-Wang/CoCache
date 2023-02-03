@@ -39,7 +39,7 @@ class CacheManager(private val cacheEvictedEventBus: CacheEvictedEventBus) {
             cacheConfig.clientSideCaching,
             cacheEvictedEventBus,
             cacheConfig.cacheSource,
-            cacheConfig.keyFilter
+            cacheConfig.keyFilter,
         )
         cacheEvictedEventBus.register(cache)
         return cache
@@ -60,5 +60,5 @@ data class CacheConfig<K, V>(
     var distributedCaching: DistributedCache<V>,
     var clientSideCaching: ClientSideCache<V> = MapClientSideCache(),
     var cacheSource: CacheSource<K, V> = CacheSource.noOp(),
-    var keyFilter: KeyFilter = NoOpKeyFilter
+    var keyFilter: KeyFilter = NoOpKeyFilter,
 )

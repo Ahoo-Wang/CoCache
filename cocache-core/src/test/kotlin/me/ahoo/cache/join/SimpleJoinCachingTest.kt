@@ -28,7 +28,7 @@ internal class SimpleJoinCachingTest {
     private val joinCaching: JoinCache<String, Order, String, OrderAddress> =
         SimpleJoinCaching(
             orderCache,
-            orderAddressCache
+            orderAddressCache,
         ) { firstValue -> firstValue.id }
 
     @Test

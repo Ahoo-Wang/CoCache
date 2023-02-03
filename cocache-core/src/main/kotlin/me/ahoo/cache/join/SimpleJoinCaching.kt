@@ -22,7 +22,7 @@ import me.ahoo.cache.CacheGetter
 class SimpleJoinCaching<K1, V1, K2, V2>(
     private val firstCaching: CacheGetter<K1, V1>,
     private val joinCaching: CacheGetter<K2, V2>,
-    override val extractJoinKey: ExtractJoinKey<V1, K2>
+    override val extractJoinKey: ExtractJoinKey<V1, K2>,
 ) : JoinCache<K1, V1, K2, V2> {
 
     override fun get(key: K1): JoinValue<V1, K2, V2>? {

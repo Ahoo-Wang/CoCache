@@ -60,8 +60,8 @@ abstract class MultipleInstanceSyncSpec<K, V> {
                 clientId = currentClientId,
                 keyConverter = keyConverter,
                 distributedCaching = distributedCaching,
-                clientSideCaching = createClientSideCache()
-            )
+                clientSideCaching = createClientSideCache(),
+            ),
         )
 
         otherCache = cacheManager.createCache(
@@ -70,8 +70,8 @@ abstract class MultipleInstanceSyncSpec<K, V> {
                 clientId = otherClientId,
                 keyConverter = keyConverter,
                 distributedCaching = distributedCaching,
-                clientSideCaching = createClientSideCache()
-            )
+                clientSideCaching = createClientSideCache(),
+            ),
         )
     }
 

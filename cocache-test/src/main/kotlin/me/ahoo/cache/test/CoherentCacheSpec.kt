@@ -52,7 +52,7 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
             keyConverter,
             distributedCaching,
             clientCaching,
-            cacheEvictedEventBus
+            cacheEvictedEventBus,
         )
         super.setup()
     }
