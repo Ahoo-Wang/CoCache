@@ -8,6 +8,8 @@ include(":cocache-spring-boot-starter")
 include(":cocache-test")
 include(":cocache-example")
 
+include(":code-coverage-report")
+
 pluginManagement {
     plugins {
         id("io.gitlab.arturbosch.detekt") version "1.22.0" apply false
