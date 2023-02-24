@@ -13,7 +13,7 @@
 
 dependencies {
     api(platform("org.springframework.boot:spring-boot-dependencies:2.7.9"))
-    api(platform("org.springframework.cloud:spring-cloud-dependencies:2021.0.5"))
+    api(platform("org.springframework.cloud:spring-cloud-dependencies:2021.0.6"))
     constraints {
         api("com.google.guava:guava:31.1-jre")
         api("org.hamcrest:hamcrest:2.2")
