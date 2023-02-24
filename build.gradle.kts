@@ -24,7 +24,6 @@ plugins {
     id("io.gitlab.arturbosch.detekt")
     kotlin("jvm")
     id("org.jetbrains.dokka")
-    id("me.champeau.jmh")
     jacoco
 }
 
@@ -97,42 +96,6 @@ configure(libraryProjects) {
             freeCompilerArgs = listOf("-Xjsr305=strict", "-Xjvm-default=all-compatibility")
         }
     }
-    apply<me.champeau.jmh.JMHPlugin>()
-    configure<me.champeau.jmh.JmhParameters> {
-        val delimiter = ','
-        val jmhIncludesKey = "jmhIncludes"
-        val jmhExcludesKey = "jmhExcludes"
-        val jmhThreadsKey = "jmhThreads"
-        val jmhModeKey = "jmhMode"
-
-        if (project.hasProperty(jmhIncludesKey)) {
-            val jmhIncludes = project.properties[jmhIncludesKey].toString().split(delimiter)
-            includes.set(jmhIncludes)
-        }
-        if (project.hasProperty(jmhExcludesKey)) {
-            val jmhExcludes = project.properties[jmhExcludesKey].toString().split(delimiter)
-            excludes.set(jmhExcludes)
-        }
-
-        warmupIterations.set(1)
-        iterations.set(1)
-        resultFormat.set("json")
-
-        var jmhMode = listOf(
-            "thrpt",
-        )
-        if (project.hasProperty(jmhModeKey)) {
-            jmhMode = project.properties[jmhModeKey].toString().split(delimiter)
-        }
-        benchmarkMode.set(jmhMode)
-        var jmhThreads = 1
-        if (project.hasProperty(jmhThreadsKey)) {
-            jmhThreads = Integer.valueOf(project.properties[jmhThreadsKey].toString())
-        }
-        threads.set(jmhThreads)
-        fork.set(1)
-        jvmArgs.set(listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logback-jmh.xml"))
-    }
     tasks.withType<Test> {
         useJUnitPlatform()
         // fix logging missing code for JacocoPlugin
@@ -142,7 +105,6 @@ configure(libraryProjects) {
     dependencies {
         api(platform(project(":cocache-dependencies")))
         detektPlugins(platform(project(":cocache-dependencies")))
-        jmh(platform(project(":cocache-dependencies")))
         implementation("org.slf4j:slf4j-api")
         testImplementation("ch.qos.logback:logback-classic")
         testImplementation("org.hamcrest:hamcrest")
@@ -150,8 +112,6 @@ configure(libraryProjects) {
         testImplementation("org.junit.jupiter:junit-jupiter-api")
         testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine")
         detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting")
-        jmh("org.openjdk.jmh:jmh-core")
-        jmh("org.openjdk.jmh:jmh-generator-annprocess")
     }
 }
 
