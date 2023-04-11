@@ -27,9 +27,10 @@ plugins {
     jacoco
 }
 
+val dependenciesProject = project(":cocache-dependencies")
 val bomProjects = setOf(
     project(":cocache-bom"),
-    project(":cocache-dependencies"),
+    dependenciesProject,
 )
 
 val coreProjects = setOf(
@@ -103,8 +104,8 @@ configure(libraryProjects) {
     }
 
     dependencies {
-        api(platform(project(":cocache-dependencies")))
-        detektPlugins(platform(project(":cocache-dependencies")))
+        api(platform(dependenciesProject))
+        detektPlugins(platform(dependenciesProject))
         implementation("org.slf4j:slf4j-api")
         testImplementation("ch.qos.logback:logback-classic")
         testImplementation("org.hamcrest:hamcrest")
