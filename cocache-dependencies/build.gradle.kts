@@ -12,7 +12,7 @@
  */
 
 dependencies {
-    api(platform("org.springframework.boot:spring-boot-dependencies:2.7.10"))
+    api(platform("org.springframework.boot:spring-boot-dependencies:3.0.5"))
     constraints {
         api("com.google.guava:guava:31.1-jre")
         api("org.hamcrest:hamcrest:2.2")
