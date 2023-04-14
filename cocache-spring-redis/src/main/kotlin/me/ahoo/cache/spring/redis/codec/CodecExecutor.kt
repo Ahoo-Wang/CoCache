@@ -20,6 +20,9 @@ import me.ahoo.cache.CacheValue
  * @author ahoo wang
  */
 interface CodecExecutor<V> {
+    /**
+     * @param ttlAt time to live([java.time.temporal.ChronoUnit.SECONDS]).
+     */
     fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>
     fun executeAndEncode(key: String, cacheValue: CacheValue<V>)
 }

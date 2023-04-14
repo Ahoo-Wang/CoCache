@@ -29,6 +29,6 @@ abstract class DistributedCacheSpec<V> : CacheSpec<String, V>() {
         val (key, value) = createCacheEntry()
         cache[key] = CacheValue.missingGuardValue()
         assertThat(cache.getCache(key)?.value, equalTo(CacheValue.missingGuardValue()))
-        assertThat(cache.getExpireAt(key), equalTo(TtlAt.FOREVER))
+        assertThat(cache.getTtlAt(key), equalTo(TtlAt.FOREVER))
     }
 }

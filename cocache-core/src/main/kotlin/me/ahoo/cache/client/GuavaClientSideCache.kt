@@ -30,6 +30,9 @@ class GuavaClientSideCache<V>(
     }
 
     override fun setCache(key: String, value: CacheValue<V>) {
+        if (value.isExpired) {
+            return
+        }
         guavaCache.put(key, value)
     }
 

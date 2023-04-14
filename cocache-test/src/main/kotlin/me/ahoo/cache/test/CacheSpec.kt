@@ -43,7 +43,7 @@ abstract class CacheSpec<K, V> {
         val ttlAt = SystemSecondClock.currentTime() - 5
         cache[key, ttlAt] = value
         assertThat(cache[key], nullValue())
-        assertThat(cache.getExpireAt(key), nullValue())
+        assertThat(cache.getTtlAt(key), nullValue())
     }
 
     @Test
@@ -52,6 +52,16 @@ abstract class CacheSpec<K, V> {
         assertThat(cache[key], nullValue())
         cache[key] = value
         assertThat(cache[key], equalTo(value))
+    }
+
+    @Test
+    fun setWithTtl() {
+        val (key, value) = createCacheEntry()
+        val ttlAt = SystemSecondClock.currentTime() + 5
+        assertThat(cache[key], nullValue())
+        cache[key, ttlAt] = value
+        assertThat(cache[key], equalTo(value))
+        assertThat(cache.getTtlAt(key), equalTo(ttlAt))
     }
 
     @Test

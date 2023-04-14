@@ -30,6 +30,7 @@ import org.slf4j.LoggerFactory
  *
  * @author ahoo wang
  */
+@Suppress("LongParameterList")
 class CoherentCache<K, V>(
     override val cacheName: String,
     override val clientId: String,
@@ -42,6 +43,18 @@ class CoherentCache<K, V>(
 ) : Cache<K, V>, DistributedClientId, CacheEvictedSubscriber {
     companion object {
         private val log = LoggerFactory.getLogger(CoherentCache::class.java)
+    }
+
+    override fun get(key: K): V? {
+        val cacheValue = getCache(key) ?: return null
+        if (cacheValue.isMissingGuard) {
+            return null
+        }
+        if (cacheValue.isExpired) {
+            clientSideCaching.evict(keyConverter.asKey(key))
+            return null
+        }
+        return cacheValue.value
     }
 
     private fun getL2Cache(cacheKey: String): CacheValue<V>? {
@@ -118,6 +131,9 @@ class CoherentCache<K, V>(
     }
 
     override fun setCache(key: K, value: CacheValue<V>) {
+        if (value.isExpired) {
+            return
+        }
         val cacheKey = keyConverter.asKey(key)
         setCache(cacheKey, value)
         cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))

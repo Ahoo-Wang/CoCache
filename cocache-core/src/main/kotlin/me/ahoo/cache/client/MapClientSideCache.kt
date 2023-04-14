@@ -31,6 +31,9 @@ class MapClientSideCache<V>(
     }
 
     override fun setCache(key: String, value: CacheValue<V>) {
+        if (value.isExpired) {
+            return
+        }
         if (missingGuardValue<Any>() == value.value) {
             cacheMap[key] = missingGuard()
             return

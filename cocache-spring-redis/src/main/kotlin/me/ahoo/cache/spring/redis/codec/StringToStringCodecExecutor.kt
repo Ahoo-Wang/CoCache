@@ -13,7 +13,6 @@
 package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.CacheValue
-import me.ahoo.cache.CacheValue.Companion.missingGuard
 import me.ahoo.cache.MissingGuard
 import org.springframework.data.redis.core.StringRedisTemplate
 
@@ -22,24 +21,29 @@ import org.springframework.data.redis.core.StringRedisTemplate
  *
  * @author ahoo wang
  */
-class StringToStringCodecExecutor(private val redisTemplate: StringRedisTemplate) : CodecExecutor<String> {
-    override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<String> {
-        val value = redisTemplate.opsForValue()[key] ?: return missingGuard()
-        return if (CacheValue.isMissingGuard(value)) {
-            missingGuard()
-        } else {
-            CacheValue(
-                value,
-                ttlAt,
-            )
-        }
+class StringToStringCodecExecutor(private val redisTemplate: StringRedisTemplate) :
+    AbstractCodecExecutor<String, String>() {
+    override fun isMissingGuard(rawValue: String): Boolean {
+        return CacheValue.isMissingGuard(rawValue)
     }
 
-    override fun executeAndEncode(key: String, cacheValue: CacheValue<String>) {
-        if (cacheValue.isMissingGuard) {
-            redisTemplate.opsForValue()[key] = MissingGuard.STRING_VALUE
-            return
-        }
-        redisTemplate.opsForValue()[key] = cacheValue.value
+    override fun getRawValue(key: String): String? {
+        return redisTemplate.opsForValue()[key]
+    }
+
+    override fun decode(rawValue: String): String {
+        return rawValue
+    }
+
+    override fun setMissingGuard(key: String) {
+        redisTemplate.opsForValue()[key] = MissingGuard.STRING_VALUE
+    }
+
+    override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<String>) {
+        redisTemplate.opsForValue().set(key, cacheValue.value, cacheValue.expiredDuration)
+    }
+
+    override fun setForeverValue(key: String, value: String) {
+        redisTemplate.opsForValue()[key] = value
     }
 }

@@ -15,6 +15,7 @@ package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.CacheValue
 import me.ahoo.cache.TtlAt
+import me.ahoo.cache.util.CacheSecondClock
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers
 import org.junit.jupiter.api.AfterEach
@@ -55,6 +56,16 @@ abstract class CodecExecutorSpec<V> {
         val value = CacheValue.forever(createCacheValue())
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, TtlAt.FOREVER)
+        assertThat(actual, Matchers.equalTo(value))
+    }
+
+    @Test
+    fun executeAndEncodeWithTtlAt() {
+        val key = "executeAndDecode:" + UUID.randomUUID().toString()
+        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 10
+        val value = CacheValue(createCacheValue(), ttlAt)
+        codecExecutor.executeAndEncode(key, value)
+        val actual = codecExecutor.executeAndDecode(key, ttlAt)
         assertThat(actual, Matchers.equalTo(value))
     }
 

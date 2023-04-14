@@ -13,9 +13,9 @@
 package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.CacheValue
-import me.ahoo.cache.CacheValue.Companion.missingGuard
 import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.util.CacheSecondClock
+import org.springframework.data.redis.connection.StringRedisConnection
 import org.springframework.data.redis.core.StringRedisTemplate
 
 /**
@@ -23,23 +23,42 @@ import org.springframework.data.redis.core.StringRedisTemplate
  *
  * @author ahoo wang
  */
-class MapToHashCodecExecutor(private val redisTemplate: StringRedisTemplate) : CodecExecutor<Map<String, String>> {
-    override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<Map<String, String>> {
-        val value = redisTemplate.opsForHash<String, String>().entries(key)
-        return if (CacheValue.isMissingGuard(value)) {
-            missingGuard()
-        } else {
-            CacheValue(value, ttlAt)
+class MapToHashCodecExecutor(private val redisTemplate: StringRedisTemplate) :
+    AbstractCodecExecutor<Map<String, String>, Map<String, String>>() {
+
+    override fun getRawValue(key: String): Map<String, String>? {
+        return redisTemplate.opsForHash<String, String>().entries(key)
+    }
+
+    override fun isMissingGuard(rawValue: Map<String, String>): Boolean {
+        return CacheValue.isMissingGuard(rawValue)
+    }
+
+    override fun decode(rawValue: Map<String, String>): Map<String, String> {
+        return rawValue
+    }
+
+    override fun setMissingGuard(key: String) {
+        redisTemplate.opsForHash<String, String>()
+            .put(key, MissingGuard.STRING_VALUE, CacheSecondClock.INSTANCE.currentTime().toString())
+    }
+
+    override fun setForeverValue(key: String, value: Map<String, String>) {
+        redisTemplate.executePipelined { connection ->
+            connection as StringRedisConnection
+            connection.del(key)
+            connection.hMSet(key, value)
+            null
         }
     }
 
-    override fun executeAndEncode(key: String, cacheValue: CacheValue<Map<String, String>>) {
-        if (cacheValue.isMissingGuard) {
-            redisTemplate.opsForHash<Any, Any>()
-                .put(key, MissingGuard.STRING_VALUE, CacheSecondClock.INSTANCE.currentTime().toString())
-            return
+    override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<Map<String, String>>) {
+        redisTemplate.executePipelined { connection ->
+            connection as StringRedisConnection
+            connection.del(key)
+            connection.hMSet(key, cacheValue.value)
+            connection.expire(key, cacheValue.expiredDuration.seconds)
+            null
         }
-        redisTemplate.delete(key)
-        redisTemplate.opsForHash<Any, Any>().putAll(key, cacheValue.value)
     }
 }

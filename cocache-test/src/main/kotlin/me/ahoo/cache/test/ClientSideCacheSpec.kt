@@ -30,7 +30,7 @@ abstract class ClientSideCacheSpec<V> : CacheSpec<String, V>() {
         val (key, value) = createCacheEntry()
         cache[key] = CacheValue.missingGuardValue()
         Assertions.assertNull(cache[key])
-        Assertions.assertEquals(TtlAt.FOREVER, cache.getExpireAt(key))
+        Assertions.assertEquals(TtlAt.FOREVER, cache.getTtlAt(key))
     }
 
     @Test
