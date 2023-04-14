@@ -54,7 +54,7 @@ abstract class MultipleInstanceSyncSpec<K, V> {
         cacheManager = CacheManager(cacheEvictedEventBus)
         cacheName = createCacheName()
 
-        currentCache = cacheManager.createCache(
+        currentCache = cacheManager.getOrCreateCache(
             CacheConfig(
                 cacheName = cacheName,
                 clientId = currentClientId,
@@ -63,7 +63,7 @@ abstract class MultipleInstanceSyncSpec<K, V> {
                 clientSideCaching = createClientSideCache(),
             ),
         )
-
+        assertThat(currentCache, equalTo(cacheManager.getCache(cacheName)))
         otherCache = cacheManager.createCache(
             CacheConfig(
                 cacheName = cacheName,
