@@ -45,6 +45,18 @@ class CoherentCache<K, V>(
         private val log = LoggerFactory.getLogger(CoherentCache::class.java)
     }
 
+    override fun get(key: K): V? {
+        val cacheValue = getCache(key) ?: return null
+        if (cacheValue.isMissingGuard) {
+            return null
+        }
+        if (cacheValue.isExpired) {
+            clientSideCaching.evict(keyConverter.asKey(key))
+            return null
+        }
+        return cacheValue.value
+    }
+
     private fun getL2Cache(cacheKey: String): CacheValue<V>? {
         //region L2
         var cacheValue = clientSideCaching.getCache(cacheKey)

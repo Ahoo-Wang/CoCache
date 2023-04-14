@@ -29,13 +29,10 @@ interface Cache<K, V> : CacheGetter<K, V> {
      * @param key cache key
      * @return real cache value
      */
+    @Suppress("ReturnCount")
     override fun get(key: K): V? {
         val cacheValue = getCache(key) ?: return null
-        if (cacheValue.isMissingGuard) {
-            return null
-        }
-        if (cacheValue.isExpired) {
-            evict(key)
+        if (cacheValue.isMissingGuard || cacheValue.isExpired) {
             return null
         }
         return cacheValue.value
