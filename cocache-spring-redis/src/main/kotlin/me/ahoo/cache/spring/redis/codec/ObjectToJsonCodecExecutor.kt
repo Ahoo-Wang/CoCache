@@ -14,7 +14,6 @@ package me.ahoo.cache.spring.redis.codec
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import me.ahoo.cache.CacheValue
-import me.ahoo.cache.CacheValue.Companion.missingGuard
 import me.ahoo.cache.MissingGuard
 import org.springframework.data.redis.core.StringRedisTemplate
 
@@ -27,22 +26,30 @@ class ObjectToJsonCodecExecutor<V>(
     private val valueType: Class<V>,
     private val redisTemplate: StringRedisTemplate,
     private val objectMapper: ObjectMapper,
-) : CodecExecutor<V> {
-    override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V> {
-        val value = redisTemplate.opsForValue()[key] ?: return missingGuard()
-        return if (CacheValue.isMissingGuard(value)) {
-            missingGuard()
-        } else {
-            val typedValue = objectMapper.readValue(value, valueType)
-            CacheValue(typedValue, ttlAt)
-        }
+) : AbstractCodecExecutor<V, String>() {
+
+    override fun isMissingGuard(rawValue: String): Boolean {
+        return CacheValue.isMissingGuard(rawValue)
     }
 
-    override fun executeAndEncode(key: String, cacheValue: CacheValue<V>) {
-        if (cacheValue.isMissingGuard) {
-            redisTemplate.opsForValue()[key] = MissingGuard.STRING_VALUE
-            return
-        }
-        redisTemplate.opsForValue()[key] = objectMapper.writeValueAsString(cacheValue.value)
+    override fun getRawValue(key: String): String? {
+        return redisTemplate.opsForValue()[key]
+    }
+
+    override fun decode(rawValue: String): V {
+        return objectMapper.readValue(rawValue, valueType)
+    }
+
+    override fun setMissingGuard(key: String) {
+        redisTemplate.opsForValue()[key] = MissingGuard.STRING_VALUE
+    }
+
+    override fun setForeverValue(key: String, value: V) {
+        redisTemplate.opsForValue()[key] = objectMapper.writeValueAsString(value)
+    }
+
+    override fun setValueWithTimeout(key: String, cacheValue: CacheValue<V>) {
+        val encodedValue = objectMapper.writeValueAsString(cacheValue.value)
+        redisTemplate.opsForValue().set(key, encodedValue, cacheValue.expiredDuration)
     }
 }

@@ -13,6 +13,7 @@
 package me.ahoo.cache
 
 import me.ahoo.cache.util.CacheSecondClock
+import java.time.Duration
 
 /**
  * TtlAt .
@@ -33,6 +34,16 @@ interface TtlAt {
             false
         } else {
             CacheSecondClock.INSTANCE.currentTime() > ttlAt
+        }
+
+    val expiredDuration: Duration
+        get() {
+            val currentTime = CacheSecondClock.INSTANCE.currentTime()
+            return if (currentTime > ttlAt) {
+                Duration.ZERO
+            } else {
+                Duration.ofSeconds(ttlAt - currentTime)
+            }
         }
 
     companion object {

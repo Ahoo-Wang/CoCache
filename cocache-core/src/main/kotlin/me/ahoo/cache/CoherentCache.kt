@@ -30,6 +30,7 @@ import org.slf4j.LoggerFactory
  *
  * @author ahoo wang
  */
+@Suppress("LongParameterList")
 class CoherentCache<K, V>(
     override val cacheName: String,
     override val clientId: String,
@@ -118,6 +119,9 @@ class CoherentCache<K, V>(
     }
 
     override fun setCache(key: K, value: CacheValue<V>) {
+        if (value.isExpired) {
+            return
+        }
         val cacheKey = keyConverter.asKey(key)
         setCache(cacheKey, value)
         cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))

@@ -18,7 +18,6 @@ import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.spring.redis.codec.CodecExecutor
 import me.ahoo.cache.util.CacheSecondClock
 import org.springframework.data.redis.core.StringRedisTemplate
-import java.time.Instant
 
 /**
  * Redis Distributed Cache.
@@ -47,10 +46,10 @@ class RedisDistributedCache<V>(
     }
 
     override fun setCache(key: String, value: CacheValue<V>) {
-        codecExecutor.executeAndEncode(key, value)
-        if (!value.isForever) {
-            redisTemplate.expireAt(key, Instant.ofEpochSecond(value.ttlAt))
+        if (value.isExpired) {
+            return
         }
+        codecExecutor.executeAndEncode(key, value)
     }
 
     override fun evict(key: String) {

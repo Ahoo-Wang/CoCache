@@ -29,6 +29,9 @@ class MockDistributedCache<V> : DistributedCache<V> {
     }
 
     override fun setCache(key: String, value: CacheValue<V>) {
+        if (value.isExpired) {
+            return
+        }
         cacheMap[key] = value
     }
 

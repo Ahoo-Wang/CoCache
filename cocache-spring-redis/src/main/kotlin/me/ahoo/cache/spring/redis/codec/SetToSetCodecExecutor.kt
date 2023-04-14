@@ -13,8 +13,8 @@
 package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.CacheValue
-import me.ahoo.cache.CacheValue.Companion.missingGuard
 import me.ahoo.cache.MissingGuard
+import org.springframework.data.redis.connection.StringRedisConnection
 import org.springframework.data.redis.core.StringRedisTemplate
 
 /**
@@ -22,22 +22,41 @@ import org.springframework.data.redis.core.StringRedisTemplate
  *
  * @author ahoo wang
  */
-class SetToSetCodecExecutor(private val redisTemplate: StringRedisTemplate) : CodecExecutor<Set<String>> {
-    override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<Set<String>> {
-        val value = redisTemplate.opsForSet().members(key) ?: return missingGuard()
-        return if (CacheValue.isMissingGuard(value)) {
-            missingGuard()
-        } else {
-            CacheValue(value, ttlAt)
+class SetToSetCodecExecutor(private val redisTemplate: StringRedisTemplate) :
+    AbstractCodecExecutor<Set<String>, Set<String>>() {
+
+    override fun isMissingGuard(rawValue: Set<String>): Boolean {
+        return CacheValue.isMissingGuard(rawValue)
+    }
+
+    override fun getRawValue(key: String): Set<String>? {
+        return redisTemplate.opsForSet().members(key)
+    }
+
+    override fun decode(rawValue: Set<String>): Set<String> {
+        return rawValue
+    }
+
+    override fun setMissingGuard(key: String) {
+        redisTemplate.opsForSet().add(key, MissingGuard.STRING_VALUE)
+    }
+
+    override fun setForeverValue(key: String, value: Set<String>) {
+        redisTemplate.executePipelined { connection ->
+            connection as StringRedisConnection
+            connection.del(key)
+            connection.sAdd(key, *value.toTypedArray())
+            null
         }
     }
 
-    override fun executeAndEncode(key: String, cacheValue: CacheValue<Set<String>>) {
-        if (cacheValue.isMissingGuard) {
-            redisTemplate.opsForSet().add(key, MissingGuard.STRING_VALUE)
-            return
+    override fun setValueWithTimeout(key: String, cacheValue: CacheValue<Set<String>>) {
+        redisTemplate.executePipelined { connection ->
+            connection as StringRedisConnection
+            connection.del(key)
+            connection.sAdd(key, *cacheValue.value.toTypedArray())
+            connection.expire(key, cacheValue.expiredDuration.seconds)
+            null
         }
-        redisTemplate.delete(key)
-        redisTemplate.opsForSet().add(key, *cacheValue.value.toTypedArray())
     }
 }
