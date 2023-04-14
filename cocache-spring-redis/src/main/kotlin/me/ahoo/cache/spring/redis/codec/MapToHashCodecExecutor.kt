@@ -52,7 +52,7 @@ class MapToHashCodecExecutor(private val redisTemplate: StringRedisTemplate) :
         }
     }
 
-    override fun setValueWithTimeout(key: String, cacheValue: CacheValue<Map<String, String>>) {
+    override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<Map<String, String>>) {
         redisTemplate.executePipelined { connection ->
             connection as StringRedisConnection
             connection.del(key)

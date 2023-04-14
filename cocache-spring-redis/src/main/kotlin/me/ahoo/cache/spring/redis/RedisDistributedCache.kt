@@ -29,11 +29,11 @@ class RedisDistributedCache<V>(
     private val codecExecutor: CodecExecutor<V>,
 ) : DistributedCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
-        val ttlAt = getExpireAt(key) ?: return null
+        val ttlAt = getTtlAt(key) ?: return null
         return codecExecutor.executeAndDecode(key, ttlAt)
     }
 
-    override fun getExpireAt(key: String): Long? {
+    override fun getTtlAt(key: String): Long? {
         val ttl = redisTemplate.getExpire(key)
         if (NOT_EXIST == ttl) {
             return null

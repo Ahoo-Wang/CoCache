@@ -48,7 +48,7 @@ class ObjectToJsonCodecExecutor<V>(
         redisTemplate.opsForValue()[key] = objectMapper.writeValueAsString(value)
     }
 
-    override fun setValueWithTimeout(key: String, cacheValue: CacheValue<V>) {
+    override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<V>) {
         val encodedValue = objectMapper.writeValueAsString(cacheValue.value)
         redisTemplate.opsForValue().set(key, encodedValue, cacheValue.expiredDuration)
     }

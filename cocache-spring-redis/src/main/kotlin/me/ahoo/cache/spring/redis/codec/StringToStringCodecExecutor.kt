@@ -39,7 +39,7 @@ class StringToStringCodecExecutor(private val redisTemplate: StringRedisTemplate
         redisTemplate.opsForValue()[key] = MissingGuard.STRING_VALUE
     }
 
-    override fun setValueWithTimeout(key: String, cacheValue: CacheValue<String>) {
+    override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<String>) {
         redisTemplate.opsForValue().set(key, cacheValue.value, cacheValue.expiredDuration)
     }
 

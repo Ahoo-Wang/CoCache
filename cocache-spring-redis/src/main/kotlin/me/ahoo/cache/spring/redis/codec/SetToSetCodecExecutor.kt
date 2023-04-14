@@ -50,7 +50,7 @@ class SetToSetCodecExecutor(private val redisTemplate: StringRedisTemplate) :
         }
     }
 
-    override fun setValueWithTimeout(key: String, cacheValue: CacheValue<Set<String>>) {
+    override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<Set<String>>) {
         redisTemplate.executePipelined { connection ->
             connection as StringRedisConnection
             connection.del(key)

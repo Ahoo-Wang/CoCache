@@ -37,7 +37,7 @@ class ObjectToHashCodecExecutor<V>(
             .put(key, MissingGuard.STRING_VALUE, CacheSecondClock.INSTANCE.currentTime().toString())
     }
 
-    override fun setValueWithTimeout(key: String, cacheValue: CacheValue<V>) {
+    override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<V>) {
         redisTemplate.executePipelined { connection ->
             connection as StringRedisConnection
             connection.del(key)

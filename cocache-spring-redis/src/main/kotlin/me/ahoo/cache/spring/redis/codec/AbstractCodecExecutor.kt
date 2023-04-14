@@ -38,11 +38,11 @@ abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
         when {
             cacheValue.isMissingGuard -> setMissingGuard(key)
             cacheValue.isForever -> setForeverValue(key, cacheValue.value)
-            else -> setValueWithTimeout(key, cacheValue)
+            else -> setValueWithTtlAt(key, cacheValue)
         }
     }
 
     protected abstract fun setMissingGuard(key: String)
     protected abstract fun setForeverValue(key: String, value: V)
-    protected abstract fun setValueWithTimeout(key: String, cacheValue: CacheValue<V>)
+    protected abstract fun setValueWithTtlAt(key: String, cacheValue: CacheValue<V>)
 }

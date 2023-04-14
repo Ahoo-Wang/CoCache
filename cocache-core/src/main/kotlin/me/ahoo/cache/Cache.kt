@@ -46,7 +46,7 @@ interface Cache<K, V> : CacheGetter<K, V> {
      * @param key cache key
      * @return when return null:cache not exist.
      */
-    fun getExpireAt(key: K): Long? {
+    fun getTtlAt(key: K): Long? {
         val cacheValue = getCache(key)
         return cacheValue?.ttlAt
     }
