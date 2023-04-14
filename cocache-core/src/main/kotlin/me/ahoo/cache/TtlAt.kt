@@ -51,6 +51,10 @@ interface TtlAt {
             return FOREVER == ttlAt
         }
 
+        fun at(ttl: Long): Long {
+            return CacheSecondClock.INSTANCE.currentTime() + ttl
+        }
+
         /**
          * 9223372036854775807L.
          */
