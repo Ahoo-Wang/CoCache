@@ -14,7 +14,8 @@
 package me.ahoo.cache.test
 
 import me.ahoo.cache.Cache
-import me.ahoo.cache.util.SystemSecondClock
+import me.ahoo.cache.CacheValue
+import me.ahoo.cache.TtlAt
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.nullValue
@@ -40,7 +41,7 @@ abstract class CacheSpec<K, V> {
     @Test
     fun getWhenExpired() {
         val (key, value) = createCacheEntry()
-        val ttlAt = SystemSecondClock.currentTime() - 5
+        val ttlAt = TtlAt.at(-5)
         cache[key, ttlAt] = value
         assertThat(cache[key], nullValue())
         assertThat(cache.getTtlAt(key), nullValue())
@@ -57,11 +58,11 @@ abstract class CacheSpec<K, V> {
     @Test
     fun setWithTtl() {
         val (key, value) = createCacheEntry()
-        val ttlAt = SystemSecondClock.currentTime() + 5
         assertThat(cache[key], nullValue())
-        cache[key, ttlAt] = value
+        val cacheValue = CacheValue.ttlAt(value, 5)
+        cache.setCache(key, cacheValue)
         assertThat(cache[key], equalTo(value))
-        assertThat(cache.getTtlAt(key), equalTo(ttlAt))
+        assertThat(cache.getTtlAt(key), equalTo(cacheValue.ttlAt))
     }
 
     @Test
