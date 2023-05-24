@@ -17,6 +17,6 @@ dependencies {
         api("com.google.guava:guava:31.1-jre")
         api("org.hamcrest:hamcrest:2.2")
         api("io.mockk:mockk:1.13.5")
-        api("io.gitlab.arturbosch.detekt:detekt-formatting:1.22.0")
+        api("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.0")
     }
 }
