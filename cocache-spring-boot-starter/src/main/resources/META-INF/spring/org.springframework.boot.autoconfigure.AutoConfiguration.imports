@@ -1,1 +1,2 @@
 me.ahoo.cache.spring.boot.starter.CoCacheAutoConfiguration
+me.ahoo.cache.spring.boot.starter.CoCacheEndpointAutoConfiguration

@@ -32,6 +32,8 @@ interface ClientSideCache<V> : Cache<String, V> {
         return cacheValue.value
     }
 
+    val size: Long
+
     /**
      * clear all cache.
      */

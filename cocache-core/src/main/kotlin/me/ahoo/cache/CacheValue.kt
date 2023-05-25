@@ -38,7 +38,7 @@ data class CacheValue<V>(
         get() = missingGuardValue<Any>() == value
 
     companion object {
-        private val MISSING_GUARD_CACHE_VALUE: CacheValue<*> = forever(MissingGuard)
+        private val FOREVER_MISSING_GUARD_CACHE_VALUE: CacheValue<*> = forever(MissingGuard)
 
         @JvmStatic
         fun <V> forever(value: V): CacheValue<V> {
@@ -51,10 +51,20 @@ data class CacheValue<V>(
             return CacheValue(value, ttlAt)
         }
 
+        /**
+         * forever missing guard value.
+         */
         @JvmStatic
         fun <V : CacheValue<*>> missingGuard(): V {
             @Suppress("UNCHECKED_CAST")
-            return MISSING_GUARD_CACHE_VALUE as V
+            return FOREVER_MISSING_GUARD_CACHE_VALUE as V
+        }
+
+        @JvmStatic
+        fun <V : CacheValue<*>> missingGuard(ttl: Long): V {
+            val ttlAt = TtlAt.at(ttl)
+            @Suppress("UNCHECKED_CAST")
+            return CacheValue(MissingGuard, ttlAt) as V
         }
 
         @JvmStatic

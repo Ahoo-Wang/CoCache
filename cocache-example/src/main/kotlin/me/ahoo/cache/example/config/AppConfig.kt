@@ -16,7 +16,6 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import me.ahoo.cache.CacheConfig
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.CoherentCache
-import me.ahoo.cache.converter.ExpKeyConverter
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.mock.MockDistributedCache
@@ -26,7 +25,7 @@ import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.data.redis.core.StringRedisTemplate
-import java.util.UUID
+import java.util.*
 
 /**
  * AppConfig.
@@ -40,7 +39,7 @@ class AppConfig {
         redisTemplate: StringRedisTemplate,
         cacheManager: CacheManager,
         objectMapper: ObjectMapper
-    ): CoherentCache<Long, User> {
+    ): CoherentCache<String, User> {
         val clientId = UUID.randomUUID().toString()
         val codecExecutor = ObjectToJsonCodecExecutor(
             User::class.java,
@@ -53,7 +52,7 @@ class AppConfig {
             CacheConfig(
                 cacheName = "userCache",
                 clientId = clientId,
-                keyConverter = ExpKeyConverter(User.CACHE_KEY_PREFIX, "#{#root}"),
+                keyConverter = ToStringKeyConverter(User.CACHE_KEY_PREFIX),
                 distributedCaching = distributedCaching,
             ),
         )

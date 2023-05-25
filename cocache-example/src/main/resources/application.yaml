@@ -12,16 +12,8 @@ cosid:
     enabled: true
     distributor:
       type: redis
-    state-storage:
-      local:
-        state-location: ./cosid-machine-state/
-  snowflake:
+  generator:
     enabled: true
-    share:
-      clock-sync: true
-      friendly: true
-      converter:
-        type: radix
 
 cocache:
   enabled: true
@@ -29,3 +21,10 @@ cocache:
 logging:
   level:
     me.ahoo: debug
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+          - cocache
+          - cocache-client

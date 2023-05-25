@@ -36,6 +36,9 @@ class GuavaClientSideCache<V>(
         guavaCache.put(key, value)
     }
 
+    override val size: Long
+        get() = guavaCache.size()
+
     override fun evict(key: String) {
         guavaCache.invalidate(key)
     }

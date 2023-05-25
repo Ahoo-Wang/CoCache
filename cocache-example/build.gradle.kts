@@ -49,14 +49,16 @@ application {
 
 dependencies {
     api(platform(project(":cocache-dependencies")))
+    api(platform("me.ahoo.cosid:cosid-bom:1.19.2"))
     kapt(platform(project(":cocache-dependencies")))
     implementation(project(":cocache-spring-redis"))
     implementation(project(":cocache-spring-boot-starter"))
+    implementation("me.ahoo.cosid:cosid-spring-redis")
+    implementation("me.ahoo.cosid:cosid-spring-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
-
     implementation("org.springframework.boot:spring-boot-starter-actuator")
-
     implementation("com.google.guava:guava")
+    implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.springframework.boot:spring-boot-starter-web")
     kapt("org.springframework.boot:spring-boot-configuration-processor")
     testImplementation("org.springframework.boot:spring-boot-starter-test")

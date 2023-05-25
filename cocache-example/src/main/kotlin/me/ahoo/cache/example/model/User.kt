@@ -17,9 +17,7 @@ package me.ahoo.cache.example.model
  *
  * @author ahoo wang
  */
-class User {
-    var id: Long = 0
-    var name: String? = null
+data class User(val id: String, val name: String) {
 
     companion object {
         const val CACHE_KEY_PREFIX = "user:"

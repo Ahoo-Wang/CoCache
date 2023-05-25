@@ -46,9 +46,13 @@ interface Cache<K, V> : CacheGetter<K, V> {
      * @param key cache key
      * @return when return null:cache not exist.
      */
+    @Suppress("ReturnCount")
     fun getTtlAt(key: K): Long? {
-        val cacheValue = getCache(key)
-        return cacheValue?.ttlAt
+        val cacheValue = getCache(key) ?: return null
+        if (cacheValue.isMissingGuard) {
+            return null
+        }
+        return cacheValue.ttlAt
     }
 
     operator fun set(key: K, ttlAt: Long, value: V) {
