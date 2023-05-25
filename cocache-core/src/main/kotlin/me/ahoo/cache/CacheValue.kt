@@ -31,7 +31,7 @@ data class CacheValue<V>(
      *
      * @return time to live (second)
      */
-    override val ttlAt: Long,
+    override val ttlAt: Long
 ) : TtlAt {
 
     val isMissingGuard: Boolean

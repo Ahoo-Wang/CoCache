@@ -25,7 +25,7 @@ import org.springframework.data.redis.core.StringRedisTemplate
 class ObjectToJsonCodecExecutor<V>(
     private val valueType: Class<V>,
     private val redisTemplate: StringRedisTemplate,
-    private val objectMapper: ObjectMapper,
+    private val objectMapper: ObjectMapper
 ) : AbstractCodecExecutor<V, String>() {
 
     override fun isMissingGuard(rawValue: String): Boolean {

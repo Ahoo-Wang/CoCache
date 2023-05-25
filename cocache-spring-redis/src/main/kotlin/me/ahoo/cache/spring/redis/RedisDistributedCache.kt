@@ -26,7 +26,7 @@ import org.springframework.data.redis.core.StringRedisTemplate
  */
 class RedisDistributedCache<V>(
     private val redisTemplate: StringRedisTemplate,
-    private val codecExecutor: CodecExecutor<V>,
+    private val codecExecutor: CodecExecutor<V>
 ) : DistributedCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
         val ttlAt = getTtlAt(key) ?: return null

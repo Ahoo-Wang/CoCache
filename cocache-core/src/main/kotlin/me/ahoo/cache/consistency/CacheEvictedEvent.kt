@@ -31,7 +31,7 @@ data class CacheEvictedEvent(
      *
      * @return publisherId
      */
-    val publisherId: String,
+    val publisherId: String
 ) : NamedCache {
     companion object {
         const val TYPE = "evicted"

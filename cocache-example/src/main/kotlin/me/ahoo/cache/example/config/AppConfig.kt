@@ -39,7 +39,7 @@ class AppConfig {
     fun userCache(
         redisTemplate: StringRedisTemplate,
         cacheManager: CacheManager,
-        objectMapper: ObjectMapper,
+        objectMapper: ObjectMapper
     ): CoherentCache<Long, User> {
         val clientId = UUID.randomUUID().toString()
         val codecExecutor = ObjectToJsonCodecExecutor(

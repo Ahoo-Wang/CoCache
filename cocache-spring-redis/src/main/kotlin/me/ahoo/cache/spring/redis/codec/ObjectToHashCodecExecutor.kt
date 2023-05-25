@@ -25,7 +25,7 @@ import org.springframework.data.redis.core.StringRedisTemplate
  */
 class ObjectToHashCodecExecutor<V>(
     private val mapConverter: MapConverter<V>,
-    private val redisTemplate: StringRedisTemplate,
+    private val redisTemplate: StringRedisTemplate
 ) : AbstractCodecExecutor<V, Map<String, String>>() {
 
     override fun getRawValue(key: String): Map<String, String>? {

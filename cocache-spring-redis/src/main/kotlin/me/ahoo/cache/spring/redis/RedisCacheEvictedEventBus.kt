@@ -31,7 +31,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class RedisCacheEvictedEventBus(
     private val redisTemplate: StringRedisTemplate,
-    private val listenerContainer: RedisMessageListenerContainer,
+    private val listenerContainer: RedisMessageListenerContainer
 ) : CacheEvictedEventBus {
     companion object {
         private val log = LoggerFactory.getLogger(RedisCacheEvictedEventBus::class.java)

@@ -29,7 +29,7 @@ import java.util.UUID
 @RestController
 @RequestMapping("test")
 class TestController(
-    @param:Qualifier("userCache") private val userCaching: CoherentCache<Long, User>,
+    @param:Qualifier("userCache") private val userCaching: CoherentCache<Long, User>
 ) {
     @GetMapping
     fun get(): User? {

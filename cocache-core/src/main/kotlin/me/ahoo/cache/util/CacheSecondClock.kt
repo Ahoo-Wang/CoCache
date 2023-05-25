@@ -21,7 +21,7 @@ import java.util.concurrent.locks.LockSupport
  * @author ahoo wang
  */
 enum class CacheSecondClock(private val actual: SecondClock) : SecondClock, Runnable {
-    INSTANCE(SystemSecondClock),
+    INSTANCE(SystemSecondClock)
     ;
 
     private val secondTimer: Thread

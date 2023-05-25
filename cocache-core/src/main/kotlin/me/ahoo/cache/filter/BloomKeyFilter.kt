@@ -25,7 +25,7 @@ class BloomKeyFilter(
      * The filter that has completed Key initialization.
      * [BloomFilter.readFrom]
      */
-    private val bloomFilter: BloomFilter<String>,
+    private val bloomFilter: BloomFilter<String>
 ) : KeyFilter {
     override fun notExist(key: String): Boolean {
         return !bloomFilter.mightContain(key)
