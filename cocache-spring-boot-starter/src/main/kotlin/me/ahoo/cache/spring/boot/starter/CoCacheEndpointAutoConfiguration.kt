@@ -13,7 +13,9 @@
 package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.CacheManager
+import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.autoconfigure.AutoConfiguration
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.context.annotation.Bean
 
@@ -23,6 +25,7 @@ import org.springframework.context.annotation.Bean
  * @author ahoo wang
  */
 @AutoConfiguration(after = [CoCacheAutoConfiguration::class])
+@ConditionalOnClass(Endpoint::class)
 @ConditionalOnCoCacheEnabled
 class CoCacheEndpointAutoConfiguration {
 
