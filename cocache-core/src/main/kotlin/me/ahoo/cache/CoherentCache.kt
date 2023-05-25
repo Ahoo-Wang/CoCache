@@ -24,6 +24,7 @@ import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.filter.NoOpKeyFilter
 import org.slf4j.LoggerFactory
+import java.time.Duration
 
 /**
  * Coherent cache .
@@ -37,9 +38,10 @@ class CoherentCache<K, V>(
     val keyConverter: KeyConverter<K>,
     val distributedCaching: DistributedCache<V>,
     val clientSideCaching: ClientSideCache<V> = MapClientSideCache(),
-    private val cacheEvictedEventBus: CacheEvictedEventBus,
-    private val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
-    private val keyFilter: KeyFilter = NoOpKeyFilter
+    val cacheEvictedEventBus: CacheEvictedEventBus,
+    val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
+    val keyFilter: KeyFilter = NoOpKeyFilter,
+    val missingGuardTtl: Long = Duration.ofMinutes(10).seconds
 ) : Cache<K, V>, DistributedClientId, CacheEvictedSubscriber {
     companion object {
         private val log = LoggerFactory.getLogger(CoherentCache::class.java)
@@ -65,7 +67,7 @@ class CoherentCache<K, V>(
         }
         //endregion
         if (keyFilter.notExist(cacheKey)) {
-            return missingGuard()
+            return missingGuard(missingGuardTtl)
         }
         //region L1
         cacheValue = distributedCaching.getCache(cacheKey)
@@ -81,11 +83,7 @@ class CoherentCache<K, V>(
         val cacheKey = keyConverter.asKey(key)
         var cacheValue = getL2Cache(cacheKey)
         if (null != cacheValue) {
-            return if (cacheValue.isMissingGuard) {
-                null
-            } else {
-                cacheValue
-            }
+            return cacheValue
         }
 
         /*
@@ -97,11 +95,7 @@ class CoherentCache<K, V>(
         synchronized(this) {
             cacheValue = getL2Cache(cacheKey)
             if (null != cacheValue) {
-                return if (cacheValue!!.isMissingGuard) {
-                    null
-                } else {
-                    cacheValue
-                }
+                return cacheValue
             }
             //region L0:Cache Source
             /*
@@ -120,7 +114,7 @@ class CoherentCache<K, V>(
              * 1. 穿透到 Db 回源
              **** 缓存空值 ***
              */
-            setCache(cacheKey, missingGuard())
+            setCache(cacheKey, missingGuard(missingGuardTtl))
             return null
         }
     }

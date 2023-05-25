@@ -19,6 +19,7 @@ import me.ahoo.cache.TtlAt
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.nullValue
+import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -72,5 +73,21 @@ abstract class CacheSpec<K, V> {
         assertThat(cache[key], equalTo(value))
         cache.evict(key)
         assertThat(cache[key], nullValue())
+    }
+
+    @Test
+    fun setMissing() {
+        val (key, value) = createCacheEntry()
+        cache[key] = CacheValue.missingGuardValue()
+        Assertions.assertNull(cache[key])
+        Assertions.assertNull(cache.getTtlAt(key))
+    }
+
+    @Test
+    fun setMissingTtl() {
+        val (key, value) = createCacheEntry()
+        cache.setCache(key, CacheValue.missingGuard(5))
+        Assertions.assertNull(cache[key])
+        Assertions.assertNull(cache.getTtlAt(key))
     }
 }

@@ -41,6 +41,9 @@ class MapClientSideCache<V>(
         cacheMap[key] = value
     }
 
+    override val size: Long
+        get() = cacheMap.size.toLong()
+
     override fun evict(key: String) {
         cacheMap.remove(key)
     }

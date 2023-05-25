@@ -13,22 +13,9 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.CacheValue
-import me.ahoo.cache.TtlAt
 import me.ahoo.cache.distributed.DistributedCache
-import org.hamcrest.MatcherAssert.assertThat
-import org.hamcrest.Matchers.equalTo
-import org.junit.jupiter.api.Test
 
 abstract class DistributedCacheSpec<V> : CacheSpec<String, V>() {
 
     abstract override fun createCache(): DistributedCache<V>
-
-    @Test
-    fun setMissing() {
-        val (key, value) = createCacheEntry()
-        cache[key] = CacheValue.missingGuardValue()
-        assertThat(cache.getCache(key)?.value, equalTo(CacheValue.missingGuardValue()))
-        assertThat(cache.getTtlAt(key), equalTo(TtlAt.FOREVER))
-    }
 }

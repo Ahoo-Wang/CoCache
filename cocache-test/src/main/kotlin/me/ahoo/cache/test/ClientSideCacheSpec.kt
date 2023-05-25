@@ -13,25 +13,14 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.CacheValue
-import me.ahoo.cache.TtlAt
 import me.ahoo.cache.client.ClientSideCache
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers.nullValue
-import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 
 abstract class ClientSideCacheSpec<V> : CacheSpec<String, V>() {
 
     abstract override fun createCache(): ClientSideCache<V>
-
-    @Test
-    fun setMissing() {
-        val (key, value) = createCacheEntry()
-        cache[key] = CacheValue.missingGuardValue()
-        Assertions.assertNull(cache[key])
-        Assertions.assertEquals(TtlAt.FOREVER, cache.getTtlAt(key))
-    }
 
     @Test
     fun clear() {

@@ -25,6 +25,10 @@ class CacheManager(private val cacheEvictedEventBus: CacheEvictedEventBus) {
 
     private val caches = ConcurrentHashMap<String, CoherentCache<*, *>>()
 
+    fun getCacheNames(): Set<String> {
+        return caches.keys
+    }
+
     fun <K, V> getCache(cacheName: String): CoherentCache<K, V>? {
         @Suppress("UNCHECKED_CAST")
         return caches[cacheName] as CoherentCache<K, V>?
