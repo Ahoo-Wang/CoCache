@@ -14,7 +14,7 @@
 dependencies {
     api(platform("org.springframework.boot:spring-boot-dependencies:2.7.12"))
     constraints {
-        api("com.google.guava:guava:31.1-jre")
+        api("com.google.guava:guava:32.0.0-jre")
         api("org.hamcrest:hamcrest:2.2")
         api("io.mockk:mockk:1.13.5")
         api("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.0")
