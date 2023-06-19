@@ -11,11 +11,11 @@ Level 2 Distributed Coherence Cache Framework
 ## Architecture
 
 <p align="center" style="text-align:center">
-  <img src="document/Architecture.png"/>
+  <img src="document/Architecture.png" alt="Architecture"/>
 </p>
 
 ## CoCache `Get` Sequence Diagram
 
 <p align="center" style="text-align:center">
-  <img src="document/CoCache-Get-Sequence-Diagram.svg"/>
+  <img src="document/CoCache-Get-Sequence-Diagram.svg" alt="CoCache-Get-Sequence-Diagram"/>
 </p>
