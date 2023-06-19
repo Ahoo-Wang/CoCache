@@ -49,7 +49,7 @@ application {
 
 dependencies {
     api(platform(project(":cocache-dependencies")))
-    api(platform("me.ahoo.cosid:cosid-bom:1.19.2"))
+    api(platform("me.ahoo.cosid:cosid-bom:1.19.3"))
     kapt(platform(project(":cocache-dependencies")))
     implementation(project(":cocache-spring-redis"))
     implementation(project(":cocache-spring-boot-starter"))
