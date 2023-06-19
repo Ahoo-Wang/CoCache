@@ -20,7 +20,7 @@ import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
-@Endpoint(id = "cocache-client")
+@Endpoint(id = "cocacheClient")
 class CoCacheClientEndpoint(private val cacheManager: CacheManager) {
 
     @ReadOperation

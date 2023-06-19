@@ -20,12 +20,12 @@ plugins {
 
 java {
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(8))
+        languageVersion.set(JavaLanguageVersion.of(17))
     }
 }
 
 application {
-    mainClass.set("me.ahoo.cosid.example.AppServerKt")
+    mainClass.set("me.ahoo.cache.example.AppServerKt")
     applicationDefaultJvmArgs = listOf(
         "-Xms512M",
         "-Xmx512M",
@@ -33,7 +33,7 @@ application {
         "-XX:MaxDirectMemorySize=256M",
         "-Xss1m",
         "-server",
-        "-XX:+UseG1GC",
+        "-XX:+UseZGC",
         "-Xlog:gc*:file=logs/$applicationName-gc.log:time,tags:filecount=10,filesize=32M",
         "-XX:+HeapDumpOnOutOfMemoryError",
         "-XX:HeapDumpPath=data",
@@ -49,7 +49,7 @@ application {
 
 dependencies {
     api(platform(project(":cocache-dependencies")))
-    api(platform("me.ahoo.cosid:cosid-bom:1.19.3"))
+    api(platform("me.ahoo.cosid:cosid-bom:2.1.0"))
     kapt(platform(project(":cocache-dependencies")))
     implementation(project(":cocache-spring-redis"))
     implementation(project(":cocache-spring-boot-starter"))

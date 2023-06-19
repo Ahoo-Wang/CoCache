@@ -14,13 +14,11 @@ package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.CoCache
 import org.springframework.boot.context.properties.ConfigurationProperties
-import org.springframework.boot.context.properties.ConstructorBinding
 
 /**
  * CoCache Properties .
  *
  * @author ahoo wang
  */
-@ConstructorBinding
 @ConfigurationProperties(prefix = CoCache.COCACHE)
 data class CoCacheProperties(val enabled: Boolean = true)
