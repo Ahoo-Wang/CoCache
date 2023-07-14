@@ -30,7 +30,7 @@ jobs:
           settings-path: ${{ github.workspace }}
 
       - name: Test CoCache-Core
-        run: gradle cocache-core:clean cocache-core:check
+        run: ./gradlew cocache-core:clean cocache-core:check
 
   cocache-spring-redis-test:
     name: CoCache Spring Redis Test
@@ -59,7 +59,7 @@ jobs:
           settings-path: ${{ github.workspace }}
 
       - name: Test CoCache-Spring-Redis
-        run: gradle cocache-spring-redis:clean cocache-spring-redis:check
+        run: ./gradlew cocache-spring-redis:clean cocache-spring-redis:check
 
   cocache-spring-boot-starter-test:
     name: CoCache Spring Boot Starter Test
@@ -78,4 +78,4 @@ jobs:
           settings-path: ${{ github.workspace }}
 
       - name: Test CoCache-Spring-Boot-Starter
-        run: gradle cocache-spring-boot-starter:clean cocache-spring-boot-starter:check
+        run: ./gradlew cocache-spring-boot-starter:clean cocache-spring-boot-starter:check
