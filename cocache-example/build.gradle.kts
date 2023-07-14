@@ -13,8 +13,8 @@
 
 plugins {
     application
-    kotlin("jvm")
-    kotlin("plugin.spring")
+    alias(libs.plugins.kotlin)
+    alias(libs.plugins.kotlinSpring)
     kotlin("kapt")
 }
 
@@ -49,7 +49,7 @@ application {
 
 dependencies {
     api(platform(project(":cocache-dependencies")))
-    api(platform("me.ahoo.cosid:cosid-bom:2.2.1"))
+    api(platform(libs.cosidBom))
     kapt(platform(project(":cocache-dependencies")))
     implementation(project(":cocache-spring-redis"))
     implementation(project(":cocache-spring-boot-starter"))

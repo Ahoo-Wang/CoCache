@@ -12,11 +12,11 @@
  */
 
 dependencies {
-    api(platform("org.springframework.boot:spring-boot-dependencies:3.1.1"))
+    api(platform(libs.springBootDependencies))
     constraints {
-        api("com.google.guava:guava:32.1.1-jre")
-        api("org.hamcrest:hamcrest:2.2")
-        api("io.mockk:mockk:1.13.5")
-        api("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.0")
+        api(libs.guava)
+        api(libs.hamcrest)
+        api(libs.mockk)
+        api(libs.detektFormatting)
     }
 }
