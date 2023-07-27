@@ -169,8 +169,8 @@ class CoherentCache<K, V>(
             if (log.isDebugEnabled) {
                 log.debug(
                     "Cache Name[{}] - ClientId[{}] - onEvicted - " +
-                            "Ignore the CacheEvictedEvent:{}" +
-                            ",because the cache name do not match:[{}]",
+                        "Ignore the CacheEvictedEvent:{}" +
+                        ",because the cache name do not match:[{}]",
                     cacheName,
                     clientId,
                     cacheEvictedEvent,
@@ -184,8 +184,8 @@ class CoherentCache<K, V>(
             if (log.isDebugEnabled) {
                 log.debug(
                     "Cache Name[{}] - ClientId[{}] - onEvicted - " +
-                            "Ignore the CacheEvictedEvent:{} " +
-                            "because it is self-published.",
+                        "Ignore the CacheEvictedEvent:{} " +
+                        "because it is self-published.",
                     cacheName,
                     clientId,
                     cacheEvictedEvent,
