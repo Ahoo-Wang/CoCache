@@ -1,5 +1,5 @@
 /*
- * Copyright [2021-2021] [ahoo wang <ahoowang@qq.com> (https://github.com/Ahoo-Wang)].
+ * Copyright [2021-present] [ahoo wang <ahoowang@qq.com> (https://github.com/Ahoo-Wang)].
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -11,13 +11,22 @@
  * limitations under the License.
  */
 
-dependencies {
-    api(platform(libs.springBootDependencies))
-    api(platform(libs.springCloudDependencies))
-    constraints {
-        api(libs.guava)
-        api(libs.hamcrest)
-        api(libs.mockk)
-        api(libs.detektFormatting)
+package me.ahoo.cache.util
+
+import java.lang.management.ManagementFactory
+
+object ProcessId {
+    private val currentProcessName: String by lazy {
+        ManagementFactory.getRuntimeMXBean().name
+    }
+
+    @JvmStatic
+    val current: Long by lazy {
+        val processName = currentProcessName
+        val processIdStr = processName
+            .split("@".toRegex())
+            .filter { it.isNotBlank() }
+            .toTypedArray()[0]
+        processIdStr.toLong()
     }
 }

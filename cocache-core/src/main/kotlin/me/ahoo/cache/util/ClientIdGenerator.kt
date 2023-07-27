@@ -13,7 +13,6 @@
 
 package me.ahoo.cache.util
 
-import java.lang.management.ManagementFactory
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicLong
 
@@ -25,7 +24,7 @@ interface ClientIdGenerator {
         val UUID = UUIDClientIdGenerator
 
         @JvmField
-        val HOST = HostClientIdGenerator
+        val HOST = HostClientIdGenerator.DEFAULT
     }
 }
 
@@ -35,26 +34,18 @@ object UUIDClientIdGenerator : ClientIdGenerator {
     }
 }
 
-object HostClientIdGenerator : ClientIdGenerator {
-    private val currentProcessName: String by lazy {
-        ManagementFactory.getRuntimeMXBean().name
+class HostClientIdGenerator(private val hostProvider: () -> String) : ClientIdGenerator {
+    companion object {
+        @JvmStatic
+        val DEFAULT = HostClientIdGenerator { InetAddress.getLocalHost().hostAddress }
     }
 
-    @JvmStatic
-    val currentProcessId: Long by lazy {
-        val processName = currentProcessName
-        val processIdStr = processName
-            .split("@".toRegex())
-            .filter { it.isNotBlank() }
-            .toTypedArray()[0]
-        processIdStr.toLong()
-    }
     private val counter = AtomicLong()
     private val host: String by lazy {
-        InetAddress.getLocalHost().hostAddress
+        hostProvider()
     }
 
     override fun generate(): String {
-        return "${counter.getAndIncrement()}:$currentProcessId@$host"
+        return "${counter.getAndIncrement()}:${ProcessId.current}@$host"
     }
 }
