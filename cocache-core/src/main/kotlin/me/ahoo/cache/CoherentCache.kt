@@ -72,27 +72,30 @@ class CoherentCache<K, V>(
     @Suppress("ReturnCount")
     private fun getL2Cache(cacheKey: String): CacheValue<V>? {
         //region L2
-        var cacheValue = clientSideCaching.getCache(cacheKey)
-        if (null != cacheValue) {
-            return cacheValue
+        clientSideCaching.getCache(cacheKey)?.let {
+            if (it.isExpired.not()) {
+                return it
+            }
         }
+
         //endregion
         if (keyFilter.notExist(cacheKey)) {
             return missingGuard(missingGuardTtl)
         }
         //region L1
-        cacheValue = distributedCaching.getCache(cacheKey)
-        if (null != cacheValue) {
-            if (log.isDebugEnabled) {
-                log.debug(
-                    "Cache Name[{}] - ClientId[{}] - get[{}] - set Client Cache.",
-                    cacheName,
-                    clientId,
-                    cacheKey
-                )
+        distributedCaching.getCache(cacheKey)?.let {
+            if (it.isExpired.not()) {
+                if (log.isDebugEnabled) {
+                    log.debug(
+                        "Cache Name[{}] - ClientId[{}] - get[{}] - set Client Cache.",
+                        cacheName,
+                        clientId,
+                        cacheKey
+                    )
+                }
+                clientSideCaching.setCache(cacheKey, it)
+                return it
             }
-            clientSideCaching.setCache(cacheKey, cacheValue)
-            return cacheValue
         }
         //endregion
         return null
@@ -102,9 +105,7 @@ class CoherentCache<K, V>(
     override fun getCache(key: K): CacheValue<V>? {
         val cacheKey = keyConverter.asKey(key)
         getL2Cache(cacheKey)?.let {
-            if (it.isExpired.not()) {
-                return it
-            }
+            return it
         }
 
         /*
@@ -115,9 +116,7 @@ class CoherentCache<K, V>(
          */
         synchronized(this) {
             getL2Cache(cacheKey)?.let {
-                if (it.isExpired.not()) {
-                    return it
-                }
+                return it
             }
 
             //region L0:Cache Source
