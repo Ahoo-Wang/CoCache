@@ -47,6 +47,7 @@ class CoherentCache<K, V>(
         private val log = LoggerFactory.getLogger(CoherentCache::class.java)
     }
 
+    @Suppress("ReturnCount")
     override fun get(key: K): V? {
         val cacheValue = getCache(key) ?: return null
         if (cacheValue.isMissingGuard) {
