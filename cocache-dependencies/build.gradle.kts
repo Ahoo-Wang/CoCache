@@ -16,6 +16,7 @@ dependencies {
     api(platform(libs.springCloudDependencies))
     constraints {
         api(libs.guava)
+        api(libs.springDocStarterWebfluxUi)
         api(libs.hamcrest)
         api(libs.mockk)
         api(libs.detektFormatting)

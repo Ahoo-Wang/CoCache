@@ -39,9 +39,9 @@ class TestController(
         return userCaching[id]
     }
 
-    @PostMapping
-    fun set(): String {
-        val user = User(UUID.randomUUID().toString(), UUID.randomUUID().toString())
+    @PostMapping("{id}")
+    fun set(@PathVariable id: String): String {
+        val user = User(id, UUID.randomUUID().toString())
         userCaching[user.id] = user
         return user.id
     }
