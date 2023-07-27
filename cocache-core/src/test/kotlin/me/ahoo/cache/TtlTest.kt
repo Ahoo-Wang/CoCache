@@ -33,9 +33,9 @@ class TtlTest {
 
     @Test
     fun atWithAmplitude() {
-        val ttlAt = TtlAt.at(10, 10)
-        assertThat(ttlAt, greaterThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime()))
-        assertThat(ttlAt, lessThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 20))
+        val ttlAt = TtlAt.at(10, 5)
+        assertThat(ttlAt, greaterThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 5))
+        assertThat(ttlAt, lessThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 15))
     }
 
     @Test

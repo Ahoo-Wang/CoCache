@@ -70,7 +70,7 @@ abstract class CacheSpec<K, V> {
     fun setWithTtlAmplitude() {
         val (key, value) = createCacheEntry()
         assertThat(cache[key], nullValue())
-        val cacheValue = CacheValue.ttlAt(value, 5, 5)
+        val cacheValue = CacheValue.ttlAt(value, 5, 2)
         cache.setCache(key, cacheValue)
         assertThat(cache[key], equalTo(value))
         assertThat(cache.getTtlAt(key), equalTo(cacheValue.ttlAt))
