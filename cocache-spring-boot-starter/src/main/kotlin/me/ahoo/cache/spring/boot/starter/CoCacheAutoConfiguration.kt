@@ -15,6 +15,7 @@ package me.ahoo.cache.spring.boot.starter
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus
+import me.ahoo.cache.util.ClientIdGenerator
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate
@@ -37,8 +38,16 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    fun clientIdGenerator(): ClientIdGenerator {
+        return ClientIdGenerator.HOST
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     @ConditionalOnSingleCandidate(RedisConnectionFactory::class)
-    fun cocacheRedisMessageListenerContainer(redisConnectionFactory: RedisConnectionFactory): RedisMessageListenerContainer {
+    fun cocacheRedisMessageListenerContainer(
+        redisConnectionFactory: RedisConnectionFactory
+    ): RedisMessageListenerContainer {
         val container = RedisMessageListenerContainer()
         container.setConnectionFactory(redisConnectionFactory)
         return container

@@ -36,14 +36,14 @@ class CacheManager(private val cacheEvictedEventBus: CacheEvictedEventBus) {
 
     fun <K, V> createCache(cacheConfig: CacheConfig<K, V>): CoherentCache<K, V> {
         val cache = CoherentCache(
-            cacheConfig.cacheName,
-            cacheConfig.clientId,
-            cacheConfig.keyConverter,
-            cacheConfig.distributedCaching,
-            cacheConfig.clientSideCaching,
-            cacheEvictedEventBus,
-            cacheConfig.cacheSource,
-            cacheConfig.keyFilter,
+            cacheName = cacheConfig.cacheName,
+            clientId = cacheConfig.clientId,
+            keyConverter = cacheConfig.keyConverter,
+            distributedCaching = cacheConfig.distributedCaching,
+            clientSideCaching = cacheConfig.clientSideCaching,
+            cacheEvictedEventBus = cacheEvictedEventBus,
+            cacheSource = cacheConfig.cacheSource,
+            keyFilter = cacheConfig.keyFilter,
         )
         cacheEvictedEventBus.register(cache)
         return cache
