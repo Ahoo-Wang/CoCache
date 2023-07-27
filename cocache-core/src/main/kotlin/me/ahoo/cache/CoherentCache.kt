@@ -111,6 +111,15 @@ class CoherentCache<K, V>(
             }
 
             //endregion
+            if (log.isDebugEnabled) {
+                log.debug(
+                    "Cache Name[{}] - ClientId[{}] - getCache[{}] " +
+                            "- Set missing guard,because no cache source was found.",
+                    cacheName,
+                    clientId,
+                    cacheKey
+                )
+            }
             /*
              *** Fix 缓存穿透 ***
              * 0. Db 不存在该记录
@@ -148,9 +157,9 @@ class CoherentCache<K, V>(
         if (cacheEvictedEvent.cacheName != cacheName) {
             if (log.isDebugEnabled) {
                 log.debug(
-                    "Cache Name[{}] - ClientId[{}] - onEvicted - " +
-                        "Ignore the CacheEvictedEvent:{}" +
-                        ",because the cache name do not match:[{}]",
+                    "Cache Name[{}] - ClientId[{}] - onEvicted " +
+                            "- Ignore the CacheEvictedEvent:{}" +
+                            ",because the cache name do not match:[{}]",
                     cacheName,
                     clientId,
                     cacheEvictedEvent,
@@ -163,9 +172,9 @@ class CoherentCache<K, V>(
         if (cacheEvictedEvent.publisherId == clientId) {
             if (log.isDebugEnabled) {
                 log.debug(
-                    "Cache Name[{}] - ClientId[{}] - onEvicted - " +
-                        "Ignore the CacheEvictedEvent:{} " +
-                        "because it is self-published.",
+                    "Cache Name[{}] - ClientId[{}] - onEvicted " +
+                            "- Ignore the CacheEvictedEvent:{} " +
+                            "because it is self-published.",
                     cacheName,
                     clientId,
                     cacheEvictedEvent,
