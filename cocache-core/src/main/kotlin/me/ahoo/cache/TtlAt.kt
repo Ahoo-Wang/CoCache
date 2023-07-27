@@ -56,6 +56,18 @@ interface TtlAt {
         }
 
         /**
+         * Jitter ttl (randomly) to prevent cache avalanche
+         */
+        fun jitter(ttl: Long, amplitude: Long): Long {
+            if (amplitude == 0L) {
+                return ttl
+            }
+            val low = ttl - amplitude
+            val high = ttl + amplitude
+            return (low..high).random()
+        }
+
+        /**
          * 9223372036854775807L.
          */
         const val FOREVER = Long.MAX_VALUE
