@@ -41,7 +41,8 @@ class CoherentCache<K, V>(
     val cacheEvictedEventBus: CacheEvictedEventBus,
     val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
     val keyFilter: KeyFilter = NoOpKeyFilter,
-    val missingGuardTtl: Long = Duration.ofMinutes(10).seconds
+    val missingGuardTtl: Long = Duration.ofMinutes(10).seconds,
+    val missingGuardTtlAmplitude: Long = Duration.ofMinutes(1).seconds
 ) : Cache<K, V>, DistributedClientId, CacheEvictedSubscriber {
     companion object {
         private val log = LoggerFactory.getLogger(CoherentCache::class.java)
@@ -69,7 +70,7 @@ class CoherentCache<K, V>(
 
         //endregion
         if (keyFilter.notExist(cacheKey)) {
-            return missingGuard(missingGuardTtl)
+            return missingGuard(missingGuardTtl, missingGuardTtlAmplitude)
         }
         //region L1
         distributedCaching.getCache(cacheKey)?.let {
@@ -125,7 +126,7 @@ class CoherentCache<K, V>(
              * 1. 穿透到 Db 回源
              **** 缓存空值 ***
              */
-            setCache(cacheKey, missingGuard(missingGuardTtl))
+            setCache(cacheKey, missingGuard(missingGuardTtl, missingGuardTtlAmplitude))
             return null
         }
     }
