@@ -20,6 +20,7 @@ import org.assertj.core.api.AssertionsForInterfaceTypes.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
+import org.springframework.cloud.commons.util.UtilAutoConfiguration
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
 
 internal class CoCacheAutoConfigurationTest {
@@ -35,6 +36,24 @@ internal class CoCacheAutoConfigurationTest {
                     .hasSingleBean(RedisMessageListenerContainer::class.java)
                     .hasSingleBean(CacheEvictedEventBus::class.java)
                     .hasSingleBean(CacheManager::class.java)
+            }
+    }
+
+    @Test
+    fun contextLoadsWithCloud() {
+        contextRunner
+            .withUserConfiguration(
+                UtilAutoConfiguration::class.java,
+                RedisAutoConfiguration::class.java,
+                CoCacheAutoConfiguration::class.java
+            )
+            .run { context ->
+                assertThat(context)
+                    .hasSingleBean(ClientIdGenerator::class.java)
+                    .hasSingleBean(RedisMessageListenerContainer::class.java)
+                    .hasSingleBean(CacheEvictedEventBus::class.java)
+                    .hasSingleBean(CacheManager::class.java)
+                context.getBean(ClientIdGenerator::class.java).generate()
             }
     }
 }
