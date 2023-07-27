@@ -32,6 +32,12 @@ class TtlTest {
     }
 
     @Test
+    fun atWithAmplitude() {
+        val ttlAt = TtlAt.at(10, 10)
+        assertThat(ttlAt, greaterThan(CacheSecondClock.INSTANCE.currentTime()))
+    }
+
+    @Test
     fun jitterZero() {
         val jitterTtlAt = TtlAt.jitter(60, 0)
         assertThat(jitterTtlAt, equalTo(60))
