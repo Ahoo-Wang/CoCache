@@ -53,12 +53,22 @@ class CoherentCache<K, V>(
             return null
         }
         if (cacheValue.isExpired) {
+            if (log.isDebugEnabled) {
+                log.debug(
+                    "Cache Name[{}] - ClientId[{}] - get[{}] - CacheValue is expired:[{}]",
+                    cacheName,
+                    clientId,
+                    key,
+                    cacheValue
+                )
+            }
             clientSideCaching.evict(keyConverter.asKey(key))
             return null
         }
         return cacheValue.value
     }
 
+    @Suppress("ReturnCount")
     private fun getL2Cache(cacheKey: String): CacheValue<V>? {
         //region L2
         var cacheValue = clientSideCaching.getCache(cacheKey)
@@ -72,6 +82,14 @@ class CoherentCache<K, V>(
         //region L1
         cacheValue = distributedCaching.getCache(cacheKey)
         if (null != cacheValue) {
+            if (log.isDebugEnabled) {
+                log.debug(
+                    "Cache Name[{}] - ClientId[{}] - get[{}] - set Client Cache.",
+                    cacheName,
+                    clientId,
+                    cacheKey
+                )
+            }
             clientSideCaching.setCache(cacheKey, cacheValue)
             return cacheValue
         }
@@ -79,11 +97,13 @@ class CoherentCache<K, V>(
         return null
     }
 
+    @Suppress("ReturnCount")
     override fun getCache(key: K): CacheValue<V>? {
         val cacheKey = keyConverter.asKey(key)
-        var cacheValue = getL2Cache(cacheKey)
-        if (null != cacheValue) {
-            return cacheValue
+        getL2Cache(cacheKey)?.let {
+            if (it.isExpired.not()) {
+                return it
+            }
         }
 
         /*
@@ -93,20 +113,22 @@ class CoherentCache<K, V>(
          *** 应用级锁控制并发回源 ***
          */
         synchronized(this) {
-            cacheValue = getL2Cache(cacheKey)
-            if (null != cacheValue) {
-                return cacheValue
+            getL2Cache(cacheKey)?.let {
+                if (it.isExpired.not()) {
+                    return it
+                }
             }
+
             //region L0:Cache Source
             /*
              * This is a heavy-duty operation.
              */
-            val sourceCache = cacheSource.load(key)
-            if (null != sourceCache) {
-                setCache(cacheKey, sourceCache)
+            cacheSource.load(key)?.let {
+                setCache(cacheKey, it)
                 cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
-                return sourceCache
+                return it
             }
+
             //endregion
             /*
              *** Fix 缓存穿透 ***
@@ -146,8 +168,8 @@ class CoherentCache<K, V>(
             if (log.isDebugEnabled) {
                 log.debug(
                     "Cache Name[{}] - ClientId[{}] - onEvicted - " +
-                        "Ignore the CacheEvictedEvent:{}" +
-                        ",because the cache name do not match:[{}]",
+                            "Ignore the CacheEvictedEvent:{}" +
+                            ",because the cache name do not match:[{}]",
                     cacheName,
                     clientId,
                     cacheEvictedEvent,
@@ -161,8 +183,8 @@ class CoherentCache<K, V>(
             if (log.isDebugEnabled) {
                 log.debug(
                     "Cache Name[{}] - ClientId[{}] - onEvicted - " +
-                        "Ignore the CacheEvictedEvent:{} " +
-                        "because it is self-published.",
+                            "Ignore the CacheEvictedEvent:{} " +
+                            "because it is self-published.",
                     cacheName,
                     clientId,
                     cacheEvictedEvent,
