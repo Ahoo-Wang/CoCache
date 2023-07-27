@@ -15,6 +15,7 @@ package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.consistency.CacheEvictedEventBus
+import me.ahoo.cache.util.ClientIdGenerator
 import org.assertj.core.api.AssertionsForInterfaceTypes.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
@@ -30,6 +31,7 @@ internal class CoCacheAutoConfigurationTest {
             .withUserConfiguration(RedisAutoConfiguration::class.java, CoCacheAutoConfiguration::class.java)
             .run { context ->
                 assertThat(context)
+                    .hasSingleBean(ClientIdGenerator::class.java)
                     .hasSingleBean(RedisMessageListenerContainer::class.java)
                     .hasSingleBean(CacheEvictedEventBus::class.java)
                     .hasSingleBean(CacheManager::class.java)
