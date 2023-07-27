@@ -22,10 +22,10 @@ import me.ahoo.cache.distributed.mock.MockDistributedCache
 import me.ahoo.cache.example.model.User
 import me.ahoo.cache.spring.redis.RedisDistributedCache
 import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor
+import me.ahoo.cache.util.ClientIdGenerator
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.data.redis.core.StringRedisTemplate
-import java.util.*
 
 /**
  * AppConfig.
@@ -38,9 +38,10 @@ class AppConfig {
     fun userCache(
         redisTemplate: StringRedisTemplate,
         cacheManager: CacheManager,
-        objectMapper: ObjectMapper
+        objectMapper: ObjectMapper,
+        clientIdGenerator: ClientIdGenerator
     ): CoherentCache<String, User> {
-        val clientId = UUID.randomUUID().toString()
+        val clientId = clientIdGenerator.generate()
         val codecExecutor = ObjectToJsonCodecExecutor(
             User::class.java,
             redisTemplate,
@@ -59,9 +60,9 @@ class AppConfig {
     }
 
     @Bean("mockCache")
-    fun mockCache(cacheManager: CacheManager): CoherentCache<String, String> {
+    fun mockCache(cacheManager: CacheManager, clientIdGenerator: ClientIdGenerator): CoherentCache<String, String> {
         val distributedCaching = MockDistributedCache<String>()
-        val clientId = UUID.randomUUID().toString()
+        val clientId = clientIdGenerator.generate()
         return cacheManager.getOrCreateCache(
             CacheConfig(
                 cacheName = "userCache",

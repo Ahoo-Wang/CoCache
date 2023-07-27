@@ -20,14 +20,9 @@ import org.junit.jupiter.api.Test
 class HostClientIdGeneratorTest {
 
     @Test
-    fun getCurrentProcessId() {
-        assertThat(HostClientIdGenerator.currentProcessId, greaterThan(0L))
-    }
-
-    @Test
     fun generate() {
-        val id1 = HostClientIdGenerator.generate()
-        val id2 = HostClientIdGenerator.generate()
+        val id1 = HostClientIdGenerator.DEFAULT.generate()
+        val id2 = HostClientIdGenerator.DEFAULT.generate()
         assertThat(id1, not(equalTo(id2)))
     }
 }

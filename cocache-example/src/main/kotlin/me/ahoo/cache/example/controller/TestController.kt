@@ -14,13 +14,13 @@ package me.ahoo.cache.example.controller
 
 import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.example.model.User
-import me.ahoo.cosid.IdGenerator
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import java.util.UUID
 
 /**
  * TestController .
@@ -30,7 +30,6 @@ import org.springframework.web.bind.annotation.RestController
 @RestController
 @RequestMapping("test")
 class TestController(
-    private val idGenerator: IdGenerator,
     @param:Qualifier("userCache")
     private val userCaching: CoherentCache<String, User>
 ) {
@@ -42,7 +41,7 @@ class TestController(
 
     @PostMapping
     fun set(): String {
-        val user = User(idGenerator.generateAsString(), idGenerator.generateAsString())
+        val user = User(UUID.randomUUID().toString(), UUID.randomUUID().toString())
         userCaching[user.id] = user
         return user.id
     }
