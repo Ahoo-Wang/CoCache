@@ -51,10 +51,6 @@ interface TtlAt {
             return FOREVER == ttlAt
         }
 
-        fun at(ttl: Long): Long {
-            return CacheSecondClock.INSTANCE.currentTime() + ttl
-        }
-
         /**
          * Jitter ttl (randomly) to prevent cache avalanche
          */
@@ -65,6 +61,11 @@ interface TtlAt {
             val low = ttl - amplitude
             val high = ttl + amplitude
             return (low..high).random()
+        }
+
+        fun at(ttl: Long, amplitude: Long = 0): Long {
+            val jitteredTtl = jitter(ttl, amplitude)
+            return CacheSecondClock.INSTANCE.currentTime() + jitteredTtl
         }
 
         /**
