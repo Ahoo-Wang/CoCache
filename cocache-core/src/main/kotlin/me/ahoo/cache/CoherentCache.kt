@@ -47,43 +47,54 @@ class CoherentCache<K, V>(
         private val log = LoggerFactory.getLogger(CoherentCache::class.java)
     }
 
+    @Suppress("ReturnCount")
     override fun get(key: K): V? {
         val cacheValue = getCache(key) ?: return null
         if (cacheValue.isMissingGuard) {
             return null
         }
-        if (cacheValue.isExpired) {
-            clientSideCaching.evict(keyConverter.asKey(key))
-            return null
-        }
         return cacheValue.value
     }
 
+    @Suppress("ReturnCount")
     private fun getL2Cache(cacheKey: String): CacheValue<V>? {
         //region L2
-        var cacheValue = clientSideCaching.getCache(cacheKey)
-        if (null != cacheValue) {
-            return cacheValue
+        clientSideCaching.getCache(cacheKey)?.let {
+            if (it.isExpired.not()) {
+                return it
+            } else {
+                clientSideCaching.evict(cacheKey)
+            }
         }
+
         //endregion
         if (keyFilter.notExist(cacheKey)) {
             return missingGuard(missingGuardTtl)
         }
         //region L1
-        cacheValue = distributedCaching.getCache(cacheKey)
-        if (null != cacheValue) {
-            clientSideCaching.setCache(cacheKey, cacheValue)
-            return cacheValue
+        distributedCaching.getCache(cacheKey)?.let {
+            if (it.isExpired.not()) {
+                if (log.isDebugEnabled) {
+                    log.debug(
+                        "Cache Name[{}] - ClientId[{}] - get[{}] - set Client Cache.",
+                        cacheName,
+                        clientId,
+                        cacheKey
+                    )
+                }
+                clientSideCaching.setCache(cacheKey, it)
+                return it
+            }
         }
         //endregion
         return null
     }
 
+    @Suppress("ReturnCount")
     override fun getCache(key: K): CacheValue<V>? {
         val cacheKey = keyConverter.asKey(key)
-        var cacheValue = getL2Cache(cacheKey)
-        if (null != cacheValue) {
-            return cacheValue
+        getL2Cache(cacheKey)?.let {
+            return it
         }
 
         /*
@@ -93,20 +104,20 @@ class CoherentCache<K, V>(
          *** 应用级锁控制并发回源 ***
          */
         synchronized(this) {
-            cacheValue = getL2Cache(cacheKey)
-            if (null != cacheValue) {
-                return cacheValue
+            getL2Cache(cacheKey)?.let {
+                return it
             }
+
             //region L0:Cache Source
             /*
              * This is a heavy-duty operation.
              */
-            val sourceCache = cacheSource.load(key)
-            if (null != sourceCache) {
-                setCache(cacheKey, sourceCache)
+            cacheSource.load(key)?.let {
+                setCache(cacheKey, it)
                 cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
-                return sourceCache
+                return it
             }
+
             //endregion
             /*
              *** Fix 缓存穿透 ***

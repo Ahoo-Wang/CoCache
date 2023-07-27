@@ -14,6 +14,7 @@
 package me.ahoo.cache.test
 
 import me.ahoo.cache.Cache
+import me.ahoo.cache.CacheSource
 import me.ahoo.cache.CacheValue
 import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.client.ClientSideCache
@@ -29,6 +30,9 @@ import org.junit.jupiter.api.Test
 import java.util.*
 
 abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
+    companion object {
+        private val CACHE_SOURCE_VALUE = ThreadLocal<CacheValue<*>>()
+    }
 
     private lateinit var keyConverter: KeyConverter<K>
     private lateinit var clientCaching: ClientSideCache<V>
@@ -37,6 +41,12 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     private lateinit var coherentCache: CoherentCache<K, V>
     protected lateinit var cacheName: String
     protected val clientId: String = UUID.randomUUID().toString()
+
+    private val cacheSource = object : CacheSource<K, V> {
+        override fun load(key: K): CacheValue<V>? {
+            return CACHE_SOURCE_VALUE.get() as CacheValue<V>?
+        }
+    }
 
     @BeforeEach
     override fun setup() {
@@ -53,6 +63,7 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
             distributedCaching,
             clientCaching,
             cacheEvictedEventBus,
+            cacheSource = cacheSource
         )
         super.setup()
     }
@@ -64,6 +75,15 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     protected abstract fun createCacheName(): String
     override fun createCache(): Cache<K, V> {
         return coherentCache
+    }
+
+    @Test
+    fun getFromCacheSource() {
+        val (key, value) = createCacheEntry()
+        val cacheValue = CacheValue.forever(value)
+        CACHE_SOURCE_VALUE.set(cacheValue)
+        assertThat(coherentCache[key], equalTo(value))
+        CACHE_SOURCE_VALUE.remove()
     }
 
     @Test
