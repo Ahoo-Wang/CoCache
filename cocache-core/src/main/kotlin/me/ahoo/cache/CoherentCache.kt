@@ -53,19 +53,6 @@ class CoherentCache<K, V>(
         if (cacheValue.isMissingGuard) {
             return null
         }
-        if (cacheValue.isExpired) {
-            if (log.isDebugEnabled) {
-                log.debug(
-                    "Cache Name[{}] - ClientId[{}] - get[{}] - CacheValue is expired:[{}]",
-                    cacheName,
-                    clientId,
-                    key,
-                    cacheValue
-                )
-            }
-            clientSideCaching.evict(keyConverter.asKey(key))
-            return null
-        }
         return cacheValue.value
     }
 
@@ -75,6 +62,8 @@ class CoherentCache<K, V>(
         clientSideCaching.getCache(cacheKey)?.let {
             if (it.isExpired.not()) {
                 return it
+            } else {
+                clientSideCaching.evict(cacheKey)
             }
         }
 
