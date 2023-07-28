@@ -13,9 +13,12 @@
 package me.ahoo.cache.example.config
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.google.common.cache.CacheBuilder
 import me.ahoo.cache.CacheConfig
 import me.ahoo.cache.CacheManager
+import me.ahoo.cache.CacheValue
 import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.client.GuavaClientSideCache
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.mock.MockDistributedCache
@@ -26,6 +29,7 @@ import me.ahoo.cache.util.ClientIdGenerator
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.data.redis.core.StringRedisTemplate
+import java.time.Duration
 
 /**
  * AppConfig.
@@ -49,12 +53,19 @@ class AppConfig {
         )
 
         val distributedCaching: DistributedCache<User> = RedisDistributedCache(redisTemplate, codecExecutor)
+
         return cacheManager.getOrCreateCache(
             CacheConfig(
                 cacheName = "userCache",
                 clientId = clientId,
                 keyConverter = ToStringKeyConverter(User.CACHE_KEY_PREFIX),
                 distributedCaching = distributedCaching,
+                clientSideCaching = CacheBuilder
+                    .newBuilder()
+                    .expireAfterAccess(Duration.ofHours(1))
+                    .build<String, CacheValue<User>>().let {
+                        GuavaClientSideCache(it)
+                    }
             ),
         )
     }

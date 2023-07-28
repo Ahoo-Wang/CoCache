@@ -13,7 +13,8 @@
 
 package me.ahoo.cache.util
 
-import java.net.InetAddress
+import me.ahoo.cosid.machine.LocalHostAddressSupplier
+import me.ahoo.cosid.util.ProcessId
 import java.util.concurrent.atomic.AtomicLong
 
 interface ClientIdGenerator {
@@ -37,7 +38,7 @@ object UUIDClientIdGenerator : ClientIdGenerator {
 class HostClientIdGenerator(private val hostProvider: () -> String) : ClientIdGenerator {
     companion object {
         @JvmStatic
-        val DEFAULT = HostClientIdGenerator { InetAddress.getLocalHost().hostAddress }
+        val DEFAULT = HostClientIdGenerator { LocalHostAddressSupplier.INSTANCE.hostAddress }
     }
 
     private val counter = AtomicLong()
@@ -46,6 +47,6 @@ class HostClientIdGenerator(private val hostProvider: () -> String) : ClientIdGe
     }
 
     override fun generate(): String {
-        return "${counter.getAndIncrement()}:${ProcessId.current}@$host"
+        return "${counter.getAndIncrement()}:${ProcessId.CURRENT.processId}@$host"
     }
 }
