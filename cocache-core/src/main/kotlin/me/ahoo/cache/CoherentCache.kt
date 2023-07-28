@@ -49,15 +49,6 @@ class CoherentCache<K, V>(
     }
 
     @Suppress("ReturnCount")
-    override fun get(key: K): V? {
-        val cacheValue = getCache(key) ?: return null
-        if (cacheValue.isMissingGuard) {
-            return null
-        }
-        return cacheValue.value
-    }
-
-    @Suppress("ReturnCount")
     private fun getL2Cache(cacheKey: String): CacheValue<V>? {
         //region L2
         clientSideCaching.getCache(cacheKey)?.let {
@@ -120,6 +111,15 @@ class CoherentCache<K, V>(
             }
 
             //endregion
+            if (log.isDebugEnabled) {
+                log.debug(
+                    "Cache Name[{}] - ClientId[{}] - getCache[{}] " +
+                        "- Set missing guard,because no cache source was found.",
+                    cacheName,
+                    clientId,
+                    cacheKey
+                )
+            }
             /*
              *** Fix 缓存穿透 ***
              * 0. Db 不存在该记录
@@ -157,8 +157,8 @@ class CoherentCache<K, V>(
         if (cacheEvictedEvent.cacheName != cacheName) {
             if (log.isDebugEnabled) {
                 log.debug(
-                    "Cache Name[{}] - ClientId[{}] - onEvicted - " +
-                        "Ignore the CacheEvictedEvent:{}" +
+                    "Cache Name[{}] - ClientId[{}] - onEvicted " +
+                        "- Ignore the CacheEvictedEvent:{}" +
                         ",because the cache name do not match:[{}]",
                     cacheName,
                     clientId,
@@ -172,8 +172,8 @@ class CoherentCache<K, V>(
         if (cacheEvictedEvent.publisherId == clientId) {
             if (log.isDebugEnabled) {
                 log.debug(
-                    "Cache Name[{}] - ClientId[{}] - onEvicted - " +
-                        "Ignore the CacheEvictedEvent:{} " +
+                    "Cache Name[{}] - ClientId[{}] - onEvicted " +
+                        "- Ignore the CacheEvictedEvent:{} " +
                         "because it is self-published.",
                     cacheName,
                     clientId,
