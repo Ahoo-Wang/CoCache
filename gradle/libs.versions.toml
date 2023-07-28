@@ -2,6 +2,7 @@
 # libraries
 springBoot = "3.1.2"
 springCloud = "2022.0.4"
+cosid = "2.2.6"
 guava = "32.1.1-jre"
 springDoc = "2.1.0"
 hamcrest = "2.2"
@@ -16,6 +17,7 @@ detektFormatting = "1.23.0"
 [libraries]
 springBootDependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "springBoot" }
 springCloudDependencies = { module = "org.springframework.cloud:spring-cloud-dependencies", version.ref = "springCloud" }
+cosidBom = { module = "me.ahoo.cosid:cosid-bom", version.ref = "cosid" }
 guava = { module = "com.google.guava:guava", version.ref = "guava" }
 springDocStarterWebfluxUi = { module = "org.springdoc:springdoc-openapi-starter-webflux-ui", version.ref = "springDoc" }
 hamcrest = { module = "org.hamcrest:hamcrest", version.ref = "hamcrest" }
