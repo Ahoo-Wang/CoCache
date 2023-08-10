@@ -41,7 +41,7 @@ internal class SimpleJoinCachingTest {
         Assertions.assertNotNull(joinValue)
         Assertions.assertEquals(order, joinValue!!.firstValue)
         Assertions.assertEquals(order.id, joinValue.joinKey)
-        Assertions.assertEquals(orderAddress, joinValue.joinValue)
+        Assertions.assertEquals(orderAddress, joinValue.secondValue)
     }
 
     data class Order(val id: String)
