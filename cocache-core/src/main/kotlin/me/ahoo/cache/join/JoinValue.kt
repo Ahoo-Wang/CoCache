@@ -5,4 +5,4 @@ package me.ahoo.cache.join
  *
  * @author ahoo wang
  */
-data class JoinValue<V1, K2, V2>(val firstValue: V1, val joinKey: K2, val joinValue: V2?)
+data class JoinValue<V1, K2, V2>(val firstValue: V1, val joinKey: K2, val secondValue: V2?)

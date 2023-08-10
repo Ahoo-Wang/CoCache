@@ -19,3 +19,9 @@ Level 2 Distributed Coherence Cache Framework
 <p align="center" style="text-align:center">
   <img src="document/CoCache-Get-Sequence-Diagram.svg" alt="CoCache-Get-Sequence-Diagram"/>
 </p>
+
+## JoinCache `Get` Sequence Diagram
+
+<p align="center" style="text-align:center">
+  <img src="document/JoinCache.svg" alt="JoinCache-Get-Sequence-Diagram"/>
+</p>

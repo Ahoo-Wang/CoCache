@@ -1,0 +1,27 @@
+@startuml
+
+!include layout.puml
+
+title
+JoinCache
+__Sequence Diagram__
+end title
+
+actor User
+participant JoinCache
+participant FirstCache
+participant ExtractJoinKey
+participant SecondCache
+
+User++
+
+User -> JoinCache++ : get(key)
+JoinCache -> FirstCache++: get(key)
+JoinCache <-- FirstCache--: firstValue
+JoinCache -> ExtractJoinKey++ : extract(firstValue)
+JoinCache <-- ExtractJoinKey-- : joinKey
+JoinCache -> SecondCache++ : get(joinKey)
+JoinCache <-- SecondCache-- : secondValue
+User <-- JoinCache : JoinValue
+
+@enduml
