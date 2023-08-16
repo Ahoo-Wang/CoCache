@@ -2,7 +2,7 @@
 # libraries
 springBoot = "3.1.2"
 springCloud = "2022.0.4"
-cosid = "2.4.0"
+cosid = "2.5.0"
 guava = "32.1.2-jre"
 springDoc = "2.2.0"
 hamcrest = "2.2"
