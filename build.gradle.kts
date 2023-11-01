@@ -81,8 +81,9 @@ configure(libraryProjects) {
         withJavadocJar()
         withSourcesJar()
     }
-    apply<KotlinPlatformJvmPlugin>()
-    configure<KotlinJvmProjectExtension>() {
+    apply(plugin = "org.jetbrains.kotlin.jvm")
+//    apply<KotlinPlatformJvmPlugin>()
+    configure<KotlinJvmProjectExtension> {
         jvmToolchain {
             languageVersion.set(JavaLanguageVersion.of(17))
         }
