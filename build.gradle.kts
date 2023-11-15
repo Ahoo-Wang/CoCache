@@ -95,6 +95,9 @@ configure(libraryProjects) {
     }
     tasks.withType<Test> {
         useJUnitPlatform()
+        testLogging {
+            exceptionFormat = TestExceptionFormat.FULL
+        }
         // fix logging missing code for JacocoPlugin
         jvmArgs = listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logback.xml")
     }
