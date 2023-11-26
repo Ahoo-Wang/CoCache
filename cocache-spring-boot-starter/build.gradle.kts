@@ -17,7 +17,6 @@ dependencies {
     api(project(":cocache-spring-redis"))
     api("org.springframework.boot:spring-boot-starter")
     "actuatorSupportImplementation"("org.springframework.boot:spring-boot-starter-actuator")
-    "cloudSupportImplementation"("org.springframework.cloud:spring-cloud-commons")
     kapt("org.springframework.boot:spring-boot-configuration-processor")
     kapt("org.springframework.boot:spring-boot-autoconfigure-processor")
     testImplementation("com.google.guava:guava")
