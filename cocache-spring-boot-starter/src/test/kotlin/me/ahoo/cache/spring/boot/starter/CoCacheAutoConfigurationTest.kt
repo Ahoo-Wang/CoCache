@@ -16,11 +16,12 @@ package me.ahoo.cache.spring.boot.starter
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.util.ClientIdGenerator
+import me.ahoo.cosid.machine.HostAddressSupplier
+import me.ahoo.cosid.machine.LocalHostAddressSupplier
 import org.assertj.core.api.AssertionsForInterfaceTypes.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
-import org.springframework.cloud.commons.util.UtilAutoConfiguration
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
 
 internal class CoCacheAutoConfigurationTest {
@@ -42,8 +43,8 @@ internal class CoCacheAutoConfigurationTest {
     @Test
     fun contextLoadsWithCloud() {
         contextRunner
+            .withBean(HostAddressSupplier::class.java, { LocalHostAddressSupplier.INSTANCE })
             .withUserConfiguration(
-                UtilAutoConfiguration::class.java,
                 RedisAutoConfiguration::class.java,
                 CoCacheAutoConfiguration::class.java
             )

@@ -17,6 +17,7 @@ import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus
 import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.cache.util.HostClientIdGenerator
+import me.ahoo.cosid.machine.HostAddressSupplier
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -24,7 +25,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate
 import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
 import org.springframework.boot.context.properties.EnableConfigurationProperties
-import org.springframework.cloud.commons.util.InetUtils
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.data.redis.connection.RedisConnectionFactory
@@ -37,15 +37,14 @@ import org.springframework.data.redis.listener.RedisMessageListenerContainer
  * @author ahoo wang
  */
 @AutoConfiguration(
-    after = [RedisAutoConfiguration::class],
-    afterName = ["org.springframework.cloud.commons.util.UtilAutoConfiguration"]
+    after = [RedisAutoConfiguration::class]
 )
 @ConditionalOnCoCacheEnabled
 @EnableConfigurationProperties(CoCacheProperties::class)
 class CoCacheAutoConfiguration {
 
     @Bean
-    @ConditionalOnMissingBean(value = [ClientIdGenerator::class, InetUtils::class])
+    @ConditionalOnMissingBean(value = [ClientIdGenerator::class, HostAddressSupplier::class])
     fun defaultHostClientIdGenerator(): ClientIdGenerator {
         return ClientIdGenerator.HOST
     }
@@ -77,13 +76,13 @@ class CoCacheAutoConfiguration {
     }
 
     @Configuration
-    @ConditionalOnClass(InetUtils::class)
-    class CloudUtilAutoConfiguration {
+    @ConditionalOnClass(HostAddressSupplier::class)
+    class CosIdHostAddressSupplierAutoConfiguration {
         @Bean
-        @ConditionalOnBean(InetUtils::class)
-        fun inetUtilsHostClientIdGenerator(inetUtils: InetUtils): ClientIdGenerator {
+        @ConditionalOnBean(HostAddressSupplier::class)
+        fun inetUtilsHostClientIdGenerator(hostAddressSupplier: HostAddressSupplier): ClientIdGenerator {
             return HostClientIdGenerator {
-                inetUtils.findFirstNonLoopbackHostInfo().ipAddress
+                hostAddressSupplier.hostAddress
             }
         }
     }
