@@ -28,30 +28,32 @@ class ObjectToHashCodecExecutor<V>(
     private val redisTemplate: StringRedisTemplate
 ) : AbstractCodecExecutor<V, Map<String, String>>() {
 
-    override fun getRawValue(key: String): Map<String, String>? {
-        return redisTemplate.opsForHash<String, String>().entries(key)
+    override fun CacheValue<V>.toRawValue(): Map<String, String> {
+        if (isMissingGuard) {
+            return mapOf(MissingGuard.STRING_VALUE to CacheSecondClock.INSTANCE.currentTime().toString())
+        }
+        return mapConverter.asMap(value)
     }
 
-    override fun setMissingGuard(key: String) {
-        redisTemplate.opsForHash<String, String>()
-            .put(key, MissingGuard.STRING_VALUE, CacheSecondClock.INSTANCE.currentTime().toString())
+    override fun getRawValue(key: String): Map<String, String> {
+        return redisTemplate.opsForHash<String, String>().entries(key)
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<V>) {
         redisTemplate.executePipelined { connection ->
             connection as StringRedisConnection
             connection.del(key)
-            connection.hMSet(key, mapConverter.asMap(cacheValue.value))
+            connection.hMSet(key, cacheValue.toRawValue())
             connection.expire(key, cacheValue.expiredDuration.seconds)
             null
         }
     }
 
-    override fun setForeverValue(key: String, value: V) {
+    override fun setForeverValue(key: String, cacheValue: CacheValue<V>) {
         redisTemplate.executePipelined { connection ->
             connection as StringRedisConnection
             connection.del(key)
-            connection.hMSet(key, mapConverter.asMap(value))
+            connection.hMSet(key, cacheValue.toRawValue())
             null
         }
     }

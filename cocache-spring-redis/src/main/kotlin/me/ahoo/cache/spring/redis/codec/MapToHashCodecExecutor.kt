@@ -26,6 +26,13 @@ import org.springframework.data.redis.core.StringRedisTemplate
 class MapToHashCodecExecutor(private val redisTemplate: StringRedisTemplate) :
     AbstractCodecExecutor<Map<String, String>, Map<String, String>>() {
 
+    override fun CacheValue<Map<String, String>>.toRawValue(): Map<String, String> {
+        if (isMissingGuard) {
+            return mapOf(MissingGuard.STRING_VALUE to CacheSecondClock.INSTANCE.currentTime().toString())
+        }
+        return value
+    }
+
     override fun getRawValue(key: String): Map<String, String>? {
         return redisTemplate.opsForHash<String, String>().entries(key)
     }
@@ -38,16 +45,11 @@ class MapToHashCodecExecutor(private val redisTemplate: StringRedisTemplate) :
         return rawValue
     }
 
-    override fun setMissingGuard(key: String) {
-        redisTemplate.opsForHash<String, String>()
-            .put(key, MissingGuard.STRING_VALUE, CacheSecondClock.INSTANCE.currentTime().toString())
-    }
-
-    override fun setForeverValue(key: String, value: Map<String, String>) {
+    override fun setForeverValue(key: String, cacheValue: CacheValue<Map<String, String>>) {
         redisTemplate.executePipelined { connection ->
             connection as StringRedisConnection
             connection.del(key)
-            connection.hMSet(key, value)
+            connection.hMSet(key, cacheValue.toRawValue())
             null
         }
     }
@@ -56,7 +58,7 @@ class MapToHashCodecExecutor(private val redisTemplate: StringRedisTemplate) :
         redisTemplate.executePipelined { connection ->
             connection as StringRedisConnection
             connection.del(key)
-            connection.hMSet(key, cacheValue.value)
+            connection.hMSet(key, cacheValue.toRawValue())
             connection.expire(key, cacheValue.expiredDuration.seconds)
             null
         }

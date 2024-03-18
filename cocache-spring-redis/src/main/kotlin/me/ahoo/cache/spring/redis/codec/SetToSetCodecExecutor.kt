@@ -25,6 +25,15 @@ import org.springframework.data.redis.core.StringRedisTemplate
 class SetToSetCodecExecutor(private val redisTemplate: StringRedisTemplate) :
     AbstractCodecExecutor<Set<String>, Set<String>>() {
 
+    private val missingGuard: Set<String> = setOf(MissingGuard.STRING_VALUE)
+
+    override fun CacheValue<Set<String>>.toRawValue(): Set<String> {
+        if (isMissingGuard) {
+            return missingGuard
+        }
+        return value
+    }
+
     override fun isMissingGuard(rawValue: Set<String>): Boolean {
         return CacheValue.isMissingGuard(rawValue)
     }
@@ -37,15 +46,11 @@ class SetToSetCodecExecutor(private val redisTemplate: StringRedisTemplate) :
         return rawValue
     }
 
-    override fun setMissingGuard(key: String) {
-        redisTemplate.opsForSet().add(key, MissingGuard.STRING_VALUE)
-    }
-
-    override fun setForeverValue(key: String, value: Set<String>) {
+    override fun setForeverValue(key: String, cacheValue: CacheValue<Set<String>>) {
         redisTemplate.executePipelined { connection ->
             connection as StringRedisConnection
             connection.del(key)
-            connection.sAdd(key, *value.toTypedArray())
+            connection.sAdd(key, *cacheValue.toRawValue().toTypedArray())
             null
         }
     }
@@ -54,7 +59,7 @@ class SetToSetCodecExecutor(private val redisTemplate: StringRedisTemplate) :
         redisTemplate.executePipelined { connection ->
             connection as StringRedisConnection
             connection.del(key)
-            connection.sAdd(key, *cacheValue.value.toTypedArray())
+            connection.sAdd(key, *cacheValue.toRawValue().toTypedArray())
             connection.expire(key, cacheValue.expiredDuration.seconds)
             null
         }

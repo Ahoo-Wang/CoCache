@@ -77,4 +77,13 @@ abstract class CodecExecutorSpec<V> {
         val actual = codecExecutor.executeAndDecode(key, TtlAt.FOREVER)
         assertThat(actual, Matchers.equalTo(value))
     }
+
+    @Test
+    fun executeAndEncodeMissingWithTtlAt() {
+        val key = "executeAndDecodeWhenMissingTtl:" + UUID.randomUUID().toString()
+        val value = CacheValue.missingGuard<CacheValue<V>>(100)
+        codecExecutor.executeAndEncode(key, value)
+        val actual = codecExecutor.executeAndDecode(key, 100)
+        assertThat(actual, Matchers.equalTo(value))
+    }
 }

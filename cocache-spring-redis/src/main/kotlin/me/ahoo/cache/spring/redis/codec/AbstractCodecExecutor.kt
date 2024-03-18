@@ -17,10 +17,12 @@ import me.ahoo.cache.CacheValue
 
 abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
 
+    abstract fun CacheValue<V>.toRawValue(): RAW_VALUE
+
     override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V> {
-        val rawValue = getRawValue(key) ?: return CacheValue.missingGuard()
+        val rawValue = getRawValue(key) ?: return CacheValue.missingGuard(ttlAt)
         return if (isMissingGuard(rawValue)) {
-            CacheValue.missingGuard()
+            CacheValue.missingGuard(ttlAt)
         } else {
             val value = decode(rawValue)
             CacheValue(
@@ -36,13 +38,11 @@ abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
 
     override fun executeAndEncode(key: String, cacheValue: CacheValue<V>) {
         when {
-            cacheValue.isMissingGuard -> setMissingGuard(key)
-            cacheValue.isForever -> setForeverValue(key, cacheValue.value)
+            cacheValue.isForever -> setForeverValue(key, cacheValue)
             else -> setValueWithTtlAt(key, cacheValue)
         }
     }
 
-    protected abstract fun setMissingGuard(key: String)
-    protected abstract fun setForeverValue(key: String, value: V)
+    protected abstract fun setForeverValue(key: String, cacheValue: CacheValue<V>)
     protected abstract fun setValueWithTtlAt(key: String, cacheValue: CacheValue<V>)
 }
