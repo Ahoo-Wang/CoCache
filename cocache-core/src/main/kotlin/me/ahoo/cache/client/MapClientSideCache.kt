@@ -13,8 +13,6 @@
 package me.ahoo.cache.client
 
 import me.ahoo.cache.CacheValue
-import me.ahoo.cache.CacheValue.Companion.missingGuard
-import me.ahoo.cache.CacheValue.Companion.missingGuardValue
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -32,10 +30,6 @@ class MapClientSideCache<V>(
 
     override fun setCache(key: String, value: CacheValue<V>) {
         if (value.isExpired) {
-            return
-        }
-        if (missingGuardValue<Any>() == value.value) {
-            cacheMap[key] = missingGuard()
             return
         }
         cacheMap[key] = value
