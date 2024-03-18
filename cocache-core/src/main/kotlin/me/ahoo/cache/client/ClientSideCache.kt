@@ -22,11 +22,11 @@ import me.ahoo.cache.Cache
 interface ClientSideCache<V> : Cache<String, V> {
     override fun get(key: String): V? {
         val cacheValue = getCache(key) ?: return null
-        if (cacheValue.isMissingGuard) {
-            return null
-        }
         if (cacheValue.isExpired) {
             evict(key)
+            return null
+        }
+        if (cacheValue.isMissingGuard) {
             return null
         }
         return cacheValue.value
