@@ -23,6 +23,14 @@ import org.springframework.data.redis.core.StringRedisTemplate
  */
 class StringToStringCodecExecutor(private val redisTemplate: StringRedisTemplate) :
     AbstractCodecExecutor<String, String>() {
+
+    override fun CacheValue<String>.toRawValue(): String {
+        if (isMissingGuard) {
+            return MissingGuard.STRING_VALUE
+        }
+        return value
+    }
+
     override fun isMissingGuard(rawValue: String): Boolean {
         return CacheValue.isMissingGuard(rawValue)
     }
@@ -35,15 +43,11 @@ class StringToStringCodecExecutor(private val redisTemplate: StringRedisTemplate
         return rawValue
     }
 
-    override fun setMissingGuard(key: String) {
-        redisTemplate.opsForValue()[key] = MissingGuard.STRING_VALUE
-    }
-
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<String>) {
-        redisTemplate.opsForValue().set(key, cacheValue.value, cacheValue.expiredDuration)
+        redisTemplate.opsForValue().set(key, cacheValue.toRawValue(), cacheValue.expiredDuration)
     }
 
-    override fun setForeverValue(key: String, value: String) {
-        redisTemplate.opsForValue()[key] = value
+    override fun setForeverValue(key: String, cacheValue: CacheValue<String>) {
+        redisTemplate.opsForValue()[key] = cacheValue.toRawValue()
     }
 }

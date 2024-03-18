@@ -28,6 +28,13 @@ class ObjectToJsonCodecExecutor<V>(
     private val objectMapper: ObjectMapper
 ) : AbstractCodecExecutor<V, String>() {
 
+    override fun CacheValue<V>.toRawValue(): String {
+        if (isMissingGuard) {
+            return MissingGuard.STRING_VALUE
+        }
+        return objectMapper.writeValueAsString(value)
+    }
+
     override fun isMissingGuard(rawValue: String): Boolean {
         return CacheValue.isMissingGuard(rawValue)
     }
@@ -40,16 +47,11 @@ class ObjectToJsonCodecExecutor<V>(
         return objectMapper.readValue(rawValue, valueType)
     }
 
-    override fun setMissingGuard(key: String) {
-        redisTemplate.opsForValue()[key] = MissingGuard.STRING_VALUE
-    }
-
-    override fun setForeverValue(key: String, value: V) {
-        redisTemplate.opsForValue()[key] = objectMapper.writeValueAsString(value)
+    override fun setForeverValue(key: String, cacheValue: CacheValue<V>) {
+        redisTemplate.opsForValue()[key] = cacheValue.toRawValue()
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<V>) {
-        val encodedValue = objectMapper.writeValueAsString(cacheValue.value)
-        redisTemplate.opsForValue().set(key, encodedValue, cacheValue.expiredDuration)
+        redisTemplate.opsForValue().set(key, cacheValue.toRawValue(), cacheValue.expiredDuration)
     }
 }

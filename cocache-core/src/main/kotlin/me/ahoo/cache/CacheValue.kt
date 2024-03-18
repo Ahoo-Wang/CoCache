@@ -62,6 +62,9 @@ data class CacheValue<V>(
 
         @JvmStatic
         fun <V : CacheValue<*>> missingGuard(ttl: Long, amplitude: Long = 0): V {
+            if (TtlAt.isForever(ttl)) {
+                return missingGuard()
+            }
             val ttlAt = TtlAt.at(ttl, amplitude)
             @Suppress("UNCHECKED_CAST")
             return CacheValue(MissingGuard, ttlAt) as V
