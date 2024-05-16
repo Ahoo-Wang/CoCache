@@ -5,7 +5,7 @@ cosid = "2.8.0"
 guava = "33.2.0-jre"
 springDoc = "2.5.0"
 hamcrest = "2.2"
-mockk = "1.13.10"
+mockk = "1.13.11"
 # plugins
 detekt = "1.23.6"
 dokka = "1.9.20"
