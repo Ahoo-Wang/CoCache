@@ -1,6 +1,6 @@
 [versions]
 # libraries
-springBoot = "3.2.5"
+springBoot = "3.2.6"
 cosid = "2.8.1"
 guava = "33.2.0-jre"
 springDoc = "2.5.0"
