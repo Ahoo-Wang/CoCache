@@ -34,7 +34,7 @@ implementation 'me.ahoo.cocache:cocache-spring-boot-starter'
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>${coapi.version}</version>
+    <version>${cocache.version}</version>
 </dependency>
 ```
 
