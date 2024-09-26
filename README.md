@@ -40,7 +40,60 @@ implementation 'me.ahoo.cocache:cocache-spring-boot-starter'
 
 ## Usage
 
+```mermaid
+classDiagram
+direction BT
+class Cache~K, V~ {
+<<Interface>>
+  + getCache(K) CacheValue~V~?
+  + set(K, Long, V) Unit
+  + set(K, V) Unit
+  + set(K, Long, V) Unit
+  + get(K) V?
+  + getTtlAt(K) Long?
+  + set(K, V) Unit
+  + setCache(K, CacheValue~V~) Unit
+  + get(K) V?
+  + getTtlAt(K) Long?
+  + evict(K) Unit
+}
+class CacheGetter~K, V~ {
+<<Interface>>
+  + get(K) V?
+}
+class CacheSource~K, V~ {
+<<Interface>>
+  + load(K) CacheValue~V~?
+  + noOp() CacheSource~K, V~
+}
+class UserCache {
+  + set(String, UserData) Unit
+  + setCache(String, CacheValue~UserData~) Unit
+  + getCache(String) CacheValue~UserData~?
+  + evict(String) Unit
+  + get(String) UserData?
+  + getTtlAt(String) Long?
+  + set(String, Long, UserData) Unit
+}
+class UserCacheAutoConfiguration {
+  + userCache(CacheSource~String, UserData~, StringRedisTemplate, CacheManager, ClientIdGenerator) UserCache
+  + userCacheSource(UserClient) CacheSource~String, UserData~
+}
+class UserCacheSource {
+  + load(String) CacheValue~UserData~?
+}
+
+Cache~K, V~  -->  CacheGetter~K, V~ 
+UserCache  ..>  Cache~K, V~ 
+UserCacheSource  ..>  CacheSource~K, V~ 
+
+```
+
 ```kotlin
+
+class UserCache(private val delegate: Cache<String, UserData>) :
+    Cache<String, UserData> by delegate
+
 @AutoConfiguration
 class UserCacheAutoConfiguration {
     companion object {
