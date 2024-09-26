@@ -45,15 +45,15 @@ classDiagram
 direction BT
 class Cache~K, V~ {
 <<Interface>>
+  + set(K, Long, V) Unit
   + getCache(K) CacheValue~V~?
   + set(K, Long, V) Unit
   + set(K, V) Unit
-  + set(K, Long, V) Unit
+  + get(K) V?
+  + set(K, V) Unit
   + get(K) V?
   + getTtlAt(K) Long?
-  + set(K, V) Unit
   + setCache(K, CacheValue~V~) Unit
-  + get(K) V?
   + getTtlAt(K) Long?
   + evict(K) Unit
 }
@@ -75,10 +75,6 @@ class UserCache {
   + getTtlAt(String) Long?
   + set(String, Long, UserData) Unit
 }
-class UserCacheAutoConfiguration {
-  + userCache(CacheSource~String, UserData~, StringRedisTemplate, CacheManager, ClientIdGenerator) UserCache
-  + userCacheSource(UserClient) CacheSource~String, UserData~
-}
 class UserCacheSource {
   + load(String) CacheValue~UserData~?
 }
@@ -86,7 +82,6 @@ class UserCacheSource {
 Cache~K, V~  -->  CacheGetter~K, V~ 
 UserCache  ..>  Cache~K, V~ 
 UserCacheSource  ..>  CacheSource~K, V~ 
-
 ```
 
 ```kotlin
