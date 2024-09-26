@@ -31,13 +31,8 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.data.redis.core.StringRedisTemplate
 import java.time.Duration
 
-/**
- * AppConfig.
- *
- * @author ahoo wang
- */
 @Configuration
-class AppConfig {
+class CacheConfiguration {
     @Bean("userCache")
     fun userCache(
         redisTemplate: StringRedisTemplate,
