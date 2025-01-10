@@ -12,13 +12,13 @@
  */
 
 dependencies {
-    api(platform(libs.springBootDependencies))
-    api(platform(libs.cosidBom))
+    api(platform(libs.spring.boot.dependencies))
+    api(platform(libs.cosid.bom))
     constraints {
         api(libs.guava)
-        api(libs.springDocStarterWebfluxUi)
+        api(libs.springdoc.openapi.starter.webflux.ui)
         api(libs.hamcrest)
         api(libs.mockk)
-        api(libs.detektFormatting)
+        api(libs.detekt.formatting)
     }
 }
