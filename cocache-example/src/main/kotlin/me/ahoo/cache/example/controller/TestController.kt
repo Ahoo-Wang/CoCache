@@ -13,6 +13,7 @@
 package me.ahoo.cache.example.controller
 
 import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.example.cache.UserCacheProxy
 import me.ahoo.cache.example.model.User
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.web.bind.annotation.GetMapping
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import java.util.PrimitiveIterator
 import java.util.UUID
 
 /**
@@ -31,18 +33,19 @@ import java.util.UUID
 @RequestMapping("test")
 class TestController(
     @param:Qualifier("userCache")
-    private val userCaching: CoherentCache<String, User>
+    private val userCaching: CoherentCache<String, User>,
+    private val userCacheProxy: UserCacheProxy
 ) {
 
     @GetMapping("{id}")
     fun get(@PathVariable id: String): User? {
-        return userCaching[id]
+        return userCacheProxy[id]
     }
 
     @PostMapping("{id}")
     fun set(@PathVariable id: String): String {
         val user = User(id, UUID.randomUUID().toString())
-        userCaching[user.id] = user
+        userCacheProxy[user.id] = user
         return user.id
     }
 }

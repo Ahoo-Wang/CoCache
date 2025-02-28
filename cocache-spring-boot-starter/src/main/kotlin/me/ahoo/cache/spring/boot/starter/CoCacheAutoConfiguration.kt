@@ -12,8 +12,11 @@
  */
 package me.ahoo.cache.spring.boot.starter
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.consistency.CacheEvictedEventBus
+import me.ahoo.cache.proxy.CacheProxyFactory
+import me.ahoo.cache.spring.proxy.DefaultCacheProxyFactory
 import me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus
 import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.cache.util.HostClientIdGenerator
@@ -73,6 +76,21 @@ class CoCacheAutoConfiguration {
     @ConditionalOnMissingBean
     fun cacheManager(cacheEvictedEventBus: CacheEvictedEventBus): CacheManager {
         return CacheManager(cacheEvictedEventBus)
+    }
+
+    @Bean
+    fun cacheProxyFactory(
+        cacheManager: CacheManager,
+        redisTemplate: StringRedisTemplate,
+        clientIdGenerator: ClientIdGenerator,
+        jsonSerializer: ObjectMapper
+    ): CacheProxyFactory {
+        return DefaultCacheProxyFactory(
+            cacheManager = cacheManager,
+            redisTemplate = redisTemplate,
+            clientIdGenerator = clientIdGenerator,
+            jsonSerializer = jsonSerializer
+        )
     }
 
     @Configuration

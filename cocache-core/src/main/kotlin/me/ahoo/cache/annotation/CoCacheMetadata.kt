@@ -10,22 +10,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.example
 
-import me.ahoo.cache.example.cache.UserCacheProxy
-import me.ahoo.cache.spring.EnableCoCache
-import org.springframework.boot.autoconfigure.SpringBootApplication
-import org.springframework.boot.runApplication
+package me.ahoo.cache.annotation
 
-/**
- * AppServer.
- *
- * @author ahoo wang
- */
-@EnableCoCache(caches = [UserCacheProxy::class])
-@SpringBootApplication
-class AppServer
+import me.ahoo.cache.NamedCache
+import kotlin.reflect.KClass
 
-fun main(args: Array<String>) {
-    runApplication<AppServer>(*args)
+data class CoCacheMetadata(
+    val type: KClass<*>,
+    val name: String,
+    val prefix: String,
+    val valueType: KClass<*>
+) : NamedCache {
+    override val cacheName: String = name.ifBlank {
+        type.simpleName!!
+    }
 }
