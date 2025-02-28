@@ -10,22 +10,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.example
 
-import me.ahoo.cache.example.cache.UserCacheProxy
-import me.ahoo.cache.spring.EnableCoCache
-import org.springframework.boot.autoconfigure.SpringBootApplication
-import org.springframework.boot.runApplication
+package me.ahoo.cache.annotation
 
-/**
- * AppServer.
- *
- * @author ahoo wang
- */
-@EnableCoCache(caches = [UserCacheProxy::class])
-@SpringBootApplication
-class AppServer
+import java.lang.annotation.Inherited
 
-fun main(args: Array<String>) {
-    runApplication<AppServer>(*args)
-}
+@Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
+@Inherited
+@MustBeDocumented
+annotation class CoCache(
+    val name: String = "",
+    val prefix: String = ""
+)
