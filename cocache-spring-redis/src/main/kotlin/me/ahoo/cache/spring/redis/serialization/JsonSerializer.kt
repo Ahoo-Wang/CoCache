@@ -10,15 +10,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.api.annotation.CoCache
-import org.springframework.boot.context.properties.ConfigurationProperties
+package me.ahoo.cache.spring.redis.serialization
 
-/**
- * CoCache Properties .
- *
- * @author ahoo wang
- */
-@ConfigurationProperties(prefix = CoCache.COCACHE)
-data class CoCacheProperties(val enabled: Boolean = true)
+import com.fasterxml.jackson.annotation.JsonAutoDetect
+import com.fasterxml.jackson.annotation.PropertyAccessor
+import com.fasterxml.jackson.core.JsonParser
+import com.fasterxml.jackson.databind.DeserializationFeature
+import com.fasterxml.jackson.databind.ObjectMapper
+
+object JsonSerializer : ObjectMapper() {
+
+    init {
+        setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY)
+        configure(JsonParser.Feature.IGNORE_UNDEFINED, true)
+        disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+        findAndRegisterModules()
+    }
+}

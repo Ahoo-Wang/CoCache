@@ -14,6 +14,7 @@
 package me.ahoo.cache.annotation
 
 import me.ahoo.cache.Cache
+import me.ahoo.cache.api.annotation.CoCache
 import kotlin.reflect.KClass
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.full.isSubclassOf

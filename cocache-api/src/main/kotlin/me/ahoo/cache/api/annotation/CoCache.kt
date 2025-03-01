@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.annotation
+package me.ahoo.cache.api.annotation
 
 import java.lang.annotation.Inherited
 
@@ -21,4 +21,8 @@ import java.lang.annotation.Inherited
 annotation class CoCache(
     val name: String = "",
     val prefix: String = ""
-)
+) {
+    companion object {
+        const val COCACHE = "cocache"
+    }
+}

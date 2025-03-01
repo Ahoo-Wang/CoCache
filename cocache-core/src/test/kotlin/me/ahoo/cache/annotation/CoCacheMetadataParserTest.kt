@@ -1,6 +1,7 @@
 package me.ahoo.cache.annotation
 
 import me.ahoo.cache.Cache
+import me.ahoo.cache.api.annotation.CoCache
 import org.hamcrest.CoreMatchers.equalTo
 import org.hamcrest.MatcherAssert.assertThat
 import org.junit.jupiter.api.Assertions

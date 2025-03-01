@@ -12,7 +12,7 @@
  */
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.CoCache
+import me.ahoo.cache.api.annotation.CoCache
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 
 /**

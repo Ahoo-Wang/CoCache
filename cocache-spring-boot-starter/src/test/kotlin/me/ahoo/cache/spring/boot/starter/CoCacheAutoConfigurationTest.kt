@@ -15,6 +15,7 @@ package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.consistency.CacheEvictedEventBus
+import me.ahoo.cache.example.cache.UserCacheProxy
 import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.cosid.machine.HostAddressSupplier
 import me.ahoo.cosid.machine.LocalHostAddressSupplier
@@ -30,13 +31,18 @@ internal class CoCacheAutoConfigurationTest {
     @Test
     fun contextLoads() {
         contextRunner
-            .withUserConfiguration(RedisAutoConfiguration::class.java, CoCacheAutoConfiguration::class.java)
+            .withUserConfiguration(
+                RedisAutoConfiguration::class.java,
+                CoCacheAutoConfiguration::class.java,
+                EnableCoCacheConfiguration::class.java
+            )
             .run { context ->
                 assertThat(context)
                     .hasSingleBean(ClientIdGenerator::class.java)
                     .hasSingleBean(RedisMessageListenerContainer::class.java)
                     .hasSingleBean(CacheEvictedEventBus::class.java)
                     .hasSingleBean(CacheManager::class.java)
+                    .hasSingleBean(UserCacheProxy::class.java)
             }
     }
 

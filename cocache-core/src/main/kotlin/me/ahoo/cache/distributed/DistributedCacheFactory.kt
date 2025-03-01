@@ -10,15 +10,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.api.annotation.CoCache
-import org.springframework.boot.context.properties.ConfigurationProperties
+package me.ahoo.cache.distributed
 
-/**
- * CoCache Properties .
- *
- * @author ahoo wang
- */
-@ConfigurationProperties(prefix = CoCache.COCACHE)
-data class CoCacheProperties(val enabled: Boolean = true)
+import me.ahoo.cache.annotation.CoCacheMetadata
+
+@FunctionalInterface
+interface DistributedCacheFactory {
+    fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V>
+}

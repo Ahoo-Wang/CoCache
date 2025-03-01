@@ -15,8 +15,8 @@ package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.CacheValue
-import me.ahoo.cache.CoCache
 import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.spring.boot.starter.CoCacheEndpoint.CacheReport.Companion.asReport
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint

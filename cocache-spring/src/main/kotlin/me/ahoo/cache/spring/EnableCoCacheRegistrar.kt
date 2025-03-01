@@ -16,18 +16,25 @@ package me.ahoo.cache.spring
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.annotation.toCoCacheMetadata
 import me.ahoo.cache.spring.proxy.CacheProxyFactoryBean
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.support.BeanDefinitionBuilder
 import org.springframework.beans.factory.support.BeanDefinitionRegistry
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar
 import org.springframework.core.type.AnnotationMetadata
 
 class EnableCoCacheRegistrar : ImportBeanDefinitionRegistrar {
+    companion object {
+        private val log = LoggerFactory.getLogger(EnableCoCacheRegistrar::class.java)
+    }
 
     override fun registerBeanDefinitions(importingClassMetadata: AnnotationMetadata, registry: BeanDefinitionRegistry) {
         val cacheMetadataList = resolveCacheMetadataList(importingClassMetadata)
         cacheMetadataList.forEach { cacheMetadata ->
             val beanDefinitionBuilder = BeanDefinitionBuilder.genericBeanDefinition(CacheProxyFactoryBean::class.java)
             beanDefinitionBuilder.addConstructorArgValue(cacheMetadata)
+            if (log.isInfoEnabled) {
+                log.info("Register cache proxy bean definition:{}.", cacheMetadata)
+            }
             registry.registerBeanDefinition(cacheMetadata.cacheName, beanDefinitionBuilder.beanDefinition)
         }
     }

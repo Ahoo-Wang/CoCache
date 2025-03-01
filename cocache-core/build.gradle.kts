@@ -1,4 +1,5 @@
 dependencies {
+    api(project(":cocache-api"))
     api("me.ahoo.cosid:cosid-core")
     implementation(kotlin("reflect"))
     implementation("com.google.guava:guava")

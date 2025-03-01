@@ -14,6 +14,7 @@ java {
 }
 dependencies {
     kapt(platform(project(":cocache-dependencies")))
+    api(project(":cocache-spring"))
     api(project(":cocache-spring-redis"))
     api("org.springframework.boot:spring-boot-starter")
     "actuatorSupportImplementation"("org.springframework.boot:spring-boot-starter-actuator")
@@ -22,5 +23,6 @@ dependencies {
     testImplementation("com.google.guava:guava")
     testImplementation("org.springframework.boot:spring-boot-starter-data-redis")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation(project(":cocache-example"))
 }
 

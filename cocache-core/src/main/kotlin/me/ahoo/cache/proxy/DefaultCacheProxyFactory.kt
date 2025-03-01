@@ -11,47 +11,32 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.spring.proxy
+package me.ahoo.cache.proxy
 
-import com.fasterxml.jackson.databind.ObjectMapper
 import me.ahoo.cache.Cache
 import me.ahoo.cache.CacheConfig
 import me.ahoo.cache.CacheManager
-import me.ahoo.cache.CacheSource
-import me.ahoo.cache.CoCache
 import me.ahoo.cache.NamedCache
 import me.ahoo.cache.annotation.CoCacheMetadata
+import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
-import me.ahoo.cache.proxy.CacheProxyFactory
-import me.ahoo.cache.proxy.CoCacheInvocationHandler
-import me.ahoo.cache.spring.redis.RedisDistributedCache
-import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor
+import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.util.ClientIdGenerator
-import org.springframework.beans.factory.BeanFactory
-import org.springframework.beans.factory.BeanFactoryAware
-import org.springframework.core.ResolvableType
-import org.springframework.data.redis.core.StringRedisTemplate
 import java.lang.reflect.Proxy
 
 class DefaultCacheProxyFactory(
     private val cacheManager: CacheManager,
-    private val redisTemplate: StringRedisTemplate,
     private val clientIdGenerator: ClientIdGenerator,
-    private val jsonSerializer: ObjectMapper
-) : CacheProxyFactory, BeanFactoryAware {
-    private lateinit var beanFactory: BeanFactory
-    override fun setBeanFactory(beanFactory: BeanFactory) {
-        this.beanFactory = beanFactory
-    }
+    private val distributedCacheFactory: DistributedCacheFactory,
+    private val cacheSourceResolver: CacheSourceResolver
+) : CacheProxyFactory {
 
     @Suppress("UNCHECKED_CAST")
     override fun <CACHE : Cache<*, *>> create(cacheMetadata: CoCacheMetadata): CACHE {
         val clientId = clientIdGenerator.generate()
-        val cacheSource = cacheMetadata.resolveCacheSource()
-        val valueType = cacheMetadata.valueType.java as Class<Any>
-        val codecExecutor = ObjectToJsonCodecExecutor(valueType, redisTemplate, jsonSerializer)
-        val distributedCaching: DistributedCache<Any> = RedisDistributedCache(redisTemplate, codecExecutor)
+        val cacheSource = cacheSourceResolver.resolve<Any>(cacheMetadata)
+        val distributedCaching: DistributedCache<Any> = distributedCacheFactory.create(cacheMetadata)
         val delegate = cacheManager.getOrCreateCache(
             CacheConfig(
                 cacheName = cacheMetadata.cacheName,
@@ -67,18 +52,6 @@ class DefaultCacheProxyFactory(
             arrayOf(cacheMetadata.type.java, NamedCache::class.java),
             invocationHandler
         ) as CACHE
-    }
-
-    private fun CoCacheMetadata.resolveCacheSource(): CacheSource<String, Any> {
-        val cacheSourceType = ResolvableType.forClassWithGenerics(
-            CacheSource::class.java,
-            String::class.java,
-            valueType.java
-        )
-        val cacheSourceProvider = beanFactory.getBeanProvider<CacheSource<String, Any>>(cacheSourceType)
-        return cacheSourceProvider.getIfAvailable {
-            CacheSource.noOp()
-        }
     }
 
     private fun CoCacheMetadata.resolveCacheKeyPrefix(): String {

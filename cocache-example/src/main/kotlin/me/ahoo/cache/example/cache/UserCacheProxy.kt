@@ -14,7 +14,7 @@
 package me.ahoo.cache.example.cache
 
 import me.ahoo.cache.Cache
-import me.ahoo.cache.annotation.CoCache
+import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.example.model.User
 
 @CoCache
