@@ -14,17 +14,7 @@
 package me.ahoo.cache.proxy
 
 import me.ahoo.cache.Cache
-import me.ahoo.cache.NamedCache
-import java.lang.reflect.InvocationHandler
-import java.lang.reflect.Method
+import me.ahoo.cache.api.annotation.CoCache
 
-class CoCacheInvocationHandler<V : Any, DELEGATE>(private val delegate: DELEGATE) :
-    InvocationHandler where DELEGATE : Cache<String, V>, DELEGATE : NamedCache {
-    @Suppress("SpreadOperator")
-    override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
-        if (args == null) {
-            return method.invoke(delegate)
-        }
-        return method.invoke(delegate, *args)
-    }
-}
+@CoCache
+interface MockCache : Cache<String, String>
