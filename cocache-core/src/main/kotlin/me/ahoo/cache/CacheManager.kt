@@ -59,10 +59,10 @@ class CacheManager(private val cacheEvictedEventBus: CacheEvictedEventBus) {
 
 data class CacheConfig<K, V>(
     val cacheName: String,
-    var clientId: String,
-    var keyConverter: KeyConverter<K>,
-    var distributedCaching: DistributedCache<V>,
-    var clientSideCaching: ClientSideCache<V> = MapClientSideCache(),
-    var cacheSource: CacheSource<K, V> = CacheSource.noOp(),
-    var keyFilter: KeyFilter = NoOpKeyFilter
+    val clientId: String,
+    val keyConverter: KeyConverter<K>,
+    val distributedCaching: DistributedCache<V>,
+    val clientSideCaching: ClientSideCache<V> = MapClientSideCache(),
+    val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
+    val keyFilter: KeyFilter = NoOpKeyFilter
 )

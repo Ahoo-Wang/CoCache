@@ -10,15 +10,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.api.annotation.CoCache
-import org.springframework.boot.context.properties.ConfigurationProperties
+import me.ahoo.cache.example.cache.UserCacheProxy
+import me.ahoo.cache.spring.EnableCoCache
+import org.springframework.boot.autoconfigure.SpringBootApplication
 
-/**
- * CoCache Properties .
- *
- * @author ahoo wang
- */
-@ConfigurationProperties(prefix = CoCache.COCACHE)
-data class CoCacheProperties(val enabled: Boolean = true)
+@SpringBootApplication
+@EnableCoCache(
+    caches = [
+        UserCacheProxy::class
+    ]
+)
+class EnableCoCacheConfiguration

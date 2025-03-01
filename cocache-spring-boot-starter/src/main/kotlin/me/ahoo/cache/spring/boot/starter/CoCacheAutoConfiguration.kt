@@ -12,15 +12,19 @@
  */
 package me.ahoo.cache.spring.boot.starter
 
-import com.fasterxml.jackson.databind.ObjectMapper
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.consistency.CacheEvictedEventBus
+import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.proxy.CacheProxyFactory
-import me.ahoo.cache.spring.proxy.DefaultCacheProxyFactory
+import me.ahoo.cache.proxy.CacheSourceResolver
+import me.ahoo.cache.proxy.DefaultCacheProxyFactory
+import me.ahoo.cache.spring.proxy.SpringCacheSourceResolver
 import me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus
+import me.ahoo.cache.spring.redis.RedisDistributedCacheFactory
 import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.cache.util.HostClientIdGenerator
 import me.ahoo.cosid.machine.HostAddressSupplier
+import org.springframework.beans.factory.BeanFactory
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -79,18 +83,26 @@ class CoCacheAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean
+    fun cacheSourceResolver(beanFactory: BeanFactory): CacheSourceResolver {
+        return SpringCacheSourceResolver(beanFactory)
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    fun distributedCacheFactory(redisTemplate: StringRedisTemplate): DistributedCacheFactory {
+        return RedisDistributedCacheFactory(redisTemplate)
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     fun cacheProxyFactory(
         cacheManager: CacheManager,
-        redisTemplate: StringRedisTemplate,
         clientIdGenerator: ClientIdGenerator,
-        jsonSerializer: ObjectMapper
+        distributedCacheFactory: DistributedCacheFactory,
+        cacheSourceResolver: CacheSourceResolver
     ): CacheProxyFactory {
-        return DefaultCacheProxyFactory(
-            cacheManager = cacheManager,
-            redisTemplate = redisTemplate,
-            clientIdGenerator = clientIdGenerator,
-            jsonSerializer = jsonSerializer
-        )
+        return DefaultCacheProxyFactory(cacheManager, clientIdGenerator, distributedCacheFactory, cacheSourceResolver)
     }
 
     @Configuration
