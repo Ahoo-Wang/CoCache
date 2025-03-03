@@ -13,17 +13,8 @@
 
 package me.ahoo.cache.proxy
 
-import me.ahoo.cache.CoherentCache
-import me.ahoo.cache.ComputedCache
-import me.ahoo.cache.api.annotation.CoCache
-import me.ahoo.cache.distributed.DistributedClientId
+import me.ahoo.cache.annotation.CoCacheMetadata
 
-@CoCache
-interface MockCache :
-    ComputedCache<String, String>,
-    CacheDelegated<CoherentCache<String, String>>,
-    DistributedClientId,
-    CacheMetadataCapable
-
-@CoCache(keyPrefix = "prefix:", keyExpression = "#{#root}")
-interface MockCacheWithKeyExpression : ComputedCache<String, String>
+interface CacheMetadataCapable {
+    val cacheMetadata: CoCacheMetadata
+}

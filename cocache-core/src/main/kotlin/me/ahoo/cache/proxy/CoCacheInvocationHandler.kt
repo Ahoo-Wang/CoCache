@@ -13,24 +13,33 @@
 
 package me.ahoo.cache.proxy
 
+import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.NamedCache
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import kotlin.reflect.jvm.javaGetter
 
-class CoCacheInvocationHandler<K, V : Any, DELEGATE>(override val delegate: DELEGATE) :
+class CoCacheInvocationHandler<K, V : Any, DELEGATE>(
+    override val cacheMetadata: CoCacheMetadata,
+    override val delegate: DELEGATE
+) :
     CacheDelegated<DELEGATE>,
+    CacheMetadataCapable,
     InvocationHandler where DELEGATE : Cache<K, V>, DELEGATE : NamedCache {
 
     companion object {
         val DELEGATE_METHOD_SIGN: String = CacheDelegated<*>::delegate.javaGetter!!.name
+        val CACHE_METADATA_METHOD_SIGN: String = CacheMetadataCapable::cacheMetadata.javaGetter!!.name
     }
 
     @Suppress("SpreadOperator", "ReturnCount")
     override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
         if (DELEGATE_METHOD_SIGN == method.name) {
             return delegate
+        }
+        if (CACHE_METADATA_METHOD_SIGN == method.name) {
+            return cacheMetadata
         }
         if (args == null) {
             return method.invoke(delegate)
