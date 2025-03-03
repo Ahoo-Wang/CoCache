@@ -16,10 +16,15 @@ package me.ahoo.cache.spring.souce
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.source.CacheSourceFactory
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
 
 class SpringCacheSourceFactory(private val beanFactory: BeanFactory) : CacheSourceFactory {
+    companion object {
+        private val log = LoggerFactory.getLogger(SpringCacheSourceFactory::class.java)
+    }
+
     @Suppress("UNCHECKED_CAST")
     override fun <K, V> create(cacheMetadata: CoCacheMetadata): CacheSource<K, V> {
         val cacheSourceType = ResolvableType.forClassWithGenerics(
@@ -29,6 +34,12 @@ class SpringCacheSourceFactory(private val beanFactory: BeanFactory) : CacheSour
         )
         val cacheSourceProvider = beanFactory.getBeanProvider<CacheSource<String, Any>>(cacheSourceType)
         return cacheSourceProvider.getIfAvailable {
+            if (log.isWarnEnabled) {
+                log.warn(
+                    "CacheSource not found for {}, use CacheSource.noOp() instead.",
+                    cacheMetadata
+                )
+            }
             CacheSource.noOp()
         } as CacheSource<K, V>
     }
