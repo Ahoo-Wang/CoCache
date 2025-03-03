@@ -16,9 +16,10 @@ package me.ahoo.cache.proxy
 import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.distributed.DistributedClientId
 
 @CoCache
-interface MockCache : ComputedCache<String, String>, CacheDelegated<CoherentCache<String, String>>
+interface MockCache : ComputedCache<String, String>, CacheDelegated<CoherentCache<String, String>>, DistributedClientId
 
 @CoCache(keyPrefix = "prefix:", keyExpression = "#{#root}")
 interface MockCacheWithKeyExpression : ComputedCache<String, String>
