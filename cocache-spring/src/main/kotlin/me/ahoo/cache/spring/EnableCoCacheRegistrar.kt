@@ -32,6 +32,7 @@ class EnableCoCacheRegistrar : ImportBeanDefinitionRegistrar {
         cacheMetadataList.forEach { cacheMetadata ->
             val beanDefinitionBuilder = BeanDefinitionBuilder.genericBeanDefinition(CacheProxyFactoryBean::class.java)
             beanDefinitionBuilder.addConstructorArgValue(cacheMetadata)
+            beanDefinitionBuilder.setPrimary(true)
             if (log.isInfoEnabled) {
                 log.info("Register cache proxy bean definition:{}.", cacheMetadata)
             }
