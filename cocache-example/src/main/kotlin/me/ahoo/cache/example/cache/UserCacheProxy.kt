@@ -13,9 +13,9 @@
 
 package me.ahoo.cache.example.cache
 
-import me.ahoo.cache.Cache
+import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.example.model.User
 
 @CoCache
-interface UserCacheProxy : Cache<String, User>
+interface UserCacheProxy : ComputedCache<String, User>

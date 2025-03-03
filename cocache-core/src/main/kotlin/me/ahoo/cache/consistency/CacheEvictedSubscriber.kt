@@ -12,7 +12,7 @@
  */
 package me.ahoo.cache.consistency
 
-import me.ahoo.cache.NamedCache
+import me.ahoo.cache.api.NamedCache
 
 /**
  * Cache Evicted Subscriber .

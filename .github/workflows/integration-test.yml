@@ -31,7 +31,23 @@ jobs:
 
       - name: Test CoCache-Core
         run: ./gradlew cocache-core:clean cocache-core:check
+  cocache-spring-test:
+    name: CoCache Spring Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@master
 
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          server-id: github
+          settings-path: ${{ github.workspace }}
+
+      - name: Test CoCache-Spring
+        run: ./gradlew cocache-spring:clean cocache-spring:check
   cocache-spring-redis-test:
     name: CoCache Spring Redis Test
     needs: [ cocache-core-test ]

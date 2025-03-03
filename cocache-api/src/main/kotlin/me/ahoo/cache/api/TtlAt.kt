@@ -10,18 +10,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache
+package me.ahoo.cache.api
+
+import java.time.Duration
 
 /**
- * Named Caching .
+ * TtlAt .
  *
  * @author ahoo wang
  */
-interface NamedCache {
+interface TtlAt {
     /**
-     * Return the cache name.
+     * get time to live([java.time.temporal.ChronoUnit.SECONDS]).
      *
-     * @return cache name
+     * @return time to live
      */
-    val cacheName: String
+    val ttlAt: Long
+    val isForever: Boolean
+    val isExpired: Boolean
+    val expiredDuration: Duration
 }

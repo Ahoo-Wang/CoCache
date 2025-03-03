@@ -12,7 +12,7 @@
  */
 package me.ahoo.cache.client
 
-import me.ahoo.cache.CacheValue
+import me.ahoo.cache.api.CacheValue
 import java.util.concurrent.ConcurrentHashMap
 
 /**

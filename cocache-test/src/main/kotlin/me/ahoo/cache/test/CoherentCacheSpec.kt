@@ -13,10 +13,11 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.Cache
-import me.ahoo.cache.CacheSource
-import me.ahoo.cache.CacheValue
 import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.ClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.cache.consistency.CacheEvictedEventBus
@@ -80,7 +81,7 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     @Test
     fun getFromCacheSource() {
         val (key, value) = createCacheEntry()
-        val cacheValue = CacheValue.forever(value)
+        val cacheValue = DefaultCacheValue.forever(value)
         CACHE_SOURCE_VALUE.set(cacheValue)
         assertThat(coherentCache[key], equalTo(value))
         CACHE_SOURCE_VALUE.remove()
@@ -89,7 +90,7 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     @Test
     fun onEvicted() {
         val (key, value) = createCacheEntry()
-        val cacheValue = CacheValue.forever(value)
+        val cacheValue = DefaultCacheValue.forever(value)
         coherentCache.setCache(key, cacheValue)
         val cacheKey = keyConverter.asKey(key)
         val event = CacheEvictedEvent(cacheName, cacheKey, "")
@@ -102,7 +103,7 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     @Test
     fun onEvictedWhenLoop() {
         val (key, value) = createCacheEntry()
-        val cacheValue = CacheValue.forever(value)
+        val cacheValue = DefaultCacheValue.forever(value)
         coherentCache.setCache(key, cacheValue)
         val cacheKey = keyConverter.asKey(key)
         val event = CacheEvictedEvent(cacheName, cacheKey, clientId)
@@ -115,7 +116,7 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     @Test
     fun onEvictedWhenCacheNameNotMatch() {
         val (key, value) = createCacheEntry()
-        val cacheValue = CacheValue.forever(value)
+        val cacheValue = DefaultCacheValue.forever(value)
         coherentCache.setCache(key, cacheValue)
         val cacheKey = keyConverter.asKey(key)
         val event = CacheEvictedEvent(UUID.randomUUID().toString(), cacheKey, "")

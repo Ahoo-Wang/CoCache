@@ -13,8 +13,8 @@
 
 package me.ahoo.cache.proxy
 
-import me.ahoo.cache.CacheSource
 import me.ahoo.cache.annotation.CoCacheMetadata
+import me.ahoo.cache.api.source.CacheSource
 
 @FunctionalInterface
 interface CacheSourceResolver {

@@ -21,32 +21,32 @@ import org.junit.jupiter.api.Test
 class TtlTest {
     @Test
     fun isForever() {
-        val ttlAt = TtlAt.FOREVER
-        assertThat(TtlAt.isForever(ttlAt), equalTo(true))
+        val ttlAt = ComputedTtlAt.FOREVER
+        assertThat(ComputedTtlAt.isForever(ttlAt), equalTo(true))
     }
 
     @Test
     fun at() {
-        val ttlAt = TtlAt.at(10)
+        val ttlAt = ComputedTtlAt.at(10)
         assertThat(ttlAt, greaterThan(CacheSecondClock.INSTANCE.currentTime()))
     }
 
     @Test
     fun atWithAmplitude() {
-        val ttlAt = TtlAt.at(10, 5)
+        val ttlAt = ComputedTtlAt.at(10, 5)
         assertThat(ttlAt, greaterThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 5))
         assertThat(ttlAt, lessThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 15))
     }
 
     @Test
     fun jitterZero() {
-        val jitterTtlAt = TtlAt.jitter(60, 0)
+        val jitterTtlAt = ComputedTtlAt.jitter(60, 0)
         assertThat(jitterTtlAt, equalTo(60))
     }
 
     @Test
     fun jitter() {
-        val jitterTtlAt = TtlAt.jitter(60, 10)
+        val jitterTtlAt = ComputedTtlAt.jitter(60, 10)
         assertThat(jitterTtlAt, greaterThanOrEqualTo(50))
         assertThat(jitterTtlAt, lessThanOrEqualTo(70))
     }

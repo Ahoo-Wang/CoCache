@@ -10,19 +10,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.source
-
-import me.ahoo.cache.CacheSource
-import me.ahoo.cache.CacheValue
+package me.ahoo.cache.api
 
 /**
- * No Op Cache Source .
+ * Cache Value .
  *
  * @author ahoo wang
  */
-object NoOpCacheSource : CacheSource<Any, Any> {
+interface CacheValue<V> : TtlAt {
+    val value: V
 
-    override fun load(key: Any): CacheValue<Any>? {
-        return null
-    }
+    /**
+     * get time to live([java.time.temporal.ChronoUnit.SECONDS]).
+     *
+     * @return time to live (second)
+     */
+    override val ttlAt: Long
+
+    val isMissingGuard: Boolean
 }

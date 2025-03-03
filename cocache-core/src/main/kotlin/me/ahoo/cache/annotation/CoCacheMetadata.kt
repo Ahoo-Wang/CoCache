@@ -13,7 +13,7 @@
 
 package me.ahoo.cache.annotation
 
-import me.ahoo.cache.NamedCache
+import me.ahoo.cache.api.NamedCache
 import kotlin.reflect.KClass
 
 data class CoCacheMetadata(

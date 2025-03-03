@@ -13,8 +13,8 @@
 
 package me.ahoo.cache.proxy
 
-import me.ahoo.cache.Cache
-import me.ahoo.cache.NamedCache
+import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.NamedCache
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 

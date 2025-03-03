@@ -12,7 +12,7 @@
  */
 package me.ahoo.cache.join
 
-import me.ahoo.cache.CacheValue.Companion.forever
+import me.ahoo.cache.DefaultCacheValue.Companion.forever
 import me.ahoo.cache.client.MapClientSideCache
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test

@@ -10,7 +10,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache
+
+import me.ahoo.cache.api.CacheValue
 
 object MissingGuard {
     const val STRING_VALUE = "_nil_"
@@ -24,17 +27,17 @@ object MissingGuard {
  *
  * @author ahoo wang
  */
-data class CacheValue<V>(
-    val value: V,
+data class DefaultCacheValue<V>(
+    override val value: V,
     /**
      * get time to live([java.time.temporal.ChronoUnit.SECONDS]).
      *
      * @return time to live (second)
      */
     override val ttlAt: Long
-) : TtlAt {
+) : CacheValue<V>, ComputedTtlAt {
 
-    val isMissingGuard: Boolean
+    override val isMissingGuard: Boolean
         get() = missingGuardValue<Any>() == value
 
     companion object {
@@ -42,13 +45,13 @@ data class CacheValue<V>(
 
         @JvmStatic
         fun <V> forever(value: V): CacheValue<V> {
-            return CacheValue(value, TtlAt.FOREVER)
+            return DefaultCacheValue(value, ComputedTtlAt.FOREVER)
         }
 
         @JvmStatic
         fun <V> ttlAt(value: V, ttl: Long, amplitude: Long = 0): CacheValue<V> {
-            val ttlAt = TtlAt.at(ttl, amplitude)
-            return CacheValue(value, ttlAt)
+            val ttlAt = ComputedTtlAt.at(ttl, amplitude)
+            return DefaultCacheValue(value, ttlAt)
         }
 
         /**
@@ -62,12 +65,12 @@ data class CacheValue<V>(
 
         @JvmStatic
         fun <V : CacheValue<*>> missingGuard(ttl: Long, amplitude: Long = 0): V {
-            if (TtlAt.isForever(ttl)) {
+            if (ComputedTtlAt.isForever(ttl)) {
                 return missingGuard()
             }
-            val ttlAt = TtlAt.at(ttl, amplitude)
+            val ttlAt = ComputedTtlAt.at(ttl, amplitude)
             @Suppress("UNCHECKED_CAST")
-            return CacheValue(MissingGuard, ttlAt) as V
+            return DefaultCacheValue(MissingGuard, ttlAt) as V
         }
 
         @JvmStatic

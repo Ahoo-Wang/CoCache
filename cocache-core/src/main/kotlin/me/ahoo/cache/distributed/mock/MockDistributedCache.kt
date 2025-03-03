@@ -12,7 +12,7 @@
  */
 package me.ahoo.cache.distributed.mock
 
-import me.ahoo.cache.CacheValue
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.distributed.DistributedCache
 import java.util.concurrent.ConcurrentHashMap
 

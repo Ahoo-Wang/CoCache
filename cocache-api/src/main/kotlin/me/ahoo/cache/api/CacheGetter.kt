@@ -10,19 +10,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.spring.redis.codec
-
-import me.ahoo.cache.api.CacheValue
+package me.ahoo.cache.api
 
 /**
- * Codec Executor .
+ * Cache Getter .
  *
  * @author ahoo wang
  */
-interface CodecExecutor<V> {
+interface CacheGetter<K, V> {
     /**
-     * @param ttlAt time to live([java.time.temporal.ChronoUnit.SECONDS]).
+     * Get the real cache value.
+     *
+     * @param key cache key
+     * @return real cache value
      */
-    fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>
-    fun executeAndEncode(key: String, cacheValue: CacheValue<V>)
+    operator fun get(key: K): V?
 }

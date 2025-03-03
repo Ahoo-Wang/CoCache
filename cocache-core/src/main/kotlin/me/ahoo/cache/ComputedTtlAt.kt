@@ -10,33 +10,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache
 
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.cache.util.CacheSecondClock
 import java.time.Duration
 
-/**
- * TtlAt .
- *
- * @author ahoo wang
- */
-interface TtlAt {
-    /**
-     * get time to live([java.time.temporal.ChronoUnit.SECONDS]).
-     *
-     * @return time to live
-     */
-    val ttlAt: Long
-    val isForever: Boolean
+interface ComputedTtlAt : TtlAt {
+
+    override val isForever: Boolean
         get() = isForever(ttlAt)
-    val isExpired: Boolean
+    override val isExpired: Boolean
         get() = if (isForever) {
             false
         } else {
             CacheSecondClock.INSTANCE.currentTime() > ttlAt
         }
 
-    val expiredDuration: Duration
+    override val expiredDuration: Duration
         get() {
             val currentTime = CacheSecondClock.INSTANCE.currentTime()
             return if (currentTime > ttlAt) {
