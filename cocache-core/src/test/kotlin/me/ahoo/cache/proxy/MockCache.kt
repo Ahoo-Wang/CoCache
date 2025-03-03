@@ -18,3 +18,6 @@ import me.ahoo.cache.api.annotation.CoCache
 
 @CoCache
 interface MockCache : ComputedCache<String, String>
+
+@CoCache(keyPrefix = "prefix:", keyExpression = "#{#root}")
+interface MockCacheWithKeyExpression : ComputedCache<String, String>

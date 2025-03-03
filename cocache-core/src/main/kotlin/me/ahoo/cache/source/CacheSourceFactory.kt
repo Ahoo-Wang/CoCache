@@ -18,5 +18,5 @@ import me.ahoo.cache.api.source.CacheSource
 
 @FunctionalInterface
 interface CacheSourceFactory {
-    fun <V> create(cacheMetadata: CoCacheMetadata): CacheSource<String, V>
+    fun <K, V> create(cacheMetadata: CoCacheMetadata): CacheSource<K, V>
 }

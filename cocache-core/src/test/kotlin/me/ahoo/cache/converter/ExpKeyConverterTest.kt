@@ -26,7 +26,7 @@ internal class ExpKeyConverterTest {
         val prefix = "prefix:"
         val expKeyConverter = ExpKeyConverter<String>(prefix, "#{#root}")
         Assertions.assertEquals(prefix, expKeyConverter.keyPrefix)
-        val actual = expKeyConverter.asKey("asString")
+        val actual = expKeyConverter.toStringKey("asString")
         Assertions.assertEquals(prefix + "asString", actual)
     }
 }

@@ -85,7 +85,7 @@ class CoherentCache<K, V>(
 
     @Suppress("ReturnCount")
     override fun getCache(key: K): CacheValue<V>? {
-        val cacheKey = keyConverter.asKey(key)
+        val cacheKey = keyConverter.toStringKey(key)
         getL2Cache(cacheKey)?.let {
             return it
         }
@@ -141,13 +141,13 @@ class CoherentCache<K, V>(
         if (value.isExpired) {
             return
         }
-        val cacheKey = keyConverter.asKey(key)
+        val cacheKey = keyConverter.toStringKey(key)
         setCache(cacheKey, value)
         cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
     }
 
     override fun evict(key: K) {
-        val cacheKey = keyConverter.asKey(key)
+        val cacheKey = keyConverter.toStringKey(key)
         clientSideCaching.evict(cacheKey)
         distributedCaching.evict(cacheKey)
         cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))

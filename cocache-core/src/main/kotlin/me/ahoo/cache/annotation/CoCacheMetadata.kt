@@ -19,7 +19,8 @@ import kotlin.reflect.KClass
 data class CoCacheMetadata(
     val type: KClass<*>,
     val name: String,
-    val prefix: String,
+    val keyPrefix: String,
+    val keyExpression: String,
     val valueType: KClass<*>
 ) : NamedCache {
     override val cacheName: String = name.ifBlank {
