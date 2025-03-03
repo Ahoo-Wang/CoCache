@@ -11,12 +11,12 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.proxy
+package me.ahoo.cache.source
 
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.source.CacheSource
 
 @FunctionalInterface
-interface CacheSourceResolver {
-    fun <V> resolve(cacheMetadata: CoCacheMetadata): CacheSource<String, V>
+interface CacheSourceFactory {
+    fun <V> create(cacheMetadata: CoCacheMetadata): CacheSource<String, V>
 }

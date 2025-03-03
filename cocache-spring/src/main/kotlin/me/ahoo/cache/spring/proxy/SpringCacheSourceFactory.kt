@@ -15,13 +15,13 @@ package me.ahoo.cache.spring.proxy
 
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.source.CacheSource
-import me.ahoo.cache.proxy.CacheSourceResolver
+import me.ahoo.cache.source.CacheSourceFactory
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
 
-class SpringCacheSourceResolver(private val beanFactory: BeanFactory) : CacheSourceResolver {
+class SpringCacheSourceFactory(private val beanFactory: BeanFactory) : CacheSourceFactory {
     @Suppress("UNCHECKED_CAST")
-    override fun <V> resolve(cacheMetadata: CoCacheMetadata): CacheSource<String, V> {
+    override fun <V> create(cacheMetadata: CoCacheMetadata): CacheSource<String, V> {
         val cacheSourceType = ResolvableType.forClassWithGenerics(
             CacheSource::class.java,
             String::class.java,

@@ -18,9 +18,9 @@ import me.ahoo.cache.client.MapClientSideCacheFactory
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.proxy.CacheProxyFactory
-import me.ahoo.cache.proxy.CacheSourceResolver
 import me.ahoo.cache.proxy.DefaultCacheProxyFactory
-import me.ahoo.cache.spring.proxy.SpringCacheSourceResolver
+import me.ahoo.cache.source.CacheSourceFactory
+import me.ahoo.cache.spring.proxy.SpringCacheSourceFactory
 import me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus
 import me.ahoo.cache.spring.redis.RedisDistributedCacheFactory
 import me.ahoo.cache.util.ClientIdGenerator
@@ -86,8 +86,8 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    fun cacheSourceResolver(beanFactory: BeanFactory): CacheSourceResolver {
-        return SpringCacheSourceResolver(beanFactory)
+    fun cacheSourceFactory(beanFactory: BeanFactory): CacheSourceFactory {
+        return SpringCacheSourceFactory(beanFactory)
     }
 
     @Bean
@@ -109,7 +109,7 @@ class CoCacheAutoConfiguration {
         clientIdGenerator: ClientIdGenerator,
         clientSideCacheFactory: ClientSideCacheFactory,
         distributedCacheFactory: DistributedCacheFactory,
-        cacheSourceResolver: CacheSourceResolver
+        cacheSourceResolver: CacheSourceFactory
     ): CacheProxyFactory {
         return DefaultCacheProxyFactory(
             cacheManager,
