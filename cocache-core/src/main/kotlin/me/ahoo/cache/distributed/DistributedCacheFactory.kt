@@ -15,7 +15,6 @@ package me.ahoo.cache.distributed
 
 import me.ahoo.cache.annotation.CoCacheMetadata
 
-@FunctionalInterface
 interface DistributedCacheFactory {
     fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V>
 }
