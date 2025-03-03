@@ -10,6 +10,7 @@ import me.ahoo.cache.consistency.NoOpCacheEvictedEventBus
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.distributed.mock.MockDistributedCache
+import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.util.ClientIdGenerator
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -23,8 +24,8 @@ class DefaultCacheProxyFactoryTest {
                     return MockDistributedCache()
                 }
             }
-            val cacheSourceResolver = object : CacheSourceResolver {
-                override fun <V> resolve(cacheMetadata: CoCacheMetadata): CacheSource<String, V> {
+            val cacheSourceFactory = object : CacheSourceFactory {
+                override fun <V> create(cacheMetadata: CoCacheMetadata): CacheSource<String, V> {
                     return CacheSource.noOp()
                 }
             }
@@ -33,7 +34,7 @@ class DefaultCacheProxyFactoryTest {
                 clientIdGenerator = ClientIdGenerator.UUID,
                 clientSideCacheFactory = MapClientSideCacheFactory,
                 distributedCacheFactory = distributedCacheFactory,
-                cacheSourceResolver = cacheSourceResolver
+                cacheSourceFactory = cacheSourceFactory
             )
             return cacheProxyFactory.create(coCacheMetadata<MockCache>())
         }

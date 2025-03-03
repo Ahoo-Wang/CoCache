@@ -25,6 +25,7 @@ import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
+import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.util.ClientIdGenerator
 import java.lang.reflect.Proxy
 
@@ -33,13 +34,13 @@ class DefaultCacheProxyFactory(
     private val clientIdGenerator: ClientIdGenerator,
     private val clientSideCacheFactory: ClientSideCacheFactory,
     private val distributedCacheFactory: DistributedCacheFactory,
-    private val cacheSourceResolver: CacheSourceResolver
+    private val cacheSourceFactory: CacheSourceFactory
 ) : CacheProxyFactory {
 
     @Suppress("UNCHECKED_CAST")
     override fun <CACHE : Cache<*, *>> create(cacheMetadata: CoCacheMetadata): CACHE {
         val clientId = clientIdGenerator.generate()
-        val cacheSource = cacheSourceResolver.resolve<Any>(cacheMetadata)
+        val cacheSource = cacheSourceFactory.create<Any>(cacheMetadata)
         val clientSideCaching: ClientSideCache<Any> = clientSideCacheFactory.create(cacheMetadata)
         val distributedCaching: DistributedCache<Any> = distributedCacheFactory.create(cacheMetadata)
         val delegate = cacheManager.getOrCreateCache(
