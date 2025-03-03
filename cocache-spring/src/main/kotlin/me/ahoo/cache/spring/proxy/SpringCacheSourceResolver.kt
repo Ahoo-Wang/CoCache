@@ -13,8 +13,8 @@
 
 package me.ahoo.cache.spring.proxy
 
-import me.ahoo.cache.CacheSource
 import me.ahoo.cache.annotation.CoCacheMetadata
+import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.proxy.CacheSourceResolver
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType

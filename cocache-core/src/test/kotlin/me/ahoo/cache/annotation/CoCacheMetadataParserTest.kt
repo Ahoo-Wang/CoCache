@@ -1,6 +1,7 @@
 package me.ahoo.cache.annotation
 
-import me.ahoo.cache.Cache
+import me.ahoo.cache.ComputedCache
+import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CoCache
 import org.hamcrest.CoreMatchers.equalTo
 import org.hamcrest.MatcherAssert.assertThat
@@ -46,5 +47,5 @@ class CoCacheMetadataParserTest {
 
     interface NotSubclassOfCache
 
-    interface NotCacheAnnotation : Cache<String, CoCacheMetadataParserTest>
+    interface NotCacheAnnotation : ComputedCache<String, CoCacheMetadataParserTest>
 }

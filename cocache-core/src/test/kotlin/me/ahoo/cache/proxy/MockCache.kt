@@ -13,8 +13,8 @@
 
 package me.ahoo.cache.proxy
 
-import me.ahoo.cache.Cache
+import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.api.annotation.CoCache
 
 @CoCache
-interface MockCache : Cache<String, String>
+interface MockCache : ComputedCache<String, String>

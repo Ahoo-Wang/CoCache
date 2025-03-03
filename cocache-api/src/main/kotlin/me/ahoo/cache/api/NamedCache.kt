@@ -10,13 +10,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache
+package me.ahoo.cache.api
 
 /**
- * Cache Getter .
+ * Named Caching .
  *
  * @author ahoo wang
  */
-interface CacheGetter<K, V> {
-    operator fun get(key: K): V?
+interface NamedCache {
+    /**
+     * Return the cache name.
+     *
+     * @return cache name
+     */
+    val cacheName: String
 }

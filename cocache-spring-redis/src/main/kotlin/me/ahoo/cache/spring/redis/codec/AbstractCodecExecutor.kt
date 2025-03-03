@@ -13,19 +13,20 @@
 
 package me.ahoo.cache.spring.redis.codec
 
-import me.ahoo.cache.CacheValue
+import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.api.CacheValue
 
 abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
 
     abstract fun CacheValue<V>.toRawValue(): RAW_VALUE
 
     override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V> {
-        val rawValue = getRawValue(key) ?: return CacheValue.missingGuard(ttlAt)
+        val rawValue = getRawValue(key) ?: return DefaultCacheValue.missingGuard(ttlAt)
         return if (isMissingGuard(rawValue)) {
-            CacheValue.missingGuard(ttlAt)
+            DefaultCacheValue.missingGuard(ttlAt)
         } else {
             val value = decode(rawValue)
-            CacheValue(
+            DefaultCacheValue(
                 value,
                 ttlAt,
             )

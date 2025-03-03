@@ -13,7 +13,8 @@
 
 package me.ahoo.cache.annotation
 
-import me.ahoo.cache.Cache
+import me.ahoo.cache.ComputedCache
+import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CoCache
 import kotlin.reflect.KClass
 import kotlin.reflect.full.findAnnotation
@@ -39,7 +40,7 @@ object CoCacheMetadataParser {
 
         // 获取继承的 Cache<K,V> 中 V 的具体类型
         val superCacheType = cacheType.supertypes.first {
-            it.classifier == Cache::class
+            it.classifier == Cache::class || it.classifier == ComputedCache::class
         }
         val valueType = superCacheType.arguments.last().type?.classifier as? KClass<*>
         requireNotNull(valueType)

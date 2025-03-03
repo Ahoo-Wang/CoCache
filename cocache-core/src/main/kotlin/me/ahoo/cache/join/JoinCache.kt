@@ -1,6 +1,6 @@
 package me.ahoo.cache.join
 
-import me.ahoo.cache.CacheGetter
+import me.ahoo.cache.api.CacheGetter
 
 /**
  * Join Caching.

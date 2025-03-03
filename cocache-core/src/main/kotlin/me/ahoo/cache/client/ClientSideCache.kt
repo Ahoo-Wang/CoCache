@@ -12,14 +12,14 @@
  */
 package me.ahoo.cache.client
 
-import me.ahoo.cache.Cache
+import me.ahoo.cache.ComputedCache
 
 /**
  * Client Side Cache .
  *
  * @author ahoo wang
  */
-interface ClientSideCache<V> : Cache<String, V> {
+interface ClientSideCache<V> : ComputedCache<String, V> {
     override fun get(key: String): V? {
         val cacheValue = getCache(key) ?: return null
         if (cacheValue.isExpired) {

@@ -14,7 +14,7 @@ package me.ahoo.cache.client
 
 import com.google.common.cache.Cache
 import com.google.common.cache.CacheBuilder
-import me.ahoo.cache.CacheValue
+import me.ahoo.cache.api.CacheValue
 
 /**
  * Guava Client Side Cache .

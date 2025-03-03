@@ -13,7 +13,7 @@
 
 package me.ahoo.cache.spring
 
-import me.ahoo.cache.Cache
+import me.ahoo.cache.api.Cache
 import org.springframework.context.annotation.Import
 import kotlin.reflect.KClass
 

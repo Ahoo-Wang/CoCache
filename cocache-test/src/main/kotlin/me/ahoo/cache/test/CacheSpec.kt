@@ -13,9 +13,9 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.Cache
-import me.ahoo.cache.CacheValue
-import me.ahoo.cache.TtlAt
+import me.ahoo.cache.ComputedTtlAt
+import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.api.Cache
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.nullValue
@@ -42,7 +42,7 @@ abstract class CacheSpec<K, V> {
     @Test
     fun getWhenExpired() {
         val (key, value) = createCacheEntry()
-        val ttlAt = TtlAt.at(-5)
+        val ttlAt = ComputedTtlAt.at(-5)
         cache[key, ttlAt] = value
         assertThat(cache[key], nullValue())
         assertThat(cache.getTtlAt(key), nullValue())
@@ -60,7 +60,7 @@ abstract class CacheSpec<K, V> {
     fun setWithTtl() {
         val (key, value) = createCacheEntry()
         assertThat(cache[key], nullValue())
-        val cacheValue = CacheValue.ttlAt(value, 5)
+        val cacheValue = DefaultCacheValue.ttlAt(value, 5)
         cache.setCache(key, cacheValue)
         assertThat(cache[key], equalTo(value))
         assertThat(cache.getTtlAt(key), equalTo(cacheValue.ttlAt))
@@ -70,7 +70,7 @@ abstract class CacheSpec<K, V> {
     fun setWithTtlAmplitude() {
         val (key, value) = createCacheEntry()
         assertThat(cache[key], nullValue())
-        val cacheValue = CacheValue.ttlAt(value, 5, 1)
+        val cacheValue = DefaultCacheValue.ttlAt(value, 5, 1)
         cache.setCache(key, cacheValue)
         assertThat(cache[key], equalTo(value))
         assertThat(cache.getTtlAt(key), equalTo(cacheValue.ttlAt))
@@ -88,7 +88,7 @@ abstract class CacheSpec<K, V> {
     @Test
     fun setMissing() {
         val (key, value) = createCacheEntry()
-        cache[key] = CacheValue.missingGuardValue()
+        cache[key] = DefaultCacheValue.missingGuardValue()
         Assertions.assertNull(cache[key])
         Assertions.assertNull(cache.getTtlAt(key))
     }
@@ -96,7 +96,7 @@ abstract class CacheSpec<K, V> {
     @Test
     fun setMissingTtl() {
         val (key, value) = createCacheEntry()
-        cache.setCache(key, CacheValue.missingGuard(5))
+        cache.setCache(key, DefaultCacheValue.missingGuard(5))
         Assertions.assertNull(cache[key])
         Assertions.assertNull(cache.getTtlAt(key))
     }

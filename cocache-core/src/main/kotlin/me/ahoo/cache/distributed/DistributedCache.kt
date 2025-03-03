@@ -12,11 +12,11 @@
  */
 package me.ahoo.cache.distributed
 
-import me.ahoo.cache.Cache
+import me.ahoo.cache.ComputedCache
 
 /**
  * Distributed Caching .
  *
  * @author ahoo wang
  */
-interface DistributedCache<V> : Cache<String, V>, AutoCloseable
+interface DistributedCache<V> : ComputedCache<String, V>, AutoCloseable

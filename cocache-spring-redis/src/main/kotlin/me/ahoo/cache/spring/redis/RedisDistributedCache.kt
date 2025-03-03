@@ -12,8 +12,8 @@
  */
 package me.ahoo.cache.spring.redis
 
-import me.ahoo.cache.CacheValue
-import me.ahoo.cache.TtlAt
+import me.ahoo.cache.ComputedTtlAt
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.spring.redis.codec.CodecExecutor
 import me.ahoo.cache.util.CacheSecondClock
@@ -39,7 +39,7 @@ class RedisDistributedCache<V>(
             return null
         }
         return if (FOREVER == ttl) {
-            TtlAt.FOREVER
+            ComputedTtlAt.FOREVER
         } else {
             CacheSecondClock.INSTANCE.currentTime() + ttl
         }

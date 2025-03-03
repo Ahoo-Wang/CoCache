@@ -13,16 +13,12 @@
 
 package me.ahoo.cache
 
-import me.ahoo.cache.CacheValue.Companion.forever
-import me.ahoo.cache.CacheValue.Companion.missingGuard
-import me.ahoo.cache.CacheValue.Companion.missingGuardValue
+import me.ahoo.cache.DefaultCacheValue.Companion.forever
+import me.ahoo.cache.DefaultCacheValue.Companion.missingGuard
+import me.ahoo.cache.DefaultCacheValue.Companion.missingGuardValue
+import me.ahoo.cache.api.Cache
 
-/**
- * Cache api.
- *
- * @author ahoo wang
- */
-interface Cache<K, V> : CacheGetter<K, V> {
+interface ComputedCache<K, V> : Cache<K, V> {
     /**
      * Get the real cache value.
      *
@@ -38,8 +34,6 @@ interface Cache<K, V> : CacheGetter<K, V> {
         return cacheValue.value
     }
 
-    fun getCache(key: K): CacheValue<V>?
-
     /**
      * get cache expire at time.
      *
@@ -47,7 +41,7 @@ interface Cache<K, V> : CacheGetter<K, V> {
      * @return when return null:cache not exist.
      */
     @Suppress("ReturnCount")
-    fun getTtlAt(key: K): Long? {
+    override fun getTtlAt(key: K): Long? {
         val cacheValue = getCache(key) ?: return null
         if (cacheValue.isMissingGuard) {
             return null
@@ -55,21 +49,12 @@ interface Cache<K, V> : CacheGetter<K, V> {
         return cacheValue.ttlAt
     }
 
-    operator fun set(key: K, ttlAt: Long, value: V) {
-        setCache(key, CacheValue(value, ttlAt))
+    override operator fun set(key: K, ttlAt: Long, value: V) {
+        setCache(key, DefaultCacheValue(value, ttlAt))
     }
 
-    operator fun set(key: K, value: V) {
+    override operator fun set(key: K, value: V) {
         val cacheValue = if (missingGuardValue<Any>() == value) missingGuard() else forever(value)
         setCache(key, cacheValue)
     }
-
-    fun setCache(key: K, value: CacheValue<V>)
-
-    /**
-     * evict cache.
-     *
-     * @param key cache key
-     */
-    fun evict(key: K)
 }

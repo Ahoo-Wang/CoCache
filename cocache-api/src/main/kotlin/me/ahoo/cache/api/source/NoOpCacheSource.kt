@@ -10,24 +10,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache
+package me.ahoo.cache.api.source
 
-import me.ahoo.cache.source.NoOpCacheSource
+import me.ahoo.cache.api.CacheValue
 
 /**
- * L0
- * Cache Source .
+ * No Op Cache Source .
  *
  * @author ahoo wang
  */
-interface CacheSource<K, V> {
-    fun load(key: K): CacheValue<V>?
+object NoOpCacheSource : CacheSource<Any, Any> {
 
-    companion object {
-        @JvmStatic
-        fun <K, V> noOp(): CacheSource<K, V> {
-            @Suppress("UNCHECKED_CAST")
-            return NoOpCacheSource as CacheSource<K, V>
-        }
+    override fun load(key: Any): CacheValue<Any>? {
+        return null
     }
 }

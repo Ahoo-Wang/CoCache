@@ -12,8 +12,9 @@
  */
 package me.ahoo.cache.spring.redis.codec
 
-import me.ahoo.cache.CacheValue
+import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.MissingGuard
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.util.CacheSecondClock
 import org.springframework.data.redis.connection.StringRedisConnection
 import org.springframework.data.redis.core.StringRedisTemplate
@@ -63,7 +64,7 @@ class ObjectToHashCodecExecutor<V>(
     }
 
     override fun isMissingGuard(rawValue: Map<String, String>): Boolean {
-        return CacheValue.isMissingGuard(rawValue)
+        return DefaultCacheValue.isMissingGuard(rawValue)
     }
 
     interface MapConverter<V> {

@@ -13,6 +13,7 @@
 
 package me.ahoo.cache
 
+import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.ClientSideCache
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEventBus

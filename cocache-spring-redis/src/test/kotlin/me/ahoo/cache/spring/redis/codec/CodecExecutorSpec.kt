@@ -13,8 +13,9 @@
 
 package me.ahoo.cache.spring.redis.codec
 
-import me.ahoo.cache.CacheValue
-import me.ahoo.cache.TtlAt
+import me.ahoo.cache.ComputedTtlAt
+import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.util.CacheSecondClock
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers.*
@@ -53,9 +54,9 @@ abstract class CodecExecutorSpec<V> {
     @Test
     fun executeAndEncode() {
         val key = "executeAndDecode:" + UUID.randomUUID().toString()
-        val value = CacheValue.forever(createCacheValue())
+        val value = DefaultCacheValue.forever(createCacheValue())
         codecExecutor.executeAndEncode(key, value)
-        val actual = codecExecutor.executeAndDecode(key, TtlAt.FOREVER)
+        val actual = codecExecutor.executeAndDecode(key, ComputedTtlAt.FOREVER)
         assertThat(actual, equalTo(value))
     }
 
@@ -63,7 +64,7 @@ abstract class CodecExecutorSpec<V> {
     fun executeAndEncodeWithTtlAt() {
         val key = "executeAndDecode:" + UUID.randomUUID().toString()
         val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 10
-        val value = CacheValue(createCacheValue(), ttlAt)
+        val value = DefaultCacheValue(createCacheValue(), ttlAt)
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, ttlAt)
         assertThat(actual.value, equalTo(value.value))
@@ -73,16 +74,16 @@ abstract class CodecExecutorSpec<V> {
     @Test
     fun executeAndEncodeMissing() {
         val key = "executeAndDecodeWhenMissing:" + UUID.randomUUID().toString()
-        val value = CacheValue.missingGuard<CacheValue<V>>()
+        val value = DefaultCacheValue.missingGuard<CacheValue<V>>()
         codecExecutor.executeAndEncode(key, value)
-        val actual = codecExecutor.executeAndDecode(key, TtlAt.FOREVER)
+        val actual = codecExecutor.executeAndDecode(key, ComputedTtlAt.FOREVER)
         assertThat(actual, equalTo(value))
     }
 
     @Test
     fun executeAndEncodeMissingWithTtlAt() {
         val key = "executeAndDecodeWhenMissingTtl:" + UUID.randomUUID().toString()
-        val value = CacheValue.missingGuard<CacheValue<V>>(100)
+        val value = DefaultCacheValue.missingGuard<CacheValue<V>>(100)
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, 100)
         assertThat(actual.value, equalTo(value.value))

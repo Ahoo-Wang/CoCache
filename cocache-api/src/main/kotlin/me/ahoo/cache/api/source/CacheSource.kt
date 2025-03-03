@@ -10,19 +10,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.spring.redis.codec
+package me.ahoo.cache.api.source
 
 import me.ahoo.cache.api.CacheValue
 
 /**
- * Codec Executor .
+ * L0
+ * Cache Source .
  *
  * @author ahoo wang
  */
-interface CodecExecutor<V> {
-    /**
-     * @param ttlAt time to live([java.time.temporal.ChronoUnit.SECONDS]).
-     */
-    fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>
-    fun executeAndEncode(key: String, cacheValue: CacheValue<V>)
+interface CacheSource<K, V> {
+    fun load(key: K): CacheValue<V>?
+
+    companion object {
+        @JvmStatic
+        fun <K, V> noOp(): CacheSource<K, V> {
+            @Suppress("UNCHECKED_CAST")
+            return NoOpCacheSource as CacheSource<K, V>
+        }
+    }
 }

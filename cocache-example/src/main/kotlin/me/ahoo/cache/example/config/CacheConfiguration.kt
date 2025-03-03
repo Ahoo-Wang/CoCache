@@ -16,7 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.google.common.cache.CacheBuilder
 import me.ahoo.cache.CacheConfig
 import me.ahoo.cache.CacheManager
-import me.ahoo.cache.CacheValue
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.client.GuavaClientSideCache
 import me.ahoo.cache.converter.ToStringKeyConverter
