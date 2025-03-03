@@ -13,12 +13,9 @@
 
 package me.ahoo.cache.proxy
 
-import me.ahoo.cache.CoherentCache
-import me.ahoo.cache.ComputedCache
-import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.NamedCache
 
-@CoCache
-interface MockCache : ComputedCache<String, String>, CacheDelegated<CoherentCache<String, String>>
-
-@CoCache(keyPrefix = "prefix:", keyExpression = "#{#root}")
-interface MockCacheWithKeyExpression : ComputedCache<String, String>
+interface CacheDelegated<DELEGATE> where DELEGATE : Cache<*, *>, DELEGATE : NamedCache {
+    val delegate: DELEGATE
+}
