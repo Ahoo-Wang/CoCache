@@ -47,6 +47,7 @@ class DefaultCacheProxyFactoryTest {
         assertTrue(cache.toString().startsWith(CoherentCache::class.java.name))
         assertEquals(cache.delegate.cacheName, MockCache::class.java.simpleName)
         assertEquals(cache.clientId, cache.delegate.clientId)
+        assertEquals(cache.cacheMetadata, coCacheMetadata<MockCache>())
     }
 
     @Test
