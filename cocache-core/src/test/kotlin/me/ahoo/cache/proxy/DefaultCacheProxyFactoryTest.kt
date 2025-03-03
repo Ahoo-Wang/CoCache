@@ -44,7 +44,7 @@ class DefaultCacheProxyFactoryTest {
     fun create() {
         val cache = createProxyCache<MockCache>()
         assertNull(cache.getCache("key"))
-        assertTrue(cache.toString().startsWith(CoherentCache::class.java.name))
+        assertTrue(cache.toString().startsWith(CoherentCache::class.java.simpleName))
         assertEquals(cache.delegate.cacheName, MockCache::class.java.simpleName)
         assertEquals(cache.clientId, cache.delegate.clientId)
         assertEquals(cache.cacheMetadata, coCacheMetadata<MockCache>())

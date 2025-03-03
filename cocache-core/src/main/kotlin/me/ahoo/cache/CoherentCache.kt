@@ -193,4 +193,8 @@ class CoherentCache<K, V>(
         }
         clientSideCaching.evict(cacheEvictedEvent.key)
     }
+
+    override fun toString(): String {
+        return "CoherentCache(cacheName='$cacheName', clientId='$clientId')"
+    }
 }
