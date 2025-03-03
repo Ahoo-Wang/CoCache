@@ -26,7 +26,8 @@ interface MockDefaultGuavaClientCache : ComputedCache<String, String>
     initialCapacity = 1,
     maximumSize = 2,
     concurrencyLevel = 3,
-    expireAfterAccessNanos = 4,
-    expireAfterWriteNanos = 5
+    maximumWeight = 4,
+    expireAfterAccessNanos = 5,
+    expireAfterWriteNanos = 6
 )
 interface MockCustomizeGuavaClientCache : ComputedCache<String, String>
