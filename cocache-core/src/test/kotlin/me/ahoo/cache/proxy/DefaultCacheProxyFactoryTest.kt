@@ -4,7 +4,6 @@ import me.ahoo.cache.CacheManager
 import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.annotation.coCacheMetadata
-import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCacheFactory
 import me.ahoo.cache.consistency.NoOpCacheEvictedEventBus
@@ -19,7 +18,7 @@ import org.junit.jupiter.api.Test
 class DefaultCacheProxyFactoryTest {
 
     companion object {
-        internal fun createProxyCache(metadata: CoCacheMetadata = coCacheMetadata<MockCache>()): Cache<String, String> {
+        internal fun <CACHE> createProxyCache(metadata: CoCacheMetadata = coCacheMetadata<MockCache>()): CACHE {
             val distributedCacheFactory = object : DistributedCacheFactory {
                 override fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V> {
                     return MockDistributedCache()
@@ -43,15 +42,20 @@ class DefaultCacheProxyFactoryTest {
 
     @Test
     fun create() {
-        val cache = createProxyCache()
+        val cache = createProxyCache<MockCache>()
         assertNull(cache.getCache("key"))
         assertTrue(cache.toString().startsWith(CoherentCache::class.java.name))
+        assertEquals(cache.delegate.cacheName, MockCache::class.java.simpleName)
     }
 
     @Test
     fun createWithKeyExpression() {
         val cache =
-            createProxyCache(metadata = coCacheMetadata<MockCacheWithKeyExpression>().copy(keyExpression = "key"))
+            createProxyCache<MockCacheWithKeyExpression>(
+                metadata = coCacheMetadata<MockCacheWithKeyExpression>().copy(
+                    keyExpression = "key"
+                )
+            )
         assertNull(cache.getCache("key"))
     }
 }
