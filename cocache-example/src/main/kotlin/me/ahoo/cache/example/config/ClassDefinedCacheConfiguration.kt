@@ -32,7 +32,7 @@ import org.springframework.data.redis.core.StringRedisTemplate
 import java.time.Duration
 
 @Configuration
-class CacheConfiguration {
+class ClassDefinedCacheConfiguration {
     @Bean("userCache")
     fun userCache(
         redisTemplate: StringRedisTemplate,

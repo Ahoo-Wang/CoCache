@@ -15,7 +15,7 @@ package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.example.cache.UserCacheProxy
+import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.spring.boot.starter.auto.EnableCoCacheConfiguration
 import me.ahoo.cache.spring.boot.starter.customize.EnableCoCacheConfigurationWithCustomize
 import me.ahoo.cache.util.ClientIdGenerator
@@ -44,9 +44,9 @@ internal class CoCacheAutoConfigurationTest {
                     .hasSingleBean(RedisMessageListenerContainer::class.java)
                     .hasSingleBean(CacheEvictedEventBus::class.java)
                     .hasSingleBean(CacheManager::class.java)
-                    .hasSingleBean(UserCacheProxy::class.java)
+                    .hasSingleBean(UserCache::class.java)
 
-                context.getBean(UserCacheProxy::class.java)
+                context.getBean(UserCache::class.java)
             }
     }
 
@@ -64,9 +64,9 @@ internal class CoCacheAutoConfigurationTest {
                     .hasSingleBean(RedisMessageListenerContainer::class.java)
                     .hasSingleBean(CacheEvictedEventBus::class.java)
                     .hasSingleBean(CacheManager::class.java)
-                    .hasSingleBean(UserCacheProxy::class.java)
+                    .hasSingleBean(UserCache::class.java)
 
-                context.getBean(UserCacheProxy::class.java)
+                context.getBean(UserCache::class.java)
             }
     }
 
