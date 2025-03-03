@@ -27,6 +27,7 @@ import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
+import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.util.ClientIdGenerator
 import java.lang.reflect.Proxy
@@ -62,7 +63,8 @@ class DefaultCacheProxyFactory(
                 cacheMetadata.type.java,
                 ComputedCache::class.java,
                 NamedCache::class.java,
-                CacheDelegated::class.java
+                CacheDelegated::class.java,
+                DistributedClientId::class.java
             ),
             invocationHandler
         ) as CACHE
