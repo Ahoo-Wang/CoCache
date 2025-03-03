@@ -10,24 +10,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.client
 
-import me.ahoo.cache.api.client.ClientSideCache
-import me.ahoo.cache.test.ClientSideCacheSpec
-import java.util.*
+package me.ahoo.cache.api.annotation
+
+import java.lang.annotation.Inherited
 
 /**
- * GuavaClientSideCachingTest .
- *
- * @author ahoo wang
+ * @see me.ahoo.cache.api.client.ClientSideCache
  */
-internal class GuavaClientSideCacheTest : ClientSideCacheSpec<String>() {
-
-    override fun createCache(): ClientSideCache<String> {
-        return GuavaClientSideCache()
-    }
-
-    override fun createCacheEntry(): Pair<String, String> {
-        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
+@Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
+@Inherited
+@MustBeDocumented
+@Suppress("LongParameterList")
+annotation class GuavaCache(
+    val initialCapacity: Int = UNSET_INT,
+    val concurrencyLevel: Int = UNSET_INT,
+    val maximumSize: Long = UNSET_LONG,
+    val maximumWeight: Long = UNSET_LONG,
+    val expireAfterWriteNanos: Long = UNSET_LONG,
+    val expireAfterAccessNanos: Long = UNSET_LONG
+) {
+    companion object {
+        const val UNSET_INT: Int = -1
+        const val UNSET_LONG: Long = -1
     }
 }

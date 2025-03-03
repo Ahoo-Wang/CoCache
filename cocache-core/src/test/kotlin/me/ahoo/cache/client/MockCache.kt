@@ -13,11 +13,20 @@
 
 package me.ahoo.cache.client
 
-import me.ahoo.cache.annotation.CoCacheMetadata
-import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.ComputedCache
+import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.api.annotation.GuavaCache
 
-object GuavaClientSideCacheFactory : ClientSideCacheFactory {
-    override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
-        return GuavaClientSideCache()
-    }
-}
+@CoCache
+@GuavaCache
+interface MockDefaultGuavaClientCache : ComputedCache<String, String>
+
+@CoCache
+@GuavaCache(
+    initialCapacity = 1,
+    maximumSize = 2,
+    concurrencyLevel = 3,
+    expireAfterAccessNanos = 4,
+    expireAfterWriteNanos = 5
+)
+interface MockCustomizeGuavaClientCache : ComputedCache<String, String>

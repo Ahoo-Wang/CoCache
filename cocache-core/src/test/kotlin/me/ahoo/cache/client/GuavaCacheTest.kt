@@ -10,14 +10,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package me.ahoo.cache.client
 
-import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.test.ClientSideCacheSpec
+import java.util.*
 
-object MapClientSideCacheFactory : ClientSideCacheFactory {
-    override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
-        return MapClientSideCache()
+/**
+ * GuavaClientSideCachingTest .
+ *
+ * @author ahoo wang
+ */
+internal class GuavaCacheTest : ClientSideCacheSpec<String>() {
+
+    override fun createCache(): ClientSideCache<String> {
+        return GuavaClientSideCache()
+    }
+
+    override fun createCacheEntry(): Pair<String, String> {
+        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
     }
 }
