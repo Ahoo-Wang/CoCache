@@ -16,7 +16,6 @@ package me.ahoo.cache.source
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.source.CacheSource
 
-@FunctionalInterface
 interface CacheSourceFactory {
     fun <K, V> create(cacheMetadata: CoCacheMetadata): CacheSource<K, V>
 }
