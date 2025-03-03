@@ -17,10 +17,15 @@ import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.client.MapClientSideCacheFactory
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
 
 class SpringClientSideCacheFactory(private val beanFactory: BeanFactory) : ClientSideCacheFactory {
+    companion object {
+        private val log = LoggerFactory.getLogger(SpringClientSideCacheFactory::class.java)
+    }
+
     @Suppress("UNCHECKED_CAST")
     override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
         val clientSideCacheType = ResolvableType.forClassWithGenerics(
@@ -29,6 +34,12 @@ class SpringClientSideCacheFactory(private val beanFactory: BeanFactory) : Clien
         )
         val clientSideCacheProvider = beanFactory.getBeanProvider<ClientSideCache<Any>>(clientSideCacheType)
         return clientSideCacheProvider.getIfAvailable {
+            if (log.isWarnEnabled) {
+                log.warn(
+                    "ClientSideCache not found for {}, use MapClientSideCacheFactory instead.",
+                    cacheMetadata
+                )
+            }
             MapClientSideCacheFactory.create(cacheMetadata)
         } as ClientSideCache<V>
     }

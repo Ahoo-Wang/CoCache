@@ -26,6 +26,10 @@ class RedisDistributedCacheFactory(
     private val beanFactory: BeanFactory,
     private val redisTemplate: StringRedisTemplate
 ) : DistributedCacheFactory {
+    companion object {
+        private val log = org.slf4j.LoggerFactory.getLogger(RedisDistributedCacheFactory::class.java)
+    }
+
     @Suppress("UNCHECKED_CAST")
     override fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V> {
         val valueType = cacheMetadata.valueType.java as Class<V>
@@ -35,6 +39,12 @@ class RedisDistributedCacheFactory(
         )
         val distributedCacheProvider = beanFactory.getBeanProvider<DistributedCache<V>>(distributedCacheType)
         return distributedCacheProvider.getIfAvailable {
+            if (log.isInfoEnabled) {
+                log.info(
+                    "DistributedCache not found for {}, use ObjectToJsonCodecExecutor's RedisDistributedCache instead.",
+                    cacheMetadata
+                )
+            }
             val codecExecutor = ObjectToJsonCodecExecutor(valueType, redisTemplate, JsonSerializer)
             RedisDistributedCache(redisTemplate, codecExecutor)
         }
