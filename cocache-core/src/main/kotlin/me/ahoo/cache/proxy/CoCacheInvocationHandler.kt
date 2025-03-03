@@ -27,7 +27,7 @@ class CoCacheInvocationHandler<K, V : Any, DELEGATE>(override val delegate: DELE
         val DELEGATE_METHOD_SIGN: String = CacheDelegated<*>::delegate.javaGetter!!.name
     }
 
-    @Suppress("SpreadOperator")
+    @Suppress("SpreadOperator", "ReturnCount")
     override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
         if (DELEGATE_METHOD_SIGN == method.name) {
             return delegate
