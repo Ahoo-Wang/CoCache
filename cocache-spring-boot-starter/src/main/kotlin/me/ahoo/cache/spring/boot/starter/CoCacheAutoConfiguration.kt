@@ -98,8 +98,8 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    fun distributedCacheFactory(redisTemplate: StringRedisTemplate): DistributedCacheFactory {
-        return RedisDistributedCacheFactory(redisTemplate)
+    fun distributedCacheFactory(beanFactory: BeanFactory, redisTemplate: StringRedisTemplate): DistributedCacheFactory {
+        return RedisDistributedCacheFactory(beanFactory, redisTemplate)
     }
 
     @Bean

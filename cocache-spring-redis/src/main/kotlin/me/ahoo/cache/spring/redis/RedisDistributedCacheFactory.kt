@@ -18,13 +18,25 @@ import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor
 import me.ahoo.cache.spring.redis.serialization.JsonSerializer
+import org.springframework.beans.factory.BeanFactory
+import org.springframework.core.ResolvableType
 import org.springframework.data.redis.core.StringRedisTemplate
 
-class RedisDistributedCacheFactory(private val redisTemplate: StringRedisTemplate) : DistributedCacheFactory {
+class RedisDistributedCacheFactory(
+    private val beanFactory: BeanFactory,
+    private val redisTemplate: StringRedisTemplate
+) : DistributedCacheFactory {
     @Suppress("UNCHECKED_CAST")
     override fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V> {
         val valueType = cacheMetadata.valueType.java as Class<V>
-        val codecExecutor = ObjectToJsonCodecExecutor(valueType, redisTemplate, JsonSerializer)
-        return RedisDistributedCache(redisTemplate, codecExecutor)
+        val distributedCacheType = ResolvableType.forClassWithGenerics(
+            DistributedCache::class.java,
+            valueType
+        )
+        val distributedCacheProvider = beanFactory.getBeanProvider<DistributedCache<V>>(distributedCacheType)
+        return distributedCacheProvider.getIfAvailable {
+            val codecExecutor = ObjectToJsonCodecExecutor(valueType, redisTemplate, JsonSerializer)
+            RedisDistributedCache(redisTemplate, codecExecutor)
+        }
     }
 }

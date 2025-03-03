@@ -16,6 +16,7 @@ package me.ahoo.cache.spring.boot.starter.customize
 import io.mockk.mockk
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.ComputedClientSideCache
+import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.example.model.User
 import me.ahoo.cache.spring.EnableCoCache
@@ -37,6 +38,11 @@ class EnableCoCacheConfigurationWithCustomize {
 
     @Bean
     fun customizeUserCacheSource(): CacheSource<String, User> {
+        return mockk()
+    }
+
+    @Bean
+    fun customizeDistributedCache(): DistributedCache<User> {
         return mockk()
     }
 }
