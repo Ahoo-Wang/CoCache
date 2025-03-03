@@ -32,9 +32,6 @@ object DefaultClientSideCacheFactory : ClientSideCacheFactory {
         if (guavaCache.maximumSize != GuavaCache.UNSET_LONG) {
             cacheBuilder.maximumSize(guavaCache.maximumSize)
         }
-        if (guavaCache.maximumWeight != GuavaCache.UNSET_LONG) {
-            cacheBuilder.maximumWeight(guavaCache.maximumWeight)
-        }
         if (guavaCache.expireAfterWriteNanos != GuavaCache.UNSET_LONG) {
             cacheBuilder.expireAfterWrite(guavaCache.expireAfterWriteNanos, java.util.concurrent.TimeUnit.NANOSECONDS)
         }

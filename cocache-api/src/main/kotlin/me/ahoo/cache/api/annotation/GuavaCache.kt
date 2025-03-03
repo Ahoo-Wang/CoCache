@@ -26,7 +26,6 @@ annotation class GuavaCache(
     val initialCapacity: Int = UNSET_INT,
     val concurrencyLevel: Int = UNSET_INT,
     val maximumSize: Long = UNSET_LONG,
-    val maximumWeight: Long = UNSET_LONG,
     val expireAfterWriteNanos: Long = UNSET_LONG,
     val expireAfterAccessNanos: Long = UNSET_LONG
 ) {
