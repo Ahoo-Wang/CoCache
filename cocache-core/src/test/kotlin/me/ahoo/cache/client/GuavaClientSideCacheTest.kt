@@ -12,6 +12,7 @@
  */
 package me.ahoo.cache.client
 
+import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.test.ClientSideCacheSpec
 import java.util.*
 

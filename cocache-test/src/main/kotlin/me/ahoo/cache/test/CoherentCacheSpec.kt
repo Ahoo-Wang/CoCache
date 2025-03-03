@@ -17,8 +17,8 @@ import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
-import me.ahoo.cache.client.ClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.converter.KeyConverter

@@ -14,7 +14,7 @@
 package me.ahoo.cache.spring.client
 
 import me.ahoo.cache.annotation.CoCacheMetadata
-import me.ahoo.cache.client.ClientSideCache
+import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.client.MapClientSideCacheFactory
 import org.springframework.beans.factory.BeanFactory

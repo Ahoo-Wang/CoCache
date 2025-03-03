@@ -14,8 +14,8 @@ package me.ahoo.cache
 
 import com.google.common.eventbus.Subscribe
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
-import me.ahoo.cache.client.ClientSideCache
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.cache.consistency.CacheEvictedEventBus

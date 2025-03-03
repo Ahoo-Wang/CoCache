@@ -13,7 +13,7 @@
 
 package me.ahoo.cache.spring.redis
 
-import me.ahoo.cache.client.ClientSideCache
+import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.converter.KeyConverter

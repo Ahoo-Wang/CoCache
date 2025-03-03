@@ -23,7 +23,7 @@ import me.ahoo.cache.api.CacheValue
  */
 class GuavaClientSideCache<V>(
     private val guavaCache: Cache<String, CacheValue<V>> = CacheBuilder.newBuilder().build()
-) : ClientSideCache<V> {
+) : ComputedClientSideCache<V> {
 
     override fun getCache(key: String): CacheValue<V>? {
         return guavaCache.getIfPresent(key)

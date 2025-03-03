@@ -10,24 +10,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.client
 
+import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.api.client.ClientSideCache
-import me.ahoo.cache.test.ClientSideCacheSpec
-import java.util.*
 
-/**
- * MapClientSideCachingTest .
- *
- * @author ahoo wang
- */
-internal class MapClientSideCacheTest : ClientSideCacheSpec<String>() {
-
-    override fun createCache(): ClientSideCache<String> {
-        return MapClientSideCache()
-    }
-
-    override fun createCacheEntry(): Pair<String, String> {
-        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
+interface ComputedClientSideCache<V> : ClientSideCache<V>, ComputedCache<String, V> {
+    override fun get(key: String): V? {
+        val cacheValue = getCache(key) ?: return null
+        if (cacheValue.isExpired) {
+            evict(key)
+            return null
+        }
+        if (cacheValue.isMissingGuard) {
+            return null
+        }
+        return cacheValue.value
     }
 }

@@ -20,7 +20,7 @@ import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.annotation.CoCache
-import me.ahoo.cache.client.ClientSideCache
+import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache

@@ -22,8 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class MapClientSideCache<V>(
     private val cacheMap: MutableMap<String, CacheValue<V>> = ConcurrentHashMap()
-) :
-    ClientSideCache<V> {
+) : ComputedClientSideCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
         return cacheMap[key]
     }
