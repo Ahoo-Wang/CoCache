@@ -48,7 +48,8 @@ object CoCacheMetadataParser {
         return CoCacheMetadata(
             type = cacheType,
             name = coCacheAnnotation.name,
-            prefix = coCacheAnnotation.prefix,
+            keyPrefix = coCacheAnnotation.keyPrefix,
+            keyExpression = coCacheAnnotation.keyExpression,
             valueType = valueType
         )
     }

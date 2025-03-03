@@ -22,6 +22,8 @@ import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
+import me.ahoo.cache.converter.ExpKeyConverter
+import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
@@ -42,12 +44,12 @@ class DefaultCacheProxyFactory(
         val clientId = clientIdGenerator.generate()
         val clientSideCaching: ClientSideCache<Any> = clientSideCacheFactory.create(cacheMetadata)
         val distributedCaching: DistributedCache<Any> = distributedCacheFactory.create(cacheMetadata)
-        val cacheSource = cacheSourceFactory.create<Any>(cacheMetadata)
+        val cacheSource = cacheSourceFactory.create<Any, Any>(cacheMetadata)
         val delegate = cacheManager.getOrCreateCache(
             CacheConfig(
                 cacheName = cacheMetadata.cacheName,
                 clientId = clientId,
-                keyConverter = ToStringKeyConverter(cacheMetadata.resolveCacheKeyPrefix()),
+                keyConverter = cacheMetadata.resolveKeyConverter(),
                 clientSideCaching = clientSideCaching,
                 distributedCaching = distributedCaching,
                 cacheSource = cacheSource,
@@ -61,9 +63,17 @@ class DefaultCacheProxyFactory(
         ) as CACHE
     }
 
+    private fun CoCacheMetadata.resolveKeyConverter(): KeyConverter<Any> {
+        val cacheKeyPrefix = this.resolveCacheKeyPrefix()
+        if (this.keyExpression.isNotBlank()) {
+            return ExpKeyConverter(cacheKeyPrefix, this.keyExpression)
+        }
+        return ToStringKeyConverter(cacheKeyPrefix)
+    }
+
     private fun CoCacheMetadata.resolveCacheKeyPrefix(): String {
-        return prefix.ifBlank {
-            "${CoCache.COCACHE}:$cacheName"
+        return keyPrefix.ifBlank {
+            "${CoCache.COCACHE}:$cacheName:"
         }
     }
 }

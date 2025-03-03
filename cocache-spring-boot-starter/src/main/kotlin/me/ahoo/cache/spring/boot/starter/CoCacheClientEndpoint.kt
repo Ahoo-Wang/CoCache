@@ -31,7 +31,7 @@ class CoCacheClientEndpoint(private val cacheManager: CacheManager) {
     @ReadOperation
     fun get(@Selector name: String, @Selector key: String): CacheValue<*>? {
         val coherentCache = cacheManager.getCache<String, Any>(name) ?: return null
-        val clientCacheKey = coherentCache.keyConverter.asKey(key)
+        val clientCacheKey = coherentCache.keyConverter.toStringKey(key)
         return coherentCache.clientSideCaching.getCache(clientCacheKey)
     }
 

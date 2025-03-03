@@ -4,6 +4,7 @@ import me.ahoo.cache.CacheManager
 import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.annotation.coCacheMetadata
+import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCacheFactory
 import me.ahoo.cache.consistency.NoOpCacheEvictedEventBus
@@ -18,14 +19,14 @@ import org.junit.jupiter.api.Test
 class DefaultCacheProxyFactoryTest {
 
     companion object {
-        internal fun createProxyCache(): MockCache {
+        internal fun createProxyCache(metadata: CoCacheMetadata = coCacheMetadata<MockCache>()): Cache<String, String> {
             val distributedCacheFactory = object : DistributedCacheFactory {
                 override fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V> {
                     return MockDistributedCache()
                 }
             }
             val cacheSourceFactory = object : CacheSourceFactory {
-                override fun <V> create(cacheMetadata: CoCacheMetadata): CacheSource<String, V> {
+                override fun <K, V> create(cacheMetadata: CoCacheMetadata): CacheSource<K, V> {
                     return CacheSource.noOp()
                 }
             }
@@ -36,7 +37,7 @@ class DefaultCacheProxyFactoryTest {
                 distributedCacheFactory = distributedCacheFactory,
                 cacheSourceFactory = cacheSourceFactory
             )
-            return cacheProxyFactory.create(coCacheMetadata<MockCache>())
+            return cacheProxyFactory.create(metadata)
         }
     }
 
@@ -45,5 +46,12 @@ class DefaultCacheProxyFactoryTest {
         val cache = createProxyCache()
         assertNull(cache.getCache("key"))
         assertTrue(cache.toString().startsWith(CoherentCache::class.java.name))
+    }
+
+    @Test
+    fun createWithKeyExpression() {
+        val cache =
+            createProxyCache(metadata = coCacheMetadata<MockCacheWithKeyExpression>().copy(keyExpression = "key"))
+        assertNull(cache.getCache("key"))
     }
 }

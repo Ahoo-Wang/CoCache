@@ -85,7 +85,7 @@ abstract class MultipleInstanceSyncSpec<K, V> {
     @Test
     fun multipleInstanceSync() {
         val (key, value) = createCacheEntry()
-        val cacheKey = keyConverter.asKey(key)
+        val cacheKey = keyConverter.toStringKey(key)
 
         val latch1 = CountDownLatch(1)
         val latch2 = CountDownLatch(2)

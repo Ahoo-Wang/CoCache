@@ -21,7 +21,7 @@ import org.springframework.core.ResolvableType
 
 class SpringCacheSourceFactory(private val beanFactory: BeanFactory) : CacheSourceFactory {
     @Suppress("UNCHECKED_CAST")
-    override fun <V> create(cacheMetadata: CoCacheMetadata): CacheSource<String, V> {
+    override fun <K, V> create(cacheMetadata: CoCacheMetadata): CacheSource<K, V> {
         val cacheSourceType = ResolvableType.forClassWithGenerics(
             CacheSource::class.java,
             String::class.java,
@@ -30,6 +30,6 @@ class SpringCacheSourceFactory(private val beanFactory: BeanFactory) : CacheSour
         val cacheSourceProvider = beanFactory.getBeanProvider<CacheSource<String, Any>>(cacheSourceType)
         return cacheSourceProvider.getIfAvailable {
             CacheSource.noOp()
-        } as CacheSource<String, V>
+        } as CacheSource<K, V>
     }
 }

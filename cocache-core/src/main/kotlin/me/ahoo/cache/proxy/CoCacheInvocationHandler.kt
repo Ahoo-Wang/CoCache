@@ -18,8 +18,8 @@ import me.ahoo.cache.api.NamedCache
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 
-class CoCacheInvocationHandler<V : Any, DELEGATE>(private val delegate: DELEGATE) :
-    InvocationHandler where DELEGATE : Cache<String, V>, DELEGATE : NamedCache {
+class CoCacheInvocationHandler<K, V : Any, DELEGATE>(private val delegate: DELEGATE) :
+    InvocationHandler where DELEGATE : Cache<K, V>, DELEGATE : NamedCache {
     @Suppress("SpreadOperator")
     override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
         if (args == null) {

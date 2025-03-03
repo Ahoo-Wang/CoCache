@@ -3,6 +3,7 @@ package me.ahoo.cache.annotation
 import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.proxy.MockCacheWithKeyExpression
 import org.hamcrest.CoreMatchers.equalTo
 import org.hamcrest.MatcherAssert.assertThat
 import org.junit.jupiter.api.Assertions
@@ -15,8 +16,18 @@ class CoCacheMetadataParserTest {
         val metadata = coCacheMetadata<MockCache>()
         assertThat(metadata.type, equalTo(MockCache::class))
         assertThat(metadata.name, equalTo(""))
-        assertThat(metadata.prefix, equalTo(""))
+        assertThat(metadata.keyPrefix, equalTo(""))
         assertThat(metadata.valueType, equalTo(CoCacheMetadataParserTest::class))
+    }
+
+    @Test
+    fun parseWithKeyExp() {
+        val metadata = coCacheMetadata<MockCacheWithKeyExpression>()
+        assertThat(metadata.type, equalTo(MockCacheWithKeyExpression::class))
+        assertThat(metadata.name, equalTo(""))
+        assertThat(metadata.keyPrefix, equalTo("prefix:"))
+        assertThat(metadata.keyExpression, equalTo("#{#root}"))
+        assertThat(metadata.valueType, equalTo(String::class))
     }
 
     @Test

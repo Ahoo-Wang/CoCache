@@ -20,7 +20,11 @@ import java.lang.annotation.Inherited
 @MustBeDocumented
 annotation class CoCache(
     val name: String = "",
-    val prefix: String = ""
+    val keyPrefix: String = "",
+    /**
+     * Spel Expression
+     */
+    val keyExpression: String = ""
 ) {
     companion object {
         const val COCACHE = "cocache"

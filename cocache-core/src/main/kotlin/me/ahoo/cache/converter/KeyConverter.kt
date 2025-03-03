@@ -7,5 +7,5 @@ package me.ahoo.cache.converter
  */
 @FunctionalInterface
 interface KeyConverter<K> {
-    fun asKey(sourceKey: K): String
+    fun toStringKey(sourceKey: K): String
 }

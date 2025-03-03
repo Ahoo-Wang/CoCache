@@ -22,14 +22,10 @@ import org.springframework.expression.spel.standard.SpelExpressionParser
  * @author ahoo wang
  */
 class ExpKeyConverter<K>(val keyPrefix: String, expression: String) : KeyConverter<K> {
-    private val expression: Expression
+    private val expression: Expression = SpelExpressionParser()
+        .parseExpression(expression, TemplateParserContext.TEMPLATE_EXPRESSION)
 
-    init {
-        this.expression =
-            SpelExpressionParser().parseExpression(expression, TemplateParserContext.TEMPLATE_EXPRESSION)
-    }
-
-    override fun asKey(sourceKey: K): String {
+    override fun toStringKey(sourceKey: K): String {
         return keyPrefix + expression.getValue(sourceKey, String::class.java)
     }
 }
