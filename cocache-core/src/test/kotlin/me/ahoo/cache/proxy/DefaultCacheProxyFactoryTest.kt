@@ -5,6 +5,7 @@ import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.annotation.coCacheMetadata
 import me.ahoo.cache.api.source.CacheSource
+import me.ahoo.cache.client.MapClientSideCacheFactory
 import me.ahoo.cache.consistency.NoOpCacheEvictedEventBus
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
@@ -30,6 +31,7 @@ class DefaultCacheProxyFactoryTest {
         val cacheProxyFactory = DefaultCacheProxyFactory(
             cacheManager = CacheManager(NoOpCacheEvictedEventBus),
             clientIdGenerator = ClientIdGenerator.UUID,
+            clientSideCacheFactory = MapClientSideCacheFactory,
             distributedCacheFactory = distributedCacheFactory,
             cacheSourceResolver = cacheSourceResolver
         )

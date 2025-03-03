@@ -19,6 +19,8 @@ import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.client.ClientSideCache
+import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
@@ -28,6 +30,7 @@ import java.lang.reflect.Proxy
 class DefaultCacheProxyFactory(
     private val cacheManager: CacheManager,
     private val clientIdGenerator: ClientIdGenerator,
+    private val clientSideCacheFactory: ClientSideCacheFactory,
     private val distributedCacheFactory: DistributedCacheFactory,
     private val cacheSourceResolver: CacheSourceResolver
 ) : CacheProxyFactory {
@@ -36,12 +39,14 @@ class DefaultCacheProxyFactory(
     override fun <CACHE : Cache<*, *>> create(cacheMetadata: CoCacheMetadata): CACHE {
         val clientId = clientIdGenerator.generate()
         val cacheSource = cacheSourceResolver.resolve<Any>(cacheMetadata)
+        val clientSideCaching: ClientSideCache<Any> = clientSideCacheFactory.create(cacheMetadata)
         val distributedCaching: DistributedCache<Any> = distributedCacheFactory.create(cacheMetadata)
         val delegate = cacheManager.getOrCreateCache(
             CacheConfig(
                 cacheName = cacheMetadata.cacheName,
                 clientId = clientId,
                 keyConverter = ToStringKeyConverter(cacheMetadata.resolveCacheKeyPrefix()),
+                clientSideCaching = clientSideCaching,
                 distributedCaching = distributedCaching,
                 cacheSource = cacheSource,
             ),
