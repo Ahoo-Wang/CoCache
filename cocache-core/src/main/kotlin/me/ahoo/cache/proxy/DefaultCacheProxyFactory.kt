@@ -40,9 +40,9 @@ class DefaultCacheProxyFactory(
     @Suppress("UNCHECKED_CAST")
     override fun <CACHE : Cache<*, *>> create(cacheMetadata: CoCacheMetadata): CACHE {
         val clientId = clientIdGenerator.generate()
-        val cacheSource = cacheSourceFactory.create<Any>(cacheMetadata)
         val clientSideCaching: ClientSideCache<Any> = clientSideCacheFactory.create(cacheMetadata)
         val distributedCaching: DistributedCache<Any> = distributedCacheFactory.create(cacheMetadata)
+        val cacheSource = cacheSourceFactory.create<Any>(cacheMetadata)
         val delegate = cacheManager.getOrCreateCache(
             CacheConfig(
                 cacheName = cacheMetadata.cacheName,
