@@ -17,6 +17,7 @@ class CoCacheMetadataParserTest {
         assertThat(metadata.type, equalTo(MockCache::class))
         assertThat(metadata.name, equalTo(""))
         assertThat(metadata.keyPrefix, equalTo(""))
+        assertThat(metadata.keyType, equalTo(String::class))
         assertThat(metadata.valueType, equalTo(CoCacheMetadataParserTest::class))
     }
 

@@ -21,6 +21,7 @@ data class CoCacheMetadata(
     val name: String,
     val keyPrefix: String,
     val keyExpression: String,
+    val keyType: KClass<*>,
     val valueType: KClass<*>
 ) : NamedCache {
     override val cacheName: String = name.ifBlank {

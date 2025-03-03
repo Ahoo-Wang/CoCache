@@ -16,7 +16,7 @@ package me.ahoo.cache.spring.client
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
-import me.ahoo.cache.client.MapClientSideCacheFactory
+import me.ahoo.cache.client.DefaultClientSideCacheFactory
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
@@ -36,11 +36,11 @@ class SpringClientSideCacheFactory(private val beanFactory: BeanFactory) : Clien
         return clientSideCacheProvider.getIfAvailable {
             if (log.isWarnEnabled) {
                 log.warn(
-                    "ClientSideCache not found for {}, use MapClientSideCacheFactory instead.",
+                    "ClientSideCache not found for {}, use DefaultClientSideCacheFactory instead.",
                     cacheMetadata
                 )
             }
-            MapClientSideCacheFactory.create(cacheMetadata)
+            DefaultClientSideCacheFactory.create(cacheMetadata)
         } as ClientSideCache<V>
     }
 }

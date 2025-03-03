@@ -29,7 +29,7 @@ class SpringCacheSourceFactory(private val beanFactory: BeanFactory) : CacheSour
     override fun <K, V> create(cacheMetadata: CoCacheMetadata): CacheSource<K, V> {
         val cacheSourceType = ResolvableType.forClassWithGenerics(
             CacheSource::class.java,
-            String::class.java,
+            cacheMetadata.keyType.java,
             cacheMetadata.valueType.java
         )
         val cacheSourceProvider = beanFactory.getBeanProvider<CacheSource<String, Any>>(cacheSourceType)

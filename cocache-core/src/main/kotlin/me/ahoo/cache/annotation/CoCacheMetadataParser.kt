@@ -42,6 +42,8 @@ object CoCacheMetadataParser {
         val superCacheType = cacheType.supertypes.first {
             it.classifier == Cache::class || it.classifier == ComputedCache::class
         }
+        val keyType = superCacheType.arguments.first().type?.classifier as? KClass<*>
+        requireNotNull(keyType)
         val valueType = superCacheType.arguments.last().type?.classifier as? KClass<*>
         requireNotNull(valueType)
 
@@ -50,6 +52,7 @@ object CoCacheMetadataParser {
             name = coCacheAnnotation.name,
             keyPrefix = coCacheAnnotation.keyPrefix,
             keyExpression = coCacheAnnotation.keyExpression,
+            keyType = keyType,
             valueType = valueType
         )
     }
