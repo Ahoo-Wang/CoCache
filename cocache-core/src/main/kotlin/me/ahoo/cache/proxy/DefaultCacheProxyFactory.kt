@@ -15,6 +15,7 @@ package me.ahoo.cache.proxy
 
 import me.ahoo.cache.CacheConfig
 import me.ahoo.cache.CacheManager
+import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.NamedCache
@@ -54,7 +55,7 @@ class DefaultCacheProxyFactory(
         val invocationHandler = CoCacheInvocationHandler(delegate)
         return Proxy.newProxyInstance(
             cacheMetadata.type.java.classLoader,
-            arrayOf(cacheMetadata.type.java, NamedCache::class.java),
+            arrayOf(cacheMetadata.type.java, ComputedCache::class.java, NamedCache::class.java),
             invocationHandler
         ) as CACHE
     }
