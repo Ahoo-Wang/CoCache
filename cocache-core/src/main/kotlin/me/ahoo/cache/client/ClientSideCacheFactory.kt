@@ -14,6 +14,7 @@
 package me.ahoo.cache.client
 
 import me.ahoo.cache.annotation.CoCacheMetadata
+import me.ahoo.cache.api.client.ClientSideCache
 
 @FunctionalInterface
 interface ClientSideCacheFactory {

@@ -13,7 +13,7 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.client.ClientSideCache
+import me.ahoo.cache.api.client.ClientSideCache
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers.nullValue
 import org.junit.jupiter.api.Test

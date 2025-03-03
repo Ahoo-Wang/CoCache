@@ -10,27 +10,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache.client
+package me.ahoo.cache.api.client
 
-import me.ahoo.cache.ComputedCache
+import me.ahoo.cache.api.Cache
 
 /**
  * Client Side Cache .
  *
  * @author ahoo wang
  */
-interface ClientSideCache<V> : ComputedCache<String, V> {
-    override fun get(key: String): V? {
-        val cacheValue = getCache(key) ?: return null
-        if (cacheValue.isExpired) {
-            evict(key)
-            return null
-        }
-        if (cacheValue.isMissingGuard) {
-            return null
-        }
-        return cacheValue.value
-    }
+interface ClientSideCache<V> : Cache<String, V> {
 
     val size: Long
 
