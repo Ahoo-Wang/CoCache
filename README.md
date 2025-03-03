@@ -86,45 +86,29 @@ UserCacheSource  ..>  CacheSource~K, V~
 
 ```kotlin
 
-class UserCache(private val delegate: Cache<String, UserData>) :
-    Cache<String, UserData> by delegate
+/**
+ * 定义缓存接口
+ */
+@CoCache
+interface UserCache : Cache<String, User>
 
-@AutoConfiguration
-class UserCacheAutoConfiguration {
-    companion object {
-        const val CACHE_KEY_PREFIX = "iam"
-        const val USER_CACHE_BEAN_NAME = "userCache"
-        const val USER_CACHE_SOURCE_BEAN_NAME = "${USER_CACHE_BEAN_NAME}Source"
+@EnableCoCache(caches = [UserCache::class])
+@SpringBootApplication
+class AppServer
+
+/**
+ * 可选的配置
+ */
+@Configuration
+class UserCacheConfiguration {
+    @Bean
+    fun customizeUserClientSideCache(): ClientSideCache<User> {
+        return MapClientSideCache()
     }
 
     @Bean
-    @ConditionalOnMissingBean(name = [USER_CACHE_SOURCE_BEAN_NAME])
-    fun userCacheSource(userClient: UserClient): CacheSource<String, UserData> {
-        return UserCacheSource(userClient)
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    fun userCache(
-        @Qualifier(USER_CACHE_SOURCE_BEAN_NAME) cacheSource: CacheSource<String, UserData>,
-        redisTemplate: StringRedisTemplate,
-        cacheManager: CacheManager,
-        clientIdGenerator: ClientIdGenerator
-    ): UserCache {
-        val clientId = clientIdGenerator.generate()
-        val cacheKeyPrefix = "$CACHE_KEY_PREFIX:user:"
-        val codecExecutor = ObjectToJsonCodecExecutor(UserData::class.java, redisTemplate, JsonSerializer)
-        val distributedCaching: DistributedCache<UserData> = RedisDistributedCache(redisTemplate, codecExecutor)
-        val delegate = cacheManager.getOrCreateCache(
-            CacheConfig(
-                cacheName = USER_CACHE_BEAN_NAME,
-                clientId = clientId,
-                keyConverter = ToStringKeyConverter(cacheKeyPrefix),
-                distributedCaching = distributedCaching,
-                cacheSource = cacheSource,
-            ),
-        )
-        return UserCache(delegate)
+    fun customizeUserCacheSource(): CacheSource<String, User> {
+        return CacheSource.noOp()
     }
 }
 ```

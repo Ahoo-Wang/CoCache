@@ -16,7 +16,7 @@ package me.ahoo.cache.spring.boot.starter.customize
 import io.mockk.mockk
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.ClientSideCache
-import me.ahoo.cache.example.cache.UserCacheProxy
+import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.example.model.User
 import me.ahoo.cache.spring.EnableCoCache
 import org.springframework.boot.autoconfigure.SpringBootApplication
@@ -25,18 +25,18 @@ import org.springframework.context.annotation.Bean
 @SpringBootApplication
 @EnableCoCache(
     caches = [
-        UserCacheProxy::class
+        UserCache::class
     ]
 )
 class EnableCoCacheConfigurationWithCustomize {
 
     @Bean
-    fun customizeClientSideCache(): ClientSideCache<User> {
+    fun customizeUserClientSideCache(): ClientSideCache<User> {
         return mockk()
     }
 
     @Bean
-    fun customizeCacheSource(): CacheSource<String, User> {
+    fun customizeUserCacheSource(): CacheSource<String, User> {
         return mockk()
     }
 }

@@ -10,17 +10,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package me.ahoo.cache.example.config
 
-package me.ahoo.cache.spring.boot.starter.auto
+import me.ahoo.cache.api.source.CacheSource
+import me.ahoo.cache.client.ClientSideCache
+import me.ahoo.cache.client.MapClientSideCache
+import me.ahoo.cache.example.model.User
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
 
-import me.ahoo.cache.example.cache.UserCache
-import me.ahoo.cache.spring.EnableCoCache
-import org.springframework.boot.autoconfigure.SpringBootApplication
+@Configuration
+class UserCacheConfiguration {
+    @Bean
+    fun customizeUserClientSideCache(): ClientSideCache<User> {
+        return MapClientSideCache()
+    }
 
-@SpringBootApplication
-@EnableCoCache(
-    caches = [
-        UserCache::class
-    ]
-)
-class EnableCoCacheConfiguration
+    @Bean
+    fun customizeUserCacheSource(): CacheSource<String, User> {
+        return CacheSource.noOp()
+    }
+}
