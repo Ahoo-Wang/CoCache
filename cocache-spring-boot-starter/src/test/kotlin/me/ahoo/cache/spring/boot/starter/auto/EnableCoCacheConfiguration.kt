@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.spring.boot.starter
+package me.ahoo.cache.spring.boot.starter.auto
 
 import me.ahoo.cache.example.cache.UserCacheProxy
 import me.ahoo.cache.spring.EnableCoCache
