@@ -17,6 +17,8 @@ import java.lang.annotation.Inherited
 import java.util.concurrent.TimeUnit
 
 /**
+ * 配置 GuavaCache 作为客户端缓存。
+ *
  * @see me.ahoo.cache.api.client.ClientSideCache
  */
 @Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
