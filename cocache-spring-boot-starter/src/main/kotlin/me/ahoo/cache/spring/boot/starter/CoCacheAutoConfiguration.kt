@@ -15,13 +15,13 @@ package me.ahoo.cache.spring.boot.starter
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.converter.DefaultKeyConverterFactory
 import me.ahoo.cache.converter.KeyConverterFactory
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.proxy.CacheProxyFactory
 import me.ahoo.cache.proxy.DefaultCacheProxyFactory
 import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.spring.client.SpringClientSideCacheFactory
+import me.ahoo.cache.spring.converter.SpringKeyConverterFactory
 import me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus
 import me.ahoo.cache.spring.redis.RedisDistributedCacheFactory
 import me.ahoo.cache.spring.source.SpringCacheSourceFactory
@@ -36,6 +36,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate
 import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
 import org.springframework.boot.context.properties.EnableConfigurationProperties
+import org.springframework.context.ApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.data.redis.connection.RedisConnectionFactory
@@ -106,8 +107,8 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    fun keyConverterFactory(): KeyConverterFactory {
-        return DefaultKeyConverterFactory
+    fun keyConverterFactory(appContext: ApplicationContext): KeyConverterFactory {
+        return SpringKeyConverterFactory(appContext)
     }
 
     @Suppress("LongParameterList")
