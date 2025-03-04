@@ -14,6 +14,7 @@
 package me.ahoo.cache
 
 import me.ahoo.cache.api.NamedCache
+import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCache
@@ -22,7 +23,6 @@ import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.filter.NoOpKeyFilter
-import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 
 class CacheManager(private val cacheEvictedEventBus: CacheEvictedEventBus) {
@@ -63,6 +63,6 @@ data class CoherentCacheConfiguration<K, V>(
     val clientSideCache: ClientSideCache<V> = MapClientSideCache(),
     val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
     val keyFilter: KeyFilter = NoOpKeyFilter,
-    val missingGuardTtl: Long = Duration.ofMinutes(10).seconds,
-    val missingGuardTtlAmplitude: Long = Duration.ofMinutes(1).seconds
+    val missingGuardTtl: Long = MissingGuardCache.DEFAULT_TTL_SECONDS,
+    val missingGuardTtlAmplitude: Long = MissingGuardCache.DEFAULT_TTL_AMPLITUDE_SECONDS
 ) : NamedCache, DistributedClientId

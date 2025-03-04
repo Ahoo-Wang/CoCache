@@ -15,6 +15,7 @@ package me.ahoo.cache
 import com.google.common.eventbus.Subscribe
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.NamedCache
+import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCache
@@ -26,7 +27,6 @@ import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.filter.NoOpKeyFilter
 import org.slf4j.LoggerFactory
-import java.time.Duration
 
 /**
  * Coherent cache .
@@ -47,8 +47,8 @@ class CoherentCache<K, V>(
         distributedCache: DistributedCache<V>,
         cacheSource: CacheSource<K, V> = CacheSource.noOp(),
         keyFilter: KeyFilter = NoOpKeyFilter,
-        missingGuardTtl: Long = Duration.ofMinutes(10).seconds,
-        missingGuardTtlAmplitude: Long = Duration.ofMinutes(1).seconds,
+        missingGuardTtl: Long = MissingGuardCache.DEFAULT_TTL_SECONDS,
+        missingGuardTtlAmplitude: Long = MissingGuardCache.DEFAULT_TTL_AMPLITUDE_SECONDS,
         cacheEvictedEventBus: CacheEvictedEventBus
     ) : this(
         CoherentCacheConfiguration(

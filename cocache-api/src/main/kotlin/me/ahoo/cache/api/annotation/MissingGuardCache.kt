@@ -11,21 +11,19 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.proxy
+package me.ahoo.cache.api.annotation
 
-import me.ahoo.cache.CoherentCache
-import me.ahoo.cache.ComputedCache
-import me.ahoo.cache.api.annotation.CoCache
-import me.ahoo.cache.api.annotation.MissingGuardCache
-import me.ahoo.cache.distributed.DistributedClientId
+import java.lang.annotation.Inherited
 
-@CoCache
-@MissingGuardCache
-interface MockCache :
-    ComputedCache<String, String>,
-    CacheDelegated<CoherentCache<String, String>>,
-    DistributedClientId,
-    CacheMetadataCapable
-
-@CoCache(keyPrefix = "prefix:", keyExpression = "#{#root}")
-interface MockCacheWithKeyExpression : ComputedCache<String, String>
+@Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
+@Inherited
+@MustBeDocumented
+annotation class MissingGuardCache(
+    val ttlSeconds: Long = DEFAULT_TTL_SECONDS,
+    val ttlAmplitudeSeconds: Long = DEFAULT_TTL_AMPLITUDE_SECONDS,
+) {
+    companion object {
+        const val DEFAULT_TTL_SECONDS = 600L
+        const val DEFAULT_TTL_AMPLITUDE_SECONDS = 60L
+    }
+}
