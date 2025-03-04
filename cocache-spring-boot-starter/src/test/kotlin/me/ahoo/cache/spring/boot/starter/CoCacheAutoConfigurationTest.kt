@@ -18,6 +18,8 @@ import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.spring.boot.starter.auto.EnableCoCacheConfiguration
 import me.ahoo.cache.spring.boot.starter.customize.EnableCoCacheConfigurationWithCustomize
+import me.ahoo.cache.spring.boot.starter.customize.UserExpCache
+import me.ahoo.cache.spring.boot.starter.customize.UserPlaceholderCache
 import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.cosid.machine.HostAddressSupplier
 import me.ahoo.cosid.machine.LocalHostAddressSupplier
@@ -53,6 +55,7 @@ internal class CoCacheAutoConfigurationTest {
     @Test
     fun contextLoadsWithCustomize() {
         contextRunner
+            .withPropertyValues("spring.application.name=cocache-example")
             .withUserConfiguration(
                 RedisAutoConfiguration::class.java,
                 CoCacheAutoConfiguration::class.java,
@@ -67,6 +70,8 @@ internal class CoCacheAutoConfigurationTest {
                     .hasSingleBean(UserCache::class.java)
 
                 context.getBean(UserCache::class.java)
+                context.getBean(UserExpCache::class.java)
+                context.getBean(UserPlaceholderCache::class.java)
             }
     }
 

@@ -14,6 +14,8 @@
 package me.ahoo.cache.spring.boot.starter.customize
 
 import io.mockk.mockk
+import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.ComputedClientSideCache
 import me.ahoo.cache.distributed.DistributedCache
@@ -26,7 +28,9 @@ import org.springframework.context.annotation.Bean
 @SpringBootApplication
 @EnableCoCache(
     caches = [
-        UserCache::class
+        UserCache::class,
+        UserExpCache::class,
+        UserPlaceholderCache::class
     ]
 )
 class EnableCoCacheConfigurationWithCustomize {
@@ -46,3 +50,9 @@ class EnableCoCacheConfigurationWithCustomize {
         return mockk()
     }
 }
+
+@CoCache(keyPrefix = "user:", keyExpression = "#{#root}")
+interface UserExpCache : Cache<String, User>
+
+@CoCache(keyPrefix = "\${spring.application.name}:user")
+interface UserPlaceholderCache : Cache<String, User>
