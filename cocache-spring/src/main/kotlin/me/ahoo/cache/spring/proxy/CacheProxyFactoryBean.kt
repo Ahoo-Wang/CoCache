@@ -30,17 +30,10 @@ class CacheProxyFactoryBean(private val cacheMetadata: CoCacheMetadata) :
 
     override fun getObject(): Cache<Any, Any> {
         val cacheProxyFactory = appContext.getBean(CacheProxyFactory::class.java)
-        val resolvedMetadata = resolveMetadata()
-        return cacheProxyFactory.create(resolvedMetadata)
+        return cacheProxyFactory.create(cacheMetadata)
     }
 
     override fun getObjectType(): Class<*> {
         return cacheMetadata.type.java
-    }
-
-    private fun resolveMetadata(): CoCacheMetadata {
-        val keyPrefix = appContext.environment.resolvePlaceholders(cacheMetadata.keyPrefix)
-        val keyExpression = appContext.environment.resolvePlaceholders(cacheMetadata.keyExpression)
-        return cacheMetadata.copy(keyPrefix = keyPrefix, keyExpression = keyExpression)
     }
 }
