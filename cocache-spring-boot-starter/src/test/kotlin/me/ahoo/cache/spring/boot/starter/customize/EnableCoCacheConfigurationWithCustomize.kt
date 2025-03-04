@@ -51,7 +51,7 @@ class EnableCoCacheConfigurationWithCustomize {
     }
 }
 
-@CoCache(keyPrefix = "user:", keyExpression = "#{#root}")
+@CoCache(keyExpression = "#{#root}")
 interface UserExpCache : Cache<String, User>
 
 @CoCache(keyPrefix = "\${spring.application.name}:user")
