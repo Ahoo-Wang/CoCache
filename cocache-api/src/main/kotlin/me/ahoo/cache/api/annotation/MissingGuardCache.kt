@@ -15,6 +15,9 @@ package me.ahoo.cache.api.annotation
 
 import java.lang.annotation.Inherited
 
+/**
+ * 缓存缺失保护配置。
+ */
 @Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
 @Inherited
 @MustBeDocumented
