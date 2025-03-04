@@ -105,7 +105,7 @@ class CoherentCache<K, V>(
             /*
              * This is a heavy-duty operation.
              */
-            cacheSource.load(key)?.let {
+            cacheSource.loadCacheValue(key)?.let {
                 setCache(cacheKey, it)
                 cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
                 return it
