@@ -17,29 +17,31 @@ import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.client.DefaultClientSideCacheFactory
-import org.slf4j.LoggerFactory
+import me.ahoo.cache.spring.AbstractCacheFactory
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
 
-class SpringClientSideCacheFactory(private val beanFactory: BeanFactory) : ClientSideCacheFactory {
+class SpringClientSideCacheFactory(beanFactory: BeanFactory) : ClientSideCacheFactory,
+    AbstractCacheFactory(beanFactory) {
     companion object {
-        private val log = LoggerFactory.getLogger(SpringClientSideCacheFactory::class.java)
+        const val CLIENT_SIDE_CACHE_SUFFIX = ".ClientSideCache"
     }
 
-    override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
-        val clientSideCacheType = ResolvableType.forClassWithGenerics(
+    override val suffix: String = CLIENT_SIDE_CACHE_SUFFIX
+
+    override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
+        return ResolvableType.forClassWithGenerics(
             ClientSideCache::class.java,
             cacheMetadata.valueType.java
         )
-        val clientSideCacheProvider = beanFactory.getBeanProvider<ClientSideCache<V>>(clientSideCacheType)
-        return clientSideCacheProvider.getIfAvailable {
-            if (log.isWarnEnabled) {
-                log.warn(
-                    "ClientSideCache not found for {}, use DefaultClientSideCacheFactory instead.",
-                    cacheMetadata
-                )
-            }
-            DefaultClientSideCacheFactory.create(cacheMetadata)
-        }
+    }
+
+    override fun fallback(cacheMetadata: CoCacheMetadata): Any {
+        return DefaultClientSideCacheFactory.create<Any>(cacheMetadata)
+    }
+
+    override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
+        @Suppress("UNCHECKED_CAST")
+        return createBean(cacheMetadata) as ClientSideCache<V>
     }
 }

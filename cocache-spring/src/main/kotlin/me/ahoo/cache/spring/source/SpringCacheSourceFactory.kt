@@ -16,30 +16,31 @@ package me.ahoo.cache.spring.source
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.source.CacheSourceFactory
-import org.slf4j.LoggerFactory
+import me.ahoo.cache.spring.AbstractCacheFactory
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
 
-class SpringCacheSourceFactory(private val beanFactory: BeanFactory) : CacheSourceFactory {
+class SpringCacheSourceFactory(beanFactory: BeanFactory) : CacheSourceFactory,
+    AbstractCacheFactory(beanFactory) {
     companion object {
-        private val log = LoggerFactory.getLogger(SpringCacheSourceFactory::class.java)
+        const val CACHE_SOURCE_SUFFIX = ".CacheSource"
     }
 
-    override fun <K, V> create(cacheMetadata: CoCacheMetadata): CacheSource<K, V> {
-        val cacheSourceType = ResolvableType.forClassWithGenerics(
+    override val suffix: String = CACHE_SOURCE_SUFFIX
+    override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
+        return ResolvableType.forClassWithGenerics(
             CacheSource::class.java,
             cacheMetadata.keyType.java,
             cacheMetadata.valueType.java
         )
-        val cacheSourceProvider = beanFactory.getBeanProvider<CacheSource<K, V>>(cacheSourceType)
-        return cacheSourceProvider.getIfAvailable {
-            if (log.isWarnEnabled) {
-                log.warn(
-                    "CacheSource not found for {}, use CacheSource.noOp() instead.",
-                    cacheMetadata
-                )
-            }
-            CacheSource.noOp()
-        }
+    }
+
+    override fun fallback(cacheMetadata: CoCacheMetadata): Any {
+        return CacheSource.noOp<Any, Any>()
+    }
+
+    override fun <K, V> create(cacheMetadata: CoCacheMetadata): CacheSource<K, V> {
+        @Suppress("UNCHECKED_CAST")
+        return createBean(cacheMetadata) as CacheSource<K, V>
     }
 }
