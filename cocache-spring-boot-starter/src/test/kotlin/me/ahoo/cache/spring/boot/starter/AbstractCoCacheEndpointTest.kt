@@ -1,7 +1,7 @@
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.CacheConfig
 import me.ahoo.cache.CacheManager
+import me.ahoo.cache.CoherentCacheConfiguration
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
 import me.ahoo.cache.converter.ToStringKeyConverter
@@ -22,12 +22,12 @@ open class AbstractCoCacheEndpointTest {
         val distributedCaching = MockDistributedCache<String>()
         cacheManager = CacheManager(GuavaCacheEvictedEventBus())
         cacheManager.getOrCreateCache(
-            CacheConfig(
+            CoherentCacheConfiguration(
                 cacheName = CACHE_NAME,
                 clientId = "currentClientId",
                 keyConverter = keyConverter,
-                distributedCaching = distributedCaching,
-                clientSideCaching = clientSideCaching,
+                distributedCache = distributedCaching,
+                clientSideCache = clientSideCaching,
             ),
         )
     }

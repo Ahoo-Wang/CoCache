@@ -25,18 +25,18 @@ class CoCacheClientEndpoint(private val cacheManager: CacheManager) {
 
     @ReadOperation
     fun getSize(@Selector name: String): Long? {
-        return cacheManager.getCache<String, Any>(name)?.clientSideCaching?.size
+        return cacheManager.getCache<String, Any>(name)?.clientSideCache?.size
     }
 
     @ReadOperation
     fun get(@Selector name: String, @Selector key: String): CacheValue<*>? {
         val coherentCache = cacheManager.getCache<String, Any>(name) ?: return null
         val clientCacheKey = coherentCache.keyConverter.toStringKey(key)
-        return coherentCache.clientSideCaching.getCache(clientCacheKey)
+        return coherentCache.clientSideCache.getCache(clientCacheKey)
     }
 
     @DeleteOperation
     fun clear(@Selector name: String) {
-        cacheManager.getCache<String, Any>(name)?.clientSideCaching?.clear()
+        cacheManager.getCache<String, Any>(name)?.clientSideCache?.clear()
     }
 }

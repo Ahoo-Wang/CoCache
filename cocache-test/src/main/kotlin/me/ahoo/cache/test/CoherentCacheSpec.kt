@@ -36,8 +36,8 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     }
 
     private lateinit var keyConverter: KeyConverter<K>
-    private lateinit var clientCaching: ClientSideCache<V>
-    private lateinit var distributedCaching: DistributedCache<V>
+    private lateinit var clientSideCache: ClientSideCache<V>
+    private lateinit var distributedCache: DistributedCache<V>
     private lateinit var cacheEvictedEventBus: CacheEvictedEventBus
     private lateinit var coherentCache: CoherentCache<K, V>
     protected lateinit var cacheName: String
@@ -52,19 +52,19 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     @BeforeEach
     override fun setup() {
         keyConverter = createKeyConverter()
-        clientCaching = createClientSideCache()
-        distributedCaching = createDistributedCache()
+        clientSideCache = createClientSideCache()
+        distributedCache = createDistributedCache()
         cacheEvictedEventBus = createCacheEvictedEventBus()
         cacheName = createCacheName()
 
         coherentCache = CoherentCache(
-            cacheName,
-            clientId,
-            keyConverter,
-            distributedCaching,
-            clientCaching,
-            cacheEvictedEventBus,
-            cacheSource = cacheSource
+            cacheName = cacheName,
+            clientId = clientId,
+            keyConverter = keyConverter,
+            clientSideCache = clientSideCache,
+            distributedCache = distributedCache,
+            cacheSource = cacheSource,
+            cacheEvictedEventBus = cacheEvictedEventBus
         )
         super.setup()
     }
@@ -95,8 +95,8 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         val cacheKey = keyConverter.toStringKey(key)
         val event = CacheEvictedEvent(cacheName, cacheKey, "")
         coherentCache.onEvicted(event)
-        assertThat(clientCaching[cacheKey], nullValue())
-        assertThat(distributedCaching[cacheKey], equalTo(value))
+        assertThat(clientSideCache[cacheKey], nullValue())
+        assertThat(distributedCache[cacheKey], equalTo(value))
         assertThat(coherentCache[key], equalTo(value))
     }
 
@@ -108,8 +108,8 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         val cacheKey = keyConverter.toStringKey(key)
         val event = CacheEvictedEvent(cacheName, cacheKey, clientId)
         coherentCache.onEvicted(event)
-        assertThat(clientCaching[cacheKey], equalTo(value))
-        assertThat(distributedCaching[cacheKey], equalTo(value))
+        assertThat(clientSideCache[cacheKey], equalTo(value))
+        assertThat(distributedCache[cacheKey], equalTo(value))
         assertThat(coherentCache[key], equalTo(value))
     }
 
@@ -121,8 +121,8 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         val cacheKey = keyConverter.toStringKey(key)
         val event = CacheEvictedEvent(UUID.randomUUID().toString(), cacheKey, "")
         coherentCache.onEvicted(event)
-        assertThat(clientCaching[cacheKey], equalTo(value))
-        assertThat(distributedCaching[cacheKey], equalTo(value))
+        assertThat(clientSideCache[cacheKey], equalTo(value))
+        assertThat(distributedCache[cacheKey], equalTo(value))
         assertThat(coherentCache[key], equalTo(value))
     }
 }

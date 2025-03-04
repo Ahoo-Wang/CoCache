@@ -13,9 +13,9 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.CacheConfig
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.CoherentCacheConfiguration
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.cache.consistency.CacheEvictedEventBus
@@ -55,22 +55,22 @@ abstract class MultipleInstanceSyncSpec<K, V> {
         cacheName = createCacheName()
 
         currentCache = cacheManager.getOrCreateCache(
-            CacheConfig(
+            CoherentCacheConfiguration(
                 cacheName = cacheName,
                 clientId = currentClientId,
                 keyConverter = keyConverter,
-                distributedCaching = distributedCaching,
-                clientSideCaching = createClientSideCache(),
+                distributedCache = distributedCaching,
+                clientSideCache = createClientSideCache(),
             ),
         )
         assertThat(currentCache, equalTo(cacheManager.getCache(cacheName)))
         otherCache = cacheManager.createCache(
-            CacheConfig(
+            CoherentCacheConfiguration(
                 cacheName = cacheName,
                 clientId = otherClientId,
                 keyConverter = keyConverter,
-                distributedCaching = distributedCaching,
-                clientSideCaching = createClientSideCache(),
+                distributedCache = distributedCaching,
+                clientSideCache = createClientSideCache(),
             ),
         )
     }
@@ -112,14 +112,14 @@ abstract class MultipleInstanceSyncSpec<K, V> {
 
         assertThat(otherCache, not(currentCache))
         //region init
-        assertThat(currentCache.clientSideCaching[cacheKey], nullValue())
+        assertThat(currentCache.clientSideCache[cacheKey], nullValue())
         currentCache[key] = value
-        assertThat(currentCache.clientSideCaching[cacheKey], equalTo(value))
+        assertThat(currentCache.clientSideCache[cacheKey], equalTo(value))
         assertThat(latch1.await(1, TimeUnit.SECONDS), equalTo(true))
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
-        assertThat(otherCache.clientSideCaching[cacheKey], nullValue())
+        assertThat(otherCache.clientSideCache[cacheKey], nullValue())
         assertThat(otherCache[key], equalTo(value))
-        assertThat(otherCache.clientSideCaching[cacheKey], equalTo(value))
+        assertThat(otherCache.clientSideCache[cacheKey], equalTo(value))
         //endregion
 
         //region set
@@ -127,14 +127,14 @@ abstract class MultipleInstanceSyncSpec<K, V> {
         currentCache[key] = nextValue
         assertThat(latch2.await(1, TimeUnit.SECONDS), equalTo(true))
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
-        assertThat(otherCache.clientSideCaching[cacheKey], nullValue())
+        assertThat(otherCache.clientSideCache[cacheKey], nullValue())
         //endregion
 
         currentCache.evict(key)
         assertThat(currentCache[key], nullValue())
         assertThat(latch3.await(1, TimeUnit.SECONDS), equalTo(true))
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
-        assertThat(otherCache.clientSideCaching[cacheKey], nullValue())
+        assertThat(otherCache.clientSideCache[cacheKey], nullValue())
         assertThat(otherCache[key], nullValue())
     }
 }
