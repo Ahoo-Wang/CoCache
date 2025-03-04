@@ -21,19 +21,26 @@ import org.springframework.context.ApplicationContext
 import org.springframework.context.ApplicationContextAware
 
 class CacheProxyFactoryBean(private val cacheMetadata: CoCacheMetadata) :
-    FactoryBean<Cache<String, Any>>,
+    FactoryBean<Cache<Any, Any>>,
     ApplicationContextAware {
     private lateinit var appContext: ApplicationContext
     override fun setApplicationContext(applicationContext: ApplicationContext) {
         this.appContext = applicationContext
     }
 
-    override fun getObject(): Cache<String, Any> {
+    override fun getObject(): Cache<Any, Any> {
         val cacheProxyFactory = appContext.getBean(CacheProxyFactory::class.java)
-        return cacheProxyFactory.create(cacheMetadata)
+        val resolvedMetadata = resolveMetadata()
+        return cacheProxyFactory.create(resolvedMetadata)
     }
 
     override fun getObjectType(): Class<*> {
         return cacheMetadata.type.java
+    }
+
+    private fun resolveMetadata(): CoCacheMetadata {
+        val keyPrefix = appContext.environment.resolvePlaceholders(cacheMetadata.keyPrefix)
+        val keyExpression = appContext.environment.resolvePlaceholders(cacheMetadata.keyExpression)
+        return cacheMetadata.copy(keyPrefix = keyPrefix, keyExpression = keyExpression)
     }
 }
