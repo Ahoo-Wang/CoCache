@@ -7,6 +7,7 @@ import me.ahoo.cache.annotation.coCacheMetadata
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.DefaultClientSideCacheFactory
 import me.ahoo.cache.consistency.NoOpCacheEvictedEventBus
+import me.ahoo.cache.converter.DefaultKeyConverterFactory
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.distributed.mock.MockDistributedCache
@@ -34,7 +35,8 @@ class DefaultCacheProxyFactoryTest {
                 clientIdGenerator = ClientIdGenerator.UUID,
                 clientSideCacheFactory = DefaultClientSideCacheFactory,
                 distributedCacheFactory = distributedCacheFactory,
-                cacheSourceFactory = cacheSourceFactory
+                cacheSourceFactory = cacheSourceFactory,
+                keyConverterFactory = DefaultKeyConverterFactory
             )
             return cacheProxyFactory.create(metadata)
         }
