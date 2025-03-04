@@ -20,7 +20,7 @@ import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.example.model.User
 import java.util.concurrent.TimeUnit
 
-@CoCache
+@CoCache(keyPrefix = "user:")
 @GuavaCache(
     maximumSize = 1000_000,
     expireUnit = TimeUnit.SECONDS,
