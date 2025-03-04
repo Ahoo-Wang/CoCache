@@ -44,7 +44,7 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     protected val clientId: String = UUID.randomUUID().toString()
 
     private val cacheSource = object : CacheSource<K, V> {
-        override fun load(key: K): CacheValue<V>? {
+        override fun loadCacheValue(key: K): CacheValue<V>? {
             return CACHE_SOURCE_VALUE.get() as CacheValue<V>?
         }
     }

@@ -21,7 +21,7 @@ import me.ahoo.cache.api.CacheValue
  */
 object NoOpCacheSource : CacheSource<Any, Any> {
 
-    override fun load(key: Any): CacheValue<Any>? {
+    override fun loadCacheValue(key: Any): CacheValue<Any>? {
         return null
     }
 }

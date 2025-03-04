@@ -21,7 +21,7 @@ import me.ahoo.cache.api.CacheValue
  * @author ahoo wang
  */
 interface CacheSource<K, V> {
-    fun load(key: K): CacheValue<V>?
+    fun loadCacheValue(key: K): CacheValue<V>?
 
     companion object {
         @JvmStatic
