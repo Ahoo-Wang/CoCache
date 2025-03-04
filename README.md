@@ -94,12 +94,13 @@ UserCacheSource  ..>  CacheSource~K, V~
  * 可选的配置
  */
 @GuavaCache(
-    initialCapacity = 1,
-    maximumSize = 2,
-    concurrencyLevel = 3,
-    expireAfterAccessNanos = 4,
-    expireAfterWriteNanos = 5
+    maximumSize = 1000_000,
+    expireUnit = TimeUnit.SECONDS,
+    expireAfterAccess = 120
 )
+/**
+ * 可选的配置
+ */
 @MissingGuardCache(ttlSeconds = 120)
 interface UserCache : Cache<String, User>
 
