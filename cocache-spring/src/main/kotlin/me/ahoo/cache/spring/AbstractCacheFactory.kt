@@ -43,7 +43,7 @@ abstract class AbstractCacheFactory(private val beanFactory: BeanFactory) {
         return provider.getIfAvailable {
             if (log.isWarnEnabled) {
                 log.warn(
-                    "[${this.javaClass.simpleName} ] Not found for {}, fallback.",
+                    "[${this.javaClass.simpleName}] Not found for {}, fallback.",
                     cacheMetadata
                 )
             }
