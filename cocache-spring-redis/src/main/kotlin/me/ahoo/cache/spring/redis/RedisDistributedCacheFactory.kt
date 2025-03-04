@@ -16,6 +16,7 @@ package me.ahoo.cache.spring.redis
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
+import me.ahoo.cache.spring.AbstractCacheFactory
 import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor
 import me.ahoo.cache.spring.redis.serialization.JsonSerializer
 import org.springframework.beans.factory.BeanFactory
@@ -23,30 +24,29 @@ import org.springframework.core.ResolvableType
 import org.springframework.data.redis.core.StringRedisTemplate
 
 class RedisDistributedCacheFactory(
-    private val beanFactory: BeanFactory,
+    beanFactory: BeanFactory,
     private val redisTemplate: StringRedisTemplate
-) : DistributedCacheFactory {
+) : DistributedCacheFactory, AbstractCacheFactory(beanFactory) {
     companion object {
-        private val log = org.slf4j.LoggerFactory.getLogger(RedisDistributedCacheFactory::class.java)
+        const val DISTRIBUTED_CACHE_SUFFIX = ".DistributedCache"
     }
 
-    @Suppress("UNCHECKED_CAST")
-    override fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V> {
-        val valueType = cacheMetadata.valueType.java as Class<V>
-        val distributedCacheType = ResolvableType.forClassWithGenerics(
+    override val suffix: String = DISTRIBUTED_CACHE_SUFFIX
+
+    override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
+        return ResolvableType.forClassWithGenerics(
             DistributedCache::class.java,
-            valueType
+            cacheMetadata.valueType.java
         )
-        val distributedCacheProvider = beanFactory.getBeanProvider<DistributedCache<V>>(distributedCacheType)
-        return distributedCacheProvider.getIfAvailable {
-            if (log.isInfoEnabled) {
-                log.info(
-                    "DistributedCache not found for {}, use ObjectToJsonCodecExecutor's RedisDistributedCache instead.",
-                    cacheMetadata
-                )
-            }
-            val codecExecutor = ObjectToJsonCodecExecutor(valueType, redisTemplate, JsonSerializer)
-            RedisDistributedCache(redisTemplate, codecExecutor)
-        }
+    }
+
+    override fun fallback(cacheMetadata: CoCacheMetadata): Any {
+        val codecExecutor = ObjectToJsonCodecExecutor(cacheMetadata.valueType.java, redisTemplate, JsonSerializer)
+        return RedisDistributedCache(redisTemplate, codecExecutor)
+    }
+
+    override fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V> {
+        @Suppress("UNCHECKED_CAST")
+        return createBean(cacheMetadata) as DistributedCache<V>
     }
 }

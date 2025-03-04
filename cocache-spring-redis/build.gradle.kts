@@ -1,5 +1,6 @@
 dependencies {
     api(project(":cocache-core"))
+    api(project(":cocache-spring"))
     api("com.fasterxml.jackson.core:jackson-databind")
     api("org.springframework.data:spring-data-redis")
     testImplementation("com.fasterxml.jackson.module:jackson-module-kotlin")
