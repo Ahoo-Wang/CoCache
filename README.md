@@ -87,9 +87,20 @@ UserCacheSource  ..>  CacheSource~K, V~
 ```kotlin
 
 /**
- * 定义缓存接口
+ * 定义缓存接口,必须的
  */
 @CoCache
+/**
+ * 可选的配置
+ */
+@GuavaCache(
+    initialCapacity = 1,
+    maximumSize = 2,
+    concurrencyLevel = 3,
+    expireAfterAccessNanos = 4,
+    expireAfterWriteNanos = 5
+)
+@MissingGuardCache(ttlSeconds = 120)
 interface UserCache : Cache<String, User>
 
 @EnableCoCache(caches = [UserCache::class])

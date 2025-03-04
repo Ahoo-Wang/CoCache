@@ -20,7 +20,7 @@ import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.distributed.DistributedClientId
 
 @CoCache
-@MissingGuardCache
+@MissingGuardCache(ttlSeconds = 120)
 interface MockCache :
     ComputedCache<String, String>,
     CacheDelegated<CoherentCache<String, String>>,
