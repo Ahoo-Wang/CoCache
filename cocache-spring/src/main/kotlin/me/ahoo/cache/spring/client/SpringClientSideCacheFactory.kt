@@ -26,13 +26,12 @@ class SpringClientSideCacheFactory(private val beanFactory: BeanFactory) : Clien
         private val log = LoggerFactory.getLogger(SpringClientSideCacheFactory::class.java)
     }
 
-    @Suppress("UNCHECKED_CAST")
     override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
         val clientSideCacheType = ResolvableType.forClassWithGenerics(
             ClientSideCache::class.java,
             cacheMetadata.valueType.java
         )
-        val clientSideCacheProvider = beanFactory.getBeanProvider<ClientSideCache<Any>>(clientSideCacheType)
+        val clientSideCacheProvider = beanFactory.getBeanProvider<ClientSideCache<V>>(clientSideCacheType)
         return clientSideCacheProvider.getIfAvailable {
             if (log.isWarnEnabled) {
                 log.warn(
@@ -41,6 +40,6 @@ class SpringClientSideCacheFactory(private val beanFactory: BeanFactory) : Clien
                 )
             }
             DefaultClientSideCacheFactory.create(cacheMetadata)
-        } as ClientSideCache<V>
+        }
     }
 }
