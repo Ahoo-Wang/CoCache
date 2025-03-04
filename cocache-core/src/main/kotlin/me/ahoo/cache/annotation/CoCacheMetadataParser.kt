@@ -18,7 +18,6 @@ import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CoCache
 import kotlin.reflect.KClass
 import kotlin.reflect.full.findAnnotation
-import kotlin.reflect.full.isSubclassOf
 import kotlin.reflect.jvm.jvmName
 
 object CoCacheMetadataParser {
@@ -27,12 +26,9 @@ object CoCacheMetadataParser {
      *
      * @param cacheType 必须继承 `Cache` 接口，必须有 `@CoCache` 注解 ,必须是接口
      */
-    fun parse(cacheType: KClass<*>): CoCacheMetadata {
+    fun parse(cacheType: KClass<out Cache<*, *>>): CoCacheMetadata {
         require(cacheType.java.isInterface) {
             "${cacheType.jvmName} must be interface."
-        }
-        require(cacheType.isSubclassOf(Cache::class)) {
-            "cacheType must inherit from Cache<K,V> interface"
         }
         val coCacheAnnotation = requireNotNull(cacheType.findAnnotation<CoCache>()) {
             "cacheType must be annotated with @CoCache"
@@ -58,10 +54,10 @@ object CoCacheMetadataParser {
     }
 }
 
-fun KClass<*>.toCoCacheMetadata(): CoCacheMetadata {
+fun KClass<out Cache<*, *>>.toCoCacheMetadata(): CoCacheMetadata {
     return CoCacheMetadataParser.parse(this)
 }
 
-inline fun <reified C> coCacheMetadata(): CoCacheMetadata {
-    return C::class.toCoCacheMetadata()
+inline fun <reified CACHE : Cache<*, *>> coCacheMetadata(): CoCacheMetadata {
+    return CACHE::class.toCoCacheMetadata()
 }
