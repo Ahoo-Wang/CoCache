@@ -15,6 +15,14 @@ package me.ahoo.cache.api.annotation
 
 import java.lang.annotation.Inherited
 
+/**
+ * 用于标记缓存接口，用于自动注入缓存代理。
+ *
+ * - 缓存接口必须是接口。
+ * - 缓存接口必须继承 [me.ahoo.cache.api.Cache]。
+ *
+ * @see me.ahoo.cache.api.Cache
+ */
 @Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
 @Inherited
 @MustBeDocumented
