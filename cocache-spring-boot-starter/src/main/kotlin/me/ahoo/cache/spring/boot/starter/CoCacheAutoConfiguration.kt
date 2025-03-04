@@ -15,6 +15,8 @@ package me.ahoo.cache.spring.boot.starter
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.consistency.CacheEvictedEventBus
+import me.ahoo.cache.converter.DefaultKeyConverterFactory
+import me.ahoo.cache.converter.KeyConverterFactory
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.proxy.CacheProxyFactory
 import me.ahoo.cache.proxy.DefaultCacheProxyFactory
@@ -104,19 +106,28 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    fun keyConverterFactory(): KeyConverterFactory {
+        return DefaultKeyConverterFactory
+    }
+
+    @Suppress("LongParameterList")
+    @Bean
+    @ConditionalOnMissingBean
     fun cacheProxyFactory(
         cacheManager: CacheManager,
         clientIdGenerator: ClientIdGenerator,
         clientSideCacheFactory: ClientSideCacheFactory,
         distributedCacheFactory: DistributedCacheFactory,
-        cacheSourceResolver: CacheSourceFactory
+        cacheSourceResolver: CacheSourceFactory,
+        keyConverterFactory: KeyConverterFactory
     ): CacheProxyFactory {
         return DefaultCacheProxyFactory(
             cacheManager,
             clientIdGenerator,
             clientSideCacheFactory,
             distributedCacheFactory,
-            cacheSourceResolver
+            cacheSourceResolver,
+            keyConverterFactory
         )
     }
 

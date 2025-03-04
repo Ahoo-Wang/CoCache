@@ -19,13 +19,10 @@ import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.NamedCache
-import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
-import me.ahoo.cache.converter.ExpKeyConverter
-import me.ahoo.cache.converter.KeyConverter
-import me.ahoo.cache.converter.ToStringKeyConverter
+import me.ahoo.cache.converter.KeyConverterFactory
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.distributed.DistributedClientId
@@ -39,7 +36,8 @@ class DefaultCacheProxyFactory(
     private val clientIdGenerator: ClientIdGenerator,
     private val clientSideCacheFactory: ClientSideCacheFactory,
     private val distributedCacheFactory: DistributedCacheFactory,
-    private val cacheSourceFactory: CacheSourceFactory
+    private val cacheSourceFactory: CacheSourceFactory,
+    private val keyConverterFactory: KeyConverterFactory
 ) : CacheProxyFactory {
 
     @Suppress("UNCHECKED_CAST")
@@ -49,11 +47,12 @@ class DefaultCacheProxyFactory(
         val distributedCaching: DistributedCache<Any> = distributedCacheFactory.create(cacheMetadata)
         val cacheSource = cacheSourceFactory.create<Any, Any>(cacheMetadata)
         val missingGuardCache = cacheMetadata.resolveMissingGuardCache()
+        val keyConverter = keyConverterFactory.create<Any>(cacheMetadata)
         val delegate = cacheManager.getOrCreateCache(
             CoherentCacheConfiguration(
                 cacheName = cacheMetadata.cacheName,
                 clientId = clientId,
-                keyConverter = cacheMetadata.resolveKeyConverter(),
+                keyConverter = keyConverter,
                 clientSideCache = clientSideCaching,
                 distributedCache = distributedCaching,
                 cacheSource = cacheSource,
@@ -78,19 +77,5 @@ class DefaultCacheProxyFactory(
 
     private fun CoCacheMetadata.resolveMissingGuardCache(): MissingGuardCache {
         return type.findAnnotation<MissingGuardCache>() ?: return MissingGuardCache()
-    }
-
-    private fun CoCacheMetadata.resolveKeyConverter(): KeyConverter<Any> {
-        val cacheKeyPrefix = this.resolveCacheKeyPrefix()
-        if (this.keyExpression.isNotBlank()) {
-            return ExpKeyConverter(cacheKeyPrefix, this.keyExpression)
-        }
-        return ToStringKeyConverter(cacheKeyPrefix)
-    }
-
-    private fun CoCacheMetadata.resolveCacheKeyPrefix(): String {
-        return keyPrefix.ifBlank {
-            "${CoCache.COCACHE}:$cacheName:"
-        }
     }
 }
