@@ -14,6 +14,7 @@ package me.ahoo.cache
 
 import com.google.common.eventbus.Subscribe
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCache
@@ -34,29 +35,56 @@ import java.time.Duration
  */
 @Suppress("LongParameterList")
 class CoherentCache<K, V>(
-    override val cacheName: String,
-    override val clientId: String,
-    val keyConverter: KeyConverter<K>,
-    val distributedCaching: DistributedCache<V>,
-    val clientSideCaching: ClientSideCache<V> = MapClientSideCache(),
-    val cacheEvictedEventBus: CacheEvictedEventBus,
-    val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
-    val keyFilter: KeyFilter = NoOpKeyFilter,
-    val missingGuardTtl: Long = Duration.ofMinutes(10).seconds,
-    val missingGuardTtlAmplitude: Long = Duration.ofMinutes(1).seconds
-) : ComputedCache<K, V>, DistributedClientId, CacheEvictedSubscriber {
+    val config: CoherentCacheConfiguration<K, V>,
+    val cacheEvictedEventBus: CacheEvictedEventBus
+) : ComputedCache<K, V>, DistributedClientId by config, NamedCache by config, CacheEvictedSubscriber {
+
+    constructor(
+        cacheName: String,
+        clientId: String,
+        keyConverter: KeyConverter<K>,
+        clientSideCache: ClientSideCache<V> = MapClientSideCache(),
+        distributedCache: DistributedCache<V>,
+        cacheSource: CacheSource<K, V> = CacheSource.noOp(),
+        keyFilter: KeyFilter = NoOpKeyFilter,
+        missingGuardTtl: Long = Duration.ofMinutes(10).seconds,
+        missingGuardTtlAmplitude: Long = Duration.ofMinutes(1).seconds,
+        cacheEvictedEventBus: CacheEvictedEventBus
+    ) : this(
+        CoherentCacheConfiguration(
+            cacheName = cacheName,
+            clientId = clientId,
+            keyConverter = keyConverter,
+            clientSideCache = clientSideCache,
+            distributedCache = distributedCache,
+            cacheSource = cacheSource,
+            keyFilter = keyFilter,
+            missingGuardTtl = missingGuardTtl,
+            missingGuardTtlAmplitude = missingGuardTtlAmplitude
+        ),
+        cacheEvictedEventBus = cacheEvictedEventBus,
+    )
+
     companion object {
         private val log = LoggerFactory.getLogger(CoherentCache::class.java)
     }
 
+    val clientSideCache = config.clientSideCache
+    val distributedCache = config.distributedCache
+    val keyFilter = config.keyFilter
+    val keyConverter = config.keyConverter
+    val missingGuardTtl = config.missingGuardTtl
+    val missingGuardTtlAmplitude = config.missingGuardTtlAmplitude
+    val cacheSource = config.cacheSource
+
     @Suppress("ReturnCount")
     private fun getL2Cache(cacheKey: String): CacheValue<V>? {
         //region L2
-        clientSideCaching.getCache(cacheKey)?.let {
+        clientSideCache.getCache(cacheKey)?.let {
             if (it.isExpired.not()) {
                 return it
             } else {
-                clientSideCaching.evict(cacheKey)
+                clientSideCache.evict(cacheKey)
             }
         }
 
@@ -65,7 +93,7 @@ class CoherentCache<K, V>(
             return DefaultCacheValue.missingGuard(missingGuardTtl, missingGuardTtlAmplitude)
         }
         //region L1
-        distributedCaching.getCache(cacheKey)?.let {
+        distributedCache.getCache(cacheKey)?.let {
             if (it.isExpired.not()) {
                 if (log.isDebugEnabled) {
                     log.debug(
@@ -75,7 +103,7 @@ class CoherentCache<K, V>(
                         cacheKey
                     )
                 }
-                clientSideCaching.setCache(cacheKey, it)
+                clientSideCache.setCache(cacheKey, it)
                 return it
             }
         }
@@ -133,8 +161,8 @@ class CoherentCache<K, V>(
     }
 
     private fun setCache(cacheKey: String, cacheValue: CacheValue<V>) {
-        clientSideCaching.setCache(cacheKey, cacheValue)
-        distributedCaching.setCache(cacheKey, cacheValue)
+        clientSideCache.setCache(cacheKey, cacheValue)
+        distributedCache.setCache(cacheKey, cacheValue)
     }
 
     override fun setCache(key: K, value: CacheValue<V>) {
@@ -148,8 +176,8 @@ class CoherentCache<K, V>(
 
     override fun evict(key: K) {
         val cacheKey = keyConverter.toStringKey(key)
-        clientSideCaching.evict(cacheKey)
-        distributedCaching.evict(cacheKey)
+        clientSideCache.evict(cacheKey)
+        distributedCache.evict(cacheKey)
         cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
     }
 
@@ -191,7 +219,7 @@ class CoherentCache<K, V>(
                 cacheEvictedEvent,
             )
         }
-        clientSideCaching.evict(cacheEvictedEvent.key)
+        clientSideCache.evict(cacheEvictedEvent.key)
     }
 
     override fun toString(): String {

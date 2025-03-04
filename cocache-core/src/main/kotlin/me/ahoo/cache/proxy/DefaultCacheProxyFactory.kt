@@ -13,8 +13,8 @@
 
 package me.ahoo.cache.proxy
 
-import me.ahoo.cache.CacheConfig
 import me.ahoo.cache.CacheManager
+import me.ahoo.cache.CoherentCacheConfiguration
 import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
@@ -47,12 +47,12 @@ class DefaultCacheProxyFactory(
         val distributedCaching: DistributedCache<Any> = distributedCacheFactory.create(cacheMetadata)
         val cacheSource = cacheSourceFactory.create<Any, Any>(cacheMetadata)
         val delegate = cacheManager.getOrCreateCache(
-            CacheConfig(
+            CoherentCacheConfiguration(
                 cacheName = cacheMetadata.cacheName,
                 clientId = clientId,
                 keyConverter = cacheMetadata.resolveKeyConverter(),
-                clientSideCaching = clientSideCaching,
-                distributedCaching = distributedCaching,
+                clientSideCache = clientSideCaching,
+                distributedCache = distributedCaching,
                 cacheSource = cacheSource,
             ),
         )

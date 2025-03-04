@@ -65,10 +65,10 @@ class CoCacheEndpoint(private val cacheManager: CacheManager) {
                 return CacheReport(
                     name = cacheName,
                     clientId = clientId,
-                    clientSize = clientSideCaching.size,
+                    clientSize = clientSideCache.size,
                     keyConverter = keyConverter.javaClass.name,
-                    distributedCaching = distributedCaching.javaClass.name,
-                    clientSideCaching = clientSideCaching.javaClass.name,
+                    distributedCaching = distributedCache.javaClass.name,
+                    clientSideCaching = clientSideCache.javaClass.name,
                     cacheEvictedEventBus = cacheEvictedEventBus.javaClass.name,
                     cacheSource = cacheSource.javaClass.name,
                     keyFilter = keyFilter.javaClass.name,

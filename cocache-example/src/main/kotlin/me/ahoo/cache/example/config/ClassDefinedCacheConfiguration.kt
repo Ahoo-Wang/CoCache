@@ -14,7 +14,7 @@ package me.ahoo.cache.example.config
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.google.common.cache.CacheBuilder
-import me.ahoo.cache.CacheConfig
+import me.ahoo.cache.CoherentCacheConfiguration
 import me.ahoo.cache.CacheManager
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.CoherentCache
@@ -50,12 +50,12 @@ class ClassDefinedCacheConfiguration {
         val distributedCaching: DistributedCache<User> = RedisDistributedCache(redisTemplate, codecExecutor)
 
         return cacheManager.getOrCreateCache(
-            CacheConfig(
+            CoherentCacheConfiguration(
                 cacheName = "userCache",
                 clientId = clientId,
                 keyConverter = ToStringKeyConverter(User.CACHE_KEY_PREFIX),
-                distributedCaching = distributedCaching,
-                clientSideCaching = CacheBuilder
+                distributedCache = distributedCaching,
+                clientSideCache = CacheBuilder
                     .newBuilder()
                     .expireAfterAccess(Duration.ofHours(1))
                     .build<String, CacheValue<User>>().let {
@@ -70,11 +70,11 @@ class ClassDefinedCacheConfiguration {
         val distributedCaching = MockDistributedCache<String>()
         val clientId = clientIdGenerator.generate()
         return cacheManager.getOrCreateCache(
-            CacheConfig(
+            CoherentCacheConfiguration(
                 cacheName = "userCache",
                 clientId = clientId,
                 keyConverter = ToStringKeyConverter(""),
-                distributedCaching = distributedCaching,
+                distributedCache = distributedCaching,
             ),
         )
     }

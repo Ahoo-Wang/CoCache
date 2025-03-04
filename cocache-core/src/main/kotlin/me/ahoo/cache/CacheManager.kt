@@ -13,13 +13,16 @@
 
 package me.ahoo.cache
 
+import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.filter.NoOpKeyFilter
+import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 
 class CacheManager(private val cacheEvictedEventBus: CacheEvictedEventBus) {
@@ -35,22 +38,16 @@ class CacheManager(private val cacheEvictedEventBus: CacheEvictedEventBus) {
         return caches[cacheName] as CoherentCache<K, V>?
     }
 
-    fun <K, V> createCache(cacheConfig: CacheConfig<K, V>): CoherentCache<K, V> {
+    fun <K, V> createCache(cacheConfig: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
         val cache = CoherentCache(
-            cacheName = cacheConfig.cacheName,
-            clientId = cacheConfig.clientId,
-            keyConverter = cacheConfig.keyConverter,
-            distributedCaching = cacheConfig.distributedCaching,
-            clientSideCaching = cacheConfig.clientSideCaching,
-            cacheEvictedEventBus = cacheEvictedEventBus,
-            cacheSource = cacheConfig.cacheSource,
-            keyFilter = cacheConfig.keyFilter,
+            config = cacheConfig,
+            cacheEvictedEventBus = cacheEvictedEventBus
         )
         cacheEvictedEventBus.register(cache)
         return cache
     }
 
-    fun <K, V> getOrCreateCache(cacheConfig: CacheConfig<K, V>): CoherentCache<K, V> {
+    fun <K, V> getOrCreateCache(cacheConfig: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
         @Suppress("UNCHECKED_CAST")
         return caches.computeIfAbsent(cacheConfig.cacheName) {
             createCache(cacheConfig)
@@ -58,12 +55,14 @@ class CacheManager(private val cacheEvictedEventBus: CacheEvictedEventBus) {
     }
 }
 
-data class CacheConfig<K, V>(
-    val cacheName: String,
-    val clientId: String,
+data class CoherentCacheConfiguration<K, V>(
+    override val cacheName: String,
+    override val clientId: String,
     val keyConverter: KeyConverter<K>,
-    val distributedCaching: DistributedCache<V>,
-    val clientSideCaching: ClientSideCache<V> = MapClientSideCache(),
+    val distributedCache: DistributedCache<V>,
+    val clientSideCache: ClientSideCache<V> = MapClientSideCache(),
     val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
-    val keyFilter: KeyFilter = NoOpKeyFilter
-)
+    val keyFilter: KeyFilter = NoOpKeyFilter,
+    val missingGuardTtl: Long = Duration.ofMinutes(10).seconds,
+    val missingGuardTtlAmplitude: Long = Duration.ofMinutes(1).seconds
+) : NamedCache, DistributedClientId
