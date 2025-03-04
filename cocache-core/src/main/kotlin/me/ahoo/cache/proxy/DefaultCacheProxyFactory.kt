@@ -20,6 +20,7 @@ import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.converter.ExpKeyConverter
@@ -31,6 +32,7 @@ import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.util.ClientIdGenerator
 import java.lang.reflect.Proxy
+import kotlin.reflect.full.findAnnotation
 
 class DefaultCacheProxyFactory(
     private val cacheManager: CacheManager,
@@ -46,6 +48,7 @@ class DefaultCacheProxyFactory(
         val clientSideCaching: ClientSideCache<Any> = clientSideCacheFactory.create(cacheMetadata)
         val distributedCaching: DistributedCache<Any> = distributedCacheFactory.create(cacheMetadata)
         val cacheSource = cacheSourceFactory.create<Any, Any>(cacheMetadata)
+        val missingGuardCache = cacheMetadata.resolveMissingGuardCache()
         val delegate = cacheManager.getOrCreateCache(
             CoherentCacheConfiguration(
                 cacheName = cacheMetadata.cacheName,
@@ -54,6 +57,8 @@ class DefaultCacheProxyFactory(
                 clientSideCache = clientSideCaching,
                 distributedCache = distributedCaching,
                 cacheSource = cacheSource,
+                missingGuardTtl = missingGuardCache.ttlSeconds,
+                missingGuardTtlAmplitude = missingGuardCache.ttlAmplitudeSeconds
             ),
         )
         val invocationHandler = CoCacheInvocationHandler(cacheMetadata = cacheMetadata, delegate = delegate)
@@ -69,6 +74,10 @@ class DefaultCacheProxyFactory(
             ),
             invocationHandler
         ) as CACHE
+    }
+
+    private fun CoCacheMetadata.resolveMissingGuardCache(): MissingGuardCache {
+        return type.findAnnotation<MissingGuardCache>() ?: return MissingGuardCache()
     }
 
     private fun CoCacheMetadata.resolveKeyConverter(): KeyConverter<Any> {
