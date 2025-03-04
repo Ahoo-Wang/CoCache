@@ -14,6 +14,7 @@
 package me.ahoo.cache.api.annotation
 
 import java.lang.annotation.Inherited
+import java.util.concurrent.TimeUnit
 
 /**
  * @see me.ahoo.cache.api.client.ClientSideCache
@@ -26,8 +27,9 @@ annotation class GuavaCache(
     val initialCapacity: Int = UNSET_INT,
     val concurrencyLevel: Int = UNSET_INT,
     val maximumSize: Long = UNSET_LONG,
-    val expireAfterWriteNanos: Long = UNSET_LONG,
-    val expireAfterAccessNanos: Long = UNSET_LONG
+    val expireUnit: TimeUnit = TimeUnit.SECONDS,
+    val expireAfterWrite: Long = UNSET_LONG,
+    val expireAfterAccess: Long = UNSET_LONG
 ) {
     companion object {
         const val UNSET_INT: Int = -1

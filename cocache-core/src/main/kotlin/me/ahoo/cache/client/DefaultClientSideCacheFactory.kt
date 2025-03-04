@@ -32,11 +32,11 @@ object DefaultClientSideCacheFactory : ClientSideCacheFactory {
         if (guavaCache.maximumSize != GuavaCache.UNSET_LONG) {
             cacheBuilder.maximumSize(guavaCache.maximumSize)
         }
-        if (guavaCache.expireAfterWriteNanos != GuavaCache.UNSET_LONG) {
-            cacheBuilder.expireAfterWrite(guavaCache.expireAfterWriteNanos, java.util.concurrent.TimeUnit.NANOSECONDS)
+        if (guavaCache.expireAfterWrite != GuavaCache.UNSET_LONG) {
+            cacheBuilder.expireAfterWrite(guavaCache.expireAfterWrite, guavaCache.expireUnit)
         }
-        if (guavaCache.expireAfterAccessNanos != GuavaCache.UNSET_LONG) {
-            cacheBuilder.expireAfterAccess(guavaCache.expireAfterAccessNanos, java.util.concurrent.TimeUnit.NANOSECONDS)
+        if (guavaCache.expireAfterAccess != GuavaCache.UNSET_LONG) {
+            cacheBuilder.expireAfterAccess(guavaCache.expireAfterAccess, guavaCache.expireUnit)
         }
         return GuavaClientSideCache(cacheBuilder.build())
     }
