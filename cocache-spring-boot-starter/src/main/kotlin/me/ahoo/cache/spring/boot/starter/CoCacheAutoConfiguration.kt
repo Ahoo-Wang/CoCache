@@ -22,7 +22,7 @@ import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.spring.client.SpringClientSideCacheFactory
 import me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus
 import me.ahoo.cache.spring.redis.RedisDistributedCacheFactory
-import me.ahoo.cache.spring.souce.SpringCacheSourceFactory
+import me.ahoo.cache.spring.source.SpringCacheSourceFactory
 import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.cache.util.HostClientIdGenerator
 import me.ahoo.cosid.machine.HostAddressSupplier

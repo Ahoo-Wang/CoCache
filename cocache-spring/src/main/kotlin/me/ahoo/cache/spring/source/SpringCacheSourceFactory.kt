@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.spring.souce
+package me.ahoo.cache.spring.source
 
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.source.CacheSource
