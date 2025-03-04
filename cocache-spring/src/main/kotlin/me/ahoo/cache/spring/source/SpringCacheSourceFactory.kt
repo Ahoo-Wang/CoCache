@@ -25,14 +25,13 @@ class SpringCacheSourceFactory(private val beanFactory: BeanFactory) : CacheSour
         private val log = LoggerFactory.getLogger(SpringCacheSourceFactory::class.java)
     }
 
-    @Suppress("UNCHECKED_CAST")
     override fun <K, V> create(cacheMetadata: CoCacheMetadata): CacheSource<K, V> {
         val cacheSourceType = ResolvableType.forClassWithGenerics(
             CacheSource::class.java,
             cacheMetadata.keyType.java,
             cacheMetadata.valueType.java
         )
-        val cacheSourceProvider = beanFactory.getBeanProvider<CacheSource<String, Any>>(cacheSourceType)
+        val cacheSourceProvider = beanFactory.getBeanProvider<CacheSource<K, V>>(cacheSourceType)
         return cacheSourceProvider.getIfAvailable {
             if (log.isWarnEnabled) {
                 log.warn(
@@ -41,6 +40,6 @@ class SpringCacheSourceFactory(private val beanFactory: BeanFactory) : CacheSour
                 )
             }
             CacheSource.noOp()
-        } as CacheSource<K, V>
+        }
     }
 }

@@ -39,13 +39,6 @@ class CoCacheMetadataParserTest {
     }
 
     @Test
-    fun parseIfNotSubclassOfCache() {
-        Assertions.assertThrows(IllegalArgumentException::class.java) {
-            coCacheMetadata<NotSubclassOfCache>()
-        }
-    }
-
-    @Test
     fun parseIfNotCacheAnnotation() {
         Assertions.assertThrows(IllegalArgumentException::class.java) {
             coCacheMetadata<NotCacheAnnotation>()
@@ -55,9 +48,7 @@ class CoCacheMetadataParserTest {
     @CoCache
     interface MockCache : Cache<String, CoCacheMetadataParserTest>
 
-    class NotInterface
-
-    interface NotSubclassOfCache
+    abstract class NotInterface : Cache<String, CoCacheMetadataParserTest>
 
     interface NotCacheAnnotation : ComputedCache<String, CoCacheMetadataParserTest>
 }
