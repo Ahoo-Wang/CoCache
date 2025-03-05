@@ -39,6 +39,10 @@ class SpringKeyConverterFactory(private val appContext: ApplicationContext) : Ke
         )
     }
 
+    override fun getBeanProvider(cacheMetadata: CoCacheMetadata, fallback: () -> Any): Any {
+        return fallback()
+    }
+
     override fun fallback(cacheMetadata: CoCacheMetadata): Any {
         val cacheKeyPrefix = if (cacheMetadata.keyPrefix.isNotBlank()) {
             appContext.environment.resolvePlaceholders(cacheMetadata.keyPrefix)

@@ -31,16 +31,23 @@ abstract class AbstractCacheFactory(private val beanFactory: BeanFactory) {
 
     abstract fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType
 
+    open fun getBeanProvider(cacheMetadata: CoCacheMetadata, fallback: () -> Any): Any {
+        val beanType = getBeanType(cacheMetadata)
+        val provider = beanFactory.getBeanProvider<Any>(beanType)
+        return provider.getIfAvailable {
+            fallback(cacheMetadata)
+        }
+    }
+
     abstract fun fallback(cacheMetadata: CoCacheMetadata): Any
 
+    @Suppress("ReturnCount")
     fun createBean(cacheMetadata: CoCacheMetadata): Any {
         val beanName = getBeanName(cacheMetadata)
         if (beanFactory.containsBean(beanName)) {
             return beanFactory.getBean(beanName)
         }
-        val beanType = getBeanType(cacheMetadata)
-        val provider = beanFactory.getBeanProvider<Any>(beanType)
-        return provider.getIfAvailable {
+        return getBeanProvider(cacheMetadata) {
             if (log.isWarnEnabled) {
                 log.warn(
                     "[${this.javaClass.simpleName}] Not found for {}, fallback.",
