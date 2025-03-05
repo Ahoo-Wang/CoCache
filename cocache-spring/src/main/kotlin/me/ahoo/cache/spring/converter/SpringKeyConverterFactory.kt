@@ -40,7 +40,10 @@ class SpringKeyConverterFactory(private val appContext: ApplicationContext) : Ke
     }
 
     override fun getBeanProvider(cacheMetadata: CoCacheMetadata, fallback: () -> Any): Any {
-        return fallback()
+        if (cacheMetadata.keyType.java == String::class.java) {
+            return fallback()
+        }
+        return super.getBeanProvider(cacheMetadata, fallback)
     }
 
     override fun fallback(cacheMetadata: CoCacheMetadata): Any {
