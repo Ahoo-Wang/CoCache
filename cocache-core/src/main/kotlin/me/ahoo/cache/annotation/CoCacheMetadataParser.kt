@@ -24,16 +24,13 @@ object CoCacheMetadataParser {
     /**
      * 解析 CoCache 注解定义的 Cache 接口
      *
-     * @param cacheType 必须继承 `Cache` 接口，必须有 `@CoCache` 注解 ,必须是接口
+     * @param cacheType 必须继承 `Cache` 接口，必须是接口
      */
     fun parse(cacheType: KClass<out Cache<*, *>>): CoCacheMetadata {
         require(cacheType.java.isInterface) {
             "${cacheType.jvmName} must be interface."
         }
-        val coCacheAnnotation = requireNotNull(cacheType.findAnnotation<CoCache>()) {
-            "cacheType must be annotated with @CoCache"
-        }
-
+        val coCacheAnnotation = cacheType.findAnnotation<CoCache>() ?: CoCache()
         // 获取继承的 Cache<K,V> 中 V 的具体类型
         val superCacheType = cacheType.supertypes.first {
             it.classifier == Cache::class || it.classifier == ComputedCache::class

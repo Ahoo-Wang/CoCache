@@ -87,7 +87,8 @@ UserCacheSource  ..>  CacheSource~K, V~
 ```kotlin
 
 /**
- * 定义缓存接口,必须的
+ * 定义缓存接口
+ * 可选的配置
  */
 @CoCache
 /**
