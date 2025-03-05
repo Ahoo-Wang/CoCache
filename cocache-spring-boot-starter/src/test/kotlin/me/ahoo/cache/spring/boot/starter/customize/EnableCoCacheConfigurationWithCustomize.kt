@@ -30,7 +30,8 @@ import org.springframework.context.annotation.Bean
     caches = [
         UserCache::class,
         UserExpCache::class,
-        UserPlaceholderCache::class
+        UserPlaceholderCache::class,
+        UserKeyCache::class
     ]
 )
 class EnableCoCacheConfigurationWithCustomize {
@@ -56,3 +57,7 @@ interface UserExpCache : Cache<String, User>
 
 @CoCache(keyPrefix = "\${spring.application.name}:user")
 interface UserPlaceholderCache : Cache<String, User>
+
+interface UserKeyCache : Cache<UserId, User>
+
+data class UserId(val id: String)

@@ -19,6 +19,7 @@ import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.spring.boot.starter.auto.EnableCoCacheConfiguration
 import me.ahoo.cache.spring.boot.starter.customize.EnableCoCacheConfigurationWithCustomize
 import me.ahoo.cache.spring.boot.starter.customize.UserExpCache
+import me.ahoo.cache.spring.boot.starter.customize.UserKeyCache
 import me.ahoo.cache.spring.boot.starter.customize.UserPlaceholderCache
 import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.cosid.machine.HostAddressSupplier
@@ -72,6 +73,7 @@ internal class CoCacheAutoConfigurationTest {
                 context.getBean(UserCache::class.java)
                 context.getBean(UserExpCache::class.java)
                 context.getBean(UserPlaceholderCache::class.java)
+                context.getBean(UserKeyCache::class.java)
             }
     }
 
