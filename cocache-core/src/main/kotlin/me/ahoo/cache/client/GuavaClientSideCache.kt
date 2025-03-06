@@ -15,6 +15,7 @@ package me.ahoo.cache.client
 import com.google.common.cache.Cache
 import com.google.common.cache.CacheBuilder
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.annotation.GuavaCache
 
 /**
  * Guava Client Side Cache .
@@ -45,5 +46,27 @@ class GuavaClientSideCache<V>(
 
     override fun clear() {
         guavaCache.invalidateAll()
+    }
+
+    companion object {
+        fun <V> GuavaCache.toClientSideCache(): GuavaClientSideCache<V> {
+            val cacheBuilder = CacheBuilder.newBuilder()
+            if (initialCapacity != GuavaCache.UNSET_INT) {
+                cacheBuilder.initialCapacity(initialCapacity)
+            }
+            if (concurrencyLevel != GuavaCache.UNSET_INT) {
+                cacheBuilder.concurrencyLevel(concurrencyLevel)
+            }
+            if (maximumSize != GuavaCache.UNSET_LONG) {
+                cacheBuilder.maximumSize(maximumSize)
+            }
+            if (expireAfterWrite != GuavaCache.UNSET_LONG) {
+                cacheBuilder.expireAfterWrite(expireAfterWrite, expireUnit)
+            }
+            if (expireAfterAccess != GuavaCache.UNSET_LONG) {
+                cacheBuilder.expireAfterAccess(expireAfterAccess, expireUnit)
+            }
+            return GuavaClientSideCache(cacheBuilder.build())
+        }
     }
 }
