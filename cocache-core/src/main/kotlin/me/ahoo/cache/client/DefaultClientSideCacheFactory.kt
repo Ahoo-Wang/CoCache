@@ -13,36 +13,15 @@
 
 package me.ahoo.cache.client
 
-import com.google.common.cache.CacheBuilder
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.annotation.GuavaCache
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.client.GuavaClientSideCache.Companion.toClientSideCache
 import kotlin.reflect.full.findAnnotation
 
 object DefaultClientSideCacheFactory : ClientSideCacheFactory {
     override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
         val guavaCache = cacheMetadata.type.findAnnotation<GuavaCache>() ?: return MapClientSideCache()
-        val cacheBuilder = cacheBuilder(guavaCache)
-        return GuavaClientSideCache(cacheBuilder.build())
-    }
-
-    fun cacheBuilder(guavaCache: GuavaCache): CacheBuilder<Any, Any> {
-        val cacheBuilder = CacheBuilder.newBuilder()
-        if (guavaCache.initialCapacity != GuavaCache.UNSET_INT) {
-            cacheBuilder.initialCapacity(guavaCache.initialCapacity)
-        }
-        if (guavaCache.concurrencyLevel != GuavaCache.UNSET_INT) {
-            cacheBuilder.concurrencyLevel(guavaCache.concurrencyLevel)
-        }
-        if (guavaCache.maximumSize != GuavaCache.UNSET_LONG) {
-            cacheBuilder.maximumSize(guavaCache.maximumSize)
-        }
-        if (guavaCache.expireAfterWrite != GuavaCache.UNSET_LONG) {
-            cacheBuilder.expireAfterWrite(guavaCache.expireAfterWrite, guavaCache.expireUnit)
-        }
-        if (guavaCache.expireAfterAccess != GuavaCache.UNSET_LONG) {
-            cacheBuilder.expireAfterAccess(guavaCache.expireAfterAccess, guavaCache.expireUnit)
-        }
-        return cacheBuilder
+        return guavaCache.toClientSideCache()
     }
 }
