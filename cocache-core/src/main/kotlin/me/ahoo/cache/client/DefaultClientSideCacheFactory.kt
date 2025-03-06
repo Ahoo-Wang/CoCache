@@ -22,6 +22,11 @@ import kotlin.reflect.full.findAnnotation
 object DefaultClientSideCacheFactory : ClientSideCacheFactory {
     override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
         val guavaCache = cacheMetadata.type.findAnnotation<GuavaCache>() ?: return MapClientSideCache()
+        val cacheBuilder = cacheBuilder(guavaCache)
+        return GuavaClientSideCache(cacheBuilder.build())
+    }
+
+    fun cacheBuilder(guavaCache: GuavaCache): CacheBuilder<Any, Any> {
         val cacheBuilder = CacheBuilder.newBuilder()
         if (guavaCache.initialCapacity != GuavaCache.UNSET_INT) {
             cacheBuilder.initialCapacity(guavaCache.initialCapacity)
@@ -38,6 +43,6 @@ object DefaultClientSideCacheFactory : ClientSideCacheFactory {
         if (guavaCache.expireAfterAccess != GuavaCache.UNSET_LONG) {
             cacheBuilder.expireAfterAccess(guavaCache.expireAfterAccess, guavaCache.expireUnit)
         }
-        return GuavaClientSideCache(cacheBuilder.build())
+        return cacheBuilder
     }
 }
