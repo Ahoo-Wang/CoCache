@@ -12,39 +12,35 @@
  */
 package me.ahoo.cache.join
 
-import me.ahoo.cache.DefaultCacheValue.Companion.forever
+import me.ahoo.cache.api.Cache
 import me.ahoo.cache.client.MapClientSideCache
-import org.junit.jupiter.api.Assertions
-import org.junit.jupiter.api.Test
+import me.ahoo.cache.test.CacheSpec
+import me.ahoo.cosid.jvm.UuidGenerator
 
 /**
  * SimpleJoinCachingTest .
  *
  * @author ahoo wang
  */
-internal class SimpleJoinCachingTest {
-    private val orderCache = MapClientSideCache<Order>()
-    private val orderAddressCache = MapClientSideCache<OrderAddress>()
-    private val joinCaching: JoinCache<String, Order, String, OrderAddress> =
-        SimpleJoinCaching(
+internal class SimpleJoinCachingTest : CacheSpec<String, JoinValue<Order, String, OrderAddress>>() {
+
+    override fun createCache(): Cache<String, JoinValue<Order, String, OrderAddress>> {
+        val orderCache = MapClientSideCache<Order>()
+        val orderAddressCache = MapClientSideCache<OrderAddress>()
+        return SimpleJoinCaching(
             orderCache,
             orderAddressCache,
         ) { firstValue -> firstValue.id }
-
-    @Test
-    fun get() {
-        val order = Order("1")
-        val orderAddress = OrderAddress(order.id)
-        orderCache.setCache(order.id, forever(order))
-        orderAddressCache.setCache(order.id, forever(orderAddress))
-        val joinValue = joinCaching[order.id]
-        Assertions.assertNotNull(joinValue)
-        Assertions.assertEquals(order, joinValue!!.firstValue)
-        Assertions.assertEquals(order.id, joinValue.joinKey)
-        Assertions.assertEquals(orderAddress, joinValue.secondValue)
     }
 
-    data class Order(val id: String)
-
-    data class OrderAddress(val orderId: String)
+    override fun createCacheEntry(): Pair<String, JoinValue<Order, String, OrderAddress>> {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+        val order = Order(orderId)
+        val orderAddress = OrderAddress(order.id)
+        return orderId to JoinValue(order, orderId, orderAddress)
+    }
 }
+
+data class Order(val id: String)
+
+data class OrderAddress(val orderId: String)

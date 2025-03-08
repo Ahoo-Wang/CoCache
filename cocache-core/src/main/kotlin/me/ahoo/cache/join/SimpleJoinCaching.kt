@@ -12,7 +12,12 @@
  */
 package me.ahoo.cache.join
 
-import me.ahoo.cache.api.CacheGetter
+import me.ahoo.cache.ComputedCache
+import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.DefaultCacheValue.Companion.missingGuard
+import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.CacheValue
+import kotlin.math.min
 
 /**
  * Simple Join Caching .
@@ -20,15 +25,51 @@ import me.ahoo.cache.api.CacheGetter
  * @author ahoo wang
  */
 class SimpleJoinCaching<K1, V1, K2, V2>(
-    private val firstCaching: CacheGetter<K1, V1>,
-    private val joinCaching: CacheGetter<K2, V2>,
+    private val firstCache: Cache<K1, V1>,
+    private val joinCache: Cache<K2, V2>,
     override val extractJoinKey: ExtractJoinKey<V1, K2>
-) : JoinCache<K1, V1, K2, V2> {
+) : JoinCache<K1, V1, K2, V2>, ComputedCache<K1, JoinValue<V1, K2, V2>> {
 
-    override fun get(key: K1): JoinValue<V1, K2, V2>? {
-        val firstValue = firstCaching[key] ?: return null
+    @Suppress("ReturnCount")
+    override fun getCache(key: K1): CacheValue<JoinValue<V1, K2, V2>>? {
+        val firstCacheValue = firstCache.getCache(key) ?: return null
+        if (firstCacheValue.isMissingGuard) {
+            return missingGuard()
+        }
+        val joinKey = extractJoinKey.extract(firstCacheValue.value)
+        val secondCacheValue = joinCache.getCache(joinKey)
+        val joinValue = JoinValue(firstCacheValue.value, joinKey, secondCacheValue?.value)
+        val ttlAt = getJoinTtlAt(firstCacheValue.ttlAt, secondCacheValue?.ttlAt)
+        return DefaultCacheValue(value = joinValue, ttlAt = ttlAt)
+    }
+
+    private fun getJoinTtlAt(
+        firstTtlAt: Long,
+        secondTtlAt: Long?
+    ): Long {
+        if (secondTtlAt == null) {
+            return firstTtlAt
+        }
+        return min(firstTtlAt, secondTtlAt)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    override fun setCache(key: K1, value: CacheValue<JoinValue<V1, K2, V2>>) {
+        if (value.isMissingGuard) {
+            firstCache.setCache(key, missingGuard())
+            return
+        }
+        val firstCacheValue = DefaultCacheValue(value = value.value.firstValue, ttlAt = value.ttlAt)
+        firstCache.setCache(key, firstCacheValue)
+        val secondValue = value.value.secondValue ?: return
+        val secondCacheValue = DefaultCacheValue(value = secondValue, ttlAt = value.ttlAt) as CacheValue<V2>
+        joinCache.setCache(value.value.joinKey, secondCacheValue)
+    }
+
+    override fun evict(key: K1) {
+        val firstValue = firstCache[key] ?: return
+        firstCache.evict(key)
         val joinKey = extractJoinKey.extract(firstValue)
-        val secondValue = joinCaching[joinKey]
-        return JoinValue(firstValue, joinKey, secondValue)
+        joinCache.evict(joinKey)
     }
 }
