@@ -10,29 +10,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.api
 
-/**
- * Cache Getter .
- *
- * @author ahoo wang
- */
-interface CacheGetter<K, V> {
-    fun getCache(key: K): CacheValue<V>?
+interface CacheSetter<K, V> {
+    operator fun set(key: K, ttlAt: Long, value: V)
+
+    operator fun set(key: K, value: V)
+
+    fun setCache(key: K, value: CacheValue<V>)
 
     /**
-     * Get the real cache value.
+     * evict cache.
      *
      * @param key cache key
-     * @return real cache value
      */
-    operator fun get(key: K): V?
-
-    /**
-     * get cache expire at time.
-     *
-     * @param key cache key
-     * @return when return null:cache not exist.
-     */
-    fun getTtlAt(key: K): Long?
+    fun evict(key: K)
 }
