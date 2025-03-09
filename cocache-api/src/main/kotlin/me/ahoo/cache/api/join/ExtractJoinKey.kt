@@ -1,4 +1,4 @@
-package me.ahoo.cache.join
+package me.ahoo.cache.api.join
 
 /**
  * Extract Join Key.

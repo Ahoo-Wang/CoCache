@@ -13,6 +13,7 @@
 package me.ahoo.cache.join
 
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.join.JoinValue
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.test.CacheSpec
 import me.ahoo.cosid.jvm.UuidGenerator
@@ -37,7 +38,7 @@ internal class SimpleJoinCachingTest : CacheSpec<String, JoinValue<Order, String
         val orderId = UuidGenerator.INSTANCE.generateAsString()
         val order = Order(orderId)
         val orderAddress = OrderAddress(order.id)
-        return orderId to JoinValue(order, orderId, orderAddress)
+        return orderId to DefaultJoinValue(order, orderId, orderAddress)
     }
 }
 

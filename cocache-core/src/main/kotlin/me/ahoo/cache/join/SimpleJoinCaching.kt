@@ -17,6 +17,9 @@ import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.DefaultCacheValue.Companion.missingGuard
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.join.ExtractJoinKey
+import me.ahoo.cache.api.join.JoinCache
+import me.ahoo.cache.api.join.JoinValue
 import kotlin.math.min
 
 /**
@@ -38,7 +41,7 @@ class SimpleJoinCaching<K1, V1, K2, V2>(
         }
         val joinKey = extractJoinKey.extract(firstCacheValue.value)
         val secondCacheValue = joinCache.getCache(joinKey)
-        val joinValue = JoinValue(firstCacheValue.value, joinKey, secondCacheValue?.value)
+        val joinValue = DefaultJoinValue(firstCacheValue.value, joinKey, secondCacheValue?.value)
         val ttlAt = getJoinTtlAt(firstCacheValue.ttlAt, secondCacheValue?.ttlAt)
         return DefaultCacheValue(value = joinValue, ttlAt = ttlAt)
     }
