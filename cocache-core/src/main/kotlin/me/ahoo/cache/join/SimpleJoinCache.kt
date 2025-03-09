@@ -23,11 +23,11 @@ import me.ahoo.cache.api.join.JoinValue
 import kotlin.math.min
 
 /**
- * Simple Join Caching .
+ * Simple Join Cache .
  *
  * @author ahoo wang
  */
-class SimpleJoinCaching<K1, V1, K2, V2>(
+class SimpleJoinCache<K1, V1, K2, V2>(
     private val firstCache: Cache<K1, V1>,
     private val joinCache: Cache<K2, V2>,
     override val extractJoinKey: ExtractJoinKey<V1, K2>

@@ -23,12 +23,12 @@ import me.ahoo.cosid.jvm.UuidGenerator
  *
  * @author ahoo wang
  */
-internal class SimpleJoinCachingTest : CacheSpec<String, JoinValue<Order, String, OrderAddress>>() {
+internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, OrderAddress>>() {
 
     override fun createCache(): Cache<String, JoinValue<Order, String, OrderAddress>> {
         val orderCache = MapClientSideCache<Order>()
         val orderAddressCache = MapClientSideCache<OrderAddress>()
-        return SimpleJoinCaching(
+        return SimpleJoinCache(
             orderCache,
             orderAddressCache,
         ) { firstValue -> firstValue.id }
