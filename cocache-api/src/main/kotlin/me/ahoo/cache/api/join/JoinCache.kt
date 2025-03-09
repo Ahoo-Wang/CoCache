@@ -21,5 +21,5 @@ import me.ahoo.cache.api.Cache
  * @author ahoo wang
  */
 interface JoinCache<K1, V1, K2, V2> : Cache<K1, JoinValue<V1, K2, V2>> {
-    val extractJoinKey: ExtractJoinKey<V1, K2>
+    val joinKeyExtractor: JoinKeyExtractor<V1, K2>
 }

@@ -1,10 +1,10 @@
 package me.ahoo.cache.api.join
 
 /**
- * Extract Join Key.
+ * Join Key Extractor.
  *
  * @author ahoo wang
  */
-fun interface ExtractJoinKey<V1, K2> {
+fun interface JoinKeyExtractor<V1, K2> {
     fun extract(firstValue: V1): K2
 }
