@@ -17,8 +17,8 @@ import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.DefaultCacheValue.Companion.missingGuard
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
-import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.join.JoinCache
+import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.join.JoinValue
 import kotlin.math.min
 
