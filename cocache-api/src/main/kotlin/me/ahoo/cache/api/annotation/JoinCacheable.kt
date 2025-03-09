@@ -11,15 +11,20 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.api.join
+package me.ahoo.cache.api.annotation
 
-import me.ahoo.cache.api.Cache
+import java.lang.annotation.Inherited
 
 /**
- * Join Caching.
- *
- * @author ahoo wang
+ * @see me.ahoo.cache.api.join.JoinCache
  */
-interface JoinCache<K1, V1, K2, V2> : Cache<K1, JoinValue<V1, K2, V2>> {
-    val joinKeyExtractor: JoinKeyExtractor<V1, K2>
-}
+@Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
+@Inherited
+@MustBeDocumented
+annotation class JoinCacheable(
+    val name: String = "",
+    val firstCacheName: String = "",
+    val joinCacheName: String = "",
+    val extractJoinKeyName: String = "",
+    val extractJoinKeyExpression: String = ""
+)

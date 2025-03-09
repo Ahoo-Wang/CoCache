@@ -17,7 +17,7 @@ import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.DefaultCacheValue.Companion.missingGuard
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
-import me.ahoo.cache.api.join.ExtractJoinKey
+import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinValue
 import kotlin.math.min
@@ -30,7 +30,7 @@ import kotlin.math.min
 class SimpleJoinCache<K1, V1, K2, V2>(
     private val firstCache: Cache<K1, V1>,
     private val joinCache: Cache<K2, V2>,
-    override val extractJoinKey: ExtractJoinKey<V1, K2>
+    override val joinKeyExtractor: JoinKeyExtractor<V1, K2>
 ) : JoinCache<K1, V1, K2, V2>, ComputedCache<K1, JoinValue<V1, K2, V2>> {
 
     @Suppress("ReturnCount")
@@ -39,7 +39,7 @@ class SimpleJoinCache<K1, V1, K2, V2>(
         if (firstCacheValue.isMissingGuard) {
             return missingGuard()
         }
-        val joinKey = extractJoinKey.extract(firstCacheValue.value)
+        val joinKey = joinKeyExtractor.extract(firstCacheValue.value)
         val secondCacheValue = joinCache.getCache(joinKey)
         val joinValue = DefaultJoinValue(firstCacheValue.value, joinKey, secondCacheValue?.value)
         val ttlAt = getJoinTtlAt(firstCacheValue.ttlAt, secondCacheValue?.ttlAt)
@@ -72,7 +72,7 @@ class SimpleJoinCache<K1, V1, K2, V2>(
     override fun evict(key: K1) {
         val firstValue = firstCache[key] ?: return
         firstCache.evict(key)
-        val joinKey = extractJoinKey.extract(firstValue)
+        val joinKey = joinKeyExtractor.extract(firstValue)
         joinCache.evict(joinKey)
     }
 }

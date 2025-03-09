@@ -11,15 +11,18 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.api.join
+package me.ahoo.cache.join
 
-import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.join.JoinKeyExtractor
+import org.springframework.expression.Expression
+import org.springframework.expression.common.TemplateParserContext
+import org.springframework.expression.spel.standard.SpelExpressionParser
 
-/**
- * Join Caching.
- *
- * @author ahoo wang
- */
-interface JoinCache<K1, V1, K2, V2> : Cache<K1, JoinValue<V1, K2, V2>> {
-    val joinKeyExtractor: JoinKeyExtractor<V1, K2>
+class ExpJoinKeyExtractor<V1>(expression: String) : JoinKeyExtractor<V1, String> {
+    private val expression: Expression = SpelExpressionParser()
+        .parseExpression(expression, TemplateParserContext.TEMPLATE_EXPRESSION)
+
+    override fun extract(firstValue: V1): String {
+        return requireNotNull(expression.getValue(firstValue, String::class.java))
+    }
 }
