@@ -16,6 +16,7 @@ package me.ahoo.cache.spring
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.annotation.toCoCacheMetadata
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.spring.proxy.CacheProxyFactoryBean
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.support.BeanDefinitionBuilder
@@ -46,6 +47,8 @@ class EnableCoCacheRegistrar : ImportBeanDefinitionRegistrar {
         val enableCoCache = importingClassMetadata
             .getAnnotationAttributes(EnableCoCache::class.java.name) ?: return emptyList()
         val caches = enableCoCache[EnableCoCache::caches.name] as Array<Class<Cache<*, *>>>
-        return caches.map { it.kotlin.toCoCacheMetadata() }
+        return caches.filter {
+            !it.isAssignableFrom(JoinCache::class.java)
+        }.map { it.kotlin.toCoCacheMetadata() }
     }
 }
