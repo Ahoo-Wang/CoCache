@@ -25,5 +25,5 @@ annotation class JoinCacheable(
     val name: String = "",
     val firstCacheName: String = "",
     val joinCacheName: String = "",
-    val joinKeyExtractorName: String = ""
+    val joinKeyExpression: String = ""
 )

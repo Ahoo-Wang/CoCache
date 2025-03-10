@@ -20,7 +20,7 @@ data class JoinCacheMetadata(
     override val name: String,
     val firstCacheName: String,
     val joinCacheName: String,
-    val joinKeyExtractorName: String,
+    val joinKeyExpression: String,
     val firstKeyType: KClass<*>,
     val firstValueType: KClass<*>,
     val joinKeyType: KClass<*>,

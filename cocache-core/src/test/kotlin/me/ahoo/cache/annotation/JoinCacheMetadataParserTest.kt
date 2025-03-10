@@ -16,7 +16,7 @@ class JoinCacheMetadataParserTest {
         assertThat(metadata.cacheName, equalTo("MockJoinCache"))
         assertThat(metadata.firstCacheName, equalTo("OrderAddress"))
         assertThat(metadata.joinCacheName, equalTo("Order"))
-        assertThat(metadata.joinKeyExtractorName, equalTo(""))
+        assertThat(metadata.joinKeyExpression, equalTo(""))
         assertThat(metadata.firstKeyType, equalTo(String::class))
         assertThat(metadata.firstValueType, equalTo(OrderAddress::class))
         assertThat(metadata.joinKeyType, equalTo(String::class))
