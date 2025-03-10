@@ -22,11 +22,23 @@ import org.junit.jupiter.api.Test
  */
 internal class ExpKeyConverterTest {
     @Test
-    fun asString() {
+    fun toStringKey() {
         val prefix = "prefix:"
         val expKeyConverter = ExpKeyConverter<String>(prefix, "#{#root}")
         Assertions.assertEquals(prefix, expKeyConverter.keyPrefix)
         val actual = expKeyConverter.toStringKey("asString")
         Assertions.assertEquals(prefix + "asString", actual)
     }
+
+    @Test
+    fun toStringKeyIfObject() {
+        val prefix = "prefix:"
+        val expKeyConverter = ExpKeyConverter<BrandNameIndexKey>(prefix, "#{tenantId}:#{name}")
+        Assertions.assertEquals(prefix, expKeyConverter.keyPrefix)
+        val brandNameIndexKey = BrandNameIndexKey("tenantId", "name")
+        val actual = expKeyConverter.toStringKey(brandNameIndexKey)
+        Assertions.assertEquals(prefix + "tenantId:name", actual)
+    }
 }
+
+data class BrandNameIndexKey(val tenantId: String, val name: String)
