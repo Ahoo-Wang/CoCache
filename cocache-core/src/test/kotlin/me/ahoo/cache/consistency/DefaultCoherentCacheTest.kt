@@ -10,17 +10,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache
+package me.ahoo.cache.consistency
 
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
 import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.mock.MockDistributedCache
-import me.ahoo.cache.test.CoherentCacheSpec
+import me.ahoo.cache.test.DefaultCoherentCacheSpec
 import java.util.*
 
 /**
@@ -28,7 +26,7 @@ import java.util.*
  *
  * @author ahoo wang
  */
-internal class CoherentCacheTest : CoherentCacheSpec<String, String>() {
+internal class DefaultCoherentCacheTest : DefaultCoherentCacheSpec<String, String>() {
 
     override fun createKeyConverter(): KeyConverter<String> = ToStringKeyConverter("")
 

@@ -1,5 +1,6 @@
 package me.ahoo.cache.spring.boot.starter
 
+import me.ahoo.cache.api.Cache
 import org.hamcrest.MatcherAssert.*
 import org.hamcrest.Matchers.*
 import org.junit.jupiter.api.BeforeEach
@@ -11,7 +12,7 @@ class CoCacheEndpointTest : AbstractCoCacheEndpointTest() {
     @BeforeEach
     override fun setup() {
         super.setup()
-        endpoint = CoCacheEndpoint(cacheManager)
+        endpoint = CoCacheEndpoint(cacheFactory)
     }
 
     @Test
@@ -26,7 +27,7 @@ class CoCacheEndpointTest : AbstractCoCacheEndpointTest() {
 
     @Test
     fun evict() {
-        val cache = cacheManager.getCache<String, String>(CACHE_NAME)!!
+        val cache = cacheFactory.getCache<Cache<String, String>>(CACHE_NAME)!!
         val key = "evict-key"
         cache[key] = "value"
         endpoint.evict(CACHE_NAME, key)
@@ -35,7 +36,7 @@ class CoCacheEndpointTest : AbstractCoCacheEndpointTest() {
 
     @Test
     fun get() {
-        val cache = cacheManager.getCache<String, String>(CACHE_NAME)!!
+        val cache = cacheFactory.getCache<Cache<String, String>>(CACHE_NAME)!!
         val key = "get-key"
         cache[key] = "value"
         assertThat(endpoint.get(CACHE_NAME, key)?.value, equalTo("value"))
