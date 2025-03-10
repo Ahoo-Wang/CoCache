@@ -15,7 +15,6 @@ package me.ahoo.cache.proxy
 
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
-import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
@@ -25,7 +24,6 @@ import me.ahoo.cache.consistency.CoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverterFactory
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
-import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.util.ClientIdGenerator
 import java.lang.reflect.Proxy
@@ -66,9 +64,7 @@ class DefaultCacheProxyFactory(
             arrayOf(
                 cacheMetadata.proxyInterface.java,
                 CoherentCache::class.java,
-                NamedCache::class.java,
                 CacheDelegated::class.java,
-                DistributedClientId::class.java,
                 CacheMetadataCapable::class.java
             ),
             invocationHandler
