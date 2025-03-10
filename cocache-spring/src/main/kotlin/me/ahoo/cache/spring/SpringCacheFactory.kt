@@ -17,6 +17,7 @@ import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.Cache
 import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.beans.factory.NoSuchBeanDefinitionException
+import org.springframework.core.ResolvableType
 
 class SpringCacheFactory(private val beanFactory: ListableBeanFactory) : CacheFactory {
     override val caches: Map<String, Cache<*, *>>
@@ -29,6 +30,18 @@ class SpringCacheFactory(private val beanFactory: ListableBeanFactory) : CacheFa
         return try {
             beanFactory.getBean(cacheName, cacheType) as CACHE
         } catch (error: NoSuchBeanDefinitionException) {
+            null
+        }
+    }
+
+    override fun <CACHE : Cache<*, *>> getCache(keyType: Class<*>, valueType: Class<*>): CACHE? {
+        val cacheType = ResolvableType.forClassWithGenerics(
+            Cache::class.java,
+            keyType,
+            valueType
+        )
+        val provider = beanFactory.getBeanProvider<CACHE>(cacheType)
+        return provider.getIfAvailable {
             null
         }
     }

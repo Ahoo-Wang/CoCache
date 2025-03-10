@@ -19,6 +19,7 @@ import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.example.cache.UserExtendInfoJoinCache
 import me.ahoo.cache.spring.boot.starter.auto.EnableCoCacheConfiguration
 import me.ahoo.cache.spring.boot.starter.customize.EnableCoCacheConfigurationWithCustomize
+import me.ahoo.cache.spring.boot.starter.customize.MockJoinMainCache
 import me.ahoo.cache.spring.boot.starter.customize.MockUserExtendInfoJoinCache
 import me.ahoo.cache.spring.boot.starter.customize.MockUserExtendInfoJoinCacheUseNameSuffix
 import me.ahoo.cache.spring.boot.starter.customize.UserExpCache
@@ -80,6 +81,7 @@ internal class CoCacheAutoConfigurationTest {
                 context.getBean(UserKeyCache::class.java)
                 context.getBean(MockUserExtendInfoJoinCache::class.java)
                 context.getBean(MockUserExtendInfoJoinCacheUseNameSuffix::class.java)
+                context.getBean(MockJoinMainCache::class.java)
             }
     }
 
