@@ -13,6 +13,8 @@
 package me.ahoo.cache.join
 
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.annotation.JoinCacheable
+import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinValue
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.test.CacheSpec
@@ -45,3 +47,6 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
 data class Order(val id: String)
 
 data class OrderAddress(val orderId: String)
+
+@JoinCacheable(firstCacheName = "OrderAddress", joinCacheName = "Order")
+interface MockJoinCache : JoinCache<String, OrderAddress, String, Order>

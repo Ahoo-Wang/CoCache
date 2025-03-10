@@ -16,14 +16,14 @@ package me.ahoo.cache.proxy
 import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.api.annotation.MissingGuardCache
-import me.ahoo.cache.consistency.DefaultCoherentCache
+import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.distributed.DistributedClientId
 
 @CoCache
 @MissingGuardCache(ttlSeconds = 120)
 interface MockCache :
     ComputedCache<String, String>,
-    CacheDelegated<DefaultCoherentCache<String, String>>,
+    CacheDelegated<CoherentCache<String, String>>,
     DistributedClientId,
     CacheMetadataCapable
 

@@ -15,15 +15,14 @@ package me.ahoo.cache.annotation
 
 import kotlin.reflect.KClass
 
-data class CoCacheMetadata(
+data class JoinCacheMetadata(
     override val proxyInterface: KClass<*>,
     override val name: String,
-    val keyPrefix: String,
-    val keyExpression: String,
-    val keyType: KClass<*>,
-    val valueType: KClass<*>
-) : ComputedNamedCache {
-    override val cacheName: String = name.ifBlank {
-        proxyInterface.simpleName!!
-    }
-}
+    val firstCacheName: String,
+    val joinCacheName: String,
+    val joinKeyExtractorName: String,
+    val firstKeyType: KClass<*>,
+    val firstValueType: KClass<*>,
+    val joinKeyType: KClass<*>,
+    val joinValueType: KClass<*>
+) : ComputedNamedCache

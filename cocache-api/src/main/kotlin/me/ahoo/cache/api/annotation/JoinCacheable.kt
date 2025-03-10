@@ -11,19 +11,19 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.annotation
+package me.ahoo.cache.api.annotation
 
-import kotlin.reflect.KClass
+import java.lang.annotation.Inherited
 
-data class CoCacheMetadata(
-    override val proxyInterface: KClass<*>,
-    override val name: String,
-    val keyPrefix: String,
-    val keyExpression: String,
-    val keyType: KClass<*>,
-    val valueType: KClass<*>
-) : ComputedNamedCache {
-    override val cacheName: String = name.ifBlank {
-        proxyInterface.simpleName!!
-    }
-}
+/**
+ * @see me.ahoo.cache.api.join.JoinCache
+ */
+@Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
+@Inherited
+@MustBeDocumented
+annotation class JoinCacheable(
+    val name: String = "",
+    val firstCacheName: String = "",
+    val joinCacheName: String = "",
+    val joinKeyExtractorName: String = ""
+)

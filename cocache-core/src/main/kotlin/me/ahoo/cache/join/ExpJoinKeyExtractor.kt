@@ -11,19 +11,18 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.annotation
+package me.ahoo.cache.join
 
-import kotlin.reflect.KClass
+import me.ahoo.cache.api.join.JoinKeyExtractor
+import org.springframework.expression.Expression
+import org.springframework.expression.common.TemplateParserContext
+import org.springframework.expression.spel.standard.SpelExpressionParser
 
-data class CoCacheMetadata(
-    override val proxyInterface: KClass<*>,
-    override val name: String,
-    val keyPrefix: String,
-    val keyExpression: String,
-    val keyType: KClass<*>,
-    val valueType: KClass<*>
-) : ComputedNamedCache {
-    override val cacheName: String = name.ifBlank {
-        proxyInterface.simpleName!!
+class ExpJoinKeyExtractor<V1>(expression: String) : JoinKeyExtractor<V1, String> {
+    private val expression: Expression = SpelExpressionParser()
+        .parseExpression(expression, TemplateParserContext.TEMPLATE_EXPRESSION)
+
+    override fun extract(firstValue: V1): String {
+        return requireNotNull(expression.getValue(firstValue, String::class.java))
     }
 }
