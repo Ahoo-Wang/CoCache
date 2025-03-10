@@ -18,9 +18,9 @@ import me.ahoo.cache.proxy.CoCacheInvocationHandler.Companion.EMPTY_ARGS
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 
-abstract class CoCacheProxy<K, V : Any, DELEGATE> :
+abstract class CoCacheProxy<DELEGATE> :
     InvocationHandler,
-    CacheDelegated<DELEGATE> where DELEGATE : Cache<K, V> {
+    CacheDelegated<DELEGATE> where DELEGATE : Cache<*, *> {
     abstract val proxyInterface: Class<*>
 
     private val declaredDefaultMethods by lazy {

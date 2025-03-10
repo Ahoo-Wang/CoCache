@@ -14,7 +14,7 @@ class CoCacheMetadataParserTest {
     @Test
     fun parse() {
         val metadata = coCacheMetadata<MockCache>()
-        assertThat(metadata.type, equalTo(MockCache::class))
+        assertThat(metadata.proxyInterface, equalTo(MockCache::class))
         assertThat(metadata.name, equalTo(""))
         assertThat(metadata.keyPrefix, equalTo(""))
         assertThat(metadata.keyType, equalTo(String::class))
@@ -24,7 +24,7 @@ class CoCacheMetadataParserTest {
     @Test
     fun parseComputedCache() {
         val metadata = coCacheMetadata<MockComputedCache>()
-        assertThat(metadata.type, equalTo(MockComputedCache::class))
+        assertThat(metadata.proxyInterface, equalTo(MockComputedCache::class))
         assertThat(metadata.name, equalTo(""))
         assertThat(metadata.keyPrefix, equalTo(""))
         assertThat(metadata.keyType, equalTo(String::class))
@@ -34,7 +34,7 @@ class CoCacheMetadataParserTest {
     @Test
     fun parseWithKeyExp() {
         val metadata = coCacheMetadata<MockCacheWithKeyExpression>()
-        assertThat(metadata.type, equalTo(MockCacheWithKeyExpression::class))
+        assertThat(metadata.proxyInterface, equalTo(MockCacheWithKeyExpression::class))
         assertThat(metadata.name, equalTo(""))
         assertThat(metadata.keyPrefix, equalTo("prefix:"))
         assertThat(metadata.keyExpression, equalTo("#{#root}"))
