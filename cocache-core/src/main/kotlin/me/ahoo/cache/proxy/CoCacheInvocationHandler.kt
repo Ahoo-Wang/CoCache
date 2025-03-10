@@ -27,7 +27,6 @@ class CoCacheInvocationHandler<DELEGATE>(
     CoCacheProxy<DELEGATE>() where DELEGATE : Cache<*, *>, DELEGATE : NamedCache {
 
     companion object {
-        val EMPTY_ARGS = emptyArray<Any>()
         val DELEGATE_METHOD_SIGN: String = CacheDelegated<*>::delegate.javaGetter!!.name
         val CACHE_METADATA_METHOD_SIGN: String = CacheMetadataCapable::cacheMetadata.javaGetter!!.name
     }

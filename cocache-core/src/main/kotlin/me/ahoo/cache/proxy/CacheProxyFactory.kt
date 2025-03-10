@@ -16,7 +16,6 @@ package me.ahoo.cache.proxy
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
 
-@FunctionalInterface
 interface CacheProxyFactory {
     fun <CACHE : Cache<*, *>> create(cacheMetadata: CoCacheMetadata): CACHE
 }
