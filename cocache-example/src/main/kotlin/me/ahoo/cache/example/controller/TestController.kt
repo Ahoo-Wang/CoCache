@@ -13,7 +13,6 @@
 package me.ahoo.cache.example.controller
 
 import me.ahoo.cache.consistency.CoherentCache
-import me.ahoo.cache.consistency.DefaultCoherentCache
 import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.example.model.User
 import org.springframework.beans.factory.annotation.Qualifier
@@ -22,7 +21,7 @@ import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
-import java.util.UUID
+import java.util.*
 
 /**
  * TestController .
