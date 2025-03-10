@@ -13,30 +13,35 @@
 
 package me.ahoo.cache.join.proxy
 
-import me.ahoo.cache.CacheManager
+import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.annotation.JoinCacheMetadata
+import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.join.SimpleJoinCache
 import java.lang.reflect.Proxy
 
-class DefaultJoinProxyFactory(private val cacheManager: CacheManager) : JoinProxyFactory {
+class DefaultJoinProxyFactory(private val cacheManager: CacheFactory) : JoinProxyFactory {
+    @Suppress("UNCHECKED_CAST")
     override fun <CACHE : JoinCache<*, *, *, *>> create(cacheMetadata: JoinCacheMetadata): CACHE {
-        val firstCache = cacheManager.getCache<Any, Any>(cacheMetadata.firstCacheName)
+        val firstCache = cacheManager.getCache<Cache<Any, Any>>(cacheMetadata.firstCacheName)
         requireNotNull(firstCache)
-        val joinCache = cacheManager.getCache<Any, Any>(cacheMetadata.joinCacheName)
+        val joinCache = cacheManager.getCache<Cache<Any, Any>>(cacheMetadata.joinCacheName)
         requireNotNull(joinCache)
-        val joinKeyExtractor = JoinKeyExtractor<Any, Any> { TODO("Not yet implemented") }
-        val delegate = SimpleJoinCache<Any, Any, Any, Any>(firstCache, joinCache, joinKeyExtractor)
-        val invocationHandler = JoinCacheInvocationHandler(delegate)
+        val noOpExtractor = JoinKeyExtractor<Any, Any> { it }
+        val delegate = SimpleJoinCache(firstCache, joinCache, noOpExtractor)
+        val invocationHandler = JoinCacheInvocationHandler(cacheMetadata, delegate)
 
-        return Proxy.newProxyInstance(
-            cacheMetadata.type.java.classLoader,
+        val proxy = Proxy.newProxyInstance(
+            this.javaClass.classLoader,
             arrayOf(
-                cacheMetadata.type.java,
-                JoinCache::class.java
+                cacheMetadata.proxyInterface.java,
+                JoinCache::class.java,
+                JoinCacheMetadataCapable::class.java
             ),
             invocationHandler
         ) as CACHE
+        delegate.joinKeyExtractor = proxy as JoinKeyExtractor<Any, Any>
+        return proxy
     }
 }

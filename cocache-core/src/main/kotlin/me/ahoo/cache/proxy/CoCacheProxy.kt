@@ -14,13 +14,16 @@
 package me.ahoo.cache.proxy
 
 import me.ahoo.cache.api.Cache
-import me.ahoo.cache.proxy.CoCacheInvocationHandler.Companion.EMPTY_ARGS
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 
 abstract class CoCacheProxy<DELEGATE> :
     InvocationHandler,
     CacheDelegated<DELEGATE> where DELEGATE : Cache<*, *> {
+    companion object {
+        val EMPTY_ARGS = emptyArray<Any>()
+    }
+
     abstract val proxyInterface: Class<*>
 
     private val declaredDefaultMethods by lazy {

@@ -11,15 +11,10 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.api.join
+package me.ahoo.cache
 
 import me.ahoo.cache.api.Cache
 
-/**
- * Join Cache.
- *
- * @author ahoo wang
- */
-interface JoinCache<K1, V1, K2, V2> : Cache<K1, JoinValue<V1, K2, V2>> {
-    val joinKeyExtractor: JoinKeyExtractor<V1, K2>
+interface CacheFactory {
+    fun <CACHE : Cache<*, *>> getCache(cacheName: String): CACHE?
 }

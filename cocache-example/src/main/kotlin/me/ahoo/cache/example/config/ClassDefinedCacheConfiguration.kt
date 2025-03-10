@@ -15,7 +15,7 @@ package me.ahoo.cache.example.config
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.google.common.cache.CacheBuilder
 import me.ahoo.cache.CoherentCacheConfiguration
-import me.ahoo.cache.CacheManager
+import me.ahoo.cache.CoherentCacheFactory
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.client.GuavaClientSideCache
@@ -36,7 +36,7 @@ class ClassDefinedCacheConfiguration {
     @Bean("userCache")
     fun userCache(
         redisTemplate: StringRedisTemplate,
-        cacheManager: CacheManager,
+        cacheManager: CoherentCacheFactory,
         objectMapper: ObjectMapper,
         clientIdGenerator: ClientIdGenerator
     ): CoherentCache<String, User> {
@@ -66,7 +66,7 @@ class ClassDefinedCacheConfiguration {
     }
 
     @Bean("mockCache")
-    fun mockCache(cacheManager: CacheManager, clientIdGenerator: ClientIdGenerator): CoherentCache<String, String> {
+    fun mockCache(cacheManager: CoherentCacheFactory, clientIdGenerator: ClientIdGenerator): CoherentCache<String, String> {
         val distributedCaching = MockDistributedCache<String>()
         val clientId = clientIdGenerator.generate()
         return cacheManager.getOrCreateCache(

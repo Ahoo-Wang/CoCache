@@ -30,7 +30,7 @@ import kotlin.math.min
 class SimpleJoinCache<K1, V1, K2, V2>(
     private val firstCache: Cache<K1, V1>,
     private val joinCache: Cache<K2, V2>,
-    override val joinKeyExtractor: JoinKeyExtractor<V1, K2>
+    override var joinKeyExtractor: JoinKeyExtractor<V1, K2>
 ) : JoinCache<K1, V1, K2, V2>, ComputedCache<K1, JoinValue<V1, K2, V2>> {
 
     @Suppress("ReturnCount")

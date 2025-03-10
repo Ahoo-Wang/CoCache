@@ -1,7 +1,7 @@
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.CacheManager
 import me.ahoo.cache.CoherentCacheConfiguration
+import me.ahoo.cache.CoherentCacheFactory
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
 import me.ahoo.cache.converter.ToStringKeyConverter
@@ -13,14 +13,14 @@ open class AbstractCoCacheEndpointTest {
         const val CACHE_NAME = "cacheName"
     }
 
-    lateinit var cacheManager: CacheManager
+    lateinit var cacheManager: CoherentCacheFactory
 
     @BeforeEach
     open fun setup() {
         val keyConverter = ToStringKeyConverter<String>("")
         val clientSideCaching = MapClientSideCache<String>()
         val distributedCaching = MockDistributedCache<String>()
-        cacheManager = CacheManager(GuavaCacheEvictedEventBus())
+        cacheManager = CoherentCacheFactory(GuavaCacheEvictedEventBus())
         cacheManager.getOrCreateCache(
             CoherentCacheConfiguration(
                 cacheName = CACHE_NAME,

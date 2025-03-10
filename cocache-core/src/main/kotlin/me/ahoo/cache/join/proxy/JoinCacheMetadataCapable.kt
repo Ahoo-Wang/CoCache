@@ -11,15 +11,10 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.api.join
+package me.ahoo.cache.join.proxy
 
-import me.ahoo.cache.api.Cache
+import me.ahoo.cache.annotation.JoinCacheMetadata
 
-/**
- * Join Cache.
- *
- * @author ahoo wang
- */
-interface JoinCache<K1, V1, K2, V2> : Cache<K1, JoinValue<V1, K2, V2>> {
-    val joinKeyExtractor: JoinKeyExtractor<V1, K2>
+interface JoinCacheMetadataCapable {
+    val cacheMetadata: JoinCacheMetadata
 }

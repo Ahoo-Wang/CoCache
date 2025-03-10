@@ -16,7 +16,7 @@ package me.ahoo.cache.annotation
 import kotlin.reflect.KClass
 
 data class JoinCacheMetadata(
-    override val type: KClass<*>,
+    override val proxyInterface: KClass<*>,
     override val name: String,
     val firstCacheName: String,
     val joinCacheName: String,

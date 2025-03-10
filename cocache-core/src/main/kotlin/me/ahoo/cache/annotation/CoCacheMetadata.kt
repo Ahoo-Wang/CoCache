@@ -13,17 +13,16 @@
 
 package me.ahoo.cache.annotation
 
-import me.ahoo.cache.api.NamedCache
 import kotlin.reflect.KClass
 
 data class CoCacheMetadata(
-    val proxyInterface: KClass<*>,
-    val name: String,
+    override val proxyInterface: KClass<*>,
+    override val name: String,
     val keyPrefix: String,
     val keyExpression: String,
     val keyType: KClass<*>,
     val valueType: KClass<*>
-) : NamedCache {
+) : ComputedNamedCache {
     override val cacheName: String = name.ifBlank {
         proxyInterface.simpleName!!
     }

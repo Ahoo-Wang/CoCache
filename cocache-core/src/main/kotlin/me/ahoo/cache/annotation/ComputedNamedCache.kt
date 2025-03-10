@@ -18,9 +18,9 @@ import kotlin.reflect.KClass
 
 interface ComputedNamedCache : NamedCache {
     val name: String
-    val type: KClass<*>
+    val proxyInterface: KClass<*>
     override val cacheName: String
         get() = name.ifBlank {
-            type.simpleName!!
+            proxyInterface.simpleName!!
         }
 }

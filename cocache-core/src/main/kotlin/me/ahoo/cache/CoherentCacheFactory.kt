@@ -25,7 +25,7 @@ import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.filter.NoOpKeyFilter
 import java.util.concurrent.ConcurrentHashMap
 
-class CacheManager(private val cacheEvictedEventBus: CacheEvictedEventBus) {
+class CoherentCacheFactory(private val cacheEvictedEventBus: CacheEvictedEventBus) {
 
     private val caches = ConcurrentHashMap<String, CoherentCache<*, *>>()
 

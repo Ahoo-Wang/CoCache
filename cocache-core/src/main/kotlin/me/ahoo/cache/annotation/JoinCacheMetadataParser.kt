@@ -25,23 +25,32 @@ object JoinCacheMetadataParser {
     /**
      * 解析 JoinCacheable 注解定义的 JoinCache 接口
      *
-     * @param cacheType 必须继承 `JoinCache` 接口，必须是接口
+     * @param proxyInterface 必须继承 `JoinCache` 接口，必须是接口
      */
-    fun parse(cacheType: KClass<out Cache<*, *>>): JoinCacheMetadata {
-        require(cacheType.java.isInterface) {
-            "${cacheType.jvmName} must be interface."
+    fun parse(proxyInterface: KClass<out Cache<*, *>>): JoinCacheMetadata {
+        require(proxyInterface.java.isInterface) {
+            "${proxyInterface.jvmName} must be interface."
         }
-        val joinCacheAnnotation = cacheType.findAnnotation<JoinCacheable>() ?: JoinCacheable()
+        val joinCacheAnnotation = proxyInterface.findAnnotation<JoinCacheable>()
+        requireNotNull(joinCacheAnnotation) {
+            "${proxyInterface.jvmName} must be marked with @JoinCacheable"
+        }
         // 获取继承的 JoinCache<K,V> 中 V 的具体类型
-        val superCacheType = cacheType.supertypes.first {
+        val superCacheType = proxyInterface.supertypes.first {
             it.classifier == JoinCache::class
         }
         val firstKeyType = superCacheType.getCacheGenericsType(0)
         val firstValueType = superCacheType.getCacheGenericsType(1)
-        val joinKeyType = superCacheType.getCacheGenericsType(0)
-        val joinValueType = superCacheType.getCacheGenericsType(1)
+        val joinKeyType = superCacheType.getCacheGenericsType(2)
+        val joinValueType = superCacheType.getCacheGenericsType(3)
+        require(joinCacheAnnotation.firstCacheName.isNotBlank()) {
+            "JoinCacheable.firstCacheName must be not blank."
+        }
+        require(joinCacheAnnotation.joinCacheName.isNotBlank()) {
+            "JoinCacheable.joinCacheName must be not blank."
+        }
         return JoinCacheMetadata(
-            type = cacheType,
+            proxyInterface = proxyInterface,
             name = joinCacheAnnotation.name,
             firstCacheName = joinCacheAnnotation.firstCacheName,
             joinCacheName = joinCacheAnnotation.joinCacheName,

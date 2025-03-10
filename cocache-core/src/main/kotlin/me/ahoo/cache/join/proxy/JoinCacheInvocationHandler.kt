@@ -13,27 +13,28 @@
 
 package me.ahoo.cache.join.proxy
 
+import me.ahoo.cache.annotation.JoinCacheMetadata
 import me.ahoo.cache.api.join.JoinCache
-import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.proxy.CoCacheProxy
 import java.lang.reflect.Method
+import kotlin.reflect.jvm.javaGetter
 
-class JoinCacheInvocationHandler<K1, V1, K2, V2>(
-    val delegate: JoinCache<K1, V1, K2, V2>,
-) : CoCacheProxy {
+class JoinCacheInvocationHandler<DELEGATE>(
+    override val cacheMetadata: JoinCacheMetadata,
+    override val delegate: DELEGATE,
+) : JoinCacheMetadataCapable, CoCacheProxy<DELEGATE>() where DELEGATE : JoinCache<*, *, *, *> {
 
     companion object {
-        val EXTRACT_METHOD_SIGN: String = JoinKeyExtractor<*, *>::extract.name
+        val CACHE_METADATA_METHOD_SIGN: String = JoinCacheMetadataCapable::cacheMetadata.javaGetter!!.name
     }
+
+    override val proxyInterface: Class<*> = cacheMetadata.proxyInterface.java
 
     @Suppress("SpreadOperator", "ReturnCount")
     override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
-        if (EXTRACT_METHOD_SIGN == method.name) {
-            return method.invoke(proxy)
+        if (CACHE_METADATA_METHOD_SIGN == method.name) {
+            return cacheMetadata
         }
-        if (args == null) {
-            return method.invoke(delegate)
-        }
-        return method.invoke(delegate, *args)
+        return super.invoke(proxy, method, args)
     }
 }

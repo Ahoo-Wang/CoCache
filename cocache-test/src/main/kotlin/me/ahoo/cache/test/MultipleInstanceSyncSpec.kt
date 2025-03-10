@@ -13,9 +13,9 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.CacheManager
 import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.CoherentCacheConfiguration
+import me.ahoo.cache.CoherentCacheFactory
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.cache.consistency.CacheEvictedEventBus
@@ -44,14 +44,14 @@ abstract class MultipleInstanceSyncSpec<K, V> {
     protected val otherClientId: String = "otherClientId"
     private lateinit var currentCache: CoherentCache<K, V>
     private lateinit var otherCache: CoherentCache<K, V>
-    private lateinit var cacheManager: CacheManager
+    private lateinit var cacheManager: CoherentCacheFactory
 
     @BeforeEach
     open fun setup() {
         keyConverter = createKeyConverter()
         distributedCaching = createDistributedCache()
         cacheEvictedEventBus = createCacheEvictedEventBus()
-        cacheManager = CacheManager(cacheEvictedEventBus)
+        cacheManager = CoherentCacheFactory(cacheEvictedEventBus)
         cacheName = createCacheName()
 
         currentCache = cacheManager.getOrCreateCache(

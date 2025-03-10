@@ -13,8 +13,8 @@
 
 package me.ahoo.cache.proxy
 
-import me.ahoo.cache.CacheManager
 import me.ahoo.cache.CoherentCacheConfiguration
+import me.ahoo.cache.CoherentCacheFactory
 import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
@@ -32,7 +32,7 @@ import java.lang.reflect.Proxy
 import kotlin.reflect.full.findAnnotation
 
 class DefaultCacheProxyFactory(
-    private val cacheManager: CacheManager,
+    private val cacheManager: CoherentCacheFactory,
     private val clientIdGenerator: ClientIdGenerator,
     private val clientSideCacheFactory: ClientSideCacheFactory,
     private val distributedCacheFactory: DistributedCacheFactory,

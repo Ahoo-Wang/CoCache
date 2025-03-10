@@ -13,8 +13,8 @@
 
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.CacheManager
 import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.CoherentCacheFactory
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.spring.boot.starter.CoCacheEndpoint.CacheReport.Companion.asReport
@@ -24,7 +24,7 @@ import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
 @Endpoint(id = CoCache.COCACHE)
-class CoCacheEndpoint(private val cacheManager: CacheManager) {
+class CoCacheEndpoint(private val cacheManager: CoherentCacheFactory) {
 
     @ReadOperation
     fun total(): List<CacheReport> {

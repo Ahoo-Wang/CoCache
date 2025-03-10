@@ -12,7 +12,7 @@
  */
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.CacheManager
+import me.ahoo.cache.CoherentCacheFactory
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.converter.KeyConverterFactory
@@ -83,8 +83,8 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    fun cacheManager(cacheEvictedEventBus: CacheEvictedEventBus): CacheManager {
-        return CacheManager(cacheEvictedEventBus)
+    fun cacheManager(cacheEvictedEventBus: CacheEvictedEventBus): CoherentCacheFactory {
+        return CoherentCacheFactory(cacheEvictedEventBus)
     }
 
     @Bean
@@ -115,7 +115,7 @@ class CoCacheAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     fun cacheProxyFactory(
-        cacheManager: CacheManager,
+        cacheManager: CoherentCacheFactory,
         clientIdGenerator: ClientIdGenerator,
         clientSideCacheFactory: ClientSideCacheFactory,
         distributedCacheFactory: DistributedCacheFactory,

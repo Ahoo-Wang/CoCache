@@ -15,6 +15,7 @@ package me.ahoo.cache.join
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.JoinCacheable
 import me.ahoo.cache.api.join.JoinCache
+import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.join.JoinValue
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.test.CacheSpec
@@ -48,5 +49,9 @@ data class Order(val id: String)
 
 data class OrderAddress(val orderId: String)
 
-@JoinCacheable
-interface MockJoinCache : JoinCache<String, OrderAddress, String, Order>
+@JoinCacheable(firstCacheName = "OrderAddress", joinCacheName = "Order")
+interface MockJoinCache : JoinCache<String, OrderAddress, String, Order>, JoinKeyExtractor<OrderAddress, String> {
+    override fun extract(firstValue: OrderAddress): String {
+        return firstValue.orderId
+    }
+}

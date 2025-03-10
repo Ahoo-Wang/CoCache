@@ -1,7 +1,7 @@
 package me.ahoo.cache.proxy
 
-import me.ahoo.cache.CacheManager
 import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.CoherentCacheFactory
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.annotation.coCacheMetadata
 import me.ahoo.cache.api.source.CacheSource
@@ -31,7 +31,7 @@ class DefaultCacheProxyFactoryTest {
                 }
             }
             val cacheProxyFactory = DefaultCacheProxyFactory(
-                cacheManager = CacheManager(NoOpCacheEvictedEventBus),
+                cacheManager = CoherentCacheFactory(NoOpCacheEvictedEventBus),
                 clientIdGenerator = ClientIdGenerator.UUID,
                 clientSideCacheFactory = DefaultClientSideCacheFactory,
                 distributedCacheFactory = distributedCacheFactory,
