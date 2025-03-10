@@ -50,7 +50,6 @@ application {
 dependencies {
     api(platform(project(":cocache-dependencies")))
     kapt(platform(project(":cocache-dependencies")))
-    implementation(project(":cocache-spring-redis"))
     implementation(project(":cocache-spring-boot-starter"))
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
