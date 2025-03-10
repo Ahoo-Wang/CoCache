@@ -11,25 +11,24 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.proxy
+package me.ahoo.cache.consistency
 
 import me.ahoo.cache.ComputedCache
-import me.ahoo.cache.api.annotation.CoCache
-import me.ahoo.cache.api.annotation.MissingGuardCache
-import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.KeyFilter
+import me.ahoo.cache.api.NamedCache
+import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.api.source.CacheSource
+import me.ahoo.cache.converter.KeyConverter
+import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedClientId
 
-@CoCache
-@MissingGuardCache(ttlSeconds = 120)
-interface MockCache :
-    ComputedCache<String, String>,
-    CacheDelegated<CoherentCache<String, String>>,
-    DistributedClientId,
-    CacheMetadataCapable
-
-@CoCache(keyPrefix = "prefix:", keyExpression = "#{#root}")
-interface MockCacheWithKeyExpression : ComputedCache<String, String> {
-    fun defaultMethod(): String {
-        return "defaultMethod"
-    }
+interface CoherentCache<K, V> : ComputedCache<K, V>, DistributedClientId, NamedCache, CacheEvictedSubscriber {
+    val cacheEvictedEventBus: CacheEvictedEventBus
+    val clientSideCache: ClientSideCache<V>
+    val distributedCache: DistributedCache<V>
+    val keyFilter: KeyFilter
+    val keyConverter: KeyConverter<K>
+    val missingGuardTtl: Long
+    val missingGuardTtlAmplitude: Long
+    val cacheSource: CacheSource<K, V>
 }

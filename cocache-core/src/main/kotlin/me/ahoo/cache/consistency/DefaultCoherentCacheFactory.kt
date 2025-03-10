@@ -11,11 +11,15 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.proxy
+package me.ahoo.cache.consistency
 
-import me.ahoo.cache.annotation.CoCacheMetadata
-import me.ahoo.cache.api.Cache
-
-interface CacheProxyFactory {
-    fun <CACHE : Cache<*, *>> create(cacheMetadata: CoCacheMetadata): CACHE
+class DefaultCoherentCacheFactory(private val cacheEvictedEventBus: CacheEvictedEventBus) : CoherentCacheFactory {
+    override fun <K, V> create(cacheConfig: CoherentCacheConfiguration<K, V>): DefaultCoherentCache<K, V> {
+        val coherentCache = DefaultCoherentCache<K, V>(
+            config = cacheConfig,
+            cacheEvictedEventBus = cacheEvictedEventBus
+        )
+        cacheEvictedEventBus.register(coherentCache)
+        return coherentCache
+    }
 }

@@ -16,5 +16,10 @@ package me.ahoo.cache
 import me.ahoo.cache.api.Cache
 
 interface CacheFactory {
-    fun <CACHE : Cache<*, *>> getCache(cacheName: String): CACHE?
+    val caches: Map<String, Cache<*, *>>
+    fun <CACHE : Cache<*, *>> getCache(cacheName: String): CACHE? {
+        return getCache(cacheName, Cache::class.java)
+    }
+
+    fun <CACHE : Cache<*, *>> getCache(cacheName: String, cacheType: Class<*>): CACHE?
 }

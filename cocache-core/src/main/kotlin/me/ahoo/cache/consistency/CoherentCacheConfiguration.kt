@@ -11,49 +11,18 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache
+package me.ahoo.cache.consistency
 
+import me.ahoo.cache.KeyFilter
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.filter.NoOpKeyFilter
-import java.util.concurrent.ConcurrentHashMap
-
-class CoherentCacheFactory(private val cacheEvictedEventBus: CacheEvictedEventBus) {
-
-    private val caches = ConcurrentHashMap<String, CoherentCache<*, *>>()
-
-    fun getCacheNames(): Set<String> {
-        return caches.keys
-    }
-
-    fun <K, V> getCache(cacheName: String): CoherentCache<K, V>? {
-        @Suppress("UNCHECKED_CAST")
-        return caches[cacheName] as CoherentCache<K, V>?
-    }
-
-    fun <K, V> createCache(cacheConfig: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
-        val cache = CoherentCache(
-            config = cacheConfig,
-            cacheEvictedEventBus = cacheEvictedEventBus
-        )
-        cacheEvictedEventBus.register(cache)
-        return cache
-    }
-
-    fun <K, V> getOrCreateCache(cacheConfig: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
-        @Suppress("UNCHECKED_CAST")
-        return caches.computeIfAbsent(cacheConfig.cacheName) {
-            createCache(cacheConfig)
-        } as CoherentCache<K, V>
-    }
-}
 
 data class CoherentCacheConfiguration<K, V>(
     override val cacheName: String,

@@ -12,14 +12,17 @@
  */
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.CoherentCacheFactory
+import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.consistency.CacheEvictedEventBus
+import me.ahoo.cache.consistency.CoherentCacheFactory
+import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverterFactory
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.proxy.CacheProxyFactory
 import me.ahoo.cache.proxy.DefaultCacheProxyFactory
 import me.ahoo.cache.source.CacheSourceFactory
+import me.ahoo.cache.spring.SpringCacheFactory
 import me.ahoo.cache.spring.client.SpringClientSideCacheFactory
 import me.ahoo.cache.spring.converter.SpringKeyConverterFactory
 import me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus
@@ -29,6 +32,7 @@ import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.cache.util.HostClientIdGenerator
 import me.ahoo.cosid.machine.HostAddressSupplier
 import org.springframework.beans.factory.BeanFactory
+import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -63,6 +67,12 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    fun cacheFactory(beanFactory: ListableBeanFactory): CacheFactory {
+        return SpringCacheFactory(beanFactory)
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     @ConditionalOnSingleCandidate(RedisConnectionFactory::class)
     fun cocacheRedisMessageListenerContainer(
         redisConnectionFactory: RedisConnectionFactory
@@ -83,8 +93,8 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    fun cacheManager(cacheEvictedEventBus: CacheEvictedEventBus): CoherentCacheFactory {
-        return CoherentCacheFactory(cacheEvictedEventBus)
+    fun coherentCacheFactory(cacheEvictedEventBus: CacheEvictedEventBus): CoherentCacheFactory {
+        return DefaultCoherentCacheFactory(cacheEvictedEventBus)
     }
 
     @Bean
@@ -115,7 +125,7 @@ class CoCacheAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     fun cacheProxyFactory(
-        cacheManager: CoherentCacheFactory,
+        coherentCacheFactory: CoherentCacheFactory,
         clientIdGenerator: ClientIdGenerator,
         clientSideCacheFactory: ClientSideCacheFactory,
         distributedCacheFactory: DistributedCacheFactory,
@@ -123,7 +133,7 @@ class CoCacheAutoConfiguration {
         keyConverterFactory: KeyConverterFactory
     ): CacheProxyFactory {
         return DefaultCacheProxyFactory(
-            cacheManager,
+            coherentCacheFactory,
             clientIdGenerator,
             clientSideCacheFactory,
             distributedCacheFactory,

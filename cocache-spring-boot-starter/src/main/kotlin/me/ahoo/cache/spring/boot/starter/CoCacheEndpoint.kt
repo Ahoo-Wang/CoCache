@@ -13,10 +13,11 @@
 
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.CoherentCache
-import me.ahoo.cache.CoherentCacheFactory
+import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.consistency.DefaultCoherentCache
 import me.ahoo.cache.spring.boot.starter.CoCacheEndpoint.CacheReport.Companion.asReport
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
@@ -24,28 +25,31 @@ import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
 @Endpoint(id = CoCache.COCACHE)
-class CoCacheEndpoint(private val cacheManager: CoherentCacheFactory) {
+class CoCacheEndpoint(private val cacheFactory: CacheFactory) {
 
     @ReadOperation
     fun total(): List<CacheReport> {
-        return cacheManager.getCacheNames().mapNotNull {
-            cacheManager.getCache<String, Any>(it)?.asReport()
+        return cacheFactory.caches.filter {
+            it.value is CoherentCache
+        }.map {
+            val coherentCache = it.value as CoherentCache<*, *>
+            coherentCache.asReport(it.key)
         }.toList()
     }
 
     @ReadOperation
     fun stat(@Selector name: String): CacheReport? {
-        return cacheManager.getCache<String, Any>(name)?.asReport()
+        return cacheFactory.getCache<DefaultCoherentCache<String, Any>>(name)?.asReport(name)
     }
 
     @DeleteOperation
     fun evict(@Selector name: String, @Selector key: String) {
-        cacheManager.getCache<String, Any>(name)?.evict(key)
+        cacheFactory.getCache<DefaultCoherentCache<String, Any>>(name)?.evict(key)
     }
 
     @ReadOperation
     fun get(@Selector name: String, @Selector key: String): CacheValue<*>? {
-        return cacheManager.getCache<String, Any>(name)?.getCache(key)
+        return cacheFactory.getCache<DefaultCoherentCache<String, Any>>(name)?.getCache(key)
     }
 
     data class CacheReport(
@@ -61,7 +65,7 @@ class CoCacheEndpoint(private val cacheManager: CoherentCacheFactory) {
         val missingGuardTtl: Long
     ) {
         companion object {
-            fun CoherentCache<*, *>.asReport(): CacheReport {
+            fun CoherentCache<*, *>.asReport(cacheName: String): CacheReport {
                 return CacheReport(
                     name = cacheName,
                     clientId = clientId,

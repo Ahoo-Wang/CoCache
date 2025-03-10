@@ -21,12 +21,12 @@ import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.join.SimpleJoinCache
 import java.lang.reflect.Proxy
 
-class DefaultJoinProxyFactory(private val cacheManager: CacheFactory) : JoinProxyFactory {
+class DefaultJoinProxyFactory(private val cacheFactory: CacheFactory) : JoinProxyFactory {
     @Suppress("UNCHECKED_CAST")
     override fun <CACHE : JoinCache<*, *, *, *>> create(cacheMetadata: JoinCacheMetadata): CACHE {
-        val firstCache = cacheManager.getCache<Cache<Any, Any>>(cacheMetadata.firstCacheName)
+        val firstCache = cacheFactory.getCache<Cache<Any, Any>>(cacheMetadata.firstCacheName)
         requireNotNull(firstCache)
-        val joinCache = cacheManager.getCache<Cache<Any, Any>>(cacheMetadata.joinCacheName)
+        val joinCache = cacheFactory.getCache<Cache<Any, Any>>(cacheMetadata.joinCacheName)
         requireNotNull(joinCache)
         val noOpExtractor = JoinKeyExtractor<Any, Any> { it }
         val delegate = SimpleJoinCache(firstCache, joinCache, noOpExtractor)

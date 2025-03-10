@@ -11,11 +11,8 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.proxy
+package me.ahoo.cache.consistency
 
-import me.ahoo.cache.annotation.CoCacheMetadata
-import me.ahoo.cache.api.Cache
-
-interface CacheProxyFactory {
-    fun <CACHE : Cache<*, *>> create(cacheMetadata: CoCacheMetadata): CACHE
+interface CoherentCacheFactory {
+    fun <K, V> create(cacheConfig: CoherentCacheConfiguration<K, V>): CoherentCache<K, V>
 }

@@ -12,7 +12,7 @@
  */
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.CoherentCacheFactory
+import me.ahoo.cache.CacheFactory
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -31,13 +31,13 @@ class CoCacheEndpointAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    fun cocacheEndpoint(cacheManager: CoherentCacheFactory): CoCacheEndpoint {
-        return CoCacheEndpoint(cacheManager)
+    fun cocacheEndpoint(cacheFactory: CacheFactory): CoCacheEndpoint {
+        return CoCacheEndpoint(cacheFactory)
     }
 
     @Bean
     @ConditionalOnMissingBean
-    fun coCacheClientEndpoint(cacheManager: CoherentCacheFactory): CoCacheClientEndpoint {
-        return CoCacheClientEndpoint(cacheManager)
+    fun coCacheClientEndpoint(cacheFactory: CacheFactory): CoCacheClientEndpoint {
+        return CoCacheClientEndpoint(cacheFactory)
     }
 }

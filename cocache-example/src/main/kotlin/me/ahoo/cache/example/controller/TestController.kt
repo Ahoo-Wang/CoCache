@@ -12,7 +12,8 @@
  */
 package me.ahoo.cache.example.controller
 
-import me.ahoo.cache.CoherentCache
+import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.consistency.DefaultCoherentCache
 import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.example.model.User
 import org.springframework.beans.factory.annotation.Qualifier
