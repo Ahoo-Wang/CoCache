@@ -64,7 +64,7 @@ class DefaultCacheProxyFactory(
         return Proxy.newProxyInstance(
             this.javaClass.classLoader,
             arrayOf(
-                cacheMetadata.type.java,
+                cacheMetadata.proxyInterface.java,
                 ComputedCache::class.java,
                 NamedCache::class.java,
                 CacheDelegated::class.java,
@@ -76,6 +76,6 @@ class DefaultCacheProxyFactory(
     }
 
     private fun CoCacheMetadata.resolveMissingGuardCache(): MissingGuardCache {
-        return type.findAnnotation<MissingGuardCache>() ?: return MissingGuardCache()
+        return proxyInterface.findAnnotation<MissingGuardCache>() ?: return MissingGuardCache()
     }
 }

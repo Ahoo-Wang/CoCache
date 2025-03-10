@@ -19,12 +19,12 @@ import me.ahoo.cache.api.NamedCache
 import java.lang.reflect.Method
 import kotlin.reflect.jvm.javaGetter
 
-class CoCacheInvocationHandler<K, V : Any, DELEGATE>(
+class CoCacheInvocationHandler<DELEGATE>(
     override val cacheMetadata: CoCacheMetadata,
     override val delegate: DELEGATE
 ) : CacheDelegated<DELEGATE>,
     CacheMetadataCapable,
-    CoCacheProxy<K, V, DELEGATE>() where DELEGATE : Cache<K, V>, DELEGATE : NamedCache {
+    CoCacheProxy<DELEGATE>() where DELEGATE : Cache<*, *>, DELEGATE : NamedCache {
 
     companion object {
         val EMPTY_ARGS = emptyArray<Any>()
@@ -32,7 +32,7 @@ class CoCacheInvocationHandler<K, V : Any, DELEGATE>(
         val CACHE_METADATA_METHOD_SIGN: String = CacheMetadataCapable::cacheMetadata.javaGetter!!.name
     }
 
-    override val proxyInterface: Class<*> = cacheMetadata.type.java
+    override val proxyInterface: Class<*> = cacheMetadata.proxyInterface.java
 
     @Suppress("SpreadOperator", "ReturnCount")
     override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {

@@ -34,6 +34,6 @@ class CacheProxyFactoryBean(private val cacheMetadata: CoCacheMetadata) :
     }
 
     override fun getObjectType(): Class<*> {
-        return cacheMetadata.type.java
+        return cacheMetadata.proxyInterface.java
     }
 }
