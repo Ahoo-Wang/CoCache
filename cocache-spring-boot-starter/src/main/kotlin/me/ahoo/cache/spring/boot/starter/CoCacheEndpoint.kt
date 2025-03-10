@@ -17,7 +17,6 @@ import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.consistency.CoherentCache
-import me.ahoo.cache.consistency.DefaultCoherentCache
 import me.ahoo.cache.spring.boot.starter.CoCacheEndpoint.CacheReport.Companion.asReport
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
@@ -39,17 +38,17 @@ class CoCacheEndpoint(private val cacheFactory: CacheFactory) {
 
     @ReadOperation
     fun stat(@Selector name: String): CacheReport? {
-        return cacheFactory.getCache<DefaultCoherentCache<String, Any>>(name)?.asReport(name)
+        return cacheFactory.getCache<CoherentCache<String, Any>>(name)?.asReport(name)
     }
 
     @DeleteOperation
     fun evict(@Selector name: String, @Selector key: String) {
-        cacheFactory.getCache<DefaultCoherentCache<String, Any>>(name)?.evict(key)
+        cacheFactory.getCache<CoherentCache<String, Any>>(name)?.evict(key)
     }
 
     @ReadOperation
     fun get(@Selector name: String, @Selector key: String): CacheValue<*>? {
-        return cacheFactory.getCache<DefaultCoherentCache<String, Any>>(name)?.getCache(key)
+        return cacheFactory.getCache<CoherentCache<String, Any>>(name)?.getCache(key)
     }
 
     data class CacheReport(

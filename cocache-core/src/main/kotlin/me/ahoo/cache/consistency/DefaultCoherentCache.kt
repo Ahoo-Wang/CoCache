@@ -14,17 +14,9 @@ package me.ahoo.cache.consistency
 
 import com.google.common.eventbus.Subscribe
 import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.KeyFilter
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.NamedCache
-import me.ahoo.cache.api.annotation.MissingGuardCache
-import me.ahoo.cache.api.client.ClientSideCache
-import me.ahoo.cache.api.source.CacheSource
-import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.converter.KeyConverter
-import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedClientId
-import me.ahoo.cache.filter.NoOpKeyFilter
 import org.slf4j.LoggerFactory
 
 /**
@@ -37,32 +29,6 @@ class DefaultCoherentCache<K, V>(
     val config: CoherentCacheConfiguration<K, V>,
     override val cacheEvictedEventBus: CacheEvictedEventBus
 ) : CoherentCache<K, V>, DistributedClientId by config, NamedCache by config {
-
-    constructor(
-        cacheName: String,
-        clientId: String,
-        keyConverter: KeyConverter<K>,
-        clientSideCache: ClientSideCache<V> = MapClientSideCache(),
-        distributedCache: DistributedCache<V>,
-        cacheSource: CacheSource<K, V> = CacheSource.noOp(),
-        keyFilter: KeyFilter = NoOpKeyFilter,
-        missingGuardTtl: Long = MissingGuardCache.DEFAULT_TTL_SECONDS,
-        missingGuardTtlAmplitude: Long = MissingGuardCache.DEFAULT_TTL_AMPLITUDE_SECONDS,
-        cacheEvictedEventBus: CacheEvictedEventBus
-    ) : this(
-        CoherentCacheConfiguration(
-            cacheName = cacheName,
-            clientId = clientId,
-            keyConverter = keyConverter,
-            clientSideCache = clientSideCache,
-            distributedCache = distributedCache,
-            cacheSource = cacheSource,
-            keyFilter = keyFilter,
-            missingGuardTtl = missingGuardTtl,
-            missingGuardTtlAmplitude = missingGuardTtlAmplitude
-        ),
-        cacheEvictedEventBus = cacheEvictedEventBus,
-    )
 
     companion object {
         private val log = LoggerFactory.getLogger(DefaultCoherentCache::class.java)

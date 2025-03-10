@@ -14,8 +14,8 @@
 package me.ahoo.cache.consistency
 
 class DefaultCoherentCacheFactory(private val cacheEvictedEventBus: CacheEvictedEventBus) : CoherentCacheFactory {
-    override fun <K, V> create(cacheConfig: CoherentCacheConfiguration<K, V>): DefaultCoherentCache<K, V> {
-        val coherentCache = DefaultCoherentCache<K, V>(
+    override fun <K, V> create(cacheConfig: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
+        val coherentCache = DefaultCoherentCache(
             config = cacheConfig,
             cacheEvictedEventBus = cacheEvictedEventBus
         )
