@@ -20,8 +20,8 @@ import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverterFactory
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.join.JoinKeyExtractorFactory
-import me.ahoo.cache.join.proxy.DefaultJoinProxyFactory
-import me.ahoo.cache.join.proxy.JoinProxyFactory
+import me.ahoo.cache.join.proxy.DefaultJoinCacheProxyFactory
+import me.ahoo.cache.join.proxy.JoinCacheProxyFactory
 import me.ahoo.cache.proxy.CacheProxyFactory
 import me.ahoo.cache.proxy.DefaultCacheProxyFactory
 import me.ahoo.cache.source.CacheSourceFactory
@@ -154,11 +154,11 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    fun joinProxyFactory(
+    fun joinCacheProxyFactory(
         cacheFactory: CacheFactory,
         joinKeyExtractorFactory: JoinKeyExtractorFactory
-    ): JoinProxyFactory {
-        return DefaultJoinProxyFactory(cacheFactory, joinKeyExtractorFactory)
+    ): JoinCacheProxyFactory {
+        return DefaultJoinCacheProxyFactory(cacheFactory, joinKeyExtractorFactory)
     }
 
     @Configuration

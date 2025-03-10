@@ -11,20 +11,11 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.spring.boot.starter.auto
+package me.ahoo.cache.join.proxy
 
-import me.ahoo.cache.example.cache.UserCache
-import me.ahoo.cache.example.cache.UserExtendInfoCache
-import me.ahoo.cache.example.cache.UserExtendInfoJoinCache
-import me.ahoo.cache.spring.EnableCoCache
-import org.springframework.boot.autoconfigure.SpringBootApplication
+import me.ahoo.cache.annotation.JoinCacheMetadata
+import me.ahoo.cache.api.join.JoinCache
 
-@SpringBootApplication
-@EnableCoCache(
-    caches = [
-        UserCache::class,
-        UserExtendInfoCache::class,
-        UserExtendInfoJoinCache::class
-    ]
-)
-class EnableCoCacheConfiguration
+interface JoinCacheProxyFactory {
+    fun <CACHE : JoinCache<*, *, *, *>> create(cacheMetadata: JoinCacheMetadata): CACHE
+}

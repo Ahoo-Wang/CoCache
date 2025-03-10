@@ -17,7 +17,7 @@ import me.ahoo.cache.join.OrderAddress
 import me.ahoo.cache.test.CacheSpec
 import java.util.UUID
 
-class DefaultJoinProxyFactoryTest : CacheSpec<String, JoinValue<OrderAddress, String, Order>>() {
+class DefaultJoinCacheProxyFactoryTest : CacheSpec<String, JoinValue<OrderAddress, String, Order>>() {
 
     override fun createCache(): JoinCache<String, OrderAddress, String, Order> {
         val cacheFactory = mockk<CacheFactory> {
@@ -29,7 +29,7 @@ class DefaultJoinProxyFactoryTest : CacheSpec<String, JoinValue<OrderAddress, St
             every { create<OrderAddress, String>(metadata) } returns JoinKeyExtractor { it.orderId }
         }
 
-        val joinProxyFactory = DefaultJoinProxyFactory(cacheFactory, joinKeyExtractorFactory)
+        val joinProxyFactory = DefaultJoinCacheProxyFactory(cacheFactory, joinKeyExtractorFactory)
         return joinProxyFactory.create<MockJoinCache>(metadata)
     }
 
