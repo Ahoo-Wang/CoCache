@@ -24,15 +24,15 @@ object CoCacheMetadataParser {
     /**
      * 解析 CoCache 注解定义的 Cache 接口
      *
-     * @param cacheType 必须继承 `Cache` 接口，必须是接口
+     * @param proxyInterface 必须继承 `Cache` 接口，必须是接口
      */
-    fun parse(cacheType: KClass<out Cache<*, *>>): CoCacheMetadata {
-        require(cacheType.java.isInterface) {
-            "${cacheType.jvmName} must be interface."
+    fun parse(proxyInterface: KClass<out Cache<*, *>>): CoCacheMetadata {
+        require(proxyInterface.java.isInterface) {
+            "${proxyInterface.jvmName} must be interface."
         }
-        val coCacheAnnotation = cacheType.findAnnotation<CoCache>() ?: CoCache()
+        val coCacheAnnotation = proxyInterface.findAnnotation<CoCache>() ?: CoCache()
         // 获取继承的 Cache<K,V> 中 V 的具体类型
-        val superCacheType = cacheType.supertypes.first {
+        val superCacheType = proxyInterface.supertypes.first {
             it.classifier == Cache::class || it.classifier == ComputedCache::class
         }
         val keyType = superCacheType.arguments.first().type?.classifier as? KClass<*>
@@ -41,7 +41,7 @@ object CoCacheMetadataParser {
         requireNotNull(valueType)
 
         return CoCacheMetadata(
-            proxyInterface = cacheType,
+            proxyInterface = proxyInterface,
             name = coCacheAnnotation.name,
             keyPrefix = coCacheAnnotation.keyPrefix,
             keyExpression = coCacheAnnotation.keyExpression,
