@@ -16,7 +16,7 @@ package me.ahoo.cache.api.join
 import me.ahoo.cache.api.Cache
 
 /**
- * Join Caching.
+ * Join Cache.
  *
  * @author ahoo wang
  */
