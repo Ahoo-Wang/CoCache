@@ -17,6 +17,7 @@ import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CoCache
 import kotlin.reflect.KClass
+import kotlin.reflect.KType
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.jvm.jvmName
 
@@ -35,10 +36,9 @@ object CoCacheMetadataParser {
         val superCacheType = cacheType.supertypes.first {
             it.classifier == Cache::class || it.classifier == ComputedCache::class
         }
-        val keyType = superCacheType.arguments.first().type?.classifier as? KClass<*>
-        requireNotNull(keyType)
-        val valueType = superCacheType.arguments.last().type?.classifier as? KClass<*>
-        requireNotNull(valueType)
+
+        val keyType = superCacheType.getCacheGenericsType(0)
+        val valueType = superCacheType.getCacheGenericsType(1)
 
         return CoCacheMetadata(
             type = cacheType,
@@ -48,6 +48,10 @@ object CoCacheMetadataParser {
             keyType = keyType,
             valueType = valueType
         )
+    }
+
+    fun KType.getCacheGenericsType(index: Int): KClass<*> {
+        return arguments[index].type?.classifier as KClass<*>
     }
 }
 

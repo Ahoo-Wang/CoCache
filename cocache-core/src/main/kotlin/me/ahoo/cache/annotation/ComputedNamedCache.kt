@@ -11,18 +11,16 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.api.annotation
+package me.ahoo.cache.annotation
 
-import java.lang.annotation.Inherited
+import me.ahoo.cache.api.NamedCache
+import kotlin.reflect.KClass
 
-/**
- * @see me.ahoo.cache.api.join.JoinCache
- */
-@Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
-@Inherited
-@MustBeDocumented
-annotation class JoinCacheable(
-    val name: String = "",
-    val firstCacheName: String = "",
-    val joinCacheName: String = ""
-)
+interface ComputedNamedCache : NamedCache {
+    val name: String
+    val type: KClass<*>
+    override val cacheName: String
+        get() = name.ifBlank {
+            type.simpleName!!
+        }
+}

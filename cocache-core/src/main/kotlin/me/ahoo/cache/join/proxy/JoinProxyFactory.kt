@@ -11,18 +11,11 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.api.annotation
+package me.ahoo.cache.join.proxy
 
-import java.lang.annotation.Inherited
+import me.ahoo.cache.annotation.JoinCacheMetadata
+import me.ahoo.cache.api.join.JoinCache
 
-/**
- * @see me.ahoo.cache.api.join.JoinCache
- */
-@Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
-@Inherited
-@MustBeDocumented
-annotation class JoinCacheable(
-    val name: String = "",
-    val firstCacheName: String = "",
-    val joinCacheName: String = ""
-)
+interface JoinProxyFactory {
+    fun <CACHE : JoinCache<*, *, *, *>> create(cacheMetadata: JoinCacheMetadata): CACHE
+}
