@@ -63,4 +63,15 @@ class DefaultCacheProxyFactoryTest {
             )
         assertNull(cache.getCache("key"))
     }
+
+    @Test
+    fun defaultMethod() {
+        val cache =
+            createProxyCache<MockCacheWithKeyExpression>(
+                metadata = coCacheMetadata<MockCacheWithKeyExpression>().copy(
+                    keyExpression = "key"
+                )
+            )
+        assertEquals(cache.defaultMethod(), "defaultMethod")
+    }
 }
