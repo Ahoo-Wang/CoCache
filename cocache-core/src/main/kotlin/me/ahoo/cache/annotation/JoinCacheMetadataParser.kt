@@ -54,7 +54,7 @@ object JoinCacheMetadataParser {
             name = joinCacheAnnotation.name,
             firstCacheName = joinCacheAnnotation.firstCacheName,
             joinCacheName = joinCacheAnnotation.joinCacheName,
-            joinKeyExpression = "",
+            joinKeyExtractorName = joinCacheAnnotation.joinKeyExtractorName,
             firstKeyType = firstKeyType,
             firstValueType = firstValueType,
             joinKeyType = joinKeyType,

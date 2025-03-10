@@ -17,22 +17,26 @@ import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.annotation.JoinCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.join.JoinCache
-import me.ahoo.cache.api.join.JoinKeyExtractor
+import me.ahoo.cache.join.JoinKeyExtractorFactory
 import me.ahoo.cache.join.SimpleJoinCache
 import java.lang.reflect.Proxy
 
-class DefaultJoinProxyFactory(private val cacheFactory: CacheFactory) : JoinProxyFactory {
+class DefaultJoinProxyFactory(
+    private val cacheFactory: CacheFactory,
+    private val joinKeyExtractorFactory: JoinKeyExtractorFactory,
+) : JoinProxyFactory {
     @Suppress("UNCHECKED_CAST")
     override fun <CACHE : JoinCache<*, *, *, *>> create(cacheMetadata: JoinCacheMetadata): CACHE {
         val firstCache = cacheFactory.getCache<Cache<Any, Any>>(cacheMetadata.firstCacheName)
         requireNotNull(firstCache)
         val joinCache = cacheFactory.getCache<Cache<Any, Any>>(cacheMetadata.joinCacheName)
         requireNotNull(joinCache)
-        val noOpExtractor = JoinKeyExtractor<Any, Any> { it }
-        val delegate = SimpleJoinCache(firstCache, joinCache, noOpExtractor)
+
+        val joinKeyExtractor = joinKeyExtractorFactory.create<Any, Any>(cacheMetadata)
+        val delegate = SimpleJoinCache(firstCache, joinCache, joinKeyExtractor)
         val invocationHandler = JoinCacheInvocationHandler(cacheMetadata, delegate)
 
-        val proxy = Proxy.newProxyInstance(
+        return Proxy.newProxyInstance(
             this.javaClass.classLoader,
             arrayOf(
                 cacheMetadata.proxyInterface.java,
@@ -41,7 +45,5 @@ class DefaultJoinProxyFactory(private val cacheFactory: CacheFactory) : JoinProx
             ),
             invocationHandler
         ) as CACHE
-        delegate.joinKeyExtractor = proxy as JoinKeyExtractor<Any, Any>
-        return proxy
     }
 }

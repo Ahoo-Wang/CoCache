@@ -6,9 +6,11 @@ import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.annotation.joinCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.join.JoinCache
+import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.join.JoinValue
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.join.DefaultJoinValue
+import me.ahoo.cache.join.JoinKeyExtractorFactory
 import me.ahoo.cache.join.MockJoinCache
 import me.ahoo.cache.join.Order
 import me.ahoo.cache.join.OrderAddress
@@ -22,13 +24,13 @@ class DefaultJoinProxyFactoryTest : CacheSpec<String, JoinValue<OrderAddress, St
             every { getCache<Cache<String, OrderAddress>>("OrderAddress") } returns MapClientSideCache()
             every { getCache<Cache<String, Order>>("Order") } returns MapClientSideCache()
         }
-
-        val joinProxyFactory = DefaultJoinProxyFactory(cacheFactory)
         val metadata = joinCacheMetadata<MockJoinCache>()
+        val joinKeyExtractorFactory = mockk<JoinKeyExtractorFactory> {
+            every { create<OrderAddress, String>(metadata) } returns JoinKeyExtractor { it.orderId }
+        }
+
+        val joinProxyFactory = DefaultJoinProxyFactory(cacheFactory, joinKeyExtractorFactory)
         return joinProxyFactory.create<MockJoinCache>(metadata)
-//        val orderAddress = OrderAddress(UUID.randomUUID().toString())
-//        val extractKey = cache.extract(orderAddress)
-//        assertEquals(extractKey, orderAddress.orderId)
     }
 
     override fun createCacheEntry(): Pair<String, JoinValue<OrderAddress, String, Order>> {
