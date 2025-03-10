@@ -41,7 +41,7 @@ object CoCacheMetadataParser {
         requireNotNull(valueType)
 
         return CoCacheMetadata(
-            type = cacheType,
+            proxyInterface = cacheType,
             name = coCacheAnnotation.name,
             keyPrefix = coCacheAnnotation.keyPrefix,
             keyExpression = coCacheAnnotation.keyExpression,
