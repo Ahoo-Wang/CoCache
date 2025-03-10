@@ -62,7 +62,7 @@ class DefaultCacheProxyFactory(
         )
         val invocationHandler = CoCacheInvocationHandler(cacheMetadata = cacheMetadata, delegate = delegate)
         return Proxy.newProxyInstance(
-            cacheMetadata.type.java.classLoader,
+            this.javaClass.classLoader,
             arrayOf(
                 cacheMetadata.type.java,
                 ComputedCache::class.java,

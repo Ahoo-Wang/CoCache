@@ -14,8 +14,7 @@
 package me.ahoo.cache.proxy
 
 import me.ahoo.cache.api.Cache
-import me.ahoo.cache.api.NamedCache
 
-interface CacheDelegated<DELEGATE> where DELEGATE : Cache<*, *>, DELEGATE : NamedCache {
+interface CacheDelegated<DELEGATE> where DELEGATE : Cache<*, *> {
     val delegate: DELEGATE
 }

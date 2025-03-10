@@ -28,4 +28,8 @@ interface MockCache :
     CacheMetadataCapable
 
 @CoCache(keyPrefix = "prefix:", keyExpression = "#{#root}")
-interface MockCacheWithKeyExpression : ComputedCache<String, String>
+interface MockCacheWithKeyExpression : ComputedCache<String, String> {
+    fun defaultMethod(): String {
+        return "defaultMethod"
+    }
+}
