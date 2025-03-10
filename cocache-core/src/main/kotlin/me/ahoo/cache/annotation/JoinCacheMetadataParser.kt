@@ -14,7 +14,6 @@
 package me.ahoo.cache.annotation
 
 import me.ahoo.cache.annotation.CoCacheMetadataParser.getCacheGenericsType
-import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.JoinCacheable
 import me.ahoo.cache.api.join.JoinCache
 import kotlin.reflect.KClass
@@ -27,14 +26,11 @@ object JoinCacheMetadataParser {
      *
      * @param proxyInterface 必须继承 `JoinCache` 接口，必须是接口
      */
-    fun parse(proxyInterface: KClass<out Cache<*, *>>): JoinCacheMetadata {
+    fun parse(proxyInterface: KClass<out JoinCache<*, *, *, *>>): JoinCacheMetadata {
         require(proxyInterface.java.isInterface) {
             "${proxyInterface.jvmName} must be interface."
         }
-        val joinCacheAnnotation = proxyInterface.findAnnotation<JoinCacheable>()
-        requireNotNull(joinCacheAnnotation) {
-            "${proxyInterface.jvmName} must be marked with @JoinCacheable"
-        }
+        val joinCacheAnnotation = proxyInterface.findAnnotation<JoinCacheable>() ?: JoinCacheable()
         // 获取继承的 JoinCache<K,V> 中 V 的具体类型
         val superCacheType = proxyInterface.supertypes.first {
             it.classifier == JoinCache::class
