@@ -13,6 +13,8 @@
 package me.ahoo.cache.example
 
 import me.ahoo.cache.example.cache.UserCache
+import me.ahoo.cache.example.cache.UserExtendInfoCache
+import me.ahoo.cache.example.cache.UserExtendInfoJoinCache
 import me.ahoo.cache.spring.EnableCoCache
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
@@ -22,7 +24,7 @@ import org.springframework.boot.runApplication
  *
  * @author ahoo wang
  */
-@EnableCoCache(caches = [UserCache::class])
+@EnableCoCache(caches = [UserCache::class, UserExtendInfoCache::class, UserExtendInfoJoinCache::class])
 @SpringBootApplication
 class AppServer
 
