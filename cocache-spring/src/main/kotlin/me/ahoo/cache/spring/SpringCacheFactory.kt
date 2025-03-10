@@ -27,7 +27,7 @@ class SpringCacheFactory(private val beanFactory: ListableBeanFactory) : CacheFa
     @Suppress("UNCHECKED_CAST", "SwallowedException")
     override fun <CACHE : Cache<*, *>> getCache(cacheName: String, cacheType: Class<*>): CACHE? {
         return try {
-            beanFactory.getBean(cacheName, cacheType::class.java) as CACHE
+            beanFactory.getBean(cacheName, cacheType) as CACHE
         } catch (error: NoSuchBeanDefinitionException) {
             null
         }

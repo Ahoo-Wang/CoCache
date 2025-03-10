@@ -14,15 +14,19 @@
 package me.ahoo.cache.spring
 
 import me.ahoo.cache.annotation.CoCacheMetadata
+import me.ahoo.cache.annotation.JoinCacheMetadata
 import me.ahoo.cache.annotation.toCoCacheMetadata
+import me.ahoo.cache.annotation.toJoinCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.join.JoinCache
+import me.ahoo.cache.spring.join.JoinCacheProxyFactoryBean
 import me.ahoo.cache.spring.proxy.CacheProxyFactoryBean
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.support.BeanDefinitionBuilder
 import org.springframework.beans.factory.support.BeanDefinitionRegistry
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar
 import org.springframework.core.type.AnnotationMetadata
+import kotlin.reflect.KClass
 
 class EnableCoCacheRegistrar : ImportBeanDefinitionRegistrar {
     companion object {
@@ -36,19 +40,49 @@ class EnableCoCacheRegistrar : ImportBeanDefinitionRegistrar {
             beanDefinitionBuilder.addConstructorArgValue(cacheMetadata)
             beanDefinitionBuilder.setPrimary(true)
             if (log.isInfoEnabled) {
-                log.info("Register cache proxy bean definition:{}.", cacheMetadata)
+                log.info("Register Cache proxy bean definition:{}.", cacheMetadata)
+            }
+            registry.registerBeanDefinition(cacheMetadata.cacheName, beanDefinitionBuilder.beanDefinition)
+        }
+        val joinCacheMetadataList = resolveJoinCacheMetadataList(importingClassMetadata)
+        joinCacheMetadataList.forEach { cacheMetadata ->
+            val beanDefinitionBuilder =
+                BeanDefinitionBuilder.genericBeanDefinition(JoinCacheProxyFactoryBean::class.java)
+            beanDefinitionBuilder.addConstructorArgValue(cacheMetadata)
+            beanDefinitionBuilder.setPrimary(true)
+            if (log.isInfoEnabled) {
+                log.info("Register JoinCache proxy bean definition:{}.", cacheMetadata)
             }
             registry.registerBeanDefinition(cacheMetadata.cacheName, beanDefinitionBuilder.beanDefinition)
         }
     }
 
-    @Suppress("UNCHECKED_CAST")
     private fun resolveCacheMetadataList(importingClassMetadata: AnnotationMetadata): List<CoCacheMetadata> {
+        return getCacheTypes(importingClassMetadata)
+            .filter {
+                !JoinCache::class.java.isAssignableFrom(it)
+            }.map {
+                it.kotlin.toCoCacheMetadata()
+            }
+    }
+
+    private fun getCacheTypes(importingClassMetadata: AnnotationMetadata): Array<Class<out Cache<*, *>>> {
         val enableCoCache = importingClassMetadata
-            .getAnnotationAttributes(EnableCoCache::class.java.name) ?: return emptyList()
-        val caches = enableCoCache[EnableCoCache::caches.name] as Array<Class<Cache<*, *>>>
-        return caches.filter {
-            !it.isAssignableFrom(JoinCache::class.java)
-        }.map { it.kotlin.toCoCacheMetadata() }
+            .getAnnotationAttributes(EnableCoCache::class.java.name) ?: return emptyArray()
+        @Suppress("UNCHECKED_CAST")
+        return enableCoCache[EnableCoCache::caches.name] as Array<Class<out Cache<*, *>>>
+    }
+
+    private fun resolveJoinCacheMetadataList(importingClassMetadata: AnnotationMetadata): List<JoinCacheMetadata> {
+        return getCacheTypes(importingClassMetadata)
+            .filter {
+                JoinCache::class.java.isAssignableFrom(it)
+            }.map {
+                @Suppress("UNCHECKED_CAST")
+                it.kotlin as KClass<JoinCache<*, *, *, *>>
+            }
+            .map {
+                it.toJoinCacheMetadata()
+            }
     }
 }

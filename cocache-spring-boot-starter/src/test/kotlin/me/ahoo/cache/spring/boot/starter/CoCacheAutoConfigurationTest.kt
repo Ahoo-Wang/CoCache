@@ -16,6 +16,7 @@ package me.ahoo.cache.spring.boot.starter
 import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.example.cache.UserCache
+import me.ahoo.cache.example.cache.UserExtendInfoJoinCache
 import me.ahoo.cache.spring.boot.starter.auto.EnableCoCacheConfiguration
 import me.ahoo.cache.spring.boot.starter.customize.EnableCoCacheConfigurationWithCustomize
 import me.ahoo.cache.spring.boot.starter.customize.UserExpCache
@@ -50,6 +51,7 @@ internal class CoCacheAutoConfigurationTest {
                     .hasSingleBean(UserCache::class.java)
 
                 context.getBean(UserCache::class.java)
+                context.getBean(UserExtendInfoJoinCache::class.java)
             }
     }
 
