@@ -19,12 +19,16 @@ import me.ahoo.cache.consistency.CoherentCacheFactory
 import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverterFactory
 import me.ahoo.cache.distributed.DistributedCacheFactory
+import me.ahoo.cache.join.JoinKeyExtractorFactory
+import me.ahoo.cache.join.proxy.DefaultJoinProxyFactory
+import me.ahoo.cache.join.proxy.JoinProxyFactory
 import me.ahoo.cache.proxy.CacheProxyFactory
 import me.ahoo.cache.proxy.DefaultCacheProxyFactory
 import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.spring.SpringCacheFactory
 import me.ahoo.cache.spring.client.SpringClientSideCacheFactory
 import me.ahoo.cache.spring.converter.SpringKeyConverterFactory
+import me.ahoo.cache.spring.join.SpringJoinKeyExtractorFactory
 import me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus
 import me.ahoo.cache.spring.redis.RedisDistributedCacheFactory
 import me.ahoo.cache.spring.source.SpringCacheSourceFactory
@@ -140,6 +144,21 @@ class CoCacheAutoConfiguration {
             cacheSourceResolver,
             keyConverterFactory
         )
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    fun joinKeyExtractorFactory(beanFactory: BeanFactory): JoinKeyExtractorFactory {
+        return SpringJoinKeyExtractorFactory(beanFactory)
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    fun joinProxyFactory(
+        cacheFactory: CacheFactory,
+        joinKeyExtractorFactory: JoinKeyExtractorFactory
+    ): JoinProxyFactory {
+        return DefaultJoinProxyFactory(cacheFactory, joinKeyExtractorFactory)
     }
 
     @Configuration

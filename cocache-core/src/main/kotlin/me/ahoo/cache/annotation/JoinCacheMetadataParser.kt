@@ -44,17 +44,23 @@ object JoinCacheMetadataParser {
         val joinKeyType = superCacheType.getCacheGenericsType(2)
         val joinValueType = superCacheType.getCacheGenericsType(3)
         require(joinCacheAnnotation.firstCacheName.isNotBlank()) {
-            "JoinCacheable.firstCacheName must be not blank."
+            "[${proxyInterface.jvmName}] JoinCacheable.firstCacheName must be not blank."
         }
         require(joinCacheAnnotation.joinCacheName.isNotBlank()) {
-            "JoinCacheable.joinCacheName must be not blank."
+            "[${proxyInterface.jvmName}] JoinCacheable.joinCacheName must be not blank."
         }
+        if (joinCacheAnnotation.joinKeyExpression.isNotBlank()) {
+            require(joinKeyType == String::class) {
+                "[${proxyInterface.jvmName}] JoinCacheable.joinKeyExpression must be blank when joinKeyType is not String."
+            }
+        }
+
         return JoinCacheMetadata(
             proxyInterface = proxyInterface,
             name = joinCacheAnnotation.name,
             firstCacheName = joinCacheAnnotation.firstCacheName,
             joinCacheName = joinCacheAnnotation.joinCacheName,
-            joinKeyExtractorName = joinCacheAnnotation.joinKeyExtractorName,
+            joinKeyExpression = joinCacheAnnotation.joinKeyExpression,
             firstKeyType = firstKeyType,
             firstValueType = firstValueType,
             joinKeyType = joinKeyType,
