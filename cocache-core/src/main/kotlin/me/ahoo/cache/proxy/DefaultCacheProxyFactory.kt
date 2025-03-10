@@ -13,15 +13,15 @@
 
 package me.ahoo.cache.proxy
 
-import me.ahoo.cache.CacheManager
-import me.ahoo.cache.CoherentCacheConfiguration
-import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
+import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.consistency.CoherentCacheConfiguration
+import me.ahoo.cache.consistency.CoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverterFactory
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
@@ -32,7 +32,7 @@ import java.lang.reflect.Proxy
 import kotlin.reflect.full.findAnnotation
 
 class DefaultCacheProxyFactory(
-    private val cacheManager: CacheManager,
+    private val coherentCacheFactory: CoherentCacheFactory,
     private val clientIdGenerator: ClientIdGenerator,
     private val clientSideCacheFactory: ClientSideCacheFactory,
     private val distributedCacheFactory: DistributedCacheFactory,
@@ -48,7 +48,7 @@ class DefaultCacheProxyFactory(
         val cacheSource = cacheSourceFactory.create<Any, Any>(cacheMetadata)
         val missingGuardCache = cacheMetadata.resolveMissingGuardCache()
         val keyConverter = keyConverterFactory.create<Any>(cacheMetadata)
-        val delegate = cacheManager.getOrCreateCache(
+        val delegate = coherentCacheFactory.create(
             CoherentCacheConfiguration(
                 cacheName = cacheMetadata.cacheName,
                 clientId = clientId,
@@ -65,7 +65,7 @@ class DefaultCacheProxyFactory(
             this.javaClass.classLoader,
             arrayOf(
                 cacheMetadata.proxyInterface.java,
-                ComputedCache::class.java,
+                CoherentCache::class.java,
                 NamedCache::class.java,
                 CacheDelegated::class.java,
                 DistributedClientId::class.java,

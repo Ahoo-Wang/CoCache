@@ -13,7 +13,6 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
@@ -21,6 +20,9 @@ import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.cache.consistency.CacheEvictedEventBus
+import me.ahoo.cache.consistency.CoherentCacheConfiguration
+import me.ahoo.cache.consistency.DefaultCoherentCache
+import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import org.hamcrest.MatcherAssert.assertThat
@@ -30,7 +32,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.util.*
 
-abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
+abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     companion object {
         private val CACHE_SOURCE_VALUE = ThreadLocal<CacheValue<*>>()
     }
@@ -39,7 +41,7 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     private lateinit var clientSideCache: ClientSideCache<V>
     private lateinit var distributedCache: DistributedCache<V>
     private lateinit var cacheEvictedEventBus: CacheEvictedEventBus
-    private lateinit var coherentCache: CoherentCache<K, V>
+    private lateinit var coherentCache: DefaultCoherentCache<K, V>
     protected lateinit var cacheName: String
     protected val clientId: String = UUID.randomUUID().toString()
 
@@ -56,15 +58,15 @@ abstract class CoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         distributedCache = createDistributedCache()
         cacheEvictedEventBus = createCacheEvictedEventBus()
         cacheName = createCacheName()
-
-        coherentCache = CoherentCache(
-            cacheName = cacheName,
-            clientId = clientId,
-            keyConverter = keyConverter,
-            clientSideCache = clientSideCache,
-            distributedCache = distributedCache,
-            cacheSource = cacheSource,
-            cacheEvictedEventBus = cacheEvictedEventBus
+        coherentCache = DefaultCoherentCacheFactory(cacheEvictedEventBus).create(
+            CoherentCacheConfiguration(
+                cacheName = cacheName,
+                clientId = clientId,
+                keyConverter = keyConverter,
+                clientSideCache = clientSideCache,
+                distributedCache = distributedCache,
+                cacheSource = cacheSource
+            )
         )
         super.setup()
     }

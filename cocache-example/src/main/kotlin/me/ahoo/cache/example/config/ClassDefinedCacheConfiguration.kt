@@ -14,11 +14,11 @@ package me.ahoo.cache.example.config
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.google.common.cache.CacheBuilder
-import me.ahoo.cache.CoherentCacheConfiguration
-import me.ahoo.cache.CacheManager
 import me.ahoo.cache.api.CacheValue
-import me.ahoo.cache.CoherentCache
 import me.ahoo.cache.client.GuavaClientSideCache
+import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.consistency.CoherentCacheConfiguration
+import me.ahoo.cache.consistency.CoherentCacheFactory
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.mock.MockDistributedCache
@@ -36,7 +36,7 @@ class ClassDefinedCacheConfiguration {
     @Bean("userCache")
     fun userCache(
         redisTemplate: StringRedisTemplate,
-        cacheManager: CacheManager,
+        coherentCacheFactory: CoherentCacheFactory,
         objectMapper: ObjectMapper,
         clientIdGenerator: ClientIdGenerator
     ): CoherentCache<String, User> {
@@ -49,7 +49,7 @@ class ClassDefinedCacheConfiguration {
 
         val distributedCaching: DistributedCache<User> = RedisDistributedCache(redisTemplate, codecExecutor)
 
-        return cacheManager.getOrCreateCache(
+        return coherentCacheFactory.create(
             CoherentCacheConfiguration(
                 cacheName = "userCache",
                 clientId = clientId,
@@ -66,12 +66,15 @@ class ClassDefinedCacheConfiguration {
     }
 
     @Bean("mockCache")
-    fun mockCache(cacheManager: CacheManager, clientIdGenerator: ClientIdGenerator): CoherentCache<String, String> {
+    fun mockCache(
+        coherentCacheFactory: CoherentCacheFactory,
+        clientIdGenerator: ClientIdGenerator
+    ): CoherentCache<String, String> {
         val distributedCaching = MockDistributedCache<String>()
         val clientId = clientIdGenerator.generate()
-        return cacheManager.getOrCreateCache(
+        return coherentCacheFactory.create(
             CoherentCacheConfiguration(
-                cacheName = "userCache",
+                cacheName = "mockCache",
                 clientId = clientId,
                 keyConverter = ToStringKeyConverter(""),
                 distributedCache = distributedCaching,

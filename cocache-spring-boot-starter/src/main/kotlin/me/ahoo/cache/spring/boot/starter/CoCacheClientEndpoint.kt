@@ -13,30 +13,32 @@
 
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.CacheManager
+import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.consistency.CoherentCache
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
 @Endpoint(id = "cocacheClient")
-class CoCacheClientEndpoint(private val cacheManager: CacheManager) {
+class CoCacheClientEndpoint(private val cacheFactory: CacheFactory) {
 
     @ReadOperation
     fun getSize(@Selector name: String): Long? {
-        return cacheManager.getCache<String, Any>(name)?.clientSideCache?.size
+        return cacheFactory.getCache<CoherentCache<String, Any>>(name, CoherentCache::class.java)?.clientSideCache?.size
     }
 
     @ReadOperation
     fun get(@Selector name: String, @Selector key: String): CacheValue<*>? {
-        val coherentCache = cacheManager.getCache<String, Any>(name) ?: return null
+        val coherentCache =
+            cacheFactory.getCache<CoherentCache<String, Any>>(name, CoherentCache::class.java) ?: return null
         val clientCacheKey = coherentCache.keyConverter.toStringKey(key)
         return coherentCache.clientSideCache.getCache(clientCacheKey)
     }
 
     @DeleteOperation
     fun clear(@Selector name: String) {
-        cacheManager.getCache<String, Any>(name)?.clientSideCache?.clear()
+        cacheFactory.getCache<CoherentCache<String, Any>>(name, CoherentCache::class.java)?.clientSideCache?.clear()
     }
 }

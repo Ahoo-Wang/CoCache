@@ -13,13 +13,14 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.CacheManager
-import me.ahoo.cache.CoherentCache
-import me.ahoo.cache.CoherentCacheConfiguration
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.consistency.CacheEvictedSubscriber
+import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.consistency.CoherentCacheConfiguration
+import me.ahoo.cache.consistency.CoherentCacheFactory
+import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import org.hamcrest.MatcherAssert.assertThat
@@ -44,17 +45,17 @@ abstract class MultipleInstanceSyncSpec<K, V> {
     protected val otherClientId: String = "otherClientId"
     private lateinit var currentCache: CoherentCache<K, V>
     private lateinit var otherCache: CoherentCache<K, V>
-    private lateinit var cacheManager: CacheManager
+    private lateinit var coherentCacheFactory: CoherentCacheFactory
 
     @BeforeEach
     open fun setup() {
         keyConverter = createKeyConverter()
         distributedCaching = createDistributedCache()
         cacheEvictedEventBus = createCacheEvictedEventBus()
-        cacheManager = CacheManager(cacheEvictedEventBus)
+        coherentCacheFactory = DefaultCoherentCacheFactory(cacheEvictedEventBus)
         cacheName = createCacheName()
 
-        currentCache = cacheManager.getOrCreateCache(
+        currentCache = coherentCacheFactory.create(
             CoherentCacheConfiguration(
                 cacheName = cacheName,
                 clientId = currentClientId,
@@ -63,8 +64,8 @@ abstract class MultipleInstanceSyncSpec<K, V> {
                 clientSideCache = createClientSideCache(),
             ),
         )
-        assertThat(currentCache, equalTo(cacheManager.getCache(cacheName)))
-        otherCache = cacheManager.createCache(
+
+        otherCache = coherentCacheFactory.create(
             CoherentCacheConfiguration(
                 cacheName = cacheName,
                 clientId = otherClientId,

@@ -10,18 +10,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package me.ahoo.cache
+package me.ahoo.cache.consistency
 
 import com.google.common.eventbus.Subscribe
+import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.KeyFilter
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.consistency.CacheEvictedEvent
-import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.consistency.CacheEvictedSubscriber
 import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedClientId
@@ -34,10 +33,10 @@ import org.slf4j.LoggerFactory
  * @author ahoo wang
  */
 @Suppress("LongParameterList")
-class CoherentCache<K, V>(
+class DefaultCoherentCache<K, V>(
     val config: CoherentCacheConfiguration<K, V>,
-    val cacheEvictedEventBus: CacheEvictedEventBus
-) : ComputedCache<K, V>, DistributedClientId by config, NamedCache by config, CacheEvictedSubscriber {
+    override val cacheEvictedEventBus: CacheEvictedEventBus
+) : CoherentCache<K, V>, DistributedClientId by config, NamedCache by config {
 
     constructor(
         cacheName: String,
@@ -66,16 +65,16 @@ class CoherentCache<K, V>(
     )
 
     companion object {
-        private val log = LoggerFactory.getLogger(CoherentCache::class.java)
+        private val log = LoggerFactory.getLogger(DefaultCoherentCache::class.java)
     }
 
-    val clientSideCache = config.clientSideCache
-    val distributedCache = config.distributedCache
-    val keyFilter = config.keyFilter
-    val keyConverter = config.keyConverter
-    val missingGuardTtl = config.missingGuardTtl
-    val missingGuardTtlAmplitude = config.missingGuardTtlAmplitude
-    val cacheSource = config.cacheSource
+    override val clientSideCache = config.clientSideCache
+    override val distributedCache = config.distributedCache
+    override val keyFilter = config.keyFilter
+    override val keyConverter = config.keyConverter
+    override val missingGuardTtl = config.missingGuardTtl
+    override val missingGuardTtlAmplitude = config.missingGuardTtlAmplitude
+    override val cacheSource = config.cacheSource
 
     @Suppress("ReturnCount")
     private fun getL2Cache(cacheKey: String): CacheValue<V>? {

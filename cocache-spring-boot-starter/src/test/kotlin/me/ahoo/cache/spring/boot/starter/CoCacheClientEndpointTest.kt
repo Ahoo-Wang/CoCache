@@ -1,5 +1,6 @@
 package me.ahoo.cache.spring.boot.starter
 
+import me.ahoo.cache.api.Cache
 import org.hamcrest.MatcherAssert.*
 import org.hamcrest.Matchers.*
 import org.junit.jupiter.api.BeforeEach
@@ -11,7 +12,7 @@ class CoCacheClientEndpointTest : AbstractCoCacheEndpointTest() {
     @BeforeEach
     override fun setup() {
         super.setup()
-        endpoint = CoCacheClientEndpoint(cacheManager)
+        endpoint = CoCacheClientEndpoint(cacheFactory)
     }
 
     @Test
@@ -31,7 +32,7 @@ class CoCacheClientEndpointTest : AbstractCoCacheEndpointTest() {
 
     @Test
     fun clear() {
-        val cache = cacheManager.getCache<String, String>(CACHE_NAME)!!
+        val cache = cacheFactory.getCache<Cache<String, String>>(CACHE_NAME)!!
         val key = "clear-key"
         cache[key] = "value"
         assertThat(endpoint.getSize(CACHE_NAME), equalTo(1))
