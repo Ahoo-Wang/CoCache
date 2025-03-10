@@ -47,5 +47,6 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
 data class Order(val id: String)
 
 data class OrderAddress(val orderId: String)
+
 @JoinCacheable
 interface MockJoinCache : JoinCache<String, OrderAddress, String, Order>

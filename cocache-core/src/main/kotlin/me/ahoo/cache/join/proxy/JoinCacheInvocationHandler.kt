@@ -15,12 +15,12 @@ package me.ahoo.cache.join.proxy
 
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinKeyExtractor
-import java.lang.reflect.InvocationHandler
+import me.ahoo.cache.proxy.CoCacheProxy
 import java.lang.reflect.Method
 
 class JoinCacheInvocationHandler<K1, V1, K2, V2>(
     val delegate: JoinCache<K1, V1, K2, V2>,
-) : InvocationHandler {
+) : CoCacheProxy {
 
     companion object {
         val EXTRACT_METHOD_SIGN: String = JoinKeyExtractor<*, *>::extract.name
