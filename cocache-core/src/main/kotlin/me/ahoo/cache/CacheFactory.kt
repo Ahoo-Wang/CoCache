@@ -22,4 +22,6 @@ interface CacheFactory {
     }
 
     fun <CACHE : Cache<*, *>> getCache(cacheName: String, cacheType: Class<*>): CACHE?
+
+    fun <CACHE : Cache<*, *>> getCache(keyType: Class<*>, valueType: Class<*>): CACHE?
 }

@@ -27,9 +27,17 @@ class DefaultJoinCacheProxyFactory(
 ) : JoinCacheProxyFactory {
     @Suppress("UNCHECKED_CAST")
     override fun <CACHE : JoinCache<*, *, *, *>> create(cacheMetadata: JoinCacheMetadata): CACHE {
-        val firstCache = cacheFactory.getCache<Cache<Any, Any>>(cacheMetadata.firstCacheName)
+        val firstCache = getCache(
+            cacheName = cacheMetadata.firstCacheName,
+            keyType = cacheMetadata.firstKeyType.java,
+            valueType = cacheMetadata.firstValueType.java
+        )
         requireNotNull(firstCache)
-        val joinCache = cacheFactory.getCache<Cache<Any, Any>>(cacheMetadata.joinCacheName)
+        val joinCache = getCache(
+            cacheName = cacheMetadata.joinCacheName,
+            keyType = cacheMetadata.joinKeyType.java,
+            valueType = cacheMetadata.joinValueType.java
+        )
         requireNotNull(joinCache)
 
         val joinKeyExtractor = joinKeyExtractorFactory.create<Any, Any>(cacheMetadata)
@@ -45,5 +53,12 @@ class DefaultJoinCacheProxyFactory(
             ),
             invocationHandler
         ) as CACHE
+    }
+
+    private fun getCache(cacheName: String, keyType: Class<*>, valueType: Class<*>): Cache<Any, Any>? {
+        if (cacheName.isNotBlank()) {
+            return cacheFactory.getCache(cacheName)
+        }
+        return cacheFactory.getCache(keyType, valueType)
     }
 }

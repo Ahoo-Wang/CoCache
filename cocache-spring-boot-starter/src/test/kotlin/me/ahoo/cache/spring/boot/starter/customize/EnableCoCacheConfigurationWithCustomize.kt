@@ -40,7 +40,10 @@ import org.springframework.context.annotation.Bean
         UserKeyCache::class,
         UserExtendInfoCache::class,
         MockUserExtendInfoJoinCache::class,
-        MockUserExtendInfoJoinCacheUseNameSuffix::class
+        MockUserExtendInfoJoinCacheUseNameSuffix::class,
+        MainDataCache::class,
+        JoinDataCache::class,
+        MockJoinMainCache::class
     ]
 )
 class EnableCoCacheConfigurationWithCustomize {
@@ -96,3 +99,14 @@ interface MockUserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String
     joinCacheName = "UserCache"
 )
 interface MockUserExtendInfoJoinCacheUseNameSuffix : JoinCache<String, UserExtendInfo, String, User>
+
+interface MainData
+interface JoinData
+
+interface MainDataCache : Cache<String, MainData>
+interface JoinDataCache : Cache<String, JoinData>
+
+@JoinCacheable(
+    joinKeyExpression = "#{#root.mainId}"
+)
+interface MockJoinMainCache : JoinCache<String, MainData, String, JoinData>
