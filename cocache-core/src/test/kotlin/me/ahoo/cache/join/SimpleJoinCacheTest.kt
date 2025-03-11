@@ -19,6 +19,9 @@ import me.ahoo.cache.api.join.JoinValue
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.test.CacheSpec
 import me.ahoo.cosid.jvm.UuidGenerator
+import org.hamcrest.MatcherAssert.*
+import org.hamcrest.Matchers.*
+import org.junit.jupiter.api.Test
 
 /**
  * SimpleJoinCachingTest .
@@ -41,6 +44,16 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
         val order = Order(orderId)
         val orderAddress = OrderAddress(order.id)
         return orderId to DefaultJoinValue(order, orderId, orderAddress)
+    }
+
+    @Test
+    fun evictJoinCache() {
+        val (key, value) = createCacheEntry()
+        cache[key] = value
+        assertThat(cache[key], equalTo(value))
+        val joinCache = cache as JoinCache<String, Order, String, OrderAddress>
+        joinCache.evict(key, key)
+        assertThat(cache[key], nullValue())
     }
 }
 

@@ -75,4 +75,9 @@ class SimpleJoinCache<K1, V1, K2, V2>(
         val joinKey = joinKeyExtractor.extract(firstValue)
         joinCache.evict(joinKey)
     }
+
+    override fun evict(firstKey: K1, joinKey: K2) {
+        firstCache.evict(firstKey)
+        joinCache.evict(joinKey)
+    }
 }
