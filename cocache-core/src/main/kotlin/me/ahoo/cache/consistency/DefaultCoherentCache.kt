@@ -18,6 +18,7 @@ import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.distributed.DistributedClientId
 import org.slf4j.LoggerFactory
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Coherent cache .
@@ -41,6 +42,7 @@ class DefaultCoherentCache<K, V>(
     override val missingGuardTtl = config.missingGuardTtl
     override val missingGuardTtlAmplitude = config.missingGuardTtlAmplitude
     override val cacheSource = config.cacheSource
+    private val keyLocks = ConcurrentHashMap<String, Any>()
 
     @Suppress("ReturnCount")
     private fun getL2Cache(cacheKey: String): CacheValue<V>? {
@@ -76,6 +78,16 @@ class DefaultCoherentCache<K, V>(
         return null
     }
 
+    private fun getLock(cacheKey: String): Any {
+        return keyLocks.computeIfAbsent(cacheKey) {
+            Object()
+        }
+    }
+
+    private fun releaseLock(cacheKey: String) {
+        keyLocks.remove(cacheKey)
+    }
+
     @Suppress("ReturnCount")
     override fun getCache(key: K): CacheValue<V>? {
         val cacheKey = keyConverter.toStringKey(key)
@@ -87,41 +99,46 @@ class DefaultCoherentCache<K, V>(
          *** Fix 缓存击穿 ***
          * 0. Db 存在该记录
          * 1. 并发获取缓存时导致的多次回源问题
-         *** 应用级锁控制并发回源 ***
+         *** 细粒度锁控制并发回源 ***
          */
-        synchronized(this) {
-            getL2Cache(cacheKey)?.let {
-                return it
-            }
+        val lock = getLock(cacheKey)
+        synchronized(lock) {
+            try {
+                getL2Cache(cacheKey)?.let {
+                    return it
+                }
 
-            //region L0:Cache Source
-            /*
-             * This is a heavy-duty operation.
-             */
-            cacheSource.loadCacheValue(key)?.let {
-                setCache(cacheKey, it)
-                cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
-                return it
-            }
+                //region L0:Cache Source
+                /*
+                 * This is a heavy-duty operation.
+                 */
+                cacheSource.loadCacheValue(key)?.let {
+                    setCache(cacheKey, it)
+                    cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
+                    return it
+                }
 
-            //endregion
-            if (log.isDebugEnabled) {
-                log.debug(
-                    "Cache Name[{}] - ClientId[{}] - getCache[{}] " +
-                        "- Set missing guard,because no cache source was found.",
-                    cacheName,
-                    clientId,
-                    cacheKey
-                )
+                //endregion
+                if (log.isDebugEnabled) {
+                    log.debug(
+                        "Cache Name[{}] - ClientId[{}] - getCache[{}] " +
+                            "- Set missing guard,because no cache source was found.",
+                        cacheName,
+                        clientId,
+                        cacheKey
+                    )
+                }
+                /*
+                 *** Fix 缓存穿透 ***
+                 * 0. Db 不存在该记录
+                 * 1. 穿透到 Db 回源
+                 **** 缓存空值 ***
+                 */
+                setCache(cacheKey, DefaultCacheValue.missingGuard(missingGuardTtl, missingGuardTtlAmplitude))
+                return null
+            } finally {
+                releaseLock(cacheKey)
             }
-            /*
-             *** Fix 缓存穿透 ***
-             * 0. Db 不存在该记录
-             * 1. 穿透到 Db 回源
-             **** 缓存空值 ***
-             */
-            setCache(cacheKey, DefaultCacheValue.missingGuard(missingGuardTtl, missingGuardTtlAmplitude))
-            return null
         }
     }
 
