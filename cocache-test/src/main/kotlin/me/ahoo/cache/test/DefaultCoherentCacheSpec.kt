@@ -29,7 +29,14 @@ import org.hamcrest.MatcherAssert.*
 import org.hamcrest.Matchers.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import java.util.*
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     companion object {
@@ -46,6 +53,7 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
 
     private val cacheSource = object : CacheSource<K, V> {
         override fun loadCacheValue(key: K): CacheValue<V>? {
+            Thread.sleep(100)
             return CACHE_SOURCE_VALUE.get() as CacheValue<V>?
         }
     }
@@ -125,5 +133,49 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         assertThat(clientSideCache[cacheKey], equalTo(value))
         assertThat(distributedCache[cacheKey], equalTo(value))
         assertThat(coherentCache[key], equalTo(value))
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = [10, 100, 1000])
+    fun `should prevent cache breakdown under high concurrency`(threadCount: Int) {
+        val (key, value) = createCacheEntry()
+        val cacheValue = DefaultCacheValue.forever(value)
+
+        val startLatch = CountDownLatch(1)
+        val finishLatch = CountDownLatch(threadCount)
+        val executor = Executors.newFixedThreadPool(threadCount)
+        val results = ConcurrentLinkedQueue<Any?>()
+        val callCount = AtomicInteger()
+
+        val coherentCache = DefaultCoherentCacheFactory(cacheEvictedEventBus).create(
+            CoherentCacheConfiguration(
+                cacheName = cacheName,
+                clientId = clientId,
+                keyConverter = keyConverter,
+                clientSideCache = clientSideCache,
+                distributedCache = distributedCache,
+                cacheSource = object : CacheSource<K, V> {
+                    override fun loadCacheValue(key: K): CacheValue<V> {
+                        callCount.incrementAndGet()
+                        Thread.sleep(100) // 放大并发窗口
+                        return cacheValue
+                    }
+                }
+            )
+        )
+
+        repeat(threadCount) {
+            executor.submit {
+                startLatch.await()
+                results.add(coherentCache[key])
+                finishLatch.countDown()
+            }
+        }
+
+        startLatch.countDown()
+        finishLatch.await(5, TimeUnit.SECONDS)
+
+        assertThat("所有线程应获得相同结果", results.all { it == value })
+        assertThat("缓存源应只加载一次", callCount.get(), equalTo(1)) // 核心断言
     }
 }
