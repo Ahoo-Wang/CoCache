@@ -13,6 +13,7 @@
 package me.ahoo.cache.api.source
 
 import me.ahoo.cache.api.CacheValue
+import java.util.concurrent.TimeoutException
 
 /**
  * L0
@@ -21,6 +22,7 @@ import me.ahoo.cache.api.CacheValue
  * @author ahoo wang
  */
 interface CacheSource<K, V> {
+    @Throws(TimeoutException::class)
     fun loadCacheValue(key: K): CacheValue<V>?
 
     companion object {
