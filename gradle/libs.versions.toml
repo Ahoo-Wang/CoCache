@@ -3,6 +3,7 @@
 spring-boot = "3.4.4"
 cosid = "2.12.1"
 guava = "33.4.5-jre"
+kotlin-logging = "7.0.3"
 springdoc = "2.8.5"
 hamcrest = "3.0"
 mockk = "1.13.17"
@@ -16,6 +17,7 @@ publish-plugin = "2.0.0"
 spring-boot-dependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
 cosid-bom = { module = "me.ahoo.cosid:cosid-bom", version.ref = "cosid" }
 guava = { module = "com.google.guava:guava", version.ref = "guava" }
+kotlin-logging = { module = "io.github.oshai:kotlin-logging-jvm", version.ref = "kotlin-logging" }
 springdoc-openapi-starter-webflux-ui = { module = "org.springdoc:springdoc-openapi-starter-webflux-ui", version.ref = "springdoc" }
 hamcrest = { module = "org.hamcrest:hamcrest", version.ref = "hamcrest" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
