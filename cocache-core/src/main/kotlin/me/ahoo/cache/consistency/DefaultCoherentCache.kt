@@ -13,11 +13,11 @@
 package me.ahoo.cache.consistency
 
 import com.google.common.eventbus.Subscribe
+import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.distributed.DistributedClientId
-import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -32,7 +32,7 @@ class DefaultCoherentCache<K, V>(
 ) : CoherentCache<K, V>, DistributedClientId by config, NamedCache by config {
 
     companion object {
-        private val log = LoggerFactory.getLogger(DefaultCoherentCache::class.java)
+        private val log = KotlinLogging.logger {}
     }
 
     override val clientSideCache = config.clientSideCache
@@ -62,13 +62,8 @@ class DefaultCoherentCache<K, V>(
         //region L1
         distributedCache.getCache(cacheKey)?.let {
             if (it.isExpired.not()) {
-                if (log.isDebugEnabled) {
-                    log.debug(
-                        "Cache Name[{}] - ClientId[{}] - get[{}] - set Client Cache.",
-                        cacheName,
-                        clientId,
-                        cacheKey
-                    )
+                log.debug {
+                    "Cache Name[$cacheName] - ClientId[$clientId] - get[$cacheKey] - set Client Cache."
                 }
                 clientSideCache.setCache(cacheKey, it)
                 return it
@@ -119,14 +114,9 @@ class DefaultCoherentCache<K, V>(
                 }
 
                 //endregion
-                if (log.isDebugEnabled) {
-                    log.debug(
-                        "Cache Name[{}] - ClientId[{}] - getCache[{}] " +
-                            "- Set missing guard,because no cache source was found.",
-                        cacheName,
-                        clientId,
-                        cacheKey
-                    )
+                log.debug {
+                    "Cache Name[$cacheName] - ClientId[$clientId] - getCache[$cacheKey] " +
+                        "- Set missing guard,because no cache source was found."
                 }
                 /*
                  *** Fix 缓存穿透 ***
@@ -166,40 +156,24 @@ class DefaultCoherentCache<K, V>(
     @Subscribe
     override fun onEvicted(cacheEvictedEvent: CacheEvictedEvent) {
         if (cacheEvictedEvent.cacheName != cacheName) {
-            if (log.isDebugEnabled) {
-                log.debug(
-                    "Cache Name[{}] - ClientId[{}] - onEvicted " +
-                        "- Ignore the CacheEvictedEvent:{}" +
-                        ",because the cache name do not match:[{}]",
-                    cacheName,
-                    clientId,
-                    cacheEvictedEvent,
-                    cacheName,
-                )
+            log.debug {
+                "Cache Name[$cacheName] - ClientId[$clientId] - onEvicted " +
+                    "- Ignore the CacheEvictedEvent:$cacheEvictedEvent" +
+                    ",because the cache name do not match:[$cacheName]"
             }
             return
         }
 
         if (cacheEvictedEvent.publisherId == clientId) {
-            if (log.isDebugEnabled) {
-                log.debug(
-                    "Cache Name[{}] - ClientId[{}] - onEvicted " +
-                        "- Ignore the CacheEvictedEvent:{} " +
-                        "because it is self-published.",
-                    cacheName,
-                    clientId,
-                    cacheEvictedEvent,
-                )
+            log.debug {
+                "Cache Name[$cacheName] - ClientId[$clientId] - onEvicted " +
+                    "- Ignore the CacheEvictedEvent:$cacheEvictedEvent" +
+                    ",because it is self-published."
             }
             return
         }
-        if (log.isDebugEnabled) {
-            log.debug(
-                "Cache Name[{}] - ClientId[{}] - onEvicted - CacheEvictedEvent:[{}]",
-                cacheName,
-                clientId,
-                cacheEvictedEvent,
-            )
+        log.debug {
+            "Cache Name[$cacheName] - ClientId[$clientId] - onEvicted - CacheEvictedEvent:[$cacheEvictedEvent]"
         }
         clientSideCache.evict(cacheEvictedEvent.key)
     }

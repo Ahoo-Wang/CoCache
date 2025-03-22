@@ -14,7 +14,7 @@ package me.ahoo.cache.consistency
 
 import com.google.common.eventbus.EventBus
 import com.google.common.eventbus.Subscribe
-import org.slf4j.LoggerFactory
+import io.github.oshai.kotlinlogging.KotlinLogging
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -26,20 +26,20 @@ class GuavaCacheEvictedEventBus(
     private val eventBus: EventBus = EventBus()
 ) : CacheEvictedEventBus {
     companion object {
-        private val log = LoggerFactory.getLogger(GuavaCacheEvictedEventBus::class.java)
+        private val log = KotlinLogging.logger {}
     }
 
     private val subscribers = ConcurrentHashMap<CacheEvictedSubscriber, CacheEvictedSubscriberAdapter>()
     override fun publish(event: CacheEvictedEvent) {
-        if (log.isDebugEnabled) {
-            log.debug("Publish - event:[{}].", event)
+        log.debug {
+            "Publish - event:[$event]."
         }
         eventBus.post(event)
     }
 
     override fun register(subscriber: CacheEvictedSubscriber) {
-        if (log.isDebugEnabled) {
-            log.debug("Register - subscriber:[{}].", subscriber)
+        log.debug {
+            "Register - subscriber:[$subscriber]."
         }
         subscribers.computeIfAbsent(subscriber) {
             CacheEvictedSubscriberAdapter(it).also { adapter ->
@@ -49,8 +49,8 @@ class GuavaCacheEvictedEventBus(
     }
 
     override fun unregister(subscriber: CacheEvictedSubscriber) {
-        if (log.isDebugEnabled) {
-            log.debug("Unregister - subscriber:[{}].", subscriber)
+        log.debug {
+            "Unregister - subscriber:[$subscriber]."
         }
         subscribers.remove(subscriber)?.also {
             eventBus.unregister(it)

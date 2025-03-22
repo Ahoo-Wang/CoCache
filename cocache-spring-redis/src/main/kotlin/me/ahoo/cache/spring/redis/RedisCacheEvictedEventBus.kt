@@ -12,11 +12,11 @@
  */
 package me.ahoo.cache.spring.redis
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.consistency.CacheEvictedSubscriber
 import me.ahoo.cache.spring.redis.codec.EvictedEvents
-import org.slf4j.LoggerFactory
 import org.springframework.data.redis.connection.Message
 import org.springframework.data.redis.connection.MessageListener
 import org.springframework.data.redis.core.StringRedisTemplate
@@ -34,7 +34,7 @@ class RedisCacheEvictedEventBus(
     private val listenerContainer: RedisMessageListenerContainer
 ) : CacheEvictedEventBus {
     companion object {
-        private val log = LoggerFactory.getLogger(RedisCacheEvictedEventBus::class.java)
+        private val log = KotlinLogging.logger {}
     }
 
     private val subscribers = ConcurrentHashMap<CacheEvictedSubscriber, MessageListenerAdapter>()
@@ -44,8 +44,8 @@ class RedisCacheEvictedEventBus(
     }
 
     override fun register(subscriber: CacheEvictedSubscriber) {
-        if (log.isDebugEnabled) {
-            log.debug("Register - subscriber:[{}].", subscriber)
+        log.debug {
+            "Register - subscriber:[$subscriber]."
         }
         subscribers.computeIfAbsent(subscriber) {
             MessageListenerAdapter(it).also { listener ->
@@ -55,8 +55,8 @@ class RedisCacheEvictedEventBus(
     }
 
     override fun unregister(subscriber: CacheEvictedSubscriber) {
-        if (log.isDebugEnabled) {
-            log.debug("Unregister - subscriber:[{}].", subscriber)
+        log.debug {
+            "Unregister - subscriber:[$subscriber]."
         }
         subscribers.remove(subscriber)?.also {
             listenerContainer.removeMessageListener(it)
