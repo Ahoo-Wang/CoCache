@@ -6,7 +6,7 @@ guava = "33.4.6-jre"
 kotlin-logging = "7.0.6"
 springdoc = "2.8.6"
 hamcrest = "3.0"
-mockk = "1.13.17"
+mockk = "1.14.0"
 # plugins
 detekt = "1.23.8"
 dokka = "2.0.0"
