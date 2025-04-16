@@ -18,6 +18,7 @@ import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.distributed.DistributedClientId
+import me.ahoo.cache.getFirstTtlConfiguration
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -39,9 +40,10 @@ class DefaultCoherentCache<K, V>(
     override val distributedCache = config.distributedCache
     override val keyFilter = config.keyFilter
     override val keyConverter = config.keyConverter
-    override val missingGuardTtl = config.missingGuardTtl
-    override val missingGuardTtlAmplitude = config.missingGuardTtlAmplitude
     override val cacheSource = config.cacheSource
+    private val ttlConfiguration = getFirstTtlConfiguration(clientSideCache, distributedCache)
+    override val ttl: Long = ttlConfiguration.ttl
+    override val ttlAmplitude: Long = ttlConfiguration.ttlAmplitude
     private val keyLocks = ConcurrentHashMap<String, Any>()
 
     @Suppress("ReturnCount")
@@ -57,7 +59,7 @@ class DefaultCoherentCache<K, V>(
 
         //endregion
         if (keyFilter.notExist(cacheKey)) {
-            return DefaultCacheValue.missingGuard(missingGuardTtl, missingGuardTtlAmplitude)
+            return DefaultCacheValue.missingGuard(ttl, ttlAmplitude)
         }
         //region L1
         distributedCache.getCache(cacheKey)?.let {
@@ -124,7 +126,7 @@ class DefaultCoherentCache<K, V>(
                  * 1. 穿透到 Db 回源
                  **** 缓存空值 ***
                  */
-                setCache(cacheKey, DefaultCacheValue.missingGuard(missingGuardTtl, missingGuardTtlAmplitude))
+                setCache(cacheKey, DefaultCacheValue.missingGuard(ttl, ttlAmplitude))
                 return null
             } finally {
                 releaseLock(cacheKey)

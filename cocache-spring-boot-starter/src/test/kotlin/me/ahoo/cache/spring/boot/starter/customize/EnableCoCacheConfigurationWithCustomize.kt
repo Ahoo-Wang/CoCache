@@ -21,6 +21,7 @@ import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.ComputedClientSideCache
+import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.example.cache.UserExtendInfoCache
@@ -50,7 +51,7 @@ class EnableCoCacheConfigurationWithCustomize {
 
     @Bean
     fun customizeUserClientSideCache(): ComputedClientSideCache<User> {
-        return mockk()
+        return MapClientSideCache<User>()
     }
 
     @Bean

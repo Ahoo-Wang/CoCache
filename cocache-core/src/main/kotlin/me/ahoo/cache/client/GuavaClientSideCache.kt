@@ -15,6 +15,7 @@ package me.ahoo.cache.client
 import com.google.common.cache.Cache
 import com.google.common.cache.CacheBuilder
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.api.annotation.GuavaCache
 
 /**
@@ -23,7 +24,9 @@ import me.ahoo.cache.api.annotation.GuavaCache
  * @author ahoo wang
  */
 class GuavaClientSideCache<V>(
-    private val guavaCache: Cache<String, CacheValue<V>> = CacheBuilder.newBuilder().build()
+    private val guavaCache: Cache<String, CacheValue<V>> = CacheBuilder.newBuilder().build(),
+    override val ttl: Long = CoCache.DEFAULT_TTL,
+    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
 ) : ComputedClientSideCache<V> {
 
     override fun getCache(key: String): CacheValue<V>? {
@@ -49,7 +52,10 @@ class GuavaClientSideCache<V>(
     }
 
     companion object {
-        fun <V> GuavaCache.toClientSideCache(): GuavaClientSideCache<V> {
+        fun <V> GuavaCache.toClientSideCache(
+            ttl: Long = CoCache.DEFAULT_TTL,
+            ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
+        ): GuavaClientSideCache<V> {
             val cacheBuilder = CacheBuilder.newBuilder()
             if (initialCapacity != GuavaCache.UNSET_INT) {
                 cacheBuilder.initialCapacity(initialCapacity)
@@ -66,7 +72,7 @@ class GuavaClientSideCache<V>(
             if (expireAfterAccess != GuavaCache.UNSET_LONG) {
                 cacheBuilder.expireAfterAccess(expireAfterAccess, expireUnit)
             }
-            return GuavaClientSideCache(cacheBuilder.build())
+            return GuavaClientSideCache(cacheBuilder.build(), ttl, ttlAmplitude)
         }
     }
 }

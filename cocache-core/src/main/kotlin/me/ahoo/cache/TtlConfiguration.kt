@@ -11,22 +11,28 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.api.annotation
+package me.ahoo.cache
 
-import java.lang.annotation.Inherited
+import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.annotation.CoCache
 
-/**
- * 缓存缺失保护配置。
- */
-@Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
-@Inherited
-@MustBeDocumented
-annotation class MissingGuardCache(
-    val ttlSeconds: Long = DEFAULT_TTL_SECONDS,
-    val ttlAmplitudeSeconds: Long = DEFAULT_TTL_AMPLITUDE_SECONDS,
-) {
-    companion object {
-        const val DEFAULT_TTL_SECONDS = 600L
-        const val DEFAULT_TTL_AMPLITUDE_SECONDS = 60L
-    }
+interface TtlConfiguration {
+    /**
+     * Default TTL
+     */
+    val ttl: Long
+
+    /**
+     * Default TTL Amplitude
+     */
+    val ttlAmplitude: Long
+}
+
+data class DefaultTtlConfiguration(
+    override val ttl: Long = CoCache.DEFAULT_TTL,
+    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
+) : TtlConfiguration
+
+fun getFirstTtlConfiguration(vararg caches: Cache<*, *>): TtlConfiguration {
+    return caches.firstOrNull { it is TtlConfiguration } as TtlConfiguration? ?: DefaultTtlConfiguration()
 }

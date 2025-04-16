@@ -14,6 +14,7 @@
 package me.ahoo.cache.api
 
 interface CacheSetter<K, V> {
+
     operator fun set(key: K, ttlAt: Long, value: V)
 
     operator fun set(key: K, value: V)

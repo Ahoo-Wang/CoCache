@@ -60,8 +60,7 @@ class CoCacheEndpoint(private val cacheFactory: CacheFactory) {
         val clientSideCaching: String,
         val cacheEvictedEventBus: String,
         val cacheSource: String,
-        val keyFilter: String,
-        val missingGuardTtl: Long
+        val keyFilter: String
     ) {
         companion object {
             fun CoherentCache<*, *>.asReport(cacheName: String): CacheReport {
@@ -74,8 +73,7 @@ class CoCacheEndpoint(private val cacheFactory: CacheFactory) {
                     clientSideCaching = clientSideCache.javaClass.name,
                     cacheEvictedEventBus = cacheEvictedEventBus.javaClass.name,
                     cacheSource = cacheSource.javaClass.name,
-                    keyFilter = keyFilter.javaClass.name,
-                    missingGuardTtl = missingGuardTtl
+                    keyFilter = keyFilter.javaClass.name
                 )
             }
         }

@@ -13,12 +13,12 @@
 
 package me.ahoo.cache
 
-import me.ahoo.cache.DefaultCacheValue.Companion.forever
 import me.ahoo.cache.DefaultCacheValue.Companion.missingGuard
 import me.ahoo.cache.DefaultCacheValue.Companion.missingGuardValue
 import me.ahoo.cache.api.Cache
 
-interface ComputedCache<K, V> : Cache<K, V> {
+interface ComputedCache<K, V> : Cache<K, V>, TtlConfiguration {
+
     /**
      * Get the real cache value.
      *
@@ -54,7 +54,11 @@ interface ComputedCache<K, V> : Cache<K, V> {
     }
 
     override operator fun set(key: K, value: V) {
-        val cacheValue = if (missingGuardValue<Any>() == value) missingGuard() else forever(value)
+        val cacheValue = if (missingGuardValue<Any>() == value) {
+            missingGuard(ttl, ttlAmplitude)
+        } else {
+            DefaultCacheValue.ttlAt(value, ttl, ttlAmplitude)
+        }
         setCache(key, cacheValue)
     }
 }
