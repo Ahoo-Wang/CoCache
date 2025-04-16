@@ -36,3 +36,7 @@ data class DefaultTtlConfiguration(
 fun getFirstTtlConfiguration(vararg caches: Cache<*, *>): TtlConfiguration {
     return caches.firstOrNull { it is TtlConfiguration } as TtlConfiguration? ?: DefaultTtlConfiguration()
 }
+
+interface TtlConfigurationAware {
+    fun setTtlConfiguration(ttlConfiguration: TtlConfiguration)
+}

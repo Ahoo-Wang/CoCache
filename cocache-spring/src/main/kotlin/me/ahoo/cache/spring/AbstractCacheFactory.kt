@@ -13,6 +13,7 @@
 
 package me.ahoo.cache.spring
 
+import me.ahoo.cache.TtlConfigurationAware
 import me.ahoo.cache.annotation.CoCacheMetadata
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
@@ -47,7 +48,7 @@ abstract class AbstractCacheFactory(private val beanFactory: BeanFactory) {
         if (beanFactory.containsBean(beanName)) {
             return beanFactory.getBean(beanName)
         }
-        return getBeanProvider(cacheMetadata) {
+        val bean = getBeanProvider(cacheMetadata) {
             if (log.isWarnEnabled) {
                 log.warn(
                     "[${this.javaClass.simpleName}] Not found for {}, fallback.",
@@ -56,5 +57,9 @@ abstract class AbstractCacheFactory(private val beanFactory: BeanFactory) {
             }
             fallback(cacheMetadata)
         }
+        if (bean is TtlConfigurationAware) {
+            bean.setTtlConfiguration(cacheMetadata)
+        }
+        return bean
     }
 }
