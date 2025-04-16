@@ -30,9 +30,7 @@ open class AbstractCoCacheEndpointTest {
                 "clientId",
                 ToStringKeyConverter("keyPrefix"),
                 distributedCaching,
-                clientSideCaching,
-                missingGuardTtl = 1,
-                missingGuardTtlAmplitude = 1
+                clientSideCaching
             ),
             NoOpCacheEvictedEventBus
         )

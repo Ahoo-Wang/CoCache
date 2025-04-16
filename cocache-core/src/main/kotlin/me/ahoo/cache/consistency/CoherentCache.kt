@@ -28,7 +28,5 @@ interface CoherentCache<K, V> : ComputedCache<K, V>, DistributedClientId, NamedC
     val distributedCache: DistributedCache<V>
     val keyFilter: KeyFilter
     val keyConverter: KeyConverter<K>
-    val missingGuardTtl: Long
-    val missingGuardTtlAmplitude: Long
     val cacheSource: CacheSource<K, V>
 }

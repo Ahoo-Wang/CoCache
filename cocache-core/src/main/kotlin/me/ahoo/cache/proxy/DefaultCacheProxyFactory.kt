@@ -15,7 +15,6 @@ package me.ahoo.cache.proxy
 
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
-import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.consistency.CoherentCache
@@ -27,7 +26,6 @@ import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.util.ClientIdGenerator
 import java.lang.reflect.Proxy
-import kotlin.reflect.full.findAnnotation
 
 class DefaultCacheProxyFactory(
     private val coherentCacheFactory: CoherentCacheFactory,
@@ -44,7 +42,6 @@ class DefaultCacheProxyFactory(
         val clientSideCaching: ClientSideCache<Any> = clientSideCacheFactory.create(cacheMetadata)
         val distributedCaching: DistributedCache<Any> = distributedCacheFactory.create(cacheMetadata)
         val cacheSource = cacheSourceFactory.create<Any, Any>(cacheMetadata)
-        val missingGuardCache = cacheMetadata.resolveMissingGuardCache()
         val keyConverter = keyConverterFactory.create<Any>(cacheMetadata)
         val delegate = coherentCacheFactory.create(
             CoherentCacheConfiguration(
@@ -53,9 +50,7 @@ class DefaultCacheProxyFactory(
                 keyConverter = keyConverter,
                 clientSideCache = clientSideCaching,
                 distributedCache = distributedCaching,
-                cacheSource = cacheSource,
-                missingGuardTtl = missingGuardCache.ttlSeconds,
-                missingGuardTtlAmplitude = missingGuardCache.ttlAmplitudeSeconds
+                cacheSource = cacheSource
             ),
         )
         val invocationHandler = CoCacheInvocationHandler(cacheMetadata = cacheMetadata, delegate = delegate)
@@ -69,9 +64,5 @@ class DefaultCacheProxyFactory(
             ),
             invocationHandler
         ) as CACHE
-    }
-
-    private fun CoCacheMetadata.resolveMissingGuardCache(): MissingGuardCache {
-        return proxyInterface.findAnnotation<MissingGuardCache>() ?: return MissingGuardCache()
     }
 }

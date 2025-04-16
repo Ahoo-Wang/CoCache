@@ -15,7 +15,6 @@ package me.ahoo.cache.consistency
 
 import me.ahoo.cache.KeyFilter
 import me.ahoo.cache.api.NamedCache
-import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCache
@@ -31,7 +30,5 @@ data class CoherentCacheConfiguration<K, V>(
     val distributedCache: DistributedCache<V>,
     val clientSideCache: ClientSideCache<V> = MapClientSideCache(),
     val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
-    val keyFilter: KeyFilter = NoOpKeyFilter,
-    val missingGuardTtl: Long = MissingGuardCache.DEFAULT_TTL_SECONDS,
-    val missingGuardTtlAmplitude: Long = MissingGuardCache.DEFAULT_TTL_AMPLITUDE_SECONDS
+    val keyFilter: KeyFilter = NoOpKeyFilter
 ) : NamedCache, DistributedClientId

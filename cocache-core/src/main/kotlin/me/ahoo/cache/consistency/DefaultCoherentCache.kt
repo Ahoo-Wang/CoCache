@@ -40,11 +40,10 @@ class DefaultCoherentCache<K, V>(
     override val distributedCache = config.distributedCache
     override val keyFilter = config.keyFilter
     override val keyConverter = config.keyConverter
-    override val missingGuardTtl = config.missingGuardTtl
-    override val missingGuardTtlAmplitude = config.missingGuardTtlAmplitude
     override val cacheSource = config.cacheSource
-    override val ttl: Long = getFirstTtlConfiguration(clientSideCache, distributedCache).ttl
-    override val ttlAmplitude: Long = getFirstTtlConfiguration(clientSideCache, distributedCache).ttlAmplitude
+    private val ttlConfiguration = getFirstTtlConfiguration(clientSideCache, distributedCache)
+    override val ttl: Long = ttlConfiguration.ttl
+    override val ttlAmplitude: Long = ttlConfiguration.ttlAmplitude
     private val keyLocks = ConcurrentHashMap<String, Any>()
 
     @Suppress("ReturnCount")
@@ -60,7 +59,7 @@ class DefaultCoherentCache<K, V>(
 
         //endregion
         if (keyFilter.notExist(cacheKey)) {
-            return DefaultCacheValue.missingGuard(missingGuardTtl, missingGuardTtlAmplitude)
+            return DefaultCacheValue.missingGuard(ttl, ttlAmplitude)
         }
         //region L1
         distributedCache.getCache(cacheKey)?.let {
@@ -127,7 +126,7 @@ class DefaultCoherentCache<K, V>(
                  * 1. 穿透到 Db 回源
                  **** 缓存空值 ***
                  */
-                setCache(cacheKey, DefaultCacheValue.missingGuard(missingGuardTtl, missingGuardTtlAmplitude))
+                setCache(cacheKey, DefaultCacheValue.missingGuard(ttl, ttlAmplitude))
                 return null
             } finally {
                 releaseLock(cacheKey)

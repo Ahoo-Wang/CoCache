@@ -16,15 +16,13 @@ package me.ahoo.cache.example.cache
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.api.annotation.GuavaCache
-import me.ahoo.cache.api.annotation.MissingGuardCache
 import me.ahoo.cache.example.model.User
 import java.util.concurrent.TimeUnit
 
-@CoCache(keyPrefix = "user:")
+@CoCache(keyPrefix = "user:", ttl = 120)
 @GuavaCache(
     maximumSize = 1000_000,
     expireUnit = TimeUnit.SECONDS,
     expireAfterAccess = 120
 )
-@MissingGuardCache(ttlSeconds = 120)
 interface UserCache : Cache<String, User>

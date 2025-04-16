@@ -90,7 +90,7 @@ UserCacheSource  ..>  CacheSource~K, V~
  * 定义缓存接口
  * 可选的配置
  */
-@CoCache
+@CoCache(keyPrefix = "user:", ttl = 120)
 /**
  * 可选的配置
  */
@@ -99,10 +99,6 @@ UserCacheSource  ..>  CacheSource~K, V~
     expireUnit = TimeUnit.SECONDS,
     expireAfterAccess = 120
 )
-/**
- * 可选的配置
- */
-@MissingGuardCache(ttlSeconds = 120)
 interface UserCache : Cache<String, User>
 
 @EnableCoCache(caches = [UserCache::class])
