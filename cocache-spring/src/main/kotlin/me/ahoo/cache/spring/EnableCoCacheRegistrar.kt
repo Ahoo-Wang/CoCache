@@ -31,11 +31,21 @@ import kotlin.reflect.KClass
 class EnableCoCacheRegistrar : ImportBeanDefinitionRegistrar {
     companion object {
         private val log = LoggerFactory.getLogger(EnableCoCacheRegistrar::class.java)
+        const val CACHE_METADATA_SUFFIX = ".CacheMetadata"
+    }
+
+    private fun BeanDefinitionRegistry.registerCacheMetadata(cacheMetadata: CoCacheMetadata) {
+        val metadataName = "${cacheMetadata.cacheName}$CACHE_METADATA_SUFFIX"
+        val metadataBeanDefinition = BeanDefinitionBuilder.genericBeanDefinition(CoCacheMetadata::class.java) {
+            cacheMetadata
+        }
+        registerBeanDefinition(metadataName, metadataBeanDefinition.beanDefinition)
     }
 
     override fun registerBeanDefinitions(importingClassMetadata: AnnotationMetadata, registry: BeanDefinitionRegistry) {
         val cacheMetadataList = resolveCacheMetadataList(importingClassMetadata)
         cacheMetadataList.forEach { cacheMetadata ->
+            registry.registerCacheMetadata(cacheMetadata)
             val beanDefinitionBuilder = BeanDefinitionBuilder.genericBeanDefinition(CacheProxyFactoryBean::class.java)
             beanDefinitionBuilder.addConstructorArgValue(cacheMetadata)
             beanDefinitionBuilder.setPrimary(true)
