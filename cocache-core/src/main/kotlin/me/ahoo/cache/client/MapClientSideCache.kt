@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
 class MapClientSideCache<V>(
     private val cacheMap: MutableMap<String, CacheValue<V>> = ConcurrentHashMap(),
     override val ttl: Long = CoCache.DEFAULT_TTL,
-    override val ttlAmplitude: Long = CoCache.DEFAULT_AMPLITUDE
+    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
 ) : ComputedClientSideCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
         return cacheMap[key]

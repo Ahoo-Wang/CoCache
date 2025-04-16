@@ -18,7 +18,7 @@ import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.api.annotation.GuavaCache
 import java.util.concurrent.TimeUnit
 
-@CoCache
+@CoCache(ttl = 1000, ttlAmplitude = 10)
 @GuavaCache
 interface MockDefaultGuavaClientCache : ComputedCache<String, String>
 

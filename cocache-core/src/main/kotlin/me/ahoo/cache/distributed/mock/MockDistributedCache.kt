@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class MockDistributedCache<V>(
     override val ttl: Long = CoCache.DEFAULT_TTL,
-    override val ttlAmplitude: Long = CoCache.DEFAULT_AMPLITUDE
+    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
 ) : DistributedCache<V> {
     private val cacheMap: ConcurrentHashMap<String, CacheValue<V>> = ConcurrentHashMap()
 

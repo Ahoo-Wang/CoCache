@@ -30,7 +30,7 @@ interface TtlConfiguration {
 
 data class DefaultTtlConfiguration(
     override val ttl: Long = CoCache.DEFAULT_TTL,
-    override val ttlAmplitude: Long = CoCache.DEFAULT_AMPLITUDE
+    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
 ) : TtlConfiguration
 
 fun getFirstTtlConfiguration(vararg caches: Cache<*, *>): TtlConfiguration {

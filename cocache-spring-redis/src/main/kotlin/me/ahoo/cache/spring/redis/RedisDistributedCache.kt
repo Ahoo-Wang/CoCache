@@ -29,7 +29,7 @@ class RedisDistributedCache<V>(
     private val redisTemplate: StringRedisTemplate,
     private val codecExecutor: CodecExecutor<V>,
     override val ttl: Long = CoCache.DEFAULT_TTL,
-    override val ttlAmplitude: Long = CoCache.DEFAULT_AMPLITUDE
+    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
 ) : DistributedCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
         val ttlAt = ttlAt(key) ?: return null

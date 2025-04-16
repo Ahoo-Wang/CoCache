@@ -26,7 +26,7 @@ import me.ahoo.cache.api.annotation.GuavaCache
 class GuavaClientSideCache<V>(
     private val guavaCache: Cache<String, CacheValue<V>> = CacheBuilder.newBuilder().build(),
     override val ttl: Long = CoCache.DEFAULT_TTL,
-    override val ttlAmplitude: Long = CoCache.DEFAULT_AMPLITUDE
+    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
 ) : ComputedClientSideCache<V> {
 
     override fun getCache(key: String): CacheValue<V>? {
@@ -54,7 +54,7 @@ class GuavaClientSideCache<V>(
     companion object {
         fun <V> GuavaCache.toClientSideCache(
             ttl: Long = CoCache.DEFAULT_TTL,
-            ttlAmplitude: Long = CoCache.DEFAULT_AMPLITUDE
+            ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
         ): GuavaClientSideCache<V> {
             val cacheBuilder = CacheBuilder.newBuilder()
             if (initialCapacity != GuavaCache.UNSET_INT) {

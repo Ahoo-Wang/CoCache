@@ -34,12 +34,12 @@ annotation class CoCache(
      */
     val keyExpression: String = "",
     val ttl: Long = DEFAULT_TTL,
-    val ttlAmplitude: Long = DEFAULT_AMPLITUDE,
+    val ttlAmplitude: Long = DEFAULT_TTL_AMPLITUDE,
 ) {
     companion object {
         const val COCACHE = "cocache"
 
         const val DEFAULT_TTL: Long = Long.MAX_VALUE
-        const val DEFAULT_AMPLITUDE: Long = 10
+        const val DEFAULT_TTL_AMPLITUDE: Long = 10
     }
 }
