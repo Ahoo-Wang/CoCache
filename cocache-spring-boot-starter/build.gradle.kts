@@ -15,6 +15,7 @@ java {
 dependencies {
     kapt(platform(project(":cocache-dependencies")))
     api(project(":cocache-spring"))
+    api(project(":cocache-spring-cache"))
     api(project(":cocache-spring-redis"))
     api("org.springframework.boot:spring-boot-starter")
     "actuatorSupportImplementation"("org.springframework.boot:spring-boot-starter-actuator")

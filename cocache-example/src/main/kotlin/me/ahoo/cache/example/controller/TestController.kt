@@ -16,6 +16,7 @@ import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.example.model.User
 import org.springframework.beans.factory.annotation.Qualifier
+import org.springframework.cache.annotation.Cacheable
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -46,5 +47,11 @@ class TestController(
         val user = User(id, UUID.randomUUID().toString())
         userCache[user.id] = user
         return user.id
+    }
+
+    @Cacheable(cacheNames = ["userCache"])
+    @GetMapping("spring/{id}")
+    fun getBySpring(@PathVariable id: String, name: String?): User? {
+        return User(id, name ?: UUID.randomUUID().toString())
     }
 }
