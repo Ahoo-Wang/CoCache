@@ -26,6 +26,7 @@ import me.ahoo.cache.proxy.CacheProxyFactory
 import me.ahoo.cache.proxy.DefaultCacheProxyFactory
 import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.spring.SpringCacheFactory
+import me.ahoo.cache.spring.cache.CoCacheManager
 import me.ahoo.cache.spring.client.SpringClientSideCacheFactory
 import me.ahoo.cache.spring.converter.SpringKeyConverterFactory
 import me.ahoo.cache.spring.join.SpringJoinKeyExtractorFactory
@@ -73,6 +74,11 @@ class CoCacheAutoConfiguration {
     @ConditionalOnMissingBean
     fun cacheFactory(beanFactory: ListableBeanFactory): CacheFactory {
         return SpringCacheFactory(beanFactory)
+    }
+
+    @Bean
+    fun coCacheManager(cacheFactory: CacheFactory): CoCacheManager {
+        return CoCacheManager(cacheFactory)
     }
 
     @Bean

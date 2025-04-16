@@ -3,9 +3,9 @@ server:
 spring:
   application:
     name: ${service.name:cocache-example}
-  redis:
-    url: redis://localhost:6379
-
+  data:
+    redis:
+      host: localhost
 cocache:
   enabled: true
 
