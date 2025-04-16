@@ -14,7 +14,10 @@
 package me.ahoo.cache.spring.boot.starter.customize
 
 import io.mockk.mockk
+import me.ahoo.cache.TtlConfiguration
+import me.ahoo.cache.TtlConfigurationAware
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.api.annotation.JoinCacheable
 import me.ahoo.cache.api.join.JoinCache
@@ -56,7 +59,7 @@ class EnableCoCacheConfigurationWithCustomize {
 
     @Bean
     fun customizeUserCacheSource(): CacheSource<String, User> {
-        return mockk()
+        return CustomizeUserCacheSource()
     }
 
     @Bean
@@ -111,3 +114,14 @@ interface JoinDataCache : Cache<String, JoinData>
     joinKeyExpression = "#{#root.mainId}"
 )
 interface MockJoinMainCache : JoinCache<String, MainData, String, JoinData>
+
+class CustomizeUserCacheSource : CacheSource<String, User>, TtlConfigurationAware {
+    private var ttlConfiguration: TtlConfiguration? = null
+    override fun loadCacheValue(key: String): CacheValue<User>? {
+        return null
+    }
+
+    override fun setTtlConfiguration(ttlConfiguration: TtlConfiguration) {
+        this.ttlConfiguration = ttlConfiguration
+    }
+}
