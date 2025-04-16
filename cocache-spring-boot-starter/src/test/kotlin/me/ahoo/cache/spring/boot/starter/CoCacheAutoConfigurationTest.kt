@@ -52,6 +52,7 @@ internal class CoCacheAutoConfigurationTest {
                     .hasSingleBean(CacheEvictedEventBus::class.java)
                     .hasSingleBean(CacheFactory::class.java)
                     .hasSingleBean(UserCache::class.java)
+                    .hasBean("UserCache.CacheMetadata")
 
                 context.getBean(UserCache::class.java)
                 context.getBean(UserExtendInfoJoinCache::class.java)
