@@ -32,9 +32,14 @@ annotation class CoCache(
     /**
      * Spel Expression
      */
-    val keyExpression: String = ""
+    val keyExpression: String = "",
+    val ttl: Long = DEFAULT_TTL,
+    val ttlAmplitude: Long = DEFAULT_AMPLITUDE,
 ) {
     companion object {
         const val COCACHE = "cocache"
+
+        const val DEFAULT_TTL: Long = Long.MAX_VALUE
+        const val DEFAULT_AMPLITUDE: Long = 10
     }
 }

@@ -20,6 +20,7 @@ import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.join.JoinValue
+import me.ahoo.cache.getFirstTtlConfiguration
 import kotlin.math.min
 
 /**
@@ -32,6 +33,8 @@ class SimpleJoinCache<K1, V1, K2, V2>(
     private val joinCache: Cache<K2, V2>,
     override val joinKeyExtractor: JoinKeyExtractor<V1, K2>
 ) : JoinCache<K1, V1, K2, V2>, ComputedCache<K1, JoinValue<V1, K2, V2>> {
+    override val ttl: Long = getFirstTtlConfiguration(firstCache, joinCache).ttl
+    override val ttlAmplitude: Long = getFirstTtlConfiguration(firstCache, joinCache).ttlAmplitude
 
     @Suppress("ReturnCount")
     override fun getCache(key: K1): CacheValue<JoinValue<V1, K2, V2>>? {

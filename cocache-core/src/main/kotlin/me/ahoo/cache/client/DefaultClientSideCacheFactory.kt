@@ -21,7 +21,10 @@ import kotlin.reflect.full.findAnnotation
 
 object DefaultClientSideCacheFactory : ClientSideCacheFactory {
     override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
-        val guavaCache = cacheMetadata.proxyInterface.findAnnotation<GuavaCache>() ?: return MapClientSideCache()
-        return guavaCache.toClientSideCache()
+        val guavaCache = cacheMetadata.proxyInterface.findAnnotation<GuavaCache>() ?: return MapClientSideCache(
+            ttl = cacheMetadata.ttl,
+            ttlAmplitude = cacheMetadata.ttlAmplitude
+        )
+        return guavaCache.toClientSideCache(cacheMetadata.ttl, cacheMetadata.ttlAmplitude)
     }
 }

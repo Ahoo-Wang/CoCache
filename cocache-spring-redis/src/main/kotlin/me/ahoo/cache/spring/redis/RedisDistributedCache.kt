@@ -14,6 +14,7 @@ package me.ahoo.cache.spring.redis
 
 import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.spring.redis.codec.CodecExecutor
 import me.ahoo.cache.util.CacheSecondClock
@@ -26,7 +27,9 @@ import org.springframework.data.redis.core.StringRedisTemplate
  */
 class RedisDistributedCache<V>(
     private val redisTemplate: StringRedisTemplate,
-    private val codecExecutor: CodecExecutor<V>
+    private val codecExecutor: CodecExecutor<V>,
+    override val ttl: Long = CoCache.DEFAULT_TTL,
+    override val ttlAmplitude: Long = CoCache.DEFAULT_AMPLITUDE
 ) : DistributedCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
         val ttlAt = ttlAt(key) ?: return null

@@ -42,7 +42,12 @@ class RedisDistributedCacheFactory(
 
     override fun fallback(cacheMetadata: CoCacheMetadata): Any {
         val codecExecutor = ObjectToJsonCodecExecutor(cacheMetadata.valueType.java, redisTemplate, JsonSerializer)
-        return RedisDistributedCache(redisTemplate, codecExecutor)
+        return RedisDistributedCache(
+            redisTemplate,
+            codecExecutor,
+            ttl = cacheMetadata.ttl,
+            ttlAmplitude = cacheMetadata.ttlAmplitude
+        )
     }
 
     override fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V> {

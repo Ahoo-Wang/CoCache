@@ -18,6 +18,7 @@ import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.distributed.DistributedClientId
+import me.ahoo.cache.getFirstTtlConfiguration
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -42,6 +43,8 @@ class DefaultCoherentCache<K, V>(
     override val missingGuardTtl = config.missingGuardTtl
     override val missingGuardTtlAmplitude = config.missingGuardTtlAmplitude
     override val cacheSource = config.cacheSource
+    override val ttl: Long = getFirstTtlConfiguration(clientSideCache, distributedCache).ttl
+    override val ttlAmplitude: Long = getFirstTtlConfiguration(clientSideCache, distributedCache).ttlAmplitude
     private val keyLocks = ConcurrentHashMap<String, Any>()
 
     @Suppress("ReturnCount")

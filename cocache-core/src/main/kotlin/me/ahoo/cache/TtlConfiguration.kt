@@ -11,22 +11,28 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.annotation
+package me.ahoo.cache
 
-import me.ahoo.cache.TtlConfiguration
-import kotlin.reflect.KClass
+import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.annotation.CoCache
 
-data class CoCacheMetadata(
-    override val proxyInterface: KClass<*>,
-    override val name: String,
-    val keyPrefix: String,
-    val keyExpression: String,
-    override val ttl: Long,
-    override val ttlAmplitude: Long,
-    val keyType: KClass<*>,
-    val valueType: KClass<*>
-) : ComputedNamedCache, TtlConfiguration {
-    override val cacheName: String = name.ifBlank {
-        proxyInterface.simpleName!!
-    }
+interface TtlConfiguration {
+    /**
+     * Default TTL
+     */
+    val ttl: Long
+
+    /**
+     * Default TTL Amplitude
+     */
+    val ttlAmplitude: Long
+}
+
+data class DefaultTtlConfiguration(
+    override val ttl: Long = CoCache.DEFAULT_TTL,
+    override val ttlAmplitude: Long = CoCache.DEFAULT_AMPLITUDE
+) : TtlConfiguration
+
+fun getFirstTtlConfiguration(vararg caches: Cache<*, *>): TtlConfiguration {
+    return caches.firstOrNull { it is TtlConfiguration } as TtlConfiguration? ?: DefaultTtlConfiguration()
 }

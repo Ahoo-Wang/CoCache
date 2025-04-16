@@ -45,6 +45,8 @@ object CoCacheMetadataParser {
             name = coCacheAnnotation.name,
             keyPrefix = coCacheAnnotation.keyPrefix,
             keyExpression = coCacheAnnotation.keyExpression,
+            ttl = coCacheAnnotation.ttl,
+            ttlAmplitude = coCacheAnnotation.ttlAmplitude,
             keyType = keyType,
             valueType = valueType
         )

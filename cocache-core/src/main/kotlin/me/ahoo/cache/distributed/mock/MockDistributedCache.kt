@@ -13,6 +13,7 @@
 package me.ahoo.cache.distributed.mock
 
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.distributed.DistributedCache
 import java.util.concurrent.ConcurrentHashMap
 
@@ -21,7 +22,10 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * @author ahoo wang
  */
-class MockDistributedCache<V> : DistributedCache<V> {
+class MockDistributedCache<V>(
+    override val ttl: Long = CoCache.DEFAULT_TTL,
+    override val ttlAmplitude: Long = CoCache.DEFAULT_AMPLITUDE
+) : DistributedCache<V> {
     private val cacheMap: ConcurrentHashMap<String, CacheValue<V>> = ConcurrentHashMap()
 
     override fun getCache(key: String): CacheValue<V>? {

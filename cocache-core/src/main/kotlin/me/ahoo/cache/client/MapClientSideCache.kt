@@ -13,6 +13,7 @@
 package me.ahoo.cache.client
 
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.annotation.CoCache
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -21,7 +22,9 @@ import java.util.concurrent.ConcurrentHashMap
  * @author ahoo wang
  */
 class MapClientSideCache<V>(
-    private val cacheMap: MutableMap<String, CacheValue<V>> = ConcurrentHashMap()
+    private val cacheMap: MutableMap<String, CacheValue<V>> = ConcurrentHashMap(),
+    override val ttl: Long = CoCache.DEFAULT_TTL,
+    override val ttlAmplitude: Long = CoCache.DEFAULT_AMPLITUDE
 ) : ComputedClientSideCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
         return cacheMap[key]

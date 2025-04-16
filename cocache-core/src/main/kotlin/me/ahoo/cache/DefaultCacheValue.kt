@@ -50,6 +50,9 @@ data class DefaultCacheValue<V>(
 
         @JvmStatic
         fun <V> ttlAt(value: V, ttl: Long, amplitude: Long = 0): CacheValue<V> {
+            if (ComputedTtlAt.isForever(ttl)) {
+                return forever(value)
+            }
             val ttlAt = ComputedTtlAt.at(ttl, amplitude)
             return DefaultCacheValue(value, ttlAt)
         }
