@@ -13,8 +13,7 @@
 
 package me.ahoo.cache.util
 
-import org.hamcrest.MatcherAssert.*
-import org.hamcrest.Matchers.*
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
 class HostClientIdGeneratorTest {
@@ -23,6 +22,6 @@ class HostClientIdGeneratorTest {
     fun generate() {
         val id1 = HostClientIdGenerator.DEFAULT.generate()
         val id2 = HostClientIdGenerator.DEFAULT.generate()
-        assertThat(id1, not(equalTo(id2)))
+        id1.assert().isNotEqualTo(id2)
     }
 }

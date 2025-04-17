@@ -14,6 +14,7 @@
 package me.ahoo.cache
 
 import me.ahoo.cache.util.CacheSecondClock
+import me.ahoo.test.asserts.assert
 import org.hamcrest.MatcherAssert.*
 import org.hamcrest.Matchers.*
 import org.junit.jupiter.api.Test
@@ -22,32 +23,33 @@ class TtlTest {
     @Test
     fun isForever() {
         val ttlAt = ComputedTtlAt.FOREVER
-        assertThat(ComputedTtlAt.isForever(ttlAt), equalTo(true))
+        ComputedTtlAt.isForever(ttlAt).assert().isTrue()
     }
 
     @Test
     fun at() {
         val ttlAt = ComputedTtlAt.at(10)
-        assertThat(ttlAt, greaterThan(CacheSecondClock.INSTANCE.currentTime()))
+        ttlAt.assert().isGreaterThan(CacheSecondClock.INSTANCE.currentTime())
     }
 
     @Test
     fun atWithAmplitude() {
         val ttlAt = ComputedTtlAt.at(10, 5)
-        assertThat(ttlAt, greaterThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 5))
-        assertThat(ttlAt, lessThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 15))
+        ttlAt.assert()
+            .isGreaterThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 5)
+            .isLessThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 15)
     }
 
     @Test
     fun jitterZero() {
-        val jitterTtlAt = ComputedTtlAt.jitter(60, 0)
-        assertThat(jitterTtlAt, equalTo(60))
+        ComputedTtlAt.jitter(60, 0).assert().isEqualTo(60)
     }
 
     @Test
     fun jitter() {
         val jitterTtlAt = ComputedTtlAt.jitter(60, 10)
-        assertThat(jitterTtlAt, greaterThanOrEqualTo(50))
-        assertThat(jitterTtlAt, lessThanOrEqualTo(70))
+        jitterTtlAt.assert()
+            .isGreaterThanOrEqualTo(50)
+            .isLessThanOrEqualTo(70)
     }
 }
