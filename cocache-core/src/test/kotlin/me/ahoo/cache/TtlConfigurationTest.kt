@@ -15,8 +15,7 @@ package me.ahoo.cache
 
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.client.MapClientSideCache
-import org.hamcrest.CoreMatchers.equalTo
-import org.hamcrest.MatcherAssert.assertThat
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
 class TtlConfigurationTest {
@@ -25,14 +24,14 @@ class TtlConfigurationTest {
         val ttl = 1L
         val ttlAmplitude = 2L
         val ttlConfiguration = getFirstTtlConfiguration(MapClientSideCache<Any>(ttl = ttl, ttlAmplitude = ttlAmplitude))
-        assertThat(ttlConfiguration.ttl, equalTo(ttl))
-        assertThat(ttlConfiguration.ttlAmplitude, equalTo(ttlAmplitude))
+        ttlConfiguration.ttl.assert().isEqualTo(ttl)
+        ttlConfiguration.ttlAmplitude.assert().isEqualTo(ttlAmplitude)
     }
 
     @Test
     fun testGetFirstTtlConfigurationIfEmpty() {
         val ttlConfiguration = getFirstTtlConfiguration()
-        assertThat(ttlConfiguration.ttl, equalTo(CoCache.DEFAULT_TTL))
-        assertThat(ttlConfiguration.ttlAmplitude, equalTo(CoCache.DEFAULT_TTL_AMPLITUDE))
+        ttlConfiguration.ttl.assert().isEqualTo(CoCache.DEFAULT_TTL)
+        ttlConfiguration.ttlAmplitude.assert().isEqualTo(CoCache.DEFAULT_TTL_AMPLITUDE)
     }
 }
