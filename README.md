@@ -6,7 +6,8 @@ Level 2 Distributed Coherence Cache Framework
 [![Maven Central](https://maven-badges.herokuapp.com/maven-central/me.ahoo.cocache/cocache-core/badge.svg)](https://maven-badges.herokuapp.com/maven-central/me.ahoo.cocache/cocache-core)
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/a2f3fd9b1e564fa3a3b558d1dfaf2a34)](https://www.codacy.com/gh/Ahoo-Wang/CoCache/dashboard?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=Ahoo-Wang/CoCache&amp;utm_campaign=Badge_Grade)
 [![codecov](https://codecov.io/gh/Ahoo-Wang/CoCache/branch/main/graph/badge.svg?token=NlFI44RCS4)](https://codecov.io/gh/Ahoo-Wang/CoCache)
-![Integration Test Status](https://github.com/Ahoo-Wang/CoCache/actions/workflows/integration-test.yml/badge.svg)
+[![Integration Test Status](https://github.com/Ahoo-Wang/CoCache/actions/workflows/integration-test.yml/badge.svg)](https://github.com/Ahoo-Wang/CoCache)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Ahoo-Wang/CoCache)
 
 ## Architecture
 
