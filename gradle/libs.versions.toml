@@ -6,6 +6,7 @@ guava = "33.4.8-jre"
 kotlin-logging = "7.0.7"
 springdoc = "2.8.8"
 # testing
+junit = "5.13.0"
 fluent-assert = "0.1.2"
 hamcrest = "3.0"
 mockk = "1.14.2"
@@ -21,6 +22,7 @@ cosid-bom = { module = "me.ahoo.cosid:cosid-bom", version.ref = "cosid" }
 guava = { module = "com.google.guava:guava", version.ref = "guava" }
 kotlin-logging = { module = "io.github.oshai:kotlin-logging-jvm", version.ref = "kotlin-logging" }
 springdoc-openapi-starter-webflux-ui = { module = "org.springdoc:springdoc-openapi-starter-webflux-ui", version.ref = "springdoc" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 fluent-assert-bom = { module = "me.ahoo.test:fluent-assert-bom", version.ref = "fluent-assert" }
 hamcrest = { module = "org.hamcrest:hamcrest", version.ref = "hamcrest" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
