@@ -1,12 +1,14 @@
 package me.ahoo.cache.annotation
 
 import me.ahoo.cache.ComputedCache
+import me.ahoo.cache.annotation.CoCacheMetadataParser.getCacheGenericsType
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.proxy.MockCacheWithKeyExpression
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
+import kotlin.reflect.typeOf
 
 class CoCacheMetadataParserTest {
 
@@ -56,6 +58,13 @@ class CoCacheMetadataParserTest {
         metadata.keyType.classifier.assert().isEqualTo(String::class)
         metadata.valueType.classifier.assert().isEqualTo(List::class)
         metadata.valueType.arguments[0].type!!.classifier.assert().isEqualTo(CoCacheMetadataParserTest::class)
+    }
+
+    @Test
+    fun getCacheGenericsType() {
+        Assertions.assertThrows(IllegalArgumentException::class.java) {
+            typeOf<List<*>>().getCacheGenericsType(0)
+        }
     }
 
     @CoCache
