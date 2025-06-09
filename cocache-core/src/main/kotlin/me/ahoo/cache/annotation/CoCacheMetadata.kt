@@ -15,6 +15,7 @@ package me.ahoo.cache.annotation
 
 import me.ahoo.cache.TtlConfiguration
 import kotlin.reflect.KClass
+import kotlin.reflect.KType
 
 data class CoCacheMetadata(
     override val proxyInterface: KClass<*>,
@@ -23,8 +24,8 @@ data class CoCacheMetadata(
     val keyExpression: String,
     override val ttl: Long,
     override val ttlAmplitude: Long,
-    val keyType: KClass<*>,
-    val valueType: KClass<*>
+    val keyType: KType,
+    val valueType: KType
 ) : ComputedNamedCache, TtlConfiguration {
     override val cacheName: String = name.ifBlank {
         proxyInterface.simpleName!!

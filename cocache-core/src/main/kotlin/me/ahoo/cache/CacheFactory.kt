@@ -14,6 +14,7 @@
 package me.ahoo.cache
 
 import me.ahoo.cache.api.Cache
+import kotlin.reflect.KType
 
 interface CacheFactory {
     val caches: Map<String, Cache<*, *>>
@@ -23,5 +24,5 @@ interface CacheFactory {
 
     fun <CACHE : Cache<*, *>> getCache(cacheName: String, cacheType: Class<*>): CACHE?
 
-    fun <CACHE : Cache<*, *>> getCache(keyType: Class<*>, valueType: Class<*>): CACHE?
+    fun <CACHE : Cache<*, *>> getCache(keyType: KType, valueType: KType): CACHE?
 }

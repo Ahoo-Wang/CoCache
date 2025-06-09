@@ -20,6 +20,7 @@ import me.ahoo.cache.client.DefaultClientSideCacheFactory
 import me.ahoo.cache.spring.AbstractCacheFactory
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
+import kotlin.reflect.javaType
 
 class SpringClientSideCacheFactory(beanFactory: BeanFactory) : ClientSideCacheFactory,
     AbstractCacheFactory(beanFactory) {
@@ -29,10 +30,11 @@ class SpringClientSideCacheFactory(beanFactory: BeanFactory) : ClientSideCacheFa
 
     override val suffix: String = CLIENT_SIDE_CACHE_SUFFIX
 
+    @OptIn(ExperimentalStdlibApi::class)
     override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
         return ResolvableType.forClassWithGenerics(
             ClientSideCache::class.java,
-            cacheMetadata.valueType.java
+            ResolvableType.forType(cacheMetadata.valueType.javaType)
         )
     }
 

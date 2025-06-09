@@ -22,6 +22,7 @@ import me.ahoo.cache.spring.redis.serialization.JsonSerializer
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
 import org.springframework.data.redis.core.StringRedisTemplate
+import kotlin.reflect.javaType
 
 class RedisDistributedCacheFactory(
     beanFactory: BeanFactory,
@@ -33,15 +34,21 @@ class RedisDistributedCacheFactory(
 
     override val suffix: String = DISTRIBUTED_CACHE_SUFFIX
 
+    @OptIn(ExperimentalStdlibApi::class)
     override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
         return ResolvableType.forClassWithGenerics(
             DistributedCache::class.java,
-            cacheMetadata.valueType.java
+            ResolvableType.forType(cacheMetadata.valueType.javaType)
         )
     }
 
+    @OptIn(ExperimentalStdlibApi::class)
     override fun fallback(cacheMetadata: CoCacheMetadata): Any {
-        val codecExecutor = ObjectToJsonCodecExecutor(cacheMetadata.valueType.java, redisTemplate, JsonSerializer)
+        val codecExecutor = ObjectToJsonCodecExecutor<Any>(
+            valueType = cacheMetadata.valueType.javaType,
+            redisTemplate = redisTemplate,
+            objectMapper = JsonSerializer
+        )
         return RedisDistributedCache(
             redisTemplate,
             codecExecutor,

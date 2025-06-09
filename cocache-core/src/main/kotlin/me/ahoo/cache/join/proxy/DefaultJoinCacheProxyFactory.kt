@@ -20,6 +20,7 @@ import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.join.JoinKeyExtractorFactory
 import me.ahoo.cache.join.SimpleJoinCache
 import java.lang.reflect.Proxy
+import kotlin.reflect.KType
 
 class DefaultJoinCacheProxyFactory(
     private val cacheFactory: CacheFactory,
@@ -29,14 +30,14 @@ class DefaultJoinCacheProxyFactory(
     override fun <CACHE : JoinCache<*, *, *, *>> create(cacheMetadata: JoinCacheMetadata): CACHE {
         val firstCache = getCache(
             cacheName = cacheMetadata.firstCacheName,
-            keyType = cacheMetadata.firstKeyType.java,
-            valueType = cacheMetadata.firstValueType.java
+            keyType = cacheMetadata.firstKeyType,
+            valueType = cacheMetadata.firstValueType
         )
         requireNotNull(firstCache)
         val joinCache = getCache(
             cacheName = cacheMetadata.joinCacheName,
-            keyType = cacheMetadata.joinKeyType.java,
-            valueType = cacheMetadata.joinValueType.java
+            keyType = cacheMetadata.joinKeyType,
+            valueType = cacheMetadata.joinValueType
         )
         requireNotNull(joinCache)
 
@@ -55,7 +56,7 @@ class DefaultJoinCacheProxyFactory(
         ) as CACHE
     }
 
-    private fun getCache(cacheName: String, keyType: Class<*>, valueType: Class<*>): Cache<Any, Any>? {
+    private fun getCache(cacheName: String, keyType: KType, valueType: KType): Cache<Any, Any>? {
         if (cacheName.isNotBlank()) {
             return cacheFactory.getCache(cacheName)
         }
