@@ -17,6 +17,7 @@ import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.core.StringRedisTemplate
+import java.lang.reflect.Type
 
 /**
  * ObjectToJsonCodecExecutor .
@@ -24,11 +25,11 @@ import org.springframework.data.redis.core.StringRedisTemplate
  * @author ahoo wang
  */
 class ObjectToJsonCodecExecutor<V>(
-    private val valueType: Class<V>,
+    private val valueType: Type,
     private val redisTemplate: StringRedisTemplate,
     private val objectMapper: ObjectMapper
 ) : AbstractCodecExecutor<V, String>() {
-
+    private val valueJavaType = objectMapper.typeFactory.constructType(valueType)
     override fun CacheValue<V>.toRawValue(): String {
         if (isMissingGuard) {
             return MissingGuard.STRING_VALUE
@@ -45,7 +46,7 @@ class ObjectToJsonCodecExecutor<V>(
     }
 
     override fun decode(rawValue: String): V {
-        return objectMapper.readValue(rawValue, valueType)
+        return objectMapper.readValue(rawValue, valueJavaType)
     }
 
     override fun setForeverValue(key: String, cacheValue: CacheValue<V>) {

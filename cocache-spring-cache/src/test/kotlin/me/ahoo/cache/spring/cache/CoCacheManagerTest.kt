@@ -20,6 +20,7 @@ import org.hamcrest.CoreMatchers.equalTo
 import org.hamcrest.MatcherAssert.*
 import org.hamcrest.Matchers
 import org.junit.jupiter.api.Test
+import kotlin.reflect.KType
 
 class CoCacheManagerTest {
     object MockCacheFactory : CacheFactory {
@@ -35,8 +36,8 @@ class CoCacheManagerTest {
         }
 
         override fun <CACHE : Cache<*, *>> getCache(
-            keyType: Class<*>,
-            valueType: Class<*>
+            keyType: KType,
+            valueType: KType
         ): CACHE? {
             return null
         }

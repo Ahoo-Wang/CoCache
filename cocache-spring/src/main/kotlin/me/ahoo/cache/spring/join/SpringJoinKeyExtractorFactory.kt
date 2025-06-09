@@ -19,6 +19,7 @@ import me.ahoo.cache.join.ExpJoinKeyExtractor
 import me.ahoo.cache.join.JoinKeyExtractorFactory
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
+import kotlin.reflect.jvm.javaType
 
 class SpringJoinKeyExtractorFactory(private val beanFactory: BeanFactory) : JoinKeyExtractorFactory {
     companion object {
@@ -35,10 +36,11 @@ class SpringJoinKeyExtractorFactory(private val beanFactory: BeanFactory) : Join
             @Suppress("UNCHECKED_CAST")
             return beanFactory.getBean(beanName) as JoinKeyExtractor<V1, K2>
         }
+
         val beanType = ResolvableType.forClassWithGenerics(
             JoinKeyExtractor::class.java,
-            cacheMetadata.firstValueType.java,
-            cacheMetadata.joinKeyType.java
+            ResolvableType.forType(cacheMetadata.firstValueType.javaType),
+            ResolvableType.forType(cacheMetadata.joinKeyType.javaType)
         )
 
         val provider = beanFactory.getBeanProvider<JoinKeyExtractor<V1, K2>>(beanType)

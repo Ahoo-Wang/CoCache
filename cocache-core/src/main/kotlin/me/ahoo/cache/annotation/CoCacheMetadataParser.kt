@@ -52,8 +52,8 @@ object CoCacheMetadataParser {
         )
     }
 
-    fun KType.getCacheGenericsType(index: Int): KClass<*> {
-        return arguments[index].type?.classifier as KClass<*>
+    fun KType.getCacheGenericsType(index: Int): KType {
+        return requireNotNull(arguments[index].type)
     }
 }
 

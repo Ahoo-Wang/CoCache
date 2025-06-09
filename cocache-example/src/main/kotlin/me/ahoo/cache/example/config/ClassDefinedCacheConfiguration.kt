@@ -41,7 +41,7 @@ class ClassDefinedCacheConfiguration {
         clientIdGenerator: ClientIdGenerator
     ): CoherentCache<String, User> {
         val clientId = clientIdGenerator.generate()
-        val codecExecutor = ObjectToJsonCodecExecutor(
+        val codecExecutor = ObjectToJsonCodecExecutor<User>(
             User::class.java,
             redisTemplate,
             objectMapper,

@@ -22,6 +22,7 @@ import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.spring.AbstractCacheFactory
 import org.springframework.context.ApplicationContext
 import org.springframework.core.ResolvableType
+import kotlin.reflect.jvm.javaType
 
 class SpringKeyConverterFactory(private val appContext: ApplicationContext) : KeyConverterFactory,
     AbstractCacheFactory(appContext) {
@@ -35,12 +36,12 @@ class SpringKeyConverterFactory(private val appContext: ApplicationContext) : Ke
     override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
         return ResolvableType.forClassWithGenerics(
             KeyConverter::class.java,
-            cacheMetadata.keyType.java
+            ResolvableType.forType(cacheMetadata.keyType.javaType)
         )
     }
 
     override fun getBeanProvider(cacheMetadata: CoCacheMetadata, fallback: () -> Any): Any {
-        if (cacheMetadata.keyType.java == String::class.java) {
+        if (cacheMetadata.keyType.classifier == String::class.java) {
             return fallback()
         }
         return super.getBeanProvider(cacheMetadata, fallback)
