@@ -19,7 +19,7 @@ import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.spring.AbstractCacheFactory
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
-import kotlin.reflect.javaType
+import kotlin.reflect.jvm.javaType
 
 class SpringCacheSourceFactory(beanFactory: BeanFactory) : CacheSourceFactory,
     AbstractCacheFactory(beanFactory) {
@@ -29,7 +29,6 @@ class SpringCacheSourceFactory(beanFactory: BeanFactory) : CacheSourceFactory,
 
     override val suffix: String = CACHE_SOURCE_SUFFIX
 
-    @OptIn(ExperimentalStdlibApi::class)
     override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
         return ResolvableType.forClassWithGenerics(
             CacheSource::class.java,

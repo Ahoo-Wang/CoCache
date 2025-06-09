@@ -19,14 +19,13 @@ import me.ahoo.cache.join.ExpJoinKeyExtractor
 import me.ahoo.cache.join.JoinKeyExtractorFactory
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
-import kotlin.reflect.javaType
+import kotlin.reflect.jvm.javaType
 
 class SpringJoinKeyExtractorFactory(private val beanFactory: BeanFactory) : JoinKeyExtractorFactory {
     companion object {
         const val JOIN_KEY_EXTRACTOR_SUFFIX = ".JoinKeyExtractor"
     }
 
-    @OptIn(ExperimentalStdlibApi::class)
     override fun <V1, K2> create(cacheMetadata: JoinCacheMetadata): JoinKeyExtractor<V1, K2> {
         if (cacheMetadata.joinKeyExpression.isNotBlank()) {
             @Suppress("UNCHECKED_CAST")

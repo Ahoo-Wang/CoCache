@@ -22,7 +22,7 @@ import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.spring.AbstractCacheFactory
 import org.springframework.context.ApplicationContext
 import org.springframework.core.ResolvableType
-import kotlin.reflect.javaType
+import kotlin.reflect.jvm.javaType
 
 class SpringKeyConverterFactory(private val appContext: ApplicationContext) : KeyConverterFactory,
     AbstractCacheFactory(appContext) {
@@ -33,7 +33,6 @@ class SpringKeyConverterFactory(private val appContext: ApplicationContext) : Ke
 
     override val suffix: String = KEY_CONVERTER_SUFFIX
 
-    @OptIn(ExperimentalStdlibApi::class)
     override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
         return ResolvableType.forClassWithGenerics(
             KeyConverter::class.java,
