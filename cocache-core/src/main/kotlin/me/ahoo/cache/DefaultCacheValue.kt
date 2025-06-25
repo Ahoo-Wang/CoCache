@@ -13,10 +13,11 @@
 
 package me.ahoo.cache
 
+import me.ahoo.cache.MissingGuard.Companion.STRING_VALUE
+import me.ahoo.cache.MissingGuard.Companion.isMissingGuard
 import me.ahoo.cache.api.CacheValue
 
-object MissingGuard {
-    const val STRING_VALUE = "_nil_"
+object DefaultMissingGuard : MissingGuard {
     override fun toString(): String {
         return STRING_VALUE
     }
@@ -38,10 +39,10 @@ data class DefaultCacheValue<V>(
 ) : CacheValue<V>, ComputedTtlAt {
 
     override val isMissingGuard: Boolean
-        get() = missingGuardValue<Any>() == value
+        get() = value.isMissingGuard
 
     companion object {
-        private val FOREVER_MISSING_GUARD_CACHE_VALUE: CacheValue<*> = forever(MissingGuard)
+        private val FOREVER_MISSING_GUARD_CACHE_VALUE: CacheValue<*> = forever(DefaultMissingGuard)
 
         @JvmStatic
         fun <V> forever(value: V): CacheValue<V> {
@@ -66,43 +67,24 @@ data class DefaultCacheValue<V>(
             return FOREVER_MISSING_GUARD_CACHE_VALUE as V
         }
 
-        @JvmStatic
         fun <V : CacheValue<*>> missingGuard(ttl: Long, amplitude: Long = 0): V {
+            return missingGuard(DefaultMissingGuard, ttl, amplitude)
+        }
+
+        @JvmStatic
+        fun <V : CacheValue<*>> missingGuard(missingGuard: MissingGuard, ttl: Long, amplitude: Long = 0): V {
             if (ComputedTtlAt.isForever(ttl)) {
                 return missingGuard()
             }
             val ttlAt = ComputedTtlAt.at(ttl, amplitude)
             @Suppress("UNCHECKED_CAST")
-            return DefaultCacheValue(MissingGuard, ttlAt) as V
+            return DefaultCacheValue(missingGuard, ttlAt) as V
         }
 
         @JvmStatic
         fun <V> missingGuardValue(): V {
             @Suppress("UNCHECKED_CAST")
-            return MissingGuard as V
-        }
-
-        @JvmStatic
-        fun isMissingGuard(value: String): Boolean {
-            return MissingGuard.STRING_VALUE == value
-        }
-
-        @JvmStatic
-        fun isMissingGuard(value: Set<String>): Boolean {
-            return if (value.isEmpty()) {
-                false
-            } else {
-                return value.contains(MissingGuard.STRING_VALUE)
-            }
-        }
-
-        @JvmStatic
-        fun isMissingGuard(value: Map<String, String>): Boolean {
-            return if (value.isEmpty()) {
-                false
-            } else {
-                value.containsKey(MissingGuard.STRING_VALUE)
-            }
+            return DefaultMissingGuard as V
         }
     }
 }

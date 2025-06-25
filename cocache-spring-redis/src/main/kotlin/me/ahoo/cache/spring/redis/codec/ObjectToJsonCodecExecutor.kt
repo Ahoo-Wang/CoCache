@@ -13,8 +13,8 @@
 package me.ahoo.cache.spring.redis.codec
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.MissingGuard
+import me.ahoo.cache.MissingGuard.Companion.isMissingGuard
 import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.core.StringRedisTemplate
 import java.lang.reflect.Type
@@ -38,7 +38,7 @@ class ObjectToJsonCodecExecutor<V>(
     }
 
     override fun isMissingGuard(rawValue: String): Boolean {
-        return DefaultCacheValue.isMissingGuard(rawValue)
+        return rawValue.isMissingGuard
     }
 
     override fun getRawValue(key: String): String? {

@@ -14,7 +14,7 @@
 package me.ahoo.cache.spring.cache
 
 import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.MissingGuard
+import me.ahoo.cache.DefaultMissingGuard
 import me.ahoo.cache.api.CacheValue
 import org.hamcrest.CoreMatchers.equalTo
 import org.hamcrest.MatcherAssert.*
@@ -26,7 +26,7 @@ class SpringCacheValueWrapperTest {
 
     @Test
     fun get() {
-        assertThat(springCacheValueWrapper.get(), equalTo(MissingGuard))
+        assertThat(springCacheValueWrapper.get(), equalTo(DefaultMissingGuard))
     }
 
     @Test
