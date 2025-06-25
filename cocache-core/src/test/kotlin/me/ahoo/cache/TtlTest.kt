@@ -15,8 +15,6 @@ package me.ahoo.cache
 
 import me.ahoo.cache.util.CacheSecondClock
 import me.ahoo.test.asserts.assert
-import org.hamcrest.MatcherAssert.*
-import org.hamcrest.Matchers.*
 import org.junit.jupiter.api.Test
 
 class TtlTest {
