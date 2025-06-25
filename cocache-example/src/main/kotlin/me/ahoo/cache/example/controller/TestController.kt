@@ -29,6 +29,7 @@ import java.util.*
  *
  * @author ahoo wang
  */
+@Suppress("UnusedPrivateProperty")
 @RestController
 @RequestMapping("test")
 class TestController(
