@@ -13,8 +13,8 @@
 package me.ahoo.cache.example.config
 
 import me.ahoo.cache.annotation.CoCacheMetadata
-import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.example.model.User
 import org.springframework.beans.factory.annotation.Qualifier
