@@ -11,26 +11,25 @@
  * limitations under the License.
  */
 
-package me.ahoo.cache.spring.cache
+package me.ahoo.cache.join
 
-import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.DefaultMissingGuard
-import me.ahoo.cache.api.CacheValue
-import org.hamcrest.CoreMatchers.equalTo
-import org.hamcrest.MatcherAssert.*
+import me.ahoo.cache.MissingGuard
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
-class SpringCacheValueWrapperTest {
-    private val cacheValue = DefaultCacheValue.missingGuard<CacheValue<Any?>>()
-    private val springCacheValueWrapper = SpringCacheValueWrapper(cacheValue)
-
+class DefaultJoinMissingGuardTest {
     @Test
-    fun get() {
-        assertThat(springCacheValueWrapper.get(), equalTo(DefaultMissingGuard))
+    fun getFirstValue() {
+        DefaultJoinMissingGuard.firstValue.assert().isEqualTo(MissingGuard.STRING_VALUE)
     }
 
     @Test
-    fun getCacheValue() {
-        assertThat(springCacheValueWrapper.cacheValue, equalTo(cacheValue))
+    fun getJoinKey() {
+        DefaultJoinMissingGuard.joinKey.assert().isEqualTo(MissingGuard.STRING_VALUE)
+    }
+
+    @Test
+    fun getSecondValue() {
+        DefaultJoinMissingGuard.secondValue.assert().isEqualTo(MissingGuard.STRING_VALUE)
     }
 }

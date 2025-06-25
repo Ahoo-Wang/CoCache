@@ -15,6 +15,7 @@ package me.ahoo.cache.test
 
 import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.Cache
 import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.Matchers.equalTo
@@ -27,6 +28,7 @@ abstract class CacheSpec<K, V> {
     protected abstract fun createCache(): Cache<K, V>
     protected abstract fun createCacheEntry(): Pair<K, V>
     protected lateinit var cache: Cache<K, V>
+    protected open val missingGuard: V = DefaultCacheValue.missingGuardValue()
 
     @BeforeEach
     open fun setup() {
@@ -88,7 +90,7 @@ abstract class CacheSpec<K, V> {
     @Test
     fun setMissing() {
         val (key, value) = createCacheEntry()
-        cache[key] = DefaultCacheValue.missingGuardValue()
+        cache[key] = missingGuard
         Assertions.assertNull(cache[key])
         Assertions.assertNull(cache.getTtlAt(key))
     }
@@ -96,7 +98,7 @@ abstract class CacheSpec<K, V> {
     @Test
     fun setMissingTtl() {
         val (key, value) = createCacheEntry()
-        cache.setCache(key, DefaultCacheValue.missingGuard(5))
+        cache.setCache(key, DefaultCacheValue.missingGuard(missingGuard as MissingGuard, 5))
         Assertions.assertNull(cache[key])
         Assertions.assertNull(cache.getTtlAt(key))
     }

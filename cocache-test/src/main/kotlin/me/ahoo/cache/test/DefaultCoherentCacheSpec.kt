@@ -54,6 +54,7 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     private val cacheSource = object : CacheSource<K, V> {
         override fun loadCacheValue(key: K): CacheValue<V>? {
             Thread.sleep(100)
+            @Suppress("UNCHECKED_CAST")
             return CACHE_SOURCE_VALUE.get() as CacheValue<V>?
         }
     }

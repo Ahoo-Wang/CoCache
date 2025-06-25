@@ -18,7 +18,8 @@ import me.ahoo.cache.test.CacheSpec
 import java.util.UUID
 
 class DefaultJoinCacheProxyFactoryTest : CacheSpec<String, JoinValue<OrderAddress, String, Order>>() {
-
+    override val missingGuard: JoinValue<OrderAddress, String, Order>
+        get() = DefaultJoinValue.missingGuardValue()
     override fun createCache(): JoinCache<String, OrderAddress, String, Order> {
         val cacheFactory = mockk<CacheFactory> {
             every { getCache<Cache<String, OrderAddress>>("OrderAddress") } returns MapClientSideCache()

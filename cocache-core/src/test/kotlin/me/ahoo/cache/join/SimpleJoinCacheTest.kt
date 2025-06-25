@@ -30,6 +30,8 @@ import org.junit.jupiter.api.Test
  */
 internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, OrderAddress>>() {
 
+    override val missingGuard: JoinValue<Order, String, OrderAddress>
+        get() = DefaultJoinValue.missingGuardValue()
     override fun createCache(): Cache<String, JoinValue<Order, String, OrderAddress>> {
         val orderCache = MapClientSideCache<Order>()
         val orderAddressCache = MapClientSideCache<OrderAddress>()
