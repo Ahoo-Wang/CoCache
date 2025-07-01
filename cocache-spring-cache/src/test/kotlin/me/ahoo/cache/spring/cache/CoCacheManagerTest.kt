@@ -16,9 +16,7 @@ package me.ahoo.cache.spring.cache
 import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.client.MapClientSideCache
-import org.hamcrest.CoreMatchers.equalTo
-import org.hamcrest.MatcherAssert.*
-import org.hamcrest.Matchers
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import kotlin.reflect.KType
 
@@ -47,12 +45,12 @@ class CoCacheManagerTest {
 
     @Test
     fun loadCaches() {
-        assertThat(coCacheManager.cacheNames, Matchers.emptyIterable<String>())
+        coCacheManager.cacheNames.assert().isEmpty()
     }
 
     @Test
     fun getMissingCache() {
         val cache = coCacheManager.getCache("test")
-        assertThat(cache!!.name, equalTo("test"))
+        cache?.name.assert().isEqualTo("test")
     }
 }

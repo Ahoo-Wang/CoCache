@@ -17,8 +17,8 @@ import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.util.CacheSecondClock
-import org.hamcrest.MatcherAssert.assertThat
-import org.hamcrest.Matchers.*
+import me.ahoo.test.asserts.assert
+import org.assertj.core.data.Offset
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -57,7 +57,7 @@ abstract class CodecExecutorSpec<V> {
         val value = DefaultCacheValue.forever(createCacheValue())
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, ComputedTtlAt.FOREVER)
-        assertThat(actual, equalTo(value))
+        actual.assert().isEqualTo(value)
     }
 
     @Test
@@ -67,8 +67,8 @@ abstract class CodecExecutorSpec<V> {
         val value = DefaultCacheValue(createCacheValue(), ttlAt)
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, ttlAt)
-        assertThat(actual.value, equalTo(value.value))
-        assertThat(actual.ttlAt.toDouble(), closeTo(value.ttlAt.toDouble(), 1.toDouble()))
+        actual.assert().isEqualTo(value)
+        actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
     }
 
     @Test
@@ -77,7 +77,7 @@ abstract class CodecExecutorSpec<V> {
         val value = DefaultCacheValue.missingGuard<CacheValue<V>>()
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, ComputedTtlAt.FOREVER)
-        assertThat(actual, equalTo(value))
+        actual.assert().isEqualTo(value)
     }
 
     @Test
@@ -86,7 +86,7 @@ abstract class CodecExecutorSpec<V> {
         val value = DefaultCacheValue.missingGuard<CacheValue<V>>(100)
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, 100)
-        assertThat(actual.value, equalTo(value.value))
-        assertThat(actual.ttlAt.toDouble(), closeTo(value.ttlAt.toDouble(), 1.toDouble()))
+        actual.assert().isEqualTo(value)
+        actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
     }
 }
