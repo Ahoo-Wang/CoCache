@@ -12,8 +12,12 @@
  */
 package me.ahoo.cache.client
 
+import me.ahoo.cache.api.annotation.GuavaCache
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.client.GuavaClientSideCache.Companion.toClientSideCache
 import me.ahoo.cache.test.ClientSideCacheSpec
+import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.Test
 import java.util.*
 
 /**
@@ -29,5 +33,11 @@ internal class GuavaCacheTest : ClientSideCacheSpec<String>() {
 
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()
+    }
+
+    @Test
+    fun defaultCacheConvert() {
+        val cache = GuavaCache().toClientSideCache<String>()
+        cache.assert().isNotNull()
     }
 }
