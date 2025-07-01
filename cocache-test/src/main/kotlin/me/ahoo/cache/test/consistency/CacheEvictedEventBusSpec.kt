@@ -16,8 +16,7 @@ package me.ahoo.cache.test.consistency
 import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.consistency.CacheEvictedSubscriber
-import org.hamcrest.MatcherAssert.assertThat
-import org.hamcrest.Matchers.equalTo
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -35,7 +34,7 @@ abstract class CacheEvictedEventBusSpec {
         val evictedEvent = CacheEvictedEvent(cacheName, "publish", UUID.randomUUID().toString())
         val subscriber = object : CacheEvictedSubscriber {
             override fun onEvicted(cacheEvictedEvent: CacheEvictedEvent) {
-                assertThat(evictedEvent, equalTo(cacheEvictedEvent))
+                evictedEvent.assert().isEqualTo(cacheEvictedEvent)
                 countDownLatch.countDown()
             }
 
@@ -45,7 +44,7 @@ abstract class CacheEvictedEventBusSpec {
 
         eventBus.register(subscriber)
         eventBus.publish(evictedEvent)
-        assertThat(countDownLatch.await(1, TimeUnit.SECONDS), equalTo(true))
+        countDownLatch.await(1, TimeUnit.SECONDS).assert().isTrue()
     }
 
     @Test
@@ -57,7 +56,7 @@ abstract class CacheEvictedEventBusSpec {
         val evictedEvent = CacheEvictedEvent(cacheName, "unregister", UUID.randomUUID().toString())
         val subscriber = object : CacheEvictedSubscriber {
             override fun onEvicted(cacheEvictedEvent: CacheEvictedEvent) {
-                assertThat(evictedEvent, equalTo(cacheEvictedEvent))
+                evictedEvent.assert().isEqualTo(cacheEvictedEvent)
                 countDownLatch.countDown()
                 countDownLatch2.countDown()
             }
@@ -67,9 +66,9 @@ abstract class CacheEvictedEventBusSpec {
         }
         eventBus.register(subscriber)
         eventBus.publish(evictedEvent)
-        assertThat(countDownLatch.await(1, TimeUnit.SECONDS), equalTo(true))
+        countDownLatch.await(1, TimeUnit.SECONDS).assert().isTrue()
         eventBus.unregister(subscriber)
         eventBus.publish(evictedEvent)
-        assertThat(countDownLatch2.await(2, TimeUnit.SECONDS), equalTo(false))
+        countDownLatch2.await(2, TimeUnit.SECONDS).assert().isFalse()
     }
 }

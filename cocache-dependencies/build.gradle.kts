@@ -19,7 +19,6 @@ dependencies {
         api(libs.guava)
         api(libs.kotlin.logging)
         api(libs.springdoc.openapi.starter.webflux.ui)
-        api(libs.hamcrest)
         api(libs.mockk)
         api(libs.detekt.formatting)
     }

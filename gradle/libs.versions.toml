@@ -8,7 +8,6 @@ springdoc = "2.8.9"
 # testing
 junit = "5.13.2"
 fluent-assert = "0.2.0"
-hamcrest = "3.0"
 mockk = "1.14.4"
 # plugins
 detekt = "1.23.8"
@@ -24,7 +23,6 @@ kotlin-logging = { module = "io.github.oshai:kotlin-logging-jvm", version.ref = 
 springdoc-openapi-starter-webflux-ui = { module = "org.springdoc:springdoc-openapi-starter-webflux-ui", version.ref = "springdoc" }
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 fluent-assert-bom = { module = "me.ahoo.test:fluent-assert-bom", version.ref = "fluent-assert" }
-hamcrest = { module = "org.hamcrest:hamcrest", version.ref = "hamcrest" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 detekt-formatting = { module = "io.gitlab.arturbosch.detekt:detekt-formatting", version.ref = "detekt" }
 [plugins]

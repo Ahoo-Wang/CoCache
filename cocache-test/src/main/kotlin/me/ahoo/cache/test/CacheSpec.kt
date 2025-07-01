@@ -17,10 +17,7 @@ import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.Cache
-import org.hamcrest.MatcherAssert.assertThat
-import org.hamcrest.Matchers.equalTo
-import org.hamcrest.Matchers.nullValue
-import org.junit.jupiter.api.Assertions
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -38,7 +35,7 @@ abstract class CacheSpec<K, V> {
     @Test
     fun get() {
         val (key, value) = createCacheEntry()
-        assertThat(cache[key], nullValue())
+        cache[key].assert().isNull()
     }
 
     @Test
@@ -46,60 +43,60 @@ abstract class CacheSpec<K, V> {
         val (key, value) = createCacheEntry()
         val ttlAt = ComputedTtlAt.at(-5)
         cache[key, ttlAt] = value
-        assertThat(cache[key], nullValue())
-        assertThat(cache.getTtlAt(key), nullValue())
+        cache[key].assert().isNull()
+        cache.getTtlAt(key).assert().isNull()
     }
 
     @Test
     fun set() {
         val (key, value) = createCacheEntry()
-        assertThat(cache[key], nullValue())
+        cache[key].assert().isNull()
         cache[key] = value
-        assertThat(cache[key], equalTo(value))
+        cache[key].assert().isEqualTo(value)
     }
 
     @Test
     fun setWithTtl() {
         val (key, value) = createCacheEntry()
-        assertThat(cache[key], nullValue())
+        cache[key].assert().isNull()
         val cacheValue = DefaultCacheValue.ttlAt(value, 5)
         cache.setCache(key, cacheValue)
-        assertThat(cache[key], equalTo(value))
-        assertThat(cache.getTtlAt(key), equalTo(cacheValue.ttlAt))
+        cache[key].assert().isEqualTo(value)
+        cache.getTtlAt(key).assert().isEqualTo(cacheValue.ttlAt)
     }
 
     @Test
     fun setWithTtlAmplitude() {
         val (key, value) = createCacheEntry()
-        assertThat(cache[key], nullValue())
+        cache[key].assert().isNull()
         val cacheValue = DefaultCacheValue.ttlAt(value, 5, 1)
         cache.setCache(key, cacheValue)
-        assertThat(cache[key], equalTo(value))
-        assertThat(cache.getTtlAt(key), equalTo(cacheValue.ttlAt))
+        cache[key].assert().isEqualTo(value)
+        cache.getTtlAt(key).assert().isEqualTo(cacheValue.ttlAt)
     }
 
     @Test
     fun evict() {
         val (key, value) = createCacheEntry()
         cache[key] = value
-        assertThat(cache[key], equalTo(value))
+        cache[key].assert().isEqualTo(value)
         cache.evict(key)
-        assertThat(cache[key], nullValue())
+        cache[key].assert().isNull()
     }
 
     @Test
     fun setMissing() {
         val (key, value) = createCacheEntry()
         cache[key] = missingGuard
-        Assertions.assertNull(cache[key])
-        Assertions.assertNull(cache.getTtlAt(key))
+        cache[key].assert().isNull()
+        cache.getTtlAt(key).assert().isNull()
     }
 
     @Test
     fun setMissingTtl() {
         val (key, value) = createCacheEntry()
         cache.setCache(key, DefaultCacheValue.missingGuard(missingGuard as MissingGuard, 5))
-        Assertions.assertNull(cache[key])
-        Assertions.assertNull(cache.getTtlAt(key))
+        cache[key].assert().isNull()
+        cache.getTtlAt(key).assert().isNull()
     }
 }
