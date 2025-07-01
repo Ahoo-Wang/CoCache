@@ -209,8 +209,8 @@ nexusPublishing {
     this.repositories {
         sonatype {
             nexusUrl.set(uri("https://ossrh-staging-api.central.sonatype.com/service/local/"))
-            username.set(System.getenv("MAVEN_USERNAME"))
-            password.set(System.getenv("MAVEN_PASSWORD"))
+            username.set(System.getenv("SONATYPE_USERNAME"))
+            password.set(System.getenv("SONATYPE_PASSWORD"))
         }
     }
 }
