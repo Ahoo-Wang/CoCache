@@ -12,8 +12,12 @@
  */
 package me.ahoo.cache.client
 
+import me.ahoo.cache.api.annotation.CaffeineCache
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.client.CaffeineClientSideCache.Companion.toClientSideCache
 import me.ahoo.cache.test.ClientSideCacheSpec
+import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.Test
 import java.util.*
 
 /**
@@ -29,5 +33,11 @@ internal class CaffeineCacheTest : ClientSideCacheSpec<String>() {
 
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()
+    }
+
+    @Test
+    fun defaultCacheConvert() {
+        val cache = CaffeineCache().toClientSideCache<String>()
+        cache.assert().isNotNull()
     }
 }
