@@ -14,17 +14,26 @@
 package me.ahoo.cache.client
 
 import me.ahoo.cache.annotation.CoCacheMetadata
+import me.ahoo.cache.api.annotation.CaffeineCache
 import me.ahoo.cache.api.annotation.GuavaCache
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.client.CaffeineClientSideCache.Companion.toClientSideCache
 import me.ahoo.cache.client.GuavaClientSideCache.Companion.toClientSideCache
 import kotlin.reflect.full.findAnnotation
 
 object DefaultClientSideCacheFactory : ClientSideCacheFactory {
+    @Suppress("ReturnCount")
     override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
-        val guavaCache = cacheMetadata.proxyInterface.findAnnotation<GuavaCache>() ?: return MapClientSideCache(
+        cacheMetadata.proxyInterface.findAnnotation<GuavaCache>()?.let {
+            return it.toClientSideCache(cacheMetadata.ttl, cacheMetadata.ttlAmplitude)
+        }
+        cacheMetadata.proxyInterface.findAnnotation<CaffeineCache>()?.let {
+            return it.toClientSideCache(cacheMetadata.ttl, cacheMetadata.ttlAmplitude)
+        }
+
+        return MapClientSideCache(
             ttl = cacheMetadata.ttl,
             ttlAmplitude = cacheMetadata.ttlAmplitude
         )
-        return guavaCache.toClientSideCache(cacheMetadata.ttl, cacheMetadata.ttlAmplitude)
     }
 }
