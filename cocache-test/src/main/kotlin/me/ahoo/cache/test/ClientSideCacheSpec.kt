@@ -23,9 +23,11 @@ abstract class ClientSideCacheSpec<V> : CacheSpec<String, V>() {
 
     @Test
     fun clear() {
+        val clientSideCache = cache as ClientSideCache<V>
         val (key, value) = createCacheEntry()
-        cache[key] = value
-        (cache as ClientSideCache<V>).clear()
+        clientSideCache[key] = value
+        clientSideCache.clear()
         cache[key].assert().isNull()
+        clientSideCache.size.assert().isZero()
     }
 }
