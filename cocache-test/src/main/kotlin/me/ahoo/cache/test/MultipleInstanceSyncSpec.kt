@@ -23,8 +23,7 @@ import me.ahoo.cache.consistency.CoherentCacheFactory
 import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.distributed.DistributedCache
-import org.hamcrest.MatcherAssert.assertThat
-import org.hamcrest.Matchers.*
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
@@ -110,32 +109,31 @@ abstract class MultipleInstanceSyncSpec<K, V> {
                 get() = this@MultipleInstanceSyncSpec.cacheName
         }
         cacheEvictedEventBus.register(subscriber)
-
-        assertThat(otherCache, not(currentCache))
+        otherCache.assert().isNotEqualTo(currentCache)
         //region init
-        assertThat(currentCache.clientSideCache[cacheKey], nullValue())
+        currentCache.clientSideCache[cacheKey].assert().isNull()
         currentCache[key] = value
-        assertThat(currentCache.clientSideCache[cacheKey], equalTo(value))
-        assertThat(latch1.await(1, TimeUnit.SECONDS), equalTo(true))
+        currentCache.clientSideCache[cacheKey].assert().isEqualTo(value)
+        latch1.await(1, TimeUnit.SECONDS).assert().isTrue()
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
-        assertThat(otherCache.clientSideCache[cacheKey], nullValue())
-        assertThat(otherCache[key], equalTo(value))
-        assertThat(otherCache.clientSideCache[cacheKey], equalTo(value))
+        otherCache.clientSideCache[cacheKey].assert().isNull()
+        otherCache[key].assert().isEqualTo(value)
+        otherCache.clientSideCache[cacheKey].assert().isEqualTo(value)
         //endregion
 
         //region set
         val nextValue = createCacheEntry().second
         currentCache[key] = nextValue
-        assertThat(latch2.await(1, TimeUnit.SECONDS), equalTo(true))
+        latch2.await(1, TimeUnit.SECONDS).assert().isTrue()
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
-        assertThat(otherCache.clientSideCache[cacheKey], nullValue())
+        otherCache.clientSideCache[cacheKey].assert().isNull()
         //endregion
 
         currentCache.evict(key)
-        assertThat(currentCache[key], nullValue())
-        assertThat(latch3.await(1, TimeUnit.SECONDS), equalTo(true))
+        currentCache[key].assert().isNull()
+        latch2.await(1, TimeUnit.SECONDS).assert().isTrue()
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
-        assertThat(otherCache.clientSideCache[cacheKey], nullValue())
-        assertThat(otherCache[key], nullValue())
+        otherCache.clientSideCache[cacheKey].assert().isNull()
+        otherCache[key].assert().isNull()
     }
 }

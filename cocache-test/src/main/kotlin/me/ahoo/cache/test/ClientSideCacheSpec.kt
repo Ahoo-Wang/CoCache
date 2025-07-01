@@ -14,8 +14,7 @@
 package me.ahoo.cache.test
 
 import me.ahoo.cache.api.client.ClientSideCache
-import org.hamcrest.MatcherAssert.assertThat
-import org.hamcrest.Matchers.nullValue
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
 abstract class ClientSideCacheSpec<V> : CacheSpec<String, V>() {
@@ -27,6 +26,6 @@ abstract class ClientSideCacheSpec<V> : CacheSpec<String, V>() {
         val (key, value) = createCacheEntry()
         cache[key] = value
         (cache as ClientSideCache<V>).clear()
-        assertThat(cache[key], nullValue())
+        cache[key].assert().isNull()
     }
 }

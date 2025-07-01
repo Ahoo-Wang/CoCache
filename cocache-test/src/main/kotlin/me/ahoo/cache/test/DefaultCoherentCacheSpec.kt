@@ -25,8 +25,7 @@ import me.ahoo.cache.consistency.CoherentCacheConfiguration
 import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.distributed.DistributedCache
-import org.hamcrest.MatcherAssert.*
-import org.hamcrest.Matchers.*
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
@@ -93,7 +92,7 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         val (key, value) = createCacheEntry()
         val cacheValue = DefaultCacheValue.forever(value)
         CACHE_SOURCE_VALUE.set(cacheValue)
-        assertThat(coherentCache[key], equalTo(value))
+        coherentCache[key].assert().isEqualTo(value)
         CACHE_SOURCE_VALUE.remove()
     }
 
@@ -105,9 +104,9 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         val cacheKey = keyConverter.toStringKey(key)
         val event = CacheEvictedEvent(cacheName, cacheKey, "")
         coherentCache.onEvicted(event)
-        assertThat(clientSideCache[cacheKey], nullValue())
-        assertThat(distributedCache[cacheKey], equalTo(value))
-        assertThat(coherentCache[key], equalTo(value))
+        clientSideCache[cacheKey].assert().isNull()
+        distributedCache[cacheKey].assert().isEqualTo(value)
+        coherentCache[key].assert().isEqualTo(value)
     }
 
     @Test
@@ -118,9 +117,9 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         val cacheKey = keyConverter.toStringKey(key)
         val event = CacheEvictedEvent(cacheName, cacheKey, clientId)
         coherentCache.onEvicted(event)
-        assertThat(clientSideCache[cacheKey], equalTo(value))
-        assertThat(distributedCache[cacheKey], equalTo(value))
-        assertThat(coherentCache[key], equalTo(value))
+        clientSideCache[cacheKey].assert().isEqualTo(value)
+        distributedCache[cacheKey].assert().isEqualTo(value)
+        coherentCache[key].assert().isEqualTo(value)
     }
 
     @Test
@@ -131,9 +130,9 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         val cacheKey = keyConverter.toStringKey(key)
         val event = CacheEvictedEvent(UUID.randomUUID().toString(), cacheKey, "")
         coherentCache.onEvicted(event)
-        assertThat(clientSideCache[cacheKey], equalTo(value))
-        assertThat(distributedCache[cacheKey], equalTo(value))
-        assertThat(coherentCache[key], equalTo(value))
+        clientSideCache[cacheKey].assert().isEqualTo(value)
+        distributedCache[cacheKey].assert().isEqualTo(value)
+        coherentCache[key].assert().isEqualTo(value)
     }
 
     @ParameterizedTest
@@ -175,8 +174,7 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
 
         startLatch.countDown()
         finishLatch.await(5, TimeUnit.SECONDS)
-
-        assertThat("所有线程应获得相同结果", results.all { it == value })
-        assertThat("缓存源应只加载一次", callCount.get(), equalTo(1)) // 核心断言
+        results.all { it == value }.assert().isTrue()
+        callCount.get().assert().isOne() // 核心断言
     }
 }
