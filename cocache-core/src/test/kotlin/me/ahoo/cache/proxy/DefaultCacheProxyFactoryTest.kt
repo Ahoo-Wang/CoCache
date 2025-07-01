@@ -13,7 +13,7 @@ import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.distributed.mock.MockDistributedCache
 import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.util.ClientIdGenerator
-import org.junit.jupiter.api.Assertions.*
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
 class DefaultCacheProxyFactoryTest {
@@ -45,11 +45,11 @@ class DefaultCacheProxyFactoryTest {
     @Test
     fun create() {
         val cache = createProxyCache<MockCache>()
-        assertNull(cache.getCache("key"))
-        assertTrue(cache.toString().startsWith(CoherentCache::class.java.simpleName))
-        assertEquals(cache.delegate.cacheName, MockCache::class.java.simpleName)
-        assertEquals(cache.clientId, cache.delegate.clientId)
-        assertEquals(cache.cacheMetadata, coCacheMetadata<MockCache>())
+        cache.getCache("key").assert().isNull()
+        cache.toString().assert().startsWith(CoherentCache::class.java.simpleName)
+        cache.delegate.cacheName.assert().isEqualTo(MockCache::class.java.simpleName)
+        cache.clientId.assert().isEqualTo(cache.delegate.clientId)
+        cache.cacheMetadata.assert().isEqualTo(coCacheMetadata<MockCache>())
     }
 
     @Test
@@ -60,7 +60,7 @@ class DefaultCacheProxyFactoryTest {
                     keyExpression = "key"
                 )
             )
-        assertNull(cache.getCache("key"))
+        cache.getCache("key").assert().isNull()
     }
 
     @Test
@@ -71,6 +71,6 @@ class DefaultCacheProxyFactoryTest {
                     keyExpression = "key"
                 )
             )
-        assertEquals(cache.defaultMethod(), "defaultMethod")
+        cache.defaultMethod().assert().isEqualTo("defaultMethod")
     }
 }

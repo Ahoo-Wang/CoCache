@@ -16,8 +16,7 @@ package me.ahoo.cache.spring.cache
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.DefaultMissingGuard
 import me.ahoo.cache.api.CacheValue
-import org.hamcrest.CoreMatchers.equalTo
-import org.hamcrest.MatcherAssert.*
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
 class SpringCacheValueWrapperTest {
@@ -26,11 +25,11 @@ class SpringCacheValueWrapperTest {
 
     @Test
     fun get() {
-        assertThat(springCacheValueWrapper.get(), equalTo(DefaultMissingGuard))
+        springCacheValueWrapper.get().assert().isEqualTo(DefaultMissingGuard)
     }
 
     @Test
     fun getCacheValue() {
-        assertThat(springCacheValueWrapper.cacheValue, equalTo(cacheValue))
+        springCacheValueWrapper.cacheValue.assert().isEqualTo(cacheValue)
     }
 }

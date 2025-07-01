@@ -14,8 +14,7 @@
 package me.ahoo.cache.filter
 
 import com.google.common.hash.BloomFilter
-import org.hamcrest.MatcherAssert.assertThat
-import org.hamcrest.Matchers.*
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.nio.charset.Charset
 import java.util.UUID
@@ -31,8 +30,8 @@ internal class BloomKeyFilterTest {
         )
         val filter = BloomKeyFilter(bloomFilter)
         val id = UUID.randomUUID().toString()
-        assertThat(filter.notExist(id), `is`(true))
+        filter.notExist(id).assert().isTrue()
         bloomFilter.put(id)
-        assertThat(filter.notExist(id), `is`(false))
+        filter.notExist(id).assert().isFalse()
     }
 }

@@ -1,6 +1,6 @@
 package me.ahoo.cache.join
 
-import org.junit.jupiter.api.Assertions.*
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.UUID
 
@@ -11,6 +11,6 @@ class ExpJoinKeyExtractorTest {
         val joinKeyExtractor = ExpJoinKeyExtractor<OrderAddress>("#{#root.orderId}")
         val orderAddress = OrderAddress(UUID.randomUUID().toString())
         val joinKey = joinKeyExtractor.extract(orderAddress)
-        assertEquals(orderAddress.orderId, joinKey)
+        orderAddress.orderId.assert().isEqualTo(joinKey)
     }
 }

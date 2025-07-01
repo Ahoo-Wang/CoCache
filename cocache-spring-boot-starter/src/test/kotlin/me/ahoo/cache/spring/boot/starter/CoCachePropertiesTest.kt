@@ -13,8 +13,7 @@
 
 package me.ahoo.cache.spring.boot.starter
 
-import org.hamcrest.MatcherAssert.assertThat
-import org.hamcrest.Matchers.*
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
 internal class CoCachePropertiesTest {
@@ -22,12 +21,12 @@ internal class CoCachePropertiesTest {
     @Test
     fun getEnabled() {
         val coCacheProperties = CoCacheProperties()
-        assertThat(coCacheProperties.enabled, `is`(true))
+        coCacheProperties.enabled.assert().isTrue()
     }
 
     @Test
     fun setEnabled() {
         val coCacheProperties = CoCacheProperties(false)
-        assertThat(coCacheProperties.enabled, `is`(false))
+        coCacheProperties.enabled.assert().isFalse()
     }
 }

@@ -13,15 +13,14 @@
 
 package me.ahoo.cache.filter
 
-import org.hamcrest.MatcherAssert.assertThat
-import org.hamcrest.Matchers.`is`
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
 internal class NoOpKeyFilterTest {
 
     @Test
     fun notExist() {
-        assertThat(NoOpKeyFilter.notExist(""), `is`(false))
-        assertThat(NoOpKeyFilter.notExist(""), `is`(false))
+        NoOpKeyFilter.notExist("").assert().isFalse()
+        NoOpKeyFilter.notExist("").assert().isFalse()
     }
 }

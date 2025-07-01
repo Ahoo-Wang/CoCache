@@ -25,9 +25,7 @@ style:
   WildcardImport:
     excludeImports:
       - java.util.*
-      - org.hamcrest.Matchers.*
-      - org.hamcrest.MatcherAssert.*
-      - org.junit.jupiter.api.Assertions.*
+      - org.assertj.core.api.Assertions.*
 naming:
   MemberNameEqualsClassName:
     active: false
@@ -43,7 +41,7 @@ performance:
     active: false
 formatting:
   NoWildcardImports:
-    packagesToUseImportOnDemandProperty: "java.util.*,org.hamcrest.Matchers.*,org.hamcrest.MatcherAssert.*,org.junit.jupiter.api.Assertions.*"
+    packagesToUseImportOnDemandProperty: "java.util.*,org.assertj.core.api.Assertions.*"
   MaximumLineLength:
     active: false
   Filename:

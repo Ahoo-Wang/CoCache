@@ -15,7 +15,7 @@ package me.ahoo.cache.spring.cache
 
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.client.MapClientSideCache
-import org.junit.jupiter.api.Assertions.*
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletableFuture
 
@@ -25,78 +25,72 @@ class CoSpringCacheTest {
 
     @Test
     fun getName() {
-        assertEquals("test", coSpringCache.cacheName)
+        coSpringCache.cacheName.assert().isEqualTo("test")
     }
 
     @Test
     fun getNativeCache() {
-        assertEquals(coSpringCache.delegate, coSpringCache.nativeCache)
+        coSpringCache.nativeCache.assert().isEqualTo(coSpringCache.delegate)
     }
 
     @Test
     fun get() {
-        assertEquals(null, coSpringCache.get("test"))
+        coSpringCache.get("test").assert().isNull()
     }
 
     @Test
     fun testGet() {
-        assertEquals(null, coSpringCache.get("test", String::class.java))
+        coSpringCache.get("test", String::class.java).assert().isNull()
     }
 
     @Test
     fun testGet1() {
-        assertEquals(
-            "test",
-            coSpringCache.get("test", {
-                "test"
-            })
-        )
+        coSpringCache.get("test", {
+            "test"
+        }).assert().isEqualTo("test")
     }
 
     @Test
     fun put() {
         coSpringCache.put("putTest", "test")
-        assertEquals("test", coSpringCache.get("putTest")!!.get())
+        coSpringCache.get("putTest")!!.get().assert().isEqualTo("test")
     }
 
     @Test
     fun evict() {
         coSpringCache.put("evictTest", "test")
         coSpringCache.evict("evictTest")
-        assertEquals(null, coSpringCache.get("evictTest"))
+        coSpringCache.get("evictTest").assert().isNull()
     }
 
     @Test
     fun clear() {
         coSpringCache.put("clearTest", "test")
         coSpringCache.clear()
-        assertEquals(null, coSpringCache.get("clearTest"))
+        coSpringCache.get("clearTest").assert().isNull()
     }
 
     @Test
     fun retrieve() {
         coSpringCache.put("retrieveTest", "test")
-        assertEquals("test", coSpringCache.retrieve("retrieveTest")!!.get())
+        coSpringCache.retrieve("retrieveTest")!!.get().assert().isEqualTo("test")
     }
 
     @Test
     fun testRetrieve() {
         coSpringCache.put("testRetrieve", "test")
-        assertEquals(
-            "test",
-            coSpringCache.retrieve("testRetrieve", {
-                CompletableFuture.completedFuture("test")
-            })!!.get()
-        )
+        coSpringCache.retrieve("testRetrieve", {
+            CompletableFuture.completedFuture("test")
+        }).get().assert().isEqualTo("test")
     }
 
     @Test
     fun getCacheName() {
-        assertEquals("test", coSpringCache.cacheName)
+        coSpringCache.cacheName.assert().isEqualTo("test")
     }
 
     @Test
     fun getDelegate() {
-        assertNotNull(coSpringCache.delegate)
+        coSpringCache.delegate.assert().isNotNull
     }
 }

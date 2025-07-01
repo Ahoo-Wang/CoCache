@@ -1,8 +1,7 @@
 package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.api.Cache
-import org.hamcrest.MatcherAssert.*
-import org.hamcrest.Matchers.*
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -17,17 +16,17 @@ class CoCacheClientEndpointTest : AbstractCoCacheEndpointTest() {
 
     @Test
     fun getSize() {
-        assertThat(endpoint.getSize(CACHE_NAME), equalTo(0))
+        endpoint.getSize(CACHE_NAME).assert().isEqualTo(0)
     }
 
     @Test
     fun getSizeWhenNull() {
-        assertThat(endpoint.getSize("CACHE_NAME"), nullValue())
+        endpoint.getSize("CACHE_NAME").assert().isNull()
     }
 
     @Test
     fun get() {
-        assertThat(endpoint.get(CACHE_NAME, "key"), nullValue())
+        endpoint.get(CACHE_NAME, "key").assert().isNull()
     }
 
     @Test
@@ -35,8 +34,8 @@ class CoCacheClientEndpointTest : AbstractCoCacheEndpointTest() {
         val cache = cacheFactory.getCache<Cache<String, String>>(CACHE_NAME)!!
         val key = "clear-key"
         cache[key] = "value"
-        assertThat(endpoint.getSize(CACHE_NAME), equalTo(1))
+        endpoint.getSize(CACHE_NAME).assert().isOne()
         endpoint.clear(CACHE_NAME)
-        assertThat(endpoint.getSize(CACHE_NAME), equalTo(0))
+        endpoint.getSize(CACHE_NAME).assert().isZero()
     }
 }
