@@ -25,6 +25,11 @@ class CoCacheEndpointTest : AbstractCoCacheEndpointTest() {
     }
 
     @Test
+    fun statWhenNotFound() {
+        endpoint.stat(NOT_FOUND).assert().isNull()
+    }
+
+    @Test
     fun evict() {
         val cache = cacheFactory.getCache<Cache<String, String>>(CACHE_NAME)!!
         val key = "evict-key"
@@ -34,10 +39,20 @@ class CoCacheEndpointTest : AbstractCoCacheEndpointTest() {
     }
 
     @Test
+    fun evictWhenNotFound() {
+        endpoint.evict(NOT_FOUND, "key").assert().isNotNull()
+    }
+
+    @Test
     fun get() {
         val cache = cacheFactory.getCache<Cache<String, String>>(CACHE_NAME)!!
         val key = "get-key"
         cache[key] = "value"
         endpoint.get(CACHE_NAME, key)?.value.assert().isEqualTo("value")
+    }
+
+    @Test
+    fun getWhenNotFound() {
+        endpoint.get(NOT_FOUND, "key").assert().isNull()
     }
 }

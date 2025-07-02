@@ -20,13 +20,18 @@ class CoCacheClientEndpointTest : AbstractCoCacheEndpointTest() {
     }
 
     @Test
-    fun getSizeWhenNull() {
-        endpoint.getSize("CACHE_NAME").assert().isNull()
+    fun getSizeWhenNotFound() {
+        endpoint.getSize(NOT_FOUND).assert().isNull()
     }
 
     @Test
     fun get() {
         endpoint.get(CACHE_NAME, "key").assert().isNull()
+    }
+
+    @Test
+    fun getWhenNotFound() {
+        endpoint.get(NOT_FOUND, "key").assert().isNull()
     }
 
     @Test
@@ -37,5 +42,10 @@ class CoCacheClientEndpointTest : AbstractCoCacheEndpointTest() {
         endpoint.getSize(CACHE_NAME).assert().isOne()
         endpoint.clear(CACHE_NAME)
         endpoint.getSize(CACHE_NAME).assert().isZero()
+    }
+
+    @Test
+    fun clearWhenNotFound() {
+        endpoint.clear(NOT_FOUND)
     }
 }
