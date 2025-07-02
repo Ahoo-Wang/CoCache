@@ -68,7 +68,7 @@ class CoCacheEndpoint(override val cacheFactory: CacheFactory) : AbstractCoCache
                     name = cacheName,
                     clientId = clientId,
                     clientSize = clientSideCache.size,
-                    keyConverter = keyConverter.javaClass.name,
+                    keyConverter = keyConverter.toString(),
                     distributedCaching = distributedCache.javaClass.name,
                     clientSideCaching = clientSideCache.javaClass.name,
                     cacheEvictedEventBus = cacheEvictedEventBus.javaClass.name,

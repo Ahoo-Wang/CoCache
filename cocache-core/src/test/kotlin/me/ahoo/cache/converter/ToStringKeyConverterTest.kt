@@ -10,20 +10,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.converter
 
-/**
- * To String Key Converter .
- *
- * @author ahoo wang
- */
-class ToStringKeyConverter<K>(private val keyPrefix: String) : KeyConverter<K> {
+import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.Test
 
-    override fun toStringKey(sourceKey: K): String {
-        return keyPrefix + sourceKey.toString()
-    }
-
-    override fun toString(): String {
-        return "ToStringKeyConverter(keyPrefix='$keyPrefix')"
+class ToStringKeyConverterTest {
+    @Test
+    fun toStringKey() {
+        val converter = ToStringKeyConverter<String>("prefix:")
+        converter.toStringKey("test").assert().isEqualTo("prefix:test")
+        converter.toString().assert().isEqualTo("ToStringKeyConverter(keyPrefix='prefix:')")
     }
 }

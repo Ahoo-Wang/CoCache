@@ -28,4 +28,8 @@ class ExpKeyConverter<K>(val keyPrefix: String, expression: String) : KeyConvert
     override fun toStringKey(sourceKey: K): String {
         return keyPrefix + expression.getValue(sourceKey, String::class.java)
     }
+
+    override fun toString(): String {
+        return "ExpKeyConverter(keyPrefix='$keyPrefix', expression=${expression.expressionString})"
+    }
 }

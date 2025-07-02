@@ -12,6 +12,7 @@
  */
 package me.ahoo.cache.converter
 
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 
@@ -38,6 +39,12 @@ internal class ExpKeyConverterTest {
         val brandNameIndexKey = BrandNameIndexKey("tenantId", "name")
         val actual = expKeyConverter.toStringKey(brandNameIndexKey)
         Assertions.assertEquals(prefix + "tenantId:name", actual)
+    }
+
+    @Test
+    fun toStringKeyIfObjectWithoutPrefix() {
+        val expKeyConverter = ExpKeyConverter<BrandNameIndexKey>("", "#{tenantId}:#{name}")
+        expKeyConverter.toString().assert().isEqualTo("ExpKeyConverter(keyPrefix='', expression=#{tenantId}:#{name})")
     }
 }
 
