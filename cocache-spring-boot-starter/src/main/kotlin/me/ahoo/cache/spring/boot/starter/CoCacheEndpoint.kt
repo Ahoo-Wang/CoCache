@@ -24,7 +24,7 @@ import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
 @Endpoint(id = CoCache.COCACHE)
-class CoCacheEndpoint(override val cacheFactory: CacheFactory) : CacheFactoryCapable {
+class CoCacheEndpoint(override val cacheFactory: CacheFactory) : AbstractCoCacheEndpoint() {
 
     @ReadOperation
     fun total(): List<CacheReport> {

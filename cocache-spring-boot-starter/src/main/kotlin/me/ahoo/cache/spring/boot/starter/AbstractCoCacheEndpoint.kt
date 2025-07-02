@@ -16,8 +16,8 @@ package me.ahoo.cache.spring.boot.starter
 import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.consistency.CoherentCache
 
-interface CacheFactoryCapable {
-    val cacheFactory: CacheFactory
+abstract class AbstractCoCacheEndpoint {
+    abstract val cacheFactory: CacheFactory
     fun String.coherentCache(): CoherentCache<String, Any>? {
         return cacheFactory.getCache(this, CoherentCache::class.java)
     }
