@@ -16,6 +16,7 @@ import org.junit.jupiter.api.BeforeEach
 open class AbstractCoCacheEndpointTest {
     companion object {
         const val CACHE_NAME = "cacheName"
+        const val NOT_FOUND = "NotFound"
     }
 
     lateinit var cacheFactory: CacheFactory
@@ -51,7 +52,7 @@ open class AbstractCoCacheEndpointTest {
                 getCache<CoherentCache<String, String>>(CACHE_NAME, CoherentCache::class.java)
             } returns mockCache
             every {
-                getCache<CoherentCache<String, String>>("CACHE_NAME", any())
+                getCache<CoherentCache<String, String>>(NOT_FOUND, any())
             } returns null
         }
     }

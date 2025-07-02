@@ -16,7 +16,6 @@ package me.ahoo.cache.spring.boot.starter
 import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.client.ClientSideCache
-import me.ahoo.cache.consistency.CoherentCache
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
@@ -36,8 +35,7 @@ class CoCacheClientEndpoint(override val cacheFactory: CacheFactory) : AbstractC
 
     @ReadOperation
     fun get(@Selector name: String, @Selector key: String): CacheValue<*>? {
-        val coherentCache =
-            cacheFactory.getCache<CoherentCache<String, Any>>(name, CoherentCache::class.java) ?: return null
+        val coherentCache = name.coherentCache() ?: return null
         val clientCacheKey = coherentCache.keyConverter.toStringKey(key)
         return coherentCache.clientSideCache.getCache(clientCacheKey)
     }
