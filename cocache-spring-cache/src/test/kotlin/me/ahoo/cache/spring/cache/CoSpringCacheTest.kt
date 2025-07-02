@@ -13,8 +13,11 @@
 
 package me.ahoo.cache.spring.cache
 
+import io.mockk.every
+import io.mockk.mockk
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.client.MapClientSideCache
+import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletableFuture
@@ -71,6 +74,17 @@ class CoSpringCacheTest {
     }
 
     @Test
+    fun clearCoherentCache() {
+        val coherentCache = mockk<CoherentCache<Any, Any?>> {
+            every {
+                clientSideCache
+            } returns MapClientSideCache()
+        }
+        val coSpringCache = CoSpringCache("test", coherentCache)
+        coSpringCache.clear()
+    }
+
+    @Test
     fun retrieve() {
         coSpringCache.put("retrieveTest", "test")
         coSpringCache.retrieve("retrieveTest")!!.get().assert().isEqualTo("test")
@@ -79,7 +93,7 @@ class CoSpringCacheTest {
     @Test
     fun testRetrieve() {
         coSpringCache.put("testRetrieve", "test")
-        coSpringCache.retrieve("testRetrieve", {
+        coSpringCache.retrieve("testRetrieveNotFound", {
             CompletableFuture.completedFuture("test")
         }).get().assert().isEqualTo("test")
     }
