@@ -23,7 +23,7 @@ import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
 @Endpoint(id = "cocacheClient")
-class CoCacheClientEndpoint(override val cacheFactory: CacheFactory) : CacheFactoryCapable {
+class CoCacheClientEndpoint(override val cacheFactory: CacheFactory) : AbstractCoCacheEndpoint() {
 
     private fun String.clientSideCache(): ClientSideCache<Any>? {
         return coherentCache()?.clientSideCache
