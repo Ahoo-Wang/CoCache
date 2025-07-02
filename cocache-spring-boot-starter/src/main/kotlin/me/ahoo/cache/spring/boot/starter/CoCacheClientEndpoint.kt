@@ -15,6 +15,7 @@ package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.consistency.CoherentCache
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
@@ -22,11 +23,15 @@ import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
 @Endpoint(id = "cocacheClient")
-class CoCacheClientEndpoint(private val cacheFactory: CacheFactory) {
+class CoCacheClientEndpoint(override val cacheFactory: CacheFactory) : CacheFactoryCapable {
+
+    private fun String.clientSideCache(): ClientSideCache<Any>? {
+        return coherentCache()?.clientSideCache
+    }
 
     @ReadOperation
     fun getSize(@Selector name: String): Long? {
-        return cacheFactory.getCache<CoherentCache<String, Any>>(name, CoherentCache::class.java)?.clientSideCache?.size
+        return name.clientSideCache()?.size
     }
 
     @ReadOperation
@@ -39,6 +44,6 @@ class CoCacheClientEndpoint(private val cacheFactory: CacheFactory) {
 
     @DeleteOperation
     fun clear(@Selector name: String) {
-        cacheFactory.getCache<CoherentCache<String, Any>>(name, CoherentCache::class.java)?.clientSideCache?.clear()
+        name.clientSideCache()?.clear()
     }
 }
