@@ -24,7 +24,7 @@ import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
 @Endpoint(id = CoCache.COCACHE)
-class CoCacheEndpoint(private val cacheFactory: CacheFactory) {
+class CoCacheEndpoint(override val cacheFactory: CacheFactory) : CacheFactoryCapable {
 
     @ReadOperation
     fun total(): List<CacheReport> {
@@ -38,17 +38,17 @@ class CoCacheEndpoint(private val cacheFactory: CacheFactory) {
 
     @ReadOperation
     fun stat(@Selector name: String): CacheReport? {
-        return cacheFactory.getCache<CoherentCache<String, Any>>(name)?.asReport(name)
+        return name.coherentCache()?.asReport(name)
     }
 
     @DeleteOperation
     fun evict(@Selector name: String, @Selector key: String) {
-        cacheFactory.getCache<CoherentCache<String, Any>>(name)?.evict(key)
+        name.coherentCache()?.evict(key)
     }
 
     @ReadOperation
     fun get(@Selector name: String, @Selector key: String): CacheValue<*>? {
-        return cacheFactory.getCache<CoherentCache<String, Any>>(name)?.getCache(key)
+        return name.coherentCache()?.getCache(key)
     }
 
     data class CacheReport(
