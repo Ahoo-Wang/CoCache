@@ -4,7 +4,7 @@ spring-boot = "3.5.4"
 cosid = "2.13.3"
 guava = "33.4.8-jre"
 kotlin-logging = "7.0.13"
-springdoc = "2.8.9"
+springdoc = "2.8.10"
 # testing
 junit = "5.13.4"
 fluent-assert = "0.2.1"
