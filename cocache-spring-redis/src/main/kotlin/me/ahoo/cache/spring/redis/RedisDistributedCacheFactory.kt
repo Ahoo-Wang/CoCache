@@ -18,14 +18,15 @@ import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.spring.AbstractCacheFactory
 import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor
-import me.ahoo.cache.spring.redis.serialization.JsonSerializer
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
 import org.springframework.data.redis.core.StringRedisTemplate
+import tools.jackson.databind.ObjectMapper
 import kotlin.reflect.javaType
 
 class RedisDistributedCacheFactory(
     beanFactory: BeanFactory,
+    private val objectMapper: ObjectMapper,
     private val redisTemplate: StringRedisTemplate
 ) : DistributedCacheFactory, AbstractCacheFactory(beanFactory) {
     companion object {
@@ -47,7 +48,7 @@ class RedisDistributedCacheFactory(
         val codecExecutor = ObjectToJsonCodecExecutor<Any>(
             valueType = cacheMetadata.valueType.javaType,
             redisTemplate = redisTemplate,
-            objectMapper = JsonSerializer
+            objectMapper = objectMapper
         )
         return RedisDistributedCache(
             redisTemplate,

@@ -12,11 +12,11 @@
  */
 package me.ahoo.cache.spring.redis.codec
 
-import com.fasterxml.jackson.databind.ObjectMapper
 import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.MissingGuard.Companion.isMissingGuard
 import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.core.StringRedisTemplate
+import tools.jackson.databind.ObjectMapper
 import java.lang.reflect.Type
 
 /**

@@ -13,18 +13,6 @@
 
 package me.ahoo.cache.spring.redis.codec
 
-import com.fasterxml.jackson.annotation.JsonAutoDetect
-import com.fasterxml.jackson.annotation.PropertyAccessor
-import com.fasterxml.jackson.core.JsonParser
-import com.fasterxml.jackson.databind.DeserializationFeature
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import tools.jackson.databind.ObjectMapper
 
-object Json : ObjectMapper() {
-    init {
-        setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY)
-        configure(JsonParser.Feature.IGNORE_UNDEFINED, true)
-        disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-        registerKotlinModule()
-    }
-}
+object Json : ObjectMapper()
