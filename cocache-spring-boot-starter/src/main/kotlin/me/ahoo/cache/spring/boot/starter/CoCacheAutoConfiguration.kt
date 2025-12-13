@@ -51,6 +51,7 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.data.redis.connection.RedisConnectionFactory
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
+import tools.jackson.databind.ObjectMapper
 
 /**
  * CoCache AutoConfiguration .
@@ -121,8 +122,12 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    fun distributedCacheFactory(beanFactory: BeanFactory, redisTemplate: StringRedisTemplate): DistributedCacheFactory {
-        return RedisDistributedCacheFactory(beanFactory, redisTemplate)
+    fun distributedCacheFactory(
+        beanFactory: BeanFactory,
+        objectMapper: ObjectMapper,
+        redisTemplate: StringRedisTemplate
+    ): DistributedCacheFactory {
+        return RedisDistributedCacheFactory(beanFactory, objectMapper, redisTemplate)
     }
 
     @Bean

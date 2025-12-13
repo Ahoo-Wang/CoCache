@@ -17,6 +17,7 @@ dependencies {
     api(project(":cocache-spring"))
     api(project(":cocache-spring-cache"))
     api(project(":cocache-spring-redis"))
+    api("org.springframework.boot:spring-boot-starter-jackson")
     api("org.springframework.boot:spring-boot-starter")
     api("org.springframework.boot:spring-boot-data-redis")
     "actuatorSupportImplementation"("org.springframework.boot:spring-boot-starter-actuator")

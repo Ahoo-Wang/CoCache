@@ -31,6 +31,7 @@ import me.ahoo.cosid.machine.LocalHostAddressSupplier
 import org.assertj.core.api.AssertionsForInterfaceTypes.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
+import org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
 
@@ -91,6 +92,7 @@ internal class CoCacheAutoConfigurationTest {
         contextRunner
             .withBean(HostAddressSupplier::class.java, { LocalHostAddressSupplier.INSTANCE })
             .withUserConfiguration(
+                JacksonAutoConfiguration::class.java,
                 DataRedisAutoConfiguration::class.java,
                 CoCacheAutoConfiguration::class.java
             )

@@ -12,7 +12,6 @@
  */
 package me.ahoo.cache.example.config
 
-import com.fasterxml.jackson.databind.ObjectMapper
 import com.google.common.cache.CacheBuilder
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.client.GuavaClientSideCache
@@ -29,6 +28,7 @@ import me.ahoo.cache.util.ClientIdGenerator
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.data.redis.core.StringRedisTemplate
+import tools.jackson.databind.ObjectMapper
 import java.time.Duration
 
 @Configuration
