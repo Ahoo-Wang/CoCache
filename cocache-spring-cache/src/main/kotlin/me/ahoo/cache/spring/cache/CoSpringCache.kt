@@ -45,7 +45,7 @@ class CoSpringCache(
         return delegate.get(key) as T?
     }
 
-    override fun <T : Any?> get(key: Any, valueLoader: Callable<T?>): T? {
+    override fun <T : Any> get(key: Any, valueLoader: Callable<T>): T? {
         val value = delegate.get(key)
         if (value != null) {
             return value as T
@@ -79,7 +79,7 @@ class CoSpringCache(
         }
     }
 
-    override fun <T : Any?> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T?>>): CompletableFuture<T?> {
+    override fun <T : Any> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> {
         return CompletableFuture.supplyAsync {
             delegate.get(key) as T?
         }.thenCompose<T?> {

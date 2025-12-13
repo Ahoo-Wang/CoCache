@@ -15,7 +15,6 @@ package me.ahoo.cache.spring.redis.codec
 import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.MissingGuard.Companion.isMissingGuard
 import me.ahoo.cache.api.CacheValue
-import org.springframework.data.redis.connection.StringRedisConnection
 import org.springframework.data.redis.core.StringRedisTemplate
 
 /**
@@ -23,7 +22,7 @@ import org.springframework.data.redis.core.StringRedisTemplate
  *
  * @author ahoo wang
  */
-class SetToSetCodecExecutor(private val redisTemplate: StringRedisTemplate) :
+class SetToSetCodecExecutor(override val redisTemplate: StringRedisTemplate) :
     AbstractCodecExecutor<Set<String>, Set<String>>() {
 
     private val missingGuard: Set<String> = setOf(MissingGuard.STRING_VALUE)
@@ -48,21 +47,15 @@ class SetToSetCodecExecutor(private val redisTemplate: StringRedisTemplate) :
     }
 
     override fun setForeverValue(key: String, cacheValue: CacheValue<Set<String>>) {
-        redisTemplate.executePipelined { connection ->
-            connection as StringRedisConnection
-            connection.del(key)
-            connection.sAdd(key, *cacheValue.toRawValue().toTypedArray())
-            null
+        setPipelined(key) { encodedKey, connection ->
+            connection.setCommands().sAdd(encodedKey, *serialize(cacheValue.toRawValue()))
         }
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<Set<String>>) {
-        redisTemplate.executePipelined { connection ->
-            connection as StringRedisConnection
-            connection.del(key)
-            connection.sAdd(key, *cacheValue.toRawValue().toTypedArray())
-            connection.expire(key, cacheValue.expiredDuration.seconds)
-            null
+        setPipelined(key) { encodedKey, connection ->
+            connection.setCommands().sAdd(encodedKey, *serialize(cacheValue.toRawValue()))
+            connection.keyCommands().expire(encodedKey, cacheValue.expiredDuration.seconds)
         }
     }
 }

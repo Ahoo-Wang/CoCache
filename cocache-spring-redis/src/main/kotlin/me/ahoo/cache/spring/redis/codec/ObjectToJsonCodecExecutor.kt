@@ -26,7 +26,7 @@ import java.lang.reflect.Type
  */
 class ObjectToJsonCodecExecutor<V>(
     private val valueType: Type,
-    private val redisTemplate: StringRedisTemplate,
+    override val redisTemplate: StringRedisTemplate,
     private val objectMapper: ObjectMapper
 ) : AbstractCodecExecutor<V, String>() {
     private val valueJavaType = objectMapper.typeFactory.constructType(valueType)

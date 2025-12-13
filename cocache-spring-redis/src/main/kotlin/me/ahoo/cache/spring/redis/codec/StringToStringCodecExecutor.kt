@@ -22,7 +22,7 @@ import org.springframework.data.redis.core.StringRedisTemplate
  *
  * @author ahoo wang
  */
-class StringToStringCodecExecutor(private val redisTemplate: StringRedisTemplate) :
+class StringToStringCodecExecutor(override val redisTemplate: StringRedisTemplate) :
     AbstractCodecExecutor<String, String>() {
 
     override fun CacheValue<String>.toRawValue(): String {
