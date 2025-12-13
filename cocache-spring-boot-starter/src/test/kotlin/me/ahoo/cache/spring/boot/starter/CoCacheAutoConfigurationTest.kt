@@ -30,7 +30,7 @@ import me.ahoo.cosid.machine.HostAddressSupplier
 import me.ahoo.cosid.machine.LocalHostAddressSupplier
 import org.assertj.core.api.AssertionsForInterfaceTypes.assertThat
 import org.junit.jupiter.api.Test
-import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
 
@@ -41,7 +41,7 @@ internal class CoCacheAutoConfigurationTest {
     fun contextLoads() {
         contextRunner
             .withUserConfiguration(
-                RedisAutoConfiguration::class.java,
+                DataRedisAutoConfiguration::class.java,
                 CoCacheAutoConfiguration::class.java,
                 EnableCoCacheConfiguration::class.java
             )
@@ -64,7 +64,7 @@ internal class CoCacheAutoConfigurationTest {
         contextRunner
             .withPropertyValues("spring.application.name=cocache-example")
             .withUserConfiguration(
-                RedisAutoConfiguration::class.java,
+                DataRedisAutoConfiguration::class.java,
                 CoCacheAutoConfiguration::class.java,
                 EnableCoCacheConfigurationWithCustomize::class.java
             )
@@ -91,7 +91,7 @@ internal class CoCacheAutoConfigurationTest {
         contextRunner
             .withBean(HostAddressSupplier::class.java, { LocalHostAddressSupplier.INSTANCE })
             .withUserConfiguration(
-                RedisAutoConfiguration::class.java,
+                DataRedisAutoConfiguration::class.java,
                 CoCacheAutoConfiguration::class.java
             )
             .run { context ->

@@ -15,8 +15,41 @@ package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.CacheValue
+import org.springframework.data.redis.connection.RedisConnection
+import org.springframework.data.redis.core.StringRedisTemplate
 
 abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
+    abstract val redisTemplate: StringRedisTemplate
+
+    private fun serialize(key: String): ByteArray {
+        return redisTemplate.stringSerializer.serialize(key)
+    }
+
+    fun serialize(hashes: Map<String, String>): Map<ByteArray, ByteArray> {
+        val ret = mutableMapOf<ByteArray, ByteArray>()
+
+        for (entry in hashes.entries) {
+            ret[serialize(entry.key)] = serialize(entry.value)
+        }
+
+        return ret
+    }
+
+    fun serialize(value: Set<String>?): Array<ByteArray> {
+        if (value == null) {
+            return emptyArray()
+        }
+        return value.map { serialize(it) }.toTypedArray()
+    }
+
+    protected fun setPipelined(key: String, block: (encodedKey: ByteArray, connection: RedisConnection) -> Unit) {
+        redisTemplate.executePipelined { connection ->
+            val encodedKey = serialize(key)
+            connection.keyCommands().del(encodedKey)
+            block(encodedKey, connection)
+            null
+        }
+    }
 
     abstract fun CacheValue<V>.toRawValue(): RAW_VALUE
 

@@ -44,8 +44,6 @@ class SpringCacheFactory(private val beanFactory: ListableBeanFactory) : CacheFa
             ResolvableType.forType(valueType.javaType)
         )
         val provider = beanFactory.getBeanProvider<CACHE>(cacheType)
-        return provider.getIfAvailable {
-            null
-        }
+        return provider.getIfAvailable()
     }
 }

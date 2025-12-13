@@ -18,6 +18,7 @@ dependencies {
     api(project(":cocache-spring-cache"))
     api(project(":cocache-spring-redis"))
     api("org.springframework.boot:spring-boot-starter")
+    api("org.springframework.boot:spring-boot-data-redis")
     "actuatorSupportImplementation"("org.springframework.boot:spring-boot-starter-actuator")
     kapt("org.springframework.boot:spring-boot-configuration-processor")
     kapt("org.springframework.boot:spring-boot-autoconfigure-processor")

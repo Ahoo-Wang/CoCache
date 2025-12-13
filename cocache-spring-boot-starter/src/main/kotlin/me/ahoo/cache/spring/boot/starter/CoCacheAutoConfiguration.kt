@@ -43,8 +43,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate
-import org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
 import org.springframework.boot.context.properties.EnableConfigurationProperties
+import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
 import org.springframework.context.ApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -58,7 +58,7 @@ import org.springframework.data.redis.listener.RedisMessageListenerContainer
  * @author ahoo wang
  */
 @AutoConfiguration(
-    after = [RedisAutoConfiguration::class]
+    after = [DataRedisAutoConfiguration::class]
 )
 @ConditionalOnCoCacheEnabled
 @EnableConfigurationProperties(CoCacheProperties::class)
