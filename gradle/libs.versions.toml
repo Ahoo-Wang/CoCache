@@ -1,7 +1,7 @@
 [versions]
 # libraries
 spring-boot = "4.0.1"
-cosid = "3.0.1"
+cosid = "3.0.2"
 guava = "33.5.0-jre"
 kotlin-logging = "7.0.13"
 springdoc = "3.0.0"
