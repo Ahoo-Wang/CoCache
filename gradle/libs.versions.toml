@@ -8,7 +8,7 @@ springdoc = "3.0.1"
 # testing
 junit = "6.0.2"
 fluent-assert = "0.2.6"
-mockk = "1.14.7"
+mockk = "1.14.9"
 # plugins
 detekt = "1.23.8"
 dokka = "2.1.0"
