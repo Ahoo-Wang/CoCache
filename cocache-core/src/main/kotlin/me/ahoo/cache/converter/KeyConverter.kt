@@ -5,7 +5,6 @@ package me.ahoo.cache.converter
  *
  * @author ahoo wang
  */
-@FunctionalInterface
-interface KeyConverter<K> {
+fun interface KeyConverter<K> {
     fun toStringKey(sourceKey: K): String
 }

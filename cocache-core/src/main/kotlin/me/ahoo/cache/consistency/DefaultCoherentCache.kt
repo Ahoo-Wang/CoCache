@@ -77,7 +77,7 @@ class DefaultCoherentCache<K, V>(
 
     private fun getLock(cacheKey: String): Any {
         return keyLocks.computeIfAbsent(cacheKey) {
-            Object()
+            Any()
         }
     }
 
