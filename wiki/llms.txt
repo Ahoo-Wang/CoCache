@@ -1,0 +1,54 @@
+# CoCache
+
+> Level 2 Distributed Coherence Cache Framework for Java/Kotlin. Two-level caching (L2 local + L1 distributed) with event-driven coherence, annotation-based configuration, and proxy-based cache interfaces.
+
+## Onboarding
+
+- [Contributor Guide](onboarding/contributor.md) — New contributor onboarding: language foundations, architecture, getting productive
+- [Staff Engineer Guide](onboarding/staff-engineer.md) — Architectural deep dive with design tradeoffs and system diagrams
+- [Executive Guide](onboarding/executive.md) — Capability map, risk assessment, technology investment thesis
+- [Product Manager Guide](onboarding/product-manager.md) — Feature map, user journeys, known limitations
+
+## Getting Started
+
+- [Introduction](guide/index.md) — Overview, key features, three-tier cache concept
+- [Quick Start](guide/quick-start.md) — Gradle/Maven setup, @EnableCoCache, Redis configuration
+- [Configuration](guide/configuration.md) — @CoCache parameters, @GuavaCache/@CaffeineCache, Spring Boot properties
+
+## Architecture
+
+- [Architecture Overview](architecture/index.md) — Module dependency graph, high-level system design
+- [Cache Layers](architecture/cache-layers.md) — L0/L1/L2 layer details, read/write/evict paths
+- [Coherence & Event Bus](architecture/coherence.md) — CacheEvictedEventBus, Redis Pub/Sub, cross-instance invalidation
+- [Proxy & Annotations](architecture/proxy.md) — @CoCache proxy creation, EnableCoCacheRegistrar, JDK dynamic proxies
+
+## API Reference
+
+- [API Overview](api/index.md) — Interface hierarchy, module organization
+- [Core Interfaces](api/core-interfaces.md) — Cache, CacheValue, CoherentCache, JoinCache, CacheSource, etc.
+- [Annotations](api/annotations.md) — @CoCache, @GuavaCache, @CaffeineCache, @JoinCacheable, @EnableCoCache
+- [Spring Integration](api/spring-integration.md) — Factory beans, CoCacheManager, CoSpringCache bridge
+- [Actuator Endpoints](api/actuator.md) — /actuator/cocache, /actuator/cocacheClient
+
+## Modules
+
+- [Module Overview](modules/index.md) — Dependency graph, build structure
+- [cocache-api](modules/cocache-api.md) — Core interfaces and annotations (16 files)
+- [cocache-core](modules/cocache-core.md) — Default implementations, proxy system, event bus (56 files)
+- [cocache-spring](modules/cocache-spring.md) — Spring integration, @EnableCoCache (10 files)
+- [cocache-spring-redis](modules/cocache-spring-redis.md) — Redis distributed cache, codecs (11 files)
+- [cocache-spring-boot-starter](modules/cocache-spring-boot-starter.md) — Auto-configuration, Actuator (9 files)
+- [cocache-spring-cache](modules/cocache-spring-cache.md) — Spring Cache abstraction bridge (3 files)
+
+## Testing
+
+- [Testing Overview](testing/index.md) — TCK specs, test architecture
+- [Unit Testing](testing/unit-testing.md) — CacheSpec base classes, mockk, fluent-assert
+- [Integration Testing](testing/integration-testing.md) — Redis service containers, CI setup
+- [Performance Patterns](testing/performance-patterns.md) — Stampede prevention, TTL jitter, Bloom filter
+
+## Building
+
+- [Build & CI](building/index.md) — Gradle setup, JDK 17, Detekt, CI/CD workflows
+- [Contributing](building/contributing.md) — Code style, PR workflow, adding implementations
+- [Publishing](building/publishing.md) — Maven Central, GitHub Packages, release workflow
