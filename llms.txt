@@ -1,0 +1,41 @@
+# CoCache
+
+> Level 2 Distributed Coherence Cache Framework for Java/Kotlin. Two-level caching (L2 local in-memory via Guava/Caffeine + L1 distributed via Redis) with event-driven coherence via CacheEvictedEventBus.
+
+## Documentation
+
+- [Wiki](wiki/llms.txt) — Complete wiki with onboarding guides, architecture, API reference, and module documentation
+
+## Key Concepts
+
+- **Two-Level Caching**: L2 (local in-memory) → L1 (distributed Redis) → L0 (DataSource) with automatic promotion
+- **Cache Coherence**: Event-driven via CacheEvictedEventBus (Redis Pub/Sub or in-process Guava EventBus)
+- **Annotation-Driven**: @CoCache, @GuavaCache, @CaffeineCache, @JoinCacheable for declarative configuration
+- **Proxy-Based**: JDK dynamic proxies create cache implementations from annotated interfaces
+- **JoinCache**: Compose multiple cached values into a single JoinValue result
+- **Cache Stampede Prevention**: Per-key fine-grained locking with double-check pattern
+- **Cache Penetration Prevention**: MissingGuard sentinel values + optional BloomKeyFilter
+- **TTL Jitter**: Randomized TTL within amplitude bounds prevents cache avalanche
+
+## Architecture
+
+Modules:
+- `cocache-api` — Core interfaces (Cache, CacheValue, ClientSideCache, CacheSource, JoinCache)
+- `cocache-core` — Default implementations (DefaultCoherentCache, proxy system, event bus)
+- `cocache-spring` — Spring integration (@EnableCoCache, factory beans)
+- `cocache-spring-redis` — Redis implementation (RedisDistributedCache, RedisCacheEvictedEventBus, codecs)
+- `cocache-spring-cache` — Spring Cache abstraction bridge (CoCacheManager, CoSpringCache)
+- `cocache-spring-boot-starter` — Auto-configuration and Actuator endpoints
+- `cocache-test` — TCK test specifications
+
+## Build
+
+```bash
+./gradlew build -x test    # Build without tests
+./gradlew check             # Full check (tests + detekt + dokka)
+./gradlew test              # Run all tests
+./gradlew :cocache-core:test  # Module-specific tests
+```
+
+- JDK 17+, Gradle 9.4.1, Kotlin 2.3.20
+- Group: `me.ahoo.cocache`, Version: `4.0.2`
