@@ -7,6 +7,9 @@ export default defineConfig({
   description: 'Level 2 Distributed Coherence Cache Framework',
   lastUpdated: true,
   cleanUrls: true,
+  sitemap: {
+    hostname: 'https://cocache.ahoo.me',
+  },
   ignoreDeadLinks: [
     /localhost/,
   ],
