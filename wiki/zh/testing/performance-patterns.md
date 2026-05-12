@@ -43,12 +43,6 @@ autonumber
     R2->>CC: 双重检查 L2（命中）
     R2-->>R2: 返回缓存值
 
-    style R1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style R2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CC fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Lock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ### 关键实现

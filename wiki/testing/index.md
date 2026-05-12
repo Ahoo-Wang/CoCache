@@ -232,13 +232,6 @@ autonumber
 
     Note over T1,TN: callCount.assert().isOne()
 
-    style T1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style T2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style TN fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Lock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 Source: [DefaultCoherentCacheSpec.kt:138-179](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-test/src/main/kotlin/me/ahoo/cache/test/DefaultCoherentCacheSpec.kt#L138-L179)

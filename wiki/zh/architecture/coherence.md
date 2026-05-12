@@ -70,11 +70,6 @@ autonumber
 
     Note over CC_B: L2 已失效，下次读取将从 L1 获取最新值
 
-    style AppA fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CC_A fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style EB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CC_B fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style AppB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ## onEvicted 处理逻辑

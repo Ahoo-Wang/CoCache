@@ -238,10 +238,6 @@ autonumber
         end
     end
 
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style App fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ## 相关页面

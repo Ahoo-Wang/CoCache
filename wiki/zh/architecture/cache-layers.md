@@ -100,10 +100,6 @@ autonumber
         R-->>C: null
     end
 
-    style C fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style R fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CE fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ### CodecExecutor
@@ -224,13 +220,6 @@ autonumber
         end
     end
 
-    style App fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CC fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style KF fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Lock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ## 写入路径

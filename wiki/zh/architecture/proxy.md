@@ -36,12 +36,6 @@ autonumber
     Proxy-->>FBF: Cache 代理实例
     FBF-->>Spring: 注入到容器
 
-    style Spring fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style ECR fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Parser fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style FBF fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CPF fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ## @EnableCoCache 触发注册

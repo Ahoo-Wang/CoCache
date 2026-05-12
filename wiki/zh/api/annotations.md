@@ -125,11 +125,6 @@ autonumber
     JN-->>JC: secondValue (User)
     JC-->>App: JoinValue(firstValue, joinKey, secondValue)
 
-    style App fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style JC fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style FC fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style JE fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style JN fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 **源码参考**：[`cocache-api/.../annotation/JoinCacheable.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/JoinCacheable.kt)

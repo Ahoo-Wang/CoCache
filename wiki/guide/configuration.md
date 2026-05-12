@@ -280,11 +280,6 @@ autonumber
     Proxy->>Proxy: create DefaultCoherentCache
     Proxy->>Proxy: create JDK Proxy for interface
 
-    style App fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Auto fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Prop fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Bean fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ## CosID Integration

@@ -158,10 +158,6 @@ autonumber
     Test->>Redis: Connect to localhost:6379
     Test->>Test: Execute integration tests
 
-    style GH fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Health fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Test fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 Key health check parameters:

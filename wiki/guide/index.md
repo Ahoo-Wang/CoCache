@@ -198,13 +198,6 @@ autonumber
         end
     end
 
-    style Caller fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style KeyFilter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Lock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style EventBus fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ## Module Architecture

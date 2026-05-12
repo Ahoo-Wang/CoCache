@@ -242,9 +242,6 @@ autonumber
     Other->>Other: L2.evict(key)
     Note over Other: L1 also evicted, so get() returns null
 
-    style Current fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style EB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Other fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 Source: [cocache-test/.../MultipleInstanceSyncSpec.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-test/src/main/kotlin/me/ahoo/cache/test/MultipleInstanceSyncSpec.kt)

@@ -56,13 +56,6 @@ autonumber
 
     Note over T1,T3: Only 1 call to CacheSource
 
-    style T1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style T2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style T3 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Lock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ### Implementation
@@ -216,11 +209,6 @@ autonumber
     Caller->>L1: getCache(key)
     Caller->>L0: loadCacheValue(key) [if needed]
 
-    style Caller fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style BF fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 The `BloomKeyFilter` wraps a Guava `BloomFilter<String>`:
@@ -366,9 +354,6 @@ autonumber
 
     Note over Timer,Cache: Tolerates 1-second resolution<br>for cache expiration
 
-    style Timer fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Volatile fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ### Implementation

@@ -204,12 +204,6 @@ autonumber
     SB-->>Cache: Cache is ready
     Cache->>Redis: connect to Redis
 
-    style SB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Registrar fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Factory fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ## Step 5: Use the Cache
