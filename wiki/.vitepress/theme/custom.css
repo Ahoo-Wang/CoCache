@@ -52,6 +52,26 @@
   z-index: 201;
 }
 
+/* Wider content area for readability */
+.VPDoc.has-aside .content-container {
+  max-width: 100% !important;
+}
+
+.VPDoc .container {
+  max-width: 1440px !important;
+}
+
+.VPDoc .content {
+  max-width: 100% !important;
+  padding-right: 32px !important;
+}
+
+/* Also widen for pages without aside */
+.VPDoc:not(.has-aside) .content,
+.VPDoc:not(.has-aside) .content-container {
+  max-width: 100% !important;
+}
+
 /* Code group styling */
 .vp-code-group .tabs label {
   font-family: 'JetBrains Mono', monospace;
