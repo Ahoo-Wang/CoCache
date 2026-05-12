@@ -182,7 +182,7 @@ autonumber
 ```mermaid
 graph LR
     subgraph "JoinCache Data Flow"
-        style "JoinCache Data Flow" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         key1["K1 (primary key)"]
         style key1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -222,7 +222,7 @@ The `MissingGuard` pattern prevents cache penetration (also known as cache null/
 ```mermaid
 graph TB
     subgraph "MissingGuard Detection"
-        style "MissingGuard Detection" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         check{"Is value<br>MissingGuard?"}
         style check fill:#2d333b,stroke:#6d5dfc,color:#e6edf3

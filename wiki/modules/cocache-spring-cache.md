@@ -12,7 +12,7 @@ The `cocache-spring-cache` module implements the bridge between CoCache and Spri
 ```mermaid
 graph LR
     subgraph "cocache-spring-cache Dependencies"
-        style "cocache-spring-cache Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         core["cocache-core"]
         style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -107,7 +107,7 @@ classDiagram
 ```mermaid
 flowchart TB
     subgraph "CoCacheManager Cache Resolution"
-        style "CoCacheManager Cache Resolution" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         request["getCache(name)"]
         style request fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -204,7 +204,7 @@ The `clear()` method at [CoSpringCache.kt:66](https://github.com/Ahoo-Wang/CoCac
 ```mermaid
 flowchart TB
     subgraph "CoSpringCache.clear()"
-        style "CoSpringCache.clear()" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         clear_start["clear()"]
         style clear_start fill:#2d333b,stroke:#6d5dfc,color:#e6edf3

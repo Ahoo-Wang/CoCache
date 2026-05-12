@@ -12,7 +12,7 @@ The `cocache-core` module is the engine of CoCache. It contains the default impl
 ```mermaid
 graph LR
     subgraph "cocache-core Dependencies"
-        style "cocache-core Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         api["cocache-api"]
         style api fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -54,7 +54,7 @@ graph LR
 ```mermaid
 flowchart TB
     subgraph "DefaultCoherentCache.getCache(key)"
-        style "DefaultCoherentCache.getCache(key)" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         start["getCache(key)"]
         style start fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -276,7 +276,7 @@ The TTL system provides time-to-live computation with jitter to prevent cache av
 ```mermaid
 graph TB
     subgraph "TTL Computation Pipeline"
-        style "TTL Computation Pipeline" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         ttl_input["ttl (base seconds)"]
         style ttl_input fill:#2d333b,stroke:#6d5dfc,color:#e6edf3

@@ -12,7 +12,7 @@ CoCache is organized into a set of focused Gradle modules that layer from pure A
 ```mermaid
 graph TB
     subgraph "CoCache Module Architecture"
-        style "CoCache Module Architecture" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         cocache-bom["cocache-bom<br>(Bill of Materials)"]
         style cocache-bom fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -101,7 +101,7 @@ The `build.gradle.kts` dependency declarations establish this compile-time chain
 ```mermaid
 flowchart LR
     subgraph "Build Dependencies"
-        style "Build Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         api["cocache-api<br>(no deps)"]
         style api fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -135,7 +135,7 @@ flowchart LR
 ```mermaid
 graph TB
     subgraph "Application Layer"
-        style "Application Layer" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
         app["Application Code<br>(@CoCache interfaces)"]
         style app fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
         spring_boot["Spring Boot Starter<br>(Auto-config)"]
@@ -143,7 +143,7 @@ graph TB
     end
 
     subgraph "Integration Layer"
-        style "Integration Layer" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
         spring_mod["cocache-spring<br>(@EnableCoCache)"]
         style spring_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
         redis_mod["cocache-spring-redis<br>(Redis impl)"]
@@ -153,13 +153,13 @@ graph TB
     end
 
     subgraph "Core Layer"
-        style "Core Layer" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
         core_mod["cocache-core<br>(CoherentCache, Proxy, TTL)"]
         style core_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     end
 
     subgraph "API Layer"
-        style "API Layer" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
         api_mod["cocache-api<br>(Interfaces, Annotations)"]
         style api_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     end
@@ -180,7 +180,7 @@ graph TB
 ```mermaid
 flowchart LR
     subgraph "Cache Read Path (L2 -> L1 -> DataSource)"
-        style "Cache Read Path (L2 -> L1 -> DataSource)" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         app_req["Application<br>get(key)"]
         style app_req fill:#2d333b,stroke:#6d5dfc,color:#e6edf3

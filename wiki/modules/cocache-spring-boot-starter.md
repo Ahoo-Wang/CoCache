@@ -12,7 +12,7 @@ The `cocache-spring-boot-starter` module provides zero-configuration setup for C
 ```mermaid
 graph LR
     subgraph "cocache-spring-boot-starter Dependencies"
-        style "cocache-spring-boot-starter Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         spring["cocache-spring"]
         style spring fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -76,7 +76,7 @@ me.ahoo.cache.spring.boot.starter.CoCacheEndpointAutoConfiguration
 ```mermaid
 graph TB
     subgraph "CoCacheAutoConfiguration Bean Graph"
-        style "CoCacheAutoConfiguration Bean Graph" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         props["@EnableConfigurationProperties<br>(CoCacheProperties)"]
         style props fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -193,7 +193,7 @@ cocache:
 ```mermaid
 graph LR
     subgraph "CoCacheEndpoint Operations"
-        style "CoCacheEndpoint Operations" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         total["GET /actuator/cocache<br>-> List of all cache reports"]
         style total fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -287,7 +287,7 @@ classDiagram
 ```mermaid
 flowchart TB
     subgraph "CoCache Activation Logic"
-        style "CoCache Activation Logic" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         boot["Spring Boot starts"]
         style boot fill:#2d333b,stroke:#6d5dfc,color:#e6edf3

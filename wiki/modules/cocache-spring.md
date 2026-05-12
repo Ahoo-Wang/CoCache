@@ -12,7 +12,7 @@ The `cocache-spring` module bridges CoCache's core abstractions with the Spring 
 ```mermaid
 graph LR
     subgraph "cocache-spring Dependencies"
-        style "cocache-spring Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         core["cocache-core"]
         style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -69,7 +69,7 @@ class CacheConfiguration
 ```mermaid
 flowchart TB
     subgraph "EnableCoCacheRegistrar Registration Flow"
-        style "EnableCoCacheRegistrar Registration Flow" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         scan["@EnableCoCache(caches=[...])<br>ImportBeanDefinitionRegistrar"]
         style scan fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -116,7 +116,7 @@ The registrar at [EnableCoCacheRegistrar.kt:45](https://github.com/Ahoo-Wang/CoC
 ```mermaid
 flowchart TB
     subgraph "AbstractCacheFactory.createBean(cacheMetadata)"
-        style "AbstractCacheFactory.createBean(cacheMetadata)" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         bean_name["Compute beanName<br>= cacheName + suffix"]
         style bean_name fill:#2d333b,stroke:#6d5dfc,color:#e6edf3

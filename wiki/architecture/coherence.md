@@ -65,7 +65,7 @@ CoCache provides three `CacheEvictedEventBus` implementations, each suited to a 
 ```mermaid
 graph TD
     subgraph "CacheEvictedEventBus Implementations"
-        style "CacheEvictedEventBus Implementations" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
 
         Interface["CacheEvictedEventBus<br>interface"]
 
@@ -223,7 +223,7 @@ When a `DefaultCoherentCache` is constructed, it registers itself as a subscribe
 ```mermaid
 flowchart LR
     subgraph "Registration Flow"
-        style "Registration Flow" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
 
         Create["CoherentCacheFactory<br>creates DefaultCoherentCache"]
         Register["cacheEvictedEventBus<br>.register(this)"]

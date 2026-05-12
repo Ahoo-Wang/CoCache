@@ -12,7 +12,7 @@ The `cocache-spring-redis` module implements the distributed cache layer (L1) us
 ```mermaid
 graph LR
     subgraph "cocache-spring-redis Dependencies"
-        style "cocache-spring-redis Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         core["cocache-core"]
         style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -124,7 +124,7 @@ autonumber
 ```mermaid
 graph TB
     subgraph "Redis Pub/Sub Cache Coherence"
-        style "Redis Pub/Sub Cache Coherence" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         inst1["Instance 1<br>(clientId: 0:1234@10.0.0.1)"]
         style inst1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -263,7 +263,7 @@ Each codec has a codec-specific way to detect the missing guard sentinel, matchi
 ```mermaid
 flowchart LR
     subgraph "MissingGuard Detection by Value Type"
-        style "MissingGuard Detection by Value Type" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+
 
         check{"Value Type?"}
         style check fill:#2d333b,stroke:#6d5dfc,color:#e6edf3

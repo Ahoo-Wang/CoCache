@@ -14,7 +14,7 @@ The project is organized into 10 Gradle submodules, each with a clear responsibi
 ```mermaid
 graph TD
     subgraph "Module Dependencies"
-        style "Module Dependencies" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
 
         api["cocache-api<br>Core interfaces"]
         core["cocache-core<br>Default implementations"]
@@ -61,13 +61,13 @@ CoCache organizes caching into three layers:
 ```mermaid
 graph TB
     subgraph "Application Layer"
-        style "Application Layer" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         App["Application Code"]
         Proxy["Cache Proxy<br>JDK Dynamic Proxy"]
     end
 
     subgraph "Coherent Cache - DefaultCoherentCache"
-        style "Coherent Cache - DefaultCoherentCache" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         L2["L2: ClientSideCache<br>Guava / Caffeine / Map"]
         KF["KeyFilter<br>Bloom Filter"]
         L1["L1: DistributedCache<br>Redis"]
@@ -76,7 +76,7 @@ graph TB
     end
 
     subgraph "Coherence Layer"
-        style "Coherence Layer" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         EventBus["CacheEvictedEventBus<br>Guava EventBus / Redis Pub/Sub"]
         Subscriber["CacheEvictedSubscriber<br>Other Instances"]
     end

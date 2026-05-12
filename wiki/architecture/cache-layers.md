@@ -12,22 +12,22 @@ CoCache organizes data retrieval into three distinct layers, each with a specifi
 ```mermaid
 graph LR
     subgraph "CoCache Layers"
-        style "CoCache Layers" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
 
         subgraph "L2 - ClientSideCache"
-            style "L2 - ClientSideCache" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
             Guava["GuavaClientSideCache"]
             Caffeine["CaffeineClientSideCache"]
             Map["MapClientSideCache"]
         end
 
         subgraph "L1 - DistributedCache"
-            style "L1 - DistributedCache" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
             Redis["RedisDistributedCache"]
         end
 
         subgraph "L0 - CacheSource"
-            style "L0 - CacheSource" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
             DB["Database / DataSource"]
         end
     end
@@ -293,19 +293,19 @@ The event publication triggers remote instances to evict their own L2 caches for
 ```mermaid
 graph TB
     subgraph "Write Path: setCache"
-        style "Write Path: setCache" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         W1["Write L2"] --> W2["Write L1"]
         W2 --> W3["Publish CacheEvictedEvent"]
     end
 
     subgraph "Eviction Path: evict"
-        style "Eviction Path: evict" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         E1["Evict L2"] --> E2["Evict L1"]
         E2 --> E3["Publish CacheEvictedEvent"]
     end
 
     subgraph "Read Path: getCache"
-        style "Read Path: getCache" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         R1["Read L2"] --> R2["KeyFilter"]
         R2 --> R3["Read L1"]
         R3 --> R4["Lock + Load L0"]

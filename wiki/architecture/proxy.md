@@ -12,12 +12,12 @@ CoCache uses a declarative, annotation-driven approach to cache configuration. D
 ```mermaid
 flowchart TD
     subgraph "Developer Defines"
-        style "Developer Defines" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         Interface["Cache Interface<br>+ @CoCache annotation"]
     end
 
     subgraph "Startup Registration"
-        style "Startup Registration" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         Enable["@EnableCoCache<br>caches = [...]"]
         Registrar["EnableCoCacheRegistrar"]
         Parse["CoCacheMetadataParser<br>parse interface"]
@@ -25,7 +25,7 @@ flowchart TD
     end
 
     subgraph "Bean Creation"
-        style "Bean Creation" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         FactoryBean["CacheProxyFactoryBean<br>.getObject()"]
         ProxyFactory["DefaultCacheProxyFactory<br>.create(metadata)"]
         InvocationHandler["CoCacheInvocationHandler"]
@@ -339,7 +339,7 @@ The `DefaultJoinCacheProxyFactory.create()` at [line 30](https://github.com/Ahoo
 ```mermaid
 graph TB
     subgraph "1. Annotation Parsing"
-        style "1. Annotation Parsing" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         A1["@EnableCoCache<br>caches = [MyCache::class]"]
         A2["EnableCoCacheRegistrar"]
         A3["CoCacheMetadataParser.parse()"]
@@ -347,13 +347,13 @@ graph TB
     end
 
     subgraph "2. Bean Definition"
-        style "2. Bean Definition" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         B1["Register CoCacheMetadata bean<br>(name: cacheName.CacheMetadata)"]
         B2["Register CacheProxyFactoryBean<br>(name: cacheName, primary: true)"]
     end
 
     subgraph "3. Proxy Construction"
-        style "3. Proxy Construction" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+
         C1["CacheProxyFactoryBean.getObject()"]
         C2["DefaultCacheProxyFactory.create()"]
         C3["Create L2 + L1 + L0 + KeyConverter"]
