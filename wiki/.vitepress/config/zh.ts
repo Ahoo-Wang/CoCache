@@ -11,6 +11,7 @@ export const zh: DefaultTheme.Config = {
       { text: '架构', link: '/zh/architecture/' },
       { text: 'API', link: '/zh/api/' },
       { text: '模块', link: '/zh/modules/' },
+      { text: '入门指南', link: '/zh/onboarding/' },
       {
         text: 'v4.0',
         items: [

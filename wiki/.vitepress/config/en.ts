@@ -11,6 +11,7 @@ export const en: DefaultTheme.Config = {
       { text: 'Architecture', link: '/architecture/' },
       { text: 'API', link: '/api/' },
       { text: 'Modules', link: '/modules/' },
+      { text: 'Onboarding', link: '/onboarding/' },
       {
         text: 'v4.0',
         items: [
