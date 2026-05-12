@@ -109,7 +109,6 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as 应用
     participant JC as JoinCacheProxy
     participant FC as firstCache (UserExtendInfoCache)

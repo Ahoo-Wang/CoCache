@@ -13,7 +13,7 @@ The integration tests run in GitHub Actions with separate jobs for unit and inte
 
 ```mermaid
 graph TB
-    subgraph "Integration Test Workflow"
+    subgraph sg_85 ["Integration Test Workflow"]
         direction TB
         CoreJob["cocache-core-test<br>No Redis needed"]
         SpringJob["cocache-spring-test<br>No Redis needed"]
@@ -21,7 +21,7 @@ graph TB
         StarterJob["cocache-spring-boot-starter-test<br>Redis service container"]
     end
 
-    subgraph "Redis Service"
+    subgraph sg_86 ["Redis Service"]
         direction TB
         Redis["redis:latest<br>port 6379"]
     end
@@ -141,7 +141,6 @@ The Redis service container configuration includes health checks to ensure Redis
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant GH as GitHub Actions
     participant Redis as Redis Container
     participant Health as Health Check
@@ -181,14 +180,14 @@ Tests the Redis distributed cache implementation, including:
 
 ```mermaid
 graph TB
-    subgraph "cocache-spring-redis Tests"
+    subgraph sg_87 ["cocache-spring-redis Tests"]
         direction TB
         RedisDC["RedisDistributedCache<br>DistributedCacheSpec"]
         RedisEB["RedisCacheEvictedEventBus<br>CacheEvictedEventBusSpec"]
         RedisSync["RedisMultipleInstanceSync<br>MultipleInstanceSyncSpec"]
     end
 
-    subgraph "Real Redis"
+    subgraph sg_88 ["Real Redis"]
         direction TB
         Redis["localhost:6379"]
     end
@@ -215,7 +214,7 @@ Tests the auto-configuration end-to-end:
 
 ```mermaid
 graph TB
-    subgraph "cocache-spring-boot-starter Tests"
+    subgraph sg_89 ["cocache-spring-boot-starter Tests"]
         direction TB
         AutoConf["CoCacheAutoConfiguration<br>Bean registration"]
         ProxyTest["Proxy generation<br>@EnableCoCache"]
@@ -223,7 +222,7 @@ graph TB
         BeanOverride["Custom bean overrides<br>ClientSideCache, CacheSource"]
     end
 
-    subgraph "Spring Boot Test Context"
+    subgraph sg_90 ["Spring Boot Test Context"]
         direction TB
         Context["ApplicationContext"]
         Redis["Redis Connection"]
@@ -281,12 +280,12 @@ docker stop cocache-redis && docker rm cocache-redis
 
 ```mermaid
 graph LR
-    subgraph "No Redis"
+    subgraph sg_91 ["No Redis"]
         A["cocache-core-test"]
         B["cocache-spring-test"]
     end
 
-    subgraph "With Redis"
+    subgraph sg_92 ["With Redis"]
         C["cocache-spring-redis-test"]
         D["cocache-spring-boot-starter-test"]
     end

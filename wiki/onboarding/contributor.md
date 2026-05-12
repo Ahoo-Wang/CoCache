@@ -258,17 +258,17 @@ coherent across instances through a shared distributed cache (L1) and an event b
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'secondaryColor': '#161b22', 'tertiaryColor': '#161b22'}}}%%
 graph TB
-    subgraph "Application Instance A"
+    subgraph sg_60 ["Application Instance A"]
         CA["Cache Interface Proxy"]
         L2A["L2: Local Cache<br>(Guava / Caffeine)"]
     end
 
-    subgraph "Application Instance B"
+    subgraph sg_61 ["Application Instance B"]
         CB["Cache Interface Proxy"]
         L2B["L2: Local Cache<br>(Guava / Caffeine)"]
     end
 
-    subgraph "Shared Infrastructure"
+    subgraph sg_62 ["Shared Infrastructure"]
         L1["L1: Distributed Cache<br>(Redis)"]
         EB["Event Bus<br>(Redis Pub/Sub)"]
         DB["L0: DataSource<br>(Database)"]
@@ -297,22 +297,22 @@ graph TB
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
 graph LR
-    subgraph "API Layer"
+    subgraph sg_63 ["API Layer"]
         API["cocache-api"]
     end
 
-    subgraph "Core Layer"
+    subgraph sg_64 ["Core Layer"]
         CORE["cocache-core"]
     end
 
-    subgraph "Spring Layer"
+    subgraph sg_65 ["Spring Layer"]
         SPRING["cocache-spring"]
         REDIS["cocache-spring-redis"]
         SCACHE["cocache-spring-cache"]
         STARTER["cocache-spring-boot-starter"]
     end
 
-    subgraph "Support"
+    subgraph sg_66 ["Support"]
         TEST["cocache-test"]
         EXAMPLE["cocache-example"]
         BOM["cocache-bom"]
@@ -452,15 +452,15 @@ application instance would have a stale L2 cache after another instance updates 
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
 graph TB
-    subgraph "Instance A"
+    subgraph sg_67 ["Instance A"]
         CAA["CoherentCache A"]
     end
 
-    subgraph "Instance B"
+    subgraph sg_68 ["Instance B"]
         CAB["CoherentCache B"]
     end
 
-    subgraph "Redis"
+    subgraph sg_69 ["Redis"]
         PUBLISH["PUBLISH cacheName key:clientId"]
         SUBSCRIBE["SUBSCRIBE cacheName"]
     end

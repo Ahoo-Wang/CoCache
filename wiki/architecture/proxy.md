@@ -11,12 +11,12 @@ CoCache uses a declarative, annotation-driven approach to cache configuration. D
 
 ```mermaid
 flowchart TD
-    subgraph "Developer Defines"
+    subgraph sg_14 ["Developer Defines"]
 
         Interface["Cache Interface<br>+ @CoCache annotation"]
     end
 
-    subgraph "Startup Registration"
+    subgraph sg_15 ["Startup Registration"]
 
         Enable["@EnableCoCache<br>caches = [...]"]
         Registrar["EnableCoCacheRegistrar"]
@@ -24,7 +24,7 @@ flowchart TD
         RegisterBean["Register CacheProxyFactoryBean<br>as Spring Bean"]
     end
 
-    subgraph "Bean Creation"
+    subgraph sg_16 ["Bean Creation"]
 
         FactoryBean["CacheProxyFactoryBean<br>.getObject()"]
         ProxyFactory["DefaultCacheProxyFactory<br>.create(metadata)"]
@@ -84,7 +84,6 @@ class CacheConfiguration
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant SC as Spring Container
     participant R as EnableCoCacheRegistrar
     participant P as CoCacheMetadataParser
@@ -240,7 +239,6 @@ This allows callers to access the underlying `delegate` (the `DefaultCoherentCac
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant F as DefaultCacheProxyFactory
     participant CID as ClientIdGenerator
     participant CSF as ClientSideCacheFactory
@@ -304,7 +302,6 @@ For `JoinCache` interfaces (which compose two cached values), a parallel registr
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant F as DefaultJoinCacheProxyFactory
     participant CF as CacheFactory
     participant JK as JoinKeyExtractorFactory
@@ -338,7 +335,7 @@ The `DefaultJoinCacheProxyFactory.create()` at [line 30](https://github.com/Ahoo
 
 ```mermaid
 graph TB
-    subgraph "1. Annotation Parsing"
+    subgraph sg_17 ["1. Annotation Parsing"]
 
         A1["@EnableCoCache<br>caches = [MyCache::class]"]
         A2["EnableCoCacheRegistrar"]
@@ -346,13 +343,13 @@ graph TB
         A4["CoCacheMetadata"]
     end
 
-    subgraph "2. Bean Definition"
+    subgraph sg_18 ["2. Bean Definition"]
 
         B1["Register CoCacheMetadata bean<br>(name: cacheName.CacheMetadata)"]
         B2["Register CacheProxyFactoryBean<br>(name: cacheName, primary: true)"]
     end
 
-    subgraph "3. Proxy Construction"
+    subgraph sg_19 ["3. Proxy Construction"]
 
         C1["CacheProxyFactoryBean.getObject()"]
         C2["DefaultCacheProxyFactory.create()"]

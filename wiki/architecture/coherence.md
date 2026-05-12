@@ -64,8 +64,7 @@ CoCache provides three `CacheEvictedEventBus` implementations, each suited to a 
 
 ```mermaid
 graph TD
-    subgraph "CacheEvictedEventBus Implementations"
-
+    subgraph sg_8 ["CacheEvictedEventBus Implementations"]
 
         Interface["CacheEvictedEventBus<br>interface"]
 
@@ -170,7 +169,6 @@ The following diagram shows how a cache modification on Instance A propagates to
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Instance A<br>(Publisher)
     participant CC_A as DefaultCoherentCache<br>(Instance A)
     participant EB as CacheEvictedEventBus<br>(Redis Pub/Sub)
@@ -222,8 +220,7 @@ When a `DefaultCoherentCache` is constructed, it registers itself as a subscribe
 
 ```mermaid
 flowchart LR
-    subgraph "Registration Flow"
-
+    subgraph sg_9 ["Registration Flow"]
 
         Create["CoherentCacheFactory<br>creates DefaultCoherentCache"]
         Register["cacheEvictedEventBus<br>.register(this)"]

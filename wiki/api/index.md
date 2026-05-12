@@ -167,7 +167,6 @@ CoCache uses JDK dynamic proxies to implement cache interfaces. The proxy interc
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant Proxy as Cache Proxy<br>(JDK Dynamic Proxy)
     participant Handler as CoCacheInvocationHandler

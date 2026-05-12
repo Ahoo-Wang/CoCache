@@ -11,8 +11,7 @@ The `cocache-core` module is the engine of CoCache. It contains the default impl
 
 ```mermaid
 graph LR
-    subgraph "cocache-core Dependencies"
-
+    subgraph sg_37 ["cocache-core Dependencies"]
 
         api["cocache-api"]
         style api fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -53,8 +52,7 @@ graph LR
 
 ```mermaid
 flowchart TB
-    subgraph "DefaultCoherentCache.getCache(key)"
-
+    subgraph sg_38 ["DefaultCoherentCache.getCache(key)"]
 
         start["getCache(key)"]
         style start fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -127,7 +125,6 @@ The fine-grained locking uses a `ConcurrentHashMap<String, Any>` of per-key lock
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant DCC as DefaultCoherentCache
     participant CSC as ClientSideCache
@@ -148,7 +145,6 @@ autonumber
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant DCC as DefaultCoherentCache
     participant CSC as ClientSideCache
@@ -275,8 +271,7 @@ The TTL system provides time-to-live computation with jitter to prevent cache av
 
 ```mermaid
 graph TB
-    subgraph "TTL Computation Pipeline"
-
+    subgraph sg_39 ["TTL Computation Pipeline"]
 
         ttl_input["ttl (base seconds)"]
         style ttl_input fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -356,7 +351,6 @@ The `KeyFilter` interface prevents cache penetration by checking if a key has ev
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant SJC as SimpleJoinCache
     participant FC as FirstCache

@@ -52,10 +52,10 @@ The `cocache-spring-boot-starter` transitively pulls in `cocache-core`, `cocache
 
 ```mermaid
 graph LR
-    subgraph "Your Application"
+    subgraph sg_31 ["Your Application"]
         App["Spring Boot App"]
     end
-    subgraph "CoCache Starter"
+    subgraph sg_32 ["CoCache Starter"]
         Starter["cocache-spring-boot-starter"]
         Core["cocache-core"]
         Spring["cocache-spring"]
@@ -186,7 +186,6 @@ Source: [cocache-example/.../AppServer.kt](https://github.com/Ahoo-Wang/CoCache/
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant SB as Spring Boot
     participant Registrar as EnableCoCacheRegistrar
     participant Factory as CacheProxyFactory
@@ -299,7 +298,7 @@ Source: [cocache-example/.../config/ClassDefinedCacheConfiguration.kt](https://g
 
 ```mermaid
 graph TB
-    subgraph "Setup"
+    subgraph sg_33 ["Setup"]
         direction TB
         Dep["Add cocache-spring-boot-starter"]
         Config["Configure Redis connection"]
@@ -307,7 +306,7 @@ graph TB
         Enable["@EnableCoCache<br>caches = [UserCache]"]
     end
 
-    subgraph "Runtime"
+    subgraph sg_34 ["Runtime"]
         direction TB
         Inject["Inject UserCache"]
         Get["userCache[id]"]

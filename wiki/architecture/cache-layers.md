@@ -11,22 +11,21 @@ CoCache organizes data retrieval into three distinct layers, each with a specifi
 
 ```mermaid
 graph LR
-    subgraph "CoCache Layers"
+    subgraph sg_1 ["CoCache Layers"]
 
-
-        subgraph "L2 - ClientSideCache"
+        subgraph sg_2 ["L2 - ClientSideCache"]
 
             Guava["GuavaClientSideCache"]
             Caffeine["CaffeineClientSideCache"]
             Map["MapClientSideCache"]
         end
 
-        subgraph "L1 - DistributedCache"
+        subgraph sg_3 ["L1 - DistributedCache"]
 
             Redis["RedisDistributedCache"]
         end
 
-        subgraph "L0 - CacheSource"
+        subgraph sg_4 ["L0 - CacheSource"]
 
             DB["Database / DataSource"]
         end
@@ -146,7 +145,6 @@ interface DistributedCache<V> : ComputedCache<String, V>, AutoCloseable
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant CC as DefaultCoherentCache
     participant DC as RedisDistributedCache
     participant RT as StringRedisTemplate
@@ -292,19 +290,19 @@ The event publication triggers remote instances to evict their own L2 caches for
 
 ```mermaid
 graph TB
-    subgraph "Write Path: setCache"
+    subgraph sg_5 ["Write Path: setCache"]
 
         W1["Write L2"] --> W2["Write L1"]
         W2 --> W3["Publish CacheEvictedEvent"]
     end
 
-    subgraph "Eviction Path: evict"
+    subgraph sg_6 ["Eviction Path: evict"]
 
         E1["Evict L2"] --> E2["Evict L1"]
         E2 --> E3["Publish CacheEvictedEvent"]
     end
 
-    subgraph "Read Path: getCache"
+    subgraph sg_7 ["Read Path: getCache"]
 
         R1["Read L2"] --> R2["KeyFilter"]
         R2 --> R3["Read L1"]

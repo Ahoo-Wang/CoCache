@@ -306,7 +306,6 @@ All workflows are defined in [`.github/workflows/`](https://github.com/Ahoo-Wang
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Dev as Developer
     participant GH as GitHub
     participant IT as integration-test.yml

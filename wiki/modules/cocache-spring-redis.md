@@ -11,8 +11,7 @@ The `cocache-spring-redis` module implements the distributed cache layer (L1) us
 
 ```mermaid
 graph LR
-    subgraph "cocache-spring-redis Dependencies"
-
+    subgraph sg_47 ["cocache-spring-redis Dependencies"]
 
         core["cocache-core"]
         style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -62,7 +61,6 @@ graph LR
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as CoherentCache
     participant RDC as RedisDistributedCache
     participant Redis as Redis
@@ -96,7 +94,6 @@ autonumber
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as CoherentCache
     participant RDC as RedisDistributedCache
     participant Codec as CodecExecutor
@@ -123,8 +120,7 @@ autonumber
 
 ```mermaid
 graph TB
-    subgraph "Redis Pub/Sub Cache Coherence"
-
+    subgraph sg_48 ["Redis Pub/Sub Cache Coherence"]
 
         inst1["Instance 1<br>(clientId: 0:1234@10.0.0.1)"]
         style inst1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -156,7 +152,6 @@ When a `CoherentCache` is created by `DefaultCoherentCacheFactory`, it registers
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant CCF as DefaultCoherentCacheFactory
     participant RCEEB as RedisCacheEvictedEventBus
     participant RMLC as RedisMessageListenerContainer
@@ -262,8 +257,7 @@ Each codec has a codec-specific way to detect the missing guard sentinel, matchi
 
 ```mermaid
 flowchart LR
-    subgraph "MissingGuard Detection by Value Type"
-
+    subgraph sg_49 ["MissingGuard Detection by Value Type"]
 
         check{"Value Type?"}
         style check fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -317,7 +311,6 @@ The complete flow of a cache write with cross-instance invalidation:
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Client as Client (Instance A)
     participant DCCA as DefaultCoherentCache (A)
     participant L2A as ClientSideCache (A)

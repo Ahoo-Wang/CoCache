@@ -159,7 +159,6 @@ When `@EnableCoCache` is processed, `EnableCoCacheRegistrar` performs the follow
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant SC as Spring Container
     participant R as EnableCoCacheRegistrar
     participant MD as Metadata Parser

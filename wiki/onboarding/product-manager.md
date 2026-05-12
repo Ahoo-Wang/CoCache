@@ -337,16 +337,16 @@ When CoCache is in use, your data exists in up to three places:
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
 graph TB
-    subgraph "Your Control"
+    subgraph sg_75 ["Your Control"]
         APP["Your Application"]
         CACHE["Local Memory Cache<br>(in each app instance)"]
     end
 
-    subgraph "Infrastructure"
+    subgraph sg_76 ["Infrastructure"]
         REDIS["Redis Shared Cache<br>(your infrastructure)"]
     end
 
-    subgraph "Data Origin"
+    subgraph sg_77 ["Data Origin"]
         DB["Your Database"]
     end
 

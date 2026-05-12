@@ -13,8 +13,7 @@ The project is organized into 10 Gradle submodules, each with a clear responsibi
 
 ```mermaid
 graph TD
-    subgraph "Module Dependencies"
-
+    subgraph sg_10 ["Module Dependencies"]
 
         api["cocache-api<br>Core interfaces"]
         core["cocache-core<br>Default implementations"]
@@ -60,13 +59,13 @@ CoCache organizes caching into three layers:
 
 ```mermaid
 graph TB
-    subgraph "Application Layer"
+    subgraph sg_11 ["Application Layer"]
 
         App["Application Code"]
         Proxy["Cache Proxy<br>JDK Dynamic Proxy"]
     end
 
-    subgraph "Coherent Cache - DefaultCoherentCache"
+    subgraph sg_12 ["Coherent Cache - DefaultCoherentCache"]
 
         L2["L2: ClientSideCache<br>Guava / Caffeine / Map"]
         KF["KeyFilter<br>Bloom Filter"]
@@ -75,7 +74,7 @@ graph TB
         L0["L0: CacheSource<br>DataSource / DB"]
     end
 
-    subgraph "Coherence Layer"
+    subgraph sg_13 ["Coherence Layer"]
 
         EventBus["CacheEvictedEventBus<br>Guava EventBus / Redis Pub/Sub"]
         Subscriber["CacheEvictedSubscriber<br>Other Instances"]
@@ -119,7 +118,6 @@ The read path flows L2 -> KeyFilter -> L1 -> Lock -> L0 with several optimizatio
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant CC as DefaultCoherentCache
     participant L2 as ClientSideCache

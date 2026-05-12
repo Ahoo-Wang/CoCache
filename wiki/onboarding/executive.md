@@ -65,7 +65,7 @@ For a typical high-traffic service handling 10,000 requests per second:
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
 graph TB
-    subgraph "Core Capabilities"
+    subgraph sg_70 ["Core Capabilities"]
         direction TB
         C1["Two-Level Caching<br>Fast local + shared distributed"]
         C2["Automatic Coherence<br>All instances stay in sync"]
@@ -75,7 +75,7 @@ graph TB
         C6["Composite Caching<br>Joins data from multiple caches"]
     end
 
-    subgraph "Integration Capabilities"
+    subgraph sg_71 ["Integration Capabilities"]
         direction TB
         I1["Annotation-Driven<br>Declarative cache setup"]
         I2["Spring Boot Native<br>Auto-configuration"]
@@ -83,7 +83,7 @@ graph TB
         I4["Spring Cache Bridge<br>Drop-in replacement"]
     end
 
-    subgraph "Operational Capabilities"
+    subgraph sg_72 ["Operational Capabilities"]
         direction TB
         O1["Self-Healing<br>TTL bounds staleness"]
         O2["Graceful Degradation<br>Works without Redis"]
@@ -319,13 +319,13 @@ For a service with 10,000 RPS and 99% L2 hit rate:
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
 graph LR
-    subgraph "Horizontal Scaling"
+    subgraph sg_73 ["Horizontal Scaling"]
         N1["Instance 1<br>L2: 100K entries"]
         N2["Instance 2<br>L2: 100K entries"]
         N3["Instance N<br>L2: 100K entries"]
     end
 
-    subgraph "Shared Layer"
+    subgraph sg_74 ["Shared Layer"]
         REDIS["Redis<br>Scales with data, not traffic"]
     end
 

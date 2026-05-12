@@ -140,7 +140,7 @@ Source: [cocache-test/.../consistency/CacheEvictedEventBusSpec.kt](https://githu
 
 ```mermaid
 graph TB
-    subgraph "cocache-test (TCK Specs)"
+    subgraph sg_82 ["cocache-test (TCK Specs)"]
         direction TB
         CacheSpec["CacheSpec<br>Base cache operations"]
         CSCSpec["ClientSideCacheSpec<br>L2 local cache"]
@@ -150,14 +150,14 @@ graph TB
         EBSpec["CacheEvictedEventBusSpec<br>Event bus"]
     end
 
-    subgraph "cocache-core Tests"
+    subgraph sg_83 ["cocache-core Tests"]
         direction TB
         MapTest["MapClientSideCacheTest"]
         MockDCTest["MockDistributedCacheTest"]
         CoherentTest["DefaultCoherentCacheTest"]
     end
 
-    subgraph "cocache-spring-redis Tests"
+    subgraph sg_84 ["cocache-spring-redis Tests"]
         direction TB
         RedisDCTest["RedisDistributedCacheTest"]
         RedisEBTest["RedisCacheEvictedEventBusTest"]
@@ -204,7 +204,6 @@ The `DefaultCoherentCacheSpec` includes a critical concurrency test that verifie
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant T1 as Thread 1
     participant T2 as Thread 2
     participant TN as Thread N

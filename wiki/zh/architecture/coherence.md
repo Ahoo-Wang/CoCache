@@ -53,7 +53,6 @@ interface CacheEvictedSubscriber : NamedCache {
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant AppA as 实例 A (发布者)
     participant CC_A as CoherentCache A
     participant EB as CacheEvictedEventBus
@@ -127,17 +126,17 @@ class GuavaCacheEvictedEventBus(
 
 ```mermaid
 graph TB
-    subgraph "实例 A"
+    subgraph sg_116 ["实例 A"]
         AppA["应用"] --> CCA["CoherentCache A"]
         CCA -->|publish| REBA["RedisCacheEvictedEventBus"]
     end
 
-    subgraph "Redis"
+    subgraph sg_117 ["Redis"]
         REBA -->|Pub: convertAndSend| Redis["Redis Channel<br>(cacheName)"]
         Redis -->|Sub: MessageListener| REBB["RedisCacheEvictedEventBus"]
     end
 
-    subgraph "实例 B"
+    subgraph sg_118 ["实例 B"]
         REBB -->|onEvicted| CCB["CoherentCache B"]
         CCB -->|evict L2| L2B["L2 本地缓存"]
     end

@@ -17,10 +17,10 @@ CoCache 是一个**二级分布式一致性缓存框架**（Level 2 Distributed 
 
 ```mermaid
 graph TB
-    subgraph "客户端实例 A"
+    subgraph sg_125 ["客户端实例 A"]
         AppA["应用代码"] --> L2A["L2: Guava/Caffeine 本地缓存"]
     end
-    subgraph "客户端实例 B"
+    subgraph sg_126 ["客户端实例 B"]
         AppB["应用代码"] --> L2B["L2: Guava/Caffeine 本地缓存"]
     end
     L2A --> L1["L1: Redis 分布式缓存"]

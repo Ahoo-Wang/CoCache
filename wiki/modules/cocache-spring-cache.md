@@ -11,8 +11,7 @@ The `cocache-spring-cache` module implements the bridge between CoCache and Spri
 
 ```mermaid
 graph LR
-    subgraph "cocache-spring-cache Dependencies"
-
+    subgraph sg_44 ["cocache-spring-cache Dependencies"]
 
         core["cocache-core"]
         style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -106,8 +105,7 @@ classDiagram
 
 ```mermaid
 flowchart TB
-    subgraph "CoCacheManager Cache Resolution"
-
+    subgraph sg_45 ["CoCacheManager Cache Resolution"]
 
         request["getCache(name)"]
         style request fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -178,7 +176,6 @@ CoSpringCache supports Spring 6.1's `Cache.retrieve()` methods for asynchronous 
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as Caller
     participant CSC as CoSpringCache
     participant Cache as CoCache
@@ -203,8 +200,7 @@ The `clear()` method at [CoSpringCache.kt:66](https://github.com/Ahoo-Wang/CoCac
 
 ```mermaid
 flowchart TB
-    subgraph "CoSpringCache.clear()"
-
+    subgraph sg_46 ["CoSpringCache.clear()"]
 
         clear_start["clear()"]
         style clear_start fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -275,7 +271,6 @@ This approach works alongside CoCache's native proxy-based caching -- both mecha
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as Caller
     participant AOP as Spring AOP<br>(@Cacheable)
     participant CCM as CoCacheManager

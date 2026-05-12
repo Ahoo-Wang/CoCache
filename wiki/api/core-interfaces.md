@@ -330,7 +330,6 @@ The JoinCache retrieval flow works by fetching the primary value, extracting the
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as Caller
     participant JC as SimpleJoinCache
     participant FC as firstCache

@@ -229,7 +229,6 @@ The Maven Central publishing process involves a staging workflow:
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant GH as GitHub
     participant CI as CI Runner
     participant NX as Sonatype Nexus
@@ -328,7 +327,6 @@ The complete release lifecycle from version bump to artifact availability:
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Dev as Maintainer
     participant GP as gradle.properties
     participant GH as GitHub

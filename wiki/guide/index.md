@@ -26,17 +26,17 @@ graph TB
         Caller["Caller<br>cache.get(key)"]
     end
 
-    subgraph "L2 - Client-side Cache"
+    subgraph sg_20 ["L2 - Client-side Cache"]
         direction TB
         L2["Guava / Caffeine<br>In-process Memory"]
     end
 
-    subgraph "L1 - Distributed Cache"
+    subgraph sg_21 ["L1 - Distributed Cache"]
         direction TB
         L1["Redis<br>Shared across instances"]
     end
 
-    subgraph "L0 - DataSource"
+    subgraph sg_22 ["L0 - DataSource"]
         direction TB
         L0["Database / API<br>Authoritative Source"]
     end
@@ -55,13 +55,13 @@ graph TB
 
 ```mermaid
 graph LR
-    subgraph "Instance A"
+    subgraph sg_23 ["Instance A"]
         L2A["L2 Cache<br>ClientSideCache"]
     end
-    subgraph "Instance B"
+    subgraph sg_24 ["Instance B"]
         L2B["L2 Cache<br>ClientSideCache"]
     end
-    subgraph "Shared"
+    subgraph sg_25 ["Shared"]
         L1["L1 Cache<br>Redis"]
         EB["Event Bus<br>Redis Pub/Sub"]
     end
@@ -97,33 +97,33 @@ graph LR
 
 ```mermaid
 graph TB
-    subgraph "Spring Boot Application"
+    subgraph sg_26 ["Spring Boot Application"]
         direction TB
         EnableCoCache["@EnableCoCache<br>caches = [UserCache::class]"]
         UserCache["UserCache Interface<br>@CoCache + @GuavaCache"]
         Proxy["CoCacheProxy<br>InvocationHandler"]
     end
 
-    subgraph "CoCache Core"
+    subgraph sg_27 ["CoCache Core"]
         direction TB
         CoherentCache["DefaultCoherentCache<br>L2 + L1 + Event"]
         KeyConverter["KeyConverter<br>key -> cacheKey"]
         MissingGuard["MissingGuard<br>null value protection"]
     end
 
-    subgraph "L2 - Client Side"
+    subgraph sg_28 ["L2 - Client Side"]
         direction TB
         Guava["GuavaClientSideCache"]
         Caffeine["CaffeineClientSideCache"]
         Map["MapClientSideCache"]
     end
 
-    subgraph "L1 - Distributed"
+    subgraph sg_29 ["L1 - Distributed"]
         direction TB
         Redis["RedisDistributedCache"]
     end
 
-    subgraph "Coherence"
+    subgraph sg_30 ["Coherence"]
         direction TB
         EventBus["CacheEvictedEventBus<br>Redis Pub/Sub"]
     end
@@ -157,7 +157,6 @@ graph TB
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as Caller
     participant L2 as L2 Cache
     participant KeyFilter as KeyFilter

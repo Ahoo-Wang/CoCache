@@ -63,21 +63,21 @@ cross-instance coordination on reads.
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
 graph TB
-    subgraph "JVM Instance A"
+    subgraph sg_78 ["JVM Instance A"]
         PRA["Cache Proxy (JDK Dynamic)"]
         CCA["CoherentCache A"]
         L2A["L2: Guava / Caffeine"]
         LKA["Per-Key Lock Map"]
     end
 
-    subgraph "JVM Instance B"
+    subgraph sg_79 ["JVM Instance B"]
         PRB["Cache Proxy (JDK Dynamic)"]
         CCB["CoherentCache B"]
         L2B["L2: Guava / Caffeine"]
         LKB["Per-Key Lock Map"]
     end
 
-    subgraph "Shared Infrastructure"
+    subgraph sg_80 ["Shared Infrastructure"]
         REDIS["L1: Redis<br>(Distributed Cache)"]
         PUBSUB["Redis Pub/Sub<br>(Event Bus)"]
         DB["L0: DataSource<br>(Database / Service)"]
@@ -837,7 +837,7 @@ behavior in production, teams must add instrumentation at the following points:
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
 graph TB
-    subgraph "Instrumentation Points"
+    subgraph sg_81 ["Instrumentation Points"]
         P1["1. CoherentCache.getCache()<br>Counter: hit/miss by tier"]
         P2["2. CoherentCache.getCache()<br>Histogram: L0 load latency"]
         P3["3. CacheEvictedEventBus<br>Counter: events published/received"]

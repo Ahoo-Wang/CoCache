@@ -175,7 +175,6 @@ When adding a new `ClientSideCache`, `DistributedCache`, or `CacheEvictedEventBu
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Dev as Developer
     participant Impl as New Implementation
     participant TCK as TCK Spec
@@ -347,7 +346,6 @@ Use conventional commit format:
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Dev as Developer
     participant Branch as Feature Branch
     participant PR as Pull Request

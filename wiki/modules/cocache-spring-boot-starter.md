@@ -11,8 +11,7 @@ The `cocache-spring-boot-starter` module provides zero-configuration setup for C
 
 ```mermaid
 graph LR
-    subgraph "cocache-spring-boot-starter Dependencies"
-
+    subgraph sg_40 ["cocache-spring-boot-starter Dependencies"]
 
         spring["cocache-spring"]
         style spring fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -75,8 +74,7 @@ me.ahoo.cache.spring.boot.starter.CoCacheEndpointAutoConfiguration
 
 ```mermaid
 graph TB
-    subgraph "CoCacheAutoConfiguration Bean Graph"
-
+    subgraph sg_41 ["CoCacheAutoConfiguration Bean Graph"]
 
         props["@EnableConfigurationProperties<br>(CoCacheProperties)"]
         style props fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -192,8 +190,7 @@ cocache:
 
 ```mermaid
 graph LR
-    subgraph "CoCacheEndpoint Operations"
-
+    subgraph sg_42 ["CoCacheEndpoint Operations"]
 
         total["GET /actuator/cocache<br>-> List of all cache reports"]
         style total fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -286,8 +283,7 @@ classDiagram
 
 ```mermaid
 flowchart TB
-    subgraph "CoCache Activation Logic"
-
+    subgraph sg_43 ["CoCache Activation Logic"]
 
         boot["Spring Boot starts"]
         style boot fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -337,7 +333,6 @@ The auto-configuration includes a nested `CosIdHostAddressSupplierAutoConfigurat
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Boot as Spring Boot
     participant DRA as DataRedisAutoConfiguration
     participant CCA as CoCacheAutoConfiguration

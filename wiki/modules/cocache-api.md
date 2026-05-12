@@ -138,7 +138,6 @@ The following diagram illustrates how `CacheValue` flows through the system, fro
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant CC as CoherentCache
     participant CSC as ClientSideCache<br>(L2)
@@ -181,8 +180,7 @@ autonumber
 
 ```mermaid
 graph LR
-    subgraph "JoinCache Data Flow"
-
+    subgraph sg_35 ["JoinCache Data Flow"]
 
         key1["K1 (primary key)"]
         style key1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -221,8 +219,7 @@ The `MissingGuard` pattern prevents cache penetration (also known as cache null/
 
 ```mermaid
 graph TB
-    subgraph "MissingGuard Detection"
-
+    subgraph sg_36 ["MissingGuard Detection"]
 
         check{"Is value<br>MissingGuard?"}
         style check fill:#2d333b,stroke:#6d5dfc,color:#e6edf3

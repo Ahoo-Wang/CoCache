@@ -11,8 +11,7 @@ CoCache is organized into a set of focused Gradle modules that layer from pure A
 
 ```mermaid
 graph TB
-    subgraph "CoCache Module Architecture"
-
+    subgraph sg_53 ["CoCache Module Architecture"]
 
         cocache-bom["cocache-bom<br>(Bill of Materials)"]
         style cocache-bom fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -100,8 +99,7 @@ The `build.gradle.kts` dependency declarations establish this compile-time chain
 
 ```mermaid
 flowchart LR
-    subgraph "Build Dependencies"
-
+    subgraph sg_54 ["Build Dependencies"]
 
         api["cocache-api<br>(no deps)"]
         style api fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -134,7 +132,7 @@ flowchart LR
 
 ```mermaid
 graph TB
-    subgraph "Application Layer"
+    subgraph sg_55 ["Application Layer"]
 
         app["Application Code<br>(@CoCache interfaces)"]
         style app fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -142,7 +140,7 @@ graph TB
         style spring_boot fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     end
 
-    subgraph "Integration Layer"
+    subgraph sg_56 ["Integration Layer"]
 
         spring_mod["cocache-spring<br>(@EnableCoCache)"]
         style spring_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -152,13 +150,13 @@ graph TB
         style spring_cache_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     end
 
-    subgraph "Core Layer"
+    subgraph sg_57 ["Core Layer"]
 
         core_mod["cocache-core<br>(CoherentCache, Proxy, TTL)"]
         style core_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     end
 
-    subgraph "API Layer"
+    subgraph sg_58 ["API Layer"]
 
         api_mod["cocache-api<br>(Interfaces, Annotations)"]
         style api_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -179,8 +177,7 @@ graph TB
 
 ```mermaid
 flowchart LR
-    subgraph "Cache Read Path (L2 -> L1 -> DataSource)"
-
+    subgraph sg_59 ["Cache Read Path (L2 -> L1 -> DataSource)"]
 
         app_req["Application<br>get(key)"]
         style app_req fill:#2d333b,stroke:#6d5dfc,color:#e6edf3

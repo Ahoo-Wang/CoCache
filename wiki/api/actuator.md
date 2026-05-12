@@ -179,7 +179,6 @@ Registers both endpoint beans when Spring Boot Actuator is available.
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Boot as Spring Boot
     participant Auto as CoCacheAutoConfiguration
     participant EA as CoCacheEndpointAutoConfiguration

@@ -11,7 +11,7 @@ CoCache 采用多层次的测试策略，包括共享测试规范（TCK）、单
 
 ```mermaid
 graph TB
-    subgraph "cocache-test（共享测试规范）"
+    subgraph sg_129 ["cocache-test（共享测试规范）"]
         CS["CacheSpec"]
         CSCS["ClientSideCacheSpec"]
         DCS["DistributedCacheSpec"]
@@ -20,11 +20,11 @@ graph TB
         CEBS["CacheEvictedEventBusSpec"]
     end
 
-    subgraph "单元测试"
+    subgraph sg_130 ["单元测试"]
         UT["各模块测试类<br>继承 TCK 规范"]
     end
 
-    subgraph "集成测试"
+    subgraph sg_131 ["集成测试"]
         IT["cocache-spring-redis<br>cocache-spring-boot-starter"]
     end
 

@@ -29,7 +29,7 @@ actualTtl = ttl + random(-ttlAmplitude, +ttlAmplitude)
 
 ```mermaid
 graph LR
-    subgraph "TTL Jitter"
+    subgraph ttl_jitter ["TTL Jitter"]
         direction LR
         TTL["ttl = 120s"]
         Amp["ttlAmplitude = 10"]
@@ -123,7 +123,7 @@ The `CoCacheAutoConfiguration` class registers all required beans. Every bean us
 
 ```mermaid
 graph TB
-    subgraph "CoCacheAutoConfiguration"
+    subgraph autoconfig ["CoCacheAutoConfiguration"]
         direction TB
         ClientId["ClientIdGenerator<br>@ConditionalOnMissingBean"]
         CacheFact["CacheFactory<br>@ConditionalOnMissingBean"]
@@ -258,7 +258,6 @@ fun customEventBus(): CacheEvictedEventBus {
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Spring Boot
     participant Auto as CoCacheAutoConfiguration
     participant Prop as CoCacheProperties

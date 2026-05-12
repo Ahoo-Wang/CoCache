@@ -40,7 +40,7 @@ This automatically runs 8 tests covering get, set, evict, TTL, and missing guard
 
 ```mermaid
 graph TB
-    subgraph "CacheSpec Tests"
+    subgraph sg_97 ["CacheSpec Tests"]
         direction TB
         T1["get() - missing key returns null"]
         T2["getWhenExpired() - expired entry returns null"]
@@ -140,7 +140,7 @@ class DefaultCoherentCacheTest : DefaultCoherentCacheSpec<String, String>() {
 
 ```mermaid
 graph TB
-    subgraph "DefaultCoherentCacheSpec Factory Methods"
+    subgraph sg_98 ["DefaultCoherentCacheSpec Factory Methods"]
         direction TB
         CK["createKeyConverter()"]
         CSC["createClientSideCache()"]
@@ -150,7 +150,7 @@ graph TB
         CE["createCacheEntry()"]
     end
 
-    subgraph "Assembled CoherentCache"
+    subgraph sg_99 ["Assembled CoherentCache"]
         direction TB
         CC["DefaultCoherentCache<br>L2 + L1 + CacheSource + EventBus"]
     end
@@ -219,7 +219,6 @@ class MultipleInstanceSyncTest : MultipleInstanceSyncSpec<String, String>() {
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Current as Current Instance
     participant EB as Event Bus
     participant Other as Other Instance
@@ -272,7 +271,7 @@ count.assert().isOne()
 
 ```mermaid
 graph LR
-    subgraph "fluent-assert Pattern"
+    subgraph sg_100 ["fluent-assert Pattern"]
         direction LR
         V["Any value"] --> Ext[".assert()"]
         Ext --> Chain[".isEqualTo(expected)<br>.isNull()<br>.isTrue()<br>.isZero()"]
@@ -306,21 +305,21 @@ When creating a new cache implementation (e.g., for a different distributed stor
 
 ```mermaid
 graph TB
-    subgraph "1. Implement the interface"
+    subgraph sg_101 ["1. Implement the interface"]
         direction TB
         IFace["DistributedCache&lt;V&gt;"]
         Impl["MyCustomDistributedCache&lt;V&gt;"]
         Impl -.->|implements| IFace
     end
 
-    subgraph "2. Extend the TCK spec"
+    subgraph sg_102 ["2. Extend the TCK spec"]
         direction TB
         Spec["DistributedCacheSpec&lt;V&gt;"]
         Test["MyCustomDCTest"]
         Test -.->|extends| Spec
     end
 
-    subgraph "3. Implement factory methods"
+    subgraph sg_103 ["3. Implement factory methods"]
         direction TB
         Create["createCache() -> MyCustomDistributedCache"]
         Entry["createCacheEntry() -> Pair(key, value)"]

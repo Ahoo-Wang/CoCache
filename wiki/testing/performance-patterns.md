@@ -18,7 +18,6 @@ When a cache miss occurs and the key passes the `KeyFilter` check, CoCache acqui
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant T1 as Thread 1
     participant T2 as Thread 2
     participant T3 as Thread 3
@@ -153,7 +152,7 @@ The `MissingGuard` interface detects sentinel values across different types:
 
 ```mermaid
 graph TB
-    subgraph "MissingGuard Detection"
+    subgraph sg_93 ["MissingGuard Detection"]
         direction TB
         Check["value.isMissingGuard"]
         String["String == '_nil_'"]
@@ -190,7 +189,6 @@ For high-traffic scenarios, a Bloom filter can be used as a pre-check before que
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as Caller
     participant BF as BloomKeyFilter
     participant L2 as L2 Cache
@@ -279,7 +277,7 @@ Source: [ComputedTtlAt.kt:49-61](https://github.com/Ahoo-Wang/CoCache/blob/main/
 
 ```mermaid
 graph LR
-    subgraph "Without Jitter (Avalanche)"
+    subgraph sg_94 ["Without Jitter (Avalanche)"]
         direction TB
         T1["Key A: expires at T"]
         T2["Key B: expires at T"]
@@ -288,7 +286,7 @@ graph LR
         Burst["All expired at T<br>-> Cache avalanche"]
     end
 
-    subgraph "With Jitter (Spread)"
+    subgraph sg_95 ["With Jitter (Spread)"]
         direction TB
         J1["Key A: expires at T-5"]
         J2["Key B: expires at T+3"]
@@ -339,7 +337,6 @@ CoCache solves this with `CacheSecondClock`, a daemon thread that updates a vola
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Timer as CacheSecondClock<br>Daemon Thread
     participant Volatile as lastTime<br>(volatile)
     participant Cache as Cache Operations
@@ -416,7 +413,7 @@ Source: [ComputedTtlAt.kt:24-29](https://github.com/Ahoo-Wang/CoCache/blob/main/
 
 ```mermaid
 graph TB
-    subgraph "Request Flow with All Patterns"
+    subgraph sg_96 ["Request Flow with All Patterns"]
         direction TB
         Req["Request: get(key)"]
         BF["1. BloomKeyFilter.notExist(key)<br>[Penetration Prevention]"]

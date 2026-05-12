@@ -263,7 +263,6 @@ Bridge between CoCache and Spring's `CacheManager` abstraction, enabling `@Cache
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant SC as Spring Container
     participant CCM as CoCacheManager
     participant CF as CacheFactory

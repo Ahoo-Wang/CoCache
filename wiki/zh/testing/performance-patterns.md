@@ -20,7 +20,6 @@ CoCache 内置多种性能优化模式，防止常见的缓存问题。本页面
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant R1 as 请求 1
     participant R2 as 请求 2
     participant CC as CoherentCache

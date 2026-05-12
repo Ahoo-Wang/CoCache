@@ -216,7 +216,6 @@ class UserCacheConfiguration {
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as 应用代码
     participant L2 as L2: Guava 本地缓存
     participant L1 as L1: Redis 分布式缓存

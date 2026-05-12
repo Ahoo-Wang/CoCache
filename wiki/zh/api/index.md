@@ -11,7 +11,7 @@ CoCache 的 API 设计遵循接口驱动原则，核心接口定义在 `cocache-
 
 ```mermaid
 graph TB
-    subgraph "cocache-api（接口层）"
+    subgraph sg_104 ["cocache-api（接口层）"]
         Cache["Cache&lt;K,V&gt;"]
         CacheValue["CacheValue&lt;V&gt;"]
         CSC["ClientSideCache&lt;V&gt;"]
@@ -20,7 +20,7 @@ graph TB
         Annotations["注解<br>@CoCache, @GuavaCache<br>@CaffeineCache, @JoinCacheable"]
     end
 
-    subgraph "cocache-core（核心实现层）"
+    subgraph sg_105 ["cocache-core（核心实现层）"]
         DCC["DefaultCoherentCache"]
         Proxy["CoCacheInvocationHandler"]
         EB["GuavaCacheEvictedEventBus"]
@@ -28,7 +28,7 @@ graph TB
         KF["KeyFilter"]
     end
 
-    subgraph "cocache-spring（Spring 集成层）"
+    subgraph sg_106 ["cocache-spring（Spring 集成层）"]
         EnableCoCache["@EnableCoCache"]
         FBF["CacheProxyFactoryBean"]
         SCF["SpringCacheFactory"]

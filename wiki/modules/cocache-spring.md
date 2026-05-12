@@ -11,8 +11,7 @@ The `cocache-spring` module bridges CoCache's core abstractions with the Spring 
 
 ```mermaid
 graph LR
-    subgraph "cocache-spring Dependencies"
-
+    subgraph sg_50 ["cocache-spring Dependencies"]
 
         core["cocache-core"]
         style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -68,8 +67,7 @@ class CacheConfiguration
 
 ```mermaid
 flowchart TB
-    subgraph "EnableCoCacheRegistrar Registration Flow"
-
+    subgraph sg_51 ["EnableCoCacheRegistrar Registration Flow"]
 
         scan["@EnableCoCache(caches=[...])<br>ImportBeanDefinitionRegistrar"]
         style scan fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -115,8 +113,7 @@ The registrar at [EnableCoCacheRegistrar.kt:45](https://github.com/Ahoo-Wang/CoC
 
 ```mermaid
 flowchart TB
-    subgraph "AbstractCacheFactory.createBean(cacheMetadata)"
-
+    subgraph sg_52 ["AbstractCacheFactory.createBean(cacheMetadata)"]
 
         bean_name["Compute beanName<br>= cacheName + suffix"]
         style bean_name fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -180,7 +177,6 @@ This naming convention allows users to override any component simply by declarin
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant SB as Spring BeanFactory
     participant CPFB as CacheProxyFactoryBean
     participant CPF as CacheProxyFactory<br>(DefaultCacheProxyFactory)
@@ -298,7 +294,6 @@ classDiagram
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant User as @EnableCoCache
     participant Reg as EnableCoCacheRegistrar
     participant BDR as BeanDefinitionRegistry
