@@ -12,6 +12,7 @@
  * 6. Remove `style` directives inside sequenceDiagram blocks (not supported)
  * 7. Fix quoted subgraph names to use `subgraph id ["Label"]` syntax
  * 8. Clean up blank lines left by removals
+ * 9. Remove parentheses from quadrantChart labels (lexical error)
  */
 
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'fs'
@@ -39,6 +40,7 @@ function fixMermaidBlock(block) {
   let issues = []
   const firstLine = fixed.trim().split('\n')[0].trim()
   const isSequence = firstLine === 'sequenceDiagram'
+  const isQuadrant = firstLine === 'quadrantChart'
 
   // Fix: Replace <br/> with <br>
   const brSlashCount = (fixed.match(/<br\/>/g) || []).length
@@ -97,6 +99,22 @@ function fixMermaidBlock(block) {
     // Prepend single autonumber after the diagram type line
     fixed = fixed.replace(/^(sequenceDiagram)\n*/, '$1\nautonumber\n')
     issues.push('Fixed autonumber in sequenceDiagram')
+  }
+
+  // Fix: quadrantChart - remove parentheses from labels (lexical error)
+  if (isQuadrant) {
+    const parenRegex = /^(\s+[\w\s]+)\(([^)]+)\)(:\s*\[[\d., ]+\])$/gm
+    let parenMatch
+    let parenFixed = fixed
+    let parenCount = 0
+    while ((parenMatch = parenRegex.exec(fixed)) !== null) {
+      parenFixed = parenFixed.replace(parenMatch[0], parenMatch[1] + parenMatch[2] + parenMatch[3])
+      parenCount++
+    }
+    if (parenCount > 0) {
+      fixed = parenFixed
+      issues.push(`Removed ${parenCount}x parentheses from quadrantChart labels`)
+    }
   }
 
   // Clean up excessive blank lines

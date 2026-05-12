@@ -143,7 +143,7 @@ quadrantChart
     Redis SPOF: [0.75, 0.35]
     Event Bus Message Loss: [0.35, 0.60]
     Eventual Consistency Window: [0.40, 0.80]
-    Memory Pressure (L2): [0.55, 0.40]
+    Memory Pressure L2: [0.55, 0.40]
     Bloom Filter False Positive: [0.15, 0.20]
     Developer Adoption Curve: [0.30, 0.45]
 ```
