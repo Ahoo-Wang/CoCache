@@ -1,5 +1,6 @@
 import DefaultTheme from 'vitepress/theme'
 import type { Theme } from 'vitepress'
+import { useRouter } from 'vitepress'
 import './custom.css'
 
 const hasSetup = Symbol('mermaid-setup')
@@ -7,6 +8,12 @@ const hasSetup = Symbol('mermaid-setup')
 export default {
   extends: DefaultTheme,
   setup() {
+    if (typeof window !== 'undefined') {
+      const router = useRouter()
+      router.onAfterRouteChanged = (to: string) => {
+        ;(window as any).gtag?.('event', 'page_view', { page_path: to })
+      }
+    }
     if (typeof window !== 'undefined' && !(window as any)[hasSetup]) {
       ;(window as any)[hasSetup] = true
       import('vitepress-mermaid-renderer').then(({ createMermaidRenderer }) => {
