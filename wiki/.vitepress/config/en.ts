@@ -115,6 +115,26 @@ export const en: DefaultTheme.Config = {
     },
     search: {
       provider: 'local',
+      options: {
+        detailedView: true,
+        translations: {
+          button: {
+            buttonText: 'Search',
+            buttonAriaLabel: 'Search',
+          },
+          modal: {
+            displayDetails: 'Display detailed list',
+            resetButtonTitle: 'Reset search',
+            backButtonTitle: 'Back',
+            noResultsText: 'No results found',
+            footer: {
+              selectText: 'to select',
+              navigateText: 'to navigate',
+              closeText: 'to close',
+            },
+          },
+        },
+      },
     },
   },
 }
