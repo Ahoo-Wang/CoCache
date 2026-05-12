@@ -50,7 +50,6 @@ graph LR
     style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style DB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## L2 -- ClientSideCache (In-Memory, Per-Instance)
@@ -242,7 +241,6 @@ flowchart TD
     style ReturnNull fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style ReleaseLock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### Key Implementation Details
@@ -328,7 +326,6 @@ graph TB
     style R5 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style R6 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Source References

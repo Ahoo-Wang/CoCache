@@ -83,7 +83,6 @@ graph TD
     style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style NoOp fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### GuavaCacheEvictedEventBus (In-Process)
@@ -239,7 +238,6 @@ flowchart LR
     style Listen fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style Unregister fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Comparison of EventBus Implementations

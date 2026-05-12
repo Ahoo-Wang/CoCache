@@ -27,7 +27,6 @@ graph LR
         spring_ctx --> spring_cache
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Source Files (3 files)
@@ -147,7 +146,6 @@ flowchart TB
         cache_found -->|no| null
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### loadCaches()
@@ -233,7 +231,6 @@ flowchart TB
         is_cc -->|no| no_op
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## SpringCacheValueWrapper

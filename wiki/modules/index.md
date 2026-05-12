@@ -56,7 +56,6 @@ graph TB
         cocache-example -.-> cocache-spring-boot-starter
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Module Descriptions
@@ -129,7 +128,6 @@ flowchart LR
         springcache --> starter
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Layered Architecture
@@ -175,7 +173,6 @@ graph TB
     spring_cache_mod --> core_mod
     core_mod --> api_mod
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Two-Level Caching Data Flow
@@ -208,7 +205,6 @@ flowchart LR
         l2 -->|"hit"| result
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Core Interface Hierarchy

@@ -43,7 +43,6 @@ graph LR
         jackson_boot --> starter
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Source Files (8 files)
@@ -145,7 +144,6 @@ graph TB
         jkef --> jcpf
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### Complete Bean List
@@ -214,7 +212,6 @@ graph LR
         stat --- evict
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 The `CacheReport` data class returned by the endpoint includes:
@@ -329,7 +326,6 @@ flowchart TB
         endpoints -->|no| skip_ep
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## CosID Integration

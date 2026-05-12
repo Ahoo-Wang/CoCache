@@ -51,7 +51,6 @@ flowchart TD
     style InvocationHandler fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## The @EnableCoCache Annotation
@@ -179,7 +178,6 @@ flowchart TD
     style ExtractTypes fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style BuildMetadata fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 The parser enforces that the target must be an interface. It reads the `@CoCache` annotation (or uses defaults if absent), extracts the generic type parameters from the `Cache<K, V>` supertype, and produces a `CoCacheMetadata` instance.
@@ -384,7 +382,6 @@ graph TB
     style C6 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style C7 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Key Class Relationships

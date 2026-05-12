@@ -27,7 +27,6 @@ graph LR
         spring_ctx --> spring_mod
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Source Files (10 files)
@@ -101,7 +100,6 @@ flowchart TB
         filter1 -->|Yes| join_cache --> register_join
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 The registrar at [EnableCoCacheRegistrar.kt:45](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/EnableCoCacheRegistrar.kt#L45) performs these steps:
@@ -156,7 +154,6 @@ flowchart TB
         ttl_aware -->|no| done
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 Each subclass defines:

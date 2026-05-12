@@ -43,7 +43,6 @@ graph LR
         caffeine -.-> core
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## DefaultCoherentCache -- The Heart of CoCache
@@ -119,7 +118,6 @@ flowchart TB
         source_hit -->|no| set_missing --> release
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 The fine-grained locking uses a `ConcurrentHashMap<String, Any>` of per-key lock objects to prevent cache stampede (cache breakdown) -- multiple threads requesting the same missing key will synchronize on the same lock, so only one thread performs the expensive `loadCacheValue()` call.
@@ -317,7 +315,6 @@ graph TB
         expire_check -->|no| valid
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### Key TTL Classes

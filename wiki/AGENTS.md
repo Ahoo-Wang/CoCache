@@ -61,7 +61,7 @@ wiki/
 
 - **Frontmatter**: Every page needs `title` and `description`
 - **Mermaid diagrams**: Dark-mode colors only — fills `#2d333b`, borders `#6d5dfc`, text `#e6edf3`, subgraph bg `#161b22`, lines `#8b949e`
-- **Mermaid breaks**: Use `<br>` NEVER `<br/>` (breaks Vue compiler)
+- **Mermaid breaks**: Use `<br>` NEVER `<br>` (breaks Vue compiler)
 - **Sequence diagrams**: Always include `autonumber`
 - **Inline styles**: Include `,color:#e6edf3` for dark-mode text
 - **Citations**: Linked format `[file_path:line](https://github.com/Ahoo-Wang/CoCache/blob/main/file_path#Lline)`

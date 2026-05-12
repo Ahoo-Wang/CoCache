@@ -213,7 +213,6 @@ graph LR
         v2 --> jv
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## MissingGuard Mechanism
@@ -262,7 +261,6 @@ graph TB
         obj_check -->|no| no
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 The sentinel detection logic lives in the [MissingGuard](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/MissingGuard.kt#L17) companion object and works polymorphically across `String`, `Set`, `Map`, and objects implementing the `MissingGuard` marker interface.

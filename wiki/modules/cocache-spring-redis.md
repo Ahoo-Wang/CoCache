@@ -35,7 +35,6 @@ graph LR
         sdr --> redis
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Source Files
@@ -148,7 +147,6 @@ graph TB
         inst3 -->|"Evict L2 entry<br>user:123"| inst3
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### Event Registration
@@ -288,7 +286,6 @@ flowchart LR
         check -->|"Other"| obj
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## RedisDistributedCacheFactory

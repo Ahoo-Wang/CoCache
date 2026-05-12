@@ -50,7 +50,6 @@ graph TD
     style deps fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style example fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 The dependency flow is strictly layered: `cocache-api` defines interfaces at the bottom, `cocache-core` provides implementations, `cocache-spring` adds Spring Framework integration, and `cocache-spring-redis` / `cocache-spring-boot-starter` sit at the top for production use.
@@ -105,7 +104,6 @@ graph TB
     style EventBus fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style Subscriber fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 | Layer | Name | Role | Interface | Key Implementations |
