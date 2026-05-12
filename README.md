@@ -9,6 +9,8 @@ Level 2 Distributed Coherence Cache Framework
 [![Integration Test Status](https://github.com/Ahoo-Wang/CoCache/actions/workflows/integration-test.yml/badge.svg)](https://github.com/Ahoo-Wang/CoCache)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Ahoo-Wang/CoCache)
 
+> [中文文档](https://cocache.ahoo.me/zh/) | [English Document](https://cocache.ahoo.me/)
+
 ## Architecture
 
 <p align="center" style="text-align:center">
