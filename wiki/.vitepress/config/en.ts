@@ -113,28 +113,5 @@ export const en: DefaultTheme.Config = {
       pattern: 'https://github.com/Ahoo-Wang/CoCache/edit/main/wiki/:path',
       text: 'Edit this page on GitHub',
     },
-    search: {
-      provider: 'local',
-      options: {
-        detailedView: true,
-        translations: {
-          button: {
-            buttonText: 'Search',
-            buttonAriaLabel: 'Search',
-          },
-          modal: {
-            displayDetails: 'Display detailed list',
-            resetButtonTitle: 'Reset search',
-            backButtonTitle: 'Back',
-            noResultsText: 'No results found',
-            footer: {
-              selectText: 'to select',
-              navigateText: 'to navigate',
-              closeText: 'to close',
-            },
-          },
-        },
-      },
-    },
   },
 }
