@@ -1,306 +1,511 @@
 ---
-title: 核心接口
-description: CoCache 核心接口详解，包括 Cache、CacheValue、ClientSideCache、CacheSource、DistributedCache、CoherentCache、JoinCache 等。
+title: 核心接口参考
+description: CoCache 框架所有核心接口的详细文档，包括 Cache、CacheValue、ClientSideCache、DistributedCache、CoherentCache、JoinCache、CacheEvictedEventBus 等。
 ---
 
-# 核心接口
+# 核心接口参考
 
-本页面详细介绍 CoCache 的所有核心接口，它们定义在 `cocache-api` 和 `cocache-core` 模块中。
+本页面提供 CoCache 框架中每个核心接口的完整参考。接口按模块和功能区域进行组织。
 
-## 接口层次结构
+## 缓存 API 接口 (cocache-api)
 
-```mermaid
-graph TB
-    CacheGetter["CacheGetter&lt;K,V&gt;"] --> Cache["Cache&lt;K,V&gt;"]
-    CacheSetter["CacheSetter&lt;K,V&gt;"] --> Cache
-    Cache --> ComputedCache["ComputedCache&lt;K,V&gt;"]
-    ComputedCache --> CoherentCache["CoherentCache&lt;K,V&gt;"]
-    ComputedCache --> DistributedCache["DistributedCache&lt;V&gt;"]
-    Cache --> ClientSideCache["ClientSideCache&lt;V&gt;"]
-    Cache --> JoinCache["JoinCache&lt;K1,V1,K2,V2&gt;"]
-    TtlAt --> CacheValue["CacheValue&lt;V&gt;"]
-    TtlAt --> TtlConfiguration["TtlConfiguration"]
-    TtlConfiguration --> ComputedCache
+### Cache&lt;K, V&gt;
 
-    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheGetter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheSetter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style ComputedCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CoherentCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style DistributedCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style ClientSideCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style JoinCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style TtlAt fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheValue fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style TtlConfiguration fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
+组合读写操作的根缓存接口。
 
-## Cache&lt;K, V&gt;
-
-基础缓存接口，组合了 `CacheGetter` 和 `CacheSetter`。
+| 方面 | 详情 | 源码 |
+|--------|--------|--------|
+| **包** | `me.ahoo.cache.api` | -- |
+| **继承** | `CacheGetter<K, V>`、`CacheSetter<K, V>` | -- |
+| **类型参数** | `K` -- 缓存键类型，`V` -- 缓存值类型 | -- |
+| **源文件** | -- | [Cache.kt:21](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/Cache.kt#L21) |
 
 ```kotlin
 interface Cache<K, V> : CacheGetter<K, V>, CacheSetter<K, V>
 ```
 
-- `CacheGetter<K, V>`：提供 `get(key: K): V?`、`getCache(key: K): CacheValue<V>?`、`getTtlAt(key: K): Long?`
-- `CacheSetter<K, V>`：提供 `set(key: K, value: V)`、`set(key: K, ttlAt: Long, value: V)`、`setCache(key: K, value: CacheValue<V>)`、`evict(key: K)`
+`Cache<K, V>` 是一个纯组合接口。所有缓存层 -- `ClientSideCache`、`DistributedCache`、`CoherentCache` 和 `JoinCache` -- 最终都实现此接口。
 
-这是所有缓存接口的基础，开发者定义的缓存接口都应继承此接口。
+### CacheGetter&lt;K, V&gt;
 
-**源码参考**：[`cocache-api/.../Cache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/Cache.kt)
+只读缓存访问接口。
 
-## CacheValue&lt;V&gt;
+| 方法 | 签名 | 说明 | 源码 |
+|--------|-----------|-------------|--------|
+| `getCache` | `fun getCache(key: K): CacheValue<V>?` | 返回完整的 `CacheValue` 包装（包括 TTL 元数据），不存在时返回 `null` | [CacheGetter.kt:21](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheGetter.kt#L21) |
+| `get` | `operator fun get(key: K): V?` | 返回解包后的值或 `null`。去除 TTL 和缺失守卫信息 | [CacheGetter.kt:29](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheGetter.kt#L29) |
+| `getTtlAt` | `fun getTtlAt(key: K): Long?` | 返回过期时间戳（秒），键不存在时返回 `null` | [CacheGetter.kt:37](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheGetter.kt#L37) |
 
-缓存值包装接口，包含实际值、过期时间和 MissingGuard 标记。
+### CacheSetter&lt;K, V&gt;
 
-```kotlin
-interface CacheValue<V> : TtlAt {
-    val value: V
-    override val ttlAt: Long      // 过期时间戳（秒）
-    val isMissingGuard: Boolean   // 是否为缺失守卫值
-}
+写入和驱逐接口。
+
+| 方法 | 签名 | 说明 | 源码 |
+|--------|-----------|-------------|--------|
+| `set` | `operator fun set(key: K, ttlAt: Long, value: V)` | 使用显式过期时间戳设置值 | [CacheSetter.kt:18](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheSetter.kt#L18) |
+| `set` | `operator fun set(key: K, value: V)` | 使用缓存的默认 TTL 配置设置值 | [CacheSetter.kt:20](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheSetter.kt#L20) |
+| `setCache` | `fun setCache(key: K, value: CacheValue<V>)` | 设置预构造的 `CacheValue`（包含 TTL 和缺失守卫元数据） | [CacheSetter.kt:22](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheSetter.kt#L22) |
+| `evict` | `fun evict(key: K)` | 从缓存中移除条目 | [CacheSetter.kt:29](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheSetter.kt#L29) |
+
+### CacheValue&lt;V&gt;
+
+将缓存值与 TTL 和缺失守卫元数据包装在一起。
+
+| 属性/方法 | 类型 | 说明 | 源码 |
+|-----------------|------|-------------|--------|
+| `value` | `V` | 实际的缓存值 | [CacheValue.kt:21](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheValue.kt#L21) |
+| `ttlAt` | `Long` | 过期时间戳（秒）（`ChronoUnit.SECONDS`） | [CacheValue.kt:28](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheValue.kt#L28) |
+| `isMissingGuard` | `Boolean` | 该值是否为缺失键的占位符（防止缓存穿透） | [CacheValue.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheValue.kt#L30) |
+
+继承 `TtlAt`，获得 `isForever`、`isExpired` 和 `expiredDuration` 属性。
+
+**默认实现**：[DefaultCacheValue](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/DefaultCacheValue.kt) -- 伴生对象工厂方法：`forever()`、`ttlAt()`、`missingGuard()`。
+
+### TtlAt
+
+基于绝对时间戳的生存时间管理接口。
+
+| 属性 | 类型 | 说明 | 源码 |
+|----------|------|-------------|--------|
+| `ttlAt` | `Long` | 绝对过期时间（秒） | [TtlAt.kt:23](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/TtlAt.kt#L23) |
+| `isForever` | `Boolean` | 此条目是否永不过期 | [TtlAt.kt:29](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/TtlAt.kt#L29) |
+| `isExpired` | `Boolean` | 当前时间是否已超过 `ttlAt` | [TtlAt.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/TtlAt.kt#L30) |
+| `expiredDuration` | `Duration` | 距过期还有多少时间，以 `java.time.Duration` 表示 | [TtlAt.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/TtlAt.kt#L31) |
+
+**默认实现**：[ComputedTtlAt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/ComputedTtlAt.kt) -- 提供静态工具方法 `at(ttl, amplitude)` 和 `isForever(ttl)`。
+
+### NamedCache
+
+通过逻辑名称标识缓存。
+
+| 属性 | 类型 | 说明 | 源码 |
+|----------|------|-------------|--------|
+| `cacheName` | `String` | 缓存逻辑名称，用于 Bean 注册和事件路由 | [NamedCache.kt:21](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/NamedCache.kt#L21) |
+
+### ClientSideCache&lt;V&gt;
+
+L2 客户端（进程内）缓存接口。
+
+| 方面 | 详情 | 源码 |
+|--------|--------|--------|
+| **继承** | `Cache<String, V>` | -- |
+| **键类型** | `String`（通过 `KeyConverter` 转换） | -- |
+| **源文件** | -- | [ClientSideCache.kt:22](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/client/ClientSideCache.kt#L22) |
+
+| 属性/方法 | 类型 | 说明 |
+|-----------------|------|-------------|
+| `size` | `Long` | 客户端缓存中当前的条目数 |
+| `clear` | `fun clear()` | 移除本地缓存中的所有条目 |
+
+**实现**：
+
+| 实现 | 说明 | 模块 |
+|---------------|-------------|--------|
+| `MapClientSideCache` | 基于 ConcurrentHashMap，无驱逐策略 | [cocache-core](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/MapClientSideCache.kt) |
+| `GuavaClientSideCache` | 基于 Guava `Cache`，支持可配置的大小/时间驱逐 | [cocache-core](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/GuavaClientSideCache.kt) |
+| `CaffeineClientSideCache` | 基于 Caffeine `Cache`，支持可配置的大小/时间驱逐 | [cocache-core](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
+
+### CacheSource&lt;K, V&gt;
+
+L0 数据源加载器接口。当 L2 和 L1 缓存都未命中时调用。
+
+| 方法 | 签名 | 说明 | 源码 |
+|--------|-----------|-------------|--------|
+| `loadCacheValue` | `fun loadCacheValue(key: K): CacheValue<V>?` | 从底层数据源加载值。键不存在时返回 `null`。可能抛出 `TimeoutException` | [CacheSource.kt:24](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/source/CacheSource.kt#L24) |
+
+| 伴生方法 | 说明 |
+|-----------------|-------------|
+| `noOp()` | 返回始终返回 `null` 的单例 `NoOpCacheSource` |
+
+**默认实现**：[NoOpCacheSource](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/source/NoOpCacheSource.kt) -- 对象单例，始终返回 `null`。
+
+## 核心模块接口 (cocache-core)
+
+### DistributedCache&lt;V&gt;
+
+L1 分布式（共享）缓存接口。
+
+| 方面 | 详情 | 源码 |
+|--------|--------|--------|
+| **继承** | `ComputedCache<String, V>`、`AutoCloseable` | -- |
+| **键类型** | `String` | -- |
+| **源文件** | -- | [DistributedCache.kt:22](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/distributed/DistributedCache.kt#L22) |
+
+继承 `ComputedCache` 获得默认的 `get()`、`set()` 和 `getTtlAt()` 实现，继承 `AutoCloseable` 用于资源清理。
+
+**实现**：
+
+| 实现 | 说明 | 模块 |
+|---------------|-------------|--------|
+| `MockDistributedCache` | 用于测试的内存模拟 | [cocache-core](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/distributed/mock/MockDistributedCache.kt) |
+| `RedisDistributedCache` | 使用 `StringRedisTemplate` 的 Redis 分布式缓存 | [cocache-spring-redis](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt) |
+
+### DistributedClientId
+
+在分布式系统中标识缓存客户端实例。
+
+| 属性 | 类型 | 说明 | 源码 |
+|----------|------|-------------|--------|
+| `clientId` | `String` | 此缓存客户端实例的唯一标识符（用于避免处理自己发布的事件） | [DistributedClientId.kt:21](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/distributed/DistributedClientId.kt#L21) |
+
+默认客户端 ID 生成器：`HostClientIdGenerator`（使用主机地址）、`UUIDClientIdGenerator`（随机 UUID）。
+
+### ComputedCache&lt;K, V&gt;
+
+为 `Cache` 方法提供计算默认实现，桥接原始 `CacheValue` 访问与用户友好的 `get`/`set` 操作。
+
+| 方面 | 详情 | 源码 |
+|--------|--------|--------|
+| **继承** | `Cache<K, V>`、`TtlConfiguration` | -- |
+| **源文件** | -- | [ComputedCache.kt:20](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/ComputedCache.kt#L20) |
+
+关键行为：
+- `get(key)` -- 调用 `getCache(key)`，如果为缺失守卫或已过期则返回 `null`
+- `getTtlAt(key)` -- 调用 `getCache(key)`，如果为缺失守卫则返回 `null`
+- `set(key, value)` -- 使用默认 TTL + 幅度抖动创建 `DefaultCacheValue`
+- `set(key, ttlAt, value)` -- 使用显式 TTL 创建 `DefaultCacheValue`
+
+### CoherentCache&lt;K, V&gt;
+
+二级一致性缓存的中心接口，组合了所有缓存关注点。
+
+| 方面 | 详情 | 源码 |
+|--------|--------|--------|
+| **继承** | `ComputedCache<K, V>`、`DistributedClientId`、`NamedCache`、`CacheEvictedSubscriber` | -- |
+| **源文件** | -- | [CoherentCache.kt:25](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCache.kt#L25) |
+
+| 属性 | 类型 | 说明 |
+|----------|------|-------------|
+| `cacheEvictedEventBus` | `CacheEvictedEventBus` | 用于发布/接收驱逐事件的事件总线 |
+| `clientSideCache` | `ClientSideCache<V>` | L2 本地缓存 |
+| `distributedCache` | `DistributedCache<V>` | L1 分布式缓存 |
+| `keyFilter` | `KeyFilter` | 用于防止缓存穿透的布隆过滤器 |
+| `keyConverter` | `KeyConverter<K>` | 将类型化键转换为字符串键 |
+| `cacheSource` | `CacheSource<K, V>` | L0 数据源 |
+
+**默认实现**：[DefaultCoherentCache](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt) -- 实现了细粒度锁以防止缓存击穿、缺失守卫缓存以防止缓存穿透，以及事件驱动的一致性。
+
+### DefaultCoherentCache 细粒度锁
+
+`DefaultCoherentCache.getCache()` 方法使用逐键锁，当多个线程请求相同的缺失键时防止缓存击穿：
+
+```mermaid
+flowchart TB
+    subgraph Locking["细粒度锁流程"]
+        style Locking fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+        Start["getCache(key)"]
+        L2Check["检查 L2<br>(ClientSideCache)"]
+        L2Hit{"L2 命中？"}
+        KFCheck["KeyFilter.notExist？"]
+        KFMiss{"键不存在？"}
+        L1Check["检查 L1<br>(DistributedCache)"]
+        L1Hit{"L1 命中？"}
+        Lock["获取逐键锁<br>synchronized(keyLock)"]
+        L2Recheck["重新检查 L2<br>(双重检查)"]
+        L2RHit{"L2 现在命中？"}
+        L0Load["从 L0 加载<br>(CacheSource)"]
+        L0Found{"找到值？"}
+        SetBoth["设置 L2 + L1<br>发布事件"]
+        SetGuard["设置 MissingGuard<br>在 L2 + L1 中"]
+        Return["返回值"]
+
+        Start --> L2Check
+        L2Check --> L2Hit
+        L2Hit -- "是" --> Return
+        L2Hit -- "否" --> KFCheck
+        KFCheck --> KFMiss
+        KFMiss -- "是" --> SetGuard
+        KFMiss -- "否" --> L1Check
+        L1Check --> L1Hit
+        L1Hit -- "是" --> SetBoth
+        L1Hit -- "否" --> Lock
+        Lock --> L2Recheck
+        L2Recheck --> L2RHit
+        L2RHit -- "是" --> Return
+        L2RHit -- "否" --> L0Load
+        L0Load --> L0Found
+        L0Found -- "是" --> SetBoth
+        L0Found -- "否" --> SetGuard
+        SetBoth --> Return
+        SetGuard --> Return
+    end
 ```
 
-`DefaultCacheValue` 提供了常用的工厂方法：
+### CoherentCacheConfiguration&lt;K, V&gt;
 
-```kotlin
-// 创建永不过期的缓存值
-DefaultCacheValue.forever(value)
+包含创建 `CoherentCache` 所需的所有配置的数据类。
 
-// 创建带 TTL 的缓存值
-DefaultCacheValue.ttlAt(value, ttl, ttlAmplitude)
+| 属性 | 类型 | 默认值 | 源码 |
+|----------|------|---------|--------|
+| `cacheName` | `String` | （必需） | [CoherentCacheConfiguration.kt:27](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCacheConfiguration.kt#L27) |
+| `clientId` | `String` | （必需） | [CoherentCacheConfiguration.kt:28](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCacheConfiguration.kt#L28) |
+| `keyConverter` | `KeyConverter<K>` | （必需） | [CoherentCacheConfiguration.kt:29](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCacheConfiguration.kt#L29) |
+| `distributedCache` | `DistributedCache<V>` | （必需） | [CoherentCacheConfiguration.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCacheConfiguration.kt#L30) |
+| `clientSideCache` | `ClientSideCache<V>` | `MapClientSideCache()` | [CoherentCacheConfiguration.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCacheConfiguration.kt#L31) |
+| `cacheSource` | `CacheSource<K, V>` | `CacheSource.noOp()` | [CoherentCacheConfiguration.kt:32](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCacheConfiguration.kt#L32) |
+| `keyFilter` | `KeyFilter` | `NoOpKeyFilter` | [CoherentCacheConfiguration.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCacheConfiguration.kt#L33) |
 
-// 创建缺失守卫值（缓存穿透防护）
-DefaultCacheValue.missingGuard(ttl, ttlAmplitude)
+## 缓存一致性接口
+
+### CacheEvictedEventBus
+
+用于缓存驱逐事件的发布-订阅事件总线，确保分布式缓存一致性。
+
+| 方法 | 签名 | 说明 | 源码 |
+|--------|-----------|-------------|--------|
+| `publish` | `fun publish(event: CacheEvictedEvent)` | 向所有订阅者发布驱逐事件 | [CacheEvictedEventBus.kt:20](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEventBus.kt#L20) |
+| `register` | `fun register(subscriber: CacheEvictedSubscriber)` | 注册订阅者以接收驱逐事件 | [CacheEvictedEventBus.kt:21](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEventBus.kt#L21) |
+| `unregister` | `fun unregister(subscriber: CacheEvictedSubscriber)` | 移除订阅者使其不再接收事件 | [CacheEvictedEventBus.kt:22](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEventBus.kt#L22) |
+
+**实现**：
+
+| 实现 | 范围 | 说明 | 模块 |
+|---------------|-------|-------------|--------|
+| `GuavaCacheEvictedEventBus` | 单 JVM | 使用 Guava `EventBus` 进行进程内发布/订阅 | [cocache-core](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/GuavaCacheEvictedEventBus.kt) |
+| `NoOpCacheEvictedEventBus` | 无 | 空操作单例，事件被丢弃 | [cocache-core](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/NoOpCacheEvictedEventBus.kt) |
+| `RedisCacheEvictedEventBus` | 分布式 | 使用 Redis Pub/Sub 进行跨实例事件传播 | [cocache-spring-redis](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt) |
+
+### CacheEvictedSubscriber
+
+响应缓存驱逐事件的组件接口。
+
+| 方法 | 签名 | 说明 | 源码 |
+|--------|-----------|-------------|--------|
+| `onEvicted` | `fun onEvicted(cacheEvictedEvent: CacheEvictedEvent)` | 收到缓存驱逐事件时调用 | [CacheEvictedSubscriber.kt:23](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedSubscriber.kt#L23) |
+
+继承 `NamedCache`，使订阅者知道自己属于哪个缓存。
+
+### CacheEvictedEvent
+
+表示缓存驱逐事件的数据类。
+
+| 属性 | 类型 | 说明 | 源码 |
+|----------|------|-------------|--------|
+| `cacheName` | `String` | 条目被驱逐的缓存名称 | [CacheEvictedEvent.kt:21](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEvent.kt#L21) |
+| `key` | `String` | 被驱逐的缓存键（字符串转换后） | [CacheEvictedEvent.kt:28](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEvent.kt#L28) |
+| `publisherId` | `String` | 发布事件的实例的客户端 ID | [CacheEvictedEvent.kt:34](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEvent.kt#L34) |
+
+## JoinCache 接口 (cocache-api)
+
+### JoinCache&lt;K1, V1, K2, V2&gt;
+
+将两个缓存值组合为单个 `JoinValue` 结果。
+
+| 方面 | 详情 | 源码 |
+|--------|--------|--------|
+| **继承** | `Cache<K1, JoinValue<V1, K2, V2>>` | -- |
+| **源文件** | -- | [JoinCache.kt:23](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/join/JoinCache.kt#L23) |
+
+| 属性/方法 | 类型 | 说明 |
+|-----------------|------|-------------|
+| `joinKeyExtractor` | `JoinKeyExtractor<V1, K2>` | 从第一个值中提取关联键 |
+| `evict` | `fun evict(firstKey: K1, joinKey: K2)` | 同时从第一个缓存和关联缓存中驱逐条目 |
+
+### JoinValue&lt;V1, K2, V2&gt;
+
+将主值与关联的次要值组合的结果类型。
+
+| 属性 | 类型 | 说明 | 源码 |
+|----------|------|-------------|--------|
+| `firstValue` | `V1` | 主缓存值 | [JoinValue.kt:16](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/join/JoinValue.kt#L16) |
+| `joinKey` | `K2` | 用于查找次要值的键 | [JoinValue.kt:17](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/join/JoinValue.kt#L17) |
+| `secondValue` | `V2?` | 关联的次要值（可为 null，未找到时） | [JoinValue.kt:18](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/join/JoinValue.kt#L18) |
+
+**默认实现**：[DefaultJoinValue](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/join/DefaultJoinValue.kt)
+
+### JoinKeyExtractor&lt;V1, K2&gt;
+
+用于从主值中提取关联键的函数式接口。
+
+| 方法 | 签名 | 说明 | 源码 |
+|--------|-----------|-------------|--------|
+| `extract` | `fun extract(firstValue: V1): K2` | 从第一个缓存值中提取关联键 | [JoinKeyExtractor.kt:8](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/join/JoinKeyExtractor.kt#L8) |
+
+**实现**：`ExpJoinKeyExtractor`（基于 SpEL 表达式，在 cocache-core 中）。
+
+### JoinCache 流程
+
+JoinCache 检索流程通过获取主值、提取关联键、然后获取次要值来工作：
+
+```mermaid
+sequenceDiagram
+autonumber
+    participant Caller as 调用方
+    participant JC as SimpleJoinCache
+    participant FC as firstCache
+    participant JKE as JoinKeyExtractor
+    participant SC as secondCache (joinCache)
+
+    Caller->>JC: getCache(firstKey)
+    JC->>FC: getCache(firstKey)
+    FC-->>JC: firstCacheValue
+    JC->>JKE: extract(firstValue)
+    JKE-->>JC: joinKey
+    JC->>SC: getCache(joinKey)
+    SC-->>JC: secondCacheValue
+    JC-->>Caller: JoinValue(firstValue, joinKey, secondValue)
 ```
 
-**源码参考**：[`cocache-api/.../CacheValue.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheValue.kt)
+## 键过滤器接口
 
-## TtlAt
+### KeyFilter
 
-TTL 管理接口，提供过期判断能力。
+缓存键过滤器接口，旨在适配布隆过滤器以防止缓存击穿。
 
-```kotlin
-interface TtlAt {
-    val ttlAt: Long           // 过期时间戳（秒）
-    val isForever: Boolean    // 是否永不过期
-    val isExpired: Boolean    // 是否已过期
-    val expiredDuration: Duration  // 剩余有效期
-}
-```
+| 方法 | 签名 | 说明 | 源码 |
+|--------|-----------|-------------|--------|
+| `notExist` | `fun notExist(key: String): Boolean` | 如果键确定不在数据源中，则返回 `true` | [KeyFilter.kt:22](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/KeyFilter.kt#L22) |
 
-**源码参考**：[`cocache-api/.../TtlAt.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/TtlAt.kt)
+**实现**：
 
-## NamedCache
+| 实现 | 说明 | 模块 |
+|---------------|-------------|--------|
+| `NoOpKeyFilter` | 始终返回 `false`（无过滤） | [cocache-core](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/filter/NoOpKeyFilter.kt) |
+| `BloomKeyFilter` | 使用 Guava `BloomFilter` 进行概率性键存在性检查 | [cocache-core](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/filter/BloomKeyFilter.kt) |
 
-命名缓存接口，每个缓存都有唯一的名称。
+### 客户端缓存实现
 
-```kotlin
-interface NamedCache {
-    val cacheName: String
-}
-```
+```mermaid
+classDiagram
+    direction LR
 
-缓存名称用于：
-- Bean 注册和查找
-- 事件路由（`CacheEvictedEvent.cacheName`）
-- Actuator 端点展示
-
-**源码参考**：[`cocache-api/.../NamedCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/NamedCache.kt)
-
-## ClientSideCache&lt;V&gt;
-
-L2 客户端缓存接口，代表本地内存缓存。
-
-```kotlin
-interface ClientSideCache<V> : Cache<String, V> {
-    val size: Long    // 当前缓存条目数
-    fun clear()       // 清除所有缓存
-}
-```
-
-键类型固定为 `String`（经 `KeyConverter` 转换后的字符串键）。
-
-实现：
-
-| 实现类 | 基础库 | 说明 |
-|--------|--------|------|
-| `GuavaClientSideCache` | Google Guava Cache | 成熟稳定 |
-| `CaffeineClientSideCache` | Caffeine Cache | 高性能 |
-| `MapClientSideCache` | ConcurrentHashMap | 轻量级 |
-
-**源码参考**：[`cocache-api/.../client/ClientSideCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/client/ClientSideCache.kt)
-
-## CacheSource&lt;K, V&gt;
-
-L0 数据源接口，代表最终数据来源。
-
-```kotlin
-interface CacheSource<K, V> {
-    fun loadCacheValue(key: K): CacheValue<V>?
-}
-```
-
-- 返回 `null` 表示数据源中不存在该键
-- 框架会自动缓存 `MissingGuard` 值防止缓存穿透
-- `CacheSource.noOp()` 提供空操作实现
-
-**源码参考**：[`cocache-api/.../source/CacheSource.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/source/CacheSource.kt)
-
-## DistributedCache&lt;V&gt;
-
-L1 分布式缓存接口。
-
-```kotlin
-interface DistributedCache<V> : ComputedCache<String, V>, AutoCloseable
-```
-
-- 键类型固定为 `String`
-- 继承 `ComputedCache`，自动处理 `CacheValue` 包装和 TTL 管理
-- 继承 `AutoCloseable`，支持资源释放
-
-默认实现为 `RedisDistributedCache`。
-
-**源码参考**：[`cocache-core/.../distributed/DistributedCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/distributed/DistributedCache.kt)
-
-## ComputedCache&lt;K, V&gt;
-
-计算缓存接口，封装了 `get`/`set` 的逻辑，自动处理 `CacheValue` 解包和 TTL 管理。
-
-```kotlin
-interface ComputedCache<K, V> : Cache<K, V>, TtlConfiguration {
-    override fun get(key: K): V? {
-        val cacheValue = getCache(key) ?: return null
-        if (cacheValue.isMissingGuard || cacheValue.isExpired) return null
-        return cacheValue.value
+    class ClientSideCache~V~ {
+        <<interface>>
+        +size: Long
+        +clear()
     }
-}
+    class Cache~String,V~ {
+        <<interface>>
+    }
+    class MapClientSideCache~V~ {
+        -cache: ConcurrentHashMap
+        +getCache(key) CacheValue
+        +setCache(key, value)
+        +evict(key)
+        +clear()
+    }
+    class GuavaClientSideCache~V~ {
+        -cache: Guava~Cache~
+        +getCache(key) CacheValue
+        +setCache(key, value)
+        +evict(key)
+        +clear()
+    }
+    class CaffeineClientSideCache~V~ {
+        -cache: Caffeine~Cache~
+        +getCache(key) CacheValue
+        +setCache(key, value)
+        +evict(key)
+        +clear()
+    }
+
+    Cache <|-- ClientSideCache
+    ClientSideCache <|.. MapClientSideCache
+    ClientSideCache <|.. GuavaClientSideCache
+    ClientSideCache <|.. CaffeineClientSideCache
+
+    style ClientSideCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style MapClientSideCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style GuavaClientSideCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CaffeineClientSideCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
-**源码参考**：[`cocache-core/.../ComputedCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/ComputedCache.kt)
+## 键转换器接口
 
-## CoherentCache&lt;K, V&gt;
+### KeyConverter&lt;K&gt;
 
-二级一致性缓存接口，是 CoCache 的核心接口。
+将类型化的缓存键转换为用于存储的字符串键。
 
-```kotlin
-interface CoherentCache<K, V> :
-    ComputedCache<K, V>,    // 计算缓存
-    DistributedClientId,    // 分布式客户端 ID
-    NamedCache,             // 命名缓存
-    CacheEvictedSubscriber  // 缓存失效事件订阅者
-{
-    val cacheEvictedEventBus: CacheEvictedEventBus
-    val clientSideCache: ClientSideCache<V>
-    val distributedCache: DistributedCache<V>
-    val keyFilter: KeyFilter
-    val keyConverter: KeyConverter<K>
-    val cacheSource: CacheSource<K, V>
-}
+| 方法 | 签名 | 说明 | 源码 |
+|--------|-----------|-------------|--------|
+| `toStringKey` | `fun toStringKey(sourceKey: K): String` | 将类型化键转换为带前缀的字符串表示 | [KeyConverter.kt:8](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/converter/KeyConverter.kt#L8) |
+
+**实现**：
+
+| 实现 | 说明 | 源码 |
+|---------------|-------------|--------|
+| `ToStringKeyConverter<K>` | 简单的 `keyPrefix + sourceKey.toString()` | [ToStringKeyConverter.kt:20](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/converter/ToStringKeyConverter.kt#L20) |
+| `ExpKeyConverter<K>` | 基于 SpEL 表达式的键生成，带前缀 | [ExpKeyConverter.kt:24](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/converter/ExpKeyConverter.kt#L24) |
+
+## MissingGuard
+
+通过使用哨兵标记缓存 null/缺失值来防止缓存穿透。
+
+| 常量/扩展 | 说明 | 源码 |
+|-------------------|-------------|--------|
+| `STRING_VALUE = "_nil_"` | `String`、`Set` 或 `Map` 类型缺失值的哨兵字符串 | [MissingGuard.kt:18](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/MissingGuard.kt#L18) |
+| `Any?.isMissingGuard` | 检查值是否为缺失守卫的扩展属性 | [MissingGuard.kt:19](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/MissingGuard.kt#L19) |
+
+## 工厂接口
+
+所有工厂接口遵循共同的模式：接受 `CoCacheMetadata`（或 `JoinCacheMetadata`）并生成相应的缓存组件。
+
+| 工厂接口 | 产出 | 源码 |
+|-------------------|----------|--------|
+| `CacheFactory` | 按名称/类型的命名 `Cache` 实例 | [CacheFactory.kt:19](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/CacheFactory.kt#L19) |
+| `CoherentCacheFactory` | 从 `CoherentCacheConfiguration` 创建 `CoherentCache` | [CoherentCacheFactory.kt:16](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCacheFactory.kt#L16) |
+| `CacheProxyFactory` | 基于代理的 `Cache` 实现 | [CacheProxyFactory.kt:19](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/proxy/CacheProxyFactory.kt#L19) |
+| `ClientSideCacheFactory` | `ClientSideCache<V>` 实例 | [ClientSideCacheFactory.kt:19](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/ClientSideCacheFactory.kt#L19) |
+| `DistributedCacheFactory` | `DistributedCache<V>` 实例 | [DistributedCacheFactory.kt:18](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/distributed/DistributedCacheFactory.kt#L18) |
+| `CacheSourceFactory` | `CacheSource<K, V>` 实例 | [CacheSourceFactory.kt:19](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/source/CacheSourceFactory.kt#L19) |
+| `KeyConverterFactory` | `KeyConverter<K>` 实例 | [KeyConverterFactory.kt:18](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/converter/KeyConverterFactory.kt#L18) |
+| `JoinKeyExtractorFactory` | `JoinKeyExtractor<V1, K2>` 实例 | [JoinKeyExtractorFactory.kt:19](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/join/JoinKeyExtractorFactory.kt#L19) |
+| `JoinCacheProxyFactory` | 基于代理的 `JoinCache` 实现 | [JoinCacheProxyFactory.kt:19](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/join/proxy/JoinCacheProxyFactory.kt#L19) |
+
+## 接口关系图
+
+下图展示了工厂接口如何组合以产生可工作的缓存：
+
+```mermaid
+graph TB
+    subgraph Inputs["输入"]
+        style Inputs fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+        Meta["CoCacheMetadata<br>(从 @CoCache 解析)"]
+    end
+
+    subgraph Factories["工厂层"]
+        style Factories fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+        KCF["KeyConverterFactory"]
+        CSF["ClientSideCacheFactory"]
+        DCF["DistributedCacheFactory"]
+        CSrcF["CacheSourceFactory"]
+        CCGF["CoherentCacheFactory"]
+        CPF["CacheProxyFactory"]
+    end
+
+    subgraph Products["产生的组件"]
+        style Products fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+        KC["KeyConverter"]
+        CSC["ClientSideCache"]
+        DC["DistributedCache"]
+        CSrc["CacheSource"]
+        CC["CoherentCache"]
+        Proxy["缓存代理"]
+    end
+
+    Meta --> KCF
+    Meta --> CSF
+    Meta --> DCF
+    Meta --> CSrcF
+    KCF --> KC
+    CSF --> CSC
+    DCF --> DC
+    CSrcF --> CSrc
+    KC --> CCGF
+    CSC --> CCGF
+    DC --> CCGF
+    CSrc --> CCGF
+    CCGF --> CC
+    CC --> CPF
+    Meta --> CPF
+    CPF --> Proxy
+
 ```
-
-`DefaultCoherentCache` 实现了完整的二级缓存逻辑，包括：
-- L2 -> L1 -> L0 读取路径
-- 双写路径
-- 逐键锁防止缓存击穿
-- MissingGuard 防止缓存穿透
-- 事件驱动一致性
-
-**源码参考**：[`cocache-core/.../CoherentCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCache.kt)
-
-## JoinCache&lt;K1, V1, K2, V2&gt;
-
-组合缓存接口，支持跨缓存的关联查询。
-
-```kotlin
-interface JoinCache<K1, V1, K2, V2> : Cache<K1, JoinValue<V1, K2, V2>> {
-    val joinKeyExtractor: JoinKeyExtractor<V1, K2>
-    fun evict(firstKey: K1, joinKey: K2)
-}
-```
-
-工作流程：
-1. 从 `firstCache` 获取主值（`V1`）
-2. 通过 `JoinKeyExtractor` 从主值中提取关联键（`K2`）
-3. 从 `joinCache` 获取关联值（`V2`）
-4. 组合成 `JoinValue<V1, K2, V2>` 返回
-
-**源码参考**：[`cocache-api/.../join/JoinCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/join/JoinCache.kt)
-
-## JoinValue&lt;V1, K2, V2&gt;
-
-组合值类型，包含主值和关联值。
-
-```kotlin
-interface JoinValue<V1, K2, V2> {
-    val firstValue: V1    // 主缓存值
-    val joinKey: K2       // 关联键
-    val secondValue: V2?  // 关联缓存值（可能为 null）
-}
-```
-
-**源码参考**：[`cocache-api/.../join/JoinValue.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/join/JoinValue.kt)
-
-## CacheEvictedEventBus
-
-缓存失效事件总线，负责发布和订阅缓存失效事件。
-
-```kotlin
-interface CacheEvictedEventBus {
-    fun publish(event: CacheEvictedEvent)
-    fun register(subscriber: CacheEvictedSubscriber)
-    fun unregister(subscriber: CacheEvictedSubscriber)
-}
-```
-
-实现：
-
-| 实现类 | 说明 |
-|--------|------|
-| `GuavaCacheEvictedEventBus` | 进程内事件总线（基于 Guava EventBus） |
-| `RedisCacheEvictedEventBus` | 分布式事件总线（基于 Redis Pub/Sub） |
-| `NoOpCacheEvictedEventBus` | 空操作实现 |
-
-**源码参考**：[`cocache-core/.../CacheEvictedEventBus.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEventBus.kt)
-
-## KeyFilter
-
-键过滤器接口，用于防止缓存穿透。
-
-```kotlin
-interface KeyFilter {
-    fun notExist(key: String): Boolean
-}
-```
-
-| 实现类 | 说明 |
-|--------|------|
-| `BloomKeyFilter` | 基于 Guava 布隆过滤器 |
-| `NoOpKeyFilter` | 空操作（默认） |
-
-**源码参考**：[`cocache-core/.../KeyFilter.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/KeyFilter.kt)
-
-## KeyConverter&lt;K&gt;
-
-键转换器接口，将业务键转换为缓存字符串键。
-
-```kotlin
-fun interface KeyConverter<K> {
-    fun toStringKey(sourceKey: K): String
-}
-```
-
-| 实现类 | 说明 |
-|--------|------|
-| `ToStringKeyConverter` | 拼接前缀 + `toString()` |
-| `ExpKeyConverter` | SpEL 表达式支持 |
-
-**源码参考**：[`cocache-core/.../converter/KeyConverter.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/converter/KeyConverter.kt)
 
 ## 相关页面
 
-- [注解](./annotations.md) - 注解参考
-- [Spring 集成](./spring-integration.md) - Spring 集成
-- [架构概览](../architecture/index.md) - 整体架构
-- [缓存层级](../architecture/cache-layers.md) - 层级详解
+- [API 概览](./index.md) -- 架构概览和模块组织
+- [注解](./annotations.md) -- 完整的注解参考
+- [Spring 集成](./spring-integration.md) -- Spring 和 Spring Boot 集成 API
+- [Actuator 端点](./actuator.md) -- 监控和管理端点

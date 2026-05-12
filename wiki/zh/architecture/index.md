@@ -1,154 +1,204 @@
 ---
 title: 架构概览
-description: CoCache 系统架构概览，包括模块依赖关系、L0/L1/L2 三级缓存层级和关键设计决策。
+description: CoCache 高层架构 -- 面向 Java/Kotlin 的二级分布式一致性缓存框架。涵盖模块结构、依赖关系图、缓存层级和关键设计决策。
 ---
 
 # 架构概览
 
-CoCache 采用二级缓存架构（L2 -> L1 -> L0），通过事件总线实现跨实例的缓存一致性。本页面介绍系统的整体架构设计。
+CoCache 是一个面向 Java/Kotlin 的**二级分布式一致性缓存框架**。它实现了两级缓存架构，将快速的本地内存缓存（L2）与共享的分布式缓存（L1）以及上游数据源（L0）相结合。通过事件总线在缓存条目被修改时发布 `CacheEvictedEvent` 消息，维护跨应用实例的缓存一致性。
 
-## 系统架构
+## 模块依赖关系图
+
+项目组织为 10 个 Gradle 子模块，每个模块职责清晰：
+
+```mermaid
+graph TD
+    subgraph sg_10 ["Module Dependencies"]
+
+        api["cocache-api<br>Core interfaces"]
+        core["cocache-core<br>Default implementations"]
+        spring["cocache-spring<br>Spring integration"]
+        springCache["cocache-spring-cache<br>Spring Cache bridge"]
+        springRedis["cocache-spring-redis<br>Redis implementation"]
+        springBoot["cocache-spring-boot-starter<br>Auto-configuration"]
+        test["cocache-test<br>Shared test specs"]
+        bom["cocache-bom<br>Bill of Materials"]
+        deps["cocache-dependencies<br>Version catalog"]
+        example["cocache-example<br>Demo application"]
+    end
+
+    core --> api
+    spring --> core
+    springCache --> core
+    springRedis --> core
+    springRedis --> spring
+    springBoot --> spring
+    springBoot --> springCache
+    springBoot --> springRedis
+    test --> core
+    example --> springBoot
+
+    style api fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style spring fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style springCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style springRedis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style springBoot fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style test fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style bom fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style deps fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style example fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+
+```
+
+依赖流严格分层：`cocache-api` 在底层定义接口，`cocache-core` 提供实现，`cocache-spring` 添加 Spring Framework 集成，`cocache-spring-redis` / `cocache-spring-boot-starter` 位于顶层用于生产使用。
+
+## 高层系统架构
+
+CoCache 将缓存组织为三个层级：
 
 ```mermaid
 graph TB
-    subgraph sg_119 ["应用层"]
-        APP["应用代码"] --> CacheInterface["Cache&lt;K, V&gt; 接口"]
-        CacheInterface --> Proxy["JDK 动态代理"]
+    subgraph sg_11 ["Application Layer"]
+
+        App["Application Code"]
+        Proxy["Cache Proxy<br>JDK Dynamic Proxy"]
     end
 
-    subgraph sg_120 ["一致性层"]
-        Proxy --> CoherentCache["DefaultCoherentCache"]
-        CoherentCache --> EventBus["CacheEvictedEventBus"]
+    subgraph sg_12 ["Coherent Cache - DefaultCoherentCache"]
+
+        L2["L2: ClientSideCache<br>Guava / Caffeine / Map"]
+        KF["KeyFilter<br>Bloom Filter"]
+        L1["L1: DistributedCache<br>Redis"]
+        Lock["Fine-Grained Lock<br>ConcurrentHashMap"]
+        L0["L0: CacheSource<br>DataSource / DB"]
     end
 
-    subgraph sg_121 ["缓存层"]
-        CoherentCache --> L2["L2: ClientSideCache"]
-        CoherentCache --> L1["L1: DistributedCache"]
-        CoherentCache --> L0["L0: CacheSource"]
-        CoherentCache --> KF["KeyFilter"]
-        CoherentCache --> KC["KeyConverter"]
+    subgraph sg_13 ["Coherence Layer"]
+
+        EventBus["CacheEvictedEventBus<br>Guava EventBus / Redis Pub/Sub"]
+        Subscriber["CacheEvictedSubscriber<br>Other Instances"]
     end
 
-    subgraph sg_122 ["L2 实现"]
-        L2 --> Guava["GuavaClientSideCache"]
-        L2 --> Caffeine["CaffeineClientSideCache"]
-        L2 --> Map["MapClientSideCache"]
-    end
+    App --> Proxy
+    Proxy --> L2
+    L2 -->|miss| KF
+    KF -->|may exist| L1
+    L1 -->|miss| Lock
+    Lock -->|acquired| L0
+    L0 -->|loaded| L1
+    L1 -->|cached| L2
 
-    subgraph sg_123 ["L1 实现"]
-        L1 --> Redis["RedisDistributedCache"]
-    end
+    L2 -.->|evict/set| EventBus
+    EventBus -.->|notify| Subscriber
+    Subscriber -.->|evict L2| L2
 
-    subgraph sg_124 ["EventBus 实现"]
-        EventBus --> GuavaEB["GuavaCacheEvictedEventBus"]
-        EventBus --> RedisEB["RedisCacheEvictedEventBus"]
-    end
-
-    style CoherentCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style App fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style KF fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style Lock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style EventBus fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style APP fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Guava fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Caffeine fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Map fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style GuavaEB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style RedisEB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style KF fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style KC fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style Subscriber fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+
 ```
 
-## 模块依赖关系
+| 层级 | 名称 | 职责 | 接口 | 主要实现 |
+|------|------|------|------|----------|
+| L0 | CacheSource | 上游数据源（DataSource/DB） | [`CacheSource<K, V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/source/CacheSource.kt#L24) | `NoOpCacheSource`，自定义实现 |
+| L1 | DistributedCache | 共享分布式缓存 | [`DistributedCache<V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/distributed/DistributedCache.kt#L22) | [`RedisDistributedCache`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt#L28) |
+| L2 | ClientSideCache | 本地内存缓存 | [`ClientSideCache<V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/client/ClientSideCache.kt#L22) | `MapClientSideCache`、`GuavaClientSideCache`、`CaffeineClientSideCache` |
+
+## 缓存读取路径
+
+读取路径按照 L2 -> KeyFilter -> L1 -> Lock -> L0 流转，配合多种优化策略：
 
 ```mermaid
-graph LR
-    API["cocache-api"] --> Core["cocache-core"]
-    Core --> Spring["cocache-spring"]
-    Spring --> Redis["cocache-spring-redis"]
-    Spring --> Starter["cocache-spring-boot-starter"]
-    Spring --> Cache["cocache-spring-cache"]
-    Core --> Test["cocache-test"]
+sequenceDiagram
+autonumber
+    participant App as Application
+    participant CC as DefaultCoherentCache
+    participant L2 as ClientSideCache
+    participant KF as KeyFilter
+    participant L1 as DistributedCache
+    participant L0 as CacheSource
+    participant EB as Event Bus
 
-    style API fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Spring fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Starter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Test fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    App->>CC: getCache(key)
+    CC->>L2: getCache(cacheKey)
+    L2-->>CC: cacheValue (hit)
+    CC-->>App: cacheValue
+
+    Note over App,EB: If L2 miss, continue...
+    CC->>L2: getCache(cacheKey)
+    L2-->>CC: null (miss)
+
+    alt Key says not exist
+        CC->>KF: notExist(cacheKey)
+        KF-->>CC: true
+        CC-->>App: missingGuard (prevents penetration)
+    end
+
+    CC->>L1: getCache(cacheKey)
+    L1-->>CC: cacheValue
+    CC->>L2: setCache(cacheKey, cacheValue)
+    CC-->>App: cacheValue
+
+    Note over App,EB: If L1 miss, acquire lock and load from L0...
+    CC->>CC: synchronized(lock) [fine-grained]
+    CC->>L2: getCache(cacheKey) [double-check]
+    L2-->>CC: null
+    CC->>L1: getCache(cacheKey) [double-check]
+    L1-->>CC: null
+    CC->>L0: loadCacheValue(key)
+    L0-->>CC: cacheValue
+    CC->>L2: setCache(cacheKey, cacheValue)
+    CC->>L1: setCache(cacheKey, cacheValue)
+    CC->>EB: publish(CacheEvictedEvent)
+    CC-->>App: cacheValue
 ```
-
-| 模块 | 职责 |
-|------|------|
-| **cocache-api** | 核心接口定义（`Cache`, `CacheValue`, `ClientSideCache`, `CacheSource`, `JoinCache`） |
-| **cocache-core** | 默认实现（`DefaultCoherentCache`、代理机制、事件总线、键转换器） |
-| **cocache-spring** | Spring 集成（`@EnableCoCache`、FactoryBean、Spring 工厂） |
-| **cocache-spring-redis** | Redis 实现（`RedisDistributedCache`、`RedisCacheEvictedEventBus`） |
-| **cocache-spring-boot-starter** | Spring Boot 自动配置、Actuator 端点 |
-| **cocache-spring-cache** | Spring Cache 抽象桥接（`CoCacheManager`） |
-| **cocache-test** | 共享测试规范（`CacheSpec`、`DistributedCacheSpec` 等） |
-
-## 三级缓存层级
-
-### L0 - 数据源层（CacheSource）
-
-`CacheSource<K, V>` 接口代表最终数据来源，通常是数据库或其他持久化存储。当 L1 和 L2 均未命中时，框架通过 `CacheSource.loadCacheValue()` 加载数据。
-
-- 通过 `MissingGuard` 机制防止缓存穿透（缓存空值）
-- 通过 `KeyFilter`（布隆过滤器）预过滤不存在的键
-
-**源码参考**：[`cocache-api/.../source/CacheSource.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/source/CacheSource.kt)
-
-### L1 - 分布式缓存层（DistributedCache）
-
-`DistributedCache<V>` 接口代表跨实例共享的缓存层。默认实现为 `RedisDistributedCache`，使用 Redis 作为存储。
-
-- 支持 TTL 和 TTL 抖动
-- 通过 `CodecExecutor` 支持多种序列化格式（JSON、Hash、Set 等）
-
-**源码参考**：[`cocache-core/.../distributed/DistributedCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/distributed/DistributedCache.kt)
-
-### L2 - 客户端缓存层（ClientSideCache）
-
-`ClientSideCache<V>` 接口代表本地内存缓存，提供最快的访问速度。
-
-| 实现 | 说明 |
-|------|------|
-| `GuavaClientSideCache` | 基于 Google Guava Cache |
-| `CaffeineClientSideCache` | 基于 Caffeine Cache（高性能） |
-| `MapClientSideCache` | 基于 ConcurrentHashMap（轻量级） |
-
-**源码参考**：[`cocache-api/.../client/ClientSideCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/client/ClientSideCache.kt)
 
 ## 关键设计决策
 
-### 1. 接口驱动设计
+### 1. 细粒度锁
 
-所有缓存层级均通过接口定义，支持多种实现的灵活替换。核心接口位于 `cocache-api` 模块，与具体实现解耦。
+CoCache 不对整个缓存实例进行同步，而是使用存储在 [`ConcurrentHashMap<String, Any>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L47) 中的逐键锁。这可以防止缓存击穿（"惊群效应"问题），同时允许对不同键的并发访问。
 
-### 2. 代理模式
+### 2. Missing Guard（缓存穿透防护）
 
-通过 JDK 动态代理为缓存接口创建实现，开发者只需定义接口和注解，框架自动生成完整的缓存管理逻辑。
+当缓存源返回 `null`（键在数据库中不存在）时，CoCache 存储一个特殊的 `missingGuard` 缓存值，而不是让键保持空缺。这防止了对不存在键的重复数据库查询 -- 即广为人知的缓存穿透问题。`KeyFilter` 接口（布隆过滤器适配器）通过在任何缓存查找之前拒绝已知不存在的键，提供了额外的防御层。
 
 ### 3. 事件驱动一致性
 
-使用观察者模式（EventBus）实现跨实例缓存失效。当一个实例修改缓存时，通过 `CacheEvictedEventBus` 发布事件，其他实例订阅事件后自动失效本地缓存。
+CoCache 不依赖 TTL 过期来最终同步各实例间的缓存，而是通过 `CacheEvictedEventBus` 主动发布 `CacheEvictedEvent`。每个 `DefaultCoherentCache` 订阅这些事件，当对等实例修改了相同键时驱逐其本地 L2 缓存。自发布事件会被过滤掉以避免冗余的本地驱逐。详情请参见[缓存一致性](./coherence.md)。
 
-### 4. 细粒度锁
+### 4. 基于代理的声明式缓存
 
-`DefaultCoherentCache` 使用 `ConcurrentHashMap<String, Any>` 实现逐键锁，避免全局锁导致的性能瓶颈。只有在缓存未命中时才加锁，并使用双重检查模式。
+缓存接口被声明为带有 `@CoCache` 注解的 Kotlin/Java 接口。在应用启动时，`EnableCoCacheRegistrar` 解析这些注解，构建 `CoCacheMetadata`，并创建由 `DefaultCoherentCache` 实例支撑的 JDK 动态代理。这使得缓存配置完全声明式。详情请参见[代理与注解](./proxy.md)。
 
-### 5. 缓存穿透防护
+### 5. 带振幅的 TTL
 
-- **MissingGuard**：缓存特殊空值标记（`_nil_`），防止对同一不存在的键反复查询数据源
-- **KeyFilter**：布隆过滤器预判键是否存在，完全避免对数据源的无效访问
+每个缓存条目都带有 TTL 加上一个随机的 `ttlAmplitude` 偏移。这种抖动可以防止大量条目同时过期（"缓存雪崩"问题）。振幅以 `[-ttlAmplitude, +ttlAmplitude]` 范围内的随机值添加。
+
+## 源码参考
+
+| 文件 | 行号 | 说明 |
+|------|------|------|
+| [`settings.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/settings.gradle.kts#L1) | 1-11 | 模块声明 |
+| [`build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L1) | 1-219 | 根构建配置，JDK 17，Kotlin 编译器标志 |
+| [`cocache-api/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/build.gradle.kts#L1) | 1 | 无外部依赖（纯接口） |
+| [`cocache-core/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/build.gradle.kts#L1) | 1-12 | 依赖 `cocache-api`、Guava、Caffeine（compile-only） |
+| [`cocache-spring/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/build.gradle.kts#L1) | 1-3 | 依赖 `cocache-core`、Spring Context |
+| [`cocache-spring-redis/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/build.gradle.kts#L1) | 1-10 | 依赖 `cocache-core`、`cocache-spring`、Jackson、Spring Data Redis |
+| [`cocache-spring-boot-starter/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/build.gradle.kts#L1) | 1-30 | 依赖 `cocache-spring`、`cocache-spring-cache`、`cocache-spring-redis`、Spring Boot |
+| [`DefaultCoherentCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L30) | 30-186 | 核心一致性缓存实现 |
+| [`CoherentCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCache.kt#L25) | 25-32 | CoherentCache 接口定义 |
+| [`CoherentCacheConfiguration.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCacheConfiguration.kt#L26) | 26-34 | 带默认值的配置数据类 |
 
 ## 相关页面
 
-- [缓存层级](./cache-layers.md) - L0/L1/L2 详细说明
-- [一致性与事件总线](./coherence.md) - 缓存一致性机制
-- [代理与注解](./proxy.md) - 代理创建流程
-- [模块概览](../modules/index.md) - 各模块详细说明
+- [缓存层级详解](./cache-layers.md) -- L0、L1、L2 层级详情和读取/写入/驱逐路径
+- [缓存一致性与事件总线](./coherence.md) -- 通过 CacheEvictedEventBus 实现分布式失效
+- [代理与注解](./proxy.md) -- 使用 @CoCache 和 JDK 动态代理的声明式缓存
