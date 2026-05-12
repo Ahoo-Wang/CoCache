@@ -317,17 +317,6 @@ graph TB
     CPF --> PROXY
     JCPF --> PROXY
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
-    linkStyle 9 stroke:#8b949e
-    linkStyle 10 stroke:#8b949e
 ```
 
 ## Complete Example

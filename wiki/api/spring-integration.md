@@ -62,20 +62,6 @@ graph TB
     SKCF --> ACF
     SCSrcF --> ACF
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
-    linkStyle 9 stroke:#8b949e
-    linkStyle 10 stroke:#8b949e
-    linkStyle 11 stroke:#8b949e
-    linkStyle 12 stroke:#8b949e
-    linkStyle 13 stroke:#8b949e
 ```
 
 ## Factory Beans
@@ -421,16 +407,6 @@ graph TB
     KCF --> CPF
     SCF --> CCM
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
-    linkStyle 9 stroke:#8b949e
 ```
 
 ## Related Pages

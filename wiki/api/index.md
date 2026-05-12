@@ -131,15 +131,6 @@ graph TB
     L1 -- "evict event" --> EventBus
     EventBus -- "invalidate" --> L2
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
 ```
 
 ## Key Packages
@@ -240,11 +231,6 @@ graph LR
     Bus -->|"onEvicted(event)"| B_Coherent
     B_Coherent -->|"evict(key)"| B_L2
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
 ```
 
 ## Factory Pattern

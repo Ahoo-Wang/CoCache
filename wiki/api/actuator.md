@@ -240,19 +240,6 @@ graph TB
     CEP -- "get" --> L2
     CEP -- "clear" --> L2
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
-    linkStyle 9 stroke:#8b949e
-    linkStyle 10 stroke:#8b949e
-    linkStyle 11 stroke:#8b949e
-    linkStyle 12 stroke:#8b949e
 ```
 
 ## Endpoint Operations Summary
@@ -284,13 +271,6 @@ graph LR
     OP6 -->|"CacheValue<*>?"| R6["JSON response"]
     OP7 -->|"void"| R7["Cleared"]
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
 ```
 
 ## CoherentCache vs Client Endpoint Usage
