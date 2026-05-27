@@ -1,5 +1,14 @@
 # Custom Cache Implementations
 
+## Contents
+
+- [Custom ClientSideCache](#custom-clientsidecache)
+- [Custom DistributedCache](#custom-distributedcache)
+- [Custom CacheEvictedEventBus](#custom-cacheevictedeventbus)
+- [Custom KeyConverter](#custom-keyconverter)
+- [Custom CacheSource](#custom-cachesource)
+- [Registering Custom Implementations](#registering-custom-implementations)
+
 This guide covers creating custom implementations of CoCache's core interfaces: `ClientSideCache`, `DistributedCache`, and `CacheEvictedEventBus`.
 
 ## Custom ClientSideCache
@@ -31,7 +40,7 @@ class RedissonClientSideCache<V>(
 
     override fun getCache(key: String): CacheValue<V>? {
         val cacheValue = cache[key] ?: return null
-        if (cacheValue.isExpired()) {
+        if (cacheValue.isExpired) {
             cache.remove(key)
             return null
         }
@@ -43,7 +52,7 @@ class RedissonClientSideCache<V>(
     }
 
     override fun set(key: String, value: V) {
-        setCache(key, DefaultCacheValue(value))
+        setCache(key, DefaultCacheValue.forever(value))
     }
 
     override fun set(key: String, ttlAt: Long, value: V) {
@@ -51,27 +60,26 @@ class RedissonClientSideCache<V>(
     }
 
     override fun setCache(key: String, cacheValue: CacheValue<V>) {
-        if (cacheValue.isMissingGuard) {
-            cache[key] = cacheValue
-        } else {
-            val ttl = cacheValue.ttlAt - System.currentTimeMillis() / 1000
-            if (ttl > 0) {
-                cache.put(key, cacheValue, ttl, TimeUnit.SECONDS)
-            }
+        if (cacheValue.isExpired) {
+            return
         }
+        if (cacheValue.isForever) {
+            cache[key] = cacheValue
+            return
+        }
+
+        val ttlSeconds = cacheValue.expiredDuration.seconds
+        if (ttlSeconds <= 0) {
+            return
+        }
+        cache.put(key, cacheValue, ttlSeconds, TimeUnit.SECONDS)
     }
 
     override fun evict(key: String) {
         cache.remove(key)
     }
 
-    override fun clear() {
-        cache.clear()
-    }
-
-    private fun CacheValue<V>.isExpired(): Boolean {
-        return ttlAt < System.currentTimeMillis() / 1000
-    }
+    override fun clear() = cache.clear()
 }
 ```
 
@@ -86,8 +94,8 @@ class RedissonClientSideCacheTest : ClientSideCacheSpec<String>() {
         return RedissonClientSideCache(Redisson.create().getMapCache("test"))
     }
 
-    override fun createCacheEntry(): CacheValue<String> {
-        return DefaultCacheValue("test_value")
+    override fun createCacheEntry(): Pair<String, String> {
+        return UUID.randomUUID().toString() to "test_value"
     }
 }
 ```
@@ -116,7 +124,9 @@ interface DistributedCache<V> : ComputedCache<String, V>, AutoCloseable {
 class MemcachedDistributedCache<V>(
     private val cacheName: String,
     private val client: MemcachedClient,
-    private val codec: Codec<V>
+    private val codec: Codec<V>,
+    override val ttl: Long = CoCache.DEFAULT_TTL,
+    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
 ) : DistributedCache<V> {
 
     private val keyPrefix = "$cacheName:"
@@ -131,7 +141,7 @@ class MemcachedDistributedCache<V>(
     }
 
     override fun set(key: String, value: V) {
-        setCache(key, DefaultCacheValue(value))
+        setCache(key, DefaultCacheValue.forever(value))
     }
 
     override fun set(key: String, ttlAt: Long, value: V) {
@@ -139,10 +149,19 @@ class MemcachedDistributedCache<V>(
     }
 
     override fun setCache(key: String, cacheValue: CacheValue<V>) {
-        val ttl = (cacheValue.ttlAt - System.currentTimeMillis() / 1000).toInt()
-        if (ttl > 0) {
-            client.set("$keyPrefix$key", ttl, codec.encode(cacheValue))
+        if (cacheValue.isExpired) {
+            return
         }
+        if (cacheValue.isForever) {
+            client.set("$keyPrefix$key", 0, codec.encode(cacheValue))
+            return
+        }
+
+        val ttlSeconds = cacheValue.expiredDuration.seconds.toInt()
+        if (ttlSeconds <= 0) {
+            return
+        }
+        client.set("$keyPrefix$key", ttlSeconds, codec.encode(cacheValue))
     }
 
     override fun evict(key: String) {
@@ -166,8 +185,8 @@ class MemcachedDistributedCacheTest : DistributedCacheSpec<String>() {
         return MemcachedDistributedCache("test", memcachedClient, StringCodec())
     }
 
-    override fun createCacheEntry(): CacheValue<String> {
-        return DefaultCacheValue("test_value")
+    override fun createCacheEntry(): Pair<String, String> {
+        return UUID.randomUUID().toString() to "test_value"
     }
 }
 ```
@@ -192,7 +211,7 @@ interface CacheEvictedEventBus {
 data class CacheEvictedEvent(
     val cacheName: String,    // which cache was evicted
     val key: String,          // the evicted key
-    val clientId: String      // which instance performed the eviction
+    val publisherId: String   // which instance performed the eviction
 )
 ```
 
@@ -257,8 +276,8 @@ class KafkaCacheEvictedEventBusTest : CacheEvictedEventBusSpec() {
 ### Interface
 
 ```kotlin
-interface KeyConverter<K> {
-    fun asKey(key: K): String
+fun interface KeyConverter<K> {
+    fun toStringKey(sourceKey: K): String
 }
 ```
 
@@ -275,10 +294,10 @@ class CompositeKeyConverter<K>(
     private val separator: String = ":"
 ) : KeyConverter<K> {
 
-    override fun asKey(key: K): String {
-        return when (key) {
-            is Pair<*, *> -> "$prefix${key.first}$separator${key.second}"
-            else -> "$prefix$key"
+    override fun toStringKey(sourceKey: K): String {
+        return when (sourceKey) {
+            is Pair<*, *> -> "$prefix${sourceKey.first}$separator${sourceKey.second}"
+            else -> "$prefix$sourceKey"
         }
     }
 }
@@ -303,12 +322,14 @@ interface CacheSource<K, V> {
 ### Implementation Patterns
 
 ```kotlin
-// Pattern 1: Using CacheSource functional interface
+// Pattern 1: Inline CacheSource implementation
 @Bean("UserCache.CacheSource")
 fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> {
-    return CacheSource { key ->
-        userRepository.findById(key).orElse(null)?.let {
-            DefaultCacheValue(it, ttl = 300)  // 5 min TTL
+    return object : CacheSource<String, User> {
+        override fun loadCacheValue(key: String): CacheValue<User>? {
+            return userRepository.findById(key).orElse(null)?.let {
+                DefaultCacheValue.ttlAt(it, ttl = 300)  // 5 min TTL
+            }
         }
     }
 }
@@ -322,10 +343,10 @@ class UserServiceCacheSource(
     override fun loadCacheValue(key: String): CacheValue<User>? {
         return try {
             val user = userService.findById(key)
-            user?.let { DefaultCacheValue(it) }
+            user?.let { DefaultCacheValue.forever(it) }
         } catch (e: Exception) {
-            // Return missing guard to prevent cache penetration
-            DefaultCacheValue.missingGuard()
+            // Use a short-lived missing guard for transient failures.
+            DefaultCacheValue.missingGuard<CacheValue<User>>(ttl = 30)
         }
     }
 }

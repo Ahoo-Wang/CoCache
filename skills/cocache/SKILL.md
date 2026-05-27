@@ -1,156 +1,67 @@
 ---
 name: cocache
-description: Use when building Spring Boot applications with CoCache distributed caching. Invoke whenever the user mentions CoCache, coherent cache, two-level cache, L2 cache, distributed cache coherence, @CoCache, @JoinCacheable, cache proxy, or wants to set up caching with Redis + local cache in a Java/Kotlin project. Also triggers on cache stampede prevention, cache breakdown protection, or event-driven cache invalidation.
+description: Use when building or modifying Java/Kotlin applications with CoCache two-level distributed coherent caching. Invoke for @CoCache cache interfaces, @JoinCacheable composition, Redis-backed coherence, Spring Boot integration, cache proxy behavior, custom cache backends, cache breakdown protection, or CoCache TCK tests.
 ---
 
 # CoCache Development Guide
 
-CoCache is a Level 2 Distributed Coherence Cache Framework for Java/Kotlin. It provides a two-level caching architecture:
-- **L2 (Client-side)**: Local in-memory cache (Map/Guava/Caffeine)
-- **L1 (Distributed)**: Shared cache layer (Redis)
+CoCache is a Java/Kotlin two-level distributed coherent cache framework:
+- L2 client-side cache: local Map, Guava, or Caffeine cache.
+- L1 distributed cache: Redis-backed shared cache.
+- Coherence: `CacheEvictedEventBus` publishes evictions so peer instances invalidate local entries.
 
-Cache coherence is maintained via an event bus that publishes `CacheEvictedEvent` when entries change, invalidating local caches across all instances.
+## Start Here
 
-## Quick Start
+Choose the smallest reference that fits the request:
 
-To add CoCache to a Spring Boot project, read `references/setup.md`.
+| Task | Read |
+|------|------|
+| Add CoCache to a Spring or Spring Boot app | `references/setup.md` |
+| Compose cached values with `@JoinCacheable` | `references/join-cache.md` |
+| Write or update tests | `references/testing.md` |
+| Implement a custom L1/L2 cache, event bus, key converter, or source | `references/custom-implementation.md` |
 
-## Core Concept: Cache Interfaces
+## Repository Rules
 
-CoCache uses a proxy-based approach. You define a **cache interface** extending `Cache<K, V>`, annotate it, and CoCache generates the implementation at runtime. This is the primary way to use the library.
+When editing this repository, follow `AGENTS.md`:
+- Use `me.ahoo.test.asserts.assert` and `.assert()` in Kotlin tests; do not use AssertJ `assertThat()`.
+- Extend the TCK specs in `cocache-test` for cache implementations.
+- Ask before changing `cocache-api` public interfaces or adding dependencies.
+- Run the relevant Gradle checks before finishing; prefer `./gradlew check` for broad changes.
 
-### Creating a Cache Interface
+## Core Model
+
+Define one cache interface per cache domain. The interface extends `Cache<K, V>`, is annotated with `@CoCache`, and is registered through `@EnableCoCache`. CoCache creates a proxy at runtime.
 
 ```kotlin
 @CoCache(keyPrefix = "user:", ttl = 120)
 @GuavaCache(maximumSize = 1_000_000, expireAfterAccess = 120, expireUnit = TimeUnit.SECONDS)
 interface UserCache : Cache<String, User>
-```
 
-Then register it:
-
-```kotlin
 @SpringBootApplication
 @EnableCoCache(caches = [UserCache::class])
 class App
 ```
 
-The proxy object injected into your code is **both** the `UserCache` interface and a `CoherentCache`, so you can cast to `CoherentCache` if you need access to internals like `clientSideCache.size`.
+Use caches through Kotlin operators: `cache[key]`, `cache[key] = value`, `cache.evict(key)`, and `cache.getCache(key)` when `CacheValue` metadata is required.
 
-### Using a Cache
+## Extension Points
 
-```kotlin
-@Service
-class UserService(@Qualifier("userCache") private val userCache: UserCache) {
+CoCache auto-configures defaults, but each component can be overridden:
+- Per cache, define named beans such as `UserCache.CacheSource`, `UserCache.ClientSideCache`, `UserCache.KeyConverter`, or `UserCache.JoinKeyExtractor`.
+- Globally, define beans by type; auto-configured beans use `@ConditionalOnMissingBean`.
+- For data loading, implement `CacheSource<K, V>.loadCacheValue(key)` and return `DefaultCacheValue.forever(value)`, `DefaultCacheValue.ttlAt(value, ttl)`, or bounded `DefaultCacheValue.missingGuard(ttl, amplitude)` values.
 
-    fun getUser(id: String): User? {
-        return userCache[id]              // CacheGetter operator
-    }
+## Testing Pattern
 
-    fun saveUser(user: User) {
-        userCache[user.id] = user         // CacheSetter operator
-    }
+CoCache provides abstract specs in `cocache-test` for compatibility coverage:
+- `CacheSpec<K,V>` for base cache behavior.
+- `ClientSideCacheSpec<V>` for L2 caches.
+- `DistributedCacheSpec<V>` for L1 caches.
+- `DefaultCoherentCacheSpec<K,V>` for two-level coherent cache behavior and cache breakdown protection.
+- `MultipleInstanceSyncSpec<K,V>` and `CacheEvictedEventBusSpec` for cross-instance coherence and event buses.
 
-    fun deleteUser(id: String) {
-        userCache.evict(id)
-    }
-}
-```
-
-### @CoCache Annotation Reference
-
-| Property | Default | Description |
-|----------|---------|-------------|
-| `name` | interface simpleName | Cache bean name |
-| `keyPrefix` | `""` | Prefix prepended to all cache keys |
-| `keyExpression` | `""` | SpEL expression for key derivation |
-| `ttl` | `Long.MAX_VALUE` | TTL in seconds (forever by default) |
-| `ttlAmplitude` | `10` | Random TTL variance to prevent thundering herd |
-
-### @GuavaCache / @CaffeineCache Annotation Reference
-
-| Property | Default | Description |
-|----------|---------|-------------|
-| `initialCapacity` | `-1` (unset) | Initial capacity |
-| `maximumSize` | `-1` (unset) | Maximum entries |
-| `expireUnit` | `SECONDS` | Time unit for expiry values |
-| `expireAfterWrite` | `-1` (unset) | Expire after write duration |
-| `expireAfterAccess` | `-1` (unset) | Expire after access duration |
-| `concurrencyLevel` | `-1` (Guava only) | Concurrency level |
-
-## Customizing Cache Behavior
-
-CoCache auto-configures defaults, but every component can be overridden via Spring beans.
-
-### Per-Cache Bean Naming Convention
-
-For a cache named `UserCache`, define beans with these names:
-
-```kotlin
-@Bean("UserCache.CacheSource")
-fun userCacheSource(): CacheSource<String, User> {
-    return CacheSource { key ->
-        val user = userRepository.findById(key).orElse(null)
-        user?.let { DefaultCacheValue(it) }
-    }
-}
-
-@Bean("UserCache.ClientSideCache")
-fun userClientSideCache(): ClientSideCache<User> {
-    return CaffeineClientSideCache(
-        maximumSize = 500_000,
-        expireAfterAccess = Duration.ofSeconds(60)
-    )
-}
-```
-
-Available suffixes: `.ClientSideCache`, `.CacheSource`, `.KeyConverter`, `.JoinKeyExtractor`
-
-### Global Bean Override
-
-Define beans by type to override defaults for all caches:
-
-```kotlin
-@Bean
-fun cacheEvictedEventBus(): CacheEvictedEventBus {
-    return GuavaCacheEvictedEventBus()  // single-instance, no Redis needed
-}
-```
-
-All auto-configured beans use `@ConditionalOnMissingBean`, so any bean you define takes precedence.
-
-## JoinCache: Composing Cached Values
-
-JoinCache composes two independent caches into one logical view. Read `references/join-cache.md` for the full guide.
-
-**Quick example:**
-
-```kotlin
-@CoCache(keyPrefix = "user:", ttl = 120)
-interface UserCache : Cache<String, User>
-
-@CoCache(keyPrefix = "user_ext:", ttl = 120)
-interface UserExtendInfoCache : Cache<String, UserExtendInfo>
-
-@JoinCacheable(
-    firstCacheName = "UserExtendInfoCache",
-    joinCacheName = "UserCache",
-    joinKeyExpression = "#{#root.userId}"
-)
-interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, User>
-```
-
-When you call `userExtendInfoJoinCache.get("extInfo123")`:
-1. Gets `UserExtendInfo` from `UserExtendInfoCache`
-2. Evaluates `#{#root.userId}` to extract the userId
-3. Gets `User` from `UserCache` by that userId
-4. Returns `JoinValue<UserExtendInfo, String, User>`
-
-## Writing Tests
-
-CoCache provides abstract test specs in `cocache-test` that verify cache contracts. Read `references/testing.md` for the full guide.
-
-**Key pattern:** Extend the appropriate spec and implement factory methods:
+Use the repo's `createCacheEntry(): Pair<K, V>` contract:
 
 ```kotlin
 class MyDistributedCacheTest : DistributedCacheSpec<String>() {
@@ -158,60 +69,13 @@ class MyDistributedCacheTest : DistributedCacheSpec<String>() {
         return MyDistributedCache()
     }
 
-    override fun createCacheEntry(): CacheValue<String> {
-        return DefaultCacheValue("test_value")
+    override fun createCacheEntry(): Pair<String, String> {
+        return UUID.randomUUID().toString() to "test_value"
     }
 }
 ```
 
-## Creating Custom Implementations
-
-To implement a custom `ClientSideCache`, `DistributedCache`, or `CacheEvictedEventBus`, read `references/custom-implementation.md`.
-
-## Spring Cache Bridge
-
-CoCache integrates with Spring's `@Cacheable` abstraction via `cocache-spring-cache`. When `@EnableCaching` is present, a `CoCacheManager` is auto-configured, allowing:
-
-```kotlin
-@Cacheable(cacheNames = ["userCache"])
-fun getUser(id: String): User? { ... }
-```
-
-This routes through CoCache's two-level cache automatically.
-
-## Actuator Endpoints
-
-When Spring Actuator is on the classpath:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/actuator/cocache` | GET | List all coherent caches |
-| `/actuator/cocache/{name}` | GET | Cache stats |
-| `/actuator/cocache/{name}/{key}` | GET | Get a cache entry |
-| `/actuator/cocache/{name}/{key}` | DELETE | Evict a cache entry |
-| `/actuator/cocacheClient` | GET | Client-side cache info |
-
-## Build Commands
-
-```bash
-# Build without tests
-./gradlew build -x test
-
-# Run all tests
-./gradlew test
-
-# Run tests for a specific module
-./gradlew :cocache-core:test
-
-# Run a single test class
-./gradlew :cocache-core:test --tests "me.ahoo.cache.proxy.ProxyCacheTest"
-
-# Run integration tests (requires Redis)
-./gradlew :cocache-spring-redis:check
-./gradlew :cocache-spring-boot-starter:check
-```
-
-## Key Classes Reference
+## Key Classes
 
 | Class | Module | Purpose |
 |-------|--------|---------|
@@ -231,3 +95,15 @@ When Spring Actuator is on the classpath:
 | `SimpleJoinCache` | cocache-core | Default JoinCache impl |
 | `KeyFilter` | cocache-core | Bloom filter for cache breakdown protection |
 | `BloomKeyFilter` | cocache-core | Guava BloomFilter impl |
+
+## Build Commands
+
+```bash
+./gradlew build -x test
+./gradlew test
+./gradlew :cocache-core:test
+./gradlew :cocache-core:test --tests "me.ahoo.cache.proxy.ProxyCacheTest"
+./gradlew :cocache-spring-redis:check
+./gradlew :cocache-spring-boot-starter:check
+./gradlew check
+```

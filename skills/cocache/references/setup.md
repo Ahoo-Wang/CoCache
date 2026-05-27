@@ -1,5 +1,17 @@
 # CoCache Project Setup Guide
 
+## Contents
+
+- [Dependencies](#dependencies)
+- [Module Selection](#module-selection)
+- [Minimal Configuration](#minimal-configuration)
+- [Step-by-Step Setup](#step-by-step-setup)
+- [Without Spring Boot](#without-spring-boot)
+- [Single-Instance Setup (No Redis)](#single-instance-setup-no-redis)
+- [Spring Cache Bridge](#spring-cache-bridge)
+- [Actuator Endpoints](#actuator-endpoints)
+- [Disabling CoCache](#disabling-cocache)
+
 ## Dependencies
 
 ### Gradle (Kotlin DSL)
@@ -109,8 +121,8 @@ That's it. CoCache auto-configures:
 plugins {
     id("org.springframework.boot") version "4.0.5"
     id("io.spring.dependency-management") version "1.1.7"
-    kotlin("jvm") version "2.1.20"
-    kotlin("plugin.spring") version "2.1.20"
+    kotlin("jvm") version "2.3.20"
+    kotlin("plugin.spring") version "2.3.20"
 }
 
 dependencies {
@@ -151,18 +163,22 @@ class CacheSourceConfig {
 
     @Bean("UserCache.CacheSource")
     fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> {
-        return CacheSource { key ->
-            userRepository.findById(key).orElse(null)?.let {
-                DefaultCacheValue(it)
+        return object : CacheSource<String, User> {
+            override fun loadCacheValue(key: String): CacheValue<User>? {
+                return userRepository.findById(key).orElse(null)?.let {
+                    DefaultCacheValue.forever(it)
+                }
             }
         }
     }
 
     @Bean("ProductCache.CacheSource")
     fun productCacheSource(productRepository: ProductRepository): CacheSource<String, Product> {
-        return CacheSource { key ->
-            productRepository.findById(key).orElse(null)?.let {
-                DefaultCacheValue(it)
+        return object : CacheSource<String, Product> {
+            override fun loadCacheValue(key: String): CacheValue<Product>? {
+                return productRepository.findById(key).orElse(null)?.let {
+                    DefaultCacheValue.forever(it)
+                }
             }
         }
     }
@@ -198,18 +214,43 @@ For plain Spring projects, use `cocache-spring` directly:
 class CacheConfig {
 
     @Bean
-    fun distributedCache(): DistributedCache<String> {
-        return RedisDistributedCache("user", redisTemplate)
+    fun distributedCache(
+        redisTemplate: StringRedisTemplate,
+        objectMapper: ObjectMapper
+    ): DistributedCache<User> {
+        val codecExecutor = ObjectToJsonCodecExecutor<User>(
+            User::class.java,
+            redisTemplate,
+            objectMapper
+        )
+        return RedisDistributedCache(redisTemplate, codecExecutor)
     }
 
     @Bean
     fun clientSideCache(): ClientSideCache<User> {
-        return GuavaClientSideCache(maximumSize = 100_000)
+        return CaffeineClientSideCache(
+            Caffeine.newBuilder()
+                .maximumSize(100_000)
+                .expireAfterAccess(Duration.ofMinutes(30))
+                .build<String, CacheValue<User>>()
+        )
     }
 
     @Bean
-    fun cacheEvictedEventBus(): CacheEvictedEventBus {
-        return RedisCacheEvictedEventBus(redisTemplate)
+    fun redisMessageListenerContainer(
+        redisConnectionFactory: RedisConnectionFactory
+    ): RedisMessageListenerContainer {
+        return RedisMessageListenerContainer().apply {
+            setConnectionFactory(redisConnectionFactory)
+        }
+    }
+
+    @Bean
+    fun cacheEvictedEventBus(
+        redisTemplate: StringRedisTemplate,
+        redisMessageListenerContainer: RedisMessageListenerContainer
+    ): CacheEvictedEventBus {
+        return RedisCacheEvictedEventBus(redisTemplate, redisMessageListenerContainer)
     }
 }
 ```
@@ -230,12 +271,37 @@ class MyApp {
 
     @Bean
     fun distributedCache(): DistributedCache<User> {
-        return MapClientSideCache<User>()  // use local map as "distributed" cache
+        return MockDistributedCache<User>()  // in-memory distributed layer for development/testing
     }
 }
 ```
 
 Note: This loses cross-instance coherence. Only use for development/testing.
+
+## Spring Cache Bridge
+
+`cocache-spring-cache` integrates CoCache with Spring's `@Cacheable` abstraction. When `@EnableCaching` is present, CoCache can auto-configure `CoCacheManager`:
+
+```kotlin
+@Cacheable(cacheNames = ["userCache"])
+fun getUser(id: String): User? {
+    return userRepository.findById(id).orElse(null)
+}
+```
+
+The call routes through CoCache's two-level cache.
+
+## Actuator Endpoints
+
+When Spring Actuator is on the classpath:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/actuator/cocache` | GET | List all coherent caches |
+| `/actuator/cocache/{name}` | GET | Cache stats |
+| `/actuator/cocache/{name}/{key}` | GET | Get a cache entry |
+| `/actuator/cocache/{name}/{key}` | DELETE | Evict a cache entry |
+| `/actuator/cocacheClient` | GET | Client-side cache info |
 
 ## Disabling CoCache
 
