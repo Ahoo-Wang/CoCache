@@ -148,7 +148,15 @@ class MemcachedDistributedCache<V>(
         if (cacheValue.isExpired) {
             return
         }
-        val ttlSeconds = if (cacheValue.isForever) 0 else cacheValue.expiredDuration.seconds.toInt()
+        if (cacheValue.isForever) {
+            client.set("$keyPrefix$key", 0, codec.encode(cacheValue))
+            return
+        }
+
+        val ttlSeconds = cacheValue.expiredDuration.seconds.toInt()
+        if (ttlSeconds <= 0) {
+            return
+        }
         client.set("$keyPrefix$key", ttlSeconds, codec.encode(cacheValue))
     }
 
