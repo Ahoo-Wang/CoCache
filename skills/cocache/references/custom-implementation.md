@@ -63,12 +63,16 @@ class RedissonClientSideCache<V>(
         if (cacheValue.isExpired) {
             return
         }
-        if (cacheValue.isForever || cacheValue.isMissingGuard) {
+        if (cacheValue.isForever) {
             cache[key] = cacheValue
             return
         }
 
-        cache.put(key, cacheValue, cacheValue.expiredDuration.seconds, TimeUnit.SECONDS)
+        val ttlSeconds = cacheValue.expiredDuration.seconds
+        if (ttlSeconds <= 0) {
+            return
+        }
+        cache.put(key, cacheValue, ttlSeconds, TimeUnit.SECONDS)
     }
 
     override fun evict(key: String) {
@@ -341,8 +345,8 @@ class UserServiceCacheSource(
             val user = userService.findById(key)
             user?.let { DefaultCacheValue.forever(it) }
         } catch (e: Exception) {
-            // Return missing guard to prevent cache penetration
-            DefaultCacheValue.missingGuard()
+            // Use a short-lived missing guard for transient failures.
+            DefaultCacheValue.missingGuard<CacheValue<User>>(ttl = 30)
         }
     }
 }

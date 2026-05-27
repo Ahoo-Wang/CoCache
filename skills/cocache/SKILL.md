@@ -50,7 +50,7 @@ Use caches through Kotlin operators: `cache[key]`, `cache[key] = value`, `cache.
 CoCache auto-configures defaults, but each component can be overridden:
 - Per cache, define named beans such as `UserCache.CacheSource`, `UserCache.ClientSideCache`, `UserCache.KeyConverter`, or `UserCache.JoinKeyExtractor`.
 - Globally, define beans by type; auto-configured beans use `@ConditionalOnMissingBean`.
-- For data loading, implement `CacheSource<K, V>.loadCacheValue(key)` and return `DefaultCacheValue.forever(value)`, `DefaultCacheValue.ttlAt(value, ttl)`, or `DefaultCacheValue.missingGuard()`.
+- For data loading, implement `CacheSource<K, V>.loadCacheValue(key)` and return `DefaultCacheValue.forever(value)`, `DefaultCacheValue.ttlAt(value, ttl)`, or bounded `DefaultCacheValue.missingGuard(ttl, amplitude)` values.
 
 ## Testing Pattern
 
