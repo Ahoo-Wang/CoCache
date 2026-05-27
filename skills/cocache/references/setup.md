@@ -214,13 +214,26 @@ For plain Spring projects, use `cocache-spring` directly:
 class CacheConfig {
 
     @Bean
-    fun distributedCache(redisTemplate: StringRedisTemplate): DistributedCache<String> {
-        return RedisDistributedCache(redisTemplate, StringToStringCodecExecutor(redisTemplate))
+    fun distributedCache(
+        redisTemplate: StringRedisTemplate,
+        objectMapper: ObjectMapper
+    ): DistributedCache<User> {
+        val codecExecutor = ObjectToJsonCodecExecutor<User>(
+            User::class.java,
+            redisTemplate,
+            objectMapper
+        )
+        return RedisDistributedCache(redisTemplate, codecExecutor)
     }
 
     @Bean
     fun clientSideCache(): ClientSideCache<User> {
-        return MapClientSideCache()
+        return CaffeineClientSideCache(
+            Caffeine.newBuilder()
+                .maximumSize(100_000)
+                .expireAfterAccess(Duration.ofMinutes(30))
+                .build<String, CacheValue<User>>()
+        )
     }
 
     @Bean
