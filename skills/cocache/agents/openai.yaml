@@ -1,0 +1,4 @@
+interface:
+  display_name: "CoCache"
+  short_description: "Build two-level coherent caches"
+  default_prompt: "Use $cocache to design, implement, or test CoCache two-level distributed coherent caching."

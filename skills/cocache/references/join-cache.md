@@ -1,5 +1,16 @@
 # JoinCache Guide
 
+## Contents
+
+- [When to Use JoinCache](#when-to-use-joincache)
+- [How It Works](#how-it-works)
+- [Creating a JoinCache](#creating-a-joincache)
+- [JoinKeyExtractor Resolution](#joinkeyextractor-resolution)
+- [JoinValue Structure](#joinvalue-structure)
+- [Nested JoinCache](#nested-joincache)
+- [Eviction in JoinCache](#eviction-in-joincache)
+- [Common Patterns](#common-patterns)
+
 JoinCache composes two independent caches into a single logical view. It retrieves a primary value, extracts a join key from it, then fetches a secondary value from another cache.
 
 ## When to Use JoinCache

@@ -1,5 +1,18 @@
 # CoCache Testing Guide
 
+## Contents
+
+- [Test Specs Overview](#test-specs-overview)
+- [Testing a ClientSideCache Implementation](#testing-a-clientsidecache-implementation)
+- [Testing a DistributedCache Implementation](#testing-a-distributedcache-implementation)
+- [Testing a CoherentCache (Two-Level Cache)](#testing-a-coherentcache-two-level-cache)
+- [Testing CacheEvictedEventBus](#testing-cacheevictedeventbus)
+- [Testing Cross-Instance Coherence](#testing-cross-instance-coherence)
+- [Testing with Redis (Integration Tests)](#testing-with-redis-integration-tests)
+- [Assertion Style](#assertion-style)
+- [Writing Custom Test Cases](#writing-custom-test-cases)
+- [Test Dependencies](#test-dependencies)
+
 CoCache provides abstract test specs in `cocache-test` that verify cache contracts. Extend the appropriate spec, implement factory methods, and you get comprehensive test coverage for free.
 
 ## Test Specs Overview
@@ -63,42 +76,26 @@ class MyDistributedCacheTest : DistributedCacheSpec<String>() {
 ## Testing a CoherentCache (Two-Level Cache)
 
 ```kotlin
-import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.core.DefaultCacheValue
-import me.ahoo.cache.core.converter.ToStringKeyConverter
+import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
+import me.ahoo.cache.converter.KeyConverter
+import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.distributed.mock.MockDistributedCache
 import me.ahoo.cache.test.DefaultCoherentCacheSpec
+import java.util.*
 
 class MyCoherentCacheTest : DefaultCoherentCacheSpec<String, String>() {
 
-    override fun createCache(): me.ahoo.cache.consistency.CoherentCache<String, String> {
-        return DefaultCoherentCache(
-            cacheName = "testCache",
-            keyConverter = createKeyConverter(),
-            clientSideCache = createClientSideCache(),
-            distributedCache = createDistributedCache(),
-            cacheSource = CacheSource.noOp(),
-            cacheEvictedEventBus = createCacheEvictedEventBus()
-        )
-    }
+    override fun createKeyConverter(): KeyConverter<String> = ToStringKeyConverter("test:")
 
-    override fun createKeyConverter(): me.ahoo.cache.api.KeyConverter<String> {
-        return ToStringKeyConverter("test:")
-    }
+    override fun createClientSideCache(): ClientSideCache<String> = MapClientSideCache()
 
-    override fun createClientSideCache(): ClientSideCache<String> {
-        return GuavaClientSideCache(maximumSize = 1000)
-    }
+    override fun createDistributedCache(): DistributedCache<String> = MockDistributedCache()
 
-    override fun createDistributedCache(): DistributedCache<String> {
-        return MyDistributedCache()
-    }
-
-    override fun createCacheEvictedEventBus(): CacheEvictedEventBus {
-        return GuavaCacheEvictedEventBus()
-    }
+    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = GuavaCacheEvictedEventBus()
 
     override fun createCacheName(): String = "testCache"
 
@@ -120,7 +117,7 @@ This tests:
 
 ```kotlin
 import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.core.GuavaCacheEvictedEventBus
+import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
 import me.ahoo.cache.test.CacheEvictedEventBusSpec
 
 class MyEventBusTest : CacheEvictedEventBusSpec() {
@@ -138,33 +135,28 @@ Tests:
 ## Testing Cross-Instance Coherence
 
 ```kotlin
-import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.core.DefaultCacheValue
+import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
+import me.ahoo.cache.converter.KeyConverter
+import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.distributed.mock.MockDistributedCache
 import me.ahoo.cache.test.MultipleInstanceSyncSpec
+import java.util.*
 
 class MyMultiInstanceTest : MultipleInstanceSyncSpec<String, String>() {
 
-    override fun createDistributedCache(): DistributedCache<String> {
-        return MyDistributedCache()
-    }
+    override fun createKeyConverter(): KeyConverter<String> = ToStringKeyConverter("test:")
 
-    override fun createCacheEvictedEventBus(): CacheEvictedEventBus {
-        return GuavaCacheEvictedEventBus()
-    }
+    override fun createClientSideCache(): ClientSideCache<String> = MapClientSideCache()
 
-    override fun createCache(): me.ahoo.cache.consistency.CoherentCache<String, String> {
-        // Create a CoherentCache instance
-        return DefaultCoherentCache(
-            cacheName = "testCache",
-            keyConverter = ToStringKeyConverter("test:"),
-            clientSideCache = GuavaClientSideCache(maximumSize = 1000),
-            distributedCache = createDistributedCache(),
-            cacheSource = CacheSource.noOp(),
-            cacheEvictedEventBus = createCacheEvictedEventBus()
-        )
-    }
+    override fun createDistributedCache(): DistributedCache<String> = MockDistributedCache()
+
+    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = GuavaCacheEvictedEventBus()
+
+    override fun createCacheName(): String = "testCache"
 
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()
@@ -178,29 +170,47 @@ This creates two CoherentCache instances sharing the same DistributedCache and E
 
 ## Testing with Redis (Integration Tests)
 
-For Redis-based tests, use Testcontainers:
+Redis integration tests require a running Redis instance. CI provides Redis as a service container; local runs should start Redis first.
 
 ```kotlin
-@Testcontainers
+import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.spring.redis.RedisDistributedCache
+import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor
+import me.ahoo.cache.test.DistributedCacheSpec
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
+import org.springframework.data.redis.core.StringRedisTemplate
+import java.util.*
+
 class RedisDistributedCacheTest : DistributedCacheSpec<String>() {
 
-    companion object {
-        @Container
-        val redis = GenericContainer(DockerImageName.parse("redis:7"))
-            .withExposedPorts(6379)
-    }
+    private lateinit var stringRedisTemplate: StringRedisTemplate
+    private lateinit var codecExecutor: StringToStringCodecExecutor
+    private lateinit var lettuceConnectionFactory: LettuceConnectionFactory
 
     override fun createCache(): DistributedCache<String> {
-        val factory = LettuceConnectionFactory(
-            RedisStandaloneConfiguration("localhost", redis.firstMappedPort)
-        )
-        factory.afterPropertiesSet()
-        val template = StringRedisTemplate(factory)
-        return RedisDistributedCache("test", template)
+        return RedisDistributedCache(stringRedisTemplate, codecExecutor)
     }
 
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()
+    }
+
+    @BeforeEach
+    override fun setup() {
+        lettuceConnectionFactory = LettuceConnectionFactory(RedisStandaloneConfiguration())
+        lettuceConnectionFactory.afterPropertiesSet()
+        stringRedisTemplate = StringRedisTemplate(lettuceConnectionFactory)
+        stringRedisTemplate.afterPropertiesSet()
+        codecExecutor = StringToStringCodecExecutor(stringRedisTemplate)
+        super.setup()
+    }
+
+    @AfterEach
+    fun destroy() {
+        lettuceConnectionFactory.destroy()
     }
 }
 ```
@@ -240,7 +250,7 @@ class MyCacheTest : ClientSideCacheSpec<String>() {
         repeat(100) { i ->
             thread {
                 try {
-                    cache["key_$i"] = DefaultCacheValue("value_$i")
+                    cache["key_$i"] = "value_$i"
                     cache.getCache("key_$i").assert().isNotNull()
                 } catch (e: Exception) {
                     errors.add(i)
