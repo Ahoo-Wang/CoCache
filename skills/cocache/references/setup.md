@@ -224,8 +224,20 @@ class CacheConfig {
     }
 
     @Bean
-    fun cacheEvictedEventBus(): CacheEvictedEventBus {
-        return RedisCacheEvictedEventBus(redisTemplate)
+    fun redisMessageListenerContainer(
+        redisConnectionFactory: RedisConnectionFactory
+    ): RedisMessageListenerContainer {
+        return RedisMessageListenerContainer().apply {
+            setConnectionFactory(redisConnectionFactory)
+        }
+    }
+
+    @Bean
+    fun cacheEvictedEventBus(
+        redisTemplate: StringRedisTemplate,
+        redisMessageListenerContainer: RedisMessageListenerContainer
+    ): CacheEvictedEventBus {
+        return RedisCacheEvictedEventBus(redisTemplate, redisMessageListenerContainer)
     }
 }
 ```
