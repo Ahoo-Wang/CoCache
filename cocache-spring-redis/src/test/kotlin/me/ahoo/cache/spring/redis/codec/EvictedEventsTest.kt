@@ -60,4 +60,29 @@ internal class EvictedEventsTest {
         val event = EvictedEvents.fromMessage(messageOf(cacheName, message))
         event.assert().isEqualTo(CacheEvictedEvent(cacheName, key, publisherId))
     }
+
+    @Test
+    fun wireFormatStaysCompatibleForKeyWithoutAtSign() {
+        // Rolling-deploy compatibility: a key/id that contains no `@` (but may
+        // contain `%`) must encode to EXACTLY the legacy wire format, so an
+        // older subscriber (which does no unescaping) decodes it correctly.
+        // The legacy format is simply `key + "@@" + publisherId`.
+        val cacheName = "userCache"
+        val key = "discount:100%off"
+        val publisherId = "client-1"
+        val body = EvictedEvents.asMessage(key, publisherId)
+        body.assert().isEqualTo("discount:100%off@@client-1")
+    }
+
+    @Test
+    fun newDecoderReadsLegacyUnescapedFormat() {
+        // An older publisher emits the raw (unescaped) body. The new decoder must
+        // still decode it correctly for backward compatibility.
+        val cacheName = "userCache"
+        val key = "legacy-key"
+        val publisherId = "legacy-client"
+        val legacyBody = "$key@@$publisherId"
+        val event = EvictedEvents.fromMessage(messageOf(cacheName, legacyBody))
+        event.assert().isEqualTo(CacheEvictedEvent(cacheName, key, publisherId))
+    }
 }

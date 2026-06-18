@@ -19,6 +19,7 @@ import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.join.JoinKeyExtractorFactory
 import me.ahoo.cache.join.SimpleJoinCache
+import me.ahoo.cache.proxy.CacheDelegated
 import java.lang.reflect.Proxy
 import kotlin.reflect.KType
 
@@ -50,6 +51,7 @@ class DefaultJoinCacheProxyFactory(
             arrayOf(
                 cacheMetadata.proxyInterface.java,
                 JoinCache::class.java,
+                CacheDelegated::class.java,
                 JoinCacheMetadataCapable::class.java
             ),
             invocationHandler

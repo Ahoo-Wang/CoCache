@@ -18,18 +18,18 @@ import org.springframework.data.redis.connection.Message
 
 object EvictedEvents {
     private const val DELIMITER = "@@"
+    private const val AT_SIGN_ENCODED = "%40"
 
     /**
-     * Percent-encode the `@` (and reserve `%`) so that neither field can
-     * contain the `@@` delimiter, making the wire format unambiguous.
+     * Percent-encode only the `@` (the delimiter's constituent char) so a field
+     * can never contain the `@@` delimiter. `%` itself is intentionally NOT
+     * encoded: that keeps the wire format byte-for-byte identical to the legacy
+     * format for any key/id without `@`, so older subscribers (which do no
+     * unescaping) keep decoding such keys correctly during a rolling deploy.
      */
-    private fun String.escape(): String {
-        return replace("%", "%25").replace("@", "%40")
-    }
+    private fun String.escape(): String = replace("@", AT_SIGN_ENCODED)
 
-    private fun String.unescape(): String {
-        return replace("%40", "@").replace("%25", "%")
-    }
+    private fun String.unescape(): String = replace(AT_SIGN_ENCODED, "@")
 
     fun fromMessage(message: Message): CacheEvictedEvent {
         val cacheName = message.channel.decodeToString()
