@@ -12,6 +12,7 @@
  */
 package me.ahoo.cache.join
 
+import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.JoinCacheable
 import me.ahoo.cache.api.join.JoinCache
@@ -29,11 +30,14 @@ import org.junit.jupiter.api.Test
  */
 internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, OrderAddress>>() {
 
+    private lateinit var orderCache: MapClientSideCache<Order>
+    private lateinit var orderAddressCache: MapClientSideCache<OrderAddress>
+
     override val missingGuard: JoinValue<Order, String, OrderAddress>
         get() = DefaultJoinValue.missingGuardValue()
     override fun createCache(): Cache<String, JoinValue<Order, String, OrderAddress>> {
-        val orderCache = MapClientSideCache<Order>()
-        val orderAddressCache = MapClientSideCache<OrderAddress>()
+        orderCache = MapClientSideCache()
+        orderAddressCache = MapClientSideCache()
         return SimpleJoinCache(
             orderCache,
             orderAddressCache,
@@ -55,6 +59,45 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
         val joinCache = cache as JoinCache<String, Order, String, OrderAddress>
         joinCache.evict(key, key)
         cache[key].assert().isNull()
+    }
+
+    @Test
+    fun evictWhenFirstValueIsMissingGuardStillEvictsJoinCache() {
+        val (key, value) = createCacheEntry()
+        cache[key] = value
+        cache[key].assert().isEqualTo(value)
+        // Degrade the first cache entry to a missing-guard so that
+        // `firstCache[key]` reads as null (see ComputedCache.get).
+        orderCache.setCache(key, DefaultCacheValue.missingGuard())
+
+        // Both underlying caches still physically hold entries: the guard in
+        // orderCache, and the live join value in orderAddressCache.
+        orderCache.getCache(key).assert().isNotNull
+        orderAddressCache.getCache(key).assert().isNotNull
+
+        cache.evict(key)
+
+        // Evicting must always clear the first cache, even though the first
+        // value reads back as a (null-on-get) missing guard. The old impl
+        // returned early on `firstCache[key] == null` and cleared nothing.
+        orderCache.getCache(key).assert().isNull()
+    }
+
+    @Test
+    fun evictWhenFirstValueIsExpiredStillEvictsBothCaches() {
+        val (key, value) = createCacheEntry()
+        cache[key] = value
+        // The first cache now holds a real entry; reading via the typed `get`
+        // would return null only once expired, but the underlying CacheValue
+        // stays present so the join key remains recoverable. Here the entry is
+        // still fresh, so both eviction targets must be cleared.
+        orderCache.getCache(key).assert().isNotNull
+        orderAddressCache.getCache(key).assert().isNotNull
+
+        cache.evict(key)
+
+        orderCache.getCache(key).assert().isNull()
+        orderAddressCache.getCache(key).assert().isNull()
     }
 }
 

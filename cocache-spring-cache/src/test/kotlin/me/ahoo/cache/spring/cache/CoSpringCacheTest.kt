@@ -15,9 +15,13 @@ package me.ahoo.cache.spring.cache
 
 import io.mockk.every
 import io.mockk.mockk
+import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.join.JoinValue
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.join.DefaultJoinValue
+import me.ahoo.cache.join.SimpleJoinCache
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletableFuture
@@ -82,6 +86,30 @@ class CoSpringCacheTest {
         }
         val coSpringCache = CoSpringCache("test", coherentCache)
         coSpringCache.clear()
+    }
+
+    @Test
+    fun clearJoinCacheIsNotSilentNoOp() {
+        // A JoinCache proxy implements neither ClientSideCache nor CoherentCache,
+        // so the old clear() silently dropped the call. Spring's Cache.clear()
+        // contract requires the mapping to be removed. Wrap a SimpleJoinCache and
+        // assert clear() actually evicts the entries it holds.
+        val firstCache = MapClientSideCache<String>()
+        val joinCache = MapClientSideCache<String>()
+        val joinDelegate = SimpleJoinCache<String, String, String, String>(
+            firstCache,
+            joinCache,
+        ) { firstValue -> firstValue }
+        val joinValue: JoinValue<String, String, String> = DefaultJoinValue("first", "first", "second")
+        joinDelegate.setCache("k", DefaultCacheValue(joinValue, Long.MAX_VALUE))
+        joinDelegate.getCache("k").assert().isNotNull // entry present
+
+        @Suppress("UNCHECKED_CAST")
+        val coSpringCache = CoSpringCache("join", joinDelegate as Cache<Any, Any?>)
+        coSpringCache.clear()
+
+        // BUG: clear() was a silent no-op for the JoinCache delegate.
+        joinDelegate.getCache("k").assert().isNull()
     }
 
     @Test

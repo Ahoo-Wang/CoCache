@@ -17,6 +17,7 @@ import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.join.SimpleJoinCache
 import me.ahoo.cache.proxy.CacheDelegated
 import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
@@ -64,12 +65,34 @@ class CoSpringCache(
     }
 
     override fun clear() {
-        if (delegate is ClientSideCache) {
-            delegate.clear()
+        clearDelegate(delegate)
+    }
+
+    /**
+     * Recursively unwrap proxies and clear the local/client-side caches.
+     *
+     * Previously this only handled `ClientSideCache` and `CoherentCache`, so a
+     * wrapped `JoinCache` (whose proxy implements neither) — or any proxy that
+     * needed unwrapping via `CacheDelegated` — silently dropped `clear()`,
+     * violating Spring's `Cache.clear()` contract.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun clearDelegate(cache: Cache<*, *>) {
+        // Unwrap proxy delegates first (plain cache proxies implement CacheDelegated).
+        if (cache is CacheDelegated<*>) {
+            clearDelegate(cache.delegate as Cache<*, *>)
             return
         }
-        if (delegate is CoherentCache) {
-            delegate.clientSideCache.clear()
+        when (cache) {
+            // A local client-side cache is cleared in full.
+            is ClientSideCache<*> -> cache.clear()
+            // A coherent cache only exposes its local tier for clearing.
+            is CoherentCache<*, *> -> cache.clientSideCache.clear()
+            // A join cache composes two caches; clear both local tiers.
+            is SimpleJoinCache<*, *, *, *> -> {
+                clearDelegate(cache.firstCache)
+                clearDelegate(cache.joinCache)
+            }
         }
     }
 

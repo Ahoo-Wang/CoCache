@@ -19,15 +19,27 @@ import org.springframework.data.redis.connection.Message
 object EvictedEvents {
     private const val DELIMITER = "@@"
 
+    /**
+     * Percent-encode the `@` (and reserve `%`) so that neither field can
+     * contain the `@@` delimiter, making the wire format unambiguous.
+     */
+    private fun String.escape(): String {
+        return replace("%", "%25").replace("@", "%40")
+    }
+
+    private fun String.unescape(): String {
+        return replace("%40", "@").replace("%25", "%")
+    }
+
     fun fromMessage(message: Message): CacheEvictedEvent {
         val cacheName = message.channel.decodeToString()
         val msgBody = message.body.decodeToString()
-        val clientIdWithKey = msgBody.split(DELIMITER.toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()
-        require(2 == clientIdWithKey.size) { "message illegal:[$msgBody]." }
-        return CacheEvictedEvent(cacheName, clientIdWithKey[0], clientIdWithKey[1])
+        val parts = msgBody.split(DELIMITER, limit = 2)
+        require(2 == parts.size) { "message illegal:[$msgBody]." }
+        return CacheEvictedEvent(cacheName, parts[0].unescape(), parts[1].unescape())
     }
 
     fun asMessage(key: String, clientId: String): String {
-        return key + DELIMITER + clientId
+        return key.escape() + DELIMITER + clientId.escape()
     }
 }

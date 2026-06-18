@@ -50,4 +50,18 @@ class TtlTest {
             .isGreaterThanOrEqualTo(50)
             .isLessThanOrEqualTo(70)
     }
+
+    @Test
+    fun jitterWhenAmplitudeExceedsTtlStaysPositive() {
+        // When amplitude >= ttl the lower bound would otherwise go negative,
+        // producing an already-expired ttlAt and rejecting the write.
+        val ttl = 5L
+        val amplitude = 10L
+        repeat(100) {
+            val jitterTtl = ComputedTtlAt.jitter(ttl, amplitude)
+            jitterTtl.assert().isPositive()
+            val ttlAt = ComputedTtlAt.at(ttl, amplitude)
+            ttlAt.assert().isGreaterThan(CacheSecondClock.INSTANCE.currentTime())
+        }
+    }
 }

@@ -29,8 +29,8 @@ import kotlin.math.min
  * @author ahoo wang
  */
 class SimpleJoinCache<K1, V1, K2, V2>(
-    private val firstCache: Cache<K1, V1>,
-    private val joinCache: Cache<K2, V2>,
+    val firstCache: Cache<K1, V1>,
+    val joinCache: Cache<K2, V2>,
     override val joinKeyExtractor: JoinKeyExtractor<V1, K2>
 ) : JoinCache<K1, V1, K2, V2>, ComputedCache<K1, JoinValue<V1, K2, V2>> {
     override val ttl: Long = getFirstTtlConfiguration(firstCache, joinCache).ttl
@@ -73,10 +73,16 @@ class SimpleJoinCache<K1, V1, K2, V2>(
     }
 
     override fun evict(key: K1) {
-        val firstValue = firstCache[key] ?: return
+        // Read the raw CacheValue (not `operator get`, which hides missing-guards
+        // and expired entries as null). The first cache must always be evicted;
+        // the join cache is evicted only when we can still resolve a join key
+        // from a real (non-guard) first value.
+        val firstCacheValue = firstCache.getCache(key)
         firstCache.evict(key)
-        val joinKey = joinKeyExtractor.extract(firstValue)
-        joinCache.evict(joinKey)
+        if (firstCacheValue != null && !firstCacheValue.isMissingGuard) {
+            val joinKey = joinKeyExtractor.extract(firstCacheValue.value)
+            joinCache.evict(joinKey)
+        }
     }
 
     override fun evict(firstKey: K1, joinKey: K2) {
