@@ -16,6 +16,7 @@ package me.ahoo.cache.spring.redis.codec
 import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.springframework.data.redis.connection.Message
 
 /**
@@ -74,5 +75,18 @@ internal class EvictedEventsTest {
         val publisherId = "client-1"
         val body = EvictedEvents.asMessage(key, publisherId)
         body.assert().isEqualTo("discount@100%off@@client-1")
+    }
+
+    @Test
+    fun asMessageRejectsPublisherIdContainingDelimiter() {
+        // publisherId must never contain the "@@" delimiter (it is split on the
+        // last "@@"). A custom ClientIdGenerator violating this contract must
+        // fail fast at publish time rather than silently produce an ambiguous
+        // message that corrupts eviction across instances.
+        val illegalPublisherId = "client@@suffix"
+        val exception = assertThrows<IllegalArgumentException> {
+            EvictedEvents.asMessage("user:1", illegalPublisherId)
+        }
+        exception.message!!.contains("publisherId").assert().isTrue()
     }
 }

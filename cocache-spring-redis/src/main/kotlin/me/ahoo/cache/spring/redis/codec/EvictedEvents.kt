@@ -36,7 +36,20 @@ object EvictedEvents {
         return CacheEvictedEvent(cacheName, key, publisherId)
     }
 
+    /**
+     * Encode a cache key and the publishing client's id into the pub/sub body.
+     *
+     * Contract: `clientId` MUST NOT contain the "@@" delimiter. The decoder
+     * splits on the last "@@", so a `clientId` containing "@@" would be split
+     * across the two fields and corrupt eviction. This is enforced here so a
+     * non-conforming [me.ahoo.cache.util.ClientIdGenerator] fails fast at publish
+     * time instead of silently producing an ambiguous message. The built-in
+     * generators (UUID, HostClientIdGenerator) satisfy this contract.
+     */
     fun asMessage(key: String, clientId: String): String {
+        require(!clientId.contains(DELIMITER)) {
+            "publisherId[$clientId] must not contain the delimiter[$DELIMITER]."
+        }
         return key + DELIMITER + clientId
     }
 }
