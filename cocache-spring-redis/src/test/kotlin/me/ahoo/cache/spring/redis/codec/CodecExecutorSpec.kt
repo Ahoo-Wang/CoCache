@@ -67,7 +67,11 @@ abstract class CodecExecutorSpec<V> {
         val value = DefaultCacheValue(createCacheValue(), ttlAt)
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, ttlAt)
-        actual.assert().isEqualTo(value)
+        // ttlAt is reconstructed from Redis EXPIRE and may drift by up to 1
+        // second across the write/read boundary, so assert value equality and a
+        // tolerant ttlAt instead of full-object equality (which is flaky).
+        actual.value.assert().isEqualTo(value.value)
+        actual.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
         actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
     }
 
@@ -86,7 +90,12 @@ abstract class CodecExecutorSpec<V> {
         val value = DefaultCacheValue.missingGuard<CacheValue<V>>(100)
         codecExecutor.executeAndEncode(key, value)
         val actual = codecExecutor.executeAndDecode(key, 100)
-        actual.assert().isEqualTo(value)
+        // The sentinel value must round-trip exactly (it identifies the
+        // missing-guard), but ttlAt is reconstructed from Redis EXPIRE and may
+        // drift by up to 1 second across the write/read second boundary, so
+        // only assert it with a tolerance instead of full-object equality.
+        actual.value.assert().isEqualTo(value.value)
+        actual.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
         actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
     }
 }
