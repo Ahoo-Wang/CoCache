@@ -18,28 +18,25 @@ import org.springframework.data.redis.connection.Message
 
 object EvictedEvents {
     private const val DELIMITER = "@@"
-    private const val AT_SIGN_ENCODED = "%40"
 
     /**
-     * Percent-encode only the `@` (the delimiter's constituent char) so a field
-     * can never contain the `@@` delimiter. `%` itself is intentionally NOT
-     * encoded: that keeps the wire format byte-for-byte identical to the legacy
-     * format for any key/id without `@`, so older subscribers (which do no
-     * unescaping) keep decoding such keys correctly during a rolling deploy.
+     * Decode a pub/sub message into an eviction event.
+     *
+     * The wire format is `key + "@@" + publisherId`. The publisherId is
+     * framework-generated and never contains the "@@" delimiter, so splitting on
+     * the LAST "@@" keeps the key intact even when the key itself contains "@@".
      */
-    private fun String.escape(): String = replace("@", AT_SIGN_ENCODED)
-
-    private fun String.unescape(): String = replace(AT_SIGN_ENCODED, "@")
-
     fun fromMessage(message: Message): CacheEvictedEvent {
         val cacheName = message.channel.decodeToString()
         val msgBody = message.body.decodeToString()
-        val parts = msgBody.split(DELIMITER, limit = 2)
-        require(2 == parts.size) { "message illegal:[$msgBody]." }
-        return CacheEvictedEvent(cacheName, parts[0].unescape(), parts[1].unescape())
+        val delimiterIndex = msgBody.lastIndexOf(DELIMITER)
+        require(delimiterIndex >= 0) { "message illegal:[$msgBody]." }
+        val key = msgBody.substring(0, delimiterIndex)
+        val publisherId = msgBody.substring(delimiterIndex + DELIMITER.length)
+        return CacheEvictedEvent(cacheName, key, publisherId)
     }
 
     fun asMessage(key: String, clientId: String): String {
-        return key.escape() + DELIMITER + clientId.escape()
+        return key + DELIMITER + clientId
     }
 }

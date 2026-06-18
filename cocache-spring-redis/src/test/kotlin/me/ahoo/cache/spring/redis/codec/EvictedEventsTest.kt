@@ -43,8 +43,11 @@ internal class EvictedEventsTest {
 
     @Test
     fun roundTripWhenKeyContainsDelimiter() {
+        // The key may itself contain the "@@" delimiter; the publisherId never does
+        // (it is framework-generated). Split on the LAST "@@" so the whole key is
+        // preserved.
         val cacheName = "userCache"
-        val key = "user@@42" // key contains the @@ delimiter
+        val key = "user@@42"
         val publisherId = "client-1"
         val message = EvictedEvents.asMessage(key, publisherId)
         val event = EvictedEvents.fromMessage(messageOf(cacheName, message))
@@ -52,37 +55,24 @@ internal class EvictedEventsTest {
     }
 
     @Test
-    fun roundTripWhenBothFieldsContainDelimiterAndPercent() {
+    fun roundTripWhenKeyContainsMultipleDelimiters() {
         val cacheName = "userCache"
-        val key = "user@@100%off"
-        val publisherId = "cli@@ent@1"
+        val key = "user@@42@@extra"
+        val publisherId = "0:1@10.0.0.1"
         val message = EvictedEvents.asMessage(key, publisherId)
         val event = EvictedEvents.fromMessage(messageOf(cacheName, message))
         event.assert().isEqualTo(CacheEvictedEvent(cacheName, key, publisherId))
     }
 
     @Test
-    fun wireFormatStaysCompatibleForKeyWithoutAtSign() {
-        // Rolling-deploy compatibility: a key/id that contains no `@` (but may
-        // contain `%`) must encode to EXACTLY the legacy wire format, so an
-        // older subscriber (which does no unescaping) decodes it correctly.
-        // The legacy format is simply `key + "@@" + publisherId`.
-        val cacheName = "userCache"
-        val key = "discount:100%off"
+    fun wireFormatIsUnchangedFromLegacy() {
+        // No escaping is applied: the body is simply `key + "@@" + publisherId`,
+        // byte-for-byte identical to the legacy format, so mixed-version deploys
+        // keep working in both directions. This holds even when the key contains
+        // `@` — the raw key bytes are preserved on the wire.
+        val key = "discount@100%off"
         val publisherId = "client-1"
         val body = EvictedEvents.asMessage(key, publisherId)
-        body.assert().isEqualTo("discount:100%off@@client-1")
-    }
-
-    @Test
-    fun newDecoderReadsLegacyUnescapedFormat() {
-        // An older publisher emits the raw (unescaped) body. The new decoder must
-        // still decode it correctly for backward compatibility.
-        val cacheName = "userCache"
-        val key = "legacy-key"
-        val publisherId = "legacy-client"
-        val legacyBody = "$key@@$publisherId"
-        val event = EvictedEvents.fromMessage(messageOf(cacheName, legacyBody))
-        event.assert().isEqualTo(CacheEvictedEvent(cacheName, key, publisherId))
+        body.assert().isEqualTo("discount@100%off@@client-1")
     }
 }
