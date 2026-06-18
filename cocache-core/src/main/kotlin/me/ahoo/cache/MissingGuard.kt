@@ -42,11 +42,11 @@ interface MissingGuard {
         }
 
         fun Set<*>.isMissingGuard(): Boolean {
-            return firstOrNull() == STRING_VALUE
+            return size == 1 && first() == STRING_VALUE
         }
 
         fun Map<*, *>.isMissingGuard(): Boolean {
-            return keys.firstOrNull() == STRING_VALUE
+            return size == 1 && keys.first() == STRING_VALUE
         }
     }
 }

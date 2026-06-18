@@ -15,6 +15,7 @@ package me.ahoo.cache.join.proxy
 
 import me.ahoo.cache.annotation.JoinCacheMetadata
 import me.ahoo.cache.api.join.JoinCache
+import me.ahoo.cache.proxy.CacheDelegated
 import me.ahoo.cache.proxy.CoCacheProxy
 import java.lang.reflect.Method
 import kotlin.reflect.jvm.javaGetter
@@ -25,6 +26,7 @@ class JoinCacheInvocationHandler<DELEGATE>(
 ) : JoinCacheMetadataCapable, CoCacheProxy<DELEGATE>() where DELEGATE : JoinCache<*, *, *, *> {
 
     companion object {
+        val DELEGATE_METHOD_SIGN: String = CacheDelegated<*>::delegate.javaGetter!!.name
         val CACHE_METADATA_METHOD_SIGN: String = JoinCacheMetadataCapable::cacheMetadata.javaGetter!!.name
     }
 
@@ -32,6 +34,9 @@ class JoinCacheInvocationHandler<DELEGATE>(
 
     @Suppress("SpreadOperator", "ReturnCount")
     override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
+        if (DELEGATE_METHOD_SIGN == method.name) {
+            return delegate
+        }
         if (CACHE_METADATA_METHOD_SIGN == method.name) {
             return cacheMetadata
         }

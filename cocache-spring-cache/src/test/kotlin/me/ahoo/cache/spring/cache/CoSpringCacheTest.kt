@@ -15,9 +15,16 @@ package me.ahoo.cache.spring.cache
 
 import io.mockk.every
 import io.mockk.mockk
+import me.ahoo.cache.CacheFactory
+import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.join.JoinValue
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.join.DefaultJoinValue
+import me.ahoo.cache.join.JoinKeyExtractorFactory
+import me.ahoo.cache.join.SimpleJoinCache
+import me.ahoo.cache.join.proxy.DefaultJoinCacheProxyFactory
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletableFuture
@@ -85,6 +92,63 @@ class CoSpringCacheTest {
     }
 
     @Test
+    fun clearJoinCacheIsNotSilentNoOp() {
+        // A JoinCache proxy implements neither ClientSideCache nor CoherentCache,
+        // so the old clear() silently dropped the call. Spring's Cache.clear()
+        // contract requires the mapping to be removed. Wrap a SimpleJoinCache and
+        // assert clear() actually evicts the entries it holds.
+        val firstCache = MapClientSideCache<String>()
+        val joinCache = MapClientSideCache<String>()
+        val joinDelegate = SimpleJoinCache<String, String, String, String>(
+            firstCache,
+            joinCache,
+        ) { firstValue -> firstValue }
+        val joinValue: JoinValue<String, String, String> = DefaultJoinValue("first", "first", "second")
+        joinDelegate.setCache("k", DefaultCacheValue(joinValue, Long.MAX_VALUE))
+        joinDelegate.getCache("k").assert().isNotNull // entry present
+
+        @Suppress("UNCHECKED_CAST")
+        val coSpringCache = CoSpringCache("join", joinDelegate as Cache<Any, Any?>)
+        coSpringCache.clear()
+
+        // BUG: clear() was a silent no-op for the JoinCache delegate.
+        joinDelegate.getCache("k").assert().isNull()
+    }
+
+    @Test
+    fun clearJoinCacheProxyIsNotSilentNoOp() {
+        // Production join caches are JDK proxies from DefaultJoinCacheProxyFactory,
+        // whose interface list is [proxyInterface, JoinCache, JoinCacheMetadataCapable]
+        // — NOT CacheDelegated and NOT SimpleJoinCache. The fix above only handled a
+        // bare SimpleJoinCache; the proxied path must also clear its local tiers.
+        val firstCache = MapClientSideCache<String>()
+        val joinCache = MapClientSideCache<String>()
+        val cacheFactory = mockk<CacheFactory> {
+            every { getCache<Cache<String, String>>("First") } returns firstCache
+            every { getCache<Cache<String, String>>("Join") } returns joinCache
+        }
+        val metadata = me.ahoo.cache.annotation.joinCacheMetadata<TestJoinCache>()
+        val joinKeyExtractorFactory = mockk<JoinKeyExtractorFactory> {
+            every { create<String, String>(metadata) } returns me.ahoo.cache.api.join.JoinKeyExtractor { it }
+        }
+        val proxy = DefaultJoinCacheProxyFactory(cacheFactory, joinKeyExtractorFactory)
+            .create<TestJoinCache>(metadata)
+
+        val joinValue: JoinValue<String, String, String> = DefaultJoinValue("first", "first", "second")
+        proxy.setCache("k", DefaultCacheValue(joinValue, Long.MAX_VALUE))
+        firstCache.size.assert().isEqualTo(1L) // first tier populated
+        joinCache.size.assert().isEqualTo(1L) // join tier populated
+
+        @Suppress("UNCHECKED_CAST")
+        val coSpringCache = CoSpringCache("join", proxy as Cache<Any, Any?>)
+        coSpringCache.clear()
+
+        // BUG: the proxied join cache's local tiers were not cleared.
+        firstCache.size.assert().isEqualTo(0L)
+        joinCache.size.assert().isEqualTo(0L)
+    }
+
+    @Test
     fun retrieve() {
         coSpringCache.put("retrieveTest", "test")
         coSpringCache.retrieve("retrieveTest")!!.get().assert().isEqualTo("test")
@@ -108,3 +172,6 @@ class CoSpringCacheTest {
         coSpringCache.delegate.assert().isNotNull
     }
 }
+
+@me.ahoo.cache.api.annotation.JoinCacheable(firstCacheName = "First", joinCacheName = "Join")
+interface TestJoinCache : me.ahoo.cache.api.join.JoinCache<String, String, String, String>

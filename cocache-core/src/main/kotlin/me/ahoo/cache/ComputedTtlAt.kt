@@ -44,14 +44,18 @@ interface ComputedTtlAt : TtlAt {
         }
 
         /**
-         * Jitter ttl (randomly) to prevent cache avalanche
+         * Jitter ttl (randomly) to prevent cache avalanche.
+         *
+         * The jittered ttl is clamped to a strictly-positive value so that a
+         * misconfigured `amplitude >= ttl` can never yield a negative ttl
+         * (which would produce an already-expired ttlAt and reject the write).
          */
         fun jitter(ttl: Long, amplitude: Long): Long {
             if (amplitude == 0L) {
                 return ttl
             }
-            val low = ttl - amplitude
-            val high = ttl + amplitude
+            val low = (ttl - amplitude).coerceAtLeast(1)
+            val high = (ttl + amplitude).coerceAtLeast(1)
             return (low..high).random()
         }
 

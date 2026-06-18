@@ -17,6 +17,15 @@ import me.ahoo.cosid.machine.LocalHostAddressSupplier
 import me.ahoo.cosid.util.ProcessId
 import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * Generator of the per-instance client id used to tag cache-eviction events.
+ *
+ * Contract: the generated id MUST NOT contain the "@@" substring. It is used as
+ * the publisherId of eviction messages (see
+ * `me.ahoo.cache.spring.redis.codec.EvictedEvents`), whose wire format splits the
+ * body on the last "@@"; an id containing "@@" would break that split and
+ * corrupt cross-instance eviction. The built-in generators below satisfy this.
+ */
 interface ClientIdGenerator {
     fun generate(): String
 
