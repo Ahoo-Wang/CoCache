@@ -17,6 +17,7 @@ import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.util.CacheSecondClock
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -55,6 +56,19 @@ abstract class CacheSpec<K, V> {
 
         val expiredValue = DefaultCacheValue(createCacheEntry().second, ComputedTtlAt.at(-5))
         cache.setCache(key, expiredValue)
+
+        cache[key].assert().isNull()
+        cache.getTtlAt(key).assert().isNull()
+    }
+
+    @Test
+    fun setExpiresAtCurrentSecondEvictsExistingValue() {
+        val (key, value) = createCacheEntry()
+        cache[key] = value
+        cache[key].assert().isEqualTo(value)
+
+        val expiresNow = CacheSecondClock.INSTANCE.currentTime()
+        cache[key, expiresNow] = value
 
         cache[key].assert().isNull()
         cache.getTtlAt(key).assert().isNull()
