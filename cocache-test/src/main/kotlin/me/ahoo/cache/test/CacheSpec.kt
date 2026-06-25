@@ -48,6 +48,19 @@ abstract class CacheSpec<K, V> {
     }
 
     @Test
+    fun setExpiredCacheValueEvictsExistingValue() {
+        val (key, value) = createCacheEntry()
+        cache[key] = value
+        cache[key].assert().isEqualTo(value)
+
+        val expiredValue = DefaultCacheValue(createCacheEntry().second, ComputedTtlAt.at(-5))
+        cache.setCache(key, expiredValue)
+
+        cache[key].assert().isNull()
+        cache.getTtlAt(key).assert().isNull()
+    }
+
+    @Test
     fun set() {
         val (key, value) = createCacheEntry()
         cache[key].assert().isNull()

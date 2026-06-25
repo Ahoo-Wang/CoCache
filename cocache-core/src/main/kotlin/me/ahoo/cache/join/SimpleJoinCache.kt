@@ -14,7 +14,6 @@ package me.ahoo.cache.join
 
 import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.DefaultCacheValue.Companion.missingGuard
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.join.JoinCache
@@ -39,13 +38,19 @@ class SimpleJoinCache<K1, V1, K2, V2>(
     @Suppress("ReturnCount")
     override fun getCache(key: K1): CacheValue<JoinValue<V1, K2, V2>>? {
         val firstCacheValue = firstCache.getCache(key) ?: return null
+        if (firstCacheValue.isExpired) {
+            return null
+        }
         if (firstCacheValue.isMissingGuard) {
-            return missingGuard()
+            return DefaultCacheValue(DefaultJoinValue.missingGuardValue(), firstCacheValue.ttlAt)
         }
         val joinKey = joinKeyExtractor.extract(firstCacheValue.value)
         val secondCacheValue = joinCache.getCache(joinKey)
-        val joinValue = DefaultJoinValue(firstCacheValue.value, joinKey, secondCacheValue?.value)
-        val ttlAt = getJoinTtlAt(firstCacheValue.ttlAt, secondCacheValue?.ttlAt)
+        val availableSecondCacheValue = secondCacheValue?.takeUnless {
+            it.isMissingGuard || it.isExpired
+        }
+        val joinValue = DefaultJoinValue(firstCacheValue.value, joinKey, availableSecondCacheValue?.value)
+        val ttlAt = getJoinTtlAt(firstCacheValue.ttlAt, availableSecondCacheValue?.ttlAt)
         return DefaultCacheValue(value = joinValue, ttlAt = ttlAt)
     }
 
@@ -62,7 +67,7 @@ class SimpleJoinCache<K1, V1, K2, V2>(
     @Suppress("UNCHECKED_CAST")
     override fun setCache(key: K1, value: CacheValue<JoinValue<V1, K2, V2>>) {
         if (value.isMissingGuard) {
-            firstCache.setCache(key, missingGuard())
+            firstCache.setCache(key, DefaultCacheValue(DefaultCacheValue.missingGuardValue(), value.ttlAt))
             return
         }
         val firstCacheValue = DefaultCacheValue(value = value.value.firstValue, ttlAt = value.ttlAt)

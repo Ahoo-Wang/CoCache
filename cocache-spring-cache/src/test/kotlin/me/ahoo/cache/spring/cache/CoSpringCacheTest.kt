@@ -27,7 +27,9 @@ import me.ahoo.cache.join.SimpleJoinCache
 import me.ahoo.cache.join.proxy.DefaultJoinCacheProxyFactory
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import java.util.concurrent.CompletableFuture
+import org.springframework.cache.Cache as SpringCache
 
 class CoSpringCacheTest {
     @Suppress("UNCHECKED_CAST")
@@ -64,6 +66,46 @@ class CoSpringCacheTest {
     fun put() {
         coSpringCache.put("putTest", "test")
         coSpringCache.get("putTest")!!.get().assert().isEqualTo("test")
+    }
+
+    @Test
+    fun getWhenMissingGuardReturnsMiss() {
+        coSpringCache.delegate.setCache("missing", DefaultCacheValue.missingGuard())
+
+        coSpringCache.get("missing").assert().isNull()
+    }
+
+    @Test
+    fun getWithLoaderKeepsCachedNull() {
+        var loadCount = 0
+        coSpringCache.put("cachedNull", null)
+
+        val actual = coSpringCache.get("cachedNull") {
+            loadCount++
+            "loaded"
+        }
+
+        actual.assert().isNull()
+        loadCount.assert().isZero()
+    }
+
+    @Test
+    fun getWithTypeMismatchThrowsIllegalStateException() {
+        coSpringCache.put("typed", "value")
+
+        assertThrows<IllegalStateException> {
+            val actual: Int? = coSpringCache.get("typed", Int::class.javaObjectType)
+            actual.assert().isNull()
+        }
+    }
+
+    @Test
+    fun getWithLoaderWrapsException() {
+        assertThrows<SpringCache.ValueRetrievalException> {
+            coSpringCache.get("loaderException") {
+                throw IllegalStateException("boom")
+            }
+        }
     }
 
     @Test

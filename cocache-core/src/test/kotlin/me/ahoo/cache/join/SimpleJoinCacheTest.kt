@@ -13,7 +13,9 @@
 package me.ahoo.cache.join
 
 import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.annotation.JoinCacheable
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinValue
@@ -98,6 +100,34 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
 
         orderCache.getCache(key).assert().isNull()
         orderAddressCache.getCache(key).assert().isNull()
+    }
+
+    @Test
+    fun getWhenSecondValueIsMissingGuardTreatsSecondAsAbsent() {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+        val order = Order(orderId)
+        orderCache.setCache(orderId, DefaultCacheValue.forever(order))
+        orderAddressCache.setCache(orderId, DefaultCacheValue.missingGuard())
+
+        val actual = cache[orderId]
+
+        actual.assert().isNotNull()
+        actual!!.firstValue.assert().isEqualTo(order)
+        actual.joinKey.assert().isEqualTo(orderId)
+        actual.secondValue.assert().isNull()
+    }
+
+    @Test
+    fun setMissingTtlPreservesTtlAtInFirstCache() {
+        val (key, _) = createCacheEntry()
+        val missingValue = DefaultCacheValue.missingGuard<CacheValue<JoinValue<Order, String, OrderAddress>>>(
+            missingGuard as MissingGuard,
+            5,
+        )
+
+        cache.setCache(key, missingValue)
+
+        orderCache.getCache(key)!!.ttlAt.assert().isEqualTo(missingValue.ttlAt)
     }
 }
 

@@ -135,12 +135,18 @@ class DefaultCoherentCache<K, V>(
     }
 
     private fun setCache(cacheKey: String, cacheValue: CacheValue<V>) {
+        if (cacheValue.isExpired) {
+            clientSideCache.evict(cacheKey)
+            distributedCache.evict(cacheKey)
+            return
+        }
         clientSideCache.setCache(cacheKey, cacheValue)
         distributedCache.setCache(cacheKey, cacheValue)
     }
 
     override fun setCache(key: K, value: CacheValue<V>) {
         if (value.isExpired) {
+            evict(key)
             return
         }
         val cacheKey = keyConverter.toStringKey(key)

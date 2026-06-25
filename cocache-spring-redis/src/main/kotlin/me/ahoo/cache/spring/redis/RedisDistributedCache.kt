@@ -50,6 +50,7 @@ class RedisDistributedCache<V>(
 
     override fun setCache(key: String, value: CacheValue<V>) {
         if (value.isExpired) {
+            evict(key)
             return
         }
         codecExecutor.executeAndEncode(key, value)

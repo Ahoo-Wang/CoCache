@@ -45,6 +45,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
+import org.springframework.cache.CacheManager
 import org.springframework.context.ApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -78,6 +79,7 @@ class CoCacheAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean(CacheManager::class)
     fun coCacheManager(cacheFactory: CacheFactory): CoCacheManager {
         return CoCacheManager(cacheFactory)
     }
@@ -177,6 +179,7 @@ class CoCacheAutoConfiguration {
     class CosIdHostAddressSupplierAutoConfiguration {
         @Bean
         @ConditionalOnBean(HostAddressSupplier::class)
+        @ConditionalOnMissingBean(ClientIdGenerator::class)
         fun inetUtilsHostClientIdGenerator(hostAddressSupplier: HostAddressSupplier): ClientIdGenerator {
             return HostClientIdGenerator {
                 hostAddressSupplier.hostAddress
