@@ -32,6 +32,7 @@ class MapClientSideCache<V>(
 
     override fun setCache(key: String, value: CacheValue<V>) {
         if (value.isExpired) {
+            evict(key)
             return
         }
         cacheMap[key] = value

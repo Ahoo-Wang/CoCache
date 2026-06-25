@@ -16,8 +16,10 @@ package me.ahoo.cache.spring.cache
 import io.mockk.every
 import io.mockk.mockk
 import me.ahoo.cache.CacheFactory
+import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.join.JoinValue
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.CoherentCache
@@ -27,7 +29,11 @@ import me.ahoo.cache.join.SimpleJoinCache
 import me.ahoo.cache.join.proxy.DefaultJoinCacheProxyFactory
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import org.springframework.cache.Cache as SpringCache
 
 class CoSpringCacheTest {
     @Suppress("UNCHECKED_CAST")
@@ -67,6 +73,69 @@ class CoSpringCacheTest {
     }
 
     @Test
+    fun getWhenMissingGuardReturnsMiss() {
+        coSpringCache.delegate.setCache("missing", DefaultCacheValue.missingGuard())
+
+        coSpringCache.get("missing").assert().isNull()
+    }
+
+    @Test
+    fun getWhenExpiredEvictsDelegate() {
+        val expiredCache = RawSpringCache(DefaultCacheValue("expired", ComputedTtlAt.at(-5)))
+        val expiredSpringCache = CoSpringCache("expired", expiredCache)
+
+        expiredSpringCache.get("expired").assert().isNull()
+        expiredCache.evicted.assert().isTrue()
+    }
+
+    @Test
+    fun getWithMatchingTypeReturnsValue() {
+        coSpringCache.put("typedString", "value")
+
+        coSpringCache.get("typedString", String::class.java).assert().isEqualTo("value")
+    }
+
+    @Test
+    fun getWithNullTypeReturnsValue() {
+        coSpringCache.put("typedAny", "value")
+
+        coSpringCache.get<Any>("typedAny", null).assert().isEqualTo("value")
+    }
+
+    @Test
+    fun getWithLoaderKeepsCachedNull() {
+        var loadCount = 0
+        coSpringCache.put("cachedNull", null)
+
+        val actual = coSpringCache.get("cachedNull") {
+            loadCount++
+            "loaded"
+        }
+
+        actual.assert().isNull()
+        loadCount.assert().isZero()
+    }
+
+    @Test
+    fun getWithTypeMismatchThrowsIllegalStateException() {
+        coSpringCache.put("typed", "value")
+
+        assertThrows<IllegalStateException> {
+            val actual: Int? = coSpringCache.get("typed", Int::class.javaObjectType)
+            actual.assert().isNull()
+        }
+    }
+
+    @Test
+    fun getWithLoaderWrapsException() {
+        assertThrows<SpringCache.ValueRetrievalException> {
+            coSpringCache.get("loaderException") {
+                throw IllegalStateException("boom")
+            }
+        }
+    }
+
+    @Test
     fun evict() {
         coSpringCache.put("evictTest", "test")
         coSpringCache.evict("evictTest")
@@ -89,6 +158,11 @@ class CoSpringCacheTest {
         }
         val coSpringCache = CoSpringCache("test", coherentCache)
         coSpringCache.clear()
+    }
+
+    @Test
+    fun clearPlainDelegateCompletes() {
+        CoSpringCache("plain", RawSpringCache()).clear()
     }
 
     @Test
@@ -151,7 +225,52 @@ class CoSpringCacheTest {
     @Test
     fun retrieve() {
         coSpringCache.put("retrieveTest", "test")
-        coSpringCache.retrieve("retrieveTest")!!.get().assert().isEqualTo("test")
+        val valueWrapper = coSpringCache.retrieve("retrieveTest")!!.get()
+        valueWrapper.assert().isInstanceOf(SpringCache.ValueWrapper::class.java)
+        (valueWrapper as SpringCache.ValueWrapper).get().assert().isEqualTo("test")
+    }
+
+    @Test
+    fun retrieveWhenMissingReturnsNull() {
+        coSpringCache.retrieve("retrieveMissing")!!.get().assert().isNull()
+    }
+
+    @Test
+    fun retrieveDoesNotReadDelegateOnCallerThread() {
+        val callerThread = Thread.currentThread()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        var lookupThread: Thread? = null
+        val cache = object : RawSpringCache(DefaultCacheValue.forever("cached")) {
+            override fun getCache(key: Any): CacheValue<Any?>? {
+                lookupThread = Thread.currentThread()
+                started.countDown()
+                release.await(5, TimeUnit.SECONDS)
+                return super.getCache(key)
+            }
+        }
+        val coSpringCache = CoSpringCache("async", cache)
+        val future = coSpringCache.retrieve("asyncLookup")!!
+
+        started.await(5, TimeUnit.SECONDS).assert().isTrue()
+        try {
+            (lookupThread == callerThread).assert().isFalse()
+        } finally {
+            release.countDown()
+        }
+        val valueWrapper = future.get()
+        valueWrapper.assert().isInstanceOf(SpringCache.ValueWrapper::class.java)
+        (valueWrapper as SpringCache.ValueWrapper).get().assert().isEqualTo("cached")
+    }
+
+    @Test
+    fun retrieveReturnsValueWrapperForCachedNull() {
+        coSpringCache.put("retrieveCachedNull", null)
+
+        val valueWrapper = coSpringCache.retrieve("retrieveCachedNull")!!.get()
+
+        valueWrapper.assert().isInstanceOf(SpringCache.ValueWrapper::class.java)
+        (valueWrapper as SpringCache.ValueWrapper).get().assert().isNull()
     }
 
     @Test
@@ -163,6 +282,45 @@ class CoSpringCacheTest {
     }
 
     @Test
+    fun retrieveWithLoaderKeepsCachedValue() {
+        var loadCount = 0
+        coSpringCache.put("asyncCached", "cached")
+
+        val actual = coSpringCache.retrieve("asyncCached") {
+            loadCount++
+            CompletableFuture.completedFuture("loaded")
+        }
+
+        actual.get().assert().isEqualTo("cached")
+        loadCount.assert().isZero()
+    }
+
+    @Test
+    fun retrieveWithLoaderKeepsCachedNull() {
+        var loadCount = 0
+        coSpringCache.put("asyncCachedNull", null)
+
+        val actual = coSpringCache.retrieve("asyncCachedNull") {
+            loadCount++
+            CompletableFuture.completedFuture("loaded")
+        }
+
+        actual.get().assert().isNull()
+        loadCount.assert().isZero()
+    }
+
+    @Test
+    fun retrieveWithLoaderReturnsFailedFutureWhenLoaderThrows() {
+        val actual = coSpringCache.retrieve<String>("asyncLoaderException") {
+            throw IllegalStateException("boom")
+        }
+
+        assertThrows<java.util.concurrent.ExecutionException> {
+            actual.get()
+        }.cause.assert().isInstanceOf(IllegalStateException::class.java)
+    }
+
+    @Test
     fun getCacheName() {
         coSpringCache.cacheName.assert().isEqualTo("test")
     }
@@ -170,6 +328,46 @@ class CoSpringCacheTest {
     @Test
     fun getDelegate() {
         coSpringCache.delegate.assert().isNotNull
+    }
+}
+
+private open class RawSpringCache(
+    private var cacheValue: CacheValue<Any?>? = null
+) : Cache<Any, Any?> {
+    var evicted: Boolean = false
+        private set
+
+    open override fun getCache(key: Any): CacheValue<Any?>? {
+        return cacheValue
+    }
+
+    override fun get(key: Any): Any? {
+        return cacheValue?.takeUnless {
+            it.isMissingGuard || it.isExpired
+        }?.value
+    }
+
+    override fun getTtlAt(key: Any): Long? {
+        return cacheValue?.takeUnless {
+            it.isMissingGuard
+        }?.ttlAt
+    }
+
+    override fun set(key: Any, ttlAt: Long, value: Any?) {
+        cacheValue = DefaultCacheValue(value, ttlAt)
+    }
+
+    override fun set(key: Any, value: Any?) {
+        cacheValue = DefaultCacheValue.forever(value)
+    }
+
+    override fun setCache(key: Any, value: CacheValue<Any?>) {
+        cacheValue = value
+    }
+
+    override fun evict(key: Any) {
+        evicted = true
+        cacheValue = null
     }
 }
 

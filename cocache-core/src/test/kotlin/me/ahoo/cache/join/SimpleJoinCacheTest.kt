@@ -12,8 +12,11 @@
  */
 package me.ahoo.cache.join
 
+import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.annotation.JoinCacheable
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinValue
@@ -99,11 +102,165 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
         orderCache.getCache(key).assert().isNull()
         orderAddressCache.getCache(key).assert().isNull()
     }
+
+    @Test
+    fun getWhenSecondValueIsMissingGuardTreatsSecondAsAbsent() {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+        val order = Order(orderId)
+        orderCache.setCache(orderId, DefaultCacheValue.forever(order))
+        val secondMissingGuard = DefaultCacheValue.missingGuard<CacheValue<OrderAddress>>(5)
+        orderAddressCache.setCache(orderId, secondMissingGuard)
+
+        val actualCacheValue = cache.getCache(orderId)
+        val actual = actualCacheValue!!.value
+
+        actualCacheValue.ttlAt.assert().isEqualTo(secondMissingGuard.ttlAt)
+        actual.firstValue.assert().isEqualTo(order)
+        actual.joinKey.assert().isEqualTo(orderId)
+        actual.secondValue.assert().isNull()
+    }
+
+    @Test
+    fun getWhenSecondValueIsAbsentKeepsFirstValue() {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+        val order = Order(orderId)
+        orderCache.setCache(orderId, DefaultCacheValue.forever(order))
+
+        val actual = cache[orderId]
+
+        actual.assert().isNotNull()
+        actual!!.firstValue.assert().isEqualTo(order)
+        actual.joinKey.assert().isEqualTo(orderId)
+        actual.secondValue.assert().isNull()
+    }
+
+    @Test
+    fun getWhenSecondValueIsExpiredTreatsSecondAsAbsent() {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+        val order = Order(orderId)
+        val firstCache = RawCache<Order>(DefaultCacheValue.forever(order))
+        val secondCache = RawCache<OrderAddress>(DefaultCacheValue(OrderAddress(order.id), ComputedTtlAt.at(-5)))
+        val cache = SimpleJoinCache(firstCache, secondCache) { firstValue -> firstValue.id }
+
+        val actual = cache[orderId]
+
+        actual.assert().isNotNull()
+        actual!!.firstValue.assert().isEqualTo(order)
+        actual.joinKey.assert().isEqualTo(orderId)
+        actual.secondValue.assert().isNull()
+    }
+
+    @Test
+    fun getWhenFirstValueIsExpiredReturnsMiss() {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+        val firstCache = RawCache<Order>(DefaultCacheValue(Order(orderId), ComputedTtlAt.at(-5)))
+        val secondCache = RawCache<OrderAddress>()
+        val cache = SimpleJoinCache(firstCache, secondCache) { firstValue -> firstValue.id }
+
+        cache.getCache(orderId).assert().isNull()
+    }
+
+    @Test
+    fun setJoinValueWithoutSecondValueDoesNotPopulateJoinCache() {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+        val order = Order(orderId)
+        val joinValue: JoinValue<Order, String, OrderAddress> = DefaultJoinValue(order, orderId, null)
+
+        cache.setCache(orderId, DefaultCacheValue.forever(joinValue))
+
+        orderCache[orderId].assert().isEqualTo(order)
+        orderAddressCache.getCache(orderId).assert().isNull()
+    }
+
+    @Test
+    fun setExpiredJoinValueEvictsPreviousJoinEntry() {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+        val oldOrder = Order(orderId)
+        val oldAddress = OrderAddress(orderId)
+        cache.setCache(
+            orderId,
+            DefaultCacheValue.forever(DefaultJoinValue(oldOrder, orderId, oldAddress))
+        )
+        orderCache.getCache(orderId).assert().isNotNull()
+        orderAddressCache.getCache(orderId).assert().isNotNull()
+
+        val newJoinKey = UuidGenerator.INSTANCE.generateAsString()
+        val expiredJoinValue: JoinValue<Order, String, OrderAddress> = DefaultJoinValue(
+            Order(newJoinKey),
+            newJoinKey,
+            null,
+        )
+
+        cache.setCache(orderId, DefaultCacheValue(expiredJoinValue, ComputedTtlAt.at(-5)))
+
+        orderCache.getCache(orderId).assert().isNull()
+        orderAddressCache.getCache(orderId).assert().isNull()
+        orderAddressCache.getCache(newJoinKey).assert().isNull()
+    }
+
+    @Test
+    fun evictWhenFirstValueIsAbsentStillCompletes() {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+
+        cache.evict(orderId)
+
+        orderCache.getCache(orderId).assert().isNull()
+        orderAddressCache.getCache(orderId).assert().isNull()
+    }
+
+    @Test
+    fun setMissingTtlPreservesTtlAtInFirstCache() {
+        val (key, _) = createCacheEntry()
+        val missingValue = DefaultCacheValue.missingGuard<CacheValue<JoinValue<Order, String, OrderAddress>>>(
+            missingGuard as MissingGuard,
+            5,
+        )
+
+        cache.setCache(key, missingValue)
+
+        orderCache.getCache(key)!!.ttlAt.assert().isEqualTo(missingValue.ttlAt)
+    }
 }
 
 data class Order(val id: String)
 
 data class OrderAddress(val orderId: String)
+
+private class RawCache<V>(
+    private var cacheValue: CacheValue<V>? = null
+) : Cache<String, V> {
+    override fun getCache(key: String): CacheValue<V>? {
+        return cacheValue
+    }
+
+    override fun get(key: String): V? {
+        return cacheValue?.takeUnless {
+            it.isMissingGuard || it.isExpired
+        }?.value
+    }
+
+    override fun getTtlAt(key: String): Long? {
+        return cacheValue?.takeUnless {
+            it.isMissingGuard
+        }?.ttlAt
+    }
+
+    override fun set(key: String, ttlAt: Long, value: V) {
+        cacheValue = DefaultCacheValue(value, ttlAt)
+    }
+
+    override fun set(key: String, value: V) {
+        cacheValue = DefaultCacheValue.forever(value)
+    }
+
+    override fun setCache(key: String, value: CacheValue<V>) {
+        cacheValue = value
+    }
+
+    override fun evict(key: String) {
+        cacheValue = null
+    }
+}
 
 @JoinCacheable(firstCacheName = "OrderAddress", joinCacheName = "Order")
 interface MockJoinCache : JoinCache<String, OrderAddress, String, Order>

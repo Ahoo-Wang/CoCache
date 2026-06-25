@@ -28,11 +28,14 @@ import me.ahoo.cache.spring.boot.starter.customize.UserPlaceholderCache
 import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.cosid.machine.HostAddressSupplier
 import me.ahoo.cosid.machine.LocalHostAddressSupplier
+import me.ahoo.test.asserts.assert
 import org.assertj.core.api.AssertionsForInterfaceTypes.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
 import org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
+import org.springframework.cache.CacheManager
+import org.springframework.cache.concurrent.ConcurrentMapCacheManager
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
 
 internal class CoCacheAutoConfigurationTest {
@@ -103,6 +106,45 @@ internal class CoCacheAutoConfigurationTest {
                     .hasSingleBean(CacheEvictedEventBus::class.java)
                     .hasSingleBean(CacheFactory::class.java)
                 context.getBean(ClientIdGenerator::class.java).generate()
+            }
+    }
+
+    @Test
+    fun contextLoadsWithCustomClientIdGeneratorAndHostAddressSupplier() {
+        val customClientIdGenerator = object : ClientIdGenerator {
+            override fun generate(): String {
+                return "custom-client"
+            }
+        }
+
+        contextRunner
+            .withBean(HostAddressSupplier::class.java, { LocalHostAddressSupplier.INSTANCE })
+            .withBean(ClientIdGenerator::class.java, { customClientIdGenerator })
+            .withUserConfiguration(
+                JacksonAutoConfiguration::class.java,
+                DataRedisAutoConfiguration::class.java,
+                CoCacheAutoConfiguration::class.java
+            )
+            .run { context ->
+                context.getBeansOfType(ClientIdGenerator::class.java).size.assert().isOne()
+                context.getBean(ClientIdGenerator::class.java).assert().isEqualTo(customClientIdGenerator)
+            }
+    }
+
+    @Test
+    fun contextLoadsWithCustomCacheManager() {
+        val customCacheManager = ConcurrentMapCacheManager("custom")
+
+        contextRunner
+            .withBean(CacheManager::class.java, { customCacheManager })
+            .withUserConfiguration(
+                JacksonAutoConfiguration::class.java,
+                DataRedisAutoConfiguration::class.java,
+                CoCacheAutoConfiguration::class.java
+            )
+            .run { context ->
+                context.getBeansOfType(CacheManager::class.java).size.assert().isOne()
+                context.getBean(CacheManager::class.java).assert().isEqualTo(customCacheManager)
             }
     }
 }

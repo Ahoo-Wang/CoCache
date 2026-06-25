@@ -131,7 +131,7 @@ abstract class MultipleInstanceSyncSpec<K, V> {
 
         currentCache.evict(key)
         currentCache[key].assert().isNull()
-        latch2.await(1, TimeUnit.SECONDS).assert().isTrue()
+        latch3.await(1, TimeUnit.SECONDS).assert().isTrue()
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
         otherCache.clientSideCache[cacheKey].assert().isNull()
         otherCache[key].assert().isNull()

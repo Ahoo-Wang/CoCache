@@ -17,7 +17,35 @@ on:
     types: [created]
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          server-id: github
+          settings-path: ${{ github.workspace }}
+
+      - name: Check
+        run: ./gradlew clean check
+
   github-deploy:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,6 +70,7 @@ jobs:
           SIGNING_SECRETKEY: ${{ secrets.SIGNING_SECRETKEY }}
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
   central-deploy:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

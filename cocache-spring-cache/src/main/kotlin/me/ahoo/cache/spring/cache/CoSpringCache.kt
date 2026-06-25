@@ -39,21 +39,38 @@ class CoSpringCache(
 
     override fun get(key: Any): SpringCache.ValueWrapper? {
         val cacheValue = delegate.getCache(key) ?: return null
+        if (cacheValue.isExpired) {
+            delegate.evict(key)
+            return null
+        }
+        if (cacheValue.isMissingGuard) {
+            return null
+        }
         return SpringCacheValueWrapper(cacheValue)
     }
 
     override fun <T : Any> get(key: Any, type: Class<T>?): T? {
-        return delegate.get(key) as T?
+        val value = get(key)?.get() ?: return null
+        if (type != null && !type.isInstance(value)) {
+            throw IllegalStateException(
+                "Cached value is not of required type [" + type.name + "]: " + value
+            )
+        }
+        return value as T
     }
 
+    @Suppress("TooGenericExceptionCaught")
     override fun <T : Any> get(key: Any, valueLoader: Callable<T>): T? {
-        val value = delegate.get(key)
-        if (value != null) {
-            return value as T
+        get(key)?.let {
+            return it.get() as T?
         }
-        val loadedValue = valueLoader.call()
-        delegate.set(key, loadedValue)
-        return loadedValue
+        return try {
+            val loadedValue = valueLoader.call()
+            delegate.set(key, loadedValue)
+            loadedValue
+        } catch (error: Throwable) {
+            throw SpringCache.ValueRetrievalException(key, valueLoader, error)
+        }
     }
 
     override fun put(key: Any, value: Any?) {
@@ -76,11 +93,10 @@ class CoSpringCache(
      * needed unwrapping via `CacheDelegated` — silently dropped `clear()`,
      * violating Spring's `Cache.clear()` contract.
      */
-    @Suppress("UNCHECKED_CAST")
     private fun clearDelegate(cache: Cache<*, *>) {
         // Unwrap proxy delegates first (plain cache proxies implement CacheDelegated).
         if (cache is CacheDelegated<*>) {
-            clearDelegate(cache.delegate as Cache<*, *>)
+            clearDelegate(cache.delegate)
             return
         }
         when (cache) {
@@ -97,22 +113,31 @@ class CoSpringCache(
     }
 
     override fun retrieve(key: Any): CompletableFuture<*>? {
-        return CompletableFuture.supplyAsync {
-            delegate.get(key)
+        return retrieveValueWrapper(key)
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    override fun <T : Any> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> {
+        return retrieveValueWrapper(key).thenCompose { valueWrapper ->
+            if (valueWrapper == null) {
+                return@thenCompose try {
+                    valueLoader.get().thenApply {
+                        delegate.set(key, it)
+                        it
+                    }
+                } catch (error: Throwable) {
+                    CompletableFuture.failedFuture(error)
+                }
+            }
+            @Suppress("UNCHECKED_CAST")
+            CompletableFuture.completedFuture(valueWrapper.get() as T?)
+                as CompletableFuture<T>
         }
     }
 
-    override fun <T : Any> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> {
+    private fun retrieveValueWrapper(key: Any): CompletableFuture<SpringCache.ValueWrapper?> {
         return CompletableFuture.supplyAsync {
-            delegate.get(key) as T?
-        }.thenCompose<T?> {
-            if (it != null) {
-                return@thenCompose CompletableFuture.completedFuture(it)
-            }
-            valueLoader.get().thenApply {
-                delegate.set(key, it)
-                it
-            }
+            get(key)
         }
     }
 }

@@ -13,6 +13,7 @@
 
 package me.ahoo.cache.test
 
+import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
@@ -94,6 +95,22 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         CACHE_SOURCE_VALUE.set(cacheValue)
         coherentCache[key].assert().isEqualTo(value)
         CACHE_SOURCE_VALUE.remove()
+    }
+
+    @Test
+    fun getExpiredValueFromCacheSourceDoesNotPopulateCaches() {
+        val (key, value) = createCacheEntry()
+        val cacheValue = DefaultCacheValue(value, ComputedTtlAt.at(-5))
+        CACHE_SOURCE_VALUE.set(cacheValue)
+        val cacheKey = keyConverter.toStringKey(key)
+
+        try {
+            coherentCache.getCache(key)!!.isExpired.assert().isTrue()
+            clientSideCache.getCache(cacheKey).assert().isNull()
+            distributedCache.getCache(cacheKey).assert().isNull()
+        } finally {
+            CACHE_SOURCE_VALUE.remove()
+        }
     }
 
     @Test
