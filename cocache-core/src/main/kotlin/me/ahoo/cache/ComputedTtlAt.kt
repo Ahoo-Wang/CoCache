@@ -25,13 +25,13 @@ interface ComputedTtlAt : TtlAt {
         get() = if (isForever) {
             false
         } else {
-            CacheSecondClock.INSTANCE.currentTime() > ttlAt
+            CacheSecondClock.INSTANCE.currentTime() >= ttlAt
         }
 
     override val expiredDuration: Duration
         get() {
             val currentTime = CacheSecondClock.INSTANCE.currentTime()
-            return if (currentTime > ttlAt) {
+            return if (currentTime >= ttlAt) {
                 Duration.ZERO
             } else {
                 Duration.ofSeconds(ttlAt - currentTime)

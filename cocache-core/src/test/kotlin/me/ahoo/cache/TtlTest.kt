@@ -16,6 +16,7 @@ package me.ahoo.cache
 import me.ahoo.cache.util.CacheSecondClock
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
+import java.time.Duration
 
 class TtlTest {
     @Test
@@ -28,6 +29,15 @@ class TtlTest {
     fun at() {
         val ttlAt = ComputedTtlAt.at(10)
         ttlAt.assert().isGreaterThan(CacheSecondClock.INSTANCE.currentTime())
+    }
+
+    @Test
+    fun expiresAtCurrentSecondIsExpired() {
+        val ttlAt = CacheSecondClock.INSTANCE.currentTime()
+        val cacheValue = DefaultCacheValue("value", ttlAt)
+
+        cacheValue.isExpired.assert().isTrue()
+        cacheValue.expiredDuration.assert().isEqualTo(Duration.ZERO)
     }
 
     @Test
