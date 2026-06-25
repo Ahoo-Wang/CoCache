@@ -113,19 +113,31 @@ class CoSpringCache(
     }
 
     override fun retrieve(key: Any): CompletableFuture<*>? {
-        val valueWrapper = get(key) ?: return null
-        return CompletableFuture.completedFuture(valueWrapper.get())
+        return retrieveValueWrapper(key)
     }
 
+    @Suppress("TooGenericExceptionCaught")
     override fun <T : Any> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> {
-        get(key)?.let {
+        return retrieveValueWrapper(key).thenCompose { valueWrapper ->
+            if (valueWrapper == null) {
+                return@thenCompose try {
+                    valueLoader.get().thenApply {
+                        delegate.set(key, it)
+                        it
+                    }
+                } catch (error: Throwable) {
+                    CompletableFuture.failedFuture(error)
+                }
+            }
             @Suppress("UNCHECKED_CAST")
-            return CompletableFuture.completedFuture(it.get() as T?)
+            CompletableFuture.completedFuture(valueWrapper.get() as T?)
                 as CompletableFuture<T>
         }
-        return valueLoader.get().thenApply {
-            delegate.set(key, it)
-            it
+    }
+
+    private fun retrieveValueWrapper(key: Any): CompletableFuture<SpringCache.ValueWrapper?> {
+        return CompletableFuture.supplyAsync {
+            get(key)
         }
     }
 }

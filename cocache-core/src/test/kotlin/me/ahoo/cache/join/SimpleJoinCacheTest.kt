@@ -108,12 +108,14 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
         val orderId = UuidGenerator.INSTANCE.generateAsString()
         val order = Order(orderId)
         orderCache.setCache(orderId, DefaultCacheValue.forever(order))
-        orderAddressCache.setCache(orderId, DefaultCacheValue.missingGuard())
+        val secondMissingGuard = DefaultCacheValue.missingGuard<CacheValue<OrderAddress>>(5)
+        orderAddressCache.setCache(orderId, secondMissingGuard)
 
-        val actual = cache[orderId]
+        val actualCacheValue = cache.getCache(orderId)
+        val actual = actualCacheValue!!.value
 
-        actual.assert().isNotNull()
-        actual!!.firstValue.assert().isEqualTo(order)
+        actualCacheValue.ttlAt.assert().isEqualTo(secondMissingGuard.ttlAt)
+        actual.firstValue.assert().isEqualTo(order)
         actual.joinKey.assert().isEqualTo(orderId)
         actual.secondValue.assert().isNull()
     }
@@ -168,6 +170,32 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
 
         orderCache[orderId].assert().isEqualTo(order)
         orderAddressCache.getCache(orderId).assert().isNull()
+    }
+
+    @Test
+    fun setExpiredJoinValueEvictsPreviousJoinEntry() {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+        val oldOrder = Order(orderId)
+        val oldAddress = OrderAddress(orderId)
+        cache.setCache(
+            orderId,
+            DefaultCacheValue.forever(DefaultJoinValue(oldOrder, orderId, oldAddress))
+        )
+        orderCache.getCache(orderId).assert().isNotNull()
+        orderAddressCache.getCache(orderId).assert().isNotNull()
+
+        val newJoinKey = UuidGenerator.INSTANCE.generateAsString()
+        val expiredJoinValue: JoinValue<Order, String, OrderAddress> = DefaultJoinValue(
+            Order(newJoinKey),
+            newJoinKey,
+            null,
+        )
+
+        cache.setCache(orderId, DefaultCacheValue(expiredJoinValue, ComputedTtlAt.at(-5)))
+
+        orderCache.getCache(orderId).assert().isNull()
+        orderAddressCache.getCache(orderId).assert().isNull()
+        orderAddressCache.getCache(newJoinKey).assert().isNull()
     }
 
     @Test

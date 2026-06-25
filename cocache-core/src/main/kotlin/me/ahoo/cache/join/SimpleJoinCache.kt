@@ -50,7 +50,10 @@ class SimpleJoinCache<K1, V1, K2, V2>(
             it.isMissingGuard || it.isExpired
         }
         val joinValue = DefaultJoinValue(firstCacheValue.value, joinKey, availableSecondCacheValue?.value)
-        val ttlAt = getJoinTtlAt(firstCacheValue.ttlAt, availableSecondCacheValue?.ttlAt)
+        val secondTtlAt = secondCacheValue?.takeUnless {
+            it.isExpired
+        }?.ttlAt
+        val ttlAt = getJoinTtlAt(firstCacheValue.ttlAt, secondTtlAt)
         return DefaultCacheValue(value = joinValue, ttlAt = ttlAt)
     }
 
@@ -66,6 +69,10 @@ class SimpleJoinCache<K1, V1, K2, V2>(
 
     @Suppress("UNCHECKED_CAST")
     override fun setCache(key: K1, value: CacheValue<JoinValue<V1, K2, V2>>) {
+        if (value.isExpired) {
+            evict(key)
+            return
+        }
         if (value.isMissingGuard) {
             firstCache.setCache(key, DefaultCacheValue(DefaultCacheValue.missingGuardValue(), value.ttlAt))
             return
