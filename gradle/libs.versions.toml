@@ -7,7 +7,7 @@ kotlin-logging = "8.0.4"
 springdoc = "3.0.3"
 # testing
 junit = "6.1.0"
-fluent-assert = "0.2.8"
+fluent-assert = "1.0.0"
 mockk = "1.14.11"
 # plugins
 detekt = "1.23.8"
