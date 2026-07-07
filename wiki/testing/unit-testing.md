@@ -14,7 +14,7 @@ Add the `cocache-test` module as a test dependency:
 ```kotlin
 // build.gradle.kts
 dependencies {
-    testImplementation("me.ahoo.cocache:cocache-test:4.0.2")
+    testImplementation("me.ahoo.cocache:cocache-test:4.2.0")
     testImplementation("me.ahoo.test:fluent-assert-core")
     testImplementation("io.mockk:mockk")
 }

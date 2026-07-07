@@ -5,7 +5,7 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v4.0.2（当前版本）
+## v4.2.0（当前版本）
 
 **模块组：** `me.ahoo.cocache`
 
@@ -13,23 +13,23 @@ description: CoCache 版本发布历史和重要变更。
 
 | 依赖 | 版本 |
 |------|------|
-| Spring Boot | 4.0.5 |
+| Spring Boot | 4.1.0 |
 | CosId | 3.2.0 |
-| Guava | 33.5.0-jre |
-| Kotlin | 2.3.20 |
-| JUnit | 6.0.3 |
+| Guava | 33.6.0-jre |
+| Kotlin | 2.4.0 |
+| JUnit | 6.1.1 |
 
 ### Gradle 配置
 
 ```kotlin
-implementation("me.ahoo.cocache:cocache-spring-boot-starter:4.0.2")
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:4.2.0")
 ```
 
 ```xml
 <dependency>
   <groupId>me.ahoo.cocache</groupId>
   <artifactId>cocache-spring-boot-starter</artifactId>
-  <version>4.0.2</version>
+  <version>4.2.0</version>
 </dependency>
 ```
 

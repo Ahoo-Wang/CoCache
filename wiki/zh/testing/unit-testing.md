@@ -14,7 +14,7 @@ CoCache 提供了抽象测试规范类（TCK）来验证缓存行为。本指南
 ```kotlin
 // build.gradle.kts
 dependencies {
-    testImplementation("me.ahoo.cocache:cocache-test:4.0.2")
+    testImplementation("me.ahoo.cocache:cocache-test:4.2.0")
     testImplementation("me.ahoo.test:fluent-assert-core")
     testImplementation("io.mockk:mockk")
 }

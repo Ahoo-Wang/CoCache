@@ -5,7 +5,7 @@ description: Level 2 Distributed Coherence Cache Framework for Java/Kotlin - Ove
 
 # CoCache Introduction
 
-**CoCache** is a **Level 2 Distributed Coherence Cache Framework** for Java/Kotlin that provides a two-level caching architecture with event-driven coherence across distributed instances. It is published under the group `me.ahoo.cocache` at version **4.0.2**.
+**CoCache** is a **Level 2 Distributed Coherence Cache Framework** for Java/Kotlin that provides a two-level caching architecture with event-driven coherence across distributed instances. It is published under the group `me.ahoo.cocache` at version **4.2.0**.
 
 CoCache sits between your application and your data source, adding two cache layers -- a local in-memory L2 cache (Guava or Caffeine) and a shared distributed L1 cache (Redis) -- while keeping all instances coherent through an event bus.
 
@@ -219,7 +219,7 @@ autonumber
 | Property | Value | Source |
 |----------|-------|--------|
 | Group | `me.ahoo.cocache` | [gradle.properties:14](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L14) |
-| Version | `4.0.2` | [gradle.properties:15](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
+| Version | `4.2.0` | [gradle.properties:15](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
 | License | Apache License 2.0 | [gradle.properties:23](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L23) |
 | JDK | 17+ (via `jvmToolchain`) | [build.gradle.kts](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts) |
 | Gradle | 9.4.1 (wrapper) | [gradle/wrapper/gradle-wrapper.properties](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/wrapper/gradle-wrapper.properties) |
