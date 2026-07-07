@@ -1,6 +1,9 @@
 .gradle
 /build/
 
+# Module Gradle build output
+**/build/
+
 # Ignore Gradle GUI config
 gradle-app.setting
 
@@ -13,4 +16,12 @@ gradle-app.setting
 # # Work around https://youtrack.jetbrains.com/issue/IDEA-116898
 # gradle/wrapper/gradle-wrapper.properties
 
+# IntelliJ IDEA
+.idea/
+
+# macOS
+.DS_Store
+
+# Agent workspaces
 .superpowers/
+skills/cocache-workspace/
