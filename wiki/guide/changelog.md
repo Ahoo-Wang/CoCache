@@ -14,7 +14,7 @@ description: Release history and notable changes for CoCache.
 | Dependency | Version |
 |------------|---------|
 | Spring Boot | 4.0.5 |
-| CosId | 3.0.5 |
+| CosId | 3.2.0 |
 | Guava | 33.5.0-jre |
 | Kotlin | 2.3.20 |
 | JUnit | 6.0.3 |
