@@ -71,9 +71,9 @@ Detekt 作为 `./gradlew check` 的一部分自动运行。提交前务必运行
 
 | 工具 | 用途 | 版本 | 来源 |
 |------|------|------|------|
-| JUnit 5 Jupiter | 测试框架和参数化测试 | 6.0.3 | [`libs.versions.toml:9`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L9) |
-| mockk | Kotlin 原生模拟框架 | 1.14.9 | [`libs.versions.toml:11`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L11) |
-| fluent-assert | Kotlin 流式断言库（封装 AssertJ） | 0.2.6 | [`libs.versions.toml:10`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L10) |
+| JUnit 5 Jupiter | 测试框架和参数化测试 | 6.1.1 | [`libs.versions.toml:9`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L9) |
+| mockk | Kotlin 原生模拟框架 | 1.14.11 | [`libs.versions.toml:11`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L11) |
+| fluent-assert | Kotlin 流式断言库（封装 AssertJ） | 1.0.0 | [`libs.versions.toml:10`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L10) |
 
 ### 断言风格
 
@@ -338,7 +338,7 @@ val serverProjects = setOf(
 | `refactor` | 代码重构 | `refactor(api): extract CacheGetter interface` |
 | `test` | 添加或更新测试 | `test(core): add concurrent access spec` |
 | `docs` | 文档 | `docs(wiki): add publishing guide` |
-| `chore` | 构建、CI、依赖 | `chore(deps): upgrade Kotlin to 2.3.20` |
+| `chore` | 构建、CI、依赖 | `chore(deps): upgrade Kotlin to 2.4.0` |
 | `ci` | CI/CD 变更 | `ci: add CodeQL analysis workflow` |
 
 ## Pull Request 工作流

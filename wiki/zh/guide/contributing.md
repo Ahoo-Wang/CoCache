@@ -24,8 +24,8 @@ cd CoCache
 ## 开发环境
 
 - **JDK 17+**（通过 [build.gradle.kts](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts) 中的 `jvmToolchain` 配置）
-- **Gradle 9.4.1**（包含 wrapper）
-- **Kotlin 2.3.20**，编译参数 `-Xjsr305=strict`、`-Xjvm-default=all-compatibility`
+- **Gradle 9.6.1**（包含 wrapper）
+- **Kotlin 2.4.0**，编译参数 `-Xjsr305=strict`、`-Xjvm-default=all-compatibility`
 
 ## 代码风格
 

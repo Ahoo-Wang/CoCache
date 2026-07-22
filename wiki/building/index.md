@@ -5,7 +5,7 @@ description: Build system configuration, Gradle setup, CI/CD pipelines, and qual
 
 # Build & CI Overview
 
-CoCache uses **Gradle 9.4.1** with the Kotlin DSL, targeting **JDK 17+** across all library modules. The build pipeline integrates Detekt for static analysis, Dokka for API documentation, JaCoCo for code coverage, and GitHub Actions for continuous integration and deployment.
+CoCache uses **Gradle 9.6.1** with the Kotlin DSL, targeting **JDK 17+** across all library modules. The build pipeline integrates Detekt for static analysis, Dokka for API documentation, JaCoCo for code coverage, and GitHub Actions for continuous integration and deployment.
 
 ## Gradle Setup
 
@@ -117,14 +117,14 @@ api(platform(dependenciesProject))
 
 | Dependency | Version | Source |
 |------------|---------|--------|
-| Kotlin | 2.3.20 | [`libs.versions.toml:14`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L14) |
-| Spring Boot | 4.0.5 | [`libs.versions.toml:3`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L3) |
+| Kotlin | 2.4.0 | [`libs.versions.toml:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L15) |
+| Spring Boot | 4.1.0 | [`libs.versions.toml:3`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L3) |
 | CoSid | 3.2.0 | [`libs.versions.toml:4`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L4) |
 | Detekt | 1.23.8 | [`libs.versions.toml:13`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L13) |
 | Dokka | 2.2.0 | [`libs.versions.toml:14`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L14) |
-| JUnit | 6.0.3 | [`libs.versions.toml:9`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L9) |
-| fluent-assert | 0.2.6 | [`libs.versions.toml:10`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L10) |
-| mockk | 1.14.9 | [`libs.versions.toml:11`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L11) |
+| JUnit | 6.1.1 | [`libs.versions.toml:9`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L9) |
+| fluent-assert | 1.0.0 | [`libs.versions.toml:10`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L10) |
+| mockk | 1.14.11 | [`libs.versions.toml:11`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L11) |
 
 ## Module Build Graph
 
@@ -409,11 +409,11 @@ Both jobs require JDK 17 (Temurin) and use PGP signing with CI-injected secrets.
 
 ## Manifold Configuration
 
-The Gradle wrapper is pinned to Gradle 9.4.1:
+The Gradle wrapper is pinned to Gradle 9.6.1:
 
 ```properties
 # [gradle-wrapper.properties:3](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/wrapper/gradle-wrapper.properties#L3)
-distributionUrl=https\://services.gradle.org/distributions/gradle-9.4.1-bin.zip
+distributionUrl=https\://services.gradle.org/distributions/gradle-9.6.1-bin.zip
 ```
 
 The [`settings.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/settings.gradle.kts) uses the `foojay-resolver-convention` plugin (v1.0.0) for automatic JDK toolchain resolution.

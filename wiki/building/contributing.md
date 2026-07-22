@@ -71,9 +71,9 @@ All contributions must include appropriate tests. CoCache uses **JUnit 5 (Jupite
 
 | Tool | Purpose | Version | Source |
 |------|---------|---------|--------|
-| JUnit 5 Jupiter | Test framework and parameterized tests | 6.0.3 | [`libs.versions.toml:9`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L9) |
-| mockk | Kotlin-native mocking | 1.14.9 | [`libs.versions.toml:11`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L11) |
-| fluent-assert | Fluent Kotlin assertions (wraps AssertJ) | 0.2.6 | [`libs.versions.toml:10`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L10) |
+| JUnit 5 Jupiter | Test framework and parameterized tests | 6.1.1 | [`libs.versions.toml:9`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L9) |
+| mockk | Kotlin-native mocking | 1.14.11 | [`libs.versions.toml:11`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L11) |
+| fluent-assert | Fluent Kotlin assertions (wraps AssertJ) | 1.0.0 | [`libs.versions.toml:10`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L10) |
 
 ### Assertion Style
 
@@ -338,7 +338,7 @@ Use conventional commit format:
 | `refactor` | Code restructuring | `refactor(api): extract CacheGetter interface` |
 | `test` | Adding or updating tests | `test(core): add concurrent access spec` |
 | `docs` | Documentation | `docs(wiki): add publishing guide` |
-| `chore` | Build, CI, deps | `chore(deps): upgrade Kotlin to 2.3.20` |
+| `chore` | Build, CI, deps | `chore(deps): upgrade Kotlin to 2.4.0` |
 | `ci` | CI/CD changes | `ci: add CodeQL analysis workflow` |
 
 ## Pull Request Workflow

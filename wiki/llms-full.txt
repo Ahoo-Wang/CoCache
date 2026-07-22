@@ -1,10 +1,13 @@
-# CoCache Wiki — Full Content
+# CoCache
+> Level 2 Distributed Coherence Cache Framework for Java/Kotlin. Two-level caching (L2 local + L1 distributed) with event-driven coherence, annotation-based configuration, and proxy-based cache interfaces.
+## Onboarding
+## Onboarding
+- [Contributor Guide](onboarding/contributor.md)
+- [Staff Engineer Guide](onboarding/staff-engineer.md)
+- [Executive Guide](onboarding/executive.md)
+- [Product Manager Guide](onboarding/product-manager.md)
 
-> Level 2 Distributed Coherence Cache Framework for Java/Kotlin. Complete wiki content for LLM consumption.
-
-
-<doc title="Contributor Onboarding Guide" path="onboarding/contributor.md">
-
+<doc title="Contributor Guide" path="onboarding/contributor.md">
 
 # Contributor Onboarding Guide
 
@@ -13,6 +16,35 @@ you need to become an effective contributor to the CoCache framework -- from the
 language and framework foundations, through the core architecture and domain model,
 to hands-on productivity with the build, test, and contribution workflow.
 
+---
+
+## Table of Contents
+
+- [Part I: Language and Framework Foundations](#part-i-language-and-framework-foundations)
+  - [1.1 Kotlin Fundamentals](#11-kotlin-fundamentals)
+  - [1.2 Java Interop Essentials](#12-java-interop-essentials)
+  - [1.3 Gradle Build System](#13-gradle-build-system)
+  - [1.4 Spring Boot Integration](#14-spring-boot-integration)
+  - [1.5 Guava and Caffeine Libraries](#15-guava-and-caffeine-libraries)
+  - [1.6 Redis](#16-redis)
+- [Part II: CoCache Architecture and Domain Model](#part-ii-cocache-architecture-and-domain-model)
+  - [2.1 High-Level Architecture](#21-high-level-architecture)
+  - [2.2 Module Map](#22-module-map)
+  - [2.3 L0 / L1 / L2 Cache Layers](#23-l0--l1--l2-cache-layers)
+  - [2.4 Cache Coherence via Event Bus](#24-cache-coherence-via-event-bus)
+  - [2.5 Proxy-Based Caching](#25-proxy-based-caching)
+  - [2.6 JoinCache Pattern](#26-join-cache-pattern)
+  - [2.7 Cache Stampede and Penetration Protection](#27-cache-stampede-and-penetration-protection)
+- [Part III: Getting Productive](#part-iii-getting-productive)
+  - [3.1 Environment Setup](#31-environment-setup)
+  - [3.2 Building the Project](#32-building-the-project)
+  - [3.3 Running Tests](#33-running-tests)
+  - [3.4 Test Compatibility Kit (TCK)](#34-test-compatibility-kit-tck)
+  - [3.5 Contributing Workflow](#35-contributing-workflow)
+- [Glossary](#glossary)
+- [Key File Reference](#key-file-reference)
+
+---
 
 ## Part I: Language and Framework Foundations
 
@@ -94,7 +126,7 @@ Key interop patterns you will see in the codebase:
 
 ### 1.3 Gradle Build System
 
-CoCache uses **Gradle 9.4.1** (wrapper). The build is configured via
+CoCache uses **Gradle 9.6.1** (wrapper). The build is configured via
 [build.gradle.kts](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts) at the root, with each module having its
 own build file.
 
@@ -148,7 +180,7 @@ This ensures every module uses the same dependency versions.
 
 ### 1.4 Spring Boot Integration
 
-CoCache integrates with **Spring Boot 4.0.5**. The Spring integration lives in
+CoCache integrates with **Spring Boot 4.1.0**. The Spring integration lives in
 three modules:
 
 - **`cocache-spring`** -- Core Spring integration (`@EnableCoCache`, factory beans,
@@ -219,6 +251,512 @@ The `RedisCacheEvictedEventBus` ([cocache-spring-redis/src/main/kotlin/me/ahoo/c
 uses Redis Pub/Sub to broadcast eviction events across all application instances.
 Each cache name maps to a separate Redis Pub/Sub channel.
 
+---
+
+## Part II: CoCache Architecture and Domain Model
+
+### 2.1 High-Level Architecture
+
+CoCache implements a **two-level distributed coherence cache**. The fundamental idea
+is: every application instance maintains a local in-memory cache (L2) that is kept
+coherent across instances through a shared distributed cache (L1) and an event bus.
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'secondaryColor': '#161b22', 'tertiaryColor': '#161b22'}}}%%
+graph TB
+    subgraph sg_60 ["Application Instance A"]
+        CA["Cache Interface Proxy"]
+        L2A["L2: Local Cache<br>(Guava / Caffeine)"]
+    end
+
+    subgraph sg_61 ["Application Instance B"]
+        CB["Cache Interface Proxy"]
+        L2B["L2: Local Cache<br>(Guava / Caffeine)"]
+    end
+
+    subgraph sg_62 ["Shared Infrastructure"]
+        L1["L1: Distributed Cache<br>(Redis)"]
+        EB["Event Bus<br>(Redis Pub/Sub)"]
+        DB["L0: DataSource<br>(Database)"]
+    end
+
+    CA --> L2A
+    CB --> L2B
+    L2A -->|"miss"| L1
+    L2B -->|"miss"| L1
+    L1 -->|"miss"| DB
+    L1 -->|"publish evict"| EB
+    EB -->|"notify"| L2A
+    EB -->|"notify"| L2B
+
+    style CA fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style L2A fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style L2B fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style EB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style DB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+```
+
+### 2.2 Module Map
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
+graph LR
+    subgraph sg_63 ["API Layer"]
+        API["cocache-api"]
+    end
+
+    subgraph sg_64 ["Core Layer"]
+        CORE["cocache-core"]
+    end
+
+    subgraph sg_65 ["Spring Layer"]
+        SPRING["cocache-spring"]
+        REDIS["cocache-spring-redis"]
+        SCACHE["cocache-spring-cache"]
+        STARTER["cocache-spring-boot-starter"]
+    end
+
+    subgraph sg_66 ["Support"]
+        TEST["cocache-test"]
+        EXAMPLE["cocache-example"]
+        BOM["cocache-bom"]
+        DEPS["cocache-dependencies"]
+    end
+
+    CORE --> API
+    SPRING --> CORE
+    REDIS --> SPRING
+    SCACHE --> SPRING
+    STARTER --> REDIS
+    STARTER --> SCACHE
+    TEST --> CORE
+    EXAMPLE --> STARTER
+
+    style API fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CORE fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style SPRING fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style REDIS fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style SCACHE fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style STARTER fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style TEST fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style EXAMPLE fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style BOM fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style DEPS fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+```
+
+| Module | Purpose |
+|--------|---------|
+| `cocache-api` | Core interfaces: `Cache`, `CacheGetter`, `CacheSetter`, `ClientSideCache`, `CacheSource`, annotations |
+| `cocache-core` | Default implementations: `DefaultCoherentCache`, `ComputedCache`, proxy handlers, Guava/Caffeine clients, bloom filter |
+| `cocache-spring` | Spring integration: `@EnableCoCache`, `CoCacheRegistrar`, `SpringCacheFactory` |
+| `cocache-spring-redis` | Redis L1 cache: `RedisDistributedCache`, `RedisCacheEvictedEventBus` |
+| `cocache-spring-cache` | Spring Cache bridge: `CoCacheManager`, `CoSpringCache` |
+| `cocache-spring-boot-starter` | Auto-configuration for Spring Boot |
+| `cocache-test` | TCK abstract specs: `CacheSpec`, `DistributedCacheSpec`, `ClientSideCacheSpec`, `DefaultCoherentCacheSpec` |
+| `cocache-example` | Reference application showing usage patterns |
+
+### 2.3 L0 / L1 / L2 Cache Layers
+
+CoCache uses a three-tier terminology for data access:
+
+| Layer | Name | Component | Latency | Shared? |
+|-------|------|-----------|---------|---------|
+| **L2** | Local Cache | `ClientSideCache<V>` | ~microseconds | Per-instance |
+| **L1** | Distributed Cache | `DistributedCache<V>` | ~milliseconds (network) | All instances |
+| **L0** | Data Source | `CacheSource<K, V>` | ~milliseconds to seconds | N/A |
+
+#### Cache Read Flow
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
+sequenceDiagram
+    autonumber
+    participant App as Application
+    participant L2 as L2: ClientSideCache
+    participant BF as KeyFilter (Bloom)
+    participant L1 as L1: DistributedCache
+    participant Lock as Per-Key Lock
+    participant L0 as L0: CacheSource
+    participant EB as Event Bus
+
+    App->>L2: getCache(key)
+    alt L2 hit and not expired
+        L2-->>App: return CacheValue
+    else L2 miss or expired
+        L2->>BF: notExist(key)?
+        alt Key filtered (does not exist)
+            BF-->>App: return MissingGuard
+        else Key might exist
+            BF->>L1: getCache(key)
+            alt L1 hit and not expired
+                L1->>L2: setCache(key, value)
+                L1-->>App: return CacheValue
+            else L1 miss
+                L1->>Lock: synchronized(lock)
+                Note over Lock: Double-check L2 and L1
+                Lock->>L0: loadCacheValue(key)
+                alt Value found
+                    L0->>L2: setCache
+                    L0->>L1: setCache
+                    L0->>EB: publish(CacheEvictedEvent)
+                    L0-->>App: return CacheValue
+                else Value not found
+                    L0->>L2: set MissingGuard
+                    L0->>L1: set MissingGuard
+                    L0-->>App: return null
+                end
+            end
+        end
+    end
+```
+
+The key source for this flow is
+[cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L89](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L89).
+
+The method `getL2Cache()` ([cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt:50](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L50))
+first checks L2, then the bloom filter, then L1. If all miss, the per-key lock is
+acquired and the check is repeated (double-check locking pattern) before falling
+through to L0.
+
+#### Cache Write Flow
+
+When a value is written, it is set on **both** L2 and L1 simultaneously:
+
+```kotlin
+// DefaultCoherentCache.setCache() -- line 137
+private fun setCache(cacheKey: String, cacheValue: CacheValue<V>) {
+    clientSideCache.setCache(cacheKey, cacheValue)  // L2
+    distributedCache.setCache(cacheKey, cacheValue)  // L1
+}
+```
+
+An eviction event is then published to notify other instances.
+
+#### Cache Evict Flow
+
+Eviction removes the entry from both L2 and L1, then publishes an event:
+
+```kotlin
+// DefaultCoherentCache.evict() -- line 151
+override fun evict(key: K) {
+    val cacheKey = keyConverter.toStringKey(key)
+    clientSideCache.evict(cacheKey)         // L2
+    distributedCache.evict(cacheKey)        // L1
+    cacheEvictedEventBus.publish(...)       // notify others
+}
+```
+
+### 2.4 Cache Coherence via Event Bus
+
+The event bus is the backbone of CoCache's coherence model. Without it, each
+application instance would have a stale L2 cache after another instance updates L1.
+
+#### Architecture
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
+graph TB
+    subgraph sg_67 ["Instance A"]
+        CAA["CoherentCache A"]
+    end
+
+    subgraph sg_68 ["Instance B"]
+        CAB["CoherentCache B"]
+    end
+
+    subgraph sg_69 ["Redis"]
+        PUBLISH["PUBLISH cacheName key:clientId"]
+        SUBSCRIBE["SUBSCRIBE cacheName"]
+    end
+
+    CAA -->|"evict / set"| PUBLISH
+    PUBLISH -->|"message"| SUBSCRIBE
+    SUBSCRIBE -->|"onEvicted()"| CAB
+    CAB -->|"evict L2 entry"| CAB
+
+    style CAA fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CAB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style PUBLISH fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style SUBSCRIBE fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+```
+
+#### Event Bus Implementations
+
+| Implementation | Module | Transport | Use Case |
+|---------------|--------|-----------|----------|
+| `GuavaCacheEvictedEventBus` | `cocache-core` | In-process Guava EventBus | Single-instance or testing |
+| `NoOpCacheEvictedEventBus` | `cocache-core` | None (events dropped) | No coherence needed |
+| `RedisCacheEvictedEventBus` | `cocache-spring-redis` | Redis Pub/Sub | Multi-instance production |
+
+#### How It Works
+
+1. When any instance performs a `setCache()` or `evict()`, a
+   [cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEvent.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEvent.kt)
+   is published to the event bus.
+
+2. The event contains the `cacheName`, `key`, and `publisherId`.
+
+3. In the Redis implementation
+   ([cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt)),
+   the event is sent via `redisTemplate.convertAndSend(cacheName, ...)`.
+
+4. All instances subscribed to that cache name receive the event via
+   `onEvicted()` ([cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L159](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L159)).
+
+5. Each instance checks: (a) does the event's cacheName match mine? (b) was this
+   event published by me? If (a) yes and (b) no, the local L2 entry is evicted.
+
+### 2.5 Proxy-Based Caching
+
+CoCache uses JDK dynamic proxies to implement cache interfaces. This means you
+never write implementation code for your cache interfaces -- just declare the
+interface, annotate it, and CoCache creates the implementation at runtime.
+
+#### Class Hierarchy
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
+classDiagram
+    class Cache~K,V~ {
+        <<interface>>
+        +getCache(key: K) CacheValue~V~?
+        +get(key: K) V?
+        +set(key: K, value: V)
+        +evict(key: K)
+    }
+
+    class CoherentCache~K,V~ {
+        <<interface>>
+        +cacheEvictedEventBus: CacheEvictedEventBus
+        +clientSideCache: ClientSideCache~V~
+        +distributedCache: DistributedCache~V~
+        +keyFilter: KeyFilter
+        +onEvicted(event: CacheEvictedEvent)
+    }
+
+    class DefaultCoherentCache~K,V~ {
+        +config: CoherentCacheConfiguration
+        +keyLocks: ConcurrentHashMap
+        +getL2Cache(cacheKey) CacheValue?
+    }
+
+    class CoCacheProxy~DELEGATE~ {
+        <<abstract>>
+        +proxyInterface: Class
+        +invoke(proxy, method, args)
+    }
+
+    class CacheProxyFactory {
+        <<interface>>
+        +createCacheProxy(metadata) Any
+    }
+
+    Cache <|-- CoherentCache
+    CoherentCache <|-- DefaultCoherentCache
+    CoCacheProxy --> Cache : delegates
+    CacheProxyFactory --> CoCacheProxy : creates
+
+    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CoherentCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style DefaultCoherentCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CoCacheProxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CacheProxyFactory fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+```
+
+#### How Proxy Creation Works
+
+1. `@EnableCoCache` triggers `EnableCoCacheRegistrar` (in `cocache-spring`).
+2. The registrar scans for interfaces annotated with `@CoCache`.
+3. For each interface, a `CoCacheMetadata` is parsed from the annotations.
+4. `CacheProxyFactory.createCacheProxy()` creates a JDK dynamic proxy.
+5. The proxy's `InvocationHandler` (a `CoCacheProxy` subclass) delegates all
+   method calls to the `DefaultCoherentCache` instance.
+
+The [cocache-core/src/main/kotlin/me/ahoo/cache/proxy/CoCacheProxy.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/proxy/CoCacheProxy.kt)
+handles both interface default methods (invoked via `InvocationHandler.invokeDefault()`)
+and regular cache methods (delegated to the `CoherentCache`).
+
+### 2.6 JoinCache Pattern
+
+JoinCache allows composing values from two different caches. For example, you might
+have a `UserCache` (keyed by userId) and a `UserExtendInfoCache` (keyed by
+extendId). A `JoinCache` can combine them: given a user, extract the extendId from
+the user object, then fetch the extend info.
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
+sequenceDiagram
+    autonumber
+    participant App as Application
+    participant JC as JoinCache
+    participant FC as First Cache (User)
+    participant JC2 as Join Key Extractor
+    participant SC as Second Cache (ExtendInfo)
+
+    App->>JC: getCache(userId)
+    JC->>FC: getCache(userId)
+    FC-->>JC: User{extendId: "ext-42"}
+    JC->>JC2: extractJoinKey(user) -> "ext-42"
+    JC->>SC: getCache("ext-42")
+    SC-->>JC: ExtendInfo{...}
+    JC-->>App: JoinValue{first: User, second: ExtendInfo}
+```
+
+The `JoinCache` interface ([cocache-api/src/main/kotlin/me/ahoo/cache/api/join/JoinCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/join/JoinCache.kt))
+extends `Cache<K1, JoinValue<V1, K2, V2>>` and adds a `joinKeyExtractor` that
+derives the secondary key from the primary value.
+
+The example module demonstrates this with
+[cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserExtendInfoJoinCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserExtendInfoJoinCache.kt).
+
+### 2.7 Cache Stampede and Penetration Protection
+
+CoCache addresses three classic cache problems:
+
+#### Cache Stampede (Breakdown)
+
+**Problem**: When a popular cache entry expires, many concurrent requests
+simultaneously miss the cache and all hit the database.
+
+**Solution**: Per-key fine-grained locking. The `DefaultCoherentCache` maintains
+a `ConcurrentHashMap<String, Any>` of lock objects. When a cache miss occurs, the
+specific key's lock is acquired via `synchronized(lock)`. Inside the lock, the
+cache is re-checked (double-check locking). Only one thread per key falls through
+to the database.
+
+```kotlin
+// DefaultCoherentCache.getCache() -- lines 101-134
+val lock = getLock(cacheKey)
+synchronized(lock) {
+    try {
+        getL2Cache(cacheKey)?.let { return it }
+        // ... fall through to CacheSource
+    } finally {
+        releaseLock(cacheKey)
+    }
+}
+```
+
+This is implemented at
+[cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L101](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L101).
+
+#### Cache Penetration
+
+**Problem**: Queries for keys that do not exist in the database always miss the
+cache and hit the database.
+
+**Solution**: MissingGuard sentinel values. When a cache lookup returns no value
+from the database, CoCache stores a special "missing guard" value
+(`_nil_` string for strings, or a marker object). Subsequent lookups for the same
+key return this sentinel, and the caller treats it as "no value found" without
+hitting the database.
+
+```kotlin
+// DefaultCoherentCache.getCache() -- line 129
+setCache(cacheKey, DefaultCacheValue.missingGuard(ttl, ttlAmplitude))
+return null
+```
+
+See [cocache-core/src/main/kotlin/me/ahoo/cache/MissingGuard.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/MissingGuard.kt)
+for the sentinel value detection logic.
+
+#### Cache Breakdown (via Bloom Filter)
+
+**Problem**: Large numbers of random non-existent keys overwhelm the cache.
+
+**Solution**: `KeyFilter` interface with a `BloomKeyFilter` implementation backed
+by Guava's `BloomFilter`. Before hitting L1, the bloom filter is checked. If the
+key definitely does not exist, a MissingGuard is returned immediately without
+touching Redis.
+
+See [cocache-core/src/main/kotlin/me/ahoo/cache/filter/BloomKeyFilter.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/filter/BloomKeyFilter.kt).
+
+### 2.8 CacheValue and TTL System
+
+Understanding the `CacheValue` and TTL (Time-To-Live) system is essential for
+working with CoCache internals.
+
+#### CacheValue Lifecycle
+
+Every entry stored in the cache is wrapped in a `CacheValue<V>` that carries
+metadata:
+
+| Property | Type | Meaning |
+|----------|------|---------|
+| `value` | `V` | The actual cached data (or a MissingGuard sentinel) |
+| `ttlAt` | `Long` | Absolute timestamp (seconds since epoch) when this entry expires |
+| `isExpired` | `Boolean` | Whether `currentTime > ttlAt` |
+| `isMissingGuard` | `Boolean` | Whether this is a sentinel "not found" marker |
+
+The implementation is [cocache-core/src/main/kotlin/me/ahoo/cache/DefaultCacheValue.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/DefaultCacheValue.kt),
+which uses `ComputedTtlAt` ([cocache-core/src/main/kotlin/me/ahoo/cache/ComputedTtlAt.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/ComputedTtlAt.kt))
+to compute expiration.
+
+#### TTL Amplitude (Jitter) in Detail
+
+The `ComputedTtlAt.jitter()` function ([cocache-core/src/main/kotlin/me/ahoo/cache/ComputedTtlAt.kt:49](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/ComputedTtlAt.kt#L49))
+randomizes the TTL within a range:
+
+```kotlin
+fun jitter(ttl: Long, amplitude: Long): Long {
+    val low = ttl - amplitude
+    val high = ttl + amplitude
+    return (low..high).random()
+}
+```
+
+For a cache with `ttl = 120` and `ttlAmplitude = 10`, each entry will expire
+between 110 and 130 seconds after creation. This prevents the "cache avalanche"
+scenario where all entries fetched during a traffic spike expire simultaneously.
+
+The `TtlConfiguration` interface ([cocache-core/src/main/kotlin/me/ahoo/cache/TtlConfiguration.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/TtlConfiguration.kt))
+carries `ttl` and `ttlAmplitude` and is implemented by cache implementations.
+The `getFirstTtlConfiguration()` utility function finds the TTL config from the
+first cache (L2 or L1) that implements it.
+
+#### The `isForever` Special Case
+
+When `ttl` is `Long.MAX_VALUE` (the default in `@CoCache`), the entry never
+expires. This is detected by `ComputedTtlAt.isForever()` and the entry's
+`isExpired` always returns `false`. In practice, you should almost always set a
+finite TTL.
+
+### 2.9 Key Conversion
+
+CoCache stores all cache keys as strings internally, regardless of the key type
+defined on the cache interface. The `KeyConverter<K>` interface
+([cocache-core/src/main/kotlin/me/ahoo/cache/converter/KeyConverter.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/converter/KeyConverter.kt))
+handles this conversion.
+
+| Converter | Behavior | Use Case |
+|-----------|----------|----------|
+| `ToStringKeyConverter` | Calls `key.toString()` | Simple keys (String, Long, UUID) |
+| `ExpKeyConverter` | Evaluates a SpEL expression against the key | Complex keys or derived key formats |
+
+The `@CoCache` annotation's `keyExpression` field controls which converter is
+used. If empty, `ToStringKeyConverter` is used. If set to a SpEL expression
+(e.g., `"#root.id"`), `ExpKeyConverter` evaluates it.
+
+The `keyPrefix` field on `@CoCache` is prepended to all keys, providing
+namespacing. For `@CoCache(keyPrefix = "user:", ttl = 120)` with key `"123"`,
+the Redis key becomes `"user:123"`.
+
+### 2.10 DistributedClientId
+
+Each `CoherentCache` instance has a unique `clientId` (via the
+`DistributedClientId` interface). This ID is used to:
+
+1. **Identify the publisher** of eviction events, so the publishing instance
+   can ignore its own events in `onEvicted()`.
+2. **Log debugging information** about which instance performed which operation.
+
+Client IDs are generated by implementations of `ClientIdGenerator`:
+- `UUIDClientIdGenerator` -- Random UUID (default)
+- `HostClientIdGenerator` -- Based on hostname + port
+
+---
 
 ## Part III: Getting Productive
 
@@ -393,6 +931,32 @@ git push origin feature/my-feature
 - Detekt reports no issues.
 - Code coverage does not decrease.
 
+---
+
+## Glossary
+
+| Term | Definition |
+|------|-----------|
+| **L2 Cache** | Local in-memory cache on each application instance (Guava, Caffeine, or simple Map) |
+| **L1 Cache** | Distributed cache shared across all instances (Redis) |
+| **L0** | The underlying data source (typically a database), loaded via `CacheSource` |
+| **CoherentCache** | The main cache abstraction that orchestrates L2, L1, L0, and event-driven coherence |
+| **CacheEvictedEvent** | An event published when a cache entry is modified or removed, used for cross-instance invalidation |
+| **CacheEvictedEventBus** | The pub/sub mechanism for distributing eviction events (Guava EventBus or Redis Pub/Sub) |
+| **ClientSideCache** | Interface for the L2 local cache layer |
+| **DistributedCache** | Interface for the L1 distributed cache layer |
+| **CacheSource** | Interface for loading data from the underlying data store (L0) |
+| **MissingGuard** | A sentinel value stored in cache to indicate a key was looked up but not found in the database |
+| **KeyFilter** | A bloom filter that checks whether a key might exist before hitting L1 |
+| **CoCache Proxy** | JDK dynamic proxy that implements a user-defined cache interface and delegates to `CoherentCache` |
+| **JoinCache** | A cache that composes values from two caches using a join key extractor |
+| **JoinValue** | The composite result type of a JoinCache, containing the primary value and the joined secondary value |
+| **TTL Amplitude** | A random jitter added to TTL values to prevent synchronized expiration (thundering herd) |
+| **KeyConverter** | Converts typed keys to string keys for storage in the cache |
+| **CacheStampede** | When many concurrent requests all miss the cache simultaneously and overwhelm the data source |
+| **TCK** | Test Compatibility Kit -- abstract test specs that any new cache implementation must pass |
+
+---
 
 ## Key File Reference
 
@@ -442,11 +1006,25 @@ git push origin feature/my-feature
 | [settings.gradle.kts](https://github.com/Ahoo-Wang/CoCache/blob/main/settings.gradle.kts) | Module inclusion | All 11 modules listed |
 | [config/detekt/detekt.yml](https://github.com/Ahoo-Wang/CoCache/blob/main/config/detekt/detekt.yml) | Detekt code quality rules | Override configuration |
 
+---
 
+## Next Steps
+
+Now that you have completed this guide, you should be able to:
+
+1. Understand the Kotlin patterns used throughout the codebase.
+2. Navigate the module structure and know where each piece lives.
+3. Trace a cache read through L2 -> L1 -> L0 with locking and event publication.
+4. Understand how the event bus maintains cross-instance coherence.
+5. Build, test, and contribute changes following the project conventions.
+
+For deeper architectural analysis, see the
+[Staff Engineer Onboarding Guide](./staff-engineer.md).
+For a non-technical overview, see the
+[Executive Onboarding Guide](./executive.md).
 </doc>
 
-<doc title="Staff Engineer Onboarding Guide" path="onboarding/staff-engineer.md">
-
+<doc title="Staff Engineer Guide" path="onboarding/staff-engineer.md">
 
 # Staff Engineer Onboarding Guide
 
@@ -455,6 +1033,22 @@ It distills the single most important architectural insight, maps the full syste
 examines design tradeoffs, and provides a language-neutral pseudocode model of the
 core caching pattern.
 
+---
+
+## Table of Contents
+
+- [The Core Architectural Insight](#the-core-architectural-insight)
+- [System Architecture Diagram](#system-architecture-diagram)
+- [Cache Read Sequence (Full Path)](#cache-read-sequence-full-path)
+- [Class Model](#class-model)
+- [Design Tradeoff Analysis](#design-tradeoff-analysis)
+- [Decision Log](#decision-log)
+- [Core Pattern in Pseudocode](#core-pattern-in-pseudocode)
+- [Extension Points](#extension-points)
+- [Performance Characteristics](#performance-characteristics)
+- [Operational Considerations](#operational-considerations)
+
+---
 
 ## The Core Architectural Insight
 
@@ -485,6 +1079,72 @@ its own L2, using L1 as the shared truth and the event bus as the invalidation
 signal. There is no consensus protocol, no distributed lock manager, and no
 cross-instance coordination on reads.
 
+---
+
+## System Architecture Diagram
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
+graph TB
+    subgraph sg_78 ["JVM Instance A"]
+        PRA["Cache Proxy (JDK Dynamic)"]
+        CCA["CoherentCache A"]
+        L2A["L2: Guava / Caffeine"]
+        LKA["Per-Key Lock Map"]
+    end
+
+    subgraph sg_79 ["JVM Instance B"]
+        PRB["Cache Proxy (JDK Dynamic)"]
+        CCB["CoherentCache B"]
+        L2B["L2: Guava / Caffeine"]
+        LKB["Per-Key Lock Map"]
+    end
+
+    subgraph sg_80 ["Shared Infrastructure"]
+        REDIS["L1: Redis<br>(Distributed Cache)"]
+        PUBSUB["Redis Pub/Sub<br>(Event Bus)"]
+        DB["L0: DataSource<br>(Database / Service)"]
+    end
+
+    PRA --> CCA
+    PRB --> CCB
+    CCA --> L2A
+    CCA --> LKA
+    CCB --> L2B
+    CCB --> LKB
+    L2A -->|"miss"| REDIS
+    L2B -->|"miss"| REDIS
+    REDIS -->|"miss"| DB
+    CCA -->|"publish"| PUBSUB
+    CCB -->|"publish"| PUBSUB
+    PUBSUB -->|"onEvicted"| CCA
+    PUBSUB -->|"onEvicted"| CCB
+
+    style PRA fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style PRB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CCA fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CCB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style L2A fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style L2B fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style LKA fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style LKB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style REDIS fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style PUBSUB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style DB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+```
+
+Key observations from this diagram:
+
+- Each JVM instance owns its own `ConcurrentHashMap<String, Any>` for per-key
+  locks. These are **not** shared. The lock only prevents concurrent L0 lookups
+  for the same key **within** the same instance.
+- Redis serves dual roles: as the L1 cache store AND as the Pub/Sub transport
+  for eviction events. These are logically separate concerns but share the same
+  Redis infrastructure.
+- The Cache Proxy is a JDK dynamic proxy implementing the user-defined cache
+  interface. All method calls are intercepted and routed through `CoherentCache`.
+
+---
 
 ## Cache Read Sequence (Full Path)
 
@@ -584,6 +1244,152 @@ eviction event is published. This "write-through-both" strategy ensures that the
 next request on any instance will find the value in L1 even if the L2 of that
 instance has not yet received the event.
 
+---
+
+## Class Model
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
+classDiagram
+    class Cache~K,V~ {
+        <<interface>>
+        +getCache(key: K) CacheValue~V~?
+        +get(key: K) V?
+        +getTtlAt(key: K) Long?
+        +set(key: K, value: V)
+        +set(key: K, ttlAt: Long, value: V)
+        +setCache(key: K, value: CacheValue~V~)
+        +evict(key: K)
+    }
+
+    class TtlConfiguration {
+        <<interface>>
+        +ttl: Long
+        +ttlAmplitude: Long
+    }
+
+    class ComputedCache~K,V~ {
+        <<interface>>
+        +get(key: K) V?*
+        +set(key: K, value: V)*
+    }
+
+    class CoherentCache~K,V~ {
+        <<interface>>
+        +cacheEvictedEventBus: CacheEvictedEventBus
+        +clientSideCache: ClientSideCache~V~
+        +distributedCache: DistributedCache~V~
+        +keyFilter: KeyFilter
+        +keyConverter: KeyConverter~K~
+        +cacheSource: CacheSource~K,V~
+    }
+
+    class CacheEvictedSubscriber {
+        <<interface>>
+        +cacheName: String
+        +onEvicted(event: CacheEvictedEvent)
+    }
+
+    class DefaultCoherentCache~K,V~ {
+        -keyLocks: ConcurrentHashMap~String, Any~
+        -ttlConfiguration: TtlConfiguration
+        +getL2Cache(cacheKey: String) CacheValue~V~?
+        -getLock(cacheKey: String) Any
+        -releaseLock(cacheKey: String)
+        -setCache(cacheKey: String, cacheValue: CacheValue~V~)
+    }
+
+    class DistributedClientId {
+        <<interface>>
+        +clientId: String
+    }
+
+    class NamedCache {
+        <<interface>>
+        +cacheName: String
+    }
+
+    class CacheEvictedEventBus {
+        <<interface>>
+        +publish(event: CacheEvictedEvent)
+        +register(subscriber: CacheEvictedSubscriber)
+        +unregister(subscriber: CacheEvictedSubscriber)
+    }
+
+    class ClientSideCache~V~ {
+        <<interface>>
+        +size: Long
+        +clear()
+    }
+
+    class DistributedCache~V~ {
+        <<interface>>
+    }
+
+    class CacheSource~K,V~ {
+        <<interface>>
+        +loadCacheValue(key: K) CacheValue~V~?
+    }
+
+    class KeyFilter {
+        <<interface>>
+        +notExist(key: String) Boolean
+    }
+
+    class CoCacheProxy~DELEGATE~ {
+        <<abstract>>
+        +proxyInterface: Class~*~
+        +invoke(proxy, method, args) Any?
+    }
+
+    Cache <|-- ComputedCache
+    ComputedCache <|-- CoherentCache
+    CacheEvictedSubscriber <|-- CoherentCache
+    DistributedClientId <|-- CoherentCache
+    NamedCache <|-- CoherentCache
+    CoherentCache <|.. DefaultCoherentCache
+    TtlConfiguration <|.. DefaultCoherentCache
+    CacheEvictedEventBus ..> CacheEvictedEvent : publishes
+    CacheEvictedEventBus ..> CacheEvictedSubscriber : notifies
+    DefaultCoherentCache --> ClientSideCache : owns
+    DefaultCoherentCache --> DistributedCache : owns
+    DefaultCoherentCache --> CacheSource : delegates to
+    DefaultCoherentCache --> KeyFilter : uses
+    DefaultCoherentCache --> CacheEvictedEventBus : publishes to
+    CoCacheProxy --> Cache : delegates
+
+    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style ComputedCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CoherentCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CacheEvictedSubscriber fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style DistributedClientId fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style NamedCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style DefaultCoherentCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CacheEvictedEventBus fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style ClientSideCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style DistributedCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CacheSource fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style KeyFilter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style TtlConfiguration fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CoCacheProxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+```
+
+### Key Design Patterns in the Class Model
+
+**Composition over Inheritance**: `DefaultCoherentCache` composes L2, L1, L0,
+event bus, key filter, and key converter. Each is an interface, allowing any
+implementation to be plugged in.
+
+**Delegation via Kotlin `by`**: `DefaultCoherentCache` delegates `DistributedClientId`
+and `NamedCache` to its `CoherentCacheConfiguration` object, reducing boilerplate.
+
+**Template Method via `ComputedCache`**: The `ComputedCache` interface provides
+default implementations of `get()`, `getTtlAt()`, and `set()` that work with
+`CacheValue` objects (handling missing guards, TTL computation). `CoherentCache`
+inherits these defaults and only overrides `getCache()` (the raw lookup that
+checks L2/L1/L0).
+
+---
 
 ## Design Tradeoff Analysis
 
@@ -678,6 +1484,25 @@ This means a cache entry with TTL=120s will expire somewhere between 120s and 13
 preventing all entries fetched during the same traffic spike from expiring
 simultaneously.
 
+---
+
+## Decision Log
+
+| Decision | Date/Rationale | Alternatives Considered | Outcome |
+|----------|---------------|------------------------|---------|
+| **Three-tier architecture (L2/L1/L0)** | Enables sub-ms reads while maintaining coherence | Two-tier (L1/L0 only), Two-tier (L2/L0 with broadcast) | Production-proven at scale |
+| **Per-key in-process locking** | Nanosecond latency, zero external deps | Distributed locks (Redisson), No locking (allow stampede) | Acceptable within-instance stampede prevention; cross-instance prevented by L1 write-through |
+| **Redis Pub/Sub for event bus** | Near-instant, zero coupling, leverages existing Redis | Kafka, RabbitMQ, Polling-based invalidation | Good enough latency; lossy delivery is acceptable because TTL provides self-healing |
+| **JDK dynamic proxies** | Interface-level cache semantics, type safety | Spring AOP, CGLIB class proxies, Annotation processors (KSP) | Clean API: `interface UserCache : Cache<String, User>` |
+| **MissingGuard sentinel values** | Prevents cache penetration without external state | TTL=0 for nulls, Separate null-cache store | Simple; works with all serialization formats |
+| **Bloom filter as KeyFilter** | Probabilistic pre-filter before L1 lookup | No filter, Exact set membership | Prevents non-existent key lookups hitting Redis |
+| **TTL amplitude (jitter)** | Prevents synchronized expiration thundering herd | Fixed TTL, Exponential backoff | 10-second default jitter; configurable per cache |
+| **Kotlin as implementation language** | Concise, null-safe, extension functions, Java interop | Pure Java, Scala | `-Xjvm-default=all-compatibility` ensures Java interop |
+| **`synchronized` over `ReentrantLock`** | Simpler, sufficient for the use case | `ReentrantLock`, `StampedLock` | No need for tryLock/timeout/interrupt -- critical sections are fast |
+| **Write-through to both L2 and L1 simultaneously** | Ensures L1 always has latest value for other instances | Write L1 first, then L2; Write L2 first, then L1 | Both writes are fast; order does not matter much; parallel writes reduce window |
+| **CacheName-based event routing** | Each cache gets its own Pub/Sub channel | Single global channel with filtering | Per-cache channels provide natural isolation; no cross-talk |
+
+---
 
 ## Core Pattern in Pseudocode
 
@@ -885,6 +1710,25 @@ The `on_evicted()` method implements the coherence protocol. It is called by the
 event bus when another instance publishes an eviction event. The two guard checks
 (cache name match, not self-published) prevent unnecessary work.
 
+---
+
+## Extension Points
+
+CoCache is designed for extensibility through interface substitution:
+
+| Extension Point | Interface | Default Implementation | How to Replace |
+|----------------|-----------|----------------------|----------------|
+| L2 Cache | `ClientSideCache<V>` | `GuavaClientSideCache`, `CaffeineClientSideCache`, `MapClientSideCache` | Implement `ClientSideCache` or provide a `@Bean` named `<CacheName>.ClientSideCache` |
+| L1 Cache | `DistributedCache<V>` | `RedisDistributedCache` | Implement `DistributedCache` for non-Redis backends |
+| Event Bus | `CacheEvictedEventBus` | `GuavaCacheEvictedEventBus`, `RedisCacheEvictedEventBus` | Implement for Kafka, RabbitMQ, etc. |
+| Data Source | `CacheSource<K, V>` | `NoOpCacheSource` | Implement to load from any data store |
+| Key Filter | `KeyFilter` | `NoOpKeyFilter`, `BloomKeyFilter` | Implement for different probabilistic structures |
+| Key Converter | `KeyConverter<K>` | `ToStringKeyConverter`, `ExpKeyConverter` | Implement for custom key formatting |
+
+The Spring integration resolves these via bean name matching: a bean named
+`UserCache.ClientSideCache` will be injected as the L2 cache for `UserCache`.
+
+---
 
 ## Performance Characteristics
 
@@ -915,6 +1759,45 @@ event bus when another instance publishes an eviction event. The two guard check
   With N instances and W writes/sec, the event bus handles N*W messages/sec.
   Redis Pub/Sub can handle ~100K+ messages/sec per channel.
 
+---
+
+## Operational Considerations
+
+### Redis Dependency
+
+Redis is a **shared dependency** for both L1 caching and event bus. Redis failure
+impacts:
+- L1 cache reads (degraded to L0 direct hits)
+- Coherence events (stale L2 until TTL expiry)
+- No impact on L2 reads that are already cached locally
+
+The system degrades gracefully: if Redis is down, reads still work through L2
+(cache hits) and L0 (direct database). Writes and evictions continue to work
+locally. The L2 caches across instances will diverge until Redis recovers, at
+which point normal operation resumes.
+
+### Monitoring Recommendations
+
+| Metric | Source | Significance |
+|--------|--------|-------------|
+| L2 hit rate | `ClientSideCache` | Primary performance indicator; should be >90% |
+| L1 hit rate | `DistributedCache` | Secondary hit rate; indicates L2 effectiveness |
+| L0 call rate | `CacheSource` | Should be <1%; spikes indicate cache problems |
+| Event bus latency | `CacheEvictedEventBus` | Coherence lag indicator |
+| Per-key lock contention | `DefaultCoherentCache` | Thread contention indicator |
+| Missing guard rate | `KeyFilter`/`CacheSource` | Penetration attack indicator |
+
+### TTL Strategy
+
+- **Set TTL based on data volatility**: Volatile data gets short TTL (e.g., 60s);
+  static data gets long TTL (e.g., 3600s).
+- **Always use TTL amplitude**: The default 10-second jitter prevents thundering
+  herd. For high-traffic caches, increase amplitude to 20-30% of TTL.
+- **Missing guard TTL should match data TTL**: A missing guard for a key that
+  might appear later should expire around the same time as regular entries, so
+  the system can re-check.
+
+---
 
 ## CacheValue Lifecycle and Serialization
 
@@ -965,6 +1848,62 @@ Redis itself.
 
 For a cache with 100K entries averaging 500B payload: ~70MB L2 memory.
 
+---
+
+## Observability and Instrumentation
+
+CoCache does not include built-in metrics instrumentation. To observe cache
+behavior in production, teams must add instrumentation at the following points:
+
+### Recommended Instrumentation Points
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
+graph TB
+    subgraph sg_81 ["Instrumentation Points"]
+        P1["1. CoherentCache.getCache()<br>Counter: hit/miss by tier"]
+        P2["2. CoherentCache.getCache()<br>Histogram: L0 load latency"]
+        P3["3. CacheEvictedEventBus<br>Counter: events published/received"]
+        P4["4. ClientSideCache<br>Gauge: current size, eviction count"]
+        P5["5. Per-Key Lock Map<br>Gauge: active locks count"]
+        P6["6. KeyFilter<br>Counter: filtered vs passed"]
+    end
+
+    style P1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style P2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style P3 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style P4 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style P5 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style P6 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+```
+
+### Recommended Metrics (Micrometer/Prometheus format)
+
+| Metric Name | Type | Labels | Purpose |
+|-------------|------|--------|---------|
+| `cocache.get.total` | Counter | `cache_name`, `tier` (L2/L1/L0/filtered/missing) | Hit/miss rates per tier |
+| `cocache.get.duration` | Histogram | `cache_name`, `tier` | Latency per tier |
+| `cocache.set.total` | Counter | `cache_name` | Write throughput |
+| `cocache.evict.total` | Counter | `cache_name`, `source` (local/event) | Eviction rate and source |
+| `cocache.event.published` | Counter | `cache_name` | Events published |
+| `cocache.event.received` | Counter | `cache_name` | Events received (coherence) |
+| `cocache.l2.size` | Gauge | `cache_name` | Current L2 cache size |
+| `cocache.l2.eviction` | Counter | `cache_name` | L2 evictions (capacity or TTL) |
+| `cocache.lock.active` | Gauge | `cache_name` | Active per-key locks |
+| `cocache.keyfilter.filtered` | Counter | `cache_name` | Keys rejected by bloom filter |
+
+### SLO Recommendations
+
+| SLO | Target | Alert Threshold |
+|-----|--------|----------------|
+| L2 hit rate | >90% | <85% for 5 minutes |
+| L1 hit rate (given L2 miss) | >80% | <70% for 5 minutes |
+| L0 call rate | <1% of total reads | >2% for 5 minutes |
+| L0 latency p99 | <100ms | >200ms for 5 minutes |
+| Event bus delivery rate | >99% | <95% for 5 minutes |
+| Missing guard rate | <5% of L0 calls | >10% for 5 minutes |
+
+---
 
 ## Summary
 
@@ -979,11 +1918,9 @@ exchange for simplicity, performance, and operational resilience. For systems th
 require strict consistency, the architecture can be extended with stronger
 invalidation mechanisms, but for the vast majority of caching use cases, CoCache's
 approach is the right balance.
-
 </doc>
 
-<doc title="Executive Onboarding Guide" path="onboarding/executive.md">
-
+<doc title="Executive Guide" path="onboarding/executive.md">
 
 # Executive Onboarding Guide
 
@@ -992,6 +1929,19 @@ evaluating or overseeing its adoption. It focuses on capabilities, risk,
 investment rationale, cost modeling, and actionable recommendations -- without
 diving into implementation details.
 
+---
+
+## Table of Contents
+
+- [What CoCache Does](#what-cocache-does)
+- [Capability Map](#capability-map)
+- [Risk Assessment](#risk-assessment)
+- [Technology Investment Thesis](#technology-investment-thesis)
+- [Cost and Scaling Model](#cost-and-scaling-model)
+- [Competitive Positioning](#competitive-positioning)
+- [Actionable Recommendations](#actionable-recommendations)
+
+---
 
 ## What CoCache Does
 
@@ -1027,6 +1977,73 @@ For a typical high-traffic service handling 10,000 requests per second:
   operates at 1% capacity. Response times drop to sub-millisecond for cached
   reads. Infrastructure costs decrease.
 
+---
+
+## Capability Map
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
+graph TB
+    subgraph sg_70 ["Core Capabilities"]
+        direction TB
+        C1["Two-Level Caching<br>Fast local + shared distributed"]
+        C2["Automatic Coherence<br>All instances stay in sync"]
+        C3["Stampede Protection<br>Prevents database overload"]
+        C4["Penetration Protection<br>Blocks invalid key floods"]
+        C5["Bloom Filter Pre-screen<br>Filters impossible lookups"]
+        C6["Composite Caching<br>Joins data from multiple caches"]
+    end
+
+    subgraph sg_71 ["Integration Capabilities"]
+        direction TB
+        I1["Annotation-Driven<br>Declarative cache setup"]
+        I2["Spring Boot Native<br>Auto-configuration"]
+        I3["Pluggable Storage<br>Swap cache backends"]
+        I4["Spring Cache Bridge<br>Drop-in replacement"]
+    end
+
+    subgraph sg_72 ["Operational Capabilities"]
+        direction TB
+        O1["Self-Healing<br>TTL bounds staleness"]
+        O2["Graceful Degradation<br>Works without Redis"]
+        O3["TTL Jitter<br>Prevents synchronized expiry"]
+        O4["Per-Key Locking<br>Fine-grained concurrency"]
+    end
+
+    style C1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style C2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style C3 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style C4 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style C5 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style C6 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style I1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style I2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style I3 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style I4 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style O1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style O2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style O3 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style O4 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+```
+
+### Capability Detail
+
+| Capability | Business Impact | Technical Category |
+|-----------|----------------|-------------------|
+| **Two-Level Caching** | 10-100x latency reduction on data reads | Core |
+| **Automatic Coherence** | All application instances see consistent data without manual intervention | Core |
+| **Stampede Protection** | Prevents cascading database overload during cache expiration | Resilience |
+| **Penetration Protection** | Blocks attacks that query non-existent data to overwhelm the database | Security |
+| **Bloom Filter** | Reduces unnecessary cache and database lookups by pre-filtering impossible keys | Efficiency |
+| **Composite Caching (JoinCache)** | Combines related data from multiple sources in a single cache operation | Developer Productivity |
+| **Annotation-Driven Setup** | Reduces integration effort from days to hours | Developer Productivity |
+| **Spring Boot Auto-Configuration** | Zero-configuration for standard setups | Operational Efficiency |
+| **Pluggable Storage** | Future-proof: swap Guava for Caffeine, Redis for another distributed cache | Flexibility |
+| **Self-Healing** | Stale data automatically corrects within the TTL window; no manual intervention | Reliability |
+| **Graceful Degradation** | If Redis goes down, reads still work via local cache and direct database access | Availability |
+| **TTL Jitter** | Prevents synchronized cache expiration storms that could cascade to the database | Stability |
+
+---
 
 ## Risk Assessment
 
@@ -1045,7 +2062,7 @@ quadrantChart
     Redis SPOF: [0.75, 0.35]
     Event Bus Message Loss: [0.35, 0.60]
     Eventual Consistency Window: [0.40, 0.80]
-    Memory Pressure (L2): [0.55, 0.40]
+    Memory Pressure L2: [0.55, 0.40]
     Bloom Filter False Positive: [0.15, 0.20]
     Developer Adoption Curve: [0.30, 0.45]
 ```
@@ -1125,6 +2142,56 @@ quadrantChart
   - Use the example module as a reference implementation.
   - Code review all cache interface definitions and configurations.
 
+---
+
+## Technology Investment Thesis
+
+### Problem Statement
+
+Modern microservices architectures amplify the caching challenge:
+
+1. **Database cost scales linearly** with request volume without caching.
+2. **Response time** directly impacts user experience and conversion rates.
+3. **Cache coherence** across dozens of service instances is operationally complex
+   to build correctly.
+4. **Cache stampede** during high-traffic events (sales, launches) can cascade
+   into database overload and full outages.
+
+### Solution Value
+
+| Value Dimension | Without CoCache | With CoCache |
+|----------------|----------------|-------------|
+| Database query load | 100% of read requests | ~1% of read requests |
+| Average read latency | 10-100ms (database) | <1ms (L2 cache hit) |
+| Cache coherence | Manual implementation (weeks of engineering) | Automatic via event bus |
+| Stampede protection | Custom per-project (error-prone) | Built-in per-key locking |
+| Time to implement caching | 2-4 weeks per service | 1-2 days per service |
+| Operational burden | High (custom cache logic to maintain) | Low (standard framework) |
+
+### Return on Investment
+
+Assumptions for a mid-size service (5 instances, 5,000 RPS, average 3 database
+queries per request):
+
+**Before CoCache:**
+- 15,000 database queries/second
+- Database requires 8 vCPU, 32GB RAM cluster (~$800/month cloud)
+- Average response time: 50ms (database-bound)
+- Engineering time for custom caching: 3 weeks per service x 4 services = 12 weeks
+
+**After CoCache:**
+- ~150 database queries/second (99% cache hit rate)
+- Database can downsize to 2 vCPU, 8GB RAM (~$200/month)
+- Average response time: <1ms for reads
+- Engineering time: 2 days per service x 4 services = 2 weeks
+
+**Net savings:**
+- $600/month database cost reduction
+- 10 weeks of engineering time freed up
+- 50x reduction in p99 read latency
+- Eliminated risk of cache-related production incidents from custom implementations
+
+---
 
 ## Cost and Scaling Model
 
@@ -1171,13 +2238,13 @@ For a service with 10,000 RPS and 99% L2 hit rate:
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
 graph LR
-    subgraph "Horizontal Scaling"
+    subgraph sg_73 ["Horizontal Scaling"]
         N1["Instance 1<br>L2: 100K entries"]
         N2["Instance 2<br>L2: 100K entries"]
         N3["Instance N<br>L2: 100K entries"]
     end
 
-    subgraph "Shared Layer"
+    subgraph sg_74 ["Shared Layer"]
         REDIS["Redis<br>Scales with data, not traffic"]
     end
 
@@ -1201,6 +2268,23 @@ Key scaling properties:
   Each instance subscribes to every cache channel. At 100 instances with 10 cache
   types, each eviction publishes 100 messages. Redis Pub/Sub handles this easily.
 
+---
+
+## Competitive Positioning
+
+| Feature | CoCache | Spring Cache + Redis | Redisson Local Cache | Custom Implementation |
+|---------|---------|---------------------|---------------------|----------------------|
+| Two-level caching | Built-in | Manual wiring | Built-in | Manual |
+| Cross-instance coherence | Automatic (event bus) | None (each instance independent) | Sync via Redis | Manual |
+| Stampede protection | Per-key locking | None | RLock (distributed) | Varies |
+| Penetration protection | MissingGuard + Bloom | None | None | Manual |
+| Annotation-driven | `@CoCache` on interface | `@Cacheable` on method | N/A | N/A |
+| Proxy-based (interface-level) | Yes | No (method-level) | No | N/A |
+| JoinCache (composite) | Built-in | Not supported | Not supported | Manual |
+| TTL jitter | Built-in (configurable) | Not available | Not available | Manual |
+| Operational overhead | Low (framework-managed) | Medium (manual coherence) | Medium (distributed locks) | High |
+
+---
 
 ## Actionable Recommendations
 
@@ -1262,11 +2346,30 @@ Key scaling properties:
    Redis failover), all L2 caches are empty. Consider pre-warming critical caches
    by calling the cache source for high-traffic keys before accepting traffic.
 
+---
 
+## Summary
+
+CoCache is a mature, well-architected caching framework that solves the
+distributed caching problem with minimal operational overhead. Its three-tier
+model (local memory, Redis, database) with automatic coherence provides
+significant performance improvements while its self-healing design (TTL-based
+staleness bounds, graceful degradation) limits operational risk.
+
+The primary investment considerations are:
+- **Redis infrastructure cost**: Minimal for typical workloads (~100MB memory,
+  negligible CPU).
+- **Per-instance memory overhead**: ~100MB per instance for a typical cache
+  configuration.
+- **Engineering time savings**: 2-4 weeks per service vs. 2 days with CoCache.
+- **Operational risk**: Low, given self-healing design and graceful degradation.
+
+Recommendation: **Adopt CoCache for all new and existing JVM-based services**
+that require read-heavy caching, starting with non-critical services for
+familiarity before expanding to high-traffic core services.
 </doc>
 
-<doc title="Product Manager Onboarding Guide" path="onboarding/product-manager.md">
-
+<doc title="Product Manager Guide" path="onboarding/product-manager.md">
 
 # Product Manager Onboarding Guide
 
@@ -1275,6 +2378,20 @@ are a Product Manager working with a team that uses or plans to use CoCache,
 this document will help you understand what it does, why it matters, what it
 can and cannot do, and how it affects your product decisions.
 
+---
+
+## Table of Contents
+
+- [What Is CoCache? (In Plain Language)](#what-is-cocache-in-plain-language)
+- [Why Does It Exist?](#why-does-it-exist)
+- [The Developer Experience](#the-developer-experience)
+- [Feature Capability Map](#feature-capability-map)
+- [What CoCache Changes for Your Product](#what-cocache-changes-for-your-product)
+- [Known Limitations](#known-limitations)
+- [Data and Privacy Overview](#data-and-privacy-overview)
+- [Frequently Asked Questions](#frequently-asked-questions)
+
+---
 
 ## What Is CoCache? (In Plain Language)
 
@@ -1306,6 +2423,38 @@ graph LR
 The result: your application responds faster, your database handles less work,
 and your infrastructure costs less.
 
+---
+
+## Why Does It Exist?
+
+### The Problem It Solves
+
+Modern applications run as multiple copies (instances) to handle user traffic.
+When you have 5 copies of an application running, each copy needs the same data.
+Without a shared caching strategy:
+
+1. **Every copy makes its own database queries.** This multiplies database load by
+   the number of instances.
+2. **When one copy updates data, the other copies do not know.** They continue
+   serving old (stale) data until they happen to query the database again.
+3. **Popular data that expires can cause a "rush" to the database.** If 1,000
+   users all need the same product page and the cached version just expired,
+   all 1,000 requests hit the database at once.
+
+These problems are expensive to solve manually. Engineering teams spend weeks
+building custom caching solutions for each project. CoCache provides a standard
+solution that works across all projects.
+
+### The Scale of the Problem
+
+| Scenario | Without Caching | With CoCache |
+|----------|----------------|-------------|
+| 10,000 users/second viewing product pages | 10,000 database queries/second | ~100 database queries/second |
+| Black Friday traffic spike (10x normal) | Database likely overloaded | Cache absorbs spike; database sees ~1% increase |
+| Application restart (new deployment) | All data needs re-fetching | Shared cache still has data; local cache rebuilds quickly |
+| Multiple application instances (5 copies) | 5x database queries for same data | Database queried once; result shared via cache |
+
+---
 
 ## The Developer Experience
 
@@ -1364,6 +2513,53 @@ keeping all instances in sync, preventing overload.
 - **Consistent patterns**: Every service uses the same caching model, making
   onboarding faster and code reviews easier.
 
+---
+
+## Feature Capability Map
+
+### What CoCache Provides
+
+```mermaid
+%%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
+mindmap
+    root((CoCache))
+        Speed
+            Instant reads from memory
+            Shared fast-access store
+            99% cache hit rate target
+        Protection
+            Prevents database overload storms
+            Blocks invalid data floods
+            Self-healing on failures
+        Consistency
+            All app copies stay in sync
+            Automatic cross-instance updates
+            Bounded staleness via expiry
+        Developer Productivity
+            Annotation-driven setup
+            Spring Boot auto-configuration
+            Built-in testing tools
+        Flexibility
+            Pluggable storage engines
+            Configurable expiry times
+            Composite data joining
+```
+
+### Feature Detail (Non-Technical)
+
+| Feature | What It Does | Why It Matters to Your Product |
+|---------|-------------|-------------------------------|
+| **Two-level caching** | Keeps data in two places: fast local memory and a shared store | Users get instant responses; your database is not overloaded |
+| **Automatic sync across copies** | When one copy updates data, all other copies are notified | Users always see up-to-date information regardless of which copy serves them |
+| **Overload prevention** | If popular data expires, only one request goes to the database; others wait for the result | Your product survives traffic spikes (sales events, viral moments) without crashing |
+| **Invalid request blocking** | Blocks requests for data that does not exist before they reach the database | Protects against attacks or bugs that send millions of invalid requests |
+| **Expiry time jitter** | Slightly randomizes when cached data expires to prevent all data expiring at once | Prevents "cache storms" that could cascade into outages |
+| **Self-healing** | If the sync system has a brief interruption, data automatically refreshes when expiry times pass | No manual intervention needed during minor infrastructure issues |
+| **Composite data joining** | Combines related data from different sources in a single cached result | Reduces the number of lookups needed for complex data; faster responses |
+| **Spring Boot integration** | Works automatically with the most popular Java web framework | Developers can add caching with minimal effort; faster time-to-market |
+| **Pluggable storage** | Can use different memory engines (Guava, Caffeine) and shared stores (Redis) | Future-proof: can adapt to different infrastructure without code changes |
+
+---
 
 ## What CoCache Changes for Your Product
 
@@ -1394,6 +2590,79 @@ keeping all instances in sync, preventing overload.
 | What if too many users request uncached data at once? | Only one request goes to the database per unique data item. Others wait and receive the result. |
 | What if someone sends millions of requests for non-existent data? | The request-blocking feature (bloom filter) prevents these from ever reaching the database. |
 
+---
+
+## Known Limitations
+
+Every technology has tradeoffs. Here is what CoCache does not do, so you can make
+informed product decisions:
+
+### 1. Eventual Consistency (Not Instant Consistency)
+
+**What it means**: When data changes on one copy of the application, there is a
+very brief moment (typically under 1 millisecond) where other copies might serve
+the old version.
+
+**When this matters**: For most product data (user profiles, product catalogs,
+content), this is imperceptible. For real-time financial transactions, live
+inventory counts during flash sales, or collaborative editing, you may need
+additional consistency mechanisms.
+
+**What to do**: Define acceptable staleness for each data type. Use shorter
+expiry times for data that must be fresher.
+
+### 2. Redis Dependency
+
+**What it means**: CoCache requires Redis for its shared cache store and
+cross-instance sync. Redis is a widely-used, proven technology, but it is an
+additional piece of infrastructure to operate.
+
+**When this matters**: If your organization does not currently operate Redis, you
+will need to add it to your infrastructure. Most cloud providers offer managed
+Redis services that reduce operational burden.
+
+**What to do**: Plan for Redis in your infrastructure budget and operational
+runbook. Use managed Redis services (AWS ElastiCache, Azure Cache for Redis,
+Google Cloud Memorystore) where possible.
+
+### 3. Read-Heavy Workloads Only
+
+**What it means**: CoCache is optimized for data that is read much more often
+than it is written (e.g., user profiles read 1000x/day but updated 1x/week).
+It does not help with write-heavy workloads.
+
+**When this matters**: For data that changes frequently (chat messages, real-time
+scores, activity feeds), CoCache provides less benefit because cached data
+expires quickly.
+
+**What to do**: Use CoCache for stable, frequently-read data. Use other
+strategies for write-heavy data.
+
+### 4. No Built-in Cache Warming
+
+**What it means**: When a new copy of your application starts (after deployment
+or restart), its local cache is empty. It takes some time (and some database
+queries) to "warm up" the cache.
+
+**When this matters**: For applications with strict cold-start latency
+requirements, you may need to implement a cache warming step in your deployment
+process.
+
+**What to do**: For critical caches, implement a pre-warming step that loads
+the most frequently accessed data before accepting user traffic.
+
+### 5. Per-Instance Memory Overhead
+
+**What it means**: Each copy of your application uses additional memory (~100MB)
+for its local cache. With 10 instances, that is ~1GB total across the fleet.
+
+**When this matters**: For memory-constrained environments (small containers,
+edge deployments), this may be significant.
+
+**What to do**: Right-size the local cache (configurable maximum number of
+entries). Start small and increase based on hit rate monitoring.
+
+---
 
 ## Data and Privacy Overview
 
@@ -1436,16 +2705,16 @@ When CoCache is in use, your data exists in up to three places:
 ```mermaid
 %%{init: {'theme': 'dark', 'themeVariables': {'primaryColor': '#2d333b', 'primaryBorderColor': '#6d5dfc', 'primaryTextColor': '#e6edf3', 'lineColor': '#8b949e', 'subgraphBgColor': '#161b22'}}}%%
 graph TB
-    subgraph "Your Control"
+    subgraph sg_75 ["Your Control"]
         APP["Your Application"]
         CACHE["Local Memory Cache<br>(in each app instance)"]
     end
 
-    subgraph "Infrastructure"
+    subgraph sg_76 ["Infrastructure"]
         REDIS["Redis Shared Cache<br>(your infrastructure)"]
     end
 
-    subgraph "Data Origin"
+    subgraph sg_77 ["Data Origin"]
         DB["Your Database"]
     end
 
@@ -1465,6 +2734,115 @@ graph TB
     style DB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
+---
+
+## Frequently Asked Questions
+
+### General Questions
+
+**Q: Do users interact with CoCache directly?**
+A: No. CoCache works entirely behind the scenes. Users interact with your
+application (website, mobile app, API). CoCache makes those interactions faster
+by optimizing how your application retrieves data. Users will never see or know
+about CoCache.
+
+**Q: Will CoCache change how our product looks or feels?**
+A: The product will look the same but feel faster. Pages load quicker, API
+responses come back sooner, and the application handles traffic spikes better.
+There are no visual or feature changes.
+
+**Q: Does CoCache work on mobile devices?**
+A: CoCache runs on the server side (where your application runs), not on user
+devices. Mobile users benefit from the faster server responses. There is no
+mobile SDK or client-side component.
+
+### Performance Questions
+
+**Q: How much faster will our application be?**
+A: For data that is cached, response times typically drop from 10-100ms to under
+1ms. For overall application response time, expect 30-70% improvement depending
+on how much of your response time comes from database queries. Applications that
+are mostly database-bound see the biggest improvement.
+
+**Q: What is a "cache hit rate" and what should ours be?**
+A: Cache hit rate is the percentage of requests served from cache (fast) vs.
+the database (slow). A good target is 90-99%. Below 85% suggests the cache
+is too small, the expiry times are too short, or the data access patterns are
+not well-suited for caching.
+
+**Q: What happens during a traffic spike?**
+A: CoCache absorbs the spike because most requests are served from cache. The
+database only sees a small fraction of the traffic. Additionally, the built-in
+"overload prevention" ensures that even when popular cached data expires during
+a spike, only one request goes to the database while others wait for the result.
+
+### Reliability Questions
+
+**Q: Can CoCache cause an outage?**
+A: CoCache is designed to fail safely. If the shared cache (Redis) goes down,
+the application continues working using local memory and direct database queries.
+It will be slower but functional. CoCache cannot cause data loss because it does
+not own the authoritative data -- that is always in your database.
+
+**Q: How do we handle data that must be perfectly up-to-date?**
+A: For data where even a brief moment of staleness is unacceptable (e.g.,
+financial balances), developers can configure short expiry times (seconds) or
+bypass the cache entirely for that specific data. This is a per-data-type
+decision.
+
+**Q: What monitoring do we need?**
+A: The engineering team should monitor: cache hit rates (target: >90%), Redis
+health, and application memory usage. These metrics tell you whether the cache
+is effective and healthy.
+
+### Adoption Questions
+
+**Q: How long does it take to adopt CoCache for a service?**
+A: For a typical service: 1-2 days of engineering work. This includes defining
+the cache interfaces, configuring the cache settings, testing, and deploying.
+Compare this to 2-4 weeks for building a custom caching solution.
+
+**Q: Can we adopt CoCache incrementally?**
+A: Yes. CoCache is per-data-entity. You can cache one data type (e.g., user
+profiles) first, measure the impact, and then expand to other data types.
+There is no requirement to cache everything at once.
+
+**Q: Does CoCache require us to change our database?**
+A: No. CoCache sits between your application and your database. It does not
+modify your database schema, queries, or access patterns. It simply reduces
+how often the application needs to query the database.
+
+**Q: What infrastructure do we need?**
+A: You need Redis (a widely-used, open-source data store). Most cloud providers
+offer managed Redis services. If you already use Redis for other purposes, you
+can share the instance (with appropriate configuration). If not, a basic Redis
+instance costs approximately $50-200/month depending on your cloud provider and
+the size you need.
+
+### Data Questions
+
+**Q: Where does cached data live?**
+A: In two places: (1) in the memory of each application instance (local cache),
+and (2) in Redis (shared cache). Both locations are within your infrastructure.
+No data is sent to external services.
+
+**Q: How long does cached data persist?**
+A: You configure the expiry time per data type. It can be as short as a few
+seconds or as long as hours. Once expired, the data is automatically removed
+from both the local cache and Redis.
+
+**Q: Can cached data be deleted on demand?**
+A: Yes. CoCache supports explicit eviction (removal) of specific cached entries.
+This is used when data changes in the database and the cache needs to be updated
+immediately, rather than waiting for the expiry time.
+
+**Q: Is cached data encrypted?**
+A: CoCache does not add encryption itself. For encryption in transit, configure
+TLS on your Redis connection. For encryption at rest, use Redis's built-in
+encryption features or your cloud provider's encrypted storage. For local
+memory, data is as secure as the application process itself.
+
+---
 
 ## Summary
 
@@ -1487,15 +2865,18 @@ Key takeaways for Product Managers:
 For questions about specific product scenarios or data types, consult with your
 engineering team or refer to the [Contributor Guide](./contributor.md) for
 technical details.
-
 </doc>
 
-<doc title="CoCache Introduction" path="guide/index.md">
+## Getting Started
+- [Introduction](guide/index.md)
+- [Quick Start](guide/quick-start.md)
+- [Configuration](guide/configuration.md)
 
+<doc title="Introduction" path="guide/index.md">
 
 # CoCache Introduction
 
-**CoCache** is a **Level 2 Distributed Coherence Cache Framework** for Java/Kotlin that provides a two-level caching architecture with event-driven coherence across distributed instances. It is published under the group `me.ahoo.cocache` at version **4.0.2**.
+**CoCache** is a **Level 2 Distributed Coherence Cache Framework** for Java/Kotlin that provides a two-level caching architecture with event-driven coherence across distributed instances. It is published under the group `me.ahoo.cocache` at version **4.2.0**.
 
 CoCache sits between your application and your data source, adding two cache layers -- a local in-memory L2 cache (Guava or Caffeine) and a shared distributed L1 cache (Redis) -- while keeping all instances coherent through an event bus.
 
@@ -1516,17 +2897,17 @@ graph TB
         Caller["Caller<br>cache.get(key)"]
     end
 
-    subgraph "L2 - Client-side Cache"
+    subgraph sg_20 ["L2 - Client-side Cache"]
         direction TB
         L2["Guava / Caffeine<br>In-process Memory"]
     end
 
-    subgraph "L1 - Distributed Cache"
+    subgraph sg_21 ["L1 - Distributed Cache"]
         direction TB
         L1["Redis<br>Shared across instances"]
     end
 
-    subgraph "L0 - DataSource"
+    subgraph sg_22 ["L0 - DataSource"]
         direction TB
         L0["Database / API<br>Authoritative Source"]
     end
@@ -1545,13 +2926,13 @@ graph TB
 
 ```mermaid
 graph LR
-    subgraph "Instance A"
+    subgraph sg_23 ["Instance A"]
         L2A["L2 Cache<br>ClientSideCache"]
     end
-    subgraph "Instance B"
+    subgraph sg_24 ["Instance B"]
         L2B["L2 Cache<br>ClientSideCache"]
     end
-    subgraph "Shared"
+    subgraph sg_25 ["Shared"]
         L1["L1 Cache<br>Redis"]
         EB["Event Bus<br>Redis Pub/Sub"]
     end
@@ -1587,33 +2968,33 @@ graph LR
 
 ```mermaid
 graph TB
-    subgraph "Spring Boot Application"
+    subgraph sg_26 ["Spring Boot Application"]
         direction TB
         EnableCoCache["@EnableCoCache<br>caches = [UserCache::class]"]
         UserCache["UserCache Interface<br>@CoCache + @GuavaCache"]
         Proxy["CoCacheProxy<br>InvocationHandler"]
     end
 
-    subgraph "CoCache Core"
+    subgraph sg_27 ["CoCache Core"]
         direction TB
         CoherentCache["DefaultCoherentCache<br>L2 + L1 + Event"]
         KeyConverter["KeyConverter<br>key -> cacheKey"]
         MissingGuard["MissingGuard<br>null value protection"]
     end
 
-    subgraph "L2 - Client Side"
+    subgraph sg_28 ["L2 - Client Side"]
         direction TB
         Guava["GuavaClientSideCache"]
         Caffeine["CaffeineClientSideCache"]
         Map["MapClientSideCache"]
     end
 
-    subgraph "L1 - Distributed"
+    subgraph sg_29 ["L1 - Distributed"]
         direction TB
         Redis["RedisDistributedCache"]
     end
 
-    subgraph "Coherence"
+    subgraph sg_30 ["Coherence"]
         direction TB
         EventBus["CacheEvictedEventBus<br>Redis Pub/Sub"]
     end
@@ -1647,7 +3028,6 @@ graph TB
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as Caller
     participant L2 as L2 Cache
     participant KeyFilter as KeyFilter
@@ -1688,13 +3068,6 @@ autonumber
         end
     end
 
-    style Caller fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style KeyFilter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Lock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style EventBus fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ## Module Architecture
@@ -1717,10 +3090,10 @@ autonumber
 | Property | Value | Source |
 |----------|-------|--------|
 | Group | `me.ahoo.cocache` | [gradle.properties:14](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L14) |
-| Version | `4.0.2` | [gradle.properties:15](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
+| Version | `4.2.0` | [gradle.properties:15](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
 | License | Apache License 2.0 | [gradle.properties:23](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L23) |
 | JDK | 17+ (via `jvmToolchain`) | [build.gradle.kts](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts) |
-| Gradle | 9.4.1 (wrapper) | [gradle/wrapper/gradle-wrapper.properties](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/wrapper/gradle-wrapper.properties) |
+| Gradle | 9.6.1 (wrapper) | [gradle/wrapper/gradle-wrapper.properties](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/wrapper/gradle-wrapper.properties) |
 
 ## Quick Example
 
@@ -1753,11 +3126,9 @@ class UserController(private val userCache: UserCache) {
 - [Configuration Reference](./configuration.md) -- All annotation parameters and properties
 - [Testing Overview](../testing/index.md) -- TCK test specs and test patterns
 - [Performance Patterns](../testing/performance-patterns.md) -- Cache stampede, penetration, and avalanche prevention
-
 </doc>
 
-<doc title="Quick Start Guide" path="guide/quick-start.md">
-
+<doc title="Quick Start" path="guide/quick-start.md">
 
 # Quick Start Guide
 
@@ -1776,7 +3147,7 @@ This guide walks you through adding CoCache to a Spring Boot application, defini
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter:4.0.2")
+    implementation("me.ahoo.cocache:cocache-spring-boot-starter:4.2.0")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 }
 ```
@@ -1785,7 +3156,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:4.0.2'
+    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:4.2.0'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 }
 ```
@@ -1796,7 +3167,7 @@ dependencies {
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>4.0.2</version>
+    <version>4.2.0</version>
 </dependency>
 <dependency>
     <groupId>org.springframework.boot</groupId>
@@ -1808,10 +3179,10 @@ The `cocache-spring-boot-starter` transitively pulls in `cocache-core`, `cocache
 
 ```mermaid
 graph LR
-    subgraph "Your Application"
+    subgraph sg_31 ["Your Application"]
         App["Spring Boot App"]
     end
-    subgraph "CoCache Starter"
+    subgraph sg_32 ["CoCache Starter"]
         Starter["cocache-spring-boot-starter"]
         Core["cocache-core"]
         Spring["cocache-spring"]
@@ -1942,7 +3313,6 @@ Source: [cocache-example/.../AppServer.kt](https://github.com/Ahoo-Wang/CoCache/
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant SB as Spring Boot
     participant Registrar as EnableCoCacheRegistrar
     participant Factory as CacheProxyFactory
@@ -1960,12 +3330,6 @@ autonumber
     SB-->>Cache: Cache is ready
     Cache->>Redis: connect to Redis
 
-    style SB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Registrar fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Factory fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ## Step 5: Use the Cache
@@ -2061,7 +3425,7 @@ Source: [cocache-example/.../config/ClassDefinedCacheConfiguration.kt](https://g
 
 ```mermaid
 graph TB
-    subgraph "Setup"
+    subgraph sg_33 ["Setup"]
         direction TB
         Dep["Add cocache-spring-boot-starter"]
         Config["Configure Redis connection"]
@@ -2069,7 +3433,7 @@ graph TB
         Enable["@EnableCoCache<br>caches = [UserCache]"]
     end
 
-    subgraph "Runtime"
+    subgraph sg_34 ["Runtime"]
         direction TB
         Inject["Inject UserCache"]
         Get["userCache[id]"]
@@ -2108,11 +3472,9 @@ graph TB
 - [Configuration Reference](./configuration.md) -- All annotation parameters and properties
 - [Testing Overview](../testing/index.md) -- TCK test specs
 - [Unit Testing](../testing/unit-testing.md) -- Writing tests with cache spec base classes
-
 </doc>
 
-<doc title="Configuration Reference" path="guide/configuration.md">
-
+<doc title="Configuration" path="guide/configuration.md">
 
 # Configuration Reference
 
@@ -2140,7 +3502,7 @@ actualTtl = ttl + random(-ttlAmplitude, +ttlAmplitude)
 
 ```mermaid
 graph LR
-    subgraph "TTL Jitter"
+    subgraph ttl_jitter ["TTL Jitter"]
         direction LR
         TTL["ttl = 120s"]
         Amp["ttlAmplitude = 10"]
@@ -2234,7 +3596,7 @@ The `CoCacheAutoConfiguration` class registers all required beans. Every bean us
 
 ```mermaid
 graph TB
-    subgraph "CoCacheAutoConfiguration"
+    subgraph autoconfig ["CoCacheAutoConfiguration"]
         direction TB
         ClientId["ClientIdGenerator<br>@ConditionalOnMissingBean"]
         CacheFact["CacheFactory<br>@ConditionalOnMissingBean"]
@@ -2369,7 +3731,6 @@ fun customEventBus(): CacheEvictedEventBus {
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Spring Boot
     participant Auto as CoCacheAutoConfiguration
     participant Prop as CoCacheProperties
@@ -2391,11 +3752,6 @@ autonumber
     Proxy->>Proxy: create DefaultCoherentCache
     Proxy->>Proxy: create JDK Proxy for interface
 
-    style App fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Auto fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Prop fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Bean fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ## CosID Integration
@@ -2426,11 +3782,15 @@ Source: [CoCacheAutoConfiguration.kt:175-185](https://github.com/Ahoo-Wang/CoCac
 - [Quick Start Guide](./quick-start.md) -- Setup and first cache in minutes
 - [Testing Overview](../testing/index.md) -- TCK test specs and test patterns
 - [Performance Patterns](../testing/performance-patterns.md) -- TTL jitter and cache stampede details
-
 </doc>
 
-<doc title="Architecture Overview" path="architecture/index.md">
+## Architecture
+- [Architecture Overview](architecture/index.md)
+- [Cache Layers](architecture/cache-layers.md)
+- [Coherence & Event Bus](architecture/coherence.md)
+- [Proxy & Annotations](architecture/proxy.md)
 
+<doc title="Architecture Overview" path="architecture/index.md">
 
 # Architecture Overview
 
@@ -2442,8 +3802,7 @@ The project is organized into 10 Gradle submodules, each with a clear responsibi
 
 ```mermaid
 graph TD
-    subgraph "Module Dependencies"
-        style "Module Dependencies" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_10 ["Module Dependencies"]
 
         api["cocache-api<br>Core interfaces"]
         core["cocache-core<br>Default implementations"]
@@ -2479,7 +3838,6 @@ graph TD
     style deps fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style example fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 The dependency flow is strictly layered: `cocache-api` defines interfaces at the bottom, `cocache-core` provides implementations, `cocache-spring` adds Spring Framework integration, and `cocache-spring-redis` / `cocache-spring-boot-starter` sit at the top for production use.
@@ -2490,14 +3848,14 @@ CoCache organizes caching into three layers:
 
 ```mermaid
 graph TB
-    subgraph "Application Layer"
-        style "Application Layer" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_11 ["Application Layer"]
+
         App["Application Code"]
         Proxy["Cache Proxy<br>JDK Dynamic Proxy"]
     end
 
-    subgraph "Coherent Cache - DefaultCoherentCache"
-        style "Coherent Cache - DefaultCoherentCache" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_12 ["Coherent Cache - DefaultCoherentCache"]
+
         L2["L2: ClientSideCache<br>Guava / Caffeine / Map"]
         KF["KeyFilter<br>Bloom Filter"]
         L1["L1: DistributedCache<br>Redis"]
@@ -2505,8 +3863,8 @@ graph TB
         L0["L0: CacheSource<br>DataSource / DB"]
     end
 
-    subgraph "Coherence Layer"
-        style "Coherence Layer" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_13 ["Coherence Layer"]
+
         EventBus["CacheEvictedEventBus<br>Guava EventBus / Redis Pub/Sub"]
         Subscriber["CacheEvictedSubscriber<br>Other Instances"]
     end
@@ -2534,7 +3892,6 @@ graph TB
     style EventBus fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style Subscriber fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 | Layer | Name | Role | Interface | Key Implementations |
@@ -2550,7 +3907,6 @@ The read path flows L2 -> KeyFilter -> L1 -> Lock -> L0 with several optimizatio
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant CC as DefaultCoherentCache
     participant L2 as ClientSideCache
@@ -2635,11 +3991,9 @@ Each cache entry carries a TTL plus a random `ttlAmplitude` offset. This jitter 
 - [Cache Layers Deep Dive](./cache-layers.md) -- L0, L1, L2 layer details and read/write/evict paths
 - [Cache Coherence and Event Bus](./coherence.md) -- distributed invalidation via CacheEvictedEventBus
 - [Proxy and Annotations](./proxy.md) -- declarative caching with @CoCache and JDK dynamic proxies
-
 </doc>
 
-<doc title="Cache Layers Deep Dive" path="architecture/cache-layers.md">
-
+<doc title="Cache Layers" path="architecture/cache-layers.md">
 
 # Cache Layers Deep Dive
 
@@ -2649,23 +4003,22 @@ CoCache organizes data retrieval into three distinct layers, each with a specifi
 
 ```mermaid
 graph LR
-    subgraph "CoCache Layers"
-        style "CoCache Layers" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_1 ["CoCache Layers"]
 
-        subgraph "L2 - ClientSideCache"
-            style "L2 - ClientSideCache" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+        subgraph sg_2 ["L2 - ClientSideCache"]
+
             Guava["GuavaClientSideCache"]
             Caffeine["CaffeineClientSideCache"]
             Map["MapClientSideCache"]
         end
 
-        subgraph "L1 - DistributedCache"
-            style "L1 - DistributedCache" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+        subgraph sg_3 ["L1 - DistributedCache"]
+
             Redis["RedisDistributedCache"]
         end
 
-        subgraph "L0 - CacheSource"
-            style "L0 - CacheSource" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+        subgraph sg_4 ["L0 - CacheSource"]
+
             DB["Database / DataSource"]
         end
     end
@@ -2688,7 +4041,6 @@ graph LR
     style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style DB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## L2 -- ClientSideCache (In-Memory, Per-Instance)
@@ -2785,7 +4137,6 @@ interface DistributedCache<V> : ComputedCache<String, V>, AutoCloseable
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant CC as DefaultCoherentCache
     participant DC as RedisDistributedCache
     participant RT as StringRedisTemplate
@@ -2880,7 +4231,6 @@ flowchart TD
     style ReturnNull fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style ReleaseLock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### Key Implementation Details
@@ -2932,20 +4282,20 @@ The event publication triggers remote instances to evict their own L2 caches for
 
 ```mermaid
 graph TB
-    subgraph "Write Path: setCache"
-        style "Write Path: setCache" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_5 ["Write Path: setCache"]
+
         W1["Write L2"] --> W2["Write L1"]
         W2 --> W3["Publish CacheEvictedEvent"]
     end
 
-    subgraph "Eviction Path: evict"
-        style "Eviction Path: evict" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_6 ["Eviction Path: evict"]
+
         E1["Evict L2"] --> E2["Evict L1"]
         E2 --> E3["Publish CacheEvictedEvent"]
     end
 
-    subgraph "Read Path: getCache"
-        style "Read Path: getCache" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_7 ["Read Path: getCache"]
+
         R1["Read L2"] --> R2["KeyFilter"]
         R2 --> R3["Read L1"]
         R3 --> R4["Lock + Load L0"]
@@ -2966,7 +4316,6 @@ graph TB
     style R5 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style R6 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Source References
@@ -2992,11 +4341,9 @@ graph TB
 - [Architecture Overview](./index.md) -- high-level system architecture and module graph
 - [Cache Coherence and Event Bus](./coherence.md) -- distributed invalidation mechanism
 - [Proxy and Annotations](./proxy.md) -- declarative cache interface creation
-
 </doc>
 
-<doc title="Cache Coherence and Event Bus" path="architecture/coherence.md">
-
+<doc title="Coherence & Event Bus" path="architecture/coherence.md">
 
 # Cache Coherence and Event Bus
 
@@ -3059,8 +4406,7 @@ CoCache provides three `CacheEvictedEventBus` implementations, each suited to a 
 
 ```mermaid
 graph TD
-    subgraph "CacheEvictedEventBus Implementations"
-        style "CacheEvictedEventBus Implementations" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_8 ["CacheEvictedEventBus Implementations"]
 
         Interface["CacheEvictedEventBus<br>interface"]
 
@@ -3078,7 +4424,6 @@ graph TD
     style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style NoOp fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### GuavaCacheEvictedEventBus (In-Process)
@@ -3166,7 +4511,6 @@ The following diagram shows how a cache modification on Instance A propagates to
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Instance A<br>(Publisher)
     participant CC_A as DefaultCoherentCache<br>(Instance A)
     participant EB as CacheEvictedEventBus<br>(Redis Pub/Sub)
@@ -3218,8 +4562,7 @@ When a `DefaultCoherentCache` is constructed, it registers itself as a subscribe
 
 ```mermaid
 flowchart LR
-    subgraph "Registration Flow"
-        style "Registration Flow" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_9 ["Registration Flow"]
 
         Create["CoherentCacheFactory<br>creates DefaultCoherentCache"]
         Register["cacheEvictedEventBus<br>.register(this)"]
@@ -3234,7 +4577,6 @@ flowchart LR
     style Listen fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style Unregister fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Comparison of EventBus Implementations
@@ -3266,11 +4608,9 @@ flowchart LR
 - [Architecture Overview](./index.md) -- high-level system architecture
 - [Cache Layers Deep Dive](./cache-layers.md) -- L0/L1/L2 read, write, and eviction paths
 - [Proxy and Annotations](./proxy.md) -- declarative cache interface creation
-
 </doc>
 
-<doc title="Proxy and Annotation System" path="architecture/proxy.md">
-
+<doc title="Proxy & Annotations" path="architecture/proxy.md">
 
 # Proxy and Annotation System
 
@@ -3280,21 +4620,21 @@ CoCache uses a declarative, annotation-driven approach to cache configuration. D
 
 ```mermaid
 flowchart TD
-    subgraph "Developer Defines"
-        style "Developer Defines" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_14 ["Developer Defines"]
+
         Interface["Cache Interface<br>+ @CoCache annotation"]
     end
 
-    subgraph "Startup Registration"
-        style "Startup Registration" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_15 ["Startup Registration"]
+
         Enable["@EnableCoCache<br>caches = [...]"]
         Registrar["EnableCoCacheRegistrar"]
         Parse["CoCacheMetadataParser<br>parse interface"]
         RegisterBean["Register CacheProxyFactoryBean<br>as Spring Bean"]
     end
 
-    subgraph "Bean Creation"
-        style "Bean Creation" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_16 ["Bean Creation"]
+
         FactoryBean["CacheProxyFactoryBean<br>.getObject()"]
         ProxyFactory["DefaultCacheProxyFactory<br>.create(metadata)"]
         InvocationHandler["CoCacheInvocationHandler"]
@@ -3320,7 +4660,6 @@ flowchart TD
     style InvocationHandler fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## The @EnableCoCache Annotation
@@ -3354,7 +4693,6 @@ class CacheConfiguration
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant SC as Spring Container
     participant R as EnableCoCacheRegistrar
     participant P as CoCacheMetadataParser
@@ -3448,7 +4786,6 @@ flowchart TD
     style ExtractTypes fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style BuildMetadata fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 The parser enforces that the target must be an interface. It reads the `@CoCache` annotation (or uses defaults if absent), extracts the generic type parameters from the `Cache<K, V>` supertype, and produces a `CoCacheMetadata` instance.
@@ -3511,7 +4848,6 @@ This allows callers to access the underlying `delegate` (the `DefaultCoherentCac
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant F as DefaultCacheProxyFactory
     participant CID as ClientIdGenerator
     participant CSF as ClientSideCacheFactory
@@ -3575,7 +4911,6 @@ For `JoinCache` interfaces (which compose two cached values), a parallel registr
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant F as DefaultJoinCacheProxyFactory
     participant CF as CacheFactory
     participant JK as JoinKeyExtractorFactory
@@ -3609,22 +4944,22 @@ The `DefaultJoinCacheProxyFactory.create()` at [line 30](https://github.com/Ahoo
 
 ```mermaid
 graph TB
-    subgraph "1. Annotation Parsing"
-        style "1. Annotation Parsing" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_17 ["1. Annotation Parsing"]
+
         A1["@EnableCoCache<br>caches = [MyCache::class]"]
         A2["EnableCoCacheRegistrar"]
         A3["CoCacheMetadataParser.parse()"]
         A4["CoCacheMetadata"]
     end
 
-    subgraph "2. Bean Definition"
-        style "2. Bean Definition" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_18 ["2. Bean Definition"]
+
         B1["Register CoCacheMetadata bean<br>(name: cacheName.CacheMetadata)"]
         B2["Register CacheProxyFactoryBean<br>(name: cacheName, primary: true)"]
     end
 
-    subgraph "3. Proxy Construction"
-        style "3. Proxy Construction" fill:#161b22,color:#e6edf3,stroke:#6d5dfc
+    subgraph sg_19 ["3. Proxy Construction"]
+
         C1["CacheProxyFactoryBean.getObject()"]
         C2["DefaultCacheProxyFactory.create()"]
         C3["Create L2 + L1 + L0 + KeyConverter"]
@@ -3653,7 +4988,6 @@ graph TB
     style C6 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style C7 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Key Class Relationships
@@ -3691,11 +5025,16 @@ graph TB
 - [Architecture Overview](./index.md) -- high-level system architecture and module graph
 - [Cache Layers Deep Dive](./cache-layers.md) -- L0/L1/L2 layer details
 - [Cache Coherence and Event Bus](./coherence.md) -- distributed invalidation mechanism
-
 </doc>
 
-<doc title="CoCache API Overview" path="api/index.md">
+## API Reference
+- [API Overview](api/index.md)
+- [Core Interfaces](api/core-interfaces.md)
+- [Annotations](api/annotations.md)
+- [Spring Integration](api/spring-integration.md)
+- [Actuator Endpoints](api/actuator.md)
 
+<doc title="API Overview" path="api/index.md">
 
 # CoCache API Overview
 
@@ -3825,15 +5164,6 @@ graph TB
     L1 -- "evict event" --> EventBus
     EventBus -- "invalidate" --> L2
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
 ```
 
 ## Key Packages
@@ -3870,7 +5200,6 @@ CoCache uses JDK dynamic proxies to implement cache interfaces. The proxy interc
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant Proxy as Cache Proxy<br>(JDK Dynamic Proxy)
     participant Handler as CoCacheInvocationHandler
@@ -3934,11 +5263,6 @@ graph LR
     Bus -->|"onEvicted(event)"| B_Coherent
     B_Coherent -->|"evict(key)"| B_L2
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
 ```
 
 ## Factory Pattern
@@ -4020,11 +5344,9 @@ classDiagram
 - [Annotations](./annotations.md) -- Complete annotation reference
 - [Spring Integration](./spring-integration.md) -- Spring and Spring Boot integration API
 - [Actuator Endpoints](./actuator.md) -- Monitoring and management endpoints
-
 </doc>
 
-<doc title="Core Interfaces Reference" path="api/core-interfaces.md">
-
+<doc title="Core Interfaces" path="api/core-interfaces.md">
 
 # Core Interfaces Reference
 
@@ -4353,7 +5675,6 @@ The JoinCache retrieval flow works by fetching the primary value, extracting the
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as Caller
     participant JC as SimpleJoinCache
     participant FC as firstCache
@@ -4525,20 +5846,6 @@ graph TB
     Meta --> CPF
     CPF --> Proxy
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
-    linkStyle 9 stroke:#8b949e
-    linkStyle 10 stroke:#8b949e
-    linkStyle 11 stroke:#8b949e
-    linkStyle 12 stroke:#8b949e
-    linkStyle 13 stroke:#8b949e
 ```
 
 ## Related Pages
@@ -4547,11 +5854,9 @@ graph TB
 - [Annotations](./annotations.md) -- Complete annotation reference
 - [Spring Integration](./spring-integration.md) -- Spring and Spring Boot integration API
 - [Actuator Endpoints](./actuator.md) -- Monitoring and management endpoints
-
 </doc>
 
-<doc title="Annotations Reference" path="api/annotations.md">
-
+<doc title="Annotations" path="api/annotations.md">
 
 # Annotations Reference
 
@@ -4709,7 +6014,6 @@ When `@EnableCoCache` is processed, `EnableCoCacheRegistrar` performs the follow
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant SC as Spring Container
     participant R as EnableCoCacheRegistrar
     participant MD as Metadata Parser
@@ -4867,17 +6171,6 @@ graph TB
     CPF --> PROXY
     JCPF --> PROXY
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
-    linkStyle 9 stroke:#8b949e
-    linkStyle 10 stroke:#8b949e
 ```
 
 ## Complete Example
@@ -4935,11 +6228,9 @@ class CacheConfiguration
 - [Core Interfaces](./core-interfaces.md) -- Detailed reference for all core interfaces
 - [Spring Integration](./spring-integration.md) -- Spring and Spring Boot integration API
 - [Actuator Endpoints](./actuator.md) -- Monitoring and management endpoints
-
 </doc>
 
-<doc title="Spring Integration API" path="api/spring-integration.md">
-
+<doc title="Spring Integration" path="api/spring-integration.md">
 
 # Spring Integration API
 
@@ -5000,20 +6291,6 @@ graph TB
     SKCF --> ACF
     SCSrcF --> ACF
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
-    linkStyle 9 stroke:#8b949e
-    linkStyle 10 stroke:#8b949e
-    linkStyle 11 stroke:#8b949e
-    linkStyle 12 stroke:#8b949e
-    linkStyle 13 stroke:#8b949e
 ```
 
 ## Factory Beans
@@ -5215,7 +6492,6 @@ Bridge between CoCache and Spring's `CacheManager` abstraction, enabling `@Cache
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant SC as Spring Container
     participant CCM as CoCacheManager
     participant CF as CacheFactory
@@ -5359,16 +6635,6 @@ graph TB
     KCF --> CPF
     SCF --> CCM
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
-    linkStyle 9 stroke:#8b949e
 ```
 
 ## Related Pages
@@ -5377,11 +6643,9 @@ graph TB
 - [Core Interfaces](./core-interfaces.md) -- Detailed reference for all core interfaces
 - [Annotations](./annotations.md) -- Complete annotation reference
 - [Actuator Endpoints](./actuator.md) -- Monitoring and management endpoints
-
 </doc>
 
 <doc title="Actuator Endpoints" path="api/actuator.md">
-
 
 # Actuator Endpoints
 
@@ -5559,7 +6823,6 @@ Registers both endpoint beans when Spring Boot Actuator is available.
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Boot as Spring Boot
     participant Auto as CoCacheAutoConfiguration
     participant EA as CoCacheEndpointAutoConfiguration
@@ -5620,19 +6883,6 @@ graph TB
     CEP -- "get" --> L2
     CEP -- "clear" --> L2
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
-    linkStyle 7 stroke:#8b949e
-    linkStyle 8 stroke:#8b949e
-    linkStyle 9 stroke:#8b949e
-    linkStyle 10 stroke:#8b949e
-    linkStyle 11 stroke:#8b949e
-    linkStyle 12 stroke:#8b949e
 ```
 
 ## Endpoint Operations Summary
@@ -5664,13 +6914,6 @@ graph LR
     OP6 -->|"CacheValue<*>?"| R6["JSON response"]
     OP7 -->|"void"| R7["Cleared"]
 
-    linkStyle 0 stroke:#8b949e
-    linkStyle 1 stroke:#8b949e
-    linkStyle 2 stroke:#8b949e
-    linkStyle 3 stroke:#8b949e
-    linkStyle 4 stroke:#8b949e
-    linkStyle 5 stroke:#8b949e
-    linkStyle 6 stroke:#8b949e
 ```
 
 ## CoherentCache vs Client Endpoint Usage
@@ -5742,11 +6985,18 @@ class CustomEndpointConfig {
 - [Core Interfaces](./core-interfaces.md) -- Detailed reference for all core interfaces
 - [Annotations](./annotations.md) -- Complete annotation reference
 - [Spring Integration](./spring-integration.md) -- Spring and Spring Boot integration API
-
 </doc>
 
-<doc title="CoCache Module Overview" path="modules/index.md">
+## Modules
+- [Module Overview](modules/index.md)
+- [cocache-api](modules/cocache-api.md)
+- [cocache-core](modules/cocache-core.md)
+- [cocache-spring](modules/cocache-spring.md)
+- [cocache-spring-redis](modules/cocache-spring-redis.md)
+- [cocache-spring-boot-starter](modules/cocache-spring-boot-starter.md)
+- [cocache-spring-cache](modules/cocache-spring-cache.md)
 
+<doc title="Module Overview" path="modules/index.md">
 
 # Module Overview
 
@@ -5756,8 +7006,7 @@ CoCache is organized into a set of focused Gradle modules that layer from pure A
 
 ```mermaid
 graph TB
-    subgraph "CoCache Module Architecture"
-        style "CoCache Module Architecture" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_53 ["CoCache Module Architecture"]
 
         cocache-bom["cocache-bom<br>(Bill of Materials)"]
         style cocache-bom fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -5801,7 +7050,6 @@ graph TB
         cocache-example -.-> cocache-spring-boot-starter
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Module Descriptions
@@ -5846,8 +7094,7 @@ The `build.gradle.kts` dependency declarations establish this compile-time chain
 
 ```mermaid
 flowchart LR
-    subgraph "Build Dependencies"
-        style "Build Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_54 ["Build Dependencies"]
 
         api["cocache-api<br>(no deps)"]
         style api fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -5874,23 +7121,22 @@ flowchart LR
         springcache --> starter
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Layered Architecture
 
 ```mermaid
 graph TB
-    subgraph "Application Layer"
-        style "Application Layer" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_55 ["Application Layer"]
+
         app["Application Code<br>(@CoCache interfaces)"]
         style app fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
         spring_boot["Spring Boot Starter<br>(Auto-config)"]
         style spring_boot fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     end
 
-    subgraph "Integration Layer"
-        style "Integration Layer" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_56 ["Integration Layer"]
+
         spring_mod["cocache-spring<br>(@EnableCoCache)"]
         style spring_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
         redis_mod["cocache-spring-redis<br>(Redis impl)"]
@@ -5899,14 +7145,14 @@ graph TB
         style spring_cache_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     end
 
-    subgraph "Core Layer"
-        style "Core Layer" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_57 ["Core Layer"]
+
         core_mod["cocache-core<br>(CoherentCache, Proxy, TTL)"]
         style core_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     end
 
-    subgraph "API Layer"
-        style "API Layer" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_58 ["API Layer"]
+
         api_mod["cocache-api<br>(Interfaces, Annotations)"]
         style api_mod fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     end
@@ -5920,15 +7166,13 @@ graph TB
     spring_cache_mod --> core_mod
     core_mod --> api_mod
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Two-Level Caching Data Flow
 
 ```mermaid
 flowchart LR
-    subgraph "Cache Read Path (L2 -> L1 -> DataSource)"
-        style "Cache Read Path (L2 -> L1 -> DataSource)" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_59 ["Cache Read Path (L2 -> L1 -> DataSource)"]
 
         app_req["Application<br>get(key)"]
         style app_req fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -5953,7 +7197,6 @@ flowchart LR
         l2 -->|"hit"| result
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Core Interface Hierarchy
@@ -6021,11 +7264,9 @@ classDiagram
 - [cocache-spring-redis](./cocache-spring-redis.md) -- Redis distributed cache implementation
 - [cocache-spring-boot-starter](./cocache-spring-boot-starter.md) -- Auto-configuration and endpoints
 - [cocache-spring-cache](./cocache-spring-cache.md) -- Spring Cache abstraction bridge
-
 </doc>
 
-<doc title="cocache-api Module" path="modules/cocache-api.md">
-
+<doc title="cocache-api" path="modules/cocache-api.md">
 
 # cocache-api Module
 
@@ -6162,7 +7403,6 @@ The following diagram illustrates how `CacheValue` flows through the system, fro
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant CC as CoherentCache
     participant CSC as ClientSideCache<br>(L2)
@@ -6205,8 +7445,7 @@ autonumber
 
 ```mermaid
 graph LR
-    subgraph "JoinCache Data Flow"
-        style "JoinCache Data Flow" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_35 ["JoinCache Data Flow"]
 
         key1["K1 (primary key)"]
         style key1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -6237,7 +7476,6 @@ graph LR
         v2 --> jv
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## MissingGuard Mechanism
@@ -6246,8 +7484,7 @@ The `MissingGuard` pattern prevents cache penetration (also known as cache null/
 
 ```mermaid
 graph TB
-    subgraph "MissingGuard Detection"
-        style "MissingGuard Detection" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_36 ["MissingGuard Detection"]
 
         check{"Is value<br>MissingGuard?"}
         style check fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -6286,7 +7523,6 @@ graph TB
         obj_check -->|no| no
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 The sentinel detection logic lives in the [MissingGuard](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/MissingGuard.kt#L17) companion object and works polymorphically across `String`, `Set`, `Map`, and objects implementing the `MissingGuard` marker interface.
@@ -6317,11 +7553,9 @@ class UserService(private val userCache: UserCache) {
 - [cocache-core](./cocache-core.md) -- Default implementations of all API interfaces
 - [cocache-spring](./cocache-spring.md) -- Spring integration and `@EnableCoCache`
 - [cocache-spring-boot-starter](./cocache-spring-boot-starter.md) -- Auto-configuration
-
 </doc>
 
-<doc title="cocache-core Module" path="modules/cocache-core.md">
-
+<doc title="cocache-core" path="modules/cocache-core.md">
 
 # cocache-core Module
 
@@ -6331,8 +7565,7 @@ The `cocache-core` module is the engine of CoCache. It contains the default impl
 
 ```mermaid
 graph LR
-    subgraph "cocache-core Dependencies"
-        style "cocache-core Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_37 ["cocache-core Dependencies"]
 
         api["cocache-api"]
         style api fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -6363,7 +7596,6 @@ graph LR
         caffeine -.-> core
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## DefaultCoherentCache -- The Heart of CoCache
@@ -6374,8 +7606,7 @@ graph LR
 
 ```mermaid
 flowchart TB
-    subgraph "DefaultCoherentCache.getCache(key)"
-        style "DefaultCoherentCache.getCache(key)" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_38 ["DefaultCoherentCache.getCache(key)"]
 
         start["getCache(key)"]
         style start fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -6439,7 +7670,6 @@ flowchart TB
         source_hit -->|no| set_missing --> release
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 The fine-grained locking uses a `ConcurrentHashMap<String, Any>` of per-key lock objects to prevent cache stampede (cache breakdown) -- multiple threads requesting the same missing key will synchronize on the same lock, so only one thread performs the expensive `loadCacheValue()` call.
@@ -6449,7 +7679,6 @@ The fine-grained locking uses a `ConcurrentHashMap<String, Any>` of per-key lock
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant DCC as DefaultCoherentCache
     participant CSC as ClientSideCache
@@ -6470,7 +7699,6 @@ autonumber
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant DCC as DefaultCoherentCache
     participant CSC as ClientSideCache
@@ -6597,8 +7825,7 @@ The TTL system provides time-to-live computation with jitter to prevent cache av
 
 ```mermaid
 graph TB
-    subgraph "TTL Computation Pipeline"
-        style "TTL Computation Pipeline" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_39 ["TTL Computation Pipeline"]
 
         ttl_input["ttl (base seconds)"]
         style ttl_input fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -6637,7 +7864,6 @@ graph TB
         expire_check -->|no| valid
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### Key TTL Classes
@@ -6679,7 +7905,6 @@ The `KeyFilter` interface prevents cache penetration by checking if a key has ev
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant App as Application
     participant SJC as SimpleJoinCache
     participant FC as FirstCache
@@ -6769,11 +7994,9 @@ Unique client identifiers are critical for event-driven coherence -- each instan
 - [cocache-api](./cocache-api.md) -- Interfaces and annotations
 - [cocache-spring](./cocache-spring.md) -- Spring integration and factory beans
 - [cocache-spring-redis](./cocache-spring-redis.md) -- Redis distributed cache and event bus
-
 </doc>
 
-<doc title="cocache-spring Module" path="modules/cocache-spring.md">
-
+<doc title="cocache-spring" path="modules/cocache-spring.md">
 
 # cocache-spring Module
 
@@ -6783,8 +8006,7 @@ The `cocache-spring` module bridges CoCache's core abstractions with the Spring 
 
 ```mermaid
 graph LR
-    subgraph "cocache-spring Dependencies"
-        style "cocache-spring Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_50 ["cocache-spring Dependencies"]
 
         core["cocache-core"]
         style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -6799,7 +8021,6 @@ graph LR
         spring_ctx --> spring_mod
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Source Files (10 files)
@@ -6841,8 +8062,7 @@ class CacheConfiguration
 
 ```mermaid
 flowchart TB
-    subgraph "EnableCoCacheRegistrar Registration Flow"
-        style "EnableCoCacheRegistrar Registration Flow" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_51 ["EnableCoCacheRegistrar Registration Flow"]
 
         scan["@EnableCoCache(caches=[...])<br>ImportBeanDefinitionRegistrar"]
         style scan fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -6873,7 +8093,6 @@ flowchart TB
         filter1 -->|Yes| join_cache --> register_join
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 The registrar at [EnableCoCacheRegistrar.kt:45](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/EnableCoCacheRegistrar.kt#L45) performs these steps:
@@ -6889,8 +8108,7 @@ The registrar at [EnableCoCacheRegistrar.kt:45](https://github.com/Ahoo-Wang/CoC
 
 ```mermaid
 flowchart TB
-    subgraph "AbstractCacheFactory.createBean(cacheMetadata)"
-        style "AbstractCacheFactory.createBean(cacheMetadata)" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_52 ["AbstractCacheFactory.createBean(cacheMetadata)"]
 
         bean_name["Compute beanName<br>= cacheName + suffix"]
         style bean_name fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -6928,7 +8146,6 @@ flowchart TB
         ttl_aware -->|no| done
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 Each subclass defines:
@@ -6955,7 +8172,6 @@ This naming convention allows users to override any component simply by declarin
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant SB as Spring BeanFactory
     participant CPFB as CacheProxyFactoryBean
     participant CPF as CacheProxyFactory<br>(DefaultCacheProxyFactory)
@@ -7073,7 +8289,6 @@ classDiagram
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant User as @EnableCoCache
     participant Reg as EnableCoCacheRegistrar
     participant BDR as BeanDefinitionRegistry
@@ -7135,11 +8350,9 @@ class CustomCacheConfig {
 - [cocache-spring-redis](./cocache-spring-redis.md) -- Redis distributed cache implementation
 - [cocache-spring-boot-starter](./cocache-spring-boot-starter.md) -- Auto-configuration
 - [cocache-spring-cache](./cocache-spring-cache.md) -- Spring Cache abstraction bridge
-
 </doc>
 
-<doc title="cocache-spring-redis Module" path="modules/cocache-spring-redis.md">
-
+<doc title="cocache-spring-redis" path="modules/cocache-spring-redis.md">
 
 # cocache-spring-redis Module
 
@@ -7149,8 +8362,7 @@ The `cocache-spring-redis` module implements the distributed cache layer (L1) us
 
 ```mermaid
 graph LR
-    subgraph "cocache-spring-redis Dependencies"
-        style "cocache-spring-redis Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_47 ["cocache-spring-redis Dependencies"]
 
         core["cocache-core"]
         style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -7173,7 +8385,6 @@ graph LR
         sdr --> redis
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Source Files
@@ -7201,7 +8412,6 @@ graph LR
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as CoherentCache
     participant RDC as RedisDistributedCache
     participant Redis as Redis
@@ -7235,7 +8445,6 @@ autonumber
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as CoherentCache
     participant RDC as RedisDistributedCache
     participant Codec as CodecExecutor
@@ -7262,8 +8471,7 @@ autonumber
 
 ```mermaid
 graph TB
-    subgraph "Redis Pub/Sub Cache Coherence"
-        style "Redis Pub/Sub Cache Coherence" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_48 ["Redis Pub/Sub Cache Coherence"]
 
         inst1["Instance 1<br>(clientId: 0:1234@10.0.0.1)"]
         style inst1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -7286,7 +8494,6 @@ graph TB
         inst3 -->|"Evict L2 entry<br>user:123"| inst3
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### Event Registration
@@ -7296,7 +8503,6 @@ When a `CoherentCache` is created by `DefaultCoherentCacheFactory`, it registers
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant CCF as DefaultCoherentCacheFactory
     participant RCEEB as RedisCacheEvictedEventBus
     participant RMLC as RedisMessageListenerContainer
@@ -7402,8 +8608,7 @@ Each codec has a codec-specific way to detect the missing guard sentinel, matchi
 
 ```mermaid
 flowchart LR
-    subgraph "MissingGuard Detection by Value Type"
-        style "MissingGuard Detection by Value Type" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_49 ["MissingGuard Detection by Value Type"]
 
         check{"Value Type?"}
         style check fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -7426,7 +8631,6 @@ flowchart LR
         check -->|"Other"| obj
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## RedisDistributedCacheFactory
@@ -7458,7 +8662,6 @@ The complete flow of a cache write with cross-instance invalidation:
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Client as Client (Instance A)
     participant DCCA as DefaultCoherentCache (A)
     participant L2A as ClientSideCache (A)
@@ -7487,11 +8690,9 @@ autonumber
 - [cocache-core](./cocache-core.md) -- DefaultCoherentCache, DistributedCache interface, CacheEvictedEventBus
 - [cocache-spring](./cocache-spring.md) -- AbstractCacheFactory base class, Spring integration
 - [cocache-spring-boot-starter](./cocache-spring-boot-starter.md) -- Auto-configuration that wires RedisDistributedCacheFactory
-
 </doc>
 
-<doc title="cocache-spring-boot-starter Module" path="modules/cocache-spring-boot-starter.md">
-
+<doc title="cocache-spring-boot-starter" path="modules/cocache-spring-boot-starter.md">
 
 # cocache-spring-boot-starter Module
 
@@ -7501,8 +8702,7 @@ The `cocache-spring-boot-starter` module provides zero-configuration setup for C
 
 ```mermaid
 graph LR
-    subgraph "cocache-spring-boot-starter Dependencies"
-        style "cocache-spring-boot-starter Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_40 ["cocache-spring-boot-starter Dependencies"]
 
         spring["cocache-spring"]
         style spring fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -7533,7 +8733,6 @@ graph LR
         jackson_boot --> starter
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Source Files (8 files)
@@ -7566,8 +8765,7 @@ me.ahoo.cache.spring.boot.starter.CoCacheEndpointAutoConfiguration
 
 ```mermaid
 graph TB
-    subgraph "CoCacheAutoConfiguration Bean Graph"
-        style "CoCacheAutoConfiguration Bean Graph" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_41 ["CoCacheAutoConfiguration Bean Graph"]
 
         props["@EnableConfigurationProperties<br>(CoCacheProperties)"]
         style props fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -7635,7 +8833,6 @@ graph TB
         jkef --> jcpf
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### Complete Bean List
@@ -7684,8 +8881,7 @@ cocache:
 
 ```mermaid
 graph LR
-    subgraph "CoCacheEndpoint Operations"
-        style "CoCacheEndpoint Operations" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_42 ["CoCacheEndpoint Operations"]
 
         total["GET /actuator/cocache<br>-> List of all cache reports"]
         style total fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -7704,7 +8900,6 @@ graph LR
         stat --- evict
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 The `CacheReport` data class returned by the endpoint includes:
@@ -7779,8 +8974,7 @@ classDiagram
 
 ```mermaid
 flowchart TB
-    subgraph "CoCache Activation Logic"
-        style "CoCache Activation Logic" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_43 ["CoCache Activation Logic"]
 
         boot["Spring Boot starts"]
         style boot fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -7819,7 +9013,6 @@ flowchart TB
         endpoints -->|no| skip_ep
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## CosID Integration
@@ -7831,7 +9024,6 @@ The auto-configuration includes a nested `CosIdHostAddressSupplierAutoConfigurat
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Boot as Spring Boot
     participant DRA as DataRedisAutoConfiguration
     participant CCA as CoCacheAutoConfiguration
@@ -7884,11 +9076,9 @@ The auto-configuration handles everything else: Redis connection, event bus, pro
 - [cocache-spring](./cocache-spring.md) -- @EnableCoCache and AbstractCacheFactory
 - [cocache-spring-redis](./cocache-spring-redis.md) -- Redis distributed cache and event bus
 - [cocache-spring-cache](./cocache-spring-cache.md) -- Spring Cache bridge (CoCacheManager)
-
 </doc>
 
-<doc title="cocache-spring-cache Module" path="modules/cocache-spring-cache.md">
-
+<doc title="cocache-spring-cache" path="modules/cocache-spring-cache.md">
 
 # cocache-spring-cache Module
 
@@ -7898,8 +9088,7 @@ The `cocache-spring-cache` module implements the bridge between CoCache and Spri
 
 ```mermaid
 graph LR
-    subgraph "cocache-spring-cache Dependencies"
-        style "cocache-spring-cache Dependencies" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_44 ["cocache-spring-cache Dependencies"]
 
         core["cocache-core"]
         style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -7914,7 +9103,6 @@ graph LR
         spring_ctx --> spring_cache
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## Source Files (3 files)
@@ -7994,8 +9182,7 @@ classDiagram
 
 ```mermaid
 flowchart TB
-    subgraph "CoCacheManager Cache Resolution"
-        style "CoCacheManager Cache Resolution" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_45 ["CoCacheManager Cache Resolution"]
 
         request["getCache(name)"]
         style request fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -8034,7 +9221,6 @@ flowchart TB
         cache_found -->|no| null
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ### loadCaches()
@@ -8067,7 +9253,6 @@ CoSpringCache supports Spring 6.1's `Cache.retrieve()` methods for asynchronous 
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as Caller
     participant CSC as CoSpringCache
     participant Cache as CoCache
@@ -8092,8 +9277,7 @@ The `clear()` method at [CoSpringCache.kt:66](https://github.com/Ahoo-Wang/CoCac
 
 ```mermaid
 flowchart TB
-    subgraph "CoSpringCache.clear()"
-        style "CoSpringCache.clear()" fill:#161b22,stroke:#6d5dfc,color:#e6edf3
+    subgraph sg_46 ["CoSpringCache.clear()"]
 
         clear_start["clear()"]
         style clear_start fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -8120,7 +9304,6 @@ flowchart TB
         is_cc -->|no| no_op
     end
 
-    linkStyle default stroke:#8b949e
 ```
 
 ## SpringCacheValueWrapper
@@ -8165,7 +9348,6 @@ This approach works alongside CoCache's native proxy-based caching -- both mecha
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as Caller
     participant AOP as Spring AOP<br>(@Cacheable)
     participant CCM as CoCacheManager
@@ -8238,11 +9420,15 @@ class CacheConfig {
 - [cocache-core](./cocache-core.md) -- CoherentCache, Cache interface, CacheFactory
 - [cocache-spring](./cocache-spring.md) -- SpringCacheFactory (the CacheFactory implementation)
 - [cocache-spring-boot-starter](./cocache-spring-boot-starter.md) -- Auto-configuration that registers CoCacheManager
-
 </doc>
 
-<doc title="Testing Overview" path="testing/index.md">
+## Testing
+- [Testing Overview](testing/index.md)
+- [Unit Testing](testing/unit-testing.md)
+- [Integration Testing](testing/integration-testing.md)
+- [Performance Patterns](testing/performance-patterns.md)
 
+<doc title="Testing Overview" path="testing/index.md">
 
 # Testing Overview
 
@@ -8381,7 +9567,7 @@ Source: [cocache-test/.../consistency/CacheEvictedEventBusSpec.kt](https://githu
 
 ```mermaid
 graph TB
-    subgraph "cocache-test (TCK Specs)"
+    subgraph sg_82 ["cocache-test (TCK Specs)"]
         direction TB
         CacheSpec["CacheSpec<br>Base cache operations"]
         CSCSpec["ClientSideCacheSpec<br>L2 local cache"]
@@ -8391,14 +9577,14 @@ graph TB
         EBSpec["CacheEvictedEventBusSpec<br>Event bus"]
     end
 
-    subgraph "cocache-core Tests"
+    subgraph sg_83 ["cocache-core Tests"]
         direction TB
         MapTest["MapClientSideCacheTest"]
         MockDCTest["MockDistributedCacheTest"]
         CoherentTest["DefaultCoherentCacheTest"]
     end
 
-    subgraph "cocache-spring-redis Tests"
+    subgraph sg_84 ["cocache-spring-redis Tests"]
         direction TB
         RedisDCTest["RedisDistributedCacheTest"]
         RedisEBTest["RedisCacheEvictedEventBusTest"]
@@ -8445,7 +9631,6 @@ The `DefaultCoherentCacheSpec` includes a critical concurrency test that verifie
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant T1 as Thread 1
     participant T2 as Thread 2
     participant TN as Thread N
@@ -8473,13 +9658,6 @@ autonumber
 
     Note over T1,TN: callCount.assert().isOne()
 
-    style T1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style T2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style TN fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Lock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 Source: [DefaultCoherentCacheSpec.kt:138-179](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-test/src/main/kotlin/me/ahoo/cache/test/DefaultCoherentCacheSpec.kt#L138-L179)
@@ -8490,11 +9668,9 @@ Source: [DefaultCoherentCacheSpec.kt:138-179](https://github.com/Ahoo-Wang/CoCac
 - [Integration Testing](./integration-testing.md) -- Redis service container setup in CI
 - [Performance Patterns](./performance-patterns.md) -- Cache stampede, penetration, and avalanche prevention
 - [Introduction](../guide/index.md) -- Architecture overview
-
 </doc>
 
-<doc title="Unit Testing Guide" path="testing/unit-testing.md">
-
+<doc title="Unit Testing" path="testing/unit-testing.md">
 
 # Unit Testing Guide
 
@@ -8507,7 +9683,7 @@ Add the `cocache-test` module as a test dependency:
 ```kotlin
 // build.gradle.kts
 dependencies {
-    testImplementation("me.ahoo.cocache:cocache-test:4.0.2")
+    testImplementation("me.ahoo.cocache:cocache-test:4.2.0")
     testImplementation("me.ahoo.test:fluent-assert-core")
     testImplementation("io.mockk:mockk")
 }
@@ -8533,7 +9709,7 @@ This automatically runs 8 tests covering get, set, evict, TTL, and missing guard
 
 ```mermaid
 graph TB
-    subgraph "CacheSpec Tests"
+    subgraph sg_97 ["CacheSpec Tests"]
         direction TB
         T1["get() - missing key returns null"]
         T2["getWhenExpired() - expired entry returns null"]
@@ -8633,7 +9809,7 @@ class DefaultCoherentCacheTest : DefaultCoherentCacheSpec<String, String>() {
 
 ```mermaid
 graph TB
-    subgraph "DefaultCoherentCacheSpec Factory Methods"
+    subgraph sg_98 ["DefaultCoherentCacheSpec Factory Methods"]
         direction TB
         CK["createKeyConverter()"]
         CSC["createClientSideCache()"]
@@ -8643,7 +9819,7 @@ graph TB
         CE["createCacheEntry()"]
     end
 
-    subgraph "Assembled CoherentCache"
+    subgraph sg_99 ["Assembled CoherentCache"]
         direction TB
         CC["DefaultCoherentCache<br>L2 + L1 + CacheSource + EventBus"]
     end
@@ -8712,7 +9888,6 @@ class MultipleInstanceSyncTest : MultipleInstanceSyncSpec<String, String>() {
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Current as Current Instance
     participant EB as Event Bus
     participant Other as Other Instance
@@ -8735,9 +9910,6 @@ autonumber
     Other->>Other: L2.evict(key)
     Note over Other: L1 also evicted, so get() returns null
 
-    style Current fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style EB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Other fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 Source: [cocache-test/.../MultipleInstanceSyncSpec.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-test/src/main/kotlin/me/ahoo/cache/test/MultipleInstanceSyncSpec.kt)
@@ -8768,7 +9940,7 @@ count.assert().isOne()
 
 ```mermaid
 graph LR
-    subgraph "fluent-assert Pattern"
+    subgraph sg_100 ["fluent-assert Pattern"]
         direction LR
         V["Any value"] --> Ext[".assert()"]
         Ext --> Chain[".isEqualTo(expected)<br>.isNull()<br>.isTrue()<br>.isZero()"]
@@ -8802,21 +9974,21 @@ When creating a new cache implementation (e.g., for a different distributed stor
 
 ```mermaid
 graph TB
-    subgraph "1. Implement the interface"
+    subgraph sg_101 ["1. Implement the interface"]
         direction TB
         IFace["DistributedCache&lt;V&gt;"]
         Impl["MyCustomDistributedCache&lt;V&gt;"]
         Impl -.->|implements| IFace
     end
 
-    subgraph "2. Extend the TCK spec"
+    subgraph sg_102 ["2. Extend the TCK spec"]
         direction TB
         Spec["DistributedCacheSpec&lt;V&gt;"]
         Test["MyCustomDCTest"]
         Test -.->|extends| Spec
     end
 
-    subgraph "3. Implement factory methods"
+    subgraph sg_103 ["3. Implement factory methods"]
         direction TB
         Create["createCache() -> MyCustomDistributedCache"]
         Entry["createCacheEntry() -> Pair(key, value)"]
@@ -8864,11 +10036,9 @@ graph TB
 - [Integration Testing](./integration-testing.md) -- Redis-based integration tests in CI
 - [Performance Patterns](./performance-patterns.md) -- Concurrency test details
 - [Configuration Reference](../guide/configuration.md) -- Annotation parameters
-
 </doc>
 
 <doc title="Integration Testing" path="testing/integration-testing.md">
-
 
 # Integration Testing
 
@@ -8880,7 +10050,7 @@ The integration tests run in GitHub Actions with separate jobs for unit and inte
 
 ```mermaid
 graph TB
-    subgraph "Integration Test Workflow"
+    subgraph sg_85 ["Integration Test Workflow"]
         direction TB
         CoreJob["cocache-core-test<br>No Redis needed"]
         SpringJob["cocache-spring-test<br>No Redis needed"]
@@ -8888,7 +10058,7 @@ graph TB
         StarterJob["cocache-spring-boot-starter-test<br>Redis service container"]
     end
 
-    subgraph "Redis Service"
+    subgraph sg_86 ["Redis Service"]
         direction TB
         Redis["redis:latest<br>port 6379"]
     end
@@ -9008,7 +10178,6 @@ The Redis service container configuration includes health checks to ensure Redis
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant GH as GitHub Actions
     participant Redis as Redis Container
     participant Health as Health Check
@@ -9025,10 +10194,6 @@ autonumber
     Test->>Redis: Connect to localhost:6379
     Test->>Test: Execute integration tests
 
-    style GH fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Health fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Test fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 Key health check parameters:
@@ -9052,14 +10217,14 @@ Tests the Redis distributed cache implementation, including:
 
 ```mermaid
 graph TB
-    subgraph "cocache-spring-redis Tests"
+    subgraph sg_87 ["cocache-spring-redis Tests"]
         direction TB
         RedisDC["RedisDistributedCache<br>DistributedCacheSpec"]
         RedisEB["RedisCacheEvictedEventBus<br>CacheEvictedEventBusSpec"]
         RedisSync["RedisMultipleInstanceSync<br>MultipleInstanceSyncSpec"]
     end
 
-    subgraph "Real Redis"
+    subgraph sg_88 ["Real Redis"]
         direction TB
         Redis["localhost:6379"]
     end
@@ -9086,7 +10251,7 @@ Tests the auto-configuration end-to-end:
 
 ```mermaid
 graph TB
-    subgraph "cocache-spring-boot-starter Tests"
+    subgraph sg_89 ["cocache-spring-boot-starter Tests"]
         direction TB
         AutoConf["CoCacheAutoConfiguration<br>Bean registration"]
         ProxyTest["Proxy generation<br>@EnableCoCache"]
@@ -9094,7 +10259,7 @@ graph TB
         BeanOverride["Custom bean overrides<br>ClientSideCache, CacheSource"]
     end
 
-    subgraph "Spring Boot Test Context"
+    subgraph sg_90 ["Spring Boot Test Context"]
         direction TB
         Context["ApplicationContext"]
         Redis["Redis Connection"]
@@ -9152,12 +10317,12 @@ docker stop cocache-redis && docker rm cocache-redis
 
 ```mermaid
 graph LR
-    subgraph "No Redis"
+    subgraph sg_91 ["No Redis"]
         A["cocache-core-test"]
         B["cocache-spring-test"]
     end
 
-    subgraph "With Redis"
+    subgraph sg_92 ["With Redis"]
         C["cocache-spring-redis-test"]
         D["cocache-spring-boot-starter-test"]
     end
@@ -9207,11 +10372,9 @@ The example includes:
 - [Unit Testing](./unit-testing.md) -- Using TCK base classes for unit tests
 - [Performance Patterns](./performance-patterns.md) -- Concurrency and cache protection patterns
 - [Quick Start Guide](../guide/quick-start.md) -- Setting up a CoCache application
-
 </doc>
 
 <doc title="Performance Patterns" path="testing/performance-patterns.md">
-
 
 # Performance Patterns
 
@@ -9228,7 +10391,6 @@ When a cache miss occurs and the key passes the `KeyFilter` check, CoCache acqui
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant T1 as Thread 1
     participant T2 as Thread 2
     participant T3 as Thread 3
@@ -9266,13 +10428,6 @@ autonumber
 
     Note over T1,T3: Only 1 call to CacheSource
 
-    style T1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style T2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style T3 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Lock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ### Implementation
@@ -9370,7 +10525,7 @@ The `MissingGuard` interface detects sentinel values across different types:
 
 ```mermaid
 graph TB
-    subgraph "MissingGuard Detection"
+    subgraph sg_93 ["MissingGuard Detection"]
         direction TB
         Check["value.isMissingGuard"]
         String["String == '_nil_'"]
@@ -9407,7 +10562,6 @@ For high-traffic scenarios, a Bloom filter can be used as a pre-check before que
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Caller as Caller
     participant BF as BloomKeyFilter
     participant L2 as L2 Cache
@@ -9426,11 +10580,6 @@ autonumber
     Caller->>L1: getCache(key)
     Caller->>L0: loadCacheValue(key) [if needed]
 
-    style Caller fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style BF fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 The `BloomKeyFilter` wraps a Guava `BloomFilter<String>`:
@@ -9501,7 +10650,7 @@ Source: [ComputedTtlAt.kt:49-61](https://github.com/Ahoo-Wang/CoCache/blob/main/
 
 ```mermaid
 graph LR
-    subgraph "Without Jitter (Avalanche)"
+    subgraph sg_94 ["Without Jitter (Avalanche)"]
         direction TB
         T1["Key A: expires at T"]
         T2["Key B: expires at T"]
@@ -9510,7 +10659,7 @@ graph LR
         Burst["All expired at T<br>-> Cache avalanche"]
     end
 
-    subgraph "With Jitter (Spread)"
+    subgraph sg_95 ["With Jitter (Spread)"]
         direction TB
         J1["Key A: expires at T-5"]
         J2["Key B: expires at T+3"]
@@ -9561,7 +10710,6 @@ CoCache solves this with `CacheSecondClock`, a daemon thread that updates a vola
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Timer as CacheSecondClock<br>Daemon Thread
     participant Volatile as lastTime<br>(volatile)
     participant Cache as Cache Operations
@@ -9576,9 +10724,6 @@ autonumber
 
     Note over Timer,Cache: Tolerates 1-second resolution<br>for cache expiration
 
-    style Timer fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Volatile fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
 ### Implementation
@@ -9641,7 +10786,7 @@ Source: [ComputedTtlAt.kt:24-29](https://github.com/Ahoo-Wang/CoCache/blob/main/
 
 ```mermaid
 graph TB
-    subgraph "Request Flow with All Patterns"
+    subgraph sg_96 ["Request Flow with All Patterns"]
         direction TB
         Req["Request: get(key)"]
         BF["1. BloomKeyFilter.notExist(key)<br>[Penetration Prevention]"]
@@ -9692,15 +10837,18 @@ graph TB
 - [Unit Testing](./unit-testing.md) -- Concurrency test details
 - [Configuration Reference](../guide/configuration.md) -- TTL and amplitude configuration
 - [Introduction](../guide/index.md) -- Architecture overview
-
 </doc>
 
-<doc title="Build & CI Overview" path="building/index.md">
+## Building
+- [Build & CI](building/index.md)
+- [Contributing](building/contributing.md)
+- [Publishing](building/publishing.md)
 
+<doc title="Build & CI" path="building/index.md">
 
 # Build & CI Overview
 
-CoCache uses **Gradle 9.4.1** with the Kotlin DSL, targeting **JDK 17+** across all library modules. The build pipeline integrates Detekt for static analysis, Dokka for API documentation, JaCoCo for code coverage, and GitHub Actions for continuous integration and deployment.
+CoCache uses **Gradle 9.6.1** with the Kotlin DSL, targeting **JDK 17+** across all library modules. The build pipeline integrates Detekt for static analysis, Dokka for API documentation, JaCoCo for code coverage, and GitHub Actions for continuous integration and deployment.
 
 ## Gradle Setup
 
@@ -9812,14 +10960,14 @@ api(platform(dependenciesProject))
 
 | Dependency | Version | Source |
 |------------|---------|--------|
-| Kotlin | 2.3.20 | [`libs.versions.toml:14`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L14) |
-| Spring Boot | 4.0.5 | [`libs.versions.toml:3`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L3) |
-| CoSid | 3.0.5 | [`libs.versions.toml:4`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L4) |
+| Kotlin | 2.4.0 | [`libs.versions.toml:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L15) |
+| Spring Boot | 4.1.0 | [`libs.versions.toml:3`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L3) |
+| CoSid | 3.2.0 | [`libs.versions.toml:4`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L4) |
 | Detekt | 1.23.8 | [`libs.versions.toml:13`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L13) |
 | Dokka | 2.2.0 | [`libs.versions.toml:14`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L14) |
-| JUnit | 6.0.3 | [`libs.versions.toml:9`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L9) |
-| fluent-assert | 0.2.6 | [`libs.versions.toml:10`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L10) |
-| mockk | 1.14.9 | [`libs.versions.toml:11`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L11) |
+| JUnit | 6.1.1 | [`libs.versions.toml:9`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L9) |
+| fluent-assert | 1.0.0 | [`libs.versions.toml:10`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L10) |
+| mockk | 1.14.11 | [`libs.versions.toml:11`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L11) |
 
 ## Module Build Graph
 
@@ -10001,7 +11149,6 @@ All workflows are defined in [`.github/workflows/`](https://github.com/Ahoo-Wang
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Dev as Developer
     participant GH as GitHub
     participant IT as integration-test.yml
@@ -10105,11 +11252,11 @@ Both jobs require JDK 17 (Temurin) and use PGP signing with CI-injected secrets.
 
 ## Manifold Configuration
 
-The Gradle wrapper is pinned to Gradle 9.4.1:
+The Gradle wrapper is pinned to Gradle 9.6.1:
 
 ```properties
 # [gradle-wrapper.properties:3](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/wrapper/gradle-wrapper.properties#L3)
-distributionUrl=https\://services.gradle.org/distributions/gradle-9.4.1-bin.zip
+distributionUrl=https\://services.gradle.org/distributions/gradle-9.6.1-bin.zip
 ```
 
 The [`settings.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/settings.gradle.kts) uses the `foojay-resolver-convention` plugin (v1.0.0) for automatic JDK toolchain resolution.
@@ -10120,11 +11267,9 @@ The [`settings.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/setti
 - [Publishing & Release](/building/publishing) -- Maven Central publishing and release pipeline
 - [Testing](/testing/) -- Test specifications and patterns
 - [Architecture](/architecture/) -- System architecture overview
-
 </doc>
 
-<doc title="Contributing Guide" path="building/contributing.md">
-
+<doc title="Contributing" path="building/contributing.md">
 
 # Contributing Guide
 
@@ -10194,9 +11339,9 @@ All contributions must include appropriate tests. CoCache uses **JUnit 5 (Jupite
 
 | Tool | Purpose | Version | Source |
 |------|---------|---------|--------|
-| JUnit 5 Jupiter | Test framework and parameterized tests | 6.0.3 | [`libs.versions.toml:9`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L9) |
-| mockk | Kotlin-native mocking | 1.14.9 | [`libs.versions.toml:11`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L11) |
-| fluent-assert | Fluent Kotlin assertions (wraps AssertJ) | 0.2.6 | [`libs.versions.toml:10`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L10) |
+| JUnit 5 Jupiter | Test framework and parameterized tests | 6.1.1 | [`libs.versions.toml:9`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L9) |
+| mockk | Kotlin-native mocking | 1.14.11 | [`libs.versions.toml:11`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L11) |
+| fluent-assert | Fluent Kotlin assertions (wraps AssertJ) | 1.0.0 | [`libs.versions.toml:10`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/libs.versions.toml#L10) |
 
 ### Assertion Style
 
@@ -10298,7 +11443,6 @@ When adding a new `ClientSideCache`, `DistributedCache`, or `CacheEvictedEventBu
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Dev as Developer
     participant Impl as New Implementation
     participant TCK as TCK Spec
@@ -10462,7 +11606,7 @@ Use conventional commit format:
 | `refactor` | Code restructuring | `refactor(api): extract CacheGetter interface` |
 | `test` | Adding or updating tests | `test(core): add concurrent access spec` |
 | `docs` | Documentation | `docs(wiki): add publishing guide` |
-| `chore` | Build, CI, deps | `chore(deps): upgrade Kotlin to 2.3.20` |
+| `chore` | Build, CI, deps | `chore(deps): upgrade Kotlin to 2.4.0` |
 | `ci` | CI/CD changes | `ci: add CodeQL analysis workflow` |
 
 ## Pull Request Workflow
@@ -10470,7 +11614,6 @@ Use conventional commit format:
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Dev as Developer
     participant Branch as Feature Branch
     participant PR as Pull Request
@@ -10509,11 +11652,9 @@ Before submitting a pull request, ensure:
 - [Publishing & Release](/building/publishing) -- Maven Central publishing and release workflow
 - [Testing](/testing/) -- Test specifications, patterns, and shared test infrastructure
 - [Architecture](/architecture/) -- System architecture and design decisions
-
 </doc>
 
-<doc title="Publishing & Release" path="building/publishing.md">
-
+<doc title="Publishing" path="building/publishing.md">
 
 # Publishing & Release
 
@@ -10629,7 +11770,7 @@ The POM properties are sourced from [`gradle.properties`](https://github.com/Aho
 | Property | Value | Source |
 |----------|-------|--------|
 | `group` | `me.ahoo.cocache` | [`gradle.properties:14`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L14) |
-| `version` | `4.0.2` | [`gradle.properties:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
+| `version` | `4.2.0` | [`gradle.properties:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
 | `description` | `Level 2 Distributed Coherence Cache Framework` | [`gradle.properties:17`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L17) |
 | `website` | `https://github.com/Ahoo-Wang/CoCache` | [`gradle.properties:18`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L18) |
 | `license_name` | `The Apache Software License, Version 2.0` | [`gradle.properties:22`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L22) |
@@ -10640,14 +11781,14 @@ The project version is defined centrally in [`gradle.properties`](https://github
 
 ```properties
 # [gradle.properties:15](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15)
-version=4.0.2
+version=4.2.0
 ```
 
 All published artifacts share this version. To prepare a release:
 
 1. Update the `version` property in `gradle.properties`
 2. Commit the version change
-3. Create a GitHub Release with a matching tag (e.g., `v4.0.2`)
+3. Create a GitHub Release with a matching tag (e.g., `v4.2.0`)
 
 The version is automatically stamped into JAR manifests:
 
@@ -10741,7 +11882,6 @@ The Maven Central publishing process involves a staging workflow:
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant GH as GitHub
     participant CI as CI Runner
     participant NX as Sonatype Nexus
@@ -10840,7 +11980,6 @@ The complete release lifecycle from version bump to artifact availability:
 ```mermaid
 sequenceDiagram
 autonumber
-    autonumber
     participant Dev as Maintainer
     participant GP as gradle.properties
     participant GH as GitHub
@@ -10849,9 +11988,9 @@ autonumber
     participant SNX as Sonatype Nexus
     participant MC as Maven Central
 
-    Dev->>GP: Update version (e.g., 4.0.2 -> 4.1.0)
+    Dev->>GP: Update version (e.g., 4.2.0 -> 4.3.0)
     Dev->>GH: Commit & push version change
-    Dev->>GH: Create Release (tag: v4.1.0)
+    Dev->>GH: Create Release (tag: v4.3.0)
     GH->>PD: Trigger package-deploy.yml
 
     par github-deploy
@@ -10917,5 +12056,5 @@ Publish to this repository with:
 - [Contributing Guide](/building/contributing) -- Code style, testing, and PR workflow
 - [Modules](/modules/) -- Module architecture and responsibilities
 - [Architecture](/architecture/) -- System architecture overview
-
 </doc>
+

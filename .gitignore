@@ -24,4 +24,5 @@ gradle-app.setting
 
 # Agent workspaces
 .superpowers/
+.zcode/
 skills/cocache-workspace/

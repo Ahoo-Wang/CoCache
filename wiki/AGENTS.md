@@ -31,9 +31,8 @@ wiki/
 │   │   ├── en.ts          # English sidebar/nav config
 │   │   └── zh.ts          # Chinese sidebar/nav config
 │   ├── theme/
-│   │   ├── index.ts       # Custom theme entry
+│   │   ├── index.ts       # Custom theme entry (Mermaid renderer, page-view tracking)
 │   │   └── custom.css     # Dark theme styles, Mermaid styling
-│   └── config.ts          # (unused — see index.ts)
 ├── scripts/
 │   └── fix-mermaid.mjs    # Mermaid syntax validator & fixer
 ├── public/
