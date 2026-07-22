@@ -117,7 +117,7 @@ The POM properties are sourced from [`gradle.properties`](https://github.com/Aho
 | Property | Value | Source |
 |----------|-------|--------|
 | `group` | `me.ahoo.cocache` | [`gradle.properties:14`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L14) |
-| `version` | `4.0.2` | [`gradle.properties:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
+| `version` | `4.2.0` | [`gradle.properties:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
 | `description` | `Level 2 Distributed Coherence Cache Framework` | [`gradle.properties:17`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L17) |
 | `website` | `https://github.com/Ahoo-Wang/CoCache` | [`gradle.properties:18`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L18) |
 | `license_name` | `The Apache Software License, Version 2.0` | [`gradle.properties:22`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L22) |
@@ -128,14 +128,14 @@ The project version is defined centrally in [`gradle.properties`](https://github
 
 ```properties
 # [gradle.properties:15](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15)
-version=4.0.2
+version=4.2.0
 ```
 
 All published artifacts share this version. To prepare a release:
 
 1. Update the `version` property in `gradle.properties`
 2. Commit the version change
-3. Create a GitHub Release with a matching tag (e.g., `v4.0.2`)
+3. Create a GitHub Release with a matching tag (e.g., `v4.2.0`)
 
 The version is automatically stamped into JAR manifests:
 
@@ -335,9 +335,9 @@ autonumber
     participant SNX as Sonatype Nexus
     participant MC as Maven Central
 
-    Dev->>GP: Update version (e.g., 4.0.2 -> 4.1.0)
+    Dev->>GP: Update version (e.g., 4.2.0 -> 4.3.0)
     Dev->>GH: Commit & push version change
-    Dev->>GH: Create Release (tag: v4.1.0)
+    Dev->>GH: Create Release (tag: v4.3.0)
     GH->>PD: Trigger package-deploy.yml
 
     par github-deploy

@@ -117,7 +117,7 @@ POM 属性来源于 [`gradle.properties`](https://github.com/Ahoo-Wang/CoCache/b
 | 属性 | 值 | 来源 |
 |------|-----|------|
 | `group` | `me.ahoo.cocache` | [`gradle.properties:14`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L14) |
-| `version` | `4.0.2` | [`gradle.properties:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
+| `version` | `4.2.0` | [`gradle.properties:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
 | `description` | `Level 2 Distributed Coherence Cache Framework` | [`gradle.properties:17`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L17) |
 | `website` | `https://github.com/Ahoo-Wang/CoCache` | [`gradle.properties:18`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L18) |
 | `license_name` | `The Apache Software License, Version 2.0` | [`gradle.properties:22`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L22) |
@@ -128,14 +128,14 @@ POM 属性来源于 [`gradle.properties`](https://github.com/Ahoo-Wang/CoCache/b
 
 ```properties
 # [gradle.properties:15](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15)
-version=4.0.2
+version=4.2.0
 ```
 
 所有已发布构件共享此版本。准备发布时：
 
 1. 在 `gradle.properties` 中更新 `version` 属性
 2. 提交版本变更
-3. 创建一个带有对应标签的 GitHub Release（例如 `v4.0.2`）
+3. 创建一个带有对应标签的 GitHub Release（例如 `v4.2.0`）
 
 版本号会自动写入 JAR 清单：
 
@@ -335,9 +335,9 @@ autonumber
     participant SNX as Sonatype Nexus
     participant MC as Maven Central
 
-    Dev->>GP: Update version (e.g., 4.0.2 -> 4.1.0)
+    Dev->>GP: Update version (e.g., 4.2.0 -> 4.3.0)
     Dev->>GH: Commit & push version change
-    Dev->>GH: Create Release (tag: v4.1.0)
+    Dev->>GH: Create Release (tag: v4.3.0)
     GH->>PD: Trigger package-deploy.yml
 
     par github-deploy

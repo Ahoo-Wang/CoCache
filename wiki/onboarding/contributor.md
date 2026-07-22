@@ -120,7 +120,7 @@ Key interop patterns you will see in the codebase:
 
 ### 1.3 Gradle Build System
 
-CoCache uses **Gradle 9.4.1** (wrapper). The build is configured via
+CoCache uses **Gradle 9.6.1** (wrapper). The build is configured via
 [build.gradle.kts](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts) at the root, with each module having its
 own build file.
 
@@ -174,7 +174,7 @@ This ensures every module uses the same dependency versions.
 
 ### 1.4 Spring Boot Integration
 
-CoCache integrates with **Spring Boot 4.0.5**. The Spring integration lives in
+CoCache integrates with **Spring Boot 4.1.0**. The Spring integration lives in
 three modules:
 
 - **`cocache-spring`** -- Core Spring integration (`@EnableCoCache`, factory beans,

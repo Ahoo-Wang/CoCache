@@ -13,7 +13,7 @@ export const en: DefaultTheme.Config = {
       { text: 'Modules', link: '/modules/' },
       { text: 'Onboarding', link: '/onboarding/' },
       {
-        text: 'v4.0',
+        text: 'v4.2',
         items: [
           { text: 'Changelog', link: '/guide/changelog' },
           { text: 'Contributing', link: '/guide/contributing' },
@@ -94,6 +94,7 @@ export const en: DefaultTheme.Config = {
           text: 'Onboarding',
           collapsed: false,
           items: [
+            { text: 'Overview', link: '/onboarding/' },
             { text: 'Contributor Guide', link: '/onboarding/contributor' },
             { text: 'Staff Engineer Guide', link: '/onboarding/staff-engineer' },
             { text: 'Executive Guide', link: '/onboarding/executive' },
