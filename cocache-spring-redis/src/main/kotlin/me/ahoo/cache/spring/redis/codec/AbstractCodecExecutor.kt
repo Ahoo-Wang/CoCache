@@ -13,6 +13,7 @@
 
 package me.ahoo.cache.spring.redis.codec
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.connection.RedisConnection
@@ -53,17 +54,25 @@ abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
 
     abstract fun CacheValue<V>.toRawValue(): RAW_VALUE
 
-    override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V> {
+    @Suppress("TooGenericExceptionCaught")
+    override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>? {
         val rawValue = getRawValue(key) ?: return DefaultCacheValue.missingGuard(ttlAt)
-        return if (isMissingGuard(rawValue)) {
-            DefaultCacheValue.missingGuard(ttlAt)
-        } else {
-            val value = decode(rawValue)
-            DefaultCacheValue(
-                value,
-                ttlAt,
-            )
+        if (isMissingGuard(rawValue)) {
+            return DefaultCacheValue.missingGuard(ttlAt)
         }
+        val value = try {
+            decode(rawValue)
+        } catch (e: Exception) {
+            // Self-heal: any decode failure means the stored payload is corrupted
+            // or incompatible. Catch broadly so every codec gets the same guarantee.
+            log.warn(e) { "Corrupted payload at key[$key] - evict and treat as cache miss." }
+            redisTemplate.delete(key)
+            return null
+        }
+        return DefaultCacheValue(
+            value,
+            ttlAt,
+        )
     }
 
     protected abstract fun getRawValue(key: String): RAW_VALUE?
@@ -79,4 +88,8 @@ abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
 
     protected abstract fun setForeverValue(key: String, cacheValue: CacheValue<V>)
     protected abstract fun setValueWithTtlAt(key: String, cacheValue: CacheValue<V>)
+
+    companion object {
+        private val log = KotlinLogging.logger {}
+    }
 }

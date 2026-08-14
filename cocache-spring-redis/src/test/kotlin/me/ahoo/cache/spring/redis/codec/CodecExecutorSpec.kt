@@ -70,9 +70,9 @@ abstract class CodecExecutorSpec<V> {
         // ttlAt is reconstructed from Redis EXPIRE and may drift by up to 1
         // second across the write/read boundary, so assert value equality and a
         // tolerant ttlAt instead of full-object equality (which is flaky).
-        actual.value.assert().isEqualTo(value.value)
-        actual.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
-        actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
+        actual!!.value.assert().isEqualTo(value.value)
+        actual!!.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
+        actual!!.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
     }
 
     @Test
@@ -94,8 +94,8 @@ abstract class CodecExecutorSpec<V> {
         // missing-guard), but ttlAt is reconstructed from Redis EXPIRE and may
         // drift by up to 1 second across the write/read second boundary, so
         // only assert it with a tolerance instead of full-object equality.
-        actual.value.assert().isEqualTo(value.value)
-        actual.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
-        actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
+        actual!!.value.assert().isEqualTo(value.value)
+        actual!!.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
+        actual!!.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
     }
 }

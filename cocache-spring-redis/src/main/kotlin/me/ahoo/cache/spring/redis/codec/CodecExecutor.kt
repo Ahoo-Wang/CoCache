@@ -22,7 +22,10 @@ import me.ahoo.cache.api.CacheValue
 interface CodecExecutor<V> {
     /**
      * @param ttlAt time to live([java.time.temporal.ChronoUnit.SECONDS]).
+     * @return 命中返回 [CacheValue]；负缓存返回 missing-guard；**载荷损坏或无法解码时返回 null**
+     * （该 key 已被淘汰，调用方必须按缓存未命中处理——回源重建）。注意与 missing-guard 的区别：
+     * missing-guard 会抑制回源，null 则触发回源。
      */
-    fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>
+    fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>?
     fun executeAndEncode(key: String, cacheValue: CacheValue<V>)
 }

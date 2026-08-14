@@ -13,6 +13,9 @@
 
 package me.ahoo.cache.spring.redis.codec
 
+import me.ahoo.cache.ComputedTtlAt
+import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.Test
 import java.util.*
 
 internal class ObjectToJsonCodecExecutorTest : CodecExecutorSpec<Model>() {
@@ -23,6 +26,17 @@ internal class ObjectToJsonCodecExecutorTest : CodecExecutorSpec<Model>() {
 
     override fun createCacheValue(): Model {
         return Model(UUID.randomUUID().toString())
+    }
+
+    @Test
+    fun executeAndDecodeWhenCorruptedPayloadEvictsAndReturnsNull() {
+        val key = "corrupted:" + UUID.randomUUID().toString()
+        stringRedisTemplate.opsForValue()[key] = "{invalid-json"
+
+        val actual = codecExecutor.executeAndDecode(key, ComputedTtlAt.FOREVER)
+
+        actual.assert().isNull()
+        stringRedisTemplate.opsForValue()[key].assert().isNull()
     }
 }
 
