@@ -12,6 +12,7 @@
  */
 package me.ahoo.cache.spring.boot.starter
 
+import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.annotation.CoCache
 import org.springframework.boot.context.properties.ConfigurationProperties
 
@@ -21,4 +22,19 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  * @author ahoo wang
  */
 @ConfigurationProperties(prefix = CoCache.COCACHE)
-data class CoCacheProperties(val enabled: Boolean = true)
+data class CoCacheProperties(
+    val enabled: Boolean = true,
+    val redis: Redis = Redis(),
+) {
+    data class Redis(
+        /**
+         * Redis 故障时重抛异常（默认 false = 降级：读按未命中、写/evict 仅告警）。
+         */
+        val strictFailure: Boolean = false,
+        /**
+         * 自定义 missing-guard 哨兵值。约束见 [me.ahoo.cache.spring.redis.codec.AbstractCodecExecutor]：
+         * 自定义值与默认值互不识别，需全集群同时切换，且不得与任何合法业务序列化值相等。
+         */
+        val missingGuardSentinel: String = MissingGuard.STRING_VALUE,
+    )
+}

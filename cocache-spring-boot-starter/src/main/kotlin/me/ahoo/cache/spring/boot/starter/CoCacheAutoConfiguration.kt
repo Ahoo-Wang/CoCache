@@ -127,9 +127,16 @@ class CoCacheAutoConfiguration {
     fun distributedCacheFactory(
         beanFactory: BeanFactory,
         objectMapper: ObjectMapper,
-        redisTemplate: StringRedisTemplate
+        redisTemplate: StringRedisTemplate,
+        cocacheProperties: CoCacheProperties
     ): DistributedCacheFactory {
-        return RedisDistributedCacheFactory(beanFactory, objectMapper, redisTemplate)
+        return RedisDistributedCacheFactory(
+            beanFactory,
+            objectMapper,
+            redisTemplate,
+            missingGuardSentinel = cocacheProperties.redis.missingGuardSentinel,
+            strictFailure = cocacheProperties.redis.strictFailure,
+        )
     }
 
     @Bean

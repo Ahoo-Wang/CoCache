@@ -34,7 +34,11 @@ class RedisDistributedCacheFactory(
      * [AbstractCodecExecutor.missingGuardSentinel]：自定义值与默认值互不识别，
      * 需全集群同时切换，且不得与任何合法业务序列化值相等。
      */
-    private val missingGuardSentinel: String = MissingGuard.STRING_VALUE,
+    val missingGuardSentinel: String = MissingGuard.STRING_VALUE,
+    /**
+     * true = Redis 故障重抛（旧行为）；false（默认）= 降级。透传给 [RedisDistributedCache]。
+     */
+    val strictFailure: Boolean = false,
 ) : DistributedCacheFactory, AbstractCacheFactory(beanFactory) {
     companion object {
         const val DISTRIBUTED_CACHE_SUFFIX = ".DistributedCache"
@@ -62,7 +66,8 @@ class RedisDistributedCacheFactory(
             redisTemplate,
             codecExecutor,
             ttl = cacheMetadata.ttl,
-            ttlAmplitude = cacheMetadata.ttlAmplitude
+            ttlAmplitude = cacheMetadata.ttlAmplitude,
+            strictFailure = strictFailure
         )
     }
 
