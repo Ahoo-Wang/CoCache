@@ -16,24 +16,34 @@ package me.ahoo.cache.spring.proxy
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.proxy.CacheProxyFactory
+import org.springframework.beans.factory.DisposableBean
 import org.springframework.beans.factory.FactoryBean
 import org.springframework.context.ApplicationContext
 import org.springframework.context.ApplicationContextAware
 
 class CacheProxyFactoryBean(private val cacheMetadata: CoCacheMetadata) :
     FactoryBean<Cache<Any, Any>>,
-    ApplicationContextAware {
+    ApplicationContextAware,
+    DisposableBean {
     private lateinit var appContext: ApplicationContext
+    private var proxy: Cache<Any, Any>? = null
     override fun setApplicationContext(applicationContext: ApplicationContext) {
         this.appContext = applicationContext
     }
 
     override fun getObject(): Cache<Any, Any> {
-        val cacheProxyFactory = appContext.getBean(CacheProxyFactory::class.java)
-        return cacheProxyFactory.create(cacheMetadata)
+        if (proxy == null) {
+            val cacheProxyFactory = appContext.getBean(CacheProxyFactory::class.java)
+            proxy = cacheProxyFactory.create(cacheMetadata)
+        }
+        return requireNotNull(proxy)
     }
 
     override fun getObjectType(): Class<*> {
         return cacheMetadata.proxyInterface.java
+    }
+
+    override fun destroy() {
+        (proxy as? AutoCloseable)?.close()
     }
 }
