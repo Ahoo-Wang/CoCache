@@ -57,9 +57,11 @@ abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
 
     @Suppress("TooGenericExceptionCaught")
     override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>? {
-        val rawValue = getRawValue(key) ?: return DefaultCacheValue.missingGuard(ttlAt)
-        if (isMissingGuard(rawValue)) {
-            return DefaultCacheValue.missingGuard(ttlAt)
+        // ttlAt 是绝对到期时间戳：不得经 missingGuard(ttl) 构造（其按相对时长 now+ttl 计算），
+        // 否则负缓存读回的到期时间约为两倍纪元秒，客户端负缓存实际永不过期。
+        val rawValue = getRawValue(key)
+        if (rawValue == null || isMissingGuard(rawValue)) {
+            return missingGuardCacheValue(ttlAt)
         }
         val value = try {
             decode(rawValue)
@@ -81,13 +83,21 @@ abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
     protected abstract fun decode(rawValue: RAW_VALUE): V
 
     /**
+     * 以绝对到期时间戳构造负缓存值。不得改为 [DefaultCacheValue.missingGuard]——
+     * 其参数按相对时长（now+ttl）计算，传入绝对时间戳会使到期时间翻倍纪元秒。
+     */
+    protected fun missingGuardCacheValue(ttlAt: Long): CacheValue<V> {
+        @Suppress("UNCHECKED_CAST")
+        return DefaultCacheValue(DefaultMissingGuard, ttlAt) as CacheValue<V>
+    }
+
+    /**
      * null 归一化：非 missing-guard 的 null 统一转为负缓存哨兵写入，
      * 使所有 codec 与内存实现语义对齐（null = 负缓存）。
      */
     override fun executeAndEncode(key: String, cacheValue: CacheValue<V>) {
         val normalizedValue = if (cacheValue.value == null && cacheValue.isMissingGuard.not()) {
-            @Suppress("UNCHECKED_CAST")
-            DefaultCacheValue(DefaultMissingGuard, cacheValue.ttlAt) as CacheValue<V>
+            missingGuardCacheValue(cacheValue.ttlAt)
         } else {
             cacheValue
         }

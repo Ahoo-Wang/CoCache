@@ -219,7 +219,8 @@ return 1
 ## 兼容性注记
 
 - `executeAndDecode` 可空化：实现方协变返回（源码兼容）；JVM 方法签名不含可空性（二进制兼容）。仅"混用新旧 jar 调用"场景（不受支持）有风险。
-- 默认行为变更（需 release notes）：① Redis 故障从抛异常变为降级（可经 `strictFailure` 找回旧行为）；② JSON codec 的 null 从 `"null"` 字面量往返变为负缓存哨兵；③ 所有 codec 的 null 写入从异常/静默损坏变为负缓存。
+- 默认行为变更（需 release notes）：① Redis 故障从抛异常变为降级（可经 `strictFailure` 找回旧行为）；② JSON codec 的 null 从 `"null"` 字面量往返变为负缓存哨兵；③ 所有 codec 的 null 写入从异常/静默损坏变为负缓存；④ 混合版本读取方向：滚动升级期间新实例读到旧实例写入的 `"null"` 字面量（JSON codec）会解码为 null 值命中（非自愈路径）——与旧实例自身行为一致、无回退，但这些 key 在升级窗口内延迟获得新负缓存语义；原始类型 JSON 缓存遇 `"null"` 抛异常 → Task 1 自愈删除 → 干净未命中，两种路径均健全。
+- 实施中发现的既有 bug 一并修复：`executeAndDecode` 此前经 `missingGuard(ttlAt)` 构造负缓存返回值，把绝对时间戳按相对时长计算，导致读回的负缓存到期时间约为两倍纪元秒（客户端负缓存实际永不过期）。修复为直接以绝对 ttlAt 构造（`missingGuardCacheValue` 助手）。
 - 存储格式、消息格式：零变更，滚动升级双向兼容。
 
 ## 验收标准

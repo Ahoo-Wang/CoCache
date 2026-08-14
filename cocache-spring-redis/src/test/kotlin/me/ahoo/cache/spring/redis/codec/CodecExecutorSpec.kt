@@ -15,6 +15,7 @@ package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.DefaultMissingGuard
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.util.CacheSecondClock
 import me.ahoo.test.asserts.assert
@@ -87,16 +88,19 @@ abstract class CodecExecutorSpec<V> {
     @Test
     fun executeAndEncodeMissingWithTtlAt() {
         val key = "executeAndDecodeWhenMissingTtl:" + UUID.randomUUID().toString()
-        val value = DefaultCacheValue.missingGuard<CacheValue<V>>(100)
+        // ttlAt is an ABSOLUTE deadline (production callers pass currentTime + remainingTtl),
+        // so construct the guard with the same absolute value the decode side will receive.
+        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 100
+
+        @Suppress("UNCHECKED_CAST")
+        val value = DefaultCacheValue(DefaultMissingGuard, ttlAt) as CacheValue<V>
         codecExecutor.executeAndEncode(key, value)
-        val actual = requireNotNull(codecExecutor.executeAndDecode(key, 100))
-        // The sentinel value must round-trip exactly (it identifies the
-        // missing-guard), but ttlAt is reconstructed from Redis EXPIRE and may
-        // drift by up to 1 second across the write/read second boundary, so
-        // only assert it with a tolerance instead of full-object equality.
+        val actual = requireNotNull(codecExecutor.executeAndDecode(key, ttlAt))
+        // The sentinel must round-trip exactly, and the decoded ttlAt must equal the
+        // passed absolute deadline (a regression re-treats it as a relative duration).
         actual.value.assert().isEqualTo(value.value)
         actual.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
-        actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
+        actual.ttlAt.assert().isEqualTo(ttlAt)
     }
 
     @Test
@@ -108,8 +112,9 @@ abstract class CodecExecutorSpec<V> {
         val nullValue = null as V
         codecExecutor.executeAndEncode(key, DefaultCacheValue(nullValue, ttlAt))
 
-        val actual = codecExecutor.executeAndDecode(key, ttlAt)
+        val actual = requireNotNull(codecExecutor.executeAndDecode(key, ttlAt))
 
-        actual!!.isMissingGuard.assert().isTrue()
+        actual.isMissingGuard.assert().isTrue()
+        actual.ttlAt.assert().isEqualTo(ttlAt)
     }
 }
