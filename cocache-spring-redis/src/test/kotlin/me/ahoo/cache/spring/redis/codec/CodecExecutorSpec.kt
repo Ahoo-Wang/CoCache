@@ -66,13 +66,13 @@ abstract class CodecExecutorSpec<V> {
         val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 10
         val value = DefaultCacheValue(createCacheValue(), ttlAt)
         codecExecutor.executeAndEncode(key, value)
-        val actual = codecExecutor.executeAndDecode(key, ttlAt)
+        val actual = requireNotNull(codecExecutor.executeAndDecode(key, ttlAt))
         // ttlAt is reconstructed from Redis EXPIRE and may drift by up to 1
         // second across the write/read boundary, so assert value equality and a
         // tolerant ttlAt instead of full-object equality (which is flaky).
-        actual!!.value.assert().isEqualTo(value.value)
-        actual!!.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
-        actual!!.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
+        actual.value.assert().isEqualTo(value.value)
+        actual.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
+        actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
     }
 
     @Test
@@ -89,13 +89,27 @@ abstract class CodecExecutorSpec<V> {
         val key = "executeAndDecodeWhenMissingTtl:" + UUID.randomUUID().toString()
         val value = DefaultCacheValue.missingGuard<CacheValue<V>>(100)
         codecExecutor.executeAndEncode(key, value)
-        val actual = codecExecutor.executeAndDecode(key, 100)
+        val actual = requireNotNull(codecExecutor.executeAndDecode(key, 100))
         // The sentinel value must round-trip exactly (it identifies the
         // missing-guard), but ttlAt is reconstructed from Redis EXPIRE and may
         // drift by up to 1 second across the write/read second boundary, so
         // only assert it with a tolerance instead of full-object equality.
-        actual!!.value.assert().isEqualTo(value.value)
-        actual!!.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
-        actual!!.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
+        actual.value.assert().isEqualTo(value.value)
+        actual.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
+        actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
+    }
+
+    @Test
+    fun executeAndEncodeNullValueAsMissingGuard() {
+        val key = "null-normalize:" + UUID.randomUUID().toString()
+        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 100
+
+        @Suppress("UNCHECKED_CAST")
+        val nullValue = null as V
+        codecExecutor.executeAndEncode(key, DefaultCacheValue(nullValue, ttlAt))
+
+        val actual = codecExecutor.executeAndDecode(key, ttlAt)
+
+        actual!!.isMissingGuard.assert().isTrue()
     }
 }

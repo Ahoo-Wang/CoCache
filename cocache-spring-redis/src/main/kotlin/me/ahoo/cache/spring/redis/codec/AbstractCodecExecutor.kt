@@ -15,6 +15,7 @@ package me.ahoo.cache.spring.redis.codec
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.DefaultMissingGuard
 import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.connection.RedisConnection
 import org.springframework.data.redis.core.StringRedisTemplate
@@ -79,10 +80,21 @@ abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
     protected abstract fun isMissingGuard(rawValue: RAW_VALUE): Boolean
     protected abstract fun decode(rawValue: RAW_VALUE): V
 
+    /**
+     * null 归一化：非 missing-guard 的 null 统一转为负缓存哨兵写入，
+     * 使所有 codec 与内存实现语义对齐（null = 负缓存）。
+     */
     override fun executeAndEncode(key: String, cacheValue: CacheValue<V>) {
-        when {
-            cacheValue.isForever -> setForeverValue(key, cacheValue)
-            else -> setValueWithTtlAt(key, cacheValue)
+        val normalizedValue = if (cacheValue.value == null && cacheValue.isMissingGuard.not()) {
+            @Suppress("UNCHECKED_CAST")
+            DefaultCacheValue(DefaultMissingGuard, cacheValue.ttlAt) as CacheValue<V>
+        } else {
+            cacheValue
+        }
+        if (normalizedValue.isForever) {
+            setForeverValue(key, normalizedValue)
+        } else {
+            setValueWithTtlAt(key, normalizedValue)
         }
     }
 
