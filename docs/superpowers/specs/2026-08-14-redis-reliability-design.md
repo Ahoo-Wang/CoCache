@@ -72,9 +72,9 @@
 
 ```kotlin
 override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>? {
-    val rawValue = getRawValue(key) ?: return DefaultCacheValue.missingGuard(ttlAt)
-    if (isMissingGuard(rawValue)) {
-        return DefaultCacheValue.missingGuard(ttlAt)
+    val rawValue = getRawValue(key)
+    if (rawValue == null || isMissingGuard(rawValue)) {
+        return missingGuardCacheValue(ttlAt)  // 直接以绝对 ttlAt 构造（勿用 missingGuard(ttl)——其按相对时长计算）
     }
     val value = try {
         decode(rawValue)
@@ -98,10 +98,14 @@ override fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>? {
 ```kotlin
 override fun executeAndEncode(key: String, cacheValue: CacheValue<V>) {
     val normalizedValue = if (cacheValue.value == null && cacheValue.isMissingGuard.not()) {
-        @Suppress("UNCHECKED_CAST")
-        DefaultCacheValue.missingGuard(cacheValue.ttlAt) as CacheValue<V>
+        missingGuardCacheValue(cacheValue.ttlAt)  // 直接以绝对 ttlAt 构造（勿用 missingGuard(ttl)）
     } else {
         cacheValue
+    }
+    if (normalizedValue.isExpired) {
+        // 写入时已过期（含归一化路径与亚秒边界）：淘汰而非落盘
+        redisTemplate.delete(key)
+        return
     }
     if (normalizedValue.isForever) setForeverValue(key, normalizedValue)
     else setValueWithTtlAt(key, normalizedValue)
@@ -172,7 +176,7 @@ return 1
 - `ttlSeconds = 0` 表示 FOREVER，脚本跳过 EXPIRE（保持 `setForeverValue` 语义）。
 - **空集合守卫**：空 Map/Set 只执行 DEL（避免 HSET/SADD 无成员命令错误；现有代码同样存在此边界）。
 - 存储结构不变（HSET 字段、SADD 成员），字节级兼容。
-- `setPipelined` 及 `serialize(hashes)`/`serialize(value)` 序列化助手保留复用（Lua 参数仍需序列化为 String 实参，由模板的 value 序列化器处理）。
+- `setPipelined` 与 `serialize(hashes)`/`serialize(value)` 序列化助手**移除**（实施决策，修订原"保留复用"设想）：Lua 参数由 `redisTemplate.execute` 的 String 序列化器处理，这些服务于旧 pipeline 协议的内部管道代码无剩余调用方，保留只会成为死代码。属 public API 移除（对直接继承/调用 `AbstractCodecExecutor` 这些成员的外部代码构成破坏），记入 release notes 破坏性清单。
 
 ## Codec TCK 规范（cocache-spring-redis 测试源集）
 
@@ -224,6 +228,7 @@ return 1
 - 实施中发现的既有 bug 一并修复：`executeAndDecode` 此前经 `missingGuard(ttlAt)` 构造负缓存返回值，把绝对时间戳按相对时长计算，导致读回的负缓存到期时间约为两倍纪元秒（客户端负缓存实际永不过期）。修复为直接以绝对 ttlAt 构造（`missingGuardCacheValue` 助手）。
 - 降级模式的运行时权衡（release notes 需记录）：Redis 故障期间每次失败的读/写各产生一条含堆栈的 WARN（高 QPS 全故障下日志量可观，后续可考虑采样去重）；故障期间本地 L2 未命中的 key 退化为回源（每进程每 key 每客户端 TTL 至多一次回源放大，L2 持续服务已缓存热 key）。
 - 空 Map/Set 写入行为变化（release notes 需记录）：此前 hMSet 空 Map / SADD 无成员会被 Redis 拒绝并抛异常；原子化后空集合写入静默淘汰该 key（与负缓存语义一致，属纯改善）。
+- 最终整体审查补充（release notes 需记录）：① 写入时已过期的值现统一淘汰该 key（此前亚秒边界下结构性 codec 可能落盘为无 TTL 的永不过期 key——已修复）；② `AbstractCodecExecutor` 的 `setPipelined`/`serialize` public 成员被移除（见 #9 节修订），对外部直接继承者构成破坏；③ `strictFailure`/`missingGuardSentinel` 仅作用于**自动装配（fallback）创建**的缓存——用户自定义 `DistributedCache` Bean 的行为不受这两个配置影响。
 - 存储格式、消息格式：零变更，滚动升级双向兼容。
 
 ## 验收标准

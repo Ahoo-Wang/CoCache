@@ -36,5 +36,9 @@ data class CoCacheProperties(
          * 自定义值与默认值互不识别，需全集群同时切换，且不得与任何合法业务序列化值相等。
          */
         val missingGuardSentinel: String = MissingGuard.STRING_VALUE,
-    )
+    ) {
+        init {
+            require(missingGuardSentinel.isNotBlank()) { "cocache.redis.missing-guard-sentinel must not be blank." }
+        }
+    }
 }

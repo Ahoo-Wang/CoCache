@@ -64,4 +64,11 @@ internal class CoCacheRedisPropertiesTest {
                 factory.missingGuardSentinel.assert().isEqualTo("custom-nil")
             }
     }
+
+    @Test
+    fun blankSentinelRejected() {
+        // 绑定空哨兵最终经构造校验抛出（fail-fast），防止空串哨兵静默误判业务空值
+        val rejected = runCatching { CoCacheProperties.Redis(missingGuardSentinel = "") }.isFailure
+        rejected.assert().isTrue()
+    }
 }

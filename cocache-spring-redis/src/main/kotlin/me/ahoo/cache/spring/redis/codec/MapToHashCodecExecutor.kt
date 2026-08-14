@@ -51,6 +51,11 @@ class MapToHashCodecExecutor(
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<Map<String, String>>) {
-        executeAtomicHashWrite(key, cacheValue.toRawValue(), ttlSeconds = cacheValue.expiredDuration.seconds)
+        // coerceAtLeast(1)：亚秒边界下剩余 TTL 可能归零，0 会被脚本当作 FOREVER 跳过 EXPIRE——钳为 1 秒
+        executeAtomicHashWrite(
+            key,
+            cacheValue.toRawValue(),
+            ttlSeconds = cacheValue.expiredDuration.seconds.coerceAtLeast(1)
+        )
     }
 }

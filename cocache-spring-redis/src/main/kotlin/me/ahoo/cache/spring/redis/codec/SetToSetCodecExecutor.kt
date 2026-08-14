@@ -52,6 +52,11 @@ class SetToSetCodecExecutor(
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<Set<String>>) {
-        executeAtomicSetWrite(key, cacheValue.toRawValue(), ttlSeconds = cacheValue.expiredDuration.seconds)
+        // coerceAtLeast(1)：亚秒边界下剩余 TTL 可能归零，0 会被脚本当作 FOREVER 跳过 EXPIRE——钳为 1 秒
+        executeAtomicSetWrite(
+            key,
+            cacheValue.toRawValue(),
+            ttlSeconds = cacheValue.expiredDuration.seconds.coerceAtLeast(1)
+        )
     }
 }

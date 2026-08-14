@@ -17,6 +17,7 @@ import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.core.StringRedisTemplate
 import tools.jackson.databind.ObjectMapper
 import java.lang.reflect.Type
+import java.time.Duration
 
 /**
  * ObjectToJsonCodecExecutor .
@@ -54,6 +55,8 @@ class ObjectToJsonCodecExecutor<V>(
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<V>) {
-        redisTemplate.opsForValue().set(key, cacheValue.toRawValue(), cacheValue.expiredDuration)
+        // 与结构型 codec 一致：亚秒边界下钳为 1 秒，避免 Duration.ZERO 触发 SET EX 0 报错
+        val ttl = maxOf(cacheValue.expiredDuration, Duration.ofSeconds(1))
+        redisTemplate.opsForValue().set(key, cacheValue.toRawValue(), ttl)
     }
 }

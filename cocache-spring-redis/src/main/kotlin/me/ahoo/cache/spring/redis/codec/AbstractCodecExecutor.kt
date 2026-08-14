@@ -114,6 +114,12 @@ abstract class AbstractCodecExecutor<V, RAW_VALUE>(
         } else {
             cacheValue
         }
+        if (normalizedValue.isExpired) {
+            // 写入时已过期（含归一化路径与调用方检查后的亚秒边界）：淘汰而非落盘——
+            // 落盘会以剩余 TTL=0 写入，结构性 codec 的脚本将跳过 EXPIRE 成为永不过期的脏 key。
+            redisTemplate.delete(key)
+            return
+        }
         if (normalizedValue.isForever) {
             setForeverValue(key, normalizedValue)
         } else {

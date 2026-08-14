@@ -75,9 +75,8 @@ abstract class CodecExecutorSpec<V> {
         val value = DefaultCacheValue(createCacheValue(), ttlAt)
         codecExecutor.executeAndEncode(key, value)
         val actual = requireNotNull(codecExecutor.executeAndDecode(key, ttlAt))
-        // ttlAt is reconstructed from Redis EXPIRE and may drift by up to 1
-        // second across the write/read boundary, so assert value equality and a
-        // tolerant ttlAt instead of full-object equality (which is flaky).
+        // The decoded ttlAt is the caller-passed absolute deadline (not Redis-EXPIRE
+        // reconstructed); the ±1s tolerance remains only for write-side second-boundary drift.
         actual.value.assert().isEqualTo(value.value)
         actual.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
         actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
@@ -123,6 +122,17 @@ abstract class CodecExecutorSpec<V> {
 
         actual.isMissingGuard.assert().isTrue()
         actual.ttlAt.assert().isEqualTo(ttlAt)
+    }
+
+    @Test
+    fun executeAndEncodeExpiredValueEvictsKey() {
+        val key = "write-time-expired:" + UUID.randomUUID().toString()
+        val expiredTtlAt = CacheSecondClock.INSTANCE.currentTime() - 5
+
+        codecExecutor.executeAndEncode(key, DefaultCacheValue(createCacheValue(), expiredTtlAt))
+
+        // 写入时已过期的值必须淘汰（而非落盘为无 TTL 的永不过期 key）
+        stringRedisTemplate.hasKey(key).assert().isFalse()
     }
 
     @Test
