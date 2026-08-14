@@ -33,7 +33,14 @@ abstract class CodecExecutorSpec<V> {
     lateinit var lettuceConnectionFactory: LettuceConnectionFactory
     lateinit var codecExecutor: CodecExecutor<V>
     abstract fun createCodecExecutor(): CodecExecutor<V>
+
+    /** 自定义哨兵执行器：驱动 [customSentinelGuardRoundTrip] 在每个 codec 上回归哨兵属性化。 */
+    abstract fun createCustomSentinelCodecExecutor(): CodecExecutor<V>
     abstract fun createCacheValue(): V
+
+    companion object {
+        const val CUSTOM_SENTINEL = "\u0000cocache-test:nil"
+    }
 
     @BeforeEach
     open fun setup() {
@@ -116,5 +123,21 @@ abstract class CodecExecutorSpec<V> {
 
         actual.isMissingGuard.assert().isTrue()
         actual.ttlAt.assert().isEqualTo(ttlAt)
+    }
+
+    @Test
+    fun customSentinelGuardRoundTrip() {
+        val executor = createCustomSentinelCodecExecutor()
+        val key = "custom-sentinel-rt:" + UUID.randomUUID().toString()
+        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 100
+
+        @Suppress("UNCHECKED_CAST")
+        val guardValue = DefaultCacheValue(DefaultMissingGuard, ttlAt) as CacheValue<V>
+        executor.executeAndEncode(key, guardValue)
+
+        val actual = requireNotNull(executor.executeAndDecode(key, ttlAt))
+
+        // 若某 codec 的哨兵判定退回常量（而非属性），自定义哨兵写读将无法互相识别，此断言失败
+        actual.isMissingGuard.assert().isTrue()
     }
 }

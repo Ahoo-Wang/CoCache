@@ -13,7 +13,6 @@
 package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.MissingGuard
-import me.ahoo.cache.MissingGuard.Companion.isMissingGuard
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.util.CacheSecondClock
 import org.springframework.data.redis.core.StringRedisTemplate
@@ -23,12 +22,14 @@ import org.springframework.data.redis.core.StringRedisTemplate
  *
  * @author ahoo wang
  */
-class MapToHashCodecExecutor(override val redisTemplate: StringRedisTemplate) :
-    AbstractCodecExecutor<Map<String, String>, Map<String, String>>() {
+class MapToHashCodecExecutor(
+    override val redisTemplate: StringRedisTemplate,
+    missingGuardSentinel: String = MissingGuard.STRING_VALUE,
+) : AbstractCodecExecutor<Map<String, String>, Map<String, String>>(missingGuardSentinel) {
 
     override fun CacheValue<Map<String, String>>.toRawValue(): Map<String, String> {
         if (isMissingGuard) {
-            return mapOf(MissingGuard.STRING_VALUE to CacheSecondClock.INSTANCE.currentTime().toString())
+            return mapOf(missingGuardSentinel to CacheSecondClock.INSTANCE.currentTime().toString())
         }
         return value
     }
@@ -38,7 +39,7 @@ class MapToHashCodecExecutor(override val redisTemplate: StringRedisTemplate) :
     }
 
     override fun isMissingGuard(rawValue: Map<String, String>): Boolean {
-        return rawValue.isMissingGuard
+        return rawValue.size == 1 && rawValue.keys.first() == missingGuardSentinel
     }
 
     override fun decode(rawValue: Map<String, String>): Map<String, String> {

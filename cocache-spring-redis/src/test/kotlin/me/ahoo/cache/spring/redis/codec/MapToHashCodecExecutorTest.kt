@@ -21,6 +21,10 @@ internal class MapToHashCodecExecutorTest : CodecExecutorSpec<Map<String, String
         return MapToHashCodecExecutor(stringRedisTemplate)
     }
 
+    override fun createCustomSentinelCodecExecutor(): CodecExecutor<Map<String, String>> {
+        return MapToHashCodecExecutor(stringRedisTemplate, CUSTOM_SENTINEL)
+    }
+
     override fun createCacheValue(): Map<String, String> {
         return mapOf(UUID.randomUUID().toString() to UUID.randomUUID().toString())
     }

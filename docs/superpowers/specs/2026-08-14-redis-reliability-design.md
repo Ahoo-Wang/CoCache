@@ -27,7 +27,7 @@
 
 **#9**：pipeline 只是批量发送不是事务。两实例并发写同一 key 可交错为 `A.DEL → B.DEL → A.HMSET → B.HMSET`，HMSET 合并语义导致最终值是两个版本字段的并集（既非 A 也非 B），脏数据存活整个 TTL。
 
-**哨兵**：业务值恰好等于 `"_nil_"`（String）、`{"_nil_"}`（Set）、单键 `"_nil_"` 的 Map 时被误判为负缓存，静默返回 null。
+**哨兵**：业务值恰好等于 `"_nil_"`（String）、`{"_nil_"}`（Set）、单键 `"_nil_"` 的 Map 时被误判为负缓存，静默返回 null。（实施后注：本专项的哨兵可配置仅缓解 Redis 外部写入碰撞的读侧；核心层常量判定不变，端到端语义见"哨兵值可配置"节的限定范围说明。）
 
 ## 目标
 
@@ -131,6 +131,7 @@ data class CoCacheProperties(
 ```
 
 - **文档化约束**：自定义哨兵与默认哨兵互不识别——启用自定义值需全集群同时切换（或接受滚动升级期间旧实例把新哨兵当真实值的瞬态误读）。定位为高级逃生舱，非常规配置。
+- **限定范围**（实施审查确认）：进程内 `Any?.isMissingGuard` / `DefaultCacheValue.isMissingGuard`（cocache-core）仍基于常量——值为 `"_nil_"` 形状的 `CacheValue` 在 core 各层（ComputedCache、client cache、DefaultCoherentCache）依旧被视为负缓存，经 API 写入的业务值 `"_nil_"` 也会被编码为哨兵。自定义哨兵仅改变 Redis 静止字节的写入与读侧识别（外部写入碰撞场景），**不改变端到端读语义与 API 写路径**。核心层常量判定的调整属 core 契约变更，超出本专项范围。
 
 ### #8 故障降级（`RedisDistributedCache` + `RedisCacheEvictedEventBus`）
 

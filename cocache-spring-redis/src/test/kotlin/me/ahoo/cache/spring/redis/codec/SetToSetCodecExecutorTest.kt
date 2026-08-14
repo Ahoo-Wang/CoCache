@@ -25,6 +25,10 @@ internal class SetToSetCodecExecutorTest : CodecExecutorSpec<Set<String>>() {
         return SetToSetCodecExecutor(stringRedisTemplate)
     }
 
+    override fun createCustomSentinelCodecExecutor(): CodecExecutor<Set<String>> {
+        return SetToSetCodecExecutor(stringRedisTemplate, CUSTOM_SENTINEL)
+    }
+
     override fun createCacheValue(): Set<String> {
         return setOf(UUID.randomUUID().toString(), UUID.randomUUID().toString())
     }

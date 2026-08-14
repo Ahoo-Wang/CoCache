@@ -13,6 +13,7 @@
 
 package me.ahoo.cache.spring.redis
 
+import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
@@ -27,7 +28,13 @@ import kotlin.reflect.javaType
 class RedisDistributedCacheFactory(
     beanFactory: BeanFactory,
     private val objectMapper: ObjectMapper,
-    private val redisTemplate: StringRedisTemplate
+    private val redisTemplate: StringRedisTemplate,
+    /**
+     * 负缓存哨兵值，默认 [MissingGuard.STRING_VALUE]。约束见
+     * [AbstractCodecExecutor.missingGuardSentinel]：自定义值与默认值互不识别，
+     * 需全集群同时切换，且不得与任何合法业务序列化值相等。
+     */
+    private val missingGuardSentinel: String = MissingGuard.STRING_VALUE,
 ) : DistributedCacheFactory, AbstractCacheFactory(beanFactory) {
     companion object {
         const val DISTRIBUTED_CACHE_SUFFIX = ".DistributedCache"
@@ -48,7 +55,8 @@ class RedisDistributedCacheFactory(
         val codecExecutor = ObjectToJsonCodecExecutor<Any>(
             valueType = cacheMetadata.valueType.javaType,
             redisTemplate = redisTemplate,
-            objectMapper = objectMapper
+            objectMapper = objectMapper,
+            missingGuardSentinel = missingGuardSentinel
         )
         return RedisDistributedCache(
             redisTemplate,

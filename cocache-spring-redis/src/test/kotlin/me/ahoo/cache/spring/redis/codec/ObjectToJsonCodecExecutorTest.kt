@@ -24,6 +24,10 @@ internal class ObjectToJsonCodecExecutorTest : CodecExecutorSpec<Model>() {
         return ObjectToJsonCodecExecutor(Model::class.java, stringRedisTemplate, Json)
     }
 
+    override fun createCustomSentinelCodecExecutor(): CodecExecutor<Model> {
+        return ObjectToJsonCodecExecutor(Model::class.java, stringRedisTemplate, Json, CUSTOM_SENTINEL)
+    }
+
     override fun createCacheValue(): Model {
         return Model(UUID.randomUUID().toString())
     }

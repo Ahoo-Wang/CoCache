@@ -13,7 +13,6 @@
 package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.MissingGuard
-import me.ahoo.cache.MissingGuard.Companion.isMissingGuard
 import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.core.StringRedisTemplate
 
@@ -22,18 +21,20 @@ import org.springframework.data.redis.core.StringRedisTemplate
  *
  * @author ahoo wang
  */
-class StringToStringCodecExecutor(override val redisTemplate: StringRedisTemplate) :
-    AbstractCodecExecutor<String, String>() {
+class StringToStringCodecExecutor(
+    override val redisTemplate: StringRedisTemplate,
+    missingGuardSentinel: String = MissingGuard.STRING_VALUE,
+) : AbstractCodecExecutor<String, String>(missingGuardSentinel) {
 
     override fun CacheValue<String>.toRawValue(): String {
         if (isMissingGuard) {
-            return MissingGuard.STRING_VALUE
+            return missingGuardSentinel
         }
         return value
     }
 
     override fun isMissingGuard(rawValue: String): Boolean {
-        return rawValue.isMissingGuard
+        return rawValue == missingGuardSentinel
     }
 
     override fun getRawValue(key: String): String? {

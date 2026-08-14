@@ -13,7 +13,6 @@
 package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.MissingGuard
-import me.ahoo.cache.MissingGuard.Companion.isMissingGuard
 import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.core.StringRedisTemplate
 import tools.jackson.databind.ObjectMapper
@@ -27,18 +26,19 @@ import java.lang.reflect.Type
 class ObjectToJsonCodecExecutor<V>(
     private val valueType: Type,
     override val redisTemplate: StringRedisTemplate,
-    private val objectMapper: ObjectMapper
-) : AbstractCodecExecutor<V, String>() {
+    private val objectMapper: ObjectMapper,
+    missingGuardSentinel: String = MissingGuard.STRING_VALUE,
+) : AbstractCodecExecutor<V, String>(missingGuardSentinel) {
     private val valueJavaType = objectMapper.typeFactory.constructType(valueType)
     override fun CacheValue<V>.toRawValue(): String {
         if (isMissingGuard) {
-            return MissingGuard.STRING_VALUE
+            return missingGuardSentinel
         }
         return objectMapper.writeValueAsString(value)
     }
 
     override fun isMissingGuard(rawValue: String): Boolean {
-        return rawValue.isMissingGuard
+        return rawValue == missingGuardSentinel
     }
 
     override fun getRawValue(key: String): String? {

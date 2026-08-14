@@ -16,11 +16,22 @@ package me.ahoo.cache.spring.redis.codec
 import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.DefaultMissingGuard
+import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.connection.RedisConnection
 import org.springframework.data.redis.core.StringRedisTemplate
 
-abstract class AbstractCodecExecutor<V, RAW_VALUE> : CodecExecutor<V> {
+abstract class AbstractCodecExecutor<V, RAW_VALUE>(
+    /**
+     * 负缓存哨兵值。默认 [MissingGuard.STRING_VALUE]；自定义值与默认值互不识别，
+     * 启用自定义哨兵需全集群同时切换（滚动升级期间旧实例会把新哨兵当真实值）。
+     *
+     * 限定范围：仅影响 Redis 静止字节的写入与读侧识别；进程内
+     * [me.ahoo.cache.MissingGuard.Companion.isMissingGuard]（core 常量判定）不受影响——
+     * 值为 `"_nil_"` 形状的 [me.ahoo.cache.api.CacheValue] 在 core 各层仍被视为负缓存。
+     */
+    protected val missingGuardSentinel: String = MissingGuard.STRING_VALUE,
+) : CodecExecutor<V> {
     abstract val redisTemplate: StringRedisTemplate
 
     private fun serialize(key: String): ByteArray {
