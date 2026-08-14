@@ -13,14 +13,15 @@
 package me.ahoo.cache.consistency
 
 import com.google.common.eventbus.Subscribe
+import com.google.common.util.concurrent.Striped
 import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.getFirstTtlConfiguration
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.Lock
 
 /**
  * Coherent cache .
@@ -35,6 +36,12 @@ class DefaultCoherentCache<K, V>(
 
     companion object {
         private val log = KotlinLogging.logger {}
+
+        /**
+         * Striped 锁数量：固定且永不回收，从根上消除"锁对象回收"竞态。
+         * 不同 key 哈希到同一 stripe 时会被串行化（仅影响吞吐、不影响正确性）。
+         */
+        private const val KEY_LOCK_STRIPES = 1024
     }
 
     override val clientSideCache = config.clientSideCache
@@ -45,7 +52,7 @@ class DefaultCoherentCache<K, V>(
     private val ttlConfiguration = getFirstTtlConfiguration(clientSideCache, distributedCache)
     override val ttl: Long = ttlConfiguration.ttl
     override val ttlAmplitude: Long = ttlConfiguration.ttlAmplitude
-    private val keyLocks = ConcurrentHashMap<String, Any>()
+    private val keyLocks: Striped<Lock> = Striped.lock(KEY_LOCK_STRIPES)
     private val closed = AtomicBoolean(false)
 
     @Suppress("ReturnCount")
@@ -77,16 +84,6 @@ class DefaultCoherentCache<K, V>(
         return null
     }
 
-    private fun getLock(cacheKey: String): Any {
-        return keyLocks.computeIfAbsent(cacheKey) {
-            Any()
-        }
-    }
-
-    private fun releaseLock(cacheKey: String) {
-        keyLocks.remove(cacheKey)
-    }
-
     @Suppress("ReturnCount")
     override fun getCache(key: K): CacheValue<V>? {
         val cacheKey = keyConverter.toStringKey(key)
@@ -100,39 +97,38 @@ class DefaultCoherentCache<K, V>(
          * 1. 并发获取缓存时导致的多次回源问题
          *** 细粒度锁控制并发回源 ***
          */
-        val lock = getLock(cacheKey)
-        synchronized(lock) {
-            try {
-                getL2Cache(cacheKey)?.let {
-                    return it
-                }
-
-                //region L0:Cache Source
-                /*
-                 * This is a heavy-duty operation.
-                 */
-                cacheSource.loadCacheValue(key)?.let {
-                    setCache(cacheKey, it)
-                    cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
-                    return it
-                }
-
-                //endregion
-                log.debug {
-                    "Cache Name[$cacheName] - ClientId[$clientId] - getCache[$cacheKey] " +
-                        "- Set missing guard,because no cache source was found."
-                }
-                /*
-                 *** Fix 缓存穿透 ***
-                 * 0. Db 不存在该记录
-                 * 1. 穿透到 Db 回源
-                 **** 缓存空值 ***
-                 */
-                setCache(cacheKey, DefaultCacheValue.missingGuard(ttl, ttlAmplitude))
-                return null
-            } finally {
-                releaseLock(cacheKey)
+        val lock = keyLocks.get(cacheKey)
+        lock.lock()
+        try {
+            getL2Cache(cacheKey)?.let {
+                return it
             }
+
+            //region L0:Cache Source
+            /*
+             * This is a heavy-duty operation.
+             */
+            cacheSource.loadCacheValue(key)?.let {
+                setCache(cacheKey, it)
+                cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
+                return it
+            }
+
+            //endregion
+            log.debug {
+                "Cache Name[$cacheName] - ClientId[$clientId] - getCache[$cacheKey] " +
+                    "- Set missing guard,because no cache source was found."
+            }
+            /*
+             *** Fix 缓存穿透 ***
+             * 0. Db 不存在该记录
+             * 1. 穿透到 Db 回源
+             **** 缓存空值 ***
+             */
+            setCache(cacheKey, DefaultCacheValue.missingGuard(ttl, ttlAmplitude))
+            return null
+        } finally {
+            lock.unlock()
         }
     }
 
@@ -175,7 +171,9 @@ class DefaultCoherentCache<K, V>(
         runCatching {
             cacheEvictedEventBus.unregister(this)
         }.onFailure {
-            log.warn(it) { "Cache Name[$cacheName] - ClientId[$clientId] - Failed to unregister from the evicted event bus." }
+            log.warn(
+                it
+            ) { "Cache Name[$cacheName] - ClientId[$clientId] - Failed to unregister from the evicted event bus." }
         }
         runCatching {
             distributedCache.close()

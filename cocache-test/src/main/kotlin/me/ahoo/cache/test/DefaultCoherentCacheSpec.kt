@@ -164,7 +164,7 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         val results = ConcurrentLinkedQueue<Any?>()
         val callCount = AtomicInteger()
 
-        val coherentCache = DefaultCoherentCacheFactory(cacheEvictedEventBus).create(
+        val concurrentCache = DefaultCoherentCacheFactory(cacheEvictedEventBus).create(
             CoherentCacheConfiguration(
                 cacheName = cacheName,
                 clientId = clientId,
@@ -181,18 +181,27 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
             )
         )
 
-        repeat(threadCount) {
-            executor.submit {
-                startLatch.await()
-                results.add(coherentCache[key])
-                finishLatch.countDown()
+        try {
+            repeat(threadCount) {
+                executor.submit {
+                    startLatch.await()
+                    results.add(concurrentCache[key])
+                    finishLatch.countDown()
+                }
             }
-        }
 
-        startLatch.countDown()
-        finishLatch.await(5, TimeUnit.SECONDS)
-        results.all { it == value }.assert().isTrue()
-        callCount.get().assert().isOne() // 核心断言
+            startLatch.countDown()
+            val allFinished = finishLatch.await(5, TimeUnit.SECONDS)
+            allFinished.assert()
+                .withFailMessage { "finished=${threadCount - finishLatch.count}/$threadCount, callCount=${callCount.get()}" }
+                .isTrue()
+            results.all { it == value }.assert().isTrue()
+            callCount.get().assert().isOne() // 核心断言
+        } finally {
+            executor.shutdownNow()
+            // 共享 setup() 的 distributedCache/clientSideCache：close 会同时关闭外层 coherentCache 引用的分布式缓存，断言须在此之前完成
+            concurrentCache.close()
+        }
     }
 
     @Test
