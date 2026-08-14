@@ -146,7 +146,7 @@ loadGenerations.computeIfPresent(cacheEvictedEvent.key) { _, g -> g + 1 }
 
 ### 修复 #4：生命周期 close 钩子
 
-**接口层（cocache-api）**：
+**接口层**（`CoherentCache` 位于 cocache-core，非 cocache-api）：
 
 ```kotlin
 interface CoherentCache<K, V> : ..., AutoCloseable {
@@ -192,7 +192,7 @@ interface CoherentCache<K, V> : ..., AutoCloseable {
 
 | 模块 | 文件 | 变更 |
 |---|---|---|
-| cocache-api | `CoherentCache.kt` | + `AutoCloseable`、默认 `close()` |
+| cocache-core | `consistency/CoherentCache.kt` | + `AutoCloseable`、默认 `close()` |
 | cocache-core | `consistency/DefaultCoherentCache.kt` | Striped 锁、代际计数器、`close()` |
 | cocache-core | `util/CacheSecondClock.kt` | 赋值/启动顺序修复 |
 | cocache-core | `join/SimpleJoinCache.kt` | 实现 `AutoCloseable` |
