@@ -30,14 +30,15 @@ enum class CacheSecondClock(private val actual: SecondClock) : SecondClock, Runn
     private var lastTime: Long = actual.currentTime()
 
     init {
-        secondTimer = startTimer()
+        // 先赋值再 start()：start() 的 happens-before 边保证线程看到已初始化的状态；run() 刻意使用 Thread.currentThread()，不依赖该字段。
+        secondTimer = createTimer()
+        secondTimer.start()
     }
 
-    private fun startTimer(): Thread {
+    private fun createTimer(): Thread {
         val timer = Thread(this)
         timer.name = "CacheSecondClock"
         timer.isDaemon = true
-        timer.start()
         return timer
     }
 
@@ -46,7 +47,7 @@ enum class CacheSecondClock(private val actual: SecondClock) : SecondClock, Runn
     }
 
     override fun run() {
-        while (!secondTimer.isInterrupted) {
+        while (!Thread.currentThread().isInterrupted) {
             lastTime = actual.currentTime()
             LockSupport.parkNanos(this, ONE_SECOND_PERIOD)
         }
