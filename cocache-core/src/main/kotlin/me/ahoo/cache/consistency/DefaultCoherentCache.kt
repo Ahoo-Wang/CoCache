@@ -20,6 +20,7 @@ import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.distributed.DistributedClientId
 import me.ahoo.cache.getFirstTtlConfiguration
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Coherent cache .
@@ -45,6 +46,7 @@ class DefaultCoherentCache<K, V>(
     override val ttl: Long = ttlConfiguration.ttl
     override val ttlAmplitude: Long = ttlConfiguration.ttlAmplitude
     private val keyLocks = ConcurrentHashMap<String, Any>()
+    private val closed = AtomicBoolean(false)
 
     @Suppress("ReturnCount")
     private fun getL2Cache(cacheKey: String): CacheValue<V>? {
@@ -159,6 +161,27 @@ class DefaultCoherentCache<K, V>(
         clientSideCache.evict(cacheKey)
         distributedCache.evict(cacheKey)
         cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, clientId))
+    }
+
+    /**
+     * 幂等（重复调用为无操作）且协作式：不中断在途回源。
+     * clientSideCache 不需要关闭（Guava/Caffeine/Map 实现均无 close 语义）。
+     */
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) {
+            return
+        }
+        log.info { "Cache Name[$cacheName] - ClientId[$clientId] - close." }
+        runCatching {
+            cacheEvictedEventBus.unregister(this)
+        }.onFailure {
+            log.warn(it) { "Cache Name[$cacheName] - ClientId[$clientId] - Failed to unregister from the evicted event bus." }
+        }
+        runCatching {
+            distributedCache.close()
+        }.onFailure {
+            log.warn(it) { "Cache Name[$cacheName] - ClientId[$clientId] - Failed to close the distributed cache." }
+        }
     }
 
     @Subscribe

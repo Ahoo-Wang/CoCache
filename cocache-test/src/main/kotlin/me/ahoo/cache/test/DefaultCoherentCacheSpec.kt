@@ -194,4 +194,30 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         results.all { it == value }.assert().isTrue()
         callCount.get().assert().isOne() // 核心断言
     }
+
+    @Test
+    fun closeUnregistersSubscriber() {
+        val (key, value) = createCacheEntry()
+        val cacheValue = DefaultCacheValue.forever(value)
+        coherentCache.setCache(key, cacheValue)
+        val cacheKey = keyConverter.toStringKey(key)
+
+        coherentCache.close()
+
+        cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, "remote-client-id"))
+        clientSideCache[cacheKey].assert().isEqualTo(value)
+    }
+
+    @Test
+    fun closeIsIdempotentAndCacheStillUsable() {
+        val (key, value) = createCacheEntry()
+        CACHE_SOURCE_VALUE.set(DefaultCacheValue.forever(value))
+        try {
+            coherentCache.close()
+            coherentCache.close()
+            coherentCache[key].assert().isEqualTo(value)
+        } finally {
+            CACHE_SOURCE_VALUE.remove()
+        }
+    }
 }
