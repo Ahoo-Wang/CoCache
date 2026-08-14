@@ -47,15 +47,10 @@ class MapToHashCodecExecutor(
     }
 
     override fun setForeverValue(key: String, cacheValue: CacheValue<Map<String, String>>) {
-        setPipelined(key) { encodedKey, connection ->
-            connection.hashCommands().hMSet(encodedKey, serialize(cacheValue.toRawValue()))
-        }
+        executeAtomicHashWrite(key, cacheValue.toRawValue(), ttlSeconds = 0)
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<Map<String, String>>) {
-        setPipelined(key) { encodedKey, connection ->
-            connection.hashCommands().hMSet(encodedKey, serialize(cacheValue.toRawValue()))
-            connection.keyCommands().expire(encodedKey, cacheValue.expiredDuration.seconds)
-        }
+        executeAtomicHashWrite(key, cacheValue.toRawValue(), ttlSeconds = cacheValue.expiredDuration.seconds)
     }
 }

@@ -18,8 +18,9 @@ import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.DefaultMissingGuard
 import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.CacheValue
-import org.springframework.data.redis.connection.RedisConnection
 import org.springframework.data.redis.core.StringRedisTemplate
+import org.springframework.data.redis.core.script.DefaultRedisScript
+import org.springframework.data.redis.core.script.RedisScript
 
 abstract class AbstractCodecExecutor<V, RAW_VALUE>(
     /**
@@ -34,34 +35,35 @@ abstract class AbstractCodecExecutor<V, RAW_VALUE>(
 ) : CodecExecutor<V> {
     abstract val redisTemplate: StringRedisTemplate
 
-    private fun serialize(key: String): ByteArray {
-        return redisTemplate.stringSerializer.serialize(key)
+    /**
+     * 原子写入 Hash（DEL + HSET + 可选 EXPIRE）。空 Map 仅淘汰该 key；[ttlSeconds] <= 0 跳过 EXPIRE（永不过期）。
+     */
+    protected fun executeAtomicHashWrite(key: String, hashes: Map<String, String>, ttlSeconds: Long) {
+        if (hashes.isEmpty()) {
+            redisTemplate.delete(key)
+            return
+        }
+        val args = ArrayList<String>(hashes.size * 2 + 1)
+        hashes.forEach { (field, value) ->
+            args.add(field)
+            args.add(value)
+        }
+        args.add(ttlSeconds.coerceAtLeast(0).toString())
+        redisTemplate.execute(SET_HASH_SCRIPT, listOf(key), *args.toTypedArray())
     }
 
-    fun serialize(hashes: Map<String, String>): Map<ByteArray, ByteArray> {
-        val ret = mutableMapOf<ByteArray, ByteArray>()
-
-        for (entry in hashes.entries) {
-            ret[serialize(entry.key)] = serialize(entry.value)
+    /**
+     * 原子写入 Set（DEL + SADD + 可选 EXPIRE）。空 Set 仅淘汰该 key；[ttlSeconds] <= 0 跳过 EXPIRE（永不过期）。
+     */
+    protected fun executeAtomicSetWrite(key: String, members: Set<String>, ttlSeconds: Long) {
+        if (members.isEmpty()) {
+            redisTemplate.delete(key)
+            return
         }
-
-        return ret
-    }
-
-    fun serialize(value: Set<String>?): Array<ByteArray> {
-        if (value == null) {
-            return emptyArray()
-        }
-        return value.map { serialize(it) }.toTypedArray()
-    }
-
-    protected fun setPipelined(key: String, block: (encodedKey: ByteArray, connection: RedisConnection) -> Unit) {
-        redisTemplate.executePipelined { connection ->
-            val encodedKey = serialize(key)
-            connection.keyCommands().del(encodedKey)
-            block(encodedKey, connection)
-            null
-        }
+        val args = ArrayList<String>(members.size + 1)
+        args.addAll(members)
+        args.add(ttlSeconds.coerceAtLeast(0).toString())
+        redisTemplate.execute(SET_SET_SCRIPT, listOf(key), *args.toTypedArray())
     }
 
     abstract fun CacheValue<V>.toRawValue(): RAW_VALUE
@@ -124,5 +126,38 @@ abstract class AbstractCodecExecutor<V, RAW_VALUE>(
 
     companion object {
         private val log = KotlinLogging.logger {}
+
+        /**
+         * DEL + HSET + 可选 EXPIRE 原子执行（ARGV 为扁平 field/value 对，末位为 ttl 秒数，0 表示永不过期）。
+         * 逐对 HSET 而非 unpack，避免大 Map 超出 Lua 栈限制。
+         */
+        private val SET_HASH_SCRIPT: RedisScript<Long> = DefaultRedisScript(
+            """
+            redis.call('DEL', KEYS[1])
+            for i = 1, #ARGV - 1, 2 do
+              redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
+            end
+            local ttl = tonumber(ARGV[#ARGV])
+            if ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
+            return 1
+            """.trimIndent(),
+            Long::class.java,
+        )
+
+        /**
+         * DEL + SADD + 可选 EXPIRE 原子执行（ARGV 为成员列表，末位为 ttl 秒数，0 表示永不过期）。
+         */
+        private val SET_SET_SCRIPT: RedisScript<Long> = DefaultRedisScript(
+            """
+            redis.call('DEL', KEYS[1])
+            for i = 1, #ARGV - 1 do
+              redis.call('SADD', KEYS[1], ARGV[i])
+            end
+            local ttl = tonumber(ARGV[#ARGV])
+            if ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
+            return 1
+            """.trimIndent(),
+            Long::class.java,
+        )
     }
 }

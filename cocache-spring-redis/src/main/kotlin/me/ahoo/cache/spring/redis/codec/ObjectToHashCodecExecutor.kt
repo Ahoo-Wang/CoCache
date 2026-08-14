@@ -40,16 +40,11 @@ class ObjectToHashCodecExecutor<V>(
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<V>) {
-        setPipelined(key) { encodedKey, connection ->
-            connection.hashCommands().hMSet(encodedKey, serialize(cacheValue.toRawValue()))
-            connection.keyCommands().expire(encodedKey, cacheValue.expiredDuration.seconds)
-        }
+        executeAtomicHashWrite(key, cacheValue.toRawValue(), ttlSeconds = cacheValue.expiredDuration.seconds)
     }
 
     override fun setForeverValue(key: String, cacheValue: CacheValue<V>) {
-        setPipelined(key) { encodedKey, connection ->
-            connection.hashCommands().hMSet(encodedKey, serialize(cacheValue.toRawValue()))
-        }
+        executeAtomicHashWrite(key, cacheValue.toRawValue(), ttlSeconds = 0)
     }
 
     override fun decode(rawValue: Map<String, String>): V {

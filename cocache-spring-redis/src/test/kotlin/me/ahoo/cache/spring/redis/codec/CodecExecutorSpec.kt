@@ -140,4 +140,15 @@ abstract class CodecExecutorSpec<V> {
         // 若某 codec 的哨兵判定退回常量（而非属性），自定义哨兵写读将无法互相识别，此断言失败
         actual.isMissingGuard.assert().isTrue()
     }
+
+    @Test
+    fun executeAndEncodeWithTtlSetsRedisExpire() {
+        val key = "redis-expire:" + UUID.randomUUID().toString()
+        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 60
+        codecExecutor.executeAndEncode(key, DefaultCacheValue(createCacheValue(), ttlAt))
+
+        val expire = stringRedisTemplate.getExpire(key)
+
+        (expire != null && expire > 0).assert().isTrue()
+    }
 }

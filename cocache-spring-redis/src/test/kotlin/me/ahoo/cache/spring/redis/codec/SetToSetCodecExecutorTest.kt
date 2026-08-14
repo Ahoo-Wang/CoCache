@@ -12,6 +12,10 @@
  */
 package me.ahoo.cache.spring.redis.codec
 
+import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.util.CacheSecondClock
+import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.Test
 import java.util.*
 
 /**
@@ -31,5 +35,14 @@ internal class SetToSetCodecExecutorTest : CodecExecutorSpec<Set<String>>() {
 
     override fun createCacheValue(): Set<String> {
         return setOf(UUID.randomUUID().toString(), UUID.randomUUID().toString())
+    }
+
+    @Test
+    fun executeAndEncodeEmptySetEvictsKey() {
+        val key = "empty-set:" + UUID.randomUUID().toString()
+        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 60
+        codecExecutor.executeAndEncode(key, DefaultCacheValue(emptySet(), ttlAt))
+
+        stringRedisTemplate.hasKey(key).assert().isFalse()
     }
 }

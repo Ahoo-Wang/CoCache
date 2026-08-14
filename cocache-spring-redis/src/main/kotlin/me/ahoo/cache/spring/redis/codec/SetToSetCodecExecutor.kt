@@ -48,15 +48,10 @@ class SetToSetCodecExecutor(
     }
 
     override fun setForeverValue(key: String, cacheValue: CacheValue<Set<String>>) {
-        setPipelined(key) { encodedKey, connection ->
-            connection.setCommands().sAdd(encodedKey, *serialize(cacheValue.toRawValue()))
-        }
+        executeAtomicSetWrite(key, cacheValue.toRawValue(), ttlSeconds = 0)
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<Set<String>>) {
-        setPipelined(key) { encodedKey, connection ->
-            connection.setCommands().sAdd(encodedKey, *serialize(cacheValue.toRawValue()))
-            connection.keyCommands().expire(encodedKey, cacheValue.expiredDuration.seconds)
-        }
+        executeAtomicSetWrite(key, cacheValue.toRawValue(), ttlSeconds = cacheValue.expiredDuration.seconds)
     }
 }
