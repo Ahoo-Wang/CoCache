@@ -193,6 +193,7 @@ interface CoherentCache<K, V> : ..., AutoCloseable {
 | 模块 | 文件 | 变更 |
 |---|---|---|
 | cocache-core | `consistency/CoherentCache.kt` | + `AutoCloseable`、默认 `close()` |
+| cocache-core | `build.gradle.kts` | Guava `compileOnly` → `implementation`（Striped 在构造期即需，scope 修正非新增依赖） |
 | cocache-core | `consistency/DefaultCoherentCache.kt` | Striped 锁、代际计数器、`close()` |
 | cocache-core | `util/CacheSecondClock.kt` | 赋值/启动顺序修复 |
 | cocache-core | `join/SimpleJoinCache.kt` | 实现 `AutoCloseable` |

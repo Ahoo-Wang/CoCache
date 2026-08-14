@@ -170,7 +170,7 @@ class DefaultCoherentCache<K, V>(
     private fun logStaleLoadDiscarded(cacheKey: String) {
         log.warn {
             "Cache Name[$cacheName] - ClientId[$clientId] - getCache[$cacheKey] " +
-                "- Discard the load result,because it was invalidated by an eviction event during loading."
+                "- Discard the load result, because it was invalidated by an eviction event during loading."
         }
     }
 
