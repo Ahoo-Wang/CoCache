@@ -12,6 +12,7 @@
  */
 package me.ahoo.cache.join
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cache.ComputedCache
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.Cache
@@ -31,7 +32,12 @@ class SimpleJoinCache<K1, V1, K2, V2>(
     val firstCache: Cache<K1, V1>,
     val joinCache: Cache<K2, V2>,
     override val joinKeyExtractor: JoinKeyExtractor<V1, K2>
-) : JoinCache<K1, V1, K2, V2>, ComputedCache<K1, JoinValue<V1, K2, V2>> {
+) : JoinCache<K1, V1, K2, V2>, ComputedCache<K1, JoinValue<V1, K2, V2>>, AutoCloseable {
+
+    companion object {
+        private val log = KotlinLogging.logger {}
+    }
+
     override val ttl: Long = getFirstTtlConfiguration(firstCache, joinCache).ttl
     override val ttlAmplitude: Long = getFirstTtlConfiguration(firstCache, joinCache).ttlAmplitude
 
@@ -100,5 +106,21 @@ class SimpleJoinCache<K1, V1, K2, V2>(
     override fun evict(firstKey: K1, joinKey: K2) {
         firstCache.evict(firstKey)
         joinCache.evict(joinKey)
+    }
+
+    /**
+     * 非 AutoCloseable 的组合缓存会被安全跳过；组合的 CoherentCache 自行注销事件订阅并关闭分布式缓存。
+     */
+    override fun close() {
+        (firstCache as? AutoCloseable)?.let {
+            runCatching(it::close).onFailure { e ->
+                log.warn(e) { "Failed to close firstCache:[$firstCache]." }
+            }
+        }
+        (joinCache as? AutoCloseable)?.let {
+            runCatching(it::close).onFailure { e ->
+                log.warn(e) { "Failed to close joinCache:[$joinCache]." }
+            }
+        }
     }
 }

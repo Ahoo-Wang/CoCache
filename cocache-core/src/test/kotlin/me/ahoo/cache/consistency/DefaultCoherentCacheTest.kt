@@ -12,14 +12,24 @@
  */
 package me.ahoo.cache.consistency
 
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
+import me.ahoo.cache.ComputedTtlAt
+import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.mock.MockDistributedCache
 import me.ahoo.cache.test.DefaultCoherentCacheSpec
+import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.Test
 import java.util.*
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Coherent Cache Test .
@@ -41,5 +51,105 @@ internal class DefaultCoherentCacheTest : DefaultCoherentCacheSpec<String, Strin
 
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()
+    }
+
+    @Test
+    fun closeClosesDistributedCache() {
+        val distributedCache = mockk<DistributedCache<String>>(relaxUnitFun = true)
+        val cache = DefaultCoherentCache<String, String>(
+            config = CoherentCacheConfiguration(
+                cacheName = cacheName,
+                clientId = clientId,
+                keyConverter = ToStringKeyConverter(""),
+                clientSideCache = MapClientSideCache(),
+                distributedCache = distributedCache,
+                cacheSource = CacheSource.noOp()
+            ),
+            cacheEvictedEventBus = GuavaCacheEvictedEventBus()
+        )
+        cache.close()
+        cache.close()
+        verify(exactly = 1) { distributedCache.close() }
+    }
+
+    /**
+     * close() must swallow exceptions from both the unregister and distributed-close steps,
+     * execute the second cleanup step even when the first throws, and remain idempotent.
+     */
+    @Test
+    fun closeSwallowsUnregisterAndCloseExceptions() {
+        val eventBus = ThrowingUnregisterBus()
+        val distributedCache = mockk<DistributedCache<String>>(relaxUnitFun = true)
+        every { distributedCache.close() } throws IllegalStateException("close boom")
+
+        // Pre-register so that the cache is the registered subscriber.
+        val cache = DefaultCoherentCache<String, String>(
+            config = CoherentCacheConfiguration(
+                cacheName = cacheName,
+                clientId = clientId,
+                keyConverter = ToStringKeyConverter(""),
+                clientSideCache = MapClientSideCache(),
+                distributedCache = distributedCache,
+                cacheSource = CacheSource.noOp()
+            ),
+            cacheEvictedEventBus = eventBus
+        )
+        eventBus.register(cache)
+
+        // Must not throw despite the throwing unregister and throwing close.
+        cache.close()
+        // Idempotent: a second close() must not throw either, and distributedCache.close()
+        // must still only have been invoked once.
+        cache.close()
+
+        verify(exactly = 1) { distributedCache.close() }
+    }
+
+    /**
+     * getL2Cache: distributedCache 返回过期值 → 跳过该值、落入回源 → 新值写回两层。
+     * 注：MockDistributedCache.setCache 拒绝存储已过期值，故用 mockk 直接 stub 过期 L1 条目。
+     */
+    @Test
+    fun getCacheFallsThroughExpiredL1ToSource() {
+        val key = "expired-l1-key"
+        val cacheKey = ToStringKeyConverter<String>("").toStringKey(key)
+        val distributedCache = mockk<DistributedCache<String>>(relaxUnitFun = true)
+        every { distributedCache.getCache(cacheKey) } returns DefaultCacheValue("stale", ComputedTtlAt.at(-5))
+
+        val sourceValue: String = "fresh-from-source"
+        val cache = DefaultCoherentCache<String, String>(
+            config = CoherentCacheConfiguration(
+                cacheName = cacheName,
+                clientId = clientId,
+                keyConverter = ToStringKeyConverter(""),
+                clientSideCache = MapClientSideCache(),
+                distributedCache = distributedCache,
+                cacheSource = object : CacheSource<String, String> {
+                    override fun loadCacheValue(key: String): CacheValue<String>? {
+                        return DefaultCacheValue.forever(sourceValue)
+                    }
+                }
+            ),
+            cacheEvictedEventBus = GuavaCacheEvictedEventBus()
+        )
+
+        val actual = cache.getCache(key)!!
+
+        actual.value.assert().isEqualTo(sourceValue)
+        // 过期值被跳过（不会写入客户端缓存），回源新值写回两层。
+        (cache.clientSideCache.getCache(cacheKey)!!).value.assert().isEqualTo(sourceValue)
+        verify(exactly = 1) { distributedCache.setCache(cacheKey, DefaultCacheValue.forever(sourceValue)) }
+        verify(atLeast = 1) { distributedCache.getCache(cacheKey) }
+    }
+
+    private class ThrowingUnregisterBus : CacheEvictedEventBus {
+        val registered = AtomicInteger(0)
+        override fun publish(event: CacheEvictedEvent) = Unit
+        override fun register(subscriber: CacheEvictedSubscriber) {
+            registered.incrementAndGet()
+        }
+        override fun unregister(subscriber: CacheEvictedSubscriber) {
+            throw IllegalStateException("unregister boom")
+        }
     }
 }

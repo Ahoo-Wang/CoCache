@@ -22,11 +22,22 @@ import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedClientId
 
-interface CoherentCache<K, V> : ComputedCache<K, V>, DistributedClientId, NamedCache, CacheEvictedSubscriber {
+interface CoherentCache<K, V> :
+    ComputedCache<K, V>,
+    DistributedClientId,
+    NamedCache,
+    CacheEvictedSubscriber,
+    AutoCloseable {
     val cacheEvictedEventBus: CacheEvictedEventBus
     val clientSideCache: ClientSideCache<V>
     val distributedCache: DistributedCache<V>
     val keyFilter: KeyFilter
     val keyConverter: KeyConverter<K>
     val cacheSource: CacheSource<K, V>
+
+    /**
+     * 空默认实现保证对既有实现者二进制兼容（-Xjvm-default=all-compatibility 编译为 default method）。
+     * DefaultCoherentCache 覆写为注销事件订阅并关闭分布式缓存。
+     */
+    override fun close() {}
 }
