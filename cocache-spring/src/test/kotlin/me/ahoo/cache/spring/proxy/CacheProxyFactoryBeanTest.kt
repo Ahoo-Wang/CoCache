@@ -65,4 +65,44 @@ class CacheProxyFactoryBeanTest {
         val factoryBean = CacheProxyFactoryBean(mockk(relaxed = true))
         factoryBean.destroy()
     }
+
+    /**
+     * getObject() must keep returning the memoized proxy after destroy(); the proxy
+     * reference is not invalidated, so subsequent calls return the same instance and
+     * the close() side effect is not repeated.
+     */
+    @Test
+    fun getObjectAfterDestroyReturnsSameMemoizedProxy() {
+        val closeCount = AtomicInteger(0)
+        val proxy = Proxy.newProxyInstance(
+            javaClass.classLoader,
+            arrayOf(TestCache::class.java, CoherentCache::class.java),
+        ) { proxyInstance, method, args ->
+            when (method.name) {
+                "close" -> {
+                    closeCount.incrementAndGet()
+                    null
+                }
+                "equals" -> proxyInstance === args?.get(0)
+                "hashCode" -> System.identityHashCode(proxyInstance)
+                "toString" -> "TestCacheProxy"
+                else -> null
+            }
+        } as TestCache
+
+        val appContext = mockk<ApplicationContext>()
+        val cacheProxyFactory = mockk<CacheProxyFactory>()
+        every { appContext.getBean(CacheProxyFactory::class.java) } returns cacheProxyFactory
+        every { cacheProxyFactory.create<TestCache>(any()) } returns proxy
+
+        val factoryBean = CacheProxyFactoryBean(mockk(relaxed = true))
+        factoryBean.setApplicationContext(appContext)
+
+        val first = factoryBean.getObject()
+        factoryBean.destroy()
+        val second = factoryBean.getObject()
+
+        first.assert().isSameAs(second)
+        closeCount.get().assert().isOne()
+    }
 }

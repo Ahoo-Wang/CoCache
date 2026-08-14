@@ -28,6 +28,7 @@ import me.ahoo.cache.test.CacheSpec
 import me.ahoo.cosid.jvm.UuidGenerator
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
+import java.lang.reflect.Proxy
 
 /**
  * SimpleJoinCachingTest .
@@ -244,6 +245,48 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
         val joinCaching = SimpleJoinCache(firstCache, joinCache) { _ -> "" }
 
         joinCaching.close() // 非 closeable 组合缓存必须被安全跳过，不抛异常
+    }
+
+    /**
+     * close() must swallow exceptions raised by firstCache.close() so a failing
+     * first cache does not prevent the join cache from being closed.
+     */
+    @Test
+    fun closeSwallowsFirstCacheCloseException() {
+        val firstCache = newThrowingCacheProxy<String, Order>(RuntimeException("first close boom"))
+        val joinCache = RawCache<OrderAddress>()
+        val joinCaching = SimpleJoinCache(firstCache, joinCache) { _ -> "" }
+
+        joinCaching.close() // must not throw
+    }
+
+    /**
+     * close() must swallow exceptions raised by joinCache.close(); even when the
+     * first cache closes cleanly the join-cache failure must not propagate.
+     */
+    @Test
+    fun closeSwallowsJoinCacheCloseException() {
+        val firstCache = RawCache<Order>()
+        val joinCache = newThrowingCacheProxy<String, OrderAddress>(RuntimeException("join close boom"))
+        val joinCaching = SimpleJoinCache(firstCache, joinCache) { _ -> "" }
+
+        joinCaching.close() // must not throw
+    }
+
+    private fun <K, V> newThrowingCacheProxy(closeException: RuntimeException): Cache<K, V> {
+        @Suppress("UNCHECKED_CAST")
+        return Proxy.newProxyInstance(
+            javaClass.classLoader,
+            arrayOf(Cache::class.java, AutoCloseable::class.java),
+        ) { _, method, _ ->
+            when (method.name) {
+                "close" -> throw closeException
+                "equals" -> false
+                "hashCode" -> 0
+                "toString" -> "ThrowingCacheProxy"
+                else -> null
+            }
+        } as Cache<K, V>
     }
 }
 

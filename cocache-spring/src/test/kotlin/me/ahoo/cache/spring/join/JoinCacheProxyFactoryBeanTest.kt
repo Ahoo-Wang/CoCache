@@ -71,6 +71,48 @@ class JoinCacheProxyFactoryBeanTest {
         factoryBean.destroy()
     }
 
+    /**
+     * getObject() must keep returning the memoized proxy after destroy() — the
+     * underlying composed caches must NOT be re-closed by a later getObject() call.
+     */
+    @Test
+    fun getObjectAfterDestroyReturnsSameMemoizedProxy() {
+        val firstCloseCount = AtomicInteger(0)
+        val joinCloseCount = AtomicInteger(0)
+        val firstCache = newCountingCacheProxy(firstCloseCount)
+        val joinCache = newCountingCacheProxy(joinCloseCount)
+        val delegate = SimpleJoinCache(firstCache, joinCache) { _ -> "" }
+
+        val proxy = Proxy.newProxyInstance(
+            javaClass.classLoader,
+            arrayOf(TestJoinCache::class.java, CacheDelegated::class.java),
+        ) { proxyInstance, method, args ->
+            when (method.name) {
+                "getDelegate" -> delegate
+                "equals" -> proxyInstance === args?.get(0)
+                "hashCode" -> System.identityHashCode(proxyInstance)
+                "toString" -> "TestJoinCacheProxy"
+                else -> null
+            }
+        }
+
+        val appContext = mockk<ApplicationContext>()
+        val joinCacheProxyFactory = mockk<JoinCacheProxyFactory>()
+        every { appContext.getBean(JoinCacheProxyFactory::class.java) } returns joinCacheProxyFactory
+        every { joinCacheProxyFactory.create<TestJoinCache>(any()) } returns proxy as TestJoinCache
+
+        val factoryBean = JoinCacheProxyFactoryBean(mockk(relaxed = true))
+        factoryBean.setApplicationContext(appContext)
+
+        val first = factoryBean.getObject()
+        factoryBean.destroy()
+        val second = factoryBean.getObject()
+
+        first.assert().isSameAs(second)
+        firstCloseCount.get().assert().isOne()
+        joinCloseCount.get().assert().isOne()
+    }
+
     private fun newCountingCacheProxy(closeCount: AtomicInteger): Cache<String, String> {
         return Proxy.newProxyInstance(
             javaClass.classLoader,
