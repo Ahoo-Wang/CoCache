@@ -12,6 +12,8 @@
  */
 package me.ahoo.cache.join
 
+import io.mockk.mockk
+import io.mockk.verify
 import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.MissingGuard
@@ -21,6 +23,7 @@ import me.ahoo.cache.api.annotation.JoinCacheable
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinValue
 import me.ahoo.cache.client.MapClientSideCache
+import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.test.CacheSpec
 import me.ahoo.cosid.jvm.UuidGenerator
 import me.ahoo.test.asserts.assert
@@ -219,6 +222,28 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
         cache.setCache(key, missingValue)
 
         orderCache.getCache(key)!!.ttlAt.assert().isEqualTo(missingValue.ttlAt)
+    }
+
+    @Test
+    fun closeClosesComposedCaches() {
+        val firstCache = mockk<CoherentCache<String, Order>>(relaxed = true)
+        val joinCache = mockk<CoherentCache<String, OrderAddress>>(relaxed = true)
+        val joinCaching = SimpleJoinCache(firstCache, joinCache) { _ -> "" }
+
+        joinCaching.close()
+
+        verify(exactly = 1) { firstCache.close() }
+        verify(exactly = 1) { joinCache.close() }
+    }
+
+    @Test
+    fun closeSkipsNonCloseableCaches() {
+        val orderId = UuidGenerator.INSTANCE.generateAsString()
+        val firstCache = RawCache<Order>(DefaultCacheValue.forever(Order(orderId)))
+        val joinCache = RawCache<OrderAddress>()
+        val joinCaching = SimpleJoinCache(firstCache, joinCache) { _ -> "" }
+
+        joinCaching.close() // 非 closeable 组合缓存必须被安全跳过，不抛异常
     }
 }
 
