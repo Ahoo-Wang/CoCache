@@ -15,6 +15,7 @@ package me.ahoo.cache.spring.join
 
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.join.SimpleJoinCache
@@ -109,6 +110,8 @@ class JoinCacheProxyFactoryBeanTest {
         val second = factoryBean.getObject()
 
         first.assert().isSameAs(second)
+        // memoization 守卫必须真实生效：两次 getObject() 只创建一次代理（去掉守卫则该断言失败）。
+        verify(exactly = 1) { joinCacheProxyFactory.create<TestJoinCache>(any()) }
         firstCloseCount.get().assert().isOne()
         joinCloseCount.get().assert().isOne()
     }

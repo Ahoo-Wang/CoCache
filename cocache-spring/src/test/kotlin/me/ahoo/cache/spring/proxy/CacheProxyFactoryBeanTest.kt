@@ -15,6 +15,7 @@ package me.ahoo.cache.spring.proxy
 
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.proxy.CacheProxyFactory
@@ -103,6 +104,8 @@ class CacheProxyFactoryBeanTest {
         val second = factoryBean.getObject()
 
         first.assert().isSameAs(second)
+        // memoization 守卫必须真实生效：两次 getObject() 只创建一次代理（去掉守卫则该断言失败）。
+        verify(exactly = 1) { cacheProxyFactory.create<TestCache>(any()) }
         closeCount.get().assert().isOne()
     }
 }

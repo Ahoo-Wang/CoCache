@@ -106,14 +106,15 @@ internal class DefaultCoherentCacheTest : DefaultCoherentCacheSpec<String, Strin
     }
 
     /**
-     * getL2Cache: distributedCache returns an expired value → evict L1 → fall through to source.
+     * getL2Cache: distributedCache 返回过期值 → 跳过该值、落入回源 → 新值写回两层。
+     * 注：MockDistributedCache.setCache 拒绝存储已过期值，故用 mockk 直接 stub 过期 L1 条目。
      */
     @Test
-    fun getCacheEvictsExpiredL1EntryAndFallsThroughToSource() {
+    fun getCacheFallsThroughExpiredL1ToSource() {
         val key = "expired-l1-key"
         val cacheKey = ToStringKeyConverter<String>("").toStringKey(key)
-        val distributedCache = MockDistributedCache<String>()
-        distributedCache.setCache(cacheKey, DefaultCacheValue("stale", ComputedTtlAt.at(-5)))
+        val distributedCache = mockk<DistributedCache<String>>(relaxUnitFun = true)
+        every { distributedCache.getCache(cacheKey) } returns DefaultCacheValue("stale", ComputedTtlAt.at(-5))
 
         val sourceValue: String = "fresh-from-source"
         val cache = DefaultCoherentCache<String, String>(
@@ -135,11 +136,10 @@ internal class DefaultCoherentCacheTest : DefaultCoherentCacheSpec<String, Strin
         val actual = cache.getCache(key)!!
 
         actual.value.assert().isEqualTo(sourceValue)
-        // L1 expired entry must be evicted before falling through, then the fresh value
-        // from the source is written back to both layers.
-        distributedCache.getCache(cacheKey).assert().isNotNull()
-        distributedCache.getCache(cacheKey)!!.value.assert().isEqualTo(sourceValue)
+        // 过期值被跳过（不会写入客户端缓存），回源新值写回两层。
         (cache.clientSideCache.getCache(cacheKey)!!).value.assert().isEqualTo(sourceValue)
+        verify(exactly = 1) { distributedCache.setCache(cacheKey, DefaultCacheValue.forever(sourceValue)) }
+        verify(atLeast = 1) { distributedCache.getCache(cacheKey) }
     }
 
     private class ThrowingUnregisterBus : CacheEvictedEventBus {
