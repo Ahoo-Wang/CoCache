@@ -12,11 +12,15 @@
  */
 package me.ahoo.cache.spring.redis
 
+import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor
 import me.ahoo.cache.test.DistributedCacheSpec
+import me.ahoo.test.asserts.assert
+import org.assertj.core.data.Offset
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
 import org.springframework.data.redis.core.StringRedisTemplate
@@ -59,5 +63,29 @@ internal class RedisDistributedCachingTest : DistributedCacheSpec<String>() {
         if (null != lettuceConnectionFactory) {
             lettuceConnectionFactory.destroy()
         }
+    }
+
+    /**
+     * Redis 实现的 ttlAt 经 getExpire 重建，写读跨越秒边界时会有 ±1 秒漂移——
+     * 覆盖 TCK 的精确相等断言为容差断言（与 CodecExecutorSpec 的既有做法一致）。
+     */
+    @Test
+    override fun setWithTtl() {
+        val (key, value) = createCacheEntry()
+        cache[key].assert().isNull()
+        val cacheValue = DefaultCacheValue.ttlAt(value, 5)
+        cache.setCache(key, cacheValue)
+        cache[key].assert().isEqualTo(value)
+        cache.getTtlAt(key).assert().isCloseTo(cacheValue.ttlAt, Offset.offset(1))
+    }
+
+    @Test
+    override fun setWithTtlAmplitude() {
+        val (key, value) = createCacheEntry()
+        cache[key].assert().isNull()
+        val cacheValue = DefaultCacheValue.ttlAt(value, 5, 1)
+        cache.setCache(key, cacheValue)
+        cache[key].assert().isEqualTo(value)
+        cache.getTtlAt(key).assert().isCloseTo(cacheValue.ttlAt, Offset.offset(1))
     }
 }
