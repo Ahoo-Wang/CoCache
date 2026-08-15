@@ -5,7 +5,7 @@ description: 面向 Java/Kotlin 的二级分布式一致性缓存框架 -- 概�
 
 # CoCache 介绍
 
-**CoCache** 是一个面向 Java/Kotlin 的**二级分布式一致性缓存框架**，提供基于事件驱动一致性的两级缓存架构。它以 `me.ahoo.cocache` 为组织标识发布，当前版本为 **4.2.0**。
+**CoCache** 是一个面向 Java/Kotlin 的**二级分布式一致性缓存框架**，提供基于事件驱动一致性的两级缓存架构。它以 `me.ahoo.cocache` 为组织标识发布，当前版本为 **4.3.0**。
 
 CoCache 位于应用与数据源之间，增加两层缓存 -- 本地内存 L2 缓存（Guava 或 Caffeine）和共享的分布式 L1 缓存（Redis） -- 同时通过事件总线保持所有实例间的缓存一致性。
 
@@ -219,7 +219,7 @@ autonumber
 | 属性 | 值 | 源码 |
 |------|-----|------|
 | Group | `me.ahoo.cocache` | [gradle.properties:14](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L14) |
-| Version | `4.2.0` | [gradle.properties:15](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
+| Version | `4.3.0` | [gradle.properties:15](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
 | License | Apache License 2.0 | [gradle.properties:23](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L23) |
 | JDK | 17+（通过 `jvmToolchain`） | [build.gradle.kts](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts) |
 | Gradle | 9.6.1（wrapper） | [gradle/wrapper/gradle-wrapper.properties](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/wrapper/gradle-wrapper.properties) |

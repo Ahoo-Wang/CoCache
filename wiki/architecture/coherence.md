@@ -237,6 +237,10 @@ flowchart LR
 
 ```
 
+### Close Lifecycle (v4.3.0)
+
+Since v4.3.0, the lifecycle is closed-loop: `CoherentCache` extends `AutoCloseable` and `DefaultCoherentCache.close()` performs the `unregister` step idempotently (guarded by an atomic CAS — repeated calls are no-ops), then closes the distributed cache. In Spring applications, `CacheProxyFactoryBean`/`JoinCacheProxyFactoryBean` implement `DisposableBean`, so caches are unregistered and closed automatically at container shutdown. Manual (non-Spring) users should call `close()` when discarding a cache — previously, subscribers were registered on construction but never unregistered, leaking subscriptions for non-singleton cache lifecycles.
+
 ## Comparison of EventBus Implementations
 
 | Feature | GuavaCacheEvictedEventBus | RedisCacheEvictedEventBus | NoOpCacheEvictedEventBus |

@@ -106,16 +106,47 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 | 属性 | 类型 | 默认值 | 说明 | 源码 |
 |------|------|--------|------|------|
 | `cocache.enabled` | `Boolean` | `true` | 启用或禁用整个 CoCache 自动配置 | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
+| `cocache.redis.strict-failure` | `Boolean` | `false` | Redis 故障策略：`false` = 降级（读回源、写仅告警）；`true` = 重抛 `DataAccessException`（4.3.0 之前的行为） | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
+| `cocache.redis.missing-guard-sentinel` | `String` | `"_nil_"` | 自定义 Redis codec 负缓存哨兵值（约束见下文） | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
 
 ```yaml
 # application.yml
 cocache:
   enabled: true
+  redis:
+    strict-failure: false
+    missing-guard-sentinel: "_nil_"
 ```
 
 当 `cocache.enabled` 为 `false` 时，所有 CoCache Bean 都会被跳过。条件化由 `@ConditionalOnCoCacheEnabled` 处理。
 
 源码：[ConditionalOnCoCacheEnabled.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/ConditionalOnCoCacheEnabled.kt)
+
+#### Redis 故障降级（v4.3.0）
+
+自 v4.3.0 起，`RedisDistributedCache` 对 Redis 故障降级处理，不再向业务调用方传播异常：
+
+- **读失败** → 按缓存未命中处理：一致性缓存回退到数据源回源，Redis 故障或主从切换期间业务调用不受影响。
+- **写 / evict 失败** → 记录 `WARN` 后吞掉——缓存写入失败不会阻断业务写路径。
+- 失效事件发布路径（`RedisCacheEvictedEventBus`）同样降级（pub/sub 本就是 fire-and-forget）。
+
+设置 `cocache.redis.strict-failure=true` 可恢复 4.3.0 之前的严格行为（异常传播）。注意：降级启用时，故障期间本地 L2 未命中的 key 每进程每客户端 TTL 窗口至多回源一次——请据此规划数据源容量。这两个属性仅作用于自动装配（fallback）创建的缓存；自定义 `DistributedCache` Bean 自行管理其策略。
+
+#### 负缓存哨兵（v4.3.0）
+
+Redis codec 用哨兵值 `"_nil_"` 标记负缓存条目。若业务数据可能合法地等于哨兵（外部写入者写入的精确 `"_nil_"` 字符串、单元素 `{"_nil_"}` 集合或单 `"_nil_"` 键的 Map），可配置自定义哨兵：
+
+```yaml
+cocache:
+  redis:
+    missing-guard-sentinel: "\u0000myapp:nil"
+```
+
+约束：
+
+- 自定义哨兵与默认哨兵**互不识别**——切换需全集群同时变更（滚动升级期间旧实例会把新哨兵误读为真实值）。
+- 取值不得等于任何合法的业务序列化值，且不得为空白（绑定时 fail-fast）。
+- 仅影响 codec 读写的 Redis 静止字节；进程内 missing-guard 判定不受影响。
 
 ## 自动配置 Bean 注册表
 

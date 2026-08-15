@@ -117,7 +117,7 @@ POM 属性来源于 [`gradle.properties`](https://github.com/Ahoo-Wang/CoCache/b
 | 属性 | 值 | 来源 |
 |------|-----|------|
 | `group` | `me.ahoo.cocache` | [`gradle.properties:14`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L14) |
-| `version` | `4.2.0` | [`gradle.properties:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
+| `version` | `4.3.0` | [`gradle.properties:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15) |
 | `description` | `Level 2 Distributed Coherence Cache Framework` | [`gradle.properties:17`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L17) |
 | `website` | `https://github.com/Ahoo-Wang/CoCache` | [`gradle.properties:18`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L18) |
 | `license_name` | `The Apache Software License, Version 2.0` | [`gradle.properties:22`](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L22) |
@@ -128,7 +128,7 @@ POM 属性来源于 [`gradle.properties`](https://github.com/Ahoo-Wang/CoCache/b
 
 ```properties
 # [gradle.properties:15](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle.properties#L15)
-version=4.2.0
+version=4.3.0
 ```
 
 所有已发布构件共享此版本。准备发布时：
