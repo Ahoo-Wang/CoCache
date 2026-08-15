@@ -319,6 +319,19 @@ interface CacheSource<K, V> {
 }
 ```
 
+### Return-value semantics
+
+What `loadCacheValue` returns decides how CoCache caches the outcome:
+
+| Returns | CoCache behavior |
+|---------|------------------|
+| `DefaultCacheValue.ttlAt(value, ttl)` / `forever(value)` | Positive entry, cached at both levels |
+| `null` | CoCache automatically caches a missing guard using the cache's `ttl`/`ttlAmplitude` (`@CoCache` defaults) — cache-penetration protection. Callers still see `null` from `get(key)` |
+| `DefaultCacheValue.missingGuard(ttl, amplitude)` | Negative entry with a custom window — use it when the cache default is too long (e.g. transient source failures) or too short |
+| throws | Nothing is cached; the exception propagates to the caller of `get(key)` |
+
+Returning `null` for "key does not exist" is the idiomatic baseline — the framework performs the negative caching for you. Return an explicit `missingGuard(ttl)` only to override that window.
+
 ### Implementation Patterns
 
 ```kotlin
