@@ -136,6 +136,32 @@ abstract class CodecExecutorSpec<V> {
     }
 
     @Test
+    fun executeAndDecodeWhenKeyAbsentReturnsMissingGuard() {
+        val key = "absent-key:" + UUID.randomUUID().toString()
+
+        // key 不存在（生产路径由 RedisDistributedCache 的 NOT_EXIST 前置拦截，
+        // 此处锁定 codec 契约）：返回负缓存而非 null/异常
+        val actual = requireNotNull(codecExecutor.executeAndDecode(key, ComputedTtlAt.FOREVER))
+        actual.isMissingGuard.assert().isTrue()
+    }
+
+    @Test
+    fun singleEntryNonSentinelValueReadsBackAsValue() {
+        val key = "single-non-sentinel:" + UUID.randomUUID().toString()
+        val single = createSingleNonSentinelValue()
+        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 100
+
+        codecExecutor.executeAndEncode(key, DefaultCacheValue(single, ttlAt))
+
+        // 单元素/单字段但非哨兵的数据不得被误判为负缓存（哨兵判定要求元素等于哨兵）
+        val actual = requireNotNull(codecExecutor.executeAndDecode(key, ttlAt))
+        actual.isMissingGuard.assert().isFalse()
+    }
+
+    /** 单元素且不等于哨兵的业务值（驱动 isMissingGuard 的 size==1 && !=sentinel 分支）。 */
+    protected open fun createSingleNonSentinelValue(): V = createCacheValue()
+
+    @Test
     fun customSentinelGuardRoundTrip() {
         val executor = createCustomSentinelCodecExecutor()
         val key = "custom-sentinel-rt:" + UUID.randomUUID().toString()

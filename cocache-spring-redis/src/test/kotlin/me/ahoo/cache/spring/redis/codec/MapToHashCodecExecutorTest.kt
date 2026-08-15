@@ -33,6 +33,10 @@ internal class MapToHashCodecExecutorTest : CodecExecutorSpec<Map<String, String
         return mapOf(UUID.randomUUID().toString() to UUID.randomUUID().toString())
     }
 
+    override fun createSingleNonSentinelValue(): Map<String, String> {
+        return mapOf("single-field" to UUID.randomUUID().toString())
+    }
+
     @Test
     fun executeAndEncodeEmptyMapEvictsKey() {
         val key = "empty-map:" + UUID.randomUUID().toString()

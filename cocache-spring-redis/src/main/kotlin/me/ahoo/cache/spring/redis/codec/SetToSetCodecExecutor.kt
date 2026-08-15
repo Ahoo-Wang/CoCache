@@ -40,7 +40,9 @@ class SetToSetCodecExecutor(
     }
 
     override fun getRawValue(key: String): Set<String>? {
-        return redisTemplate.opsForSet().members(key)
+        // absent key 与空 Set 在 Redis 侧不可区分（都返回空 members）；写入路径已把空集合定义为淘汰，
+        // 故空原始集合按 key 不存在处理（返回 null → 负缓存），与 String/JSON codec 契约一致
+        return redisTemplate.opsForSet().members(key)?.takeIf { it.isNotEmpty() }
     }
 
     override fun decode(rawValue: Set<String>): Set<String> {

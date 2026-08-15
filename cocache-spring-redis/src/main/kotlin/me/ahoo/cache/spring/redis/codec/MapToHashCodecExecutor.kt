@@ -35,7 +35,9 @@ class MapToHashCodecExecutor(
     }
 
     override fun getRawValue(key: String): Map<String, String>? {
-        return redisTemplate.opsForHash<String, String>().entries(key)
+        // absent key 与空 Hash 在 Redis 侧不可区分（都返回空 entries）；写入路径已把空集合定义为淘汰，
+        // 故空原始集合按 key 不存在处理（返回 null → 负缓存），与 String/JSON codec 契约一致
+        return redisTemplate.opsForHash<String, String>().entries(key).takeIf { it.isNotEmpty() }
     }
 
     override fun isMissingGuard(rawValue: Map<String, String>): Boolean {
