@@ -106,16 +106,47 @@ Source: [cocache-example/.../cache/UserExtendInfoJoinCache.kt](https://github.co
 | Property | Type | Default | Description | Source |
 |----------|------|---------|-------------|--------|
 | `cocache.enabled` | `Boolean` | `true` | Enables or disables the entire CoCache auto-configuration | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
+| `cocache.redis.strict-failure` | `Boolean` | `false` | Redis failure policy: `false` = degrade (reads fall back to source, writes log warnings); `true` = rethrow `DataAccessException` (pre-4.3.0 behavior) | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
+| `cocache.redis.missing-guard-sentinel` | `String` | `"_nil_"` | Custom missing-guard sentinel value for Redis codecs (see notes below) | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
 
 ```yaml
 # application.yml
 cocache:
   enabled: true
+  redis:
+    strict-failure: false
+    missing-guard-sentinel: "_nil_"
 ```
 
 When `cocache.enabled` is `false`, all CoCache beans are skipped. The conditional is handled by `@ConditionalOnCoCacheEnabled`.
 
 Source: [ConditionalOnCoCacheEnabled.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/ConditionalOnCoCacheEnabled.kt)
+
+#### Redis Failure Degradation (v4.3.0)
+
+Since v4.3.0, `RedisDistributedCache` degrades instead of propagating Redis failures to business callers:
+
+- **Read failures** → treated as a cache miss: the coherent cache falls back to the source (database), so business calls are unaffected during Redis outages or master-slave switchovers.
+- **Write / evict failures** → logged at `WARN` and swallowed — a cache write failure never blocks the business write path.
+- The eviction-event publish path (`RedisCacheEvictedEventBus`) degrades the same way (pub/sub is fire-and-forget by nature).
+
+Set `cocache.redis.strict-failure=true` to restore the strict pre-4.3.0 behavior (exceptions propagate). Note that during an outage with degradation enabled, every key not served by the local L2 cache falls back to the source once per client-side TTL window per process — plan source capacity accordingly. These properties apply only to auto-configured (fallback-created) caches; custom `DistributedCache` beans manage their own policy.
+
+#### Missing-Guard Sentinel (v4.3.0)
+
+Redis codecs mark negative-cache entries with the sentinel value `"_nil_"`. If your business data can legitimately equal the sentinel (an exact `"_nil_"` string, a single-element `{"_nil_"}` set, or a single-`"_nil_"`-keyed map written by an external writer), configure a custom sentinel:
+
+```yaml
+cocache:
+  redis:
+    missing-guard-sentinel: "\u0000myapp:nil"
+```
+
+Constraints:
+
+- Custom and default sentinels **do not recognize each other** — switching requires a simultaneous cluster-wide change (during a rolling upgrade, old instances would misread the new sentinel as a real value).
+- The value must not equal any legitimate serialized business value, and must not be blank (binding fails fast).
+- This affects only the Redis at-rest bytes written/read by the codecs; in-process missing-guard checks are unaffected.
 
 ## Auto-Configuration Bean Registry
 

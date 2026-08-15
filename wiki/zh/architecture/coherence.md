@@ -237,6 +237,10 @@ flowchart LR
 
 ```
 
+### 关闭生命周期（v4.3.0）
+
+自 v4.3.0 起，生命周期形成闭环：`CoherentCache` 继承 `AutoCloseable`，`DefaultCoherentCache.close()` 幂等地执行注销步骤（原子 CAS 防护——重复调用为无操作），随后关闭分布式缓存。Spring 应用中，`CacheProxyFactoryBean`/`JoinCacheProxyFactoryBean` 实现了 `DisposableBean`，容器关闭时自动注销并关闭缓存。手工（非 Spring）用户应在废弃缓存时调用 `close()`——此前订阅者在构造时注册但永不注销，非单例缓存生命周期会泄漏订阅。
+
 ## EventBus 实现对比
 
 | 特性 | GuavaCacheEvictedEventBus | RedisCacheEvictedEventBus | NoOpCacheEvictedEventBus |

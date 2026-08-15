@@ -173,6 +173,16 @@ autonumber
 | `FOREVER` | `-1` | 键存在但没有过期时间 |
 | `NOT_EXIST` | `-2` | 键在 Redis 中不存在 |
 
+### 故障降级与自愈（v4.3.0）
+
+自 v4.3.0 起，`RedisDistributedCache` 吸收 Redis 故障而非向调用方传播：
+
+- **读失败**（`DataAccessException`）降级为缓存未命中——`getCache` 返回 `null`，一致性缓存回退数据源，Redis 故障期间业务调用持续可用。
+- **写 / evict 失败**记录 `WARN` 后吞掉。
+- 设置 `cocache.redis.strict-failure=true` 可恢复严格异常传播（见[配置参考](/zh/guide/configuration#redis-故障降级-v4-3-0)）。
+
+此外，codec 层对**脏载荷自愈**：存储值无法解码时（外部损坏、schema 不兼容），该 key 被删除且读取按未命中处理，下次回源重建有效值——损坏的 key 不再在 TTL 期内每次读取都抛异常。
+
 ## L0 -- CacheSource（数据源）
 
 L0 层代表权威数据源（通常是数据库）。它是 L2 和 L1 都未命中时的最后兜底。[`CacheSource<K, V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/source/CacheSource.kt#L24) 接口定义了一个方法：

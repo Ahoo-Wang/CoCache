@@ -173,6 +173,16 @@ autonumber
 | `FOREVER` | `-1` | Key exists but has no expiration |
 | `NOT_EXIST` | `-2` | Key does not exist in Redis |
 
+### Failure Degradation & Self-Healing (v4.3.0)
+
+Since v4.3.0, `RedisDistributedCache` absorbs Redis failures instead of propagating them:
+
+- **Read failures** (`DataAccessException`) degrade to a cache miss — `getCache` returns `null`, the coherent cache falls back to the source, and business calls continue to work through Redis outages.
+- **Write / evict failures** are logged at `WARN` and swallowed.
+- Set `cocache.redis.strict-failure=true` to restore strict exception propagation (see [Configuration](/guide/configuration#redis-failure-degradation-v4-3-0)).
+
+Additionally, the codec layer **self-heals corrupted payloads**: if a stored value cannot be decoded (external corruption, incompatible schema), the key is deleted and the read is treated as a cache miss so the next load repopulates a valid value — a broken key no longer throws on every read until TTL expiry.
+
 ## L0 -- CacheSource (Data Source)
 
 The L0 layer represents the authoritative data source (typically a database). It is the last resort when both L2 and L1 miss. The [`CacheSource<K, V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/source/CacheSource.kt#L24) interface defines a single method:

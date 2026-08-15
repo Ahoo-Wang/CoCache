@@ -13,7 +13,7 @@ export const zh: DefaultTheme.Config = {
       { text: '模块', link: '/zh/modules/' },
       { text: '入门指南', link: '/zh/onboarding/' },
       {
-        text: 'v4.2',
+        text: 'v4.3',
         items: [
           { text: '更新日志', link: '/zh/guide/changelog' },
           { text: '贡献指南', link: '/zh/guide/contributing' },
