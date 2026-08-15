@@ -17,6 +17,7 @@ import me.ahoo.cache.consistency.CacheEvictedEvent
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.consistency.CacheEvictedSubscriber
 import me.ahoo.cache.spring.redis.codec.EvictedEvents
+import org.springframework.dao.DataAccessException
 import org.springframework.data.redis.connection.Message
 import org.springframework.data.redis.connection.MessageListener
 import org.springframework.data.redis.core.StringRedisTemplate
@@ -40,7 +41,12 @@ class RedisCacheEvictedEventBus(
     private val subscribers = ConcurrentHashMap<CacheEvictedSubscriber, MessageListenerAdapter>()
 
     override fun publish(event: CacheEvictedEvent) {
-        redisTemplate.convertAndSend(event.cacheName, EvictedEvents.asMessage(event.key, event.publisherId))
+        try {
+            redisTemplate.convertAndSend(event.cacheName, EvictedEvents.asMessage(event.key, event.publisherId))
+        } catch (e: DataAccessException) {
+            // pub/sub 为 fire-and-forget：发布失败仅告警，不阻断调用方（与已接受的丢消息语义一致）
+            log.warn(e) { "Publish - event:[$event] failed." }
+        }
     }
 
     override fun register(subscriber: CacheEvictedSubscriber) {

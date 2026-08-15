@@ -13,11 +13,11 @@
 package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.MissingGuard
-import me.ahoo.cache.MissingGuard.Companion.isMissingGuard
 import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.core.StringRedisTemplate
 import tools.jackson.databind.ObjectMapper
 import java.lang.reflect.Type
+import java.time.Duration
 
 /**
  * ObjectToJsonCodecExecutor .
@@ -27,18 +27,19 @@ import java.lang.reflect.Type
 class ObjectToJsonCodecExecutor<V>(
     private val valueType: Type,
     override val redisTemplate: StringRedisTemplate,
-    private val objectMapper: ObjectMapper
-) : AbstractCodecExecutor<V, String>() {
+    private val objectMapper: ObjectMapper,
+    missingGuardSentinel: String = MissingGuard.STRING_VALUE,
+) : AbstractCodecExecutor<V, String>(missingGuardSentinel) {
     private val valueJavaType = objectMapper.typeFactory.constructType(valueType)
     override fun CacheValue<V>.toRawValue(): String {
         if (isMissingGuard) {
-            return MissingGuard.STRING_VALUE
+            return missingGuardSentinel
         }
         return objectMapper.writeValueAsString(value)
     }
 
     override fun isMissingGuard(rawValue: String): Boolean {
-        return rawValue.isMissingGuard
+        return rawValue == missingGuardSentinel
     }
 
     override fun getRawValue(key: String): String? {
@@ -54,6 +55,8 @@ class ObjectToJsonCodecExecutor<V>(
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<V>) {
-        redisTemplate.opsForValue().set(key, cacheValue.toRawValue(), cacheValue.expiredDuration)
+        // 与结构型 codec 一致：亚秒边界下钳为 1 秒，避免 Duration.ZERO 触发 SET EX 0 报错
+        val ttl = maxOf(cacheValue.expiredDuration, Duration.ofSeconds(1))
+        redisTemplate.opsForValue().set(key, cacheValue.toRawValue(), ttl)
     }
 }

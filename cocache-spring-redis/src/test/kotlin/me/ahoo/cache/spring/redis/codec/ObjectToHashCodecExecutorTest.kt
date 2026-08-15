@@ -23,12 +23,16 @@ internal class ObjectToHashCodecExecutorTest :
         return ObjectToHashCodecExecutor(this, stringRedisTemplate)
     }
 
+    override fun createCustomSentinelCodecExecutor(): CodecExecutor<Model> {
+        return ObjectToHashCodecExecutor(this, stringRedisTemplate, CUSTOM_SENTINEL)
+    }
+
     override fun createCacheValue(): Model {
         return Model(UUID.randomUUID().toString())
     }
 
     override fun asValue(map: Map<String, String>): Model {
-        return Model(map["id"]!!)
+        return Model(map.getValue("id"))
     }
 
     override fun asMap(value: Model): Map<String, String> {

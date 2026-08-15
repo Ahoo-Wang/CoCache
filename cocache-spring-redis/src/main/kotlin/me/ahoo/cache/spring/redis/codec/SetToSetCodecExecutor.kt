@@ -13,7 +13,6 @@
 package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.MissingGuard
-import me.ahoo.cache.MissingGuard.Companion.isMissingGuard
 import me.ahoo.cache.api.CacheValue
 import org.springframework.data.redis.core.StringRedisTemplate
 
@@ -22,10 +21,12 @@ import org.springframework.data.redis.core.StringRedisTemplate
  *
  * @author ahoo wang
  */
-class SetToSetCodecExecutor(override val redisTemplate: StringRedisTemplate) :
-    AbstractCodecExecutor<Set<String>, Set<String>>() {
+class SetToSetCodecExecutor(
+    override val redisTemplate: StringRedisTemplate,
+    missingGuardSentinel: String = MissingGuard.STRING_VALUE,
+) : AbstractCodecExecutor<Set<String>, Set<String>>(missingGuardSentinel) {
 
-    private val missingGuard: Set<String> = setOf(MissingGuard.STRING_VALUE)
+    private val missingGuard: Set<String> = setOf(missingGuardSentinel)
 
     override fun CacheValue<Set<String>>.toRawValue(): Set<String> {
         if (isMissingGuard) {
@@ -35,11 +36,13 @@ class SetToSetCodecExecutor(override val redisTemplate: StringRedisTemplate) :
     }
 
     override fun isMissingGuard(rawValue: Set<String>): Boolean {
-        return rawValue.isMissingGuard
+        return rawValue.size == 1 && rawValue.first() == missingGuardSentinel
     }
 
     override fun getRawValue(key: String): Set<String>? {
-        return redisTemplate.opsForSet().members(key)
+        // absent key 与空 Set 在 Redis 侧不可区分（都返回空 members）；写入路径已把空集合定义为淘汰，
+        // 故空原始集合按 key 不存在处理（返回 null → 负缓存），与 String/JSON codec 契约一致
+        return redisTemplate.opsForSet().members(key)?.takeIf { it.isNotEmpty() }
     }
 
     override fun decode(rawValue: Set<String>): Set<String> {
@@ -47,15 +50,15 @@ class SetToSetCodecExecutor(override val redisTemplate: StringRedisTemplate) :
     }
 
     override fun setForeverValue(key: String, cacheValue: CacheValue<Set<String>>) {
-        setPipelined(key) { encodedKey, connection ->
-            connection.setCommands().sAdd(encodedKey, *serialize(cacheValue.toRawValue()))
-        }
+        executeAtomicSetWrite(key, cacheValue.toRawValue(), ttlSeconds = 0)
     }
 
     override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<Set<String>>) {
-        setPipelined(key) { encodedKey, connection ->
-            connection.setCommands().sAdd(encodedKey, *serialize(cacheValue.toRawValue()))
-            connection.keyCommands().expire(encodedKey, cacheValue.expiredDuration.seconds)
-        }
+        // coerceAtLeast(1)：亚秒边界下剩余 TTL 可能归零，0 会被脚本当作 FOREVER 跳过 EXPIRE——钳为 1 秒
+        executeAtomicSetWrite(
+            key,
+            cacheValue.toRawValue(),
+            ttlSeconds = cacheValue.expiredDuration.seconds.coerceAtLeast(1)
+        )
     }
 }

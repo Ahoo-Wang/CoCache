@@ -12,28 +12,39 @@
  */
 package me.ahoo.cache.spring.redis
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cache.ComputedTtlAt
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.spring.redis.codec.CodecExecutor
 import me.ahoo.cache.util.CacheSecondClock
+import org.springframework.dao.DataAccessException
 import org.springframework.data.redis.core.StringRedisTemplate
 
 /**
  * Redis Distributed Cache.
  *
+ * 默认故障降级：读失败按缓存未命中处理（上层回源），写/evict 失败仅告警。
+ *
+ * @param strictFailure true = 重抛 [DataAccessException]（旧行为）；false（默认）= 降级。
  * @author ahoo wang
  */
 class RedisDistributedCache<V>(
     private val redisTemplate: StringRedisTemplate,
     private val codecExecutor: CodecExecutor<V>,
     override val ttl: Long = CoCache.DEFAULT_TTL,
-    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
+    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE,
+    private val strictFailure: Boolean = false,
 ) : DistributedCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
-        val ttlAt = ttlAt(key) ?: return null
-        return codecExecutor.executeAndDecode(key, ttlAt)
+        return try {
+            val ttlAt = ttlAt(key) ?: return null
+            codecExecutor.executeAndDecode(key, ttlAt)
+        } catch (e: DataAccessException) {
+            handleFailure("getCache", key, e)
+            null
+        }
     }
 
     private fun ttlAt(key: String): Long? {
@@ -49,20 +60,36 @@ class RedisDistributedCache<V>(
     }
 
     override fun setCache(key: String, value: CacheValue<V>) {
-        if (value.isExpired) {
-            evict(key)
-            return
+        try {
+            if (value.isExpired) {
+                evict(key)
+                return
+            }
+            codecExecutor.executeAndEncode(key, value)
+        } catch (e: DataAccessException) {
+            handleFailure("setCache", key, e)
         }
-        codecExecutor.executeAndEncode(key, value)
     }
 
     override fun evict(key: String) {
-        redisTemplate.delete(key)
+        try {
+            redisTemplate.delete(key)
+        } catch (e: DataAccessException) {
+            handleFailure("evict", key, e)
+        }
     }
 
     override fun close() = Unit
 
+    private fun handleFailure(operation: String, key: String, e: DataAccessException) {
+        if (strictFailure) {
+            throw e
+        }
+        log.warn(e) { "Cache operation[$operation] key[$key] failed - degrading (strictFailure=false)." }
+    }
+
     companion object {
+        private val log = KotlinLogging.logger {}
         const val FOREVER = -1L
         const val NOT_EXIST = -2L
     }
