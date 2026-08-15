@@ -13,13 +13,14 @@
 
 - [Introduction](guide/index.md) — Overview, key features, three-tier cache concept
 - [Quick Start](guide/quick-start.md) — Gradle/Maven setup, @EnableCoCache, Redis configuration
-- [Configuration](guide/configuration.md) — @CoCache parameters, @GuavaCache/@CaffeineCache, Spring Boot properties
+- [Configuration](guide/configuration.md) — @CoCache parameters, @GuavaCache/@CaffeineCache, Spring Boot properties, Redis failure degradation & missing-guard sentinel
+- [Changelog](guide/changelog.md) — Release history: v4.3.0 concurrency & reliability highlights, breaking changes, dependency tables
 
 ## Architecture
 
 - [Architecture Overview](architecture/index.md) — Module dependency graph, high-level system design
-- [Cache Layers](architecture/cache-layers.md) — L0/L1/L2 layer details, read/write/evict paths
-- [Coherence & Event Bus](architecture/coherence.md) — CacheEvictedEventBus, Redis Pub/Sub, cross-instance invalidation
+- [Cache Layers](architecture/cache-layers.md) — L0/L1/L2 layer details, read/write/evict paths, failure degradation & self-healing
+- [Coherence & Event Bus](architecture/coherence.md) — CacheEvictedEventBus, Redis Pub/Sub, cross-instance invalidation, close lifecycle
 - [Proxy & Annotations](architecture/proxy.md) — @CoCache proxy creation, EnableCoCacheRegistrar, JDK dynamic proxies
 
 ## API Reference

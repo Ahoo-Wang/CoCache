@@ -13,9 +13,10 @@
 - **Annotation-Driven**: @CoCache, @GuavaCache, @CaffeineCache, @JoinCacheable for declarative configuration
 - **Proxy-Based**: JDK dynamic proxies create cache implementations from annotated interfaces
 - **JoinCache**: Compose multiple cached values into a single JoinValue result
-- **Cache Stampede Prevention**: Per-key fine-grained locking with double-check pattern
+- **Cache Stampede Prevention**: Per-key striped locking (Guava Striped) with double-check pattern
 - **Cache Penetration Prevention**: MissingGuard sentinel values + optional BloomKeyFilter
 - **TTL Jitter**: Randomized TTL within amplitude bounds prevents cache avalanche
+- **Failure Degradation (v4.3.0)**: Redis read failures fall back to source (strict mode via `cocache.redis.strict-failure`); corrupted payloads self-heal; coherent caches close idempotently on shutdown
 
 ## Architecture
 
@@ -37,5 +38,5 @@ Modules:
 ./gradlew :cocache-core:test  # Module-specific tests
 ```
 
-- JDK 17+, Gradle 9.6.1, Kotlin 2.4.0
-- Group: `me.ahoo.cocache`, Version: `4.2.0`
+- JDK 17+, Gradle 9.7.0, Kotlin 2.4.10
+- Group: `me.ahoo.cocache`, Version: `4.3.0`
