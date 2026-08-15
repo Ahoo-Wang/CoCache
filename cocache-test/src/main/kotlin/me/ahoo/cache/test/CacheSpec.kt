@@ -82,8 +82,11 @@ abstract class CacheSpec<K, V> {
         cache[key].assert().isEqualTo(value)
     }
 
+    /**
+     * open：Redis 等经 TTL 重建的实现可覆写为 ±1 秒容差断言（写读跨秒边界漂移），内存实现继承精确断言。
+     */
     @Test
-    fun setWithTtl() {
+    open fun setWithTtl() {
         val (key, value) = createCacheEntry()
         cache[key].assert().isNull()
         val cacheValue = DefaultCacheValue.ttlAt(value, 5)
@@ -93,7 +96,7 @@ abstract class CacheSpec<K, V> {
     }
 
     @Test
-    fun setWithTtlAmplitude() {
+    open fun setWithTtlAmplitude() {
         val (key, value) = createCacheEntry()
         cache[key].assert().isNull()
         val cacheValue = DefaultCacheValue.ttlAt(value, 5, 1)
