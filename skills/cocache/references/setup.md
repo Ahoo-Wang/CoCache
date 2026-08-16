@@ -209,7 +209,7 @@ class UserService(
 
 `RedisDistributedCache` catches only `DataAccessException` (never broader types) and degrades by default:
 
-- **Read failure** → returns `null` (cache miss), so the coherent cache reloads from the `CacheSource`.
+- **Read failure** → logged as WARN, then returns `null` (cache miss), so the coherent cache reloads from the `CacheSource`.
 - **Write/evict failure** → logged as WARN and swallowed.
 
 Set `cocache.redis.strict-failure: true` to rethrow the exception instead of degrading:

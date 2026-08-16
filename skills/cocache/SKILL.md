@@ -1,6 +1,6 @@
 ---
 name: cocache
-description: Use when building or modifying Java/Kotlin applications with CoCache two-level distributed coherent caching. Invoke for @CoCache cache interfaces, @JoinCacheable composition, Redis-backed coherence, Spring Boot integration, cache proxy behavior, custom cache backends, cache penetration/breakdown protection (missing guards), Redis failure policy (strict-failure, missing-guard sentinel), Redis TTL-drift test failures, or CoCache TCK tests.
+description: Use when building or modifying Java/Kotlin applications with CoCache two-level distributed coherent caching. Invoke for @CoCache cache interfaces, @JoinCacheable composition, Redis-backed coherence, Spring Boot integration, cache proxy behavior, custom cache backends, cache penetration protection (missing guards), cache breakdown protection, Redis failure policy (strict-failure, missing-guard sentinel), Redis TTL-drift test failures, or CoCache TCK tests.
 ---
 
 # CoCache Development Guide
