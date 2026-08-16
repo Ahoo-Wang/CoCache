@@ -234,7 +234,7 @@ cocache:
     missing-guard-sentinel: "__my_missing__"
 ```
 
-The default and a custom sentinel do not recognize each other — a custom value must be switched across the whole cluster at once (old instances would read the new sentinel as a real value during a rolling upgrade), must not be blank, and must never equal any legitimate payload.
+The default and a custom sentinel do not recognize each other — a custom value must be switched across the whole cluster at once (old instances would read the new sentinel as a real value during a rolling upgrade), must not be blank, and must never equal any legitimate payload. The sentinel only governs the bytes written to and recognized from Redis; in-process layers always treat the `"_nil_"` shape as a missing guard regardless of this setting.
 
 ## Without Spring Boot
 
