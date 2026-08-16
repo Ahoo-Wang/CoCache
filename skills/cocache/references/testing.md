@@ -9,6 +9,7 @@
 - [Testing CacheEvictedEventBus](#testing-cacheevictedeventbus)
 - [Testing Cross-Instance Coherence](#testing-cross-instance-coherence)
 - [Testing with Redis (Integration Tests)](#testing-with-redis-integration-tests)
+- [Redis-Style TTL Drift](#redis-style-ttl-drift)
 - [Assertion Style](#assertion-style)
 - [Writing Custom Test Cases](#writing-custom-test-cases)
 - [Test Dependencies](#test-dependencies)
@@ -25,6 +26,8 @@ CoCache provides abstract test specs in `cocache-test` that verify cache contrac
 | `DefaultCoherentCacheSpec<K,V>` | all of CacheSpec + cache source, event bus, concurrency | Two-level cache implementations |
 | `MultipleInstanceSyncSpec<K,V>` | cross-instance coherence | Event bus implementations |
 | `CacheEvictedEventBusSpec` | publish, register, unregister | Event bus implementations |
+
+All specs live in package `me.ahoo.cache.test`, except `CacheEvictedEventBusSpec` which is in `me.ahoo.cache.test.consistency`.
 
 ## Testing a ClientSideCache Implementation
 
@@ -118,7 +121,7 @@ This tests:
 ```kotlin
 import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
-import me.ahoo.cache.test.CacheEvictedEventBusSpec
+import me.ahoo.cache.test.consistency.CacheEvictedEventBusSpec
 
 class MyEventBusTest : CacheEvictedEventBusSpec() {
 
@@ -214,6 +217,27 @@ class RedisDistributedCacheTest : DistributedCacheSpec<String>() {
     }
 }
 ```
+
+## Redis-Style TTL Drift
+
+Caches that reconstruct `ttlAt` from the store's remaining expiry (e.g. `RedisDistributedCache` reads Redis `getExpire`) can drift by ±1 second when the write and the read land on different sides of a second boundary. `CacheSpec.setWithTtl` and `CacheSpec.setWithTtlAmplitude` are `open` for exactly this reason — override them to relax the exact `ttlAt` equality into a tolerance assertion. In-memory implementations inherit the exact assertions unchanged.
+
+```kotlin
+@Test
+override fun setWithTtl() {
+    val (key, value) = createCacheEntry()
+    cache[key].assert().isNull()
+    val cacheValue = DefaultCacheValue.ttlAt(value, 5)
+    cache.setCache(key, cacheValue)
+    cache[key].assert().isEqualTo(value)
+    cache.getTtlAt(key).assert().isCloseTo(cacheValue.ttlAt, Offset.offset(1))
+}
+```
+
+Two details matter here:
+
+- The `@Test` annotation must be repeated on the override — JUnit 5 does not inherit it from the overridden spec method.
+- `Offset` comes from `org.assertj.core.data.Offset`. Passing it as an assertion argument is the one allowed AssertJ import; `assertThat()` itself stays banned.
 
 ## Assertion Style
 

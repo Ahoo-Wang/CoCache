@@ -40,7 +40,7 @@ get(key)
 1. `evict(key)`: Gets primary value, extracts join key, evicts both caches
 2. `evict(firstKey, joinKey)`: Directly evicts both by their respective keys
 
-**TTL:** The composed `JoinValue` uses `min(firstTtl, secondTtl)`.
+**TTL:** The composed `JoinValue` expires at the earlier of the two entries' absolute deadlines (`min(firstTtlAt, secondTtlAt)`). If the secondary value is missing or already expired, the primary entry's deadline is used.
 
 ## Creating a JoinCache
 

@@ -6,6 +6,7 @@
 - [Module Selection](#module-selection)
 - [Minimal Configuration](#minimal-configuration)
 - [Step-by-Step Setup](#step-by-step-setup)
+- [Redis Failure Behavior](#redis-failure-behavior)
 - [Without Spring Boot](#without-spring-boot)
 - [Single-Instance Setup (No Redis)](#single-instance-setup-no-redis)
 - [Spring Cache Bridge](#spring-cache-bridge)
@@ -119,10 +120,10 @@ That's it. CoCache auto-configures:
 ```kotlin
 // build.gradle.kts
 plugins {
-    id("org.springframework.boot") version "4.0.5"
+    id("org.springframework.boot") version "4.1.0"
     id("io.spring.dependency-management") version "1.1.7"
-    kotlin("jvm") version "2.3.20"
-    kotlin("plugin.spring") version "2.3.20"
+    kotlin("jvm") version "2.4.10"
+    kotlin("plugin.spring") version "2.4.10"
 }
 
 dependencies {
@@ -203,6 +204,37 @@ class UserService(
     }
 }
 ```
+
+## Redis Failure Behavior
+
+`RedisDistributedCache` catches only `DataAccessException` (never broader types) and degrades by default:
+
+- **Read failure** → returns `null` (cache miss), so the coherent cache reloads from the `CacheSource`.
+- **Write/evict failure** → logged as WARN and swallowed.
+
+Set `cocache.redis.strict-failure: true` to rethrow the exception instead of degrading:
+
+```yaml
+cocache:
+  redis:
+    strict-failure: true
+```
+
+This property reaches only the caches the auto-configuration creates. If you define your own `DistributedCache` bean, you own its failure policy.
+
+Corrupted payloads self-heal: when the codec cannot decode a stored value, CoCache deletes the key and treats the read as a miss, so the next `get` reloads from the source instead of failing repeatedly on the same bad bytes.
+
+### Custom Missing-Guard Sentinel
+
+Negative cache entries are stored in Redis under a sentinel value (default `"_nil_"`). If that string can collide with a legitimate serialized payload, override it:
+
+```yaml
+cocache:
+  redis:
+    missing-guard-sentinel: "__my_missing__"
+```
+
+The default and a custom sentinel do not recognize each other — a custom value must be switched across the whole cluster at once (old instances would read the new sentinel as a real value during a rolling upgrade), must not be blank, and must never equal any legitimate payload.
 
 ## Without Spring Boot
 
@@ -301,7 +333,9 @@ When Spring Actuator is on the classpath:
 | `/actuator/cocache/{name}` | GET | Cache stats |
 | `/actuator/cocache/{name}/{key}` | GET | Get a cache entry |
 | `/actuator/cocache/{name}/{key}` | DELETE | Evict a cache entry |
-| `/actuator/cocacheClient` | GET | Client-side cache info |
+| `/actuator/cocacheClient/{name}` | GET | Client-side cache size |
+| `/actuator/cocacheClient/{name}/{key}` | GET | Get a client-side cache entry |
+| `/actuator/cocacheClient/{name}` | DELETE | Clear a client-side cache |
 
 ## Disabling CoCache
 
