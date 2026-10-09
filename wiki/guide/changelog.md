@@ -17,6 +17,7 @@ description: Release history and notable changes for CoCache.
 - **Local writes invalidate in-flight loads** — `evict`/`setCache` on the same instance now discard a concurrent source load's stale write-back (previously only remote events did). L1 → L2 fills are guarded the same way.
 - **Original exceptions from cache proxies** — proxies unwrap `InvocationTargetException`; callers no longer receive `UndeclaredThrowableException`.
 - **Bounded staleness by default** — default `ttl` is 3600 s (was forever); the negative cache has its own `missingTtl` (default 60 s, was the value TTL); default L2 is a bounded Caffeine cache (10 000 entries); every (re)subscription of the eviction channel clears L2 so lost pub/sub messages cannot leave L2 stale.
+- **Read-your-writes** — a `get` after the same thread's `evict`/`setCache` never returns the result of a load that started before that invalidation; it reloads once.
 - **Spring Cache** — `get(key, valueLoader)` loads once per key (`@Cacheable(sync = true)` semantics); `retrieve` runs on a dedicated executor instead of the common ForkJoin pool.
 - **Stateful components are never shared** — `ClientSideCache`, `DistributedCache` and `KeyConverter` beans resolve by name only; previously a bean matched by generic type could be shared by every cache with the same value type.
 - **JoinCache.evict(key) no longer loads** — it evicts only the first cache.
@@ -28,6 +29,19 @@ description: Release history and notable changes for CoCache.
 - Storage tiers are pure stores; TTL policy (`TtlPolicy`) lives in the orchestration layer.
 - `DefaultCoherentCache` coalesces loads per key with `SingleFlight` (no striped-lock collisions) and guards write-backs with `InvalidationStamps`.
 - One `CacheInvocationHandler` serves CoCache and JoinCache proxies.
+
+### Performance
+
+JMH, 4.3.0 vs 5.0.0, same machine and Redis (ops/s):
+
+| Benchmark | 4.3.0 · 1 thread | 5.0.0 · 1 thread | 4.3.0 · 8 threads | 5.0.0 · 8 threads |
+|---|---:|---:|---:|---:|
+| L2 hit | 31.1M | 32.6M | 217.5M | 235.9M |
+| L1 read | 3,188 | 6,144 | 5,438 | 10,758 |
+| Miss + load | 1,487 | 3,082 | 2,467 | 5,173 |
+| Set | 2,779 | 2,804 | 4,714 | 4,694 |
+
+L1 reads and miss-loads are about 2× faster, because one Lua round trip replaces `TTL` + `GET`. L2 hits still scale with threads: plain bounded Caffeine checks expiry on read against the cached `CacheClock`. The benchmark ships as `RedisCacheBenchmark` (`./gradlew :cocache-spring-redis:jmh`).
 
 ### Migration from 4.x
 
@@ -49,10 +63,28 @@ description: Release history and notable changes for CoCache.
 | `JoinCache.evict(key)` evicted both caches | Evicts the first cache only; use `evict(firstKey, joinKey)` for both |
 | A `CacheSource` reading the same key from the same cache re-entered the lock | Fails fast with `IllegalStateException` (it previously over-evicted) |
 
+### Dependencies
+
+| Dependency | Version |
+|------------|---------|
+| Spring Boot | 4.1.1 |
+| CosId | 3.2.1 |
+| Guava | 33.7.2-jre |
+| Kotlin | 2.4.21 |
+| JUnit | 6.1.3 |
+
 ### Gradle Setup
 
 ```kotlin
 implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.0")
+```
+
+```xml
+<dependency>
+  <groupId>me.ahoo.cocache</groupId>
+  <artifactId>cocache-spring-boot-starter</artifactId>
+  <version>5.0.0</version>
+</dependency>
 ```
 
 ## v4.3.0
