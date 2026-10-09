@@ -1,0 +1,66 @@
+name: "🐛 Bug Report"
+description: Something isn't working as expected
+labels: [ "bug" ]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please search [existing issues](https://github.com/Ahoo-Wang/CoCache/issues?q=is%3Aissue) first.
+        Issues that cannot be reproduced and get no follow-up may be closed.
+  - type: input
+    id: version
+    attributes:
+      label: CoCache version
+      placeholder: "5.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: Affected module
+      multiple: true
+      options:
+        - cocache-api
+        - cocache-core
+        - cocache-spring
+        - cocache-spring-redis
+        - cocache-spring-cache
+        - cocache-spring-boot-starter
+        - cocache-test
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: JDK, Spring Boot, Redis versions and topology (standalone / sentinel / cluster)
+      placeholder: "JDK 21, Spring Boot 4.1.1, Redis 7.4 standalone"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include stack traces and relevant logs.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: A minimal reproduction (code snippet or repository link) helps most.
+    validations:
+      required: true
+  - type: textarea
+    id: analysis
+    attributes:
+      label: Root-cause analysis (optional)

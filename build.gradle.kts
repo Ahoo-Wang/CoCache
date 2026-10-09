@@ -11,8 +11,10 @@
  * limitations under the License.
  */
 
+import io.gitlab.arturbosch.detekt.Detekt
 import io.gitlab.arturbosch.detekt.DetektPlugin
 import io.gitlab.arturbosch.detekt.extensions.DetektExtension
+import io.gitlab.arturbosch.detekt.report.ReportMergeTask
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.jetbrains.dokka.gradle.DokkaPlugin
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
@@ -46,6 +48,12 @@ val libraryProjects = publishProjects - bomProjects
 
 ext.set("libraryProjects", libraryProjects)
 
+// 汇总所有模块的 Detekt SARIF，供 GitHub code scanning 上传
+val detektReportMerge by tasks.registering(ReportMergeTask::class) {
+    output.set(rootProject.layout.buildDirectory.file("reports/detekt/merge.sarif"))
+    input.from(allprojects.map { p -> p.tasks.withType<Detekt>().map { it.sarifReportFile } })
+}
+
 allprojects {
     repositories {
         mavenLocal()
@@ -56,6 +64,11 @@ allprojects {
         config.setFrom(files("${rootProject.rootDir}/config/detekt/detekt.yml"))
         buildUponDefaultConfig = true
         autoCorrect = true
+        basePath = rootDir.absolutePath
+    }
+    tasks.withType<Detekt>().configureEach {
+        reports.sarif.required.set(true)
+        finalizedBy(detektReportMerge)
     }
     dependencies {
         detektPlugins(dependenciesProject)
@@ -213,6 +226,28 @@ nexusPublishing {
             password.set(System.getenv("SONATYPE_PASSWORD"))
         }
     }
+}
+
+val licenseHeader = "Licensed under the Apache License, Version 2.0"
+val licensedSources = files(
+    subprojects.map { sub -> fileTree(sub.projectDir) { include("src/**/*.kt", "src/**/*.java", "*.gradle.kts") } },
+    "build.gradle.kts",
+    "settings.gradle.kts",
+)
+val checkLicenseHeader by tasks.registering {
+    group = "verification"
+    description = "Verifies every Kotlin/Java source and build script carries the Apache-2.0 license header."
+    val rootPath = rootDir.toPath()
+    inputs.files(licensedSources)
+    doLast {
+        val missing = licensedSources.files.filterNot { it.readText().contains(licenseHeader) }
+        check(missing.isEmpty()) {
+            "Missing Apache-2.0 license header:\n" + missing.joinToString("\n") { rootPath.relativize(it.toPath()).toString() }
+        }
+    }
+}
+tasks.check {
+    dependsOn(checkLicenseHeader)
 }
 
 fun getPropertyOf(name: String) = project.properties[name]?.toString()
