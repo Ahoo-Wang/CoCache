@@ -7113,7 +7113,7 @@ graph LR
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `ci.yml` | Push to `main`, pull request | **Static Analysis**: actionlint, Detekt on every module (merged SARIF uploaded to GitHub code scanning), `checkLicenseHeader`. **Test & Coverage**: `./gradlew check` against a `redis:7-alpine` service (all tests, Dokka, JMH compile, JaCoCo gate ≥ 90% lines / ≥ 80% branches), then Codecov upload. Test reports are uploaded as an artifact on failure. Superseded PR runs are cancelled. |
+| `ci.yml` | Push to `main`, pull request | **Static Analysis**: actionlint, Detekt on every module (merged SARIF uploaded to GitHub code scanning), `checkLicenseHeader`. **Test & Coverage**: `./gradlew check` against a `redis:7-alpine` service (all tests, Dokka, JMH compile, JaCoCo gate ≥ 90% lines / ≥ 80% branches), then Codecov upload. **Test (JDK 25)**: the same tests on the latest LTS runtime (`-PtestJavaVersion=25`; artifacts still compile for JDK 17). Test reports are uploaded as an artifact on failure. Superseded PR runs are cancelled. |
 | `labeler.yml` | Pull request (`pull_request_target`, no checkout) | Labels PRs by module, changed paths and branch prefix; labels drive release-note categories (`.github/release.yml`). |
 | `deploy-wiki.yml` | `wiki/**` changes | Builds the VitePress site on PRs; builds and deploys to GitHub Pages on `main`. |
 | `package-deploy.yml` | Release **published** | Re-runs `clean check`, then publishes signed artifacts to GitHub Packages and Maven Central. One run per tag, never cancelled. |

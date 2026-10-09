@@ -326,7 +326,7 @@ graph LR
 
 | 工作流 | 触发 | 内容 |
 |--------|------|------|
-| `ci.yml` | push 到 `main`、Pull Request | **Static Analysis**：actionlint、全模块 Detekt（合并后的 SARIF 上传到 GitHub code scanning）、`checkLicenseHeader`。**Test & Coverage**：在 `redis:7-alpine` 服务下运行 `./gradlew check`（全部测试、Dokka、JMH 编译、JaCoCo 门禁：行 ≥ 90%、分支 ≥ 80%），并上传 Codecov。失败时上传测试报告。被新提交取代的 PR 运行会被取消。 |
+| `ci.yml` | push 到 `main`、Pull Request | **Static Analysis**：actionlint、全模块 Detekt（合并后的 SARIF 上传到 GitHub code scanning）、`checkLicenseHeader`。**Test & Coverage**：在 `redis:7-alpine` 服务下运行 `./gradlew check`（全部测试、Dokka、JMH 编译、JaCoCo 门禁：行 ≥ 90%、分支 ≥ 80%），并上传 Codecov。**Test (JDK 25)**：在最新 LTS 运行时上运行同一套测试（`-PtestJavaVersion=25`；产物仍按 JDK 17 编译）。失败时上传测试报告。被新提交取代的 PR 运行会被取消。 |
 | `labeler.yml` | Pull Request（`pull_request_target`，不检出代码） | 按模块、变更路径和分支前缀为 PR 打标签；标签决定发布说明分类（`.github/release.yml`）。 |
 | `deploy-wiki.yml` | `wiki/**` 变更 | PR 中构建 VitePress 站点；`main` 上构建并部署到 GitHub Pages。 |
 | `package-deploy.yml` | Release **published** | 重新运行 `clean check`，然后把签名构件发布到 GitHub Packages 与 Maven Central。每个 tag 只运行一次，不会被取消。 |

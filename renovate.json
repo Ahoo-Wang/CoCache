@@ -11,13 +11,19 @@
   "packageRules": [
     {
       "description": "Group Spring ecosystem updates into a single PR",
-      "matchPackagePatterns": ["^org\\.springframework"],
+      "matchPackageNames": ["/^org\\.springframework/"],
       "groupName": "spring"
     },
     {
       "description": "Group Kotlin-related updates into a single PR",
-      "matchPackagePatterns": ["^org\\.jetbrains\\.kotlin"],
+      "matchPackageNames": ["/^org\\.jetbrains\\.kotlin/"],
       "groupName": "kotlin"
+    },
+    {
+      "description": "JDK versions in workflows are deliberate: 17 is the bytecode baseline, 25 the latest-LTS test runtime",
+      "matchDatasources": ["java-version"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
     }
   ]
 }
