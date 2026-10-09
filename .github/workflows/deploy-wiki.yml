@@ -62,6 +62,11 @@ jobs:
         run: pnpm build
         working-directory: wiki
 
+      # Mermaid 在浏览器端渲染，构建成功不代表图表语法正确
+      - name: Validate Mermaid diagrams
+        run: pnpm check:mermaid
+        working-directory: wiki
+
       - name: Upload Pages artifact
         if: ${{ github.event_name != 'pull_request' }}
         uses: actions/upload-pages-artifact@v5

@@ -121,7 +121,7 @@ autonumber
         else L1 miss
             SF->>Src: load (null → MissingValue(missingTtl))
             SF->>L1: write if stamp unchanged
-            SF->>L2: write; undo if stamp changed meanwhile
+            SF->>L2: write — undo if stamp changed meanwhile
         end
         SF-->>App: value
     end
@@ -305,7 +305,7 @@ autonumber
         SF->>Src: loadCacheValue(key)
         Src-->>SF: value | null → MissingValue(missingTtl)
         SF->>L1: write iff stamp unchanged
-        SF->>C: write L2; if stamp changed → undo L1+L2, publish
+        SF->>C: write L2 — if stamp changed → undo L1+L2, publish
     end
     SF-->>App: value (followers share it)
 ```
@@ -2897,7 +2897,7 @@ autonumber
     R-->>B: message
     B->>B: onEvicted: ignore if publisherId == own clientId
     B->>B: invalidate stamp, evict L2
-    Note over R,B: connection lost; events in this window are dropped
+    Note over R,B: connection lost — events in this window are dropped
     R-->>B: re-SUBSCRIBE confirmed
     B->>B: onReset: invalidate all stamps, clear L2
 ```

@@ -20,6 +20,9 @@ export default {
         const isDark = document.documentElement.classList.contains('dark')
         createMermaidRenderer({
           theme: isDark ? 'dark' : 'default',
+          // mermaid 12 默认改用新布局与外观；固定经典布局与外观，保持现有图表的排版与配色
+          layout: 'dagre',
+          look: 'classic',
           startOnLoad: true,
           flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
           sequence: { useMaxWidth: true, diagramMarginX: 50, diagramMarginY: 10 },

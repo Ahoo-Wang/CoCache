@@ -116,7 +116,7 @@ autonumber
         else L1 miss
             SF->>Src: load (null → MissingValue(missingTtl))
             SF->>L1: write if stamp unchanged
-            SF->>L2: write; undo if stamp changed meanwhile
+            SF->>L2: write — undo if stamp changed meanwhile
         end
         SF-->>App: value
     end

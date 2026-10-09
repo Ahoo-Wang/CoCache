@@ -86,7 +86,7 @@ autonumber
         SF->>Src: loadCacheValue(key)
         Src-->>SF: value | null → MissingValue(missingTtl)
         SF->>L1: write iff stamp unchanged
-        SF->>C: write L2; if stamp changed → undo L1+L2, publish
+        SF->>C: write L2 — if stamp changed → undo L1+L2, publish
     end
     SF-->>App: value (followers share it)
 ```

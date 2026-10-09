@@ -19,6 +19,9 @@ pnpm preview
 
 # Fix Mermaid syntax issues
 pnpm fix:mermaid
+
+# Validate every Mermaid diagram with the real parser (headless Chrome; CI runs this)
+pnpm check:mermaid
 ```
 
 ## Project Structure
@@ -34,7 +37,8 @@ wiki/
 │   │   ├── index.ts       # Custom theme entry (Mermaid renderer, page-view tracking)
 │   │   └── custom.css     # Dark theme styles, Mermaid styling
 ├── scripts/
-│   └── fix-mermaid.mjs    # Mermaid syntax validator & fixer
+│   ├── fix-mermaid.mjs    # Mermaid syntax validator & fixer
+│   └── check-mermaid.mjs  # Parses every diagram with mermaid in headless Chrome
 ├── public/
 │   └── logo.svg           # Site logo
 ├── index.md               # English homepage (VitePress home layout)
@@ -75,7 +79,8 @@ wiki/
 ## Boundaries
 
 - ✅ DO: Add new pages following the existing structure and conventions
-- ✅ DO: Run `pnpm fix:mermaid` before committing
+- ✅ DO: Run `pnpm fix:mermaid` and `pnpm check:mermaid` before committing
+- 🚫 DON'T: Put `;` in sequence-diagram message or note text — Mermaid treats it as a statement separator
 - ✅ DO: Keep English and Chinese versions in sync
 - 🚫 DON'T: Delete generated pages without updating the sidebar config
 - 🚫 DON'T: Modify theme CSS without testing dark mode rendering
