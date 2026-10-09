@@ -14,6 +14,7 @@
 # 主干与 PR 的唯一质量门禁：
 # - Static Analysis：actionlint + Detekt（全模块，SARIF 上传 code scanning）+ 许可证头检查
 # - Test & Coverage：真实 Redis 下运行全部模块的 check（测试、dokka、JMH 编译、覆盖率门禁），并上传 Codecov
+# - Test (JDK 25)：产物仍按 JDK 17 编译，测试运行在最新 LTS 上，验证运行时兼容性
 name: CI
 on:
   push:
@@ -110,3 +111,45 @@ jobs:
           files: ./code-coverage-report/build/reports/jacoco/codeCoverageReport/codeCoverageReport.xml
           flags: unittests
           fail_ci_if_error: true
+
+  test-latest-jdk:
+    name: Test (JDK 25)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17 (toolchain) and JDK 25 (test runtime)
+        uses: actions/setup-java@v6
+        with:
+          java-version: |
+            25
+            17
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Test on JDK 25
+        run: >-
+          ./gradlew test --continue
+          -PtestJavaVersion=25
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64,JAVA_HOME_25_X64
+          -Porg.gradle.java.installations.auto-download=false
+
+      - name: Upload test reports
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-jdk25
+          path: '**/build/reports/tests/'
+          retention-days: 7
