@@ -13,36 +13,27 @@
 package me.ahoo.cache.converter
 
 import me.ahoo.test.asserts.assert
-import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 
-/**
- * ExpKeyConverterTest .
- *
- * @author ahoo wang
- */
 internal class ExpKeyConverterTest {
     @Test
     fun toStringKey() {
-        val prefix = "prefix:"
-        val expKeyConverter = ExpKeyConverter<String>(prefix, "#{#root}")
-        Assertions.assertEquals(prefix, expKeyConverter.keyPrefix)
-        val actual = expKeyConverter.toStringKey("asString")
-        Assertions.assertEquals(prefix + "asString", actual)
+        val expKeyConverter = ExpKeyConverter<String>("prefix:", "#{#root}")
+        expKeyConverter.toStringKey("asString").assert().isEqualTo("prefix:asString")
     }
 
     @Test
     fun toStringKeyIfObject() {
-        val prefix = "prefix:"
-        val expKeyConverter = ExpKeyConverter<BrandNameIndexKey>(prefix, "#{tenantId}:#{name}")
-        Assertions.assertEquals(prefix, expKeyConverter.keyPrefix)
-        val brandNameIndexKey = BrandNameIndexKey("tenantId", "name")
-        val actual = expKeyConverter.toStringKey(brandNameIndexKey)
-        Assertions.assertEquals(prefix + "tenantId:name", actual)
+        val expKeyConverter = ExpKeyConverter<BrandNameIndexKey>("prefix:", "#{tenantId}:#{name}")
+        repeat(3) {
+            expKeyConverter.toStringKey(
+                BrandNameIndexKey("tenantId", "name")
+            ).assert().isEqualTo("prefix:tenantId:name")
+        }
     }
 
     @Test
-    fun toStringKeyIfObjectWithoutPrefix() {
+    fun toStringWithoutPrefix() {
         val expKeyConverter = ExpKeyConverter<BrandNameIndexKey>("", "#{tenantId}:#{name}")
         expKeyConverter.toString().assert().isEqualTo("ExpKeyConverter(keyPrefix='', expression=#{tenantId}:#{name})")
     }

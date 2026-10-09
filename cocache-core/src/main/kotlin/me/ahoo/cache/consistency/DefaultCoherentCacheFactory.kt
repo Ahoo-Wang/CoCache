@@ -13,13 +13,15 @@
 
 package me.ahoo.cache.consistency
 
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
+
+/**
+ * 创建 [DefaultCoherentCache] 并注册到失效事件通道。
+ */
 class DefaultCoherentCacheFactory(private val cacheEvictedEventBus: CacheEvictedEventBus) : CoherentCacheFactory {
-    override fun <K, V> create(cacheConfig: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
-        val coherentCache = DefaultCoherentCache(
-            config = cacheConfig,
-            cacheEvictedEventBus = cacheEvictedEventBus
-        )
-        cacheEvictedEventBus.register(coherentCache)
-        return coherentCache
+    override fun <K, V> create(configuration: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
+        return DefaultCoherentCache(configuration, cacheEvictedEventBus).also {
+            cacheEvictedEventBus.register(it)
+        }
     }
 }

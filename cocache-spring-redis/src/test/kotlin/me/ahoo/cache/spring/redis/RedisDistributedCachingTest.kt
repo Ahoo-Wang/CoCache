@@ -10,82 +10,56 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.spring.redis
 
-import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.TtlAt
+import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor
 import me.ahoo.cache.test.DistributedCacheSpec
 import me.ahoo.test.asserts.assert
 import org.assertj.core.data.Offset
 import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.springframework.data.redis.connection.RedisStandaloneConfiguration
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
-import org.springframework.data.redis.core.StringRedisTemplate
 import java.util.*
 
-/**
- * RedisDistributedCachingTest .
- *
- * @author ahoo wang
- */
 internal class RedisDistributedCachingTest : DistributedCacheSpec<String>() {
-    lateinit var stringRedisTemplate: StringRedisTemplate
-    lateinit var codecExecutor: StringToStringCodecExecutor
-    lateinit var lettuceConnectionFactory: LettuceConnectionFactory
+    private val redis = RedisTestSupport()
 
-    override fun createCache(): DistributedCache<String> {
-        return RedisDistributedCache(
-            stringRedisTemplate,
-            codecExecutor,
-        )
+    override fun createCacheStore(): DistributedCache<String> {
+        return RedisDistributedCache(redis.redisTemplate, StringToStringCodecExecutor(redis.redisTemplate))
     }
 
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()
     }
 
-    @BeforeEach
-    override fun setup() {
-        val redisStandaloneConfiguration = RedisStandaloneConfiguration()
-        lettuceConnectionFactory = LettuceConnectionFactory(redisStandaloneConfiguration)
-        lettuceConnectionFactory.afterPropertiesSet()
-        stringRedisTemplate = StringRedisTemplate(lettuceConnectionFactory)
-        stringRedisTemplate.afterPropertiesSet()
-        codecExecutor = StringToStringCodecExecutor(stringRedisTemplate)
-        super.setup()
-    }
-
     @AfterEach
     fun destroy() {
-        if (null != lettuceConnectionFactory) {
-            lettuceConnectionFactory.destroy()
-        }
+        redis.close()
     }
 
     /**
-     * Redis 实现的 ttlAt 经 getExpire 重建，写读跨越秒边界时会有 ±1 秒漂移——
-     * 覆盖 TCK 的精确相等断言为容差断言（与 CodecExecutorSpec 的既有做法一致）。
+     * ttlAt 经 Redis 剩余 TTL 重建，写读跨越秒边界时有 ±1 秒漂移。
      */
     @Test
-    override fun setWithTtl() {
+    override fun setWithTtlAt() {
         val (key, value) = createCacheEntry()
-        cache[key].assert().isNull()
-        val cacheValue = DefaultCacheValue.ttlAt(value, 5)
-        cache.setCache(key, cacheValue)
-        cache[key].assert().isEqualTo(value)
-        cache.getTtlAt(key).assert().isCloseTo(cacheValue.ttlAt, Offset.offset(1))
+        val cacheValue = CacheValue.of(value, TtlAt.at(10))
+        cacheStore.setCache(key, cacheValue)
+        val actual = requireNotNull(cacheStore.getCache(key))
+        actual.value.assert().isEqualTo(value)
+        actual.ttlAt.assert().isCloseTo(cacheValue.ttlAt, Offset.offset(1))
     }
 
     @Test
-    override fun setWithTtlAmplitude() {
-        val (key, value) = createCacheEntry()
-        cache[key].assert().isNull()
-        val cacheValue = DefaultCacheValue.ttlAt(value, 5, 1)
-        cache.setCache(key, cacheValue)
-        cache[key].assert().isEqualTo(value)
-        cache.getTtlAt(key).assert().isCloseTo(cacheValue.ttlAt, Offset.offset(1))
+    override fun setMissingWithTtlAt() {
+        val (key, _) = createCacheEntry()
+        val missing = CacheValue.missing<String>(TtlAt.at(10))
+        cacheStore.setCache(key, missing)
+        val actual = requireNotNull(cacheStore.getCache(key))
+        actual.isMissing.assert().isTrue()
+        actual.ttlAt.assert().isCloseTo(missing.ttlAt, Offset.offset(1))
     }
 }

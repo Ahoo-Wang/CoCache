@@ -13,24 +13,33 @@
 
 package me.ahoo.cache.api.annotation
 
-import me.ahoo.cache.api.annotation.GuavaCache.Companion.UNSET_INT
-import me.ahoo.cache.api.annotation.GuavaCache.Companion.UNSET_LONG
 import java.lang.annotation.Inherited
 import java.util.concurrent.TimeUnit
 
 /**
- * 配置 GuavaCache 作为客户端缓存。
+ * 配置 L2（Caffeine）客户端缓存。未标注时使用全部默认值。
+ *
+ * 条目按各自的 [me.ahoo.cache.api.CacheValue.ttlAt] 主动到期，无需配置写后过期。
  *
  * @see me.ahoo.cache.api.client.ClientSideCache
  */
 @Target(AnnotationTarget.CLASS, AnnotationTarget.ANNOTATION_CLASS)
 @Inherited
 @MustBeDocumented
-@Suppress("LongParameterList")
 annotation class CaffeineCache(
-    val initialCapacity: Int = UNSET_INT,
-    val maximumSize: Long = UNSET_LONG,
+    val initialCapacity: Int = UNSET,
+    /**
+     * 最大条目数。L2 必须有界，防止内存无限增长。
+     */
+    val maximumSize: Long = DEFAULT_MAXIMUM_SIZE,
+    /**
+     * 空闲淘汰时长（自最近一次访问起），`<= 0` 表示不启用。
+     */
+    val expireAfterAccess: Long = 0,
     val expireUnit: TimeUnit = TimeUnit.SECONDS,
-    val expireAfterWrite: Long = UNSET_LONG,
-    val expireAfterAccess: Long = UNSET_LONG
-)
+) {
+    companion object {
+        const val UNSET: Int = -1
+        const val DEFAULT_MAXIMUM_SIZE: Long = 10_000
+    }
+}

@@ -13,8 +13,13 @@
 
 package me.ahoo.cache.api.join
 
-interface JoinValue<V1, K2, V2> {
-    val firstValue: V1
-    val joinKey: K2
+/**
+ * JoinCache 的组合结果：主值、关联 key 与关联值（关联缓存未命中时为 `null`）。
+ *
+ * @author ahoo wang
+ */
+data class JoinValue<V1, K2, V2>(
+    val firstValue: V1,
+    val joinKey: K2,
     val secondValue: V2?
-}
+)

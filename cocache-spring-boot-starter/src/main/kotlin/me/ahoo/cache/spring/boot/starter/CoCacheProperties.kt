@@ -12,8 +12,8 @@
  */
 package me.ahoo.cache.spring.boot.starter
 
-import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.spring.redis.codec.AbstractCodecExecutor
 import org.springframework.boot.context.properties.ConfigurationProperties
 
 /**
@@ -32,10 +32,10 @@ data class CoCacheProperties(
          */
         val strictFailure: Boolean = false,
         /**
-         * 自定义 missing-guard 哨兵值。约束见 [me.ahoo.cache.spring.redis.codec.AbstractCodecExecutor]：
+         * 自定义 missing-guard 哨兵值。约束见 [AbstractCodecExecutor]：
          * 自定义值与默认值互不识别，需全集群同时切换，且不得与任何合法业务序列化值相等。
          */
-        val missingGuardSentinel: String = MissingGuard.STRING_VALUE,
+        val missingGuardSentinel: String = AbstractCodecExecutor.DEFAULT_MISSING_GUARD_SENTINEL,
     ) {
         init {
             require(missingGuardSentinel.isNotBlank()) { "cocache.redis.missing-guard-sentinel must not be blank." }

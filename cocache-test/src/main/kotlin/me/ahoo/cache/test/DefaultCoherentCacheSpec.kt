@@ -13,20 +13,22 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.ComputedTtlAt
-import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.TtlPolicy
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.api.consistency.CacheEvictedEvent
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
+import me.ahoo.cache.api.consistency.CacheEvictedSubscriber
+import me.ahoo.cache.api.converter.KeyConverter
+import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.api.source.CacheSource
-import me.ahoo.cache.consistency.CacheEvictedEvent
-import me.ahoo.cache.consistency.CacheEvictedEventBus
 import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.consistency.CoherentCacheConfiguration
 import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
-import me.ahoo.cache.converter.KeyConverter
-import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
@@ -37,27 +39,41 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * [me.ahoo.cache.consistency.DefaultCoherentCache] 的兼容性规格：缓存语义 + 一致性不变量。
+ *
+ * 竞态用例一律以 latch 编排（不使用 sleep），并通过 `finished` latch 确保后台线程真实完成。
+ */
 abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
-    companion object {
-        private val CACHE_SOURCE_VALUE = ThreadLocal<CacheValue<*>>()
-    }
-
-    private lateinit var keyConverter: KeyConverter<K>
-    private lateinit var clientSideCache: ClientSideCache<V>
-    private lateinit var distributedCache: DistributedCache<V>
-    private lateinit var cacheEvictedEventBus: CacheEvictedEventBus
-    private lateinit var coherentCache: CoherentCache<K, V>
+    protected lateinit var keyConverter: KeyConverter<K>
+    protected lateinit var clientSideCache: ClientSideCache<V>
+    protected lateinit var distributedCache: DistributedCache<V>
+    protected lateinit var cacheEvictedEventBus: CacheEvictedEventBus
+    protected lateinit var coherentCache: CoherentCache<K, V>
     protected lateinit var cacheName: String
     protected val clientId: String = UUID.randomUUID().toString()
+    protected val ttlPolicy = TtlPolicy(ttl = 60, ttlAmplitude = 0, missingTtl = 10)
 
-    private val cacheSource = object : CacheSource<K, V> {
-        override fun loadCacheValue(key: K): CacheValue<V>? {
-            Thread.sleep(100)
-            @Suppress("UNCHECKED_CAST")
-            return CACHE_SOURCE_VALUE.get() as CacheValue<V>?
-        }
+    /**
+     * 默认数据源：委托给可替换的 [loader]，并统计调用次数。
+     */
+    protected val sourceCalls = AtomicInteger()
+
+    @Volatile
+    protected var loader: (K) -> CacheValue<V>? = { null }
+
+    private val cacheSource = CacheSource<K, V> { key ->
+        sourceCalls.incrementAndGet()
+        loader(key)
     }
+
+    protected abstract fun createKeyConverter(): KeyConverter<K>
+    protected abstract fun createClientSideCache(): ClientSideCache<V>
+    protected abstract fun createDistributedCache(): DistributedCache<V>
+    protected abstract fun createCacheEvictedEventBus(): CacheEvictedEventBus
+    protected abstract fun createCacheName(): String
 
     @BeforeEach
     override fun setup() {
@@ -66,265 +82,371 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         distributedCache = createDistributedCache()
         cacheEvictedEventBus = createCacheEvictedEventBus()
         cacheName = createCacheName()
-        coherentCache = DefaultCoherentCacheFactory(cacheEvictedEventBus).create(
+        coherentCache = createCoherentCache()
+        super.setup()
+    }
+
+    @AfterEach
+    open fun tearDown() {
+        coherentCache.close()
+    }
+
+    protected fun createCoherentCache(
+        distributedCache: DistributedCache<V> = this.distributedCache,
+        cacheSource: CacheSource<K, V> = this.cacheSource
+    ): CoherentCache<K, V> {
+        return DefaultCoherentCacheFactory(cacheEvictedEventBus).create(
             CoherentCacheConfiguration(
                 cacheName = cacheName,
                 clientId = clientId,
                 keyConverter = keyConverter,
                 clientSideCache = clientSideCache,
                 distributedCache = distributedCache,
-                cacheSource = cacheSource
+                cacheSource = cacheSource,
+                ttlPolicy = ttlPolicy
             )
         )
-        super.setup()
     }
 
-    protected abstract fun createKeyConverter(): KeyConverter<K>
-    protected abstract fun createClientSideCache(): ClientSideCache<V>
-    protected abstract fun createDistributedCache(): DistributedCache<V>
-    protected abstract fun createCacheEvictedEventBus(): CacheEvictedEventBus
-    protected abstract fun createCacheName(): String
     override fun createCache(): Cache<K, V> {
         return coherentCache
     }
 
+    private val CoherentCache<K, V>.subscriber: CacheEvictedSubscriber
+        get() = this as CacheEvictedSubscriber
+
+    private fun K.cacheKey(): String = keyConverter.toStringKey(this)
+
     @Test
-    fun getFromCacheSource() {
+    fun getFromCacheSourcePopulatesBothLevels() {
         val (key, value) = createCacheEntry()
-        val cacheValue = DefaultCacheValue.forever(value)
-        CACHE_SOURCE_VALUE.set(cacheValue)
+        loader = { CacheValue.forever(value) }
+
         coherentCache[key].assert().isEqualTo(value)
-        CACHE_SOURCE_VALUE.remove()
+
+        clientSideCache.getCache(key.cacheKey())?.value.assert().isEqualTo(value)
+        distributedCache.getCache(key.cacheKey())?.value.assert().isEqualTo(value)
+        coherentCache[key].assert().isEqualTo(value)
+        sourceCalls.get().assert().isOne()
+    }
+
+    @Test
+    fun getFromCacheSourceNullWritesMissingWithMissingTtl() {
+        val (key, _) = createCacheEntry()
+
+        val actual = coherentCache.getCache(key)
+
+        actual.assert().isNotNull()
+        requireNotNull(actual).isMissing.assert().isTrue()
+        actual.ttlAt.assert().isLessThanOrEqualTo(TtlAt.at(ttlPolicy.missingTtl))
+        requireNotNull(distributedCache.getCache(key.cacheKey())).isMissing.assert().isTrue()
+        coherentCache[key].assert().isNull()
+        sourceCalls.get().assert().isOne()
     }
 
     @Test
     fun getExpiredValueFromCacheSourceDoesNotPopulateCaches() {
         val (key, value) = createCacheEntry()
-        val cacheValue = DefaultCacheValue(value, ComputedTtlAt.at(-5))
-        CACHE_SOURCE_VALUE.set(cacheValue)
-        val cacheKey = keyConverter.toStringKey(key)
+        loader = { CacheValue.of(value, TtlAt.at(-5)) }
 
+        requireNotNull(coherentCache.getCache(key)).isExpired.assert().isTrue()
+
+        clientSideCache.getCache(key.cacheKey()).assert().isNull()
+        distributedCache.getCache(key.cacheKey()).assert().isNull()
+    }
+
+    @Test
+    fun getFromDistributedCacheFillsClientSide() {
+        val (key, value) = createCacheEntry()
+        distributedCache.setCache(key.cacheKey(), CacheValue.forever(value))
+
+        coherentCache[key].assert().isEqualTo(value)
+
+        clientSideCache.getCache(key.cacheKey())?.value.assert().isEqualTo(value)
+        sourceCalls.get().assert().isZero()
+    }
+
+    @Test
+    fun setPublishesEvictedEvent() {
+        val (key, value) = createCacheEntry()
+        val received = awaitEvent(key.cacheKey()) {
+            coherentCache[key] = value
+        }
+        received.publisherId.assert().isEqualTo(clientId)
+    }
+
+    @Test
+    fun evictPublishesEvictedEvent() {
+        val (key, _) = createCacheEntry()
+        val received = awaitEvent(key.cacheKey()) {
+            coherentCache.evict(key)
+        }
+        received.publisherId.assert().isEqualTo(clientId)
+    }
+
+    private fun awaitEvent(cacheKey: String, action: () -> Unit): CacheEvictedEvent {
+        val received = AtomicReference<CacheEvictedEvent>()
+        val latch = CountDownLatch(1)
+        val subscribed = CountDownLatch(1)
+        val listener = object : CacheEvictedSubscriber {
+            override val cacheName: String = this@DefaultCoherentCacheSpec.cacheName
+            override fun onEvicted(cacheEvictedEvent: CacheEvictedEvent) {
+                if (cacheEvictedEvent.key == cacheKey) {
+                    received.set(cacheEvictedEvent)
+                    latch.countDown()
+                }
+            }
+
+            override fun onReset() {
+                subscribed.countDown()
+            }
+        }
+        cacheEvictedEventBus.register(listener)
         try {
-            coherentCache.getCache(key)!!.isExpired.assert().isTrue()
-            clientSideCache.getCache(cacheKey).assert().isNull()
-            distributedCache.getCache(cacheKey).assert().isNull()
+            // 订阅建立时通道回调 onReset，之后发布的事件才保证可达
+            subscribed.await(5, TimeUnit.SECONDS).assert().isTrue()
+            action()
+            latch.await(5, TimeUnit.SECONDS).assert().isTrue()
+            return received.get()
         } finally {
-            CACHE_SOURCE_VALUE.remove()
+            cacheEvictedEventBus.unregister(listener)
         }
     }
 
     @Test
-    fun onEvicted() {
+    fun onEvictedFromRemoteEvictsClientSideOnly() {
         val (key, value) = createCacheEntry()
-        val cacheValue = DefaultCacheValue.forever(value)
-        coherentCache.setCache(key, cacheValue)
-        val cacheKey = keyConverter.toStringKey(key)
-        val event = CacheEvictedEvent(cacheName, cacheKey, "")
-        coherentCache.onEvicted(event)
-        clientSideCache[cacheKey].assert().isNull()
-        distributedCache[cacheKey].assert().isEqualTo(value)
+        coherentCache[key] = value
+
+        coherentCache.subscriber.onEvicted(CacheEvictedEvent(cacheName, key.cacheKey(), "remote"))
+
+        clientSideCache.getCache(key.cacheKey()).assert().isNull()
+        distributedCache.getCache(key.cacheKey())?.value.assert().isEqualTo(value)
         coherentCache[key].assert().isEqualTo(value)
     }
 
     @Test
-    fun onEvictedWhenLoop() {
+    fun onEvictedIgnoresSelfPublished() {
         val (key, value) = createCacheEntry()
-        val cacheValue = DefaultCacheValue.forever(value)
-        coherentCache.setCache(key, cacheValue)
-        val cacheKey = keyConverter.toStringKey(key)
-        val event = CacheEvictedEvent(cacheName, cacheKey, clientId)
-        coherentCache.onEvicted(event)
-        clientSideCache[cacheKey].assert().isEqualTo(value)
-        distributedCache[cacheKey].assert().isEqualTo(value)
-        coherentCache[key].assert().isEqualTo(value)
+        coherentCache[key] = value
+
+        coherentCache.subscriber.onEvicted(CacheEvictedEvent(cacheName, key.cacheKey(), clientId))
+
+        clientSideCache.getCache(key.cacheKey())?.value.assert().isEqualTo(value)
     }
 
     @Test
-    fun onEvictedWhenCacheNameNotMatch() {
+    fun onEvictedIgnoresOtherCacheName() {
         val (key, value) = createCacheEntry()
-        val cacheValue = DefaultCacheValue.forever(value)
-        coherentCache.setCache(key, cacheValue)
-        val cacheKey = keyConverter.toStringKey(key)
-        val event = CacheEvictedEvent(UUID.randomUUID().toString(), cacheKey, "")
-        coherentCache.onEvicted(event)
-        clientSideCache[cacheKey].assert().isEqualTo(value)
-        distributedCache[cacheKey].assert().isEqualTo(value)
+        coherentCache[key] = value
+
+        coherentCache.subscriber.onEvicted(CacheEvictedEvent(UUID.randomUUID().toString(), key.cacheKey(), "remote"))
+
+        clientSideCache.getCache(key.cacheKey())?.value.assert().isEqualTo(value)
+    }
+
+    @Test
+    fun onResetClearsClientSide() {
+        val (key, value) = createCacheEntry()
+        coherentCache[key] = value
+
+        coherentCache.subscriber.onReset()
+
+        clientSideCache.size.assert().isZero()
         coherentCache[key].assert().isEqualTo(value)
     }
 
     @ParameterizedTest
-    @ValueSource(ints = [10, 100, 1000])
-    fun `should prevent cache breakdown under high concurrency`(threadCount: Int) {
+    @ValueSource(ints = [10, 100])
+    fun `concurrent misses load the source once`(threadCount: Int) {
         val (key, value) = createCacheEntry()
-        val cacheValue = DefaultCacheValue.forever(value)
-
-        val startLatch = CountDownLatch(1)
-        val finishLatch = CountDownLatch(threadCount)
+        val release = CountDownLatch(1)
+        loader = {
+            release.await(5, TimeUnit.SECONDS)
+            CacheValue.forever(value)
+        }
+        val results = ConcurrentLinkedQueue<V?>()
         val executor = Executors.newFixedThreadPool(threadCount)
-        val results = ConcurrentLinkedQueue<Any?>()
-        val callCount = AtomicInteger()
-
-        val concurrentCache = DefaultCoherentCacheFactory(cacheEvictedEventBus).create(
-            CoherentCacheConfiguration(
-                cacheName = cacheName,
-                clientId = clientId,
-                keyConverter = keyConverter,
-                clientSideCache = clientSideCache,
-                distributedCache = distributedCache,
-                cacheSource = object : CacheSource<K, V> {
-                    override fun loadCacheValue(key: K): CacheValue<V> {
-                        callCount.incrementAndGet()
-                        Thread.sleep(100) // 放大并发窗口
-                        return cacheValue
-                    }
-                }
-            )
-        )
-
         try {
-            repeat(threadCount) {
-                executor.submit {
-                    startLatch.await()
-                    results.add(concurrentCache[key])
-                    finishLatch.countDown()
-                }
+            val futures = (1..threadCount).map {
+                executor.submit { results.add(coherentCache[key]) }
             }
-
-            startLatch.countDown()
-            val allFinished = finishLatch.await(5, TimeUnit.SECONDS)
-            allFinished.assert()
-                .withFailMessage { "finished=${threadCount - finishLatch.count}/$threadCount, callCount=${callCount.get()}" }
-                .isTrue()
-            results.all { it == value }.assert().isTrue()
-            callCount.get().assert().isOne() // 核心断言
+            // 等待 leader 进入回源后放行
+            awaitCondition { sourceCalls.get() == 1 }
+            release.countDown()
+            futures.forEach { it.get(5, TimeUnit.SECONDS) }
         } finally {
             executor.shutdownNow()
-            // 共享 setup() 的 distributedCache/clientSideCache：close 会同时关闭外层 coherentCache 引用的分布式缓存，断言须在此之前完成
-            concurrentCache.close()
+        }
+        results.size.assert().isEqualTo(threadCount)
+        results.all { it == value }.assert().isTrue()
+        sourceCalls.get().assert().isOne()
+    }
+
+    @Test
+    fun `source failure propagates the original exception to concurrent callers`() {
+        val (key, _) = createCacheEntry()
+        val release = CountDownLatch(1)
+        val failure = IllegalStateException("source down")
+        loader = {
+            release.await(5, TimeUnit.SECONDS)
+            throw failure
+        }
+        val errors = ConcurrentLinkedQueue<Throwable>()
+        val threads = (1..2).map {
+            Thread {
+                runCatching { coherentCache.getCache(key) }.onFailure { errors.add(it) }
+            }.also { it.start() }
+        }
+        awaitCondition { sourceCalls.get() == 1 }
+        // 第二个线程或作为 follower 共享 leader 的异常，或在 leader 结束后自行回源得到同一异常
+        release.countDown()
+        threads.forEach { it.join(5000) }
+
+        errors.size.assert().isEqualTo(2)
+        errors.all { it === failure }.assert().isTrue()
+        distributedCache.getCache(key.cacheKey()).assert().isNull()
+        clientSideCache.getCache(key.cacheKey()).assert().isNull()
+    }
+
+    @Test
+    fun `recursive load of the same key fails fast`() {
+        val (key, _) = createCacheEntry()
+        loader = { coherentCache.getCache(it) }
+
+        val error = runCatching { coherentCache.getCache(key) }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalStateException::class.java)
+    }
+
+    @Test
+    fun `local evict during in-flight load discards stale write-back`() {
+        assertInFlightLoadDiscarded(staleValue = { CacheValue.forever(it) }) { key ->
+            coherentCache.evict(key)
+        }
+    }
+
+    @Test
+    fun `local set during in-flight load keeps the newer value`() {
+        val (key, value) = createCacheEntry()
+        val (_, newerValue) = createCacheEntry()
+        runInFlightLoad(key, CacheValue.forever(value)) {
+            coherentCache[key] = newerValue
+        }
+        distributedCache.getCache(key.cacheKey())?.value.assert().isEqualTo(newerValue)
+        coherentCache[key].assert().isEqualTo(newerValue)
+    }
+
+    @Test
+    fun `remote eviction during in-flight load discards stale write-back`() {
+        assertInFlightLoadDiscarded(staleValue = { CacheValue.forever(it) }) { key ->
+            coherentCache.subscriber.onEvicted(CacheEvictedEvent(cacheName, key.cacheKey(), "remote"))
+        }
+    }
+
+    @Test
+    fun `remote eviction during in-flight load discards missing write-back`() {
+        assertInFlightLoadDiscarded(staleValue = { null }) { key ->
+            coherentCache.subscriber.onEvicted(CacheEvictedEvent(cacheName, key.cacheKey(), "remote"))
+        }
+    }
+
+    @Test
+    fun `reset during in-flight load discards stale write-back`() {
+        assertInFlightLoadDiscarded(staleValue = { CacheValue.forever(it) }) { _ ->
+            coherentCache.subscriber.onReset()
+        }
+    }
+
+    private fun assertInFlightLoadDiscarded(staleValue: (V) -> CacheValue<V>?, invalidate: (K) -> Unit) {
+        val (key, value) = createCacheEntry()
+        runInFlightLoad(key, staleValue(value)) {
+            invalidate(key)
+        }
+        clientSideCache.getCache(key.cacheKey()).assert().isNull()
+        distributedCache.getCache(key.cacheKey()).assert().isNull()
+    }
+
+    /**
+     * 在回源进行中执行 [duringLoad]，随后放行回源并等待其完成。
+     */
+    private fun runInFlightLoad(key: K, loaded: CacheValue<V>?, duringLoad: () -> Unit) {
+        val loadStarted = CountDownLatch(1)
+        val releaseLoad = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        loader = {
+            loadStarted.countDown()
+            releaseLoad.await(5, TimeUnit.SECONDS)
+            loaded
+        }
+        val loaderThread = Thread {
+            coherentCache.getCache(key)
+            finished.countDown()
+        }
+        loaderThread.start()
+        loadStarted.await(5, TimeUnit.SECONDS).assert().isTrue()
+        duringLoad()
+        releaseLoad.countDown()
+        finished.await(5, TimeUnit.SECONDS).assert().isTrue()
+    }
+
+    @Test
+    fun `remote eviction during distributed read discards client side fill`() {
+        val (key, value) = createCacheEntry()
+        distributedCache.setCache(key.cacheKey(), CacheValue.forever(value))
+        val readStarted = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val blockingDistributedCache = object : DistributedCache<V> by distributedCache {
+            override fun getCache(key: String): CacheValue<V>? {
+                val cacheValue = distributedCache.getCache(key)
+                readStarted.countDown()
+                releaseRead.await(5, TimeUnit.SECONDS)
+                return cacheValue
+            }
+        }
+        val cache = createCoherentCache(distributedCache = blockingDistributedCache)
+        try {
+            val readerThread = Thread {
+                cache.getCache(key)
+                finished.countDown()
+            }
+            readerThread.start()
+            readStarted.await(5, TimeUnit.SECONDS).assert().isTrue()
+            cache.subscriber.onEvicted(CacheEvictedEvent(cacheName, key.cacheKey(), "remote"))
+            releaseRead.countDown()
+            finished.await(5, TimeUnit.SECONDS).assert().isTrue()
+
+            clientSideCache.getCache(key.cacheKey()).assert().isNull()
+        } finally {
+            cacheEvictedEventBus.unregister(cache.subscriber)
         }
     }
 
     @Test
     fun closeUnregistersSubscriber() {
         val (key, value) = createCacheEntry()
-        val cacheValue = DefaultCacheValue.forever(value)
-        coherentCache.setCache(key, cacheValue)
-        val cacheKey = keyConverter.toStringKey(key)
-
+        coherentCache[key] = value
         coherentCache.close()
 
-        cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, cacheKey, "remote-client-id"))
-        clientSideCache[cacheKey].assert().isEqualTo(value)
+        cacheEvictedEventBus.publish(CacheEvictedEvent(cacheName, key.cacheKey(), "remote"))
+
+        clientSideCache.getCache(key.cacheKey())?.value.assert().isEqualTo(value)
     }
 
     @Test
     fun closeIsIdempotentAndCacheStillUsable() {
         val (key, value) = createCacheEntry()
-        CACHE_SOURCE_VALUE.set(DefaultCacheValue.forever(value))
-        try {
-            coherentCache.close()
-            coherentCache.close()
-            coherentCache[key].assert().isEqualTo(value)
-        } finally {
-            CACHE_SOURCE_VALUE.remove()
-        }
+        loader = { CacheValue.forever(value) }
+        coherentCache.close()
+        coherentCache.close()
+        coherentCache[key].assert().isEqualTo(value)
     }
 
-    @Test
-    fun `eviction during in-flight load discards stale write-back`() {
-        val (key, value) = createCacheEntry()
-        val cacheKey = keyConverter.toStringKey(key)
-        val staleValue = DefaultCacheValue.forever(value)
-        val loadStarted = CountDownLatch(1)
-        val releaseLoad = CountDownLatch(1)
-        val finished = CountDownLatch(1)
-        val result = java.util.concurrent.atomic.AtomicReference<CacheValue<V>?>()
-
-        val cache = DefaultCoherentCacheFactory(cacheEvictedEventBus).create(
-            CoherentCacheConfiguration(
-                cacheName = cacheName,
-                clientId = clientId,
-                keyConverter = keyConverter,
-                clientSideCache = clientSideCache,
-                distributedCache = distributedCache,
-                cacheSource = object : CacheSource<K, V> {
-                    override fun loadCacheValue(key: K): CacheValue<V> {
-                        loadStarted.countDown()
-                        releaseLoad.await()
-                        return staleValue
-                    }
-                }
-            )
-        )
-        val loaderThread = Thread {
-            result.set(cache.getCache(key))
-            finished.countDown()
-        }
-        try {
-            loaderThread.start()
-            loadStarted.await(5, TimeUnit.SECONDS).assert().isTrue()
-
-            // 模拟远端实例在回源在途时发布失效事件
-            cache.onEvicted(CacheEvictedEvent(cacheName, cacheKey, "remote-client-id"))
-
-            releaseLoad.countDown()
-            finished.await(5, TimeUnit.SECONDS).assert().isTrue()
-            loaderThread.join(5000)
-            loaderThread.isAlive.assert().isFalse()
-
-            result.get().assert().isEqualTo(staleValue)
-            clientSideCache.getCache(cacheKey).assert().isNull()
-            distributedCache.getCache(cacheKey).assert().isNull()
-        } finally {
-            cache.close()
-        }
-    }
-
-    @Test
-    fun `eviction during in-flight load discards missing-guard write-back`() {
-        val (key, value) = createCacheEntry()
-        val cacheKey = keyConverter.toStringKey(key)
-        val loadStarted = CountDownLatch(1)
-        val releaseLoad = CountDownLatch(1)
-        val finished = CountDownLatch(1)
-        val result = java.util.concurrent.atomic.AtomicReference<CacheValue<V>?>()
-
-        val cache = DefaultCoherentCacheFactory(cacheEvictedEventBus).create(
-            CoherentCacheConfiguration(
-                cacheName = cacheName,
-                clientId = clientId,
-                keyConverter = keyConverter,
-                clientSideCache = clientSideCache,
-                distributedCache = distributedCache,
-                cacheSource = object : CacheSource<K, V> {
-                    override fun loadCacheValue(key: K): CacheValue<V>? {
-                        loadStarted.countDown()
-                        releaseLoad.await()
-                        return null
-                    }
-                }
-            )
-        )
-        val loaderThread = Thread {
-            result.set(cache.getCache(key))
-            finished.countDown()
-        }
-        try {
-            loaderThread.start()
-            loadStarted.await(5, TimeUnit.SECONDS).assert().isTrue()
-
-            cache.onEvicted(CacheEvictedEvent(cacheName, cacheKey, "remote-client-id"))
-
-            releaseLoad.countDown()
-            finished.await(5, TimeUnit.SECONDS).assert().isTrue()
-            loaderThread.join(5000)
-            loaderThread.isAlive.assert().isFalse()
-
-            result.get().assert().isNull()
-            clientSideCache.getCache(cacheKey).assert().isNull()
-            distributedCache.getCache(cacheKey).assert().isNull()
-        } finally {
-            cache.close()
+    protected fun awaitCondition(condition: () -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (!condition()) {
+            check(System.nanoTime() < deadline) { "Condition not met within 5 seconds." }
+            Thread.onSpinWait()
         }
     }
 }

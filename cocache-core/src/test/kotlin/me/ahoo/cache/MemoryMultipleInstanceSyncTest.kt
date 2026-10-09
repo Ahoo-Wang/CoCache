@@ -14,13 +14,13 @@
 package me.ahoo.cache
 
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
+import me.ahoo.cache.api.converter.KeyConverter
+import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
-import me.ahoo.cache.converter.KeyConverter
+import me.ahoo.cache.consistency.LocalCacheEvictedEventBus
 import me.ahoo.cache.converter.ToStringKeyConverter
-import me.ahoo.cache.distributed.DistributedCache
-import me.ahoo.cache.distributed.mock.MockDistributedCache
+import me.ahoo.cache.distributed.InMemoryDistributedCache
 import me.ahoo.cache.test.MultipleInstanceSyncSpec
 import java.util.*
 
@@ -29,12 +29,11 @@ class MemoryMultipleInstanceSyncTest : MultipleInstanceSyncSpec<String, String>(
 
     override fun createClientSideCache(): ClientSideCache<String> = MapClientSideCache()
 
-    override fun createDistributedCache(): DistributedCache<String> = MockDistributedCache()
+    override fun createDistributedCache(): DistributedCache<String> = InMemoryDistributedCache()
 
-    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = GuavaCacheEvictedEventBus()
-    override fun createCacheName(): String {
-        return "MemoryMultipleInstanceSyncTest"
-    }
+    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = LocalCacheEvictedEventBus()
+
+    override fun createCacheName(): String = "MemoryMultipleInstanceSyncTest"
 
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()

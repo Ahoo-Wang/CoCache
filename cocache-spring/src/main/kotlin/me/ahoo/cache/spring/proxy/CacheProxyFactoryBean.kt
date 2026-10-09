@@ -21,22 +21,24 @@ import org.springframework.beans.factory.FactoryBean
 import org.springframework.context.ApplicationContext
 import org.springframework.context.ApplicationContextAware
 
+/**
+ * 创建缓存代理（单例），容器销毁时关闭缓存。
+ */
 class CacheProxyFactoryBean(private val cacheMetadata: CoCacheMetadata) :
     FactoryBean<Cache<Any, Any>>,
     ApplicationContextAware,
     DisposableBean {
     private lateinit var appContext: ApplicationContext
-    private var proxy: Cache<Any, Any>? = null
+    private val lazyProxy = lazy {
+        appContext.getBean(CacheProxyFactory::class.java).create<Cache<Any, Any>>(cacheMetadata)
+    }
+
     override fun setApplicationContext(applicationContext: ApplicationContext) {
         this.appContext = applicationContext
     }
 
     override fun getObject(): Cache<Any, Any> {
-        if (proxy == null) {
-            val cacheProxyFactory = appContext.getBean(CacheProxyFactory::class.java)
-            proxy = cacheProxyFactory.create(cacheMetadata)
-        }
-        return requireNotNull(proxy)
+        return lazyProxy.value
     }
 
     override fun getObjectType(): Class<*> {
@@ -44,6 +46,8 @@ class CacheProxyFactoryBean(private val cacheMetadata: CoCacheMetadata) :
     }
 
     override fun destroy() {
-        (proxy as? AutoCloseable)?.close()
+        if (lazyProxy.isInitialized()) {
+            (lazyProxy.value as? AutoCloseable)?.close()
+        }
     }
 }

@@ -13,12 +13,16 @@
 
 package me.ahoo.cache.annotation
 
+import me.ahoo.cache.api.NamedCache
 import kotlin.reflect.KClass
 import kotlin.reflect.KType
 
+/**
+ * [me.ahoo.cache.api.annotation.JoinCacheable] 接口的解析结果。
+ */
 data class JoinCacheMetadata(
-    override val proxyInterface: KClass<*>,
-    override val name: String,
+    val proxyInterface: KClass<*>,
+    override val cacheName: String,
     val firstCacheName: String,
     val joinCacheName: String,
     val joinKeyExpression: String,
@@ -26,4 +30,4 @@ data class JoinCacheMetadata(
     val firstValueType: KType,
     val joinKeyType: KType,
     val joinValueType: KType
-) : ComputedNamedCache
+) : NamedCache

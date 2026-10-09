@@ -13,31 +13,28 @@
 
 package me.ahoo.cache.spring.redis
 
-import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.annotation.CoCacheMetadata
-import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.spring.AbstractCacheFactory
+import me.ahoo.cache.spring.redis.codec.AbstractCodecExecutor
 import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor
 import org.springframework.beans.factory.BeanFactory
-import org.springframework.core.ResolvableType
 import org.springframework.data.redis.core.StringRedisTemplate
 import tools.jackson.databind.ObjectMapper
-import kotlin.reflect.javaType
+import kotlin.reflect.jvm.javaType
 
+/**
+ * 解析 `{cacheName}.DistributedCache` bean，缺省创建 JSON 编码的 [RedisDistributedCache]。
+ *
+ * @param missingGuardSentinel 负缓存哨兵，见 [AbstractCodecExecutor]
+ * @param strictFailure 透传给 [RedisDistributedCache]
+ */
 class RedisDistributedCacheFactory(
     beanFactory: BeanFactory,
     private val objectMapper: ObjectMapper,
     private val redisTemplate: StringRedisTemplate,
-    /**
-     * 负缓存哨兵值，默认 [MissingGuard.STRING_VALUE]。约束见
-     * [AbstractCodecExecutor.missingGuardSentinel]：自定义值与默认值互不识别，
-     * 需全集群同时切换，且不得与任何合法业务序列化值相等。
-     */
-    val missingGuardSentinel: String = MissingGuard.STRING_VALUE,
-    /**
-     * true = Redis 故障重抛（旧行为）；false（默认）= 降级。透传给 [RedisDistributedCache]。
-     */
+    val missingGuardSentinel: String = AbstractCodecExecutor.DEFAULT_MISSING_GUARD_SENTINEL,
     val strictFailure: Boolean = false,
 ) : DistributedCacheFactory, AbstractCacheFactory(beanFactory) {
     companion object {
@@ -46,15 +43,6 @@ class RedisDistributedCacheFactory(
 
     override val suffix: String = DISTRIBUTED_CACHE_SUFFIX
 
-    @OptIn(ExperimentalStdlibApi::class)
-    override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
-        return ResolvableType.forClassWithGenerics(
-            DistributedCache::class.java,
-            ResolvableType.forType(cacheMetadata.valueType.javaType)
-        )
-    }
-
-    @OptIn(ExperimentalStdlibApi::class)
     override fun fallback(cacheMetadata: CoCacheMetadata): Any {
         val codecExecutor = ObjectToJsonCodecExecutor<Any>(
             valueType = cacheMetadata.valueType.javaType,
@@ -62,17 +50,11 @@ class RedisDistributedCacheFactory(
             objectMapper = objectMapper,
             missingGuardSentinel = missingGuardSentinel
         )
-        return RedisDistributedCache(
-            redisTemplate,
-            codecExecutor,
-            ttl = cacheMetadata.ttl,
-            ttlAmplitude = cacheMetadata.ttlAmplitude,
-            strictFailure = strictFailure
-        )
+        return RedisDistributedCache(redisTemplate, codecExecutor, strictFailure)
     }
 
     override fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V> {
         @Suppress("UNCHECKED_CAST")
-        return createBean(cacheMetadata) as DistributedCache<V>
+        return resolve(cacheMetadata) as DistributedCache<V>
     }
 }

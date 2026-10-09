@@ -21,20 +21,25 @@ import org.springframework.beans.factory.BeanFactory
 import org.springframework.core.ResolvableType
 import kotlin.reflect.jvm.javaType
 
-class SpringCacheSourceFactory(beanFactory: BeanFactory) : CacheSourceFactory,
-    AbstractCacheFactory(beanFactory) {
+/**
+ * 解析数据源：`{cacheName}.CacheSource` bean → 唯一的 `CacheSource<K, V>` bean → [CacheSource.noOp]。
+ *
+ * 数据源是无状态的加载器，允许按类型在多个缓存间共享。
+ */
+class SpringCacheSourceFactory(beanFactory: BeanFactory) : CacheSourceFactory, AbstractCacheFactory(beanFactory) {
     companion object {
         const val CACHE_SOURCE_SUFFIX = ".CacheSource"
     }
 
     override val suffix: String = CACHE_SOURCE_SUFFIX
 
-    override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
-        return ResolvableType.forClassWithGenerics(
+    override fun resolveByType(cacheMetadata: CoCacheMetadata): Any? {
+        val beanType = ResolvableType.forClassWithGenerics(
             CacheSource::class.java,
             ResolvableType.forType(cacheMetadata.keyType.javaType),
             ResolvableType.forType(cacheMetadata.valueType.javaType)
         )
+        return beanFactory.getBeanProvider<Any>(beanType).getIfUnique()
     }
 
     override fun fallback(cacheMetadata: CoCacheMetadata): Any {
@@ -43,6 +48,6 @@ class SpringCacheSourceFactory(beanFactory: BeanFactory) : CacheSourceFactory,
 
     override fun <K, V> create(cacheMetadata: CoCacheMetadata): CacheSource<K, V> {
         @Suppress("UNCHECKED_CAST")
-        return createBean(cacheMetadata) as CacheSource<K, V>
+        return resolve(cacheMetadata) as CacheSource<K, V>
     }
 }

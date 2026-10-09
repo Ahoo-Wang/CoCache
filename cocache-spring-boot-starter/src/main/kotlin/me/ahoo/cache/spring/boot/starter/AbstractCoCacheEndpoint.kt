@@ -18,7 +18,8 @@ import me.ahoo.cache.consistency.CoherentCache
 
 abstract class AbstractCoCacheEndpoint {
     abstract val cacheFactory: CacheFactory
-    fun String.coherentCache(): CoherentCache<String, Any>? {
+
+    protected fun String.coherentCache(): CoherentCache<String, Any>? {
         return cacheFactory.getCache(this, CoherentCache::class.java)
     }
 }

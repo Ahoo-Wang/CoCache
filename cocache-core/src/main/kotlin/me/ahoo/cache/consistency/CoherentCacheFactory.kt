@@ -14,5 +14,5 @@
 package me.ahoo.cache.consistency
 
 interface CoherentCacheFactory {
-    fun <K, V> create(cacheConfig: CoherentCacheConfiguration<K, V>): CoherentCache<K, V>
+    fun <K, V> create(configuration: CoherentCacheConfiguration<K, V>): CoherentCache<K, V>
 }

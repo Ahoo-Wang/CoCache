@@ -14,26 +14,26 @@
 package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.CacheFactory
+import me.ahoo.cache.TtlPolicy
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.consistency.CoherentCache
-import me.ahoo.cache.spring.boot.starter.CoCacheEndpoint.CacheReport.Companion.asReport
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
+/**
+ * 缓存运维端点：查看缓存构成、读取与淘汰条目。
+ */
 @Endpoint(id = CoCache.COCACHE)
 class CoCacheEndpoint(override val cacheFactory: CacheFactory) : AbstractCoCacheEndpoint() {
 
     @ReadOperation
     fun total(): List<CacheReport> {
-        return cacheFactory.caches.filter {
-            it.value is CoherentCache
-        }.map {
-            val coherentCache = it.value as CoherentCache<*, *>
-            coherentCache.asReport(it.key)
-        }.toList()
+        return cacheFactory.caches.mapNotNull { (name, cache) ->
+            (cache as? CoherentCache<*, *>)?.asReport(name)
+        }
     }
 
     @ReadOperation
@@ -46,6 +46,9 @@ class CoCacheEndpoint(override val cacheFactory: CacheFactory) : AbstractCoCache
         name.coherentCache()?.evict(key)
     }
 
+    /**
+     * 读取条目（未命中时会回源加载）。
+     */
     @ReadOperation
     fun get(@Selector name: String, @Selector key: String): CacheValue<*>? {
         return name.coherentCache()?.getCache(key)
@@ -55,27 +58,25 @@ class CoCacheEndpoint(override val cacheFactory: CacheFactory) : AbstractCoCache
         val name: String,
         val clientId: String,
         val clientSize: Long,
+        val ttlPolicy: TtlPolicy,
         val keyConverter: String,
-        val distributedCaching: String,
-        val clientSideCaching: String,
-        val cacheEvictedEventBus: String,
+        val distributedCache: String,
+        val clientSideCache: String,
         val cacheSource: String,
         val keyFilter: String
-    ) {
-        companion object {
-            fun CoherentCache<*, *>.asReport(cacheName: String): CacheReport {
-                return CacheReport(
-                    name = cacheName,
-                    clientId = clientId,
-                    clientSize = clientSideCache.size,
-                    keyConverter = keyConverter.toString(),
-                    distributedCaching = distributedCache.javaClass.name,
-                    clientSideCaching = clientSideCache.javaClass.name,
-                    cacheEvictedEventBus = cacheEvictedEventBus.javaClass.name,
-                    cacheSource = cacheSource.javaClass.name,
-                    keyFilter = keyFilter.javaClass.name
-                )
-            }
-        }
+    )
+
+    private fun CoherentCache<*, *>.asReport(name: String): CacheReport {
+        return CacheReport(
+            name = name,
+            clientId = clientId,
+            clientSize = configuration.clientSideCache.size,
+            ttlPolicy = configuration.ttlPolicy,
+            keyConverter = configuration.keyConverter.toString(),
+            distributedCache = configuration.distributedCache.javaClass.name,
+            clientSideCache = configuration.clientSideCache.javaClass.name,
+            cacheSource = configuration.cacheSource.javaClass.name,
+            keyFilter = configuration.keyFilter.javaClass.name
+        )
     }
 }

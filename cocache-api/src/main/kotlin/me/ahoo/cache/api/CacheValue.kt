@@ -10,22 +10,71 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.api
 
 /**
- * Cache Value .
+ * 缓存条目：带绝对到期时间的命中值 [PresentValue]，或负缓存 [MissingValue]。
+ *
+ * 负缓存是显式状态而非“哨兵值”：任何业务值（包括与哨兵同形的字符串/集合）都不会被误判为负缓存。
  *
  * @author ahoo wang
  */
-interface CacheValue<V> : TtlAt {
-    val value: V
+sealed interface CacheValue<out V> : TtlAt {
+    /**
+     * 命中值；负缓存恒为 `null`。
+     */
+    val value: V?
 
     /**
-     * get time to live([java.time.temporal.ChronoUnit.SECONDS]).
-     *
-     * @return time to live (second)
+     * 是否为负缓存（数据源确认该 key 不存在）。
      */
-    override val ttlAt: Long
+    val isMissing: Boolean
 
-    val isMissingGuard: Boolean
+    companion object {
+        /**
+         * 构造缓存条目：`null` 值归一化为负缓存。
+         */
+        @JvmStatic
+        fun <V> of(value: V?, ttlAt: Long): CacheValue<V> {
+            if (value == null) {
+                return missing(ttlAt)
+            }
+            return PresentValue(value, ttlAt)
+        }
+
+        @JvmStatic
+        fun <V> forever(value: V?): CacheValue<V> {
+            return of(value, TtlAt.FOREVER)
+        }
+
+        @JvmStatic
+        @JvmOverloads
+        fun <V> missing(ttlAt: Long = TtlAt.FOREVER): CacheValue<V> {
+            return MissingValue(ttlAt)
+        }
+    }
+}
+
+/**
+ * 命中值。
+ */
+data class PresentValue<out V>(
+    override val value: V,
+    override val ttlAt: Long
+) : CacheValue<V> {
+    override val isMissing: Boolean
+        get() = false
+}
+
+/**
+ * 负缓存：数据源确认 key 不存在，在 [ttlAt] 之前抑制回源（防缓存穿透）。
+ */
+data class MissingValue(
+    override val ttlAt: Long
+) : CacheValue<Nothing> {
+    override val value: Nothing?
+        get() = null
+    override val isMissing: Boolean
+        get() = true
 }

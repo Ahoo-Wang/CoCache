@@ -14,6 +14,7 @@
 package me.ahoo.cache.converter
 
 import me.ahoo.cache.annotation.CoCacheMetadata
+import me.ahoo.cache.api.converter.KeyConverter
 
 interface KeyConverterFactory {
     fun <K> create(cacheMetadata: CoCacheMetadata): KeyConverter<K>

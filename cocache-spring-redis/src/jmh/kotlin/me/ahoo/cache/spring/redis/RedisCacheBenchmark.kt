@@ -13,8 +13,10 @@
 
 package me.ahoo.cache.spring.redis
 
-import me.ahoo.cache.CoherentCache
-import me.ahoo.cache.client.MapClientSideCache
+import me.ahoo.cache.client.CaffeineClientSideCache
+import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.consistency.CoherentCacheConfiguration
+import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
 import me.ahoo.cache.converter.ToStringKeyConverter
 import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor
 import org.openjdk.jmh.annotations.Benchmark
@@ -33,38 +35,26 @@ open class RedisCacheBenchmark {
     private val cacheKey = UUID.randomUUID().toString()
 
     @Setup
-    public fun setup() {
-        val redisStandaloneConfiguration = RedisStandaloneConfiguration()
-        val lettuceConnectionFactory = LettuceConnectionFactory(redisStandaloneConfiguration)
+    fun setup() {
+        val lettuceConnectionFactory = LettuceConnectionFactory(RedisStandaloneConfiguration())
         lettuceConnectionFactory.afterPropertiesSet()
         val stringRedisTemplate = StringRedisTemplate(lettuceConnectionFactory)
         stringRedisTemplate.afterPropertiesSet()
-        val codecExecutor = StringToStringCodecExecutor(stringRedisTemplate)
-        val distributedCache = RedisDistributedCache(
-            stringRedisTemplate,
-            codecExecutor,
-        )
         val redisMessageListenerContainer = RedisMessageListenerContainer()
         redisMessageListenerContainer.setConnectionFactory(lettuceConnectionFactory)
         redisMessageListenerContainer.afterPropertiesSet()
-        /*
-         **** Very important ****
-         */
         redisMessageListenerContainer.start()
-        val cacheEvictedEventBus = RedisCacheEvictedEventBus(
-            redisTemplate = StringRedisTemplate(lettuceConnectionFactory),
-            listenerContainer = redisMessageListenerContainer,
+        val cacheEvictedEventBus = RedisCacheEvictedEventBus(stringRedisTemplate, redisMessageListenerContainer)
+        coherentCache = DefaultCoherentCacheFactory(cacheEvictedEventBus).create(
+            CoherentCacheConfiguration(
+                cacheName = "RedisCacheBenchmark",
+                clientId = UUID.randomUUID().toString(),
+                keyConverter = ToStringKeyConverter(""),
+                distributedCache = RedisDistributedCache(stringRedisTemplate, StringToStringCodecExecutor(stringRedisTemplate)),
+                clientSideCache = CaffeineClientSideCache.build()
+            )
         )
-        coherentCache = CoherentCache(
-            "RedisCacheBenchmark",
-            UUID.randomUUID().toString(),
-            ToStringKeyConverter(""),
-            distributedCache,
-            MapClientSideCache(),
-            cacheEvictedEventBus,
-        )
-
-        coherentCache.set(cacheKey, UUID.randomUUID().toString())
+        coherentCache[cacheKey] = UUID.randomUUID().toString()
     }
 
     @Benchmark

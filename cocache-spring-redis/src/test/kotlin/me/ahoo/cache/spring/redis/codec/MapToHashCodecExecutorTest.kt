@@ -13,24 +13,22 @@
 
 package me.ahoo.cache.spring.redis.codec
 
-import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.util.CacheSecondClock
+import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.*
 
 internal class MapToHashCodecExecutorTest : CodecExecutorSpec<Map<String, String>>() {
 
-    override fun createCodecExecutor(): CodecExecutor<Map<String, String>> {
-        return MapToHashCodecExecutor(stringRedisTemplate)
-    }
+    override fun createCodecExecutor(): CodecExecutor<Map<String, String>> = MapToHashCodecExecutor(stringRedisTemplate)
 
     override fun createCustomSentinelCodecExecutor(): CodecExecutor<Map<String, String>> {
         return MapToHashCodecExecutor(stringRedisTemplate, CUSTOM_SENTINEL)
     }
 
     override fun createCacheValue(): Map<String, String> {
-        return mapOf(UUID.randomUUID().toString() to UUID.randomUUID().toString())
+        return mapOf(UUID.randomUUID().toString() to UUID.randomUUID().toString(), "k2" to "v2")
     }
 
     override fun createSingleNonSentinelValue(): Map<String, String> {
@@ -38,11 +36,10 @@ internal class MapToHashCodecExecutorTest : CodecExecutorSpec<Map<String, String
     }
 
     @Test
-    fun executeAndEncodeEmptyMapEvictsKey() {
-        val key = "empty-map:" + UUID.randomUUID().toString()
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 60
-        codecExecutor.executeAndEncode(key, DefaultCacheValue(emptyMap(), ttlAt))
-
+    fun emptyMapEvictsKey() {
+        val key = newKey()
+        codecExecutor.executeAndEncode(key, CacheValue.forever(createCacheValue()))
+        codecExecutor.executeAndEncode(key, CacheValue.of(emptyMap(), TtlAt.at(60)))
         stringRedisTemplate.hasKey(key).assert().isFalse()
     }
 }

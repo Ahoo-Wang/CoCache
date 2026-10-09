@@ -10,55 +10,66 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.spring.redis.codec
 
-import me.ahoo.cache.MissingGuard
-import me.ahoo.cache.api.CacheValue
+import org.springframework.data.redis.core.RedisOperations
 import org.springframework.data.redis.core.StringRedisTemplate
+import org.springframework.data.redis.core.script.DefaultRedisScript
+import org.springframework.data.redis.core.script.RedisScript
 
 /**
- * SetToSetCodecExecutor .
- *
- * @author ahoo wang
+ * `Set<String>` 存为 Redis Set。负缓存形态为单元素 `{sentinel}`；空 Set 写入即淘汰。
  */
-class SetToSetCodecExecutor(
-    override val redisTemplate: StringRedisTemplate,
-    missingGuardSentinel: String = MissingGuard.STRING_VALUE,
-) : AbstractCodecExecutor<Set<String>, Set<String>>(missingGuardSentinel) {
-
-    private val missingGuard: Set<String> = setOf(missingGuardSentinel)
-
-    override fun CacheValue<Set<String>>.toRawValue(): Set<String> {
-        if (isMissingGuard) {
-            return missingGuard
-        }
-        return value
-    }
-
-    override fun isMissingGuard(rawValue: Set<String>): Boolean {
-        return rawValue.size == 1 && rawValue.first() == missingGuardSentinel
-    }
-
-    override fun getRawValue(key: String): Set<String>? {
-        // absent key 与空 Set 在 Redis 侧不可区分（都返回空 members）；写入路径已把空集合定义为淘汰，
-        // 故空原始集合按 key 不存在处理（返回 null → 负缓存），与 String/JSON codec 契约一致
-        return redisTemplate.opsForSet().members(key)?.takeIf { it.isNotEmpty() }
-    }
-
-    override fun decode(rawValue: Set<String>): Set<String> {
-        return rawValue
-    }
-
-    override fun setForeverValue(key: String, cacheValue: CacheValue<Set<String>>) {
-        executeAtomicSetWrite(key, cacheValue.toRawValue(), ttlSeconds = 0)
-    }
-
-    override fun setValueWithTtlAt(key: String, cacheValue: CacheValue<Set<String>>) {
-        // coerceAtLeast(1)：亚秒边界下剩余 TTL 可能归零，0 会被脚本当作 FOREVER 跳过 EXPIRE——钳为 1 秒
-        executeAtomicSetWrite(
-            key,
-            cacheValue.toRawValue(),
-            ttlSeconds = cacheValue.expiredDuration.seconds.coerceAtLeast(1)
+class SetToSetCodecExecutor @JvmOverloads constructor(
+    redisTemplate: StringRedisTemplate,
+    missingGuardSentinel: String = DEFAULT_MISSING_GUARD_SENTINEL,
+) : AbstractCodecExecutor<Set<String>, Set<String>>(redisTemplate, missingGuardSentinel) {
+    companion object {
+        /**
+         * DEL + SADD + 可选 EXPIRE 原子执行。ARGV 为成员列表，末位为 TTL 秒数（0 表示永不过期）。
+         */
+        private val WRITE_SCRIPT: RedisScript<Long> = DefaultRedisScript(
+            """
+            redis.call('DEL', KEYS[1])
+            for i = 1, #ARGV - 1 do
+              redis.call('SADD', KEYS[1], ARGV[i])
+            end
+            local ttl = tonumber(ARGV[#ARGV])
+            if ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
+            return 1
+            """.trimIndent(),
+            Long::class.java,
         )
+    }
+
+    override fun RedisOperations<String, String>.readRaw(key: String) {
+        opsForSet().members(key)
+    }
+
+    override fun toRaw(result: Any?): Set<String>? {
+        @Suppress("UNCHECKED_CAST")
+        return (result as Set<String>?)?.takeIf { it.isNotEmpty() }
+    }
+
+    override fun isMissingGuard(raw: Set<String>): Boolean {
+        return raw.size == 1 && raw.first() == missingGuardSentinel
+    }
+
+    override fun decode(raw: Set<String>): Set<String> = raw
+
+    override fun encodeMissingGuard(): Set<String> = setOf(missingGuardSentinel)
+
+    override fun encode(value: Set<String>): Set<String> = value
+
+    override fun writeRaw(key: String, raw: Set<String>, ttlSeconds: Long?) {
+        if (raw.isEmpty()) {
+            redisTemplate.delete(key)
+            return
+        }
+        val args = ArrayList<String>(raw.size + 1)
+        args.addAll(raw)
+        args.add((ttlSeconds ?: 0).toString())
+        redisTemplate.execute(WRITE_SCRIPT, listOf(key), *args.toTypedArray())
     }
 }

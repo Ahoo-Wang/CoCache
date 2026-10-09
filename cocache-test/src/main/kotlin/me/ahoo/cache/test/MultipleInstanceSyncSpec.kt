@@ -14,66 +14,29 @@
 package me.ahoo.cache.test
 
 import me.ahoo.cache.api.client.ClientSideCache
-import me.ahoo.cache.consistency.CacheEvictedEvent
-import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.consistency.CacheEvictedSubscriber
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
+import me.ahoo.cache.api.converter.KeyConverter
+import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.consistency.CoherentCacheConfiguration
-import me.ahoo.cache.consistency.CoherentCacheFactory
 import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
-import me.ahoo.cache.converter.KeyConverter
-import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.slf4j.LoggerFactory
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.locks.LockSupport
 
+/**
+ * 多实例共享 L1 与失效通道时的一致性规格。
+ */
 abstract class MultipleInstanceSyncSpec<K, V> {
-    companion object {
-        private val log = LoggerFactory.getLogger(MultipleInstanceSyncSpec::class.java)
-    }
-
     private lateinit var keyConverter: KeyConverter<K>
-    private lateinit var distributedCaching: DistributedCache<V>
-    private lateinit var cacheEvictedEventBus: CacheEvictedEventBus
     protected lateinit var cacheName: String
-    protected val currentClientId: String = "currentClientId"
-    protected val otherClientId: String = "otherClientId"
+    private lateinit var currentClientSideCache: ClientSideCache<V>
+    private lateinit var otherClientSideCache: ClientSideCache<V>
     private lateinit var currentCache: CoherentCache<K, V>
     private lateinit var otherCache: CoherentCache<K, V>
-    private lateinit var coherentCacheFactory: CoherentCacheFactory
-
-    @BeforeEach
-    open fun setup() {
-        keyConverter = createKeyConverter()
-        distributedCaching = createDistributedCache()
-        cacheEvictedEventBus = createCacheEvictedEventBus()
-        coherentCacheFactory = DefaultCoherentCacheFactory(cacheEvictedEventBus)
-        cacheName = createCacheName()
-
-        currentCache = coherentCacheFactory.create(
-            CoherentCacheConfiguration(
-                cacheName = cacheName,
-                clientId = currentClientId,
-                keyConverter = keyConverter,
-                distributedCache = distributedCaching,
-                clientSideCache = createClientSideCache(),
-            ),
-        )
-
-        otherCache = coherentCacheFactory.create(
-            CoherentCacheConfiguration(
-                cacheName = cacheName,
-                clientId = otherClientId,
-                keyConverter = keyConverter,
-                distributedCache = distributedCaching,
-                clientSideCache = createClientSideCache(),
-            ),
-        )
-    }
+    private lateinit var cacheEvictedEventBus: CacheEvictedEventBus
 
     protected abstract fun createKeyConverter(): KeyConverter<K>
     protected abstract fun createClientSideCache(): ClientSideCache<V>
@@ -82,58 +45,71 @@ abstract class MultipleInstanceSyncSpec<K, V> {
     protected abstract fun createCacheName(): String
     protected abstract fun createCacheEntry(): Pair<K, V>
 
+    @BeforeEach
+    open fun setup() {
+        keyConverter = createKeyConverter()
+        cacheName = createCacheName()
+        val distributedCache = createDistributedCache()
+        cacheEvictedEventBus = createCacheEvictedEventBus()
+        val coherentCacheFactory = DefaultCoherentCacheFactory(cacheEvictedEventBus)
+        currentClientSideCache = createClientSideCache()
+        otherClientSideCache = createClientSideCache()
+        currentCache = coherentCacheFactory.create(
+            CoherentCacheConfiguration(
+                cacheName = cacheName,
+                clientId = "currentClientId",
+                keyConverter = keyConverter,
+                distributedCache = distributedCache,
+                clientSideCache = currentClientSideCache,
+            )
+        )
+        otherCache = coherentCacheFactory.create(
+            CoherentCacheConfiguration(
+                cacheName = cacheName,
+                clientId = "otherClientId",
+                keyConverter = keyConverter,
+                distributedCache = distributedCache,
+                clientSideCache = otherClientSideCache,
+            )
+        )
+    }
+
+    @AfterEach
+    open fun tearDown() {
+        currentCache.close()
+        otherCache.close()
+    }
+
     @Test
     fun multipleInstanceSync() {
         val (key, value) = createCacheEntry()
         val cacheKey = keyConverter.toStringKey(key)
 
-        val latch1 = CountDownLatch(1)
-        val latch2 = CountDownLatch(2)
-        val latch3 = CountDownLatch(3)
-        val subscriber = object : CacheEvictedSubscriber {
-            override fun onEvicted(cacheEvictedEvent: CacheEvictedEvent) {
-                if (cacheEvictedEvent.cacheName != cacheName) {
-                    return
-                }
-                if (cacheEvictedEvent.key == cacheKey &&
-                    cacheEvictedEvent.publisherId == currentClientId
-                ) {
-                    log.info("onEvicted - Current - {}", cacheEvictedEvent)
-                    latch1.countDown()
-                    latch2.countDown()
-                    latch3.countDown()
-                }
-            }
-
-            override val cacheName: String
-                get() = this@MultipleInstanceSyncSpec.cacheName
-        }
-        cacheEvictedEventBus.register(subscriber)
-        otherCache.assert().isNotEqualTo(currentCache)
-        //region init
-        currentCache.clientSideCache[cacheKey].assert().isNull()
         currentCache[key] = value
-        currentCache.clientSideCache[cacheKey].assert().isEqualTo(value)
-        latch1.await(1, TimeUnit.SECONDS).assert().isTrue()
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
-        otherCache.clientSideCache[cacheKey].assert().isNull()
+        currentClientSideCache.getCache(cacheKey)?.value.assert().isEqualTo(value)
         otherCache[key].assert().isEqualTo(value)
-        otherCache.clientSideCache[cacheKey].assert().isEqualTo(value)
-        //endregion
+        // 写入广播的失效事件异步到达，可能清掉刚填入的 L2；事件处理完后再次读取必定填入 L2
+        awaitCondition {
+            otherCache[key]
+            otherClientSideCache.getCache(cacheKey)?.value == value
+        }
 
-        //region set
-        val nextValue = createCacheEntry().second
+        val (_, nextValue) = createCacheEntry()
         currentCache[key] = nextValue
-        latch2.await(1, TimeUnit.SECONDS).assert().isTrue()
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
-        otherCache.clientSideCache[cacheKey].assert().isNull()
-        //endregion
+        awaitCondition { otherClientSideCache.getCache(cacheKey) == null }
+        otherCache[key].assert().isEqualTo(nextValue)
 
         currentCache.evict(key)
+        awaitCondition { otherClientSideCache.getCache(cacheKey) == null }
         currentCache[key].assert().isNull()
-        latch3.await(1, TimeUnit.SECONDS).assert().isTrue()
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100))
-        otherCache.clientSideCache[cacheKey].assert().isNull()
         otherCache[key].assert().isNull()
+    }
+
+    private fun awaitCondition(condition: () -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (!condition()) {
+            check(System.nanoTime() < deadline) { "Condition not met within 5 seconds." }
+            Thread.sleep(10)
+        }
     }
 }

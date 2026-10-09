@@ -13,7 +13,7 @@
 package me.ahoo.cache.filter
 
 import com.google.common.hash.BloomFilter
-import me.ahoo.cache.KeyFilter
+import me.ahoo.cache.api.filter.KeyFilter
 
 /**
  * Bloom Cache Key Filter .

@@ -16,36 +16,27 @@ package me.ahoo.cache.spring.join
 import me.ahoo.cache.annotation.JoinCacheMetadata
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.join.proxy.JoinCacheProxyFactory
-import me.ahoo.cache.proxy.CacheDelegated
-import org.springframework.beans.factory.DisposableBean
 import org.springframework.beans.factory.FactoryBean
 import org.springframework.context.ApplicationContext
 import org.springframework.context.ApplicationContextAware
 
+/**
+ * JoinCache 代理不持有组件缓存的生命周期（组件缓存由各自的 FactoryBean 关闭）。
+ */
 class JoinCacheProxyFactoryBean(private val cacheMetadata: JoinCacheMetadata) :
     FactoryBean<JoinCache<Any, Any, Any, Any>>,
-    ApplicationContextAware,
-    DisposableBean {
+    ApplicationContextAware {
     private lateinit var appContext: ApplicationContext
-    private var proxy: JoinCache<Any, Any, Any, Any>? = null
+
     override fun setApplicationContext(applicationContext: ApplicationContext) {
         this.appContext = applicationContext
     }
 
     override fun getObject(): JoinCache<Any, Any, Any, Any> {
-        if (proxy == null) {
-            val joinCacheProxyFactory = appContext.getBean(JoinCacheProxyFactory::class.java)
-            proxy = joinCacheProxyFactory.create(cacheMetadata)
-        }
-        return requireNotNull(proxy)
+        return appContext.getBean(JoinCacheProxyFactory::class.java).create(cacheMetadata)
     }
 
     override fun getObjectType(): Class<*> {
         return cacheMetadata.proxyInterface.java
-    }
-
-    override fun destroy() {
-        val delegate = (proxy as? CacheDelegated<*>)?.delegate
-        (delegate as? AutoCloseable)?.close()
     }
 }

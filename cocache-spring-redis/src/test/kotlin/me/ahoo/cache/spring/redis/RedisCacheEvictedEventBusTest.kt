@@ -10,55 +10,41 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.spring.redis
 
-import me.ahoo.cache.consistency.CacheEvictedEventBus
+import io.mockk.every
+import io.mockk.mockk
+import me.ahoo.cache.api.consistency.CacheEvictedEvent
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
 import me.ahoo.cache.test.consistency.CacheEvictedEventBusSpec
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
-import org.springframework.data.redis.connection.RedisStandaloneConfiguration
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
+import org.junit.jupiter.api.Test
+import org.springframework.data.redis.RedisConnectionFailureException
 import org.springframework.data.redis.core.StringRedisTemplate
-import org.springframework.data.redis.listener.RedisMessageListenerContainer
 
-/**
- * RedisCacheEvictedEventBusTest .
- *
- * @author ahoo wang
- */
 internal class RedisCacheEvictedEventBusTest : CacheEvictedEventBusSpec() {
-
-    private lateinit var lettuceConnectionFactory: LettuceConnectionFactory
-    private lateinit var redisMessageListenerContainer: RedisMessageListenerContainer
+    private lateinit var redis: RedisTestSupport
 
     @BeforeEach
     fun setup() {
-        val redisStandaloneConfiguration = RedisStandaloneConfiguration()
-        lettuceConnectionFactory = LettuceConnectionFactory(redisStandaloneConfiguration)
-        lettuceConnectionFactory.afterPropertiesSet()
-        redisMessageListenerContainer = RedisMessageListenerContainer()
-        redisMessageListenerContainer.setConnectionFactory(lettuceConnectionFactory)
-        redisMessageListenerContainer.afterPropertiesSet()
-        /*
-         **** Very important ****
-         */
-        redisMessageListenerContainer.start()
-    }
-
-    override fun createCacheEvictedEventBus(): CacheEvictedEventBus {
-        return RedisCacheEvictedEventBus(
-            redisTemplate = StringRedisTemplate(lettuceConnectionFactory),
-            listenerContainer = redisMessageListenerContainer,
-        )
+        redis = RedisTestSupport()
     }
 
     @AfterEach
     fun destroy() {
-        if (null != lettuceConnectionFactory) {
-            lettuceConnectionFactory.destroy()
+        redis.close()
+    }
+
+    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = redis.newEventBus()
+
+    @Test
+    fun publishSwallowsRedisFailure() {
+        val redisTemplate = mockk<StringRedisTemplate> {
+            every { convertAndSend(any<String>(), any<Any>()) } throws RedisConnectionFailureException("down")
         }
-        if (null != redisMessageListenerContainer) {
-            redisMessageListenerContainer.destroy()
-        }
+        RedisCacheEvictedEventBus(redisTemplate, mockk(relaxed = true))
+            .publish(CacheEvictedEvent("cache", "key", "clientId"))
     }
 }

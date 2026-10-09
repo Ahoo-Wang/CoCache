@@ -13,21 +13,20 @@
 
 package me.ahoo.cache.annotation
 
-import me.ahoo.cache.TtlConfiguration
+import me.ahoo.cache.TtlPolicy
+import me.ahoo.cache.api.NamedCache
 import kotlin.reflect.KClass
 import kotlin.reflect.KType
 
+/**
+ * [me.ahoo.cache.api.annotation.CoCache] 接口的解析结果。
+ */
 data class CoCacheMetadata(
-    override val proxyInterface: KClass<*>,
-    override val name: String,
+    val proxyInterface: KClass<*>,
+    override val cacheName: String,
     val keyPrefix: String,
     val keyExpression: String,
-    override val ttl: Long,
-    override val ttlAmplitude: Long,
+    val ttlPolicy: TtlPolicy,
     val keyType: KType,
     val valueType: KType
-) : ComputedNamedCache, TtlConfiguration {
-    override val cacheName: String = name.ifBlank {
-        proxyInterface.simpleName!!
-    }
-}
+) : NamedCache

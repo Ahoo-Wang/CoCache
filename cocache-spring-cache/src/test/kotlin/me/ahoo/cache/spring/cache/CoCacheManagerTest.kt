@@ -13,35 +13,20 @@
 
 package me.ahoo.cache.spring.cache
 
+import io.mockk.every
+import io.mockk.mockk
 import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.Cache
-import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
-import kotlin.reflect.KType
 
 class CoCacheManagerTest {
-    object MockCacheFactory : CacheFactory {
-        override val caches: Map<String, Cache<*, *>>
-            get() = emptyMap()
-
-        @Suppress("UNCHECKED_CAST")
-        override fun <CACHE : Cache<*, *>> getCache(
-            cacheName: String,
-            cacheType: Class<*>
-        ): CACHE? {
-            return MapClientSideCache<Any>() as CACHE
-        }
-
-        override fun <CACHE : Cache<*, *>> getCache(
-            keyType: KType,
-            valueType: KType
-        ): CACHE? {
-            return null
-        }
+    private val cacheFactory = mockk<CacheFactory> {
+        every { caches } returns emptyMap()
+        every { getCache<Cache<*, *>>("test") } returns inMemoryCache<Any, Any?>()
+        every { getCache<Cache<*, *>>("absent") } returns null
     }
-
-    private val coCacheManager = CoCacheManager(MockCacheFactory)
+    private val coCacheManager = CoCacheManager(cacheFactory).apply { afterPropertiesSet() }
 
     @Test
     fun loadCaches() {
@@ -50,7 +35,7 @@ class CoCacheManagerTest {
 
     @Test
     fun getMissingCache() {
-        val cache = coCacheManager.getCache("test")
-        cache?.name.assert().isEqualTo("test")
+        coCacheManager.getCache("test")?.name.assert().isEqualTo("test")
+        coCacheManager.getCache("absent").assert().isNull()
     }
 }

@@ -13,65 +13,78 @@
 
 package me.ahoo.cache
 
-import me.ahoo.cache.util.CacheSecondClock
+import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
 
 class TtlTest {
     @Test
-    fun isForever() {
-        val ttlAt = ComputedTtlAt.FOREVER
-        ComputedTtlAt.isForever(ttlAt).assert().isTrue()
+    fun foreverTtlStaysForever() {
+        TtlAt.at(TtlAt.FOREVER, 10).assert().isEqualTo(TtlAt.FOREVER)
+        CacheValue.forever("value").isForever.assert().isTrue()
+        CacheValue.forever("value").isExpired.assert().isFalse()
     }
 
     @Test
     fun at() {
-        val ttlAt = ComputedTtlAt.at(10)
-        ttlAt.assert().isGreaterThan(CacheSecondClock.INSTANCE.currentTime())
+        val now = TtlAt.currentTime()
+        TtlAt.at(10).assert().isBetween(now + 10, now + 11)
+    }
+
+    @Test
+    fun atWithAmplitude() {
+        val now = TtlAt.currentTime()
+        TtlAt.at(10, 5).assert()
+            .isGreaterThanOrEqualTo(now + 5)
+            .isLessThanOrEqualTo(now + 16)
+    }
+
+    @Test
+    fun amplitudeExceedingTtlStaysPositive() {
+        repeat(100) {
+            TtlAt.at(5, 10).assert().isGreaterThan(TtlAt.currentTime())
+        }
     }
 
     @Test
     fun expiresAtCurrentSecondIsExpired() {
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime()
-        val cacheValue = DefaultCacheValue("value", ttlAt)
-
+        val cacheValue = CacheValue.of("value", TtlAt.currentTime())
         cacheValue.isExpired.assert().isTrue()
         cacheValue.expiredDuration.assert().isEqualTo(Duration.ZERO)
     }
 
     @Test
-    fun atWithAmplitude() {
-        val ttlAt = ComputedTtlAt.at(10, 5)
-        ttlAt.assert()
-            .isGreaterThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 5)
-            .isLessThanOrEqualTo(CacheSecondClock.INSTANCE.currentTime() + 15)
+    fun expiredDuration() {
+        CacheValue.of("value", TtlAt.at(10)).expiredDuration.seconds.assert().isBetween(9, 10)
     }
 
     @Test
-    fun jitterZero() {
-        ComputedTtlAt.jitter(60, 0).assert().isEqualTo(60)
+    fun ttlPolicyToCacheValue() {
+        val policy = TtlPolicy(ttl = 100, ttlAmplitude = 0, missingTtl = 10)
+        val now = TtlAt.currentTime()
+        policy.toCacheValue("value").ttlAt.assert().isBetween(now + 100, now + 101)
+        val missing = policy.toCacheValue<String>(null)
+        missing.isMissing.assert().isTrue()
+        missing.ttlAt.assert().isBetween(now + 10, now + 11)
     }
 
     @Test
-    fun jitter() {
-        val jitterTtlAt = ComputedTtlAt.jitter(60, 10)
-        jitterTtlAt.assert()
-            .isGreaterThanOrEqualTo(50)
-            .isLessThanOrEqualTo(70)
+    fun ttlPolicyRejectsInvalidValues() {
+        runCatching { TtlPolicy(ttl = 0) }.isFailure.assert().isTrue()
+        runCatching { TtlPolicy(ttlAmplitude = -1) }.isFailure.assert().isTrue()
+        runCatching { TtlPolicy(missingTtl = 0) }.isFailure.assert().isTrue()
     }
 
     @Test
-    fun jitterWhenAmplitudeExceedsTtlStaysPositive() {
-        // When amplitude >= ttl the lower bound would otherwise go negative,
-        // producing an already-expired ttlAt and rejecting the write.
-        val ttl = 5L
-        val amplitude = 10L
-        repeat(100) {
-            val jitterTtl = ComputedTtlAt.jitter(ttl, amplitude)
-            jitterTtl.assert().isPositive()
-            val ttlAt = ComputedTtlAt.at(ttl, amplitude)
-            ttlAt.assert().isGreaterThan(CacheSecondClock.INSTANCE.currentTime())
-        }
+    fun cacheValueOfNullIsMissing() {
+        CacheValue.of<String>(null, 10).assert().isEqualTo(CacheValue.missing<String>(10))
+    }
+
+    @Test
+    fun valueShapedLikeSentinelIsNotMissing() {
+        CacheValue.forever("_nil_").isMissing.assert().isFalse()
+        CacheValue.forever(setOf("_nil_")).isMissing.assert().isFalse()
     }
 }

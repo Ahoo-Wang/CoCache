@@ -13,37 +13,19 @@
 
 package me.ahoo.cache.client
 
-import me.ahoo.cache.ComputedCache
+import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CaffeineCache
 import me.ahoo.cache.api.annotation.CoCache
-import me.ahoo.cache.api.annotation.GuavaCache
 import java.util.concurrent.TimeUnit
 
-@CoCache(ttl = 1000, ttlAmplitude = 10)
-@GuavaCache
-interface MockDefaultGuavaClientCache : ComputedCache<String, String>
-
 @CoCache
-@GuavaCache(
-    initialCapacity = 1,
-    maximumSize = 2,
-    concurrencyLevel = 3,
-    expireUnit = TimeUnit.SECONDS,
-    expireAfterAccess = 4,
-    expireAfterWrite = 5
-)
-interface MockCustomizeGuavaClientCache : ComputedCache<String, String>
-
-@CoCache(ttl = 1000, ttlAmplitude = 10)
-@CaffeineCache
-interface MockDefaultCaffeineClientCache : ComputedCache<String, String>
+interface MockDefaultClientCache : Cache<String, String>
 
 @CoCache
 @CaffeineCache(
     initialCapacity = 1,
     maximumSize = 2,
     expireUnit = TimeUnit.SECONDS,
-    expireAfterAccess = 4,
-    expireAfterWrite = 5
+    expireAfterAccess = 4
 )
-interface MockCustomizeCaffeineClientCache : ComputedCache<String, String>
+interface MockCustomizeCaffeineClientCache : Cache<String, String>

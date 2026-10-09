@@ -13,9 +13,9 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.api.distributed.DistributedCache
 
-abstract class DistributedCacheSpec<V> : CacheSpec<String, V>() {
+abstract class DistributedCacheSpec<V> : CacheStoreSpec<V>() {
 
-    abstract override fun createCache(): DistributedCache<V>
+    abstract override fun createCacheStore(): DistributedCache<V>
 }

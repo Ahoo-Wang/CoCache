@@ -19,23 +19,15 @@ internal class ObjectToHashCodecExecutorTest :
     CodecExecutorSpec<Model>(),
     ObjectToHashCodecExecutor.MapConverter<Model> {
 
-    override fun createCodecExecutor(): CodecExecutor<Model> {
-        return ObjectToHashCodecExecutor(this, stringRedisTemplate)
-    }
+    override fun createCodecExecutor(): CodecExecutor<Model> = ObjectToHashCodecExecutor(this, stringRedisTemplate)
 
     override fun createCustomSentinelCodecExecutor(): CodecExecutor<Model> {
         return ObjectToHashCodecExecutor(this, stringRedisTemplate, CUSTOM_SENTINEL)
     }
 
-    override fun createCacheValue(): Model {
-        return Model(UUID.randomUUID().toString())
-    }
+    override fun createCacheValue(): Model = Model(UUID.randomUUID().toString())
 
-    override fun asValue(map: Map<String, String>): Model {
-        return Model(map.getValue("id"))
-    }
+    override fun asValue(map: Map<String, String>): Model = Model(map.getValue("id"))
 
-    override fun asMap(value: Model): Map<String, String> {
-        return mapOf("id" to value.id)
-    }
+    override fun asMap(value: Model): Map<String, String> = mapOf("id" to value.id)
 }

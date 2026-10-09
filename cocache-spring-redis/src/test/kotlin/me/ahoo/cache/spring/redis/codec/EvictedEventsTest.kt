@@ -13,7 +13,7 @@
 
 package me.ahoo.cache.spring.redis.codec
 
-import me.ahoo.cache.consistency.CacheEvictedEvent
+import me.ahoo.cache.api.consistency.CacheEvictedEvent
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows

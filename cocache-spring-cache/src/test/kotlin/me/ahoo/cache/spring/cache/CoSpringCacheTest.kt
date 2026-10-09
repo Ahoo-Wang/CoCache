@@ -16,360 +16,187 @@ package me.ahoo.cache.spring.cache
 import io.mockk.every
 import io.mockk.mockk
 import me.ahoo.cache.CacheFactory
-import me.ahoo.cache.ComputedTtlAt
-import me.ahoo.cache.DefaultCacheValue
+import me.ahoo.cache.annotation.joinCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.join.JoinCache
+import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.join.JoinValue
-import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.consistency.CoherentCache
-import me.ahoo.cache.join.DefaultJoinValue
 import me.ahoo.cache.join.JoinKeyExtractorFactory
-import me.ahoo.cache.join.SimpleJoinCache
 import me.ahoo.cache.join.proxy.DefaultJoinCacheProxyFactory
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.springframework.cache.Cache as SpringCache
 
 class CoSpringCacheTest {
-    @Suppress("UNCHECKED_CAST")
-    private val coSpringCache = CoSpringCache("test", MapClientSideCache<Any?>() as Cache<Any, Any?>)
+    private val delegate = inMemoryCache<Any, Any?>()
+    private val coSpringCache = CoSpringCache("test", delegate)
 
     @Test
-    fun getName() {
-        coSpringCache.cacheName.assert().isEqualTo("test")
+    fun nameAndNativeCache() {
+        coSpringCache.name.assert().isEqualTo("test")
+        coSpringCache.nativeCache.assert().isSameAs(delegate)
     }
 
     @Test
-    fun getNativeCache() {
-        coSpringCache.nativeCache.assert().isEqualTo(coSpringCache.delegate)
+    fun getAbsent() {
+        coSpringCache.get("absent").assert().isNull()
+        coSpringCache.get("absent", String::class.java).assert().isNull()
     }
 
     @Test
-    fun get() {
-        coSpringCache.get("test").assert().isNull()
+    fun putAndGet() {
+        coSpringCache.put("key", "value")
+        coSpringCache.get("key")?.get().assert().isEqualTo("value")
+        coSpringCache.get("key", String::class.java).assert().isEqualTo("value")
+        coSpringCache.get<Any>("key", null).assert().isEqualTo("value")
     }
 
     @Test
-    fun testGet() {
-        coSpringCache.get("test", String::class.java).assert().isNull()
-    }
-
-    @Test
-    fun testGet1() {
-        coSpringCache.get("test", {
-            "test"
-        }).assert().isEqualTo("test")
-    }
-
-    @Test
-    fun put() {
-        coSpringCache.put("putTest", "test")
-        coSpringCache.get("putTest")!!.get().assert().isEqualTo("test")
-    }
-
-    @Test
-    fun getWhenMissingGuardReturnsMiss() {
-        coSpringCache.delegate.setCache("missing", DefaultCacheValue.missingGuard())
-
-        coSpringCache.get("missing").assert().isNull()
-    }
-
-    @Test
-    fun getWhenExpiredEvictsDelegate() {
-        val expiredCache = RawSpringCache(DefaultCacheValue("expired", ComputedTtlAt.at(-5)))
-        val expiredSpringCache = CoSpringCache("expired", expiredCache)
-
-        expiredSpringCache.get("expired").assert().isNull()
-        expiredCache.evicted.assert().isTrue()
-    }
-
-    @Test
-    fun getWithMatchingTypeReturnsValue() {
-        coSpringCache.put("typedString", "value")
-
-        coSpringCache.get("typedString", String::class.java).assert().isEqualTo("value")
-    }
-
-    @Test
-    fun getWithNullTypeReturnsValue() {
-        coSpringCache.put("typedAny", "value")
-
-        coSpringCache.get<Any>("typedAny", null).assert().isEqualTo("value")
-    }
-
-    @Test
-    fun getWithLoaderKeepsCachedNull() {
-        var loadCount = 0
-        coSpringCache.put("cachedNull", null)
-
-        val actual = coSpringCache.get("cachedNull") {
-            loadCount++
-            "loaded"
-        }
-
-        actual.assert().isNull()
-        loadCount.assert().isZero()
-    }
-
-    @Test
-    fun getWithTypeMismatchThrowsIllegalStateException() {
-        coSpringCache.put("typed", "value")
-
+    fun getWithTypeMismatchThrows() {
+        coSpringCache.put("key", "value")
         assertThrows<IllegalStateException> {
-            val actual: Int? = coSpringCache.get("typed", Int::class.javaObjectType)
-            actual.assert().isNull()
+            coSpringCache.get("key", Int::class.javaObjectType)
         }
+    }
+
+    @Test
+    fun missingIsMiss() {
+        delegate.setCache("missing", CacheValue.missing())
+        coSpringCache.get("missing").assert().isNull()
+        coSpringCache.put("putNull", null)
+        coSpringCache.get("putNull").assert().isNull()
+    }
+
+    @Test
+    fun getWithLoader() {
+        coSpringCache.get("key") { "loaded" }.assert().isEqualTo("loaded")
+        coSpringCache.get("key")?.get().assert().isEqualTo("loaded")
     }
 
     @Test
     fun getWithLoaderWrapsException() {
         assertThrows<SpringCache.ValueRetrievalException> {
-            coSpringCache.get("loaderException") {
-                throw IllegalStateException("boom")
-            }
+            coSpringCache.get("key") { throw IllegalStateException("boom") }
         }
+    }
+
+    @Test
+    fun getWithLoaderLoadsOnceUnderConcurrency() {
+        val loads = AtomicInteger()
+        val release = CountDownLatch(1)
+        val results = ConcurrentLinkedQueue<Any?>()
+        val executor = Executors.newFixedThreadPool(8)
+        try {
+            val futures = (1..8).map {
+                executor.submit {
+                    results.add(
+                        coSpringCache.get("sync") {
+                            loads.incrementAndGet()
+                            release.await(5, TimeUnit.SECONDS)
+                            "loaded"
+                        }
+                    )
+                }
+            }
+            while (loads.get() == 0) {
+                Thread.onSpinWait()
+            }
+            release.countDown()
+            futures.forEach { it.get(5, TimeUnit.SECONDS) }
+        } finally {
+            executor.shutdownNow()
+        }
+        loads.get().assert().isOne()
+        results.all { it == "loaded" }.assert().isTrue()
     }
 
     @Test
     fun evict() {
-        coSpringCache.put("evictTest", "test")
-        coSpringCache.evict("evictTest")
-        coSpringCache.get("evictTest").assert().isNull()
+        coSpringCache.put("key", "value")
+        coSpringCache.evict("key")
+        coSpringCache.get("key").assert().isNull()
     }
 
     @Test
-    fun clear() {
-        coSpringCache.put("clearTest", "test")
+    fun clearCoherentCacheClearsClientSide() {
+        coSpringCache.put("key", "value")
         coSpringCache.clear()
-        coSpringCache.get("clearTest").assert().isNull()
+        delegate.configuration.clientSideCache.size.assert().isZero()
     }
 
-    @Test
-    fun clearCoherentCache() {
-        val coherentCache = mockk<CoherentCache<Any, Any?>> {
-            every {
-                clientSideCache
-            } returns MapClientSideCache()
-        }
-        val coSpringCache = CoSpringCache("test", coherentCache)
-        coSpringCache.clear()
-    }
+    interface TestJoinCache : JoinCache<String, String, String, String>
 
     @Test
-    fun clearPlainDelegateCompletes() {
-        CoSpringCache("plain", RawSpringCache()).clear()
-    }
-
-    @Test
-    fun clearJoinCacheIsNotSilentNoOp() {
-        // A JoinCache proxy implements neither ClientSideCache nor CoherentCache,
-        // so the old clear() silently dropped the call. Spring's Cache.clear()
-        // contract requires the mapping to be removed. Wrap a SimpleJoinCache and
-        // assert clear() actually evicts the entries it holds.
-        val firstCache = MapClientSideCache<String>()
-        val joinCache = MapClientSideCache<String>()
-        val joinDelegate = SimpleJoinCache<String, String, String, String>(
-            firstCache,
-            joinCache,
-        ) { firstValue -> firstValue }
-        val joinValue: JoinValue<String, String, String> = DefaultJoinValue("first", "first", "second")
-        joinDelegate.setCache("k", DefaultCacheValue(joinValue, Long.MAX_VALUE))
-        joinDelegate.getCache("k").assert().isNotNull // entry present
-
-        @Suppress("UNCHECKED_CAST")
-        val coSpringCache = CoSpringCache("join", joinDelegate as Cache<Any, Any?>)
-        coSpringCache.clear()
-
-        // BUG: clear() was a silent no-op for the JoinCache delegate.
-        joinDelegate.getCache("k").assert().isNull()
-    }
-
-    @Test
-    fun clearJoinCacheProxyIsNotSilentNoOp() {
-        // Production join caches are JDK proxies from DefaultJoinCacheProxyFactory,
-        // whose interface list is [proxyInterface, JoinCache, JoinCacheMetadataCapable]
-        // — NOT CacheDelegated and NOT SimpleJoinCache. The fix above only handled a
-        // bare SimpleJoinCache; the proxied path must also clear its local tiers.
-        val firstCache = MapClientSideCache<String>()
-        val joinCache = MapClientSideCache<String>()
+    fun clearJoinCacheProxyClearsBothClientSides() {
+        val firstCache = inMemoryCache<String, String>()
+        val joinCache = inMemoryCache<String, String>()
         val cacheFactory = mockk<CacheFactory> {
             every { getCache<Cache<String, String>>("First") } returns firstCache
             every { getCache<Cache<String, String>>("Join") } returns joinCache
         }
-        val metadata = me.ahoo.cache.annotation.joinCacheMetadata<TestJoinCache>()
+        val metadata = joinCacheMetadata<TestJoinCache>().copy(firstCacheName = "First", joinCacheName = "Join")
         val joinKeyExtractorFactory = mockk<JoinKeyExtractorFactory> {
-            every { create<String, String>(metadata) } returns me.ahoo.cache.api.join.JoinKeyExtractor { it }
+            every { create<String, String>(metadata) } returns JoinKeyExtractor { it }
         }
-        val proxy = DefaultJoinCacheProxyFactory(cacheFactory, joinKeyExtractorFactory)
-            .create<TestJoinCache>(metadata)
+        val proxy = DefaultJoinCacheProxyFactory(cacheFactory, joinKeyExtractorFactory).create<TestJoinCache>(metadata)
+        proxy["k"] = JoinValue("first", "first", "second")
 
-        val joinValue: JoinValue<String, String, String> = DefaultJoinValue("first", "first", "second")
-        proxy.setCache("k", DefaultCacheValue(joinValue, Long.MAX_VALUE))
-        firstCache.size.assert().isEqualTo(1L) // first tier populated
-        joinCache.size.assert().isEqualTo(1L) // join tier populated
+        CoSpringCache("join", proxy.asAnyCache()).clear()
 
-        @Suppress("UNCHECKED_CAST")
-        val coSpringCache = CoSpringCache("join", proxy as Cache<Any, Any?>)
-        coSpringCache.clear()
-
-        // BUG: the proxied join cache's local tiers were not cleared.
-        firstCache.size.assert().isEqualTo(0L)
-        joinCache.size.assert().isEqualTo(0L)
+        firstCache.configuration.clientSideCache.size.assert().isZero()
+        joinCache.configuration.clientSideCache.size.assert().isZero()
     }
 
     @Test
-    fun retrieve() {
-        coSpringCache.put("retrieveTest", "test")
-        val valueWrapper = coSpringCache.retrieve("retrieveTest")!!.get()
-        valueWrapper.assert().isInstanceOf(SpringCache.ValueWrapper::class.java)
-        (valueWrapper as SpringCache.ValueWrapper).get().assert().isEqualTo("test")
-    }
-
-    @Test
-    fun retrieveWhenMissingReturnsNull() {
-        coSpringCache.retrieve("retrieveMissing")!!.get().assert().isNull()
-    }
-
-    @Test
-    fun retrieveDoesNotReadDelegateOnCallerThread() {
+    fun retrieveRunsOnAsyncExecutor() {
+        coSpringCache.put("key", "value")
         val callerThread = Thread.currentThread()
-        val started = CountDownLatch(1)
-        val release = CountDownLatch(1)
         var lookupThread: Thread? = null
-        val cache = object : RawSpringCache(DefaultCacheValue.forever("cached")) {
-            override fun getCache(key: Any): CacheValue<Any?>? {
+        val cache = CoSpringCache("async", delegate) { command ->
+            Thread {
                 lookupThread = Thread.currentThread()
-                started.countDown()
-                release.await(5, TimeUnit.SECONDS)
-                return super.getCache(key)
-            }
+                command.run()
+            }.start()
         }
-        val coSpringCache = CoSpringCache("async", cache)
-        val future = coSpringCache.retrieve("asyncLookup")!!
-
-        started.await(5, TimeUnit.SECONDS).assert().isTrue()
-        try {
-            (lookupThread == callerThread).assert().isFalse()
-        } finally {
-            release.countDown()
-        }
-        val valueWrapper = future.get()
-        valueWrapper.assert().isInstanceOf(SpringCache.ValueWrapper::class.java)
-        (valueWrapper as SpringCache.ValueWrapper).get().assert().isEqualTo("cached")
+        val valueWrapper = cache.retrieve("key")!!.get(5, TimeUnit.SECONDS) as SpringCache.ValueWrapper
+        valueWrapper.get().assert().isEqualTo("value")
+        (lookupThread !== callerThread).assert().isTrue()
     }
 
     @Test
-    fun retrieveReturnsValueWrapperForCachedNull() {
-        coSpringCache.put("retrieveCachedNull", null)
-
-        val valueWrapper = coSpringCache.retrieve("retrieveCachedNull")!!.get()
-
-        valueWrapper.assert().isInstanceOf(SpringCache.ValueWrapper::class.java)
-        (valueWrapper as SpringCache.ValueWrapper).get().assert().isNull()
+    fun retrieveAbsentCompletesWithNull() {
+        coSpringCache.retrieve("absent")!!.get().assert().isNull()
     }
 
     @Test
-    fun testRetrieve() {
-        coSpringCache.put("testRetrieve", "test")
-        coSpringCache.retrieve("testRetrieveNotFound", {
-            CompletableFuture.completedFuture("test")
-        }).get().assert().isEqualTo("test")
+    fun retrieveWithLoader() {
+        coSpringCache.retrieve("key") { CompletableFuture.completedFuture("loaded") }.get().assert().isEqualTo("loaded")
+        coSpringCache.get("key")?.get().assert().isEqualTo("loaded")
     }
 
     @Test
     fun retrieveWithLoaderKeepsCachedValue() {
-        var loadCount = 0
-        coSpringCache.put("asyncCached", "cached")
-
-        val actual = coSpringCache.retrieve("asyncCached") {
-            loadCount++
+        coSpringCache.put("key", "cached")
+        val loads = AtomicInteger()
+        coSpringCache.retrieve("key") {
+            loads.incrementAndGet()
             CompletableFuture.completedFuture("loaded")
-        }
-
-        actual.get().assert().isEqualTo("cached")
-        loadCount.assert().isZero()
+        }.get().assert().isEqualTo("cached")
+        loads.get().assert().isZero()
     }
 
     @Test
-    fun retrieveWithLoaderKeepsCachedNull() {
-        var loadCount = 0
-        coSpringCache.put("asyncCachedNull", null)
-
-        val actual = coSpringCache.retrieve("asyncCachedNull") {
-            loadCount++
-            CompletableFuture.completedFuture("loaded")
-        }
-
-        actual.get().assert().isNull()
-        loadCount.assert().isZero()
-    }
-
-    @Test
-    fun retrieveWithLoaderReturnsFailedFutureWhenLoaderThrows() {
-        val actual = coSpringCache.retrieve<String>("asyncLoaderException") {
-            throw IllegalStateException("boom")
-        }
-
-        assertThrows<java.util.concurrent.ExecutionException> {
-            actual.get()
-        }.cause.assert().isInstanceOf(IllegalStateException::class.java)
-    }
-
-    @Test
-    fun getCacheName() {
-        coSpringCache.cacheName.assert().isEqualTo("test")
-    }
-
-    @Test
-    fun getDelegate() {
-        coSpringCache.delegate.assert().isNotNull
+    fun retrieveWithLoaderFailure() {
+        val actual = coSpringCache.retrieve<String>("key") { throw IllegalStateException("boom") }
+        assertThrows<ExecutionException> { actual.get() }.cause.assert().isInstanceOf(IllegalStateException::class.java)
     }
 }
-
-private open class RawSpringCache(
-    private var cacheValue: CacheValue<Any?>? = null
-) : Cache<Any, Any?> {
-    var evicted: Boolean = false
-        private set
-
-    open override fun getCache(key: Any): CacheValue<Any?>? {
-        return cacheValue
-    }
-
-    override fun get(key: Any): Any? {
-        return cacheValue?.takeUnless {
-            it.isMissingGuard || it.isExpired
-        }?.value
-    }
-
-    override fun getTtlAt(key: Any): Long? {
-        return cacheValue?.takeUnless {
-            it.isMissingGuard
-        }?.ttlAt
-    }
-
-    override fun set(key: Any, ttlAt: Long, value: Any?) {
-        cacheValue = DefaultCacheValue(value, ttlAt)
-    }
-
-    override fun set(key: Any, value: Any?) {
-        cacheValue = DefaultCacheValue.forever(value)
-    }
-
-    override fun setCache(key: Any, value: CacheValue<Any?>) {
-        cacheValue = value
-    }
-
-    override fun evict(key: Any) {
-        evicted = true
-        cacheValue = null
-    }
-}
-
-@me.ahoo.cache.api.annotation.JoinCacheable(firstCacheName = "First", joinCacheName = "Join")
-interface TestJoinCache : me.ahoo.cache.api.join.JoinCache<String, String, String, String>

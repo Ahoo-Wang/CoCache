@@ -10,325 +10,124 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.join
 
-import io.mockk.mockk
-import io.mockk.verify
-import me.ahoo.cache.ComputedTtlAt
-import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.cache.api.annotation.JoinCacheable
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinValue
-import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.foreverSource
+import me.ahoo.cache.inMemoryCoherentCache
 import me.ahoo.cache.test.CacheSpec
-import me.ahoo.cosid.jvm.UuidGenerator
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
-import java.lang.reflect.Proxy
+import java.util.*
 
-/**
- * SimpleJoinCachingTest .
- *
- * @author ahoo wang
- */
 internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, OrderAddress>>() {
 
-    private lateinit var orderCache: MapClientSideCache<Order>
-    private lateinit var orderAddressCache: MapClientSideCache<OrderAddress>
+    private lateinit var orderCache: CoherentCache<String, Order>
+    private lateinit var orderAddressCache: CoherentCache<String, OrderAddress>
+    private val joinCache: JoinCache<String, Order, String, OrderAddress>
+        get() = cache as JoinCache<String, Order, String, OrderAddress>
 
-    override val missingGuard: JoinValue<Order, String, OrderAddress>
-        get() = DefaultJoinValue.missingGuardValue()
     override fun createCache(): Cache<String, JoinValue<Order, String, OrderAddress>> {
-        orderCache = MapClientSideCache()
-        orderAddressCache = MapClientSideCache()
-        return SimpleJoinCache(
-            orderCache,
-            orderAddressCache,
-        ) { firstValue -> firstValue.id }
+        orderCache = inMemoryCoherentCache()
+        orderAddressCache = inMemoryCoherentCache()
+        return SimpleJoinCache(orderCache, orderAddressCache) { it.id }
     }
 
     override fun createCacheEntry(): Pair<String, JoinValue<Order, String, OrderAddress>> {
-        val orderId = UuidGenerator.INSTANCE.generateAsString()
-        val order = Order(orderId)
-        val orderAddress = OrderAddress(order.id)
-        return orderId to DefaultJoinValue(order, orderId, orderAddress)
+        val orderId = UUID.randomUUID().toString()
+        return orderId to JoinValue(Order(orderId), orderId, OrderAddress(orderId))
     }
 
     @Test
-    fun evictJoinCache() {
-        val (key, value) = createCacheEntry()
-        cache[key] = value
-        cache[key].assert().isEqualTo(value)
-        val joinCache = cache as JoinCache<String, Order, String, OrderAddress>
-        joinCache.evict(key, key)
-        cache[key].assert().isNull()
+    fun getWithoutSecondValueKeepsFirstValue() {
+        val orderId = UUID.randomUUID().toString()
+        orderCache[orderId] = Order(orderId)
+
+        val actual = requireNotNull(cache[orderId])
+
+        actual.firstValue.assert().isEqualTo(Order(orderId))
+        actual.joinKey.assert().isEqualTo(orderId)
+        actual.secondValue.assert().isNull()
     }
 
     @Test
-    fun evictWhenFirstValueIsMissingGuardStillEvictsJoinCache() {
+    fun getWithMissingSecondValueUsesEarlierTtlAt() {
+        val orderId = UUID.randomUUID().toString()
+        orderCache.setCache(orderId, CacheValue.forever(Order(orderId)))
+        val secondMissing = CacheValue.missing<OrderAddress>(TtlAt.at(5))
+        orderAddressCache.setCache(orderId, secondMissing)
+
+        val actual = requireNotNull(cache.getCache(orderId))
+
+        actual.ttlAt.assert().isEqualTo(secondMissing.ttlAt)
+        actual.value?.secondValue.assert().isNull()
+    }
+
+    @Test
+    fun getWithMissingFirstValueIsMissing() {
+        val orderId = UUID.randomUUID().toString()
+        val missing = CacheValue.missing<Order>(TtlAt.at(5))
+        orderCache.setCache(orderId, missing)
+
+        val actual = requireNotNull(cache.getCache(orderId))
+
+        actual.isMissing.assert().isTrue()
+        actual.ttlAt.assert().isEqualTo(missing.ttlAt)
+    }
+
+    @Test
+    fun getLoadsComponentsThroughTheirSources() {
+        val orderId = UUID.randomUUID().toString()
+        val cache = SimpleJoinCache(
+            inMemoryCoherentCache(foreverSource(orderId to Order(orderId))),
+            inMemoryCoherentCache(foreverSource(orderId to OrderAddress(orderId)))
+        ) { it.id }
+
+        cache[orderId].assert().isEqualTo(JoinValue(Order(orderId), orderId, OrderAddress(orderId)))
+    }
+
+    @Test
+    fun setWithoutSecondValueDoesNotPopulateJoinCache() {
+        val orderId = UUID.randomUUID().toString()
+        cache.setCache(orderId, CacheValue.forever(JoinValue(Order(orderId), orderId, null)))
+
+        orderCache[orderId].assert().isEqualTo(Order(orderId))
+        orderAddressCache.getCache(orderId)?.isMissing.assert().isTrue()
+    }
+
+    @Test
+    fun evictOnlyEvictsFirstCache() {
         val (key, value) = createCacheEntry()
         cache[key] = value
-        cache[key].assert().isEqualTo(value)
-        // Degrade the first cache entry to a missing-guard so that
-        // `firstCache[key]` reads as null (see ComputedCache.get).
-        orderCache.setCache(key, DefaultCacheValue.missingGuard())
-
-        // Both underlying caches still physically hold entries: the guard in
-        // orderCache, and the live join value in orderAddressCache.
-        orderCache.getCache(key).assert().isNotNull
-        orderAddressCache.getCache(key).assert().isNotNull
 
         cache.evict(key)
 
-        // Evicting must always clear the first cache, even though the first
-        // value reads back as a (null-on-get) missing guard. The old impl
-        // returned early on `firstCache[key] == null` and cleared nothing.
-        orderCache.getCache(key).assert().isNull()
+        orderCache[key].assert().isNull()
+        orderAddressCache[key].assert().isEqualTo(value.secondValue)
     }
 
     @Test
-    fun evictWhenFirstValueIsExpiredStillEvictsBothCaches() {
+    fun evictBoth() {
         val (key, value) = createCacheEntry()
         cache[key] = value
-        // The first cache now holds a real entry; reading via the typed `get`
-        // would return null only once expired, but the underlying CacheValue
-        // stays present so the join key remains recoverable. Here the entry is
-        // still fresh, so both eviction targets must be cleared.
-        orderCache.getCache(key).assert().isNotNull
-        orderAddressCache.getCache(key).assert().isNotNull
 
-        cache.evict(key)
+        joinCache.evict(key, value.joinKey)
 
-        orderCache.getCache(key).assert().isNull()
-        orderAddressCache.getCache(key).assert().isNull()
-    }
-
-    @Test
-    fun getWhenSecondValueIsMissingGuardTreatsSecondAsAbsent() {
-        val orderId = UuidGenerator.INSTANCE.generateAsString()
-        val order = Order(orderId)
-        orderCache.setCache(orderId, DefaultCacheValue.forever(order))
-        val secondMissingGuard = DefaultCacheValue.missingGuard<CacheValue<OrderAddress>>(5)
-        orderAddressCache.setCache(orderId, secondMissingGuard)
-
-        val actualCacheValue = cache.getCache(orderId)
-        val actual = actualCacheValue!!.value
-
-        actualCacheValue.ttlAt.assert().isEqualTo(secondMissingGuard.ttlAt)
-        actual.firstValue.assert().isEqualTo(order)
-        actual.joinKey.assert().isEqualTo(orderId)
-        actual.secondValue.assert().isNull()
-    }
-
-    @Test
-    fun getWhenSecondValueIsAbsentKeepsFirstValue() {
-        val orderId = UuidGenerator.INSTANCE.generateAsString()
-        val order = Order(orderId)
-        orderCache.setCache(orderId, DefaultCacheValue.forever(order))
-
-        val actual = cache[orderId]
-
-        actual.assert().isNotNull()
-        actual!!.firstValue.assert().isEqualTo(order)
-        actual.joinKey.assert().isEqualTo(orderId)
-        actual.secondValue.assert().isNull()
-    }
-
-    @Test
-    fun getWhenSecondValueIsExpiredTreatsSecondAsAbsent() {
-        val orderId = UuidGenerator.INSTANCE.generateAsString()
-        val order = Order(orderId)
-        val firstCache = RawCache<Order>(DefaultCacheValue.forever(order))
-        val secondCache = RawCache<OrderAddress>(DefaultCacheValue(OrderAddress(order.id), ComputedTtlAt.at(-5)))
-        val cache = SimpleJoinCache(firstCache, secondCache) { firstValue -> firstValue.id }
-
-        val actual = cache[orderId]
-
-        actual.assert().isNotNull()
-        actual!!.firstValue.assert().isEqualTo(order)
-        actual.joinKey.assert().isEqualTo(orderId)
-        actual.secondValue.assert().isNull()
-    }
-
-    @Test
-    fun getWhenFirstValueIsExpiredReturnsMiss() {
-        val orderId = UuidGenerator.INSTANCE.generateAsString()
-        val firstCache = RawCache<Order>(DefaultCacheValue(Order(orderId), ComputedTtlAt.at(-5)))
-        val secondCache = RawCache<OrderAddress>()
-        val cache = SimpleJoinCache(firstCache, secondCache) { firstValue -> firstValue.id }
-
-        cache.getCache(orderId).assert().isNull()
-    }
-
-    @Test
-    fun setJoinValueWithoutSecondValueDoesNotPopulateJoinCache() {
-        val orderId = UuidGenerator.INSTANCE.generateAsString()
-        val order = Order(orderId)
-        val joinValue: JoinValue<Order, String, OrderAddress> = DefaultJoinValue(order, orderId, null)
-
-        cache.setCache(orderId, DefaultCacheValue.forever(joinValue))
-
-        orderCache[orderId].assert().isEqualTo(order)
-        orderAddressCache.getCache(orderId).assert().isNull()
-    }
-
-    @Test
-    fun setExpiredJoinValueEvictsPreviousJoinEntry() {
-        val orderId = UuidGenerator.INSTANCE.generateAsString()
-        val oldOrder = Order(orderId)
-        val oldAddress = OrderAddress(orderId)
-        cache.setCache(
-            orderId,
-            DefaultCacheValue.forever(DefaultJoinValue(oldOrder, orderId, oldAddress))
-        )
-        orderCache.getCache(orderId).assert().isNotNull()
-        orderAddressCache.getCache(orderId).assert().isNotNull()
-
-        val newJoinKey = UuidGenerator.INSTANCE.generateAsString()
-        val expiredJoinValue: JoinValue<Order, String, OrderAddress> = DefaultJoinValue(
-            Order(newJoinKey),
-            newJoinKey,
-            null,
-        )
-
-        cache.setCache(orderId, DefaultCacheValue(expiredJoinValue, ComputedTtlAt.at(-5)))
-
-        orderCache.getCache(orderId).assert().isNull()
-        orderAddressCache.getCache(orderId).assert().isNull()
-        orderAddressCache.getCache(newJoinKey).assert().isNull()
-    }
-
-    @Test
-    fun evictWhenFirstValueIsAbsentStillCompletes() {
-        val orderId = UuidGenerator.INSTANCE.generateAsString()
-
-        cache.evict(orderId)
-
-        orderCache.getCache(orderId).assert().isNull()
-        orderAddressCache.getCache(orderId).assert().isNull()
-    }
-
-    @Test
-    fun setMissingTtlPreservesTtlAtInFirstCache() {
-        val (key, _) = createCacheEntry()
-        val missingValue = DefaultCacheValue.missingGuard<CacheValue<JoinValue<Order, String, OrderAddress>>>(
-            missingGuard as MissingGuard,
-            5,
-        )
-
-        cache.setCache(key, missingValue)
-
-        orderCache.getCache(key)!!.ttlAt.assert().isEqualTo(missingValue.ttlAt)
-    }
-
-    @Test
-    fun closeClosesComposedCaches() {
-        val firstCache = mockk<CoherentCache<String, Order>>(relaxed = true)
-        val joinCache = mockk<CoherentCache<String, OrderAddress>>(relaxed = true)
-        val joinCaching = SimpleJoinCache(firstCache, joinCache) { _ -> "" }
-
-        joinCaching.close()
-
-        verify(exactly = 1) { firstCache.close() }
-        verify(exactly = 1) { joinCache.close() }
-    }
-
-    @Test
-    fun closeSkipsNonCloseableCaches() {
-        val orderId = UuidGenerator.INSTANCE.generateAsString()
-        val firstCache = RawCache<Order>(DefaultCacheValue.forever(Order(orderId)))
-        val joinCache = RawCache<OrderAddress>()
-        val joinCaching = SimpleJoinCache(firstCache, joinCache) { _ -> "" }
-
-        joinCaching.close() // 非 closeable 组合缓存必须被安全跳过，不抛异常
-    }
-
-    /**
-     * close() must swallow exceptions raised by firstCache.close() so a failing
-     * first cache does not prevent the join cache from being closed.
-     */
-    @Test
-    fun closeSwallowsFirstCacheCloseException() {
-        val firstCache = newThrowingCacheProxy<String, Order>(RuntimeException("first close boom"))
-        val joinCache = RawCache<OrderAddress>()
-        val joinCaching = SimpleJoinCache(firstCache, joinCache) { _ -> "" }
-
-        joinCaching.close() // must not throw
-    }
-
-    /**
-     * close() must swallow exceptions raised by joinCache.close(); even when the
-     * first cache closes cleanly the join-cache failure must not propagate.
-     */
-    @Test
-    fun closeSwallowsJoinCacheCloseException() {
-        val firstCache = RawCache<Order>()
-        val joinCache = newThrowingCacheProxy<String, OrderAddress>(RuntimeException("join close boom"))
-        val joinCaching = SimpleJoinCache(firstCache, joinCache) { _ -> "" }
-
-        joinCaching.close() // must not throw
-    }
-
-    private fun <K, V> newThrowingCacheProxy(closeException: RuntimeException): Cache<K, V> {
-        @Suppress("UNCHECKED_CAST")
-        return Proxy.newProxyInstance(
-            javaClass.classLoader,
-            arrayOf(Cache::class.java, AutoCloseable::class.java),
-        ) { _, method, _ ->
-            when (method.name) {
-                "close" -> throw closeException
-                "equals" -> false
-                "hashCode" -> 0
-                "toString" -> "ThrowingCacheProxy"
-                else -> null
-            }
-        } as Cache<K, V>
+        orderCache[key].assert().isNull()
+        orderAddressCache[value.joinKey].assert().isNull()
     }
 }
 
 data class Order(val id: String)
 
 data class OrderAddress(val orderId: String)
-
-private class RawCache<V>(
-    private var cacheValue: CacheValue<V>? = null
-) : Cache<String, V> {
-    override fun getCache(key: String): CacheValue<V>? {
-        return cacheValue
-    }
-
-    override fun get(key: String): V? {
-        return cacheValue?.takeUnless {
-            it.isMissingGuard || it.isExpired
-        }?.value
-    }
-
-    override fun getTtlAt(key: String): Long? {
-        return cacheValue?.takeUnless {
-            it.isMissingGuard
-        }?.ttlAt
-    }
-
-    override fun set(key: String, ttlAt: Long, value: V) {
-        cacheValue = DefaultCacheValue(value, ttlAt)
-    }
-
-    override fun set(key: String, value: V) {
-        cacheValue = DefaultCacheValue.forever(value)
-    }
-
-    override fun setCache(key: String, value: CacheValue<V>) {
-        cacheValue = value
-    }
-
-    override fun evict(key: String) {
-        cacheValue = null
-    }
-}
 
 @JoinCacheable(firstCacheName = "OrderAddress", joinCacheName = "Order")
 interface MockJoinCache : JoinCache<String, OrderAddress, String, Order>

@@ -13,8 +13,8 @@
 
 package me.ahoo.cache.spring.redis.codec
 
-import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.util.CacheSecondClock
+import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -55,7 +55,7 @@ internal class AtomicWriteConsistencyTest {
     @Test
     fun concurrentWritesProduceCompleteSingleVersion() {
         val key = "atomic-write:" + UUID.randomUUID().toString()
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 60
+        val ttlAt = TtlAt.at(60)
         val versionA = mapOf("fa" to "va1", "extra-a" to "va2")
         val versionB = mapOf("fb" to "vb1")
         val iterations = 50
@@ -69,7 +69,7 @@ internal class AtomicWriteConsistencyTest {
                     try {
                         startLatch.await()
                         repeat(iterations) {
-                            codecExecutor.executeAndEncode(key, DefaultCacheValue(version, ttlAt))
+                            codecExecutor.executeAndEncode(key, CacheValue.of(version, ttlAt))
                         }
                     } catch (e: Throwable) {
                         errors.incrementAndGet()
@@ -95,7 +95,7 @@ internal class AtomicWriteConsistencyTest {
     fun concurrentSetWritesProduceCompleteSingleVersion() {
         val setCodecExecutor = SetToSetCodecExecutor(stringRedisTemplate)
         val key = "atomic-write-set:" + UUID.randomUUID().toString()
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 60
+        val ttlAt = TtlAt.at(60)
         val versionA = setOf("sa1", "sa2", "extra-a")
         val versionB = setOf("sb1")
         val iterations = 50
@@ -109,7 +109,7 @@ internal class AtomicWriteConsistencyTest {
                     try {
                         startLatch.await()
                         repeat(iterations) {
-                            setCodecExecutor.executeAndEncode(key, DefaultCacheValue(version, ttlAt))
+                            setCodecExecutor.executeAndEncode(key, CacheValue.of(version, ttlAt))
                         }
                     } catch (e: Throwable) {
                         errors.incrementAndGet()

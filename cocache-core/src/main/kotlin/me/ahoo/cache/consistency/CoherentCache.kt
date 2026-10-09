@@ -13,31 +13,20 @@
 
 package me.ahoo.cache.consistency
 
-import me.ahoo.cache.ComputedCache
-import me.ahoo.cache.KeyFilter
+import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.NamedCache
-import me.ahoo.cache.api.client.ClientSideCache
-import me.ahoo.cache.api.source.CacheSource
-import me.ahoo.cache.converter.KeyConverter
-import me.ahoo.cache.distributed.DistributedCache
-import me.ahoo.cache.distributed.DistributedClientId
 
-interface CoherentCache<K, V> :
-    ComputedCache<K, V>,
-    DistributedClientId,
-    NamedCache,
-    CacheEvictedSubscriber,
-    AutoCloseable {
-    val cacheEvictedEventBus: CacheEvictedEventBus
-    val clientSideCache: ClientSideCache<V>
-    val distributedCache: DistributedCache<V>
-    val keyFilter: KeyFilter
-    val keyConverter: KeyConverter<K>
-    val cacheSource: CacheSource<K, V>
+/**
+ * 两级一致性缓存：L2（进程内）→ L1（分布式）→ 数据源。
+ *
+ * 只暴露缓存语义；组件构成通过只读的 [configuration] 查看（供运维端点使用）。
+ */
+interface CoherentCache<K, V> : Cache<K, V>, NamedCache, AutoCloseable {
+    val configuration: CoherentCacheConfiguration<K, V>
 
-    /**
-     * 空默认实现保证对既有实现者二进制兼容（-Xjvm-default=all-compatibility 编译为 default method）。
-     * DefaultCoherentCache 覆写为注销事件订阅并关闭分布式缓存。
-     */
-    override fun close() {}
+    override val cacheName: String
+        get() = configuration.cacheName
+
+    val clientId: String
+        get() = configuration.clientId
 }

@@ -14,9 +14,9 @@
 package me.ahoo.cache.spring.boot.starter
 
 import io.mockk.mockk
-import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.spring.redis.RedisDistributedCacheFactory
+import me.ahoo.cache.spring.redis.codec.AbstractCodecExecutor
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.springframework.boot.autoconfigure.AutoConfigurations
@@ -37,11 +37,13 @@ internal class CoCacheRedisPropertiesTest {
         contextRunner.run { context ->
             context.getBean(CoCacheProperties::class.java).let { properties ->
                 properties.redis.strictFailure.assert().isFalse()
-                properties.redis.missingGuardSentinel.assert().isEqualTo(MissingGuard.STRING_VALUE)
+                properties.redis.missingGuardSentinel.assert().isEqualTo(
+                    AbstractCodecExecutor.DEFAULT_MISSING_GUARD_SENTINEL
+                )
             }
             val factory = context.getBean(DistributedCacheFactory::class.java) as RedisDistributedCacheFactory
             factory.strictFailure.assert().isFalse()
-            factory.missingGuardSentinel.assert().isEqualTo(MissingGuard.STRING_VALUE)
+            factory.missingGuardSentinel.assert().isEqualTo(AbstractCodecExecutor.DEFAULT_MISSING_GUARD_SENTINEL)
         }
     }
 

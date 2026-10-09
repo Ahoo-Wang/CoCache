@@ -14,62 +14,43 @@
 package me.ahoo.cache.spring.redis
 
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
+import me.ahoo.cache.api.converter.KeyConverter
+import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.converter.KeyConverter
 import me.ahoo.cache.converter.ToStringKeyConverter
-import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor
 import me.ahoo.cache.test.MultipleInstanceSyncSpec
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
-import org.springframework.data.redis.connection.RedisStandaloneConfiguration
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
-import org.springframework.data.redis.core.StringRedisTemplate
-import org.springframework.data.redis.listener.RedisMessageListenerContainer
 import java.util.*
 
 class RedisMultipleInstanceSyncTest : MultipleInstanceSyncSpec<String, String>() {
-    private lateinit var lettuceConnectionFactory: LettuceConnectionFactory
-    private lateinit var redisMessageListenerContainer: RedisMessageListenerContainer
-    lateinit var stringRedisTemplate: StringRedisTemplate
-    lateinit var codecExecutor: StringToStringCodecExecutor
+    private lateinit var redis: RedisTestSupport
 
     @BeforeEach
     override fun setup() {
-        val redisStandaloneConfiguration = RedisStandaloneConfiguration()
-        lettuceConnectionFactory = LettuceConnectionFactory(redisStandaloneConfiguration)
-        lettuceConnectionFactory.afterPropertiesSet()
-        redisMessageListenerContainer = RedisMessageListenerContainer()
-        redisMessageListenerContainer.setConnectionFactory(lettuceConnectionFactory)
-        redisMessageListenerContainer.afterPropertiesSet()
-        redisMessageListenerContainer.start()
-        stringRedisTemplate = StringRedisTemplate(lettuceConnectionFactory)
-        stringRedisTemplate.afterPropertiesSet()
-        codecExecutor = StringToStringCodecExecutor(stringRedisTemplate)
+        redis = RedisTestSupport()
         super.setup()
     }
 
-    override fun createKeyConverter(): KeyConverter<String> = ToStringKeyConverter("")
+    @AfterEach
+    override fun tearDown() {
+        super.tearDown()
+        redis.close()
+    }
+
+    override fun createKeyConverter(): KeyConverter<String> = ToStringKeyConverter("sync-test:")
 
     override fun createClientSideCache(): ClientSideCache<String> = MapClientSideCache()
 
     override fun createDistributedCache(): DistributedCache<String> {
-        return RedisDistributedCache(
-            stringRedisTemplate,
-            codecExecutor,
-        )
+        return RedisDistributedCache(redis.redisTemplate, StringToStringCodecExecutor(redis.redisTemplate))
     }
 
-    override fun createCacheEvictedEventBus(): CacheEvictedEventBus {
-        return RedisCacheEvictedEventBus(
-            redisTemplate = StringRedisTemplate(lettuceConnectionFactory),
-            listenerContainer = redisMessageListenerContainer,
-        )
-    }
+    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = redis.newEventBus()
 
-    override fun createCacheName(): String {
-        return "RedisMultipleInstanceSyncTest"
-    }
+    override fun createCacheName(): String = "RedisMultipleInstanceSyncTest"
 
     override fun createCacheEntry(): Pair<String, String> {
         return UUID.randomUUID().toString() to UUID.randomUUID().toString()

@@ -21,11 +21,14 @@ import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
+/**
+ * 本实例 L2 的运维端点。
+ */
 @Endpoint(id = "cocacheClient")
 class CoCacheClientEndpoint(override val cacheFactory: CacheFactory) : AbstractCoCacheEndpoint() {
 
     private fun String.clientSideCache(): ClientSideCache<Any>? {
-        return coherentCache()?.clientSideCache
+        return coherentCache()?.configuration?.clientSideCache
     }
 
     @ReadOperation
@@ -36,8 +39,8 @@ class CoCacheClientEndpoint(override val cacheFactory: CacheFactory) : AbstractC
     @ReadOperation
     fun get(@Selector name: String, @Selector key: String): CacheValue<*>? {
         val coherentCache = name.coherentCache() ?: return null
-        val clientCacheKey = coherentCache.keyConverter.toStringKey(key)
-        return coherentCache.clientSideCache.getCache(clientCacheKey)
+        val cacheKey = coherentCache.configuration.keyConverter.toStringKey(key)
+        return coherentCache.configuration.clientSideCache.getCache(cacheKey)
     }
 
     @DeleteOperation

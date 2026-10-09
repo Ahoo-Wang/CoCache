@@ -13,47 +13,55 @@
 
 package me.ahoo.cache.annotation
 
-import me.ahoo.cache.ComputedCache
+import me.ahoo.cache.TtlPolicy
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CoCache
 import kotlin.reflect.KClass
 import kotlin.reflect.KType
+import kotlin.reflect.full.allSupertypes
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.jvm.jvmName
 
 object CoCacheMetadataParser {
     /**
-     * 解析 CoCache 注解定义的 Cache 接口
+     * 解析 [CoCache] 注解定义的缓存接口。
      *
-     * @param proxyInterface 必须继承 `Cache` 接口，必须是接口
+     * @param proxyInterface 必须是接口，且继承 [Cache]
      */
     fun parse(proxyInterface: KClass<out Cache<*, *>>): CoCacheMetadata {
         require(proxyInterface.java.isInterface) {
             "${proxyInterface.jvmName} must be interface."
         }
-        val coCacheAnnotation = proxyInterface.findAnnotation<CoCache>() ?: CoCache()
-        // 获取继承的 Cache<K,V> 中 V 的具体类型
-        val superCacheType = proxyInterface.supertypes.first {
-            it.classifier == Cache::class || it.classifier == ComputedCache::class
-        }
-
-        val keyType = superCacheType.getCacheGenericsType(0)
-        val valueType = superCacheType.getCacheGenericsType(1)
-
+        val annotation = proxyInterface.findAnnotation<CoCache>() ?: CoCache()
+        val cacheType = proxyInterface.resolveSupertype(Cache::class)
         return CoCacheMetadata(
             proxyInterface = proxyInterface,
-            name = coCacheAnnotation.name,
-            keyPrefix = coCacheAnnotation.keyPrefix,
-            keyExpression = coCacheAnnotation.keyExpression,
-            ttl = coCacheAnnotation.ttl,
-            ttlAmplitude = coCacheAnnotation.ttlAmplitude,
-            keyType = keyType,
-            valueType = valueType
+            cacheName = annotation.name.ifBlank { requireNotNull(proxyInterface.simpleName) },
+            keyPrefix = annotation.keyPrefix,
+            keyExpression = annotation.keyExpression,
+            ttlPolicy = TtlPolicy(
+                ttl = annotation.ttl,
+                ttlAmplitude = annotation.ttlAmplitude,
+                missingTtl = annotation.missingTtl
+            ),
+            keyType = cacheType.typeArgument(0),
+            valueType = cacheType.typeArgument(1)
         )
     }
+}
 
-    fun KType.getCacheGenericsType(index: Int): KType {
-        return requireNotNull(arguments[index].type)
+/**
+ * 解析 [supertype] 在 [this] 上的参数化类型，类型参数必须是具体类型。
+ */
+internal fun KClass<*>.resolveSupertype(supertype: KClass<*>): KType {
+    return requireNotNull(allSupertypes.firstOrNull { it.classifier == supertype }) {
+        "$jvmName must extend ${supertype.jvmName}."
+    }
+}
+
+internal fun KType.typeArgument(index: Int): KType {
+    return requireNotNull(arguments[index].type) {
+        "Type argument[$index] of [$this] must be a concrete type."
     }
 }
 

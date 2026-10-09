@@ -13,18 +13,28 @@
 
 package me.ahoo.cache.api
 
+/**
+ * Cache Setter .
+ *
+ * @author ahoo wang
+ */
 interface CacheSetter<K, V> {
-
-    operator fun set(key: K, ttlAt: Long, value: V)
-
-    operator fun set(key: K, value: V)
-
+    /**
+     * 写入缓存条目；已过期的条目等价于 [evict]。
+     */
     fun setCache(key: K, value: CacheValue<V>)
 
     /**
-     * evict cache.
-     *
-     * @param key cache key
+     * 以绝对到期时间写入；`null` 值写为负缓存。
      */
+    operator fun set(key: K, ttlAt: Long, value: V) {
+        setCache(key, CacheValue.of(value, ttlAt))
+    }
+
+    /**
+     * 按缓存自身的 TTL 策略写入；`null` 值写为负缓存。
+     */
+    operator fun set(key: K, value: V)
+
     fun evict(key: K)
 }

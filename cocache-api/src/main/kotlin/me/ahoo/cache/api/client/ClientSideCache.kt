@@ -10,21 +10,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.api.client
 
-import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.CacheStore
 
 /**
- * Client Side Cache .
+ * L2 进程内缓存存储。
  *
  * @author ahoo wang
  */
-interface ClientSideCache<V> : Cache<String, V> {
+interface ClientSideCache<V> : CacheStore<V> {
 
     val size: Long
 
     /**
-     * clear all cache.
+     * 清空全部条目。
      */
     fun clear()
 }
