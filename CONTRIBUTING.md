@@ -31,15 +31,15 @@ codec, or proxy code.
 
 ## Quality gates
 
-`./gradlew check` must pass before you push. CI enforces the same gates:
+`./gradlew check` must pass before you push. The `CI` workflow (`.github/workflows/ci.yml`) enforces the same gates, and `actionlint` checks workflow changes:
 
 | Gate | Tooling | Where |
 |------|---------|-------|
-| Coding conventions and static analysis | Detekt + detekt-formatting (`config/detekt/detekt.yml`). Findings are uploaded to GitHub code scanning | `Static Analysis` workflow |
-| License headers | `checkLicenseHeader` (Apache-2.0 header in every source file and build script) | `Static Analysis` workflow, `check` |
-| Unit tests | JUnit 5, MockK, fluent-assert, shared TCK specs in `cocache-test` | `Integration Test` workflow (per module) |
-| Integration tests | Real Redis service container (`cocache-spring-redis`, `cocache-spring-boot-starter`) | `Integration Test` workflow |
-| Coverage | JaCoCo aggregate gate (lines ≥ 90%, branches ≥ 80%) and Codecov status (project ≥ 90%, patch ≥ 80%) | `Codecov` workflow |
+| Coding conventions and static analysis | Detekt + detekt-formatting (`config/detekt/detekt.yml`). Findings are uploaded to GitHub code scanning | CI · Static Analysis |
+| License headers | `checkLicenseHeader` (Apache-2.0 header in every source file and build script) | CI · Static Analysis, `check` |
+| Unit tests | JUnit 5, MockK, fluent-assert, shared TCK specs in `cocache-test` | CI · Test & Coverage |
+| Integration tests | Real Redis service container (`cocache-spring-redis`, `cocache-spring-boot-starter`) | CI · Test & Coverage |
+| Coverage | JaCoCo aggregate gate (lines ≥ 90%, branches ≥ 80%) and Codecov status (project ≥ 90%, patch ≥ 80%) | CI · Test & Coverage |
 | Performance (on demand) | JMH `RedisCacheBenchmark` (`./gradlew :cocache-spring-redis:jmh`) | Run locally when touching the hit path |
 
 Integration tests need Redis at `localhost:6379`:

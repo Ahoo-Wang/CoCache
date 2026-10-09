@@ -7,166 +7,43 @@ description: Redis service container setup in CI, integration test modules, and 
 
 CoCache runs integration tests that verify the full stack against a real Redis instance. These tests validate distributed cache operations, pub/sub event propagation, and Spring Boot auto-configuration end-to-end.
 
-## CI Pipeline Architecture
+## CI Pipeline
 
-The integration tests run in GitHub Actions with separate jobs for unit and integration tests. Redis-dependent modules use a Redis service container.
-
-```mermaid
-graph TB
-    subgraph sg_85 ["Integration Test Workflow"]
-        direction TB
-        CoreJob["cocache-core-test<br>No Redis needed"]
-        SpringJob["cocache-spring-test<br>No Redis needed"]
-        RedisJob["cocache-spring-redis-test<br>Redis service container"]
-        StarterJob["cocache-spring-boot-starter-test<br>Redis service container"]
-    end
-
-    subgraph sg_86 ["Redis Service"]
-        direction TB
-        Redis["redis:latest<br>port 6379"]
-    end
-
-    CoreJob -->|"depends"| RedisJob
-    CoreJob -->|"depends"| StarterJob
-    Redis --> RedisJob
-    Redis --> StarterJob
-
-    style CoreJob fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style SpringJob fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style RedisJob fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style StarterJob fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-## GitHub Actions Workflow
-
-The integration test workflow is defined in `.github/workflows/integration-test.yml` and runs on every pull request.
-
-### Job 1: cocache-core-test
-
-Runs core unit tests without Redis:
-
-```yaml
-cocache-core-test:
-  name: CoCache Core Test
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@master
-    - uses: actions/setup-java@v5
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - run: ./gradlew cocache-core:clean cocache-core:check
-```
-
-### Job 2: cocache-spring-test
-
-Runs Spring integration tests without Redis:
-
-```yaml
-cocache-spring-test:
-  name: CoCache Spring Test
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@master
-    - uses: actions/setup-java@v5
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - run: ./gradlew cocache-spring:clean cocache-spring:check
-```
-
-### Job 3: cocache-spring-redis-test
-
-Runs Redis integration tests with a service container:
-
-```yaml
-cocache-spring-redis-test:
-  name: CoCache Spring Redis Test
-  needs: [cocache-core-test]
-  runs-on: ubuntu-latest
-  services:
-    redis:
-      image: redis
-      options: >-
-        --health-cmd "redis-cli ping"
-        --health-interval 10s
-        --health-timeout 5s
-        --health-retries 5
-      ports:
-        - 6379:6379
-  steps:
-    - uses: actions/checkout@master
-    - uses: actions/setup-java@v5
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - run: ./gradlew cocache-spring-redis:clean cocache-spring-redis:check
-```
-
-### Job 4: cocache-spring-boot-starter-test
-
-Runs Spring Boot auto-configuration integration tests:
-
-```yaml
-cocache-spring-boot-starter-test:
-  name: CoCache Spring Boot Starter Test
-  needs: [cocache-core-test]
-  runs-on: ubuntu-latest
-  services:
-    redis:
-      image: redis
-      options: >-
-        --health-cmd "redis-cli ping"
-        --health-interval 10s
-        --health-timeout 5s
-        --health-retries 5
-      ports:
-        - 6379:6379
-  steps:
-    - uses: actions/checkout@master
-    - uses: actions/setup-java@v5
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - run: ./gradlew cocache-spring-boot-starter:clean cocache-spring-boot-starter:check
-```
-
-Source: [.github/workflows/integration-test.yml](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml)
-
-## Redis Service Container
-
-The Redis service container configuration includes health checks to ensure Redis is ready before tests run:
+Integration tests run in the **Test & Coverage** job of [`ci.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/ci.yml) on every pull request and every push to `main`. A single `./gradlew check` runs all modules against one Redis service container. Unit and integration tests then feed the same aggregated JaCoCo report and coverage gate, and nothing runs twice.
 
 ```mermaid
 sequenceDiagram
 autonumber
     participant GH as GitHub Actions
-    participant Redis as Redis Container
-    participant Health as Health Check
-    participant Test as Gradle Test
+    participant Redis as redis:7-alpine
+    participant Gradle as ./gradlew check
 
-    GH->>Redis: Start redis:latest image
-    GH->>Redis: Expose port 6379
-    loop Health check
-        Health->>Redis: redis-cli ping
-        Redis-->>Health: PONG
+    GH->>Redis: Start service container (port 6379)
+    loop Health check every 5s (10 retries)
+        GH->>Redis: redis-cli ping
+        Redis-->>GH: PONG
     end
-    Note over Redis: Health check passes<br>(5 retries, 10s interval)
-    GH->>Test: Run ./gradlew check
-    Test->>Redis: Connect to localhost:6379
-    Test->>Test: Execute integration tests
-
+    GH->>Gradle: check -x detekt -x checkLicenseHeader
+    Gradle->>Redis: cocache-spring-redis and starter tests
+    Gradle->>Gradle: Other module tests, Dokka, JMH compile
+    Gradle->>Gradle: codeCoverageReport + codeCoverageVerification
+    GH->>GH: Upload coverage to Codecov (test reports on failure)
 ```
 
-Key health check parameters:
+```yaml
+services:
+  redis:
+    image: redis:7-alpine
+    options: >-
+      --health-cmd "redis-cli ping"
+      --health-interval 5s
+      --health-timeout 5s
+      --health-retries 10
+    ports:
+      - 6379:6379
+```
 
-| Parameter | Value | Purpose |
-|-----------|-------|---------|
-| `--health-cmd` | `redis-cli ping` | Command to verify Redis is responsive |
-| `--health-interval` | `10s` | Time between health check attempts |
-| `--health-timeout` | `5s` | Maximum wait for a single health check |
-| `--health-retries` | `5` | Number of failures before marking unhealthy |
+Redis tests use `RedisTestSupport`, whose listener container runs on a `SyncTaskExecutor`, so subscription resets complete inside `register()` and tests stay deterministic.
 
 ## Integration Test Modules
 
@@ -250,7 +127,7 @@ A running Redis instance is required. The simplest approach:
 
 ```bash
 # Using Docker
-docker run -d --name cocache-redis -p 6379:6379 redis:latest
+docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 
 # Verify
 redis-cli ping
@@ -275,31 +152,6 @@ redis-cli ping
 ```bash
 docker stop cocache-redis && docker rm cocache-redis
 ```
-
-## CI Job Dependency Graph
-
-```mermaid
-graph LR
-    subgraph sg_91 ["No Redis"]
-        A["cocache-core-test"]
-        B["cocache-spring-test"]
-    end
-
-    subgraph sg_92 ["With Redis"]
-        C["cocache-spring-redis-test"]
-        D["cocache-spring-boot-starter-test"]
-    end
-
-    A -->|"needs"| C
-    A -->|"needs"| D
-
-    style A fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style B fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style C fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style D fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-Note that `cocache-spring-test` runs independently (no Redis dependency and no downstream dependents). The `cocache-spring-redis-test` and `cocache-spring-boot-starter-test` both depend on `cocache-core-test` passing first.
 
 ## Example Application Integration
 

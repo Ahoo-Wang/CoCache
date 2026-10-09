@@ -90,7 +90,7 @@ cd wiki && pnpm build                   # Production build — the ONLY dead-lin
 ## Git Workflow
 
 - Main branch: `main` (protected; changes land via squash-merged PRs). Branch names: `<type>/<short-description>` (the type drives PR labels and release-note categories).
-- CI: integration-test.yml (per-module tests, Redis), static-analysis.yml (detekt → code scanning, license headers), codecov.yml (coverage gate), labeler.yml, package-deploy.yml (on release published), deploy-wiki.yml, gitee-sync.yml, renovate.yml.
+- CI: ci.yml (Static Analysis: actionlint + detekt → code scanning + license headers; Test & Coverage: `check` with Redis + coverage gate + Codecov), labeler.yml, deploy-wiki.yml (build on PR, deploy on main), package-deploy.yml (on release published), renovate.yml, gitee-sync.yml. Every workflow: least-privilege `permissions`, `timeout-minutes`, lint with `actionlint`.
 - Commits / PR titles: Conventional format (`feat(scope):`, `fix(scope):`, `perf:`, `docs(scope):`, `refactor!:` for breaking). See CONTRIBUTING.md.
 
 ## Boundaries
