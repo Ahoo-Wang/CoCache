@@ -23,6 +23,63 @@ import java.util.concurrent.atomic.AtomicReference
 class SingleFlightTest {
     private val singleFlight = SingleFlight<String, String>()
 
+    /**
+     * leader 线程第二次计算 hashCode（即注销调用时）阻塞到 [release]，用于在“注销”这一步暂停 leader。
+     */
+    private class PausingKey(private val leader: () -> Thread?, private val release: CountDownLatch) {
+        private val leaderHashes = AtomicInteger()
+
+        override fun hashCode(): Int {
+            if (Thread.currentThread() === leader() && leaderHashes.incrementAndGet() == 2) {
+                // 修复后结果在注销之后才发布，等待者无法在此期间重试：有界等待后放行
+                release.await(500, TimeUnit.MILLISECONDS)
+            }
+            return 1
+        }
+
+        override fun equals(other: Any?): Boolean = other === this
+    }
+
+    @Test
+    fun followerRetryAfterWakeStartsNewExecution() {
+        val flight = SingleFlight<PausingKey, String>()
+        val leaderStarted = CountDownLatch(1)
+        val releaseLeader = CountDownLatch(1)
+        val followerRetried = CountDownLatch(1)
+        val leaderRef = AtomicReference<Thread>()
+        val key = PausingKey(leaderRef::get, followerRetried)
+        val leader = Thread {
+            flight.execute(key) {
+                leaderStarted.countDown()
+                releaseLeader.await(5, TimeUnit.SECONDS)
+                "stale"
+            }
+        }
+        leaderRef.set(leader)
+        leader.start()
+        leaderStarted.await(5, TimeUnit.SECONDS).assert().isTrue()
+
+        val first = AtomicReference<String>()
+        val retried = AtomicReference<String>()
+        val follower = Thread {
+            first.set(flight.execute(key) { "unexpected" })
+            // 被唤醒后立即重试：必须开始新的执行，而不是再次加入已结束的调用
+            retried.set(flight.execute(key) { "fresh" })
+            followerRetried.countDown()
+        }
+        follower.start()
+        while (follower.state != Thread.State.WAITING) {
+            Thread.onSpinWait()
+        }
+        releaseLeader.countDown()
+        leader.join(5000)
+        follower.join(5000)
+
+        first.get().assert().isEqualTo("stale")
+        retried.get().assert().isEqualTo("fresh")
+        flight.inFlight.assert().isZero()
+    }
+
     @Test
     fun followerSharesLeaderResult() {
         val calls = AtomicInteger()

@@ -22,6 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * - 精确到 key，不存在分段锁的哈希碰撞阻塞。
  * - leader 执行期间同线程对同一 key 的重入会快速失败（否则将自我等待死锁）。
+ * - 等待者被唤醒时该调用已注销：随后对同一 key 的调用总是开始新的执行。
  */
 class SingleFlight<K : Any, R> {
     private class Call<R>(val owner: Thread) {
@@ -46,16 +47,17 @@ class SingleFlight<K : Any, R> {
             }
             return await(existing)
         }
-        try {
-            val result = block()
-            call.future.complete(result)
-            return result
+        // 先注销再发布结果：被唤醒的等待者若立即重试，必须开始新的执行，而不是再次加入这个已结束的调用
+        val result = try {
+            block()
         } catch (error: Throwable) {
+            calls.remove(key, call)
             call.future.completeExceptionally(error)
             throw error
-        } finally {
-            calls.remove(key, call)
         }
+        calls.remove(key, call)
+        call.future.complete(result)
+        return result
     }
 
     private fun await(call: Call<R>): R {
