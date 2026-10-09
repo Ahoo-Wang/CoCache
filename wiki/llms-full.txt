@@ -6871,6 +6871,17 @@ Defaults: `ttl = 3600`, `ttlAmplitude = 60`. Entries written together expire spr
 
 Time is read from `CacheClock`, a volatile epoch second refreshed every 100 ms. `System.currentTimeMillis()` did not scale across threads in our JMH runs on macOS.
 
+### Benchmark
+
+`RedisCacheBenchmark` (`cocache-spring-redis/src/jmh`) measures `l2Hit`, `l1Read`, `missLoad` and `set` against Redis at `localhost:6379`. `check` compiles it but never runs it:
+
+```bash
+./gradlew :cocache-spring-redis:jmh                                  # all, 1 thread
+./gradlew :cocache-spring-redis:jmh -PjmhThreads=8 -PjmhIncludes=l2Hit
+```
+
+Results go to `cocache-spring-redis/build/results/jmh/results.json`. Compare against the previous version on the same machine and in the same session. Absolute L1 numbers depend heavily on the Redis setup.
+
 ## Pattern Summary
 
 | Problem | Pattern | Config |

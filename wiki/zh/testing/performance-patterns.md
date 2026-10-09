@@ -90,6 +90,17 @@ actualTtl = random(ttl - ttlAmplitude .. ttl + ttlAmplitude)，钳为 > 0
 
 时间取自 `CacheClock`：每 100ms 刷新的 volatile 秒值。我们在 macOS 上的 JMH 测试中，`System.currentTimeMillis()` 无法随线程扩展。
 
+### 基准测试
+
+`RedisCacheBenchmark`（`cocache-spring-redis/src/jmh`）针对 `localhost:6379` 的 Redis 测量 `l2Hit`、`l1Read`、`missLoad` 与 `set`。`check` 只编译它，从不运行：
+
+```bash
+./gradlew :cocache-spring-redis:jmh                                  # 全部，1 线程
+./gradlew :cocache-spring-redis:jmh -PjmhThreads=8 -PjmhIncludes=l2Hit
+```
+
+结果写入 `cocache-spring-redis/build/results/jmh/results.json`。请在同一台机器、同一时段与上一版本对比；L1 的绝对数值高度依赖 Redis 环境。
+
 ## 模式总结
 
 | 问题 | 模式 | 配置 |

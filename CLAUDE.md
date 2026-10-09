@@ -52,6 +52,9 @@ Design goals, module boundaries, and invariants live in `docs/architecture.md` â
 
 # Publish to local Maven
 ./gradlew publishToMavenLocal
+
+# Hit-path JMH benchmark (requires Redis; compiled by check, never run by it)
+./gradlew :cocache-spring-redis:jmh -PjmhThreads=8 -PjmhIncludes=l2Hit
 ```
 
 ## Module Architecture

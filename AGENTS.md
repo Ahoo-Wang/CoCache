@@ -30,6 +30,7 @@ wiki/                — VitePress docs site, bilingual: en at root, zh mirror u
 ./gradlew detekt               # Code quality
 ./gradlew detektAutoFix        # Auto-fix
 ./gradlew publishToMavenLocal
+./gradlew :cocache-spring-redis:jmh -PjmhThreads=8 -PjmhIncludes=l2Hit  # Hit-path JMH (needs Redis; not part of check)
 
 # Wiki (VitePress)
 cd wiki && pnpm install && pnpm dev     # Dev server
@@ -76,7 +77,7 @@ cd wiki && pnpm build                   # Production build — the ONLY dead-lin
 - **Source loads are coalesced per key** via `SingleFlight` (original exceptions propagate to all waiters; same-key reentrancy fails fast). A successful load does not broadcast.
 - **Read-your-writes:** a reader records the stamp before reading and rejects a shared load whose starting stamp is older (it began before an invalidation the reader has already observed); it then reloads once.
 - **Proxies unwrap `InvocationTargetException`.**
-- **Hit-path performance (JMH-verified):** L2 is a plain bounded Caffeine cache — no per-entry `Expiry` (it writes node metadata on every read; a hot key stopped scaling: 224M → 11M ops/s at 8 threads). Expiry is checked on read via `TtlAt.isExpired`, which reads the cached `CacheClock` (not `System.currentTimeMillis()`, which did not scale on macOS). Redis reads use one atomic Lua script on the shared connection — never `executePipelined` (Lettuce pipelines take a dedicated connection; ~3× slower than two plain round trips without a pool). Re-run the 4.x vs 5.x JMH comparison when touching these paths.
+- **Hit-path performance (JMH-verified):** L2 is a plain bounded Caffeine cache — no per-entry `Expiry` (it writes node metadata on every read; a hot key stopped scaling: 224M → 11M ops/s at 8 threads). Expiry is checked on read via `TtlAt.isExpired`, which reads the cached `CacheClock` (not `System.currentTimeMillis()`, which did not scale on macOS). Redis reads use one atomic Lua script on the shared connection — never `executePipelined` (Lettuce pipelines take a dedicated connection; ~3× slower than two plain round trips without a pool). Re-run `RedisCacheBenchmark` (`./gradlew :cocache-spring-redis:jmh`, threads 1 and 8) against the previous version when touching these paths.
 - **Stateful Spring components resolve by bean name only** (`{cacheName}.ClientSideCache|.DistributedCache|.KeyConverter`); `CacheSource`/`JoinKeyExtractor` may fall back to a unique generic type.
 - **Wire compatibility:** Redis storage layout and the eviction message (`key@@publisherId`, split on the last `@@`) stay byte-compatible across versions.
 
