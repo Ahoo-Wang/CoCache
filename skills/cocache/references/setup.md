@@ -223,7 +223,7 @@ cocache:
 
 This property reaches only the caches the auto-configuration creates. If you define your own `DistributedCache` bean, you own its failure policy.
 
-Corrupted payloads self-heal: when the codec cannot decode a stored value, CoCache deletes the key and treats the read as a miss, so the next `get` reloads from the source instead of failing repeatedly on the same bad bytes.
+Corrupted payloads self-heal: when the codec cannot decode a stored value, the read is treated as a miss, and the reload writes a fresh value over the bad bytes. Reads never delete keys, because a delete could remove a valid value that another instance wrote concurrently.
 
 ### Custom Missing-Guard Sentinel
 

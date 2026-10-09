@@ -26,7 +26,7 @@ This guide gets you from a fresh clone to a mergeable pull request. Read [`docs/
 | `data class` | `CoherentCacheConfiguration`, `TtlPolicy`, `JoinValue`, metadata | Value semantics |
 | Extension functions | `KClass.toCoCacheMetadata()` | Readable parsing entry points |
 
-Compiler flags: `-Xjsr305=strict` (nullness of Java APIs is enforced) and `-Xjvm-default=all-compatibility` (interface bodies compile to Java default methods).
+Compiler flags: `-Xjsr305=strict` (nullness of Java APIs is enforced) and `-jvm-default=enable` (interface bodies compile to Java default methods).
 
 ### Libraries
 

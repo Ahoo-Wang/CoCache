@@ -26,4 +26,11 @@ class ExpJoinKeyExtractorTest {
         val joinKey = joinKeyExtractor.extract(orderAddress)
         orderAddress.orderId.assert().isEqualTo(joinKey)
     }
+
+    @Test
+    fun nullJoinKeyIsRejected() {
+        val joinKeyExtractor = ExpJoinKeyExtractor<OrderAddress>("#{null}")
+        runCatching { joinKeyExtractor.extract(OrderAddress("order")) }
+            .exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
 }

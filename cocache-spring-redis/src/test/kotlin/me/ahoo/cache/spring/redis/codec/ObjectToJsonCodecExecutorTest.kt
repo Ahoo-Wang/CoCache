@@ -30,12 +30,13 @@ internal class ObjectToJsonCodecExecutorTest : CodecExecutorSpec<Model>() {
     override fun createCacheValue(): Model = Model(UUID.randomUUID().toString())
 
     @Test
-    fun corruptedPayloadEvictsAndIsMiss() {
+    fun corruptedPayloadIsMissWithoutMutatingRedis() {
         val key = newKey()
         stringRedisTemplate.opsForValue()[key] = "{invalid-json"
 
         codecExecutor.executeAndDecode(key).assert().isNull()
-        stringRedisTemplate.hasKey(key).assert().isFalse()
+        // 读取无副作用：不删除，避免误删并发写入的有效值；由回源写回覆盖
+        stringRedisTemplate.opsForValue()[key].assert().isEqualTo("{invalid-json")
     }
 }
 

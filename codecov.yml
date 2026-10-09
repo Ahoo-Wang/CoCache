@@ -5,13 +5,13 @@ coverage:
   status:
     project:
       default:
-        # 整体覆盖率不得低于 90%，且单次变更最多下降 1%
-        target: 90%
+        # 整体覆盖率不得低于 95%，且单次变更最多下降 1%
+        target: 95%
         threshold: 1%
     patch:
       default:
-        # 新增/修改代码至少 80% 覆盖
-        target: 80%
+        # 新增/修改代码至少 85% 覆盖
+        target: 85%
         threshold: 1%
 ignore:
   - "cocache-test/.*"

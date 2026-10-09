@@ -285,7 +285,7 @@ dependencies {
 
 该模块将自动继承以下配置：
 - JDK 17 工具链
-- Kotlin 编译器标志（`-Xjsr305=strict`、`-Xjvm-default=all-compatibility`）
+- Kotlin 编译器标志（`-Xjsr305=strict`、`-jvm-default=enable`）
 - Detekt 配置
 - JUnit 5 测试配置
 - 通用测试依赖（mockk、fluent-assert、logback）

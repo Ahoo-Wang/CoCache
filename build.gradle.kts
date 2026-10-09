@@ -49,7 +49,7 @@ val libraryProjects = publishProjects - bomProjects
 ext.set("libraryProjects", libraryProjects)
 
 // 汇总所有模块的 Detekt SARIF，供 GitHub code scanning 上传
-val detektReportMerge by tasks.registering(ReportMergeTask::class) {
+val detektReportMerge = tasks.register<ReportMergeTask>("detektReportMerge") {
     output.set(rootProject.layout.buildDirectory.file("reports/detekt/merge.sarif"))
     input.from(allprojects.map { p -> p.tasks.withType<Detekt>().map { it.sarifReportFile } })
 }
@@ -71,7 +71,7 @@ allprojects {
         finalizedBy(detektReportMerge)
     }
     dependencies {
-        detektPlugins(dependenciesProject)
+        detektPlugins(project(dependenciesProject.path))
         detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting")
     }
     tasks.withType<Jar> {
@@ -105,7 +105,7 @@ configure(libraryProjects) {
     }
     tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
         compilerOptions {
-            freeCompilerArgs = listOf("-Xjsr305=strict", "-Xjvm-default=all-compatibility")
+            freeCompilerArgs = listOf("-Xjsr305=strict", "-jvm-default=enable")
             javaParameters = true
         }
     }
@@ -129,7 +129,7 @@ configure(libraryProjects) {
         }
     }
     dependencies {
-        api(platform(dependenciesProject))
+        api(platform(project(dependenciesProject.path)))
         testImplementation(platform(rootProject.libs.junit.bom))
         implementation("org.slf4j:slf4j-api")
         testImplementation("ch.qos.logback:logback-classic")
@@ -165,10 +165,10 @@ configure(publishProjects) {
             }
             maven {
                 name = "LinYiPackages"
-                url = uri(project.properties["linyiPackageReleaseUrl"].toString())
+                url = uri(providers.gradleProperty("linyiPackageReleaseUrl").orNull.toString())
                 credentials {
-                    username = project.properties["linyiPackageUsername"]?.toString()
-                    password = project.properties["linyiPackagePwd"]?.toString()
+                    username = providers.gradleProperty("linyiPackageUsername").orNull
+                    password = providers.gradleProperty("linyiPackagePwd").orNull
                 }
             }
         }
@@ -242,7 +242,7 @@ val licensedSources = files(
     "build.gradle.kts",
     "settings.gradle.kts",
 )
-val checkLicenseHeader by tasks.registering {
+val checkLicenseHeader = tasks.register("checkLicenseHeader") {
     group = "verification"
     description = "Verifies every Kotlin/Java source and build script carries the Apache-2.0 license header."
     val rootPath = rootDir.toPath()
@@ -258,4 +258,4 @@ tasks.check {
     dependsOn(checkLicenseHeader)
 }
 
-fun getPropertyOf(name: String) = project.properties[name]?.toString()
+fun getPropertyOf(name: String): String? = providers.gradleProperty(name).orNull

@@ -43,6 +43,21 @@ internal class CodecReadResultTest {
     }
 
     @Test
+    fun emptyResultIsMiss() {
+        codecReturning(emptyList()).executeAndDecode("key").assert().isNull()
+    }
+
+    @Test
+    fun hashWithoutFieldsIsMiss() {
+        // TTL 读到之后、HGETALL 之前 key 被删除：空集合必须按未命中处理
+        val redisTemplate = mockk<StringRedisTemplate> {
+            every { execute(any<RedisScript<List<*>>>(), any<List<String>>()) } returns listOf(10L)
+        }
+        MapToHashCodecExecutor(redisTemplate).executeAndDecode("key").assert().isNull()
+        SetToSetCodecExecutor(redisTemplate).executeAndDecode("key").assert().isNull()
+    }
+
+    @Test
     fun nullResultIsMiss() {
         codecReturning(null).executeAndDecode("key").assert().isNull()
     }

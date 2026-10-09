@@ -129,9 +129,9 @@ abstract class AbstractCodecExecutor<V, RAW : Any>(
         val value = try {
             decode(raw)
         } catch (e: Exception) {
-            // 自愈：载荷损坏或不兼容，淘汰后按未命中处理（回源重建）
-            log.warn(e) { "Corrupted payload at key[$key] - evict and treat as cache miss." }
-            redisTemplate.delete(key)
+            // 载荷损坏或不兼容：按未命中处理。读取不修改 L1——回源后的写回会覆盖该值；
+            // 此处若直接 DEL，可能误删并发写入的有效值。
+            log.warn(e) { "Corrupted payload at key[$key] - treat as cache miss; the reload overwrites it." }
             return null
         }
         return CacheValue.of(value, ttlAt)

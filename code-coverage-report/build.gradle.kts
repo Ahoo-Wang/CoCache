@@ -20,14 +20,15 @@ plugins {
 val libraryProjects = rootProject.ext.get("libraryProjects") as Iterable<Project>
 
 dependencies {
-    libraryProjects.forEach {
-        jacocoAggregation(it)
+    // cocache-test 是测试规格（TCK），不计入产品覆盖率（与 codecov.yml 的 ignore 一致）
+    libraryProjects.filter { it.path != ":cocache-test" }.forEach {
+        jacocoAggregation(project(it.path))
     }
 }
 
 reporting {
     reports {
-        val codeCoverageReport by creating(JacocoCoverageReport::class) {
+        register<JacocoCoverageReport>("codeCoverageReport") {
             testSuiteName = "test"
         }
     }
@@ -36,7 +37,7 @@ reporting {
 /**
  * 覆盖率门禁：低于阈值则构建失败（Codecov 在 PR 上做同样的增量控制）。
  */
-val codeCoverageVerification by tasks.registering(JacocoCoverageVerification::class) {
+val codeCoverageVerification = tasks.register<JacocoCoverageVerification>("codeCoverageVerification") {
     group = "verification"
     description = "Fails the build when aggregated coverage drops below the project thresholds."
     val report = tasks.named<JacocoReport>("codeCoverageReport")
@@ -48,11 +49,11 @@ val codeCoverageVerification by tasks.registering(JacocoCoverageVerification::cl
         rule {
             limit {
                 counter = "LINE"
-                minimum = "0.90".toBigDecimal()
+                minimum = "0.95".toBigDecimal()
             }
             limit {
                 counter = "BRANCH"
-                minimum = "0.80".toBigDecimal()
+                minimum = "0.90".toBigDecimal()
             }
         }
     }

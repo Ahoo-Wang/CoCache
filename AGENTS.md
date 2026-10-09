@@ -61,7 +61,7 @@ cd wiki && pnpm build                   # Production build — the ONLY dead-lin
 - **Detekt gotchas**:
   - `ArgumentListWrapping` is NOT overridden → uses detekt's default `maxLineLength: 120` independent of the project's 300. Multi-argument calls longer than 120 chars (e.g. `log.warn(e) { ... }`) must wrap.
   - Per-source-set tasks `detektMain`/`detektTest` are NOT wired into `check` (only the aggregate `detekt` is) and resolve different config — don't treat their failures as the project gate, but don't add new violations.
-- Kotlin compiler: `-Xjsr305=strict`, `-Xjvm-default=all-compatibility` (interface methods with bodies compile to default methods → backward-compatible additions are possible).
+- Kotlin compiler: `-Xjsr305=strict`, `-jvm-default=enable` (interface methods with bodies compile to default methods → backward-compatible additions are possible).
 - Java compiler: `-parameters`.
 - Conventions: Apache-2.0 license header on every source file (including tests); Chinese comments/KDoc are the established style.
 
@@ -99,7 +99,7 @@ cd wiki && pnpm build                   # Production build — the ONLY dead-lin
 - ✅ Always: Use fluent-assert `.assert()` in Kotlin tests
 - ✅ Always: Follow Detekt rules
 - ✅ Always: Keep the Apache-2.0 license header on every source file and build script (`checkLicenseHeader`)
-- ✅ Always: Keep aggregate coverage ≥ 90% lines / 80% branches (`codeCoverageVerification`)
+- ✅ Always: Keep aggregate coverage ≥ 95% lines / 90% branches (`codeCoverageVerification`)
 - ✅ Always: Extend TCK specs for new cache/codec implementations
 - ⚠️ Ask first: Adding new dependencies to version catalog
 - ⚠️ Ask first: Modifying cocache-api interfaces or wire formats (breaking-change risk)

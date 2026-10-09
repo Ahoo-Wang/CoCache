@@ -33,6 +33,13 @@ internal class EvictedEventsTest {
     }
 
     @Test
+    fun messageWithoutDelimiterIsRejected() {
+        assertThrows<IllegalArgumentException> {
+            EvictedEvents.fromMessage(messageOf("userCache", "no-delimiter"))
+        }
+    }
+
+    @Test
     fun roundTrip() {
         val cacheName = "userCache"
         val key = "user:1"

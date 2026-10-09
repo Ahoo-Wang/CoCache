@@ -26,7 +26,7 @@ description: 面向新贡献者的 CoCache 入门 -- 工具链、架构及其不
 | `data class` | `CoherentCacheConfiguration`、`TtlPolicy`、`JoinValue`、元数据 | 值语义 |
 | 扩展函数 | `KClass.toCoCacheMetadata()` | 可读的解析入口 |
 
-编译参数：`-Xjsr305=strict`（强制 Java API 的空安全）与 `-Xjvm-default=all-compatibility`（接口方法体编译为 Java 默认方法）。
+编译参数：`-Xjsr305=strict`（强制 Java API 的空安全）与 `-jvm-default=enable`（接口方法体编译为 Java 默认方法）。
 
 ### 依赖库
 

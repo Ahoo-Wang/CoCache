@@ -59,7 +59,7 @@ Two critical Kotlin compiler flags are applied to all library modules:
 | Flag | Purpose | Source |
 |------|---------|--------|
 | `-Xjsr305=strict` | Enforces strict null-safety for JSR-305 annotated APIs (e.g., Spring, Guava) | [`build.gradle.kts:95`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L95) |
-| `-Xjvm-default=all-compatibility` | Generates default method implementations in interfaces for Java interoperability | [`build.gradle.kts:95`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L95) |
+| `-jvm-default=enable` | Generates default method implementations in interfaces for Java interoperability | [`build.gradle.kts:95`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L95) |
 | `javaParameters = true` | Stores method parameter names in bytecode for reflection-based tools | [`build.gradle.kts:96`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L96) |
 
 Java compilation also passes `-parameters` for consistent parameter name retention:
@@ -255,7 +255,7 @@ A custom Logback configuration ([`config/logback.xml`](https://github.com/Ahoo-W
 jvmArgs = listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logback.xml")
 ```
 
-Coverage is enforced twice: the Gradle task `codeCoverageVerification` (part of `check`) fails the build below 90% line or 80% branch coverage, and [`codecov.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/codecov.yml) requires 90% project and 80% patch coverage on pull requests (1% threshold). `cocache-test` and `cocache-example` are excluded.
+Coverage is enforced twice: the Gradle task `codeCoverageVerification` (part of `check`) fails the build below 95% line or 90% branch coverage, and [`codecov.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/codecov.yml) requires 95% project and 85% patch coverage on pull requests (1% threshold). `cocache-test` and `cocache-example` are excluded.
 
 ## Build Commands
 
@@ -270,7 +270,7 @@ Coverage is enforced twice: the Gradle task `codeCoverageVerification` (part of 
 | `./gradlew detekt` | Run Detekt analysis only | Static analysis without build |
 | `./gradlew detektAutoFix` | Run Detekt with auto-fix | Applies safe formatting corrections |
 | `./gradlew codeCoverageReport` | Generate aggregated JaCoCo report | Uploaded to Codecov by CI |
-| `./gradlew codeCoverageVerification` | Enforce coverage thresholds | ≥ 90% lines, ≥ 80% branches |
+| `./gradlew codeCoverageVerification` | Enforce coverage thresholds | ≥ 95% lines, ≥ 90% branches |
 | `./gradlew checkLicenseHeader` | Verify Apache-2.0 headers | Part of `check` |
 | `./gradlew publishToMavenLocal` | Publish to local Maven repo | For local integration testing |
 
@@ -326,7 +326,7 @@ graph LR
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `ci.yml` | Push to `main`, pull request | **Static Analysis**: actionlint, Detekt on every module (merged SARIF uploaded to GitHub code scanning), `checkLicenseHeader`. **Test & Coverage**: `./gradlew check` against a `redis:7-alpine` service (all tests, Dokka, JMH compile, JaCoCo gate ≥ 90% lines / ≥ 80% branches), then Codecov upload. **Test (JDK 25)**: the same tests on the latest LTS runtime (`-PtestJavaVersion=25`; artifacts still compile for JDK 17). Test reports are uploaded as an artifact on failure. Superseded PR runs are cancelled. |
+| `ci.yml` | Push to `main`, pull request | **Static Analysis**: actionlint, Detekt on every module (merged SARIF uploaded to GitHub code scanning), `checkLicenseHeader`. **Test & Coverage**: `./gradlew check` against a `redis:7-alpine` service (all tests, Dokka, JMH compile, JaCoCo gate ≥ 95% lines / ≥ 90% branches), then Codecov upload. **Test (JDK 25)**: the same tests on the latest LTS runtime (`-PtestJavaVersion=25`; artifacts still compile for JDK 17). Test reports are uploaded as an artifact on failure. Superseded PR runs are cancelled. |
 | `labeler.yml` | Pull request (`pull_request_target`, no checkout) | Labels PRs by module, changed paths and branch prefix; labels drive release-note categories (`.github/release.yml`). |
 | `deploy-wiki.yml` | `wiki/**` changes | Builds the VitePress site on PRs; builds and deploys to GitHub Pages on `main`. |
 | `package-deploy.yml` | Release **published** | Re-runs `clean check`, then publishes signed artifacts to GitHub Packages and Maven Central. One run per tag, never cancelled. |
