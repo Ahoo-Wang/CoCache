@@ -102,7 +102,9 @@ flowchart LR
 - Write-backs take the stamp **before** reading. They skip the write if the stamp has already changed, and they re-check after writing:
   - A source write-back that lost the race is undone in L1 and L2 and re-broadcast.
   - An L1 → L2 fill that lost the race is undone in L2.
-- Because of this ordering, at least one side always removes the stale copy, however the two interleave. A stripe collision only skips a write-back, which lowers the hit rate but never affects correctness.
+- Because of this ordering, at least one side always removes the stale copy, however the two interleave.
+- Readers also record the stamp before reading. A reader rejects a coalesced load that started before an invalidation it has already observed (e.g. its own `evict` followed by `get`) and reloads once, so a thread always reads its own writes.
+- A stripe collision never affects correctness. It costs an extra skipped write-back; if it lands exactly between the write and the re-check, it also costs one extra L1 delete and broadcast.
 
 This also closes the 4.x gap where a **local** `evict` did not stop an in-flight load on the same instance.
 

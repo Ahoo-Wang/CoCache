@@ -58,9 +58,9 @@ autonumber
 
     CC->>RDC: getCache(key)
     RDC->>CE: executeAndDecode(key)
-    CE->>R: pipeline: readRaw(key) + TTL(key)
-    R-->>CE: [raw, ttl]
-    alt raw empty or ttl == -2
+    CE->>R: EVALSHA read-script key → {ttl, ...raw}
+    R-->>CE: [ttl, raw...]
+    alt ttl == -2 or raw empty
         CE-->>RDC: null
     else raw is sentinel
         CE-->>RDC: MissingValue(ttlAt)
@@ -73,7 +73,7 @@ autonumber
     RDC-->>CC: result (DataAccessException → null unless strict)
 ```
 
-- One round trip per L1 read.
+- One round trip per L1 read: an atomic Lua script on the shared connection. Do not use `executePipelined` here: Lettuce pipelines need a dedicated connection, which without a pool costs more than two plain round trips.
 - **A missing key is a miss, never a negative cache.** In 4.x a key deleted between the separate `TTL` and `GET` calls decoded as a negative cache, which could pin "not found" into L2 until the old TTL.
 - `ttlAt = now + ttl`, or `FOREVER` for TTL `-1`. The value is reconstructed from Redis expiry, so it can drift by ±1 s.
 
@@ -99,7 +99,7 @@ classDiagram
     }
     class AbstractCodecExecutor~V, RAW~ {
         <<abstract>>
-        #readRaw(key)
+        #readScript: RedisScript
         #toRaw(result) RAW?
         #isMissingGuard(raw) Boolean
         #decode(raw) V
@@ -139,7 +139,7 @@ classDiagram
 
 The sentinel is constructor-injectable (`missingGuardSentinel`, property `cocache.redis.missing-guard-sentinel`). Custom and default sentinels do not recognize each other, so switch the whole cluster at once.
 
-To write a codec for another structure, extend `AbstractCodecExecutor` and implement `readRaw` (queue a read command in the pipeline), `toRaw`, `isMissingGuard`, `decode`, `encode`, `encodeMissingGuard`, and `writeRaw`.
+To write a codec for another structure, extend `AbstractCodecExecutor` and implement `readScript` (via `readScript("GET" | "HGETALL" | "SMEMBERS")`), `toRaw` (elements after the TTL), `isMissingGuard`, `decode`, `encode`, `encodeMissingGuard`, and `writeRaw`.
 
 ## RedisCacheEvictedEventBus
 

@@ -77,14 +77,14 @@ classDiagram
 
 | Implementation | Behavior | Source |
 |----------------|----------|--------|
-| `CaffeineClientSideCache` (default) | Bounded (`maximumSize`, default 10 000); each entry expires at its own `ttlAt` via a Caffeine `Expiry`; optional `expireAfterAccess` | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
+| `CaffeineClientSideCache` (default) | Bounded (`maximumSize`, default 10 000); expired entries are evicted when read; optional `expireAfterAccess`. No per-entry `Expiry`: it writes node metadata on every read and stops a hot key from scaling | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
 | `MapClientSideCache` | Unbounded `ConcurrentHashMap`, expired entries removed on read -- tests or small fixed key sets only | [MapClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/MapClientSideCache.kt) |
 
 Configure the default L2 with [`@CaffeineCache`](../api/annotations.md#caffeinecache) or replace it with a bean named `{cacheName}.ClientSideCache`.
 
 ## L1 -- DistributedCache (Redis)
 
-[`RedisDistributedCache`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt) delegates to a `CodecExecutor`. A read is **one pipelined round trip** that fetches the raw value and its TTL together.
+[`RedisDistributedCache`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt) delegates to a `CodecExecutor`. A read is **one round trip**: an atomic Lua script (EVALSHA on the shared connection) returns the TTL and the raw value together.
 
 ```mermaid
 sequenceDiagram
@@ -96,9 +96,9 @@ autonumber
 
     CC->>DC: getCache(key)
     DC->>CE: executeAndDecode(key)
-    CE->>R: PIPELINE [GET/HGETALL/SMEMBERS key, TTL key]
-    R-->>CE: [raw, ttl]
-    alt raw absent or ttl == -2
+    CE->>R: EVALSHA read-script key → {ttl, ...raw}
+    R-->>CE: [ttl, raw...]
+    alt ttl == -2 or raw absent
         CE-->>CC: null (miss → reload)
     else raw == sentinel
         CE-->>CC: MissingValue(ttlAt)
@@ -112,7 +112,7 @@ autonumber
 
 Rules:
 
-- **An L1 miss is never a negative cache.** Only a stored sentinel decodes to `MissingValue`. A key deleted between the two pipelined commands reads as a miss.
+- **An L1 miss is never a negative cache.** Only a stored sentinel decodes to `MissingValue`; an absent key or value reads as a miss.
 - Writes clamp the remaining TTL to at least one second; a `FOREVER` value is written without expiry; an already expired value deletes the key.
 - **Failure degradation:** `DataAccessException` on read → miss; on write/evict → `WARN`. Set `cocache.redis.strict-failure=true` to rethrow (see [Configuration](/guide/configuration#redis-failure-degradation)).
 

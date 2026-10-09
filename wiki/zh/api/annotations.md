@@ -55,7 +55,7 @@ interface OrderCache : Cache<OrderId, Order>
 
 ## @CaffeineCache
 
-配置默认 L2（`CaffeineClientSideCache`）。不标注时使用全部默认值。条目总是在自身 `ttlAt` 到期，无需配置写后过期。
+配置默认 L2（`CaffeineClientSideCache`）。不标注时使用全部默认值。过期条目在读取时淘汰（L2 受 `maximumSize` 约束），无需配置写后过期。
 
 | 参数 | 类型 | 默认值 | 说明 | 源码 |
 |------|------|--------|------|------|

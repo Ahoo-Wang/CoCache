@@ -55,7 +55,7 @@ interface OrderCache : Cache<OrderId, Order>
 
 ## @CaffeineCache
 
-Configures the default L2 (`CaffeineClientSideCache`). Without the annotation all defaults apply. Entries always expire at their own `ttlAt`, so no write-expiry setting is needed.
+Configures the default L2 (`CaffeineClientSideCache`). Without the annotation all defaults apply. Expired entries are evicted when read (L2 is bounded by `maximumSize`), so no write-expiry setting is needed.
 
 | Parameter | Type | Default | Description | Source |
 |-----------|------|---------|-------------|--------|

@@ -48,7 +48,12 @@ class DefaultCoherentCache<K, V>(
     private val cacheSource = configuration.cacheSource
     private val ttlPolicy = configuration.ttlPolicy
     private val stamps = InvalidationStamps()
-    private val loads = SingleFlight<String, CacheValue<V>>()
+    private val loads = SingleFlight<String, Loaded<V>>()
+
+    /**
+     * 一次 L1 读取/回源的结果，附带该次加载开始时的失效戳。
+     */
+    private class Loaded<V>(val cacheValue: CacheValue<V>, val stamp: Long)
     private val closed = AtomicBoolean(false)
 
     override val cacheName: String = configuration.cacheName
@@ -64,28 +69,34 @@ class DefaultCoherentCache<K, V>(
         if (keyFilter.notExist(cacheKey)) {
             return ttlPolicy.missing()
         }
-        return loads.execute(cacheKey) {
-            loadThrough(key, cacheKey)
+        // 未命中才取戳（命中路径零额外开销）：先于本次读取发生的失效此时必已递增该戳，
+        // 本次读取不得接受开始于这些失效之前的加载结果
+        val observedStamp = stamps.current(cacheKey)
+        val loaded = loads.execute(cacheKey) { loadThrough(key, cacheKey) }
+        if (loaded.stamp >= observedStamp) {
+            return loaded.cacheValue
         }
+        // 共享到的加载开始于本次读取之前的某次失效（如本线程先 evict 再 get）：其结果可能早于该失效，必须重新加载。
+        // 新一轮加载必然开始于上一轮结束之后，因此至多重试一次。
+        return loads.execute(cacheKey) { loadThrough(key, cacheKey) }.cacheValue
     }
 
     /**
      * 由 [SingleFlight] leader 执行：同一 key 在本实例内同一时刻只有一个线程访问 L1 与数据源。
      */
-    private fun loadThrough(key: K, cacheKey: String): CacheValue<V> {
+    private fun loadThrough(key: K, cacheKey: String): Loaded<V> {
         val stamp = stamps.current(cacheKey)
         distributedCache.getCache(cacheKey)?.let {
             if (!it.isExpired) {
                 fillClientSide(cacheKey, it, stamp)
-                return it
+                return Loaded(it, stamp)
             }
         }
         val loaded = cacheSource.loadCacheValue(key) ?: ttlPolicy.missing()
-        if (loaded.isExpired) {
-            return loaded
+        if (!loaded.isExpired) {
+            writeBack(cacheKey, loaded, stamp)
         }
-        writeBack(cacheKey, loaded, stamp)
-        return loaded
+        return Loaded(loaded, stamp)
     }
 
     private fun fillClientSide(cacheKey: String, cacheValue: CacheValue<V>, stamp: Long) {

@@ -61,7 +61,7 @@ interface UserCache : Cache<String, User>
 
 ## @CaffeineCache 注解
 
-配置默认 L2（`CaffeineClientSideCache`）。该注解可选，不标注时使用下列默认值。条目在自身 `ttlAt` 到期。
+配置默认 L2（`CaffeineClientSideCache`）。该注解可选，不标注时使用下列默认值。过期条目在读取时淘汰。
 
 | 参数 | 类型 | 默认值 | 说明 | 源码 |
 |------|------|--------|------|------|

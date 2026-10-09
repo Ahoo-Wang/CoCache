@@ -18,7 +18,7 @@ import java.time.Duration
 /**
  * 绝对到期时间（纪元秒）。
  *
- * 时间以秒为精度，统一取自 [currentTime]；[FOREVER] 表示永不过期。
+ * 时间以秒为精度，统一取自 [currentTime]（缓存时钟）；[FOREVER] 表示永不过期。
  *
  * @author ahoo wang
  */
@@ -55,11 +55,11 @@ interface TtlAt {
         private val FOREVER_DURATION: Duration = Duration.ofSeconds(Long.MAX_VALUE)
 
         /**
-         * 当前纪元秒。
+         * 当前纪元秒，取自 [CacheClock]（最多滞后 [CacheClock.TICK_MILLIS] 毫秒）。
          */
         @JvmStatic
         fun currentTime(): Long {
-            return System.currentTimeMillis() / 1000
+            return CacheClock.currentTime()
         }
 
         @JvmStatic

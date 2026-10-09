@@ -82,13 +82,13 @@ actualTtl = random(ttl - ttlAmplitude .. ttl + ttlAmplitude)，钳为 > 0
 
 | 层级 | 成本 | 原因 |
 |------|------|------|
-| L2 命中 | 一次 Caffeine 查找 + `isExpired` 检查 | 有界 Caffeine；条目通过 `Expiry` 在自身 `ttlAt` 到期，过期条目被主动回收 |
-| L1 命中 | 一次 Redis 往返 | 值与 TTL 在同一个 pipeline 中读取 |
+| L2 命中 | 一次 Caffeine 查找 + `isExpired` 检查 | 有界 Caffeine，不使用条目级 `Expiry`（它会让每次读取写元数据，热点 key 无法扩展）；`isExpired` 读取缓存时钟 `CacheClock` |
+| L1 命中 | 一次 Redis 往返 | 原子 Lua 脚本在共享连接上同时返回 TTL 与值（Lettuce pipeline 需要专用连接） |
 | key 转换 | 编译后的 SpEL | `ExpKeyConverter` 使用 `SpelCompilerMode.MIXED` |
 | 代理分派 | 对委托对象的反射调用 | 除参数数组外无额外分配 |
 | 回源成功 | 不广播 | L1 为空时，其它实例不持有有效副本，无需发事件 |
 
-时间取自 `System.currentTimeMillis()`，精度为秒。现代 JVM 上无需后台时钟线程。
+时间取自 `CacheClock`：每 100ms 刷新的 volatile 秒值。我们在 macOS 上的 JMH 测试中，`System.currentTimeMillis()` 无法随线程扩展。
 
 ## 模式总结
 

@@ -77,14 +77,14 @@ classDiagram
 
 | 实现 | 行为 | 源码 |
 |------|------|------|
-| `CaffeineClientSideCache`（默认） | 有界（`maximumSize`，默认 10000）；通过 Caffeine `Expiry` 让每个条目在自身 `ttlAt` 到期；可选 `expireAfterAccess` | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
+| `CaffeineClientSideCache`（默认） | 有界（`maximumSize`，默认 10000）；过期条目在读取时淘汰；可选 `expireAfterAccess`。不使用条目级 `Expiry`：它会让每次读取都写节点元数据，热点 key 无法随线程扩展 | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
 | `MapClientSideCache` | 无界 `ConcurrentHashMap`，过期条目在读取时淘汰 -- 仅用于测试或 key 集合固定且较小的场景 | [MapClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/MapClientSideCache.kt) |
 
 用 [`@CaffeineCache`](../api/annotations.md#caffeinecache) 配置默认 L2，或声明名为 `{cacheName}.ClientSideCache` 的 bean 替换它。
 
 ## L1 -- DistributedCache（Redis）
 
-[`RedisDistributedCache`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt) 委托给 `CodecExecutor`。一次读取是**一次 pipeline 往返**，同时取回原始值与 TTL。
+[`RedisDistributedCache`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt) 委托给 `CodecExecutor`。一次读取是**一次往返**：原子的 Lua 脚本（在共享连接上 EVALSHA）同时返回 TTL 与原始值。
 
 ```mermaid
 sequenceDiagram
@@ -96,9 +96,9 @@ autonumber
 
     CC->>DC: getCache(key)
     DC->>CE: executeAndDecode(key)
-    CE->>R: PIPELINE [GET/HGETALL/SMEMBERS key, TTL key]
-    R-->>CE: [raw, ttl]
-    alt raw absent or ttl == -2
+    CE->>R: EVALSHA read-script key → {ttl, ...raw}
+    R-->>CE: [ttl, raw...]
+    alt ttl == -2 or raw absent
         CE-->>CC: null (miss → reload)
     else raw == sentinel
         CE-->>CC: MissingValue(ttlAt)
@@ -112,7 +112,7 @@ autonumber
 
 规则：
 
-- **L1 未命中绝不等于负缓存。** 只有存储中的哨兵记录才解码为 `MissingValue`；两条 pipeline 命令之间被删除的 key 按未命中处理。
+- **L1 未命中绝不等于负缓存。** 只有存储中的哨兵记录才解码为 `MissingValue`；key 或值不存在都按未命中处理。
 - 写入时剩余 TTL 至少钳为 1 秒；`FOREVER` 写为不过期；已过期的值直接删除 key。
 - **故障降级：** 读出现 `DataAccessException` → 未命中；写/淘汰出现 → `WARN`。设置 `cocache.redis.strict-failure=true` 改为重抛（见[配置](/zh/guide/configuration#redis-故障降级)）。
 

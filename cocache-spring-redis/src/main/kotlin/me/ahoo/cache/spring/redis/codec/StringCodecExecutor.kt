@@ -13,8 +13,8 @@
 
 package me.ahoo.cache.spring.redis.codec
 
-import org.springframework.data.redis.core.RedisOperations
 import org.springframework.data.redis.core.StringRedisTemplate
+import org.springframework.data.redis.core.script.RedisScript
 import java.time.Duration
 
 /**
@@ -25,12 +25,14 @@ abstract class StringCodecExecutor<V>(
     missingGuardSentinel: String = DEFAULT_MISSING_GUARD_SENTINEL,
 ) : AbstractCodecExecutor<V, String>(redisTemplate, missingGuardSentinel) {
 
-    override fun RedisOperations<String, String>.readRaw(key: String) {
-        opsForValue().get(key)
+    companion object {
+        private val READ_SCRIPT: RedisScript<List<*>> = readScript("GET")
     }
 
-    override fun toRaw(result: Any?): String? {
-        return result as String?
+    override val readScript: RedisScript<List<*>> = READ_SCRIPT
+
+    override fun toRaw(elements: List<*>): String? {
+        return elements.firstOrNull() as String?
     }
 
     override fun isMissingGuard(raw: String): Boolean {

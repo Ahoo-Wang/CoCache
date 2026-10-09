@@ -389,6 +389,55 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
         finished.await(5, TimeUnit.SECONDS).assert().isTrue()
     }
 
+    /**
+     * 读己之写：线程先更新数据源并 evict，再 get —— 即使存在开始于 evict 之前的在途回源，也不得读到 evict 之前的旧值。
+     */
+    @Test
+    fun `get after own evict never shares a load that started before the evict`() {
+        val (key, value) = createCacheEntry()
+        val (_, newValue) = createCacheEntry()
+        val loadStarted = CountDownLatch(1)
+        val releaseLoad = CountDownLatch(1)
+        val calls = AtomicInteger()
+        loader = {
+            if (calls.incrementAndGet() == 1) {
+                // 第一次回源读到 evict 之前的旧数据，并阻塞到测试放行
+                loadStarted.countDown()
+                releaseLoad.await(5, TimeUnit.SECONDS)
+                CacheValue.forever(value)
+            } else {
+                CacheValue.forever(newValue)
+            }
+        }
+        val leaderFinished = CountDownLatch(1)
+        Thread {
+            coherentCache.getCache(key)
+            leaderFinished.countDown()
+        }.start()
+        loadStarted.await(5, TimeUnit.SECONDS).assert().isTrue()
+
+        val result = AtomicReference<V?>()
+        val evicted = CountDownLatch(1)
+        val readerFinished = CountDownLatch(1)
+        val reader = Thread {
+            // 数据源已更新为 newValue（由第二次回源体现）
+            coherentCache.evict(key)
+            evicted.countDown()
+            result.set(coherentCache[key])
+            readerFinished.countDown()
+        }
+        reader.start()
+        // evict 完成后 reader 只做本地 L2 查找，随后的 WAITING 只可能是加入了在途回源
+        evicted.await(5, TimeUnit.SECONDS).assert().isTrue()
+        awaitCondition { reader.state == Thread.State.WAITING }
+        releaseLoad.countDown()
+
+        leaderFinished.await(5, TimeUnit.SECONDS).assert().isTrue()
+        readerFinished.await(5, TimeUnit.SECONDS).assert().isTrue()
+        result.get().assert().isEqualTo(newValue)
+        calls.get().assert().isEqualTo(2)
+    }
+
     @Test
     fun `remote eviction during distributed read discards client side fill`() {
         val (key, value) = createCacheEntry()

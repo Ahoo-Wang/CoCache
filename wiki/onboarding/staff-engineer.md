@@ -23,7 +23,7 @@ A two-level cache trades **staleness for latency**. Instead of claiming coherenc
 |----------|-----------|
 | **Bounded staleness**: every inconsistency self-heals in finite time | Finite default `ttl` (3600 s); separate short `missingTtl` (60 s); L2 cleared on every event-channel (re)subscription |
 | **No lost invalidation**: concurrent loads and out-of-order events never resurrect old values | `InvalidationStamps` guard every write-back; an L1 miss is never inferred as "not found" |
-| **Cheap hit path** | Bounded Caffeine L2 with per-entry expiry; one pipelined round trip per L1 read; per-key `SingleFlight` |
+| **Cheap hit path** | Bounded Caffeine L2 (expiry checked on read, cached `CacheClock`); one atomic Lua round trip per L1 read; per-key `SingleFlight` |
 
 No distributed locks and no consensus are involved. Each instance coalesces its own loads, and L1 absorbs duplicates across instances.
 
@@ -79,7 +79,7 @@ autonumber
     C->>C: keyFilter.notExist? → MissingValue
     C->>SF: execute(cacheKey)
     SF->>SF: stamp = current(cacheKey)
-    SF->>L1: PIPELINE [GET, TTL]
+    SF->>L1: EVALSHA read-script → {TTL, value}
     alt hit
         SF->>C: fill L2 iff stamp unchanged (re-check after)
     else miss
@@ -138,11 +138,11 @@ Verify any new implementation with the matching TCK spec in `cocache-test`.
 | Path | Latency | Notes |
 |------|---------|-------|
 | L2 hit | ~100 ns – 1 µs | Caffeine lookup + expiry check |
-| L1 hit | ~0.5 – 2 ms | One pipelined round trip |
+| L1 hit | ~0.5 – 2 ms | One Lua round trip |
 | L0 load | source latency | Coalesced per key |
 | Write / evict | ~1 RTT + publish | Publish is fire-and-forget |
 
-Memory: L2 is bounded by `maximumSize` (default 10 000 entries per cache). Expired entries are reclaimed proactively. In-flight loads cost one map entry each.
+Memory: L2 is bounded by `maximumSize` (default 10 000 entries per cache). Expired entries are evicted when read, or by size-based eviction. In-flight loads cost one map entry each.
 
 Fan-out: with N instances and W writes/s per cache, Pub/Sub delivers N·W messages/s on that cache's channel. Successful loads publish nothing.
 

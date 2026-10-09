@@ -32,7 +32,7 @@ Compiler flags: `-Xjsr305=strict` (nullness of Java APIs is enforced) and `-Xjvm
 
 | Library | Used for | Module |
 |---------|----------|--------|
-| Caffeine | Default L2 (bounded, per-entry `Expiry`) | cocache-core |
+| Caffeine | Default L2 (bounded; expiry checked on read) | cocache-core |
 | Spring Expression | SpEL key / join-key templates (compiled mode) | cocache-core |
 | Spring Data Redis + Jackson 3 | L1 store, Pub/Sub channel | cocache-spring-redis |
 | Guava (compile-only) | `BloomKeyFilter` | cocache-core |
@@ -146,7 +146,7 @@ stateDiagram-v2
     MissingValue --> [*]: missingTtl reached / evict
 ```
 
-`ttlAt` is an absolute epoch second; `TtlAt.FOREVER = Long.MAX_VALUE`. Time comes from `TtlAt.currentTime()`, which is `System.currentTimeMillis() / 1000`.
+`ttlAt` is an absolute epoch second; `TtlAt.FOREVER = Long.MAX_VALUE`. Time comes from `TtlAt.currentTime()`, backed by `CacheClock` (a volatile epoch second refreshed every 100 ms).
 
 ### Key Conversion and Client IDs
 

@@ -79,7 +79,7 @@ interface DistributedCache<V> : CacheStore<V>, AutoCloseable
 
 | 实现 | 层级 | 源码 |
 |------|------|------|
-| `CaffeineClientSideCache` | L2（默认，有界，条目级过期） | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
+| `CaffeineClientSideCache` | L2（默认，有界；过期条目读取时淘汰） | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
 | `MapClientSideCache` | L2（无界，测试用） | [MapClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/MapClientSideCache.kt) |
 | `RedisDistributedCache` | L1 | [RedisDistributedCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt) |
 | `InMemoryDistributedCache` | L1（测试 / 单进程） | [InMemoryDistributedCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/distributed/InMemoryDistributedCache.kt) |

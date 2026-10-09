@@ -37,7 +37,7 @@ Compiler flags: `-Xjsr305=strict` (nullness of Java APIs is enforced) and `-Xjvm
 
 | Library | Used for | Module |
 |---------|----------|--------|
-| Caffeine | Default L2 (bounded, per-entry `Expiry`) | cocache-core |
+| Caffeine | Default L2 (bounded; expiry checked on read) | cocache-core |
 | Spring Expression | SpEL key / join-key templates (compiled mode) | cocache-core |
 | Spring Data Redis + Jackson 3 | L1 store, Pub/Sub channel | cocache-spring-redis |
 | Guava (compile-only) | `BloomKeyFilter` | cocache-core |
@@ -151,7 +151,7 @@ stateDiagram-v2
     MissingValue --> [*]: missingTtl reached / evict
 ```
 
-`ttlAt` is an absolute epoch second; `TtlAt.FOREVER = Long.MAX_VALUE`. Time comes from `TtlAt.currentTime()`, which is `System.currentTimeMillis() / 1000`.
+`ttlAt` is an absolute epoch second; `TtlAt.FOREVER = Long.MAX_VALUE`. Time comes from `TtlAt.currentTime()`, backed by `CacheClock` (a volatile epoch second refreshed every 100 ms).
 
 ### Key Conversion and Client IDs
 
@@ -242,7 +242,7 @@ A two-level cache trades **staleness for latency**. Instead of claiming coherenc
 |----------|-----------|
 | **Bounded staleness**: every inconsistency self-heals in finite time | Finite default `ttl` (3600 s); separate short `missingTtl` (60 s); L2 cleared on every event-channel (re)subscription |
 | **No lost invalidation**: concurrent loads and out-of-order events never resurrect old values | `InvalidationStamps` guard every write-back; an L1 miss is never inferred as "not found" |
-| **Cheap hit path** | Bounded Caffeine L2 with per-entry expiry; one pipelined round trip per L1 read; per-key `SingleFlight` |
+| **Cheap hit path** | Bounded Caffeine L2 (expiry checked on read, cached `CacheClock`); one atomic Lua round trip per L1 read; per-key `SingleFlight` |
 
 No distributed locks and no consensus are involved. Each instance coalesces its own loads, and L1 absorbs duplicates across instances.
 
@@ -298,7 +298,7 @@ autonumber
     C->>C: keyFilter.notExist? → MissingValue
     C->>SF: execute(cacheKey)
     SF->>SF: stamp = current(cacheKey)
-    SF->>L1: PIPELINE [GET, TTL]
+    SF->>L1: EVALSHA read-script → {TTL, value}
     alt hit
         SF->>C: fill L2 iff stamp unchanged (re-check after)
     else miss
@@ -357,11 +357,11 @@ Verify any new implementation with the matching TCK spec in `cocache-test`.
 | Path | Latency | Notes |
 |------|---------|-------|
 | L2 hit | ~100 ns – 1 µs | Caffeine lookup + expiry check |
-| L1 hit | ~0.5 – 2 ms | One pipelined round trip |
+| L1 hit | ~0.5 – 2 ms | One Lua round trip |
 | L0 load | source latency | Coalesced per key |
 | Write / evict | ~1 RTT + publish | Publish is fire-and-forget |
 
-Memory: L2 is bounded by `maximumSize` (default 10 000 entries per cache). Expired entries are reclaimed proactively. In-flight loads cost one map entry each.
+Memory: L2 is bounded by `maximumSize` (default 10 000 entries per cache). Expired entries are evicted when read, or by size-based eviction. In-flight loads cost one map entry each.
 
 Fan-out: with N instances and W writes/s per cache, Pub/Sub delivers N·W messages/s on that cache's channel. Successful loads publish nothing.
 
@@ -1992,7 +1992,7 @@ interface UserCache : Cache<String, User>
 
 ## @CaffeineCache Annotation
 
-Configures the default L2 (`CaffeineClientSideCache`). It is optional; without it the defaults below apply. Entries expire at their own `ttlAt`.
+Configures the default L2 (`CaffeineClientSideCache`). It is optional; without it the defaults below apply. Expired entries are evicted when read.
 
 | Parameter | Type | Default | Description | Source |
 |-----------|------|---------|-------------|--------|
@@ -2271,10 +2271,10 @@ Source: [CoCacheAutoConfiguration.kt:175-185](https://github.com/Ahoo-Wang/CoCac
 
 ### Correctness Fixes
 
-- **L1 miss is never a negative cache** — Redis reads are one pipelined round trip (value + TTL). An absent key, a key deleted mid-read, or a corrupted payload is a miss that reloads from the source. Previously a concurrent eviction between the `TTL` and `GET` calls was decoded as a negative cache and pinned into L2 until the old TTL (forever by default).
+- **L1 miss is never a negative cache** — Redis reads are one atomic round trip (a Lua script returns TTL + value). An absent key, a key deleted mid-read, or a corrupted payload is a miss that reloads from the source. Previously a concurrent eviction between the `TTL` and `GET` calls was decoded as a negative cache and pinned into L2 until the old TTL (forever by default).
 - **Local writes invalidate in-flight loads** — `evict`/`setCache` on the same instance now discard a concurrent source load's stale write-back (previously only remote events did). L1 → L2 fills are guarded the same way.
 - **Original exceptions from cache proxies** — proxies unwrap `InvocationTargetException`; callers no longer receive `UndeclaredThrowableException`.
-- **Bounded staleness by default** — default `ttl` is 3600 s (was forever); the negative cache has its own `missingTtl` (default 60 s, was the value TTL); default L2 is a bounded Caffeine cache (10 000 entries) that expires entries at their `ttlAt`; every (re)subscription of the eviction channel clears L2 so lost pub/sub messages cannot leave L2 stale.
+- **Bounded staleness by default** — default `ttl` is 3600 s (was forever); the negative cache has its own `missingTtl` (default 60 s, was the value TTL); default L2 is a bounded Caffeine cache (10 000 entries); every (re)subscription of the eviction channel clears L2 so lost pub/sub messages cannot leave L2 stale.
 - **Spring Cache** — `get(key, valueLoader)` loads once per key (`@Cacheable(sync = true)` semantics); `retrieve` runs on a dedicated executor instead of the common ForkJoin pool.
 - **Stateful components are never shared** — `ClientSideCache`, `DistributedCache` and `KeyConverter` beans resolve by name only; previously a bean matched by generic type could be shared by every cache with the same value type.
 - **JoinCache.evict(key) no longer loads** — it evicts only the first cache.
@@ -2305,6 +2305,7 @@ Source: [CoCacheAutoConfiguration.kt:175-185](https://github.com/Ahoo-Wang/CoCac
 | `TtlConfiguration`, `TtlConfigurationAware`, `ComputedCache` | Removed — TTL comes from `@CoCache` (`TtlPolicy`) |
 | `@CoCache` without `ttl` meant "forever" | Now 3600 s — set `ttl = TtlAt.FOREVER` explicitly to keep the old behavior |
 | `JoinCache.evict(key)` evicted both caches | Evicts the first cache only; use `evict(firstKey, joinKey)` for both |
+| A `CacheSource` reading the same key from the same cache re-entered the lock | Fails fast with `IllegalStateException` (it previously over-evicted) |
 
 ### Gradle Setup
 
@@ -2541,7 +2542,7 @@ autonumber
     end
 
     Note over CC: SingleFlight: one leader per key, followers wait
-    CC->>L1: getCache(cacheKey) [one pipelined round trip]
+    CC->>L1: getCache(cacheKey) [one round trip: Lua read of TTL + value]
     L1-->>CC: cacheValue
     CC->>L2: stamp-guarded setCache(cacheKey, cacheValue)
     CC-->>App: cacheValue
@@ -2674,14 +2675,14 @@ classDiagram
 
 | Implementation | Behavior | Source |
 |----------------|----------|--------|
-| `CaffeineClientSideCache` (default) | Bounded (`maximumSize`, default 10 000); each entry expires at its own `ttlAt` via a Caffeine `Expiry`; optional `expireAfterAccess` | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
+| `CaffeineClientSideCache` (default) | Bounded (`maximumSize`, default 10 000); expired entries are evicted when read; optional `expireAfterAccess`. No per-entry `Expiry`: it writes node metadata on every read and stops a hot key from scaling | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
 | `MapClientSideCache` | Unbounded `ConcurrentHashMap`, expired entries removed on read -- tests or small fixed key sets only | [MapClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/MapClientSideCache.kt) |
 
 Configure the default L2 with [`@CaffeineCache`](../api/annotations.md#caffeinecache) or replace it with a bean named `{cacheName}.ClientSideCache`.
 
 ## L1 -- DistributedCache (Redis)
 
-[`RedisDistributedCache`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt) delegates to a `CodecExecutor`. A read is **one pipelined round trip** that fetches the raw value and its TTL together.
+[`RedisDistributedCache`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt) delegates to a `CodecExecutor`. A read is **one round trip**: an atomic Lua script (EVALSHA on the shared connection) returns the TTL and the raw value together.
 
 ```mermaid
 sequenceDiagram
@@ -2693,9 +2694,9 @@ autonumber
 
     CC->>DC: getCache(key)
     DC->>CE: executeAndDecode(key)
-    CE->>R: PIPELINE [GET/HGETALL/SMEMBERS key, TTL key]
-    R-->>CE: [raw, ttl]
-    alt raw absent or ttl == -2
+    CE->>R: EVALSHA read-script key → {ttl, ...raw}
+    R-->>CE: [ttl, raw...]
+    alt ttl == -2 or raw absent
         CE-->>CC: null (miss → reload)
     else raw == sentinel
         CE-->>CC: MissingValue(ttlAt)
@@ -2709,7 +2710,7 @@ autonumber
 
 Rules:
 
-- **An L1 miss is never a negative cache.** Only a stored sentinel decodes to `MissingValue`. A key deleted between the two pipelined commands reads as a miss.
+- **An L1 miss is never a negative cache.** Only a stored sentinel decodes to `MissingValue`; an absent key or value reads as a miss.
 - Writes clamp the remaining TTL to at least one second; a `FOREVER` value is written without expiry; an already expired value deletes the key.
 - **Failure degradation:** `DataAccessException` on read → miss; on write/evict → `WARN`. Set `cocache.redis.strict-failure=true` to rethrow (see [Configuration](/guide/configuration#redis-failure-degradation)).
 
@@ -2901,7 +2902,9 @@ flowchart LR
 - Write-backs take the stamp **before** reading. They skip the write if the stamp has already changed, and they re-check after writing:
   - A source write-back that lost the race is undone in L1 and L2 and re-broadcast.
   - An L1 → L2 fill that lost the race is undone in L2.
-- Because of this ordering, at least one side always removes the stale copy, however the two interleave. A stripe collision only skips a write-back, which lowers the hit rate but never affects correctness.
+- Because of this ordering, at least one side always removes the stale copy, however the two interleave.
+- Readers also record the stamp before reading. A reader rejects a coalesced load that started before an invalidation it has already observed (e.g. its own `evict` followed by `get`) and reloads once, so a thread always reads its own writes.
+- A stripe collision never affects correctness. It costs an extra skipped write-back; if it lands exactly between the write and the re-check, it also costs one extra L1 delete and broadcast.
 
 This also closes the 4.x gap where a **local** `evict` did not stop an in-flight load on the same instance.
 
@@ -3432,7 +3435,7 @@ Stores hold no TTL policy. Contract for `DistributedCache.getCache`: `null` mean
 
 | Implementation | Tier | Source |
 |----------------|------|--------|
-| `CaffeineClientSideCache` | L2 (default, bounded, per-entry expiry) | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
+| `CaffeineClientSideCache` | L2 (default, bounded; expired entries evicted on read) | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
 | `MapClientSideCache` | L2 (unbounded, tests) | [MapClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/MapClientSideCache.kt) |
 | `RedisDistributedCache` | L1 | [RedisDistributedCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt) |
 | `InMemoryDistributedCache` | L1 (tests / single process) | [InMemoryDistributedCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/distributed/InMemoryDistributedCache.kt) |
@@ -3635,7 +3638,7 @@ interface OrderCache : Cache<OrderId, Order>
 
 ## @CaffeineCache
 
-Configures the default L2 (`CaffeineClientSideCache`). Without the annotation all defaults apply. Entries always expire at their own `ttlAt`, so no write-expiry setting is needed.
+Configures the default L2 (`CaffeineClientSideCache`). Without the annotation all defaults apply. Expired entries are evicted when read (L2 is bounded by `maximumSize`), so no write-expiry setting is needed.
 
 | Parameter | Type | Default | Description | Source |
 |-----------|------|---------|-------------|--------|
@@ -5125,13 +5128,13 @@ graph LR
     style S fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
-The jittered TTL is clamped to stay positive. `TtlAt.FOREVER` as `ttl` disables expiry. Time comes from `System.currentTimeMillis()` at second precision; there is no background clock thread.
+The jittered TTL is clamped to stay positive. `TtlAt.FOREVER` as `ttl` disables expiry. Time comes from `CacheClock`, a volatile epoch second refreshed every 100 ms by a daemon thread: `System.currentTimeMillis()` does not scale across threads on some platforms (e.g. macOS), and the hit path checks expiry on every read.
 
 ## L2 Implementations
 
 | Class | Notes | Source |
 |-------|-------|--------|
-| `CaffeineClientSideCache` | Default. `build(maximumSize = 10_000, initialCapacity, expireAfterAccess)`; a `TtlAtExpiry` expires each entry at its own `ttlAt` (capped by `expireAfterAccess` if set) | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
+| `CaffeineClientSideCache` | Default. `build(maximumSize = 10_000, initialCapacity, expireAfterAccess)`; expired entries are evicted when read. No per-entry `Expiry`, which would write metadata on every read and stop hot keys from scaling | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
 | `MapClientSideCache` | Unbounded `ConcurrentHashMap`; tests or small fixed key sets | [MapClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/MapClientSideCache.kt) |
 
 ## Proxies and Join
@@ -5561,9 +5564,9 @@ autonumber
 
     CC->>RDC: getCache(key)
     RDC->>CE: executeAndDecode(key)
-    CE->>R: pipeline: readRaw(key) + TTL(key)
-    R-->>CE: [raw, ttl]
-    alt raw empty or ttl == -2
+    CE->>R: EVALSHA read-script key → {ttl, ...raw}
+    R-->>CE: [ttl, raw...]
+    alt ttl == -2 or raw empty
         CE-->>RDC: null
     else raw is sentinel
         CE-->>RDC: MissingValue(ttlAt)
@@ -5576,7 +5579,7 @@ autonumber
     RDC-->>CC: result (DataAccessException → null unless strict)
 ```
 
-- One round trip per L1 read.
+- One round trip per L1 read: an atomic Lua script on the shared connection. Do not use `executePipelined` here: Lettuce pipelines need a dedicated connection, which without a pool costs more than two plain round trips.
 - **A missing key is a miss, never a negative cache.** In 4.x a key deleted between the separate `TTL` and `GET` calls decoded as a negative cache, which could pin "not found" into L2 until the old TTL.
 - `ttlAt = now + ttl`, or `FOREVER` for TTL `-1`. The value is reconstructed from Redis expiry, so it can drift by ±1 s.
 
@@ -5602,7 +5605,7 @@ classDiagram
     }
     class AbstractCodecExecutor~V, RAW~ {
         <<abstract>>
-        #readRaw(key)
+        #readScript: RedisScript
         #toRaw(result) RAW?
         #isMissingGuard(raw) Boolean
         #decode(raw) V
@@ -5642,7 +5645,7 @@ classDiagram
 
 The sentinel is constructor-injectable (`missingGuardSentinel`, property `cocache.redis.missing-guard-sentinel`). Custom and default sentinels do not recognize each other, so switch the whole cluster at once.
 
-To write a codec for another structure, extend `AbstractCodecExecutor` and implement `readRaw` (queue a read command in the pipeline), `toRaw`, `isMissingGuard`, `decode`, `encode`, `encodeMissingGuard`, and `writeRaw`.
+To write a codec for another structure, extend `AbstractCodecExecutor` and implement `readScript` (via `readScript("GET" | "HGETALL" | "SMEMBERS")`), `toRaw` (elements after the TTL), `isMissingGuard`, `decode`, `encode`, `encodeMissingGuard`, and `writeRaw`.
 
 ## RedisCacheEvictedEventBus
 
@@ -6860,13 +6863,13 @@ Defaults: `ttl = 3600`, `ttlAmplitude = 60`. Entries written together expire spr
 
 | Tier | Cost | Why |
 |------|------|-----|
-| L2 hit | One Caffeine lookup + an `isExpired` check | Bounded Caffeine; entries expire at their own `ttlAt` via `Expiry`, so expired entries are reclaimed proactively |
-| L1 hit | One Redis round trip | Value and TTL are read in a single pipeline |
+| L2 hit | One Caffeine lookup + an `isExpired` check | Bounded Caffeine without per-entry `Expiry` (which writes metadata on every read and stops a hot key from scaling); `isExpired` reads the cached `CacheClock` |
+| L1 hit | One Redis round trip | An atomic Lua script returns TTL + value on the shared connection (a Lettuce pipeline would need a dedicated connection) |
 | Key conversion | Compiled SpEL | `ExpKeyConverter` uses `SpelCompilerMode.MIXED` |
 | Proxy dispatch | Reflection on the delegate | No per-call allocation beyond the argument array |
 | Successful load | No broadcast | When L1 is empty, peers hold no valid copy, so no event is needed |
 
-Time is read from `System.currentTimeMillis()` at second precision. A background clock thread is unnecessary on modern JVMs.
+Time is read from `CacheClock`, a volatile epoch second refreshed every 100 ms. `System.currentTimeMillis()` did not scale across threads in our JMH runs on macOS.
 
 ## Pattern Summary
 

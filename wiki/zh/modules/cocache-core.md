@@ -88,13 +88,13 @@ graph LR
     style S fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
-抖动后的 TTL 钳为正数；把 `ttl` 设为 `TtlAt.FOREVER` 表示永不过期。时间取自 `System.currentTimeMillis()`，精度为秒，不再使用后台时钟线程。
+抖动后的 TTL 钳为正数；把 `ttl` 设为 `TtlAt.FOREVER` 表示永不过期。时间取自 `CacheClock`：守护线程每 100ms 刷新的 volatile 秒值。`System.currentTimeMillis()` 在部分平台（如 macOS）上无法随线程扩展，而命中路径每次读取都要判断过期。
 
 ## L2 实现
 
 | 类 | 说明 | 源码 |
 |----|------|------|
-| `CaffeineClientSideCache` | 默认实现。`build(maximumSize = 10_000, initialCapacity, expireAfterAccess)`；`TtlAtExpiry` 让每个条目在自身 `ttlAt` 到期（如设置了 `expireAfterAccess`，取两者较早者） | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
+| `CaffeineClientSideCache` | 默认实现。`build(maximumSize = 10_000, initialCapacity, expireAfterAccess)`；过期条目在读取时淘汰。不使用条目级 `Expiry`，否则每次读取都写元数据，热点 key 无法扩展 | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
 | `MapClientSideCache` | 无界 `ConcurrentHashMap`；仅用于测试或 key 集合固定且较小的场景 | [MapClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/MapClientSideCache.kt) |
 
 ## 代理与 Join

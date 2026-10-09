@@ -142,7 +142,7 @@ autonumber
     end
 
     Note over CC: SingleFlight: one leader per key, followers wait
-    CC->>L1: getCache(cacheKey) [one pipelined round trip]
+    CC->>L1: getCache(cacheKey) [one round trip: Lua read of TTL + value]
     L1-->>CC: cacheValue
     CC->>L2: stamp-guarded setCache(cacheKey, cacheValue)
     CC-->>App: cacheValue

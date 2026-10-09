@@ -15,15 +15,17 @@ package me.ahoo.cache.client
 
 import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
-import com.github.benmanes.caffeine.cache.Expiry
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.annotation.CaffeineCache
 import me.ahoo.cache.api.client.ClientSideCache
 import java.time.Duration
-import java.util.concurrent.TimeUnit
 
 /**
- * 基于 Caffeine 的 L2 缓存：有界，且每个条目按自身 [CacheValue.ttlAt] 主动到期。
+ * 基于 Caffeine 的 L2 缓存：有界（[CaffeineCache.DEFAULT_MAXIMUM_SIZE]）。
+ *
+ * 不使用条目级 `Expiry`：它会让每次读取都写节点元数据，热点 key 在多线程下无法扩展。
+ * 过期条目在读取时由编排层判断并淘汰，内存由 `maximumSize` 约束。
+ * 可选的 `expireAfterAccess` 同样会在每次读取时写访问时间，热点高并发场景慎用。
  *
  * @author ahoo wang
  */
@@ -66,12 +68,11 @@ class CaffeineClientSideCache<V>(
             expireAfterAccess: Duration? = null
         ): CaffeineClientSideCache<V> {
             require(maximumSize > 0) { "maximumSize[$maximumSize] must be positive." }
-            val builder = Caffeine.newBuilder()
-                .maximumSize(maximumSize)
-                .expireAfter(TtlAtExpiry<V>(expireAfterAccess))
+            val builder = Caffeine.newBuilder().maximumSize(maximumSize)
             if (initialCapacity != CaffeineCache.UNSET) {
                 builder.initialCapacity(initialCapacity)
             }
+            expireAfterAccess?.let { builder.expireAfterAccess(it) }
             return CaffeineClientSideCache(builder.build())
         }
 
@@ -90,39 +91,5 @@ class CaffeineClientSideCache<V>(
                 }
             )
         }
-    }
-}
-
-/**
- * 条目在 [CacheValue.ttlAt] 到期；启用空闲淘汰时取两者较早者。
- */
-internal class TtlAtExpiry<V>(expireAfterAccess: Duration?) : Expiry<String, CacheValue<V>> {
-    private val expireAfterAccessNanos: Long? = expireAfterAccess?.toNanos()
-
-    private fun remainingNanos(value: CacheValue<V>): Long {
-        if (value.isForever) {
-            return Long.MAX_VALUE
-        }
-        val remainingMillis = TimeUnit.SECONDS.toMillis(value.ttlAt) - System.currentTimeMillis()
-        return TimeUnit.MILLISECONDS.toNanos(remainingMillis.coerceAtLeast(0))
-    }
-
-    private fun capByAccess(nanos: Long): Long {
-        return expireAfterAccessNanos?.let { minOf(it, nanos) } ?: nanos
-    }
-
-    override fun expireAfterCreate(key: String, value: CacheValue<V>, currentTime: Long): Long {
-        return capByAccess(remainingNanos(value))
-    }
-
-    override fun expireAfterUpdate(key: String, value: CacheValue<V>, currentTime: Long, currentDuration: Long): Long {
-        return capByAccess(remainingNanos(value))
-    }
-
-    override fun expireAfterRead(key: String, value: CacheValue<V>, currentTime: Long, currentDuration: Long): Long {
-        if (expireAfterAccessNanos == null) {
-            return currentDuration
-        }
-        return capByAccess(remainingNanos(value))
     }
 }

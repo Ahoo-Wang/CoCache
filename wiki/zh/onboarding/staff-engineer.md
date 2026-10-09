@@ -23,7 +23,7 @@ description: 面向资深工程师的架构深入解读 -- 一致性模型、每
 |------|------|
 | **陈旧度有上界**：任何不一致都在有限时间内自愈 | 有限的默认 `ttl`（3600 秒）；独立的短 `missingTtl`（60 秒）；事件通道每次（重新）订阅时清空 L2 |
 | **失效不被吞没**：并发回源与乱序事件不会让旧值复活 | `InvalidationStamps` 保护每一次写回；L1 未命中绝不推断为“不存在” |
-| **命中路径够便宜** | 有界 Caffeine L2 + 条目级过期；每次 L1 读取一次 pipeline 往返；按 key 的 `SingleFlight` |
+| **命中路径够便宜** | 有界 Caffeine L2（读取时判断过期，缓存时钟 `CacheClock`）；每次 L1 读取一次原子 Lua 往返；按 key 的 `SingleFlight` |
 
 不使用分布式锁，也没有共识协议。每个实例各自合并回源，跨实例的重复由 L1 吸收。
 
@@ -79,7 +79,7 @@ autonumber
     C->>C: keyFilter.notExist? → MissingValue
     C->>SF: execute(cacheKey)
     SF->>SF: stamp = current(cacheKey)
-    SF->>L1: PIPELINE [GET, TTL]
+    SF->>L1: EVALSHA read-script → {TTL, value}
     alt hit
         SF->>C: fill L2 iff stamp unchanged (re-check after)
     else miss
@@ -138,11 +138,11 @@ Redis Pub/Sub 是至多一次投递。CoCache 没有引入持久化消息中间�
 | 路径 | 延迟 | 说明 |
 |------|------|------|
 | L2 命中 | ~100 ns – 1 µs | Caffeine 查找 + 过期检查 |
-| L1 命中 | ~0.5 – 2 ms | 一次 pipeline 往返 |
+| L1 命中 | ~0.5 – 2 ms | 一次 Lua 往返 |
 | L0 回源 | 数据源延迟 | 按 key 合并 |
 | 写入 / 淘汰 | ~1 RTT + 发布 | 发布即发即忘 |
 
-内存：L2 受 `maximumSize` 约束（默认每个缓存 10000 条），过期条目被主动回收；在途回源每个占一个 map 条目。
+内存：L2 受 `maximumSize` 约束（默认每个缓存 10000 条），过期条目在读取时或按容量淘汰；在途回源每个占一个 map 条目。
 
 扇出：N 个实例、每个缓存每秒 W 次写入时，该缓存频道上 Pub/Sub 每秒投递 N·W 条消息；回源成功不发布任何消息。
 

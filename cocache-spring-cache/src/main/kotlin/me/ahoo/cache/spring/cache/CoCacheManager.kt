@@ -16,8 +16,10 @@ package me.ahoo.cache.spring.cache
 import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.Cache
 import org.springframework.cache.support.AbstractCacheManager
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executor
-import java.util.concurrent.Executors
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import org.springframework.cache.Cache as SpringCache
 
@@ -32,14 +34,23 @@ class CoCacheManager(
 ) : AbstractCacheManager() {
     companion object {
         private val threadIndex = AtomicInteger()
+        private const val QUEUE_CAPACITY = 1024
 
         /**
-         * 默认异步查找线程池：按需创建的守护线程，适合阻塞 I/O（不使用 ForkJoin 公共池）。
+         * 默认异步查找线程池：有界（线程数与队列均有上限），队列满时由调用方线程执行（背压），
+         * 不使用 ForkJoin 公共池，也不会在突发流量下无限创建线程。
          */
         val DEFAULT_ASYNC_EXECUTOR: Executor by lazy {
-            Executors.newCachedThreadPool {
-                Thread(it, "cocache-retrieve-${threadIndex.incrementAndGet()}").apply { isDaemon = true }
-            }
+            val threads = (Runtime.getRuntime().availableProcessors() * 2).coerceAtLeast(4)
+            ThreadPoolExecutor(
+                threads,
+                threads,
+                60,
+                TimeUnit.SECONDS,
+                ArrayBlockingQueue(QUEUE_CAPACITY),
+                { Thread(it, "cocache-retrieve-${threadIndex.incrementAndGet()}").apply { isDaemon = true } },
+                ThreadPoolExecutor.CallerRunsPolicy()
+            ).apply { allowCoreThreadTimeOut(true) }
         }
     }
 

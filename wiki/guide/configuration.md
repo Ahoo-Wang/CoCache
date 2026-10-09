@@ -61,7 +61,7 @@ interface UserCache : Cache<String, User>
 
 ## @CaffeineCache Annotation
 
-Configures the default L2 (`CaffeineClientSideCache`). It is optional; without it the defaults below apply. Entries expire at their own `ttlAt`.
+Configures the default L2 (`CaffeineClientSideCache`). It is optional; without it the defaults below apply. Expired entries are evicted when read.
 
 | Parameter | Type | Default | Description | Source |
 |-----------|------|---------|-------------|--------|

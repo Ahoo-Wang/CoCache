@@ -20,7 +20,14 @@ package me.ahoo.cache.api
  */
 interface CacheGetter<K, V> {
     /**
-     * 获取缓存条目（可能为负缓存）。`null` 表示缓存与数据源中均无记录。
+     * 获取缓存条目。
+     *
+     * - [PresentValue]：命中。
+     * - [MissingValue]：确认不存在（负缓存，如数据源返回 `null` 或 key 过滤器判定不存在）。
+     * - `null`：没有任何条目可用。带数据源的缓存（如 CoherentCache）会回源，因此只会返回条目；
+     *   不回源的缓存（如只读组合缓存在主值缺失时）才返回 `null`。
+     *
+     * 判断“不存在”请使用 [get] 或 [CacheValue.isMissing]，不要仅判断 `null`。
      */
     fun getCache(key: K): CacheValue<V>?
 

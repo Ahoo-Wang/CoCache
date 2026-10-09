@@ -10,7 +10,7 @@
 |---|------|----------|
 | G1 | **陈旧度有上界**：任何不一致都在有限时间内自愈 | 有限的默认 TTL；负缓存独立的短 TTL；失效通道重订阅时清空 L2 |
 | G2 | **失效不被吞没**：并发回源、事件乱序/丢失不会把旧值写回 | 失效戳（InvalidationStamps）保护所有写回；L1 读不到即未命中，绝不推断为负缓存 |
-| G3 | **命中路径够便宜**：L2 命中近零开销，L1 命中单次往返 | Caffeine L2 按条目 ttlAt 主动过期；Redis 读 pipeline（值 + TTL）一次往返；按 key 合并的 SingleFlight |
+| G3 | **命中路径够便宜**：L2 命中近零开销且随线程扩展，L1 命中单次往返 | 有界 Caffeine L2（无条目级 Expiry，过期在读取时判断）；缓存秒级时钟 `CacheClock`；Redis 读为一次 Lua（EVALSHA）往返取回 TTL + 值；按 key 合并的 SingleFlight |
 
 非目标：强一致（线性一致）读；跨实例的回源互斥（各实例独立合并回源，L1 吸收重复）。
 
@@ -50,7 +50,7 @@ cocache-test                 TCK：CacheSpec、CacheStoreSpec、DefaultCoherentC
 
 - `CacheValue<V>` 是密封类型：`PresentValue(value, ttlAt)` 或 `MissingValue(ttlAt)`。负缓存是**显式状态**，任何业务值（包括 `"_nil_"`）都不会被误判。
 - `CacheValue.of(null, ttlAt)` 归一化为负缓存；`Cache.set(key, null)` 按 `missingTtl` 写负缓存。
-- `ttlAt` 为绝对纪元秒；`TtlAt.FOREVER = Long.MAX_VALUE`。
+- `ttlAt` 为绝对纪元秒；`TtlAt.FOREVER = Long.MAX_VALUE`。当前时间取自 `CacheClock`：守护线程每 100ms 刷新的 volatile 秒值（`System.currentTimeMillis()` 在部分平台上无法随线程扩展），最多滞后 100ms。
 - 负缓存哨兵（默认 `_nil_`）只存在于 Redis codec 的线格式中（String/JSON：哨兵字符串；Hash：单字段 `{sentinel: 写入时间}`；Set：单元素 `{sentinel}`）。
 
 ## 4. 读路径
@@ -69,9 +69,11 @@ getCache(key)
   }
 ```
 
-- **L1 未命中的定义**：key 不存在、读取期间被删除（TTL = -2）、或载荷损坏（自愈删除）。三者都返回 `null` 并触发回源；**不得**推断为负缓存。
+- **L1 读取**：一个 Lua 读脚本原子地返回 `{ttl, ...原始值}`，走共享连接（不要用 pipeline：Lettuce 的 pipeline 需要专用连接，无连接池时代价远高于两次往返）。
+- **L1 未命中的定义**：key 不存在（TTL = -2）、值缺失、或载荷损坏（自愈删除）。三者都返回 `null` 并触发回源；**不得**推断为负缓存。
 - **回源成功不广播**：L1 为空时，其它实例 L2 中的副本必然已过期（L2 复制 L1 的 ttlAt）或已被失效事件清除。
 - SingleFlight 将 leader 的结果或**原始异常**共享给所有等待者；同线程对同一 key 的重入（CacheSource 内再次读同一 key）快速失败。
+- **读己之写**：每次读取在开始时记录失效戳；若共享到的加载开始于更早的戳（即开始于本次读取已观察到的某次失效之前，如本线程先 `evict` 再 `get`），则放弃该结果重新加载。新一轮加载必然开始于上一轮结束之后，至多重试一次。
 
 ## 5. 失效与写回保护（核心不变量）
 
@@ -82,7 +84,7 @@ getCache(key)
   - 写入前戳已变化：放弃写回。
   - 写入后戳变化（与失效交错）：回源写回需撤销 L1、L2 并广播；L1→L2 填充只需撤销 L2。
 - 两侧顺序保证：失效与写回无论如何交错，总有一方清除陈旧副本。
-- 分段碰撞只会造成多余的放弃写回（命中率略降），不影响正确性。
+- 分段碰撞不影响正确性：代价是多余地放弃写回；若碰撞恰好落在写入与复核之间，还会多一次 L1 淘汰与失效广播。
 
 本地写入 `setCache`：失效戳 → 写 L1 → 写 L2 → 广播。本地淘汰 `evict`：失效戳 → 淘汰 L2 → 淘汰 L1 → 广播。调用方必须**先更新数据源、再淘汰缓存**。
 
@@ -104,7 +106,7 @@ getCache(key)
 | `@CoCache.ttl` | 3600 s | G1：任何不一致最多持续 1 小时 |
 | `@CoCache.ttlAmplitude` | 60 s | 打散批量过期 |
 | `@CoCache.missingTtl` | 60 s | 数据新建后最多 60 秒仍被视为不存在 |
-| L2 | Caffeine，`maximumSize = 10000`，按条目 ttlAt 过期 | 有界内存 + 主动回收 |
+| L2 | Caffeine，`maximumSize = 10000`；过期条目在读取时淘汰 | 有界内存；条目级 `Expiry` 会让每次读取写节点元数据，热点 key 无法随线程扩展（JMH 实测） |
 | `cocache.redis.strict-failure` | false | Redis 故障降级：读按未命中、写/淘汰仅告警 |
 
 ## 8. 代理

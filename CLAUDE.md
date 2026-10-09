@@ -108,7 +108,7 @@ Enable CoCache via `@EnableCoCache(caches = [YourCacheInterface::class])` on you
 - Unit tests use JUnit 5 (Jupiter) with **mockk** and **fluent-assert**
 - Fluent-assert pattern: `import me.ahoo.test.asserts.assert` then use `.assert()` extension on any value — never use AssertJ's `assertThat()`
 - Shared test specifications live in `cocache-test`: `CacheStoreSpec` (→ `ClientSideCacheSpec`, `DistributedCacheSpec`) for stores, `CacheSpec` for `Cache` implementations, `DefaultCoherentCacheSpec` / `MultipleInstanceSyncSpec` / `CacheEvictedEventBusSpec` for coherence — new implementations extend these
-- Every fixed defect gets a reproducing test; race tests use latches, not sleeps
+- Every fixed defect gets a reproducing test; orchestrate interleavings with latches (never sleeps); assert eventual cross-instance effects by polling with a timeout
 - Integration tests require Redis at localhost:6379 (`cocache-spring-redis`, `cocache-spring-boot-starter`); in CI a Redis service container is used (see `integration-test.yml`). Redis tests use `RedisTestSupport` (listener container on `SyncTaskExecutor` so subscription resets complete inside `register()`)
 - Logback configured via `config/logback.xml` for tests (fixes JaCoCo logging gaps)
 

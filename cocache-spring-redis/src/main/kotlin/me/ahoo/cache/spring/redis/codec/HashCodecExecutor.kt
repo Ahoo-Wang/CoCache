@@ -14,9 +14,7 @@
 package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.api.TtlAt
-import org.springframework.data.redis.core.RedisOperations
 import org.springframework.data.redis.core.StringRedisTemplate
-import org.springframework.data.redis.core.script.DefaultRedisScript
 import org.springframework.data.redis.core.script.RedisScript
 
 /**
@@ -27,31 +25,20 @@ abstract class HashCodecExecutor<V>(
     missingGuardSentinel: String = DEFAULT_MISSING_GUARD_SENTINEL,
 ) : AbstractCodecExecutor<V, Map<String, String>>(redisTemplate, missingGuardSentinel) {
     companion object {
-        /**
-         * DEL + HSET + 可选 EXPIRE 原子执行。ARGV 为扁平 field/value 对，末位为 TTL 秒数（0 表示永不过期）。
-         * 逐对 HSET 而非 unpack，避免大 Map 超出 Lua 栈限制。
-         */
-        private val WRITE_SCRIPT: RedisScript<Long> = DefaultRedisScript(
-            """
-            redis.call('DEL', KEYS[1])
-            for i = 1, #ARGV - 1, 2 do
-              redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
-            end
-            local ttl = tonumber(ARGV[#ARGV])
-            if ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
-            return 1
-            """.trimIndent(),
-            Long::class.java,
-        )
+        private val WRITE_SCRIPT: RedisScript<Long> = collectionWriteScript("HSET", step = 2)
+        private val READ_SCRIPT: RedisScript<List<*>> = readScript("HGETALL")
     }
 
-    override fun RedisOperations<String, String>.readRaw(key: String) {
-        opsForHash<String, String>().entries(key)
-    }
+    override val readScript: RedisScript<List<*>> = READ_SCRIPT
 
-    override fun toRaw(result: Any?): Map<String, String>? {
-        @Suppress("UNCHECKED_CAST")
-        return (result as Map<String, String>?)?.takeIf { it.isNotEmpty() }
+    /**
+     * HGETALL 展开为 field/value 交替的列表。
+     */
+    override fun toRaw(elements: List<*>): Map<String, String>? {
+        if (elements.isEmpty()) {
+            return null
+        }
+        return elements.chunked(2).associate { (field, value) -> field as String to value as String }
     }
 
     override fun isMissingGuard(raw: Map<String, String>): Boolean {
@@ -63,17 +50,12 @@ abstract class HashCodecExecutor<V>(
     }
 
     override fun writeRaw(key: String, raw: Map<String, String>, ttlSeconds: Long?) {
-        if (raw.isEmpty()) {
-            redisTemplate.delete(key)
-            return
-        }
-        val args = ArrayList<String>(raw.size * 2 + 1)
+        val elements = ArrayList<String>(raw.size * 2)
         raw.forEach { (field, value) ->
-            args.add(field)
-            args.add(value)
+            elements.add(field)
+            elements.add(value)
         }
-        args.add((ttlSeconds ?: 0).toString())
-        redisTemplate.execute(WRITE_SCRIPT, listOf(key), *args.toTypedArray())
+        executeCollectionWrite(WRITE_SCRIPT, key, elements, ttlSeconds)
     }
 }
 

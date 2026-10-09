@@ -58,9 +58,9 @@ autonumber
 
     CC->>RDC: getCache(key)
     RDC->>CE: executeAndDecode(key)
-    CE->>R: pipeline: readRaw(key) + TTL(key)
-    R-->>CE: [raw, ttl]
-    alt raw empty or ttl == -2
+    CE->>R: EVALSHA read-script key → {ttl, ...raw}
+    R-->>CE: [ttl, raw...]
+    alt ttl == -2 or raw empty
         CE-->>RDC: null
     else raw is sentinel
         CE-->>RDC: MissingValue(ttlAt)
@@ -73,7 +73,7 @@ autonumber
     RDC-->>CC: result (DataAccessException → null unless strict)
 ```
 
-- 每次 L1 读取只需一次往返。
+- 每次 L1 读取只需一次往返：在共享连接上执行原子 Lua 脚本。不要用 `executePipelined`：Lettuce 的 pipeline 需要专用连接，无连接池时代价高于两次普通往返。
 - **key 不存在就是未命中，绝不当作负缓存。** 在 4.x 中，若 key 在分开执行的 `TTL` 与 `GET` 之间被删除，会被解码为负缓存，可能把“不存在”钉在 L2 中直到旧 TTL 到期。
 - `ttlAt = now + ttl`，TTL 为 `-1` 时为 `FOREVER`。该值由 Redis 剩余 TTL 重建，可能有 ±1 秒漂移。
 
@@ -99,7 +99,7 @@ classDiagram
     }
     class AbstractCodecExecutor~V, RAW~ {
         <<abstract>>
-        #readRaw(key)
+        #readScript: RedisScript
         #toRaw(result) RAW?
         #isMissingGuard(raw) Boolean
         #decode(raw) V
@@ -139,7 +139,7 @@ classDiagram
 
 哨兵可通过构造参数注入（`missingGuardSentinel`，属性 `cocache.redis.missing-guard-sentinel`）。自定义哨兵与默认哨兵互不识别，切换时需全集群同时变更。
 
-要为其它数据结构编写 codec，继承 `AbstractCodecExecutor` 并实现 `readRaw`（在 pipeline 中排入读命令）、`toRaw`、`isMissingGuard`、`decode`、`encode`、`encodeMissingGuard`、`writeRaw`。
+要为其它数据结构编写 codec，继承 `AbstractCodecExecutor` 并实现 `readScript`（通过 `readScript("GET" | "HGETALL" | "SMEMBERS")` 生成）、`toRaw`（TTL 之后的元素）、`isMissingGuard`、`decode`、`encode`、`encodeMissingGuard`、`writeRaw`。
 
 ## RedisCacheEvictedEventBus
 

@@ -88,13 +88,13 @@ graph LR
     style S fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
-The jittered TTL is clamped to stay positive. `TtlAt.FOREVER` as `ttl` disables expiry. Time comes from `System.currentTimeMillis()` at second precision; there is no background clock thread.
+The jittered TTL is clamped to stay positive. `TtlAt.FOREVER` as `ttl` disables expiry. Time comes from `CacheClock`, a volatile epoch second refreshed every 100 ms by a daemon thread: `System.currentTimeMillis()` does not scale across threads on some platforms (e.g. macOS), and the hit path checks expiry on every read.
 
 ## L2 Implementations
 
 | Class | Notes | Source |
 |-------|-------|--------|
-| `CaffeineClientSideCache` | Default. `build(maximumSize = 10_000, initialCapacity, expireAfterAccess)`; a `TtlAtExpiry` expires each entry at its own `ttlAt` (capped by `expireAfterAccess` if set) | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
+| `CaffeineClientSideCache` | Default. `build(maximumSize = 10_000, initialCapacity, expireAfterAccess)`; expired entries are evicted when read. No per-entry `Expiry`, which would write metadata on every read and stop hot keys from scaling | [CaffeineClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/CaffeineClientSideCache.kt) |
 | `MapClientSideCache` | Unbounded `ConcurrentHashMap`; tests or small fixed key sets | [MapClientSideCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/client/MapClientSideCache.kt) |
 
 ## Proxies and Join

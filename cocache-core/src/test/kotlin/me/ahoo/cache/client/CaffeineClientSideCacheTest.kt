@@ -14,7 +14,6 @@
 package me.ahoo.cache.client
 
 import me.ahoo.cache.api.CacheValue
-import me.ahoo.cache.api.TtlAt
 import me.ahoo.cache.api.annotation.CaffeineCache
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.CaffeineClientSideCache.Companion.toClientSideCache
@@ -43,21 +42,16 @@ internal class CaffeineClientSideCacheTest : ClientSideCacheSpec<String>() {
     }
 
     @Test
-    fun expiryFollowsTtlAt() {
-        val expiry = TtlAtExpiry<String>(null)
-        val nanos = expiry.expireAfterCreate("key", CacheValue.of("value", TtlAt.at(10)), 0)
-        Duration.ofNanos(nanos).seconds.assert().isBetween(8, 10)
-        expiry.expireAfterCreate("key", CacheValue.forever("value"), 0).assert().isEqualTo(Long.MAX_VALUE)
-        expiry.expireAfterRead("key", CacheValue.forever("value"), 0, 42).assert().isEqualTo(42)
+    fun expireAfterAccessIsSupported() {
+        val cache = CaffeineClientSideCache.build<String>(expireAfterAccess = Duration.ofMinutes(1))
+        cache.setCache("key", CacheValue.forever("value"))
+        cache.getCache("key")?.value.assert().isEqualTo("value")
     }
 
     @Test
-    fun expiryCappedByExpireAfterAccess() {
-        val expiry = TtlAtExpiry<String>(Duration.ofSeconds(1))
-        val oneSecond = Duration.ofSeconds(1).toNanos()
-        expiry.expireAfterCreate("key", CacheValue.forever("value"), 0).assert().isEqualTo(oneSecond)
-        expiry.expireAfterRead("key", CacheValue.forever("value"), 0, 42).assert().isEqualTo(oneSecond)
-        expiry.expireAfterUpdate("key", CacheValue.forever("value"), 0, 42).assert().isEqualTo(oneSecond)
+    fun customizedAnnotationConvert() {
+        CaffeineCache(initialCapacity = 16, maximumSize = 100, expireAfterAccess = 30).toClientSideCache<String>()
+            .assert().isNotNull()
     }
 
     @Test

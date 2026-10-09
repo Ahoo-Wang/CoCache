@@ -61,7 +61,7 @@ class Cache2kClientSideCache<V>(private val cache: org.cache2k.Cache<String, Cac
 }
 ```
 
-Keep L2 **bounded**, and ideally expire each entry at its own `ttlAt` (see `TtlAtExpiry` in `CaffeineClientSideCache`).
+Keep L2 **bounded**. Avoid per-entry expiry hooks that write metadata on every read (e.g. a Caffeine `Expiry`): a hot key then stops scaling across threads. The coherent cache checks `isExpired` on read and evicts expired entries itself.
 
 Test it:
 
@@ -112,7 +112,7 @@ class MemcachedDistributedCache<V>(
 }
 ```
 
-For Redis structures, extend `AbstractCodecExecutor` (or `StringCodecExecutor` / `HashCodecExecutor`) and wrap it in `RedisDistributedCache`. You implement `readRaw` (queue a read command in the pipeline), `toRaw`, `isMissingGuard`, `decode`, `encode`, `encodeMissingGuard`, and `writeRaw`. The base class supplies the one-round-trip read, the miss semantics, self-healing of corrupted payloads, and TTL clamping.
+For Redis structures, extend `AbstractCodecExecutor` (or `StringCodecExecutor` / `HashCodecExecutor`) and wrap it in `RedisDistributedCache`. You provide `readScript` (built with `readScript("GET" | "HGETALL" | "SMEMBERS" | ...)`, an atomic one-round-trip Lua read returning `{ttl, ...raw}`), `toRaw`, `isMissingGuard`, `decode`, `encode`, `encodeMissingGuard`, and `writeRaw`. The base class supplies the atomic read, the miss semantics, self-healing of corrupted payloads, and TTL clamping.
 
 Test it (stores that rebuild `ttlAt` from server expiry should override the `open` TTL tests with a ±1 s tolerance):
 

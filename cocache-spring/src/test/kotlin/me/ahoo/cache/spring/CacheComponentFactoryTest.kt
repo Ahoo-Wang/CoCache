@@ -13,8 +13,6 @@
 
 package me.ahoo.cache.spring
 
-import io.mockk.every
-import io.mockk.mockk
 import me.ahoo.cache.annotation.coCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
@@ -29,6 +27,8 @@ import me.ahoo.cache.spring.converter.SpringKeyConverterFactory
 import me.ahoo.cache.spring.source.SpringCacheSourceFactory
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import org.springframework.beans.factory.NoUniqueBeanDefinitionException
 import org.springframework.context.support.GenericApplicationContext
 import java.util.function.Supplier
 
@@ -94,16 +94,27 @@ class CacheComponentFactoryTest {
         ).create<String, String>(firstMetadata).assert().isInstanceOf(StringSource::class.java)
     }
 
+    class AnotherStringSource : CacheSource<String, String> {
+        override fun loadCacheValue(key: String) = CacheValue.forever("another")
+    }
+
+    @Test
+    fun ambiguousCacheSourceFailsFast() {
+        val appContext = GenericApplicationContext().apply {
+            registerBean("stringSource", StringSource::class.java, *emptyArray<Any?>())
+            registerBean("anotherStringSource", AnotherStringSource::class.java, *emptyArray<Any?>())
+            refresh()
+        }
+        assertThrows<NoUniqueBeanDefinitionException> {
+            SpringCacheSourceFactory(appContext).create<String, String>(firstMetadata)
+        }
+    }
+
     @Test
     fun cacheSourceFallsBackToNoOp() {
-        val beanFactory = mockk<org.springframework.beans.factory.BeanFactory> {
-            every { containsBean(any()) } returns false
-            every { getBeanProvider<Any>(any<org.springframework.core.ResolvableType>()) } returns mockk {
-                every { getIfUnique() } returns null
-            }
-        }
+        val appContext = GenericApplicationContext().apply { refresh() }
         SpringCacheSourceFactory(
-            beanFactory
+            appContext
         ).create<String, String>(firstMetadata).loadCacheValue("id").assert().isNull()
     }
 }

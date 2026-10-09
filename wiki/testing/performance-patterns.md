@@ -82,13 +82,13 @@ Defaults: `ttl = 3600`, `ttlAmplitude = 60`. Entries written together expire spr
 
 | Tier | Cost | Why |
 |------|------|-----|
-| L2 hit | One Caffeine lookup + an `isExpired` check | Bounded Caffeine; entries expire at their own `ttlAt` via `Expiry`, so expired entries are reclaimed proactively |
-| L1 hit | One Redis round trip | Value and TTL are read in a single pipeline |
+| L2 hit | One Caffeine lookup + an `isExpired` check | Bounded Caffeine without per-entry `Expiry` (which writes metadata on every read and stops a hot key from scaling); `isExpired` reads the cached `CacheClock` |
+| L1 hit | One Redis round trip | An atomic Lua script returns TTL + value on the shared connection (a Lettuce pipeline would need a dedicated connection) |
 | Key conversion | Compiled SpEL | `ExpKeyConverter` uses `SpelCompilerMode.MIXED` |
 | Proxy dispatch | Reflection on the delegate | No per-call allocation beyond the argument array |
 | Successful load | No broadcast | When L1 is empty, peers hold no valid copy, so no event is needed |
 
-Time is read from `System.currentTimeMillis()` at second precision. A background clock thread is unnecessary on modern JVMs.
+Time is read from `CacheClock`, a volatile epoch second refreshed every 100 ms. `System.currentTimeMillis()` did not scale across threads in our JMH runs on macOS.
 
 ## Pattern Summary
 

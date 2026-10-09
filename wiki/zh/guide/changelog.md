@@ -13,10 +13,10 @@ description: CoCache 版本发布历史和重要变更。
 
 ### 正确性修复
 
-- **L1 读不到绝不视为负缓存**：Redis 读取改为一次 pipeline 往返（值 + TTL）。key 不存在、读取期间被删除、载荷损坏都按未命中处理并回源。此前若在 `TTL` 与 `GET` 之间发生并发淘汰，会被解码为负缓存并写入 L2，直到旧 TTL 到期（默认永久）。
+- **L1 读不到绝不视为负缓存**：Redis 读取改为一次原子往返（Lua 脚本同时返回 TTL 与值）。key 不存在、读取期间被删除、载荷损坏都按未命中处理并回源。此前若在 `TTL` 与 `GET` 之间发生并发淘汰，会被解码为负缓存并写入 L2，直到旧 TTL 到期（默认永久）。
 - **本地写入使在途回源失效**：同实例上的 `evict`/`setCache` 现在会让并发回源放弃陈旧写回（此前只有远端事件生效）；L1 → L2 填充受同样保护。
 - **代理抛出原始异常**：代理解包 `InvocationTargetException`，调用方不再收到 `UndeclaredThrowableException`。
-- **默认陈旧度有界**：默认 `ttl` 为 3600 秒（原为永久）；负缓存使用独立的 `missingTtl`（默认 60 秒，原与命中值共用 TTL）；默认 L2 为有界 Caffeine（10000 条）并按条目 `ttlAt` 主动过期；失效通道每次（重新）订阅都会清空 L2，丢失的 Pub/Sub 消息不会让 L2 永久陈旧。
+- **默认陈旧度有界**：默认 `ttl` 为 3600 秒（原为永久）；负缓存使用独立的 `missingTtl`（默认 60 秒，原与命中值共用 TTL）；默认 L2 为有界 Caffeine（10000 条）；失效通道每次（重新）订阅都会清空 L2，丢失的 Pub/Sub 消息不会让 L2 永久陈旧。
 - **Spring Cache**：`get(key, valueLoader)` 按 key 只加载一次（满足 `@Cacheable(sync = true)`）；`retrieve` 改用专用线程池，不再占用 ForkJoin 公共池。
 - **有状态组件不再共享**：`ClientSideCache`、`DistributedCache`、`KeyConverter` bean 只按名称解析；此前按泛型类型匹配的 bean 会被同值类型的所有缓存共享。
 - **JoinCache.evict(key) 不再回源**：只淘汰主缓存。
@@ -47,6 +47,7 @@ description: CoCache 版本发布历史和重要变更。
 | `TtlConfiguration`、`TtlConfigurationAware`、`ComputedCache` | 已移除，TTL 来自 `@CoCache`（`TtlPolicy`） |
 | `@CoCache` 不指定 `ttl` 即永久 | 现为 3600 秒；如需旧行为请显式设置 `ttl = TtlAt.FOREVER` |
 | `JoinCache.evict(key)` 同时淘汰两个缓存 | 只淘汰主缓存；同时淘汰请用 `evict(firstKey, joinKey)` |
+| `CacheSource` 内部读同一缓存的同一 key 会重入锁 | 改为抛出 `IllegalStateException` 快速失败（原行为会导致错误淘汰） |
 
 ### Gradle 配置
 

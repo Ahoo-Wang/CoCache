@@ -32,7 +32,7 @@ description: 面向新贡献者的 CoCache 入门 -- 工具链、架构及其不
 
 | 库 | 用途 | 模块 |
 |----|------|------|
-| Caffeine | 默认 L2（有界，条目级 `Expiry`） | cocache-core |
+| Caffeine | 默认 L2（有界；读取时判断过期） | cocache-core |
 | Spring Expression | SpEL key / join key 模板（编译模式） | cocache-core |
 | Spring Data Redis + Jackson 3 | L1 存储、Pub/Sub 通道 | cocache-spring-redis |
 | Guava（compile-only） | `BloomKeyFilter` | cocache-core |
@@ -146,7 +146,7 @@ stateDiagram-v2
     MissingValue --> [*]: missingTtl reached / evict
 ```
 
-`ttlAt` 是绝对纪元秒；`TtlAt.FOREVER = Long.MAX_VALUE`。时间来自 `TtlAt.currentTime()`，即 `System.currentTimeMillis() / 1000`。
+`ttlAt` 是绝对纪元秒；`TtlAt.FOREVER = Long.MAX_VALUE`。时间来自 `TtlAt.currentTime()`，由 `CacheClock`（每 100ms 刷新的 volatile 秒值）提供。
 
 ### key 转换与 clientId
 
