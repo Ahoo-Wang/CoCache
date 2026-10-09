@@ -62,7 +62,7 @@ graph TB
 | 模块 | 用途 | 关键内容 | 源码 |
 |------|------|----------|------|
 | **cocache-api** | 纯接口和注解，零实现依赖 | `Cache`、`CacheValue`、`ClientSideCache`、`CacheSource`、`JoinCache`、`@CoCache`、`@JoinCacheable` | [cocache-api/](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-api) |
-| **cocache-core** | 所有核心抽象的默认实现 | `DefaultCoherentCache`、`CoCacheProxy`、`SimpleJoinCache`、`MapClientSideCache`、`GuavaClientSideCache`、`CaffeineClientSideCache`、`BloomKeyFilter`、`CacheEvictedEventBus` | [cocache-core/](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-core) |
+| **cocache-core** | 所有核心抽象的默认实现 | `DefaultCoherentCache`、`TtlPolicy`、`SingleFlight`、`CacheInvocationHandler`、`SimpleJoinCache`、`CaffeineClientSideCache`、`MapClientSideCache`、`LocalCacheEvictedEventBus`、`BloomKeyFilter` | [cocache-core/](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-core) |
 | **cocache-spring** | Spring 框架集成，基于 DI 的缓存创建 | `@EnableCoCache`、`EnableCoCacheRegistrar`、`AbstractCacheFactory`、`CacheProxyFactoryBean`、`JoinCacheProxyFactoryBean` | [cocache-spring/](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-spring) |
 | **cocache-spring-redis** | 基于 Redis 的分布式缓存和事件总线 | `RedisDistributedCache`、`RedisCacheEvictedEventBus`、`CodecExecutor` 层次结构 | [cocache-spring-redis/](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-spring-redis) |
 | **cocache-spring-cache** | Spring `CacheManager` 抽象的桥接 | `CoCacheManager`、`CoSpringCache` | [cocache-spring-cache/](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-spring-cache) |

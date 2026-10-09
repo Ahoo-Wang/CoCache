@@ -25,7 +25,6 @@ graph TB
         style SpringCache fill:#161b22,stroke:#6d5dfc,color:#e6edf3
         CCM["CoCacheManager"]
         CSC["CoSpringCache"]
-        SVW["SpringCacheValueWrapper"]
     end
 
     subgraph Spring["cocache-spring"]
@@ -111,24 +110,22 @@ The `AbstractCacheFactory` provides a template method pattern for creating cache
 flowchart TB
     subgraph Strategy["Bean Resolution Strategy"]
         style Strategy fill:#161b22,stroke:#6d5dfc,color:#e6edf3
-        Start["createBean(cacheMetadata)"]
+        Start["resolve(cacheMetadata)"]
         NameLookup["Look up by name:<br>{cacheName}{suffix}"]
         NameFound{"Bean found?"}
-        TypeLookup["Look up by type:<br>BeanFactory.getBeanProvider(type)"]
-        TypeFound{"Bean found?"}
+        TypeLookup["resolveByType()<br>(CacheSource only)"]
+        TypeFound{"Unique bean?"}
         Fallback["Use default fallback"]
-        TTL["Set TTL if TtlConfigurationAware"]
         Return["Return bean"]
 
         Start --> NameLookup
         NameLookup --> NameFound
-        NameFound -- "yes" --> TTL
+        NameFound -- "yes" --> Return
         NameFound -- "no" --> TypeLookup
         TypeLookup --> TypeFound
-        TypeFound -- "yes" --> TTL
+        TypeFound -- "yes" --> Return
         TypeFound -- "no" --> Fallback
-        Fallback --> TTL
-        TTL --> Return
+        Fallback --> Return
     end
 ```
 
@@ -137,13 +134,12 @@ flowchart TB
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `suffix` | `abstract val suffix: String` | Bean name suffix for this factory type |
-| `getBeanType` | `abstract fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType` | Returns the generic `ResolvableType` for bean lookup |
+| `resolveByType` | `open fun resolveByType(cacheMetadata: CoCacheMetadata): Any?` | Optional unique-type lookup (only for stateless components; default `null`) |
 | `fallback` | `abstract fun fallback(cacheMetadata: CoCacheMetadata): Any` | Default component when no Spring bean is found |
-| `getBeanProvider` | `open fun getBeanProvider(...)` | Type-based bean lookup with fallback provider |
 
 ## Spring Factory Implementations
 
-All Spring factory implementations extend `AbstractCacheFactory` and follow the same named-bean-first resolution pattern.
+All Spring factory implementations extend `AbstractCacheFactory`: named bean first, then (stateless components only) a unique bean by type, then the default.
 
 ### SpringClientSideCacheFactory
 
@@ -151,7 +147,7 @@ All Spring factory implementations extend `AbstractCacheFactory` and follow the 
 |--------|--------|--------|
 | **Implements** | `ClientSideCacheFactory`, `AbstractCacheFactory` | -- |
 | **Bean Name Suffix** | `.ClientSideCache` | -- |
-| **Fallback** | `DefaultClientSideCacheFactory.create()` (uses `@GuavaCache`/`@CaffeineCache` annotations) | -- |
+| **Fallback** | `DefaultClientSideCacheFactory.create()` (bounded Caffeine per `@CaffeineCache`) | -- |
 | **Source File** | -- | [SpringClientSideCacheFactory.kt:25](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/client/SpringClientSideCacheFactory.kt#L25) |
 
 ### SpringKeyConverterFactory
@@ -163,7 +159,7 @@ All Spring factory implementations extend `AbstractCacheFactory` and follow the 
 | **Fallback** | `ExpKeyConverter` if `keyExpression` is set, otherwise `ToStringKeyConverter` with computed prefix | -- |
 | **Source File** | -- | [SpringKeyConverterFactory.kt:27](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/converter/SpringKeyConverterFactory.kt#L27) |
 
-Special behavior: skips bean lookup when `keyType` is `String` (no conversion needed).
+Key prefixes and expressions resolve Spring placeholders (`${...}`). Converters are never shared by type: two caches with the same key type would otherwise share one prefix and collide.
 
 ### SpringCacheSourceFactory
 
@@ -171,6 +167,7 @@ Special behavior: skips bean lookup when `keyType` is `String` (no conversion ne
 |--------|--------|--------|
 | **Implements** | `CacheSourceFactory`, `AbstractCacheFactory` | -- |
 | **Bean Name Suffix** | `.CacheSource` | -- |
+| **Type fallback** | unique `CacheSource<K, V>` bean | -- |
 | **Fallback** | `CacheSource.noOp()` | -- |
 | **Source File** | -- | [SpringCacheSourceFactory.kt:24](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/source/SpringCacheSourceFactory.kt#L24) |
 
@@ -222,22 +219,13 @@ class CustomCacheConfig {
 
     @Bean("user-cache.ClientSideCache")
     fun userClientSideCache(): ClientSideCache<User> {
-        return CaffeineClientSideCache(
-            Caffeine.newBuilder()
-                .maximumSize(20_000)
-                .expireAfterWrite(Duration.ofMinutes(10))
-                .build()
-        )
+        return CaffeineClientSideCache.build(maximumSize = 20_000, expireAfterAccess = Duration.ofMinutes(10))
     }
 
     @Bean("user-cache.CacheSource")
     fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> {
-        return object : CacheSource<String, User> {
-            override fun loadCacheValue(key: String): CacheValue<User>? {
-                return userRepository.findById(key).map {
-                    DefaultCacheValue.ttlAt(it, 3600)
-                }.orElse(null)
-            }
+        return CacheSource { key ->
+            userRepository.findById(key).map { CacheValue.of(it, TtlAt.at(3600)) }.orElse(null)
         }
     }
 }
@@ -286,20 +274,20 @@ Adapter that wraps a CoCache `Cache` instance as a Spring `Cache` implementation
 | Aspect | Detail | Source |
 |--------|--------|--------|
 | **Implements** | `NamedCache`, `SpringCache`, `CacheDelegated<Cache<Any, Any?>>` | -- |
-| **Constructor** | `(cacheName: String, delegate: Cache<Any, Any?>)` | -- |
+| **Constructor** | `(cacheName: String, delegate: Cache<Any, Any?>, asyncExecutor: Executor)` | -- |
 | **Source File** | -- | [CoSpringCache.kt:27](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-cache/src/main/kotlin/me/ahoo/cache/spring/cache/CoSpringCache.kt#L27) |
 
 | Method | Spring Interface | Description |
 |--------|-----------------|-------------|
 | `getName()` | `Cache.getName()` | Returns the cache name |
 | `getNativeCache()` | `Cache.getNativeCache()` | Returns the underlying CoCache instance |
-| `get(key)` | `Cache.get(key)` | Returns a `SpringCacheValueWrapper` around the CoCache value |
+| `get(key)` | `Cache.get(key)` | `SimpleValueWrapper(value)` on hit; `null` for absent, expired, or negative-cache entries |
 | `get(key, type)` | `Cache.get(key, type)` | Returns the value cast to the specified type |
-| `get(key, valueLoader)` | `Cache.get(key, valueLoader)` | Loads value via `Callable` if not cached, then stores it |
+| `get(key, valueLoader)` | `Cache.get(key, valueLoader)` | Loads at most once per key concurrently (`@Cacheable(sync = true)`), then stores it |
 | `put(key, value)` | `Cache.put(key, value)` | Delegates to `delegate.set(key, value)` |
 | `evict(key)` | `Cache.evict(key)` | Delegates to `delegate.evict(key)` |
 | `clear()` | `Cache.clear()` | Clears the `ClientSideCache` (if `CoherentCache`, clears L2 only) |
-| `retrieve(key)` | `Cache.retrieve(key)` | Async get via `CompletableFuture.supplyAsync` |
+| `retrieve(key)` | `Cache.retrieve(key)` | Async lookup on the dedicated `asyncExecutor` (not the ForkJoin common pool) |
 | `retrieve(key, valueLoader)` | `Cache.retrieve(key, valueLoader)` | Async get with `CompletableFuture` composition |
 
 ### Using with @Cacheable

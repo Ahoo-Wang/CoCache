@@ -1,6 +1,6 @@
 ---
 title: 配置参考
-description: CoCache 完整配置参考 -- @CoCache 参数、@GuavaCache/@CaffeineCache 设置、Spring Boot 自动配置和自定义 Bean 覆盖。
+description: CoCache 完整配置参考 -- @CoCache 参数与 TTL 选择、@CaffeineCache 设置、Spring Boot 自动配置和自定义 Bean 覆盖。
 ---
 
 # 配置参考
@@ -13,11 +13,17 @@ description: CoCache 完整配置参考 -- @CoCache 参数、@GuavaCache/@Caffei
 
 | 参数 | 类型 | 默认值 | 说明 | 源码 |
 |------|------|--------|------|------|
-| `name` | `String` | `""`（接口名） | 缓存名称，用于事件匹配和 Bean 命名 | [CoCache.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L30) |
-| `keyPrefix` | `String` | `""` | 在分布式层中预置到所有缓存键的前缀 | [CoCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L31) |
-| `keyExpression` | `String` | `""` | 用于键派生的 SpEL 表达式 | [CoCache.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L33) |
-| `ttl` | `Long` | `Long.MAX_VALUE` | 生存时间，单位由缓存实现指定（Redis 为秒） | [CoCache.kt:35](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L35) |
-| `ttlAmplitude` | `Long` | `10` | 从 TTL 中加减的随机抖动范围，防止缓存雪崩 | [CoCache.kt:36](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L36) |
+| `name` | `String` | `""`（接口名） | 缓存名称，用于事件频道和 Bean 命名 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `keyPrefix` | `String` | `""`（→ `cocache:{cacheName}:`） | 所有存储 key 的前缀；支持 Spring 占位符 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `keyExpression` | `String` | `""` | 用于派生 key 的 SpEL 模板 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `ttl` | `Long` | `3600` | 命中值 TTL（秒），`TtlAt.FOREVER` 表示永不过期 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `ttlAmplitude` | `Long` | `60` | 命中值 TTL 的随机抖动（± 秒），防止缓存雪崩 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `missingTtl` | `Long` | `60` | 负缓存 TTL（秒，`CacheSource` 返回 `null` 时） | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+
+### 如何选择 TTL
+
+- `ttl` 决定残留不一致最多能存活多久。cache-aside 竞态（慢回源覆盖了 L1 中的并发更新）只能靠过期修复。除非每个写入方都可靠地调用 `evict`，否则请保持 `ttl` 有限。
+- `missingTtl` 决定一次“不存在”查询被缓存后，新建数据最多多久不可见。请保持它较短。
 
 ### TTL 抖动机制
 
@@ -44,7 +50,7 @@ graph LR
     style Result fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
-源码：[ComputedTtlAt.kt:49-56](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/ComputedTtlAt.kt#L49-L56)
+源码：[TtlAt.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/TtlAt.kt)、[TtlPolicy.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/TtlPolicy.kt)
 
 ### 示例
 
@@ -53,30 +59,16 @@ graph LR
 interface UserCache : Cache<String, User>
 ```
 
-## @GuavaCache 注解
-
-配置基于 Guava 的 `ClientSideCache`（L2 本地缓存）。
-
-| 参数 | 类型 | 默认值 | 说明 | 源码 |
-|------|------|--------|------|------|
-| `initialCapacity` | `Int` | `-1`（未设置） | Guava 缓存的初始容量 | [GuavaCache.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L30) |
-| `concurrencyLevel` | `Int` | `-1`（未设置） | 缓存可处理的并发更新数 | [GuavaCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L31) |
-| `maximumSize` | `Long` | `-1`（未设置） | 缓存可容纳的最大条目数 | [GuavaCache.kt:32](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L32) |
-| `expireUnit` | `TimeUnit` | `TimeUnit.SECONDS` | `expireAfterWrite` 和 `expireAfterAccess` 的时间单位 | [GuavaCache.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L33) |
-| `expireAfterWrite` | `Long` | `-1`（未设置） | 写入后条目过期的时间 | [GuavaCache.kt:34](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L34) |
-| `expireAfterAccess` | `Long` | `-1`（未设置） | 最后一次访问后条目过期的时间 | [GuavaCache.kt:35](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L35) |
-
 ## @CaffeineCache 注解
 
-配置基于 Caffeine 的 `ClientSideCache`（L2 本地缓存）。
+配置默认 L2（`CaffeineClientSideCache`）。该注解可选，不标注时使用下列默认值。条目在自身 `ttlAt` 到期。
 
 | 参数 | 类型 | 默认值 | 说明 | 源码 |
 |------|------|--------|------|------|
-| `initialCapacity` | `Int` | `-1`（未设置） | Caffeine 缓存的初始容量 | [CaffeineCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L31) |
-| `maximumSize` | `Long` | `-1`（未设置） | 缓存可容纳的最大条目数 | [CaffeineCache.kt:32](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L32) |
-| `expireUnit` | `TimeUnit` | `TimeUnit.SECONDS` | 过期设置的时间单位 | [CaffeineCache.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L33) |
-| `expireAfterWrite` | `Long` | `-1`（未设置） | 写入后条目过期的时间 | [CaffeineCache.kt:34](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L34) |
-| `expireAfterAccess` | `Long` | `-1`（未设置） | 最后一次访问后条目过期的时间 | [CaffeineCache.kt:35](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L35) |
+| `initialCapacity` | `Int` | `-1`（未设置） | 初始容量 | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `maximumSize` | `Long` | `10000` | 最大条目数（L2 始终有界） | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `expireAfterAccess` | `Long` | `0`（不启用） | 自最近一次访问起的空闲淘汰 | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `expireUnit` | `TimeUnit` | `SECONDS` | `expireAfterAccess` 的单位 | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
 
 ## @JoinCacheable 注解
 
@@ -106,7 +98,7 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 | 属性 | 类型 | 默认值 | 说明 | 源码 |
 |------|------|--------|------|------|
 | `cocache.enabled` | `Boolean` | `true` | 启用或禁用整个 CoCache 自动配置 | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
-| `cocache.redis.strict-failure` | `Boolean` | `false` | Redis 故障策略：`false` = 降级（读回源、写仅告警）；`true` = 重抛 `DataAccessException`（4.3.0 之前的行为） | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
+| `cocache.redis.strict-failure` | `Boolean` | `false` | Redis 故障策略：`false` = 降级（读回源、写仅告警）；`true` = 重抛 `DataAccessException` | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
 | `cocache.redis.missing-guard-sentinel` | `String` | `"_nil_"` | 自定义 Redis codec 负缓存哨兵值（约束见下文） | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
 
 ```yaml
@@ -122,17 +114,17 @@ cocache:
 
 源码：[ConditionalOnCoCacheEnabled.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/ConditionalOnCoCacheEnabled.kt)
 
-#### Redis 故障降级（v4.3.0）
+#### Redis 故障降级
 
-自 v4.3.0 起，`RedisDistributedCache` 对 Redis 故障降级处理，不再向业务调用方传播异常：
+`RedisDistributedCache` 对 Redis 故障降级处理，不向业务调用方传播异常：
 
 - **读失败** → 按缓存未命中处理：一致性缓存回退到数据源回源，Redis 故障或主从切换期间业务调用不受影响。
 - **写 / evict 失败** → 记录 `WARN` 后吞掉——缓存写入失败不会阻断业务写路径。
 - 失效事件发布路径（`RedisCacheEvictedEventBus`）同样降级（pub/sub 本就是 fire-and-forget）。
 
-设置 `cocache.redis.strict-failure=true` 可恢复 4.3.0 之前的严格行为（异常传播）。注意：降级启用时，故障期间本地 L2 未命中的 key 每进程每客户端 TTL 窗口至多回源一次——请据此规划数据源容量。这两个属性仅作用于自动装配（fallback）创建的缓存；自定义 `DistributedCache` Bean 自行管理其策略。
+设置 `cocache.redis.strict-failure=true` 改为传播异常。注意：降级启用时，故障期间本地 L2 未命中的 key 每进程每客户端 TTL 窗口至多回源一次——请据此规划数据源容量。这两个属性仅作用于自动装配（fallback）创建的缓存；自定义 `DistributedCache` Bean 自行管理其策略。
 
-#### 负缓存哨兵（v4.3.0）
+#### 负缓存哨兵
 
 Redis codec 用哨兵值 `"_nil_"` 标记负缓存条目。若业务数据可能合法地等于哨兵（外部写入者写入的精确 `"_nil_"` 字符串、单元素 `{"_nil_"}` 集合或单 `"_nil_"` 键的 Map），可配置自定义哨兵：
 
@@ -146,7 +138,7 @@ cocache:
 
 - 自定义哨兵与默认哨兵**互不识别**——切换需全集群同时变更（滚动升级期间旧实例会把新哨兵误读为真实值）。
 - 取值不得等于任何合法的业务序列化值，且不得为空白（绑定时 fail-fast）。
-- 仅影响 codec 读写的 Redis 静止字节；进程内 missing-guard 判定不受影响。
+- 进程内的负缓存是显式的 `MissingValue` 类型，哨兵只存在于 Redis 中。
 
 ## 自动配置 Bean 注册表
 
@@ -209,8 +201,8 @@ graph TB
 | `cocacheRedisMessageListenerContainer` | `RedisMessageListenerContainer` | `@ConditionalOnMissingBean` + `@ConditionalOnSingleCandidate` | 监听 Redis Pub/Sub 消息 |
 | `cacheEvictedEventBus` | `CacheEvictedEventBus` | `@ConditionalOnMissingBean` | 通过 Redis 发布和订阅缓存失效事件 |
 | `coherentCacheFactory` | `CoherentCacheFactory` | `@ConditionalOnMissingBean` | 创建 `DefaultCoherentCache` 实例 |
-| `cacheSourceFactory` | `CacheSourceFactory` | `@ConditionalOnMissingBean` | 按名称解析 `CacheSource` Bean |
-| `clientSideCacheFactory` | `ClientSideCacheFactory` | `@ConditionalOnMissingBean` | 从注解创建 `ClientSideCache` 实例 |
+| `cacheSourceFactory` | `CacheSourceFactory` | `@ConditionalOnMissingBean` | 先按名称、再按唯一类型解析 `CacheSource` Bean |
+| `clientSideCacheFactory` | `ClientSideCacheFactory` | `@ConditionalOnMissingBean` | 解析 `{cacheName}.ClientSideCache`，或按 `@CaffeineCache` 构建 Caffeine |
 | `distributedCacheFactory` | `DistributedCacheFactory` | `@ConditionalOnMissingBean` | 创建 `RedisDistributedCache` 实例 |
 | `keyConverterFactory` | `KeyConverterFactory` | `@ConditionalOnMissingBean` | 使用 SpEL 表达式转换缓存键 |
 | `cacheProxyFactory` | `CacheProxyFactory` | `@ConditionalOnMissingBean` | 创建缓存接口的代理实现 |
@@ -221,19 +213,19 @@ graph TB
 
 ### 自定义 ClientSideCache
 
-通过声明 Bean 来覆盖特定缓存接口的 L2 缓存：
+声明名为 `{cacheName}.ClientSideCache` 的 Bean，覆盖特定缓存接口的 L2：
 
 ```kotlin
 @Configuration
 class UserCacheConfiguration {
-    @Bean
-    fun customizeUserClientSideCache(): ClientSideCache<User> {
-        return MapClientSideCache(ttl = 120, ttlAmplitude = 10)
+    @Bean("UserCache.ClientSideCache")
+    fun userClientSideCache(): ClientSideCache<User> {
+        return CaffeineClientSideCache.build(maximumSize = 100_000, expireAfterAccess = Duration.ofMinutes(10))
     }
 }
 ```
 
-自动配置使用 `SpringClientSideCacheFactory`，它从 Spring `BeanFactory` 解析 Bean。如果存在匹配的 `ClientSideCache` Bean，它优先于基于注解的 Guava/Caffeine 默认值。
+有状态组件（`ClientSideCache`、`DistributedCache`、`KeyConverter`）**只按 Bean 名称解析**。如果按类型匹配，值类型相同的所有缓存会共享同一个 Bean：一个缓存 `clear()` 会清掉其它缓存，key 前缀也会冲突。
 
 ### 自定义 CacheSource
 
@@ -244,26 +236,20 @@ class UserCacheConfiguration {
 class UserCacheConfiguration {
     @Bean
     fun customizeUserCacheSource(): CacheSource<String, User> {
-        return object : CacheSource<String, User> {
-            override fun loadCacheValue(key: String): CacheValue<User>? {
-                // 从数据库加载
-                return database.findById(key)?.let {
-                    DefaultCacheValue.forever(it)
-                }
-            }
-        }
+        // 返回 null → 以 missingTtl 写入负缓存
+        return CacheSource { key -> database.findById(key)?.let { CacheValue.forever(it) } }
     }
 }
 ```
 
-如果没有提供 `CacheSource` Bean，缓存使用 `CacheSource.noOp()`，它始终返回 `null`。
+`CacheSource` 先按名称 `{cacheName}.CacheSource` 解析，再按唯一的 `CacheSource<K, V>` 类型 Bean 解析（数据源无状态，可以安全共享）；都没有时使用 `CacheSource.noOp()`。
 
 ### 自定义 DistributedCache
 
-覆盖分布式缓存实现：
+声明名为 `{cacheName}.DistributedCache` 的 Bean，覆盖分布式缓存实现：
 
 ```kotlin
-@Bean
+@Bean("UserCache.DistributedCache")
 fun customDistributedCache(redisTemplate: StringRedisTemplate): DistributedCache<User> {
     val codec = ObjectToJsonCodecExecutor<User>(
         User::class.java, redisTemplate, ObjectMapper()
@@ -274,7 +260,7 @@ fun customDistributedCache(redisTemplate: StringRedisTemplate): DistributedCache
 
 ### 自定义 CacheEvictedEventBus
 
-用自定义实现替换基于 Redis 的事件总线：
+用自定义实现替换基于 Redis 的事件总线。实现必须在每次（重新）建立订阅时调用 `CacheEvictedSubscriber.onReset()`，因为未订阅期间发送的事件已经丢失：
 
 ```kotlin
 @Bean

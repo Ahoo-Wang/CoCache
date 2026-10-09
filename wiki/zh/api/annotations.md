@@ -1,6 +1,6 @@
 ---
 title: 注解参考
-description: CoCache 所有注解的完整参考，包括 @CoCache、@GuavaCache、@CaffeineCache、@JoinCacheable、@EnableCoCache、@ConditionalOnCoCacheEnabled 及使用示例。
+description: CoCache 所有注解的完整参考，包括 @CoCache、@CaffeineCache、@JoinCacheable、@EnableCoCache、@ConditionalOnCoCacheEnabled 及使用示例。
 ---
 
 # 注解参考
@@ -12,20 +12,22 @@ CoCache 使用注解进行声明式缓存配置。注解定义在 `cocache-api` 
 标记缓存接口用于基于代理的缓存创建。这是定义标准一致性缓存的主要注解。
 
 | 参数 | 类型 | 默认值 | 说明 | 源码 |
-|-----------|------|---------|-------------|--------|
-| `name` | `String` | `""`（使用接口简单类名） | 缓存逻辑名称，用于 Bean 注册和事件路由 | [CoCache.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L30) |
-| `keyPrefix` | `String` | `""`（自动生成为 `cocache:{cacheName}:`） | 在分布式存储中所有缓存键前添加的前缀 | [CoCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L31) |
-| `keyExpression` | `String` | `""` | 用于键生成的 SpEL 模板表达式（例如 `"#{id}"`） | [CoCache.kt:35](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L35) |
-| `ttl` | `Long` | `Long.MAX_VALUE`（永不过期） | 默认生存时间，单位为秒 | [CoCache.kt:36](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L36) |
-| `ttlAmplitude` | `Long` | `10` | 添加到 TTL 的随机抖动范围（秒），用于防止缓存雪崩 | [CoCache.kt:37](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L37) |
+|------|------|--------|------|------|
+| `name` | `String` | `""`（接口简单类名） | 缓存逻辑名称：bean 名、事件频道、组件 bean 前缀 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `keyPrefix` | `String` | `""`（→ `cocache:{cacheName}:`） | 存储 key 前缀；解析 Spring 占位符 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `keyExpression` | `String` | `""` | key 的 SpEL 模板（如 `"#{id}"`）；为空时使用 `key.toString()` | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `ttl` | `Long` | `3600` | 命中值 TTL（秒）。默认有限，任何不一致都能自愈；`TtlAt.FOREVER` 表示永不过期 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `ttlAmplitude` | `Long` | `60` | 命中值 TTL 的随机抖动（± 秒），防止缓存雪崩 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `missingTtl` | `Long` | `60` | 负缓存 TTL（秒，不抖动）；新建数据最多在该时长内不可见 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
 
 **伴生常量**：
 
 | 常量 | 值 | 说明 |
-|----------|-------|-------------|
+|------|----|------|
 | `COCACHE` | `"cocache"` | 配置的基础属性前缀 |
-| `DEFAULT_TTL` | `Long.MAX_VALUE` | 默认 TTL（永不过期） |
-| `DEFAULT_TTL_AMPLITUDE` | `10L` | 默认 TTL 抖动范围 |
+| `DEFAULT_TTL` | `3600` | 默认命中值 TTL |
+| `DEFAULT_TTL_AMPLITUDE` | `60` | 默认 TTL 抖动 |
+| `DEFAULT_MISSING_TTL` | `60` | 默认负缓存 TTL |
 
 ### 使用示例
 
@@ -51,67 +53,26 @@ interface UserCache : Cache<String, User>
 interface OrderCache : Cache<OrderId, Order>
 ```
 
-## @GuavaCache
-
-配置基于 Guava 的 `ClientSideCache` 实现。当缓存接口上存在此注解时，`DefaultClientSideCacheFactory` 会创建 `GuavaClientSideCache` 而非默认的 `MapClientSideCache`。
-
-| 参数 | 类型 | 默认值 | 说明 | 源码 |
-|-----------|------|---------|-------------|--------|
-| `initialCapacity` | `Int` | `-1`（未设置） | Guava 缓存的初始容量 | [GuavaCache.kt:29](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L29) |
-| `concurrencyLevel` | `Int` | `-1`（未设置） | 并发访问的段数 | [GuavaCache.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L30) |
-| `maximumSize` | `Long` | `-1`（未设置） | 驱逐前的最大条目数 | [GuavaCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L31) |
-| `expireUnit` | `TimeUnit` | `TimeUnit.SECONDS` | 过期时间的时间单位 | [GuavaCache.kt:32](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L32) |
-| `expireAfterWrite` | `Long` | `-1`（未设置） | 写入后条目过期的时间 | [GuavaCache.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L33) |
-| `expireAfterAccess` | `Long` | `-1`（未设置） | 最后一次访问后条目过期的时间 | [GuavaCache.kt:34](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L34) |
-
-### 使用示例
-
-```kotlin
-@CoCache(name = "user-cache", ttl = 3600)
-@GuavaCache(
-    maximumSize = 10_000,
-    expireAfterAccess = 300,
-    expireUnit = TimeUnit.SECONDS
-)
-interface UserCache : Cache<String, User>
-```
-
 ## @CaffeineCache
 
-配置基于 Caffeine 的 `ClientSideCache` 实现。当缓存接口上存在此注解时，`DefaultClientSideCacheFactory` 会创建 `CaffeineClientSideCache`。
+配置默认 L2（`CaffeineClientSideCache`）。不标注时使用全部默认值。条目总是在自身 `ttlAt` 到期，无需配置写后过期。
 
 | 参数 | 类型 | 默认值 | 说明 | 源码 |
-|-----------|------|---------|-------------|--------|
-| `initialCapacity` | `Int` | `-1`（未设置） | Caffeine 缓存的初始容量 | [CaffeineCache.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L30) |
-| `maximumSize` | `Long` | `-1`（未设置） | 驱逐前的最大条目数 | [CaffeineCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L31) |
-| `expireUnit` | `TimeUnit` | `TimeUnit.SECONDS` | 过期时间的时间单位 | [CaffeineCache.kt:32](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L32) |
-| `expireAfterWrite` | `Long` | `-1`（未设置） | 写入后条目过期的时间 | [CaffeineCache.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L33) |
-| `expireAfterAccess` | `Long` | `-1`（未设置） | 最后一次访问后条目过期的时间 | [CaffeineCache.kt:34](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L34) |
+|------|------|--------|------|------|
+| `initialCapacity` | `Int` | `-1`（未设置） | 初始容量 | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `maximumSize` | `Long` | `10000` | 最大条目数；L2 始终有界 | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `expireAfterAccess` | `Long` | `0`（不启用） | 自最近一次访问起的空闲淘汰（不晚于 `ttlAt`） | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `expireUnit` | `TimeUnit` | `SECONDS` | `expireAfterAccess` 的单位 | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
 
 ### 使用示例
 
 ```kotlin
 @CoCache(name = "product-cache", ttl = 7200)
-@CaffeineCache(
-    maximumSize = 50_000,
-    expireAfterWrite = 600,
-    expireUnit = TimeUnit.SECONDS
-)
+@CaffeineCache(maximumSize = 50_000, expireAfterAccess = 600)
 interface ProductCache : Cache<String, Product>
 ```
 
-## @GuavaCache 与 @CaffeineCache 对比
-
-| 特性 | @GuavaCache | @CaffeineCache |
-|---------|-------------|----------------|
-| `concurrencyLevel` | 支持 | 不支持 |
-| `initialCapacity` | 支持 | 支持 |
-| `maximumSize` | 支持 | 支持 |
-| `expireAfterWrite` | 支持 | 支持 |
-| `expireAfterAccess` | 支持 | 支持 |
-| `expireUnit` | 支持 | 支持 |
-| 底层库 | Google Guava | Caffeine |
-| 异步刷新 | 否 | 原生支持（尚未暴露） |
+如需完全替换 L2，声明名为 `{cacheName}.ClientSideCache` 的 bean。
 
 ## @JoinCacheable
 
@@ -210,23 +171,14 @@ classDiagram
         +keyExpression: String
         +ttl: Long
         +ttlAmplitude: Long
-    }
-    class GuavaCache {
-        <<annotation>>
-        +initialCapacity: Int
-        +concurrencyLevel: Int
-        +maximumSize: Long
-        +expireUnit: TimeUnit
-        +expireAfterWrite: Long
-        +expireAfterAccess: Long
+        +missingTtl: Long
     }
     class CaffeineCache {
         <<annotation>>
         +initialCapacity: Int
         +maximumSize: Long
-        +expireUnit: TimeUnit
-        +expireAfterWrite: Long
         +expireAfterAccess: Long
+        +expireUnit: TimeUnit
     }
     class JoinCacheable {
         <<annotation>>
@@ -243,7 +195,7 @@ classDiagram
         <<data class>>
         +cacheName: String
         +keyPrefix: String
-        +ttl: Long
+        +ttlPolicy: TtlPolicy
         +keyType: KType
         +valueType: KType
     }
@@ -255,13 +207,11 @@ classDiagram
     }
 
     CoCache ..> CoCacheMetadata : 解析为
-    GuavaCache ..> CoCacheMetadata : 配置客户端缓存
     CaffeineCache ..> CoCacheMetadata : 配置客户端缓存
     JoinCacheable ..> JoinCacheMetadata : 解析为
     EnableCoCache ..> CoCache : 触发注册
 
     style CoCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style GuavaCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style CaffeineCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style JoinCacheable fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style EnableCoCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -277,7 +227,7 @@ classDiagram
 graph TB
     subgraph Declaration["接口声明"]
         style Declaration fill:#161b22,stroke:#6d5dfc,color:#e6edf3
-        CI["缓存接口<br>+ @CoCache<br>+ @GuavaCache / @CaffeineCache"]
+        CI["缓存接口<br>+ @CoCache<br>+ @CaffeineCache"]
         JCI["JoinCache 接口<br>+ @JoinCacheable"]
     end
 
@@ -323,17 +273,15 @@ graph TB
 使用所有可用注解的完整配置：
 
 ```kotlin
-// 定义使用 Guava 客户端缓存的标准缓存
+// 定义一个指定 L2 容量的标准缓存
 @CoCache(
     name = "user-cache",
     keyPrefix = "myapp:user:",
     ttl = 3600,
-    ttlAmplitude = 30
+    ttlAmplitude = 30,
+    missingTtl = 30
 )
-@GuavaCache(
-    maximumSize = 10_000,
-    expireAfterWrite = 600
-)
+@CaffeineCache(maximumSize = 10_000, expireAfterAccess = 600)
 interface UserCache : Cache<String, User> {
     // 从 Cache<K, V> 继承的方法：
     // - get(key): User?

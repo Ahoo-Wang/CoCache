@@ -1,6 +1,6 @@
 ---
 title: Configuration Reference
-description: Complete reference for CoCache configuration -- @CoCache parameters, @GuavaCache/@CaffeineCache settings, Spring Boot auto-config, and custom bean overrides.
+description: Complete reference for CoCache configuration -- @CoCache parameters and TTL choices, @CaffeineCache settings, Spring Boot auto-config, and custom bean overrides.
 ---
 
 # Configuration Reference
@@ -13,11 +13,17 @@ The `@CoCache` annotation marks a cache interface for proxy-based implementation
 
 | Parameter | Type | Default | Description | Source |
 |-----------|------|---------|-------------|--------|
-| `name` | `String` | `""` (interface name) | Cache name used for event matching and bean naming | [CoCache.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L30) |
-| `keyPrefix` | `String` | `""` | Prefix prepended to all cache keys in the distributed layer | [CoCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L31) |
-| `keyExpression` | `String` | `""` | SpEL expression for key derivation | [CoCache.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L33) |
-| `ttl` | `Long` | `Long.MAX_VALUE` | Time-to-live in the unit specified by the cache implementation (seconds for Redis) | [CoCache.kt:35](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L35) |
-| `ttlAmplitude` | `Long` | `10` | Random jitter range added/subtracted from TTL to prevent cache avalanche | [CoCache.kt:36](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L36) |
+| `name` | `String` | `""` (interface name) | Cache name used for event channels and bean naming | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `keyPrefix` | `String` | `""` (→ `cocache:{cacheName}:`) | Prefix prepended to all storage keys; supports Spring placeholders | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `keyExpression` | `String` | `""` | SpEL template for key derivation | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `ttl` | `Long` | `3600` | Value TTL in seconds (`TtlAt.FOREVER` = never expires) | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `ttlAmplitude` | `Long` | `60` | Random jitter (± seconds) on the value TTL to prevent cache avalanche | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `missingTtl` | `Long` | `60` | Negative-cache TTL in seconds (when `CacheSource` returns `null`) | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+
+### Choosing TTLs
+
+- `ttl` bounds how long any residual inconsistency can survive. The cache-aside race (a slow load overwriting a concurrent update in L1) can only be repaired by expiry. Keep `ttl` finite unless every writer reliably calls `evict`.
+- `missingTtl` bounds how long a newly created row can stay invisible after a lookup cached its absence. Keep it short.
 
 ### TTL Jitter Mechanism
 
@@ -33,7 +39,7 @@ graph LR
         direction LR
         TTL["ttl = 120s"]
         Amp["ttlAmplitude = 10"]
-        Result["actualTtl = 110..130s<br>(random)"]
+        Result["actualTtl = 110..130s<br>(random, always > 0)"]
     end
 
     TTL --> Result
@@ -44,7 +50,7 @@ graph LR
     style Result fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
-Source: [ComputedTtlAt.kt:49-56](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/ComputedTtlAt.kt#L49-L56)
+Source: [TtlAt.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/TtlAt.kt), [TtlPolicy.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/TtlPolicy.kt)
 
 ### Example
 
@@ -53,30 +59,16 @@ Source: [ComputedTtlAt.kt:49-56](https://github.com/Ahoo-Wang/CoCache/blob/main/
 interface UserCache : Cache<String, User>
 ```
 
-## @GuavaCache Annotation
-
-Configures a Guava-based `ClientSideCache` (L2 local cache).
-
-| Parameter | Type | Default | Description | Source |
-|-----------|------|---------|-------------|--------|
-| `initialCapacity` | `Int` | `-1` (unset) | Initial capacity of the Guava cache | [GuavaCache.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L30) |
-| `concurrencyLevel` | `Int` | `-1` (unset) | Number of concurrent updates the cache can handle | [GuavaCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L31) |
-| `maximumSize` | `Long` | `-1` (unset) | Maximum number of entries the cache may hold | [GuavaCache.kt:32](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L32) |
-| `expireUnit` | `TimeUnit` | `TimeUnit.SECONDS` | Time unit for `expireAfterWrite` and `expireAfterAccess` | [GuavaCache.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L33) |
-| `expireAfterWrite` | `Long` | `-1` (unset) | Duration after write before entry expires | [GuavaCache.kt:34](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L34) |
-| `expireAfterAccess` | `Long` | `-1` (unset) | Duration after last access before entry expires | [GuavaCache.kt:35](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L35) |
-
 ## @CaffeineCache Annotation
 
-Configures a Caffeine-based `ClientSideCache` (L2 local cache).
+Configures the default L2 (`CaffeineClientSideCache`). It is optional; without it the defaults below apply. Entries expire at their own `ttlAt`.
 
 | Parameter | Type | Default | Description | Source |
 |-----------|------|---------|-------------|--------|
-| `initialCapacity` | `Int` | `-1` (unset) | Initial capacity of the Caffeine cache | [CaffeineCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L31) |
-| `maximumSize` | `Long` | `-1` (unset) | Maximum number of entries the cache may hold | [CaffeineCache.kt:32](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L32) |
-| `expireUnit` | `TimeUnit` | `TimeUnit.SECONDS` | Time unit for expiration settings | [CaffeineCache.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L33) |
-| `expireAfterWrite` | `Long` | `-1` (unset) | Duration after write before entry expires | [CaffeineCache.kt:34](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L34) |
-| `expireAfterAccess` | `Long` | `-1` (unset) | Duration after last access before entry expires | [CaffeineCache.kt:35](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L35) |
+| `initialCapacity` | `Int` | `-1` (unset) | Initial capacity | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `maximumSize` | `Long` | `10000` | Maximum entries (L2 is always bounded) | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `expireAfterAccess` | `Long` | `0` (disabled) | Idle eviction since last access | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `expireUnit` | `TimeUnit` | `SECONDS` | Unit for `expireAfterAccess` | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
 
 ## @JoinCacheable Annotation
 
@@ -106,7 +98,7 @@ Source: [cocache-example/.../cache/UserExtendInfoJoinCache.kt](https://github.co
 | Property | Type | Default | Description | Source |
 |----------|------|---------|-------------|--------|
 | `cocache.enabled` | `Boolean` | `true` | Enables or disables the entire CoCache auto-configuration | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
-| `cocache.redis.strict-failure` | `Boolean` | `false` | Redis failure policy: `false` = degrade (reads fall back to source, writes log warnings); `true` = rethrow `DataAccessException` (pre-4.3.0 behavior) | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
+| `cocache.redis.strict-failure` | `Boolean` | `false` | Redis failure policy: `false` = degrade (reads fall back to source, writes log warnings); `true` = rethrow `DataAccessException` | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
 | `cocache.redis.missing-guard-sentinel` | `String` | `"_nil_"` | Custom missing-guard sentinel value for Redis codecs (see notes below) | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
 
 ```yaml
@@ -122,17 +114,17 @@ When `cocache.enabled` is `false`, all CoCache beans are skipped. The conditiona
 
 Source: [ConditionalOnCoCacheEnabled.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/ConditionalOnCoCacheEnabled.kt)
 
-#### Redis Failure Degradation (v4.3.0)
+#### Redis Failure Degradation
 
-Since v4.3.0, `RedisDistributedCache` degrades instead of propagating Redis failures to business callers:
+`RedisDistributedCache` degrades instead of propagating Redis failures to business callers:
 
 - **Read failures** → treated as a cache miss: the coherent cache falls back to the source (database), so business calls are unaffected during Redis outages or master-slave switchovers.
 - **Write / evict failures** → logged at `WARN` and swallowed — a cache write failure never blocks the business write path.
 - The eviction-event publish path (`RedisCacheEvictedEventBus`) degrades the same way (pub/sub is fire-and-forget by nature).
 
-Set `cocache.redis.strict-failure=true` to restore the strict pre-4.3.0 behavior (exceptions propagate). Note that during an outage with degradation enabled, every key not served by the local L2 cache falls back to the source once per client-side TTL window per process — plan source capacity accordingly. These properties apply only to auto-configured (fallback-created) caches; custom `DistributedCache` beans manage their own policy.
+Set `cocache.redis.strict-failure=true` to propagate exceptions instead. Note that during an outage with degradation enabled, every key not served by the local L2 cache falls back to the source once per client-side TTL window per process — plan source capacity accordingly. These properties apply only to auto-configured (fallback-created) caches; custom `DistributedCache` beans manage their own policy.
 
-#### Missing-Guard Sentinel (v4.3.0)
+#### Missing-Guard Sentinel
 
 Redis codecs mark negative-cache entries with the sentinel value `"_nil_"`. If your business data can legitimately equal the sentinel (an exact `"_nil_"` string, a single-element `{"_nil_"}` set, or a single-`"_nil_"`-keyed map written by an external writer), configure a custom sentinel:
 
@@ -146,7 +138,7 @@ Constraints:
 
 - Custom and default sentinels **do not recognize each other** — switching requires a simultaneous cluster-wide change (during a rolling upgrade, old instances would misread the new sentinel as a real value).
 - The value must not equal any legitimate serialized business value, and must not be blank (binding fails fast).
-- This affects only the Redis at-rest bytes written/read by the codecs; in-process missing-guard checks are unaffected.
+- In-process, negative entries are the explicit `MissingValue` type; the sentinel exists only in Redis.
 
 ## Auto-Configuration Bean Registry
 
@@ -209,8 +201,8 @@ Source: [CoCacheAutoConfiguration.kt:61-186](https://github.com/Ahoo-Wang/CoCach
 | `cocacheRedisMessageListenerContainer` | `RedisMessageListenerContainer` | `@ConditionalOnMissingBean` + `@ConditionalOnSingleCandidate` | Listens for Redis pub/sub messages |
 | `cacheEvictedEventBus` | `CacheEvictedEventBus` | `@ConditionalOnMissingBean` | Publishes and subscribes to cache eviction events via Redis |
 | `coherentCacheFactory` | `CoherentCacheFactory` | `@ConditionalOnMissingBean` | Creates `DefaultCoherentCache` instances |
-| `cacheSourceFactory` | `CacheSourceFactory` | `@ConditionalOnMissingBean` | Resolves `CacheSource` beans by name |
-| `clientSideCacheFactory` | `ClientSideCacheFactory` | `@ConditionalOnMissingBean` | Creates `ClientSideCache` instances from annotations |
+| `cacheSourceFactory` | `CacheSourceFactory` | `@ConditionalOnMissingBean` | Resolves `CacheSource` beans by name, then by unique type |
+| `clientSideCacheFactory` | `ClientSideCacheFactory` | `@ConditionalOnMissingBean` | Resolves `{cacheName}.ClientSideCache` or builds Caffeine from `@CaffeineCache` |
 | `distributedCacheFactory` | `DistributedCacheFactory` | `@ConditionalOnMissingBean` | Creates `RedisDistributedCache` instances |
 | `keyConverterFactory` | `KeyConverterFactory` | `@ConditionalOnMissingBean` | Converts cache keys using SpEL expressions |
 | `cacheProxyFactory` | `CacheProxyFactory` | `@ConditionalOnMissingBean` | Creates proxy implementations of cache interfaces |
@@ -221,19 +213,19 @@ Source: [CoCacheAutoConfiguration.kt:61-186](https://github.com/Ahoo-Wang/CoCach
 
 ### Custom ClientSideCache
 
-Override the L2 cache for a specific cache interface by declaring a bean:
+Override the L2 cache for a specific cache interface by declaring a bean named `{cacheName}.ClientSideCache`:
 
 ```kotlin
 @Configuration
 class UserCacheConfiguration {
-    @Bean
-    fun customizeUserClientSideCache(): ClientSideCache<User> {
-        return MapClientSideCache(ttl = 120, ttlAmplitude = 10)
+    @Bean("UserCache.ClientSideCache")
+    fun userClientSideCache(): ClientSideCache<User> {
+        return CaffeineClientSideCache.build(maximumSize = 100_000, expireAfterAccess = Duration.ofMinutes(10))
     }
 }
 ```
 
-The auto-configuration uses `SpringClientSideCacheFactory` which resolves beans from the Spring `BeanFactory`. If a matching `ClientSideCache` bean exists, it takes precedence over annotation-based Guava/Caffeine defaults.
+Stateful components (`ClientSideCache`, `DistributedCache`, `KeyConverter`) are resolved **by bean name only**. A bean matched by type would be shared by every cache with the same value type: one cache's `clear()` would wipe the others, and their key prefixes would collide.
 
 ### Custom CacheSource
 
@@ -244,26 +236,20 @@ Provide a data source loader for a specific cache:
 class UserCacheConfiguration {
     @Bean
     fun customizeUserCacheSource(): CacheSource<String, User> {
-        return object : CacheSource<String, User> {
-            override fun loadCacheValue(key: String): CacheValue<User>? {
-                // Load from database
-                return database.findById(key)?.let {
-                    DefaultCacheValue.forever(it)
-                }
-            }
-        }
+        // null → negative cache for missingTtl seconds
+        return CacheSource { key -> database.findById(key)?.let { CacheValue.forever(it) } }
     }
 }
 ```
 
-If no `CacheSource` bean is provided, the cache uses `CacheSource.noOp()` which always returns `null`.
+A `CacheSource` is resolved by the name `{cacheName}.CacheSource` first, then by a unique bean of type `CacheSource<K, V>` (sources are stateless and safe to share). If neither exists, the cache uses `CacheSource.noOp()`.
 
 ### Custom DistributedCache
 
-Override the distributed cache implementation:
+Override the distributed cache implementation with a bean named `{cacheName}.DistributedCache`:
 
 ```kotlin
-@Bean
+@Bean("UserCache.DistributedCache")
 fun customDistributedCache(redisTemplate: StringRedisTemplate): DistributedCache<User> {
     val codec = ObjectToJsonCodecExecutor<User>(
         User::class.java, redisTemplate, ObjectMapper()
@@ -274,7 +260,7 @@ fun customDistributedCache(redisTemplate: StringRedisTemplate): DistributedCache
 
 ### Custom CacheEvictedEventBus
 
-Replace the Redis-based event bus with a custom implementation:
+Replace the Redis-based event bus with a custom implementation. Implementations must call `CacheEvictedSubscriber.onReset()` whenever a subscription is (re)established, because events sent while unsubscribed are lost:
 
 ```kotlin
 @Bean

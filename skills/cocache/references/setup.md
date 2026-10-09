@@ -108,7 +108,7 @@ interface UserCache : Cache<String, User>
 
 That's it. CoCache auto-configures:
 - `RedisDistributedCache` as L1
-- `MapClientSideCache` as L2
+- `CaffeineClientSideCache` as L2 (bounded, 10000 entries by default)
 - `RedisCacheEvictedEventBus` for cross-instance coherence
 - `ToStringKeyConverter` with the `keyPrefix`
 - `CacheSource.noOp()` (returns null, you provide your own)
@@ -138,14 +138,23 @@ Create one interface per cache domain:
 
 ```kotlin
 // UserCache.kt
-@CoCache(keyPrefix = "user:", ttl = 300)
-@GuavaCache(maximumSize = 500_000, expireAfterAccess = 300, expireUnit = TimeUnit.SECONDS)
+@CoCache(keyPrefix = "user:", ttl = 300, missingTtl = 30)
+@CaffeineCache(maximumSize = 500_000, expireAfterAccess = 300)
 interface UserCache : Cache<String, User>
 
-// ProductCache.kt
-@CoCache(keyPrefix = "product:", ttl = 600)
-@CaffeineCache(maximumSize = 1_000_000, expireAfterWrite = 600, expireUnit = TimeUnit.SECONDS)
+// ProductCache.kt -- defaults: ttl 3600s, ttlAmplitude 60s, missingTtl 60s, L2 maximumSize 10000
+@CoCache(keyPrefix = "product:")
 interface ProductCache : Cache<String, Product>
+```
+
+TTL guidance (all in seconds):
+
+- `ttl` caps how long a missed invalidation can survive (cache-aside races are only repaired by expiry). Keep it finite; `TtlAt.FOREVER` disables expiry.
+- `ttlAmplitude` spreads expirations to avoid avalanches (about 2–10 % of `ttl`).
+- `missingTtl` caps how long a newly created row stays invisible after a "not found" was cached. Keep it short.
+- L2 entries expire at their own `ttlAt`; `@CaffeineCache` only bounds size and idle time.
+
+```kotlin
 ```
 
 ### Step 3: Register Caches
@@ -162,26 +171,17 @@ class MyApp
 @Configuration
 class CacheSourceConfig {
 
+    // null → negative cache for missingTtl. CacheValue.forever(...) means "no expiry from the source";
+    // return CacheValue.of(value, TtlAt.at(seconds)) to give the entry its own TTL instead.
     @Bean("UserCache.CacheSource")
     fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> {
-        return object : CacheSource<String, User> {
-            override fun loadCacheValue(key: String): CacheValue<User>? {
-                return userRepository.findById(key).orElse(null)?.let {
-                    DefaultCacheValue.forever(it)
-                }
-            }
-        }
+        return CacheSource { key -> userRepository.findById(key).orElse(null)?.let { CacheValue.of(it, TtlAt.at(300)) } }
     }
 
-    @Bean("ProductCache.CacheSource")
+    // A CacheSource may also be matched by its generic type when it is the only CacheSource<String, Product> bean
+    @Bean
     fun productCacheSource(productRepository: ProductRepository): CacheSource<String, Product> {
-        return object : CacheSource<String, Product> {
-            override fun loadCacheValue(key: String): CacheValue<Product>? {
-                return productRepository.findById(key).orElse(null)?.let {
-                    DefaultCacheValue.forever(it)
-                }
-            }
-        }
+        return CacheSource { key -> productRepository.findById(key).orElse(null)?.let { CacheValue.of(it, TtlAt.at(600)) } }
     }
 }
 ```
@@ -196,7 +196,8 @@ class UserService(
     fun getUser(id: String): User? = userCache[id]
 
     fun saveUser(user: User) {
-        userCache[user.id] = user
+        userRepository.save(user)   // update the source first
+        userCache.evict(user.id)    // then evict (or set the committed value)
     }
 
     fun deleteUser(id: String) {
@@ -234,7 +235,7 @@ cocache:
     missing-guard-sentinel: "__my_missing__"
 ```
 
-The default and a custom sentinel do not recognize each other — a custom value must be switched across the whole cluster at once (old instances would read the new sentinel as a real value during a rolling upgrade), must not be blank, and must never equal any legitimate payload. The sentinel only governs the bytes written to and recognized from Redis; in-process layers always treat the `"_nil_"` shape as a missing guard regardless of this setting.
+The default and a custom sentinel do not recognize each other — a custom value must be switched across the whole cluster at once (old instances would read the new sentinel as a real value during a rolling upgrade), must not be blank, and must never equal any legitimate payload. The sentinel only governs the bytes written to and recognized from Redis. In-process, negative entries are the explicit `MissingValue` type, so a business value like `"_nil_"` is never misread as missing outside Redis.
 
 ## Without Spring Boot
 
@@ -245,7 +246,7 @@ For plain Spring projects, use `cocache-spring` directly:
 @EnableCoCache(caches = [UserCache::class])
 class CacheConfig {
 
-    @Bean
+    @Bean("UserCache.DistributedCache")
     fun distributedCache(
         redisTemplate: StringRedisTemplate,
         objectMapper: ObjectMapper
@@ -258,14 +259,10 @@ class CacheConfig {
         return RedisDistributedCache(redisTemplate, codecExecutor)
     }
 
-    @Bean
+    // stateful components are matched by name: {cacheName}.ClientSideCache
+    @Bean("UserCache.ClientSideCache")
     fun clientSideCache(): ClientSideCache<User> {
-        return CaffeineClientSideCache(
-            Caffeine.newBuilder()
-                .maximumSize(100_000)
-                .expireAfterAccess(Duration.ofMinutes(30))
-                .build<String, CacheValue<User>>()
-        )
+        return CaffeineClientSideCache.build(maximumSize = 100_000, expireAfterAccess = Duration.ofMinutes(30))
     }
 
     @Bean
@@ -298,12 +295,12 @@ class MyApp {
 
     @Bean
     fun cacheEvictedEventBus(): CacheEvictedEventBus {
-        return GuavaCacheEvictedEventBus()  // in-process only
+        return LocalCacheEvictedEventBus()  // in-process only
     }
 
-    @Bean
+    @Bean("UserCache.DistributedCache")
     fun distributedCache(): DistributedCache<User> {
-        return MockDistributedCache<User>()  // in-memory distributed layer for development/testing
+        return InMemoryDistributedCache()  // in-memory L1 for development/testing
     }
 }
 ```

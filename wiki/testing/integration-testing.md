@@ -322,7 +322,7 @@ The example includes:
 
 | Component | Description | Source |
 |-----------|-------------|--------|
-| `UserCache` | Basic cache with `@CoCache` + `@GuavaCache` | [UserCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserCache.kt) |
+| `UserCache` | Basic cache with `@CoCache` + `@CaffeineCache` | [UserCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserCache.kt) |
 | `UserExtendInfoCache` | Extended user info cache | [UserExtendInfoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserExtendInfoCache.kt) |
 | `UserExtendInfoJoinCache` | JoinCache composing two caches | [UserExtendInfoJoinCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserExtendInfoJoinCache.kt) |
 | `TestController` | REST API using cache | [TestController.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/controller/TestController.kt) |

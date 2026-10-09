@@ -109,11 +109,11 @@ The registrar at [EnableCoCacheRegistrar.kt:45](https://github.com/Ahoo-Wang/CoC
 
 ## AbstractCacheFactory Pattern
 
-[AbstractCacheFactory](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/AbstractCacheFactory.kt#L21) is the shared base class for all Spring-aware component factories. It implements a three-tier resolution strategy:
+[AbstractCacheFactory](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/AbstractCacheFactory.kt#L21) is the shared base class for all Spring-aware component factories. It resolves a component by bean name first; only stateless components (`CacheSource`) may fall back to a unique bean of the matching generic type. Stateful components (L2, L1, `KeyConverter`) never resolve by type, because a shared instance would leak state across caches.
 
 ```mermaid
 flowchart TB
-    subgraph sg_52 ["AbstractCacheFactory.createBean(cacheMetadata)"]
+    subgraph sg_52 ["AbstractCacheFactory.resolve(cacheMetadata)"]
 
         bean_name["Compute beanName<br>= cacheName + suffix"]
         style bean_name fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -124,20 +124,14 @@ flowchart TB
         by_name["Return beanFactory<br>.getBean(beanName)"]
         style by_name fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-        by_type["getBeanProvider(type)<br>.getIfAvailable()"]
+        by_type["resolveByType()<br>(stateless components only)"]
         style by_type fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-        type_found{"Bean found<br>by type?"}
+        type_found{"Unique bean<br>by type?"}
         style type_found fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
         fallback["Invoke fallback()<br>(default implementation)"]
         style fallback fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        ttl_aware{"Is TtlConfigurationAware?"}
-        style ttl_aware fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        set_ttl["setTtlConfiguration(metadata)"]
-        style set_ttl fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
         done["Return bean"]
         style done fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -145,17 +139,15 @@ flowchart TB
         bean_name --> exists
         exists -->|yes| by_name --> done
         exists -->|no| by_type --> type_found
-        type_found -->|yes| ttl_aware
-        type_found -->|no| fallback --> ttl_aware
-        ttl_aware -->|yes| set_ttl --> done
-        ttl_aware -->|no| done
+        type_found -->|yes| done
+        type_found -->|no| fallback --> done
     end
 
 ```
 
 Each subclass defines:
 - **`suffix`**: The convention-based bean name suffix (e.g., `".ClientSideCache"`, `".DistributedCache"`, `".KeyConverter"`, `".CacheSource"`, `".JoinKeyExtractor"`)
-- **`getBeanType()`**: The `ResolvableType` for type-based bean lookup
+- **`resolveByType()`** (optional): type-based lookup, overridden only by `SpringCacheSourceFactory`
 - **`fallback()`**: The default factory method when no Spring bean is found
 
 ### Factory Suffixes and Bean Naming
@@ -196,7 +188,7 @@ autonumber
     CCF->>CCF: new DefaultCoherentCache(...)
     CCF->>EB: register(coherentCache)
     CCF-->>CPF: CoherentCache
-    CPF->>CPF: new CoCacheInvocationHandler(metadata, delegate)
+    CPF->>CPF: new CacheInvocationHandler(interface, delegate, metadata)
     CPF->>CPF: Proxy.newProxyInstance(...)
     CPF-->>CPFB: Cache proxy
     CPFB-->>SB: Cache proxy (as FactoryBean result)
@@ -244,10 +236,8 @@ classDiagram
         <<abstract>>
         #beanFactory: BeanFactory
         +suffix: String
-        +createBean(cacheMetadata) Any
-        #getBeanName(cacheMetadata) String
-        #getBeanType(cacheMetadata) ResolvableType
-        #getBeanProvider(metadata, fallback) Any
+        #resolve(cacheMetadata) Any
+        #resolveByType(cacheMetadata) Any?
         #fallback(cacheMetadata) Any
     }
 
@@ -313,7 +303,7 @@ autonumber
     App->>JPF: create(joinCacheMetadata)
     JPF->>JPF: Resolve firstCache, joinCache, joinKeyExtractor
     JPF->>JPF: Create SimpleJoinCache(first, join, extractor)
-    JPF->>JPF: Wrap in JoinCacheProxy
+    JPF->>JPF: Wrap in CacheInvocationHandler proxy
     JPF-->>App: JoinCache proxy
 ```
 
@@ -328,12 +318,7 @@ class CustomCacheConfig {
     // Override the client-side cache for UserCache
     @Bean("UserCache.ClientSideCache")
     fun userCacheClientSide(): ClientSideCache<User> {
-        return CaffeineClientSideCache(
-            Caffeine.newBuilder()
-                .maximumSize(50_000)
-                .expireAfterWrite(Duration.ofMinutes(30))
-                .build()
-        )
+        return CaffeineClientSideCache.build(maximumSize = 50_000)
     }
 
     // Override the cache source for UserCache
@@ -341,7 +326,7 @@ class CustomCacheConfig {
     fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> {
         return CacheSource { key ->
             val user = userRepository.findById(key)
-            user.map { DefaultCacheValue.ttlAt(it, 3600) }.orElse(null)
+            user.map { CacheValue.of(it, TtlAt.at(3600)) }.orElse(null)
         }
     }
 }

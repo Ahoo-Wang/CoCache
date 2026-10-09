@@ -20,7 +20,7 @@ description: 几分钟内开始使用 CoCache -- Gradle/Maven 依赖配置、@En
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter:4.3.0")
+    implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.0")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 }
 ```
@@ -29,7 +29,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:4.3.0'
+    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:5.0.0'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 }
 ```
@@ -40,7 +40,7 @@ dependencies {
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>4.3.0</version>
+    <version>5.0.0</version>
 </dependency>
 <dependency>
     <groupId>org.springframework.boot</groupId>
@@ -121,7 +121,7 @@ classDiagram
     }
     class UserCache {
         @CoCache(keyPrefix = "user:", ttl = 120)
-        @GuavaCache(maximumSize = 1_000_000)
+        @CaffeineCache(maximumSize = 1_000_000)
     }
 
     Cache~K, V~ --> CacheGetter~K, V~
@@ -139,21 +139,18 @@ classDiagram
 ```kotlin
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CoCache
-import me.ahoo.cache.api.annotation.GuavaCache
-import java.util.concurrent.TimeUnit
+import me.ahoo.cache.api.annotation.CaffeineCache
 
+// ttl/ttlAmplitude/missingTtl 单位为秒（默认 3600 / 60 / 60）
 @CoCache(keyPrefix = "user:", ttl = 120)
-@GuavaCache(
-    maximumSize = 1_000_000,
-    expireUnit = TimeUnit.SECONDS,
-    expireAfterAccess = 120
-)
+// 可选：L2 设置（L2 始终有界，默认 maximumSize = 10000）
+@CaffeineCache(maximumSize = 1_000_000, expireAfterAccess = 120)
 interface UserCache : Cache<String, User>
 ```
 
 源码：[cocache-example/.../cache/UserCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserCache.kt)
 
-缓存接口在运行时由 `CoCacheProxy` 通过动态代理自动实现。你不需要编写任何实现代码。
+缓存接口在运行时由 JDK 动态代理（`CacheInvocationHandler`）自动实现。你不需要编写任何实现代码。
 
 ### 模型类
 
@@ -189,7 +186,7 @@ autonumber
     participant SB as Spring Boot
     participant Registrar as EnableCoCacheRegistrar
     participant Factory as CacheProxyFactory
-    participant Proxy as CoCacheProxy
+    participant Proxy as JDK Proxy
     participant Cache as DefaultCoherentCache
     participant Redis as Redis
 
@@ -232,19 +229,19 @@ class TestController(private val userCache: UserCache) {
 
 ## 第六步（可选）：自定义 ClientSideCache 和 CacheSource
 
-你可以通过声明匹配名称的 Bean 来为每个缓存接口自定义 L2 缓存和数据源：
+你可以为每个缓存接口自定义 L2 缓存和数据源。有状态组件**按 Bean 名称**（`{cacheName}.ClientSideCache`）匹配；`CacheSource` 还可以按泛型类型匹配：
 
 ```kotlin
 @Configuration
 class UserCacheConfiguration {
-    @Bean
+    @Bean("UserCache.ClientSideCache")
     fun customizeUserClientSideCache(): ClientSideCache<User> {
-        return MapClientSideCache(ttl = 120, ttlAmplitude = 10)
+        return MapClientSideCache()
     }
 
     @Bean
     fun customizeUserCacheSource(): CacheSource<String, User> {
-        return CacheSource.noOp()  // 无数据源回退
+        return CacheSource.noOp()  // 返回 null 会以 missingTtl 缓存“不存在”
     }
 }
 ```
@@ -252,7 +249,7 @@ class UserCacheConfiguration {
 源码：[cocache-example/.../config/UserCacheConfiguration.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/config/UserCacheConfiguration.kt)
 
 如果不提供自定义 Bean，自动配置使用默认值：
-- **ClientSideCache**：基于 Guava（如果存在 `@GuavaCache`）或基于 Caffeine（如果存在 `@CaffeineCache`）
+- **ClientSideCache**：有界 Caffeine，存在 `@CaffeineCache` 时按其配置
 - **CacheSource**：需要一个 `CacheSource` Bean，否则回退到 `CacheSource.noOp()`
 
 ## 第七步（可选）：编程式 CoherentCache
@@ -281,11 +278,7 @@ class ClassDefinedCacheConfiguration {
                 clientId = clientIdGenerator.generate(),
                 keyConverter = ToStringKeyConverter("user:"),
                 distributedCache = distributedCache,
-                clientSideCache = GuavaClientSideCache(
-                    CacheBuilder.newBuilder()
-                        .expireAfterAccess(Duration.ofHours(1))
-                        .build<String, CacheValue<User>>()
-                )
+                clientSideCache = CaffeineClientSideCache.build(expireAfterAccess = Duration.ofHours(1))
             )
         )
     }
@@ -302,7 +295,7 @@ graph TB
         direction TB
         Dep["Add cocache-spring-boot-starter"]
         Config["Configure Redis connection"]
-        Define["Define cache interface<br>@CoCache + @GuavaCache"]
+        Define["Define cache interface<br>@CoCache + @CaffeineCache"]
         Enable["@EnableCoCache<br>caches = [UserCache]"]
     end
 

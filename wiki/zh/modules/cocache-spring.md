@@ -109,11 +109,11 @@ flowchart TB
 
 ## AbstractCacheFactory 模式
 
-[AbstractCacheFactory](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/AbstractCacheFactory.kt#L21) 是所有 Spring 感知组件工厂的共享基类。它实现了三级解析策略：
+[AbstractCacheFactory](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/AbstractCacheFactory.kt#L21) 是所有 Spring 感知组件工厂的共享基类。它先按 bean 名称解析组件；只有无状态组件（`CacheSource`）在名称未命中时可回退到唯一的同泛型类型 bean。有状态组件（L2、L1、`KeyConverter`）从不按类型解析，因为共享实例会在缓存之间泄漏状态：
 
 ```mermaid
 flowchart TB
-    subgraph sg_52 ["AbstractCacheFactory.createBean(cacheMetadata)"]
+    subgraph sg_52 ["AbstractCacheFactory.resolve(cacheMetadata)"]
 
         bean_name["计算 beanName<br>= cacheName + suffix"]
         style bean_name fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -124,20 +124,14 @@ flowchart TB
         by_name["返回 beanFactory<br>.getBean(beanName)"]
         style by_name fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-        by_type["getBeanProvider(type)<br>.getIfAvailable()"]
+        by_type["resolveByType()<br>(仅无状态组件)"]
         style by_type fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
-        type_found{"按类型找到<br>Bean?"}
+        type_found{"按类型找到<br>唯一 Bean?"}
         style type_found fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
         fallback["调用 fallback()<br>(默认实现)"]
         style fallback fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        ttl_aware{"实现了 TtlConfigurationAware?"}
-        style ttl_aware fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        set_ttl["setTtlConfiguration(metadata)"]
-        style set_ttl fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 
         done["返回 Bean"]
         style done fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -145,17 +139,15 @@ flowchart TB
         bean_name --> exists
         exists -->|是| by_name --> done
         exists -->|否| by_type --> type_found
-        type_found -->|是| ttl_aware
-        type_found -->|否| fallback --> ttl_aware
-        ttl_aware -->|是| set_ttl --> done
-        ttl_aware -->|否| done
+        type_found -->|是| done
+        type_found -->|否| fallback --> done
     end
 
 ```
 
 每个子类定义：
 - **`suffix`**：基于约定的 Bean 名称后缀（例如 `".ClientSideCache"`、`".DistributedCache"`、`".KeyConverter"`、`".CacheSource"`、`".JoinKeyExtractor"`）
-- **`getBeanType()`**：用于基于类型查找 Bean 的 `ResolvableType`
+- **`resolveByType()`**（可选）：按类型查找，仅 `SpringCacheSourceFactory` 覆写
 - **`fallback()`**：未找到 Spring Bean 时的默认工厂方法
 
 ### 工厂后缀与 Bean 命名
@@ -196,7 +188,7 @@ autonumber
     CCF->>CCF: new DefaultCoherentCache(...)
     CCF->>EB: register(coherentCache)
     CCF-->>CPF: CoherentCache
-    CPF->>CPF: new CoCacheInvocationHandler(metadata, delegate)
+    CPF->>CPF: new CacheInvocationHandler(interface, delegate, metadata)
     CPF->>CPF: Proxy.newProxyInstance(...)
     CPF-->>CPFB: 缓存代理
     CPFB-->>SB: 缓存代理 (作为 FactoryBean 结果)
@@ -244,10 +236,8 @@ classDiagram
         <<abstract>>
         #beanFactory: BeanFactory
         +suffix: String
-        +createBean(cacheMetadata) Any
-        #getBeanName(cacheMetadata) String
-        #getBeanType(cacheMetadata) ResolvableType
-        #getBeanProvider(metadata, fallback) Any
+        #resolve(cacheMetadata) Any
+        #resolveByType(cacheMetadata) Any?
         #fallback(cacheMetadata) Any
     }
 
@@ -313,7 +303,7 @@ autonumber
     App->>JPF: create(joinCacheMetadata)
     JPF->>JPF: 解析 firstCache、joinCache、joinKeyExtractor
     JPF->>JPF: 创建 SimpleJoinCache(first, join, extractor)
-    JPF->>JPF: 包装为 JoinCacheProxy
+    JPF->>JPF: 包装为 CacheInvocationHandler 代理
     JPF-->>App: JoinCache 代理
 ```
 
@@ -328,12 +318,7 @@ class CustomCacheConfig {
     // 覆盖 UserCache 的客户端缓存
     @Bean("UserCache.ClientSideCache")
     fun userCacheClientSide(): ClientSideCache<User> {
-        return CaffeineClientSideCache(
-            Caffeine.newBuilder()
-                .maximumSize(50_000)
-                .expireAfterWrite(Duration.ofMinutes(30))
-                .build()
-        )
+        return CaffeineClientSideCache.build(maximumSize = 50_000)
     }
 
     // 覆盖 UserCache 的缓存数据源
@@ -341,7 +326,7 @@ class CustomCacheConfig {
     fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> {
         return CacheSource { key ->
             val user = userRepository.findById(key)
-            user.map { DefaultCacheValue.ttlAt(it, 3600) }.orElse(null)
+            user.map { CacheValue.of(it, TtlAt.at(3600)) }.orElse(null)
         }
     }
 }

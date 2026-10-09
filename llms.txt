@@ -1,6 +1,6 @@
 # CoCache
 
-> Level 2 Distributed Coherence Cache Framework for Java/Kotlin. Two-level caching (L2 local in-memory via Guava/Caffeine + L1 distributed via Redis) with event-driven coherence via CacheEvictedEventBus.
+> Level 2 Distributed Coherence Cache Framework for Java/Kotlin. Two-level caching (L2 bounded local Caffeine + L1 distributed Redis) with event-driven coherence via CacheEvictedEventBus and bounded staleness.
 
 ## Documentation
 
@@ -8,21 +8,21 @@
 
 ## Key Concepts
 
-- **Two-Level Caching**: L2 (local in-memory) → L1 (distributed Redis) → L0 (DataSource) with automatic promotion
-- **Cache Coherence**: Event-driven via CacheEvictedEventBus (Redis Pub/Sub or in-process Guava EventBus)
-- **Annotation-Driven**: @CoCache, @GuavaCache, @CaffeineCache, @JoinCacheable for declarative configuration
+- **Two-Level Caching**: L2 (local in-memory) → L1 (distributed Redis) → L0 (DataSource); storage tiers are pure stores, TTL policy (`TtlPolicy`) lives in the orchestration layer
+- **Cache Coherence**: Event-driven via CacheEvictedEventBus (Redis Pub/Sub or in-process LocalCacheEvictedEventBus); every write-back is guarded by invalidation stamps; L2 is cleared on every channel (re)subscription (`onReset`)
+- **Annotation-Driven**: @CoCache (ttl 3600s, ttlAmplitude 60s, missingTtl 60s by default), @CaffeineCache, @JoinCacheable
 - **Proxy-Based**: JDK dynamic proxies create cache implementations from annotated interfaces
 - **JoinCache**: Compose multiple cached values into a single JoinValue result
-- **Cache Stampede Prevention**: Per-key striped locking (Guava Striped) with double-check pattern
-- **Cache Penetration Prevention**: MissingGuard sentinel values + optional BloomKeyFilter
+- **Cache Stampede Prevention**: Per-key SingleFlight load coalescing (original exceptions shared with waiters)
+- **Cache Penetration Prevention**: Explicit negative cache (sealed `CacheValue` = `PresentValue` | `MissingValue`) with its own `missingTtl` + optional BloomKeyFilter
 - **TTL Jitter**: Randomized TTL within amplitude bounds prevents cache avalanche
-- **Failure Degradation (v4.3.0)**: Redis read failures fall back to source (strict mode via `cocache.redis.strict-failure`); corrupted payloads self-heal; coherent caches close idempotently on shutdown
+- **Failure Degradation**: Redis read failures fall back to source (strict mode via `cocache.redis.strict-failure`); an L1 miss is never treated as a negative cache; corrupted payloads self-heal
 
 ## Architecture
 
 Modules:
-- `cocache-api` — Core interfaces (Cache, CacheValue, ClientSideCache, CacheSource, JoinCache)
-- `cocache-core` — Default implementations (DefaultCoherentCache, proxy system, event bus)
+- `cocache-api` — User API and all SPI (Cache, CacheValue, CacheStore/ClientSideCache/DistributedCache, CacheSource, KeyConverter, KeyFilter, CacheEvictedEventBus, JoinCache)
+- `cocache-core` — Orchestration and defaults (DefaultCoherentCache, TtlPolicy, SingleFlight, Caffeine L2, proxies, JoinCache)
 - `cocache-spring` — Spring integration (@EnableCoCache, factory beans)
 - `cocache-spring-redis` — Redis implementation (RedisDistributedCache, RedisCacheEvictedEventBus, codecs)
 - `cocache-spring-cache` — Spring Cache abstraction bridge (CoCacheManager, CoSpringCache)
@@ -39,4 +39,5 @@ Modules:
 ```
 
 - JDK 17+, Gradle 9.7.0, Kotlin 2.4.10
-- Group: `me.ahoo.cocache`, Version: `4.3.0`
+- Group: `me.ahoo.cocache`, Version: `5.0.0`
+- Design and invariants: `docs/architecture.md`

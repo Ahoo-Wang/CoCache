@@ -37,8 +37,10 @@ get(key)
 2. If secondary value is not null, sets `joinCache` with it at the extracted join key
 
 **Evict flow:**
-1. `evict(key)`: Gets primary value, extracts join key, evicts both caches
-2. `evict(firstKey, joinKey)`: Directly evicts both by their respective keys
+1. `evict(key)`: evicts the **primary cache only** (no read, no source load). The joined cache has its own lifecycle and its writers evict it.
+2. `evict(firstKey, joinKey)`: evicts both caches by their respective keys.
+
+A JoinCache stores nothing of its own: every read composes the current component values. Keeping each component cache fresh is therefore enough.
 
 **TTL:** The composed `JoinValue` expires at the earlier of the two entries' absolute deadlines (`min(firstTtlAt, secondTtlAt)`). If the secondary value is missing or already expired, the primary entry's deadline is used.
 
@@ -93,7 +95,7 @@ class UserExtendInfoService(
     }
 
     fun evict(extId: String) {
-        joinCache.evict(extId)  // Evicts from both caches
+        joinCache.evict(extId)  // Evicts the primary (UserExtendInfo) entry only
     }
 }
 ```
@@ -171,27 +173,25 @@ interface OrderProductCategoryJoinCache : JoinCache<String, JoinValue<Order, Str
 
 ## Eviction in JoinCache
 
-When the secondary cache value changes, you need to evict the JoinCache too:
+A JoinCache composes its component caches at read time; it holds no copy of its own. When a component changes, evict **that component's cache**. The next join read picks up the fresh value.
 
 ```kotlin
-// When User changes, evict the JoinCache
+// User changed: evict the User cache; every JoinValue that references this user is fresh on the next read
 fun updateUser(user: User) {
-    userCache[user.id] = user
-    // Evict all JoinCache entries that reference this user
-    // Since we don't know which extInfo keys map to this user,
-    // we need a strategy:
+    userRepository.save(user)
+    userCache.evict(user.id)
 }
 
-// Option 1: If you know the primary key
-fun updateUserWithExtId(user: User, extId: String) {
-    userCache[user.id] = user
-    userExtendInfoJoinCache.evict(extId, user.id)  // evict(firstKey, joinKey)
-}
-
-// Option 2: Evict when primary changes
+// Primary changed: evicting through the JoinCache only touches the primary cache
 fun updateExtendInfo(extInfo: UserExtendInfo) {
-    userExtendInfoCache[extInfo.id] = extInfo
-    userExtendInfoJoinCache.evict(extInfo.id)  // auto-extracts joinKey and evicts both
+    userExtendInfoRepository.save(extInfo)
+    userExtendInfoJoinCache.evict(extInfo.id)        // same as userExtendInfoCache.evict(extInfo.id)
+}
+
+// Both changed in one transaction
+fun updateBoth(extInfo: UserExtendInfo, user: User) {
+    // ... save both ...
+    userExtendInfoJoinCache.evict(extInfo.id, user.id)   // evict(firstKey, joinKey)
 }
 ```
 

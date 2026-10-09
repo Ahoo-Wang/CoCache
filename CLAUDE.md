@@ -5,18 +5,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 CoCache is a Level 2 Distributed Coherence Cache Framework for Java/Kotlin. It implements a two-level caching architecture:
-- **L2 Client-side cache**: Local in-memory cache (Guava/Caffeine)
+- **L2 Client-side cache**: Local in-memory cache (bounded Caffeine by default)
 - **L1 Distributed cache**: Shared cache layer (e.g., Redis)
 
-Cache coherence is maintained through an event bus that publishes `CacheEvictedEvent` when entries are modified, allowing all client instances to invalidate their local caches.
+Cache coherence is maintained through an event bus that publishes `CacheEvictedEvent` when entries are modified, allowing all client instances to invalidate their local caches. Staleness is bounded: finite default TTLs, a separate short negative-cache TTL, and L2 is cleared whenever the event channel (re)subscribes.
+
+Design goals, module boundaries, and invariants live in `docs/architecture.md` — read it before changing coherence, storage, codec, or proxy code.
 
 ## Key Features
 
-- **Two-Level Caching**: L2 (local) → L1 (distributed) → DataSource with fine-grained locking to prevent cache stampede
+- **Two-Level Caching**: L2 (local) → L1 (distributed) → DataSource, with per-key `SingleFlight` coalescing to prevent cache stampede
 - **JoinCache**: Compose multiple cached values into a single result (see `document/JoinCache.svg`)
 - **Event-Driven Coherence**: `CacheEvictedEventBus` enables distributed cache invalidation across instances
-- **Annotation-Based Configuration**: `@CoCache`, `@JoinCacheable`, `@GuavaCache` for declarative cache setup
-- **Proxy-Based Caching**: Cache interfaces are implemented via dynamic proxies (`CoCacheProxy`, `JoinCacheProxy`)
+- **Annotation-Based Configuration**: `@CoCache`, `@JoinCacheable`, `@CaffeineCache` for declarative cache setup
+- **Proxy-Based Caching**: Cache interfaces are implemented via JDK dynamic proxies (`CacheInvocationHandler`, shared by CoCache and JoinCache)
 
 ## Build Commands
 
@@ -70,41 +72,44 @@ code-coverage-report - Aggregated JaCoCo coverage report
 
 ## Key Interfaces
 
-- **`Cache<K, V>`** - Basic cache interface extending `CacheGetter` and `CacheSetter`
-- **`CoherentCache<K, V>`** - Two-level cache combining `ComputedCache`, `DistributedClientId`, `NamedCache`, and `CacheEvictedSubscriber`
-- **`JoinCache<K1, V1, K2, V2>`** - Composes two cached values via `JoinKeyExtractor` (see `document/JoinCache.svg`)
-- **`JoinValue<V1, K2, V2>`** - Result type combining primary value with joined secondary value
-- **`ClientSideCache<V>`** - L2 local cache (implementations: `MapClientSideCache`, `GuavaClientSideCache`, `CaffeineClientSideCache`)
-- **`DistributedCache<V>`** - L1 shared cache (implementation: `RedisDistributedCache`)
-- **`CacheSource<K, V>`** - Data source loader (prevents cache penetration via `MissingGuard`)
-- **`CacheEvictedEventBus`** - Publishes `CacheEvictedEvent` for distributed cache invalidation (implementations: `GuavaCacheEvictedEventBus` in cocache-core, `NoOpCacheEvictedEventBus` in cocache-core, `RedisCacheEvictedEventBus` in cocache-spring-redis)
-- **`KeyFilter`** - Bloom filter to prevent non-existent key queries (prevents cache breakdown)
+All SPI lives in `cocache-api`; `cocache-core` holds orchestration and defaults.
+
+- **`Cache<K, V>`** - User-facing cache: `getCache`/`get`/`getTtlAt`, `setCache`/`set`/`evict`
+- **`CacheValue<V>`** - Sealed: `PresentValue(value, ttlAt)` | `MissingValue(ttlAt)` (explicit negative cache; `CacheValue.of(null, …)` is missing)
+- **`CacheStore<V>`** - Pure storage by string key; no TTL policy. Specialized as **`ClientSideCache<V>`** (L2: `CaffeineClientSideCache`, `MapClientSideCache`) and **`DistributedCache<V>`** (L1: `RedisDistributedCache`, `InMemoryDistributedCache`)
+- **`TtlPolicy`** (core) - `ttl` ± `ttlAmplitude` for values, `missingTtl` for negative cache
+- **`CoherentCache<K, V>`** (core) - Two-level cache; exposes cache semantics plus read-only `configuration`. Default impl `DefaultCoherentCache`
+- **`CacheSource<K, V>`** - Data source loader; returning `null` writes a negative cache (prevents penetration)
+- **`KeyConverter<K>`** / **`KeyFilter`** - Business key → storage key; Bloom-style existence filter
+- **`CacheEvictedEventBus`** / **`CacheEvictedSubscriber`** - Invalidation channel; subscribers get `onEvicted` and `onReset` (on every (re)subscription). Implementations: `RedisCacheEvictedEventBus`, `LocalCacheEvictedEventBus`, `NoOpCacheEvictedEventBus`
+- **`JoinCache<K1, V1, K2, V2>`** / **`JoinValue`** - Composes two independent caches via `JoinKeyExtractor`; `evict(key)` evicts only the first cache
 
 ## Key Annotations
 
-- **`@CoCache`** - Marks a cache interface with name, keyPrefix, keyExpression, ttl, and ttlAmplitude
-- **`@JoinCacheable`** - Marks a cache interface as a JoinCache with firstCacheName, joinCacheName, and joinKeyExpression
-- **`@GuavaCache`** - Configures Guava cache settings (maximumSize, expireAfterAccess, etc.)
-- **`@CaffeineCache`** - Configures Caffeine cache settings
+- **`@CoCache`** - name, keyPrefix, keyExpression (SpEL template), ttl (default 3600s), ttlAmplitude (60s), missingTtl (60s)
+- **`@JoinCacheable`** - firstCacheName, joinCacheName, joinKeyExpression
+- **`@CaffeineCache`** - L2 settings: maximumSize (default 10000), initialCapacity, expireAfterAccess
 
 ## Configuration
 
-Enable CoCache via `@EnableCoCache(caches = [YourCacheInterface::class])` on your Spring configuration. Optionally customize `ClientSideCache` and `CacheSource` beans by name matching the cache interface.
+Enable CoCache via `@EnableCoCache(caches = [YourCacheInterface::class])` on your Spring configuration. Customize components with beans named `{cacheName}.ClientSideCache`, `.DistributedCache`, `.KeyConverter`, `.CacheSource` (stateful components resolve by name only; `CacheSource` may also resolve by unique generic type).
 
 ## Caching Strategy
 
-1. **Cache Get**: L2 → L1 → CacheSource (with fine-grained locking to prevent cache stampede)
-2. **Cache Set**: Both L2 and L1 simultaneously
-3. **Cache Evict**: Local + distributed + event bus publication
-4. **Event-driven Coherence**: Subscribe to `CacheEvictedEvent` to invalidate local cache on other instances
-5. **JoinCache**: Retrieves primary value and join key, then fetches secondary value from another cache, composing them into `JoinValue`
+1. **Cache Get**: L2 → KeyFilter → per-key `SingleFlight` { L1 → CacheSource }. An L1 miss (absent/deleted/corrupted) always reloads; it is never treated as a negative cache
+2. **Write-back guard**: every L1→L2 fill and source write-back is protected by `InvalidationStamps` (stamp before, re-check before and after writing)
+3. **Cache Set**: invalidate stamp → L1 → L2 → publish
+4. **Cache Evict**: invalidate stamp → L2 → L1 → publish (update the data source *before* evicting)
+5. **Coherence**: `onEvicted` from other instances evicts L2; `onReset` (channel (re)subscribed) clears L2
+6. **JoinCache**: reads the first value, extracts the join key, reads the second cache, composes `JoinValue` with the earlier ttlAt
 
 ## Testing
 
 - Unit tests use JUnit 5 (Jupiter) with **mockk** and **fluent-assert**
 - Fluent-assert pattern: `import me.ahoo.test.asserts.assert` then use `.assert()` extension on any value — never use AssertJ's `assertThat()`
-- Shared test specifications live in `cocache-test` (abstract base classes: `CacheSpec`, `DistributedCacheSpec`, `ClientSideCacheSpec`, etc.) — new cache implementations extend these
-- Integration tests require Redis (`cocache-spring-redis`, `cocache-spring-boot-starter`); in CI a Redis service container is used (see `integration-test.yml`)
+- Shared test specifications live in `cocache-test`: `CacheStoreSpec` (→ `ClientSideCacheSpec`, `DistributedCacheSpec`) for stores, `CacheSpec` for `Cache` implementations, `DefaultCoherentCacheSpec` / `MultipleInstanceSyncSpec` / `CacheEvictedEventBusSpec` for coherence — new implementations extend these
+- Every fixed defect gets a reproducing test; race tests use latches, not sleeps
+- Integration tests require Redis at localhost:6379 (`cocache-spring-redis`, `cocache-spring-boot-starter`); in CI a Redis service container is used (see `integration-test.yml`). Redis tests use `RedisTestSupport` (listener container on `SyncTaskExecutor` so subscription resets complete inside `register()`)
 - Logback configured via `config/logback.xml` for tests (fixes JaCoCo logging gaps)
 
 ## Build Configuration
