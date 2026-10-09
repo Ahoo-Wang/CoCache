@@ -5,11 +5,20 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布
+## v5.0.1（当前版本）
+
+**模块组：** `me.ahoo.cocache` · 补丁版本，与 5.0.0 向后兼容，Redis 线格式不变。
 
 - **读取时不再删除损坏载荷。** 无法解码的载荷仍按未命中处理，由一致性缓存回源后的写回（受失效戳保护）覆盖。此前读取会无条件 `DEL`，可能误删其他实例刚写入的有效值。
 - **`cocache-spring-boot-starter` 移除 `actuator-support` / `cloud-support` Gradle capability。** Actuator 改为 `compileOnly`，端点仍只在应用自行引入 `spring-boot-starter-actuator` 时启用。POM 不再列出 actuator 可选依赖；未使用这两个 capability 的 Maven/Gradle 用户不受影响。
 - 构建：为 Gradle 10 做好准备（构建脚本不再使用已弃用 API），改用 Kotlin `-jvm-default=enable`（字节码与 `-Xjvm-default=all-compatibility` 相同）。测试同时在 JDK 25 上运行。
+- 文档站：修复 3 张无法渲染的时序图，修复文档工具链的全部 Dependabot 安全告警。
+
+### Gradle 配置
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.1")
+```
 
 ## v5.0.0
 

@@ -9,7 +9,7 @@ description: 如何用 cocache-test TCK 测试 CoCache 实现 -- 存储规格、
 
 ```kotlin
 dependencies {
-    testImplementation("me.ahoo.cocache:cocache-test:5.0.0")
+    testImplementation("me.ahoo.cocache:cocache-test:5.0.1")
 }
 ```
 
