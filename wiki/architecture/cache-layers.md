@@ -103,8 +103,7 @@ autonumber
     else raw == sentinel
         CE-->>CC: MissingValue(ttlAt)
     else decode fails
-        CE->>R: DEL key (self-heal)
-        CE-->>CC: null (miss → reload)
+        CE-->>CC: null (miss → reload, write-back overwrites the bad bytes)
     else
         CE-->>CC: PresentValue(value, ttlAt)
     end

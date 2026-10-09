@@ -26,7 +26,7 @@ Design goals, module boundaries, and invariants live in `docs/architecture.md` �
 # Full build (no tests)
 ./gradlew build -x test
 
-# Full check (tests + detekt + dokka + license headers + coverage gate ≥90% lines / ≥80% branches); needs Redis
+# Full check (tests + detekt + dokka + license headers + coverage gate ≥95% lines / ≥90% branches); needs Redis
 ./gradlew check
 ./gradlew clean check
 
@@ -119,5 +119,5 @@ Enable CoCache via `@EnableCoCache(caches = [YourCacheInterface::class])` on you
 
 - **JDK 17+** (via `jvmToolchain` in root `build.gradle.kts`)
 - **Gradle 9.8.1** (wrapper)
-- **Kotlin compiler flags**: `-Xjsr305=strict` (strict null-safety for JSR-305 annotations), `-Xjvm-default=all-compatibility` (generates default methods in interfaces for Java interop)
+- **Kotlin compiler flags**: `-Xjsr305=strict` (strict null-safety for JSR-305 annotations), `-jvm-default=enable` (generates default methods in interfaces for Java interop)
 - **Detekt** config at `config/detekt/detekt.yml` — key overrides: `LongParameterList`, `TooManyFunctions`, `ReturnCount`, `MagicNumber`, `UnusedPrivateMember` all disabled; `MaxLineLength` raised to 300; `WildcardImport` allowed for `java.util.*`

@@ -25,7 +25,7 @@ cd CoCache
 
 - **JDK 17+** required (configured via `jvmToolchain` in [build.gradle.kts](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts))
 - **Gradle 9.6.1** (wrapper included)
-- **Kotlin 2.4.0** with `-Xjsr305=strict` and `-Xjvm-default=all-compatibility`
+- **Kotlin 2.4** with `-Xjsr305=strict` and `-jvm-default=enable`
 
 ## Code Style
 

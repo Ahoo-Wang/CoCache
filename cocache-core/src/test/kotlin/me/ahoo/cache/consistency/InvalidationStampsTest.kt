@@ -38,5 +38,7 @@ class InvalidationStampsTest {
     @Test
     fun stripesMustBePowerOfTwo() {
         runCatching { InvalidationStamps(3) }.isFailure.assert().isTrue()
+        runCatching { InvalidationStamps(0) }.isFailure.assert().isTrue()
+        runCatching { InvalidationStamps(-4) }.isFailure.assert().isTrue()
     }
 }

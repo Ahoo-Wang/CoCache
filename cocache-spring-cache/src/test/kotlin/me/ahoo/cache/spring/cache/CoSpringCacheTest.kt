@@ -29,6 +29,7 @@ import me.ahoo.cache.join.proxy.DefaultJoinCacheProxyFactory
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
@@ -103,6 +104,38 @@ class CoSpringCacheTest {
         assertThrows<IllegalStateException> {
             coSpringCache.get("key", Int::class.javaObjectType)
         }.message.assert().contains("java.lang.Integer")
+    }
+
+    @Test
+    fun getWithoutTypeReturnsValue() {
+        coSpringCache.put("key", "value")
+        coSpringCache.get("key", null as Class<Any>?).assert().isEqualTo("value")
+    }
+
+    @Test
+    fun getWithLoaderUsesValueCachedBeforeTheLoadStarted() {
+        // 首次检查未命中后、进入合并加载前，其他线程已写入：加载内的二次检查直接复用，不调用 loader
+        val reads = AtomicInteger()
+        val racingDelegate = object : Cache<Any, Any?> by delegate {
+            override fun getCache(key: Any): CacheValue<Any?>? {
+                if (reads.incrementAndGet() == 1) {
+                    delegate[key] = "written-concurrently"
+                    return null
+                }
+                return delegate.getCache(key)
+            }
+        }
+        val cache = CoSpringCache("racing", racingDelegate)
+        val loader = Callable<String> { error("loader must not run") }
+        cache.get("key", loader).assert().isEqualTo("written-concurrently")
+    }
+
+    @Test
+    fun clearIgnoresCachesWithoutClientSide() {
+        val plain = object : Cache<Any, Any?> by delegate {}
+        delegate["key"] = "value"
+        CoSpringCache("plain", plain).clear()
+        delegate.configuration.clientSideCache.size.assert().isEqualTo(1L)
     }
 
     @Test

@@ -56,6 +56,11 @@ class TtlTest {
     }
 
     @Test
+    fun foreverExpiredDurationIsMaximal() {
+        CacheValue.forever("value").expiredDuration.assert().isEqualTo(Duration.ofSeconds(Long.MAX_VALUE))
+    }
+
+    @Test
     fun expiredDuration() {
         CacheValue.of("value", TtlAt.at(10)).expiredDuration.seconds.assert().isBetween(9, 10)
     }

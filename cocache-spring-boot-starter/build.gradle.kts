@@ -15,16 +15,6 @@ plugins {
     alias(libs.plugins.kotlin.spring)
     kotlin("kapt")
 }
-java {
-    registerFeature("actuatorSupport") {
-        usingSourceSet(sourceSets[SourceSet.MAIN_SOURCE_SET_NAME])
-        capability(group.toString(), "actuator-support", version.toString())
-    }
-    registerFeature("cloudSupport") {
-        usingSourceSet(sourceSets[SourceSet.MAIN_SOURCE_SET_NAME])
-        capability(group.toString(), "cloud-support", version.toString())
-    }
-}
 dependencies {
     kapt(platform(project(":cocache-dependencies")))
     api(project(":cocache-spring"))
@@ -33,7 +23,9 @@ dependencies {
     api("org.springframework.boot:spring-boot-starter-jackson")
     api("org.springframework.boot:spring-boot-starter")
     api("org.springframework.boot:spring-boot-data-redis")
-    "actuatorSupportImplementation"("org.springframework.boot:spring-boot-starter-actuator")
+    // Actuator 端点按 @ConditionalOnClass 激活：编译期可见，由使用方自行引入
+    compileOnly("org.springframework.boot:spring-boot-starter-actuator")
+    testImplementation("org.springframework.boot:spring-boot-starter-actuator")
     kapt("org.springframework.boot:spring-boot-configuration-processor")
     kapt("org.springframework.boot:spring-boot-autoconfigure-processor")
     testImplementation("com.google.guava:guava")

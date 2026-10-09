@@ -285,7 +285,7 @@ dependencies {
 
 The module will automatically inherit:
 - JDK 17 toolchain
-- Kotlin compiler flags (`-Xjsr305=strict`, `-Xjvm-default=all-compatibility`)
+- Kotlin compiler flags (`-Xjsr305=strict`, `-jvm-default=enable`)
 - Detekt configuration
 - JUnit 5 test configuration
 - Common test dependencies (mockk, fluent-assert, logback)

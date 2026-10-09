@@ -59,7 +59,7 @@ configure<KotlinJvmProjectExtension> {
 | 标志 | 用途 | 来源 |
 |------|------|------|
 | `-Xjsr305=strict` | 对 JSR-305 注解的 API（如 Spring、Guava）强制执行严格的空安全检查 | [`build.gradle.kts:95`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L95) |
-| `-Xjvm-default=all-compatibility` | 为接口生成默认方法实现，以实现 Java 互操作性 | [`build.gradle.kts:95`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L95) |
+| `-jvm-default=enable` | 为接口生成默认方法实现，以实现 Java 互操作性 | [`build.gradle.kts:95`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L95) |
 | `javaParameters = true` | 在字节码中存储方法参数名称，供基于反射的工具使用 | [`build.gradle.kts:96`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L96) |
 
 Java 编译也传递 `-parameters` 以保持一致的参数名保留：
@@ -255,7 +255,7 @@ dependencies {
 jvmArgs = listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logback.xml")
 ```
 
-覆盖率有两道门禁：Gradle 任务 `codeCoverageVerification`（属于 `check`）在行覆盖率低于 90% 或分支覆盖率低于 80% 时使构建失败；[`codecov.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/codecov.yml) 要求 PR 的整体覆盖率 ≥ 90%、增量覆盖率 ≥ 80%（容差 1%）。`cocache-test` 与 `cocache-example` 不计入。
+覆盖率有两道门禁：Gradle 任务 `codeCoverageVerification`（属于 `check`）在行覆盖率低于 95% 或分支覆盖率低于 90% 时使构建失败；[`codecov.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/codecov.yml) 要求 PR 的整体覆盖率 ≥ 95%、增量覆盖率 ≥ 85%（容差 1%）。`cocache-test` 与 `cocache-example` 不计入。
 
 ## 构建命令
 
@@ -270,7 +270,7 @@ jvmArgs = listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logb
 | `./gradlew detekt` | 仅运行 Detekt 分析 | 无构建的静态分析 |
 | `./gradlew detektAutoFix` | 运行 Detekt 并自动修正 | 应用安全的格式化修正 |
 | `./gradlew codeCoverageReport` | 生成聚合 JaCoCo 报告 | 由 CI 上传到 Codecov |
-| `./gradlew codeCoverageVerification` | 覆盖率门禁 | 行 ≥ 90%、分支 ≥ 80% |
+| `./gradlew codeCoverageVerification` | 覆盖率门禁 | 行 ≥ 95%、分支 ≥ 90% |
 | `./gradlew checkLicenseHeader` | 校验 Apache-2.0 许可证头 | 属于 `check` |
 | `./gradlew publishToMavenLocal` | 发布到本地 Maven 仓库 | 用于本地集成测试 |
 
@@ -326,7 +326,7 @@ graph LR
 
 | 工作流 | 触发 | 内容 |
 |--------|------|------|
-| `ci.yml` | push 到 `main`、Pull Request | **Static Analysis**：actionlint、全模块 Detekt（合并后的 SARIF 上传到 GitHub code scanning）、`checkLicenseHeader`。**Test & Coverage**：在 `redis:7-alpine` 服务下运行 `./gradlew check`（全部测试、Dokka、JMH 编译、JaCoCo 门禁：行 ≥ 90%、分支 ≥ 80%），并上传 Codecov。**Test (JDK 25)**：在最新 LTS 运行时上运行同一套测试（`-PtestJavaVersion=25`；产物仍按 JDK 17 编译）。失败时上传测试报告。被新提交取代的 PR 运行会被取消。 |
+| `ci.yml` | push 到 `main`、Pull Request | **Static Analysis**：actionlint、全模块 Detekt（合并后的 SARIF 上传到 GitHub code scanning）、`checkLicenseHeader`。**Test & Coverage**：在 `redis:7-alpine` 服务下运行 `./gradlew check`（全部测试、Dokka、JMH 编译、JaCoCo 门禁：行 ≥ 95%、分支 ≥ 90%），并上传 Codecov。**Test (JDK 25)**：在最新 LTS 运行时上运行同一套测试（`-PtestJavaVersion=25`；产物仍按 JDK 17 编译）。失败时上传测试报告。被新提交取代的 PR 运行会被取消。 |
 | `labeler.yml` | Pull Request（`pull_request_target`，不检出代码） | 按模块、变更路径和分支前缀为 PR 打标签；标签决定发布说明分类（`.github/release.yml`）。 |
 | `deploy-wiki.yml` | `wiki/**` 变更 | PR 中构建 VitePress 站点；`main` 上构建并部署到 GitHub Pages。 |
 | `package-deploy.yml` | Release **published** | 重新运行 `clean check`，然后把签名构件发布到 GitHub Packages 与 Maven Central。每个 tag 只运行一次，不会被取消。 |
