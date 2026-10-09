@@ -125,6 +125,76 @@ internal class SimpleJoinCacheTest : CacheSpec<String, JoinValue<Order, String, 
     }
 }
 
+/**
+ * 直接返回预置条目的缓存（可包含已过期条目），用于覆盖过期分支。
+ */
+private class FixedCache<V>(private val cacheValue: CacheValue<V>?) : Cache<String, V> {
+    var written: CacheValue<V>? = null
+    override fun getCache(key: String): CacheValue<V>? = cacheValue
+    override fun setCache(key: String, value: CacheValue<V>) {
+        written = value
+    }
+
+    override fun set(key: String, value: V) {
+        written = CacheValue.forever(value)
+    }
+
+    override fun evict(key: String) = Unit
+}
+
+internal class SimpleJoinCacheExpiryTest {
+    private val orderId = UUID.randomUUID().toString()
+
+    @Test
+    fun expiredFirstValueIsMiss() {
+        val cache = SimpleJoinCache(
+            FixedCache(CacheValue.of(Order(orderId), TtlAt.at(-5))),
+            FixedCache<OrderAddress>(null)
+        ) { it.id }
+        cache.getCache(orderId).assert().isNull()
+    }
+
+    @Test
+    fun expiredSecondValueIsTreatedAsAbsent() {
+        val firstTtlAt = TtlAt.at(60)
+        val cache = SimpleJoinCache(
+            FixedCache(CacheValue.of(Order(orderId), firstTtlAt)),
+            FixedCache(CacheValue.of(OrderAddress(orderId), TtlAt.at(-5)))
+        ) { it.id }
+
+        val actual = requireNotNull(cache.getCache(orderId))
+
+        actual.value?.secondValue.assert().isNull()
+        actual.ttlAt.assert().isEqualTo(firstTtlAt)
+    }
+
+    @Test
+    fun absentSecondValueKeepsFirstTtlAt() {
+        val firstTtlAt = TtlAt.at(60)
+        val cache = SimpleJoinCache(
+            FixedCache(CacheValue.of(Order(orderId), firstTtlAt)),
+            FixedCache<OrderAddress>(null)
+        ) { it.id }
+
+        val actual = requireNotNull(cache.getCache(orderId))
+
+        actual.value?.secondValue.assert().isNull()
+        actual.ttlAt.assert().isEqualTo(firstTtlAt)
+    }
+
+    @Test
+    fun setWithoutSecondValueOnlyWritesFirst() {
+        val first = FixedCache<Order>(null)
+        val second = FixedCache<OrderAddress>(null)
+        val cache = SimpleJoinCache(first, second) { it.id }
+
+        cache[orderId] = JoinValue(Order(orderId), orderId, null)
+
+        first.written?.value.assert().isEqualTo(Order(orderId))
+        second.written.assert().isNull()
+    }
+}
+
 data class Order(val id: String)
 
 data class OrderAddress(val orderId: String)

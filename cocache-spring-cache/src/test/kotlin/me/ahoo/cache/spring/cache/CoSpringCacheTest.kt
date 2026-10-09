@@ -19,10 +19,12 @@ import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.annotation.joinCacheMetadata
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.join.JoinValue
 import me.ahoo.cache.join.JoinKeyExtractorFactory
+import me.ahoo.cache.join.SimpleJoinCache
 import me.ahoo.cache.join.proxy.DefaultJoinCacheProxyFactory
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
@@ -61,11 +63,46 @@ class CoSpringCacheTest {
     }
 
     @Test
+    fun absentDelegateEntryIsMiss() {
+        val empty = mockk<Cache<Any, Any?>> {
+            every { getCache("key") } returns null
+        }
+        CoSpringCache("empty", empty).get("key").assert().isNull()
+    }
+
+    @Test
+    fun expiredEntryIsMiss() {
+        val expired = mockk<Cache<Any, Any?>> {
+            every { getCache("key") } returns CacheValue.of("value", TtlAt.at(-5))
+        }
+        CoSpringCache("expired", expired).get("key").assert().isNull()
+    }
+
+    @Test
+    fun getWithLoaderReturnsCachedValueWithoutLoading() {
+        coSpringCache.put("key", "cached")
+        coSpringCache.get("key") { "loaded" }.assert().isEqualTo("cached")
+    }
+
+    @Test
+    fun clearBareSimpleJoinCacheClearsBothClientSides() {
+        val firstCache = inMemoryCache<String, String>()
+        val joinCache = inMemoryCache<String, String>()
+        val joinDelegate = SimpleJoinCache(firstCache, joinCache) { it }
+        joinDelegate["k"] = JoinValue("first", "first", "second")
+
+        CoSpringCache("join", joinDelegate.asAnyCache()).clear()
+
+        firstCache.configuration.clientSideCache.size.assert().isZero()
+        joinCache.configuration.clientSideCache.size.assert().isZero()
+    }
+
+    @Test
     fun getWithTypeMismatchThrows() {
         coSpringCache.put("key", "value")
         assertThrows<IllegalStateException> {
             coSpringCache.get("key", Int::class.javaObjectType)
-        }
+        }.message.assert().contains("java.lang.Integer")
     }
 
     @Test

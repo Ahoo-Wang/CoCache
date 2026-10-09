@@ -13,7 +13,13 @@
 
 package me.ahoo.cache.spring.boot.starter
 
+import io.mockk.every
+import io.mockk.mockk
+import me.ahoo.cache.CacheFactory
+import me.ahoo.cache.TtlPolicy
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.client.MapClientSideCache
+import me.ahoo.cache.distributed.InMemoryDistributedCache
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -33,8 +39,28 @@ class CoCacheEndpointTest : AbstractCoCacheEndpointTest() {
     }
 
     @Test
+    fun totalSkipsNonCoherentCaches() {
+        val factory = mockk<CacheFactory> {
+            every { caches } returns mapOf(
+                CACHE_NAME to cacheFactory.caches.getValue(CACHE_NAME),
+                "plain" to mockk<Cache<String, String>>()
+            )
+        }
+        CoCacheEndpoint(factory).total().map { it.name }.assert().containsExactly(CACHE_NAME)
+    }
+
+    @Test
     fun stat() {
-        endpoint.stat(CACHE_NAME).assert().isNotNull()
+        val report = requireNotNull(endpoint.stat(CACHE_NAME))
+        report.name.assert().isEqualTo(CACHE_NAME)
+        report.clientId.assert().isEqualTo("clientId")
+        report.clientSize.assert().isZero()
+        report.ttlPolicy.assert().isEqualTo(TtlPolicy())
+        report.keyConverter.assert().contains("keyPrefix")
+        report.distributedCache.assert().isEqualTo(InMemoryDistributedCache::class.java.name)
+        report.clientSideCache.assert().isEqualTo(MapClientSideCache::class.java.name)
+        report.cacheSource.assert().isNotBlank()
+        report.keyFilter.assert().isNotBlank()
     }
 
     @Test
