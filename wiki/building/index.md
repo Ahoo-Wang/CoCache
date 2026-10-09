@@ -5,7 +5,7 @@ description: Build system configuration, Gradle setup, CI/CD pipelines, and qual
 
 # Build & CI Overview
 
-CoCache uses **Gradle 9.6.1** with the Kotlin DSL, targeting **JDK 17+** across all library modules. The build pipeline integrates Detekt for static analysis, Dokka for API documentation, JaCoCo for code coverage, and GitHub Actions for continuous integration and deployment.
+CoCache uses **Gradle 9.8.1** with the Kotlin DSL, targeting **JDK 17+** across all library modules. The build pipeline integrates Detekt for static analysis, Dokka for API documentation, JaCoCo for code coverage, and GitHub Actions for continuous integration and deployment.
 
 ## Gradle Setup
 
@@ -255,21 +255,23 @@ A custom Logback configuration ([`config/logback.xml`](https://github.com/Ahoo-W
 jvmArgs = listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logback.xml")
 ```
 
-The [`codecov.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/codecov.yml) configuration targets 60% coverage with a 1% threshold for both patch and project metrics, ignoring the `cocache-test` and `cocache-example` modules.
+Coverage is enforced twice: the Gradle task `codeCoverageVerification` (part of `check`) fails the build below 90% line or 80% branch coverage, and [`codecov.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/codecov.yml) requires 90% project and 80% patch coverage on pull requests (1% threshold). `cocache-test` and `cocache-example` are excluded.
 
 ## Build Commands
 
 | Command | Purpose | Notes |
 |---------|---------|-------|
 | `./gradlew build -x test` | Full build without tests | Fast compilation check |
-| `./gradlew check` | Full check: tests + Detekt + Dokka | Used in CI for reproducible validation |
+| `./gradlew check` | Full check: tests + Detekt + Dokka + license headers + coverage gate | Needs Redis at `localhost:6379`; what CI runs |
 | `./gradlew clean check` | Clean full check | Recommended for CI to ensure reproducibility |
 | `./gradlew test` | Run all tests | JUnit 5 via Jupiter engine |
 | `./gradlew :cocache-core:test` | Test a specific module | Prefix with `:` for module targeting |
 | `./gradlew :cocache-core:test --tests "me.ahoo.cache.proxy.ProxyCacheTest"` | Run a single test class | Full qualified class name |
 | `./gradlew detekt` | Run Detekt analysis only | Static analysis without build |
 | `./gradlew detektAutoFix` | Run Detekt with auto-fix | Applies safe formatting corrections |
-| `./gradlew codeCoverageReport` | Generate aggregated JaCoCo report | Used by Codecov workflow |
+| `./gradlew codeCoverageReport` | Generate aggregated JaCoCo report | Uploaded to Codecov by CI |
+| `./gradlew codeCoverageVerification` | Enforce coverage thresholds | ≥ 90% lines, ≥ 80% branches |
+| `./gradlew checkLicenseHeader` | Verify Apache-2.0 headers | Part of `check` |
 | `./gradlew publishToMavenLocal` | Publish to local Maven repo | For local integration testing |
 
 ## Test Configuration
@@ -301,119 +303,45 @@ Test dependencies injected to all library modules:
 
 ## CI/CD Pipelines
 
-All workflows are defined in [`.github/workflows/`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/).
+All workflows live in [`.github/workflows/`](https://github.com/Ahoo-Wang/CoCache/tree/main/.github/workflows). Every workflow declares least-privilege `permissions` and a `timeout-minutes` per job, and caches Gradle through `actions/setup-java` (`cache: gradle`).
 
 ```mermaid
-sequenceDiagram
-autonumber
-    participant Dev as Developer
-    participant GH as GitHub
-    participant IT as integration-test.yml
-    participant COV as codecov.yml
-    participant CQL as codeql-analysis.yml
-    participant DEP as package-deploy.yml
+graph LR
+    PR["Pull request / push to main"] --> CI["ci.yml"]
+    CI --> SA["Static Analysis<br>actionlint · Detekt → code scanning · license headers"]
+    CI --> TC["Test & Coverage<br>check with Redis · coverage gate · Codecov"]
+    PR --> LB["labeler.yml<br>module / type labels"]
+    PR -->|wiki/** changed| WK["deploy-wiki.yml<br>build (PR) · deploy (main)"]
+    REL["Release published"] --> DEP["package-deploy.yml<br>verify → GitHub Packages + Maven Central"]
 
-    Dev->>GH: Push / Pull Request
-    GH->>IT: Trigger PR workflow
-    GH->>COV: Trigger push/PR workflow
-    GH->>CQL: Trigger push/PR + schedule
-
-    IT->>IT: cocache-core-test (parallel)
-    IT->>IT: cocache-spring-test (parallel)
-    IT->>IT: cocache-spring-redis-test (needs: core)
-    IT->>IT: cocache-spring-boot-starter-test (needs: core)
-
-    COV->>COV: codeCoverageReport
-    COV->>COV: Upload to Codecov
-
-    CQL->>CQL: CodeQL Java Analysis
-
-    Dev->>GH: Create Release
-    GH->>DEP: Trigger release workflow
-    DEP->>DEP: github-deploy (GitHub Packages)
-    DEP->>DEP: central-deploy (Maven Central)
+    style PR fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CI fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style SA fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style TC fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style LB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style WK fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style REL fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style DEP fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
-### Integration Test (`integration-test.yml`)
+| Workflow | Trigger | What it does |
+|----------|---------|--------------|
+| `ci.yml` | Push to `main`, pull request | **Static Analysis**: actionlint, Detekt on every module (merged SARIF uploaded to GitHub code scanning), `checkLicenseHeader`. **Test & Coverage**: `./gradlew check` against a `redis:7-alpine` service (all tests, Dokka, JMH compile, JaCoCo gate ≥ 90% lines / ≥ 80% branches), then Codecov upload. Test reports are uploaded as an artifact on failure. Superseded PR runs are cancelled. |
+| `labeler.yml` | Pull request (`pull_request_target`, no checkout) | Labels PRs by module, changed paths and branch prefix; labels drive release-note categories (`.github/release.yml`). |
+| `deploy-wiki.yml` | `wiki/**` changes | Builds the VitePress site on PRs; builds and deploys to GitHub Pages on `main`. |
+| `package-deploy.yml` | Release **published** | Re-runs `clean check`, then publishes signed artifacts to GitHub Packages and Maven Central. One run per tag, never cancelled. |
+| `renovate.yml` | Daily | Self-hosted Renovate dependency updates. |
+| `gitee-sync.yml` | Push to `main`, `v*` tags, daily | Mirrors the repository to Gitee. |
 
-Triggered on every pull request. Runs four parallel jobs with dependency ordering:
+Fork pull requests skip the two steps that need repository secrets or write access (SARIF upload, Codecov upload) instead of failing.
 
-| Job | Depends On | Redis Service | Source |
-|-----|------------|---------------|--------|
-| `cocache-core-test` | -- | No | [`integration-test.yml:17-32`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml#L17-L32) |
-| `cocache-spring-test` | -- | No | [`integration-test.yml:33-49`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml#L33-L49) |
-| `cocache-spring-redis-test` | `cocache-core-test` | Yes (port 6379) | [`integration-test.yml:51-78`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml#L51-L78) |
-| `cocache-spring-boot-starter-test` | `cocache-core-test` | Yes (port 6379) | [`integration-test.yml:80-107`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml#L80-L107) |
+## Other Configuration
 
-```mermaid
-graph TD
-    subgraph IntegrationTest["integration-test.yml Pipeline"]
-        direction TB
-        CORE["cocache-core-test"] --> REDIS_TEST["cocache-spring-redis-test"]
-        CORE --> BOOT_TEST["cocache-spring-boot-starter-test"]
-        SPRING_TEST["cocache-spring-test"]
-    end
-    style IntegrationTest fill:#161b22,stroke:#6d5dfc,color:#e6edf3
-    style CORE fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style SPRING_TEST fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style REDIS_TEST fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style BOOT_TEST fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-Redis-dependent tests use a GitHub Actions service container with health checks:
-
-```yaml
-# [integration-test.yml:56-65](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml#L56-L65)
-services:
-  redis:
-    image: redis
-    options: >-
-      --health-cmd "redis-cli ping"
-      --health-interval 10s
-      --health-timeout 5s
-      --health-retries 5
-    ports:
-      - 6379:6379
-```
-
-### Codecov (`codecov.yml`)
-
-Triggered on push and pull request. Runs the full `codeCoverageReport` task with a Redis service, then uploads the aggregated JaCoCo XML report to Codecov.
-
-| Step | Detail | Source |
-|------|--------|--------|
-| Build | `./gradlew codeCoverageReport --stacktrace` | [`codecov.yml:30`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codecov.yml#L30) |
-| Upload | `codecov/codecov-action@v6` with `CODECOV_TOKEN` | [`codecov.yml:33`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codecov.yml#L33) |
-| Report Path | `./code-coverage-report/build/reports/jacoco/codeCoverageReport/codeCoverageReport.xml` | [`codecov.yml:41`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codecov.yml#L41) |
-
-### CodeQL Analysis (`codeql-analysis.yml`)
-
-Triggered on push/PR to `main` and weekly schedule (Friday 09:17 UTC). Performs static security analysis for Java using GitHub CodeQL.
-
-| Trigger | Schedule | Source |
-|---------|----------|--------|
-| Push to `main` | Immediate | [`codeql-analysis.yml:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codeql-analysis.yml#L15) |
-| PR to `main` | Immediate | [`codeql-analysis.yml:17`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codeql-analysis.yml#L17) |
-| Cron | `17 9 * * 5` (Fridays) | [`codeql-analysis.yml:20`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codeql-analysis.yml#L20) |
-
-### Package Deploy (`package-deploy.yml`)
-
-Triggered on GitHub release creation. Runs two parallel jobs:
-
-| Job | Target | Command | Source |
-|-----|--------|---------|--------|
-| `github-deploy` | GitHub Packages | `./gradlew publishAllPublicationsToGitHubPackagesRepository` | [`package-deploy.yml:37`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/package-deploy.yml#L37) |
-| `central-deploy` | Maven Central (Sonatype) | `./gradlew publishToSonatype closeAndReleaseSonatypeStagingRepository` | [`package-deploy.yml:59`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/package-deploy.yml#L59) |
-
-Both jobs require JDK 17 (Temurin) and use PGP signing with CI-injected secrets.
-
-## Manifold Configuration
-
-The Gradle wrapper is pinned to Gradle 9.6.1:
+The Gradle wrapper is pinned to Gradle 9.8.1:
 
 ```properties
 # [gradle-wrapper.properties:3](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/wrapper/gradle-wrapper.properties#L3)
-distributionUrl=https\://services.gradle.org/distributions/gradle-9.6.1-bin.zip
+distributionUrl=https\://services.gradle.org/distributions/gradle-9.8.1-bin.zip
 ```
 
 The [`settings.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/settings.gradle.kts) uses the `foojay-resolver-convention` plugin (v1.0.0) for automatic JDK toolchain resolution.

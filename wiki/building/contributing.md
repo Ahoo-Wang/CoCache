@@ -357,9 +357,9 @@ autonumber
     Dev->>Branch: Implement changes
     Dev->>Branch: ./gradlew check
     Dev->>PR: Open Pull Request
-    PR->>CI: Trigger integration-test.yml
-    CI->>CI: Run all test jobs (parallel)
-    CI->>CI: Run codecov.yml
+    PR->>CI: Trigger ci.yml (+ labeler.yml)
+    CI->>CI: Static Analysis (actionlint, Detekt, license headers)
+    CI->>CI: Test & Coverage (check with Redis, coverage gate, Codecov)
     CI-->>PR: Report status
     PR->>Review: Request review
     Review-->>PR: Approve / Request changes

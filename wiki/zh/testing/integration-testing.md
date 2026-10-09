@@ -7,166 +7,43 @@ description: CI 中的 Redis 服务容器配置、集成测试模块，以及 Co
 
 CoCache 在真实的 Redis 实例上运行集成测试，验证完整的缓存栈。这些测试覆盖分布式缓存操作、发布/订阅事件传播以及 Spring Boot 自动配置的端到端流程。
 
-## CI 流水线架构
+## CI 流水线
 
-集成测试在 GitHub Actions 中运行，单元测试和集成测试分为不同的 Job。依赖 Redis 的模块使用 Redis 服务容器。
-
-```mermaid
-graph TB
-    subgraph sg_85 ["Integration Test Workflow"]
-        direction TB
-        CoreJob["cocache-core-test<br>No Redis needed"]
-        SpringJob["cocache-spring-test<br>No Redis needed"]
-        RedisJob["cocache-spring-redis-test<br>Redis service container"]
-        StarterJob["cocache-spring-boot-starter-test<br>Redis service container"]
-    end
-
-    subgraph sg_86 ["Redis Service"]
-        direction TB
-        Redis["redis:latest<br>port 6379"]
-    end
-
-    CoreJob -->|"depends"| RedisJob
-    CoreJob -->|"depends"| StarterJob
-    Redis --> RedisJob
-    Redis --> StarterJob
-
-    style CoreJob fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style SpringJob fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style RedisJob fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style StarterJob fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-## GitHub Actions 工作流
-
-集成测试工作流定义在 `.github/workflows/integration-test.yml` 中，每个 Pull Request 都会触发。
-
-### Job 1: cocache-core-test
-
-运行核心单元测试，不需要 Redis：
-
-```yaml
-cocache-core-test:
-  name: CoCache Core Test
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@master
-    - uses: actions/setup-java@v5
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - run: ./gradlew cocache-core:clean cocache-core:check
-```
-
-### Job 2: cocache-spring-test
-
-运行 Spring 集成测试，不需要 Redis：
-
-```yaml
-cocache-spring-test:
-  name: CoCache Spring Test
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@master
-    - uses: actions/setup-java@v5
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - run: ./gradlew cocache-spring:clean cocache-spring:check
-```
-
-### Job 3: cocache-spring-redis-test
-
-使用服务容器运行 Redis 集成测试：
-
-```yaml
-cocache-spring-redis-test:
-  name: CoCache Spring Redis Test
-  needs: [cocache-core-test]
-  runs-on: ubuntu-latest
-  services:
-    redis:
-      image: redis
-      options: >-
-        --health-cmd "redis-cli ping"
-        --health-interval 10s
-        --health-timeout 5s
-        --health-retries 5
-      ports:
-        - 6379:6379
-  steps:
-    - uses: actions/checkout@master
-    - uses: actions/setup-java@v5
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - run: ./gradlew cocache-spring-redis:clean cocache-spring-redis:check
-```
-
-### Job 4: cocache-spring-boot-starter-test
-
-运行 Spring Boot 自动配置集成测试：
-
-```yaml
-cocache-spring-boot-starter-test:
-  name: CoCache Spring Boot Starter Test
-  needs: [cocache-core-test]
-  runs-on: ubuntu-latest
-  services:
-    redis:
-      image: redis
-      options: >-
-        --health-cmd "redis-cli ping"
-        --health-interval 10s
-        --health-timeout 5s
-        --health-retries 5
-      ports:
-        - 6379:6379
-  steps:
-    - uses: actions/checkout@master
-    - uses: actions/setup-java@v5
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-    - run: ./gradlew cocache-spring-boot-starter:clean cocache-spring-boot-starter:check
-```
-
-源码参考：[.github/workflows/integration-test.yml](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml)
-
-## Redis 服务容器
-
-Redis 服务容器配置包含健康检查，确保在测试运行前 Redis 已就绪：
+集成测试运行在 [`ci.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/ci.yml) 的 **Test & Coverage** 作业中，每个 Pull Request 和每次 push 到 `main` 都会触发。一次 `./gradlew check` 在同一个 Redis 服务容器下运行全部模块，单元测试与集成测试共用同一份聚合 JaCoCo 报告和覆盖率门禁，不会重复运行。
 
 ```mermaid
 sequenceDiagram
 autonumber
     participant GH as GitHub Actions
-    participant Redis as Redis Container
-    participant Health as Health Check
-    participant Test as Gradle Test
+    participant Redis as redis:7-alpine
+    participant Gradle as ./gradlew check
 
-    GH->>Redis: Start redis:latest image
-    GH->>Redis: Expose port 6379
-    loop Health check
-        Health->>Redis: redis-cli ping
-        Redis-->>Health: PONG
+    GH->>Redis: Start service container (port 6379)
+    loop Health check every 5s (10 retries)
+        GH->>Redis: redis-cli ping
+        Redis-->>GH: PONG
     end
-    Note over Redis: Health check passes<br>(5 retries, 10s interval)
-    GH->>Test: Run ./gradlew check
-    Test->>Redis: Connect to localhost:6379
-    Test->>Test: Execute integration tests
-
+    GH->>Gradle: check -x detekt -x checkLicenseHeader
+    Gradle->>Redis: cocache-spring-redis and starter tests
+    Gradle->>Gradle: Other module tests, Dokka, JMH compile
+    Gradle->>Gradle: codeCoverageReport + codeCoverageVerification
+    GH->>GH: Upload coverage to Codecov (test reports on failure)
 ```
 
-健康检查关键参数：
+```yaml
+services:
+  redis:
+    image: redis:7-alpine
+    options: >-
+      --health-cmd "redis-cli ping"
+      --health-interval 5s
+      --health-timeout 5s
+      --health-retries 10
+    ports:
+      - 6379:6379
+```
 
-| 参数 | 值 | 用途 |
-|------|-----|------|
-| `--health-cmd` | `redis-cli ping` | 验证 Redis 是否响应的命令 |
-| `--health-interval` | `10s` | 健康检查间隔时间 |
-| `--health-timeout` | `5s` | 单次健康检查的最大等待时间 |
-| `--health-retries` | `5` | 连续失败多少次后标记为不健康 |
+Redis 测试使用 `RedisTestSupport`：其监听容器运行在 `SyncTaskExecutor` 上，订阅重置在 `register()` 内完成，测试结果确定。
 
 ## 集成测试模块
 
@@ -250,7 +127,7 @@ graph TB
 
 ```bash
 # 使用 Docker
-docker run -d --name cocache-redis -p 6379:6379 redis:latest
+docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 
 # 验证
 redis-cli ping
@@ -275,31 +152,6 @@ redis-cli ping
 ```bash
 docker stop cocache-redis && docker rm cocache-redis
 ```
-
-## CI Job 依赖图
-
-```mermaid
-graph LR
-    subgraph sg_91 ["No Redis"]
-        A["cocache-core-test"]
-        B["cocache-spring-test"]
-    end
-
-    subgraph sg_92 ["With Redis"]
-        C["cocache-spring-redis-test"]
-        D["cocache-spring-boot-starter-test"]
-    end
-
-    A -->|"needs"| C
-    A -->|"needs"| D
-
-    style A fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style B fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style C fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style D fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-注意 `cocache-spring-test` 独立运行（无 Redis 依赖，也没有下游依赖）。`cocache-spring-redis-test` 和 `cocache-spring-boot-starter-test` 都依赖 `cocache-core-test` 先通过。
 
 ## 示例应用集成
 

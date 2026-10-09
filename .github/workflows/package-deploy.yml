@@ -17,12 +17,21 @@ on:
     # published 同时覆盖“直接发布”与“草稿转正式”；草稿不会触发工作流
     types: [published]
 
+permissions:
+  contents: read
+
+# 同一版本只允许一个发布流程，且不中途取消
+concurrency:
+  group: package-deploy-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     services:
       redis:
-        image: redis
+        image: redis:7-alpine
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -39,8 +48,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          server-id: github
-          settings-path: ${{ github.workspace }}
+          cache: gradle
 
       - name: Check
         run: ./gradlew clean check
@@ -48,6 +56,7 @@ jobs:
   github-deploy:
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
@@ -60,8 +69,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          server-id: github
-          settings-path: ${{ github.workspace }}
+          cache: gradle
 
       - name: Publish package
         run: ./gradlew publishAllPublicationsToGitHubPackagesRepository
@@ -73,6 +81,7 @@ jobs:
   central-deploy:
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -82,8 +91,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          server-id: github
-          settings-path: ${{ github.workspace }}
+          cache: gradle
 
       - name: Publish package
         run: ./gradlew publishToSonatype closeAndReleaseSonatypeStagingRepository

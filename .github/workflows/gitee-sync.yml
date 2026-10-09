@@ -3,14 +3,21 @@ on:
   schedule:
     - cron: '0 0 * * *'
   push:
-    branches:
-      - main
-      - gh-pages
-      - gh-pages-with-site-base
+    branches: [ main ]
+    tags: [ 'v*' ]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitee-sync
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Sync to Gitee
         uses: wearerequired/git-mirror-action@v1

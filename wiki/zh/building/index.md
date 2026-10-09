@@ -5,7 +5,7 @@ description: CoCache 项目的构建系统配置、Gradle 设置、CI/CD 流水�
 
 # 构建与 CI 概览
 
-CoCache 使用 **Gradle 9.6.1** 的 Kotlin DSL，所有库模块均面向 **JDK 17+**。构建流水线集成了 Detekt 进行静态分析、Dokka 生成 API 文档、JaCoCo 进行代码覆盖率统计，以及 GitHub Actions 实现持续集成和部署。
+CoCache 使用 **Gradle 9.8.1** 的 Kotlin DSL，所有库模块均面向 **JDK 17+**。构建流水线集成了 Detekt 进行静态分析、Dokka 生成 API 文档、JaCoCo 进行代码覆盖率统计，以及 GitHub Actions 实现持续集成和部署。
 
 ## Gradle 配置
 
@@ -255,21 +255,23 @@ dependencies {
 jvmArgs = listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logback.xml")
 ```
 
-[`codecov.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/codecov.yml) 配置的目标覆盖率为 60%，patch 和 project 指标均有 1% 的阈值容差，忽略 `cocache-test` 和 `cocache-example` 模块。
+覆盖率有两道门禁：Gradle 任务 `codeCoverageVerification`（属于 `check`）在行覆盖率低于 90% 或分支覆盖率低于 80% 时使构建失败；[`codecov.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/codecov.yml) 要求 PR 的整体覆盖率 ≥ 90%、增量覆盖率 ≥ 80%（容差 1%）。`cocache-test` 与 `cocache-example` 不计入。
 
 ## 构建命令
 
 | 命令 | 用途 | 备注 |
 |------|------|------|
 | `./gradlew build -x test` | 跳过测试的完整构建 | 快速编译检查 |
-| `./gradlew check` | 完整检查：测试 + Detekt + Dokka | CI 中用于可重复验证 |
+| `./gradlew check` | 完整检查：测试 + Detekt + Dokka + 许可证头 + 覆盖率门禁 | 需要 `localhost:6379` 的 Redis；CI 即运行此任务 |
 | `./gradlew clean check` | 清理后完整检查 | CI 中推荐使用以确保可重复性 |
 | `./gradlew test` | 运行所有测试 | 通过 Jupiter 引擎运行 JUnit 5 |
 | `./gradlew :cocache-core:test` | 测试特定模块 | 前缀 `:` 用于模块定向 |
 | `./gradlew :cocache-core:test --tests "me.ahoo.cache.proxy.ProxyCacheTest"` | 运行单个测试类 | 完全限定类名 |
 | `./gradlew detekt` | 仅运行 Detekt 分析 | 无构建的静态分析 |
 | `./gradlew detektAutoFix` | 运行 Detekt 并自动修正 | 应用安全的格式化修正 |
-| `./gradlew codeCoverageReport` | 生成聚合 JaCoCo 报告 | Codecov 工作流使用 |
+| `./gradlew codeCoverageReport` | 生成聚合 JaCoCo 报告 | 由 CI 上传到 Codecov |
+| `./gradlew codeCoverageVerification` | 覆盖率门禁 | 行 ≥ 90%、分支 ≥ 80% |
+| `./gradlew checkLicenseHeader` | 校验 Apache-2.0 许可证头 | 属于 `check` |
 | `./gradlew publishToMavenLocal` | 发布到本地 Maven 仓库 | 用于本地集成测试 |
 
 ## 测试配置
@@ -301,119 +303,45 @@ tasks.withType<Test> {
 
 ## CI/CD 流水线
 
-所有工作流定义在 [`.github/workflows/`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/) 中。
+所有工作流位于 [`.github/workflows/`](https://github.com/Ahoo-Wang/CoCache/tree/main/.github/workflows)。每个工作流都声明最小权限 `permissions`，每个作业设置 `timeout-minutes`，并通过 `actions/setup-java`（`cache: gradle`）缓存 Gradle。
 
 ```mermaid
-sequenceDiagram
-autonumber
-    participant Dev as Developer
-    participant GH as GitHub
-    participant IT as integration-test.yml
-    participant COV as codecov.yml
-    participant CQL as codeql-analysis.yml
-    participant DEP as package-deploy.yml
+graph LR
+    PR["Pull request / push to main"] --> CI["ci.yml"]
+    CI --> SA["Static Analysis<br>actionlint · Detekt → code scanning · license headers"]
+    CI --> TC["Test & Coverage<br>check with Redis · coverage gate · Codecov"]
+    PR --> LB["labeler.yml<br>module / type labels"]
+    PR -->|wiki/** changed| WK["deploy-wiki.yml<br>build (PR) · deploy (main)"]
+    REL["Release published"] --> DEP["package-deploy.yml<br>verify → GitHub Packages + Maven Central"]
 
-    Dev->>GH: Push / Pull Request
-    GH->>IT: Trigger PR workflow
-    GH->>COV: Trigger push/PR workflow
-    GH->>CQL: Trigger push/PR + schedule
-
-    IT->>IT: cocache-core-test (parallel)
-    IT->>IT: cocache-spring-test (parallel)
-    IT->>IT: cocache-spring-redis-test (needs: core)
-    IT->>IT: cocache-spring-boot-starter-test (needs: core)
-
-    COV->>COV: codeCoverageReport
-    COV->>COV: Upload to Codecov
-
-    CQL->>CQL: CodeQL Java Analysis
-
-    Dev->>GH: Create Release
-    GH->>DEP: Trigger release workflow
-    DEP->>DEP: github-deploy (GitHub Packages)
-    DEP->>DEP: central-deploy (Maven Central)
+    style PR fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CI fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style SA fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style TC fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style LB fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style WK fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style REL fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style DEP fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
-### 集成测试（integration-test.yml）
+| 工作流 | 触发 | 内容 |
+|--------|------|------|
+| `ci.yml` | push 到 `main`、Pull Request | **Static Analysis**：actionlint、全模块 Detekt（合并后的 SARIF 上传到 GitHub code scanning）、`checkLicenseHeader`。**Test & Coverage**：在 `redis:7-alpine` 服务下运行 `./gradlew check`（全部测试、Dokka、JMH 编译、JaCoCo 门禁：行 ≥ 90%、分支 ≥ 80%），并上传 Codecov。失败时上传测试报告。被新提交取代的 PR 运行会被取消。 |
+| `labeler.yml` | Pull Request（`pull_request_target`，不检出代码） | 按模块、变更路径和分支前缀为 PR 打标签；标签决定发布说明分类（`.github/release.yml`）。 |
+| `deploy-wiki.yml` | `wiki/**` 变更 | PR 中构建 VitePress 站点；`main` 上构建并部署到 GitHub Pages。 |
+| `package-deploy.yml` | Release **published** | 重新运行 `clean check`，然后把签名构件发布到 GitHub Packages 与 Maven Central。每个 tag 只运行一次，不会被取消。 |
+| `renovate.yml` | 每天 | 自托管 Renovate 依赖更新。 |
+| `gitee-sync.yml` | push 到 `main`、`v*` tag、每天 | 镜像仓库到 Gitee。 |
 
-在每个 Pull Request 上触发。运行四个并行任务，并带有依赖排序：
-
-| 任务 | 依赖 | Redis 服务 | 来源 |
-|------|------|------------|------|
-| `cocache-core-test` | -- | 否 | [`integration-test.yml:17-32`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml#L17-L32) |
-| `cocache-spring-test` | -- | 否 | [`integration-test.yml:33-49`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml#L33-L49) |
-| `cocache-spring-redis-test` | `cocache-core-test` | 是（端口 6379） | [`integration-test.yml:51-78`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml#L51-L78) |
-| `cocache-spring-boot-starter-test` | `cocache-core-test` | 是（端口 6379） | [`integration-test.yml:80-107`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml#L80-L107) |
-
-```mermaid
-graph TD
-    subgraph IntegrationTest["integration-test.yml Pipeline"]
-        direction TB
-        CORE["cocache-core-test"] --> REDIS_TEST["cocache-spring-redis-test"]
-        CORE --> BOOT_TEST["cocache-spring-boot-starter-test"]
-        SPRING_TEST["cocache-spring-test"]
-    end
-    style IntegrationTest fill:#161b22,stroke:#6d5dfc,color:#e6edf3
-    style CORE fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style SPRING_TEST fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style REDIS_TEST fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style BOOT_TEST fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-依赖 Redis 的测试使用带健康检查的 GitHub Actions 服务容器：
-
-```yaml
-# [integration-test.yml:56-65](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/integration-test.yml#L56-L65)
-services:
-  redis:
-    image: redis
-    options: >-
-      --health-cmd "redis-cli ping"
-      --health-interval 10s
-      --health-timeout 5s
-      --health-retries 5
-    ports:
-      - 6379:6379
-```
-
-### Codecov（codecov.yml）
-
-在 push 和 pull request 时触发。运行完整的 `codeCoverageReport` 任务（带 Redis 服务），然后将聚合的 JaCoCo XML 报告上传到 Codecov。
-
-| 步骤 | 详情 | 来源 |
-|------|------|------|
-| 构建 | `./gradlew codeCoverageReport --stacktrace` | [`codecov.yml:30`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codecov.yml#L30) |
-| 上传 | `codecov/codecov-action@v6`，使用 `CODECOV_TOKEN` | [`codecov.yml:33`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codecov.yml#L33) |
-| 报告路径 | `./code-coverage-report/build/reports/jacoco/codeCoverageReport/codeCoverageReport.xml` | [`codecov.yml:41`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codecov.yml#L41) |
-
-### CodeQL 分析（codeql-analysis.yml）
-
-在 push/PR 到 `main` 分支以及每周定期（UTC 时间周五 09:17）时触发。使用 GitHub CodeQL 对 Java 执行静态安全分析。
-
-| 触发条件 | 时间计划 | 来源 |
-|----------|----------|------|
-| Push 到 `main` | 立即 | [`codeql-analysis.yml:15`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codeql-analysis.yml#L15) |
-| PR 到 `main` | 立即 | [`codeql-analysis.yml:17`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codeql-analysis.yml#L17) |
-| 定时 | `17 9 * * 5`（周五） | [`codeql-analysis.yml:20`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/codeql-analysis.yml#L20) |
-
-### 包发布（package-deploy.yml）
-
-在 GitHub Release 创建时触发。运行两个并行任务：
-
-| 任务 | 目标 | 命令 | 来源 |
-|------|------|------|------|
-| `github-deploy` | GitHub Packages | `./gradlew publishAllPublicationsToGitHubPackagesRepository` | [`package-deploy.yml:37`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/package-deploy.yml#L37) |
-| `central-deploy` | Maven Central（Sonatype） | `./gradlew publishToSonatype closeAndReleaseSonatypeStagingRepository` | [`package-deploy.yml:59`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/package-deploy.yml#L59) |
-
-两个任务均需要 JDK 17（Temurin），并使用 CI 注入的密钥进行 PGP 签名。
+来自 fork 的 PR 会跳过需要仓库 secrets 或写权限的两步（SARIF 上传、Codecov 上传），而不是失败。
 
 ## 其他配置
 
-Gradle Wrapper 固定为 Gradle 9.6.1：
+Gradle Wrapper 固定为 Gradle 9.8.1：
 
 ```properties
 # [gradle-wrapper.properties:3](https://github.com/Ahoo-Wang/CoCache/blob/main/gradle/wrapper/gradle-wrapper.properties#L3)
-distributionUrl=https\://services.gradle.org/distributions/gradle-9.6.1-bin.zip
+distributionUrl=https\://services.gradle.org/distributions/gradle-9.8.1-bin.zip
 ```
 
 [`settings.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/settings.gradle.kts) 使用 `foojay-resolver-convention` 插件（v1.0.0）来自动解析 JDK 工具链。
