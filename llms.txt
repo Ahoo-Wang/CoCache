@@ -39,5 +39,5 @@ Modules:
 ```
 
 - JDK 17+, Gradle 9.7.0, Kotlin 2.4.10
-- Group: `me.ahoo.cocache`, Version: `5.0.0`
+- Group: `me.ahoo.cocache`, Version: `5.0.1`
 - Design and invariants: `docs/architecture.md`

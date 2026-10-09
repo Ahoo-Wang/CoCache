@@ -20,7 +20,7 @@ description: 几分钟内开始使用 CoCache -- Gradle/Maven 依赖配置、@En
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.0")
+    implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.1")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 }
 ```
@@ -29,7 +29,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:5.0.0'
+    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:5.0.1'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 }
 ```
@@ -40,7 +40,7 @@ dependencies {
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>5.0.0</version>
+    <version>5.0.1</version>
 </dependency>
 <dependency>
     <groupId>org.springframework.boot</groupId>

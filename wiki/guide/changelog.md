@@ -5,11 +5,20 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## Unreleased
+## v5.0.1 (Current)
+
+**Module Group:** `me.ahoo.cocache` · Patch release, backward compatible with 5.0.0. Redis wire format unchanged.
 
 - **Corrupted payloads are no longer deleted on read.** A payload that fails to decode is still a miss. The coherent cache's reload now overwrites it through the stamp-guarded write-back. Previously the read issued an unconditional `DEL`, which could remove a valid value that another instance had just written.
 - **`cocache-spring-boot-starter` drops the `actuator-support` / `cloud-support` Gradle capabilities.** Actuator is now `compileOnly`, and the endpoints still activate only when the application adds `spring-boot-starter-actuator`. The POM no longer lists actuator as an optional dependency, and nothing changes for Maven or Gradle consumers who don't request those capabilities.
 - Build: ready for Gradle 10 (no deprecated APIs in the build scripts) and Kotlin's `-jvm-default=enable`, with the same binary output as `-Xjvm-default=all-compatibility`. The test suite also runs on JDK 25.
+- Docs site: fixed three sequence diagrams that failed to render, and patched all Dependabot alerts in the docs toolchain.
+
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.1")
+```
 
 ## v5.0.0
 

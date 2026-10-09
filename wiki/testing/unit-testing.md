@@ -9,7 +9,7 @@ description: How to test CoCache implementations with the cocache-test TCK -- st
 
 ```kotlin
 dependencies {
-    testImplementation("me.ahoo.cocache:cocache-test:5.0.0")
+    testImplementation("me.ahoo.cocache:cocache-test:5.0.1")
 }
 ```
 
