@@ -118,6 +118,6 @@ Enable CoCache via `@EnableCoCache(caches = [YourCacheInterface::class])` on you
 ## Build Configuration
 
 - **JDK 17+** (via `jvmToolchain` in root `build.gradle.kts`)
-- **Gradle 9.4.1** (wrapper)
+- **Gradle 9.8.1** (wrapper)
 - **Kotlin compiler flags**: `-Xjsr305=strict` (strict null-safety for JSR-305 annotations), `-Xjvm-default=all-compatibility` (generates default methods in interfaces for Java interop)
 - **Detekt** config at `config/detekt/detekt.yml` — key overrides: `LongParameterList`, `TooManyFunctions`, `ReturnCount`, `MagicNumber`, `UnusedPrivateMember` all disabled; `MaxLineLength` raised to 300; `WildcardImport` allowed for `java.util.*`

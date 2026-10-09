@@ -17,6 +17,7 @@ description: CoCache 版本发布历史和重要变更。
 - **本地写入使在途回源失效**：同实例上的 `evict`/`setCache` 现在会让并发回源放弃陈旧写回（此前只有远端事件生效）；L1 → L2 填充受同样保护。
 - **代理抛出原始异常**：代理解包 `InvocationTargetException`，调用方不再收到 `UndeclaredThrowableException`。
 - **默认陈旧度有界**：默认 `ttl` 为 3600 秒（原为永久）；负缓存使用独立的 `missingTtl`（默认 60 秒，原与命中值共用 TTL）；默认 L2 为有界 Caffeine（10000 条）；失效通道每次（重新）订阅都会清空 L2，丢失的 Pub/Sub 消息不会让 L2 永久陈旧。
+- **读己之写**：同一线程 `evict`/`setCache` 之后的 `get`，不会返回开始于该次失效之前的加载结果，而是重新加载一次。
 - **Spring Cache**：`get(key, valueLoader)` 按 key 只加载一次（满足 `@Cacheable(sync = true)`）；`retrieve` 改用专用线程池，不再占用 ForkJoin 公共池。
 - **有状态组件不再共享**：`ClientSideCache`、`DistributedCache`、`KeyConverter` bean 只按名称解析；此前按泛型类型匹配的 bean 会被同值类型的所有缓存共享。
 - **JoinCache.evict(key) 不再回源**：只淘汰主缓存。
@@ -28,6 +29,19 @@ description: CoCache 版本发布历史和重要变更。
 - 存储层只存不判；TTL 策略（`TtlPolicy`）由编排层持有。
 - `DefaultCoherentCache` 以 `SingleFlight` 按 key 合并回源（无分段锁碰撞），以 `InvalidationStamps` 保护写回。
 - CoCache 与 JoinCache 代理共用一个 `CacheInvocationHandler`。
+
+### 性能
+
+JMH，4.3.0 对比 5.0.0，同一机器、同一 Redis（ops/s）：
+
+| 基准 | 4.3.0 · 1 线程 | 5.0.0 · 1 线程 | 4.3.0 · 8 线程 | 5.0.0 · 8 线程 |
+|---|---:|---:|---:|---:|
+| L2 命中 | 31.1M | 32.6M | 217.5M | 235.9M |
+| L1 读取 | 3,188 | 6,144 | 5,438 | 10,758 |
+| 未命中回源 | 1,487 | 3,082 | 2,467 | 5,173 |
+| 写入 | 2,779 | 2,804 | 4,714 | 4,694 |
+
+一次 Lua 往返取代 `TTL` + `GET`，L1 读取与未命中回源约快 2 倍。L2 命中保持随线程扩展：有界 Caffeine 在读取时对照缓存时钟 `CacheClock` 判断过期。基准随仓库提供：`RedisCacheBenchmark`（`./gradlew :cocache-spring-redis:jmh`）。
 
 ### 从 4.x 迁移
 
@@ -49,10 +63,28 @@ description: CoCache 版本发布历史和重要变更。
 | `JoinCache.evict(key)` 同时淘汰两个缓存 | 只淘汰主缓存；同时淘汰请用 `evict(firstKey, joinKey)` |
 | `CacheSource` 内部读同一缓存的同一 key 会重入锁 | 改为抛出 `IllegalStateException` 快速失败（原行为会导致错误淘汰） |
 
+### 依赖版本
+
+| 依赖 | 版本 |
+|------|------|
+| Spring Boot | 4.1.1 |
+| CosId | 3.2.1 |
+| Guava | 33.7.2-jre |
+| Kotlin | 2.4.21 |
+| JUnit | 6.1.3 |
+
 ### Gradle 配置
 
 ```kotlin
 implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.0")
+```
+
+```xml
+<dependency>
+  <groupId>me.ahoo.cocache</groupId>
+  <artifactId>cocache-spring-boot-starter</artifactId>
+  <version>5.0.0</version>
+</dependency>
 ```
 
 ## v4.3.0
