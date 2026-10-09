@@ -65,7 +65,7 @@ autonumber
     R-->>B: message
     B->>B: onEvicted: ignore if publisherId == own clientId
     B->>B: invalidate stamp, evict L2
-    Note over R,B: connection lost; events in this window are dropped
+    Note over R,B: connection lost — events in this window are dropped
     R-->>B: re-SUBSCRIBE confirmed
     B->>B: onReset: invalidate all stamps, clear L2
 ```
