@@ -13,22 +13,27 @@
 
 package me.ahoo.cache.consistency
 
-import me.ahoo.cache.KeyFilter
+import me.ahoo.cache.TtlPolicy
 import me.ahoo.cache.api.NamedCache
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.api.converter.KeyConverter
+import me.ahoo.cache.api.distributed.DistributedCache
+import me.ahoo.cache.api.filter.KeyFilter
 import me.ahoo.cache.api.source.CacheSource
-import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.converter.KeyConverter
-import me.ahoo.cache.distributed.DistributedCache
-import me.ahoo.cache.distributed.DistributedClientId
-import me.ahoo.cache.filter.NoOpKeyFilter
+import me.ahoo.cache.client.CaffeineClientSideCache
 
+/**
+ * [CoherentCache] 的组件构成。
+ *
+ * @param clientId 本实例标识，用于忽略自身发布的失效事件
+ */
 data class CoherentCacheConfiguration<K, V>(
     override val cacheName: String,
-    override val clientId: String,
+    val clientId: String,
     val keyConverter: KeyConverter<K>,
     val distributedCache: DistributedCache<V>,
-    val clientSideCache: ClientSideCache<V> = MapClientSideCache(),
+    val clientSideCache: ClientSideCache<V> = CaffeineClientSideCache.build(),
     val cacheSource: CacheSource<K, V> = CacheSource.noOp(),
-    val keyFilter: KeyFilter = NoOpKeyFilter
-) : NamedCache, DistributedClientId
+    val keyFilter: KeyFilter = KeyFilter.NO_OP,
+    val ttlPolicy: TtlPolicy = TtlPolicy()
+) : NamedCache

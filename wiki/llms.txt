@@ -13,8 +13,8 @@
 
 - [Introduction](guide/index.md) — Overview, key features, three-tier cache concept
 - [Quick Start](guide/quick-start.md) — Gradle/Maven setup, @EnableCoCache, Redis configuration
-- [Configuration](guide/configuration.md) — @CoCache parameters, @GuavaCache/@CaffeineCache, Spring Boot properties, Redis failure degradation & missing-guard sentinel
-- [Changelog](guide/changelog.md) — Release history: v4.3.0 concurrency & reliability highlights, breaking changes, dependency tables
+- [Configuration](guide/configuration.md) — @CoCache parameters and TTL choices, @CaffeineCache, Spring Boot properties, Redis failure degradation & missing-guard sentinel
+- [Changelog](guide/changelog.md) — Release history: v5.0.0 coherence rebuild and migration guide, earlier releases
 
 ## Architecture
 
@@ -27,7 +27,7 @@
 
 - [API Overview](api/index.md) — Interface hierarchy, module organization
 - [Core Interfaces](api/core-interfaces.md) — Cache, CacheValue, CoherentCache, JoinCache, CacheSource, etc.
-- [Annotations](api/annotations.md) — @CoCache, @GuavaCache, @CaffeineCache, @JoinCacheable, @EnableCoCache
+- [Annotations](api/annotations.md) — @CoCache, @CaffeineCache, @JoinCacheable, @EnableCoCache
 - [Spring Integration](api/spring-integration.md) — Factory beans, CoCacheManager, CoSpringCache bridge
 - [Actuator Endpoints](api/actuator.md) — /actuator/cocache, /actuator/cocacheClient
 

@@ -13,21 +13,31 @@
 
 package me.ahoo.cache.test
 
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
-abstract class ClientSideCacheSpec<V> : CacheSpec<String, V>() {
+abstract class ClientSideCacheSpec<V> : CacheStoreSpec<V>() {
 
-    abstract override fun createCache(): ClientSideCache<V>
+    abstract override fun createCacheStore(): ClientSideCache<V>
+
+    private val clientSideCache: ClientSideCache<V>
+        get() = cacheStore as ClientSideCache<V>
 
     @Test
     fun clear() {
-        val clientSideCache = cache as ClientSideCache<V>
         val (key, value) = createCacheEntry()
-        clientSideCache[key] = value
+        clientSideCache.setCache(key, CacheValue.forever(value))
         clientSideCache.clear()
-        cache[key].assert().isNull()
+        clientSideCache.getCache(key).assert().isNull()
         clientSideCache.size.assert().isZero()
+    }
+
+    @Test
+    fun size() {
+        val (key, value) = createCacheEntry()
+        clientSideCache.setCache(key, CacheValue.forever(value))
+        clientSideCache.size.assert().isOne()
     }
 }

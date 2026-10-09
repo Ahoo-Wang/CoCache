@@ -13,7 +13,7 @@ export const en: DefaultTheme.Config = {
       { text: 'Modules', link: '/modules/' },
       { text: 'Onboarding', link: '/onboarding/' },
       {
-        text: 'v4.3',
+        text: 'v5.0',
         items: [
           { text: 'Changelog', link: '/guide/changelog' },
           { text: 'Contributing', link: '/guide/contributing' },

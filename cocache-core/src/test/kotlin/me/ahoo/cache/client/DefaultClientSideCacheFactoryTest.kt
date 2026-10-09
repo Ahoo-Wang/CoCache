@@ -1,40 +1,32 @@
+/*
+ * Copyright [2021-present] [ahoo wang <ahoowang@qq.com> (https://github.com/Ahoo-Wang)].
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package me.ahoo.cache.client
 
 import me.ahoo.cache.annotation.coCacheMetadata
-import me.ahoo.cache.proxy.MockCache
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
 class DefaultClientSideCacheFactoryTest {
 
     @Test
-    fun create() {
-        val clientSideCache = DefaultClientSideCacheFactory.create<Any>(coCacheMetadata<MockCache>())
-        clientSideCache.assert().isInstanceOf(MapClientSideCache::class.java)
-    }
-
-    @Test
-    fun createIfDefaultGuavaCache() {
-        val clientSideCache = DefaultClientSideCacheFactory.create<Any>(coCacheMetadata<MockDefaultGuavaClientCache>())
-        clientSideCache.assert().isInstanceOf(GuavaClientSideCache::class.java)
-    }
-
-    @Test
-    fun createIfCustomizeGuavaCache() {
-        val clientSideCache =
-            DefaultClientSideCacheFactory.create<Any>(coCacheMetadata<MockCustomizeGuavaClientCache>())
-        clientSideCache.assert().isInstanceOf(GuavaClientSideCache::class.java)
-    }
-
-    @Test
-    fun createIfDefaultCaffeineCache() {
-        val clientSideCache =
-            DefaultClientSideCacheFactory.create<Any>(coCacheMetadata<MockDefaultCaffeineClientCache>())
+    fun createDefault() {
+        val clientSideCache = DefaultClientSideCacheFactory.create<Any>(coCacheMetadata<MockDefaultClientCache>())
         clientSideCache.assert().isInstanceOf(CaffeineClientSideCache::class.java)
     }
 
     @Test
-    fun createIfCustomizeCaffeineCache() {
+    fun createCustomized() {
         val clientSideCache =
             DefaultClientSideCacheFactory.create<Any>(coCacheMetadata<MockCustomizeCaffeineClientCache>())
         clientSideCache.assert().isInstanceOf(CaffeineClientSideCache::class.java)

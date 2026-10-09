@@ -47,61 +47,46 @@ implementation 'me.ahoo.cocache:cocache-spring-boot-starter'
 classDiagram
 direction BT
 class Cache~K, V~ {
-<<Interface>>
-  + set(K, Long, V) Unit
+  <<Interface>>
   + getCache(K) CacheValue~V~?
-  + set(K, Long, V) Unit
-  + set(K, V) Unit
-  + get(K) V?
-  + set(K, V) Unit
   + get(K) V?
   + getTtlAt(K) Long?
   + setCache(K, CacheValue~V~) Unit
-  + getTtlAt(K) Long?
+  + set(K, V) Unit
+  + set(K, Long, V) Unit
   + evict(K) Unit
 }
-class CacheGetter~K, V~ {
-<<Interface>>
-  + get(K) V?
+class CacheValue~V~ {
+  <<sealed>>
+  + ttlAt Long
+  + value V?
+  + isMissing Boolean
 }
+class PresentValue~V~
+class MissingValue
 class CacheSource~K, V~ {
-<<Interface>>
-  + load(K) CacheValue~V~?
-  + noOp() CacheSource~K, V~
+  <<Interface>>
+  + loadCacheValue(K) CacheValue~V~?
 }
 class UserCache {
-  + set(String, UserData) Unit
-  + setCache(String, CacheValue~UserData~) Unit
-  + getCache(String) CacheValue~UserData~?
-  + evict(String) Unit
-  + get(String) UserData?
-  + getTtlAt(String) Long?
-  + set(String, Long, UserData) Unit
+  <<Interface>>
 }
-class UserCacheSource {
-  + load(String) CacheValue~UserData~?
-}
-
-Cache~K, V~  -->  CacheGetter~K, V~ 
-UserCache  ..>  Cache~K, V~ 
-UserCacheSource  ..>  CacheSource~K, V~ 
+PresentValue~V~ ..|> CacheValue~V~
+MissingValue ..|> CacheValue~V~
+UserCache --|> Cache~K, V~
+UserCacheSource ..|> CacheSource~K, V~
 ```
 
 ```kotlin
-
 /**
- * 定义缓存接口
- * 可选的配置
+ * Declare a cache interface; CoCache generates the implementation.
+ * ttl/ttlAmplitude/missingTtl are seconds (defaults: 3600 / 60 / 60).
  */
 @CoCache(keyPrefix = "user:", ttl = 120)
 /**
- * 可选的配置
+ * Optional: L2 (Caffeine) settings. L2 is always bounded.
  */
-@GuavaCache(
-    maximumSize = 1000_000,
-    expireUnit = TimeUnit.SECONDS,
-    expireAfterAccess = 120
-)
+@CaffeineCache(maximumSize = 1_000_000, expireAfterAccess = 120)
 interface UserCache : Cache<String, User>
 
 @EnableCoCache(caches = [UserCache::class])
@@ -109,21 +94,32 @@ interface UserCache : Cache<String, User>
 class AppServer
 
 /**
- * 可选的配置
+ * Optional customization. Stateful components are resolved by bean name
+ * `{cacheName}.ClientSideCache | .DistributedCache | .KeyConverter`;
+ * a CacheSource may also be resolved by its generic type.
  */
 @Configuration
 class UserCacheConfiguration {
-    @Bean
-    fun customizeUserClientSideCache(): ClientSideCache<User> {
-        return MapClientSideCache()
+    @Bean("UserCache.ClientSideCache")
+    fun userClientSideCache(): ClientSideCache<User> {
+        return CaffeineClientSideCache.build(maximumSize = 100_000)
     }
 
     @Bean
-    fun customizeUserCacheSource(): CacheSource<String, User> {
-        return CacheSource.noOp()
+    fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> {
+        // returning null writes a negative cache for `missingTtl` seconds
+        return CacheSource { id -> userRepository.findById(id)?.let { CacheValue.forever(it) } }
     }
 }
 ```
+
+## Consistency Guarantees
+
+- **Bounded staleness**: values expire after `ttl` (finite by default); negative cache entries after `missingTtl`; every (re)subscription of the eviction channel clears L2, so lost pub/sub messages cannot leave L2 stale.
+- **No lost invalidations**: concurrent loads are coalesced per key, and every write-back (L1 → L2 fill, source load) is discarded or undone if an eviction happened meanwhile — local or remote.
+- **Write pattern**: update the data source first, then `evict(key)` (or `set` the new value).
+
+See [`docs/architecture.md`](docs/architecture.md) for the full design and invariants.
 
 ## CoCache `Get` Sequence Diagram
 

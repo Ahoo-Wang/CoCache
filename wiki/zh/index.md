@@ -19,16 +19,16 @@ hero:
 features:
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
     title: 二级缓存
-    details: L2（本地内存缓存，支持 Guava/Caffeine）+ L1（分布式缓存，Redis）自动缓存提升和双写。
+    details: L2（有界本地 Caffeine）+ L1（分布式 Redis），受戳保护的缓存提升与双写；有限 TTL 与重订阅重置保证陈旧度有界。
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
     title: 事件驱动一致性
     details: CacheEvictedEventBus 通过 Redis Pub/Sub 或进程内事件总线实现跨实例分布式缓存失效。
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
     title: 注解驱动
-    details: 通过 @CoCache、@GuavaCache、@CaffeineCache 和 @JoinCacheable 注解声明式配置缓存。
+    details: 通过 @CoCache、@CaffeineCache 和 @JoinCacheable 注解声明式配置缓存。
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
     title: 缓存击穿防护
-    details: 细粒度的逐键锁配合双重检查模式，防止缓存未命中时的惊群效应。
+    details: 按 key 的 SingleFlight 把并发未命中合并为一次回源，防止惊群效应且不阻塞无关 key。
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
     title: TTL 抖动
     details: 自动 TTL 随机化防止多个缓存条目同时过期导致的缓存雪崩。

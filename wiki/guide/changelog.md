@@ -5,7 +5,57 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v4.3.0 (Current)
+## v5.0.0 (Current)
+
+**Module Group:** `me.ahoo.cocache`
+
+5.0 rebuilds the coherence core around three first-principles goals — bounded staleness, no lost invalidations, and a cheap hit path. It is a breaking release with no compatibility bridges. **Redis storage layout and the eviction message format are unchanged**, so 4.x and 5.0 instances can share Redis during a rolling upgrade.
+
+### Correctness Fixes
+
+- **L1 miss is never a negative cache** — Redis reads are one atomic round trip (a Lua script returns TTL + value). An absent key, a key deleted mid-read, or a corrupted payload is a miss that reloads from the source. Previously a concurrent eviction between the `TTL` and `GET` calls was decoded as a negative cache and pinned into L2 until the old TTL (forever by default).
+- **Local writes invalidate in-flight loads** — `evict`/`setCache` on the same instance now discard a concurrent source load's stale write-back (previously only remote events did). L1 → L2 fills are guarded the same way.
+- **Original exceptions from cache proxies** — proxies unwrap `InvocationTargetException`; callers no longer receive `UndeclaredThrowableException`.
+- **Bounded staleness by default** — default `ttl` is 3600 s (was forever); the negative cache has its own `missingTtl` (default 60 s, was the value TTL); default L2 is a bounded Caffeine cache (10 000 entries); every (re)subscription of the eviction channel clears L2 so lost pub/sub messages cannot leave L2 stale.
+- **Spring Cache** — `get(key, valueLoader)` loads once per key (`@Cacheable(sync = true)` semantics); `retrieve` runs on a dedicated executor instead of the common ForkJoin pool.
+- **Stateful components are never shared** — `ClientSideCache`, `DistributedCache` and `KeyConverter` beans resolve by name only; previously a bean matched by generic type could be shared by every cache with the same value type.
+- **JoinCache.evict(key) no longer loads** — it evicts only the first cache.
+
+### Architecture
+
+- `cocache-api` owns all SPI: `CacheStore` → `ClientSideCache` / `DistributedCache`, `CacheEvictedEventBus` / `CacheEvictedSubscriber` / `CacheEvictedEvent`, `KeyConverter`, `KeyFilter`, `CacheSource`.
+- `CacheValue` is sealed: `PresentValue(value, ttlAt)` | `MissingValue(ttlAt)`.
+- Storage tiers are pure stores; TTL policy (`TtlPolicy`) lives in the orchestration layer.
+- `DefaultCoherentCache` coalesces loads per key with `SingleFlight` (no striped-lock collisions) and guards write-backs with `InvalidationStamps`.
+- One `CacheInvocationHandler` serves CoCache and JoinCache proxies.
+
+### Migration from 4.x
+
+| 4.x | 5.0 |
+|-----|-----|
+| `me.ahoo.cache.DefaultCacheValue(value, ttlAt)` / `.forever(v)` / `.missingGuard(...)` | `CacheValue.of(value, ttlAt)` / `CacheValue.forever(v)` / `CacheValue.missing(ttlAt)` |
+| `cacheValue.isMissingGuard` | `cacheValue.isMissing` (or `is MissingValue`) |
+| `ComputedTtlAt.at(ttl)`, `ComputedTtlAt.FOREVER`, `CacheSecondClock.INSTANCE.currentTime()` | `TtlAt.at(ttl)`, `TtlAt.FOREVER`, `TtlAt.currentTime()` |
+| `ClientSideCache` / `DistributedCache` extended `Cache` (`cache[key] = v`) | They are `CacheStore`s: `getCache` / `setCache` / `evict` |
+| `me.ahoo.cache.distributed.DistributedCache`, `me.ahoo.cache.consistency.CacheEvicted*`, `me.ahoo.cache.converter.KeyConverter`, `me.ahoo.cache.KeyFilter` | `me.ahoo.cache.api.distributed.DistributedCache`, `me.ahoo.cache.api.consistency.CacheEvicted*`, `me.ahoo.cache.api.converter.KeyConverter`, `me.ahoo.cache.api.filter.KeyFilter` |
+| `@GuavaCache`, `GuavaClientSideCache`, `GuavaCacheEvictedEventBus` | `@CaffeineCache`, `CaffeineClientSideCache.build(...)`, `LocalCacheEvictedEventBus` |
+| `MockDistributedCache` | `InMemoryDistributedCache` |
+| `CoherentCache.clientSideCache` / `.distributedCache` / ... | `CoherentCache.configuration.clientSideCache` / ... |
+| Custom `CacheEvictedSubscriber` | Implement `onReset()` (clear local copies) |
+| Custom `CodecExecutor` | `executeAndDecode(key)` reads value and TTL itself; extend `StringCodecExecutor` / `HashCodecExecutor` or `AbstractCodecExecutor` |
+| `ClientSideCache<User>` bean picked by type | Name it `UserCache.ClientSideCache` |
+| `TtlConfiguration`, `TtlConfigurationAware`, `ComputedCache` | Removed — TTL comes from `@CoCache` (`TtlPolicy`) |
+| `@CoCache` without `ttl` meant "forever" | Now 3600 s — set `ttl = TtlAt.FOREVER` explicitly to keep the old behavior |
+| `JoinCache.evict(key)` evicted both caches | Evicts the first cache only; use `evict(firstKey, joinKey)` for both |
+| A `CacheSource` reading the same key from the same cache re-entered the lock | Fails fast with `IllegalStateException` (it previously over-evicted) |
+
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.0")
+```
+
+## v4.3.0
 
 **Module Group:** `me.ahoo.cocache`
 

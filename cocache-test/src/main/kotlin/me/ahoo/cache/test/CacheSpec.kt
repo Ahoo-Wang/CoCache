@@ -13,20 +13,20 @@
 
 package me.ahoo.cache.test
 
-import me.ahoo.cache.ComputedTtlAt
-import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.MissingGuard
 import me.ahoo.cache.api.Cache
-import me.ahoo.cache.util.CacheSecondClock
+import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
+/**
+ * [Cache] 语义的兼容性规格。
+ */
 abstract class CacheSpec<K, V> {
     protected abstract fun createCache(): Cache<K, V>
     protected abstract fun createCacheEntry(): Pair<K, V>
     protected lateinit var cache: Cache<K, V>
-    protected open val missingGuard: V = DefaultCacheValue.missingGuardValue()
 
     @BeforeEach
     open fun setup() {
@@ -34,42 +34,8 @@ abstract class CacheSpec<K, V> {
     }
 
     @Test
-    fun get() {
-        val (key, value) = createCacheEntry()
-        cache[key].assert().isNull()
-    }
-
-    @Test
-    fun getWhenExpired() {
-        val (key, value) = createCacheEntry()
-        val ttlAt = ComputedTtlAt.at(-5)
-        cache[key, ttlAt] = value
-        cache[key].assert().isNull()
-        cache.getTtlAt(key).assert().isNull()
-    }
-
-    @Test
-    fun setExpiredCacheValueEvictsExistingValue() {
-        val (key, value) = createCacheEntry()
-        cache[key] = value
-        cache[key].assert().isEqualTo(value)
-
-        val expiredValue = DefaultCacheValue(createCacheEntry().second, ComputedTtlAt.at(-5))
-        cache.setCache(key, expiredValue)
-
-        cache[key].assert().isNull()
-        cache.getTtlAt(key).assert().isNull()
-    }
-
-    @Test
-    fun setExpiresAtCurrentSecondEvictsExistingValue() {
-        val (key, value) = createCacheEntry()
-        cache[key] = value
-        cache[key].assert().isEqualTo(value)
-
-        val expiresNow = CacheSecondClock.INSTANCE.currentTime()
-        cache[key, expiresNow] = value
-
+    fun getAbsent() {
+        val (key, _) = createCacheEntry()
         cache[key].assert().isNull()
         cache.getTtlAt(key).assert().isNull()
     }
@@ -77,56 +43,43 @@ abstract class CacheSpec<K, V> {
     @Test
     fun set() {
         val (key, value) = createCacheEntry()
-        cache[key].assert().isNull()
         cache[key] = value
         cache[key].assert().isEqualTo(value)
-    }
-
-    /**
-     * open：Redis 等经 TTL 重建的实现可覆写为 ±1 秒容差断言（写读跨秒边界漂移），内存实现继承精确断言。
-     */
-    @Test
-    open fun setWithTtl() {
-        val (key, value) = createCacheEntry()
-        cache[key].assert().isNull()
-        val cacheValue = DefaultCacheValue.ttlAt(value, 5)
-        cache.setCache(key, cacheValue)
-        cache[key].assert().isEqualTo(value)
-        cache.getTtlAt(key).assert().isEqualTo(cacheValue.ttlAt)
+        cache.getTtlAt(key).assert().isNotNull()
     }
 
     @Test
-    open fun setWithTtlAmplitude() {
+    fun setWithTtlAt() {
         val (key, value) = createCacheEntry()
-        cache[key].assert().isNull()
-        val cacheValue = DefaultCacheValue.ttlAt(value, 5, 1)
-        cache.setCache(key, cacheValue)
+        val ttlAt = TtlAt.at(10)
+        cache[key, ttlAt] = value
         cache[key].assert().isEqualTo(value)
-        cache.getTtlAt(key).assert().isEqualTo(cacheValue.ttlAt)
+        cache.getTtlAt(key).assert().isEqualTo(ttlAt)
+    }
+
+    @Test
+    fun setExpiredEvictsExistingValue() {
+        val (key, value) = createCacheEntry()
+        cache[key] = value
+        cache[key, TtlAt.at(-5)] = value
+        cache[key].assert().isNull()
+        cache.getTtlAt(key).assert().isNull()
+    }
+
+    @Test
+    fun setMissing() {
+        val (key, _) = createCacheEntry()
+        cache.setCache(key, CacheValue.missing(TtlAt.at(10)))
+        cache[key].assert().isNull()
+        cache.getTtlAt(key).assert().isNull()
+        requireNotNull(cache.getCache(key)).isMissing.assert().isTrue()
     }
 
     @Test
     fun evict() {
         val (key, value) = createCacheEntry()
         cache[key] = value
-        cache[key].assert().isEqualTo(value)
         cache.evict(key)
         cache[key].assert().isNull()
-    }
-
-    @Test
-    fun setMissing() {
-        val (key, value) = createCacheEntry()
-        cache[key] = missingGuard
-        cache[key].assert().isNull()
-        cache.getTtlAt(key).assert().isNull()
-    }
-
-    @Test
-    fun setMissingTtl() {
-        val (key, value) = createCacheEntry()
-        cache.setCache(key, DefaultCacheValue.missingGuard(missingGuard as MissingGuard, 5))
-        cache[key].assert().isNull()
-        cache.getTtlAt(key).assert().isNull()
     }
 }

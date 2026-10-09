@@ -16,7 +16,10 @@ package me.ahoo.cache.api.join
 import me.ahoo.cache.api.Cache
 
 /**
- * Join Cache.
+ * Join Cache：由主缓存与关联缓存组合而成，两者各自拥有独立的生命周期与 TTL 策略。
+ *
+ * - [evict] 只淘汰主缓存条目；关联缓存由其自身的写入方负责失效。
+ * - [evict] (firstKey, joinKey) 同时淘汰两者。
  *
  * @author ahoo wang
  */

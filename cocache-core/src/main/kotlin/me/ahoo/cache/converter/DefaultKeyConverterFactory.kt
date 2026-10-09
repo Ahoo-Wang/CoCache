@@ -15,15 +15,28 @@ package me.ahoo.cache.converter
 
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.api.converter.KeyConverter
 
-object DefaultKeyConverterFactory : KeyConverterFactory {
+/**
+ * 按元数据创建 key 转换器：前缀缺省为 `cocache:{cacheName}:`；设置了 keyExpression 时使用 SpEL。
+ *
+ * @param resolvePlaceholders 解析 keyPrefix/keyExpression 中的占位符（如 Spring Environment）
+ */
+class DefaultKeyConverterFactory(
+    private val resolvePlaceholders: (String) -> String = { it }
+) : KeyConverterFactory {
+    companion object {
+        @JvmField
+        val INSTANCE = DefaultKeyConverterFactory()
+    }
+
     override fun <K> create(cacheMetadata: CoCacheMetadata): KeyConverter<K> {
-        val cacheKeyPrefix = cacheMetadata.keyPrefix.ifBlank {
+        val keyPrefix = cacheMetadata.keyPrefix.ifBlank {
             "${CoCache.COCACHE}:${cacheMetadata.cacheName}:"
-        }
+        }.let(resolvePlaceholders)
         if (cacheMetadata.keyExpression.isNotBlank()) {
-            return ExpKeyConverter(cacheKeyPrefix, cacheMetadata.keyExpression)
+            return ExpKeyConverter(keyPrefix, resolvePlaceholders(cacheMetadata.keyExpression))
         }
-        return ToStringKeyConverter(cacheKeyPrefix)
+        return ToStringKeyConverter(keyPrefix)
     }
 }

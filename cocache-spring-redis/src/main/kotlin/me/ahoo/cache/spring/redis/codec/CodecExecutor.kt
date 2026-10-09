@@ -10,22 +10,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.api.CacheValue
 
 /**
- * Codec Executor .
+ * Redis 编解码执行器：负责一种 Redis 数据结构上的读写。
  *
  * @author ahoo wang
  */
 interface CodecExecutor<V> {
     /**
-     * @param ttlAt time to live([java.time.temporal.ChronoUnit.SECONDS]).
-     * @return 命中返回 [CacheValue]；负缓存返回 missing-guard；**载荷损坏或无法解码时返回 null**
-     * （该 key 已被淘汰，调用方必须按缓存未命中处理——回源重建）。注意与 missing-guard 的区别：
-     * missing-guard 会抑制回源，null 则触发回源。
+     * 一次往返读取值及其剩余 TTL。
+     *
+     * @return 命中值或负缓存；`null` 表示未命中（key 不存在、读取期间被删除、或载荷损坏已自愈淘汰），调用方必须回源
      */
-    fun executeAndDecode(key: String, ttlAt: Long): CacheValue<V>?
+    fun executeAndDecode(key: String): CacheValue<V>?
+
+    /**
+     * 写入条目：负缓存写为哨兵；已过期条目淘汰 key。
+     */
     fun executeAndEncode(key: String, cacheValue: CacheValue<V>)
 }

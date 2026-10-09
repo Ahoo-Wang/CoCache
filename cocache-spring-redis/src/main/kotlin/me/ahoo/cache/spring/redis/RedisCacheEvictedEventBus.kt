@@ -10,23 +10,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.spring.redis
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import me.ahoo.cache.consistency.CacheEvictedEvent
-import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.consistency.CacheEvictedSubscriber
+import me.ahoo.cache.api.consistency.CacheEvictedEvent
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
+import me.ahoo.cache.api.consistency.CacheEvictedSubscriber
 import me.ahoo.cache.spring.redis.codec.EvictedEvents
 import org.springframework.dao.DataAccessException
 import org.springframework.data.redis.connection.Message
 import org.springframework.data.redis.connection.MessageListener
+import org.springframework.data.redis.connection.SubscriptionListener
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.listener.ChannelTopic
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * RedisCacheEvictedEventBus .
+ * 基于 Redis Pub/Sub 的失效事件通道：每个缓存一个频道（频道名即 cacheName）。
+ *
+ * Pub/Sub 至多一次投递，断线期间的事件会丢失。容器每次（重新）订阅成功都会回调
+ * [CacheEvictedSubscriber.onReset]，订阅者据此放弃本地副本，使陈旧度有界。
  *
  * @author ahoo wang
  */
@@ -38,40 +43,41 @@ class RedisCacheEvictedEventBus(
         private val log = KotlinLogging.logger {}
     }
 
-    private val subscribers = ConcurrentHashMap<CacheEvictedSubscriber, MessageListenerAdapter>()
+    private val listeners = ConcurrentHashMap<CacheEvictedSubscriber, SubscriberListener>()
 
     override fun publish(event: CacheEvictedEvent) {
         try {
             redisTemplate.convertAndSend(event.cacheName, EvictedEvents.asMessage(event.key, event.publisherId))
         } catch (e: DataAccessException) {
-            // pub/sub 为 fire-and-forget：发布失败仅告警，不阻断调用方（与已接受的丢消息语义一致）
+            // 尽力而为：发布失败仅告警，不阻断调用方；接收方由 TTL 与重置兜底
             log.warn(e) { "Publish - event:[$event] failed." }
         }
     }
 
     override fun register(subscriber: CacheEvictedSubscriber) {
-        log.debug {
-            "Register - subscriber:[$subscriber]."
-        }
-        subscribers.computeIfAbsent(subscriber) {
-            MessageListenerAdapter(it).also { listener ->
+        listeners.computeIfAbsent(subscriber) {
+            SubscriberListener(it).also { listener ->
                 listenerContainer.addMessageListener(listener, ChannelTopic(it.cacheName))
             }
         }
     }
 
     override fun unregister(subscriber: CacheEvictedSubscriber) {
-        log.debug {
-            "Unregister - subscriber:[$subscriber]."
-        }
-        subscribers.remove(subscriber)?.also {
+        listeners.remove(subscriber)?.also {
             listenerContainer.removeMessageListener(it)
         }
     }
-}
 
-data class MessageListenerAdapter(private val subscriber: CacheEvictedSubscriber) : MessageListener {
-    override fun onMessage(message: Message, pattern: ByteArray?) {
-        EvictedEvents.fromMessage(message).let { subscriber.onEvicted(it) }
+    private class SubscriberListener(private val subscriber: CacheEvictedSubscriber) :
+        MessageListener,
+        SubscriptionListener {
+        override fun onMessage(message: Message, pattern: ByteArray?) {
+            subscriber.onEvicted(EvictedEvents.fromMessage(message))
+        }
+
+        override fun onChannelSubscribed(channel: ByteArray, count: Long) {
+            log.info { "Channel[${channel.decodeToString()}] subscribed - reset subscriber:[$subscriber]." }
+            subscriber.onReset()
+        }
     }
 }

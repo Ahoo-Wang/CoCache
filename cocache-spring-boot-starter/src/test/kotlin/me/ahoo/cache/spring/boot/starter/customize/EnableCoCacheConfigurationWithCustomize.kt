@@ -14,18 +14,16 @@
 package me.ahoo.cache.spring.boot.starter.customize
 
 import io.mockk.mockk
-import me.ahoo.cache.TtlConfiguration
-import me.ahoo.cache.TtlConfigurationAware
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.api.annotation.JoinCacheable
+import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.source.CacheSource
-import me.ahoo.cache.client.ComputedClientSideCache
 import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.example.cache.UserExtendInfoCache
 import me.ahoo.cache.example.model.User
@@ -52,9 +50,9 @@ import org.springframework.context.annotation.Bean
 )
 class EnableCoCacheConfigurationWithCustomize {
 
-    @Bean
-    fun customizeUserClientSideCache(): ComputedClientSideCache<User> {
-        return MapClientSideCache<User>()
+    @Bean("UserCache.ClientSideCache")
+    fun customizeUserClientSideCache(): ClientSideCache<User> {
+        return MapClientSideCache()
     }
 
     @Bean
@@ -62,9 +60,9 @@ class EnableCoCacheConfigurationWithCustomize {
         return CustomizeUserCacheSource()
     }
 
-    @Bean
+    @Bean("UserCache.DistributedCache")
     fun customizeDistributedCache(): DistributedCache<User> {
-        return mockk()
+        return mockk(relaxed = true)
     }
 
     @Bean
@@ -115,13 +113,8 @@ interface JoinDataCache : Cache<String, JoinData>
 )
 interface MockJoinMainCache : JoinCache<String, MainData, String, JoinData>
 
-class CustomizeUserCacheSource : CacheSource<String, User>, TtlConfigurationAware {
-    private var ttlConfiguration: TtlConfiguration? = null
+class CustomizeUserCacheSource : CacheSource<String, User> {
     override fun loadCacheValue(key: String): CacheValue<User>? {
         return null
-    }
-
-    override fun setTtlConfiguration(ttlConfiguration: TtlConfiguration) {
-        this.ttlConfiguration = ttlConfiguration
     }
 }

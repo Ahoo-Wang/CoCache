@@ -67,16 +67,16 @@ graph TB
 
     subgraph sg_12 ["Coherent Cache - DefaultCoherentCache"]
 
-        L2["L2: ClientSideCache<br>Guava / Caffeine / Map"]
+        L2["L2: ClientSideCache<br>bounded Caffeine"]
         KF["KeyFilter<br>Bloom Filter"]
         L1["L1: DistributedCache<br>Redis"]
-        Lock["Fine-Grained Lock<br>ConcurrentHashMap"]
+        Lock["SingleFlight<br>per-key load coalescing"]
         L0["L0: CacheSource<br>DataSource / DB"]
     end
 
     subgraph sg_13 ["Coherence Layer"]
 
-        EventBus["CacheEvictedEventBus<br>Guava EventBus / Redis Pub/Sub"]
+        EventBus["CacheEvictedEventBus<br>Redis Pub/Sub"]
         Subscriber["CacheEvictedSubscriber<br>Other Instances"]
     end
 
@@ -85,13 +85,13 @@ graph TB
     L2 -->|miss| KF
     KF -->|may exist| L1
     L1 -->|miss| Lock
-    Lock -->|acquired| L0
+    Lock -->|leader| L0
     L0 -->|loaded| L1
     L1 -->|cached| L2
 
     L2 -.->|evict/set| EventBus
     EventBus -.->|notify| Subscriber
-    Subscriber -.->|evict L2| L2
+    Subscriber -.->|"evict L2 / reset"| L2
 
     style App fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -107,13 +107,13 @@ graph TB
 
 | Layer | Name | Role | Interface | Key Implementations |
 |-------|------|------|-----------|---------------------|
-| L0 | CacheSource | Upstream data source (DataSource/DB) | [`CacheSource<K, V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/source/CacheSource.kt#L24) | `NoOpCacheSource`, custom implementations |
-| L1 | DistributedCache | Shared distributed cache | [`DistributedCache<V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/distributed/DistributedCache.kt#L22) | [`RedisDistributedCache`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt#L28) |
-| L2 | ClientSideCache | Local in-memory cache | [`ClientSideCache<V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/client/ClientSideCache.kt#L22) | `MapClientSideCache`, `GuavaClientSideCache`, `CaffeineClientSideCache` |
+| L0 | CacheSource | Upstream data source (DataSource/DB) | [`CacheSource<K, V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/source/CacheSource.kt) | `CacheSource.noOp()`, custom implementations |
+| L1 | DistributedCache | Shared distributed store | [`DistributedCache<V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/distributed/DistributedCache.kt) | [`RedisDistributedCache`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt), `InMemoryDistributedCache` |
+| L2 | ClientSideCache | Local in-memory store | [`ClientSideCache<V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/client/ClientSideCache.kt) | `CaffeineClientSideCache` (default), `MapClientSideCache` |
 
 ## Cache Read Path
 
-The read path flows L2 -> KeyFilter -> L1 -> Lock -> L0 with several optimization strategies:
+The read path flows L2 -> KeyFilter -> SingleFlight { L1 -> L0 }:
 
 ```mermaid
 sequenceDiagram
@@ -138,41 +138,36 @@ autonumber
     alt Key says not exist
         CC->>KF: notExist(cacheKey)
         KF-->>CC: true
-        CC-->>App: missingGuard (prevents penetration)
+        CC-->>App: MissingValue (prevents penetration)
     end
 
-    CC->>L1: getCache(cacheKey)
+    Note over CC: SingleFlight: one leader per key, followers wait
+    CC->>L1: getCache(cacheKey) [one round trip: Lua read of TTL + value]
     L1-->>CC: cacheValue
-    CC->>L2: setCache(cacheKey, cacheValue)
+    CC->>L2: stamp-guarded setCache(cacheKey, cacheValue)
     CC-->>App: cacheValue
 
-    Note over App,EB: If L1 miss, acquire lock and load from L0...
-    CC->>CC: synchronized(lock) [fine-grained]
-    CC->>L2: getCache(cacheKey) [double-check]
-    L2-->>CC: null
-    CC->>L1: getCache(cacheKey) [double-check]
-    L1-->>CC: null
+    Note over App,EB: If L1 misses, the leader loads from L0...
     CC->>L0: loadCacheValue(key)
-    L0-->>CC: cacheValue
-    CC->>L2: setCache(cacheKey, cacheValue)
-    CC->>L1: setCache(cacheKey, cacheValue)
-    CC->>EB: publish(CacheEvictedEvent)
+    L0-->>CC: cacheValue (or null → MissingValue)
+    CC->>L1: stamp-guarded setCache
+    CC->>L2: stamp-guarded setCache
     CC-->>App: cacheValue
 ```
 
 ## Key Design Decisions
 
-### 1. Fine-Grained Locking
+### 1. Per-Key Load Coalescing
 
-Rather than synchronizing on the entire cache instance, CoCache uses a per-key lock stored in a [`ConcurrentHashMap<String, Any>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L47). This prevents cache stampede (the "thundering herd" problem) while allowing concurrent access to different keys.
+`SingleFlight` lets exactly one thread per key read L1 and load the source; concurrent callers share its result or its original exception. Unlike striped locks, unrelated keys never block each other. This prevents cache stampede (the "thundering herd" problem).
 
-### 2. Missing Guard (Cache Penetration Prevention)
+### 2. Explicit Negative Cache (Cache Penetration Prevention)
 
-When a cache source returns `null` (key does not exist in the database), CoCache stores a special `missingGuard` cache value instead of leaving the key empty. This prevents repeated database queries for non-existent keys -- the well-known cache penetration problem. The `KeyFilter` interface (a Bloom filter adapter) provides an additional layer of defense by rejecting keys known not to exist before any cache lookup.
+When a cache source returns `null`, CoCache stores a `MissingValue` with its own short `missingTtl` (default 60s), so non-existent keys stop hitting the database without hiding newly created rows for long. `CacheValue` is sealed (`PresentValue` | `MissingValue`), so no business value can be mistaken for a negative entry. An L1 miss is never treated as negative. The `KeyFilter` interface (a Bloom filter adapter) rejects keys known not to exist before any lookup.
 
 ### 3. Event-Driven Coherence
 
-Rather than relying on TTL expiration to eventually synchronize caches across instances, CoCache actively publishes `CacheEvictedEvent` through the `CacheEvictedEventBus`. Each `DefaultCoherentCache` subscribes to these events and evicts its local L2 cache when a peer modifies the same key. Self-published events are filtered out to avoid redundant local eviction. See [Cache Coherence](./coherence.md) for details.
+CoCache actively publishes `CacheEvictedEvent` through the `CacheEvictedEventBus`; peers evict their L2 for that key. Every write-back is guarded by invalidation stamps so a concurrent eviction (local or remote) is never overwritten by a stale value, and every (re)subscription of the channel clears L2 so lost messages cannot leave stale copies. See [Cache Coherence](./coherence.md) for details.
 
 ### 4. Proxy-Based Declarative Caching
 
@@ -180,7 +175,7 @@ Cache interfaces are declared as Kotlin/Java interfaces annotated with `@CoCache
 
 ### 5. TTL with Amplitude
 
-Each cache entry carries a TTL plus a random `ttlAmplitude` offset. This jitter prevents synchronized expiration of many entries at once (the "cache avalanche" problem). The amplitude is added as a random value within `[-ttlAmplitude, +ttlAmplitude]`.
+Each value carries a TTL (default 3600s -- finite so any residual inconsistency self-heals) plus a random offset within `[-ttlAmplitude, +ttlAmplitude]` (default 60s). The jitter prevents synchronized expiration of many entries at once (the "cache avalanche" problem). The policy lives in `TtlPolicy`; storage tiers only see the resulting absolute `ttlAt`.
 
 ## Source References
 
@@ -189,7 +184,7 @@ Each cache entry carries a TTL plus a random `ttlAmplitude` offset. This jitter 
 | [`settings.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/settings.gradle.kts#L1) | 1-11 | Module declarations |
 | [`build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L1) | 1-219 | Root build config, JDK 17, Kotlin compiler flags |
 | [`cocache-api/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/build.gradle.kts#L1) | 1 | No external dependencies (pure interfaces) |
-| [`cocache-core/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/build.gradle.kts#L1) | 1-12 | Depends on `cocache-api`, Guava, Caffeine (compile-only) |
+| [`cocache-core/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/build.gradle.kts#L1) | 1-12 | Depends on `cocache-api`, Caffeine, Spring Expression; Guava compile-only (BloomKeyFilter) |
 | [`cocache-spring/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/build.gradle.kts#L1) | 1-3 | Depends on `cocache-core`, Spring Context |
 | [`cocache-spring-redis/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/build.gradle.kts#L1) | 1-10 | Depends on `cocache-core`, `cocache-spring`, Jackson, Spring Data Redis |
 | [`cocache-spring-boot-starter/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/build.gradle.kts#L1) | 1-30 | Depends on `cocache-spring`, `cocache-spring-cache`, `cocache-spring-redis`, Spring Boot |

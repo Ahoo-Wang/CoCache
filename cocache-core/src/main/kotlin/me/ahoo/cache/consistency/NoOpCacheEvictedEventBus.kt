@@ -10,12 +10,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.consistency
 
+import me.ahoo.cache.api.consistency.CacheEvictedEvent
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
+import me.ahoo.cache.api.consistency.CacheEvictedSubscriber
+
 /**
- * No Op Invalidate EventBus .
- *
- * @author ahoo wang
+ * 不传播失效事件：仅适用于单实例部署。
  */
 object NoOpCacheEvictedEventBus : CacheEvictedEventBus {
     override fun publish(event: CacheEvictedEvent) = Unit

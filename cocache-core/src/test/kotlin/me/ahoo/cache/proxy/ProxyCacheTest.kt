@@ -19,7 +19,7 @@ import java.util.*
 
 class ProxyCacheTest : CacheSpec<String, String>() {
     override fun createCache(): Cache<String, String> {
-        return DefaultCacheProxyFactoryTest.createProxyCache()
+        return DefaultCacheProxyFactoryTest.createProxyCache<MockCache>()
     }
 
     override fun createCacheEntry(): Pair<String, String> {

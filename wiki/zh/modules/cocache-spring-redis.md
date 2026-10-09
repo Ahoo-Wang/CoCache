@@ -1,341 +1,164 @@
 ---
-title: cocache-spring-redis 模块
-description: cocache-spring-redis 模块提供基于 Redis 的分布式缓存（L1）和通过 Redis Pub/Sub 实现的跨实例缓存一致性机制。它包含用于将缓存值编码到 Redis 数据结构的编解码器层次结构。
+title: cocache-spring-redis
+description: Redis L1 存储与失效通道 -- 一次往返读取的 RedisDistributedCache、codec 体系及其线格式、故障降级，以及订阅即重置的 RedisCacheEvictedEventBus。
 ---
 
-# cocache-spring-redis 模块
+# cocache-spring-redis
 
-`cocache-spring-redis` 模块使用 Redis 实现分布式缓存层（L1），使用 Redis Pub/Sub 实现跨实例缓存一致性机制。它提供了使 CoCache 成为真正的分布式缓存框架的生产级实现。
-
-## 模块依赖
+本模块提供两个 SPI 的 Redis 实现：L1 存储（`DistributedCache`）和失效通道（`CacheEvictedEventBus`）。依赖 `cocache-spring`、Spring Data Redis 和 Jackson。
 
 ```mermaid
-graph LR
-    subgraph sg_47 ["cocache-spring-redis 依赖"]
-
-        core["cocache-core"]
-        style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        spring["cocache-spring"]
-        style spring fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        redis["cocache-spring-redis"]
-        style redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        jackson["jackson-databind<br>jackson-module-kotlin"]
-        style jackson fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        sdr["spring-data-redis"]
-        style sdr fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        core --> redis
-        spring --> redis
-        jackson --> redis
-        sdr --> redis
+graph TB
+    subgraph redis_mod ["cocache-spring-redis"]
+        RDC["RedisDistributedCache"]
+        RDCF["RedisDistributedCacheFactory"]
+        CE["CodecExecutor family"]
+        Bus["RedisCacheEvictedEventBus"]
+        EE["EvictedEvents (wire codec)"]
     end
+    RDCF --> RDC
+    RDC --> CE
+    Bus --> EE
+    CE --> R[("Redis")]
+    Bus --> R
 
+    style RDC fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style RDCF fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CE fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style Bus fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style EE fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style R fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style redis_mod fill:#161b22,stroke:#8b949e,color:#e6edf3
 ```
 
 ## 源文件
 
-| 文件 | 包 | 说明 |
-|------|-----|------|
-| [RedisDistributedCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt#L28) | `me.ahoo.cache.spring.redis` | 使用 `StringRedisTemplate` 的 L1 分布式缓存实现 |
-| [RedisCacheEvictedEventBus.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt#L32) | `me.ahoo.cache.spring.redis` | 使用 Redis Pub/Sub 的跨实例事件总线 |
-| [RedisDistributedCacheFactory.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCacheFactory.kt#L27) | `me.ahoo.cache.spring.redis` | 通过 `AbstractCacheFactory` 创建 `RedisDistributedCache` 实例的工厂 |
-| [CodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/CodecExecutor.kt#L22) | `me.ahoo.cache.spring.redis.codec` | 缓存值编解码接口 |
-| [AbstractCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/AbstractCodecExecutor.kt#L21) | `me.ahoo.cache.spring.redis.codec` | 抽象基类，提供管道写入和 MissingGuard 处理 |
-| [ObjectToJsonCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/ObjectToJsonCodecExecutor.kt#L27) | `me.ahoo.cache.spring.redis.codec` | 通过 Jackson 进行 JSON 序列化（默认编解码器） |
-| [StringToStringCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/StringToStringCodecExecutor.kt#L25) | `me.ahoo.cache.spring.redis.codec` | `String` 值的直接字符串存储 |
-| [MapToHashCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/MapToHashCodecExecutor.kt#L26) | `me.ahoo.cache.spring.redis.codec` | `Map<String, String>` 值的 Redis Hash 存储 |
-| [ObjectToHashCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocoa-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/ObjectToHashCodecExecutor.kt#L26) | `me.ahoo.cache.spring.redis.codec` | 通过 `MapConverter` 的任意对象的 Hash 存储 |
-| [SetToSetCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/SetToSetCodecExecutor.kt#L25) | `me.ahoo.cache.spring.redis.codec` | `Set<String>` 值的 Redis Set 存储 |
-| [EvictedEvents.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/EvictedEvents.kt#L19) | `me.ahoo.cache.spring.redis.codec` | 驱逐事件的消息格式（key@@clientId 编码） |
+| 文件 | 说明 |
+|------|------|
+| [RedisDistributedCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt) | L1 存储；故障降级（`strictFailure`） |
+| [RedisDistributedCacheFactory.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCacheFactory.kt) | `{cacheName}.DistributedCache` bean 或默认的 JSON codec |
+| [CodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/CodecExecutor.kt) | `executeAndDecode(key)` / `executeAndEncode(key, value)` |
+| [AbstractCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/AbstractCodecExecutor.kt) | 统一的读写协议 |
+| [StringCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/StringCodecExecutor.kt) | String 结构基类 + `StringToStringCodecExecutor` |
+| [ObjectToJsonCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/ObjectToJsonCodecExecutor.kt) | Jackson JSON（默认） |
+| [HashCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/HashCodecExecutor.kt) | Hash 基类 + `MapToHashCodecExecutor`、`ObjectToHashCodecExecutor` |
+| [SetToSetCodecExecutor.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/SetToSetCodecExecutor.kt) | Redis Set |
+| [RedisCacheEvictedEventBus.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt) | 每个缓存一个 Pub/Sub 频道 |
+| [EvictedEvents.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/EvictedEvents.kt) | `key@@publisherId` 消息格式 |
 
-## RedisDistributedCache
-
-[RedisDistributedCache](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt#L28) 使用 Spring 的 `StringRedisTemplate` 和可插拔的 `CodecExecutor` 实现 `DistributedCache<V>`。
-
-### 缓存读取流程
+## 读取协议
 
 ```mermaid
 sequenceDiagram
 autonumber
-    participant Caller as CoherentCache
+    participant CC as DefaultCoherentCache
     participant RDC as RedisDistributedCache
-    participant Redis as Redis
-    participant Codec as CodecExecutor
+    participant CE as AbstractCodecExecutor
+    participant R as Redis
 
-    Caller->>RDC: getCache(key)
-    RDC->>Redis: getExpire(key)
-    Redis-->>RDC: TTL（秒）
-
-    alt 键不存在（TTL = -2）
-        RDC-->>Caller: null
-    else 键无过期时间（TTL = -1）
-        RDC->>Codec: executeAndDecode(key, FOREVER)
-        Codec->>Redis: GET / HGETALL / SMEMBERS（取决于编解码器）
-        Redis-->>Codec: 原始值
-        Codec->>Codec: 检查 MissingGuard
-        Codec-->>RDC: CacheValue<V>
-        RDC-->>Caller: CacheValue<V>
-    else 键有 TTL
-        RDC->>RDC: ttlAt = currentTime + TTL
-        RDC->>Codec: executeAndDecode(key, ttlAt)
-        Codec->>Redis: GET key
-        Redis-->>Codec: 原始值
-        Codec-->>RDC: CacheValue<V>
-        RDC-->>Caller: CacheValue<V>
+    CC->>RDC: getCache(key)
+    RDC->>CE: executeAndDecode(key)
+    CE->>R: EVALSHA read-script key → {ttl, ...raw}
+    R-->>CE: [ttl, raw...]
+    alt ttl == -2 or raw empty
+        CE-->>RDC: null
+    else raw is sentinel
+        CE-->>RDC: MissingValue(ttlAt)
+    else decode throws
+        CE->>R: DEL key
+        CE-->>RDC: null
+    else
+        CE-->>RDC: PresentValue(value, ttlAt)
     end
+    RDC-->>CC: result (DataAccessException → null unless strict)
 ```
 
-### 缓存写入流程
+- 每次 L1 读取只需一次往返：在共享连接上执行原子 Lua 脚本。不要用 `executePipelined`：Lettuce 的 pipeline 需要专用连接，无连接池时代价高于两次普通往返。
+- **key 不存在就是未命中，绝不当作负缓存。** 在 4.x 中，若 key 在分开执行的 `TTL` 与 `GET` 之间被删除，会被解码为负缓存，可能把“不存在”钉在 L2 中直到旧 TTL 到期。
+- `ttlAt = now + ttl`，TTL 为 `-1` 时为 `FOREVER`。该值由 Redis 剩余 TTL 重建，可能有 ±1 秒漂移。
 
-```mermaid
-sequenceDiagram
-autonumber
-    participant Caller as CoherentCache
-    participant RDC as RedisDistributedCache
-    participant Codec as CodecExecutor
-    participant Redis as Redis
+## 写入协议
 
-    Caller->>RDC: setCache(key, cacheValue)
-    RDC->>RDC: 检查是否过期 -> 跳过
+| 值 | 动作 |
+|----|------|
+| 已过期 | `DEL key` |
+| `MissingValue` | 写入该 codec 的哨兵形态 |
+| `PresentValue` | 写入编码后的值 |
+| TTL | `FOREVER` 时不设过期（`null`）；否则剩余秒数，至少钳为 1 |
 
-    alt 永不过期
-        RDC->>Codec: executeAndEncode(key, cacheValue)
-        Codec->>Codec: toRawValue()
-        Codec->>Redis: SET key value（无过期时间）
-    else 有 TTL
-        RDC->>Codec: executeAndEncode(key, cacheValue)
-        Codec->>Codec: toRawValue()
-        Codec->>Codec: 计算 expiredDuration
-        Codec->>Redis: SET key value EX ttl
-    end
-```
+Hash / Set 写入通过一个原子 Lua 脚本完成（`DEL` + `HSET`/`SADD` + 可选 `EXPIRE`）。写入空 Map/Set 会删除该 key。
 
-## RedisCacheEvictedEventBus
-
-[RedisCacheEvictedEventBus](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt#L32) 使用 Redis Pub/Sub 在所有应用实例间分发缓存驱逐事件。
-
-```mermaid
-graph TB
-    subgraph sg_48 ["Redis Pub/Sub 缓存一致性"]
-
-        inst1["实例 1<br>(clientId: 0:1234@10.0.0.1)"]
-        style inst1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        inst2["实例 2<br>(clientId: 0:5678@10.0.0.2)"]
-        style inst2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        inst3["实例 3<br>(clientId: 0:9012@10.0.0.3)"]
-        style inst3 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        redis["Redis Pub/Sub<br>(Channel = cacheName)"]
-        style redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        inst1 -->|"PUBLISH userCache<br>'user:123@@0:1234@10.0.0.1'"| redis
-        redis -->|"传递给订阅者"| inst2
-        redis -->|"传递给订阅者"| inst3
-        redis -->|"传递给订阅者"| inst1
-        inst1 -->|"过滤：publisherId == self<br>-> 忽略"| inst1
-        inst2 -->|"驱逐 L2 条目<br>user:123"| inst2
-        inst3 -->|"驱逐 L2 条目<br>user:123"| inst3
-    end
-
-```
-
-### 事件注册
-
-当 `CoherentCache` 由 `DefaultCoherentCacheFactory` 创建时，它会注册到事件总线：
-
-```mermaid
-sequenceDiagram
-autonumber
-    participant CCF as DefaultCoherentCacheFactory
-    participant RCEEB as RedisCacheEvictedEventBus
-    participant RMLC as RedisMessageListenerContainer
-    participant Redis as Redis
-
-    CCF->>RCEEB: register(coherentCache)
-    RCEEB->>RCEEB: 创建 MessageListenerAdapter
-    RCEEB->>RMLC: addMessageListener(adapter, ChannelTopic(cacheName))
-    RMLC->>Redis: SUBSCRIBE cacheName
-```
-
-### MessageListenerAdapter
-
-[MessageListenerAdapter](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt#L67) 包装 `CacheEvictedSubscriber` 以实现 Spring 的 `MessageListener` 接口。在收到 Redis 消息时，它委托给 `EvictedEvents.fromMessage()` 解析消息，然后调用 `subscriber.onEvicted()`。
-
-## EvictedEvents 消息格式
-
-[EvictedEvents](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/EvictedEvents.kt#L19) 定义了缓存驱逐消息的传输格式：
-
-| 字段 | 编码 | 示例 |
-|------|------|------|
-| Channel | 缓存名称（来自 `NamedCache.cacheName`） | `userCache` |
-| Body | `key + "@@" + clientId` | `user:123@@0:1234@10.0.0.1` |
-
-[EvictedEvents.fromMessage()](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/EvictedEvents.kt#L22) 中的解析逻辑：
-- `cacheName` = `message.channel.decodeToString()`
-- 以 `"@@"` 分割 `message.body.decodeToString()` 得到 `[key, clientId]`
-- 构造 `CacheEvictedEvent(cacheName, key, clientId)`
-
-## 编解码器层次结构
-
-编解码器系统处理缓存值与 Redis 数据结构之间的序列化。每个编解码器将特定的值类型映射到 Redis 数据类型。
+## Codec
 
 ```mermaid
 classDiagram
     class CodecExecutor~V~ {
         <<interface>>
-        +executeAndDecode(key: String, ttlAt: Long) CacheValue~V~
-        +executeAndEncode(key: String, cacheValue: CacheValue~V~)
+        +executeAndDecode(key) CacheValue~V~?
+        +executeAndEncode(key, value)
     }
-
     class AbstractCodecExecutor~V, RAW~ {
         <<abstract>>
-        #redisTemplate: StringRedisTemplate
-        +executeAndDecode(key, ttlAt) CacheValue~V~
-        +executeAndEncode(key, cacheValue)
-        #toRawValue() RAW
-        #getRawValue(key) RAW?
+        #readScript: RedisScript
+        #toRaw(result) RAW?
         #isMissingGuard(raw) Boolean
         #decode(raw) V
-        #setForeverValue(key, cacheValue)
-        #setValueWithTtlAt(key, cacheValue)
+        #encode(value) RAW
+        #encodeMissingGuard() RAW
+        #writeRaw(key, raw, ttlSeconds?)
     }
-
-    class ObjectToJsonCodecExecutor~V~ {
-        -valueType: Type
-        -objectMapper: ObjectMapper
-        Redis 类型：STRING (GET/SET)
-    }
-
-    class StringToStringCodecExecutor {
-        Redis 类型：STRING (GET/SET)
-    }
-
-    class MapToHashCodecExecutor {
-        Redis 类型：HASH (HGETALL/HMSET)
-    }
-
-    class ObjectToHashCodecExecutor~V~ {
-        -mapConverter: MapConverter
-        Redis 类型：HASH (HGETALL/HMSET)
-    }
-
-    class SetToSetCodecExecutor {
-        Redis 类型：SET (SMEMBERS/SADD)
-    }
-
+    class StringCodecExecutor~V~
+    class HashCodecExecutor~V~
     CodecExecutor <|.. AbstractCodecExecutor
-    AbstractCodecExecutor <|-- ObjectToJsonCodecExecutor
-    AbstractCodecExecutor <|-- StringToStringCodecExecutor
-    AbstractCodecExecutor <|-- MapToHashCodecExecutor
-    AbstractCodecExecutor <|-- ObjectToHashCodecExecutor
+    AbstractCodecExecutor <|-- StringCodecExecutor
+    AbstractCodecExecutor <|-- HashCodecExecutor
     AbstractCodecExecutor <|-- SetToSetCodecExecutor
+    StringCodecExecutor <|-- StringToStringCodecExecutor
+    StringCodecExecutor <|-- ObjectToJsonCodecExecutor
+    HashCodecExecutor <|-- MapToHashCodecExecutor
+    HashCodecExecutor <|-- ObjectToHashCodecExecutor
+
+    style CodecExecutor fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style AbstractCodecExecutor fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style StringCodecExecutor fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style HashCodecExecutor fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style SetToSetCodecExecutor fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style StringToStringCodecExecutor fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style ObjectToJsonCodecExecutor fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style MapToHashCodecExecutor fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style ObjectToHashCodecExecutor fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
-### 编解码器详情
+| Codec | 值类型 | Redis 类型 | 负缓存线格式 |
+|-------|--------|------------|--------------|
+| `ObjectToJsonCodecExecutor`（默认） | 任意 POJO | String | `_nil_` |
+| `StringToStringCodecExecutor` | `String` | String | `_nil_`（与哨兵相等的业务字符串读回时视为负缓存） |
+| `MapToHashCodecExecutor` | `Map<String, String>` | Hash | `{_nil_: <写入时间>}` |
+| `ObjectToHashCodecExecutor` | 经 `MapConverter` 的任意对象 | Hash | `{_nil_: <写入时间>}` |
+| `SetToSetCodecExecutor` | `Set<String>` | Set | `{_nil_}` |
 
-| 编解码器 | 值类型 | Redis 类型 | 序列化方式 | MissingGuard 编码 |
-|---------|--------|-----------|-----------|------------------|
-| `ObjectToJsonCodecExecutor` | 任意 POJO | STRING | Jackson ObjectMapper JSON | `"_nil_"` 字符串 |
-| `StringToStringCodecExecutor` | `String` | STRING | 直接存储（无转换） | `"_nil_"` 字符串 |
-| `MapToHashCodecExecutor` | `Map<String, String>` | HASH | 直接键值映射 | `{"_nil_": "<timestamp>"}` |
-| `ObjectToHashCodecExecutor` | 通过 `MapConverter` 的任意类型 | HASH | 对象 <-> Map 转换 | `{"_nil_": "<timestamp>"}` |
-| `SetToSetCodecExecutor` | `Set<String>` | SET | 直接集合成员 | `{"_nil_"}` 单元素集合 |
+哨兵可通过构造参数注入（`missingGuardSentinel`，属性 `cocache.redis.missing-guard-sentinel`）。自定义哨兵与默认哨兵互不识别，切换时需全集群同时变更。
 
-### AbstractCodecExecutor 写入管道
+要为其它数据结构编写 codec，继承 `AbstractCodecExecutor` 并实现 `readScript`（通过 `readScript("GET" | "HGETALL" | "SMEMBERS")` 生成）、`toRaw`（TTL 之后的元素）、`isMissingGuard`、`decode`、`encode`、`encodeMissingGuard`、`writeRaw`。
 
-[AbstractCodecExecutor](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/AbstractCodecExecutor.kt#L21) 在[第 45 行](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/AbstractCodecExecutor.kt#L45)提供了 `setPipelined()` 辅助方法，它在一个 Redis 管道中原子性地删除旧键并写入新值，防止写入窗口期间的脏读。
+## RedisCacheEvictedEventBus
 
-### 各编解码器的 MissingGuard 检测
+- 频道 = `cacheName`，消息 = `key@@publisherId`，按最后一个 `@@` 切分。
+- `publish` 吞掉 `DataAccessException` 并告警。
+- 每个注册的订阅者都包装为同时实现 `MessageListener` **和** `SubscriptionListener` 的监听器。容器在初次订阅后、每次重连后、以及同一频道加入新监听器时调用 `onChannelSubscribed`，每次调用都映射为 `CacheEvictedSubscriber.onReset()`，从而清空 L2。
+- 订阅通知经由容器的 `TaskExecutor` 分发。测试使用 `SyncTaskExecutor`，使 `register()` 返回时重置已经执行完。
 
-每个编解码器有特定于编解码器的缺失守卫哨兵值检测方式，与多态的 `MissingGuard.Companion.isMissingGuard` 扩展相匹配：
+## 故障降级
 
-```mermaid
-flowchart LR
-    subgraph sg_49 ["按值类型的 MissingGuard 检测"]
+| 操作 | 默认（`strictFailure = false`） | 严格 |
+|------|---------------------------------|------|
+| 读 | `null`（未命中 → 回源）+ `WARN` | 重抛 |
+| 写 / 淘汰 | `WARN`，吞掉异常 | 重抛 |
 
-        check{"值类型?"}
-        style check fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        str["String<br>== '_nil_'"]
-        style str fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        set["Set<br>first() == '_nil_'"]
-        style set fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        map["Map<br>firstKey() == '_nil_'"]
-        style map fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        obj["Object<br>is MissingGuard"]
-        style obj fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-        check -->|"String"| str
-        check -->|"Set<String>"| set
-        check -->|"Map<String,String>"| map
-        check -->|"其他"| obj
-    end
-
-```
-
-## RedisDistributedCacheFactory
-
-[RedisDistributedCacheFactory](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCacheFactory.kt#L27) 继承 `AbstractCacheFactory`，创建 `RedisDistributedCache` 实例。它在[第 47 行](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCacheFactory.kt#L47)的 `fallback()` 方法创建一个使用 `ObjectToJsonCodecExecutor`（JSON 序列化）作为默认编解码器的 `RedisDistributedCache`。
-
-用户可以通过声明名为 `"{cacheName}.DistributedCache"` 的 Spring Bean 来自定义分布式缓存：
-
-```kotlin
-@Bean("UserCache.DistributedCache")
-fun userDistributedCache(
-    redisTemplate: StringRedisTemplate
-): DistributedCache<User> {
-    val codec = ObjectToHashCodecExecutor(
-        mapConverter = object : ObjectToHashCodecExecutor.MapConverter<User> {
-            override fun asValue(map: Map<String, String>): User = /* 将 map 转换为 User */
-            override fun asMap(value: User): Map<String, String> = /* 将 User 转换为 map */
-        },
-        redisTemplate = redisTemplate
-    )
-    return RedisDistributedCache(redisTemplate, codec, ttl = 7200, ttlAmplitude = 60)
-}
-```
-
-## 跨实例一致性流程
-
-带跨实例失效的缓存写入完整流程：
-
-```mermaid
-sequenceDiagram
-autonumber
-    participant Client as 客户端 (实例 A)
-    participant DCCA as DefaultCoherentCache (A)
-    participant L2A as ClientSideCache (A)
-    participant Redis as Redis
-    participant EventBus as RedisCacheEvictedEventBus
-    participant L2B as ClientSideCache (B)
-    participant DCCB as DefaultCoherentCache (B)
-
-    Client->>DCCA: set(key, value)
-    DCCA->>DCCA: keyConverter.toStringKey(key)
-    DCCA->>L2A: setCache(cacheKey, value)
-    DCCA->>Redis: SET cacheKey value EX ttl
-    DCCA->>EventBus: publish(CacheEvictedEvent)
-    EventBus->>Redis: PUBLISH cacheName "cacheKey@@clientIdA"
-    Redis->>DCCB: onMessage (Pub/Sub 投递)
-    DCCB->>DCCB: 解析 EvictedEvent
-    DCCB->>DCCB: 过滤：cacheName 匹配？
-    DCCB->>DCCB: 过滤：publisherId != self？
-    DCCB->>L2B: evict(cacheKey)
-    Note over L2B: 实例 B 的 L2 已被失效
-```
+这些设置只作用于默认（回退创建）的缓存。自定义的 `{cacheName}.DistributedCache` bean 自行决定策略。
 
 ## 相关页面
 
-- [模块概览](./index.md) -- 依赖关系图和模块说明
-- [cocache-core](./cocache-core.md) -- DefaultCoherentCache、DistributedCache 接口、CacheEvictedEventBus
-- [cocache-spring](./cocache-spring.md) -- AbstractCacheFactory 基类、Spring 集成
-- [cocache-spring-boot-starter](./cocache-spring-boot-starter.md) -- 连接 RedisDistributedCacheFactory 的自动配置
+- [缓存层级](../architecture/cache-layers.md)
+- [缓存一致性](../architecture/coherence.md)
+- [配置](../guide/configuration.md)

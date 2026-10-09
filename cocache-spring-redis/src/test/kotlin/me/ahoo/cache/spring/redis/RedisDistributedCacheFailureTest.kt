@@ -10,12 +10,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.spring.redis
 
 import io.mockk.every
 import io.mockk.mockk
-import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.consistency.CacheEvictedEvent
+import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.spring.redis.codec.CodecExecutor
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
@@ -23,89 +23,31 @@ import org.junit.jupiter.api.assertThrows
 import org.springframework.data.redis.RedisConnectionFailureException
 import org.springframework.data.redis.core.StringRedisTemplate
 
-/**
- * RedisDistributedCacheFailureTest .
- *
- * @author ahoo wang
- */
 internal class RedisDistributedCacheFailureTest {
     private val failure = RedisConnectionFailureException("redis down")
 
-    private fun newFailingTemplate(): StringRedisTemplate {
-        val template = mockk<StringRedisTemplate>()
-        every { template.getExpire(any<String>()) } throws failure
-        every { template.delete(any<String>()) } throws failure
-        return template
+    private val failingTemplate = mockk<StringRedisTemplate> {
+        every { delete(any<String>()) } throws failure
     }
 
-    private fun newFailingCodec(): CodecExecutor<String> {
-        val codec = mockk<CodecExecutor<String>>()
-        every { codec.executeAndEncode(any(), any()) } throws failure
-        return codec
+    private val failingCodec = mockk<CodecExecutor<String>> {
+        every { executeAndDecode(any()) } throws failure
+        every { executeAndEncode(any(), any()) } throws failure
     }
 
     @Test
-    fun getCacheDegradesToMissOnFailure() {
-        val cache = RedisDistributedCache(newFailingTemplate(), newFailingCodec())
+    fun degradesByDefault() {
+        val cache = RedisDistributedCache(failingTemplate, failingCodec)
         cache.getCache("key").assert().isNull()
-    }
-
-    @Test
-    fun getCacheDegradesToMissWhenCodecFails() {
-        val template = mockk<StringRedisTemplate>()
-        every { template.getExpire(any<String>()) } returns RedisDistributedCache.FOREVER
-        val codec = mockk<CodecExecutor<String>>()
-        every { codec.executeAndDecode(any(), any()) } throws failure
-
-        val cache = RedisDistributedCache(template, codec)
-
-        cache.getCache("key").assert().isNull()
-    }
-
-    @Test
-    fun setCacheSwallowsFailure() {
-        val cache = RedisDistributedCache(mockk<StringRedisTemplate>(), newFailingCodec())
-        cache.setCache("key", DefaultCacheValue.forever("value"))
-    }
-
-    @Test
-    fun evictSwallowsFailure() {
-        val cache = RedisDistributedCache(newFailingTemplate(), mockk<CodecExecutor<String>>())
+        cache.setCache("key", CacheValue.forever("value"))
         cache.evict("key")
     }
 
     @Test
-    fun getCacheRethrowsInStrictMode() {
-        val cache = RedisDistributedCache(newFailingTemplate(), newFailingCodec(), strictFailure = true)
-        assertThrows<RedisConnectionFailureException> {
-            cache.getCache("key")
-        }
-    }
-
-    @Test
-    fun setCacheRethrowsInStrictMode() {
-        val cache = RedisDistributedCache(mockk<StringRedisTemplate>(), newFailingCodec(), strictFailure = true)
-        assertThrows<RedisConnectionFailureException> {
-            cache.setCache("key", DefaultCacheValue.forever("value"))
-        }
-    }
-
-    @Test
-    fun evictRethrowsInStrictMode() {
-        val cache = RedisDistributedCache(newFailingTemplate(), mockk<CodecExecutor<String>>(), strictFailure = true)
-        assertThrows<RedisConnectionFailureException> {
-            cache.evict("key")
-        }
-    }
-}
-
-internal class RedisCacheEvictedEventBusFailureTest {
-    @Test
-    fun publishSwallowsRedisFailure() {
-        val redisTemplate = mockk<StringRedisTemplate>()
-        every { redisTemplate.convertAndSend(any<String>(), any<Any>()) } throws RedisConnectionFailureException("down")
-        val bus = RedisCacheEvictedEventBus(redisTemplate, mockk(relaxed = true))
-
-        bus.publish(CacheEvictedEvent("cache", "key", "clientId"))
+    fun rethrowsInStrictMode() {
+        val cache = RedisDistributedCache(failingTemplate, failingCodec, strictFailure = true)
+        assertThrows<RedisConnectionFailureException> { cache.getCache("key") }
+        assertThrows<RedisConnectionFailureException> { cache.setCache("key", CacheValue.forever("value")) }
+        assertThrows<RedisConnectionFailureException> { cache.evict("key") }
     }
 }

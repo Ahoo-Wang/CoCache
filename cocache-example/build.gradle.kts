@@ -53,7 +53,6 @@ dependencies {
     implementation(project(":cocache-spring-boot-starter"))
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
-    implementation("com.google.guava:guava")
     implementation("tools.jackson.module:jackson-module-kotlin")
     implementation("org.springframework.boot:spring-boot-starter-webflux")
 //    implementation("org.springframework.cloud:spring-cloud-commons")

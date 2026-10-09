@@ -12,15 +12,12 @@
  */
 package me.ahoo.cache.example.config
 
-import com.google.common.cache.CacheBuilder
-import me.ahoo.cache.api.CacheValue
-import me.ahoo.cache.client.GuavaClientSideCache
+import me.ahoo.cache.client.CaffeineClientSideCache
 import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.consistency.CoherentCacheConfiguration
 import me.ahoo.cache.consistency.CoherentCacheFactory
 import me.ahoo.cache.converter.ToStringKeyConverter
-import me.ahoo.cache.distributed.DistributedCache
-import me.ahoo.cache.distributed.mock.MockDistributedCache
+import me.ahoo.cache.distributed.InMemoryDistributedCache
 import me.ahoo.cache.example.model.User
 import me.ahoo.cache.spring.redis.RedisDistributedCache
 import me.ahoo.cache.spring.redis.codec.ObjectToJsonCodecExecutor
@@ -31,6 +28,9 @@ import org.springframework.data.redis.core.StringRedisTemplate
 import tools.jackson.databind.ObjectMapper
 import java.time.Duration
 
+/**
+ * 不使用注解接口、直接以代码组装 [CoherentCache]。
+ */
 @Configuration
 class ClassDefinedCacheConfiguration {
     @Bean("userCache")
@@ -40,27 +40,14 @@ class ClassDefinedCacheConfiguration {
         objectMapper: ObjectMapper,
         clientIdGenerator: ClientIdGenerator
     ): CoherentCache<String, User> {
-        val clientId = clientIdGenerator.generate()
-        val codecExecutor = ObjectToJsonCodecExecutor<User>(
-            User::class.java,
-            redisTemplate,
-            objectMapper,
-        )
-
-        val distributedCaching: DistributedCache<User> = RedisDistributedCache(redisTemplate, codecExecutor)
-
+        val codecExecutor = ObjectToJsonCodecExecutor<User>(User::class.java, redisTemplate, objectMapper)
         return coherentCacheFactory.create(
             CoherentCacheConfiguration(
                 cacheName = "userCache",
-                clientId = clientId,
+                clientId = clientIdGenerator.generate(),
                 keyConverter = ToStringKeyConverter(User.CACHE_KEY_PREFIX),
-                distributedCache = distributedCaching,
-                clientSideCache = CacheBuilder
-                    .newBuilder()
-                    .expireAfterAccess(Duration.ofHours(1))
-                    .build<String, CacheValue<User>>().let {
-                        GuavaClientSideCache(it)
-                    }
+                distributedCache = RedisDistributedCache(redisTemplate, codecExecutor),
+                clientSideCache = CaffeineClientSideCache.build(expireAfterAccess = Duration.ofHours(1))
             ),
         )
     }
@@ -70,14 +57,12 @@ class ClassDefinedCacheConfiguration {
         coherentCacheFactory: CoherentCacheFactory,
         clientIdGenerator: ClientIdGenerator
     ): CoherentCache<String, String> {
-        val distributedCaching = MockDistributedCache<String>()
-        val clientId = clientIdGenerator.generate()
         return coherentCacheFactory.create(
             CoherentCacheConfiguration(
                 cacheName = "mockCache",
-                clientId = clientId,
+                clientId = clientIdGenerator.generate(),
                 keyConverter = ToStringKeyConverter(""),
-                distributedCache = distributedCaching,
+                distributedCache = InMemoryDistributedCache(),
             ),
         )
     }

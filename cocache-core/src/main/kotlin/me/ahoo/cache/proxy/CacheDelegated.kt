@@ -15,6 +15,9 @@ package me.ahoo.cache.proxy
 
 import me.ahoo.cache.api.Cache
 
+/**
+ * 代理对象暴露其委托的缓存实现。
+ */
 interface CacheDelegated<DELEGATE> where DELEGATE : Cache<*, *> {
     val delegate: DELEGATE
 }

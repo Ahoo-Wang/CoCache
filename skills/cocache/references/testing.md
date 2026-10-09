@@ -10,24 +10,25 @@
 - [Testing Cross-Instance Coherence](#testing-cross-instance-coherence)
 - [Testing with Redis (Integration Tests)](#testing-with-redis-integration-tests)
 - [Redis-Style TTL Drift](#redis-style-ttl-drift)
+- [Race-Condition Tests](#race-condition-tests)
 - [Assertion Style](#assertion-style)
-- [Writing Custom Test Cases](#writing-custom-test-cases)
 - [Test Dependencies](#test-dependencies)
 
-CoCache provides abstract test specs in `cocache-test` that verify cache contracts. Extend the appropriate spec, implement factory methods, and you get comprehensive test coverage for free.
+`cocache-test` provides abstract specs that verify CoCache contracts. Extend the matching spec, implement its factory methods, and the contract tests come with it.
 
 ## Test Specs Overview
 
-| Spec | Tests | Use For |
-|------|-------|---------|
-| `CacheSpec<K,V>` | get, set, evict, TTL, missing guard | Base contract |
-| `ClientSideCacheSpec<V>` | all of CacheSpec + clear() | L2 local cache implementations |
-| `DistributedCacheSpec<V>` | all of CacheSpec | L1 distributed cache implementations |
-| `DefaultCoherentCacheSpec<K,V>` | all of CacheSpec + cache source, event bus, concurrency | Two-level cache implementations |
-| `MultipleInstanceSyncSpec<K,V>` | cross-instance coherence | Event bus implementations |
-| `CacheEvictedEventBusSpec` | publish, register, unregister | Event bus implementations |
+| Spec | Factory method | Verifies | Use For |
+|------|----------------|----------|---------|
+| `CacheStoreSpec<V>` | `createCacheStore()` | absent → `null`, forever / `ttlAt` round trip, expired write evicts, negative-cache round trip, evict | Base store contract |
+| `ClientSideCacheSpec<V>` | `createCacheStore()` | + `clear()`, `size` | L2 stores |
+| `DistributedCacheSpec<V>` | `createCacheStore()` | store contract | L1 stores |
+| `CacheSpec<K,V>` | `createCache()` | `get`/`set`/`getTtlAt`/`evict`, negative cache | `Cache` implementations |
+| `DefaultCoherentCacheSpec<K,V>` | component factories | read-through, `missingTtl`, fill, events, `onReset`, single load, exception propagation, in-flight invalidation races | Two-level coherence with your L1/L2/bus |
+| `MultipleInstanceSyncSpec<K,V>` | component factories | two instances converge after set/evict | L1 + bus end-to-end |
+| `CacheEvictedEventBusSpec` | `createCacheEvictedEventBus()` | `register` → `onReset`, routing by cache name, unregister | Event buses |
 
-All specs live in package `me.ahoo.cache.test`, except `CacheEvictedEventBusSpec` which is in `me.ahoo.cache.test.consistency`.
+All specs are in `me.ahoo.cache.test`, except `CacheEvictedEventBusSpec`, which is in `me.ahoo.cache.test.consistency`.
 
 ## Testing a ClientSideCache Implementation
 
@@ -36,43 +37,22 @@ import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.test.ClientSideCacheSpec
 
 class MyClientSideCacheTest : ClientSideCacheSpec<String>() {
-
-    override fun createCache(): ClientSideCache<String> {
-        return MyCustomClientSideCache()
-    }
-
-    override fun createCacheEntry(): Pair<String, String> {
-        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
-    }
+    override fun createCacheStore(): ClientSideCache<String> = MyClientSideCache()
+    override fun createCacheEntry(): Pair<String, String> =
+        UUID.randomUUID().toString() to UUID.randomUUID().toString()
 }
 ```
-
-This automatically tests:
-- `get` returns null for missing keys
-- `get` returns value after `set`
-- `set` with TTL
-- `set` with TTL amplitude
-- `evict` removes the entry
-- `set` with missing guard
-- `set` with missing guard TTL
-- `clear` removes all entries
-- `getWhenExpired` returns null after TTL
 
 ## Testing a DistributedCache Implementation
 
 ```kotlin
-import me.ahoo.cache.distributed.DistributedCache
+import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.test.DistributedCacheSpec
 
 class MyDistributedCacheTest : DistributedCacheSpec<String>() {
-
-    override fun createCache(): DistributedCache<String> {
-        return MyCustomDistributedCache()
-    }
-
-    override fun createCacheEntry(): Pair<String, String> {
-        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
-    }
+    override fun createCacheStore(): DistributedCache<String> = MyDistributedCache()
+    override fun createCacheEntry(): Pair<String, String> =
+        UUID.randomUUID().toString() to UUID.randomUUID().toString()
 }
 ```
 
@@ -80,224 +60,137 @@ class MyDistributedCacheTest : DistributedCacheSpec<String>() {
 
 ```kotlin
 import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
+import me.ahoo.cache.api.converter.KeyConverter
+import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
-import me.ahoo.cache.converter.KeyConverter
+import me.ahoo.cache.consistency.LocalCacheEvictedEventBus
 import me.ahoo.cache.converter.ToStringKeyConverter
-import me.ahoo.cache.distributed.DistributedCache
-import me.ahoo.cache.distributed.mock.MockDistributedCache
+import me.ahoo.cache.distributed.InMemoryDistributedCache
 import me.ahoo.cache.test.DefaultCoherentCacheSpec
-import java.util.*
 
 class MyCoherentCacheTest : DefaultCoherentCacheSpec<String, String>() {
-
     override fun createKeyConverter(): KeyConverter<String> = ToStringKeyConverter("test:")
-
     override fun createClientSideCache(): ClientSideCache<String> = MapClientSideCache()
-
-    override fun createDistributedCache(): DistributedCache<String> = MockDistributedCache()
-
-    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = GuavaCacheEvictedEventBus()
-
+    override fun createDistributedCache(): DistributedCache<String> = InMemoryDistributedCache()
+    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = LocalCacheEvictedEventBus()
     override fun createCacheName(): String = "testCache"
-
-    override fun createCacheEntry(): Pair<String, String> {
-        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
-    }
+    override fun createCacheEntry(): Pair<String, String> =
+        UUID.randomUUID().toString() to UUID.randomUUID().toString()
 }
 ```
 
-This tests:
-- All basic cache operations
-- Cache source integration (loading from data source)
-- Event-driven eviction (local + distributed)
-- Self-published events are ignored (no loops)
-- Cache name matching for events
-- **Concurrency**: Verifies cache stampede prevention (10/100/1000 threads, only 1 CacheSource call)
+The spec drives its `CacheSource` through the protected `loader` and counts calls in `sourceCalls`, so you can add your own scenarios.
 
 ## Testing CacheEvictedEventBus
 
 ```kotlin
-import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
 import me.ahoo.cache.test.consistency.CacheEvictedEventBusSpec
 
 class MyEventBusTest : CacheEvictedEventBusSpec() {
-
-    override fun createCacheEvictedEventBus(): CacheEvictedEventBus {
-        return GuavaCacheEvictedEventBus()
-    }
+    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = MyEventBus()
 }
 ```
 
-Tests:
-- `publish` delivers events to subscribers
-- `unregister` stops delivery
+The spec requires `register` to trigger `onReset`. Your bus must call it whenever a subscription is (re)established.
 
 ## Testing Cross-Instance Coherence
 
 ```kotlin
-import me.ahoo.cache.api.client.ClientSideCache
-import me.ahoo.cache.client.MapClientSideCache
-import me.ahoo.cache.consistency.CacheEvictedEventBus
-import me.ahoo.cache.consistency.GuavaCacheEvictedEventBus
-import me.ahoo.cache.converter.KeyConverter
-import me.ahoo.cache.converter.ToStringKeyConverter
-import me.ahoo.cache.distributed.DistributedCache
-import me.ahoo.cache.distributed.mock.MockDistributedCache
-import me.ahoo.cache.test.MultipleInstanceSyncSpec
-import java.util.*
-
 class MyMultiInstanceTest : MultipleInstanceSyncSpec<String, String>() {
-
     override fun createKeyConverter(): KeyConverter<String> = ToStringKeyConverter("test:")
-
     override fun createClientSideCache(): ClientSideCache<String> = MapClientSideCache()
-
-    override fun createDistributedCache(): DistributedCache<String> = MockDistributedCache()
-
-    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = GuavaCacheEvictedEventBus()
-
+    override fun createDistributedCache(): DistributedCache<String> = InMemoryDistributedCache()
+    override fun createCacheEvictedEventBus(): CacheEvictedEventBus = LocalCacheEvictedEventBus()
     override fun createCacheName(): String = "testCache"
-
-    override fun createCacheEntry(): Pair<String, String> {
-        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
-    }
+    override fun createCacheEntry(): Pair<String, String> =
+        UUID.randomUUID().toString() to UUID.randomUUID().toString()
 }
 ```
 
-This creates two CoherentCache instances sharing the same DistributedCache and EventBus, then verifies:
-- When instance A sets a value, instance B's local cache is invalidated
-- When instance A evicts, instance B's local cache is invalidated
+Two `CoherentCache` instances share one L1 and one bus. The spec waits, with a timeout, until each set/evict on one instance has invalidated the other instance's L2.
 
 ## Testing with Redis (Integration Tests)
 
-Redis integration tests require a running Redis instance. CI provides Redis as a service container; local runs should start Redis first.
+Redis tests need Redis at `localhost:6379`. If the shell exports `SPRING_DATA_REDIS_*` cluster variables, unset them for local runs.
+
+Asynchronous channels deliver `onReset` after subscription, and a late reset can wipe L2 in the middle of a test. Give the `RedisMessageListenerContainer` a `SyncTaskExecutor` in tests; `register()` then returns only after the reset ran:
 
 ```kotlin
-import me.ahoo.cache.distributed.DistributedCache
-import me.ahoo.cache.spring.redis.RedisDistributedCache
-import me.ahoo.cache.spring.redis.codec.StringToStringCodecExecutor
-import me.ahoo.cache.test.DistributedCacheSpec
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.BeforeEach
-import org.springframework.data.redis.connection.RedisStandaloneConfiguration
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
-import org.springframework.data.redis.core.StringRedisTemplate
-import java.util.*
+val listenerContainer = RedisMessageListenerContainer().apply {
+    setConnectionFactory(connectionFactory)
+    setTaskExecutor(SyncTaskExecutor())
+    afterPropertiesSet()
+    start()
+}
+```
 
-class RedisDistributedCacheTest : DistributedCacheSpec<String>() {
+Lifecycle overrides must repeat the JUnit annotation, or JUnit will not run them:
 
-    private lateinit var stringRedisTemplate: StringRedisTemplate
-    private lateinit var codecExecutor: StringToStringCodecExecutor
-    private lateinit var lettuceConnectionFactory: LettuceConnectionFactory
-
-    override fun createCache(): DistributedCache<String> {
-        return RedisDistributedCache(stringRedisTemplate, codecExecutor)
-    }
-
-    override fun createCacheEntry(): Pair<String, String> {
-        return UUID.randomUUID().toString() to UUID.randomUUID().toString()
-    }
-
+```kotlin
+class RedisCoherentCacheTest : DefaultCoherentCacheSpec<String, String>() {
     @BeforeEach
-    override fun setup() {
-        lettuceConnectionFactory = LettuceConnectionFactory(RedisStandaloneConfiguration())
-        lettuceConnectionFactory.afterPropertiesSet()
-        stringRedisTemplate = StringRedisTemplate(lettuceConnectionFactory)
-        stringRedisTemplate.afterPropertiesSet()
-        codecExecutor = StringToStringCodecExecutor(stringRedisTemplate)
-        super.setup()
-    }
+    override fun setup() { redis = RedisTestSupport(); super.setup() }
 
     @AfterEach
-    fun destroy() {
-        lettuceConnectionFactory.destroy()
-    }
+    override fun tearDown() { super.tearDown(); redis.close() }
+    // ...
 }
 ```
 
 ## Redis-Style TTL Drift
 
-Caches that reconstruct `ttlAt` from the store's remaining expiry (e.g. `RedisDistributedCache` reads Redis `getExpire`) can drift by ±1 second when the write and the read land on different sides of a second boundary. `CacheSpec.setWithTtl` and `CacheSpec.setWithTtlAmplitude` are `open` for exactly this reason — override them to relax the exact `ttlAt` equality into a tolerance assertion. In-memory implementations inherit the exact assertions unchanged.
+Stores that rebuild `ttlAt` from the server's remaining expiry can drift by ±1 s across a second boundary. `CacheStoreSpec.setWithTtlAt` and `setMissingWithTtlAt` are `open`; override them with a tolerance:
 
 ```kotlin
 @Test
-override fun setWithTtl() {
+override fun setWithTtlAt() {
     val (key, value) = createCacheEntry()
-    cache[key].assert().isNull()
-    val cacheValue = DefaultCacheValue.ttlAt(value, 5)
-    cache.setCache(key, cacheValue)
-    cache[key].assert().isEqualTo(value)
-    cache.getTtlAt(key).assert().isCloseTo(cacheValue.ttlAt, Offset.offset(1))
+    val cacheValue = CacheValue.of(value, TtlAt.at(10))
+    cacheStore.setCache(key, cacheValue)
+    val actual = requireNotNull(cacheStore.getCache(key))
+    actual.value.assert().isEqualTo(value)
+    actual.ttlAt.assert().isCloseTo(cacheValue.ttlAt, Offset.offset(1))
 }
 ```
 
-Two details matter here:
+`Offset` (`org.assertj.core.data.Offset`) is the one allowed AssertJ import, as an argument only.
 
-- The `@Test` annotation must be repeated on the override — JUnit 5 does not inherit it from the overridden spec method.
-- `Offset` comes from `org.assertj.core.data.Offset`. Passing it as an assertion argument is the one allowed AssertJ import; `assertThat()` itself stays banned.
+## Race-Condition Tests
+
+- Orchestrate interleavings with latches, for example by blocking the `CacheSource` until the test releases it. Never use sleeps to create an interleaving.
+- Wait on a `finished` latch so a dead background thread fails the test instead of passing vacuously.
+- Assert cross-instance (eventual) effects by polling with a timeout.
+- Every fixed defect gets a reproducing test.
+
+```kotlin
+loader = {
+    loadStarted.countDown()
+    releaseLoad.await(5, TimeUnit.SECONDS)
+    CacheValue.forever(staleValue)
+}
+// start loader thread → await loadStarted → coherentCache.evict(key) → releaseLoad.countDown()
+// → await finished → assert L1 and L2 do not hold the stale value
+```
 
 ## Assertion Style
-
-All tests use `fluent-assert`:
 
 ```kotlin
 import me.ahoo.test.asserts.assert
 
-// Correct
 value.assert().isEqualTo(expected)
-result.assert().isNull()
-list.assert().hasSize(3)
+requireNotNull(cache.getCache(key)).isMissing.assert().isTrue()
+runCatching { cache[key] }.exceptionOrNull().assert().isSameAs(failure)
 
-// Wrong - don't use AssertJ
 assertThat(value).isEqualTo(expected)  // DON'T
-```
-
-## Writing Custom Test Cases
-
-When you need additional tests beyond the spec:
-
-```kotlin
-class MyCacheTest : ClientSideCacheSpec<String>() {
-
-    override fun createCache(): ClientSideCache<String> = MyCache()
-    override fun createCacheEntry(): Pair<String, String> = UUID.randomUUID().toString() to "v"
-
-    @Test
-    fun `should handle concurrent access`() {
-        val cache = createCache()
-        val latch = CountDownLatch(100)
-        val errors = ConcurrentHashMap.newKeySet<Int>()
-
-        repeat(100) { i ->
-            thread {
-                try {
-                    cache["key_$i"] = "value_$i"
-                    cache.getCache("key_$i").assert().isNotNull()
-                } catch (e: Exception) {
-                    errors.add(i)
-                } finally {
-                    latch.countDown()
-                }
-            }
-        }
-        latch.await()
-        errors.assert().isEmpty()
-    }
-}
 ```
 
 ## Test Dependencies
 
-Add to your test `build.gradle.kts`:
-
 ```kotlin
 dependencies {
     testImplementation("me.ahoo.cocache:cocache-test")
-    testImplementation("me.ahoo.test:fluent-assert-core")
-    testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("io.mockk:mockk")
 }
 ```

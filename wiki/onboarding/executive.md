@@ -88,7 +88,7 @@ graph TB
         O1["Self-Healing<br>TTL bounds staleness"]
         O2["Graceful Degradation<br>Works without Redis"]
         O3["TTL Jitter<br>Prevents synchronized expiry"]
-        O4["Per-Key Locking<br>Fine-grained concurrency"]
+        O4["Per-Key Load Coalescing<br>SingleFlight"]
     end
 
     style C1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -119,7 +119,7 @@ graph TB
 | **Composite Caching (JoinCache)** | Combines related data from multiple sources in a single cache operation | Developer Productivity |
 | **Annotation-Driven Setup** | Reduces integration effort from days to hours | Developer Productivity |
 | **Spring Boot Auto-Configuration** | Zero-configuration for standard setups | Operational Efficiency |
-| **Pluggable Storage** | Future-proof: swap Guava for Caffeine, Redis for another distributed cache | Flexibility |
+| **Pluggable Storage** | Future-proof: swap the local cache or Redis for another store through stable SPIs | Flexibility |
 | **Self-Healing** | Stale data automatically corrects within the TTL window; no manual intervention | Reliability |
 | **Graceful Degradation** | If Redis goes down, reads still work via local cache and direct database access | Availability |
 | **TTL Jitter** | Prevents synchronized cache expiration storms that could cascade to the database | Stability |
@@ -199,7 +199,7 @@ quadrantChart
 - **Impact**: Medium -- excessive memory usage can trigger GC pauses or OOM.
 - **Mitigation**:
   - Set appropriate `maximumSize` per cache (documented in annotation config).
-  - Use Caffeine (more memory-efficient than Guava for large caches).
+  - Size the bounded Caffeine L2 (`maximumSize`) to the hot set.
   - Monitor JVM heap usage and set alerting at 75% threshold.
 
 #### 5. Bloom Filter False Positives
@@ -245,7 +245,7 @@ Modern microservices architectures amplify the caching challenge:
 | Database query load | 100% of read requests | ~1% of read requests |
 | Average read latency | 10-100ms (database) | <1ms (L2 cache hit) |
 | Cache coherence | Manual implementation (weeks of engineering) | Automatic via event bus |
-| Stampede protection | Custom per-project (error-prone) | Built-in per-key locking |
+| Stampede protection | Custom per-project (error-prone) | Built-in per-key load coalescing |
 | Time to implement caching | 2-4 weeks per service | 1-2 days per service |
 | Operational burden | High (custom cache logic to maintain) | Low (standard framework) |
 
@@ -280,9 +280,8 @@ queries per request):
 
 | Component | Memory per Instance | Notes |
 |-----------|-------------------|-------|
-| L2 Local Cache (Guava, 100K entries) | ~100MB heap | Depends on entry size; 1KB average |
-| L2 Local Cache (Caffeine, 100K entries) | ~90MB heap | Slightly more efficient than Guava |
-| Per-Key Lock Map | ~1-10MB | Transient; only during L0 fetches |
+| L2 Local Cache (Caffeine, 100K entries) | ~90MB heap | Depends on entry size; 1KB average |
+| In-flight load map | negligible | One entry per key currently loading |
 | Bloom Filter (1M keys, 1% FP) | ~1.2MB | Fixed; does not grow with entries |
 | Event Bus Subscriptions | ~negligible | One Redis subscription per cache name |
 | **Total overhead** | **~100-115MB per instance** | For 100K entry cache |
@@ -357,8 +356,8 @@ Key scaling properties:
 |---------|---------|---------------------|---------------------|----------------------|
 | Two-level caching | Built-in | Manual wiring | Built-in | Manual |
 | Cross-instance coherence | Automatic (event bus) | None (each instance independent) | Sync via Redis | Manual |
-| Stampede protection | Per-key locking | None | RLock (distributed) | Varies |
-| Penetration protection | MissingGuard + Bloom | None | None | Manual |
+| Stampede protection | Per-key SingleFlight | None | RLock (distributed) | Varies |
+| Penetration protection | Negative cache (`missingTtl`) + Bloom | None | None | Manual |
 | Annotation-driven | `@CoCache` on interface | `@Cacheable` on method | N/A | N/A |
 | Proxy-based (interface-level) | Yes | No (method-level) | No | N/A |
 | JoinCache (composite) | Built-in | Not supported | Not supported | Manual |
@@ -383,8 +382,8 @@ Key scaling properties:
    Always configure a TTL based on your data's acceptable staleness window. Use the
    `ttlAmplitude` parameter (default: 10 seconds) to prevent synchronized expiration.
 
-4. **Size L2 caches conservatively.** Start with `maximumSize = 100_000` for Guava
-   or Caffeine caches. Monitor heap usage and adjust. Over-provisioning L2 wastes
+4. **Size L2 caches conservatively.** L2 is bounded by default (10,000 entries per cache);
+   raise `@CaffeineCache(maximumSize)` for hot caches. Monitor heap usage and adjust. Over-provisioning L2 wastes
    memory; under-provisioning reduces hit rate.
 
 5. **Deploy Redis in Sentinel or Cluster mode.** Do not use a single Redis instance

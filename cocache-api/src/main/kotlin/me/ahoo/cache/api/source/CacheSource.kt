@@ -10,26 +10,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.api.source
 
 import me.ahoo.cache.api.CacheValue
-import java.util.concurrent.TimeoutException
 
 /**
- * L0
- * Cache Source .
+ * 数据源（L0）：L2、L1 均未命中时回源加载。
+ *
+ * 返回 `null` 表示数据源中不存在该 key，调用方将写入负缓存以防缓存穿透。
  *
  * @author ahoo wang
  */
-interface CacheSource<K, V> {
-    @Throws(TimeoutException::class)
+fun interface CacheSource<K, V> {
     fun loadCacheValue(key: K): CacheValue<V>?
 
     companion object {
+        private val NO_OP = CacheSource<Any?, Any?> { null }
+
         @JvmStatic
         fun <K, V> noOp(): CacheSource<K, V> {
             @Suppress("UNCHECKED_CAST")
-            return NoOpCacheSource as CacheSource<K, V>
+            return NO_OP as CacheSource<K, V>
         }
     }
 }

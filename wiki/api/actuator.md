@@ -85,15 +85,15 @@ Detailed report of a Coherent cache's configuration and runtime state.
 
 | Field | Type | Description | Source |
 |-------|------|-------------|--------|
-| `name` | `String` | Cache name | [CoCacheEndpoint.kt:55](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L55) |
-| `clientId` | `String` | Distributed client ID of this instance | [CoCacheEndpoint.kt:56](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L56) |
-| `clientSize` | `Long` | Number of entries in the L2 client-side cache | [CoCacheEndpoint.kt:57](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L57) |
-| `keyConverter` | `String` | String representation of the key converter | [CoCacheEndpoint.kt:58](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L58) |
-| `distributedCaching` | `String` | Fully qualified class name of the distributed cache implementation | [CoCacheEndpoint.kt:59](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L59) |
-| `clientSideCaching` | `String` | Fully qualified class name of the client-side cache implementation | [CoCacheEndpoint.kt:60](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L60) |
-| `cacheEvictedEventBus` | `String` | Fully qualified class name of the event bus implementation | [CoCacheEndpoint.kt:61](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L61) |
-| `cacheSource` | `String` | Fully qualified class name of the cache source implementation | [CoCacheEndpoint.kt:62](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L62) |
-| `keyFilter` | `String` | Fully qualified class name of the key filter implementation | [CoCacheEndpoint.kt:63](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L63) |
+| `name` | `String` | Cache name | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `clientId` | `String` | Client ID of this instance | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `clientSize` | `Long` | Number of entries in this instance's L2 | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `ttlPolicy` | `TtlPolicy` | `ttl`, `ttlAmplitude`, `missingTtl` in seconds | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `keyConverter` | `String` | String representation of the key converter | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `distributedCache` | `String` | Class name of the L1 implementation | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `clientSideCache` | `String` | Class name of the L2 implementation | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `cacheSource` | `String` | Class name of the cache source | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `keyFilter` | `String` | Class name of the key filter | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
 
 ### Example Response
 
@@ -103,14 +103,14 @@ Detailed report of a Coherent cache's configuration and runtime state.
 [
   {
     "name": "user-cache",
-    "clientId": "192.168.1.10",
+    "clientId": "0:12345@192.168.1.10",
     "clientSize": 1523,
+    "ttlPolicy": { "ttl": 3600, "ttlAmplitude": 60, "missingTtl": 60 },
     "keyConverter": "ToStringKeyConverter(keyPrefix='cocache:user-cache:')",
-    "distributedCaching": "me.ahoo.cache.spring.redis.RedisDistributedCache",
-    "clientSideCaching": "me.ahoo.cache.client.CaffeineClientSideCache",
-    "cacheEvictedEventBus": "me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus",
-    "cacheSource": "me.ahoo.cache.api.source.NoOpCacheSource",
-    "keyFilter": "me.ahoo.cache.filter.NoOpKeyFilter"
+    "distributedCache": "me.ahoo.cache.spring.redis.RedisDistributedCache",
+    "clientSideCache": "me.ahoo.cache.client.CaffeineClientSideCache",
+    "cacheSource": "com.example.UserCacheSource",
+    "keyFilter": "me.ahoo.cache.api.filter.KeyFilter$Companion$NO_OP$1"
   }
 ]
 ```

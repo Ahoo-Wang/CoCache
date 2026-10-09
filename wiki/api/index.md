@@ -44,55 +44,41 @@ classDiagram
         +setCache(key: K, value: CacheValue~V~)
         +evict(key: K)
     }
-    class ComputedCache~K,V~ {
-        <<interface>>
-        +ttl: Long
-        +ttlAmplitude: Long
-    }
     class NamedCache {
         <<interface>>
         +cacheName: String
     }
-    class DistributedClientId {
-        <<interface>>
-        +clientId: String
+    class CacheValue~V~ {
+        <<sealed>>
+        +ttlAt: Long
+        +value: V?
+        +isMissing: Boolean
     }
-    class TtlConfiguration {
+    class CacheStore~V~ {
         <<interface>>
-        +ttl: Long
-        +ttlAmplitude: Long
-    }
-    class CacheEvictedSubscriber {
-        <<interface>>
-        +onEvicted(event: CacheEvictedEvent)
+        +getCache(key: String) CacheValue~V~?
+        +setCache(key: String, value: CacheValue~V~)
+        +evict(key: String)
     }
     class CoherentCache~K,V~ {
         <<interface>>
-        +cacheEvictedEventBus: CacheEvictedEventBus
-        +clientSideCache: ClientSideCache~V~
-        +distributedCache: DistributedCache~V~
-        +keyFilter: KeyFilter
-        +keyConverter: KeyConverter~K~
-        +cacheSource: CacheSource~K,V~
+        +configuration: CoherentCacheConfiguration
+        +clientId: String
+        +close()
     }
 
     Cache <|-- CacheGetter
     Cache <|-- CacheSetter
-    Cache <|-- ComputedCache
-    ComputedCache ..|> TtlConfiguration
-    CoherentCache ..|> ComputedCache
-    CoherentCache ..|> DistributedClientId
+    CoherentCache ..|> Cache
     CoherentCache ..|> NamedCache
-    CoherentCache ..|> CacheEvictedSubscriber
+    CacheStore ..> CacheValue
 
     style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style CacheGetter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style CacheSetter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style ComputedCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style NamedCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style DistributedClientId fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style TtlConfiguration fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheEvictedSubscriber fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CacheValue fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CacheStore fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style CoherentCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
@@ -106,7 +92,7 @@ graph TB
         style Client fill:#161b22,stroke:#6d5dfc,color:#e6edf3
         App["Application Code"]
         Proxy["Cache Proxy<br>(Dynamic Proxy)"]
-        L2["L2: ClientSideCache<br>(Guava / Caffeine / Map)"]
+        L2["L2: ClientSideCache<br>(bounded Caffeine)"]
     end
 
     subgraph Distributed["Shared Layer"]
@@ -139,25 +125,30 @@ graph TB
 
 | Package | Description | Key Types |
 |---------|-------------|-----------|
-| `me.ahoo.cache.api` | Core cache abstractions | `Cache`, `CacheGetter`, `CacheSetter`, `CacheValue`, `TtlAt`, `NamedCache` |
-| `me.ahoo.cache.api.client` | Client-side cache interface | `ClientSideCache` |
-| `me.ahoo.cache.api.source` | Data source interface | `CacheSource`, `NoOpCacheSource` |
+| `me.ahoo.cache.api` | Core cache abstractions | `Cache`, `CacheGetter`, `CacheSetter`, `CacheValue` (`PresentValue` / `MissingValue`), `TtlAt`, `NamedCache`, `CacheStore` |
+| `me.ahoo.cache.api.client` | L2 store SPI | `ClientSideCache` |
+| `me.ahoo.cache.api.distributed` | L1 store SPI | `DistributedCache` |
+| `me.ahoo.cache.api.source` | Data source SPI | `CacheSource` |
+| `me.ahoo.cache.api.converter` | Key conversion SPI | `KeyConverter` |
+| `me.ahoo.cache.api.filter` | Key existence filter SPI | `KeyFilter` |
+| `me.ahoo.cache.api.consistency` | Invalidation channel SPI | `CacheEvictedEventBus`, `CacheEvictedSubscriber`, `CacheEvictedEvent` |
 | `me.ahoo.cache.api.join` | Join cache abstractions | `JoinCache`, `JoinValue`, `JoinKeyExtractor` |
-| `me.ahoo.cache.api.annotation` | Declarative cache annotations | `@CoCache`, `@GuavaCache`, `@CaffeineCache`, `@JoinCacheable` |
+| `me.ahoo.cache.api.annotation` | Declarative cache annotations | `@CoCache`, `@CaffeineCache`, `@JoinCacheable` |
 
 ### cocache-core Packages
 
 | Package | Description | Key Types |
 |---------|-------------|-----------|
-| `me.ahoo.cache` | Core implementations and interfaces | `ComputedCache`, `DefaultCacheValue`, `MissingGuard`, `KeyFilter`, `TtlConfiguration` |
-| `me.ahoo.cache.consistency` | Cache coherence engine | `CoherentCache`, `DefaultCoherentCache`, `CacheEvictedEventBus`, `CacheEvictedEvent`, `CoherentCacheFactory` |
-| `me.ahoo.cache.proxy` | Dynamic proxy-based caching | `CacheProxyFactory`, `DefaultCacheProxyFactory`, `CoCacheInvocationHandler`, `CoCacheProxy` |
-| `me.ahoo.cache.client` | Client-side cache implementations | `MapClientSideCache`, `GuavaClientSideCache`, `CaffeineClientSideCache`, `ClientSideCacheFactory` |
-| `me.ahoo.cache.distributed` | Distributed cache abstractions | `DistributedCache`, `DistributedClientId`, `DistributedCacheFactory` |
-| `me.ahoo.cache.converter` | Key conversion utilities | `KeyConverter`, `ToStringKeyConverter`, `ExpKeyConverter`, `KeyConverterFactory` |
-| `me.ahoo.cache.filter` | Cache key filters | `BloomKeyFilter`, `NoOpKeyFilter` |
+| `me.ahoo.cache` | Policy and factory root | `TtlPolicy`, `CacheFactory` |
+| `me.ahoo.cache.consistency` | Coherence engine | `CoherentCache`, `DefaultCoherentCache`, `CoherentCacheConfiguration`, `CoherentCacheFactory`, `LocalCacheEvictedEventBus`, `NoOpCacheEvictedEventBus` |
+| `me.ahoo.cache.concurrent` | Concurrency primitives | `SingleFlight` |
+| `me.ahoo.cache.proxy` | Dynamic proxy-based caching | `CacheProxyFactory`, `DefaultCacheProxyFactory`, `CacheInvocationHandler`, `CacheDelegated`, `CacheMetadataCapable` |
+| `me.ahoo.cache.client` | L2 implementations | `CaffeineClientSideCache`, `MapClientSideCache`, `ClientSideCacheFactory` |
+| `me.ahoo.cache.distributed` | L1 helpers | `InMemoryDistributedCache`, `DistributedCacheFactory` |
+| `me.ahoo.cache.converter` | Key conversion | `ToStringKeyConverter`, `ExpKeyConverter`, `KeyConverterFactory`, `DefaultKeyConverterFactory` |
+| `me.ahoo.cache.filter` | Cache key filters | `BloomKeyFilter` |
 | `me.ahoo.cache.source` | Cache source factories | `CacheSourceFactory` |
-| `me.ahoo.cache.join` | Join cache implementation | `SimpleJoinCache`, `DefaultJoinValue`, `ExpJoinKeyExtractor`, `JoinKeyExtractorFactory` |
+| `me.ahoo.cache.join` | Join cache implementation | `SimpleJoinCache`, `ExpJoinKeyExtractor`, `JoinKeyExtractorFactory` |
 | `me.ahoo.cache.annotation` | Metadata parsers | `CoCacheMetadata`, `CoCacheMetadataParser`, `JoinCacheMetadata`, `JoinCacheMetadataParser` |
 
 ## Dynamic Proxy Architecture
@@ -169,7 +160,7 @@ sequenceDiagram
 autonumber
     participant App as Application
     participant Proxy as Cache Proxy<br>(JDK Dynamic Proxy)
-    participant Handler as CoCacheInvocationHandler
+    participant Handler as CacheInvocationHandler
     participant Coherent as DefaultCoherentCache
     participant L2 as ClientSideCache
     participant L1 as DistributedCache
@@ -187,12 +178,11 @@ autonumber
         alt L1 Hit
             L1-->>Coherent: CacheValue
             Coherent->>L2: setCache(cacheKey, value)
-        else L1 Miss
+        else L1 Miss (SingleFlight leader)
             Coherent->>L0: loadCacheValue(key)
-            L0-->>Coherent: CacheValue
-            Coherent->>L2: setCache(cacheKey, value)
-            Coherent->>L1: setCache(cacheKey, value)
-            Coherent->>Bus: publish(CacheEvictedEvent)
+            L0-->>Coherent: CacheValue (null → MissingValue)
+            Coherent->>L1: stamp-guarded setCache(cacheKey, value)
+            Coherent->>L2: stamp-guarded setCache(cacheKey, value)
         end
     end
     Coherent-->>Handler: CacheValue

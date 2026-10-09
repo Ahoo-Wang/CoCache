@@ -12,25 +12,26 @@
  */
 package me.ahoo.cache.example.config
 
-import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.MapClientSideCache
 import me.ahoo.cache.example.model.User
-import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
 @Configuration
 class UserCacheConfiguration {
-    @Bean
-    fun customizeUserClientSideCache(
-        @Qualifier("UserCache.CacheMetadata")
-        cacheMetadata: CoCacheMetadata
-    ): ClientSideCache<User> {
-        return MapClientSideCache(ttl = cacheMetadata.ttl, ttlAmplitude = cacheMetadata.ttlAmplitude)
+    /**
+     * 以 `{cacheName}.ClientSideCache` 命名的 bean 覆盖 UserCache 的 L2。
+     */
+    @Bean("UserCache.ClientSideCache")
+    fun customizeUserClientSideCache(): ClientSideCache<User> {
+        return MapClientSideCache()
     }
 
+    /**
+     * 按类型 `CacheSource<String, User>` 匹配的数据源。
+     */
     @Bean
     fun customizeUserCacheSource(): CacheSource<String, User> {
         return CacheSource.noOp()

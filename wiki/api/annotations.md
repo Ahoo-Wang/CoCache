@@ -1,6 +1,6 @@
 ---
 title: Annotations Reference
-description: Complete reference for all CoCache annotations including @CoCache, @GuavaCache, @CaffeineCache, @JoinCacheable, @EnableCoCache, and @ConditionalOnCoCacheEnabled with usage examples.
+description: Complete reference for all CoCache annotations including @CoCache, @CaffeineCache, @JoinCacheable, @EnableCoCache, and @ConditionalOnCoCacheEnabled with usage examples.
 ---
 
 # Annotations Reference
@@ -13,19 +13,21 @@ Marks a cache interface for proxy-based cache creation. This is the primary anno
 
 | Parameter | Type | Default | Description | Source |
 |-----------|------|---------|-------------|--------|
-| `name` | `String` | `""` (uses interface simple name) | Logical cache name, used for bean registration and event routing | [CoCache.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L30) |
-| `keyPrefix` | `String` | `""` (auto-generated as `cocache:{cacheName}:`) | Prefix prepended to all cache keys in the distributed store | [CoCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L31) |
-| `keyExpression` | `String` | `""` | SpEL template expression for key generation (e.g., `"#{id}"`) | [CoCache.kt:35](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L35) |
-| `ttl` | `Long` | `Long.MAX_VALUE` (forever) | Default time-to-live in seconds | [CoCache.kt:36](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L36) |
-| `ttlAmplitude` | `Long` | `10` | Random jitter range (in seconds) added to TTL to prevent thundering herd expiration | [CoCache.kt:37](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt#L37) |
+| `name` | `String` | `""` (interface simple name) | Logical cache name: bean name, event channel, component-bean prefix | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `keyPrefix` | `String` | `""` (→ `cocache:{cacheName}:`) | Storage-key prefix; Spring placeholders are resolved | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `keyExpression` | `String` | `""` | SpEL template for the key (e.g. `"#{id}"`); empty → `key.toString()` | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `ttl` | `Long` | `3600` | Value TTL in seconds. Finite by default so any inconsistency self-heals; `TtlAt.FOREVER` disables expiry | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `ttlAmplitude` | `Long` | `60` | Random jitter (± seconds) on value TTL, prevents cache avalanche | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| `missingTtl` | `Long` | `60` | Negative-cache TTL in seconds (no jitter); newly created rows stay invisible at most this long | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
 
 **Companion Constants**:
 
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `COCACHE` | `"cocache"` | Base property prefix for configuration |
-| `DEFAULT_TTL` | `Long.MAX_VALUE` | Default TTL (forever) |
-| `DEFAULT_TTL_AMPLITUDE` | `10L` | Default TTL jitter range |
+| `DEFAULT_TTL` | `3600` | Default value TTL |
+| `DEFAULT_TTL_AMPLITUDE` | `60` | Default TTL jitter |
+| `DEFAULT_MISSING_TTL` | `60` | Default negative-cache TTL |
 
 ### Usage Example
 
@@ -51,67 +53,26 @@ With SpEL key expression for non-string keys:
 interface OrderCache : Cache<OrderId, Order>
 ```
 
-## @GuavaCache
-
-Configures a Guava-based `ClientSideCache` implementation. When present on a cache interface, `DefaultClientSideCacheFactory` creates a `GuavaClientSideCache` instead of the default `MapClientSideCache`.
-
-| Parameter | Type | Default | Description | Source |
-|-----------|------|---------|-------------|--------|
-| `initialCapacity` | `Int` | `-1` (unset) | Initial capacity of the Guava cache | [GuavaCache.kt:29](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L29) |
-| `concurrencyLevel` | `Int` | `-1` (unset) | Number of segments for concurrent access | [GuavaCache.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L30) |
-| `maximumSize` | `Long` | `-1` (unset) | Maximum number of entries before eviction | [GuavaCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L31) |
-| `expireUnit` | `TimeUnit` | `TimeUnit.SECONDS` | Time unit for expiration durations | [GuavaCache.kt:32](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L32) |
-| `expireAfterWrite` | `Long` | `-1` (unset) | Duration after write before entry expires | [GuavaCache.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L33) |
-| `expireAfterAccess` | `Long` | `-1` (unset) | Duration after last access before entry expires | [GuavaCache.kt:34](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/GuavaCache.kt#L34) |
-
-### Usage Example
-
-```kotlin
-@CoCache(name = "user-cache", ttl = 3600)
-@GuavaCache(
-    maximumSize = 10_000,
-    expireAfterAccess = 300,
-    expireUnit = TimeUnit.SECONDS
-)
-interface UserCache : Cache<String, User>
-```
-
 ## @CaffeineCache
 
-Configures a Caffeine-based `ClientSideCache` implementation. When present on a cache interface, `DefaultClientSideCacheFactory` creates a `CaffeineClientSideCache`.
+Configures the default L2 (`CaffeineClientSideCache`). Without the annotation all defaults apply. Expired entries are evicted when read (L2 is bounded by `maximumSize`), so no write-expiry setting is needed.
 
 | Parameter | Type | Default | Description | Source |
 |-----------|------|---------|-------------|--------|
-| `initialCapacity` | `Int` | `-1` (unset) | Initial capacity of the Caffeine cache | [CaffeineCache.kt:30](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L30) |
-| `maximumSize` | `Long` | `-1` (unset) | Maximum number of entries before eviction | [CaffeineCache.kt:31](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L31) |
-| `expireUnit` | `TimeUnit` | `TimeUnit.SECONDS` | Time unit for expiration durations | [CaffeineCache.kt:32](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L32) |
-| `expireAfterWrite` | `Long` | `-1` (unset) | Duration after write before entry expires | [CaffeineCache.kt:33](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L33) |
-| `expireAfterAccess` | `Long` | `-1` (unset) | Duration after last access before entry expires | [CaffeineCache.kt:34](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt#L34) |
+| `initialCapacity` | `Int` | `-1` (unset) | Initial capacity | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `maximumSize` | `Long` | `10000` | Maximum entries; L2 is always bounded | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `expireAfterAccess` | `Long` | `0` (disabled) | Idle eviction since last access (capped by `ttlAt`) | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
+| `expireUnit` | `TimeUnit` | `SECONDS` | Unit for `expireAfterAccess` | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
 
 ### Usage Example
 
 ```kotlin
 @CoCache(name = "product-cache", ttl = 7200)
-@CaffeineCache(
-    maximumSize = 50_000,
-    expireAfterWrite = 600,
-    expireUnit = TimeUnit.SECONDS
-)
+@CaffeineCache(maximumSize = 50_000, expireAfterAccess = 600)
 interface ProductCache : Cache<String, Product>
 ```
 
-## @GuavaCache vs @CaffeineCache Comparison
-
-| Feature | @GuavaCache | @CaffeineCache |
-|---------|-------------|----------------|
-| `concurrencyLevel` | Supported | Not supported |
-| `initialCapacity` | Supported | Supported |
-| `maximumSize` | Supported | Supported |
-| `expireAfterWrite` | Supported | Supported |
-| `expireAfterAccess` | Supported | Supported |
-| `expireUnit` | Supported | Supported |
-| Underlying library | Google Guava | Caffeine |
-| Async refresh | No | Native support (not yet exposed) |
+To replace L2 entirely, declare a bean named `{cacheName}.ClientSideCache`.
 
 ## @JoinCacheable
 
@@ -210,23 +171,14 @@ classDiagram
         +keyExpression: String
         +ttl: Long
         +ttlAmplitude: Long
-    }
-    class GuavaCache {
-        <<annotation>>
-        +initialCapacity: Int
-        +concurrencyLevel: Int
-        +maximumSize: Long
-        +expireUnit: TimeUnit
-        +expireAfterWrite: Long
-        +expireAfterAccess: Long
+        +missingTtl: Long
     }
     class CaffeineCache {
         <<annotation>>
         +initialCapacity: Int
         +maximumSize: Long
-        +expireUnit: TimeUnit
-        +expireAfterWrite: Long
         +expireAfterAccess: Long
+        +expireUnit: TimeUnit
     }
     class JoinCacheable {
         <<annotation>>
@@ -243,7 +195,7 @@ classDiagram
         <<data class>>
         +cacheName: String
         +keyPrefix: String
-        +ttl: Long
+        +ttlPolicy: TtlPolicy
         +keyType: KType
         +valueType: KType
     }
@@ -255,13 +207,11 @@ classDiagram
     }
 
     CoCache ..> CoCacheMetadata : parsed to
-    GuavaCache ..> CoCacheMetadata : configures client-side
     CaffeineCache ..> CoCacheMetadata : configures client-side
     JoinCacheable ..> JoinCacheMetadata : parsed to
     EnableCoCache ..> CoCache : triggers registration
 
     style CoCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style GuavaCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style CaffeineCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style JoinCacheable fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style EnableCoCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
@@ -277,7 +227,7 @@ The following diagram shows how annotations flow through the system from interfa
 graph TB
     subgraph Declaration["Interface Declaration"]
         style Declaration fill:#161b22,stroke:#6d5dfc,color:#e6edf3
-        CI["Cache Interface<br>+ @CoCache<br>+ @GuavaCache / @CaffeineCache"]
+        CI["Cache Interface<br>+ @CoCache<br>+ @CaffeineCache"]
         JCI["JoinCache Interface<br>+ @JoinCacheable"]
     end
 
@@ -323,17 +273,15 @@ graph TB
 A full configuration using all available annotations:
 
 ```kotlin
-// Define a standard cache with Guava client-side caching
+// Define a standard cache with a sized L2
 @CoCache(
     name = "user-cache",
     keyPrefix = "myapp:user:",
     ttl = 3600,
-    ttlAmplitude = 30
+    ttlAmplitude = 30,
+    missingTtl = 30
 )
-@GuavaCache(
-    maximumSize = 10_000,
-    expireAfterWrite = 600
-)
+@CaffeineCache(maximumSize = 10_000, expireAfterAccess = 600)
 interface UserCache : Cache<String, User> {
     // Methods inherited from Cache<K, V>:
     // - get(key): User?

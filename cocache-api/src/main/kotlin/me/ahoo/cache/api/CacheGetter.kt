@@ -10,6 +10,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.api
 
 /**
@@ -18,21 +19,29 @@ package me.ahoo.cache.api
  * @author ahoo wang
  */
 interface CacheGetter<K, V> {
+    /**
+     * 获取缓存条目。
+     *
+     * - [PresentValue]：命中。
+     * - [MissingValue]：确认不存在（负缓存，如数据源返回 `null` 或 key 过滤器判定不存在）。
+     * - `null`：没有任何条目可用。带数据源的缓存（如 CoherentCache）会回源，因此只会返回条目；
+     *   不回源的缓存（如只读组合缓存在主值缺失时）才返回 `null`。
+     *
+     * 判断“不存在”请使用 [get] 或 [CacheValue.isMissing]，不要仅判断 `null`。
+     */
     fun getCache(key: K): CacheValue<V>?
 
     /**
-     * Get the real cache value.
-     *
-     * @param key cache key
-     * @return real cache value
+     * 获取缓存值：未命中、负缓存或已过期均返回 `null`。
      */
-    operator fun get(key: K): V?
+    operator fun get(key: K): V? {
+        return getCache(key)?.takeUnless { it.isExpired }?.value
+    }
 
     /**
-     * get cache expire at time.
-     *
-     * @param key cache key
-     * @return when return null:cache not exist.
+     * 获取缓存值的绝对到期时间：未命中、负缓存或已过期均返回 `null`。
      */
-    fun getTtlAt(key: K): Long?
+    fun getTtlAt(key: K): Long? {
+        return getCache(key)?.takeUnless { it.isMissing || it.isExpired }?.ttlAt
+    }
 }

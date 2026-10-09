@@ -10,43 +10,32 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.spring.redis.codec
 
-import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.util.CacheSecondClock
+import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.*
 
-/**
- * SetToSetCodecExecutorTest .
- *
- * @author ahoo wang
- */
 internal class SetToSetCodecExecutorTest : CodecExecutorSpec<Set<String>>() {
 
-    override fun createCodecExecutor(): CodecExecutor<Set<String>> {
-        return SetToSetCodecExecutor(stringRedisTemplate)
-    }
+    override fun createCodecExecutor(): CodecExecutor<Set<String>> = SetToSetCodecExecutor(stringRedisTemplate)
 
     override fun createCustomSentinelCodecExecutor(): CodecExecutor<Set<String>> {
         return SetToSetCodecExecutor(stringRedisTemplate, CUSTOM_SENTINEL)
     }
 
-    override fun createCacheValue(): Set<String> {
-        return setOf(UUID.randomUUID().toString(), UUID.randomUUID().toString())
-    }
+    override fun createCacheValue(): Set<String> = setOf(UUID.randomUUID().toString(), UUID.randomUUID().toString())
 
-    override fun createSingleNonSentinelValue(): Set<String> {
-        return setOf(UUID.randomUUID().toString())
-    }
+    override fun createSingleNonSentinelValue(): Set<String> = setOf(UUID.randomUUID().toString())
 
     @Test
-    fun executeAndEncodeEmptySetEvictsKey() {
-        val key = "empty-set:" + UUID.randomUUID().toString()
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 60
-        codecExecutor.executeAndEncode(key, DefaultCacheValue(emptySet(), ttlAt))
-
+    fun emptySetEvictsKey() {
+        val key = newKey()
+        codecExecutor.executeAndEncode(key, CacheValue.forever(createCacheValue()))
+        codecExecutor.executeAndEncode(key, CacheValue.of(emptySet(), TtlAt.at(60)))
         stringRedisTemplate.hasKey(key).assert().isFalse()
     }
 }

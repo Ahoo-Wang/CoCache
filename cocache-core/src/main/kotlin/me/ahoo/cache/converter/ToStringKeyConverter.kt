@@ -10,10 +10,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.converter
 
+import me.ahoo.cache.api.converter.KeyConverter
+
 /**
- * To String Key Converter .
+ * `keyPrefix + key.toString()`。
  *
  * @author ahoo wang
  */

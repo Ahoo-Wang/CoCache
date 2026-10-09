@@ -13,7 +13,7 @@
 
 package me.ahoo.cache.spring.redis.codec
 
-import me.ahoo.cache.consistency.CacheEvictedEvent
+import me.ahoo.cache.api.consistency.CacheEvictedEvent
 import org.springframework.data.redis.connection.Message
 
 object EvictedEvents {

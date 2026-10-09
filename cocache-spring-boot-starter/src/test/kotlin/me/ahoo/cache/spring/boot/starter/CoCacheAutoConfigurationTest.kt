@@ -14,10 +14,12 @@
 package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.CacheFactory
-import me.ahoo.cache.consistency.CacheEvictedEventBus
+import me.ahoo.cache.api.consistency.CacheEvictedEventBus
+import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.example.cache.UserExtendInfoJoinCache
 import me.ahoo.cache.spring.boot.starter.auto.EnableCoCacheConfiguration
+import me.ahoo.cache.spring.boot.starter.customize.CustomizeUserCacheSource
 import me.ahoo.cache.spring.boot.starter.customize.EnableCoCacheConfigurationWithCustomize
 import me.ahoo.cache.spring.boot.starter.customize.MockJoinMainCache
 import me.ahoo.cache.spring.boot.starter.customize.MockUserExtendInfoJoinCache
@@ -87,6 +89,16 @@ internal class CoCacheAutoConfigurationTest {
                 context.getBean(MockUserExtendInfoJoinCache::class.java)
                 context.getBean(MockUserExtendInfoJoinCacheUseNameSuffix::class.java)
                 context.getBean(MockJoinMainCache::class.java)
+
+                // 按名称定制的有状态组件只属于 UserCache，同值类型的其它缓存不共享
+                val customized = context.getBean("UserCache.ClientSideCache")
+                (context.getBean(UserCache::class.java) as CoherentCache<*, *>).configuration.clientSideCache
+                    .assert().isSameAs(customized)
+                (context.getBean(UserExpCache::class.java) as CoherentCache<*, *>).configuration.clientSideCache
+                    .assert().isNotSameAs(customized)
+                // 数据源按类型共享
+                (context.getBean(UserExpCache::class.java) as CoherentCache<*, *>).configuration.cacheSource
+                    .assert().isInstanceOf(CustomizeUserCacheSource::class.java)
             }
     }
 

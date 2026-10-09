@@ -10,20 +10,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.converter
 
+import me.ahoo.cache.api.converter.KeyConverter
 import org.springframework.expression.Expression
-import org.springframework.expression.common.TemplateParserContext
-import org.springframework.expression.spel.standard.SpelExpressionParser
 
 /**
- * Expression Key Converter .
+ * 基于 SpEL 模板表达式的 key 转换器。
  *
  * @author ahoo wang
  */
-class ExpKeyConverter<K>(val keyPrefix: String, expression: String) : KeyConverter<K> {
-    private val expression: Expression = SpelExpressionParser()
-        .parseExpression(expression, TemplateParserContext.TEMPLATE_EXPRESSION)
+class ExpKeyConverter<K>(private val keyPrefix: String, expression: String) : KeyConverter<K> {
+    private val expression: Expression = SpelTemplates.parse(expression)
 
     override fun toStringKey(sourceKey: K): String {
         return keyPrefix + expression.getValue(sourceKey, String::class.java)

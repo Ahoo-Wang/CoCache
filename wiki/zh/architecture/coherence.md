@@ -1,272 +1,133 @@
 ---
 title: 缓存一致性与事件总线
-description: CoCache 如何通过 CacheEvictedEventBus、Guava EventBus（进程内）和 Redis Pub/Sub（跨实例）维护分布式缓存一致性。涵盖 onEvicted 处理器、自驱逐过滤和 EvictedEvents 编解码器。
+description: CoCache 如何保持各实例 L2 一致 -- 基于 Redis Pub/Sub 的失效事件、受戳保护的写回，以及订阅（重）建立时重置 L2 以保证陈旧度有界。
 ---
 
 # 缓存一致性与事件总线
 
-缓存一致性是 CoCache 的核心特性。当一个应用实例修改或驱逐缓存条目时，所有其他实例必须使其本地 L2 缓存失效，以防止读取过期数据。这通过围绕 `CacheEvictedEvent` 构建的发布-订阅事件总线模式实现。
+每个实例都有自己的 L2。CoCache 用三种机制保持这些副本一致：
+
+1. **失效事件** -- 每次本地写入或淘汰都会广播 `CacheEvictedEvent`，其它实例据此从 L2 淘汰该 key。
+2. **受戳保护的写回** -- 从 L1 读到或从数据源加载的值，只有在期间没有发生该 key 的失效时才会被缓存。
+3. **（重）订阅时重置** -- 事件通道每次（重新）订阅，订阅者都清空 L2，因为断线期间发送的事件已经丢失。
+
+结合有限的 TTL，这三点保证了任何实例提供陈旧值的时长都有上界。
 
 ## 核心接口
 
-一致性系统由 `cocache-api` 模块中的三个接口定义：
+三者都位于 `cocache-api`（`me.ahoo.cache.api.consistency`）。
 
-```mermaid
-classDiagram
-    class CacheEvictedEventBus {
-        <<interface>>
-        +publish(event: CacheEvictedEvent)
-        +register(subscriber: CacheEvictedSubscriber)
-        +unregister(subscriber: CacheEvictedSubscriber)
-    }
+```kotlin
+data class CacheEvictedEvent(override val cacheName: String, val key: String, val publisherId: String) : NamedCache
 
-    class CacheEvictedSubscriber {
-        <<interface>>
-        +onEvicted(cacheEvictedEvent: CacheEvictedEvent)
-    }
+interface CacheEvictedSubscriber : NamedCache {
+    fun onEvicted(cacheEvictedEvent: CacheEvictedEvent)
+    fun onReset()   // 通道（重新）订阅：放弃全部本地副本
+}
 
-    class CacheEvictedEvent {
-        +cacheName: String
-        +key: String
-        +publisherId: String
-    }
-
-    class NamedCache {
-        <<interface>>
-        +cacheName: String
-    }
-
-    CacheEvictedEventBus --> CacheEvictedEvent : publishes
-    CacheEvictedEventBus --> CacheEvictedSubscriber : manages
-    CacheEvictedSubscriber ..|> NamedCache
-    CacheEvictedEvent ..|> NamedCache
-
-    style CacheEvictedEventBus fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheEvictedSubscriber fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheEvictedEvent fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style NamedCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+interface CacheEvictedEventBus {
+    fun publish(event: CacheEvictedEvent)   // 尽力而为，失败不阻断调用方
+    fun register(subscriber: CacheEvictedSubscriber)
+    fun unregister(subscriber: CacheEvictedSubscriber)
+}
 ```
 
-| 接口 | 源码 | 职责 |
+| 接口 | 职责 | 源码 |
 |------|------|------|
-| [`CacheEvictedEventBus`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEventBus.kt#L20) | [CacheEvictedEventBus.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEventBus.kt#L20) | 驱逐事件的发布/订阅注册表 |
-| [`CacheEvictedSubscriber`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedSubscriber.kt#L22) | [CacheEvictedSubscriber.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedSubscriber.kt#L22) | 接收驱逐通知 |
-| [`CacheEvictedEvent`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEvent.kt#L21) | [CacheEvictedEvent.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEvent.kt#L21) | 携带 `cacheName`、`key` 和 `publisherId` |
-
-`CacheEvictedEvent` 数据类携带三个字段：
-- **`cacheName`** -- 标识受影响的缓存（使订阅者能够按缓存名称过滤）
-- **`key`** -- 被修改或驱逐的具体缓存键
-- **`publisherId`** -- 发布事件的实例的 `clientId`（用于自驱逐过滤）
+| `CacheEvictedEventBus` | 通道 SPI；每次（重新）订阅都必须调用 `onReset` | [CacheEvictedEventBus.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/consistency/CacheEvictedEventBus.kt) |
+| `CacheEvictedSubscriber` | 接收所属 `cacheName` 的 `onEvicted` / `onReset` | [CacheEvictedSubscriber.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/consistency/CacheEvictedSubscriber.kt) |
+| `CacheEvictedEvent` | `cacheName`、存储层 `key`、`publisherId`（= 发布者的 `clientId`） | [CacheEvictedEvent.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/consistency/CacheEvictedEvent.kt) |
 
 ## 实现
 
-CoCache 提供三种 `CacheEvictedEventBus` 实现，每种适用于不同的部署场景：
+| 特性 | `RedisCacheEvictedEventBus` | `LocalCacheEvictedEventBus` | `NoOpCacheEvictedEventBus` |
+|------|-----------------------------|-----------------------------|----------------------------|
+| 范围 | 跨实例 | 单 JVM | 无（单实例） |
+| 传输 | Redis Pub/Sub，频道 = `cacheName` | 直接调用，按 `cacheName` 路由 | -- |
+| `onReset` | 每次频道（重新）订阅 | `register` 时 | 从不 |
+| 模块 | `cocache-spring-redis` | `cocache-core` | `cocache-core` |
 
-```mermaid
-graph TD
-    subgraph sg_8 ["CacheEvictedEventBus Implementations"]
+### Redis Pub/Sub
 
-        Interface["CacheEvictedEventBus<br>interface"]
-
-        Guava["GuavaCacheEvictedEventBus<br>(in-process, single JVM)"]
-        Redis["RedisCacheEvictedEventBus<br>(distributed, Redis Pub/Sub)"]
-        NoOp["NoOpCacheEvictedEventBus<br>(disabled, no-op)"]
-    end
-
-    Interface --> Guava
-    Interface --> Redis
-    Interface --> NoOp
-
-    style Interface fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Guava fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style NoOp fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
-```
-
-### GuavaCacheEvictedEventBus（进程内）
-
-[`GuavaCacheEvictedEventBus`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/GuavaCacheEvictedEventBus.kt#L25) 封装 Guava `EventBus` 实现进程内发布/订阅。当没有配置分布式事件总线时，它是默认实现。同一 JVM 内的所有 `DefaultCoherentCache` 实例共享一个 `GuavaCacheEvictedEventBus`，因此事件在单个应用内的各个缓存之间传播。
-
-```kotlin
-class GuavaCacheEvictedEventBus(
-    private val eventBus: EventBus = EventBus()
-) : CacheEvictedEventBus {
-    private val subscribers = ConcurrentHashMap<CacheEvictedSubscriber, CacheEvictedSubscriberAdapter>()
-
-    override fun publish(event: CacheEvictedEvent) {
-        eventBus.post(event)
-    }
-
-    override fun register(subscriber: CacheEvictedSubscriber) {
-        subscribers.computeIfAbsent(subscriber) {
-            CacheEvictedSubscriberAdapter(it).also { adapter ->
-                eventBus.register(adapter)
-            }
-        }
-    }
-}
-```
-
-适配器类 [`CacheEvictedSubscriberAdapter`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/GuavaCacheEvictedEventBus.kt#L61) 在 Guava 的 `@Subscribe` 注解和 `CacheEvictedSubscriber.onEvicted()` 方法之间进行桥接。订阅者映射（`ConcurrentHashMap`）防止重复注册。
-
-### RedisCacheEvictedEventBus（分布式）
-
-[`RedisCacheEvictedEventBus`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt#L32) 使用 Redis Pub/Sub 实现跨实例事件传播。当调用 `publish()` 时，它将驱逐消息发送到以 `cacheName` 命名的 Redis 频道。订阅该频道的所有实例都会收到通知。
-
-```kotlin
-class RedisCacheEvictedEventBus(
-    private val redisTemplate: StringRedisTemplate,
-    private val listenerContainer: RedisMessageListenerContainer
-) : CacheEvictedEventBus {
-
-    override fun publish(event: CacheEvictedEvent) {
-        redisTemplate.convertAndSend(event.cacheName, EvictedEvents.asMessage(event.key, event.publisherId))
-    }
-
-    override fun register(subscriber: CacheEvictedSubscriber) {
-        subscribers.computeIfAbsent(subscriber) {
-            MessageListenerAdapter(it).also { listener ->
-                listenerContainer.addMessageListener(listener, ChannelTopic(it.cacheName))
-            }
-        }
-    }
-}
-```
-
-### NoOpCacheEvictedEventBus（禁用）
-
-[`NoOpCacheEvictedEventBus`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/NoOpCacheEvictedEventBus.kt#L20) 是一个什么都不做的单例。适用于单实例部署或不需要一致性的测试场景。
-
-## EvictedEvents 编解码器
-
-[`EvictedEvents`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/EvictedEvents.kt#L19) 对象处理 Redis Pub/Sub 消息的编码和解码。它使用 `@@` 作为分隔符，将 `key` 和 `clientId` 打包到单个消息体中：
-
-```kotlin
-object EvictedEvents {
-    private const val DELIMITER = "@@"
-
-    fun fromMessage(message: Message): CacheEvictedEvent {
-        val cacheName = message.channel.decodeToString()
-        val msgBody = message.body.decodeToString()
-        val clientIdWithKey = msgBody.split(DELIMITER.toRegex())
-        require(2 == clientIdWithKey.size)
-        return CacheEvictedEvent(cacheName, clientIdWithKey[0], clientIdWithKey[1])
-    }
-
-    fun asMessage(key: String, clientId: String): String {
-        return key + DELIMITER + clientId
-    }
-}
-```
-
-`cacheName` 被编码为 Redis 频道名称，而 `key` 和 `clientId` 被打包到消息体中。
-
-## 跨实例失效流程
-
-下图展示了实例 A 上的缓存修改如何传播到实例 B：
+- 消息体：`key@@publisherId`。解码按**最后一个** `@@` 切分，因此 key 可以包含 `@@`；包含 `@@` 的 `publisherId` 在发布时被拒绝。
+- 至多一次投递，发布失败仅告警。
+- 监听器实现了 Spring Data Redis 的 `SubscriptionListener`。`RedisMessageListenerContainer` 在初次订阅后、每次重连后、以及同一频道加入新监听器时调用 `onChannelSubscribed`，CoCache 将每次调用都映射为 `onReset`。
 
 ```mermaid
 sequenceDiagram
 autonumber
-    participant App as Instance A<br>(Publisher)
-    participant CC_A as DefaultCoherentCache<br>(Instance A)
-    participant EB as CacheEvictedEventBus<br>(Redis Pub/Sub)
-    participant CC_B as DefaultCoherentCache<br>(Instance B)
-    participant L2_B as ClientSideCache<br>(Instance B)
+    participant A as Instance A
+    participant R as Redis
+    participant B as Instance B
 
-    App->>CC_A: setCache(key, value)
-    CC_A->>CC_A: Write to L2 + L1
-    CC_A->>EB: publish(CacheEvictedEvent<br>cacheName, key, clientId_A)
-
-    EB->>CC_B: onEvicted(event)
-    CC_B->>CC_B: Check: cacheName matches?
-    Note over CC_B: Yes -- same cache name
-    CC_B->>CC_B: Check: publisherId == clientId_B?
-    Note over CC_B: No -- different instance
-    CC_B->>L2_B: evict(key)
-    L2_B-->>CC_B: L2 entry removed
-
-    Note over CC_B: Next read for this key<br>will fetch fresh value from L1 or L0
+    A->>A: evict(key): invalidate stamp, evict L2, evict L1
+    A->>R: PUBLISH cacheName "key@@clientA"
+    R-->>B: message
+    B->>B: onEvicted: ignore if publisherId == own clientId
+    B->>B: invalidate stamp, evict L2
+    Note over R,B: connection lost; events in this window are dropped
+    R-->>B: re-SUBSCRIBE confirmed
+    B->>B: onReset: invalidate all stamps, clear L2
 ```
 
-## 自驱逐过滤
+## 写回保护
 
-`DefaultCoherentCache` 中的 [`onEvicted()`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L158) 处理器在驱逐本地 L2 缓存之前执行两项关键检查：
-
-```kotlin
-@Subscribe
-override fun onEvicted(cacheEvictedEvent: CacheEvictedEvent) {
-    // Filter 1: ignore events for different caches
-    if (cacheEvictedEvent.cacheName != cacheName) {
-        return
-    }
-    // Filter 2: ignore self-published events
-    if (cacheEvictedEvent.publisherId == clientId) {
-        return
-    }
-    // Only evict L2 for events from other instances
-    clientSideCache.evict(cacheEvictedEvent.key)
-}
-```
-
-**为什么要过滤自发布事件？** 当实例 A 调用 `setCache()` 或 `evict()` 时，它已经直接修改了自己的 L2 缓存。如果再接收回发布的事件，会导致冗余的 L2 驱逐（或者更糟，驱逐刚刚写入的值）。[第 169 行](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L169)的 `publisherId == clientId` 检查防止了这种情况。
-
-**为什么要按 cacheName 过滤？** 单个应用可能有多个 `DefaultCoherentCache` 实例（每个缓存接口一个）。它们都订阅同一个事件总线，因此[第 160 行](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L160)的 cacheName 检查确保每个实例只对与自己缓存相关的事件做出反应。
-
-## 注册生命周期
-
-当 `DefaultCoherentCache` 被构造时，它将自己注册为事件总线的订阅者。`onEvicted()` 上的 `@Subscribe` 注解被 Guava EventBus（进程内模式）识别，`MessageListenerAdapter` 处理 Redis Pub/Sub 消息（分布式模式）。
+`InvalidationStamps` 是按存储 key 哈希分段（4096 段）的计数器数组。
 
 ```mermaid
 flowchart LR
-    subgraph sg_9 ["Registration Flow"]
-
-        Create["CoherentCacheFactory<br>creates DefaultCoherentCache"]
-        Register["cacheEvictedEventBus<br>.register(this)"]
-        Listen["Listening for events"]
-        Unregister["cacheEvictedEventBus<br>.unregister(this)"]
+    subgraph inv ["Invalidators"]
+        E1["evict / setCache"]
+        E2["onEvicted"]
+        E3["onReset → invalidateAll"]
     end
+    subgraph wb ["Write-backs"]
+        W1["L1 → L2 fill"]
+        W2["source load → L1 + L2"]
+    end
+    inv -->|"1. bump stamp<br>2. evict copies"| S["InvalidationStamps"]
+    wb -->|"1. take stamp<br>2. check, write, re-check"| S
 
-    Create --> Register --> Listen --> Unregister
-
-    style Create fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Register fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Listen fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Unregister fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
+    style E1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style E2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style E3 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style W1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style W2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style S fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style inv fill:#161b22,stroke:#8b949e,color:#e6edf3
+    style wb fill:#161b22,stroke:#8b949e,color:#e6edf3
 ```
 
-### 关闭生命周期（v4.3.0）
+- 失效方**先**递增戳，**再**淘汰副本。
+- 写回方在读取**之前**取戳。若写入前戳已变化则跳过写入，写入后还要复核：
+  - 回源写回竞争失败时，撤销 L1、L2 并重新广播。
+  - L1 → L2 填充竞争失败时，撤销 L2。
+- 由于这一顺序，无论两者如何交错，总有一方会清除陈旧副本。
+- 读取方同样在读取之前记录戳。若合并到的回源开始于本次读取已观察到的某次失效之前（例如本线程先 `evict` 再 `get`），读取方会放弃该结果并重新加载一次，从而保证线程总能读到自己的写入。
+- 分段碰撞不影响正确性：代价是多余地放弃一次写回；若恰好落在写入与复核之间，还会多一次 L1 淘汰与广播。
 
-自 v4.3.0 起，生命周期形成闭环：`CoherentCache` 继承 `AutoCloseable`，`DefaultCoherentCache.close()` 幂等地执行注销步骤（原子 CAS 防护——重复调用为无操作），随后关闭分布式缓存。Spring 应用中，`CacheProxyFactoryBean`/`JoinCacheProxyFactoryBean` 实现了 `DisposableBean`，容器关闭时自动注销并关闭缓存。手工（非 Spring）用户应在废弃缓存时调用 `close()`——此前订阅者在构造时注册但永不注销，非单例缓存生命周期会泄漏订阅。
+这也补上了 4.x 的缺口：同一实例上的**本地** `evict` 无法阻止在途回源。
 
-## EventBus 实现对比
+### 残留窗口
 
-| 特性 | GuavaCacheEvictedEventBus | RedisCacheEvictedEventBus | NoOpCacheEvictedEventBus |
-|------|--------------------------|--------------------------|--------------------------|
-| 范围 | 单 JVM（进程内） | 跨实例（分布式） | 无 |
-| 传输 | Guava EventBus | Redis Pub/Sub | N/A |
-| 频道 | N/A（直接方法调用） | `cacheName` 作为 Redis 频道 | N/A |
-| 序列化 | 无（对象引用） | `EvictedEvents` 编解码器（`key@@clientId`） | N/A |
-| 依赖 | 仅 `cocache-core` | `cocache-spring-redis` | 仅 `cocache-core` |
-| 源码 | [GuavaCacheEvictedEventBus.kt:25](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/GuavaCacheEvictedEventBus.kt#L25) | [RedisCacheEvictedEventBus.kt:32](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt#L32) | [NoOpCacheEvictedEventBus.kt:20](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/NoOpCacheEvictedEventBus.kt#L20) |
+实例 A 回源读到旧数据 → B 更新数据库、删除 L1、发布事件 → A 在收到 B 的事件之前把旧值写入 L1。事件到达后 A 会撤销 L2，但 L1 中的旧值会一直保留到过期。这是所有 cache-aside 方案共有的窗口，也是默认 TTL 必须有限的原因。
+
+## 生命周期
+
+`DefaultCoherentCacheFactory.create` 把缓存注册到总线。`close()` 是幂等的：注销订阅并关闭分布式缓存。Spring 的 `CacheProxyFactoryBean` 在容器关闭时调用 `close()`。
 
 ## 源码参考
 
-| 文件 | 行号 | 说明 |
-|------|------|------|
-| [`CacheEvictedEventBus.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEventBus.kt#L20) | 20-24 | 核心事件总线接口 |
-| [`CacheEvictedEvent.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedEvent.kt#L21) | 21-39 | 事件数据类，包含 cacheName、key、publisherId |
-| [`CacheEvictedSubscriber.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CacheEvictedSubscriber.kt#L22) | 22-24 | 订阅者接口，包含 onEvicted() |
-| [`GuavaCacheEvictedEventBus.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/GuavaCacheEvictedEventBus.kt#L25) | 25-66 | 进程内 Guava EventBus 实现 |
-| [`RedisCacheEvictedEventBus.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt#L32) | 32-71 | 分布式 Redis Pub/Sub 实现 |
-| [`EvictedEvents.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/EvictedEvents.kt#L19) | 19-33 | Redis Pub/Sub 消息编解码器 |
-| [`DefaultCoherentCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L158) | 158-181 | onEvicted 处理器，带自驱逐过滤 |
-| [`NoOpCacheEvictedEventBus.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/NoOpCacheEvictedEventBus.kt#L20) | 20-24 | 空操作实现 |
+| 组件 | 源码 |
+|------|------|
+| `DefaultCoherentCache.onEvicted` / `onReset` | [DefaultCoherentCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt) |
+| `InvalidationStamps` | [InvalidationStamps.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/InvalidationStamps.kt) |
+| `RedisCacheEvictedEventBus` | [RedisCacheEvictedEventBus.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt) |
+| `EvictedEvents`（线格式） | [EvictedEvents.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/EvictedEvents.kt) |
+| `LocalCacheEvictedEventBus` | [LocalCacheEvictedEventBus.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/LocalCacheEvictedEventBus.kt) |
 
 ## 相关页面
 
-- [架构概览](./index.md) -- 高层系统架构
-- [缓存层级详解](./cache-layers.md) -- L0/L1/L2 读取、写入和驱逐路径
-- [代理与注解](./proxy.md) -- 声明式缓存接口创建
+- [架构概览](./index.md)
+- [缓存层级详解](./cache-layers.md)
+- [代理与注解](./proxy.md)

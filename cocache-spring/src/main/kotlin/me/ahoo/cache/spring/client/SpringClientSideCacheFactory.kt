@@ -19,23 +19,18 @@ import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.client.DefaultClientSideCacheFactory
 import me.ahoo.cache.spring.AbstractCacheFactory
 import org.springframework.beans.factory.BeanFactory
-import org.springframework.core.ResolvableType
-import kotlin.reflect.jvm.javaType
 
-class SpringClientSideCacheFactory(beanFactory: BeanFactory) : ClientSideCacheFactory,
-    AbstractCacheFactory(beanFactory) {
+/**
+ * 解析 `{cacheName}.ClientSideCache` bean，缺省使用 [DefaultClientSideCacheFactory]。
+ */
+class SpringClientSideCacheFactory(
+    beanFactory: BeanFactory
+) : ClientSideCacheFactory, AbstractCacheFactory(beanFactory) {
     companion object {
         const val CLIENT_SIDE_CACHE_SUFFIX = ".ClientSideCache"
     }
 
     override val suffix: String = CLIENT_SIDE_CACHE_SUFFIX
-
-    override fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType {
-        return ResolvableType.forClassWithGenerics(
-            ClientSideCache::class.java,
-            ResolvableType.forType(cacheMetadata.valueType.javaType)
-        )
-    }
 
     override fun fallback(cacheMetadata: CoCacheMetadata): Any {
         return DefaultClientSideCacheFactory.create<Any>(cacheMetadata)
@@ -43,6 +38,6 @@ class SpringClientSideCacheFactory(beanFactory: BeanFactory) : ClientSideCacheFa
 
     override fun <V> create(cacheMetadata: CoCacheMetadata): ClientSideCache<V> {
         @Suppress("UNCHECKED_CAST")
-        return createBean(cacheMetadata) as ClientSideCache<V>
+        return resolve(cacheMetadata) as ClientSideCache<V>
     }
 }

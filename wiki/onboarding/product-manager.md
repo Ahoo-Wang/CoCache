@@ -189,7 +189,7 @@ mindmap
 | **Self-healing** | If the sync system has a brief interruption, data automatically refreshes when expiry times pass | No manual intervention needed during minor infrastructure issues |
 | **Composite data joining** | Combines related data from different sources in a single cached result | Reduces the number of lookups needed for complex data; faster responses |
 | **Spring Boot integration** | Works automatically with the most popular Java web framework | Developers can add caching with minimal effort; faster time-to-market |
-| **Pluggable storage** | Can use different memory engines (Guava, Caffeine) and shared stores (Redis) | Future-proof: can adapt to different infrastructure without code changes |
+| **Pluggable storage** | Local memory (Caffeine) and shared store (Redis) are replaceable through stable extension points | Future-proof: can adapt to different infrastructure without code changes |
 
 ---
 

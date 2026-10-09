@@ -44,55 +44,41 @@ classDiagram
         +setCache(key: K, value: CacheValue~V~)
         +evict(key: K)
     }
-    class ComputedCache~K,V~ {
-        <<interface>>
-        +ttl: Long
-        +ttlAmplitude: Long
-    }
     class NamedCache {
         <<interface>>
         +cacheName: String
     }
-    class DistributedClientId {
-        <<interface>>
-        +clientId: String
+    class CacheValue~V~ {
+        <<sealed>>
+        +ttlAt: Long
+        +value: V?
+        +isMissing: Boolean
     }
-    class TtlConfiguration {
+    class CacheStore~V~ {
         <<interface>>
-        +ttl: Long
-        +ttlAmplitude: Long
-    }
-    class CacheEvictedSubscriber {
-        <<interface>>
-        +onEvicted(event: CacheEvictedEvent)
+        +getCache(key: String) CacheValue~V~?
+        +setCache(key: String, value: CacheValue~V~)
+        +evict(key: String)
     }
     class CoherentCache~K,V~ {
         <<interface>>
-        +cacheEvictedEventBus: CacheEvictedEventBus
-        +clientSideCache: ClientSideCache~V~
-        +distributedCache: DistributedCache~V~
-        +keyFilter: KeyFilter
-        +keyConverter: KeyConverter~K~
-        +cacheSource: CacheSource~K,V~
+        +configuration: CoherentCacheConfiguration
+        +clientId: String
+        +close()
     }
 
     Cache <|-- CacheGetter
     Cache <|-- CacheSetter
-    Cache <|-- ComputedCache
-    ComputedCache ..|> TtlConfiguration
-    CoherentCache ..|> ComputedCache
-    CoherentCache ..|> DistributedClientId
+    CoherentCache ..|> Cache
     CoherentCache ..|> NamedCache
-    CoherentCache ..|> CacheEvictedSubscriber
+    CacheStore ..> CacheValue
 
     style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style CacheGetter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style CacheSetter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style ComputedCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style NamedCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style DistributedClientId fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style TtlConfiguration fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheEvictedSubscriber fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CacheValue fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
+    style CacheStore fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
     style CoherentCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
 ```
 
@@ -106,7 +92,7 @@ graph TB
         style Client fill:#161b22,stroke:#6d5dfc,color:#e6edf3
         App["应用程序代码"]
         Proxy["缓存代理<br>(动态代理)"]
-        L2["L2: ClientSideCache<br>(Guava / Caffeine / Map)"]
+        L2["L2: ClientSideCache<br>(bounded Caffeine)"]
     end
 
     subgraph Distributed["共享层"]
@@ -139,25 +125,30 @@ graph TB
 
 | 包 | 说明 | 关键类型 |
 |---------|-------------|-----------|
-| `me.ahoo.cache.api` | 核心缓存抽象 | `Cache`、`CacheGetter`、`CacheSetter`、`CacheValue`、`TtlAt`、`NamedCache` |
-| `me.ahoo.cache.api.client` | 客户端缓存接口 | `ClientSideCache` |
-| `me.ahoo.cache.api.source` | 数据源接口 | `CacheSource`、`NoOpCacheSource` |
+| `me.ahoo.cache.api` | 核心缓存抽象 | `Cache`、`CacheGetter`、`CacheSetter`、`CacheValue`（`PresentValue` / `MissingValue`）、`TtlAt`、`NamedCache`、`CacheStore` |
+| `me.ahoo.cache.api.client` | L2 存储 SPI | `ClientSideCache` |
+| `me.ahoo.cache.api.distributed` | L1 存储 SPI | `DistributedCache` |
+| `me.ahoo.cache.api.source` | 数据源 SPI | `CacheSource` |
+| `me.ahoo.cache.api.converter` | key 转换 SPI | `KeyConverter` |
+| `me.ahoo.cache.api.filter` | key 存在性过滤 SPI | `KeyFilter` |
+| `me.ahoo.cache.api.consistency` | 失效通道 SPI | `CacheEvictedEventBus`、`CacheEvictedSubscriber`、`CacheEvictedEvent` |
 | `me.ahoo.cache.api.join` | Join 缓存抽象 | `JoinCache`、`JoinValue`、`JoinKeyExtractor` |
-| `me.ahoo.cache.api.annotation` | 声明式缓存注解 | `@CoCache`、`@GuavaCache`、`@CaffeineCache`、`@JoinCacheable` |
+| `me.ahoo.cache.api.annotation` | 声明式缓存注解 | `@CoCache`、`@CaffeineCache`、`@JoinCacheable` |
 
 ### cocache-core 包
 
 | 包 | 说明 | 关键类型 |
 |---------|-------------|-----------|
-| `me.ahoo.cache` | 核心实现和接口 | `ComputedCache`、`DefaultCacheValue`、`MissingGuard`、`KeyFilter`、`TtlConfiguration` |
-| `me.ahoo.cache.consistency` | 缓存一致性引擎 | `CoherentCache`、`DefaultCoherentCache`、`CacheEvictedEventBus`、`CacheEvictedEvent`、`CoherentCacheFactory` |
-| `me.ahoo.cache.proxy` | 基于动态代理的缓存 | `CacheProxyFactory`、`DefaultCacheProxyFactory`、`CoCacheInvocationHandler`、`CoCacheProxy` |
-| `me.ahoo.cache.client` | 客户端缓存实现 | `MapClientSideCache`、`GuavaClientSideCache`、`CaffeineClientSideCache`、`ClientSideCacheFactory` |
-| `me.ahoo.cache.distributed` | 分布式缓存抽象 | `DistributedCache`、`DistributedClientId`、`DistributedCacheFactory` |
-| `me.ahoo.cache.converter` | 键转换工具 | `KeyConverter`、`ToStringKeyConverter`、`ExpKeyConverter`、`KeyConverterFactory` |
-| `me.ahoo.cache.filter` | 缓存键过滤器 | `BloomKeyFilter`、`NoOpKeyFilter` |
+| `me.ahoo.cache` | 策略与工厂根包 | `TtlPolicy`、`CacheFactory` |
+| `me.ahoo.cache.consistency` | 一致性引擎 | `CoherentCache`、`DefaultCoherentCache`、`CoherentCacheConfiguration`、`CoherentCacheFactory`、`LocalCacheEvictedEventBus`、`NoOpCacheEvictedEventBus` |
+| `me.ahoo.cache.concurrent` | 并发原语 | `SingleFlight` |
+| `me.ahoo.cache.proxy` | 基于动态代理的缓存 | `CacheProxyFactory`、`DefaultCacheProxyFactory`、`CacheInvocationHandler`、`CacheDelegated`、`CacheMetadataCapable` |
+| `me.ahoo.cache.client` | L2 实现 | `CaffeineClientSideCache`、`MapClientSideCache`、`ClientSideCacheFactory` |
+| `me.ahoo.cache.distributed` | L1 辅助 | `InMemoryDistributedCache`、`DistributedCacheFactory` |
+| `me.ahoo.cache.converter` | key 转换 | `ToStringKeyConverter`、`ExpKeyConverter`、`KeyConverterFactory`、`DefaultKeyConverterFactory` |
+| `me.ahoo.cache.filter` | 缓存键过滤器 | `BloomKeyFilter` |
 | `me.ahoo.cache.source` | 缓存数据源工厂 | `CacheSourceFactory` |
-| `me.ahoo.cache.join` | Join 缓存实现 | `SimpleJoinCache`、`DefaultJoinValue`、`ExpJoinKeyExtractor`、`JoinKeyExtractorFactory` |
+| `me.ahoo.cache.join` | Join 缓存实现 | `SimpleJoinCache`、`ExpJoinKeyExtractor`、`JoinKeyExtractorFactory` |
 | `me.ahoo.cache.annotation` | 元数据解析器 | `CoCacheMetadata`、`CoCacheMetadataParser`、`JoinCacheMetadata`、`JoinCacheMetadataParser` |
 
 ## 动态代理架构
@@ -169,7 +160,7 @@ sequenceDiagram
 autonumber
     participant App as 应用程序
     participant Proxy as 缓存代理<br>(JDK 动态代理)
-    participant Handler as CoCacheInvocationHandler
+    participant Handler as CacheInvocationHandler
     participant Coherent as DefaultCoherentCache
     participant L2 as ClientSideCache
     participant L1 as DistributedCache
@@ -187,12 +178,11 @@ autonumber
         alt L1 命中
             L1-->>Coherent: CacheValue
             Coherent->>L2: setCache(cacheKey, value)
-        else L1 未命中
+        else L1 未命中（SingleFlight leader）
             Coherent->>L0: loadCacheValue(key)
-            L0-->>Coherent: CacheValue
-            Coherent->>L2: setCache(cacheKey, value)
-            Coherent->>L1: setCache(cacheKey, value)
-            Coherent->>Bus: publish(CacheEvictedEvent)
+            L0-->>Coherent: CacheValue (null → MissingValue)
+            Coherent->>L1: stamp-guarded setCache(cacheKey, value)
+            Coherent->>L2: stamp-guarded setCache(cacheKey, value)
         end
     end
     Coherent-->>Handler: CacheValue

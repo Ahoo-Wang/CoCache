@@ -322,7 +322,7 @@ class AppServer
 
 | 组件 | 描述 | 源码 |
 |------|------|------|
-| `UserCache` | 使用 `@CoCache` + `@GuavaCache` 的基础缓存 | [UserCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserCache.kt) |
+| `UserCache` | 使用 `@CoCache` + `@CaffeineCache` 的基础缓存 | [UserCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserCache.kt) |
 | `UserExtendInfoCache` | 扩展用户信息缓存 | [UserExtendInfoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserExtendInfoCache.kt) |
 | `UserExtendInfoJoinCache` | 组合两个缓存的 JoinCache | [UserExtendInfoJoinCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserExtendInfoJoinCache.kt) |
 | `TestController` | 使用缓存的 REST API | [TestController.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/controller/TestController.kt) |

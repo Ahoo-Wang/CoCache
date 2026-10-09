@@ -84,16 +84,16 @@ CoCache 暴露了两个 Spring Boot Actuator 端点，用于运行时监控和�
 一致性缓存配置和运行时状态的详细报告。
 
 | 字段 | 类型 | 说明 | 源码 |
-|-------|------|-------------|--------|
-| `name` | `String` | 缓存名称 | [CoCacheEndpoint.kt:55](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L55) |
-| `clientId` | `String` | 当前实例的分布式客户端 ID | [CoCacheEndpoint.kt:56](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L56) |
-| `clientSize` | `Long` | L2 客户端缓存中的条目数 | [CoCacheEndpoint.kt:57](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L57) |
-| `keyConverter` | `String` | 键转换器的字符串表示 | [CoCacheEndpoint.kt:58](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L58) |
-| `distributedCaching` | `String` | 分布式缓存实现的全限定类名 | [CoCacheEndpoint.kt:59](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L59) |
-| `clientSideCaching` | `String` | 客户端缓存实现的全限定类名 | [CoCacheEndpoint.kt:60](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L60) |
-| `cacheEvictedEventBus` | `String` | 事件总线实现的全限定类名 | [CoCacheEndpoint.kt:61](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L61) |
-| `cacheSource` | `String` | 数据源实现的全限定类名 | [CoCacheEndpoint.kt:62](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L62) |
-| `keyFilter` | `String` | 键过滤器实现的全限定类名 | [CoCacheEndpoint.kt:63](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt#L63) |
+|------|------|------|------|
+| `name` | `String` | 缓存名称 | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `clientId` | `String` | 当前实例的 clientId | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `clientSize` | `Long` | 本实例 L2 中的条目数 | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `ttlPolicy` | `TtlPolicy` | `ttl`、`ttlAmplitude`、`missingTtl`（秒） | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `keyConverter` | `String` | key 转换器的字符串表示 | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `distributedCache` | `String` | L1 实现的类名 | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `clientSideCache` | `String` | L2 实现的类名 | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `cacheSource` | `String` | 数据源的类名 | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
+| `keyFilter` | `String` | key 过滤器的类名 | [CoCacheEndpoint.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheEndpoint.kt) |
 
 ### 响应示例
 
@@ -103,14 +103,14 @@ CoCache 暴露了两个 Spring Boot Actuator 端点，用于运行时监控和�
 [
   {
     "name": "user-cache",
-    "clientId": "192.168.1.10",
+    "clientId": "0:12345@192.168.1.10",
     "clientSize": 1523,
+    "ttlPolicy": { "ttl": 3600, "ttlAmplitude": 60, "missingTtl": 60 },
     "keyConverter": "ToStringKeyConverter(keyPrefix='cocache:user-cache:')",
-    "distributedCaching": "me.ahoo.cache.spring.redis.RedisDistributedCache",
-    "clientSideCaching": "me.ahoo.cache.client.CaffeineClientSideCache",
-    "cacheEvictedEventBus": "me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus",
-    "cacheSource": "me.ahoo.cache.api.source.NoOpCacheSource",
-    "keyFilter": "me.ahoo.cache.filter.NoOpKeyFilter"
+    "distributedCache": "me.ahoo.cache.spring.redis.RedisDistributedCache",
+    "clientSideCache": "me.ahoo.cache.client.CaffeineClientSideCache",
+    "cacheSource": "com.example.UserCacheSource",
+    "keyFilter": "me.ahoo.cache.api.filter.KeyFilter$Companion$NO_OP$1"
   }
 ]
 ```

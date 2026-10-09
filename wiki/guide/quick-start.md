@@ -20,7 +20,7 @@ This guide walks you through adding CoCache to a Spring Boot application, defini
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter:4.3.0")
+    implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.0")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 }
 ```
@@ -29,7 +29,7 @@ dependencies {
 
 ```groovy
 dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:4.3.0'
+    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:5.0.0'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 }
 ```
@@ -40,7 +40,7 @@ dependencies {
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>4.3.0</version>
+    <version>5.0.0</version>
 </dependency>
 <dependency>
     <groupId>org.springframework.boot</groupId>
@@ -121,7 +121,7 @@ classDiagram
     }
     class UserCache {
         @CoCache(keyPrefix = "user:", ttl = 120)
-        @GuavaCache(maximumSize = 1_000_000)
+        @CaffeineCache(maximumSize = 1_000_000)
     }
 
     Cache~K, V~ --> CacheGetter~K, V~
@@ -139,21 +139,18 @@ classDiagram
 ```kotlin
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.annotation.CoCache
-import me.ahoo.cache.api.annotation.GuavaCache
-import java.util.concurrent.TimeUnit
+import me.ahoo.cache.api.annotation.CaffeineCache
 
+// ttl/ttlAmplitude/missingTtl are seconds (defaults 3600 / 60 / 60)
 @CoCache(keyPrefix = "user:", ttl = 120)
-@GuavaCache(
-    maximumSize = 1_000_000,
-    expireUnit = TimeUnit.SECONDS,
-    expireAfterAccess = 120
-)
+// optional: L2 settings (L2 is always bounded; default maximumSize = 10000)
+@CaffeineCache(maximumSize = 1_000_000, expireAfterAccess = 120)
 interface UserCache : Cache<String, User>
 ```
 
 Source: [cocache-example/.../cache/UserCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserCache.kt)
 
-The cache interface is automatically implemented by `CoCacheProxy` at runtime via dynamic proxy. You do not need to write any implementation code.
+The cache interface is implemented at runtime by a JDK dynamic proxy (`CacheInvocationHandler`). You do not need to write any implementation code.
 
 ### The Model Class
 
@@ -189,7 +186,7 @@ autonumber
     participant SB as Spring Boot
     participant Registrar as EnableCoCacheRegistrar
     participant Factory as CacheProxyFactory
-    participant Proxy as CoCacheProxy
+    participant Proxy as JDK Proxy
     participant Cache as DefaultCoherentCache
     participant Redis as Redis
 
@@ -232,19 +229,19 @@ Source: [cocache-example/.../controller/TestController.kt](https://github.com/Ah
 
 ## Step 6 (Optional): Custom ClientSideCache and CacheSource
 
-You can customize the L2 cache and data source per cache interface by declaring beans with matching names:
+You can customize the L2 cache and data source per cache interface. Stateful components are matched **by bean name** (`{cacheName}.ClientSideCache`); a `CacheSource` may also be matched by its generic type:
 
 ```kotlin
 @Configuration
 class UserCacheConfiguration {
-    @Bean
+    @Bean("UserCache.ClientSideCache")
     fun customizeUserClientSideCache(): ClientSideCache<User> {
-        return MapClientSideCache(ttl = 120, ttlAmplitude = 10)
+        return MapClientSideCache()
     }
 
     @Bean
     fun customizeUserCacheSource(): CacheSource<String, User> {
-        return CacheSource.noOp()  // No data source fallback
+        return CacheSource.noOp()  // returning null caches "not found" for missingTtl seconds
     }
 }
 ```
@@ -252,7 +249,7 @@ class UserCacheConfiguration {
 Source: [cocache-example/.../config/UserCacheConfiguration.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/config/UserCacheConfiguration.kt)
 
 If you do not provide custom beans, the auto-configuration uses defaults:
-- **ClientSideCache**: Guava-based (if `@GuavaCache` is present) or Caffeine-based (if `@CaffeineCache` is present)
+- **ClientSideCache**: bounded Caffeine, configured by `@CaffeineCache` if present
 - **CacheSource**: Requires a `CacheSource` bean or falls back to `CacheSource.noOp()`
 
 ## Step 7 (Optional): Programmatic CoherentCache
@@ -281,11 +278,7 @@ class ClassDefinedCacheConfiguration {
                 clientId = clientIdGenerator.generate(),
                 keyConverter = ToStringKeyConverter("user:"),
                 distributedCache = distributedCache,
-                clientSideCache = GuavaClientSideCache(
-                    CacheBuilder.newBuilder()
-                        .expireAfterAccess(Duration.ofHours(1))
-                        .build<String, CacheValue<User>>()
-                )
+                clientSideCache = CaffeineClientSideCache.build(expireAfterAccess = Duration.ofHours(1))
             )
         )
     }
@@ -302,7 +295,7 @@ graph TB
         direction TB
         Dep["Add cocache-spring-boot-starter"]
         Config["Configure Redis connection"]
-        Define["Define cache interface<br>@CoCache + @GuavaCache"]
+        Define["Define cache interface<br>@CoCache + @CaffeineCache"]
         Enable["@EnableCoCache<br>caches = [UserCache]"]
     end
 

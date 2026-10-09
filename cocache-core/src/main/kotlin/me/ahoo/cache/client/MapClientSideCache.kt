@@ -10,22 +10,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.client
 
 import me.ahoo.cache.api.CacheValue
-import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.api.client.ClientSideCache
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Map Client Cache .
+ * 基于 Map 的 L2 缓存：无界、过期条目仅在读取时淘汰。仅适用于测试或 key 集合有限的场景。
  *
  * @author ahoo wang
  */
 class MapClientSideCache<V>(
-    private val cacheMap: MutableMap<String, CacheValue<V>> = ConcurrentHashMap(),
-    override val ttl: Long = CoCache.DEFAULT_TTL,
-    override val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE
-) : ComputedClientSideCache<V> {
+    private val cacheMap: MutableMap<String, CacheValue<V>> = ConcurrentHashMap()
+) : ClientSideCache<V> {
     override fun getCache(key: String): CacheValue<V>? {
         return cacheMap[key]
     }

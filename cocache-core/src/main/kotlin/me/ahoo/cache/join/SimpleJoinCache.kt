@@ -10,21 +10,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package me.ahoo.cache.join
 
-import io.github.oshai.kotlinlogging.KotlinLogging
-import me.ahoo.cache.ComputedCache
-import me.ahoo.cache.DefaultCacheValue
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.MissingValue
+import me.ahoo.cache.api.PresentValue
 import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.api.join.JoinKeyExtractor
 import me.ahoo.cache.api.join.JoinValue
-import me.ahoo.cache.getFirstTtlConfiguration
 import kotlin.math.min
 
 /**
- * Simple Join Cache .
+ * 组合两个独立缓存的 [JoinCache]。不持有组件缓存的生命周期。
  *
  * @author ahoo wang
  */
@@ -32,95 +31,54 @@ class SimpleJoinCache<K1, V1, K2, V2>(
     val firstCache: Cache<K1, V1>,
     val joinCache: Cache<K2, V2>,
     override val joinKeyExtractor: JoinKeyExtractor<V1, K2>
-) : JoinCache<K1, V1, K2, V2>, ComputedCache<K1, JoinValue<V1, K2, V2>>, AutoCloseable {
+) : JoinCache<K1, V1, K2, V2> {
 
-    companion object {
-        private val log = KotlinLogging.logger {}
-    }
-
-    override val ttl: Long = getFirstTtlConfiguration(firstCache, joinCache).ttl
-    override val ttlAmplitude: Long = getFirstTtlConfiguration(firstCache, joinCache).ttlAmplitude
-
-    @Suppress("ReturnCount")
     override fun getCache(key: K1): CacheValue<JoinValue<V1, K2, V2>>? {
-        val firstCacheValue = firstCache.getCache(key) ?: return null
-        if (firstCacheValue.isExpired) {
-            return null
+        val first = firstCache.getCache(key)?.takeUnless { it.isExpired } ?: return null
+        val firstValue = when (first) {
+            is MissingValue -> return CacheValue.missing(first.ttlAt)
+            is PresentValue -> first.value
         }
-        if (firstCacheValue.isMissingGuard) {
-            return DefaultCacheValue(DefaultJoinValue.missingGuardValue(), firstCacheValue.ttlAt)
-        }
-        val joinKey = joinKeyExtractor.extract(firstCacheValue.value)
-        val secondCacheValue = joinCache.getCache(joinKey)
-        val availableSecondCacheValue = secondCacheValue?.takeUnless {
-            it.isMissingGuard || it.isExpired
-        }
-        val joinValue = DefaultJoinValue(firstCacheValue.value, joinKey, availableSecondCacheValue?.value)
-        val secondTtlAt = secondCacheValue?.takeUnless {
-            it.isExpired
-        }?.ttlAt
-        val ttlAt = getJoinTtlAt(firstCacheValue.ttlAt, secondTtlAt)
-        return DefaultCacheValue(value = joinValue, ttlAt = ttlAt)
+        val joinKey = joinKeyExtractor.extract(firstValue)
+        val second = joinCache.getCache(joinKey)?.takeUnless { it.isExpired }
+        val ttlAt = second?.let { min(first.ttlAt, it.ttlAt) } ?: first.ttlAt
+        return CacheValue.of(JoinValue(firstValue, joinKey, second?.value), ttlAt)
     }
 
-    private fun getJoinTtlAt(
-        firstTtlAt: Long,
-        secondTtlAt: Long?
-    ): Long {
-        if (secondTtlAt == null) {
-            return firstTtlAt
-        }
-        return min(firstTtlAt, secondTtlAt)
-    }
-
-    @Suppress("UNCHECKED_CAST")
     override fun setCache(key: K1, value: CacheValue<JoinValue<V1, K2, V2>>) {
-        if (value.isExpired) {
-            evict(key)
-            return
+        val joinValue = when (value) {
+            is MissingValue -> {
+                firstCache.setCache(key, CacheValue.missing(value.ttlAt))
+                return
+            }
+
+            is PresentValue -> value.value
         }
-        if (value.isMissingGuard) {
-            firstCache.setCache(key, DefaultCacheValue(DefaultCacheValue.missingGuardValue(), value.ttlAt))
-            return
+        firstCache.setCache(key, CacheValue.of(joinValue.firstValue, value.ttlAt))
+        joinValue.secondValue?.let {
+            joinCache.setCache(joinValue.joinKey, CacheValue.of(it, value.ttlAt))
         }
-        val firstCacheValue = DefaultCacheValue(value = value.value.firstValue, ttlAt = value.ttlAt)
-        firstCache.setCache(key, firstCacheValue)
-        val secondValue = value.value.secondValue ?: return
-        val secondCacheValue = DefaultCacheValue(value = secondValue, ttlAt = value.ttlAt) as CacheValue<V2>
-        joinCache.setCache(value.value.joinKey, secondCacheValue)
     }
 
-    override fun evict(key: K1) {
-        // Read the raw CacheValue (not `operator get`, which hides missing-guards
-        // and expired entries as null). The first cache must always be evicted;
-        // the join cache is evicted only when we can still resolve a join key
-        // from a real (non-guard) first value.
-        val firstCacheValue = firstCache.getCache(key)
-        firstCache.evict(key)
-        if (firstCacheValue != null && !firstCacheValue.isMissingGuard) {
-            val joinKey = joinKeyExtractor.extract(firstCacheValue.value)
-            joinCache.evict(joinKey)
+    /**
+     * 各组件缓存按自身 TTL 策略写入。
+     */
+    override fun set(key: K1, value: JoinValue<V1, K2, V2>) {
+        firstCache[key] = value.firstValue
+        value.secondValue?.let {
+            joinCache[value.joinKey] = it
         }
+    }
+
+    /**
+     * 只淘汰主缓存：关联缓存有独立的生命周期，由其写入方负责失效。
+     */
+    override fun evict(key: K1) {
+        firstCache.evict(key)
     }
 
     override fun evict(firstKey: K1, joinKey: K2) {
         firstCache.evict(firstKey)
         joinCache.evict(joinKey)
-    }
-
-    /**
-     * 非 AutoCloseable 的组合缓存会被安全跳过；组合的 CoherentCache 自行注销事件订阅并关闭分布式缓存。
-     */
-    override fun close() {
-        (firstCache as? AutoCloseable)?.let {
-            runCatching(it::close).onFailure { e ->
-                log.warn(e) { "Failed to close firstCache:[$firstCache]." }
-            }
-        }
-        (joinCache as? AutoCloseable)?.let {
-            runCatching(it::close).onFailure { e ->
-                log.warn(e) { "Failed to close joinCache:[$joinCache]." }
-            }
-        }
     }
 }

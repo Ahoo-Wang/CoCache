@@ -13,178 +13,126 @@
 
 package me.ahoo.cache.spring.redis.codec
 
-import me.ahoo.cache.ComputedTtlAt
-import me.ahoo.cache.DefaultCacheValue
-import me.ahoo.cache.DefaultMissingGuard
 import me.ahoo.cache.api.CacheValue
-import me.ahoo.cache.util.CacheSecondClock
+import me.ahoo.cache.api.TtlAt
+import me.ahoo.cache.spring.redis.RedisTestSupport
 import me.ahoo.test.asserts.assert
 import org.assertj.core.data.Offset
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.springframework.data.redis.connection.RedisStandaloneConfiguration
-import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
 import org.springframework.data.redis.core.StringRedisTemplate
-import java.util.UUID
+import java.util.*
 
 abstract class CodecExecutorSpec<V> {
-    lateinit var stringRedisTemplate: StringRedisTemplate
-    lateinit var lettuceConnectionFactory: LettuceConnectionFactory
-    lateinit var codecExecutor: CodecExecutor<V>
+    private lateinit var redis: RedisTestSupport
+    protected val stringRedisTemplate: StringRedisTemplate
+        get() = redis.redisTemplate
+    protected lateinit var codecExecutor: CodecExecutor<V>
+
     abstract fun createCodecExecutor(): CodecExecutor<V>
 
-    /** 自定义哨兵执行器：驱动 [customSentinelGuardRoundTrip] 在每个 codec 上回归哨兵属性化。 */
+    /** 自定义哨兵执行器：回归每个 codec 的哨兵属性化。 */
     abstract fun createCustomSentinelCodecExecutor(): CodecExecutor<V>
     abstract fun createCacheValue(): V
+
+    /** 单元素且不等于哨兵的业务值（覆盖 size==1 && != sentinel 分支）。 */
+    protected open fun createSingleNonSentinelValue(): V = createCacheValue()
 
     companion object {
         const val CUSTOM_SENTINEL = "\u0000cocache-test:nil"
     }
 
+    protected fun newKey(): String = "codec-test:" + UUID.randomUUID()
+
     @BeforeEach
-    open fun setup() {
-        val redisStandaloneConfiguration = RedisStandaloneConfiguration()
-        lettuceConnectionFactory = LettuceConnectionFactory(redisStandaloneConfiguration)
-        lettuceConnectionFactory.afterPropertiesSet()
-        stringRedisTemplate = StringRedisTemplate(lettuceConnectionFactory)
-        stringRedisTemplate.afterPropertiesSet()
+    fun setup() {
+        redis = RedisTestSupport()
         codecExecutor = createCodecExecutor()
     }
 
     @AfterEach
-    open fun destroy() {
-        if (null != lettuceConnectionFactory) {
-            lettuceConnectionFactory.destroy()
-        }
+    fun destroy() {
+        redis.close()
     }
 
     @Test
-    fun executeAndEncode() {
-        val key = "executeAndDecode:" + UUID.randomUUID().toString()
-        val value = DefaultCacheValue.forever(createCacheValue())
+    fun roundTripForever() {
+        val key = newKey()
+        val value = CacheValue.forever(createCacheValue())
         codecExecutor.executeAndEncode(key, value)
-        val actual = codecExecutor.executeAndDecode(key, ComputedTtlAt.FOREVER)
-        actual.assert().isEqualTo(value)
+        codecExecutor.executeAndDecode(key).assert().isEqualTo(value)
+        stringRedisTemplate.getExpire(key).assert().isEqualTo(-1L)
     }
 
     @Test
-    fun executeAndEncodeWithTtlAt() {
-        val key = "executeAndDecode:" + UUID.randomUUID().toString()
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 10
-        val value = DefaultCacheValue(createCacheValue(), ttlAt)
+    fun roundTripWithTtlAt() {
+        val key = newKey()
+        val value = CacheValue.of(createCacheValue(), TtlAt.at(60))
         codecExecutor.executeAndEncode(key, value)
-        val actual = requireNotNull(codecExecutor.executeAndDecode(key, ttlAt))
-        // The decoded ttlAt is the caller-passed absolute deadline (not Redis-EXPIRE
-        // reconstructed); the ±1s tolerance remains only for write-side second-boundary drift.
+        val actual = requireNotNull(codecExecutor.executeAndDecode(key))
         actual.value.assert().isEqualTo(value.value)
-        actual.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
         actual.ttlAt.assert().isCloseTo(value.ttlAt, Offset.offset(1))
+        stringRedisTemplate.getExpire(key).assert().isBetween(58, 60)
     }
 
     @Test
-    fun executeAndEncodeMissing() {
-        val key = "executeAndDecodeWhenMissing:" + UUID.randomUUID().toString()
-        val value = DefaultCacheValue.missingGuard<CacheValue<V>>()
-        codecExecutor.executeAndEncode(key, value)
-        val actual = codecExecutor.executeAndDecode(key, ComputedTtlAt.FOREVER)
-        actual.assert().isEqualTo(value)
+    fun roundTripMissingForever() {
+        val key = newKey()
+        codecExecutor.executeAndEncode(key, CacheValue.missing())
+        codecExecutor.executeAndDecode(key).assert().isEqualTo(CacheValue.missing<V>())
     }
 
     @Test
-    fun executeAndEncodeMissingWithTtlAt() {
-        val key = "executeAndDecodeWhenMissingTtl:" + UUID.randomUUID().toString()
-        // ttlAt is an ABSOLUTE deadline (production callers pass currentTime + remainingTtl),
-        // so construct the guard with the same absolute value the decode side will receive.
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 100
+    fun roundTripMissingWithTtlAt() {
+        val key = newKey()
+        val missing = CacheValue.missing<V>(TtlAt.at(100))
+        codecExecutor.executeAndEncode(key, missing)
+        val actual = requireNotNull(codecExecutor.executeAndDecode(key))
+        actual.isMissing.assert().isTrue()
+        actual.ttlAt.assert().isCloseTo(missing.ttlAt, Offset.offset(1))
+    }
 
-        @Suppress("UNCHECKED_CAST")
-        val value = DefaultCacheValue(DefaultMissingGuard, ttlAt) as CacheValue<V>
-        codecExecutor.executeAndEncode(key, value)
-        val actual = requireNotNull(codecExecutor.executeAndDecode(key, ttlAt))
-        // The sentinel must round-trip exactly, and the decoded ttlAt must equal the
-        // passed absolute deadline (a regression re-treats it as a relative duration).
-        actual.value.assert().isEqualTo(value.value)
-        actual.isMissingGuard.assert().isEqualTo(value.isMissingGuard)
-        actual.ttlAt.assert().isEqualTo(ttlAt)
+    /**
+     * 回归：不存在的 key 必须是未命中（触发回源），不得推断为负缓存（否则真实数据会被长期读成不存在）。
+     */
+    @Test
+    fun absentKeyIsMiss() {
+        codecExecutor.executeAndDecode(newKey()).assert().isNull()
     }
 
     @Test
-    fun executeAndEncodeNullValueAsMissingGuard() {
-        val key = "null-normalize:" + UUID.randomUUID().toString()
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 100
-
-        @Suppress("UNCHECKED_CAST")
-        val nullValue = null as V
-        codecExecutor.executeAndEncode(key, DefaultCacheValue(nullValue, ttlAt))
-
-        val actual = requireNotNull(codecExecutor.executeAndDecode(key, ttlAt))
-
-        actual.isMissingGuard.assert().isTrue()
-        actual.ttlAt.assert().isEqualTo(ttlAt)
-    }
-
-    @Test
-    fun executeAndEncodeExpiredValueEvictsKey() {
-        val key = "write-time-expired:" + UUID.randomUUID().toString()
-        val expiredTtlAt = CacheSecondClock.INSTANCE.currentTime() - 5
-
-        codecExecutor.executeAndEncode(key, DefaultCacheValue(createCacheValue(), expiredTtlAt))
-
-        // 写入时已过期的值必须淘汰（而非落盘为无 TTL 的永不过期 key）
+    fun expiredValueEvictsKey() {
+        val key = newKey()
+        codecExecutor.executeAndEncode(key, CacheValue.forever(createCacheValue()))
+        codecExecutor.executeAndEncode(key, CacheValue.of(createCacheValue(), TtlAt.at(-5)))
         stringRedisTemplate.hasKey(key).assert().isFalse()
     }
 
+    /**
+     * 剩余 TTL 不足 1 秒时钳为 1 秒，而不是写成永不过期或被 Redis 拒绝。
+     */
     @Test
-    fun executeAndDecodeWhenKeyAbsentReturnsMissingGuard() {
-        val key = "absent-key:" + UUID.randomUUID().toString()
-
-        // key 不存在（生产路径由 RedisDistributedCache 的 NOT_EXIST 前置拦截，
-        // 此处锁定 codec 契约）：返回负缓存而非 null/异常
-        val actual = requireNotNull(codecExecutor.executeAndDecode(key, ComputedTtlAt.FOREVER))
-        actual.isMissingGuard.assert().isTrue()
+    fun subSecondTtlIsClampedToOneSecond() {
+        val key = newKey()
+        codecExecutor.executeAndEncode(key, CacheValue.of(createCacheValue(), TtlAt.at(1)))
+        stringRedisTemplate.getExpire(key).assert().isBetween(0, 1)
     }
 
     @Test
-    fun singleEntryNonSentinelValueReadsBackAsValue() {
-        val key = "single-non-sentinel:" + UUID.randomUUID().toString()
-        val single = createSingleNonSentinelValue()
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 100
-
-        codecExecutor.executeAndEncode(key, DefaultCacheValue(single, ttlAt))
-
-        // 单元素/单字段但非哨兵的数据不得被误判为负缓存（哨兵判定要求元素等于哨兵）
-        val actual = requireNotNull(codecExecutor.executeAndDecode(key, ttlAt))
-        actual.isMissingGuard.assert().isFalse()
+    fun singleEntryNonSentinelValueIsNotMissing() {
+        val key = newKey()
+        codecExecutor.executeAndEncode(key, CacheValue.forever(createSingleNonSentinelValue()))
+        requireNotNull(codecExecutor.executeAndDecode(key)).isMissing.assert().isFalse()
     }
 
-    /** 单元素且不等于哨兵的业务值（驱动 isMissingGuard 的 size==1 && !=sentinel 分支）。 */
-    protected open fun createSingleNonSentinelValue(): V = createCacheValue()
-
     @Test
-    fun customSentinelGuardRoundTrip() {
+    fun customSentinelRoundTrip() {
         val executor = createCustomSentinelCodecExecutor()
-        val key = "custom-sentinel-rt:" + UUID.randomUUID().toString()
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 100
-
-        @Suppress("UNCHECKED_CAST")
-        val guardValue = DefaultCacheValue(DefaultMissingGuard, ttlAt) as CacheValue<V>
-        executor.executeAndEncode(key, guardValue)
-
-        val actual = requireNotNull(executor.executeAndDecode(key, ttlAt))
-
-        // 若某 codec 的哨兵判定退回常量（而非属性），自定义哨兵写读将无法互相识别，此断言失败
-        actual.isMissingGuard.assert().isTrue()
-    }
-
-    @Test
-    fun executeAndEncodeWithTtlSetsRedisExpire() {
-        val key = "redis-expire:" + UUID.randomUUID().toString()
-        val ttlAt = CacheSecondClock.INSTANCE.currentTime() + 60
-        codecExecutor.executeAndEncode(key, DefaultCacheValue(createCacheValue(), ttlAt))
-
-        val expire = stringRedisTemplate.getExpire(key)
-
-        (expire != null && expire > 0).assert().isTrue()
+        val key = newKey()
+        executor.executeAndEncode(key, CacheValue.missing(TtlAt.at(100)))
+        requireNotNull(executor.executeAndDecode(key)).isMissing.assert().isTrue()
+        // 默认哨兵的执行器不识别自定义哨兵
+        codecExecutor.executeAndDecode(key)?.isMissing.assert().isNotEqualTo(true)
     }
 }

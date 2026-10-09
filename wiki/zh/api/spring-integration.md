@@ -25,7 +25,6 @@ graph TB
         style SpringCache fill:#161b22,stroke:#6d5dfc,color:#e6edf3
         CCM["CoCacheManager"]
         CSC["CoSpringCache"]
-        SVW["SpringCacheValueWrapper"]
     end
 
     subgraph Spring["cocache-spring"]
@@ -111,24 +110,22 @@ graph TB
 flowchart TB
     subgraph Strategy["Bean 解析策略"]
         style Strategy fill:#161b22,stroke:#6d5dfc,color:#e6edf3
-        Start["createBean(cacheMetadata)"]
+        Start["resolve(cacheMetadata)"]
         NameLookup["按名称查找：<br>{cacheName}{suffix}"]
         NameFound{"找到 Bean？"}
-        TypeLookup["按类型查找：<br>BeanFactory.getBeanProvider(type)"]
-        TypeFound{"找到 Bean？"}
+        TypeLookup["resolveByType()<br>（仅 CacheSource）"]
+        TypeFound{"唯一 Bean？"}
         Fallback["使用默认回退"]
-        TTL["设置 TTL（如果 TtlConfigurationAware）"]
         Return["返回 Bean"]
 
         Start --> NameLookup
         NameLookup --> NameFound
-        NameFound -- "是" --> TTL
+        NameFound -- "是" --> Return
         NameFound -- "否" --> TypeLookup
         TypeLookup --> TypeFound
-        TypeFound -- "是" --> TTL
+        TypeFound -- "是" --> Return
         TypeFound -- "否" --> Fallback
-        Fallback --> TTL
-        TTL --> Return
+        Fallback --> Return
     end
 ```
 
@@ -137,13 +134,12 @@ flowchart TB
 | 方法 | 签名 | 说明 |
 |--------|-----------|-------------|
 | `suffix` | `abstract val suffix: String` | 此工厂类型的 Bean 名称后缀 |
-| `getBeanType` | `abstract fun getBeanType(cacheMetadata: CoCacheMetadata): ResolvableType` | 返回用于 Bean 查找的泛型 `ResolvableType` |
+| `resolveByType` | `open fun resolveByType(cacheMetadata: CoCacheMetadata): Any?` | 可选的唯一类型查找（仅用于无状态组件，默认 `null`） |
 | `fallback` | `abstract fun fallback(cacheMetadata: CoCacheMetadata): Any` | 未找到 Spring Bean 时的默认组件 |
-| `getBeanProvider` | `open fun getBeanProvider(...)` | 带回退提供者的按类型 Bean 查找 |
 
 ## Spring 工厂实现
 
-所有 Spring 工厂实现都继承 `AbstractCacheFactory`，遵循相同的按名称优先解析模式。
+所有 Spring 工厂实现都继承 `AbstractCacheFactory`：先按名称，再（仅无状态组件）按唯一类型，最后使用默认实现。
 
 ### SpringClientSideCacheFactory
 
@@ -151,7 +147,7 @@ flowchart TB
 |--------|--------|--------|
 | **实现** | `ClientSideCacheFactory`、`AbstractCacheFactory` | -- |
 | **Bean 名称后缀** | `.ClientSideCache` | -- |
-| **回退** | `DefaultClientSideCacheFactory.create()`（使用 `@GuavaCache`/`@CaffeineCache` 注解） | -- |
+| **回退** | `DefaultClientSideCacheFactory.create()`（按 `@CaffeineCache` 构建有界 Caffeine） | -- |
 | **源文件** | -- | [SpringClientSideCacheFactory.kt:25](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/client/SpringClientSideCacheFactory.kt#L25) |
 
 ### SpringKeyConverterFactory
@@ -163,7 +159,7 @@ flowchart TB
 | **回退** | 设置 `keyExpression` 时使用 `ExpKeyConverter`，否则使用带计算前缀的 `ToStringKeyConverter` | -- |
 | **源文件** | -- | [SpringKeyConverterFactory.kt:27](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/src/main/kotlin/me/ahoo/cache/spring/converter/SpringKeyConverterFactory.kt#L27) |
 
-特殊行为：当 `keyType` 为 `String` 时跳过 Bean 查找（无需转换）。
+key 前缀与表达式会解析 Spring 占位符（`${...}`）。转换器从不按类型共享，否则 key 类型相同的两个缓存会共用一个前缀而导致冲突。
 
 ### SpringCacheSourceFactory
 
@@ -222,22 +218,13 @@ class CustomCacheConfig {
 
     @Bean("user-cache.ClientSideCache")
     fun userClientSideCache(): ClientSideCache<User> {
-        return CaffeineClientSideCache(
-            Caffeine.newBuilder()
-                .maximumSize(20_000)
-                .expireAfterWrite(Duration.ofMinutes(10))
-                .build()
-        )
+        return CaffeineClientSideCache.build(maximumSize = 20_000, expireAfterAccess = Duration.ofMinutes(10))
     }
 
     @Bean("user-cache.CacheSource")
     fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> {
-        return object : CacheSource<String, User> {
-            override fun loadCacheValue(key: String): CacheValue<User>? {
-                return userRepository.findById(key).map {
-                    DefaultCacheValue.ttlAt(it, 3600)
-                }.orElse(null)
-            }
+        return CacheSource { key ->
+            userRepository.findById(key).map { CacheValue.of(it, TtlAt.at(3600)) }.orElse(null)
         }
     }
 }
@@ -286,20 +273,20 @@ autonumber
 | 方面 | 详情 | 源码 |
 |--------|--------|--------|
 | **实现** | `NamedCache`、`SpringCache`、`CacheDelegated<Cache<Any, Any?>>` | -- |
-| **构造函数** | `(cacheName: String, delegate: Cache<Any, Any?>)` | -- |
+| **构造函数** | `(cacheName: String, delegate: Cache<Any, Any?>, asyncExecutor: Executor)` | -- |
 | **源文件** | -- | [CoSpringCache.kt:27](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-cache/src/main/kotlin/me/ahoo/cache/spring/cache/CoSpringCache.kt#L27) |
 
 | 方法 | Spring 接口 | 说明 |
 |--------|-----------------|-------------|
 | `getName()` | `Cache.getName()` | 返回缓存名称 |
 | `getNativeCache()` | `Cache.getNativeCache()` | 返回底层 CoCache 实例 |
-| `get(key)` | `Cache.get(key)` | 返回 CoCache 值的 `SpringCacheValueWrapper` 包装 |
+| `get(key)` | `Cache.get(key)` | 命中时返回 `SimpleValueWrapper(value)`；不存在、已过期或负缓存返回 `null` |
 | `get(key, type)` | `Cache.get(key, type)` | 返回转换为指定类型的值 |
-| `get(key, valueLoader)` | `Cache.get(key, valueLoader)` | 通过 `Callable` 加载未缓存的值，然后存储 |
+| `get(key, valueLoader)` | `Cache.get(key, valueLoader)` | 同一 key 并发时最多加载一次（`@Cacheable(sync = true)`），然后存储 |
 | `put(key, value)` | `Cache.put(key, value)` | 委托给 `delegate.set(key, value)` |
 | `evict(key)` | `Cache.evict(key)` | 委托给 `delegate.evict(key)` |
 | `clear()` | `Cache.clear()` | 清除 `ClientSideCache`（如果是 `CoherentCache`，仅清除 L2） |
-| `retrieve(key)` | `Cache.retrieve(key)` | 通过 `CompletableFuture.supplyAsync` 异步获取 |
+| `retrieve(key)` | `Cache.retrieve(key)` | 在专用 `asyncExecutor` 上异步查找（不使用 ForkJoin 公共池） |
 | `retrieve(key, valueLoader)` | `Cache.retrieve(key, valueLoader)` | 使用 `CompletableFuture` 组合的异步获取 |
 
 ### 配合 @Cacheable 使用

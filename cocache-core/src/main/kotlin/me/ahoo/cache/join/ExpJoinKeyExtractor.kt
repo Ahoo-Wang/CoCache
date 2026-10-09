@@ -14,15 +14,18 @@
 package me.ahoo.cache.join
 
 import me.ahoo.cache.api.join.JoinKeyExtractor
+import me.ahoo.cache.converter.SpelTemplates
 import org.springframework.expression.Expression
-import org.springframework.expression.common.TemplateParserContext
-import org.springframework.expression.spel.standard.SpelExpressionParser
 
+/**
+ * 基于 SpEL 模板表达式提取关联 key。
+ */
 class ExpJoinKeyExtractor<V1>(expression: String) : JoinKeyExtractor<V1, String> {
-    private val expression: Expression = SpelExpressionParser()
-        .parseExpression(expression, TemplateParserContext.TEMPLATE_EXPRESSION)
+    private val expression: Expression = SpelTemplates.parse(expression)
 
     override fun extract(firstValue: V1): String {
-        return requireNotNull(expression.getValue(firstValue, String::class.java))
+        return requireNotNull(expression.getValue(firstValue, String::class.java)) {
+            "JoinKey extracted by [${expression.expressionString}] must not be null."
+        }
     }
 }

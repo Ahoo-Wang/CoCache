@@ -15,13 +15,11 @@ package me.ahoo.cache.proxy
 
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
-import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.consistency.CoherentCacheConfiguration
 import me.ahoo.cache.consistency.CoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverterFactory
-import me.ahoo.cache.distributed.DistributedCache
 import me.ahoo.cache.distributed.DistributedCacheFactory
 import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.util.ClientIdGenerator
@@ -38,31 +36,27 @@ class DefaultCacheProxyFactory(
 
     @Suppress("UNCHECKED_CAST")
     override fun <CACHE : Cache<*, *>> create(cacheMetadata: CoCacheMetadata): CACHE {
-        val clientId = clientIdGenerator.generate()
-        val clientSideCaching: ClientSideCache<Any> = clientSideCacheFactory.create(cacheMetadata)
-        val distributedCaching: DistributedCache<Any> = distributedCacheFactory.create(cacheMetadata)
-        val cacheSource = cacheSourceFactory.create<Any, Any>(cacheMetadata)
-        val keyConverter = keyConverterFactory.create<Any>(cacheMetadata)
         val delegate = coherentCacheFactory.create(
-            CoherentCacheConfiguration(
+            CoherentCacheConfiguration<Any, Any>(
                 cacheName = cacheMetadata.cacheName,
-                clientId = clientId,
-                keyConverter = keyConverter,
-                clientSideCache = clientSideCaching,
-                distributedCache = distributedCaching,
-                cacheSource = cacheSource
-            ),
+                clientId = clientIdGenerator.generate(),
+                keyConverter = keyConverterFactory.create(cacheMetadata),
+                distributedCache = distributedCacheFactory.create(cacheMetadata),
+                clientSideCache = clientSideCacheFactory.create(cacheMetadata),
+                cacheSource = cacheSourceFactory.create(cacheMetadata),
+                ttlPolicy = cacheMetadata.ttlPolicy
+            )
         )
-        val invocationHandler = CoCacheInvocationHandler(cacheMetadata = cacheMetadata, delegate = delegate)
+        val proxyInterface = cacheMetadata.proxyInterface.java
         return Proxy.newProxyInstance(
-            this.javaClass.classLoader,
+            proxyInterface.classLoader,
             arrayOf(
-                cacheMetadata.proxyInterface.java,
+                proxyInterface,
                 CoherentCache::class.java,
                 CacheDelegated::class.java,
                 CacheMetadataCapable::class.java
             ),
-            invocationHandler
+            CacheInvocationHandler(proxyInterface, delegate, cacheMetadata)
         ) as CACHE
     }
 }

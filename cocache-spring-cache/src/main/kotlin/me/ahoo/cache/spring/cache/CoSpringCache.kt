@@ -15,129 +15,113 @@ package me.ahoo.cache.spring.cache
 
 import me.ahoo.cache.api.Cache
 import me.ahoo.cache.api.NamedCache
-import me.ahoo.cache.api.client.ClientSideCache
+import me.ahoo.cache.concurrent.SingleFlight
 import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.join.SimpleJoinCache
 import me.ahoo.cache.proxy.CacheDelegated
+import org.springframework.cache.support.SimpleValueWrapper
 import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executor
 import java.util.function.Supplier
 import org.springframework.cache.Cache as SpringCache
 
-@Suppress("UNCHECKED_CAST")
+/**
+ * 将 CoCache 适配为 Spring [SpringCache]。
+ *
+ * - 负缓存视为未命中：CoCache 的负缓存由 CacheSource 驱动，`put(key, null)` 写入负缓存但不会作为“缓存的 null”返回。
+ * - [get] (key, valueLoader) 按 key 合并并发加载（满足 `@Cacheable(sync = true)` 的同步语义）。
+ * - [retrieve] 在 [asyncExecutor] 上执行阻塞查找，不占用调用方线程。
+ */
 class CoSpringCache(
     override val cacheName: String,
-    override val delegate: Cache<Any, Any?>
+    override val delegate: Cache<Any, Any?>,
+    private val asyncExecutor: Executor = CoCacheManager.DEFAULT_ASYNC_EXECUTOR
 ) : NamedCache, SpringCache, CacheDelegated<Cache<Any, Any?>> {
-    override fun getName(): String {
-        return cacheName
-    }
+    private val loads = SingleFlight<Any, Any?>()
 
-    override fun getNativeCache(): Any {
-        return delegate
-    }
+    override fun getName(): String = cacheName
+
+    override fun getNativeCache(): Any = delegate
 
     override fun get(key: Any): SpringCache.ValueWrapper? {
         val cacheValue = delegate.getCache(key) ?: return null
-        if (cacheValue.isExpired) {
-            delegate.evict(key)
+        if (cacheValue.isExpired || cacheValue.isMissing) {
             return null
         }
-        if (cacheValue.isMissingGuard) {
-            return null
-        }
-        return SpringCacheValueWrapper(cacheValue)
+        return SimpleValueWrapper(cacheValue.value)
     }
 
     override fun <T : Any> get(key: Any, type: Class<T>?): T? {
         val value = get(key)?.get() ?: return null
-        if (type != null && !type.isInstance(value)) {
-            throw IllegalStateException(
-                "Cached value is not of required type [" + type.name + "]: " + value
-            )
+        check(type == null || type.isInstance(value)) {
+            "Cached value is not of required type [${type?.name}]: $value"
         }
+        @Suppress("UNCHECKED_CAST")
         return value as T
     }
 
     @Suppress("TooGenericExceptionCaught")
     override fun <T : Any> get(key: Any, valueLoader: Callable<T>): T? {
         get(key)?.let {
+            @Suppress("UNCHECKED_CAST")
             return it.get() as T?
         }
-        return try {
-            val loadedValue = valueLoader.call()
-            delegate.set(key, loadedValue)
-            loadedValue
-        } catch (error: Throwable) {
-            throw SpringCache.ValueRetrievalException(key, valueLoader, error)
-        }
+        @Suppress("UNCHECKED_CAST")
+        return loads.execute(key) {
+            get(key)?.get() ?: try {
+                valueLoader.call().also { delegate[key] = it }
+            } catch (error: Throwable) {
+                throw SpringCache.ValueRetrievalException(key, valueLoader, error)
+            }
+        } as T?
     }
 
     override fun put(key: Any, value: Any?) {
-        delegate.set(key, value)
+        delegate[key] = value
     }
 
     override fun evict(key: Any) {
         delegate.evict(key)
     }
 
+    /**
+     * 只能清空本实例的 L2；L1 是共享存储，不支持整体清空。
+     */
     override fun clear() {
-        clearDelegate(delegate)
+        clearClientSide(delegate)
     }
 
-    /**
-     * Recursively unwrap proxies and clear the local/client-side caches.
-     *
-     * Previously this only handled `ClientSideCache` and `CoherentCache`, so a
-     * wrapped `JoinCache` (whose proxy implements neither) — or any proxy that
-     * needed unwrapping via `CacheDelegated` — silently dropped `clear()`,
-     * violating Spring's `Cache.clear()` contract.
-     */
-    private fun clearDelegate(cache: Cache<*, *>) {
-        // Unwrap proxy delegates first (plain cache proxies implement CacheDelegated).
-        if (cache is CacheDelegated<*>) {
-            clearDelegate(cache.delegate)
-            return
-        }
+    private fun clearClientSide(cache: Cache<*, *>) {
         when (cache) {
-            // A local client-side cache is cleared in full.
-            is ClientSideCache<*> -> cache.clear()
-            // A coherent cache only exposes its local tier for clearing.
-            is CoherentCache<*, *> -> cache.clientSideCache.clear()
-            // A join cache composes two caches; clear both local tiers.
+            is CacheDelegated<*> -> clearClientSide(cache.delegate)
+            is CoherentCache<*, *> -> cache.configuration.clientSideCache.clear()
             is SimpleJoinCache<*, *, *, *> -> {
-                clearDelegate(cache.firstCache)
-                clearDelegate(cache.joinCache)
+                clearClientSide(cache.firstCache)
+                clearClientSide(cache.joinCache)
             }
         }
     }
 
     override fun retrieve(key: Any): CompletableFuture<*>? {
-        return retrieveValueWrapper(key)
+        return CompletableFuture.supplyAsync({ get(key) }, asyncExecutor)
     }
 
     @Suppress("TooGenericExceptionCaught")
     override fun <T : Any> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> {
-        return retrieveValueWrapper(key).thenCompose { valueWrapper ->
-            if (valueWrapper == null) {
-                return@thenCompose try {
-                    valueLoader.get().thenApply {
-                        delegate.set(key, it)
-                        it
-                    }
-                } catch (error: Throwable) {
-                    CompletableFuture.failedFuture(error)
-                }
+        return CompletableFuture.supplyAsync({ get(key) }, asyncExecutor).thenCompose { valueWrapper ->
+            if (valueWrapper != null) {
+                @Suppress("UNCHECKED_CAST")
+                return@thenCompose CompletableFuture.completedFuture(valueWrapper.get() as T)
             }
-            @Suppress("UNCHECKED_CAST")
-            CompletableFuture.completedFuture(valueWrapper.get() as T?)
-                as CompletableFuture<T>
-        }
-    }
-
-    private fun retrieveValueWrapper(key: Any): CompletableFuture<SpringCache.ValueWrapper?> {
-        return CompletableFuture.supplyAsync {
-            get(key)
+            try {
+                valueLoader.get().thenApply {
+                    delegate[key] = it
+                    it
+                }
+            } catch (error: Throwable) {
+                CompletableFuture.failedFuture(error)
+            }
         }
     }
 }

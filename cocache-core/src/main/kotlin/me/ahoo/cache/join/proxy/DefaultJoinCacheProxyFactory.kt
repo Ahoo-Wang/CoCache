@@ -20,6 +20,7 @@ import me.ahoo.cache.api.join.JoinCache
 import me.ahoo.cache.join.JoinKeyExtractorFactory
 import me.ahoo.cache.join.SimpleJoinCache
 import me.ahoo.cache.proxy.CacheDelegated
+import me.ahoo.cache.proxy.CacheInvocationHandler
 import java.lang.reflect.Proxy
 import kotlin.reflect.KType
 
@@ -27,41 +28,51 @@ class DefaultJoinCacheProxyFactory(
     private val cacheFactory: CacheFactory,
     private val joinKeyExtractorFactory: JoinKeyExtractorFactory,
 ) : JoinCacheProxyFactory {
+
     @Suppress("UNCHECKED_CAST")
     override fun <CACHE : JoinCache<*, *, *, *>> create(cacheMetadata: JoinCacheMetadata): CACHE {
-        val firstCache = getCache(
-            cacheName = cacheMetadata.firstCacheName,
-            keyType = cacheMetadata.firstKeyType,
-            valueType = cacheMetadata.firstValueType
-        )
-        requireNotNull(firstCache)
-        val joinCache = getCache(
-            cacheName = cacheMetadata.joinCacheName,
-            keyType = cacheMetadata.joinKeyType,
-            valueType = cacheMetadata.joinValueType
-        )
-        requireNotNull(joinCache)
-
+        val firstCache =
+            requireCache(
+                cacheMetadata,
+                cacheMetadata.firstCacheName,
+                cacheMetadata.firstKeyType,
+                cacheMetadata.firstValueType
+            )
+        val joinCache =
+            requireCache(
+                cacheMetadata,
+                cacheMetadata.joinCacheName,
+                cacheMetadata.joinKeyType,
+                cacheMetadata.joinValueType
+            )
         val joinKeyExtractor = joinKeyExtractorFactory.create<Any, Any>(cacheMetadata)
         val delegate = SimpleJoinCache(firstCache, joinCache, joinKeyExtractor)
-        val invocationHandler = JoinCacheInvocationHandler(cacheMetadata, delegate)
-
+        val proxyInterface = cacheMetadata.proxyInterface.java
         return Proxy.newProxyInstance(
-            this.javaClass.classLoader,
+            proxyInterface.classLoader,
             arrayOf(
-                cacheMetadata.proxyInterface.java,
+                proxyInterface,
                 JoinCache::class.java,
                 CacheDelegated::class.java,
                 JoinCacheMetadataCapable::class.java
             ),
-            invocationHandler
+            CacheInvocationHandler(proxyInterface, delegate, cacheMetadata)
         ) as CACHE
     }
 
-    private fun getCache(cacheName: String, keyType: KType, valueType: KType): Cache<Any, Any>? {
-        if (cacheName.isNotBlank()) {
-            return cacheFactory.getCache(cacheName)
+    private fun requireCache(
+        cacheMetadata: JoinCacheMetadata,
+        cacheName: String,
+        keyType: KType,
+        valueType: KType
+    ): Cache<Any, Any> {
+        val cache: Cache<Any, Any>? = if (cacheName.isNotBlank()) {
+            cacheFactory.getCache(cacheName)
+        } else {
+            cacheFactory.getCache(keyType, valueType)
         }
-        return cacheFactory.getCache(keyType, valueType)
+        return requireNotNull(cache) {
+            "[${cacheMetadata.cacheName}] Cache not found for name[$cacheName] or type[Cache<$keyType, $valueType>]."
+        }
     }
 }
