@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Documentation
+    url: https://cocache.ahoo.me/
+    about: Guides, architecture and API reference
+  - name: 🔒 Security vulnerability
+    url: https://github.com/Ahoo-Wang/CoCache/security/advisories/new
+    about: Please report security issues privately, not as public issues

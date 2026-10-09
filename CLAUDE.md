@@ -26,7 +26,7 @@ Design goals, module boundaries, and invariants live in `docs/architecture.md` �
 # Full build (no tests)
 ./gradlew build -x test
 
-# Full check (tests + detekt + dokka); use clean check in CI for reproducibility
+# Full check (tests + detekt + dokka + license headers + coverage gate ≥90% lines / ≥80% branches); needs Redis
 ./gradlew check
 ./gradlew clean check
 

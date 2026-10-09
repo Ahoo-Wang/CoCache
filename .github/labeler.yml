@@ -1,0 +1,75 @@
+# actions/labeler 配置：按变更路径与分支名自动打标签。
+# 分支名前缀遵循 Conventional Commits，标签与 .github/release.yml 的发布说明分类一致。
+
+# ---- 模块 ----
+"module: api":
+  - changed-files:
+      - any-glob-to-any-file: cocache-api/**
+"module: core":
+  - changed-files:
+      - any-glob-to-any-file: cocache-core/**
+"module: spring":
+  - changed-files:
+      - any-glob-to-any-file: cocache-spring/**
+"module: spring-redis":
+  - changed-files:
+      - any-glob-to-any-file: cocache-spring-redis/**
+"module: spring-cache":
+  - changed-files:
+      - any-glob-to-any-file: cocache-spring-cache/**
+"module: starter":
+  - changed-files:
+      - any-glob-to-any-file: cocache-spring-boot-starter/**
+"module: test":
+  - changed-files:
+      - any-glob-to-any-file: cocache-test/**
+"module: example":
+  - changed-files:
+      - any-glob-to-any-file: cocache-example/**
+
+# ---- 变更类型（路径）----
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - wiki/**
+          - document/**
+          - skills/**
+          - "**/*.md"
+          - llms.txt
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/src/test/**"
+          - cocache-test/**
+benchmark:
+  - changed-files:
+      - any-glob-to-any-file: "**/src/jmh/**"
+ci:
+  - changed-files:
+      - any-glob-to-any-file: .github/**
+build:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.gradle.kts"
+          - gradle/**
+          - gradle.properties
+          - config/**
+dependency:
+  - changed-files:
+      - any-glob-to-any-file:
+          - gradle/libs.versions.toml
+          - gradle/wrapper/**
+          - wiki/package.json
+          - wiki/pnpm-lock.yaml
+  - head-branch: ['^renovate/', '^dependabot/']
+
+# ---- 变更类型（分支名）----
+enhancement:
+  - head-branch: ['^feat']
+bug:
+  - head-branch: ['^fix']
+performance:
+  - head-branch: ['^perf']
+maintenance:
+  - head-branch: ['^refactor', '^chore', '^build', '^ci', '^style']

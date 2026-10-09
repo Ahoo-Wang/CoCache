@@ -23,7 +23,7 @@ wiki/                — VitePress docs site, bilingual: en at root, zh mirror u
 
 ```bash
 ./gradlew build -x test        # Build without tests
-./gradlew check                # Full gate: tests + detekt + dokka (run before committing)
+./gradlew check                # Full gate: tests + detekt + dokka + license headers + coverage gate (run before committing; needs Redis)
 ./gradlew test                 # All tests
 ./gradlew :cocache-core:test   # Single module
 ./gradlew :cocache-core:test --tests "me.ahoo.cache.proxy.ProxyCacheTest"  # Single class
@@ -89,14 +89,17 @@ cd wiki && pnpm build                   # Production build — the ONLY dead-lin
 
 ## Git Workflow
 
-- Main branch: `main`. CI: integration-test.yml, codecov.yml, package-deploy.yml, deploy-wiki.yml, gitee-sync.yml, renovate.yml.
-- Commits: Conventional format (`feat(scope):`, `fix(scope):`, `docs(scope):`, `chore(release):`, `test:`).
+- Main branch: `main` (protected; changes land via squash-merged PRs). Branch names: `<type>/<short-description>` (the type drives PR labels and release-note categories).
+- CI: integration-test.yml (per-module tests, Redis), static-analysis.yml (detekt → code scanning, license headers), codecov.yml (coverage gate), labeler.yml, package-deploy.yml (on release published), deploy-wiki.yml, gitee-sync.yml, renovate.yml.
+- Commits / PR titles: Conventional format (`feat(scope):`, `fix(scope):`, `perf:`, `docs(scope):`, `refactor!:` for breaking). See CONTRIBUTING.md.
 
 ## Boundaries
 
 - ✅ Always: Run `./gradlew check` before committing
 - ✅ Always: Use fluent-assert `.assert()` in Kotlin tests
 - ✅ Always: Follow Detekt rules
+- ✅ Always: Keep the Apache-2.0 license header on every source file and build script (`checkLicenseHeader`)
+- ✅ Always: Keep aggregate coverage ≥ 90% lines / 80% branches (`codeCoverageVerification`)
 - ✅ Always: Extend TCK specs for new cache/codec implementations
 - ⚠️ Ask first: Adding new dependencies to version catalog
 - ⚠️ Ask first: Modifying cocache-api interfaces or wire formats (breaking-change risk)

@@ -12,8 +12,34 @@
 #
 
 name: Integration Test
-on: [ pull_request ]
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  cocache-api-test:
+    name: CoCache API Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Test CoCache-API
+        run: ./gradlew cocache-api:clean cocache-api:check
   cocache-core-test:
     name: CoCache Core Test
     runs-on: ubuntu-latest
@@ -48,6 +74,21 @@ jobs:
 
       - name: Test CoCache-Spring
         run: ./gradlew cocache-spring:clean cocache-spring:check
+  cocache-spring-cache-test:
+    name: CoCache Spring Cache Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Test CoCache-Spring-Cache
+        run: ./gradlew cocache-spring-cache:clean cocache-spring-cache:check
   cocache-spring-redis-test:
     name: CoCache Spring Redis Test
     needs: [ cocache-core-test ]

@@ -14,7 +14,8 @@
 name: Packages Deploy
 on:
   release:
-    types: [created]
+    # published 同时覆盖“直接发布”与“草稿转正式”；草稿不会触发工作流
+    types: [published]
 
 jobs:
   verify:
