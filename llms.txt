@@ -1,43 +1,28 @@
 # CoCache
 
-> Level 2 Distributed Coherence Cache Framework for Java/Kotlin. Two-level caching (L2 bounded local Caffeine + L1 distributed Redis) with event-driven coherence via CacheEvictedEventBus and bounded staleness.
+> Two-level distributed coherent cache for Java/Kotlin on Spring Boot 4: bounded local Caffeine (L2) in front of shared Redis (L1) in front of a data source, with invalidation broadcast over Redis Pub/Sub and bounded staleness. Maven group `me.ahoo.cocache`; JDK 17+.
 
-## Documentation
+Declare a cache as an interface (`@CoCache interface UserCache : Cache<String, User>`), register it with `@EnableCoCache(caches = [...])`, and provide a `CacheSource<K, V>` bean that loads on a miss (`null` = negative entry). Write pattern: update the data source first, then `evict(key)`.
 
-- [Wiki](wiki/llms.txt) — Complete wiki with onboarding guides, architecture, API reference, and module documentation
+## Docs
 
-## Key Concepts
+- [Introduction](https://cocache.ahoo.me/guide/): the problem, guarantees, and when not to use CoCache
+- [Quick Start](https://cocache.ahoo.me/guide/quick-start): dependency, cache interface, source, usage
+- [Configuration](https://cocache.ahoo.me/guide/configuration): `@CoCache`/`@CaffeineCache`, `cocache.*` properties, per-cache component beans, Redis codecs
+- [JoinCache](https://cocache.ahoo.me/guide/join-cache): composing two caches
+- [Spring Cache](https://cocache.ahoo.me/guide/spring-cache): `@Cacheable` through `CoCacheManager`
+- [Operations](https://cocache.ahoo.me/guide/operations): actuator endpoints, Redis failure policy, negative-cache sentinel, troubleshooting
+- [Changelog](https://cocache.ahoo.me/guide/changelog): releases and 4.x → 5.0 migration table
 
-- **Two-Level Caching**: L2 (local in-memory) → L1 (distributed Redis) → L0 (DataSource); storage tiers are pure stores, TTL policy (`TtlPolicy`) lives in the orchestration layer
-- **Cache Coherence**: Event-driven via CacheEvictedEventBus (Redis Pub/Sub or in-process LocalCacheEvictedEventBus); every write-back is guarded by invalidation stamps; L2 is cleared on every channel (re)subscription (`onReset`)
-- **Annotation-Driven**: @CoCache (ttl 3600s, ttlAmplitude 60s, missingTtl 60s by default), @CaffeineCache, @JoinCacheable
-- **Proxy-Based**: JDK dynamic proxies create cache implementations from annotated interfaces
-- **JoinCache**: Compose multiple cached values into a single JoinValue result
-- **Cache Stampede Prevention**: Per-key SingleFlight load coalescing (original exceptions shared with waiters)
-- **Cache Penetration Prevention**: Explicit negative cache (sealed `CacheValue` = `PresentValue` | `MissingValue`) with its own `missingTtl` + optional BloomKeyFilter
-- **TTL Jitter**: Randomized TTL within amplitude bounds prevents cache avalanche
-- **Failure Degradation**: Redis read failures fall back to source (strict mode via `cocache.redis.strict-failure`); an L1 miss is never treated as a negative cache; corrupted payloads self-heal
+## Design
 
-## Architecture
+- [Architecture](https://cocache.ahoo.me/architecture/): goals, modules, data model, proxy wiring
+- [Consistency](https://cocache.ahoo.me/architecture/consistency): read/write paths, invalidation stamps, eviction channel, guarantees and known windows
+- [Extending CoCache](https://cocache.ahoo.me/architecture/extending): SPI contracts and the `cocache-test` TCK
+- [docs/architecture.md](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md): normative design and invariants (Chinese)
 
-Modules:
-- `cocache-api` — User API and all SPI (Cache, CacheValue, CacheStore/ClientSideCache/DistributedCache, CacheSource, KeyConverter, KeyFilter, CacheEvictedEventBus, JoinCache)
-- `cocache-core` — Orchestration and defaults (DefaultCoherentCache, TtlPolicy, SingleFlight, Caffeine L2, proxies, JoinCache)
-- `cocache-spring` — Spring integration (@EnableCoCache, factory beans)
-- `cocache-spring-redis` — Redis implementation (RedisDistributedCache, RedisCacheEvictedEventBus, codecs)
-- `cocache-spring-cache` — Spring Cache abstraction bridge (CoCacheManager, CoSpringCache)
-- `cocache-spring-boot-starter` — Auto-configuration and Actuator endpoints
-- `cocache-test` — TCK test specifications
+## Optional
 
-## Build
-
-```bash
-./gradlew build -x test    # Build without tests
-./gradlew check             # Full check (tests + detekt + dokka)
-./gradlew test              # Run all tests
-./gradlew :cocache-core:test  # Module-specific tests
-```
-
-- JDK 17+, Gradle 9.7.0, Kotlin 2.4.10
-- Group: `me.ahoo.cocache`, Version: `5.0.1`
-- Design and invariants: `docs/architecture.md`
+- [CONTRIBUTING.md](https://github.com/Ahoo-Wang/CoCache/blob/main/CONTRIBUTING.md): workflow, quality gates, release process
+- [AGENTS.md](https://github.com/Ahoo-Wang/CoCache/blob/main/AGENTS.md): build commands and coding rules for agents changing CoCache
+- [skills/cocache](https://github.com/Ahoo-Wang/CoCache/blob/main/skills/cocache/SKILL.md): agent skill for applications that use CoCache
