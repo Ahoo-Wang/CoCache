@@ -6,4 +6,4 @@ allowBuilds:
 # - katex：仅被 mermaid 用于图表内数学公式（本站未使用），升级到已修复版本。
 overrides:
   vite: ^6.4.4
-  katex: ^0.18.2
+  katex: ^0.19.0
