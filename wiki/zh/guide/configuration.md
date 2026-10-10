@@ -1,328 +1,127 @@
 ---
-title: 配置参考
-description: CoCache 完整配置参考 -- @CoCache 参数与 TTL 选择、@CaffeineCache 设置、Spring Boot 自动配置和自定义 Bean 覆盖。
+title: 配置
+description: CoCache 的全部配置：@CoCache 的 TTL、@CaffeineCache 的 L2 容量、cocache.* 属性、按缓存定制的组件 bean、Redis 编码以及用代码构建缓存。
 ---
 
-# 配置参考
+# 配置
 
-本页面涵盖 CoCache 中所有可用的配置选项，包括注解参数、Spring Boot 属性和自定义 Bean 覆盖。
+CoCache 的配置分三层：
 
-## @CoCache 注解
+1. **缓存接口上的注解**：TTL、key 格式、L2 容量。
+2. **以缓存命名的 bean**：替换单个组件，如 L2、L1、key 转换器或数据源。
+3. **`cocache.*` 属性**：全局开关。
 
-`@CoCache` 注解标记缓存接口用于基于代理的实现。它配置分布式缓存层的行为。
+## `@CoCache`
 
-| 参数 | 类型 | 默认值 | 说明 | 源码 |
-|------|------|--------|------|------|
-| `name` | `String` | `""`（接口名） | 缓存名称，用于事件频道和 Bean 命名 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
-| `keyPrefix` | `String` | `""`（→ `cocache:{cacheName}:`） | 所有存储 key 的前缀；支持 Spring 占位符 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
-| `keyExpression` | `String` | `""` | 用于派生 key 的 SpEL 模板 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
-| `ttl` | `Long` | `3600` | 命中值 TTL（秒），`TtlAt.FOREVER` 表示永不过期 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
-| `ttlAmplitude` | `Long` | `60` | 命中值 TTL 的随机抖动（± 秒），防止缓存雪崩 | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
-| `missingTtl` | `Long` | `60` | 负缓存 TTL（秒，`CacheSource` 返回 `null` 时） | [CoCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CoCache.kt) |
+| 属性 | 默认值 | 含义 |
+|------|--------|------|
+| `name` | 接口简单类名 | 缓存名。决定淘汰事件频道与按缓存定制的 bean 名 |
+| `keyPrefix` | `cocache:{name}:` | 所有存储 key 的前缀，支持 Spring `${…}` 占位符 |
+| `keyExpression` | `""`（使用 `key.toString()`） | 把 key 转为字符串的 SpEL 模板，例如 `#{#root.tenantId}:#{#root.id}` |
+| `ttl` | `3600` | 值的存活秒数；`TtlAt.FOREVER` 表示永不过期 |
+| `ttlAmplitude` | `60` | 随机抖动秒数：每个值存活 `ttl ± ttlAmplitude` 秒，且不少于 1 秒 |
+| `missingTtl` | `60` | 负缓存（“不存在”）的存活秒数，不抖动 |
 
 ### 如何选择 TTL
 
-- `ttl` 决定残留不一致最多能存活多久。cache-aside 竞态（慢回源覆盖了 L1 中的并发更新）只能靠过期修复。除非每个写入方都可靠地调用 `evict`，否则请保持 `ttl` 有限。
-- `missingTtl` 决定一次“不存在”查询被缓存后，新建数据最多多久不可见。请保持它较短。
+- **`ttl` 就是陈旧度上限。** 有一种竞态会让旧值留在 Redis 中直到过期：慢加载可能在并发更新的淘汰之后才写入结果（见[一致性](../architecture/consistency.md#what-is-not-guaranteed)）。按业务在这种少见情况下能容忍的最长陈旧时间来选。只有当所有写入方都可靠地调用 `evict`、并且接受上述竞态永不修复时，`TtlAt.FOREVER` 才是安全的。
+- **`missingTtl` 是新建数据可能“不可见”的时长**：之前的查询缓存了它不存在。应保持较短。
+- **`ttlAmplitude` 打散过期时间**，一起加载的 key（如发布后）不会在同一秒过期。取 `ttl` 的百分之几即可。
 
-### TTL 抖动机制
+## `@CaffeineCache`
 
-`ttlAmplitude` 参数通过随机化实际 TTL 来防止缓存雪崩（大量键同时过期）：
+配置默认的 L2；不标注时使用下列默认值。L2 始终有界。
 
-```
-actualTtl = ttl + random(-ttlAmplitude, +ttlAmplitude)
-```
+| 属性 | 默认值 | 含义 |
+|------|--------|------|
+| `maximumSize` | `10000` | 每个实例的最大条目数 |
+| `initialCapacity` | 不设置 | 初始哈希表大小 |
+| `expireAfterAccess` | `0`（关闭） | 空闲多久后淘汰 |
+| `expireUnit` | `SECONDS` | `expireAfterAccess` 的单位 |
 
-```mermaid
-graph LR
-    subgraph ttl_jitter ["TTL Jitter"]
-        direction LR
-        TTL["ttl = 120s"]
-        Amp["ttlAmplitude = 10"]
-        Result["actualTtl = 110..130s<br>(random)"]
-    end
+正确性不依赖 `expireAfterAccess`：每个条目自带 `ttlAt`，过期后在读取时淘汰。空闲淘汰只是更早释放内存；它在每次读取时记录访问时间，对极热的 key 会损失吞吐。
 
-    TTL --> Result
-    Amp --> Result
+## 属性
 
-    style TTL fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Amp fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Result fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
+| 属性 | 默认值 | 含义 |
+|------|--------|------|
+| `cocache.enabled` | `true` | `false` 关闭全部 CoCache 自动配置（包括 Actuator 端点） |
+| `cocache.redis.strict-failure` | `false` | `false` 在 Redis 故障时降级：读取回源，写入与淘汰仅告警。`true` 重抛异常。见[运维](./operations.md#redis-failures) |
+| `cocache.redis.missing-guard-sentinel` | `_nil_` | Redis 中标记负缓存的值。见[运维](./operations.md#the-negative-cache-sentinel) |
 
-源码：[TtlAt.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/TtlAt.kt)、[TtlPolicy.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/TtlPolicy.kt)
+两个 `cocache.redis.*` 属性只作用于默认创建的 Redis 缓存；自定义的 `{name}.DistributedCache` bean 自行决定策略。
 
-### 示例
+## 按缓存定制组件 {#per-cache-components}
 
-```kotlin
-@CoCache(keyPrefix = "user:", ttl = 120, ttlAmplitude = 10)
-interface UserCache : Cache<String, User>
-```
+每个缓存由若干组件组装而成。要为单个缓存替换某个组件，声明名为 `{cacheName}{suffix}` 的 bean：
 
-## @CaffeineCache 注解
-
-配置默认 L2（`CaffeineClientSideCache`）。该注解可选，不标注时使用下列默认值。过期条目在读取时淘汰。
-
-| 参数 | 类型 | 默认值 | 说明 | 源码 |
-|------|------|--------|------|------|
-| `initialCapacity` | `Int` | `-1`（未设置） | 初始容量 | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
-| `maximumSize` | `Long` | `10000` | 最大条目数（L2 始终有界） | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
-| `expireAfterAccess` | `Long` | `0`（不启用） | 自最近一次访问起的空闲淘汰 | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
-| `expireUnit` | `TimeUnit` | `SECONDS` | `expireAfterAccess` 的单位 | [CaffeineCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/CaffeineCache.kt) |
-
-## @JoinCacheable 注解
-
-将缓存接口标记为 `JoinCache`，用于组合两个缓存值。
-
-| 参数 | 类型 | 默认值 | 说明 | 源码 |
-|------|------|--------|------|------|
-| `firstCacheName` | `String` | `""` | 用于获取第一个值的主缓存名称 | [JoinCacheable.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/JoinCacheable.kt) |
-| `joinCacheName` | `String` | `""` | 用于获取关联值的辅助缓存名称 | [JoinCacheable.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/JoinCacheable.kt) |
-| `joinKeyExpression` | `String` | `""` | 从第一个值中提取关联键的 SpEL 表达式 | [JoinCacheable.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/annotation/JoinCacheable.kt) |
-
-```kotlin
-@JoinCacheable(
-    firstCacheName = "UserExtendInfoCache",
-    joinCacheName = "UserCache",
-    joinKeyExpression = "#{#root.userId}"
-)
-interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, User>
-```
-
-源码：[cocache-example/.../cache/UserExtendInfoJoinCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserExtendInfoJoinCache.kt)
-
-## Spring Boot 属性
-
-### CoCacheProperties
-
-| 属性 | 类型 | 默认值 | 说明 | 源码 |
-|------|------|--------|------|------|
-| `cocache.enabled` | `Boolean` | `true` | 启用或禁用整个 CoCache 自动配置 | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
-| `cocache.redis.strict-failure` | `Boolean` | `false` | Redis 故障策略：`false` = 降级（读回源、写仅告警）；`true` = 重抛 `DataAccessException` | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
-| `cocache.redis.missing-guard-sentinel` | `String` | `"_nil_"` | 自定义 Redis codec 负缓存哨兵值（约束见下文） | [CoCacheProperties.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheProperties.kt) |
-
-```yaml
-# application.yml
-cocache:
-  enabled: true
-  redis:
-    strict-failure: false
-    missing-guard-sentinel: "_nil_"
-```
-
-当 `cocache.enabled` 为 `false` 时，所有 CoCache Bean 都会被跳过。条件化由 `@ConditionalOnCoCacheEnabled` 处理。
-
-源码：[ConditionalOnCoCacheEnabled.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/ConditionalOnCoCacheEnabled.kt)
-
-#### Redis 故障降级
-
-`RedisDistributedCache` 对 Redis 故障降级处理，不向业务调用方传播异常：
-
-- **读失败** → 按缓存未命中处理：一致性缓存回退到数据源回源，Redis 故障或主从切换期间业务调用不受影响。
-- **写 / evict 失败** → 记录 `WARN` 后吞掉——缓存写入失败不会阻断业务写路径。
-- 失效事件发布路径（`RedisCacheEvictedEventBus`）同样降级（pub/sub 本就是 fire-and-forget）。
-
-设置 `cocache.redis.strict-failure=true` 改为传播异常。注意：降级启用时，故障期间本地 L2 未命中的 key 每进程每客户端 TTL 窗口至多回源一次——请据此规划数据源容量。这两个属性仅作用于自动装配（fallback）创建的缓存；自定义 `DistributedCache` Bean 自行管理其策略。
-
-#### 负缓存哨兵
-
-Redis codec 用哨兵值 `"_nil_"` 标记负缓存条目。若业务数据可能合法地等于哨兵（外部写入者写入的精确 `"_nil_"` 字符串、单元素 `{"_nil_"}` 集合或单 `"_nil_"` 键的 Map），可配置自定义哨兵：
-
-```yaml
-cocache:
-  redis:
-    missing-guard-sentinel: "\u0000myapp:nil"
-```
-
-约束：
-
-- 自定义哨兵与默认哨兵**互不识别**——切换需全集群同时变更（滚动升级期间旧实例会把新哨兵误读为真实值）。
-- 取值不得等于任何合法的业务序列化值，且不得为空白（绑定时 fail-fast）。
-- 进程内的负缓存是显式的 `MissingValue` 类型，哨兵只存在于 Redis 中。
-
-## 自动配置 Bean 注册表
-
-`CoCacheAutoConfiguration` 类注册所有必需的 Bean。每个 Bean 都使用 `@ConditionalOnMissingBean`，意味着你可以通过声明自己的 Bean 来覆盖任何 Bean。
-
-```mermaid
-graph TB
-    subgraph autoconfig ["CoCacheAutoConfiguration"]
-        direction TB
-        ClientId["ClientIdGenerator<br>@ConditionalOnMissingBean"]
-        CacheFact["CacheFactory<br>@ConditionalOnMissingBean"]
-        CoCacheMgr["CoCacheManager"]
-        RedisContainer["RedisMessageListenerContainer<br>@ConditionalOnMissingBean"]
-        EventBus["CacheEvictedEventBus<br>RedisCacheEvictedEventBus"]
-        CoherentFact["CoherentCacheFactory<br>@ConditionalOnMissingBean"]
-        CacheSrcFact["CacheSourceFactory<br>@ConditionalOnMissingBean"]
-        CSCFact["ClientSideCacheFactory<br>@ConditionalOnMissingBean"]
-        DistFact["DistributedCacheFactory<br>@ConditionalOnMissingBean"]
-        KeyConvFact["KeyConverterFactory<br>@ConditionalOnMissingBean"]
-        ProxyFact["CacheProxyFactory<br>@ConditionalOnMissingBean"]
-        JoinKeyFact["JoinKeyExtractorFactory<br>@ConditionalOnMissingBean"]
-        JoinProxyFact["JoinCacheProxyFactory<br>@ConditionalOnMissingBean"]
-    end
-
-    RedisContainer --> EventBus
-    EventBus --> CoherentFact
-    CoherentFact --> ProxyFact
-    CSCFact --> ProxyFact
-    DistFact --> ProxyFact
-    CacheSrcFact --> ProxyFact
-    KeyConvFact --> ProxyFact
-    ClientId --> ProxyFact
-    CacheFact --> JoinProxyFact
-    JoinKeyFact --> JoinProxyFact
-
-    style ClientId fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheFact fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CoCacheMgr fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style RedisContainer fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style EventBus fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CoherentFact fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheSrcFact fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CSCFact fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style DistFact fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style KeyConvFact fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style ProxyFact fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style JoinKeyFact fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style JoinProxyFact fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-源码：[CoCacheAutoConfiguration.kt:61-186](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheAutoConfiguration.kt#L61-L186)
-
-### 自动配置 Bean 参考
-
-| Bean | 类型 | 条件 | 说明 |
-|------|------|------|------|
-| `defaultHostClientIdGenerator` | `ClientIdGenerator` | `@ConditionalOnMissingBean` | 基于主机地址生成客户端 ID |
-| `cacheFactory` | `CacheFactory` | `@ConditionalOnMissingBean` | 从 Bean 工厂解析缓存实例 |
-| `coCacheManager` | `CoCacheManager` | -- | 集成 Spring Cache 抽象 |
-| `cocacheRedisMessageListenerContainer` | `RedisMessageListenerContainer` | `@ConditionalOnMissingBean` + `@ConditionalOnSingleCandidate` | 监听 Redis Pub/Sub 消息 |
-| `cacheEvictedEventBus` | `CacheEvictedEventBus` | `@ConditionalOnMissingBean` | 通过 Redis 发布和订阅缓存失效事件 |
-| `coherentCacheFactory` | `CoherentCacheFactory` | `@ConditionalOnMissingBean` | 创建 `DefaultCoherentCache` 实例 |
-| `cacheSourceFactory` | `CacheSourceFactory` | `@ConditionalOnMissingBean` | 先按名称、再按唯一类型解析 `CacheSource` Bean |
-| `clientSideCacheFactory` | `ClientSideCacheFactory` | `@ConditionalOnMissingBean` | 解析 `{cacheName}.ClientSideCache`，或按 `@CaffeineCache` 构建 Caffeine |
-| `distributedCacheFactory` | `DistributedCacheFactory` | `@ConditionalOnMissingBean` | 创建 `RedisDistributedCache` 实例 |
-| `keyConverterFactory` | `KeyConverterFactory` | `@ConditionalOnMissingBean` | 使用 SpEL 表达式转换缓存键 |
-| `cacheProxyFactory` | `CacheProxyFactory` | `@ConditionalOnMissingBean` | 创建缓存接口的代理实现 |
-| `joinKeyExtractorFactory` | `JoinKeyExtractorFactory` | `@ConditionalOnMissingBean` | 从 SpEL 表达式解析关联键提取器 |
-| `joinCacheProxyFactory` | `JoinCacheProxyFactory` | `@ConditionalOnMissingBean` | 创建 JoinCache 接口的代理实现 |
-
-## 自定义 Bean 覆盖
-
-### 自定义 ClientSideCache
-
-声明名为 `{cacheName}.ClientSideCache` 的 Bean，覆盖特定缓存接口的 L2：
+| Bean 名 | 类型 | 默认 |
+|---------|------|------|
+| `{name}.ClientSideCache` | `ClientSideCache<V>` | Caffeine，容量取自 `@CaffeineCache` |
+| `{name}.DistributedCache` | `DistributedCache<V>` | 使用 JSON 编码的 `RedisDistributedCache` |
+| `{name}.KeyConverter` | `KeyConverter<K>` | 由 `keyPrefix` 与 `keyExpression` 构建 |
+| `{name}.CacheSource` | `CacheSource<K, V>` | 唯一的 `CacheSource<K, V>` 类型 bean，否则为 `CacheSource.noOp()` |
+| `{name}.JoinKeyExtractor` | `JoinKeyExtractor<V1, K2>` | 设置了 `joinKeyExpression` 时由其构建，否则为唯一的该类型 bean |
 
 ```kotlin
 @Configuration
 class UserCacheConfiguration {
     @Bean("UserCache.ClientSideCache")
-    fun userClientSideCache(): ClientSideCache<User> {
-        return CaffeineClientSideCache.build(maximumSize = 100_000, expireAfterAccess = Duration.ofMinutes(10))
-    }
+    fun userClientSideCache(): ClientSideCache<User> =
+        CaffeineClientSideCache.build(maximumSize = 100_000)
+
+    @Bean("UserCache.DistributedCache")
+    fun userDistributedCache(redisTemplate: StringRedisTemplate, objectMapper: ObjectMapper): DistributedCache<User> =
+        RedisDistributedCache(redisTemplate, ObjectToJsonCodecExecutor(User::class.java, redisTemplate, objectMapper))
 }
 ```
 
-有状态组件（`ClientSideCache`、`DistributedCache`、`KeyConverter`）**只按 Bean 名称解析**。如果按类型匹配，值类型相同的所有缓存会共享同一个 Bean：一个缓存 `clear()` 会清掉其它缓存，key 前缀也会冲突。
+**有状态组件只按名称匹配。** 有状态组件是 `ClientSideCache`、`DistributedCache` 与 `KeyConverter`。若按类型匹配，所有同值类型的缓存会共享同一实例：清空一个会清空全部，key 也会互相冲突。`CacheSource` 与 `JoinKeyExtractor` 无状态，因此也可按唯一的泛型类型匹配。若有多个同类型候选且都不是 `@Primary`，启动失败，CoCache 不会悄悄回退为 `noOp`。
 
-### 自定义 CacheSource
+### 全局组件
 
-为特定缓存提供数据源加载器：
+自动配置中的其它 bean，如 `CacheEvictedEventBus`、`ClientIdGenerator`、`CoherentCacheFactory`、各组件工厂与 `CacheManager`，都带有 `@ConditionalOnMissingBean`。声明同类型的 bean 即可替换。例如，自定义的 `CacheEvictedEventBus` 可以通过 Kafka 传递淘汰事件，但必须遵守[扩展 CoCache](../architecture/extending.md#invalidation-channel) 中的约定。
 
-```kotlin
-@Configuration
-class UserCacheConfiguration {
-    @Bean
-    fun customizeUserCacheSource(): CacheSource<String, User> {
-        // 返回 null → 以 missingTtl 写入负缓存
-        return CacheSource { key -> database.findById(key)?.let { CacheValue.forever(it) } }
-    }
-}
-```
+## Redis 存储格式
 
-`CacheSource` 先按名称 `{cacheName}.CacheSource` 解析，再按唯一的 `CacheSource<K, V>` 类型 Bean 解析（数据源无状态，可以安全共享）；都没有时使用 `CacheSource.noOp()`。
+默认的 L1 把值以 JSON 存入 Redis String。要以 Hash 或 Set 存储，请在 `{name}.DistributedCache` bean 中换用其它编码器：
 
-### 自定义 DistributedCache
+| 编码器 | 值类型 | Redis 类型 |
+|--------|--------|------------|
+| `ObjectToJsonCodecExecutor`（默认） | Jackson 能序列化的任意类型 | String |
+| `StringToStringCodecExecutor` | `String` | String |
+| `MapToHashCodecExecutor` | `Map<String, String>` | Hash |
+| `ObjectToHashCodecExecutor` | 任意类型，经 `MapConverter` 转换 | Hash |
+| `SetToSetCodecExecutor` | `Set<String>` | Set |
 
-声明名为 `{cacheName}.DistributedCache` 的 Bean，覆盖分布式缓存实现：
+读取通过一个原子 Lua 脚本，一次往返同时取回剩余 TTL 与值。
 
-```kotlin
-@Bean("UserCache.DistributedCache")
-fun customDistributedCache(redisTemplate: StringRedisTemplate): DistributedCache<User> {
-    val codec = ObjectToJsonCodecExecutor<User>(
-        User::class.java, redisTemplate, ObjectMapper()
-    )
-    return RedisDistributedCache(redisTemplate, codec)
-}
-```
+## 用代码构建缓存
 
-### 自定义 CacheEvictedEventBus
-
-用自定义实现替换基于 Redis 的事件总线。实现必须在每次（重新）建立订阅时调用 `CacheEvictedSubscriber.onReset()`，因为未订阅期间发送的事件已经丢失：
+也可以不用注解，自己组装 `CoherentCache`。`CoherentCacheFactory` bean 会把它接入淘汰事件通道：
 
 ```kotlin
 @Bean
-fun customEventBus(): CacheEvictedEventBus {
-    // 自定义事件总线（例如 Kafka、RabbitMQ）
-    return MyCustomEventBus()
-}
+fun userCache(
+    redisTemplate: StringRedisTemplate,
+    objectMapper: ObjectMapper,
+    coherentCacheFactory: CoherentCacheFactory,
+    clientIdGenerator: ClientIdGenerator,
+): CoherentCache<String, User> = coherentCacheFactory.create(
+    CoherentCacheConfiguration(
+        cacheName = "userCache",
+        clientId = clientIdGenerator.generate(),
+        keyConverter = ToStringKeyConverter("user:"),
+        distributedCache = RedisDistributedCache(
+            redisTemplate,
+            ObjectToJsonCodecExecutor(User::class.java, redisTemplate, objectMapper),
+        ),
+        clientSideCache = CaffeineClientSideCache.build(maximumSize = 100_000),
+        cacheSource = CacheSource { id -> /* 加载 */ null },
+        keyFilter = KeyFilter.NO_OP,          // 或 BloomKeyFilter
+        ttlPolicy = TtlPolicy(ttl = 600, ttlAmplitude = 30, missingTtl = 30),
+    )
+)
 ```
 
-## 配置流程
-
-```mermaid
-sequenceDiagram
-autonumber
-    participant App as Spring Boot
-    participant Auto as CoCacheAutoConfiguration
-    participant Prop as CoCacheProperties
-    participant Bean as BeanFactory
-    participant Proxy as CacheProxyFactory
-
-    App->>Prop: bind cocache.enabled
-    Prop-->>Auto: enabled = true
-    Auto->>Auto: register default beans
-    Auto->>Bean: register ClientIdGenerator
-    Auto->>Bean: register CacheFactory
-    Auto->>Bean: register CacheEvictedEventBus
-    Auto->>Bean: register CoherentCacheFactory
-    Auto->>Bean: register CacheProxyFactory
-    App->>Proxy: @EnableCoCache(caches = [...])
-    Proxy->>Bean: resolve ClientSideCache (custom or default)
-    Proxy->>Bean: resolve CacheSource (custom or noop)
-    Proxy->>Proxy: create CoherentCacheConfiguration
-    Proxy->>Proxy: create DefaultCoherentCache
-    Proxy->>Proxy: create JDK Proxy for interface
-
-```
-
-## CosID 集成
-
-当 CosId 库位于类路径上且存在 `HostAddressSupplier` Bean 时，自动配置会注册一个 `HostClientIdGenerator`，使用 CosId 的主机地址进行客户端 ID 生成。
-
-```kotlin
-@Configuration
-@ConditionalOnClass(HostAddressSupplier::class)
-class CosIdHostAddressSupplierAutoConfiguration {
-    @Bean
-    @ConditionalOnBean(HostAddressSupplier::class)
-    fun inetUtilsHostClientIdGenerator(
-        hostAddressSupplier: HostAddressSupplier
-    ): ClientIdGenerator {
-        return HostClientIdGenerator {
-            hostAddressSupplier.hostAddress
-        }
-    }
-}
-```
-
-源码：[CoCacheAutoConfiguration.kt:175-185](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/src/main/kotlin/me/ahoo/cache/spring/boot/starter/CoCacheAutoConfiguration.kt#L175-L185)
-
-## 相关页面
-
-- [介绍](./index.md) -- 架构概览和核心特性
-- [快速上手](./quick-start.md) -- 几分钟内完成配置并创建第一个缓存
-- [测试概览](../testing/index.md) -- TCK 测试规范与测试模式
-- [性能模式](../testing/performance-patterns.md) -- TTL 抖动和缓存击穿详情
+这也是设置 `KeyFilter`（如 `BloomKeyFilter`）的唯一方式。key 过滤器在 L2 未命中后才参与：被它判定为不存在的 key 直接得到负结果，不访问 Redis 与数据源。使用 `BloomKeyFilter` 需要 classpath 上有 Guava。

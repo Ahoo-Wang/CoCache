@@ -1,42 +1,33 @@
 ---
 title: 快速上手
-description: 几分钟内开始使用 CoCache -- Gradle/Maven 依赖配置、@EnableCoCache、定义缓存接口和 Redis 配置。
+description: 把 CoCache 接入 Spring Boot 应用：依赖、缓存接口、数据源与第一次读取。
 ---
 
 # 快速上手
 
-本指南将帮助你在 Spring Boot 应用中添加 CoCache、定义缓存接口并连接到 Redis。
+本页把一个 Spring Boot 应用从没有缓存带到可用的二级缓存。代码取自 [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example)。
 
-## 前置要求
+**前置条件：** JDK 17+、Spring Boot 4.x、一个 Redis 服务。
 
-- JDK 17 或更高版本
-- Spring Boot 3.x 项目
-- 运行中的 Redis 实例（用于分布式缓存层）
+## 1. 添加依赖
 
-## 第一步：添加依赖
+::: code-group
 
-### Gradle (Kotlin DSL)
-
-```kotlin
-// build.gradle.kts
+```kotlin [Gradle (Kotlin)]
 dependencies {
     implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.1")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 }
 ```
 
-### Gradle (Groovy DSL)
-
-```groovy
+```groovy [Gradle (Groovy)]
 dependencies {
     implementation 'me.ahoo.cocache:cocache-spring-boot-starter:5.0.1'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 }
 ```
 
-### Maven
-
-```xml
+```xml [Maven]
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
@@ -48,38 +39,11 @@ dependencies {
 </dependency>
 ```
 
-`cocache-spring-boot-starter` 会传递性地引入 `cocache-core`、`cocache-spring` 和 `cocache-spring-redis`。
+:::
 
-```mermaid
-graph LR
-    subgraph sg_31 ["Your Application"]
-        App["Spring Boot App"]
-    end
-    subgraph sg_32 ["CoCache Starter"]
-        Starter["cocache-spring-boot-starter"]
-        Core["cocache-core"]
-        Spring["cocache-spring"]
-        Redis["cocache-spring-redis"]
-        API["cocache-api"]
-    end
+如需统一管理所有 CoCache 模块的版本，可导入 BOM `me.ahoo.cocache:cocache-bom`。
 
-    App --> Starter
-    Starter --> Core
-    Starter --> Spring
-    Starter --> Redis
-    Core --> API
-
-    style App fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Starter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Spring fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style API fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-## 第二步：配置 Redis
-
-在 `application.yml` 中设置 Redis 连接属性：
+## 2. 配置 Redis
 
 ```yaml
 spring:
@@ -87,254 +51,80 @@ spring:
     redis:
       host: localhost
       port: 6379
-      # password: your-password
-      # database: 0
 ```
 
-## 第三步：定义缓存接口
+## 3. 声明缓存
 
-创建一个继承 `Cache<K, V>` 的 Kotlin 接口并使用 `@CoCache` 注解标记。注解参数配置分布式缓存行为。
-
-```mermaid
-classDiagram
-    direction TB
-    class Cache~K, V~ {
-        <<Interface>>
-        +get(K) V?
-        +set(K, V) Unit
-        +set(K, Long, V) Unit
-        +getCache(K) CacheValue~V~?
-        +setCache(K, CacheValue~V~) Unit
-        +evict(K) Unit
-        +getTtlAt(K) Long?
-    }
-    class CacheGetter~K, V~ {
-        <<Interface>>
-        +get(K) V?
-    }
-    class CacheSetter~K, V~ {
-        <<Interface>>
-        +set(K, V) Unit
-        +set(K, Long, V) Unit
-        +setCache(K, CacheValue~V~) Unit
-        +evict(K) Unit
-    }
-    class UserCache {
-        @CoCache(keyPrefix = "user:", ttl = 120)
-        @CaffeineCache(maximumSize = 1_000_000)
-    }
-
-    Cache~K, V~ --> CacheGetter~K, V~
-    Cache~K, V~ --> CacheSetter~K, V~
-    UserCache ..|> Cache~K, V~
-
-    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheGetter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheSetter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style UserCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-### 基本缓存接口
+缓存是一个继承 `Cache<K, V>` 的接口，CoCache 在启动时生成其实现。
 
 ```kotlin
-import me.ahoo.cache.api.Cache
-import me.ahoo.cache.api.annotation.CoCache
-import me.ahoo.cache.api.annotation.CaffeineCache
-
-// ttl/ttlAmplitude/missingTtl 单位为秒（默认 3600 / 60 / 60）
-@CoCache(keyPrefix = "user:", ttl = 120)
-// 可选：L2 设置（L2 始终有界，默认 maximumSize = 10000）
-@CaffeineCache(maximumSize = 1_000_000, expireAfterAccess = 120)
+@CoCache(keyPrefix = "user:", ttl = 120)          // 单位秒；默认 ttl 3600、ttlAmplitude 60、missingTtl 60
+@CaffeineCache(maximumSize = 1_000_000)          // 可选的 L2 配置；默认 maximumSize 10000
 interface UserCache : Cache<String, User>
 ```
 
-源码：[cocache-example/.../cache/UserCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserCache.kt)
-
-缓存接口在运行时由 JDK 动态代理（`CacheInvocationHandler`）自动实现。你不需要编写任何实现代码。
-
-### 模型类
+用 `@EnableCoCache` 注册：
 
 ```kotlin
-data class User(val id: String, val name: String)
-```
-
-源码：[cocache-example/.../model/User.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/model/User.kt)
-
-## 第四步：启用 CoCache
-
-在 Spring Boot 应用类上添加 `@EnableCoCache` 注解并列出要注册的缓存接口：
-
-```kotlin
-import me.ahoo.cache.spring.EnableCoCache
-import org.springframework.boot.autoconfigure.SpringBootApplication
-import org.springframework.boot.runApplication
-
 @EnableCoCache(caches = [UserCache::class])
 @SpringBootApplication
 class AppServer
-
-fun main(args: Array<String>) {
-    runApplication<AppServer>(*args)
-}
 ```
 
-源码：[cocache-example/.../AppServer.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/AppServer.kt)
+缓存名默认为接口简单类名（`UserCache`），也可用 `@CoCache(name = …)` 指定。缓存名决定淘汰事件的频道，以及按缓存定制组件时的 bean 名。
 
-```mermaid
-sequenceDiagram
-autonumber
-    participant SB as Spring Boot
-    participant Registrar as EnableCoCacheRegistrar
-    participant Factory as CacheProxyFactory
-    participant Proxy as JDK Proxy
-    participant Cache as DefaultCoherentCache
-    participant Redis as Redis
+## 4. 从数据源加载
 
-    SB->>Registrar: @EnableCoCache(caches = [UserCache])
-    Registrar->>Factory: createProxy(UserCache)
-    Factory->>Factory: read @CoCache annotation
-    Factory->>Factory: create CoherentCacheConfiguration
-    Factory->>Cache: DefaultCoherentCache(config)
-    Factory->>Proxy: Proxy.newProxyInstance(UserCache, handler)
-    Registrar->>SB: register UserCache bean
-    SB-->>Cache: Cache is ready
-    Cache->>Redis: connect to Redis
-
-```
-
-## 第五步：使用缓存
-
-将缓存接口注入到任何 Spring 管理的 Bean 中并直接使用：
-
-```kotlin
-@RestController
-@RequestMapping("test")
-class TestController(private val userCache: UserCache) {
-
-    @GetMapping("{id}")
-    fun get(@PathVariable id: String): User? {
-        return userCache[id]
-    }
-
-    @PostMapping("{id}")
-    fun set(@PathVariable id: String): String {
-        val user = User(id, UUID.randomUUID().toString())
-        userCache[user.id] = user
-        return user.id
-    }
-}
-```
-
-源码：[cocache-example/.../controller/TestController.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/controller/TestController.kt)
-
-## 第六步（可选）：自定义 ClientSideCache 和 CacheSource
-
-你可以为每个缓存接口自定义 L2 缓存和数据源。有状态组件**按 Bean 名称**（`{cacheName}.ClientSideCache`）匹配；`CacheSource` 还可以按泛型类型匹配：
+L2、L1 都未命中时，CoCache 调用该缓存的 `CacheSource`。把它声明为 bean：
 
 ```kotlin
 @Configuration
 class UserCacheConfiguration {
-    @Bean("UserCache.ClientSideCache")
-    fun customizeUserClientSideCache(): ClientSideCache<User> {
-        return MapClientSideCache()
-    }
-
     @Bean
-    fun customizeUserCacheSource(): CacheSource<String, User> {
-        return CacheSource.noOp()  // 返回 null 会以 missingTtl 缓存“不存在”
-    }
+    fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> =
+        CacheSource { id ->
+            // null 表示“不存在”：CoCache 写入负缓存，保留 missingTtl 秒
+            userRepository.findById(id)?.let { CacheValue.of(it, TtlAt.at(120)) }
+        }
 }
 ```
 
-源码：[cocache-example/.../config/UserCacheConfiguration.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/config/UserCacheConfiguration.kt)
+CoCache 按泛型类型 `CacheSource<String, User>` 找到这个 bean。若多个缓存的 key、value 类型相同，请改用 bean 名 `UserCache.CacheSource`。没有任何数据源时，未命中返回空（`CacheSource.noOp()`）。
 
-如果不提供自定义 Bean，自动配置使用默认值：
-- **ClientSideCache**：有界 Caffeine，存在 `@CaffeineCache` 时按其配置
-- **CacheSource**：需要一个 `CacheSource` Bean，否则回退到 `CacheSource.noOp()`
+返回的 `ttlAt` 会原样使用：相对 TTL 用 `TtlAt.at(seconds)`，永不过期用 `CacheValue.forever(value)`。
 
-## 第七步（可选）：编程式 CoherentCache
+## 5. 使用
 
-对于高级用例，你可以通过编程方式创建 `CoherentCache` 实例：
+像注入其它 bean 一样注入接口：
 
 ```kotlin
-@Configuration
-class ClassDefinedCacheConfiguration {
-    @Bean("userCache")
-    fun userCache(
-        redisTemplate: StringRedisTemplate,
-        coherentCacheFactory: CoherentCacheFactory,
-        objectMapper: ObjectMapper,
-        clientIdGenerator: ClientIdGenerator
-    ): CoherentCache<String, User> {
-        val codecExecutor = ObjectToJsonCodecExecutor<User>(
-            User::class.java, redisTemplate, objectMapper
-        )
-        val distributedCache: DistributedCache<User> =
-            RedisDistributedCache(redisTemplate, codecExecutor)
+@Service
+class UserService(
+    private val userCache: UserCache,
+    private val userRepository: UserRepository,
+) {
+    fun find(id: String): User? = userCache[id]   // L2 → L1 → CacheSource
 
-        return coherentCacheFactory.create(
-            CoherentCacheConfiguration(
-                cacheName = "userCache",
-                clientId = clientIdGenerator.generate(),
-                keyConverter = ToStringKeyConverter("user:"),
-                distributedCache = distributedCache,
-                clientSideCache = CaffeineClientSideCache.build(expireAfterAccess = Duration.ofHours(1))
-            )
-        )
+    fun rename(id: String, name: String) {
+        userRepository.rename(id, name)           // 1. 先更新数据源
+        userCache.evict(id)                       // 2. 再淘汰；所有实例都会丢弃副本
     }
 }
 ```
 
-源码：[cocache-example/.../config/ClassDefinedCacheConfiguration.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/config/ClassDefinedCacheConfiguration.kt)
+| 调用 | 效果 |
+|------|------|
+| `cache[key]` | 返回值；不存在、负缓存或已过期时为 `null` |
+| `cache.getCache(key)` | 返回条目本身：`PresentValue(value, ttlAt)` 或 `MissingValue(ttlAt)` |
+| `cache.getTtlAt(key)` | 值的绝对到期时间（纪元秒），或 `null` |
+| `cache[key] = value` | 按缓存的 TTL 策略写入 L1 与 L2 并通知其它实例；`null` 写入负缓存 |
+| `cache[key, ttlAt] = value` | 同上，使用显式的绝对到期时间 |
+| `cache.evict(key)` | 从 L2、L1 删除该 key 并通知其它实例 |
 
-## 完整流程图
+**先更新数据库，再淘汰缓存。** 先淘汰的话，并发读取可能在更新提交前重新加载旧数据。
 
-```mermaid
-graph TB
-    subgraph sg_33 ["Setup"]
-        direction TB
-        Dep["Add cocache-spring-boot-starter"]
-        Config["Configure Redis connection"]
-        Define["Define cache interface<br>@CoCache + @CaffeineCache"]
-        Enable["@EnableCoCache<br>caches = [UserCache]"]
-    end
+## 下一步
 
-    subgraph sg_34 ["Runtime"]
-        direction TB
-        Inject["Inject UserCache"]
-        Get["userCache[id]"]
-        Set["userCache[id] = user"]
-    end
-
-    Dep --> Config
-    Config --> Define
-    Define --> Enable
-    Enable --> Inject
-    Inject --> Get
-    Inject --> Set
-
-    style Dep fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Config fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Define fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Enable fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Inject fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Get fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Set fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-## 可用缓存操作
-
-| 操作 | 方法 | 说明 | 源码 |
-|------|------|------|------|
-| 读取 | `cache[key]` | 通过 L2 -> L1 -> DataSource 获取值 | [CacheGetter.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheGetter.kt) |
-| 写入 | `cache[key] = value` | 同时写入 L2 和 L1，发布驱逐事件 | [CacheSetter.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheSetter.kt) |
-| 带 TTL 写入 | `cache[key, ttl] = value` | 使用自定义 TTL 和可选幅度设置 | [CacheSetter.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheSetter.kt) |
-| 驱逐 | `cache.evict(key)` | 从 L2 和 L1 中移除，发布驱逐事件 | [DefaultCoherentCache.kt:151-156](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L151-L156) |
-| 获取 TTL | `cache.getTtlAt(key)` | 返回该键的过期时间戳 | [CacheGetter.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheGetter.kt) |
-
-## 相关页面
-
-- [介绍](./index.md) -- 架构概览和核心特性
-- [配置参考](./configuration.md) -- 所有注解参数和配置属性
-- [测试概览](../testing/index.md) -- TCK 测试规范
-- [单元测试](../testing/unit-testing.md) -- 使用缓存规范基类编写测试
+- [配置](./configuration.md)：选择 TTL，按缓存覆盖组件。
+- [运维](./operations.md)：Actuator 端点与 Redis 故障行为。
+- [JoinCache](./join-cache.md) 与 [Spring Cache](./spring-cache.md) 集成。

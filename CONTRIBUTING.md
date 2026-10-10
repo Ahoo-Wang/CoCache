@@ -1,9 +1,9 @@
 # Contributing to CoCache
 
-Thanks for helping improve CoCache. This file is the short version of the process. The
-[Contributor Guide](https://cocache.ahoo.me/onboarding/contributor) explains the architecture and its
-invariants. Read [`docs/architecture.md`](docs/architecture.md) before changing coherence, storage,
-codec, or proxy code.
+Thanks for helping improve CoCache. This file is the contribution process. Read
+[`docs/architecture.md`](docs/architecture.md) before you change coherence, storage, codec, or proxy
+code. It is the normative design and lists the invariants that every change must keep.
+[`AGENTS.md`](AGENTS.md) collects the build commands and the testing and style rules.
 
 ## Requirements and issues
 
@@ -52,6 +52,18 @@ docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 
 Every fixed defect gets a reproducing test. Orchestrate races with latches, never with sleeps.
 
+## Documentation
+
+Update the docs in the same PR as the change they describe:
+
+| Change | Update |
+|--------|--------|
+| Coherence, storage, codec, or proxy behavior | [`docs/architecture.md`](docs/architecture.md) |
+| Anything a user can see: API, defaults, configuration, behavior | the wiki page under `wiki/guide/` or `wiki/architecture/`, **in both `wiki/` and `wiki/zh/`** |
+| Breaking change | the migration table in `wiki/guide/changelog.md` (en + zh) |
+
+See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in `wiki/` is the dead-link check.
+
 ## Versioning and releases
 
 - CoCache follows [Semantic Versioning](https://semver.org/). Breaking API or behavior changes bump
@@ -59,11 +71,16 @@ Every fixed defect gets a reproducing test. Orchestrate races with latches, neve
   in a MAJOR version.
 - `version` in `gradle.properties` is the next release version.
 - To release:
-  1. Update the wiki changelog (en + zh), including a migration table for MAJOR versions.
-  2. Publish a GitHub Release tagged `vX.Y.Z`.
+  1. Open a PR titled `chore(release): bump version to X.Y.Z`. It sets `version=` in
+     `gradle.properties`, adds the release to `wiki/guide/changelog.md` (en + zh, with a migration
+     table for MAJOR versions), and updates the version in `wiki/guide/quick-start.md` (en + zh) and
+     `README.md`, plus the nav label in `wiki/.vitepress/config/{en,zh}.ts` for MINOR and MAJOR
+     releases. Leave historical changelog entries untouched.
+  2. After it merges, publish a GitHub Release tagged `vX.Y.Z`.
 
   The `Packages Deploy` workflow re-runs `clean check` and publishes to Maven Central and GitHub
-  Packages. Release notes are grouped by PR labels (`.github/release.yml`).
+  Packages. Release notes are grouped by PR labels (`.github/release.yml`). The wiki deploys to
+  GitHub Pages on every push to `main`.
 
 ## Licensing
 

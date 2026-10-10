@@ -1,199 +1,100 @@
 ---
-title: Architecture Overview
-description: High-level architecture of CoCache - a Level 2 Distributed Coherence Cache Framework for Java/Kotlin. Covers module structure, dependency graph, cache layers, and key design decisions.
+title: Architecture
+description: CoCache's design goals, module boundaries, data model, and how annotated interfaces become cache instances.
 ---
 
-# Architecture Overview
+# Architecture
 
-CoCache is a **Level 2 Distributed Coherence Cache Framework** for Java/Kotlin. It implements a two-level caching architecture that combines a fast local in-memory cache (L2) with a shared distributed cache (L1) and an upstream data source (L0). Cache coherence across application instances is maintained through an event bus that publishes `CacheEvictedEvent` messages whenever cache entries are modified.
+This page explains how CoCache is put together. The normative specification, with every invariant a change must preserve, is [`docs/architecture.md`](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md) in the repository (in Chinese). If this page and that document disagree, the document wins.
 
-## Module Dependency Graph
+## Design goals
 
-The project is organized into 10 Gradle submodules, each with a clear responsibility:
+A two-level cache trades staleness for latency. Every design decision serves three goals:
+
+| Goal | Means |
+|------|-------|
+| **G1 Bounded staleness.** Any inconsistency heals within a finite time. | Finite default TTLs. A separate short TTL for negative entries. L2 cleared whenever the eviction channel (re)subscribes. |
+| **G2 No lost invalidations.** Concurrent loads and lost or reordered events cannot write an old value back. | Invalidation stamps guard every write-back. An L1 miss is never treated as "not found". |
+| **G3 A cheap hit path.** An L2 hit costs near zero and scales with threads. An L1 hit is one round trip. | Bounded Caffeine with no per-entry expiry policy. A cached clock. One Lua read per L1 lookup. Per-key load coalescing. |
+
+**Non-goals:** linearizable reads, and mutual exclusion of loads *across* instances. Each instance coalesces its own loads, and L1 absorbs the duplicates.
+
+## Modules
 
 ```mermaid
-graph TD
-    subgraph sg_10 ["Module Dependencies"]
-
-        api["cocache-api<br>Core interfaces"]
-        core["cocache-core<br>Default implementations"]
-        spring["cocache-spring<br>Spring integration"]
-        springCache["cocache-spring-cache<br>Spring Cache bridge"]
-        springRedis["cocache-spring-redis<br>Redis implementation"]
-        springBoot["cocache-spring-boot-starter<br>Auto-configuration"]
-        test["cocache-test<br>Shared test specs"]
-        bom["cocache-bom<br>Bill of Materials"]
-        deps["cocache-dependencies<br>Version catalog"]
-        example["cocache-example<br>Demo application"]
-    end
-
+flowchart BT
+    api["cocache-api<br>user API + all SPI"]
+    core["cocache-core<br>orchestration + defaults"]
+    spring["cocache-spring<br>@EnableCoCache, bean resolution"]
+    redis["cocache-spring-redis<br>Redis L1 + Pub/Sub channel"]
+    scache["cocache-spring-cache<br>Spring CacheManager bridge"]
+    starter["cocache-spring-boot-starter<br>auto-config, properties, actuator"]
     core --> api
     spring --> core
-    springCache --> core
-    springRedis --> core
-    springRedis --> spring
-    springBoot --> spring
-    springBoot --> springCache
-    springBoot --> springRedis
-    test --> core
-    example --> springBoot
-
-    style api fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style spring fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style springCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style springRedis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style springBoot fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style test fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style bom fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style deps fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style example fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
+    redis --> spring
+    scache --> core
+    starter --> redis
+    starter --> scache
 ```
 
-The dependency flow is strictly layered: `cocache-api` defines interfaces at the bottom, `cocache-core` provides implementations, `cocache-spring` adds Spring Framework integration, and `cocache-spring-redis` / `cocache-spring-boot-starter` sit at the top for production use.
+| Module | Contains |
+|--------|----------|
+| `cocache-api` | `Cache`, the sealed `CacheValue`, `TtlAt`/`CacheClock`, and the SPI: `CacheStore` → `ClientSideCache` / `DistributedCache`, `CacheSource`, `KeyConverter`, `KeyFilter`, `CacheEvictedEventBus`, `JoinCache`. Also the annotations. No runtime dependencies. |
+| `cocache-core` | `DefaultCoherentCache`, `TtlPolicy`, `SingleFlight`, `InvalidationStamps`, Caffeine/Map L2, in-memory L1, local/no-op event buses, the proxies, and `SimpleJoinCache` |
+| `cocache-spring` | `@EnableCoCache`, the `FactoryBean`s, and resolution of components by bean name |
+| `cocache-spring-redis` | `RedisDistributedCache`, codecs, and `RedisCacheEvictedEventBus` |
+| `cocache-spring-cache` | `CoCacheManager` / `CoSpringCache` |
+| `cocache-spring-boot-starter` | Auto-configuration, `CoCacheProperties`, and the actuator endpoints |
+| `cocache-test` | Contract test suites (TCK) for new implementations |
+| `cocache-bom` | Version alignment for all of the above |
 
-## High-Level System Architecture
+Dependencies point one way. The starter also depends on `cocache-spring`. A new store or event channel depends only on `cocache-api`, and is verified with `cocache-test`.
 
-CoCache organizes caching into three layers:
+## Responsibilities
 
-```mermaid
-graph TB
-    subgraph sg_11 ["Application Layer"]
+- **Stores only store.** `CacheStore` gets and sets `CacheValue`s by string key. It knows nothing about TTLs or negative caching. Writing an entry that has already expired is the same as evicting it.
+- **Policy lives above the stores.** `TtlPolicy` turns `ttl ± ttlAmplitude` into an absolute `ttlAt` for values, and `missingTtl` for negative entries. The stores only ever see `ttlAt`.
+- **Orchestration** (`DefaultCoherentCache`) reads through the levels, coalesces loads, guards write-backs, and broadcasts invalidations.
+- **The channel** (`CacheEvictedEventBus`) broadcasts invalidations on a best-effort basis, and calls `onReset` whenever its subscription is (re)established.
 
-        App["Application Code"]
-        Proxy["Cache Proxy<br>JDK Dynamic Proxy"]
-    end
+## Data model
 
-    subgraph sg_12 ["Coherent Cache - DefaultCoherentCache"]
-
-        L2["L2: ClientSideCache<br>bounded Caffeine"]
-        KF["KeyFilter<br>Bloom Filter"]
-        L1["L1: DistributedCache<br>Redis"]
-        Lock["SingleFlight<br>per-key load coalescing"]
-        L0["L0: CacheSource<br>DataSource / DB"]
-    end
-
-    subgraph sg_13 ["Coherence Layer"]
-
-        EventBus["CacheEvictedEventBus<br>Redis Pub/Sub"]
-        Subscriber["CacheEvictedSubscriber<br>Other Instances"]
-    end
-
-    App --> Proxy
-    Proxy --> L2
-    L2 -->|miss| KF
-    KF -->|may exist| L1
-    L1 -->|miss| Lock
-    Lock -->|leader| L0
-    L0 -->|loaded| L1
-    L1 -->|cached| L2
-
-    L2 -.->|evict/set| EventBus
-    EventBus -.->|notify| Subscriber
-    Subscriber -.->|"evict L2 / reset"| L2
-
-    style App fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Proxy fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L2 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style KF fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L1 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Lock fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style L0 fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style EventBus fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Subscriber fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-
+```kotlin
+sealed interface CacheValue<out V> : TtlAt      // ttlAt: absolute expiry, epoch seconds
+data class PresentValue<V>(val value: V, val ttlAt: Long) : CacheValue<V>
+data class MissingValue(val ttlAt: Long) : CacheValue<Nothing>   // explicit negative entry
 ```
 
-| Layer | Name | Role | Interface | Key Implementations |
-|-------|------|------|-----------|---------------------|
-| L0 | CacheSource | Upstream data source (DataSource/DB) | [`CacheSource<K, V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/source/CacheSource.kt) | `CacheSource.noOp()`, custom implementations |
-| L1 | DistributedCache | Shared distributed store | [`DistributedCache<V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/distributed/DistributedCache.kt) | [`RedisDistributedCache`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisDistributedCache.kt), `InMemoryDistributedCache` |
-| L2 | ClientSideCache | Local in-memory store | [`ClientSideCache<V>`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/client/ClientSideCache.kt) | `CaffeineClientSideCache` (default), `MapClientSideCache` |
+- A negative entry is a **type**, not a magic value, so no business value can be mistaken for one. The Redis sentinel `_nil_` exists only in the Redis wire format.
+- `CacheValue.of(null, ttlAt)` produces a `MissingValue`. `TtlAt.FOREVER` (`Long.MAX_VALUE`) never expires.
+- The current time comes from `CacheClock`, a volatile second counter that a daemon thread refreshes every 100 ms. On the hit path this is cheaper than `System.currentTimeMillis()`, which does not scale with threads on some platforms.
 
-## Cache Read Path
-
-The read path flows L2 -> KeyFilter -> SingleFlight { L1 -> L0 }:
+## From interface to instance
 
 ```mermaid
 sequenceDiagram
-autonumber
-    participant App as Application
-    participant CC as DefaultCoherentCache
-    participant L2 as ClientSideCache
-    participant KF as KeyFilter
-    participant L1 as DistributedCache
-    participant L0 as CacheSource
-    participant EB as Event Bus
-
-    App->>CC: getCache(key)
-    CC->>L2: getCache(cacheKey)
-    L2-->>CC: cacheValue (hit)
-    CC-->>App: cacheValue
-
-    Note over App,EB: If L2 miss, continue...
-    CC->>L2: getCache(cacheKey)
-    L2-->>CC: null (miss)
-
-    alt Key says not exist
-        CC->>KF: notExist(cacheKey)
-        KF-->>CC: true
-        CC-->>App: MissingValue (prevents penetration)
-    end
-
-    Note over CC: SingleFlight: one leader per key, followers wait
-    CC->>L1: getCache(cacheKey) [one round trip: Lua read of TTL + value]
-    L1-->>CC: cacheValue
-    CC->>L2: stamp-guarded setCache(cacheKey, cacheValue)
-    CC-->>App: cacheValue
-
-    Note over App,EB: If L1 misses, the leader loads from L0...
-    CC->>L0: loadCacheValue(key)
-    L0-->>CC: cacheValue (or null → MissingValue)
-    CC->>L1: stamp-guarded setCache
-    CC->>L2: stamp-guarded setCache
-    CC-->>App: cacheValue
+    autonumber
+    participant R as EnableCoCacheRegistrar
+    participant FB as CacheProxyFactoryBean
+    participant PF as CacheProxyFactory
+    participant B as BeanFactory
+    R->>R: parse @CoCache / @CaffeineCache into CoCacheMetadata
+    R->>FB: register bean definition named after the cache
+    FB->>PF: create(metadata)
+    PF->>B: resolve per-cache beans (ClientSideCache, DistributedCache, KeyConverter, CacheSource)
+    PF->>PF: DefaultCoherentCache(configuration), subscribed to the event bus
+    PF-->>FB: JDK proxy implementing the interface
 ```
 
-## Key Design Decisions
+The proxy implements your interface along with `CoherentCache`, `CacheDelegated`, and `CacheMetadataCapable`. Calls are dispatched by `CacheInvocationHandler`:
 
-### 1. Per-Key Load Coalescing
+- `Cache` methods are forwarded to the `DefaultCoherentCache`. `InvocationTargetException` is unwrapped, so callers see the original exception.
+- Default methods declared on your interface run as written, so you can add helpers to a cache interface.
+- `equals`, `hashCode`, and `toString` use proxy identity.
 
-`SingleFlight` lets exactly one thread per key read L1 and load the source; concurrent callers share its result or its original exception. Unlike striped locks, unrelated keys never block each other. This prevents cache stampede (the "thundering herd" problem).
+When the Spring context closes, `CacheProxyFactoryBean` closes its cache. The cache unsubscribes from the channel and closes its L1. A JoinCache does not own its component caches, so closing it leaves them open.
 
-### 2. Explicit Negative Cache (Cache Penetration Prevention)
+## Next
 
-When a cache source returns `null`, CoCache stores a `MissingValue` with its own short `missingTtl` (default 60s), so non-existent keys stop hitting the database without hiding newly created rows for long. `CacheValue` is sealed (`PresentValue` | `MissingValue`), so no business value can be mistaken for a negative entry. An L1 miss is never treated as negative. The `KeyFilter` interface (a Bloom filter adapter) rejects keys known not to exist before any lookup.
-
-### 3. Event-Driven Coherence
-
-CoCache actively publishes `CacheEvictedEvent` through the `CacheEvictedEventBus`; peers evict their L2 for that key. Every write-back is guarded by invalidation stamps so a concurrent eviction (local or remote) is never overwritten by a stale value, and every (re)subscription of the channel clears L2 so lost messages cannot leave stale copies. See [Cache Coherence](./coherence.md) for details.
-
-### 4. Proxy-Based Declarative Caching
-
-Cache interfaces are declared as Kotlin/Java interfaces annotated with `@CoCache`. At application startup, `EnableCoCacheRegistrar` parses these annotations, constructs `CoCacheMetadata`, and creates JDK dynamic proxies backed by `DefaultCoherentCache` instances. This allows cache configuration to be fully declarative. See [Proxy and Annotations](./proxy.md) for details.
-
-### 5. TTL with Amplitude
-
-Each value carries a TTL (default 3600s -- finite so any residual inconsistency self-heals) plus a random offset within `[-ttlAmplitude, +ttlAmplitude]` (default 60s). The jitter prevents synchronized expiration of many entries at once (the "cache avalanche" problem). The policy lives in `TtlPolicy`; storage tiers only see the resulting absolute `ttlAt`.
-
-## Source References
-
-| File | Line(s) | Description |
-|------|---------|-------------|
-| [`settings.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/settings.gradle.kts#L1) | 1-11 | Module declarations |
-| [`build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/build.gradle.kts#L1) | 1-219 | Root build config, JDK 17, Kotlin compiler flags |
-| [`cocache-api/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/build.gradle.kts#L1) | 1 | No external dependencies (pure interfaces) |
-| [`cocache-core/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/build.gradle.kts#L1) | 1-12 | Depends on `cocache-api`, Caffeine, Spring Expression; Guava compile-only (BloomKeyFilter) |
-| [`cocache-spring/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring/build.gradle.kts#L1) | 1-3 | Depends on `cocache-core`, Spring Context |
-| [`cocache-spring-redis/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-redis/build.gradle.kts#L1) | 1-10 | Depends on `cocache-core`, `cocache-spring`, Jackson, Spring Data Redis |
-| [`cocache-spring-boot-starter/build.gradle.kts`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-spring-boot-starter/build.gradle.kts#L1) | 1-30 | Depends on `cocache-spring`, `cocache-spring-cache`, `cocache-spring-redis`, Spring Boot |
-| [`DefaultCoherentCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L30) | 30-186 | Central coherent cache implementation |
-| [`CoherentCache.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCache.kt#L25) | 25-32 | CoherentCache interface definition |
-| [`CoherentCacheConfiguration.kt`](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/CoherentCacheConfiguration.kt#L26) | 26-34 | Configuration data class with defaults |
-
-## Related Pages
-
-- [Cache Layers Deep Dive](./cache-layers.md) -- L0, L1, L2 layer details and read/write/evict paths
-- [Cache Coherence and Event Bus](./coherence.md) -- distributed invalidation via CacheEvictedEventBus
-- [Proxy and Annotations](./proxy.md) -- declarative caching with @CoCache and JDK dynamic proxies
+- [Consistency](./consistency.md): the read, write, and evict paths, and what they guarantee.
+- [Extending CoCache](./extending.md): implementing a store, a channel, or a source.

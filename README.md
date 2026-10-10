@@ -1,4 +1,5 @@
 # CoCache
+
 Level 2 Distributed Coherence Cache Framework
 
 [![License](https://img.shields.io/badge/license-Apache%202-4EB1BA.svg)](https://www.apache.org/licenses/LICENSE-2.0.html)
@@ -9,132 +10,68 @@ Level 2 Distributed Coherence Cache Framework
 [![CI](https://github.com/Ahoo-Wang/CoCache/actions/workflows/ci.yml/badge.svg)](https://github.com/Ahoo-Wang/CoCache/actions/workflows/ci.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Ahoo-Wang/CoCache)
 
-> [中文文档](https://cocache.ahoo.me/zh/) | [English Document](https://cocache.ahoo.me/)
+> **Documentation:** [English](https://cocache.ahoo.me/) | [中文](https://cocache.ahoo.me/zh/)
 
-## Architecture
-
-<p align="center" style="text-align:center">
-  <img src="document/Architecture.png" alt="Architecture"/>
-</p>
-
-## Installation
-
-> Use *Gradle(Kotlin)* to install dependencies
-
-```kotlin
-implementation("me.ahoo.cocache:cocache-spring-boot-starter")
-```
-
-> Use *Gradle(Groovy)* to install dependencies
-
-```groovy
-implementation 'me.ahoo.cocache:cocache-spring-boot-starter'
-```
-
-> Use *Maven* to install dependencies
-
-```xml
-<dependency>
-    <groupId>me.ahoo.cocache</groupId>
-    <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>${cocache.version}</version>
-</dependency>
-```
-
-## Usage
+CoCache gives Spring Boot services local-memory read latency without serving stale data indefinitely. Each instance keeps an in-process copy (L2, Caffeine) in front of a shared copy (L1, Redis) in front of your data source. Writes and evicts on one instance tell every other instance to drop its local copy.
 
 ```mermaid
-classDiagram
-direction BT
-class Cache~K, V~ {
-  <<Interface>>
-  + getCache(K) CacheValue~V~?
-  + get(K) V?
-  + getTtlAt(K) Long?
-  + setCache(K, CacheValue~V~) Unit
-  + set(K, V) Unit
-  + set(K, Long, V) Unit
-  + evict(K) Unit
-}
-class CacheValue~V~ {
-  <<sealed>>
-  + ttlAt Long
-  + value V?
-  + isMissing Boolean
-}
-class PresentValue~V~
-class MissingValue
-class CacheSource~K, V~ {
-  <<Interface>>
-  + loadCacheValue(K) CacheValue~V~?
-}
-class UserCache {
-  <<Interface>>
-}
-PresentValue~V~ ..|> CacheValue~V~
-MissingValue ..|> CacheValue~V~
-UserCache --|> Cache~K, V~
-UserCacheSource ..|> CacheSource~K, V~
+flowchart LR
+    App["Your code"] --> L2["L2: local Caffeine<br>(per instance)"]
+    L2 -- miss --> L1["L1: Redis<br>(shared)"]
+    L1 -- miss --> Src["CacheSource<br>(your database)"]
+    L1 -. "evict events (Pub/Sub)" .-> Peers["Other instances' L2"]
+```
+
+## Quick start
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.1")
+implementation("org.springframework.boot:spring-boot-starter-data-redis")
 ```
 
 ```kotlin
-/**
- * Declare a cache interface; CoCache generates the implementation.
- * ttl/ttlAmplitude/missingTtl are seconds (defaults: 3600 / 60 / 60).
- */
-@CoCache(keyPrefix = "user:", ttl = 120)
-/**
- * Optional: L2 (Caffeine) settings. L2 is always bounded.
- */
-@CaffeineCache(maximumSize = 1_000_000, expireAfterAccess = 120)
-interface UserCache : Cache<String, User>
+@CoCache(keyPrefix = "user:", ttl = 120)          // seconds; defaults: ttl 3600, ttlAmplitude 60, missingTtl 60
+interface UserCache : Cache<String, User>         // CoCache generates the implementation
 
 @EnableCoCache(caches = [UserCache::class])
 @SpringBootApplication
 class AppServer
 
-/**
- * Optional customization. Stateful components are resolved by bean name
- * `{cacheName}.ClientSideCache | .DistributedCache | .KeyConverter`;
- * a CacheSource may also be resolved by its generic type.
- */
 @Configuration
 class UserCacheConfiguration {
-    @Bean("UserCache.ClientSideCache")
-    fun userClientSideCache(): ClientSideCache<User> {
-        return CaffeineClientSideCache.build(maximumSize = 100_000)
-    }
-
-    @Bean
-    fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> {
-        // returning null writes a negative cache for `missingTtl` seconds
-        return CacheSource { id -> userRepository.findById(id)?.let { CacheValue.forever(it) } }
-    }
+    @Bean // loads on an L2 + L1 miss; null caches "not found" for missingTtl seconds
+    fun userCacheSource(repo: UserRepository) =
+        CacheSource<String, User> { id -> repo.findById(id)?.let { CacheValue.of(it, TtlAt.at(120)) } }
 }
+
+// usage
+val user = userCache[id]              // L2 → L1 → CacheSource
+userRepository.save(changed)          // write: update the source of truth first,
+userCache.evict(changed.id)           // then evict — every instance drops its copy
 ```
 
-## Consistency Guarantees
+The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each step.
 
-- **Bounded staleness**: values expire after `ttl` (finite by default); negative cache entries after `missingTtl`; every (re)subscription of the eviction channel clears L2, so lost pub/sub messages cannot leave L2 stale.
-- **No lost invalidations**: concurrent loads are coalesced per key, and every write-back (L1 → L2 fill, source load) is discarded or undone if an eviction happened meanwhile — local or remote.
-- **Write pattern**: update the data source first, then `evict(key)` (or `set` the new value).
+## Guarantees
 
-See [`docs/architecture.md`](docs/architecture.md) for the full design and invariants.
+- **Bounded staleness.** Values expire after `ttl`, and negative entries after `missingTtl`. Every (re)subscription of the eviction channel clears L2, so lost Pub/Sub messages cannot leave L2 stale.
+- **No lost invalidations.** Concurrent loads of a key are coalesced. A write-back that overlaps an invalidation is discarded or undone.
+- **Not linearizable.** Peers see a change once the eviction event arrives. The cache-aside race in L1 is bounded by `ttl`.
 
-## CoCache `Get` Sequence Diagram
+[Consistency](https://cocache.ahoo.me/architecture/consistency) states the full model. The normative design and its invariants are in [`docs/architecture.md`](docs/architecture.md).
 
-<p align="center" style="text-align:center">
-  <img src="document/CoCache-Get-Sequence-Diagram.svg" alt="CoCache-Get-Sequence-Diagram"/>
-</p>
+## Documentation map
 
-## JoinCache `Get` Sequence Diagram
+| You want to… | Read |
+|--------------|------|
+| Use CoCache | [Guide](https://cocache.ahoo.me/guide/): introduction, quick start, configuration, JoinCache, Spring Cache, operations, changelog |
+| Understand or extend it | [Architecture](https://cocache.ahoo.me/architecture/): design, consistency, SPI and TCK |
+| Change CoCache itself | [`CONTRIBUTING.md`](CONTRIBUTING.md), then [`docs/architecture.md`](docs/architecture.md) |
+| Work on it as an AI agent | [`AGENTS.md`](AGENTS.md) and the [`skills/cocache`](skills/cocache/SKILL.md) skill |
 
-<p align="center" style="text-align:center">
-  <img src="document/JoinCache.svg" alt="JoinCache-Get-Sequence-Diagram"/>
-</p>
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branching model, quality gates, and release process. Report security issues privately per [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues privately per [SECURITY.md](SECURITY.md).
 
 ## License
 

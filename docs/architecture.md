@@ -37,7 +37,7 @@ cocache-spring-boot-starter  自动配置、CoCacheProperties、actuator 端点
 cocache-test                 TCK：CacheSpec、CacheStoreSpec、DefaultCoherentCacheSpec ...
 ```
 
-依赖方向严格单向：`api ← core ← spring ← {spring-redis, spring-cache} ← starter`。新的存储/通道实现只需依赖 `cocache-api`（实现 SPI）与 `cocache-test`（验证 TCK）。
+依赖方向严格单向：`api ← core ← spring ← spring-redis`，`core ← spring-cache`，starter 依赖 `spring`、`spring-redis` 与 `spring-cache`。新的存储/通道实现只需依赖 `cocache-api`（实现 SPI）与 `cocache-test`（验证 TCK）。
 
 ### 职责划分
 
@@ -69,7 +69,7 @@ getCache(key)
   }
 ```
 
-- **L1 读取**：一个 Lua 读脚本原子地返回 `{ttl, ...原始值}`，走共享连接（不要用 pipeline：Lettuce 的 pipeline 需要专用连接，无连接池时代价远高于两次往返）。
+- **L1 读取**：一个 Lua 读脚本原子地返回 `{ttl, ...原始值}`，走共享连接（不要用 `executePipelined`：Lettuce 的 pipeline 需要专用连接，无连接池时约比两次普通往返慢 3 倍）。
 - **L1 未命中的定义**：key 不存在（TTL = -2）、值缺失、或载荷损坏（读取不修改 L1，回源后的写回覆盖它）。三者都返回 `null` 并触发回源；**不得**推断为负缓存。
 - **回源成功不广播**：L1 为空时，其它实例 L2 中的副本必然已过期（L2 复制 L1 的 ttlAt）或已被失效事件清除。
 - SingleFlight 将 leader 的结果或**原始异常**共享给所有等待者；同线程对同一 key 的重入（CacheSource 内再次读同一 key）快速失败。
@@ -106,7 +106,7 @@ getCache(key)
 | `@CoCache.ttl` | 3600 s | G1：任何不一致最多持续 1 小时 |
 | `@CoCache.ttlAmplitude` | 60 s | 打散批量过期 |
 | `@CoCache.missingTtl` | 60 s | 数据新建后最多 60 秒仍被视为不存在 |
-| L2 | Caffeine，`maximumSize = 10000`；过期条目在读取时淘汰 | 有界内存；条目级 `Expiry` 会让每次读取写节点元数据，热点 key 无法随线程扩展（JMH 实测） |
+| L2 | Caffeine，`maximumSize = 10000`；过期条目在读取时淘汰 | 有界内存；条目级 `Expiry` 会让每次读取写节点元数据，热点 key 无法随线程扩展（JMH 实测：8 线程下 224M → 11M ops/s） |
 | `cocache.redis.strict-failure` | false | Redis 故障降级：读按未命中、写/淘汰仅告警 |
 
 ## 8. 代理
@@ -133,7 +133,17 @@ getCache(key)
 - `retrieve` 在专用守护线程池（或注入的 Executor）上执行阻塞查找。
 - `clear()` 只能清空本实例 L2（L1 为共享存储）。
 
-## 11. 测试约定
+## 11. 性能验证
+
+命中路径（L2 命中、L1 命中）的改动必须用 JMH 与上一版本对比，线程数取 1 与 8：
+
+```bash
+./gradlew :cocache-spring-redis:jmh -PjmhThreads=8 -PjmhIncludes=l2Hit   # 需要 Redis；check 只编译不运行
+```
+
+基准位于 `cocache-spring-redis/src/jmh`（`RedisCacheBenchmark`）。
+
+## 12. 测试约定
 
 - 新存储实现扩展 `ClientSideCacheSpec` / `DistributedCacheSpec`；新编排或通道实现扩展 `DefaultCoherentCacheSpec`、`MultipleInstanceSyncSpec`、`CacheEvictedEventBusSpec`。
 - 竞态用例用 latch 编排，禁止以 sleep 制造时序；断言“最终”行为时用带超时的轮询。

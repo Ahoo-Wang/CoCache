@@ -1,89 +1,44 @@
 # AGENTS.md — CoCache Wiki (VitePress)
 
-> Generated for the CoCache wiki documentation site.
+The user-facing docs site, published at https://cocache.ahoo.me. English at the root, Chinese mirror under `zh/`.
 
-## Build & Run Commands
+## Commands
 
 ```bash
-# Install dependencies (use pnpm)
 pnpm install
-
-# Development server
-pnpm dev
-
-# Build static site
-pnpm build
-
-# Preview built site
-pnpm preview
-
-# Fix Mermaid syntax issues
-pnpm fix:mermaid
-
-# Validate every Mermaid diagram with the real parser (headless Chrome; CI runs this)
-pnpm check:mermaid
+pnpm dev             # dev server
+pnpm build           # production build; fails on dead links
+pnpm check:mermaid   # parses every Mermaid diagram in headless Chrome (CI runs this too)
+pnpm fix:mermaid     # auto-fixes common Mermaid syntax issues
 ```
 
-## Project Structure
+## Structure
 
 ```
-wiki/
-├── .vitepress/
-│   ├── config/
-│   │   ├── index.ts      # Main VitePress config (locales, markdown)
-│   │   ├── en.ts          # English sidebar/nav config
-│   │   └── zh.ts          # Chinese sidebar/nav config
-│   ├── theme/
-│   │   ├── index.ts       # Custom theme entry (Mermaid renderer, page-view tracking)
-│   │   └── custom.css     # Dark theme styles, Mermaid styling
-├── scripts/
-│   ├── fix-mermaid.mjs    # Mermaid syntax validator & fixer
-│   └── check-mermaid.mjs  # Parses every diagram with mermaid in headless Chrome
-├── public/
-│   └── logo.svg           # Site logo
-├── index.md               # English homepage (VitePress home layout)
-├── guide/                 # Getting Started section
-├── architecture/          # Architecture deep dives
-├── api/                   # API reference
-├── modules/               # Per-module documentation
-├── testing/               # Testing guides
-├── building/              # Build, CI, publishing
-├── onboarding/            # Audience-specific onboarding guides
-└── zh/                    # Chinese translations (mirrors above structure)
-    ├── index.md
-    ├── guide/
-    ├── architecture/
-    ├── api/
-    ├── modules/
-    ├── testing/
-    ├── building/
-    └── onboarding/
+guide/          for users: introduction, quick-start, configuration, join-cache, spring-cache, operations, changelog
+architecture/   for integrators: index (goals, modules, data model, wiring), consistency, extending (SPI + TCK)
+zh/             one-to-one Chinese mirror of the above
+.vitepress/config/{en,zh}.ts   nav + sidebar (keep the two in step)
 ```
 
-## Content Conventions
+## What belongs here
 
-- **Frontmatter**: Every page needs `title` and `description`
-- **Mermaid diagrams**: Dark-mode colors only — fills `#2d333b`, borders `#6d5dfc`, text `#e6edf3`, subgraph bg `#161b22`, lines `#8b949e`
-- **Mermaid breaks**: Use `<br>` NEVER `<br>` (breaks Vue compiler)
-- **Sequence diagrams**: Always include `autonumber`
-- **Inline styles**: Include `,color:#e6edf3` for dark-mode text
-- **Citations**: Linked format `[file_path:line](https://github.com/Ahoo-Wang/CoCache/blob/main/file_path#Lline)`
-- **Tables**: Include "Source" column when listing components/APIs
-- **Diagrams per page**: Minimum 3-5, using at least 2 different diagram types
+The wiki explains **how to use** CoCache and **why it behaves** as it does. Other facts have a single home elsewhere, and the wiki links to them instead of copying them:
 
-## Documentation Files
+| Fact | Single source |
+|------|---------------|
+| Design invariants (normative) | `docs/architecture.md` |
+| Contribution workflow, quality gates, release process | `CONTRIBUTING.md` |
+| Build, test, and code-style rules for agents | root `AGENTS.md` |
+| API details | KDoc in the source |
 
-- `llms.txt` — LLM-friendly project summary with wiki-relative paths
-- `llms-full.txt` — Full page content inlined for LLM consumption
+## Conventions
 
-## Boundaries
-
-- ✅ DO: Add new pages following the existing structure and conventions
-- ✅ DO: Run `pnpm fix:mermaid` and `pnpm check:mermaid` before committing
-- 🚫 DON'T: Put `;` in sequence-diagram message or note text — Mermaid treats it as a statement separator
-- ✅ DO: Keep English and Chinese versions in sync
-- 🚫 DON'T: Delete generated pages without updating the sidebar config
-- 🚫 DON'T: Modify theme CSS without testing dark mode rendering
-- 🚫 DON'T: Use light-mode colors in Mermaid diagrams
-- 🚫 DON'T: Use `<br>` in Mermaid labels
-- ⚠️ ASK FIRST: Changing VitePress config or adding new plugins
+- Every page has `title` and `description` frontmatter.
+- **Keep en and zh in parity.** Same pages, same sections, same anchors. In zh, give any heading that another page links to an explicit English id, for example `## 存储 {#stores}`, so links work in both languages.
+- **Verify every claim against the code**, including defaults, bean names, and behavior. A wrong doc is worse than a missing one.
+- **Don't cite line numbers.** Link to files or directories. Line anchors rot with every commit.
+- **Add a diagram only when it explains a mechanism** that prose explains worse, such as a read path or a sequence. Don't add decorative diagrams. The theme styles Mermaid globally, so don't add per-node `style` lines.
+- Mermaid: use `<br>` for line breaks, and never `;` in sequence-diagram message text (Mermaid reads it as a statement separator).
+- Write any text containing `<…>`, such as `Cache<K, V>`, in backticks. Otherwise Vue parses it as HTML.
+- The current version appears only in `guide/quick-start.md` and `guide/changelog.md` (both languages), the root `README.md`, and the `v5.0` nav label. The release steps are in `CONTRIBUTING.md`.

@@ -1,42 +1,33 @@
 ---
-title: Quick Start Guide
-description: Get started with CoCache in minutes -- Gradle/Maven dependencies, @EnableCoCache, defining cache interfaces, and Redis setup.
+title: Quick Start
+description: Add CoCache to a Spring Boot application — dependency, cache interface, data source, and first read.
 ---
 
-# Quick Start Guide
+# Quick Start
 
-This guide walks you through adding CoCache to a Spring Boot application, defining a cache interface, and connecting it to Redis.
+This page takes a Spring Boot application from no cache to a working two-level cache. The code comes from [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example).
 
-## Prerequisites
+**You need:** JDK 17+, Spring Boot 4.x, and a Redis server.
 
-- JDK 17 or later
-- A Spring Boot 3.x project
-- A running Redis instance (for the distributed cache layer)
+## 1. Add the dependencies
 
-## Step 1: Add Dependencies
+::: code-group
 
-### Gradle (Kotlin DSL)
-
-```kotlin
-// build.gradle.kts
+```kotlin [Gradle (Kotlin)]
 dependencies {
     implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.1")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 }
 ```
 
-### Gradle (Groovy DSL)
-
-```groovy
+```groovy [Gradle (Groovy)]
 dependencies {
     implementation 'me.ahoo.cocache:cocache-spring-boot-starter:5.0.1'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 }
 ```
 
-### Maven
-
-```xml
+```xml [Maven]
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
@@ -48,38 +39,11 @@ dependencies {
 </dependency>
 ```
 
-The `cocache-spring-boot-starter` transitively pulls in `cocache-core`, `cocache-spring`, and `cocache-spring-redis`.
+:::
 
-```mermaid
-graph LR
-    subgraph sg_31 ["Your Application"]
-        App["Spring Boot App"]
-    end
-    subgraph sg_32 ["CoCache Starter"]
-        Starter["cocache-spring-boot-starter"]
-        Core["cocache-core"]
-        Spring["cocache-spring"]
-        Redis["cocache-spring-redis"]
-        API["cocache-api"]
-    end
+To manage the versions of all CoCache modules in one place, import the BOM `me.ahoo.cocache:cocache-bom`.
 
-    App --> Starter
-    Starter --> Core
-    Starter --> Spring
-    Starter --> Redis
-    Core --> API
-
-    style App fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Starter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Core fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Spring fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Redis fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style API fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-## Step 2: Configure Redis
-
-Set Redis connection properties in `application.yml`:
+## 2. Point Spring at Redis
 
 ```yaml
 spring:
@@ -87,254 +51,80 @@ spring:
     redis:
       host: localhost
       port: 6379
-      # password: your-password
-      # database: 0
 ```
 
-## Step 3: Define a Cache Interface
+## 3. Declare a cache
 
-Create a Kotlin interface that extends `Cache<K, V>` and annotate it with `@CoCache`. The annotation parameters configure the distributed cache behavior.
-
-```mermaid
-classDiagram
-    direction TB
-    class Cache~K, V~ {
-        <<Interface>>
-        +get(K) V?
-        +set(K, V) Unit
-        +set(K, Long, V) Unit
-        +getCache(K) CacheValue~V~?
-        +setCache(K, CacheValue~V~) Unit
-        +evict(K) Unit
-        +getTtlAt(K) Long?
-    }
-    class CacheGetter~K, V~ {
-        <<Interface>>
-        +get(K) V?
-    }
-    class CacheSetter~K, V~ {
-        <<Interface>>
-        +set(K, V) Unit
-        +set(K, Long, V) Unit
-        +setCache(K, CacheValue~V~) Unit
-        +evict(K) Unit
-    }
-    class UserCache {
-        @CoCache(keyPrefix = "user:", ttl = 120)
-        @CaffeineCache(maximumSize = 1_000_000)
-    }
-
-    Cache~K, V~ --> CacheGetter~K, V~
-    Cache~K, V~ --> CacheSetter~K, V~
-    UserCache ..|> Cache~K, V~
-
-    style Cache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheGetter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style CacheSetter fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style UserCache fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-### Basic Cache Interface
+A cache is an interface that extends `Cache<K, V>`. CoCache generates the implementation at startup.
 
 ```kotlin
-import me.ahoo.cache.api.Cache
-import me.ahoo.cache.api.annotation.CoCache
-import me.ahoo.cache.api.annotation.CaffeineCache
-
-// ttl/ttlAmplitude/missingTtl are seconds (defaults 3600 / 60 / 60)
-@CoCache(keyPrefix = "user:", ttl = 120)
-// optional: L2 settings (L2 is always bounded; default maximumSize = 10000)
-@CaffeineCache(maximumSize = 1_000_000, expireAfterAccess = 120)
+@CoCache(keyPrefix = "user:", ttl = 120)          // seconds; defaults: ttl 3600, ttlAmplitude 60, missingTtl 60
+@CaffeineCache(maximumSize = 1_000_000)          // optional L2 settings; default maximumSize 10000
 interface UserCache : Cache<String, User>
 ```
 
-Source: [cocache-example/.../cache/UserCache.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/cache/UserCache.kt)
-
-The cache interface is implemented at runtime by a JDK dynamic proxy (`CacheInvocationHandler`). You do not need to write any implementation code.
-
-### The Model Class
+Register it with `@EnableCoCache`:
 
 ```kotlin
-data class User(val id: String, val name: String)
-```
-
-Source: [cocache-example/.../model/User.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/model/User.kt)
-
-## Step 4: Enable CoCache
-
-Annotate your Spring Boot application class with `@EnableCoCache` and list the cache interfaces to register:
-
-```kotlin
-import me.ahoo.cache.spring.EnableCoCache
-import org.springframework.boot.autoconfigure.SpringBootApplication
-import org.springframework.boot.runApplication
-
 @EnableCoCache(caches = [UserCache::class])
 @SpringBootApplication
 class AppServer
-
-fun main(args: Array<String>) {
-    runApplication<AppServer>(*args)
-}
 ```
 
-Source: [cocache-example/.../AppServer.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/AppServer.kt)
+The cache's name is the interface's simple name (`UserCache`) unless `@CoCache(name = …)` sets one. The name scopes the eviction channel and the bean names of per-cache components.
 
-```mermaid
-sequenceDiagram
-autonumber
-    participant SB as Spring Boot
-    participant Registrar as EnableCoCacheRegistrar
-    participant Factory as CacheProxyFactory
-    participant Proxy as JDK Proxy
-    participant Cache as DefaultCoherentCache
-    participant Redis as Redis
+## 4. Load from your data source
 
-    SB->>Registrar: @EnableCoCache(caches = [UserCache])
-    Registrar->>Factory: createProxy(UserCache)
-    Factory->>Factory: read @CoCache annotation
-    Factory->>Factory: create CoherentCacheConfiguration
-    Factory->>Cache: DefaultCoherentCache(config)
-    Factory->>Proxy: Proxy.newProxyInstance(UserCache, handler)
-    Registrar->>SB: register UserCache bean
-    SB-->>Cache: Cache is ready
-    Cache->>Redis: connect to Redis
-
-```
-
-## Step 5: Use the Cache
-
-Inject the cache interface into any Spring-managed bean and use it directly:
-
-```kotlin
-@RestController
-@RequestMapping("test")
-class TestController(private val userCache: UserCache) {
-
-    @GetMapping("{id}")
-    fun get(@PathVariable id: String): User? {
-        return userCache[id]
-    }
-
-    @PostMapping("{id}")
-    fun set(@PathVariable id: String): String {
-        val user = User(id, UUID.randomUUID().toString())
-        userCache[user.id] = user
-        return user.id
-    }
-}
-```
-
-Source: [cocache-example/.../controller/TestController.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/controller/TestController.kt)
-
-## Step 6 (Optional): Custom ClientSideCache and CacheSource
-
-You can customize the L2 cache and data source per cache interface. Stateful components are matched **by bean name** (`{cacheName}.ClientSideCache`); a `CacheSource` may also be matched by its generic type:
+On a miss in both L2 and L1, CoCache calls the cache's `CacheSource`. Declare one as a bean:
 
 ```kotlin
 @Configuration
 class UserCacheConfiguration {
-    @Bean("UserCache.ClientSideCache")
-    fun customizeUserClientSideCache(): ClientSideCache<User> {
-        return MapClientSideCache()
-    }
-
     @Bean
-    fun customizeUserCacheSource(): CacheSource<String, User> {
-        return CacheSource.noOp()  // returning null caches "not found" for missingTtl seconds
-    }
+    fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> =
+        CacheSource { id ->
+            // null = "not found": CoCache stores a negative entry for missingTtl seconds
+            userRepository.findById(id)?.let { CacheValue.of(it, TtlAt.at(120)) }
+        }
 }
 ```
 
-Source: [cocache-example/.../config/UserCacheConfiguration.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/config/UserCacheConfiguration.kt)
+CoCache finds this bean by its generic type `CacheSource<String, User>`. If several caches share key and value types, name the bean `UserCache.CacheSource` instead. Without any source, misses return nothing (`CacheSource.noOp()`).
 
-If you do not provide custom beans, the auto-configuration uses defaults:
-- **ClientSideCache**: bounded Caffeine, configured by `@CaffeineCache` if present
-- **CacheSource**: Requires a `CacheSource` bean or falls back to `CacheSource.noOp()`
+The `ttlAt` you return is used as-is. Use `TtlAt.at(seconds)` for a relative TTL, or `CacheValue.forever(value)` for no expiry.
 
-## Step 7 (Optional): Programmatic CoherentCache
+## 5. Use it
 
-For advanced use cases, you can create `CoherentCache` instances programmatically:
+Inject the interface like any other bean:
 
 ```kotlin
-@Configuration
-class ClassDefinedCacheConfiguration {
-    @Bean("userCache")
-    fun userCache(
-        redisTemplate: StringRedisTemplate,
-        coherentCacheFactory: CoherentCacheFactory,
-        objectMapper: ObjectMapper,
-        clientIdGenerator: ClientIdGenerator
-    ): CoherentCache<String, User> {
-        val codecExecutor = ObjectToJsonCodecExecutor<User>(
-            User::class.java, redisTemplate, objectMapper
-        )
-        val distributedCache: DistributedCache<User> =
-            RedisDistributedCache(redisTemplate, codecExecutor)
+@Service
+class UserService(
+    private val userCache: UserCache,
+    private val userRepository: UserRepository,
+) {
+    fun find(id: String): User? = userCache[id]   // L2 → L1 → CacheSource
 
-        return coherentCacheFactory.create(
-            CoherentCacheConfiguration(
-                cacheName = "userCache",
-                clientId = clientIdGenerator.generate(),
-                keyConverter = ToStringKeyConverter("user:"),
-                distributedCache = distributedCache,
-                clientSideCache = CaffeineClientSideCache.build(expireAfterAccess = Duration.ofHours(1))
-            )
-        )
+    fun rename(id: String, name: String) {
+        userRepository.rename(id, name)           // 1. update the source of truth
+        userCache.evict(id)                       // 2. then evict; every instance drops its copy
     }
 }
 ```
 
-Source: [cocache-example/.../config/ClassDefinedCacheConfiguration.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-example/src/main/kotlin/me/ahoo/cache/example/config/ClassDefinedCacheConfiguration.kt)
+| Call | Effect |
+|------|--------|
+| `cache[key]` | The value, or `null` if absent, negative, or expired |
+| `cache.getCache(key)` | The entry itself: `PresentValue(value, ttlAt)` or `MissingValue(ttlAt)` |
+| `cache.getTtlAt(key)` | The value's absolute expiry in epoch seconds, or `null` |
+| `cache[key] = value` | Writes L1 and L2 with the cache's TTL policy and notifies peers. `null` writes a negative entry. |
+| `cache[key, ttlAt] = value` | Same, with an explicit absolute expiry |
+| `cache.evict(key)` | Removes the key from L2 and L1 and notifies peers |
 
-## Complete Flow Diagram
+**Update the database first, then evict.** If you evict first, a concurrent read can reload the old row before your update commits.
 
-```mermaid
-graph TB
-    subgraph sg_33 ["Setup"]
-        direction TB
-        Dep["Add cocache-spring-boot-starter"]
-        Config["Configure Redis connection"]
-        Define["Define cache interface<br>@CoCache + @CaffeineCache"]
-        Enable["@EnableCoCache<br>caches = [UserCache]"]
-    end
+## Next steps
 
-    subgraph sg_34 ["Runtime"]
-        direction TB
-        Inject["Inject UserCache"]
-        Get["userCache[id]"]
-        Set["userCache[id] = user"]
-    end
-
-    Dep --> Config
-    Config --> Define
-    Define --> Enable
-    Enable --> Inject
-    Inject --> Get
-    Inject --> Set
-
-    style Dep fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Config fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Define fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Enable fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Inject fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Get fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-    style Set fill:#2d333b,stroke:#6d5dfc,color:#e6edf3
-```
-
-## Available Cache Operations
-
-| Operation | Method | Description | Source |
-|-----------|--------|-------------|--------|
-| Get | `cache[key]` | Retrieves value through L2 -> L1 -> DataSource | [CacheGetter.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheGetter.kt) |
-| Set | `cache[key] = value` | Writes to both L2 and L1, publishes evict event | [CacheSetter.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheSetter.kt) |
-| Set with TTL | `cache[key, ttl] = value` | Set with custom TTL and optional amplitude | [CacheSetter.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheSetter.kt) |
-| Evict | `cache.evict(key)` | Removes from both L2 and L1, publishes evict event | [DefaultCoherentCache.kt:151-156](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt#L151-L156) |
-| Get TTL | `cache.getTtlAt(key)` | Returns expiration timestamp for the key | [CacheGetter.kt](https://github.com/Ahoo-Wang/CoCache/blob/main/cocache-api/src/main/kotlin/me/ahoo/cache/api/CacheGetter.kt) |
-
-## Related Pages
-
-- [Introduction](./index.md) -- Architecture overview and key features
-- [Configuration Reference](./configuration.md) -- All annotation parameters and properties
-- [Testing Overview](../testing/index.md) -- TCK test specs
-- [Unit Testing](../testing/unit-testing.md) -- Writing tests with cache spec base classes
+- [Configuration](./configuration.md): choose TTLs and override per-cache components.
+- [Operations](./operations.md): actuator endpoints and Redis failure behavior.
+- [JoinCache](./join-cache.md) and [Spring Cache](./spring-cache.md) integration.
