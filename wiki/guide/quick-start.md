@@ -15,14 +15,14 @@ This page takes a Spring Boot application from no cache to a working two-level c
 
 ```kotlin [Gradle (Kotlin)]
 dependencies {
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.1")
+    implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.1.0")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 }
 ```
 
 ```groovy [Gradle (Groovy)]
 dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:5.0.1'
+    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:5.1.0'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 }
 ```
@@ -31,7 +31,7 @@ dependencies {
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>5.0.1</version>
+    <version>5.1.0</version>
 </dependency>
 <dependency>
     <groupId>org.springframework.boot</groupId>

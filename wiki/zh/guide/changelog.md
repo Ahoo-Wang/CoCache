@@ -5,7 +5,7 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v5.1.0（未发布）
+## v5.1.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。Redis 线格式与失效消息格式不变，5.0.x 与 5.1 实例可共享 Redis。
 
@@ -27,7 +27,13 @@ policyIndexCache.removeElements(key, listOf(policyId))
 - **写回安全**：对实现 `SetElementsStore` 的存储，回源写回改为条件写入（仅当 key 不存在或为负缓存时写入），撤销改为比较后删除。此前，开始于 `addElements` 之前的回源（例如写入负缓存）可能覆盖或删除新加入的元素。`InMemoryDistributedCache` 实现了该 SPI，因此对任意值类型都使用条件写回。
 - 新增 `TtlPolicy.valueTtlAt()`（含抖动的命中值到期时间）；`RedisDistributedCache` 改为 `open`。
 
-## v5.0.1（当前版本）
+### Gradle 配置
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.1.0")
+```
+
+## v5.0.1
 
 **模块组：** `me.ahoo.cocache` · 补丁版本，与 5.0.0 向后兼容，Redis 线格式不变。
 

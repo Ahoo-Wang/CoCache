@@ -5,7 +5,7 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v5.1.0 (Unreleased)
+## v5.1.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive. Redis wire format and eviction messages are unchanged, so 5.0.x and 5.1 instances can share Redis.
 
@@ -27,7 +27,13 @@ policyIndexCache.removeElements(key, listOf(policyId))
 - **Write-back safety**: on stores that implement `SetElementsStore`, a source load's write-back is now conditional: it writes only when the key is absent or holds a negative cache. Its undo is now compare-and-delete. Before this, a load that started before an `addElements` (for example, writing the negative cache) could overwrite or delete the added elements. Because `InMemoryDistributedCache` implements the SPI, it uses the conditional write-back for every value type.
 - `TtlPolicy.valueTtlAt()` exposes the jittered value expiry. `RedisDistributedCache` is now `open`.
 
-## v5.0.1 (Current)
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.1.0")
+```
+
+## v5.0.1
 
 **Module Group:** `me.ahoo.cocache` · Patch release, backward compatible with 5.0.0. Redis wire format unchanged.
 
