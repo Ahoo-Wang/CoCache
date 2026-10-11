@@ -96,4 +96,15 @@ class RedisSetElementsCacheTest : SetElementsCacheSpec() {
             redis.redisTemplate.delete(cacheKey)
         }
     }
+
+    @Test
+    fun conditionalWriteBack() {
+        val cacheKey = keyConverter.toStringKey(newKey())
+        val store = RedisSetDistributedCache(redis.redisTemplate)
+        val filled = CacheValue.forever(setOf("a"))
+        store.fillCache(cacheKey, filled).assert().isTrue()
+        store.fillCache(cacheKey, CacheValue.forever(setOf("b"))).assert().isFalse()
+        store.evictIfUnchanged(cacheKey, filled)
+        redis.redisTemplate.hasKey(cacheKey).assert().isFalse()
+    }
 }

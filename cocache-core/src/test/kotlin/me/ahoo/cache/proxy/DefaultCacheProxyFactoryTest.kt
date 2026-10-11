@@ -21,6 +21,9 @@ import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.DefaultClientSideCacheFactory
 import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.consistency.CoherentCacheConfiguration
+import me.ahoo.cache.consistency.CoherentCacheFactory
+import me.ahoo.cache.consistency.DefaultCoherentCache
 import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
 import me.ahoo.cache.consistency.NoOpCacheEvictedEventBus
 import me.ahoo.cache.converter.DefaultKeyConverterFactory
@@ -31,6 +34,7 @@ import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
+import java.util.concurrent.atomic.AtomicBoolean
 
 class DefaultCacheProxyFactoryTest {
 
@@ -38,7 +42,8 @@ class DefaultCacheProxyFactoryTest {
         internal fun <CACHE> createProxyCache(
             metadata: CoCacheMetadata = coCacheMetadata<MockCache>(),
             cacheSource: CacheSource<Any, Any> = CacheSource.noOp(),
-            distributedCache: () -> DistributedCache<*> = { InMemoryDistributedCache<Any>() }
+            distributedCache: () -> DistributedCache<*> = { InMemoryDistributedCache<Any>() },
+            coherentCacheFactory: CoherentCacheFactory = DefaultCoherentCacheFactory(NoOpCacheEvictedEventBus)
         ): CACHE {
             val distributedCacheFactory = object : DistributedCacheFactory {
                 @Suppress("UNCHECKED_CAST")
@@ -53,7 +58,7 @@ class DefaultCacheProxyFactoryTest {
                 }
             }
             val cacheProxyFactory = DefaultCacheProxyFactory(
-                coherentCacheFactory = DefaultCoherentCacheFactory(NoOpCacheEvictedEventBus),
+                coherentCacheFactory = coherentCacheFactory,
                 clientIdGenerator = ClientIdGenerator.UUID,
                 clientSideCacheFactory = DefaultClientSideCacheFactory,
                 distributedCacheFactory = distributedCacheFactory,
@@ -129,5 +134,26 @@ class DefaultCacheProxyFactoryTest {
             createProxyCache<MockSetCache>(coCacheMetadata<MockSetCache>(), distributedCache = { plain })
         }
         error.message.assert().contains("SetElementsStore")
+    }
+
+    @Test
+    fun setElementsRequiresSupportingCoherentCache() {
+        // 自定义 CoherentCache 未实现 SetElementsCache：即使 L1 支持也拒绝，并关闭已创建的实例
+        val closed = AtomicBoolean()
+        val factory = object : CoherentCacheFactory {
+            override fun <K, V> create(configuration: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
+                val default = DefaultCoherentCache(configuration, NoOpCacheEvictedEventBus)
+                return object : CoherentCache<K, V> by default {
+                    override fun close() {
+                        closed.set(true)
+                        default.close()
+                    }
+                }
+            }
+        }
+        Assertions.assertThrows(IllegalArgumentException::class.java) {
+            createProxyCache<MockSetCache>(coCacheMetadata<MockSetCache>(), coherentCacheFactory = factory)
+        }
+        closed.get().assert().isTrue()
     }
 }

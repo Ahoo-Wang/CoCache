@@ -17,6 +17,7 @@ import me.ahoo.cache.TtlPolicy
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.SetElementsCache
 import me.ahoo.cache.api.TtlAt
+import me.ahoo.cache.api.client.ClientSideCache
 import me.ahoo.cache.api.consistency.CacheEvictedEvent
 import me.ahoo.cache.api.consistency.CacheEvictedEventBus
 import me.ahoo.cache.api.consistency.CacheEvictedSubscriber
@@ -191,5 +192,45 @@ internal class DefaultCoherentCacheSetElementsTest {
         // 写回路径不受影响：仍为无条件写入
         plainCache.getCache(key)!!.isMissing.assert().isTrue()
         backing[key]!!.isMissing.assert().isTrue()
+    }
+
+    @Test
+    fun plainStoreWriteBackUndoStillEvictsL1() {
+        // 非 SetElementsStore 的 L1 保持原语义：写后复核失败时无条件撤销 L1
+        val backing = ConcurrentHashMap<String, CacheValue<String>>()
+        val plain = object : DistributedCache<String> {
+            override fun getCache(key: String): CacheValue<String>? = backing[key]
+            override fun setCache(key: String, value: CacheValue<String>) {
+                backing[key] = value
+            }
+
+            override fun evict(key: String) {
+                backing.remove(key)
+            }
+        }
+        lateinit var plainCache: DefaultCoherentCache<String, String>
+        val l2Delegate = MapClientSideCache<String>()
+        val l2 = object : ClientSideCache<String> by l2Delegate {
+            override fun setCache(key: String, value: CacheValue<String>) {
+                l2Delegate.setCache(key, value)
+                // L2 写入与写后复核之间到达远端失效
+                plainCache.onEvicted(CacheEvictedEvent(plainCache.cacheName, key, "other"))
+            }
+        }
+        plainCache = DefaultCoherentCache(
+            CoherentCacheConfiguration<String, String>(
+                cacheName = "plain-undo",
+                clientId = "test",
+                keyConverter = ToStringKeyConverter<String>(""),
+                distributedCache = plain,
+                clientSideCache = l2,
+                cacheSource = { CacheValue.forever("value") },
+            ),
+            recordingEventBus
+        )
+        plainCache.getCache(key)!!.value.assert().isEqualTo("value")
+        backing[key].assert().isNull()
+        l2.getCache(key).assert().isNull()
+        published.map { it.key }.assert().containsExactly(key)
     }
 }
