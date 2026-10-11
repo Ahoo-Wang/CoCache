@@ -117,6 +117,7 @@ policyIndexCache.removeElements(key, listOf("p1"))
 - 向负缓存的 key 加入元素会替换负缓存。key 的到期时间遵循缓存的 TTL 策略，`TtlAt.FOREVER` 时 key 不带到期时间。
 - 对不存在的 key 或负缓存执行移除不做任何事。移除最后一个元素会删除 key，下次读取返回 `null`。
 - 等于负缓存哨兵（默认 `_nil_`）的元素会被拒绝。
+- Redis 故障时总是抛出异常，即使 `strictFailure = false`，更新不会被静默丢弃。两个调用都是幂等的，可以重试。
 - 接口声明了 `SetElementsCache`，而其 `DistributedCache` 不支持（例如普通的 `RedisDistributedCache`）时，创建缓存会在启动时失败。
 
 ## 用代码构建缓存

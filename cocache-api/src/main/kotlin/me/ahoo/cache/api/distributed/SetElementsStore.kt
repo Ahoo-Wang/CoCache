@@ -23,6 +23,7 @@ import me.ahoo.cache.api.CacheValue
  * - [addElements]：key 为负缓存时先清除负缓存记录；加入元素；到期时间设为 `ttlAt`
  *   （[TtlAt.FOREVER][me.ahoo.cache.api.TtlAt.FOREVER] 表示移除到期时间）。
  * - [removeElements]：key 不存在或为负缓存时不修改；移除元素；集合变空时删除 key，否则到期时间设为 `ttlAt`。
+ * - [addElements] / [removeElements] 失败时必须抛出异常（不得静默降级）：调用方需要知道写入是否生效。
  * - [fillCache] / [evictIfUnchanged]：回源写回及其撤销。L1 中的集合是元素增删的权威副本，
  *   无条件的写回或撤销（DEL）会吞没与之并发的增删，因此二者都是条件操作。
  *
