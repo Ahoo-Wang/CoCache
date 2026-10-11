@@ -15,9 +15,11 @@ package me.ahoo.cache.consistency
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.SetElementsCache
 import me.ahoo.cache.api.consistency.CacheEvictedEvent
 import me.ahoo.cache.api.consistency.CacheEvictedEventBus
 import me.ahoo.cache.api.consistency.CacheEvictedSubscriber
+import me.ahoo.cache.api.distributed.SetElementsStore
 import me.ahoo.cache.concurrent.SingleFlight
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -31,11 +33,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   所有写回（L1→L2 填充、回源写回）都在取戳之后、写入前后各复核一次。
  * - 通道重置（[onReset]）清空 L2：至多一次投递的事件通道丢失的失效以此兜底。
  * - 回源成功不广播事件：L1 为空时，其它实例 L2 中的副本必然已过期或已被失效。
+ *
+ * 集合元素增删（[SetElementsCache]）要求 L1 实现 [SetElementsStore]，否则抛出 [UnsupportedOperationException]。
+ * 此时 L1 中的集合是权威副本：回源写回改用条件写入（[SetElementsStore.fillCache]），撤销改用条件删除
+ * （[SetElementsStore.evictIfUnchanged]），二者都不会吞没并发的元素增删。
  */
 class DefaultCoherentCache<K, V>(
     override val configuration: CoherentCacheConfiguration<K, V>,
     private val cacheEvictedEventBus: CacheEvictedEventBus
-) : CoherentCache<K, V>, CacheEvictedSubscriber {
+) : CoherentCache<K, V>, SetElementsCache<K, Any?>, CacheEvictedSubscriber {
 
     companion object {
         private val log = KotlinLogging.logger {}
@@ -49,6 +55,12 @@ class DefaultCoherentCache<K, V>(
     private val ttlPolicy = configuration.ttlPolicy
     private val stamps = InvalidationStamps()
     private val loads = SingleFlight<String, Loaded<V>>()
+
+    /**
+     * L1 支持集合元素增删时非空：回源写回与撤销改用其条件操作。
+     */
+    @Suppress("UNCHECKED_CAST")
+    private val setElementsStore = distributedCache as? SetElementsStore<Any?>
 
     /**
      * 一次 L1 读取/回源的结果，附带该次加载开始时的失效戳。
@@ -114,14 +126,31 @@ class DefaultCoherentCache<K, V>(
             logStaleLoadDiscarded(cacheKey)
             return
         }
-        distributedCache.setCache(cacheKey, cacheValue)
+        val setStore = setElementsStore
+        if (setStore == null) {
+            distributedCache.setCache(cacheKey, cacheValue)
+        } else if (!setStore.fillCache(cacheKey, cacheValue.asSetValue())) {
+            // L1 已被并发写入（如元素增删）：以 L1 为准，不填充 L2
+            return
+        }
         clientSideCache.setCache(cacheKey, cacheValue)
         if (!stamps.isValid(cacheKey, stamp)) {
             // 写入与失效交错：写入的值可能覆盖了失效方刚刚的淘汰，必须撤销并广播
             logStaleLoadDiscarded(cacheKey)
-            invalidate(cacheKey)
+            if (setStore == null) {
+                invalidate(cacheKey)
+                return
+            }
+            // 只撤销本次写回的内容：其后的元素增删已改写集合，DEL 会把它们一并删除
+            stamps.invalidate(cacheKey)
+            clientSideCache.evict(cacheKey)
+            setStore.evictIfUnchanged(cacheKey, cacheValue.asSetValue())
+            publish(cacheKey)
         }
     }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun CacheValue<V>.asSetValue(): CacheValue<Set<Any?>> = this as CacheValue<Set<Any?>>
 
     private fun logStaleLoadDiscarded(cacheKey: String) {
         log.warn {
@@ -151,6 +180,44 @@ class DefaultCoherentCache<K, V>(
      */
     override fun evict(key: K) {
         invalidate(keyConverter.toStringKey(key))
+    }
+
+    override fun addElements(key: K, elements: Collection<Any?>) {
+        updateElements(key, elements) { store, cacheKey ->
+            store.addElements(cacheKey, elements, ttlPolicy.valueTtlAt())
+        }
+    }
+
+    override fun removeElements(key: K, elements: Collection<Any?>) {
+        updateElements(key, elements) { store, cacheKey ->
+            store.removeElements(cacheKey, elements, ttlPolicy.valueTtlAt())
+        }
+    }
+
+    /**
+     * 失效戳 → L1 原子增删 → 淘汰 L2 → 广播。
+     *
+     * 与 [setCache] 不同，写入后的完整集合只在 L1 中，因此淘汰而非填充 L2。先递增失效戳：
+     * 在途的 L1→L2 填充要么被放弃，要么先于本次淘汰写入 L2；同线程随后的读取不会接受开始于本次写入之前的加载。
+     */
+    private fun updateElements(
+        key: K,
+        elements: Collection<Any?>,
+        update: (SetElementsStore<Any?>, String) -> Unit
+    ) {
+        val store = setElementsStore
+            ?: throw UnsupportedOperationException(
+                "Cache Name[$cacheName] - DistributedCache[${distributedCache.javaClass.name}] " +
+                    "does not implement ${SetElementsStore::class.java.name}."
+            )
+        if (elements.isEmpty()) {
+            return
+        }
+        val cacheKey = keyConverter.toStringKey(key)
+        stamps.invalidate(cacheKey)
+        update(store, cacheKey)
+        clientSideCache.evict(cacheKey)
+        publish(cacheKey)
     }
 
     private fun invalidate(cacheKey: String) {

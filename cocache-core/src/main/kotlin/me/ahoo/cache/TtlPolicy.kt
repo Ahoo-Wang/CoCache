@@ -42,7 +42,14 @@ data class TtlPolicy(
         if (value == null) {
             return missing()
         }
-        return CacheValue.of(value, TtlAt.at(ttl, ttlAmplitude))
+        return CacheValue.of(value, valueTtlAt())
+    }
+
+    /**
+     * 命中值的绝对到期时间（含抖动）。
+     */
+    fun valueTtlAt(): Long {
+        return TtlAt.at(ttl, ttlAmplitude)
     }
 
     fun <V> missing(): CacheValue<V> {

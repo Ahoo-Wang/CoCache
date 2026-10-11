@@ -15,6 +15,8 @@ package me.ahoo.cache.proxy
 
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.SetElementsCache
+import me.ahoo.cache.api.distributed.SetElementsStore
 import me.ahoo.cache.client.ClientSideCacheFactory
 import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.consistency.CoherentCacheConfiguration
@@ -48,6 +50,9 @@ class DefaultCacheProxyFactory(
             )
         )
         val proxyInterface = cacheMetadata.proxyInterface.java
+        if (SetElementsCache::class.java.isAssignableFrom(proxyInterface)) {
+            requireSetElementsSupport(cacheMetadata, delegate)
+        }
         return Proxy.newProxyInstance(
             proxyInterface.classLoader,
             arrayOf(
@@ -58,5 +63,20 @@ class DefaultCacheProxyFactory(
             ),
             CacheInvocationHandler(proxyInterface, delegate, cacheMetadata)
         ) as CACHE
+    }
+
+    private fun requireSetElementsSupport(cacheMetadata: CoCacheMetadata, delegate: CoherentCache<Any, Any>) {
+        val distributedCache = delegate.configuration.distributedCache
+        if (delegate is SetElementsCache<*, *> && distributedCache is SetElementsStore<*>) {
+            return
+        }
+        // 已注册到失效通道：拒绝前先关闭
+        delegate.close()
+        throw IllegalArgumentException(
+            "Cache Name[${cacheMetadata.cacheName}] - ${cacheMetadata.proxyInterface.qualifiedName} declares " +
+                "${SetElementsCache::class.simpleName}, but CoherentCache[${delegate.javaClass.name}] / " +
+                "DistributedCache[${distributedCache.javaClass.name}] does not support it " +
+                "(the DistributedCache must implement SetElementsStore, e.g. RedisSetDistributedCache)."
+        )
     }
 }

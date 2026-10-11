@@ -5,6 +5,28 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## v5.1.0 (Unreleased)
+
+**Module Group:** `me.ahoo.cocache` · Minor release, additive. Redis wire format and eviction messages are unchanged, so 5.0.x and 5.1 instances can share Redis.
+
+### Atomic element updates for Set-valued caches
+
+Concurrent "read the whole set → modify → write the whole set" updates lose writes across instances. A cache interface can now also declare `SetElementsCache<K, E>`, and each update becomes one atomic L1 operation:
+
+```kotlin
+@CoCache(ttl = TtlAt.FOREVER)
+interface PolicyIndexCache : Cache<String, Set<String>>, SetElementsCache<String, String>
+
+policyIndexCache.addElements(key, listOf(policyId))
+policyIndexCache.removeElements(key, listOf(policyId))
+```
+
+- **Wiring**: the distributed cache must implement the new `SetElementsStore` SPI. For Redis, use `RedisSetDistributedCache(redisTemplate)` (native Redis Set, same layout as `SetToSetCodecExecutor`). `InMemoryDistributedCache` supports it as well. If a proxy declares `SetElementsCache` over a store that can't support it, creating the proxy fails with a message that names the fix.
+- **Semantics**: L1 is the authoritative copy, and these operations never call the `CacheSource`. Adding to a negative cache replaces it, so the sentinel never ends up in the set. After every update, the key's expiry follows the cache's `TtlPolicy` (`TtlAt.FOREVER` → no expiry, even when the key previously held the 60 s negative cache). Removing from an absent key or a negative cache does nothing. Removing the last element deletes the key.
+- **Coherence**: invalidation stamp → atomic L1 update (one Lua round trip) → L2 evict → eviction event. Read-your-writes and in-flight-load protection match `setCache`.
+- **Write-back safety**: on stores that implement `SetElementsStore`, a source load's write-back is now conditional: it writes only when the key is absent or holds a negative cache. Its undo is now compare-and-delete. Before this, a load that started before an `addElements` (for example, writing the negative cache) could overwrite or delete the added elements. Because `InMemoryDistributedCache` implements the SPI, it uses the conditional write-back for every value type.
+- `TtlPolicy.valueTtlAt()` exposes the jittered value expiry. `RedisDistributedCache` is now `open`.
+
 ## v5.0.1 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Patch release, backward compatible with 5.0.0. Redis wire format unchanged.

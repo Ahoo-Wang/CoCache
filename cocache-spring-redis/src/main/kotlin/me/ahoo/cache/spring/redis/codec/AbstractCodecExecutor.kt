@@ -168,7 +168,16 @@ abstract class AbstractCodecExecutor<V, RAW : Any>(
             is MissingValue -> encodeMissingGuard()
             is PresentValue -> encode(cacheValue.value)
         }
-        val ttlSeconds = if (cacheValue.isForever) null else cacheValue.expiredDuration.seconds.coerceAtLeast(1)
-        writeRaw(key, raw, ttlSeconds)
+        writeRaw(key, raw, ttlSecondsOf(cacheValue.ttlAt))
+    }
+
+    /**
+     * 剩余 TTL 秒数（至少 1 秒），`null` 表示永不过期。
+     */
+    protected fun ttlSecondsOf(ttlAt: Long): Long? {
+        if (TtlAt.isForever(ttlAt)) {
+            return null
+        }
+        return (ttlAt - TtlAt.currentTime()).coerceAtLeast(1)
     }
 }

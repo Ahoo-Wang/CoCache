@@ -50,6 +50,8 @@ An **L1** store must also follow these rules:
 
 For a new Redis data structure, extend `AbstractCodecExecutor` and wrap it in `RedisDistributedCache`. The base class provides the atomic Lua read, the miss semantics, and the TTL handling.
 
+An L1 store that can update set elements atomically implements `SetElementsStore<E>` as well (see `RedisSetDistributedCache`). Each operation must be atomic. `addElements` clears a negative record, adds the elements, and sets the expiry. `removeElements` leaves an absent key or a negative record alone and deletes the key once the set is empty. `fillCache`, the write-back after a load, writes only when the key is absent or negative. `evictIfUnchanged`, its undo, deletes only when the members are unchanged. Verify an implementation with `SetElementsCacheSpec`.
+
 Stores that rebuild `ttlAt` from server-side expiry can drift by up to a second. `CacheStoreSpec`'s TTL tests are `open`, so override them with `isCloseTo(expected, Offset.offset(1))`.
 
 ## Invalidation channel

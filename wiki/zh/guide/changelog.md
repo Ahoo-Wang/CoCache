@@ -5,6 +5,28 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## v5.1.0（未发布）
+
+**模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。Redis 线格式与失效消息格式不变，5.0.x 与 5.1 实例可共享 Redis。
+
+### 集合值缓存的原子元素增删
+
+并发的“读整集 → 修改 → 写整集”会在实例间丢失更新。缓存接口现在可以再声明 `SetElementsCache<K, E>`，每次增删都是一次原子的 L1 操作：
+
+```kotlin
+@CoCache(ttl = TtlAt.FOREVER)
+interface PolicyIndexCache : Cache<String, Set<String>>, SetElementsCache<String, String>
+
+policyIndexCache.addElements(key, listOf(policyId))
+policyIndexCache.removeElements(key, listOf(policyId))
+```
+
+- **装配**：分布式缓存须实现新的 SPI `SetElementsStore`。Redis 使用 `RedisSetDistributedCache(redisTemplate)`（原生 Redis Set，与 `SetToSetCodecExecutor` 布局相同），`InMemoryDistributedCache` 同样支持。代理声明了 `SetElementsCache` 而存储不支持时，创建代理即失败，错误信息给出修复方法。
+- **语义**：L1 是权威副本，增删不访问 `CacheSource`。加入时替换负缓存（哨兵不会残留在集合中）。每次增删后，key 的到期时间按缓存的 `TtlPolicy` 重置（`TtlAt.FOREVER` → 无到期时间，即使此前是 60 秒的负缓存）。对不存在的 key 或负缓存执行移除不做任何事；移除最后一个元素会删除 key。
+- **一致性**：失效戳 → L1 原子增删（一次 Lua 往返）→ 淘汰 L2 → 广播失效事件。读己之写与在途加载保护同 `setCache`。
+- **写回安全**：对实现 `SetElementsStore` 的存储，回源写回改为条件写入（仅当 key 不存在或为负缓存时写入），撤销改为比较后删除。此前，开始于 `addElements` 之前的回源（例如写入负缓存）可能覆盖或删除新加入的元素。`InMemoryDistributedCache` 实现了该 SPI，因此对任意值类型都使用条件写回。
+- 新增 `TtlPolicy.valueTtlAt()`（含抖动的命中值到期时间）；`RedisDistributedCache` 改为 `open`。
+
 ## v5.0.1（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 补丁版本，与 5.0.0 向后兼容，Redis 线格式不变。
