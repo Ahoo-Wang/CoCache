@@ -21,6 +21,7 @@ cocache-api                  用户 API + 全部 SPI（零运行时依赖）
   Cache / CacheGetter / CacheSetter / NamedCache
   CacheValue = PresentValue | MissingValue（密封）、TtlAt
   CacheStore → ClientSideCache（L2）/ DistributedCache（L1）
+  SetElementsCache（集合元素原子增删能力）、SetElementsStore（L1 侧 SPI）
   CacheSource、KeyConverter、KeyFilter
   CacheEvictedEventBus / CacheEvictedSubscriber / CacheEvictedEvent
   JoinCache / JoinValue / JoinKeyExtractor
@@ -31,7 +32,7 @@ cocache-core                 编排与默认实现（Caffeine、SpEL、kotlin-lo
   LocalCacheEvictedEventBus、NoOpCacheEvictedEventBus
   元数据解析、CacheInvocationHandler、SimpleJoinCache、各组件工厂
 cocache-spring               @EnableCoCache、FactoryBean、按 bean 名解析组件
-cocache-spring-redis         RedisDistributedCache、codec、RedisCacheEvictedEventBus
+cocache-spring-redis         RedisDistributedCache、RedisSetDistributedCache、codec、RedisCacheEvictedEventBus
 cocache-spring-cache         Spring Cache 适配（CoSpringCache / CoCacheManager）
 cocache-spring-boot-starter  自动配置、CoCacheProperties、actuator 端点
 cocache-test                 TCK：CacheSpec、CacheStoreSpec、DefaultCoherentCacheSpec ...
@@ -89,6 +90,15 @@ getCache(key)
 本地写入 `setCache`：失效戳 → 写 L1 → 写 L2 → 广播。本地淘汰 `evict`：失效戳 → 淘汰 L2 → 淘汰 L1 → 广播。调用方必须**先更新数据源、再淘汰缓存**。
 
 已知的固有窗口（cache-aside 共性，不在本框架消除）：实例 A 回源读到旧数据 → B 更新 DB、删除 L1、广播 → A 在收到事件前把旧值写入 L1。A 收到事件后撤销 L2，但若该事件在 A 写入 L1 之后才到达，L1 中的旧值将持续到 TTL 到期。**这正是默认 TTL 必须有限的原因（G1）。**
+
+### 5.1 集合元素增删（5.1）
+
+缓存接口同时声明 `Cache<K, Set<E>>` 与 `SetElementsCache<K, E>` 时，`addElements` / `removeElements` 在 L1 中原子完成，避免“读整集 → 修改 → 写整集”在并发写者间丢失更新。L1 必须实现 `SetElementsStore`（Redis：`RedisSetDistributedCache`；内存：`InMemoryDistributedCache`），否则创建代理时失败。
+
+- **编排**：失效戳 → L1 原子增删（到期时间由 `TtlPolicy.valueTtlAt()` 计算，FOREVER 即无到期时间）→ 淘汰 L2 → 广播。写入后的完整集合只在 L1 中，所以淘汰 L2，不填充。读己之写与在途加载的保护同 `setCache`。
+- **语义**：L1 中的集合是该 key 的**权威副本**，增删不访问 `CacheSource`。加入时，key 若为负缓存则先清除；移除时，key 不存在或为负缓存则不修改，移空则删除 key（之后的读取未命中、回源，与“空集合写入即淘汰”一致）。集合的真实数据若在数据源中，应先更新数据源、再 `evict`。
+- **条件写回**：L1 实现 `SetElementsStore` 时，回源写回改为 `fillCache`（仅当 key 不存在或为负缓存时写入）；写后复核失败时，撤销改为 `evictIfUnchanged`（仅当内容仍为本次写入时删除）。若无条件写回或撤销（`DEL`），开始于增删之前的回源（例如无数据源时写入负缓存）就会吞没增删，同实例与跨实例皆然。
+- **Redis**：每个操作一次 Lua 往返，线格式不变。负缓存判定与读取一致（恰好只含哨兵一个成员）；加入的元素不得等于哨兵。
 
 ## 6. 失效通道
 

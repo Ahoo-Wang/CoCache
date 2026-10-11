@@ -96,6 +96,29 @@ class UserCacheConfiguration {
 
 读取通过一个原子 Lua 脚本，一次往返同时取回剩余 TTL 与值。
 
+## 集合值缓存：原子增删元素 {#set-elements}
+
+两个实例同时“读出整个集合 → 修改 → 写回”会丢失更新。若 `Set` 缓存的内容只存在于缓存中（如索引、成员列表），请再声明 `SetElementsCache`，并用 `RedisSetDistributedCache` 作为 L1：
+
+```kotlin
+@CoCache(ttl = TtlAt.FOREVER)
+interface PolicyIndexCache : Cache<String, Set<String>>, SetElementsCache<String, String>
+
+@Bean("PolicyIndexCache.DistributedCache")
+fun policyIndexDistributedCache(redisTemplate: StringRedisTemplate): DistributedCache<Set<String>> =
+    RedisSetDistributedCache(redisTemplate)
+
+policyIndexCache.addElements(key, listOf("p1"))
+policyIndexCache.removeElements(key, listOf("p1"))
+```
+
+- 每次调用都是在原生 Redis Set 上执行的一个原子 Lua 脚本（布局与 `SetToSetCodecExecutor` 相同）。之后淘汰本地副本并发布淘汰事件，其它实例随之重新加载。
+- 缓存是权威副本：这些调用从不访问 `CacheSource`。若集合数据存放在数据库中，请先更新数据库再 `evict`。
+- 向负缓存的 key 加入元素会替换负缓存。key 的到期时间遵循缓存的 TTL 策略，`TtlAt.FOREVER` 时 key 不带到期时间。
+- 对不存在的 key 或负缓存执行移除不做任何事。移除最后一个元素会删除 key，下次读取返回 `null`。
+- 等于负缓存哨兵（默认 `_nil_`）的元素会被拒绝。
+- 接口声明了 `SetElementsCache`，而其 `DistributedCache` 不支持（例如普通的 `RedisDistributedCache`）时，创建缓存会在启动时失败。
+
 ## 用代码构建缓存
 
 也可以不用注解，自己组装 `CoherentCache`。`CoherentCacheFactory` bean 会把它接入淘汰事件通道：

@@ -28,7 +28,7 @@ import org.springframework.data.redis.core.StringRedisTemplate
  * @param strictFailure `true` 时重抛 [DataAccessException]
  * @author ahoo wang
  */
-class RedisDistributedCache<V> @JvmOverloads constructor(
+open class RedisDistributedCache<V> @JvmOverloads constructor(
     private val redisTemplate: StringRedisTemplate,
     private val codecExecutor: CodecExecutor<V>,
     private val strictFailure: Boolean = false,
@@ -62,7 +62,7 @@ class RedisDistributedCache<V> @JvmOverloads constructor(
         }
     }
 
-    private fun handleFailure(operation: String, key: String, e: DataAccessException) {
+    protected fun handleFailure(operation: String, key: String, e: DataAccessException) {
         if (strictFailure) {
             throw e
         }

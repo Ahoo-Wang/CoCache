@@ -16,6 +16,7 @@ package me.ahoo.cache.proxy
 import me.ahoo.cache.annotation.CoCacheMetadata
 import me.ahoo.cache.annotation.coCacheMetadata
 import me.ahoo.cache.api.CacheValue
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.cache.api.distributed.DistributedCache
 import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.cache.client.DefaultClientSideCacheFactory
@@ -28,6 +29,7 @@ import me.ahoo.cache.distributed.InMemoryDistributedCache
 import me.ahoo.cache.source.CacheSourceFactory
 import me.ahoo.cache.util.ClientIdGenerator
 import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.Test
 
 class DefaultCacheProxyFactoryTest {
@@ -35,11 +37,13 @@ class DefaultCacheProxyFactoryTest {
     companion object {
         internal fun <CACHE> createProxyCache(
             metadata: CoCacheMetadata = coCacheMetadata<MockCache>(),
-            cacheSource: CacheSource<Any, Any> = CacheSource.noOp()
+            cacheSource: CacheSource<Any, Any> = CacheSource.noOp(),
+            distributedCache: () -> DistributedCache<*> = { InMemoryDistributedCache<Any>() }
         ): CACHE {
             val distributedCacheFactory = object : DistributedCacheFactory {
+                @Suppress("UNCHECKED_CAST")
                 override fun <V> create(cacheMetadata: CoCacheMetadata): DistributedCache<V> {
-                    return InMemoryDistributedCache()
+                    return distributedCache() as DistributedCache<V>
                 }
             }
             val cacheSourceFactory = object : CacheSourceFactory {
@@ -103,5 +107,27 @@ class DefaultCacheProxyFactoryTest {
     fun loadsFromSource() {
         val cache = createProxyCache<MockCache>(cacheSource = CacheSource { CacheValue.forever("value") })
         cache["key"].assert().isEqualTo("value")
+    }
+
+    @Test
+    fun setElementsThroughProxy() {
+        val cache = createProxyCache<MockSetCache>(coCacheMetadata<MockSetCache>())
+        cache.addElements("key", listOf("a", "b"))
+        cache.removeElements("key", listOf("a"))
+        cache["key"].assert().isEqualTo(setOf("b"))
+        cache.getTtlAt("key").assert().isEqualTo(TtlAt.FOREVER)
+    }
+
+    @Test
+    fun setElementsRequiresSupportingDistributedCache() {
+        val plain = object : DistributedCache<Set<String>> {
+            override fun getCache(key: String): CacheValue<Set<String>>? = null
+            override fun setCache(key: String, value: CacheValue<Set<String>>) = Unit
+            override fun evict(key: String) = Unit
+        }
+        val error = Assertions.assertThrows(IllegalArgumentException::class.java) {
+            createProxyCache<MockSetCache>(coCacheMetadata<MockSetCache>(), distributedCache = { plain })
+        }
+        error.message.assert().contains("SetElementsStore")
     }
 }

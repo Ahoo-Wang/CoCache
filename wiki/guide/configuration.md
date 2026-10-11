@@ -96,6 +96,29 @@ The default L1 stores each value as JSON in a Redis string. To store a value as 
 
 Reads use one atomic Lua script that returns the remaining TTL and the value in a single round trip.
 
+## Set-valued caches: atomic element updates {#set-elements}
+
+Reading a whole set, modifying it, and writing it back loses updates when two instances do it at the same time. For a `Set` cache whose contents live only in the cache (an index, a membership list), also declare `SetElementsCache` and back it with `RedisSetDistributedCache`:
+
+```kotlin
+@CoCache(ttl = TtlAt.FOREVER)
+interface PolicyIndexCache : Cache<String, Set<String>>, SetElementsCache<String, String>
+
+@Bean("PolicyIndexCache.DistributedCache")
+fun policyIndexDistributedCache(redisTemplate: StringRedisTemplate): DistributedCache<Set<String>> =
+    RedisSetDistributedCache(redisTemplate)
+
+policyIndexCache.addElements(key, listOf("p1"))
+policyIndexCache.removeElements(key, listOf("p1"))
+```
+
+- Each call is one atomic Lua script on a native Redis Set (the same layout as `SetToSetCodecExecutor`). Afterwards the local copy is evicted and an eviction event is published, so other instances reload.
+- The cache is the authoritative copy: these calls never consult the `CacheSource`. If the set's data lives in your database, update the database and `evict` instead.
+- Adding to a key that holds the negative cache replaces it. The key's expiry follows the cache's TTL policy, so `TtlAt.FOREVER` leaves the key without an expiry.
+- Removing from an absent key or a negative cache does nothing. Removing the last element deletes the key, so the next read returns `null`.
+- Elements equal to the negative-cache sentinel (`_nil_` by default) are rejected.
+- If the interface declares `SetElementsCache` but its `DistributedCache` can't support it, for example a plain `RedisDistributedCache`, creating the cache fails at startup.
+
 ## Building a cache in code
 
 You can skip the annotations and assemble a `CoherentCache` yourself. The `CoherentCacheFactory` bean connects it to the eviction channel:

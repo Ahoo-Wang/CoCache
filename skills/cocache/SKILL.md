@@ -64,6 +64,7 @@ Specs in `cocache-test`:
 - `CacheSpec<K,V>` for `Cache` implementations — implement `createCache()`.
 - `DefaultCoherentCacheSpec<K,V>` for coherence invariants and concurrency.
 - `MultipleInstanceSyncSpec<K,V>` and `CacheEvictedEventBusSpec` for cross-instance coherence and event buses.
+- `SetElementsCacheSpec` for `SetElementsStore` implementations (atomic Set element updates).
 
 ```kotlin
 class MyDistributedCacheTest : DistributedCacheSpec<String>() {
@@ -85,6 +86,7 @@ class MyDistributedCacheTest : DistributedCacheSpec<String>() {
 | `CacheEvictedEventBus` / `CacheEvictedSubscriber` | cocache-api | Invalidation channel (`onEvicted`, `onReset`) |
 | `KeyConverter<K>` / `KeyFilter` | cocache-api | Storage key mapping / existence filter |
 | `JoinCache<K1,V1,K2,V2>` | cocache-api | Composed cache |
+| `SetElementsCache<K,E>` / `SetElementsStore<E>` | cocache-api | Atomic `addElements` / `removeElements` on a `Set` cache. Declare it next to `Cache<K, Set<E>>`. L1 is authoritative and the `CacheSource` is never consulted |
 | `CoherentCache<K,V>` / `DefaultCoherentCache` | cocache-core | Two-level orchestration |
 | `TtlPolicy` | cocache-core | `ttl`, `ttlAmplitude`, `missingTtl` |
 | `CaffeineClientSideCache` / `MapClientSideCache` | cocache-core | L2 implementations |
@@ -93,6 +95,7 @@ class MyDistributedCacheTest : DistributedCacheSpec<String>() {
 | `SimpleJoinCache` | cocache-core | Default JoinCache |
 | `BloomKeyFilter` | cocache-core | Guava BloomFilter adapter (Guava is compile-only) |
 | `RedisDistributedCache` / `RedisCacheEvictedEventBus` | cocache-spring-redis | Redis implementations |
+| `RedisSetDistributedCache` | cocache-spring-redis | `Set<String>` L1 with atomic element updates (required by `SetElementsCache` on Redis) |
 
 ## Migrating from 4.x
 

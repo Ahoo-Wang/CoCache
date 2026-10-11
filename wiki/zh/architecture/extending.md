@@ -50,6 +50,8 @@ interface DistributedCache<V> : CacheStore<V>, AutoCloseable
 
 要支持新的 Redis 数据结构，继承 `AbstractCodecExecutor` 并用 `RedisDistributedCache` 包装。基类提供原子的 Lua 读取、未命中语义与 TTL 处理。
 
+能原子增删集合元素的 L1 还需实现 `SetElementsStore<E>`（参见 `RedisSetDistributedCache`）。每个操作都必须原子完成：`addElements` 清除负缓存记录、加入元素并设置到期时间；`removeElements` 对不存在的 key 或负缓存记录不做修改，集合移空时删除 key；`fillCache`（回源写回）只在 key 不存在或为负缓存时写入；`evictIfUnchanged`（撤销写回）只在成员未变时删除。用 `SetElementsCacheSpec` 验证实现。
+
 根据服务端过期时间重建 `ttlAt` 的存储可能有最多一秒的偏差。`CacheStoreSpec` 的 TTL 用例是 `open` 的，可以覆盖为 `isCloseTo(expected, Offset.offset(1))`。
 
 ## 失效通道 {#invalidation-channel}

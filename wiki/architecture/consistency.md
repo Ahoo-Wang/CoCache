@@ -36,6 +36,9 @@ flowchart TD
 | `evict(key)` | invalidate stamp → evict L2 → evict L1 → publish eviction event |
 | peer receives event | invalidate stamp → evict L2 (events from its own `clientId` are ignored) |
 | channel (re)subscribed (`onReset`) | invalidate all stamps → clear L2 |
+| `addElements` / `removeElements` ([Set caches](../guide/configuration.md#set-elements)) | invalidate stamp → atomic update in L1 → evict L2 → publish eviction event |
+
+With a `SetElementsStore` L1, the set in L1 is the authoritative copy, so a load's write-back must not overwrite or delete a concurrent element update. Such a write-back writes only when the key is absent or holds a negative cache. If the post-check fails, the undo deletes only what that write-back wrote.
 
 **Callers must update the data source first, then evict.** If the evict comes first, a concurrent read can reload the old row before the update commits.
 

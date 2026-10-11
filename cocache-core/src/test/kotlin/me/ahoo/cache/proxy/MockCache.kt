@@ -14,6 +14,8 @@
 package me.ahoo.cache.proxy
 
 import me.ahoo.cache.api.Cache
+import me.ahoo.cache.api.SetElementsCache
+import me.ahoo.cache.api.TtlAt
 import me.ahoo.cache.api.annotation.CoCache
 import me.ahoo.cache.consistency.CoherentCache
 
@@ -29,3 +31,6 @@ interface MockCacheWithKeyExpression : Cache<String, String> {
         return "defaultMethod"
     }
 }
+
+@CoCache(ttl = TtlAt.FOREVER)
+interface MockSetCache : Cache<String, Set<String>>, SetElementsCache<String, String>
