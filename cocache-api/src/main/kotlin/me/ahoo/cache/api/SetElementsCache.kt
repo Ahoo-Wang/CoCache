@@ -27,6 +27,9 @@ package me.ahoo.cache.api
  * 语义：L1 中的集合被视为该 key 的权威副本，增删**不访问** [CacheSource][me.ahoo.cache.api.source.CacheSource]。
  * 若集合的真实数据在数据源中，应先更新数据源再 [evict][CacheSetter.evict]，而不是使用本接口。
  *
+ * 失败语义：L1 写入失败时抛出存储层异常（不受降级配置影响）；此时 L1 可能已生效（如响应超时），
+ * 因此仍会淘汰本地副本并广播失效，调用方可安全重试（增删均幂等）。
+ *
  * @param K 业务 key
  * @param E 集合元素
  */

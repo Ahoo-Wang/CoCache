@@ -215,9 +215,13 @@ class DefaultCoherentCache<K, V>(
         }
         val cacheKey = keyConverter.toStringKey(key)
         stamps.invalidate(cacheKey)
-        update(store, cacheKey)
-        clientSideCache.evict(cacheKey)
-        publish(cacheKey)
+        try {
+            update(store, cacheKey)
+        } finally {
+            // 失败时 L1 也可能已生效（如响应超时）：仍淘汰并广播，异常原样抛给调用方
+            clientSideCache.evict(cacheKey)
+            publish(cacheKey)
+        }
     }
 
     private fun invalidate(cacheKey: String) {

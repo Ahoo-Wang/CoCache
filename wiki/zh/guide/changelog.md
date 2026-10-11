@@ -24,6 +24,7 @@ policyIndexCache.removeElements(key, listOf(policyId))
 - **装配**：分布式缓存须实现新的 SPI `SetElementsStore`。Redis 使用 `RedisSetDistributedCache(redisTemplate)`（原生 Redis Set，与 `SetToSetCodecExecutor` 布局相同），`InMemoryDistributedCache` 同样支持。代理声明了 `SetElementsCache` 而存储不支持时，创建代理即失败，错误信息给出修复方法。
 - **语义**：L1 是权威副本，增删不访问 `CacheSource`。加入时替换负缓存（哨兵不会残留在集合中）。每次增删后，key 的到期时间按缓存的 `TtlPolicy` 重置（`TtlAt.FOREVER` → 无到期时间，即使此前是 60 秒的负缓存）。对不存在的 key 或负缓存执行移除不做任何事；移除最后一个元素会删除 key。
 - **一致性**：失效戳 → L1 原子增删（一次 Lua 往返）→ 淘汰 L2 → 广播失效事件。读己之写与在途加载保护同 `setCache`。
+- **失败总会暴露**：元素增删是显式写入，L1 失败时总是抛出异常，即使 `strictFailure = false`。更新仍可能已生效（例如响应超时），因此仍会淘汰本地副本并广播失效。两个操作都是幂等的，调用方可以重试。
 - **写回安全**：对实现 `SetElementsStore` 的存储，回源写回改为条件写入（仅当 key 不存在或为负缓存时写入），撤销改为比较后删除。此前，开始于 `addElements` 之前的回源（例如写入负缓存）可能覆盖或删除新加入的元素。`InMemoryDistributedCache` 实现了该 SPI，因此对任意值类型都使用条件写回。
 - 新增 `TtlPolicy.valueTtlAt()`（含抖动的命中值到期时间）；`RedisDistributedCache` 改为 `open`。
 

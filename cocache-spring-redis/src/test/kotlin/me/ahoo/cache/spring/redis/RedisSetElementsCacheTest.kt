@@ -71,18 +71,23 @@ class RedisSetElementsCacheTest : SetElementsCacheSpec() {
     }
 
     @Test
-    fun strictFailureRethrows() {
+    fun elementUpdateFailuresAlwaysThrow() {
         val wrongType = newKey()
         val cacheKey = keyConverter.toStringKey(wrongType)
         redis.redisTemplate.opsForValue().set(cacheKey, "string")
         try {
+            // 默认 strictFailure = false：显式的元素增删仍抛出，不静默丢弃
+            Assertions.assertThrows(DataAccessException::class.java) {
+                currentCache.elements.addElements(wrongType, listOf("a"))
+            }
+            Assertions.assertThrows(DataAccessException::class.java) {
+                currentCache.elements.removeElements(wrongType, listOf("a"))
+            }
             val strict = RedisSetDistributedCache(redis.redisTemplate, strictFailure = true)
             Assertions.assertThrows(DataAccessException::class.java) {
-                strict.addElements(cacheKey, listOf("a"), TtlAt.FOREVER)
+                strict.fillCache(cacheKey, CacheValue.forever(setOf("a")))
             }
-            // 默认降级：仅告警，条件写回视为未写入
-            currentCache.elements.addElements(wrongType, listOf("a"))
-            currentCache.elements.removeElements(wrongType, listOf("a"))
+            // 条件写回属于缓存填充：默认降级，视为未写入
             val lenient = RedisSetDistributedCache(redis.redisTemplate)
             lenient.fillCache(cacheKey, CacheValue.forever(setOf("a"))).assert().isFalse()
             lenient.evictIfUnchanged(cacheKey, CacheValue.forever(setOf("a")))
@@ -90,5 +95,16 @@ class RedisSetElementsCacheTest : SetElementsCacheSpec() {
         } finally {
             redis.redisTemplate.delete(cacheKey)
         }
+    }
+
+    @Test
+    fun conditionalWriteBack() {
+        val cacheKey = keyConverter.toStringKey(newKey())
+        val store = RedisSetDistributedCache(redis.redisTemplate)
+        val filled = CacheValue.forever(setOf("a"))
+        store.fillCache(cacheKey, filled).assert().isTrue()
+        store.fillCache(cacheKey, CacheValue.forever(setOf("b"))).assert().isFalse()
+        store.evictIfUnchanged(cacheKey, filled)
+        redis.redisTemplate.hasKey(cacheKey).assert().isFalse()
     }
 }

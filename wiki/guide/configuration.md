@@ -117,6 +117,7 @@ policyIndexCache.removeElements(key, listOf("p1"))
 - Adding to a key that holds the negative cache replaces it. The key's expiry follows the cache's TTL policy, so `TtlAt.FOREVER` leaves the key without an expiry.
 - Removing from an absent key or a negative cache does nothing. Removing the last element deletes the key, so the next read returns `null`.
 - Elements equal to the negative-cache sentinel (`_nil_` by default) are rejected.
+- A Redis failure always throws, even with `strictFailure = false`, so an update is never dropped silently. Both calls are idempotent, so you can retry.
 - If the interface declares `SetElementsCache` but its `DistributedCache` can't support it, for example a plain `RedisDistributedCache`, creating the cache fails at startup.
 
 ## Building a cache in code

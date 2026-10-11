@@ -23,7 +23,8 @@ import org.springframework.data.redis.core.StringRedisTemplate
  * 以 Redis Set 存储 `Set<String>` 的分布式缓存，支持原子元素增删
  * （[SetElementsCache][me.ahoo.cache.api.SetElementsCache]）。线格式与 [SetToSetCodecExecutor] 相同。
  *
- * 故障降级同 [RedisDistributedCache]：增删失败仅告警；条件写回失败视为未写入。
+ * 元素增删是调用方的显式写入，失败时**总是**抛出 [DataAccessException]（不受 `strictFailure` 影响），
+ * 避免更新被静默丢弃；条件写回与撤销属于缓存填充，按 `strictFailure` 降级（写回失败视为未写入）。
  *
  * @author ahoo wang
  */
@@ -34,19 +35,11 @@ class RedisSetDistributedCache @JvmOverloads constructor(
 ) : RedisDistributedCache<Set<String>>(redisTemplate, codecExecutor, strictFailure), SetElementsStore<String> {
 
     override fun addElements(key: String, elements: Collection<String>, ttlAt: Long) {
-        try {
-            codecExecutor.executeAddElements(key, elements, ttlAt)
-        } catch (e: DataAccessException) {
-            handleFailure("addElements", key, e)
-        }
+        codecExecutor.executeAddElements(key, elements, ttlAt)
     }
 
     override fun removeElements(key: String, elements: Collection<String>, ttlAt: Long) {
-        try {
-            codecExecutor.executeRemoveElements(key, elements, ttlAt)
-        } catch (e: DataAccessException) {
-            handleFailure("removeElements", key, e)
-        }
+        codecExecutor.executeRemoveElements(key, elements, ttlAt)
     }
 
     override fun fillCache(key: String, value: CacheValue<Set<String>>): Boolean {
