@@ -26,6 +26,7 @@ import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.listener.ChannelTopic
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.LongAdder
 
 /**
  * 基于 Redis Pub/Sub 的失效事件通道：每个缓存一个频道（频道名即 cacheName）。
@@ -44,12 +45,20 @@ class RedisCacheEvictedEventBus(
     }
 
     private val listeners = ConcurrentHashMap<CacheEvictedSubscriber, SubscriberListener>()
+    private val publishFailures = LongAdder()
+
+    /**
+     * 发布失败次数：失败的事件不会重试，其它实例的 L2 副本只能由 TTL 或通道重置兜底。
+     */
+    val publishFailureCount: Long
+        get() = publishFailures.sum()
 
     override fun publish(event: CacheEvictedEvent) {
         try {
             redisTemplate.convertAndSend(event.cacheName, EvictedEvents.asMessage(event.key, event.publisherId))
         } catch (e: DataAccessException) {
             // 尽力而为：发布失败仅告警，不阻断调用方；接收方由 TTL 与重置兜底
+            publishFailures.increment()
             log.warn(e) { "Publish - event:[$event] failed." }
         }
     }

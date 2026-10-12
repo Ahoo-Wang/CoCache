@@ -1,6 +1,6 @@
 ---
 title: 运维
-description: 生产环境运行 CoCache：Actuator 端点、Redis 故障行为、负缓存哨兵、容量规划与陈旧读取排查。
+description: 生产环境运行 CoCache：Actuator 端点、指标、Redis 故障行为、负缓存哨兵、容量规划与陈旧读取排查。
 ---
 
 # 运维
@@ -28,6 +28,30 @@ management:
 | `DELETE /actuator/cocacheClient/{name}` | 清空本实例的 L2 |
 
 `DELETE` 操作会修改缓存，请像保护其它可写 Actuator 端点一样保护它们。
+
+## 指标 {#metrics}
+
+classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入它），starter 会把以下指标绑定到所有 `MeterRegistry`。按缓存统计的指标带 `cache` 标签，值为缓存名。
+
+| 指标 | 类型 | 含义 |
+|------|------|------|
+| `cocache.hits{level=l2}` | counter | 由本实例 L2 返回的读取。仅在 `cocache.metrics.client-side-hits=true` 时统计 |
+| `cocache.hits{level=l1}` | counter | L2 未命中、由 Redis 返回的读取 |
+| `cocache.misses` | counter | L2 未命中次数，统计于同一 key 的并发未命中合并之前 |
+| `cocache.loads` | timer | 调用 `CacheSource` 的次数与耗时，含失败 |
+| `cocache.load.failures` | counter | `CacheSource` 抛出异常的次数 |
+| `cocache.filtered` | counter | key 过滤器判定“不存在”的读取 |
+| `cocache.stale.discards` | counter | 加载期间 key 被失效，加载结果被放弃或撤销的次数 |
+| `cocache.evictions.received` | counter | 收到其它实例失效事件的次数 |
+| `cocache.resets` | counter | 失效通道（重新）订阅并清空 L2 的次数 |
+| `cocache.l2.size` | gauge | 本实例 L2 的条目数 |
+| `cocache.eviction.publish.failures` | counter | 发布失败的失效事件（无 `cache` 标签） |
+
+常用比值：
+
+- **L2 命中率** = `hits{level=l2}` / (`hits{level=l2}` + `misses`)。需要开启 `cocache.metrics.client-side-hits=true`：在最热的路径上计数会使 L2 命中吞吐下降 8%–15%（JMH，1–8 线程），因此默认关闭。其余指标都不在命中路径上记录，始终开启。
+- **被合并的读取** = `misses` − `hits{level=l1}` − `loads`，即等待其它线程加载结果的未命中。
+- **`eviction.publish.failures` > 0** 表示其它实例的 L2 可能保留旧副本，直到 `clientSideTtl` 或 `ttl` 到期。
 
 ## Redis 故障 {#redis-failures}
 
@@ -75,7 +99,8 @@ cocache:
 1. 确认写入方在数据库提交*之后*才淘汰。提交前淘汰会让并发读取重新加载旧数据。
 2. 确认每条写入路径都会淘汰，包括批处理任务以及写同一份数据的其它服务。
 3. 查看 `GET /actuator/cocache/{name}`：所有实例必须使用相同的缓存名，缓存名就是频道名。
-4. 剩下的陈旧来源是[一致性](../architecture/consistency.md#what-is-not-guaranteed)中描述的 cache-aside 竞态，由 `ttl` 限定上界。
+4. 查看 `cocache.eviction.publish.failures`。发布失败时，其它实例的 L2 副本会保持陈旧，直到 `clientSideTtl`（若已设置）或 `ttl` 到期。
+5. 剩下的陈旧来源是[一致性](../architecture/consistency.md#what-is-not-guaranteed)中描述的 cache-aside 竞态，由 `ttl` 限定上界。
 
 **新建的数据被报告为不存在。** 数据创建前的一次查询缓存了负缓存，最多持续 `missingTtl` 秒。创建数据后淘汰该 key，或调低 `missingTtl`。
 

@@ -29,4 +29,10 @@ interface CoherentCache<K, V> : Cache<K, V>, NamedCache, AutoCloseable {
 
     val clientId: String
         get() = configuration.clientId
+
+    /**
+     * 运行统计（只读累计值）；不记录统计的实现返回恒为 0 的统计。
+     */
+    val stats: CoherentCacheStats
+        get() = CoherentCacheStats.EMPTY
 }

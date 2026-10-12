@@ -39,9 +39,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 此时 L1 中的集合是权威副本：回源写回改用条件写入（[SetElementsStore.fillCache]），撤销改用条件删除
  * （[SetElementsStore.evictIfUnchanged]），二者都不会吞没并发的元素增删。
  */
-class DefaultCoherentCache<K, V>(
+class DefaultCoherentCache<K, V> @JvmOverloads constructor(
     override val configuration: CoherentCacheConfiguration<K, V>,
-    private val cacheEvictedEventBus: CacheEvictedEventBus
+    private val cacheEvictedEventBus: CacheEvictedEventBus,
+    private val recordClientSideHits: Boolean = false
 ) : CoherentCache<K, V>, SetElementsCache<K, Any?>, CacheEvictedSubscriber {
 
     companion object {
@@ -71,17 +72,25 @@ class DefaultCoherentCache<K, V>(
 
     override val cacheName: String = configuration.cacheName
 
+    override val stats: CoherentCacheStats = CoherentCacheStats(recordClientSideHits)
+
     override fun getCache(key: K): CacheValue<V> {
         val cacheKey = keyConverter.toStringKey(key)
         clientSideCache.getCache(cacheKey)?.let {
             if (!it.isExpired) {
+                // 命中路径上的计数在 8 线程下使吞吐下降约 15%（JMH），因此默认关闭
+                if (recordClientSideHits) {
+                    stats.recordClientSideHit()
+                }
                 return it
             }
             clientSideCache.evict(cacheKey)
         }
         if (keyFilter.notExist(cacheKey)) {
+            stats.recordFiltered()
             return ttlPolicy.missing()
         }
+        stats.recordMiss()
         // 未命中才取戳（命中路径零额外开销）：先于本次读取发生的失效此时必已递增该戳，
         // 本次读取不得接受开始于这些失效之前的加载结果
         val observedStamp = stamps.current(cacheKey)
@@ -101,15 +110,26 @@ class DefaultCoherentCache<K, V>(
         val stamp = stamps.current(cacheKey)
         distributedCache.getCache(cacheKey)?.let {
             if (!it.isExpired) {
+                stats.recordDistributedHit()
                 fillClientSide(cacheKey, it, stamp)
                 return Loaded(it, stamp)
             }
         }
-        val loaded = cacheSource.loadCacheValue(key) ?: ttlPolicy.missing()
+        val loaded = loadFromSource(key) ?: ttlPolicy.missing()
         if (!loaded.isExpired) {
             writeBack(cacheKey, loaded, stamp)
         }
         return Loaded(loaded, stamp)
+    }
+
+    private fun loadFromSource(key: K): CacheValue<V>? {
+        val startNanos = System.nanoTime()
+        var failed = true
+        try {
+            return cacheSource.loadCacheValue(key).also { failed = false }
+        } finally {
+            stats.recordLoad(System.nanoTime() - startNanos, failed)
+        }
     }
 
     private fun fillClientSide(cacheKey: String, cacheValue: CacheValue<V>, stamp: Long) {
@@ -154,6 +174,7 @@ class DefaultCoherentCache<K, V>(
     private fun CacheValue<V>.asSetValue(): CacheValue<Set<Any?>> = this as CacheValue<Set<Any?>>
 
     private fun logStaleLoadDiscarded(cacheKey: String) {
+        stats.recordStaleLoadDiscarded()
         log.warn {
             "Cache Name[$cacheName] - ClientId[$clientId] - key[$cacheKey] " +
                 "- Discard the loaded value, because it was invalidated during loading."
@@ -243,12 +264,14 @@ class DefaultCoherentCache<K, V>(
         log.debug {
             "Cache Name[$cacheName] - ClientId[$clientId] - onEvicted - CacheEvictedEvent:[$cacheEvictedEvent]"
         }
+        stats.recordEvictionReceived()
         stamps.invalidate(cacheEvictedEvent.key)
         clientSideCache.evict(cacheEvictedEvent.key)
     }
 
     override fun onReset() {
         log.info { "Cache Name[$cacheName] - ClientId[$clientId] - onReset - clear client side cache." }
+        stats.recordReset()
         stamps.invalidateAll()
         clientSideCache.clear()
     }

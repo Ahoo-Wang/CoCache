@@ -101,8 +101,11 @@ class CoCacheAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    fun coherentCacheFactory(cacheEvictedEventBus: CacheEvictedEventBus): CoherentCacheFactory {
-        return DefaultCoherentCacheFactory(cacheEvictedEventBus)
+    fun coherentCacheFactory(
+        cacheEvictedEventBus: CacheEvictedEventBus,
+        coCacheProperties: CoCacheProperties
+    ): CoherentCacheFactory {
+        return DefaultCoherentCacheFactory(cacheEvictedEventBus, coCacheProperties.metrics.clientSideHits)
     }
 
     @Bean

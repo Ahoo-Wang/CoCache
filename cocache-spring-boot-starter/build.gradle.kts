@@ -26,6 +26,8 @@ dependencies {
     // Actuator 端点按 @ConditionalOnClass 激活：编译期可见，由使用方自行引入
     compileOnly("org.springframework.boot:spring-boot-starter-actuator")
     testImplementation("org.springframework.boot:spring-boot-starter-actuator")
+    // Micrometer 指标按 @ConditionalOnClass 激活：编译期可见，由使用方自行引入
+    compileOnly("io.micrometer:micrometer-core")
     kapt("org.springframework.boot:spring-boot-configuration-processor")
     kapt("org.springframework.boot:spring-boot-autoconfigure-processor")
     testImplementation("com.google.guava:guava")
