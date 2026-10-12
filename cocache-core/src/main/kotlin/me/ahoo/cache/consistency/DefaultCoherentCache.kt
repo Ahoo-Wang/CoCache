@@ -25,6 +25,8 @@ import me.ahoo.cache.concurrent.SingleFlight
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -47,7 +49,8 @@ class DefaultCoherentCache<K, V> @JvmOverloads constructor(
     override val configuration: CoherentCacheConfiguration<K, V>,
     private val cacheEvictedEventBus: CacheEvictedEventBus,
     private val recordClientSideHits: Boolean = false,
-    private val refreshExecutor: Executor = RefreshExecutors.DEFAULT
+    private val refreshExecutor: Executor = RefreshExecutors.DEFAULT,
+    private val sourceLoadLimit: SourceLoadLimit = SourceLoadLimit.UNLIMITED
 ) : CoherentCache<K, V>, SetElementsCache<K, Any?>, CacheEvictedSubscriber {
 
     companion object {
@@ -63,6 +66,11 @@ class DefaultCoherentCache<K, V> @JvmOverloads constructor(
     private val stamps = InvalidationStamps()
     private val loads = SingleFlight<String, Loaded<V>>()
     private val refreshAheadEnabled = ttlPolicy.refreshAhead > 0
+    private val loadPermits: Semaphore? = if (sourceLoadLimit.isLimited) {
+        Semaphore(sourceLoadLimit.maxConcurrentLoads)
+    } else {
+        null
+    }
 
     /**
      * L2 命中时是否有额外工作（命中计数或提前刷新）。合并为一个字段，使默认配置下的命中路径只做一次判断（JMH：多一次判断在 8 线程下约 −5%）。
@@ -240,11 +248,27 @@ class DefaultCoherentCache<K, V> @JvmOverloads constructor(
         }
     }
 
-    private fun loadAllFromSource(keys: Collection<K>): Map<K, CacheValue<V>> {
+    /**
+     * 在回源并发限制内执行 [block]；超时未获得许可时抛出 [SourceLoadRejectedException]。
+     */
+    private inline fun <R> withLoadPermit(block: () -> R): R {
+        val permits = loadPermits ?: return block()
+        if (!permits.tryAcquire(sourceLoadLimit.acquireTimeout.toNanos(), TimeUnit.NANOSECONDS)) {
+            stats.recordLoadRejected()
+            throw SourceLoadRejectedException(cacheName, sourceLoadLimit)
+        }
+        try {
+            return block()
+        } finally {
+            permits.release()
+        }
+    }
+
+    private fun loadAllFromSource(keys: Collection<K>): Map<K, CacheValue<V>> = withLoadPermit {
         val startNanos = System.nanoTime()
         var failed = true
         try {
-            return cacheSource.loadCacheValues(keys).also { failed = false }
+            cacheSource.loadCacheValues(keys).also { failed = false }
         } finally {
             stats.recordLoad(System.nanoTime() - startNanos, failed)
         }
@@ -272,11 +296,11 @@ class DefaultCoherentCache<K, V> @JvmOverloads constructor(
         return Loaded(loaded, stamp)
     }
 
-    private fun loadFromSource(key: K): CacheValue<V>? {
+    private fun loadFromSource(key: K): CacheValue<V>? = withLoadPermit {
         val startNanos = System.nanoTime()
         var failed = true
         try {
-            return cacheSource.loadCacheValue(key).also { failed = false }
+            cacheSource.loadCacheValue(key).also { failed = false }
         } finally {
             stats.recordLoad(System.nanoTime() - startNanos, failed)
         }

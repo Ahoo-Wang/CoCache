@@ -45,6 +45,7 @@ classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入它）
 | `cocache.evictions.received` | counter | 收到其它实例失效事件的次数 |
 | `cocache.resets` | counter | 失效通道（重新）订阅并清空 L2 的次数 |
 | `cocache.refreshes` | counter | 提前刷新的执行次数，含失败；其中的回源同时计入 `cocache.loads` |
+| `cocache.load.rejections` | counter | 被 `cocache.load.max-concurrent` 拒绝的回源 |
 | `cocache.l2.size` | gauge | 本实例 L2 的条目数 |
 | `cocache.eviction.publish.failures` | counter | 发布失败的失效事件（无 `cache` 标签） |
 
@@ -65,6 +66,10 @@ classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入它）
 | 发布淘汰事件 | 记录 `WARN`（两种模式相同） | 记录 `WARN` |
 
 请为降级的代价做好准备：Redis 不可用期间，每次 L2 未命中都会访问数据源。由于并发未命中会合并，同一 key 在每个实例上同时最多只有一次加载。确认数据源能承受这部分负载，否则选择 `strict-failure=true` 并自行处理异常。
+
+不同 key 的加载不会合并，故障期间仍可能同时产生大量回源。设置 `cocache.load.max-concurrent`（每个实例、每个缓存）即可限制：超过上限的回源最多等待 `cocache.load.acquire-timeout` 获取许可，超时抛出 `SourceLoadRejectedException`，并计入 `cocache.load.rejections`。合并到在途加载的读取不占用许可，一次批量回源占用一个许可。
+
+失效通道断开期间不会进一步缩短 L2 副本的存活时间：通道重新订阅时每个实例都会清空 L2，因此断开造成的陈旧不会超过断开时长。连接未断但事件丢失的情况由 `clientSideTtl` 限定上界。
 
 淘汰事件通道重连时，每个实例清空 L2，并以 `INFO` 级别记录 `Channel[…] subscribed - reset subscriber`。故障期间发布的事件已丢失，清空 L2 保证旧条目不会在故障后继续存在。
 

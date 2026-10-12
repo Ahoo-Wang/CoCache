@@ -336,7 +336,7 @@ When Spring Actuator is on the classpath:
 | `/actuator/cocacheClient/{name}/{key}` | GET | Get a client-side cache entry |
 | `/actuator/cocacheClient/{name}` | DELETE | Clear a client-side cache |
 
-With Micrometer on the classpath, the starter also binds `cocache.*` meters tagged by `cache`: `hits{level=l2|l1}`, `misses`, `loads` (timer), `load.failures`, `filtered`, `stale.discards`, `evictions.received`, `resets`, `l2.size`, plus the untagged `eviction.publish.failures`. `hits{level=l2}` is recorded only with `cocache.metrics.client-side-hits=true` (off by default: it costs 8–15% of L2 hit throughput). The L2 hit ratio is `hits{level=l2} / (hits{level=l2} + misses)`.
+With Micrometer on the classpath, the starter also binds `cocache.*` meters tagged by `cache`: `hits{level=l2|l1}`, `misses`, `loads` (timer), `load.failures`, `filtered`, `stale.discards`, `evictions.received`, `resets`, `l2.size`, plus the untagged `eviction.publish.failures`. Set `cocache.load.max-concurrent` (with `cocache.load.acquire-timeout`, default `1s`) to cap concurrent source loads per cache while Redis is down; excess loads fail with `SourceLoadRejectedException` and count in `load.rejections`. `hits{level=l2}` is recorded only with `cocache.metrics.client-side-hits=true` (off by default: it costs 8–15% of L2 hit throughput). The L2 hit ratio is `hits{level=l2} / (hits{level=l2} + misses)`.
 
 ## Disabling CoCache
 

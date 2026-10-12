@@ -16,6 +16,7 @@ package me.ahoo.cache.spring.boot.starter
 import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.consistency.CacheEvictedEventBus
 import me.ahoo.cache.consistency.CoherentCache
+import me.ahoo.cache.consistency.SourceLoadLimit
 import me.ahoo.cache.example.cache.UserCache
 import me.ahoo.cache.example.cache.UserExtendInfoJoinCache
 import me.ahoo.cache.spring.boot.starter.auto.EnableCoCacheConfiguration
@@ -37,6 +38,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.cache.CacheManager
 import org.springframework.cache.concurrent.ConcurrentMapCacheManager
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
+import java.time.Duration
 
 internal class CoCacheAutoConfigurationTest {
     private val contextRunner = ApplicationContextRunner()
@@ -136,6 +138,22 @@ internal class CoCacheAutoConfigurationTest {
             .run { context ->
                 context.getBeansOfType(ClientIdGenerator::class.java).size.assert().isOne()
                 context.getBean(ClientIdGenerator::class.java).assert().isEqualTo(customClientIdGenerator)
+            }
+    }
+
+    @Test
+    fun bindLoadLimitProperties() {
+        contextRunner
+            .withPropertyValues("cocache.load.max-concurrent=8", "cocache.load.acquire-timeout=200ms")
+            .withUserConfiguration(
+                JacksonAutoConfiguration::class.java,
+                DataRedisAutoConfiguration::class.java,
+                CoCacheAutoConfiguration::class.java
+            )
+            .run { context ->
+                val load = context.getBean(CoCacheProperties::class.java).load
+                load.toSourceLoadLimit().assert()
+                    .isEqualTo(SourceLoadLimit(maxConcurrentLoads = 8, acquireTimeout = Duration.ofMillis(200)))
             }
     }
 

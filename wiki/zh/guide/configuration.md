@@ -50,6 +50,8 @@ CoCache 的配置分三层：
 | 属性 | 默认值 | 含义 |
 |------|--------|------|
 | `cocache.enabled` | `true` | `false` 关闭全部 CoCache 自动配置（包括 Actuator 端点） |
+| `cocache.load.max-concurrent` | `0`（不限制） | 每个实例、每个缓存同时进行的回源数上限，在 Redis 故障时保护数据源。见[运维](./operations.md#redis-failures) |
+| `cocache.load.acquire-timeout` | `1s` | 达到上限时等待许可的最长时间，超时抛出 `SourceLoadRejectedException` |
 | `cocache.metrics.client-side-hits` | `false` | 统计 L2 命中（`cocache.hits{level=l2}`）。计数会使 L2 命中吞吐下降约 8%（单线程）到 15%（8 线程），因此默认关闭。见[运维](./operations.md#metrics) |
 | `cocache.redis.strict-failure` | `false` | `false` 在 Redis 故障时降级：读取回源，写入与淘汰仅告警。`true` 重抛异常。见[运维](./operations.md#redis-failures) |
 | `cocache.redis.missing-guard-sentinel` | `_nil_` | Redis 中标记负缓存的值。见[运维](./operations.md#the-negative-cache-sentinel) |
