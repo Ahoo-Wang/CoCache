@@ -38,6 +38,7 @@ docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 | One class or method | `./gradlew :cocache-core:test --tests "me.ahoo.cache.proxy.ProxyCacheTest"` |
 | Lint (**rewrites files**: `autoCorrect = true`) | `./gradlew detekt` |
 | Runtime compatibility on a newer JDK | `./gradlew test -PtestJavaVersion=25` |
+| Redis modules on a local Redis Cluster (needs `redis-server` 7+) | `.github/scripts/start-redis-cluster.sh`, then `SPRING_DATA_REDIS_CLUSTER_NODES=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002 ./gradlew :cocache-spring-redis:test :cocache-spring-cache:test :cocache-spring-boot-starter:test` |
 | Hit-path benchmark (never run by `check`; `--rerun` because Gradle otherwise reuses the last result) | `./gradlew :cocache-spring-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit` |
 | Wiki build, the only dead-link check | `cd wiki && pnpm install && pnpm build` |
 

@@ -15,11 +15,11 @@ package me.ahoo.cache.spring.redis.codec
 
 import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.TtlAt
+import me.ahoo.cache.spring.redis.RedisTestSupport
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.springframework.data.redis.connection.RedisStandaloneConfiguration
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
 import org.springframework.data.redis.core.StringRedisTemplate
 import java.util.UUID
@@ -38,8 +38,7 @@ internal class AtomicWriteConsistencyTest {
 
     @BeforeEach
     fun setup() {
-        lettuceConnectionFactory = LettuceConnectionFactory(RedisStandaloneConfiguration())
-        lettuceConnectionFactory.afterPropertiesSet()
+        lettuceConnectionFactory = RedisTestSupport.newConnectionFactory()
         stringRedisTemplate = StringRedisTemplate(lettuceConnectionFactory)
         stringRedisTemplate.afterPropertiesSet()
         codecExecutor = MapToHashCodecExecutor(stringRedisTemplate)
