@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   所有写回（L1→L2 填充、回源写回）都在取戳之后、写入前后各复核一次。
  * - 通道重置（[onReset]）清空 L2：至多一次投递的事件通道丢失的失效以此兜底。
  * - 回源成功不广播事件：L1 为空时，其它实例 L2 中的副本必然已过期或已被失效。
+ * - 写入 L2 的副本按 [me.ahoo.cache.TtlPolicy.clientSide] 限制到期时间：事件丢失时 L2 的陈旧度仍有上界。
  *
  * 集合元素增删（[SetElementsCache]）要求 L1 实现 [SetElementsStore]，否则抛出 [UnsupportedOperationException]。
  * 此时 L1 中的集合是权威副本：回源写回改用条件写入（[SetElementsStore.fillCache]），撤销改用条件删除
@@ -115,7 +116,7 @@ class DefaultCoherentCache<K, V>(
         if (!stamps.isValid(cacheKey, stamp)) {
             return
         }
-        clientSideCache.setCache(cacheKey, cacheValue)
+        clientSideCache.setCache(cacheKey, ttlPolicy.clientSide(cacheValue))
         if (!stamps.isValid(cacheKey, stamp)) {
             clientSideCache.evict(cacheKey)
         }
@@ -133,7 +134,7 @@ class DefaultCoherentCache<K, V>(
             // L1 已被并发写入（如元素增删）：以 L1 为准，不填充 L2
             return
         }
-        clientSideCache.setCache(cacheKey, cacheValue)
+        clientSideCache.setCache(cacheKey, ttlPolicy.clientSide(cacheValue))
         if (!stamps.isValid(cacheKey, stamp)) {
             // 写入与失效交错：写入的值可能覆盖了失效方刚刚的淘汰，必须撤销并广播
             logStaleLoadDiscarded(cacheKey)
@@ -171,7 +172,7 @@ class DefaultCoherentCache<K, V>(
         val cacheKey = keyConverter.toStringKey(key)
         stamps.invalidate(cacheKey)
         distributedCache.setCache(cacheKey, value)
-        clientSideCache.setCache(cacheKey, value)
+        clientSideCache.setCache(cacheKey, ttlPolicy.clientSide(value))
         publish(cacheKey)
     }
 

@@ -20,7 +20,7 @@
 | 项 | 目标 | 内容 | 验收 |
 |----|------|------|------|
 | 移除 CosId 依赖 | 精简依赖 | 用 JDK（`ProcessHandle`、`NetworkInterface`）替代 `ProcessId`、`LocalHostAddressSupplier`；`HostAddressSupplier` 集成改为可选或移除；删除 example 中的 `cosid:` 配置 | `cocache-core` 不再传递 `cosid-core`；changelog 说明 |
-| L2 陈旧上限 | G1 | `@CaffeineCache.maxStaleness`（默认 0 = 不限制，保持现有行为）；填充 L2 时取 `min(ttlAt, now + maxStaleness)`，命中路径零开销 | TCK：丢失一条失效事件后，L2 在上限内自愈；L2 命中 JMH（1/8 线程）不退化 |
+| L2 陈旧上限 | G1 | `@CoCache.clientSideTtl`（默认 0 = 不限制，保持现有行为）；写入 L2 时取 `min(ttlAt, now + clientSideTtl)`，命中路径零开销。由 `TtlPolicy` 持有而非 `@CaffeineCache`：策略属于编排层，且 L2 不一定是 Caffeine | TCK：丢失一条失效事件后，L2 在上限内自愈；L2 命中 JMH（1/8 线程）不退化 |
 | 指标 | 验证 G1–G3 | Micrometer（starter 中 `compileOnly` + `@ConditionalOnClass`）：分层命中率、回源耗时与异常、SingleFlight 合并数、戳作废写回数、发布失败数、`onReset` 次数 | 计数基于 `LongAdder`，JMH 不退化 |
 
 ## v5.3：批量与尾延迟

@@ -152,6 +152,7 @@ TTL guidance (all in seconds):
 - `ttl` caps how long a missed invalidation can survive (cache-aside races are only repaired by expiry). Keep it finite; `TtlAt.FOREVER` disables expiry.
 - `ttlAmplitude` spreads expirations to avoid avalanches (about 2–10 % of `ttl`).
 - `missingTtl` caps how long a newly created row stays invisible after a "not found" was cached. Keep it short.
+- `clientSideTtl` (default `0` = unlimited) caps how long an L2 copy lives before it is refilled from L1, which bounds staleness when an eviction event is lost.
 - L2 entries expire at their own `ttlAt`; `@CaffeineCache` only bounds size and idle time.
 
 ```kotlin

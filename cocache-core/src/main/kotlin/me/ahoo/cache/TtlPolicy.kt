@@ -23,17 +23,27 @@ import me.ahoo.cache.api.annotation.CoCache
  * @param ttl 命中值 TTL，可为 [TtlAt.FOREVER]
  * @param ttlAmplitude 命中值 TTL 的随机抖动幅度
  * @param missingTtl 负缓存 TTL（不抖动）
+ * @param clientSideTtl L2 副本的最长存活时间，`0` 表示不限制
  */
 data class TtlPolicy(
     val ttl: Long = CoCache.DEFAULT_TTL,
     val ttlAmplitude: Long = CoCache.DEFAULT_TTL_AMPLITUDE,
-    val missingTtl: Long = CoCache.DEFAULT_MISSING_TTL
+    val missingTtl: Long = CoCache.DEFAULT_MISSING_TTL,
+    val clientSideTtl: Long = CoCache.DEFAULT_CLIENT_SIDE_TTL
 ) {
     init {
         require(ttl > 0) { "ttl[$ttl] must be positive." }
         require(ttlAmplitude >= 0) { "ttlAmplitude[$ttlAmplitude] must not be negative." }
         require(missingTtl > 0) { "missingTtl[$missingTtl] must be positive." }
+        require(clientSideTtl >= 0) { "clientSideTtl[$clientSideTtl] must not be negative." }
     }
+
+    /**
+     * 保留 5.1 的构造函数签名，保证二进制兼容。
+     */
+    @Deprecated("Binary compatibility only.", level = DeprecationLevel.HIDDEN)
+    constructor(ttl: Long, ttlAmplitude: Long, missingTtl: Long) :
+        this(ttl, ttlAmplitude, missingTtl, CoCache.DEFAULT_CLIENT_SIDE_TTL)
 
     /**
      * 按策略构造缓存条目：`null` 值为负缓存。
@@ -54,5 +64,19 @@ data class TtlPolicy(
 
     fun <V> missing(): CacheValue<V> {
         return CacheValue.missing(TtlAt.at(missingTtl))
+    }
+
+    /**
+     * 写入 L2 的副本：到期时间不晚于 `now + clientSideTtl`。不限制或原到期时间更早时原样返回。
+     */
+    fun <V> clientSide(cacheValue: CacheValue<V>): CacheValue<V> {
+        if (clientSideTtl == 0L) {
+            return cacheValue
+        }
+        val cappedTtlAt = TtlAt.at(clientSideTtl)
+        if (cacheValue.ttlAt <= cappedTtlAt) {
+            return cacheValue
+        }
+        return CacheValue.of(cacheValue.value, cappedTtlAt)
     }
 }
