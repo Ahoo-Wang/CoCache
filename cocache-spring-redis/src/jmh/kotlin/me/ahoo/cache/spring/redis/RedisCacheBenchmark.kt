@@ -55,6 +55,11 @@ open class RedisCacheBenchmark {
     private lateinit var listenerContainer: RedisMessageListenerContainer
     private lateinit var distributedCache: DistributedCache<String>
     private lateinit var cache: CoherentCache<String, String>
+    private val batchKeys = (1..BATCH_SIZE).map { "${keyPrefix}batch-$it" }
+
+    companion object {
+        const val BATCH_SIZE = 100
+    }
 
     @Setup
     fun setup() {
@@ -82,6 +87,7 @@ open class RedisCacheBenchmark {
         )
         cache["hot"] = "hot-value"
         cache["l1"] = "l1-value"
+        batchKeys.forEach { distributedCache.setCache(it, CacheValue.of("batch-value", TtlAt.at(600))) }
     }
 
     @TearDown
@@ -98,6 +104,14 @@ open class RedisCacheBenchmark {
     /** 直接读 L1（不经 L2）：一次 Lua 往返取回 TTL 与值。 */
     @Benchmark
     fun l1Read(): CacheValue<String>? = distributedCache.getCache("${keyPrefix}l1")
+
+    /** 逐个读 L1 的 [BATCH_SIZE] 个 key：[BATCH_SIZE] 次往返，与 [l1BatchRead] 对比。 */
+    @Benchmark
+    fun l1SequentialRead(): Int = batchKeys.count { distributedCache.getCache(it) != null }
+
+    /** 批量读 L1 的 [BATCH_SIZE] 个 key：一次 pipeline 往返。 */
+    @Benchmark
+    fun l1BatchRead(): Int = distributedCache.getCaches(batchKeys).size
 
     /** 完整未命中：L2、L1 均未命中，回源并写回 L1 + L2。 */
     @Benchmark

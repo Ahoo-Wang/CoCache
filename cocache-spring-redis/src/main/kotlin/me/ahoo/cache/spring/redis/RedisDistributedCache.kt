@@ -35,6 +35,7 @@ open class RedisDistributedCache<V> @JvmOverloads constructor(
 ) : DistributedCache<V> {
     companion object {
         private val log = KotlinLogging.logger {}
+        private const val MAX_LOGGED_KEYS = 10
     }
 
     override fun getCache(key: String): CacheValue<V>? {
@@ -43,6 +44,15 @@ open class RedisDistributedCache<V> @JvmOverloads constructor(
         } catch (e: DataAccessException) {
             handleFailure("getCache", key, e)
             null
+        }
+    }
+
+    override fun getCaches(keys: Collection<String>): Map<String, CacheValue<V>> {
+        return try {
+            codecExecutor.executeAndDecodeAll(keys)
+        } catch (e: DataAccessException) {
+            handleFailure("getCaches", keys.joinToString(prefix = "[", postfix = "]", limit = MAX_LOGGED_KEYS), e)
+            emptyMap()
         }
     }
 

@@ -41,6 +41,16 @@ abstract class CacheSpec<K, V> {
     }
 
     @Test
+    fun getAllReturnsOnlyPresentValues() {
+        val (key, value) = createCacheEntry()
+        val (absentKey, _) = createCacheEntry()
+        cache[key] = value
+
+        cache.getAll(listOf(key, absentKey)).assert().isEqualTo(mapOf(key to value))
+        cache.getAll(emptyList()).assert().isEmpty()
+    }
+
+    @Test
     fun set() {
         val (key, value) = createCacheEntry()
         cache[key] = value

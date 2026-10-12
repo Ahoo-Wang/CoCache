@@ -50,7 +50,7 @@ classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入它）
 常用比值：
 
 - **L2 命中率** = `hits{level=l2}` / (`hits{level=l2}` + `misses`)。需要开启 `cocache.metrics.client-side-hits=true`：在最热的路径上计数会使 L2 命中吞吐下降 8%–15%（JMH，1–8 线程），因此默认关闭。其余指标都不在命中路径上记录，始终开启。
-- **被合并的读取** = `misses` − `hits{level=l1}` − `loads`，即等待其它线程加载结果的未命中。
+- **被合并的读取** = `misses` − `hits{level=l1}` − `loads`（不使用批量读取时），即等待其它线程加载结果的未命中。一次批量回源在 `loads` 中计为一次。
 - **`eviction.publish.failures` > 0** 表示其它实例的 L2 可能保留旧副本，直到 `clientSideTtl` 或 `ttl` 到期。
 
 ## Redis 故障 {#redis-failures}

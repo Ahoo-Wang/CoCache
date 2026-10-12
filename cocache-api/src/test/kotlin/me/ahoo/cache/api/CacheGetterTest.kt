@@ -13,6 +13,7 @@
 
 package me.ahoo.cache.api
 
+import me.ahoo.cache.api.source.CacheSource
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
@@ -44,6 +45,44 @@ class CacheGetterTest {
         val getter = FixedGetter(CacheValue.of("value", TtlAt.currentTime() - 1))
         getter["key"].assert().isNull()
         getter.getTtlAt("key").assert().isNull()
+    }
+
+    @Test
+    fun getCachesKeepsOnlyKeysWithEntries() {
+        val entries = mapOf(
+            "present" to CacheValue.forever("value"),
+            "missing" to CacheValue.missing(),
+            "expired" to CacheValue.of("old", TtlAt.currentTime() - 1)
+        )
+        val getter = object : CacheGetter<String, String> {
+            override fun getCache(key: String): CacheValue<String>? = entries[key]
+        }
+        val keys = listOf("absent", "present", "missing", "expired")
+
+        getter.getCaches(keys).keys.assert().containsExactly("present", "missing", "expired")
+        getter.getAll(keys).assert().isEqualTo(mapOf("present" to "value"))
+    }
+
+    @Test
+    fun cacheStoreGetCachesKeepsOnlyKeysWithEntries() {
+        val store = object : CacheStore<String> {
+            override fun getCache(key: String): CacheValue<String>? =
+                if (key == "present") CacheValue.forever("value") else null
+
+            override fun setCache(key: String, value: CacheValue<String>) = Unit
+            override fun evict(key: String) = Unit
+        }
+
+        store.getCaches(listOf("present", "absent")).assert()
+            .isEqualTo(mapOf("present" to CacheValue.forever("value")))
+    }
+
+    @Test
+    fun cacheSourceLoadCacheValuesOmitsNotFound() {
+        val source = CacheSource<String, String> { key -> if (key == "present") CacheValue.forever(key) else null }
+
+        source.loadCacheValues(listOf("present", "absent")).assert()
+            .isEqualTo(mapOf("present" to CacheValue.forever("present")))
     }
 
     @Test

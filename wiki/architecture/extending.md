@@ -28,6 +28,7 @@ interface CacheStore<V> {
     fun getCache(key: String): CacheValue<V>?
     fun setCache(key: String, value: CacheValue<V>)
     fun evict(key: String)
+    fun getCaches(keys: Collection<String>): Map<String, CacheValue<V>> // default: getCache per key
 }
 interface ClientSideCache<V> : CacheStore<V> { val size: Long; fun clear() }
 interface DistributedCache<V> : CacheStore<V>, AutoCloseable
@@ -38,6 +39,7 @@ Every store:
 - **Only stores.** Keep `CacheValue`s exactly as given. Don't apply TTL defaults, jitter, or negative-cache policy, because the orchestration layer already did.
 - Treats `setCache` with an already expired value as `evict`.
 - May return expired entries from `getCache`. The caller checks `isExpired`.
+- Optionally overrides `getCaches(keys)`, which by default calls `getCache` per key. A remote L1 should read all keys in one round trip. The result holds only the keys `getCache` would return non-null for.
 
 An **L2** store must also be **bounded**. Avoid per-entry expiry callbacks that write metadata on every read, such as a Caffeine `Expiry`. With one, a hot key stops scaling across threads.
 
@@ -74,6 +76,6 @@ interface CacheEvictedSubscriber : NamedCache {
 
 ## Sources and keys
 
-- **`CacheSource<K, V>`** returns a `CacheValue` with an absolute `ttlAt`, or `null` for "does not exist". CoCache stores `null` as a negative entry for `missingTtl` seconds. A source is called at most once at a time per key per instance. It must not read its own cache for the same key, or the call fails fast.
+- **`CacheSource<K, V>`** returns a `CacheValue` with an absolute `ttlAt`, or `null` for "does not exist". CoCache stores `null` as a negative entry for `missingTtl` seconds. Single-key reads call it at most once at a time per key per instance. It must not read its own cache for the same key, or the call fails fast. Batch reads call `loadCacheValues(keys)` once with every key that missed L2 and L1. Keys missing from the result become negative entries. The default calls `loadCacheValue` per key, so override it with one query. Batch loads are not coalesced with concurrent single-key loads.
 - **`KeyConverter<K>`** must produce a different string for every key and include a cache-specific prefix, because L1 is shared by every cache.
 - **`KeyFilter.notExist(key)`** may return `true` only for keys that certainly don't exist. For a Bloom filter, that means it was built from every existing key.

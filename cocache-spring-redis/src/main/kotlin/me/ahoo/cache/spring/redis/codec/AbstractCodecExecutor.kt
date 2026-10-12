@@ -18,6 +18,8 @@ import me.ahoo.cache.api.CacheValue
 import me.ahoo.cache.api.MissingValue
 import me.ahoo.cache.api.PresentValue
 import me.ahoo.cache.api.TtlAt
+import org.springframework.data.redis.connection.ReturnType
+import org.springframework.data.redis.core.RedisCallback
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.core.script.DefaultRedisScript
 import org.springframework.data.redis.core.script.RedisScript
@@ -114,9 +116,44 @@ abstract class AbstractCodecExecutor<V, RAW : Any>(
      */
     protected abstract fun writeRaw(key: String, raw: RAW, ttlSeconds: Long?)
 
-    @Suppress("TooGenericExceptionCaught")
     final override fun executeAndDecode(key: String): CacheValue<V>? {
-        val results = redisTemplate.execute(readScript, listOf(key)) ?: return null
+        return decodeReadResults(key, redisTemplate.execute(readScript, listOf(key)))
+    }
+
+    /**
+     * 一次往返（pipeline）对每个 key 执行读脚本；单个 key 时走 [executeAndDecode]（共享连接，无需专用连接）。
+     *
+     * pipeline 中使用 EVAL 而非 EVALSHA：脚本未缓存时 EVALSHA 的 NOSCRIPT 错误无法在 pipeline 内回退。
+     * 每条命令只含一个 key，Redis Cluster 下按 key 路由，不会产生 CROSSSLOT。
+     */
+    final override fun executeAndDecodeAll(keys: Collection<String>): Map<String, CacheValue<V>> {
+        val distinctKeys = keys.distinct()
+        if (distinctKeys.size <= 1) {
+            return super.executeAndDecodeAll(distinctKeys)
+        }
+        val script = readScript.scriptAsString.toByteArray()
+        val serializer = redisTemplate.stringSerializer
+        val results = redisTemplate.executePipelined(
+            RedisCallback<Any?> { connection ->
+                val scripting = connection.scriptingCommands()
+                for (key in distinctKeys) {
+                    scripting.eval<Any>(script, ReturnType.MULTI, 1, requireNotNull(serializer.serialize(key)))
+                }
+                null
+            }
+        )
+        val decoded = LinkedHashMap<String, CacheValue<V>>()
+        distinctKeys.forEachIndexed { index, key ->
+            decodeReadResults(key, results.getOrNull(index) as List<*>?)?.let { decoded[key] = it }
+        }
+        return decoded
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun decodeReadResults(key: String, results: List<*>?): CacheValue<V>? {
+        if (results == null) {
+            return null
+        }
         val ttl = results.firstOrNull() as Long? ?: return null
         if (ttl == TTL_NOT_EXIST) {
             return null

@@ -32,6 +32,7 @@ internal class RedisDistributedCacheFailureTest {
 
     private val failingCodec = mockk<CodecExecutor<String>> {
         every { executeAndDecode(any()) } throws failure
+        every { executeAndDecodeAll(any()) } throws failure
         every { executeAndEncode(any(), any()) } throws failure
     }
 
@@ -39,6 +40,7 @@ internal class RedisDistributedCacheFailureTest {
     fun degradesByDefault() {
         val cache = RedisDistributedCache(failingTemplate, failingCodec)
         cache.getCache("key").assert().isNull()
+        cache.getCaches(listOf("key1", "key2")).assert().isEmpty()
         cache.setCache("key", CacheValue.forever("value"))
         cache.evict("key")
     }
@@ -47,6 +49,7 @@ internal class RedisDistributedCacheFailureTest {
     fun rethrowsInStrictMode() {
         val cache = RedisDistributedCache(failingTemplate, failingCodec, strictFailure = true)
         assertThrows<RedisConnectionFailureException> { cache.getCache("key") }
+        assertThrows<RedisConnectionFailureException> { cache.getCaches(listOf("key")) }
         assertThrows<RedisConnectionFailureException> { cache.setCache("key", CacheValue.forever("value")) }
         assertThrows<RedisConnectionFailureException> { cache.evict("key") }
     }

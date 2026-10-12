@@ -29,6 +29,17 @@ interface CodecExecutor<V> {
     fun executeAndDecode(key: String): CacheValue<V>?
 
     /**
+     * 批量读取：结果只包含 [executeAndDecode] 返回非 `null` 的 key。默认逐个读取。
+     */
+    fun executeAndDecodeAll(keys: Collection<String>): Map<String, CacheValue<V>> {
+        val result = LinkedHashMap<String, CacheValue<V>>()
+        for (key in keys) {
+            executeAndDecode(key)?.let { result[key] = it }
+        }
+        return result
+    }
+
+    /**
      * 写入条目：负缓存写为哨兵；已过期条目淘汰 key。
      */
     fun executeAndEncode(key: String, cacheValue: CacheValue<V>)

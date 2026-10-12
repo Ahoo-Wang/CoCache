@@ -93,6 +93,19 @@ CoCache 按泛型类型 `CacheSource<String, User>` 找到这个 bean。若多�
 
 返回的 `ttlAt` 会原样使用：相对 TTL 用 `TtlAt.at(seconds)`，永不过期用 `CacheValue.forever(value)`。
 
+批量读取（`getAll`）对 L2、L1 都未命中的 key 只调用一次 `loadCacheValues(keys)`。默认实现逐个调用 `loadCacheValue`，覆盖它即可一次查询加载：
+
+```kotlin
+object : CacheSource<String, User> {
+    override fun loadCacheValue(key: String): CacheValue<User>? =
+        userRepository.findById(key)?.let { CacheValue.forever(it) }
+
+    // 结果中缺少的 key 视为“不存在”，写入负缓存
+    override fun loadCacheValues(keys: Collection<String>): Map<String, CacheValue<User>> =
+        userRepository.findAllById(keys).associate { it.id to CacheValue.forever(it) }
+}
+```
+
 ## 5. 使用
 
 像注入其它 bean 一样注入接口：
@@ -117,6 +130,8 @@ class UserService(
 | `cache[key]` | 返回值；不存在、负缓存或已过期时为 `null` |
 | `cache.getCache(key)` | 返回条目本身：`PresentValue(value, ttlAt)` 或 `MissingValue(ttlAt)` |
 | `cache.getTtlAt(key)` | 值的绝对到期时间（纪元秒），或 `null` |
+| `cache.getAll(keys)` | 按 key 返回存在的值：先读 L2，剩余 key 一次往返读 Redis，仍未命中的一次调用 `loadCacheValues` 加载。不存在、负缓存、已过期的 key 不出现在结果中 |
+| `cache.getCaches(keys)` | 按 key 返回条目，等同于对每个 key 调用 `getCache` |
 | `cache[key] = value` | 按缓存的 TTL 策略写入 L1 与 L2 并通知其它实例；`null` 写入负缓存 |
 | `cache[key, ttlAt] = value` | 同上，使用显式的绝对到期时间 |
 | `cache.evict(key)` | 从 L2、L1 删除该 key 并通知其它实例 |

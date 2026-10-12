@@ -66,7 +66,7 @@ class CoherentCacheStats(
     val filteredCount: Long get() = filtered.sum()
 
     /**
-     * 回源次数（含失败）。
+     * 回源次数（含失败；一次批量回源计为一次）。
      */
     val loadCount: Long get() = loads.sum()
 

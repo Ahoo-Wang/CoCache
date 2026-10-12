@@ -93,6 +93,19 @@ CoCache finds this bean by its generic type `CacheSource<String, User>`. If seve
 
 The `ttlAt` you return is used as-is. Use `TtlAt.at(seconds)` for a relative TTL, or `CacheValue.forever(value)` for no expiry.
 
+Batch reads (`getAll`) call `loadCacheValues(keys)` once for all keys that missed L2 and L1. By default it calls `loadCacheValue` per key. Override it to load them in one query:
+
+```kotlin
+object : CacheSource<String, User> {
+    override fun loadCacheValue(key: String): CacheValue<User>? =
+        userRepository.findById(key)?.let { CacheValue.forever(it) }
+
+    // Keys missing from the result are "not found" and get negative entries
+    override fun loadCacheValues(keys: Collection<String>): Map<String, CacheValue<User>> =
+        userRepository.findAllById(keys).associate { it.id to CacheValue.forever(it) }
+}
+```
+
 ## 5. Use it
 
 Inject the interface like any other bean:
@@ -117,6 +130,8 @@ class UserService(
 | `cache[key]` | The value, or `null` if absent, negative, or expired |
 | `cache.getCache(key)` | The entry itself: `PresentValue(value, ttlAt)` or `MissingValue(ttlAt)` |
 | `cache.getTtlAt(key)` | The value's absolute expiry in epoch seconds, or `null` |
+| `cache.getAll(keys)` | Present values by key. It reads L2, then the remaining keys from Redis in one round trip, then loads the rest with one `loadCacheValues` call. Absent, negative, and expired keys are left out. |
+| `cache.getCaches(keys)` | The entries by key, like `getCache` for each key |
 | `cache[key] = value` | Writes L1 and L2 with the cache's TTL policy and notifies peers. `null` writes a negative entry. |
 | `cache[key, ttlAt] = value` | Same, with an explicit absolute expiry |
 | `cache.evict(key)` | Removes the key from L2 and L1 and notifies peers |
