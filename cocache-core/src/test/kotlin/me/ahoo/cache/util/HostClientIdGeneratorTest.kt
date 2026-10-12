@@ -24,4 +24,21 @@ class HostClientIdGeneratorTest {
         val id2 = HostClientIdGenerator.DEFAULT.generate()
         id1.assert().isNotEqualTo(id2)
     }
+
+    /**
+     * 复现：host 与 pid 都相同的两个实例（如 host 网络模式下同机的两个容器，pid 均为 1）
+     * 曾生成相同的 clientId，导致双方把对方的失效事件当作自发事件忽略。
+     * 同一 JVM 中的两个生成器实例恰好模拟了 host、pid 与计数器都相同的情形。
+     */
+    @Test
+    fun generateUniqueAcrossInstancesWithSameHostAndProcess() {
+        val instance1 = HostClientIdGenerator { "10.0.0.1" }
+        val instance2 = HostClientIdGenerator { "10.0.0.1" }
+        instance1.generate().assert().isNotEqualTo(instance2.generate())
+    }
+
+    @Test
+    fun generateWithoutEventDelimiter() {
+        HostClientIdGenerator { "10.0.0.1" }.generate().assert().doesNotContain("@@")
+    }
 }
