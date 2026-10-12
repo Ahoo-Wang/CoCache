@@ -46,7 +46,7 @@ export const zh: DefaultTheme.Config = {
       { text: '指南', link: '/zh/guide/' },
       { text: '架构', link: '/zh/architecture/' },
       {
-        text: 'v5.3',
+        text: 'v5.4',
         items: [
           { text: '更新日志', link: '/zh/guide/changelog' },
           { text: '贡献指南', link: 'https://github.com/Ahoo-Wang/CoCache/blob/main/CONTRIBUTING.md' },
