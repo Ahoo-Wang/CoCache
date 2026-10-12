@@ -21,11 +21,13 @@ CoCache 的配置分三层：
 | `ttl` | `3600` | 值的存活秒数；`TtlAt.FOREVER` 表示永不过期 |
 | `ttlAmplitude` | `60` | 随机抖动秒数：每个值存活 `ttl ± ttlAmplitude` 秒，且不少于 1 秒 |
 | `missingTtl` | `60` | 负缓存（“不存在”）的存活秒数，不抖动 |
+| `clientSideTtl` | `0`（不限制） | L2（本地）副本的最长存活秒数，过期后从 L1 重新填充；`0` 表示沿用 L1 的到期时间 |
 
 ### 如何选择 TTL
 
 - **`ttl` 就是陈旧度上限。** 有一种竞态会让旧值留在 Redis 中直到过期：慢加载可能在并发更新的淘汰之后才写入结果（见[一致性](../architecture/consistency.md#what-is-not-guaranteed)）。按业务在这种少见情况下能容忍的最长陈旧时间来选。只有当所有写入方都可靠地调用 `evict`、并且接受上述竞态永不修复时，`TtlAt.FOREVER` 才是安全的。
 - **`missingTtl` 是新建数据可能“不可见”的时长**：之前的查询缓存了它不存在。应保持较短。
+- **`clientSideTtl` 限制失效事件丢失造成的陈旧。** 失效事件至多投递一次；事件丢失时，其它实例会一直使用 L2 副本直到 `ttl` 到期。设置 `clientSideTtl = 30` 后，该副本最多存活 30 秒，随后从 Redis 重新填充。命中路径没有额外开销，但每次 L2 过期需要一次 Redis 往返。启用后，L2 命中时 `getTtlAt` 返回的是 L2 副本的到期时间。
 - **`ttlAmplitude` 打散过期时间**，一起加载的 key（如发布后）不会在同一秒过期。取 `ttl` 的百分之几即可。
 
 ## `@CaffeineCache`

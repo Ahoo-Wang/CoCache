@@ -42,7 +42,8 @@ object CoCacheMetadataParser {
             ttlPolicy = TtlPolicy(
                 ttl = annotation.ttl,
                 ttlAmplitude = annotation.ttlAmplitude,
-                missingTtl = annotation.missingTtl
+                missingTtl = annotation.missingTtl,
+                clientSideTtl = annotation.clientSideTtl
             ),
             keyType = cacheType.typeArgument(0),
             valueType = cacheType.typeArgument(1)

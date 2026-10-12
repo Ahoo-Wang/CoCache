@@ -74,7 +74,7 @@ The default channel is Redis Pub/Sub:
 | Property | Guarantee |
 |----------|-----------|
 | Staleness | Bounded by `ttl` for values and `missingTtl` for negative entries |
-| Lost events | Cannot outlive a reconnect, because L2 is cleared on resubscribe |
+| Lost events | Cannot outlive a reconnect, because L2 is cleared on resubscribe. With `clientSideTtl` set, they also cannot outlive that many seconds |
 | Load vs. invalidation | If an instance observes an invalidation while a load is in flight, the load's result is discarded or undone |
 | Same instance after `evict`/`set` returns | Never serves the previous value |
 | Peers after `evict`/`set` | Drop their copy when the event arrives, normally milliseconds later |

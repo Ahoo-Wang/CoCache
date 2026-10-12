@@ -80,6 +80,31 @@ class TtlTest {
         runCatching { TtlPolicy(ttl = 0) }.isFailure.assert().isTrue()
         runCatching { TtlPolicy(ttlAmplitude = -1) }.isFailure.assert().isTrue()
         runCatching { TtlPolicy(missingTtl = 0) }.isFailure.assert().isTrue()
+        runCatching { TtlPolicy(clientSideTtl = -1) }.isFailure.assert().isTrue()
+    }
+
+    @Test
+    fun ttlPolicyClientSideUnlimitedKeepsValue() {
+        val value = CacheValue.forever("value")
+        TtlPolicy().clientSide(value).assert().isSameAs(value)
+    }
+
+    @Test
+    fun ttlPolicyClientSideCapsTtlAt() {
+        val policy = TtlPolicy(clientSideTtl = 30)
+        val now = TtlAt.currentTime()
+        val capped = policy.clientSide(CacheValue.forever("value"))
+        capped.value.assert().isEqualTo("value")
+        capped.ttlAt.assert().isBetween(now + 30, now + 31)
+        val missing = policy.clientSide(CacheValue.missing<String>())
+        missing.isMissing.assert().isTrue()
+        missing.ttlAt.assert().isBetween(now + 30, now + 31)
+    }
+
+    @Test
+    fun ttlPolicyClientSideKeepsEarlierTtlAt() {
+        val value = CacheValue.of("value", TtlAt.at(10))
+        TtlPolicy(clientSideTtl = 30).clientSide(value).assert().isSameAs(value)
     }
 
     @Test

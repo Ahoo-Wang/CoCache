@@ -53,7 +53,7 @@ flowchart BT
 ## 职责划分
 
 - **存储层只存储。** `CacheStore` 按字符串 key 存取 `CacheValue`，不了解 TTL 或负缓存。写入已过期的条目等同于淘汰。
-- **策略在存储层之上。** `TtlPolicy` 把 `ttl ± ttlAmplitude`（值）或 `missingTtl`（负缓存）换算为绝对到期时间 `ttlAt`。存储层只看到 `ttlAt`。
+- **策略在存储层之上。** `TtlPolicy` 把 `ttl ± ttlAmplitude`（值）或 `missingTtl`（负缓存）换算为绝对到期时间 `ttlAt`。设置 `clientSideTtl` 时，它还限制 L2 副本的到期时间。存储层只看到 `ttlAt`。
 - **编排层**（`DefaultCoherentCache`）逐级读取、合并加载、保护写回、广播失效。
 - **通道**（`CacheEvictedEventBus`）尽力而为地广播失效，并在订阅（重新）建立时回调 `onReset`。
 

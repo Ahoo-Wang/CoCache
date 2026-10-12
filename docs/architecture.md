@@ -8,7 +8,7 @@
 
 | # | 约束 | 实现手段 |
 |---|------|----------|
-| G1 | **陈旧度有上界**：任何不一致都在有限时间内自愈 | 有限的默认 TTL；负缓存独立的短 TTL；失效通道重订阅时清空 L2 |
+| G1 | **陈旧度有上界**：任何不一致都在有限时间内自愈 | 有限的默认 TTL；负缓存独立的短 TTL；失效通道重订阅时清空 L2；可选的 L2 副本存活上限 `clientSideTtl` |
 | G2 | **失效不被吞没**：并发回源、事件乱序/丢失不会把旧值写回 | 失效戳（InvalidationStamps）保护所有写回；L1 读不到即未命中，绝不推断为负缓存 |
 | G3 | **命中路径够便宜**：L2 命中近零开销且随线程扩展，L1 命中单次往返 | 有界 Caffeine L2（无条目级 Expiry，过期在读取时判断）；缓存秒级时钟 `CacheClock`；Redis 读为一次 Lua（EVALSHA）往返取回 TTL + 值；按 key 合并的 SingleFlight |
 
@@ -43,7 +43,7 @@ cocache-test                 TCK：CacheSpec、CacheStoreSpec、DefaultCoherentC
 ### 职责划分
 
 - **存储层（`CacheStore`）只存不判**：按字符串 key 存取 `CacheValue`，不持有 TTL、抖动、负缓存等策略。写入已过期条目等价于淘汰。
-- **策略层（`TtlPolicy`）**：命中值 `ttl ± ttlAmplitude`（防雪崩）；负缓存 `missingTtl`（不抖动）。由编排层持有，存储层只看到绝对到期时间 `ttlAt`。
+- **策略层（`TtlPolicy`）**：命中值 `ttl ± ttlAmplitude`（防雪崩）；负缓存 `missingTtl`（不抖动）；写入 L2 的副本到期时间不晚于 `now + clientSideTtl`（`0` 不限制）。由编排层持有，存储层只看到绝对到期时间 `ttlAt`。
 - **编排层（`DefaultCoherentCache`）**：读穿透、回源合并、写回保护、失效广播。
 - **通道（`CacheEvictedEventBus`）**：尽力而为地广播失效；订阅（重）建立时回调 `onReset`。
 
@@ -118,6 +118,7 @@ getCache(key)
 | `@CoCache.ttlAmplitude` | 60 s | 打散批量过期 |
 | `@CoCache.missingTtl` | 60 s | 数据新建后最多 60 秒仍被视为不存在 |
 | L2 | Caffeine，`maximumSize = 10000`；过期条目在读取时淘汰 | 有界内存；条目级 `Expiry` 会让每次读取写节点元数据，热点 key 无法随线程扩展（JMH 实测：8 线程下 224M → 11M ops/s） |
+| `@CoCache.clientSideTtl` | 0（不限制） | L2 副本沿用 L1 到期时间，与 5.1 行为一致；设置后，失效事件丢失时 L2 的陈旧度以该值为上界。只在写入 L2 时计算，命中路径无额外开销 |
 | `cocache.redis.strict-failure` | false | Redis 故障降级：读按未命中、写/淘汰仅告警 |
 
 ## 8. 代理

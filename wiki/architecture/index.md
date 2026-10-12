@@ -53,7 +53,7 @@ Dependencies point one way. The starter also depends on `cocache-spring`. A new 
 ## Responsibilities
 
 - **Stores only store.** `CacheStore` gets and sets `CacheValue`s by string key. It knows nothing about TTLs or negative caching. Writing an entry that has already expired is the same as evicting it.
-- **Policy lives above the stores.** `TtlPolicy` turns `ttl ± ttlAmplitude` into an absolute `ttlAt` for values, and `missingTtl` for negative entries. The stores only ever see `ttlAt`.
+- **Policy lives above the stores.** `TtlPolicy` turns `ttl ± ttlAmplitude` into an absolute `ttlAt` for values, and `missingTtl` for negative entries. It also caps L2 copies at `clientSideTtl` when set. The stores only ever see `ttlAt`.
 - **Orchestration** (`DefaultCoherentCache`) reads through the levels, coalesces loads, guards write-backs, and broadcasts invalidations.
 - **The channel** (`CacheEvictedEventBus`) broadcasts invalidations on a best-effort basis, and calls `onReset` whenever its subscription is (re)established.
 

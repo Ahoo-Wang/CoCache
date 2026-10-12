@@ -52,6 +52,14 @@ annotation class CoCache(
      * 负缓存（数据源不存在）的 TTL，应远小于 [ttl]：数据新建后最多在该时长内仍被视为不存在。
      */
     val missingTtl: Long = DEFAULT_MISSING_TTL,
+    /**
+     * L2（本地）副本的最长存活时间；`0` 表示不限制，L2 副本沿用 L1 的到期时间。
+     *
+     * 失效事件至多投递一次：事件丢失时，其它实例 L2 中的旧值会一直持续到 [ttl] 到期。
+     * 设置该值后，L2 副本最多存活 `clientSideTtl` 秒，过期后从 L1 重新填充，
+     * 从而使 L2 的陈旧度不依赖失效通道。启用后，L2 命中返回的到期时间是 L2 副本的到期时间。
+     */
+    val clientSideTtl: Long = DEFAULT_CLIENT_SIDE_TTL,
 ) {
     companion object {
         const val COCACHE = "cocache"
@@ -59,5 +67,6 @@ annotation class CoCache(
         const val DEFAULT_TTL: Long = 3600
         const val DEFAULT_TTL_AMPLITUDE: Long = 60
         const val DEFAULT_MISSING_TTL: Long = 60
+        const val DEFAULT_CLIENT_SIDE_TTL: Long = 0
     }
 }

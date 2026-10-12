@@ -21,11 +21,13 @@ CoCache has three layers of configuration:
 | `ttl` | `3600` | Seconds a value lives. `TtlAt.FOREVER` means it never expires. |
 | `ttlAmplitude` | `60` | Random jitter in seconds. Each value lives `ttl ± ttlAmplitude` seconds, never less than 1. |
 | `missingTtl` | `60` | Seconds a negative entry ("not found") lives. No jitter. |
+| `clientSideTtl` | `0` (unlimited) | Maximum seconds an L2 (local) copy lives before it is refilled from L1. `0` keeps the L1 expiry. |
 
 ### Choosing TTLs
 
 - **`ttl` is your staleness bound.** One race can leave an old value in Redis until it expires: a slow load can write its result after a concurrent update's evict (see [Consistency](../architecture/consistency.md#what-is-not-guaranteed)). Pick the longest staleness the business can tolerate in that rare case. `TtlAt.FOREVER` is safe only if every writer reliably calls `evict` and you accept that the race above is never repaired.
 - **`missingTtl` is how long a newly created row can stay invisible** after a lookup cached its absence. Keep it short.
+- **`clientSideTtl` bounds staleness from lost eviction events.** Eviction events are delivered at most once. If one is lost, a peer keeps serving its L2 copy until `ttl`. With `clientSideTtl = 30`, that copy lives at most 30 seconds and is then refilled from Redis. The hit path costs nothing extra, but each L2 expiry costs one Redis round trip. When set, an L2 hit reports the L2 copy's expiry from `getTtlAt`.
 - **`ttlAmplitude` spreads expiries.** Keys loaded together, such as after a deploy, then don't all expire in the same second. Keep it at a few percent of `ttl`.
 
 ## `@CaffeineCache`
