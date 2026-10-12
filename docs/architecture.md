@@ -77,6 +77,22 @@ getCache(key)
 - SingleFlight 将 leader 的结果或**原始异常**共享给所有等待者；同线程对同一 key 的重入（CacheSource 内再次读同一 key）快速失败。
 - **读己之写**：每次读取在开始时记录失效戳；若共享到的加载开始于更早的戳（即开始于本次读取已观察到的某次失效之前，如本线程先 `evict` 再 `get`），则放弃该结果重新加载。新一轮加载必然开始于上一轮结束之后，至多重试一次——前提是 SingleFlight **先注销调用、再发布结果**，否则被唤醒的等待者重试时会再次加入同一个已结束的调用。
 
+### 4.1 批量读取（5.3）
+
+```
+getCaches(keys)
+  逐个 key：L2 命中且未过期 → 结果；keyFilter.notExist → 负缓存
+  剩余 key：逐个取戳 → L1 getCaches（一次往返）
+      L1 命中且未过期        → 受戳保护地填充 L2
+      其余                   → source.loadCacheValues（一次调用），缺少的 key 为负缓存
+                               未过期的值受戳保护地写回 L1、L2
+```
+
+- 每个 key 的戳保护与单 key 读取相同（先取戳再读 L1、写回前后复核），所以批量读取不会写回旧值。
+- **不经过 SingleFlight**：同一 key 的并发单 key 读取与批量读取可能各自回源一次，重复由 L1 吸收；`loads` 指标把一次批量回源计为一次。
+- 被 `KeyConverter` 映射为同一 cacheKey 的多个 key 共享一次读取。
+- **Redis**：多个 key 用一次 pipeline 执行读脚本（每条命令一个 key，Redis Cluster 按 key 路由，不会 CROSSSLOT）；pipeline 里用 EVAL 而非 EVALSHA，因为 NOSCRIPT 无法在 pipeline 内回退。单个 key 仍走共享连接。pipeline 需要专用连接，只在批量时值得。
+
 ## 5. 失效与写回保护（核心不变量）
 
 `InvalidationStamps` 是按 key 哈希分段（4096）的计数器。

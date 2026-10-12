@@ -44,4 +44,31 @@ interface CacheGetter<K, V> {
     fun getTtlAt(key: K): Long? {
         return getCache(key)?.takeUnless { it.isMissing || it.isExpired }?.ttlAt
     }
+
+    /**
+     * 批量获取缓存条目，语义同逐个调用 [getCache]：结果只包含有条目的 key，按 [keys] 的迭代顺序排列。
+     *
+     * 默认逐个调用 [getCache]；实现可以合并往返（如 L1 一次读取、数据源一次批量加载）。
+     */
+    fun getCaches(keys: Collection<K>): Map<K, CacheValue<V>> {
+        val result = LinkedHashMap<K, CacheValue<V>>()
+        for (key in keys) {
+            getCache(key)?.let { result[key] = it }
+        }
+        return result
+    }
+
+    /**
+     * 批量获取缓存值：未命中、负缓存或已过期的 key 不出现在结果中。
+     */
+    fun getAll(keys: Collection<K>): Map<K, V> {
+        val result = LinkedHashMap<K, V>()
+        for ((key, cacheValue) in getCaches(keys)) {
+            if (cacheValue.isExpired) {
+                continue
+            }
+            cacheValue.value?.let { result[key] = it }
+        }
+        return result
+    }
 }

@@ -25,6 +25,19 @@ import me.ahoo.cache.api.CacheValue
 fun interface CacheSource<K, V> {
     fun loadCacheValue(key: K): CacheValue<V>?
 
+    /**
+     * 批量回源：结果中缺少的 key 视为数据源中不存在，调用方将写入负缓存。
+     *
+     * 默认逐个调用 [loadCacheValue]；数据源应覆盖为一次批量查询（如 `WHERE id IN (...)`）。
+     */
+    fun loadCacheValues(keys: Collection<K>): Map<K, CacheValue<V>> {
+        val result = LinkedHashMap<K, CacheValue<V>>()
+        for (key in keys) {
+            loadCacheValue(key)?.let { result[key] = it }
+        }
+        return result
+    }
+
     companion object {
         private val NO_OP = CacheSource<Any?, Any?> { null }
 

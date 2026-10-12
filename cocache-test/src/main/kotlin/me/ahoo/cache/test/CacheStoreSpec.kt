@@ -34,6 +34,22 @@ abstract class CacheStoreSpec<V> {
     }
 
     @Test
+    fun getCachesReturnsOnlyKeysWithEntries() {
+        val (presentKey, value) = createCacheEntry()
+        val (missingKey, _) = createCacheEntry()
+        val (absentKey, _) = createCacheEntry()
+        cacheStore.setCache(presentKey, CacheValue.forever(value))
+        cacheStore.setCache(missingKey, CacheValue.missing())
+
+        val actual = cacheStore.getCaches(listOf(presentKey, absentKey, missingKey))
+
+        actual.keys.assert().containsExactlyInAnyOrder(presentKey, missingKey)
+        actual[presentKey]?.value.assert().isEqualTo(value)
+        requireNotNull(actual[missingKey]).isMissing.assert().isTrue()
+        cacheStore.getCaches(emptyList()).assert().isEmpty()
+    }
+
+    @Test
     fun getAbsentKeyReturnsNull() {
         val (key, _) = createCacheEntry()
         cacheStore.getCache(key).assert().isNull()

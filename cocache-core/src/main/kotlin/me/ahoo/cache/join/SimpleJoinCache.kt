@@ -45,6 +45,38 @@ class SimpleJoinCache<K1, V1, K2, V2>(
         return CacheValue.of(JoinValue(firstValue, joinKey, second?.value), ttlAt)
     }
 
+    /**
+     * 批量组合：主缓存一次批量读取，关联缓存按去重后的 joinKey 一次批量读取。
+     */
+    override fun getCaches(keys: Collection<K1>): Map<K1, CacheValue<JoinValue<V1, K2, V2>>> {
+        val firstValues = firstCache.getCaches(keys)
+        val joinKeys = LinkedHashMap<K1, K2>()
+        for ((key, first) in firstValues) {
+            if (first is PresentValue && !first.isExpired) {
+                joinKeys[key] = joinKeyExtractor.extract(first.value)
+            }
+        }
+        val secondValues = joinCache.getCaches(joinKeys.values.distinct())
+        val result = LinkedHashMap<K1, CacheValue<JoinValue<V1, K2, V2>>>()
+        for ((key, first) in firstValues) {
+            if (first.isExpired) {
+                continue
+            }
+            val firstValue = when (first) {
+                is MissingValue -> {
+                    result[key] = CacheValue.missing(first.ttlAt)
+                    continue
+                }
+                is PresentValue -> first.value
+            }
+            val joinKey = joinKeys.getValue(key)
+            val second = secondValues[joinKey]?.takeUnless { it.isExpired }
+            val ttlAt = second?.let { min(first.ttlAt, it.ttlAt) } ?: first.ttlAt
+            result[key] = CacheValue.of(JoinValue(firstValue, joinKey, second?.value), ttlAt)
+        }
+        return result
+    }
+
     override fun setCache(key: K1, value: CacheValue<JoinValue<V1, K2, V2>>) {
         val joinValue = when (value) {
             is MissingValue -> {

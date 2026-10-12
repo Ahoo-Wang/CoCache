@@ -337,6 +337,47 @@ abstract class DefaultCoherentCacheSpec<K, V> : CacheSpec<K, V>() {
     }
 
     @Test
+    fun getCachesReadsEachLevelInBatch() {
+        val (clientSideKey, clientSideValue) = createCacheEntry()
+        val (distributedKey, distributedValue) = createCacheEntry()
+        val (sourceKey, sourceValue) = createCacheEntry()
+        val (absentKey, _) = createCacheEntry()
+        loader = { key -> if (key == sourceKey) CacheValue.forever(sourceValue) else null }
+        clientSideCache.setCache(clientSideKey.cacheKey(), CacheValue.forever(clientSideValue))
+        distributedCache.setCache(distributedKey.cacheKey(), CacheValue.forever(distributedValue))
+
+        val actual = coherentCache.getCaches(listOf(clientSideKey, distributedKey, sourceKey, absentKey))
+
+        actual.keys.assert().containsExactly(clientSideKey, distributedKey, sourceKey, absentKey)
+        actual[clientSideKey]?.value.assert().isEqualTo(clientSideValue)
+        actual[distributedKey]?.value.assert().isEqualTo(distributedValue)
+        actual[sourceKey]?.value.assert().isEqualTo(sourceValue)
+        requireNotNull(actual[absentKey]).isMissing.assert().isTrue()
+        sourceCalls.get().assert().isEqualTo(2)
+        clientSideCache.getCache(distributedKey.cacheKey())?.value.assert().isEqualTo(distributedValue)
+        distributedCache.getCache(sourceKey.cacheKey())?.value.assert().isEqualTo(sourceValue)
+        requireNotNull(distributedCache.getCache(absentKey.cacheKey())).isMissing.assert().isTrue()
+
+        coherentCache.getAll(listOf(distributedKey, sourceKey, absentKey)).assert()
+            .isEqualTo(mapOf(distributedKey to distributedValue, sourceKey to sourceValue))
+        sourceCalls.get().assert().isEqualTo(2)
+    }
+
+    @Test
+    fun `remote eviction during in-flight batch load discards stale write-back`() {
+        val (key, value) = createCacheEntry()
+        loader = {
+            coherentCache.subscriber.onEvicted(CacheEvictedEvent(cacheName, key.cacheKey(), "remote"))
+            CacheValue.forever(value)
+        }
+
+        coherentCache.getCaches(listOf(key))[key]?.value.assert().isEqualTo(value)
+
+        distributedCache.getCache(key.cacheKey()).assert().isNull()
+        clientSideCache.getCache(key.cacheKey()).assert().isNull()
+    }
+
+    @Test
     fun `remote eviction during in-flight load discards stale write-back`() {
         assertInFlightLoadDiscarded(staleValue = { CacheValue.forever(it) }) { key ->
             coherentCache.subscriber.onEvicted(CacheEvictedEvent(cacheName, key.cacheKey(), "remote"))

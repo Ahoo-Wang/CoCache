@@ -28,6 +28,7 @@ interface CacheStore<V> {
     fun getCache(key: String): CacheValue<V>?
     fun setCache(key: String, value: CacheValue<V>)
     fun evict(key: String)
+    fun getCaches(keys: Collection<String>): Map<String, CacheValue<V>> // default: getCache per key
 }
 interface ClientSideCache<V> : CacheStore<V> { val size: Long; fun clear() }
 interface DistributedCache<V> : CacheStore<V>, AutoCloseable
@@ -38,6 +39,7 @@ interface DistributedCache<V> : CacheStore<V>, AutoCloseable
 - **只存储。** 按原样保存 `CacheValue`；不要应用 TTL 默认值、抖动或负缓存策略，编排层已经做过了。
 - `setCache` 写入已过期的值时等同于 `evict`。
 - `getCache` 可以返回已过期的条目，由调用方检查 `isExpired`。
+- 可选地覆盖 `getCaches(keys)`（默认逐个调用 `getCache`）。远程 L1 应在一次往返内读取所有 key；结果只包含 `getCache` 会返回非 `null` 的 key。
 
 **L2** 存储还必须**有界**。避免每次读取都写元数据的条目级过期回调（如 Caffeine 的 `Expiry`），否则热点 key 无法随线程扩展。
 
@@ -74,6 +76,6 @@ interface CacheEvictedSubscriber : NamedCache {
 
 ## 数据源与 key
 
-- **`CacheSource<K, V>`** 返回带绝对 `ttlAt` 的 `CacheValue`，或返回 `null` 表示“不存在”。CoCache 把 `null` 存为负缓存，保留 `missingTtl` 秒。在每个实例上，同一 key 同时最多只有一次数据源调用。数据源不得读取自身缓存中的同一 key，否则调用会快速失败。
+- **`CacheSource<K, V>`** 返回带绝对 `ttlAt` 的 `CacheValue`，或返回 `null` 表示“不存在”。CoCache 把 `null` 存为负缓存，保留 `missingTtl` 秒。单 key 读取时，在每个实例上同一 key 同时最多只有一次数据源调用。数据源不得读取自身缓存中的同一 key，否则调用会快速失败。批量读取对 L2、L1 都未命中的 key 只调用一次 `loadCacheValues(keys)`，结果中缺少的 key 写入负缓存；默认实现逐个调用 `loadCacheValue`，应覆盖为一次查询。批量加载不与并发的单 key 加载合并。
 - **`KeyConverter<K>`** 必须为每个 key 生成不同的字符串，并包含缓存专属前缀，因为所有缓存共享 L1。
 - **`KeyFilter.notExist(key)`** 只能对确定不存在的 key 返回 `true`。对布隆过滤器而言，意味着它必须由全部已存在的 key 构建。

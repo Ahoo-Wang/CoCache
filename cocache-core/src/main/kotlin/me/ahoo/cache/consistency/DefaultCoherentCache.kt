@@ -104,6 +104,93 @@ class DefaultCoherentCache<K, V> @JvmOverloads constructor(
     }
 
     /**
+     * 批量读取：L2 → key 过滤器 → L1 一次批量读取 → 数据源一次批量加载。
+     *
+     * 每个 key 的 L1→L2 填充与回源写回都与单 key 读取一样受失效戳保护。批量加载不经过 [SingleFlight]：
+     * 同一 key 的并发读取可能各自回源一次（由 L1 吸收），但失效戳保证任何一方都不会写回旧值。
+     */
+    override fun getCaches(keys: Collection<K>): Map<K, CacheValue<V>> {
+        if (keys.isEmpty()) {
+            return emptyMap()
+        }
+        val resolved = LinkedHashMap<K, CacheValue<V>?>()
+        // cacheKey → 映射到它的 key（不同 key 可能被 KeyConverter 映射为同一个 cacheKey）
+        val pending = LinkedHashMap<String, MutableList<K>>()
+        for (key in keys) {
+            if (resolved.containsKey(key)) {
+                continue
+            }
+            resolved[key] = null
+            val cacheKey = keyConverter.toStringKey(key)
+            val clientSideValue = clientSideCache.getCache(cacheKey)
+            if (clientSideValue != null) {
+                if (!clientSideValue.isExpired) {
+                    if (recordClientSideHits) {
+                        stats.recordClientSideHit()
+                    }
+                    resolved[key] = clientSideValue
+                    continue
+                }
+                clientSideCache.evict(cacheKey)
+            }
+            if (keyFilter.notExist(cacheKey)) {
+                stats.recordFiltered()
+                resolved[key] = ttlPolicy.missing()
+                continue
+            }
+            stats.recordMiss()
+            pending.getOrPut(cacheKey) { ArrayList(1) }.add(key)
+        }
+        if (pending.isNotEmpty()) {
+            loadAllThrough(pending, resolved)
+        }
+        val result = LinkedHashMap<K, CacheValue<V>>()
+        for ((key, cacheValue) in resolved) {
+            cacheValue?.let { result[key] = it }
+        }
+        return result
+    }
+
+    private fun loadAllThrough(pending: Map<String, List<K>>, resolved: MutableMap<K, CacheValue<V>?>) {
+        // 先取戳再读 L1：与单 key 的 loadThrough 相同，开始于本次读取之后的失效必然使写回失效
+        val loadStamps = pending.keys.associateWith { stamps.current(it) }
+        val distributedValues = distributedCache.getCaches(pending.keys)
+        // 数据源 key → cacheKey
+        val toLoad = LinkedHashMap<K, String>()
+        for ((cacheKey, sourceKeys) in pending) {
+            val distributedValue = distributedValues[cacheKey]
+            if (distributedValue != null && !distributedValue.isExpired) {
+                stats.recordDistributedHit()
+                fillClientSide(cacheKey, distributedValue, loadStamps.getValue(cacheKey))
+                sourceKeys.forEach { resolved[it] = distributedValue }
+                continue
+            }
+            toLoad[sourceKeys.first()] = cacheKey
+        }
+        if (toLoad.isEmpty()) {
+            return
+        }
+        val loadedValues = loadAllFromSource(toLoad.keys)
+        for ((sourceKey, cacheKey) in toLoad) {
+            val loaded = loadedValues[sourceKey] ?: ttlPolicy.missing()
+            if (!loaded.isExpired) {
+                writeBack(cacheKey, loaded, loadStamps.getValue(cacheKey))
+            }
+            pending.getValue(cacheKey).forEach { resolved[it] = loaded }
+        }
+    }
+
+    private fun loadAllFromSource(keys: Collection<K>): Map<K, CacheValue<V>> {
+        val startNanos = System.nanoTime()
+        var failed = true
+        try {
+            return cacheSource.loadCacheValues(keys).also { failed = false }
+        } finally {
+            stats.recordLoad(System.nanoTime() - startNanos, failed)
+        }
+    }
+
+    /**
      * 由 [SingleFlight] leader 执行：同一 key 在本实例内同一时刻只有一个线程访问 L1 与数据源。
      */
     private fun loadThrough(key: K, cacheKey: String): Loaded<V> {

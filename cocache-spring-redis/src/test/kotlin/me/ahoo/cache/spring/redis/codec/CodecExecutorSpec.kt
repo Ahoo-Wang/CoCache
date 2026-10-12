@@ -77,6 +77,37 @@ abstract class CodecExecutorSpec<V> {
     }
 
     @Test
+    fun decodeAllInOnePipeline() {
+        val presentKey = newKey()
+        val ttlKey = newKey()
+        val missingKey = newKey()
+        val absentKey = newKey()
+        val present = CacheValue.forever(createCacheValue())
+        val withTtl = CacheValue.of(createCacheValue(), TtlAt.at(60))
+        codecExecutor.executeAndEncode(presentKey, present)
+        codecExecutor.executeAndEncode(ttlKey, withTtl)
+        codecExecutor.executeAndEncode(missingKey, CacheValue.missing())
+
+        val actual = codecExecutor.executeAndDecodeAll(listOf(presentKey, absentKey, ttlKey, missingKey, presentKey))
+
+        actual.keys.assert().containsExactly(presentKey, ttlKey, missingKey)
+        actual[presentKey].assert().isEqualTo(present)
+        requireNotNull(actual[ttlKey]).value.assert().isEqualTo(withTtl.value)
+        requireNotNull(actual[ttlKey]).ttlAt.assert().isCloseTo(withTtl.ttlAt, Offset.offset(1))
+        actual[missingKey].assert().isEqualTo(CacheValue.missing<V>())
+    }
+
+    @Test
+    fun decodeAllSingleKeyAndEmpty() {
+        val key = newKey()
+        val value = CacheValue.forever(createCacheValue())
+        codecExecutor.executeAndEncode(key, value)
+
+        codecExecutor.executeAndDecodeAll(listOf(key)).assert().isEqualTo(mapOf(key to value))
+        codecExecutor.executeAndDecodeAll(emptyList()).assert().isEmpty()
+    }
+
+    @Test
     fun roundTripMissingForever() {
         val key = newKey()
         codecExecutor.executeAndEncode(key, CacheValue.missing())

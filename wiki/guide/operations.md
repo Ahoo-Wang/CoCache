@@ -50,7 +50,7 @@ With Micrometer on the classpath (`spring-boot-starter-actuator` brings it), the
 Useful ratios:
 
 - **L2 hit ratio** is `hits{level=l2}` / (`hits{level=l2}` + `misses`). It needs `cocache.metrics.client-side-hits=true`, which is off by default because counting the hottest path costs 8–15% of L2 hit throughput (JMH, 1–8 threads). Every other meter is recorded off the hit path and is always on.
-- **Coalesced reads** are `misses` − `hits{level=l1}` − `loads`. These are misses that waited for another thread's load.
+- **Coalesced reads** are `misses` − `hits{level=l1}` − `loads` when you don't use batch reads. These are misses that waited for another thread's load. A batch load counts once in `loads`.
 - **`eviction.publish.failures` > 0** means peers may hold stale L2 copies until `clientSideTtl` or `ttl`.
 
 ## Redis failures

@@ -30,4 +30,17 @@ interface CacheStore<V> {
     fun setCache(key: String, value: CacheValue<V>)
 
     fun evict(key: String)
+
+    /**
+     * 批量读取：结果只包含 [getCache] 返回非 `null` 的 key（同样可能包含已过期条目）。
+     *
+     * 默认逐个调用 [getCache]；远程存储应合并为一次往返。
+     */
+    fun getCaches(keys: Collection<String>): Map<String, CacheValue<V>> {
+        val result = LinkedHashMap<String, CacheValue<V>>()
+        for (key in keys) {
+            getCache(key)?.let { result[key] = it }
+        }
+        return result
+    }
 }
