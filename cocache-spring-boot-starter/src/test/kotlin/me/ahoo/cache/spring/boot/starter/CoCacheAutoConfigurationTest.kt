@@ -28,8 +28,6 @@ import me.ahoo.cache.spring.boot.starter.customize.UserExpCache
 import me.ahoo.cache.spring.boot.starter.customize.UserKeyCache
 import me.ahoo.cache.spring.boot.starter.customize.UserPlaceholderCache
 import me.ahoo.cache.util.ClientIdGenerator
-import me.ahoo.cosid.machine.HostAddressSupplier
-import me.ahoo.cosid.machine.LocalHostAddressSupplier
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.AssertionsForInterfaceTypes.assertThat
 import org.junit.jupiter.api.Test
@@ -103,9 +101,8 @@ internal class CoCacheAutoConfigurationTest {
     }
 
     @Test
-    fun contextLoadsWithCloud() {
+    fun contextLoadsWithJackson() {
         contextRunner
-            .withBean(HostAddressSupplier::class.java, { LocalHostAddressSupplier.INSTANCE })
             .withUserConfiguration(
                 JacksonAutoConfiguration::class.java,
                 DataRedisAutoConfiguration::class.java,
@@ -122,7 +119,7 @@ internal class CoCacheAutoConfigurationTest {
     }
 
     @Test
-    fun contextLoadsWithCustomClientIdGeneratorAndHostAddressSupplier() {
+    fun contextLoadsWithCustomClientIdGenerator() {
         val customClientIdGenerator = object : ClientIdGenerator {
             override fun generate(): String {
                 return "custom-client"
@@ -130,7 +127,6 @@ internal class CoCacheAutoConfigurationTest {
         }
 
         contextRunner
-            .withBean(HostAddressSupplier::class.java, { LocalHostAddressSupplier.INSTANCE })
             .withBean(ClientIdGenerator::class.java, { customClientIdGenerator })
             .withUserConfiguration(
                 JacksonAutoConfiguration::class.java,

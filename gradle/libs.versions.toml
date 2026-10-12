@@ -1,7 +1,6 @@
 [versions]
 # libraries
 spring-boot = "4.1.1"
-cosid = "3.4.1"
 guava = "33.7.2-jre"
 kotlin-logging = "8.0.4"
 springdoc = "3.1.1"
@@ -19,7 +18,6 @@ openjdk-jmh = "1.37"
 
 [libraries]
 spring-boot-dependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
-cosid-bom = { module = "me.ahoo.cosid:cosid-bom", version.ref = "cosid" }
 guava = { module = "com.google.guava:guava", version.ref = "guava" }
 kotlin-logging = { module = "io.github.oshai:kotlin-logging-jvm", version.ref = "kotlin-logging" }
 springdoc-openapi-starter-webflux-ui = { module = "org.springdoc:springdoc-openapi-starter-webflux-ui", version.ref = "springdoc" }

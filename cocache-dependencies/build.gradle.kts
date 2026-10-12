@@ -13,7 +13,6 @@
 
 dependencies {
     api(platform(libs.spring.boot.dependencies))
-    api(platform(libs.cosid.bom))
     api(platform(libs.fluent.assert.bom))
     constraints {
         api(libs.guava)
