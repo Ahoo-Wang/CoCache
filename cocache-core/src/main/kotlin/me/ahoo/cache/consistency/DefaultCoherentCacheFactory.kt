@@ -17,10 +17,15 @@ import me.ahoo.cache.api.consistency.CacheEvictedEventBus
 
 /**
  * 创建 [DefaultCoherentCache] 并注册到失效事件通道。
+ *
+ * @param recordClientSideHits 是否统计 L2 命中，见 [CoherentCacheStats.clientSideHitsRecorded]
  */
-class DefaultCoherentCacheFactory(private val cacheEvictedEventBus: CacheEvictedEventBus) : CoherentCacheFactory {
+class DefaultCoherentCacheFactory @JvmOverloads constructor(
+    private val cacheEvictedEventBus: CacheEvictedEventBus,
+    private val recordClientSideHits: Boolean = false
+) : CoherentCacheFactory {
     override fun <K, V> create(configuration: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
-        return DefaultCoherentCache(configuration, cacheEvictedEventBus).also {
+        return DefaultCoherentCache(configuration, cacheEvictedEventBus, recordClientSideHits).also {
             cacheEvictedEventBus.register(it)
         }
     }

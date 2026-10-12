@@ -25,7 +25,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 data class CoCacheProperties(
     val enabled: Boolean = true,
     val redis: Redis = Redis(),
+    val metrics: Metrics = Metrics(),
 ) {
+    data class Metrics(
+        /**
+         * 统计 L2 命中（`cocache.hits{level=l2}`）。L2 命中是最热的路径，计数会使其吞吐下降约 8%（单线程）
+         * 到 15%（8 线程），因此默认关闭。
+         */
+        val clientSideHits: Boolean = false,
+    )
+
     data class Redis(
         /**
          * Redis 故障时重抛异常（默认 false = 降级：读按未命中、写/evict 仅告警）。

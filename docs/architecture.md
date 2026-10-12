@@ -45,6 +45,7 @@ cocache-test                 TCK：CacheSpec、CacheStoreSpec、DefaultCoherentC
 - **存储层（`CacheStore`）只存不判**：按字符串 key 存取 `CacheValue`，不持有 TTL、抖动、负缓存等策略。写入已过期条目等价于淘汰。
 - **策略层（`TtlPolicy`）**：命中值 `ttl ± ttlAmplitude`（防雪崩）；负缓存 `missingTtl`（不抖动）；写入 L2 的副本到期时间不晚于 `now + clientSideTtl`（`0` 不限制）。由编排层持有，存储层只看到绝对到期时间 `ttlAt`。
 - **编排层（`DefaultCoherentCache`）**：读穿透、回源合并、写回保护、失效广播。
+- **统计（`CoherentCacheStats`）**：编排层以 `LongAdder` 累计 L1 命中、未命中、回源、写回作废、失效事件与重置，都在未命中或失效路径上。L2 命中计数默认关闭（`DefaultCoherentCacheFactory(recordClientSideHits)`）：JMH 实测它使 L2 命中吞吐下降约 8%（1 线程）与 15%（8 线程），违背 G3。Micrometer 绑定在 starter 中，可选。
 - **通道（`CacheEvictedEventBus`）**：尽力而为地广播失效；订阅（重）建立时回调 `onReset`。
 
 ## 3. 数据模型

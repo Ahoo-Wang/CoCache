@@ -18,6 +18,7 @@ import io.mockk.mockk
 import me.ahoo.cache.api.consistency.CacheEvictedEvent
 import me.ahoo.cache.api.consistency.CacheEvictedEventBus
 import me.ahoo.cache.test.consistency.CacheEvictedEventBusSpec
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -44,7 +45,8 @@ internal class RedisCacheEvictedEventBusTest : CacheEvictedEventBusSpec() {
         val redisTemplate = mockk<StringRedisTemplate> {
             every { convertAndSend(any<String>(), any<Any>()) } throws RedisConnectionFailureException("down")
         }
-        RedisCacheEvictedEventBus(redisTemplate, mockk(relaxed = true))
-            .publish(CacheEvictedEvent("cache", "key", "clientId"))
+        val eventBus = RedisCacheEvictedEventBus(redisTemplate, mockk(relaxed = true))
+        eventBus.publish(CacheEvictedEvent("cache", "key", "clientId"))
+        eventBus.publishFailureCount.assert().isOne()
     }
 }
