@@ -5,7 +5,46 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v5.1.1（当前版本）
+## v5.2.0（当前版本）
+
+**模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。Redis 线格式与失效消息格式不变，5.1.x 与 5.2 实例可共享 Redis。
+
+### L2 陈旧上限：`@CoCache.clientSideTtl`
+
+失效事件经 Redis Pub/Sub 至多投递一次。事件丢失时，其它实例会一直使用 L2 副本，直到值的 `ttl`（默认 3600 秒）到期。
+
+```kotlin
+@CoCache(clientSideTtl = 30)
+interface UserCache : Cache<String, User>
+```
+
+- L2 副本最多存活 `clientSideTtl` 秒，过期后从 Redis 重新填充；L1 仍保留完整 TTL。
+- 默认 `0` 不限制，与 5.1 行为一致。
+- 只在写入 L2 时计算，命中路径没有额外开销；每次 L2 过期需要一次 Redis 往返。
+- 启用后，L2 命中时 `getTtlAt` 返回 L2 副本的到期时间。
+
+### Micrometer 指标
+
+classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入），starter 绑定 `cocache.*` 指标，按 `cache` 标签区分：`hits{level=l2|l1}`、`misses`、`loads`（timer）、`load.failures`、`filtered`、`stale.discards`、`evictions.received`、`resets`、`l2.size`，以及不带标签的 `eviction.publish.failures`。完整说明见[运维](./operations.md#metrics)。
+
+- 统计由编排层以 `LongAdder` 累计，可通过 `CoherentCache.stats` 直接读取。
+- L2 命中计数（`hits{level=l2}`）默认关闭，用 `cocache.metrics.client-side-hits=true` 开启：在最热的路径上计数会使 L2 命中吞吐下降 8%–15%（JMH，1–8 线程）。其余指标都不在命中路径上，命中路径吞吐不变。
+- `RedisCacheEvictedEventBus.publishFailureCount` 记录发布失败次数。
+
+### 移除 CosId 依赖
+
+`cocache-core` 只用 CosId 生成 clientId，现改用 JDK 实现。
+
+- `cosid-core` 不再随 CoCache 传递引入。直接使用 CosId 的项目需要自行声明依赖。
+- 移除 `CosIdHostAddressSupplierAutoConfiguration`：容器中的 CosId `HostAddressSupplier` 不再用于 clientId 的 host 部分。clientId 的唯一性由随机后缀保证，host 只影响可读性。
+
+### Gradle 配置
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.2.0")
+```
+
+## v5.1.1
 
 **模块组：** `me.ahoo.cocache` · 补丁版本，与 5.1.0 向后兼容，Redis 线格式与失效消息格式不变。
 

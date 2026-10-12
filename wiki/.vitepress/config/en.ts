@@ -46,7 +46,7 @@ export const en: DefaultTheme.Config = {
       { text: 'Guide', link: '/guide/' },
       { text: 'Architecture', link: '/architecture/' },
       {
-        text: 'v5.1',
+        text: 'v5.2',
         items: [
           { text: 'Changelog', link: '/guide/changelog' },
           { text: 'Contributing', link: 'https://github.com/Ahoo-Wang/CoCache/blob/main/CONTRIBUTING.md' },
