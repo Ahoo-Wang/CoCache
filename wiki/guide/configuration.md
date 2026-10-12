@@ -51,6 +51,8 @@ You don't need `expireAfterAccess` for correctness. Every entry carries its own 
 |----------|---------|---------|
 | `cocache.enabled` | `true` | `false` turns off all CoCache auto-configuration, including the actuator endpoints. |
 | `cocache.redis.strict-failure` | `false` | `false` degrades during a Redis failure: reads fall back to the source, and writes and evicts log a warning. `true` rethrows. See [Operations](./operations.md#redis-failures). |
+| `cocache.load.max-concurrent` | `0` (unlimited) | Maximum concurrent source loads per cache and instance. Protects the source while Redis is down. See [Operations](./operations.md#redis-failures). |
+| `cocache.load.acquire-timeout` | `1s` | How long a load waits for a permit before failing with `SourceLoadRejectedException` |
 | `cocache.metrics.client-side-hits` | `false` | Count L2 hits as `cocache.hits{level=l2}`. Off by default because the counter costs the L2 hit path about 8% of its throughput on one thread and 15% on eight. See [Operations](./operations.md#metrics). |
 | `cocache.redis.missing-guard-sentinel` | `_nil_` | The Redis value that marks a negative entry. See [Operations](./operations.md#the-negative-cache-sentinel). |
 

@@ -13,8 +13,10 @@
 package me.ahoo.cache.spring.boot.starter
 
 import me.ahoo.cache.api.annotation.CoCache
+import me.ahoo.cache.consistency.SourceLoadLimit
 import me.ahoo.cache.spring.redis.codec.AbstractCodecExecutor
 import org.springframework.boot.context.properties.ConfigurationProperties
+import java.time.Duration
 
 /**
  * CoCache Properties .
@@ -26,7 +28,21 @@ data class CoCacheProperties(
     val enabled: Boolean = true,
     val redis: Redis = Redis(),
     val metrics: Metrics = Metrics(),
+    val load: Load = Load(),
 ) {
+    data class Load(
+        /**
+         * 每个缓存同时进行的回源数上限（bulkhead）；`0` 表示不限制。Redis 故障时每个 L2 未命中都会回源，此限制保护数据源。
+         */
+        val maxConcurrent: Int = 0,
+        /**
+         * 达到上限时等待许可的最长时间，超时抛出 `SourceLoadRejectedException`。
+         */
+        val acquireTimeout: Duration = SourceLoadLimit.DEFAULT_ACQUIRE_TIMEOUT,
+    ) {
+        fun toSourceLoadLimit(): SourceLoadLimit = SourceLoadLimit(maxConcurrent, acquireTimeout)
+    }
+
     data class Metrics(
         /**
          * 统计 L2 命中（`cocache.hits{level=l2}`）。L2 命中是最热的路径，计数会使其吞吐下降约 8%（单线程）

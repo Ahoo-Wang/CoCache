@@ -78,6 +78,9 @@ class CoCacheMeterBinder(
             it.resetCount
         }
         counter(registry, "cocache.refreshes", "Refresh-ahead executions", tags, stats) { it.refreshCount }
+        counter(registry, "cocache.load.rejections", "Source loads rejected by the concurrency limit", tags, stats) {
+            it.loadRejectedCount
+        }
         FunctionTimer.builder(
             "cocache.loads",
             stats,

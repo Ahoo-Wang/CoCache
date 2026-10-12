@@ -22,14 +22,22 @@ import java.util.concurrent.Executor
  *
  * @param recordClientSideHits 是否统计 L2 命中，见 [CoherentCacheStats.clientSideHitsRecorded]
  * @param refreshExecutor 执行提前刷新（`refreshAhead`）的执行器
+ * @param sourceLoadLimit 每个缓存的回源并发限制
  */
 class DefaultCoherentCacheFactory @JvmOverloads constructor(
     private val cacheEvictedEventBus: CacheEvictedEventBus,
     private val recordClientSideHits: Boolean = false,
-    private val refreshExecutor: Executor = RefreshExecutors.DEFAULT
+    private val refreshExecutor: Executor = RefreshExecutors.DEFAULT,
+    private val sourceLoadLimit: SourceLoadLimit = SourceLoadLimit.UNLIMITED
 ) : CoherentCacheFactory {
     override fun <K, V> create(configuration: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
-        return DefaultCoherentCache(configuration, cacheEvictedEventBus, recordClientSideHits, refreshExecutor).also {
+        return DefaultCoherentCache(
+            configuration,
+            cacheEvictedEventBus,
+            recordClientSideHits,
+            refreshExecutor,
+            sourceLoadLimit
+        ).also {
             cacheEvictedEventBus.register(it)
         }
     }

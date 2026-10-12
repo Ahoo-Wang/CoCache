@@ -147,6 +147,7 @@ getCaches(keys)
 | `@CoCache.missingTtl` | 60 s | 数据新建后最多 60 秒仍被视为不存在 |
 | L2 | Caffeine，`maximumSize = 10000`；过期条目在读取时淘汰 | 有界内存；条目级 `Expiry` 会让每次读取写节点元数据，热点 key 无法随线程扩展（JMH 实测：8 线程下 224M → 11M ops/s） |
 | `@CoCache.clientSideTtl` | 0（不限制） | L2 副本沿用 L1 到期时间，与 5.1 行为一致；设置后，失效事件丢失时 L2 的陈旧度以该值为上界。只在写入 L2 时计算，命中路径无额外开销 |
+| `cocache.load.max-concurrent` | 0（不限制） | 回源并发上限（bulkhead，`SourceLoadLimit`）：只计 SingleFlight leader，批量回源占一个许可；等待 `acquire-timeout`（默认 1s）后抛出 `SourceLoadRejectedException`。通道断开期间不另行缩短 L2：重订阅时 `onReset` 清空 L2，断开造成的陈旧不超过断开时长 |
 | `cocache.redis.strict-failure` | false | Redis 故障降级：读按未命中、写/淘汰仅告警 |
 
 ## 8. 代理

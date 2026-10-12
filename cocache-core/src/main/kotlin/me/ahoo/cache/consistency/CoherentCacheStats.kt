@@ -45,6 +45,7 @@ class CoherentCacheStats(
     private val evictionsReceived = LongAdder()
     private val resets = LongAdder()
     private val refreshes = LongAdder()
+    private val loadRejections = LongAdder()
 
     /**
      * L2 命中次数；仅当 [clientSideHitsRecorded] 时统计。
@@ -101,6 +102,11 @@ class CoherentCacheStats(
      */
     val refreshCount: Long get() = refreshes.sum()
 
+    /**
+     * 因回源并发限制被拒绝的回源次数（不计入 [loadCount]）。
+     */
+    val loadRejectedCount: Long get() = loadRejections.sum()
+
     internal fun recordClientSideHit() = clientSideHits.increment()
     internal fun recordDistributedHit() = distributedHits.increment()
     internal fun recordMiss() = misses.increment()
@@ -117,11 +123,13 @@ class CoherentCacheStats(
     internal fun recordEvictionReceived() = evictionsReceived.increment()
     internal fun recordReset() = resets.increment()
     internal fun recordRefresh() = refreshes.increment()
+    internal fun recordLoadRejected() = loadRejections.increment()
 
     override fun toString(): String {
         return "CoherentCacheStats(clientSideHits=$clientSideHitCount, distributedHits=$distributedHitCount, " +
             "misses=$missCount, filtered=$filteredCount, loads=$loadCount, loadFailures=$loadFailureCount, " +
             "totalLoadNanos=$totalLoadNanos, staleLoadsDiscarded=$staleLoadDiscardedCount, " +
-            "evictionsReceived=$evictionReceivedCount, resets=$resetCount, refreshes=$refreshCount)"
+            "evictionsReceived=$evictionReceivedCount, resets=$resetCount, refreshes=$refreshCount, " +
+            "loadRejections=$loadRejectedCount)"
     }
 }

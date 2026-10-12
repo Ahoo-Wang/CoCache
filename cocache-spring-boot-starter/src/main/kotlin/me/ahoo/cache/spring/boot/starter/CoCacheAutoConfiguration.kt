@@ -15,6 +15,7 @@ package me.ahoo.cache.spring.boot.starter
 import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.consistency.CacheEvictedEventBus
 import me.ahoo.cache.client.ClientSideCacheFactory
+import me.ahoo.cache.concurrent.RefreshExecutors
 import me.ahoo.cache.consistency.CoherentCacheFactory
 import me.ahoo.cache.consistency.DefaultCoherentCacheFactory
 import me.ahoo.cache.converter.KeyConverterFactory
@@ -105,7 +106,12 @@ class CoCacheAutoConfiguration {
         cacheEvictedEventBus: CacheEvictedEventBus,
         coCacheProperties: CoCacheProperties
     ): CoherentCacheFactory {
-        return DefaultCoherentCacheFactory(cacheEvictedEventBus, coCacheProperties.metrics.clientSideHits)
+        return DefaultCoherentCacheFactory(
+            cacheEvictedEventBus,
+            coCacheProperties.metrics.clientSideHits,
+            RefreshExecutors.DEFAULT,
+            coCacheProperties.load.toSourceLoadLimit()
+        )
     }
 
     @Bean

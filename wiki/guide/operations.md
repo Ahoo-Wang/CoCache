@@ -45,6 +45,7 @@ With Micrometer on the classpath (`spring-boot-starter-actuator` brings it), the
 | `cocache.evictions.received` | counter | Eviction events received from other instances |
 | `cocache.resets` | counter | Eviction channel (re)subscriptions that cleared L2 |
 | `cocache.refreshes` | counter | Refresh-ahead executions, including failures. Their source loads also count in `cocache.loads` |
+| `cocache.load.rejections` | counter | Source loads rejected by `cocache.load.max-concurrent` |
 | `cocache.l2.size` | gauge | Entries in this instance's L2 |
 | `cocache.eviction.publish.failures` | counter | Eviction events that failed to publish (no `cache` tag) |
 
@@ -65,6 +66,10 @@ With the default `cocache.redis.strict-failure=false`, a Redis error never reach
 | Publishing an eviction event | Logged at `WARN` (in both modes) | Logged at `WARN` |
 
 Plan for the cost of degrading. While Redis is down, every L2 miss goes to your data source. That is at most one load per key per instance at a time, because concurrent misses are coalesced. Make sure the source can absorb that load, or choose `strict-failure=true` and handle the exceptions yourself.
+
+Distinct keys are not coalesced, so an outage can still send many loads at once. To cap them, set `cocache.load.max-concurrent` (per cache, per instance). A load beyond the cap waits up to `cocache.load.acquire-timeout` for a permit, then fails with `SourceLoadRejectedException`, and `cocache.load.rejections` counts it. Readers that coalesce onto an in-flight load don't take a permit, and a batch load takes one.
+
+While the eviction channel is down, L2 copies are not capped further. When the channel resubscribes, every instance clears its L2, so staleness from the outage can't outlive it. Lost events while the connection stays up are bounded by `clientSideTtl`.
 
 When the eviction channel reconnects, each instance clears its L2 and logs `Channel[…] subscribed - reset subscriber` at `INFO`. Events published during the outage were lost, so the clear stops the old L2 entries from outliving it.
 
