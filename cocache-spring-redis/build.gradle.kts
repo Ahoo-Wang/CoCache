@@ -31,7 +31,8 @@ dependencies {
 
 /**
  * 命中路径基准（需要 localhost:6379 的 Redis），不属于 check：
- * `./gradlew :cocache-spring-redis:jmh -PjmhThreads=8 -PjmhIncludes=l2Hit`
+ * `./gradlew :cocache-spring-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit`
+ * （`--rerun`：参数不变时 Gradle 判定任务为最新，会直接沿用上次的结果。`jmhIncludes` 每次只能传一个正则。）
  */
 jmh {
     jmhVersion = libs.versions.openjdk.jmh
