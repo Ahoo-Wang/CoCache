@@ -167,8 +167,11 @@ getCaches(keys)
 命中路径（L2 命中、L1 命中）的改动必须用 JMH 与上一版本对比，线程数取 1 与 8：
 
 ```bash
-./gradlew :cocache-spring-redis:jmh -PjmhThreads=8 -PjmhIncludes=l2Hit   # 需要 Redis；check 只编译不运行
+./gradlew :cocache-spring-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit   # 需要 Redis；check 只编译不运行
 ```
+
+- 必须加 `--rerun`：参数不变时 Gradle 判定 `jmh` 任务为最新，静默沿用上次的结果。
+- 同一台机器上 8 线程的结果在多次运行之间波动约 ±4%：每侧至少交替运行三轮，比较中位数。
 
 基准位于 `cocache-spring-redis/src/jmh`（`RedisCacheBenchmark`）。
 

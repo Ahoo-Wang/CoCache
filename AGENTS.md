@@ -38,7 +38,7 @@ docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 | One class or method | `./gradlew :cocache-core:test --tests "me.ahoo.cache.proxy.ProxyCacheTest"` |
 | Lint (**rewrites files**: `autoCorrect = true`) | `./gradlew detekt` |
 | Runtime compatibility on a newer JDK | `./gradlew test -PtestJavaVersion=25` |
-| Hit-path benchmark (never run by `check`) | `./gradlew :cocache-spring-redis:jmh -PjmhThreads=8 -PjmhIncludes=l2Hit` |
+| Hit-path benchmark (never run by `check`; `--rerun` because Gradle otherwise reuses the last result) | `./gradlew :cocache-spring-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit` |
 | Wiki build, the only dead-link check | `cd wiki && pnpm install && pnpm build` |
 
 If your shell exports `SPRING_DATA_REDIS_*` variables (for example `SPRING_DATA_REDIS_CLUSTER_NODES`), the starter tests bind to that Redis instead of localhost. Unset them first.
@@ -64,7 +64,7 @@ Read `docs/architecture.md` before you touch coherence, storage, codec, proxy, o
 - **Stateful Spring components resolve by bean name only.** These are the L2, the L1, and the `KeyConverter`. Resolving them by type lets two caches share one instance.
 - **The proxy unwraps `InvocationTargetException`.** Callers always see the original exception.
 - **The wire format is frozen within a major version.** This covers the Redis key and value layout, the `_nil_` sentinel encodings, and the `key@@publisherId` message format.
-- **Hit-path changes need numbers.** Compare JMH results against the previous version at 1 and 8 threads, and put them in the PR.
+- **Hit-path changes need numbers.** Compare JMH results against the previous version at 1 and 8 threads, and put them in the PR. Run at least three alternating rounds per side with `--rerun`: 8-thread results vary by about ±4% between runs on one machine.
 
 ## Tests
 
