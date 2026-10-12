@@ -6,15 +6,6 @@ spring:
   redis:
     url: redis://localhost:6379
 
-cosid:
-  namespace: ${spring.application.name}
-  machine:
-    enabled: true
-    distributor:
-      type: redis
-  generator:
-    enabled: true
-
 cocache:
   enabled: true
 

@@ -13,8 +13,6 @@
 
 package me.ahoo.cache.util
 
-import me.ahoo.cosid.machine.LocalHostAddressSupplier
-import me.ahoo.cosid.util.ProcessId
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -51,7 +49,7 @@ object UUIDClientIdGenerator : ClientIdGenerator {
 class HostClientIdGenerator(private val hostProvider: () -> String) : ClientIdGenerator {
     companion object {
         @JvmStatic
-        val DEFAULT = HostClientIdGenerator { LocalHostAddressSupplier.INSTANCE.hostAddress }
+        val DEFAULT = HostClientIdGenerator { LocalHostAddress.hostAddress }
 
         private const val NONCE_LENGTH = 8
     }
@@ -68,6 +66,6 @@ class HostClientIdGenerator(private val hostProvider: () -> String) : ClientIdGe
     private val nonce: String = java.util.UUID.randomUUID().toString().substring(0, NONCE_LENGTH)
 
     override fun generate(): String {
-        return "${counter.getAndIncrement()}:${ProcessId.CURRENT.processId}:$nonce@$host"
+        return "${counter.getAndIncrement()}:${ProcessHandle.current().pid()}:$nonce@$host"
     }
 }
