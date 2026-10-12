@@ -5,7 +5,46 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v5.1.1 (Current)
+## v5.2.0 (Current)
+
+**Module Group:** `me.ahoo.cocache` · Minor release, additive. Redis wire format and eviction messages are unchanged, so 5.1.x and 5.2 instances can share Redis.
+
+### Bounded L2 staleness: `@CoCache.clientSideTtl`
+
+Eviction events travel over Redis Pub/Sub, which delivers at most once. When an event is lost, other instances keep serving their L2 copy until the value's `ttl` (3600 s by default).
+
+```kotlin
+@CoCache(clientSideTtl = 30)
+interface UserCache : Cache<String, User>
+```
+
+- An L2 copy lives at most `clientSideTtl` seconds, then refills from Redis. L1 keeps the full TTL.
+- The default `0` means unlimited, the same as 5.1.
+- The cap is computed only when writing L2, so the hit path costs nothing extra. Each L2 expiry costs one Redis round trip.
+- When set, an L2 hit reports the L2 copy's expiry from `getTtlAt`.
+
+### Micrometer metrics
+
+With Micrometer on the classpath (`spring-boot-starter-actuator` brings it), the starter binds `cocache.*` meters tagged by `cache`: `hits{level=l2|l1}`, `misses`, `loads` (timer), `load.failures`, `filtered`, `stale.discards`, `evictions.received`, `resets`, `l2.size`, plus the untagged `eviction.publish.failures`. See [Operations](./operations.md#metrics).
+
+- The orchestration layer accumulates the counts in `LongAdder`s. Read them directly from `CoherentCache.stats`.
+- The L2 hit counter (`hits{level=l2}`) is off by default. Turn it on with `cocache.metrics.client-side-hits=true`. Counting on the hottest path costs 8–15% of L2 hit throughput (JMH, 1–8 threads). No other meter touches the hit path.
+- `RedisCacheEvictedEventBus.publishFailureCount` counts failed publishes.
+
+### CosId dependency removed
+
+`cocache-core` used CosId only to build the clientId. It now uses the JDK instead.
+
+- `cosid-core` is no longer a transitive dependency. Projects that use CosId directly must declare it.
+- `CosIdHostAddressSupplierAutoConfiguration` is removed, so a CosId `HostAddressSupplier` bean no longer feeds the clientId's host. The random suffix makes the id unique; the host is only for readability.
+
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.2.0")
+```
+
+## v5.1.1
 
 **Module Group:** `me.ahoo.cocache` · Patch release, backward compatible with 5.1.0. Redis wire format and eviction messages are unchanged.
 
