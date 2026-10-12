@@ -5,7 +5,51 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v5.2.0 (Current)
+## v5.3.0 (Current)
+
+**Module Group:** `me.ahoo.cocache` · Minor release, additive (every new interface method has a default). Redis wire format and eviction messages are unchanged, so 5.2.x and 5.3 instances can share Redis. New behaviors are off by default.
+
+### Batch reads: `getAll` / `getCaches` / `loadCacheValues`
+
+Reading N keys no longer costs N Redis round trips and N source loads:
+
+```kotlin
+val users: Map<String, User> = userCache.getAll(ids)
+```
+
+- CoCache reads L2 first, then the remaining keys from Redis in one pipeline, then loads the rest with one `CacheSource.loadCacheValues(keys)` call. Keys missing from that result become negative entries. Reading 100 keys from L1 drops from about 13.6 ms to about 1 ms (JMH).
+- Every fill and write-back is stamp-guarded per key, as in single-key reads.
+- `CacheSource.loadCacheValues` calls `loadCacheValue` per key by default. Override it with one query, such as `findAllById`.
+- `SimpleJoinCache` joins with two batch reads.
+- New API, all with default implementations: `CacheGetter.getCaches` / `getAll`, `CacheStore.getCaches`, `CacheSource.loadCacheValues`, and `CodecExecutor.executeAndDecodeAll`.
+
+### Refresh ahead: `@CoCache.refreshAhead`
+
+```kotlin
+@CoCache(ttl = 600, refreshAhead = 60)
+interface UserCache : Cache<String, User>
+```
+
+When a value has at most `refreshAhead` seconds left, reads still return it, and one background refresh per key per instance reloads it. Hot keys no longer stall on expiry. Expired values are never served, and negative entries are not refreshed. The default `0` turns it off. Meter: `cocache.refreshes`.
+
+### Source load limit
+
+```yaml
+cocache:
+  load:
+    max-concurrent: 32
+    acquire-timeout: 1s
+```
+
+While Redis is down, every L2 miss goes to the source. With a limit set, each cache runs at most `max-concurrent` source loads at once. A load beyond the limit waits `acquire-timeout`, then fails with `SourceLoadRejectedException`. Meter: `cocache.load.rejections`. Unlimited by default.
+
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.3.0")
+```
+
+## v5.2.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive. Redis wire format and eviction messages are unchanged, so 5.1.x and 5.2 instances can share Redis.
 

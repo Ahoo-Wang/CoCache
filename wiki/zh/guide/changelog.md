@@ -5,7 +5,51 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v5.2.0（当前版本）
+## v5.3.0（当前版本）
+
+**模块组：** `me.ahoo.cocache` · 次版本，仅新增 API（新接口方法都带默认实现）。Redis 线格式与失效消息格式不变，5.2.x 与 5.3 实例可共享 Redis。新行为默认关闭。
+
+### 批量读取：`getAll` / `getCaches` / `loadCacheValues`
+
+读取 N 个 key 不再需要 N 次 Redis 往返和 N 次回源：
+
+```kotlin
+val users: Map<String, User> = userCache.getAll(ids)
+```
+
+- 先读 L2，剩余 key 用一次 pipeline 读 Redis，仍未命中的 key 一次调用 `CacheSource.loadCacheValues(keys)` 加载（结果中缺少的 key 写入负缓存）。100 个 key 的 L1 读取从约 13.6 ms 降到约 1 ms（JMH）。
+- 每个 key 的回填与写回都受失效戳保护，与单 key 读取相同。
+- `CacheSource.loadCacheValues` 默认逐个调用 `loadCacheValue`，覆盖为一次查询（如 `findAllById`）即可。
+- `SimpleJoinCache` 以两次批量读取完成组合。
+- 新增 API：`CacheGetter.getCaches` / `getAll`、`CacheStore.getCaches`、`CacheSource.loadCacheValues`、`CodecExecutor.executeAndDecodeAll`，均带默认实现。
+
+### 提前刷新：`@CoCache.refreshAhead`
+
+```kotlin
+@CoCache(ttl = 600, refreshAhead = 60)
+interface UserCache : Cache<String, User>
+```
+
+值的剩余存活时间不超过 `refreshAhead` 秒时，读取照常返回当前值，并在后台刷新一次（每个实例每个 key 同一时刻至多一次）。热点 key 过期时不再出现回源延迟尖刺。不会返回已过期的值，负缓存不刷新。默认 `0` 关闭。指标：`cocache.refreshes`。
+
+### 回源并发上限
+
+```yaml
+cocache:
+  load:
+    max-concurrent: 32
+    acquire-timeout: 1s
+```
+
+Redis 故障期间每次 L2 未命中都会回源。设置后，每个缓存同时进行的回源数受限，超出的回源等待 `acquire-timeout` 后抛出 `SourceLoadRejectedException`。指标：`cocache.load.rejections`。默认不限制。
+
+### Gradle 配置
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.3.0")
+```
+
+## v5.2.0
 
 **模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。Redis 线格式与失效消息格式不变，5.1.x 与 5.2 实例可共享 Redis。
 
