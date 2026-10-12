@@ -60,6 +60,13 @@ annotation class CoCache(
      * 从而使 L2 的陈旧度不依赖失效通道。启用后，L2 命中返回的到期时间是 L2 副本的到期时间。
      */
     val clientSideTtl: Long = DEFAULT_CLIENT_SIDE_TTL,
+    /**
+     * 提前刷新窗口；`0` 表示关闭。
+     *
+     * 命中值的剩余存活时间不超过该值时，读取照常返回当前值，并在后台刷新一次（每个实例每个 key 同一时刻至多一次）：
+     * L1 仍在窗口外时只从 L1 重新填充 L2，否则回源并写回。不会返回已过期的值，负缓存不刷新。
+     */
+    val refreshAhead: Long = DEFAULT_REFRESH_AHEAD,
 ) {
     companion object {
         const val COCACHE = "cocache"
@@ -68,5 +75,6 @@ annotation class CoCache(
         const val DEFAULT_TTL_AMPLITUDE: Long = 60
         const val DEFAULT_MISSING_TTL: Long = 60
         const val DEFAULT_CLIENT_SIDE_TTL: Long = 0
+        const val DEFAULT_REFRESH_AHEAD: Long = 0
     }
 }

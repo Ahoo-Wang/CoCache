@@ -73,7 +73,9 @@ class CoCacheMetadataParserTest {
     fun parseTtlPolicy() {
         val metadata = coCacheMetadata<MockTtlCache>()
         metadata.cacheName.assert().isEqualTo("ttl-cache")
-        metadata.ttlPolicy.assert().isEqualTo(TtlPolicy(ttl = 100, ttlAmplitude = 5, missingTtl = 7, clientSideTtl = 9))
+        metadata.ttlPolicy.assert().isEqualTo(
+            TtlPolicy(ttl = 100, ttlAmplitude = 5, missingTtl = 7, clientSideTtl = 9, refreshAhead = 8)
+        )
     }
 
     @Test
@@ -89,7 +91,7 @@ class CoCacheMetadataParserTest {
     @CoCache
     interface MockGenericValueCache : Cache<String, List<CoCacheMetadataParserTest>>
 
-    @CoCache(name = "ttl-cache", ttl = 100, ttlAmplitude = 5, missingTtl = 7, clientSideTtl = 9)
+    @CoCache(name = "ttl-cache", ttl = 100, ttlAmplitude = 5, missingTtl = 7, clientSideTtl = 9, refreshAhead = 8)
     interface MockTtlCache : Cache<String, CoCacheMetadataParserTest>
 
     @CoCache

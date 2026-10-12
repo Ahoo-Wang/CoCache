@@ -153,6 +153,7 @@ TTL guidance (all in seconds):
 - `ttlAmplitude` spreads expirations to avoid avalanches (about 2–10 % of `ttl`).
 - `missingTtl` caps how long a newly created row stays invisible after a "not found" was cached. Keep it short.
 - `clientSideTtl` (default `0` = unlimited) caps how long an L2 copy lives before it is refilled from L1, which bounds staleness when an eviction event is lost.
+- `refreshAhead` (default `0` = off) reloads a value in the background once it has that many seconds left, so hot keys don't stall on expiry. It must be less than `ttl` and `clientSideTtl`.
 - L2 entries expire at their own `ttlAt`; `@CaffeineCache` only bounds size and idle time.
 
 ```kotlin

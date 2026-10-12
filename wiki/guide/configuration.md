@@ -21,6 +21,7 @@ CoCache has three layers of configuration:
 | `ttl` | `3600` | Seconds a value lives. `TtlAt.FOREVER` means it never expires. |
 | `ttlAmplitude` | `60` | Random jitter in seconds. Each value lives `ttl ± ttlAmplitude` seconds, never less than 1. |
 | `missingTtl` | `60` | Seconds a negative entry ("not found") lives. No jitter. |
+| `refreshAhead` | `0` (off) | Refresh window in seconds. When a value has at most this long left to live, reads still return it, and one background refresh reloads it. Must be less than `ttl` and `clientSideTtl`. |
 | `clientSideTtl` | `0` (unlimited) | Maximum seconds an L2 (local) copy lives before it is refilled from L1. `0` keeps the L1 expiry. |
 
 ### Choosing TTLs
@@ -28,6 +29,7 @@ CoCache has three layers of configuration:
 - **`ttl` is your staleness bound.** One race can leave an old value in Redis until it expires: a slow load can write its result after a concurrent update's evict (see [Consistency](../architecture/consistency.md#what-is-not-guaranteed)). Pick the longest staleness the business can tolerate in that rare case. `TtlAt.FOREVER` is safe only if every writer reliably calls `evict` and you accept that the race above is never repaired.
 - **`missingTtl` is how long a newly created row can stay invisible** after a lookup cached its absence. Keep it short.
 - **`clientSideTtl` bounds staleness from lost eviction events.** Eviction events are delivered at most once. If one is lost, a peer keeps serving its L2 copy until `ttl`. With `clientSideTtl = 30`, that copy lives at most 30 seconds and is then refilled from Redis. The hit path costs nothing extra, but each L2 expiry costs one Redis round trip. When set, an L2 hit reports the L2 copy's expiry from `getTtlAt`.
+- **`refreshAhead` removes the latency spike when a hot key expires.** Without it, the first read after expiry waits for the source. With `refreshAhead = 60`, a read within the last 60 seconds triggers one background reload per key per instance, and readers keep getting the current value. Expired values are never served, so `ttl` still bounds staleness. Negative entries are not refreshed. For Set caches with atomic element updates, L1 is authoritative, so a refresh only refills L2.
 - **`ttlAmplitude` spreads expiries.** Keys loaded together, such as after a deploy, then don't all expire in the same second. Keep it at a few percent of `ttl`.
 
 ## `@CaffeineCache`

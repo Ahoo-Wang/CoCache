@@ -20,7 +20,11 @@ import me.ahoo.cache.api.consistency.CacheEvictedEvent
 import me.ahoo.cache.api.consistency.CacheEvictedEventBus
 import me.ahoo.cache.api.consistency.CacheEvictedSubscriber
 import me.ahoo.cache.api.distributed.SetElementsStore
+import me.ahoo.cache.concurrent.RefreshExecutors
 import me.ahoo.cache.concurrent.SingleFlight
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -42,7 +46,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class DefaultCoherentCache<K, V> @JvmOverloads constructor(
     override val configuration: CoherentCacheConfiguration<K, V>,
     private val cacheEvictedEventBus: CacheEvictedEventBus,
-    private val recordClientSideHits: Boolean = false
+    private val recordClientSideHits: Boolean = false,
+    private val refreshExecutor: Executor = RefreshExecutors.DEFAULT
 ) : CoherentCache<K, V>, SetElementsCache<K, Any?>, CacheEvictedSubscriber {
 
     companion object {
@@ -57,6 +62,17 @@ class DefaultCoherentCache<K, V> @JvmOverloads constructor(
     private val ttlPolicy = configuration.ttlPolicy
     private val stamps = InvalidationStamps()
     private val loads = SingleFlight<String, Loaded<V>>()
+    private val refreshAheadEnabled = ttlPolicy.refreshAhead > 0
+
+    /**
+     * L2 命中时是否有额外工作（命中计数或提前刷新）。合并为一个字段，使默认配置下的命中路径只做一次判断（JMH：多一次判断在 8 线程下约 −5%）。
+     */
+    private val clientSideHitHook = recordClientSideHits || refreshAheadEnabled
+
+    /**
+     * 正在提前刷新的 cacheKey：每个 key 同一时刻至多一次刷新。
+     */
+    private val refreshing = ConcurrentHashMap.newKeySet<String>()
 
     /**
      * L1 支持集合元素增删时非空：回源写回与撤销改用其条件操作。
@@ -76,14 +92,21 @@ class DefaultCoherentCache<K, V> @JvmOverloads constructor(
 
     override fun getCache(key: K): CacheValue<V> {
         val cacheKey = keyConverter.toStringKey(key)
-        clientSideCache.getCache(cacheKey)?.let {
-            if (!it.isExpired) {
-                // 命中路径上的计数在 8 线程下使吞吐下降约 15%（JMH），因此默认关闭
-                if (recordClientSideHits) {
-                    stats.recordClientSideHit()
-                }
-                return it
+        val clientSideValue = clientSideCache.getCache(cacheKey)
+        if (clientSideValue != null && !clientSideValue.isExpired) {
+            if (clientSideHitHook) {
+                onClientSideHit(key, cacheKey, clientSideValue)
             }
+            return clientSideValue
+        }
+        return getCacheOnMiss(key, cacheKey, clientSideValue)
+    }
+
+    /**
+     * L2 未命中（或已过期）。与命中路径分开，使 [getCache] 足够小而能被 JIT 内联。
+     */
+    private fun getCacheOnMiss(key: K, cacheKey: String, expiredClientSideValue: CacheValue<V>?): CacheValue<V> {
+        if (expiredClientSideValue != null) {
             clientSideCache.evict(cacheKey)
         }
         if (keyFilter.notExist(cacheKey)) {
@@ -101,6 +124,43 @@ class DefaultCoherentCache<K, V> @JvmOverloads constructor(
         // 共享到的加载开始于本次读取之前的某次失效（如本线程先 evict 再 get）：其结果可能早于该失效，必须重新加载。
         // 新一轮加载必然开始于上一轮结束之后，因此至多重试一次。
         return loads.execute(cacheKey) { loadThrough(key, cacheKey) }.cacheValue
+    }
+
+    private fun onClientSideHit(key: K, cacheKey: String, cacheValue: CacheValue<V>) {
+        // 命中路径上的计数在 8 线程下使吞吐下降约 15%（JMH），因此默认关闭
+        if (recordClientSideHits) {
+            stats.recordClientSideHit()
+        }
+        if (refreshAheadEnabled && ttlPolicy.isDueForRefresh(cacheValue)) {
+            refreshAsync(key, cacheKey)
+        }
+    }
+
+    /**
+     * 后台刷新：经 [SingleFlight] 与并发的未命中合并；L1 不在刷新窗口内（或 L1 是集合元素的权威副本）时只重新填充 L2，
+     * 否则回源并写回。
+     * 写回与普通回源一样受失效戳保护。刷新失败或被执行器拒绝时只告警，值照常到期。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun refreshAsync(key: K, cacheKey: String) {
+        if (closed.get() || !refreshing.add(cacheKey)) {
+            return
+        }
+        try {
+            refreshExecutor.execute {
+                try {
+                    stats.recordRefresh()
+                    loads.execute(cacheKey) { loadThrough(key, cacheKey, refresh = true) }
+                } catch (e: Exception) {
+                    log.warn(e) { "Cache Name[$cacheName] - key[$cacheKey] - Refresh ahead failed." }
+                } finally {
+                    refreshing.remove(cacheKey)
+                }
+            }
+        } catch (e: RejectedExecutionException) {
+            refreshing.remove(cacheKey)
+            log.warn(e) { "Cache Name[$cacheName] - key[$cacheKey] - Refresh ahead rejected." }
+        }
     }
 
     /**
@@ -125,8 +185,8 @@ class DefaultCoherentCache<K, V> @JvmOverloads constructor(
             val clientSideValue = clientSideCache.getCache(cacheKey)
             if (clientSideValue != null) {
                 if (!clientSideValue.isExpired) {
-                    if (recordClientSideHits) {
-                        stats.recordClientSideHit()
+                    if (clientSideHitHook) {
+                        onClientSideHit(key, cacheKey, clientSideValue)
                     }
                     resolved[key] = clientSideValue
                     continue
@@ -193,10 +253,13 @@ class DefaultCoherentCache<K, V> @JvmOverloads constructor(
     /**
      * 由 [SingleFlight] leader 执行：同一 key 在本实例内同一时刻只有一个线程访问 L1 与数据源。
      */
-    private fun loadThrough(key: K, cacheKey: String): Loaded<V> {
+    private fun loadThrough(key: K, cacheKey: String, refresh: Boolean = false): Loaded<V> {
         val stamp = stamps.current(cacheKey)
         distributedCache.getCache(cacheKey)?.let {
-            if (!it.isExpired) {
+            // 刷新时 L1 也进入刷新窗口：回源以延长 L1 的到期时间。
+            // L1 支持集合元素增删时它是权威副本，回源结果不得覆盖它，因此只从 L1 重新填充 L2。
+            val reloadFromSource = refresh && setElementsStore == null && ttlPolicy.isDueForRefresh(it)
+            if (!it.isExpired && !reloadFromSource) {
                 stats.recordDistributedHit()
                 fillClientSide(cacheKey, it, stamp)
                 return Loaded(it, stamp)

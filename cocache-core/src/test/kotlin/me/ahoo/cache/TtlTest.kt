@@ -81,6 +81,20 @@ class TtlTest {
         runCatching { TtlPolicy(ttlAmplitude = -1) }.isFailure.assert().isTrue()
         runCatching { TtlPolicy(missingTtl = 0) }.isFailure.assert().isTrue()
         runCatching { TtlPolicy(clientSideTtl = -1) }.isFailure.assert().isTrue()
+        runCatching { TtlPolicy(refreshAhead = -1) }.isFailure.assert().isTrue()
+        runCatching { TtlPolicy(ttl = 10, refreshAhead = 10) }.isFailure.assert().isTrue()
+        runCatching { TtlPolicy(clientSideTtl = 10, refreshAhead = 10) }.isFailure.assert().isTrue()
+        TtlPolicy(ttl = TtlAt.FOREVER, refreshAhead = 10).refreshAhead.assert().isEqualTo(10)
+    }
+
+    @Test
+    fun ttlPolicyIsDueForRefresh() {
+        val policy = TtlPolicy(ttl = 60, refreshAhead = 10)
+        policy.isDueForRefresh(CacheValue.of("value", TtlAt.at(5))).assert().isTrue()
+        policy.isDueForRefresh(CacheValue.of("value", TtlAt.at(30))).assert().isFalse()
+        policy.isDueForRefresh(CacheValue.missing<String>(TtlAt.at(5))).assert().isFalse()
+        policy.isDueForRefresh(CacheValue.forever("value")).assert().isFalse()
+        TtlPolicy().isDueForRefresh(CacheValue.of("value", TtlAt.at(5))).assert().isFalse()
     }
 
     @Test
