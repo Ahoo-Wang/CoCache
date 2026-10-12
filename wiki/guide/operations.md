@@ -93,6 +93,42 @@ cocache:
 
 The default and a custom sentinel do not recognize each other, so **change it on every instance at once**. The value must not be blank.
 
+## Evicting from outside CoCache {#external-eviction}
+
+Writes that bypass CoCache, such as direct SQL, batch jobs, or services in other languages, leave caches stale until `ttl`. Any process that can reach the same Redis can evict a key with the same protocol CoCache uses. The format is frozen within a major version.
+
+| Part | Value |
+|------|-------|
+| Storage key | `keyPrefix` + the converted key. The default prefix is `cocache:{cacheName}:`, so `UserCache` key `42` is `cocache:UserCache:42`. With `keyExpression`, use the expression's result. |
+| Channel | The cache name, for example `UserCache` |
+| Message | `{storageKey}@@{publisherId}`. Subscribers split on the last `@@`. `publisherId` must not contain `@@` and must differ from every instance's `clientId`, for example `cdc`. |
+
+After the source of truth commits, evict in this order:
+
+1. `DEL {storageKey}`, which removes the L1 copy.
+2. `PUBLISH {cacheName} {storageKey}@@{publisherId}`, which makes every instance invalidate its stamp and drop its L2 copy.
+
+```bash
+redis-cli DEL cocache:UserCache:42
+redis-cli PUBLISH UserCache 'cocache:UserCache:42@@cdc'
+```
+
+From a change-data-capture consumer (Debezium, Canal, or any row-change stream):
+
+```kotlin
+class UserChangeEvictor(private val redis: StringRedisTemplate) {
+    fun onUserChanged(userId: String) {   // called after the change is committed
+        val storageKey = "cocache:UserCache:$userId"
+        redis.delete(storageKey)
+        redis.convertAndSend("UserCache", "$storageKey@@cdc")
+    }
+}
+```
+
+- Delivery is at most once, like CoCache's own events. A lost message leaves peers' L2 stale until `clientSideTtl` (if set) or `ttl`.
+- Skipping the `DEL` leaves the old value in L1, and instances reload it into L2. Skipping the `PUBLISH` leaves peers' L2 copies until they expire.
+- An instance that loaded the old row just before the `DEL` can still write it back to L1. This is the same cache-aside race described in [Consistency](../architecture/consistency.md#what-is-not-guaranteed), and `ttl` bounds it.
+
 ## Sizing
 
 - **L2 memory** is about `maximumSize` × average value size, per cache and per instance. The default `maximumSize` is 10,000.
@@ -103,7 +139,7 @@ The default and a custom sentinel do not recognize each other, so **change it on
 
 **An instance keeps serving an old value.**
 1. Check that the writer evicts *after* the database commit. Evicting before the commit lets a concurrent read reload the old row.
-2. Check that every write path evicts, including batch jobs and other services that write the same data.
+2. Check that every write path evicts, including batch jobs and other services that write the same data. Paths outside CoCache can use the [eviction protocol](#external-eviction).
 3. Check `GET /actuator/cocache/{name}`: every instance must use the same cache name. The name is the channel.
 4. Check `cocache.eviction.publish.failures`. A failed publish leaves peers' L2 copies stale until `clientSideTtl` (if set) or `ttl`.
 5. The remaining source of staleness is the cache-aside race described in [Consistency](../architecture/consistency.md#what-is-not-guaranteed). `ttl` bounds it.
