@@ -236,8 +236,7 @@ abstract class SetElementsCacheSpec {
             executor.shutdownNow()
         }
         val expected = (0 until threads).flatMap { thread -> (0 until elementsPerThread).map { "t$thread-$it" } }.toSet()
-        currentCache[key].assert().isEqualTo(expected)
-        otherCache[key].assert().isEqualTo(expected)
+        assertAllInstancesConverge(key, expected)
     }
 
     @Test
@@ -261,8 +260,16 @@ abstract class SetElementsCacheSpec {
             executor.shutdownNow()
         }
         val expected = all.filterIndexed { index, _ -> index % 2 == 1 }.toSet()
-        currentCache[key].assert().isEqualTo(expected)
-        otherCache[key].assert().isEqualTo(expected)
+        assertAllInstancesConverge(key, expected)
+    }
+
+    /**
+     * L1 是集合的权威副本且原子增删，立即断言其内容（不丢更新）；各实例的 L2 依赖异步到达的失效事件，
+     * 因此轮询直到两个实例都读到该内容（跨实例效果必须带超时轮询断言）。
+     */
+    private fun assertAllInstancesConverge(key: String, expected: Set<String>) {
+        createDistributedCache().getCache(keyConverter.toStringKey(key))?.value.assert().isEqualTo(expected)
+        awaitCondition { currentCache[key] == expected && otherCache[key] == expected }
     }
 
     protected fun awaitCondition(condition: () -> Boolean) {
