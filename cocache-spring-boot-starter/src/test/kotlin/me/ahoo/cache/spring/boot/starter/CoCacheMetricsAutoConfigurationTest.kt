@@ -51,11 +51,13 @@ internal class CoCacheMetricsAutoConfigurationTest {
 
             registry.get("cocache.misses").tag(CoCacheMeterBinder.TAG_CACHE, cacheName).functionCounter()
                 .count().assert().isGreaterThanOrEqualTo(1.0)
-            registry.get("cocache.loads").tag(CoCacheMeterBinder.TAG_CACHE, cacheName).functionTimer()
-                .count().assert().isGreaterThanOrEqualTo(1.0)
+            val loads = registry.get("cocache.loads").tag(CoCacheMeterBinder.TAG_CACHE, cacheName).functionTimer()
+            loads.count().assert().isGreaterThanOrEqualTo(1.0)
+            loads.totalTime(TimeUnit.NANOSECONDS).assert().isGreaterThan(0.0)
             registry.find("cocache.hits").tag(CoCacheMeterBinder.TAG_LEVEL, "l2").meters().assert().isEmpty()
-            registry.get("cocache.hits").tag(CoCacheMeterBinder.TAG_LEVEL, "l1").functionCounters()
-                .assert().isNotEmpty()
+            registry.get("cocache.hits").tag(CoCacheMeterBinder.TAG_CACHE, cacheName)
+                .tag(CoCacheMeterBinder.TAG_LEVEL, "l1").functionCounter()
+                .count().assert().isGreaterThanOrEqualTo(0.0)
             // 监听容器异步分发订阅回调，onReset 可能在读取之后清空 L2，因此只断言非负
             registry.get("cocache.l2.size").tag(CoCacheMeterBinder.TAG_CACHE, cacheName).gauge()
                 .value().assert().isGreaterThanOrEqualTo(0.0)
@@ -67,6 +69,7 @@ internal class CoCacheMetricsAutoConfigurationTest {
                 "cocache.resets"
             ).forEach {
                 registry.get(it).tag(CoCacheMeterBinder.TAG_CACHE, cacheName).functionCounter()
+                    .count().assert().isGreaterThanOrEqualTo(0.0)
             }
             registry.get("cocache.eviction.publish.failures").functionCounter().count().assert().isZero()
         }
