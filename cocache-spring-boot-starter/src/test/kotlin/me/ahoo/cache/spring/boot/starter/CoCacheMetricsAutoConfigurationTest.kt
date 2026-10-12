@@ -66,7 +66,8 @@ internal class CoCacheMetricsAutoConfigurationTest {
                 "cocache.load.failures",
                 "cocache.stale.discards",
                 "cocache.evictions.received",
-                "cocache.resets"
+                "cocache.resets",
+                "cocache.refreshes"
             ).forEach {
                 registry.get(it).tag(CoCacheMeterBinder.TAG_CACHE, cacheName).functionCounter()
                     .count().assert().isGreaterThanOrEqualTo(0.0)

@@ -37,7 +37,7 @@ When editing the CoCache repository, follow `AGENTS.md`:
 Define one cache interface per cache domain. It extends `Cache<K, V>`, carries `@CoCache`, and is registered through `@EnableCoCache`. CoCache implements it with a proxy at runtime.
 
 ```kotlin
-// ttl / ttlAmplitude / missingTtl / clientSideTtl are seconds; defaults 3600 / 60 / 60 / 0 (unlimited)
+// ttl / ttlAmplitude / missingTtl / clientSideTtl / refreshAhead are seconds; defaults 3600 / 60 / 60 / 0 (unlimited) / 0 (off)
 @CoCache(keyPrefix = "user:", ttl = 120)
 @CaffeineCache(maximumSize = 1_000_000, expireAfterAccess = 120)   // optional; L2 is always bounded
 interface UserCache : Cache<String, User>
@@ -88,7 +88,7 @@ class MyDistributedCacheTest : DistributedCacheSpec<String>() {
 | `JoinCache<K1,V1,K2,V2>` | cocache-api | Composed cache |
 | `SetElementsCache<K,E>` / `SetElementsStore<E>` | cocache-api | Atomic `addElements` / `removeElements` on a `Set` cache. Declare it next to `Cache<K, Set<E>>`. L1 is authoritative and the `CacheSource` is never consulted |
 | `CoherentCache<K,V>` / `DefaultCoherentCache` | cocache-core | Two-level orchestration |
-| `TtlPolicy` | cocache-core | `ttl`, `ttlAmplitude`, `missingTtl`, `clientSideTtl` |
+| `TtlPolicy` | cocache-core | `ttl`, `ttlAmplitude`, `missingTtl`, `clientSideTtl`, `refreshAhead` |
 | `CaffeineClientSideCache` / `MapClientSideCache` | cocache-core | L2 implementations |
 | `InMemoryDistributedCache` | cocache-core | In-memory L1 (tests) |
 | `LocalCacheEvictedEventBus` / `NoOpCacheEvictedEventBus` | cocache-core | In-process / disabled buses |

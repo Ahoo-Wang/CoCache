@@ -44,6 +44,7 @@ classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入它）
 | `cocache.stale.discards` | counter | 加载期间 key 被失效，加载结果被放弃或撤销的次数 |
 | `cocache.evictions.received` | counter | 收到其它实例失效事件的次数 |
 | `cocache.resets` | counter | 失效通道（重新）订阅并清空 L2 的次数 |
+| `cocache.refreshes` | counter | 提前刷新的执行次数，含失败；其中的回源同时计入 `cocache.loads` |
 | `cocache.l2.size` | gauge | 本实例 L2 的条目数 |
 | `cocache.eviction.publish.failures` | counter | 发布失败的失效事件（无 `cache` 标签） |
 

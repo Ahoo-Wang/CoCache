@@ -14,18 +14,22 @@
 package me.ahoo.cache.consistency
 
 import me.ahoo.cache.api.consistency.CacheEvictedEventBus
+import me.ahoo.cache.concurrent.RefreshExecutors
+import java.util.concurrent.Executor
 
 /**
  * 创建 [DefaultCoherentCache] 并注册到失效事件通道。
  *
  * @param recordClientSideHits 是否统计 L2 命中，见 [CoherentCacheStats.clientSideHitsRecorded]
+ * @param refreshExecutor 执行提前刷新（`refreshAhead`）的执行器
  */
 class DefaultCoherentCacheFactory @JvmOverloads constructor(
     private val cacheEvictedEventBus: CacheEvictedEventBus,
-    private val recordClientSideHits: Boolean = false
+    private val recordClientSideHits: Boolean = false,
+    private val refreshExecutor: Executor = RefreshExecutors.DEFAULT
 ) : CoherentCacheFactory {
     override fun <K, V> create(configuration: CoherentCacheConfiguration<K, V>): CoherentCache<K, V> {
-        return DefaultCoherentCache(configuration, cacheEvictedEventBus, recordClientSideHits).also {
+        return DefaultCoherentCache(configuration, cacheEvictedEventBus, recordClientSideHits, refreshExecutor).also {
             cacheEvictedEventBus.register(it)
         }
     }

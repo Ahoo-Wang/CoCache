@@ -77,6 +77,7 @@ class CoCacheMeterBinder(
         counter(registry, "cocache.resets", "Invalidation channel resets that cleared L2", tags, stats) {
             it.resetCount
         }
+        counter(registry, "cocache.refreshes", "Refresh-ahead executions", tags, stats) { it.refreshCount }
         FunctionTimer.builder(
             "cocache.loads",
             stats,

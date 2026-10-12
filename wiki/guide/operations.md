@@ -44,6 +44,7 @@ With Micrometer on the classpath (`spring-boot-starter-actuator` brings it), the
 | `cocache.stale.discards` | counter | Loaded values discarded or undone because the key was invalidated during the load |
 | `cocache.evictions.received` | counter | Eviction events received from other instances |
 | `cocache.resets` | counter | Eviction channel (re)subscriptions that cleared L2 |
+| `cocache.refreshes` | counter | Refresh-ahead executions, including failures. Their source loads also count in `cocache.loads` |
 | `cocache.l2.size` | gauge | Entries in this instance's L2 |
 | `cocache.eviction.publish.failures` | counter | Eviction events that failed to publish (no `cache` tag) |
 

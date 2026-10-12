@@ -43,7 +43,8 @@ object CoCacheMetadataParser {
                 ttl = annotation.ttl,
                 ttlAmplitude = annotation.ttlAmplitude,
                 missingTtl = annotation.missingTtl,
-                clientSideTtl = annotation.clientSideTtl
+                clientSideTtl = annotation.clientSideTtl,
+                refreshAhead = annotation.refreshAhead
             ),
             keyType = cacheType.typeArgument(0),
             valueType = cacheType.typeArgument(1)
