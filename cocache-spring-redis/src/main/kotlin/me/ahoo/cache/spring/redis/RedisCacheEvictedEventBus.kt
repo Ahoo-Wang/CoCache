@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.LongAdder
 class RedisCacheEvictedEventBus(
     private val redisTemplate: StringRedisTemplate,
     private val listenerContainer: RedisMessageListenerContainer
-) : CacheEvictedEventBus {
+) : CacheEvictedEventBus, EvictionPublishStats {
     companion object {
         private val log = KotlinLogging.logger {}
     }
@@ -50,7 +50,7 @@ class RedisCacheEvictedEventBus(
     /**
      * 发布失败次数：失败的事件不会重试，其它实例的 L2 副本只能由 TTL 或通道重置兜底。
      */
-    val publishFailureCount: Long
+    override val publishFailureCount: Long
         get() = publishFailures.sum()
 
     override fun publish(event: CacheEvictedEvent) {

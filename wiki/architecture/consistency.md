@@ -69,6 +69,8 @@ The default channel is Redis Pub/Sub:
 - **At-most-once delivery.** A failed publish is logged and dropped, and messages sent while an instance is disconnected are lost.
 - **Reset on (re)subscribe.** Each time the listener container (re)subscribes, it calls `onReset`, and each subscribed cache clears its L2. This bounds staleness after any lost event. Registering a new listener on a channel also resubscribes it, which harmlessly resets that channel's existing listeners.
 
+On Redis 7+ you can switch to **Sharded Pub/Sub** with `cocache.redis.eviction-channel=sharded`, which needs Lettuce. In Redis Cluster, a plain `PUBLISH` reaches every node, while `SPUBLISH` stays within the shard that owns the channel's slot, so the cost doesn't grow with the cluster. Channel names and messages are the same, and the reset-on-resubscribe guarantee holds. The two channel types don't see each other's messages, so **switch every instance at once**.
+
 ## What is guaranteed
 
 | Property | Guarantee |

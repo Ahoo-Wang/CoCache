@@ -21,6 +21,8 @@ dependencies {
     api("tools.jackson.core:jackson-databind")
     api("tools.jackson.module:jackson-module-kotlin")
     api("org.springframework.data:spring-data-redis")
+    // Sharded Pub/Sub 通道直接使用 Lettuce（Spring Data Redis 尚不支持 SSUBSCRIBE），由使用方提供
+    compileOnly("io.lettuce:lettuce-core")
     testImplementation(project(":cocache-test"))
     testImplementation("org.springframework.boot:spring-boot-autoconfigure")
     testImplementation("io.lettuce:lettuce-core")
