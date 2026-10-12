@@ -5,7 +5,20 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v5.1.0（当前版本）
+## v5.1.1（当前版本）
+
+**模块组：** `me.ahoo.cocache` · 补丁版本，与 5.1.0 向后兼容，Redis 线格式与失效消息格式不变。
+
+- **clientId 在实例间保证唯一。** `HostClientIdGenerator` 此前以 `{计数器}:{pid}@{host}` 作为 clientId，但 host + pid 并不唯一：同一宿主机上以 host 网络模式运行的两个容器 IP 相同、pid 都可能为 1。订阅方会忽略 publisherId 等于自身 clientId 的失效事件，因此这两个实例会互相丢弃对方的失效，L2 中的旧值要等到 TTL 才过期。clientId 现为 `{计数器}:{pid}:{随机后缀}@{host}`；`ClientIdGenerator` 的契约补充了“必须在所有实例间唯一”。
+- 依赖：CosId 3.4.1，fluent-assert 1.2.1。
+
+### Gradle 配置
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.1.1")
+```
+
+## v5.1.0
 
 **模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。Redis 线格式与失效消息格式不变，5.0.x 与 5.1 实例可共享 Redis。
 

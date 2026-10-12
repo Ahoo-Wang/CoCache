@@ -15,14 +15,14 @@ description: 把 CoCache 接入 Spring Boot 应用：依赖、缓存接口、数
 
 ```kotlin [Gradle (Kotlin)]
 dependencies {
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.1.0")
+    implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.1.1")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
 }
 ```
 
 ```groovy [Gradle (Groovy)]
 dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:5.1.0'
+    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:5.1.1'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 }
 ```
@@ -31,7 +31,7 @@ dependencies {
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>5.1.0</version>
+    <version>5.1.1</version>
 </dependency>
 <dependency>
     <groupId>org.springframework.boot</groupId>

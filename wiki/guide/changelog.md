@@ -5,7 +5,20 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v5.1.0 (Current)
+## v5.1.1 (Current)
+
+**Module Group:** `me.ahoo.cocache` · Patch release, backward compatible with 5.1.0. Redis wire format and eviction messages are unchanged.
+
+- **Client ids are unique across instances.** `HostClientIdGenerator` used `{counter}:{pid}@{host}` as the clientId, but host + pid is not unique: two containers on the same machine with host networking share an IP and can both run as pid 1. Subscribers ignore eviction events whose publisherId equals their own clientId, so such instances dropped each other's evictions and served stale L2 copies until TTL. The clientId is now `{counter}:{pid}:{random suffix}@{host}`, and the `ClientIdGenerator` contract now requires ids to be unique across instances.
+- Dependencies: CosId 3.4.1, fluent-assert 1.2.1.
+
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.1.1")
+```
+
+## v5.1.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive. Redis wire format and eviction messages are unchanged, so 5.0.x and 5.1 instances can share Redis.
 
