@@ -27,8 +27,13 @@ object EvictedEvents {
      * the LAST "@@" keeps the key intact even when the key itself contains "@@".
      */
     fun fromMessage(message: Message): CacheEvictedEvent {
-        val cacheName = message.channel.decodeToString()
-        val msgBody = message.body.decodeToString()
+        return fromMessage(message.channel.decodeToString(), message.body.decodeToString())
+    }
+
+    /**
+     * Decode a channel name and message body into an eviction event.
+     */
+    fun fromMessage(cacheName: String, msgBody: String): CacheEvictedEvent {
         val delimiterIndex = msgBody.lastIndexOf(DELIMITER)
         require(delimiterIndex >= 0) { "message illegal:[$msgBody]." }
         val key = msgBody.substring(0, delimiterIndex)

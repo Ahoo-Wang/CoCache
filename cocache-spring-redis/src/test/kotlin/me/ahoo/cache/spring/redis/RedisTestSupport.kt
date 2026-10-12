@@ -69,7 +69,18 @@ class RedisTestSupport : AutoCloseable {
         return RedisCacheEvictedEventBus(redisTemplate, listenerContainer)
     }
 
+    private val shardedEventBuses = mutableListOf<ShardedRedisCacheEvictedEventBus>()
+
+    /**
+     * Sharded Pub/Sub 通道（使用连接工厂底层的 Lettuce 客户端，单机或集群），随 [close] 关闭。
+     */
+    fun newShardedEventBus(): ShardedRedisCacheEvictedEventBus {
+        return ShardedRedisCacheEvictedEventBus.create(requireNotNull(connectionFactory.nativeClient))
+            .also { shardedEventBuses.add(it) }
+    }
+
     override fun close() {
+        shardedEventBuses.forEach { it.close() }
         listenerContainer.destroy()
         connectionFactory.destroy()
     }

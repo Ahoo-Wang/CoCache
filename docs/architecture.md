@@ -138,6 +138,15 @@ getCaches(keys)
   - 通知经容器 TaskExecutor 异步分发；集成测试给容器配置 `SyncTaskExecutor`，使 `register()` 返回时重置已完成。
 - 订阅者忽略 `publisherId == clientId` 的自发事件（本地写已直接处理）。
 
+### 6.1 Sharded Pub/Sub（5.4，可选）
+
+`cocache.redis.eviction-channel=sharded` 时使用 `ShardedRedisCacheEvictedEventBus`（SPUBLISH / SSUBSCRIBE，Redis 7+）。Redis Cluster 中普通 PUBLISH 广播到所有节点，Sharded Pub/Sub 只在频道所属 slot 的分片内传播。
+
+- 频道名与消息格式相同，但 SPUBLISH 与 PUBLISH 互不相通：**全集群必须同时切换**。
+- 直接使用 Lettuce（Spring Data Redis 不支持 Sharded Pub/Sub）：集群用 `RedisClusterClient.connectPubSub`（订阅按 slot 路由，开启节点消息传播），单机用 `RedisClient.connectPubSub`。
+- 重置：`register()` 在 SSUBSCRIBE 确认后直接调用 `onReset`（同步，测试不会被迟到的重置干扰）；此后同一频道再收到 `ssubscribed` 确认即为断线重连后的重新订阅，重置该频道全部订阅者。断线兜底与 §6 等价。
+- 集成测试在单机与 Redis Cluster（CI · Test (Redis Cluster)）上运行，包括断开所有 Pub/Sub 连接后的重新订阅与重置。
+
 ## 7. 默认值
 
 | 配置 | 默认 | 理由 |

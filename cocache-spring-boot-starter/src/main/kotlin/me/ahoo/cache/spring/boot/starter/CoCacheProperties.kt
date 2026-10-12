@@ -19,6 +19,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 import java.time.Duration
 
 /**
+ * 失效通道类型，见 [CoCacheProperties.Redis.evictionChannel]。
+ */
+enum class EvictionChannel {
+    PUBSUB,
+    SHARDED
+}
+
+/**
  * CoCache Properties .
  *
  * @author ahoo wang
@@ -61,6 +69,11 @@ data class CoCacheProperties(
          * 自定义值与默认值互不识别，需全集群同时切换，且不得与任何合法业务序列化值相等。
          */
         val missingGuardSentinel: String = AbstractCodecExecutor.DEFAULT_MISSING_GUARD_SENTINEL,
+        /**
+         * 失效通道：`pubsub`（默认，PUBLISH/SUBSCRIBE）或 `sharded`（SPUBLISH/SSUBSCRIBE，Redis 7+，需要 Lettuce）。
+         * 两者互不相通，需全集群同时切换。
+         */
+        val evictionChannel: EvictionChannel = EvictionChannel.PUBSUB,
     ) {
         init {
             require(missingGuardSentinel.isNotBlank()) { "cocache.redis.missing-guard-sentinel must not be blank." }

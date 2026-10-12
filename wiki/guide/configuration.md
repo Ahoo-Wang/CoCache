@@ -54,9 +54,10 @@ You don't need `expireAfterAccess` for correctness. Every entry carries its own 
 | `cocache.load.max-concurrent` | `0` (unlimited) | Maximum concurrent source loads per cache and instance. Protects the source while Redis is down. See [Operations](./operations.md#redis-failures). |
 | `cocache.load.acquire-timeout` | `1s` | How long a load waits for a permit before failing with `SourceLoadRejectedException` |
 | `cocache.metrics.client-side-hits` | `false` | Count L2 hits as `cocache.hits{level=l2}`. Off by default because the counter costs the L2 hit path about 8% of its throughput on one thread and 15% on eight. See [Operations](./operations.md#metrics). |
+| `cocache.redis.eviction-channel` | `pubsub` | `sharded` uses Redis 7+ Sharded Pub/Sub (`SPUBLISH`/`SSUBSCRIBE`, requires Lettuce), which stays within one shard in Redis Cluster. The two channels don't interoperate, so switch every instance at once. See [Consistency](../architecture/consistency.md#eviction-channel). |
 | `cocache.redis.missing-guard-sentinel` | `_nil_` | The Redis value that marks a negative entry. See [Operations](./operations.md#the-negative-cache-sentinel). |
 
-The two `cocache.redis.*` properties apply only to the default Redis caches. A custom `{name}.DistributedCache` bean sets its own policy.
+`cocache.redis.strict-failure` and `cocache.redis.missing-guard-sentinel` apply only to the default Redis caches. A custom `{name}.DistributedCache` bean sets its own policy.
 
 ## Per-cache components
 

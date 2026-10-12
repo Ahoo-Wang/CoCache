@@ -23,7 +23,7 @@ import me.ahoo.cache.CacheFactory
 import me.ahoo.cache.api.consistency.CacheEvictedEventBus
 import me.ahoo.cache.consistency.CoherentCache
 import me.ahoo.cache.consistency.CoherentCacheStats
-import me.ahoo.cache.spring.redis.RedisCacheEvictedEventBus
+import me.ahoo.cache.spring.redis.EvictionPublishStats
 import java.util.concurrent.TimeUnit
 
 /**
@@ -45,7 +45,7 @@ class CoCacheMeterBinder(
             .filterIsInstance<CoherentCache<*, *>>()
             .distinctBy { it.cacheName }
             .forEach { bindCache(registry, it) }
-        (cacheEvictedEventBus as? RedisCacheEvictedEventBus)?.let { bus ->
+        (cacheEvictedEventBus as? EvictionPublishStats)?.let { bus ->
             FunctionCounter.builder("cocache.eviction.publish.failures", bus) { it.publishFailureCount.toDouble() }
                 .description("Eviction events that failed to publish")
                 .register(registry)
