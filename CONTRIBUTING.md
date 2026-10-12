@@ -40,6 +40,7 @@ code. It is the normative design and lists the invariants that every change must
 | Unit tests | JUnit 5, MockK, fluent-assert, shared TCK specs in `cocache-test` | CI · Test & Coverage |
 | Integration tests | Real Redis service container (`cocache-spring-redis`, `cocache-spring-boot-starter`) | CI · Test & Coverage |
 | Runtime compatibility | Artifacts compile for JDK 17; the full suite also runs on JDK 25 (`-PtestJavaVersion=25`) | CI · Test (JDK 25) |
+| Redis Cluster | The Redis, Spring Cache, and starter tests also run on a 3-master Redis Cluster (`.github/scripts/start-redis-cluster.sh`) | CI · Test (Redis Cluster) |
 | Coverage | JaCoCo aggregate gate (lines ≥ 95%, branches ≥ 90%; TCK specs excluded) and Codecov status (project ≥ 95%, patch ≥ 85%) | CI · Test & Coverage |
 | Performance (on demand) | JMH `RedisCacheBenchmark` (`./gradlew :cocache-spring-redis:jmh`) | Run locally when touching the hit path |
 

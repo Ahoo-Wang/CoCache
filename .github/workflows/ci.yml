@@ -15,6 +15,7 @@
 # - Static Analysis：actionlint + Detekt（全模块，SARIF 上传 code scanning）+ 许可证头检查
 # - Test & Coverage：真实 Redis 下运行全部模块的 check（测试、dokka、JMH 编译、覆盖率门禁），并上传 Codecov
 # - Test (JDK 25)：产物仍按 JDK 17 编译，测试运行在最新 LTS 上，验证运行时兼容性
+# - Test (Redis Cluster)：Redis 相关模块的测试在 3 主 3 从的 Redis Cluster 上运行（slot 路由、pipeline、Pub/Sub）
 name: CI
 on:
   push:
@@ -151,5 +152,46 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-jdk25
+          path: '**/build/reports/tests/'
+          retention-days: 7
+
+  test-redis-cluster:
+    name: Test (Redis Cluster)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Start Redis Cluster
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq redis-server
+          sudo systemctl stop redis-server || true
+          redis-server --version
+          .github/scripts/start-redis-cluster.sh "$RUNNER_TEMP/redis-cluster"
+
+      # RedisTestSupport 与 starter 测试都读取该变量，改为连接集群
+      - name: Test Redis modules on Redis Cluster
+        env:
+          SPRING_DATA_REDIS_CLUSTER_NODES: 127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002
+        run: >-
+          ./gradlew --continue
+          :cocache-spring-redis:test
+          :cocache-spring-cache:test
+          :cocache-spring-boot-starter:test
+
+      - name: Upload test reports
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-redis-cluster
           path: '**/build/reports/tests/'
           retention-days: 7

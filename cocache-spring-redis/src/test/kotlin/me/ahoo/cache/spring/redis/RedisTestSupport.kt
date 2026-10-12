@@ -14,19 +14,41 @@
 package me.ahoo.cache.spring.redis
 
 import org.springframework.core.task.SyncTaskExecutor
+import org.springframework.data.redis.connection.RedisClusterConfiguration
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory
 import org.springframework.data.redis.core.StringRedisTemplate
 import org.springframework.data.redis.listener.RedisMessageListenerContainer
 
 /**
- * 集成测试的 Redis 连接（localhost:6379）。
+ * 集成测试的 Redis 连接：默认 localhost:6379；设置环境变量 `SPRING_DATA_REDIS_CLUSTER_NODES`
+ * （如 `127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002`）时连接 Redis Cluster，与 starter 测试一致。
  */
 class RedisTestSupport : AutoCloseable {
-    val connectionFactory = LettuceConnectionFactory(RedisStandaloneConfiguration()).apply {
-        afterPropertiesSet()
-        start()
+    companion object {
+        private const val CLUSTER_NODES_ENV = "SPRING_DATA_REDIS_CLUSTER_NODES"
+
+        val clusterNodes: List<String>? = System.getenv(CLUSTER_NODES_ENV)
+            ?.split(',')
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.takeIf { it.isNotEmpty() }
+
+        fun newConnectionFactory(): LettuceConnectionFactory {
+            val nodes = clusterNodes
+            val factory = if (nodes == null) {
+                LettuceConnectionFactory(RedisStandaloneConfiguration())
+            } else {
+                LettuceConnectionFactory(RedisClusterConfiguration(nodes))
+            }
+            return factory.apply {
+                afterPropertiesSet()
+                start()
+            }
+        }
     }
+
+    val connectionFactory = newConnectionFactory()
     val redisTemplate = StringRedisTemplate(connectionFactory).apply {
         afterPropertiesSet()
     }
