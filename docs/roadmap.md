@@ -41,7 +41,7 @@
 | 外部失效接入 | G1 | 公开 `key@@publisherId` 协议，提供 CDC（Debezium/Canal）接入示例 |
 | RESP3 client tracking | G2 | 仅预研，产出结论文档，决定是否作为 6.0 通道 |
 
-同期产出 6.0 设计 RFC：L1 版本号 / lease 的数据结构、墓碑 TTL、迁移方案。
+同期产出 6.0 设计 RFC：L1 版本号 / lease 的数据结构、墓碑 TTL、迁移方案（[RFC 0001](rfc/0001-l1-write-back-lease.md)）。
 
 ## v6.0：L1 写回保护
 
