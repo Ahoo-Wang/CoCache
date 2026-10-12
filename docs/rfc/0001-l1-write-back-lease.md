@@ -138,9 +138,11 @@ Hash/Set codec 下 5.x 会把 lease 标记当作业务值返回。因此：
 - architecture.md 删除“已知的固有窗口”，G1 的实现手段不再只依赖 TTL。
 - 升级指南（changelog 迁移表）写明 §5 的两步升级。
 
-## 9. 待定问题
+## 9. 已定事项
 
-1. `leaseTtl` / `leaseWait` 的默认值与配置位置（`@CoCache` 还是全局属性）。
-2. 他人持有 lease 时，默认“轮询后回源不写回”是否合适，还是直接回源。
-3. 是否在 6.0 把默认 `ttl` 从 3600 s 调长（lease 关闭窗口后，TTL 只需覆盖事件丢失）。
-4. `strictFailure = false` 下条件写失败（Redis 故障）的降级：按放弃写回处理。
+维护者于 2026-10-12 确认：
+
+1. `leaseTtl` 默认 10 s，`leaseWait` 默认 200 ms，均为全局属性（`cocache.redis.lease-ttl`、`cocache.redis.lease-wait`）；需要时再考虑按缓存覆盖。
+2. 他人持有 lease 时：轮询 L1 至多 `leaseWait`，超时后自行回源但不写回 L1（§3.4）。
+3. 6.0 不调整默认 `ttl`（3600 s）。lease 上线后用指标（`cocache.stale.discards` 与 lease 写回失败数）评估，再决定是否调长。
+4. `strictFailure = false` 下条件写失败（Redis 故障）按放弃写回处理，不影响返回值。
