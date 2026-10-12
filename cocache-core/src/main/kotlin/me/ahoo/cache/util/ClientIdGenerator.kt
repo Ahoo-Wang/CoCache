@@ -25,6 +25,10 @@ import java.util.concurrent.atomic.AtomicLong
  * `me.ahoo.cache.spring.redis.codec.EvictedEvents`), whose wire format splits the
  * body on the last "@@"; an id containing "@@" would break that split and
  * corrupt cross-instance eviction. The built-in generators below satisfy this.
+ *
+ * Contract: the generated id MUST be unique across all instances. Subscribers
+ * ignore events whose publisherId equals their own clientId, so two instances
+ * sharing an id silently drop each other's evictions.
  */
 interface ClientIdGenerator {
     fun generate(): String
@@ -48,6 +52,8 @@ class HostClientIdGenerator(private val hostProvider: () -> String) : ClientIdGe
     companion object {
         @JvmStatic
         val DEFAULT = HostClientIdGenerator { LocalHostAddressSupplier.INSTANCE.hostAddress }
+
+        private const val NONCE_LENGTH = 8
     }
 
     private val counter = AtomicLong()
@@ -55,7 +61,13 @@ class HostClientIdGenerator(private val hostProvider: () -> String) : ClientIdGe
         hostProvider()
     }
 
+    /**
+     * 每个生成器实例的随机后缀。host + pid 并不唯一（例如 host 网络模式下同机的两个容器 pid 都为 1），
+     * clientId 相同的实例会把对方的失效事件当作自发事件忽略，因此需要随机后缀保证唯一。
+     */
+    private val nonce: String = java.util.UUID.randomUUID().toString().substring(0, NONCE_LENGTH)
+
     override fun generate(): String {
-        return "${counter.getAndIncrement()}:${ProcessId.CURRENT.processId}@$host"
+        return "${counter.getAndIncrement()}:${ProcessId.CURRENT.processId}:$nonce@$host"
     }
 }
