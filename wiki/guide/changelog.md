@@ -5,7 +5,49 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v5.3.0 (Current)
+## v5.4.0 (Current)
+
+**Module Group:** `me.ahoo.cocache` · Minor release, additive. The default eviction channel and the Redis wire format are unchanged, so 5.3.x and 5.4 instances can share Redis. The new channel is off by default.
+
+### Sharded Pub/Sub eviction channel
+
+```yaml
+cocache:
+  redis:
+    eviction-channel: sharded   # default: pubsub
+```
+
+In Redis Cluster, a plain `PUBLISH` reaches every node. `SPUBLISH`/`SSUBSCRIBE` (Redis 7+) stays within the shard that owns the channel's slot, so the cost doesn't grow with the cluster.
+
+- It requires Lettuce. `ShardedRedisCacheEvictedEventBus` uses Lettuce directly, because Spring Data Redis doesn't support Sharded Pub/Sub yet.
+- Channel names and messages are unchanged. Resubscribing after a reconnect still clears L2.
+- **The two channels don't interoperate, so switch every instance at once.**
+- Failed publishes on either channel count in `cocache.eviction.publish.failures` (new interface `EvictionPublishStats`).
+
+### Evicting from outside CoCache
+
+The [operations guide](./operations.md#external-eviction) now documents the eviction protocol: the storage key, the channel, and the `key@@publisherId` message. It includes `redis-cli` and CDC-consumer examples. A writer that bypasses CoCache runs `DEL` on the storage key, then `PUBLISH`.
+
+### Redis Cluster tests
+
+A new CI job, "Test (Redis Cluster)", also runs the Redis, Spring Cache, and starter tests on a 3-master, 3-replica cluster. Start the same cluster locally with `.github/scripts/start-redis-cluster.sh`.
+
+### TCK
+
+The two concurrent cases in `SetElementsCacheSpec` now assert the L1 contents (the authoritative copy) immediately, and poll the per-instance reads with a timeout. Before this change they could fail intermittently where eviction events are slower, such as on Redis Cluster.
+
+### Design documents
+
+- [RFC 0001](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0001-l1-write-back-lease.md): L1 write-back leases for 6.0, which close the cross-instance stale write-back window.
+- [RFC 0002](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0002-resp3-client-tracking.md): the RESP3 client tracking spike result (not adopted for 6.0).
+
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.4.0")
+```
+
+## v5.3.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive (every new interface method has a default). Redis wire format and eviction messages are unchanged, so 5.2.x and 5.3 instances can share Redis. New behaviors are off by default.
 

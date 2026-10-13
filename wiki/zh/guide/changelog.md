@@ -5,7 +5,49 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v5.3.0（当前版本）
+## v5.4.0（当前版本）
+
+**模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。默认失效通道与 Redis 线格式不变，5.3.x 与 5.4 实例可共享 Redis。新通道默认关闭。
+
+### Sharded Pub/Sub 失效通道
+
+```yaml
+cocache:
+  redis:
+    eviction-channel: sharded   # 默认 pubsub
+```
+
+Redis Cluster 中普通 `PUBLISH` 会到达每个节点；`SPUBLISH`/`SSUBSCRIBE`（Redis 7+）只在频道所属 slot 的分片内传播，开销不随集群规模增长。
+
+- 需要 Lettuce（`ShardedRedisCacheEvictedEventBus` 直接使用 Lettuce，Spring Data Redis 尚不支持 Sharded Pub/Sub）。
+- 频道名与消息格式不变；断线重连后重新订阅同样会清空 L2。
+- **两种通道互不相通，所有实例必须同时切换。**
+- 两种通道的发布失败都计入 `cocache.eviction.publish.failures`（新接口 `EvictionPublishStats`）。
+
+### 从 CoCache 之外淘汰
+
+[运维指南](./operations.md#external-eviction)公开了失效协议（存储 key、频道、`key@@publisherId` 消息），并给出 `redis-cli` 与 CDC 消费者示例：绕过 CoCache 的写入方先 `DEL` 存储 key，再 `PUBLISH`。
+
+### Redis Cluster 测试
+
+CI 新增 “Test (Redis Cluster)” 任务，Redis、Spring Cache 与 starter 的测试同时在 3 主 3 从的集群上运行。本地可用 `.github/scripts/start-redis-cluster.sh` 启动同样的集群。
+
+### TCK
+
+`SetElementsCacheSpec` 的两个并发用例改为：立即断言 L1（权威副本）内容，各实例的读取以带超时的轮询断言。此前它们在失效事件较慢的环境（如 Redis Cluster）下会偶发失败。
+
+### 设计文档
+
+- [RFC 0001](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0001-l1-write-back-lease.md)：6.0 的 L1 写回 lease，关闭跨实例的旧值写回窗口。
+- [RFC 0002](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0002-resp3-client-tracking.md)：RESP3 client tracking 预研结论（6.0 不采用）。
+
+### Gradle 配置
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.4.0")
+```
+
+## v5.3.0
 
 **模块组：** `me.ahoo.cocache` · 次版本，仅新增 API（新接口方法都带默认实现）。Redis 线格式与失效消息格式不变，5.2.x 与 5.3 实例可共享 Redis。新行为默认关闭。
 
