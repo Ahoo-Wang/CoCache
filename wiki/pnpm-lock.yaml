@@ -171,14 +171,14 @@ importers:
   .:
     devDependencies:
       mermaid:
-        specifier: ^12.1.0
-        version: 12.1.0
+        specifier: ^12.2.0
+        version: 12.2.0
       vitepress:
         specifier: ^1.6.4
         version: 1.6.4(@algolia/client-search@5.59.0)(postcss@8.5.29)(search-insights@2.17.3)
       vitepress-mermaid-renderer:
         specifier: ^1.2.2
-        version: 1.2.2(mermaid@12.1.0)(vue@3.5.43)
+        version: 1.2.2(mermaid@12.2.0)(vue@3.5.43)
 
 packages:
 
@@ -1195,8 +1195,8 @@ packages:
   mdast-util-to-hast@13.2.1:
     resolution: {integrity: sha512-cctsq2wp5vTsLIcaymblUriiTcZd0CwWtCbLvrOzYCDZoWyMNV8sZ7krj09FSnsiJi3WVsHLM4k6Dq/yaPyCXA==}
 
-  mermaid@12.1.0:
-    resolution: {integrity: sha512-wlVCp+8eTupfCeeFvoZNNiTuHrvag0P2jz/ILgb/f/6jkVokUefOcujefi8qUe/j2asHiSePncVsz/xzzA80LQ==}
+  mermaid@12.2.0:
+    resolution: {integrity: sha512-w7nr/SFrLO7BaVTs3dQTvYSV6nYSBj0Yy9DjBhsIJtAcHqRzXSq4Pg32ujHZ/AdWsAMNEvvhbm5dt9E2tOiHzw==}
     engines: {node: '>=22.12.0'}
 
   micromark-util-character@2.1.1:
@@ -2449,7 +2449,7 @@ snapshots:
       unist-util-visit: 5.1.0
       vfile: 6.0.3
 
-  mermaid@12.1.0:
+  mermaid@12.2.0:
     dependencies:
       '@braintree/sanitize-url': 7.1.2
       '@iconify/utils': 3.1.7
@@ -2677,9 +2677,9 @@ snapshots:
     optionalDependencies:
       fsevents: 2.3.3
 
-  vitepress-mermaid-renderer@1.2.2(mermaid@12.1.0)(vue@3.5.43):
+  vitepress-mermaid-renderer@1.2.2(mermaid@12.2.0)(vue@3.5.43):
     dependencies:
-      mermaid: 12.1.0
+      mermaid: 12.2.0
       vue: 3.5.43
 
   vitepress@1.6.4(@algolia/client-search@5.59.0)(postcss@8.5.29)(search-insights@2.17.3):

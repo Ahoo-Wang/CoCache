@@ -12,7 +12,7 @@
   },
   "packageManager": "pnpm@12.11.2",
   "devDependencies": {
-    "mermaid": "^12.1.0",
+    "mermaid": "^12.2.0",
     "vitepress": "^1.6.4",
     "vitepress-mermaid-renderer": "^1.2.2"
   }
