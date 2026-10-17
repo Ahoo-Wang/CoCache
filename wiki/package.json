@@ -10,7 +10,7 @@
     "fix:mermaid": "node scripts/fix-mermaid.mjs",
     "check:mermaid": "node scripts/check-mermaid.mjs"
   },
-  "packageManager": "pnpm@12.11.2",
+  "packageManager": "pnpm@12.14.0",
   "devDependencies": {
     "mermaid": "^12.1.0",
     "vitepress": "^1.6.4",
