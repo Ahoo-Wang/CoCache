@@ -49,7 +49,7 @@
 | G2 | 失效不被吞没 | 对每一层：读取开始于某次失效之前的填充，**永远不会**在该失效之后变得可见（同进程、跨进程都成立） |
 | G3 | 命中路径便宜 | L2 命中（**经过用户实际调用的代理**）与 5.4 相比不退化；L1 命中一次往返；失效、写入各一次往返；同一 key 全集群并发未命中时只回源一次 |
 
-非目标：线性一致读；把 L1 当作主存储（`SetCache` 的权威模式除外，见 §4.8）；异步 API（同步 API 对虚拟线程友好，内部 I/O 用 Lettuce 异步实现）。
+非目标：线性一致读；把 L1 当作主存储（`SetCache` 的权威模式除外，见 §4.8）；api 与 core 中的异步 API 和协程（同步 API 对虚拟线程友好，内部 I/O 用 Lettuce 异步实现；预留的扩展方式见 §8 Q8）。
 
 ---
 
@@ -353,6 +353,8 @@ loadThrough(key, k):
 
 L1 读失败（Redis 故障）时：按未命中回源，不写 L1，L2 以 `degradedLocalMaxAge`（默认 10 s）限龄。
 
+**未命中路径在内部用 Future 实现**：Lettuce 异步命令、SingleFlight 的 `CompletableFuture`、批量合并都返回 Future，同步 API 只在最外层 `join`。L2 命中不经过 Future。这样以后增加异步 API 时，一致性协议不需要再实现一遍（§8 Q8）。
+
 ### 4.6 写路径
 
 | 操作 | 步骤 | 往返 |
@@ -526,6 +528,7 @@ val users: CoCache<String, User> = runtime.create(
 | Q5 | 提前刷新令牌的过期 | 令牌中编码签发时间（服务端 `TIME`），超过 `lease.ttl` 可以被抢占；不使用字段级 TTL（HEXPIRE 需要 7.4+） |
 | Q6 | 故障切换丢写 | Redis 异步复制在故障切换时可能丢失 `DEL` 或 fill。这属于协议之外的问题，由 TTL 兜底（A4）；切换会导致订阅重连，触发 `onReset` 清空 L2 |
 | Q7 | JDK 基线 | 维持 17（Spring Boot 4 的下限）。代码对虚拟线程友好：I/O 路径上没有 `synchronized` |
+| Q8 | 是否引入协程 / 异步 API | **7.0 不引入**。L2 命中是纳秒级、没有 I/O，挂起函数只会增加成本（G3）；api 必须零依赖，Java 用户无法自然使用挂起函数；同步与挂起两套 API 会让协议证明和 TCK 都翻倍；阻塞 loader 的高并发由虚拟线程解决。只有在 WebFlux / 协程栈配合非阻塞 loader（R2DBC、WebClient）时才有收益。**预留**：§4.5 的未命中路径用 Future 实现。有需求时，在 core 中增加基于 `CompletableFuture` 的 `AsyncCoCache` 与 `AsyncCacheLoader`（L2 命中返回已完成的 Future），并新增可选模块 `cocache-coroutines`，用少量扩展函数提供挂起版本：先同步查 L2，未命中再 `await()`。协程依赖只出现在该模块中。触发条件：reactive 用户提出需求，或者指标显示事件循环线程上出现阻塞的未命中读取 |
 
 ---
 
