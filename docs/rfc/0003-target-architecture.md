@@ -687,7 +687,7 @@ val users: CoCache<String, User> = runtime.create(
 
 6.0 在新包 `me.ahoo.cocache` 下与 5.x 并行开发，新旧模块在同一个仓库中共存，所以每一步都能独立合入并通过 `check`；最后一步删除旧模块。
 
-0. **先修 5.x**：§10 C1（同实例失效吞没、`setCache` 的 L2 写入无保护）是 5.x 现存的缺陷，先在 5.4.x 中修复并补上复现用例。
+0. **先修 5.x**：§10 C1（同实例失效吞没、`setCache` 的 L2 写入无保护）是 5.x 现存的缺陷，先在 5.4.x 中修复并补上复现用例（[#628](https://github.com/Ahoo-Wang/CoCache/issues/628)）。
 1. **TCK 先行**：`cocache-test` 新增 `BackendProtocolSpec`（状态机、令牌、到期时间重设、原子广播能力、reclaim、release、NOSCRIPT 回退）和 `ManualClock`；`InMemoryBackend` 首先通过。
 2. **api + core**：`CoCache`、`CacheSpec`、`CacheRuntime`、`CoherentEngine`、批量 SingleFlight、`CachePolicy`。把 `DefaultCoherentCacheSpec` 的 in-flight 系列用例迁移到新引擎，并补上 §10 中每个协议发现的复现用例。
 3. **cocache-redis**：Lua 协议、线格式、命令多路复用、Router、心跳、环境探测；单机、Cluster 与 Valkey CI；JMH 对比 5.4（§7）。
@@ -704,7 +704,7 @@ v1 由三路独立的对抗审查验证：协议正确性（构造交错反例�
 
 | ID | 严重度 | 发现 | 5.x | 处理 |
 |----|--------|------|-----|------|
-| C1 | 严重 | 同实例失效吞没：失效方只在修改 L1 之前递增一次戳，并发读在递增之后取戳、在修改之前读到旧值，写入 L2 后通过两次校验，本节点自己的事件又被过滤。`put` 的 L2 写入同样无保护，另一实例更晚的写入事件若在“写 L1”与“写 L2”之间到达，也会留下旧值 | 是（`DefaultCoherentCache.kt:362`、`:423`） | D2、A2、§4.4 两次递增、不变量 #1；§9 第 0 步先修 5.x |
+| C1 | 严重 | 同实例失效吞没：失效方只在修改 L1 之前递增一次戳，并发读在递增之后取戳、在修改之前读到旧值，写入 L2 后通过两次校验，本节点自己的事件又被过滤。`put` 的 L2 写入同样无保护，另一实例更晚的写入事件若在“写 L1”与“写 L2”之间到达，也会留下旧值 | 是（`DefaultCoherentCache.kt:362`、`:423`；[#628](https://github.com/Ahoo-Wang/CoCache/issues/628)） | D2、A2、§4.4 两次递增、不变量 #1；§9 第 0 步先修 5.x |
 | C2 | 严重 | 集合元素写入：lease 期间的 `remove` 被种子填充复活；`add` 覆盖 lease 后丢掉种子；`SOURCE` 模式下 `add` 在 key 不存在时产生部分集合；元素写入不清除刷新令牌，被刷新覆盖；移空后重新播种会复活已删元素 | 部分是（部分集合） | §4.8 按模式重新定义；`REMOTE` 禁止 loader |
 | C3 | 严重 | TTL 泄漏：`HSET` 保留旧 TTL，lease 的 10 s、负缓存的 TTL 会泄漏到新值 | 否（5.x 先 `DEL`） | §4.3、不变量 #8 |
 | C4 | 严重 | Lettuce 默认缓冲并重放断线期间的命令：已抛出异常的 `put` 可能稍后执行，覆盖更新的值 | 否（Spring 模板） | §4.7 `REJECT_COMMANDS`、不变量 #12 |
@@ -722,6 +722,6 @@ v1 由三路独立的对抗审查验证：协议正确性（构造交错反例�
 | R6 | 重要 | Cluster 下批量失效约等于 N 个脚本加 N 次全集群广播，原子性只在单个 slot 内 | — | §4.6、Q10 |
 | m | 次要 | 令牌应由客户端构造（`NodeId + 序号`），不依赖 Lua 随机数；Lua 脚本不带 shebang（否则 OOM 时被拒）；批次上限；帧由客户端构造；格式升级两阶段、未知版本不回收；`reclaim` 每次读至多一次；`onReset` 在订阅确认之后；批量戳在注册之后取；批量合并先做自己的；`Lookup.expiresAt` 可空并说明来自哪一层；`ttlOf(K, V)`；配置第四层来源与校验；`CacheLoader` 改为 `fun interface`；`KeyFilter` 描述自相矛盾；`@CaffeineCache` 字段丢失；actuator 需要不回源的查看接口；Spring Cache 的 null；Jackson 3；非 Boot 的 Spring 用户；“auto-pipelining”用词；实施步骤无法各自通过 `check`；阈值低于测量噪声 | — | 已分别并入各节 |
 
-**待验证（不阻塞本 RFC）**：Redis 7 在 slot 迁移时会向 shard channel 的订阅者发送主动的 `sunsubscribed`。5.4 的 `ShardedRedisCacheEvictedEventBus` 只处理 `ssubscribed`，resharding 之后可能静默停止接收事件，也不会触发重置。需要用 Cluster 集成测试确认；如果属实，属于 5.4 的缺陷。
+**待验证（不阻塞本 RFC）**：Redis 7 在 slot 迁移时会向 shard channel 的订阅者发送主动的 `sunsubscribed`。5.4 的 `ShardedRedisCacheEvictedEventBus` 只处理 `ssubscribed`，resharding 之后可能静默停止接收事件，也不会触发重置。需要用 Cluster 集成测试确认；如果属实，属于 5.4 的缺陷（[#629](https://github.com/Ahoo-Wang/CoCache/issues/629)）。
 
 **尝试攻破但成立的论断**：L1 fill 与失效（`DEL` 销毁令牌，令牌唯一，无 ABA）；lease 过期与慢 loader；两个读者同时未命中（读脚本原子，恰好一个取得 lease）；等待 lease 超时后本地回源再填 L2（受戳保护，跨节点受事件延迟约束）；A 写 L1 成功后 B 失效、A 再写 L2（三种到达时刻都会被戳或事件清除）；刷新令牌与 `put`、失效、抢占；`reclaim` 与并发写入；读己之写至多重试一次；结果未知的 fill；故障切换丢失 lease（最多多一次回源）；脚本内 `PUBLISH` 合法、按顺序执行并在 Cluster 中广播；脚本内可以使用 `TIME`；`PEXPIRE`/`PTTL` 的毫秒语义；Valkey 7.2+ 兼容。
