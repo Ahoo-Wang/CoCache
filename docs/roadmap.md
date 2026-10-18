@@ -41,18 +41,24 @@
 | 外部失效接入 | G1 | 公开 `key@@publisherId` 协议，提供 CDC（Debezium/Canal）接入示例 |
 | RESP3 client tracking | G2 | 仅预研，产出结论文档，决定是否作为 6.0 通道。结论：6.0 不采用，6.x 再评估（[RFC 0002](rfc/0002-resp3-client-tracking.md)） |
 
-同期产出 6.0 设计 RFC：L1 版本号 / lease 的数据结构、墓碑 TTL、迁移方案（[RFC 0001](rfc/0001-l1-write-back-lease.md)）。
+同期产出 6.0 设计 RFC：L1 版本号 / lease 的数据结构、墓碑 TTL、迁移方案（[RFC 0001](rfc/0001-l1-write-back-lease.md)，已被 [RFC 0003](rfc/0003-target-architecture.md) 取代）。
 
-## v6.0：L1 写回保护
+## v6.0：目标架构重构（[RFC 0003](rfc/0003-target-architecture.md)）
+
+不兼容 5.x：API、SPI、模块、Redis 线格式、配置项一次性重做，线格式只破坏这一次。原计划的 L1 写回 lease（RFC 0001）与清理并入本版本。
 
 | 项 | 目标 | 内容 |
 |----|------|------|
-| Redis 侧版本号 / lease | G2 | 消除 architecture.md §5 的“已知的固有窗口”：L1 陈旧上界从 TTL 降至事件延迟 |
-| 跨实例回源互斥 | 保护数据源 | 复用 lease，移出非目标 |
-| 清理 | — | 移除 5.x 废弃接口；按预研结论确定通道实现 |
+| L1 lease 栅栏 | G2 | 消除 architecture.md §5 的“已知的固有窗口”：L1 陈旧上界从 TTL 降至事件延迟；取代 `fillCache`/`evictIfUnchanged` 与写后撤销 L1 |
+| 跨实例回源互斥与单次刷新 | 保护数据源、G3 | 复用 lease 与刷新令牌，全集群同一 key 只回源 / 刷新一次 |
+| 原子失效与广播 | G1 | 失效、写入在一次 Lua 中完成 `DEL`/写入 + `PUBLISH`，各 1 次往返 |
+| 信封线格式 | G2、可演进 | 每个 key 一个 Redis Hash，控制字段与数据分离；去掉 `_nil_` 哨兵；`!f` 字段承担值格式版本化 |
+| Lettuce 原生后端 | G3 | 去掉 Spring Data Redis；自动流水线批量读；进程级失效路由 |
+| 声明与装配 | 简化 | `CacheSpec` + `CacheRuntime` 取代 9 种工厂与 bean 名后缀约定；配置分层 |
+| 删除 | 简化 | JoinCache 子系统、L2 可替换、5.x 废弃接口 |
 
-验收：`MultipleInstanceSyncSpec` 覆盖 §5 跨实例竞态；architecture.md 删除“固有窗口”；升级指南说明 wire format 变化。
+实施顺序与验收见 RFC 0003 §9：architecture.md 删除“固有窗口”；`MultiNodeSpec` 覆盖跨实例竞态、单次回源与单次刷新；changelog 给出 5.x → 6.0 概念对照表。
 
 ## 暂缓
 
-异步 API（JDK 21 虚拟线程已覆盖多数场景）、按字节限制 L2 与压缩 codec、值格式版本化。等 5.2 的指标证明有需要时再排期。
+异步 API 与协程（JDK 21 虚拟线程已覆盖多数场景；6.0 预留扩展方式，见 RFC 0003 §8 Q8）、按字节限制 L2 与压缩 codec。等指标证明有需要时再排期。值格式版本化已并入 6.0（信封 `!f` 字段）。

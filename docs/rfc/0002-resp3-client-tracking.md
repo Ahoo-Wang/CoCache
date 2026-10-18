@@ -1,6 +1,7 @@
 # RFC 0002：RESP3 client tracking 作为失效通道（预研结论）
 
 - 状态：推迟到 6.x，作为可选通道再评估；6.0 不采用
+- 注：6.0 改为 [RFC 0003](0003-target-architecture.md) 的整体重构（Lettuce 原生后端，失效与广播在 Lua 中原子完成），下文 §4 的 Spring 相关落地障碍随之消失；tracking 作为 `InvalidationChannel` 的一种实现再评估
 - Issue：#607
 
 ## 1. 问题

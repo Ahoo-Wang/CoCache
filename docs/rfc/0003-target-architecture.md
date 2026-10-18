@@ -1,8 +1,8 @@
-# RFC 0003：目标架构（第一性原理重构，7.0）
+# RFC 0003：目标架构（第一性原理重构，6.0）
 
 - 状态：草案（架构评审用）
 - 前提：**不考虑兼容性**。API、SPI、模块、Redis 线格式、配置项都可以推倒重来
-- 关系：吸收并取代 [RFC 0001](0001-l1-write-back-lease.md)（lease 成为唯一的写回保护原语）；[RFC 0002](0002-resp3-client-tracking.md) 变为新后端 SPI 下的一种可选通道
+- 关系：吸收并取代 [RFC 0001](0001-l1-write-back-lease.md)（lease 成为唯一的写回保护原语，6.0 只破坏一次线格式，不再单独发布 lease）；[RFC 0002](0002-resp3-client-tracking.md) 变为新后端 SPI 下的一种可选通道
 
 ---
 
@@ -378,7 +378,7 @@ L1 读失败（Redis 故障）时：按未命中回源，不写 L1，L2 以 `deg
 
 ### 4.8 `SetCache` 的两种权威模式
 
-5.x 中，元素增删把 L1 当作权威副本，但回源写回又把数据源当作权威，两种语义混在一起。7.0 中由 `CacheSpec.authority` 显式声明：
+5.x 中，元素增删把 L1 当作权威副本，但回源写回又把数据源当作权威，两种语义混在一起。6.0 中由 `CacheSpec.authority` 显式声明：
 
 | 模式 | 权威 | 写法 | 回源 |
 |------|------|------|------|
@@ -503,7 +503,7 @@ val users: CoCache<String, User> = runtime.create(
 
 ## 7. 性能预算与验证
 
-| 路径 | 5.4 | 7.0 目标 | 验证方式 |
+| 路径 | 5.4 | 6.0 目标 | 验证方式 |
 |------|-----|----------|----------|
 | L2 命中（经过代理） | 未测量（基准绕过代理） | ≤ 5.4 直接调用引擎的数值 + 3% | 新增 `l2HitViaProxy`，同时测 `@CoCache` 接口与 spec bean |
 | L1 命中 | 1 RTT（TTL + GET） | 1 RTT（PTTL + HGETALL），吞吐与延迟 ±5% 以内 | `l1Read`，标量值 1 KB / 10 KB |
@@ -528,7 +528,7 @@ val users: CoCache<String, User> = runtime.create(
 | Q5 | 提前刷新令牌的过期 | 令牌中编码签发时间（服务端 `TIME`），超过 `lease.ttl` 可以被抢占；不使用字段级 TTL（HEXPIRE 需要 7.4+） |
 | Q6 | 故障切换丢写 | Redis 异步复制在故障切换时可能丢失 `DEL` 或 fill。这属于协议之外的问题，由 TTL 兜底（A4）；切换会导致订阅重连，触发 `onReset` 清空 L2 |
 | Q7 | JDK 基线 | 维持 17（Spring Boot 4 的下限）。代码对虚拟线程友好：I/O 路径上没有 `synchronized` |
-| Q8 | 是否引入协程 / 异步 API | **7.0 不引入**。L2 命中是纳秒级、没有 I/O，挂起函数只会增加成本（G3）；api 必须零依赖，Java 用户无法自然使用挂起函数；同步与挂起两套 API 会让协议证明和 TCK 都翻倍；阻塞 loader 的高并发由虚拟线程解决。只有在 WebFlux / 协程栈配合非阻塞 loader（R2DBC、WebClient）时才有收益。**预留**：§4.5 的未命中路径用 Future 实现。有需求时，在 core 中增加基于 `CompletableFuture` 的 `AsyncCoCache` 与 `AsyncCacheLoader`（L2 命中返回已完成的 Future），并新增可选模块 `cocache-coroutines`，用少量扩展函数提供挂起版本：先同步查 L2，未命中再 `await()`。协程依赖只出现在该模块中。触发条件：reactive 用户提出需求，或者指标显示事件循环线程上出现阻塞的未命中读取 |
+| Q8 | 是否引入协程 / 异步 API | **6.0 不引入**。L2 命中是纳秒级、没有 I/O，挂起函数只会增加成本（G3）；api 必须零依赖，Java 用户无法自然使用挂起函数；同步与挂起两套 API 会让协议证明和 TCK 都翻倍；阻塞 loader 的高并发由虚拟线程解决。只有在 WebFlux / 协程栈配合非阻塞 loader（R2DBC、WebClient）时才有收益。**预留**：§4.5 的未命中路径用 Future 实现。有需求时，在 core 中增加基于 `CompletableFuture` 的 `AsyncCoCache` 与 `AsyncCacheLoader`（L2 命中返回已完成的 Future），并新增可选模块 `cocache-coroutines`，用少量扩展函数提供挂起版本：先同步查 L2，未命中再 `await()`。协程依赖只出现在该模块中。触发条件：reactive 用户提出需求，或者指标显示事件循环线程上出现阻塞的未命中读取 |
 
 ---
 
@@ -540,6 +540,6 @@ val users: CoCache<String, User> = runtime.create(
 2. **api + core**：`CoCache`、`CacheSpec`、`CacheRuntime`、`CoherentEngine`、批量 SingleFlight、`CachePolicy`；把 `DefaultCoherentCacheSpec` 的 in-flight 系列用例全部迁移到新引擎。
 3. **cocache-redis**：Lua 协议、信封、自动流水线、Router、重连重置；单机与 Cluster CI；JMH 对比 5.4（§7）。
 4. **starter**：spec 注册、`@CoCache` 扫描与 MethodHandle 代理、配置分层、Spring Cache 适配、actuator、Micrometer。
-5. **删除与文档**：删除旧模块；重写 `docs/architecture.md`、wiki（中英文）、`skills/cocache/`、AGENTS.md 不变量；在 changelog 中给出概念对照表（5.x → 7.0）。
+5. **删除与文档**：删除旧模块；重写 `docs/architecture.md`、wiki（中英文）、`skills/cocache/`、AGENTS.md 不变量；在 changelog 中给出概念对照表（5.x → 6.0）。
 
 验收：architecture.md 删除“已知的固有窗口”；`MultiNodeSpec` 覆盖 §4.4 的三种交错（失效先于 lease、晚于 lease、晚于 fill）、全集群单次回源和单次刷新；`FaultSpec` 覆盖 Redis 故障时的降级限龄，以及写入抛出异常后重试的幂等性。
