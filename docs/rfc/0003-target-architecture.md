@@ -1,6 +1,6 @@
 # RFC 0003：目标架构（第一性原理重构，6.0）
 
-- 状态：草案 v2（已经过一轮对抗验证，见 §10）
+- 状态：草案 v3（已经过两轮对抗验证，见 §10）
 - 前提：**不考虑兼容性**。API、SPI、模块、Redis 线格式、配置项都可以推倒重来
 - 关系：吸收并取代 [RFC 0001](0001-l1-write-back-lease.md)（lease 成为唯一的写回保护原语，6.0 只破坏一次线格式，不再单独发布 lease）；[RFC 0002](0002-resp3-client-tracking.md) 变为新后端 SPI 下的一种可选通道
 
@@ -49,7 +49,7 @@
 | G2 | 失效不被吞没 | **L1**：读取开始于某次失效之前的填充，永远不会在该失效之后出现在 L1。**L2**：在某个节点处理完一次失效（本地调用返回，或收到并处理了远端事件，或执行了重置）之后，该节点的 L2 永远不会再出现读取开始于这次失效之前的填充 |
 | G3 | 命中路径便宜 | L2 命中（spec bean 直接注入）与 5.4 直接调用引擎相比不退化，`@CoCache` 接口方式的开销单独测量并公布；L1 命中一次往返；单 key 的失效、写入各一次往返；同一 key 全集群并发未命中时，若 loader 耗时小于 `lease.wait`，只回源一次 |
 
-非目标：线性一致读；api 与 core 中的异步 API 和协程（同步 API 对虚拟线程友好；预留的扩展方式见 §8 Q8）。`SetCache` 的 `REMOTE` 模式把 L1 当作唯一存储（§4.8），这是有意的例外。
+非目标：线性一致读；api 与 core 中的异步 API 和协程（同步 API 对虚拟线程友好；预留的扩展方式见 §8 Q8）。`SetCache` 把 L1 当作唯一存储（§4.8），这是有意的例外。
 
 ---
 
@@ -67,7 +67,7 @@
 | 失效与广播分两次执行 | 先 `distributedCache.evict` 再 `publish`；[`RedisCacheEvictedEventBus.kt:56`](../../cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/RedisCacheEvictedEventBus.kt) 发布失败只计数 | 违反 A3。其它实例的 L2 陈旧到 `clientSideTtl` 或 TTL |
 | L1 失败降级后，L2 仍以完整 TTL 填充 | `writeBack` 在 L1 `setCache` 被降级吞掉之后照常写 L2（[`DefaultCoherentCache.kt:319`](../../cocache-core/src/main/kotlin/me/ahoo/cache/consistency/DefaultCoherentCache.kt)） | 如果 Redis 故障时 Pub/Sub 连接没有断开，失效发不出去，`onReset` 也不会触发，L2 陈旧度的上界退化为 TTL |
 | 写回保护有三种形态 | 写后复核后的 `invalidate`、Set 的 `fillCache` + `evictIfUnchanged`、RFC 0001 准备再加的 lease | 每种形态都要单独证明、单独测试；Set 已经因此有了专用 SPI |
-| 集合元素写入与数据源语义冲突 | `addElements` 在 key 不存在时直接创建集合，不经过数据源 | 若集合的真实数据在数据源中，L1 会长期只保存部分元素（§4.8 重新定义） |
+| 集合元素写入与数据源语义冲突 | `addElements` 在 key 不存在时直接创建集合，不经过数据源；增量操作与数据库中的写入顺序无关 | 若集合的真实数据在数据源中，L1 会长期只保存部分元素，或因增量操作乱序留下已删除的元素（§4.8 重新定义） |
 | 带内哨兵 | `_nil_` 字符串、Hash 单字段、Set 单成员；[`SetToSetCodecExecutor.kt:133`](../../cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/SetToSetCodecExecutor.kt) 禁止元素等于哨兵；自定义哨兵需要全集群同时切换 | 类型混淆隐患；RFC 0001 的 lease 标记还要在每种 codec 里再加一个带内形态 |
 | 时间精度 | `TTL` 秒级回读，`ttlSecondsOf` 的 `coerceAtLeast(1)`（[`AbstractCodecExecutor.kt:218`](../../cocache-spring-redis/src/main/kotlin/me/ahoo/cache/spring/redis/codec/AbstractCodecExecutor.kt)）；TCK 需要 `Offset.offset(1)` | ±1 s 漂移；短 TTL（例如 1–2 s 的负缓存）的语义不精确 |
 
@@ -228,9 +228,9 @@ interface CoherenceBackend : AutoCloseable {
 基础类型：
 
 ```kotlin
-@JvmInline value class NodeId(val bytes: ByteArray)       // 16 B，每个 CacheRuntime 一个，随机生成
-data class Token(val node: NodeId, val seq: Long)          // 24 B，由客户端生成并作为参数传入脚本：构造上唯一，不依赖 Lua 随机数
-@JvmInline value class Digest(val sha1: ByteArray)         // 20 B，L1 原始字节的 SHA-1（Lua 侧用 redis.sha1hex）
+class NodeId(val bytes: ByteArray)                        // 16 B，每个 CacheRuntime 一个，随机生成
+class Token(val node: NodeId, val seq: Long)               // 24 B，由客户端生成并作为参数传入脚本：构造上唯一，不依赖 Lua 随机数
+class Digest(val sha1: ByteArray)                          // 20 B，见 §4.4“损坏与格式演进”
 
 sealed interface Envelope {
     data class Scalar(val bytes: ByteArray) : Envelope
@@ -240,7 +240,7 @@ sealed interface Envelope {
 data class Fill(val key: String, val token: Token, val envelope: Envelope, val ttl: Duration?)
 ```
 
-（`value class` 只用于不进入公共方法签名的内部表示；出现在 SPI 方法签名中的类型都是普通类，避免名称改写。）
+（出现在 API/SPI 中的类型一律是普通类，不使用 `value class`：值类类型的参数和属性会让 JVM 名称被改写，Java 实现方无法使用。）
 
 `RemoteStore` 只处理字节和信封，不知道值的类型，也不持有策略：刷新窗口、TTL 都由引擎作为参数传入。
 
@@ -267,14 +267,14 @@ interface RemoteStore : AutoCloseable {
     fun reclaim(key: String, observed: Digest, lease: Token): Boolean
 
     /** 集合元素增删，语义见 §4.8。 */
-    fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, mode: Authority, frame: ByteArray)
-    fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, mode: Authority, frame: ByteArray)
+    fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
+    fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
 }
 
 data class RefreshRequest(val window: Duration, val token: Token, val tokenTtl: Duration)
 
 sealed interface RemoteRead {
-    data class Hit(val envelope: Envelope, val format: Int, val ttl: Duration?, val refreshGranted: Boolean, val digest: Digest) : RemoteRead
+    data class Hit(val envelope: Envelope, val format: Int, val ttl: Duration?, val refreshGranted: Boolean) : RemoteRead
     data class Miss(val leaseGranted: Boolean) : RemoteRead
     data class Leased(val remaining: Duration) : RemoteRead   // 其它节点正在回源
 }
@@ -365,7 +365,7 @@ L2 写入方的完整顺序：
 | 操作 | 顺序 |
 |------|------|
 | `invalidate` | 戳 → 淘汰 L2 → Lua `DEL`+`PUBLISH` → 戳（无论成功失败）→ 淘汰 L2 |
-| `put` | 戳 → Lua 覆盖+`PUBLISH` → `s = 戳` → 写 L2（写前校验 `s`、写后复核 `s`，失败则撤销） |
+| `put` | 戳 → 淘汰 L2 → Lua 覆盖+`PUBLISH` → 戳（无论成功失败）→ 淘汰 L2。**不写 L2**，下一次读取从 L1 填充 |
 | `add` / `remove` | 戳 → Lua 元素写入+`PUBLISH` → 戳 → 淘汰 L2 |
 | 收到远端事件 | 戳 → 淘汰 L2 |
 | `onReset` | 全部戳递增 → 清空 L2 |
@@ -384,11 +384,13 @@ L2 写入方的完整顺序：
 
 对抗验证中的反例（W 只在 `t_m` 之前递增一次：F 在 `s1` 之后取戳，在 `t_m` 之前读到旧值，写入通过两次校验，而本节点自己的事件又被过滤掉）正是被 `s2` 消除的。
 
+**为什么 `put` 不写 L2。** 戳只能判断“写入期间有没有发生失效”，判断不了两次写入在 L1 中的先后。同一节点上两个并发的 `put`：T1 先执行 Lua 写 v1，T2 后执行 Lua 写 v2（L1 = v2），T2 递增戳并写 L2 = v2，T1 随后才递增戳并写 L2 = v1，前后两次校验都能通过；两次写入发出的事件都被本节点过滤，L2 留下 v1 直到 `localMaxAge`（§10 v3-1）。L2 的内容只能来自“读 L1”这一个方向，才能保证它与 L1 的顺序一致。代价是写入后的第一次读取多一次 L1 往返；读己之写仍然成立（`put` 返回时 L2 已淘汰，随后的读取从 L1 读到新值或更新的值）。
+
 **L2（跨节点）。** 节点 X 的 L2 在处理远端事件时递增戳并淘汰，与上面的“`s2` + 淘汰”同构。所以在 X 处理事件之后，X 的 L2 不会保留开始于该失效之前的填充。X 处理事件之前，X 的 L2 可以合法地返回旧值，这就是 G1 中的“事件延迟”。
 
 #### 其它节点持有 lease
 
-读到 `Leased(remaining)` 时，等待 `min(remaining, lease.wait)`（`lease.wait` 默认 200 ms），期间以短退避重新执行 `loadThrough`，并沿用最初取得的戳：重读命中就使用，得到 `Miss(leaseGranted = true)` 就由自己回源。等待超时后自行回源，但不写 L1，结果按戳保护填入 L2，并以 `degradedLocalMaxAge` 限龄。
+读到 `Leased(remaining)` 时，在 `loadThrough` 内部循环：等待 `min(remaining, lease.wait)`（`lease.wait` 默认 200 ms），期间以短退避重新读 L1，**沿用进入 `loadThrough` 时取得的戳**：重读命中就使用，得到 `Miss(leaseGranted = true)` 就由自己回源。等待超时后自行回源，但不写 L1，结果按戳保护填入 L2，并以 `degradedLocalMaxAge` 限龄。
 
 所以“全集群同一 key 只回源一次”只在 loader 耗时小于 `lease.wait` 时成立。对于耗时较长的 loader，应调大 `lease.wait`（以调用方可接受的延迟为限）。
 
@@ -409,7 +411,9 @@ L2 写入方的完整顺序：
 
 #### 损坏与格式演进
 
-- **同一格式版本下解码失败**：按未命中处理，调用 `reclaim(key, digest, lease)`。只有当原始字节仍是本次读到的内容时，才把它原子地转为 lease，然后正常回源和 fill。每次读取至多回收一次，并计入指标。
+- **同一格式版本下解码失败**：按未命中处理，由客户端对本次读到的原始字节计算 SHA-1，调用 `reclaim(key, digest, lease)`；Lua 侧用 `redis.sha1hex` 对当前内容计算并比较。只有当内容仍是本次读到的那份时，才把它原子地转为 lease，然后正常回源和 fill。每次读取至多回收一次，并计入指标。digest 只在解码失败时计算，命中路径不付出哈希成本。
+  - 标量：对整个 String（含头部）计算。
+  - 集合：按 `HGETALL` 返回的顺序拼接 `len(field) | field | len(value) | value` 后计算。Hash 内容不变时 `HGETALL` 的顺序确定，所以两侧结果一致；内容变了，顺序或字节不同，比较必然失败，正好符合“只在未变时回收”。
 - **格式版本高于本节点所知**（滚动升级期间的旧节点）：按未命中处理，**不回收、不写 L1**，回源结果只以 `degradedLocalMaxAge` 进 L2。否则新旧节点会互相覆盖。
 - **格式升级分两阶段**：先发布能读取 N+1 版本、但仍写 N 版本的版本；全集群升级完后，再发布写 N+1 的版本。
 
@@ -434,9 +438,12 @@ miss(key, k):
   return r.value
 
 loadThrough(key, k):                              // 在 leader（调用方）线程上执行
-  stamp = stamps.current(k)                       // 在 SingleFlight 注册之后取戳
+  stamp = stamps.current(k)                       // 在 SingleFlight 注册之后取戳；整个调用（含等待 lease 的重读）只取这一次
+  if pendingInvalidations.contains(k): return loadBypassingL1(key, k, stamp)   // §4.13：失效仍在重试中
   t = tokens.next()
+  deadline = now + lease.wait
   rr = remote.read(k, lease = t, refresh = refreshRequest)
+  while rr is Leased && now < deadline: backoff(); rr = remote.read(k, lease = t, refresh = refreshRequest)
   when rr:
     Hit    -> entry = decodeOrReclaim(rr)         // 见 §4.4“损坏与格式演进”
               fillLocal(k, entry, stamp, maxAge = localMaxAge)
@@ -444,8 +451,10 @@ loadThrough(key, k):                              // 在 leader（调用方）�
               entry = policy.entryOf(key, v)      // ttlOf(K, V) 优先，否则按策略（含抖动）；null → 负缓存
               filled = rr.leaseGranted && remote.fill(Fill(k, t, encode(entry), entry.ttl))
               fillLocal(k, entry, stamp, maxAge = if (filled) localMaxAge else degradedLocalMaxAge)
-    Leased -> 见 §4.4“其它节点持有 lease”
-  L1 异常 -> 按 Miss(leaseGranted = false) 处理：回源，不写 L1，L2 以 degradedLocalMaxAge 限龄
+    Leased -> loadBypassingL1(key, k, stamp)      // 等待超时：回源，不写 L1
+  L1 异常 -> loadBypassingL1(key, k, stamp)
+
+loadBypassingL1(key, k, stamp):                   // 回源，不写 L1，L2 以 degradedLocalMaxAge 限龄（仍受戳保护）
 ```
 
 **线程模型（不变量）**：loader 总是在调用方（SingleFlight leader）线程上同步执行，所以事务、SecurityContext、MDC 等 ThreadLocal 都可用，同线程重入检测也照常有效。Future 只包装 L1 I/O：引擎在调用方线程上等待 Lettuce 的 Future，**不在 Lettuce/Netty 事件循环线程上执行任何续接**。这样以后增加异步 API 时（§8 Q8），只需把最外层的等待换成组合，不需要再实现一遍协议。
@@ -499,24 +508,35 @@ loadThrough(key, k):                              // 在 leader（调用方）�
 
 **兼容性**：Redis 7.0+ 与 Valkey 7.2+（用到 `TIME`、`SETRANGE`、`SPUBLISH`）。
 
-### 4.8 `SetCache` 的两种权威模式
+### 4.8 集合：`SetCache` 只用于 L1 是唯一副本的场景
 
-5.x 中，元素增删把 L1 当作权威副本，但回源写回又把数据源当作权威，两种语义混在一起，并因此产生了丢失元素写入的竞态（§10 C2）。6.0 中由 `CacheSpec.authority` 显式声明，两种模式的规则不同：
+v2 曾把 `SetCache` 分成 `SOURCE` 与 `REMOTE` 两种模式。第二轮验证发现 `SOURCE` 模式下的增量 `add`/`remove` 无法保证正确（§10 v3-2）：两个写者先后在数据库中加入、删除元素 x，它们对 L1 的增量操作可能以相反顺序到达，`remove x` 先执行（集合中还没有 x，什么也不做），`add x` 后执行，L1 里留下 x，直到 TTL。失效是幂等且可交换的，增量操作两者都不满足；而数据库中的顺序，L1 无从得知。
 
-| | `SOURCE`（默认） | `REMOTE` |
-|---|---|---|
-| 权威 | 数据源 | L1 是唯一副本 |
-| loader | 必需 | **禁止**（spec 校验时拒绝） |
-| 写法 | 先更新数据源，再 `add`/`remove`（作为增量失效的优化）或 `invalidate` | 只用 `add` / `remove` |
-| L1 状态为 `S` 时执行 `add`/`remove` | 原子增删成员，清除刷新令牌，重设 TTL | 同左 |
-| L1 状态为 `ABSENT`/`L`/`M` 时执行 `add`/`remove` | **当作失效处理**（`DEL`，销毁 lease）：下一次读取从已更新的数据源加载完整集合。这样不会产生部分集合，也不会让在途种子覆盖这次写入 | `add`：创建只含这些成员的集合（没有种子可丢失）。`remove`：不做任何事 |
-| 移空最后一个成员 | 删除 key（下次从数据源加载） | 删除 key（空集合与不存在等价，没有回源） |
-| 未命中 | 正常回源（取 lease） | 返回不存在，不取 lease；L2 以戳保护缓存负结果 |
-| `invalidate` | 允许 | **拒绝**（它会销毁唯一副本）；删除数据用 `clear(key)` |
-| 提前刷新 | 允许 | 不适用（没有 loader） |
-| 默认 TTL | 策略 `ttl` | `FOREVER` |
+所以 v3 的划分是：
 
-把已有数据迁移进 `REMOTE` 缓存，用一次性的 `put(key, fullSet)`（运维操作），而不是 loader。
+| 数据的权威在哪里 | 声明方式 | 写法 |
+|------------------|----------|------|
+| 数据源 | 普通的 `CoCache<K, Set<E>>`（集合作为一个标量值，由 `Codec` 编码） | 先更新数据源，再 `invalidate` |
+| L1 本身 | `SetCache<K, E>`（集合以 Hash 形状存储，§4.3） | 只用 `add` / `remove`，由 L1 串行化 |
+
+`SetCache` 的规则：
+
+| 项 | 规则 |
+|----|------|
+| loader | **禁止**（spec 校验时拒绝）：没有数据源，也就没有“种子覆盖元素写入”的竞态 |
+| `add` | key 不存在、为负缓存或处于 lease 状态时，先清除再创建只含这些成员的集合；为 `S` 时原子加入。重设 TTL，并 `PUBLISH` |
+| `remove` | 为 `S` 时原子移除，移空则删除 key；其它状态什么也不做。并 `PUBLISH` |
+| 并发顺序 | 同一元素的并发 `add`/`remove` 以 L1 的串行化顺序为准：L1 就是权威，不存在“另一个顺序” |
+| 未命中 | 返回空集合，不取 lease；L2 以戳保护缓存这个结果（其它节点的 `add` 通过事件在事件延迟内淘汰它） |
+| `invalidate` | **拒绝**（它会销毁唯一副本）；删除数据用 `clear(key)` |
+| 提前刷新 | 不适用 |
+| 默认 TTL | `FOREVER` |
+| 迁移已有数据 | 一次性的 `put(key, fullSet)`（运维操作） |
+
+**L1 作为唯一副本的前提**（写入用户文档；启动时尽力检查，`CONFIG` 被禁用的托管环境中只告警）：
+
+- Redis 的 `maxmemory-policy` 不能是 `allkeys-*`，否则内存压力下会淘汰权威数据。没有 TTL 的 key 在 `volatile-*` 与 `noeviction` 策略下不会被淘汰。
+- 数据的持久性等于 Redis 的持久性（RDB/AOF、复制）。异步复制在故障切换时可能丢失最近的写入，所以 `SetCache` 不适合保存不能丢失的数据。
 
 ### 4.9 时间
 
@@ -591,7 +611,7 @@ val users: CoCache<String, User> = runtime.create(
 | 类别 | 操作 | L1 故障时 |
 |------|------|-----------|
 | 填充 | 读、fill、刷新、种子 | 按未命中处理，回源结果只进 L2 并按 `degradedLocalMaxAge` 限龄，计数并告警 |
-| 失效 | `invalidate`、`invalidateAll` | 本地效果（两次递增戳、淘汰 L2）先生效；L1 失败时进入有界重试队列（默认开启；指数退避；操作幂等），**不抛出**。队列溢出或重试耗尽时记录错误并计数，此时其它节点的陈旧上界为 `min(localMaxAge, L1 剩余 TTL)`。需要同步结果的调用方可以配置 `failure.invalidate = THROW` |
+| 失效 | `invalidate`、`invalidateAll` | 本地效果（两次递增戳、淘汰 L2）先生效；L1 失败时进入有界重试队列（默认开启；指数退避；操作幂等），**不抛出**。排队期间，L1 中仍是旧值：该 key 的未命中**跳过 L1** 直接回源，并以 `degradedLocalMaxAge` 填 L2（这个检查只在未命中路径上，不影响命中路径）；重试成功后，本节点再递增一次戳并淘汰 L2（本节点自己的事件会被过滤，不能依赖它）。队列溢出或重试耗尽时记录错误并计数，此时其它节点的陈旧上界为 `min(localMaxAge, L1 剩余 TTL)`。需要同步结果的调用方可以配置 `failure.invalidate = THROW` |
 | 显式写入 | `put`、`add`、`remove` | 本地效果先生效，然后抛出 `CacheWriteException`。结果未知（超时）时，L1 可能已经生效；这些操作都是幂等的，可以安全重试 |
 
 回源并发上限（bulkhead）保持 5.3 的语义：只计 leader，批量回源只占一个许可。
@@ -630,7 +650,7 @@ val users: CoCache<String, User> = runtime.create(
 
 ## 6. 新不变量（取代 AGENTS.md 中的对应列表）
 
-1. **栅栏规则**：任何填充都必须持有读取之前取得的令牌（L1 lease 或刷新令牌；L2 失效戳）。L1 的失效通过销毁令牌完成；L2 的失效方在修改上游**之前和之后**各递增一次戳，`put` 的 L2 写入使用修改之后的戳并受保护。
+1. **栅栏规则**：任何填充都必须持有读取之前取得的令牌（L1 lease 或刷新令牌；L2 失效戳）。L1 的失效通过销毁令牌完成；L2 的失效方（含 `put`、元素写入）在修改上游**之前和之后**各递增一次戳并淘汰 L2。**L2 只由读 L1 的路径填充**，写入方从不直接写 L2。
 2. **L1 未命中就是未命中**：key 不存在或处于 `L` 状态都不代表负缓存。负缓存只有状态 `M` 一种形态。
 3. **读路径从不无条件删除**：同版本的损坏只能通过 `reclaim`（比较 digest）转为 lease；未知的更高版本既不回收也不写回。
 4. **能原子广播就原子广播**：后端以 `atomicBroadcast` 声明能力；为 false 时由引擎在写入成功后发布，TCK 按能力分别验证。
@@ -639,7 +659,7 @@ val users: CoCache<String, User> = runtime.create(
 7. **令牌必须释放或过期**：loader 失败、被拒绝，以及刷新任务被拒绝时都要 `release`。
 8. **每次 L1 状态转换都显式重设到期时间。**
 9. **线格式在一个大版本内冻结**：key 布局、标量头、集合字段、消息帧、频道命名。格式演进通过版本号两阶段完成。
-10. **集合元素增删在 L1 中原子完成**，并遵守 §4.8 按模式定义的状态规则。
+10. **集合元素增删只用于 L1 是唯一副本的 `SetCache`**，在 L1 中原子完成，且 `SetCache` 不得配置 loader。数据源中的集合只能用 `invalidate` 维护。
 11. **有状态组件只能由运行时创建**：用户只提供 spec 和工厂。
 12. **CoCache 的 L1 连接只访问主节点**，断线时拒绝命令而不是缓冲重放。
 13. **存储脚本只执行协议，不持有策略**：TTL、刷新窗口、令牌都由引擎作为参数传入。
@@ -694,18 +714,20 @@ val users: CoCache<String, User> = runtime.create(
 4. **cocache-spring + starter**：spec 注册、`@CoCache` 接口实现（依 Q9）、配置分层与校验、Spring Cache 适配、事务内失效、actuator、Micrometer。
 5. **删除与文档**：删除旧模块；重写 `docs/architecture.md`、wiki（中英文）、`skills/cocache/`、AGENTS.md 不变量；changelog 给出概念对照表与迁移指南（5.x → 6.0）。
 
-验收：architecture.md 删除“已知的固有窗口”；`MultiNodeSpec` 覆盖 §4.4 的全部交错（失效先于 lease、晚于 lease、晚于 fill；同节点失效与并发读；并发 `put`）、全集群单次回源和单次刷新；`FaultSpec` 覆盖 Redis 故障时的降级限龄、失效重试与溢出、写入抛出后重试的幂等性、断线时命令不被重放、故障切换后的 NOSCRIPT。
+验收：architecture.md 删除“已知的固有窗口”；`MultiNodeSpec` 覆盖 §4.4 的全部交错（失效先于 lease、晚于 lease、晚于 fill；同节点失效与并发读；同节点与跨节点的并发 `put`；失效重试期间的未命中）、全集群单次回源和单次刷新；`FaultSpec` 覆盖 Redis 故障时的降级限龄、失效重试与溢出、写入抛出后重试的幂等性、断线时命令不被重放、故障切换后的 NOSCRIPT。
 
 ---
 
-## 10. 对抗验证记录（v1 → v2）
+## 10. 对抗验证记录
+
+### v1 → v2
 
 v1 由三路独立的对抗审查验证：协议正确性（构造交错反例）、Redis/Lettuce 事实核查、API 与可运维性。下表列出被采纳的发现。“5.x”一列表示 5.x 现有实现是否同样受影响。
 
 | ID | 严重度 | 发现 | 5.x | 处理 |
 |----|--------|------|-----|------|
 | C1 | 严重 | 同实例失效吞没：失效方只在修改 L1 之前递增一次戳，并发读在递增之后取戳、在修改之前读到旧值，写入 L2 后通过两次校验，本节点自己的事件又被过滤。`put` 的 L2 写入同样无保护，另一实例更晚的写入事件若在“写 L1”与“写 L2”之间到达，也会留下旧值 | 是（`DefaultCoherentCache.kt:362`、`:423`；[#628](https://github.com/Ahoo-Wang/CoCache/issues/628)） | D2、A2、§4.4 两次递增、不变量 #1；§9 第 0 步先修 5.x |
-| C2 | 严重 | 集合元素写入：lease 期间的 `remove` 被种子填充复活；`add` 覆盖 lease 后丢掉种子；`SOURCE` 模式下 `add` 在 key 不存在时产生部分集合；元素写入不清除刷新令牌，被刷新覆盖；移空后重新播种会复活已删元素 | 部分是（部分集合） | §4.8 按模式重新定义；`REMOTE` 禁止 loader |
+| C2 | 严重 | 集合元素写入：lease 期间的 `remove` 被种子填充复活；`add` 覆盖 lease 后丢掉种子；`SOURCE` 模式下 `add` 在 key 不存在时产生部分集合；元素写入不清除刷新令牌，被刷新覆盖；移空后重新播种会复活已删元素 | 部分是（部分集合） | §4.8 重新定义（v3 进一步收窄：`SetCache` 只用于 L1 是唯一副本的场景，禁止 loader） |
 | C3 | 严重 | TTL 泄漏：`HSET` 保留旧 TTL，lease 的 10 s、负缓存的 TTL 会泄漏到新值 | 否（5.x 先 `DEL`） | §4.3、不变量 #8 |
 | C4 | 严重 | Lettuce 默认缓冲并重放断线期间的命令：已抛出异常的 `put` 可能稍后执行，覆盖更新的值 | 否（Spring 模板） | §4.7 `REJECT_COMMANDS`、不变量 #12 |
 | C5 | 严重 | Lettuce 不在 `NOSCRIPT` 时回退；故障切换、重启、resharding 后脚本缓存丢失 | 否（Spring 会回退） | §4.7 EVALSHA → EVAL 回退；TCK 覆盖 |
@@ -725,3 +747,18 @@ v1 由三路独立的对抗审查验证：协议正确性（构造交错反例�
 **待验证（不阻塞本 RFC）**：Redis 7 在 slot 迁移时会向 shard channel 的订阅者发送主动的 `sunsubscribed`。5.4 的 `ShardedRedisCacheEvictedEventBus` 只处理 `ssubscribed`，resharding 之后可能静默停止接收事件，也不会触发重置。需要用 Cluster 集成测试确认；如果属实，属于 5.4 的缺陷（[#629](https://github.com/Ahoo-Wang/CoCache/issues/629)）。
 
 **尝试攻破但成立的论断**：L1 fill 与失效（`DEL` 销毁令牌，令牌唯一，无 ABA）；lease 过期与慢 loader；两个读者同时未命中（读脚本原子，恰好一个取得 lease）；等待 lease 超时后本地回源再填 L2（受戳保护，跨节点受事件延迟约束）；A 写 L1 成功后 B 失效、A 再写 L2（三种到达时刻都会被戳或事件清除）；刷新令牌与 `put`、失效、抢占；`reclaim` 与并发写入；读己之写至多重试一次；结果未知的 fill；故障切换丢失 lease（最多多一次回源）；脚本内 `PUBLISH` 合法、按顺序执行并在 Cluster 中广播；脚本内可以使用 `TIME`；`PEXPIRE`/`PTTL` 的毫秒语义；Valkey 7.2+ 兼容。
+
+### v2 → v3
+
+第二轮由作者对 v2 重新推演，发现下列问题，均已修订。“5.x”一列含义同上。
+
+| ID | 严重度 | 发现 | 5.x | 处理 |
+|----|--------|------|-----|------|
+| v3-1 | 重要 | 同一节点两个并发的 `put`：后执行 Lua 的线程先写 L2，先执行 Lua 的线程后写 L2，前后两次戳校验都能通过，L2 留下较旧的值；两次写入的事件都被本节点过滤。v2 的“修改 L1 后用新戳保护写 L2”挡不住这种情况，因为戳只表达“期间有没有失效”，不表达 L1 中的写入顺序 | 是（[#628](https://github.com/Ahoo-Wang/CoCache/issues/628) 的修复方案需相应调整） | §4.4：`put` 不写 L2，修改 L1 前后各递增一次戳并淘汰 L2；不变量 #1“L2 只由读 L1 的路径填充” |
+| v3-2 | 重要 | `SOURCE` 模式的增量 `add`/`remove` 与数据库中的写入顺序无关，乱序到达时 L1 留下已删除的元素，直到 TTL | 是 | §4.8：`SetCache` 只用于 L1 是唯一副本的场景；数据源中的集合用普通 `CoCache<K, Set<E>>` + `invalidate` |
+| v3-3 | 重要 | 失效写 L1 失败进入重试队列后，L1 仍是旧值，本节点的未命中会把旧值以 `localMaxAge` 填入 L2；重试成功时本节点的事件又被过滤 | 不适用（5.x 不重试） | §4.13：排队中的 key 未命中时跳过 L1；重试成功后本地再递增戳并淘汰 L2 |
+| v3-4 | 次要 | `RemoteRead.Hit` 带 digest，每次 L1 命中都要在 Lua 里计算 SHA-1，违反 G3 | — | digest 只在解码失败时由客户端计算 |
+| v3-5 | 次要 | L1 作为唯一副本的两个前提没有写明：`maxmemory-policy` 不能是 `allkeys-*`；持久性等于 Redis 的持久性 | 是（5.x `SetElementsCache` 同样如此，未写明） | §4.8 前提与启动检查 |
+| v3-6 | 次要 | `Token` 的属性类型是 `value class NodeId`，出现在 SPI 中，Java 实现方访问时会遇到名称改写 | — | §4.2：API/SPI 中不使用 `value class` |
+| v3-7 | 次要 | §4.4 说等待 lease 时沿用最初的戳，§4.5 的伪代码却每次进入 `loadThrough` 都重新取戳 | — | 等待循环移入 `loadThrough` 内部 |
+| v3-8 | 次要 | 集合的 digest 计算方式未定义 | — | §4.4：按 `HGETALL` 返回顺序拼接后计算 |
