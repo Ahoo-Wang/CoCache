@@ -26,6 +26,7 @@ class CacheMetrics internal constructor() {
     private val loadFailureAdder = LongAdder()
     private val loadNanosAdder = LongAdder()
     private val loadRejectedAdder = LongAdder()
+    private val loadTimeoutAdder = LongAdder()
     private val leaseWaitAdder = LongAdder()
     private val leaseWaitTimeoutAdder = LongAdder()
     private val fillRejectedAdder = LongAdder()
@@ -49,6 +50,11 @@ class CacheMetrics internal constructor() {
     val loadFailures: Long get() = loadFailureAdder.sum()
     val loadNanos: Long get() = loadNanosAdder.sum()
     val loadRejected: Long get() = loadRejectedAdder.sum()
+
+    /**
+     * 异步数据源超过 `LoadPolicy.asyncTimeout` 的加载数。
+     */
+    val loadTimeouts: Long get() = loadTimeoutAdder.sum()
     val leaseWaits: Long get() = leaseWaitAdder.sum()
     val leaseWaitTimeouts: Long get() = leaseWaitTimeoutAdder.sum()
     val fillRejected: Long get() = fillRejectedAdder.sum()
@@ -76,6 +82,7 @@ class CacheMetrics internal constructor() {
         }
     }
     internal fun loadRejected() = loadRejectedAdder.increment()
+    internal fun loadTimeout() = loadTimeoutAdder.increment()
     internal fun leaseWait() = leaseWaitAdder.increment()
     internal fun leaseWaitTimeout() = leaseWaitTimeoutAdder.increment()
     internal fun fillRejected() = fillRejectedAdder.increment()

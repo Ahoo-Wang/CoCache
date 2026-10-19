@@ -65,6 +65,11 @@ abstract class MultiNodeSpec {
      */
     protected abstract fun elapse(duration: Duration)
 
+    /**
+     * 访问缓存的方式：同步 API（默认），或经异步视图（[AsyncMultiNodeSpec]，RFC 0004 §10.1）。
+     */
+    protected open val access: CacheAccess = CacheAccess.SYNC
+
     protected lateinit var backend: HookedBackend
     protected lateinit var cacheName: String
     private lateinit var nodes: List<CacheRuntime>
@@ -120,11 +125,12 @@ abstract class MultiNodeSpec {
         codec = TestCodec
         loader = this@MultiNodeSpec.loader
         this.policy = policy
+        access.source(this)
     }
 
     private fun caches(policy: CachePolicy = policy()): List<Cache<String, String>> {
         val spec = spec(policy)
-        return nodes.map { it.create(spec) }
+        return nodes.map { access.cache(it.create(spec)) }
     }
 
     private fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))

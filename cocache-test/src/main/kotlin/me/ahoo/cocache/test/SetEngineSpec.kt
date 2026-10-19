@@ -64,8 +64,13 @@ abstract class SetEngineSpec {
         backend.close()
     }
 
-    protected fun CacheRuntime.setCache(): SetCache<String, String> = create(
-        setCacheSpec(cacheName) { elementCodec = StringCodec }
+    /**
+     * 访问缓存的方式：同步 API（默认），或经异步视图（[AsyncSetEngineSpec]，RFC 0004 §10.1）。
+     */
+    protected open val access: CacheAccess = CacheAccess.SYNC
+
+    protected fun CacheRuntime.setCache(): SetCache<String, String> = access.setCache(
+        create(setCacheSpec(cacheName) { elementCodec = StringCodec })
     )
 
     @Test

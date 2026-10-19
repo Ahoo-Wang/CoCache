@@ -98,6 +98,7 @@ class CachePolicyTest {
         fails { LeasePolicy(wait = Duration.ofSeconds(-1)) }
         fails { LoadPolicy(maxConcurrent = -1) }
         fails { LoadPolicy(acquireTimeout = Duration.ofSeconds(-1)) }
+        fails { LoadPolicy(asyncTimeout = Duration.ZERO) }
         fails { LocalPolicy(maximumSize = 0) }
         fails { LocalPolicy(initialCapacity = -1) }
         fails { LocalPolicy(expireAfterAccess = Duration.ZERO) }

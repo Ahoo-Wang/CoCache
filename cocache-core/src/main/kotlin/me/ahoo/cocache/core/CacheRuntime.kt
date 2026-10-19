@@ -23,6 +23,7 @@ import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.core.clock.TickingClock
 import me.ahoo.cocache.core.engine.AbstractEngine
+import me.ahoo.cocache.core.engine.AsyncContext
 import me.ahoo.cocache.core.engine.CoherentEngine
 import me.ahoo.cocache.core.engine.EngineContext
 import me.ahoo.cocache.core.engine.InvalidationRetrier
@@ -33,7 +34,11 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ForkJoinPool
+import java.util.concurrent.ForkJoinWorkerThread
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -68,7 +73,18 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         val retrier = InvalidationRetrier(scheduler, builder.retryPolicy)
         // 先于调度器关闭：未执行的重试计入丢弃并告警
         owned.add(AutoCloseable { retrier.close() })
-        context = EngineContext(nodeId, clock, backend, refreshExecutor, retrier, builder.loadObserver)
+        context = EngineContext(nodeId, clock, backend, refreshExecutor, retrier, builder.loadObserver, asyncContext(builder))
+    }
+
+    /**
+     * 异步路径的执行资源（RFC 0004 §5.1）。运行时自建的执行器与定时器随运行时关闭；调用方给出的执行器不关闭。
+     * 关闭顺序（[owned] 逆序）：先让未触发的定时等待失败，再停定时器，最后关闭自建的执行器。
+     */
+    private fun asyncContext(builder: Builder): AsyncContext {
+        val executor = builder.asyncExecutor ?: defaultAsyncExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
+        val blocking = builder.blockingExecutor ?: defaultBlockingExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
+        val timer = defaultTimer().also { owned.add(AutoCloseable { it.shutdownNow() }) }
+        return AsyncContext(executor, blocking, timer).also { owned.add(it) }
     }
 
     /**
@@ -165,6 +181,8 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         var refreshExecutor: Executor? = null
         var retryPolicy: RetryPolicy = RetryPolicy()
         var loadObserver: LoadObserver = LoadObserver.NOOP
+        var asyncExecutor: Executor? = null
+        var blockingExecutor: Executor? = null
 
         fun backend(backend: CoherenceBackend) = apply { this.backend = backend }
 
@@ -185,6 +203,19 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
          * 回源观测（如链路追踪），作用于本运行时创建的所有缓存。不指定时为 [LoadObserver.NOOP]。
          */
         fun loadObserver(loadObserver: LoadObserver) = apply { this.loadObserver = loadObserver }
+
+        /**
+         * 异步执行器（RFC 0004 §5.1）：运行异步视图的全部续接，只承载短小的非阻塞工作。由调用方管理。
+         * 不指定时使用运行时自建并管理的 `ForkJoinPool`（并行度为 CPU 数，`cocache-async-*`）：
+         * 它的线程在 `join()` 上阻塞时会补偿线程，替换为固定大小的普通线程池时没有这个保证。
+         */
+        fun asyncExecutor(asyncExecutor: Executor) = apply { this.asyncExecutor = asyncExecutor }
+
+        /**
+         * 阻塞执行器（RFC 0004 §5.1）：异步路径上的同步数据源与只实现同步 SPI 的后端只在这里执行。由调用方管理，不应排队。
+         * 不指定时：JDK 21+ 每个任务一个虚拟线程；否则是运行时自建的不排队守护线程池（最多 512 线程，满时拒绝）。
+         */
+        fun blockingExecutor(blockingExecutor: Executor) = apply { this.blockingExecutor = blockingExecutor }
 
         fun build(): CacheRuntime = CacheRuntime(this)
     }
@@ -214,6 +245,44 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
                 daemonThreads("cocache-refresh"),
                 ThreadPoolExecutor.AbortPolicy(),
             ).apply { allowCoreThreadTimeOut(true) }
+        }
+
+        internal const val MAX_BLOCKING_THREADS = 512
+        private const val BLOCKING_KEEP_ALIVE_SECONDS = 60L
+
+        private fun defaultAsyncExecutor(): ForkJoinPool {
+            val counter = AtomicInteger()
+            val factory = ForkJoinPool.ForkJoinWorkerThreadFactory { pool ->
+                object : ForkJoinWorkerThread(pool) {}.apply {
+                    name = "cocache-async-${counter.incrementAndGet()}"
+                    isDaemon = true
+                }
+            }
+            return ForkJoinPool(Runtime.getRuntime().availableProcessors(), factory, null, true)
+        }
+
+        /**
+         * JDK 21+ 经反射取得 `Executors.newVirtualThreadPerTaskExecutor()`（基线为 JDK 17）；否则为不排队的守护线程池。
+         * 满时拒绝而不是由调用方执行：调用方是异步执行器的线程，同步数据源不得在那里执行。
+         */
+        internal fun defaultBlockingExecutor(
+            virtual: () -> ExecutorService? = ::virtualThreadExecutor
+        ): ExecutorService = virtual() ?: ThreadPoolExecutor(
+            0,
+            MAX_BLOCKING_THREADS,
+            BLOCKING_KEEP_ALIVE_SECONDS,
+            TimeUnit.SECONDS,
+            SynchronousQueue(),
+            daemonThreads("cocache-blocking"),
+            ThreadPoolExecutor.AbortPolicy(),
+        )
+
+        private fun virtualThreadExecutor(): ExecutorService? = runCatching {
+            Executors::class.java.getMethod("newVirtualThreadPerTaskExecutor").invoke(null) as ExecutorService
+        }.getOrNull()
+
+        private fun defaultTimer(): ScheduledExecutorService {
+            return ScheduledThreadPoolExecutor(1, daemonThreads("cocache-timer")).apply { removeOnCancelPolicy = true }
         }
 
         private fun defaultScheduler(): ScheduledExecutorService {

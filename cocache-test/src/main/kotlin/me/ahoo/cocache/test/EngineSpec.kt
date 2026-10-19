@@ -46,6 +46,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -71,6 +72,11 @@ abstract class EngineSpec {
      * 模拟失效通道断开并重新订阅。
      */
     protected abstract fun simulateReconnect()
+
+    /**
+     * 访问缓存的方式：同步 API（默认），或经异步视图（[AsyncEngineSpec] 等，RFC 0004 §10.1）。
+     */
+    protected open val access: CacheAccess = CacheAccess.SYNC
 
     protected lateinit var backend: HookedBackend
     protected lateinit var nodeA: CacheRuntime
@@ -112,7 +118,13 @@ abstract class EngineSpec {
         .clock(clock)
         .refreshExecutor(directExecutor)
         .retryPolicy(RetryPolicy(initialBackoff = Duration.ofMillis(10), maxBackoff = Duration.ofMillis(50)))
+        .also { configureNode(it) }
         .build()
+
+    /**
+     * 调整 [nodeA] / [nodeB] 的运行时（如异步路径的执行器）。
+     */
+    protected open fun configureNode(builder: CacheRuntime.Builder) = Unit
 
     protected open fun policy(): CachePolicy = CachePolicy(
         ttl = Duration.ofMinutes(10),
@@ -144,10 +156,13 @@ abstract class EngineSpec {
             loader = this@EngineSpec.loader
             this.policy = policy
             block()
+            access.source(this)
         }
     }
 
-    protected fun CacheRuntime.cache(spec: CacheSpec<String, String> = spec()): Cache<String, String> = create(spec)
+    protected fun CacheRuntime.cache(spec: CacheSpec<String, String> = spec()): Cache<String, String> = access.cache(
+        create(spec)
+    )
 
     protected fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 
@@ -270,8 +285,10 @@ abstract class EngineSpec {
         database["k"] = "v"
         val loading = CountDownLatch(1)
         val release = CountDownLatch(1)
-        afterLoad = { key ->
-            if (Thread.currentThread().name == "holder") {
+        // 只挡住第一次回源（A 的）：不按线程名判断，异步视图上回源可能在别的线程上执行
+        val first = AtomicBoolean(true)
+        afterLoad = { _ ->
+            if (first.compareAndSet(true, false)) {
                 loading.countDown()
                 release.awaitOrFail("release")
             }
@@ -402,8 +419,10 @@ abstract class EngineSpec {
         database["k"] = "v0"
         val loaded = CountDownLatch(1)
         val release = CountDownLatch(1)
+        // 只挡住第一次回源（early 的）：不按线程名判断，异步视图上回源可能在别的线程上执行
+        val first = AtomicBoolean(true)
         afterLoad = {
-            if (Thread.currentThread().name == "early") {
+            if (first.compareAndSet(true, false)) {
                 loaded.countDown()
                 release.awaitOrFail("release")
             }
@@ -582,10 +601,11 @@ abstract class EngineSpec {
         database["k"] = "v1"
         elapse(Duration.ofSeconds(6))
         cacheA["k"].assert().isEqualTo("v0")
+        // 刷新在异步视图上可能在另一个线程上完成：等它结束再触发 B 的刷新
+        awaitCondition("A refreshed") { cacheA["k"] == "v1" }
         cacheB["k"]
+        awaitCondition("B refreshed") { cacheB["k"] == "v1" }
         loads.get().assert().isEqualTo(2)
-        cacheA["k"].assert().isEqualTo("v1")
-        cacheB["k"].assert().isEqualTo("v1")
         nodeA.metrics().refreshes.assert().isEqualTo(1)
         nodeB.metrics().refreshes.assert().isEqualTo(1)
     }
@@ -776,8 +796,10 @@ abstract class EngineSpec {
         database["k"] = "v0"
         val loaded = CountDownLatch(1)
         val release = CountDownLatch(1)
+        // 只挡住第一次回源（early 的）：不按线程名判断，异步视图上回源可能在别的线程上执行
+        val first = AtomicBoolean(true)
         afterLoad = {
-            if (Thread.currentThread().name == "early") {
+            if (first.compareAndSet(true, false)) {
                 loaded.countDown()
                 release.awaitOrFail("release")
             }

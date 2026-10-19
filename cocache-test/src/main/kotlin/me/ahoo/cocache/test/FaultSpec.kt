@@ -71,6 +71,11 @@ abstract class FaultSpec {
      */
     protected open fun disconnect(): AutoCloseable? = null
 
+    /**
+     * 访问缓存的方式：同步 API（默认），或经异步视图（[AsyncFaultSpec]，RFC 0004 §10.1）。
+     */
+    protected open val access: CacheAccess = CacheAccess.SYNC
+
     protected lateinit var backend: HookedBackend
     protected lateinit var cacheName: String
     private lateinit var nodeA: CacheRuntime
@@ -119,9 +124,12 @@ abstract class FaultSpec {
         codec = TestCodec
         loader = this@FaultSpec.loader
         this.policy = policy
+        access.source(this)
     }
 
-    private fun CacheRuntime.cache(policy: CachePolicy = policy()): Cache<String, String> = create(spec(policy))
+    private fun CacheRuntime.cache(policy: CachePolicy = policy()): Cache<String, String> = access.cache(
+        create(spec(policy))
+    )
 
     private fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 

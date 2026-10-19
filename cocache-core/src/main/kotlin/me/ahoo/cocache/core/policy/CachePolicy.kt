@@ -180,16 +180,26 @@ data class LeasePolicy @JvmOverloads constructor(
  *
  * @param maxConcurrent 每个缓存同时进行的回源数上限；`0` 表示不限制
  * @param acquireTimeout 等待许可的最长时间，超时抛出 [me.ahoo.cocache.core.SourceLoadRejectedException]
+ * @param asyncTimeout 异步数据源（`AsyncCacheLoader`）一次加载的最长时间，超时以
+ *   [me.ahoo.cocache.core.SourceLoadTimeoutException] 失败并释放 lease 与回源许可（RFC 0004 §5.2.1）；数据源返回的 future 不会被取消，
+ *   它可能仍在执行（此时不再计入并发上限），迟到的结果被丢弃。由 JDK 的延迟线程计时（`completeOnTimeout`）。不作用于同步数据源
  */
 data class LoadPolicy @JvmOverloads constructor(
     val maxConcurrent: Int = 0,
     val acquireTimeout: Duration = Duration.ofSeconds(1),
+    val asyncTimeout: Duration = DEFAULT_ASYNC_TIMEOUT,
 ) {
     init {
         require(maxConcurrent >= 0) { "load.maxConcurrent[$maxConcurrent] must not be negative." }
         require(
             !acquireTimeout.isNegative && acquireTimeout <= MAX_DURATION
         ) { "load.acquireTimeout[$acquireTimeout] must be within [0, $MAX_DURATION]." }
+        requirePositive("load.asyncTimeout", asyncTimeout)
+    }
+
+    companion object {
+        @JvmField
+        val DEFAULT_ASYNC_TIMEOUT: Duration = Duration.ofSeconds(30)
     }
 }
 

@@ -48,4 +48,11 @@ interface SetCache<K : Any, E : Any> : Cache<K, Set<E>> {
      * @throws CacheWriteException L1 写入失败
      */
     fun clear(key: K)
+
+    /**
+     * 同一个集合缓存的异步视图（RFC 0004）。其它实现默认抛出 [UnsupportedOperationException]。
+     */
+    override fun async(): AsyncSetCache<K, E> = throw UnsupportedOperationException(
+        "${javaClass.name} does not support async()."
+    )
 }
