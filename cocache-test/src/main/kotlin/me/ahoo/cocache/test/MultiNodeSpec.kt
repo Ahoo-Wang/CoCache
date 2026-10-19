@@ -39,6 +39,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -228,8 +229,10 @@ abstract class MultiNodeSpec {
         database["k"] = "v0"
         val loading = CountDownLatch(1)
         val release = CountDownLatch(1)
+        // 只挡住第一次回源（持有者的）：不按线程名判断，异步视图上回源可能在别的线程上执行
+        val first = AtomicBoolean(true)
         afterLoad = {
-            if (Thread.currentThread().name == "holder") {
+            if (first.compareAndSet(true, false)) {
                 loading.countDown()
                 release.awaitOrFail("release holder")
             }
@@ -263,8 +266,10 @@ abstract class MultiNodeSpec {
         database["k"] = "v0"
         val filled = CountDownLatch(1)
         val resume = CountDownLatch(1)
+        // 只挡住第一次 fill（填充者的）：异步视图上 fill 由引擎的线程发起
+        val first = AtomicBoolean(true)
         backend.afterFill = { _, _ ->
-            if (Thread.currentThread().name == "filler") {
+            if (first.compareAndSet(true, false)) {
                 filled.countDown()
                 resume.awaitOrFail("resume filler")
             }
@@ -295,7 +300,7 @@ abstract class MultiNodeSpec {
         val readerParked = CountDownLatch(1)
         val resume = CountDownLatch(1)
         backend.afterRead = { _, read ->
-            if (Thread.currentThread().name == "reader") {
+            if (backend.issuer() == "reader") {
                 readerParked.countDown()
                 resume.awaitOrFail("resume reader")
             }
@@ -324,7 +329,7 @@ abstract class MultiNodeSpec {
         val firstWritten = CountDownLatch(1)
         val releaseFirst = CountDownLatch(1)
         backend.afterPut = {
-            if (Thread.currentThread().name == "first") {
+            if (backend.issuer() == "first") {
                 firstWritten.countDown()
                 releaseFirst.awaitOrFail("release first put")
             }
@@ -398,13 +403,15 @@ abstract class MultiNodeSpec {
         afterLoad = { release.awaitOrFail("release refresh loads") }
         val hits = caches.flatMapIndexed { node, cache -> keys.map { key -> fork("node$node-$key") { cache[key] } } }
         awaitCondition("one refresh load per key, every other hit returned") {
-            keys.all { loadsOf(it) == 2 } && hits.count { !it.thread.isAlive } == hits.size - keys.size
+            // 同步视图上取得刷新令牌的命中线程等在回源里；异步视图上刷新可能在异步执行器上回源，命中线程都已返回
+            keys.all { loadsOf(it) == 2 } && hits.count { !it.thread.isAlive } >= hits.size - keys.size
         }
         release.countDown()
         hits.forEach { it.join() }
         afterLoad = null
         sum { it.refreshes }.assert().isEqualTo(hits.size.toLong())
-        keys.forEach { remoteValue(it).assert().isEqualTo("$it-1") }
+        // 异步视图上刷新的 fill 可能在命中线程返回之后才完成
+        awaitCondition("refresh fills reached L1") { keys.all { remoteValue(it) == "$it-1" } }
         awaitCondition("every node refilled from L1") { caches.all { cache -> keys.all { cache[it] == "$it-1" } } }
         keys.forEach { key -> loadsOf(key).assert().withFailMessage { "loads of $key" }.isEqualTo(2) }
     }

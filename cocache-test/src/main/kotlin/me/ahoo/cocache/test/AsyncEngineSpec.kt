@@ -573,8 +573,8 @@ abstract class AsyncEngineSpec : EngineSpec() {
         const val WAITERS = 1000
 
         /**
-         * 等待期间允许新增的线程数（定时器、JDK 内部线程等），与 [WAITERS] 无关。
+         * 等待期间允许新增的线程数（定时器、JDK 的延迟线程、L1 客户端按需创建的 I/O 线程等），与 [WAITERS] 无关。
          */
-        const val CONSTANT_THREADS = 4
+        const val CONSTANT_THREADS = 8
     }
 }

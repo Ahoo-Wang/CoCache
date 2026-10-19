@@ -340,7 +340,7 @@ abstract class EngineSpec {
         val releaseReader = CountDownLatch(1)
         var reader: Concurrency.Forked<String?>? = null
         backend.afterRead = { _, read ->
-            if (Thread.currentThread().name == "reader") {
+            if (backend.issuer() == "reader") {
                 readerParked.countDown()
                 releaseReader.awaitOrFail("release reader")
             }
@@ -367,7 +367,7 @@ abstract class EngineSpec {
         val firstWritten = CountDownLatch(1)
         val releaseFirst = CountDownLatch(1)
         backend.afterPut = {
-            if (Thread.currentThread().name == "first") {
+            if (backend.issuer() == "first") {
                 firstWritten.countDown()
                 releaseFirst.awaitOrFail("release first put")
             }

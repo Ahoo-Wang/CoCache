@@ -271,7 +271,7 @@ abstract class FaultSpec {
         database["k"] = "v0"
         cacheB["k"].assert().isEqualTo("v0")
         backend.afterPut = {
-            if (Thread.currentThread().name == "writer") {
+            if (backend.issuer() == "writer") {
                 throw RemoteUnavailableException("put (applied)")
             }
         }

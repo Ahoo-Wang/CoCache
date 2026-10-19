@@ -99,11 +99,69 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
         await(base.publish(channel, message).toCompletableFuture())
     }
 
+    fun publishAsync(channel: ByteArray, message: ByteArray): CompletableFuture<Void?> =
+        mapped(bounded(base.publish(channel, message).toCompletableFuture())) { null }
+
     /**
      * `SPUBLISH`：集群中按频道的 slot 路由到所属主节点。
      */
     fun spublish(channel: ByteArray, message: ByteArray) {
         await(base.spublish(channel, message).toCompletableFuture())
+    }
+
+    fun spublishAsync(channel: ByteArray, message: ByteArray): CompletableFuture<Void?> =
+        mapped(bounded(base.spublish(channel, message).toCompletableFuture())) { null }
+
+    /**
+     * [await] 的异步版本（RFC 0004 §4.3）：超时与异常类型与同步等待一致。超过 `commandTimeout` 时取消命令并以
+     * [RedisException] 失败；执行异常解包为原始的运行时异常（不是运行时异常的包装为 [RedisException]）。
+     * 返回的是新的 future（取消它不影响命令），在 Lettuce 的 I/O 线程或 JDK 的延迟线程上完成：引擎会切换线程。
+     */
+    fun <T> bounded(future: CompletableFuture<T>): CompletableFuture<T> {
+        val pending = CompletableFuture<T>()
+        future.whenComplete { value, error ->
+            if (error == null) pending.complete(value) else pending.completeExceptionally(failureOf(error))
+        }
+        // orTimeout 作用于自己的副本（它会完成 future 本身），命令完成时 JDK 撤销超时任务
+        pending.orTimeout(commandTimeout.toMillis(), TimeUnit.MILLISECONDS)
+        val result = CompletableFuture<T>()
+        pending.whenComplete { value, error ->
+            when (error) {
+                null -> result.complete(value)
+                is TimeoutException -> {
+                    future.cancel(false)
+                    result.completeExceptionally(RedisException("Command timed out after $commandTimeout.", error))
+                }
+
+                else -> result.completeExceptionally(error)
+            }
+        }
+        return result
+    }
+
+    /**
+     * 以 [transform] 的结果完成的新 future；失败（含 [transform] 抛出）以原始异常完成，不像 `thenApply` 那样包装为 [CompletionException]。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    fun <T, R> mapped(future: CompletableFuture<T>, transform: (T) -> R): CompletableFuture<R> {
+        val result = CompletableFuture<R>()
+        future.whenComplete { value, error ->
+            if (error != null) {
+                result.completeExceptionally(if (error is CompletionException) error.cause ?: error else error)
+            } else {
+                try {
+                    result.complete(transform(value))
+                } catch (e: Throwable) {
+                    result.completeExceptionally(e)
+                }
+            }
+        }
+        return result
+    }
+
+    private fun failureOf(error: Throwable): RuntimeException {
+        val cause = if (error is CompletionException || error is ExecutionException) error.cause ?: error else error
+        return cause as? RuntimeException ?: RedisException(cause)
     }
 
     /**

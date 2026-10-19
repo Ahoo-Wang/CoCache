@@ -88,6 +88,9 @@ internal class ShardedInvalidationChannel(
         connections.spublish(channelOf(namespace).toByteArray(Charsets.UTF_8), frame)
     }
 
+    override fun publishAsync(namespace: String, frame: ByteArray): CompletableFuture<Void?> =
+        connections.spublishAsync(channelOf(namespace).toByteArray(Charsets.UTF_8), frame)
+
     @Suppress("TooGenericExceptionCaught")
     override fun ping() {
         unconfirmed.forEach(::resubscribe)

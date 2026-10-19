@@ -14,6 +14,7 @@
 package me.ahoo.cocache.redis
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -22,14 +23,18 @@ import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Token
 import java.time.Duration
 import java.util.IdentityHashMap
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 
 /**
  * 一个命名空间的 L1 存储：每个操作一次 Lua 往返（[RedisScripts]）。
+ *
+ * 原生异步（RFC 0004 §4.3）：每个操作只构造一次命令（`xxxCommand`），同步方法等待它，异步方法以与同步等待相同的超时与异常类型
+ * 返回它（[RedisConnections.bounded]），同步与异步只有一份协议实现。异步结果在 Lettuce 的 I/O 线程上完成，引擎负责切换线程。
  *
  * @param channel 原子广播的频道；为空时不在脚本中广播（后端不支持原子广播，由引擎经通道发布）
  */
@@ -37,13 +42,16 @@ internal class RedisRemoteStore(
     private val connections: RedisConnections,
     private val channel: ByteArray,
     private val invalidateBatchSize: Int,
-) : RemoteStore {
+) : AsyncRemoteStore {
 
     override fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
-        return decodeRead(connections.await(readAsync(key, lease, refresh)))
+        return decodeRead(connections.await(readCommand(key, lease, refresh)))
     }
 
-    private fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<List<Any?>> {
+    override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
+        connections.mapped(connections.bounded(readCommand(key, lease, refresh))) { decodeRead(it) }
+
+    private fun readCommand(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<List<Any?>> {
         val args = listOf(
             lease?.token?.toBytes() ?: EMPTY,
             millis(lease?.ttl),
@@ -62,7 +70,7 @@ internal class RedisRemoteStore(
      */
     @Suppress("TooGenericExceptionCaught")
     override fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
-        val futures = keys.associateWith { readAsync(it, leases[it], null) }
+        val futures = keys.associateWith { readCommand(it, leases[it], null) }
         val results = LinkedHashMap<String, RemoteRead>(futures.size)
         var failure: RuntimeException? = null
         for ((key, future) in futures) {
@@ -74,30 +82,71 @@ internal class RedisRemoteStore(
             }
         }
         val error = failure ?: return results
-        results.forEach { (key, read) ->
-            val lease = leases[key]
-            if (read is RemoteRead.Miss && read.leaseGranted && lease != null) {
-                releaseAsync(key, lease.token)
+        releaseGranted(results, leases)
+        throw error
+    }
+
+    /**
+     * [readAll] 的异步版本：等全部读取完成再判定；任一失败时先尽力释放其余读取取得的 lease，再以第一个异常失败。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    override fun readAllAsync(
+        keys: Collection<String>,
+        leases: Map<String, LeaseRequest>
+    ): CompletableFuture<Map<String, RemoteRead>> {
+        val futures = keys.associateWith { key ->
+            connections.mapped(connections.bounded(readCommand(key, leases[key], null))) { decodeRead(it) }
+        }
+        val result = CompletableFuture<Map<String, RemoteRead>>()
+        CompletableFuture.allOf(*futures.values.toTypedArray()).whenComplete { _, _ ->
+            val reads = LinkedHashMap<String, RemoteRead>(futures.size)
+            var failure: Throwable? = null
+            for ((key, future) in futures) {
+                val (read, error) = outcome(future)
+                if (error == null) {
+                    reads[key] = requireNotNull(read)
+                } else {
+                    val first = failure
+                    if (first == null) failure = error else first.addSuppressed(error)
+                }
+            }
+            val error = failure
+            if (error == null) {
+                result.complete(reads)
+            } else {
+                releaseGranted(reads, leases)
+                result.completeExceptionally(error)
             }
         }
-        throw error
+        return result
+    }
+
+    private fun releaseGranted(reads: Map<String, RemoteRead>, leases: Map<String, LeaseRequest>) {
+        reads.forEach { (key, read) ->
+            val lease = leases[key]
+            if (read is RemoteRead.Miss && read.leaseGranted && lease != null) {
+                releaseQuietly(key, lease.token)
+            }
+        }
     }
 
     /**
      * 尽力释放令牌（不等待）：失败只记录，lease 最终由 `lease.ttl` 回收。
      */
-    private fun releaseAsync(key: String, token: Token) {
-        connections.evalAsync<List<Any?>>(RedisScripts.RELEASE, listOf(key.bytes()), listOf(token.toBytes()))
-            .whenComplete { _, error ->
-                if (error != null) {
-                    log.warn(error) { "Release lease of key[$key] failed - reclaimed after lease ttl." }
-                }
+    private fun releaseQuietly(key: String, token: Token) {
+        releaseCommand(key, token).whenComplete { _, error ->
+            if (error != null) {
+                log.warn(error) { "Release lease of key[$key] failed - reclaimed after lease ttl." }
             }
+        }
     }
 
-    override fun fill(fill: Fill): Boolean = connections.await(fillAsync(fill)).firstFlag()
+    override fun fill(fill: Fill): Boolean = connections.await(fillCommand(fill)).firstFlag()
 
-    private fun fillAsync(fill: Fill): CompletableFuture<List<Any?>> {
+    override fun fillAsync(fill: Fill): CompletableFuture<Boolean> =
+        connections.mapped(connections.bounded(fillCommand(fill))) { it.firstFlag() }
+
+    private fun fillCommand(fill: Fill): CompletableFuture<List<Any?>> {
         val args = ArrayList<ByteArray>()
         args.add(fill.token.toBytes())
         addShape(args, fill.envelope, fill.ttl)
@@ -105,22 +154,40 @@ internal class RedisRemoteStore(
     }
 
     override fun fillAll(fills: List<Fill>): List<Boolean> {
-        val futures = fills.map { fillAsync(it) }
+        val futures = fills.map { fillCommand(it) }
         return futures.map { connections.await(it).firstFlag() }
     }
 
-    override fun release(key: String, token: Token) {
-        connections.eval<List<Any?>>(RedisScripts.RELEASE, listOf(key.bytes()), listOf(token.toBytes()))
+    override fun fillAllAsync(fills: List<Fill>): CompletableFuture<List<Boolean>> {
+        val futures = fills.map { fillAsync(it) }
+        return connections.mapped(allDone(futures)) { futures.map { it.join() } }
     }
 
+    override fun release(key: String, token: Token) {
+        connections.await(releaseCommand(key, token))
+    }
+
+    override fun releaseAsync(key: String, token: Token): CompletableFuture<Void?> =
+        connections.mapped(connections.bounded(releaseCommand(key, token))) { null }
+
+    private fun releaseCommand(key: String, token: Token): CompletableFuture<List<Any?>> =
+        connections.evalAsync(RedisScripts.RELEASE, listOf(key.bytes()), listOf(token.toBytes()))
+
     override fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
+        connections.await(putCommand(key, envelope, ttl, frame))
+    }
+
+    override fun putAsync(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
+        connections.mapped(connections.bounded(putCommand(key, envelope, ttl, frame))) { null }
+
+    private fun putCommand(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray): CompletableFuture<List<Any?>> {
         val args = ArrayList<ByteArray>()
         args.add(kindOf(envelope).bytes())
         args.add(millis(ttl))
         args.add(channel)
         args.add(frame)
         addPayload(args, envelope)
-        connections.eval<List<Any?>>(RedisScripts.PUT, listOf(key.bytes()), args)
+        return connections.evalAsync(RedisScripts.PUT, listOf(key.bytes()), args)
     }
 
     /**
@@ -128,13 +195,20 @@ internal class RedisRemoteStore(
      * 只广播本组的 key，并发执行；原子性只在单个组内成立。
      */
     override fun putAll(puts: List<Put>, frame: ByteArray) {
+        putAllCommands(puts, frame).forEach { connections.await(it) }
+    }
+
+    override fun putAllAsync(puts: List<Put>, frame: ByteArray): CompletableFuture<Void?> =
+        allDone(putAllCommands(puts, frame).map { connections.bounded(it) })
+
+    private fun putAllCommands(puts: List<Put>, frame: ByteArray): List<CompletableFuture<List<Any?>>> {
         val byKey = LinkedHashMap<String, Put>(puts.size)
         puts.forEach { byKey[it.key] = it }
         val putOf = IdentityHashMap<ByteArray, Put>(byKey.size)
         val keyBytes = byKey.values.map { put -> put.key.bytes().also { putOf[it] = put } }
         val groups = connections.groupBySlot(keyBytes).flatMap { it.chunked(invalidateBatchSize) }
         val frames = framesOf(byKey.keys, frame, groups)
-        val futures = groups.mapIndexed { index, group ->
+        return groups.mapIndexed { index, group ->
             val args = ArrayList<ByteArray>()
             args.add(channel)
             args.add(frames[index])
@@ -145,22 +219,47 @@ internal class RedisRemoteStore(
                 args.add(payloadCount(put.envelope).toString().bytes())
                 addPayload(args, put.envelope)
             }
-            connections.evalAsync<List<Any?>>(RedisScripts.PUT_ALL, group, args)
+            connections.evalAsync(RedisScripts.PUT_ALL, group, args)
         }
-        futures.forEach { connections.await(it) }
     }
 
     override fun invalidate(keys: Collection<String>, frame: ByteArray) {
+        invalidateCommands(keys, frame).forEach { connections.await(it) }
+    }
+
+    override fun invalidateAsync(keys: Collection<String>, frame: ByteArray): CompletableFuture<Void?> =
+        allDone(invalidateCommands(keys, frame).map { connections.bounded(it) })
+
+    private fun invalidateCommands(keys: Collection<String>, frame: ByteArray): List<CompletableFuture<List<Any?>>> {
         val groups = connections.groupBySlot(keys.map { it.bytes() }).flatMap { it.chunked(invalidateBatchSize) }
         val frames = framesOf(keys, frame, groups)
-        val futures = groups.mapIndexed { index, group ->
-            connections.evalAsync<List<Any?>>(
+        return groups.mapIndexed { index, group ->
+            connections.evalAsync(
                 RedisScripts.INVALIDATE,
                 group,
                 listOf(channel, frames[index])
             )
         }
-        futures.forEach { connections.await(it) }
+    }
+
+    /**
+     * 全部完成后完成；有失败时以按发出顺序的第一个异常失败（与同步版本逐个等待时抛出的异常一致）。
+     */
+    private fun allDone(futures: List<CompletableFuture<*>>): CompletableFuture<Void?> {
+        val result = CompletableFuture<Void?>()
+        CompletableFuture.allOf(*futures.toTypedArray()).whenComplete { _, _ ->
+            val error = futures.firstNotNullOfOrNull { outcome(it).second }
+            if (error == null) result.complete(null) else result.completeExceptionally(error)
+        }
+        return result
+    }
+
+    private fun <T> outcome(future: CompletableFuture<T>): Pair<T?, Throwable?> = try {
+        future.getNow(null) to null
+    } catch (e: CompletionException) {
+        null to (e.cause ?: e)
+    } catch (e: CancellationException) {
+        null to e
     }
 
     /**
@@ -188,18 +287,51 @@ internal class RedisRemoteStore(
         }
     }
 
-    override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {
+    override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean =
+        connections.await(reclaimCommand(key, observed, lease)).firstFlag()
+
+    override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
+        connections.mapped(connections.bounded(reclaimCommand(key, observed, lease))) { it.firstFlag() }
+
+    private fun reclaimCommand(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<List<Any?>> {
         val args = listOf(observed.toString().bytes(), lease.token.toBytes(), millis(lease.ttl))
-        return connections.eval<List<Any?>>(RedisScripts.RECLAIM, listOf(key.bytes()), args).firstFlag()
+        return connections.evalAsync(RedisScripts.RECLAIM, listOf(key.bytes()), args)
     }
 
     override fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
-        connections.eval<List<Any?>>(RedisScripts.ADD_MEMBERS, listOf(key.bytes()), memberArgs(ttl, frame, members))
+        connections.await(membersCommand(RedisScripts.ADD_MEMBERS, key, members, ttl, frame))
     }
 
+    override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
+        connections.mapped(
+            connections.bounded(membersCommand(RedisScripts.ADD_MEMBERS, key, members, ttl, frame))
+        ) { null }
+
     override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
-        connections.eval<List<Any?>>(RedisScripts.REMOVE_MEMBERS, listOf(key.bytes()), memberArgs(ttl, frame, members))
+        connections.await(membersCommand(RedisScripts.REMOVE_MEMBERS, key, members, ttl, frame))
     }
+
+    override fun removeMembersAsync(
+        key: String,
+        members: Collection<ByteArray>,
+        ttl: Duration?,
+        frame: ByteArray
+    ): CompletableFuture<Void?> =
+        connections.mapped(
+            connections.bounded(membersCommand(RedisScripts.REMOVE_MEMBERS, key, members, ttl, frame))
+        ) { null }
+
+    private fun membersCommand(
+        script: RedisScripts.Script,
+        key: String,
+        members: Collection<ByteArray>,
+        ttl: Duration?,
+        frame: ByteArray
+    ): CompletableFuture<List<Any?>> = connections.evalAsync(
+        script,
+        listOf(key.bytes()),
+        memberArgs(ttl, frame, members)
+    )
 
     private fun memberArgs(ttl: Duration?, frame: ByteArray, members: Collection<ByteArray>): List<ByteArray> {
         val args = ArrayList<ByteArray>(members.size + 3)
