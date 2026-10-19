@@ -15,10 +15,11 @@ plugins {
     alias(libs.plugins.jmh)
 }
 
-description = "CoCache 6.0 Redis backend (Lettuce native, no Spring)"
+description = "CoCache Redis backend (Lettuce native, no Spring)"
 
 dependencies {
     api(project(":cocache-core"))
+    implementation("io.github.oshai:kotlin-logging-jvm")
     api("io.lettuce:lettuce-core")
     testImplementation(project(":cocache-test"))
     jmh(platform(project(":cocache-dependencies")))

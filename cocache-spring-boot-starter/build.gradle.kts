@@ -11,6 +11,8 @@
  * limitations under the License.
  */
 
+description = "CoCache Spring Boot auto-configuration, actuator endpoint and metrics"
+
 plugins {
     alias(libs.plugins.kotlin.spring)
     kotlin("kapt")
@@ -35,3 +37,15 @@ dependencies {
     testImplementation(project(":cocache-test"))
 }
 
+
+kapt {
+    arguments {
+        // kapt 的类输出目录不在 Gradle 的标准位置，显式告诉配置处理器去哪里找 additional-spring-configuration-metadata.json
+        arg("org.springframework.boot.configurationprocessor.additionalMetadataLocations", "$projectDir/src/main/resources")
+    }
+}
+
+tasks.matching { it.name == "kaptKotlin" }.configureEach {
+    inputs.file("src/main/resources/META-INF/additional-spring-configuration-metadata.json")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+}

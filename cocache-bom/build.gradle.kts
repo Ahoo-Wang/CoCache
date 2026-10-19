@@ -11,6 +11,8 @@
  * limitations under the License.
  */
 
+description = "CoCache bill of materials"
+
 @Suppress("UNCHECKED_CAST")
 val libraryProjects = rootProject.ext.get("libraryProjects") as Iterable<Project>
 

@@ -11,11 +11,11 @@
  * limitations under the License.
  */
 
-description = "The Technology Compatibility Kit"
+description = "CoCache Technology Compatibility Kit for backends and engines"
 
 dependencies {
     api(project(":cocache-core"))
     api("me.ahoo.test:fluent-assert-core")
-    implementation("org.junit.jupiter:junit-jupiter-api")
-    implementation("org.junit.jupiter:junit-jupiter-params")
+    api("org.junit.jupiter:junit-jupiter-api")
+    api("org.junit.jupiter:junit-jupiter-params")
 }

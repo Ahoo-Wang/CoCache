@@ -131,7 +131,6 @@ configure(libraryProjects) {
     dependencies {
         api(platform(project(dependenciesProject.path)))
         testImplementation(platform(rootProject.libs.junit.bom))
-        implementation("org.slf4j:slf4j-api")
         testImplementation("ch.qos.logback:logback-classic")
         testImplementation("org.junit.jupiter:junit-jupiter-api")
         testImplementation("org.junit.jupiter:junit-jupiter-params")
@@ -178,9 +177,9 @@ configure(publishProjects) {
             create<MavenPublication>(publishName) {
                 from(components[publishComponentName])
                 pom {
-                    name.set(rootProject.name)
+                    name.set(project.name)
 
-                    description.set(getPropertyOf("description"))
+                    description.set(provider { project.description ?: getPropertyOf("description") })
                     url.set(getPropertyOf("website"))
                     issueManagement {
                         system.set("GitHub")

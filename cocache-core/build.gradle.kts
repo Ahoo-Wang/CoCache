@@ -11,9 +11,11 @@
  * limitations under the License.
  */
 
+description = "CoCache coherence engine, policies and in-memory backend"
+
 dependencies {
     api(project(":cocache-api"))
-    api("com.github.ben-manes.caffeine:caffeine")
-    api("io.github.oshai:kotlin-logging-jvm")
+    implementation("com.github.ben-manes.caffeine:caffeine")
+    implementation("io.github.oshai:kotlin-logging-jvm")
     testImplementation(project(":cocache-test"))
 }
