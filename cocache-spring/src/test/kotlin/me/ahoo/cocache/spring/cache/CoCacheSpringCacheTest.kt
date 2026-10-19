@@ -113,6 +113,27 @@ class CoCacheSpringCacheTest {
         cache.get("loaded") { "unused" }.assert().isEqualTo("L")
     }
 
+    /**
+     * `sync = true` 的加载受 lease 与失效戳保护：加载期间发生的失效不会被这次加载的旧结果覆盖。
+     */
+    @Test
+    fun invalidationDuringValueLoaderIsNotOverwritten() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val loading = fork {
+            cache.get("stale") {
+                started.countDown()
+                release.awaitOrFail()
+                "old"
+            }
+        }
+        started.awaitOrFail()
+        cache.evict("stale")
+        release.countDown()
+        loading.join().assert().isEqualTo("old")
+        cache.get("stale") { "new" }.assert().isEqualTo("new")
+    }
+
     @Test
     fun valueLoaderFailureIsWrappedAndShared() {
         val started = CountDownLatch(1)

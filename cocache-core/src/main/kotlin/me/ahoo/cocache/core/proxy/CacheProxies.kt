@@ -14,6 +14,7 @@
 package me.ahoo.cocache.core.proxy
 
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.SetCache
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
@@ -72,7 +73,7 @@ object CacheProxies {
         @Suppress("UNCHECKED_CAST", "CyclomaticComplexMethod")
         private fun dispatch(method: Method, args: Array<out Any?>): Any? {
             return when (method.name) {
-                "get" -> target.get(args[0] as Any)
+                "get" -> get(args)
                 "getAll" -> target.getAll(args[0] as Collection<Any>)
                 "lookup" -> target.lookup(args[0] as Any)
                 "put" -> put(args)
@@ -86,6 +87,14 @@ object CacheProxies {
                     "${type.name}.${method.name} is abstract and not part of ${Cache::class.java.simpleName}; declare it as a default method."
                 )
             }
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        private fun get(args: Array<out Any?>): Any? {
+            if (args.size == 1) {
+                return target.get(args[0] as Any)
+            }
+            return target.get(args[0] as Any, args[1] as CacheLoader<Any, Any>)
         }
 
         private fun put(args: Array<out Any?>) {

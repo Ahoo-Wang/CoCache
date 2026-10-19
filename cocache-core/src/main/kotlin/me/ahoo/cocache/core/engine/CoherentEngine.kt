@@ -14,6 +14,7 @@
 package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.Digest
@@ -69,6 +70,18 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     override fun lookup(key: K): Lookup<V> = lookupOf(entryOf(key))
 
+    /**
+     * 以调用方给出的 [loader] 回源，与 [get] 走同一条受 lease 与失效戳保护的路径（供 Spring `@Cacheable(sync = true)` 等使用）。
+     */
+    override fun get(key: K, loader: CacheLoader<K, V>): V? {
+        val storageKey = storageKey(key)
+        val entry = local.getIfPresent(storageKey)
+        if (entry != null && entry.expiresAt > clock.nowMillis()) {
+            return entry.value
+        }
+        return miss(key, storageKey, loader).value
+    }
+
     private fun entryOf(key: K): LocalEntry<V> {
         val storageKey = storageKey(key)
         val entry = local.getIfPresent(storageKey)
@@ -87,7 +100,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 未命中路径，与命中路径分开以保证 [entryOf] 足够小、可内联。
      */
-    private fun miss(key: K, storageKey: String): LocalEntry<V> {
+    private fun miss(key: K, storageKey: String, source: CacheLoader<K, V>? = loader): LocalEntry<V> {
         if (keyFilter?.notExist(storageKey) == true) {
             metrics.filtered()
             return LocalEntry(null, clock.nowMillis() + policy.absentTtl.toMillis())
@@ -95,34 +108,34 @@ internal class CoherentEngine<K : Any, V : Any>(
         metrics.miss()
         // 先于本次读取发生的失效此时必已递增戳：不接受开始于这些失效之前的共享加载（读己之写）
         val observed = stamps.current(storageKey)
-        val loaded = flights.execute(storageKey) { loadThrough(key, storageKey) }
+        val loaded = flights.execute(storageKey) { loadThrough(key, storageKey, source) }
         if (loaded.stamp >= observed) {
             return loaded.entry
         }
         // 新一轮加载必然开始于上一轮结束之后（SingleFlight 先注销、再发布），因此至多重试一次
-        return flights.execute(storageKey) { loadThrough(key, storageKey) }.entry
+        return flights.execute(storageKey) { loadThrough(key, storageKey, source) }.entry
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private fun loadThrough(key: K, storageKey: String): Loaded<V> {
+    private fun loadThrough(key: K, storageKey: String, source: CacheLoader<K, V>? = loader): Loaded<V> {
         // 在 SingleFlight 注册之后取戳；整个调用（含等待 lease 的重读）只取这一次
         val stamp = stamps.current(storageKey)
         if (pendingInvalidations.contains(storageKey)) {
-            return Loaded(loadBypassingRemote(key, storageKey, stamp), stamp)
+            return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
         val lease = LeaseRequest(context.nextToken(), policy.lease.ttl)
         val read = try {
             readWaitingLease(storageKey, lease)
         } catch (e: Exception) {
             onRemoteFailure("read", storageKey, e)
-            return Loaded(loadBypassingRemote(key, storageKey, stamp), stamp)
+            return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
         val entry = when (read) {
-            is RemoteRead.Hit -> onHit(key, storageKey, read, stamp, lease)
-            is RemoteRead.Miss -> loadAndFill(key, storageKey, stamp, lease.token.takeIf { read.leaseGranted })
+            is RemoteRead.Hit -> onHit(key, storageKey, read, stamp, lease, source)
+            is RemoteRead.Miss -> loadAndFill(key, storageKey, stamp, lease.token.takeIf { read.leaseGranted }, source)
             is RemoteRead.Leased -> {
                 metrics.leaseWaitTimeout()
-                loadBypassingRemote(key, storageKey, stamp)
+                loadBypassingRemote(key, storageKey, stamp, source)
             }
         }
         return Loaded(entry, stamp)
@@ -157,18 +170,19 @@ internal class CoherentEngine<K : Any, V : Any>(
         storageKey: String,
         read: RemoteRead.Hit,
         stamp: Long,
-        lease: LeaseRequest
+        lease: LeaseRequest,
+        source: CacheLoader<K, V>?
     ): LocalEntry<V> {
         if (read.format > backendFormat) {
             // 滚动升级期间更高版本写入的值：既不回收也不写回，否则新旧节点互相覆盖
             metrics.unknownFormat()
-            return loadBypassingRemote(key, storageKey, stamp)
+            return loadBypassingRemote(key, storageKey, stamp, source)
         }
         val value = try {
             check(read.format >= MIN_FORMAT) { "Unrecognized remote content (not written by this protocol)." }
             decode(read.envelope)
         } catch (e: Exception) {
-            return onCorrupt(key, storageKey, read, stamp, lease, e)
+            return onCorrupt(key, storageKey, read, stamp, lease, source, e)
         }
         metrics.remoteHit()
         val entry = localEntry(value, read.ttl, policy.localMaxAge)
@@ -186,6 +200,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         read: RemoteRead.Hit,
         stamp: Long,
         lease: LeaseRequest,
+        source: CacheLoader<K, V>?,
         error: Exception
     ): LocalEntry<V> {
         log.warn(error) { "Cache[$name] - key[$storageKey] - corrupted payload, reclaim and reload." }
@@ -197,9 +212,9 @@ internal class CoherentEngine<K : Any, V : Any>(
             false
         }
         if (!reclaimed) {
-            return loadBypassingRemote(key, storageKey, stamp)
+            return loadBypassingRemote(key, storageKey, stamp, source)
         }
-        return loadAndFill(key, storageKey, stamp, lease.token)
+        return loadAndFill(key, storageKey, stamp, lease.token, source)
     }
 
     private fun decode(envelope: Envelope): V? = when (envelope) {
@@ -222,12 +237,18 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 结果照常返回，L2 以降级限龄填充（否则慢 key 会一直未命中）。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun loadAndFill(key: K, storageKey: String, stamp: Long, token: Token?): LocalEntry<V> {
-        if (loader == null) {
+    private fun loadAndFill(
+        key: K,
+        storageKey: String,
+        stamp: Long,
+        token: Token?,
+        source: CacheLoader<K, V>?
+    ): LocalEntry<V> {
+        if (source == null) {
             return absentWithoutLoader(storageKey, stamp, token)
         }
         val value = try {
-            loadFromSource(key)
+            loadFromSource(key, source)
         } catch (e: Throwable) {
             token?.let { release(storageKey, it) }
             throw e
@@ -259,8 +280,13 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 不经过 L1 的回源：L1 故障、等待 lease 超时、未知格式、失效重试中。L2 以降级限龄填充（仍受戳保护）。
      */
-    private fun loadBypassingRemote(key: K, storageKey: String, stamp: Long): LocalEntry<V> {
-        val value = loadFromSource(key)
+    private fun loadBypassingRemote(
+        key: K,
+        storageKey: String,
+        stamp: Long,
+        source: CacheLoader<K, V>?
+    ): LocalEntry<V> {
+        val value = loadFromSource(key, source)
         metrics.degradedFill()
         val entry = localEntry(value, ttlOf(key, value), policy.degradedLocalMaxAge)
         fillLocal(storageKey, entry, stamp)
@@ -291,8 +317,8 @@ internal class CoherentEngine<K : Any, V : Any>(
         log.warn(error) { "Cache[$name] - key[$storageKey] - remote $operation failed, degrading." }
     }
 
-    private fun loadFromSource(key: K): V? {
-        val sourceLoader = loader ?: return null
+    private fun loadFromSource(key: K, source: CacheLoader<K, V>?): V? {
+        val sourceLoader = source ?: return null
         return guarded { sourceLoader.load(key) }
     }
 
@@ -531,7 +557,8 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun refreshAsync(key: K, storageKey: String) {
-        if (closed.get() || !refreshing.add(storageKey)) {
+        // 没有数据源的缓存（如只经 Spring Cache 写入）无法回源刷新
+        if (loader == null || closed.get() || !refreshing.add(storageKey)) {
             return
         }
         try {
@@ -572,7 +599,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             fillLocal(storageKey, entry, stamp)
             return Loaded(entry, stamp)
         }
-        return Loaded(loadAndFill(key, storageKey, stamp, token), stamp)
+        return Loaded(loadAndFill(key, storageKey, stamp, token, loader), stamp)
     }
 
     override fun put(key: K, value: V) {

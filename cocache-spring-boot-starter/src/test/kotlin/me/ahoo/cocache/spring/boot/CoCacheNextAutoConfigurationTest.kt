@@ -137,7 +137,11 @@ class CoCacheNextAutoConfigurationTest {
                 CacheRuntime::class.java
             ).cacheNames.assert().containsExactlyInAnyOrder("user", "profile", "index")
             assertThat(context).hasSingleBean(CacheManager::class.java)
-            (context.getBean(CacheManager::class.java) is CoCacheSpringCacheManager).assert().isTrue()
+            (
+                context.getBean(
+                    CacheManager::class.java
+                ) is org.springframework.cache.transaction.TransactionAwareCacheManagerProxy
+                ).assert().isTrue()
             context.getBean(CacheManager::class.java).getCache("user")?.get("2")?.get().assert().isEqualTo("user-2")
         }
     }
@@ -278,6 +282,20 @@ class CoCacheNextAutoConfigurationTest {
             .run { context ->
                 assertThat(context).hasNotFailed()
                 assertThat(context).doesNotHaveBean(me.ahoo.cocache.spring.tx.TransactionalInvalidator::class.java)
+            }
+    }
+
+    @Test
+    fun cacheManagerIsPlainWithoutSpringTx() {
+        runner.withUserConfiguration(InMemoryConfig::class.java)
+            .withClassLoader(
+                org.springframework.boot.test.context.FilteredClassLoader(
+                    org.springframework.transaction.support.TransactionSynchronizationManager::class.java
+                )
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                (context.getBean(CacheManager::class.java) is CoCacheSpringCacheManager).assert().isTrue()
             }
     }
 

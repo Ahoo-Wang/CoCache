@@ -101,6 +101,10 @@ class TransactionalInvalidatorTest {
         val invalidations = CopyOnWriteArrayList<List<String>>()
 
         override fun get(key: String): String? = throw UnsupportedOperationException()
+        override fun get(
+            key: String,
+            loader: me.ahoo.cocache.api.CacheLoader<String, String>
+        ): String? = throw UnsupportedOperationException()
         override fun getAll(keys: Collection<String>): Map<String, String> = throw UnsupportedOperationException()
         override fun lookup(key: String): Lookup<String> = throw UnsupportedOperationException()
         override fun put(key: String, value: String) = throw UnsupportedOperationException()
