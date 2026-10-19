@@ -44,7 +44,7 @@ class CacheAssembler(
     fun <K : Any, E : Any> create(spec: SetCacheSpec<K, E>): SetCache<K, E> = withCacheName(spec.name) {
         val builder = spec.toBuilder()
         customizers.filter { it.supports(spec.name) }.forEach { it.customize(builder) }
-        builder.policy = properties.policyFor(spec.name, builder.policy)
+        builder.policy = properties.setPolicyFor(spec.name, builder.policy)
         properties.keyPrefixFor(spec.name)?.let { builder.keyPrefix = it }
         runtime.create(builder.build())
     }

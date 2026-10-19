@@ -80,6 +80,15 @@ data class CoCacheProperties @ConstructorBinding constructor(
     }
 
     /**
+     * 集合缓存的策略：`cocache.defaults.ttl` / `ttl-forever` 不作用于集合缓存（其 L1 是唯一副本，全局寿命会让集合过期丢失），
+     * 只有 `cocache.caches.[name].*` 能改变它的寿命。其它默认项照常生效。
+     */
+    fun setPolicyFor(cacheName: String, declared: CachePolicy): CachePolicy {
+        val withDefaults = defaults.copy(ttl = null, ttlForever = null).applyTo(declared)
+        return cacheProperties(cacheName)?.applyTo(withDefaults) ?: withDefaults
+    }
+
+    /**
      * 配置文件中的 key 前缀：`cocache.caches.[name].key-prefix` 优先，其次 `cocache.defaults.key-prefix`；都没有时为 `null`
      * （沿用声明与定制器的值）。与策略字段同一规则：配置文件覆盖声明（含注解或 spec 中显式写出的 `keyPrefix`）。
      */
@@ -253,7 +262,8 @@ data class CoCacheProperties @ConstructorBinding constructor(
             absentTtl?.let { builder.absentTtl = it }
             localMaxAge?.let { builder.localMaxAge = it }
             degradedLocalMaxAge?.let { builder.degradedLocalMaxAge = it }
-            refreshWindow?.let { builder.refreshWindow = it }
+            // 0 表示关闭（与注解一致），用于在配置文件中关掉声明里的提前刷新
+            refreshWindow?.let { builder.refreshWindow = it.takeUnless(Duration::isZero) }
         }
 
         private fun applyLease(builder: CachePolicy.Builder, policy: CachePolicy) {

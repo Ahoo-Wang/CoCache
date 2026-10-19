@@ -19,6 +19,7 @@ import me.ahoo.cocache.core.CacheAdmin
 import org.springframework.cache.support.SimpleValueWrapper
 import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.Executor
 import java.util.function.Supplier
 import org.springframework.cache.Cache as SpringCache
@@ -92,20 +93,20 @@ class CoCacheSpringCache(
         return CompletableFuture.supplyAsync({ get(key) }, executor)
     }
 
-    @Suppress("TooGenericExceptionCaught", "UNCHECKED_CAST")
+    /**
+     * 响应式 / `CompletableFuture` 方法上的 `@Cacheable(sync = true)`：与 [get] (key, valueLoader) 一样经引擎受 lease
+     * 与失效戳保护的路径回源（在 [executor] 上等待异步 loader 完成），而不是“读不到就 put”。
+     */
+    @Suppress("UNCHECKED_CAST")
     override fun <T : Any> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> {
-        return CompletableFuture.supplyAsync({ get(key) }, executor).thenCompose { wrapper ->
-            if (wrapper != null) {
-                return@thenCompose CompletableFuture.completedFuture(wrapper.get() as T)
-            }
-            try {
-                valueLoader.get().thenApply { value ->
-                    put(key, value)
-                    value
+        return CompletableFuture.supplyAsync({
+            cache.get(key) { _ ->
+                try {
+                    valueLoader.get().join()
+                } catch (error: CompletionException) {
+                    throw error.cause ?: error
                 }
-            } catch (error: Throwable) {
-                CompletableFuture.failedFuture(error)
-            }
-        }
+            } as T
+        }, executor)
     }
 }
