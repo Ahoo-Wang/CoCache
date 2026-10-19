@@ -1,13 +1,11 @@
 ---
 title: JoinCache
-description: Compose two CoCache caches into one read-only view with @JoinCacheable — declaring it, extracting the join key, batch reads, and invalidation.
+description: Read two caches as one with @JoinCacheable — declaring the view, extracting the join key, batch reads, invalidation, and what the view does not guarantee.
 ---
 
 # JoinCache
 
-A `JoinCache` reads a value from one cache (the *first* cache), derives a key from it, and reads a second cache (the *join* cache) with that key. One call returns both values. Typical uses are "order + its customer" or "profile extension + its user".
-
-A JoinCache is a **read-only view**. It has no copy of its own, no loader, and no `put`: each component cache keeps its own loader, TTL, and invalidation, and the view only reads through them. It is not a `Cache` subtype.
+Many read models are "one thing plus the thing it points to": an order and its customer, a profile extension and its user. You already cache both. A `JoinCache` reads them together: it reads a value from the **first** cache, derives a key from it, and reads the **join** cache with that key.
 
 ```mermaid
 sequenceDiagram
@@ -25,17 +23,19 @@ sequenceDiagram
     J-->>C: JoinValue(firstValue, joinKey, secondValue)
 ```
 
+A JoinCache is a **read-only view**. It stores nothing, has no loader, and has no `put`. Each component cache keeps its own loader, TTL, and invalidation.
+
 ## Declare it {#declare}
 
-Both component caches are ordinary CoCache caches, declared as interfaces or as `CacheSpec` beans. Declare the view as an interface that extends `JoinCache<K1, V1, K2, V2>`, and list it in `@EnableCoCache(joinCaches = …)`:
+The two component caches are ordinary caches, declared as interfaces or spec beans. The view is an interface that extends `JoinCache<K1, V1, K2, V2>`, listed in `@EnableCoCache(joinCaches = …)`:
 
 ```kotlin
 data class UserExtendInfo(val id: String, val userId: String)
 
-@CoCache(keyPrefix = "userExtendInfo:")
+@CoCache
 interface UserExtendInfoCache : Cache<String, UserExtendInfo>
 
-@CoCache(keyPrefix = "user:")
+@CoCache
 interface UserCache : Cache<String, User>
 
 @JoinCacheable(
@@ -50,50 +50,54 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
     joinCaches = [UserExtendInfoJoinCache::class],
 )
 @SpringBootApplication
-class AppServer
+class App
 ```
 
-The starter registers the view as a bean of the interface type. The bean name is `@JoinCacheable(name)`, which defaults to the interface's simple name (`UserExtendInfoJoinCache`).
+Inject `UserExtendInfoJoinCache` like any bean. Its bean name is the view name.
 
 | `@JoinCacheable` attribute | Meaning |
 |----------------------------|---------|
 | `name` | View name and bean name. Default: the interface's simple name. |
-| `firstCacheName` | **Required.** The first cache, by name: an interface cache's name, or a spec cache's name or bean name. |
+| `firstCacheName` | **Required.** The first cache's name (an interface cache's name, or a spec cache's name or bean name). |
 | `joinCacheName` | **Required.** The join cache, by the same rules. |
-| `joinKeyExpression` | SpEL template evaluated with the first value as root, for example `#{#root.userId}` or `#{userId}`. Requires `K2 = String`. |
+| `joinKeyExpression` | SpEL template with the first value as root, such as `#{#root.userId}` or `#{userId}`. Requires `K2 = String`. |
 | `joinKeyExtractor` | Bean name of a `JoinKeyExtractor<V1, K2>`. |
-
-Startup fails, naming the view and the attribute, when a name is blank or matches no cache, when the cache's type is not `Cache<K1, V1>` (or `Cache<K2, V2>`), or when the type arguments aren't concrete.
 
 ## The join key {#join-key}
 
-Pick one of three ways:
+Choose one of three ways:
 
-1. **`joinKeyExpression`**: a SpEL template, the same syntax as `@CoCache(keyExpression)`, with the first value as root. It works only when the join key type is `String`.
+1. **`joinKeyExpression`**: a SpEL template, for `String` join keys only.
 2. **`joinKeyExtractor = "beanName"`**: any join key type.
-3. **Neither**: the starter uses the only bean of type `JoinKeyExtractor<V1, K2>`. None, or more than one, fails startup.
-
-Setting both `joinKeyExpression` and `joinKeyExtractor` fails startup.
+3. **Neither**: the single bean of type `JoinKeyExtractor<V1, K2>` is used.
 
 ```kotlin
 @Bean
-fun userIdExtractor() = JoinKeyExtractor<UserExtendInfo, String> { it.userId }
+fun userIdOf() = JoinKeyExtractor<UserExtendInfo, String> { it.userId }
 ```
 
-A `null` join key means "no join for this value": the result has `joinKey = null` and `secondValue = null`, and the join cache isn't read. An expression that evaluates to `null` behaves the same way.
+A `null` join key means "nothing to join": the result has `joinKey = null` and `secondValue = null`, and the join cache isn't read. An expression that evaluates to `null` behaves the same way.
 
-## Semantics {#semantics}
+## What each call does {#semantics}
 
-| Operation | Behavior |
-|-----------|----------|
-| `get(key)` | Reads the first cache (which loads from its own source on a miss). A missing first value, including a negative entry, returns `null`. Otherwise it extracts the join key and reads the join cache. A missing second value gives `secondValue = null`. |
-| `getAll(keys)` | Two batch reads: `getAll` on the first cache, then one `getAll` on the join cache over the **distinct** non-null join keys (skipped when there are none). The result contains only the keys whose first value exists. |
-| `invalidate(key)` | Invalidates **only the first cache**. The second value is shared by other entries and belongs to its own writers. |
-| `invalidate(firstKey, joinKey)` | Invalidates both caches. |
+| Call | Behavior |
+|------|----------|
+| `get(key)` | Reads the first cache (loading on a miss). Absent, or a negative entry: returns `null`. Otherwise extracts the join key and reads the join cache; an absent second value gives `secondValue = null`. |
+| `getAll(keys)` | One `getAll` on the first cache, then one `getAll` on the join cache over the **distinct** non-null join keys (skipped if there are none). Contains only keys whose first value exists. |
+| `invalidate(key)` | Invalidates **only the first cache**. The second value is shared with other entries and belongs to its own writers. |
+| `invalidate(firstKey, joinKey)` | Invalidates both. |
 
-A JoinCache adds no coherence logic of its own: every read goes through the component caches, so their guarantees (fenced fills, invalidation, `localMaxAge`) apply unchanged. The two reads aren't atomic, so the two values may come from different moments. When a `User` changes, invalidate it in `UserCache`, and every view that reads it sees the new value on its next call.
+Because `getAll` is two batch reads, listing 100 extensions that point to 20 users costs at most one batched Redis read and one `loadAll` per cache, regardless of how many entries share a user.
 
-You can add default methods to the interface; they run on the proxy:
+## Guarantees and limits {#guarantees}
+
+- Every read goes through the component caches, so their guarantees apply unchanged: fenced loads, invalidation, `localMaxAge`.
+- **No snapshot across the two caches.** The two reads are independent; the pair may combine values from different moments. If the first value changes its join key between reads, you see the old pairing until the first cache is invalidated.
+- When a `User` changes, invalidate it in `UserCache`. Every view that reads it sees the change on its next call.
+
+## Adding methods {#methods}
+
+Default methods run on the proxy:
 
 ```kotlin
 interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, User> {
@@ -101,18 +105,22 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 }
 ```
 
-Abstract methods other than those of `JoinCache` fail at startup. Declare them as default methods.
+An abstract method that doesn't match a `JoinCache` method fails startup.
+
+## Startup checks {#validation}
+
+Startup fails, naming the view and the attribute, when:
+
+- `firstCacheName` or `joinCacheName` is blank or matches no cache,
+- a named cache isn't a `Cache<K1, V1>` (or `Cache<K2, V2>`),
+- the interface's type arguments aren't concrete or `@JoinCacheable` is missing,
+- both `joinKeyExpression` and `joinKeyExtractor` are set, `joinKeyExpression` is used with a non-`String` join key, or the extractor lookup by type finds zero or several beans.
 
 ## Without Spring {#without-spring}
 
 `SimpleJoinCache` in `cocache-core` is the implementation, and `JoinCacheProxies` wraps it in your interface:
 
 ```kotlin
-val view = SimpleJoinCache("userExtendInfoJoin", userExtendInfoCache, userCache) { info -> info.userId }
+val view = SimpleJoinCache("UserExtendInfoJoinCache", userExtendInfoCache, userCache) { info -> info.userId }
 val typed = JoinCacheProxies.create(UserExtendInfoJoinCache::class.java, view)
 ```
-
-## Next steps
-
-- [Quick Start](./quick-start.md#composing-caches): the example app uses this view.
-- [Migrating from 5.x](./migration-6.md#joincache): what changed since 5.x.
