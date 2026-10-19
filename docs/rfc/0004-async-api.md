@@ -1,6 +1,6 @@
 # RFC 0004：异步 API
 
-- 状态：**草案**（待维护者审阅）。本 RFC 就是 AGENTS.md 要求的“先问再改”：它提议修改 `cocache-api`（新增用户 API 与 SPI 接口、`Cache` / `SetCache` 各加一个 default 方法），并为可选模块 `cocache-coroutines` 引入新依赖 `kotlinx-coroutines-core`（§7，**需要维护者单独批准**）。**不改线格式**，Lua 脚本不变。
+- 状态：**已批准（2026-10-19，维护者）**，待实施（§13）。范围按全文确定：异步读与写、`AsyncSetCache`、`AsyncInvalidationChannel`、A1–A14。本 RFC 就是 AGENTS.md 要求的“先问再改”：它修改 `cocache-api`（新增用户 API 与 SPI 接口、`Cache` / `SetCache` 各加一个 default 方法），并为可选模块 `cocache-coroutines` 引入新依赖 `kotlinx-coroutines-core`（§7，**已批准**，只用于该模块）。**不改线格式**，Lua 脚本不变。审阅中的修改：默认异步执行器由 `commonPool` 改为运行时自建的池（§5.1、§12 Q2）；补充同步与异步混合合并时不变量的论证（§5.4）；验收中写明同步命中不退化与 lease 等待的线程数测试（§10.1、§11）
 - 前提：6.x 小版本，**只做增量**。同步 API、同步 SPI、同步命中路径的行为与性能不变；所有新增接口方法都是 default 方法（`-jvm-default=enable`），对已有第三方实现二进制兼容。
 - 关系：兑现 [RFC 0003](0003-target-architecture.md) §8 Q8 的预留（当时的名字是 `AsyncCoCache`，本文改为 `AsyncCache`，与 `Cache` 对应）。规范以 [architecture.md](../architecture.md) 为准；本 RFC 实施时同步修改其 §1 非目标、§5 线程模型、§9.5 与 §14 不变量（§9）。
 - 触发条件：维护者已决定需要异步 API（Q8 的触发条件之一：reactive 用户的需求）。
@@ -19,12 +19,12 @@
 | A6 | **异步 SingleFlight 与同步共用一张表**：先注册、后取戳；**先注销、再发布**；读己之写至多重试一次；每个调用方拿到共享结果的**副本** | 同步与异步对同一 key 的并发未命中只回源一次；副本让取消只影响取消者 |
 | A7 | **取消只作用于调用方自己的 future**：不取消共享加载，不取消 loader 返回的 future，lease 照常 fill 或释放 | 共享加载属于所有等待者；中途放弃只会让其它等待者失败、让 lease 白等 |
 | A8 | **异常透明**：返回的 future 以**原始异常**异常完成（`CacheReadException`、`CacheWriteException`、loader 的异常、`SourceLoadRejectedException` 等），不以 `CompletionException` 包装；异步方法**从不同步抛出** | 与同步 API、代理“原样抛出”的不变量一致。JDK 的 `join()` / `get()` 自己会包装，这是 JDK 行为；`handle`、`exceptionally`、协程 `await()` 看到的都是原始异常 |
-| A9 | **线程模型**：L2 命中在调用方线程上返回已完成的 future；其余情况 future 在**异步执行器**上完成。L1 I/O 与用户 loader 的 future 完成后先切换到异步执行器，再运行任何引擎或用户代码，**Lettuce 事件循环上什么都不执行**。等待 lease、等待回源许可都用定时器调度重读，**不挂起任何线程** | 解码（用户 `Codec`）在事件循环上执行会拖慢共享连接上的全部命令；挂起线程等待 lease 正是异步 API 要消除的东西 |
+| A9 | **线程模型**：L2 命中在调用方线程上返回已完成的 future；其余情况 future 在**异步执行器**上完成（默认是运行时自建的 `cocache-async-*` 池，不是 `commonPool`；同步 loader 从不在该池上执行，而是在单独的阻塞执行器上）。L1 I/O 与用户 loader 的 future 完成后先切换到异步执行器，再运行任何引擎或用户代码，**Lettuce 事件循环上什么都不执行**。等待 lease、等待回源许可都用定时器调度重读，**不挂起任何线程** | 解码（用户 `Codec`）在事件循环上执行会拖慢共享连接上的全部命令；挂起线程等待 lease 正是异步 API 要消除的东西 |
 | A10 | **命中路径**：同步 L2 命中的代码不改；异步 L2 命中 = 同一次 Caffeine 查找 + 一次 `completedFuture` 分配。验收：异步 L2 命中吞吐 ≥ 同轮同步 L2 命中的 80%（1 线程与 8 线程）。达不到时启用 §5.8 的备选（L2 条目缓存一个不可变的已完成 future） | 一次逃逸分配是 `CompletableFuture` 返回类型的下限；预算写死，备选方案事先设计好 |
 | A11 | **Spring**：`retrieve(key)` / `retrieve(key, loader)` 改走异步视图，不再占用 retrieve 执行器线程；`cocache.spring-cache.retrieve-executor` 在 6.3 弃用（设置时告警，不再使用） | 消除“每个等待中的调用占一个线程”和嵌套调用的死锁条件（architecture.md §9.5） |
 | A12 | **协程**：可选模块 `cocache-coroutines`（6.4），`cache.suspending()` 视图与 `SuspendingCacheLoader`。`kotlinx-coroutines-core` 只出现在该模块中 | api 仍零依赖；Java 用户不受影响 |
 | A13 | **异步 loader 有超时**：`LoadPolicy.asyncTimeout`（默认 30 s）。超时后共享调用以 `SourceLoadTimeoutException` 失败并释放 lease | 一个永不完成的 future 会让该 key 在本节点上永远合并到一个不会结束的调用；同步路径至少还会占着一个看得见的线程 |
-| A14 | **发布顺序**：6.3 交付 api + core + Redis + 内存后端 + TCK + Spring；6.4 交付协程模块（依赖获批后） | 协程只是薄封装，不应阻塞核心交付；依赖审批独立进行 |
+| A14 | **发布顺序**：6.3 交付 api + core + Redis + 内存后端 + TCK + Spring；6.4 交付协程模块（依赖已获批） | 协程只是薄封装，不应阻塞核心交付；依赖审批独立进行 |
 
 ---
 
@@ -244,13 +244,15 @@ interface AsyncInvalidationChannel : InvalidationChannel {
 
 | 组件 | 用途 | 默认 | 配置 |
 |------|------|------|------|
-| **异步执行器** `asyncExecutor` | 所有异步续接：解码、L2 填充、发出下一条 L1 命令、调用 `loadAsync`、完成返回的 future | `ForkJoinPool.commonPool()`（与 `CompletableFuture` 的默认异步执行器、Caffeine 的默认执行器相同） | `CacheRuntime.Builder.asyncExecutor`；starter `cocache.async-executor`（bean 名） |
+| **异步执行器** `asyncExecutor` | 所有异步续接：解码、L2 填充、发出下一条 L1 命令、调用 `loadAsync`、完成返回的 future | 运行时自建的 `ForkJoinPool`：并行度 = CPU 数，守护线程，命名 `cocache-async-N`，随运行时关闭。**只执行短小的非阻塞工作；同步 loader 与同步 SPI 调用从不在这里执行** | `CacheRuntime.Builder.asyncExecutor`；starter `cocache.async-executor`（bean 名，与 6.1 的执行器同一规则） |
 | **阻塞执行器** `blockingExecutor` | 异步路径上的同步 loader；非原生异步后端的同步 SPI 调用 | JDK 21+：每任务一个虚拟线程；JDK 17：不排队、按需增长的守护线程池（≤ 512 线程，超出时由调用方执行）。即现在 Spring retrieve 执行器的默认值，移入 core 复用 | `CacheRuntime.Builder.blockingExecutor`；starter `cocache.blocking-executor`（bean 名） |
 | **定时器** `cocache-timer` | 等待 lease 的退避重读、等待回源许可的重试、`asyncTimeout` | 运行时自建的单线程守护 `ScheduledExecutorService`。**定时任务只把工作提交给异步执行器**，自己不执行任何引擎或用户代码 | 不可配置 |
 
-- 选择 `commonPool` 作为默认异步执行器的关键理由：`ForkJoinPool` 的工作线程在 `CompletableFuture.join()` 上阻塞时会经 `ManagedBlocker` 补偿线程。用户若在异步续接里调用了同步 API（不推荐），不会因为异步执行器被占满而死锁。替换为固定大小的普通线程池时没有这个保证，文档中写明。
+- **为什么不用 `commonPool`**（审阅决定，见 §12 Q2）：它与应用的并行流、其它库共用，被占满时所有缓存的完成都会停顿，而且从线程转储上看不出原因。自建池的线程名 `cocache-async-*` 在转储与 profiler 中一眼可辨，生命周期与运行时一致。
+- **为什么仍是 `ForkJoinPool`**：它的工作线程在 `CompletableFuture.join()` 上阻塞时会经 `ManagedBlocker` 补偿线程。用户若在异步续接里调用了同步 API（不推荐），池不会因此被占满而死锁。替换为固定大小的普通线程池时没有这个保证，文档中写明。
+- **两个执行器分工固定**：异步执行器上只运行引擎续接、解码、L2 填充、`loadAsync` 的同步部分与用户 future 的完成；同步 `CacheLoader.load` / `loadAll` 与非原生异步后端的同步 SPI 调用**只在阻塞执行器上执行**。`AsyncEngineSpec` 断言这一点（§10.1）。
 - 不复用 `cocache-retry` 调度线程：重试任务在该线程上同步调用 `store.invalidate`，最长阻塞 `commandTimeout`，会推迟 lease 重读。
-- 与现有配置项相同，执行器只按 bean 名解析，用户提供的执行器不随运行时关闭（architecture.md §9.2）。
+- 与现有配置项相同，执行器只按 bean 名解析，用户提供的执行器不随运行时关闭（architecture.md §9.2）；运行时自建的异步池、阻塞池（JDK 17 的平台线程池）与定时器在 `CacheRuntime.close()` 中最后关闭。
 - **运行时关闭**：定时器先停止；被取消的定时任务所属的 future 以 `IllegalStateException("CacheRuntime closed")` 异常完成，并尽力释放已取得的 lease；在途的 L1 future 照常完成。
 
 ### 5.2 读路径
@@ -323,7 +325,9 @@ executeAsync(key, block: () -> CompletableFuture<R>): CompletableFuture<R>
   checkNotReentrant(key)                          // 守卫：本线程是否正在为该 key 调用 loader
   call = Call(owner = null)
   existing = calls.putIfAbsent(key, call)
-  if existing != null: return existing.future.copy()
+  if existing != null:
+      return if existing.async: existing.future.copy()                 // 异步 leader 本来就在异步执行器上完成
+             else forwardOn(asyncExecutor, existing.future)       // 同步 leader 在自己的线程上完成：转发，不让用户续接跑在它上面
   f = try { block() } catch (e) { failedFuture(e) }   // block 内第一件事是取戳：注册之后
   f.whenComplete { r, e ->
       calls.remove(key, call)                      // 先注销
@@ -333,7 +337,17 @@ executeAsync(key, block: () -> CompletableFuture<R>): CompletableFuture<R>
 ```
 
 - **先注销再发布**、**注册之后取戳**、**读己之写至多重试一次**：与同步路径逐条相同，证明（RFC 0003 §4.4、architecture.md §5）不变：重试发起时上一轮调用已注销，新一轮调用（无论是自己发起还是合并到别人发起的）注册于注销之后，它的戳不早于本次读取观察到的戳。
-- **同步与异步互相合并**：同步调用合并到异步调用时 `join()` 等待（同步调用方本来就阻塞）；异步调用合并到同步调用时拿到副本，不阻塞。
+- **同步与异步互相合并**：两种 leader 对表的操作完全相同，所以不变量与谁领导、谁合并无关。逐条：
+
+  | 不变量 | 同步 leader（`execute`，现状） | 异步 leader（`executeAsync`） | 为什么混合合并时仍成立 |
+  |--------|------|------|------|
+  | 注册之后取戳 | `putIfAbsent` 成功后在本线程调用 `loadThrough`，其第一句取戳 | `putIfAbsent` 成功后调用 `block`，`loadThroughAsync` 的第一句取戳 | 戳只由 leader 取，合并者从不取加载戳；leader 的种类不影响“注册 → 取戳”的先后 |
+  | 先注销再发布 | `calls.remove(key, call)` 后 `call.future.complete` | `whenComplete` 中先 `remove` 再 `complete` | 任何合并者（同步的 `join`、异步的副本）都只能在 `complete` 之后观察到结果，此时调用已从表中移除，它随后的重试必然注册新调用或合并到注销之后注册的调用 |
+  | 读己之写至多重试一次 | `loadMiss`：`observed` 取于合并之前；结果 `stamp < observed` 时再 `execute` 一次 | `missAsync`：同样的 `observed` 与一次重试 | 重试合并到的调用注册于上一轮注销之后，即晚于本次 `observed`，其加载戳 ≥ `observed`；这一论证只用到“先注销再发布”和“注册之后取戳”，两者对两种 leader 都成立 |
+
+  - **同步调用合并到异步调用**：在 `call.future` 上 `join()`（解包后抛出原始异常）。阻塞的只有该同步调用方自己的线程：异步 leader 的续接在异步执行器上推进，不依赖这个线程。唯一的例外是同步调用方本身就是异步执行器的线程（在异步续接里调用同步 API），此时由 `ForkJoinPool` 的补偿线程保证不死锁（§5.1）；loader 内的这种调用被重入守卫拒绝（见下）。同步调用方的拥有线程检查对异步调用不适用（异步调用没有拥有线程），由重入守卫覆盖。
+  - **异步调用合并到同步调用**：不阻塞。同步 leader 在自己的线程上完成 `call.future`，如果直接返回 `copy()`，副本会在同步 leader 的线程上完成，用户的续接随之在一个不属于异步执行器的线程上运行，违反 A9。所以合并到同步调用的异步调用方拿到的是经 `whenCompleteAsync(…, asyncExecutor)` 转发的新 future（合并到异步调用时 `call.future` 本来就在异步执行器上完成，`copy()` 即可）。
+  - **批量**：`executeAll`（同步）合并到异步调用时同样 `join`；`executeAllAsync` 合并到同步调用时同样经异步执行器转发。
 - **副本**（`CompletableFuture.copy()`，JDK 9+）：每个调用方（含 leader）拿到不同的 future，取消、`obtrude`、`complete` 都只影响自己。
 - **重入检测**：同步路径保留 `owner === currentThread`。另外引擎在**调用 loader 期间**（同步 loader 的整个执行；异步 loader 的 `loadAsync` 同步部分）把 `(SingleFlight, key)` 记入一个 ThreadLocal 守卫；同一线程在守卫内再对同一 key 发起同步或异步调用时快速失败（`IllegalStateException`，与现状同一信息）。覆盖：
   - 异步 loader 在 `loadAsync` 中直接调用 `cache.async().get(sameKey)`；
@@ -460,14 +474,14 @@ interface LoadObserver {
 | loader 超时（`asyncTimeout`） | 释放 lease，以 `SourceLoadTimeoutException` 完成（新增，只在异步 loader 上） |
 | 回源被拒绝 | 释放 lease，以 `SourceLoadRejectedException` 完成（同；等待改为定时重试） |
 | 写入失败 | 两次递增与淘汰已完成；`put` 一类以 `CacheWriteException` 完成；`invalidate` 默认登记重试后正常完成（同） |
-| 异步执行器拒绝任务 | 以 `RejectedExecutionException` 完成，已取得的 lease 经阻塞执行器尽力释放（新增；默认的 `commonPool` 不会拒绝） |
+| 异步执行器拒绝任务 | 以 `RejectedExecutionException` 完成，已取得的 lease 经阻塞执行器尽力释放（新增；默认的自建 `ForkJoinPool` 只在运行时关闭后拒绝） |
 | 重入 | `IllegalStateException`，在 future 中（同步路径是抛出） |
 
 ### 8.3 配置
 
 | 项 | 位置 | 默认 |
 |----|------|------|
-| `asyncExecutor` | `CacheRuntime.Builder`；starter `cocache.async-executor`（bean 名） | `ForkJoinPool.commonPool()` |
+| `asyncExecutor` | `CacheRuntime.Builder`；starter `cocache.async-executor`（bean 名） | 运行时自建的 `ForkJoinPool`（CPU 数，守护，`cocache-async-*`，随运行时关闭） |
 | `blockingExecutor` | `CacheRuntime.Builder`；starter `cocache.blocking-executor`（bean 名） | JDK 21+ 虚拟线程；否则不排队的守护线程池（≤ 512） |
 | `LoadPolicy.asyncTimeout` | `CachePolicy`；`cocache.defaults.load-async-timeout`、`cocache.caches.[name].load-async-timeout` | 30 s；必须为正且 ≤ 100 年 |
 | `cocache.spring-cache.retrieve-executor` | starter | 弃用（§6） |
@@ -480,8 +494,8 @@ interface LoadObserver {
 
 | # | 修改后 |
 |---|--------|
-| 5 | **SingleFlight 先注销调用、再发布结果**（读己之写依赖这个顺序）；同步与异步调用共用一张表，异步调用在注册之后取戳；每个调用方拿到共享结果的副本。同线程对同一 key 的重入（同步调用的拥有线程，或正在为该 key 调用 loader 的线程）快速失败；批量合并先注册全部 key、先启动自己负责的 key |
-| 6 | **同步路径上 loader 在调用方线程上执行**；异步路径上 `AsyncCacheLoader` 在异步执行器上调用，同步 loader 在阻塞执行器上执行。L1 与 loader 的 future 完成后先切换到异步执行器再执行任何续接，**事件循环线程上不执行续接** |
+| 5 | **SingleFlight 先注销调用、再发布结果**（读己之写依赖这个顺序）；同步与异步调用共用一张表，异步调用在注册之后取戳；每个调用方拿到共享结果的副本；同步调用合并到异步调用时只阻塞自己的线程，异步调用合并到同步调用时经异步执行器拿到结果（§5.4 的逐条论证）。同线程对同一 key 的重入（同步调用的拥有线程，或正在为该 key 调用 loader 的线程）快速失败；批量合并先注册全部 key、先启动自己负责的 key |
+| 6 | **同步路径上 loader 在调用方线程上执行**；异步路径上 `AsyncCacheLoader` 在异步执行器上调用，同步 loader 只在阻塞执行器上执行，从不在异步执行器上执行。L1 与 loader 的 future 完成后先切换到异步执行器再执行任何续接，**事件循环线程上不执行续接** |
 | 7 | **令牌必须释放或过期**：loader、`ttlOf`、`Codec` 失败，回源被拒绝或超时，刷新令牌用不上，以及运行时关闭时取消的等待，都要 `release` |
 | 17（新） | **取消不传播**：取消调用方的 future 不取消共享加载、不取消 loader 的 future、不跳过写入方的第二次递增 |
 | 18（新） | **异步 API 不挂起线程、不同步抛出**：等待 lease 与回源许可经定时器调度；失败以原始异常（不包装为 `CompletionException`）完成返回的 future |
@@ -497,14 +511,14 @@ interface LoadObserver {
 | 新增 | 内容 |
 |------|------|
 | `AsyncEngineSpec` | 继承 `EngineSpec`，把读写入口换成 `async()` 视图（`EngineSpec` 抽出 `read` / `write` 钩子，默认走同步 API；异步实现以 `join` 后解包等待）。**`EngineSpec` 的每个用例都在异步路径上重跑**，包括同节点失效与并发读、同节点并发 `put`、读己之写、跨节点单次回源、lease 等待超时、失效重试、损坏回收、未知格式、批量 |
-| `AsyncEngineSpec` 的专有用例 | 取消一个等待者不影响其它等待者与 L1 fill；全部等待者取消后加载仍完成并 fill；返回的 future 不在后端 I/O 线程上完成（`HookedBackend` 在专用线程上完成 future 并断言续接线程）；lease 等待期间不挂起线程（异步执行器为单线程时 100 个并发异步读取同一个被 lease 的 key 全部完成）；异常为原始类型；异步方法不同步抛出；loader future 永不完成时 `asyncTimeout` 释放 lease、其它节点随后可以回源；同步与异步调用互相合并（只回源一次）；`loadAsync` 同步部分重入同一 key 快速失败；阻塞执行器上的同步 loader 重入快速失败；同步 loader 经异步调用时在阻塞执行器上执行；异步 loader 经同步调用时可用 |
+| `AsyncEngineSpec` 的专有用例 | 取消一个等待者不影响其它等待者与 L1 fill；全部等待者取消后加载仍完成并 fill；返回的 future 不在后端 I/O 线程上完成（`HookedBackend` 在专用线程上完成 future 并断言续接线程）；**lease 等待只用 O(1) 个线程**：另一节点持有 lease 期间发起 N = 1000 个异步读取，异步执行器为单线程、阻塞执行器为计数线程工厂，断言等待期间所有线程工厂都没有创建新线程、`ThreadMXBean` 的线程数增量不超过常数（与 N 无关）、没有线程处于 `TIMED_WAITING`/`WAITING` 于引擎代码中，lease 释放后 N 个读取全部完成且只回源一次；同样的用例覆盖等待回源许可；异常为原始类型；异步方法不同步抛出；loader future 永不完成时 `asyncTimeout` 释放 lease、其它节点随后可以回源；同步与异步调用互相合并（只回源一次）；`loadAsync` 同步部分重入同一 key 快速失败；阻塞执行器上的同步 loader 重入快速失败；同步 loader 经异步调用时在阻塞执行器上执行、从不在异步执行器上执行（断言线程名）；同步调用合并到异步加载时只阻塞自己（其它异步调用照常完成）；异步调用合并到同步加载时结果在异步执行器上送达；异步 loader 经同步调用时可用 |
 | `AsyncSetEngineSpec` | 同理继承 `SetEngineSpec` |
 | `AsyncBackendProtocolSpec` | 继承 `BackendProtocolSpec`，经 `AsyncRemoteStore` 的方法重跑协议用例；另加同步与异步交替调用的一致性、不得同步抛出 |
 | `HookedBackend` | 被包装的 store 是 `AsyncRemoteStore` 时也实现它；钩子（`failAll`、`failWrites`、`failFill`、`failRelease`、改写读取、写入前后编排）同时作用于同步与异步方法；新增“在指定线程上完成 future”的钩子 |
 
 - 运行矩阵：`InMemoryBackend`（原生异步）、一个只实现同步 SPI 的测试后端（经阻塞适配器）、Redis 的 `pubsub` / 非原子 / `sharded` 三种后端（与 `EngineSpec` 相同的矩阵），设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时连接 Cluster。
 - 竞态仍用 latch 编排，禁止 sleep；等待 `finished` latch；跨节点效果带超时轮询。
-- 多进程交错的 `MultiNodeSpec` 正在另一个会话中实现：它合入后增加“同步写 + 异步读”“异步写 + 同步读”的跨节点交错。
+- `MultiNodeSpec` 与 `FaultSpec` 已合入（#650）：新增 `AsyncMultiNodeSpec` / `AsyncFaultSpec`，以同样的入口钩子在异步路径上重跑，并增加“同步写 + 异步读”“异步写 + 同步读”的跨节点交错。
 
 ### 10.2 模块测试
 
@@ -521,26 +535,27 @@ interface LoadObserver {
 
 | 路径 | 验收 |
 |------|------|
-| 同步 `l2Hit`、`l2HitViaInterface`、`l2HitMixed` | 与 6.2 相比在噪声内（命中路径代码未改，必须用数据证明） |
+| 同步 `l2Hit`、`l2HitViaInterface`、`l2HitMixed` | **吞吐与 6.2 相比在噪声内**：至少 5 轮交替运行（`--rerun`），1 线程与 8 线程，比较中位数，置信区间不得与退化区间重叠（命中路径代码未改，也必须用数据证明） |
 | `l2HitAsync` / `l2HitAsyncMixed` | ≥ 同轮同步对应项的 80%（1 与 8 线程）；否则实施 §5.8 备选并重测 |
 | `l1ReadAsync`（存储层，`store.readAsync(…).join()`，与 `l1Read` 对应） | ≥ 同轮 `l1Read` 的 95%（同步 `read` 本身就是等待同一个异步调用） |
 | `missLoadAsync`、`setAsync`、`invalidateAsync`（经引擎，含线程切换） | ≥ 同步对应项的 90% |
 | `l1ReadPipelined` | 只报告，不设门槛（展示单线程可达的吞吐） |
 | 分配 | `-prof gc` 报告异步 L2 命中每次操作的分配字节数（预期约 24 B） |
+| lease 等待的线程数 | 不是基准而是测试：§10.1 的“N 个异步等待者只用 O(1) 个线程”用例必须通过（内存后端与 Redis 后端） |
 
 ---
 
-## 12. 未决问题
+## 12. 已决问题（原未决问题，2026-10-19 审阅决定）
 
-| # | 问题 | 倾向 |
-|---|------|------|
-| Q1 | 是否批准 `kotlinx-coroutines-core` 作为 `cocache-coroutines` 的依赖 | 批准；只在该模块中，6.4 交付。不批准时协程用户自行 `await()`（官方文档给出三行扩展函数） |
-| Q2 | 默认异步执行器：`commonPool` 还是运行时自建的 `ForkJoinPool` | `commonPool`：零配置、与 JDK / Caffeine 一致；续接都是短小的非阻塞工作。自建池多一组线程，收益只是与应用的并行流隔离 |
-| Q3 | `asyncTimeout` 的默认值 | 30 s：远大于常见 loader 的 p99，又让“丢失回调”的 key 在半分钟内恢复。设为 `null`（不限）会把一个 bug 变成永久不可用的 key |
-| Q4 | 是否支持 `@CoCache interface X : AsyncCache<K, V>` 或自动注册 `AsyncCache` bean | 6.3 不做（§3.4）。有明确需求时再加，届时只需在注册器中把 bean 类型改为 `AsyncCache`、实例为 `engine.async()` |
-| Q5 | `JoinCache` 的异步视图 | 推迟：它是两次 `getAll` 的组合，用户可以用两次 `async().getAll` 写出来 |
-| Q6 | 同步路径是否也对 `AsyncCacheLoader` 之外的情况设超时 | 否：阻塞的 loader 无法被打断，超时只会让调用方先返回而线程继续占用 |
-| Q7 | `retrieve-executor` 弃用而不是立即删除 | 弃用：6.x 只做增量，删除配置项属于破坏性变化（会触发 `RemovedProperties` 的启动失败），留到 7.0 |
+| # | 问题 | 决定与理由 |
+|---|------|-----------|
+| Q1 | 是否引入 `kotlinx-coroutines-core` | **批准**，只作为可选模块 `cocache-coroutines` 的依赖，6.4 交付；api、core 及其它模块不依赖它 |
+| Q2 | 默认异步执行器 | **运行时自建的 `ForkJoinPool`**（CPU 数、守护、`cocache-async-*`、随运行时关闭），不用 `commonPool`。理由：`commonPool` 与应用的并行流和其它库共用，被占满时所有缓存的完成都会停顿且难以诊断；自建池可辨识、生命周期明确，同时保留 `ForkJoinPool` 在 `join()` 上补偿线程的性质（§5.1）。同步 loader 只在阻塞执行器上执行 |
+| Q3 | `asyncTimeout` 的默认值 | **30 s**：远大于常见 loader 的 p99，又让“丢失回调”的 key 在半分钟内恢复。设为不限会把一个 bug 变成永久不可用的 key |
+| Q4 | 是否支持 `@CoCache interface X : AsyncCache<K, V>` 或自动注册 `AsyncCache` bean | **推迟**（6.3 不做，§3.4）。一个接口不能同时继承同名不同返回类型的两组方法；为每个缓存再注册一种 bean 会让注册、AOT 提示与 sync 检查成倍处理，收益只是省掉一次 `.async()`。有明确需求时只需在注册器中把 bean 类型改为 `AsyncCache`、实例为 `engine.async()` |
+| Q5 | `JoinCache` 的异步视图 | **推迟**：它是两次 `getAll` 的组合，用户可以用两次 `async().getAll` 写出来 |
+| Q6 | 同步路径是否对阻塞的 loader 设超时 | **否**：阻塞的 loader 无法被打断，超时只会让调用方先返回而线程继续占用。`asyncTimeout` 只作用于 `AsyncCacheLoader` |
+| Q7 | `retrieve-executor` 如何退场 | **6.3 弃用，7.0 删除**：6.x 只做增量，删除配置项是破坏性变化（会触发 `RemovedProperties` 的启动失败）。6.3 中设置它只告警，执行器不再使用 |
 
 ---
 
@@ -554,4 +569,4 @@ interface LoadObserver {
    - TCK：`AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncBackendProtocolSpec`、`HookedBackend` 异步钩子。
 2. **6.3 / PR 2：Redis**：`RedisRemoteStore` 与通道的原生异步实现、同步方法改为等待异步实现；Redis 上的异步 TCK 矩阵；JMH（§11，PR 中附数据）。
 3. **6.3 / PR 3：Spring 与文档**：`CoCacheSpringCache.retrieve`、starter 配置项与 bean 解析、`MicrometerLoadObserver.observeAsync`、AOT 提示、弃用告警；architecture.md（§1 非目标、§5 线程模型、§7、§9.2、§9.5、§10、§13、§14）、wiki（中英文：异步 API 指南、配置、可观测、扩展后端）、`skills/`、changelog；版本号 6.3.0。
-4. **6.4：`cocache-coroutines`**（Q1 批准后）：模块、BOM、示例、wiki。
+4. **6.4：`cocache-coroutines`**（Q1 已批准）：模块、BOM、示例、wiki。
