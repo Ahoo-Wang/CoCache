@@ -22,6 +22,7 @@ import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -71,6 +72,23 @@ class MicrometerLoadObserverAsyncTest {
             CompletableFuture.failedFuture<String>(SourceLoadTimeoutException("user", Duration.ofSeconds(1)))
         }.handle { _, e -> e }.join()
         handler.stopped.last().outcome().assert().isEqualTo(MicrometerLoadObserver.TIMEOUT)
+    }
+
+    @Test
+    fun completionExceptionIsUnwrapped() {
+        val timeout = SourceLoadTimeoutException("user", Duration.ofSeconds(1))
+        observer.observeAsync("user", LoadOperation.LOAD, 1) {
+            CompletableFuture.failedFuture<String>(CompletionException(timeout))
+        }.handle { _, e -> e }.join()
+        handler.stopped.last().outcome().assert().isEqualTo(MicrometerLoadObserver.TIMEOUT)
+        handler.stopped.last().error.assert().isSameAs(timeout)
+
+        // 没有 cause 的 CompletionException 原样记录
+        val bare = CompletionException("bare", null)
+        observer.observeAsync("user", LoadOperation.LOAD, 1) { CompletableFuture.failedFuture<String>(bare) }
+            .handle { _, e -> e }.join()
+        handler.stopped.last().outcome().assert().isEqualTo(MicrometerLoadObserver.ERROR)
+        handler.stopped.last().error.assert().isSameAs(bare)
     }
 
     @Test
