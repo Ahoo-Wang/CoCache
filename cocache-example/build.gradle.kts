@@ -16,6 +16,9 @@ plugins {
     alias(libs.plugins.kotlin)
     alias(libs.plugins.kotlin.spring)
     kotlin("kapt")
+    // Spring Boot 插件提供 processAot（构建期 AOT 处理）；GraalVM 插件提供 nativeCompile / nativeRun / nativeTest
+    alias(libs.plugins.spring.boot)
+    alias(libs.plugins.graalvm.native)
 }
 
 java {
@@ -64,4 +67,16 @@ dependencies {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+}
+
+/**
+ * 原生镜像冒烟构建：`./gradlew :cocache-example:nativeCompile`（需要 GraalVM 25+ 作为 JAVA_HOME 或 GRAALVM_HOME）。
+ * 镜像名固定，CI 按 build/native/nativeCompile/cocache-example 启动它。
+ */
+graalvmNative {
+    binaries {
+        named("main") {
+            imageName.set("cocache-example")
+        }
+    }
 }

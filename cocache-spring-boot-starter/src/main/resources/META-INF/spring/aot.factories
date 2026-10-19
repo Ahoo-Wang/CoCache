@@ -1,0 +1,4 @@
+org.springframework.beans.factory.aot.BeanFactoryInitializationAotProcessor=\
+me.ahoo.cocache.spring.boot.CoCacheAotProcessor
+org.springframework.aot.hint.RuntimeHintsRegistrar=\
+me.ahoo.cocache.spring.boot.CoCacheRuntimeHints

@@ -17,8 +17,6 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.annotation.JoinCacheable
 import me.ahoo.cocache.api.join.JoinCache
 import me.ahoo.cocache.api.join.JoinKeyExtractor
-import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
 import me.ahoo.cocache.core.join.SimpleJoinCache
 import me.ahoo.cocache.core.proxy.JoinCacheProxies
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
@@ -83,14 +81,8 @@ internal class JoinCacheFactory(private val beanFactory: ConfigurableListableBea
     private fun cacheBeanNameOf(cacheName: String): String? {
         // 先按缓存名精确匹配 spec 声明的缓存（其 bean 名可能不同于缓存名），再按 bean 名匹配接口式缓存
         val specCache = beanFactory.beanDefinitionNames.firstOrNull { beanName ->
-            val specBean = beanFactory.getBeanDefinition(
-                beanName
-            ).getAttribute(CacheBeanDefinitions.SPEC_BEAN_ATTRIBUTE) as? String
-            when (val spec = specBean?.let { beanFactory.getBean(it) }) {
-                is CacheSpec<*, *> -> spec.name == cacheName
-                is SetCacheSpec<*, *> -> spec.name == cacheName
-                else -> false
-            }
+            val specBean = CacheBeanDefinitions.specBeanOf(beanFactory.getBeanDefinition(beanName))
+            specBean != null && CacheBeanDefinitions.specNameOf(beanFactory.getBean(specBean)) == cacheName
         }
         if (specCache != null) {
             return specCache

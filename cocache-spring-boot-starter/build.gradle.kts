@@ -34,6 +34,10 @@ dependencies {
     kapt("org.springframework.boot:spring-boot-autoconfigure-processor")
     testImplementation("org.springframework.boot:spring-boot-starter-data-redis")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    // AOT 测试：编译 ApplicationContextAotGenerator 生成的源码并在新容器中运行
+    testImplementation("org.springframework:spring-core-test")
+    // 校验原生镜像提示中的 Caffeine 生成类名（cocache-core 的 implementation 依赖，测试编译期需要可见）
+    testImplementation("com.github.ben-manes.caffeine:caffeine")
     testImplementation(project(":cocache-test"))
 }
 

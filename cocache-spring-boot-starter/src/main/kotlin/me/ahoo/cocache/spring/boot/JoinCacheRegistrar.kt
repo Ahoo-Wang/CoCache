@@ -14,12 +14,9 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.api.join.JoinCache
-import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.beans.factory.support.BeanDefinitionRegistry
-import org.springframework.beans.factory.support.RootBeanDefinition
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar
 import org.springframework.core.type.AnnotationMetadata
-import java.util.function.Supplier
 
 /**
  * 把 [EnableCoCache.joinCaches] 列出的组合视图接口注册为 bean：bean 名为组合视图名（默认接口简单类名），类型为接口本身。
@@ -37,12 +34,7 @@ internal class JoinCacheRegistrar : ImportBeanDefinitionRegistrar {
             check(!registry.containsBeanDefinition(joinCacheName)) {
                 "Cannot register join cache interface[${type.name}]: the bean name[$joinCacheName] is already in use."
             }
-            val definition = RootBeanDefinition(type).apply {
-                instanceSupplier = Supplier {
-                    JoinCacheFactory(registry as ConfigurableListableBeanFactory).create(type)
-                }
-            }
-            registry.registerBeanDefinition(joinCacheName, definition)
+            registry.registerBeanDefinition(joinCacheName, CacheBeanDefinitions.joinCacheDefinition(type))
         }
     }
 }

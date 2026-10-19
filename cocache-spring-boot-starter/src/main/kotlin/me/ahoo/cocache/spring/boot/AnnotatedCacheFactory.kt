@@ -96,11 +96,9 @@ class AnnotatedCacheFactory(
     }
 
     private fun generics(type: Class<*>, cacheType: Class<*>): Pair<ResolvableType, ResolvableType> {
-        val generics = ResolvableType.forClass(type).`as`(cacheType).generics
-        check(generics.size == 2 && generics.none { it.resolve() == null }) {
+        return checkNotNull(genericsOf(type, cacheType)) {
             "Cache interface[${type.name}] must extend ${cacheType.simpleName} with concrete type arguments."
         }
-        return generics[0] to generics[1]
     }
 
     private fun keyEncoderOf(annotation: CoCache?): KeyEncoder<Any> {
@@ -197,6 +195,22 @@ class AnnotatedCacheFactory(
 
     companion object {
         private val PARSER = SpelExpressionParser()
+
+        /**
+         * 缓存接口的 key 类型与 value 类型（集合缓存为元素类型）；没有具体类型参数时返回 `null`。
+         */
+        internal fun keyValueTypesOf(type: Class<*>): Pair<ResolvableType, ResolvableType>? {
+            val cacheType = if (SetCache::class.java.isAssignableFrom(type)) SetCache::class.java else Cache::class.java
+            return genericsOf(type, cacheType)
+        }
+
+        private fun genericsOf(type: Class<*>, cacheType: Class<*>): Pair<ResolvableType, ResolvableType>? {
+            val generics = ResolvableType.forClass(type).`as`(cacheType).generics
+            if (generics.size != 2 || generics.any { it.resolve() == null }) {
+                return null
+            }
+            return generics[0] to generics[1]
+        }
 
         /**
          * 缓存名：`@CoCache(name)`，默认接口简单类名。

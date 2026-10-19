@@ -26,6 +26,7 @@ import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import java.util.UUID
 
@@ -61,7 +62,7 @@ class TestController(
      * 组合视图：做的就是两次批量读取（扩展信息一次 `getAll`，去重后的 userId 一次 `getAll`）。
      */
     @GetMapping("extend")
-    fun extendInfos(ids: List<String>): List<JoinValue<UserExtendInfo, String, User>> {
+    fun extendInfos(@RequestParam ids: List<String>): List<JoinValue<UserExtendInfo, String, User>> {
         return userExtendInfoJoinCache.getAll(ids).values.toList()
     }
 

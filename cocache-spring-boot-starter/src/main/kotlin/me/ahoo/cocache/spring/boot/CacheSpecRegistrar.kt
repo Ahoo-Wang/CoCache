@@ -20,9 +20,7 @@ import me.ahoo.cocache.core.SetCacheSpec
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.beans.factory.support.BeanDefinitionRegistry
-import org.springframework.beans.factory.support.RootBeanDefinition
 import org.springframework.core.ResolvableType
-import java.util.function.Supplier
 
 /**
  * 把每个 [CacheSpec] / [SetCacheSpec] bean 注册为对应的 [Cache] / [SetCache] bean（RFC 0003 §4.12）。
@@ -34,12 +32,8 @@ import java.util.function.Supplier
 internal class CacheSpecRegistrar : BeanFactoryPostProcessor {
     override fun postProcessBeanFactory(beanFactory: ConfigurableListableBeanFactory) {
         val registry = beanFactory as? BeanDefinitionRegistry ?: return
-        register(beanFactory, registry, CacheSpec::class.java, Cache::class.java) { assembler, spec ->
-            assembler.create(spec as CacheSpec<Any, Any>)
-        }
-        register(beanFactory, registry, SetCacheSpec::class.java, SetCache::class.java) { assembler, spec ->
-            assembler.create(spec as SetCacheSpec<Any, Any>)
-        }
+        register(beanFactory, registry, CacheSpec::class.java, Cache::class.java)
+        register(beanFactory, registry, SetCacheSpec::class.java, SetCache::class.java)
     }
 
     private fun register(
@@ -47,7 +41,6 @@ internal class CacheSpecRegistrar : BeanFactoryPostProcessor {
         registry: BeanDefinitionRegistry,
         specType: Class<*>,
         cacheType: Class<*>,
-        create: (CacheAssembler, Any) -> Any,
     ) {
         for (specName in beanFactory.getBeanNamesForType(specType, true, false)) {
             val generics = beanFactory.getMergedBeanDefinition(specName).resolvableType.`as`(specType).generics
@@ -55,18 +48,19 @@ internal class CacheSpecRegistrar : BeanFactoryPostProcessor {
                 "Cache spec bean[$specName] must declare its generic types, e.g. `fun userSpec(): CacheSpec<String, User>`."
             }
             val cacheName = cacheBeanName(specName)
+            // AOT 运行时：构建期生成的代码已注册了同一个 spec 的缓存 bean
+            if (registry.containsBeanDefinition(cacheName) &&
+                CacheBeanDefinitions.specBeanOf(registry.getBeanDefinition(cacheName)) == specName
+            ) {
+                continue
+            }
             check(!registry.containsBeanDefinition(cacheName)) {
                 "Cannot register cache bean[$cacheName] for spec bean[$specName]: the bean name is already in use."
             }
-            val definition = RootBeanDefinition(cacheType).apply {
-                setTargetType(ResolvableType.forClassWithGenerics(cacheType, *generics))
-                setDependsOn(specName)
-                setAttribute(CacheBeanDefinitions.SPEC_BEAN_ATTRIBUTE, specName)
-                instanceSupplier = Supplier {
-                    val assembler = CacheBeanDefinitions.requireComponent(beanFactory, CacheAssembler::class.java, cacheName)
-                    create(assembler, beanFactory.getBean(specName))
-                }
-            }
+            val definition = CacheBeanDefinitions.specCacheDefinition(
+                ResolvableType.forClassWithGenerics(cacheType, *generics),
+                specName
+            )
             registry.registerBeanDefinition(cacheName, definition)
         }
     }

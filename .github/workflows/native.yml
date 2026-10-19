@@ -1,0 +1,105 @@
+#
+# Copyright [2021-present] [ahoo wang <ahoowang@qq.com> (https://github.com/Ahoo-Wang)].
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# 原生镜像冒烟：Spring AOT 处理 + GraalVM 编译 cocache-example，在真实 Redis 下请求示例接口（.github/scripts/smoke-example.sh）。
+# 先以 AOT 模式在 JVM 上冒烟（快速暴露 AOT 生成代码的问题），再编译并冒烟原生可执行文件（暴露缺失的运行时提示）。
+# 原生编译耗时数分钟，不作为 PR 的必需检查：手动触发、main 上相关路径变更与发布时运行。
+name: Native
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'cocache-*/src/main/**'
+      - 'cocache-example/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - '.github/scripts/smoke-example.sh'
+      - '.github/workflows/native.yml'
+  release:
+    types: [ published ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-example:
+    name: Native Example
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      redis:
+        image: redis:8-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # 产物按 JDK 17 编译（Gradle toolchain）；随后的 GraalVM 成为 JAVA_HOME，负责运行 Gradle 与 native-image
+      - name: Set up JDK 17 (toolchain)
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      # Spring Boot 4 要求 GraalVM 25 及以上
+      - name: Set up GraalVM 25
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+
+      - name: Build AOT-processed jar
+        run: >-
+          ./gradlew :cocache-example:bootJar
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
+          -Porg.gradle.java.installations.auto-download=false
+
+      - name: Smoke test (AOT on the JVM)
+        env:
+          SMOKE_LOG: ${{ runner.temp }}/smoke-aot-jvm.log
+        run: |
+          jar="$(find cocache-example/build/libs -name 'cocache-example-*.jar' ! -name '*-plain.jar' | head -n 1)"
+          .github/scripts/smoke-example.sh java -Dspring.aot.enabled=true -jar "$jar"
+
+      - name: Build native image
+        run: >-
+          ./gradlew :cocache-example:nativeCompile
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
+          -Porg.gradle.java.installations.auto-download=false
+
+      - name: Smoke test (native image)
+        env:
+          SMOKE_LOG: ${{ runner.temp }}/smoke-native.log
+        run: .github/scripts/smoke-example.sh cocache-example/build/native/nativeCompile/cocache-example
+
+      - name: Upload smoke logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-smoke-logs
+          path: ${{ runner.temp }}/smoke-*.log
+          retention-days: 7
