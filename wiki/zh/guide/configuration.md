@@ -31,6 +31,8 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `cocache.caches.[name].*` | 策略 | — | 作用于单个缓存的[策略配置项](#policy-properties) |
 | `cocache.redis.*` | — | — | [Redis 后端](#redis)配置 |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
+| `cocache.spring-cache.retrieve-executor` | bean 名 | 内置 | 执行 Spring Cache `retrieve`（异步与响应式 `@Cacheable`）的 `Executor` bean。见[执行器](#executors)。 |
+| `cocache.refresh-executor` | bean 名 | 内置 | 执行[提前刷新](./freshness.md#refresh-ahead)回源的 `Executor` bean。见[执行器](#executors)。 |
 | `management.health.cocache.enabled` | boolean | `true` | 注册 `cocache` 健康检查（见[下文](#actuator)） |
 
 ## 策略配置项 {#policy-properties}
@@ -95,6 +97,34 @@ cocache:
 
 `caches.[name].key-prefix` 覆盖 `defaults.key-prefix`，后者又覆盖声明与定制器，包括 `@CoCache` 中显式写出的 `keyPrefix`。同一应用的所有实例必须使用相同的前缀，修改前缀相当于冷启动。失效频道 `cocache:inv:{namespace}` 不含前缀，所以在同一个 Redis 上 namespace 相同的应用会收到彼此的消息；这只是多余的处理，不会产生错误数据。
 
+## 执行器 {#executors}
+
+CoCache 在执行器上运行两类后台工作：
+
+| 工作 | 配置项 | 内置执行器 |
+|------|--------|------------|
+| Spring Cache `retrieve`：阻塞查找，或 `sync = true` 时等待异步 loader | `cocache.spring-cache.retrieve-executor` | JDK 21+ 上每个任务一个虚拟线程。JDK 17–20 上是不排队、按需增长的守护线程池（最多 512 个线程，超出时在调用方线程执行）。 |
+| 提前刷新回源 | `cocache.refresh-executor` | 有界守护线程池（1–4 个线程，队列 1024）。队列满时跳过这次刷新，计入 `cocache.refresh.rejections`。 |
+
+两个配置项的值都是 `Executor` bean 的**名称**。CoCache 只按名称查找，从不按类型查找。名称没有对应的 bean，或该 bean 不是 `Executor` 时，启动失败，错误信息指明配置项。该执行器归容器管理：关闭 `CacheRuntime` 不会关闭它。
+
+Spring Boot 自带的 `applicationTaskExecutor` 两者都可以用：
+
+```yaml
+spring:
+  threads:
+    virtual:
+      enabled: true          # applicationTaskExecutor 使用虚拟线程
+cocache:
+  spring-cache:
+    retrieve-executor: applicationTaskExecutor
+  refresh-executor: applicationTaskExecutor
+```
+
+::: warning retrieve 执行器不能排队
+一个 `retrieve` 任务可能等待另一个 `retrieve` 任务：嵌套的异步 `@Cacheable(sync = true)` 方法会等待内层调用。把任务排在等待它的任务之后的执行器可能死锁。固定线程池或有界队列正是如此，Spring Boot 默认的平台线程 `applicationTaskExecutor` 在核心线程占满后也是如此。虚拟线程执行器（`spring.threads.virtual.enabled=true`）从不排队，因此是安全的。刷新执行器没有这个限制：刷新不会等待另一个刷新。
+:::
+
 ## Redis {#redis}
 
 Redis 后端由 Spring Boot 的 `spring.data.redis.*` 连接信息构建，使用 CoCache 自己的 Lettuce 客户端。
@@ -151,7 +181,7 @@ CoCache 不会带着无法兑现的配置运行，而是让启动失败：
 | `ttlOf`、`keyEncoder`、`keyFilter`、`codec`、`loader` | spec 或[定制器](./caches.md#customizer) |
 | `local.initialCapacity`、`local.expireAfterAccess` | `@CaffeineCache`、spec 或定制器 |
 | 时钟 | `CacheClock` bean（如测试中的 `ManualClock`）会被运行时与内存后端使用 |
-| 重试策略、刷新执行器、节点 id | 自己声明的 `CacheRuntime` bean |
+| 重试策略、节点 id | 自己声明的 `CacheRuntime` bean |
 | Redis 客户端 | 自己声明的 `CoherenceBackend` bean，如 `RedisBackend.of(client, options)` |
 
 自己声明 `CacheRuntime` 或 `CoherenceBackend` bean 时，自动配置的那个会退让：

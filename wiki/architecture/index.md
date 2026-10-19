@@ -160,7 +160,7 @@ Content the protocol didn't write (no magic byte, an unknown state, a Hash witho
 | Impossible keys | Yes | `KeyFilter` |
 | Per-entry lifetime | Yes | `TtlFunction` (`ttlOf`) |
 | Clock | Yes | `CacheClock` (tests) |
-| Refresh executor, retry policy | Yes | `CacheRuntime.Builder.refreshExecutor`, `retryPolicy` |
+| Refresh executor, retry policy | Yes | `CacheRuntime.Builder.refreshExecutor` (starter: `cocache.refresh-executor`), `retryPolicy` |
 | **L2** | **No** | Always a bounded Caffeine cache, so the hit path stays monomorphic and its cost is known. Size it with `local-maximum-size`. |
 | **Fences, write order, read path** | **No** | They are the protocol. See [Consistency](./consistency.md). |
 | Wire format | Not within a major version | Two-phase upgrade only |

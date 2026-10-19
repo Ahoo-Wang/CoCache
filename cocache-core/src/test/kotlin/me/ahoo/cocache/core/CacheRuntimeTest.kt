@@ -102,6 +102,21 @@ class CacheRuntimeTest {
     }
 
     @Test
+    fun closeLeavesGivenRefreshExecutorRunning() {
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            CacheRuntime.builder().backend(InMemoryBackend()).refreshExecutor(executor).build().use { runtime ->
+                runtime.create(spec("user"))
+            }
+            // 调用方提供的执行器由调用方管理：运行时关闭后仍可使用
+            executor.isShutdown.assert().isFalse()
+            executor.submit { }.get(5, java.util.concurrent.TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun closeSurvivesFailingResources() {
         val subscriptions = AtomicInteger()
         val delegate = InMemoryBackend()

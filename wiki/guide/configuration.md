@@ -31,6 +31,8 @@ Properties come last so operators can retune a cache without a rebuild. This mea
 | `cocache.caches.[name].*` | policy | — | [Policy properties](#policy-properties) for one cache |
 | `cocache.redis.*` | — | — | [Redis backend](#redis) settings |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`: startup fails if a `@Cacheable` on a CoCache cache lacks `sync = true`. `false`: a warning is logged. See [Spring Cache](./spring-cache.md#sync-check). |
+| `cocache.spring-cache.retrieve-executor` | bean name | built-in | The `Executor` bean that runs Spring Cache `retrieve` (async and reactive `@Cacheable`). See [Executors](#executors). |
+| `cocache.refresh-executor` | bean name | built-in | The `Executor` bean that runs [refresh-ahead](./freshness.md#refresh-ahead) loads. See [Executors](#executors). |
 | `management.health.cocache.enabled` | boolean | `true` | Registers the `cocache` health indicator ([below](#actuator)) |
 
 ## Policy properties {#policy-properties}
@@ -95,6 +97,34 @@ cocache:
 
 `caches.[name].key-prefix` overrides `defaults.key-prefix`, which overrides the declaration and customizers, even a `keyPrefix` written in `@CoCache`. Every instance of an application must use the same prefix, and changing it is a cold start. The invalidation channel `cocache:inv:{namespace}` doesn't include the prefix, so applications with the same namespace on one Redis receive each other's messages; that is wasted work, never wrong data.
 
+## Executors {#executors}
+
+CoCache runs two kinds of background work on executors:
+
+| Work | Property | Built-in executor |
+|------|----------|-------------------|
+| Spring Cache `retrieve`: the blocking lookup, or the wait for the async loader with `sync = true` | `cocache.spring-cache.retrieve-executor` | A virtual thread per task on JDK 21+. On JDK 17–20, a growable daemon pool that never queues (up to 512 threads; beyond that the task runs on the calling thread). |
+| Refresh-ahead loads | `cocache.refresh-executor` | A bounded daemon pool (1–4 threads, 1024 queued tasks). A full queue skips the refresh and counts it in `cocache.refresh.rejections`. |
+
+Each property takes the **name** of an `Executor` bean. CoCache looks the bean up by name only, never by type. A name that matches no bean, or a bean that isn't an `Executor`, fails startup with a message naming the property. The container owns that executor: closing the `CacheRuntime` doesn't shut it down.
+
+Spring Boot's own `applicationTaskExecutor` works for both:
+
+```yaml
+spring:
+  threads:
+    virtual:
+      enabled: true          # applicationTaskExecutor uses virtual threads
+cocache:
+  spring-cache:
+    retrieve-executor: applicationTaskExecutor
+  refresh-executor: applicationTaskExecutor
+```
+
+::: warning The retrieve executor must not queue
+A `retrieve` task can wait on another `retrieve` task: a nested async `@Cacheable(sync = true)` method waits for its inner call. An executor that queues tasks behind the ones waiting on them can deadlock. A fixed pool or a bounded queue does exactly that, and so does Spring Boot's default platform-thread `applicationTaskExecutor` once its core threads are busy. A virtual-thread executor (`spring.threads.virtual.enabled=true`) never queues, so it is safe. The refresh executor has no such constraint: a refresh never waits on another refresh.
+:::
+
 ## Redis {#redis}
 
 The Redis backend is built from Spring Boot's `spring.data.redis.*` connection details, with CoCache's own Lettuce client.
@@ -151,7 +181,7 @@ Some settings exist only in code, because they are functions or objects rather t
 | `ttlOf`, `keyEncoder`, `keyFilter`, `codec`, `loader` | Spec or [customizer](./caches.md#customizer) |
 | `local.initialCapacity`, `local.expireAfterAccess` | `@CaffeineCache`, spec, or customizer |
 | Clock | A `CacheClock` bean (for example `ManualClock` in tests) is used by the runtime and the in-memory backend |
-| Retry policy, refresh executor, node id | Your own `CacheRuntime` bean |
+| Retry policy, node id | Your own `CacheRuntime` bean |
 | Redis client | Your own `CoherenceBackend` bean, such as `RedisBackend.of(client, options)` |
 
 Both the `CacheRuntime` and the `CoherenceBackend` beans are replaced when you declare your own:

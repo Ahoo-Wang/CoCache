@@ -452,7 +452,8 @@ class CoCacheAutoConfigurationTest {
                 me.ahoo.cocache.redis.RedisChannelMode.PUBSUB
             ),
             CoCacheProperties.Backend.REDIS,
-            CoCacheProperties.SpringCache(false)
+            CoCacheProperties.SpringCache(false, null),
+            null
         ).policyFor("USER", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(2))
     }
 
@@ -534,6 +535,9 @@ class CoCacheAutoConfigurationTest {
             "\"cocache.backend\"",
             "\"cocache.defaults.key-prefix\"",
             "\"cocache.spring-cache.require-sync\"",
+            "\"cocache.spring-cache.retrieve-executor\"",
+            "\"cocache.refresh-executor\"",
+            "\"spring-bean-reference\"",
             "\"management.health.cocache.enabled\"",
             "\"level\": \"error\"",
         ).forEach { text.assert().contains(it) }
