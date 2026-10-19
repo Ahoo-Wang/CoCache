@@ -224,6 +224,8 @@ class RedisBackendsTest {
     fun redissUrlPropertyReachesTheBackend() {
         // spring.data.redis.url=rediss://…（未设置 ssl.enabled）：Spring Boot 的连接信息不带 SSL bundle，CoCache 按 URL 启用 TLS。
         // 假服务端回一个明文 RESP 错误：启用 TLS 的客户端把它当作非法 TLS 记录（NotSslRecordException）
+        // 环境变量指向 Redis Cluster 时 cluster 配置优先于 url，本用例不适用
+        org.junit.jupiter.api.Assumptions.assumeTrue(System.getenv("SPRING_DATA_REDIS_CLUSTER_NODES") == null)
         java.net.ServerSocket(0).use { server ->
             val finished = java.util.concurrent.CountDownLatch(1)
             val acceptor = Thread {
