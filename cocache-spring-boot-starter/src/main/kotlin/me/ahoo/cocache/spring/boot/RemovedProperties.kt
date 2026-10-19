@@ -24,7 +24,7 @@ import org.springframework.core.env.Environment
  * 静默忽略会让 `strict-failure`、`eviction-channel` 等改变语义的配置悄悄失效（例如全集群通道不一致导致失效丢失），
  * 因此按松散绑定规则（含环境变量形式）检查。
  */
-object RemovedProperties {
+internal object RemovedProperties {
     /**
      * 已删除的配置项（或前缀）→ 处理建议。
      */

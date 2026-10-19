@@ -1,36 +1,35 @@
 ---
 title: Extending CoCache
-description: The SPI contracts for a custom backend (CoherenceBackend, RemoteStore, InvalidationChannel), codecs, loaders, and key filters — and the TCK suites that verify them.
+description: Implementing a CoherenceBackend (RemoteStore and InvalidationChannel) or a Codec — the exact SPI contracts, the cocache-test TCK suites and how to run them, codec rules, and what not to customize.
 ---
 
 # Extending CoCache
 
-The extension points are interfaces: `CacheLoader` and `Codec` in `me.ahoo.cocache.api`, the backend SPI in `me.ahoo.cocache.api.spi` (both `cocache-api`, no dependencies), and the spec functions `KeyEncoder`, `KeyFilter`, and `TtlFunction` in `me.ahoo.cocache.core`. L2 is always Caffeine and is not an extension point. Verify a new backend with the TCK in `cocache-test`:
+| You want to | Implement | Verify with |
+|-------------|-----------|-------------|
+| Store L1 somewhere other than Redis, or talk to Redis differently | [`CoherenceBackend`](#backend) | [`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`](#tck) |
+| Change how values become bytes | [`Codec<V>`](#codecs) | Your own round-trip tests |
+| Load, encode keys, reject impossible keys, choose lifetimes per entry | [Functions](#functions): `CacheLoader`, `KeyEncoder`, `KeyFilter`, `TtlFunction` | Your own tests |
 
-```kotlin
-testImplementation("me.ahoo.cocache:cocache-test")
-```
+The SPI lives in `me.ahoo.cocache.api.spi` (`cocache-api`, no dependencies). A backend needs only `cocache-api` at runtime and `cocache-test` for its tests.
 
-| You implement | Contract | Verify with |
-|---------------|----------|-------------|
-| `CoherenceBackend` (its `RemoteStore` and `InvalidationChannel`) | [Backend](#backend) | `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec` |
-| `Codec<V>` | [Codecs](#codecs) | your own round-trip tests |
-| `CacheLoader<K, V>`, `KeyEncoder<K>`, `KeyFilter`, `TtlFunction<K, V>` | [Functions](#functions) | your own tests |
-
-In a Spring Boot application, a `CoherenceBackend` bean replaces the Redis backend, and a `Codec<V>` bean is picked up by every cache with value type `V`.
+In a Spring Boot application, a `CoherenceBackend` bean replaces the Redis backend (the starter backs off), and Spring closes it on shutdown. The single `Codec<V>` bean is used by every interface cache whose value type is `V`, unless the cache names another with `@CoCache(codec = "beanName")`.
 
 ## Backend {#backend}
 
 ```kotlin
 interface CoherenceBackend : AutoCloseable {
-    val atomicBroadcast: Boolean          // can a write broadcast in the same atomic step?
-    val format: Int                       // wire format version this implementation writes
+    val atomicBroadcast: Boolean               // can a write publish its frame in the same atomic step?
+    val format: Int                            // wire format version this implementation writes
     val channel: InvalidationChannel
-    fun store(namespace: String): RemoteStore
+    fun store(namespace: String): RemoteStore  // called once per cache
 }
 ```
 
-L1 storage and the invalidation channel are two faces of one backend, because the side that serializes a write should also announce it. The engine calls `store(namespace)` once per cache and subscribes to `channel` for that namespace.
+L1 storage and the invalidation channel are two faces of one object, because the side that serializes a write should also announce it.
+
+- **`atomicBroadcast`.** If `true`, every write method of the store must publish its `frame` in the same atomic step as the change. If `false`, the engine calls `channel.publish(namespace, frame)` after each successful write. Atomic is better: a crash between write and publish loses the message. Declare only what you can guarantee. The TCK checks both kinds.
+- **`format`.** The engine compares it with `RemoteRead.Hit.format`: a higher stored format is loaded around and never overwritten, and `0` means content your protocol didn't write, which the engine treats as corrupt. Start at `1`, and bump it only through a two-phase upgrade.
 
 ### `RemoteStore` {#remote-store}
 
@@ -49,49 +48,113 @@ interface RemoteStore : AutoCloseable {
 }
 ```
 
-A store handles bytes and tokens only. It holds no policy: TTLs, refresh windows, and tokens all come from the engine as arguments. Keys already include the prefix and namespace. Each key is in one of these states:
+Keys arrive complete, with prefix and namespace. A store handles bytes and tokens only, and holds no policy: every TTL, window, and token is an argument. The types:
 
-```mermaid
-stateDiagram-v2
-    [*] --> Absent
-    Absent --> Leased: read on miss with a lease
-    Leased --> Value: fill with the matching token
-    Leased --> Absent: release, lease expiry, invalidate
-    Value --> Value: put (overwrite)
-    Value --> Refreshing: read inside the refresh window
-    Refreshing --> Value: fill with the refresh token, release, token expiry
-    Value --> Absent: invalidate, expiry
-    Refreshing --> Absent: invalidate
-```
+| Type | Shape |
+|------|-------|
+| `Envelope` | `Scalar(bytes)`, `Members(list of bytes)`, or `Absent` (a negative entry) |
+| `RemoteRead` | `Hit(envelope, format, ttl, refreshGranted)`, `Miss(leaseGranted)`, or `Leased(remaining)`. `ttl == null` means no expiry. |
+| `Token` | 24 bytes: `NodeId` (16) + sequence (8). Unique, never reused. Compare by bytes. |
+| `LeaseRequest(token, ttl)` | Lease to place on a miss, expiring after `ttl` |
+| `RefreshRequest(window, token, tokenTtl)` | Refresh token to place on a value inside `window`. A token older than `tokenTtl` may be taken over. |
+| `Fill(key, token, envelope, ttl)` | Write `envelope` with `ttl` only if `key` holds `token` |
+| `Digest` | SHA-1 of the content: scalar → payload bytes, set → each member as `int32 length + bytes` in returned order, negative entry → empty |
 
-"Value" covers a value, a negative entry (`Envelope.Absent`), and a set (`Envelope.Members`). The contract:
+The contract, method by method. The state machine is in [Consistency](./consistency.md#l1-fence).
 
-- **Every method is atomic per key.** Batch methods are atomic per key, not across keys.
-- **`read`** on an absent key with a `lease` writes a lease placeholder and returns `Miss(leaseGranted = true)`. On a leased key it returns `Leased(remaining)`. On a scalar value whose remaining TTL is within `refresh.window` and that has no unexpired token, it writes the refresh token and returns `Hit(refreshGranted = true)`. A token older than `tokenTtl` counts as expired. `Hit.format` is the stored format version, or `0` for content this protocol didn't write.
-- **`fill`** writes only if the key still holds `fill.token` (a lease or a refresh token), and returns whether it wrote. **`release`** removes a lease placeholder, or clears a refresh token, only if the token matches.
-- **`put`, `invalidate`, `addMembers`, and `removeMembers` destroy any token.** `addMembers` replaces an absent key, a negative entry, or a lease with a new set. `removeMembers` affects only sets and deletes the key when it becomes empty.
-- **`reclaim`** turns the key into a lease placeholder only if the `Digest` of its current content equals `observed` (scalar: the payload; negative entry: empty; set: `int32 length + member` concatenated in returned order). It must never delete content that changed.
-- **Every state transition resets the expiry** (`ttl == null` means none). A lease's or a negative entry's TTL must never leak onto a new value. Use millisecond precision.
+| Method | Must |
+|--------|------|
+| `read` | Absent key and `lease != null`: place the lease (expiring after `lease.ttl`) and return `Miss(true)`. Absent and no lease: `Miss(false)`, write nothing. Leased key: `Leased(remaining)`. Value: `Hit` with the remaining TTL. A scalar value whose remaining TTL is `> 0` and `≤ refresh.window`, with no token or a token older than `refresh.tokenTtl`: store the refresh token (keeping the TTL) and return `refreshGranted = true`. Never on a value without expiry. Content you didn't write: `Hit(…, format = 0)`. With both requests `null`, `read` is pure and writes nothing. |
+| `readAll` | `read` for each key, requesting a lease only for keys in `leases`. Return every key. If any key fails, release the leases already granted in this call (otherwise every instance waits for `lease-ttl`), then throw. |
+| `fill` / `fillAll` | Write only if the key currently holds exactly `fill.token`, as a lease or a refresh token, and reset the expiry to `fill.ttl`. Return whether you wrote. |
+| `release` | Token matches a lease: delete the key. Token matches a refresh token on a value: clear the token, keep the value and its TTL. Otherwise do nothing. |
+| `put` | Overwrite any state, destroying any token, set the expiry, broadcast `frame`. A `Members` envelope replaces the whole set. |
+| `invalidate` | Delete every key, destroying any token, and broadcast `frame`. Atomic per key. Batches may split. |
+| `reclaim` | Only if the key's current content has digest `observed` and isn't a lease: replace it with the lease. Return whether you did. Never delete content that changed. |
+| `addMembers` | Key holds a set: add the members atomically. Otherwise (absent, negative entry, lease, scalar): replace it with a set of these members. Destroy any token, set the expiry (`null` removes it), broadcast. |
+| `removeMembers` | Only if the key holds a set: remove the members, delete the key when the set becomes empty, otherwise reset the expiry. Broadcast in every case. |
+
+Across all methods:
+
+- **Atomic per key.** Batch methods are atomic per key, not across keys.
+- **Reset the expiry on every state change**, at millisecond precision. A lease's or a negative entry's lifetime must never leak onto a new value.
 - **Never delete on read.**
-- **Broadcast.** If `atomicBroadcast` is `true`, every write method must publish `frame` to the namespace's channel in the same atomic step. If it is `false`, the engine calls `channel.publish` after a successful write.
-- **Throw on failure.** The engine decides whether to degrade, retry, or rethrow.
+- **Throw on failure.** Don't swallow errors or retry internally: the engine decides whether to degrade, retry, or rethrow, and counts it.
+- **Reject commands while disconnected** rather than buffering and replaying them.
 
 ### `InvalidationChannel` {#invalidation-channel}
 
 ```kotlin
 interface InvalidationChannel {
     fun subscribe(namespace: String, listener: InvalidationListener): Subscription
-    fun publish(namespace: String, frame: ByteArray)   // only when atomicBroadcast == false
+    fun publish(namespace: String, frame: ByteArray)   // called only when atomicBroadcast == false
 }
 interface InvalidationListener {
     fun onInvalidated(keys: List<String>, origin: NodeId)
     fun onReset()
 }
+fun interface Subscription : AutoCloseable
 ```
 
-- **Delivery is at most once.** `frame` is an `InvalidationFrame` (`[version][nodeId][count]([length][key])*`). Decode it and call `onInvalidated` with the keys and the origin. Listeners ignore their own `NodeId`, so the channel needn't filter.
-- **`onReset` is mandatory.** Call it for every listener on a connection each time the subscription is established or re-established *and confirmed by the server*, and whenever messages may have been lost (a failed heartbeat, a consumer-group rebalance). The listener clears its L2. Without resets, a lost event leaves L2 stale until `localMaxAge`.
-- Subscribing a new namespace must not reset other namespaces.
+- **Frames.** `frame` is built by the engine with `InvalidationFrame.encode(origin, storageKeys)`. Deliver it to every listener of the namespace, decoded with `InvalidationFrame.decode`. Drop malformed frames. Don't filter by origin: listeners ignore their own `NodeId`.
+- **At most once is enough, silence is not.** Call `onReset()` on every listener of a subscription each time it is established or re-established **and confirmed**, and whenever messages may have been lost (a failed heartbeat, a consumer-group rebalance, a gap in a sequence). The listener then clears its L2. Without resets, a lost message leaves L2 stale until `local-max-age`.
+- **Reset before `subscribe` returns.** The first listener's reset must have run when `subscribe` returns, or a late reset clears copies filled after subscribing. Later listeners on an existing subscription get one `onReset()` right away.
+- **Isolation.** Subscribing a new namespace must not reset other namespaces. A listener that throws must not keep other listeners from receiving the message.
+- **Failure.** If `subscribe` fails, throw and leave no partial registration: the runtime rolls back the cache.
+- Closing the `Subscription` unsubscribes that listener.
+
+## TCK {#tck}
+
+`cocache-test` is the published TCK. Every backend must pass it.
+
+```kotlin
+testImplementation("me.ahoo.cocache:cocache-test")
+```
+
+| Suite | Covers | You provide |
+|-------|--------|-------------|
+| `BackendProtocolSpec` | The `RemoteStore` contract: lease grant, token checks, expiry resets, release, refresh tokens, reclaim, batch reads, set updates, broadcast frames, reset on subscribe | `createBackend()`, `elapse(duration)`. Optionally `shortTtl` (default 300 ms). |
+| `EngineSpec` | Two runtimes on your backend: single load across instances, lease-wait timeout, invalidation during a load, same-instance invalidate-vs-read race, concurrent `put`s, read-your-writes, loader failure, Redis failure, invalidation retry, reconnect reset, `local-max-age`, batch reads, refresh-ahead, reclaim, newer format, load limit | `createBackend()`, `clock`, `elapse(duration)`, `simulateReconnect()` |
+| `SetEngineSpec` | `SetCache` across two runtimes: atomic concurrent adds, empty-set deletion, `invalidate` rejected, write and read failures | `createBackend()`, `clock`, `elapse(duration)` |
+
+The suites wrap your backend in `HookedBackend`, which injects faults (`failAll`, `failWrites`, `failFill`, `failRelease`), rewrites read results, runs hooks before and after writes so races are orchestrated with latches instead of sleeps, and can override `atomicBroadcast` to exercise the non-atomic path. Use it in your own tests too.
+
+`elapse(duration)` must move time forward for both your store and the engine:
+
+- **In-process backend:** advance a `ManualClock` shared by the backend and `clock`.
+- **Real server:** advance `ManualClock` for the engine, and shorten the remaining TTL of the test keys on the server by `duration`. For short durations in `BackendProtocolSpec`, sleeping also works. Token issue times come from the server clock.
+
+`simulateReconnect()` must break the subscription so your channel resubscribes, for example by killing its connection on the server.
+
+The in-memory backend's TCK classes are a minimal template:
+
+```kotlin
+class MyBackendProtocolTest : BackendProtocolSpec() {
+    private val clock = ManualClock()
+    override fun createBackend(): CoherenceBackend = MyBackend(clock)
+    override fun elapse(duration: Duration) = clock.advance(duration)
+}
+
+class MyEngineTest : EngineSpec() {
+    private val manualClock = ManualClock()
+    private lateinit var backend: MyBackend
+    override val clock: CacheClock = manualClock
+    override fun createBackend(): CoherenceBackend = MyBackend(manualClock).also { backend = it }
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+    override fun simulateReconnect() = backend.dropSubscription()
+}
+
+class MySetEngineTest : SetEngineSpec() {
+    private val manualClock = ManualClock()
+    override val clock: CacheClock = manualClock
+    override fun createBackend(): CoherenceBackend = MyBackend(manualClock)
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+}
+```
+
+Run them with your build's normal test task (JUnit 6). `cocache-redis` runs `BackendProtocolSpec` and `EngineSpec` in three modes: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. `SetEngineSpec` runs on classic Pub/Sub only. Run the suites for every mode your backend supports.
+
+`InMemoryBackend` implements the whole protocol in one process. Several runtimes sharing one instance behave like several instances, which makes it a good backend for application tests.
 
 ## Codecs {#codecs}
 
@@ -102,35 +165,28 @@ interface Codec<V> {
 }
 ```
 
-`decode` should throw on bytes it can't read. The engine then treats the entry as corrupt: a miss, a conditional reclaim, and a reload. Changing a codec's byte format is a wire-format change for that cache: use a new namespace or `keyPrefix`, or make `decode` accept both formats.
+- **`decode` throws on bytes it can't read.** The engine then treats the entry as corrupt: a miss, a conditional reclaim, and a reload. Don't return a default object.
+- **Thread-safe and stateless.** One instance serves every thread.
+- **Never sees `null`.** Negative entries are handled by the engine.
+- **A set element codec must be canonical.** `SetCache` members are compared by their encoded bytes, so equal elements must always encode to identical bytes. JSON with unstable field order breaks that.
+- **The byte format is part of the cache's wire format.** Changing it in a running cluster makes old and new instances reclaim each other's values. Use a new namespace or key prefix for an incompatible change, or make `decode` accept both forms during the rollout.
+- **Keep payloads small.** All of an instance's commands share one connection, and a large value delays commands behind it.
+
+`StringCodec` (UTF-8) is in `cocache-core`, and `JacksonCodec` (`jacksonCodec<V>(mapper)`) in `cocache-codec-jackson`. Interface caches without a codec bean use `JacksonCodec` with the application's `ObjectMapper`.
 
 ## Functions {#functions}
 
-- **`CacheLoader<K, V>`**: `load(key)` returns the value or `null` for "doesn't exist" (stored as a negative entry for `absentTtl`). `loadAll(keys)` loads every key that missed L2 and L1 at once, and keys missing from its result become negative entries. The default calls `load` per key, so override it with one query. The loader runs on the caller's thread and must not read its own cache for the same key, or the call fails fast.
-- **`KeyEncoder<K>`**: turns a key into the string after `{keyPrefix}{namespace}:`. It must be injective. The default is `toString()`.
-- **`KeyFilter.notExist(storageKey)`**: may return `true` only for keys that certainly don't exist. For a Bloom filter, that means it was built from every existing key.
-- **`TtlFunction<K, V>`** (`ttlOf`): a per-entry lifetime, see [Per-entry TTL](../guide/configuration.md#per-entry-ttl).
+| Function | Contract |
+|----------|----------|
+| `CacheLoader<K, V>` | `load(key)` returns the value, or `null` for "doesn't exist" (stored as a negative entry for `absent-ttl`). `loadAll(keys)` loads a batch, and keys missing from its result are negative. The default calls `load` per key, so override it with one query. Runs on the caller's thread. Must not read its own cache for the same key (that fails fast). Must read the primary, not a lagging replica. |
+| `KeyEncoder<K>` | Turns a key into the string after `{keyPrefix}{namespace}:`. Must be **injective** (distinct keys, distinct strings), deterministic, and identical on every instance and version. The default is `toString()`, which rejects types that don't override it. |
+| `KeyFilter` | `notExist(storageKey)` receives the full storage key. Return `true` only for keys that certainly don't exist: a Bloom filter must contain every existing key. A `true` answer skips Redis and the loader, and caches nothing. |
+| `TtlFunction<K, V>` (`ttlOf`) | A per-entry lifetime. A non-null result replaces `ttl` and gets no jitter. Clamped to between 1 ms and 100 years. Not applied to negative entries. |
 
-## TCK {#tck}
+## What not to customize {#not-pluggable}
 
-| Suite | What it covers | You provide |
-|-------|----------------|-------------|
-| `BackendProtocolSpec` | The `RemoteStore` state machine: leases, tokens, expiry resets, broadcast, reclaim, release | `createBackend()`, `elapse(duration)` |
-| `EngineSpec` | Two runtimes on one backend: every interleaving of loads, fills, invalidations, and writes, lease waits, refresh, failures and retries, resets | `createBackend()`, `clock`, `elapse(duration)`, `simulateReconnect()` |
-| `SetEngineSpec` | `SetCache` element updates across two runtimes | `createBackend()`, `clock`, `elapse(duration)` |
-
-The suites wrap your backend in `HookedBackend`, which injects hooks and faults so races are orchestrated with latches, not sleeps. An in-memory backend can advance a `ManualClock` in `elapse`. A real backend can sleep, since the suites use short TTLs (override `shortTtl` in `BackendProtocolSpec` if needed).
-
-```kotlin
-class InMemoryEngineTest : EngineSpec() {
-    private val manualClock = ManualClock()
-    private lateinit var memory: InMemoryBackend
-
-    override val clock: CacheClock = manualClock
-    override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock).also { memory = it }
-    override fun elapse(duration: Duration) = manualClock.advance(duration)
-    override fun simulateReconnect() = memory.reconnect()
-}
-```
-
-`InMemoryBackend` implements the same protocol in one process. Several runtimes sharing one instance simulate several nodes, which also makes it a convenient backend for your own application tests.
+- **L2.** It is always a bounded Caffeine cache, with expiry checked on read against the ticking clock. A pluggable L2 would make the hit path polymorphic and let two caches share one by mistake. Tune it with `local-maximum-size`.
+- **The fences and the write order.** Leases, refresh tokens, stamps, the double bump, and filling L2 only from L1 are the protocol. A backend implements the L1 side, and the engine owns the rest.
+- **Policy inside a store.** Jitter, negative TTLs, and refresh windows belong to the engine. A store only sees the durations it is given.
+- **The Redis wire format within a major version.** Other code may read CoCache keys for diagnosis, but must write them only through the [invalidation protocol](../operations/troubleshooting.md#external-invalidation).
+- **Shared state between caches.** Every stateful component is created by `CacheRuntime.create` per cache. Pass specs and stateless functions, never L2 instances, stores, or stamps.

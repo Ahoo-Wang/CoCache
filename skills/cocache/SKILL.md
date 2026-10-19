@@ -1,6 +1,6 @@
 ---
 name: cocache
-description: Use when building or modifying Java/Kotlin applications with CoCache 6.x two-level distributed coherent caching. Invoke for @CoCache cache interfaces, CacheSpec beans, CacheLoader data sources, invalidate-after-commit (TransactionalInvalidator), Redis-backed coherence (leases, Pub/Sub or sharded channel), Spring Boot and Spring Cache (@Cacheable) integration, CachePolicy and cocache.* properties (ttl, absentTtl, localMaxAge, refreshWindow, read-failure), SetCache, custom CoherenceBackend implementations, the cocache-test TCK, or migrating from CoCache 5.x.
+description: Use when building or modifying Java/Kotlin applications with CoCache 6.x two-level distributed coherent caching. Invoke for @CoCache cache interfaces, CacheSpec beans, CacheLoader data sources, invalidate-after-commit (TransactionalInvalidator), Redis-backed coherence (leases, Pub/Sub or sharded channel), Spring Boot and Spring Cache (@Cacheable) integration, JoinCache read-only views (@JoinCacheable, two-cache composition), CachePolicy and cocache.* properties (ttl, absentTtl, localMaxAge, refreshWindow, read-failure), SetCache, custom CoherenceBackend implementations, the cocache-test TCK, or migrating from CoCache 5.x.
 ---
 
 # CoCache Development Guide
@@ -9,15 +9,16 @@ CoCache (6.x) is a Java/Kotlin two-level distributed coherent cache:
 - **L2**: bounded local Caffeine copy, one per instance (fixed; not pluggable).
 - **L1**: shared Redis, which serializes every write per key.
 - **Data source**: a `CacheLoader<K, V>`; `null` means "not found" and is cached for `absentTtl`.
-- **Coherence**: a miss takes a lease in Redis and only the lease holder may fill, so a slow load never overwrites a newer invalidation. `put` and `invalidate` write and broadcast in one Lua script; peers drop their L2 copy when the message arrives. Lost messages are bounded by `localMaxAge` (default 5 min) and channel resets.
+- **Coherence**: a miss takes a lease in Redis and only the lease holder may fill, so a slow load never overwrites a newer invalidation. `put` and `invalidate` write and broadcast in one Lua script (in `sharded` channel mode or non-atomic mode, the broadcast is a second command); peers drop their L2 copy when the message arrives. Lost messages are bounded by `localMaxAge` (default 5 min) and channel resets.
 
-Packages are `me.ahoo.cocache.*` (5.x used `me.ahoo.cache.*`). The normative design is `docs/architecture.md` in the CoCache repository.
+Packages are `me.ahoo.cocache.*`. The normative design is `docs/architecture.md` in the CoCache repository.
 
 ## Start Here
 
 | Task | Read |
 |------|------|
 | Add CoCache to a Spring Boot / Spring / plain JVM app; configure TTLs, properties, failure behavior, metrics | `references/setup.md` |
+| Compose two caches into one read-only view (`JoinCache`, `@JoinCacheable`) | `references/join-cache.md` |
 | Upgrade an app from CoCache 5.x | `references/migration-5x.md` |
 | Write or update tests | `references/testing.md` |
 | Implement a custom `CoherenceBackend`, codec, key encoder, key filter, or per-entry TTL | `references/custom-implementation.md` |
@@ -60,7 +61,7 @@ Operations on `Cache<K, V>`: `get(key)` / `cache[key]`, `get(key, loader)`, `get
 - With Spring Cache, use `@Cacheable(sync = true)`. Without `sync`, Spring's "miss → call → put" is an unconditional write and loses the lease protection.
 - A cache without a loader is valid (fill it with `put`); misses return `null` and nothing negative is written to Redis.
 - Use `SetCache<K, E>` only when Redis is the only copy of the set (no loader allowed; `invalidate` throws, use `clear`). A set that lives in your database is a plain `Cache<K, Set<E>>` maintained with `invalidate`.
-- All instances of one cluster must use the same `cocache.redis.channel-mode` and the same major version (5.x and 6.x cannot share Redis).
+- All instances of one cluster must use the same `cocache.redis.channel-mode` and the same major version (different major versions cannot share Redis).
 - Size `lease-ttl` above the loader's p99 and `lease-wait` above its typical latency, or cross-instance deduplication falls back to independent loads.
 
 ## Key Classes
@@ -70,12 +71,14 @@ Operations on `Cache<K, V>`: `get(key)` / `cache[key]`, `get(key, loader)`, `get
 | `Cache<K,V>` / `SetCache<K,E>` / `Lookup<V>` | cocache-api | User API |
 | `CacheLoader<K,V>` / `Codec<V>` | cocache-api | Data source / value bytes |
 | `@CoCache` / `@CaffeineCache` | cocache-api | Interface-style declaration |
+| `JoinCache` / `JoinValue` / `JoinKeyExtractor` (`api.join`), `@JoinCacheable` | cocache-api | Read-only view over two caches |
 | `CacheReadException` / `CacheWriteException` | cocache-api | L1 failures surfaced to callers |
 | `CoherenceBackend`, `RemoteStore`, `InvalidationChannel` (`api.spi`) | cocache-api | Backend SPI |
 | `CacheRuntime`, `CacheSpec` / `cacheSpec {}`, `SetCacheSpec` / `setCacheSpec {}` | cocache-core | Runtime and declarations |
 | `CachePolicy`, `LeasePolicy`, `LoadPolicy`, `LocalPolicy`, `ReadFailureMode`, `InvalidateFailureMode` | cocache-core | Lifetimes and failure behavior |
 | `KeyEncoder`, `TtlFunction`, `KeyFilter` | cocache-core | Key mapping, per-entry TTL, existence filter |
 | `InMemoryBackend`, `ManualClock`, `StringCodec` | cocache-core | Tests / single instance |
+| `SimpleJoinCache`, `JoinCacheProxies` | cocache-core | JoinCache implementation and interface proxy |
 | `RedisBackend`, `RedisBackendOptions`, `RedisChannelMode` | cocache-redis | Lettuce-native Redis backend |
 | `JacksonCodec`, `jacksonCodec<V>()` | cocache-codec-jackson | Jackson 3 codec |
 | `CoCacheSpringCacheManager`, `TransactionalInvalidator` | cocache-spring | Spring Cache bridge, after-commit invalidation |

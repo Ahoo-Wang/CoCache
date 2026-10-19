@@ -1,6 +1,6 @@
 # Migrating from CoCache 5.x to 6.x
 
-6.0 replaces 5.x entirely: new packages (`me.ahoo.cache.*` → `me.ahoo.cocache.*`), a new Redis wire format, and new configuration keys. The full guide is the wiki page [Migrating from 5.x to 6.0](https://cocache.ahoo.me/guide/migration-6). This page is the checklist an agent needs.
+6.0 replaces 5.x entirely: new packages (`me.ahoo.cache.*` → `me.ahoo.cocache.*`), a new Redis wire format, and new configuration keys. The full guide is the wiki page [Upgrading from 5.x](https://cocache.ahoo.me/guide/migration-6). This page is the checklist an agent needs.
 
 ## Rollout
 
@@ -52,7 +52,7 @@ Per-entry lifetimes move to `CacheSpec.ttlOf` (spec beans, or a `CacheSpecCustom
 | `set(key, null)`, `setCache(key, MissingValue)` | `invalidate(key)` (negative entries are written only when the loader returns `null`) |
 | `evict(key)` | `invalidate(key)` |
 | `SetElementsCache.addElements` / `removeElements` | `SetCache.add` / `remove`, only if Redis is the only copy; otherwise use `Cache<K, Set<E>>` + `invalidate` |
-| `JoinCache`, `@JoinCacheable` | removed; compose two `getAll` calls in your code |
+| `JoinCache`, `@JoinCacheable` | kept under `me.ahoo.cocache.api.join` / `me.ahoo.cocache.api.annotation`, but a read-only view (not a `Cache`): `evict` → `invalidate`, no `set`, register with `@EnableCoCache(joinCaches = [...])`, `firstCacheName`/`joinCacheName` required, extractor bean via `joinKeyExtractor = "beanName"` (no `{name}.JoinKeyExtractor` convention); see `join-cache.md` |
 | `CoCacheManager` (Spring Cache) | `CoCacheSpringCacheManager`; use `@Cacheable(sync = true)` |
 
 Move `invalidate` after commit: use `TransactionalInvalidator` inside transactions.

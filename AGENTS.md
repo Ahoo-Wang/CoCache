@@ -1,6 +1,6 @@
 # AGENTS.md — CoCache
 
-CoCache is a two-level coherent cache for Kotlin/Java on Spring Boot 4. Each instance keeps a bounded Caffeine copy (L2) in front of shared Redis (L1) in front of a `CacheLoader`. L1 serializes every write per key: fills are lease-fenced, and `put` / `invalidate` write and broadcast the invalidation in one Lua script over Redis Pub/Sub. Artifacts target JDK 17 and ship to Maven Central as `me.ahoo.cocache:*`.
+CoCache is a two-level coherent cache for Kotlin/Java on Spring Boot 4. Each instance keeps a bounded Caffeine copy (L2) in front of shared Redis (L1) in front of a `CacheLoader`. L1 serializes every write per key: fills are lease-fenced, and `put` / `invalidate` write and broadcast the invalidation over Redis Pub/Sub in one Lua script (one round trip; in `sharded` channel mode, or when the atomic-broadcast probe fails, the broadcast is a separate command, so two round trips). Artifacts target JDK 17 and ship to Maven Central as `me.ahoo.cocache:*`.
 
 The product trades staleness for latency. Every rule below protects one of three goals:
 
@@ -32,7 +32,7 @@ docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 
 | Purpose | Command |
 |---------|---------|
-| Full gate (same as CI): tests, detekt, dokka, license headers, JMH compile, coverage ≥ 95% lines / ≥ 90% branches | `./gradlew check` |
+| Full gate (same as CI): tests, detekt, license headers, JMH compile, coverage ≥ 95% lines / ≥ 90% branches (Dokka runs when the javadoc jar is built for publishing) | `./gradlew check` |
 | Compile only | `./gradlew build -x test` |
 | One module | `./gradlew :cocache-core:test` |
 | One class or method | `./gradlew :cocache-core:test --tests "me.ahoo.cocache.core.engine.CoherentEngineTest"` |
@@ -74,7 +74,7 @@ Read `docs/architecture.md` before you touch coherence, storage, codec, proxy, o
 
 ## Tests
 
-- Use JUnit 5, MockK, and fluent-assert (`import me.ahoo.test.asserts.assert`, then `x.assert()…`).
+- Use JUnit 6, MockK, and fluent-assert (`import me.ahoo.test.asserts.assert`, then `x.assert()…`).
   - `assert()` accepts nullable receivers. There is no `isTrue {}`, so use `.withFailMessage { … }`.
   - Prefer `requireNotNull(…)` to chains of `!!`.
   - Don't use AssertJ `assertThat()`. Two exceptions: `assertThat(context)` on Spring's `ApplicationContextRunner` in starter tests, and `Offset.offset(n)` as an argument.

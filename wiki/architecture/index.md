@@ -1,38 +1,42 @@
 ---
 title: Architecture
-description: CoCache's design goals, module boundaries, runtime and declarations, the Redis wire format, and how a declaration becomes a cache bean.
+description: How CoCache is built — its three goals, the module map, the runtime and how a declaration becomes a cache bean, the Redis wire format, and which parts are fixed and which are pluggable.
 ---
 
 # Architecture
 
-This page explains how CoCache is put together. The normative design, with every invariant a change must preserve, is in the repository (in Chinese): [`docs/architecture.md`](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md) and [RFC 0003](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0003-target-architecture.md). If this page and those documents disagree, they win.
+This section is for engineers who need to trust the protocol or extend it. It explains how CoCache is built. [Consistency](./consistency.md) proves why it doesn't lose invalidations, and [Extending](./extending.md) shows how to plug in a backend or codec. The normative specification, with every invariant a change must preserve, is [`docs/architecture.md`](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md) (in Chinese).
 
-## Design goals
+## Goals {#goals}
 
-A two-level cache trades staleness for latency. Every design decision serves three goals:
+A two-level cache trades staleness for latency. It does three things: it **copies** values closer to the reader (fills), **destroys** copies when the source changes (invalidations), and **ages** copies out (TTLs). Every correctness bug in a cache is the same interleaving: a copy that started before an invalidation lands after it. CoCache's design follows from three goals:
 
-| Goal | Measurable form | Means |
-|------|-----------------|-------|
-| **G1 Bounded staleness** | L1: no staleness from races inside the protocol, and at most `ttl` from changes outside it. L2: the event delay when events arrive, at most `localMaxAge` when they're lost, at most `degradedLocalMaxAge` for fills that skipped L1. | Finite `localMaxAge` by default. L2 cleared on every resubscribe and heartbeat failure. |
-| **G2 No lost invalidations** | A fill whose read started before an invalidation never appears after that invalidation, in L1 or in any instance's L2 that has processed it. | One primitive, the fence: L1 leases and L2 invalidation stamps. |
-| **G3 A cheap hit path** | An L2 hit is one concurrent-map read and one expiry comparison. An L1 hit is one round trip. A single-key write or invalidation is one round trip. | Fixed Caffeine L2, a ticking clock, atomic Lua scripts, multiplexed Lettuce connections, no counters on the L2 hit path. |
+| Goal | What it means for you |
+|------|-----------------------|
+| **G1 Staleness is bounded** | Every inconsistency heals on its own within a known time. Races inside the protocol leave nothing stale in Redis. Changes CoCache never hears about last at most `ttl`. A lost message leaves one instance's local copy stale for at most `local-max-age`. [Exact bounds](./consistency.md#staleness-bounds). |
+| **G2 No invalidation is lost** | Once `invalidate` returns, no load that started before it can write the old value back, in Redis or in any instance that has processed the invalidation. The same instance never serves the old value again. |
+| **G3 The hit path is cheap** | A local hit is one concurrent-map lookup and one time comparison, and scales with threads. A Redis hit is one round trip. A `put` or an `invalidate` is one round trip by default (atomic broadcast), two in sharded or non-atomic mode. Concurrent misses for one key load once per cluster. |
 
-**Non-goals:** linearizable reads, and asynchronous or coroutine APIs. The synchronous API works well with virtual threads.
+**Non-goals.** Linearizable reads: between a write and the arrival of its message, other instances may serve the previous value. Asynchronous or coroutine APIs: the API is synchronous and works well on virtual threads.
 
-## Modules
+**TTL is a safety net, not the mechanism.** Races inside the protocol are closed by fences, not by waiting for expiry. That is why `ttl-forever` is safe as long as every write goes through the protocol.
+
+## Modules {#modules}
 
 ```mermaid
 flowchart BT
-    api["cocache-api<br>user API + SPI"]
-    core["cocache-core<br>engine, runtime, in-memory backend"]
+    api["cocache-api<br>user API + SPI<br>no dependencies"]
+    core["cocache-core<br>engines, runtime,<br>in-memory backend"]
     redis["cocache-redis<br>Lettuce backend"]
     jackson["cocache-codec-jackson<br>Jackson 3 codec"]
-    spring["cocache-spring<br>Spring Cache adapter, transactions"]
-    starter["cocache-spring-boot-starter<br>auto-config, annotations, actuator, metrics"]
+    spring["cocache-spring<br>Spring Cache adapter,<br>transactions"]
+    starter["cocache-spring-boot-starter<br>auto-configuration, annotations,<br>actuator, health, metrics"]
+    tck["cocache-test<br>TCK"]
     core --> api
-    redis --> core
     jackson --> api
+    redis --> core
     spring --> core
+    tck --> core
     starter --> spring
     starter --> redis
     starter --> jackson
@@ -40,81 +44,123 @@ flowchart BT
 
 | Module | Contains |
 |--------|----------|
-| `cocache-api` | `Cache`, `SetCache`, `Lookup`, `CacheLoader`, `Codec`, `CacheClock`, the exceptions, the `@CoCache` / `@CaffeineCache` annotations, and the SPI in `me.ahoo.cocache.api.spi`: `CoherenceBackend`, `RemoteStore`, `InvalidationChannel`, `InvalidationFrame`. No runtime dependencies. |
-| `cocache-core` | `CacheSpec`, `CachePolicy`, `CacheRuntime`, the engines, `SingleFlight`, `InvalidationStamps`, `CacheProxies`, `CacheAdmin` / `CacheMetrics`, `InMemoryBackend`, `TickingClock`, `ManualClock`, `StringCodec`. Depends on Caffeine. |
-| `cocache-redis` | `RedisBackend`: the Lua protocol, the wire format, and the Pub/Sub and Sharded channels. Depends on `lettuce-core`, not on Spring. |
+| `cocache-api` | `Cache`, `SetCache`, `Lookup`, `CacheLoader`, `Codec`, `CacheClock`, the exceptions, the annotations (`@CoCache`, `@CaffeineCache`, `@JoinCacheable`), `JoinCache`, and the backend SPI in `me.ahoo.cocache.api.spi`. No runtime dependencies. |
+| `cocache-core` | `CacheSpec` / `SetCacheSpec`, `CachePolicy`, `CacheRuntime`, the engines, `SingleFlight`, `InvalidationStamps`, `CacheAdmin` / `CacheMetrics`, `RetryPolicy`, `ExternalInvalidator`, `CacheProxies`, `InMemoryBackend`, `TickingClock`, `ManualClock`. Depends on Caffeine. |
+| `cocache-redis` | `RedisBackend`: the Lua scripts, the wire format, the Pub/Sub and Sharded Pub/Sub channels. Depends on Lettuce, not on Spring. |
 | `cocache-codec-jackson` | `JacksonCodec` (Jackson 3, `tools.jackson`) |
-| `cocache-spring` | `CoCacheSpringCacheManager`, `TransactionalInvalidator`. For Spring applications without Boot. |
-| `cocache-spring-boot-starter` | Auto-configuration, `@EnableCoCache`, spec-bean registration, `CoCacheProperties`, `CacheSpecCustomizer`, the `cocache` actuator endpoint, Micrometer binding |
-| `cocache-test` | The TCK for new backends and engines |
+| `cocache-spring` | `CoCacheSpringCacheManager`, `TransactionalInvalidator`. For Spring without Boot. |
+| `cocache-spring-boot-starter` | Auto-configuration, `@EnableCoCache`, annotation translation, spec-bean registration, `cocache.*` properties, the actuator endpoint, health indicator, Micrometer binding, and the Spring Cache `sync` check |
+| `cocache-test` | The published TCK: `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `HookedBackend`, `Concurrency` |
 | `cocache-bom` | Version alignment |
 
-Annotation parsing and SpEL live only in the starter, so the core has no Spring or reflection dependencies.
+Dependencies point one way. Annotation parsing and SpEL exist only in the starter, so the core needs neither Spring nor `kotlin-reflect`. A new backend depends only on `cocache-api`, and on `cocache-test` for its tests.
 
-## Responsibilities
+## Responsibilities {#responsibilities}
 
-- **The loader only loads.** `CacheLoader` returns a value or `null`. It never decides how long a value lives.
-- **The policy decides lifetimes.** `CachePolicy` holds `ttl`, jitter, `absentTtl`, `localMaxAge`, `degradedLocalMaxAge`, the refresh window, lease, load limit, L2 size, and failure modes. `CacheSpec.ttlOf` overrides `ttl` per entry.
-- **The engine** reads through the levels, coalesces loads, takes and releases leases, fences L2 fills with stamps, retries invalidations, and refreshes ahead. The loader always runs on the caller's thread.
-- **The backend** is one object with two faces: a `RemoteStore` per namespace, which executes the L1 protocol on bytes and tokens, and an `InvalidationChannel`, which delivers invalidations. The side that serializes a write also broadcasts it, in the same atomic step when it can (`atomicBroadcast`).
-- **L2 is not pluggable.** It is always a bounded Caffeine cache, which keeps the hit path monomorphic inside CoCache.
+| Part | Does | Never does |
+|------|------|------------|
+| **Loader** (`CacheLoader`) | Returns a value, or `null` for "doesn't exist" | Decide lifetimes |
+| **Policy** (`CachePolicy`) | Holds lifetimes, jitter, negative TTL, local and degraded max age, refresh window, lease, load limit, L2 size, failure modes | Act |
+| **Engine** (`CoherentEngine`, `SetEngine`) | Reads through the levels, coalesces loads, holds both fences, orders writes, handles failures, refreshes ahead | Store anything remotely itself |
+| **Store** (`RemoteStore`) | Executes the L1 protocol on bytes and tokens. TTLs, windows, and tokens arrive as arguments. | Know value types or hold policy |
+| **Channel** (`InvalidationChannel`) | Delivers invalidation frames, and tells listeners when messages may have been lost | Filter or interpret keys |
+| **Runtime** (`CacheRuntime`) | One per process: holds the `NodeId`, the clock, the backend, the refresh executor, and the retry queue, and creates every cache | Share a cache's state with another cache |
 
-## Runtime and declarations
+The store and the channel are two faces of one `CoherenceBackend`, because whoever serializes a write should also announce it, in the same atomic step when possible.
+
+## Runtime {#runtime}
 
 ```kotlin
+val backend = RedisBackend.standalone(RedisURI.create("localhost", 6379))
 val runtime = CacheRuntime.builder().backend(backend).build()   // one per process
-val users: Cache<String, User> = runtime.create(cacheSpec("user") { … })
+
+val users: Cache<String, User> = runtime.create(
+    cacheSpec<String, User>("user") {
+        codec = jacksonCodec<User>(mapper)
+        loader = CacheLoader { id -> repository.findById(id) }
+        policy { ttl = Duration.ofMinutes(10) }
+    }
+)
 ```
 
-- A `CacheSpec` (or `SetCacheSpec`) is immutable data: name, namespace, key prefix, key encoder, codec, loader, `ttlOf`, key filter, and policy.
-- `CacheRuntime` holds what belongs to the process: the `NodeId` (16 random bytes), the clock, the backend, a refresh executor, and the invalidation retrier. Every stateful component of a cache (its L2, stamps, single-flight table, subscription) is created by `runtime.create`, so two caches can never share one. Duplicate names or namespaces fail.
-- Closing the runtime closes caches and subscriptions in reverse order of creation.
+- A spec is immutable data: name, namespace, key prefix, key encoder, codec, loader, `ttlOf`, key filter, and policy. Users supply only data and stateless functions.
+- `runtime.create` builds every stateful part of a cache: its L2, invalidation stamps, single-flight table, store, and subscription. Two caches can't share one by accident. A duplicate name or namespace fails.
+- `NodeId` is 16 random bytes per runtime. It makes tokens globally unique and lets an instance ignore its own messages.
+- `close()` closes subscriptions, engines, and stores in reverse creation order, then the clock and executors the runtime created. Pending invalidation retries are counted as dropped. The caller closes the backend.
 
-## Wire format
+**Time.** `CacheClock` returns epoch milliseconds. The default `TickingClock` refreshes a volatile field every 100 ms, which is cheaper on the hit path than `System.currentTimeMillis()` on some platforms. Expiry crosses the wire only as relative durations (`PEXPIRE`, `PTTL`), so clock skew between instances doesn't matter. Tests inject `ManualClock`.
 
-The wire format is frozen within a major version.
+## From declaration to bean {#wiring}
 
-| Part | Format |
-|------|--------|
-| Key | `{keyPrefix}{namespace}:{encodedKey}`, default prefix `cocache:`, default namespace the cache name |
-| Scalar value, negative entry, lease | Redis String: a 36-byte header, then the codec's bytes. Header: magic `0xC0`, format version, state (`V` value, `M` negative, `L` lease), a reserved byte, a 24-byte token (lease or refresh token, zeros for none), and the token's issue time (server `TIME`, milliseconds). |
-| Set (`SetCache`) | Redis Hash: field `!f` holds the format version, and each member is a field `+{member}` with an empty value |
-| Expiry | `PEXPIRE` / `PTTL`, millisecond precision, reset explicitly on every state change |
-| Channel | `cocache:inv:{namespace}` |
-| Message | `[version:1][nodeId:16][count:varint]([length:varint][storage key])*` |
-
-A value written in a newer format than a node knows is treated as a miss, neither reclaimed nor written back, so a two-phase format upgrade is possible.
-
-## Time
-
-`CacheClock` returns epoch milliseconds. The default `TickingClock` refreshes a volatile value every 100 ms, which is cheaper on the hit path than `System.currentTimeMillis()`. The runtime starts and stops it. Tests inject `ManualClock` and advance it, so TTL, refresh, and age tests are deterministic. An L2 entry stores its expiry as local time plus the `PTTL` returned by Redis, so clock skew between instances doesn't matter.
-
-## From declaration to bean
+The starter supports two declaration styles that end in the same engine.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant R as AnnotatedCacheRegistrar
-    participant F as AnnotatedCacheFactory
-    participant A as CacheAssembler
+    participant Reg as Registrars<br>(bean definitions)
+    participant Fac as AnnotatedCacheFactory
+    participant Asm as CacheAssembler
     participant RT as CacheRuntime
-    R->>R: register a bean per @EnableCoCache interface
-    F->>F: translate @CoCache / @CaffeineCache into a CacheSpec<br>resolve loader, codec, keyExpression
-    F->>A: create(spec)
-    A->>A: apply CacheSpecCustomizers, then cocache.defaults and cocache.caches
-    A->>RT: create(spec)
-    RT-->>F: engine, subscribed to its namespace
-    F-->>R: JDK proxy implementing the interface
+    Reg->>Reg: one bean per @EnableCoCache interface<br>one Cache bean per CacheSpec bean
+    Note over Fac: on first injection
+    Fac->>Fac: @CoCache / @CaffeineCache to CacheSpec<br>resolve loader, codec, keyExpression
+    Fac->>Asm: create(spec)
+    Asm->>Asm: apply CacheSpecCustomizers,<br>then cocache.defaults, then cocache.caches.[name]
+    Asm->>RT: create(spec)
+    RT-->>Asm: engine, subscribed to cocache:inv:{namespace}
+    Asm-->>Fac: engine
+    Fac-->>Reg: JDK proxy implementing the interface
 ```
 
-- **Interface declarations** (`@EnableCoCache`): the bean name is the cache name and the bean type is the interface. Generic types come from the `Cache<K, V>` or `SetCache<K, E>` the interface extends and must be concrete.
-- **Spec beans**: `CacheSpecRegistrar`, a `BeanFactoryPostProcessor`, reads `K` and `V` from the factory method's declared return type without instantiating the spec, and registers a `Cache<K, V>` bean named after the spec bean minus `Spec` (or plus `Cache`). That bean is the engine itself, with no proxy.
-- A bean name that is already taken fails startup, and so does a cache name used twice.
-- Caches are created on first injection. After all singletons exist, `CacheAssembler` fails startup if `cocache.caches` names a cache that doesn't exist.
+| Style | Bean name | Bean |
+|-------|-----------|------|
+| Interface: `@CoCache interface UserCache : Cache<String, User>`, listed in `@EnableCoCache(caches = …)` | the cache name (`@CoCache(name)`, default the interface's simple name) | A JDK proxy. `Cache` / `SetCache` methods dispatch to the engine by name, without reflection, so exceptions reach you unwrapped. Your `default` methods run through `InvocationHandler.invokeDefault`. |
+| Spec bean: `@Bean fun userSpec(): CacheSpec<String, User>` | the spec bean name minus `Spec` (`userSpec` → `user`), or plus `Cache` | The engine itself. `CacheSpecRegistrar` reads `K` and `V` from the factory method's declared return type without instantiating the spec. |
+| Join cache: `@JoinCacheable interface …`, listed in `@EnableCoCache(joinCaches = …)` | the join cache name | A read-only view over two caches, resolved by name. See [JoinCache](../guide/join-cache.md). |
 
-The proxy (`CacheProxies`) dispatches `Cache` and `SetCache` methods to the engine by name, without `Method.invoke`, so exceptions reach the caller unwrapped. Default methods on your interface run through `InvocationHandler.invokeDefault`. `equals` and `hashCode` use proxy identity.
+Policy layers, later wins: built-in defaults → the declaration → `CacheSpecCustomizer` beans (in order) → `cocache.defaults.*` → `cocache.caches.[name].*`. `key-prefix` follows the same layering. After all singletons exist, `CacheAssembler` fails startup if `cocache.caches` names an undeclared cache. Every stateful component is created per spec by `CacheRuntime` ([Runtime](#runtime)), so two caches never share one. In Spring, a join cache finds its two caches by cache name (through their bean names), never by type.
 
-## Next
+## Wire format {#wire-format}
 
-- [Consistency](./consistency.md): the read, write, and invalidation paths, and what they guarantee.
-- [Extending CoCache](./extending.md): implementing a backend or a codec, and the TCK.
+The wire format is frozen within a major version. The normative definition is `RedisScripts` and `InvalidationFrame`.
+
+| Part | Format |
+|------|--------|
+| Storage key | `{keyPrefix}{namespace}:{encodedKey}`, default `cocache:{cacheName}:{key.toString()}` |
+| Value, negative entry, lease | Redis String: a 36-byte header, then the codec's bytes |
+| Set (`SetCache`) | Redis Hash: field `!f` holds the format version (`"1"`), each member is a field `+{member bytes}` with an empty value |
+| Expiry | `PEXPIRE` / `PTTL` in milliseconds, reset explicitly on every state change |
+| Channel | `cocache:inv:{namespace}` (no key prefix) |
+| Message | `[0x01][publisher NodeId: 16 bytes][count: varint]([length: varint][storage key: UTF-8])*` |
+
+The String header:
+
+| Offset | Length | Field |
+|--------|--------|-------|
+| 0 | 1 | Magic `0xC0` |
+| 1 | 1 | Format version (`1`) |
+| 2 | 1 | State: `V` value, `M` negative entry, `L` lease |
+| 3 | 1 | Reserved (`0`) |
+| 4 | 24 | Token: the lease token in state `L`, the refresh token in state `V`, zeros for none |
+| 28 | 8 | Token issue time: server `TIME` in epoch milliseconds, big-endian IEEE 754 double |
+| 36 | n | Payload from `Codec<V>` (none for `M` and `L`) |
+
+A token is the issuing runtime's `NodeId` (16 bytes) plus a per-process sequence number (8 bytes). Tokens are built by the client, never reused, so a destroyed token can't match again.
+
+Content the protocol didn't write (no magic byte, an unknown state, a Hash without `!f`, another Redis type) reads as format `0` and is treated as corrupt: reclaimed only if unchanged, then reloaded. A format higher than the instance knows is loaded around, never overwritten. Together these allow a two-phase format upgrade: first ship a version that reads N+1 and writes N, then one that writes N+1.
+
+## Fixed and pluggable {#pluggable}
+
+| Part | Pluggable? | How |
+|------|-----------|-----|
+| L1 storage + invalidation channel | Yes | Implement `CoherenceBackend` and pass the TCK. See [Extending](./extending.md#backend). |
+| Value bytes | Yes | `Codec<V>`, per cache. See [codecs](./extending.md#codecs). |
+| Data source | Yes | `CacheLoader<K, V>` |
+| Key encoding | Yes | `KeyEncoder<K>` or `keyExpression` |
+| Impossible keys | Yes | `KeyFilter` |
+| Per-entry lifetime | Yes | `TtlFunction` (`ttlOf`) |
+| Clock | Yes | `CacheClock` (tests) |
+| Refresh executor, retry policy | Yes | `CacheRuntime.Builder.refreshExecutor`, `retryPolicy` |
+| **L2** | **No** | Always a bounded Caffeine cache, so the hit path stays monomorphic and its cost is known. Size it with `local-maximum-size`. |
+| **Fences, write order, read path** | **No** | They are the protocol. See [Consistency](./consistency.md). |
+| Wire format | Not within a major version | Two-phase upgrade only |

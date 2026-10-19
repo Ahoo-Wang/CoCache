@@ -12,7 +12,7 @@ Level 2 Distributed Coherence Cache Framework
 
 > **Documentation:** [English](https://cocache.ahoo.me/) | [中文](https://cocache.ahoo.me/zh/)
 
-CoCache gives Spring Boot services local-memory read latency without serving stale data indefinitely. Each instance keeps an in-process copy (L2, Caffeine) in front of a shared copy (L1, Redis) in front of your data source. Redis serializes every write per key, so a slow load can never overwrite a newer invalidation, and every `put` or `invalidate` tells the other instances to drop their local copy in the same round trip.
+CoCache gives Spring Boot services local-memory read latency without serving stale data indefinitely. Each instance keeps an in-process copy (L2, Caffeine) in front of a shared copy (L1, Redis) in front of your data source. Redis serializes every write per key, so a slow load can never overwrite a newer invalidation, and every `put` or `invalidate` tells the other instances to drop their local copy in the same round trip (with the default atomic broadcast; sharded or non-atomic mode takes two round trips).
 
 ```mermaid
 flowchart LR
@@ -60,19 +60,21 @@ fun userSpec(repo: UserRepository): CacheSpec<String, User> = cacheSpec("user") 
 }
 ```
 
-The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each step. Coming from 5.x? Read the [5.x → 6.0 migration guide](https://cocache.ahoo.me/guide/migration-6).
+The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each step. Coming from 5.x? Read [Upgrading from 5.x](https://cocache.ahoo.me/guide/migration-6).
 
 ## Features
 
 - **Two levels, one API.** `get`, `getAll`, `lookup`, `put`, `invalidate`, `invalidateAll` on `Cache<K, V>`, declared as an `@CoCache` interface or a `CacheSpec` bean.
-- **Lease-fenced L1.** A miss takes a lease in Redis, and only the lease holder may fill. Concurrent misses across the cluster load once when the loader finishes within `lease.wait`.
+- **Lease-fenced L1.** A miss takes a lease in Redis, and only the lease holder may fill. Concurrent misses across the cluster load once when the loader finishes within `lease-wait`.
 - **Atomic invalidation.** Delete and broadcast happen in one Lua script. Failed invalidations are retried in the background.
 - **Negative caching.** A loader that returns `null` stores "not found" for `absentTtl`.
 - **Refresh ahead.** With `refreshWindow`, one node per key reloads a hot value before it expires.
 - **Batch reads.** `getAll` reads L1 in about one round trip and calls `CacheLoader.loadAll` once.
 - **`SetCache`.** Atomic element add and remove for sets whose only copy is Redis.
+- **`JoinCache`.** A read-only view that joins two caches (for example an order and its user) with two batch reads, declared with `@JoinCacheable`.
 - **Spring Cache and transactions.** `@Cacheable` through `CoCacheSpringCacheManager`, and `TransactionalInvalidator` to invalidate after commit.
-- **Observability.** Micrometer metrics and the `cocache` actuator endpoint.
+- **Observability.** Micrometer metrics, a `cocache` health indicator, and the `cocache` actuator endpoint, which can inspect or invalidate a single key.
+- **Local development without Redis.** `cocache.backend: memory` runs caches in process for tests and local runs.
 - **Redis topologies.** Standalone, Sentinel, and Cluster through Lettuce, with classic or sharded Pub/Sub (`cocache.redis.channel-mode`).
 
 ## Guarantees
@@ -87,7 +89,9 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 
 | You want to… | Read |
 |--------------|------|
-| Use CoCache | [Guide](https://cocache.ahoo.me/guide/): introduction, quick start, configuration, Spring Cache, operations, 5.x → 6.0 migration, changelog |
+| Use CoCache | [Guide](https://cocache.ahoo.me/guide/): why CoCache, quick start, how it works, declaring caches, keeping data fresh, JoinCache, Spring Cache, testing, configuration reference |
+| Upgrade from 5.x | [Upgrading from 5.x](https://cocache.ahoo.me/guide/migration-6) and the [changelog](https://cocache.ahoo.me/guide/changelog) |
+| Run it in production | [Operations](https://cocache.ahoo.me/operations/): deployment, observability, troubleshooting |
 | Understand or extend it | [Architecture](https://cocache.ahoo.me/architecture/): design, consistency, SPI and TCK |
 | Change CoCache itself | [`CONTRIBUTING.md`](CONTRIBUTING.md), then [`docs/architecture.md`](docs/architecture.md) |
 | Work on it as an AI agent | [`AGENTS.md`](AGENTS.md) and the [`skills/cocache`](skills/cocache/SKILL.md) skill |

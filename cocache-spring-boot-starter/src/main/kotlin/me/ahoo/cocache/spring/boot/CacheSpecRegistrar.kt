@@ -31,7 +31,7 @@ import java.util.function.Supplier
  * - bean 名：声明 bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` 后缀。
  * - 缓存在首次注入时由 [CacheAssembler] 创建。
  */
-class CacheSpecRegistrar : BeanFactoryPostProcessor {
+internal class CacheSpecRegistrar : BeanFactoryPostProcessor {
     override fun postProcessBeanFactory(beanFactory: ConfigurableListableBeanFactory) {
         val registry = beanFactory as? BeanDefinitionRegistry ?: return
         register(beanFactory, registry, CacheSpec::class.java, Cache::class.java) { assembler, spec ->

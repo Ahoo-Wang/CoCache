@@ -95,18 +95,30 @@ configure(libraryProjects) {
     apply<JavaLibraryPlugin>()
     configure<JavaPluginExtension> {
         withJavadocJar()
-        withSourcesJar()
+    }
+    // javadoc jar 放 Dokka 生成的 HTML（Java 的 javadoc 读不了 Kotlin 源码，否则是空 jar）
+    tasks.named<Jar>("javadocJar") {
+        from(tasks.named("dokkaGeneratePublicationHtml"))
     }
     apply(plugin = "org.jetbrains.kotlin.jvm")
+    // 必须在应用 Kotlin 插件之后：之前调用会让 .module 重复登记 sources jar；不调用则不发布 sources jar（Central 会拒绝）
+    configure<JavaPluginExtension> {
+        withSourcesJar()
+    }
     configure<KotlinJvmProjectExtension> {
         jvmToolchain {
             languageVersion.set(JavaLanguageVersion.of(17))
         }
+        // 与 apiVersion 一致：POM 中声明的 kotlin-stdlib 不高于用户的 Kotlin 编译器能读取的版本
+        coreLibrariesVersion = "2.2.21"
     }
     tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
         compilerOptions {
             freeCompilerArgs = listOf("-Xjsr305=strict", "-jvm-default=enable")
             javaParameters = true
+            // 产物的元数据与标准库 API 固定在 Spring Boot 4 支持的最低 Kotlin 版本，用户用较老的 Kotlin 编译器与 stdlib 也能使用
+            apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_2)
+            languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_2)
         }
     }
     tasks.withType<JavaCompile> {

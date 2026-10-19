@@ -37,6 +37,7 @@ internal class SetEngine<K : Any, E : Any>(
     SetCache<K, E> {
 
     private val elementCodec = spec.elementCodec
+    private val backendFormat = context.backend.format
 
     override fun get(key: K): Set<E> = entryOf(key).value ?: emptySet()
 
@@ -76,10 +77,7 @@ internal class SetEngine<K : Any, E : Any>(
     private fun loadThrough(storageKey: String): Loaded<Set<E>> {
         val stamp = stamps.current(storageKey)
         val entry = when (val read = store.read(storageKey, null, null)) {
-            is RemoteRead.Hit -> {
-                metrics.remoteHit()
-                localEntry(decode(read.envelope), read.ttl, policy.localMaxAge)
-            }
+            is RemoteRead.Hit -> onHit(storageKey, read)
 
             is RemoteRead.Miss, is RemoteRead.Leased -> {
                 metrics.miss()
@@ -88,6 +86,33 @@ internal class SetEngine<K : Any, E : Any>(
         }
         fillLocal(storageKey, entry, stamp)
         return Loaded(entry, stamp)
+    }
+
+    /**
+     * L1 是唯一副本，没有数据源可以回源，因此格式检查与 [CoherentEngine] 不同：
+     * - 更高版本写入的集合读不懂，也不能当作别的值返回：抛出，且不写 L2；
+     * - 不是本协议写入的内容（如旧版本留下的原生 Set）不是本缓存的数据：按不存在处理、以降级限龄进入 L2，
+     *   读路径不删除它，下一次 `put` / `add` 会整体覆盖。
+     */
+    private fun onHit(storageKey: String, read: RemoteRead.Hit): LocalEntry<Set<E>> {
+        if (read.format > backendFormat) {
+            metrics.unknownFormat()
+            throw IllegalStateException(
+                "SetCache[$name] - key[$storageKey] was written in format[${read.format}], newer than this node's " +
+                    "format[$backendFormat]; upgrade this node."
+            )
+        }
+        if (read.format < MIN_FORMAT) {
+            metrics.unknownFormat()
+            log.warn {
+                "SetCache[$name] - key[$storageKey] - unrecognized remote content, treated as absent until it is rewritten."
+            }
+            return localEntry(null, null, policy.degradedLocalMaxAge)
+        }
+        // 先解码再计入命中：形状不符（集合 key 上是本协议的标量，通常是命名空间冲突）抛出，且不计为命中
+        val value = decode(read.envelope)
+        metrics.remoteHit()
+        return localEntry(value, read.ttl, policy.localMaxAge)
     }
 
     private fun decode(envelope: Envelope): Set<E>? = when (envelope) {
@@ -149,6 +174,16 @@ internal class SetEngine<K : Any, E : Any>(
 
     override fun clear(key: K) {
         val storageKey = storageKey(key)
+        write(listOf(storageKey), { frame -> store.invalidate(listOf(storageKey), frame) }, throwWriteFailure("clear"))
+    }
+
+    override fun describe(envelope: Envelope): Any? = decode(envelope)
+
+    /**
+     * 运维的强制失效：L1 是唯一副本，等价于 [clear]。
+     */
+    override fun invalidateEncoded(encodedKey: String) {
+        val storageKey = storageKeyOf(encodedKey)
         write(listOf(storageKey), { frame -> store.invalidate(listOf(storageKey), frame) }, throwWriteFailure("clear"))
     }
 

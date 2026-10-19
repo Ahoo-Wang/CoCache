@@ -1,89 +1,74 @@
 ---
-title: Configuration
-description: Every CoCache setting — @CoCache and @CaffeineCache, cocache.* properties and their precedence, Redis connection and channel mode, codecs, per-entry TTLs, Set caches, and building caches in code.
+title: Configuration Reference
+description: Every cocache.* property with its type, default and unit, how properties layer over declarations and customizers, Redis connection settings, actuator and health switches, startup validation, and what only code can configure.
 ---
 
-# Configuration
+# Configuration Reference
 
-A cache's settings come from four layers. Each later layer overrides the earlier ones, field by field:
+## How settings combine {#precedence}
 
-1. **Built-in defaults** (`CachePolicy`).
-2. **The declaration**: `@CoCache` / `@CaffeineCache` on an interface, or the `CacheSpec` you build.
-3. **`CacheSpecCustomizer` beans**, applied in Spring order.
-4. **Properties**: first `cocache.defaults.*`, then `cocache.caches.[name].*`.
+Each cache's settings are built in layers. A later layer overrides an earlier one, field by field; a field a layer doesn't set passes through:
 
-Properties come last so operators can tune a cache without recompiling. Note that `cocache.defaults.*` therefore overrides what an annotation says.
+1. **Built-in defaults** (`CachePolicy.DEFAULT`; `SetCacheSpec.DEFAULT_POLICY` for set caches).
+2. **The declaration**: `@CoCache` / `@CaffeineCache`, or the `CacheSpec` you build.
+3. **`CacheSpecCustomizer` beans**, in Spring order.
+4. **`cocache.defaults.*`**, for every cache.
+5. **`cocache.caches.[name].*`**, for one cache.
 
-## `@CoCache`
+Properties come last so operators can retune a cache without a rebuild. This means `cocache.defaults.*` overrides what an annotation says, too.
 
-Durations are in **seconds**. Every attribute defaults to `CoCache.UNSET`, which means "use the next layer down".
+::: tip Set caches keep their lifetime
+`cocache.defaults.ttl` and `ttl-forever` don't apply to a [`SetCache`](./caches.md#set-cache): its only copy is Redis, so a global lifetime would make sets expire and disappear. `cocache.defaults.absent-ttl` and `refresh-window` are skipped too, since a set cache has no source. Only `cocache.caches.[name].ttl` / `ttl-forever` change a set cache's lifetime. Every other `defaults` key applies as usual.
+:::
 
-| Attribute | Default | Meaning |
-|-----------|---------|---------|
-| `name` | interface simple name | Cache name, and the bean name |
-| `namespace` | the cache name | Part of every Redis key and of the invalidation channel |
-| `keyPrefix` | `cocache:` | Start of every Redis key. Redis keys are `{keyPrefix}{namespace}:{key}`. |
-| `keyExpression` | `""` (uses `key.toString()`) | SpEL template evaluated with the key as root object, for example `#{tenantId}:#{id}` |
-| `ttl` | `3600` | How long an L1 value lives. `CoCache.FOREVER` means it never expires. |
-| `ttlJitter` | `60` | Random jitter: each value lives `ttl ± ttlJitter`. `0` turns it off. The effective jitter never exceeds `ttl / 2`. |
-| `absentTtl` | `60` | How long a negative entry ("not found") lives. No jitter. |
-| `localMaxAge` | `300` | Maximum age of an L2 copy. It is always finite: this is the staleness bound when invalidation events are lost. |
-| `refreshWindow` | off | When a value has at most this long left, one node in the cluster reloads it in the background. `0` means off. |
-| `loader` | `""` | Name of the `CacheLoader` bean. Empty: the unique bean of type `CacheLoader<K, V>`, else no loader. Several candidates fail startup. |
-| `codec` | `""` | Name of the `Codec` bean. Empty: the unique bean of type `Codec<V>`, else Jackson for the value type. Several candidates fail startup. |
+## Top-level properties {#properties}
 
-`CoCache.FOREVER` is accepted only by `ttl` (never expires) and by `@CaffeineCache.expireAfterAccess` (no idle eviction). Any other attribute set to `FOREVER`, or set to `0` (except `ttlJitter` and `refreshWindow`), fails startup.
+| Property | Type | Default | Meaning |
+|----------|------|---------|---------|
+| `cocache.enabled` | boolean | `true` | `false` turns off all CoCache auto-configuration, including the endpoint, health indicator, and metrics |
+| `cocache.backend` | `redis` \| `memory` | `redis` | `redis`: built from `spring.data.redis.*`. `memory`: in-process, single instance, for development and tests. A `CoherenceBackend` bean of your own replaces either. |
+| `cocache.defaults.*` | policy | — | [Policy properties](#policy-properties) for every cache |
+| `cocache.caches.[name].*` | policy | — | [Policy properties](#policy-properties) for one cache |
+| `cocache.redis.*` | — | — | [Redis backend](#redis) settings |
+| `cocache.spring-cache.require-sync` | boolean | `false` | `true`: startup fails if a `@Cacheable` on a CoCache cache lacks `sync = true`. `false`: a warning is logged. See [Spring Cache](./spring-cache.md#sync-check). |
+| `management.health.cocache.enabled` | boolean | `true` | Registers the `cocache` health indicator ([below](#actuator)) |
 
-The interface must extend `Cache<K, V>` or `SetCache<K, E>` with concrete type arguments. Annotations must sit directly on the interface: meta-annotations and inherited annotations are not read. Default methods on the interface run as written, so you can add helpers. An abstract method that doesn't match a `Cache` (or `SetCache`) method fails startup.
+## Policy properties {#policy-properties}
 
-## `@CaffeineCache`
+These keys work under both `cocache.defaults.` and `cocache.caches.[name].`.
 
-Sizes the L2. L2 is always Caffeine and always bounded.
+| Key | Type | Built-in default | Annotation equivalent | Meaning |
+|-----|------|------------------|-----------------------|---------|
+| `ttl` | duration | `1h` (set caches: forever) | `@CoCache.ttl` | Lifetime of a value in Redis |
+| `ttl-forever` | boolean | `false` | `ttl = CoCache.FOREVER` | `true`: values never expire. Overrides `ttl`. |
+| `ttl-jitter` | duration | `1m` | `@CoCache.ttlJitter` | Random ± spread on each value's lifetime, capped at `ttl / 2`. `0`: off. |
+| `absent-ttl` | duration | `1m` | `@CoCache.absentTtl` | Lifetime of a negative entry |
+| `local-max-age` | duration | `5m` | `@CoCache.localMaxAge` | Maximum age of an L2 copy |
+| `degraded-local-max-age` | duration | `10s` | — | Maximum age of an L2 copy that couldn't be written to Redis |
+| `refresh-window` | duration | off | `@CoCache.refreshWindow` | Refresh-ahead window. `0`: off (also removes a window the declaration enables); see [validation](#validation). |
+| `lease-ttl` | duration | `10s` | — | How long a lease lives if its holder never fills it. Keep it above the loader's p99. |
+| `lease-wait` | duration | `200ms` | — | How long a miss waits for another instance's load before loading itself |
+| `load-max-concurrent` | integer | `0` (unlimited) | — | Maximum concurrent source loads per cache per instance |
+| `load-acquire-timeout` | duration | `1s` | — | How long a load waits for a permit before throwing `SourceLoadRejectedException` |
+| `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | Maximum L2 entries per instance |
+| `invalidate-failure` | `retry` \| `throw` | `retry` | — | A failed Redis invalidation: queue for background retry, or throw `CacheWriteException` |
+| `read-failure` | `degrade` \| `throw` | `degrade` | — | A failed Redis read: load from the source, or throw `CacheReadException` |
+| `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | First part of every storage key ([below](#key-prefix)) |
 
-| Attribute | Default | Meaning |
-|-----------|---------|---------|
-| `maximumSize` | `10000` | Maximum entries per instance |
-| `initialCapacity` | unset | Initial hash-table size |
-| `expireAfterAccess` | off | Evict entries idle for this many seconds |
+[Keeping Data Fresh](./freshness.md#lifetimes) explains how to choose these values.
 
-You don't need `expireAfterAccess` for correctness. Every entry already expires after `localMaxAge` and at its L1 expiry. Idle eviction only frees memory sooner, and it writes the access time on every read, which costs throughput on very hot keys.
+### Durations {#durations}
 
-## Properties {#properties}
+A bare number under `defaults` and `caches` is **seconds**, matching the annotations: `ttl: 600`. Spring duration strings also work: `500ms`, `10m`, `PT10M`. Write a unit for sub-second values such as `lease-wait: 500ms`.
 
-| Property | Default | Meaning |
-|----------|---------|---------|
-| `cocache.enabled` | `true` | `false` turns off all CoCache auto-configuration, including the actuator endpoint and metrics |
-| `cocache.defaults.*` | | Policy for every cache (table below) |
-| `cocache.caches.[name].*` | | Policy for one cache, by cache name (case-insensitive). A name that no cache declares fails startup (usually a typo). |
-| `cocache.redis.*` | | The Redis backend ([below](#redis-connection)) |
+Under `cocache.redis` a bare number is **milliseconds**, matching `spring.data.redis.timeout`. Write a unit there too.
 
-### Policy properties
-
-These keys work under both `cocache.defaults.` and `cocache.caches.[name].`. Unset keys keep the value from the layer below.
-
-| Key | Built-in default | Meaning |
-|-----|------------------|---------|
-| `ttl` | `1h` | L1 value lifetime |
-| `ttl-forever` | `false` | `true`: values never expire (overrides `ttl`) |
-| `ttl-jitter` | `1m` | Random jitter of the value lifetime (effective jitter ≤ `ttl / 2`) |
-| `absent-ttl` | `1m` | Negative-entry lifetime |
-| `local-max-age` | `5m` | Maximum age of an L2 copy |
-| `degraded-local-max-age` | `10s` | Maximum age of an L2 copy that could not be written to L1 (Redis failure, lease-wait timeout, rejected fill) |
-| `refresh-window` | off | Refresh-ahead window |
-| `lease-ttl` | `10s` | How long an L1 lease lives if its holder never fills it (a crashed node). Keep it above your loader's p99. |
-| `lease-wait` | `200ms` | How long a miss waits for another node's lease before loading itself |
-| `load-max-concurrent` | `0` (unlimited) | Maximum concurrent source loads per cache per instance |
-| `load-acquire-timeout` | `1s` | How long a load waits for a permit before failing with `SourceLoadRejectedException` |
-| `local-maximum-size` | `10000` | L2 maximum entries |
-| `invalidate-failure` | `retry` | `retry`: a failed L1 invalidation goes to a bounded background retry queue. `throw`: it throws `CacheWriteException`. |
-| `read-failure` | `degrade` | `degrade`: a failed L1 read loads from the source. `throw`: it throws `CacheReadException`. |
-
-A bare number is **seconds** (`ttl: 120`). Spring duration strings also work (`120s`, `2m`, `PT2M`).
+### One cache {#per-cache}
 
 ```yaml
 cocache:
   defaults:
-    local-max-age: 60s
+    local-max-age: 2m
   caches:
     "[UserCache]":
       ttl: 10m
@@ -91,142 +76,98 @@ cocache:
       read-failure: throw
 ```
 
-### Validation
+- Cache names match case-insensitively, so the environment-variable form works: `COCACHE_CACHES_USERCACHE_TTL=10m`.
+- Quote and bracket names in YAML (`"[UserCache]"`) to keep them exactly as written.
+- A name that matches no declared cache fails startup.
 
-A policy that breaks one of these rules fails startup:
+### Key prefix {#key-prefix}
 
-- Every duration is positive and at most 100 years. Only `ttl-jitter`, `lease-wait`, and `load-acquire-timeout` may be zero.
-- `refresh-window` is less than `ttl − ttl-jitter` (with the effective jitter) and less than `local-max-age`.
-- Removed 5.x keys (`cocache.redis.strict-failure`, `cocache.redis.eviction-channel`, `cocache.redis.missing-guard-sentinel`, `cocache.load.*`, `cocache.metrics.client-side-hits`, `cocache.next.*`) fail startup with a message naming the replacement. See [Migrating from 5.x](./migration-6.md#properties).
+Storage keys are `{keyPrefix}{namespace}:{encodedKey}` (see [Declaring Caches](./caches.md#storage-keys)). Setting the prefix once separates applications that share a Redis:
 
-## Choosing values {#choosing-values}
+```yaml
+cocache:
+  defaults:
+    key-prefix: ${spring.application.name}:
+  caches:
+    "[SharedIndexCache]":
+      key-prefix: "shared:"
+```
 
-- **`ttl` bounds L1 staleness from changes CoCache never sees**: writes that bypass the cache, writes lost in a Redis failover, or a loader that read an old database replica. Races inside the protocol don't need it, because the lease fence already prevents them. `ttl-forever` is safe when every writer invalidates.
-- **`local-max-age` bounds L2 staleness when invalidation events are lost**: a half-open connection, a network partition, or a non-atomic publish that failed. A shorter value costs one more Redis round trip per key per expiry and nothing on the hit path.
-- **`absent-ttl` is how long a newly created row can stay invisible** after a lookup cached its absence. Keep it short, or invalidate the key after creating the row.
-- **`refresh-window` removes the latency spike when a hot key expires.** A read inside the window returns the current value and triggers one background reload. Only the node that wins a refresh token in Redis reloads from the source: one reload per key for the whole cluster. Expired values are never served. Negative entries are not refreshed.
-- **`ttl-jitter` spreads expiries** so keys loaded together don't all expire in the same second.
-- **`lease-wait`**: concurrent misses on different nodes share one load only if the loader finishes within `lease-wait`. Raise it for slow loaders, up to the latency your callers accept.
+`caches.[name].key-prefix` overrides `defaults.key-prefix`, which overrides the declaration and customizers, even a `keyPrefix` written in `@CoCache`. Every instance of an application must use the same prefix, and changing it is a cold start. The invalidation channel `cocache:inv:{namespace}` doesn't include the prefix, so applications with the same namespace on one Redis receive each other's messages; that is wasted work, never wrong data.
 
-## Redis connection {#redis-connection}
+## Redis {#redis}
 
-The backend is built from Spring Boot's `spring.data.redis.*` connection details.
+The Redis backend is built from Spring Boot's `spring.data.redis.*` connection details, with CoCache's own Lettuce client.
 
-| Topology | Support |
-|----------|---------|
+| Topology | Supported |
+|----------|-----------|
 | Standalone | Yes |
-| Sentinel | Yes |
-| Cluster | Yes. Scripts are routed by key, and the client refreshes the topology adaptively. |
+| Sentinel | Yes. Sentinel nodes use `spring.data.redis.sentinel.username` / `password`; data nodes use `spring.data.redis.username` / `password`. |
+| Cluster | Yes. Scripts are routed by key, and the topology refreshes adaptively. |
 | Static master-replica | No. Startup fails. |
 
-TLS comes from the Spring Boot SSL bundle (`spring.data.redis.ssl.bundle`): key and trust managers, enabled protocols, and cipher suites. A `rediss://` URL enables TLS with the JDK defaults. Sentinel nodes authenticate with `spring.data.redis.sentinel.username` / `password`, data nodes with `spring.data.redis.username` / `password`. Only Lettuce is supported. CoCache always reads and writes the master, because its read script also writes leases and refresh tokens, and its connections reject commands while disconnected instead of replaying them later.
+TLS follows the Spring Boot SSL bundle (`spring.data.redis.ssl.bundle`). A `rediss://` URL enables TLS with the JDK defaults. CoCache always uses the master, because its read script also writes leases.
 
-| Property | Default | Meaning |
-|----------|---------|---------|
-| `cocache.redis.channel-mode` | `pubsub` | `pubsub`: `PUBLISH`/`SUBSCRIBE`, atomic with the L1 change. `sharded`: `SPUBLISH`/`SSUBSCRIBE` (Redis 7+), published right after the L1 change. See [Consistency](../architecture/consistency.md#invalidation-channel). **Every instance must use the same mode.** |
-| `cocache.redis.command-timeout` | `2s` | Maximum wait for one command or script |
-| `cocache.redis.heartbeat` | `5s` | `PING` interval on the subscription connection. A failed or slow ping forces a reconnect, which clears L2. |
-| `cocache.redis.invalidate-batch-size` | `512` | Maximum keys per invalidation script, so one call doesn't block a shard for long |
-| `cocache.redis.client-name` | unset | `CLIENT SETNAME` for CoCache's connections, to find them in `CLIENT LIST` |
+| Property | Type | Default | Meaning |
+|----------|------|---------|---------|
+| `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`: `PUBLISH` / `SUBSCRIBE`, atomic with the Redis change. `sharded`: `SPUBLISH` / `SSUBSCRIBE` (Redis 7+), sent right after the change. **All instances must use the same mode**; the two don't hear each other. |
+| `cocache.redis.command-timeout` | duration (ms) | `2s` | Maximum wait for one command or script |
+| `cocache.redis.heartbeat` | duration (ms) | `5s` | `PING` interval on the subscription connection. A failed ping clears L2 and reconnects. |
+| `cocache.redis.invalidate-batch-size` | integer | `512` | Maximum keys per invalidation script |
+| `cocache.redis.client-name` | string | unset | `CLIENT SETNAME` for CoCache's connections |
 
-A bare number here is **milliseconds**, as for `spring.data.redis.timeout`, so write a unit (`2s`, `500ms`).
+[Operations](/operations/) covers sizing and deployment choices.
 
-To use another backend, or a Lettuce client you configure yourself, declare your own `CoherenceBackend` bean. To change the runtime (clock, refresh executor, invalidation retry policy), declare your own `CacheRuntime` bean. Both auto-configured beans are `@ConditionalOnMissingBean`.
+## Actuator and health {#actuator}
 
-## Codecs {#codecs}
+With `spring-boot-starter-actuator` on the classpath:
 
-A `Codec<V>` turns a value into the bytes stored in Redis. The starter picks, in order: `@CoCache(codec = "beanName")`, the unique `Codec<V>` bean, then `JacksonCodec` for the value type with your application's `ObjectMapper` (Jackson 3, `tools.jackson`). A spec bean must set its codec explicitly.
+| Feature | Switch | Notes |
+|---------|--------|-------|
+| `cocache` endpoint | `management.endpoints.web.exposure.include=cocache`; access via `management.endpoint.cocache.access` | Lists caches and counters, inspects and invalidates single keys |
+| `cocache` health indicator | `management.health.cocache.enabled` (default `true`) | `DOWN` only while the Redis invalidation heartbeat fails |
+| Micrometer meters `cocache.*` | Micrometer on the classpath | Tagged by `cache` |
 
-| Codec | Module |
-|-------|--------|
-| `JacksonCodec` / `jacksonCodec<V>(mapper)` | `cocache-codec-jackson` |
-| `StringCodec` (UTF-8) | `cocache-core` |
+See [Observability](/operations/observability) for the endpoint paths and meter names.
 
-If a payload in Redis can't be decoded, CoCache treats it as a miss, reclaims the key only if it still holds the bytes it read, and reloads. It never deletes on the read path.
+## Startup validation {#validation}
 
-Redis values carry a 36-byte binary header in front of the codec's bytes, so `redis-cli GET` no longer shows plain JSON. Other services must not read CoCache keys directly.
+CoCache fails startup instead of running with a configuration it can't honor:
 
-## Per-entry TTL {#per-entry-ttl}
+- **Unknown cache names** under `cocache.caches` (almost always a typo). The message lists the declared caches.
+- **Unsupported property names** from earlier major versions, such as `cocache.redis.strict-failure` or anything under `cocache.load.*`, fail startup with a message that names the replacement, if there is one. The full list is in [Upgrading from 5.x](./migration-6.md#properties).
+- **Invalid policies.** Every duration must be positive and at most 100 years; only `ttl-jitter`, `lease-wait`, `load-acquire-timeout`, and `refresh-window` (0 = off) may be zero; none may be negative. `refresh-window` must be less than `ttl − ttl-jitter` (the effective jitter) and less than `local-max-age`.
 
-To decide the lifetime from the key or the value, set `ttlOf` on the spec (directly, or in a `CacheSpecCustomizer`):
+`refresh-window: 0` turns refresh-ahead off, so a property can also remove a window that the declaration enables.
 
-```kotlin
-cacheSpec<String, Session>("session") {
-    codec = jacksonCodec(mapper)
-    loader = CacheLoader { id -> sessionRepository.find(id) }
-    ttlOf = TtlFunction { _, session -> Duration.between(Instant.now(), session.expiresAt) }
-}
-```
+[Declaring Caches](./caches.md#validation) lists the declaration checks.
 
-A non-null result overrides the policy `ttl` and gets no jitter. `null` falls back to the policy. Negative entries always use `absentTtl`. The `ttl` property doesn't affect `ttlOf`.
+## Beyond properties {#beyond-properties}
 
-## Customizing a declaration {#customizing}
+Some settings exist only in code, because they are functions or objects rather than values:
 
-`CacheSpecCustomizer` replaces the bean-name conventions of 5.x (`{name}.ClientSideCache`, …). It sees the spec builder before the properties are applied:
+| Setting | Where |
+|---------|-------|
+| `ttlOf`, `keyEncoder`, `keyFilter`, `codec`, `loader` | Spec or [customizer](./caches.md#customizer) |
+| `local.initialCapacity`, `local.expireAfterAccess` | `@CaffeineCache`, spec, or customizer |
+| Clock | A `CacheClock` bean (for example `ManualClock` in tests) is used by the runtime and the in-memory backend |
+| Retry policy, refresh executor, node id | Your own `CacheRuntime` bean |
+| Redis client | Your own `CoherenceBackend` bean, such as `RedisBackend.of(client, options)` |
 
-```kotlin
-@Bean
-fun userCacheCustomizer(): CacheSpecCustomizer = object : CacheSpecCustomizer {
-    override fun supports(cacheName: String) = cacheName == "UserCache"
-
-    override fun customize(spec: CacheSpec.Builder<*, *>) {
-        spec.policy = spec.policy.toBuilder().absentTtl(Duration.ofSeconds(30)).build()
-    }
-}
-```
-
-Use it for anything the annotations don't cover: lease settings, `degradedLocalMaxAge`, `ttlOf`, a `KeyFilter`, or a custom codec.
-
-## Set caches: atomic element updates {#set-elements}
-
-`SetCache<K, E>` is for sets whose **only** copy is in Redis, such as an index or a membership list. Elements are added and removed atomically in Redis, so two instances updating one set at the same time never lose an update.
+Both the `CacheRuntime` and the `CoherenceBackend` beans are replaced when you declare your own:
 
 ```kotlin
-@CoCache
-interface PolicyIndexCache : SetCache<String, String>
-
-policyIndexCache.add(key, listOf("p1"))
-policyIndexCache.remove(key, listOf("p1"))
-policyIndexCache.clear(key)
-val members: Set<String> = policyIndexCache[key]   // empty set when absent
+@Bean(destroyMethod = "close")
+fun cocacheRuntime(backend: CoherenceBackend): CacheRuntime =
+    CacheRuntime.builder()
+        .backend(backend)
+        .retryPolicy(RetryPolicy(maxAttempts = 16, capacity = 50_000))
+        .build()
 ```
 
-- A `SetCache` has no loader (`@CoCache(loader = …)` on a `SetCache` fails startup). Redis is the authoritative copy, so its default `ttl` is forever.
-- `add` creates the set if the key is absent. `remove` deletes the key when the set becomes empty. Both reset the expiry and notify peers.
-- `invalidate` throws `UnsupportedOperationException`, because it would destroy the only copy. Use `clear(key)`.
-- A Redis failure throws `CacheWriteException`. The calls are idempotent, so you can retry.
-- The set is stored as a Redis Hash. Compared with a native Set, each non-integer member costs about 16 extra bytes, and integer members lose the compact intset encoding.
-- Redis must not use an `allkeys-*` `maxmemory-policy`, which could evict the only copy. Durability equals Redis durability: an asynchronous-replication failover can lose recent writes.
-
-If the set's data lives in your database, don't use `SetCache`. Declare a plain `Cache<K, Set<E>>`, update the database, and `invalidate`.
-
-## Building a cache in code {#building-a-cache-in-code}
-
-Without Spring, create a `CacheRuntime` (one per process) and create caches from specs:
-
-```kotlin
-val backend = RedisBackend.standalone(RedisURI.create("redis://localhost:6379"))
-val runtime = CacheRuntime.builder().backend(backend).build()
-
-val users: Cache<String, User> = runtime.create(
-    cacheSpec<String, User>("user") {
-        codec = jacksonCodec(mapper)
-        loader = CacheLoader { id -> userRepository.findById(id) }
-        keyFilter = KeyFilter { storageKey -> !bloomFilter.mightContain(storageKey) }
-        policy {
-            ttl = Duration.ofMinutes(2)
-            local = LocalPolicy(maximumSize = 1_000_000)
-        }
-    }
-)
-
-// on shutdown
-runtime.close()
-backend.close()
-```
-
-- `RedisBackend.cluster(uris)` connects to a cluster. `RedisBackend.of(client)` uses a Lettuce client you manage.
-- Each runtime has one node identity and one subscription connection. Cache names and namespaces must be unique within a runtime.
-- `runtime.close()` closes the caches in reverse order. The backend is closed by whoever created it.
-- A `KeyFilter` is consulted after an L2 miss. A key it rejects returns "not found" without touching Redis or the source. It receives the full storage key (`{keyPrefix}{namespace}:{key}`), and must reject only keys that certainly don't exist.
-- In a Boot application, the same spec as a `@Bean` method is registered automatically ([Quick Start](./quick-start.md#spec-bean)).
+| `RetryPolicy` field | Default |
+|---------------------|---------|
+| `maxAttempts` | `8` |
+| `initialBackoff` | `100ms` (doubles each attempt) |
+| `maxBackoff` | `10s` |
+| `capacity` | `10000` pending invalidations |

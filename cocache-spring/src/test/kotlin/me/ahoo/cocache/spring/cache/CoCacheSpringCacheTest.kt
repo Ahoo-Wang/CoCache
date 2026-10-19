@@ -164,4 +164,28 @@ class CoCacheSpringCacheTest {
             cache.retrieve<String>("broken") { throw failure }.join()
         }.exceptionOrNull()?.cause.assert().isSameAs(failure)
     }
+
+    @Test
+    fun retrieveWithLoaderIsSingleFlightAndLeaseProtected() {
+        val loads = java.util.concurrent.atomic.AtomicInteger()
+        val gate = CompletableFuture<String>()
+        val loader = java.util.function.Supplier {
+            loads.incrementAndGet()
+            gate
+        }
+        val first = cache.retrieve("shared", loader)
+        awaitCondition { loads.get() == 1 }
+        val second = cache.retrieve("shared", loader)
+        gate.complete("S")
+        first.get().assert().isEqualTo("S")
+        second.get().assert().isEqualTo("S")
+        // 并发的两次异步回源合并为一次，结果经引擎写入（不是读不到就 put）
+        loads.get().assert().isEqualTo(1)
+        cache.get("shared")?.get().assert().isEqualTo("S")
+
+        val failure = IllegalStateException("async source failed")
+        runCatching {
+            cache.retrieve<String>("failing") { CompletableFuture.failedFuture(failure) }.join()
+        }.exceptionOrNull()?.cause.assert().isSameAs(failure)
+    }
 }

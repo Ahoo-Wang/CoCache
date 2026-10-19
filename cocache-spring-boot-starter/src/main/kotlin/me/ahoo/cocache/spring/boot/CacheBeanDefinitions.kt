@@ -64,7 +64,7 @@ internal object CacheBeanDefinitions {
             val enabled = environment?.getProperty("${CoCacheProperties.PREFIX}.enabled", Boolean::class.javaObjectType, true) ?: true
             val reason = if (enabled) {
                 "no ${CoherenceBackend::class.java.simpleName} is available: configure Spring Data Redis " +
-                    "(spring.data.redis.*) or declare a CoherenceBackend bean"
+                    "(spring.data.redis.*), set cocache.backend=memory for local development and tests, or declare a CoherenceBackend bean"
             } else {
                 "CoCache is disabled (${CoCacheProperties.PREFIX}.enabled=false): enable it or remove the cache declaration"
             }

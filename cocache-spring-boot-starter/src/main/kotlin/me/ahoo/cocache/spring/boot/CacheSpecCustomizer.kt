@@ -17,7 +17,7 @@ import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.SetCacheSpec
 
 /**
- * 在创建缓存之前修改声明（取代 5.x 的 bean 名后缀约定）。多个定制器按 Spring 的顺序依次应用。
+ * 在创建缓存之前修改声明，用于注解或 spec 无法表达的设置，或批量修改多个缓存。多个定制器按 Spring 的顺序依次应用。
  */
 interface CacheSpecCustomizer {
     /**

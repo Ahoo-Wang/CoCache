@@ -15,15 +15,19 @@ package me.ahoo.cocache.example
 
 import me.ahoo.cocache.example.cache.UserCache
 import me.ahoo.cocache.example.cache.UserExtendInfoCache
+import me.ahoo.cocache.example.cache.UserExtendInfoJoinCache
 import me.ahoo.cocache.spring.boot.EnableCoCache
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
 import org.springframework.cache.annotation.EnableCaching
 
 /**
- * 示例应用：接口式声明（[UserCache]、[UserExtendInfoCache]）、spec bean（`productSpec`）与 Spring Cache 注解。
+ * 示例应用：接口式声明（[UserCache]、[UserExtendInfoCache]）、组合视图（[UserExtendInfoJoinCache]）、spec bean（`productSpec`）与 Spring Cache 注解。
  */
-@EnableCoCache(caches = [UserCache::class, UserExtendInfoCache::class])
+@EnableCoCache(
+    caches = [UserCache::class, UserExtendInfoCache::class],
+    joinCaches = [UserExtendInfoJoinCache::class],
+)
 @EnableCaching
 @SpringBootApplication
 class AppServer

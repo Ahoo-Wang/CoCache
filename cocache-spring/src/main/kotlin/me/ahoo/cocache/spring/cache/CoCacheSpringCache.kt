@@ -19,18 +19,19 @@ import me.ahoo.cocache.core.CacheAdmin
 import org.springframework.cache.support.SimpleValueWrapper
 import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.Executor
 import java.util.function.Supplier
 import org.springframework.cache.Cache as SpringCache
 
 /**
- * 把 6.0 的 [Cache] 适配为 Spring [SpringCache]（RFC 0003 §4.12）。
+ * 把 [Cache] 适配为 Spring [SpringCache]（RFC 0003 §4.12）。
  *
  * - 负缓存视为未命中：否则 `@Cacheable` 遇到负缓存将永远不调用方法。
  * - `put(key, null)`（如 `@CachePut` 返回 null）映射为失效。
  * - [get] (key, valueLoader) 经引擎受 lease 保护地回源并按 key 合并并发加载，满足 `@Cacheable(sync = true)`。
  *   不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → put”，put 是无条件写入，
- *   回源期间发生的失效可能被覆盖；需要 6.0 的一致性保证时请使用 `sync = true`。
+ *   回源期间发生的失效可能被覆盖；需要上述一致性保证时请使用 `sync = true`。
  * - [clear] 只清空本节点的本地副本：L1 是共享存储，不支持整体清空。
  * - [retrieve] 在 [executor] 上执行阻塞查找，不占用调用方线程。
  */
@@ -92,20 +93,20 @@ class CoCacheSpringCache(
         return CompletableFuture.supplyAsync({ get(key) }, executor)
     }
 
-    @Suppress("TooGenericExceptionCaught", "UNCHECKED_CAST")
+    /**
+     * 响应式 / `CompletableFuture` 方法上的 `@Cacheable(sync = true)`：与 [get] (key, valueLoader) 一样经引擎受 lease
+     * 与失效戳保护的路径回源（在 [executor] 上等待异步 loader 完成），而不是“读不到就 put”。
+     */
+    @Suppress("UNCHECKED_CAST")
     override fun <T : Any> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> {
-        return CompletableFuture.supplyAsync({ get(key) }, executor).thenCompose { wrapper ->
-            if (wrapper != null) {
-                return@thenCompose CompletableFuture.completedFuture(wrapper.get() as T)
-            }
-            try {
-                valueLoader.get().thenApply { value ->
-                    put(key, value)
-                    value
+        return CompletableFuture.supplyAsync({
+            cache.get(key) { _ ->
+                try {
+                    valueLoader.get().join()
+                } catch (error: CompletionException) {
+                    throw error.cause ?: error
                 }
-            } catch (error: Throwable) {
-                CompletableFuture.failedFuture(error)
-            }
-        }
+            } as T
+        }, executor)
     }
 }

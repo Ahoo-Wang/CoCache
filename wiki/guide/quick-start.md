@@ -1,15 +1,15 @@
 ---
 title: Quick Start
-description: Add CoCache to a Spring Boot application — dependency, cache declaration, data source, first read, and composing two caches.
+description: Add a two-level coherent cache to a Spring Boot application in five minutes, check that it works, and create one without Spring.
 ---
 
 # Quick Start
 
-This page takes a Spring Boot application from no cache to a working two-level cache. The code comes from [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example).
+This page takes a Spring Boot application from no cache to a working two-level cache. The code is based on [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example).
 
-**You need:** JDK 17+, Spring Boot 4.x, and Redis 7+ (or Valkey 7.2+).
+**You need** JDK 17+, Spring Boot 4, and either Redis 7+ or nothing at all (the in-memory backend, step 2).
 
-## 1. Add the dependencies
+## 1. Add the dependencies {#dependencies}
 
 ::: code-group
 
@@ -17,6 +17,7 @@ This page takes a Spring Boot application from no cache to a working two-level c
 dependencies {
     implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.0.0")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
+    implementation("org.springframework.boot:spring-boot-starter-actuator") // optional: the cocache endpoint
 }
 ```
 
@@ -24,6 +25,7 @@ dependencies {
 dependencies {
     implementation 'me.ahoo.cocache:cocache-spring-boot-starter:6.0.0'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator' // optional: the cocache endpoint
 }
 ```
 
@@ -37,13 +39,20 @@ dependencies {
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-data-redis</artifactId>
 </dependency>
+<!-- optional: the cocache endpoint -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
 ```
 
 :::
 
-The starter brings `cocache-redis` (a native Lettuce backend), `cocache-codec-jackson`, and `cocache-spring`. To manage the versions of all CoCache modules in one place, import the BOM `me.ahoo.cocache:cocache-bom`.
+The BOM `me.ahoo.cocache:cocache-bom` manages the versions of all CoCache modules if you use more than the starter.
 
-## 2. Point Spring at Redis
+## 2. Point it at Redis {#redis}
+
+CoCache reads Spring Boot's Redis connection settings and opens **its own** Lettuce connections. It never touches your application's connection factory.
 
 ```yaml
 spring:
@@ -53,64 +62,95 @@ spring:
       port: 6379
 ```
 
-CoCache reads Spring Boot's Redis connection details (standalone, Sentinel, or Cluster, with username, password, and SSL bundle) and builds **its own** Lettuce client from them. It never reuses or reconfigures your application's Redis connection factory. See [Redis connection](./configuration.md#redis-connection).
+No Redis on your laptop? Use the in-memory backend instead:
 
-## 3. Declare a cache
-
-A cache is an interface that extends `Cache<K, V>`:
-
-```kotlin
-import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.annotation.CaffeineCache
-import me.ahoo.cocache.api.annotation.CoCache
-
-@CoCache(ttl = 120)                         // seconds; defaults: ttl 3600, ttlJitter 60, absentTtl 60, localMaxAge 300
-@CaffeineCache(maximumSize = 1_000_000)     // optional L2 sizing; default maximumSize 10000
-interface UserCache : Cache<String, User>
+```yaml
+cocache:
+  backend: memory   # single process only: for local development and tests
 ```
 
-Register it with `@EnableCoCache`:
+## 3. Declare a cache {#declare}
 
-```kotlin
+A cache is an interface that extends `Cache<K, V>`. List it in `@EnableCoCache`:
+
+::: code-group
+
+```kotlin [Kotlin]
+import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.spring.boot.EnableCoCache
+import org.springframework.boot.autoconfigure.SpringBootApplication
+
+data class User(val id: String, val name: String)
+
+@CoCache(ttl = 600)                  // seconds in Redis; everything else uses defaults
+interface UserCache : Cache<String, User>
 
 @EnableCoCache(caches = [UserCache::class])
 @SpringBootApplication
-class AppServer
+class App
 ```
 
-The cache's name is the interface's simple name (`UserCache`) unless `@CoCache(name = …)` sets one. The bean has the same name and the interface as its type. Keys and values go to Redis as `cocache:UserCache:{key}`, and values are JSON-encoded with your application's Jackson `ObjectMapper` unless a `Codec<User>` bean exists.
+```java [Java]
+// User.java
+public record User(String id, String name) {}
 
-## 4. Load from your data source
+// UserCache.java
+import me.ahoo.cocache.api.Cache;
+import me.ahoo.cocache.api.annotation.CoCache;
 
-On a miss in both L2 and L1, CoCache calls the cache's `CacheLoader`. Declare one as a bean:
+@CoCache(ttl = 600)
+public interface UserCache extends Cache<String, User> {}
 
-```kotlin
+// App.java
+import me.ahoo.cocache.spring.boot.EnableCoCache;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@EnableCoCache(caches = UserCache.class)
+@SpringBootApplication
+public class App {}
+```
+
+:::
+
+The cache is named after the interface (`UserCache`), and so is the bean. Values go to Redis under `cocache:UserCache:{id}`, encoded as JSON with your application's Jackson `ObjectMapper`.
+
+## 4. Give it a loader {#loader}
+
+On a miss in both levels, CoCache calls the cache's `CacheLoader`. Declare one as a bean; it is matched by its generic type:
+
+::: code-group
+
+```kotlin [Kotlin]
+import me.ahoo.cocache.api.CacheLoader
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
+
 @Configuration
-class UserCacheConfiguration {
+class CacheConfig {
     @Bean
-    fun userLoader(userRepository: UserRepository): CacheLoader<String, User> =
-        CacheLoader { id -> userRepository.findById(id) }   // null = "not found": a negative entry for absentTtl
+    fun userLoader(repo: UserRepository): CacheLoader<String, User> =
+        CacheLoader { id -> repo.findById(id) }   // null = not found, cached as a negative entry
 }
 ```
 
-CoCache finds this bean by its generic type `CacheLoader<String, User>`. If several beans match, startup fails. Name the right one with `@CoCache(loader = "userLoader")`. Without any loader, a miss returns `null` and nothing is written to Redis, so the cache is filled only by `put`.
+```java [Java]
+import me.ahoo.cocache.api.CacheLoader;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
-The loader only loads. How long a value lives is decided by the cache's policy (`ttl` with jitter), or per entry by a [`ttlOf` function](./configuration.md#per-entry-ttl). The loader always runs on the calling thread, so transactions, security context, and MDC are available.
-
-Batch reads (`getAll`) call `loadAll(keys)` once with every key that missed L2 and L1. By default it calls `load` per key. Override it to load them in one query:
-
-```kotlin
-object : CacheLoader<String, User> {
-    override fun load(key: String): User? = userRepository.findById(key)
-
-    // Keys missing from the result are "not found" and get negative entries
-    override fun loadAll(keys: Collection<String>): Map<String, User> =
-        userRepository.findAllById(keys).associateBy { it.id }
+@Configuration
+class CacheConfig {
+    @Bean
+    CacheLoader<String, User> userLoader(UserRepository repo) {
+        return id -> repo.findById(id).orElse(null);   // null = not found
+    }
 }
 ```
 
-## 5. Use it
+:::
+
+## 5. Read, write, invalidate {#use}
 
 Inject the interface like any other bean:
 
@@ -118,71 +158,107 @@ Inject the interface like any other bean:
 @Service
 class UserService(
     private val userCache: UserCache,
-    private val userRepository: UserRepository,
+    private val repo: UserRepository,
     private val invalidator: TransactionalInvalidator,
 ) {
-    fun find(id: String): User? = userCache[id]            // L2 → L1 → CacheLoader
+    fun find(id: String): User? = userCache[id]       // L2 → Redis → loader
 
     @Transactional
     fun rename(id: String, name: String) {
-        userRepository.rename(id, name)                    // 1. update the source of truth
-        invalidator.invalidate(userCache, id)              // 2. invalidate after the commit
+        repo.rename(id, name)                         // 1. change the source of truth
+        invalidator.invalidate(userCache, id)         // 2. invalidate after the commit
     }
 }
 ```
 
-| Call | Effect |
-|------|--------|
-| `cache[key]` | The value, or `null` if absent or negative |
-| `cache.get(key, loader)` | Like `cache[key]`, but a miss loads with the given loader instead of the cache's own. The load is protected the same way. |
-| `cache.getAll(keys)` | Present values by key. Reads L2, then the remaining keys from Redis in one batch, then loads the rest with one `loadAll` call. Absent and negative keys are left out. |
-| `cache.lookup(key)` | `Lookup.Present(value, expiresAt)` or `Lookup.Absent(expiresAt)`, when you need to tell "confirmed absent" apart |
-| `cache.put(key, value)` | Writes L1 with the cache's TTL policy and notifies peers. Doesn't fill L2: the next read fills it from L1. Throws `CacheWriteException` if Redis fails. |
-| `cache.put(key, value, ttl)` | Same, with an explicit `java.time.Duration` |
-| `cache.invalidate(key)` | Removes the key from L2 and L1 and notifies peers. If Redis fails, the invalidation is retried in the background. |
-| `cache.invalidateAll(keys)` | Same, for several keys |
+`TransactionalInvalidator` runs the invalidation after the transaction commits, and not at all on rollback. Invalidating before the commit would let a concurrent read reload the old row. Outside a transaction it invalidates immediately. [Keeping Data Fresh](./freshness.md) explains the rule and the alternatives.
 
-**Update the database first, then invalidate.** If you invalidate first, a concurrent read can reload the old row before your update commits. Inside a transaction, use `TransactionalInvalidator`: it defers the invalidation to `afterCommit`, merges repeated invalidations of one cache into one `invalidateAll`, and skips it on rollback. Outside a transaction it invalidates immediately.
+## 6. Check that it works {#check}
 
-Prefer `invalidate` over `put`. Use `put` only when the writer computes the final value itself.
+Expose the actuator endpoint:
 
-## Without annotations: a spec bean {#spec-bean}
-
-You can declare a cache as a `CacheSpec` bean instead of an interface. The starter registers a `Cache<K, V>` bean for it, named after the spec bean minus its `Spec` suffix:
-
-```kotlin
-@Bean
-fun productSpec(): CacheSpec<String, String> = cacheSpec("product") {
-    codec = StringCodec
-    loader = CacheLoader { id -> "product-$id" }
-    policy { ttl = Duration.ofMinutes(10) }
-}
-
-// inject it as Cache<String, String>, bean name "product"
-class ProductService(@Qualifier("product") private val productCache: Cache<String, String>)
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: cocache
 ```
 
-The factory method must declare its generic return type (`CacheSpec<String, String>`), because CoCache reads `K` and `V` from it without instantiating the spec. A spec bean is injected as the engine itself, with no proxy in between. See [Building a cache in code](./configuration.md#building-a-cache-in-code).
+Call `find("42")` twice, then:
 
-## Composing two caches {#composing-caches}
-
-A read model built from two caches is two batch reads. For example, extended user info that refers to a user:
-
-```kotlin
-@CoCache
-interface UserExtendInfoCache : Cache<String, UserExtendInfo>   // UserExtendInfo(id, userId)
-
-fun extendInfos(ids: List<String>): List<Pair<UserExtendInfo, User?>> {
-    val infos = userExtendInfoCache.getAll(ids)
-    val users = userCache.getAll(infos.values.map { it.userId }.distinct())
-    return infos.values.map { it to users[it.userId] }
-}
+```bash
+curl localhost:8080/actuator/cocache/UserCache        # localSize, loads, counters
+curl localhost:8080/actuator/cocache/UserCache/42     # this key in L2 and in Redis
 ```
 
-Each `getAll` reads L2, then Redis in one batch, then the source in one `loadAll`, and each cache keeps its own TTL and invalidation. This replaces the JoinCache of 5.x.
+The first read missed and loaded once (`loads: 1`). The second was an L2 hit. The key view shows the local copy with its expiry and the Redis copy with its remaining TTL, without loading anything. Run a second instance against the same Redis, call `rename` on one, and the other returns the new name on its next read.
 
-## Next steps
+## Without Spring {#without-spring}
 
-- [Configuration](./configuration.md): choose TTLs, sizes, and failure behavior.
-- [Spring Cache](./spring-cache.md): use CoCache behind `@Cacheable`.
-- [Operations](./operations.md): actuator endpoint, metrics, and Redis failure behavior.
+Add `cocache-core`, `cocache-redis`, and `cocache-codec-jackson` (same version). Create one `CacheRuntime` per process and create caches from specs:
+
+::: code-group
+
+```kotlin [Kotlin]
+import io.lettuce.core.RedisURI
+import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.codec.jackson.jacksonCodec
+import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.cacheSpec
+import me.ahoo.cocache.redis.RedisBackend
+import tools.jackson.databind.json.JsonMapper   // Jackson 3
+import java.time.Duration
+
+val mapper = JsonMapper.builder().findAndAddModules().build()
+val backend = RedisBackend.standalone(RedisURI.create("redis://localhost:6379"))
+val runtime = CacheRuntime.builder().backend(backend).build()
+
+val users: Cache<String, User> = runtime.create(
+    cacheSpec<String, User>("UserCache") {
+        codec = jacksonCodec<User>(mapper)
+        loader = CacheLoader { id -> repo.findById(id) }
+        policy { ttl = Duration.ofMinutes(10) }
+    }
+)
+
+// on shutdown: caches first, then the backend
+runtime.close()
+backend.close()
+```
+
+```java [Java]
+import io.lettuce.core.RedisURI;
+import java.time.Duration;
+import me.ahoo.cocache.api.Cache;
+import me.ahoo.cocache.codec.jackson.JacksonCodec;
+import me.ahoo.cocache.core.CacheRuntime;
+import me.ahoo.cocache.core.CacheSpec;
+import me.ahoo.cocache.redis.RedisBackend;
+import tools.jackson.databind.ObjectMapper;        // Jackson 3
+import tools.jackson.databind.json.JsonMapper;
+
+ObjectMapper mapper = JsonMapper.builder().findAndAddModules().build();
+RedisBackend backend = RedisBackend.standalone(RedisURI.create("redis://localhost:6379"));
+CacheRuntime runtime = CacheRuntime.builder().backend(backend).build();
+
+Cache<String, User> users = runtime.create(
+    CacheSpec.<String, User>builder("UserCache")
+        .codec(JacksonCodec.of(mapper, User.class))
+        .loader(id -> repo.findById(id).orElse(null))
+        .updatePolicy(policy -> policy.ttl(Duration.ofMinutes(10)))
+        .build()
+);
+
+runtime.close();
+backend.close();
+```
+
+:::
+
+## Next steps {#next}
+
+- [How It Works](./concepts.md): the mental model behind reads, writes, and staleness.
+- [Declaring Caches](./caches.md): keys, loaders, codecs, spec beans, and set caches.
+- [Configuration Reference](./configuration.md): every `cocache.*` property.

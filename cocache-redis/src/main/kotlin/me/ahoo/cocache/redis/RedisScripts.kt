@@ -227,7 +227,9 @@ return 1
     val ADD_MEMBERS = Script(
         PRELUDE + """
 local key = KEYS[1]
-if redis.call('TYPE', key)['ok'] ~= 'hash' then
+-- 不是本协议的集合（非 Hash 或没有 !f）时整体覆盖。!f 为更高版本时保留并按本版本写入成员：
+-- 格式演进按两阶段进行（先让所有节点能读新格式，再开始写），写入方不会遇到读不懂的版本。
+if redis.call('TYPE', key)['ok'] ~= 'hash' or redis.call('HEXISTS', key, '!f') == 0 then
   redis.call('DEL', key)
   redis.call('HSET', key, '!f', '1')
 end
@@ -244,7 +246,7 @@ return 1
     val REMOVE_MEMBERS = Script(
         PRELUDE + """
 local key = KEYS[1]
-if redis.call('TYPE', key)['ok'] == 'hash' then
+if redis.call('TYPE', key)['ok'] == 'hash' and redis.call('HEXISTS', key, '!f') == 1 then
   for i = 4, #ARGV do redis.call('HDEL', key, '+' .. ARGV[i]) end
   if redis.call('HLEN', key) <= 1 then
     redis.call('DEL', key)

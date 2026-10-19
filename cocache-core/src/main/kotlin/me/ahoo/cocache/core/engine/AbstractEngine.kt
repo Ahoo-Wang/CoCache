@@ -18,13 +18,16 @@ import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.KeyEncoder
+import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.SingleFlight
 import me.ahoo.cocache.core.policy.CachePolicy
@@ -75,6 +78,14 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     private val storagePrefix = "$keyPrefix$namespace:"
 
     protected fun storageKey(key: K): String = storagePrefix + keyEncoder.encode(key)
+
+    /**
+     * 编码后的 key → 存储 key（运维接口使用）。
+     */
+    protected fun storageKeyOf(encodedKey: String): String {
+        require(encodedKey.isNotEmpty()) { "Cache[$name] - encodedKey must not be empty." }
+        return storagePrefix + encodedKey
+    }
 
     protected fun frameOf(keys: Collection<String>): ByteArray = InvalidationFrame.encode(nodeId, keys)
 
@@ -179,6 +190,92 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         local.invalidateAll()
     }
 
+    override val pendingInvalidationCount: Int
+        get() = 0
+
+    /**
+     * 该存储 key 的失效是否仍在重试中。
+     */
+    protected open fun isInvalidationPending(storageKey: String): Boolean = false
+
+    /**
+     * 把 L1 内容解码为展示用的值；形状不符或解码失败时抛出。
+     */
+    protected abstract fun describe(envelope: Envelope): Any?
+
+    /**
+     * 只读快照：L2 用 `getIfPresentQuietly`（不影响淘汰统计），L1 用不带 lease 与刷新令牌的 `read`（纯读取）。
+     * 不经过 SingleFlight，不取戳，不写任何一层，不计入指标：与命中路径完全无关。
+     */
+    override fun inspect(encodedKey: String): KeyInspection {
+        val storageKey = storageKeyOf(encodedKey)
+        val localCopy = local.policy().getIfPresentQuietly(storageKey)?.let { localCopyOf(it) }
+        return KeyInspection(name, storageKey, localCopy, remoteCopyOf(storageKey), isInvalidationPending(storageKey))
+    }
+
+    private fun localCopyOf(entry: LocalEntry<V>): KeyInspection.LocalCopy {
+        val state = when {
+            entry.value != null -> KeyInspection.LocalState.VALUE
+            entry.unresolved -> KeyInspection.LocalState.UNRESOLVED
+            else -> KeyInspection.LocalState.ABSENT
+        }
+        return KeyInspection.LocalCopy(
+            state = state,
+            value = entry.value?.let { KeyInspection.display(it) },
+            expiresAt = Instant.ofEpochMilli(entry.expiresAt),
+            refreshAt = entry.refreshAt.takeIf { it != FOREVER }?.let { Instant.ofEpochMilli(it) },
+            expired = entry.expiresAt <= clock.nowMillis(),
+        )
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun remoteCopyOf(storageKey: String): KeyInspection.RemoteCopy {
+        val read = try {
+            store.read(storageKey, null, null)
+        } catch (e: Exception) {
+            return KeyInspection.RemoteCopy(KeyInspection.RemoteState.ERROR, error = e.toString())
+        }
+        return when (read) {
+            is RemoteRead.Miss -> KeyInspection.RemoteCopy(KeyInspection.RemoteState.MISS)
+            is RemoteRead.Leased -> KeyInspection.RemoteCopy(KeyInspection.RemoteState.LEASED, ttl = read.remaining)
+            is RemoteRead.Hit -> remoteHitOf(read)
+        }
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun remoteHitOf(read: RemoteRead.Hit): KeyInspection.RemoteCopy {
+        val unreadable = { reason: String ->
+            KeyInspection.RemoteCopy(
+                KeyInspection.RemoteState.UNREADABLE,
+                ttl = read.ttl,
+                format = read.format,
+                error = reason
+            )
+        }
+        if (read.format < MIN_FORMAT) {
+            return unreadable("Unrecognized remote content (not written by this protocol).")
+        }
+        if (read.format > context.backend.format) {
+            return unreadable("Written by a newer format[${read.format}] than this node[${context.backend.format}].")
+        }
+        val value = try {
+            describe(read.envelope)
+        } catch (e: Exception) {
+            return unreadable(e.toString())
+        }
+        val state = when (read.envelope) {
+            is Envelope.Scalar -> KeyInspection.RemoteState.VALUE
+            is Envelope.Members -> KeyInspection.RemoteState.SET
+            Envelope.Absent -> KeyInspection.RemoteState.ABSENT
+        }
+        return KeyInspection.RemoteCopy(
+            state = state,
+            value = value?.let { KeyInspection.display(it) },
+            ttl = read.ttl,
+            format = read.format,
+        )
+    }
+
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             log.info { "Cache[$name] - close." }
@@ -189,6 +286,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 
     protected companion object {
         val log = KotlinLogging.logger {}
+
+        /**
+         * 格式版本 `0` 表示无法识别的内容（如旧版本写入的值），按损坏处理。
+         */
+        const val MIN_FORMAT = 1
 
         fun <V> buildLocal(policy: CachePolicy): Cache<String, LocalEntry<V>> {
             val local = policy.local

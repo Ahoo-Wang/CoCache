@@ -1,9 +1,9 @@
 ---
-title: 从 5.x 迁移到 6.0
+title: 从 5.x 升级
 description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注解、API、配置项、Redis 线格式、指标、Actuator、移除的能力，以及如何切换集群。
 ---
 
-# 从 5.x 迁移到 6.0
+# 从 5.x 升级
 
 6.0 是一次重写。接口式声明（`@CoCache interface UserCache : Cache<String, User>`）仍然可用，只需更换 import 并修改几个改名的属性；但它周围几乎全部改变了：API、SPI、模块、配置项、Redis 线格式和失效通道。本页列出每一项变化及其替代方案。
 
@@ -17,7 +17,7 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 然后处理 5.x 留下的 key：
 
 - 默认布局下，6.0 的 key 与 5.x 的 key 都是 `cocache:{cacheName}:{key}`，所以 6.0 会读到旧值。任何 5.x 的值（String、Hash 或原生 Set，包括 `_nil_` 哨兵）都会被识别为外来内容（格式 0），仅在未被修改时回收，然后从数据源重新加载，无需手工清理。
-- **5.x 的 `SetElementsCache` 是例外**：它的集合是唯一副本，而 6.0 把它当作外来内容读取，所以同一个 key 上的 `SetCache` 从空集合开始。用 `put(key, fullSet)` 一次性迁移数据（或者使用新的 `keyPrefix`，从旧 key 复制）。
+- **5.x 的 `SetElementsCache` 是例外**：它的原生 Redis Set 是唯一副本，而 6.0 的 `SetCache` 读不了它。读取这样的 key 会返回空集合（计入 `cocache.unknown.formats`，Redis 中的内容保留不动），直到该 key 被重写；`add` 会替换旧集合，而不是在其上追加。切换之前用 `put(key, fullSet)` 逐个迁移集合，或者给 `SetCache` 设置新的 `keyPrefix`，再从旧 key 复制。
 - 要立即释放内存，按前缀删除旧 key（`SCAN` 配合 `MATCH`，再 `UNLINK`）。
 
 `redis-cli GET` 不再显示 JSON：每个值都以 36 字节的二进制头开始。直接从 Redis 读取 CoCache key 的程序（例如对 Hash 编码的缓存执行 `HGET`）不再受支持。
@@ -47,6 +47,8 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 | `me.ahoo.cache.spring.EnableCoCache` | `me.ahoo.cocache.spring.boot.EnableCoCache`（在 starter 中） |
 | `me.ahoo.cache.api.source.CacheSource` | `me.ahoo.cocache.api.CacheLoader` |
 | `me.ahoo.cache.spring.cache.CoCacheManager` | `me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager` |
+| `me.ahoo.cache.api.join.JoinCache` / `JoinValue` / `JoinKeyExtractor` | `me.ahoo.cocache.api.join.JoinCache` / `JoinValue` / `JoinKeyExtractor` |
+| `me.ahoo.cache.api.annotation.JoinCacheable` | `me.ahoo.cocache.api.annotation.JoinCacheable` |
 
 ## 注解 {#annotations}
 
@@ -59,13 +61,13 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 | `@CoCache(missingTtl)` | `absentTtl` |
 | `@CoCache(clientSideTtl)` | `localMaxAge`。**`0`（不限制）没有对应值**，见[下文](#semantics) |
 | `@CoCache(refreshAhead)` | `refreshWindow`。`0` 仍表示关闭 |
-| `@CoCache(keyPrefix)`，默认 `cocache:{name}:` | `keyPrefix`，默认 `cocache:`，后接命名空间。不再解析 Spring `${…}` 占位符 |
+| `@CoCache(keyPrefix)`，默认 `cocache:{name}:` | `keyPrefix`，默认 `cocache:`，后接命名空间。注解不再解析 Spring `${…}` 占位符；`key-prefix` 配置项支持占位符，见[配置项](#properties) |
 | `@CoCache(keyExpression)` | `keyExpression`（同样的 SpEL 模板，以 key 为根对象） |
 | — | 新增：`namespace`、`loader`、`codec` |
 | `@CaffeineCache(maximumSize, initialCapacity, expireAfterAccess)` | 名称不变 |
 | `@CaffeineCache(expireUnit)` | 删除：`expireAfterAccess` 固定以秒为单位 |
 | 元注解与 `@Inherited` | 删除：注解必须直接标在缓存接口上 |
-| `@JoinCacheable` | 删除，见 [JoinCache](#joincache) |
+| `@JoinCacheable` | `me.ahoo.cocache.api.annotation.JoinCacheable`，新增 `joinKeyExtractor` 属性，见 [JoinCache](#joincache) |
 
 6.0 中 `FOREVER` 只能用于 `ttl` 与 `expireAfterAccess`，`0` 只能用于 `ttlJitter` 与 `refreshWindow`，其它情况启动失败。
 
@@ -75,7 +77,7 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 |-----|-----|
 | `CacheSource<K, V>.loadCacheValue(key): CacheValue<V>?` | `CacheLoader<K, V>.load(key): V?` |
 | `loadCacheValues(keys): Map<K, CacheValue<V>>` | `loadAll(keys): Map<K, V>` |
-| 由数据源决定每个值的 `ttlAt` | 由策略决定（`ttl` 加抖动）。按条目决定：`CacheSpec.ttlOf(key, value)`，见[按条目决定寿命](./configuration.md#per-entry-ttl) |
+| 由数据源决定每个值的 `ttlAt` | 由策略决定（`ttl` 加抖动）。按条目决定：`CacheSpec.ttlOf(key, value)`，见[按条目决定寿命](./caches.md#ttl-of) |
 | 名为 `{cacheName}.CacheSource` 的 bean，否则唯一的 `CacheSource<K, V>` | `@CoCache(loader = "beanName")`，否则唯一的 `CacheLoader<K, V>`。有多个候选时启动失败 |
 | `CacheSource.noOp()`：每次未命中都在 Redis 中写入负缓存 | 没有 loader：未命中返回 `null`，不写 Redis |
 
@@ -85,7 +87,7 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 |-----|-----|
 | `cache[key]` / `get(key)` | `cache[key]` / `get(key)` |
 | `getCache(key): CacheValue<V>?` | `lookup(key): Lookup<V>`（`Present(value, expiresAt)` / `Absent(expiresAt)`） |
-| `getTtlAt(key)` | `lookup(key).expiresAt`（`Instant`，毫秒精度） |
+| `getTtlAt(key)` | `lookup(key).expiresAt`：返回的这份副本的到期时间（命中 L2 时是 L2 副本的到期时间，受 `localMaxAge` / `degradedLocalMaxAge` 限制），精度为缓存时钟的刻度。要看 Redis 中的 TTL，用 [actuator 查看 key](../operations/observability.md#inspect-key) 或 `CacheAdmin.inspect`。 |
 | `getCaches(keys)` / `getAll(keys)` | `getAll(keys)`，现在会与并发的单 key 加载合并 |
 | `cache[key] = value` / `set(key, value)` | `put(key, value)` |
 | `set(key, ttlAt, value)` | `put(key, value, ttl: Duration)` |
@@ -95,7 +97,7 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 | `SetElementsCache.addElements` / `removeElements` | `SetCache.add` / `remove` / `clear` |
 | `CacheValue`、`PresentValue`、`MissingValue`、`TtlAt`、`CacheClock` 单例 | 转为内部实现，或由 `java.time` 类型与可注入的 `CacheClock` 取代 |
 
-`SetCache` 只用于唯一副本在 Redis 中的集合：它没有 loader，`invalidate` 会抛出异常。如果集合的数据在数据库中，声明 `Cache<K, Set<E>>` 并用失效维护。见[集合缓存](./configuration.md#set-elements)。
+`SetCache` 只用于唯一副本在 Redis 中的集合：它没有 loader，`invalidate` 会抛出异常。如果集合的数据在数据库中，声明 `Cache<K, Set<E>>` 并用失效维护。见[集合缓存](./caches.md#set-cache)。
 
 ## 组件 {#components}
 
@@ -112,12 +114,24 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 
 ## JoinCache {#joincache}
 
-JoinCache 子系统（`@JoinCacheable`、`JoinCache`、`JoinValue`、`JoinKeyExtractor`、`joinKeyExpression`）已删除。用两次 `getAll` 组合两个缓存，见[组合两个缓存](./quick-start.md#composing-caches)。
+JoinCache 仍然保留，位于 `me.ahoo.cocache.api.join`，但现在是**只读视图**，不再是 `Cache` 的子类型。见 [JoinCache](./join-cache.md)。
+
+| 5.x | 6.0 |
+|-----|-----|
+| `JoinCache<K1, V1, K2, V2> : Cache<K1, JoinValue<…>>` | `JoinCache<K1, V1, K2, V2>`，不是 `Cache`：`name`、`get`、`getAll`、`invalidate(key)`、`invalidate(firstKey, joinKey)` |
+| `set(key, joinValue)`、`getCache`、`getTtlAt` | 删除：直接写入、查看各组件缓存 |
+| `evict(key)` / `evict(firstKey, joinKey)` | `invalidate(key)`（只失效主缓存）/ `invalidate(firstKey, joinKey)`（两者） |
+| `JoinValue.joinKey: K2` | `joinKey: K2?`：`JoinKeyExtractor` 可以返回 `null` 表示没有关联 |
+| 列在 `@EnableCoCache(caches = …)` 中 | 列在 `@EnableCoCache(joinCaches = …)` 中 |
+| `firstCacheName` / `joinCacheName` 可选（为空时按类型唯一匹配缓存） | 必填：只按名称解析缓存 |
+| 提取器 bean 名约定 `{name}.JoinKeyExtractor` | `@JoinCacheable(joinKeyExtractor = "beanName")`，否则按泛型 `JoinKeyExtractor<V1, K2>` 唯一匹配 |
+| `joinKeyExpression` | 不变：以主值为根对象的 SpEL 模板，只支持 `String` 关联 key |
+| 把 `@JoinCacheable` 用作元注解 | 删除：直接标注在接口上 |
 
 ## Spring Cache {#spring-cache}
 
 - `CoCacheManager` 改为 `CoCacheSpringCacheManager`，由 `CacheRuntime` 构造。
-- `@Cacheable(sync = true)` 现在经受 lease 与失效戳保护的路径加载。需要 CoCache 的一致性保证时请使用它：不带 `sync` 时，Spring 的无条件 `put` 可能覆盖失效。
+- `@Cacheable(sync = true)` 现在经受 lease 与失效戳保护的路径加载。需要 CoCache 的一致性保证时请使用它：不带 `sync` 时，Spring 的无条件 `put` 可能覆盖失效。启动时，starter 会为每个指向 CoCache 缓存且没有 `sync = true` 的 `@Cacheable` 记录一条 `WARN`；设置 `cocache.spring-cache.require-sync: true` 则改为启动失败。
 - `put(key, null)` 现在执行失效，而不是写入负缓存。
 - 有 `spring-tx` 时 CacheManager 是事务感知的：事务内的 `@CacheEvict` 与 `@CachePut` 在提交之后执行。直接调用时使用 `TransactionalInvalidator`。
 
@@ -125,7 +139,7 @@ JoinCache 子系统（`@JoinCacheable`、`JoinCache`、`JoinValue`、`JoinKeyExt
 
 ## 配置项 {#properties}
 
-已删除的 5.x 配置项会导致启动失败，错误信息给出替代项。
+已删除的 5.x 配置项会导致启动失败，错误信息给出替代项（如果有的话）。
 
 | 5.x | 6.0 |
 |-----|-----|
@@ -138,7 +152,7 @@ JoinCache 子系统（`@JoinCacheable`、`JoinCache`、`JoinValue`、`JoinKeyExt
 | `cocache.metrics.client-side-hits` | 删除：没有 L2 命中计数 |
 | `cocache.next.*`（6.0 预览） | `cocache.*` |
 
-新增：`cocache.defaults.*` 与 `cocache.caches.[name].*` 下的全部策略字段，以及 `cocache.redis.command-timeout`、`heartbeat`、`invalidate-batch-size`、`client-name`。见[配置](./configuration.md#properties)。
+新增：`cocache.defaults.*` 与 `cocache.caches.[name].*` 下的全部策略字段，包括 `key-prefix`（支持占位符，例如 `${spring.application.name}:`）；`cocache.redis.command-timeout`、`heartbeat`、`invalidate-batch-size`、`client-name`、`channel-mode`；`cocache.backend`（`redis` 或 `memory`）；以及 `cocache.spring-cache.require-sync`。见[配置](./configuration.md#properties)。
 
 ## Redis {#redis}
 
@@ -146,15 +160,15 @@ JoinCache 子系统（`@JoinCacheable`、`JoinCache`、`JoinValue`、`JoinKeyExt
 |-|-----|-----|
 | 客户端 | Spring Data Redis，Lettuce 或 Jedis | 原生 Lettuce。CoCache 按 `spring.data.redis.*` 自建客户端。**不支持 Jedis**：需要引入 Lettuce（不影响应用自己的 Redis 客户端） |
 | 拓扑 | 单机、Sentinel、Cluster | 单机、Sentinel、Cluster。静态主从启动失败 |
-| 最低版本 | — | Redis 7.0+ 或 Valkey 7.2+ |
+| 最低版本 | — | Redis 7.0+。Valkey 7.2+ 应当可用，但未纳入 CI 测试 |
 | key | `keyPrefix` + key，默认前缀 `cocache:{name}:` | `{keyPrefix}{namespace}:{key}`，默认为 `cocache:{name}:{key}`。自定义 `keyPrefix: "user:"` 在 5.x 中得到 `user:42`，现在得到 `user:UserCache:42` |
 | 值 | JSON 字符串、Hash 或 Set，带内哨兵 `_nil_` | 36 字节二进制头 + codec 字节。集合是带 `!f` 与 `+{member}` 字段的 Hash |
 | TTL 精度 | 秒 | 毫秒 |
 | 频道 | 缓存名，例如 `UserCache` | `cocache:inv:{namespace}`，例如 `cocache:inv:UserCache` |
-| 消息 | 文本 `{key}@@{publisherId}` | 二进制帧（`InvalidationFrame`），见[运维](./operations.md#external-eviction) |
+| 消息 | 文本 `{key}@@{publisherId}` | 二进制帧（`InvalidationFrame`），见[运维](../operations/troubleshooting.md#external-invalidation) |
 | 失效 | 先 `DEL` 再 `PUBLISH`（2 次往返） | 一个原子脚本（`pubsub` 模式） |
 
-用 `DEL` + `PUBLISH {cacheName} key@@id` 失效的外部程序必须改用 [6.0 的协议](./operations.md#external-eviction)。
+用 `DEL` + `PUBLISH {cacheName} key@@id` 失效的外部程序必须改用 [6.0 的协议](../operations/troubleshooting.md#external-invalidation)。
 
 ## Actuator {#actuator}
 
@@ -162,11 +176,12 @@ JoinCache 子系统（`@JoinCacheable`、`JoinCache`、`JoinValue`、`JoinKeyExt
 |-----|-----|
 | `GET /actuator/cocache` | `GET /actuator/cocache`：缓存名、L2 条目数、加载统计与全部计数器 |
 | `GET /actuator/cocache/{name}` | `GET /actuator/cocache/{name}` |
-| `GET /actuator/cocache/{name}/{key}`（未命中时回源） | 删除 |
-| `DELETE /actuator/cocache/{name}/{key}` | 删除：在应用中调用 `invalidate` |
+| `GET /actuator/cocache/{name}/{key}`（未命中时回源） | `GET /actuator/cocache/{name}/{key}`：查看该 key 的 L2 副本与 L1 状态，**不回源**。`{key}` 是编码后的 key |
+| `DELETE /actuator/cocache/{name}/{key}` | `DELETE /actuator/cocache/{name}/{key}`：在所有实例上失效该 key，与 `invalidate(key)` 相同 |
 | `cocacheClient` 端点（`GET /{name}`、`GET /{name}/{key}`、`DELETE /{name}`） | 删除。`DELETE /actuator/cocache/{name}` 清空本实例的 L2 |
+| — | 新增健康检查 `cocache`：Redis 订阅连接心跳失败时为 `DOWN` |
 
-从 `management.endpoints.web.exposure.include` 中去掉 `cocacheClient`。
+从 `management.endpoints.web.exposure.include` 中去掉 `cocacheClient`。见[可观测性](../operations/observability.md#actuator-endpoint)。
 
 ## 指标 {#metrics}
 
@@ -188,7 +203,7 @@ JoinCache 子系统（`@JoinCacheable`、`JoinCache`、`JoinValue`、`JoinKeyExt
 | `cocache.l2.size` | `cocache.local.size` |
 | `cocache.eviction.publish.failures`（无 `cache` 标签） | 删除。失效与广播在同一个脚本中完成，失败计入 `cocache.write.failures`，最终失败计入 `cocache.invalidations.dropped` |
 
-新增：`lease.waits`、`lease.wait.timeouts`、`fill.rejections`、`degraded.fills`、`reclaims`、`unknown.formats`、`refresh.rejections`、`remote.failures`、`write.failures`、`invalidation.retries`、`invalidations.dropped`。见[运维](./operations.md#metrics)。
+新增：`cocache.lease.waits`、`cocache.lease.wait.timeouts`、`cocache.fill.rejections`、`cocache.degraded.fills`、`cocache.reclaims`、`cocache.unknown.formats`、`cocache.refresh.rejections`、`cocache.remote.failures`、`cocache.write.failures`、`cocache.invalidation.retries`、`cocache.invalidations.dropped`。见[运维](../operations/observability.md#metrics)。
 
 ## 行为变化 {#semantics}
 

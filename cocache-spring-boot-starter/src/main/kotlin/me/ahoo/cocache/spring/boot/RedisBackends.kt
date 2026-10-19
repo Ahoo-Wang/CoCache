@@ -25,7 +25,7 @@ import java.net.URI
  * 由 Spring Boot 的 Redis 连接信息构造后端。后端自建 Lettuce 客户端（断线时拒绝命令、只访问主节点），
  * 不复用应用的连接工厂：客户端选项是全局的，不能为 CoCache 改动应用的连接行为。
  */
-object RedisBackends {
+internal object RedisBackends {
     /**
      * 连接目标：单机（含 Sentinel URI）或集群。
      */

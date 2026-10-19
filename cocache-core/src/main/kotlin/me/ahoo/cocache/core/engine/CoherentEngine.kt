@@ -727,14 +727,18 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 失效仍在重试中的 key 数（供运维与测试查看）。
      */
-    val pendingInvalidationCount: Int
+    override val pendingInvalidationCount: Int
         get() = pendingInvalidations.size
 
+    override fun isInvalidationPending(storageKey: String): Boolean = pendingInvalidations.containsKey(storageKey)
+
+    override fun describe(envelope: Envelope): Any? = decode(envelope)
+
+    override fun invalidateEncoded(encodedKey: String) {
+        invalidateStorageKeys(listOf(storageKeyOf(encodedKey)))
+    }
+
     private companion object {
-        /**
-         * 格式版本 `0` 表示无法识别的内容（如旧版本写入的值），按损坏处理。
-         */
-        const val MIN_FORMAT = 1
         val INITIAL_BACKOFF_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(2)
         val MAX_BACKOFF_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(50)
     }

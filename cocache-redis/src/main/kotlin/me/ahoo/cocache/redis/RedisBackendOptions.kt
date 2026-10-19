@@ -28,7 +28,7 @@ import java.time.Duration
  * @param sslOptions 后端自建客户端的 TLS 选项（证书、信任库、协议、加密套件）；URI 启用 SSL 而本项为空时使用 JDK 默认配置
  * @param channelMode 失效通道模式（RFC 0003 §4.7），全集群必须一致：`PUBLISH` 与 `SPUBLISH` 互不相通
  */
-data class RedisBackendOptions(
+data class RedisBackendOptions @JvmOverloads constructor(
     val commandTimeout: Duration = Duration.ofSeconds(2),
     val heartbeat: Duration = Duration.ofSeconds(5),
     val invalidateBatchSize: Int = 512,

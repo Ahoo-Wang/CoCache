@@ -19,6 +19,18 @@ description: Release history and notable changes for CoCache.
 - **Spring:** `@EnableCoCache` with `@CoCache` interfaces or `CacheSpec` beans, `CacheSpecCustomizer`, layered `cocache.defaults.*` / `cocache.caches.[name].*` properties with full IDE metadata, the `CoCacheSpringCacheManager` (use `@Cacheable(sync = true)` for coherent loads), and `TransactionalInvalidator` (invalidate after commit).
 - **Observability:** the `cocache` actuator endpoint and `cocache.*` Micrometer meters tagged by `cache`.
 
+### Developer experience
+
+- **`JoinCache`**: a read-only view that joins two caches with two batch reads, declared with `@JoinCacheable` and registered with `@EnableCoCache(joinCaches = […])`. See [JoinCache](./join-cache.md).
+- **No Redis for local development and tests:** `cocache.backend: memory` runs every cache on the in-process backend (single process only). A `CacheClock` bean such as `ManualClock` lets tests advance time.
+- **Per-key troubleshooting:** `GET /actuator/cocache/{name}/{key}` shows the L2 copy and the L1 state of one key without loading it; `DELETE` on the same path invalidates it cluster-wide. See [Operations](../operations/observability.md#inspect-key).
+- **Health indicator** `cocache`: DOWN when the Redis heartbeat fails; pending invalidations are listed in the details.
+- **Spring Cache check:** a WARN for each `@Cacheable` on a CoCache cache without `sync = true` (the non-sync path isn't lease-protected); `cocache.spring-cache.require-sync=true` fails startup instead.
+- **Global key prefix:** `cocache.defaults.key-prefix` (and per cache `cocache.caches.[name].key-prefix`), for example `${spring.application.name}:` when several apps share one Redis.
+- **Key type check:** the default `toString()` key encoder rejects key types that don't override `toString()`, which would otherwise never hit.
+- **`ExternalInvalidator`:** invalidate from CDC consumers or batch jobs with the same protocol, without creating a cache.
+- `@JvmOverloads` on `LeasePolicy`, `LoadPolicy`, `LocalPolicy`, `RetryPolicy` and `RedisBackendOptions`, and `updatePolicy(Consumer)` on spec builders, for Java.
+
 ### Migration at a glance
 
 | 5.x | 6.0 |
@@ -34,9 +46,21 @@ description: Release history and notable changes for CoCache.
 | `cocache.redis.eviction-channel=sharded` | `cocache.redis.channel-mode=sharded` |
 | `cocache.load.*` | `cocache.defaults.load-max-concurrent` / `load-acquire-timeout` |
 | actuator `cocacheClient` | removed; use `cocache` |
-| Jedis, JoinCache, pluggable L2, explicit negative-entry writes | removed |
+| `JoinCache` (`me.ahoo.cache.api.join`) | `me.ahoo.cocache.api.join.JoinCache`: a read-only view of two caches, registered with `@EnableCoCache(joinCaches = […])`; `evict` → `invalidate`, no `set` (see [JoinCache](./join-cache.md)) |
+| Jedis, pluggable L2, explicit negative-entry writes | removed |
 
-Removed 5.x property keys fail startup with a message that names the replacement. Some renames change meaning (for example, L2 is now always bounded by `localMaxAge`, 5 minutes by default): see [Behavior changes](./migration-6.md#semantics).
+Removed 5.x property keys fail startup with a message that names the replacement, if there is one. Some renames change meaning (for example, L2 is now always bounded by `localMaxAge`, 5 minutes by default): see [Behavior changes](./migration-6.md#semantics).
+
+### Dependencies
+
+| Dependency | Version |
+|------------|---------|
+| JDK (minimum) | 17 (tested on 17 and 25) |
+| Spring Boot | 4.1.1 |
+| Kotlin | 2.4.21 (artifacts target Kotlin API and language level 2.2) |
+| Lettuce | 7.5.2.RELEASE |
+| Caffeine | 3.2.4 |
+| Jackson | 3.1.5 (`tools.jackson`) |
 
 ### Gradle Setup
 
@@ -65,7 +89,7 @@ In Redis Cluster, a plain `PUBLISH` reaches every node. `SPUBLISH`/`SSUBSCRIBE` 
 
 ### Evicting from outside CoCache
 
-The [operations guide](./operations.md#external-eviction) now documents the eviction protocol: the storage key, the channel, and the `key@@publisherId` message. It includes `redis-cli` and CDC-consumer examples. A writer that bypasses CoCache runs `DEL` on the storage key, then `PUBLISH`.
+The [operations guide](../operations/troubleshooting.md#external-invalidation) now documents the eviction protocol: the storage key, the channel, and the `key@@publisherId` message. It includes `redis-cli` and CDC-consumer examples. A writer that bypasses CoCache runs `DEL` on the storage key, then `PUBLISH`.
 
 ### Redis Cluster tests
 
@@ -150,7 +174,7 @@ interface UserCache : Cache<String, User>
 
 ### Micrometer metrics
 
-With Micrometer on the classpath (`spring-boot-starter-actuator` brings it), the starter binds `cocache.*` meters tagged by `cache`: `hits{level=l2|l1}`, `misses`, `loads` (timer), `load.failures`, `filtered`, `stale.discards`, `evictions.received`, `resets`, `l2.size`, plus the untagged `eviction.publish.failures`. See [Operations](./operations.md#metrics).
+With Micrometer on the classpath (`spring-boot-starter-actuator` brings it), the starter binds `cocache.*` meters tagged by `cache`: `hits{level=l2|l1}`, `misses`, `loads` (timer), `load.failures`, `filtered`, `stale.discards`, `evictions.received`, `resets`, `l2.size`, plus the untagged `eviction.publish.failures`. See [Operations](../operations/observability.md#metrics).
 
 - The orchestration layer accumulates the counts in `LongAdder`s. Read them directly from `CoherentCache.stats`.
 - The L2 hit counter (`hits{level=l2}`) is off by default. Turn it on with `cocache.metrics.client-side-hits=true`. Counting on the hottest path costs 8–15% of L2 hit throughput (JMH, 1–8 threads). No other meter touches the hit path.

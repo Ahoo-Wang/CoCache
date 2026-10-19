@@ -17,6 +17,7 @@ import io.lettuce.core.RedisException
 import io.lettuce.core.cluster.SlotHash
 import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import io.lettuce.core.cluster.pubsub.StatefulRedisClusterPubSubConnection
+import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -27,6 +28,9 @@ import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assumptions
@@ -90,6 +94,70 @@ class RedisRobustnessTest {
     }
 
     /**
+     * 集合缓存 key 上是外来内容：原生 Set 与没有 `!f` 的 Hash 都读作空集合，`add` 整体覆盖它们，`remove` 不改动外来 Hash。
+     */
+    @Test
+    fun setCacheTreatsForeignContentAsAbsentAndAddReplacesIt() {
+        RedisTestSupport.backend().use { backend ->
+            CacheRuntime.builder().backend(backend).build().use { runtime ->
+                val index: SetCache<String, String> = runtime.create(
+                    setCacheSpec<String, String>(namespace) { elementCodec = StringCodec }
+                )
+                RedisTestSupport.withCommands { commands ->
+                    commands.sadd(key("native"), "x")
+                    commands.hset(key("hash"), "field", "value")
+                    commands.hset(key("untouched"), "+a", "")
+                }
+                for (name in listOf("native", "hash")) {
+                    index[name].assert().isEmpty()
+                    index.add(name, listOf("a"))
+                    awaitCondition { index[name] == setOf("a") }
+                }
+                index.remove("untouched", listOf("a"))
+                RedisTestSupport.withCommands { commands ->
+                    commands.hexists(key("untouched"), "+a").assert().isTrue()
+                }
+            }
+        }
+    }
+
+    /**
+     * 运维文档（wiki/operations/index.md#acl）给出的最小 ACL：缓存与集合缓存的全部操作都能执行。
+     * 文档中的命令列表与脚本不一致时这里失败。
+     */
+    @Test
+    fun documentedAclAllowsEveryOperation() {
+        Assumptions.assumeTrue(System.getenv("SPRING_DATA_REDIS_CLUSTER_NODES") == null)
+        val rules = (
+            "~cocache:* resetchannels &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe " +
+                "+unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hset +hdel +hexists " +
+                "+hlen +pexpire +persist +setrange +time"
+            ).split(" ")
+        RedisTestSupport.aclBackend("cocache-documented", rules).use { backend ->
+            backend.atomicBroadcast.assert().isTrue()
+            CacheRuntime.builder().backend(backend).build().use { runtime ->
+                val users = runtime.create(
+                    me.ahoo.cocache.core.cacheSpec<String, String>("acl-$namespace") {
+                        codec = StringCodec
+                        loader = me.ahoo.cocache.api.CacheLoader { "v-$it" }
+                    }
+                )
+                users["1"].assert().isEqualTo("v-1")
+                users.put("1", "v1")
+                users.invalidate("1")
+                users.getAll(listOf("1", "2")).assert().hasSize(2)
+                val index: SetCache<String, String> = runtime.create(
+                    setCacheSpec<String, String>("acl-set-$namespace") { elementCodec = StringCodec }
+                )
+                index.add("k", listOf("a", "b"))
+                index.remove("k", listOf("a"))
+                awaitCondition { index["k"] == setOf("b") }
+                index.clear("k")
+            }
+        }
+    }
+
+    /**
      * 批量读取中一个 key 失败：其余读取取得的 lease 被释放，而不是等 lease.ttl 到期。
      */
     @Test
@@ -128,6 +196,24 @@ class RedisRobustnessTest {
     }
 
     /**
+     * 心跳正常时健康状态为正常（很短的心跳周期，订阅期间会执行多次心跳）。
+     */
+    @Test
+    fun heartbeatHealthyWhenPingSucceeds() {
+        RedisTestSupport.backend(
+            RedisBackendOptions(clientName = "cocache-hb-" + UUID.randomUUID(), heartbeat = Duration.ofMillis(20))
+        ).use { backend ->
+            backend.heartbeatHealthy.assert().isTrue()
+            val listener = RecordingListener()
+            backend.channel.subscribe("healthy-$namespace", listener).use {
+                listener.resets.get().assert().isGreaterThanOrEqualTo(1)
+                backend.heartbeatHealthy.assert().isTrue()
+                backend.heartbeatFailure.assert().isNull()
+            }
+        }
+    }
+
+    /**
      * 心跳失败（这里用 ACL 禁止 PING 模拟）：重置订阅者并强制断开订阅连接，由 Lettuce 重连并重新订阅。
      */
     @Test
@@ -148,6 +234,9 @@ class RedisRobustnessTest {
                 after.isNotEmpty() && after != before
             }
             listener.resets.get().assert().isGreaterThanOrEqualTo(2)
+            // 健康检查可见的只读状态：心跳持续失败
+            awaitCondition("heartbeat failure recorded") { !backend.heartbeatHealthy }
+            backend.heartbeatFailure.assert().isNotNull()
             subscription.close()
         }
     }

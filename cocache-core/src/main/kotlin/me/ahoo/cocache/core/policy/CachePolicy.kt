@@ -165,7 +165,7 @@ class CachePolicy(
  * @param ttl lease 自动回收时长（节点崩溃的兜底），应大于 loader 的 p99 耗时
  * @param wait 其它节点持有 lease 时最多等待的时长；超时后自行回源但不写 L1
  */
-data class LeasePolicy(
+data class LeasePolicy @JvmOverloads constructor(
     val ttl: Duration = Duration.ofSeconds(10),
     val wait: Duration = Duration.ofMillis(200),
 ) {
@@ -181,7 +181,7 @@ data class LeasePolicy(
  * @param maxConcurrent 每个缓存同时进行的回源数上限；`0` 表示不限制
  * @param acquireTimeout 等待许可的最长时间，超时抛出 [me.ahoo.cocache.core.SourceLoadRejectedException]
  */
-data class LoadPolicy(
+data class LoadPolicy @JvmOverloads constructor(
     val maxConcurrent: Int = 0,
     val acquireTimeout: Duration = Duration.ofSeconds(1),
 ) {
@@ -198,7 +198,7 @@ data class LoadPolicy(
  *
  * @param expireAfterAccess 空闲淘汰时长；`null` 表示不启用（启用后每次读取都写访问时间，热点高并发场景慎用）
  */
-data class LocalPolicy(
+data class LocalPolicy @JvmOverloads constructor(
     val maximumSize: Long = 10_000,
     val initialCapacity: Int? = null,
     val expireAfterAccess: Duration? = null,
@@ -235,7 +235,7 @@ enum class ReadFailureMode {
     DEGRADE,
 
     /**
-     * 抛出 [me.ahoo.cocache.api.CacheReadException]（对应 5.x 的 `strictFailure = true`）。
+     * 抛出 [me.ahoo.cocache.api.CacheReadException]。
      * 只作用于读取；填充、释放令牌等尽力而为的操作仍然降级。
      */
     THROW,

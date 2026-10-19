@@ -3,7 +3,7 @@
   "plugins": [
     {
       "name": "ahoo-cocache-skills",
-      "description": "CoCache 6.x skills for two-level distributed coherent caching in Java/Kotlin: @CoCache interfaces and CacheSpec beans, CacheLoader data sources, lease-fenced Redis coherence, Spring Boot and Spring Cache integration, custom CoherenceBackend implementations, the TCK, and migration from 5.x.",
+      "description": "CoCache 6.x skills for two-level distributed coherent caching in Java/Kotlin: @CoCache interfaces and CacheSpec beans, CacheLoader data sources, lease-fenced Redis coherence, Spring Boot and Spring Cache integration, JoinCache views over two caches, custom CoherenceBackend implementations, the TCK, and migration from 5.x.",
       "skills": {
         "include": [
           "*"
@@ -24,7 +24,8 @@
         "kotlin",
         "java",
         "cache-coherence",
-        "cache-invalidation"
+        "cache-invalidation",
+        "join-cache"
       ],
       "category": "development",
       "interface": {

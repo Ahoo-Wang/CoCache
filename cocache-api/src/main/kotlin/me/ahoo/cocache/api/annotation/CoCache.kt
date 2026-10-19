@@ -27,7 +27,7 @@ package me.ahoo.cocache.api.annotation
 @MustBeDocumented
 annotation class CoCache(
     /**
-     * 缓存名，默认取接口简单类名（与 5.x 相同）。
+     * 缓存名，默认取接口简单类名。
      */
     val name: String = "",
     /**

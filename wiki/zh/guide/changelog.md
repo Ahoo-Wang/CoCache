@@ -19,6 +19,18 @@ description: CoCache 版本发布历史和重要变更。
 - **Spring：** `@EnableCoCache` 配合 `@CoCache` 接口或 `CacheSpec` bean；`CacheSpecCustomizer`；分层的 `cocache.defaults.*` / `cocache.caches.[name].*` 配置并带完整的 IDE 元数据；`CoCacheSpringCacheManager`（一致的回源请用 `@Cacheable(sync = true)`）；`TransactionalInvalidator`（事务提交后失效）。
 - **可观测性：** actuator 端点 `cocache`，以及按 `cache` 打标签的 `cocache.*` Micrometer 指标。
 
+### 开发体验
+
+- **`JoinCache`**：两个缓存的只读组合视图，内部是两次批量读；用 `@JoinCacheable` 声明，`@EnableCoCache(joinCaches = […])` 注册。见 [JoinCache](./join-cache.md)。
+- **本地开发与测试不需要 Redis**：`cocache.backend: memory` 让所有缓存运行在进程内后端上（仅限单进程）。声明 `CacheClock` bean（如 `ManualClock`）即可在测试中推进时间。
+- **按 key 排查**：`GET /actuator/cocache/{name}/{key}` 查看某个 key 的 L2 副本与 L1 状态，不回源；同一路径的 `DELETE` 在全集群失效它。见[运维](../operations/observability.md#inspect-key)。
+- **健康检查** `cocache`：Redis 心跳失败时为 DOWN；仍在重试的失效列在详情中。
+- **Spring Cache 检查**：用在 CoCache 缓存上、但没有 `sync = true` 的 `@Cacheable` 会逐个告警（非 sync 路径不受 lease 保护）；`cocache.spring-cache.require-sync=true` 时改为启动失败。
+- **全局 key 前缀**：`cocache.defaults.key-prefix`（以及按缓存的 `cocache.caches.[name].key-prefix`），例如多个应用共用一个 Redis 时设为 `${spring.application.name}:`。
+- **key 类型检查**：默认的 `toString()` 编码器拒绝没有重写 `toString()` 的 key 类型，否则缓存永远不会命中。
+- **`ExternalInvalidator`**：CDC 消费者、批处理任务按同一协议失效，不需要创建缓存。
+- 面向 Java：`LeasePolicy`、`LoadPolicy`、`LocalPolicy`、`RetryPolicy`、`RedisBackendOptions` 加了 `@JvmOverloads`，spec 构建器新增 `updatePolicy(Consumer)`。
+
 ### 迁移速查
 
 | 5.x | 6.0 |
@@ -34,9 +46,21 @@ description: CoCache 版本发布历史和重要变更。
 | `cocache.redis.eviction-channel=sharded` | `cocache.redis.channel-mode=sharded` |
 | `cocache.load.*` | `cocache.defaults.load-max-concurrent` / `load-acquire-timeout` |
 | actuator `cocacheClient` | 已删除，改用 `cocache` |
-| Jedis、JoinCache、可替换的 L2、显式写入负缓存 | 已删除 |
+| `JoinCache`（`me.ahoo.cache.api.join`） | `me.ahoo.cocache.api.join.JoinCache`：两个缓存的只读组合视图，用 `@EnableCoCache(joinCaches = […])` 注册；`evict` → `invalidate`，不再有 `set`（见 [JoinCache](./join-cache.md)） |
+| Jedis、可替换的 L2、显式写入负缓存 | 已删除 |
 
-已删除的 5.x 配置项会让启动失败，错误信息会给出替代项。部分改名同时改变了语义（例如 L2 现在总受 `localMaxAge` 限龄，默认 5 分钟），详见[行为变化](./migration-6.md#semantics)。
+已删除的 5.x 配置项会让启动失败，错误信息会给出替代项（如果有的话）。部分改名同时改变了语义（例如 L2 现在总受 `localMaxAge` 限龄，默认 5 分钟），详见[行为变化](./migration-6.md#semantics)。
+
+### 依赖
+
+| 依赖 | 版本 |
+|------|------|
+| JDK（最低） | 17（在 17 与 25 上测试） |
+| Spring Boot | 4.1.1 |
+| Kotlin | 2.4.21（产物的 Kotlin API 与语言级别为 2.2） |
+| Lettuce | 7.5.2.RELEASE |
+| Caffeine | 3.2.4 |
+| Jackson | 3.1.5（`tools.jackson`） |
 
 ### Gradle 配置
 
@@ -65,7 +89,7 @@ Redis Cluster 中普通 `PUBLISH` 会到达每个节点；`SPUBLISH`/`SSUBSCRIBE
 
 ### 从 CoCache 之外淘汰
 
-[运维指南](./operations.md#external-eviction)公开了失效协议（存储 key、频道、`key@@publisherId` 消息），并给出 `redis-cli` 与 CDC 消费者示例：绕过 CoCache 的写入方先 `DEL` 存储 key，再 `PUBLISH`。
+[运维指南](../operations/troubleshooting.md#external-invalidation)公开了失效协议（存储 key、频道、`key@@publisherId` 消息），并给出 `redis-cli` 与 CDC 消费者示例：绕过 CoCache 的写入方先 `DEL` 存储 key，再 `PUBLISH`。
 
 ### Redis Cluster 测试
 
@@ -122,7 +146,7 @@ cocache:
     acquire-timeout: 1s
 ```
 
-Redis 故障期间每次 L2 未命中都会回源。设置后，每个缓存同时进行的回源数受限，超出的回源等待 `acquire-timeout` 后抛出 `SourceLoadRejectedException`。指标：`cocache.load.rejections`。默认不限制。
+Redis 故障期间每次 L2 未命中都会回源。设置后，每个缓存同时进行的回源数最多为 `max-concurrent`，超出的回源等待 `acquire-timeout` 后抛出 `SourceLoadRejectedException`。指标：`cocache.load.rejections`。默认不限制。
 
 ### Gradle 配置
 
@@ -150,7 +174,7 @@ interface UserCache : Cache<String, User>
 
 ### Micrometer 指标
 
-classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入），starter 绑定 `cocache.*` 指标，按 `cache` 标签区分：`hits{level=l2|l1}`、`misses`、`loads`（timer）、`load.failures`、`filtered`、`stale.discards`、`evictions.received`、`resets`、`l2.size`，以及不带标签的 `eviction.publish.failures`。完整说明见[运维](./operations.md#metrics)。
+classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入），starter 绑定 `cocache.*` 指标，按 `cache` 标签区分：`hits{level=l2|l1}`、`misses`、`loads`（timer）、`load.failures`、`filtered`、`stale.discards`、`evictions.received`、`resets`、`l2.size`，以及不带标签的 `eviction.publish.failures`。完整说明见[运维](../operations/observability.md#metrics)。
 
 - 统计由编排层以 `LongAdder` 累计，可通过 `CoherentCache.stats` 直接读取。
 - L2 命中计数（`hits{level=l2}`）默认关闭，用 `cocache.metrics.client-side-hits=true` 开启：在最热的路径上计数会使 L2 命中吞吐下降 8%–15%（JMH，1–8 线程）。其余指标都不在命中路径上，命中路径吞吐不变。
@@ -317,7 +341,7 @@ implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.0")
 - **击穿防护加固** —— `DefaultCoherentCache` 的 per-key 锁映射（存在锁对象回收竞态，可能导致并发重复回源）替换为 Guava `Striped` 锁（#519）。
 - **时钟线程启动竞态修复** —— `CacheSecondClock` 计时线程启动不再与字段初始化竞态；杜绝"时钟冻结 → 缓存永不过期"的故障模式（#519）。
 - **旧值回填竞态修复** —— 引入 per-key 失效代际计数器，在途回源可检测加载期间到达的失效事件：过期结果被丢弃（或补偿淘汰），不再钉死在两级缓存直至 TTL（#519）。
-- **生命周期管理** —— `CoherentCache` 新增幂等 `close()`（注销事件订阅 + 关闭分布式缓存）；Spring 容器关闭时自动销毁缓存（#519）。
+- **生命周期管理** —— `CoherentCache` 继承 `AutoCloseable`，新增幂等 `close()`（注销事件订阅 + 关闭分布式缓存）；Spring 容器关闭时自动销毁缓存（#519）。
 - **脏载荷自愈** —— 无法解码的 Redis 值被删除并按缓存未命中处理（回源重建），不再每次读取都抛异常（#520）。
 - **null 值归一化** —— null 值在所有 codec 下一致写入为负缓存哨兵（此前：空串损坏、NPE 或 codec 各异的语义）（#520）。
 - **Redis 故障降级** —— 默认情况下，Redis 读失败降级为缓存未命中语义（回源，业务无感），写/evict 失败仅记录告警。设置 `cocache.redis.strict-failure=true` 可恢复严格抛出行为（#520）。
