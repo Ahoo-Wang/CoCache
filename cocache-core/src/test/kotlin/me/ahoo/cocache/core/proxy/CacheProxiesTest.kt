@@ -67,6 +67,7 @@ class CacheProxiesTest {
         cache.invalidateAll(listOf("5"))
         cache["5"].assert().isEqualTo("u-5")
         cache.greet("6").assert().isEqualTo("hello u-6")
+        cache.get("7") { "loaded-$it" }.assert().isEqualTo("loaded-7")
         CacheProxies.targetOf(cache).assert().isSameAs(engine)
         CacheProxies.targetOf(engine).assert().isNull()
         CacheProxies.targetOf(
@@ -110,6 +111,9 @@ class CacheProxiesTest {
         cache["k"].assert().containsExactly("b")
         cache.clear("k")
         cache["k"].assert().isEmpty()
+        runCatching {
+            cache.get("k") { setOf("x") }
+        }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
     }
 
     @Test

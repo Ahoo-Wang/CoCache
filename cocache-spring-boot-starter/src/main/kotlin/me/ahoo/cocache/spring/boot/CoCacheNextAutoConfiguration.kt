@@ -20,6 +20,7 @@ import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -29,9 +30,11 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
 import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails
 import org.springframework.cache.CacheManager
+import org.springframework.cache.transaction.TransactionAwareCacheManagerProxy
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.transaction.support.TransactionSynchronizationManager
+import org.springframework.util.ClassUtils
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.json.JsonMapper
 
@@ -80,7 +83,14 @@ class CoCacheNextAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(CacheManager::class)
     @ConditionalOnBean(CacheRuntime::class)
-    fun cocacheNextCacheManager(runtime: CacheRuntime): CacheManager = CoCacheSpringCacheManager(runtime)
+    fun cocacheNextCacheManager(runtime: CacheRuntime, beanFactory: ConfigurableBeanFactory): CacheManager {
+        val manager = CoCacheSpringCacheManager(runtime)
+        // 有 spring-tx 时把 put / evict / clear 推迟到事务提交之后：提交前失效会让并发回源读到旧数据（G2）
+        if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, beanFactory.beanClassLoader)) {
+            return manager
+        }
+        return TransactionAwareCacheManagerProxy(manager)
+    }
 
     /**
      * 事务内失效登记到提交之后执行（有 spring-tx 时启用）。
@@ -94,6 +104,8 @@ class CoCacheNextAutoConfiguration {
     }
 
     companion object {
+        private const val TRANSACTION_SYNCHRONIZATION = "org.springframework.transaction.support.TransactionSynchronizationManager"
+
         @Bean
         @JvmStatic
         fun cocacheNextSpecRegistrar(): CacheSpecRegistrar = CacheSpecRegistrar()

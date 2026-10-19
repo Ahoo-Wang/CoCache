@@ -162,7 +162,10 @@ interface Cache<K : Any, V : Any> {
     val name: String
 
     /** 读穿透；不存在（含负缓存）返回 null。 */
-    fun get(key: K): V?
+    operator fun get(key: K): V?
+
+    /** 读穿透，未命中时用调用方给出的 loader 回源，同样受 lease 与失效戳保护（供 Spring @Cacheable(sync = true) 等使用）。 */
+    fun get(key: K, loader: CacheLoader<K, V>): V?
 
     /** 批量读穿透：一次 L1 往返（单机；Cluster 下按节点并发）+ 一次批量回源；与并发的单 key 读共享在途加载。 */
     fun getAll(keys: Collection<K>): Map<K, V>
@@ -622,7 +625,11 @@ val users: Cache<String, User> = runtime.create(
   - 数据源与 key 编码在 spec 中显式指定（`loader`、`keyEncoder`）。
 - 同一个缓存名既有接口声明又有 spec bean 时，创建第二个时因缓存名重复而启动失败。
 - v1 中“MethodHandle 分发表”的说法已撤回：JDK 18+ 的 `Method.invoke` 本身就基于 MethodHandle，存在表里的 MethodHandle 不是常量，JIT 无法内联。当前代理改为按方法名直接分派。
-- **Spring Cache 适配**：`cocache-spring` 提供 `CoCacheSpringCacheManager`（starter 自动配置）。语义：负缓存视为未命中，`sync = true` 按 key 合并，`clear` 只清本地，`put(k, null)` 映射为 `invalidate`。
+- **Spring Cache 适配**：`cocache-spring` 提供 `CoCacheSpringCacheManager`（starter 自动配置）。语义：
+  - 负缓存视为未命中；`put(k, null)` 映射为 `invalidate`；`clear` 只清本节点的本地副本。
+  - `@Cacheable(sync = true)`（`get(key, valueLoader)`）经引擎的 `get(key, loader)` 回源：受 lease 与失效戳保护，本节点经 SingleFlight、跨节点经 lease 合并加载，回源期间发生的失效不会被旧结果覆盖。
+  - 不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → `put`”，`put` 是无条件写入，没有这层保护；需要 6.0 的一致性保证时应使用 `sync = true`（写进用户文档）。
+  - 有 spring-tx 时，starter 用 Spring 的 `TransactionAwareCacheManagerProxy` 包装 CacheManager：`@CacheEvict` / `@CachePut` 在事务提交之后执行，与 `TransactionalInvalidator` 一致。
 - **事务**：`invalidate` 必须在提交之后执行。`cocache-spring` 提供 `TransactionalInvalidator`（starter 在有 spring-tx 时自动配置）：事务内调用时登记到当前事务的 `afterCommit`，同一事务内对同一缓存的失效合并为一次 `invalidateAll`，回滚时不失效；没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己提交之后失效。在提交之前失效本身就是一个 G2 漏洞：并发的回源可能读到提交前的数据。
 
 ### 4.13 失败语义

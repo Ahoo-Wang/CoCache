@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.engine
 
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Envelope
@@ -39,6 +40,15 @@ internal class SetEngine<K : Any, E : Any>(
     override fun get(key: K): Set<E> = entryOf(key).value ?: emptySet()
 
     override fun lookup(key: K): Lookup<Set<E>> = lookupOf(entryOf(key))
+
+    /**
+     * L1 是唯一副本，没有可回源的数据源。
+     */
+    override fun get(key: K, loader: CacheLoader<K, Set<E>>): Set<E> {
+        throw UnsupportedOperationException(
+            "SetCache[$name] - the remote copy is authoritative; loading from a source is not supported."
+        )
+    }
 
     override fun getAll(keys: Collection<K>): Map<K, Set<E>> {
         val result = LinkedHashMap<K, Set<E>>()

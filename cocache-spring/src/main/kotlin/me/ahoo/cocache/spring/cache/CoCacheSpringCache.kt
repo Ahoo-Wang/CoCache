@@ -19,7 +19,6 @@ import me.ahoo.cocache.core.CacheAdmin
 import org.springframework.cache.support.SimpleValueWrapper
 import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.function.Supplier
 import org.springframework.cache.Cache as SpringCache
@@ -29,7 +28,9 @@ import org.springframework.cache.Cache as SpringCache
  *
  * - 负缓存视为未命中：否则 `@Cacheable` 遇到负缓存将永远不调用方法。
  * - `put(key, null)`（如 `@CachePut` 返回 null）映射为失效。
- * - [get] (key, valueLoader) 按 key 合并并发加载，满足 `@Cacheable(sync = true)`。
+ * - [get] (key, valueLoader) 经引擎受 lease 保护地回源并按 key 合并并发加载，满足 `@Cacheable(sync = true)`。
+ *   不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → put”，put 是无条件写入，
+ *   回源期间发生的失效可能被覆盖；需要 6.0 的一致性保证时请使用 `sync = true`。
  * - [clear] 只清空本节点的本地副本：L1 是共享存储，不支持整体清空。
  * - [retrieve] 在 [executor] 上执行阻塞查找，不占用调用方线程。
  */
@@ -38,8 +39,6 @@ class CoCacheSpringCache(
     private val admin: CacheAdmin?,
     private val executor: Executor,
 ) : SpringCache {
-    private val loads = ConcurrentHashMap<Any, CompletableFuture<Any?>>()
-
     override fun getName(): String = cache.name
 
     override fun getNativeCache(): Any = cache
@@ -58,32 +57,19 @@ class CoCacheSpringCache(
         return value as T
     }
 
+    /**
+     * `@Cacheable(sync = true)`：经引擎的 [Cache.get] (key, loader) 回源，受 lease 与失效戳保护，并按 key 合并并发加载
+     * （本节点经 SingleFlight，跨节点经 lease）。回源期间发生的失效不会被这次加载的结果覆盖。
+     */
     @Suppress("TooGenericExceptionCaught", "UNCHECKED_CAST")
     override fun <T : Any> get(key: Any, valueLoader: Callable<T>): T? {
-        get(key)?.let { return it.get() as T? }
-        val call = CompletableFuture<Any?>()
-        val existing = loads.putIfAbsent(key, call)
-        if (existing != null) {
-            return try {
-                existing.join() as T?
-            } catch (e: java.util.concurrent.CompletionException) {
-                throw e.cause ?: e
-            }
-        }
-        try {
-            val value = get(key)?.get() ?: try {
-                valueLoader.call().also { put(key, it) }
+        return cache.get(key) { _ ->
+            try {
+                valueLoader.call()
             } catch (error: Throwable) {
                 throw SpringCache.ValueRetrievalException(key, valueLoader, error)
             }
-            loads.remove(key, call)
-            call.complete(value)
-            return value as T?
-        } catch (error: Throwable) {
-            loads.remove(key, call)
-            call.completeExceptionally(error)
-            throw error
-        }
+        } as T?
     }
 
     override fun put(key: Any, value: Any?) {

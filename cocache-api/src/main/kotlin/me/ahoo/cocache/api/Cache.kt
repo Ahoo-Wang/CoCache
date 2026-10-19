@@ -35,6 +35,14 @@ interface Cache<K : Any, V : Any> {
     operator fun get(key: K): V?
 
     /**
+     * 读穿透，未命中时用 [loader] 回源（代替缓存声明中的数据源）。
+     *
+     * 与 [get] 走同一条受 lease 与失效戳保护的路径：回源结果只能凭 lease 写回 L1，期间发生的失效不会被吞没。
+     * 供 Spring `@Cacheable(sync = true)` 等“调用方提供加载逻辑”的场景使用，避免“读未命中 → 加载 → 无条件写入”的竞态。
+     */
+    fun get(key: K, loader: CacheLoader<K, V>): V?
+
+    /**
      * 批量读穿透：L1 一次批量读取、数据源一次批量加载，并与并发的单 key 读取共享在途加载。
      * 结果只包含存在的 key。
      */
