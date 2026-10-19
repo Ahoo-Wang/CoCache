@@ -41,6 +41,7 @@ interface RemoteStore : AutoCloseable {
     fun fillAll(fills: List<Fill>): List<Boolean>
     fun release(key: String, token: Token)
     fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray)
+    fun putAll(puts: List<Put>, frame: ByteArray)   // default: put per entry
     fun invalidate(keys: Collection<String>, frame: ByteArray)
     fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean
     fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
@@ -58,6 +59,7 @@ Keys arrive complete, with prefix and namespace. A store handles bytes and token
 | `LeaseRequest(token, ttl)` | Lease to place on a miss, expiring after `ttl` |
 | `RefreshRequest(window, token, tokenTtl)` | Refresh token to place on a value inside `window`. A token older than `tokenTtl` may be taken over. |
 | `Fill(key, token, envelope, ttl)` | Write `envelope` with `ttl` only if `key` holds `token` |
+| `Put(key, envelope, ttl)` | One entry of `putAll`: overwrite `key` like `put` |
 | `Digest` | SHA-1 of the content: scalar → payload bytes, set → each member as `int32 length + bytes` in returned order, negative entry → empty |
 
 The contract, method by method. The state machine is in [Consistency](./consistency.md#l1-fence).
@@ -69,6 +71,7 @@ The contract, method by method. The state machine is in [Consistency](./consiste
 | `fill` / `fillAll` | Write only if the key currently holds exactly `fill.token`, as a lease or a refresh token, and reset the expiry to `fill.ttl`. Return whether you wrote. |
 | `release` | Token matches a lease: delete the key. Token matches a refresh token on a value: clear the token, keep the value and its TTL. Otherwise do nothing. |
 | `put` | Overwrite any state, destroying any token, set the expiry, broadcast `frame`. A `Members` envelope replaces the whole set. |
+| `putAll` | `put` for each entry, atomic per key, not across keys. `frame` carries every key: broadcast each key exactly once with its write (you may split the frame, for example per slot group). Optional: the default calls `put` once per entry with a one-key frame. |
 | `invalidate` | Delete every key, destroying any token, and broadcast `frame`. Atomic per key. Batches may split. |
 | `reclaim` | Only if the key's current content has digest `observed` and isn't a lease: replace it with the lease. Return whether you did. Never delete content that changed. |
 | `addMembers` | Key holds a set: add the members atomically. Otherwise (absent, negative entry, lease, scalar): replace it with a set of these members. Destroy any token, set the expiry (`null` removes it), broadcast. |
@@ -113,7 +116,7 @@ testImplementation("me.ahoo.cocache:cocache-test")
 
 | Suite | Covers | You provide |
 |-------|--------|-------------|
-| `BackendProtocolSpec` | The `RemoteStore` contract: lease grant, token checks, expiry resets, release, refresh tokens, reclaim, batch reads, set updates, broadcast frames, reset on subscribe | `createBackend()`, `elapse(duration)`. Optionally `shortTtl` (default 300 ms). |
+| `BackendProtocolSpec` | The `RemoteStore` contract: lease grant, token checks, expiry resets, release, refresh tokens, reclaim, batch reads and writes, set updates, broadcast frames, reset on subscribe | `createBackend()`, `elapse(duration)`. Optionally `shortTtl` (default 300 ms). |
 | `EngineSpec` | Two runtimes on your backend: single load across instances, lease-wait timeout, invalidation during a load, same-instance invalidate-vs-read race, concurrent `put`s, read-your-writes, loader failure, Redis failure, invalidation retry, reconnect reset, `local-max-age`, batch reads, refresh-ahead, reclaim, newer format, load limit | `createBackend()`, `clock`, `elapse(duration)`, `simulateReconnect()` |
 | `SetEngineSpec` | `SetCache` across two runtimes: atomic concurrent adds, empty-set deletion, `invalidate` rejected, write and read failures | `createBackend()`, `clock`, `elapse(duration)` |
 

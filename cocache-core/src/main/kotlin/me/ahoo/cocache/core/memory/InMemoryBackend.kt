@@ -22,6 +22,7 @@ import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.LeaseRequest
+import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
@@ -195,6 +196,14 @@ class InMemoryBackend @JvmOverloads constructor(
 
         override fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
             slots[key] = Slot(stateOf(envelope), envelope, expireAt = expireAt(ttl))
+            publish(namespace, frame)
+        }
+
+        /**
+         * 每个 key 的转换同 [put]，整批只广播一次 [frame]。
+         */
+        override fun putAll(puts: List<Put>, frame: ByteArray) {
+            puts.forEach { slots[it.key] = Slot(stateOf(it.envelope), it.envelope, expireAt = expireAt(it.ttl)) }
             publish(namespace, frame)
         }
 

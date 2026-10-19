@@ -161,6 +161,37 @@ abstract class SetEngineSpec {
     }
 
     @Test
+    fun putAllReplacesAndEmptySetsClear() {
+        val cacheA = nodeA.setCache()
+        val cacheB = nodeB.setCache()
+        cacheA.add("a", listOf("1"))
+        cacheA.add("b", listOf("2"))
+        cacheB.getAll(listOf("a", "b")).assert().isEqualTo(mapOf("a" to setOf("1"), "b" to setOf("2")))
+        cacheA.putAll(mapOf("a" to setOf("x", "y"), "b" to emptySet(), "c" to setOf("z")))
+        cacheA["a"].assert().containsExactlyInAnyOrder("x", "y")
+        cacheA["b"].assert().isEmpty()
+        cacheA["c"].assert().containsExactly("z")
+        awaitCondition("B sees the batch") { cacheB["a"] == setOf("x", "y") && cacheB["b"].isEmpty() }
+        cacheB["c"].assert().containsExactly("z")
+
+        cacheA.putAll(mapOf("a" to emptySet(), "c" to emptySet()))
+        cacheA["a"].assert().isEmpty()
+        cacheA["c"].assert().isEmpty()
+        cacheA.putAll(mapOf("d" to setOf("w")), Duration.ofSeconds(1))
+        cacheA["d"].assert().containsExactly("w")
+        elapse(Duration.ofSeconds(2))
+        cacheA["d"].assert().isEmpty()
+    }
+
+    @Test
+    fun emptyPutAllIsANoOp() {
+        val cache = nodeA.setCache()
+        cache.putAll(emptyMap())
+        cache.putAll(emptyMap(), Duration.ofSeconds(1))
+        backend.putAlls.get().assert().isEqualTo(0)
+    }
+
+    @Test
     fun getAllReturnsNonEmptySets() {
         val cache = nodeA.setCache()
         cache.add("a", listOf("1"))
@@ -191,6 +222,9 @@ abstract class SetEngineSpec {
                 setOf("a")
             )
         }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
+        val error = runCatching { cache.putAll(mapOf("k" to setOf("a"))) }.exceptionOrNull()
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        (error as CacheWriteException).operation.assert().isEqualTo("putAll")
     }
 
     @Test

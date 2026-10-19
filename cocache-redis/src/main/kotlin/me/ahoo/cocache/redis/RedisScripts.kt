@@ -172,6 +172,35 @@ return 1
     )
 
     /**
+     * 批量整体覆盖写入并广播一次。KEYS：同一 slot 内的 key；ARGV：频道、帧，然后每个 key 依次为形状、TTL、载荷个数、载荷或成员…
+     *
+     * 每个 key 的转换与 [PUT] 的 `write` 完全相同（`write` 从某个下标读到 ARGV 末尾，这里需要按个数截取，
+     * 而改动 PRELUDE 会改变所有写脚本的 SHA，因此在本脚本内展开）。
+     */
+    val PUT_ALL = Script(
+        PRELUDE + """
+local i = 3
+for k = 1, #KEYS do
+  local key, kind, ttl = KEYS[k], ARGV[i], ARGV[i + 1]
+  local first, last = i + 3, i + 2 + tonumber(ARGV[i + 2])
+  redis.call('DEL', key)
+  if kind == 'S' then
+    redis.call('HSET', key, '!f', '1')
+    for j = first, last do redis.call('HSET', key, '+' .. ARGV[j], '') end
+  elseif kind == 'V' then
+    redis.call('SET', key, header('V', ZERO_TOKEN, 0) .. ARGV[first])
+  else
+    redis.call('SET', key, header('M', ZERO_TOKEN, 0))
+  end
+  expire(key, ttl)
+  i = last + 1
+end
+publish(ARGV[1], ARGV[2])
+return 1
+"""
+    )
+
+    /**
      * 删除并广播。KEYS：同一 slot 内的 key；ARGV：频道、帧。
      */
     val INVALIDATE = Script(
