@@ -60,11 +60,22 @@ class AnnotatedCacheTest {
 
     interface IndexCache : SetCache<String, String>
 
+    @CoCache(
+        name = "tags",
+        namespace = "tag-ns",
+        keyPrefix = "t:",
+        keyExpression = "#{toUpperCase()}",
+        ttl = 600,
+        codec = "namedCodec"
+    )
+    @CaffeineCache
+    interface TagCache : SetCache<String, String>
+
     interface GenericCache<V : Any> : Cache<String, V>
 
     @Configuration(proxyBeanMethods = false)
     @EnableCoCache(
-        caches = [UserCache::class, PlainCache::class, UndeclaredCache::class, NamedCache::class, IndexCache::class]
+        caches = [UserCache::class, PlainCache::class, UndeclaredCache::class, NamedCache::class, IndexCache::class, TagCache::class]
     )
     class AppConfig {
         @Bean(destroyMethod = "close")
@@ -139,6 +150,20 @@ class AnnotatedCacheTest {
             index.add("k", listOf("a"))
             index["k"].assert().containsExactly("a")
             CacheProxies.targetOf(index).assert().isSameAs(runtime.cache("IndexCache"))
+        }
+    }
+
+    @Test
+    fun annotatedSetCacheUsesNamespacePrefixAndKeyExpression() {
+        runner.withUserConfiguration(AppConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val tags = context.getBean("tags") as TagCache
+            tags.add("k", listOf("a"))
+            tags["k"].assert().containsExactly("a")
+            val stored = context.getBean(
+                CoherenceBackend::class.java
+            ).store("tag-ns").read("t:tag-ns:K", null, null) as RemoteRead.Hit
+            requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(600))
         }
     }
 
