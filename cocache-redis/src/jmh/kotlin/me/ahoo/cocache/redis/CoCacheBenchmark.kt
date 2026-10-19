@@ -152,6 +152,45 @@ open class CoCacheBenchmark {
     @Benchmark
     fun l1HitViaEngineAsync(): String? = l1Hits.async().get(l1HitKeys[ThreadLocalRandom.current().nextInt(L1_HIT_KEYS)]).join()
 
+    /**
+     * 每次调用保持 [IN_FLIGHT] 个在途的异步 L1 命中（经引擎），全部完成后再等待：异步视图的真实收益——
+     * 一个线程同时推进多个请求。与 [l1HitSequential] 比较（每次调用同样完成 [IN_FLIGHT] 次读取）。
+     */
+    @Benchmark
+    fun l1HitInFlightAsync(): Int {
+        val async = l1Hits.async()
+        val random = ThreadLocalRandom.current()
+        val futures = Array(IN_FLIGHT) { async.get(l1HitKeys[random.nextInt(L1_HIT_KEYS)]) }
+        CompletableFuture.allOf(*futures).join()
+        return futures.size
+    }
+
+    /** 同步逐个阻塞读取 [IN_FLIGHT] 次 L1 命中（经引擎），与 [l1HitInFlightAsync] 对照。 */
+    @Benchmark
+    fun l1HitSequential(): Int {
+        val random = ThreadLocalRandom.current()
+        var count = 0
+        repeat(IN_FLIGHT) { if (l1Hits[l1HitKeys[random.nextInt(L1_HIT_KEYS)]] != null) count++ }
+        return count
+    }
+
+    /** 每次调用保持 [IN_FLIGHT] 个在途的异步写入，全部完成后再等待。与 [setSequential] 对照。 */
+    @Benchmark
+    fun setInFlightAsync(): Int {
+        val random = ThreadLocalRandom.current()
+        val futures = Array(IN_FLIGHT) { asyncCache.put("in-flight-${random.nextInt(L1_HIT_KEYS)}", "value") }
+        CompletableFuture.allOf(*futures).join()
+        return futures.size
+    }
+
+    /** 同步逐个阻塞写入 [IN_FLIGHT] 次，与 [setInFlightAsync] 对照。 */
+    @Benchmark
+    fun setSequential(): Int {
+        val random = ThreadLocalRandom.current()
+        repeat(IN_FLIGHT) { cache.put("in-flight-${random.nextInt(L1_HIT_KEYS)}", "value") }
+        return IN_FLIGHT
+    }
+
     /** 直接读 L1：一次 EVALSHA（PTTL + GET + 头部解析）。 */
     @Benchmark
     fun l1Read(): RemoteRead = store.read(l1Key, null, null)
@@ -199,6 +238,7 @@ open class CoCacheBenchmark {
     companion object {
         const val BATCH_SIZE = 100
         const val L1_HIT_KEYS = 10_000
+        const val IN_FLIGHT = 32
     }
 }
 

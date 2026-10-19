@@ -480,6 +480,8 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 
 - 基准：`cocache-redis/src/jmh` 的 `CoCacheBenchmark`，方法 `l2Hit`、`l2HitViaInterface`、`l2HitMixed`（轮流访问三个配置不同的缓存）、`l1Read`、`l1SequentialRead`、`l1BatchRead`、`missLoad`、`set`、`invalidate`。`-PjmhIncludes` 是正则，`l2Hit` 同时匹配三个 L2 基准。
 - 必须加 `--rerun`：参数不变时 Gradle 判定 `jmh` 任务为最新，静默沿用上次的结果。
+- 命中路径的前后对比按基准拆开、两侧交替运行（`-PjmhIncludes='\.l2Hit$'` 等）：同一个 `jmh` 任务里排在后段的基准在 8 线程下会因长时间满载而明显变慢（实测低 20%–30%），单独运行时回到基线（RFC 0004 §14）。开跑前确认机器空闲（`uptime`）。
+- 异步视图的基准：`l2HitAsync`、`l2HitAsyncMixed`、`l1ReadAsync`、`l1HitViaEngine` / `l1HitViaEngineAsync`、`missLoadAsync`、`setAsync`、`invalidateAsync`（闭环，每次操作后等待），以及在途请求基准 `l1HitInFlightAsync` / `setInFlightAsync` 与同步对照 `l1HitSequential` / `setSequential`（每次调用 32 个请求）。
 - 1 线程与 8 线程，与上一版本**至少交替运行 5 轮**，比较中位数与置信区间，包含 `l2HitMixed`。同一台机器上 8 线程的结果在多次运行之间波动约 ±4%，差异小于噪声时不作结论。
 
 ## 14. 不变量
