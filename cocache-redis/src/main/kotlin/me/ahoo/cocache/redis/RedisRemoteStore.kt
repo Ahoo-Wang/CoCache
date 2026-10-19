@@ -26,7 +26,6 @@ import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import java.time.Duration
 import java.util.IdentityHashMap
-import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 
@@ -268,8 +267,6 @@ internal class RedisRemoteStore(
         future.getNow(null) to null
     } catch (e: CompletionException) {
         null to (e.cause ?: e)
-    } catch (e: CancellationException) {
-        null to e
     }
 
     /**

@@ -133,6 +133,14 @@ class RedisAsyncStoreFaultTest {
         val error = store.readAsync(key("slow"), null, null).failure()
         error.assert().isInstanceOf(RedisException::class.java)
         error?.message.assert().contains("timed out")
+        // 批量操作：全部完成后以第一个异常失败（与同步版本相同的异常类型）
+        val leases = mapOf(key("b1") to LeaseRequest(token(), Duration.ofSeconds(30)))
+        listOf(
+            store.readAllAsync(listOf(key("b1"), key("b2")), leases),
+            store.fillAllAsync(listOf(Fill(key("b1"), token(), scalar("v"), null))),
+            store.putAllAsync(listOf(Put(key("b3"), scalar("p"), null)), frame(key("b3"))),
+            store.invalidateAsync(listOf(key("b1"), key("b2")), frame(key("b1"), key("b2"))),
+        ).forEach { future -> future.failure().assert().isInstanceOf(RedisException::class.java) }
         Thread.sleep(1_000)
         store.readAsync(key("slow"), null, null).await().assert().isEqualTo(RemoteRead.Miss(false))
     }
