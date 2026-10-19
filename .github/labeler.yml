@@ -11,12 +11,12 @@
 "module: spring":
   - changed-files:
       - any-glob-to-any-file: cocache-spring/**
-"module: spring-redis":
+"module: redis":
   - changed-files:
-      - any-glob-to-any-file: cocache-spring-redis/**
-"module: spring-cache":
+      - any-glob-to-any-file: cocache-redis/**
+"module: codec-jackson":
   - changed-files:
-      - any-glob-to-any-file: cocache-spring-cache/**
+      - any-glob-to-any-file: cocache-codec-jackson/**
 "module: starter":
   - changed-files:
       - any-glob-to-any-file: cocache-spring-boot-starter/**
@@ -26,6 +26,11 @@
 "module: example":
   - changed-files:
       - any-glob-to-any-file: cocache-example/**
+"module: bom":
+  - changed-files:
+      - any-glob-to-any-file:
+          - cocache-bom/**
+          - cocache-dependencies/**
 
 # ---- 变更类型（路径）----
 documentation:

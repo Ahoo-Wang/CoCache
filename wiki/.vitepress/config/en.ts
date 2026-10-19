@@ -4,23 +4,38 @@ const guide: DefaultTheme.SidebarItem[] = [
   {
     text: 'Getting Started',
     items: [
-      { text: 'Introduction', link: '/guide/' },
+      { text: 'Why CoCache', link: '/guide/' },
       { text: 'Quick Start', link: '/guide/quick-start' },
-      { text: 'Configuration', link: '/guide/configuration' },
+      { text: 'How It Works', link: '/guide/concepts' },
     ],
   },
   {
-    text: 'Features',
+    text: 'Using CoCache',
     items: [
+      { text: 'Declaring Caches', link: '/guide/caches' },
+      { text: 'Keeping Data Fresh', link: '/guide/freshness' },
       { text: 'JoinCache', link: '/guide/join-cache' },
       { text: 'Spring Cache', link: '/guide/spring-cache' },
-      { text: 'Operations', link: '/guide/operations' },
+      { text: 'Testing', link: '/guide/testing' },
+      { text: 'Configuration Reference', link: '/guide/configuration' },
     ],
   },
   {
     text: 'Releases',
     items: [
+      { text: 'Upgrading from 5.x', link: '/guide/migration-6' },
       { text: 'Changelog', link: '/guide/changelog' },
+    ],
+  },
+]
+
+const operations: DefaultTheme.SidebarItem[] = [
+  {
+    text: 'Operations',
+    items: [
+      { text: 'Deployment', link: '/operations/' },
+      { text: 'Observability', link: '/operations/observability' },
+      { text: 'Troubleshooting', link: '/operations/troubleshooting' },
     ],
   },
 ]
@@ -44,9 +59,10 @@ export const en: DefaultTheme.Config = {
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/guide/' },
+      { text: 'Operations', link: '/operations/' },
       { text: 'Architecture', link: '/architecture/' },
       {
-        text: 'v5.4',
+        text: 'v6.0',
         items: [
           { text: 'Changelog', link: '/guide/changelog' },
           { text: 'Contributing', link: 'https://github.com/Ahoo-Wang/CoCache/blob/main/CONTRIBUTING.md' },
@@ -55,6 +71,7 @@ export const en: DefaultTheme.Config = {
     ],
     sidebar: {
       '/guide/': guide,
+      '/operations/': operations,
       '/architecture/': architecture,
     },
     socialLinks: [

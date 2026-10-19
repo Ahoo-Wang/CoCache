@@ -2,234 +2,108 @@
 
 ## Contents
 
-- [When to Use JoinCache](#when-to-use-joincache)
-- [How It Works](#how-it-works)
-- [Creating a JoinCache](#creating-a-joincache)
-- [JoinKeyExtractor Resolution](#joinkeyextractor-resolution)
-- [JoinValue Structure](#joinvalue-structure)
-- [Nested JoinCache](#nested-joincache)
-- [Eviction in JoinCache](#eviction-in-joincache)
-- [Common Patterns](#common-patterns)
+- [When to Use](#when-to-use)
+- [Declare a JoinCache](#declare-a-joincache)
+- [Join Key Resolution](#join-key-resolution)
+- [Semantics](#semantics)
+- [Invalidation](#invalidation)
+- [Without Spring and in Tests](#without-spring-and-in-tests)
+- [Limits](#limits)
 
-JoinCache composes two independent caches into a single logical view. It retrieves a primary value, extracts a join key from it, then fetches a secondary value from another cache.
+A `JoinCache<K1, V1, K2, V2>` (`me.ahoo.cocache.api.join`) is a **read-only view** over two ordinary caches: it reads the first cache, extracts a join key from the first value, and reads the join cache. It is **not** a `Cache` subtype: no `put`, no loader, no copy of its own.
 
-## When to Use JoinCache
+## When to Use
 
-Use JoinCache when you need to return a composite result from two related cached entities. For example:
-- A user's profile (primary) + their department info (secondary)
-- An order (primary) + the product details (secondary)
-- A blog post (primary) + the author info (secondary)
+Return a composite of two cached entities, for example an order plus its customer, or a profile extension plus its user. It does exactly two batch reads for `getAll`; writing them by hand is equivalent. Use the view when the composition is reused, or to keep callers on one typed bean.
 
-Without JoinCache, you'd need two separate cache lookups and manual composition. JoinCache handles this atomically and caches the composed result.
-
-## How It Works
-
-```
-get(key)
-  ├── firstCache.getCache(key) → CacheValue<V1>
-  ├── joinKeyExtractor.extract(firstValue) → K2
-  ├── joinCache.getCache(joinKey) → CacheValue<V2>
-  └── JoinValue(firstValue, joinKey, secondValue)
-```
-
-**Set flow:**
-1. Sets `firstCache` with the primary value
-2. If secondary value is not null, sets `joinCache` with it at the extracted join key
-
-**Evict flow:**
-1. `evict(key)`: evicts the **primary cache only** (no read, no source load). The joined cache has its own lifecycle and its writers evict it.
-2. `evict(firstKey, joinKey)`: evicts both caches by their respective keys.
-
-A JoinCache stores nothing of its own: every read composes the current component values. Keeping each component cache fresh is therefore enough.
-
-**TTL:** The composed `JoinValue` expires at the earlier of the two entries' absolute deadlines (`min(firstTtlAt, secondTtlAt)`). If the secondary value is missing or already expired, the primary entry's deadline is used.
-
-## Creating a JoinCache
-
-### Step 1: Define the Two Base Caches
+## Declare a JoinCache
 
 ```kotlin
-@CoCache(keyPrefix = "user:", ttl = 300)
+@CoCache(keyPrefix = "user:")
 interface UserCache : Cache<String, User>
 
-@CoCache(keyPrefix = "user_ext:", ttl = 300)
-interface UserExtendInfoCache : Cache<String, UserExtendInfo>
-```
+@CoCache(keyPrefix = "user_ext:")
+interface UserExtendInfoCache : Cache<String, UserExtendInfo>   // UserExtendInfo(id, userId)
 
-### Step 2: Define the JoinCache Interface
-
-```kotlin
-@JoinCacheable(
-    firstCacheName = "UserExtendInfoCache",
-    joinCacheName = "UserCache",
-    joinKeyExpression = "#{#root.userId}"
+@JoinCacheable(                                 // me.ahoo.cocache.api.annotation.JoinCacheable
+    firstCacheName = "UserExtendInfoCache",     // required, resolved by name
+    joinCacheName = "UserCache",                // required, resolved by name
+    joinKeyExpression = "#{#root.userId}",      // SpEL template, first value as root
 )
-interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, User>
-```
+interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, User> {
+    fun userOf(id: String): User? = get(id)?.secondValue   // default methods run on the proxy
+}
 
-The type parameters are: `JoinCache<PrimaryKey, PrimaryValue, JoinKey, JoinValue>`
-
-### Step 3: Register All Three
-
-```kotlin
 @SpringBootApplication
-@EnableCoCache(caches = [UserCache::class, UserExtendInfoCache::class, UserExtendInfoJoinCache::class])
-class MyApp
-```
-
-### Step 4: Use It
-
-```kotlin
-@Service
-class UserExtendInfoService(
-    @Qualifier("userExtendInfoJoinCache")
-    private val joinCache: UserExtendInfoJoinCache
-) {
-    fun getExtendInfoWithUser(extId: String): JoinValue<UserExtendInfo, String, User>? {
-        val result = joinCache[extId]  // Returns JoinValue<UserExtendInfo, String, User>
-        return result
-    }
-
-    fun getUser(result: JoinValue<UserExtendInfo, String, User>): User? {
-        return result.secondValue  // The joined User
-    }
-
-    fun evict(extId: String) {
-        joinCache.evict(extId)  // Evicts the primary (UserExtendInfo) entry only
-    }
-}
-```
-
-## JoinKeyExtractor Resolution
-
-The join key is extracted from the primary value using one of these methods (in order of priority):
-
-### 1. SpEL Expression (via @JoinCacheable)
-
-```kotlin
-@JoinCacheable(
-    firstCacheName = "OrderCache",
-    joinCacheName = "ProductCache",
-    joinKeyExpression = "#{#root.productId}"
+@EnableCoCache(
+    caches = [UserCache::class, UserExtendInfoCache::class],
+    joinCaches = [UserExtendInfoJoinCache::class],          // NOT in `caches`
 )
-interface OrderProductJoinCache : JoinCache<String, Order, String, Product>
+class App
 ```
 
-`#root` refers to the primary value. Common patterns:
-- `#{#root.userId}` - property access
-- `#{#root.items[0].productId}` - nested access
-- `#{#root.categoryId.toString()}` - method call
+- Bean name: `@JoinCacheable(name)`, default the interface's simple name (`UserExtendInfoJoinCache`); bean type is the interface.
+- `firstCacheName` / `joinCacheName` accept an interface cache's name, or a spec cache's name or bean name (`cacheSpec("orders")` from `orderSpec()` → `"orders"` or `"order"`).
+- Startup fails with a message naming the view when a name is blank or unknown, when a referenced cache is not `Cache<K1, V1>` / `Cache<K2, V2>`, or when the interface's type arguments are not concrete.
+- Abstract methods other than `JoinCache`'s fail at creation; use default methods.
 
-### 2. Named Bean
+## Join Key Resolution
 
-Define a bean named `{cacheName}.JoinKeyExtractor`:
+Exactly one of:
 
-```kotlin
-@Bean("OrderProductJoinCache.JoinKeyExtractor")
-fun orderJoinKeyExtractor(): JoinKeyExtractor<Order, String> {
-    return JoinKeyExtractor { order -> order.productId }
-}
-```
+1. `joinKeyExpression = "#{#root.userId}"` (or `#{userId}`): only when `K2` is `String`.
+2. `joinKeyExtractor = "beanName"`: a `JoinKeyExtractor<V1, K2>` bean, any key type.
+3. Neither: the unique `JoinKeyExtractor<V1, K2>` bean by generic type; none or several fail startup.
 
-### 3. Type-Based Bean
-
-Define a bean by generic type:
+Both set → startup failure.
 
 ```kotlin
 @Bean
-fun orderJoinKeyExtractor(): JoinKeyExtractor<Order, String> {
-    return JoinKeyExtractor { order -> order.productId }
-}
+fun orderCustomerId() = JoinKeyExtractor<Order, Long> { it.customerId }   // return null for "no join"
 ```
 
-## JoinValue Structure
+## Semantics
 
-`JoinValue<V1, K2, V2>` contains:
-- `firstValue: V1` - the primary value
-- `joinKey: K2` - the extracted join key
-- `secondValue: V2?` - the joined secondary value (null if not found)
+| Call | Behavior |
+|------|----------|
+| `get(key)` | `null` if the first value is absent (including a negative entry). Else `JoinValue(firstValue, joinKey, secondValue)`; `secondValue` is `null` when the join key is `null` or the second value is absent. |
+| `getAll(keys)` | first cache `getAll`, then one join cache `getAll` over the distinct non-null join keys (skipped if none). Only keys with a first value appear. |
+| `invalidate(key)` | first cache only |
+| `invalidate(firstKey, joinKey)` | both caches |
 
-## Nested JoinCache
+`JoinValue<V1, K2, V2>(firstValue: V1, joinKey: K2?, secondValue: V2?)` is a data class.
 
-You can compose JoinCaches to create multi-level joins:
+The two reads are not atomic; each component cache's coherence guarantees apply unchanged.
 
-```kotlin
-// Level 1: Order + Product
-@JoinCacheable(
-    firstCacheName = "OrderCache",
-    joinCacheName = "ProductCache",
-    joinKeyExpression = "#{#root.productId}"
-)
-interface OrderProductJoinCache : JoinCache<String, Order, String, Product>
+## Invalidation
 
-// Level 2: (Order+Product) + Category
-@JoinCacheable(
-    firstCacheName = "OrderProductJoinCache",
-    joinCacheName = "CategoryCache",
-    joinKeyExpression = "#{#root.secondValue.categoryId}"
-)
-interface OrderProductCategoryJoinCache : JoinCache<String, JoinValue<Order, String, Product>, String, Category>
-```
-
-## Eviction in JoinCache
-
-A JoinCache composes its component caches at read time; it holds no copy of its own. When a component changes, evict **that component's cache**. The next join read picks up the fresh value.
+The view holds nothing, so keep the component caches fresh:
 
 ```kotlin
-// User changed: evict the User cache; every JoinValue that references this user is fresh on the next read
 fun updateUser(user: User) {
     userRepository.save(user)
-    userCache.evict(user.id)
+    transactionalInvalidator.invalidate(userCache, user.id)   // every view reading this user is fresh on the next call
 }
 
-// Primary changed: evicting through the JoinCache only touches the primary cache
-fun updateExtendInfo(extInfo: UserExtendInfo) {
-    userExtendInfoRepository.save(extInfo)
-    userExtendInfoJoinCache.evict(extInfo.id)        // same as userExtendInfoCache.evict(extInfo.id)
-}
-
-// Both changed in one transaction
-fun updateBoth(extInfo: UserExtendInfo, user: User) {
-    // ... save both ...
-    userExtendInfoJoinCache.evict(extInfo.id, user.id)   // evict(firstKey, joinKey)
+fun updateExtendInfo(info: UserExtendInfo) {
+    repository.save(info)
+    userExtendInfoJoinCache.invalidate(info.id)               // == userExtendInfoCache.invalidate(info.id)
 }
 ```
 
-## Common Patterns
+Inside a transaction, invalidate after commit (`TransactionalInvalidator` takes a `Cache`, so pass the component cache).
 
-### Pattern: Enriching an Entity
+## Without Spring and in Tests
 
 ```kotlin
-// Cache the core entity
-@CoCache(keyPrefix = "order:", ttl = 600)
-interface OrderCache : Cache<String, Order>
-
-// Cache the enrichment data
-@CoCache(keyPrefix = "customer:", ttl = 300)
-interface CustomerCache : Cache<String, Customer>
-
-// Compose them
-@JoinCacheable(
-    firstCacheName = "OrderCache",
-    joinCacheName = "CustomerCache",
-    joinKeyExpression = "#{#root.customerId}"
-)
-interface OrderWithCustomerCache : JoinCache<String, Order, String, Customer>
+val view = SimpleJoinCache("extJoin", userExtendInfoCache, userCache) { it.userId }   // me.ahoo.cocache.core.join
+val typed = JoinCacheProxies.create(UserExtendInfoJoinCache::class.java, view)       // me.ahoo.cocache.core.proxy
 ```
 
-### Pattern: Multi-Tenant Data
+Build both component caches on a `CacheRuntime` with `InMemoryBackend` (see `testing.md`).
 
-```kotlin
-@CoCache(keyPrefix = "tenant:", ttl = 3600)
-interface TenantCache : Cache<String, Tenant>
+## Limits
 
-@CoCache(keyPrefix = "tenant_config:", ttl = 3600)
-interface TenantConfigCache : Cache<String, TenantConfig>
-
-@JoinCacheable(
-    firstCacheName = "TenantCache",
-    joinCacheName = "TenantConfigCache",
-    joinKeyExpression = "#{#root.id}"
-)
-interface TenantWithConfigCache : JoinCache<String, Tenant, String, TenantConfig>
-```
+- No nested joins: `firstCacheName` / `joinCacheName` must name a `Cache`, not another JoinCache. Compose in code instead.
+- No `set` / `put` through the view; write each component cache.
+- `@JoinCacheable` is not a meta-annotation; place it directly on the interface.

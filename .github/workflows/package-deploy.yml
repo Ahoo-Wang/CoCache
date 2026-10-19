@@ -43,6 +43,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Tag matches the project version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="$(grep '^version=' gradle.properties | cut -d= -f2)"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Release tag $TAG does not match gradle.properties version $version (expected v$version)."
+            exit 1
+          fi
+
       - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:

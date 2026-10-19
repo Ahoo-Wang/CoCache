@@ -2,25 +2,40 @@ import { DefaultTheme } from 'vitepress'
 
 const guide: DefaultTheme.SidebarItem[] = [
   {
-    text: '快速开始',
+    text: '入门',
     items: [
-      { text: '介绍', link: '/zh/guide/' },
+      { text: '为什么用 CoCache', link: '/zh/guide/' },
       { text: '快速上手', link: '/zh/guide/quick-start' },
-      { text: '配置', link: '/zh/guide/configuration' },
+      { text: '工作原理', link: '/zh/guide/concepts' },
     ],
   },
   {
-    text: '功能',
+    text: '使用',
     items: [
+      { text: '声明缓存', link: '/zh/guide/caches' },
+      { text: '保持数据新鲜', link: '/zh/guide/freshness' },
       { text: 'JoinCache', link: '/zh/guide/join-cache' },
       { text: 'Spring Cache', link: '/zh/guide/spring-cache' },
-      { text: '运维', link: '/zh/guide/operations' },
+      { text: '测试', link: '/zh/guide/testing' },
+      { text: '配置参考', link: '/zh/guide/configuration' },
     ],
   },
   {
     text: '版本',
     items: [
+      { text: '从 5.x 升级', link: '/zh/guide/migration-6' },
       { text: '更新日志', link: '/zh/guide/changelog' },
+    ],
+  },
+]
+
+const operations: DefaultTheme.SidebarItem[] = [
+  {
+    text: '运维',
+    items: [
+      { text: '部署', link: '/zh/operations/' },
+      { text: '可观测性', link: '/zh/operations/observability' },
+      { text: '故障排查', link: '/zh/operations/troubleshooting' },
     ],
   },
 ]
@@ -44,9 +59,10 @@ export const zh: DefaultTheme.Config = {
   themeConfig: {
     nav: [
       { text: '指南', link: '/zh/guide/' },
+      { text: '运维', link: '/zh/operations/' },
       { text: '架构', link: '/zh/architecture/' },
       {
-        text: 'v5.4',
+        text: 'v6.0',
         items: [
           { text: '更新日志', link: '/zh/guide/changelog' },
           { text: '贡献指南', link: 'https://github.com/Ahoo-Wang/CoCache/blob/main/CONTRIBUTING.md' },
@@ -55,6 +71,7 @@ export const zh: DefaultTheme.Config = {
     ],
     sidebar: {
       '/zh/guide/': guide,
+      '/zh/operations/': operations,
       '/zh/architecture/': architecture,
     },
     socialLinks: [

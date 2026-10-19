@@ -11,3 +11,5 @@
  * limitations under the License.
  */
 
+description = "CoCache user API and SPI (zero runtime dependencies)"
+

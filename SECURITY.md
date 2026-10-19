@@ -4,7 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 5.x     | ✅ |
+| 6.x     | ✅ |
+| 5.x     | Critical security fixes only (best effort), on the `5.x` branch |
 | 4.x     | Critical security fixes only (best effort), on the `4.x` branch |
 | < 4.0   | ❌ |
 

@@ -1,113 +1,103 @@
 ---
 name: cocache
-description: Use when building or modifying Java/Kotlin applications with CoCache two-level distributed coherent caching. Invoke for @CoCache cache interfaces, @JoinCacheable composition, Redis-backed coherence, Spring Boot integration, cache proxy behavior, custom cache backends (CacheStore, CacheEvictedEventBus), negative caching (MissingValue, missingTtl), cache breakdown protection, TTL choices, Redis failure policy (strict-failure, missing-guard sentinel), Redis TTL-drift test failures, migrating from CoCache 4.x, or CoCache TCK tests.
+description: Use when building or modifying Java/Kotlin applications with CoCache 6.x two-level distributed coherent caching. Invoke for @CoCache cache interfaces, CacheSpec beans, CacheLoader data sources, invalidate-after-commit (TransactionalInvalidator), Redis-backed coherence (leases, Pub/Sub or sharded channel), Spring Boot and Spring Cache (@Cacheable) integration, JoinCache read-only views (@JoinCacheable, two-cache composition), CachePolicy and cocache.* properties (ttl, absentTtl, localMaxAge, refreshWindow, read-failure), SetCache, custom CoherenceBackend implementations, the cocache-test TCK, or migrating from CoCache 5.x.
 ---
 
 # CoCache Development Guide
 
-CoCache (5.x) is a Java/Kotlin two-level distributed coherent cache framework:
-- L2 client-side cache: bounded local Caffeine store (one per instance).
-- L1 distributed cache: shared Redis store.
-- Coherence: `CacheEvictedEventBus` publishes evictions so peer instances drop local copies. Write-backs are guarded against concurrent invalidation, and L2 is cleared whenever the event channel (re)subscribes.
+CoCache (6.x) is a Java/Kotlin two-level distributed coherent cache:
+- **L2**: bounded local Caffeine copy, one per instance (fixed; not pluggable).
+- **L1**: shared Redis, which serializes every write per key.
+- **Data source**: a `CacheLoader<K, V>`; `null` means "not found" and is cached for `absentTtl`.
+- **Coherence**: a miss takes a lease in Redis and only the lease holder may fill, so a slow load never overwrites a newer invalidation. `put` and `invalidate` write and broadcast in one Lua script (in `sharded` channel mode or non-atomic mode, the broadcast is a second command); peers drop their L2 copy when the message arrives. Lost messages are bounded by `localMaxAge` (default 5 min) and channel resets.
 
-Design goals and invariants are documented in `docs/architecture.md` of the CoCache repository.
+Packages are `me.ahoo.cocache.*`. The normative design is `docs/architecture.md` in the CoCache repository.
 
 ## Start Here
 
-Choose the smallest reference that fits the request:
-
 | Task | Read |
 |------|------|
-| Add CoCache to a Spring or Spring Boot app; configure TTLs, Redis failure behavior or the missing-guard sentinel | `references/setup.md` |
-| Compose cached values with `@JoinCacheable` | `references/join-cache.md` |
+| Add CoCache to a Spring Boot / Spring / plain JVM app; configure TTLs, properties, failure behavior, metrics | `references/setup.md` |
+| Compose two caches into one read-only view (`JoinCache`, `@JoinCacheable`) | `references/join-cache.md` |
+| Upgrade an app from CoCache 5.x | `references/migration-5x.md` |
 | Write or update tests | `references/testing.md` |
-| Implement a custom L1/L2 store, event bus, key converter, or source | `references/custom-implementation.md` |
-
-## Repository Rules
-
-When editing the CoCache repository, follow `AGENTS.md`:
-- Use `me.ahoo.test.asserts.assert` and `.assert()` in Kotlin tests; do not use AssertJ `assertThat()`.
-- Extend the TCK specs in `cocache-test` for new implementations; every fixed defect gets a reproducing test.
-- Ask before changing `cocache-api` public interfaces, Redis wire formats, or adding dependencies.
-- Update `docs/architecture.md` when changing coherence, storage, codec, or proxy behavior.
-- Run `./gradlew check` before finishing broad changes.
+| Implement a custom `CoherenceBackend`, codec, key encoder, key filter, or per-entry TTL | `references/custom-implementation.md` |
 
 ## Core Model
 
-Define one cache interface per cache domain. It extends `Cache<K, V>`, carries `@CoCache`, and is registered through `@EnableCoCache`. CoCache implements it with a proxy at runtime.
+Declare each cache once, either as an annotated interface or as a spec bean. Both become the same engine.
 
 ```kotlin
-// ttl / ttlAmplitude / missingTtl / clientSideTtl / refreshAhead are seconds; defaults 3600 / 60 / 60 / 0 (unlimited) / 0 (off)
-@CoCache(keyPrefix = "user:", ttl = 120)
-@CaffeineCache(maximumSize = 1_000_000, expireAfterAccess = 120)   // optional; L2 is always bounded
-interface UserCache : Cache<String, User>
+// Interface style: durations in seconds; defaults ttl 3600, ttlJitter 60, absentTtl 60, localMaxAge 300, refreshWindow off
+@CoCache(ttl = 120)
+@CaffeineCache(maximumSize = 100_000)              // optional; L2 is always bounded (default 10 000)
+interface UserCache : Cache<String, User>          // bean name "UserCache"
 
 @SpringBootApplication
 @EnableCoCache(caches = [UserCache::class])
 class App
+
+@Bean // matched to UserCache by generic type (or @CoCache(loader = "beanName"))
+fun userLoader(repo: UserRepository) = CacheLoader<String, User> { id -> repo.findById(id) }
 ```
-
-Operations: `cache[key]`, `cache[key] = value` (uses the cache's TTL policy; `null` stores a negative entry), `cache.evict(key)`, and `cache.getCache(key)` when you need the `CacheValue` (`PresentValue` or `MissingValue`, with `ttlAt`).
-
-Write pattern: **update the data source first, then `evict(key)`**.
-
-## Extension Points
-
-- Per cache, define beans named `UserCache.ClientSideCache`, `UserCache.DistributedCache`, `UserCache.KeyConverter`, `UserCache.CacheSource`, or `UserCache.JoinKeyExtractor`. Stateful components (`ClientSideCache`, `DistributedCache`, `KeyConverter`) are resolved **by name only**. A `CacheSource` / `JoinKeyExtractor` may also be matched by a unique bean of its generic type.
-- Globally, define beans by type; auto-configured beans use `@ConditionalOnMissingBean`.
-- Data loading: `CacheSource<K, V>` is a `fun interface`. Return `CacheValue.forever(v)`, `CacheValue.of(v, TtlAt.at(seconds))`, or `CacheValue.missing(ttlAt)`. Returning `null` stores a negative entry for the cache's `missingTtl` (cache-penetration protection).
-
-## Testing Pattern
-
-Specs in `cocache-test`:
-- `ClientSideCacheSpec<V>` / `DistributedCacheSpec<V>` (both `CacheStoreSpec`) for stores — implement `createCacheStore()`.
-- `CacheSpec<K,V>` for `Cache` implementations — implement `createCache()`.
-- `DefaultCoherentCacheSpec<K,V>` for coherence invariants and concurrency.
-- `MultipleInstanceSyncSpec<K,V>` and `CacheEvictedEventBusSpec` for cross-instance coherence and event buses.
-- `SetElementsCacheSpec` for `SetElementsStore` implementations (atomic Set element updates).
 
 ```kotlin
-class MyDistributedCacheTest : DistributedCacheSpec<String>() {
-    override fun createCacheStore(): DistributedCache<String> = MyDistributedCache()
-    override fun createCacheEntry(): Pair<String, String> = UUID.randomUUID().toString() to "test_value"
+// Spec style: inject Cache<String, User>; bean name "user" (spec bean name minus "Spec")
+@Bean
+fun userSpec(repo: UserRepository): CacheSpec<String, User> = cacheSpec("user") {
+    codec = jacksonCodec<User>(mapper)
+    loader = CacheLoader { id -> repo.findById(id) }
+    policy { ttl = Duration.ofMinutes(2) }
 }
 ```
+
+Operations on `Cache<K, V>`: `get(key)` / `cache[key]`, `get(key, loader)`, `getAll(keys)`, `lookup(key)` (`Lookup.Present` / `Lookup.Absent`), `put(key, value)`, `put(key, value, ttl)`, `invalidate(key)`, `invalidateAll(keys)`.
+
+**Write pattern**: commit the data source first, then `invalidate(key)`. Inside a transaction use `TransactionalInvalidator.invalidate(cache, key)`, which runs after commit. Prefer `invalidate` over `put`; `put` is for writers that compute the final value, and it does not fill the local L2.
+
+## Rules That Prevent Bugs
+
+- Never invalidate before the transaction commits: a concurrent load can read the old row and cache it.
+- With Spring Cache, use `@Cacheable(sync = true)`. Without `sync`, Spring's "miss → call → put" is an unconditional write and loses the lease protection.
+- A cache without a loader is valid (fill it with `put`); misses return `null` and nothing negative is written to Redis.
+- Use `SetCache<K, E>` only when Redis is the only copy of the set (no loader allowed; `invalidate` throws, use `clear`). A set that lives in your database is a plain `Cache<K, Set<E>>` maintained with `invalidate`.
+- All instances of one cluster must use the same `cocache.redis.channel-mode` and the same major version (different major versions cannot share Redis).
+- Size `lease-ttl` above the loader's p99 and `lease-wait` above its typical latency, or cross-instance deduplication falls back to independent loads.
 
 ## Key Classes
 
 | Class | Module | Purpose |
 |-------|--------|---------|
-| `Cache<K,V>` | cocache-api | User-facing cache |
-| `CacheValue<V>` (`PresentValue` / `MissingValue`) | cocache-api | Sealed entry with absolute `ttlAt` |
-| `CacheStore<V>` | cocache-api | Pure storage SPI (no TTL policy) |
-| `ClientSideCache<V>` | cocache-api | L2 store SPI |
-| `DistributedCache<V>` | cocache-api | L1 store SPI (`null` = miss) |
-| `CacheSource<K,V>` | cocache-api | Data source loader |
-| `CacheEvictedEventBus` / `CacheEvictedSubscriber` | cocache-api | Invalidation channel (`onEvicted`, `onReset`) |
-| `KeyConverter<K>` / `KeyFilter` | cocache-api | Storage key mapping / existence filter |
-| `JoinCache<K1,V1,K2,V2>` | cocache-api | Composed cache |
-| `SetElementsCache<K,E>` / `SetElementsStore<E>` | cocache-api | Atomic `addElements` / `removeElements` on a `Set` cache. Declare it next to `Cache<K, Set<E>>`. L1 is authoritative and the `CacheSource` is never consulted |
-| `CoherentCache<K,V>` / `DefaultCoherentCache` | cocache-core | Two-level orchestration |
-| `TtlPolicy` | cocache-core | `ttl`, `ttlAmplitude`, `missingTtl`, `clientSideTtl`, `refreshAhead` |
-| `CaffeineClientSideCache` / `MapClientSideCache` | cocache-core | L2 implementations |
-| `InMemoryDistributedCache` | cocache-core | In-memory L1 (tests) |
-| `LocalCacheEvictedEventBus` / `NoOpCacheEvictedEventBus` | cocache-core | In-process / disabled buses |
-| `SimpleJoinCache` | cocache-core | Default JoinCache |
-| `BloomKeyFilter` | cocache-core | Guava BloomFilter adapter (Guava is compile-only) |
-| `RedisDistributedCache` / `RedisCacheEvictedEventBus` | cocache-spring-redis | Redis implementations |
-| `RedisSetDistributedCache` | cocache-spring-redis | `Set<String>` L1 with atomic element updates (required by `SetElementsCache` on Redis) |
+| `Cache<K,V>` / `SetCache<K,E>` / `Lookup<V>` | cocache-api | User API |
+| `CacheLoader<K,V>` / `Codec<V>` | cocache-api | Data source / value bytes |
+| `@CoCache` / `@CaffeineCache` | cocache-api | Interface-style declaration |
+| `JoinCache` / `JoinValue` / `JoinKeyExtractor` (`api.join`), `@JoinCacheable` | cocache-api | Read-only view over two caches |
+| `CacheReadException` / `CacheWriteException` | cocache-api | L1 failures surfaced to callers |
+| `CoherenceBackend`, `RemoteStore`, `InvalidationChannel` (`api.spi`) | cocache-api | Backend SPI |
+| `CacheRuntime`, `CacheSpec` / `cacheSpec {}`, `SetCacheSpec` / `setCacheSpec {}` | cocache-core | Runtime and declarations |
+| `CachePolicy`, `LeasePolicy`, `LoadPolicy`, `LocalPolicy`, `ReadFailureMode`, `InvalidateFailureMode` | cocache-core | Lifetimes and failure behavior |
+| `KeyEncoder`, `TtlFunction`, `KeyFilter` | cocache-core | Key mapping, per-entry TTL, existence filter |
+| `InMemoryBackend`, `ManualClock`, `StringCodec` | cocache-core | Tests / single instance |
+| `SimpleJoinCache`, `JoinCacheProxies` | cocache-core | JoinCache implementation and interface proxy |
+| `RedisBackend`, `RedisBackendOptions`, `RedisChannelMode` | cocache-redis | Lettuce-native Redis backend |
+| `JacksonCodec`, `jacksonCodec<V>()` | cocache-codec-jackson | Jackson 3 codec |
+| `CoCacheSpringCacheManager`, `TransactionalInvalidator` | cocache-spring | Spring Cache bridge, after-commit invalidation |
+| `@EnableCoCache`, `CacheSpecCustomizer`, `CoCacheProperties` | cocache-spring-boot-starter | Boot wiring |
+| `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `HookedBackend` | cocache-test | TCK |
 
-## Migrating from 4.x
+## Repository Rules
 
-`DefaultCacheValue` → `CacheValue.of/forever/missing`; `isMissingGuard` → `isMissing`; `ComputedTtlAt`/`CacheSecondClock` → `TtlAt`; `@GuavaCache`/`GuavaClientSideCache` → `@CaffeineCache`/`CaffeineClientSideCache.build`; `GuavaCacheEvictedEventBus` → `LocalCacheEvictedEventBus`; `MockDistributedCache` → `InMemoryDistributedCache`; SPI packages moved to `me.ahoo.cache.api.*`; `@CoCache` default `ttl` is now 3600 s (set `TtlAt.FOREVER` explicitly for the old behavior). The full table is in the wiki changelog.
-
-## Build Commands
+When editing the CoCache repository itself, follow its `AGENTS.md`:
+- Use `me.ahoo.test.asserts.assert` and `.assert()` in Kotlin tests; do not use AssertJ `assertThat()`.
+- New backends pass the `cocache-test` TCK; every fixed defect gets a reproducing test.
+- Ask before changing `cocache-api`, the Redis wire format, or adding dependencies.
+- Update `docs/architecture.md` when changing coherence, storage, codec, proxy, or Spring wiring behavior.
+- Run `./gradlew check` (Redis on `localhost:6379`) before finishing broad changes.
 
 ```bash
 ./gradlew build -x test
-./gradlew :cocache-core:test
-./gradlew :cocache-core:test --tests "me.ahoo.cache.proxy.ProxyCacheTest"
-./gradlew :cocache-spring-redis:check          # Redis at localhost:6379
-./gradlew :cocache-spring-boot-starter:check
+./gradlew :cocache-core:test --tests "me.ahoo.cocache.core.engine.CoherentEngineTest"
+./gradlew :cocache-redis:test                  # Redis at localhost:6379
+./gradlew :cocache-spring-boot-starter:test
 ./gradlew check
 ```

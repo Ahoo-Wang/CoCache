@@ -1,8 +1,8 @@
 # Contributing to CoCache
 
 Thanks for helping improve CoCache. This file is the contribution process. Read
-[`docs/architecture.md`](docs/architecture.md) before you change coherence, storage, codec, or proxy
-code. It is the normative design and lists the invariants that every change must keep.
+[`docs/architecture.md`](docs/architecture.md) before you change coherence, storage, codec, proxy, or
+Spring wiring code. It is the normative design and lists the invariants that every change must keep.
 [`AGENTS.md`](AGENTS.md) collects the build commands and the testing and style rules.
 
 ## Requirements and issues
@@ -37,12 +37,12 @@ code. It is the normative design and lists the invariants that every change must
 |------|---------|-------|
 | Coding conventions and static analysis | Detekt + detekt-formatting (`config/detekt/detekt.yml`). Findings are uploaded to GitHub code scanning | CI · Static Analysis |
 | License headers | `checkLicenseHeader` (Apache-2.0 header in every source file and build script) | CI · Static Analysis, `check` |
-| Unit tests | JUnit 5, MockK, fluent-assert, shared TCK specs in `cocache-test` | CI · Test & Coverage |
-| Integration tests | Real Redis service container (`cocache-spring-redis`, `cocache-spring-boot-starter`) | CI · Test & Coverage |
+| Unit tests | JUnit 6, MockK, fluent-assert, shared TCK specs in `cocache-test` (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`) | CI · Test & Coverage |
+| Integration tests | Real Redis service container (`cocache-redis`, `cocache-spring-boot-starter`) | CI · Test & Coverage |
 | Runtime compatibility | Artifacts compile for JDK 17; the full suite also runs on JDK 25 (`-PtestJavaVersion=25`) | CI · Test (JDK 25) |
-| Redis Cluster | The Redis, Spring Cache, and starter tests also run on a 3-master Redis Cluster (`.github/scripts/start-redis-cluster.sh`) | CI · Test (Redis Cluster) |
+| Redis Cluster | The `cocache-redis` and starter tests also run on a 3-master Redis Cluster (`.github/scripts/start-redis-cluster.sh`) | CI · Test (Redis Cluster) |
 | Coverage | JaCoCo aggregate gate (lines ≥ 95%, branches ≥ 90%; TCK specs excluded) and Codecov status (project ≥ 95%, patch ≥ 85%) | CI · Test & Coverage |
-| Performance (on demand) | JMH `RedisCacheBenchmark` (`./gradlew :cocache-spring-redis:jmh`) | Run locally when touching the hit path |
+| Performance (on demand) | JMH `CoCacheBenchmark` (`./gradlew :cocache-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit`; at least five alternating rounds at 1 and 8 threads, see `docs/architecture.md` §13) | Run locally when touching the hit path |
 
 Integration tests need Redis at `localhost:6379`:
 
@@ -59,8 +59,8 @@ Update the docs in the same PR as the change they describe:
 
 | Change | Update |
 |--------|--------|
-| Coherence, storage, codec, or proxy behavior | [`docs/architecture.md`](docs/architecture.md) |
-| Anything a user can see: API, defaults, configuration, behavior | the wiki page under `wiki/guide/` or `wiki/architecture/`, **in both `wiki/` and `wiki/zh/`** |
+| Coherence, storage, codec, proxy, or Spring wiring behavior | [`docs/architecture.md`](docs/architecture.md) |
+| Anything a user can see: API, defaults, configuration, behavior | the wiki page under `wiki/guide/`, `wiki/operations/`, or `wiki/architecture/`, **in both `wiki/` and `wiki/zh/`** |
 | Breaking change | the migration table in `wiki/guide/changelog.md` (en + zh) |
 
 See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in `wiki/` is the dead-link check.
@@ -71,6 +71,20 @@ See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in
   MAJOR. Backward-compatible features bump MINOR. Fixes bump PATCH. The Redis wire format changes only
   in a MAJOR version.
 - `version` in `gradle.properties` is the next release version.
+- The baseline is JDK 17, Kotlin metadata and API version 2.2, and Spring Boot 4.x. Raising any of
+  them is a MAJOR change.
+- What the compatibility promise covers:
+  - Covered: `cocache-api` (user API and SPI), the public types of `cocache-core` (including
+    `JoinCacheProxies`, which the docs recommend for non-Spring join caches), `cocache-redis`,
+    `cocache-codec-jackson` and `cocache-spring`, the published TCK in `cocache-test`
+    (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `HookedBackend`, `Concurrency`), the
+    annotations and `CoCacheProperties` keys of the starter, metric names, endpoint paths and the wire
+    format. Sealed types (`Lookup`, `RemoteRead`, `Envelope`) gain subtypes only in a MAJOR version.
+  - Not covered: auto-configuration classes and other starter wiring (`CacheAssembler`,
+    `AnnotatedCacheFactory`, bean methods), `CacheProxies` (used by the starter),
+    and the generated `copy` / `componentN` functions of configuration data classes (policies,
+    `RedisBackendOptions`, `KeyInspection`, properties), which may gain properties in a MINOR version.
+    Construct those types with named arguments or their builders.
 - To release:
   1. Open a PR titled `chore(release): bump version to X.Y.Z`. It sets `version=` in
      `gradle.properties`, adds the release to `wiki/guide/changelog.md` (en + zh, with a migration

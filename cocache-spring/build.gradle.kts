@@ -11,8 +11,14 @@
  * limitations under the License.
  */
 
+description = "CoCache Spring integration: annotations, Spring Cache adapter, transactional invalidation"
+
 dependencies {
     api(project(":cocache-core"))
     api("org.springframework:spring-context")
+    // 事务内失效（TransactionalInvalidator）按需使用：编译期可见，由使用方的事务管理提供
+    compileOnly("org.springframework:spring-tx")
+    testImplementation("org.springframework:spring-tx")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation(project(":cocache-test"))
 }

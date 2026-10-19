@@ -1,24 +1,31 @@
 # CoCache
 
-> Two-level distributed coherent cache for Java/Kotlin on Spring Boot 4: bounded local Caffeine (L2) in front of shared Redis (L1) in front of a data source, with invalidation broadcast over Redis Pub/Sub and bounded staleness. Maven group `me.ahoo.cocache`; JDK 17+.
+> Two-level distributed coherent cache for Java/Kotlin on Spring Boot 4: bounded local Caffeine (L2) in front of shared Redis (L1) in front of a data source. Redis serializes writes per key (lease-fenced fills), invalidations are deleted and broadcast over Redis Pub/Sub in one Lua script (a separate publish in sharded or non-atomic channel mode), and staleness is bounded. Maven group `me.ahoo.cocache`; JDK 17+; packages `me.ahoo.cocache.*`.
 
-Declare a cache as an interface (`@CoCache interface UserCache : Cache<String, User>`), register it with `@EnableCoCache(caches = [...])`, and provide a `CacheSource<K, V>` bean that loads on a miss (`null` = negative entry). Write pattern: update the data source first, then `evict(key)`.
+Declare a cache as an interface (`@CoCache interface UserCache : Cache<String, User>`) registered with `@EnableCoCache(caches = [...])`, or as a spec bean (`@Bean fun userSpec(): CacheSpec<String, User> = cacheSpec("user") { ... }`, injected as `Cache<String, User>`). Provide a `CacheLoader<K, V>` bean that loads on a miss (`null` = negative entry for `absentTtl`). Write pattern: commit the data source first, then `invalidate(key)` (inside a transaction, use `TransactionalInvalidator`). Upgrading from 5.x: see the migration guide below.
 
 ## Docs
 
-- [Introduction](https://cocache.ahoo.me/guide/): the problem, guarantees, and when not to use CoCache
-- [Quick Start](https://cocache.ahoo.me/guide/quick-start): dependency, cache interface, source, usage
-- [Configuration](https://cocache.ahoo.me/guide/configuration): `@CoCache`/`@CaffeineCache`, `cocache.*` properties, per-cache component beans, Redis codecs
-- [JoinCache](https://cocache.ahoo.me/guide/join-cache): composing two caches
-- [Spring Cache](https://cocache.ahoo.me/guide/spring-cache): `@Cacheable` through `CoCacheManager`
-- [Operations](https://cocache.ahoo.me/guide/operations): actuator endpoints, Redis failure policy, negative-cache sentinel, troubleshooting
-- [Changelog](https://cocache.ahoo.me/guide/changelog): releases and 4.x → 5.0 migration table
+- [Why CoCache](https://cocache.ahoo.me/guide/): the problem, guarantees, limits, and when not to use it
+- [Quick Start](https://cocache.ahoo.me/guide/quick-start): dependency, `@EnableCoCache` + `@CoCache` interface + `CacheLoader` bean, read, invalidate after commit; `cocache.backend: memory` without Redis; plain `CacheRuntime` without Spring
+- [How It Works](https://cocache.ahoo.me/guide/concepts): two levels, read path, negative caching, refresh-ahead, write path, staleness bounds, failure behavior
+- [Declaring Caches](https://cocache.ahoo.me/guide/caches): `@CoCache` / `@CaffeineCache` attributes, `CacheSpec` beans (Kotlin DSL, Java builder), keys and `KeyEncoder`, loaders and `ttlOf`, codecs, `SetCache`, `CacheSpecCustomizer`, startup validation
+- [Keeping Data Fresh](https://cocache.ahoo.me/guide/freshness): write then invalidate, `invalidate` vs `put`, `TransactionalInvalidator`, `ExternalInvalidator`, choosing lifetimes
+- [JoinCache](https://cocache.ahoo.me/guide/join-cache): `@JoinCacheable` read-only views over two caches, `@EnableCoCache(joinCaches = [...])`
+- [Spring Cache](https://cocache.ahoo.me/guide/spring-cache): `CoCacheSpringCacheManager`, `@Cacheable(sync = true)`, the sync check, transactions
+- [Testing](https://cocache.ahoo.me/guide/testing): memory backend in `@SpringBootTest`, `ManualClock`, `InMemoryBackend` unit tests, `HookedBackend` fault injection
+- [Configuration Reference](https://cocache.ahoo.me/guide/configuration): every `cocache.*` property with type, default and unit; precedence layering
+- [Deployment](https://cocache.ahoo.me/operations/): Redis versions and topologies, maxmemory-policy, TLS, channel modes, sizing, rolling deploys, key layout, ACLs
+- [Observability](https://cocache.ahoo.me/operations/observability): every `cocache.*` meter and alerts, the `cocache` health indicator, the actuator endpoint (inspect and invalidate one key), logs
+- [Troubleshooting](https://cocache.ahoo.me/operations/troubleshooting): runbooks and the external invalidation protocol
+- [Upgrading from 5.x](https://cocache.ahoo.me/guide/migration-6): renamed APIs, annotation attributes, configuration keys, wire format change
+- [Changelog](https://cocache.ahoo.me/guide/changelog): releases
 
 ## Design
 
-- [Architecture](https://cocache.ahoo.me/architecture/): goals, modules, data model, proxy wiring
-- [Consistency](https://cocache.ahoo.me/architecture/consistency): read/write paths, invalidation stamps, eviction channel, guarantees and known windows
-- [Extending CoCache](https://cocache.ahoo.me/architecture/extending): SPI contracts and the `cocache-test` TCK
+- [Architecture](https://cocache.ahoo.me/architecture/): goals, modules, data model, runtime and Spring wiring
+- [Consistency](https://cocache.ahoo.me/architecture/consistency): leases, invalidation stamps, read/write paths, failure modes, guarantees
+- [Extending CoCache](https://cocache.ahoo.me/architecture/extending): `CoherenceBackend` SPI and the `cocache-test` TCK
 - [docs/architecture.md](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md): normative design and invariants (Chinese)
 
 ## Optional

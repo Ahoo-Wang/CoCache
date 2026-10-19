@@ -1,0 +1,93 @@
+{
+  "properties": [
+    {
+      "name": "cocache.redis.strict-failure",
+      "type": "java.lang.Boolean",
+      "description": "Removed in 6.0.",
+      "deprecation": {
+        "level": "error",
+        "reason": "Removed in 6.0: L1 read failures are configured per cache.",
+        "replacement": "cocache.defaults.read-failure"
+      }
+    },
+    {
+      "name": "cocache.redis.eviction-channel",
+      "type": "java.lang.String",
+      "description": "Removed in 6.0.",
+      "deprecation": {
+        "level": "error",
+        "reason": "Removed in 6.0.",
+        "replacement": "cocache.redis.channel-mode"
+      }
+    },
+    {
+      "name": "cocache.redis.missing-guard-sentinel",
+      "type": "java.lang.String",
+      "description": "Removed in 6.0.",
+      "deprecation": {
+        "level": "error",
+        "reason": "Removed in 6.0 without replacement."
+      }
+    },
+    {
+      "name": "cocache.metrics.client-side-hits",
+      "type": "java.lang.Boolean",
+      "description": "Removed in 6.0.",
+      "deprecation": {
+        "level": "error",
+        "reason": "Removed in 6.0 without replacement."
+      }
+    },
+    {
+      "name": "cocache.load.max-concurrent",
+      "type": "java.lang.Integer",
+      "description": "Removed in 6.0.",
+      "deprecation": {
+        "level": "error",
+        "reason": "Removed in 6.0.",
+        "replacement": "cocache.defaults.load-max-concurrent"
+      }
+    },
+    {
+      "name": "cocache.load.acquire-timeout",
+      "type": "java.time.Duration",
+      "description": "Removed in 6.0.",
+      "deprecation": {
+        "level": "error",
+        "reason": "Removed in 6.0.",
+        "replacement": "cocache.defaults.load-acquire-timeout"
+      }
+    },
+    {
+      "name": "cocache.next.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Removed in 6.0.",
+      "deprecation": {
+        "level": "error",
+        "reason": "Removed in 6.0: the transitional prefix cocache.next.* became cocache.*.",
+        "replacement": "cocache.enabled"
+      }
+    },
+    {
+      "name": "management.health.cocache.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to enable the CoCache health indicator (DOWN only when the invalidation channel heartbeat fails).",
+      "defaultValue": true
+    }
+  ],
+  "hints": [
+    {
+      "name": "cocache.backend",
+      "values": [
+        {
+          "value": "redis",
+          "description": "Redis backend built from Spring Data Redis connection details (default)."
+        },
+        {
+          "value": "memory",
+          "description": "In-process InMemoryBackend for local development and tests: single process only, no cross-instance coherence."
+        }
+      ]
+    }
+  ]
+}

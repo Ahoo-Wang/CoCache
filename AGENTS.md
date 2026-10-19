@@ -1,10 +1,10 @@
 # AGENTS.md — CoCache
 
-CoCache is a two-level coherent cache for Kotlin/Java on Spring Boot 4. Each instance keeps a bounded Caffeine copy (L2) in front of shared Redis (L1) in front of a `CacheSource`. Writes and evicts broadcast invalidations over Redis Pub/Sub. Artifacts target JDK 17 and ship to Maven Central as `me.ahoo.cocache:*`.
+CoCache is a two-level coherent cache for Kotlin/Java on Spring Boot 4. Each instance keeps a bounded Caffeine copy (L2) in front of shared Redis (L1) in front of a `CacheLoader`. L1 serializes every write per key: fills are lease-fenced, and `put` / `invalidate` write and broadcast the invalidation over Redis Pub/Sub in one Lua script (one round trip; in `sharded` channel mode, or when the atomic-broadcast probe fails, the broadcast is a separate command, so two round trips). Artifacts target JDK 17 and ship to Maven Central as `me.ahoo.cocache:*`.
 
 The product trades staleness for latency. Every rule below protects one of three goals:
 
-1. **Staleness is bounded.** Any inconsistency heals within a finite TTL.
+1. **Staleness is bounded.** Races inside the protocol leave nothing stale. Anything outside it heals within `ttl` in L1 and `localMaxAge` in L2.
 2. **No invalidation is ever lost.** Concurrent loads and out-of-order events never write a stale value back.
 3. **The hit path stays cheap.** An L2 hit costs almost nothing and scales with threads. An L1 hit is one round trip.
 
@@ -32,44 +32,49 @@ docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 
 | Purpose | Command |
 |---------|---------|
-| Full gate (same as CI): tests, detekt, dokka, license headers, JMH compile, coverage ≥ 95% lines / ≥ 90% branches | `./gradlew check` |
+| Full gate (same as CI): tests, detekt, license headers, JMH compile, coverage ≥ 95% lines / ≥ 90% branches (Dokka runs when the javadoc jar is built for publishing) | `./gradlew check` |
 | Compile only | `./gradlew build -x test` |
 | One module | `./gradlew :cocache-core:test` |
-| One class or method | `./gradlew :cocache-core:test --tests "me.ahoo.cache.proxy.ProxyCacheTest"` |
+| One class or method | `./gradlew :cocache-core:test --tests "me.ahoo.cocache.core.engine.CoherentEngineTest"` |
 | Lint (**rewrites files**: `autoCorrect = true`) | `./gradlew detekt` |
 | Runtime compatibility on a newer JDK | `./gradlew test -PtestJavaVersion=25` |
-| Redis modules on a local Redis Cluster (needs `redis-server` 7+) | `.github/scripts/start-redis-cluster.sh`, then `SPRING_DATA_REDIS_CLUSTER_NODES=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002 ./gradlew :cocache-spring-redis:test :cocache-spring-cache:test :cocache-spring-boot-starter:test` |
-| Hit-path benchmark (never run by `check`; `--rerun` because Gradle otherwise reuses the last result) | `./gradlew :cocache-spring-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit` |
+| Redis modules on a local Redis Cluster (needs `redis-server` 7+) | `.github/scripts/start-redis-cluster.sh`, then `SPRING_DATA_REDIS_CLUSTER_NODES=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002 ./gradlew :cocache-redis:test :cocache-spring-boot-starter:test` |
+| Hit-path benchmark (`CoCacheBenchmark`; never run by `check`; `--rerun` because Gradle otherwise reuses the last result; `-PjmhIncludes` is a regex, so `l2Hit` also runs `l2HitViaInterface` and `l2HitMixed`) | `./gradlew :cocache-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit` |
 | Wiki build, the only dead-link check | `cd wiki && pnpm install && pnpm build` |
 
-If your shell exports `SPRING_DATA_REDIS_*` variables (for example `SPRING_DATA_REDIS_CLUSTER_NODES`), the starter tests bind to that Redis instead of localhost. Unset them first.
+If your shell exports `SPRING_DATA_REDIS_*` variables (for example `SPRING_DATA_REDIS_CLUSTER_NODES`), the `cocache-redis` and starter tests bind to that Redis instead of localhost. Unset them first.
 
 ## Where code goes
 
-Dependencies point one way: `api ← core ← spring ← spring-redis`, and `core ← spring-cache`. The starter depends on all three Spring modules.
+Dependencies point one way: `api ← core ← redis`, `api ← codec-jackson`, and `core ← spring`. The starter depends on `spring`, `redis`, and `codec-jackson`. Only the starter may use SpEL or annotation scanning.
 
-- `cocache-api` holds the user API and every SPI, and has zero runtime dependencies. Changing it is a public-API change.
-- `cocache-core` holds orchestration (`DefaultCoherentCache`, `SingleFlight`, `InvalidationStamps`, `TtlPolicy`), the proxies (`CacheInvocationHandler`), and in-memory defaults.
-- Stores only store. TTL jitter, negative caching, and other policy live in `TtlPolicy`, owned by the orchestration layer. A store sees only an absolute `ttlAt`.
+- `cocache-api` holds the user API (`Cache`, `SetCache`, `CacheLoader`, `Codec`, `Lookup`, `@CoCache`) and every SPI (`me.ahoo.cocache.api.spi`), and has zero runtime dependencies. Changing it is a public-API change.
+- `cocache-core` holds the runtime and engines (`CacheRuntime`, `CacheSpec`, `engine/CoherentEngine`, `engine/SetEngine`), the L2 fence and coalescing (`internal/InvalidationStamps`, `internal/SingleFlight`), policy (`policy/CachePolicy`), the interface proxy (`proxy/CacheProxies`), and test helpers that ship (`InMemoryBackend`, `ManualClock`). L2 is always Caffeine; it is not an SPI.
+- `cocache-redis` is the Lettuce-native backend. Its Lua scripts and wire format live in `RedisScripts`.
+- Stores only run the protocol. TTL, jitter, negative caching, refresh windows, and tokens come from the engine as arguments. A store sees a relative `Duration?` (`null` = never expires), never a policy.
 - `cocache-test` is a **published** TCK. Anything added under `src/main` becomes API for third-party implementations.
-- `cocache-example` is the example app, and the starter tests run against it.
+- `cocache-example` is the example app, with its own smoke test.
 
 ## Invariants that "simple" refactors break
 
 Read `docs/architecture.md` before you touch coherence, storage, codec, proxy, or Spring wiring code. If behavior changes, update it in the same PR.
 
-- **An L1 miss is a miss.** A key that is absent, deleted mid-read, or holds a corrupt payload returns `null` and reloads. Never infer a negative entry from it, and never delete from the read path. Negative entries exist only as `MissingValue`.
-- **Every write-back is stamp-guarded.** Take the stamp, check it before the write, write, then check it again. If the stamp changed after the write, undo the write. Invalidators bump the stamp *before* they evict.
-- **`SingleFlight` deregisters a call before it publishes the result.** Read-your-writes relies on that order.
-- **Set-element add and remove are atomic in L1.** Fill-backs for Set caches are conditional (`fillCache`, `evictIfUnchanged`), so a load that started earlier can't swallow an element write.
-- **Stateful Spring components resolve by bean name only.** These are the L2, the L1, and the `KeyConverter`. Resolving them by type lets two caches share one instance.
-- **The proxy unwraps `InvocationTargetException`.** Callers always see the original exception.
-- **The wire format is frozen within a major version.** This covers the Redis key and value layout, the `_nil_` sentinel encodings, and the `key@@publisherId` message format.
-- **Hit-path changes need numbers.** Compare JMH results against the previous version at 1 and 8 threads, and put them in the PR. Run at least three alternating rounds per side with `--rerun`: 8-thread results vary by about ±4% between runs on one machine.
+- **Fence every fill.** A fill must hold a token taken *before* its read: an L1 lease or refresh token, or an L2 invalidation stamp. Writers (`invalidate`, `put`, set-element writes) bump the stamp and evict L2 both *before and after* they change L1. L2 is filled only by paths that read L1. Writers never write L2.
+- **An L1 miss is a miss.** An absent key or a lease placeholder is not a negative entry. Negative entries exist only as state `M`.
+- **The read path never deletes unconditionally.** A corrupt payload is reclaimed only by digest compare (`reclaim`). An unknown newer format is neither reclaimed nor written back.
+- **Release every token.** When the loader, `ttlOf`, or the codec throws, or the load is rejected, `release` the lease. Set an explicit expiry on every L1 state change.
+- **`SingleFlight` deregisters a call before it publishes the result.** Read-your-writes relies on that order. Same-thread reentry on a key fails fast, and a batch finishes its own keys before it waits on others.
+- **The loader runs on the caller's thread.** Futures wrap I/O only. Nothing runs on a Lettuce event-loop thread.
+- **Only the runtime creates stateful components.** Users pass specs and stateless functions, never an L2, store, or connection.
+- **L1 connections reach primaries only and reject commands while disconnected.** Buffered replay could apply a `put` that already failed for the caller.
+- **The proxy never wraps exceptions.** Callers always see the original exception.
+- **Set-element writes are only for `SetCache`**, where L1 is the only copy and there is no loader. Sets owned by a data source are a plain `Cache<K, Set<E>>` maintained with `invalidate`.
+- **The wire format is frozen within a major version.** This covers the key layout, the scalar header, the set fields, the invalidation frame, and channel names.
+- **Hit-path changes need numbers.** Compare JMH results against the previous version at 1 and 8 threads, and put them in the PR. Run at least five alternating rounds per side with `--rerun`, report the median and confidence interval, and include `l2HitMixed` (three differently configured caches). 8-thread results vary by about ±4% between runs on one machine.
 
 ## Tests
 
-- Use JUnit 5, MockK, and fluent-assert (`import me.ahoo.test.asserts.assert`, then `x.assert()…`).
+- Use JUnit 6, MockK, and fluent-assert (`import me.ahoo.test.asserts.assert`, then `x.assert()…`).
   - `assert()` accepts nullable receivers. There is no `isTrue {}`, so use `.withFailMessage { … }`.
   - Prefer `requireNotNull(…)` to chains of `!!`.
   - Don't use AssertJ `assertThat()`. Two exceptions: `assertThat(context)` on Spring's `ApplicationContextRunner` in starter tests, and `Offset.offset(n)` as an argument.
@@ -77,19 +82,16 @@ Read `docs/architecture.md` before you touch coherence, storage, codec, proxy, o
 
   | You implement | Extend |
   |---------------|--------|
-  | L2 or L1 store | `ClientSideCacheSpec` / `DistributedCacheSpec` |
-  | Set-element store | `SetElementsCacheSpec` |
-  | `Cache` | `CacheSpec` |
-  | Orchestration or invalidation channel | `DefaultCoherentCacheSpec`, `MultipleInstanceSyncSpec`, `consistency/CacheEvictedEventBusSpec` |
-  | Codec | `CodecExecutorSpec` (in `cocache-spring-redis` test sources, not the TCK) |
+  | `CoherenceBackend` (L1 protocol and invalidation channel) | `BackendProtocolSpec` |
+  | The backend under real engines (two runtimes sharing one backend) | `EngineSpec` and `SetEngineSpec` |
 
-  Stores that rebuild `ttlAt` from Redis expiry drift by ±1 s. Override the `open` TTL tests with `isCloseTo(…, Offset.offset(1))`.
-- Redis tests use `RedisTestSupport`. Its listener container runs on a `SyncTaskExecutor`, so `onReset` finishes inside `register()`. Without it, a late reset clears L2 mid-test and the test flakes.
+  `HookedBackend` wraps any backend to inject failures and orchestrate races. Expiry is millisecond-precise, so TTL assertions need no drift offset.
+- Redis tests use `RedisTestSupport`. It picks standalone or Cluster from `SPRING_DATA_REDIS_CLUSTER_NODES`, simulates time with `shiftTtl`, and kills this test's Pub/Sub connection with `killPubSubConnections` to force a reset. `subscribe` returns only after the subscription is acknowledged and `onReset` has run, so a late reset can't clear L2 mid-test.
 - Concurrency tests:
   - Orchestrate races with latches, never sleeps.
   - Wait on a `finished` latch, so a dead background thread fails the test instead of passing silently.
   - Assert cross-instance effects by polling with a timeout.
-- Every fixed defect gets a test that reproduces it. The in-flight cases in `DefaultCoherentCacheSpec` are the model.
+- Every fixed defect gets a test that reproduces it. The same-node race cases in `EngineSpec` are the model.
 - The coverage gate is an aggregate across modules (TCK specs are excluded). New branches without tests can fail `check` even when every test passes.
 
 ## Code style

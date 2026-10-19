@@ -1,159 +1,173 @@
 ---
-title: 配置
-description: CoCache 的全部配置：@CoCache 的 TTL、@CaffeineCache 的 L2 容量、cocache.* 属性、按缓存定制的组件 bean、Redis 编码以及用代码构建缓存。
+title: 配置参考
+description: 所有 cocache.* 配置项的类型、默认值与单位，配置项如何叠加在声明与定制器之上，Redis 连接配置，actuator 与健康检查开关，启动校验，以及只能用代码配置的部分。
 ---
 
-# 配置
+# 配置参考
 
-CoCache 的配置分三层：
+## 配置如何叠加 {#precedence}
 
-1. **缓存接口上的注解**：TTL、key 格式、L2 容量。
-2. **以缓存命名的 bean**：替换单个组件，如 L2、L1、key 转换器或数据源。
-3. **`cocache.*` 属性**：全局开关。
+每个缓存的配置分层构建。后一层按字段覆盖前一层；某层没有设置的字段原样传下去：
 
-## `@CoCache`
+1. **内置默认值**（`CachePolicy.DEFAULT`；集合缓存为 `SetCacheSpec.DEFAULT_POLICY`）。
+2. **声明**：`@CoCache` / `@CaffeineCache`，或你构建的 `CacheSpec`。
+3. **`CacheSpecCustomizer` bean**，按 Spring 的顺序。
+4. **`cocache.defaults.*`**，作用于所有缓存。
+5. **`cocache.caches.[name].*`**，作用于单个缓存。
 
-| 属性 | 默认值 | 含义 |
-|------|--------|------|
-| `name` | 接口简单类名 | 缓存名。决定淘汰事件频道与按缓存定制的 bean 名 |
-| `keyPrefix` | `cocache:{name}:` | 所有存储 key 的前缀，支持 Spring `${…}` 占位符 |
-| `keyExpression` | `""`（使用 `key.toString()`） | 把 key 转为字符串的 SpEL 模板，例如 `#{#root.tenantId}:#{#root.id}` |
-| `ttl` | `3600` | 值的存活秒数；`TtlAt.FOREVER` 表示永不过期 |
-| `ttlAmplitude` | `60` | 随机抖动秒数：每个值存活 `ttl ± ttlAmplitude` 秒，且不少于 1 秒 |
-| `missingTtl` | `60` | 负缓存（“不存在”）的存活秒数，不抖动 |
-| `refreshAhead` | `0`（关闭） | 提前刷新窗口（秒）：值的剩余存活时间不超过该值时，读取照常返回它，并在后台刷新一次。必须小于 `ttl` 与 `clientSideTtl` |
-| `clientSideTtl` | `0`（不限制） | L2（本地）副本的最长存活秒数，过期后从 L1 重新填充；`0` 表示沿用 L1 的到期时间 |
+配置项排在最后，运维无需重新构建就能调整缓存。这也意味着 `cocache.defaults.*` 会覆盖注解中写的值。
 
-### 如何选择 TTL
+::: tip 集合缓存保持自己的寿命
+`cocache.defaults.ttl` 与 `ttl-forever` 不作用于 [`SetCache`](./caches.md#set-cache)：它的唯一副本在 Redis 中，全局寿命会让集合过期并消失。`cocache.defaults.absent-ttl` 与 `refresh-window` 同样跳过集合缓存，因为它没有数据源。只有 `cocache.caches.[name].ttl` / `ttl-forever` 能改变集合缓存的寿命，`defaults` 的其它配置项照常生效。
+:::
 
-- **`ttl` 就是陈旧度上限。** 有一种竞态会让旧值留在 Redis 中直到过期：慢加载可能在并发更新的淘汰之后才写入结果（见[一致性](../architecture/consistency.md#what-is-not-guaranteed)）。按业务在这种少见情况下能容忍的最长陈旧时间来选。只有当所有写入方都可靠地调用 `evict`、并且接受上述竞态永不修复时，`TtlAt.FOREVER` 才是安全的。
-- **`missingTtl` 是新建数据可能“不可见”的时长**：之前的查询缓存了它不存在。应保持较短。
-- **`clientSideTtl` 限制失效事件丢失造成的陈旧。** 失效事件至多投递一次；事件丢失时，其它实例会一直使用 L2 副本直到 `ttl` 到期。设置 `clientSideTtl = 30` 后，该副本最多存活 30 秒，随后从 Redis 重新填充。命中路径没有额外开销，但每次 L2 过期需要一次 Redis 往返。启用后，L2 命中时 `getTtlAt` 返回的是 L2 副本的到期时间。
-- **`refreshAhead` 消除热点 key 过期时的延迟尖刺。** 未开启时，过期后的第一次读取要等待回源。设置 `refreshAhead = 60` 后，最后 60 秒内的读取会触发一次后台刷新（每个实例每个 key 同一时刻至多一次），读取方照常拿到当前值。不会返回已过期的值，所以陈旧度仍以 `ttl` 为上界。负缓存不刷新。对于支持原子元素增删的集合缓存，L1 是权威副本，刷新只重新填充 L2。
-- **`ttlAmplitude` 打散过期时间**，一起加载的 key（如发布后）不会在同一秒过期。取 `ttl` 的百分之几即可。
+## 顶层配置项 {#properties}
 
-## `@CaffeineCache`
+| 配置项 | 类型 | 默认值 | 含义 |
+|--------|------|--------|------|
+| `cocache.enabled` | boolean | `true` | `false` 关闭 CoCache 的全部自动配置，包括端点、健康检查与指标 |
+| `cocache.backend` | `redis` \| `memory` | `redis` | `redis`：由 `spring.data.redis.*` 构建。`memory`：进程内、单实例，用于开发与测试。自己声明的 `CoherenceBackend` bean 优先于两者。 |
+| `cocache.defaults.*` | 策略 | — | 作用于所有缓存的[策略配置项](#policy-properties) |
+| `cocache.caches.[name].*` | 策略 | — | 作用于单个缓存的[策略配置项](#policy-properties) |
+| `cocache.redis.*` | — | — | [Redis 后端](#redis)配置 |
+| `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
+| `management.health.cocache.enabled` | boolean | `true` | 注册 `cocache` 健康检查（见[下文](#actuator)） |
 
-配置默认的 L2；不标注时使用下列默认值。L2 始终有界。
+## 策略配置项 {#policy-properties}
 
-| 属性 | 默认值 | 含义 |
-|------|--------|------|
-| `maximumSize` | `10000` | 每个实例的最大条目数 |
-| `initialCapacity` | 不设置 | 初始哈希表大小 |
-| `expireAfterAccess` | `0`（关闭） | 空闲多久后淘汰 |
-| `expireUnit` | `SECONDS` | `expireAfterAccess` 的单位 |
+以下配置项在 `cocache.defaults.` 与 `cocache.caches.[name].` 下都可以使用。
 
-正确性不依赖 `expireAfterAccess`：每个条目自带 `ttlAt`，过期后在读取时淘汰。空闲淘汰只是更早释放内存；它在每次读取时记录访问时间，对极热的 key 会损失吞吐。
+| 配置项 | 类型 | 内置默认值 | 对应注解 | 含义 |
+|--------|------|------------|----------|------|
+| `ttl` | 时长 | `1h`（集合缓存：永不过期） | `@CoCache.ttl` | 值在 Redis 中的寿命 |
+| `ttl-forever` | boolean | `false` | `ttl = CoCache.FOREVER` | `true`：值永不过期，覆盖 `ttl` |
+| `ttl-jitter` | 时长 | `1m` | `@CoCache.ttlJitter` | 每个值寿命上的随机 ± 抖动，不超过 `ttl / 2`。`0`：关闭。 |
+| `absent-ttl` | 时长 | `1m` | `@CoCache.absentTtl` | 负缓存的寿命 |
+| `local-max-age` | 时长 | `5m` | `@CoCache.localMaxAge` | L2 副本的最长寿命 |
+| `degraded-local-max-age` | 时长 | `10s` | — | 无法写入 Redis 的 L2 副本的最长寿命 |
+| `refresh-window` | 时长 | 关闭 | `@CoCache.refreshWindow` | 提前刷新窗口。`0`：关闭（也会关掉声明中开启的窗口），见[校验](#validation)。 |
+| `lease-ttl` | 时长 | `10s` | — | 持有者一直不写回时 lease 的寿命，应大于 loader 的 p99 |
+| `lease-wait` | 时长 | `200ms` | — | 未命中时等待其它实例加载的最长时间，超时后自行加载 |
+| `load-max-concurrent` | integer | `0`（不限制） | — | 每个实例上每个缓存同时进行的数据源加载数上限 |
+| `load-acquire-timeout` | 时长 | `1s` | — | 加载等待许可的最长时间，超时抛出 `SourceLoadRejectedException` |
+| `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | 每个实例 L2 的最大条目数 |
+| `invalidate-failure` | `retry` \| `throw` | `retry` | — | Redis 失效失败时：进入后台重试队列，或抛出 `CacheWriteException` |
+| `read-failure` | `degrade` \| `throw` | `degrade` | — | Redis 读取失败时：从数据源加载，或抛出 `CacheReadException` |
+| `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | 每个存储 key 的开头（见[下文](#key-prefix)） |
 
-## 属性
+如何选择这些值，见[保持数据新鲜](./freshness.md#lifetimes)。
 
-| 属性 | 默认值 | 含义 |
-|------|--------|------|
-| `cocache.enabled` | `true` | `false` 关闭全部 CoCache 自动配置（包括 Actuator 端点） |
-| `cocache.load.max-concurrent` | `0`（不限制） | 每个实例、每个缓存同时进行的回源数上限，在 Redis 故障时保护数据源。见[运维](./operations.md#redis-failures) |
-| `cocache.load.acquire-timeout` | `1s` | 达到上限时等待许可的最长时间，超时抛出 `SourceLoadRejectedException` |
-| `cocache.metrics.client-side-hits` | `false` | 统计 L2 命中（`cocache.hits{level=l2}`）。计数会使 L2 命中吞吐下降约 8%（单线程）到 15%（8 线程），因此默认关闭。见[运维](./operations.md#metrics) |
-| `cocache.redis.strict-failure` | `false` | `false` 在 Redis 故障时降级：读取回源，写入与淘汰仅告警。`true` 重抛异常。见[运维](./operations.md#redis-failures) |
-| `cocache.redis.eviction-channel` | `pubsub` | `sharded` 使用 Redis 7+ 的 Sharded Pub/Sub（`SPUBLISH`/`SSUBSCRIBE`，需要 Lettuce），在 Redis Cluster 中只在单个分片内传播。两种通道互不相通，所有实例必须同时切换。见[一致性](../architecture/consistency.md#eviction-channel) |
-| `cocache.redis.missing-guard-sentinel` | `_nil_` | Redis 中标记负缓存的值。见[运维](./operations.md#the-negative-cache-sentinel) |
+### 时长 {#durations}
 
-`cocache.redis.strict-failure` 与 `cocache.redis.missing-guard-sentinel` 只作用于默认创建的 Redis 缓存；自定义的 `{name}.DistributedCache` bean 自行决定策略。
+`defaults` 与 `caches` 下不写单位的数字按**秒**解析，与注解一致：`ttl: 600`。也可以写 Spring 的时长字符串：`500ms`、`10m`、`PT10M`。亚秒级的值请写单位，如 `lease-wait: 500ms`。
 
-## 按缓存定制组件 {#per-cache-components}
+`cocache.redis` 下不写单位的数字按**毫秒**解析，与 `spring.data.redis.timeout` 一致。那里同样建议写单位。
 
-每个缓存由若干组件组装而成。要为单个缓存替换某个组件，声明名为 `{cacheName}{suffix}` 的 bean：
+### 单个缓存 {#per-cache}
 
-| Bean 名 | 类型 | 默认 |
-|---------|------|------|
-| `{name}.ClientSideCache` | `ClientSideCache<V>` | Caffeine，容量取自 `@CaffeineCache` |
-| `{name}.DistributedCache` | `DistributedCache<V>` | 使用 JSON 编码的 `RedisDistributedCache` |
-| `{name}.KeyConverter` | `KeyConverter<K>` | 由 `keyPrefix` 与 `keyExpression` 构建 |
-| `{name}.CacheSource` | `CacheSource<K, V>` | 唯一的 `CacheSource<K, V>` 类型 bean，否则为 `CacheSource.noOp()` |
-| `{name}.JoinKeyExtractor` | `JoinKeyExtractor<V1, K2>` | 设置了 `joinKeyExpression` 时由其构建，否则为唯一的该类型 bean |
-
-```kotlin
-@Configuration
-class UserCacheConfiguration {
-    @Bean("UserCache.ClientSideCache")
-    fun userClientSideCache(): ClientSideCache<User> =
-        CaffeineClientSideCache.build(maximumSize = 100_000)
-
-    @Bean("UserCache.DistributedCache")
-    fun userDistributedCache(redisTemplate: StringRedisTemplate, objectMapper: ObjectMapper): DistributedCache<User> =
-        RedisDistributedCache(redisTemplate, ObjectToJsonCodecExecutor(User::class.java, redisTemplate, objectMapper))
-}
+```yaml
+cocache:
+  defaults:
+    local-max-age: 2m
+  caches:
+    "[UserCache]":
+      ttl: 10m
+      load-max-concurrent: 32
+      read-failure: throw
 ```
 
-**有状态组件只按名称匹配。** 有状态组件是 `ClientSideCache`、`DistributedCache` 与 `KeyConverter`。若按类型匹配，所有同值类型的缓存会共享同一实例：清空一个会清空全部，key 也会互相冲突。`CacheSource` 与 `JoinKeyExtractor` 无状态，因此也可按唯一的泛型类型匹配。若有多个同类型候选且都不是 `@Primary`，启动失败，CoCache 不会悄悄回退为 `noOp`。
+- 缓存名不区分大小写匹配，所以环境变量形式也可以：`COCACHE_CACHES_USERCACHE_TTL=10m`。
+- 在 YAML 中给缓存名加上引号与方括号（`"[UserCache]"`），保持原样。
+- 对应不上任何已声明缓存的名字会让启动失败。
 
-### 全局组件
+### key 前缀 {#key-prefix}
 
-自动配置中的其它 bean，如 `CacheEvictedEventBus`、`ClientIdGenerator`、`CoherentCacheFactory`、各组件工厂与 `CacheManager`，都带有 `@ConditionalOnMissingBean`。声明同类型的 bean 即可替换。例如，自定义的 `CacheEvictedEventBus` 可以通过 Kafka 传递淘汰事件，但必须遵守[扩展 CoCache](../architecture/extending.md#invalidation-channel) 中的约定。
+存储 key 是 `{keyPrefix}{namespace}:{encodedKey}`（见[声明缓存](./caches.md#storage-keys)）。统一设置前缀，可以隔离共用一个 Redis 的多个应用：
 
-## Redis 存储格式
-
-默认的 L1 把值以 JSON 存入 Redis String。要以 Hash 或 Set 存储，请在 `{name}.DistributedCache` bean 中换用其它编码器：
-
-| 编码器 | 值类型 | Redis 类型 |
-|--------|--------|------------|
-| `ObjectToJsonCodecExecutor`（默认） | Jackson 能序列化的任意类型 | String |
-| `StringToStringCodecExecutor` | `String` | String |
-| `MapToHashCodecExecutor` | `Map<String, String>` | Hash |
-| `ObjectToHashCodecExecutor` | 任意类型，经 `MapConverter` 转换 | Hash |
-| `SetToSetCodecExecutor` | `Set<String>` | Set |
-
-读取通过一个原子 Lua 脚本，一次往返同时取回剩余 TTL 与值。
-
-## 集合值缓存：原子增删元素 {#set-elements}
-
-两个实例同时“读出整个集合 → 修改 → 写回”会丢失更新。若 `Set` 缓存的内容只存在于缓存中（如索引、成员列表），请再声明 `SetElementsCache`，并用 `RedisSetDistributedCache` 作为 L1：
-
-```kotlin
-@CoCache(ttl = TtlAt.FOREVER)
-interface PolicyIndexCache : Cache<String, Set<String>>, SetElementsCache<String, String>
-
-@Bean("PolicyIndexCache.DistributedCache")
-fun policyIndexDistributedCache(redisTemplate: StringRedisTemplate): DistributedCache<Set<String>> =
-    RedisSetDistributedCache(redisTemplate)
-
-policyIndexCache.addElements(key, listOf("p1"))
-policyIndexCache.removeElements(key, listOf("p1"))
+```yaml
+cocache:
+  defaults:
+    key-prefix: ${spring.application.name}:
+  caches:
+    "[SharedIndexCache]":
+      key-prefix: "shared:"
 ```
 
-- 每次调用都是在原生 Redis Set 上执行的一个原子 Lua 脚本（布局与 `SetToSetCodecExecutor` 相同）。之后淘汰本地副本并发布淘汰事件，其它实例随之重新加载。
-- 缓存是权威副本：这些调用从不访问 `CacheSource`。若集合数据存放在数据库中，请先更新数据库再 `evict`。
-- 向负缓存的 key 加入元素会替换负缓存。key 的到期时间遵循缓存的 TTL 策略，`TtlAt.FOREVER` 时 key 不带到期时间。
-- 对不存在的 key 或负缓存执行移除不做任何事。移除最后一个元素会删除 key，下次读取返回 `null`。
-- 等于负缓存哨兵（默认 `_nil_`）的元素会被拒绝。
-- Redis 故障时总是抛出异常，即使 `strictFailure = false`，更新不会被静默丢弃。两个调用都是幂等的，可以重试。
-- 接口声明了 `SetElementsCache`，而其 `DistributedCache` 不支持（例如普通的 `RedisDistributedCache`）时，创建缓存会在启动时失败。
+`caches.[name].key-prefix` 覆盖 `defaults.key-prefix`，后者又覆盖声明与定制器，包括 `@CoCache` 中显式写出的 `keyPrefix`。同一应用的所有实例必须使用相同的前缀，修改前缀相当于冷启动。失效频道 `cocache:inv:{namespace}` 不含前缀，所以在同一个 Redis 上 namespace 相同的应用会收到彼此的消息；这只是多余的处理，不会产生错误数据。
 
-## 用代码构建缓存
+## Redis {#redis}
 
-也可以不用注解，自己组装 `CoherentCache`。`CoherentCacheFactory` bean 会把它接入淘汰事件通道：
+Redis 后端由 Spring Boot 的 `spring.data.redis.*` 连接信息构建，使用 CoCache 自己的 Lettuce 客户端。
+
+| 拓扑 | 是否支持 |
+|------|----------|
+| 单机 | 支持 |
+| Sentinel | 支持。Sentinel 节点使用 `spring.data.redis.sentinel.username` / `password`；数据节点使用 `spring.data.redis.username` / `password`。 |
+| Cluster | 支持。脚本按 key 路由，拓扑自适应刷新。 |
+| 静态主从 | 不支持，启动失败。 |
+
+TLS 遵循 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）。`rediss://` URL 以 JDK 默认配置启用 TLS。CoCache 总是访问主节点，因为它的读脚本也会写入 lease。
+
+| 配置项 | 类型 | 默认值 | 含义 |
+|--------|------|--------|------|
+| `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`：`PUBLISH` / `SUBSCRIBE`，与 Redis 修改原子地完成。`sharded`：`SPUBLISH` / `SSUBSCRIBE`（Redis 7+），在修改之后立即发送。**所有实例必须使用相同的模式**，两种模式互不相通。 |
+| `cocache.redis.command-timeout` | 时长（毫秒） | `2s` | 单条命令或脚本的最长等待时间 |
+| `cocache.redis.heartbeat` | 时长（毫秒） | `5s` | 订阅连接上的 `PING` 间隔。PING 失败时清空 L2 并重连。 |
+| `cocache.redis.invalidate-batch-size` | integer | `512` | 单个失效脚本处理的 key 数上限 |
+| `cocache.redis.client-name` | string | 未设置 | CoCache 连接的 `CLIENT SETNAME` |
+
+部署与容量方面的选择见[运维](../operations/)。
+
+## Actuator 与健康检查 {#actuator}
+
+classpath 中有 `spring-boot-starter-actuator` 时：
+
+| 功能 | 开关 | 说明 |
+|------|------|------|
+| `cocache` 端点 | `management.endpoints.web.exposure.include=cocache`；访问控制用 `management.endpoint.cocache.access` | 列出缓存与计数，查看与失效单个 key |
+| `cocache` 健康检查 | `management.health.cocache.enabled`（默认 `true`） | 只有 Redis 失效通道心跳失败期间为 `DOWN` |
+| Micrometer 指标 `cocache.*` | classpath 中有 Micrometer | 以 `cache` 标签区分 |
+
+端点路径与指标名见[可观测性](../operations/observability.md)。
+
+## 启动校验 {#validation}
+
+CoCache 不会带着无法兑现的配置运行，而是让启动失败：
+
+- **未知的缓存名**出现在 `cocache.caches` 下（几乎总是拼写错误）。错误信息会列出已声明的缓存。
+- **不再支持的旧大版本配置名**，如 `cocache.redis.strict-failure` 或 `cocache.load.*` 下的任何项，会让启动失败，错误信息给出替代项（如果有的话）。完整列表见[从 5.x 升级](./migration-6.md#properties)。
+- **不合法的策略。** 所有时长必须为正，且不超过 100 年；只有 `ttl-jitter`、`lease-wait`、`load-acquire-timeout` 与 `refresh-window`（0 表示关闭）可以为 0；任何时长都不能为负。`refresh-window` 必须小于 `ttl − ttl-jitter`（按实际抖动计算），也必须小于 `local-max-age`。
+
+`refresh-window: 0` 表示关闭提前刷新，因此配置项也可以关掉声明中开启的窗口。
+
+声明层面的校验见[声明缓存](./caches.md#validation)。
+
+## 配置项之外 {#beyond-properties}
+
+有些配置只存在于代码中，因为它们是函数或对象，而不是值：
+
+| 配置 | 位置 |
+|------|------|
+| `ttlOf`、`keyEncoder`、`keyFilter`、`codec`、`loader` | spec 或[定制器](./caches.md#customizer) |
+| `local.initialCapacity`、`local.expireAfterAccess` | `@CaffeineCache`、spec 或定制器 |
+| 时钟 | `CacheClock` bean（如测试中的 `ManualClock`）会被运行时与内存后端使用 |
+| 重试策略、刷新执行器、节点 id | 自己声明的 `CacheRuntime` bean |
+| Redis 客户端 | 自己声明的 `CoherenceBackend` bean，如 `RedisBackend.of(client, options)` |
+
+自己声明 `CacheRuntime` 或 `CoherenceBackend` bean 时，自动配置的那个会退让：
 
 ```kotlin
-@Bean
-fun userCache(
-    redisTemplate: StringRedisTemplate,
-    objectMapper: ObjectMapper,
-    coherentCacheFactory: CoherentCacheFactory,
-    clientIdGenerator: ClientIdGenerator,
-): CoherentCache<String, User> = coherentCacheFactory.create(
-    CoherentCacheConfiguration(
-        cacheName = "userCache",
-        clientId = clientIdGenerator.generate(),
-        keyConverter = ToStringKeyConverter("user:"),
-        distributedCache = RedisDistributedCache(
-            redisTemplate,
-            ObjectToJsonCodecExecutor(User::class.java, redisTemplate, objectMapper),
-        ),
-        clientSideCache = CaffeineClientSideCache.build(maximumSize = 100_000),
-        cacheSource = CacheSource { id -> /* 加载 */ null },
-        keyFilter = KeyFilter.NO_OP,          // 或 BloomKeyFilter
-        ttlPolicy = TtlPolicy(ttl = 600, ttlAmplitude = 30, missingTtl = 30),
-    )
-)
+@Bean(destroyMethod = "close")
+fun cocacheRuntime(backend: CoherenceBackend): CacheRuntime =
+    CacheRuntime.builder()
+        .backend(backend)
+        .retryPolicy(RetryPolicy(maxAttempts = 16, capacity = 50_000))
+        .build()
 ```
 
-这也是设置 `KeyFilter`（如 `BloomKeyFilter`）的唯一方式。key 过滤器在 L2 未命中后才参与：被它判定为不存在的 key 直接得到负结果，不访问 Redis 与数据源。使用 `BloomKeyFilter` 需要 classpath 上有 Guava。
+| `RetryPolicy` 字段 | 默认值 |
+|--------------------|--------|
+| `maxAttempts` | `8` |
+| `initialBackoff` | `100ms`（每次翻倍） |
+| `maxBackoff` | `10s` |
+| `capacity` | 最多 `10000` 个排队的失效 |

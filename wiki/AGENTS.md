@@ -15,8 +15,9 @@ pnpm fix:mermaid     # auto-fixes common Mermaid syntax issues
 ## Structure
 
 ```
-guide/          for users: introduction, quick-start, configuration, join-cache, spring-cache, operations, changelog
-architecture/   for integrators: index (goals, modules, data model, wiring), consistency, extending (SPI + TCK)
+guide/          for users: index (why CoCache), quick-start, concepts, caches, freshness, join-cache, spring-cache, testing, configuration (reference), migration-6 (5.x → 6.0), changelog
+operations/     for operators: index (deployment), observability (metrics, health, endpoint, logs), troubleshooting (runbooks, external invalidation)
+architecture/   for integrators: index (goals, modules, runtime, wire format, wiring), consistency, extending (backend SPI + TCK)
 zh/             one-to-one Chinese mirror of the above
 .vitepress/config/{en,zh}.ts   nav + sidebar (keep the two in step)
 ```
@@ -27,7 +28,7 @@ The wiki explains **how to use** CoCache and **why it behaves** as it does. Othe
 
 | Fact | Single source |
 |------|---------------|
-| Design invariants (normative) | `docs/architecture.md` |
+| Design invariants (normative) | `docs/architecture.md`, `docs/rfc/0003-target-architecture.md` |
 | Contribution workflow, quality gates, release process | `CONTRIBUTING.md` |
 | Build, test, and code-style rules for agents | root `AGENTS.md` |
 | API details | KDoc in the source |
@@ -41,4 +42,4 @@ The wiki explains **how to use** CoCache and **why it behaves** as it does. Othe
 - **Add a diagram only when it explains a mechanism** that prose explains worse, such as a read path or a sequence. Don't add decorative diagrams. The theme styles Mermaid globally, so don't add per-node `style` lines.
 - Mermaid: use `<br>` for line breaks, and never `;` in sequence-diagram message text (Mermaid reads it as a statement separator).
 - Write any text containing `<…>`, such as `Cache<K, V>`, in backticks. Otherwise Vue parses it as HTML.
-- The current version appears only in `guide/quick-start.md` and `guide/changelog.md` (both languages), the root `README.md`, and the `v5.0` nav label. The release steps are in `CONTRIBUTING.md`.
+- The current version appears only in `guide/quick-start.md` and `guide/changelog.md` (both languages), the root `README.md`, and the `v6.0` nav label. The release steps are in `CONTRIBUTING.md`.
