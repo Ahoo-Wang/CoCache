@@ -97,6 +97,18 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     @Volatile
     var beforeInvalidate: ((Collection<String>) -> Unit)? = null
 
+    /**
+     * invalidate 在 L1 生效之后、返回之前调用；抛出即模拟“已生效但向调用方报错”的写入（如应答超时）。
+     */
+    @Volatile
+    var afterInvalidate: ((Collection<String>) -> Unit)? = null
+
+    /**
+     * 单 key fill 在 L1 执行之后、返回之前调用，参数为 key 与是否写入成功。
+     */
+    @Volatile
+    var afterFill: ((String, Boolean) -> Unit)? = null
+
     val reads = AtomicInteger()
     val readAlls = AtomicInteger()
     val fills = AtomicInteger()
@@ -128,7 +140,9 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         override fun fill(fill: Fill): Boolean {
             guard("fill", fail = failFill)
             fills.incrementAndGet()
-            return store.fill(fill)
+            val filled = store.fill(fill)
+            afterFill?.invoke(fill.key, filled)
+            return filled
         }
 
         override fun fillAll(fills: List<Fill>): List<Boolean> {
@@ -159,6 +173,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             beforeInvalidate?.invoke(keys)
             guard("invalidate", fail = failWrites)
             store.invalidate(keys, frame)
+            afterInvalidate?.invoke(keys)
         }
 
         override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {

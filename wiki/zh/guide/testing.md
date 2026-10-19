@@ -153,4 +153,4 @@ fun backend(clock: ManualClock): CoherenceBackend = HookedBackend(InMemoryBacken
 
 ## 测试自己的后端 {#tck}
 
-如果你为 Redis 之外的存储实现了 `CoherenceBackend`，`cocache-test` 同时也是兼容性测试套件：继承 `BackendProtocolSpec`、`EngineSpec` 与 `SetEngineSpec`。见[扩展 CoCache](../architecture/extending.md)。
+如果你为 Redis 之外的存储实现了 `CoherenceBackend`，`cocache-test` 同时也是兼容性测试套件：继承 `BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec` 与 `FaultSpec`。见[扩展 CoCache](../architecture/extending.md)。
