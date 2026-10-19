@@ -26,7 +26,8 @@ import java.util.function.Supplier
  * 以 Micrometer Observation 观测回源：每次回源（或 lease 等待）一个名为 [NAME] 的 Observation，
  * 由 ObservationRegistry 上的处理器转为链路追踪的 span 与计时指标。
  *
- * 低基数标签：[CACHE]、[OPERATION]、[OUTCOME]（`success` / `error`）；高基数标签只有 [KEY_COUNT]。
+ * 低基数标签：[CACHE]、[OPERATION]、[OUTCOME]（`success` / `error` / `timeout`：[SourceLoadTimeoutException]，
+ * 即异步加载超过 `load-async-timeout`，同步调用方等待它时同样记为 `timeout`）；高基数标签只有 [KEY_COUNT]。
  * 从不记录 key 本身（高基数，且可能是个人信息）。异常原样抛出并记录到 Observation。
  */
 class MicrometerLoadObserver(private val registry: ObservationRegistry) : LoadObserver {
@@ -47,7 +48,7 @@ class MicrometerLoadObserver(private val registry: ObservationRegistry) : LoadOb
             observation.lowCardinalityKeyValue(OUTCOME, SUCCESS)
             return result
         } catch (e: Throwable) {
-            observation.lowCardinalityKeyValue(OUTCOME, ERROR)
+            observation.lowCardinalityKeyValue(OUTCOME, outcomeOf(e))
             observation.error(e)
             throw e
         } finally {
@@ -88,13 +89,15 @@ class MicrometerLoadObserver(private val registry: ObservationRegistry) : LoadOb
                 observation.lowCardinalityKeyValue(OUTCOME, SUCCESS)
             } else {
                 val cause = if (error is CompletionException) error.cause ?: error else error
-                observation.lowCardinalityKeyValue(OUTCOME, if (cause is SourceLoadTimeoutException) TIMEOUT else ERROR)
+                observation.lowCardinalityKeyValue(OUTCOME, outcomeOf(cause))
                 observation.error(cause)
             }
             observation.stop()
         }
         return future
     }
+
+    private fun outcomeOf(error: Throwable): String = if (error is SourceLoadTimeoutException) TIMEOUT else ERROR
 
     companion object {
         /**

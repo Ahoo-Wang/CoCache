@@ -67,7 +67,7 @@ cocache:
 | `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)` |
 | `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 是共享的，从不整体清空。 |
 | `retrieve(key)`（异步与响应式） | 缓存[异步视图](./async.md)上的异步 `lookup`。L2 命中返回已完成的 future，不切换线程；负缓存以 `null` 完成（视为未命中）。 |
-| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | [异步视图](./async.md)上的异步 `get(key, loader)`：与 `get(key, loader)` 一样经受 lease 保护的路径回源，**没有线程等待**异步 loader。loader 在调用方线程或 CoCache 的异步执行器上被调用，看不到调用方的 ThreadLocal。失败时 future 以原始异常完成。 |
+| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | [异步视图](./async.md)上的异步 `get(key, loader)`：与 `get(key, loader)` 一样经受 lease 保护的路径回源，**没有线程等待**异步 loader。方法体在运行时的阻塞执行器（`cocache.blocking-executor`）上执行，与 6.3 之前在 retrieve 执行器上执行一样，所以先阻塞再返回 future 的方法体（如 `completedFuture(repository.find(id))`）不会卡住 CoCache 的异步执行器。方法体看不到调用方的 ThreadLocal。失败时 future 以原始异常完成。 |
 
 ### null 结果 {#null}
 
@@ -77,11 +77,11 @@ cocache:
 
 ## retrieve 执行器（已弃用） {#executor}
 
-6.3 起，`retrieve` 经缓存的[异步视图](./async.md)，不再需要执行器。6.3 之前，每个等待中的调用都占一个线程，执行器还必须不排队，才能避免嵌套的异步 `@Cacheable(sync = true)` 死锁；现在这两点都不存在了。
+6.3 起，`retrieve` 经缓存的[异步视图](./async.md)，不再需要单独的执行器。6.3 之前，每个等待中的调用都占一个线程，执行器还必须不排队，才能避免嵌套的异步 `@Cacheable(sync = true)` 死锁；现在这两点都不存在了。
 
 - `cocache.spring-cache.retrieve-executor` 已弃用：设置时启动告警并被忽略，7.0 删除。
 - `CoCacheSpringCacheManager(runtime, executor)`、`CoCacheSpringCache(cache, admin, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 同样已弃用，执行器被忽略。
-- 异步视图在 `cocache.async-executor` 与 `cocache.blocking-executor` 上运行；经 `retrieve` 调用的同步 loader 在阻塞执行器上执行。见[配置参考](./configuration.md#executors)。
+- 异步视图在 `cocache.async-executor` 与 `cocache.blocking-executor` 上运行；经 `retrieve` 调用的同步 loader 与异步 `@Cacheable(sync = true)` 方法的方法体都在阻塞执行器上执行。见[配置参考](./configuration.md#executors)。
 
 Spring Cache 的 `put` 与 `evict` 只有阻塞签名。响应式方法上的 `@CachePut`、`@CacheEvict` 与不带 sync 的 `@Cacheable` 会在完成回调中调用它们，占用该线程一次 Redis 往返。请继续使用 `sync = true`；写路径不能阻塞时调用 `cache.async().invalidate(key)`。
 

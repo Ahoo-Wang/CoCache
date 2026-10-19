@@ -45,10 +45,10 @@ With an `ObservationRegistry` bean, the starter registers a `MicrometerLoadObser
 
 ### Upgrade notes
 
-- `cocache.spring-cache.retrieve-executor`, `CoCacheSpringCacheManager(runtime, executor)`, `CoCacheSpringCache(cache, admin, executor)` and `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` are deprecated: the executor is ignored, and the property logs a warning at startup. They are removed in 7.0.
+- `cocache.spring-cache.retrieve-executor`, `CoCacheSpringCacheManager(runtime, executor)` and `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` are deprecated: the executor is ignored, and the property logs a warning at startup. They are removed in 7.0. The body of an async `@Cacheable(sync = true)` method now runs on `cocache.blocking-executor` (virtual threads on JDK 21+), as it ran on the retrieve executor before. `CoCacheSpringCache(cache, admin, executor)` is kept: its executor runs that body.
 - `Cache.async()` is a default method that throws `UnsupportedOperationException`. A `Cache` you implement yourself, for example a test double, needs to override it only if callers use the async view.
 - A custom `LoadObserver` sees async loads only if it overrides `observeAsync`.
-- `LoadPolicy` gained `asyncTimeout`. Its Java constructors are unchanged, but Kotlin callers of the data class's `copy` must recompile.
+- **Kotlin callers must recompile** against 6.3, or they fail with `NoSuchMethodError`. `LoadPolicy` gained `asyncTimeout`, which changes `copy` and the synthetic constructor behind Kotlin default arguments, so this applies to Kotlin code that calls `copy` or omits `LoadPolicy` arguments. `CoCacheSpringCacheManager(runtime)` is no longer a constructor with a default argument, so it applies to Kotlin code that omits the executor too. Java callers are unaffected.
 - TCK: `HookedBackend.closesDelegate` (default `false`, as before) and each suite's `closesBackend` let the suites close a backend created per case. Turn it on if your backend opens connections or threads. Hooks that pick out a caller should use `HookedBackend.issuer()`, because async calls complete on other threads.
 
 ### Gradle Setup

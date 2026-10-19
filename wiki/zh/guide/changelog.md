@@ -45,10 +45,10 @@ async.put("42", user).thenCompose { async.get("42") }
 
 ### 升级注意
 
-- `cocache.spring-cache.retrieve-executor`、`CoCacheSpringCacheManager(runtime, executor)`、`CoCacheSpringCache(cache, admin, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 已弃用：执行器被忽略，配置项在启动时告警。7.0 删除。
+- `cocache.spring-cache.retrieve-executor`、`CoCacheSpringCacheManager(runtime, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 已弃用：执行器被忽略，配置项在启动时告警。7.0 删除。异步 `@Cacheable(sync = true)` 方法的方法体改在 `cocache.blocking-executor`（JDK 21+ 为虚拟线程）上执行，与之前在 retrieve 执行器上执行一样。`CoCacheSpringCache(cache, admin, executor)` 保留，其执行器执行方法体。
 - `Cache.async()` 是默认抛出 `UnsupportedOperationException` 的 default 方法。你自己实现的 `Cache`（例如测试替身）只有在调用方使用异步视图时才需要覆盖它。
 - 自定义的 `LoadObserver` 只有覆盖 `observeAsync` 才能看到异步加载。
-- `LoadPolicy` 新增 `asyncTimeout`：Java 构造函数不变，但调用 data class `copy` 的 Kotlin 代码需要重新编译。
+- **Kotlin 调用方需要针对 6.3 重新编译**，否则报 `NoSuchMethodError`。`LoadPolicy` 新增 `asyncTimeout`，改变了 `copy` 与 Kotlin 默认参数背后的合成构造函数，调用 `copy` 或省略 `LoadPolicy` 参数的 Kotlin 代码都受影响；`CoCacheSpringCacheManager(runtime)` 不再是带默认参数的构造函数，省略执行器的 Kotlin 代码同样受影响。Java 调用方不受影响。
 - TCK：`HookedBackend.closesDelegate`（默认 `false`，与之前相同）与各套件的 `closesBackend` 让套件关闭每个用例新建的后端，后端会打开连接或线程时请开启。按调用方筛选的钩子请改用 `HookedBackend.issuer()`，因为异步调用在其它线程上完成。
 
 ### Gradle 配置

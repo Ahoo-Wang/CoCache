@@ -20,6 +20,7 @@ import me.ahoo.cocache.core.CacheAdmin
 import org.springframework.cache.support.SimpleValueWrapper
 import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.Executor
 import java.util.function.Supplier
 import org.springframework.cache.Cache as SpringCache
@@ -33,21 +34,19 @@ import org.springframework.cache.Cache as SpringCache
  *   不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → put”，put 是无条件写入，
  *   回源期间发生的失效可能被覆盖；需要上述一致性保证时请使用 `sync = true`。
  * - [clear] 只清空本节点的本地副本：L1 是共享存储，不支持整体清空。
- * - [retrieve] 经缓存的异步视图（RFC 0004 §6）：L2 命中返回已完成的 future，未命中不占用任何线程等待。
+ * - [retrieve] 经缓存的异步视图（RFC 0004 §6）：L2 命中返回已完成的 future，未命中不占用任何线程等待；
+ *   `sync = true` 的方法体在 [executor] 上执行。
  */
 class CoCacheSpringCache(
     private val cache: Cache<Any, Any>,
     private val admin: CacheAdmin?,
-) : SpringCache {
     /**
-     * 6.3 起 [retrieve] 不再使用执行器（经异步视图，不阻塞任何线程）：[executor] 被忽略，7.0 删除此构造函数。
+     * 执行 [retrieve] (key, valueLoader) 的方法体（`valueLoader.get()`）。方法体可能先阻塞再返回 future
+     * （如 `completedFuture(repository.find(id))`），因此不能在 CoCache 的异步执行器上执行；
+     * [CoCacheSpringCacheManager] 传入运行时的阻塞执行器（[me.ahoo.cocache.core.CacheRuntime.blockingExecutor]）。不应排队。
      */
-    @Deprecated(
-        "Since 6.3, retrieve uses the async view and no executor; the executor is ignored.",
-        ReplaceWith("CoCacheSpringCache(cache, admin)")
-    )
-    @Suppress("UNUSED_PARAMETER")
-    constructor(cache: Cache<Any, Any>, admin: CacheAdmin?, executor: Executor) : this(cache, admin)
+    private val executor: Executor,
+) : SpringCache {
 
     override fun getName(): String = cache.name
 
@@ -102,18 +101,49 @@ class CoCacheSpringCache(
      * 经异步视图读取：命中（含负缓存视为未命中，以 `null` 完成）不切换线程；未命中经引擎回源，不阻塞任何线程。
      */
     override fun retrieve(key: Any): CompletableFuture<*>? {
-        return cache.async().lookup(key).thenApply { lookup ->
-            (lookup as? Lookup.Present)?.let { SimpleValueWrapper(it.value) }
+        // 不用 thenApply：它会把失败包成 CompletionException，调用方应看到原始异常
+        val result = CompletableFuture<SpringCache.ValueWrapper?>()
+        cache.async().lookup(key).whenComplete { lookup, error ->
+            if (error != null) {
+                result.completeExceptionally(unwrap(error))
+            } else {
+                result.complete((lookup as? Lookup.Present)?.let { SimpleValueWrapper(it.value) })
+            }
         }
+        return result
     }
 
     /**
      * 响应式 / `CompletableFuture` 方法上的 `@Cacheable(sync = true)`：与 [get] (key, valueLoader) 一样经引擎受 lease
-     * 与失效戳保护的路径回源，而不是“读不到就 put”。经异步视图，没有线程在等待 [valueLoader]：它在调用方线程或
-     * CoCache 的异步执行器上被调用（看不到调用方的 ThreadLocal），返回的 future 以原始异常失败。
+     * 与失效戳保护的路径回源，而不是“读不到就 put”。没有线程在等待 [valueLoader] 返回的 future；
+     * 方法体本身（`valueLoader.get()`）派发到 [executor] 上执行（与 6.1 一样不在调用方线程上，看不到调用方的 ThreadLocal），
+     * 先阻塞再返回的方法体因此不会占住异步执行器。返回的 future 以原始异常失败；[executor] 拒绝时以 RejectedExecutionException 失败。
      */
     @Suppress("UNCHECKED_CAST")
     override fun <T : Any> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> {
-        return cache.async().get(key, AsyncCacheLoader { _ -> valueLoader.get() }) as CompletableFuture<T>
+        return cache.async().get(key, AsyncCacheLoader { _ -> dispatch(valueLoader) }) as CompletableFuture<T>
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun <T> dispatch(valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> {
+        val result = CompletableFuture<T>()
+        executor.execute {
+            try {
+                valueLoader.get().whenComplete { value, error ->
+                    if (error != null) {
+                        result.completeExceptionally(unwrap(error))
+                    } else {
+                        result.complete(value)
+                    }
+                }
+            } catch (error: Throwable) {
+                result.completeExceptionally(error)
+            }
+        }
+        return result
+    }
+
+    private fun unwrap(error: Throwable): Throwable {
+        return if (error is CompletionException) error.cause ?: error else error
     }
 }

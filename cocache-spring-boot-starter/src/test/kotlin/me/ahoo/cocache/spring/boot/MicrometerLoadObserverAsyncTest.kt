@@ -101,6 +101,17 @@ class MicrometerLoadObserverAsyncTest {
     }
 
     @Test
+    fun synchronousTimeoutIsRecordedAsTimeout() {
+        // 同步调用方等待异步加载（AwaitingLoader）时，引擎的超时同样记为 timeout
+        val timeout = SourceLoadTimeoutException("user", Duration.ofSeconds(1))
+        runCatching {
+            observer.observe<String>("user", LoadOperation.LOAD, 1) { throw timeout }
+        }.exceptionOrNull().assert().isSameAs(timeout)
+        handler.stopped.single().outcome().assert().isEqualTo(MicrometerLoadObserver.TIMEOUT)
+        handler.stopped.single().error.assert().isSameAs(timeout)
+    }
+
+    @Test
     fun noopRegistryRunsTheBlockDirectly() {
         val noop = MicrometerLoadObserver(ObservationRegistry.NOOP)
         val future = CompletableFuture.completedFuture("v")

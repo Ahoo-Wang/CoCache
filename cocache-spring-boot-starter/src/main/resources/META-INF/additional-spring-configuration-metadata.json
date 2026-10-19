@@ -125,6 +125,28 @@
           "description": "In-process InMemoryBackend for local development and tests: single process only, no cross-instance coherence."
         }
       ]
+    },
+    {
+      "name": "cocache.async-executor",
+      "providers": [
+        {
+          "name": "spring-bean-reference",
+          "parameters": {
+            "target": "java.util.concurrent.Executor"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cocache.blocking-executor",
+      "providers": [
+        {
+          "name": "spring-bean-reference",
+          "parameters": {
+            "target": "java.util.concurrent.Executor"
+          }
+        }
+      ]
     }
   ]
 }

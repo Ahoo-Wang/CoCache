@@ -169,7 +169,7 @@ class MyFaultTest : FaultSpec() {
 }
 ```
 
-Each case creates a backend through `createBackend()`. If yours opens connections or threads, override `closesBackend` to `true` so the suites close it after each case; it defaults to `false` because a backend may be shared.
+Each case creates a backend through `createBackend()`. If yours opens connections or threads, override `closesBackend` to `true` so the suites close it after each case; it defaults to `false` because a backend may be shared. `BackendProtocolSpec` always closes the backend it creates, whatever `closesBackend` says.
 
 Run them with your build's normal test task (JUnit 6). `cocache-redis` runs `BackendProtocolSpec`, `EngineSpec`, `MultiNodeSpec`, and `FaultSpec` in three modes: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. `SetEngineSpec` runs on classic Pub/Sub only. The disconnect case of `FaultSpec` runs on standalone classic Pub/Sub, and `cocache-redis` adds its own case for the `NOSCRIPT` fallback after the script cache is flushed. Run the suites for every mode your backend supports.
 

@@ -27,15 +27,16 @@ import org.springframework.cache.Cache as SpringCache
 
 /**
  * 以 [CacheRuntime] 中已创建的缓存为来源的 Spring [CacheManager]。不会按名称自动创建缓存。
+ * `retrieve` 的方法体在运行时的阻塞执行器（[CacheRuntime.blockingExecutor]）上执行。
  */
 class CoCacheSpringCacheManager(
     private val runtime: CacheRuntime,
 ) : CacheManager {
     /**
-     * 6.3 起 `retrieve` 经缓存的异步视图，不再使用执行器：[executor] 被忽略，7.0 删除此构造函数。
+     * 6.3 起 `retrieve` 经缓存的异步视图，方法体在运行时的阻塞执行器上执行：[executor] 被忽略，7.0 删除此构造函数。
      */
     @Deprecated(
-        "Since 6.3, retrieve uses the async view and no executor; the executor is ignored.",
+        "Since 6.3, retrieve uses the async view and the runtime blocking executor; the executor is ignored.",
         ReplaceWith("CoCacheSpringCacheManager(runtime)")
     )
     @Suppress("UNUSED_PARAMETER")
@@ -47,7 +48,7 @@ class CoCacheSpringCacheManager(
         caches[name]?.let { return it }
         @Suppress("UNCHECKED_CAST")
         val cache = runtime.cache(name) as Cache<Any, Any>? ?: return null
-        return caches.computeIfAbsent(name) { CoCacheSpringCache(cache, runtime.admin(name)) }
+        return caches.computeIfAbsent(name) { CoCacheSpringCache(cache, runtime.admin(name), runtime.blockingExecutor) }
     }
 
     override fun getCacheNames(): Collection<String> = runtime.cacheNames

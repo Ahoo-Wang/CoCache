@@ -71,7 +71,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 ## Spring Cache {#spring-cache}
 
-`retrieve(key)` 与 `retrieve(key, loader)` 经异步视图，所以异步与响应式的 `@Cacheable(sync = true)` 方法经受 lease 保护的路径回源，不占用线程。原来的 `cocache.spring-cache.retrieve-executor` 已弃用并被忽略，见 [Spring Cache](./spring-cache.md#executor)。
+`retrieve(key)` 与 `retrieve(key, loader)` 经异步视图，所以异步与响应式的 `@Cacheable(sync = true)` 方法经受 lease 保护的路径回源，等待时不占用线程；方法体在阻塞执行器上执行。原来的 `cocache.spring-cache.retrieve-executor` 已弃用并被忽略，见 [Spring Cache](./spring-cache.md#executor)。
 
 ## Kotlin 协程 {#coroutines}
 
@@ -81,6 +81,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 - **Redis**：没有新的命令、脚本、key 或频道。异步视图执行的 Lua 脚本与同步 API 相同，ACL 规则与线格式都不变。
 - **指标**：与同步 API 相同的计数，另加 `cocache.load.timeouts`。开启追踪时，异步加载产生同样的 `cocache.load` 观测，引擎超时标记为 `outcome=timeout`。自定义的 `LoadObserver` 需要覆盖 `observeAsync` 才能看到异步加载，默认实现不观测。
+- **大值**：Redis 后端在 Lettuce 的 I/O 线程上拷贝载荷，之后才交给异步执行器解码。很大的值会推迟同一连接上其它回复（队头阻塞），同步 API 同样如此。请保持值较小，或拆分。
 - **性能**：一次异步 L2 命中多一次很小的分配，约为同步命中的 90%。每次都等待结果的闭环调用在负载下比同步 API 略慢，因为每个结果都要切换到异步执行器。收益出现在一个线程同时保持多个请求时：32 个在途请求下，一个线程完成的 Redis 读写约为一个阻塞线程的 12 倍。
 
 ## 自定义后端 {#backends}

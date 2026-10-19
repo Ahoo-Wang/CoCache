@@ -71,7 +71,7 @@ The async executor and the blocking executor are configurable. See [Configuratio
 
 ## Spring Cache {#spring-cache}
 
-`retrieve(key)` and `retrieve(key, loader)` use the async view, so async and reactive `@Cacheable(sync = true)` methods load through the lease-protected path without holding a thread. The old `cocache.spring-cache.retrieve-executor` is deprecated and ignored. See [Spring Cache](./spring-cache.md#executor).
+`retrieve(key)` and `retrieve(key, loader)` use the async view, so async and reactive `@Cacheable(sync = true)` methods load through the lease-protected path without holding a thread while they wait. The method body runs on the blocking executor. The old `cocache.spring-cache.retrieve-executor` is deprecated and ignored. See [Spring Cache](./spring-cache.md#executor).
 
 ## Kotlin coroutines {#coroutines}
 
@@ -81,6 +81,7 @@ A `cocache-coroutines` module with suspending extensions is planned for 6.4. Unt
 
 - **Redis**: no new commands, scripts, keys or channels. The async view runs the same Lua scripts as the synchronous API, so ACL rules and the wire format don't change.
 - **Metrics**: the same counters as the synchronous API, plus `cocache.load.timeouts`. With tracing on, async loads produce the same `cocache.load` observation, and an engine timeout is tagged `outcome=timeout`. A custom `LoadObserver` must override `observeAsync` to see async loads; the default doesn't observe them.
+- **Large values**: the Redis backend copies each payload on the Lettuce I/O thread before the async executor decodes it. A very large value delays the other replies on that connection (head-of-line blocking), for the synchronous API too. Keep values small, or split them.
 - **Performance**: an async L2 hit costs one extra small allocation and runs at roughly 90% of a synchronous hit. A closed loop that waits for every call is somewhat slower than the synchronous API under load, because each result switches to the async executor. The gain shows when one thread keeps many requests in flight: with 32 in flight, a thread completes about 12 times as many Redis reads or writes as one blocking thread.
 
 ## Custom backends {#backends}
