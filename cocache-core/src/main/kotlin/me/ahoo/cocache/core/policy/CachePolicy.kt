@@ -26,6 +26,7 @@ import java.util.concurrent.ThreadLocalRandom
  * @param degradedLocalMaxAge 未写入 L1 的填充（L1 故障、等待 lease 超时、fill 被拒绝）在 L2 中的最长寿命
  * @param refreshWindow 提前刷新窗口；`null` 表示关闭
  * @param invalidateFailure 失效写入 L1 失败时的处理方式
+ * @param readFailure 读取 L1 失败时的处理方式
  */
 class CachePolicy(
     val ttl: Duration? = DEFAULT_TTL,
@@ -38,6 +39,7 @@ class CachePolicy(
     val load: LoadPolicy = LoadPolicy(),
     val local: LocalPolicy = LocalPolicy(),
     val invalidateFailure: InvalidateFailureMode = InvalidateFailureMode.RETRY,
+    val readFailure: ReadFailureMode = ReadFailureMode.DEGRADE,
 ) {
     init {
         ttl?.let { requirePositive("ttl", it) }
@@ -71,7 +73,7 @@ class CachePolicy(
     override fun toString(): String {
         return "CachePolicy(ttl=$ttl, ttlJitter=$ttlJitter, absentTtl=$absentTtl, localMaxAge=$localMaxAge, " +
             "degradedLocalMaxAge=$degradedLocalMaxAge, refreshWindow=$refreshWindow, lease=$lease, load=$load, " +
-            "local=$local, invalidateFailure=$invalidateFailure)"
+            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure)"
     }
 
     /**
@@ -88,6 +90,7 @@ class CachePolicy(
         var load: LoadPolicy = policy.load
         var local: LocalPolicy = policy.local
         var invalidateFailure: InvalidateFailureMode = policy.invalidateFailure
+        var readFailure: ReadFailureMode = policy.readFailure
 
         fun ttl(ttl: Duration?) = apply { this.ttl = ttl }
         fun ttlJitter(ttlJitter: Duration) = apply { this.ttlJitter = ttlJitter }
@@ -104,6 +107,8 @@ class CachePolicy(
             invalidateFailure: InvalidateFailureMode
         ) = apply { this.invalidateFailure = invalidateFailure }
 
+        fun readFailure(readFailure: ReadFailureMode) = apply { this.readFailure = readFailure }
+
         fun build(): CachePolicy = CachePolicy(
             ttl = ttl,
             ttlJitter = ttlJitter,
@@ -115,6 +120,7 @@ class CachePolicy(
             load = load,
             local = local,
             invalidateFailure = invalidateFailure,
+            readFailure = readFailure,
         )
     }
 
@@ -202,6 +208,22 @@ enum class InvalidateFailureMode {
 
     /**
      * 抛出 [me.ahoo.cocache.api.CacheWriteException]。
+     */
+    THROW,
+}
+
+/**
+ * 读取 L1 失败时的处理方式（RFC 0003 §4.13）。
+ */
+enum class ReadFailureMode {
+    /**
+     * 降级为直接回源，结果只以降级限龄进入 L2，不写 L1（默认）。L1 故障时由回源并发上限保护数据源。
+     */
+    DEGRADE,
+
+    /**
+     * 抛出 [me.ahoo.cocache.api.CacheReadException]（对应 5.x 的 `strictFailure = true`）。
+     * 只作用于读取；填充、释放令牌等尽力而为的操作仍然降级。
      */
     THROW,
 }

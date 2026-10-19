@@ -14,9 +14,11 @@
 package me.ahoo.cocache.spring.boot
 
 import io.lettuce.core.RedisURI
+import io.lettuce.core.SslOptions
 import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.cocache.redis.RedisBackendOptions
 import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails
+import org.springframework.boot.ssl.SslBundle
 
 /**
  * 由 Spring Boot 的 Redis 连接信息构造后端。后端自建 Lettuce 客户端（断线时拒绝命令、只访问主节点），
@@ -33,10 +35,24 @@ object RedisBackends {
     }
 
     fun create(details: DataRedisConnectionDetails, options: RedisBackendOptions): RedisBackend {
+        val withSsl = details.sslBundle?.let { options.copy(sslOptions = sslOptionsOf(it)) } ?: options
         return when (val target = resolve(details)) {
-            is Target.Cluster -> RedisBackend.cluster(target.uris, options)
-            is Target.Standalone -> RedisBackend.standalone(target.uri, options)
+            is Target.Cluster -> RedisBackend.cluster(target.uris, withSsl)
+            is Target.Standalone -> RedisBackend.standalone(target.uri, withSsl)
         }
+    }
+
+    /**
+     * Spring Boot 的 SSL bundle → Lettuce 的 TLS 选项：密钥与信任管理器、启用的协议与加密套件。
+     */
+    fun sslOptionsOf(bundle: SslBundle): SslOptions {
+        val builder = SslOptions.builder()
+            .jdkSslProvider()
+            .keyManager(bundle.managers.keyManagerFactory)
+            .trustManager(bundle.managers.trustManagerFactory)
+        bundle.options.enabledProtocols?.takeIf { it.isNotEmpty() }?.let { builder.protocols(*it) }
+        bundle.options.ciphers?.takeIf { it.isNotEmpty() }?.let { builder.cipherSuites(*it) }
+        return builder.build()
     }
 
     /**

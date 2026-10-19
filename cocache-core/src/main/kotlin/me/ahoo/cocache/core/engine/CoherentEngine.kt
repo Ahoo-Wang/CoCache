@@ -15,6 +15,7 @@ package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.Digest
@@ -28,6 +29,7 @@ import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
+import me.ahoo.cocache.core.policy.ReadFailureMode
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
@@ -127,7 +129,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val read = try {
             readWaitingLease(storageKey, lease)
         } catch (e: Exception) {
-            onRemoteFailure("read", storageKey, e)
+            onReadFailure("read", storageKey, e)
             return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
         val entry = when (read) {
@@ -208,7 +210,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val reclaimed = try {
             store.reclaim(storageKey, Digest.of(read.envelope), lease)
         } catch (e: Exception) {
-            onRemoteFailure("reclaim", storageKey, e)
+            onReadFailure("reclaim", storageKey, e)
             false
         }
         if (!reclaimed) {
@@ -310,6 +312,17 @@ internal class CoherentEngine<K : Any, V : Any>(
         } catch (e: Exception) {
             onRemoteFailure("release", storageKey, e)
         }
+    }
+
+    /**
+     * 读取 L1 失败：严格模式下抛出 [CacheReadException]，否则降级（调用方随后直接回源）。
+     */
+    private fun onReadFailure(operation: String, storageKey: String, error: Exception) {
+        if (policy.readFailure == ReadFailureMode.THROW) {
+            metrics.remoteFailure()
+            throw CacheReadException(name, operation, error)
+        }
+        onRemoteFailure(operation, storageKey, error)
     }
 
     private fun onRemoteFailure(operation: String, storageKey: String, error: Exception) {
@@ -447,7 +460,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val reads = try {
             if (readKeys.isEmpty()) emptyMap() else store.readAll(readKeys, leases)
         } catch (e: Exception) {
-            onRemoteFailure("readAll", readKeys.first(), e)
+            onReadFailure("readAll", readKeys.first(), e)
             emptyMap()
         }
         val toLoad = LinkedHashMap<String, Token?>()

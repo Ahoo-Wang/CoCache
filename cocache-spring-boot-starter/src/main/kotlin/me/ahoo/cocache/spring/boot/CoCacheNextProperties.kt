@@ -17,6 +17,7 @@ import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.core.policy.ReadFailureMode
 import me.ahoo.cocache.redis.RedisBackendOptions
 import org.springframework.boot.context.properties.ConfigurationProperties
 import java.time.Duration
@@ -79,6 +80,10 @@ data class CoCacheNextProperties(
         val loadAcquireTimeout: Duration? = null,
         val localMaximumSize: Long? = null,
         val invalidateFailure: InvalidateFailureMode? = null,
+        /**
+         * `throw` 时 L1 读失败直接抛出（对应 5.x 的 `cocache.redis.strict-failure=true`），默认降级回源。
+         */
+        val readFailure: ReadFailureMode? = null,
     ) {
         fun applyTo(policy: CachePolicy): CachePolicy {
             val builder = policy.toBuilder()
@@ -87,6 +92,7 @@ data class CoCacheNextProperties(
             applyLoad(builder, policy)
             localMaximumSize?.let { builder.local = policy.local.copy(maximumSize = it) }
             invalidateFailure?.let { builder.invalidateFailure = it }
+            readFailure?.let { builder.readFailure = it }
             return builder.build()
         }
 

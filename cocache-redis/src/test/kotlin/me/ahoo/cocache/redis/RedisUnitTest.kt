@@ -188,6 +188,18 @@ class RedisUnitTest {
     }
 
     @Test
+    fun backendAcceptsSslOptions() {
+        assumeStandalone()
+        // URI 未启用 SSL 时 TLS 选项不生效：只验证选项能被应用到自建客户端
+        RedisBackend.standalone(
+            RedisURI.create("localhost", 6379),
+            RedisBackendOptions(sslOptions = io.lettuce.core.SslOptions.builder().build())
+        ).use {
+            it.atomicBroadcast.assert().isTrue()
+        }
+    }
+
+    @Test
     fun channelResetsOnHeartbeatFailureAndIgnoresMalformedFrames() {
         var adapter: RedisPubSubAdapter<ByteArray, ByteArray>? = null
         val async = proxy<RedisPubSubAsyncCommands<ByteArray, ByteArray>> { method, _ ->

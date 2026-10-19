@@ -103,4 +103,36 @@ class RedisBackendsTest {
             )
         }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
     }
+
+    @Test
+    fun sslBundleMapsToLettuceSslOptions() {
+        val trust = javax.net.ssl.TrustManagerFactory.getInstance(
+            javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()
+        ).apply {
+            init(null as java.security.KeyStore?)
+        }
+        val keys = javax.net.ssl.KeyManagerFactory.getInstance(
+            javax.net.ssl.KeyManagerFactory.getDefaultAlgorithm()
+        ).apply {
+            init(null, null)
+        }
+        val managers = org.springframework.boot.ssl.SslManagerBundle.of(keys, trust)
+        val withOptions = SslBundle.of(
+            null,
+            null,
+            org.springframework.boot.ssl.SslOptions.of(arrayOf("TLS_AES_128_GCM_SHA256"), arrayOf("TLSv1.3")),
+            null,
+            managers
+        )
+        val options = RedisBackends.sslOptionsOf(withOptions)
+        options.protocols.assert().containsExactly("TLSv1.3")
+        options.cipherSuites.assert().containsExactly("TLS_AES_128_GCM_SHA256")
+
+        val defaults = RedisBackends.sslOptionsOf(
+            SslBundle.of(null, null, org.springframework.boot.ssl.SslOptions.NONE, null, managers)
+        )
+        // 未设置时 Lettuce 返回 null（使用 JDK 默认值）
+        (defaults.protocols ?: emptyArray()).assert().isEmpty()
+        (defaults.cipherSuites ?: emptyArray()).assert().isEmpty()
+    }
 }
