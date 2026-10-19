@@ -3,3 +3,5 @@ me.ahoo.cache.spring.boot.starter.CoCacheEndpointAutoConfiguration
 me.ahoo.cache.spring.boot.starter.CoCacheMetricsAutoConfiguration
 me.ahoo.cache.spring.boot.starter.CoCacheShardedEvictionAutoConfiguration
 me.ahoo.cocache.spring.boot.CoCacheNextAutoConfiguration
+me.ahoo.cocache.spring.boot.CoCacheNextEndpointAutoConfiguration
+me.ahoo.cocache.spring.boot.CoCacheNextMetricsAutoConfiguration
