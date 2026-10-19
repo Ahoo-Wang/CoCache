@@ -13,8 +13,8 @@
 
 package me.ahoo.cocache.core.engine
 
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheWriteException
-import me.ahoo.cocache.api.CoCache
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -47,7 +47,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     store: RemoteStore,
     context: EngineContext,
 ) : AbstractEngine<K, V>(spec.name, spec.namespace, spec.keyPrefix, spec.keyEncoder, spec.policy, store, context),
-    CoCache<K, V> {
+    Cache<K, V> {
 
     private val codec = spec.codec
     private val loader = spec.loader

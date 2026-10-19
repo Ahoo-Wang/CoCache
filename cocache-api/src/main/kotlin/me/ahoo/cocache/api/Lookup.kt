@@ -16,7 +16,7 @@ package me.ahoo.cocache.api
 import java.time.Instant
 
 /**
- * [CoCache.lookup] 的结果。
+ * [Cache.lookup] 的结果。
  */
 sealed interface Lookup<out V> {
     /**

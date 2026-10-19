@@ -13,7 +13,7 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.CoCache
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -31,7 +31,7 @@ class CacheAssembler(
     private val properties: CoCacheNextProperties,
 ) : SmartInitializingSingleton {
 
-    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): CoCache<K, V> {
+    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> {
         val builder = spec.toBuilder()
         customizers.filter { it.supports(spec.name) }.forEach { it.customize(builder) }
         builder.policy = properties.policyFor(spec.name, builder.policy)
