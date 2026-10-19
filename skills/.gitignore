@@ -1,0 +1,3 @@
+# claude plugin eval reports and skill-creator workspaces are local only
+*/evals/results/
+*-workspace/

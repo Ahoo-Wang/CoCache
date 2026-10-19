@@ -1,0 +1,4 @@
+interface:
+  display_name: "CoCache Extend"
+  short_description: "Implement CoCache backends that pass the TCK"
+  default_prompt: "Use $cocache-extend to implement or fix this CoherenceBackend against the pinned CoCache SPI and prove it with BackendProtocolSpec, EngineSpec and SetEngineSpec in every supported mode."

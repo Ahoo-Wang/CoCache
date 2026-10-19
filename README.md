@@ -94,7 +94,7 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 | Run it in production | [Operations](https://cocache.ahoo.me/operations/): deployment, observability, troubleshooting |
 | Understand or extend it | [Architecture](https://cocache.ahoo.me/architecture/): design, consistency, SPI and TCK |
 | Change CoCache itself | [`CONTRIBUTING.md`](CONTRIBUTING.md), then [`docs/architecture.md`](docs/architecture.md) |
-| Work on it as an AI agent | [`AGENTS.md`](AGENTS.md) and the [`skills/cocache`](skills/cocache/SKILL.md) skill |
+| Work on it as an AI agent | [`AGENTS.md`](AGENTS.md) to change CoCache itself; the [agent skills](skills/README.md) (`cocache-develop`, `cocache-migrate`, `cocache-extend`) for applications that use it |
 
 ## Contributing
 

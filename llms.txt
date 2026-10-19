@@ -32,4 +32,4 @@ Declare a cache as an interface (`@CoCache interface UserCache : Cache<String, U
 
 - [CONTRIBUTING.md](https://github.com/Ahoo-Wang/CoCache/blob/main/CONTRIBUTING.md): workflow, quality gates, release process
 - [AGENTS.md](https://github.com/Ahoo-Wang/CoCache/blob/main/AGENTS.md): build commands and coding rules for agents changing CoCache
-- [skills/cocache](https://github.com/Ahoo-Wang/CoCache/blob/main/skills/cocache/SKILL.md): agent skill for applications that use CoCache
+- [skills](https://github.com/Ahoo-Wang/CoCache/blob/main/skills/README.md): agent skills for applications that use CoCache: `cocache-develop` (declare, test, review, debug), `cocache-migrate` (5.x to 6.x), `cocache-extend` (CoherenceBackend and the TCK)

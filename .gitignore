@@ -25,7 +25,6 @@ gradle-app.setting
 # Agent workspaces
 .superpowers/
 .zcode/
-skills/cocache-workspace/
 
 # Kotlin 编译器本地状态
 .kotlin/
