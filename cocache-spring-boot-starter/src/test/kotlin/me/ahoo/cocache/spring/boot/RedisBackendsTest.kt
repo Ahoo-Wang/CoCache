@@ -135,4 +135,29 @@ class RedisBackendsTest {
         (defaults.protocols ?: emptyArray()).assert().isEmpty()
         (defaults.cipherSuites ?: emptyArray()).assert().isEmpty()
     }
+
+    @Test
+    fun createWithSslBundleBuildsTheBackend() {
+        val trust = javax.net.ssl.TrustManagerFactory.getInstance(
+            javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()
+        ).apply { init(null as java.security.KeyStore?) }
+        val keys = javax.net.ssl.KeyManagerFactory.getInstance(
+            javax.net.ssl.KeyManagerFactory.getDefaultAlgorithm()
+        ).apply { init(null, null) }
+        val bundle = SslBundle.of(
+            null,
+            null,
+            org.springframework.boot.ssl.SslOptions.NONE,
+            null,
+            org.springframework.boot.ssl.SslManagerBundle.of(keys, trust)
+        )
+        // 没有服务监听的端口：创建时连接立即失败，验证带 SSL bundle 的创建路径（TLS 选项的映射见上一个用例）
+        val details = Details(ssl = bundle, standaloneTarget = DataRedisConnectionDetails.Standalone.of("localhost", 1))
+        runCatching {
+            RedisBackends.create(
+                details,
+                me.ahoo.cocache.redis.RedisBackendOptions()
+            ).close()
+        }.exceptionOrNull().assert().isNotNull()
+    }
 }
