@@ -15,6 +15,7 @@ package me.ahoo.cocache.core.engine
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cocache.core.RetryPolicy
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -28,6 +29,11 @@ internal class InvalidationRetrier(
     private val policy: RetryPolicy,
 ) {
     private val pending = AtomicInteger()
+
+    /**
+     * 已调度、尚未执行的任务：关闭时逐个放弃（计入丢弃），而不是随调度器一起静默消失。
+     */
+    private val scheduled = ConcurrentHashMap.newKeySet<Task>()
 
     val size: Int
         get() = pending.get()
@@ -52,10 +58,12 @@ internal class InvalidationRetrier(
 
     private fun schedule(task: Task, attempt: Int): Boolean {
         val delay = policy.backoff(attempt).toMillis()
+        scheduled.add(task)
         return try {
-            scheduler.schedule({ run(task, attempt) }, delay, TimeUnit.MILLISECONDS)
+            scheduler.schedule({ if (scheduled.remove(task)) run(task, attempt) }, delay, TimeUnit.MILLISECONDS)
             true
         } catch (e: RejectedExecutionException) {
+            scheduled.remove(task)
             pending.decrementAndGet()
             log.warn(e) { "Invalidation retry rejected by the scheduler." }
             false
@@ -67,7 +75,8 @@ internal class InvalidationRetrier(
         task.onRetry()
         try {
             task.action()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // 包括 Error：否则 onGiveUp 与计数都会被跳过，key 永远停留在“重试中”
             if (attempt < policy.maxAttempts && schedule(task, attempt + 1)) {
                 return
             }
@@ -79,6 +88,19 @@ internal class InvalidationRetrier(
         }
         pending.decrementAndGet()
         task.onSuccess()
+    }
+
+    /**
+     * 关闭：放弃全部尚未执行的重试（逐个回调 onGiveUp）。之后提交的任务会被调度器拒绝。
+     */
+    fun close() {
+        val error = IllegalStateException("Invalidation retrier closed.")
+        scheduled.toList().forEach { task ->
+            if (scheduled.remove(task)) {
+                pending.decrementAndGet()
+                task.onGiveUp(error)
+            }
+        }
     }
 
     private companion object {

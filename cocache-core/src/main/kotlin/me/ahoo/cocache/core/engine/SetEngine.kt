@@ -20,6 +20,7 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
 
 /**
@@ -112,7 +113,12 @@ internal class SetEngine<K : Any, E : Any>(
         }
         val storageKey = storageKey(key)
         val envelope = Envelope.Members(encode(value))
-        write(listOf(storageKey), { frame -> store.put(storageKey, envelope, ttl, frame) }, throwWriteFailure("put"))
+        val bounded = ttl?.boundedTtl()
+        write(
+            listOf(storageKey),
+            { frame -> store.put(storageKey, envelope, bounded, frame) },
+            throwWriteFailure("put")
+        )
     }
 
     override fun add(key: K, elements: Collection<E>) {
