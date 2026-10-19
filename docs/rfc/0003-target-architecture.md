@@ -1,6 +1,6 @@
 # RFC 0003：目标架构（第一性原理重构，6.0）
 
-- 状态：草案 v3（已经过两轮对抗验证，见 §10）
+- 状态：草案 v3（已经过两轮对抗验证，见 §10）；§9 步骤 1–2 已在 `me.ahoo.cocache` 包中实现，SPI 以代码为准（`cocache-api` 的 `me.ahoo.cocache.api.spi`）
 - 前提：**不考虑兼容性**。API、SPI、模块、Redis 线格式、配置项都可以推倒重来
 - 关系：吸收并取代 [RFC 0001](0001-l1-write-back-lease.md)（lease 成为唯一的写回保护原语，6.0 只破坏一次线格式，不再单独发布 lease）；[RFC 0002](0002-resp3-client-tracking.md) 变为新后端 SPI 下的一种可选通道
 
@@ -246,9 +246,10 @@ data class Fill(val key: String, val token: Token, val envelope: Envelope, val t
 
 ```kotlin
 interface RemoteStore : AutoCloseable {
-    /** 读；未命中时原子地取得 lease（lease != null）。剩余寿命 ≤ refreshWindow 时可取得刷新令牌（refresh != null）。 */
-    fun read(key: String, lease: Token?, refresh: RefreshRequest?): RemoteRead
-    fun readAll(keys: Collection<String>, leases: Map<String, Token>?, refresh: RefreshRequest?): Map<String, RemoteRead>
+    /** 读；未命中时原子地取得 lease（lease != null，带自动回收寿命）。剩余寿命 ≤ refresh.window 时可取得刷新令牌。 */
+    fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead
+    /** 批量读：只为 leases 中的 key 申请 lease；批量路径不申请刷新令牌。 */
+    fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead>
 
     /** 仅当 L1 中仍是该令牌时写入，并按 ttl 重设到期时间。 */
     fun fill(fill: Fill): Boolean
@@ -264,13 +265,14 @@ interface RemoteStore : AutoCloseable {
     fun invalidate(keys: Collection<String>, frame: ByteArray)
 
     /** 载荷损坏时：仅当原始字节仍等于 observed 时转为 lease（条件回收，不会误删并发写入）。 */
-    fun reclaim(key: String, observed: Digest, lease: Token): Boolean
+    fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean
 
     /** 集合元素增删，语义见 §4.8。 */
     fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
     fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
 }
 
+data class LeaseRequest(val token: Token, val ttl: Duration)
 data class RefreshRequest(val window: Duration, val token: Token, val tokenTtl: Duration)
 
 sealed interface RemoteRead {
@@ -412,8 +414,9 @@ L2 写入方的完整顺序：
 #### 损坏与格式演进
 
 - **同一格式版本下解码失败**：按未命中处理，由客户端对本次读到的原始字节计算 SHA-1，调用 `reclaim(key, digest, lease)`；Lua 侧用 `redis.sha1hex` 对当前内容计算并比较。只有当内容仍是本次读到的那份时，才把它原子地转为 lease，然后正常回源和 fill。每次读取至多回收一次，并计入指标。digest 只在解码失败时计算，命中路径不付出哈希成本。
-  - 标量：对整个 String（含头部）计算。
-  - 集合：按 `HGETALL` 返回的顺序拼接 `len(field) | field | len(value) | value` 后计算。Hash 内容不变时 `HGETALL` 的顺序确定，所以两侧结果一致；内容变了，顺序或字节不同，比较必然失败，正好符合“只在未变时回收”。
+  - 标量：只对载荷计算（不含头部：头部中的刷新令牌可能被 `SETRANGE` 改写，内容并未变化）。
+  - 负缓存：空字节串。
+  - 集合：按 L1 返回的成员顺序拼接 `int32 长度 + 成员字节` 后计算（只含成员，不含控制字段）。Hash 内容不变时返回顺序确定，所以两侧结果一致；内容变了，顺序或字节不同，比较必然失败，正好符合“只在未变时回收”。
 - **格式版本高于本节点所知**（滚动升级期间的旧节点）：按未命中处理，**不回收、不写 L1**，回源结果只以 `degradedLocalMaxAge` 进 L2。否则新旧节点会互相覆盖。
 - **格式升级分两阶段**：先发布能读取 N+1 版本、但仍写 N 版本的版本；全集群升级完后，再发布写 N+1 的版本。
 
