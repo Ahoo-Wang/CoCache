@@ -15,12 +15,14 @@ package me.ahoo.cocache.redis
 
 import io.lettuce.core.KeyScanCursor
 import io.lettuce.core.KillArgs
+import io.lettuce.core.MigrateArgs
 import io.lettuce.core.RedisClient
 import io.lettuce.core.RedisURI
 import io.lettuce.core.ScanArgs
 import io.lettuce.core.ScanCursor
 import io.lettuce.core.api.sync.RedisKeyCommands
 import io.lettuce.core.cluster.RedisClusterClient
+import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import java.time.Duration
 
 /**
@@ -50,6 +52,13 @@ object RedisTestSupport {
     ): RedisBackend {
         return clusterNodes?.let { RedisBackend.cluster(it, options) } ?: RedisBackend.standalone(standaloneUri, options)
     }
+
+    /**
+     * Sharded Pub/Sub 通道的后端（非原子广播）。
+     */
+    fun shardedBackend(clientName: String = "cocache-tck-" + java.util.UUID.randomUUID()): RedisBackend = backend(
+        RedisBackendOptions(clientName = clientName, channelMode = RedisChannelMode.SHARDED)
+    )
 
     /**
      * 非原子广播的后端：用 ACL 禁止向探测频道发布（只允许 `cocache:inv:*`），探测失败后后端退回“写入后由引擎发布”。
@@ -123,6 +132,46 @@ object RedisTestSupport {
     }
 
     /**
+     * 把 [slot] 从当前主节点迁移到另一个主节点（`CLUSTER SETSLOT` IMPORTING / MIGRATING、`MIGRATE` 其中的 key、再 NODE），
+     * 返回原主节点的 nodeId（用它作为 [targetNodeId] 再调用一次即可迁回）。仅限 Cluster。
+     */
+    fun migrateSlot(slot: Int, targetNodeId: String? = null): String {
+        val client = RedisClusterClient.create(requireNotNull(clusterNodes) { "Redis Cluster only" })
+        try {
+            client.connect().use { connection ->
+                val masters = connection.partitions.filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
+                val source = masters.single { it.hasSlot(slot) }
+                val target = masters.first { node ->
+                    if (targetNodeId == null) node.nodeId != source.nodeId else node.nodeId == targetNodeId
+                }
+                val sourceCommands = connection.getConnection(source.nodeId).sync()
+                val targetCommands = connection.getConnection(target.nodeId).sync()
+                targetCommands.clusterSetSlotImporting(slot, source.nodeId)
+                sourceCommands.clusterSetSlotMigrating(slot, target.nodeId)
+                do {
+                    val keys = sourceCommands.clusterGetKeysInSlot(slot, 100)
+                    if (keys.isNotEmpty()) {
+                        sourceCommands.migrate(
+                            target.uri.host,
+                            target.uri.port,
+                            0,
+                            5000,
+                            MigrateArgs.Builder.keys(keys)
+                        )
+                    }
+                } while (keys.isNotEmpty())
+                // 先目标、再源，最后通知其余主节点，缩短各节点看到旧归属的窗口
+                (listOf(target, source) + masters.filter { it.nodeId != source.nodeId && it.nodeId != target.nodeId })
+                    .map { node -> connection.getConnection(node.nodeId).sync() }
+                    .forEach { commands -> commands.clusterSetSlotNode(slot, target.nodeId) }
+                return source.nodeId
+            }
+        } finally {
+            client.shutdown()
+        }
+    }
+
+    /**
      * 把匹配 [pattern] 的 key 的剩余寿命缩短 [duration]（缩到 0 及以下即删除）；永不过期的 key 不变。
      */
     fun shiftTtl(pattern: String, duration: Duration) {
@@ -143,7 +192,7 @@ object RedisTestSupport {
     }
 
     /**
-     * 断开名为 [clientName] 的 Pub/Sub 连接（Lettuce 会自动重连并重新订阅，触发重置）。只断开本测试的连接，不影响其它测试。
+     * 断开名为 [clientName] 的订阅连接（经典或 Sharded；Lettuce 会自动重连并重新订阅，触发重置）。只断开本测试的连接，不影响其它测试。
      */
     fun killPubSubConnections(clientName: String) {
         val nodes = clusterNodes
@@ -179,6 +228,11 @@ object RedisTestSupport {
         }
     }
 
+    /**
+     * `CLIENT LIST` 中的订阅计数：经典频道 `sub`、Sharded 频道 `ssub`（Redis 7+）。
+     */
+    private val SUBSCRIPTION_FIELDS = listOf("sub", "ssub")
+
     private fun pubSubClientIds(clientList: String, clientName: String): List<Long> {
         return clientList.lines()
             .map { line ->
@@ -186,7 +240,7 @@ object RedisTestSupport {
                     ' '
                 ).associate { field -> field.substringBefore('=') to field.substringAfter('=', "") }
             }
-            .filter { it["name"] == clientName && (it["sub"]?.toIntOrNull() ?: 0) > 0 }
+            .filter { it["name"] == clientName && SUBSCRIPTION_FIELDS.any { field -> (it[field]?.toIntOrNull() ?: 0) > 0 } }
             .mapNotNull { it["id"]?.toLongOrNull() }
     }
 }

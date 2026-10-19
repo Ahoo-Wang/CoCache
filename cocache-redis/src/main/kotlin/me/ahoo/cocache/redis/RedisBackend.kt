@@ -41,7 +41,7 @@ class RedisBackend private constructor(
     options: RedisBackendOptions,
 ) : CoherenceBackend {
     private val connections = RedisConnections(client, options.commandTimeout)
-    private val invalidationChannel = RedisInvalidationChannel(connections, options.heartbeat, options.commandTimeout)
+    private val invalidationChannel = RedisInvalidationChannel.create(connections, options)
     private val invalidateBatchSize = options.invalidateBatchSize
 
     /**
@@ -52,10 +52,15 @@ class RedisBackend private constructor(
     override val format: Int = RedisScripts.FORMAT
 
     /**
-     * 启动时探测：在把 PUBLISH 当作 SPUBLISH 执行的环境（如 ElastiCache Serverless）中，脚本内广播会报跨 slot 错误，
-     * 此时退回非原子模式（写入成功后由引擎单独发布）。
+     * 失效通道模式。
      */
-    override val atomicBroadcast: Boolean = probeAtomicBroadcast()
+    val channelMode: RedisChannelMode = options.channelMode
+
+    /**
+     * [RedisChannelMode.SHARDED] 下恒为 `false`（脚本内不广播）。经典 Pub/Sub 下启动时探测：在把 PUBLISH 当作 SPUBLISH 执行的环境
+     * （如 ElastiCache Serverless）中，脚本内广播会报跨 slot 错误，此时退回非原子模式（写入成功后由引擎单独发布）。
+     */
+    override val atomicBroadcast: Boolean = channelMode == RedisChannelMode.PUBSUB && probeAtomicBroadcast()
 
     override val channel: InvalidationChannel
         get() = invalidationChannel
