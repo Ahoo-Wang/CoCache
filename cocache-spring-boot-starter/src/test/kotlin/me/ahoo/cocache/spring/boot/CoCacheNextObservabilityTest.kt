@@ -94,6 +94,11 @@ class CoCacheNextObservabilityTest {
                 assertThat(context).hasNotFailed()
                 assertThat(context).doesNotHaveBean(CoCacheNextMeterBinder::class.java)
                 assertThat(context).doesNotHaveBean(CoCacheNextEndpoint::class.java)
+                // 没有 binder 时后处理器什么也不做
+                CacheRuntime.builder().backend(InMemoryBackend()).build().use { runtime ->
+                    val cache = runtime.create(cacheSpec<String, String>("orphan") { codec = StringCodec })
+                    context.autowireCapableBeanFactory.initializeBean(cache, "orphan").assert().isSameAs(cache)
+                }
             }
     }
 
@@ -166,6 +171,9 @@ class CoCacheNextObservabilityTest {
             binder.afterSingletonsInstantiated()
             registry.find("cocache.next.misses").tag(CoCacheNextMeterBinder.TAG_CACHE, "late").meters()
                 .assert().hasSize(1)
+            val lateIndex = runtime.create(setCacheSpec<String, String>("late-index") { elementCodec = StringCodec })
+            context.autowireCapableBeanFactory.initializeBean(lateIndex, "lateIndex")
+            registry.count("cocache.next.misses", "late-index").assert().isZero()
             context.autowireCapableBeanFactory.initializeBean(Any(), "other").assert().isNotNull()
         }
     }
