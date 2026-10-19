@@ -14,6 +14,7 @@ Use this reference before CoCache reaches production, when reviewing deployment 
 - [ ] L2 sized for the hot set; values small
 - [ ] Actuator endpoint behind auth or the management port; read-only if deletes are not wanted
 - [ ] Alerts on dropped invalidations, health DOWN, remote failures, load rejections
+- [ ] Tracing: source loads appear as `cocache.load` observations when an `ObservationRegistry` exists (`cocache.observation.enabled`, default on); keys are never recorded
 - [ ] Persistence (AOF or RDB) wherever SetCache data lives
 ```
 

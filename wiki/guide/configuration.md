@@ -34,6 +34,7 @@ Properties come last so operators can retune a cache without a rebuild. This mea
 | `cocache.spring-cache.retrieve-executor` | bean name | built-in | The `Executor` bean that runs Spring Cache `retrieve` (async and reactive `@Cacheable`). See [Executors](#executors). |
 | `cocache.refresh-executor` | bean name | built-in | The `Executor` bean that runs [refresh-ahead](./freshness.md#refresh-ahead) loads. See [Executors](#executors). |
 | `management.health.cocache.enabled` | boolean | `true` | Registers the `cocache` health indicator ([below](#actuator)) |
+| `cocache.observation.enabled` | boolean | `true` | Wraps source loads in a Micrometer `Observation` when an `ObservationRegistry` bean exists. See [tracing](../operations/observability.md#tracing). |
 
 ## Policy properties {#policy-properties}
 

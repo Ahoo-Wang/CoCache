@@ -68,7 +68,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         val retrier = InvalidationRetrier(scheduler, builder.retryPolicy)
         // 先于调度器关闭：未执行的重试计入丢弃并告警
         owned.add(AutoCloseable { retrier.close() })
-        context = EngineContext(nodeId, clock, backend, refreshExecutor, retrier)
+        context = EngineContext(nodeId, clock, backend, refreshExecutor, retrier, builder.loadObserver)
     }
 
     /**
@@ -164,6 +164,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         var nodeId: NodeId? = null
         var refreshExecutor: Executor? = null
         var retryPolicy: RetryPolicy = RetryPolicy()
+        var loadObserver: LoadObserver = LoadObserver.NOOP
 
         fun backend(backend: CoherenceBackend) = apply { this.backend = backend }
 
@@ -179,6 +180,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
          */
         fun refreshExecutor(refreshExecutor: Executor) = apply { this.refreshExecutor = refreshExecutor }
         fun retryPolicy(retryPolicy: RetryPolicy) = apply { this.retryPolicy = retryPolicy }
+
+        /**
+         * 回源观测（如链路追踪），作用于本运行时创建的所有缓存。不指定时为 [LoadObserver.NOOP]。
+         */
+        fun loadObserver(loadObserver: LoadObserver) = apply { this.loadObserver = loadObserver }
 
         fun build(): CacheRuntime = CacheRuntime(this)
     }

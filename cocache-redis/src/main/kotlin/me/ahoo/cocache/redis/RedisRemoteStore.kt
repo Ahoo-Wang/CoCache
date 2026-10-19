@@ -19,11 +19,13 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.LeaseRequest
+import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Token
 import java.time.Duration
+import java.util.IdentityHashMap
 import java.util.concurrent.CompletableFuture
 
 /**
@@ -121,6 +123,33 @@ internal class RedisRemoteStore(
         connections.eval<List<Any?>>(RedisScripts.PUT, listOf(key.bytes()), args)
     }
 
+    /**
+     * 与 [invalidate] 相同的分组：按 slot 分组（Cluster）再按 `invalidateBatchSize` 切分，每组一个 [RedisScripts.PUT_ALL]，
+     * 只广播本组的 key，并发执行；原子性只在单个组内成立。
+     */
+    override fun putAll(puts: List<Put>, frame: ByteArray) {
+        val byKey = LinkedHashMap<String, Put>(puts.size)
+        puts.forEach { byKey[it.key] = it }
+        val putOf = IdentityHashMap<ByteArray, Put>(byKey.size)
+        val keyBytes = byKey.values.map { put -> put.key.bytes().also { putOf[it] = put } }
+        val groups = connections.groupBySlot(keyBytes).flatMap { it.chunked(invalidateBatchSize) }
+        val frames = framesOf(byKey.keys, frame, groups)
+        val futures = groups.mapIndexed { index, group ->
+            val args = ArrayList<ByteArray>()
+            args.add(channel)
+            args.add(frames[index])
+            group.forEach { key ->
+                val put = putOf.getValue(key)
+                args.add(kindOf(put.envelope).bytes())
+                args.add(millis(put.ttl))
+                args.add(payloadCount(put.envelope).toString().bytes())
+                addPayload(args, put.envelope)
+            }
+            connections.evalAsync<List<Any?>>(RedisScripts.PUT_ALL, group, args)
+        }
+        futures.forEach { connections.await(it) }
+    }
+
     override fun invalidate(keys: Collection<String>, frame: ByteArray) {
         val groups = connections.groupBySlot(keys.map { it.bytes() }).flatMap { it.chunked(invalidateBatchSize) }
         val frames = framesOf(keys, frame, groups)
@@ -193,6 +222,12 @@ internal class RedisRemoteStore(
             is Envelope.Members -> args.addAll(envelope.members)
             Envelope.Absent -> Unit
         }
+    }
+
+    private fun payloadCount(envelope: Envelope): Int = when (envelope) {
+        is Envelope.Scalar -> 1
+        is Envelope.Members -> envelope.size
+        Envelope.Absent -> 0
     }
 
     private fun kindOf(envelope: Envelope): String = when (envelope) {

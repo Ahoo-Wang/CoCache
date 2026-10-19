@@ -73,6 +73,12 @@
       "type": "java.lang.Boolean",
       "description": "Whether to enable the CoCache health indicator (DOWN only when the invalidation channel heartbeat fails).",
       "defaultValue": true
+    },
+    {
+      "name": "cocache.observation.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to record a Micrometer Observation (cocache.load) around each source load and lease wait. Needs micrometer-observation and an ObservationRegistry bean.",
+      "defaultValue": true
     }
   ],
   "hints": [

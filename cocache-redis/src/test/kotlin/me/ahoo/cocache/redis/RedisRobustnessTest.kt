@@ -25,6 +25,7 @@ import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
@@ -316,6 +317,59 @@ class RedisRobustnessTest {
                 store.invalidate(keys, malformed)
                 awaitCondition("malformed frames") { frames.size >= 3 }
                 frames.forEach { it.assert().isEqualTo(malformed) }
+            }
+        }
+    }
+
+    /**
+     * 分组批量写入：按 `invalidateBatchSize` 切分（Cluster 先按 slot 分组），每组一个脚本，只广播本组的 key；
+     * 同一脚本内混合多种形状时，按每个 key 的载荷个数截取参数。
+     */
+    @Test
+    fun putAllWritesEveryShapeAndBroadcastsOnlyEachGroupsKeys() {
+        val frames = CopyOnWriteArrayList<ByteArray>()
+        RedisTestSupport.subscribeRaw(RedisInvalidationChannel.channelOf(namespace)) { frames.add(it) }.use {
+            RedisTestSupport.backend(
+                RedisBackendOptions(invalidateBatchSize = 2, clientName = "cocache-tck-" + UUID.randomUUID())
+            ).use { backend ->
+                val store = backend.store(namespace)
+                val shapes = listOf(
+                    Envelope.Members(listOf("a".toByteArray(), "b".toByteArray())),
+                    Envelope.Scalar("v".toByteArray()),
+                    Envelope.Absent,
+                    Envelope.Members(listOf("c".toByteArray())),
+                    Envelope.Scalar(ByteArray(0)),
+                )
+                val puts = shapes.mapIndexed { index, envelope ->
+                    Put(key("k$index"), envelope, if (index % 2 == 0) null else Duration.ofMinutes(1))
+                }
+                val keys = puts.map { it.key }
+                val origin = NodeId.random()
+                // 重复的 key 以后者为准
+                store.putAll(
+                    puts + Put(keys[1], Envelope.Scalar("last".toByteArray()), null),
+                    InvalidationFrame.encode(origin, keys)
+                )
+                awaitCondition("all keys broadcast") {
+                    frames.flatMap { InvalidationFrame.decode(it).keys }.toSet() == keys.toSet()
+                }
+                val decoded = frames.map { InvalidationFrame.decode(it) }
+                decoded.forEach { frame ->
+                    frame.origin.assert().isEqualTo(origin)
+                    frame.keys.size.assert().isLessThanOrEqualTo(2)
+                }
+                decoded.sumOf { it.keys.size }.assert().isEqualTo(keys.size)
+
+                fun hit(key: String) = store.read(key, null, null) as RemoteRead.Hit
+                fun members(key: String) = (hit(key).envelope as Envelope.Members).members.map { String(it) }
+                members(keys[0]).assert().containsExactlyInAnyOrder("a", "b")
+                hit(keys[0]).ttl.assert().isNull()
+                hit(keys[1]).envelope.assert().isEqualTo(Envelope.Scalar("last".toByteArray()))
+                hit(keys[1]).ttl.assert().isNull()
+                hit(keys[2]).envelope.assert().isEqualTo(Envelope.Absent)
+                members(keys[3]).assert().containsExactly("c")
+                requireNotNull(hit(keys[3]).ttl).assert().isLessThanOrEqualTo(Duration.ofMinutes(1))
+                hit(keys[4]).envelope.assert().isEqualTo(Envelope.Scalar(ByteArray(0)))
             }
         }
     }

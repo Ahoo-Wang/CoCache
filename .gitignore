@@ -28,3 +28,6 @@ gradle-app.setting
 
 # Kotlin 编译器本地状态
 .kotlin/
+
+# JVM 崩溃时的堆转储
+*.hprof

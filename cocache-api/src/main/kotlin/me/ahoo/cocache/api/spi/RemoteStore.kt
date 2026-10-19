@@ -60,6 +60,34 @@ interface RemoteStore : AutoCloseable {
     fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray)
 
     /**
+     * 批量整体覆盖写入并广播：每个 key 的转换同 [put]（销毁令牌、重设到期时间），每个 key 原子，不要求跨 key 原子。
+     * [frame] 携带 [puts] 的全部 key；实现可以把它拆成若干帧分别广播（如按 slot 分组），但每个 key 必须恰好随其写入广播一次。
+     * key 重复时后者生效（引擎不会传入重复的 key）。
+     *
+     * 默认实现逐个调用 [put]，每个 key 只广播自己（帧无法按 key 拆分时原样使用 [frame]），供第三方实现保持兼容。
+     */
+    fun putAll(puts: List<Put>, frame: ByteArray) {
+        val frames = framesPerKey(frame, puts.map { it.key })
+        puts.forEachIndexed { index, put -> put(put.key, put.envelope, put.ttl, frames[index]) }
+    }
+
+    /**
+     * 把携带多个 key 的帧拆成每个 key 一帧（同一发布者），避免 N 个 key 各广播一次全部 key（O(N²)）。
+     * 帧畸形或其中的 key 与 [keys] 不一致（无法安全拆分）时，每个 key 原样使用 [frame]。
+     */
+    private fun framesPerKey(frame: ByteArray, keys: List<String>): List<ByteArray> {
+        val decoded = try {
+            InvalidationFrame.decode(frame)
+        } catch (_: IllegalArgumentException) {
+            return List(keys.size) { frame }
+        }
+        if (decoded.keys.toSet() != keys.toSet()) {
+            return List(keys.size) { frame }
+        }
+        return keys.map { InvalidationFrame.encode(decoded.origin, listOf(it)) }
+    }
+
+    /**
      * 删除并广播。
      */
     fun invalidate(keys: Collection<String>, frame: ByteArray)
