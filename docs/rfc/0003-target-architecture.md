@@ -606,7 +606,7 @@ val users: CoCache<String, User> = runtime.create(
 - **数据源**：在 spec 中显式指定；接口方式下，按 `CacheLoader<K, V>` 的泛型唯一匹配，或通过 `@CoCache(loader = "beanName")` 指定。
 - **Spring Cache 适配**：`cocache-spring` 提供 `CoCacheManager`（starter 自动配置）。语义：负缓存视为未命中，`sync = true` 按 key 合并，`clear` 只清本地，`put(k, null)` 映射为 `invalidate`。
 - **SpEL key**：`@CoCache(key = "#{id}")` 只在 starter 中解析，编译为 `(K) -> String` 后交给 core。
-- **事务**：`invalidate` 必须在提交之后执行。starter 提供 `TransactionalInvalidator`，事务内调用时登记到 `afterCommit`。在提交之前失效本身就是一个 G2 漏洞：并发的回源可能读到提交前的数据。
+- **事务**：`invalidate` 必须在提交之后执行。`cocache-spring` 提供 `TransactionalInvalidator`（starter 在有 spring-tx 时自动配置）：事务内调用时登记到当前事务的 `afterCommit`，同一事务内对同一缓存的失效合并为一次 `invalidateAll`，回滚时不失效；没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己提交之后失效。在提交之前失效本身就是一个 G2 漏洞：并发的回源可能读到提交前的数据。
 
 ### 4.13 失败语义
 

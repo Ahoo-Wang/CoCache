@@ -265,6 +265,23 @@ class CoCacheNextAutoConfigurationTest {
     }
 
     @Test
+    fun providesTransactionalInvalidator() {
+        runner.withUserConfiguration(InMemoryConfig::class.java).run { context ->
+            assertThat(context).hasSingleBean(me.ahoo.cocache.spring.tx.TransactionalInvalidator::class.java)
+        }
+        runner.withUserConfiguration(InMemoryConfig::class.java)
+            .withClassLoader(
+                org.springframework.boot.test.context.FilteredClassLoader(
+                    org.springframework.transaction.support.TransactionSynchronizationManager::class.java
+                )
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                assertThat(context).doesNotHaveBean(me.ahoo.cocache.spring.tx.TransactionalInvalidator::class.java)
+            }
+    }
+
+    @Test
     fun cacheBeanNaming() {
         CacheSpecRegistrar.cacheBeanName("userSpec").assert().isEqualTo("user")
         CacheSpecRegistrar.cacheBeanName("user").assert().isEqualTo("userCache")
