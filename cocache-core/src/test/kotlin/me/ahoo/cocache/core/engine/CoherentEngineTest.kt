@@ -124,6 +124,47 @@ class CoherentEngineTest {
     }
 
     @Test
+    fun getWithCallerLoaderServesLocalHitsAndUsesLease() {
+        val cache = runtime().engine(spec { loader = null })
+        val calls = AtomicInteger()
+        cache.get("k") {
+            calls.incrementAndGet()
+            "loaded-$it"
+        }.assert().isEqualTo("loaded-k")
+        cache.get("k") {
+            calls.incrementAndGet()
+            "again"
+        }.assert().isEqualTo("loaded-k")
+        calls.get().assert().isEqualTo(1)
+        (
+            memory.store(
+                name
+            ).read(
+                key("k"),
+                null,
+                null
+            ) as RemoteRead.Hit
+            ).envelope.assert().isEqualTo(Envelope.Scalar("loaded-k".toByteArray()))
+    }
+
+    @Test
+    fun cacheWithoutLoaderNeverRefreshes() {
+        val policy =
+            CachePolicy(
+                ttl = Duration.ofSeconds(10),
+                ttlJitter = Duration.ZERO,
+                localMaxAge = Duration.ofSeconds(8),
+                refreshWindow = Duration.ofSeconds(5)
+            )
+        val cache = runtime().engine(spec(policy) { loader = null })
+        cache.put("k", "v")
+        cache["k"].assert().isEqualTo("v")
+        clock.advance(Duration.ofSeconds(6))
+        cache["k"].assert().isEqualTo("v")
+        cache.metrics.refreshes.assert().isEqualTo(0)
+    }
+
+    @Test
     fun keyFilterThatAllowsLoadsNormally() {
         val cache = runtime().engine(spec { keyFilter = KeyFilter { false } })
         database["k"] = "v"
