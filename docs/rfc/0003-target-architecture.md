@@ -1,6 +1,6 @@
 # RFC 0003：目标架构（第一性原理重构，6.0）
 
-- 状态：草案 v3（已经过两轮对抗验证，见 §10）；§9 步骤 1–2 已在 `me.ahoo.cocache` 包中实现，SPI 以代码为准（`cocache-api` 的 `me.ahoo.cocache.api.spi`）
+- 状态：草案 v3（已经过两轮对抗验证，见 §10）；§9 步骤 1–3 已在 `me.ahoo.cocache` 包中实现（`cocache-redis` 为 Lettuce 后端，Sharded 通道与 JMH 对比待做），SPI 与线格式以代码为准（`me.ahoo.cocache.api.spi`、`me.ahoo.cocache.redis.RedisScripts`）
 - 前提：**不考虑兼容性**。API、SPI、模块、Redis 线格式、配置项都可以推倒重来
 - 关系：吸收并取代 [RFC 0001](0001-l1-write-back-lease.md)（lease 成为唯一的写回保护原语，6.0 只破坏一次线格式，不再单独发布 lease）；[RFC 0002](0002-resp3-client-tracking.md) 变为新后端 SPI 下的一种可选通道
 
@@ -322,11 +322,10 @@ interface InvalidationListener {
 
 | 字段 | 含义 |
 |------|------|
-| `!s` | 状态：`S` 集合、`M` 负缓存、`L` lease 占位 |
 | `!f` | 格式版本 |
-| `!t` | 令牌（同上） |
-| `!i` | 令牌签发时间 |
 | `+<member>` | 集合成员（`Codec<E>` 的输出），值为空串 |
+
+Hash 只用于状态 `S`：lease 占位与负缓存总是标量形状的 String 头（状态 `L` / `M`），集合也不使用刷新令牌，所以 Hash 不需要状态与令牌字段。key 的类型（String / Hash）本身就区分了形状；任何写入都先 `DEL` 再按新形状写入。
 
 - 读取：`PTTL` + `HGETALL`，客户端去掉成员前缀。
 - 代价（必须写进用户文档）：与原生 Set 相比，非整数成员每个多约 16 B（约 +25–35%）；整数成员失去 intset 编码，最多约 7 倍。若基准表明不可接受，备选方案是“原生 Set + 同 slot 的控制 Hash”（§8 Q1）。

@@ -165,6 +165,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             return loadBypassingRemote(key, storageKey, stamp)
         }
         val value = try {
+            check(read.format >= MIN_FORMAT) { "Unrecognized remote content (not written by this protocol)." }
             decode(read.envelope)
         } catch (e: Exception) {
             return onCorrupt(key, storageKey, read, stamp, lease, e)
@@ -498,6 +499,10 @@ internal class CoherentEngine<K : Any, V : Any>(
             metrics.unknownFormat()
             return null
         }
+        if (read.format < MIN_FORMAT) {
+            log.warn { "Cache[$name] - key[$storageKey] - unrecognized remote content in batch read." }
+            return null
+        }
         return try {
             Decoded(decode(read.envelope))
         } catch (e: Exception) {
@@ -558,7 +563,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             onRemoteFailure("read", storageKey, e)
             return loadThrough(key, storageKey)
         }
-        if (read !is RemoteRead.Hit || read.format > backendFormat) {
+        if (read !is RemoteRead.Hit || read.format > backendFormat || read.format < MIN_FORMAT) {
             return loadThrough(key, storageKey)
         }
         if (!read.refreshGranted) {
@@ -648,6 +653,10 @@ internal class CoherentEngine<K : Any, V : Any>(
         get() = pendingInvalidations.size
 
     private companion object {
+        /**
+         * 格式版本 `0` 表示无法识别的内容（如旧版本写入的值），按损坏处理。
+         */
+        const val MIN_FORMAT = 1
         val INITIAL_BACKOFF_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(2)
         val MAX_BACKOFF_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(50)
     }
