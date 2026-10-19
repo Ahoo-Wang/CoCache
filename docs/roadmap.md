@@ -54,8 +54,8 @@
 | 原子失效与广播 | G1 | 失效、写入在一次 Lua 中完成 `DEL`/写入 + `PUBLISH`，各 1 次往返；环境不支持时退回非原子并告警 |
 | 新线格式 | G2、可演进 | 标量用 String + 36 字节定长头，集合用 Hash（控制字段与成员分离）；去掉 `_nil_` 哨兵；格式版本字段承担值格式版本化 |
 | Lettuce 原生后端 | G3 | 去掉 Spring Data Redis；自动流水线批量读；进程级失效路由 |
-| 声明与装配 | 简化 | `CacheSpec` + `CacheRuntime` 取代 9 种工厂与 bean 名后缀约定；配置分层 |
-| 删除 | 简化 | JoinCache 子系统、L2 可替换、5.x 废弃接口 |
+| 声明与装配 | 简化 | `CacheSpec` + `CacheRuntime` 取代 9 种工厂与 bean 名后缀约定；配置分层；不提供接口式声明，只保留 spec bean（RFC 0003 Q9） |
+| 删除 | 简化 | JoinCache 子系统、`@CoCache` 接口式声明与代理、L2 可替换、5.x 废弃接口 |
 
 实施顺序与验收见 RFC 0003 §9：architecture.md 删除“固有窗口”；`MultiNodeSpec` 覆盖跨实例竞态、单次回源与单次刷新；changelog 给出 5.x → 6.0 概念对照表。
 
