@@ -26,7 +26,7 @@ CoCache builds its own Lettuce client from `spring.data.redis.*`. It doesn't sha
 
 | Item | Requirement |
 |------|-------------|
-| Version | **Redis 7.0 or later.** The scripts use `TIME` and `SETRANGE`, and `sharded` mode uses `SPUBLISH`. Valkey 7.2+ implements the same commands and should work, but it is not tested in CI. |
+| Version | **Redis 7.0 or later.** The scripts use `TIME` and `SETRANGE`, and `sharded` mode uses `SPUBLISH`. Valkey 7.2+ implements the same commands. CI runs the Redis backend and starter tests on standalone Valkey 8. |
 | Client | Lettuce, which the starter brings. Jedis is not supported, and adding Lettuce doesn't affect a Jedis-based application client. |
 | Scripting | `EVAL` / `EVALSHA` must be allowed. The scripts carry no shebang flags. |
 | Pub/Sub | `SUBSCRIBE` / `PUBLISH`, or `SSUBSCRIBE` / `SPUBLISH` in `sharded` mode |

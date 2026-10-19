@@ -16,6 +16,7 @@
 # - Test & Coverage：真实 Redis 下运行全部模块的 check（测试、JMH 编译、覆盖率门禁），并上传 Codecov
 # - Test (JDK 25)：产物仍按 JDK 17 编译，测试运行在最新 LTS 上，验证运行时兼容性
 # - Test (Redis Cluster)：Redis 相关模块的测试在 3 主 3 从的 Redis Cluster 上运行（slot 路由、pipeline、Pub/Sub）
+# - Test (Valkey)：Redis 相关模块的测试在 Valkey 单机上运行（Lua 脚本、ACL 报错、CONFIG、Sharded Pub/Sub 的兼容性）
 name: CI
 on:
   push:
@@ -192,5 +193,45 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-redis-cluster
+          path: '**/build/reports/tests/'
+          retention-days: 7
+
+  test-valkey:
+    name: Test (Valkey)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      valkey:
+        image: valkey/valkey:8-alpine
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      # Valkey 映射到默认端口 6379，Redis 后端测试与 starter 测试无需额外配置
+      - name: Test Redis modules on Valkey
+        run: >-
+          ./gradlew --continue
+          :cocache-redis:test
+          :cocache-spring-boot-starter:test
+
+      - name: Upload test reports
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-valkey
           path: '**/build/reports/tests/'
           retention-days: 7

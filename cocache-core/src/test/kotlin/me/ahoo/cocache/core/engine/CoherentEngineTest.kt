@@ -336,6 +336,48 @@ class CoherentEngineTest {
         cache["k"].assert().isEqualTo("v1")
     }
 
+    /**
+     * 编码后碰撞的存储 key：以后出现的为准，每个存储 key 只编码、写入一次。
+     */
+    @Test
+    fun putAllCollidingStorageKeysLastWins() {
+        val encodes = AtomicInteger()
+        val countingCodec = object : me.ahoo.cocache.api.Codec<String> {
+            override fun encode(value: String): ByteArray {
+                encodes.incrementAndGet()
+                return TestCodec.encode(value)
+            }
+
+            override fun decode(bytes: ByteArray): String = TestCodec.decode(bytes)
+        }
+        val cache = runtime().engine(
+            spec {
+                codec = countingCodec
+                keyEncoder = me.ahoo.cocache.core.KeyEncoder { it.lowercase() }
+            }
+        )
+        cache.putAll(linkedMapOf("K" to "first", "k" to "second", "j" to "j"))
+        encodes.get().assert().isEqualTo(2)
+        backend.putAlls.get().assert().isEqualTo(1)
+        cache["K"].assert().isEqualTo("second")
+        cache["k"].assert().isEqualTo("second")
+        cache["j"].assert().isEqualTo("j")
+    }
+
+    @Test
+    fun nonAtomicBackendPublishesPutAllThroughTheChannel() {
+        backend.atomicBroadcastOverride = false
+        val cacheA = runtime().engine()
+        val cacheB = runtime().engine()
+        database["a"] = "a0"
+        database["b"] = "b0"
+        cacheB["a"]
+        cacheB["b"]
+        cacheA.putAll(mapOf("a" to "a1", "b" to "b1"))
+        awaitCondition { cacheB["a"] == "a1" && cacheB["b"] == "b1" }
+        cacheB.metrics.invalidationsReceived.assert().isGreaterThanOrEqualTo(1)
+    }
+
     @Test
     fun nonAtomicBackendPublishesThroughTheChannel() {
         backend.atomicBroadcastOverride = false

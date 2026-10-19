@@ -22,11 +22,14 @@ import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.LeaseRequest
+import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.LoadObserver
+import me.ahoo.cocache.core.LoadOperation
 import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.ReadFailureMode
@@ -45,7 +48,7 @@ import java.util.concurrent.locks.LockSupport
  * - L2 栅栏：失效戳。填充方读 L1 前取戳；写入方在修改 L1 前后各递增一次。L2 只由读 L1 的路径填充。
  * - loader 总是在调用方（SingleFlight leader）线程上同步执行。
  */
-@Suppress("TooManyFunctions")
+@Suppress("TooManyFunctions", "LargeClass")
 internal class CoherentEngine<K : Any, V : Any>(
     private val spec: CacheSpec<K, V>,
     store: RemoteStore,
@@ -58,6 +61,12 @@ internal class CoherentEngine<K : Any, V : Any>(
     private val keyFilter = spec.keyFilter
     private val backendFormat = context.backend.format
     private val permits: Semaphore? = policy.load.maxConcurrent.takeIf { it > 0 }?.let { Semaphore(it) }
+    private val loadObserver: LoadObserver = context.loadObserver
+
+    /**
+     * 提前刷新所用的数据源：与 [loader] 行为相同，只用于让回源观测区分刷新与未命中加载。
+     */
+    private val refreshLoader: CacheLoader<K, V>? = loader?.let { RefreshLoader(it) }
 
     /**
      * 失效写入 L1 失败、仍在重试中的存储 key：未命中时跳过 L1（L1 中仍是旧值）。
@@ -174,7 +183,13 @@ internal class CoherentEngine<K : Any, V : Any>(
             return read
         }
         metrics.leaseWait()
-        val deadline = System.nanoTime() + minOf(read.remaining, policy.lease.wait).toNanos()
+        val leased: RemoteRead.Leased = read
+        return observed(LoadOperation.LEASE_WAIT, 1) { awaitLease(storageKey, lease, leased) }
+    }
+
+    private fun awaitLease(storageKey: String, lease: LeaseRequest, leased: RemoteRead.Leased): RemoteRead {
+        var read: RemoteRead = leased
+        val deadline = System.nanoTime() + minOf(leased.remaining, policy.lease.wait).toNanos()
         var backoff = INITIAL_BACKOFF_NANOS
         while (read is RemoteRead.Leased) {
             val remaining = deadline - System.nanoTime()
@@ -360,18 +375,19 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     private fun loadFromSource(key: K, source: CacheLoader<K, V>?): V? {
         val sourceLoader = source ?: return null
-        return guarded { sourceLoader.load(key) }
+        val operation = if (sourceLoader === refreshLoader) LoadOperation.REFRESH else LoadOperation.LOAD
+        return guarded(operation, 1) { sourceLoader.load(key) }
     }
 
     private fun loadAllFromSource(keys: Collection<K>): Map<K, V> {
         val sourceLoader = requireNotNull(loader)
-        return guarded { sourceLoader.loadAll(keys) }
+        return guarded(LoadOperation.LOAD_ALL, keys.size) { sourceLoader.loadAll(keys) }
     }
 
     /**
-     * 回源并发上限（只计 leader）与耗时统计。
+     * 回源并发上限（只计 leader）、耗时统计与回源观测（只包住回源调用本身；默认的 [LoadObserver.NOOP] 不产生任何调用）。
      */
-    private inline fun <R> guarded(block: () -> R): R {
+    private inline fun <R> guarded(operation: LoadOperation, keyCount: Int, crossinline block: () -> R): R {
         val semaphore = permits
         if (semaphore != null && !semaphore.tryAcquire(policy.load.acquireTimeout.toNanos(), TimeUnit.NANOSECONDS)) {
             metrics.loadRejected()
@@ -380,11 +396,19 @@ internal class CoherentEngine<K : Any, V : Any>(
         val start = System.nanoTime()
         var failed = true
         try {
-            return block().also { failed = false }
+            return observed(operation, keyCount, block).also { failed = false }
         } finally {
             metrics.load(System.nanoTime() - start, failed)
             semaphore?.release()
         }
+    }
+
+    /**
+     * 回源观测：默认的 [LoadObserver.NOOP] 直接执行，不分配也不调用。
+     */
+    private inline fun <R> observed(operation: LoadOperation, keyCount: Int, crossinline block: () -> R): R {
+        val observer = loadObserver
+        return if (observer === LoadObserver.NOOP) block() else observer.observe(name, operation, keyCount) { block() }
     }
 
     override fun getAll(keys: Collection<K>): Map<K, V> {
@@ -611,10 +635,10 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     @Suppress("TooGenericExceptionCaught")
     private fun refreshThrough(key: K, storageKey: String): Loaded<V> {
-        val window = policy.refreshWindow ?: return loadThrough(key, storageKey)
+        val window = policy.refreshWindow ?: return loadThrough(key, storageKey, refreshLoader)
         if (pendingInvalidations.containsKey(storageKey)) {
             // 失效仍在重试：L1 可能还是旧值，不能从它重新填充 L2（loadThrough 会绕过 L1）
-            return loadThrough(key, storageKey)
+            return loadThrough(key, storageKey, refreshLoader)
         }
         val stamp = stamps.current(storageKey)
         val token = context.nextToken()
@@ -622,24 +646,25 @@ internal class CoherentEngine<K : Any, V : Any>(
             store.read(storageKey, null, RefreshRequest(window, token, policy.lease.ttl))
         } catch (e: Exception) {
             onRemoteFailure("read", storageKey, e)
-            return loadThrough(key, storageKey)
+            return loadThrough(key, storageKey, refreshLoader)
         }
         if (read !is RemoteRead.Hit) {
-            return loadThrough(key, storageKey)
+            return loadThrough(key, storageKey, refreshLoader)
         }
         if (read.format > backendFormat || read.format < MIN_FORMAT) {
             if (read.refreshGranted) {
                 release(storageKey, token)
             }
-            return loadThrough(key, storageKey)
+            return loadThrough(key, storageKey, refreshLoader)
         }
         if (!read.refreshGranted) {
-            val value = runCatching { decode(read.envelope) }.getOrElse { return loadThrough(key, storageKey) }
+            val value = runCatching { decode(read.envelope) }
+                .getOrElse { return loadThrough(key, storageKey, refreshLoader) }
             val entry = localEntry(value, read.ttl, policy.localMaxAge)
             fillLocal(storageKey, entry, stamp)
             return Loaded(entry, stamp)
         }
-        return Loaded(loadAndFill(key, storageKey, stamp, token, loader), stamp)
+        return Loaded(loadAndFill(key, storageKey, stamp, token, refreshLoader), stamp)
     }
 
     override fun put(key: K, value: V) {
@@ -659,6 +684,30 @@ internal class CoherentEngine<K : Any, V : Any>(
             { frame -> store.put(storageKey, envelope, bounded, frame) },
             throwWriteFailure("put")
         )
+    }
+
+    override fun putAll(entries: Map<K, V>) {
+        putAllWithTtl(entries) { key, value -> spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl() }
+    }
+
+    override fun putAll(entries: Map<K, V>, ttl: Duration) {
+        putAllWithTtl(entries) { _, _ -> ttl }
+    }
+
+    /**
+     * 一次 [write] 覆盖全部存储 key：戳与 L2 淘汰的顺序对整批成立，L1 批量写入、整批广播一次。
+     * 编码后碰撞的存储 key 以后出现的为准，每个存储 key 只编码一次。
+     */
+    private inline fun putAllWithTtl(entries: Map<K, V>, ttlOf: (K, V) -> Duration?) {
+        if (entries.isEmpty()) {
+            return
+        }
+        val latest = LinkedHashMap<String, Map.Entry<K, V>>(entries.size)
+        entries.entries.forEach { latest[storageKey(it.key)] = it }
+        val puts = latest.map { (storageKey, entry) ->
+            Put(storageKey, Envelope.Scalar(codec.encode(entry.value)), ttlOf(entry.key, entry.value)?.boundedTtl())
+        }
+        write(latest.keys, { frame -> store.putAll(puts, frame) }, throwWriteFailure("putAll"))
     }
 
     override fun invalidate(key: K) {
@@ -743,3 +792,8 @@ internal class CoherentEngine<K : Any, V : Any>(
         val MAX_BACKOFF_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(50)
     }
 }
+
+/**
+ * 委托给数据源的刷新数据源（见 `CoherentEngine.refreshLoader`）：只用于让回源观测区分刷新与未命中加载。
+ */
+private class RefreshLoader<K : Any, V : Any>(private val delegate: CacheLoader<K, V>) : CacheLoader<K, V> by delegate

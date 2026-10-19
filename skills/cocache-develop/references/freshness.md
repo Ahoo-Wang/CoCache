@@ -38,6 +38,8 @@ Inventory every write path of the cached data (services, repositories, SQL, batc
 
 Prefer `invalidate`: it cannot cache a value that differs from the source. Use `put` only when the writer holds the final value and reloading is expensive; `put(key, value, ttl)` sets an explicit lifetime. After either call, the next read on the same instance sees the change; others see it when the message arrives.
 
+For many keys, `putAll(entries)` (or `putAll(entries, ttl)`) applies `put` to each key in one fenced write: one Redis script per slot group and one invalidation message, no stale write-back from in-flight loads, not atomic across keys, throws `CacheWriteException` like `put`.
+
 ## Inside a transaction
 
 `TransactionalInvalidator` (registered by the starter when `spring-tx` is present) defers the invalidation to `afterCommit`:

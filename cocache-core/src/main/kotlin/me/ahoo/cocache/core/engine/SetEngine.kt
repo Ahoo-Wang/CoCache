@@ -17,6 +17,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.SetCacheSpec
@@ -144,6 +145,39 @@ internal class SetEngine<K : Any, E : Any>(
             { frame -> store.put(storageKey, envelope, bounded, frame) },
             throwWriteFailure("put")
         )
+    }
+
+    override fun putAll(entries: Map<K, Set<E>>) {
+        putAllWithTtl(entries, policy.valueTtl())
+    }
+
+    override fun putAll(entries: Map<K, Set<E>>, ttl: Duration) {
+        putAllWithTtl(entries, ttl)
+    }
+
+    /**
+     * 一次 [write] 覆盖全部存储 key，语义同逐个 [put]：非空集合整体覆盖（批量），空集合等价于 [clear]（批量删除）。
+     * 编码后碰撞的存储 key 以后出现的为准。两类都有时各自只广播自己的 key。
+     */
+    private fun putAllWithTtl(entries: Map<K, Set<E>>, ttl: Duration?) {
+        if (entries.isEmpty()) {
+            return
+        }
+        val latest = LinkedHashMap<String, Set<E>>(entries.size)
+        entries.forEach { (key, value) -> latest[storageKey(key)] = value }
+        val bounded = ttl?.boundedTtl()
+        val puts = latest.filterValues { it.isNotEmpty() }.map { (storageKey, value) ->
+            Put(storageKey, Envelope.Members(encode(value)), bounded)
+        }
+        val clears = latest.filterValues { it.isEmpty() }.keys.toList()
+        write(latest.keys, { frame ->
+            if (puts.isNotEmpty()) {
+                store.putAll(puts, if (clears.isEmpty()) frame else frameOf(puts.map { it.key }))
+            }
+            if (clears.isNotEmpty()) {
+                store.invalidate(clears, if (puts.isEmpty()) frame else frameOf(clears))
+            }
+        }, throwWriteFailure("putAll"))
     }
 
     override fun add(key: K, elements: Collection<E>) {

@@ -39,6 +39,7 @@ docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 | Lint (**rewrites files**: `autoCorrect = true`) | `./gradlew detekt` |
 | Runtime compatibility on a newer JDK | `./gradlew test -PtestJavaVersion=25` |
 | Redis modules on a local Redis Cluster (needs `redis-server` 7+) | `.github/scripts/start-redis-cluster.sh`, then `SPRING_DATA_REDIS_CLUSTER_NODES=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002 ./gradlew :cocache-redis:test :cocache-spring-boot-starter:test` |
+| Redis modules on Valkey (CI job `Test (Valkey)`; the port avoids the Redis container) | `docker run -d --name cocache-valkey -p 6380:6379 valkey/valkey:8-alpine`, then `SPRING_DATA_REDIS_PORT=6380 ./gradlew :cocache-redis:test --rerun :cocache-spring-boot-starter:test --rerun` |
 | Hit-path benchmark (`CoCacheBenchmark`; never run by `check`; `--rerun` because Gradle otherwise reuses the last result; `-PjmhIncludes` is a regex, so `l2Hit` also runs `l2HitViaInterface` and `l2HitMixed`) | `./gradlew :cocache-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit` |
 | Wiki build, the only dead-link check | `cd wiki && pnpm install && pnpm build` |
 
@@ -87,7 +88,7 @@ Read `docs/architecture.md` before you touch coherence, storage, codec, proxy, o
   | Cross-node interleavings and cluster-wide counts (three runtimes); behavior under L1 faults | `MultiNodeSpec` and `FaultSpec` (override `disconnect()` if the backend has connections) |
 
   `HookedBackend` wraps any backend to inject failures and orchestrate races. Expiry is millisecond-precise, so TTL assertions need no drift offset.
-- Redis tests use `RedisTestSupport`. It picks standalone or Cluster from `SPRING_DATA_REDIS_CLUSTER_NODES`, simulates time with `shiftTtl`, and kills this test's Pub/Sub connection with `killPubSubConnections` to force a reset. `subscribe` returns only after the subscription is acknowledged and `onReset` has run, so a late reset can't clear L2 mid-test.
+- Redis tests use `RedisTestSupport`. It picks standalone (`SPRING_DATA_REDIS_HOST` / `SPRING_DATA_REDIS_PORT`, default `localhost:6379`) or Cluster from `SPRING_DATA_REDIS_CLUSTER_NODES`, simulates time with `shiftTtl`, and kills this test's Pub/Sub connection with `killPubSubConnections` to force a reset. `subscribe` returns only after the subscription is acknowledged and `onReset` has run, so a late reset can't clear L2 mid-test.
 - Concurrency tests:
   - Orchestrate races with latches, never sleeps.
   - Wait on a `finished` latch, so a dead background thread fails the test instead of passing silently.

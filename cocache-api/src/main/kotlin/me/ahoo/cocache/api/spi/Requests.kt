@@ -29,3 +29,8 @@ data class RefreshRequest(val window: Duration, val token: Token, val tokenTtl: 
  * 令牌保护的填充：仅当 L1 中仍是 [token] 时写入 [envelope]，并按 [ttl] 重设到期时间（`null` 为永不过期）。
  */
 data class Fill(val key: String, val token: Token, val envelope: Envelope, val ttl: Duration?)
+
+/**
+ * 批量覆盖写入中的一项：语义同 [RemoteStore.put]，按 [ttl] 重设到期时间（`null` 为永不过期）。
+ */
+data class Put(val key: String, val envelope: Envelope, val ttl: Duration?)

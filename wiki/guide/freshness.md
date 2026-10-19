@@ -34,6 +34,23 @@ For several keys, `invalidateAll(keys)` sends them in as few Redis scripts as po
 
 After either call returns, the next read on the same instance sees the change. Other instances see it once the invalidation message arrives, typically within milliseconds.
 
+## Batch writes {#batch-writes}
+
+`putAll` writes several keys at once. Each key follows the same rules as `put`:
+
+```kotlin
+userCache.putAll(users.associateBy { it.id })                          // ttlOf or policy, jittered per key
+userCache.putAll(users.associateBy { it.id }, Duration.ofMinutes(5))   // one explicit lifetime
+```
+
+- **No stale write-back.** The batch is one write: this instance drops its L2 copies of every key before and after Redis is written, and the overwrite destroys any load lease. A load that started before `putAll` can't cache its old value, neither in L2 nor in Redis. Like `put`, `putAll` doesn't fill this instance's L2.
+- **One round trip, one message.** Redis receives one script that writes every key and publishes one invalidation message for all of them. In Redis Cluster, keys are grouped by slot and split at `cocache.redis.invalidate-batch-size`, and each group runs its own script concurrently. Each key is written atomically, but the batch as a whole is not.
+- **Encoded-key collisions:** if two keys encode to the same storage key, the later entry wins. An empty map does nothing.
+- **Failures:** like `put`, `putAll` throws `CacheWriteException` if Redis fails, and some keys may already be written. Retrying is safe.
+- **`SetCache.putAll`** replaces each set, and an empty set clears its key, exactly like `put`.
+
+A custom `Cache` implementation that doesn't override `putAll` falls back to calling `put` once per entry.
+
 ## Inside a transaction {#transactions}
 
 Inside a Spring transaction, "after the commit" is not where your code runs. `TransactionalInvalidator` (registered by the starter when `spring-tx` is present) moves the invalidation there:
@@ -162,6 +179,6 @@ To turn off a window that a declaration enables, use any of: `refresh-window: 0`
 - If the retries are exhausted or the queue overflows, CoCache logs an error and counts `cocache.invalidations.dropped`. Other instances can then reload the old value from Redis until it expires, so the bound is the value's remaining TTL. With `ttl-forever` there is no bound: invalidate again once Redis is back.
 - With `invalidate-failure: throw`, the call throws `CacheWriteException` instead, and you decide.
 
-**`put`**, and the `SetCache` writes `add`, `remove`, and `clear`, throw `CacheWriteException`. The outcome may be unknown after a timeout, but these operations are idempotent, so retrying is safe.
+**`put`** and **`putAll`**, and the `SetCache` writes `add`, `remove`, and `clear`, throw `CacheWriteException`. The outcome may be unknown after a timeout, but these operations are idempotent, so retrying is safe.
 
 The retry queue's limits come from `RetryPolicy` on the `CacheRuntime`. To change them in Spring Boot, declare your own `CacheRuntime` bean ([Configuration Reference](./configuration.md#beyond-properties)). Watch the queue in the health details (`pendingInvalidations`) and in [Observability](/operations/observability).

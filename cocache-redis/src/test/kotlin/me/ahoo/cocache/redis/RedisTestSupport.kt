@@ -26,7 +26,8 @@ import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import java.time.Duration
 
 /**
- * 集成测试的 Redis：默认 localhost:6379；设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时连接 Redis Cluster（与 CI 的集群任务一致）。
+ * 集成测试的 Redis：默认 localhost:6379，可用 `SPRING_DATA_REDIS_HOST` / `SPRING_DATA_REDIS_PORT` 改为其他单机实例（与 starter 测试读取的变量相同，例如 CI 的 Valkey 任务）；
+ * 设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时连接 Redis Cluster（与 CI 的集群任务一致）。
  *
  * Redis 的到期时间由服务端时钟驱动，无法推进。[shiftTtl] 把匹配 key 的剩余寿命整体缩短，模拟时间流逝。
  */
@@ -41,7 +42,10 @@ object RedisTestSupport {
             RedisURI.create(host, port.toInt())
         }
 
-    private val standaloneUri: RedisURI = RedisURI.create("localhost", 6379)
+    private val standaloneUri: RedisURI = RedisURI.create(
+        System.getenv("SPRING_DATA_REDIS_HOST") ?: "localhost",
+        System.getenv("SPRING_DATA_REDIS_PORT")?.toInt() ?: 6379
+    )
 
     val isCluster: Boolean = clusterNodes != null
 

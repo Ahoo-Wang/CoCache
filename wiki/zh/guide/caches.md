@@ -255,7 +255,7 @@ val members: Set<String> = online[roomId] // 不存在时为空集合
 
 - **没有 loader。** 集合缓存没有可重新加载的数据源；在它上面写 `@CoCache(loader = …)` 启动失败，`get(key, loader)` 会抛出异常。
 - **`invalidate` 与 `invalidateAll` 抛出 `UnsupportedOperationException`**，因为它们会销毁唯一副本。请用 `clear`。
-- **`put(key, emptySet())` 等同于 `clear(key)`**：空集合不保留 key。
+- **`put(key, emptySet())` 等同于 `clear(key)`**：空集合不保留 key。`putAll` 对每一项遵循同样的规则（[批量写入](./freshness.md#batch-writes)）。
 - **TTL 默认永不过期。** 设置了 TTL 时，每次 `add` 或 `remove` 都会重设到期时间。
 - **故障会显式暴露。** 写入抛出 `CacheWriteException`（它们是幂等的，可以重试）。读取直接抛出 Redis 错误，因为没有数据源可以降级。
 - **读不懂的内容会抛出。** 元素无法解码时读取抛出异常，更高格式写入的集合抛出 `IllegalStateException`。不是 CoCache 写入的内容（比如同一个 key 上的 Redis 原生 Set）读作空集合，在 L2 中最多保留 `degradedLocalMaxAge`，并被下一次 `put` 或 `add` 替换。
