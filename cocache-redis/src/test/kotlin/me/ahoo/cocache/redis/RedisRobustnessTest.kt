@@ -131,8 +131,8 @@ class RedisRobustnessTest {
         Assumptions.assumeTrue(System.getenv("SPRING_DATA_REDIS_CLUSTER_NODES") == null)
         val rules = (
             "~cocache:* resetchannels &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe " +
-                "+unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hset +hdel +hexists " +
-                "+hlen +pexpire +persist +setrange +time"
+                "+unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel " +
+                "+hexists +hlen +pexpire +persist +setrange +time"
             ).split(" ")
         RedisTestSupport.aclBackend("cocache-documented", rules).use { backend ->
             backend.atomicBroadcast.assert().isTrue()

@@ -46,7 +46,7 @@ import java.util.concurrent.TimeUnit
 /**
  * `SetCache` 基准 `setRead`（RFC 0003 §8 Q1）：比较集合的两种 L1 编码。
  *
- * - Hash（现行线格式）：经生产的 [RemoteStore] 读写，即 `READ`（`PTTL` + `GET` 类型不符 + `HGETALL`）与 `ADD_MEMBERS` / `REMOVE_MEMBERS`。
+ * - Hash（现行线格式）：经生产的 [RemoteStore] 读写，即 `READ`（`PTTL` + `GET` 类型不符 + `HKEYS` + `HGET !f`）与 `ADD_MEMBERS` / `REMOVE_MEMBERS`。
  * - 备选（`*Alt`）：原生 Set + 同 slot 的控制 Hash（`{…}:c` 存 `!f`，`{…}:s` 存成员），只在本基准内用等价的 Lua 原型实现，
  *   不是生产代码。读取同样先试 `GET`，与真实读脚本的分派路径一致。
  *
@@ -112,7 +112,7 @@ open class SetCacheBenchmark {
     @Benchmark
     fun setL2Hit(): Set<String> = cache["hot"]
 
-    /** 读 L1（Hash）：一次 EVALSHA（`PTTL` + `GET` 类型不符 + `HGETALL`），客户端去掉成员前缀。 */
+    /** 读 L1（Hash）：一次 EVALSHA（`PTTL` + `GET` 类型不符 + `HKEYS` + `HGET !f`），客户端去掉成员前缀。 */
     @Benchmark
     fun setL1Read(): RemoteRead = store.read(hashKey, null, null)
 
