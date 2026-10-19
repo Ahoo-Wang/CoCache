@@ -17,6 +17,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.core.policy.CachePolicy
 import java.time.Duration
+import java.util.function.Consumer
 
 /**
  * 业务 key → 存储 key 的编码（不含前缀与命名空间）。
@@ -101,6 +102,13 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
             block: CachePolicy.Builder.() -> Unit
         ) = apply { this.policy = policy.toBuilder().apply(block).build() }
 
+        /**
+         * 在当前策略基础上修改（Java 友好）。
+         */
+        fun updatePolicy(customizer: Consumer<CachePolicy.Builder>) = apply {
+            this.policy = policy.toBuilder().also { customizer.accept(it) }.build()
+        }
+
         fun build(): CacheSpec<K, V> = CacheSpec(this)
     }
 
@@ -153,10 +161,22 @@ class SetCacheSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
         fun keyPrefix(keyPrefix: String) = apply { this.keyPrefix = keyPrefix }
         fun keyEncoder(keyEncoder: KeyEncoder<K>) = apply { this.keyEncoder = keyEncoder }
         fun elementCodec(elementCodec: Codec<E>) = apply { this.elementCodec = elementCodec }
+
+        /**
+         * 整体替换策略。注意 [CachePolicy.DEFAULT] 的 `ttl` 是 1 小时：集合缓存的 L1 是唯一副本，
+         * 应以 [DEFAULT_POLICY]`.toBuilder()` 为起点，或用 [updatePolicy] 在当前策略上修改。
+         */
         fun policy(policy: CachePolicy) = apply { this.policy = policy }
         fun policy(
             block: CachePolicy.Builder.() -> Unit
         ) = apply { this.policy = policy.toBuilder().apply(block).build() }
+
+        /**
+         * 在当前策略（默认 [DEFAULT_POLICY]，永不过期）基础上修改（Java 友好）。
+         */
+        fun updatePolicy(customizer: Consumer<CachePolicy.Builder>) = apply {
+            this.policy = policy.toBuilder().also { customizer.accept(it) }.build()
+        }
 
         fun build(): SetCacheSpec<K, E> = SetCacheSpec(this)
     }

@@ -73,4 +73,21 @@ class InvalidationFrameTest {
             InvalidationFrame.decode(frame)
         }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
     }
+
+    @Test
+    fun rejectsKeyCountBeyondRemainingBytesWithoutAllocating() {
+        // count = Int.MAX_VALUE：若按计数预分配会 OOM
+        val maxVarint = byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x07)
+        val frame = byteArrayOf(InvalidationFrame.VERSION) + ByteArray(NodeId.SIZE) + maxVarint
+        val error = runCatching { InvalidationFrame.decode(frame) }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessageContaining("Key count")
+    }
+
+    @Test
+    fun rejectsKeyLengthBeyondRemainingBytesWithoutAllocating() {
+        val maxVarint = byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x07)
+        val frame = byteArrayOf(InvalidationFrame.VERSION) + ByteArray(NodeId.SIZE) + byteArrayOf(1) + maxVarint
+        val error = runCatching { InvalidationFrame.decode(frame) }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessageContaining("Key length")
+    }
 }

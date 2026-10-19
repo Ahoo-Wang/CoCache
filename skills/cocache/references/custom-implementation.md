@@ -1,243 +1,150 @@
-# Custom Cache Implementations
+# Custom Implementations (6.x)
 
 ## Contents
 
-- [Custom ClientSideCache (L2)](#custom-clientsidecache-l2)
-- [Custom DistributedCache (L1)](#custom-distributedcache-l1)
-- [Custom CacheEvictedEventBus](#custom-cacheevictedeventbus)
-- [Custom KeyConverter](#custom-keyconverter)
-- [Custom CacheSource](#custom-cachesource)
-- [Registering Custom Implementations](#registering-custom-implementations)
+- [What Can Be Customized](#what-can-be-customized)
+- [CacheLoader](#cacheloader)
+- [Codec](#codec)
+- [KeyEncoder, TtlFunction, KeyFilter](#keyencoder-ttlfunction-keyfilter)
+- [CacheSpecCustomizer](#cachespeccustomizer)
+- [Custom CoherenceBackend](#custom-coherencebackend)
+- [Registering a Backend](#registering-a-backend)
 
-All SPI interfaces live in `cocache-api`. An implementation only needs `cocache-api`, plus `cocache-test` to run the TCK specs.
+## What Can Be Customized
 
-## The Store Contract
+| You provide | Interface | Where it lives |
+|-------------|-----------|----------------|
+| Data source | `CacheLoader<K, V>` | `cocache-api` |
+| Value bytes | `Codec<V>` | `cocache-api` |
+| Storage key | `KeyEncoder<K>` | `cocache-core` (`CacheSpec`) |
+| Per-entry lifetime | `TtlFunction<K, V>` | `cocache-core` (`CacheSpec`) |
+| Existence filter (e.g. Bloom) | `KeyFilter` | `cocache-core` (`CacheSpec`) |
+| Declaration tweaks | `CacheSpecCustomizer` | starter |
+| L1 + invalidation channel | `CoherenceBackend` SPI | `cocache-api` (`me.ahoo.cocache.api.spi`) |
 
-L2 and L1 are both `CacheStore`s. A store **only stores**: TTL, jitter and negative-cache policy are decided above it, and they reach the store already encoded in `CacheValue.ttlAt`.
+Not customizable: the L2 is always Caffeine (size it with `LocalPolicy` / `@CaffeineCache`), and stateful components (L2, stores, subscriptions) are always created by `CacheRuntime`. You pass functions and specs, never instances that hold cache state.
+
+## CacheLoader
 
 ```kotlin
-interface CacheStore<V> {
-    fun getCache(key: String): CacheValue<V>?      // may return expired entries; callers check isExpired
-    fun setCache(key: String, value: CacheValue<V>) // an expired value means evict
-    fun evict(key: String)
+class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
+    override fun load(key: String): User? = repo.findById(key)          // null = not found (negative entry)
+
+    override fun loadAll(keys: Collection<String>): Map<String, User> =  // keys missing from the map are not found
+        repo.findAllById(keys).associateBy { it.id }
 }
 ```
 
-`CacheValue<V>` is sealed:
+- The loader runs synchronously on the caller's thread, so transactions, security context, and MDC are available.
+- Throwing propagates the original exception to the caller and to every coalesced waiter; the lease is released.
+- Do not read the same key from the same cache inside `load` (same-thread reentry fails fast).
+- Do not return lifetimes from the loader; use `ttlOf` or the policy.
+
+## Codec
 
 ```kotlin
-when (value) {
-    is PresentValue -> /* value.value, value.ttlAt */
-    is MissingValue -> /* negative entry, value.ttlAt */
+object UserProtoCodec : Codec<User> {
+    override fun encode(value: User): ByteArray = value.toProto().toByteArray()
+    override fun decode(bytes: ByteArray): User = UserProto.parseFrom(bytes).toUser()
 }
 ```
 
-Store `MissingValue` as an explicit negative record; never infer one from absence.
+A decode failure is treated as a corrupt payload: the entry is reclaimed only if Redis still holds the same bytes, then reloaded. Changing a codec's byte layout is safe only if `decode` throws on the old layout (or still reads it).
 
-## Custom ClientSideCache (L2)
+Built-ins: `StringCodec` (`cocache-core`), `JacksonCodec` / `jacksonCodec<V>(mapper)` (`cocache-codec-jackson`, Jackson 3). For interface-style caches, a unique `Codec<V>` bean is picked up automatically, or name one with `@CoCache(codec = "beanName")`.
+
+## KeyEncoder, TtlFunction, KeyFilter
 
 ```kotlin
-interface ClientSideCache<V> : CacheStore<V> {
-    val size: Long
-    fun clear()
+cacheSpec<UserId, User>("user") {
+    codec = jacksonCodec<User>(mapper)
+    loader = userLoader
+    keyEncoder = KeyEncoder { "${it.tenant}:${it.id}" }               // stored as cocache:user:{tenant}:{id}
+    ttlOf = TtlFunction { _, user -> if (user.vip) Duration.ofHours(6) else null }
+    keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
 }
 ```
 
-```kotlin
-class Cache2kClientSideCache<V>(private val cache: org.cache2k.Cache<String, CacheValue<V>>) : ClientSideCache<V> {
-    override fun getCache(key: String): CacheValue<V>? = cache.peek(key)
+- `KeyEncoder` maps the business key to the part after `{keyPrefix}{namespace}:`. Two keys that encode equally share one entry. Interface-style caches use `@CoCache(keyExpression = "#{tenant}:#{id}")` instead.
+- `TtlFunction.ttlOf(key, value)`: non-null overrides the policy `ttl` with no jitter; `null` falls back to the policy. Negative entries always use `absentTtl`. Results are clamped to `[1 ms, 100 years]`. Configuration-file `ttl` does not affect it.
+- `KeyFilter.notExist(storageKey)`: `true` returns "not found" without touching L1 or the loader and without caching anything. `SetCacheSpec` has no key filter.
 
-    override fun setCache(key: String, value: CacheValue<V>) {
-        if (value.isExpired) {
-            evict(key)
-            return
-        }
-        cache.put(key, value)
+## CacheSpecCustomizer
+
+```kotlin
+@Bean
+fun tenantPrefix() = object : CacheSpecCustomizer {
+    override fun supports(cacheName: String) = cacheName.startsWith("tenant")
+    override fun customize(spec: CacheSpec.Builder<*, *>) {
+        spec.keyPrefix = "app1:"
     }
-
-    override fun evict(key: String) = cache.remove(key)
-    override val size: Long get() = cache.asMap().size.toLong()
-    override fun clear() = cache.clear()
-}
-```
-
-Keep L2 **bounded**. Avoid per-entry expiry hooks that write metadata on every read (e.g. a Caffeine `Expiry`): a hot key then stops scaling across threads. The coherent cache checks `isExpired` on read and evicts expired entries itself.
-
-Test it:
-
-```kotlin
-class Cache2kClientSideCacheTest : ClientSideCacheSpec<String>() {
-    override fun createCacheStore(): ClientSideCache<String> = Cache2kClientSideCache(newCache2k())
-    override fun createCacheEntry(): Pair<String, String> = UUID.randomUUID().toString() to "v"
-}
-```
-
-## Custom DistributedCache (L1)
-
-```kotlin
-interface DistributedCache<V> : CacheStore<V>, AutoCloseable
-```
-
-Contract:
-
-- `getCache` returns `null` for a **miss** (absent key, key deleted mid-read, corrupted payload). The coherent cache then reloads from the source.
-- Return `MissingValue(ttlAt)` only when the store holds a negative record you wrote earlier.
-- Read the value and its remaining TTL in one round trip (or atomically), and derive `ttlAt` from the store's own expiry.
-- On write, clamp the remaining TTL to at least one second; write `FOREVER` entries without expiry.
-
-```kotlin
-class MemcachedDistributedCache<V>(
-    private val client: MemcachedClient,
-    private val codec: Codec<V>,
-) : DistributedCache<V> {
-    override fun getCache(key: String): CacheValue<V>? {
-        val record = client.gets(key) ?: return null            // miss
-        return record.decode(codec)                              // PresentValue or MissingValue with stored ttlAt
-    }
-
-    override fun setCache(key: String, value: CacheValue<V>) {
-        if (value.isExpired) {
-            evict(key)
-            return
-        }
-        val ttlSeconds = if (value.isForever) 0 else value.expiredDuration.seconds.coerceAtLeast(1).toInt()
-        client.set(key, ttlSeconds, codec.encode(value))         // encode MissingValue as your sentinel
-    }
-
-    override fun evict(key: String) {
-        client.delete(key)
-    }
-
-    override fun close() = client.shutdown()
-}
-```
-
-For Redis structures, extend `AbstractCodecExecutor` (or `StringCodecExecutor` / `HashCodecExecutor`) and wrap it in `RedisDistributedCache`. You provide `readScript` (built with `readScript("GET" | "HGETALL" | "SMEMBERS" | ...)`, an atomic one-round-trip Lua read returning `{ttl, ...raw}`), `toRaw`, `isMissingGuard`, `decode`, `encode`, `encodeMissingGuard`, and `writeRaw`. The base class supplies the atomic read, the miss semantics, self-healing of corrupted payloads, and TTL clamping.
-
-Test it (stores that rebuild `ttlAt` from server expiry should override the `open` TTL tests with a ±1 s tolerance):
-
-```kotlin
-class MemcachedDistributedCacheTest : DistributedCacheSpec<String>() {
-    override fun createCacheStore(): DistributedCache<String> = MemcachedDistributedCache(client, StringCodec())
-    override fun createCacheEntry(): Pair<String, String> = UUID.randomUUID().toString() to "v"
-}
-```
-
-## Custom CacheEvictedEventBus
-
-```kotlin
-interface CacheEvictedEventBus {
-    fun publish(event: CacheEvictedEvent)            // best effort; must not throw on transport failure
-    fun register(subscriber: CacheEvictedSubscriber)
-    fun unregister(subscriber: CacheEvictedSubscriber)
-}
-
-interface CacheEvictedSubscriber : NamedCache {
-    fun onEvicted(cacheEvictedEvent: CacheEvictedEvent)
-    fun onReset()
-}
-```
-
-**The reset contract is mandatory.** Call `subscriber.onReset()` whenever its subscription is (re)established: on registration, and after every reconnect or consumer-group rebalance that may have skipped messages. The subscriber clears its L2, and that bounds staleness after lost events. Route events by `cacheName`; subscribers ignore events whose `publisherId` is their own `clientId`.
-
-```kotlin
-class KafkaCacheEvictedEventBus(
-    private val producer: KafkaProducer<String, CacheEvictedEvent>,
-    private val consumerFactory: () -> KafkaConsumer<String, CacheEvictedEvent>,
-    private val topic: String,
-) : CacheEvictedEventBus {
-    private val subscribers = ConcurrentHashMap<String, MutableSet<CacheEvictedSubscriber>>()
-
-    init {
-        thread(isDaemon = true, name = "cocache-kafka-evicted") {
-            consumerFactory().use { consumer ->
-                consumer.subscribe(listOf(topic), object : ConsumerRebalanceListener {
-                    override fun onPartitionsRevoked(partitions: Collection<TopicPartition>) = Unit
-                    override fun onPartitionsAssigned(partitions: Collection<TopicPartition>) {
-                        subscribers.values.flatten().forEach { it.onReset() }   // events may have been skipped
-                    }
-                })
-                while (true) {
-                    consumer.poll(Duration.ofMillis(100)).forEach { record ->
-                        val event = record.value()
-                        subscribers[event.cacheName]?.forEach { it.onEvicted(event) }
-                    }
-                }
-            }
-        }
-    }
-
-    override fun publish(event: CacheEvictedEvent) {
-        runCatching { producer.send(ProducerRecord(topic, event.cacheName, event)) }
-    }
-
-    override fun register(subscriber: CacheEvictedSubscriber) {
-        if (subscribers.computeIfAbsent(subscriber.cacheName) { CopyOnWriteArraySet() }.add(subscriber)) {
-            subscriber.onReset()
-        }
-    }
-
-    override fun unregister(subscriber: CacheEvictedSubscriber) {
-        subscribers[subscriber.cacheName]?.remove(subscriber)
+    override fun customize(spec: SetCacheSpec.Builder<*, *>) {
+        spec.keyPrefix = "app1:"
     }
 }
 ```
 
-Test it with `CacheEvictedEventBusSpec` (it asserts that registration triggers `onReset`).
+Customizers run in Spring order after the declaration and before `cocache.defaults.*` / `cocache.caches.[name].*`.
 
-## Custom KeyConverter
+## Custom CoherenceBackend
+
+Implement this only to put L1 on something other than Redis. The backend is one SPI with two faces, because whoever serializes writes should also emit the invalidation:
 
 ```kotlin
-fun interface KeyConverter<K> {
-    fun toStringKey(sourceKey: K): String
+interface CoherenceBackend : AutoCloseable {
+    val atomicBroadcast: Boolean          // can a write and its broadcast happen in one atomic step?
+    val format: Int                       // wire-format version this backend writes
+    val channel: InvalidationChannel
+    fun store(namespace: String): RemoteStore
 }
 ```
 
-Built-ins: `ToStringKeyConverter(prefix)` and `ExpKeyConverter(prefix, "#{...}")` (compiled SpEL template). Include a cache-specific prefix so caches never share keys.
+`RemoteStore` handles bytes and tokens only; the engine passes every TTL, refresh window, and token. Each method is atomic per key:
+
+| Method | Contract |
+|--------|----------|
+| `read(key, lease, refresh)` | Absent key + lease requested → write a lease placeholder with `lease.ttl`, return `Miss(true)`. Lease placeholder → `Leased(remaining)`. Value whose remaining life ≤ `refresh.window` and no live token (or token older than `tokenTtl`) → store the refresh token, return `Hit(refreshGranted = true)`. Content you did not write → `Hit(format = 0)` |
+| `readAll(keys, leases)` | `read` per key; lease only for keys in `leases`; no refresh tokens; result has every key |
+| `fill(fill)` / `fillAll` | Write only if the key still holds `fill.token` (lease or refresh token); reset expiry to `fill.ttl` (`null` = never) |
+| `release(key, token)` | Token matches: delete a lease placeholder, or just clear a refresh token |
+| `put(key, envelope, ttl, frame)` | Overwrite, destroy any token, reset expiry, broadcast `frame` |
+| `invalidate(keys, frame)` | Delete and broadcast |
+| `reclaim(key, observed, lease)` | Only if the current content's `Digest` equals `observed`, turn the key into a lease placeholder |
+| `addMembers` / `removeMembers` | Set semantics for `SetCache`: add replaces any non-set state; remove only touches sets and deletes the key when empty; reset expiry; broadcast |
+
+Hard rules:
+
+- **Reset the expiry on every state change.** A lease's or negative entry's TTL must never leak onto a new value.
+- **An absent key or a lease placeholder is a miss, never a negative entry.** Negative entries are only `Envelope.Absent` written by `fill` / `put`.
+- **Never delete from `read`.** Corruption goes through `reclaim`.
+- **Tokens are compared byte-for-byte** (`Token.toBytes()`, 24 bytes). They are globally unique; do not generate them in the backend.
+- **When `atomicBroadcast` is `true`, broadcast `frame` in the same atomic step as the write.** When `false`, ignore `frame`; the engine calls `channel.publish` after the write succeeds.
+- Throw on failure; the engine decides whether to degrade, retry, or rethrow.
+
+`InvalidationChannel`:
 
 ```kotlin
-class TenantKeyConverter(private val prefix: String) : KeyConverter<TenantKey> {
-    override fun toStringKey(sourceKey: TenantKey): String = "$prefix${sourceKey.tenantId}:${sourceKey.id}"
+interface InvalidationChannel {
+    fun subscribe(namespace: String, listener: InvalidationListener): Subscription
+    fun publish(namespace: String, frame: ByteArray)   // called only when atomicBroadcast == false
 }
 ```
 
-## Custom CacheSource
+- Decode frames with `InvalidationFrame.decode(bytes)` and call `listener.onInvalidated(keys, origin)`. The engine filters its own `origin`.
+- **Call `onReset()` after every (re)subscription is confirmed**, including the first one, and whenever events may have been lost (for example a failed heartbeat). Delivery may be at-most-once; resets are what keep L2 bounded.
+- Prefer returning from `subscribe` only after that first reset ran, so a late reset can't clear fresh L2 entries.
+
+`InMemoryBackend` (`cocache-core`) is a complete reference implementation; `RedisScripts` in `cocache-redis` shows the same protocol in Lua.
+
+Verify the backend with `BackendProtocolSpec`, `EngineSpec`, and `SetEngineSpec` (see `testing.md`).
+
+## Registering a Backend
+
+Spring Boot: declare it as a bean; the auto-configured Redis backend backs off.
 
 ```kotlin
-fun interface CacheSource<K, V> {
-    fun loadCacheValue(key: K): CacheValue<V>?
-}
+@Bean(destroyMethod = "close")
+fun cocacheBackend(): CoherenceBackend = MyBackend.connect()
 ```
 
-| Returns | CoCache behavior |
-|---------|------------------|
-| `CacheValue.of(value, TtlAt.at(seconds))` | Positive entry with its own TTL |
-| `CacheValue.forever(value)` | Positive entry without expiry (only if writers always evict) |
-| `null` | Negative entry for the cache's `missingTtl` (cache-penetration protection); `get(key)` returns `null` |
-| `CacheValue.missing(TtlAt.at(seconds))` | Negative entry with a custom window |
-| throws | The exception reaches every caller waiting on this key's load (unwrapped); nothing is cached |
-
-```kotlin
-@Bean("UserCache.CacheSource")
-fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> = CacheSource { id ->
-    userRepository.findById(id).orElse(null)?.let { CacheValue.of(it, TtlAt.at(300)) }
-}
-```
-
-Concurrent misses of the same key are coalesced, so the source is called once per key at a time per instance. Do not read the same key from the same cache inside `loadCacheValue`; that recursive load fails fast.
-
-## Registering Custom Implementations
-
-| Component | Bean name (per cache) | By type? |
-|-----------|-----------------------|----------|
-| `ClientSideCache<V>` | `{cacheName}.ClientSideCache` | No (stateful) |
-| `DistributedCache<V>` | `{cacheName}.DistributedCache` | No (stateful) |
-| `KeyConverter<K>` | `{cacheName}.KeyConverter` | No (prefix must be cache-specific) |
-| `CacheSource<K, V>` | `{cacheName}.CacheSource` | Yes, if unique for `<K, V>` |
-| `JoinKeyExtractor<V1, K2>` | `{cacheName}.JoinKeyExtractor` | Yes, if unique |
-| `CacheEvictedEventBus` | any | Global bean replaces the Redis bus |
-
-```kotlin
-@Bean("UserCache.ClientSideCache")
-fun userClientSideCache(): ClientSideCache<User> = CaffeineClientSideCache.build(maximumSize = 100_000)
-```
+Plain JVM: `CacheRuntime.builder().backend(MyBackend.connect()).build()`. The runtime does not close the backend; close it after the runtime.

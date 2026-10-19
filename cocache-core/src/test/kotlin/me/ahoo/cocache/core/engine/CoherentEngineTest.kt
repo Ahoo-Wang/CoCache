@@ -305,13 +305,19 @@ class CoherentEngineTest {
     }
 
     @Test
-    fun unrecognizedRemoteContentInBatchBypassesRemote() {
+    fun unrecognizedRemoteContentInBatchIsReclaimed() {
         val cache = runtime().engine()
         database["k"] = "v"
         silentPut("k", Envelope.Scalar("legacy".toByteArray()))
         backend.afterReadAll = { reads -> reads.mapValues { (_, read) -> if (read is RemoteRead.Hit) read.copy(format = 0) else read } }
         cache.getAll(listOf("k")).assert().isEqualTo(mapOf("k" to "v"))
-        cache.metrics.degradedFills.assert().isEqualTo(1)
+        cache.metrics.reclaims.assert().isEqualTo(1)
+        cache.metrics.degradedFills.assert().isZero()
+        (
+            memory.store(
+                name
+            ).read(key("k"), null, null) as RemoteRead.Hit
+            ).envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
     }
 
     @Test
@@ -344,7 +350,7 @@ class CoherentEngineTest {
     }
 
     @Test
-    fun batchSkipsLeasedCorruptAndNewerFormatKeys() {
+    fun batchSkipsLeasedAndNewerFormatKeysAndReclaimsCorrupt() {
         val cache = runtime().engine()
         database["leased"] = "l"
         database["corrupt"] = "c"
@@ -357,8 +363,18 @@ class CoherentEngineTest {
         }
         val values = cache.getAll(listOf("leased", "corrupt", "newer"))
         values.assert().isEqualTo(mapOf("leased" to "l", "corrupt" to "c", "newer" to "n"))
-        cache.metrics.degradedFills.assert().isEqualTo(3)
+        cache.metrics.degradedFills.assert().isEqualTo(2)
+        cache.metrics.reclaims.assert().isEqualTo(1)
         cache.metrics.unknownFormats.assert().isEqualTo(1)
+        (
+            memory.store(
+                name
+            ).read(
+                key("corrupt"),
+                null,
+                null
+            ) as RemoteRead.Hit
+            ).envelope.assert().isEqualTo(Envelope.Scalar("c".toByteArray()))
         memory.store(name).read(key("leased"), null, null).assert().isInstanceOf(RemoteRead.Leased::class.java)
         (
             memory.store(

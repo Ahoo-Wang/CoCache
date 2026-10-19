@@ -11,6 +11,8 @@
  * limitations under the License.
  */
 
+description = "CoCache Spring integration: annotations, Spring Cache adapter, transactional invalidation"
+
 dependencies {
     api(project(":cocache-core"))
     api("org.springframework:spring-context")

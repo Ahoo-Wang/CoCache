@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-description = "CoCache 6.0 Jackson 3 codec"
+description = "CoCache Jackson 3 codec"
 
 dependencies {
     api(project(":cocache-api"))

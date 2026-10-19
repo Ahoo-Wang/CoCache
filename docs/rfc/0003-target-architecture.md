@@ -1,6 +1,6 @@
 # RFC 0003：目标架构（第一性原理重构，6.0）
 
-- 状态：草案 v3（已经过两轮对抗验证，见 §10）；§9 步骤 1–4 已在 `me.ahoo.cocache` 包中实现（`cocache-redis` 为 Lettuce 后端；starter 以 `cocache.next.*` 过渡前缀、默认关闭的方式并存；Sharded 通道已实现（`RedisBackendOptions.channelMode = SHARDED`）；JMH 对比见 §7.1）。Q9 经维护者复议改为：保留 `@CoCache` 接口式声明，主接口命名为 `Cache`（见 §8 Q9）。SPI 与线格式以代码为准（`me.ahoo.cocache.api.spi`、`me.ahoo.cocache.redis.RedisScripts`）
+- 状态：**已实施（6.0）**。草案 v3 经两轮对抗验证（§10）；§9 步骤 0–5 已完成，6.0 已取代 5.x，现行规范见 [architecture.md](../architecture.md)。未随 6.0 交付的部分（`MultiNodeSpec`、`FaultSpec`、Valkey CI 等）已在正文中标注“推迟”，并列入 [roadmap](../roadmap.md)“6.0 之后”。Q9 经维护者复议改为：保留 `@CoCache` 接口式声明，主接口命名为 `Cache`（见 §8 Q9）。SPI 与线格式以代码为准（`me.ahoo.cocache.api.spi`、`me.ahoo.cocache.redis.RedisScripts`）
 - 前提：**不考虑兼容性**。API、SPI、模块、Redis 线格式、配置项都可以推倒重来
 - 关系：吸收并取代 [RFC 0001](0001-l1-write-back-lease.md)（lease 成为唯一的写回保护原语，6.0 只破坏一次线格式，不再单独发布 lease）；[RFC 0002](0002-resp3-client-tracking.md) 变为新后端 SPI 下的一种可选通道
 
@@ -45,7 +45,7 @@
 
 | # | 目标 | 可度量的表述 |
 |---|------|--------------|
-| G1 | 陈旧度有上界 | **L1**：协议内竞态造成的陈旧为 0；协议外（绕过缓存的写入、故障切换丢写）≤ `ttl`。**L2**：事件送达时 ≤ 事件延迟；事件丢失时 ≤ `min(localMaxAge, 心跳超时 + 重连时长)`；`invalidate` 写入 L1 失败且重试队列溢出时 ≤ `min(localMaxAge, L1 剩余 TTL)`；降级填充 ≤ `degradedLocalMaxAge`。`localMaxAge` 默认 5 分钟（有限值） |
+| G1 | 陈旧度有上界 | **L1**：协议内竞态造成的陈旧为 0；协议外（绕过缓存的写入、故障切换丢写）≤ `ttl`。**L2**：事件送达时 ≤ 事件延迟；事件丢失时 ≤ `min(localMaxAge, 心跳超时 + 重连时长)`；`invalidate` 写入 L1 失败且重试放弃时 ≤ L1 剩余 TTL（L2 到期后从旧的 L1 重新填充；`ttl = null` 时无上界，计数并告警）；降级填充 ≤ `degradedLocalMaxAge`。`localMaxAge` 默认 5 分钟（有限值） |
 | G2 | 失效不被吞没 | **L1**：读取开始于某次失效之前的填充，永远不会在该失效之后出现在 L1。**L2**：在某个节点处理完一次失效（本地调用返回，或收到并处理了远端事件，或执行了重置）之后，该节点的 L2 永远不会再出现读取开始于这次失效之前的填充 |
 | G3 | 命中路径便宜 | L2 命中（spec bean 注入的就是引擎本身，没有代理层）与 5.4 直接调用引擎相比不退化；L1 命中一次往返；单 key 的失效、写入各一次往返；同一 key 全集群并发未命中时，若 loader 耗时小于 `lease.wait`，只回源一次 |
 
@@ -139,7 +139,7 @@ cocache-redis                  Lettuce 后端；依赖 lettuce-core，不依赖 
 cocache-codec-jackson          Jackson 3（tools.jackson，与 Spring Boot 4 一致）Codec，可选
 cocache-spring                 Spring Cache 适配（CacheManager），供不用 Boot 的 Spring 应用使用
 cocache-spring-boot-starter    自动配置、spec bean 注册、配置分层、actuator、Micrometer
-cocache-test                   TCK：BackendProtocolSpec、EngineSpec、MultiNodeSpec、FaultSpec
+cocache-test                   TCK：BackendProtocolSpec、EngineSpec、SetEngineSpec、HookedBackend（MultiNodeSpec、FaultSpec 推迟到 6.0 之后）
 cocache-bom
 ```
 
@@ -314,7 +314,7 @@ interface InvalidationListener {
 | 2 | 1 | 状态：`V` 值、`M` 负缓存、`L` lease 占位 |
 | 3 | 1 | 保留 |
 | 4 | 24 | 令牌：`L` 状态下是 lease 令牌，`V` 状态下是刷新令牌，全零表示无 |
-| 28 | 8 | 令牌签发时间（服务端 `TIME`，毫秒） |
+| 28 | 8 | 令牌签发时间（服务端 `TIME` 的纪元毫秒，大端 IEEE 754 double，即 Lua `struct.pack('>d')`） |
 | 36 | n | 载荷（`Codec<V>` 的输出；`M`、`L` 状态无载荷） |
 
 - 读取：`PTTL` + `GET`，与 5.x 的 `TTL` + `GET` 成本相同。
@@ -335,7 +335,7 @@ Hash 只用于状态 `S`：lease 占位与负缓存总是标量形状的 String 
 
 **到期时间**：一律用 `PEXPIRE` / `PTTL`，毫秒精度，以相对时长传输，不受实例间时钟偏差影响。**每次状态转换都必须显式重设到期时间**（`PEXPIRE`，永不过期用 `PERSIST`），因为 `HSET`、`SETRANGE` 会保留旧 TTL，否则 lease 的 10 s TTL、负缓存的 TTL 会泄漏到新值上。`PEXPIRE` 的参数钳到至少 1 ms（≤ 0 会删除 key）。
 
-**外部失效**：外部系统不需要理解线格式。随 `cocache-redis` 发布官方的 `invalidate` 脚本和一个小型 Java/CLI 工具，负责构造帧并原子执行 `DEL` + `PUBLISH`。
+**外部失效**：外部系统不需要理解线格式。随 `cocache-redis` 发布官方的 `invalidate` 脚本和一个小型 Java/CLI 工具，负责构造帧并原子执行 `DEL` + `PUBLISH`。（推迟：6.0 未提供该工具，外部写入方按 architecture.md §6.2 自行 `DEL` 并发布帧。）
 
 ### 4.4 一致性协议
 
@@ -370,7 +370,7 @@ L2 写入方的完整顺序：
 |------|------|
 | `invalidate` | 戳 → 淘汰 L2 → Lua `DEL`+`PUBLISH` → 戳（无论成功失败）→ 淘汰 L2 |
 | `put` | 戳 → 淘汰 L2 → Lua 覆盖+`PUBLISH` → 戳（无论成功失败）→ 淘汰 L2。**不写 L2**，下一次读取从 L1 填充 |
-| `add` / `remove` | 戳 → Lua 元素写入+`PUBLISH` → 戳 → 淘汰 L2 |
+| `add` / `remove` | 戳 → 淘汰 L2 → Lua 元素写入+`PUBLISH` → 戳 → 淘汰 L2（与 `put`、`invalidate` 相同的写入方顺序） |
 | 收到远端事件 | 戳 → 淘汰 L2 |
 | `onReset` | 全部戳递增 → 清空 L2 |
 
@@ -511,7 +511,7 @@ loadBypassingL1(key, k, stamp):                   // 回源，不写 L1，L2 以
 
 **环境探测**：启动时执行一次探测脚本（向不在 key 所在 slot 的频道 `PUBLISH`）。在 ElastiCache Serverless 这类把 `PUBLISH` 当作 `SPUBLISH` 执行的环境中，探测会失败并报跨 slot 错误，此时后端以 `atomicBroadcast = false` 运行，并输出告警和指标。
 
-**兼容性**：Redis 7.0+ 与 Valkey 7.2+（用到 `TIME`、`SETRANGE`、`SPUBLISH`）。
+**兼容性**：Redis 7.0+ 与 Valkey 7.2+（用到 `TIME`、`SETRANGE`、`SPUBLISH`）。Valkey 未纳入 6.0 的 CI。不支持静态主从（master-replica）拓扑。
 
 ### 4.8 集合：`SetCache` 只用于 L1 是唯一副本的场景
 
@@ -538,7 +538,7 @@ v2 曾把 `SetCache` 分成 `SOURCE` 与 `REMOTE` 两种模式。第二轮验证
 | 默认 TTL | `FOREVER` |
 | 迁移已有数据 | 一次性的 `put(key, fullSet)`（运维操作） |
 
-**L1 作为唯一副本的前提**（写入用户文档；启动时尽力检查，`CONFIG` 被禁用的托管环境中只告警）：
+**L1 作为唯一副本的前提**（写入用户文档；启动时尽力检查，`CONFIG` 被禁用的托管环境中只告警。6.0 未实现启动检查，只写在文档中）：
 
 - Redis 的 `maxmemory-policy` 不能是 `allkeys-*`，否则内存压力下会淘汰权威数据。没有 TTL 的 key 在 `volatile-*` 与 `noeviction` 策略下不会被淘汰。
 - 数据的持久性等于 Redis 的持久性（RDB/AOF、复制）。异步复制在故障切换时可能丢失最近的写入，所以 `SetCache` 不适合保存不能丢失的数据。
@@ -565,28 +565,30 @@ class CachePolicy(                                // 不可变，带 Builder；J
     val refreshWindow: Duration? = null,
     val lease: LeasePolicy = LeasePolicy(ttl = Duration.ofSeconds(10), wait = Duration.ofMillis(200)),
     val load: LoadPolicy = LoadPolicy(maxConcurrent = 0, acquireTimeout = Duration.ofSeconds(1)),
-    val local: LocalPolicy = LocalPolicy(maximumSize = 10_000, initialCapacity = null, expireAfterAccess = null, weigher = null),
+    val local: LocalPolicy = LocalPolicy(maximumSize = 10_000, initialCapacity = null, expireAfterAccess = null),
+    val invalidateFailure: InvalidateFailureMode = InvalidateFailureMode.RETRY,
+    val readFailure: ReadFailureMode = ReadFailureMode.DEGRADE,
 )
 ```
 
 - **按 key 或值决定寿命**：`CacheSpec<K, V>.ttlOf: ((K, V) -> Duration?)`。返回非 null 时优先于 `ttl`，**不加抖动**；返回 null 时按 `ttl` 加抖动。负缓存总是用 `absentTtl`。
 - **来源与优先级**（后者覆盖前者）：内置默认值 → 声明（spec DSL）→ `CacheSpecCustomizer` → 配置文件 `cocache.defaults.*` 与 `cocache.caches.[<name>].*`。配置文件放在最后，运维调参不需要重新编译。配置文件中的 `ttl` 不影响 `ttlOf`。
-- **校验**：所有缓存创建完成后（`SmartInitializingSingleton`）统一校验。配置文件中出现未声明的缓存名、`refreshWindow ≥ ttl`、`refreshWindow ≥ localMaxAge` 等都会导致启动失败。
+- **校验**：所有缓存创建完成后（`SmartInitializingSingleton`）统一校验。配置文件中出现未声明的缓存名、`refreshWindow ≥ ttl − 实际抖动`（抖动幅度不超过 `ttl / 2`）、`refreshWindow ≥ localMaxAge`、时长超过 100 年、使用已删除的 5.x 配置项等都会导致启动失败。
 
 ### 4.11 运行时与声明
 
 ```kotlin
 val runtime = CacheRuntime.builder()
-    .backend(RedisBackend.create(lettuceClient))
+    .backend(RedisBackend.standalone(RedisURI.create("localhost", 6379)))
     .clock(TickingClock())
     .build()
 
 val users: Cache<String, User> = runtime.create(
     cacheSpec<String, User>("user") {
         keyEncoder { it }                 // 默认 toString
-        codec(JacksonCodec(jsonMapper))
+        codec = jacksonCodec<User>(jsonMapper)
         loader { id -> userRepository.findById(id).orElse(null) }
-        policy { ttl = Duration.ofMinutes(2); local { maximumSize = 1_000_000 } }
+        policy { ttl = Duration.ofMinutes(2); local = LocalPolicy(maximumSize = 1_000_000) }
     }
 )
 ```
@@ -637,16 +639,16 @@ val users: Cache<String, User> = runtime.create(
 | 类别 | 操作 | L1 故障时 |
 |------|------|-----------|
 | 填充 | 读、fill、刷新、种子 | 按未命中处理，回源结果只进 L2 并按 `degradedLocalMaxAge` 限龄，计数并告警。可以按缓存配置 `readFailure = THROW`（对应 5.x 的 `strictFailure = true`）：L1 读失败直接抛出 `CacheReadException`，fill、释放令牌等尽力而为的操作仍然降级 |
-| 失效 | `invalidate`、`invalidateAll` | 本地效果（两次递增戳、淘汰 L2）先生效；L1 失败时进入有界重试队列（默认开启；指数退避；操作幂等），**不抛出**。排队期间，L1 中仍是旧值：该 key 的未命中**跳过 L1** 直接回源，并以 `degradedLocalMaxAge` 填 L2（这个检查只在未命中路径上，不影响命中路径）；重试成功后，本节点再递增一次戳并淘汰 L2（本节点自己的事件会被过滤，不能依赖它）。队列溢出或重试耗尽时记录错误并计数，此时其它节点的陈旧上界为 `min(localMaxAge, L1 剩余 TTL)`。需要同步结果的调用方可以配置 `failure.invalidate = THROW` |
+| 失效 | `invalidate`、`invalidateAll` | 本地效果（两次递增戳、淘汰 L2）先生效；L1 失败时进入有界重试队列（默认开启；指数退避；操作幂等），**不抛出**。排队期间，L1 中仍是旧值：该 key 的未命中**跳过 L1** 直接回源，并以 `degradedLocalMaxAge` 填 L2（这个检查只在未命中路径上，不影响命中路径）；重试成功后，本节点再递增一次戳并淘汰 L2（本节点自己的事件会被过滤，不能依赖它）。队列溢出或重试耗尽时记录错误并计数，此时其它节点的陈旧上界为 L1 剩余 TTL（L2 到期后会从旧的 L1 重新填充；运行时关闭时仍在排队的重试同样计为放弃）。需要同步结果的调用方可以配置 `invalidateFailure = THROW` |
 | 显式写入 | `put`、`add`、`remove` | 本地效果先生效，然后抛出 `CacheWriteException`。结果未知（超时）时，L1 可能已经生效；这些操作都是幂等的，可以安全重试 |
 
 回源并发上限（bulkhead）保持 5.3 的语义：只计 leader，批量回源只占一个许可。
 
 ### 4.14 可观测与运维
 
-- **默认全开的指标**：分层命中（L2/L1）、未命中、回源（耗时、异常、拒绝）、合并数、lease（取得、等待、等待超时、fill 失败、释放）、刷新、降级填充、回收、未知格式、失效（发出、收到、写入失败、重试、溢出）、重置、心跳超时、原子广播是否可用。
+- **默认全开的指标**：分层命中（L2/L1）、未命中、回源（耗时、异常、拒绝）、合并数、lease（取得、等待、等待超时、fill 失败、释放）、刷新、降级填充、回收、未知格式、失效（发出、收到、写入失败、重试、溢出）、重置、心跳超时、原子广播是否可用。（6.0 实际提供的计数见 `CacheMetrics` 与 starter 的 `CacheCounters`：L1 命中、未命中、过滤、回源耗时与失败与拒绝、lease 等待与等待超时、fill 被拒、降级填充、戳作废、回收、未知格式、刷新与刷新被拒、L1 失败、收到的失效、写入失败、失效重试与丢弃、重置；没有 L2 命中、合并数、lease 取得与释放、心跳超时与原子广播能力。）
 - **L2 命中计数**：使用分条带计数器（条带数为 2 的幂，每条带独占缓存行，按线程哈希选择条带，CAS 或 `getAndAdd`）。验收：8 线程、至少 5 轮交替运行、比较中位数与 95% 置信区间，回退不超过测量噪声（约 ±4%）。达不到就保持默认关闭。
-- **`CacheAdmin`**（运维接口，不属于用户 API）：按字符串 key 查看 L2 与 L1（不回源，不取 lease）、强制失效、查看策略与指标，供 actuator 端点使用。
+- **`CacheAdmin`**（运维接口，不属于用户 API）：按字符串 key 查看 L2 与 L1（不回源，不取 lease）、强制失效、查看策略与指标，供 actuator 端点使用。（6.0 只实现了 `name`、`metrics`、`localSize` 与 `clearLocal()`；按 key 查看、强制失效与策略查看推迟。actuator 端点 `cocache` 提供缓存列表、单个缓存的计数与清空本节点 L2。）
 - **迁移说明**：L1 不再能直接用 `redis-cli GET` 读出 JSON；跨服务直接 `HGET` 读取缓存字段的用法不再支持。这两点都要写进迁移指南。
 
 ---
@@ -655,16 +657,16 @@ val users: Cache<String, User> = runtime.create(
 
 | 删除 | 由什么取代 |
 |------|------------|
-| `Cache`/`CacheGetter`/`CacheSetter`、三态 `getCache`、`set(key, ttlAt, value)`、`set(key, null)` | `CoCache`、`Lookup`、`invalidate` |
+| 5.x 的 `Cache`/`CacheGetter`/`CacheSetter`、三态 `getCache`、`set(key, ttlAt, value)`、`set(key, null)` | 6.0 的 `Cache`（Q9）、`Lookup`、`invalidate` |
 | `CacheValue` 出现在用户 API 中 | 内部 `Entry` |
 | `CacheStore`、`ClientSideCache`、`DistributedCache`、`MapClientSideCache` | 固定 Caffeine L2 + `RemoteStore`；测试用 `InMemoryBackend` 与 `ManualClock` |
 | `SetElementsStore.fillCache`/`evictIfUnchanged`、写后复核后撤销 L1 | L1 lease 栅栏 + §4.8 的模式规则 |
-| `_nil_` 哨兵、`missing-guard-sentinel` 配置、元素不得等于哨兵的约束 | 线格式中的状态字节 / `!s` 字段 |
+| `_nil_` 哨兵、`missing-guard-sentinel` 配置、元素不得等于哨兵的约束 | 线格式中的状态字节（集合 Hash 只有 `!f` 控制字段） |
 | `CodecExecutor` 体系（String/Hash/Set × String/Object/JSON）、Hash 形状（`ObjectToHash`） | `Codec<V>` + 标量 / 集合两种形状 |
 | `CacheEvictedEventBus`、`CacheEvictedEvent`、`key@@publisherId` 文本格式、每个缓存一个订阅 | `InvalidationChannel` + 进程级 Router + 二进制帧 + 官方外部失效工具 |
 | `ClientIdGenerator`（每个缓存一个 id） | 每个进程一个 `NodeId` |
 | 9 种工厂、bean 名后缀约定、`AbstractCacheFactory` | `CacheSpec` + `CacheRuntime` + `CacheSpecCustomizer` |
-| `@CaffeineCache` | `CachePolicy.local`（保留 `maximumSize`、`initialCapacity`、`expireAfterAccess`，新增 `weigher`） |
+| `me.ahoo.cache` 包下的 `@CaffeineCache` | `CachePolicy.local`（保留 `maximumSize`、`initialCapacity`、`expireAfterAccess`；未加入 `weigher`）；接口式声明仍可用 `me.ahoo.cocache.api.annotation.CaffeineCache` |
 | `object CacheClock`（静态线程） | 可注入的 `CacheClock` |
 | `TtlPolicy`（含兼容构造函数）、`strictFailure`、`recordClientSideHits` | `CachePolicy`、§4.13 的规则、分条带计数器 |
 | `CacheSource` 返回带 `ttlAt` 的 `CacheValue` | `CacheLoader` + `ttlOf(K, V)` |
@@ -702,12 +704,12 @@ val users: Cache<String, User> = runtime.create(
 | L2 命中（spec bean） | 直接调用引擎（基线） | 不退化（差异在噪声内） | `l2Hit`，三个配置不同的缓存 |
 | L2 命中（接口式声明，经代理） | 5.4 经代理：比直接调用慢约 14% | 不劣于 5.4 经代理 | `l2HitViaInterface` 对 `l2HitViaProxy`，见 §7.1 |
 | L1 命中 | 1 RTT（TTL + GET） | 1 RTT（PTTL + GET），吞吐不退化；每个 key 内存 +36 B | `l1Read`，标量值 64 B / 1 KB / 10 KB；测内存 |
-| 集合 L1 命中 | 1 RTT（TTL + SMEMBERS） | 1 RTT（PTTL + HGETALL）；公布吞吐与内存差异 | 新增 `setRead`，成员数 10 / 100 / 1000 |
+| 集合 L1 命中 | 1 RTT（TTL + SMEMBERS） | 1 RTT（PTTL + HGETALL）；公布吞吐与内存差异 | 新增 `setRead`，成员数 10 / 100 / 1000（推迟，6.0 未提供） |
 | 未命中回源 | 读 + 回源 + 写，共 2 RTT | 读（含 lease）+ 回源 + fill，共 2 RTT | `missLoad` |
 | 单 key `put` / `invalidate` | 各 2 RTT | 各 1 RTT | `set`、新增 `invalidate` |
 | 批量 N 个 key | pipeline（专用连接、EVAL） | 共享连接多路复用（EVALSHA，NOSCRIPT 回退） | `l1BatchRead`，N = 10/100 |
-| M 个实例同时未命中同一 key | M 次回源 | 1 次（loader 耗时 < `lease.wait` 时） | `MultiNodeSpec` 计数断言 |
-| 热点 key 提前刷新 | 每个实例各 1 次 | 全集群 1 次 | 同上 |
+| M 个实例同时未命中同一 key | M 次回源 | 1 次（loader 耗时 < `lease.wait` 时） | `MultiNodeSpec` 计数断言（推迟；6.0 由 `EngineSpec.concurrentMissesAcrossNodesLoadOnceThroughLease` 在两个运行时上断言） |
+| 热点 key 提前刷新 | 每个实例各 1 次 | 全集群 1 次 | 同上（6.0：`EngineSpec.refreshAheadReloadsOnceAcrossNodes`） |
 
 ### 7.1 实测（2026-10-19，本机单机 Redis 7，JDK 17）
 
@@ -767,17 +769,18 @@ val users: Cache<String, User> = runtime.create(
 6.0 在新包 `me.ahoo.cocache` 下与 5.x 并行开发，新旧模块在同一个仓库中共存，所以每一步都能独立合入并通过 `check`；最后一步删除旧模块。
 
 0. **先修 5.x**：§10 C1（同实例失效吞没、`setCache` 的 L2 写入无保护）是 5.x 现存的缺陷，先在 5.4.x 中修复并补上复现用例（[#628](https://github.com/Ahoo-Wang/CoCache/issues/628)）。
-1. **TCK 先行**：`cocache-test` 新增 `BackendProtocolSpec`（状态机、令牌、到期时间重设、原子广播能力、reclaim、release、NOSCRIPT 回退）和 `ManualClock`；`InMemoryBackend` 首先通过。
+1. **TCK 先行**：`cocache-test` 新增 `BackendProtocolSpec`（状态机、令牌、到期时间重设、原子广播能力、reclaim、release、NOSCRIPT 回退）和 `ManualClock`；`InMemoryBackend` 首先通过。（NOSCRIPT 回退已实现于 `RedisConnections`，但 6.0 没有专门用例；`ManualClock` 放在 `cocache-core`。）
 2. **api + core**：`Cache`、`CacheSpec`、`CacheRuntime`、`CoherentEngine`、批量 SingleFlight、`CachePolicy`。把 `DefaultCoherentCacheSpec` 的 in-flight 系列用例迁移到新引擎，并补上 §10 中每个协议发现的复现用例。
-3. **cocache-redis**：Lua 协议、线格式、命令多路复用、Router、心跳、环境探测；单机、Cluster 与 Valkey CI；JMH 对比 5.4（§7）。
-4. **cocache-spring + starter**：spec 注册、`@CoCache` 接口式声明与 `@EnableCoCache`、配置分层与校验、Spring Cache 适配、事务内失效 `TransactionalInvalidator`（已完成，过渡前缀 `cocache.next.*`）；actuator、Micrometer 随后补齐。
-5. **切换、删除与文档**（一个破坏性 PR，前置条件：观测接入与 `TransactionalInvalidator` 已合入；Sharded 通道已合入或明确推迟到 6.x）：
+3. **cocache-redis**：Lua 协议、线格式、命令多路复用、Router、心跳、环境探测；单机、Cluster 与 Valkey CI；JMH 对比 5.4（§7）。（Valkey CI 推迟到 6.0 之后。）
+4. **cocache-spring + starter**：spec 注册、`@CoCache` 接口式声明与 `@EnableCoCache`、配置分层与校验、Spring Cache 适配、事务内失效 `TransactionalInvalidator`；actuator、Micrometer 随后补齐。（已完成；过渡前缀 `cocache.next.*` 已在第 5 步改为 `cocache.*`。）
+5. **切换、删除与文档**（已完成；一个破坏性 PR，前置条件：观测接入与 `TransactionalInvalidator` 已合入；Sharded 通道已合入或明确推迟到 6.x）：
    - **切换**：6.0 自动配置改为默认启用，过渡前缀 `cocache.next.*` 改为正式前缀 `cocache.*`，`CoCacheNextAutoConfiguration` 等类去掉 `Next`。
    - **删除 5.x**：`cocache-spring-redis`、`cocache-spring-cache` 两个模块；`cocache-api`、`cocache-core`、`cocache-spring`、starter、`cocache-test` 中 `me.ahoo.cache.*` 包下的全部代码，包括 `@CoCache` / `@CaffeineCache` / `@JoinCacheable` 注解、`@EnableCoCache`、代理与工厂、JoinCache、SpEL key 转换器（6.0 有各自的替代，D11 的 JoinCache 除外）；core 去掉 `spring-expression` 与 `kotlin-reflect` 依赖；5.x 的 JMH 基准。
    - **示例**：`cocache-example` 改用 6.0 的 `@CoCache` 与 `@EnableCoCache`（另附一个 spec bean 示例），starter 测试随之迁移。
    - **文档**：重写 `docs/architecture.md`（以本 RFC 为准，删除“已知的固有窗口”）、wiki（中英文）、`skills/cocache/`、AGENTS.md 的不变量与 TCK 表；版本号改为 6.0.0。
    - **迁移指南**（changelog）：
-     - 接口式声明：写法不变，只换 import（`me.ahoo.cache.api.annotation.CoCache` → `me.ahoo.cocache.api.annotation.CoCache`，`me.ahoo.cache.api.Cache` → `me.ahoo.cocache.api.Cache`，`me.ahoo.cache.spring.EnableCoCache` → `me.ahoo.cocache.spring.boot.EnableCoCache`）。注解属性改名：`ttlAmplitude` → `ttlJitter`、`missingTtl` → `absentTtl`、`clientSideTtl` → `localMaxAge`、`refreshAhead` → `refreshWindow`。数据源由 `{name}.CacheSource` bean 改为按 `CacheLoader<K, V>` 泛型匹配（或 `@CoCache(loader = …)`）。缓存名与 L1 key 前缀保持不变。
+     - 接口式声明：写法不变，只换 import（`me.ahoo.cache.api.annotation.CoCache` → `me.ahoo.cocache.api.annotation.CoCache`，`me.ahoo.cache.api.Cache` → `me.ahoo.cocache.api.Cache`，`me.ahoo.cache.spring.EnableCoCache` → `me.ahoo.cocache.spring.boot.EnableCoCache`）。注解属性改名：`ttlAmplitude` → `ttlJitter`、`missingTtl` → `absentTtl`、`clientSideTtl` → `localMaxAge`、`refreshAhead` → `refreshWindow`。数据源由 `{name}.CacheSource` bean 改为按 `CacheLoader<K, V>` 泛型匹配（或 `@CoCache(loader = …)`）。缓存名保持不变；L1 key 改为 `{keyPrefix}{namespace}:{key}`（`keyPrefix` 默认 `cocache:`，`namespace` 默认等于缓存名），5.x 的 `keyPrefix + key` 不再沿用。
+     - 语义变化（不是单纯改名）：5.x `clientSideTtl = 0`（不限期）在 6.0 没有对应，L2 总受 `localMaxAge`（默认 5 分钟）限龄；`refreshAhead = 0` 对应 `refreshWindow = 0`（关闭）；`FOREVER` 只能用于 `ttl`（与 `@CaffeineCache.expireAfterAccess`）；`@CaffeineCache.expireUnit` 删除（统一为秒）；注解不再支持元注解与 `@Inherited`。完整清单以 wiki《Migrating from 5.x to 6.0》为准。
      - `{cacheName}.ClientSideCache` 等 bean 名后缀约定 → `CacheSpecCustomizer` 与 `cocache.caches.[name].*`。
      - `getCache` / `CacheValue` / `set(key, ttlAt, value)` → `get` / `lookup` / `put(key, value, ttl)`；`set(key, null)` → `invalidate`。
      - `SetElementsCache` → `SetCache`（只用于 L1 是唯一副本的集合；数据源中的集合改用 `Cache<K, Set<E>>` + `invalidate`）。
@@ -785,7 +788,7 @@ val users: Cache<String, User> = runtime.create(
      - **不再支持的能力**（见 §11）：Jedis（6.0 只支持 Lettuce；使用 Jedis 的应用需要引入 Lettuce，CoCache 自建客户端，与应用自己的 Redis 客户端互不影响）；显式写入负缓存 `setCache(key, MissingValue)`（改为 `invalidate`，或让数据源返回 `null`，由引擎写入负缓存）；可替换的 L2（`{name}.ClientSideCache`，如 `MapClientSideCache`；6.0 固定为 Caffeine，容量用 `@CaffeineCache` 或 `cocache.caches.[name].local-maximum-size` 配置，测试改用 `InMemoryBackend` 与 `ManualClock`）。
      - **不能滚动升级**：线格式与失效频道都已改变，5.x 与 6.0 节点不能在同一集群中混跑，需要整体切换。切换后 L1 中 5.x 留下的值会被识别为格式 0，按损坏条件回收后回源，无需手工清理；也可以在切换时按前缀删除旧 key 以立即释放内存。
 
-验收：architecture.md 删除“已知的固有窗口”；`MultiNodeSpec` 覆盖 §4.4 的全部交错（失效先于 lease、晚于 lease、晚于 fill；同节点失效与并发读；同节点与跨节点的并发 `put`；失效重试期间的未命中）、全集群单次回源和单次刷新；`FaultSpec` 覆盖 Redis 故障时的降级限龄、失效重试与溢出、写入抛出后重试的幂等性、断线时命令不被重放、故障切换后的 NOSCRIPT。
+验收：architecture.md 删除“已知的固有窗口”（已完成）；`MultiNodeSpec` 与 `FaultSpec` 推迟到 6.0 之后（见 roadmap），6.0 由 `EngineSpec`（两个运行时共享一个后端、`HookedBackend` 注入故障）覆盖其中大部分交错。原计划：`MultiNodeSpec` 覆盖 §4.4 的全部交错（失效先于 lease、晚于 lease、晚于 fill；同节点失效与并发读；同节点与跨节点的并发 `put`；失效重试期间的未命中）、全集群单次回源和单次刷新；`FaultSpec` 覆盖 Redis 故障时的降级限龄、失效重试与溢出、写入抛出后重试的幂等性、断线时命令不被重放、故障切换后的 NOSCRIPT。
 
 ---
 
@@ -867,9 +870,9 @@ v1 由三路独立的对抗审查验证：协议正确性（构造交错反例�
 | JoinCache | `@JoinCacheable`、`JoinCache` | 无，用两次 `getAll` 组合 | ❌ |
 | 布隆过滤器 | `BloomKeyFilter`（Guava） | `KeyFilter` 函数，由用户包装 | 🔁 |
 | Spring Cache | `CoCacheManager`，`sync` 按 key 合并 | `CoCacheSpringCacheManager`，`sync` 走 lease 保护的回源 | ✅ |
-| 指标 | Micrometer 计数器、L2 命中计数可选 | `CacheMetrics` + Micrometer 绑定（`cocache.next.*`）；L2 命中计数暂不提供（需 JMH 证明开销） | ✅（L2 命中计数 🚧） |
-| actuator | `cocache`、`cocacheClient` 端点 | `cocachenext` 端点（列表、查看、清空本地副本），基于 `CacheAdmin` | ✅ |
+| 指标 | Micrometer 计数器、L2 命中计数可选 | `CacheMetrics` + Micrometer 绑定（`cocache.*`）；L2 命中计数暂不提供（需 JMH 证明开销） | ✅（L2 命中计数 🚧） |
+| actuator | `cocache`、`cocacheClient` 端点 | `cocache` 端点（列表、查看、清空本地副本），基于 `CacheAdmin`；按 key 查看与强制失效 🚧 | ✅ |
 | 自定义组件装配 | `{name}.ClientSideCache` 等 bean 名后缀 | `CacheSpecCustomizer`、配置文件 `cocache.caches.[name].*` | 🔁 |
 | 进程身份 | `ClientIdGenerator`，每个缓存一个 | `NodeId`，每个运行时一个 | 🔁 |
-| 第三方实现的 TCK | `CacheSpec`、`DistributedCacheSpec` 等 | `BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`HookedBackend` | ✅ |
+| 第三方实现的 TCK | `CacheSpec`、`DistributedCacheSpec` 等 | `BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`HookedBackend`；`MultiNodeSpec`、`FaultSpec` 🚧 | ✅ |
 | 测试时间控制 | 真实时钟 | `ManualClock`，确定性 TTL 测试 | ✅ 新增 |

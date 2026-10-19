@@ -14,6 +14,7 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.api.Cache
+import org.springframework.beans.factory.BeanFactory
 import org.springframework.beans.factory.support.BeanDefinitionRegistry
 import org.springframework.beans.factory.support.RootBeanDefinition
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar
@@ -35,9 +36,13 @@ class AnnotatedCacheRegistrar : ImportBeanDefinitionRegistrar {
                 "Cannot register cache interface[${type.name}]: the bean name[$cacheName] is already in use."
             }
             val definition = RootBeanDefinition(type).apply {
+                setAttribute(CacheBeanDefinitions.CACHE_NAME_ATTRIBUTE, cacheName)
                 instanceSupplier = Supplier {
-                    val factory = (registry as org.springframework.beans.factory.BeanFactory).getBean(AnnotatedCacheFactory::class.java)
-                    factory.create(type)
+                    CacheBeanDefinitions.requireComponent(
+                        registry as BeanFactory,
+                        AnnotatedCacheFactory::class.java,
+                        cacheName
+                    ).create(type)
                 }
             }
             registry.registerBeanDefinition(cacheName, definition)

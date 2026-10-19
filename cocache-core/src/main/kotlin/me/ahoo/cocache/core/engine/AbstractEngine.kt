@@ -34,8 +34,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * L2 副本：[value] 为 `null` 表示负缓存。到期与刷新时间均为纪元毫秒，[FOREVER] 表示没有。
+ *
+ * @param unresolved 没有数据源的缓存未命中时的“不存在”：只是没有答案，带 loader 的读取不接受它
  */
-internal class LocalEntry<V>(val value: V?, val expiresAt: Long, val refreshAt: Long = FOREVER)
+internal class LocalEntry<V>(
+    val value: V?,
+    val expiresAt: Long,
+    val refreshAt: Long = FOREVER,
+    val unresolved: Boolean = false
+)
 
 /**
  * 一次加载的结果及其开始时的失效戳。

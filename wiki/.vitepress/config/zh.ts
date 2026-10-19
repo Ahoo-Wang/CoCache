@@ -12,7 +12,6 @@ const guide: DefaultTheme.SidebarItem[] = [
   {
     text: '功能',
     items: [
-      { text: 'JoinCache', link: '/zh/guide/join-cache' },
       { text: 'Spring Cache', link: '/zh/guide/spring-cache' },
       { text: '运维', link: '/zh/guide/operations' },
     ],
@@ -20,6 +19,7 @@ const guide: DefaultTheme.SidebarItem[] = [
   {
     text: '版本',
     items: [
+      { text: '从 5.x 迁移', link: '/zh/guide/migration-6' },
       { text: '更新日志', link: '/zh/guide/changelog' },
     ],
   },

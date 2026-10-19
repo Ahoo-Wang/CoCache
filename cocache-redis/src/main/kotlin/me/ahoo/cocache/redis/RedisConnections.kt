@@ -51,7 +51,7 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
                 connection = commands
                 scripting = commands.async()
                 base = commands.async()
-                pubSub = client.connectPubSub(ByteArrayCodec.INSTANCE)
+                pubSub = connectPubSub(commands) { client.connectPubSub(ByteArrayCodec.INSTANCE) }
             }
 
             is RedisClient -> {
@@ -59,7 +59,7 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
                 connection = commands
                 scripting = commands.async()
                 base = commands.async()
-                pubSub = client.connectPubSub(ByteArrayCodec.INSTANCE)
+                pubSub = connectPubSub(commands) { client.connectPubSub(ByteArrayCodec.INSTANCE) }
             }
 
             else -> throw IllegalArgumentException("Unsupported Redis client: ${client.javaClass.name}.")
@@ -137,6 +137,22 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
     }
 
     private companion object {
+        /**
+         * 建立订阅连接；失败时关闭已建立的命令连接（避免泄漏）再抛出。
+         */
+        @Suppress("TooGenericExceptionCaught")
+        inline fun <C : StatefulRedisPubSubConnection<ByteArray, ByteArray>> connectPubSub(
+            commands: StatefulConnection<ByteArray, ByteArray>,
+            connect: () -> C
+        ): C {
+            try {
+                return connect()
+            } catch (e: RuntimeException) {
+                commands.close()
+                throw e
+            }
+        }
+
         fun isNoScript(error: Throwable): Boolean {
             return error is RedisNoScriptException || error.message?.startsWith("NOSCRIPT") == true
         }

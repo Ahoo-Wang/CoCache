@@ -15,8 +15,8 @@ pnpm fix:mermaid     # auto-fixes common Mermaid syntax issues
 ## Structure
 
 ```
-guide/          for users: introduction, quick-start, configuration, join-cache, spring-cache, operations, changelog
-architecture/   for integrators: index (goals, modules, data model, wiring), consistency, extending (SPI + TCK)
+guide/          for users: introduction, quick-start, configuration, spring-cache, operations, migration-6 (5.x → 6.0), changelog
+architecture/   for integrators: index (goals, modules, runtime, wire format, wiring), consistency, extending (backend SPI + TCK)
 zh/             one-to-one Chinese mirror of the above
 .vitepress/config/{en,zh}.ts   nav + sidebar (keep the two in step)
 ```
@@ -27,7 +27,7 @@ The wiki explains **how to use** CoCache and **why it behaves** as it does. Othe
 
 | Fact | Single source |
 |------|---------------|
-| Design invariants (normative) | `docs/architecture.md` |
+| Design invariants (normative) | `docs/architecture.md`, `docs/rfc/0003-target-architecture.md` |
 | Contribution workflow, quality gates, release process | `CONTRIBUTING.md` |
 | Build, test, and code-style rules for agents | root `AGENTS.md` |
 | API details | KDoc in the source |

@@ -110,4 +110,74 @@ class CachePolicyTest {
             refreshWindow = Duration.ofSeconds(1)
         ).refreshWindow.assert().isEqualTo(Duration.ofSeconds(1))
     }
+
+    @Test
+    fun rejectsDurationsBeyondTheCap() {
+        val huge = Duration.ofSeconds(Long.MAX_VALUE / 1000)
+        runCatching {
+            CachePolicy(
+                ttl = huge
+            )
+        }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        runCatching {
+            CachePolicy(
+                localMaxAge = huge
+            )
+        }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        runCatching {
+            CachePolicy(
+                absentTtl = huge
+            )
+        }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        runCatching {
+            CachePolicy(
+                ttlJitter = huge
+            )
+        }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        runCatching {
+            LeasePolicy(
+                wait = huge
+            )
+        }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        runCatching {
+            LoadPolicy(
+                acquireTimeout = huge
+            )
+        }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        CachePolicy(ttl = MAX_DURATION, localMaxAge = MAX_DURATION).ttl.assert().isEqualTo(MAX_DURATION)
+    }
+
+    @Test
+    fun boundedTtlClampsIntoRange() {
+        Duration.ofSeconds(Long.MAX_VALUE).boundedTtl().assert().isEqualTo(MAX_DURATION)
+        Duration.ZERO.boundedTtl().assert().isEqualTo(Duration.ofMillis(1))
+        Duration.ofSeconds(-5).boundedTtl().assert().isEqualTo(Duration.ofMillis(1))
+        Duration.ofSeconds(5).boundedTtl().assert().isEqualTo(Duration.ofSeconds(5))
+    }
+
+    @Test
+    fun jitterIsCappedAtHalfTheTtl() {
+        // 默认 60 秒抖动作用于 30 秒寿命：实际幅度只有 15 秒，不会产生 1 毫秒寿命
+        val policy = CachePolicy(ttl = Duration.ofSeconds(30), ttlJitter = Duration.ofMinutes(1))
+        repeat(500) {
+            requireNotNull(policy.valueTtl()).toMillis().assert().isBetween(15_000, 45_000)
+        }
+    }
+
+    @Test
+    fun refreshWindowMustLeaveRoomForJitter() {
+        runCatching {
+            CachePolicy(
+                ttl = Duration.ofSeconds(10),
+                ttlJitter = Duration.ofSeconds(4),
+                refreshWindow = Duration.ofSeconds(7)
+            )
+        }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        CachePolicy(
+            ttl = Duration.ofSeconds(10),
+            ttlJitter = Duration.ofSeconds(4),
+            refreshWindow = Duration.ofSeconds(5)
+        )
+            .refreshWindow.assert().isEqualTo(Duration.ofSeconds(5))
+    }
 }

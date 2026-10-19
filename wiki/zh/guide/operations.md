@@ -1,149 +1,140 @@
 ---
 title: 运维
-description: 生产环境运行 CoCache：Actuator 端点、指标、Redis 故障行为、负缓存哨兵、容量规划与陈旧读取排查。
+description: 生产环境运行 CoCache：Actuator 端点、指标、Redis 故障行为、从 CoCache 之外失效、查看 Redis、容量规划与陈旧读取排查。
 ---
 
 # 运维
 
-## Actuator 端点
+## Actuator 端点 {#actuator-endpoint}
 
-classpath 上有 `spring-boot-starter-actuator` 时，starter 会注册两个端点。像其它 Actuator 端点一样暴露它们：
+classpath 上有 `spring-boot-starter-actuator` 时，starter 提供一个端点 `cocache`。只有端点可用（允许访问且已暴露）时才会创建，所以像其它 Actuator 端点一样暴露它：
 
 ```yaml
 management:
   endpoints:
     web:
       exposure:
-        include: cocache, cocacheClient
+        include: cocache
 ```
 
 | 请求 | 效果 |
 |------|------|
-| `GET /actuator/cocache` | 所有缓存的报告：名称、`clientId`、L2 大小、TTL 策略、组件类 |
+| `GET /actuator/cocache` | 本实例每个缓存的报告：`name`、`localSize`（L2 条目数，估计值）、`loads`、`loadNanos`，以及 `metrics` 下[指标表](#metrics)中的全部计数器 |
 | `GET /actuator/cocache/{name}` | 单个缓存的报告 |
-| `GET /actuator/cocache/{name}/{key}` | 经由缓存读取条目。**未命中时会回源加载** |
-| `DELETE /actuator/cocache/{name}/{key}` | 从 L2、L1 淘汰该 key，并通知所有实例 |
-| `GET /actuator/cocacheClient/{name}` | 本实例 L2 的条目数 |
-| `GET /actuator/cocacheClient/{name}/{key}` | 本实例 L2 中的条目，不触发加载 |
-| `DELETE /actuator/cocacheClient/{name}` | 清空本实例的 L2 |
+| `DELETE /actuator/cocache/{name}` | 清空**本实例**该缓存的 L2。L1 不受影响，正在进行的加载会被放弃 |
 
-`DELETE` 操作会修改缓存，请像保护其它可写 Actuator 端点一样保护它们。
+端点从不读取或加载任何 key。`DELETE` 操作会改变状态，请像其它可写的 Actuator 端点一样加以保护。
 
 ## 指标 {#metrics}
 
-classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入它），starter 会把以下指标绑定到所有 `MeterRegistry`。按缓存统计的指标带 `cache` 标签，值为缓存名。
+classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入），starter 把以下指标绑定到所有 `MeterRegistry`。每个指标都带 `cache` 标签，值为缓存名。全部指标都在 L2 命中路径之外记录，始终开启。
 
 | 指标 | 类型 | 含义 |
 |------|------|------|
-| `cocache.hits{level=l2}` | counter | 由本实例 L2 返回的读取。仅在 `cocache.metrics.client-side-hits=true` 时统计 |
-| `cocache.hits{level=l1}` | counter | L2 未命中、由 Redis 返回的读取 |
-| `cocache.misses` | counter | L2 未命中次数，统计于同一 key 的并发未命中合并之前 |
-| `cocache.loads` | timer | 调用 `CacheSource` 的次数与耗时，含失败 |
-| `cocache.load.failures` | counter | `CacheSource` 抛出异常的次数 |
-| `cocache.filtered` | counter | key 过滤器判定“不存在”的读取 |
-| `cocache.stale.discards` | counter | 加载期间 key 被失效，加载结果被放弃或撤销的次数 |
-| `cocache.evictions.received` | counter | 收到其它实例失效事件的次数 |
-| `cocache.resets` | counter | 失效通道（重新）订阅并清空 L2 的次数 |
-| `cocache.refreshes` | counter | 提前刷新的执行次数，含失败；其中的回源同时计入 `cocache.loads` |
-| `cocache.load.rejections` | counter | 被 `cocache.load.max-concurrent` 拒绝的回源 |
-| `cocache.l2.size` | gauge | 本实例 L2 的条目数 |
-| `cocache.eviction.publish.failures` | counter | 发布失败的失效事件（无 `cache` 标签） |
+| `cocache.hits{level=l1}` | counter | 由 L1 满足的 L2 未命中 |
+| `cocache.misses` | counter | L2 未命中，在合并同一 key 的并发未命中之前计数 |
+| `cocache.filtered` | counter | 被 `KeyFilter` 判定为“不存在”的读取 |
+| `cocache.loads` | function timer | loader 调用（单 key 与批量）及累计耗时 |
+| `cocache.load.failures` | counter | 抛出异常的 loader 调用 |
+| `cocache.load.rejections` | counter | 被 `load-max-concurrent` 拒绝的回源 |
+| `cocache.lease.waits` | counter | 等待其它节点 lease 的读取 |
+| `cocache.lease.wait.timeouts` | counter | 等待 lease 超时、本节点回源但不写 L1 的读取 |
+| `cocache.fill.rejections` | counter | 被 lease 栅栏拒绝的 L1 填充（期间发生了失效，或 loader 慢于 `lease-ttl`） |
+| `cocache.degraded.fills` | counter | 只写入 L2（以 `degraded-local-max-age` 限龄）的加载 |
+| `cocache.stale.discards` | counter | 因加载期间收到失效而放弃的 L2 填充 |
+| `cocache.reclaims` | counter | 回收并重新加载的无法解码的 L1 载荷 |
+| `cocache.unknown.formats` | counter | 线格式版本高于本节点所知的 L1 值 |
+| `cocache.refreshes` | counter | 提前刷新的执行次数 |
+| `cocache.refresh.rejections` | counter | 被刷新执行器拒绝的刷新 |
+| `cocache.remote.failures` | counter | 失败的 L1 操作 |
+| `cocache.write.failures` | counter | 在 L1 上失败的写入与失效 |
+| `cocache.invalidation.retries` | counter | 安排的失效重试 |
+| `cocache.invalidations.dropped` | counter | 重试耗尽或重试队列溢出后放弃的失效 |
+| `cocache.invalidations.received` | counter | 从其它实例收到的失效事件 |
+| `cocache.resets` | counter | 清空 L2 的通道（重新）订阅与心跳失败 |
+| `cocache.local.size` | gauge | 本实例 L2 的条目数（估计值） |
 
-常用比值：
+没有 L2 命中计数：给最热的路径计数会造成可测量的吞吐下降。
 
-- **L2 命中率** = `hits{level=l2}` / (`hits{level=l2}` + `misses`)。需要开启 `cocache.metrics.client-side-hits=true`：在最热的路径上计数会使 L2 命中吞吐下降 8%–15%（JMH，1–8 线程），因此默认关闭。其余指标都不在命中路径上记录，始终开启。
-- **被合并的读取** = `misses` − `hits{level=l1}` − `loads`（不使用批量读取时），即等待其它线程加载结果的未命中。一次批量回源在 `loads` 中计为一次。
-- **`eviction.publish.failures` > 0** 表示其它实例的 L2 可能保留旧副本，直到 `clientSideTtl` 或 `ttl` 到期。
+需要关注：
+
+- **`invalidations.dropped` > 0**：部分实例可能在 `local-max-age` 内返回陈旧的 L2 副本，L1 可能保留旧值直到其 TTL。请检查 Redis 的可用性。
+- **`degraded.fills`、`remote.failures` 上升**：Redis 出现故障，读取正在回源。
+- **`lease.wait.timeouts` 相对 `lease.waits` 偏高**：loader 慢于 `lease-wait`，跨实例合并没有生效。调大 `lease-wait` 或加快 loader。
+- **`fill.rejections` 上升但没有对应的失效**：loader 慢于 `lease-ttl`。
+- **没有部署时 `resets` 上升**：订阅连接不稳定。
 
 ## Redis 故障 {#redis-failures}
 
-在默认的 `cocache.redis.strict-failure=false` 下，Redis 错误不会到达业务代码：
+| 操作 | L1 失败时 |
+|------|-----------|
+| 读取（`get`、`getAll`、`lookup`） | 默认（`read-failure: degrade`）：从数据源加载，只写入 L2，以 `degraded-local-max-age`（10 秒）限龄。`read-failure: throw`：抛出 `CacheReadException` |
+| 填充、释放 lease、刷新 | 总是尽力而为：记录日志并计数，从不抛出 |
+| `invalidate`、`invalidateAll` | 本地效果先生效。默认（`invalidate-failure: retry`）：以指数退避在后台重试，不抛出；重试成功之前，该 key 的未命中跳过 L1 直接回源。`invalidate-failure: throw`：抛出 `CacheWriteException` |
+| `put`，以及 `SetCache` 的 `add` / `remove` / `clear` | 本地效果先生效，然后抛出 `CacheWriteException`。超时时写入可能已经生效。这些操作都是幂等的，可以重试 |
 
-| 操作 | 默认（降级） | `strict-failure=true` |
-|------|--------------|------------------------|
-| L1 读取 | 记录 `WARN` 并视为未命中，值从数据源加载 | 重抛 `DataAccessException` |
-| L1 写入 / 淘汰 | 记录 `WARN` | 重抛 |
-| 发布淘汰事件 | 记录 `WARN`（两种模式相同） | 记录 `WARN` |
+**为降级的代价做好准备。** Redis 不可用时，每个 L2 未命中都会回源。同一 key 的并发未命中在每个实例内仍会合并，但不同的 key 不会。要限制回源量，设置 `load-max-concurrent`（每个缓存、每个实例）。超过上限的回源最多等待 `load-acquire-timeout` 获取许可，然后抛出 `SourceLoadRejectedException`，并计入 `load.rejections`。合并到在途加载上的调用不占用许可，一次批量回源占一个许可。
 
-请为降级的代价做好准备：Redis 不可用期间，每次 L2 未命中都会访问数据源。由于并发未命中会合并，同一 key 在每个实例上同时最多只有一次加载。确认数据源能承受这部分负载，否则选择 `strict-failure=true` 并自行处理异常。
+失效重试队列最多容纳 10,000 个失效，每个最多重试 8 次，退避从 100 ms 增长到 10 s。要修改这些参数，自己声明 `CacheRuntime` bean 并传入 `RetryPolicy`。
 
-不同 key 的加载不会合并，故障期间仍可能同时产生大量回源。设置 `cocache.load.max-concurrent`（每个实例、每个缓存）即可限制：超过上限的回源最多等待 `cocache.load.acquire-timeout` 获取许可，超时抛出 `SourceLoadRejectedException`，并计入 `cocache.load.rejections`。合并到在途加载的读取不占用许可，一次批量回源占用一个许可。
+**通道故障。** 订阅连接每隔 `heartbeat`（5 秒）PING 一次 Redis。PING 失败或连接断开时，每个缓存清空 L2，并以 `INFO` 级别记录 `Cache[…] - reset: clear local copies.`。连接恢复后会再清空一次，因为故障期间发布的事件已经丢失。
 
-失效通道断开期间不会进一步缩短 L2 副本的存活时间：通道重新订阅时每个实例都会清空 L2，因此断开造成的陈旧不会超过断开时长。连接未断但事件丢失的情况由 `clientSideTtl` 限定上界。
+## 从 CoCache 之外失效 {#external-eviction}
 
-淘汰事件通道重连时，每个实例清空 L2，并以 `INFO` 级别记录 `Channel[…] subscribed - reset subscriber`。故障期间发布的事件已丢失，清空 L2 保证旧条目不会在故障后继续存在。
+绕过 CoCache 的写入，例如直接执行 SQL、批处理任务、其它语言的服务，会让缓存陈旧直到 `ttl`。任何能访问同一 Redis 的进程都可以用 CoCache 自己的协议失效一个 key。该格式在一个大版本内冻结。
 
-## 负缓存哨兵 {#the-negative-cache-sentinel}
+| 部分 | 值 |
+|------|----|
+| 存储 key | `{keyPrefix}{namespace}:{key}`。默认配置下，`UserCache` 的 key `42` 是 `cocache:UserCache:42`。使用 `keyExpression` 时取表达式的结果 |
+| 频道 | `cocache:inv:{namespace}`，例如 `cocache:inv:UserCache` |
+| 消息 | 二进制帧：`[版本 = 1 : 1 字节][发布者 id : 16 字节][key 数 : varint]([key 长度 : varint][key : UTF-8])*`。发布者 id 必须与所有实例都不同，使用随机值即可 |
 
-在 Redis 中，负缓存以哨兵值存储，默认为 `_nil_`：
+权威数据提交之后：
 
-| Redis 类型 | 负缓存的形式 |
-|------------|--------------|
-| String | `_nil_` |
-| Hash | 单个字段 `{_nil_: <写入时间>}` |
-| Set | 单个成员 `{_nil_}` |
+1. `DEL {storageKey}` 删除 L1 副本并销毁 lease，所以在途的加载不能再把旧数据写回。
+2. `PUBLISH cocache:inv:{namespace} {frame}` 让每个实例丢弃 L2 副本。`channel-mode: sharded` 时使用 `SPUBLISH`。
 
-在内存中，负缓存是独立的类型（`MissingValue`），因此冲突只可能发生在 Redis 中。若一个 String 缓存的真实值可能恰好是 `_nil_`，读回时会被当作“不存在”；由其它程序写入的 Hash 或 Set 也可能以同样方式冲突。这种情况下请设置别的哨兵：
-
-```yaml
-cocache:
-  redis:
-    missing-guard-sentinel: "\u0000myapp:nil"
-```
-
-默认哨兵与自定义哨兵互不识别，因此**必须在所有实例上同时切换**。该值不能为空白。
-
-## 从 CoCache 之外淘汰 {#external-eviction}
-
-绕过 CoCache 的写入（直接执行 SQL、批处理任务、其它语言的服务）会让缓存保持陈旧直到 `ttl` 到期。任何能访问同一 Redis 的进程都可以用 CoCache 自己的协议淘汰 key。该格式在同一主版本内冻结。
-
-| 部分 | 取值 |
-|------|------|
-| 存储 key | `keyPrefix` + 转换后的 key。默认前缀为 `cocache:{cacheName}:`，因此 `UserCache` 的 key `42` 是 `cocache:UserCache:42`。使用 `keyExpression` 时取表达式的结果 |
-| 频道 | 缓存名，例如 `UserCache` |
-| 消息 | `{storageKey}@@{publisherId}`，订阅方按最后一个 `@@` 切分。`publisherId` 不得包含 `@@`，且不得与任何实例的 `clientId` 相同，例如 `cdc` |
-
-数据源提交后，按以下顺序淘汰：
-
-1. `DEL {storageKey}`：删除 L1 副本。
-2. `PUBLISH {cacheName} {storageKey}@@{publisherId}`：每个实例推进失效戳并丢弃 L2 副本。
-
-```bash
-redis-cli DEL cocache:UserCache:42
-redis-cli PUBLISH UserCache 'cocache:UserCache:42@@cdc'
-```
-
-在变更数据捕获（Debezium、Canal 或任何行变更流）的消费者中：
+`cocache-api`（没有运行时依赖）中的 `InvalidationFrame` 负责构造帧：
 
 ```kotlin
-class UserChangeEvictor(private val redis: StringRedisTemplate) {
-    fun onUserChanged(userId: String) {   // 在变更提交后调用
+class UserChangeInvalidator(private val redis: RedisCommands<String, ByteArray>) {
+    private val publisher = NodeId.random()
+
+    fun onUserChanged(userId: String) {   // 在变更提交之后调用
         val storageKey = "cocache:UserCache:$userId"
-        redis.delete(storageKey)
-        redis.convertAndSend("UserCache", "$storageKey@@cdc")
+        redis.del(storageKey)
+        redis.publish("cocache:inv:UserCache", InvalidationFrame.encode(publisher, listOf(storageKey)))
     }
 }
 ```
 
-- 与 CoCache 自己的事件一样至多投递一次。消息丢失时，其它实例的 L2 保持陈旧，直到 `clientSideTtl`（若已设置）或 `ttl` 到期。
-- 省略 `DEL` 会把旧值留在 L1，各实例会把它重新加载到 L2；省略 `PUBLISH` 会让其它实例的 L2 副本保留到过期。
-- 恰好在 `DEL` 之前读到旧数据的实例仍可能把它写回 L1。这与[一致性](../architecture/consistency.md#what-is-not-guaranteed)中描述的 cache-aside 竞态相同，由 `ttl` 限定上界。
+一个帧可以携带同一命名空间的多个 key。与 CoCache 自己的事件一样，投递至多一次：消息丢失时，其它实例的 L2 会陈旧到 `local-max-age`。省略 `DEL` 会让旧值留在 L1，各实例又会把它填回 L2。
 
-## 容量规划
+## 查看 Redis {#inspecting-redis}
+
+Redis 中每个 CoCache 值都以 36 字节的二进制头开始（magic 字节 `0xC0`、格式版本、状态、令牌、时间戳），后面是 codec 的字节。因此 `redis-cli GET` 显示的是二进制数据；负缓存与进行中的 lease 只有头、没有载荷。集合缓存是 Redis Hash，带一个 `!f` 格式字段，每个成员是一个 `+{member}` 字段。除了上面的失效协议，不要从其它程序读写 CoCache 的 key。
+
+要查看某个实例持有什么，用 Actuator 端点；要让所有实例重新加载某个 key，失效它。
+
+## 容量规划 {#sizing}
 
 - **L2 内存**约为 `maximumSize` × 平均值大小，按缓存、按实例计算。默认 `maximumSize` 为 10,000。
-- **Redis 内存**为每个存活 key 存一份。负缓存体积很小，并在 `missingTtl` 后过期。
-- **Redis Pub/Sub** 每个缓存一个频道，以缓存名命名。每次写入或淘汰发布一条消息，每个实例都会收到。
+- **Redis 内存**为每个存活 key 一份副本，外加 36 字节的头。负缓存只有头，在 `absentTtl` 后过期。
+- **Redis 流量。** L1 未命中的读取会写入 lease，提前刷新会写入令牌，所以读取也会产生一些复制与 AOF 流量。CoCache 的所有命令都发往主节点。
+- **Pub/Sub。** 每个缓存命名空间一个频道（`cocache:inv:{namespace}`），每个实例一条订阅连接。每次 `put` 或 `invalidate` 发布一条消息，所有实例都会收到。在 Redis Cluster 中，`channel-mode: sharded` 让这些流量留在一个分片内。
+- **大批量写入。** 一个脚本最多处理 `invalidate-batch-size`（512）个 key。一次写入非常大的 `SetCache` 集合会在执行期间阻塞所在分片。
 
-## 问题排查
+## 排查 {#troubleshooting}
 
 **某个实例一直返回旧值。**
-1. 确认写入方在数据库提交*之后*才淘汰。提交前淘汰会让并发读取重新加载旧数据。
-2. 确认每条写入路径都会淘汰，包括批处理任务以及写同一份数据的其它服务。CoCache 之外的写入路径可以使用[淘汰协议](#external-eviction)。
-3. 查看 `GET /actuator/cocache/{name}`：所有实例必须使用相同的缓存名，缓存名就是频道名。
-4. 查看 `cocache.eviction.publish.failures`。发布失败时，其它实例的 L2 副本会保持陈旧，直到 `clientSideTtl`（若已设置）或 `ttl` 到期。
-5. 剩下的陈旧来源是[一致性](../architecture/consistency.md#what-is-not-guaranteed)中描述的 cache-aside 竞态，由 `ttl` 限定上界。
+1. 确认写入方在数据库提交**之后**失效。事务内使用 `TransactionalInvalidator`。
+2. 确认所有写入路径都会失效，包括批处理任务和其它服务。CoCache 之外的路径可以使用[失效协议](#external-eviction)。
+3. 确认所有实例使用相同的缓存命名空间和相同的 `channel-mode`。`pubsub` 与 `sharded` 的实例互相收不到消息。
+4. 检查 `cocache.invalidations.dropped` 与 `cocache.write.failures`。
+5. 不带 `sync = true` 的 `@Cacheable` 中，Spring 的无条件 `put` 可能覆盖失效。请使用 `sync = true`。
 
-**新建的数据被报告为不存在。** 数据创建前的一次查询缓存了负缓存，最多持续 `missingTtl` 秒。创建数据后淘汰该 key，或调低 `missingTtl`。
+**新建的记录被报告为不存在。** 记录创建之前的一次查询缓存了负缓存，最长持续 `absentTtl`。创建记录后失效该 key，或调小 `absent-ttl`。
 
-**启动失败，提示有多个 `CacheSource` 候选。** 有两个 bean 都匹配该缓存的 `CacheSource<K, V>` 类型。把正确的那个命名为 `{cacheName}.CacheSource`，或标记为 `@Primary`。
+**启动失败，提示有多个 `CacheLoader` 候选。** 有两个 bean 匹配缓存的 `CacheLoader<K, V>` 类型。用 `@CoCache(loader = "beanName")` 指定正确的那个。
+
+**启动失败，提示某个 `cocache.*` 配置项。** 它是已删除的 5.x 配置项，或者 `cocache.caches.[name]` 指向了不存在的缓存。错误信息会给出替代项。见[从 5.x 迁移](./migration-6.md#properties)。

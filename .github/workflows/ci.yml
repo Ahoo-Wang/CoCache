@@ -178,15 +178,13 @@ jobs:
           redis-server --version
           .github/scripts/start-redis-cluster.sh "$RUNNER_TEMP/redis-cluster"
 
-      # RedisTestSupport、6.0 Redis 后端测试与 starter 测试都读取该变量，改为连接集群
+      # Redis 后端测试与 starter 测试都读取该变量，改为连接集群
       - name: Test Redis modules on Redis Cluster
         env:
           SPRING_DATA_REDIS_CLUSTER_NODES: 127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002
         run: >-
           ./gradlew --continue
           :cocache-redis:test
-          :cocache-spring-redis:test
-          :cocache-spring-cache:test
           :cocache-spring-boot-starter:test
 
       - name: Upload test reports

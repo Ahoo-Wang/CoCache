@@ -23,32 +23,50 @@ import org.springframework.beans.factory.SmartInitializingSingleton
 /**
  * 按声明创建缓存：依次叠加定制器与配置文件中的策略，再交给 [CacheRuntime]。
  *
- * 所有单例创建完成后校验：配置文件中出现未声明的缓存名时启动失败（多半是拼写错误）。
+ * 所有单例创建完成后校验：配置文件中出现未声明的缓存名时启动失败（多半是拼写错误）。缓存名不区分大小写
+ * （环境变量绑定的 key 是小写）；“已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供。
  */
 class CacheAssembler(
     private val runtime: CacheRuntime,
     private val customizers: List<CacheSpecCustomizer>,
-    private val properties: CoCacheNextProperties,
+    private val properties: CoCacheProperties,
+    private val declaredCacheNames: () -> Set<String> = { emptySet() },
 ) : SmartInitializingSingleton {
 
-    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> {
+    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> = withCacheName(spec.name) {
         val builder = spec.toBuilder()
         customizers.filter { it.supports(spec.name) }.forEach { it.customize(builder) }
         builder.policy = properties.policyFor(spec.name, builder.policy)
-        return runtime.create(builder.build())
+        runtime.create(builder.build())
     }
 
-    fun <K : Any, E : Any> create(spec: SetCacheSpec<K, E>): SetCache<K, E> {
+    fun <K : Any, E : Any> create(spec: SetCacheSpec<K, E>): SetCache<K, E> = withCacheName(spec.name) {
         val builder = spec.toBuilder()
         customizers.filter { it.supports(spec.name) }.forEach { it.customize(builder) }
         builder.policy = properties.policyFor(spec.name, builder.policy)
-        return runtime.create(builder.build())
+        runtime.create(builder.build())
     }
 
     override fun afterSingletonsInstantiated() {
-        val unknown = properties.caches.keys - runtime.cacheNames
+        val declared = runtime.cacheNames + declaredCacheNames()
+        val unknown = properties.caches.keys.filter { key -> declared.none { it.equals(key, ignoreCase = true) } }
         check(unknown.isEmpty()) {
-            "${CoCacheNextProperties.PREFIX}.caches configures undeclared caches $unknown; declared caches: ${runtime.cacheNames}."
+            "${CoCacheProperties.PREFIX}.caches configures undeclared caches $unknown; declared caches: ${declared.sorted()}."
         }
+    }
+}
+
+/**
+ * 策略校验等参数错误带上缓存名：`Cache[name] - …`。
+ */
+internal inline fun <T> withCacheName(cacheName: String, block: () -> T): T {
+    try {
+        return block()
+    } catch (e: IllegalArgumentException) {
+        val prefix = "Cache[$cacheName] - "
+        if (e.message?.startsWith(prefix) == true) {
+            throw e
+        }
+        throw IllegalArgumentException(prefix + e.message, e)
     }
 }

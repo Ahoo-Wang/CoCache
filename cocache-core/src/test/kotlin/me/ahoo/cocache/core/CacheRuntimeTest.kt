@@ -120,4 +120,33 @@ class CacheRuntimeTest {
         runtime.close()
         subscriptions.get().assert().isEqualTo(1)
     }
+
+    @Test
+    fun failedSubscribeRollsBackTheRegistration() {
+        val delegate = InMemoryBackend()
+        val attempts = AtomicInteger()
+        val flaky = object : me.ahoo.cocache.api.spi.CoherenceBackend by delegate {
+            override val channel = object : me.ahoo.cocache.api.spi.InvalidationChannel {
+                override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
+                    if (attempts.incrementAndGet() == 1) {
+                        throw IllegalStateException("subscribe failed")
+                    }
+                    return delegate.channel.subscribe(namespace, listener)
+                }
+
+                override fun publish(namespace: String, frame: ByteArray) = delegate.channel.publish(namespace, frame)
+            }
+        }
+        CacheRuntime.builder().backend(flaky).build().use { runtime ->
+            runCatching {
+                runtime.create(
+                    spec("user")
+                )
+            }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+            runtime.cache("user").assert().isNull()
+            // 回滚后同名、同命名空间可以重新创建
+            runtime.create(spec("user")).assert().isNotNull()
+            runtime.cacheNames.assert().containsExactly("user")
+        }
+    }
 }

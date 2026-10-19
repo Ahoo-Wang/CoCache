@@ -11,6 +11,8 @@
  * limitations under the License.
  */
 
+description = "CoCache Spring Boot auto-configuration, actuator endpoint and metrics"
+
 plugins {
     alias(libs.plugins.kotlin.spring)
     kotlin("kapt")
@@ -18,8 +20,6 @@ plugins {
 dependencies {
     kapt(platform(project(":cocache-dependencies")))
     api(project(":cocache-spring"))
-    api(project(":cocache-spring-cache"))
-    api(project(":cocache-spring-redis"))
     api(project(":cocache-redis"))
     api(project(":cocache-codec-jackson"))
     api("org.springframework.boot:spring-boot-starter-jackson")
@@ -30,14 +30,21 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-actuator")
     // Micrometer 指标按 @ConditionalOnClass 激活：编译期可见，由使用方自行引入
     compileOnly("io.micrometer:micrometer-core")
-    // Sharded Pub/Sub 失效通道按 @ConditionalOnClass 激活：需要 Lettuce
-    compileOnly("io.lettuce:lettuce-core")
     kapt("org.springframework.boot:spring-boot-configuration-processor")
     kapt("org.springframework.boot:spring-boot-autoconfigure-processor")
-    testImplementation("com.google.guava:guava")
     testImplementation("org.springframework.boot:spring-boot-starter-data-redis")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
-    testImplementation(project(":cocache-example"))
     testImplementation(project(":cocache-test"))
 }
 
+kapt {
+    arguments {
+        // kapt 的类输出目录不在 Gradle 的标准位置，显式告诉配置处理器去哪里找 additional-spring-configuration-metadata.json
+        arg("org.springframework.boot.configurationprocessor.additionalMetadataLocations", "$projectDir/src/main/resources")
+    }
+}
+
+tasks.matching { it.name == "kaptKotlin" }.configureEach {
+    inputs.file("src/main/resources/META-INF/additional-spring-configuration-metadata.json")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+}

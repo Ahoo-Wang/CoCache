@@ -65,7 +65,10 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             owned.add(AutoCloseable { it.shutdownNow() })
         }
         val scheduler = defaultScheduler().also { owned.add(AutoCloseable { it.shutdownNow() }) }
-        context = EngineContext(nodeId, clock, backend, refreshExecutor, InvalidationRetrier(scheduler, builder.retryPolicy))
+        val retrier = InvalidationRetrier(scheduler, builder.retryPolicy)
+        // 先于调度器关闭：未执行的重试计入丢弃并告警
+        owned.add(AutoCloseable { retrier.close() })
+        context = EngineContext(nodeId, clock, backend, refreshExecutor, retrier)
     }
 
     /**
@@ -82,7 +85,12 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         return register(spec.name, spec.namespace) { store -> SetEngine(spec, store, context) }
     }
 
-    private fun <C> register(name: String, namespace: String, factory: (RemoteStore) -> C): C where C : AbstractEngine<*, *> {
+    @Suppress("TooGenericExceptionCaught")
+    private fun <C> register(
+        name: String,
+        namespace: String,
+        factory: (RemoteStore) -> C
+    ): C where C : AbstractEngine<*, *> {
         check(!closed.get()) { "CacheRuntime is closed." }
         require(names[name] == null) { "Cache[$name] already exists." }
         require(namespaces.add(namespace)) { "Namespace[$namespace] is already used by another cache." }
@@ -95,7 +103,17 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         }
         registrations.add(registration)
         // 订阅建立时通道会回调 onReset（清空空的 L2，无害）
-        registration.subscription = backend.channel.subscribe(namespace, engine)
+        registration.subscription = try {
+            backend.channel.subscribe(namespace, engine)
+        } catch (e: Exception) {
+            // 回滚：否则同名重试会因“已存在”失败，而该命名空间永远收不到失效
+            registrations.remove(registration)
+            names.remove(name, registration)
+            namespaces.remove(namespace)
+            closeQuietly("cache $name") { engine.close() }
+            closeQuietly("store of $name") { store.close() }
+            throw e
+        }
         log.info { "Cache[$name] - created on namespace[$namespace], node[$nodeId]." }
         return engine
     }

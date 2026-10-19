@@ -30,6 +30,7 @@ import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.ReadFailureMode
+import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
@@ -61,7 +62,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 失效写入 L1 失败、仍在重试中的存储 key：未命中时跳过 L1（L1 中仍是旧值）。
      */
-    private val pendingInvalidations = ConcurrentHashMap.newKeySet<String>()
+    private val pendingInvalidations = ConcurrentHashMap<String, Int>()
 
     /**
      * 正在提前刷新的存储 key：每个节点每个 key 同一时刻至多一次。
@@ -78,7 +79,8 @@ internal class CoherentEngine<K : Any, V : Any>(
     override fun get(key: K, loader: CacheLoader<K, V>): V? {
         val storageKey = storageKey(key)
         val entry = local.getIfPresent(storageKey)
-        if (entry != null && entry.expiresAt > clock.nowMillis()) {
+        // 无数据源缓存的“未命中即不存在”只是没有答案，不能挡住调用方给出的 loader
+        if (entry != null && !entry.unresolved && entry.expiresAt > clock.nowMillis()) {
             return entry.value
         }
         return miss(key, storageKey, loader).value
@@ -108,21 +110,41 @@ internal class CoherentEngine<K : Any, V : Any>(
             return LocalEntry(null, clock.nowMillis() + policy.absentTtl.toMillis())
         }
         metrics.miss()
+        return loadMiss(key, storageKey, source)
+    }
+
+    /**
+     * 未命中的加载（已计数、已过 key 过滤器）。
+     */
+    private fun loadMiss(key: K, storageKey: String, source: CacheLoader<K, V>?): LocalEntry<V> {
         // 先于本次读取发生的失效此时必已递增戳：不接受开始于这些失效之前的共享加载（读己之写）
         val observed = stamps.current(storageKey)
         val loaded = flights.execute(storageKey) { loadThrough(key, storageKey, source) }
-        if (loaded.stamp >= observed) {
+        if (loaded.stamp >= observed && usable(loaded.entry, source)) {
             return loaded.entry
         }
         // 新一轮加载必然开始于上一轮结束之后（SingleFlight 先注销、再发布），因此至多重试一次
-        return flights.execute(storageKey) { loadThrough(key, storageKey, source) }.entry
+        val retried = flights.execute(storageKey) { loadThrough(key, storageKey, source) }.entry
+        if (usable(retried, source)) {
+            return retried
+        }
+        // 两次都合并到了不带数据源的加载（get(key) 与 get(key, loader) 并发）：自己回源，写回仍受戳保护
+        return loadThrough(key, storageKey, source).entry
     }
+
+    /**
+     * 合并到的加载若没有数据源，而本次调用带有数据源，则其结果不可用。
+     */
+    private fun usable(
+        entry: LocalEntry<V>,
+        source: CacheLoader<K, V>?
+    ): Boolean = !(entry.unresolved && source != null)
 
     @Suppress("TooGenericExceptionCaught")
     private fun loadThrough(key: K, storageKey: String, source: CacheLoader<K, V>? = loader): Loaded<V> {
         // 在 SingleFlight 注册之后取戳；整个调用（含等待 lease 的重读）只取这一次
         val stamp = stamps.current(storageKey)
-        if (pendingInvalidations.contains(storageKey)) {
+        if (pendingInvalidations.containsKey(storageKey)) {
             return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
         val lease = LeaseRequest(context.nextToken(), policy.lease.ttl)
@@ -231,7 +253,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         if (value == null) {
             return policy.absentTtl
         }
-        return spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl()
+        return (spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl())?.boundedTtl()
     }
 
     /**
@@ -249,14 +271,19 @@ internal class CoherentEngine<K : Any, V : Any>(
         if (source == null) {
             return absentWithoutLoader(storageKey, stamp, token)
         }
-        val value = try {
-            loadFromSource(key, source)
+        // 计算寿命与编码也可能抛出（用户的 ttlOf、Codec）：与回源一起释放 lease
+        var value: V? = null
+        val ttl: Duration?
+        val envelope: Envelope
+        try {
+            value = loadFromSource(key, source)
+            ttl = ttlOf(key, value)
+            envelope = envelopeOf(value)
         } catch (e: Throwable) {
             token?.let { release(storageKey, it) }
             throw e
         }
-        val ttl = ttlOf(key, value)
-        val filled = token != null && fillRemote(Fill(storageKey, token, envelopeOf(value), ttl))
+        val filled = token != null && fillRemote(Fill(storageKey, token, envelope, ttl))
         if (token != null && !filled) {
             metrics.fillRejected()
         }
@@ -274,7 +301,8 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private fun absentWithoutLoader(storageKey: String, stamp: Long, token: Token?): LocalEntry<V> {
         token?.let { release(storageKey, it) }
-        val entry = localEntry(null, policy.absentTtl, policy.localMaxAge)
+        val absent = localEntry(null, policy.absentTtl, policy.localMaxAge)
+        val entry = LocalEntry<V>(null, absent.expiresAt, absent.refreshAt, unresolved = true)
         fillLocal(storageKey, entry, stamp)
         return entry
     }
@@ -424,22 +452,19 @@ internal class CoherentEngine<K : Any, V : Any>(
             if (result != null && result.stamp >= observed.getValue(storageKey)) {
                 result.entry
             } else {
-                miss(
-                    sourceKeys.first(),
-                    storageKey
-                )
+                loadMiss(sourceKeys.first(), storageKey, loader)
             }
         }
     }
 
     /**
      * 批量：一次 L1 读取（为未命中的 key 申请 lease）→ 一次批量回源 → 一次批量写回。
-     * 批量路径不等待其它节点的 lease，也不回收损坏的载荷：这些 key 直接回源且不写 L1。
+     * 批量路径不等待其它节点的 lease（这些 key 直接回源且不写 L1）；损坏的载荷与单 key 路径一样条件回收。
      */
     private fun loadAllThrough(led: Map<String, K>): Map<String, Loaded<V>> {
         val loadStamps = led.keys.associateWith { stamps.current(it) }
         val result = LinkedHashMap<String, Loaded<V>>()
-        val toLoad = readAllForBatch(led.keys, loadStamps, result)
+        val toLoad = readAllForBatch(led, loadStamps, result)
         if (toLoad.isNotEmpty()) {
             loadAndFillBatch(led, toLoad, loadStamps, result)
         }
@@ -451,11 +476,12 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun readAllForBatch(
-        storageKeys: Collection<String>,
+        led: Map<String, K>,
         loadStamps: Map<String, Long>,
         result: MutableMap<String, Loaded<V>>
     ): Map<String, Token?> {
-        val readKeys = storageKeys.filterNot { pendingInvalidations.contains(it) }
+        val storageKeys = led.keys
+        val readKeys = storageKeys.filterNot { pendingInvalidations.containsKey(it) }
         val leases = readKeys.associateWith { LeaseRequest(context.nextToken(), policy.lease.ttl) }
         val reads = try {
             if (readKeys.isEmpty()) emptyMap() else store.readAll(readKeys, leases)
@@ -466,15 +492,29 @@ internal class CoherentEngine<K : Any, V : Any>(
         val toLoad = LinkedHashMap<String, Token?>()
         for (storageKey in storageKeys) {
             val read = reads[storageKey]
-            val decoded = (read as? RemoteRead.Hit)?.let { decodeInBatch(storageKey, it) }
-            if (decoded == null) {
+            val stamp = loadStamps.getValue(storageKey)
+            if (read !is RemoteRead.Hit) {
                 toLoad[storageKey] = (read as? RemoteRead.Miss)?.takeIf { it.leaseGranted }?.let { leases.getValue(storageKey).token }
                 continue
             }
+            if (read.format > backendFormat) {
+                // 更高版本写入的值：既不回收也不写回
+                metrics.unknownFormat()
+                toLoad[storageKey] = null
+                continue
+            }
+            val value = try {
+                check(read.format >= MIN_FORMAT) { "Unrecognized remote content (not written by this protocol)." }
+                decode(read.envelope)
+            } catch (e: Exception) {
+                // 与单 key 路径一致：条件回收后回源（否则损坏的载荷会一直留到 L1 过期）
+                result[storageKey] = Loaded(onCorrupt(led.getValue(storageKey), storageKey, read, stamp, leases.getValue(storageKey), loader, e), stamp)
+                continue
+            }
             metrics.remoteHit()
-            val entry = localEntry(decoded.value, (read as RemoteRead.Hit).ttl, policy.localMaxAge)
-            fillLocal(storageKey, entry, loadStamps.getValue(storageKey))
-            result[storageKey] = Loaded(entry, loadStamps.getValue(storageKey))
+            val entry = localEntry(value, read.ttl, policy.localMaxAge)
+            fillLocal(storageKey, entry, stamp)
+            result[storageKey] = Loaded(entry, stamp)
         }
         return toLoad
     }
@@ -495,15 +535,18 @@ internal class CoherentEngine<K : Any, V : Any>(
             }
             return
         }
-        val values = try {
-            loadAllFromSource(toLoad.keys.map { led.getValue(it) })
+        val values: Map<K, V>
+        val ttls: Map<String, Duration?>
+        val fills: List<Fill>
+        try {
+            values = loadAllFromSource(toLoad.keys.map { led.getValue(it) })
+            ttls = toLoad.keys.associateWith { storageKey -> led.getValue(storageKey).let { ttlOf(it, values[it]) } }
+            fills = toLoad.mapNotNull { (storageKey, token) ->
+                token?.let { Fill(storageKey, it, envelopeOf(values[led.getValue(storageKey)]), ttls[storageKey]) }
+            }
         } catch (e: Throwable) {
             toLoad.forEach { (storageKey, token) -> token?.let { release(storageKey, it) } }
             throw e
-        }
-        val ttls = toLoad.keys.associateWith { storageKey -> led.getValue(storageKey).let { ttlOf(it, values[it]) } }
-        val fills = toLoad.mapNotNull { (storageKey, token) ->
-            token?.let { Fill(storageKey, it, envelopeOf(values[led.getValue(storageKey)]), ttls[storageKey]) }
         }
         val filled = fillAllRemote(fills)
         for ((storageKey, token) in toLoad) {
@@ -521,32 +564,6 @@ internal class CoherentEngine<K : Any, V : Any>(
             )
             fillLocal(storageKey, entry, loadStamps.getValue(storageKey))
             result[storageKey] = Loaded(entry, loadStamps.getValue(storageKey))
-        }
-    }
-
-    /**
-     * 解码后的值（`null` 值表示负缓存）。
-     */
-    private class Decoded<V>(val value: V?)
-
-    /**
-     * 批量读取中的命中：未知格式或载荷损坏时返回 `null`（该 key 回源且不写 L1）。
-     */
-    @Suppress("TooGenericExceptionCaught")
-    private fun decodeInBatch(storageKey: String, read: RemoteRead.Hit): Decoded<V>? {
-        if (read.format > backendFormat) {
-            metrics.unknownFormat()
-            return null
-        }
-        if (read.format < MIN_FORMAT) {
-            log.warn { "Cache[$name] - key[$storageKey] - unrecognized remote content in batch read." }
-            return null
-        }
-        return try {
-            Decoded(decode(read.envelope))
-        } catch (e: Exception) {
-            log.warn(e) { "Cache[$name] - key[$storageKey] - corrupted payload in batch read." }
-            null
         }
     }
 
@@ -595,6 +612,10 @@ internal class CoherentEngine<K : Any, V : Any>(
     @Suppress("TooGenericExceptionCaught")
     private fun refreshThrough(key: K, storageKey: String): Loaded<V> {
         val window = policy.refreshWindow ?: return loadThrough(key, storageKey)
+        if (pendingInvalidations.containsKey(storageKey)) {
+            // 失效仍在重试：L1 可能还是旧值，不能从它重新填充 L2（loadThrough 会绕过 L1）
+            return loadThrough(key, storageKey)
+        }
         val stamp = stamps.current(storageKey)
         val token = context.nextToken()
         val read = try {
@@ -603,7 +624,13 @@ internal class CoherentEngine<K : Any, V : Any>(
             onRemoteFailure("read", storageKey, e)
             return loadThrough(key, storageKey)
         }
-        if (read !is RemoteRead.Hit || read.format > backendFormat || read.format < MIN_FORMAT) {
+        if (read !is RemoteRead.Hit) {
+            return loadThrough(key, storageKey)
+        }
+        if (read.format > backendFormat || read.format < MIN_FORMAT) {
+            if (read.refreshGranted) {
+                release(storageKey, token)
+            }
             return loadThrough(key, storageKey)
         }
         if (!read.refreshGranted) {
@@ -626,7 +653,12 @@ internal class CoherentEngine<K : Any, V : Any>(
     private fun putWithTtl(key: K, value: V, ttl: Duration?) {
         val storageKey = storageKey(key)
         val envelope = Envelope.Scalar(codec.encode(value))
-        write(listOf(storageKey), { frame -> store.put(storageKey, envelope, ttl, frame) }, throwWriteFailure("put"))
+        val bounded = ttl?.boundedTtl()
+        write(
+            listOf(storageKey),
+            { frame -> store.put(storageKey, envelope, bounded, frame) },
+            throwWriteFailure("put")
+        )
     }
 
     override fun invalidate(key: K) {
@@ -654,7 +686,8 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private fun scheduleRetry(storageKeys: List<String>, error: Exception) {
         log.warn(error) { "Cache[$name] - invalidate $storageKeys failed, retrying." }
-        pendingInvalidations.addAll(storageKeys)
+        // 计数：同一 key 的多次失败失效各自登记，任何一次放弃都不能提前解除其它仍在重试的
+        storageKeys.forEach { pendingInvalidations.merge(it, 1, Int::plus) }
         val accepted = context.retrier.submit(
             action = {
                 val frame = frameOf(storageKeys)
@@ -666,7 +699,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             onRetry = { metrics.invalidationRetry() },
             onSuccess = {
                 storageKeys.forEach {
-                    pendingInvalidations.remove(it)
+                    unregisterPending(it)
                     stamps.invalidate(it)
                     local.invalidate(it)
                 }
@@ -679,11 +712,16 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     private fun dropInvalidation(storageKeys: List<String>, error: Throwable) {
-        storageKeys.forEach { pendingInvalidations.remove(it) }
+        storageKeys.forEach { unregisterPending(it) }
         metrics.invalidationDropped()
+        // L1 仍是旧值，其它节点的 L2 到期后会从 L1 重新填充：陈旧度的上界是 L1 的剩余寿命
         log.error(error) {
-            "Cache[$name] - invalidate $storageKeys dropped: other nodes stay stale up to localMaxAge[${policy.localMaxAge}] or the remote TTL."
+            "Cache[$name] - invalidate $storageKeys dropped: L1 keeps the stale value until its remote TTL[${policy.ttl ?: "never"}] expires."
         }
+    }
+
+    private fun unregisterPending(storageKey: String) {
+        pendingInvalidations.computeIfPresent(storageKey) { _, count -> if (count > 1) count - 1 else null }
     }
 
     /**

@@ -12,7 +12,6 @@ const guide: DefaultTheme.SidebarItem[] = [
   {
     text: 'Features',
     items: [
-      { text: 'JoinCache', link: '/guide/join-cache' },
       { text: 'Spring Cache', link: '/guide/spring-cache' },
       { text: 'Operations', link: '/guide/operations' },
     ],
@@ -20,6 +19,7 @@ const guide: DefaultTheme.SidebarItem[] = [
   {
     text: 'Releases',
     items: [
+      { text: 'Migrating from 5.x', link: '/guide/migration-6' },
       { text: 'Changelog', link: '/guide/changelog' },
     ],
   },

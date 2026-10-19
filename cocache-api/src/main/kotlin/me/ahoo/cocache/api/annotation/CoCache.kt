@@ -20,7 +20,7 @@ package me.ahoo.cocache.api.annotation
  * 注解只是声明的另一种写法：启动时翻译为 `CacheSpec`，与 spec bean 走同一个引擎；
  * `CacheSpecCustomizer` 与配置文件 `cocache.caches.[name].*` 照常生效（优先级高于注解）。
  *
- * 时长单位均为秒；[UNSET] 表示未设置（使用默认值或配置文件），[FOREVER] 表示永不过期（仅用于 [ttl]）。
+ * 时长单位均为秒；[UNSET] 表示未设置（使用默认值或配置文件），[FOREVER] 表示永不过期，只能用于 [ttl]（以及 `@CaffeineCache.expireAfterAccess`，表示关闭），用于其它属性时启动失败；[refreshWindow] 为 `0` 表示关闭提前刷新。
  */
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)
@@ -50,7 +50,7 @@ annotation class CoCache(
      */
     val localMaxAge: Long = UNSET,
     /**
-     * 提前刷新窗口。
+     * 提前刷新窗口；`0` 表示关闭。
      */
     val refreshWindow: Long = UNSET,
     /**

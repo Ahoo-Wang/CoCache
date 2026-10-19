@@ -11,11 +11,12 @@
  * limitations under the License.
  */
 
+description = "CoCache dependency constraints"
+
 dependencies {
     api(platform(libs.spring.boot.dependencies))
     api(platform(libs.fluent.assert.bom))
     constraints {
-        api(libs.guava)
         api(libs.kotlin.logging)
         api(libs.springdoc.openapi.starter.webflux.ui)
         api(libs.mockk)
