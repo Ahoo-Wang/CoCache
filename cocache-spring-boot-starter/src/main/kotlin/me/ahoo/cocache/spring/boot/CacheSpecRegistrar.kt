@@ -61,7 +61,11 @@ class CacheSpecRegistrar : BeanFactoryPostProcessor {
             val definition = RootBeanDefinition(cacheType).apply {
                 setTargetType(ResolvableType.forClassWithGenerics(cacheType, *generics))
                 setDependsOn(specName)
-                instanceSupplier = Supplier { create(beanFactory.getBean(CacheAssembler::class.java), beanFactory.getBean(specName)) }
+                setAttribute(CacheBeanDefinitions.SPEC_BEAN_ATTRIBUTE, specName)
+                instanceSupplier = Supplier {
+                    val assembler = CacheBeanDefinitions.requireComponent(beanFactory, CacheAssembler::class.java, cacheName)
+                    create(assembler, beanFactory.getBean(specName))
+                }
             }
             registry.registerBeanDefinition(cacheName, definition)
         }

@@ -14,6 +14,7 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.core.CacheRuntime
+import org.springframework.boot.actuate.autoconfigure.endpoint.condition.ConditionalOnAvailableEndpoint
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
@@ -35,8 +36,12 @@ import org.springframework.context.annotation.Bean
 )
 class CoCacheEndpointAutoConfiguration {
 
+    /**
+     * 只在端点可用（`management.endpoint.cocache.access` 允许且已暴露）时创建。
+     */
     @Bean
     @ConditionalOnMissingBean
     @ConditionalOnBean(CacheRuntime::class)
+    @ConditionalOnAvailableEndpoint(CoCacheEndpoint::class)
     fun cocacheEndpoint(runtime: CacheRuntime): CoCacheEndpoint = CoCacheEndpoint(runtime)
 }

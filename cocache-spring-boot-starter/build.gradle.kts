@@ -37,7 +37,6 @@ dependencies {
     testImplementation(project(":cocache-test"))
 }
 
-
 kapt {
     arguments {
         // kapt 的类输出目录不在 Gradle 的标准位置，显式告诉配置处理器去哪里找 additional-spring-configuration-metadata.json

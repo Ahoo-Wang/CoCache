@@ -19,7 +19,9 @@ import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.beans.factory.config.BeanFactoryPostProcessor
 import org.springframework.beans.factory.config.ConfigurableBeanFactory
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -28,10 +30,12 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
 import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails
+import org.springframework.boot.data.redis.autoconfigure.DataRedisProperties
 import org.springframework.cache.CacheManager
 import org.springframework.cache.transaction.TransactionAwareCacheManagerProxy
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.env.Environment
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.ClassUtils
 import tools.jackson.databind.ObjectMapper
@@ -40,7 +44,11 @@ import tools.jackson.databind.json.JsonMapper
 /**
  * CoCache 自动配置（`cocache.enabled`，默认启用）：后端、运行时、声明注册与 Spring Cache 适配。
  */
-@AutoConfiguration(after = [DataRedisAutoConfiguration::class])
+@AutoConfiguration(
+    after = [DataRedisAutoConfiguration::class],
+    // 先于 Spring Boot 的 CacheAutoConfiguration：后者的 @ConditionalOnMissingBean(CacheManager) 应看到 CoCache 的 CacheManager
+    beforeName = ["org.springframework.boot.cache.autoconfigure.CacheAutoConfiguration"]
+)
 @ConditionalOnProperty(
     prefix = CoCacheProperties.PREFIX,
     name = ["enabled"],
@@ -53,8 +61,14 @@ class CoCacheAutoConfiguration {
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean(CoherenceBackend::class)
     @ConditionalOnBean(DataRedisConnectionDetails::class)
-    fun cocacheBackend(details: DataRedisConnectionDetails, properties: CoCacheProperties): CoherenceBackend {
-        return RedisBackends.create(details, properties.redis.toOptions())
+    fun cocacheBackend(
+        details: DataRedisConnectionDetails,
+        properties: CoCacheProperties,
+        redisProperties: ObjectProvider<DataRedisProperties>,
+    ): CoherenceBackend {
+        // `rediss://` URL 即使没有设置 spring.data.redis.ssl.enabled 也启用 TLS（与 Spring Boot 自己的 Lettuce 配置一致）
+        val urlUsesSsl = RedisBackends.urlUsesSsl(redisProperties.ifAvailable?.url)
+        return RedisBackends.create(details, properties.redis.toOptions(), urlUsesSsl)
     }
 
     @Bean(destroyMethod = "close")
@@ -68,7 +82,10 @@ class CoCacheAutoConfiguration {
         runtime: CacheRuntime,
         customizers: ObjectProvider<CacheSpecCustomizer>,
         properties: CoCacheProperties,
-    ): CacheAssembler = CacheAssembler(runtime, customizers.orderedStream().toList(), properties)
+        beanFactory: ConfigurableListableBeanFactory,
+    ): CacheAssembler = CacheAssembler(runtime, customizers.orderedStream().toList(), properties) {
+        CacheBeanDefinitions.declaredCacheNames(beanFactory)
+    }
 
     @Bean
     @ConditionalOnBean(CacheAssembler::class)
@@ -111,5 +128,16 @@ class CoCacheAutoConfiguration {
         @Bean
         @JvmStatic
         fun cocacheSpecRegistrar(): CacheSpecRegistrar = CacheSpecRegistrar()
+
+        /**
+         * 尽早（容器后处理阶段，任何缓存创建之前）拒绝 5.x 已删除的配置项。
+         */
+        @Bean
+        @JvmStatic
+        fun cocacheRemovedPropertiesCheck(
+            environment: Environment
+        ): BeanFactoryPostProcessor = BeanFactoryPostProcessor {
+            RemovedProperties.check(environment)
+        }
     }
 }

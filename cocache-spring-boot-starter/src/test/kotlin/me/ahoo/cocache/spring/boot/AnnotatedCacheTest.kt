@@ -86,9 +86,6 @@ class AnnotatedCacheTest {
         fun userLoader(): CacheLoader<String, User> = CacheLoader { User(it, "name-$it") }
 
         @Bean
-        fun stringCodec(): Codec<String> = StringCodec
-
-        @Bean
         fun namedLoader(): CacheLoader<Long, String> = CacheLoader { "n-$it" }
 
         @Bean
@@ -109,6 +106,100 @@ class AnnotatedCacheTest {
 
         @Bean
         fun second(): CacheLoader<String, String> = CacheLoader { it }
+    }
+
+    @CoCache(ttl = 120, refreshWindow = 0)
+    @CaffeineCache(expireAfterAccess = CoCache.FOREVER)
+    interface NoRefreshCache : Cache<String, String>
+
+    @CoCache(absentTtl = CoCache.FOREVER)
+    interface ForeverAbsentCache : Cache<String, String>
+
+    @CoCache(refreshWindow = CoCache.FOREVER)
+    interface ForeverRefreshCache : Cache<String, String>
+
+    @CoCache(ttl = 10, refreshWindow = 30)
+    interface InvalidPolicyCache : Cache<String, String>
+
+    @CoCache(loader = "namedLoader")
+    interface LoaderSetCache : SetCache<String, String>
+
+    interface OverloadCache : Cache<String, String> {
+        // 与 Cache 方法同名同参数个数，但参数类型不兼容：代理按名分派会 ClassCastException
+        fun get(key: String, fallback: String): String?
+    }
+
+    interface UnknownAbstractCache : Cache<String, String> {
+        fun lookupAll(keys: List<String>): Map<String, String>
+    }
+
+    interface BadReturnCache : Cache<String, String> {
+        fun lookup(key: Int): Int
+
+        fun invalidate(key: Long): Boolean
+    }
+
+    interface SetOnlyMethodCache : Cache<String, String> {
+        fun clear(key: String)
+    }
+
+    interface RedeclaredCache : Cache<String, String> {
+        override fun get(key: String): String?
+
+        override fun get(key: String, loader: CacheLoader<String, String>): String?
+
+        override fun put(key: String, value: String, ttl: Duration)
+    }
+
+    interface RedeclaredSetCache : SetCache<String, String> {
+        override fun clear(key: String)
+    }
+
+    /**
+     * 记录翻译后的声明策略（定制器在配置文件之前执行）。
+     */
+    class PolicyRecorder : CacheSpecCustomizer {
+        val policies = java.util.concurrent.ConcurrentHashMap<String, me.ahoo.cocache.core.policy.CachePolicy>()
+
+        override fun customize(spec: me.ahoo.cocache.core.CacheSpec.Builder<*, *>) {
+            policies[spec.name] = spec.policy
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [NoRefreshCache::class, RedeclaredCache::class, RedeclaredSetCache::class])
+    class TranslationConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun codec(): Codec<String> = StringCodec
+
+        @Bean
+        fun recorder(): PolicyRecorder = PolicyRecorder()
+
+        @Bean
+        fun namedLoader(): CacheLoader<String, String> = CacheLoader { "n-$it" }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [PlainCache::class])
+    class AmbiguousCodecConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun firstCodec(): Codec<String> = StringCodec
+
+        @Bean
+        fun secondCodec(): Codec<String> = StringCodec
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [PlainCache::class])
+    class NoBackendConfig {
+        @Bean
+        fun codec(): Codec<String> = StringCodec
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -217,5 +308,102 @@ class AnnotatedCacheTest {
     fun cacheNameDefaultsToSimpleName() {
         AnnotatedCacheFactory.cacheNameOf(UserCache::class.java).assert().isEqualTo("UserCache")
         AnnotatedCacheFactory.cacheNameOf(PlainCache::class.java).assert().isEqualTo("plain")
+    }
+
+    private fun <C : Cache<*, *>> createFailure(type: Class<C>, vararg properties: String): Throwable? {
+        var failure: Throwable? = null
+        runner.withUserConfiguration(TranslationConfig::class.java).withPropertyValues(*properties).run { context ->
+            assertThat(context).hasNotFailed()
+            failure = runCatching { context.getBean(AnnotatedCacheFactory::class.java).create(type) }.exceptionOrNull()
+        }
+        return failure
+    }
+
+    @Test
+    fun foreverIsOnlyAllowedForTtlAndExpireAfterAccess() {
+        runner.withUserConfiguration(TranslationConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val policy = requireNotNull(context.getBean(PolicyRecorder::class.java).policies["NoRefreshCache"])
+            policy.local.expireAfterAccess.assert().isNull()
+            policy.refreshWindow.assert().isNull()
+            policy.ttl.assert().isEqualTo(Duration.ofSeconds(120))
+        }
+        createFailure(ForeverAbsentCache::class.java).assert().isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageContaining("Cache[ForeverAbsentCache] - @CoCache.absentTtl = FOREVER is not supported")
+        createFailure(ForeverRefreshCache::class.java).assert().isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageContaining("Cache[ForeverRefreshCache] - @CoCache.refreshWindow = FOREVER")
+    }
+
+    @Test
+    fun policyErrorsNameTheCache() {
+        createFailure(InvalidPolicyCache::class.java).assert().isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageStartingWith("Cache[InvalidPolicyCache] - refreshWindow")
+        // 配置文件导致的策略错误同样带缓存名
+        runner.withUserConfiguration(TranslationConfig::class.java)
+            .withPropertyValues("cocache.caches.NoRefreshCache.absent-ttl=0")
+            .run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure.assert().hasStackTraceContaining("Cache[NoRefreshCache] - absentTtl")
+            }
+    }
+
+    @Test
+    fun loaderOnSetCacheFails() {
+        createFailure(LoaderSetCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("not supported on SetCache")
+    }
+
+    @Test
+    fun ambiguousCodecFailsStartup() {
+        runner.withUserConfiguration(AmbiguousCodecConfig::class.java).run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure.assert().hasStackTraceContaining("Multiple Codec beans")
+        }
+    }
+
+    @Test
+    fun incompatibleAbstractMethodsFailAtCreation() {
+        createFailure(OverloadCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("String get(String, String)")
+        createFailure(UnknownAbstractCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("lookupAll")
+        createFailure(BadReturnCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("int lookup(int)")
+            .hasMessageContaining("boolean invalidate(long)")
+        createFailure(SetOnlyMethodCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("void clear(String)")
+    }
+
+    @Test
+    fun redeclaredCacheMethodsAreDispatched() {
+        runner.withUserConfiguration(TranslationConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val cache = context.getBean(RedeclaredCache::class.java)
+            cache["a"].assert().isEqualTo("n-a")
+            cache.put("a", "v", Duration.ofSeconds(30))
+            cache["a"].assert().isEqualTo("v")
+            cache.get("b", CacheLoader { "loaded-$it" }).assert().isEqualTo("loaded-b")
+            val set = context.getBean(RedeclaredSetCache::class.java)
+            set.add("k", listOf("x"))
+            set.clear("k")
+        }
+    }
+
+    @Test
+    fun missingBackendExplainsTheCause() {
+        runner.withUserConfiguration(NoBackendConfig::class.java).run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure.assert().hasStackTraceContaining(
+                "Cannot create cache[plain] - no CoherenceBackend is available"
+            )
+        }
+        ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+            .withUserConfiguration(AppConfig::class.java)
+            .withPropertyValues("cocache.enabled=false")
+            .run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure.assert().hasStackTraceContaining("CoCache is disabled (cocache.enabled=false)")
+            }
     }
 }

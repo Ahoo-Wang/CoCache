@@ -194,7 +194,7 @@ class CoCacheAutoConfigurationTest {
 
     @Test
     fun everyPolicyPropertyIsApplied() {
-        val properties = CoCacheProperties.PolicyProperties(
+        val properties = policyProperties(
             ttl = Duration.ofMinutes(3),
             ttlJitter = Duration.ofSeconds(1),
             absentTtl = Duration.ofSeconds(2),
@@ -215,10 +215,18 @@ class CoCacheAutoConfigurationTest {
         policy.lease.wait.assert().isEqualTo(CachePolicy.DEFAULT.lease.wait)
         policy.load.acquireTimeout.assert().isEqualTo(Duration.ofMillis(5))
         policy.load.maxConcurrent.assert().isEqualTo(0)
-        CoCacheProperties.PolicyProperties(
+        policyProperties(
             ttlForever = false
         ).applyTo(CachePolicy.DEFAULT).ttl.assert().isEqualTo(CachePolicy.DEFAULT.ttl)
-        CoCacheProperties.Redis(clientName = "x").toOptions().clientName.assert().isEqualTo("x")
+        val options = CoCacheProperties.Redis(
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(2),
+            8,
+            "x",
+            me.ahoo.cocache.redis.RedisChannelMode.SHARDED
+        ).toOptions()
+        options.clientName.assert().isEqualTo("x")
+        options.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.SHARDED)
     }
 
     @Test
@@ -354,5 +362,241 @@ class CoCacheAutoConfigurationTest {
             codec = StringCodec
             loader = CacheLoader { "u-$it" }
         }
+    }
+
+    @me.ahoo.cocache.api.annotation.CoCache(name = "LazyUser")
+    interface LazyUserCache : Cache<String, String>
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [LazyUserCache::class])
+    class LazyCacheConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun eagerSpec(): CacheSpec<String, String> = cacheSpec("eager") { codec = StringCodec }
+    }
+
+    /**
+     * 把接口式声明的缓存 bean 改为延迟初始化（如 `spring.main.lazy-initialization=true`）。
+     */
+    private val lazyCaches = ApplicationContextRunner()
+        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+        .withUserConfiguration(LazyCacheConfig::class.java)
+        .withInitializer { context ->
+            context.addBeanFactoryPostProcessor { factory -> factory.getBeanDefinition("LazyUser").isLazyInit = true }
+        }
+
+    @Test
+    fun configurationPropertiesBindWithUnitsAndDefaults() {
+        runner.withUserConfiguration(InMemoryConfig::class.java)
+            .withPropertyValues(
+                "cocache.defaults.ttl=120",
+                "cocache.defaults.lease-wait=500ms",
+                "cocache.defaults.local-max-age=PT2M",
+                "cocache.caches.user.refresh-window=30",
+                "cocache.caches.user.ttl-jitter=0",
+                "cocache.redis.command-timeout=1500",
+                "cocache.redis.channel-mode=sharded",
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                val properties = context.getBean(CoCacheProperties::class.java)
+                properties.enabled.assert().isTrue()
+                properties.defaults.ttl.assert().isEqualTo(Duration.ofSeconds(120))
+                properties.defaults.leaseWait.assert().isEqualTo(Duration.ofMillis(500))
+                properties.defaults.localMaxAge.assert().isEqualTo(Duration.ofMinutes(2))
+                requireNotNull(
+                    properties.cacheProperties("user")
+                ).refreshWindow.assert().isEqualTo(Duration.ofSeconds(30))
+                properties.redis.commandTimeout.assert().isEqualTo(Duration.ofMillis(1500))
+                properties.redis.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.SHARDED)
+                properties.redis.toOptions().channelMode.assert().isEqualTo(
+                    me.ahoo.cocache.redis.RedisChannelMode.SHARDED
+                )
+            }
+        runner.withUserConfiguration(InMemoryConfig::class.java).run { context ->
+            val properties = context.getBean(CoCacheProperties::class.java)
+            properties.redis.commandTimeout.assert().isEqualTo(Duration.ofSeconds(2))
+            properties.redis.heartbeat.assert().isEqualTo(Duration.ofSeconds(5))
+            properties.redis.invalidateBatchSize.assert().isEqualTo(512)
+            properties.redis.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.PUBSUB)
+            properties.defaults.assert().isEqualTo(policyProperties())
+            properties.caches.assert().isEmpty()
+        }
+    }
+
+    @Test
+    fun cacheNamesInPropertiesAreCaseInsensitive() {
+        runner.withUserConfiguration(InMemoryConfig::class.java)
+            .withPropertyValues("cocache.caches.USER.ttl=45", "cocache.caches.Profile.ttl=46")
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                val properties = context.getBean(CoCacheProperties::class.java)
+                properties.policyFor("user", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(45))
+                properties.policyFor("profile", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(46))
+            }
+        // 精确匹配优先
+        CoCacheProperties(
+            true,
+            policyProperties(),
+            mapOf(
+                "user" to policyProperties(ttl = Duration.ofSeconds(1)),
+                "USER" to policyProperties(ttl = Duration.ofSeconds(2))
+            ),
+            CoCacheProperties.Redis(
+                Duration.ofSeconds(2),
+                Duration.ofSeconds(5),
+                512,
+                null,
+                me.ahoo.cocache.redis.RedisChannelMode.PUBSUB
+            )
+        ).policyFor("USER", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(2))
+    }
+
+    @Test
+    fun lazyCachesCountAsDeclared() {
+        lazyCaches.withPropertyValues("cocache.caches.lazyuser.ttl=30").run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean(CacheRuntime::class.java).cacheNames.assert().containsExactly("eager")
+            context.getBean(LazyUserCache::class.java).name.assert().isEqualTo("LazyUser")
+        }
+        lazyCaches.withPropertyValues("cocache.caches.lazy-usr.ttl=30").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure.assert().hasMessageContaining("undeclared caches [lazy-usr]")
+                .hasMessageContaining("LazyUser")
+        }
+    }
+
+    @Test
+    fun removedPropertiesFailStartupWithReplacement() {
+        val cases = mapOf(
+            "cocache.redis.strict-failure=true" to "cocache.defaults.read-failure=throw",
+            "cocache.load.max-concurrent=8" to "cocache.defaults.load-max-concurrent",
+            "cocache.load.acquire-timeout=1s" to "cocache.defaults.load-acquire-timeout",
+            "cocache.load.other=1" to "cocache.defaults.load-*",
+            "cocache.redis.eviction-channel=sharded" to "cocache.redis.channel-mode",
+            "cocache.redis.missing-guard-sentinel=x" to "no replacement",
+            "cocache.metrics.client-side-hits=true" to "no replacement",
+            "cocache.next.enabled=true" to "cocache.next.* became cocache.*",
+        )
+        cases.forEach { (property, replacement) ->
+            runner.withUserConfiguration(InMemoryConfig::class.java).withPropertyValues(property).run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure.assert().hasStackTraceContaining(property.substringBefore('='))
+                    .hasStackTraceContaining(replacement)
+            }
+        }
+        // 环境变量形式同样被识别
+        runner.withUserConfiguration(InMemoryConfig::class.java)
+            .withInitializer { context ->
+                context.environment.propertySources.addFirst(
+                    org.springframework.core.env.SystemEnvironmentPropertySource(
+                        "test-systemEnvironment",
+                        mapOf<String, Any>("COCACHE_REDIS_STRICTFAILURE" to "true")
+                    )
+                )
+            }
+            .run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure.assert().hasStackTraceContaining("cocache.redis.strictfailure")
+            }
+        RemovedProperties.adviceFor(
+            org.springframework.boot.context.properties.source.ConfigurationPropertyName.of(
+                "cocache.redis.channel-mode"
+            )
+        ).assert().isNull()
+    }
+
+    @Test
+    fun autoConfigurationRunsBeforeSpringCacheAutoConfiguration() {
+        val metadata = java.util.Properties()
+        javaClass.classLoader.getResources("META-INF/spring-autoconfigure-metadata.properties").asSequence()
+            .forEach { url -> url.openStream().use { metadata.load(it) } }
+        metadata.getProperty("${CoCacheAutoConfiguration::class.java.name}.AutoConfigureBefore").assert()
+            .isEqualTo("org.springframework.boot.cache.autoconfigure.CacheAutoConfiguration")
+    }
+
+    @Test
+    fun configurationMetadataListsAllProperties() {
+        // 测试源码集的 kapt 也会生成一份元数据，合并所有副本再检查
+        val text = javaClass.classLoader.getResources("META-INF/spring-configuration-metadata.json").asSequence()
+            .joinToString("\n") { it.readText() }
+        listOf(
+            "\"cocache.enabled\"",
+            "\"cocache.defaults.ttl\"",
+            "\"cocache.defaults.read-failure\"",
+            "\"cocache.redis.channel-mode\"",
+            "\"cocache.redis.command-timeout\"",
+            "\"cocache.redis.strict-failure\"",
+            "\"level\": \"error\"",
+        ).forEach { text.assert().contains(it) }
+    }
+
+    @Test
+    fun specCacheWithoutBackendExplainsTheCause() {
+        runner.withUserConfiguration(NoBackendSpecConfig::class.java).run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure.assert().hasStackTraceContaining(
+                "Cannot create cache[orphan] - no CoherenceBackend is available"
+            )
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class NoBackendSpecConfig {
+        @Bean
+        fun orphanSpec(): CacheSpec<String, String> = cacheSpec("orphan") { codec = StringCodec }
+    }
+
+    @Suppress("LongParameterList")
+    private fun policyProperties(
+        ttl: Duration? = null,
+        ttlForever: Boolean? = null,
+        ttlJitter: Duration? = null,
+        absentTtl: Duration? = null,
+        localMaxAge: Duration? = null,
+        degradedLocalMaxAge: Duration? = null,
+        refreshWindow: Duration? = null,
+        leaseTtl: Duration? = null,
+        loadAcquireTimeout: Duration? = null,
+    ) = CoCacheProperties.PolicyProperties(
+        ttl,
+        ttlForever,
+        ttlJitter,
+        absentTtl,
+        localMaxAge,
+        degradedLocalMaxAge,
+        refreshWindow,
+        leaseTtl,
+        null,
+        null,
+        loadAcquireTimeout,
+        null,
+        null,
+        null
+    )
+
+    @Test
+    fun removedPropertiesCheckSkipsNonEnumerableSources() {
+        val environment = org.springframework.core.env.StandardEnvironment()
+        environment.propertySources.addFirst(
+            object : org.springframework.core.env.PropertySource<Any>("opaque", Any()) {
+                override fun getProperty(name: String): Any? = null
+            }
+        )
+        RemovedProperties.check(environment)
+    }
+
+    @Test
+    fun missingComponentWithoutEnvironment() {
+        runCatching {
+            CacheBeanDefinitions.requireComponent(
+                org.springframework.beans.factory.support.DefaultListableBeanFactory(),
+                CacheAssembler::class.java,
+                "x"
+            )
+        }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("Cannot create cache[x] - no CoherenceBackend is available")
     }
 }

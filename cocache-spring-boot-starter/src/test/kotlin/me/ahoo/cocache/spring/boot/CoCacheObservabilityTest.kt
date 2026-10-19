@@ -46,7 +46,7 @@ class CoCacheObservabilityTest {
     )
     private val runner = ApplicationContextRunner()
         .withConfiguration(autoConfigurations)
-        .withPropertyValues("cocache.enabled=true")
+        .withPropertyValues("cocache.enabled=true", "management.endpoints.web.exposure.include=cocache")
         .withUserConfiguration(InMemoryConfig::class.java)
 
     @Configuration(proxyBeanMethods = false)
@@ -83,6 +83,22 @@ class CoCacheObservabilityTest {
             assertThat(context).hasNotFailed()
             assertThat(context).hasSingleBean(CoCacheMeterBinder::class.java)
             assertThat(context).hasSingleBean(CoCacheEndpoint::class.java)
+        }
+    }
+
+    @Test
+    fun endpointRequiresExposureAndAccess() {
+        ApplicationContextRunner()
+            .withConfiguration(autoConfigurations)
+            .withUserConfiguration(InMemoryConfig::class.java)
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                assertThat(context).hasSingleBean(CoCacheMeterBinder::class.java)
+                assertThat(context).doesNotHaveBean(CoCacheEndpoint::class.java)
+            }
+        runner.withPropertyValues("management.endpoint.cocache.access=NONE").run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(context).doesNotHaveBean(CoCacheEndpoint::class.java)
         }
     }
 

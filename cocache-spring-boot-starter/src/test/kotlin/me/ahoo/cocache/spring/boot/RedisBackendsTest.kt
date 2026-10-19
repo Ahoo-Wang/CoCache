@@ -32,6 +32,7 @@ class RedisBackendsTest {
         ),
         private val clusterTarget: DataRedisConnectionDetails.Cluster? = null,
         private val sentinelTarget: DataRedisConnectionDetails.Sentinel? = null,
+        private val masterReplicaTarget: DataRedisConnectionDetails.MasterReplica? = null,
     ) : DataRedisConnectionDetails {
         override fun getUsername(): String? = user
         override fun getPassword(): String? = secret
@@ -39,6 +40,7 @@ class RedisBackendsTest {
         override fun getStandalone(): DataRedisConnectionDetails.Standalone? = standaloneTarget
         override fun getCluster(): DataRedisConnectionDetails.Cluster? = clusterTarget
         override fun getSentinel(): DataRedisConnectionDetails.Sentinel? = sentinelTarget
+        override fun getMasterReplica(): DataRedisConnectionDetails.MasterReplica? = masterReplicaTarget
     }
 
     private fun standalone(details: DataRedisConnectionDetails) = RedisBackends.resolve(
@@ -159,5 +161,97 @@ class RedisBackendsTest {
                 me.ahoo.cocache.redis.RedisBackendOptions()
             ).close()
         }.exceptionOrNull().assert().isNotNull()
+    }
+
+    @Test
+    fun sentinelCredentialsApplyToSentinelNodes() {
+        val sentinel = object : DataRedisConnectionDetails.Sentinel {
+            override fun getDatabase(): Int = 0
+            override fun getMaster(): String = "mymaster"
+            override fun getNodes(): List<Node> = listOf(Node("s1", 26379), Node("s2", 26380))
+            override fun getUsername(): String = "sentinel-user"
+            override fun getPassword(): String = "sentinel-pw"
+        }
+        val uri = standalone(Details(user = "data-user", secret = "data-pw", sentinelTarget = sentinel)).uri
+        uri.sentinels.forEach { node ->
+            val credentials = requireNotNull(node.credentialsProvider.resolveCredentials().block())
+            credentials.username.assert().isEqualTo("sentinel-user")
+            String(credentials.password).assert().isEqualTo("sentinel-pw")
+        }
+        val data = requireNotNull(uri.credentialsProvider.resolveCredentials().block())
+        data.username.assert().isEqualTo("data-user")
+        String(data.password).assert().isEqualTo("data-pw")
+
+        // 没有 Sentinel 凭据时 Sentinel 节点不带认证
+        val open = object : DataRedisConnectionDetails.Sentinel by sentinel {
+            override fun getUsername(): String? = null
+            override fun getPassword(): String? = null
+        }
+        standalone(Details(sentinelTarget = open)).uri.sentinels.all {
+            it.credentialsProvider.resolveCredentials().block()?.hasPassword() != true
+        }.assert().isTrue()
+    }
+
+    @Test
+    fun masterReplicaFailsLoudly() {
+        val masterReplica = DataRedisConnectionDetails.MasterReplica { listOf(Node("10.0.0.1", 6379)) }
+        runCatching {
+            RedisBackends.resolve(Details(masterReplicaTarget = masterReplica))
+        }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("master-replica")
+    }
+
+    @Test
+    fun redissUrlEnablesTls() {
+        RedisBackends.urlUsesSsl("rediss://user:pw@redis.example.com:6380/1").assert().isTrue()
+        RedisBackends.urlUsesSsl("REDISS://redis.example.com").assert().isTrue()
+        RedisBackends.urlUsesSsl("redis://localhost:6379").assert().isFalse()
+        RedisBackends.urlUsesSsl(null).assert().isFalse()
+        RedisBackends.urlUsesSsl(" ").assert().isFalse()
+        standalone(Details()).uri.isSsl.assert().isFalse()
+        (
+            RedisBackends.resolve(
+                Details(),
+                urlUsesSsl = true
+            ) as RedisBackends.Target.Standalone
+            ).uri.isSsl.assert().isTrue()
+        val cluster = DataRedisConnectionDetails.Cluster { listOf(Node("10.0.0.1", 7000)) }
+        (RedisBackends.resolve(Details(clusterTarget = cluster), urlUsesSsl = true) as RedisBackends.Target.Cluster)
+            .uris.all { it.isSsl }.assert().isTrue()
+    }
+
+    @Test
+    fun redissUrlPropertyReachesTheBackend() {
+        // spring.data.redis.url=rediss://…（未设置 ssl.enabled）：Spring Boot 的连接信息不带 SSL bundle，CoCache 按 URL 启用 TLS。
+        // 假服务端回一个明文 RESP 错误：启用 TLS 的客户端把它当作非法 TLS 记录（NotSslRecordException）
+        java.net.ServerSocket(0).use { server ->
+            val finished = java.util.concurrent.CountDownLatch(1)
+            val acceptor = Thread {
+                runCatching {
+                    while (!server.isClosed) {
+                        server.accept().use { it.getOutputStream().write("-ERR plain\r\n".toByteArray()) }
+                    }
+                }
+                finished.countDown()
+            }.apply {
+                isDaemon = true
+                start()
+            }
+            org.springframework.boot.test.context.runner.ApplicationContextRunner()
+                .withConfiguration(
+                    org.springframework.boot.autoconfigure.AutoConfigurations.of(
+                        org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration::class.java,
+                        CoCacheAutoConfiguration::class.java
+                    )
+                )
+                .withPropertyValues("spring.data.redis.url=rediss://localhost:${server.localPort}")
+                .run { context ->
+                    org.assertj.core.api.Assertions.assertThat(context).hasFailed()
+                    context.startupFailure.assert().hasStackTraceContaining("NotSslRecordException")
+                }
+            server.close()
+            finished.await(5, java.util.concurrent.TimeUnit.SECONDS).assert().isTrue()
+            acceptor.join(1000)
+        }
     }
 }
