@@ -1,44 +1,30 @@
-# CoCache Project Setup Guide
+# CoCache Project Setup Guide (6.x)
 
 ## Contents
 
 - [Dependencies](#dependencies)
 - [Module Selection](#module-selection)
-- [Minimal Configuration](#minimal-configuration)
-- [Step-by-Step Setup](#step-by-step-setup)
-- [Redis Failure Behavior](#redis-failure-behavior)
-- [Without Spring Boot](#without-spring-boot)
-- [Single-Instance Setup (No Redis)](#single-instance-setup-no-redis)
+- [Spring Boot Setup](#spring-boot-setup)
+- [Declaring Caches](#declaring-caches)
+- [Policy and Configuration](#policy-and-configuration)
+- [Transactions and Writes](#transactions-and-writes)
+- [Redis Backend](#redis-backend)
+- [Failure Behavior](#failure-behavior)
 - [Spring Cache Bridge](#spring-cache-bridge)
-- [Actuator Endpoints](#actuator-endpoints) (and metrics)
+- [Metrics and Actuator](#metrics-and-actuator)
+- [Without Spring Boot](#without-spring-boot)
+- [Single Instance or Tests (No Redis)](#single-instance-or-tests-no-redis)
 - [Disabling CoCache](#disabling-cocache)
 
 ## Dependencies
 
-### Gradle (Kotlin DSL)
-
-Add to your `build.gradle.kts`:
-
 ```kotlin
 dependencies {
-    // Spring Boot starter (includes everything needed)
+    implementation(platform("me.ahoo.cocache:cocache-bom:${cocacheVersion}"))
     implementation("me.ahoo.cocache:cocache-spring-boot-starter")
-
-    // Or use BOM for version management
-    implementation(platform("me.ahoo.cocache:cocache-bom"))
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter")
+    implementation("org.springframework.boot:spring-boot-starter-data-redis") // supplies the Redis connection details
 }
 ```
-
-### Gradle (Groovy DSL)
-
-```groovy
-dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter'
-}
-```
-
-### Maven
 
 ```xml
 <dependencyManagement>
@@ -59,20 +45,21 @@ dependencies {
 </dependency>
 ```
 
+Requirements: JDK 17+, Spring Boot 4, Redis 7+. CoCache builds its own Lettuce client from Spring Boot's Redis settings; the application may keep using Jedis or Lettuce for its own Redis access.
+
 ## Module Selection
 
 | Module | When to use |
 |--------|-------------|
-| `cocache-spring-boot-starter` | Spring Boot projects (recommended, includes auto-config) |
-| `cocache-spring` | Spring projects without Boot |
-| `cocache-spring-redis` | Redis distributed cache implementation |
-| `cocache-spring-cache` | Spring Cache abstraction bridge (`@Cacheable`) |
-| `cocache-core` | Core implementations, no Spring dependency |
-| `cocache-api` | Only the interfaces (for library authors) |
+| `cocache-spring-boot-starter` | Spring Boot (recommended): auto-configuration, `@EnableCoCache`, properties, actuator, Micrometer |
+| `cocache-spring` | Spring without Boot: `CoCacheSpringCacheManager`, `TransactionalInvalidator` |
+| `cocache-redis` | Redis backend (Lettuce, no Spring) |
+| `cocache-codec-jackson` | Jackson 3 (`tools.jackson`) codec |
+| `cocache-core` | Runtime and engines, `InMemoryBackend`, no Spring |
+| `cocache-api` | Interfaces and SPI only (library authors) |
+| `cocache-test` | TCK for custom backends (test scope) |
 
-## Minimal Configuration
-
-### application.yaml
+## Spring Boot Setup
 
 ```yaml
 spring:
@@ -80,263 +67,207 @@ spring:
     redis:
       host: localhost
       port: 6379
+```
 
+Standalone, Sentinel, and Cluster (`spring.data.redis.cluster.nodes`) are supported, including username, password, and SSL bundles. Static master-replica topologies are not supported. CoCache always talks to primaries.
+
+```kotlin
+@SpringBootApplication
+@EnableCoCache(caches = [UserCache::class])   // only needed for interface-style caches
+class App
+```
+
+## Declaring Caches
+
+### Interface style
+
+```kotlin
+@CoCache(
+    ttl = 120,                 // seconds; CoCache.FOREVER = never expires
+    absentTtl = 30,            // negative entries
+    localMaxAge = 60,          // max age of an L2 copy
+    refreshWindow = 20,        // refresh ahead in the last 20 s; 0 = off
+    keyExpression = "#{id}",   // SpEL template over the key; default toString()
+)
+@CaffeineCache(maximumSize = 100_000, expireAfterAccess = 600)
+interface UserCache : Cache<String, User> {
+    fun nameOf(id: String): String? = get(id)?.name   // default methods are allowed
+}
+```
+
+- Bean name = cache name = `@CoCache(name)`, default the interface's simple name. Type = the interface.
+- Other attributes: `namespace` (default the cache name), `keyPrefix` (default `cocache:`), `ttlJitter`, `loader`, `codec`.
+- Loader: `@CoCache(loader = "beanName")`, else the unique `CacheLoader<K, V>` bean (several candidates fail startup), else no loader.
+- Codec: `@CoCache(codec = "beanName")`, else the unique `Codec<V>` bean, else Jackson for the value type using the application's `ObjectMapper`.
+- Redis key: `{keyPrefix}{namespace}:{key}`, for example `cocache:UserCache:42`.
+
+### Spec bean
+
+```kotlin
+@Bean
+fun userSpec(repo: UserRepository, mapper: ObjectMapper): CacheSpec<String, User> = cacheSpec("user") {
+    codec = jacksonCodec<User>(mapper)
+    loader = CacheLoader { id -> repo.findById(id) }      // override loadAll for a batch query
+    keyEncoder = KeyEncoder { it.lowercase() }
+    ttlOf = TtlFunction { _, user -> if (user.vip) Duration.ofHours(6) else null } // null = policy ttl
+    policy {
+        ttl = Duration.ofMinutes(10)
+        local = LocalPolicy(maximumSize = 50_000)
+    }
+}
+```
+
+- The return type must declare its generics (`CacheSpec<String, User>`); raw types fail startup.
+- The cache bean is named after the spec bean minus `Spec` (`userSpec` → `user`), otherwise plus `Cache`. Inject it as `Cache<String, User>`.
+- `SetCacheSpec<K, E>` (`setCacheSpec("index") { elementCodec = StringCodec }`) registers a `SetCache<K, E>`.
+
+### Customizers
+
+`CacheSpecCustomizer` beans replace 5.x's `{cacheName}.ClientSideCache` bean-name conventions:
+
+```kotlin
+@Bean
+fun userCacheCustomizer() = object : CacheSpecCustomizer {
+    override fun supports(cacheName: String) = cacheName == "UserCache"
+    override fun customize(spec: CacheSpec.Builder<*, *>) {
+        spec.policy = spec.policy.toBuilder().absentTtl(Duration.ofSeconds(30)).build()
+    }
+}
+```
+
+## Policy and Configuration
+
+Precedence, lowest to highest: built-in defaults → declaration (annotation or spec) → `CacheSpecCustomizer` → `cocache.defaults.*` → `cocache.caches.[name].*`.
+
+```yaml
 cocache:
-  enabled: true  # default, can omit
+  defaults:
+    local-max-age: 120        # bare numbers are seconds; 500ms, 2m, PT2M also work
+  caches:
+    UserCache:
+      ttl: 600
+      ttl-jitter: 30
+      absent-ttl: 30
+      refresh-window: 60      # 0 = off
+      lease-ttl: 10
+      lease-wait: 500ms
+      load-max-concurrent: 32
+      local-maximum-size: 200000
+      read-failure: throw     # default degrade
+    ProductCache:
+      ttl-forever: true
+  redis:
+    channel-mode: pubsub      # or sharded; must match on every instance
+    command-timeout: 2000     # bare numbers are milliseconds here
+    heartbeat: 5000
+    client-name: my-service
 ```
 
-### Application Class
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `ttl` / `ttl-forever` | 1 h | Value lifetime in L1 |
+| `ttl-jitter` | 1 min (at most `ttl / 2`) | Random spread of `ttl` |
+| `absent-ttl` | 1 min | Negative-entry lifetime (no jitter) |
+| `local-max-age` | 5 min | Max age of an L2 copy; bounds staleness when an invalidation message is lost |
+| `degraded-local-max-age` | 10 s | Max age of an L2 copy that was not written to L1 (Redis down, lease wait timed out) |
+| `refresh-window` | off | Refresh ahead; must be `< ttl − jitter` and `< local-max-age` |
+| `lease-ttl` / `lease-wait` | 10 s / 200 ms | Lease auto-release; how long a miss waits for another node's load |
+| `load-max-concurrent` / `load-acquire-timeout` | 0 (unlimited) / 1 s | Loader bulkhead; rejection throws `SourceLoadRejectedException` |
+| `local-maximum-size` | 10 000 | L2 capacity |
+| `invalidate-failure` | `retry` | `throw` to surface L1 invalidation failures |
+| `read-failure` | `degrade` | `throw` to raise `CacheReadException` when L1 reads fail |
 
-```kotlin
-import me.ahoo.cache.api.Cache
-import me.ahoo.cache.api.annotation.CoCache
-import me.ahoo.cache.spring.EnableCoCache
-import org.springframework.boot.autoconfigure.SpringBootApplication
-import org.springframework.boot.runApplication
+Startup fails when `cocache.caches` names an undeclared cache, when a policy is invalid (durations must be positive and at most 100 years), or when a removed 5.x key is used (the error names the replacement).
 
-@SpringBootApplication
-@EnableCoCache(caches = [UserCache::class])
-class MyApp
-
-fun main(args: Array<String>) {
-    runApplication<MyApp>(*args)
-}
-
-@CoCache(keyPrefix = "user:", ttl = 300)
-interface UserCache : Cache<String, User>
-```
-
-That's it. CoCache auto-configures:
-- `RedisDistributedCache` as L1
-- `CaffeineClientSideCache` as L2 (bounded, 10000 entries by default)
-- `RedisCacheEvictedEventBus` for cross-instance coherence
-- `ToStringKeyConverter` with the `keyPrefix`
-- `CacheSource.noOp()` (returns null, you provide your own)
-
-## Step-by-Step Setup
-
-### Step 1: Add Dependencies
-
-```kotlin
-// build.gradle.kts
-plugins {
-    id("org.springframework.boot") version "4.1.0"
-    id("io.spring.dependency-management") version "1.1.7"
-    kotlin("jvm") version "2.4.10"
-    kotlin("plugin.spring") version "2.4.10"
-}
-
-dependencies {
-    implementation("org.springframework.boot:spring-boot-starter-data-redis")
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter")
-}
-```
-
-### Step 2: Define Cache Interfaces
-
-Create one interface per cache domain:
-
-```kotlin
-// UserCache.kt
-@CoCache(keyPrefix = "user:", ttl = 300, missingTtl = 30)
-@CaffeineCache(maximumSize = 500_000, expireAfterAccess = 300)
-interface UserCache : Cache<String, User>
-
-// ProductCache.kt -- defaults: ttl 3600s, ttlAmplitude 60s, missingTtl 60s, L2 maximumSize 10000
-@CoCache(keyPrefix = "product:")
-interface ProductCache : Cache<String, Product>
-```
-
-TTL guidance (all in seconds):
-
-- `ttl` caps how long a missed invalidation can survive (cache-aside races are only repaired by expiry). Keep it finite; `TtlAt.FOREVER` disables expiry.
-- `ttlAmplitude` spreads expirations to avoid avalanches (about 2–10 % of `ttl`).
-- `missingTtl` caps how long a newly created row stays invisible after a "not found" was cached. Keep it short.
-- `clientSideTtl` (default `0` = unlimited) caps how long an L2 copy lives before it is refilled from L1, which bounds staleness when an eviction event is lost.
-- `refreshAhead` (default `0` = off) reloads a value in the background once it has that many seconds left, so hot keys don't stall on expiry. It must be less than `ttl` and `clientSideTtl`.
-- L2 entries expire at their own `ttlAt`; `@CaffeineCache` only bounds size and idle time.
-
-```kotlin
-```
-
-### Step 3: Register Caches
-
-```kotlin
-@SpringBootApplication
-@EnableCoCache(caches = [UserCache::class, ProductCache::class])
-class MyApp
-```
-
-### Step 4: Provide CacheSource (Data Loaders)
-
-```kotlin
-@Configuration
-class CacheSourceConfig {
-
-    // null → negative cache for missingTtl. CacheValue.forever(...) means "no expiry from the source";
-    // return CacheValue.of(value, TtlAt.at(seconds)) to give the entry its own TTL instead.
-    @Bean("UserCache.CacheSource")
-    fun userCacheSource(userRepository: UserRepository): CacheSource<String, User> {
-        return CacheSource { key -> userRepository.findById(key).orElse(null)?.let { CacheValue.of(it, TtlAt.at(300)) } }
-    }
-
-    // A CacheSource may also be matched by its generic type when it is the only CacheSource<String, Product> bean
-    @Bean
-    fun productCacheSource(productRepository: ProductRepository): CacheSource<String, Product> {
-        return CacheSource { key -> productRepository.findById(key).orElse(null)?.let { CacheValue.of(it, TtlAt.at(600)) } }
-    }
-}
-```
-
-### Step 5: Inject and Use
+## Transactions and Writes
 
 ```kotlin
 @Service
 class UserService(
-    @Qualifier("userCache") private val userCache: UserCache
+    private val repo: UserRepository,
+    private val userCache: UserCache,
+    private val invalidator: TransactionalInvalidator,
 ) {
-    fun getUser(id: String): User? = userCache[id]
-
-    fun saveUser(user: User) {
-        userRepository.save(user)   // update the source first
-        userCache.evict(user.id)    // then evict (or set the committed value)
-    }
-
-    fun deleteUser(id: String) {
-        userCache.evict(id)
+    @Transactional
+    fun rename(id: String, name: String) {
+        repo.rename(id, name)
+        invalidator.invalidate(userCache, id)   // runs after commit; skipped on rollback
     }
 }
 ```
 
-## Redis Failure Behavior
+Outside a transaction, `invalidate` runs immediately. Never call `cache.invalidate` inside an open transaction.
 
-`RedisDistributedCache` catches only `DataAccessException` (never broader types) and degrades by default:
+## Redis Backend
 
-- **Read failure** → logged as WARN, then returns `null` (cache miss), so the coherent cache reloads from the `CacheSource`.
-- **Write/evict failure** → logged as WARN and swallowed.
+- Every `put` / `invalidate` is one Lua round trip that writes and publishes the invalidation.
+- `channel-mode: pubsub` (default): classic Pub/Sub, atomic with the write. On deployments that treat `PUBLISH` as `SPUBLISH` (for example ElastiCache Serverless), CoCache detects it at startup and publishes after the write instead.
+- `channel-mode: sharded`: `SSUBSCRIBE` / `SPUBLISH` (Redis 7+), published after the write. Re-subscribes automatically after slot migration.
+- The subscription connection is pinged every `heartbeat`; any reconnect clears L2.
+- L1 values carry a binary header. Do not read them with `redis-cli GET` or from other services.
+- An external writer must `DEL` the key and publish an invalidation frame on `cocache:inv:{namespace}` (see the wiki Operations page).
 
-Set `cocache.redis.strict-failure: true` to rethrow the exception instead of degrading:
+## Failure Behavior
 
-```yaml
-cocache:
-  redis:
-    strict-failure: true
-```
-
-This property reaches only the caches the auto-configuration creates. If you define your own `DistributedCache` bean, you own its failure policy.
-
-Corrupted payloads self-heal: when the codec cannot decode a stored value, the read is treated as a miss, and the reload writes a fresh value over the bad bytes. Reads never delete keys, because a delete could remove a valid value that another instance wrote concurrently.
-
-### Custom Missing-Guard Sentinel
-
-Negative cache entries are stored in Redis under a sentinel value (default `"_nil_"`). If that string can collide with a legitimate serialized payload, override it:
-
-```yaml
-cocache:
-  redis:
-    missing-guard-sentinel: "__my_missing__"
-```
-
-The default and a custom sentinel do not recognize each other — a custom value must be switched across the whole cluster at once (old instances would read the new sentinel as a real value during a rolling upgrade), must not be blank, and must never equal any legitimate payload. The sentinel only governs the bytes written to and recognized from Redis. In-process, negative entries are the explicit `MissingValue` type, so a business value like `"_nil_"` is never misread as missing outside Redis.
-
-## Without Spring Boot
-
-For plain Spring projects, use `cocache-spring` directly:
-
-```kotlin
-@Configuration
-@EnableCoCache(caches = [UserCache::class])
-class CacheConfig {
-
-    @Bean("UserCache.DistributedCache")
-    fun distributedCache(
-        redisTemplate: StringRedisTemplate,
-        objectMapper: ObjectMapper
-    ): DistributedCache<User> {
-        val codecExecutor = ObjectToJsonCodecExecutor<User>(
-            User::class.java,
-            redisTemplate,
-            objectMapper
-        )
-        return RedisDistributedCache(redisTemplate, codecExecutor)
-    }
-
-    // stateful components are matched by name: {cacheName}.ClientSideCache
-    @Bean("UserCache.ClientSideCache")
-    fun clientSideCache(): ClientSideCache<User> {
-        return CaffeineClientSideCache.build(maximumSize = 100_000, expireAfterAccess = Duration.ofMinutes(30))
-    }
-
-    @Bean
-    fun redisMessageListenerContainer(
-        redisConnectionFactory: RedisConnectionFactory
-    ): RedisMessageListenerContainer {
-        return RedisMessageListenerContainer().apply {
-            setConnectionFactory(redisConnectionFactory)
-        }
-    }
-
-    @Bean
-    fun cacheEvictedEventBus(
-        redisTemplate: StringRedisTemplate,
-        redisMessageListenerContainer: RedisMessageListenerContainer
-    ): CacheEvictedEventBus {
-        return RedisCacheEvictedEventBus(redisTemplate, redisMessageListenerContainer)
-    }
-}
-```
-
-## Single-Instance Setup (No Redis)
-
-For development or single-instance deployments, you can skip Redis:
-
-```kotlin
-@SpringBootApplication
-@EnableCoCache(caches = [UserCache::class])
-class MyApp {
-
-    @Bean
-    fun cacheEvictedEventBus(): CacheEvictedEventBus {
-        return LocalCacheEvictedEventBus()  // in-process only
-    }
-
-    @Bean("UserCache.DistributedCache")
-    fun distributedCache(): DistributedCache<User> {
-        return InMemoryDistributedCache()  // in-memory L1 for development/testing
-    }
-}
-```
-
-Note: This loses cross-instance coherence. Only use for development/testing.
+| Operation | When Redis fails |
+|-----------|------------------|
+| Reads, fills, refresh | Default: load from the source, keep the result in L2 for `degraded-local-max-age`. `read-failure: throw` raises `CacheReadException` |
+| `invalidate`, `invalidateAll` | Local copy dropped immediately; L1 retried in the background (8 attempts, exponential backoff). Until it succeeds, misses for that key skip Redis. `invalidate-failure: throw` raises `CacheWriteException` |
+| `put`, `SetCache.add` / `remove` / `clear` | Throw `CacheWriteException`; safe to retry (idempotent) |
 
 ## Spring Cache Bridge
 
-`cocache-spring-cache` integrates CoCache with Spring's `@Cacheable` abstraction. When `@EnableCaching` is present, CoCache can auto-configure `CoCacheManager`:
+The starter registers `CoCacheSpringCacheManager` (wrapped in `TransactionAwareCacheManagerProxy` when spring-tx is present) unless you define a `CacheManager`. It exposes caches already declared with CoCache; it never creates caches by name.
 
 ```kotlin
-@Cacheable(cacheNames = ["userCache"])
-fun getUser(id: String): User? {
-    return userRepository.findById(id).orElse(null)
-}
+@Cacheable(cacheNames = ["UserCache"], sync = true)  // sync = true keeps lease protection
+fun find(id: String): User? = repo.findById(id)
 ```
 
-The call routes through CoCache's two-level cache.
+Negative entries read as misses; `@CachePut` with `null` invalidates; `clear()` only clears the local L2.
 
-## Actuator Endpoints
+## Metrics and Actuator
 
-When Spring Actuator is on the classpath:
+With Micrometer on the classpath, each cache publishes `cocache.*` meters tagged `cache=<name>`: `cocache.hits{level=l1}`, `cocache.misses`, `cocache.loads` (timer), `cocache.load.failures`, `cocache.lease.waits`, `cocache.degraded.fills`, `cocache.invalidation.retries`, `cocache.invalidations.dropped`, `cocache.resets`, `cocache.local.size`, and more. L2 hits are not counted.
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/actuator/cocache` | GET | List all coherent caches |
-| `/actuator/cocache/{name}` | GET | Cache stats |
-| `/actuator/cocache/{name}/{key}` | GET | Get a cache entry |
-| `/actuator/cocache/{name}/{key}` | DELETE | Evict a cache entry |
-| `/actuator/cocacheClient/{name}` | GET | Client-side cache size |
-| `/actuator/cocacheClient/{name}/{key}` | GET | Get a client-side cache entry |
-| `/actuator/cocacheClient/{name}` | DELETE | Clear a client-side cache |
+With actuator, expose the `cocache` endpoint:
 
-With Micrometer on the classpath, the starter also binds `cocache.*` meters tagged by `cache`: `hits{level=l2|l1}`, `misses`, `loads` (timer), `load.failures`, `filtered`, `stale.discards`, `evictions.received`, `resets`, `l2.size`, plus the untagged `eviction.publish.failures`. On Redis 7+ (especially Redis Cluster), `cocache.redis.eviction-channel=sharded` switches evictions to Sharded Pub/Sub (requires Lettuce; switch all instances at once). Set `cocache.load.max-concurrent` (with `cocache.load.acquire-timeout`, default `1s`) to cap concurrent source loads per cache while Redis is down; excess loads fail with `SourceLoadRejectedException` and count in `load.rejections`. `hits{level=l2}` is recorded only with `cocache.metrics.client-side-hits=true` (off by default: it costs 8–15% of L2 hit throughput). The L2 hit ratio is `hits{level=l2} / (hits{level=l2} + misses)`.
+```yaml
+management.endpoints.web.exposure.include: cocache
+```
+
+`GET /actuator/cocache` lists caches and counters, `GET /actuator/cocache/{name}` shows one, `DELETE /actuator/cocache/{name}` clears that cache's L2 on this instance.
+
+## Without Spring Boot
+
+```kotlin
+val backend = RedisBackend.standalone(RedisURI.create("localhost", 6379))  // or RedisBackend.cluster(uris)
+val runtime = CacheRuntime.builder().backend(backend).build()               // one per process
+
+val users: Cache<String, User> = runtime.create(cacheSpec("user") {
+    codec = jacksonCodec<User>(JsonMapper.builder().findAndAddModules().build())
+    loader = CacheLoader { id -> repository.findById(id) }
+})
+
+// shutdown
+runtime.close()
+backend.close()
+```
+
+Java uses the builders: `CacheSpec.<String, User>builder("user").codec(codec).loader(loader).policy(CachePolicy.builder().ttl(Duration.ofMinutes(2)).build()).build()`.
+
+For Spring without Boot, add `cocache-spring` and register `CoCacheSpringCacheManager(runtime)` and `TransactionalInvalidator()` as beans.
+
+## Single Instance or Tests (No Redis)
+
+Declare a `CoherenceBackend` bean and the Redis backend backs off:
+
+```kotlin
+@Bean
+fun cocacheBackend(): CoherenceBackend = InMemoryBackend()
+```
+
+`InMemoryBackend` implements the full protocol in one process. Runtimes that share one instance behave like separate nodes.
 
 ## Disabling CoCache
 
@@ -345,4 +276,4 @@ cocache:
   enabled: false
 ```
 
-This prevents all CoCache auto-configuration. Useful for test profiles.
+This turns off the backend, runtime, cache registration, cache manager, endpoint, and metrics. Injection points for CoCache caches then fail, so disable only where nothing injects them.

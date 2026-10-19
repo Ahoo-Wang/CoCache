@@ -22,11 +22,12 @@ body:
       options:
         - cocache-api
         - cocache-core
+        - cocache-redis
+        - cocache-codec-jackson
         - cocache-spring
-        - cocache-spring-redis
-        - cocache-spring-cache
         - cocache-spring-boot-starter
         - cocache-test
+        - cocache-bom
         - Documentation
         - Not sure
     validations:

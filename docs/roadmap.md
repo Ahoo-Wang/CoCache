@@ -1,6 +1,6 @@
 # CoCache 路线图
 
-本文记录 5.1 之后的演进计划。每一项都对应 [architecture.md](architecture.md) §1 的目标：G1 陈旧度有上界、G2 失效不被吞没、G3 命中路径够便宜。完成的项迁入 changelog，行为变化同步更新 architecture.md。
+本文记录 5.1 之后的演进计划；5.x 各版本已全部完成，5.x 不再维护。每一项都对应 [architecture.md](architecture.md) §1 的目标：G1 陈旧度有上界、G2 失效不被吞没、G3 命中路径够便宜。完成的项迁入 changelog，行为变化同步更新 architecture.md。
 
 ## 排序原则
 
@@ -43,22 +43,42 @@
 
 同期产出 6.0 设计 RFC：L1 版本号 / lease 的数据结构、墓碑 TTL、迁移方案（[RFC 0001](rfc/0001-l1-write-back-lease.md)，已被 [RFC 0003](rfc/0003-target-architecture.md) 取代）。
 
-## v6.0：目标架构重构（[RFC 0003](rfc/0003-target-architecture.md)）
+## v6.0：目标架构重构（[RFC 0003](rfc/0003-target-architecture.md)）— 已完成
 
-不兼容 5.x：API、SPI、模块、Redis 线格式、配置项一次性重做，线格式只破坏这一次。原计划的 L1 写回 lease（RFC 0001）与清理并入本版本。
+不兼容 5.x：API、SPI、模块、Redis 线格式、配置项一次性重做，线格式只破坏这一次。原计划的 L1 写回 lease（RFC 0001）与清理并入本版本。现行设计见 [architecture.md](architecture.md)。
 
-| 项 | 目标 | 内容 |
-|----|------|------|
-| L1 lease 栅栏 | G2 | 消除 architecture.md §5 的“已知的固有窗口”：L1 陈旧上界从 TTL 降至事件延迟；取代 `fillCache`/`evictIfUnchanged` 与写后撤销 L1 |
-| 跨实例回源互斥与单次刷新 | 保护数据源、G3 | 复用 lease 与刷新令牌，全集群同一 key 只回源 / 刷新一次 |
-| 原子失效与广播 | G1 | 失效、写入在一次 Lua 中完成 `DEL`/写入 + `PUBLISH`，各 1 次往返；环境不支持时退回非原子并告警 |
-| 新线格式 | G2、可演进 | 标量用 String + 36 字节定长头，集合用 Hash（控制字段与成员分离）；去掉 `_nil_` 哨兵；格式版本字段承担值格式版本化 |
-| Lettuce 原生后端 | G3 | 去掉 Spring Data Redis；自动流水线批量读；进程级失效路由 |
-| 声明与装配 | 简化 | `CacheSpec` + `CacheRuntime` 取代 9 种工厂与 bean 名后缀约定；配置分层；`@CoCache` 接口式声明保留（启动时翻译为 spec，RFC 0003 Q9） |
-| 删除 | 简化 | JoinCache 子系统、L2 可替换、5.x 废弃接口 |
+| 项 | 目标 | 内容 | 状态 |
+|----|------|------|------|
+| L1 lease 栅栏 | G2 | 消除 5.x 的“已知的固有窗口”：协议内竞态不再在 L1 留下旧值；取代 `fillCache`/`evictIfUnchanged` 与写后撤销 L1 | ✅ |
+| 同节点失效吞没（RFC 0003 §10 C1、v3-1） | G2 | 失效方在修改 L1 前后各递增一次戳；`put` 不写 L2 | ✅（`EngineSpec` 复现用例） |
+| 跨实例回源互斥与单次刷新 | 保护数据源、G3 | 复用 lease 与刷新令牌，全集群同一 key 只回源 / 刷新一次 | ✅ |
+| 原子失效与广播 | G1 | 失效、写入在一次 Lua 中完成 `DEL`/写入 + `PUBLISH`，各 1 次往返；环境不支持时退回非原子并告警 | ✅ |
+| 失效重试 | G1 | L1 写入失败的失效进入有界重试队列，排队期间未命中跳过 L1 | ✅ |
+| 新线格式 | G2、可演进 | 标量用 String + 36 字节定长头，集合用 Hash（控制字段与成员分离）；去掉 `_nil_` 哨兵；格式版本字段 | ✅ |
+| Lettuce 原生后端 | G3 | 去掉 Spring Data Redis；共享连接多路复用批量读；每个后端一条订阅连接；订阅心跳；Sharded 通道（slot 迁移后自动重新订阅） | ✅ |
+| 声明与装配 | 简化 | `CacheSpec` + `CacheRuntime` 取代 9 种工厂与 bean 名后缀约定；配置分层与启动校验；`@CoCache` 接口式声明保留（启动时翻译为 spec） | ✅ |
+| Spring 集成 | 正确性 | `CoCacheSpringCacheManager`（`sync = true` 走 lease 保护的回源）；`TransactionalInvalidator` | ✅ |
+| 可观测 | 验证 G1–G3 | `CacheMetrics` + Micrometer；actuator 端点 `cocache` | ✅ |
+| 删除 | 简化 | JoinCache 子系统、L2 可替换、Jedis、5.x 全部包与模块 | ✅ |
 
-实施顺序与验收见 RFC 0003 §9：architecture.md 删除“固有窗口”；`MultiNodeSpec` 覆盖跨实例竞态、单次回源与单次刷新；changelog 给出 5.x → 6.0 概念对照表。
+JMH 对比见 RFC 0003 §7.1。
+
+## 6.0 之后
+
+以下各项在 RFC 0003 中规划，但没有随 6.0 交付：
+
+| 项 | 目标 | 内容 | 现状 |
+|----|------|------|------|
+| TCK `MultiNodeSpec` | G2 验收 | 多进程覆盖 §4.4 的全部交错（失效先于 lease、晚于 lease、晚于 fill；同节点与跨节点并发 `put`；失效重试期间的未命中）、全集群单次回源与单次刷新的计数断言 | 未实现。`EngineSpec` 已用两个运行时共享一个后端覆盖其中大部分交错 |
+| TCK `FaultSpec` | G1 验收 | Redis 故障时的降级限龄、失效重试与溢出、写入抛出后重试的幂等性、断线时命令不被重放、故障切换后的 `NOSCRIPT` 回退 | 未实现。`EngineSpec` 用 `HookedBackend` 注入故障覆盖降级与重试；断线不重放与 `NOSCRIPT` 回退没有专门用例 |
+| Valkey CI | 兼容性 | Valkey 7.2+ 上运行 `cocache-redis` 与 starter 测试 | 未实现；兼容性只按协议推断 |
+| 集合基准 `setRead` | G3 | 成员数 10 / 100 / 1000 的吞吐与内存，决定 Hash 编码是否保留（RFC 0003 §8 Q1） | 未实现 |
+| L2 命中计数 | 可观测 | 分条带计数器；8 线程 JMH 回退在噪声内才默认开启 | 未提供 |
+| `CacheAdmin` 按 key 查看与强制失效 | 运维 | 不回源查看 L2 与 L1、强制失效、查看策略 | 未提供；现有 `CacheAdmin` 只有统计、本地副本数与清空本地副本 |
+| 外部失效工具 | G1 | 随 `cocache-redis` 发布构造帧并原子执行 `DEL` + `PUBLISH` 的脚本与 CLI | 未提供；协议见 architecture.md §6.2 |
+| `SetCache` 启动检查 | 安全 | 检查 `maxmemory-policy` 不是 `allkeys-*` | 未实现；只写在文档中 |
+| RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
 
 ## 暂缓
 
-异步 API 与协程（JDK 21 虚拟线程已覆盖多数场景；6.0 预留扩展方式，见 RFC 0003 §8 Q8）、按字节限制 L2 与压缩 codec。等指标证明有需要时再排期。值格式版本化已并入 6.0（线格式中的版本字段）。
+异步 API 与协程（JDK 21 虚拟线程已覆盖多数场景；6.0 预留扩展方式，见 RFC 0003 §8 Q8）、按字节限制 L2 与压缩 codec、Sharded 模式的原子广播（分桶布局，RFC 0003 §8 Q2）。等指标证明有需要时再排期。
