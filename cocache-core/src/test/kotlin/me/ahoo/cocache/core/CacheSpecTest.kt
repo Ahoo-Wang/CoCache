@@ -133,4 +133,20 @@ class CacheSpecTest {
         setCopy.keyEncoder.assert().isSameAs(setSpec.keyEncoder)
         setCopy.keyPrefix.assert().isEqualTo(setSpec.keyPrefix)
     }
+
+    @Test
+    fun updatePolicyStartsFromTheCurrentPolicy() {
+        val setSpec = SetCacheSpec.builder<String, String>("index")
+            .elementCodec(StringCodec)
+            .updatePolicy { it.localMaxAge(Duration.ofMinutes(1)) }
+            .build()
+        // 集合缓存保持永不过期，只改了限龄
+        setSpec.policy.ttl.assert().isNull()
+        setSpec.policy.localMaxAge.assert().isEqualTo(Duration.ofMinutes(1))
+        val spec = CacheSpec.builder<String, String>("user")
+            .codec(StringCodec)
+            .updatePolicy { it.ttl(Duration.ofMinutes(2)) }
+            .build()
+        spec.policy.ttl.assert().isEqualTo(Duration.ofMinutes(2))
+    }
 }
