@@ -24,6 +24,44 @@ import java.util.function.Consumer
  */
 fun interface KeyEncoder<K> {
     fun encode(key: K): String
+
+    companion object {
+        /**
+         * 默认编码：`toString()`。每种 key 类型首次编码时检查它是否重写了 `toString()`：
+         * 没有重写（`Object` 默认的“类名@哈希”）时每个实例都映射到不同的存储 key，缓存永远不命中，因此直接拒绝。
+         */
+        @JvmStatic
+        fun <K : Any> ofToString(): KeyEncoder<K> = ToStringKeyEncoder()
+    }
+}
+
+/**
+ * [KeyEncoder.ofToString] 的实现。命中路径只多一次引用比较：`String` 直接通过，其它类型与上次校验过的类型比较，
+ * 不同时才查 [DECLARES_TO_STRING]（按类型缓存的反射结果）。
+ */
+private class ToStringKeyEncoder<K : Any> : KeyEncoder<K> {
+    // 良性竞争：最坏情况是重复查一次按类型缓存的结果
+    private var verified: Class<*>? = null
+
+    override fun encode(key: K): String {
+        val type = key.javaClass
+        if (type !== String::class.java && type !== verified) {
+            require(DECLARES_TO_STRING.get(type)) {
+                "Key type [${type.name}] does not override toString(): every instance would map to a different storage key " +
+                    "and the cache would never hit. Use a data class / record, override toString(), or provide a KeyEncoder."
+            }
+            verified = type
+        }
+        return key.toString()
+    }
+
+    private companion object {
+        val DECLARES_TO_STRING: ClassValue<Boolean> = object : ClassValue<Boolean>() {
+            override fun computeValue(
+                type: Class<*>
+            ): Boolean = type.getMethod("toString").declaringClass != Any::class.java
+        }
+    }
 }
 
 /**
@@ -79,7 +117,7 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
     class Builder<K : Any, V : Any> internal constructor(val name: String) {
         var namespace: String? = null
         var keyPrefix: String = DEFAULT_KEY_PREFIX
-        var keyEncoder: KeyEncoder<K> = KeyEncoder { it.toString() }
+        var keyEncoder: KeyEncoder<K> = KeyEncoder.ofToString()
         var codec: Codec<V>? = null
         var loader: CacheLoader<K, V>? = null
         var ttlOf: TtlFunction<K, V>? = null
@@ -153,7 +191,7 @@ class SetCacheSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
     class Builder<K : Any, E : Any> internal constructor(val name: String) {
         var namespace: String? = null
         var keyPrefix: String = CacheSpec.DEFAULT_KEY_PREFIX
-        var keyEncoder: KeyEncoder<K> = KeyEncoder { it.toString() }
+        var keyEncoder: KeyEncoder<K> = KeyEncoder.ofToString()
         var elementCodec: Codec<E>? = null
         var policy: CachePolicy = DEFAULT_POLICY
 

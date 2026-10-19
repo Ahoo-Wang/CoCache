@@ -21,7 +21,7 @@ import java.time.Duration
  * @param maxAttempts 每次失效的最多重试次数
  * @param capacity 同时排队的失效数上限；溢出时放弃并告警
  */
-data class RetryPolicy(
+data class RetryPolicy @JvmOverloads constructor(
     val maxAttempts: Int = 8,
     val initialBackoff: Duration = Duration.ofMillis(100),
     val maxBackoff: Duration = Duration.ofSeconds(10),
