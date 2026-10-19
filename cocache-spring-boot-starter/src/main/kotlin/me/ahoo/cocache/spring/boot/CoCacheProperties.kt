@@ -143,6 +143,12 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         @DefaultValue("pubsub")
         val channelMode: RedisChannelMode,
+        /**
+         * 有 `SetCache` 时启动检查各主节点的 `maxmemory-policy`：`allkeys-*` 会驱逐集合的唯一副本。
+         * `warn`（默认）记录告警，`fail` 启动失败，`off` 不检查。`CONFIG` 不可用时跳过。
+         */
+        @DefaultValue("warn")
+        val setCacheEvictionCheck: EvictionCheck,
     ) {
         fun toOptions(): RedisBackendOptions = RedisBackendOptions(
             commandTimeout,
@@ -151,6 +157,15 @@ data class CoCacheProperties @ConstructorBinding constructor(
             clientName = clientName,
             channelMode = channelMode,
         )
+    }
+
+    /**
+     * `SetCache` 驱逐检查的处理方式。
+     */
+    enum class EvictionCheck {
+        WARN,
+        FAIL,
+        OFF,
     }
 
     /**

@@ -185,6 +185,17 @@ class CoCacheAutoConfiguration {
     }
 
     /**
+     * 有 `SetCache` 时检查 Redis 的 `maxmemory-policy` 会不会驱逐集合的唯一副本（`cocache.redis.set-cache-eviction-check`）。
+     */
+    @Bean
+    @ConditionalOnBean(CacheRuntime::class)
+    fun cocacheSetCacheEvictionCheck(
+        runtime: CacheRuntime,
+        backend: CoherenceBackend,
+        properties: CoCacheProperties,
+    ): SmartInitializingSingleton = SetCacheEvictionCheck(runtime, backend, properties.redis.setCacheEvictionCheck)
+
+    /**
      * 事务内失效登记到提交之后执行（有 spring-tx 时启用）。
      */
     @Configuration(proxyBeanMethods = false)

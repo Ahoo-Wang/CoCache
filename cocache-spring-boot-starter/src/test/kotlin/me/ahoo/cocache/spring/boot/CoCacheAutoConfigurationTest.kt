@@ -223,7 +223,8 @@ class CoCacheAutoConfigurationTest {
             Duration.ofSeconds(2),
             8,
             "x",
-            me.ahoo.cocache.redis.RedisChannelMode.SHARDED
+            me.ahoo.cocache.redis.RedisChannelMode.SHARDED,
+            CoCacheProperties.EvictionCheck.WARN
         ).toOptions()
         options.clientName.assert().isEqualTo("x")
         options.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.SHARDED)
@@ -398,6 +399,7 @@ class CoCacheAutoConfigurationTest {
                 "cocache.caches.user.ttl-jitter=0",
                 "cocache.redis.command-timeout=1500",
                 "cocache.redis.channel-mode=sharded",
+                "cocache.redis.set-cache-eviction-check=fail",
             )
             .run { context ->
                 assertThat(context).hasNotFailed()
@@ -411,6 +413,7 @@ class CoCacheAutoConfigurationTest {
                 ).refreshWindow.assert().isEqualTo(Duration.ofSeconds(30))
                 properties.redis.commandTimeout.assert().isEqualTo(Duration.ofMillis(1500))
                 properties.redis.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.SHARDED)
+                properties.redis.setCacheEvictionCheck.assert().isEqualTo(CoCacheProperties.EvictionCheck.FAIL)
                 properties.redis.toOptions().channelMode.assert().isEqualTo(
                     me.ahoo.cocache.redis.RedisChannelMode.SHARDED
                 )
@@ -449,7 +452,8 @@ class CoCacheAutoConfigurationTest {
                 Duration.ofSeconds(5),
                 512,
                 null,
-                me.ahoo.cocache.redis.RedisChannelMode.PUBSUB
+                me.ahoo.cocache.redis.RedisChannelMode.PUBSUB,
+                CoCacheProperties.EvictionCheck.WARN
             ),
             CoCacheProperties.Backend.REDIS,
             CoCacheProperties.SpringCache(false, null),

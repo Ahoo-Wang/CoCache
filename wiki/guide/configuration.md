@@ -141,6 +141,7 @@ TLS follows the Spring Boot SSL bundle (`spring.data.redis.ssl.bundle`). A `redi
 | Property | Type | Default | Meaning |
 |----------|------|---------|---------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`: `PUBLISH` / `SUBSCRIBE`, atomic with the Redis change. `sharded`: `SPUBLISH` / `SSUBSCRIBE` (Redis 7+), sent right after the change. **All instances must use the same mode**; the two don't hear each other. |
+| `cocache.redis.set-cache-eviction-check` | `warn` \| `fail` \| `off` | `warn` | With any `SetCache`, read every primary's `maxmemory-policy` at startup: `allkeys-*` can evict the set's only copy. `warn` logs, `fail` stops startup, `off` skips. Skipped when `CONFIG` isn't available (managed Redis, ACL). See [maxmemory-policy](../operations/index.md#maxmemory-policy). |
 | `cocache.redis.command-timeout` | duration (ms) | `2s` | Maximum wait for one command or script |
 | `cocache.redis.heartbeat` | duration (ms) | `5s` | `PING` interval on the subscription connection. A failed ping clears L2 and reconnects. |
 | `cocache.redis.invalidate-batch-size` | integer | `512` | Maximum keys per invalidation script |

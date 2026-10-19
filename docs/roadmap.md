@@ -69,7 +69,7 @@ JMH 对比见 RFC 0003 §7.1。
 |----|------|------|------|
 | Spring AOT / GraalVM 原生镜像 | 可部署 | 构建期为 `@CoCache` / `@JoinCacheable` 接口的 JDK 代理、`keyExpression` / `joinKeyExpression` 的根对象与默认 Jackson codec 的值类型登记 RuntimeHints；注册的 bean 定义可由 AOT 生成代码 | starter 中的 AOT 处理测试（生成、编译并运行生成的初始化器）；example 的原生镜像冒烟构建（独立 CI 工作流，不作为 PR 必需检查） |
 | 执行器可配置 | 运维 | `cocache.spring-cache.retrieve-executor`、`cocache.refresh-executor` 按 bean 名指定执行器（可用 `applicationTaskExecutor`），用户提供的执行器不随运行时关闭 | 绑定与元数据测试；指定的执行器确实被使用；未知 bean 名启动失败 |
-| `SetCache` 驱逐检查 | 安全 | 有 `SetCache` 时启动读取各主节点的 `maxmemory-policy`：`allkeys-*` 会驱逐集合的唯一副本（有限寿命的集合在 `volatile-*` 下同样会被驱逐）；`cocache.redis.set-cache-eviction-check: warn \| fail \| off`，默认 `warn`；`CONFIG` 不可用时跳过并记录 | 单机与集群上读取策略；ACL 禁用 `CONFIG` 时跳过；告警与失败模式测试 |
+| `SetCache` 驱逐检查 | 安全 | 有 `SetCache` 时启动读取各主节点的 `maxmemory-policy`：`allkeys-*` 会驱逐集合的唯一副本；`cocache.redis.set-cache-eviction-check: warn \| fail \| off`，默认 `warn`；`CONFIG` 不可用时跳过并记录 | 单机与集群上读取策略；ACL 禁用 `CONFIG` 时跳过；告警与失败模式测试 |
 
 ## 6.1 之后
 
