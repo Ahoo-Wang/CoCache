@@ -21,12 +21,14 @@ import me.ahoo.cocache.core.CacheMetrics
  * @property key 端点输出中的字段名（与 [CacheMetrics] 的属性同名）
  * @property meter Micrometer 指标名
  * @property level 非空时作为 `level` 标签（分层命中）
+ * @property recorded 该缓存是否记录这个计数；不记录时不注册指标、端点也不输出，避免把“未记录”读成 0
  */
 internal class CacheCounter(
     val key: String,
     val meter: String,
     val description: String,
     val level: String? = null,
+    val recorded: (CacheMetrics) -> Boolean = { true },
     val read: (CacheMetrics) -> Long,
 )
 
@@ -35,6 +37,13 @@ internal object CacheCounters {
      * 回源次数与累计耗时绑定为 FunctionTimer，不在此目录中重复。
      */
     val ALL: List<CacheCounter> = listOf(
+        CacheCounter(
+            "localHits",
+            "cocache.hits",
+            "Reads served by L2",
+            level = "l2",
+            recorded = { it.localHitsRecorded }
+        ) { it.localHits },
         CacheCounter("remoteHits", "cocache.hits", "L2 misses served by L1", level = "l1") { it.remoteHits },
         CacheCounter("misses", "cocache.misses", "L2 misses, before coalescing") { it.misses },
         CacheCounter("filtered", "cocache.filtered", "Reads rejected by the key filter") { it.filtered },

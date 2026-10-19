@@ -149,7 +149,7 @@ Removed 5.x keys fail startup with a message that names the replacement, if ther
 | `cocache.redis.missing-guard-sentinel` | removed: negative entries are a state byte in the value header, so there is no sentinel |
 | `cocache.load.max-concurrent` | `cocache.defaults.load-max-concurrent` |
 | `cocache.load.acquire-timeout` | `cocache.defaults.load-acquire-timeout` |
-| `cocache.metrics.client-side-hits` | removed: there is no L2 hit counter |
+| `cocache.metrics.client-side-hits` | `cocache.metrics.local-hits` (6.2; removed in 6.0 and 6.1) |
 | `cocache.next.*` (6.0 previews) | `cocache.*` |
 
 New: every policy field under `cocache.defaults.*` and `cocache.caches.[name].*`, including `key-prefix` (placeholders allowed, for example `${spring.application.name}:`); `cocache.redis.command-timeout`, `heartbeat`, `invalidate-batch-size`, `client-name`, `channel-mode`; `cocache.backend` (`redis` or `memory`); and `cocache.spring-cache.require-sync`. See [Configuration](./configuration.md#properties).
@@ -189,7 +189,7 @@ All meters keep the `cache` tag.
 
 | 5.x | 6.0 |
 |-----|-----|
-| `cocache.hits{level=l2}` | removed |
+| `cocache.hits{level=l2}` | `cocache.hits{level=l2}` with `cocache.metrics.local-hits=true` (6.2; removed in 6.0 and 6.1) |
 | `cocache.hits{level=l1}` | `cocache.hits{level=l1}` |
 | `cocache.misses` | `cocache.misses` |
 | `cocache.loads` (timer) | `cocache.loads` (function timer) |

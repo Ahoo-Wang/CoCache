@@ -121,6 +121,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val entry = local.getIfPresent(storageKey)
         // 无数据源缓存的“未命中即不存在”只是没有答案，不能挡住调用方给出的 loader
         if (entry != null && !entry.unresolved && entry.expiresAt > clock.nowMillis()) {
+            countLocalHit()
             return entry.value
         }
         return miss(key, storageKey, loader).value
@@ -135,6 +136,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                 if (entry.refreshAt <= now) {
                     refreshAsync(key, storageKey)
                 }
+                countLocalHit()
                 return entry
             }
         }
@@ -536,7 +538,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 未过期的 L2 副本（进入刷新窗口时触发后台刷新）；没有则返回 `null`。
+     * 未过期的 L2 副本（进入刷新窗口时触发后台刷新，并计入 L2 命中）；没有则返回 `null`。
      */
     private fun localHit(key: K, storageKey: String): LocalEntry<V>? {
         val entry = local.getIfPresent(storageKey) ?: return null
@@ -547,6 +549,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         if (entry.refreshAt <= now) {
             refreshAsync(key, storageKey)
         }
+        countLocalHit()
         return entry
     }
 
@@ -1659,6 +1662,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                     if (entry.refreshAt <= now) {
                         refreshAsync(key, storageKey)
                     }
+                    countLocalHit()
                     return@attempt CompletableFuture.completedFuture(entry.value)
                 }
             }
@@ -1669,6 +1673,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             val storageKey = storageKey(key)
             val entry = local.getIfPresent(storageKey)
             if (entry != null && !entry.unresolved && entry.expiresAt > clock.nowMillis()) {
+                countLocalHit()
                 return@attempt CompletableFuture.completedFuture(entry.value)
             }
             toUser(missAsync(key, storageKey, AsyncSource.Native(loader))) { it.value }

@@ -35,6 +35,7 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `cocache.refresh-executor` | bean 名 | 内置 | 执行[提前刷新](./freshness.md#refresh-ahead)回源的 `Executor` bean。见[执行器](#executors)。 |
 | `management.health.cocache.enabled` | boolean | `true` | 注册 `cocache` 健康检查（见[下文](#actuator)） |
 | `cocache.observation.enabled` | boolean | `true` | 有 `ObservationRegistry` bean 时把回源包在 Micrometer `Observation` 中。见[链路追踪](../operations/observability.md#tracing)。 |
+| `cocache.metrics.local-hits` | boolean | `false` | 为全部缓存记录 L2 命中数（`cocache.hits{level=l2}`，端点字段 `localHits`）。默认关闭：它给每次 L2 命中加一次原子自增。见[指标](../operations/observability.md#metrics-reads)。 |
 
 ## 策略配置项 {#policy-properties}
 

@@ -35,6 +35,7 @@ Properties come last so operators can retune a cache without a rebuild. This mea
 | `cocache.refresh-executor` | bean name | built-in | The `Executor` bean that runs [refresh-ahead](./freshness.md#refresh-ahead) loads. See [Executors](#executors). |
 | `management.health.cocache.enabled` | boolean | `true` | Registers the `cocache` health indicator ([below](#actuator)) |
 | `cocache.observation.enabled` | boolean | `true` | Wraps source loads in a Micrometer `Observation` when an `ObservationRegistry` bean exists. See [tracing](../operations/observability.md#tracing). |
+| `cocache.metrics.local-hits` | boolean | `false` | Counts L2 hits (`cocache.hits{level=l2}`, endpoint key `localHits`) for every cache. Off by default: it adds an atomic increment to every L2 hit. See [metrics](../operations/observability.md#metrics-reads). |
 
 ## Policy properties {#policy-properties}
 

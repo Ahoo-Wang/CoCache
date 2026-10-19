@@ -72,11 +72,25 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected val store: RemoteStore,
     protected val context: EngineContext,
 ) : InvalidationListener, CacheAdmin, AutoCloseable {
-    override val metrics = CacheMetrics()
+    override val metrics = CacheMetrics(context.recordLocalHits)
+
+    /**
+     * 与 [metrics] 分开保存：命中路径只读引擎自身的一个 final 字段，关闭时不触碰计数器。
+     */
+    private val recordLocalHits = context.recordLocalHits
 
     protected val clock = context.clock
     protected val stamps = InvalidationStamps()
     protected val flights = SingleFlight<String, Loaded<V>>()
+
+    /**
+     * L2 命中计数（开启 `recordLocalHits` 时）。
+     */
+    protected fun countLocalHit() {
+        if (recordLocalHits) {
+            metrics.localHit()
+        }
+    }
     protected val local: Cache<String, LocalEntry<V>> = buildLocal(policy)
     protected val closed = AtomicBoolean(false)
     private val nodeId: NodeId = context.nodeId

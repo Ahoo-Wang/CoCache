@@ -73,7 +73,16 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         val retrier = InvalidationRetrier(scheduler, builder.retryPolicy)
         // 先于调度器关闭：未执行的重试计入丢弃并告警
         owned.add(AutoCloseable { retrier.close() })
-        context = EngineContext(nodeId, clock, backend, refreshExecutor, retrier, builder.loadObserver, asyncContext(builder))
+        context = EngineContext(
+            nodeId,
+            clock,
+            backend,
+            refreshExecutor,
+            retrier,
+            builder.loadObserver,
+            asyncContext(builder),
+            builder.recordLocalHits
+        )
     }
 
     /**
@@ -183,6 +192,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         var loadObserver: LoadObserver = LoadObserver.NOOP
         var asyncExecutor: Executor? = null
         var blockingExecutor: Executor? = null
+        var recordLocalHits: Boolean = false
 
         fun backend(backend: CoherenceBackend) = apply { this.backend = backend }
 
@@ -216,6 +226,12 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
          * 不指定时：JDK 21+ 每个任务一个虚拟线程；否则是运行时自建的不排队守护线程池（最多 512 线程，满时拒绝）。
          */
         fun blockingExecutor(blockingExecutor: Executor) = apply { this.blockingExecutor = blockingExecutor }
+
+        /**
+         * 是否把 L2 命中计入 `CacheMetrics.localHits`，作用于本运行时创建的所有缓存。默认不记录：
+         * 开启后每次 L2 命中多一次 `LongAdder` 自增，在最热的路径上有可测的吞吐开销。
+         */
+        fun recordLocalHits(recordLocalHits: Boolean) = apply { this.recordLocalHits = recordLocalHits }
 
         fun build(): CacheRuntime = CacheRuntime(this)
     }

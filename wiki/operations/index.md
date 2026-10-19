@@ -97,7 +97,7 @@ Without atomic broadcast, a crash between the write and the publish loses that m
 
 Each cache has its own L2 per instance, bounded by `local-maximum-size` (default 10,000 entries; `@CaffeineCache(maximumSize)` on an interface). Heap use is roughly entries × (decoded value + key string + about 100 bytes of entry overhead), summed over every cache. Watch `cocache.local.size`. Size L2 for the hot set, not the whole key space: an L2 miss costs one Redis round trip, not a load.
 
-There is no L2 hit counter (it would slow down the hottest path). To judge L2, compare your request rate with `cocache.misses`.
+The L2 hit counter `cocache.hits{level=l2}` is off by default because it slows down the hottest path. To judge L2, compare your request rate with `cocache.misses`, or turn the counter on with [`cocache.metrics.local-hits`](../guide/configuration.md#properties).
 
 ### Redis memory {#sizing-redis}
 

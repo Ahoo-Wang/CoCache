@@ -14,7 +14,7 @@ classpath 上有 `spring-boot-starter-actuator` 时，starter 通过四个渠道
 | [健康检查](#health)（`cocache`） | 本实例能否收到失效消息 |
 | [Actuator 端点](#actuator-endpoint)（`/actuator/cocache`） | 本实例的计数器、查看一个 key、强制失效 |
 
-另外还有[日志](#logs)。它们都不触碰 L2 命中路径。
+另外还有[日志](#logs)。除默认关闭的 [L2 命中计数](#metrics-reads)外，它们都不触碰 L2 命中路径。
 
 ## 指标 {#metrics}
 
@@ -27,12 +27,15 @@ Prometheus 名称遵循 Micrometer 的约定：`cocache.misses` 变为 `cocache_
 | 指标 | 类型 | 计数对象 |
 |------|------|----------|
 | `cocache.misses` | counter | L2 未命中的读取，按调用计数，在合并同一 key 的并发未命中之前。不含 `KeyFilter` 直接回答的读取。`SetCache` 上是 L1 中没有该集合的读取 |
+| `cocache.hits{level=l2}` | counter | 由 L2 回答的读取，包括负缓存。只在 `cocache.metrics.local-hits=true` 时注册 |
 | `cocache.hits{level=l1}` | counter | 由 L1 回答的 L2 未命中，包括负缓存 |
 | `cocache.filtered` | counter | `KeyFilter` 判定“不存在”的读取，不访问 Redis |
 | `cocache.lease.waits` | counter | 发现其它实例正在加载该 key 并等待它的未命中 |
 | `cocache.lease.wait.timeouts` | counter | 停止等待（超过 `lease-wait`，或者对方 lease 的剩余寿命更短时超过该剩余寿命）、自行加载且不写 L1 的未命中 |
 
-没有 L2 命中计数器：给最热的路径计数会造成可测量的吞吐损失。L2 命中数等于请求速率减去 `cocache.misses`。
+每次读取（`getAll` 按 key）恰好计入 `hits{level=l2}`、`misses` 或 `filtered` 之一。L2 未命中之后，Redis 中有该 key 时计入 `hits{level=l1}`，调用了 loader 时计入 `loads`。
+
+L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加一次原子自增，多线程下有可测量的吞吐损失。用 `cocache.metrics.local-hits=true` 开启（不用 Spring 时：`CacheRuntime.builder().recordLocalHits(true)`），作用于该运行时的全部缓存。关闭时，L2 命中数等于请求速率减去 `cocache.misses` 与 `cocache.filtered`。
 
 ### 加载 {#metrics-loads}
 
@@ -178,7 +181,7 @@ management:
 }
 ```
 
-`metrics` 的字段与指标一一对应：`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
+`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
 
 ### 编码后的 key {#encoded-key}
 

@@ -32,7 +32,7 @@ flowchart TD
     LD --> F1["write to Redis with the lease,<br>fill L2, return"]
 ```
 
-1. **L2 hit.** A Caffeine lookup and an expiry check. No I/O, no locks, no counters.
+1. **L2 hit.** A Caffeine lookup and an expiry check. No I/O, no locks, and no counters unless you turn on the [L2 hit counter](/operations/observability#metrics-reads).
 2. **L2 miss.** Concurrent callers on this instance share one load (`SingleFlight`). The leader reads Redis.
 3. **L1 hit.** The value (or negative entry) goes into L2 and is returned.
 4. **L1 miss.** The same Redis script that found the key absent gives this instance a **lease**. The leader calls your loader on the calling thread, so transactions, security context, and MDC are available. The result is written to Redis only if the lease is still intact.

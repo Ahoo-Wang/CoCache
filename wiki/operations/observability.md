@@ -14,7 +14,7 @@ CoCache reports through four channels, all provided by the starter when `spring-
 | [Health indicator](#health) (`cocache`) | Is this instance receiving invalidations? |
 | [Actuator endpoint](#actuator-endpoint) (`/actuator/cocache`) | Per-instance counters, inspecting one key, forcing an invalidation |
 
-Plus the [logs](#logs). None of them touch the L2 hit path.
+Plus the [logs](#logs). None of them touch the L2 hit path, except the [L2 hit counter](#metrics-reads), which is off by default.
 
 ## Metrics {#metrics}
 
@@ -27,12 +27,15 @@ Prometheus names follow Micrometer's conventions: `cocache.misses` becomes `coca
 | Meter | Type | Counts |
 |-------|------|--------|
 | `cocache.misses` | counter | Reads that missed L2, counted per call before concurrent misses for a key are coalesced. Reads answered by the `KeyFilter` are not included. For a `SetCache`: reads that found no set in L1. |
+| `cocache.hits{level=l2}` | counter | Reads answered by L2, including negative entries. Registered only with `cocache.metrics.local-hits=true`. |
 | `cocache.hits{level=l1}` | counter | L2 misses answered by L1, including negative entries |
 | `cocache.filtered` | counter | Reads the `KeyFilter` answered as "doesn't exist", without touching Redis |
 | `cocache.lease.waits` | counter | Misses that found another instance loading the key and waited for it |
 | `cocache.lease.wait.timeouts` | counter | Misses that stopped waiting (after `lease-wait`, or after the other lease's remaining time if that is shorter) and loaded themselves without writing L1 |
 
-There is no L2 hit counter: counting the hottest path would cost measurable throughput. L2 hits are your request rate minus `cocache.misses`.
+Every read (every key of a `getAll`) counts exactly once in `hits{level=l2}`, `misses`, or `filtered`. An L2 miss then counts in `hits{level=l1}` if Redis had the key, or in `loads` if the loader ran.
+
+The L2 hit counter is **off by default**. Counting adds an atomic increment to every L2 hit, the hottest path, and costs measurable throughput under many threads. Turn it on with `cocache.metrics.local-hits=true` (without Spring: `CacheRuntime.builder().recordLocalHits(true)`). It applies to every cache of the runtime. With it off, L2 hits are your request rate minus `cocache.misses` and `cocache.filtered`.
 
 ### Loads {#metrics-loads}
 
@@ -178,7 +181,7 @@ A cache report:
 }
 ```
 
-The `metrics` keys map to the meters in order: `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
+The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{level=l2}` (present only when the L2 hit counter is on), `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
 
 ### Encoded keys {#encoded-key}
 

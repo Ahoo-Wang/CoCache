@@ -15,6 +15,7 @@ package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
@@ -89,10 +90,12 @@ open class CoherentEngineTest {
         retryPolicy: RetryPolicy = RetryPolicy(
             initialBackoff = Duration.ofMillis(5),
             maxBackoff = Duration.ofMillis(5)
-        )
+        ),
+        recordLocalHits: Boolean = false,
     ): CacheRuntime {
         return CacheRuntime.builder()
             .backend(backend)
+            .recordLocalHits(recordLocalHits)
             .clock(clock)
             .refreshExecutor { refreshExecutor.execute(it) }
             .retryPolicy(retryPolicy)
@@ -628,13 +631,76 @@ open class CoherentEngineTest {
         cache["k"]
         val metrics = cache.metrics
         listOf(
-            metrics.remoteHits, metrics.misses, metrics.filtered, metrics.loads, metrics.loadFailures, metrics.loadRejected,
+            metrics.localHits, metrics.remoteHits, metrics.misses, metrics.filtered, metrics.loads, metrics.loadFailures, metrics.loadRejected,
             metrics.leaseWaits, metrics.leaseWaitTimeouts, metrics.fillRejected, metrics.degradedFills, metrics.staleFillsDiscarded,
             metrics.reclaims, metrics.unknownFormats, metrics.refreshes, metrics.refreshRejected, metrics.remoteFailures,
             metrics.invalidationsReceived, metrics.writeFailures, metrics.invalidationRetries, metrics.invalidationsDropped, metrics.resets,
         ).all { it >= 0 }.assert().isTrue()
         metrics.loadNanos.assert().isGreaterThanOrEqualTo(0)
         metrics.loads.assert().isEqualTo(1)
+    }
+
+    @Test
+    fun localHitsAreNotRecordedByDefault() {
+        val cache = runtime().engine()
+        database["k"] = "v"
+        cache["k"].assert().isEqualTo("v")
+        cache["k"].assert().isEqualTo("v")
+        cache.metrics.localHitsRecorded.assert().isFalse()
+        cache.metrics.localHits.assert().isZero()
+        cache.metrics.misses.assert().isEqualTo(1)
+    }
+
+    @Test
+    fun localHitsCountEveryReadServedByL2() {
+        val cache = runtime(recordLocalHits = true).engine(
+            spec(
+                CachePolicy(
+                    ttl = Duration.ofMinutes(10),
+                    ttlJitter = Duration.ZERO,
+                    localMaxAge = Duration.ofSeconds(30)
+                )
+            )
+        )
+        database["k"] = "v"
+        cache["k"].assert().isEqualTo("v")
+        cache.metrics.localHits.assert().isZero()
+        cache.metrics.misses.assert().isEqualTo(1)
+
+        cache["k"].assert().isEqualTo("v")
+        cache.lookup("k").assert().isInstanceOf(Lookup.Present::class.java)
+        // 批量读取按 key 计数：命中的 key 计入 L2 命中，未命中的 key 计入未命中
+        cache.getAll(listOf("k", "absent")).assert().containsExactlyEntriesOf(mapOf("k" to "v"))
+        cache.get("k") { "unused" }.assert().isEqualTo("v")
+        cache.metrics.localHits.assert().isEqualTo(4)
+        cache.metrics.misses.assert().isEqualTo(2)
+
+        // 负缓存同样由 L2 返回
+        cache["absent"].assert().isNull()
+        cache.metrics.localHits.assert().isEqualTo(5)
+
+        // 过期的 L2 副本不是命中：L2 未命中后由 L1 返回
+        clock.advance(Duration.ofSeconds(31))
+        cache["k"].assert().isEqualTo("v")
+        cache.metrics.localHits.assert().isEqualTo(5)
+        cache.metrics.misses.assert().isEqualTo(3)
+        cache.metrics.remoteHits.assert().isEqualTo(1)
+    }
+
+    @Test
+    fun unresolvedLocalEntryIsNotALocalHitForCallerLoader() {
+        val cache = runtime(recordLocalHits = true).engine(spec { loader = null })
+        cache["k"].assert().isNull()
+        // 无数据源缓存的“不存在”由 L2 回答
+        cache["k"].assert().isNull()
+        cache.metrics.localHits.assert().isEqualTo(1)
+
+        // 调用方给出 loader 时，没有答案的 L2 副本不算命中
+        cache.get("k") { "loaded" }.assert().isEqualTo("loaded")
+        cache.metrics.localHits.assert().isEqualTo(1)
+        cache.metrics.misses.assert().isEqualTo(2)
+        cache.get("k") { "unused" }.assert().isEqualTo("loaded")
+        cache.metrics.localHits.assert().isEqualTo(2)
     }
 
     @Test
