@@ -18,6 +18,11 @@ import io.lettuce.core.RedisClient
 import io.lettuce.core.RedisException
 import io.lettuce.core.RedisFuture
 import io.lettuce.core.RedisURI
+import io.lettuce.core.cluster.SlotHash
+import io.lettuce.core.cluster.models.partitions.Partitions
+import io.lettuce.core.cluster.models.partitions.RedisClusterNode
+import io.lettuce.core.cluster.pubsub.StatefulRedisClusterPubSubConnection
+import io.lettuce.core.cluster.pubsub.api.async.RedisClusterPubSubAsyncCommands
 import io.lettuce.core.pubsub.RedisPubSubAdapter
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection
 import io.lettuce.core.pubsub.api.async.RedisPubSubAsyncCommands
@@ -35,6 +40,7 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class RedisUnitTest {
@@ -223,7 +229,7 @@ class RedisUnitTest {
                 resets.incrementAndGet()
             }
         }
-        RedisInvalidationChannel(connections, Duration.ofMillis(10), Duration.ofMillis(10)).use { channel ->
+        PubSubInvalidationChannel(connections, Duration.ofMillis(10), Duration.ofMillis(10)).use { channel ->
             // 没有收到订阅确认：等待超时后照常返回
             val subscription = channel.subscribe("ns", listener)
             val second = channel.subscribe("ns", listener)
@@ -238,6 +244,167 @@ class RedisUnitTest {
             received.assert().containsExactly(listOf("k"), listOf("k"))
             second.close()
             subscription.close()
+        }
+    }
+
+    @Test
+    fun shardedChannelResubscribesAfterServerUnsubscribe() {
+        var adapter: RedisPubSubAdapter<ByteArray, ByteArray>? = null
+        val subscribes = AtomicInteger()
+        val unsubscribes = AtomicInteger()
+        val failNext = AtomicBoolean()
+        val async = stub<RedisPubSubAsyncCommands<ByteArray, ByteArray>>(
+            "ssubscribe" to {
+                subscribes.incrementAndGet()
+                if (failNext.getAndSet(false)) failed<Void?>(RedisException("MOVED")) else completed<Void?>(null)
+            },
+            "sunsubscribe" to {
+                unsubscribes.incrementAndGet()
+                completed<Void?>(null)
+            },
+            "ping" to { completed("PONG") },
+        )
+        val pubSub = stub<StatefulRedisPubSubConnection<ByteArray, ByteArray>>(
+            "addListener" to { args ->
+                @Suppress("UNCHECKED_CAST")
+                adapter = args[0] as RedisPubSubAdapter<ByteArray, ByteArray>
+                null
+            },
+            "async" to { async },
+        )
+        val listener = RecordingListener()
+        // 心跳周期足够长，由用例直接调用 ping() 驱动
+        val channel = ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10))
+        val subscription = channel.subscribe("ns", listener)
+        val other = channel.subscribe("ns2", listener)
+        subscribes.get().assert().isEqualTo(2)
+        val handler = requireNotNull(adapter)
+        val ns = "cocache:inv:ns".toByteArray()
+
+        // 没有订阅者的频道被退订（主动退订的回执）：忽略
+        handler.sunsubscribed("cocache:inv:absent".toByteArray(), 0)
+        listener.resets.get().assert().isZero()
+
+        // 服务端退订（slot 迁移）：立即重置并重新订阅；重新订阅失败时由心跳重试，确认后不再重试
+        failNext.set(true)
+        handler.sunsubscribed(ns, 0)
+        listener.resets.get().assert().isEqualTo(1)
+        awaitCondition("resubscribe attempted") { subscribes.get() == 3 }
+        channel.ping()
+        subscribes.get().assert().isEqualTo(4)
+        handler.ssubscribed(ns, 1)
+        listener.resets.get().assert().isEqualTo(2)
+        channel.ping()
+        subscribes.get().assert().isEqualTo(4)
+
+        handler.smessage(ns, InvalidationFrame.encode(NodeId.random(), listOf("k")))
+        listener.received.assert().containsExactly(listOf("k"))
+
+        // 待确认期间订阅被关闭：心跳不再重新订阅
+        handler.sunsubscribed(ns, 0)
+        awaitCondition("resubscribe attempted") { subscribes.get() == 5 }
+        subscription.close()
+        unsubscribes.get().assert().isEqualTo(1)
+        channel.ping()
+        channel.ping()
+        subscribes.get().assert().isEqualTo(5)
+
+        // 通道关闭后的服务端退订：不再调度重新订阅
+        channel.close()
+        handler.sunsubscribed("cocache:inv:ns2".toByteArray(), 0)
+        subscribes.get().assert().isEqualTo(5)
+        other.close()
+    }
+
+    @Test
+    fun shardedChannelPingsEverySubscribedClusterNode() {
+        val nodePings = AtomicInteger()
+        val nodeDown = AtomicBoolean()
+        val nodeAsync = stub<RedisPubSubAsyncCommands<ByteArray, ByteArray>>(
+            "ping" to {
+                nodePings.incrementAndGet()
+                if (nodeDown.get()) failed<String>(RedisException("down")) else completed("PONG")
+            },
+        )
+        val nodeConnection = stub<StatefulRedisPubSubConnection<ByteArray, ByteArray>>("async" to { nodeAsync })
+        val async = stub<RedisClusterPubSubAsyncCommands<ByteArray, ByteArray>>(
+            "ssubscribe" to { completed<Void?>(null) },
+        )
+        var partitions = Partitions()
+        val propagation = AtomicBoolean()
+        val pubSub = stub<StatefulRedisClusterPubSubConnection<ByteArray, ByteArray>>(
+            "setNodeMessagePropagation" to { args ->
+                propagation.set(args[0] as Boolean)
+                null
+            },
+            "addListener" to { null },
+            "async" to { async },
+            "getPartitions" to { partitions },
+            "getConnectionAsync" to { CompletableFuture.completedFuture(nodeConnection) },
+        )
+        ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
+            propagation.get().assert().isTrue()
+            channel.subscribe("a", RecordingListener())
+            channel.subscribe("b", RecordingListener())
+            // slot 未被覆盖（拓扑刷新中）：跳过
+            channel.ping()
+            nodePings.get().assert().isZero()
+
+            partitions = singleNodePartitions()
+            // 两个频道在同一节点上：只探测一次
+            channel.ping()
+            nodePings.get().assert().isEqualTo(1)
+
+            nodeDown.set(true)
+            runCatching { channel.ping() }.exceptionOrNull().assert().hasRootCauseInstanceOf(RedisException::class.java)
+        }
+    }
+
+    private fun singleNodePartitions(): Partitions = Partitions().apply {
+        add(
+            RedisClusterNode(
+                RedisURI.create("localhost", 7000),
+                "node-a",
+                true,
+                null,
+                0,
+                0,
+                0,
+                (0 until SlotHash.SLOT_COUNT).toList(),
+                setOf(RedisClusterNode.NodeFlag.UPSTREAM)
+            )
+        )
+        updateCache()
+    }
+
+    private fun connectionsOf(pubSub: StatefulRedisPubSubConnection<ByteArray, ByteArray>): RedisConnections {
+        val connections = mockk<RedisConnections>()
+        every { connections.pubSub } returns pubSub
+        every { connections.await(any<CompletableFuture<Any?>>()) } answers { firstArg<CompletableFuture<Any?>>().get() }
+        return connections
+    }
+
+    /**
+     * 按方法名应答的代理，未列出的方法抛出 [UnsupportedOperationException]。
+     */
+    private inline fun <reified T> stub(vararg answers: Pair<String, (Array<out Any?>) -> Any?>): T {
+        val byName = answers.toMap()
+        return proxy { method, args ->
+            val answer = byName[method.name] ?: throw UnsupportedOperationException(method.name)
+            answer(args)
+        }
+    }
+
+    private class RecordingListener : InvalidationListener {
+        val resets = AtomicInteger()
+        val received = CopyOnWriteArrayList<List<String>>()
+
+        override fun onInvalidated(keys: List<String>, origin: NodeId) {
+            received.add(keys)
+        }
+
+        override fun onReset() {
+            resets.incrementAndGet()
         }
     }
 

@@ -97,6 +97,13 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
     }
 
     /**
+     * `SPUBLISH`：集群中按频道的 slot 路由到所属主节点。
+     */
+    fun spublish(channel: ByteArray, message: ByteArray) {
+        await(base.spublish(channel, message).toCompletableFuture())
+    }
+
+    /**
      * 同步等待：超时、执行异常都转换为运行时异常抛出。
      */
     fun <T> await(future: CompletableFuture<T>): T {

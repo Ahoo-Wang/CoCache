@@ -14,34 +14,37 @@
 package me.ahoo.cocache.redis
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.lettuce.core.pubsub.RedisPubSubAdapter
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Subscription
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
- * Redis Pub/Sub 失效通道：每个后端一条订阅连接，按频道（命名空间）分发给订阅者。
+ * Redis 失效通道的公共部分：每个后端一条订阅连接，按频道（命名空间）分发给订阅者。
  *
  * - 订阅（含断线重连后 Lettuce 自动重新订阅）得到服务端确认时，重置该频道的所有订阅者。
  * - 心跳：周期性 PING 订阅连接，失败或超时即重置所有订阅者（半开连接期间的事件可能已丢失）。
+ *
+ * 子类提供具体的订阅、退订、发布与心跳命令，并在初始化末尾调用 [start]。
  */
-internal class RedisInvalidationChannel(
-    private val connections: RedisConnections,
-    heartbeat: Duration,
+internal abstract class RedisInvalidationChannel(
+    protected val connections: RedisConnections,
+    private val heartbeat: Duration,
     private val ackTimeout: Duration,
 ) : InvalidationChannel, AutoCloseable {
-    private val listeners = ConcurrentHashMap<String, CopyOnWriteArrayList<InvalidationListener>>()
+    protected val listeners = ConcurrentHashMap<String, CopyOnWriteArrayList<InvalidationListener>>()
 
     /**
-     * 等待中的订阅确认：Lettuce 在命令完成之后才回调 `subscribed`，订阅方需要等重置真正执行完再返回，
+     * 等待中的订阅确认：Lettuce 在命令完成之后才回调确认，订阅方需要等重置真正执行完再返回，
      * 否则迟到的重置会清掉订阅之后才填充的本地副本。
      */
     private val pendingAcks = ConcurrentHashMap<String, CountDownLatch>()
@@ -49,10 +52,21 @@ internal class RedisInvalidationChannel(
         Thread(runnable, "cocache-redis-heartbeat").apply { isDaemon = true }
     }
 
-    init {
-        connections.pubSub.addListener(Adapter())
-        scheduler.scheduleWithFixedDelay(::heartbeat, heartbeat.toMillis(), heartbeat.toMillis(), TimeUnit.MILLISECONDS)
+    /**
+     * 启动心跳。子类注册完连接监听器之后调用，避免心跳在子类初始化完成前触发。
+     */
+    protected fun start() {
+        scheduler.scheduleWithFixedDelay(::beat, heartbeat.toMillis(), heartbeat.toMillis(), TimeUnit.MILLISECONDS)
     }
+
+    protected abstract fun subscribeAsync(channel: ByteArray): CompletableFuture<Void>
+
+    protected abstract fun unsubscribeAsync(channel: ByteArray): CompletableFuture<Void>
+
+    /**
+     * 心跳探测：失败或超时抛出异常。
+     */
+    internal abstract fun ping()
 
     override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
         val channel = channelOf(namespace)
@@ -63,13 +77,11 @@ internal class RedisInvalidationChannel(
         }
         channelListeners.add(listener)
         if (created) {
-            // 确认回调（subscribed）会重置该频道的全部订阅者，包括刚加入的这个；等它执行完再返回
+            // 确认回调会重置该频道的全部订阅者，包括刚加入的这个；等它执行完再返回
             val ack = CountDownLatch(1)
             pendingAcks[channel] = ack
             try {
-                connections.await(
-                    connections.pubSub.async().subscribe(channel.toByteArray(Charsets.UTF_8)).toCompletableFuture()
-                )
+                connections.await(subscribeAsync(channel.toByteArray(Charsets.UTF_8)))
                 if (!ack.await(ackTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
                     log.warn { "Invalidation channel[$channel] - subscribe acknowledgement not received in $ackTimeout." }
                 }
@@ -82,24 +94,29 @@ internal class RedisInvalidationChannel(
         return Subscription {
             channelListeners.remove(listener)
             if (channelListeners.isEmpty() && listeners.remove(channel, channelListeners)) {
-                connections.await(
-                    connections.pubSub.async().unsubscribe(channel.toByteArray(Charsets.UTF_8)).toCompletableFuture()
-                )
+                connections.await(unsubscribeAsync(channel.toByteArray(Charsets.UTF_8)))
             }
         }
     }
 
-    override fun publish(namespace: String, frame: ByteArray) {
-        connections.publish(channelOf(namespace).toByteArray(Charsets.UTF_8), frame)
-    }
-
     @Suppress("TooGenericExceptionCaught")
-    private fun heartbeat() {
+    private fun beat() {
         try {
-            connections.await(connections.pubSub.async().ping().toCompletableFuture())
+            ping()
         } catch (e: Exception) {
             log.warn(e) { "Invalidation channel heartbeat failed - reset all subscribers." }
             resetAll()
+        }
+    }
+
+    /**
+     * 在心跳线程上执行（不阻塞 Lettuce 事件循环）；通道关闭后忽略。
+     */
+    protected fun execute(task: Runnable) {
+        try {
+            scheduler.execute(task)
+        } catch (e: RejectedExecutionException) {
+            log.debug(e) { "Invalidation channel closed - ignore task." }
         }
     }
 
@@ -107,28 +124,36 @@ internal class RedisInvalidationChannel(
         listeners.values.forEach { channelListeners -> channelListeners.forEach { it.onReset() } }
     }
 
-    override fun close() {
-        scheduler.shutdownNow()
+    protected fun reset(channel: String) {
+        listeners[channel]?.forEach { it.onReset() }
     }
 
-    private inner class Adapter : RedisPubSubAdapter<ByteArray, ByteArray>() {
-        override fun message(channel: ByteArray, message: ByteArray) {
-            val channelListeners = listeners[String(channel, Charsets.UTF_8)] ?: return
-            val decoded = try {
-                InvalidationFrame.decode(message)
-            } catch (e: IllegalArgumentException) {
-                log.warn(e) { "Ignore malformed invalidation frame on channel[${String(channel, Charsets.UTF_8)}]." }
-                return
-            }
-            channelListeners.forEach { it.onInvalidated(decoded.keys, decoded.origin) }
+    /**
+     * 收到消息：解码并分发给该频道的订阅者，畸形帧告警后丢弃。
+     */
+    protected fun dispatch(channel: ByteArray, message: ByteArray) {
+        val channelListeners = listeners[String(channel, Charsets.UTF_8)] ?: return
+        val decoded = try {
+            InvalidationFrame.decode(message)
+        } catch (e: IllegalArgumentException) {
+            log.warn(e) { "Ignore malformed invalidation frame on channel[${String(channel, Charsets.UTF_8)}]." }
+            return
         }
+        channelListeners.forEach { it.onInvalidated(decoded.keys, decoded.origin) }
+    }
 
-        override fun subscribed(channel: ByteArray, count: Long) {
-            val name = String(channel, Charsets.UTF_8)
-            log.info { "Invalidation channel[$name] subscribed - reset subscribers." }
-            listeners[name]?.forEach { it.onReset() }
-            pendingAcks[name]?.countDown()
-        }
+    /**
+     * 订阅得到服务端确认：重置该频道的订阅者，并唤醒等待确认的订阅方。
+     */
+    protected open fun acknowledged(channel: ByteArray) {
+        val name = String(channel, Charsets.UTF_8)
+        log.info { "Invalidation channel[$name] subscribed - reset subscribers." }
+        reset(name)
+        pendingAcks[name]?.countDown()
+    }
+
+    override fun close() {
+        scheduler.shutdownNow()
     }
 
     companion object {
@@ -136,5 +161,14 @@ internal class RedisInvalidationChannel(
         const val CHANNEL_PREFIX = "cocache:inv:"
 
         fun channelOf(namespace: String): String = CHANNEL_PREFIX + namespace
+
+        fun create(connections: RedisConnections, options: RedisBackendOptions): RedisInvalidationChannel {
+            val heartbeat = options.heartbeat
+            val ackTimeout = options.commandTimeout
+            return when (options.channelMode) {
+                RedisChannelMode.PUBSUB -> PubSubInvalidationChannel(connections, heartbeat, ackTimeout)
+                RedisChannelMode.SHARDED -> ShardedInvalidationChannel(connections, heartbeat, ackTimeout)
+            }
+        }
     }
 }

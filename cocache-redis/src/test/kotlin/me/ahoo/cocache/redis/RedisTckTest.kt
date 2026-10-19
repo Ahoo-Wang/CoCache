@@ -109,3 +109,39 @@ class RedisNonAtomicEngineTest : EngineSpec() {
 
     private fun clientNameOf(backend: CoherenceBackend): String? = (backend as RedisBackend).clientName
 }
+
+/**
+ * Sharded Pub/Sub 通道上的协议 TCK：脚本内不广播，由调用方经通道 `SPUBLISH`。
+ */
+class RedisShardedBackendProtocolTest : BackendProtocolSpec() {
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend().also {
+        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
+    }
+
+    override fun elapse(duration: Duration) {
+        if (duration <= Duration.ofSeconds(2)) {
+            Thread.sleep(duration.toMillis())
+        } else {
+            RedisTestSupport.shiftTtl("cocache:$namespace:*", duration)
+        }
+    }
+}
+
+/**
+ * Sharded Pub/Sub 通道上的引擎 TCK（含断线重连后重新订阅触发重置）。
+ */
+class RedisShardedEngineTest : EngineSpec() {
+    private val manualClock = ManualClock()
+    private val clientName = "cocache-tck-" + UUID.randomUUID()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend(clientName)
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+
+    override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(clientName)
+}
