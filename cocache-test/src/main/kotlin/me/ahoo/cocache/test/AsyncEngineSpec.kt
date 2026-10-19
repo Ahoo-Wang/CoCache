@@ -263,6 +263,8 @@ abstract class AsyncEngineSpec : EngineSpec() {
             backend.beforeInvalidate = null
             releaseReader.countDown()
             requireNotNull(reader).join().assert().isEqualTo("v0")
+            // 第二次递增确实发生：读者在两次递增之间取的戳已失效，它的填充被放弃
+            requireNotNull(runtime.metrics(cacheName)).staleFillsDiscarded.assert().isGreaterThanOrEqualTo(1)
             switch.rejecting = false
             backend.ioExecutor = null
             backend.afterRead = null
