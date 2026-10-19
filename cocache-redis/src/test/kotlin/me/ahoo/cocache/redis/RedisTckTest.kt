@@ -14,13 +14,27 @@
 package me.ahoo.cocache.redis
 
 import me.ahoo.cocache.api.CacheClock
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
+import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.BackendProtocolSpec
+import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.EngineSpec
+import me.ahoo.cocache.test.FaultSpec
+import me.ahoo.cocache.test.MultiNodeSpec
 import me.ahoo.cocache.test.SetEngineSpec
+import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * L1 协议 TCK。短时长真实等待（令牌签发时间取自服务端时钟），长时长缩短 key 的剩余寿命。
@@ -144,4 +158,169 @@ class RedisShardedEngineTest : EngineSpec() {
     }
 
     override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(clientName)
+}
+
+class RedisMultiNodeTest : MultiNodeSpec() {
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.backend()
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+}
+
+class RedisNonAtomicMultiNodeTest : MultiNodeSpec() {
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.nonAtomicBackend().also {
+        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
+    }
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+}
+
+class RedisShardedMultiNodeTest : MultiNodeSpec() {
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend()
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+}
+
+/**
+ * 故障 TCK（`pubsub`）。单机时经 [TcpProxy] 连接 Redis，以支持断线用例；另含 Redis 特有的 `NOSCRIPT` 回退用例。
+ */
+class RedisFaultTest : FaultSpec() {
+    private val manualClock = ManualClock()
+    private var proxy: TcpProxy? = null
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend {
+        if (RedisTestSupport.isCluster) {
+            return RedisTestSupport.backend()
+        }
+        val proxy = RedisTestSupport.proxy().also { this.proxy = it }
+        return RedisTestSupport.proxiedBackend(proxy)
+    }
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+
+    override fun disconnect(): AutoCloseable? = proxy?.cut()
+
+    @AfterEach
+    override fun destroy() {
+        super.destroy()
+        proxy?.close()
+    }
+
+    /**
+     * 脚本缓存丢失（故障切换、重启、resharding）之后，每个脚本的第一次 `EVALSHA` 得到 `NOSCRIPT`，改用 `EVAL` 重试。
+     * 每个操作之前都清空脚本缓存，覆盖读、填充、释放、覆盖写、失效、批量与集合元素写入。
+     */
+    @Test
+    fun everyOperationSurvivesScriptCacheLoss() {
+        val failing = AtomicBoolean(false)
+        val spec = cacheSpec<String, String>(cacheName) {
+            codec = EngineSpec.TestCodec
+            loader = CacheLoader { key ->
+                check(!failing.get()) { "source down" }
+                "$key-v"
+            }
+        }
+        val setSpec = setCacheSpec<String, String>("$cacheName-set") { elementCodec = StringCodec }
+        val runtimes = (1..2).map { CacheRuntime.builder().backend(backend).clock(clock).build() }
+        try {
+            val (cacheA, cacheB) = runtimes.map { it.create(spec) }
+            val (setA, setB) = runtimes.map { it.create(setSpec) }
+            val remote = backend.delegate.store(cacheName)
+
+            RedisTestSupport.flushScripts()
+            cacheA["k"].assert().isEqualTo("k-v")
+            (remote.read("cocache:$cacheName:k", null, null) as RemoteRead.Hit).envelope
+                .assert().isEqualTo(Envelope.Scalar(EngineSpec.TestCodec.encode("k-v")))
+
+            RedisTestSupport.flushScripts()
+            cacheB["k"].assert().isEqualTo("k-v")
+            requireNotNull(runtimes[1].metrics(cacheName)).remoteHits.assert().isEqualTo(1)
+
+            RedisTestSupport.flushScripts()
+            cacheA.put("k", "p")
+            awaitCondition("B sees the put") { cacheB["k"] == "p" }
+
+            RedisTestSupport.flushScripts()
+            cacheA.invalidate("k")
+            remote.read("cocache:$cacheName:k", null, null).assert().isEqualTo(RemoteRead.Miss(false))
+            awaitCondition("B sees the invalidation") { cacheB["k"] == "k-v" }
+
+            RedisTestSupport.flushScripts()
+            cacheA.getAll(listOf("x", "y")).assert().isEqualTo(mapOf("x" to "x-v", "y" to "y-v"))
+
+            RedisTestSupport.flushScripts()
+            failing.set(true)
+            runCatching { cacheA["released"] }.exceptionOrNull().assert().isInstanceOf(
+                IllegalStateException::class.java
+            )
+            remote.read("cocache:$cacheName:released", null, null).assert().isEqualTo(RemoteRead.Miss(false))
+
+            RedisTestSupport.flushScripts()
+            setA.add("s", listOf("a", "b"))
+            RedisTestSupport.flushScripts()
+            setA.remove("s", listOf("a"))
+            awaitCondition("B sees the set") { setB["s"] == setOf("b") }
+            runtimes.forEach { runtime ->
+                requireNotNull(runtime.metrics(cacheName)).let {
+                    it.remoteFailures.assert().isEqualTo(0)
+                    it.writeFailures.assert().isEqualTo(0)
+                }
+            }
+        } finally {
+            runtimes.forEach { it.close() }
+        }
+    }
+}
+
+class RedisNonAtomicFaultTest : FaultSpec() {
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.nonAtomicBackend().also {
+        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
+    }
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+}
+
+class RedisShardedFaultTest : FaultSpec() {
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend()
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
 }

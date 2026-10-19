@@ -84,6 +84,7 @@ Read `docs/architecture.md` before you touch coherence, storage, codec, proxy, o
   |---------------|--------|
   | `CoherenceBackend` (L1 protocol and invalidation channel) | `BackendProtocolSpec` |
   | The backend under real engines (two runtimes sharing one backend) | `EngineSpec` and `SetEngineSpec` |
+  | Cross-node interleavings and cluster-wide counts (three runtimes); behavior under L1 faults | `MultiNodeSpec` and `FaultSpec` (override `disconnect()` if the backend has connections) |
 
   `HookedBackend` wraps any backend to inject failures and orchestrate races. Expiry is millisecond-precise, so TTL assertions need no drift offset.
 - Redis tests use `RedisTestSupport`. It picks standalone or Cluster from `SPRING_DATA_REDIS_CLUSTER_NODES`, simulates time with `shiftTtl`, and kills this test's Pub/Sub connection with `killPubSubConnections` to force a reset. `subscribe` returns only after the subscription is acknowledged and `onReset` has run, so a late reset can't clear L2 mid-test.

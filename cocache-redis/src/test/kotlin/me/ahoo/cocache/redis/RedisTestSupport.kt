@@ -147,6 +147,51 @@ object RedisTestSupport {
         }
     }
 
+    /**
+     * 经 [proxy] 连接单机 Redis 的后端（用于模拟命令连接断线）。仅限单机。
+     */
+    fun proxiedBackend(proxy: TcpProxy): RedisBackend {
+        check(!isCluster) { "Standalone only" }
+        return RedisBackend.standalone(
+            RedisURI.create(proxy.address, proxy.port),
+            RedisBackendOptions(clientName = "cocache-tck-" + java.util.UUID.randomUUID())
+        )
+    }
+
+    /**
+     * 新建一个转发到单机 Redis 的 [TcpProxy]。仅限单机。
+     */
+    fun proxy(): TcpProxy {
+        check(!isCluster) { "Standalone only" }
+        return TcpProxy(standaloneUri.host, standaloneUri.port)
+    }
+
+    /**
+     * 清空每个主节点的脚本缓存（`SCRIPT FLUSH`），模拟故障切换、重启或 resharding 后的脚本缓存丢失。
+     */
+    fun flushScripts() {
+        val nodes = clusterNodes
+        if (nodes != null) {
+            val client = RedisClusterClient.create(nodes)
+            try {
+                client.connect().use { connection ->
+                    connection.partitions
+                        .filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
+                        .forEach { node -> connection.getConnection(node.nodeId).sync().scriptFlush() }
+                }
+            } finally {
+                client.shutdown()
+            }
+            return
+        }
+        val client = RedisClient.create(standaloneUri)
+        try {
+            client.connect().use { it.sync().scriptFlush() }
+        } finally {
+            client.shutdown()
+        }
+    }
+
     private fun forEachNode(block: (io.lettuce.core.api.sync.RedisCommands<String, String>) -> Unit) {
         val nodes = clusterNodes
         if (nodes != null) {

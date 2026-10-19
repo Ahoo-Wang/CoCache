@@ -7,7 +7,7 @@ description: Implementing a CoherenceBackend (RemoteStore and InvalidationChanne
 
 | You want to | Implement | Verify with |
 |-------------|-----------|-------------|
-| Store L1 somewhere other than Redis, or talk to Redis differently | [`CoherenceBackend`](#backend) | [`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`](#tck) |
+| Store L1 somewhere other than Redis, or talk to Redis differently | [`CoherenceBackend`](#backend) | [`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`](#tck) |
 | Change how values become bytes | [`Codec<V>`](#codecs) | Your own round-trip tests |
 | Load, encode keys, reject impossible keys, choose lifetimes per entry | [Functions](#functions): `CacheLoader`, `KeyEncoder`, `KeyFilter`, `TtlFunction` | Your own tests |
 
@@ -116,8 +116,10 @@ testImplementation("me.ahoo.cocache:cocache-test")
 | `BackendProtocolSpec` | The `RemoteStore` contract: lease grant, token checks, expiry resets, release, refresh tokens, reclaim, batch reads, set updates, broadcast frames, reset on subscribe | `createBackend()`, `elapse(duration)`. Optionally `shortTtl` (default 300 ms). |
 | `EngineSpec` | Two runtimes on your backend: single load across instances, lease-wait timeout, invalidation during a load, same-instance invalidate-vs-read race, concurrent `put`s, read-your-writes, loader failure, Redis failure, invalidation retry, reconnect reset, `local-max-age`, batch reads, refresh-ahead, reclaim, newer format, load limit | `createBackend()`, `clock`, `elapse(duration)`, `simulateReconnect()` |
 | `SetEngineSpec` | `SetCache` across two runtimes: atomic concurrent adds, empty-set deletion, `invalidate` rejected, write and read failures | `createBackend()`, `clock`, `elapse(duration)` |
+| `MultiNodeSpec` | Three runtimes on your backend: invalidation before a lease, after a lease while another instance waits on it, and after a fill but before the L2 write; a remote write landing between a read and its L2 fill; concurrent `put`s from different instances (events arriving in reverse order on non-atomic backends); misses while an invalidation retry is pending; exactly one source load and one refresh per key across all instances | `createBackend()`, `clock`, `elapse(duration)` |
+| `FaultSpec` | Your backend under L1 faults: copies bounded by `degraded-local-max-age` while the store fails, a failed fill and its lease, invalidation retries that give up or overflow the queue, `put` and `invalidate` that take effect but report an error and are safe to retry, and (optional) writes rejected while disconnected are not replayed after the reconnect | `createBackend()`, `clock`, `elapse(duration)`; optionally `disconnect()` |
 
-The suites wrap your backend in `HookedBackend`, which injects faults (`failAll`, `failWrites`, `failFill`, `failRelease`), rewrites read results, runs hooks before and after writes so races are orchestrated with latches instead of sleeps, and can override `atomicBroadcast` to exercise the non-atomic path. Use it in your own tests too.
+The suites wrap your backend in `HookedBackend`, which injects faults (`failAll`, `failWrites`, `failFill`, `failRelease`), rewrites read results, runs hooks after reads and fills and around writes so races are orchestrated with latches instead of sleeps (a throwing `afterPut` or `afterInvalidate` simulates a write that took effect but reported an error), and can override `atomicBroadcast` to exercise the non-atomic path. Use it in your own tests too.
 
 `elapse(duration)` must move time forward for both your store and the engine:
 
@@ -125,6 +127,8 @@ The suites wrap your backend in `HookedBackend`, which injects faults (`failAll`
 - **Real server:** advance `ManualClock` for the engine, and shorten the remaining TTL of the test keys on the server by `duration`. For short durations in `BackendProtocolSpec`, sleeping also works. Token issue times come from the server clock.
 
 `simulateReconnect()` must break the subscription so your channel resubscribes, for example by killing its connection on the server.
+
+`disconnect()` in `FaultSpec` is optional. If your backend holds connections, override it to cut the command connection and keep it down until the returned handle is closed (CoCache's Redis tests route the backend through a local TCP proxy that closes its listener). Commands issued meanwhile must fail instead of being buffered. The default returns `null`, and the disconnect case is skipped.
 
 The in-memory backend's TCK classes are a minimal template:
 
@@ -150,9 +154,17 @@ class MySetEngineTest : SetEngineSpec() {
     override fun createBackend(): CoherenceBackend = MyBackend(manualClock)
     override fun elapse(duration: Duration) = manualClock.advance(duration)
 }
+
+// MultiNodeSpec has the same members as SetEngineSpec
+class MyFaultTest : FaultSpec() {
+    private val manualClock = ManualClock()
+    override val clock: CacheClock = manualClock
+    override fun createBackend(): CoherenceBackend = MyBackend(manualClock)
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+}
 ```
 
-Run them with your build's normal test task (JUnit 6). `cocache-redis` runs `BackendProtocolSpec` and `EngineSpec` in three modes: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. `SetEngineSpec` runs on classic Pub/Sub only. Run the suites for every mode your backend supports.
+Run them with your build's normal test task (JUnit 6). `cocache-redis` runs `BackendProtocolSpec`, `EngineSpec`, `MultiNodeSpec`, and `FaultSpec` in three modes: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. `SetEngineSpec` runs on classic Pub/Sub only. The disconnect case of `FaultSpec` runs on standalone classic Pub/Sub, and `cocache-redis` adds its own case for the `NOSCRIPT` fallback after the script cache is flushed. Run the suites for every mode your backend supports.
 
 `InMemoryBackend` implements the whole protocol in one process. Several runtimes sharing one instance behave like several instances, which makes it a good backend for application tests.
 

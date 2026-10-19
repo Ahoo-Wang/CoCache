@@ -18,6 +18,8 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.test.BackendProtocolSpec
 import me.ahoo.cocache.test.EngineSpec
+import me.ahoo.cocache.test.FaultSpec
+import me.ahoo.cocache.test.MultiNodeSpec
 import me.ahoo.cocache.test.SetEngineSpec
 import java.time.Duration
 
@@ -43,6 +45,29 @@ class InMemoryEngineTest : EngineSpec() {
 }
 
 class InMemorySetEngineTest : SetEngineSpec() {
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock)
+
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+}
+
+class InMemoryMultiNodeTest : MultiNodeSpec() {
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock)
+
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+}
+
+/**
+ * 内存后端没有连接，不支持断线用例（[disconnect] 返回 `null`，用例跳过）。
+ */
+class InMemoryFaultTest : FaultSpec() {
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
