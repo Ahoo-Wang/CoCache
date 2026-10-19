@@ -30,6 +30,7 @@ import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -96,6 +97,7 @@ class RedisUnitTest {
 
     @Test
     fun awaitTranslatesFailures() {
+        assumeStandalone()
         val client = RedisClient.create(RedisURI.create("localhost", 6379))
         try {
             RedisConnections(client, Duration.ofMillis(20)).use { connections ->
@@ -132,6 +134,7 @@ class RedisUnitTest {
 
     @Test
     fun evalFallsBackToSourceAfterScriptFlush() {
+        assumeStandalone()
         val client = RedisClient.create(RedisURI.create("localhost", 6379))
         try {
             client.connect().use { it.sync().scriptFlush() }
@@ -154,6 +157,7 @@ class RedisUnitTest {
 
     @Test
     fun borrowedClientIsNotShutDown() {
+        assumeStandalone()
         val client = RedisClient.create(RedisURI.create("localhost", 6379))
         try {
             RedisBackend.of(client).use { backend ->
@@ -169,6 +173,7 @@ class RedisUnitTest {
 
     @Test
     fun backendWithSharedResourcesAndClientName() {
+        assumeStandalone()
         val resources = io.lettuce.core.resource.DefaultClientResources.create()
         try {
             RedisBackend.standalone(
@@ -244,6 +249,11 @@ class RedisUnitTest {
             handler(method, args ?: emptyArray())
         } as T
     }
+
+    /**
+     * 这些用例验证单机客户端的行为，连接 localhost:6379；集群环境（CI 的集群任务）下跳过。
+     */
+    private fun assumeStandalone() = Assumptions.assumeFalse(RedisTestSupport.isCluster, "standalone Redis only")
 
     private fun <T> completed(value: T): RedisFuture<T> = FutureAdapter(CompletableFuture.completedFuture(value))
 

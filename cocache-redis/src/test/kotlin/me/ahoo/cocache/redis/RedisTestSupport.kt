@@ -57,7 +57,7 @@ object RedisTestSupport {
     fun nonAtomicBackend(): RedisBackend {
         val user = "cocache-nonatomic"
         val password = "nonatomic-secret"
-        forEachUpstream { commands ->
+        forEachNode { commands ->
             commands.dispatch(
                 io.lettuce.core.protocol.CommandType.ACL,
                 io.lettuce.core.output.StatusOutput(io.lettuce.core.codec.StringCodec.UTF8),
@@ -80,15 +80,14 @@ object RedisTestSupport {
         )
     }
 
-    private fun forEachUpstream(block: (io.lettuce.core.api.sync.RedisCommands<String, String>) -> Unit) {
+    private fun forEachNode(block: (io.lettuce.core.api.sync.RedisCommands<String, String>) -> Unit) {
         val nodes = clusterNodes
         if (nodes != null) {
             val client = RedisClusterClient.create(nodes)
             try {
                 client.connect().use { connection ->
-                    connection.partitions.filter {
-                        it.`is`(io.lettuce.core.cluster.models.partitions.RedisClusterNode.NodeFlag.UPSTREAM)
-                    }.forEach { node ->
+                    // 集群订阅连接可能落在任意节点（包括从节点）上，ACL 也不随复制同步
+                    connection.partitions.forEach { node ->
                         block(connection.getConnection(node.nodeId).sync())
                     }
                 }
@@ -152,9 +151,8 @@ object RedisTestSupport {
             val client = RedisClusterClient.create(nodes)
             try {
                 client.connect().use { connection ->
-                    connection.partitions.filter {
-                        it.`is`(io.lettuce.core.cluster.models.partitions.RedisClusterNode.NodeFlag.UPSTREAM)
-                    }.forEach { node ->
+                    // 集群订阅连接可能落在任意节点（包括从节点）上，ACL 也不随复制同步
+                    connection.partitions.forEach { node ->
                         val commands = connection.getConnection(node.nodeId).sync()
                         pubSubClientIds(
                             commands.clientList(),
