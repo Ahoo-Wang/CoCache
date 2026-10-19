@@ -141,7 +141,8 @@ class RedisRobustnessTest {
             error.assert().isInstanceOf(RedisException::class.java)
             // 措辞随版本不同：7.0 为 "The user executing the script can't run this command"，7.2+ 为 "ACL failure in script … no permissions"
             val messages = generateSequence(error) { it.cause }.mapNotNull { it.message?.lowercase() }.toList()
-            messages.any { message -> listOf("acl", "noperm", "permission", "can't run this command").any { it in message } }
+            val markers = listOf("acl", "noperm", "permission", "can't run this command")
+            messages.any { message -> markers.any { it in message } }
                 .assert().withFailMessage { "Expected an ACL error but was $messages" }.isTrue()
         }
         for (missing in listOf("-hkeys", "-get")) {
