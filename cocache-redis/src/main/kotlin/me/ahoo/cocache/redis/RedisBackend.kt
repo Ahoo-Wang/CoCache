@@ -128,7 +128,10 @@ class RedisBackend private constructor(
         private val log = KotlinLogging.logger {}
         private val PROBE_KEY = "cocache:probe:{a}".toByteArray(Charsets.UTF_8)
         private val PROBE_CHANNEL = "cocache:probe:{b}".toByteArray(Charsets.UTF_8)
-        private val UNSUPPORTED_BROADCAST_ERRORS = listOf("CROSSSLOT", "different slot", "NOPERM", "No permissions")
+
+        // Redis 7.0 在脚本内被 ACL 拒绝 PUBLISH 时报 "can't publish to the channel"，7.2+ 报 NOPERM
+        private val UNSUPPORTED_BROADCAST_ERRORS =
+            listOf("CROSSSLOT", "different slot", "NOPERM", "No permissions", "can't publish to the channel")
 
         /**
          * TCP keepalive：空闲 15 s 后每 5 s 探测一次，连续 3 次无响应即判定断开（需要传输层支持扩展选项，否则使用系统默认间隔）。

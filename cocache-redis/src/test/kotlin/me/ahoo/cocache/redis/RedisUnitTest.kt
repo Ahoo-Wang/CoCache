@@ -592,6 +592,11 @@ class RedisUnitTest {
         RedisBackend.isBroadcastUnsupported(
             RedisException("NOPERM no permissions to access the channel")
         ).assert().isTrue()
+        RedisBackend.isBroadcastUnsupported(
+            RedisException(
+                "ERR The user executing the script can't publish to the channel mentioned in the command script: x"
+            )
+        ).assert().isTrue()
         RedisBackend.isBroadcastUnsupported(RedisCommandTimeoutException("Command timed out")).assert().isFalse()
         RedisBackend.isBroadcastUnsupported(RedisException(null as String?)).assert().isFalse()
     }
