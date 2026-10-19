@@ -70,6 +70,12 @@ data class CoCacheProperties @ConstructorBinding constructor(
      */
     @DefaultValue
     val springCache: SpringCache,
+    /**
+     * 提前刷新（refresh-ahead）回源所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析）；
+     * 未设置时使用 CoCache 内置的有界守护线程池（队列满时跳过刷新并计数）。bean 不存在或不是 `Executor` 时启动失败。
+     * 该执行器由容器管理，运行时关闭时不会关闭它。
+     */
+    val refreshExecutor: String?,
 ) {
     /**
      * 按缓存名合并配置文件中的策略。
@@ -137,6 +143,12 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         @DefaultValue("pubsub")
         val channelMode: RedisChannelMode,
+        /**
+         * 有 `SetCache` 时启动检查各主节点的 `maxmemory-policy`：`allkeys-*` 会驱逐集合的唯一副本。
+         * `warn`（默认）记录告警，`fail` 启动失败，`off` 不检查。`CONFIG` 不可用时跳过。
+         */
+        @DefaultValue("warn")
+        val setCacheEvictionCheck: EvictionCheck,
     ) {
         fun toOptions(): RedisBackendOptions = RedisBackendOptions(
             commandTimeout,
@@ -145,6 +157,15 @@ data class CoCacheProperties @ConstructorBinding constructor(
             clientName = clientName,
             channelMode = channelMode,
         )
+    }
+
+    /**
+     * `SetCache` 驱逐检查的处理方式。
+     */
+    enum class EvictionCheck {
+        WARN,
+        FAIL,
+        OFF,
     }
 
     /**
@@ -172,6 +193,14 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         @DefaultValue("false")
         val requireSync: Boolean,
+        /**
+         * Spring Cache `retrieve`（异步 `@Cacheable`）所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析），
+         * 如 `applicationTaskExecutor`；未设置时使用 CoCache 内置执行器（JDK 21+ 每任务一个虚拟线程，否则不排队的可增长守护线程池）。
+         * bean 不存在或不是 `Executor` 时启动失败。会把任务排在等待它的任务之后的执行器（固定线程数或有界队列，
+         * 如默认的 `ThreadPoolTaskExecutor`）可能让嵌套的异步 `@Cacheable(sync = true)` 死锁；虚拟线程执行器
+         * （`spring.threads.virtual.enabled=true` 时的 `applicationTaskExecutor`）没有这个问题。
+         */
+        val retrieveExecutor: String?,
     )
 
     /**

@@ -174,7 +174,8 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         fun nodeId(nodeId: NodeId) = apply { this.nodeId = nodeId }
 
         /**
-         * 提前刷新执行器，由调用方管理。不指定时使用有界守护线程池（队列满时拒绝，刷新被跳过并计数）。
+         * 提前刷新执行器，由调用方管理：运行时关闭时不会关闭它。不指定时使用运行时自建并管理的有界守护线程池
+         * （队列满时拒绝，刷新被跳过并计数）。
          */
         fun refreshExecutor(refreshExecutor: Executor) = apply { this.refreshExecutor = refreshExecutor }
         fun retryPolicy(retryPolicy: RetryPolicy) = apply { this.retryPolicy = retryPolicy }

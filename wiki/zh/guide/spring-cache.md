@@ -67,13 +67,33 @@ cocache:
 | `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)` |
 | `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 是共享的，从不整体清空。 |
 | `retrieve(key)`（异步与响应式） | 在 `retrieve` 执行器（见下一行）上执行阻塞查找。 |
-| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | 与 `get(key, loader)` 一样经受 lease 保护的路径回源，在 `retrieve` 执行器上等待异步 loader 完成。每个等待中的调用在回源期间占用一个执行器线程：默认执行器在 JDK 21+ 上每个任务一个虚拟线程；在 JDK 17–20 上是不排队、按需增长的守护线程池（最多 512 个线程，超出时在调用方线程执行），因此嵌套的异步 `@Cacheable(sync = true)` 方法不会让它死锁。传给 `CoCacheSpringCacheManager(runtime, executor)` 的自定义执行器不能把任务排在等待它的任务之后，也不能是完成 loader future 的线程。 |
+| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | 与 `get(key, loader)` 一样经受 lease 保护的路径回源，在 `retrieve` 执行器上等待异步 loader 完成。每个等待中的调用在回源期间占用一个执行器线程：默认执行器在 JDK 21+ 上每个任务一个虚拟线程；在 JDK 17–20 上是不排队、按需增长的守护线程池（最多 512 个线程，超出时在调用方线程执行），因此嵌套的异步 `@Cacheable(sync = true)` 方法不会让它死锁。[自定义执行器](#executor)不能把任务排在等待它的任务之后，也不能是完成 loader future 的线程。 |
 
 ### null 结果 {#null}
 
 设置 `sync = true` 时，返回 `null` 的方法会产生一条负缓存。在 `absent-ttl`（默认 1 分钟）内，后续调用直接返回 `null`，不再执行方法。新建该行时请失效对应的 key，或调短 `absent-ttl`。
 
 通过 `get(key)` 读到负缓存时视为未命中，这是有意为之：CoCache 在 loader 找不到数据时都会写负缓存，若把它当作缓存的 `null`，不带 sync 的 `@Cacheable` 方法将永远不会执行。
+
+## retrieve 执行器 {#executor}
+
+`retrieve` 默认在 CoCache 内置的执行器上运行；`cocache.spring-cache.retrieve-executor` 可以指定一个 `Executor` bean：
+
+```yaml
+spring:
+  threads:
+    virtual:
+      enabled: true          # applicationTaskExecutor 使用虚拟线程
+cocache:
+  spring-cache:
+    retrieve-executor: applicationTaskExecutor
+```
+
+- 只按名称查找该 bean。名称不存在，或该 bean 不是 `Executor` 时，启动失败。
+- 该执行器不能把任务排在等待它的任务之后。嵌套的异步 `@Cacheable(sync = true)` 方法会等待内层调用；在固定线程池或有界队列上（如 Spring Boot 默认的平台线程 `applicationTaskExecutor`），内层调用可能永远排在队列里。虚拟线程执行器是安全的。
+- 该配置项作用于 starter 的 `cocacheCacheManager`。自己声明的管理器通过 `CoCacheSpringCacheManager(runtime, executor)` 传入执行器。
+
+[配置参考](./configuration.md#executors)列出了两个执行器配置项与内置默认值。
 
 ## 优先 evict 而不是 put {#evict}
 

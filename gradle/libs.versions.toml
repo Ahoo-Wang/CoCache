@@ -14,6 +14,8 @@ kotlin = "2.4.21"
 publish-plugin = "2.0.0"
 jmh-plugin = "0.7.3"
 openjdk-jmh = "1.37"
+# 与 Spring Boot 管理的 native-build-tools-plugin 版本一致（spring-boot-dependencies 的同名属性）
+graalvm-native = "1.1.8"
 
 [libraries]
 spring-boot-dependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
@@ -31,4 +33,6 @@ kotlin-spring = { id = "org.jetbrains.kotlin.plugin.spring", version.ref = "kotl
 kotlin-kapt = { id = "org.jetbrains.kotlin.kapt", version.ref = "kotlin" }
 publish = { id = "io.github.gradle-nexus.publish-plugin", version.ref = "publish-plugin" }
 jmh = { id = "me.champeau.jmh", version.ref = "jmh-plugin" }
+spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }
+graalvm-native = { id = "org.graalvm.buildtools.native", version.ref = "graalvm-native" }
 

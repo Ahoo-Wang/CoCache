@@ -14,6 +14,7 @@ Declare a cache as an interface (`@CoCache interface UserCache : Cache<String, U
 - [JoinCache](https://cocache.ahoo.me/guide/join-cache): `@JoinCacheable` read-only views over two caches, `@EnableCoCache(joinCaches = [...])`
 - [Spring Cache](https://cocache.ahoo.me/guide/spring-cache): `CoCacheSpringCacheManager`, `@Cacheable(sync = true)`, the sync check, transactions
 - [Testing](https://cocache.ahoo.me/guide/testing): memory backend in `@SpringBootTest`, `ManualClock`, `InMemoryBackend` unit tests, `HookedBackend` fault injection
+- [Native Images](https://cocache.ahoo.me/guide/native): Spring AOT and GraalVM native images, the hints the starter registers (proxies, SpEL roots, Jackson bindings), and the hints you provide (spec-cache codecs, custom codecs, SpEL beyond the root object)
 - [Configuration Reference](https://cocache.ahoo.me/guide/configuration): every `cocache.*` property with type, default and unit; precedence layering
 - [Deployment](https://cocache.ahoo.me/operations/): Redis versions and topologies, maxmemory-policy, TLS, channel modes, sizing, rolling deploys, key layout, ACLs
 - [Observability](https://cocache.ahoo.me/operations/observability): every `cocache.*` meter and alerts, the `cocache` health indicator, the actuator endpoint (inspect and invalidate one key), logs

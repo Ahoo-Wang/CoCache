@@ -55,7 +55,7 @@ A `SetCache` is different: Redis holds its only copy, so its durability is Redis
 | Your caches | Allowed policies | Why |
 |-------------|------------------|-----|
 | Only `Cache` | Any. `allkeys-lru` or `allkeys-lfu` turn Redis into a bounded cache. | An evicted value or negative entry is a miss. An evicted lease means the loader's fill is rejected, and the value stays in that instance's L2 for `degraded-local-max-age`. Nothing goes stale. |
-| Any `SetCache` | `noeviction`, or a `volatile-*` policy | Redis holds the set's only copy, so `allkeys-*` would silently lose members. `SetCache` keys have no expiry by default, so `volatile-*` never evicts them. CoCache doesn't check this at startup. |
+| Any `SetCache` | `noeviction`, or a `volatile-*` policy | Redis holds the set's only copy, so `allkeys-*` would silently lose members. `SetCache` keys have no expiry by default, so `volatile-*` never evicts them. At startup CoCache reads every primary's policy and warns on `allkeys-*` (`cocache.redis.set-cache-eviction-check`: `warn`, `fail` or `off`); it skips the check when `CONFIG` isn't available. A `SetCache` given a finite `ttl` can still be evicted under `volatile-*`. |
 
 When Redis reaches `maxmemory` under `noeviction`:
 

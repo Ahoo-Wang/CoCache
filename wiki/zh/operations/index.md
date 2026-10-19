@@ -55,7 +55,7 @@ starter 按以下顺序从 Spring Boot 的 Redis 连接信息中选择拓扑：
 | 你的缓存 | 可用的策略 | 原因 |
 |----------|------------|------|
 | 只有 `Cache` | 任意。`allkeys-lru` 或 `allkeys-lfu` 让 Redis 成为有界缓存 | 值或负缓存被淘汰就是未命中。lease 被淘汰时，加载方的填充被拒绝，值只以 `degraded-local-max-age` 留在该实例的 L2 中。不会产生陈旧数据 |
-| 有任何 `SetCache` | `noeviction` 或 `volatile-*` | Redis 保存的是集合的唯一副本，`allkeys-*` 会悄悄丢失成员。`SetCache` 的 key 默认没有到期时间，`volatile-*` 不会淘汰它们。CoCache 不在启动时检查这一点 |
+| 有任何 `SetCache` | `noeviction` 或 `volatile-*` | Redis 保存的是集合的唯一副本，`allkeys-*` 会悄悄丢失成员。`SetCache` 的 key 默认没有到期时间，`volatile-*` 不会淘汰它们。启动时 CoCache 读取各主节点的策略，遇到 `allkeys-*` 时告警（`cocache.redis.set-cache-eviction-check`：`warn`、`fail` 或 `off`）；`CONFIG` 不可用时跳过检查。设置了有限 `ttl` 的 `SetCache` 在 `volatile-*` 下仍可能被淘汰 |
 
 `noeviction` 下 Redis 达到 `maxmemory` 时：
 

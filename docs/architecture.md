@@ -325,17 +325,19 @@ val users: Cache<String, User> = runtime.create(
 |------|------|
 | `cocacheBackend`（`CoherenceBackend`，`RedisBackend`） | `cocache.backend=redis`（默认），classpath 中有 Spring Data Redis，没有其它 `CoherenceBackend` bean，且存在 `DataRedisConnectionDetails`。由连接信息构造（单机 / Sentinel / Cluster，用户名与密码，SSL bundle → Lettuce `SslOptions`），后端自建客户端，不复用应用的连接工厂 |
 | `cocacheBackend`（`CoherenceBackend`，`InMemoryBackend`） | `cocache.backend=memory`，没有其它 `CoherenceBackend` bean。不需要 Spring Data Redis；启动时告警：只适用于单进程，没有跨实例一致性 |
-| `cocacheRuntime`（`CacheRuntime`） | 存在 `CoherenceBackend` bean。有唯一的 `CacheClock` bean 时运行时使用它（内存后端同样使用它，测试推进 `ManualClock` 即可让两层一起到期） |
+| `cocacheRuntime`（`CacheRuntime`） | 存在 `CoherenceBackend` bean。有唯一的 `CacheClock` bean 时运行时使用它（内存后端同样使用它，测试推进 `ManualClock` 即可让两层一起到期）。`cocache.refresh-executor` 指定提前刷新执行器的 bean 名，未设置时运行时自建并管理内置执行器 |
 | `cocacheAssembler`（`CacheAssembler`）、`cocacheAnnotatedCacheFactory` | 运行时存在 |
 | `cocacheSpecRegistrar`（`CacheSpecRegistrar`） | `cocache.enabled` 未关闭（静态 `@Bean`，`BeanFactoryPostProcessor` 需在其它 bean 之前注册） |
 | `cocacheRemovedPropertiesCheck`（`BeanFactoryPostProcessor`） | `cocache.enabled` 未关闭（静态 `@Bean`）。在容器后处理阶段、任何缓存创建之前检查已删除的配置项（§9.4） |
-| `cocacheCacheManager`（`CoCacheSpringCacheManager`） | 没有其它 `CacheManager`；有 spring-tx 时包装为 `TransactionAwareCacheManagerProxy` |
+| `cocacheCacheManager`（`CoCacheSpringCacheManager`） | 没有其它 `CacheManager`；有 spring-tx 时包装为 `TransactionAwareCacheManagerProxy`。`cocache.spring-cache.retrieve-executor` 指定 retrieve 执行器的 bean 名，未设置时使用内置执行器（§9.5） |
 | `cocacheTransactionalInvalidator` | 有 spring-tx |
 | `cocacheSpringCacheSyncCheck`（`SpringCacheSyncCheck`） | 运行时存在（§9.5） |
 | `cocacheEndpoint`（`CoCacheEndpoint`） | 有 actuator，运行时存在，且端点可用（`management.endpoints.web.exposure.include` 等暴露配置包含 `cocache`、访问未被关闭） |
 | `cocacheHealthIndicator`（`CoCacheHealthIndicator`） | 有 `spring-boot-health`（actuator 自带），`management.health.cocache.enabled` 未关闭 |
 | `cocacheMeterBinder`（`CoCacheMeterBinder`） | 有 Micrometer，运行时存在 |
 | `cocacheMeterBindingPostProcessor`（`BeanPostProcessor`） | 有 Micrometer（静态 `@Bean`）。延迟创建的缓存 bean 初始化后补绑指标 |
+
+执行器配置项（`cocache.refresh-executor`、`cocache.spring-cache.retrieve-executor`）只按 bean 名解析，不按类型：与 L2、L1、`KeyConverter` 等有状态组件同一规则，避免按类型匹配时意外共用或选错 bean。名称没有对应的 bean 或 bean 不是 `Executor` 时启动失败，错误信息指明配置项。这些执行器由容器管理，`CacheRuntime.close()` 不会关闭它们（只关闭自己创建的）。Spring Boot 的 `applicationTaskExecutor` 可以直接使用；不会因为开启虚拟线程而自动使用它，需要显式指定。
 
 `cocache.enabled=false` 关闭全部自动配置。测试或单实例部署可以自行声明 `CoherenceBackend` bean（如 `InMemoryBackend`），Redis 后端随之退让。
 
@@ -370,8 +372,19 @@ val users: Cache<String, User> = runtime.create(
 - 负缓存视为未命中（否则 `@Cacheable` 永远不调用方法）；`put(k, null)` 映射为 `invalidate`；`evict` = `invalidate`；`clear` 只清本节点 L2（L1 是共享存储）。
 - `@Cacheable(sync = true)` 经引擎的 `get(key, loader)` 回源，受 lease 与失效戳保护。不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → `put`”，`put` 是无条件写入，没有这层保护；需要上述一致性保证时用 `sync = true`。
 - **启动检查**（`SpringCacheSyncCheck`，`SmartInitializingSingleton`）：存在 `CacheOperationSource`（`@EnableCaching`）时，按 bean 类型（不实例化 bean；CGLIB 取父类，JDK 代理取已创建单例的目标类）解析缓存操作，含 `@CacheConfig` 的类级缓存名。指向 CoCache 缓存名（已创建与已声明）且 `sync = false` 的 `CacheableOperation` 记录告警（`类名#方法名` 与缓存名）；`cocache.spring-cache.require-sync=true` 时启动失败。只按缓存名判断；指定了其它 `cacheManager` 或自定义 `cacheResolver` 的操作跳过。没有 `@EnableCaching`，或不存在名为 `cocacheCacheManager` 的 bean（用户以其它名字声明了自己的 `CacheManager`，starter 的管理器退让）时不做任何事。
-- `retrieve` 在 retrieve 执行器（默认执行器见下，或注入的 Executor）上执行阻塞查找；`retrieve(key, loader)`（响应式 / `CompletableFuture` 方法上的 `sync = true`）与 `get(key, loader)` 一样经引擎受 lease 保护的路径回源，在该执行器上等待异步 loader 完成（每个等待中的调用占一个执行器线程）。默认执行器：JDK 21+ 上每个任务一个虚拟线程（反射取得，基线仍为 JDK 17）；否则为不排队、按需增长的守护线程池（最多 512 个线程，超出时由调用方线程执行）：内层任务不会排在等待它的外层任务之后，嵌套的异步 `sync = true` 不会死锁。
+- `retrieve` 在 retrieve 执行器（默认执行器见下；starter 中可由 `cocache.spring-cache.retrieve-executor` 指定，或构造时注入）上执行阻塞查找；`retrieve(key, loader)`（响应式 / `CompletableFuture` 方法上的 `sync = true`）与 `get(key, loader)` 一样经引擎受 lease 保护的路径回源，在该执行器上等待异步 loader 完成（每个等待中的调用占一个执行器线程）。默认执行器：JDK 21+ 上每个任务一个虚拟线程（反射取得，基线仍为 JDK 17）；否则为不排队、按需增长的守护线程池（最多 512 个线程，超出时由调用方线程执行）：内层任务不会排在等待它的外层任务之后，嵌套的异步 `sync = true` 不会死锁。替换执行器时同样不能排队：固定线程数或有界队列的执行器（如默认的平台线程 `ThreadPoolTaskExecutor`，即未开启虚拟线程时的 `applicationTaskExecutor`）会把内层任务排在等待它的外层任务之后，嵌套调用可能死锁；虚拟线程执行器（`spring.threads.virtual.enabled=true` 时的 `applicationTaskExecutor`）没有这个问题。
 - `TransactionalInvalidator`：事务内调用时登记到当前事务的 `afterCommit`，同一事务内对同一缓存的失效合并为一次 `invalidateAll`，回滚时不失效，没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己提交之后失效。有 spring-tx 时 CacheManager 的 `@CacheEvict` / `@CachePut` 同样推迟到提交之后。
+
+### 9.6 Spring AOT 与原生镜像
+
+AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDefinitionRegistrar`）与 `CacheSpecRegistrar`（`BeanFactoryPostProcessor`）在**构建期**运行，它们产生的 bean 定义被写成生成代码；运行时由生成的 `ApplicationContextInitializer` 注册 bean 定义，注册器不再运行（`CacheSpecRegistrar` 作为 bean 仍会运行，见下）。
+
+- **缓存 bean 一律由 `CacheBeanDefinitions` 的静态工厂方法创建**（`annotatedCache(type, beanFactory)`、`joinCache(type, beanFactory)`、`specCache(specName, beanFactory)`）。bean 定义只携带一个可序列化的构造参数（接口 `Class` 或 spec bean 名）与目标类型（接口本身，或带 spec 泛型的 `Cache<K, V>` / `SetCache<K, E>`），`BeanFactory` 按类型自动注入。AOT 能为工厂方法生成直接调用的代码；lambda 实例提供者（`instanceSupplier`）不能生成，会让 AOT 处理失败。
+- **识别缓存 bean 只看这个构造参数**（`cacheInterfaceOf` / `joinInterfaceOf` / `specBeanOf`），不使用 bean 定义属性：AOT 生成的 bean 定义不保留属性。`declaredCacheNames`、组合视图按缓存名查找 spec 缓存都依赖这一点。
+- **`CacheSpecRegistrar` 幂等**：目标 bean 名已存在且是同一个 spec 的缓存定义时跳过（AOT 运行时生成代码已注册），其它重名仍启动失败。
+- **运行时提示**：`CoCacheAotProcessor`（`BeanFactoryInitializationAotProcessor`，经 `META-INF/spring/aot.factories` 注册）读取上述 bean 定义，为每个接口式声明与组合视图登记 JDK 代理（接口列表与 `CacheProxies` / `JoinCacheProxies` 创建代理时一致，只有接口本身）、接口公共方法反射（注解、泛型、抽象方法校验、`invokeDefault`）、key 类型的 `toString` 反射（默认 `KeyEncoder` 的检查，spec 声明同样登记）、`keyExpression` / `joinKeyExpression` 求值对象（key 类型 / 主缓存值类型）的公共方法与字段、使用默认 `JacksonCodec` 时值类型的 Jackson 绑定。`CoCacheRuntimeHints`（`RuntimeHintsRegistrar`）登记与声明无关的固定提示：`Cache` / `SetCache` / `JoinCache` 的公共方法、`Executors.newVirtualThreadPerTaskExecutor`（Spring Cache 默认 retrieve 执行器经反射取得）、L2 用到的四个 Caffeine 生成类（`SSMS`、`SSMSA` 与节点类 `PSMS`、`PSAMS`，对应 `maximumSize` 加可选 `expireAfterAccess`）。
+- spec 声明的编解码、数据源与 SpEL 以外的反射由使用者负责登记提示；`@EnableCoCache` 列表、spec bean 与 `@Conditional` 条件在构建期固定，策略配置项（`cocache.defaults.*`、`cocache.caches.*`）仍在运行时绑定。
+- 验证：`CoCacheAotTest` 检查提示，`CoCacheAotRuntimeTest` 编译生成代码并在没有注册器的新容器中运行；`cocache-example` 的原生镜像由 `.github/workflows/native.yml` 构建并冒烟。新增反射、代理、资源访问或改变缓存 bean 的创建方式时，同时更新提示与这两个测试。
 
 ## 10. 可观测与运维
 
@@ -449,3 +462,4 @@ val users: Cache<String, User> = runtime.create(
 13. **存储脚本只执行协议，不持有策略**：TTL、刷新窗口、令牌都由引擎作为参数传入。
 14. **代理不包装异常**：接口式声明的代理按方法名直接调用引擎，异常原样抛出；spec bean 注入的就是引擎本身。
 15. **命中路径的改动必须附带数据**：1 线程与 8 线程，至少 5 轮交替运行，报告中位数与置信区间，并包含配置不同的多个缓存（`l2HitMixed`）。
+16. **starter 注册的缓存 bean 必须能由 AOT 生成代码重建**：只用静态工厂方法与可序列化的构造参数，不用实例提供者，不依赖 bean 定义属性（§9.6）。

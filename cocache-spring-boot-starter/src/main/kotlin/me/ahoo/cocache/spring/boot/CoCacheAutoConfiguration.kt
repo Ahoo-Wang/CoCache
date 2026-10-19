@@ -24,7 +24,6 @@ import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.SmartInitializingSingleton
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor
-import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
@@ -43,6 +42,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.ClassUtils
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.json.JsonMapper
+import java.util.concurrent.Executor
 
 /**
  * CoCache 自动配置（`cocache.enabled`，默认启用）：后端、运行时、声明注册与 Spring Cache 适配。
@@ -108,13 +108,22 @@ class CoCacheAutoConfiguration {
 
     /**
      * 有唯一的 [CacheClock] bean 时运行时使用它（否则运行时自建 `TickingClock`）。
+     * 设置了 `cocache.refresh-executor` 时按 bean 名取得提前刷新执行器（否则运行时自建并管理内置执行器）。
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
     @ConditionalOnBean(CoherenceBackend::class)
-    fun cocacheRuntime(backend: CoherenceBackend, clock: ObjectProvider<CacheClock>): CacheRuntime {
+    fun cocacheRuntime(
+        backend: CoherenceBackend,
+        clock: ObjectProvider<CacheClock>,
+        properties: CoCacheProperties,
+        beanFactory: ListableBeanFactory,
+    ): CacheRuntime {
         val builder = CacheRuntime.builder().backend(backend)
         clock.ifUnique?.let { builder.clock(it) }
+        properties.refreshExecutor?.let {
+            builder.refreshExecutor(executorBean(beanFactory, REFRESH_EXECUTOR_PROPERTY, it))
+        }
         return builder.build()
     }
 
@@ -144,8 +153,16 @@ class CoCacheAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(CacheManager::class)
     @ConditionalOnBean(CacheRuntime::class)
-    fun cocacheCacheManager(runtime: CacheRuntime, beanFactory: ConfigurableBeanFactory): CacheManager {
-        val manager = CoCacheSpringCacheManager(runtime)
+    fun cocacheCacheManager(
+        runtime: CacheRuntime,
+        properties: CoCacheProperties,
+        beanFactory: ConfigurableListableBeanFactory,
+    ): CacheManager {
+        // 设置了 cocache.spring-cache.retrieve-executor 时按 bean 名取得 retrieve 执行器，否则使用内置执行器
+        val executor = properties.springCache.retrieveExecutor?.let {
+            executorBean(beanFactory, RETRIEVE_EXECUTOR_PROPERTY, it)
+        } ?: CoCacheSpringCacheManager.DEFAULT_EXECUTOR
+        val manager = CoCacheSpringCacheManager(runtime, executor)
         // 有 spring-tx 时把 put / evict / clear 推迟到事务提交之后：提交前失效会让并发回源读到旧数据（G2）
         if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, beanFactory.beanClassLoader)) {
             return manager
@@ -168,6 +185,17 @@ class CoCacheAutoConfiguration {
     }
 
     /**
+     * 有 `SetCache` 时检查 Redis 的 `maxmemory-policy` 会不会驱逐集合的唯一副本（`cocache.redis.set-cache-eviction-check`）。
+     */
+    @Bean
+    @ConditionalOnBean(CacheRuntime::class)
+    fun cocacheSetCacheEvictionCheck(
+        runtime: CacheRuntime,
+        backend: CoherenceBackend,
+        properties: CoCacheProperties,
+    ): SmartInitializingSingleton = SetCacheEvictionCheck(runtime, backend, properties.redis.setCacheEvictionCheck)
+
+    /**
      * 事务内失效登记到提交之后执行（有 spring-tx 时启用）。
      */
     @Configuration(proxyBeanMethods = false)
@@ -181,6 +209,23 @@ class CoCacheAutoConfiguration {
     companion object {
         private val log = LogFactory.getLog(CoCacheAutoConfiguration::class.java)
         private const val TRANSACTION_SYNCHRONIZATION = "org.springframework.transaction.support.TransactionSynchronizationManager"
+        internal const val REFRESH_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.refresh-executor"
+        internal const val RETRIEVE_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.spring-cache.retrieve-executor"
+
+        /**
+         * 按 bean 名（不按类型：避免多个组件意外共用同一个有状态 bean）取得执行器；
+         * bean 不存在或不是 [Executor] 时以指明配置项的消息启动失败。
+         */
+        internal fun executorBean(beanFactory: ListableBeanFactory, property: String, beanName: String): Executor {
+            check(beanFactory.containsBean(beanName)) {
+                "$property=$beanName - no bean named '$beanName' is defined; set it to the name of an Executor bean or remove it."
+            }
+            check(beanFactory.isTypeMatch(beanName, Executor::class.java)) {
+                "$property=$beanName - bean '$beanName' is a ${beanFactory.getType(beanName)?.name}, " +
+                    "not a java.util.concurrent.Executor."
+            }
+            return beanFactory.getBean(beanName, Executor::class.java)
+        }
 
         @Bean
         @JvmStatic

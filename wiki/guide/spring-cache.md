@@ -67,13 +67,33 @@ The check runs only when a bean named `cocacheCacheManager` exists: the starter'
 | `evict(key)` (`@CacheEvict`) | `cache.invalidate(key)` on every instance |
 | `clear()` (`allEntries = true`) | Clears **this instance's L2 only**. Redis is shared and is never cleared wholesale. |
 | `retrieve(key)` (async and reactive) | Runs the blocking lookup on the `retrieve` executor (see the next row). |
-| `retrieve(key, loader)` (async and reactive with `sync = true`) | Loads through the same lease-protected path as `get(key, loader)`, waiting for the async loader on the `retrieve` executor. Each waiting call holds one executor thread for the duration of the load: the default executor uses a virtual thread per task on JDK 21+. On JDK 17–20 it is a growable daemon pool that never queues (up to 512 threads; beyond that the task runs on the calling thread), so nested async `@Cacheable(sync = true)` methods can't deadlock it. A custom executor passed to `CoCacheSpringCacheManager(runtime, executor)` must not queue tasks behind ones that wait on them, and must not be the thread that completes the loader's future. |
+| `retrieve(key, loader)` (async and reactive with `sync = true`) | Loads through the same lease-protected path as `get(key, loader)`, waiting for the async loader on the `retrieve` executor. Each waiting call holds one executor thread for the duration of the load: the default executor uses a virtual thread per task on JDK 21+. On JDK 17–20 it is a growable daemon pool that never queues (up to 512 threads; beyond that the task runs on the calling thread), so nested async `@Cacheable(sync = true)` methods can't deadlock it. A [custom executor](#executor) must not queue tasks behind ones that wait on them, and must not be the thread that completes the loader's future. |
 
 ### Null results {#null}
 
 With `sync = true`, a method that returns `null` produces a negative entry. For `absent-ttl` (1 minute by default), later calls return `null` without running the method. Invalidate the key when the row is created, or shorten `absent-ttl`.
 
 Negative entries read as a miss through `get(key)` on purpose: CoCache stores them whenever a loader finds nothing, and treating them as a cached `null` would stop non-sync `@Cacheable` methods from ever running.
+
+## The retrieve executor {#executor}
+
+`retrieve` runs on CoCache's built-in executor unless `cocache.spring-cache.retrieve-executor` names an `Executor` bean:
+
+```yaml
+spring:
+  threads:
+    virtual:
+      enabled: true          # applicationTaskExecutor uses virtual threads
+cocache:
+  spring-cache:
+    retrieve-executor: applicationTaskExecutor
+```
+
+- The bean is looked up by name only. An unknown name, or a bean that isn't an `Executor`, fails startup.
+- The executor must not queue tasks behind the ones waiting on them. A nested async `@Cacheable(sync = true)` method waits for its inner call; on a fixed pool or a bounded queue, such as Spring Boot's default platform-thread `applicationTaskExecutor`, the inner call can wait in the queue forever. Virtual-thread executors are safe.
+- The property applies to the starter's `cocacheCacheManager`. A manager you declare yourself takes the executor as `CoCacheSpringCacheManager(runtime, executor)`.
+
+[Configuration](./configuration.md#executors) lists both executor properties and the built-in defaults.
 
 ## Prefer evict over put {#evict}
 

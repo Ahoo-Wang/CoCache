@@ -149,7 +149,7 @@ cocache:
 - Only one instance per key wins the refresh token in Redis and calls the loader. The others re-read the refreshed value. The cluster reloads each key once.
 - Only caches with a loader refresh. Negative entries are not refreshed.
 - A failed or skipped refresh only logs. The value expires normally, so staleness bounds never depend on refresh.
-- Refreshes run on a bounded pool (at most 4 threads, queue of 1024). When it is full, refreshes are skipped and counted in `cocache.refresh.rejections`.
+- Refreshes run on a bounded pool (at most 4 threads, queue of 1024). When it is full, refreshes are skipped and counted in `cocache.refresh.rejections`. [`cocache.refresh-executor`](./configuration.md#executors) names another `Executor` bean to use instead.
 
 To turn off a window that a declaration enables, use any of: `refresh-window: 0` in the [properties](./configuration.md#policy-properties), `@CoCache(refreshWindow = 0)`, or `refreshWindow = null` in a [customizer](./caches.md#customizer).
 

@@ -30,6 +30,8 @@ Lowest to highest, field by field: built-in defaults, the declaration (annotatio
 | `cocache.defaults.*` / `cocache.caches.[name].*` | | Policy properties |
 | `cocache.redis.*` | | Redis backend settings |
 | `cocache.spring-cache.require-sync` | `false` | `true` fails startup on a non-sync `@Cacheable` on a CoCache cache |
+| `cocache.spring-cache.retrieve-executor` | built-in | Bean name of the `Executor` for Spring Cache `retrieve`. Must not queue tasks behind ones waiting on them (nested async `sync = true` can deadlock); a virtual-thread `applicationTaskExecutor` is safe |
+| `cocache.refresh-executor` | built-in | Bean name of the `Executor` for refresh-ahead loads; CoCache never shuts it down |
 | `management.health.cocache.enabled` | `true` | Registers the `cocache` health indicator |
 
 ## Policy properties
@@ -91,7 +93,7 @@ The `cocache` health indicator is `DOWN` only while the subscription heartbeat f
 | `ttlOf`, `keyEncoder`, `keyFilter`, `codec`, `loader` | Spec or customizer |
 | `initialCapacity`, `expireAfterAccess` | `@CaffeineCache`, spec, or customizer |
 | Clock | A `CacheClock` bean (for example `ManualClock` in tests) |
-| Retry policy, refresh executor, node id | Your own `CacheRuntime` bean (the starter's backs off) |
+| Retry policy, node id | Your own `CacheRuntime` bean (the starter's backs off) |
 | Redis client | Your own `CoherenceBackend` bean, for example `RedisBackend.of(client, options)`; set the client's `disconnectedBehavior` to `REJECT_COMMANDS` |
 
 ## Without Spring Boot

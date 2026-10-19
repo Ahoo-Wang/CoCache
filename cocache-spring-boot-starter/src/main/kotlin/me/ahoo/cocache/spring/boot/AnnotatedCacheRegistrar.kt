@@ -14,12 +14,9 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.api.Cache
-import org.springframework.beans.factory.BeanFactory
 import org.springframework.beans.factory.support.BeanDefinitionRegistry
-import org.springframework.beans.factory.support.RootBeanDefinition
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar
 import org.springframework.core.type.AnnotationMetadata
-import java.util.function.Supplier
 
 /**
  * 把 [EnableCoCache] 列出的接口注册为 bean；缓存在首次注入时由 [AnnotatedCacheFactory] 创建。
@@ -35,17 +32,7 @@ internal class AnnotatedCacheRegistrar : ImportBeanDefinitionRegistrar {
             check(!registry.containsBeanDefinition(cacheName)) {
                 "Cannot register cache interface[${type.name}]: the bean name[$cacheName] is already in use."
             }
-            val definition = RootBeanDefinition(type).apply {
-                setAttribute(CacheBeanDefinitions.CACHE_NAME_ATTRIBUTE, cacheName)
-                instanceSupplier = Supplier {
-                    CacheBeanDefinitions.requireComponent(
-                        registry as BeanFactory,
-                        AnnotatedCacheFactory::class.java,
-                        cacheName
-                    ).create(type)
-                }
-            }
-            registry.registerBeanDefinition(cacheName, definition)
+            registry.registerBeanDefinition(cacheName, CacheBeanDefinitions.annotatedCacheDefinition(type))
         }
     }
 }

@@ -95,6 +95,19 @@ class RedisBackend private constructor(
     val heartbeatFailure: String?
         get() = invalidationChannel.lastHeartbeatFailure
 
+    /**
+     * 各主节点的 `maxmemory-policy`（键为 `host:port`，单机为 `redis`），供启动检查判断集合缓存的唯一副本会不会被驱逐。
+     * `CONFIG` 不可用（托管 Redis 常禁用或改名、ACL 无权限）时返回 `null`。
+     */
+    fun maxmemoryPolicies(): Map<String, String>? {
+        return try {
+            connections.maxmemoryPolicies()
+        } catch (e: RedisException) {
+            log.info { "Cannot read maxmemory-policy (${e.message}); skipping the check." }
+            null
+        }
+    }
+
     override fun store(namespace: String): RemoteStore {
         val channel = if (atomicBroadcast) {
             RedisInvalidationChannel.channelOf(

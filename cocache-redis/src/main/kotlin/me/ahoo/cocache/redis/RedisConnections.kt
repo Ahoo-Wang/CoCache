@@ -19,10 +19,13 @@ import io.lettuce.core.RedisException
 import io.lettuce.core.RedisNoScriptException
 import io.lettuce.core.ScriptOutputType
 import io.lettuce.core.api.StatefulConnection
+import io.lettuce.core.api.StatefulRedisConnection
 import io.lettuce.core.api.async.BaseRedisAsyncCommands
 import io.lettuce.core.api.async.RedisScriptingAsyncCommands
 import io.lettuce.core.cluster.RedisClusterClient
 import io.lettuce.core.cluster.SlotHash
+import io.lettuce.core.cluster.api.StatefulRedisClusterConnection
+import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import io.lettuce.core.codec.ByteArrayCodec
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection
 import java.time.Duration
@@ -122,6 +125,29 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
     }
 
     /**
+     * 各主节点的 `maxmemory-policy`（`CONFIG GET`），键为 `host:port`。`CONFIG` 被禁用、改名或无权限时抛出。
+     */
+    fun maxmemoryPolicies(): Map<String, String> {
+        val connection = connection
+        if (connection is StatefulRedisClusterConnection<ByteArray, ByteArray>) {
+            return connection.partitions
+                .filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
+                .associate { node ->
+                    val config = await(
+                        connection.getConnection(node.nodeId).async().configGet(MAXMEMORY_POLICY).toCompletableFuture()
+                    )
+                    "${node.uri.host}:${node.uri.port}" to policyOf(config)
+                }
+        }
+        val standalone = connection as StatefulRedisConnection<ByteArray, ByteArray>
+        val config = await(standalone.async().configGet(MAXMEMORY_POLICY).toCompletableFuture())
+        return mapOf(STANDALONE to policyOf(config))
+    }
+
+    private fun policyOf(config: Map<String, String>): String =
+        requireNotNull(config[MAXMEMORY_POLICY]) { "CONFIG GET $MAXMEMORY_POLICY returned no value." }
+
+    /**
      * 按 slot 分组（集群）；单机为一组。
      */
     fun groupBySlot(keys: List<ByteArray>): Collection<List<ByteArray>> {
@@ -137,6 +163,9 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
     }
 
     private companion object {
+        const val MAXMEMORY_POLICY = "maxmemory-policy"
+        const val STANDALONE = "redis"
+
         /**
          * 建立订阅连接；失败时关闭已建立的命令连接（避免泄漏）再抛出。
          */

@@ -77,6 +77,28 @@
   ],
   "hints": [
     {
+      "name": "cocache.refresh-executor",
+      "providers": [
+        {
+          "name": "spring-bean-reference",
+          "parameters": {
+            "target": "java.util.concurrent.Executor"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cocache.spring-cache.retrieve-executor",
+      "providers": [
+        {
+          "name": "spring-bean-reference",
+          "parameters": {
+            "target": "java.util.concurrent.Executor"
+          }
+        }
+      ]
+    },
+    {
       "name": "cocache.backend",
       "values": [
         {

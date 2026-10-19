@@ -149,7 +149,7 @@ cocache:
 - 每个 key 只有一个实例能在 Redis 中抢到刷新令牌并调用 loader，其它实例读回刷新后的值。集群对每个 key 只重新加载一次。
 - 只有带 loader 的缓存会刷新。负缓存不刷新。
 - 刷新失败或被跳过只记日志。值照常过期，所以陈旧度上界从不依赖刷新。
-- 刷新在一个有界线程池中执行（最多 4 个线程，队列 1024）。池满时跳过刷新，计入 `cocache.refresh.rejections`。
+- 刷新在一个有界线程池中执行（最多 4 个线程，队列 1024）。池满时跳过刷新，计入 `cocache.refresh.rejections`。[`cocache.refresh-executor`](./configuration.md#executors) 可以指定改用另一个 `Executor` bean。
 
 要关闭声明中开启的窗口，可以任选其一：在[配置项](./configuration.md#policy-properties)中写 `refresh-window: 0`、`@CoCache(refreshWindow = 0)`，或在[定制器](./caches.md#customizer)中把 `refreshWindow` 设为 `null`。
 

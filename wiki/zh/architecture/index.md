@@ -160,7 +160,7 @@ String 头：
 | 不可能存在的 key | 是 | `KeyFilter` |
 | 按条目决定寿命 | 是 | `TtlFunction`（`ttlOf`） |
 | 时钟 | 是 | `CacheClock`（测试） |
-| 刷新执行器、重试策略 | 是 | `CacheRuntime.Builder.refreshExecutor`、`retryPolicy` |
+| 刷新执行器、重试策略 | 是 | `CacheRuntime.Builder.refreshExecutor`（starter：`cocache.refresh-executor`）、`retryPolicy` |
 | **L2** | **否** | 始终是有界的 Caffeine 缓存，让命中路径保持单态、成本可知。用 `local-maximum-size` 调整容量 |
 | **栅栏、写入顺序、读路径** | **否** | 它们就是协议本身。见[一致性](./consistency.md) |
 | 线格式 | 大版本内不可变 | 只能两阶段升级 |
