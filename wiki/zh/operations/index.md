@@ -167,7 +167,7 @@ CoCache 的 Redis 用户需要以下权限：
 ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
 ```
 
-6.1.0 之后的版本读取 `SetCache` 成员时用 `HKEYS` 与 `HGET` 取代 `HGETALL`。升级前先给已有用户加上这两条命令，否则集合读取会以 `NOPERM` 失败。`HGETALL` 仍需保留：条件回收与旧版本实例还在使用它。
+6.1.0 之后的版本读取 `SetCache` 成员时用 `HKEYS` 与 `HGET` 取代 `HGETALL`。升级前先给已有用户加上这两条命令，否则集合读取会以 ACL 错误失败（`ERR ACL failure in script: … no permissions to run the 'hkeys' command`）。`HGETALL` 仍需保留：条件回收与旧版本实例还在使用它。
 
 使用自定义 `key-prefix` 时，把 `~cocache:*` 换成你的前缀。Redis Cluster 还要允许 Lettuce 发现拓扑所用的命令（`+cluster|nodes`、`+info`）。每个节点都要设置该用户：ACL 不会随复制同步。
 

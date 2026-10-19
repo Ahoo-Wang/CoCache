@@ -123,6 +123,50 @@ class RedisRobustnessTest {
     }
 
     /**
+     * ACL 缺少读脚本用到的命令（升级前未加 `+hkeys`，或缺 `+get`）：读取以 ACL 错误失败
+     * （Redis 7 为 `ERR ACL failure in script: … no permissions …`，脚本外的直接命令才是 `NOPERM`），
+     * 不能被当作无法识别的内容去回收——key 仍在，内容不变。
+     */
+    @Test
+    fun readFailsWithAclErrorWithoutTouchingContentWhenAclLacksReadCommands() {
+        RedisTestSupport.backend().use { admin ->
+            val store = admin.store(namespace)
+            store.put(key("set"), Envelope.Members(listOf("a".toByteArray(), "b".toByteArray())), null, ByteArray(0))
+            store.put(key("value"), Envelope.Scalar("v".toByteArray()), null, ByteArray(0))
+        }
+        // 只有 `!f` 的 Hash：其摘要与“无法识别的空内容”相同，误判为损坏时会被回收成 lease
+        RedisTestSupport.withCommands { commands -> commands.hset(key("empty"), "!f", "1") }
+        fun denied(block: () -> Any?) {
+            val error = runCatching(block).exceptionOrNull()
+            error.assert().isInstanceOf(RedisException::class.java)
+            error?.message.assert().contains("no permissions")
+        }
+        for (missing in listOf("-hkeys", "-get")) {
+            RedisTestSupport.aclBackend(
+                "cocache-no${missing.drop(1)}",
+                listOf("~*", "&*", "+@all", missing)
+            ).use { backend ->
+                val store = backend.store(namespace)
+                denied { store.read(key("set"), lease(), null) }
+                denied { store.read(key("empty"), lease(), null) }
+                if (missing == "-get") denied { store.read(key("value"), lease(), null) }
+                CacheRuntime.builder().backend(backend).build().use { runtime ->
+                    val index: SetCache<String, String> = runtime.create(
+                        setCacheSpec<String, String>(namespace) { elementCodec = StringCodec }
+                    )
+                    denied { index["set"] }
+                    denied { index["empty"] }
+                }
+            }
+        }
+        RedisTestSupport.withCommands { commands ->
+            commands.hkeys(key("set")).assert().containsExactlyInAnyOrder("!f", "+a", "+b")
+            commands.hkeys(key("empty")).assert().containsExactly("!f")
+            commands.type(key("value")).assert().isEqualTo("string")
+        }
+    }
+
+    /**
      * 运维文档（wiki/operations/index.md#acl）给出的最小 ACL：缓存与集合缓存的全部操作都能执行。
      * 文档中的命令列表与脚本不一致时这里失败。
      */

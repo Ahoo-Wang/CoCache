@@ -167,7 +167,7 @@ A starting point, checked against Redis 7.4 by running every CoCache script as t
 ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
 ```
 
-Versions after 6.1.0 read `SetCache` members with `HKEYS` and `HGET` instead of `HGETALL`. Add both to an existing user before you upgrade, or set reads fail with `NOPERM`. Keep `HGETALL`: conditional reclaim and older instances still use it.
+Versions after 6.1.0 read `SetCache` members with `HKEYS` and `HGET` instead of `HGETALL`. Add both to an existing user before you upgrade, or set reads fail with an ACL error (`ERR ACL failure in script: … no permissions to run the 'hkeys' command`). Keep `HGETALL`: conditional reclaim and older instances still use it.
 
 With a custom `key-prefix`, replace `~cocache:*` with your prefixes. On Redis Cluster, also allow the commands Lettuce uses for topology discovery (`+cluster|nodes`, `+info`). Set the user on every node: ACLs aren't replicated.
 
