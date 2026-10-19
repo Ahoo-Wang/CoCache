@@ -15,8 +15,8 @@ package me.ahoo.cocache.spring.boot
 
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.CoCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -122,7 +122,7 @@ class CoCacheNextObservabilityTest {
             val registry = SimpleMeterRegistry()
             context.getBean(CoCacheNextMeterBinder::class.java).bindTo(registry)
             @Suppress("UNCHECKED_CAST")
-            val user = context.getBean("user") as CoCache<String, String>
+            val user = context.getBean("user") as Cache<String, String>
 
             registry.count("cocache.next.misses", "user").assert().isZero()
             registry.localSize("user").assert().isZero()
@@ -199,7 +199,7 @@ class CoCacheNextObservabilityTest {
             val endpoint = context.getBean(CoCacheNextEndpoint::class.java)
 
             @Suppress("UNCHECKED_CAST")
-            val user = context.getBean("user") as CoCache<String, String>
+            val user = context.getBean("user") as Cache<String, String>
             user["1"]
 
             endpoint.caches().map { it.name }.assert().containsExactly("index", "user")
