@@ -184,10 +184,11 @@ class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
 
 - **`null` means "doesn't exist"** and is cached as a negative entry for `absentTtl`. Throw if the lookup *failed*: the exception reaches the caller (and every caller sharing the load), and nothing is cached.
 - **The default `loadAll`** calls `load` once per key. Override it with a batch query if you use `getAll`.
-- **The loader runs on the calling thread**, so transactions, `SecurityContext`, and MDC are available.
+- **The loader runs on the calling thread**, so transactions, `SecurityContext`, and MDC are available. Through the [async view](./async.md) it runs on the blocking executor instead.
 - **Don't read the same key from inside its own loader** on the same thread; that fails fast with `IllegalStateException`.
-- **Interfaces** find the loader by type `CacheLoader<K, V>`. If several beans match, startup fails; name one with `@CoCache(loader = "…")`. If none matches, the cache has no loader: misses return `null` and the cache is filled only by `put`.
+- **Interfaces** find the loader by type `CacheLoader<K, V>`, then `AsyncCacheLoader<K, V>`. If several beans match, or one of each, startup fails; name one with `@CoCache(loader = "…")`. If none matches, the cache has no loader: misses return `null` and the cache is filled only by `put`.
 - **Per-call loaders**: `cache.get(key) { k -> … }` loads a miss with the given loader instead, with the same protection. Spring's `@Cacheable(sync = true)` uses this.
+- **Non-blocking sources**: implement `AsyncCacheLoader<K, V>` (`loadAsync` returns a `CompletionStage`) and set it as `asyncLoader` in a spec. A cache has one source, sync or async; both APIs work with either. See [Async API](./async.md#loader).
 
 ### Per-entry TTL {#ttl-of}
 

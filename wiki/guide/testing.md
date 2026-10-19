@@ -153,4 +153,4 @@ fun backend(clock: ManualClock): CoherenceBackend = HookedBackend(InMemoryBacken
 
 ## Testing a backend of your own {#tck}
 
-If you implement `CoherenceBackend` for a store other than Redis, `cocache-test` is also the compatibility kit: extend `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, and `FaultSpec`. See [Extending CoCache](/architecture/extending).
+If you implement `CoherenceBackend` for a store other than Redis, `cocache-test` is also the compatibility kit: extend `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, and `FaultSpec`, and their async variants for the [async view](./async.md). See [Extending CoCache](/architecture/extending).

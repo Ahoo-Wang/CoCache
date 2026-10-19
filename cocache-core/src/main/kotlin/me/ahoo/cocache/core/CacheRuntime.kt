@@ -57,6 +57,13 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
 
     private val owned = ArrayList<AutoCloseable>()
     private val context: EngineContext
+
+    /**
+     * 阻塞执行器（RFC 0004 §5.1）：[Builder.blockingExecutor] 给出的，或运行时自建的那个。
+     * 适配层可以把可能阻塞的用户代码（如 Spring `retrieve` 的方法体）派发到这里，不占用异步执行器。随运行时关闭（自建时）。
+     */
+    val blockingExecutor: Executor
+        get() = context.async.blocking
     private val registrations = CopyOnWriteArrayList<Registration>()
     private val names = ConcurrentHashMap<String, Registration>()
     private val namespaces = ConcurrentHashMap.newKeySet<String>()

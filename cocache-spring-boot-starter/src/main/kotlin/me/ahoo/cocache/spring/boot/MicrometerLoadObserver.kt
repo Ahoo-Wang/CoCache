@@ -17,13 +17,17 @@ import io.micrometer.observation.Observation
 import io.micrometer.observation.ObservationRegistry
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.LoadOperation
+import me.ahoo.cocache.core.SourceLoadTimeoutException
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.function.Supplier
 
 /**
  * 以 Micrometer Observation 观测回源：每次回源（或 lease 等待）一个名为 [NAME] 的 Observation，
  * 由 ObservationRegistry 上的处理器转为链路追踪的 span 与计时指标。
  *
- * 低基数标签：[CACHE]、[OPERATION]、[OUTCOME]（`success` / `error`）；高基数标签只有 [KEY_COUNT]。
+ * 低基数标签：[CACHE]、[OPERATION]、[OUTCOME]（`success` / `error` / `timeout`：[SourceLoadTimeoutException]，
+ * 即异步加载超过 `load-async-timeout`，同步调用方等待它时同样记为 `timeout`）；高基数标签只有 [KEY_COUNT]。
  * 从不记录 key 本身（高基数，且可能是个人信息）。异常原样抛出并记录到 Observation。
  */
 class MicrometerLoadObserver(private val registry: ObservationRegistry) : LoadObserver {
@@ -44,13 +48,56 @@ class MicrometerLoadObserver(private val registry: ObservationRegistry) : LoadOb
             observation.lowCardinalityKeyValue(OUTCOME, SUCCESS)
             return result
         } catch (e: Throwable) {
-            observation.lowCardinalityKeyValue(OUTCOME, ERROR)
+            observation.lowCardinalityKeyValue(OUTCOME, outcomeOf(e))
             observation.error(e)
             throw e
         } finally {
             observation.stop()
         }
     }
+
+    /**
+     * 异步回源（RFC 0004 §8.1）：从调用 [block] 到其 future 完成。[block] 在 `openScope()` 内调用，`loadAsync` 的同步部分能看到当前观测
+     * （追踪上下文可经 context-propagation 传给 R2DBC / WebClient）；future 完成时记录结果并停止。引擎的超时记为 [TIMEOUT]。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    override fun <T> observeAsync(
+        cacheName: String,
+        operation: LoadOperation,
+        keyCount: Int,
+        block: Supplier<CompletableFuture<T>>
+    ): CompletableFuture<T> {
+        if (registry.isNoop) {
+            return block.get()
+        }
+        val observation = Observation.createNotStarted(NAME, registry)
+            .contextualName("cocache ${operation.value} $cacheName")
+            .lowCardinalityKeyValue(CACHE, cacheName)
+            .lowCardinalityKeyValue(OPERATION, operation.value)
+            .highCardinalityKeyValue(KEY_COUNT, keyCount.toString())
+            .start()
+        val future = try {
+            observation.openScope().use { block.get() }
+        } catch (e: Throwable) {
+            observation.lowCardinalityKeyValue(OUTCOME, ERROR)
+            observation.error(e)
+            observation.stop()
+            throw e
+        }
+        future.whenComplete { _, error ->
+            if (error == null) {
+                observation.lowCardinalityKeyValue(OUTCOME, SUCCESS)
+            } else {
+                val cause = if (error is CompletionException) error.cause ?: error else error
+                observation.lowCardinalityKeyValue(OUTCOME, outcomeOf(cause))
+                observation.error(cause)
+            }
+            observation.stop()
+        }
+        return future
+    }
+
+    private fun outcomeOf(error: Throwable): String = if (error is SourceLoadTimeoutException) TIMEOUT else ERROR
 
     companion object {
         /**
@@ -63,5 +110,6 @@ class MicrometerLoadObserver(private val registry: ObservationRegistry) : LoadOb
         const val KEY_COUNT = "key.count"
         const val SUCCESS = "success"
         const val ERROR = "error"
+        const val TIMEOUT = "timeout"
     }
 }

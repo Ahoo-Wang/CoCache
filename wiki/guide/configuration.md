@@ -31,8 +31,10 @@ Properties come last so operators can retune a cache without a rebuild. This mea
 | `cocache.caches.[name].*` | policy | — | [Policy properties](#policy-properties) for one cache |
 | `cocache.redis.*` | — | — | [Redis backend](#redis) settings |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`: startup fails if a `@Cacheable` on a CoCache cache lacks `sync = true`. `false`: a warning is logged. See [Spring Cache](./spring-cache.md#sync-check). |
-| `cocache.spring-cache.retrieve-executor` | bean name | built-in | The `Executor` bean that runs Spring Cache `retrieve` (async and reactive `@Cacheable`). See [Executors](#executors). |
+| `cocache.spring-cache.retrieve-executor` | bean name | — | **Deprecated since 6.3** and ignored with a startup warning: `retrieve` uses the [async view](./async.md) and needs no executor. Removed in 7.0. |
 | `cocache.refresh-executor` | bean name | built-in | The `Executor` bean that runs [refresh-ahead](./freshness.md#refresh-ahead) loads. See [Executors](#executors). |
+| `cocache.async-executor` | bean name | built-in | The `Executor` bean that runs the [async view](./async.md)'s continuations. See [Executors](#executors). |
+| `cocache.blocking-executor` | bean name | built-in | The `Executor` bean that runs synchronous loaders called through the async view. See [Executors](#executors). |
 | `management.health.cocache.enabled` | boolean | `true` | Registers the `cocache` health indicator ([below](#actuator)) |
 | `cocache.observation.enabled` | boolean | `true` | Wraps source loads in a Micrometer `Observation` when an `ObservationRegistry` bean exists. See [tracing](../operations/observability.md#tracing). |
 | `cocache.metrics.local-hits` | boolean | `false` | Counts L2 hits (`cocache.hits{level=l2}`, endpoint key `localHits`) for every cache. Off by default: it adds an atomic increment to every L2 hit. See [metrics](../operations/observability.md#metrics-reads). |
@@ -54,6 +56,7 @@ These keys work under both `cocache.defaults.` and `cocache.caches.[name].`.
 | `lease-wait` | duration | `200ms` | — | How long a miss waits for another instance's load before loading itself |
 | `load-max-concurrent` | integer | `0` (unlimited) | — | Maximum concurrent source loads per cache per instance |
 | `load-acquire-timeout` | duration | `1s` | — | How long a load waits for a permit before throwing `SourceLoadRejectedException` |
+| `load-async-timeout` | duration | `30s` | — | How long one `AsyncCacheLoader` load may take. Past it the call fails with `SourceLoadTimeoutException` and the lease is released. Doesn't apply to synchronous loaders. See [Async API](./async.md#timeouts). |
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | Maximum L2 entries per instance |
 | `invalidate-failure` | `retry` \| `throw` | `retry` | — | A failed Redis invalidation: queue for background retry, or throw `CacheWriteException` |
 | `read-failure` | `degrade` \| `throw` | `degrade` | — | A failed Redis read: load from the source, or throw `CacheReadException` |
@@ -101,16 +104,17 @@ cocache:
 
 ## Executors {#executors}
 
-CoCache runs two kinds of background work on executors:
+CoCache runs background and async work on executors:
 
 | Work | Property | Built-in executor |
 |------|----------|-------------------|
-| Spring Cache `retrieve`: the blocking lookup, or the wait for the async loader with `sync = true` | `cocache.spring-cache.retrieve-executor` | A virtual thread per task on JDK 21+. On JDK 17–20, a growable daemon pool that never queues (up to 512 threads; beyond that the task runs on the calling thread). |
 | Refresh-ahead loads | `cocache.refresh-executor` | A bounded daemon pool (1–4 threads, 1024 queued tasks). A full queue skips the refresh and counts it in `cocache.refresh.rejections`. |
+| Continuations of the [async view](./async.md): decoding, L2 fills, issuing the next Redis command, calling `loadAsync`, completing your future | `cocache.async-executor` | A `ForkJoinPool` owned by the runtime, sized to the CPU count, with daemon threads named `cocache-async-*` |
+| Synchronous loaders called through the async view, and backends that implement only the synchronous SPI | `cocache.blocking-executor` | A virtual thread per task on JDK 21+. On JDK 17–20, a daemon pool that never queues (up to 512 threads, named `cocache-blocking-*`). When it's full, the load is rejected rather than run on the async executor. |
 
 Each property takes the **name** of an `Executor` bean. CoCache looks the bean up by name only, never by type. A name that matches no bean, or a bean that isn't an `Executor`, fails startup with a message naming the property. The container owns that executor: closing the `CacheRuntime` doesn't shut it down.
 
-Spring Boot's own `applicationTaskExecutor` works for both:
+Spring Boot's own `applicationTaskExecutor` works for refresh-ahead and as the blocking executor:
 
 ```yaml
 spring:
@@ -118,14 +122,15 @@ spring:
     virtual:
       enabled: true          # applicationTaskExecutor uses virtual threads
 cocache:
-  spring-cache:
-    retrieve-executor: applicationTaskExecutor
   refresh-executor: applicationTaskExecutor
+  blocking-executor: applicationTaskExecutor
 ```
 
-::: warning The retrieve executor must not queue
-A `retrieve` task can wait on another `retrieve` task: a nested async `@Cacheable(sync = true)` method waits for its inner call. An executor that queues tasks behind the ones waiting on them can deadlock. A fixed pool or a bounded queue does exactly that, and so does Spring Boot's default platform-thread `applicationTaskExecutor` once its core threads are busy. A virtual-thread executor (`spring.threads.virtual.enabled=true`) never queues, so it is safe. The refresh executor has no such constraint: a refresh never waits on another refresh.
+::: warning What each executor may run
+The async executor runs only short, non-blocking work. Never block on it, for example by calling the synchronous API from a continuation. The built-in `ForkJoinPool` compensates for a thread that blocks in `join()`, but a fixed-size pool you supply doesn't. The blocking executor runs synchronous loaders, so it must not queue: a loader can wait on another load.
 :::
+
+`cocache.spring-cache.retrieve-executor` is deprecated since 6.3. Spring Cache `retrieve` now uses the async view and waits on no thread. See [Spring Cache](./spring-cache.md#executor).
 
 ## Redis {#redis}
 

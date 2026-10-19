@@ -37,7 +37,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * `cocache.refresh-executor` 与 `cocache.spring-cache.retrieve-executor`：按 bean 名解析、实际被使用、名称错误时启动失败。
+ * `cocache.refresh-executor`、`cocache.async-executor`、`cocache.blocking-executor`：按 bean 名解析、实际被使用、名称错误时启动失败；
+ * 已弃用的 `cocache.spring-cache.retrieve-executor` 被忽略（6.3 起 `retrieve` 经异步视图，不使用执行器）。
  */
 class ExecutorPropertiesTest {
     private val runner = ApplicationContextRunner()
@@ -89,6 +90,12 @@ class ExecutorPropertiesTest {
 
         @Bean
         fun retrieveRecorder(): RecordingExecutor = RecordingExecutor()
+
+        @Bean
+        fun asyncRecorder(): RecordingExecutor = RecordingExecutor()
+
+        @Bean
+        fun blockingRecorder(): RecordingExecutor = RecordingExecutor()
 
         @Bean
         fun notAnExecutor(): StringBuilder = StringBuilder("plain")
@@ -178,7 +185,7 @@ class ExecutorPropertiesTest {
     }
 
     @Test
-    fun retrieveExecutorBeanRunsSpringCacheRetrieve() {
+    fun deprecatedRetrieveExecutorIsIgnored() {
         runner.withPropertyValues("cocache.spring-cache.retrieve-executor=retrieveRecorder")
             .withUserConfiguration(ExecutorConfig::class.java)
             .run { context ->
@@ -190,21 +197,43 @@ class ExecutorPropertiesTest {
                 retrieveValue(cache, "1").assert().isEqualTo("user-1")
                 cache.retrieve("2") { java.util.concurrent.CompletableFuture.completedFuture("ignored") }
                     .get(5, TimeUnit.SECONDS).assert().isEqualTo("ignored")
-                context.getBean("retrieveRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(2)
-                context.getBean("refreshRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(0)
+                context.getBean("retrieveRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(0)
             }
+        // 弃用的配置项只告警：名称不存在也不再导致启动失败
+        runner.withPropertyValues("cocache.spring-cache.retrieve-executor=missingRetrieve").run { context ->
+            assertThat(context).hasNotFailed()
+        }
     }
 
     @Test
-    fun defaultRetrieveExecutorIsBuiltIn() {
+    fun retrieveUsesTheAsyncView() {
         runner.run { context ->
             assertThat(context).hasNotFailed()
             val cache = requireNotNull(context.getBean(CacheManager::class.java).getCache("user"))
             retrieveValue(cache, "1").assert().isEqualTo("user-1")
-            // JDK 21+ 为虚拟线程（无名），否则为内置守护线程池
+            // 同步数据源只在阻塞执行器上执行：JDK 21+ 为虚拟线程（无名），否则为运行时自建的守护线程池
             val thread = loaderThreads(context).single()
-            (thread.isEmpty() || thread.startsWith("cocache-spring-retrieve-")).assert()
-                .withFailMessage { "retrieve ran on $thread" }.isTrue()
+            (thread.isEmpty() || thread.startsWith("cocache-blocking-")).assert()
+                .withFailMessage { "the loader ran on $thread" }.isTrue()
+            // L2 命中：返回已完成的 future，不切换线程
+            requireNotNull(cache.retrieve("1")).isDone.assert().isTrue()
+        }
+    }
+
+    @Test
+    fun asyncAndBlockingExecutorBeansAreUsed() {
+        runner.withPropertyValues(
+            "cocache.async-executor=asyncRecorder",
+            "cocache.blocking-executor=blockingRecorder",
+        ).withUserConfiguration(ExecutorConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val properties = context.getBean(CoCacheProperties::class.java)
+            properties.asyncExecutor.assert().isEqualTo("asyncRecorder")
+            properties.blockingExecutor.assert().isEqualTo("blockingRecorder")
+            userCache(context).async().get("1").get(5, TimeUnit.SECONDS).assert().isEqualTo("user-1")
+            // 记录执行器就地执行：同步数据源经阻塞执行器在调用方线程上执行
+            context.getBean("blockingRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(1)
+            loaderThreads(context).single().assert().isEqualTo(Thread.currentThread().name)
         }
     }
 
@@ -220,7 +249,7 @@ class ExecutorPropertiesTest {
             .withUserConfiguration(SpecConfig::class.java)
             .withPropertyValues(
                 "cocache.backend=memory",
-                "cocache.spring-cache.retrieve-executor=applicationTaskExecutor",
+                "cocache.blocking-executor=applicationTaskExecutor",
                 "cocache.refresh-executor=applicationTaskExecutor",
             )
             .run { context ->
@@ -241,7 +270,8 @@ class ExecutorPropertiesTest {
     fun unknownExecutorBeanFailsStartup() {
         mapOf(
             "cocache.refresh-executor" to "missingRefresh",
-            "cocache.spring-cache.retrieve-executor" to "missingRetrieve",
+            "cocache.async-executor" to "missingAsync",
+            "cocache.blocking-executor" to "missingBlocking",
         ).forEach { (property, name) ->
             runner.withPropertyValues("$property=$name").run { context ->
                 assertThat(context).hasFailed()
@@ -253,14 +283,16 @@ class ExecutorPropertiesTest {
 
     @Test
     fun nonExecutorBeanFailsStartup() {
-        runner.withPropertyValues("cocache.spring-cache.retrieve-executor=notAnExecutor")
-            .withUserConfiguration(ExecutorConfig::class.java)
-            .run { context ->
-                assertThat(context).hasFailed()
-                context.startupFailure.assert()
-                    .hasStackTraceContaining("cocache.spring-cache.retrieve-executor=notAnExecutor")
-                    .hasStackTraceContaining("java.lang.StringBuilder, not a java.util.concurrent.Executor")
-            }
+        listOf("cocache.async-executor", "cocache.blocking-executor").forEach { property ->
+            runner.withPropertyValues("$property=notAnExecutor")
+                .withUserConfiguration(ExecutorConfig::class.java)
+                .run { context ->
+                    assertThat(context).hasFailed()
+                    context.startupFailure.assert()
+                        .hasStackTraceContaining("$property=notAnExecutor")
+                        .hasStackTraceContaining("java.lang.StringBuilder, not a java.util.concurrent.Executor")
+                }
+        }
     }
 
     @Test

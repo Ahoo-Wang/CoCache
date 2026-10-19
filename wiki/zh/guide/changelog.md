@@ -5,7 +5,63 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v6.1.0（当前版本）
+## v6.3.0（当前版本）
+
+**Module Group：** `me.ahoo.cocache` · 次版本。6.2 没有单独发布：原计划在 6.2 交付的内容随 6.3.0 一并发布。Redis 线格式与失效频道都没有变化，6.0、6.1 与 6.3 的实例可以共用 Redis，逐台升级。
+
+### 异步 API
+
+每个缓存都有一个基于同一个引擎的异步视图（[RFC 0004](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0004-async-api.md)），见[异步 API](./async.md) 指南。
+
+```kotlin
+val async = userCache.async()                 // 同一个 L2、栅栏、在途加载与 lease
+async.get("42").thenAccept { user -> ... }
+async.put("42", user).thenCompose { async.get("42") }
+```
+
+- `Cache.async()` / `SetCache.async()` 返回 `AsyncCache` / `AsyncSetCache`，方法与同步 API 同名、语义相同，返回 `CompletableFuture`。L2 命中返回已完成的 future。
+- `AsyncCacheLoader`（`loadAsync`、`loadAllAsync`）从非阻塞的数据源加载。在 spec 中设为 `asyncLoader`；`@CoCache` 接口按类型或 `loader = "…"` 找到它。两种 loader 都能配合两种 API。
+- 不挂起线程：等待其它实例的 lease 与回源许可都经调度完成，future 在异步执行器上完成，从不在 Lettuce 的 I/O 线程上。future 以原始异常失败，取消一个 future 不会取消共享的加载，异步方法从不同步抛出。
+- 新配置：
+  - `cocache.async-executor` 与 `cocache.blocking-executor`，各自指定一个 `Executor` bean 的名称；
+  - 每个缓存的 `load-async-timeout`（默认 30 秒），以及新的 `SourceLoadTimeoutException` 与 `cocache.load.timeouts` 指标。
+- Redis 后端原生实现新的可选 SPI `AsyncRemoteStore` / `AsyncInvalidationChannel`。第三方后端无需改动：引擎在阻塞执行器上调用它们的同步方法。
+- **Spring Cache：** `retrieve` 经异步视图，异步与响应式的 `@Cacheable(sync = true)` 方法回源时不占用线程。
+- **性能：** 同步命中路径不变（JMH 在 1 与 8 线程下与异步改动之前的代码相比，差异在噪声内）。一次异步 L2 命中约为同步命中的 90%。32 个在途请求下，一个线程完成的 Redis 读写约为一个阻塞线程的 12 倍。
+
+### 用 putAll 批量写入
+
+`putAll(entries)` 与 `putAll(entries, ttl)` 把多个 key 作为一次写入：每个 Redis slot 组一个脚本、广播一次，防止旧值写回的保护与 `put` 相同。见[保持数据新鲜](./freshness.md)。
+
+### 回源路径追踪
+
+容器中有 `ObservationRegistry` bean 时，starter 注册 `MicrometerLoadObserver`：每次回源与每次等待其它实例的 lease 都包在一个 `cocache.load` 观测中，标签为 `cache`、`operation` 与 `outcome`。命中不产生观测。新的 `LoadObserver` SPI 可以接入你自己的实现。见[可观测性](../operations/observability.md#tracing)。
+
+### L2 命中计数
+
+`cocache.metrics.local-hits=true`（不用 Spring 时：`CacheRuntime.builder().recordLocalHits(true)`）把由 L2 回答的读取计入 `cocache.hits{level=l2}` 与端点字段 `localHits`，读取因此能精确地分成 L2 命中、未命中与被过滤三类。默认关闭，因为它给每次 L2 命中加一次原子自增。5.x 的 `cocache.metrics.client-side-hits` 现在提示改用它。见[可观测性](../operations/observability.md#metrics-reads)。
+
+### 兼容性测试套件与 CI
+
+- 新的 TCK 套件：`MultiNodeSpec`（三个运行时、所有失效交错、全集群每个 key 只回源一次与刷新一次）、`FaultSpec`（L1 故障、重试、已生效但报错的写入、重连后不重放），以及每个套件的异步版本（`AsyncBackendProtocolSpec`、`AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec`）。
+- Redis 后端与 starter 在 CI 中于 Valkey 8 上测试。
+- `SetCache` 读取基准（`setRead`）确认保留 Hash 编码。
+
+### 升级注意
+
+- `cocache.spring-cache.retrieve-executor`、`CoCacheSpringCacheManager(runtime, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 已弃用：执行器被忽略，配置项在启动时告警。7.0 删除。异步 `@Cacheable(sync = true)` 方法的方法体改在 `cocache.blocking-executor`（JDK 21+ 为虚拟线程）上执行，与之前在 retrieve 执行器上执行一样。`CoCacheSpringCache(cache, admin, executor)` 保留，其执行器执行方法体。
+- `Cache.async()` 是默认抛出 `UnsupportedOperationException` 的 default 方法。你自己实现的 `Cache`（例如测试替身）只有在调用方使用异步视图时才需要覆盖它。
+- 自定义的 `LoadObserver` 只有覆盖 `observeAsync` 才能看到异步加载。
+- **Kotlin 调用方需要针对 6.3 重新编译**，否则报 `NoSuchMethodError`。`LoadPolicy` 新增 `asyncTimeout`，改变了 `copy` 与 Kotlin 默认参数背后的合成构造函数，调用 `copy` 或省略 `LoadPolicy` 参数的 Kotlin 代码都受影响；`CoCacheSpringCacheManager(runtime)` 不再是带默认参数的构造函数，省略执行器的 Kotlin 代码同样受影响。Java 调用方不受影响。
+- TCK：`HookedBackend.closesDelegate`（默认 `false`，与之前相同）与各套件的 `closesBackend` 让套件关闭每个用例新建的后端，后端会打开连接或线程时请开启。按调用方筛选的钩子请改用 `HookedBackend.issuer()`，因为异步调用在其它线程上完成。
+
+### Gradle 配置
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.3.0")
+```
+
+## v6.1.0
 
 **模块组：** `me.ahoo.cocache` · 次版本。Redis 线格式与失效频道不变，6.0 与 6.1 实例可以共享 Redis，并逐台升级。
 

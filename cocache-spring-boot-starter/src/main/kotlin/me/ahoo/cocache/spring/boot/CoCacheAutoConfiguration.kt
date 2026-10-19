@@ -131,6 +131,10 @@ class CoCacheAutoConfiguration {
         properties.refreshExecutor?.let {
             builder.refreshExecutor(executorBean(beanFactory, REFRESH_EXECUTOR_PROPERTY, it))
         }
+        properties.asyncExecutor?.let { builder.asyncExecutor(executorBean(beanFactory, ASYNC_EXECUTOR_PROPERTY, it)) }
+        properties.blockingExecutor?.let {
+            builder.blockingExecutor(executorBean(beanFactory, BLOCKING_EXECUTOR_PROPERTY, it))
+        }
         return builder.build()
     }
 
@@ -165,11 +169,14 @@ class CoCacheAutoConfiguration {
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
     ): CacheManager {
-        // 设置了 cocache.spring-cache.retrieve-executor 时按 bean 名取得 retrieve 执行器，否则使用内置执行器
-        val executor = properties.springCache.retrieveExecutor?.let {
-            executorBean(beanFactory, RETRIEVE_EXECUTOR_PROPERTY, it)
-        } ?: CoCacheSpringCacheManager.DEFAULT_EXECUTOR
-        val manager = CoCacheSpringCacheManager(runtime, executor)
+        // 6.3 起 retrieve 经异步视图，不再使用执行器：旧配置项只告警
+        properties.springCache.retrieveExecutor?.let {
+            log.warn(
+                "$RETRIEVE_EXECUTOR_PROPERTY=$it is deprecated since 6.3 and ignored: Spring Cache retrieve uses the async view " +
+                    "and no executor. Remove it; see ${CoCacheProperties.PREFIX}.async-executor and ${CoCacheProperties.PREFIX}.blocking-executor."
+            )
+        }
+        val manager = CoCacheSpringCacheManager(runtime)
         // 有 spring-tx 时把 put / evict / clear 推迟到事务提交之后：提交前失效会让并发回源读到旧数据（G2）
         if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, beanFactory.beanClassLoader)) {
             return manager
@@ -219,6 +226,8 @@ class CoCacheAutoConfiguration {
         internal const val REFRESH_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.refresh-executor"
         internal const val LOCAL_HITS_PROPERTY = "${CoCacheProperties.PREFIX}.metrics.local-hits"
         internal const val RETRIEVE_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.spring-cache.retrieve-executor"
+        internal const val ASYNC_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.async-executor"
+        internal const val BLOCKING_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.blocking-executor"
 
         /**
          * 按 bean 名（不按类型：避免多个组件意外共用同一个有状态 bean）取得执行器；

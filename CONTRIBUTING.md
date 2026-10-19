@@ -37,7 +37,7 @@ Spring wiring code. It is the normative design and lists the invariants that eve
 |------|---------|-------|
 | Coding conventions and static analysis | Detekt + detekt-formatting (`config/detekt/detekt.yml`). Findings are uploaded to GitHub code scanning | CI · Static Analysis |
 | License headers | `checkLicenseHeader` (Apache-2.0 header in every source file and build script) | CI · Static Analysis, `check` |
-| Unit tests | JUnit 6, MockK, fluent-assert, shared TCK specs in `cocache-test` (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`) | CI · Test & Coverage |
+| Unit tests | JUnit 6, MockK, fluent-assert, shared TCK specs in `cocache-test` (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec` and their async variants `AsyncBackendProtocolSpec`, `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`) | CI · Test & Coverage |
 | Integration tests | Real Redis service container (`cocache-redis`, `cocache-spring-boot-starter`) | CI · Test & Coverage |
 | Runtime compatibility | Artifacts compile for JDK 17; the full suite also runs on JDK 25 (`-PtestJavaVersion=25`) | CI · Test (JDK 25) |
 | Redis Cluster | The `cocache-redis` and starter tests also run on a 3-master Redis Cluster (`.github/scripts/start-redis-cluster.sh`) | CI · Test (Redis Cluster) |
@@ -77,8 +77,9 @@ See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in
   - Covered: `cocache-api` (user API and SPI), the public types of `cocache-core` (including
     `JoinCacheProxies`, which the docs recommend for non-Spring join caches), `cocache-redis`,
     `cocache-codec-jackson` and `cocache-spring`, the published TCK in `cocache-test`
-    (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `HookedBackend`,
-    `Concurrency`), the
+    (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, their async variants
+    `AsyncBackendProtocolSpec`, `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`,
+    `CacheAccess`, `HookedBackend`, `Concurrency`), the
     annotations and `CoCacheProperties` keys of the starter, metric names, endpoint paths and the wire
     format. Sealed types (`Lookup`, `RemoteRead`, `Envelope`) gain subtypes only in a MAJOR version.
   - Not covered: auto-configuration classes and other starter wiring (`CacheAssembler`,

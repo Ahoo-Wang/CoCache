@@ -143,7 +143,15 @@ class RedisBackend private constructor(
         ownedResources?.shutdown()
     }
 
+    private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * 幂等：重复关闭什么也不做。
+     */
     override fun close() {
+        if (!closed.compareAndSet(false, true)) {
+            return
+        }
         invalidationChannel.close()
         connections.close()
         shutdownOwned()

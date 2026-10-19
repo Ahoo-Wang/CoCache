@@ -12,7 +12,7 @@ Use this map for properties, actuator, metrics, dashboards and the behavior chan
 | `cocache.redis.missing-guard-sentinel` | removed; no in-band sentinel |
 | `cocache.load.max-concurrent` | `cocache.defaults.load-max-concurrent` |
 | `cocache.load.acquire-timeout` | `cocache.defaults.load-acquire-timeout` |
-| `cocache.metrics.client-side-hits` | `cocache.metrics.local-hits` (6.2+; absent in 6.0 and 6.1) |
+| `cocache.metrics.client-side-hits` | `cocache.metrics.local-hits` (6.3+; absent in 6.0 and 6.1) |
 | `cocache.next.*` (6.0 previews) | `cocache.*` |
 
 New in 6.x: every policy field under `cocache.defaults.*` and `cocache.caches.[name].*` (bare numbers are seconds), including `key-prefix` with placeholders; `cocache.redis.command-timeout`, `heartbeat`, `invalidate-batch-size`, `client-name`, `channel-mode` (bare numbers are milliseconds); `cocache.backend` (`redis` or `memory`); `cocache.spring-cache.require-sync`. A name under `cocache.caches` that matches no declared cache fails startup.
@@ -41,7 +41,7 @@ All meters keep the `cache` tag.
 
 | 5.x | 6.x |
 |---|---|
-| `cocache.hits{level=l2}` | `cocache.hits{level=l2}`, only with `cocache.metrics.local-hits=true` (6.2+) |
+| `cocache.hits{level=l2}` | `cocache.hits{level=l2}`, only with `cocache.metrics.local-hits=true` (6.3+) |
 | `cocache.evictions.received` | `cocache.invalidations.received` |
 | `cocache.l2.size` | `cocache.local.size` |
 | `cocache.eviction.publish.failures` | removed; failures count in `cocache.write.failures`, final failures in `cocache.invalidations.dropped` |

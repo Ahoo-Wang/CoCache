@@ -50,7 +50,7 @@ flowchart BT
 | `cocache-codec-jackson` | `JacksonCodec` (Jackson 3, `tools.jackson`) |
 | `cocache-spring` | `CoCacheSpringCacheManager`, `TransactionalInvalidator`. For Spring without Boot. |
 | `cocache-spring-boot-starter` | Auto-configuration, `@EnableCoCache`, annotation translation, spec-bean registration, `cocache.*` properties, the actuator endpoint, health indicator, Micrometer binding, and the Spring Cache `sync` check |
-| `cocache-test` | The published TCK: `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `HookedBackend`, `Concurrency` |
+| `cocache-test` | The published TCK: `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, their async variants (`AsyncBackendProtocolSpec`, `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`), `CacheAccess`, `HookedBackend`, `Concurrency` |
 | `cocache-bom` | Version alignment |
 
 Dependencies point one way. Annotation parsing and SpEL exist only in the starter, so the core needs neither Spring nor `kotlin-reflect`. A new backend depends only on `cocache-api`, and on `cocache-test` for its tests.
@@ -161,6 +161,7 @@ Content the protocol didn't write (no magic byte, an unknown state, a Hash witho
 | Per-entry lifetime | Yes | `TtlFunction` (`ttlOf`) |
 | Clock | Yes | `CacheClock` (tests) |
 | Refresh executor, retry policy | Yes | `CacheRuntime.Builder.refreshExecutor` (starter: `cocache.refresh-executor`), `retryPolicy` |
+| Async and blocking executors | Yes | `CacheRuntime.Builder.asyncExecutor` / `blockingExecutor` (starter: `cocache.async-executor` / `cocache.blocking-executor`). See [Async API](../guide/async.md#threads). |
 | **L2** | **No** | Always a bounded Caffeine cache, so the hit path stays monomorphic and its cost is known. Size it with `local-maximum-size`. |
 | **Fences, write order, read path** | **No** | They are the protocol. See [Consistency](./consistency.md). |
 | Wire format | Not within a major version | Two-phase upgrade only |

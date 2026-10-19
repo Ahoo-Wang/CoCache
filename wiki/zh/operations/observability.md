@@ -44,6 +44,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.loads` | function timer | loader 调用次数与累计耗时。一次 `loadAll` 批量计一次。包含抛出异常的调用 |
 | `cocache.load.failures` | counter | 抛出异常的 loader 调用。异常抛给调用方与所有合并的等待者 |
 | `cocache.load.rejections` | counter | 被 `load-max-concurrent` 拒绝的加载：在 `load-acquire-timeout` 内没有拿到许可，调用方收到 `SourceLoadRejectedException` |
+| `cocache.load.timeouts` | counter | 超过 `load-async-timeout` 的 `AsyncCacheLoader` 加载，调用方收到 `SourceLoadTimeoutException`，lease 已释放。见[异步 API](../guide/async.md#timeouts) |
 | `cocache.refreshes` | counter | 执行了的提前刷新任务 |
 | `cocache.refresh.rejections` | counter | 被刷新执行器拒绝的刷新。值照常提供，到期后正常过期 |
 
@@ -93,7 +94,7 @@ classpath 上有 `micrometer-observation`、容器中有 `ObservationRegistry` b
 | 上下文名称（span 名） | `cocache {operation} {cache}`，如 `cocache load UserCache` |
 | `cache`（低基数） | 缓存名 |
 | `operation`（低基数） | `load`（未命中、`get(key, loader)`，或批量读取退回单 key）、`loadAll`（一次批量回源）、`refresh`（提前刷新回源）、`lease.wait`（等待其它实例的 lease） |
-| `outcome`（低基数） | `success` 或 `error`。`error` 时异常记录到 Observation 上，并原样抛出 |
+| `outcome`（低基数） | `success` 或 `error`；异步加载超过 `load-async-timeout` 时为 `timeout`。`error` 时异常记录到 Observation 上，并原样抛出 |
 | `key.count`（高基数，只出现在 span 上） | 本次调用的 key 数：1，`loadAll` 时为批量大小 |
 
 观测范围：
@@ -101,9 +102,10 @@ classpath 上有 `micrometer-observation`、容器中有 `ObservationRegistry` b
 - 只包住 loader 调用本身，以及确实发生的 lease 等待。L2 命中、L1 读取与填充都不产生 Observation；没有配置观测器时引擎连对象都不分配。被 `load-max-concurrent` 拒绝的加载不观测。
 - 从不记录 key：高基数，且可能是个人信息。
 - loader 在调用方线程上、在 Observation 的作用域内执行，因此 loader 产生的 span（JDBC、HTTP）是 `cocache.load` 的子 span，而 `cocache.load` 又是请求 span 的子 span。提前刷新在刷新执行器上执行，只有该执行器传播上下文时它的 span 才有父 span。
+- 异步加载的观测从调用 `loadAsync` 开始，到其 future 完成为止。`loadAsync` 的同步部分在 Observation 的作用域内执行，在那里捕获上下文的响应式客户端（经 Micrometer context propagation）会产生子 span。
 - 启用 Spring Boot 指标时，每个 Observation 还会产生 `cocache.load` 计时器与 `cocache.load.active` 长任务计时器，标签为 `cache`、`operation`、`outcome`（计时器上另有 Micrometer 自带的 `error` 标签）。它们与 [`cocache.loads`](#metrics-loads) 函数计时器重叠，后者仍是开销最低、始终开启的那一个。
 
-用 `cocache.observation.enabled: false` 或 Spring Boot 的 `management.observations.enable.cocache: false` 关闭。自己声明的 `LoadObserver` bean 会取代 Micrometer 观测器；不用 Spring 时传给 `CacheRuntime.builder().loadObserver(…)`。实现必须在调用方线程上执行 block 恰好一次，并原样抛出其异常。
+用 `cocache.observation.enabled: false` 或 Spring Boot 的 `management.observations.enable.cocache: false` 关闭。自己声明的 `LoadObserver` bean 会取代 Micrometer 观测器；不用 Spring 时传给 `CacheRuntime.builder().loadObserver(…)`。实现必须在调用方线程上执行 block 恰好一次，并原样抛出其异常。要观测异步加载，还需覆盖 `observeAsync`：默认实现直接执行 block，不观测。
 
 ## 健康检查 {#health}
 
@@ -181,7 +183,7 @@ management:
 }
 ```
 
-`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
+`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
 
 ### 编码后的 key {#encoded-key}
 

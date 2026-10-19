@@ -30,8 +30,10 @@ Lowest to highest, field by field: built-in defaults, the declaration (annotatio
 | `cocache.defaults.*` / `cocache.caches.[name].*` | | Policy properties |
 | `cocache.redis.*` | | Redis backend settings |
 | `cocache.spring-cache.require-sync` | `false` | `true` fails startup on a non-sync `@Cacheable` on a CoCache cache |
-| `cocache.spring-cache.retrieve-executor` | built-in | Bean name of the `Executor` for Spring Cache `retrieve`. Must not queue tasks behind ones waiting on them (nested async `sync = true` can deadlock); a virtual-thread `applicationTaskExecutor` is safe |
+| `cocache.spring-cache.retrieve-executor` | — | Deprecated in 6.3 and ignored with a startup warning: `retrieve` uses the async view and needs no executor. Remove it |
 | `cocache.refresh-executor` | built-in | Bean name of the `Executor` for refresh-ahead loads; CoCache never shuts it down |
+| `cocache.async-executor` (6.3+) | runtime-owned `ForkJoinPool` (`cocache-async-*`) | Bean name of the `Executor` for async-view continuations; short non-blocking work only, never block on it |
+| `cocache.blocking-executor` (6.3+) | virtual threads on JDK 21+, else a non-queueing pool of up to 512 | Bean name of the `Executor` for synchronous loaders called through the async view; must not queue |
 | `management.health.cocache.enabled` | `true` | Registers the `cocache` health indicator |
 
 ## Policy properties
@@ -48,6 +50,7 @@ Valid under `cocache.defaults.` and `cocache.caches.[name].`. Bare numbers are s
 | `refresh-window` | off | Refresh-ahead; `0` removes a declared window |
 | `lease-ttl` / `lease-wait` | `10s` / `200ms` | Lease lifetime; wait for another instance's load |
 | `load-max-concurrent` / `load-acquire-timeout` | `0` (unlimited) / `1s` | Per-cache, per-instance loader bulkhead; rejection throws `SourceLoadRejectedException` |
+| `load-async-timeout` (6.3+) | `30s` | Upper bound for one `AsyncCacheLoader` load; past it the call fails with `SourceLoadTimeoutException` and the lease is released. Not applied to synchronous loaders |
 | `local-maximum-size` | `10000` | L2 entries per instance |
 | `invalidate-failure` | `retry` | `throw`: surface `CacheWriteException` |
 | `read-failure` | `degrade` | `throw`: surface `CacheReadException` |

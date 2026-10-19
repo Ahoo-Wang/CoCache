@@ -31,8 +31,10 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `cocache.caches.[name].*` | 策略 | — | 作用于单个缓存的[策略配置项](#policy-properties) |
 | `cocache.redis.*` | — | — | [Redis 后端](#redis)配置 |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
-| `cocache.spring-cache.retrieve-executor` | bean 名 | 内置 | 执行 Spring Cache `retrieve`（异步与响应式 `@Cacheable`）的 `Executor` bean。见[执行器](#executors)。 |
+| `cocache.spring-cache.retrieve-executor` | bean 名 | — | **6.3 起弃用**，设置时启动告警并被忽略：`retrieve` 经[异步视图](./async.md)，不需要执行器。7.0 删除。 |
 | `cocache.refresh-executor` | bean 名 | 内置 | 执行[提前刷新](./freshness.md#refresh-ahead)回源的 `Executor` bean。见[执行器](#executors)。 |
+| `cocache.async-executor` | bean 名 | 内置 | 执行[异步视图](./async.md)续接的 `Executor` bean。见[执行器](#executors)。 |
+| `cocache.blocking-executor` | bean 名 | 内置 | 执行经异步视图调用的同步 loader 的 `Executor` bean。见[执行器](#executors)。 |
 | `management.health.cocache.enabled` | boolean | `true` | 注册 `cocache` 健康检查（见[下文](#actuator)） |
 | `cocache.observation.enabled` | boolean | `true` | 有 `ObservationRegistry` bean 时把回源包在 Micrometer `Observation` 中。见[链路追踪](../operations/observability.md#tracing)。 |
 | `cocache.metrics.local-hits` | boolean | `false` | 为全部缓存记录 L2 命中数（`cocache.hits{level=l2}`，端点字段 `localHits`）。默认关闭：它给每次 L2 命中加一次原子自增。见[指标](../operations/observability.md#metrics-reads)。 |
@@ -54,6 +56,7 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `lease-wait` | 时长 | `200ms` | — | 未命中时等待其它实例加载的最长时间，超时后自行加载 |
 | `load-max-concurrent` | integer | `0`（不限制） | — | 每个实例上每个缓存同时进行的数据源加载数上限 |
 | `load-acquire-timeout` | 时长 | `1s` | — | 加载等待许可的最长时间，超时抛出 `SourceLoadRejectedException` |
+| `load-async-timeout` | 时长 | `30s` | — | 一次 `AsyncCacheLoader` 加载的最长时间。超时后调用以 `SourceLoadTimeoutException` 失败并释放 lease。不作用于同步 loader。见[异步 API](./async.md#timeouts)。 |
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | 每个实例 L2 的最大条目数 |
 | `invalidate-failure` | `retry` \| `throw` | `retry` | — | Redis 失效失败时：进入后台重试队列，或抛出 `CacheWriteException` |
 | `read-failure` | `degrade` \| `throw` | `degrade` | — | Redis 读取失败时：从数据源加载，或抛出 `CacheReadException` |
@@ -101,16 +104,17 @@ cocache:
 
 ## 执行器 {#executors}
 
-CoCache 在执行器上运行两类后台工作：
+CoCache 在执行器上运行后台工作与异步工作：
 
 | 工作 | 配置项 | 内置执行器 |
 |------|--------|------------|
-| Spring Cache `retrieve`：阻塞查找，或 `sync = true` 时等待异步 loader | `cocache.spring-cache.retrieve-executor` | JDK 21+ 上每个任务一个虚拟线程。JDK 17–20 上是不排队、按需增长的守护线程池（最多 512 个线程，超出时在调用方线程执行）。 |
 | 提前刷新回源 | `cocache.refresh-executor` | 有界守护线程池（1–4 个线程，队列 1024）。队列满时跳过这次刷新，计入 `cocache.refresh.rejections`。 |
+| [异步视图](./async.md)的续接：解码、填充 L2、发出下一条 Redis 命令、调用 `loadAsync`、完成你拿到的 future | `cocache.async-executor` | 运行时自建的 `ForkJoinPool`，并行度为 CPU 数，守护线程名为 `cocache-async-*` |
+| 经异步视图调用的同步 loader，以及只实现同步 SPI 的后端 | `cocache.blocking-executor` | JDK 21+ 上每个任务一个虚拟线程。JDK 17–20 上是不排队的守护线程池（最多 512 个线程，名为 `cocache-blocking-*`）；满时拒绝这次加载，而不是在异步执行器上执行。 |
 
-两个配置项的值都是 `Executor` bean 的**名称**。CoCache 只按名称查找，从不按类型查找。名称没有对应的 bean，或该 bean 不是 `Executor` 时，启动失败，错误信息指明配置项。该执行器归容器管理：关闭 `CacheRuntime` 不会关闭它。
+每个配置项的值都是 `Executor` bean 的**名称**。CoCache 只按名称查找，从不按类型查找。名称没有对应的 bean，或该 bean 不是 `Executor` 时，启动失败，错误信息指明配置项。该执行器归容器管理：关闭 `CacheRuntime` 不会关闭它。
 
-Spring Boot 自带的 `applicationTaskExecutor` 两者都可以用：
+Spring Boot 自带的 `applicationTaskExecutor` 可以用于提前刷新，也可以作为阻塞执行器：
 
 ```yaml
 spring:
@@ -118,14 +122,15 @@ spring:
     virtual:
       enabled: true          # applicationTaskExecutor 使用虚拟线程
 cocache:
-  spring-cache:
-    retrieve-executor: applicationTaskExecutor
   refresh-executor: applicationTaskExecutor
+  blocking-executor: applicationTaskExecutor
 ```
 
-::: warning retrieve 执行器不能排队
-一个 `retrieve` 任务可能等待另一个 `retrieve` 任务：嵌套的异步 `@Cacheable(sync = true)` 方法会等待内层调用。把任务排在等待它的任务之后的执行器可能死锁。固定线程池或有界队列正是如此，Spring Boot 默认的平台线程 `applicationTaskExecutor` 在核心线程占满后也是如此。虚拟线程执行器（`spring.threads.virtual.enabled=true`）从不排队，因此是安全的。刷新执行器没有这个限制：刷新不会等待另一个刷新。
+::: warning 各执行器能运行什么
+异步执行器只运行短小的非阻塞工作，不要在上面阻塞，例如在续接里调用同步 API。内置的 `ForkJoinPool` 会为在 `join()` 上阻塞的线程补偿线程，你提供的固定大小线程池不会。阻塞执行器运行同步 loader，因此不能排队：一个 loader 可能等待另一次加载。
 :::
+
+`cocache.spring-cache.retrieve-executor` 自 6.3 起弃用：Spring Cache `retrieve` 现在经异步视图，不在任何线程上等待。见 [Spring Cache](./spring-cache.md#executor)。
 
 ## Redis {#redis}
 
