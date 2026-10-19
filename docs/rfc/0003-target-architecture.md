@@ -370,7 +370,7 @@ L2 写入方的完整顺序：
 |------|------|
 | `invalidate` | 戳 → 淘汰 L2 → Lua `DEL`+`PUBLISH` → 戳（无论成功失败）→ 淘汰 L2 |
 | `put` | 戳 → 淘汰 L2 → Lua 覆盖+`PUBLISH` → 戳（无论成功失败）→ 淘汰 L2。**不写 L2**，下一次读取从 L1 填充 |
-| `add` / `remove` | 戳 → Lua 元素写入+`PUBLISH` → 戳 → 淘汰 L2 |
+| `add` / `remove` | 戳 → 淘汰 L2 → Lua 元素写入+`PUBLISH` → 戳 → 淘汰 L2（与 `put`、`invalidate` 相同的写入方顺序） |
 | 收到远端事件 | 戳 → 淘汰 L2 |
 | `onReset` | 全部戳递增 → 清空 L2 |
 
@@ -780,6 +780,7 @@ val users: Cache<String, User> = runtime.create(
    - **文档**：重写 `docs/architecture.md`（以本 RFC 为准，删除“已知的固有窗口”）、wiki（中英文）、`skills/cocache/`、AGENTS.md 的不变量与 TCK 表；版本号改为 6.0.0。
    - **迁移指南**（changelog）：
      - 接口式声明：写法不变，只换 import（`me.ahoo.cache.api.annotation.CoCache` → `me.ahoo.cocache.api.annotation.CoCache`，`me.ahoo.cache.api.Cache` → `me.ahoo.cocache.api.Cache`，`me.ahoo.cache.spring.EnableCoCache` → `me.ahoo.cocache.spring.boot.EnableCoCache`）。注解属性改名：`ttlAmplitude` → `ttlJitter`、`missingTtl` → `absentTtl`、`clientSideTtl` → `localMaxAge`、`refreshAhead` → `refreshWindow`。数据源由 `{name}.CacheSource` bean 改为按 `CacheLoader<K, V>` 泛型匹配（或 `@CoCache(loader = …)`）。缓存名保持不变；L1 key 改为 `{keyPrefix}{namespace}:{key}`（`keyPrefix` 默认 `cocache:`，`namespace` 默认等于缓存名），5.x 的 `keyPrefix + key` 不再沿用。
+     - 语义变化（不是单纯改名）：5.x `clientSideTtl = 0`（不限期）在 6.0 没有对应，L2 总受 `localMaxAge`（默认 5 分钟）限龄；`refreshAhead = 0` 对应 `refreshWindow = 0`（关闭）；`FOREVER` 只能用于 `ttl`（与 `@CaffeineCache.expireAfterAccess`）；`@CaffeineCache.expireUnit` 删除（统一为秒）；注解不再支持元注解与 `@Inherited`。完整清单以 wiki《Migrating from 5.x to 6.0》为准。
      - `{cacheName}.ClientSideCache` 等 bean 名后缀约定 → `CacheSpecCustomizer` 与 `cocache.caches.[name].*`。
      - `getCache` / `CacheValue` / `set(key, ttlAt, value)` → `get` / `lookup` / `put(key, value, ttl)`；`set(key, null)` → `invalidate`。
      - `SetElementsCache` → `SetCache`（只用于 L1 是唯一副本的集合；数据源中的集合改用 `Cache<K, Set<E>>` + `invalidate`）。
