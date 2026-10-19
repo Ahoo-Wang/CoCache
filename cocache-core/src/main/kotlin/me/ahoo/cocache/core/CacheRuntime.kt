@@ -110,6 +110,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      */
     fun metrics(name: String): CacheMetrics? = names[name]?.engine?.metrics
 
+    /**
+     * 按名称取得运维接口。
+     */
+    fun admin(name: String): CacheAdmin? = names[name]?.engine
+
     val cacheNames: Set<String>
         get() = names.keys.toSet()
 

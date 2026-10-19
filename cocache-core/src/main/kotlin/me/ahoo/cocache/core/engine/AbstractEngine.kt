@@ -22,6 +22,7 @@ import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.internal.InvalidationStamps
@@ -47,15 +48,15 @@ internal const val FOREVER = Long.MAX_VALUE
  * 两种引擎共享的部分：L2、L2 栅栏、存储 key、写入顺序、失效订阅。
  */
 internal abstract class AbstractEngine<K : Any, V : Any>(
-    val name: String,
+    override val name: String,
     protected val namespace: String,
     keyPrefix: String,
     private val keyEncoder: KeyEncoder<K>,
     protected val policy: CachePolicy,
     protected val store: RemoteStore,
     protected val context: EngineContext,
-) : InvalidationListener, AutoCloseable {
-    val metrics = CacheMetrics()
+) : InvalidationListener, CacheAdmin, AutoCloseable {
+    override val metrics = CacheMetrics()
 
     protected val clock = context.clock
     protected val stamps = InvalidationStamps()
@@ -163,8 +164,13 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * 本地副本数（估计值），供运维查看。
      */
-    val localSize: Long
+    override val localSize: Long
         get() = local.estimatedSize()
+
+    override fun clearLocal() {
+        stamps.invalidateAll()
+        local.invalidateAll()
+    }
 
     override fun close() {
         if (closed.compareAndSet(false, true)) {

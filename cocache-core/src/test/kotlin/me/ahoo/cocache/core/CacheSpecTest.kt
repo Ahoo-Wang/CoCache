@@ -104,4 +104,33 @@ class CacheSpecTest {
         fails { CacheSpec.builder<String, String>("user").namespace(" ").codec(StringCodec).build() }
         fails { SetCacheSpec.builder<String, String>("index").build() }
     }
+
+    @Test
+    fun toBuilderCopiesEveryField() {
+        val loader = CacheLoader<String, String> { it }
+        val spec = CacheSpec.builder<String, String>("user")
+            .namespace("ns").keyPrefix("p:").codec(StringCodec).loader(loader)
+            .ttlOf { _, _ -> Duration.ofSeconds(1) }.keyFilter { false }
+            .policy { ttl = Duration.ofMinutes(1) }.build()
+        val copy = spec.toBuilder().build()
+        copy.namespace.assert().isEqualTo("ns")
+        copy.keyPrefix.assert().isEqualTo("p:")
+        copy.codec.assert().isSameAs(StringCodec)
+        copy.loader.assert().isSameAs(loader)
+        copy.ttlOf.assert().isSameAs(spec.ttlOf)
+        copy.keyFilter.assert().isSameAs(spec.keyFilter)
+        copy.policy.assert().isSameAs(spec.policy)
+        copy.keyEncoder.assert().isSameAs(spec.keyEncoder)
+
+        val setSpec = setCacheSpec<String, String>("index") {
+            elementCodec = StringCodec
+            namespace = "idx"
+        }
+        val setCopy = setSpec.toBuilder().build()
+        setCopy.namespace.assert().isEqualTo("idx")
+        setCopy.elementCodec.assert().isSameAs(StringCodec)
+        setCopy.policy.assert().isSameAs(setSpec.policy)
+        setCopy.keyEncoder.assert().isSameAs(setSpec.keyEncoder)
+        setCopy.keyPrefix.assert().isEqualTo(setSpec.keyPrefix)
+    }
 }
