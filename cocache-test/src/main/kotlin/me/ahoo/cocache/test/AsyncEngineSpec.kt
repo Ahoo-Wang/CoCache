@@ -80,6 +80,18 @@ abstract class AsyncEngineSpec : EngineSpec() {
         return Executors.newFixedThreadPool(threads, factory).also { executors.add(it) } to factory
     }
 
+    /**
+     * 只在 [gate] 打开后才在 [pool] 上执行的执行器：既作 [HookedBackend.ioExecutor]（原生异步后端的结果送达），
+     * 也作阻塞执行器（只实现同步 SPI 的后端经阻塞执行器调用，`ioExecutor` 对它不起作用）。
+     */
+    private fun gated(pool: Executor, gate: () -> CountDownLatch, what: String): Executor = Executor { task ->
+        val opened = gate()
+        pool.execute {
+            opened.awaitOrFail(what)
+            task.run()
+        }
+    }
+
     private fun node(asyncExecutor: Executor? = null, blockingExecutor: Executor? = null): CacheRuntime {
         val builder = CacheRuntime.builder()
             .backend(backend)
@@ -164,17 +176,16 @@ abstract class AsyncEngineSpec : EngineSpec() {
     @Test
     fun futuresNeverCompleteOnTheBackendIoThread() {
         val (io, _) = named("tck-io", 1)
+        val (blockingPool, _) = named("tck-blocking")
         val (asyncPool, _) = named("tck-async")
-        // I/O 线程在回调注册之前不送达结果：回调一定是在完成时执行的，而不是注册时就地执行
+        // L1 的结果在回调注册之前不送达：回调一定是在完成时执行的，而不是注册时就地执行。
+        // 原生异步后端经 ioExecutor 送达；只实现同步 SPI 的后端在阻塞执行器上调用，两者都要拦住
         val gate = AtomicReference(CountDownLatch(1))
-        backend.ioExecutor = Executor { task ->
-            val opened = gate.get()
-            io.execute {
-                opened.awaitOrFail("callback registered")
-                task.run()
-            }
-        }
-        val runtime = node(asyncExecutor = asyncPool)
+        backend.ioExecutor = gated(io, gate::get, "callback registered")
+        val runtime = node(
+            asyncExecutor = asyncPool,
+            blockingExecutor = gated(blockingPool, gate::get, "callback registered")
+        )
         try {
             database["k"] = "v"
             val async = runtime.create(spec()).async()
@@ -224,9 +235,16 @@ abstract class AsyncEngineSpec : EngineSpec() {
     @Test
     fun rejectedWriteCompletionStillBumpsTheStampAgain() {
         val (io, _) = named("tck-io", 1)
+        val (blockingPool, _) = named("tck-blocking")
         val (asyncPool, _) = named("tck-async")
         val switch = SwitchExecutor(asyncPool)
-        val runtime = node(asyncExecutor = switch)
+        // L1 的结果在 invalidate 返回之后才送达：收尾一定经执行器（否则结果已完成时就地收尾，执行器不参与）。
+        // 原生异步后端经 ioExecutor 送达；只实现同步 SPI 的后端在阻塞执行器上调用，两者都要拦住
+        val delivered = AtomicReference(CountDownLatch(0))
+        val runtime = node(
+            asyncExecutor = switch,
+            blockingExecutor = gated(blockingPool, delivered::get, "write issued")
+        )
         try {
             val engine = runtime.create(spec())
             engine.put("k", "v0")
@@ -246,18 +264,12 @@ abstract class AsyncEngineSpec : EngineSpec() {
                 reader = fork("reader") { engine["k"] }
                 readerRead.awaitOrFail("reader read the old value")
             }
-            // L1 的结果在 invalidate 返回之后才送达：收尾一定经执行器（否则结果已完成时就地收尾，执行器不参与）
-            val delivered = CountDownLatch(1)
-            backend.ioExecutor = Executor { task ->
-                io.execute {
-                    delivered.awaitOrFail("write issued")
-                    task.run()
-                }
-            }
+            delivered.set(CountDownLatch(1))
+            backend.ioExecutor = gated(io, delivered::get, "write issued")
             switch.rejecting = true
             val write = engine.async().invalidate("k")
             write.isDone.assert().isFalse()
-            delivered.countDown()
+            delivered.get().countDown()
             write.handle { _, e -> e }.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
                 .assert().isInstanceOf(RejectedExecutionException::class.java)
             backend.beforeInvalidate = null
@@ -270,6 +282,7 @@ abstract class AsyncEngineSpec : EngineSpec() {
             backend.afterRead = null
             engine["k"].assert().isEqualTo("v1")
         } finally {
+            delivered.get().countDown()
             switch.rejecting = false
             backend.ioExecutor = null
             runtime.close()
