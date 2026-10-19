@@ -166,20 +166,22 @@ class ProductService(@Qualifier("product") private val productCache: Cache<Strin
 
 ## 组合两个缓存 {#composing-caches}
 
-由两个缓存组成的读模型就是两次批量读取。例如引用了用户的用户扩展信息：
+由两个缓存组成的读模型就是两次批量读取。例如引用了用户的用户扩展信息：在两个缓存之上声明一个 [JoinCache](./join-cache.md) 视图。
 
 ```kotlin
 @CoCache
 interface UserExtendInfoCache : Cache<String, UserExtendInfo>   // UserExtendInfo(id, userId)
 
-fun extendInfos(ids: List<String>): List<Pair<UserExtendInfo, User?>> {
-    val infos = userExtendInfoCache.getAll(ids)
-    val users = userCache.getAll(infos.values.map { it.userId }.distinct())
-    return infos.values.map { it to users[it.userId] }
-}
+@JoinCacheable(firstCacheName = "UserExtendInfoCache", joinCacheName = "UserCache", joinKeyExpression = "#{#root.userId}")
+interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, User>
+
+@EnableCoCache(caches = [UserCache::class, UserExtendInfoCache::class], joinCaches = [UserExtendInfoJoinCache::class])
+
+fun extendInfos(ids: List<String>): List<JoinValue<UserExtendInfo, String, User>> =
+    userExtendInfoJoinCache.getAll(ids).values.toList()
 ```
 
-每次 `getAll` 都先读 L2，再一次批量读 Redis，最后一次 `loadAll` 回源；两个缓存各自保持自己的 TTL 与失效。这取代了 5.x 的 JoinCache。
+视图上的 `getAll` 就是对 `UserExtendInfoCache` 一次 `getAll`，再按去重后的用户 id 对 `UserCache` 一次 `getAll`。每次 `getAll` 都先读 L2，再一次批量读 Redis，最后一次 `loadAll` 回源；两个缓存各自保持自己的 TTL 与失效。视图是只读的：写入与失效经由组件缓存。
 
 ## 下一步
 

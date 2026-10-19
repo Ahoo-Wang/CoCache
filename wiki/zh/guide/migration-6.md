@@ -47,6 +47,8 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 | `me.ahoo.cache.spring.EnableCoCache` | `me.ahoo.cocache.spring.boot.EnableCoCache`（在 starter 中） |
 | `me.ahoo.cache.api.source.CacheSource` | `me.ahoo.cocache.api.CacheLoader` |
 | `me.ahoo.cache.spring.cache.CoCacheManager` | `me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager` |
+| `me.ahoo.cache.api.join.JoinCache` / `JoinValue` / `JoinKeyExtractor` | `me.ahoo.cocache.api.join.JoinCache` / `JoinValue` / `JoinKeyExtractor` |
+| `me.ahoo.cache.api.annotation.JoinCacheable` | `me.ahoo.cocache.api.annotation.JoinCacheable` |
 
 ## 注解 {#annotations}
 
@@ -65,7 +67,7 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 | `@CaffeineCache(maximumSize, initialCapacity, expireAfterAccess)` | 名称不变 |
 | `@CaffeineCache(expireUnit)` | 删除：`expireAfterAccess` 固定以秒为单位 |
 | 元注解与 `@Inherited` | 删除：注解必须直接标在缓存接口上 |
-| `@JoinCacheable` | 删除，见 [JoinCache](#joincache) |
+| `@JoinCacheable` | `me.ahoo.cocache.api.annotation.JoinCacheable`，新增 `joinKeyExtractor` 属性，见 [JoinCache](#joincache) |
 
 6.0 中 `FOREVER` 只能用于 `ttl` 与 `expireAfterAccess`，`0` 只能用于 `ttlJitter` 与 `refreshWindow`，其它情况启动失败。
 
@@ -112,7 +114,19 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 
 ## JoinCache {#joincache}
 
-JoinCache 子系统（`@JoinCacheable`、`JoinCache`、`JoinValue`、`JoinKeyExtractor`、`joinKeyExpression`）已删除。用两次 `getAll` 组合两个缓存，见[组合两个缓存](./quick-start.md#composing-caches)。
+JoinCache 仍然保留，位于 `me.ahoo.cocache.api.join`，但现在是**只读视图**，不再是 `Cache` 的子类型。见 [JoinCache](./join-cache.md)。
+
+| 5.x | 6.0 |
+|-----|-----|
+| `JoinCache<K1, V1, K2, V2> : Cache<K1, JoinValue<…>>` | `JoinCache<K1, V1, K2, V2>`，不是 `Cache`：`name`、`get`、`getAll`、`invalidate(key)`、`invalidate(firstKey, joinKey)` |
+| `set(key, joinValue)`、`getCache`、`getTtlAt` | 删除：直接写入、查看各组件缓存 |
+| `evict(key)` / `evict(firstKey, joinKey)` | `invalidate(key)`（只失效主缓存）/ `invalidate(firstKey, joinKey)`（两者） |
+| `JoinValue.joinKey: K2` | `joinKey: K2?`：`JoinKeyExtractor` 可以返回 `null` 表示没有关联 |
+| 列在 `@EnableCoCache(caches = …)` 中 | 列在 `@EnableCoCache(joinCaches = …)` 中 |
+| `firstCacheName` / `joinCacheName` 可选（为空时按类型唯一匹配缓存） | 必填：只按名称解析缓存 |
+| 提取器 bean 名约定 `{name}.JoinKeyExtractor` | `@JoinCacheable(joinKeyExtractor = "beanName")`，否则按泛型 `JoinKeyExtractor<V1, K2>` 唯一匹配 |
+| `joinKeyExpression` | 不变：以主值为根对象的 SpEL 模板，只支持 `String` 关联 key |
+| 把 `@JoinCacheable` 用作元注解 | 删除：直接标注在接口上 |
 
 ## Spring Cache {#spring-cache}
 

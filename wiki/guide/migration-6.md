@@ -47,6 +47,8 @@ The base package changed from `me.ahoo.cache` to `me.ahoo.cocache`.
 | `me.ahoo.cache.spring.EnableCoCache` | `me.ahoo.cocache.spring.boot.EnableCoCache` (in the starter) |
 | `me.ahoo.cache.api.source.CacheSource` | `me.ahoo.cocache.api.CacheLoader` |
 | `me.ahoo.cache.spring.cache.CoCacheManager` | `me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager` |
+| `me.ahoo.cache.api.join.JoinCache` / `JoinValue` / `JoinKeyExtractor` | `me.ahoo.cocache.api.join.JoinCache` / `JoinValue` / `JoinKeyExtractor` |
+| `me.ahoo.cache.api.annotation.JoinCacheable` | `me.ahoo.cocache.api.annotation.JoinCacheable` |
 
 ## Annotations {#annotations}
 
@@ -65,7 +67,7 @@ Durations are still seconds.
 | `@CaffeineCache(maximumSize, initialCapacity, expireAfterAccess)` | same names |
 | `@CaffeineCache(expireUnit)` | removed: `expireAfterAccess` is always seconds |
 | Meta-annotations and `@Inherited` | removed: annotations must be placed directly on the cache interface |
-| `@JoinCacheable` | removed, see [JoinCache](#joincache) |
+| `@JoinCacheable` | `me.ahoo.cocache.api.annotation.JoinCacheable`, plus a new `joinKeyExtractor` attribute, see [JoinCache](#joincache) |
 
 In 6.0, `FOREVER` is accepted only by `ttl` and `expireAfterAccess`, and `0` only by `ttlJitter` and `refreshWindow`. Anything else fails startup.
 
@@ -112,7 +114,19 @@ In 6.0, `FOREVER` is accepted only by `ttl` and `expireAfterAccess`, and `0` onl
 
 ## JoinCache {#joincache}
 
-The JoinCache subsystem (`@JoinCacheable`, `JoinCache`, `JoinValue`, `JoinKeyExtractor`, `joinKeyExpression`) is removed. Compose the two caches with two `getAll` calls, as shown in [Composing two caches](./quick-start.md#composing-caches).
+JoinCache is still there, under `me.ahoo.cocache.api.join`, but it is now a **read-only view** instead of a `Cache` subtype. See [JoinCache](./join-cache.md).
+
+| 5.x | 6.0 |
+|-----|-----|
+| `JoinCache<K1, V1, K2, V2> : Cache<K1, JoinValue<…>>` | `JoinCache<K1, V1, K2, V2>`, not a `Cache`: `name`, `get`, `getAll`, `invalidate(key)`, `invalidate(firstKey, joinKey)` |
+| `set(key, joinValue)`, `getCache`, `getTtlAt` | removed: write and inspect each component cache directly |
+| `evict(key)` / `evict(firstKey, joinKey)` | `invalidate(key)` (first cache only) / `invalidate(firstKey, joinKey)` (both) |
+| `JoinValue.joinKey: K2` | `joinKey: K2?`: a `JoinKeyExtractor` may return `null` for "no join" |
+| Listed in `@EnableCoCache(caches = …)` | listed in `@EnableCoCache(joinCaches = …)` |
+| `firstCacheName` / `joinCacheName` optional (fell back to the unique cache of the matching type) | required: caches are resolved by name only |
+| Extractor bean named `{name}.JoinKeyExtractor` | `@JoinCacheable(joinKeyExtractor = "beanName")`, else the unique `JoinKeyExtractor<V1, K2>` |
+| `joinKeyExpression` | unchanged: SpEL template with the first value as root, `String` join keys only |
+| Meta-annotation use of `@JoinCacheable` | removed: place it directly on the interface |
 
 ## Spring Cache {#spring-cache}
 

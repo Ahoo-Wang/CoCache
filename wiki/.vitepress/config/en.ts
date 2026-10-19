@@ -13,6 +13,7 @@ const guide: DefaultTheme.SidebarItem[] = [
     text: 'Features',
     items: [
       { text: 'Spring Cache', link: '/guide/spring-cache' },
+      { text: 'JoinCache', link: '/guide/join-cache' },
       { text: 'Operations', link: '/guide/operations' },
     ],
   },

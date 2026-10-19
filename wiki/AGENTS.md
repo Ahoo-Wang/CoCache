@@ -15,7 +15,7 @@ pnpm fix:mermaid     # auto-fixes common Mermaid syntax issues
 ## Structure
 
 ```
-guide/          for users: introduction, quick-start, configuration, spring-cache, operations, migration-6 (5.x → 6.0), changelog
+guide/          for users: introduction, quick-start, configuration, spring-cache, join-cache, operations, migration-6 (5.x → 6.0), changelog
 architecture/   for integrators: index (goals, modules, runtime, wire format, wiring), consistency, extending (backend SPI + TCK)
 zh/             one-to-one Chinese mirror of the above
 .vitepress/config/{en,zh}.ts   nav + sidebar (keep the two in step)

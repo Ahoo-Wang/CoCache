@@ -15,6 +15,7 @@ package me.ahoo.cocache.example
 
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.example.cache.UserCache
+import me.ahoo.cocache.example.cache.UserExtendInfoJoinCache
 import me.ahoo.cocache.example.controller.TestController
 import me.ahoo.cocache.example.model.User
 import org.assertj.core.api.Assertions.assertThat
@@ -40,6 +41,9 @@ class AppServerTest {
     lateinit var cacheManager: CacheManager
 
     @Autowired
+    lateinit var joinCache: UserExtendInfoJoinCache
+
+    @Autowired
     lateinit var controller: TestController
 
     @Test
@@ -49,8 +53,9 @@ class AppServerTest {
         assertThat(productCache["p-$id"]).isEqualTo("product-p-$id")
         assertThat(cacheManager.cacheNames).contains("UserCache", "UserExtendInfoCache", "product")
         assertThat(
-            controller.extendInfos(listOf("e-$id")).single().second
+            controller.extendInfos(listOf("e-$id")).single().secondValue
         ).isEqualTo(User("user-of-e-$id", "user-user-of-e-$id"))
+        assertThat(joinCache["e-$id"]?.joinKey).isEqualTo("user-of-e-$id")
         // @Cacheable(sync = true)：失效后由被注解的方法回源（受 lease 保护），结果写入同一个缓存
         controller.invalidate(id)
         assertThat(controller.getBySpring(id, "from-method")).isEqualTo(User(id, "from-method"))

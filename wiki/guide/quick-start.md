@@ -166,20 +166,22 @@ The factory method must declare its generic return type (`CacheSpec<String, Stri
 
 ## Composing two caches {#composing-caches}
 
-A read model built from two caches is two batch reads. For example, extended user info that refers to a user:
+A read model built from two caches is two batch reads. For example, extended user info that refers to a user: declare a [JoinCache](./join-cache.md) view over the two caches.
 
 ```kotlin
 @CoCache
 interface UserExtendInfoCache : Cache<String, UserExtendInfo>   // UserExtendInfo(id, userId)
 
-fun extendInfos(ids: List<String>): List<Pair<UserExtendInfo, User?>> {
-    val infos = userExtendInfoCache.getAll(ids)
-    val users = userCache.getAll(infos.values.map { it.userId }.distinct())
-    return infos.values.map { it to users[it.userId] }
-}
+@JoinCacheable(firstCacheName = "UserExtendInfoCache", joinCacheName = "UserCache", joinKeyExpression = "#{#root.userId}")
+interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, User>
+
+@EnableCoCache(caches = [UserCache::class, UserExtendInfoCache::class], joinCaches = [UserExtendInfoJoinCache::class])
+
+fun extendInfos(ids: List<String>): List<JoinValue<UserExtendInfo, String, User>> =
+    userExtendInfoJoinCache.getAll(ids).values.toList()
 ```
 
-Each `getAll` reads L2, then Redis in one batch, then the source in one `loadAll`, and each cache keeps its own TTL and invalidation. This replaces the JoinCache of 5.x.
+`getAll` on the view is one `getAll` on `UserExtendInfoCache`, then one `getAll` on `UserCache` over the distinct user ids. Each `getAll` reads L2, then Redis in one batch, then the source in one `loadAll`, and each cache keeps its own TTL and invalidation. The view is read-only: write and invalidate through the component caches.
 
 ## Next steps
 

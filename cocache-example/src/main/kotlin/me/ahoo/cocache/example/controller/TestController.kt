@@ -14,8 +14,9 @@
 package me.ahoo.cocache.example.controller
 
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.join.JoinValue
 import me.ahoo.cocache.example.cache.UserCache
-import me.ahoo.cocache.example.cache.UserExtendInfoCache
+import me.ahoo.cocache.example.cache.UserExtendInfoJoinCache
 import me.ahoo.cocache.example.model.User
 import me.ahoo.cocache.example.model.UserExtendInfo
 import org.springframework.beans.factory.annotation.Qualifier
@@ -32,7 +33,7 @@ import java.util.UUID
 @RequestMapping("test")
 class TestController(
     private val userCache: UserCache,
-    private val userExtendInfoCache: UserExtendInfoCache,
+    private val userExtendInfoJoinCache: UserExtendInfoJoinCache,
     @param:Qualifier("product")
     private val productCache: Cache<String, String>,
 ) {
@@ -57,13 +58,11 @@ class TestController(
     fun product(@PathVariable id: String): String? = productCache[id]
 
     /**
-     * 组合读模型（取代 5.x 的 JoinCache）：两次批量读取。
+     * 组合视图：做的就是两次批量读取（扩展信息一次 `getAll`，去重后的 userId 一次 `getAll`）。
      */
     @GetMapping("extend")
-    fun extendInfos(ids: List<String>): List<Pair<UserExtendInfo, User?>> {
-        val infos = userExtendInfoCache.getAll(ids)
-        val users = userCache.getAll(infos.values.map { it.userId }.distinct())
-        return infos.values.map { it to users[it.userId] }
+    fun extendInfos(ids: List<String>): List<JoinValue<UserExtendInfo, String, User>> {
+        return userExtendInfoJoinCache.getAll(ids).values.toList()
     }
 
     /**

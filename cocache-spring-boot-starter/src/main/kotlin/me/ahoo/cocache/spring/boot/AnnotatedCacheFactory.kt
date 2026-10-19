@@ -101,7 +101,7 @@ class AnnotatedCacheFactory(
     }
 
     private fun keyEncoderOf(annotation: CoCache?): KeyEncoder<Any> {
-        val expression = annotation?.keyExpression?.takeIf { it.isNotBlank() } ?: return KeyEncoder { it.toString() }
+        val expression = annotation?.keyExpression?.takeIf { it.isNotBlank() } ?: return KeyEncoder.ofToString()
         val parsed: Expression = PARSER.parseExpression(expression, TemplateParserContext())
         return KeyEncoder { key ->
             requireNotNull(

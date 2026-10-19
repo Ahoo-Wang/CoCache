@@ -13,6 +13,7 @@ const guide: DefaultTheme.SidebarItem[] = [
     text: '功能',
     items: [
       { text: 'Spring Cache', link: '/zh/guide/spring-cache' },
+      { text: 'JoinCache', link: '/zh/guide/join-cache' },
       { text: '运维', link: '/zh/guide/operations' },
     ],
   },

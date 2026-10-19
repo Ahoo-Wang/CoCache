@@ -1,6 +1,6 @@
 ---
 name: cocache
-description: Use when building or modifying Java/Kotlin applications with CoCache 6.x two-level distributed coherent caching. Invoke for @CoCache cache interfaces, CacheSpec beans, CacheLoader data sources, invalidate-after-commit (TransactionalInvalidator), Redis-backed coherence (leases, Pub/Sub or sharded channel), Spring Boot and Spring Cache (@Cacheable) integration, CachePolicy and cocache.* properties (ttl, absentTtl, localMaxAge, refreshWindow, read-failure), SetCache, custom CoherenceBackend implementations, the cocache-test TCK, or migrating from CoCache 5.x.
+description: Use when building or modifying Java/Kotlin applications with CoCache 6.x two-level distributed coherent caching. Invoke for @CoCache cache interfaces, CacheSpec beans, CacheLoader data sources, invalidate-after-commit (TransactionalInvalidator), Redis-backed coherence (leases, Pub/Sub or sharded channel), Spring Boot and Spring Cache (@Cacheable) integration, JoinCache read-only views (@JoinCacheable, two-cache composition), CachePolicy and cocache.* properties (ttl, absentTtl, localMaxAge, refreshWindow, read-failure), SetCache, custom CoherenceBackend implementations, the cocache-test TCK, or migrating from CoCache 5.x.
 ---
 
 # CoCache Development Guide
@@ -18,6 +18,7 @@ Packages are `me.ahoo.cocache.*` (5.x used `me.ahoo.cache.*`). The normative des
 | Task | Read |
 |------|------|
 | Add CoCache to a Spring Boot / Spring / plain JVM app; configure TTLs, properties, failure behavior, metrics | `references/setup.md` |
+| Compose two caches into one read-only view (`JoinCache`, `@JoinCacheable`) | `references/join-cache.md` |
 | Upgrade an app from CoCache 5.x | `references/migration-5x.md` |
 | Write or update tests | `references/testing.md` |
 | Implement a custom `CoherenceBackend`, codec, key encoder, key filter, or per-entry TTL | `references/custom-implementation.md` |
@@ -70,12 +71,14 @@ Operations on `Cache<K, V>`: `get(key)` / `cache[key]`, `get(key, loader)`, `get
 | `Cache<K,V>` / `SetCache<K,E>` / `Lookup<V>` | cocache-api | User API |
 | `CacheLoader<K,V>` / `Codec<V>` | cocache-api | Data source / value bytes |
 | `@CoCache` / `@CaffeineCache` | cocache-api | Interface-style declaration |
+| `JoinCache` / `JoinValue` / `JoinKeyExtractor` (`api.join`), `@JoinCacheable` | cocache-api | Read-only view over two caches |
 | `CacheReadException` / `CacheWriteException` | cocache-api | L1 failures surfaced to callers |
 | `CoherenceBackend`, `RemoteStore`, `InvalidationChannel` (`api.spi`) | cocache-api | Backend SPI |
 | `CacheRuntime`, `CacheSpec` / `cacheSpec {}`, `SetCacheSpec` / `setCacheSpec {}` | cocache-core | Runtime and declarations |
 | `CachePolicy`, `LeasePolicy`, `LoadPolicy`, `LocalPolicy`, `ReadFailureMode`, `InvalidateFailureMode` | cocache-core | Lifetimes and failure behavior |
 | `KeyEncoder`, `TtlFunction`, `KeyFilter` | cocache-core | Key mapping, per-entry TTL, existence filter |
 | `InMemoryBackend`, `ManualClock`, `StringCodec` | cocache-core | Tests / single instance |
+| `SimpleJoinCache`, `JoinCacheProxies` | cocache-core | JoinCache implementation and interface proxy |
 | `RedisBackend`, `RedisBackendOptions`, `RedisChannelMode` | cocache-redis | Lettuce-native Redis backend |
 | `JacksonCodec`, `jacksonCodec<V>()` | cocache-codec-jackson | Jackson 3 codec |
 | `CoCacheSpringCacheManager`, `TransactionalInvalidator` | cocache-spring | Spring Cache bridge, after-commit invalidation |
