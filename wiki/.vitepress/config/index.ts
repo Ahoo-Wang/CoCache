@@ -20,6 +20,7 @@ export default defineConfig({
     ['script', {}, `window.dataLayer = window.dataLayer || [];function gtag(){dataLayer.push(arguments);}gtag('js', new Date());gtag('config', 'G-9ZGF9BDR59');`],
   ],
   themeConfig: {
+    logo: '/logo.svg',
     search: {
       provider: 'local',
       options: {
