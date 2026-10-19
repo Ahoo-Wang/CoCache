@@ -19,6 +19,5 @@ management:
       exposure:
         include:
           - cocache
-          - cocacheClient
 springdoc:
   show-actuator: true

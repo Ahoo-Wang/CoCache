@@ -119,8 +119,8 @@ class AnnotatedCacheTest {
     }
 
     private val runner = ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(CoCacheNextAutoConfiguration::class.java))
-        .withPropertyValues("cocache.next.enabled=true")
+        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+        .withPropertyValues("cocache.enabled=true")
 
     @Test
     fun registersInterfacesAsBeans() {
@@ -171,7 +171,7 @@ class AnnotatedCacheTest {
     @Test
     fun propertiesOverrideAnnotations() {
         runner.withUserConfiguration(AppConfig::class.java)
-            .withPropertyValues("cocache.next.caches.UserCache.ttl=PT10S")
+            .withPropertyValues("cocache.caches.UserCache.ttl=PT10S")
             .run { context ->
                 assertThat(context).hasNotFailed()
                 context.getBean(UserCache::class.java)["1"]

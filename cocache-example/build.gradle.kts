@@ -25,7 +25,7 @@ java {
 }
 
 application {
-    mainClass.set("me.ahoo.cache.example.AppServerKt")
+    mainClass.set("me.ahoo.cocache.example.AppServerKt")
     applicationDefaultJvmArgs = listOf(
         "-Xms512M",
         "-Xmx512M",
@@ -59,6 +59,7 @@ dependencies {
     implementation("org.springdoc:springdoc-openapi-starter-webflux-ui")
     kapt("org.springframework.boot:spring-boot-configuration-processor")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks.withType<Test> {

@@ -21,7 +21,7 @@ import kotlin.reflect.KClass
  * 注册接口式声明的缓存：`@EnableCoCache(caches = [UserCache::class])`（RFC 0003 §4.12）。
  *
  * 每个接口注册为一个 bean：bean 名为缓存名（默认接口简单类名），类型为接口本身。
- * 需要 `cocache.next.enabled=true`（6.0 自动配置提供运行时与后端）。
+ * 运行时与后端由 CoCache 自动配置提供（`cocache.enabled`，默认启用）。
  */
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)

@@ -28,7 +28,7 @@ import org.springframework.beans.factory.SmartInitializingSingleton
 class CacheAssembler(
     private val runtime: CacheRuntime,
     private val customizers: List<CacheSpecCustomizer>,
-    private val properties: CoCacheNextProperties,
+    private val properties: CoCacheProperties,
 ) : SmartInitializingSingleton {
 
     fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> {
@@ -48,7 +48,7 @@ class CacheAssembler(
     override fun afterSingletonsInstantiated() {
         val unknown = properties.caches.keys - runtime.cacheNames
         check(unknown.isEmpty()) {
-            "${CoCacheNextProperties.PREFIX}.caches configures undeclared caches $unknown; declared caches: ${runtime.cacheNames}."
+            "${CoCacheProperties.PREFIX}.caches configures undeclared caches $unknown; declared caches: ${runtime.cacheNames}."
         }
     }
 }

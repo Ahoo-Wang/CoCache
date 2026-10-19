@@ -35,57 +35,57 @@ internal object CacheCounters {
      * 回源次数与累计耗时绑定为 FunctionTimer，不在此目录中重复。
      */
     val ALL: List<CacheCounter> = listOf(
-        CacheCounter("remoteHits", "cocache.next.hits", "L2 misses served by L1", level = "l1") { it.remoteHits },
-        CacheCounter("misses", "cocache.next.misses", "L2 misses, before coalescing") { it.misses },
-        CacheCounter("filtered", "cocache.next.filtered", "Reads rejected by the key filter") { it.filtered },
-        CacheCounter("loadFailures", "cocache.next.load.failures", "Loader calls that threw") { it.loadFailures },
-        CacheCounter("loadRejected", "cocache.next.load.rejections", "Loads rejected by the concurrency limit") {
+        CacheCounter("remoteHits", "cocache.hits", "L2 misses served by L1", level = "l1") { it.remoteHits },
+        CacheCounter("misses", "cocache.misses", "L2 misses, before coalescing") { it.misses },
+        CacheCounter("filtered", "cocache.filtered", "Reads rejected by the key filter") { it.filtered },
+        CacheCounter("loadFailures", "cocache.load.failures", "Loader calls that threw") { it.loadFailures },
+        CacheCounter("loadRejected", "cocache.load.rejections", "Loads rejected by the concurrency limit") {
             it.loadRejected
         },
-        CacheCounter("leaseWaits", "cocache.next.lease.waits", "Reads that waited for another node's lease") {
+        CacheCounter("leaseWaits", "cocache.lease.waits", "Reads that waited for another node's lease") {
             it.leaseWaits
         },
-        CacheCounter("leaseWaitTimeouts", "cocache.next.lease.wait.timeouts", "Lease waits that timed out") {
+        CacheCounter("leaseWaitTimeouts", "cocache.lease.wait.timeouts", "Lease waits that timed out") {
             it.leaseWaitTimeouts
         },
-        CacheCounter("fillRejected", "cocache.next.fill.rejections", "L1 fills rejected by the lease fence") {
+        CacheCounter("fillRejected", "cocache.fill.rejections", "L1 fills rejected by the lease fence") {
             it.fillRejected
         },
-        CacheCounter("degradedFills", "cocache.next.degraded.fills", "Loads written to L2 only, without an L1 fill") {
+        CacheCounter("degradedFills", "cocache.degraded.fills", "Loads written to L2 only, without an L1 fill") {
             it.degradedFills
         },
         CacheCounter(
             "staleFillsDiscarded",
-            "cocache.next.stale.discards",
+            "cocache.stale.discards",
             "Fills discarded because an invalidation arrived"
         ) { it.staleFillsDiscarded },
-        CacheCounter("reclaims", "cocache.next.reclaims", "Corrupt L1 payloads reclaimed and reloaded") { it.reclaims },
-        CacheCounter("unknownFormats", "cocache.next.unknown.formats", "L1 payloads in an unknown format") {
+        CacheCounter("reclaims", "cocache.reclaims", "Corrupt L1 payloads reclaimed and reloaded") { it.reclaims },
+        CacheCounter("unknownFormats", "cocache.unknown.formats", "L1 payloads in an unknown format") {
             it.unknownFormats
         },
-        CacheCounter("refreshes", "cocache.next.refreshes", "Refresh-ahead executions") { it.refreshes },
-        CacheCounter("refreshRejected", "cocache.next.refresh.rejections", "Refreshes rejected by the executor") {
+        CacheCounter("refreshes", "cocache.refreshes", "Refresh-ahead executions") { it.refreshes },
+        CacheCounter("refreshRejected", "cocache.refresh.rejections", "Refreshes rejected by the executor") {
             it.refreshRejected
         },
-        CacheCounter("remoteFailures", "cocache.next.remote.failures", "L1 operations that failed") {
+        CacheCounter("remoteFailures", "cocache.remote.failures", "L1 operations that failed") {
             it.remoteFailures
         },
         CacheCounter(
             "invalidationsReceived",
-            "cocache.next.invalidations.received",
+            "cocache.invalidations.received",
             "Invalidations received from the channel"
         ) { it.invalidationsReceived },
-        CacheCounter("writeFailures", "cocache.next.write.failures", "Writes or invalidations that failed on L1") {
+        CacheCounter("writeFailures", "cocache.write.failures", "Writes or invalidations that failed on L1") {
             it.writeFailures
         },
-        CacheCounter("invalidationRetries", "cocache.next.invalidation.retries", "Invalidation retries scheduled") {
+        CacheCounter("invalidationRetries", "cocache.invalidation.retries", "Invalidation retries scheduled") {
             it.invalidationRetries
         },
         CacheCounter(
             "invalidationsDropped",
-            "cocache.next.invalidations.dropped",
+            "cocache.invalidations.dropped",
             "Invalidations dropped after retries were exhausted"
         ) { it.invalidationsDropped },
-        CacheCounter("resets", "cocache.next.resets", "Channel resets that cleared L2") { it.resets },
+        CacheCounter("resets", "cocache.resets", "Channel resets that cleared L2") { it.resets },
     )
 }
