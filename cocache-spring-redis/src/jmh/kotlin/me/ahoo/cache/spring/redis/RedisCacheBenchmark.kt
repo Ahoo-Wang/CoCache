@@ -55,6 +55,8 @@ open class RedisCacheBenchmark {
     private lateinit var listenerContainer: RedisMessageListenerContainer
     private lateinit var distributedCache: DistributedCache<String>
     private lateinit var cache: CoherentCache<String, String>
+    private lateinit var proxy: BenchCache
+    private lateinit var mixed: List<CoherentCache<String, String>>
     private val batchKeys = (1..BATCH_SIZE).map { "${keyPrefix}batch-$it" }
 
     companion object {
@@ -86,12 +88,49 @@ open class RedisCacheBenchmark {
             ),
         )
         cache["hot"] = "hot-value"
+        // 三个配置不同的缓存（与 6.0 的 CoCacheBenchmark.l2HitMixed 对照）
+        val factory = DefaultCoherentCacheFactory(RedisCacheEvictedEventBus(redisTemplate, listenerContainer))
+        mixed = listOf(
+            cache,
+            factory.create(
+                CoherentCacheConfiguration(
+                    cacheName = "bench-access-$run",
+                    clientId = UUID.randomUUID().toString(),
+                    keyConverter = ToStringKeyConverter("${keyPrefix}access:"),
+                    distributedCache = distributedCache,
+                    clientSideCache = CaffeineClientSideCache.build(expireAfterAccess = java.time.Duration.ofMinutes(10)),
+                    cacheSource = { key -> CacheValue.of("value-$key", TtlAt.at(60)) },
+                    ttlPolicy = TtlPolicy(ttl = 600, ttlAmplitude = 10, missingTtl = 60),
+                ),
+            ),
+            factory.create(
+                CoherentCacheConfiguration(
+                    cacheName = "bench-capacity-$run",
+                    clientId = UUID.randomUUID().toString(),
+                    keyConverter = ToStringKeyConverter("${keyPrefix}capacity:"),
+                    distributedCache = distributedCache,
+                    clientSideCache = CaffeineClientSideCache.build(maximumSize = 1_000, initialCapacity = 64),
+                    cacheSource = { key -> CacheValue.of("value-$key", TtlAt.at(60)) },
+                    ttlPolicy = TtlPolicy(ttl = 600, ttlAmplitude = 10, missingTtl = 60),
+                ),
+            ),
+        )
+        mixed.forEach {
+            it["hot"] = "hot-value"
+            it["hot"]
+        }
+        proxy = java.lang.reflect.Proxy.newProxyInstance(
+            BenchCache::class.java.classLoader,
+            arrayOf(BenchCache::class.java),
+            me.ahoo.cache.proxy.CacheInvocationHandler(BenchCache::class.java, cache, me.ahoo.cache.annotation.coCacheMetadata<BenchCache>()),
+        ) as BenchCache
         cache["l1"] = "l1-value"
         batchKeys.forEach { distributedCache.setCache(it, CacheValue.of("batch-value", TtlAt.at(600))) }
     }
 
     @TearDown
     fun tearDown() {
+        mixed.drop(1).forEach { it.close() }
         cache.close()
         listenerContainer.destroy()
         connectionFactory.destroy()
@@ -100,6 +139,20 @@ open class RedisCacheBenchmark {
     /** L2 命中：仅进程内查找。 */
     @Benchmark
     fun l2Hit(): String? = cache["hot"]
+
+    /** L2 命中，轮流访问三个配置不同的缓存。 */
+    @Benchmark
+    fun l2HitMixed(): Int {
+        var length = 0
+        for (each in mixed) {
+            length += each["hot"]?.length ?: 0
+        }
+        return length
+    }
+
+    /** L2 命中，经过用户实际调用的 JDK 动态代理（`@CoCache` 接口）。 */
+    @Benchmark
+    fun l2HitViaProxy(): String? = proxy["hot"]
 
     /** 直接读 L1（不经 L2）：一次 Lua 往返取回 TTL 与值。 */
     @Benchmark
@@ -122,4 +175,15 @@ open class RedisCacheBenchmark {
     fun set() {
         cache["hot-write"] = "value"
     }
+
+    /** 失效：淘汰 L2、L1 并广播（两次往返）。 */
+    @Benchmark
+    fun invalidate() {
+        cache.evict("inv")
+    }
 }
+
+/**
+ * 代理基准使用的缓存接口。
+ */
+interface BenchCache : me.ahoo.cache.api.Cache<String, String>
