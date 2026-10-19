@@ -62,3 +62,28 @@
   --vp-font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   --vp-font-family-mono: 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, 'Courier New', monospace;
 }
+
+/* 首页动效：窄屏下示意图放在标题上方，不使用默认图片的负边距（否则与标题重叠） */
+@media (max-width: 959px) {
+  .VPHero .image {
+    margin: 0 0 16px;
+  }
+
+  .VPHero .image-container {
+    width: min(320px, 100%);
+    height: auto;
+    aspect-ratio: 400 / 380;
+  }
+}
+
+/* 首页动效：宽屏下给示意图更大的空间（默认只有 320px） */
+@media (min-width: 960px) {
+  .VPHero .image-container {
+    width: 420px;
+    height: 400px;
+  }
+
+  .VPHero .image-container .cocache-hero {
+    max-width: 420px;
+  }
+}

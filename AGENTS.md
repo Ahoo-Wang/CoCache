@@ -19,7 +19,7 @@ Each fact has one home. Update that home and link to it. Don't copy it here.
 | Design, module boundaries, read and write paths, **invariants** (normative, Chinese) | `docs/architecture.md` |
 | Issues, branches, PR titles, quality gates, versioning, release steps | `CONTRIBUTING.md` |
 | User docs (en + `zh/` mirror) and their conventions | `wiki/`, `wiki/AGENTS.md` |
-| Guidance for agents *using* CoCache in other projects | `skills/cocache/` |
+| Guidance for agents *using* CoCache in other projects | `skills/` (`skills/README.md`; validate with `python3 -S scripts/validate_cocache_skills.py`) |
 | How to build, test, and style changes *to* CoCache | this file |
 
 ## Commands

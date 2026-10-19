@@ -1,0 +1,4 @@
+interface:
+  display_name: "CoCache Develop"
+  short_description: "Build, test, review and debug CoCache usage"
+  default_prompt: "Use $cocache-develop to declare, test, review or debug this application's CoCache caches, invalidating after commit and changing files only where I authorize it."

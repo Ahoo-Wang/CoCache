@@ -3,29 +3,30 @@
   "plugins": [
     {
       "name": "ahoo-cocache-skills",
-      "description": "CoCache 6.x skills for two-level distributed coherent caching in Java/Kotlin: @CoCache interfaces and CacheSpec beans, CacheLoader data sources, lease-fenced Redis coherence, Spring Boot and Spring Cache integration, JoinCache views over two caches, custom CoherenceBackend implementations, the TCK, and migration from 5.x.",
+      "version": "0.2.0",
+      "description": "Agent Skills for downstream Java/Kotlin applications built on CoCache, the two-level coherent cache (local Caffeine in front of shared Redis): declaring, testing, reviewing and debugging caches, invalidation after commit, Spring Cache, JoinCache and SetCache; upgrading from CoCache 5.x to 6.x; and implementing CoherenceBackend extensions that pass the cocache-test TCK.",
       "skills": {
         "include": [
-          "*"
-        ],
-        "exclude": [
-          "*-workspace"
+          "cocache-develop",
+          "cocache-migrate",
+          "cocache-extend"
         ]
       },
       "keywords": [
         "cocache",
         "coherent-cache",
-        "distributed-cache",
         "two-level-cache",
+        "distributed-cache",
+        "cache-invalidation",
+        "redis",
+        "caffeine",
         "spring-boot",
         "spring-cache",
-        "redis",
-        "lettuce",
         "kotlin",
         "java",
-        "cache-coherence",
-        "cache-invalidation",
-        "join-cache"
+        "join-cache",
+        "migration",
+        "tck"
       ],
       "category": "development",
       "interface": {
@@ -33,7 +34,7 @@
         "capabilities": [
           "Skills"
         ],
-        "defaultPrompt": "Help me use CoCache for two-level distributed coherent caching: cache interfaces or specs, CacheLoader, invalidation after commit, Redis, and Spring Boot integration."
+        "defaultPrompt": "Help me build, test, review or debug this application's CoCache caches, upgrade it from CoCache 5.x, or implement a CoherenceBackend, using verifiable evidence."
       },
       "policy": {
         "installation": "AVAILABLE",

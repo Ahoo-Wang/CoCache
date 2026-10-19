@@ -1,0 +1,4 @@
+interface:
+  display_name: "CoCache Migrate"
+  short_description: "Move applications from CoCache 5.x to 6.x safely"
+  default_prompt: "Use $cocache-migrate to audit and plan this application's CoCache 5.x to 6.x upgrade across code, configuration, Redis data and switch-over, marking unproved items as MISSING EVIDENCE."
