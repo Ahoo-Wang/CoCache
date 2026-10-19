@@ -86,16 +86,27 @@ class RedisUnitTest {
             ).format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
 
         val set = RedisRemoteStore.decodeRead(
-            listOf(3L, -1L, listOf("+a".toByteArray(), ByteArray(0), "other".toByteArray(), ByteArray(0)))
+            listOf(
+                3L,
+                -1L,
+                listOf("+a".toByteArray(), "!f".toByteArray(), "other".toByteArray(), ByteArray(0)),
+                ByteArray(0)
+            )
         ) as RemoteRead.Hit
         set.format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
         (set.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("a")
         set.ttl.assert().isNull()
 
         val badFormat = RedisRemoteStore.decodeRead(
-            listOf(3L, 5L, listOf("!f".toByteArray(), "x".toByteArray()))
+            listOf(3L, 5L, listOf("!f".toByteArray()), "x".toByteArray())
         ) as RemoteRead.Hit
         badFormat.format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
+
+        val versioned = RedisRemoteStore.decodeRead(
+            listOf(3L, 5L, listOf("+b".toByteArray(), "!f".toByteArray()), "1".toByteArray())
+        ) as RemoteRead.Hit
+        versioned.format.assert().isEqualTo(RedisScripts.FORMAT)
+        (versioned.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
 
         RedisRemoteStore.decodeRead(listOf(1L, -5L)).assert().isEqualTo(RemoteRead.Leased(Duration.ZERO))
         runCatching {

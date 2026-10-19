@@ -37,6 +37,10 @@ async.put("42", user).thenCompose { async.get("42") }
 
 With an `ObservationRegistry` bean, the starter registers a `MicrometerLoadObserver`. It wraps every source load and every wait for another instance's lease in a `cocache.load` observation, with tags `cache`, `operation` and `outcome`. Hits create no observation. The new `LoadObserver` SPI lets you plug in your own. See [Observability](../operations/observability.md#tracing).
 
+### Faster SetCache reads
+
+The `SetCache` read script fetches members with `HKEYS` and the format version with `HGET`, instead of `HGETALL` with every member's empty value. The stored layout is unchanged. In server-side throughput, reads are 1.33, 1.55 and 1.76 times as fast at 10, 100 and 1000 members. ACL errors raised inside the read script now reach the caller instead of being read as unrecognized content.
+
 ### Compatibility kit and CI
 
 - New TCK suites: `MultiNodeSpec` (three runtimes, every invalidation interleaving, one load and one refresh per key cluster-wide), `FaultSpec` (L1 faults, retries, writes that took effect but reported an error, no replay after a reconnect), and async variants of every suite (`AsyncBackendProtocolSpec`, `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`).
@@ -49,6 +53,7 @@ With an `ObservationRegistry` bean, the starter registers a `MicrometerLoadObser
 - `Cache.async()` is a default method that throws `UnsupportedOperationException`. A `Cache` you implement yourself, for example a test double, needs to override it only if callers use the async view.
 - A custom `LoadObserver` sees async loads only if it overrides `observeAsync`.
 - **Kotlin callers must recompile** against 6.3, or they fail with `NoSuchMethodError`. `LoadPolicy` gained `asyncTimeout`, which changes `copy` and the synthetic constructor behind Kotlin default arguments, so this applies to Kotlin code that calls `copy` or omits `LoadPolicy` arguments. `CoCacheSpringCacheManager(runtime)` is no longer a constructor with a default argument, so it applies to Kotlin code that omits the executor too. Java callers are unaffected.
+- **Redis ACL:** a user with a minimal ACL needs `+hkeys +hget` before the upgrade, or `SetCache` reads fail with an ACL error. Keep `+hgetall`: conditional reclaim and 6.0/6.1 instances still use it. See [ACL](../operations/index.md#acl).
 - TCK: `HookedBackend.closesDelegate` (default `false`, as before) and each suite's `closesBackend` let the suites close a backend created per case. Turn it on if your backend opens connections or threads. Hooks that pick out a caller should use `HookedBackend.issuer()`, because async calls complete on other threads.
 
 ### Gradle Setup

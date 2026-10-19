@@ -378,7 +378,6 @@ internal class RedisRemoteStore(
     companion object {
         private val log = KotlinLogging.logger {}
         private val EMPTY = ByteArray(0)
-        private const val FIELD_FORMAT = "!f"
         private const val MEMBER_PREFIX = '+'.code.toByte()
         private const val STATE_VALUE = 'V'.code.toByte()
         private const val STATE_MISSING = 'M'.code.toByte()
@@ -409,7 +408,11 @@ internal class RedisRemoteStore(
                     ttlOf(result[1] as Long),
                     result[3] == 1L
                 )
-                RedisScripts.RESULT_SET -> decodeSet(result[2] as List<ByteArray>, ttlOf(result[1] as Long))
+                RedisScripts.RESULT_SET -> decodeSet(
+                    result[2] as List<ByteArray>,
+                    result[3] as ByteArray,
+                    ttlOf(result[1] as Long)
+                )
                 else -> throw IllegalStateException("Unknown read result code[${result[0]}].")
             }
         }
@@ -435,18 +438,19 @@ internal class RedisRemoteStore(
             }
         }
 
-        private fun decodeSet(flat: List<ByteArray>, ttl: Duration?): RemoteRead.Hit {
-            var format = UNRECOGNIZED
-            val members = ArrayList<ByteArray>(flat.size / 2)
-            for (index in flat.indices step 2) {
-                val field = flat[index]
+        /**
+         * 集合：[fields] 为 Hash 的全部字段名（`HKEYS`），[format] 为 `!f` 的值（字段不存在时为空串）。
+         * 只取 `+` 前缀的成员字段，`!f` 与其它字段忽略。
+         */
+        private fun decodeSet(fields: List<ByteArray>, format: ByteArray, ttl: Duration?): RemoteRead.Hit {
+            val members = ArrayList<ByteArray>(fields.size)
+            for (field in fields) {
                 if (field.isNotEmpty() && field[0] == MEMBER_PREFIX) {
                     members.add(field.copyOfRange(1, field.size))
-                } else if (String(field, Charsets.UTF_8) == FIELD_FORMAT) {
-                    format = String(flat[index + 1], Charsets.UTF_8).toIntOrNull() ?: UNRECOGNIZED
                 }
             }
-            return RemoteRead.Hit(Envelope.Members(members), format, ttl)
+            val version = String(format, Charsets.UTF_8).toIntOrNull() ?: UNRECOGNIZED
+            return RemoteRead.Hit(Envelope.Members(members), version, ttl)
         }
 
         /**
