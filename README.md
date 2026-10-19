@@ -65,7 +65,7 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 ## Features
 
 - **Two levels, one API.** `get`, `getAll`, `lookup`, `put`, `invalidate`, `invalidateAll` on `Cache<K, V>`, declared as an `@CoCache` interface or a `CacheSpec` bean.
-- **Lease-fenced L1.** A miss takes a lease in Redis, and only the lease holder may fill. Concurrent misses across the cluster load once when the loader finishes within `lease.wait`.
+- **Lease-fenced L1.** A miss takes a lease in Redis, and only the lease holder may fill. Concurrent misses across the cluster load once when the loader finishes within `lease-wait`.
 - **Atomic invalidation.** Delete and broadcast happen in one Lua script. Failed invalidations are retried in the background.
 - **Negative caching.** A loader that returns `null` stores "not found" for `absentTtl`.
 - **Refresh ahead.** With `refreshWindow`, one node per key reloads a hot value before it expires.
@@ -89,7 +89,8 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 
 | You want to… | Read |
 |--------------|------|
-| Use CoCache | [Guide](https://cocache.ahoo.me/guide/): introduction, quick start, configuration, Spring Cache, 5.x → 6.0 migration, changelog |
+| Use CoCache | [Guide](https://cocache.ahoo.me/guide/): why CoCache, quick start, how it works, declaring caches, keeping data fresh, JoinCache, Spring Cache, testing, configuration reference |
+| Upgrade from 5.x | [Upgrading from 5.x](https://cocache.ahoo.me/guide/migration-6) and the [changelog](https://cocache.ahoo.me/guide/changelog) |
 | Run it in production | [Operations](https://cocache.ahoo.me/operations/): deployment, observability, troubleshooting |
 | Understand or extend it | [Architecture](https://cocache.ahoo.me/architecture/): design, consistency, SPI and TCK |
 | Change CoCache itself | [`CONTRIBUTING.md`](CONTRIBUTING.md), then [`docs/architecture.md`](docs/architecture.md) |

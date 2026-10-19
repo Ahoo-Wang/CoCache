@@ -6,14 +6,19 @@ Declare a cache as an interface (`@CoCache interface UserCache : Cache<String, U
 
 ## Docs
 
-- [Introduction](https://cocache.ahoo.me/guide/): the problem, guarantees, and when not to use CoCache
-- [Quick Start](https://cocache.ahoo.me/guide/quick-start): dependency, cache interface or spec bean, loader, usage
-- [Configuration](https://cocache.ahoo.me/guide/configuration): `@CoCache`/`@CaffeineCache`, `CacheSpec` and `CachePolicy`, `cocache.*` properties, `CacheSpecCustomizer`, codecs
-- [Spring Cache](https://cocache.ahoo.me/guide/spring-cache): `@Cacheable` through `CoCacheSpringCacheManager`, `sync = true`, transactions
+- [Why CoCache](https://cocache.ahoo.me/guide/): the problem, guarantees, limits, and when not to use it
+- [Quick Start](https://cocache.ahoo.me/guide/quick-start): dependency, `@EnableCoCache` + `@CoCache` interface + `CacheLoader` bean, read, invalidate after commit; `cocache.backend: memory` without Redis; plain `CacheRuntime` without Spring
+- [How It Works](https://cocache.ahoo.me/guide/concepts): two levels, read path, negative caching, refresh-ahead, write path, staleness bounds, failure behavior
+- [Declaring Caches](https://cocache.ahoo.me/guide/caches): `@CoCache` / `@CaffeineCache` attributes, `CacheSpec` beans (Kotlin DSL, Java builder), keys and `KeyEncoder`, loaders and `ttlOf`, codecs, `SetCache`, `CacheSpecCustomizer`, startup validation
+- [Keeping Data Fresh](https://cocache.ahoo.me/guide/freshness): write then invalidate, `invalidate` vs `put`, `TransactionalInvalidator`, `ExternalInvalidator`, choosing lifetimes
+- [JoinCache](https://cocache.ahoo.me/guide/join-cache): `@JoinCacheable` read-only views over two caches, `@EnableCoCache(joinCaches = [...])`
+- [Spring Cache](https://cocache.ahoo.me/guide/spring-cache): `CoCacheSpringCacheManager`, `@Cacheable(sync = true)`, the sync check, transactions
+- [Testing](https://cocache.ahoo.me/guide/testing): memory backend in `@SpringBootTest`, `ManualClock`, `InMemoryBackend` unit tests, `HookedBackend` fault injection
+- [Configuration Reference](https://cocache.ahoo.me/guide/configuration): every `cocache.*` property with type, default and unit; precedence layering
 - [Deployment](https://cocache.ahoo.me/operations/): Redis versions and topologies, maxmemory-policy, TLS, channel modes, sizing, rolling deploys, key layout, ACLs
 - [Observability](https://cocache.ahoo.me/operations/observability): every `cocache.*` meter and alerts, the `cocache` health indicator, the actuator endpoint (inspect and invalidate one key), logs
-- [Troubleshooting](https://cocache.ahoo.me/operations/troubleshooting): runbooks (stale values, resets, stampedes, dropped invalidations, Redis down, startup failures) and the external invalidation protocol
-- [Migrating from 5.x to 6.0](https://cocache.ahoo.me/guide/migration-6): renamed APIs, annotation attributes, configuration keys, wire format change
+- [Troubleshooting](https://cocache.ahoo.me/operations/troubleshooting): runbooks and the external invalidation protocol
+- [Upgrading from 5.x](https://cocache.ahoo.me/guide/migration-6): renamed APIs, annotation attributes, configuration keys, wire format change
 - [Changelog](https://cocache.ahoo.me/guide/changelog): releases
 
 ## Design
