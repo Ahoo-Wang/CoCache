@@ -1,6 +1,6 @@
 # RFC 0003：目标架构（第一性原理重构，6.0）
 
-- 状态：草案 v3（已经过两轮对抗验证，见 §10）；§9 步骤 1–4 已在 `me.ahoo.cocache` 包中实现（`cocache-redis` 为 Lettuce 后端；starter 以 `cocache.next.*` 过渡前缀、默认关闭的方式并存；Sharded 通道待做；JMH 对比见 §7.1；Q9 已定：6.0 不提供接口式声明），SPI 与线格式以代码为准（`me.ahoo.cocache.api.spi`、`me.ahoo.cocache.redis.RedisScripts`）
+- 状态：草案 v3（已经过两轮对抗验证，见 §10）；§9 步骤 1–4 已在 `me.ahoo.cocache` 包中实现（`cocache-redis` 为 Lettuce 后端；starter 以 `cocache.next.*` 过渡前缀、默认关闭的方式并存；Sharded 通道已实现（`RedisBackendOptions.channelMode = SHARDED`）；JMH 对比见 §7.1；Q9 已定：6.0 不提供接口式声明），SPI 与线格式以代码为准（`me.ahoo.cocache.api.spi`、`me.ahoo.cocache.redis.RedisScripts`）
 - 前提：**不考虑兼容性**。API、SPI、模块、Redis 线格式、配置项都可以推倒重来
 - 关系：吸收并取代 [RFC 0001](0001-l1-write-back-lease.md)（lease 成为唯一的写回保护原语，6.0 只破坏一次线格式，不再单独发布 lease）；[RFC 0002](0002-resp3-client-tracking.md) 变为新后端 SPI 下的一种可选通道
 
@@ -503,7 +503,7 @@ loadBypassingL1(key, k, stamp):                   // 回源，不写 L1，L2 以
 | 模式 | 广播 | 说明 |
 |------|------|------|
 | `pubsub`（默认） | Lua 内 `PUBLISH`，原子 | Cluster 中 PUBLISH 经集群总线发往全部节点 |
-| `sharded` | 脚本执行后单独 `SPUBLISH`，**非原子**（`atomicBroadcast = false`） | 脚本内的 `SPUBLISH` 要求频道与 key 同 slot。原子版本需要分桶布局（§8 Q2）。收到服务端主动发送的 `sunsubscribed`（slot 迁移）时视为重置并重新订阅（待验证，见 §10） |
+| `sharded` | 脚本执行后单独 `SPUBLISH`，**非原子**（`atomicBroadcast = false`） | 脚本内的 `SPUBLISH` 要求频道与 key 同 slot。原子版本需要分桶布局（§8 Q2）。收到服务端主动发送的 `sunsubscribed`（slot 迁移）时视为重置并重新订阅，重新订阅失败由心跳重试；Cluster 中心跳 PING 承载订阅的各主节点连接（已在 Cluster 上验证，见 §10） |
 | `tracking`（6.x 预研） | 服务端产生 | RFC 0002；在 Lettuce 原生后端下不再受 Spring 限制 |
 
 **环境探测**：启动时执行一次探测脚本（向不在 key 所在 slot 的频道 `PUBLISH`）。在 ElastiCache Serverless 这类把 `PUBLISH` 当作 `SPUBLISH` 执行的环境中，探测会失败并报跨 slot 错误，此时后端以 `atomicBroadcast = false` 运行，并输出告警和指标。
@@ -786,7 +786,7 @@ v1 由三路独立的对抗审查验证：协议正确性（构造交错反例�
 | R6 | 重要 | Cluster 下批量失效约等于 N 个脚本加 N 次全集群广播，原子性只在单个 slot 内 | — | §4.6、Q10 |
 | m | 次要 | 令牌应由客户端构造（`NodeId + 序号`），不依赖 Lua 随机数；Lua 脚本不带 shebang（否则 OOM 时被拒）；批次上限；帧由客户端构造；格式升级两阶段、未知版本不回收；`reclaim` 每次读至多一次；`onReset` 在订阅确认之后；批量戳在注册之后取；批量合并先做自己的；`Lookup.expiresAt` 可空并说明来自哪一层；`ttlOf(K, V)`；配置第四层来源与校验；`CacheLoader` 改为 `fun interface`；`KeyFilter` 描述自相矛盾；`@CaffeineCache` 字段丢失；actuator 需要不回源的查看接口；Spring Cache 的 null；Jackson 3；非 Boot 的 Spring 用户；“auto-pipelining”用词；实施步骤无法各自通过 `check`；阈值低于测量噪声 | — | 已分别并入各节 |
 
-**待验证（不阻塞本 RFC）**：Redis 7 在 slot 迁移时会向 shard channel 的订阅者发送主动的 `sunsubscribed`。5.4 的 `ShardedRedisCacheEvictedEventBus` 只处理 `ssubscribed`，resharding 之后可能静默停止接收事件，也不会触发重置。需要用 Cluster 集成测试确认；如果属实，属于 5.4 的缺陷（[#629](https://github.com/Ahoo-Wang/CoCache/issues/629)）。
+**已验证（原“待验证”）**：Redis 7 在 slot 迁移时（原节点执行 `CLUSTER SETSLOT … NODE`）会向 shard channel 的订阅者发送主动的 `sunsubscribe`；Lettuce 7.5 只把该频道从节点连接的订阅集合中移除，不会自动重新订阅。不处理它的通道在迁移后静默停止接收事件，也不会触发重置：5.4 的 `ShardedRedisCacheEvictedEventBus` 确实存在这个缺陷（[#629](https://github.com/Ahoo-Wang/CoCache/issues/629)，5.x 不再维护，已关闭）。6.0 的 `ShardedInvalidationChannel` 把非主动退订视为重置并重新订阅（Lettuce 按新拓扑或 `MOVED` 路由到新的所属节点），由 `RedisShardedChannelTest` 在 Cluster 上迁移频道所在 slot 验证；去掉该处理后同一用例超时失败。
 
 **尝试攻破但成立的论断**：L1 fill 与失效（`DEL` 销毁令牌，令牌唯一，无 ABA）；lease 过期与慢 loader；两个读者同时未命中（读脚本原子，恰好一个取得 lease）；等待 lease 超时后本地回源再填 L2（受戳保护，跨节点受事件延迟约束）；A 写 L1 成功后 B 失效、A 再写 L2（三种到达时刻都会被戳或事件清除）；刷新令牌与 `put`、失效、抢占；`reclaim` 与并发写入；读己之写至多重试一次；结果未知的 fill；故障切换丢失 lease（最多多一次回源）；脚本内 `PUBLISH` 合法、按顺序执行并在 Cluster 中广播；脚本内可以使用 `TIME`；`PEXPIRE`/`PTTL` 的毫秒语义；Valkey 7.2+ 兼容。
 
