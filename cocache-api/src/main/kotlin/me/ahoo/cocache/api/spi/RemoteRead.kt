@@ -22,7 +22,8 @@ sealed interface RemoteRead {
     /**
      * 命中。
      *
-     * @param format 线格式版本；高于本节点所知的版本时，引擎既不回收也不写回
+     * @param format 线格式版本：高于本节点所知的版本时，引擎既不回收也不写回；`0` 表示无法识别的内容（如旧版本写入的值），
+     *   引擎按损坏处理（条件回收后回源）
      * @param ttl 剩余寿命；`null` 表示永不过期
      * @param refreshGranted 是否取得了请求中的刷新令牌
      */

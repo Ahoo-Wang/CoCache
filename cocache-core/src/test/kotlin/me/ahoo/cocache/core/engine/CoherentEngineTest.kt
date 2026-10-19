@@ -200,6 +200,34 @@ class CoherentEngineTest {
     }
 
     @Test
+    fun unrecognizedRemoteContentIsReclaimed() {
+        val cache = runtime().engine()
+        database["k"] = "v"
+        silentPut("k", Envelope.Scalar("{\"legacy\":true}".toByteArray()))
+        backend.afterRead = { _, read ->
+            backend.afterRead = null
+            if (read is RemoteRead.Hit) read.copy(format = 0) else read
+        }
+        cache["k"].assert().isEqualTo("v")
+        cache.metrics.reclaims.assert().isEqualTo(1)
+        (
+            memory.store(
+                name
+            ).read(key("k"), null, null) as RemoteRead.Hit
+            ).envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
+    }
+
+    @Test
+    fun unrecognizedRemoteContentInBatchBypassesRemote() {
+        val cache = runtime().engine()
+        database["k"] = "v"
+        silentPut("k", Envelope.Scalar("legacy".toByteArray()))
+        backend.afterReadAll = { reads -> reads.mapValues { (_, read) -> if (read is RemoteRead.Hit) read.copy(format = 0) else read } }
+        cache.getAll(listOf("k")).assert().isEqualTo(mapOf("k" to "v"))
+        cache.metrics.degradedFills.assert().isEqualTo(1)
+    }
+
+    @Test
     fun remoteEventDuringRemoteReadDiscardsTheLocalFill() {
         val node = runtime()
         val cache = node.engine()
