@@ -124,7 +124,7 @@ class RedisRobustnessTest {
 
     /**
      * ACL 缺少读脚本用到的命令（升级前未加 `+hkeys`，或缺 `+get`）：读取以 ACL 错误失败
-     * （Redis 7 为 `ERR ACL failure in script: … no permissions …`，脚本外的直接命令才是 `NOPERM`），
+     * （措辞随 Redis 版本不同），
      * 不能被当作无法识别的内容去回收——key 仍在，内容不变。
      */
     @Test
@@ -139,7 +139,10 @@ class RedisRobustnessTest {
         fun denied(block: () -> Any?) {
             val error = runCatching(block).exceptionOrNull()
             error.assert().isInstanceOf(RedisException::class.java)
-            error?.message.assert().contains("no permissions")
+            // 措辞随版本不同：7.0 为 "The user executing the script can't run this command"，7.2+ 为 "ACL failure in script … no permissions"
+            val messages = generateSequence(error) { it.cause }.mapNotNull { it.message?.lowercase() }.toList()
+            messages.any { message -> listOf("acl", "noperm", "permission", "can't run this command").any { it in message } }
+                .assert().withFailMessage { "Expected an ACL error but was $messages" }.isTrue()
         }
         for (missing in listOf("-hkeys", "-get")) {
             RedisTestSupport.aclBackend(

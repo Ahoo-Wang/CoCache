@@ -16,6 +16,7 @@ const guide: DefaultTheme.SidebarItem[] = [
       { text: '保持数据新鲜', link: '/zh/guide/freshness' },
       { text: 'JoinCache', link: '/zh/guide/join-cache' },
       { text: 'Spring Cache', link: '/zh/guide/spring-cache' },
+      { text: '异步 API', link: '/zh/guide/async' },
       { text: '测试', link: '/zh/guide/testing' },
       { text: '原生镜像', link: '/zh/guide/native' },
       { text: '配置参考', link: '/zh/guide/configuration' },

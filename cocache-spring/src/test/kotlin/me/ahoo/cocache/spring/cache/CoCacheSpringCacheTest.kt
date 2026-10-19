@@ -188,4 +188,87 @@ class CoCacheSpringCacheTest {
             cache.retrieve<String>("failing") { CompletableFuture.failedFuture(failure) }.join()
         }.exceptionOrNull()?.cause.assert().isSameAs(failure)
     }
+
+    @Test
+    fun retrieveUsesTheAsyncView() {
+        // 命中：已完成的 future（不切换线程）
+        cache.get("k")?.get().assert().isEqualTo("v")
+        requireNotNull(cache.retrieve("k")).isDone.assert().isTrue()
+        // 负缓存视为未命中：以 null 完成
+        cache.retrieve("absent")?.get().assert().isNull()
+        // valueLoader 的原始异常完成 future（不包装为 CompletionException）
+        val failure = IllegalStateException("supplier failed")
+        cache.retrieve<String>("thrown") { throw failure }.handle { _, e -> e }.join().assert().isSameAs(failure)
+        cache.retrieve<String>("failed") { CompletableFuture.failedFuture(failure) }.handle { _, e -> e }.join()
+            .assert().isSameAs(failure)
+    }
+
+    @Test
+    fun retrieveKeepsTheOriginalLookupFailure() {
+        val failure = IllegalStateException("lookup failed")
+        val async = io.mockk.mockk<me.ahoo.cocache.api.AsyncCache<Any, Any>> {
+            io.mockk.every { lookup(any()) } returns CompletableFuture.failedFuture(failure)
+        }
+        val native = io.mockk.mockk<me.ahoo.cocache.api.Cache<Any, Any>> {
+            io.mockk.every { name } returns "mocked"
+            io.mockk.every { async() } returns async
+        }
+        val spring = CoCacheSpringCache(native, null, java.util.concurrent.Executor { it.run() })
+        requireNotNull(spring.retrieve("k")).handle { _, e -> e }.join().assert().isSameAs(failure)
+        // 包装过的失败也解包
+        io.mockk.every {
+            async.lookup(any())
+        } returns CompletableFuture.failedFuture(java.util.concurrent.CompletionException(failure))
+        requireNotNull(spring.retrieve("k")).handle { _, e -> e }.join().assert().isSameAs(failure)
+    }
+
+    @Test
+    fun retrieveRunsTheMethodBodyOnTheExecutor() {
+        val tasks = AtomicInteger()
+        val executor = java.util.concurrent.Executor {
+            tasks.incrementAndGet()
+            it.run()
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        val direct = CoCacheSpringCache(
+            runtime.cache("user") as me.ahoo.cocache.api.Cache<Any, Any>,
+            runtime.admin("user"),
+            executor
+        )
+        (direct.retrieve("k")?.get() as SpringCache.ValueWrapper).get().assert().isEqualTo("v")
+        tasks.get().assert().isEqualTo(0)
+        direct.retrieve("viaExecutor") { CompletableFuture.completedFuture("E") }.get().assert().isEqualTo("E")
+        tasks.get().assert().isEqualTo(1)
+        // 方法体的失败（含包装过的）以原始异常完成
+        val failure = IllegalStateException("body failed")
+        direct.retrieve<String>(
+            "wrapped"
+        ) { CompletableFuture.failedFuture(java.util.concurrent.CompletionException(failure)) }
+            .handle { _, e -> e }.join().assert().isSameAs(failure)
+        // 执行器拒绝：以 RejectedExecutionException 失败
+        val rejecting = CoCacheSpringCache(
+            @Suppress("UNCHECKED_CAST") (runtime.cache("user") as me.ahoo.cocache.api.Cache<Any, Any>),
+            runtime.admin("user"),
+            java.util.concurrent.Executor { throw java.util.concurrent.RejectedExecutionException("full") }
+        )
+        rejecting.retrieve<String>("rejected") { CompletableFuture.completedFuture("never") }
+            .handle { _, e -> e }.join().assert().isInstanceOf(
+                java.util.concurrent.RejectedExecutionException::class.java
+            )
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun deprecatedManagerConstructorIgnoresTheExecutor() {
+        val tasks = AtomicInteger()
+        val executor = java.util.concurrent.Executor {
+            tasks.incrementAndGet()
+            it.run()
+        }
+        val legacy = requireNotNull(CoCacheSpringCacheManager(runtime, executor).getCache("user"))
+        (legacy.retrieve("k")?.get() as SpringCache.ValueWrapper).get().assert().isEqualTo("v")
+        legacy.retrieve("legacy") { CompletableFuture.completedFuture("L") }.get().assert().isEqualTo("L")
+        tasks.get().assert().isEqualTo(0)
+    }
 }

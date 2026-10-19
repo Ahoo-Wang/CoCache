@@ -245,7 +245,7 @@ interface AsyncInvalidationChannel : InvalidationChannel {
 | 组件 | 用途 | 默认 | 配置 |
 |------|------|------|------|
 | **异步执行器** `asyncExecutor` | 所有异步续接：解码、L2 填充、发出下一条 L1 命令、调用 `loadAsync`、完成返回的 future | 运行时自建的 `ForkJoinPool`：并行度 = CPU 数，守护线程，命名 `cocache-async-N`，随运行时关闭。**只执行短小的非阻塞工作；同步 loader 与同步 SPI 调用从不在这里执行** | `CacheRuntime.Builder.asyncExecutor`；starter `cocache.async-executor`（bean 名，与 6.1 的执行器同一规则） |
-| **阻塞执行器** `blockingExecutor` | 异步路径上的同步 loader；非原生异步后端的同步 SPI 调用 | JDK 21+：每任务一个虚拟线程；JDK 17：不排队、按需增长的守护线程池（≤ 512 线程，超出时由调用方执行）。即现在 Spring retrieve 执行器的默认值，移入 core 复用 | `CacheRuntime.Builder.blockingExecutor`；starter `cocache.blocking-executor`（bean 名） |
+| **阻塞执行器** `blockingExecutor` | 异步路径上的同步 loader；非原生异步后端的同步 SPI 调用 | JDK 21+：每任务一个虚拟线程；JDK 17：不排队、按需增长的守护线程池（≤ 512 线程，满时拒绝：`AbortPolicy`，见 §14）。沿用 Spring retrieve 执行器默认值的线程来源，移入 core 复用 | `CacheRuntime.Builder.blockingExecutor`；starter `cocache.blocking-executor`（bean 名） |
 | **定时器** `cocache-timer` | 等待 lease 的退避重读、等待回源许可的重试、`asyncTimeout` | 运行时自建的单线程守护 `ScheduledExecutorService`。**定时任务只把工作提交给异步执行器**，自己不执行任何引擎或用户代码 | 不可配置 |
 
 - **为什么不用 `commonPool`**（审阅决定，见 §12 Q2）：它与应用的并行流、其它库共用，被占满时所有缓存的完成都会停顿，而且从线程转储上看不出原因。自建池的线程名 `cocache-async-*` 在转储与 profiler 中一眼可辨，生命周期与运行时一致。
@@ -393,17 +393,19 @@ writeAsync(keys, mutateAsync, onFailure): CompletableFuture<Void?>
 
 ```kotlin
 override fun retrieve(key: Any): CompletableFuture<*>? =
+    // 实现中以 whenComplete 完成一个新 future，失败保留原始异常（thenApply 会包成 CompletionException）
     cache.async().lookup(key).thenApply { if (it is Lookup.Present) SimpleValueWrapper(it.value) else null }
 
 override fun <T : Any> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> =
-    cache.async().get(key, AsyncCacheLoader { _ -> valueLoader.get() }) as CompletableFuture<T>
+    // valueLoader.get()（方法体）派发到运行时的阻塞执行器，返回的 future 照常衔接
+    cache.async().get(key, AsyncCacheLoader { _ -> dispatch(valueLoader, blockingExecutor) }) as CompletableFuture<T>
 ```
 
 - **L2 命中不再切换线程**：返回已完成的 future（现状是每次 `supplyAsync` 到 retrieve 执行器）。
-- **响应式 / `CompletableFuture` 方法上的 `@Cacheable(sync = true)`**：Spring 以 `retrieve(key, () -> mono.toFuture())` 调用；现在经异步视图受 lease 与失效戳保护地回源，**没有线程在等待**，architecture.md §9.5 中“替换执行器不能排队、否则嵌套调用可能死锁”的约束随之消失。`valueLoader` 在异步执行器上被调用（与 Spring 自带的 Caffeine 异步缓存在其执行器上调用相同）。
+- **响应式 / `CompletableFuture` 方法上的 `@Cacheable(sync = true)`**：Spring 以 `retrieve(key, () -> mono.toFuture())` 调用；现在经异步视图受 lease 与失效戳保护地回源，**没有线程在等待**，architecture.md §9.5 中“替换执行器不能排队、否则嵌套调用可能死锁”的约束随之消失。`valueLoader.get()` 是用户的方法体，可能先阻塞再返回（如 `completedFuture(repository.find(id))`），因此**派发到运行时的阻塞执行器**执行（与 6.1 在 retrieve 执行器上执行的线程语义相同），不在异步执行器上执行：后者并行度只有 CPU 数，被阻塞的方法体占满时所有缓存的续接都会停顿。没有线程等待它返回的 future。
 - 负缓存视为未命中的语义不变：`retrieve(key)` 对负缓存以 `null` 完成（Spring 的“迟到的未命中”）。
 - 已知限制（写进文档）：Spring Cache 的 `put` / `evict` 只有同步签名。反应式方法上的 `@CachePut`、`@CacheEvict`、不带 `sync` 的 `@Cacheable` 在完成回调中同步调用它们，每次占用该线程一次 L1 往返。推荐继续使用 `sync = true`；需要非阻塞失效的代码直接调用 `cache.async().invalidate(k)`。
-- `cocache.spring-cache.retrieve-executor` 与 `CoCacheSpringCache(cache, admin, executor)` 构造函数在 6.3 标记弃用：设置时启动告警，执行器不再使用；7.0 删除。
+- `cocache.spring-cache.retrieve-executor` 与 `CoCacheSpringCacheManager(runtime, executor)` 在 6.3 标记弃用：设置时启动告警，执行器不再使用（方法体改在运行时的阻塞执行器上执行）；7.0 删除。`CoCacheSpringCache(cache, admin, executor)` 保留，执行器即执行方法体的执行器。
 - 事务：`TransactionalInvalidator` 不变（提交后在 Spring 的同步回调中调用同步 `invalidateAll`）。
 
 ---
@@ -586,6 +588,22 @@ interface LoadObserver {
 | §5.7：异步数据源的刷新 `asyncExecutor.execute { … }` | 在刷新执行器上发起，以异步路径推进，不在刷新执行器的线程上等待 | 尊重用户配置的刷新执行器（拒绝与计数语义不变）；发起只是一次非阻塞调用 |
 | §5.1：JDK 17 的阻塞执行器“超出时由调用方执行” | 满时拒绝（`RejectedExecutionException`，释放 lease） | 调用方是异步执行器的线程，由调用方执行会让同步数据源跑在异步执行器上，违反 A9 / 不变量 #6 |
 
-另外：`LoadPolicy` 是 `data class`，新增的 `asyncTimeout` 改变了它的 `copy` 签名（Kotlin 调用方重新编译即可；`@JvmOverloads` 构造函数保持兼容）。
+另外：`LoadPolicy` 是 `data class`，新增的 `asyncTimeout` 改变了它的 `copy` 签名与 Kotlin 默认参数的合成构造函数（`$default`）：省略参数构造或调用 `copy` 的 Kotlin 代码需要重新编译，否则 `NoSuchMethodError`；Java 经 `@JvmOverloads` 生成的构造函数保持兼容。
 
 审阅后的修订（PR 1）：执行器拒绝任务时，写入方的第二次递增与淘汰在 L1 future 的完成线程上就地执行，回源许可在加载链结束时恰好归还一次，lease 与刷新令牌尽力释放（§8.2“异步执行器拒绝任务”一行据此实现）；`asyncTimeout` 由 JDK 的延迟线程以 `completeOnTimeout` 的私有哨兵值计时（不经 `cocache-timer`），与数据源自己抛出的 `TimeoutException` 区分开。
+
+### 6.3 / PR 2（Redis 原生异步）
+
+- **闭环基准在 8 线程下低于 §11 的 90%**：`missLoadAsync`、`setAsync`、`invalidateAsync` 与经引擎的 `l1HitViaEngineAsync` 每次操作后都 `join()`，测的是闭环延迟。每次操作多出的一次线程切换是 A9 刻意要求的（结果从不在 Lettuce 的 I/O 线程上完成），在 8 个线程同时阻塞等待时最明显：实测为同步的 80%–93%（1 线程下 91%–98%；存储层的 `l1ReadAsync` 不经引擎切换，为 98%–103%）。不为追数据破坏这条不变量。
+- **替代的验收证据**：在途请求基准（`l1HitInFlightAsync` / `setInFlightAsync`，每个线程每次调用保持 32 个在途请求，全部完成后再等待），与同样线程数逐个阻塞的同步做法（`l1HitSequential` / `setSequential`）对比。异步视图的收益在于一个线程同时推进多个请求，数据见 PR 2 描述。
+- **基准的运行方式**：多个基准放进同一个 `jmh` 任务时，排在任务后段的基准在 8 线程下会明显变慢（长时间满载导致的降频），同一份代码单独运行时回到基线。命中路径的比较应按基准拆开、交替运行。
+
+### 6.3 / PR 3（Spring 与文档）
+
+| 正文 | 实现 | 理由 |
+|------|------|------|
+| §6：`retrieve(key, valueLoader)` 的 `valueLoader` 在异步执行器上调用 | `valueLoader.get()` 派发到运行时的阻塞执行器（`CacheRuntime.blockingExecutor`），返回的 future 照常衔接；执行器拒绝时以 `RejectedExecutionException` 失败并释放 lease | 方法体是用户代码，常见先阻塞再返回；在并行度为 CPU 数的异步执行器上执行会饿死所有缓存的续接。与 6.1 的线程语义一致 |
+| §6：`CoCacheSpringCache(cache, admin, executor)` 弃用 | 保留且不弃用，执行器即执行方法体的执行器；`CoCacheSpringCacheManager` 传入运行时的阻塞执行器 | 适配层需要一个执行器，6.1 的签名正好表达它 |
+| §6：`retrieve(key)` 以 `thenApply` 映射 | 以 `whenComplete` 完成新的 future | `thenApply` 把失败包成 `CompletionException`，违反 A7 |
+
+另外：`CoCacheSpringCacheManager` 的主构造函数不再带默认参数（6.1 为 `@JvmOverloads constructor(runtime, executor = DEFAULT_EXECUTOR)`），省略执行器的 Kotlin 调用方链接到的 `$default` 合成构造函数已不存在，需要重新编译；Java 调用方不受影响。

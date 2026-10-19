@@ -40,11 +40,12 @@ The starter checks at startup (with `@EnableCaching`, when a bean named `cocache
 | `put` (`@CachePut`) | `cache.put`; a `null` value becomes `invalidate` |
 | `evict` (`@CacheEvict`) | `cache.invalidate` on every instance |
 | `clear()` (`allEntries = true`) | Clears this instance's L2 only; Redis is never cleared wholesale |
-| `retrieve` (async, reactive) | Blocking lookup on the `retrieve` executor; with `sync = true` the same protected load |
+| `retrieve` (async, reactive) | 6.3+: the cache's async view, so no thread waits and an L2 hit returns a completed future; with `sync = true` the same protected load, and the method body runs on `cocache.blocking-executor` (it may block before it returns the future). Before 6.3: a blocking lookup on the `retrieve` executor |
 
 - A `sync = true` method returning `null` produces a negative entry for `absent-ttl`; invalidate the key when the row is created, or shorten `absent-ttl`.
 - Prefer `@CacheEvict` over `@CachePut` after writes.
-- A custom executor passed to `CoCacheSpringCacheManager(runtime, executor)` must not queue tasks behind tasks that wait on them.
+- 6.3 deprecates `cocache.spring-cache.retrieve-executor` and `CoCacheSpringCacheManager(runtime, executor)`; the executor is ignored and the runtime's blocking executor runs the method body. Before 6.3 it must not queue tasks behind tasks that wait on them.
+- Spring's `put` / `evict` are blocking: on reactive methods, `@CachePut`, `@CacheEvict` and non-sync `@Cacheable` hold the callback thread for one Redis round trip. Call `cache.async().invalidate(key)` where a write must not block.
 
 ## Several cache managers
 

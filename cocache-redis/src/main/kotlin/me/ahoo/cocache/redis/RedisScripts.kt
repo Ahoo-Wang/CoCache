@@ -105,7 +105,7 @@ if pttl == -2 then
 end
 -- 常见路径是 String：直接 GET（与 5.x 相同的两条命令）；类型不符时退回集合的 Hash：
 -- HKEYS 只取字段名（成员的值都是空串，不必返回），格式版本另由 HGET 取；两者与 HGETALL 的字段顺序相同
--- 只有 WRONGTYPE 表示类型不符；其它错误（如 ACL 缺少命令时的 `ERR ACL failure in script`）原样抛给调用方，不能当作无法识别的内容去回收
+-- 只有 WRONGTYPE 表示类型不符；其它错误（如 ACL 缺少命令）原样抛给调用方，不能当作无法识别的内容去回收
 local v = redis.pcall('GET', key)
 if type(v) == 'table' then
   if not is_wrongtype(v) then return v end

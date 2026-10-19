@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.spring.boot
 
+import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
@@ -106,6 +107,94 @@ class AnnotatedCacheTest {
 
         @Bean
         fun second(): CacheLoader<String, String> = CacheLoader { it }
+    }
+
+    @CoCache(name = "asyncSourced")
+    interface AsyncSourcedCache : Cache<String, String>
+
+    @CoCache(name = "asyncNamed", loader = "namedAsyncLoader")
+    interface AsyncNamedCache : Cache<String, Long>
+
+    @CoCache(name = "notLoader", loader = "notALoader")
+    interface NotALoaderCache : Cache<String, Long>
+
+    /**
+     * 只有异步数据源（按类型唯一匹配）与按名称指定的异步数据源（RFC 0004 §3.4）。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [AsyncSourcedCache::class, AsyncNamedCache::class])
+    class AsyncLoaderConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun codec(): Codec<String> = StringCodec
+
+        @Bean
+        fun longCodec(): Codec<Long> = object : Codec<Long> {
+            override fun encode(value: Long): ByteArray = value.toString().toByteArray()
+            override fun decode(bytes: ByteArray): Long = String(bytes).toLong()
+        }
+
+        @Bean
+        fun asyncLoader(): AsyncCacheLoader<String, String> =
+            AsyncCacheLoader { java.util.concurrent.CompletableFuture.completedFuture("async-$it") }
+
+        @Bean
+        fun namedAsyncLoader(): AsyncCacheLoader<String, Long> =
+            AsyncCacheLoader { java.util.concurrent.CompletableFuture.completedFuture(it.length.toLong()) }
+    }
+
+    /**
+     * 同步与异步数据源各有一个候选：歧义，启动失败。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [PlainCache::class])
+    class SyncAndAsyncLoaderConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun codec(): Codec<String> = StringCodec
+
+        @Bean
+        fun syncLoader(): CacheLoader<String, String> = CacheLoader { it }
+
+        @Bean
+        fun asyncLoader(): AsyncCacheLoader<String, String> =
+            AsyncCacheLoader { java.util.concurrent.CompletableFuture.completedFuture(it) }
+    }
+
+    /**
+     * 同时实现两者的数据源按同步数据源使用。
+     */
+    class DualLoader : CacheLoader<String, String>, AsyncCacheLoader<String, String> {
+        override fun load(key: String): String = "sync-$key"
+
+        override fun loadAsync(key: String) = java.util.concurrent.CompletableFuture.completedFuture("async-$key")
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [PlainCache::class])
+    class DualLoaderConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun codec(): Codec<String> = StringCodec
+
+        @Bean
+        fun dualLoader(): DualLoader = DualLoader()
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [NotALoaderCache::class])
+    class NotALoaderConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun notALoader(): StringBuilder = StringBuilder("plain")
     }
 
     @CoCache(ttl = 120, refreshWindow = 0)
@@ -274,6 +363,43 @@ class AnnotatedCacheTest {
                 ).store("UserCache").read("app:UserCache:u-1", null, null) as RemoteRead.Hit
                 requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(10))
             }
+    }
+
+    @Test
+    fun asyncLoadersAreResolvedByTypeAndName() {
+        runner.withUserConfiguration(AsyncLoaderConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val sourced = context.getBean(AsyncSourcedCache::class.java)
+            sourced["k"].assert().isEqualTo("async-k")
+            sourced.async().get("j").join().assert().isEqualTo("async-j")
+            context.getBean(AsyncNamedCache::class.java).async().get("four").join().assert().isEqualTo(4L)
+        }
+    }
+
+    @Test
+    fun syncAndAsyncLoaderCandidatesAreAmbiguous() {
+        runner.withUserConfiguration(SyncAndAsyncLoaderConfig::class.java).run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure.assert().hasStackTraceContaining("Both CacheLoader")
+        }
+    }
+
+    @Test
+    fun loaderImplementingBothIsUsedAsSync() {
+        runner.withUserConfiguration(DualLoaderConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean(PlainCache::class.java)["k"].assert().isEqualTo("sync-k")
+        }
+    }
+
+    @Test
+    fun namedLoaderMustBeALoader() {
+        runner.withUserConfiguration(NotALoaderConfig::class.java).run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure.assert().hasStackTraceContaining(
+                "must name a CacheLoader or an AsyncCacheLoader bean"
+            )
+        }
     }
 
     @Test

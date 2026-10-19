@@ -14,8 +14,10 @@
 package me.ahoo.cocache.redis
 
 import io.lettuce.core.RedisURI
+import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.NodeId
@@ -36,6 +38,8 @@ import org.openjdk.jmh.annotations.State
 import org.openjdk.jmh.annotations.TearDown
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
@@ -58,6 +62,11 @@ open class CoCacheBenchmark {
     private lateinit var store: RemoteStore
     private lateinit var l1Key: String
     private lateinit var batchKeys: List<String>
+    private lateinit var asyncCache: AsyncCache<String, String>
+    private lateinit var asyncMixed: List<AsyncCache<String, String>>
+    private lateinit var asyncStore: AsyncRemoteStore
+    private lateinit var l1Hits: Cache<String, String>
+    private lateinit var l1HitKeys: List<String>
 
     @Setup
     fun setup() {
@@ -82,6 +91,13 @@ open class CoCacheBenchmark {
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         batchKeys = (1..BATCH_SIZE).map { "cocache:bench-$run:batch-$it" }
         batchKeys.forEach { store.put(it, Envelope.Scalar("batch-value".toByteArray()), Duration.ofMinutes(10), frame) }
+        asyncCache = cache.async()
+        asyncMixed = mixed.map { it.async() }
+        asyncStore = store as AsyncRemoteStore
+        // L1 命中经引擎：工作集远大于 L2 容量，几乎每次读取都不命中 L2、命中 L1（并填充 L2）
+        l1Hits = runtime.create(spec("bench-l1-$run", policy.toBuilder().local(LocalPolicy(maximumSize = 16)).build()))
+        l1HitKeys = (1..L1_HIT_KEYS).map { "l1-$it" }
+        l1HitKeys.chunked(1_000).forEach { chunk -> l1Hits.putAll(chunk.associateWith { "l1-value" }) }
     }
 
     private fun spec(name: String, policy: CachePolicy) = cacheSpec<String, String>(name) {
@@ -114,9 +130,74 @@ open class CoCacheBenchmark {
         return length
     }
 
+    /** 异步视图的 L2 命中：同一次 Caffeine 查找，返回已完成的 future（RFC 0004 §5.8）。 */
+    @Benchmark
+    fun l2HitAsync(): CompletableFuture<String?> = asyncCache.get("hot")
+
+    /** 异步视图的 L2 命中，轮流访问三个配置不同的缓存。 */
+    @Benchmark
+    fun l2HitAsyncMixed(): Int {
+        var length = 0
+        for (each in asyncMixed) {
+            length += each.get("hot").getNow(null)?.length ?: 0
+        }
+        return length
+    }
+
+    /** 经引擎的 L1 命中（L2 不命中）：一次 EVALSHA + 解码 + 填充 L2。 */
+    @Benchmark
+    fun l1HitViaEngine(): String? = l1Hits[l1HitKeys[ThreadLocalRandom.current().nextInt(L1_HIT_KEYS)]]
+
+    /** 经引擎的异步 L1 命中：同上，经异步视图（L1 结果在 Lettuce 的 I/O 线程上完成，续接切换到异步执行器）。 */
+    @Benchmark
+    fun l1HitViaEngineAsync(): String? = l1Hits.async().get(l1HitKeys[ThreadLocalRandom.current().nextInt(L1_HIT_KEYS)]).join()
+
+    /**
+     * 每次调用保持 [IN_FLIGHT] 个在途的异步 L1 命中（经引擎），全部完成后再等待：异步视图的真实收益——
+     * 一个线程同时推进多个请求。与 [l1HitSequential] 比较（每次调用同样完成 [IN_FLIGHT] 次读取）。
+     */
+    @Benchmark
+    fun l1HitInFlightAsync(): Int {
+        val async = l1Hits.async()
+        val random = ThreadLocalRandom.current()
+        val futures = Array(IN_FLIGHT) { async.get(l1HitKeys[random.nextInt(L1_HIT_KEYS)]) }
+        CompletableFuture.allOf(*futures).join()
+        return futures.size
+    }
+
+    /** 同步逐个阻塞读取 [IN_FLIGHT] 次 L1 命中（经引擎），与 [l1HitInFlightAsync] 对照。 */
+    @Benchmark
+    fun l1HitSequential(): Int {
+        val random = ThreadLocalRandom.current()
+        var count = 0
+        repeat(IN_FLIGHT) { if (l1Hits[l1HitKeys[random.nextInt(L1_HIT_KEYS)]] != null) count++ }
+        return count
+    }
+
+    /** 每次调用保持 [IN_FLIGHT] 个在途的异步写入，全部完成后再等待。与 [setSequential] 对照。 */
+    @Benchmark
+    fun setInFlightAsync(): Int {
+        val random = ThreadLocalRandom.current()
+        val futures = Array(IN_FLIGHT) { asyncCache.put("in-flight-${random.nextInt(L1_HIT_KEYS)}", "value") }
+        CompletableFuture.allOf(*futures).join()
+        return futures.size
+    }
+
+    /** 同步逐个阻塞写入 [IN_FLIGHT] 次，与 [setInFlightAsync] 对照。 */
+    @Benchmark
+    fun setSequential(): Int {
+        val random = ThreadLocalRandom.current()
+        repeat(IN_FLIGHT) { cache.put("in-flight-${random.nextInt(L1_HIT_KEYS)}", "value") }
+        return IN_FLIGHT
+    }
+
     /** 直接读 L1：一次 EVALSHA（PTTL + GET + 头部解析）。 */
     @Benchmark
     fun l1Read(): RemoteRead = store.read(l1Key, null, null)
+
+    /** 直接异步读 L1：与 [l1Read] 相同的命令，经 `readAsync` 等待。 */
+    @Benchmark
+    fun l1ReadAsync(): RemoteRead = asyncStore.readAsync(l1Key, null, null).join()
 
     /** 逐个读 L1 的 [BATCH_SIZE] 个 key：[BATCH_SIZE] 次往返，与 [l1BatchRead] 对比。 */
     @Benchmark
@@ -130,6 +211,10 @@ open class CoCacheBenchmark {
     @Benchmark
     fun missLoad(): String? = cache["miss-${missCounter.incrementAndGet()}"]
 
+    /** 异步视图的完整未命中。 */
+    @Benchmark
+    fun missLoadAsync(): String? = asyncCache.get("miss-async-${missCounter.incrementAndGet()}").join()
+
     /** 写入：一次 Lua（覆盖写入 + PUBLISH），淘汰 L2。 */
     @Benchmark
     fun set() {
@@ -142,8 +227,18 @@ open class CoCacheBenchmark {
         cache.invalidate("inv")
     }
 
+    /** 异步视图的写入。 */
+    @Benchmark
+    fun setAsync(): Void? = asyncCache.put("hot-write-async", "value").join()
+
+    /** 异步视图的失效。 */
+    @Benchmark
+    fun invalidateAsync(): Void? = asyncCache.invalidate("inv-async").join()
+
     companion object {
         const val BATCH_SIZE = 100
+        const val L1_HIT_KEYS = 10_000
+        const val IN_FLIGHT = 32
     }
 }
 

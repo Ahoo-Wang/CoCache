@@ -50,7 +50,7 @@ flowchart BT
 | `cocache-codec-jackson` | `JacksonCodec`（Jackson 3，`tools.jackson`） |
 | `cocache-spring` | `CoCacheSpringCacheManager`、`TransactionalInvalidator`。供不使用 Boot 的 Spring 应用 |
 | `cocache-spring-boot-starter` | 自动配置、`@EnableCoCache`、注解翻译、spec bean 注册、`cocache.*` 配置项、actuator 端点、健康检查、Micrometer 绑定与 Spring Cache `sync` 检查 |
-| `cocache-test` | 已发布的 TCK：`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`、`HookedBackend`、`Concurrency` |
+| `cocache-test` | 已发布的 TCK：`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`，以及它们的异步版本（`AsyncBackendProtocolSpec`、`AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec`）、`CacheAccess`、`HookedBackend`、`Concurrency` |
 | `cocache-bom` | 版本对齐 |
 
 依赖方向严格单向。注解解析与 SpEL 只出现在 starter 中，所以 core 既不需要 Spring 也不需要 `kotlin-reflect`。新后端运行时只依赖 `cocache-api`，测试时依赖 `cocache-test`。
@@ -161,6 +161,7 @@ String 头：
 | 按条目决定寿命 | 是 | `TtlFunction`（`ttlOf`） |
 | 时钟 | 是 | `CacheClock`（测试） |
 | 刷新执行器、重试策略 | 是 | `CacheRuntime.Builder.refreshExecutor`（starter：`cocache.refresh-executor`）、`retryPolicy` |
+| 异步执行器与阻塞执行器 | 是 | `CacheRuntime.Builder.asyncExecutor` / `blockingExecutor`（starter：`cocache.async-executor` / `cocache.blocking-executor`）。见[异步 API](../guide/async.md#threads) |
 | **L2** | **否** | 始终是有界的 Caffeine 缓存，让命中路径保持单态、成本可知。用 `local-maximum-size` 调整容量 |
 | **栅栏、写入顺序、读路径** | **否** | 它们就是协议本身。见[一致性](./consistency.md) |
 | 线格式 | 大版本内不可变 | 只能两阶段升级 |
