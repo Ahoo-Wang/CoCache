@@ -1,6 +1,6 @@
 # RFC 0003：目标架构（第一性原理重构，6.0）
 
-- 状态：草案 v3（已经过两轮对抗验证，见 §10）；§9 步骤 1–3 已在 `me.ahoo.cocache` 包中实现（`cocache-redis` 为 Lettuce 后端，Sharded 通道与 JMH 对比待做），SPI 与线格式以代码为准（`me.ahoo.cocache.api.spi`、`me.ahoo.cocache.redis.RedisScripts`）
+- 状态：草案 v3（已经过两轮对抗验证，见 §10）；§9 步骤 1–4 已在 `me.ahoo.cocache` 包中实现（`cocache-redis` 为 Lettuce 后端；starter 以 `cocache.next.*` 过渡前缀、默认关闭的方式并存；Sharded 通道、`@CoCache` 接口式声明与 JMH 对比待做），SPI 与线格式以代码为准（`me.ahoo.cocache.api.spi`、`me.ahoo.cocache.redis.RedisScripts`）
 - 前提：**不考虑兼容性**。API、SPI、模块、Redis 线格式、配置项都可以推倒重来
 - 关系：吸收并取代 [RFC 0001](0001-l1-write-back-lease.md)（lease 成为唯一的写回保护原语，6.0 只破坏一次线格式，不再单独发布 lease）；[RFC 0002](0002-resp3-client-tracking.md) 变为新后端 SPI 下的一种可选通道
 
@@ -596,10 +596,10 @@ val users: CoCache<String, User> = runtime.create(
 
 - **声明方式一（推荐，G3 的测量对象）**：`@Bean fun userCache(): CacheSpec<String, User> = cacheSpec("user") { … }`。
   - starter 的 `BeanDefinitionRegistryPostProcessor` 从工厂方法**声明的泛型返回类型**解析 `K`、`V`，不实例化 spec。
-  - 为每个 spec 注册一个 `CoCache<K, V>` bean：bean 名为 spec bean 名加 `Cache` 后缀（如 `userCacheCache`；也可以用 `@CoCacheBean("userCache")` 指定），用 `setTargetType(ResolvableType)` 声明泛型，实例延迟创建。
+  - 为每个 spec 注册一个 `CoCache<K, V>` bean（`SetCacheSpec` 对应 `SetCache<K, E>`）：bean 名为 spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` 后缀；用 `setTargetType(ResolvableType)` 声明泛型，实例延迟创建。与已有 bean 重名时启动失败。
   - 泛型无法解析时启动失败，例如返回原始类型、通配符，或者通过 `registerBean(Supplier)` 注册。
   - 按泛型注入；同一组 `K, V` 有多个候选时用 `@Qualifier`。
-- **声明方式二（语法糖）**：`@CoCache interface UserCache : CoCache<String, User>`，由 `@EnableCoCache` 扫描。
+- **声明方式二（语法糖，未实现）**：接口式声明，由 `@EnableCoCache` 扫描。注解不能命名为 `@CoCache`（与 `CoCache` 接口同名，Kotlin 中无法同时导入），名称随 Q9 一起决定。
   - 实现方式待定（§8 Q9）：(a) 启动时为每个接口生成一个具体类，继承引擎包装类并实现用户接口，调用是普通的 `invokeinterface`，用户接口的默认方法也天然可用，但需要字节码生成（ByteBuddy 是新依赖，需维护者批准）；(b) 继续用 JDK 动态代理，作为不承诺性能的语法糖，开销单独公布。
   - v1 中“MethodHandle 分发表”的说法已撤回：JDK 18+ 的 `Method.invoke` 本身就基于 MethodHandle，存在表里的 MethodHandle 不是常量，JIT 无法内联，还要多一次查表。
   - 同一个缓存名既有 spec bean 又有接口声明时，启动失败。

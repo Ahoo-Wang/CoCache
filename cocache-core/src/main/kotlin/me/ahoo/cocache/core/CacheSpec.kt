@@ -61,6 +61,20 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
 
     override fun toString(): String = "CacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"
 
+    /**
+     * 以本声明为基础的构建器（用于叠加定制与配置）。
+     */
+    fun toBuilder(): Builder<K, V> = Builder<K, V>(name).also {
+        it.namespace = namespace
+        it.keyPrefix = keyPrefix
+        it.keyEncoder = keyEncoder
+        it.codec = codec
+        it.loader = loader
+        it.ttlOf = ttlOf
+        it.keyFilter = keyFilter
+        it.policy = policy
+    }
+
     class Builder<K : Any, V : Any> internal constructor(val name: String) {
         var namespace: String? = null
         var keyPrefix: String = DEFAULT_KEY_PREFIX
@@ -116,6 +130,17 @@ class SetCacheSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
     }
 
     override fun toString(): String = "SetCacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"
+
+    /**
+     * 以本声明为基础的构建器（用于叠加定制与配置）。
+     */
+    fun toBuilder(): Builder<K, E> = Builder<K, E>(name).also {
+        it.namespace = namespace
+        it.keyPrefix = keyPrefix
+        it.keyEncoder = keyEncoder
+        it.elementCodec = elementCodec
+        it.policy = policy
+    }
 
     class Builder<K : Any, E : Any> internal constructor(val name: String) {
         var namespace: String? = null
