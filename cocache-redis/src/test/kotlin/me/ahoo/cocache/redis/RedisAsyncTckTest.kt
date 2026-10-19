@@ -70,6 +70,8 @@ class RedisShardedAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
 }
 
 class RedisAsyncEngineTest : AsyncEngineSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
     private val clientName = "cocache-tck-" + UUID.randomUUID()
 
@@ -91,6 +93,8 @@ class RedisAsyncEngineTest : AsyncEngineSpec() {
  * 默认的用户路径：异步视图 + 同步数据源（在阻塞执行器上执行）。
  */
 class RedisAsyncWithSyncSourceEngineTest : AsyncEngineSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
     private val clientName = "cocache-tck-" + UUID.randomUUID()
 
@@ -111,6 +115,8 @@ class RedisAsyncWithSyncSourceEngineTest : AsyncEngineSpec() {
 }
 
 class RedisNonAtomicAsyncEngineTest : AsyncEngineSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -130,6 +136,8 @@ class RedisNonAtomicAsyncEngineTest : AsyncEngineSpec() {
 }
 
 class RedisShardedAsyncEngineTest : AsyncEngineSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
     private val clientName = "cocache-tck-" + UUID.randomUUID()
 
@@ -146,6 +154,8 @@ class RedisShardedAsyncEngineTest : AsyncEngineSpec() {
 }
 
 class RedisAsyncSetEngineTest : AsyncSetEngineSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -159,6 +169,8 @@ class RedisAsyncSetEngineTest : AsyncSetEngineSpec() {
 }
 
 class RedisAsyncMultiNodeTest : AsyncMultiNodeSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -172,6 +184,8 @@ class RedisAsyncMultiNodeTest : AsyncMultiNodeSpec() {
 }
 
 class RedisNonAtomicAsyncMultiNodeTest : AsyncMultiNodeSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -187,6 +201,8 @@ class RedisNonAtomicAsyncMultiNodeTest : AsyncMultiNodeSpec() {
 }
 
 class RedisShardedAsyncMultiNodeTest : AsyncMultiNodeSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -203,6 +219,8 @@ class RedisShardedAsyncMultiNodeTest : AsyncMultiNodeSpec() {
  * 故障 TCK（`pubsub`）：单机时经 [TcpProxy] 连接 Redis，以支持断线用例。
  */
 class RedisAsyncFaultTest : AsyncFaultSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
     private var proxy: TcpProxy? = null
 
@@ -231,6 +249,8 @@ class RedisAsyncFaultTest : AsyncFaultSpec() {
 }
 
 class RedisNonAtomicAsyncFaultTest : AsyncFaultSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -246,6 +266,8 @@ class RedisNonAtomicAsyncFaultTest : AsyncFaultSpec() {
 }
 
 class RedisShardedAsyncFaultTest : AsyncFaultSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock

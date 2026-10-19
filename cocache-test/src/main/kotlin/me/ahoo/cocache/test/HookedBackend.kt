@@ -149,12 +149,20 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     }
 
     /**
-     * 关闭钩子线程与被包装的后端（规范在 `setup` 中经 `createBackend` 创建它，`destroy` 中关闭它）。
-     * 此前继承的是不做任何事的默认实现：Redis 后端的客户端与事件循环线程在 TCK 用例之间泄漏。
+     * [close] 时是否同时关闭被包装的后端。默认 `false`（与此前的行为相同）：被包装的后端可能是共享的，或由创建方自己关闭。
+     * 规范的 `closesBackend` 为 `true` 时开启（每个用例新建后端的实现，如 Redis，应当开启，否则客户端与线程在用例之间泄漏）。
+     */
+    @Volatile
+    var closesDelegate: Boolean = false
+
+    /**
+     * 停止钩子线程；[closesDelegate] 为 `true` 时同时关闭被包装的后端。
      */
     override fun close() {
         hookExecutor.shutdownNow()
-        delegate.close()
+        if (closesDelegate) {
+            delegate.close()
+        }
     }
 
     private fun <T> asIssuer(issuer: String, block: () -> T): T {

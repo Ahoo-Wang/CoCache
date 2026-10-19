@@ -71,6 +71,12 @@ abstract class MultiNodeSpec {
      */
     protected open val access: CacheAccess = CacheAccess.SYNC
 
+    /**
+     * 用例结束时是否关闭 [createBackend] 返回的后端（见 [HookedBackend.closesDelegate]）。默认 `false`：后端可能是共享的。
+     * 每个用例新建后端的实现应覆盖为 `true`。
+     */
+    protected open val closesBackend: Boolean = false
+
     protected lateinit var backend: HookedBackend
     protected lateinit var cacheName: String
     private lateinit var nodes: List<CacheRuntime>
@@ -88,7 +94,7 @@ abstract class MultiNodeSpec {
 
     @BeforeEach
     open fun setup() {
-        backend = HookedBackend(createBackend())
+        backend = HookedBackend(createBackend()).apply { closesDelegate = closesBackend }
         nodes = (1..NODES).map { newNode() }
         cacheName = "tck-multi-" + UUID.randomUUID().toString().substring(0, 8)
     }
@@ -403,15 +409,22 @@ abstract class MultiNodeSpec {
         afterLoad = { release.awaitOrFail("release refresh loads") }
         val hits = caches.flatMapIndexed { node, cache -> keys.map { key -> fork("node$node-$key") { cache[key] } } }
         awaitCondition("one refresh load per key, every other hit returned") {
-            // 同步视图上取得刷新令牌的命中线程等在回源里；异步视图上刷新可能在异步执行器上回源，命中线程都已返回
-            keys.all { loadsOf(it) == 2 } && hits.count { !it.thread.isAlive } >= hits.size - keys.size
+            // 同步视图上取得刷新令牌的命中线程等在回源里，其余命中都已返回；
+            // 异步视图上刷新可能在异步执行器上回源，所以命中线程可能全部已返回
+            val returned = hits.count { !it.thread.isAlive }
+            keys.all { loadsOf(it) == 2 } &&
+                if (access === CacheAccess.SYNC) returned == hits.size - keys.size else returned >= hits.size - keys.size
         }
         release.countDown()
         hits.forEach { it.join() }
         afterLoad = null
         sum { it.refreshes }.assert().isEqualTo(hits.size.toLong())
-        // 异步视图上刷新的 fill 可能在命中线程返回之后才完成
-        awaitCondition("refresh fills reached L1") { keys.all { remoteValue(it) == "$it-1" } }
+        if (access === CacheAccess.SYNC) {
+            keys.forEach { remoteValue(it).assert().isEqualTo("$it-1") }
+        } else {
+            // 异步视图上刷新的 fill 可能在命中线程返回之后才完成
+            awaitCondition("refresh fills reached L1") { keys.all { remoteValue(it) == "$it-1" } }
+        }
         awaitCondition("every node refilled from L1") { caches.all { cache -> keys.all { cache[it] == "$it-1" } } }
         keys.forEach { key -> loadsOf(key).assert().withFailMessage { "loads of $key" }.isEqualTo(2) }
     }

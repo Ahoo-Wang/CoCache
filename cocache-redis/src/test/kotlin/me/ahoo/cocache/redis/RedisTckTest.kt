@@ -55,6 +55,8 @@ class RedisBackendProtocolTest : BackendProtocolSpec() {
  * 引擎 TCK：引擎使用手动时钟，推进时同时缩短 L1 中 key 的剩余寿命。
  */
 class RedisEngineTest : EngineSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
     private val clientName = "cocache-tck-" + UUID.randomUUID()
 
@@ -73,6 +75,8 @@ class RedisEngineTest : EngineSpec() {
 }
 
 class RedisSetEngineTest : SetEngineSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -104,6 +108,8 @@ class RedisNonAtomicBackendProtocolTest : BackendProtocolSpec() {
  * 非原子广播后端上的引擎 TCK。
  */
 class RedisNonAtomicEngineTest : EngineSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -145,6 +151,8 @@ class RedisShardedBackendProtocolTest : BackendProtocolSpec() {
  * Sharded Pub/Sub 通道上的引擎 TCK（含断线重连后重新订阅触发重置）。
  */
 class RedisShardedEngineTest : EngineSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
     private val clientName = "cocache-tck-" + UUID.randomUUID()
 
@@ -161,6 +169,8 @@ class RedisShardedEngineTest : EngineSpec() {
 }
 
 class RedisMultiNodeTest : MultiNodeSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -174,6 +184,8 @@ class RedisMultiNodeTest : MultiNodeSpec() {
 }
 
 class RedisNonAtomicMultiNodeTest : MultiNodeSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -189,6 +201,8 @@ class RedisNonAtomicMultiNodeTest : MultiNodeSpec() {
 }
 
 class RedisShardedMultiNodeTest : MultiNodeSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -205,6 +219,8 @@ class RedisShardedMultiNodeTest : MultiNodeSpec() {
  * 故障 TCK（`pubsub`）。单机时经 [TcpProxy] 连接 Redis，以支持断线用例；另含 Redis 特有的 `NOSCRIPT` 回退用例。
  */
 class RedisFaultTest : FaultSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
     private var proxy: TcpProxy? = null
 
@@ -298,6 +314,8 @@ class RedisFaultTest : FaultSpec() {
 }
 
 class RedisNonAtomicFaultTest : FaultSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -313,6 +331,8 @@ class RedisNonAtomicFaultTest : FaultSpec() {
 }
 
 class RedisShardedFaultTest : FaultSpec() {
+    override val closesBackend: Boolean = true
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock

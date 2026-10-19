@@ -84,6 +84,7 @@ JMH 对比见 RFC 0003 §7.1。
 | 集合基准 `setRead` | G3 | 成员数 10 / 100 / 1000 的吞吐与内存，决定 Hash 编码是否保留（RFC 0003 §8 Q1） | ✅ `SetCacheBenchmark`；保留 Hash（RFC 0003 §8.1） |
 | 集合读脚本改用 `HKEYS` | G3 | 读脚本以 `HKEYS` + `HGET !f` 取代 `HGETALL`，不再返回空值；存储布局不变，不是线格式变更。服务端实测 1000 个成员时读吞吐约 1.8 倍（RFC 0003 §8.1） | 未实现 |
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
+| 异步命令超时改用 Lettuce `TimeoutOptions` | G3 | 异步视图的命令超时目前由 `CompletableFuture.orTimeout` 计时（JDK 的单线程延迟调度器，每条命令一次调度与撤销），8 线程闭环基准低于 RFC 0004 §11 的 90% 的一部分来自这里；改由 Lettuce 自己的命令超时触发、在 `bounded` 中只做异常映射（RFC 0004 §14） | 未实现 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
 
 6.0 已交付按 key 查看与失效（actuator `GET` / `DELETE /actuator/cocache/{name}/{key}`、`CacheAdmin.inspect`）与 `ExternalInvalidator`。

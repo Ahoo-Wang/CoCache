@@ -99,23 +99,28 @@ internal class RedisRemoteStore(
         }
         val result = CompletableFuture<Map<String, RemoteRead>>()
         CompletableFuture.allOf(*futures.values.toTypedArray()).whenComplete { _, _ ->
-            val reads = LinkedHashMap<String, RemoteRead>(futures.size)
-            var failure: Throwable? = null
-            for ((key, future) in futures) {
-                val (read, error) = outcome(future)
-                if (error == null) {
-                    reads[key] = requireNotNull(read)
-                } else {
-                    val first = failure
-                    if (first == null) failure = error else first.addSuppressed(error)
+            // 处理体抛出时 result 也必须完成，否则调用方永远等不到结果
+            try {
+                val reads = LinkedHashMap<String, RemoteRead>(futures.size)
+                var failure: Throwable? = null
+                for ((key, future) in futures) {
+                    val (read, error) = outcome(future)
+                    if (error == null) {
+                        reads[key] = requireNotNull(read)
+                    } else {
+                        val first = failure
+                        if (first == null) failure = error else first.addSuppressed(error)
+                    }
                 }
-            }
-            val error = failure
-            if (error == null) {
-                result.complete(reads)
-            } else {
-                releaseGranted(reads, leases)
-                result.completeExceptionally(error)
+                val error = failure
+                if (error == null) {
+                    result.complete(reads)
+                } else {
+                    releaseGranted(reads, leases)
+                    result.completeExceptionally(error)
+                }
+            } catch (e: Throwable) {
+                result.completeExceptionally(e)
             }
         }
         return result
@@ -245,11 +250,16 @@ internal class RedisRemoteStore(
     /**
      * 全部完成后完成；有失败时以按发出顺序的第一个异常失败（与同步版本逐个等待时抛出的异常一致）。
      */
+    @Suppress("TooGenericExceptionCaught")
     private fun allDone(futures: List<CompletableFuture<*>>): CompletableFuture<Void?> {
         val result = CompletableFuture<Void?>()
         CompletableFuture.allOf(*futures.toTypedArray()).whenComplete { _, _ ->
-            val error = futures.firstNotNullOfOrNull { outcome(it).second }
-            if (error == null) result.complete(null) else result.completeExceptionally(error)
+            try {
+                val error = futures.firstNotNullOfOrNull { outcome(it).second }
+                if (error == null) result.complete(null) else result.completeExceptionally(error)
+            } catch (e: Throwable) {
+                result.completeExceptionally(e)
+            }
         }
         return result
     }

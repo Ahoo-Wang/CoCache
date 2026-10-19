@@ -76,6 +76,12 @@ abstract class FaultSpec {
      */
     protected open val access: CacheAccess = CacheAccess.SYNC
 
+    /**
+     * 用例结束时是否关闭 [createBackend] 返回的后端（见 [HookedBackend.closesDelegate]）。默认 `false`：后端可能是共享的。
+     * 每个用例新建后端的实现应覆盖为 `true`。
+     */
+    protected open val closesBackend: Boolean = false
+
     protected lateinit var backend: HookedBackend
     protected lateinit var cacheName: String
     private lateinit var nodeA: CacheRuntime
@@ -88,7 +94,7 @@ abstract class FaultSpec {
 
     @BeforeEach
     open fun setup() {
-        backend = HookedBackend(createBackend())
+        backend = HookedBackend(createBackend()).apply { closesDelegate = closesBackend }
         nodeA = newNode(RETRY)
         nodeB = newNode(RETRY)
         cacheName = "tck-fault-" + UUID.randomUUID().toString().substring(0, 8)

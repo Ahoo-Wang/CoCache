@@ -309,7 +309,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **只访问主节点**：读脚本会写 lease 与刷新令牌，不能在副本上执行。CoCache 自己的连接不继承应用的从库读取配置。
 - **命令连接**：每个后端一条共享连接（Cluster 由 Lettuce 按节点管理），并发的异步命令在其上多路复用。大载荷会造成队头阻塞。
 - **脚本缓存**：每条命令 `EVALSHA`，遇到 `NOSCRIPT`（故障切换、重启、resharding 后）改用 `EVAL` 重试。
-- **原生异步**（RFC 0004 §4.3）：`RedisRemoteStore` 实现 `AsyncRemoteStore`，两种失效通道实现 `AsyncInvalidationChannel`。每个操作只构造一次命令，同步方法等待它，异步方法直接返回它（不占任何线程），同步与异步只有一份协议实现。异步结果的超时与异常类型与同步等待一致（`RedisConnections.bounded`）：超过 `commandTimeout` 时取消命令并以 `RedisException("Command timed out …")` 失败，执行异常解包为原始的运行时异常；超时作用于自己的副本（命令完成时 JDK 撤销超时任务）。`readAllAsync` 等全部读取完成再判定，任一失败时先尽力释放其余读取取得的 lease；`putAllAsync` / `invalidateAsync` 以按发出顺序的第一个异常失败。异步结果在 Lettuce 的 I/O 线程上完成，引擎切换到异步执行器（§5.6）。
+- **原生异步**（RFC 0004 §4.3）：`RedisRemoteStore` 实现 `AsyncRemoteStore`，两种失效通道实现 `AsyncInvalidationChannel`。每个操作只构造一次命令（`xxxCommand`），同步方法等待它；异步方法返回它经 `RedisConnections.bounded` 与 `mapped` 包装后的新 future，等待期间不占线程，同步与异步只有一份协议实现。异步结果的超时与异常类型与同步等待一致：超过 `commandTimeout` 时取消命令并以 `RedisException("Command timed out …")` 失败，执行异常解包为原始的运行时异常（不是运行时异常的包装为 `RedisException`）；超时由 JDK 的延迟调度器（`orTimeout`，作用于自己的副本，命令完成时撤销）触发，不经 `cocache-timer`。`mapped` 代替 `thenApply`，失败不包装为 `CompletionException`。`readAllAsync` 等全部读取完成再判定，任一失败时先尽力释放其余读取取得的 lease；`putAllAsync` / `invalidateAsync` 以按发出顺序的第一个异常失败。异步结果在 Lettuce 的 I/O 线程上完成，引擎切换到异步执行器（§5.6）。
 - **原子广播探测**：`pubsub` 模式启动时在脚本内向与 key 不同 slot 的频道 `PUBLISH`。在把 `PUBLISH` 当作 `SPUBLISH` 执行的环境（如 ElastiCache Serverless）中报跨 slot 错误，后端以 `atomicBroadcast = false` 运行并告警。只有确定性的错误（跨 slot、ACL 拒绝）才降级；超时等其它错误使启动失败，而不是永久降级。
 
 ### 8.1 失效通道
@@ -491,7 +491,7 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 3. **读路径从不无条件删除**：同版本的损坏只能通过 `reclaim`（比较摘要）转为 lease；更高的未知版本既不回收也不写回。
 4. **能原子广播就原子广播**：后端以 `atomicBroadcast` 声明能力；为 `false` 时由引擎在写入成功后发布，TCK 按能力分别验证。
 5. **SingleFlight 先注销调用、再发布结果**（读己之写依赖这个顺序）；同步与异步调用共用一张表，异步调用在注册之后取戳；每个异步调用方拿到自己的 future；同步调用合并到异步调用时只阻塞自己的线程，异步调用合并到同步调用时经异步执行器拿到结果。同线程对同一 key 的重入（同步调用的拥有线程，或正在为该 key 调用数据源的线程）快速失败；批量合并先注册全部 key、先完成自己负责的 key 再等待别人。
-6. **同步 API 上 loader 在调用方线程上执行**；异步视图上异步数据源在调用方线程或异步执行器上调用，同步数据源只在阻塞执行器上执行，从不在异步执行器上执行。Future 只包装 I/O，L1 与数据源的 future 完成后先切换到异步执行器（或在已完成时就地）再执行续接，**事件循环线程上不执行续接**。
+6. **同步 API 上 loader 在调用方线程上执行**；异步视图上异步数据源在调用方线程或异步执行器上调用，同步数据源只在阻塞执行器上执行，从不在异步执行器上执行。Future 只包装 I/O，L1 与数据源的 future 完成后先切换到异步执行器（或在已完成时就地）再执行续接，**事件循环线程上不执行续接**。唯一的例外是存储内部、不含用户代码的结果转换：Redis 后端在 Lettuce 的 I/O 线程上把脚本返回值转换为 `RemoteRead`（解析 36 字节头部并拷贝出载荷、集合成员），不调用 `Codec`、不调用任何用户代码；代价是大值（或大集合）的这一次拷贝在 I/O 线程上进行，会推迟同一连接上其它命令的完成（与同一连接上大载荷本身的队头阻塞同量级，§8）。
 7. **令牌必须释放或过期**：loader、`ttlOf`、`Codec` 失败，回源被拒绝或超时，以及刷新令牌用不上时都要 `release`。
 8. **每次 L1 状态转换都显式重设到期时间。**
 9. **线格式在一个大版本内冻结**：key 布局、标量头、集合字段、消息帧、频道命名、摘要算法。格式演进通过版本号两阶段完成。
