@@ -26,7 +26,8 @@ import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import java.time.Duration
 
 /**
- * 集成测试的 Redis：默认 localhost:6379；设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时连接 Redis Cluster（与 CI 的集群任务一致）。
+ * 集成测试的 Redis：默认 localhost:6379，可用 `SPRING_DATA_REDIS_HOST` / `SPRING_DATA_REDIS_PORT` 改为其他单机实例（与 starter 测试读取的变量相同，例如 CI 的 Valkey 任务）；
+ * 设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时连接 Redis Cluster（与 CI 的集群任务一致）。
  *
  * Redis 的到期时间由服务端时钟驱动，无法推进。[shiftTtl] 把匹配 key 的剩余寿命整体缩短，模拟时间流逝。
  */
@@ -41,7 +42,10 @@ object RedisTestSupport {
             RedisURI.create(host, port.toInt())
         }
 
-    private val standaloneUri: RedisURI = RedisURI.create("localhost", 6379)
+    private val standaloneUri: RedisURI = RedisURI.create(
+        System.getenv("SPRING_DATA_REDIS_HOST") ?: "localhost",
+        System.getenv("SPRING_DATA_REDIS_PORT")?.toInt() ?: 6379
+    )
 
     val isCluster: Boolean = clusterNodes != null
 
@@ -143,6 +147,51 @@ object RedisTestSupport {
         connection.sync().subscribe(channel.toByteArray(Charsets.UTF_8))
         return AutoCloseable {
             connection.close()
+            client.shutdown()
+        }
+    }
+
+    /**
+     * 经 [proxy] 连接单机 Redis 的后端（用于模拟命令连接断线）。仅限单机。
+     */
+    fun proxiedBackend(proxy: TcpProxy): RedisBackend {
+        check(!isCluster) { "Standalone only" }
+        return RedisBackend.standalone(
+            RedisURI.create(proxy.address, proxy.port),
+            RedisBackendOptions(clientName = "cocache-tck-" + java.util.UUID.randomUUID())
+        )
+    }
+
+    /**
+     * 新建一个转发到单机 Redis 的 [TcpProxy]。仅限单机。
+     */
+    fun proxy(): TcpProxy {
+        check(!isCluster) { "Standalone only" }
+        return TcpProxy(standaloneUri.host, standaloneUri.port)
+    }
+
+    /**
+     * 清空每个主节点的脚本缓存（`SCRIPT FLUSH`），模拟故障切换、重启或 resharding 后的脚本缓存丢失。
+     */
+    fun flushScripts() {
+        val nodes = clusterNodes
+        if (nodes != null) {
+            val client = RedisClusterClient.create(nodes)
+            try {
+                client.connect().use { connection ->
+                    connection.partitions
+                        .filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
+                        .forEach { node -> connection.getConnection(node.nodeId).sync().scriptFlush() }
+                }
+            } finally {
+                client.shutdown()
+            }
+            return
+        }
+        val client = RedisClient.create(standaloneUri)
+        try {
+            client.connect().use { it.sync().scriptFlush() }
+        } finally {
             client.shutdown()
         }
     }

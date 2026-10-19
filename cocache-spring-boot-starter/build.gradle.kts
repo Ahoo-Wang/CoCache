@@ -30,6 +30,9 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-actuator")
     // Micrometer 指标按 @ConditionalOnClass 激活：编译期可见，由使用方自行引入
     compileOnly("io.micrometer:micrometer-core")
+    // 回源追踪按 @ConditionalOnClass(ObservationRegistry) 激活（micrometer-core 依赖它，这里显式声明编译期依赖）
+    compileOnly("io.micrometer:micrometer-observation")
+    testImplementation("io.micrometer:micrometer-observation-test")
     kapt("org.springframework.boot:spring-boot-configuration-processor")
     kapt("org.springframework.boot:spring-boot-autoconfigure-processor")
     testImplementation("org.springframework.boot:spring-boot-starter-data-redis")

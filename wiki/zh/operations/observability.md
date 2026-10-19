@@ -1,15 +1,16 @@
 ---
 title: 可观测性
-description: 每个 cocache.* Micrometer 指标的含义与告警建议、cocache 健康检查、Actuator 端点（列出缓存、清空 L2、按 key 查看与失效），以及值得告警的日志。
+description: 每个 cocache.* Micrometer 指标的含义与告警建议、以 Micrometer Observation 追踪回源、cocache 健康检查、Actuator 端点（列出缓存、清空 L2、按 key 查看与失效），以及值得告警的日志。
 ---
 
 # 可观测性
 
-classpath 上有 `spring-boot-starter-actuator` 时，starter 通过三个渠道报告 CoCache 的状态：
+classpath 上有 `spring-boot-starter-actuator` 时，starter 通过四个渠道报告 CoCache 的状态：
 
 | 渠道 | 用途 |
 |------|------|
 | [指标](#metrics)（`cocache.*`） | 趋势与告警 |
+| [链路追踪](#tracing)（`cocache.load`） | 一次慢的未命中把时间花在了哪里 |
 | [健康检查](#health)（`cocache`） | 本实例能否收到失效消息 |
 | [Actuator 端点](#actuator-endpoint)（`/actuator/cocache`） | 本实例的计数器、查看一个 key、强制失效 |
 
@@ -78,6 +79,28 @@ Prometheus 名称遵循 Micrometer 的约定：`cocache.misses` 变为 `cocache_
 | 非发布期间 `increase(cocache_unknown_formats_total[10m]) > 0` | 警告 | 有实例在写更新的格式 | [未知格式](./troubleshooting.md#unknown-format) |
 | `rate(cocache_reclaims_total[5m]) > 0` 持续 | 警告 | 有东西在写本实例无法解码的值 | [损坏的载荷](./troubleshooting.md#corrupt-payloads) |
 | `rate(cocache_degraded_fills_total[5m])` 上升 | 提示 | 绕过 L1 的加载增多，数据源负载上升 | [Redis 不可用](./troubleshooting.md#redis-down) |
+
+## 链路追踪 {#tracing}
+
+classpath 上有 `micrometer-observation`、容器中有 `ObservationRegistry` bean（引入 actuator 后由 Spring Boot 的 `ObservationAutoConfiguration` 提供）时，starter 注册 bean `cocacheLoadObserver`（`MicrometerLoadObserver`），把每次回源包在一个 Micrometer `Observation` 中。追踪桥接（如 `micrometer-tracing-bridge-otel`）把它转为 span，Spring Boot 的指标处理器把它转为计时器。
+
+| 字段 | 值 |
+|------|----|
+| 名称 | `cocache.load` |
+| 上下文名称（span 名） | `cocache {operation} {cache}`，如 `cocache load UserCache` |
+| `cache`（低基数） | 缓存名 |
+| `operation`（低基数） | `load`（未命中、`get(key, loader)`，或批量读取退回单 key）、`loadAll`（一次批量回源）、`refresh`（提前刷新回源）、`lease.wait`（等待其它实例的 lease） |
+| `outcome`（低基数） | `success` 或 `error`。`error` 时异常记录到 Observation 上，并原样抛出 |
+| `key.count`（高基数，只出现在 span 上） | 本次调用的 key 数：1，`loadAll` 时为批量大小 |
+
+观测范围：
+
+- 只包住 loader 调用本身，以及确实发生的 lease 等待。L2 命中、L1 读取与填充都不产生 Observation；没有配置观测器时引擎连对象都不分配。被 `load-max-concurrent` 拒绝的加载不观测。
+- 从不记录 key：高基数，且可能是个人信息。
+- loader 在调用方线程上、在 Observation 的作用域内执行，因此 loader 产生的 span（JDBC、HTTP）是 `cocache.load` 的子 span，而 `cocache.load` 又是请求 span 的子 span。提前刷新在刷新执行器上执行，只有该执行器传播上下文时它的 span 才有父 span。
+- 启用 Spring Boot 指标时，每个 Observation 还会产生 `cocache.load` 计时器与 `cocache.load.active` 长任务计时器，标签为 `cache`、`operation`、`outcome`（计时器上另有 Micrometer 自带的 `error` 标签）。它们与 [`cocache.loads`](#metrics-loads) 函数计时器重叠，后者仍是开销最低、始终开启的那一个。
+
+用 `cocache.observation.enabled: false` 或 Spring Boot 的 `management.observations.enable.cocache: false` 关闭。自己声明的 `LoadObserver` bean 会取代 Micrometer 观测器；不用 Spring 时传给 `CacheRuntime.builder().loadObserver(…)`。实现必须在调用方线程上执行 block 恰好一次，并原样抛出其异常。
 
 ## 健康检查 {#health}
 

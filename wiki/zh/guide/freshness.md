@@ -34,6 +34,23 @@ userCache.invalidate(id)     // 所有实例丢弃该 key
 
 无论哪种调用，返回之后同一实例上的下一次读取都能看到变化。其它实例在失效消息到达后看到，通常是毫秒级。
 
+## 批量写入 {#batch-writes}
+
+`putAll` 一次写入多个 key，每个 key 的规则与 `put` 相同：
+
+```kotlin
+userCache.putAll(users.associateBy { it.id })                          // 按 ttlOf 或策略，每个 key 各自抖动
+userCache.putAll(users.associateBy { it.id }, Duration.ofMinutes(5))   // 统一指定寿命
+```
+
+- **不会写回旧值。** 整批是一次写入：本实例在写 Redis 之前和之后各丢弃一次所有 key 的 L2 副本，覆盖写入同时销毁加载用的 lease。开始于 `putAll` 之前的加载无法把旧值缓存下来，L2 和 Redis 都不会。与 `put` 一样，`putAll` 不填充本实例的 L2。
+- **一次往返，一条消息。** Redis 收到一个脚本，写入全部 key，并为它们发布一条失效消息。在 Redis Cluster 中，key 按 slot 分组并按 `cocache.redis.invalidate-batch-size` 切分，每组一个脚本并发执行。每个 key 原子写入，整批不保证原子。
+- **编码后的 key 冲突：** 两个 key 编码成同一个存储 key 时，后出现的为准。空 map 不做任何事。
+- **失败：** 与 `put` 一样，Redis 故障时 `putAll` 抛出 `CacheWriteException`，部分 key 可能已经写入。可以安全重试。
+- **`SetCache.putAll`** 整体替换每个集合，空集合清除对应的 key，与 `put` 完全一致。
+
+没有重写 `putAll` 的自定义 `Cache` 实现会退回为逐个调用 `put`。
+
 ## 在事务中 {#transactions}
 
 在 Spring 事务中，“提交之后”并不是你的代码运行的位置。`TransactionalInvalidator`（classpath 中有 `spring-tx` 时由 starter 注册）把失效挪到那里：
@@ -162,6 +179,6 @@ cocache:
 - 重试耗尽或队列溢出时，CoCache 记录错误日志并计入 `cocache.invalidations.dropped`。其它实例此后可能从 Redis 重新加载旧值，直到它过期，所以上界是该值的剩余寿命。`ttl-forever` 时没有上界：Redis 恢复后请再失效一次。
 - 设置 `invalidate-failure: throw` 时，调用改为抛出 `CacheWriteException`，由你决定如何处理。
 
-**`put`**，以及 `SetCache` 的写入 `add`、`remove`、`clear`，会抛出 `CacheWriteException`。超时之后结果可能未知，但这些操作都是幂等的，可以安全重试。
+**`put`** 与 **`putAll`**，以及 `SetCache` 的写入 `add`、`remove`、`clear`，会抛出 `CacheWriteException`。超时之后结果可能未知，但这些操作都是幂等的，可以安全重试。
 
 重试队列的上限来自 `CacheRuntime` 上的 `RetryPolicy`。在 Spring Boot 中修改它，需要声明自己的 `CacheRuntime` bean（见[配置参考](./configuration.md#beyond-properties)）。在健康检查详情（`pendingInvalidations`）和[可观测性](../operations/observability.md)中观察这个队列。

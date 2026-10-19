@@ -255,7 +255,7 @@ val members: Set<String> = online[roomId] // empty set when absent
 
 - **No loader.** A set cache has no source to reload from; `@CoCache(loader = …)` on one fails startup, and `get(key, loader)` throws.
 - **`invalidate` and `invalidateAll` throw `UnsupportedOperationException`**, because they would destroy the only copy. Use `clear`.
-- **`put(key, emptySet())` equals `clear(key)`**: an empty set is stored as no key.
+- **`put(key, emptySet())` equals `clear(key)`**: an empty set is stored as no key. `putAll` follows the same rule for each entry ([batch writes](./freshness.md#batch-writes)).
 - **TTL defaults to forever.** Each `add` or `remove` resets the expiry when you set one.
 - **Failures are loud.** Writes throw `CacheWriteException` (they are idempotent, so retry). Reads throw the Redis error, since there is no source to fall back to.
 - **Unreadable content throws.** An element the codec can't decode makes the read throw, and a set written in a newer format throws `IllegalStateException`. Content CoCache didn't write (for example a native Redis Set at the same key) reads as an empty set, stays in L2 for at most `degradedLocalMaxAge`, and is replaced by the next `put` or `add`.

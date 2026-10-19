@@ -53,6 +53,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * 竞态用 latch 编排；跨节点效果用带超时的轮询断言。
  */
+@Suppress("LargeClass")
 abstract class EngineSpec {
     protected abstract fun createBackend(): CoherenceBackend
 
@@ -678,6 +679,121 @@ abstract class EngineSpec {
         cacheA.invalidateAll(listOf("a", "b", "a"))
         cacheA.invalidateAll(emptyList())
         awaitCondition("B sees new values") { cacheB.getAll(listOf("a", "b")) == mapOf("a" to "a1", "b" to "b1") }
+    }
+
+    @Test
+    fun putAllIsVisibleToTheOtherNodeInOneBatch() {
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        database["a"] = "a0"
+        database["b"] = "b0"
+        cacheB["a"].assert().isEqualTo("a0")
+        cacheB["b"].assert().isEqualTo("b0")
+        cacheA.putAll(mapOf("a" to "a1", "b" to "b1", "c" to "c1"))
+        backend.putAlls.get().assert().isEqualTo(1)
+        remoteValue("a").assert().isEqualTo("a1")
+        remoteValue("c").assert().isEqualTo("c1")
+        awaitCondition("B sees the batch") { cacheB["a"] == "a1" && cacheB["b"] == "b1" }
+        cacheB["c"].assert().isEqualTo("c1")
+        cacheA.getAll(listOf("a", "b", "c")).assert().isEqualTo(mapOf("a" to "a1", "b" to "b1", "c" to "c1"))
+        loads.get().assert().isEqualTo(2)
+    }
+
+    @Test
+    fun emptyPutAllIsANoOp() {
+        val cache = nodeA.cache()
+        cache.putAll(emptyMap())
+        cache.putAll(emptyMap(), Duration.ofSeconds(1))
+        backend.putAlls.get().assert().isEqualTo(0)
+        nodeA.metrics().writeFailures.assert().isEqualTo(0)
+    }
+
+    @Test
+    fun putAllTtlFollowsPutRules() {
+        val cache = nodeA.cache(
+            spec {
+                ttlOf = me.ahoo.cocache.core.TtlFunction { key, _ -> if (key == "short") Duration.ofSeconds(1) else null }
+            }
+        )
+        cache.putAll(mapOf("short" to "s", "policy" to "p"))
+        cache.putAll(mapOf("explicit" to "e"), Duration.ofSeconds(1))
+        requireNotNull((remote("policy") as RemoteRead.Hit).ttl).assert().isGreaterThan(Duration.ofMinutes(9))
+        elapse(Duration.ofSeconds(2))
+        cache["short"].assert().isNull()
+        cache["explicit"].assert().isNull()
+        cache["policy"].assert().isEqualTo("p")
+        loads.get().assert().isEqualTo(2)
+    }
+
+    @Test
+    fun putAllFailureThrowsAndEvictsLocal() {
+        val cache = nodeA.cache()
+        database["k"] = "v0"
+        cache["k"]
+        backend.failWrites = true
+        val error = runCatching { cache.putAll(mapOf("k" to "v1", "j" to "w1")) }.exceptionOrNull()
+        backend.failWrites = false
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        (error as CacheWriteException).operation.assert().isEqualTo("putAll")
+        nodeA.metrics().writeFailures.assert().isEqualTo(1)
+        cache["k"].assert().isEqualTo("v0")
+        backend.reads.get().assert().isEqualTo(2)
+    }
+
+    /**
+     * 另一节点的回源在 putAll 之前读到旧值：putAll 销毁了它的 lease，旧值写不回 L1。
+     */
+    @Test
+    fun putAllDuringRemoteLoadRejectsTheStaleFill() {
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        database["k"] = "v0"
+        val loaded = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        afterLoad = {
+            loaded.countDown()
+            release.awaitOrFail("release")
+        }
+        val onA = fork { cacheA["k"] }
+        loaded.awaitOrFail("A read the source")
+        afterLoad = null
+        database["k"] = "v1"
+        cacheB.putAll(mapOf("k" to "v1", "other" to "o1"))
+        release.countDown()
+        onA.join().assert().isEqualTo("v0")
+        remoteValue("k").assert().isEqualTo("v1")
+        nodeA.metrics().fillRejected.assert().isEqualTo(1)
+        awaitCondition("A sees the new value") { cacheA["k"] == "v1" }
+        cacheB["k"].assert().isEqualTo("v1")
+    }
+
+    /**
+     * 同节点的在途加载开始于 putAll 之前：它的结果不能进入 L2，之后的读取也不能合并到它。
+     */
+    @Test
+    fun getAfterOwnPutAllNeverSharesALoadStartedBefore() {
+        val cache = nodeA.cache()
+        database["k"] = "v0"
+        val loaded = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        afterLoad = {
+            if (Thread.currentThread().name == "early") {
+                loaded.countDown()
+                release.awaitOrFail("release")
+            }
+        }
+        val early = fork("early") { cache["k"] }
+        loaded.awaitOrFail("early load read v0")
+        database["k"] = "v1"
+        cache.putAll(mapOf("k" to "v1", "other" to "o1"))
+        val late = fork("late") { cache["k"] }
+        awaitCondition("late joined the in-flight load") { late.thread.state == Thread.State.WAITING }
+        release.countDown()
+        early.join().assert().isEqualTo("v0")
+        late.join().assert().isEqualTo("v1")
+        cache["k"].assert().isEqualTo("v1")
+        remoteValue("k").assert().isEqualTo("v1")
+        loads.get().assert().isEqualTo(1)
     }
 
     /**

@@ -77,6 +77,7 @@ object CacheProxies {
                 "getAll" -> target.getAll(args[0] as Collection<Any>)
                 "lookup" -> target.lookup(args[0] as Any)
                 "put" -> put(args)
+                "putAll" -> putAll(args)
                 "invalidate" -> target.invalidate(args[0] as Any)
                 "invalidateAll" -> target.invalidateAll(args[0] as Collection<Any>)
                 "getName" -> target.name
@@ -102,6 +103,15 @@ object CacheProxies {
                 target.put(args[0] as Any, args[1] as Any)
             } else {
                 target.put(args[0] as Any, args[1] as Any, args[2] as Duration)
+            }
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        private fun putAll(args: Array<out Any?>) {
+            if (args.size == 1) {
+                target.putAll(args[0] as Map<Any, Any>)
+            } else {
+                target.putAll(args[0] as Map<Any, Any>, args[1] as Duration)
             }
         }
 

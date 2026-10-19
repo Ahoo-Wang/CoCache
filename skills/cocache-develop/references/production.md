@@ -5,7 +5,7 @@ Use this reference before CoCache reaches production, when reviewing deployment 
 ## Checklist
 
 ```
-- [ ] Redis 7.0+ (Valkey 7.2+ untested), EVAL/EVALSHA allowed, Pub/Sub (or sharded Pub/Sub) allowed
+- [ ] Redis 7.0+ or Valkey 7.2+ (CI tests Valkey 8), EVAL/EVALSHA allowed, Pub/Sub (or sharded Pub/Sub) allowed
 - [ ] Topology: standalone, Sentinel or Cluster (not static master-replica)
 - [ ] maxmemory-policy fits the caches (below)
 - [ ] ACL grants keys, channels, direct and in-script commands, including PING
@@ -14,6 +14,7 @@ Use this reference before CoCache reaches production, when reviewing deployment 
 - [ ] L2 sized for the hot set; values small
 - [ ] Actuator endpoint behind auth or the management port; read-only if deletes are not wanted
 - [ ] Alerts on dropped invalidations, health DOWN, remote failures, load rejections
+- [ ] Tracing: source loads appear as `cocache.load` observations when an `ObservationRegistry` exists (`cocache.observation.enabled`, default on); keys are never recorded
 - [ ] Persistence (AOF or RDB) wherever SetCache data lives
 ```
 

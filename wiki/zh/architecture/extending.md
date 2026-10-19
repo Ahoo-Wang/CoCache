@@ -7,7 +7,7 @@ description: 实现 CoherenceBackend（RemoteStore 与 InvalidationChannel）或
 
 | 你想要 | 实现 | 验证 |
 |--------|------|------|
-| 把 L1 存到 Redis 以外的地方，或者以不同方式访问 Redis | [`CoherenceBackend`](#backend) | [`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`](#tck) |
+| 把 L1 存到 Redis 以外的地方，或者以不同方式访问 Redis | [`CoherenceBackend`](#backend) | [`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`](#tck) |
 | 改变值转换为字节的方式 | [`Codec<V>`](#codecs) | 自己的往返测试 |
 | 加载、编码 key、拒绝不可能存在的 key、按条目决定寿命 | [函数](#functions)：`CacheLoader`、`KeyEncoder`、`KeyFilter`、`TtlFunction` | 自己的测试 |
 
@@ -41,6 +41,7 @@ interface RemoteStore : AutoCloseable {
     fun fillAll(fills: List<Fill>): List<Boolean>
     fun release(key: String, token: Token)
     fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray)
+    fun putAll(puts: List<Put>, frame: ByteArray)   // 默认：逐项调用 put
     fun invalidate(keys: Collection<String>, frame: ByteArray)
     fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean
     fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
@@ -58,6 +59,7 @@ interface RemoteStore : AutoCloseable {
 | `LeaseRequest(token, ttl)` | 未命中时放置的 lease，`ttl` 后到期 |
 | `RefreshRequest(window, token, tokenTtl)` | 值在 `window` 内时放置的刷新令牌。签发早于 `tokenTtl` 的令牌可以被接管 |
 | `Fill(key, token, envelope, ttl)` | 仅当 `key` 持有 `token` 时，以 `ttl` 写入 `envelope` |
+| `Put(key, envelope, ttl)` | `putAll` 中的一项：按 `put` 覆盖 `key` |
 | `Digest` | 内容的 SHA-1：标量 → 载荷字节；集合 → 按返回顺序把每个成员写成 `int32 长度 + 字节`；负缓存 → 空 |
 
 逐个方法的约定。状态机见[一致性](./consistency.md#l1-fence)。
@@ -69,6 +71,7 @@ interface RemoteStore : AutoCloseable {
 | `fill` / `fillAll` | 仅当 key 当前持有的正是 `fill.token`（作为 lease 或刷新令牌）时写入，并把到期时间重设为 `fill.ttl`。返回是否写入 |
 | `release` | 令牌与 lease 匹配：删除 key。令牌与值上的刷新令牌匹配：清除令牌，保留值及其 TTL。否则什么也不做 |
 | `put` | 覆盖任何状态，销毁任何令牌，设置到期时间，广播 `frame`。`Members` 会替换整个集合 |
+| `putAll` | 对每一项执行 `put`，对每个 key 原子，不要求跨 key 原子。`frame` 携带全部 key：每个 key 恰好随其写入广播一次（可以拆分帧，例如按 slot 分组）。可选实现：默认逐项调用 `put`，每次只广播该 key |
 | `invalidate` | 删除每个 key，销毁任何令牌，广播 `frame`。对每个 key 原子。批次可以拆分 |
 | `reclaim` | 仅当 key 当前内容的摘要等于 `observed` 且不是 lease 时，把它替换为 lease。返回是否替换。绝不删除已经变化的内容 |
 | `addMembers` | key 是集合：原子地加入成员。否则（不存在、负缓存、lease、标量）：替换为只含这些成员的集合。销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播 |
@@ -113,11 +116,13 @@ testImplementation("me.ahoo.cocache:cocache-test")
 
 | 套件 | 覆盖 | 你提供 |
 |------|------|--------|
-| `BackendProtocolSpec` | `RemoteStore` 约定：授予 lease、令牌校验、到期时间重设、释放、刷新令牌、回收、批量读、集合更新、广播帧、订阅时重置 | `createBackend()`、`elapse(duration)`。可选覆盖 `shortTtl`（默认 300 ms） |
+| `BackendProtocolSpec` | `RemoteStore` 约定：授予 lease、令牌校验、到期时间重设、释放、刷新令牌、回收、批量读写、集合更新、广播帧、订阅时重置 | `createBackend()`、`elapse(duration)`。可选覆盖 `shortTtl`（默认 300 ms） |
 | `EngineSpec` | 两个运行时共用你的后端：跨实例单次加载、等待 lease 超时、加载期间的失效、同实例失效与读取的竞态、并发 `put`、读己之写、loader 失败、Redis 失败、失效重试、重连重置、`local-max-age`、批量读、提前刷新、回收、更新的格式、回源并发上限 | `createBackend()`、`clock`、`elapse(duration)`、`simulateReconnect()` |
 | `SetEngineSpec` | 两个运行时上的 `SetCache`：原子的并发加入、空集合删除、拒绝 `invalidate`、写入与读取失败 | `createBackend()`、`clock`、`elapse(duration)` |
+| `MultiNodeSpec` | 三个运行时共用你的后端：失效先于 lease、晚于 lease 且另一实例正在等待、晚于 fill 而早于写 L2；其它实例的写入落在读取与 L2 填充之间；不同实例的并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全部实例中每个 key 只回源一次、只刷新一次 | `createBackend()`、`clock`、`elapse(duration)` |
+| `FaultSpec` | L1 故障下的后端：存储失败期间副本以 `degraded-local-max-age` 限龄、fill 失败及其 lease、放弃或溢出队列的失效重试、已生效却报错且可安全重试的 `put` 与 `invalidate`，以及（可选）断线期间被拒绝的写入在重连后不被重放 | `createBackend()`、`clock`、`elapse(duration)`；可选 `disconnect()` |
 
-套件会用 `HookedBackend` 包装你的后端。它可以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`）、改写读取结果、在写入前后执行钩子（从而用 latch 而不是 sleep 编排竞态），还能覆盖 `atomicBroadcast` 来验证非原子路径。你自己的测试也可以用它。
+套件会用 `HookedBackend` 包装你的后端。它可以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`）、改写读取结果、在读取与 fill 之后以及写入前后执行钩子（从而用 latch 而不是 sleep 编排竞态；`afterPut` 或 `afterInvalidate` 抛出即模拟已生效却报错的写入），还能覆盖 `atomicBroadcast` 来验证非原子路径。你自己的测试也可以用它。
 
 `elapse(duration)` 必须让你的存储与引擎的时间同时前进：
 
@@ -125,6 +130,8 @@ testImplementation("me.ahoo.cocache:cocache-test")
 - **真实服务端**：为引擎推进 `ManualClock`，同时在服务端把测试 key 的剩余 TTL 缩短 `duration`。`BackendProtocolSpec` 中的短时长也可以直接 sleep：令牌签发时间取自服务端时钟。
 
 `simulateReconnect()` 必须断开订阅，让通道重新订阅，例如在服务端杀掉它的连接。
+
+`FaultSpec` 的 `disconnect()` 是可选的。后端持有连接时，覆盖它以断开命令连接，并保持断开直到关闭返回值（CoCache 的 Redis 测试让后端经过一个本机 TCP 代理，断线时关闭代理的监听端口）。期间发出的命令必须失败，而不是被缓冲。默认返回 `null`，断线用例跳过。
 
 内存后端的 TCK 类就是一个最小模板：
 
@@ -150,9 +157,17 @@ class MySetEngineTest : SetEngineSpec() {
     override fun createBackend(): CoherenceBackend = MyBackend(manualClock)
     override fun elapse(duration: Duration) = manualClock.advance(duration)
 }
+
+// MultiNodeSpec 的成员与 SetEngineSpec 相同
+class MyFaultTest : FaultSpec() {
+    private val manualClock = ManualClock()
+    override val clock: CacheClock = manualClock
+    override fun createBackend(): CoherenceBackend = MyBackend(manualClock)
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+}
 ```
 
-用构建工具的常规测试任务运行（JUnit 6）。`cocache-redis` 把 `BackendProtocolSpec` 与 `EngineSpec` 在三种模式下各跑一遍：经典 Pub/Sub、非原子（用 ACL 禁止探测频道）与 sharded；`SetEngineSpec` 只在经典 Pub/Sub 下运行。你的后端支持几种模式，就对每种模式都跑这些套件。
+用构建工具的常规测试任务运行（JUnit 6）。`cocache-redis` 把 `BackendProtocolSpec`、`EngineSpec`、`MultiNodeSpec` 与 `FaultSpec` 在三种模式下各跑一遍：经典 Pub/Sub、非原子（用 ACL 禁止探测频道）与 sharded；`SetEngineSpec` 只在经典 Pub/Sub 下运行。`FaultSpec` 的断线用例在单机经典 Pub/Sub 上运行，`cocache-redis` 另有清空脚本缓存之后 `NOSCRIPT` 回退的用例。你的后端支持几种模式，就对每种模式都跑这些套件。
 
 `InMemoryBackend` 在一个进程内实现了完整的协议。多个运行时共用一个实例就像多个应用实例，因此它也很适合作为应用测试的后端。
 

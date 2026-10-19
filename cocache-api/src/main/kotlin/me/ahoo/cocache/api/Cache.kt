@@ -68,6 +68,28 @@ interface Cache<K : Any, V : Any> {
     fun put(key: K, value: V, ttl: Duration)
 
     /**
+     * 批量写入，每个 key 的语义同 [put]：寿命逐个按 [put] 计算（各自独立抖动），不填充本地 L2。
+     *
+     * 内置引擎把全部 key 放进一次写入：先对全部 key 递增失效戳并淘汰 L2，再批量写入 L1 并广播一次，最后再递增并淘汰，
+     * 因此任何在途填充都不会把旧值写回。L1 只保证每个 key 原子，不保证跨 key 原子（Cluster 按 slot 分组执行）。
+     * [entries] 为空时不做任何事。
+     *
+     * 默认实现逐个调用 [put]，供第三方实现保持兼容。
+     *
+     * @throws CacheWriteException L1 写入失败（部分 key 可能已生效；操作幂等，可安全重试）
+     */
+    fun putAll(entries: Map<K, V>) {
+        entries.forEach { (key, value) -> put(key, value) }
+    }
+
+    /**
+     * 以同一时长批量写入，语义同 [putAll]。
+     */
+    fun putAll(entries: Map<K, V>, ttl: Duration) {
+        entries.forEach { (key, value) -> put(key, value, ttl) }
+    }
+
+    /**
      * 失效两级缓存并广播。必须在数据源提交之后调用（事务内应登记到提交之后）。
      *
      * L1 写入失败时默认进入重试队列而不抛出（见 RFC 0003 §4.13）。

@@ -21,6 +21,7 @@ import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
@@ -411,5 +412,88 @@ abstract class BackendProtocolSpec {
         }
         Thread.sleep(50)
         received.size.assert().isEqualTo(countAfterClose)
+    }
+
+    /**
+     * 批量覆盖写入：每个 key 的转换同 put（任意状态 → 新内容，销毁 lease 与刷新令牌，重设到期时间）。
+     */
+    @Test
+    fun putAllOverwritesEveryKeyAndDestroysTokens() {
+        val leased = key()
+        val refreshed = key()
+        val absent = key()
+        val set = key()
+        val expiring = key()
+        val lease = lease()
+        store.read(leased, lease, null)
+        store.put(refreshed, scalar("v"), Duration.ofSeconds(60), frame(refreshed))
+        val refresh = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
+        store.read(refreshed, null, refresh).hit().refreshGranted.assert().isTrue()
+        store.put(expiring, scalar("old"), shortTtl, frame(expiring))
+
+        store.putAll(
+            listOf(
+                Put(leased, scalar("a"), null),
+                Put(refreshed, scalar("b"), Duration.ofMinutes(1)),
+                Put(absent, Envelope.Absent, Duration.ofMinutes(1)),
+                Put(set, Envelope.Members(listOf("x".toByteArray(), "y".toByteArray())), null),
+                Put(expiring, scalar("e"), null),
+            ),
+            frame(leased, refreshed, absent, set, expiring)
+        )
+
+        store.fill(Fill(leased, lease.token, scalar("stale"), null)).assert().isFalse()
+        store.fill(Fill(refreshed, refresh.token, scalar("stale"), null)).assert().isFalse()
+        elapse(shortTtl.multipliedBy(2))
+        store.read(leased, null, null).hit().let {
+            it.envelope.assert().isEqualTo(scalar("a"))
+            it.ttl.assert().isNull()
+        }
+        store.read(refreshed, null, null).hit().let {
+            it.envelope.assert().isEqualTo(scalar("b"))
+            requireNotNull(it.ttl).assert().isLessThanOrEqualTo(Duration.ofMinutes(1))
+        }
+        store.read(absent, null, null).hit().envelope.assert().isEqualTo(Envelope.Absent)
+        store.read(set, null, null).hit().let {
+            (it.envelope as Envelope.Members).members.map { member -> String(member) }
+                .assert().containsExactlyInAnyOrder("x", "y")
+            it.ttl.assert().isNull()
+        }
+        store.read(expiring, null, null).hit().let {
+            it.envelope.assert().isEqualTo(scalar("e"))
+            it.ttl.assert().isNull()
+        }
+    }
+
+    /**
+     * 批量覆盖写入的广播：每个 key 恰好随其写入广播一次（实现可以拆成若干帧，但不重复广播）。
+     */
+    @Test
+    fun putAllBroadcastsEveryKeyExactlyOnce() {
+        val received = CopyOnWriteArrayList<Pair<List<String>, NodeId>>()
+        val resets = AtomicInteger()
+        val listener = object : InvalidationListener {
+            override fun onInvalidated(keys: List<String>, origin: NodeId) {
+                received.add(keys to origin)
+            }
+
+            override fun onReset() {
+                resets.incrementAndGet()
+            }
+        }
+        backend.channel.subscribe(namespace, listener).use {
+            awaitCondition("reset on subscribe") { resets.get() >= 1 }
+            val keys = (1..5).map { key() }
+            val frame = InvalidationFrame.encode(node, keys)
+            store.putAll(keys.map { Put(it, scalar(it), null) }, frame)
+            if (!backend.atomicBroadcast) {
+                backend.channel.publish(namespace, frame)
+            }
+            awaitCondition("every key broadcast") { received.flatMap { it.first }.toSet() == keys.toSet() }
+            Thread.sleep(50)
+            received.flatMap { it.first }.sorted().assert().isEqualTo(keys.sorted())
+            received.all { it.second == node }.assert().isTrue()
+            keys.forEach { store.read(it, null, null).hit().envelope.assert().isEqualTo(scalar(it)) }
+        }
     }
 }

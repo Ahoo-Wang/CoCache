@@ -1,15 +1,16 @@
 ---
 title: Observability
-description: Every cocache.* Micrometer meter and what it means, which ones to alert on, the cocache health indicator, the actuator endpoint (list caches, clear L2, inspect and invalidate one key), and the log lines worth alerting on.
+description: Every cocache.* Micrometer meter and what it means, which ones to alert on, tracing of source loads with Micrometer Observation, the cocache health indicator, the actuator endpoint (list caches, clear L2, inspect and invalidate one key), and the log lines worth alerting on.
 ---
 
 # Observability
 
-CoCache reports through three channels, all provided by the starter when `spring-boot-starter-actuator` is on the classpath:
+CoCache reports through four channels, all provided by the starter when `spring-boot-starter-actuator` is on the classpath:
 
 | Channel | What for |
 |---------|----------|
 | [Metrics](#metrics) (`cocache.*`) | Trends and alerts |
+| [Tracing](#tracing) (`cocache.load`) | Where a slow miss spent its time |
 | [Health indicator](#health) (`cocache`) | Is this instance receiving invalidations? |
 | [Actuator endpoint](#actuator-endpoint) (`/actuator/cocache`) | Per-instance counters, inspecting one key, forcing an invalidation |
 
@@ -78,6 +79,28 @@ There is no L2 hit counter: counting the hottest path would cost measurable thro
 | `increase(cocache_unknown_formats_total[10m]) > 0` outside a deploy | warn | Some instance writes a newer format | [Unknown format](./troubleshooting.md#unknown-format) |
 | `rate(cocache_reclaims_total[5m]) > 0` sustained | warn | Something writes values this instance can't decode | [Corrupt payloads](./troubleshooting.md#corrupt-payloads) |
 | `rate(cocache_degraded_fills_total[5m])` rising | info | More loads bypass L1, so the source carries more load | [Redis down](./troubleshooting.md#redis-down) |
+
+## Tracing {#tracing}
+
+When `micrometer-observation` is on the classpath and the context has an `ObservationRegistry` bean (Spring Boot's `ObservationAutoConfiguration` provides one with the actuator), the starter registers the bean `cocacheLoadObserver`, a `MicrometerLoadObserver`. It wraps every source load in a Micrometer `Observation`. Your tracing bridge (for example `micrometer-tracing-bridge-otel`) turns it into a span, and Spring Boot's metrics handler into a timer.
+
+| Field | Value |
+|-------|-------|
+| Name | `cocache.load` |
+| Contextual (span) name | `cocache {operation} {cache}`, for example `cocache load UserCache` |
+| `cache` (low cardinality) | The cache name |
+| `operation` (low cardinality) | `load` (a miss, `get(key, loader)`, or a batch falling back to one key), `loadAll` (one batch load), `refresh` (a refresh-ahead load), `lease.wait` (waiting for another instance's lease) |
+| `outcome` (low cardinality) | `success` or `error`. On `error` the exception is recorded on the observation and rethrown unchanged. |
+| `key.count` (high cardinality, spans only) | Keys in the call: 1, or the batch size for `loadAll` |
+
+What is observed, and what isn't:
+
+- Only the loader call itself, and the wait for another instance's lease when there is one. L2 hits, L1 reads, and fills create no observation, and with no observer configured the engine doesn't even allocate. A load rejected by `load-max-concurrent` is not observed.
+- The key is never recorded: it is high cardinality and may be personal data.
+- The loader runs on the caller's thread inside the observation's scope, so spans your loader creates (JDBC, HTTP) become children of `cocache.load`, which is itself a child of the request span. Refresh-ahead runs on the refresh executor, so its spans have a parent only if that executor propagates context.
+- With Spring Boot's metrics, each observation also feeds a `cocache.load` timer and a `cocache.load.active` long task timer, tagged `cache`, `operation`, `outcome` (plus Micrometer's own `error` tag on the timer). They overlap with the [`cocache.loads`](#metrics-loads) function timer, which stays the cheap always-on one.
+
+Turn it off with `cocache.observation.enabled: false`, or with Spring Boot's `management.observations.enable.cocache: false`. A `LoadObserver` bean of your own replaces the Micrometer one. Without Spring, pass it to `CacheRuntime.builder().loadObserver(…)`. Implementations must run the block once on the calling thread and rethrow its exceptions unchanged.
 
 ## Health indicator {#health}
 

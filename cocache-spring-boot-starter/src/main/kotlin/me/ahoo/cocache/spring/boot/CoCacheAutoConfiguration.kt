@@ -16,6 +16,7 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
@@ -109,6 +110,7 @@ class CoCacheAutoConfiguration {
     /**
      * 有唯一的 [CacheClock] bean 时运行时使用它（否则运行时自建 `TickingClock`）。
      * 设置了 `cocache.refresh-executor` 时按 bean 名取得提前刷新执行器（否则运行时自建并管理内置执行器）。
+     * 有唯一的 [LoadObserver] bean（如 [CoCacheObservationAutoConfiguration] 注册的 Micrometer 观测器）时用它观测回源。
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
@@ -116,11 +118,13 @@ class CoCacheAutoConfiguration {
     fun cocacheRuntime(
         backend: CoherenceBackend,
         clock: ObjectProvider<CacheClock>,
+        loadObserver: ObjectProvider<LoadObserver>,
         properties: CoCacheProperties,
         beanFactory: ListableBeanFactory,
     ): CacheRuntime {
         val builder = CacheRuntime.builder().backend(backend)
         clock.ifUnique?.let { builder.clock(it) }
+        loadObserver.ifUnique?.let { builder.loadObserver(it) }
         properties.refreshExecutor?.let {
             builder.refreshExecutor(executorBean(beanFactory, REFRESH_EXECUTOR_PROPERTY, it))
         }

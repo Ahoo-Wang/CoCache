@@ -14,7 +14,7 @@ Route away and stop: declaring caches, writing a `Codec`, `KeyEncoder`, `KeyFilt
 ## Contract
 
 - The SPI in `me.ahoo.cocache.api.spi` of the pinned CoCache version and the published `cocache-test` suites are the contract. Read the SPI sources, KDoc and the in-memory backend of that exact version before writing code; `references/backend-contract.md` is a map of what to verify, not the definition.
-- Completion means `BackendProtocolSpec`, `EngineSpec` and `SetEngineSpec` pass for every mode the backend offers (for example atomic and non-atomic broadcast). Never weaken, skip or override a TCK test to make it pass; override only the documented timing hooks.
+- Completion means `BackendProtocolSpec`, `EngineSpec` and `SetEngineSpec` pass for every mode the backend offers (for example atomic and non-atomic broadcast), plus `MultiNodeSpec` and `FaultSpec` when the pinned `cocache-test` ships them. Never weaken, skip or override a TCK test to make it pass; override only the documented timing hooks and the optional `FaultSpec.disconnect()`.
 - The backend holds no policy. Every TTL, window and token arrives as an argument; jitter, negative lifetimes and refresh decisions belong to the engine.
 - Declare only capabilities you guarantee: `atomicBroadcast = true` only if every write publishes its frame in the same atomic step.
 - Keep read-only requests (review, diagnosis) read-only; report exact TCK commands and results, and what the TCK cannot prove (failover, durability, real network partitions).
@@ -25,9 +25,9 @@ Route away and stop: declaring caches, writing a `Codec`, `KeyEncoder`, `KeyFilt
 - [ ] 1 Pin the CoCache version; read the SPI, the in-memory backend and the TCK sources of that version
 - [ ] 2 Map the store's primitives to the L1 state machine (value, negative entry, lease, refresh token, set)
 - [ ] 3 Decide atomicBroadcast and the reset signal of the channel
-- [ ] 4 Wire the three TCK suites first, with elapse() and simulateReconnect() (red)
+- [ ] 4 Wire every TCK suite of that version first, with elapse() and simulateReconnect() (red)
 - [ ] 5 Implement RemoteStore method by method against BackendProtocolSpec
-- [ ] 6 Implement InvalidationChannel; pass EngineSpec and SetEngineSpec
+- [ ] 6 Implement InvalidationChannel; pass EngineSpec, SetEngineSpec, MultiNodeSpec and FaultSpec
 - [ ] 7 Run the suites per mode; review against the invariants; document limits
 ```
 
@@ -36,7 +36,7 @@ Route away and stop: declaring caches, writing a `Codec`, `KeyEncoder`, `KeyFilt
 3. **Channel.** Choose a transport that can tell when messages may have been lost; that moment must call `onReset()`. Without resets, a lost message leaves L2 stale until `local-max-age`.
 4. **TCK first.** Extend the suites as in `references/tck.md`. Implement `elapse` so the store and the engine clock move together.
 5. **Store.** Follow `references/backend-contract.md` method by method; make `BackendProtocolSpec` pass before engine suites.
-6. **Channel and engine.** Pass `EngineSpec` (two runtimes on your backend) and `SetEngineSpec`.
+6. **Channel and engine.** Pass `EngineSpec` (two runtimes on your backend) and `SetEngineSpec`, then `MultiNodeSpec` (three runtimes, cluster-wide load and refresh counts) and `FaultSpec` (L1 faults; implement `disconnect()` if the backend holds connections).
 7. **Verify and document.** Run every suite in every supported mode. Review the diff against the invariants in `references/backend-contract.md`. Document the store's durability, failover behavior and any capability the backend does not offer.
 
 ## Load by scope
@@ -44,7 +44,7 @@ Route away and stop: declaring caches, writing a `Codec`, `KeyEncoder`, `KeyFilt
 | Scope | Load |
 |---|---|
 | SPI shapes, per-method obligations, invariants, channel semantics, failure behavior | `references/backend-contract.md` |
-| Wiring and running `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `elapse`, `simulateReconnect`, `HookedBackend`, diagnosing a failing TCK case | `references/tck.md` |
+| Wiring and running `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `elapse`, `simulateReconnect`, `disconnect`, `HookedBackend`, diagnosing a failing TCK case | `references/tck.md` |
 
 ## Diagnosing a failing TCK case
 

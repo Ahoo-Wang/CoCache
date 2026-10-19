@@ -19,6 +19,7 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.LeaseRequest
+import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
@@ -55,7 +56,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     var failAll: Boolean = false
 
     /**
-     * 写入类操作（put、invalidate、成员增删）抛出 [RemoteUnavailableException]。
+     * 写入类操作（put、putAll、invalidate、成员增删）抛出 [RemoteUnavailableException]。
      */
     @Volatile
     var failWrites: Boolean = false
@@ -85,7 +86,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     var afterReadAll: ((Map<String, RemoteRead>) -> Map<String, RemoteRead>)? = null
 
     /**
-     * put 在 L1 生效之后、返回之前调用。
+     * put 在 L1 生效之后、返回之前调用；putAll 在整批生效之后对每个 key 各调用一次。
      */
     @Volatile
     var afterPut: ((String) -> Unit)? = null
@@ -96,9 +97,22 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     @Volatile
     var beforeInvalidate: ((Collection<String>) -> Unit)? = null
 
+    /**
+     * invalidate 在 L1 生效之后、返回之前调用；抛出即模拟“已生效但向调用方报错”的写入（如应答超时）。
+     */
+    @Volatile
+    var afterInvalidate: ((Collection<String>) -> Unit)? = null
+
+    /**
+     * 单 key fill 在 L1 执行之后、返回之前调用，参数为 key 与是否写入成功。
+     */
+    @Volatile
+    var afterFill: ((String, Boolean) -> Unit)? = null
+
     val reads = AtomicInteger()
     val readAlls = AtomicInteger()
     val fills = AtomicInteger()
+    val putAlls = AtomicInteger()
 
     override fun store(namespace: String): RemoteStore = HookedStore(delegate.store(namespace))
 
@@ -126,7 +140,9 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         override fun fill(fill: Fill): Boolean {
             guard("fill", fail = failFill)
             fills.incrementAndGet()
-            return store.fill(fill)
+            val filled = store.fill(fill)
+            afterFill?.invoke(fill.key, filled)
+            return filled
         }
 
         override fun fillAll(fills: List<Fill>): List<Boolean> {
@@ -146,10 +162,18 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             afterPut?.invoke(key)
         }
 
+        override fun putAll(puts: List<Put>, frame: ByteArray) {
+            guard("putAll", fail = failWrites)
+            putAlls.incrementAndGet()
+            store.putAll(puts, frame)
+            afterPut?.let { hook -> puts.forEach { hook(it.key) } }
+        }
+
         override fun invalidate(keys: Collection<String>, frame: ByteArray) {
             beforeInvalidate?.invoke(keys)
             guard("invalidate", fail = failWrites)
             store.invalidate(keys, frame)
+            afterInvalidate?.invoke(keys)
         }
 
         override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {
