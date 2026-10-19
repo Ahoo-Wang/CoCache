@@ -5,7 +5,48 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v6.0.0（当前版本）
+## v6.1.0（当前版本）
+
+**模块组：** `me.ahoo.cocache` · 次版本。Redis 线格式与失效频道不变，6.0 与 6.1 实例可以共享 Redis，并逐台升级。
+
+### Spring AOT 与 GraalVM 原生镜像
+
+使用 starter 的应用现在可以用 Spring AOT 构建，并以 GraalVM 原生镜像运行。CoCache 在构建期登记它需要的提示：
+
+- `@CoCache` 与 `@JoinCacheable` 接口的 JDK 代理，以及这些接口的反射（包括 default 方法）；
+- 默认 key 编码器用到的 key 类型的 `toString()`；
+- `keyExpression` 与 `joinKeyExpression` 的 SpEL 根对象类型；
+- 使用默认 codec 时值类型的 Jackson 绑定。
+
+缓存 bean 由 AOT 能够生成代码的工厂方法创建。自定义 `Codec`，以及只有你自己的代码通过反射访问的类型，仍需要你自己提供提示。见[原生镜像](./native.md)。
+
+### 执行器可配置
+
+```yaml
+cocache:
+  refresh-executor: applicationTaskExecutor          # 提前刷新的回源
+  spring-cache:
+    retrieve-executor: applicationTaskExecutor       # Spring Cache 的异步 retrieve
+```
+
+两者都按 bean 名指定一个 `Executor`。名字不存在或 bean 不是 `Executor` 时启动失败。CoCache 不会关闭你提供的执行器。`retrieve` 建议使用虚拟线程执行器：会把任务排在等待它的任务之后的线程池，可能让嵌套的异步 `@Cacheable(sync = true)` 死锁。见[配置参考](./configuration.md#executors)。
+
+### SetCache 驱逐检查
+
+有 `SetCache` 时，CoCache 启动时读取各主节点的 `maxmemory-policy`。`allkeys-*` 可能淘汰集合的唯一副本，默认记录告警。`cocache.redis.set-cache-eviction-check` 可选 `warn`、`fail` 或 `off`。`CONFIG` 不可用（托管 Redis、ACL）时跳过检查。不使用 Spring 的应用可以调用 `RedisBackend.maxmemoryPolicies()` 自行检查。
+
+### Agent Skills 与文档
+
+- Agent Skills 按交付结果拆分为 `cocache-develop`、`cocache-migrate` 与 `cocache-extend`，各自带 `claude plugin eval` 用例，并在 CI 中校验。
+- 文档站点首页新增展示读写路径的动效，并更换了 logo。
+
+### Gradle 配置
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.1.0")
+```
+
+## v6.0.0
 
 **模块组：** `me.ahoo.cocache` · **主版本。** CoCache 按 [RFC 0003](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0003-target-architecture.md) 的一致性协议重建。**不能滚动升级：** Redis 中的值格式与失效频道都已改变，5.x 与 6.0 实例不能共享 Redis。请按[迁移指南](./migration-6.md)整体切换。
 
