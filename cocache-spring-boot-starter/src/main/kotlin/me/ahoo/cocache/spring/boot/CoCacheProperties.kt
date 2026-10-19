@@ -16,7 +16,6 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
-import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.core.policy.ReadFailureMode
 import me.ahoo.cocache.redis.RedisBackendOptions
 import me.ahoo.cocache.redis.RedisChannelMode
@@ -76,6 +75,18 @@ data class CoCacheProperties @ConstructorBinding constructor(
      * 该执行器由容器管理，运行时关闭时不会关闭它。
      */
     val refreshExecutor: String?,
+    /**
+     * 异步视图（`cache.async()`，RFC 0004）续接所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析）；
+     * 只承载短小的非阻塞工作。未设置时运行时自建 `ForkJoinPool`（并行度为 CPU 数，`cocache-async-*`）。
+     * bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
+     */
+    val asyncExecutor: String? = null,
+    /**
+     * 异步视图上同步数据源与只实现同步 SPI 的后端所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析），不应排队。
+     * 未设置时 JDK 21+ 每个任务一个虚拟线程，否则为运行时自建的不排队守护线程池（最多 512 线程，满时拒绝）。
+     * bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
+     */
+    val blockingExecutor: String? = null,
 ) {
     /**
      * 按缓存名合并配置文件中的策略。
@@ -194,11 +205,8 @@ data class CoCacheProperties @ConstructorBinding constructor(
         @DefaultValue("false")
         val requireSync: Boolean,
         /**
-         * Spring Cache `retrieve`（异步 `@Cacheable`）所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析），
-         * 如 `applicationTaskExecutor`；未设置时使用 CoCache 内置执行器（JDK 21+ 每任务一个虚拟线程，否则不排队的可增长守护线程池）。
-         * bean 不存在或不是 `Executor` 时启动失败。会把任务排在等待它的任务之后的执行器（固定线程数或有界队列，
-         * 如默认的 `ThreadPoolTaskExecutor`）可能让嵌套的异步 `@Cacheable(sync = true)` 死锁；虚拟线程执行器
-         * （`spring.threads.virtual.enabled=true` 时的 `applicationTaskExecutor`）没有这个问题。
+         * 已弃用（6.3）：`retrieve`（异步 `@Cacheable`）经缓存的异步视图，不再使用执行器，也不再有线程等待回源。
+         * 设置时启动告警并忽略；7.0 删除。异步视图的执行器见 `cocache.async-executor` / `cocache.blocking-executor`。
          */
         val retrieveExecutor: String?,
     )
@@ -277,6 +285,12 @@ data class CoCacheProperties @ConstructorBinding constructor(
          * 失效频道 `cocache:inv:{namespace}` 不含前缀：共用一个 Redis 且 namespace 相同的应用会收到彼此的失效消息（key 不同，只是多余的处理）。
          */
         val keyPrefix: String?,
+        /**
+         * 异步数据源（`AsyncCacheLoader`）一次加载的最长时间，超时以 `SourceLoadTimeoutException` 失败并释放 lease
+         * （未写单位按秒；内置默认 30s）。不作用于同步数据源。
+         */
+        @DurationUnit(ChronoUnit.SECONDS)
+        val loadAsyncTimeout: Duration? = null,
     ) {
         fun applyTo(policy: CachePolicy): CachePolicy {
             val builder = policy.toBuilder()
@@ -309,8 +323,13 @@ data class CoCacheProperties @ConstructorBinding constructor(
         }
 
         private fun applyLoad(builder: CachePolicy.Builder, policy: CachePolicy) {
-            if (loadMaxConcurrent != null || loadAcquireTimeout != null) {
-                builder.load = LoadPolicy(loadMaxConcurrent ?: policy.load.maxConcurrent, loadAcquireTimeout ?: policy.load.acquireTimeout)
+            // 只覆盖设置了的字段：其余沿用下层（含 asyncTimeout），不能用默认值重建
+            if (loadMaxConcurrent != null || loadAcquireTimeout != null || loadAsyncTimeout != null) {
+                builder.load = policy.load.copy(
+                    maxConcurrent = loadMaxConcurrent ?: policy.load.maxConcurrent,
+                    acquireTimeout = loadAcquireTimeout ?: policy.load.acquireTimeout,
+                    asyncTimeout = loadAsyncTimeout ?: policy.load.asyncTimeout,
+                )
             }
         }
     }

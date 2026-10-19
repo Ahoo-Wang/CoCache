@@ -17,6 +17,9 @@ import io.micrometer.observation.Observation
 import io.micrometer.observation.ObservationRegistry
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.LoadOperation
+import me.ahoo.cocache.core.SourceLoadTimeoutException
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.function.Supplier
 
 /**
@@ -52,6 +55,47 @@ class MicrometerLoadObserver(private val registry: ObservationRegistry) : LoadOb
         }
     }
 
+    /**
+     * 异步回源（RFC 0004 §8.1）：从调用 [block] 到其 future 完成。[block] 在 `openScope()` 内调用，`loadAsync` 的同步部分能看到当前观测
+     * （追踪上下文可经 context-propagation 传给 R2DBC / WebClient）；future 完成时记录结果并停止。引擎的超时记为 [TIMEOUT]。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    override fun <T> observeAsync(
+        cacheName: String,
+        operation: LoadOperation,
+        keyCount: Int,
+        block: Supplier<CompletableFuture<T>>
+    ): CompletableFuture<T> {
+        if (registry.isNoop) {
+            return block.get()
+        }
+        val observation = Observation.createNotStarted(NAME, registry)
+            .contextualName("cocache ${operation.value} $cacheName")
+            .lowCardinalityKeyValue(CACHE, cacheName)
+            .lowCardinalityKeyValue(OPERATION, operation.value)
+            .highCardinalityKeyValue(KEY_COUNT, keyCount.toString())
+            .start()
+        val future = try {
+            observation.openScope().use { block.get() }
+        } catch (e: Throwable) {
+            observation.lowCardinalityKeyValue(OUTCOME, ERROR)
+            observation.error(e)
+            observation.stop()
+            throw e
+        }
+        future.whenComplete { _, error ->
+            if (error == null) {
+                observation.lowCardinalityKeyValue(OUTCOME, SUCCESS)
+            } else {
+                val cause = if (error is CompletionException) error.cause ?: error else error
+                observation.lowCardinalityKeyValue(OUTCOME, if (cause is SourceLoadTimeoutException) TIMEOUT else ERROR)
+                observation.error(cause)
+            }
+            observation.stop()
+        }
+        return future
+    }
+
     companion object {
         /**
          * Observation 名称（计时指标名同为 `cocache.load`）。
@@ -63,5 +107,6 @@ class MicrometerLoadObserver(private val registry: ObservationRegistry) : LoadOb
         const val KEY_COUNT = "key.count"
         const val SUCCESS = "success"
         const val ERROR = "error"
+        const val TIMEOUT = "timeout"
     }
 }
