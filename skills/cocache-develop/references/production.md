@@ -5,7 +5,7 @@ Use this reference before CoCache reaches production, when reviewing deployment 
 ## Checklist
 
 ```
-- [ ] Redis 7.0+ (Valkey 7.2+ untested), EVAL/EVALSHA allowed, Pub/Sub (or sharded Pub/Sub) allowed
+- [ ] Redis 7.0+ or Valkey 7.2+ (CI tests Valkey 8), EVAL/EVALSHA allowed, Pub/Sub (or sharded Pub/Sub) allowed
 - [ ] Topology: standalone, Sentinel or Cluster (not static master-replica)
 - [ ] maxmemory-policy fits the caches (below)
 - [ ] ACL grants keys, channels, direct and in-script commands, including PING

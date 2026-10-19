@@ -160,7 +160,7 @@ New: every policy field under `cocache.defaults.*` and `cocache.caches.[name].*`
 |-|-----|-----|
 | Client | Spring Data Redis, Lettuce or Jedis | Native Lettuce. CoCache builds its own client from `spring.data.redis.*`. **Jedis is not supported**: add Lettuce (it doesn't affect your own Redis client). |
 | Topologies | standalone, Sentinel, Cluster | standalone, Sentinel, Cluster. Static master-replica fails startup. |
-| Minimum version | — | Redis 7.0+. Valkey 7.2+ should work but isn't tested in CI. |
+| Minimum version | — | Redis 7.0+ or Valkey 7.2+. CI tests standalone Valkey 8. |
 | Key | `keyPrefix` + key, default prefix `cocache:{name}:` | `{keyPrefix}{namespace}:{key}`, default `cocache:{name}:{key}`. A custom `keyPrefix: "user:"` gave `user:42` and now gives `user:UserCache:42`. |
 | Value | JSON string, hash, or set, with an in-band `_nil_` sentinel | 36-byte binary header + codec bytes. Sets are hashes with `!f` and `+{member}` fields. |
 | TTL precision | seconds | milliseconds |
