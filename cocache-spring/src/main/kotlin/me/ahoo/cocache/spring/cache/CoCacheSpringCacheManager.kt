@@ -13,7 +13,7 @@
 
 package me.ahoo.cocache.spring.cache
 
-import me.ahoo.cocache.api.CoCache
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.core.CacheRuntime
 import org.springframework.cache.CacheManager
 import java.util.concurrent.ConcurrentHashMap
@@ -33,7 +33,7 @@ class CoCacheSpringCacheManager @JvmOverloads constructor(
     override fun getCache(name: String): SpringCache? {
         caches[name]?.let { return it }
         @Suppress("UNCHECKED_CAST")
-        val cache = runtime.cache(name) as CoCache<Any, Any>? ?: return null
+        val cache = runtime.cache(name) as Cache<Any, Any>? ?: return null
         return caches.computeIfAbsent(name) { CoCacheSpringCache(cache, runtime.admin(name), executor) }
     }
 

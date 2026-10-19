@@ -13,7 +13,7 @@
 
 package me.ahoo.cocache.spring.tx
 
-import me.ahoo.cocache.api.CoCache
+import me.ahoo.cocache.api.Cache
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
@@ -23,7 +23,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * 失效必须在数据源提交之后发生。若在提交之前失效，并发的回源可能读到提交前的数据并写回，
  * 这本身就是一个失效被吞没的漏洞（G2）。
  *
- * - 同一事务内对同一缓存的多次失效合并为一次 [CoCache.invalidateAll]（去重，保持登记顺序）。
+ * - 同一事务内对同一缓存的多次失效合并为一次 [Cache.invalidateAll]（去重，保持登记顺序）。
  * - 事务回滚时不失效：数据源没有变化。
  * - 嵌套的新事务（`REQUIRES_NEW`）在各自提交之后失效。
  * - 提交后的失效默认不会抛出（失败进入重试队列，见 `InvalidateFailureMode.RETRY`）；
@@ -31,11 +31,11 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  */
 class TransactionalInvalidator {
 
-    fun <K : Any> invalidate(cache: CoCache<K, *>, key: K) {
+    fun <K : Any> invalidate(cache: Cache<K, *>, key: K) {
         invalidateAll(cache, listOf(key))
     }
 
-    fun <K : Any> invalidateAll(cache: CoCache<K, *>, keys: Collection<K>) {
+    fun <K : Any> invalidateAll(cache: Cache<K, *>, keys: Collection<K>) {
         if (keys.isEmpty()) {
             return
         }
@@ -65,11 +65,11 @@ class TransactionalInvalidator {
      * 按缓存分组的待失效 key（保持登记顺序并去重）。
      */
     private class Pending {
-        private val keysByCache = LinkedHashMap<CoCache<Any, *>, LinkedHashSet<Any>>()
+        private val keysByCache = LinkedHashMap<Cache<Any, *>, LinkedHashSet<Any>>()
 
         @Suppress("UNCHECKED_CAST")
-        fun add(cache: CoCache<*, *>, keys: Collection<Any>) {
-            keysByCache.getOrPut(cache as CoCache<Any, *>) { LinkedHashSet() }.addAll(keys)
+        fun add(cache: Cache<*, *>, keys: Collection<Any>) {
+            keysByCache.getOrPut(cache as Cache<Any, *>) { LinkedHashSet() }.addAll(keys)
         }
 
         fun flush() {

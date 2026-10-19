@@ -13,7 +13,7 @@
 
 package me.ahoo.cocache.spring.tx
 
-import me.ahoo.cocache.api.CoCache
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
@@ -97,7 +97,7 @@ class TransactionalInvalidatorTest {
     private class RecordingCache(
         override val name: String,
         private val failure: RuntimeException? = null
-    ) : CoCache<String, String> {
+    ) : Cache<String, String> {
         val invalidations = CopyOnWriteArrayList<List<String>>()
 
         override fun get(key: String): String? = throw UnsupportedOperationException()

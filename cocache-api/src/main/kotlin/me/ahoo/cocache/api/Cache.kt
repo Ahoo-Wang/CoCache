@@ -23,7 +23,7 @@ import java.time.Duration
  * @param K 业务 key
  * @param V 缓存值
  */
-interface CoCache<K : Any, V : Any> {
+interface Cache<K : Any, V : Any> {
     /**
      * 缓存名。
      */

@@ -15,7 +15,7 @@ package me.ahoo.cocache.redis
 
 import io.lettuce.core.RedisURI
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.CoCache
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.NodeId
@@ -52,8 +52,9 @@ open class CoCacheBenchmark {
     private val missCounter = AtomicLong()
     private lateinit var backend: RedisBackend
     private lateinit var runtime: CacheRuntime
-    private lateinit var cache: CoCache<String, String>
-    private lateinit var mixed: List<CoCache<String, String>>
+    private lateinit var cache: Cache<String, String>
+    private lateinit var viaInterface: BenchCache
+    private lateinit var mixed: List<Cache<String, String>>
     private lateinit var store: RemoteStore
     private lateinit var l1Key: String
     private lateinit var batchKeys: List<String>
@@ -75,6 +76,7 @@ open class CoCacheBenchmark {
             it["hot"]
         }
         cache.put("l1", "l1-value")
+        viaInterface = me.ahoo.cocache.core.proxy.CacheProxies.create(BenchCache::class.java, cache)
         store = backend.store("bench-$run")
         l1Key = "cocache:bench-$run:l1"
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
@@ -97,6 +99,10 @@ open class CoCacheBenchmark {
     /** L2 命中：仅进程内查找（spec bean 注入的就是引擎本身，没有代理层）。 */
     @Benchmark
     fun l2Hit(): String? = cache["hot"]
+
+    /** L2 命中，经过接口式声明的代理（`@CoCache interface`）。 */
+    @Benchmark
+    fun l2HitViaInterface(): String? = viaInterface["hot"]
 
     /** L2 命中，轮流访问三个配置不同的缓存。 */
     @Benchmark
@@ -140,3 +146,8 @@ open class CoCacheBenchmark {
         const val BATCH_SIZE = 100
     }
 }
+
+/**
+ * 代理基准使用的缓存接口。
+ */
+interface BenchCache : Cache<String, String>

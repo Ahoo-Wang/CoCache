@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
+import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
@@ -31,6 +32,8 @@ import org.springframework.cache.CacheManager
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.transaction.support.TransactionSynchronizationManager
+import tools.jackson.databind.ObjectMapper
+import tools.jackson.databind.json.JsonMapper
 
 /**
  * CoCache 6.0 自动配置（`cocache.next.enabled=true` 时启用）。
@@ -61,6 +64,18 @@ class CoCacheNextAutoConfiguration {
         customizers: ObjectProvider<CacheSpecCustomizer>,
         properties: CoCacheNextProperties,
     ): CacheAssembler = CacheAssembler(runtime, customizers.orderedStream().toList(), properties)
+
+    @Bean
+    @ConditionalOnBean(CacheAssembler::class)
+    fun cocacheNextAnnotatedCacheFactory(
+        beanFactory: ListableBeanFactory,
+        assembler: CacheAssembler,
+        mappers: ObjectProvider<ObjectMapper>,
+    ): AnnotatedCacheFactory = AnnotatedCacheFactory(
+        beanFactory,
+        assembler,
+        mappers.getIfAvailable { JsonMapper.builder().findAndAddModules().build() }
+    )
 
     @Bean
     @ConditionalOnMissingBean(CacheManager::class)
