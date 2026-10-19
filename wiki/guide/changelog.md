@@ -5,7 +5,46 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v5.4.0 (Current)
+## v6.0.0 (Current)
+
+**Module Group:** `me.ahoo.cocache` · **Major release.** CoCache is rebuilt on the coherence protocol in [RFC 0003](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0003-target-architecture.md). **No rolling upgrade:** the Redis value layout and the invalidation channel changed, so 5.x and 6.0 instances cannot share Redis. Follow the [migration guide](./migration-6.md) and switch every instance at once.
+
+### What changes for you
+
+- **Stale write-backs are closed.** Loads write Redis only while they hold a lease token, and every L2 fill is checked against an invalidation stamp. The 5.x "known inherent window" no longer exists: races inside the protocol leave no stale value in Redis.
+- **Faster hit path.** An L2 hit is 54–59% faster than 5.4, an interface proxy hit 28–64% faster, and `put` / `invalidate` about twice as fast (JMH, RFC 0003 §7.1).
+- **One loader per key across the cluster**, refresh-ahead with one refresh per key cluster-wide, and batch `getAll` that reads L2, then Redis in one round trip, then the source in one `loadAll`.
+- **Failure modes you can choose:** `read-failure: degrade | throw`, `invalidate-failure: retry | throw`, a bounded invalidation retry queue, and a load bulkhead (`load-max-concurrent`).
+- **Redis backend on native Lettuce** (`cocache-redis`, no Spring dependency): standalone, Sentinel and Cluster, TLS through Spring Boot SSL bundles or `rediss://`, Pub/Sub or Sharded Pub/Sub (`cocache.redis.channel-mode`).
+- **Spring:** `@EnableCoCache` with `@CoCache` interfaces or `CacheSpec` beans, `CacheSpecCustomizer`, layered `cocache.defaults.*` / `cocache.caches.[name].*` properties with full IDE metadata, the `CoCacheSpringCacheManager` (use `@Cacheable(sync = true)` for coherent loads), and `TransactionalInvalidator` (invalidate after commit).
+- **Observability:** the `cocache` actuator endpoint and `cocache.*` Micrometer meters tagged by `cache`.
+
+### Migration at a glance
+
+| 5.x | 6.0 |
+|-----|-----|
+| `me.ahoo.cache.*` | `me.ahoo.cocache.*`; `@EnableCoCache` is in `me.ahoo.cocache.spring.boot` |
+| `cocache-spring-redis`, `cocache-spring-cache` | `cocache-redis`, `cocache-spring` (plus `cocache-codec-jackson`) |
+| `ttlAmplitude`, `missingTtl`, `clientSideTtl`, `refreshAhead` | `ttlJitter`, `absentTtl`, `localMaxAge`, `refreshWindow` |
+| `{name}.CacheSource` bean | a `CacheLoader<K, V>` bean matched by type, or `@CoCache(loader = …)` |
+| `{name}.ClientSideCache` and other bean suffixes | `CacheSpecCustomizer`, `cocache.caches.[name].*` |
+| `getCache` / `set(key, ttlAt, value)` / `evict` | `get` / `lookup` / `put(key, value, ttl)` / `invalidate` |
+| `SetElementsCache` | `SetCache` |
+| `cocache.redis.strict-failure=true` | `cocache.defaults.read-failure=throw` |
+| `cocache.redis.eviction-channel=sharded` | `cocache.redis.channel-mode=sharded` |
+| `cocache.load.*` | `cocache.defaults.load-max-concurrent` / `load-acquire-timeout` |
+| actuator `cocacheClient` | removed; use `cocache` |
+| Jedis, JoinCache, pluggable L2, explicit negative-entry writes | removed |
+
+Removed 5.x property keys fail startup with a message that names the replacement. Some renames change meaning (for example, L2 is now always bounded by `localMaxAge`, 5 minutes by default): see [Behavior changes](./migration-6.md#semantics).
+
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.0.0")
+```
+
+## v5.4.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive. The default eviction channel and the Redis wire format are unchanged, so 5.3.x and 5.4 instances can share Redis. The new channel is off by default.
 
