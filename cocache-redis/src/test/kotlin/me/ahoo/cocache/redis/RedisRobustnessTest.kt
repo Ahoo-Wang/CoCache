@@ -128,6 +128,24 @@ class RedisRobustnessTest {
     }
 
     /**
+     * 心跳正常时健康状态为正常（很短的心跳周期，订阅期间会执行多次心跳）。
+     */
+    @Test
+    fun heartbeatHealthyWhenPingSucceeds() {
+        RedisTestSupport.backend(
+            RedisBackendOptions(clientName = "cocache-hb-" + UUID.randomUUID(), heartbeat = Duration.ofMillis(20))
+        ).use { backend ->
+            backend.heartbeatHealthy.assert().isTrue()
+            val listener = RecordingListener()
+            backend.channel.subscribe("healthy-$namespace", listener).use {
+                listener.resets.get().assert().isGreaterThanOrEqualTo(1)
+                backend.heartbeatHealthy.assert().isTrue()
+                backend.heartbeatFailure.assert().isNull()
+            }
+        }
+    }
+
+    /**
      * 心跳失败（这里用 ACL 禁止 PING 模拟）：重置订阅者并强制断开订阅连接，由 Lettuce 重连并重新订阅。
      */
     @Test
@@ -148,6 +166,9 @@ class RedisRobustnessTest {
                 after.isNotEmpty() && after != before
             }
             listener.resets.get().assert().isGreaterThanOrEqualTo(2)
+            // 健康检查可见的只读状态：心跳持续失败
+            awaitCondition("heartbeat failure recorded") { !backend.heartbeatHealthy }
+            backend.heartbeatFailure.assert().isNotNull()
             subscription.close()
         }
     }

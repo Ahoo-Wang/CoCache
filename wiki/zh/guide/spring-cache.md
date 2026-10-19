@@ -43,6 +43,16 @@ class UserService(private val userRepository: UserRepository) {
 
 不带 `sync` 时，Spring 自己执行“读取、未命中、调用方法、`put`”。这个 `put` 是无条件写入，方法执行期间发生的失效可能被旧结果覆盖，直到 `ttl` 到期。需要 CoCache 的一致性保证时，请使用 `sync = true`。
 
+starter 在启动时检查这一点。有 `@EnableCaching` 时，它通过 Spring 的 `CacheOperationSource` 解析每个 bean 的缓存操作（包括 `@CacheConfig` 中的缓存名）。对每个指向 CoCache 缓存、没有 `sync = true` 的 `@Cacheable`，记录一条 `WARN`，给出 `类名#方法名` 与缓存名。要改为启动失败：
+
+```yaml
+cocache:
+  spring-cache:
+    require-sync: true
+```
+
+检查按缓存名匹配：没有写明缓存名（只用 `cacheResolver`）的操作会跳过；没有 `@EnableCaching` 时什么也不做。
+
 写入之后，优先用 `@CacheEvict` 而不是 `@CachePut`：失效让下一次读取加载已提交的状态，并且每个实例都会丢弃 L2 副本。
 
 ## 语义 {#semantics}

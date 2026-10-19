@@ -1,6 +1,6 @@
 ---
 title: 运维
-description: 生产环境运行 CoCache：Actuator 端点、指标、Redis 故障行为、从 CoCache 之外失效、查看 Redis、容量规划与陈旧读取排查。
+description: 生产环境运行 CoCache：Actuator 端点（按 key 查看与失效）、健康检查、指标、Redis 故障行为、从 CoCache 之外失效、查看 Redis、容量规划与陈旧读取排查。
 ---
 
 # 运维
@@ -22,8 +22,50 @@ management:
 | `GET /actuator/cocache` | 本实例每个缓存的报告：`name`、`localSize`（L2 条目数，估计值）、`loads`、`loadNanos`，以及 `metrics` 下[指标表](#metrics)中的全部计数器 |
 | `GET /actuator/cocache/{name}` | 单个缓存的报告 |
 | `DELETE /actuator/cocache/{name}` | 清空**本实例**该缓存的 L2。L1 不受影响，正在进行的加载会被放弃 |
+| `GET /actuator/cocache/{name}/{key}` | 查看本实例上的一个 key：L2 副本与 L1 状态（[见下文](#inspect-key)） |
+| `DELETE /actuator/cocache/{name}/{key}` | 经正常的失效路径**在全集群**失效一个 key，与 `cache.invalidate(key)` 相同，幂等。在 `SetCache` 上等价于 `clear(key)`，会删除唯一副本 |
 
-端点从不读取或加载任何 key。`DELETE` 操作会改变状态，请像其它可写的 Actuator 端点一样加以保护。
+缓存名不存在时返回 `404`。`DELETE` 操作会改变状态，查看会展示值，请像其它可写、能读取业务数据的 Actuator 端点一样加以保护。
+
+### 查看一个 key {#inspect-key}
+
+`{key}` 是**编码后的 key**：Redis key 中 `{keyPrefix}{namespace}:` 之后的部分，即 `KeyEncoder` 的输出（`toString()` 或 `keyExpression` 的结果），因此适用于任意 key 类型，可以包含 `/`。
+
+```bash
+curl localhost:8080/actuator/cocache/UserCache/42
+```
+
+```json
+{
+  "cache": "UserCache",
+  "storageKey": "cocache:UserCache:42",
+  "local": { "state": "VALUE", "value": "User(id=42, name=Ada)", "expiresAt": "2026-10-19T08:05:00Z", "refreshAt": null, "expired": false },
+  "remote": { "state": "VALUE", "value": "User(id=42, name=Ada)", "ttl": "PT58M", "format": 1, "error": null },
+  "invalidationPending": false
+}
+```
+
+| 字段 | 含义 |
+|------|------|
+| `local` | 本实例的 L2 副本，没有时为 `null`。`state` 为 `VALUE`、`ABSENT`（负缓存）或 `UNRESOLVED`（没有 loader 的缓存未命中）。已过期但 Caffeine 尚未淘汰的副本显示 `expired: true` |
+| `remote.state` | `VALUE`、`ABSENT`（负缓存）、`SET`、`LEASED`（某个节点正在加载，`ttl` 是 lease 的剩余寿命）、`MISS`、`UNREADABLE`（未知或更高的格式、形状不符或编解码失败，原因见 `error`）或 `ERROR`（读取 Redis 失败） |
+| `value` | 用缓存的编解码器解码后的 `toString()`，截断到 256 个字符 |
+| `invalidationPending` | 该 key 的失效写入 Redis 失败，仍在重试。成功之前，未命中会跳过 L1 |
+
+查看从不加载：不调用 loader，不申请 lease 或刷新令牌，不填充任何一层，不计入指标，也不影响 Caffeine 的淘汰统计。代价是一次 Redis 读取。
+
+## 健康检查 {#health}
+
+classpath 上有 actuator 时，starter 注册健康检查 `cocache`（bean `cocacheHealthIndicator`，用 `management.health.cocache.enabled` 关闭）。它只读取内存中的状态，从不访问 Redis。
+
+| 状态 | 条件 |
+|------|------|
+| `DOWN` | Redis 失效通道最近一次心跳失败。本实例的 L2 已被清空，连接恢复之前可能收不到其它实例的失效 |
+| `UP` | 其它情况，包括失效仍在重试时 |
+
+详情：`backend`（类名）、`format`、`atomicBroadcast`；Redis 后端另有 `channelMode` 与 `heartbeat`（`healthy`，失败时还有 `error`）；`pendingInvalidations` 总数；以及每个缓存的 `pendingInvalidations` 与 `localSize`。失效重试不影响状态：重试队列会自行收敛，放弃的失效计入 `cocache.invalidations.dropped`，请对该指标告警。
+
+如果不希望 Redis 订阅问题让实例退出流量，不要把 `cocache` 加入 readiness 分组。
 
 ## 指标 {#metrics}
 
@@ -114,7 +156,7 @@ class UserChangeInvalidator(private val redis: RedisCommands<String, ByteArray>)
 
 Redis 中每个 CoCache 值都以 36 字节的二进制头开始（magic 字节 `0xC0`、格式版本、状态、令牌、时间戳），后面是 codec 的字节。因此 `redis-cli GET` 显示的是二进制数据；负缓存与进行中的 lease 只有头、没有载荷。集合缓存是 Redis Hash，带一个 `!f` 格式字段，每个成员是一个 `+{member}` 字段。除了上面的失效协议，不要从其它程序读写 CoCache 的 key。
 
-要查看某个实例持有什么，用 Actuator 端点；要让所有实例重新加载某个 key，失效它。
+要查看某个实例对某个 key 持有什么，用 [`GET /actuator/cocache/{name}/{key}`](#inspect-key)，它会解码两层的内容；要让所有实例重新加载某个 key，失效它，例如 `DELETE /actuator/cocache/{name}/{key}`。
 
 ## 容量规划 {#sizing}
 
@@ -127,11 +169,12 @@ Redis 中每个 CoCache 值都以 36 字节的二进制头开始（magic 字节 
 ## 排查 {#troubleshooting}
 
 **某个实例一直返回旧值。**
-1. 确认写入方在数据库提交**之后**失效。事务内使用 `TransactionalInvalidator`。
-2. 确认所有写入路径都会失效，包括批处理任务和其它服务。CoCache 之外的路径可以使用[失效协议](#external-eviction)。
-3. 确认所有实例使用相同的缓存命名空间和相同的 `channel-mode`。`pubsub` 与 `sharded` 的实例互相收不到消息。
-4. 检查 `cocache.invalidations.dropped` 与 `cocache.write.failures`。
-5. 不带 `sync = true` 的 `@Cacheable` 中，Spring 的无条件 `put` 可能覆盖失效。请使用 `sync = true`。
+1. 在该实例上[查看这个 key](#inspect-key)：对比 `local` 副本与 `remote`，检查 `invalidationPending`。排查原因期间，`DELETE /actuator/cocache/{name}/{key}` 可以立即修复。
+2. 确认写入方在数据库提交**之后**失效。事务内使用 `TransactionalInvalidator`。
+3. 确认所有写入路径都会失效，包括批处理任务和其它服务。CoCache 之外的路径可以使用[失效协议](#external-eviction)。
+4. 确认所有实例使用相同的缓存命名空间和相同的 `channel-mode`。`pubsub` 与 `sharded` 的实例互相收不到消息。
+5. 检查 `cocache.invalidations.dropped` 与 `cocache.write.failures`。
+6. 不带 `sync = true` 的 `@Cacheable` 中，Spring 的无条件 `put` 可能覆盖失效。请使用 `sync = true`。starter 启动时会对这些方法告警（[Spring Cache](./spring-cache.md#use-sync-true)）。
 
 **新建的记录被报告为不存在。** 记录创建之前的一次查询缓存了负缓存，最长持续 `absentTtl`。创建记录后失效该 key，或调小 `absent-ttl`。
 

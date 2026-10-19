@@ -12,7 +12,7 @@ A cache's settings come from four layers. Each later layer overrides the earlier
 3. **`CacheSpecCustomizer` beans**, applied in Spring order.
 4. **Properties**: first `cocache.defaults.*`, then `cocache.caches.[name].*`.
 
-Properties come last so operators can tune a cache without recompiling. Note that `cocache.defaults.*` therefore overrides what an annotation says.
+Properties come last so operators can tune a cache without recompiling. Note that `cocache.defaults.*` therefore overrides what an annotation says. The same holds for [`key-prefix`](#key-prefix): a property overrides even a `keyPrefix` written explicitly in `@CoCache` or a spec.
 
 ## `@CoCache`
 
@@ -52,10 +52,12 @@ You don't need `expireAfterAccess` for correctness. Every entry already expires 
 
 | Property | Default | Meaning |
 |----------|---------|---------|
-| `cocache.enabled` | `true` | `false` turns off all CoCache auto-configuration, including the actuator endpoint and metrics |
+| `cocache.enabled` | `true` | `false` turns off all CoCache auto-configuration, including the actuator endpoint, health indicator, and metrics |
+| `cocache.backend` | `redis` | `redis`: the Redis backend ([below](#redis-connection)). `memory`: the in-process backend for development and tests ([below](#memory-backend)). A `CoherenceBackend` bean of your own replaces either. |
 | `cocache.defaults.*` | | Policy for every cache (table below) |
 | `cocache.caches.[name].*` | | Policy for one cache, by cache name (case-insensitive). A name that no cache declares fails startup (usually a typo). |
 | `cocache.redis.*` | | The Redis backend ([below](#redis-connection)) |
+| `cocache.spring-cache.require-sync` | `false` | `true`: startup fails when a `@Cacheable` on a CoCache cache lacks `sync = true`. `false`: a warning is logged. See [Spring Cache](./spring-cache.md#use-sync-true). |
 
 ### Policy properties
 
@@ -77,6 +79,7 @@ These keys work under both `cocache.defaults.` and `cocache.caches.[name].`. Uns
 | `local-maximum-size` | `10000` | L2 maximum entries |
 | `invalidate-failure` | `retry` | `retry`: a failed L1 invalidation goes to a bounded background retry queue. `throw`: it throws `CacheWriteException`. |
 | `read-failure` | `degrade` | `degrade`: a failed L1 read loads from the source. `throw`: it throws `CacheReadException`. |
+| `key-prefix` | `cocache:` | Start of every Redis key ([below](#key-prefix)). Not a policy field, but layered the same way. |
 
 A bare number is **seconds** (`ttl: 120`). Spring duration strings also work (`120s`, `2m`, `PT2M`).
 
@@ -90,6 +93,24 @@ cocache:
       load-max-concurrent: 32
       read-failure: throw
 ```
+
+### Key prefix {#key-prefix}
+
+Redis keys are `{keyPrefix}{namespace}:{key}`. To separate applications that share one Redis, set the prefix once for every cache, and override it per cache where needed. Placeholders resolve like any Spring property:
+
+```yaml
+cocache:
+  defaults:
+    key-prefix: ${spring.application.name}:
+  caches:
+    "[PolicyIndexCache]":
+      key-prefix: "shared:"
+```
+
+`cocache.caches.[name].key-prefix` wins over `cocache.defaults.key-prefix`, which wins over the declaration (`@CoCache(keyPrefix = …)` or `CacheSpec.keyPrefix`) and any `CacheSpecCustomizer`. With no property set, the declaration's prefix is used, and its default is `cocache:`.
+
+- Changing the prefix of a running cache is a cold start: the old keys are no longer read and expire with their TTL. Every instance must use the same prefix.
+- The invalidation channel `cocache:inv:{namespace}` doesn't include the prefix. Applications with different prefixes and the same namespace on one Redis receive each other's invalidation messages. That is only extra work, because the keys never match.
 
 ### Validation
 
@@ -131,7 +152,33 @@ TLS comes from the Spring Boot SSL bundle (`spring.data.redis.ssl.bundle`): key 
 
 A bare number here is **milliseconds**, as for `spring.data.redis.timeout`, so write a unit (`2s`, `500ms`).
 
-To use another backend, or a Lettuce client you configure yourself, declare your own `CoherenceBackend` bean. To change the runtime (clock, refresh executor, invalidation retry policy), declare your own `CacheRuntime` bean. Both auto-configured beans are `@ConditionalOnMissingBean`.
+To use another backend, or a Lettuce client you configure yourself, declare your own `CoherenceBackend` bean. To change the runtime (clock, refresh executor, invalidation retry policy), declare your own `CacheRuntime` bean. Both auto-configured beans are `@ConditionalOnMissingBean`. A unique `CacheClock` bean is picked up by the auto-configured runtime (and by the [in-memory backend](#memory-backend)).
+
+## In-memory backend {#memory-backend}
+
+For local development and tests, run without Redis:
+
+```yaml
+cocache:
+  backend: memory
+```
+
+The starter then uses `InMemoryBackend` from `cocache-core` as the `CoherenceBackend` bean. It implements the full L1 protocol (leases, refresh tokens, negative entries, sets, atomic broadcast) inside the process. Spring Data Redis can be unconfigured or absent from the classpath. The starter logs a `WARN` at startup.
+
+- **Single process only.** Each instance has its own L1 and hears only its own invalidations. Never use it with more than one instance.
+- With a `CacheClock` bean, both the runtime and the in-memory backend use it. A test can declare a `ManualClock` and advance it to expire L2 and L1 without sleeping:
+
+```kotlin
+@TestConfiguration
+class ClockConfig {
+    @Bean
+    fun clock() = ManualClock()
+}
+
+clock.advance(Duration.ofMinutes(6))   // past local-max-age: the next read comes from L1
+```
+
+- A `CoherenceBackend` bean of your own still takes precedence over `cocache.backend`.
 
 ## Codecs {#codecs}
 

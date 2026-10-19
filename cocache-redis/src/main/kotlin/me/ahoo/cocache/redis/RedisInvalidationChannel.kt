@@ -111,11 +111,20 @@ internal abstract class RedisInvalidationChannel(
         }
     }
 
+    /**
+     * 最近一次心跳失败的原因；最近一次心跳成功（或尚未执行心跳）时为 `null`。只读状态，供健康检查查看。
+     */
+    @Volatile
+    internal var lastHeartbeatFailure: String? = null
+        private set
+
     @Suppress("TooGenericExceptionCaught")
     private fun beat() {
         try {
             ping()
+            lastHeartbeatFailure = null
         } catch (e: Exception) {
+            lastHeartbeatFailure = e.toString()
             log.warn(e) { "Invalidation channel heartbeat failed - reset all subscribers and force reconnect." }
             resetAll()
             forceReconnect()

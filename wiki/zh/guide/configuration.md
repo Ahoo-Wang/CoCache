@@ -12,7 +12,7 @@ description: CoCache 的全部配置：@CoCache 与 @CaffeineCache、cocache.* �
 3. **`CacheSpecCustomizer` bean**，按 Spring 顺序依次应用。
 4. **配置文件**：先 `cocache.defaults.*`，再 `cocache.caches.[name].*`。
 
-配置文件放在最后，运维调参不需要重新编译。注意这意味着 `cocache.defaults.*` 会覆盖注解中的设置。
+配置文件放在最后，运维调参不需要重新编译。注意这意味着 `cocache.defaults.*` 会覆盖注解中的设置。[`key-prefix`](#key-prefix) 同样如此：配置文件甚至会覆盖 `@CoCache` 或 spec 中显式写出的 `keyPrefix`。
 
 ## `@CoCache`
 
@@ -52,10 +52,12 @@ description: CoCache 的全部配置：@CoCache 与 @CaffeineCache、cocache.* �
 
 | 配置项 | 默认值 | 含义 |
 |--------|--------|------|
-| `cocache.enabled` | `true` | `false` 关闭 CoCache 的全部自动配置，包括 Actuator 端点与指标 |
+| `cocache.enabled` | `true` | `false` 关闭 CoCache 的全部自动配置，包括 Actuator 端点、健康检查与指标 |
+| `cocache.backend` | `redis` | `redis`：Redis 后端（[见下文](#redis-connection)）。`memory`：用于开发与测试的进程内后端（[见下文](#memory-backend)）。自己声明的 `CoherenceBackend` bean 优先于两者 |
 | `cocache.defaults.*` | | 所有缓存的策略（见下表） |
 | `cocache.caches.[name].*` | | 按缓存名（不区分大小写）设置单个缓存的策略。出现未声明的缓存名时启动失败（多半是拼写错误） |
 | `cocache.redis.*` | | Redis 后端（[见下文](#redis-connection)） |
+| `cocache.spring-cache.require-sync` | `false` | `true`：指向 CoCache 缓存的 `@Cacheable` 没有 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#use-sync-true) |
 
 ### 策略配置项
 
@@ -77,6 +79,7 @@ description: CoCache 的全部配置：@CoCache 与 @CaffeineCache、cocache.* �
 | `local-maximum-size` | `10000` | L2 最大条目数 |
 | `invalidate-failure` | `retry` | `retry`：失效写入 L1 失败时进入有界的后台重试队列。`throw`：抛出 `CacheWriteException` |
 | `read-failure` | `degrade` | `degrade`：读取 L1 失败时直接回源。`throw`：抛出 `CacheReadException` |
+| `key-prefix` | `cocache:` | 每个 Redis key 的开头（[见下文](#key-prefix)）。不属于策略，但按同样的方式分层 |
 
 不带单位的数字表示**秒**（`ttl: 120`），也可以使用 Spring 的时长写法（`120s`、`2m`、`PT2M`）。
 
@@ -90,6 +93,24 @@ cocache:
       load-max-concurrent: 32
       read-failure: throw
 ```
+
+### key 前缀 {#key-prefix}
+
+Redis key 为 `{keyPrefix}{namespace}:{key}`。多个应用共用一个 Redis 时，可以为所有缓存统一设置前缀，个别缓存再单独覆盖。占位符与其它 Spring 配置一样解析：
+
+```yaml
+cocache:
+  defaults:
+    key-prefix: ${spring.application.name}:
+  caches:
+    "[PolicyIndexCache]":
+      key-prefix: "shared:"
+```
+
+`cocache.caches.[name].key-prefix` 优先于 `cocache.defaults.key-prefix`，后者优先于声明（`@CoCache(keyPrefix = …)` 或 `CacheSpec.keyPrefix`）与 `CacheSpecCustomizer`。没有设置配置项时使用声明中的前缀，默认 `cocache:`。
+
+- 修改运行中缓存的前缀等于冷启动：旧 key 不再被读取，随 TTL 过期。所有实例必须使用同一个前缀。
+- 失效频道 `cocache:inv:{namespace}` 不含前缀。同一个 Redis 上前缀不同、namespace 相同的应用会收到彼此的失效消息，只是多余的处理，因为 key 永远不会相同。
 
 ### 校验
 
@@ -131,7 +152,33 @@ TLS 来自 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）：密�
 
 这里不带单位的数字表示**毫秒**（与 `spring.data.redis.timeout` 一致），所以请写上单位（`2s`、`500ms`）。
 
-要使用其它后端，或自己配置的 Lettuce 客户端，声明自己的 `CoherenceBackend` bean。要修改运行时（时钟、刷新执行器、失效重试策略），声明自己的 `CacheRuntime` bean。两个自动配置的 bean 都带有 `@ConditionalOnMissingBean`。
+要使用其它后端，或自己配置的 Lettuce 客户端，声明自己的 `CoherenceBackend` bean。要修改运行时（时钟、刷新执行器、失效重试策略），声明自己的 `CacheRuntime` bean。两个自动配置的 bean 都带有 `@ConditionalOnMissingBean`。存在唯一的 `CacheClock` bean 时，自动配置的运行时（以及[内存后端](#memory-backend)）使用它。
+
+## 内存后端 {#memory-backend}
+
+本地开发与测试可以不依赖 Redis：
+
+```yaml
+cocache:
+  backend: memory
+```
+
+此时 starter 以 `cocache-core` 中的 `InMemoryBackend` 作为 `CoherenceBackend` bean。它在进程内完整实现 L1 协议（lease、刷新令牌、负缓存、集合、原子广播）。Spring Data Redis 可以不配置，也可以不在 classpath 中。starter 启动时记录一条 `WARN`。
+
+- **只适用于单进程。** 每个实例有自己的 L1，只能收到自己的失效。不要在多实例部署中使用。
+- 存在 `CacheClock` bean 时，运行时与内存后端都使用它。测试可以声明一个 `ManualClock`，推进它让 L2 与 L1 到期，而不需要 sleep：
+
+```kotlin
+@TestConfiguration
+class ClockConfig {
+    @Bean
+    fun clock() = ManualClock()
+}
+
+clock.advance(Duration.ofMinutes(6))   // 超过 local-max-age：下一次读取从 L1 读回
+```
+
+- 自己声明的 `CoherenceBackend` bean 仍然优先于 `cocache.backend`。
 
 ## 编解码 {#codecs}
 

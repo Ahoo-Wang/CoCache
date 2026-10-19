@@ -15,13 +15,17 @@ package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.KeyInspection
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
 
 /**
- * 6.0 缓存运维端点（RFC 0003 §4.14）：列出缓存及其指标、查看单个缓存、清空本节点的 L2。
+ * 6.0 缓存运维端点（RFC 0003 §4.14）：列出缓存及其指标、查看单个缓存、清空本节点的 L2、按 key 查看与强制失效。
+ *
+ * 按 key 的操作以**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分）为路径参数，适用于任意 key 类型；
+ * key 中可以含 `/`（匹配剩余的全部路径段）。缓存不存在时返回 `null`（HTTP 404）。
  */
 @Endpoint(id = CoCacheEndpoint.ID)
 class CoCacheEndpoint(private val runtime: CacheRuntime) {
@@ -46,6 +50,40 @@ class CoCacheEndpoint(private val runtime: CacheRuntime) {
     fun clearLocal(@Selector name: String) {
         runtime.admin(name)?.clearLocal()
     }
+
+    /**
+     * 查看一个 key 在本节点 L2 与 L1 中的状态，不加载、不申请 lease、不写任何一层（[me.ahoo.cocache.core.CacheAdmin.inspect]）。
+     * 返回的值是 `toString()` 的截断展示：端点访问权限应与能读取缓存数据的权限一致。
+     */
+    @ReadOperation
+    fun inspect(
+        @Selector name: String,
+        @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>
+    ): KeyInspection? {
+        return runtime.admin(name)?.inspect(encodedKeyOf(key))
+    }
+
+    /**
+     * 按 key 强制失效，走正常的失效路径（全集群生效），幂等（[me.ahoo.cocache.core.CacheAdmin.invalidateEncoded]）。
+     * `SetCache` 上等价于 `clear(key)`。
+     */
+    @DeleteOperation
+    fun invalidate(
+        @Selector name: String,
+        @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>
+    ): InvalidationReport? {
+        val admin = runtime.admin(name) ?: return null
+        val encodedKey = encodedKeyOf(key)
+        admin.invalidateEncoded(encodedKey)
+        return InvalidationReport(name, encodedKey)
+    }
+
+    /**
+     * 强制失效的结果。
+     */
+    data class InvalidationReport(val cache: String, val key: String)
+
+    private fun encodedKeyOf(segments: Array<String>): String = segments.joinToString("/")
 
     data class CacheReport(
         val name: String,

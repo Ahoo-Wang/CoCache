@@ -83,6 +83,18 @@ class RedisBackend private constructor(
     override val channel: InvalidationChannel
         get() = invalidationChannel
 
+    /**
+     * 失效通道心跳是否正常：最近一次心跳成功或尚未执行心跳时为 `true`。只读，供健康检查使用。
+     */
+    val heartbeatHealthy: Boolean
+        get() = invalidationChannel.lastHeartbeatFailure == null
+
+    /**
+     * 最近一次心跳失败的原因；心跳正常时为 `null`。
+     */
+    val heartbeatFailure: String?
+        get() = invalidationChannel.lastHeartbeatFailure
+
     override fun store(namespace: String): RemoteStore {
         val channel = if (atomicBroadcast) {
             RedisInvalidationChannel.channelOf(

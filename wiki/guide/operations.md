@@ -1,6 +1,6 @@
 ---
 title: Operations
-description: Running CoCache in production — the actuator endpoint, metrics, Redis failure behavior, invalidating from outside CoCache, inspecting Redis, sizing, and troubleshooting stale reads.
+description: Running CoCache in production — the actuator endpoint (per-key inspect and invalidate), health indicator, metrics, Redis failure behavior, invalidating from outside CoCache, inspecting Redis, sizing, and troubleshooting stale reads.
 ---
 
 # Operations
@@ -22,8 +22,50 @@ management:
 | `GET /actuator/cocache` | Report for every cache on this instance: `name`, `localSize` (L2 entries, estimated), `loads`, `loadNanos`, and every counter from the [metrics table](#metrics) under `metrics` |
 | `GET /actuator/cocache/{name}` | Report for one cache |
 | `DELETE /actuator/cocache/{name}` | Clears **this instance's** L2 for that cache. L1 is untouched. Loads in flight are discarded. |
+| `GET /actuator/cocache/{name}/{key}` | Inspects one key on this instance: its L2 copy and its L1 state ([below](#inspect-key)) |
+| `DELETE /actuator/cocache/{name}/{key}` | Invalidates one key **cluster-wide** through the normal invalidation path, as `cache.invalidate(key)` does. Idempotent. On a `SetCache` it is `clear(key)`, which deletes the only copy. |
 
-The endpoint never reads or loads a key. The `DELETE` operation changes state, so secure the endpoint like other write-capable actuator endpoints.
+An unknown cache name returns `404`. The `DELETE` operations change state, and the inspection shows values, so secure the endpoint like other write-capable actuator endpoints that can read your data.
+
+### Inspecting a key {#inspect-key}
+
+`{key}` is the **encoded key**: the part of the Redis key after `{keyPrefix}{namespace}:`, which is the `KeyEncoder` output (`toString()` or the `keyExpression` result). That works for any key type. It may contain `/`.
+
+```bash
+curl localhost:8080/actuator/cocache/UserCache/42
+```
+
+```json
+{
+  "cache": "UserCache",
+  "storageKey": "cocache:UserCache:42",
+  "local": { "state": "VALUE", "value": "User(id=42, name=Ada)", "expiresAt": "2026-10-19T08:05:00Z", "refreshAt": null, "expired": false },
+  "remote": { "state": "VALUE", "value": "User(id=42, name=Ada)", "ttl": "PT58M", "format": 1, "error": null },
+  "invalidationPending": false
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `local` | This instance's L2 copy, or `null`. `state` is `VALUE`, `ABSENT` (a negative entry), or `UNRESOLVED` (a miss on a cache without a loader). An expired copy that Caffeine has not evicted yet shows `expired: true`. |
+| `remote.state` | `VALUE`, `ABSENT` (negative entry), `SET`, `LEASED` (a node is loading; `ttl` is the lease's remaining time), `MISS`, `UNREADABLE` (unknown or newer format, wrong shape, or the codec failed; `error` says which), or `ERROR` (the Redis read failed) |
+| `value` | The value decoded with the cache's codec, as `toString()`, cut at 256 characters |
+| `invalidationPending` | An invalidation of this key failed on Redis and is still being retried. Until it succeeds, misses skip L1. |
+
+Inspecting never loads: it doesn't call the loader, take a lease or refresh token, fill either level, count in metrics, or touch Caffeine's eviction statistics. It costs one Redis read.
+
+## Health indicator {#health}
+
+With actuator on the classpath, the starter registers the health contributor `cocache` (bean `cocacheHealthIndicator`, `management.health.cocache.enabled` to turn it off). It reads only in-memory state and never calls Redis.
+
+| Status | When |
+|--------|------|
+| `DOWN` | The Redis invalidation channel's last heartbeat failed. This instance's L2 has been cleared, and invalidations from other instances may be missed until the connection recovers. |
+| `UP` | Otherwise, including while invalidations are being retried |
+
+Details: `backend` (class name), `format`, `atomicBroadcast`, for Redis also `channelMode` and `heartbeat` (`healthy`, and `error` when failing), the total `pendingInvalidations`, and per cache `pendingInvalidations` and `localSize`. Pending invalidations don't change the status: the retry queue converges on its own, and a dropped invalidation shows up in `cocache.invalidations.dropped`. Alert on that metric.
+
+If you don't want a Redis subscription problem to take an instance out of rotation, leave `cocache` out of your readiness group.
 
 ## Metrics {#metrics}
 
@@ -114,7 +156,7 @@ One frame can carry many keys of the same namespace. Delivery is at most once, l
 
 Every CoCache value in Redis starts with a 36-byte binary header (magic byte `0xC0`, format version, state, token, timestamp), followed by the codec's bytes. `redis-cli GET` therefore shows binary data, and a negative entry or an in-progress lease has a header but no payload. Set caches are Redis Hashes with a `!f` format field and one `+{member}` field per member. Don't read or write CoCache keys from other programs except through the invalidation protocol above.
 
-To see what an instance holds, use the actuator endpoint. To force every instance to reload a key, invalidate it.
+To see what an instance holds for a key, use [`GET /actuator/cocache/{name}/{key}`](#inspect-key), which decodes both levels. To force every instance to reload a key, invalidate it, for example with `DELETE /actuator/cocache/{name}/{key}`.
 
 ## Sizing {#sizing}
 
@@ -127,11 +169,12 @@ To see what an instance holds, use the actuator endpoint. To force every instanc
 ## Troubleshooting {#troubleshooting}
 
 **An instance keeps serving an old value.**
-1. Check that the writer invalidates *after* the database commit. Use `TransactionalInvalidator` inside transactions.
-2. Check that every write path invalidates, including batch jobs and other services. Paths outside CoCache can use the [invalidation protocol](#external-eviction).
-3. Check that every instance uses the same cache namespace and the same `channel-mode`. `pubsub` and `sharded` instances don't hear each other.
-4. Check `cocache.invalidations.dropped` and `cocache.write.failures`.
-5. With `@Cacheable` without `sync = true`, Spring's unconditional `put` can overwrite an invalidation. Use `sync = true`.
+1. [Inspect the key](#inspect-key) on that instance: compare its `local` copy with `remote`, and check `invalidationPending`. `DELETE /actuator/cocache/{name}/{key}` fixes it right away while you look for the cause.
+2. Check that the writer invalidates *after* the database commit. Use `TransactionalInvalidator` inside transactions.
+3. Check that every write path invalidates, including batch jobs and other services. Paths outside CoCache can use the [invalidation protocol](#external-eviction).
+4. Check that every instance uses the same cache namespace and the same `channel-mode`. `pubsub` and `sharded` instances don't hear each other.
+5. Check `cocache.invalidations.dropped` and `cocache.write.failures`.
+6. With `@Cacheable` without `sync = true`, Spring's unconditional `put` can overwrite an invalidation. Use `sync = true`. The starter warns about these methods at startup ([Spring Cache](./spring-cache.md#use-sync-true)).
 
 **A newly created record is reported as missing.** A lookup before the record existed cached a negative entry. It lasts up to `absentTtl`. Invalidate the key after creating the record, or lower `absent-ttl`.
 

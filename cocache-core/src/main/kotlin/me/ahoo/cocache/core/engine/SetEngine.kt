@@ -152,6 +152,16 @@ internal class SetEngine<K : Any, E : Any>(
         write(listOf(storageKey), { frame -> store.invalidate(listOf(storageKey), frame) }, throwWriteFailure("clear"))
     }
 
+    override fun describe(envelope: Envelope): Any? = decode(envelope)
+
+    /**
+     * 运维的强制失效：L1 是唯一副本，等价于 [clear]。
+     */
+    override fun invalidateEncoded(encodedKey: String) {
+        val storageKey = storageKeyOf(encodedKey)
+        write(listOf(storageKey), { frame -> store.invalidate(listOf(storageKey), frame) }, throwWriteFailure("clear"))
+    }
+
     override fun invalidate(key: K) {
         throw UnsupportedOperationException("SetCache[$name] - invalidate would destroy the only copy; use clear(key).")
     }

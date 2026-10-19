@@ -43,6 +43,16 @@ The annotated method acts as the loader, so the cache usually has no `CacheLoade
 
 Without `sync`, Spring does "read, miss, call the method, `put`" itself. That `put` is unconditional, so an invalidation that happened while the method ran can be overwritten with the old result until `ttl`. Use `sync = true` wherever you need CoCache's guarantees.
 
+The starter checks this at startup. With `@EnableCaching`, it asks Spring's `CacheOperationSource` for the cache operations of every bean, including names from `@CacheConfig`. For each `@Cacheable` without `sync = true` that names a CoCache cache, it logs a `WARN` with `Class#method` and the cache names. To fail startup instead:
+
+```yaml
+cocache:
+  spring-cache:
+    require-sync: true
+```
+
+The check matches by cache name. It skips operations that name no cache (only a `cacheResolver`), and it does nothing without `@EnableCaching`.
+
 After a write, prefer `@CacheEvict` over `@CachePut`. Evicting makes the next read load the committed state, and every instance drops its L2 copy.
 
 ## Semantics {#semantics}

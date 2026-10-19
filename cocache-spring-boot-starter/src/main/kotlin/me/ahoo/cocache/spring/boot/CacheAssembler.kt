@@ -21,7 +21,7 @@ import me.ahoo.cocache.core.SetCacheSpec
 import org.springframework.beans.factory.SmartInitializingSingleton
 
 /**
- * 按声明创建缓存：依次叠加定制器与配置文件中的策略，再交给 [CacheRuntime]。
+ * 按声明创建缓存：依次叠加定制器与配置文件中的策略与 key 前缀（`key-prefix`），再交给 [CacheRuntime]。
  *
  * 所有单例创建完成后校验：配置文件中出现未声明的缓存名时启动失败（多半是拼写错误）。缓存名不区分大小写
  * （环境变量绑定的 key 是小写）；“已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供。
@@ -37,6 +37,7 @@ class CacheAssembler(
         val builder = spec.toBuilder()
         customizers.filter { it.supports(spec.name) }.forEach { it.customize(builder) }
         builder.policy = properties.policyFor(spec.name, builder.policy)
+        properties.keyPrefixFor(spec.name)?.let { builder.keyPrefix = it }
         runtime.create(builder.build())
     }
 
@@ -44,6 +45,7 @@ class CacheAssembler(
         val builder = spec.toBuilder()
         customizers.filter { it.supports(spec.name) }.forEach { it.customize(builder) }
         builder.policy = properties.policyFor(spec.name, builder.policy)
+        properties.keyPrefixFor(spec.name)?.let { builder.keyPrefix = it }
         runtime.create(builder.build())
     }
 
