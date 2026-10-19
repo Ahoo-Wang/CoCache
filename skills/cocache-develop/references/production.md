@@ -29,7 +29,7 @@ Under `noeviction` at `maxmemory`, invalidations still work, reads stop taking l
 
 ## ACL
 
-CoCache needs read/write on its key prefixes (`~cocache:*` by default, plus `~cocache:probe:*` in `pubsub` mode), channels `&cocache:inv:*` (plus `&cocache:probe:*` in `pubsub` mode), direct commands `EVALSHA`, `EVAL`, `PING`, the publish/subscribe family for the chosen mode and the connection commands, and the in-script commands `GET SET DEL PTTL TYPE HGETALL HSET HDEL HEXISTS HLEN PEXPIRE PERSIST SETRANGE TIME`. Copy the exact `ACL SETUSER` line from the deployment guide of the resolved version. Denying `PING` makes every heartbeat fail, clears every L2 each period, and keeps health `DOWN`.
+CoCache needs read/write on its key prefixes (`~cocache:*` by default, plus `~cocache:probe:*` in `pubsub` mode), channels `&cocache:inv:*` (plus `&cocache:probe:*` in `pubsub` mode), direct commands `EVALSHA`, `EVAL`, `PING`, the publish/subscribe family for the chosen mode and the connection commands, and the in-script commands `GET SET DEL PTTL TYPE HGETALL HKEYS HGET HSET HDEL HEXISTS HLEN PEXPIRE PERSIST SETRANGE TIME`. Copy the exact `ACL SETUSER` line from the deployment guide of the resolved version. Denying `PING` makes every heartbeat fail, clears every L2 each period, and keeps health `DOWN`.
 
 ## Rolling-safe changes
 

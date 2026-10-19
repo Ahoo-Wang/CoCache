@@ -37,6 +37,10 @@ async.put("42", user).thenCompose { async.get("42") }
 
 容器中有 `ObservationRegistry` bean 时，starter 注册 `MicrometerLoadObserver`：每次回源与每次等待其它实例的 lease 都包在一个 `cocache.load` 观测中，标签为 `cache`、`operation` 与 `outcome`。命中不产生观测。新的 `LoadObserver` SPI 可以接入你自己的实现。见[可观测性](../operations/observability.md#tracing)。
 
+### SetCache 读取更快
+
+`SetCache` 的读脚本用 `HKEYS` 取成员、用 `HGET` 取格式版本，不再用 `HGETALL` 连同每个成员的空值一起返回。存储布局不变。服务端吞吐在 10、100、1000 个成员时分别是原来的 1.33、1.55、1.76 倍。读脚本内的 ACL 错误现在会抛给调用方，不再被当作无法识别的内容。
+
 ### L2 命中计数
 
 `cocache.metrics.local-hits=true`（不用 Spring 时：`CacheRuntime.builder().recordLocalHits(true)`）把由 L2 回答的读取计入 `cocache.hits{level=l2}` 与端点字段 `localHits`，读取因此能精确地分成 L2 命中、未命中与被过滤三类。默认关闭，因为它给每次 L2 命中加一次原子自增。5.x 的 `cocache.metrics.client-side-hits` 现在提示改用它。见[可观测性](../operations/observability.md#metrics-reads)。
@@ -53,6 +57,7 @@ async.put("42", user).thenCompose { async.get("42") }
 - `Cache.async()` 是默认抛出 `UnsupportedOperationException` 的 default 方法。你自己实现的 `Cache`（例如测试替身）只有在调用方使用异步视图时才需要覆盖它。
 - 自定义的 `LoadObserver` 只有覆盖 `observeAsync` 才能看到异步加载。
 - **Kotlin 调用方需要针对 6.3 重新编译**，否则报 `NoSuchMethodError`。`LoadPolicy` 新增 `asyncTimeout`，改变了 `copy` 与 Kotlin 默认参数背后的合成构造函数，调用 `copy` 或省略 `LoadPolicy` 参数的 Kotlin 代码都受影响；`CoCacheSpringCacheManager(runtime)` 不再是带默认参数的构造函数，省略执行器的 Kotlin 代码同样受影响。Java 调用方不受影响。
+- **Redis ACL**：使用最小 ACL 的用户须在升级前加上 `+hkeys +hget`，否则 `SetCache` 读取会以 ACL 错误失败。`+hgetall` 仍需保留：条件回收与 6.0 / 6.1 实例还在使用它。见 [ACL](../operations/index.md#acl)。
 - TCK：`HookedBackend.closesDelegate`（默认 `false`，与之前相同）与各套件的 `closesBackend` 让套件关闭每个用例新建的后端，后端会打开连接或线程时请开启。按调用方筛选的钩子请改用 `HookedBackend.issuer()`，因为异步调用在其它线程上完成。
 
 ### Gradle 配置

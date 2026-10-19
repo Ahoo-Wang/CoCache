@@ -89,6 +89,9 @@ end
      */
     val READ = Script(
         CORE + """
+local function is_wrongtype(reply)
+  return string.sub(reply['err'], 1, 9) == 'WRONGTYPE'
+end
 local key = KEYS[1]
 local pttl = redis.call('PTTL', key)
 if pttl == -2 then
@@ -100,15 +103,19 @@ if pttl == -2 then
   end
   return {0, 0}
 end
--- 常见路径是 String：直接 GET（与 5.x 相同的两条命令）；类型不符时退回 HGETALL（集合的 Hash）
+-- 常见路径是 String：直接 GET（与 5.x 相同的两条命令）；类型不符时退回集合的 Hash：
+-- HKEYS 只取字段名（成员的值都是空串，不必返回），格式版本另由 HGET 取；两者与 HGETALL 的字段顺序相同
+-- 只有 WRONGTYPE 表示类型不符；其它错误（如 ACL 缺少命令）原样抛给调用方，不能当作无法识别的内容去回收
 local v = redis.pcall('GET', key)
 if type(v) == 'table' then
-  local flat = redis.pcall('HGETALL', key)
-  if flat['err'] then
+  if not is_wrongtype(v) then return v end
+  local fields = redis.pcall('HKEYS', key)
+  if fields['err'] then
+    if not is_wrongtype(fields) then return fields end
     -- 其它类型（原生 Set / List / ZSet 等，如 5.x 遗留）：以空内容的无法识别值返回，由引擎按损坏回收（摘要为空串）
     return {2, pttl, '', 0}
   end
-  return {3, pttl, flat}
+  return {3, pttl, fields, redis.call('HGET', key, '!f') or ''}
 end
 if not is_ours(v) then return {2, pttl, v, 0} end
 local state = string.sub(v, 3, 3)
