@@ -163,6 +163,14 @@ object RedisTestSupport {
     }
 
     /**
+     * 连接单机 Redis 的客户端（调用方负责 `shutdown`）。仅限单机。
+     */
+    fun standaloneClient(): RedisClient {
+        check(!isCluster) { "Standalone only" }
+        return RedisClient.create(standaloneUri)
+    }
+
+    /**
      * 新建一个转发到单机 Redis 的 [TcpProxy]。仅限单机。
      */
     fun proxy(): TcpProxy {

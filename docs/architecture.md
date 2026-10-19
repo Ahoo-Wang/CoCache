@@ -309,6 +309,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **只访问主节点**：读脚本会写 lease 与刷新令牌，不能在副本上执行。CoCache 自己的连接不继承应用的从库读取配置。
 - **命令连接**：每个后端一条共享连接（Cluster 由 Lettuce 按节点管理），并发的异步命令在其上多路复用。大载荷会造成队头阻塞。
 - **脚本缓存**：每条命令 `EVALSHA`，遇到 `NOSCRIPT`（故障切换、重启、resharding 后）改用 `EVAL` 重试。
+- **原生异步**（RFC 0004 §4.3）：`RedisRemoteStore` 实现 `AsyncRemoteStore`，两种失效通道实现 `AsyncInvalidationChannel`。每个操作只构造一次命令（`xxxCommand`），同步方法等待它；异步方法返回它经 `RedisConnections.bounded` 与 `mapped` 包装后的新 future，等待期间不占线程，同步与异步只有一份协议实现。异步结果的超时与异常类型与同步等待一致：超过 `commandTimeout` 时取消命令并以 `RedisException("Command timed out …")` 失败，执行异常解包为原始的运行时异常（不是运行时异常的包装为 `RedisException`）；超时由 JDK 的延迟调度器（`orTimeout`，作用于自己的副本，命令完成时撤销）触发，不经 `cocache-timer`。`mapped` 代替 `thenApply`，失败不包装为 `CompletionException`。`readAllAsync` 等全部读取完成再判定，任一失败时先尽力释放其余读取取得的 lease；`putAllAsync` / `invalidateAsync` 以按发出顺序的第一个异常失败。异步结果在 Lettuce 的 I/O 线程上完成，引擎切换到异步执行器（§5.6）。
 - **原子广播探测**：`pubsub` 模式启动时在脚本内向与 key 不同 slot 的频道 `PUBLISH`。在把 `PUBLISH` 当作 `SPUBLISH` 执行的环境（如 ElastiCache Serverless）中报跨 slot 错误，后端以 `atomicBroadcast = false` 运行并告警。只有确定性的错误（跨 slot、ACL 拒绝）才降级；超时等其它错误使启动失败，而不是永久降级。
 
 ### 8.1 失效通道
@@ -460,7 +461,8 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 | 原生异步的后端（`AsyncRemoteStore`） | `AsyncBackendProtocolSpec`：`BackendProtocolSpec` 的每个用例经异步方法重跑（不得同步抛出，失败为原始异常），另加同步与异步交替调用的一致性 |
 | 故障下的 G1 / G2 | `FaultSpec`（L1 整体失败时的降级限龄、fill 失败与 lease 寿命、重试耗尽与队列溢出的放弃、“已在 L1 生效却报错”的 `put` / `invalidate` 可安全重试；可选：断线期间被拒绝的写入在重连后不被重放，后端覆盖 `disconnect()` 才运行） |
 
-- `HookedBackend` 包装任意后端以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`）、改写读取结果、在读取之后、`fill` 之后与写入前后编排竞态（`afterPut`、`afterInvalidate` 抛出即模拟“已生效但报错”），并能覆盖 `atomicBroadcast` 以验证非原子路径。被包装的存储原生异步时，同样的钩子与故障也作用于异步方法（故障以失败的 future 返回）；`ioExecutor` 让异步结果改在指定线程上送达（模拟 I/O 线程）。
+- 异步视图的 TCK 在 `cocache-redis` 上与同步矩阵一样跑 `pubsub`、非原子与 `sharded` 三种后端（`RedisAsyncTckTest`：`AsyncBackendProtocolSpec`、`AsyncEngineSpec`、`AsyncSetEngineSpec`（`pubsub`）、`AsyncMultiNodeSpec`、`AsyncFaultSpec`，另有保留同步数据源的 `CacheAccess.ASYNC_WITH_SYNC_SOURCE`），设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时同样连接 Cluster。
+- `HookedBackend` 包装任意后端以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`）、改写读取结果、在读取之后、`fill` 之后与写入前后编排竞态（`afterPut`、`afterInvalidate` 抛出即模拟“已生效但报错”），并能覆盖 `atomicBroadcast` 以验证非原子路径。被包装的存储原生异步时，同样的钩子与故障也作用于异步方法（故障以失败的 future 返回）；`ioExecutor` 让异步结果改在指定线程上送达（模拟 I/O 线程）。异步结果尚未完成且设置了钩子时，钩子在 `HookedBackend` 自己的线程上执行（钩子可能阻塞，不能在 L1 客户端的 I/O 线程上执行），`issuer()` 返回发起这次存储调用的线程名，按线程编排的钩子用它代替 `Thread.currentThread().name`。`close()` 关闭被包装的后端。
 - 时间：内存后端用 `ManualClock` 推进；Redis 测试用 `RedisTestSupport.shiftTtl` 缩短 key 的剩余寿命来模拟时间流逝。到期时间是毫秒精度，不需要 ±1 s 偏差。
 - `cocache-redis` 中 `BackendProtocolSpec`、`EngineSpec`、`MultiNodeSpec` 与 `FaultSpec` 在 `pubsub`、非原子（ACL 禁止探测频道）与 `sharded` 三种后端上各跑一遍，`SetEngineSpec` 只在 `pubsub` 后端上运行；设置 `SPRING_DATA_REDIS_HOST` / `SPRING_DATA_REDIS_PORT` 时连接其他单机实例（CI 的 Valkey 任务），设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时连接 Redis Cluster。`FaultSpec` 的断线用例只在单机 `pubsub` 上运行（经 `TcpProxy` 断开并拒绝重连）；`NOSCRIPT` 回退（每个操作之前 `SCRIPT FLUSH`）是 `RedisFaultTest` 自己的用例。
 - 竞态用 latch 编排，禁止 sleep；等待 `finished` latch，让死掉的后台线程使用例失败；跨节点效果用带超时的轮询断言。
@@ -478,6 +480,8 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 
 - 基准：`cocache-redis/src/jmh` 的 `CoCacheBenchmark`，方法 `l2Hit`、`l2HitViaInterface`、`l2HitMixed`（轮流访问三个配置不同的缓存）、`l1Read`、`l1SequentialRead`、`l1BatchRead`、`missLoad`、`set`、`invalidate`。`-PjmhIncludes` 是正则，`l2Hit` 同时匹配三个 L2 基准。
 - 必须加 `--rerun`：参数不变时 Gradle 判定 `jmh` 任务为最新，静默沿用上次的结果。
+- 命中路径的前后对比按基准拆开、两侧交替运行（`-PjmhIncludes='\.l2Hit$'` 等）：同一个 `jmh` 任务里排在后段的基准在 8 线程下会因长时间满载而明显变慢（实测低 20%–30%），单独运行时回到基线（RFC 0004 §14）。开跑前确认机器空闲（`uptime`）。
+- 异步视图的基准：`l2HitAsync`、`l2HitAsyncMixed`、`l1ReadAsync`、`l1HitViaEngine` / `l1HitViaEngineAsync`、`missLoadAsync`、`setAsync`、`invalidateAsync`（闭环，每次操作后等待），以及在途请求基准 `l1HitInFlightAsync` / `setInFlightAsync` 与同步对照 `l1HitSequential` / `setSequential`（每次调用 32 个请求）。
 - 1 线程与 8 线程，与上一版本**至少交替运行 5 轮**，比较中位数与置信区间，包含 `l2HitMixed`。同一台机器上 8 线程的结果在多次运行之间波动约 ±4%，差异小于噪声时不作结论。
 
 ## 14. 不变量
@@ -487,7 +491,7 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 3. **读路径从不无条件删除**：同版本的损坏只能通过 `reclaim`（比较摘要）转为 lease；更高的未知版本既不回收也不写回。
 4. **能原子广播就原子广播**：后端以 `atomicBroadcast` 声明能力；为 `false` 时由引擎在写入成功后发布，TCK 按能力分别验证。
 5. **SingleFlight 先注销调用、再发布结果**（读己之写依赖这个顺序）；同步与异步调用共用一张表，异步调用在注册之后取戳；每个异步调用方拿到自己的 future；同步调用合并到异步调用时只阻塞自己的线程，异步调用合并到同步调用时经异步执行器拿到结果。同线程对同一 key 的重入（同步调用的拥有线程，或正在为该 key 调用数据源的线程）快速失败；批量合并先注册全部 key、先完成自己负责的 key 再等待别人。
-6. **同步 API 上 loader 在调用方线程上执行**；异步视图上异步数据源在调用方线程或异步执行器上调用，同步数据源只在阻塞执行器上执行，从不在异步执行器上执行。Future 只包装 I/O，L1 与数据源的 future 完成后先切换到异步执行器（或在已完成时就地）再执行续接，**事件循环线程上不执行续接**。
+6. **同步 API 上 loader 在调用方线程上执行**；异步视图上异步数据源在调用方线程或异步执行器上调用，同步数据源只在阻塞执行器上执行，从不在异步执行器上执行。Future 只包装 I/O，L1 与数据源的 future 完成后先切换到异步执行器（或在已完成时就地）再执行续接，**事件循环线程上不执行续接**。唯一的例外是存储内部、不含用户代码的结果转换：Redis 后端在 Lettuce 的 I/O 线程上把脚本返回值转换为 `RemoteRead`（解析 36 字节头部并拷贝出载荷、集合成员），不调用 `Codec`、不调用任何用户代码；代价是大值（或大集合）的这一次拷贝在 I/O 线程上进行，会推迟同一连接上其它命令的完成（与同一连接上大载荷本身的队头阻塞同量级，§8）。
 7. **令牌必须释放或过期**：loader、`ttlOf`、`Codec` 失败，回源被拒绝或超时，以及刷新令牌用不上时都要 `release`。
 8. **每次 L1 状态转换都显式重设到期时间。**
 9. **线格式在一个大版本内冻结**：key 布局、标量头、集合字段、消息帧、频道命名、摘要算法。格式演进通过版本号两阶段完成。

@@ -589,3 +589,9 @@ interface LoadObserver {
 另外：`LoadPolicy` 是 `data class`，新增的 `asyncTimeout` 改变了它的 `copy` 签名（Kotlin 调用方重新编译即可；`@JvmOverloads` 构造函数保持兼容）。
 
 审阅后的修订（PR 1）：执行器拒绝任务时，写入方的第二次递增与淘汰在 L1 future 的完成线程上就地执行，回源许可在加载链结束时恰好归还一次，lease 与刷新令牌尽力释放（§8.2“异步执行器拒绝任务”一行据此实现）；`asyncTimeout` 由 JDK 的延迟线程以 `completeOnTimeout` 的私有哨兵值计时（不经 `cocache-timer`），与数据源自己抛出的 `TimeoutException` 区分开。
+
+### 6.3 / PR 2（Redis 原生异步）
+
+- **闭环基准在 8 线程下低于 §11 的 90%**：`missLoadAsync`、`setAsync`、`invalidateAsync` 与经引擎的 `l1HitViaEngineAsync` 每次操作后都 `join()`，测的是闭环延迟。每次操作多出的一次线程切换是 A9 刻意要求的（结果从不在 Lettuce 的 I/O 线程上完成），在 8 个线程同时阻塞等待时最明显：实测为同步的 80%–93%（1 线程下 91%–98%；存储层的 `l1ReadAsync` 不经引擎切换，为 98%–103%）。不为追数据破坏这条不变量。
+- **替代的验收证据**：在途请求基准（`l1HitInFlightAsync` / `setInFlightAsync`，每个线程每次调用保持 32 个在途请求，全部完成后再等待），与同样线程数逐个阻塞的同步做法（`l1HitSequential` / `setSequential`）对比。异步视图的收益在于一个线程同时推进多个请求，数据见 PR 2 描述。
+- **基准的运行方式**：多个基准放进同一个 `jmh` 任务时，排在任务后段的基准在 8 线程下会明显变慢（长时间满载导致的降频），同一份代码单独运行时回到基线。命中路径的比较应按基准拆开、交替运行。

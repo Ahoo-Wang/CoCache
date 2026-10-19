@@ -29,6 +29,7 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -118,6 +119,61 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
      */
     @Volatile
     var ioExecutor: Executor? = null
+
+    /**
+     * 发起当前存储调用的线程名：钩子用它代替 `Thread.currentThread().name` 编排竞态。
+     * 异步方法的钩子在结果的完成线程（如 Lettuce 的 I/O 线程）上执行，执行期间这里返回发起调用的线程名。
+     */
+    fun issuer(): String = issuerName.get() ?: Thread.currentThread().name
+
+    private val issuerName = ThreadLocal<String?>()
+
+    /**
+     * 异步方法的钩子在这里执行（结果尚未完成时）：钩子可能阻塞（latch），不能在 L1 客户端的 I/O 线程上执行，否则共享连接上的全部命令都会停下。
+     */
+    private val hookExecutor = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "tck-hook").apply { isDaemon = true }
+    }
+
+    /**
+     * [future] 完成后在发起者的身份下执行 [hook]：已完成时就地执行，否则在 [hookExecutor] 上执行。
+     */
+    private fun <T, R> CompletableFuture<T>.hooked(
+        issuer: String,
+        active: Boolean,
+        hook: (T) -> R
+    ): CompletableFuture<R> {
+        val apply = java.util.function.Function<T, R> { value -> asIssuer(issuer) { hook(value) } }
+        // 没有设置钩子时不切换线程：不为 TCK 的线程数断言引入额外线程
+        return if (isDone || !active) thenApply(apply) else thenApplyAsync(apply, hookExecutor)
+    }
+
+    /**
+     * [close] 时是否同时关闭被包装的后端。默认 `false`（与此前的行为相同）：被包装的后端可能是共享的，或由创建方自己关闭。
+     * 规范的 `closesBackend` 为 `true` 时开启（每个用例新建后端的实现，如 Redis，应当开启，否则客户端与线程在用例之间泄漏）。
+     */
+    @Volatile
+    var closesDelegate: Boolean = false
+
+    /**
+     * 停止钩子线程；[closesDelegate] 为 `true` 时同时关闭被包装的后端。
+     */
+    override fun close() {
+        hookExecutor.shutdownNow()
+        if (closesDelegate) {
+            delegate.close()
+        }
+    }
+
+    private fun <T> asIssuer(issuer: String, block: () -> T): T {
+        val previous = issuerName.get()
+        issuerName.set(issuer)
+        try {
+            return block()
+        } finally {
+            if (previous == null) issuerName.remove() else issuerName.set(previous)
+        }
+    }
 
     val reads = AtomicInteger()
     val readAlls = AtomicInteger()
@@ -249,18 +305,28 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
             hooked("read") {
                 reads.incrementAndGet()
-                store.readAsync(key, lease, refresh).thenApply { afterRead?.invoke(key, it) ?: it }
+                val issuer = Thread.currentThread().name
+                store.readAsync(
+                    key,
+                    lease,
+                    refresh
+                ).hooked(issuer, afterRead != null) { read -> afterRead?.invoke(key, read) ?: read }
             }
 
         override fun readAllAsync(keys: Collection<String>, leases: Map<String, LeaseRequest>): CompletableFuture<Map<String, RemoteRead>> =
             hooked("readAll") {
                 readAlls.incrementAndGet()
-                store.readAllAsync(keys, leases).thenApply { afterReadAll?.invoke(it) ?: it }
+                val issuer = Thread.currentThread().name
+                store.readAllAsync(
+                    keys,
+                    leases
+                ).hooked(issuer, afterReadAll != null) { reads -> afterReadAll?.invoke(reads) ?: reads }
             }
 
         override fun fillAsync(fill: Fill): CompletableFuture<Boolean> = hooked("fill", fail = failFill) {
             fills.incrementAndGet()
-            store.fillAsync(fill).thenApply { filled ->
+            val issuer = Thread.currentThread().name
+            store.fillAsync(fill).hooked(issuer, afterFill != null) { filled ->
                 afterFill?.invoke(fill.key, filled)
                 filled
             }
@@ -279,7 +345,8 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
 
         override fun putAsync(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
             hooked("put", fail = failWrites) {
-                store.putAsync(key, envelope, ttl, frame).thenApply {
+                val issuer = Thread.currentThread().name
+                store.putAsync(key, envelope, ttl, frame).hooked(issuer, afterPut != null) {
                     afterPut?.invoke(key)
                     null
                 }
@@ -290,7 +357,8 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             fail = failWrites
         ) {
             putAlls.incrementAndGet()
-            store.putAllAsync(puts, frame).thenApply {
+            val issuer = Thread.currentThread().name
+            store.putAllAsync(puts, frame).hooked(issuer, afterPut != null) {
                 afterPut?.let { hook -> puts.forEach { hook(it.key) } }
                 null
             }
@@ -304,7 +372,8 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
                 return deliver(CompletableFuture.failedFuture(e))
             }
             return hooked("invalidate", fail = failWrites) {
-                store.invalidateAsync(keys, frame).thenApply {
+                val issuer = Thread.currentThread().name
+                store.invalidateAsync(keys, frame).hooked(issuer, afterInvalidate != null) {
                     afterInvalidate?.invoke(keys)
                     null
                 }

@@ -42,6 +42,9 @@ internal class PubSubInvalidationChannel(
         connections.publish(channelOf(namespace).toByteArray(Charsets.UTF_8), frame)
     }
 
+    override fun publishAsync(namespace: String, frame: ByteArray): CompletableFuture<Void?> =
+        connections.publishAsync(channelOf(namespace).toByteArray(Charsets.UTF_8), frame)
+
     override fun ping() {
         connections.await(connections.pubSub.async().ping().toCompletableFuture())
     }

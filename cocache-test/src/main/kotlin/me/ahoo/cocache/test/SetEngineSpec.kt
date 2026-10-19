@@ -44,6 +44,12 @@ abstract class SetEngineSpec {
 
     protected abstract fun elapse(duration: Duration)
 
+    /**
+     * 用例结束时是否关闭 [createBackend] 返回的后端（见 [HookedBackend.closesDelegate]）。默认 `false`：后端可能是共享的。
+     * 每个用例新建后端的实现应覆盖为 `true`。
+     */
+    protected open val closesBackend: Boolean = false
+
     protected lateinit var backend: HookedBackend
     protected lateinit var nodeA: CacheRuntime
     protected lateinit var nodeB: CacheRuntime
@@ -51,7 +57,7 @@ abstract class SetEngineSpec {
 
     @BeforeEach
     open fun setup() {
-        backend = HookedBackend(createBackend())
+        backend = HookedBackend(createBackend()).apply { closesDelegate = closesBackend }
         nodeA = CacheRuntime.builder().backend(backend).clock(clock).build()
         nodeB = CacheRuntime.builder().backend(backend).clock(clock).build()
         cacheName = "tck-set-" + UUID.randomUUID().toString().substring(0, 8)
