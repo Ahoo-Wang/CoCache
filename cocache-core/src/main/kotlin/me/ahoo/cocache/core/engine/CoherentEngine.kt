@@ -47,6 +47,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.LockSupport
 
 /**
@@ -994,10 +995,12 @@ internal class CoherentEngine<K : Any, V : Any>(
         operation: LoadOperation = LoadOperation.LOAD
     ): CompletableFuture<Loaded<V>> {
         val stamp = stamps.current(storageKey)
-        val entry = if (pendingInvalidations.containsKey(storageKey)) {
-            bypassAsync(key, storageKey, stamp, source, operation)
-        } else {
-            val lease = LeaseRequest(context.nextToken(), policy.lease.ttl)
+        if (pendingInvalidations.containsKey(storageKey)) {
+            return bypassAsync(key, storageKey, stamp, source, operation)
+                .thenNext(executor) { CompletableFuture.completedFuture(Loaded(it, stamp)) }
+        }
+        val lease = LeaseRequest(context.nextToken(), policy.lease.ttl)
+        val entry = run {
             readWaitingLeaseAsync(storageKey, lease).handleNext(executor) { read, error ->
                 if (error != null) {
                     onReadFailureAsync(
@@ -1030,6 +1033,37 @@ internal class CoherentEngine<K : Any, V : Any>(
             }
         }
         return entry.thenNext(executor) { CompletableFuture.completedFuture(Loaded(it, stamp)) }
+            .releasingOnRejection { mapOf(storageKey to lease.token) }
+    }
+
+    /**
+     * 执行器拒绝任务时，链上负责释放令牌的步骤会被跳过：此时在完成线程上尽力释放（只发出一条非阻塞命令）。
+     * 令牌不匹配时 release 什么也不做，所以对已填充、已释放或从未取得的令牌重复释放是无害的。
+     */
+    private fun <T> CompletableFuture<T>.releasingOnRejection(tokens: () -> Map<String, Token>): CompletableFuture<T> {
+        whenComplete { _, error ->
+            if (error != null && Futures.unwrap(error) is RejectedExecutionException) {
+                tokens().forEach { (storageKey, token) -> releaseQuietly(storageKey, token) }
+            }
+        }
+        return this
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun releaseQuietly(storageKey: String, token: Token) {
+        try {
+            asyncStore.releaseAsync(storageKey, token).whenComplete { _, error ->
+                if (error != null) {
+                    log.warn(
+                        error
+                    ) { "Cache[$name] - key[$storageKey] - release after rejection failed, reclaimed after lease ttl." }
+                }
+            }
+        } catch (e: Exception) {
+            log.warn(
+                e
+            ) { "Cache[$name] - key[$storageKey] - release after rejection failed, reclaimed after lease ttl." }
+        }
     }
 
     /**
@@ -1257,18 +1291,19 @@ internal class CoherentEngine<K : Any, V : Any>(
                         storageKeys
                     ) { native(source.loader).toCompletableFuture() }
                 }
-                val bounded = Futures.relay<R>(started).orTimeout(asyncTimeout.toNanos(), TimeUnit.NANOSECONDS)
+                // 引擎的超时以私有哨兵值完成（JDK 的延迟线程触发），与数据源自己抛出的 TimeoutException 区分开（A8）
+                val bounded = Futures.relay<Any?>(
+                    started
+                ).completeOnTimeout(TIMED_OUT, asyncTimeout.toNanos(), TimeUnit.NANOSECONDS)
                 bounded.handleNext(executor) { value, error ->
-                    when (error) {
-                        @Suppress("UNCHECKED_CAST")
-                        null
-                        -> CompletableFuture.completedFuture(value as R)
-                        is TimeoutException -> {
+                    when {
+                        error != null -> CompletableFuture.failedFuture(error)
+                        value === TIMED_OUT -> {
                             metrics.loadTimeout()
                             CompletableFuture.failedFuture(SourceLoadTimeoutException(name, asyncTimeout))
                         }
 
-                        else -> CompletableFuture.failedFuture(error)
+                        else -> CompletableFuture.completedFuture(uncheckedCast<R>(value))
                     }
                 }
             }
@@ -1290,20 +1325,17 @@ internal class CoherentEngine<K : Any, V : Any>(
         keyCount: Int,
         block: () -> CompletableFuture<R>
     ): CompletableFuture<R> {
-        val semaphore = permits
-        val acquired = if (semaphore == null) {
-            Futures.done()
-        } else {
-            semaphore.acquireAsync(policy.load.acquireTimeout.toNanos()) {
-                metrics.loadRejected()
-                SourceLoadRejectedException(name, policy.load)
-            }
+        val semaphore = permits ?: return timedAsync(operation, keyCount, block)
+        val acquired = semaphore.acquireAsync(policy.load.acquireTimeout.toNanos()) {
+            metrics.loadRejected()
+            SourceLoadRejectedException(name, policy.load)
         }
-        return acquired.thenNext(executor) {
-            val start = System.nanoTime()
-            Futures.attempt { observedAsync(operation, keyCount, block) }.handleNext(executor) { value, error ->
-                metrics.load(System.nanoTime() - start, error != null)
-                semaphore?.release()
+        val released = AtomicBoolean()
+        val result = acquired.thenNext(executor) {
+            timedAsync(operation, keyCount, block).handleNext(executor) { value, error ->
+                if (released.compareAndSet(false, true)) {
+                    semaphore.release()
+                }
                 @Suppress("UNCHECKED_CAST")
                 if (error != null) {
                     CompletableFuture.failedFuture(
@@ -1313,6 +1345,29 @@ internal class CoherentEngine<K : Any, V : Any>(
                     CompletableFuture.completedFuture(value as R)
                 }
             }
+        }
+        // 执行器拒绝任务时上面的释放步骤会被跳过：拿到了许可就在完成线程上归还（恰好一次），否则许可永久泄漏、同步路径也被拒绝
+        result.whenComplete { _, _ ->
+            if (!acquired.isCompletedExceptionally && released.compareAndSet(false, true)) {
+                semaphore.release()
+            }
+        }
+        return result
+    }
+
+    /**
+     * 回源耗时统计与观测。
+     */
+    private fun <R> timedAsync(
+        operation: LoadOperation,
+        keyCount: Int,
+        block: () -> CompletableFuture<R>
+    ): CompletableFuture<R> {
+        val start = System.nanoTime()
+        return Futures.attempt { observedAsync(operation, keyCount, block) }.handleNext(executor) { value, error ->
+            metrics.load(System.nanoTime() - start, error != null)
+            @Suppress("UNCHECKED_CAST")
+            if (error != null) CompletableFuture.failedFuture(error) else CompletableFuture.completedFuture(value as R)
         }
     }
 
@@ -1381,7 +1436,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                 }
             }
         }
-        return reads.thenNext(executor) { readResults ->
+        return reads.thenNext<Map<String, RemoteRead>, Map<String, Loaded<V>>>(executor) { readResults ->
             val result = LinkedHashMap<String, Loaded<V>>()
             val corrupt = LinkedHashMap<String, CompletableFuture<LocalEntry<V>>>()
             val toLoad = LinkedHashMap<String, Token?>()
@@ -1413,7 +1468,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                     CompletableFuture.completedFuture(result)
                 }
             }
-        }
+        }.releasingOnRejection { leases.mapValues { it.value.token } }
     }
 
     /**
@@ -1529,6 +1584,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                         .thenNext(executor) { CompletableFuture.completedFuture(Loaded(it, stamp)) }
                 }
             }
+            .releasingOnRejection { mapOf(storageKey to token) }
     }
 
     private fun putAsync(key: K, value: V, ttl: Duration?): CompletableFuture<Void?> {
@@ -1707,6 +1763,14 @@ internal class CoherentEngine<K : Any, V : Any>(
         val MAX_BACKOFF_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(50)
 
         fun nextBackoff(backoff: Long): Long = minOf(backoff * 2, MAX_BACKOFF_NANOS)
+
+        /**
+         * 异步数据源超时的哨兵值（不可能是数据源的结果）。
+         */
+        val TIMED_OUT = Any()
+
+        @Suppress("UNCHECKED_CAST")
+        fun <R> uncheckedCast(value: Any?): R = value as R
     }
 }
 

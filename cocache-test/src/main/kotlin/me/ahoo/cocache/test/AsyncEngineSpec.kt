@@ -42,8 +42,10 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -163,30 +165,154 @@ abstract class AsyncEngineSpec : EngineSpec() {
     fun futuresNeverCompleteOnTheBackendIoThread() {
         val (io, _) = named("tck-io", 1)
         val (asyncPool, _) = named("tck-async")
-        backend.ioExecutor = io
+        // I/O 线程在回调注册之前不送达结果：回调一定是在完成时执行的，而不是注册时就地执行
+        val gate = AtomicReference(CountDownLatch(1))
+        backend.ioExecutor = Executor { task ->
+            val opened = gate.get()
+            io.execute {
+                opened.awaitOrFail("callback registered")
+                task.run()
+            }
+        }
         val runtime = node(asyncExecutor = asyncPool)
         try {
             database["k"] = "v"
             val async = runtime.create(spec()).async()
             val completedOn = AtomicReference<String>()
             val future = async.get("k")
+            future.isDone.assert().isFalse()
             future.whenComplete { _, _ -> completedOn.compareAndSet(null, Thread.currentThread().name) }
+            gate.get().countDown()
             // 先等回调执行再 get：JDK 的 get / join 会在等待线程上执行尚未执行的依赖阶段
             awaitCondition("completion recorded") { completedOn.get() != null }
             future.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("v")
-            completedOn.get().assert().withFailMessage { "completed on ${completedOn.get()}" }.doesNotStartWith(
-                "tck-io"
-            )
+            completedOn.get().assert().withFailMessage { "completed on ${completedOn.get()}" }.startsWith("tck-async")
+            gate.set(CountDownLatch(1))
             val write = async.put("k", "v2")
+            write.isDone.assert().isFalse()
             val writtenOn = AtomicReference<String>()
             write.whenComplete { _, _ -> writtenOn.compareAndSet(null, Thread.currentThread().name) }
+            gate.get().countDown()
             awaitCondition("write completion recorded") { writtenOn.get() != null }
             write.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
-            writtenOn.get().assert().doesNotStartWith("tck-io")
+            writtenOn.get().assert().startsWith("tck-async")
         } finally {
+            gate.get().countDown()
             backend.ioExecutor = null
             runtime.close()
         }
+    }
+
+    /**
+     * 可以切换为拒绝一切任务的异步执行器（模拟饱和或关闭）。
+     */
+    private class SwitchExecutor(private val delegate: Executor) : Executor {
+        @Volatile
+        var rejecting = false
+
+        override fun execute(command: Runnable) {
+            if (rejecting) {
+                throw RejectedExecutionException("rejecting")
+            }
+            delegate.execute(command)
+        }
+    }
+
+    /**
+     * 执行器拒绝写入的收尾时，第二次递增与淘汰照样执行：在两次递增之间读到旧值的填充不会留在 L2（G2）。
+     */
+    @Test
+    fun rejectedWriteCompletionStillBumpsTheStampAgain() {
+        val (io, _) = named("tck-io", 1)
+        val (asyncPool, _) = named("tck-async")
+        val switch = SwitchExecutor(asyncPool)
+        val runtime = node(asyncExecutor = switch)
+        try {
+            val engine = runtime.create(spec())
+            engine.put("k", "v0")
+            database["k"] = "v1"
+            val readerRead = CountDownLatch(1)
+            val releaseReader = CountDownLatch(1)
+            var reader: Concurrency.Forked<String?>? = null
+            backend.afterRead = { _, read ->
+                if (Thread.currentThread().name == "reader") {
+                    readerRead.countDown()
+                    releaseReader.awaitOrFail("release reader")
+                }
+                read
+            }
+            backend.beforeInvalidate = {
+                // 第一次递增之后、修改 L1 之前：读者取戳并读到旧值
+                reader = fork("reader") { engine["k"] }
+                readerRead.awaitOrFail("reader read the old value")
+            }
+            backend.ioExecutor = io
+            switch.rejecting = true
+            val write = engine.async().invalidate("k")
+            write.handle { _, e -> e }.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+                .assert().isInstanceOf(RejectedExecutionException::class.java)
+            backend.beforeInvalidate = null
+            releaseReader.countDown()
+            requireNotNull(reader).join().assert().isEqualTo("v0")
+            switch.rejecting = false
+            backend.ioExecutor = null
+            backend.afterRead = null
+            engine["k"].assert().isEqualTo("v1")
+        } finally {
+            switch.rejecting = false
+            backend.ioExecutor = null
+            runtime.close()
+        }
+    }
+
+    /**
+     * 执行器拒绝回源之后的步骤时，回源许可与 lease 照样归还：否则许可永久泄漏（同步路径也被拒绝），其它节点白等 lease。
+     */
+    @Test
+    fun rejectedLoadCompletionReleasesThePermitAndTheLease() {
+        val limited = policy().toBuilder().load(
+            LoadPolicy(maxConcurrent = 1, acquireTimeout = Duration.ofMillis(200))
+        ).build()
+        val (asyncPool, _) = named("tck-async")
+        val switch = SwitchExecutor(asyncPool)
+        val runtime = node(asyncExecutor = switch)
+        try {
+            val source = PendingLoader()
+            val engine = runtime.rawCache(source, limited)
+            val load = engine.async().get("k")
+            awaitCondition("loader called") { source.calls.get() == 1 }
+            remote("k").assert().isInstanceOf(RemoteRead.Leased::class.java)
+            switch.rejecting = true
+            source.complete("k", "v")
+            load.handle { _, e -> e }.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+                .assert().isInstanceOf(RejectedExecutionException::class.java)
+            awaitCondition("lease released") { remote("k") == RemoteRead.Miss(false) }
+            switch.rejecting = false
+            engine["k"].assert().isEqualTo("v")
+            requireNotNull(runtime.metrics(cacheName)).loadRejected.assert().isEqualTo(0)
+        } finally {
+            switch.rejecting = false
+            runtime.close()
+        }
+    }
+
+    /**
+     * 数据源自己以 [TimeoutException] 失败（如 Reactor 的 `timeout`）不是引擎的超时：调用方拿到的是同一个异常（A8）。
+     */
+    @Test
+    fun loaderTimeoutExceptionIsNotTheEngineTimeout() {
+        val own = TimeoutException("loader's own timeout")
+        val engine = nodeA.rawCache(AsyncCacheLoader { CompletableFuture.failedFuture<String?>(own) })
+        engine.async().get("k").handle { _, e -> e }.join().assert().isSameAs(own)
+        nodeA.metrics().loadTimeouts.assert().isEqualTo(0)
+    }
+
+    @Test
+    fun reentryFromTheSynchronousPartOfLoadAsyncFailsFast() {
+        lateinit var engine: Cache<String, String>
+        engine = nodeA.rawCache(AsyncCacheLoader { key -> engine.async().get(key) })
+        engine.async().get("k").handle { _, e -> e }.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
+            .assert().isInstanceOf(IllegalStateException::class.java)
     }
 
     /**
@@ -286,6 +412,12 @@ abstract class AsyncEngineSpec : EngineSpec() {
         async.getAll(listOf("k")).handle { _, e -> e }.join().assert().isSameAs(failure)
         async.put("k", "v").handle { _, e -> e }.join().assert().isSameAs(failure)
         async.invalidate("k").handle { _, e -> e }.join().assert().isSameAs(failure)
+        async.putAll(mapOf("k" to "v")).handle { _, e -> e }.join().assert().isSameAs(failure)
+        async.putAll(mapOf("k" to "v"), Duration.ofMinutes(1)).handle { _, e -> e }.join().assert().isSameAs(failure)
+        async.put("k", "v", Duration.ofMinutes(1)).handle { _, e -> e }.join().assert().isSameAs(failure)
+        async.invalidateAll(listOf("k")).handle { _, e -> e }.join().assert().isSameAs(failure)
+        async.get("k", AsyncCacheLoader { CompletableFuture.completedFuture("v") }).handle { _, e -> e }.join()
+            .assert().isSameAs(failure)
     }
 
     @Test

@@ -231,12 +231,14 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 - **命中**：与同步路径相同的 L2 查找与过期比较，返回已完成的 future（在调用方线程上）。
 - **续接**（`Futures.handleNext` / `thenNext`）：上一步已完成时就地执行（结果已同步可得，没有 I/O 线程参与，例如内存后端），否则只在完成线程上把续接提交给**异步执行器**，续接本身从不在 L1 客户端的 I/O 线程上执行。因此返回的 future 在调用方线程或异步执行器上完成（调用方注册的依赖阶段按 JDK 规则也可能在随后调用 `get()` / `join()` 的线程上执行，TCK 断言完成线程时先等依赖阶段执行完再等待结果）；`AsyncCacheLoader.loadAsync` 同样在调用方线程或异步执行器上被调用。
-- **数据源适配**：`asyncLoader` 在当前线程上调用，取其结果的副本再加 `LoadPolicy.asyncTimeout`（默认 30 s），超时以 `SourceLoadTimeoutException` 失败、计入 `loadTimeouts` 并释放 lease，迟到的结果被丢弃；同步 `loader` 在异步路径上**只在阻塞执行器上执行**，从不在异步执行器上执行，不加超时。同步 API 遇到 `asyncLoader` 时在调用方线程上调用 `loadAsync` 并等待（同样受 `asyncTimeout` 约束，异常解包）。
+- **数据源适配**：`asyncLoader` 在当前线程上调用，取其结果的副本再加 `LoadPolicy.asyncTimeout`（默认 30 s，由 JDK 的延迟线程以 `completeOnTimeout` 的私有哨兵值计时，不经 `cocache-timer`；数据源自己以 `TimeoutException` 失败时原样传递），超时以 `SourceLoadTimeoutException` 失败、计入 `loadTimeouts` 并释放 lease 与回源许可，数据源的 future 不被取消、迟到的结果被丢弃；同步 `loader` 在异步路径上**只在阻塞执行器上执行**，从不在异步执行器上执行，不加超时。同步 API 遇到 `asyncLoader` 时在调用方线程上调用 `loadAsync` 并等待（同样受 `asyncTimeout` 约束，异常解包）。
 - **不挂起线程**：等待其它节点的 lease 经定时器调度重读（退避、截止时间、令牌与戳都与同步路径相同）；等不到回源许可时登记为等待者，许可释放时按登记顺序被唤醒，`acquireTimeout` 后被拒绝。等待期间不占任何线程。
 - **SingleFlight**：同步与异步调用共用一张表。异步 leader 在注册之后、在调用方线程上开始（第一件事是取戳），其 future 完成时先注销、再发布；读己之写至多重试一次，与同步路径相同。同步调用合并到异步调用时只阻塞自己的线程；异步调用合并到同步调用时，结果经异步执行器送达（否则用户的续接会跑在同步 leader 的线程上）。每个调用方拿到自己的 future：取消只影响自己，不取消共享加载、不取消数据源的 future。
 - **重入**：除同步调用的拥有线程外，引擎在调用数据源期间（同步数据源的整个执行、异步数据源 `loadAsync` 的同步部分）为这些 key 设置线程守卫，期间本线程对同一 key 的同步或异步调用快速失败。异步数据源在一次 I/O 之后再读同一 key 形成的环无法检测，由 `asyncTimeout` 打破。
 - **写入**（`AbstractEngine.writeAsync`）：顺序同 §4.2；编码在第一次递增之前、在调用方线程上完成；第二次递增与淘汰挂在 L1 的 future 上（无论成败），在返回的 future 完成之前执行，取消返回的 future 不会跳过它。非原子广播的后端经 `AsyncInvalidationChannel.publishAsync` 发布。
 - **提前刷新**：同步数据源照旧在刷新执行器上执行；异步数据源的刷新在刷新执行器上发起、以异步路径推进，不在刷新执行器的线程上等待。
+- **执行器拒绝任务**：续接被拒绝时该步不执行，返回的 future 以 `RejectedExecutionException` 失败；必须执行的收尾不依赖执行器：写入方的第二次递增与淘汰（只涉及戳与 Caffeine）在 L1 future 的完成线程上就地执行，回源许可在加载链结束时恰好归还一次，取得的 lease / 刷新令牌在链因拒绝失败时尽力释放（令牌不匹配时 release 什么也不做，重复释放无害）。
+- **`KeyFilter`** 在调用方线程上调用，必须是本地、不阻塞的判断。
 - **异常**：返回的 future 以原始异常完成（不包装为 `CompletionException`）；异步方法从不同步抛出（包括 `KeyEncoder`、`Codec` 抛出、重入与 `SetCache` 的不支持操作）。
 - **只实现同步 SPI 的后端**：引擎经 `BlockingAsyncStore` / `BlockingAsyncChannel` 把同步调用放到阻塞执行器上；原生异步的后端实现 `AsyncRemoteStore`（与 `AsyncInvalidationChannel`），内存后端是原生异步的（就地执行、返回已完成的 future）。
 

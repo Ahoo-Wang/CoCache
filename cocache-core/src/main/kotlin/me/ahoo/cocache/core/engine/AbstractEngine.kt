@@ -33,7 +33,6 @@ import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.SingleFlight
-import me.ahoo.cocache.core.internal.handleNext
 import me.ahoo.cocache.core.internal.thenNext
 import me.ahoo.cocache.core.policy.CachePolicy
 import java.time.Duration
@@ -177,7 +176,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * [write] 的异步版本（RFC 0004 §5.6）：顺序相同；第二次递增挂在 L1 的 future 上（无论成败），
      * 在返回的 future 完成之前执行，取消返回的 future 不会跳过它。[onFailure] 同样在第二次递增之前调用，可以抛出。
+     *
+     * 第二次递增与淘汰（以及 [onFailure]：抛出写入异常或登记重试，都不阻塞、不调用用户代码）在 L1 future 的完成线程上就地执行，
+     * 不经执行器：执行器拒绝任务时也必须执行，否则在两次递增之间开始的填充会把旧值写进 L2（G2）。只有返回 future 的完成切换到执行器。
      */
+    @Suppress("TooGenericExceptionCaught")
     protected fun writeAsync(
         keys: Collection<String>,
         mutate: (ByteArray) -> CompletableFuture<Void?>,
@@ -192,21 +195,42 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             val written = mutate(frame)
             if (atomicBroadcast) written else written.thenNext(executor) { asyncChannel.publishAsync(namespace, frame) }
         }
-        return mutated.handleNext(executor) { _, error ->
-            try {
-                if (error != null) {
-                    if (error !is Exception) {
-                        throw error
-                    }
-                    metrics.writeFailure()
-                    onFailure(error)
-                }
-                Futures.done()
-            } finally {
-                keys.forEach {
-                    stamps.invalidate(it)
-                    local.invalidate(it)
-                }
+        if (mutated.isDone) {
+            // 已完成（没有 I/O 线程参与）：就地收尾并返回
+            val failure = finishWrite(keys, Futures.outcome(mutated).second, onFailure)
+            return if (failure == null) Futures.done() else CompletableFuture.failedFuture(failure)
+        }
+        val written = CompletableFuture<Void?>()
+        mutated.whenComplete { _, error ->
+            val failure = finishWrite(keys, error?.let { Futures.unwrap(it) }, onFailure)
+            Futures.dispatch(executor, written) {
+                if (failure == null) written.complete(null) else written.completeExceptionally(failure)
+            }
+        }
+        return written
+    }
+
+    /**
+     * 写入的收尾：失败时计数并调用 [onFailure]，然后（无论成败）第二次递增并淘汰 L2。返回写入的结果异常（成功为 `null`）。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun finishWrite(keys: Collection<String>, error: Throwable?, onFailure: (Exception) -> Unit): Throwable? {
+        try {
+            if (error == null) {
+                return null
+            }
+            if (error !is Exception) {
+                return error
+            }
+            metrics.writeFailure()
+            onFailure(error)
+            return null
+        } catch (e: Throwable) {
+            return e
+        } finally {
+            keys.forEach {
+                stamps.invalidate(it)
+                local.invalidate(it)
             }
         }
     }

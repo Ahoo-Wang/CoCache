@@ -46,6 +46,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -284,8 +285,10 @@ abstract class EngineSpec {
         database["k"] = "v"
         val loading = CountDownLatch(1)
         val release = CountDownLatch(1)
-        afterLoad = { key ->
-            if (Thread.currentThread().name == "holder") {
+        // 只挡住第一次回源（A 的）：不按线程名判断，异步视图上回源可能在别的线程上执行
+        val first = AtomicBoolean(true)
+        afterLoad = { _ ->
+            if (first.compareAndSet(true, false)) {
                 loading.countDown()
                 release.awaitOrFail("release")
             }
@@ -416,8 +419,10 @@ abstract class EngineSpec {
         database["k"] = "v0"
         val loaded = CountDownLatch(1)
         val release = CountDownLatch(1)
+        // 只挡住第一次回源（early 的）：不按线程名判断，异步视图上回源可能在别的线程上执行
+        val first = AtomicBoolean(true)
         afterLoad = {
-            if (Thread.currentThread().name == "early") {
+            if (first.compareAndSet(true, false)) {
                 loaded.countDown()
                 release.awaitOrFail("release")
             }
@@ -596,10 +601,11 @@ abstract class EngineSpec {
         database["k"] = "v1"
         elapse(Duration.ofSeconds(6))
         cacheA["k"].assert().isEqualTo("v0")
+        // 刷新在异步视图上可能在另一个线程上完成：等它结束再触发 B 的刷新
+        awaitCondition("A refreshed") { cacheA["k"] == "v1" }
         cacheB["k"]
+        awaitCondition("B refreshed") { cacheB["k"] == "v1" }
         loads.get().assert().isEqualTo(2)
-        cacheA["k"].assert().isEqualTo("v1")
-        cacheB["k"].assert().isEqualTo("v1")
         nodeA.metrics().refreshes.assert().isEqualTo(1)
         nodeB.metrics().refreshes.assert().isEqualTo(1)
     }
@@ -790,8 +796,10 @@ abstract class EngineSpec {
         database["k"] = "v0"
         val loaded = CountDownLatch(1)
         val release = CountDownLatch(1)
+        // 只挡住第一次回源（early 的）：不按线程名判断，异步视图上回源可能在别的线程上执行
+        val first = AtomicBoolean(true)
         afterLoad = {
-            if (Thread.currentThread().name == "early") {
+            if (first.compareAndSet(true, false)) {
                 loaded.countDown()
                 release.awaitOrFail("release")
             }

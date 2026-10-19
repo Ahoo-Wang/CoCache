@@ -229,13 +229,17 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             return deliver(future)
         }
 
+        /**
+         * 总是新建 future 并以原始异常完成（钩子在 `thenApply` 中抛出时 JDK 会包装为 CompletionException），遵守 SPI 的异常约定。
+         */
         private fun <T> deliver(future: CompletableFuture<T>): CompletableFuture<T> {
-            val io = ioExecutor ?: return future
+            val io = ioExecutor
             val result = CompletableFuture<T>()
             future.whenComplete { value, error ->
-                io.execute {
+                val complete = Runnable {
                     if (error != null) result.completeExceptionally(unwrap(error)) else result.complete(value)
                 }
+                if (io == null) complete.run() else io.execute(complete)
             }
             return result
         }

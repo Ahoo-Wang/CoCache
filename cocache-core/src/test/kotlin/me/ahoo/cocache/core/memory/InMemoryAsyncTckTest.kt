@@ -26,8 +26,12 @@ import me.ahoo.cocache.test.AsyncEngineSpec
 import me.ahoo.cocache.test.AsyncFaultSpec
 import me.ahoo.cocache.test.AsyncMultiNodeSpec
 import me.ahoo.cocache.test.AsyncSetEngineSpec
+import me.ahoo.cocache.test.CacheAccess
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
 import java.time.Duration
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /**
  * 异步视图的 TCK（RFC 0004 §10.1）：内存后端原生异步；[SyncOnlyBackend] 只暴露同步 SPI，验证引擎经阻塞执行器的适配。
@@ -47,6 +51,53 @@ class InMemoryAsyncEngineTest : AsyncEngineSpec() {
     override val clock: CacheClock = manualClock
 
     override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock).also { memory = it }
+
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+
+    override fun simulateReconnect() = memory.reconnect()
+}
+
+/**
+ * 默认的用户路径：经异步视图读写，声明中的同步数据源保留（在阻塞执行器上执行）。
+ */
+class InMemoryAsyncWithSyncSourceEngineTest : AsyncEngineSpec() {
+    private val manualClock = ManualClock()
+    private lateinit var memory: InMemoryBackend
+
+    override val access: CacheAccess = CacheAccess.ASYNC_WITH_SYNC_SOURCE
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock).also { memory = it }
+
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+
+    override fun simulateReconnect() = memory.reconnect()
+}
+
+/**
+ * 每个 L1 结果都在另一个线程上送达（模拟真实客户端的 I/O 线程），使异步路径的每一步都切换到异步执行器。
+ */
+class InMemoryHoppingAsyncEngineTest : AsyncEngineSpec() {
+    private val manualClock = ManualClock()
+    private lateinit var memory: InMemoryBackend
+    private val io = Executors.newSingleThreadExecutor { Thread(it, "tck-hop-io").apply { isDaemon = true } }
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock).also { memory = it }
+
+    @BeforeEach
+    override fun setup() {
+        super.setup()
+        backend.ioExecutor = io
+    }
+
+    @AfterEach
+    override fun destroy() {
+        super.destroy()
+        io.shutdownNow()
+    }
 
     override fun elapse(duration: Duration) = manualClock.advance(duration)
 

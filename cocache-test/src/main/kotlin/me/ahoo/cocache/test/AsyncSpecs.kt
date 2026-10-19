@@ -27,7 +27,8 @@ abstract class AsyncSetEngineSpec : SetEngineSpec() {
 
     @Test
     fun unsupportedOperationsFailTheFutureInsteadOfThrowing() {
-        val async = nodeA.create(setCacheSpec<String, String>(cacheName) { elementCodec = StringCodec }).async()
+        val engine = nodeA.create(setCacheSpec<String, String>(cacheName) { elementCodec = StringCodec })
+        val async = engine.async()
         async.invalidate(
             "k"
         ).handle { _, e -> e }.join().assert().isInstanceOf(UnsupportedOperationException::class.java)
@@ -37,7 +38,8 @@ abstract class AsyncSetEngineSpec : SetEngineSpec() {
         async.get("k", AsyncCacheLoader { error("unused") }).handle { _, e -> e }.join()
             .assert().isInstanceOf(UnsupportedOperationException::class.java)
         async.get("k").join().assert().isEmpty()
-        async.sync().assert().isSameAs(async.sync())
+        async.sync().assert().isSameAs(engine)
+        engine.async().assert().isSameAs(async)
     }
 }
 

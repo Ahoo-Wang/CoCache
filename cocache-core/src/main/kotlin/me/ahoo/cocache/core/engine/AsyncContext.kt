@@ -53,10 +53,17 @@ internal class AsyncContext(
         }
         pending.add(result)
         result.whenComplete { _, _ -> pending.remove(result) }
+        if (closed) {
+            // 与 close 并发：close 可能已经遍历过 pending，自己失败，否则这个 future 永远不会完成
+            result.completeExceptionally(closedError())
+            return result
+        }
         try {
-            scheduler.schedule({
+            val task = scheduler.schedule({
                 Futures.dispatch(executor, result) { Futures.relay(Futures.attempt(block), result) }
             }, delayNanos, TimeUnit.NANOSECONDS)
+            // 提前完成（取消、关闭）时撤销定时任务
+            result.whenComplete { _, _ -> task.cancel(false) }
         } catch (e: RejectedExecutionException) {
             result.completeExceptionally(closedError().initCause(e))
         }

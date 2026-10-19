@@ -43,17 +43,20 @@ internal class LoadPermits(permits: Int, private val async: AsyncContext) {
         // 登记之后再交接一次：避免在“尝试失败”与“登记”之间发生的释放被错过
         handOff()
         if (!waiter.isDone) {
-            async.after(timeoutNanos) {
+            val timeout = async.after(timeoutNanos) {
                 if (waiters.remove(waiter)) {
                     waiter.completeExceptionally(onTimeout())
                 }
                 CompletableFuture.completedFuture(null)
-            }.whenComplete { _, error ->
+            }
+            timeout.whenComplete { _, error ->
                 // 运行时关闭：定时器不再触发
                 if (error != null && waiters.remove(waiter)) {
                     waiter.completeExceptionally(error)
                 }
             }
+            // 拿到许可后撤销超时任务
+            waiter.whenComplete { _, _ -> timeout.cancel(false) }
         }
         return waiter
     }

@@ -79,6 +79,8 @@ fun interface TtlFunction<K, V> {
 
 /**
  * 存储 key 过滤器（如布隆过滤器）：确定不存在的 key 直接返回不存在，不访问 L1 与数据源，也不写入任何层。
+ *
+ * 必须是本地、不阻塞的判断：异步视图在调用方线程（可能是事件循环）上调用它。
  */
 fun interface KeyFilter {
     fun notExist(storageKey: String): Boolean

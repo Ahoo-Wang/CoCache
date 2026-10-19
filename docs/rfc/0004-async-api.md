@@ -587,3 +587,5 @@ interface LoadObserver {
 | §5.1：JDK 17 的阻塞执行器“超出时由调用方执行” | 满时拒绝（`RejectedExecutionException`，释放 lease） | 调用方是异步执行器的线程，由调用方执行会让同步数据源跑在异步执行器上，违反 A9 / 不变量 #6 |
 
 另外：`LoadPolicy` 是 `data class`，新增的 `asyncTimeout` 改变了它的 `copy` 签名（Kotlin 调用方重新编译即可；`@JvmOverloads` 构造函数保持兼容）。
+
+审阅后的修订（PR 1）：执行器拒绝任务时，写入方的第二次递增与淘汰在 L1 future 的完成线程上就地执行，回源许可在加载链结束时恰好归还一次，lease 与刷新令牌尽力释放（§8.2“异步执行器拒绝任务”一行据此实现）；`asyncTimeout` 由 JDK 的延迟线程以 `completeOnTimeout` 的私有哨兵值计时（不经 `cocache-timer`），与数据源自己抛出的 `TimeoutException` 区分开。

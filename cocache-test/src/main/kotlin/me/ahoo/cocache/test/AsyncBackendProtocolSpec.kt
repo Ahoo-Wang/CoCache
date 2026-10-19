@@ -66,7 +66,7 @@ abstract class AsyncBackendProtocolSpec : BackendProtocolSpec() {
 /**
  * 经异步方法实现的同步 [RemoteStore]（TCK 用）：每次调用等待异步结果，异常解包为原始异常。
  */
-class AsyncBackedStore(private val store: AsyncRemoteStore) : RemoteStore {
+internal class AsyncBackedStore(private val store: AsyncRemoteStore) : RemoteStore {
     override fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead =
         CacheAccess.await { store.readAsync(key, lease, refresh) }
 

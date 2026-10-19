@@ -79,22 +79,41 @@ interface CacheAccess {
         }
 
         /**
-         * 等待异步调用：异步方法不得同步抛出；失败时抛出原始异常（解开 JDK 的 [CompletionException]）。
+         * 经 `async()` 视图读写，但保留声明中的同步数据源（默认的用户路径：同步数据源在阻塞执行器上执行）。
          */
-        @Suppress("TooGenericExceptionCaught")
+        @JvmField
+        val ASYNC_WITH_SYNC_SOURCE: CacheAccess = object : CacheAccess {
+            override fun <K : Any, V : Any> cache(cache: Cache<K, V>): Cache<K, V> = AsyncBackedCache(cache)
+
+            override fun <K : Any, E : Any> setCache(cache: SetCache<K, E>): SetCache<K, E> = AsyncBackedSetCache(cache)
+
+            override fun <K : Any, V : Any> source(builder: CacheSpec.Builder<K, V>) = Unit
+
+            override fun toString(): String = "CacheAccess.ASYNC_WITH_SYNC_SOURCE"
+        }
+
+        /**
+         * 等待异步调用：异步方法不得同步抛出；失败时抛出 future 中保存的原始异常，并断言它不是 [CompletionException]（A8）。
+         */
         fun <T> await(call: () -> CompletableFuture<T>): T {
-            val future = try {
-                call()
-            } catch (e: Throwable) {
-                throw AssertionError("Async API must not throw synchronously.", e)
+            val future = start(call)
+            // handle 收到的是 future 中保存的那个异常；join 会把保存的 CompletionException 原样抛出，看不出是否被包装
+            val stored = future.handle { _, error -> error }.join() ?: return future.join()
+            throw if (stored is CompletionException) {
+                AssertionError(
+                    "Async API completed with a wrapped exception.",
+                    stored
+                )
+            } else {
+                stored
             }
-            try {
-                return future.join()
-            } catch (e: CompletionException) {
-                val cause = e.cause ?: e
-                check(cause !is CompletionException) { "Async API completed with a wrapped exception: $cause" }
-                throw cause
-            }
+        }
+
+        @Suppress("TooGenericExceptionCaught")
+        private fun <T> start(call: () -> CompletableFuture<T>): CompletableFuture<T> = try {
+            call()
+        } catch (e: Throwable) {
+            throw AssertionError("Async API must not throw synchronously.", e)
         }
     }
 }
@@ -102,7 +121,7 @@ interface CacheAccess {
 /**
  * 在调用线程上执行同步数据源的异步数据源（TCK 用）。
  */
-class InlineAsyncLoader<K : Any, V : Any>(private val delegate: CacheLoader<K, V>) : AsyncCacheLoader<K, V> {
+internal class InlineAsyncLoader<K : Any, V : Any>(private val delegate: CacheLoader<K, V>) : AsyncCacheLoader<K, V> {
     @Suppress("TooGenericExceptionCaught")
     override fun loadAsync(key: K): CompletionStage<out V?> = try {
         CompletableFuture.completedFuture(delegate.load(key))
@@ -121,7 +140,7 @@ class InlineAsyncLoader<K : Any, V : Any>(private val delegate: CacheLoader<K, V
 /**
  * 经 `async()` 视图实现的同步 [Cache]（TCK 用）。
  */
-open class AsyncBackedCache<K : Any, V : Any>(val target: Cache<K, V>) : Cache<K, V> {
+internal open class AsyncBackedCache<K : Any, V : Any>(val target: Cache<K, V>) : Cache<K, V> {
     private val async = target.async()
 
     override val name: String
@@ -172,7 +191,7 @@ open class AsyncBackedCache<K : Any, V : Any>(val target: Cache<K, V>) : Cache<K
 /**
  * 经 `async()` 视图实现的同步 [SetCache]（TCK 用）。
  */
-class AsyncBackedSetCache<K : Any, E : Any>(target: SetCache<K, E>) :
+internal class AsyncBackedSetCache<K : Any, E : Any>(target: SetCache<K, E>) :
     AsyncBackedCache<K, Set<E>>(
         target
     ),
