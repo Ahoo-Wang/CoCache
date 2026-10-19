@@ -135,8 +135,8 @@ See [Observability](/operations/observability) for the endpoint paths and meter 
 CoCache fails startup instead of running with a configuration it can't honor:
 
 - **Unknown cache names** under `cocache.caches` (almost always a typo). The message lists the declared caches.
-- **Removed property names** (listed in [Upgrading from 5.x](./migration-6.md#properties)), such as `cocache.redis.strict-failure` or anything under `cocache.load.*`, fail startup with a message naming the replacement.
-- **Invalid policies.** Every duration must be positive and at most 100 years; only `ttl-jitter`, `lease-wait`, and `load-acquire-timeout` may be zero. `refresh-window` must be less than `ttl − ttl-jitter` (the effective jitter) and less than `local-max-age`.
+- **Unsupported property names** from earlier major versions, such as `cocache.redis.strict-failure` or anything under `cocache.load.*`, fail startup with a message that names the replacement, if there is one. The full list is in [Upgrading from 5.x](./migration-6.md#properties).
+- **Invalid policies.** Every duration must be positive and at most 100 years; only `ttl-jitter`, `lease-wait`, `load-acquire-timeout`, and `refresh-window` (0 = off) may be zero; none may be negative. `refresh-window` must be less than `ttl − ttl-jitter` (the effective jitter) and less than `local-max-age`.
 
 `refresh-window: 0` turns refresh-ahead off, so a property can also remove a window that the declaration enables.
 

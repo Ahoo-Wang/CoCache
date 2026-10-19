@@ -54,10 +54,22 @@ class ExternalInvalidator @JvmOverloads constructor(
         require(encodedKeys.none { it.isEmpty() }) { "Encoded keys must not be empty." }
         val storageKeys = encodedKeys.distinct().map { "$keyPrefix$namespace:$it" }
         val frame = InvalidationFrame.encode(nodeId, storageKeys)
-        stores.computeIfAbsent(namespace) { backend.store(it) }.invalidate(storageKeys, frame)
+        storeOf(namespace).invalidate(storageKeys, frame)
         if (!backend.atomicBroadcast) {
             backend.channel.publish(namespace, frame)
         }
+    }
+
+    /**
+     * 与 [close] 并发时：在关闭清空句柄之后才创建的句柄由本次调用关闭，并拒绝本次调用。
+     */
+    private fun storeOf(namespace: String): RemoteStore {
+        val store = stores.computeIfAbsent(namespace) { backend.store(it) }
+        if (closed.get() && stores.remove(namespace, store)) {
+            store.close()
+            throw IllegalStateException("ExternalInvalidator is closed.")
+        }
+        return store
     }
 
     /**

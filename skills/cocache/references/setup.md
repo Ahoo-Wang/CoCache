@@ -123,7 +123,7 @@ fun userSpec(repo: UserRepository, mapper: ObjectMapper): CacheSpec<String, User
 
 ### Customizers
 
-`CacheSpecCustomizer` beans replace 5.x's `{cacheName}.ClientSideCache` bean-name conventions:
+`CacheSpecCustomizer` beans edit declarations before caches are created (there are no bean-name conventions such as `{cacheName}.ClientSideCache`):
 
 ```kotlin
 @Bean
@@ -177,7 +177,7 @@ cocache:
 | `invalidate-failure` | `retry` | `throw` to surface L1 invalidation failures |
 | `read-failure` | `degrade` | `throw` to raise `CacheReadException` when L1 reads fail |
 
-Startup fails when `cocache.caches` names an undeclared cache, when a policy is invalid (durations must be positive and at most 100 years), or when a removed 5.x key is used (the error names the replacement).
+Startup fails when `cocache.caches` names an undeclared cache, when a policy is invalid (durations must be positive and at most 100 years), or when a property from an earlier major version is used (the error names the replacement, if there is one).
 
 ## Transactions and Writes
 
@@ -200,7 +200,7 @@ Outside a transaction, `invalidate` runs immediately. Never call `cache.invalida
 
 ## Redis Backend
 
-- Every `put` / `invalidate` is one Lua round trip that writes and publishes the invalidation.
+- Every `put` / `invalidate` writes and publishes the invalidation in one Lua script (one round trip) when broadcast is atomic. In `sharded` mode, or when CoCache falls back to publishing after the write, it takes two round trips.
 - `channel-mode: pubsub` (default): classic Pub/Sub, atomic with the write. On deployments that treat `PUBLISH` as `SPUBLISH` (for example ElastiCache Serverless), CoCache detects it at startup and publishes after the write instead.
 - `channel-mode: sharded`: `SSUBSCRIBE` / `SPUBLISH` (Redis 7+), published after the write. Re-subscribes automatically after slot migration.
 - The subscription connection is pinged every `heartbeat`; any reconnect clears L2.
@@ -236,7 +236,7 @@ With actuator, expose the `cocache` endpoint:
 management.endpoints.web.exposure.include: cocache
 ```
 
-`GET /actuator/cocache` lists caches and counters, `GET /actuator/cocache/{name}` shows one, `DELETE /actuator/cocache/{name}` clears that cache's L2 on this instance.
+`GET /actuator/cocache` lists caches and counters, `GET /actuator/cocache/{name}` shows one, `DELETE /actuator/cocache/{name}` clears that cache's L2 on this instance. `GET /actuator/cocache/{name}/{key}` inspects one key in L2 and Redis without loading, and `DELETE /actuator/cocache/{name}/{key}` invalidates it on every instance. `{key}` is the encoded key (the part of the storage key after `{keyPrefix}{namespace}:`).
 
 ## Without Spring Boot
 

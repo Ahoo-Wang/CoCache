@@ -49,7 +49,7 @@ description: CoCache 版本发布历史和重要变更。
 | `JoinCache`（`me.ahoo.cache.api.join`） | `me.ahoo.cocache.api.join.JoinCache`：两个缓存的只读组合视图，用 `@EnableCoCache(joinCaches = […])` 注册；`evict` → `invalidate`，不再有 `set`（见 [JoinCache](./join-cache.md)） |
 | Jedis、可替换的 L2、显式写入负缓存 | 已删除 |
 
-已删除的 5.x 配置项会让启动失败，错误信息会给出替代项。部分改名同时改变了语义（例如 L2 现在总受 `localMaxAge` 限龄，默认 5 分钟），详见[行为变化](./migration-6.md#semantics)。
+已删除的 5.x 配置项会让启动失败，错误信息会给出替代项（如果有的话）。部分改名同时改变了语义（例如 L2 现在总受 `localMaxAge` 限龄，默认 5 分钟），详见[行为变化](./migration-6.md#semantics)。
 
 ### 依赖
 
@@ -146,7 +146,7 @@ cocache:
     acquire-timeout: 1s
 ```
 
-Redis 故障期间每次 L2 未命中都会回源。设置后，每个缓存同时进行的回源数受限，超出的回源等待 `acquire-timeout` 后抛出 `SourceLoadRejectedException`。指标：`cocache.load.rejections`。默认不限制。
+Redis 故障期间每次 L2 未命中都会回源。设置后，每个缓存同时进行的回源数最多为 `max-concurrent`，超出的回源等待 `acquire-timeout` 后抛出 `SourceLoadRejectedException`。指标：`cocache.load.rejections`。默认不限制。
 
 ### Gradle 配置
 
@@ -341,7 +341,7 @@ implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.0.0")
 - **击穿防护加固** —— `DefaultCoherentCache` 的 per-key 锁映射（存在锁对象回收竞态，可能导致并发重复回源）替换为 Guava `Striped` 锁（#519）。
 - **时钟线程启动竞态修复** —— `CacheSecondClock` 计时线程启动不再与字段初始化竞态；杜绝"时钟冻结 → 缓存永不过期"的故障模式（#519）。
 - **旧值回填竞态修复** —— 引入 per-key 失效代际计数器，在途回源可检测加载期间到达的失效事件：过期结果被丢弃（或补偿淘汰），不再钉死在两级缓存直至 TTL（#519）。
-- **生命周期管理** —— `CoherentCache` 新增幂等 `close()`（注销事件订阅 + 关闭分布式缓存）；Spring 容器关闭时自动销毁缓存（#519）。
+- **生命周期管理** —— `CoherentCache` 继承 `AutoCloseable`，新增幂等 `close()`（注销事件订阅 + 关闭分布式缓存）；Spring 容器关闭时自动销毁缓存（#519）。
 - **脏载荷自愈** —— 无法解码的 Redis 值被删除并按缓存未命中处理（回源重建），不再每次读取都抛异常（#520）。
 - **null 值归一化** —— null 值在所有 codec 下一致写入为负缓存哨兵（此前：空串损坏、NPE 或 codec 各异的语义）（#520）。
 - **Redis 故障降级** —— 默认情况下，Redis 读失败降级为缓存未命中语义（回源，业务无感），写/evict 失败仅记录告警。设置 `cocache.redis.strict-failure=true` 可恢复严格抛出行为（#520）。

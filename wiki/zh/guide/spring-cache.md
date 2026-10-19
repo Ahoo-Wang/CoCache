@@ -53,7 +53,9 @@ cocache:
     require-sync: true
 ```
 
-检查按缓存名匹配，跳过没有写明缓存名的操作（只用 `cacheResolver` 的那些）。
+检查按缓存名匹配。指定了其它 `cacheManager` 或自定义 `cacheResolver` 的操作不一定经过 CoCache，检查会跳过。
+
+只有存在名为 `cocacheCacheManager` 的 bean 时检查才会运行：可以是 starter 自己的管理器，也可以是你以这个名字声明的管理器（见[与其它缓存管理器并存](#other-managers)）。你声明任何其它 `CacheManager` 时 starter 的管理器会退让，因此如果你以别的 bean 名自己装配 `CoCacheSpringCacheManager`，检查不适用，`sync = true` 需要你自己保证。
 
 ## Spring 操作如何映射 {#semantics}
 
@@ -64,8 +66,8 @@ cocache:
 | `put(key, value)`（`@CachePut`） | `cache.put(key, value)`。值为 `null` 时改为 `invalidate(key)`。 |
 | `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)` |
 | `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 是共享的，从不整体清空。 |
-| `retrieve(key)`（异步与响应式） | 在守护线程池上执行阻塞查找。 |
-| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | 与 `get(key, loader)` 一样经受 lease 保护的路径回源，在该线程池上等待异步 loader 完成。每个等待中的调用在回源期间占用一个执行器线程：默认执行器在 JDK 21+ 上每个任务一个虚拟线程，在 JDK 17 上是有上限的守护线程池（`max(8, 4 × CPU 数)` 个线程，多余任务排队）。传给 `CoCacheSpringCacheManager(runtime, executor)` 的自定义执行器不能同时是完成 loader future 的线程，否则线程池占满时会死锁。 |
+| `retrieve(key)`（异步与响应式） | 在 `retrieve` 执行器（见下一行）上执行阻塞查找。 |
+| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | 与 `get(key, loader)` 一样经受 lease 保护的路径回源，在 `retrieve` 执行器上等待异步 loader 完成。每个等待中的调用在回源期间占用一个执行器线程：默认执行器在 JDK 21+ 上每个任务一个虚拟线程；在 JDK 17–20 上是不排队、按需增长的守护线程池（最多 512 个线程，超出时在调用方线程执行），因此嵌套的异步 `@Cacheable(sync = true)` 方法不会让它死锁。传给 `CoCacheSpringCacheManager(runtime, executor)` 的自定义执行器不能把任务排在等待它的任务之后，也不能是完成 loader future 的线程。 |
 
 ### null 结果 {#null}
 
@@ -100,7 +102,7 @@ fun localCacheManager(): CacheManager = CaffeineCacheManager()
 fun getUser(id: String): User? = repo.findById(id)
 ```
 
-`CoCacheSpringCacheManager(runtime, executor)` 还可以传入 `retrieve` 使用的执行器。sync 检查按缓存名匹配，所以请给 CoCache 缓存起一个其它管理器不用的名字。
+`CoCacheSpringCacheManager(runtime, executor)` 还可以传入 `retrieve` 使用的执行器。把 bean 命名为 `cocacheCacheManager` 可让 [sync 检查](#sync-check)继续运行。检查按缓存名匹配，并把没有 `cacheManager` 属性的操作视为指向 CoCache，所以请给 CoCache 缓存起一个其它管理器不用的名字。
 
 ## 不用 Spring Boot {#without-spring-boot}
 

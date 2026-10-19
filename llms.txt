@@ -1,6 +1,6 @@
 # CoCache
 
-> Two-level distributed coherent cache for Java/Kotlin on Spring Boot 4: bounded local Caffeine (L2) in front of shared Redis (L1) in front of a data source. Redis serializes writes per key (lease-fenced fills), invalidations are deleted and broadcast over Redis Pub/Sub in one Lua script, and staleness is bounded. Maven group `me.ahoo.cocache`; JDK 17+; packages `me.ahoo.cocache.*`.
+> Two-level distributed coherent cache for Java/Kotlin on Spring Boot 4: bounded local Caffeine (L2) in front of shared Redis (L1) in front of a data source. Redis serializes writes per key (lease-fenced fills), invalidations are deleted and broadcast over Redis Pub/Sub in one Lua script (a separate publish in sharded or non-atomic channel mode), and staleness is bounded. Maven group `me.ahoo.cocache`; JDK 17+; packages `me.ahoo.cocache.*`.
 
 Declare a cache as an interface (`@CoCache interface UserCache : Cache<String, User>`) registered with `@EnableCoCache(caches = [...])`, or as a spec bean (`@Bean fun userSpec(): CacheSpec<String, User> = cacheSpec("user") { ... }`, injected as `Cache<String, User>`). Provide a `CacheLoader<K, V>` bean that loads on a miss (`null` = negative entry for `absentTtl`). Write pattern: commit the data source first, then `invalidate(key)` (inside a transaction, use `TransactionalInvalidator`). Upgrading from 5.x: see the migration guide below.
 

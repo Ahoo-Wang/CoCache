@@ -14,7 +14,6 @@
 package me.ahoo.cocache.core.proxy
 
 import me.ahoo.cocache.api.join.JoinCache
-import me.ahoo.cocache.api.join.JoinValue
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
@@ -68,7 +67,7 @@ object JoinCacheProxies {
 
     /**
      * [JoinCache] 的参数擦除后都是 `Object`，所以只比较名称、参数个数与返回类型：
-     * 返回类型可以收窄，但不能换成不相关的类型；`void` 只与 `void` 兼容。
+     * 返回类型只能放宽（声明的类型是 JoinCache 方法返回类型的父类型），不能收窄或换成不相关的类型；`void` 只与 `void` 兼容。
      */
     private fun matches(method: Method, joinMethod: Method): Boolean {
         if (method.name != joinMethod.name || method.parameterCount != joinMethod.parameterCount) {
@@ -79,8 +78,8 @@ object JoinCacheProxies {
         if (declared == Void.TYPE || expected == Void.TYPE) {
             return declared == expected
         }
-        // 只允许放宽返回类型；收窄只允许到 JoinValue（final 类），否则目标返回的实现类会在调用时 ClassCastException
-        return !declared.isPrimitive && (declared.isAssignableFrom(expected) || declared == JoinValue::class.java)
+        // 只允许放宽返回类型：收窄（如 Map → HashMap）会在调用时因目标返回的实现类不同而 ClassCastException
+        return !declared.isPrimitive && declared.isAssignableFrom(expected)
     }
 
     private class Handler(private val type: Class<*>, val target: JoinCache<Any, Any, Any, Any>) : InvocationHandler {

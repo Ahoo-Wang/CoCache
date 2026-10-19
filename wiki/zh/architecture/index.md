@@ -50,10 +50,10 @@ flowchart BT
 | `cocache-codec-jackson` | `JacksonCodec`（Jackson 3，`tools.jackson`） |
 | `cocache-spring` | `CoCacheSpringCacheManager`、`TransactionalInvalidator`。供不使用 Boot 的 Spring 应用 |
 | `cocache-spring-boot-starter` | 自动配置、`@EnableCoCache`、注解翻译、spec bean 注册、`cocache.*` 配置项、actuator 端点、健康检查、Micrometer 绑定与 Spring Cache `sync` 检查 |
-| `cocache-test` | 已发布的 TCK：`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`HookedBackend` |
+| `cocache-test` | 已发布的 TCK：`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`HookedBackend`、`Concurrency` |
 | `cocache-bom` | 版本对齐 |
 
-依赖方向严格单向。注解解析与 SpEL 只出现在 starter 中，所以 core 既不需要 Spring 也不需要反射。新后端运行时只依赖 `cocache-api`，测试时依赖 `cocache-test`。
+依赖方向严格单向。注解解析与 SpEL 只出现在 starter 中，所以 core 既不需要 Spring 也不需要 `kotlin-reflect`。新后端运行时只依赖 `cocache-api`，测试时依赖 `cocache-test`。
 
 ## 职责划分 {#responsibilities}
 
@@ -118,7 +118,7 @@ sequenceDiagram
 | spec bean：`@Bean fun userSpec(): CacheSpec<String, User>` | spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` | 引擎本身。`CacheSpecRegistrar` 从工厂方法声明的返回类型读取 `K` 与 `V`，不实例化 spec |
 | 组合缓存：`@JoinCacheable interface …`，列在 `@EnableCoCache(joinCaches = …)` 中 | 组合缓存名 | 两个缓存之上的只读视图，按名称解析。见 [JoinCache](../guide/join-cache.md) |
 
-策略分层，后者覆盖前者：内置默认值 → 声明 → `CacheSpecCustomizer` bean（按顺序）→ `cocache.defaults.*` → `cocache.caches.[name].*`。`key-prefix` 按同样的规则分层。所有单例创建完成后，如果 `cocache.caches` 中出现未声明的缓存，`CacheAssembler` 会让启动失败。有状态组件只按缓存名解析，从不按类型解析。
+策略分层，后者覆盖前者：内置默认值 → 声明 → `CacheSpecCustomizer` bean（按顺序）→ `cocache.defaults.*` → `cocache.caches.[name].*`。`key-prefix` 按同样的规则分层。所有单例创建完成后，如果 `cocache.caches` 中出现未声明的缓存，`CacheAssembler` 会让启动失败。所有有状态组件都由 `CacheRuntime` 按 spec 新建（见[运行时](#runtime)），两个缓存不可能共享其中任何一个。在 Spring 中，组合缓存按缓存名（经由对应的 bean 名）找到它的两个缓存，从不按类型。
 
 ## 线格式 {#wire-format}
 

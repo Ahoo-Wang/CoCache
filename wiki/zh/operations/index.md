@@ -159,12 +159,12 @@ CoCache 的 Redis 用户需要以下权限：
 | key | 对你的 key 前缀可读写（默认 `~cocache:*`）。`pubsub` 模式下还需要 `~cocache:probe:*` |
 | 频道 | `&cocache:inv:*`。`pubsub` 模式下还需要 `&cocache:probe:*`，否则后端退回非原子广播 |
 | 直接调用的命令 | `EVALSHA`、`EVAL`（`NOSCRIPT` 后的回退）、`PING`（心跳）、`PUBLISH`、`SUBSCRIBE`、`UNSUBSCRIBE`，`sharded` 模式下为 `SPUBLISH`、`SSUBSCRIBE`、`SUNSUBSCRIBE`，以及连接命令（`HELLO`、`AUTH`、`CLIENT`、`SELECT`） |
-| 脚本内的命令 | Redis 7 同样按调用方的 ACL 检查：`GET`、`SET`、`DEL`、`PTTL`、`TYPE`、`HGETALL`、`HSET`、`HDEL`、`HLEN`、`PEXPIRE`、`PERSIST`、`SETRANGE`、`TIME` |
+| 脚本内的命令 | Redis 7 同样按调用方的 ACL 检查：`GET`、`SET`、`DEL`、`PTTL`、`TYPE`、`HGETALL`、`HSET`、`HDEL`、`HEXISTS`、`HLEN`、`PEXPIRE`、`PERSIST`、`SETRANGE`、`TIME` |
 
 一个起点（已在 Redis 7.4 上以该用户执行全部 CoCache 脚本验证）：
 
 ```
-ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hset +hdel +hlen +pexpire +persist +setrange +time
+ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
 ```
 
 使用自定义 `key-prefix` 时，把 `~cocache:*` 换成你的前缀。Redis Cluster 还要允许 Lettuce 发现拓扑所用的命令（`+cluster|nodes`、`+info`）。每个节点都要设置该用户：ACL 不会随复制同步。

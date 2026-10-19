@@ -49,7 +49,7 @@ description: Release history and notable changes for CoCache.
 | `JoinCache` (`me.ahoo.cache.api.join`) | `me.ahoo.cocache.api.join.JoinCache`: a read-only view of two caches, registered with `@EnableCoCache(joinCaches = […])`; `evict` → `invalidate`, no `set` (see [JoinCache](./join-cache.md)) |
 | Jedis, pluggable L2, explicit negative-entry writes | removed |
 
-Removed 5.x property keys fail startup with a message that names the replacement. Some renames change meaning (for example, L2 is now always bounded by `localMaxAge`, 5 minutes by default): see [Behavior changes](./migration-6.md#semantics).
+Removed 5.x property keys fail startup with a message that names the replacement, if there is one. Some renames change meaning (for example, L2 is now always bounded by `localMaxAge`, 5 minutes by default): see [Behavior changes](./migration-6.md#semantics).
 
 ### Dependencies
 

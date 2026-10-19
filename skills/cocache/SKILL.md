@@ -9,7 +9,7 @@ CoCache (6.x) is a Java/Kotlin two-level distributed coherent cache:
 - **L2**: bounded local Caffeine copy, one per instance (fixed; not pluggable).
 - **L1**: shared Redis, which serializes every write per key.
 - **Data source**: a `CacheLoader<K, V>`; `null` means "not found" and is cached for `absentTtl`.
-- **Coherence**: a miss takes a lease in Redis and only the lease holder may fill, so a slow load never overwrites a newer invalidation. `put` and `invalidate` write and broadcast in one Lua script; peers drop their L2 copy when the message arrives. Lost messages are bounded by `localMaxAge` (default 5 min) and channel resets.
+- **Coherence**: a miss takes a lease in Redis and only the lease holder may fill, so a slow load never overwrites a newer invalidation. `put` and `invalidate` write and broadcast in one Lua script (in `sharded` channel mode or non-atomic mode, the broadcast is a second command); peers drop their L2 copy when the message arrives. Lost messages are bounded by `localMaxAge` (default 5 min) and channel resets.
 
 Packages are `me.ahoo.cocache.*`. The normative design is `docs/architecture.md` in the CoCache repository.
 
@@ -61,7 +61,7 @@ Operations on `Cache<K, V>`: `get(key)` / `cache[key]`, `get(key, loader)`, `get
 - With Spring Cache, use `@Cacheable(sync = true)`. Without `sync`, Spring's "miss → call → put" is an unconditional write and loses the lease protection.
 - A cache without a loader is valid (fill it with `put`); misses return `null` and nothing negative is written to Redis.
 - Use `SetCache<K, E>` only when Redis is the only copy of the set (no loader allowed; `invalidate` throws, use `clear`). A set that lives in your database is a plain `Cache<K, Set<E>>` maintained with `invalidate`.
-- All instances of one cluster must use the same `cocache.redis.channel-mode` and the same major version (5.x and 6.x cannot share Redis).
+- All instances of one cluster must use the same `cocache.redis.channel-mode` and the same major version (different major versions cannot share Redis).
 - Size `lease-ttl` above the loader's p99 and `lease-wait` above its typical latency, or cross-instance deduplication falls back to independent loads.
 
 ## Key Classes

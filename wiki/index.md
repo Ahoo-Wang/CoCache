@@ -37,7 +37,7 @@ features:
     details: Switch to the in-memory backend with one property and drive time with ManualClock. Spring Cache, transactions, and actuator work out of the box.
 ---
 
-## A cache in a dozen lines
+## A cache in a dozen lines {#example}
 
 ```kotlin
 @CoCache(ttl = 600)                                   // seconds

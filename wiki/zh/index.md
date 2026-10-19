@@ -37,7 +37,7 @@ features:
     details: 一个配置项切换到内存后端，用 ManualClock 推进时间。Spring Cache、事务与 actuator 开箱即用。
 ---
 
-## 十几行代码的缓存
+## 十几行代码的缓存 {#example}
 
 ```kotlin
 @CoCache(ttl = 600)                                   // 单位：秒

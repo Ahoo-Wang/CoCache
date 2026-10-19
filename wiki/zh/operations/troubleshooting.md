@@ -168,7 +168,7 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 | `CoCache 6.0 removed these properties: [cocache.…] - …` | 使用了已不存在的配置项 | 按信息改名。见[从 5.x 升级](../guide/migration-6.md#properties) |
 | `cocache.caches configures undeclared caches [x]; declared caches: […]` | `cocache.caches.[name]` 中出现了不存在的缓存，通常是拼写错误。缓存名不区分大小写匹配 | 修正名称或删除该项 |
 | `Cache[x] - … must be positive …`、`refreshWindow[…] must be less than ttl[…] - ttlJitter[…]`、`refreshWindow[…] must be less than localMaxAge[…]` | 所有配置层叠加之后策略不合法 | 修正取值。不写单位的时长按秒解析 |
-| `Cache[x] - @CoCache.… = FOREVER is not supported` | 在 `ttl` 与 `@CaffeineCache.expireAfterAccess` 以外的属性上使用了 `FOREVER` | 改用具体时长 |
+| `Cache[x] - @CoCache.<attribute> = FOREVER is not supported; FOREVER is only allowed for @CoCache.ttl and @CaffeineCache.expireAfterAccess.` | 在 `ttl` 与 `@CaffeineCache.expireAfterAccess` 以外的属性上使用了 `FOREVER` | 改用具体时长 |
 | `Cache[x] already exists.` / `Namespace[x] is already used by another cache.` | 两个声明使用了相同的缓存名或命名空间，例如一个接口与一个 spec bean | 改名其中一个，或设置不同的 `namespace` |
 | `Cannot register cache interface[…]: the bean name[x] is already in use.` / `Cannot register cache bean[x] for spec bean[…]` | 缓存的 bean 名与其它 bean 冲突 | 修改缓存名（`@CoCache(name)`）或 spec bean 名 |
 | `Cache interface[…] must extend Cache with concrete type arguments.` / `Cache spec bean[…] must declare its generic types` | 无法解析泛型 | 使用具体类型，并把 spec 工厂方法的返回类型声明为 `CacheSpec<K, V>` |
@@ -183,7 +183,7 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 | `@Cacheable without sync = true on CoCache caches: …` | `cocache.spring-cache.require-sync: true` 且存在不带 sync 的 `@Cacheable` | 加上 `sync = true`，或关闭该检查 |
 | `Join cache[x] - …` | `@JoinCacheable` 指向不存在的缓存、类型不符，或同时指定了两种提取方式 | 按信息处理。见 [JoinCache](../guide/join-cache.md) |
 
-有一项检查发生在第一次调用而不是启动时：`Key type [...] does not override toString()` 表示缓存的 key 类型没有有意义的 `toString()`，每个实例都会映射到不同的 Redis key。请使用 data class 或 record、重写 `toString()`，或者设置 `keyExpression` 或 `KeyEncoder`。
+有一项检查发生在第一次调用而不是启动时：`Key type [...] does not override toString()` 表示缓存的 key 类型没有有意义的 `toString()`，每个 key 对象都会映射到不同的 Redis key。请使用 data class 或 record、重写 `toString()`，或者设置 `keyExpression` 或 `KeyEncoder`。
 
 ## 来自 CoCache 之外的写入 {#external-invalidation}
 
@@ -208,6 +208,8 @@ orderInvalidator.invalidate("OrderCache", "7/9")
 ```
 
 第一个参数是**命名空间**（缓存设置了 `namespace` 时用它，否则就是缓存名），key 是**编码后的 key**（[含义](./observability.md#encoded-key)）。不在 Spring 中时，传入缓存使用的同一个 `CoherenceBackend`，或者连接同一个 Redis、使用同一种通道模式的任意 `RedisBackend`。
+
+编码后的 key 为空串时抛出 `IllegalArgumentException`，传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`；`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
 
 ### 任意语言：原始协议 {#raw-protocol}
 

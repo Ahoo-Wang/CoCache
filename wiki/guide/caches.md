@@ -48,7 +48,7 @@ Durations are in **seconds**. Every policy attribute defaults to `CoCache.UNSET`
 | `loader` | `""` | Bean name of the `CacheLoader`. Empty: the single bean of type `CacheLoader<K, V>`, or none. |
 | `codec` | `""` | Bean name of the `Codec`. Empty: the single bean of type `Codec<V>`, or Jackson. |
 
-`CoCache.FOREVER` is valid only for `ttl` (and for `@CaffeineCache.expireAfterAccess`, where it means off). Using it anywhere else fails startup. Zero is valid only for `ttlJitter` and `refreshWindow`; any other zero duration fails startup.
+`CoCache.FOREVER` is valid only for `ttl` (and for `@CaffeineCache.expireAfterAccess`, where it means off). On any other duration attribute it fails startup. `@CaffeineCache.maximumSize` is a count, not a duration, so `FOREVER` there is simply `Long.MAX_VALUE` entries. Zero is valid only for `ttlJitter` and `refreshWindow`; any other zero duration, and any negative value other than `UNSET`, fails startup.
 
 ### `@CaffeineCache` {#caffeine-annotation}
 
@@ -137,7 +137,7 @@ Every key in Redis is:
 - Cache names and namespaces must each be unique within an application. A duplicate fails startup.
 - Invalidations travel on the channel `cocache:inv:{namespace}`. The channel doesn't include the prefix.
 - The **encoded key** is what the actuator endpoint and `ExternalInvalidator` take, so other tools can address a key without knowing its Kotlin type.
-- To share one Redis between applications, give each a different `keyPrefix` (for example `${spring.application.name}:`). Changing the prefix or namespace of a running cache is a cold start: old keys are ignored and expire on their own.
+- To share one Redis between applications, give each a different prefix with the [`cocache.defaults.key-prefix` property](./configuration.md#key-prefix) (for example `${spring.application.name}:`). `@CoCache(keyPrefix)` is literal text: placeholders in it are not resolved (and in Kotlin, `$` starts a string template). Changing the prefix or namespace of a running cache is a cold start: old keys are ignored and expire on their own.
 
 ## Keys {#keys}
 
@@ -235,7 +235,7 @@ fun moneyCodec(): Codec<Money> = object : Codec<Money> {
 }
 ```
 
-If a payload can't be decoded (for example, after an incompatible change to the value class), CoCache treats it as a miss and reloads it. Changes that still decode but mean something different won't be caught: change the namespace or key prefix for those.
+If a payload can't be decoded (for example, after an incompatible change to the value class), CoCache treats it as a miss and reloads it. A [`SetCache`](#set-cache) has no source to reload from and throws instead. Changes that still decode but mean something different won't be caught: change the namespace or key prefix for those.
 
 Redis values carry a short binary header before the codec's bytes. `redis-cli GET` shows binary, and other programs must not read or write CoCache keys directly.
 
@@ -254,10 +254,11 @@ val members: Set<String> = online[roomId] // empty set when absent
 ```
 
 - **No loader.** A set cache has no source to reload from; `@CoCache(loader = …)` on one fails startup, and `get(key, loader)` throws.
-- **`invalidate` throws `UnsupportedOperationException`**, because it would destroy the only copy. Use `clear`.
+- **`invalidate` and `invalidateAll` throw `UnsupportedOperationException`**, because they would destroy the only copy. Use `clear`.
 - **`put(key, emptySet())` equals `clear(key)`**: an empty set is stored as no key.
 - **TTL defaults to forever.** Each `add` or `remove` resets the expiry when you set one.
 - **Failures are loud.** Writes throw `CacheWriteException` (they are idempotent, so retry). Reads throw the Redis error, since there is no source to fall back to.
+- **Unreadable content throws.** An element the codec can't decode makes the read throw, and a set written in a newer format throws `IllegalStateException`. Content CoCache didn't write (for example a native Redis Set at the same key) reads as an empty set, stays in L2 for at most `degradedLocalMaxAge`, and is replaced by the next `put` or `add`.
 - **Durability is Redis durability.** Use a `maxmemory-policy` that never evicts keys without a TTL (not `allkeys-*`). An asynchronous-replication failover can lose recent writes.
 
 If the set's truth lives in your database, don't use `SetCache`. Declare `Cache<K, Set<E>>`, update the database, and `invalidate`.
@@ -294,9 +295,9 @@ CoCache refuses to start rather than run a cache that can't behave as declared. 
 | Abstract interface method that matches no `Cache` method | The call would fail at runtime instead |
 | Several `CacheLoader<K, V>` or `Codec<V>` beans match | A silent pick could use the wrong source or format |
 | `loader` on a `SetCache` | A set cache has no source; misses would silently return empty |
-| `FOREVER` on an attribute other than `ttl` / `expireAfterAccess`, or a zero or negative duration (except `ttlJitter`, `refreshWindow`) | Meaningless or unsafe lifetimes |
+| `FOREVER` on a duration attribute other than `ttl` / `expireAfterAccess`, a zero duration (except `ttlJitter`, `refreshWindow`), or any negative duration | Meaningless or unsafe lifetimes |
 | `refreshWindow` not less than `ttl − ttlJitter` (the effective jitter), or not less than `localMaxAge` | A fresh copy would start inside the window and refresh on every hit |
 | Duplicate cache name, namespace, or bean name | Two caches would share keys or invalidations |
-| `cocache.caches.[name]` for a cache that doesn't exist, or a removed property name (listed in [Upgrading from 5.x](./migration-6.md#properties)) | Almost always a typo; see [Configuration Reference](./configuration.md#validation) |
+| `cocache.caches.[name]` for a cache that doesn't exist, or an unsupported property name from an earlier major version (see [Upgrading from 5.x](./migration-6.md#properties)) | Almost always a typo; see [Configuration Reference](./configuration.md#validation) |
 
 The `toString()` check on key types runs on the first read of each key type, not at startup.

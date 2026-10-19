@@ -31,7 +31,7 @@ import org.springframework.expression.spel.standard.SpelExpressionParser
  * 把组合视图接口（[JoinCacheable]）翻译为 [SimpleJoinCache]，再包上代理（[JoinCacheProxies]）。
  *
  * - 泛型取自接口继承的 `JoinCache<K1, V1, K2, V2>`，必须是具体类型。
- * - 主缓存与关联缓存只按名称解析（`firstCacheName` / `joinCacheName` 必填）：先按 bean 名，再按 spec 声明的缓存名；
+ * - 主缓存与关联缓存只按名称解析（`firstCacheName` / `joinCacheName` 必填）：先按 spec 声明的缓存名（其 bean 名可能不同），再按 bean 名（接口式缓存的 bean 名即缓存名）；
  *   并校验其类型为 `Cache<K1, V1>` / `Cache<K2, V2>`。
  * - 关联 key：`joinKeyExpression`（SpEL 模板，以主值为根对象，要求 `K2` 为 `String`）、`joinKeyExtractor` 指定的 bean，
  *   两者都为空时按泛型 `JoinKeyExtractor<V1, K2>` 唯一匹配；找不到或有多个候选时启动失败。

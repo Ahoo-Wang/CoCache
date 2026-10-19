@@ -135,8 +135,8 @@ classpath 中有 `spring-boot-starter-actuator` 时：
 CoCache 不会带着无法兑现的配置运行，而是让启动失败：
 
 - **未知的缓存名**出现在 `cocache.caches` 下（几乎总是拼写错误）。错误信息会列出已声明的缓存。
-- **已删除的配置名**（列在[从 5.x 升级](./migration-6.md#properties)中），如 `cocache.redis.strict-failure` 或 `cocache.load.*` 下的任何项，会让启动失败，错误信息给出替代项。
-- **不合法的策略。** 所有时长必须为正，且不超过 100 年；只有 `ttl-jitter`、`lease-wait` 与 `load-acquire-timeout` 可以为 0。`refresh-window` 必须小于 `ttl − ttl-jitter`（按实际抖动计算），也必须小于 `local-max-age`。
+- **不再支持的旧大版本配置名**，如 `cocache.redis.strict-failure` 或 `cocache.load.*` 下的任何项，会让启动失败，错误信息给出替代项（如果有的话）。完整列表见[从 5.x 升级](./migration-6.md#properties)。
+- **不合法的策略。** 所有时长必须为正，且不超过 100 年；只有 `ttl-jitter`、`lease-wait`、`load-acquire-timeout` 与 `refresh-window`（0 表示关闭）可以为 0；任何时长都不能为负。`refresh-window` 必须小于 `ttl − ttl-jitter`（按实际抖动计算），也必须小于 `local-max-age`。
 
 `refresh-window: 0` 表示关闭提前刷新，因此配置项也可以关掉声明中开启的窗口。
 

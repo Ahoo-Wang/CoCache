@@ -48,7 +48,7 @@ class App
 | `loader` | `""` | `CacheLoader` 的 bean 名。为空时取唯一的 `CacheLoader<K, V>` 类型 bean，没有则无 loader。 |
 | `codec` | `""` | `Codec` 的 bean 名。为空时取唯一的 `Codec<V>` 类型 bean，没有则用 Jackson。 |
 
-`CoCache.FOREVER` 只能用于 `ttl`（以及 `@CaffeineCache.expireAfterAccess`，表示关闭），用在其它属性上启动失败。只有 `ttlJitter` 与 `refreshWindow` 可以为 0，其它时长为 0 时启动失败。
+`CoCache.FOREVER` 只能用于 `ttl`（以及 `@CaffeineCache.expireAfterAccess`，表示关闭），用在其它时长属性上启动失败。`@CaffeineCache.maximumSize` 是条目数而不是时长，在它上面写 `FOREVER` 就是 `Long.MAX_VALUE` 个条目。只有 `ttlJitter` 与 `refreshWindow` 可以为 0；其它时长为 0，或任何时长为 `UNSET` 以外的负数，都会启动失败。
 
 ### `@CaffeineCache` {#caffeine-annotation}
 
@@ -137,7 +137,7 @@ Redis 中的每个 key 都是：
 - 在一个应用内，缓存名与 namespace 都必须唯一，重复时启动失败。
 - 失效消息走频道 `cocache:inv:{namespace}`，频道不含前缀。
 - actuator 端点与 `ExternalInvalidator` 接受的都是**编码后的 key**，所以其它工具不必知道 key 的 Kotlin 类型也能定位它。
-- 多个应用共用一个 Redis 时，给每个应用一个不同的 `keyPrefix`（比如 `${spring.application.name}:`）。修改运行中缓存的前缀或 namespace 相当于冷启动：旧 key 不再被读取，随各自的寿命过期。
+- 多个应用共用一个 Redis 时，用 [`cocache.defaults.key-prefix` 配置项](./configuration.md#key-prefix)给每个应用一个不同的前缀（比如 `${spring.application.name}:`）。`@CoCache(keyPrefix)` 是字面文本：其中的占位符不会被解析（在 Kotlin 中 `$` 还会开启字符串模板）。修改运行中缓存的前缀或 namespace 相当于冷启动：旧 key 不再被读取，随各自的寿命过期。
 
 ## key {#keys}
 
@@ -235,7 +235,7 @@ fun moneyCodec(): Codec<Money> = object : Codec<Money> {
 }
 ```
 
-载荷无法解码时（比如值类型做了不兼容的修改），CoCache 按未命中处理并重新加载。仍能解码但含义变了的修改无法被发现：这类修改请同时更换 namespace 或 key 前缀。
+载荷无法解码时（比如值类型做了不兼容的修改），CoCache 按未命中处理并重新加载。[`SetCache`](#set-cache) 没有数据源可以重新加载，会直接抛出。仍能解码但含义变了的修改无法被发现：这类修改请同时更换 namespace 或 key 前缀。
 
 Redis 中的值在编解码输出之前带有一个简短的二进制头。`redis-cli GET` 看到的是二进制内容；其它程序不得直接读写 CoCache 的 key。
 
@@ -254,10 +254,11 @@ val members: Set<String> = online[roomId] // 不存在时为空集合
 ```
 
 - **没有 loader。** 集合缓存没有可重新加载的数据源；在它上面写 `@CoCache(loader = …)` 启动失败，`get(key, loader)` 会抛出异常。
-- **`invalidate` 抛出 `UnsupportedOperationException`**，因为它会销毁唯一副本。请用 `clear`。
+- **`invalidate` 与 `invalidateAll` 抛出 `UnsupportedOperationException`**，因为它们会销毁唯一副本。请用 `clear`。
 - **`put(key, emptySet())` 等同于 `clear(key)`**：空集合不保留 key。
 - **TTL 默认永不过期。** 设置了 TTL 时，每次 `add` 或 `remove` 都会重设到期时间。
 - **故障会显式暴露。** 写入抛出 `CacheWriteException`（它们是幂等的，可以重试）。读取直接抛出 Redis 错误，因为没有数据源可以降级。
+- **读不懂的内容会抛出。** 元素无法解码时读取抛出异常，更高格式写入的集合抛出 `IllegalStateException`。不是 CoCache 写入的内容（比如同一个 key 上的 Redis 原生 Set）读作空集合，在 L2 中最多保留 `degradedLocalMaxAge`，并被下一次 `put` 或 `add` 替换。
 - **持久性等于 Redis 的持久性。** `maxmemory-policy` 不能淘汰没有 TTL 的 key（不要用 `allkeys-*`）。异步复制下的故障切换可能丢失最近的写入。
 
 如果集合的权威数据在数据库中，不要用 `SetCache`。声明为 `Cache<K, Set<E>>`，更新数据库后 `invalidate`。
@@ -294,9 +295,9 @@ CoCache 宁可启动失败，也不运行一个无法按声明工作的缓存。
 | 接口的抽象方法对应不上任何 `Cache` 方法 | 否则调用会在运行时失败 |
 | 匹配到多个 `CacheLoader<K, V>` 或 `Codec<V>` bean | 静默挑一个可能用错数据源或格式 |
 | `SetCache` 上设置了 `loader` | 集合缓存没有数据源，未命中会悄悄返回空集合 |
-| 在 `ttl` / `expireAfterAccess` 之外的属性上用 `FOREVER`，或时长为 0 或负数（`ttlJitter`、`refreshWindow` 除外） | 无意义或不安全的寿命 |
+| 在 `ttl` / `expireAfterAccess` 之外的时长属性上用 `FOREVER`，时长为 0（`ttlJitter`、`refreshWindow` 除外），或任何时长为负数 | 无意义或不安全的寿命 |
 | `refreshWindow` 不小于 `ttl − ttlJitter`（按实际抖动计算），或不小于 `localMaxAge` | 新副本一出生就在窗口内，每次命中都会触发刷新 |
 | 缓存名、namespace 或 bean 名重复 | 两个缓存会共享 key 或失效消息 |
-| `cocache.caches.[name]` 指向不存在的缓存，或使用了已删除的配置名（列在[从 5.x 升级](./migration-6.md#properties)中） | 几乎总是拼写错误；见[配置参考](./configuration.md#validation) |
+| `cocache.caches.[name]` 指向不存在的缓存，或使用了旧大版本中不再支持的配置名（见[从 5.x 升级](./migration-6.md#properties)） | 几乎总是拼写错误；见[配置参考](./configuration.md#validation) |
 
 key 类型的 `toString()` 检查发生在每种 key 类型第一次读取时，而不是启动时。

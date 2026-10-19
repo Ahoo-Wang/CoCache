@@ -96,7 +96,7 @@ sequenceDiagram
 | 故障点 | 默认行为 | 可选行为 |
 |--------|----------|----------|
 | 读取 Redis | 直接从数据源加载，结果只在 L2 中保留 `degradedLocalMaxAge`，不写 Redis。调用方照常工作，压力落到数据库上。 | `read-failure: throw` 抛出 `CacheReadException` |
-| `invalidate` | 本地效果先生效。Redis 删除交给有界的后台重试队列，调用**不抛出**（它通常在提交之后执行，抛出也于事无补）。重试成功之前，该 key 的未命中跳过 Redis。 | `invalidate-failure: throw` 抛出 `CacheWriteException` |
+| `invalidate` | 本地效果先生效。Redis 删除交给有界的后台重试队列，调用**不抛出**（它通常在提交之后执行，抛出也于事无补）。重试成功之前，本实例上该 key 的未命中跳过 Redis。 | `invalidate-failure: throw` 抛出 `CacheWriteException` |
 | `put` | 抛出 `CacheWriteException`。结果可能未知（超时），但 `put` 是幂等的，可以安全重试。 | — |
 | Pub/Sub 连接 | 心跳在数秒内发现。重连时每个实例清空 L2，而本地副本无论如何都受 `localMaxAge` 限制。期间健康检查报告 `DOWN`。 | — |
 | 你的 loader | 异常抛给调用方以及所有等待同一次加载的调用方，不缓存任何东西。 | — |

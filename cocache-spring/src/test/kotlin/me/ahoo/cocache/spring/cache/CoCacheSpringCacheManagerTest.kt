@@ -27,25 +27,45 @@ class CoCacheSpringCacheManagerTest {
     }
 
     @Test
-    fun fallsBackToABoundedDaemonPool() {
+    fun fallsBackToAGrowableDaemonPoolThatNeverQueues() {
         val pool = CoCacheSpringCacheManager.platformExecutor()
         try {
-            pool.maximumPoolSize.assert().isEqualTo(CoCacheSpringCacheManager.maxPlatformThreads())
-            CoCacheSpringCacheManager.maxPlatformThreads().assert().isGreaterThanOrEqualTo(8)
-            val ran = CountDownLatch(1)
+            pool.maximumPoolSize.assert().isEqualTo(CoCacheSpringCacheManager.MAX_PLATFORM_THREADS)
+            // 外层任务占住线程等待内层任务：内层任务必须拿到新线程（不排在外层之后），否则就会死锁
+            val inner = CountDownLatch(1)
+            val outer = CountDownLatch(1)
             var daemon = false
             pool.execute {
                 daemon = Thread.currentThread().isDaemon
-                ran.countDown()
+                pool.execute { inner.countDown() }
+                inner.await(5, TimeUnit.SECONDS)
+                outer.countDown()
             }
-            ran.await(5, TimeUnit.SECONDS).assert().isTrue()
+            outer.await(5, TimeUnit.SECONDS).assert().isTrue()
             daemon.assert().isTrue()
         } finally {
             pool.shutdownNow()
         }
-        CoCacheSpringCacheManager.defaultExecutor {
-            null
-        }.assert().isInstanceOf(java.util.concurrent.ThreadPoolExecutor::class.java)
+        CoCacheSpringCacheManager.defaultExecutor { null }.assert().isInstanceOf(
+            java.util.concurrent.ThreadPoolExecutor::class.java
+        )
+    }
+
+    @Test
+    fun saturatedPoolRunsOnTheCaller() {
+        val pool = CoCacheSpringCacheManager.platformExecutor()
+        try {
+            val release = CountDownLatch(1)
+            repeat(
+                CoCacheSpringCacheManager.MAX_PLATFORM_THREADS
+            ) { pool.execute { release.await(10, TimeUnit.SECONDS) } }
+            var ranOn: Thread? = null
+            pool.execute { ranOn = Thread.currentThread() }
+            ranOn.assert().isSameAs(Thread.currentThread())
+            release.countDown()
+        } finally {
+            pool.shutdownNow()
+        }
     }
 
     @Test

@@ -286,6 +286,12 @@ class CoCacheUsabilityTest {
          */
         @Cacheable(cacheNames = ["user"], cacheManager = "otherCacheManager")
         open fun otherManager(id: String): String = "m-$id"
+
+        /**
+         * 自定义 CacheResolver：不一定经过 CoCache，不告警。
+         */
+        @Cacheable(cacheNames = ["user"], cacheResolver = "customResolver")
+        open fun customResolver(id: String): String = "r-$id"
     }
 
     @CacheConfig(cacheNames = ["profile"])

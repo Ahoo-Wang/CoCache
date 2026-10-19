@@ -105,5 +105,5 @@ Build both component caches on a `CacheRuntime` with `InMemoryBackend` (see `tes
 ## Limits
 
 - No nested joins: `firstCacheName` / `joinCacheName` must name a `Cache`, not another JoinCache. Compose in code instead.
-- No `set` / `put` through the view (5.x had `set(key, joinValue)`); write each component cache.
+- No `set` / `put` through the view; write each component cache.
 - `@JoinCacheable` is not a meta-annotation; place it directly on the interface.

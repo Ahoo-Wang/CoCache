@@ -50,10 +50,10 @@ flowchart BT
 | `cocache-codec-jackson` | `JacksonCodec` (Jackson 3, `tools.jackson`) |
 | `cocache-spring` | `CoCacheSpringCacheManager`, `TransactionalInvalidator`. For Spring without Boot. |
 | `cocache-spring-boot-starter` | Auto-configuration, `@EnableCoCache`, annotation translation, spec-bean registration, `cocache.*` properties, the actuator endpoint, health indicator, Micrometer binding, and the Spring Cache `sync` check |
-| `cocache-test` | The published TCK: `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `HookedBackend` |
+| `cocache-test` | The published TCK: `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `HookedBackend`, `Concurrency` |
 | `cocache-bom` | Version alignment |
 
-Dependencies point one way. Annotation parsing and SpEL exist only in the starter, so the core needs neither Spring nor reflection. A new backend depends only on `cocache-api`, and on `cocache-test` for its tests.
+Dependencies point one way. Annotation parsing and SpEL exist only in the starter, so the core needs neither Spring nor `kotlin-reflect`. A new backend depends only on `cocache-api`, and on `cocache-test` for its tests.
 
 ## Responsibilities {#responsibilities}
 
@@ -118,7 +118,7 @@ sequenceDiagram
 | Spec bean: `@Bean fun userSpec(): CacheSpec<String, User>` | the spec bean name minus `Spec` (`userSpec` → `user`), or plus `Cache` | The engine itself. `CacheSpecRegistrar` reads `K` and `V` from the factory method's declared return type without instantiating the spec. |
 | Join cache: `@JoinCacheable interface …`, listed in `@EnableCoCache(joinCaches = …)` | the join cache name | A read-only view over two caches, resolved by name. See [JoinCache](../guide/join-cache.md). |
 
-Policy layers, later wins: built-in defaults → the declaration → `CacheSpecCustomizer` beans (in order) → `cocache.defaults.*` → `cocache.caches.[name].*`. `key-prefix` follows the same layering. After all singletons exist, `CacheAssembler` fails startup if `cocache.caches` names an undeclared cache. Stateful components are only ever resolved by cache name, never by type.
+Policy layers, later wins: built-in defaults → the declaration → `CacheSpecCustomizer` beans (in order) → `cocache.defaults.*` → `cocache.caches.[name].*`. `key-prefix` follows the same layering. After all singletons exist, `CacheAssembler` fails startup if `cocache.caches` names an undeclared cache. Every stateful component is created per spec by `CacheRuntime` ([Runtime](#runtime)), so two caches never share one. In Spring, a join cache finds its two caches by cache name (through their bean names), never by type.
 
 ## Wire format {#wire-format}
 

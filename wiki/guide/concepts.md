@@ -96,7 +96,7 @@ By default the delete and the publish run in one Lua script, so there is no wind
 | What fails | Default behavior | Opt-in alternative |
 |------------|------------------|--------------------|
 | Reading Redis | The read loads from the source and keeps the result in L2 for `degradedLocalMaxAge`, without writing Redis. Your callers keep working; the database takes the load. | `read-failure: throw` throws `CacheReadException` |
-| `invalidate` | Local effects happen first. The Redis delete goes to a bounded background retry queue and the call **doesn't throw** (it usually runs after a commit, where throwing can't help). Until it succeeds, misses for that key skip Redis. | `invalidate-failure: throw` throws `CacheWriteException` |
+| `invalidate` | Local effects happen first. The Redis delete goes to a bounded background retry queue and the call **doesn't throw** (it usually runs after a commit, where throwing can't help). Until it succeeds, misses for that key on this instance skip Redis. | `invalidate-failure: throw` throws `CacheWriteException` |
 | `put` | Throws `CacheWriteException`. The outcome may be unknown (a timeout), but `put` is idempotent, so retrying is safe. | — |
 | The Pub/Sub connection | The heartbeat detects it within seconds. On reconnect every instance clears its L2, and local copies are capped at `localMaxAge` regardless. The health indicator reports `DOWN` meanwhile. | — |
 | Your loader | The exception reaches the caller and every caller waiting on the same load. Nothing is cached. | — |

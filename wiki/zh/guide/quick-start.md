@@ -5,7 +5,7 @@ description: 五分钟为 Spring Boot 应用加上二级一致性缓存，确认
 
 # 快速上手
 
-本页带一个 Spring Boot 应用从没有缓存走到一个可用的二级缓存。代码与 [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example) 一致。
+本页带一个 Spring Boot 应用从没有缓存走到一个可用的二级缓存。代码基于 [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example)。
 
 **你需要** JDK 17+、Spring Boot 4，以及 Redis 7+；也可以什么都不装，用第 2 步的内存后端。
 
@@ -79,6 +79,7 @@ cocache:
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.spring.boot.EnableCoCache
+import org.springframework.boot.autoconfigure.SpringBootApplication
 
 data class User(val id: String, val name: String)
 
@@ -91,14 +92,19 @@ class App
 ```
 
 ```java [Java]
+// User.java
+public record User(String id, String name) {}
+
+// UserCache.java
 import me.ahoo.cocache.api.Cache;
 import me.ahoo.cocache.api.annotation.CoCache;
-import me.ahoo.cocache.spring.boot.EnableCoCache;
-
-public record User(String id, String name) {}
 
 @CoCache(ttl = 600)
 public interface UserCache extends Cache<String, User> {}
+
+// App.java
+import me.ahoo.cocache.spring.boot.EnableCoCache;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @EnableCoCache(caches = UserCache.class)
 @SpringBootApplication
@@ -116,6 +122,10 @@ public class App {}
 ::: code-group
 
 ```kotlin [Kotlin]
+import me.ahoo.cocache.api.CacheLoader
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
+
 @Configuration
 class CacheConfig {
     @Bean
@@ -125,6 +135,10 @@ class CacheConfig {
 ```
 
 ```java [Java]
+import me.ahoo.cocache.api.CacheLoader;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
 @Configuration
 class CacheConfig {
     @Bean
@@ -187,6 +201,16 @@ curl localhost:8080/actuator/cocache/UserCache/42     # 这个 key 在 L2 与 Re
 ::: code-group
 
 ```kotlin [Kotlin]
+import io.lettuce.core.RedisURI
+import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.codec.jackson.jacksonCodec
+import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.cacheSpec
+import me.ahoo.cocache.redis.RedisBackend
+import tools.jackson.databind.json.JsonMapper   // Jackson 3
+import java.time.Duration
+
 val mapper = JsonMapper.builder().findAndAddModules().build()
 val backend = RedisBackend.standalone(RedisURI.create("redis://localhost:6379"))
 val runtime = CacheRuntime.builder().backend(backend).build()
@@ -205,6 +229,16 @@ backend.close()
 ```
 
 ```java [Java]
+import io.lettuce.core.RedisURI;
+import java.time.Duration;
+import me.ahoo.cocache.api.Cache;
+import me.ahoo.cocache.codec.jackson.JacksonCodec;
+import me.ahoo.cocache.core.CacheRuntime;
+import me.ahoo.cocache.core.CacheSpec;
+import me.ahoo.cocache.redis.RedisBackend;
+import tools.jackson.databind.ObjectMapper;        // Jackson 3
+import tools.jackson.databind.json.JsonMapper;
+
 ObjectMapper mapper = JsonMapper.builder().findAndAddModules().build();
 RedisBackend backend = RedisBackend.standalone(RedisURI.create("redis://localhost:6379"));
 CacheRuntime runtime = CacheRuntime.builder().backend(backend).build();

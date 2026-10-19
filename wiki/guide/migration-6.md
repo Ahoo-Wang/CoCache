@@ -139,7 +139,7 @@ See [Spring Cache](./spring-cache.md).
 
 ## Properties {#properties}
 
-Removed 5.x keys fail startup with a message that names the replacement.
+Removed 5.x keys fail startup with a message that names the replacement, if there is one.
 
 | 5.x | 6.0 |
 |-----|-----|

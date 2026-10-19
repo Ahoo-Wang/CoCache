@@ -152,7 +152,7 @@ class MySetEngineTest : SetEngineSpec() {
 }
 ```
 
-用构建工具的常规测试任务运行（JUnit 5）。`cocache-redis` 把 `BackendProtocolSpec` 与 `EngineSpec` 在三种模式下各跑一遍：经典 Pub/Sub、非原子（用 ACL 禁止探测频道）与 sharded；`SetEngineSpec` 只在经典 Pub/Sub 下运行。你的后端支持几种模式，就对每种模式都跑这些套件。
+用构建工具的常规测试任务运行（JUnit 6）。`cocache-redis` 把 `BackendProtocolSpec` 与 `EngineSpec` 在三种模式下各跑一遍：经典 Pub/Sub、非原子（用 ACL 禁止探测频道）与 sharded；`SetEngineSpec` 只在经典 Pub/Sub 下运行。你的后端支持几种模式，就对每种模式都跑这些套件。
 
 `InMemoryBackend` 在一个进程内实现了完整的协议。多个运行时共用一个实例就像多个应用实例，因此它也很适合作为应用测试的后端。
 

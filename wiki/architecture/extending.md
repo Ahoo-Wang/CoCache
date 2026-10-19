@@ -13,7 +13,7 @@ description: Implementing a CoherenceBackend (RemoteStore and InvalidationChanne
 
 The SPI lives in `me.ahoo.cocache.api.spi` (`cocache-api`, no dependencies). A backend needs only `cocache-api` at runtime and `cocache-test` for its tests.
 
-In a Spring Boot application, a `CoherenceBackend` bean replaces the Redis backend (the starter backs off), and Spring closes it on shutdown. A `Codec<V>` bean is used by every interface cache whose value type is `V`, unless the cache names another with `@CoCache(codec = "beanName")`.
+In a Spring Boot application, a `CoherenceBackend` bean replaces the Redis backend (the starter backs off), and Spring closes it on shutdown. The single `Codec<V>` bean is used by every interface cache whose value type is `V`, unless the cache names another with `@CoCache(codec = "beanName")`.
 
 ## Backend {#backend}
 
@@ -152,7 +152,7 @@ class MySetEngineTest : SetEngineSpec() {
 }
 ```
 
-Run them with your build's normal test task (JUnit 5). `cocache-redis` runs `BackendProtocolSpec` and `EngineSpec` in three modes: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. `SetEngineSpec` runs on classic Pub/Sub only. Run the suites for every mode your backend supports.
+Run them with your build's normal test task (JUnit 6). `cocache-redis` runs `BackendProtocolSpec` and `EngineSpec` in three modes: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. `SetEngineSpec` runs on classic Pub/Sub only. Run the suites for every mode your backend supports.
 
 `InMemoryBackend` implements the whole protocol in one process. Several runtimes sharing one instance behave like several instances, which makes it a good backend for application tests.
 
@@ -170,7 +170,7 @@ interface Codec<V> {
 - **Never sees `null`.** Negative entries are handled by the engine.
 - **A set element codec must be canonical.** `SetCache` members are compared by their encoded bytes, so equal elements must always encode to identical bytes. JSON with unstable field order breaks that.
 - **The byte format is part of the cache's wire format.** Changing it in a running cluster makes old and new instances reclaim each other's values. Use a new namespace or key prefix for an incompatible change, or make `decode` accept both forms during the rollout.
-- **Keep payloads small.** Every instance shares one connection, and a large value delays commands behind it.
+- **Keep payloads small.** All of an instance's commands share one connection, and a large value delays commands behind it.
 
 `StringCodec` (UTF-8) is in `cocache-core`, and `JacksonCodec` (`jacksonCodec<V>(mapper)`) in `cocache-codec-jackson`. Interface caches without a codec bean use `JacksonCodec` with the application's `ObjectMapper`.
 

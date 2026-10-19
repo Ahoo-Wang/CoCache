@@ -19,7 +19,7 @@ import org.springframework.cache.CacheManager
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -46,16 +46,11 @@ class CoCacheSpringCacheManager @JvmOverloads constructor(
     companion object {
         /**
          * `retrieve` 的默认执行器。它在阻塞查找（以及 `sync = true` 时等待回源）上等待：
-         * 运行在 JDK 21+ 时每个任务一个虚拟线程；否则是有上限的守护线程池（上限 [maxPlatformThreads]，多余任务排队），
-         * 不会因为 Redis 或数据源变慢而无限创建平台线程。
+         * 运行在 JDK 21+ 时每个任务一个虚拟线程；否则是可增长的守护线程池：空闲线程不足时新建（上限 [MAX_PLATFORM_THREADS]），
+         * 不排队，因此嵌套的异步 `@Cacheable(sync = true)` 不会因内层任务排在外层任务之后而死锁；达到上限时由调用方线程执行。
          */
         @JvmField
         val DEFAULT_EXECUTOR: Executor = defaultExecutor()
-
-        internal fun maxPlatformThreads(): Int = maxOf(
-            MIN_PLATFORM_THREADS,
-            Runtime.getRuntime().availableProcessors() * THREADS_PER_CPU
-        )
 
         internal fun defaultExecutor(virtual: () -> Executor? = ::virtualThreadExecutor): Executor {
             return virtual() ?: platformExecutor()
@@ -71,21 +66,24 @@ class CoCacheSpringCacheManager @JvmOverloads constructor(
         }
 
         internal fun platformExecutor(): ThreadPoolExecutor {
-            val threads = maxPlatformThreads()
             val counter = AtomicInteger()
             return ThreadPoolExecutor(
-                threads,
-                threads,
+                0,
+                MAX_PLATFORM_THREADS,
                 KEEP_ALIVE_SECONDS,
                 TimeUnit.SECONDS,
-                LinkedBlockingQueue()
-            ) { runnable ->
-                Thread(runnable, "cocache-spring-retrieve-${counter.incrementAndGet()}").apply { isDaemon = true }
-            }.apply { allowCoreThreadTimeOut(true) }
+                SynchronousQueue(),
+                { runnable ->
+                    Thread(
+                        runnable,
+                        "cocache-spring-retrieve-${counter.incrementAndGet()}"
+                    ).apply { isDaemon = true }
+                },
+                ThreadPoolExecutor.CallerRunsPolicy()
+            )
         }
 
-        private const val MIN_PLATFORM_THREADS = 8
-        private const val THREADS_PER_CPU = 4
+        internal const val MAX_PLATFORM_THREADS = 512
         private const val KEEP_ALIVE_SECONDS = 60L
     }
 }

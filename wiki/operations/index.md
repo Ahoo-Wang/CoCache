@@ -159,12 +159,12 @@ CoCache needs these permissions on its Redis user:
 | Keys | Read and write on your key prefixes (`~cocache:*` by default). Also `~cocache:probe:*` in `pubsub` mode. |
 | Channels | `&cocache:inv:*`. In `pubsub` mode also `&cocache:probe:*`, or the backend falls back to non-atomic broadcast. |
 | Commands, direct | `EVALSHA`, `EVAL` (fallback after `NOSCRIPT`), `PING` (heartbeat), `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, or in `sharded` mode `SPUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, plus the connection commands (`HELLO`, `AUTH`, `CLIENT`, `SELECT`) |
-| Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HSET`, `HDEL`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
+| Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HSET`, `HDEL`, `HEXISTS`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
 
 A starting point, checked against Redis 7.4 by running every CoCache script as this user:
 
 ```
-ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hset +hdel +hlen +pexpire +persist +setrange +time
+ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
 ```
 
 With a custom `key-prefix`, replace `~cocache:*` with your prefixes. On Redis Cluster, also allow the commands Lettuce uses for topology discovery (`+cluster|nodes`, `+info`). Set the user on every node: ACLs aren't replicated.

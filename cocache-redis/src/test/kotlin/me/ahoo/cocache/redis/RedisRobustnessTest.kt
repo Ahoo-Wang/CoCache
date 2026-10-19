@@ -122,6 +122,42 @@ class RedisRobustnessTest {
     }
 
     /**
+     * 运维文档（wiki/operations/index.md#acl）给出的最小 ACL：缓存与集合缓存的全部操作都能执行。
+     * 文档中的命令列表与脚本不一致时这里失败。
+     */
+    @Test
+    fun documentedAclAllowsEveryOperation() {
+        Assumptions.assumeTrue(System.getenv("SPRING_DATA_REDIS_CLUSTER_NODES") == null)
+        val rules = (
+            "~cocache:* resetchannels &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe " +
+                "+unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hset +hdel +hexists " +
+                "+hlen +pexpire +persist +setrange +time"
+            ).split(" ")
+        RedisTestSupport.aclBackend("cocache-documented", rules).use { backend ->
+            backend.atomicBroadcast.assert().isTrue()
+            CacheRuntime.builder().backend(backend).build().use { runtime ->
+                val users = runtime.create(
+                    me.ahoo.cocache.core.cacheSpec<String, String>("acl-$namespace") {
+                        codec = StringCodec
+                        loader = me.ahoo.cocache.api.CacheLoader { "v-$it" }
+                    }
+                )
+                users["1"].assert().isEqualTo("v-1")
+                users.put("1", "v1")
+                users.invalidate("1")
+                users.getAll(listOf("1", "2")).assert().hasSize(2)
+                val index: SetCache<String, String> = runtime.create(
+                    setCacheSpec<String, String>("acl-set-$namespace") { elementCodec = StringCodec }
+                )
+                index.add("k", listOf("a", "b"))
+                index.remove("k", listOf("a"))
+                awaitCondition { index["k"] == setOf("b") }
+                index.clear("k")
+            }
+        }
+    }
+
+    /**
      * 批量读取中一个 key 失败：其余读取取得的 lease 被释放，而不是等 lease.ttl 到期。
      */
     @Test

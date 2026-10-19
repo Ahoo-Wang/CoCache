@@ -168,7 +168,7 @@ CoCache fails fast on configuration it can't run safely. The message names the p
 | `CoCache 6.0 removed these properties: [cocache.…] - …` | A property that no longer exists | Rename as the message says. See [Upgrading from 5.x](../guide/migration-6.md#properties). |
 | `cocache.caches configures undeclared caches [x]; declared caches: […]` | A `cocache.caches.[name]` entry for a cache that doesn't exist, usually a typo. Names match case-insensitively. | Fix the name, or remove the entry |
 | `Cache[x] - … must be positive …`, `refreshWindow[…] must be less than ttl[…] - ttlJitter[…]`, `refreshWindow[…] must be less than localMaxAge[…]` | An invalid policy after all layers were applied | Fix the value. Durations without a unit are seconds. |
-| `Cache[x] - @CoCache.… = FOREVER is not supported` | `FOREVER` on an attribute other than `ttl` or `@CaffeineCache.expireAfterAccess` | Use a duration |
+| `Cache[x] - @CoCache.<attribute> = FOREVER is not supported; FOREVER is only allowed for @CoCache.ttl and @CaffeineCache.expireAfterAccess.` | `FOREVER` on an attribute other than `ttl` or `@CaffeineCache.expireAfterAccess` | Use a duration |
 | `Cache[x] already exists.` / `Namespace[x] is already used by another cache.` | Two declarations with the same cache name or namespace, for example an interface and a spec bean | Rename one, or set a distinct `namespace` |
 | `Cannot register cache interface[…]: the bean name[x] is already in use.` / `Cannot register cache bean[x] for spec bean[…]` | The cache's bean name collides with another bean | Rename the cache (`@CoCache(name)`) or the spec bean |
 | `Cache interface[…] must extend Cache with concrete type arguments.` / `Cache spec bean[…] must declare its generic types` | Generics can't be resolved | Use concrete types, and declare the spec factory method's return type as `CacheSpec<K, V>` |
@@ -183,7 +183,7 @@ CoCache fails fast on configuration it can't run safely. The message names the p
 | `@Cacheable without sync = true on CoCache caches: …` | `cocache.spring-cache.require-sync: true` and a non-sync `@Cacheable` | Add `sync = true`, or turn the check off |
 | `Join cache[x] - …` | A `@JoinCacheable` names a missing cache, a wrong type, or both extractor options | Follow the message. See [JoinCache](../guide/join-cache.md). |
 
-One check runs at the first call, not at startup: `Key type [...] does not override toString()` means the cache's key type has no meaningful `toString()`, so every instance would map to a different Redis key. Use a data class or record, override `toString()`, or set a `keyExpression` or `KeyEncoder`.
+One check runs at the first call, not at startup: `Key type [...] does not override toString()` means the cache's key type has no meaningful `toString()`, so every key object would map to a different Redis key. Use a data class or record, override `toString()`, or set a `keyExpression` or `KeyEncoder`.
 
 ## Writes from outside CoCache {#external-invalidation}
 
@@ -208,6 +208,8 @@ orderInvalidator.invalidate("OrderCache", "7/9")
 ```
 
 The first argument is the **namespace** (the cache name unless the cache sets `namespace`), and the keys are **encoded keys** ([what that means](./observability.md#encoded-key)). Outside Spring, pass the same `CoherenceBackend` the caches use, or any `RedisBackend` with the same Redis and channel mode.
+
+An empty encoded key throws `IllegalArgumentException`, and an empty collection does nothing. After `close()`, every call throws `IllegalStateException`; `close()` releases the invalidator's own store handles and doesn't close the backend.
 
 ### Any language: the raw protocol {#raw-protocol}
 

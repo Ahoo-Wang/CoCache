@@ -84,10 +84,10 @@ internal class SpringCacheSyncCheck(
     }
 
     /**
-     * 显式指定了其它 CacheManager 的操作不经过 CoCache。
+     * 显式指定了其它 CacheManager 或自定义 CacheResolver 的操作不一定经过 CoCache，不检查。
      */
     private fun targetsCoCache(operation: CacheableOperation): Boolean =
-        operation.cacheManager.isEmpty() || operation.cacheManager == COCACHE_CACHE_MANAGER
+        operation.cacheResolver.isEmpty() && (operation.cacheManager.isEmpty() || operation.cacheManager == COCACHE_CACHE_MANAGER)
 
     private fun scan(sources: List<CacheOperationSource>, names: Set<String>): List<Violation> {
         val found = LinkedHashMap<String, Violation>()

@@ -92,10 +92,10 @@ cocache-bom / cocache-dependencies / cocache-example
 - **令牌**（`Token`，24 B）= `NodeId`（16 B，每个运行时随机生成）+ 进程内单调序号（8 B）。由客户端构造，全局唯一、永不重复签发，所以被销毁的令牌不可能再次匹配（无 ABA）。
 - **到期时间**：一律 `PEXPIRE` / `PTTL`，毫秒，以相对时长传输，不受节点间时钟偏差影响。参数钳到至少 1 ms；`0` 表示永不过期。**每次状态转换都显式重设到期时间**，lease 的寿命和负缓存的寿命不得泄漏到新值上。
 - **读取成本**：标量 `PTTL` + `GET`（一次 EVALSHA）；集合 `PTTL` + `HGETALL`。
-- **无法识别的内容**（不以 magic 开头的 String、未知状态、没有 `!f` 的 Hash、其它 Redis 类型如 5.x 集合缓存留下的原生 Set，包括 5.x 留下的值）以格式版本 `0` 返回，引擎按损坏处理（§5.4）。String 与 Hash 以外的类型以空载荷返回。
+- **无法识别的内容**（不以 magic 开头的 String、未知状态、没有 `!f` 的 Hash、其它 Redis 类型如原生 Set；其它程序或其它大版本写入的内容都属此类）以格式版本 `0` 返回，引擎按损坏处理（§5.4）。String 与 Hash 以外的类型以空载荷返回。
 - **摘要**（`Digest`，供条件回收）：标量取载荷（无法识别的 String 取整个值，String 与 Hash 以外的类型取空串），负缓存取空串，集合按 L1 返回顺序拼接 `int32 长度 + 成员`，SHA-1。只在解码失败时计算。
 
-线格式（key 布局、频道命名、标量头、集合字段、帧、摘要算法）在一个大版本内冻结。格式演进分两阶段：先发布能读 N+1、仍写 N 的版本，全集群升级后再发布写 N+1 的版本。5.x 与 6.0 节点不能在同一集群混跑。
+线格式（key 布局、频道命名、标量头、集合字段、帧、摘要算法）在一个大版本内冻结。格式演进分两阶段：先发布能读 N+1、仍写 N 的版本，全集群升级后再发布写 N+1 的版本。不同大版本的节点不能共享同一个 Redis。
 
 ## 4. 栅栏
 
@@ -210,7 +210,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **格式版本高于本节点**（滚动升级期间）：计入 `unknownFormats`，回源但**不回收、不写 L1**，L2 降级限龄。否则新旧节点互相覆盖。
 - **格式 0 或同版本解码失败**：计入 `reclaims`，计算本次读到内容的摘要，调用 `reclaim`；成功则凭新 lease 正常回源与 `fill`，失败（内容已变或 L1 异常）则不写 L1 回源。每次读取至多回收一次。
 - 读路径**从不无条件删除**。
-- **`SetCache`**（L1 是唯一副本，没有数据源可回源）：格式高于本节点时计入 `unknownFormats` 并抛出，不写 L2；不是本协议写入的内容（格式 0，如旧版本留下的原生 Set）计入 `unknownFormats`、按不存在处理并以降级限龄进入 L2，不回收、不删除，下一次 `put` / `add` 整体覆盖。
+- **`SetCache`**（L1 是唯一副本，没有数据源可回源）：格式高于本节点时计入 `unknownFormats` 并抛出，不写 L2；不是本协议写入的内容（格式 0，如原生 Set）计入 `unknownFormats`、按不存在处理（读到空集合）并以降级限龄进入 L2，不回收、不删除，下一次 `put` / `add` 整体覆盖；同版本内容的元素解码失败时读取直接抛出，不计为命中。
 
 ### 5.5 提前刷新
 
@@ -327,13 +327,15 @@ val users: Cache<String, User> = runtime.create(
 | `cocacheBackend`（`CoherenceBackend`，`InMemoryBackend`） | `cocache.backend=memory`，没有其它 `CoherenceBackend` bean。不需要 Spring Data Redis；启动时告警：只适用于单进程，没有跨实例一致性 |
 | `cocacheRuntime`（`CacheRuntime`） | 存在 `CoherenceBackend` bean。有唯一的 `CacheClock` bean 时运行时使用它（内存后端同样使用它，测试推进 `ManualClock` 即可让两层一起到期） |
 | `cocacheAssembler`（`CacheAssembler`）、`cocacheAnnotatedCacheFactory` | 运行时存在 |
-| `cocacheSpecRegistrar`（`CacheSpecRegistrar`） | 无条件（静态 `@Bean`，`BeanFactoryPostProcessor` 需在其它 bean 之前注册） |
+| `cocacheSpecRegistrar`（`CacheSpecRegistrar`） | `cocache.enabled` 未关闭（静态 `@Bean`，`BeanFactoryPostProcessor` 需在其它 bean 之前注册） |
+| `cocacheRemovedPropertiesCheck`（`BeanFactoryPostProcessor`） | `cocache.enabled` 未关闭（静态 `@Bean`）。在容器后处理阶段、任何缓存创建之前检查已删除的配置项（§9.4） |
 | `cocacheCacheManager`（`CoCacheSpringCacheManager`） | 没有其它 `CacheManager`；有 spring-tx 时包装为 `TransactionAwareCacheManagerProxy` |
 | `cocacheTransactionalInvalidator` | 有 spring-tx |
 | `cocacheSpringCacheSyncCheck`（`SpringCacheSyncCheck`） | 运行时存在（§9.5） |
 | `cocacheEndpoint`（`CoCacheEndpoint`） | 有 actuator，运行时存在，且端点可用（`management.endpoints.web.exposure.include` 等暴露配置包含 `cocache`、访问未被关闭） |
 | `cocacheHealthIndicator`（`CoCacheHealthIndicator`） | 有 `spring-boot-health`（actuator 自带），`management.health.cocache.enabled` 未关闭 |
-| `cocacheMeterBinder`（`CoCacheMeterBinder`） | 有 Micrometer |
+| `cocacheMeterBinder`（`CoCacheMeterBinder`） | 有 Micrometer，运行时存在 |
+| `cocacheMeterBindingPostProcessor`（`BeanPostProcessor`） | 有 Micrometer（静态 `@Bean`）。延迟创建的缓存 bean 初始化后补绑指标 |
 
 `cocache.enabled=false` 关闭全部自动配置。测试或单实例部署可以自行声明 `CoherenceBackend` bean（如 `InMemoryBackend`），Redis 后端随之退让。
 
@@ -356,10 +358,10 @@ val users: Cache<String, User> = runtime.create(
 
 优先级（后者覆盖前者）：内置默认值 → 声明（注解或 spec DSL）→ `CacheSpecCustomizer`（按 Spring 顺序）→ `cocache.defaults.*` → `cocache.caches.[name].*`。
 
-- **`key-prefix`**（`cocache.defaults.key-prefix`、`cocache.caches.[name].key-prefix`）不是策略字段，但按同一规则分层：配置文件覆盖声明（包括注解或 spec 中显式写出的 `keyPrefix`）与定制器，`caches.[name]` 覆盖 `defaults`；都未设置时沿用声明（默认 `cocache:`）。占位符（如 `${spring.application.name}:`）由 Spring 的配置解析处理。失效频道不含前缀（§3.2）。
+- **`key-prefix`**（`cocache.defaults.key-prefix`、`cocache.caches.[name].key-prefix`）不是策略字段，但按同一规则分层：配置文件覆盖声明（包括注解或 spec 中显式写出的 `keyPrefix`）与定制器，`caches.[name]` 覆盖 `defaults`；都未设置时沿用声明（默认 `cocache:`）。配置项中的占位符（如 `${spring.application.name}:`）由 Spring 的配置解析处理；`@CoCache.keyPrefix` 是字面文本，不解析占位符。失效频道不含前缀（§3.2）。
 - 策略字段：`ttl`、`ttl-forever`、`ttl-jitter`、`absent-ttl`、`local-max-age`、`degraded-local-max-age`、`refresh-window`、`lease-ttl`、`lease-wait`、`load-max-concurrent`、`load-acquire-timeout`、`local-maximum-size`、`invalidate-failure`、`read-failure`。策略时长不写单位时按**秒**解析，也可以写 `500ms`、`2m`、`PT2M`；`refresh-window: 0` 表示关闭（可以关掉声明中的提前刷新）。`cocache.defaults.ttl` / `ttl-forever` 不作用于 `SetCache`（L1 是唯一副本，全局寿命会让集合过期丢失），`cocache.defaults.absent-ttl` / `refresh-window` 同样跳过 `SetCache`；只有 `cocache.caches.[name].ttl` / `ttl-forever` 能改变集合缓存的寿命。`cocache.redis.*`（`command-timeout`、`heartbeat`、`invalidate-batch-size`、`client-name`、`channel-mode`）的时长不写单位时按毫秒解析。
 - 配置文件中的 `ttl` 不影响 `ttlOf`。
-- 启动失败的情形：`cocache.caches` 中出现未声明的缓存名（所有单例创建后由 `CacheAssembler` 校验；缓存名不区分大小写匹配）；使用了 5.x 已删除的配置项（错误信息给出替代项，例如 `cocache.redis.strict-failure` → `read-failure: throw`）；策略不合法。
+- 启动失败的情形：`cocache.caches` 中出现未声明的缓存名（所有单例创建后由 `CacheAssembler` 校验；缓存名不区分大小写匹配）；使用了已删除的配置项（`RemovedProperties`；错误信息给出替代项，如果有的话，例如 `cocache.redis.strict-failure` → `read-failure: throw`；`missing-guard-sentinel`、`client-side-hits` 没有替代项）；策略不合法。
 - 策略约束（`CachePolicy` 构造时校验）：所有时长为正且 ≤ 100 年（`ttlJitter`、`lease.wait`、`load.acquireTimeout` 可以为 0）；抖动实际幅度不超过 `ttl / 2`；`refreshWindow < ttl − 实际抖动` 且 `refreshWindow < localMaxAge`，否则新副本一出生就在窗口内。
 
 ### 9.5 Spring Cache 与事务
@@ -367,13 +369,13 @@ val users: Cache<String, User> = runtime.create(
 - `CoCacheSpringCacheManager` 只暴露运行时中已创建的缓存，不按名称自动创建。
 - 负缓存视为未命中（否则 `@Cacheable` 永远不调用方法）；`put(k, null)` 映射为 `invalidate`；`evict` = `invalidate`；`clear` 只清本节点 L2（L1 是共享存储）。
 - `@Cacheable(sync = true)` 经引擎的 `get(key, loader)` 回源，受 lease 与失效戳保护。不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → `put`”，`put` 是无条件写入，没有这层保护；需要上述一致性保证时用 `sync = true`。
-- **启动检查**（`SpringCacheSyncCheck`，`SmartInitializingSingleton`）：存在 `CacheOperationSource`（`@EnableCaching`）时，按 bean 类型（不实例化 bean；CGLIB 取父类，JDK 代理取已创建单例的目标类）解析缓存操作，含 `@CacheConfig` 的类级缓存名。指向 CoCache 缓存名（已创建与已声明）且 `sync = false` 的 `CacheableOperation` 记录告警（`类名#方法名` 与缓存名）；`cocache.spring-cache.require-sync=true` 时启动失败。只按缓存名判断，没有缓存名（只用 `cacheResolver`）的操作跳过；没有 `@EnableCaching` 时不做任何事。
-- `retrieve` 在专用守护线程池（或注入的 Executor）上执行阻塞查找；`retrieve(key, loader)`（响应式 / `CompletableFuture` 方法上的 `sync = true`）与 `get(key, loader)` 一样经引擎受 lease 保护的路径回源，在该线程池上等待异步 loader 完成（每个等待中的调用占一个执行器线程）。默认执行器：JDK 21+ 上每个任务一个虚拟线程（反射取得，基线仍为 JDK 17）；否则为有上限的守护线程池（`max(8, 4 × CPU)`，多余任务排队），不会因 Redis 或数据源变慢而无限创建平台线程。
+- **启动检查**（`SpringCacheSyncCheck`，`SmartInitializingSingleton`）：存在 `CacheOperationSource`（`@EnableCaching`）时，按 bean 类型（不实例化 bean；CGLIB 取父类，JDK 代理取已创建单例的目标类）解析缓存操作，含 `@CacheConfig` 的类级缓存名。指向 CoCache 缓存名（已创建与已声明）且 `sync = false` 的 `CacheableOperation` 记录告警（`类名#方法名` 与缓存名）；`cocache.spring-cache.require-sync=true` 时启动失败。只按缓存名判断；指定了其它 `cacheManager` 或自定义 `cacheResolver` 的操作跳过。没有 `@EnableCaching`，或不存在名为 `cocacheCacheManager` 的 bean（用户以其它名字声明了自己的 `CacheManager`，starter 的管理器退让）时不做任何事。
+- `retrieve` 在 retrieve 执行器（默认执行器见下，或注入的 Executor）上执行阻塞查找；`retrieve(key, loader)`（响应式 / `CompletableFuture` 方法上的 `sync = true`）与 `get(key, loader)` 一样经引擎受 lease 保护的路径回源，在该执行器上等待异步 loader 完成（每个等待中的调用占一个执行器线程）。默认执行器：JDK 21+ 上每个任务一个虚拟线程（反射取得，基线仍为 JDK 17）；否则为不排队、按需增长的守护线程池（最多 512 个线程，超出时由调用方线程执行）：内层任务不会排在等待它的外层任务之后，嵌套的异步 `sync = true` 不会死锁。
 - `TransactionalInvalidator`：事务内调用时登记到当前事务的 `afterCommit`，同一事务内对同一缓存的失效合并为一次 `invalidateAll`，回滚时不失效，没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己提交之后失效。有 spring-tx 时 CacheManager 的 `@CacheEvict` / `@CachePut` 同样推迟到提交之后。
 
 ## 10. 可观测与运维
 
-- **`CacheMetrics`**（每个缓存一份，`LongAdder` 累计值）全部记录在未命中、写入、失效路径上，**L2 命中路径不计数**（需要 JMH 证明分条带计数器的开销在噪声内之后才会加入）。
+- **`CacheMetrics`**（每个缓存一份，`LongAdder` 累计值）全部记录在未命中、写入、失效路径上，**L2 命中路径不计数**（命中路径不承担计数开销，G3）。
 - **Micrometer**（`CoCacheMeterBinder`，指标目录在 `CacheCounters`，tag `cache`）：`cocache.hits{level=l1}`、`cocache.misses`、`cocache.filtered`、`cocache.load.failures`、`cocache.load.rejections`、`cocache.lease.waits`、`cocache.lease.wait.timeouts`、`cocache.fill.rejections`、`cocache.degraded.fills`、`cocache.stale.discards`、`cocache.reclaims`、`cocache.unknown.formats`、`cocache.refreshes`、`cocache.refresh.rejections`、`cocache.remote.failures`、`cocache.invalidations.received`、`cocache.write.failures`、`cocache.invalidation.retries`、`cocache.invalidations.dropped`、`cocache.resets`；FunctionTimer `cocache.loads`；Gauge `cocache.local.size`。延迟创建的缓存在 bean 初始化后补绑。
 - **actuator 端点 `cocache`**（基于 `CacheAdmin`）：`GET /actuator/cocache` 列出缓存与计数，`GET /actuator/cocache/{name}` 查看单个缓存，`DELETE /actuator/cocache/{name}` 清空本节点 L2，`GET /actuator/cocache/{name}/{key}` 查看一个 key，`DELETE /actuator/cocache/{name}/{key}` 按 key 强制失效。`{key}` 是**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分，可含 `/`，按剩余路径段匹配），适用于任意 key 类型；未知缓存的 GET 返回 404，DELETE 返回 204（不做任何事）；空 key 返回 400。
 - **`CacheAdmin`**（运维接口，不属于用户 API）：`name`、`metrics`、`localSize`、`pendingInvalidationCount`、`clearLocal()`、`inspect(encodedKey)`、`invalidateEncoded(encodedKey)`。

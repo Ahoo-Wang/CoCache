@@ -53,7 +53,9 @@ cocache:
     require-sync: true
 ```
 
-The check matches by cache name and skips operations that name no cache (those using only a `cacheResolver`).
+The check matches by cache name. It skips operations that name another `cacheManager` or set a custom `cacheResolver`, since those don't necessarily reach CoCache.
+
+The check runs only when a bean named `cocacheCacheManager` exists: the starter's own manager, or one you declare under that name (see [Alongside other cache managers](#other-managers)). The starter's manager steps aside when you declare any other `CacheManager`, so if you wire `CoCacheSpringCacheManager` yourself under a different bean name, the check doesn't apply and `sync = true` is up to you.
 
 ## How Spring operations map {#semantics}
 
@@ -64,8 +66,8 @@ The check matches by cache name and skips operations that name no cache (those u
 | `put(key, value)` (`@CachePut`) | `cache.put(key, value)`. A `null` value becomes `invalidate(key)`. |
 | `evict(key)` (`@CacheEvict`) | `cache.invalidate(key)` on every instance |
 | `clear()` (`allEntries = true`) | Clears **this instance's L2 only**. Redis is shared and is never cleared wholesale. |
-| `retrieve(key)` (async and reactive) | Runs the blocking lookup on a daemon thread pool. |
-| `retrieve(key, loader)` (async and reactive with `sync = true`) | Loads through the same lease-protected path as `get(key, loader)`, waiting for the async loader on that pool. Each waiting call holds one executor thread for the duration of the load: the default executor uses a virtual thread per task on JDK 21+, and a bounded daemon pool (`max(8, 4 × CPUs)` threads, extra tasks queue) on JDK 17. A custom executor passed to `CoCacheSpringCacheManager(runtime, executor)` must not also be the thread that completes the loader's future, or a saturated pool deadlocks. |
+| `retrieve(key)` (async and reactive) | Runs the blocking lookup on the `retrieve` executor (see the next row). |
+| `retrieve(key, loader)` (async and reactive with `sync = true`) | Loads through the same lease-protected path as `get(key, loader)`, waiting for the async loader on the `retrieve` executor. Each waiting call holds one executor thread for the duration of the load: the default executor uses a virtual thread per task on JDK 21+. On JDK 17–20 it is a growable daemon pool that never queues (up to 512 threads; beyond that the task runs on the calling thread), so nested async `@Cacheable(sync = true)` methods can't deadlock it. A custom executor passed to `CoCacheSpringCacheManager(runtime, executor)` must not queue tasks behind ones that wait on them, and must not be the thread that completes the loader's future. |
 
 ### Null results {#null}
 
@@ -100,7 +102,7 @@ fun localCacheManager(): CacheManager = CaffeineCacheManager()
 fun getUser(id: String): User? = repo.findById(id)
 ```
 
-`CoCacheSpringCacheManager(runtime, executor)` also accepts the executor `retrieve` should use. The sync check matches by cache name, so give CoCache caches names that other managers don't use.
+`CoCacheSpringCacheManager(runtime, executor)` also accepts the executor `retrieve` should use. Naming the bean `cocacheCacheManager` keeps the [sync check](#sync-check) running. The check matches by cache name and treats operations without a `cacheManager` attribute as CoCache's, so give CoCache caches names that other managers don't use.
 
 ## Without Spring Boot {#without-spring-boot}
 
