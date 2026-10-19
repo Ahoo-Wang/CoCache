@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.test
 
+import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -25,6 +26,9 @@ import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Token
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
+import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -109,15 +113,27 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     @Volatile
     var afterFill: ((String, Boolean) -> Unit)? = null
 
+    /**
+     * 异步方法的结果改在这个执行器上送达（模拟 L1 客户端的 I/O 线程，RFC 0004 §10.1）；为 `null` 时原样返回。
+     */
+    @Volatile
+    var ioExecutor: Executor? = null
+
     val reads = AtomicInteger()
     val readAlls = AtomicInteger()
     val fills = AtomicInteger()
     val putAlls = AtomicInteger()
 
-    override fun store(namespace: String): RemoteStore = HookedStore(delegate.store(namespace))
+    /**
+     * 被包装的存储原生异步时，钩子同样作用于异步方法；否则只包装同步方法（引擎经阻塞执行器调用它们）。
+     */
+    override fun store(namespace: String): RemoteStore = when (val store = delegate.store(namespace)) {
+        is AsyncRemoteStore -> HookedAsyncStore(store)
+        else -> HookedStore(store)
+    }
 
-    private inner class HookedStore(private val store: RemoteStore) : RemoteStore {
-        private fun guard(operation: String, fail: Boolean = false) {
+    private open inner class HookedStore(private val store: RemoteStore) : RemoteStore {
+        protected fun guard(operation: String, fail: Boolean = false) {
             if (failAll || fail) {
                 throw RemoteUnavailableException(operation)
             }
@@ -192,5 +208,118 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         }
 
         override fun close() = store.close()
+    }
+
+    private inner class HookedAsyncStore(private val store: AsyncRemoteStore) : HookedStore(store), AsyncRemoteStore {
+        /**
+         * 与同步方法相同的钩子与故障；故障以失败的 future 返回，从不同步抛出。
+         */
+        @Suppress("TooGenericExceptionCaught")
+        private fun <T> hooked(
+            operation: String,
+            fail: Boolean = false,
+            block: () -> CompletableFuture<T>
+        ): CompletableFuture<T> {
+            val future = try {
+                guard(operation, fail)
+                block()
+            } catch (e: Throwable) {
+                CompletableFuture.failedFuture(e)
+            }
+            return deliver(future)
+        }
+
+        private fun <T> deliver(future: CompletableFuture<T>): CompletableFuture<T> {
+            val io = ioExecutor ?: return future
+            val result = CompletableFuture<T>()
+            future.whenComplete { value, error ->
+                io.execute {
+                    if (error != null) result.completeExceptionally(unwrap(error)) else result.complete(value)
+                }
+            }
+            return result
+        }
+
+        private fun unwrap(error: Throwable): Throwable = if (error is CompletionException) error.cause ?: error else error
+
+        override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
+            hooked("read") {
+                reads.incrementAndGet()
+                store.readAsync(key, lease, refresh).thenApply { afterRead?.invoke(key, it) ?: it }
+            }
+
+        override fun readAllAsync(keys: Collection<String>, leases: Map<String, LeaseRequest>): CompletableFuture<Map<String, RemoteRead>> =
+            hooked("readAll") {
+                readAlls.incrementAndGet()
+                store.readAllAsync(keys, leases).thenApply { afterReadAll?.invoke(it) ?: it }
+            }
+
+        override fun fillAsync(fill: Fill): CompletableFuture<Boolean> = hooked("fill", fail = failFill) {
+            fills.incrementAndGet()
+            store.fillAsync(fill).thenApply { filled ->
+                afterFill?.invoke(fill.key, filled)
+                filled
+            }
+        }
+
+        override fun fillAllAsync(fills: List<Fill>): CompletableFuture<List<Boolean>> = hooked(
+            "fillAll",
+            fail = failFill
+        ) {
+            this@HookedBackend.fills.addAndGet(fills.size)
+            store.fillAllAsync(fills)
+        }
+
+        override fun releaseAsync(key: String, token: Token): CompletableFuture<Void?> =
+            hooked("release", fail = failRelease) { store.releaseAsync(key, token) }
+
+        override fun putAsync(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
+            hooked("put", fail = failWrites) {
+                store.putAsync(key, envelope, ttl, frame).thenApply {
+                    afterPut?.invoke(key)
+                    null
+                }
+            }
+
+        override fun putAllAsync(puts: List<Put>, frame: ByteArray): CompletableFuture<Void?> = hooked(
+            "putAll",
+            fail = failWrites
+        ) {
+            putAlls.incrementAndGet()
+            store.putAllAsync(puts, frame).thenApply {
+                afterPut?.let { hook -> puts.forEach { hook(it.key) } }
+                null
+            }
+        }
+
+        @Suppress("TooGenericExceptionCaught")
+        override fun invalidateAsync(keys: Collection<String>, frame: ByteArray): CompletableFuture<Void?> {
+            try {
+                beforeInvalidate?.invoke(keys)
+            } catch (e: Throwable) {
+                return deliver(CompletableFuture.failedFuture(e))
+            }
+            return hooked("invalidate", fail = failWrites) {
+                store.invalidateAsync(keys, frame).thenApply {
+                    afterInvalidate?.invoke(keys)
+                    null
+                }
+            }
+        }
+
+        override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
+            hooked("reclaim") { store.reclaimAsync(key, observed, lease) }
+
+        override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
+            hooked("addMembers", fail = failWrites) { store.addMembersAsync(key, members, ttl, frame) }
+
+        override fun removeMembersAsync(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray
+        ): CompletableFuture<Void?> = hooked("removeMembers", fail = failWrites) {
+            store.removeMembersAsync(key, members, ttl, frame)
+        }
     }
 }

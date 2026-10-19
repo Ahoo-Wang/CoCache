@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core
 
+import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.core.policy.CachePolicy
@@ -95,12 +96,18 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
     val keyEncoder: KeyEncoder<K> = builder.keyEncoder
     val codec: Codec<V> = requireNotNull(builder.codec) { "Cache[${builder.name}] - codec is required." }
     val loader: CacheLoader<K, V>? = builder.loader
+
+    /**
+     * 异步数据源（RFC 0004）；与 [loader] 至多设置一个，引擎在同步与异步路径之间自动适配。
+     */
+    val asyncLoader: AsyncCacheLoader<K, V>? = builder.asyncLoader
     val ttlOf: TtlFunction<K, V>? = builder.ttlOf
     val keyFilter: KeyFilter? = builder.keyFilter
     val policy: CachePolicy = builder.policy
 
     init {
         requireValidName(name, namespace)
+        require(loader == null || asyncLoader == null) { "Cache[$name] - set either loader or asyncLoader, not both." }
     }
 
     override fun toString(): String = "CacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"
@@ -114,6 +121,7 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         it.keyEncoder = keyEncoder
         it.codec = codec
         it.loader = loader
+        it.asyncLoader = asyncLoader
         it.ttlOf = ttlOf
         it.keyFilter = keyFilter
         it.policy = policy
@@ -125,6 +133,7 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         var keyEncoder: KeyEncoder<K> = KeyEncoder.ofToString()
         var codec: Codec<V>? = null
         var loader: CacheLoader<K, V>? = null
+        var asyncLoader: AsyncCacheLoader<K, V>? = null
         var ttlOf: TtlFunction<K, V>? = null
         var keyFilter: KeyFilter? = null
         var policy: CachePolicy = CachePolicy.DEFAULT
@@ -134,6 +143,7 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         fun keyEncoder(keyEncoder: KeyEncoder<K>) = apply { this.keyEncoder = keyEncoder }
         fun codec(codec: Codec<V>) = apply { this.codec = codec }
         fun loader(loader: CacheLoader<K, V>) = apply { this.loader = loader }
+        fun asyncLoader(asyncLoader: AsyncCacheLoader<K, V>) = apply { this.asyncLoader = asyncLoader }
         fun ttlOf(ttlOf: TtlFunction<K, V>) = apply { this.ttlOf = ttlOf }
         fun keyFilter(keyFilter: KeyFilter) = apply { this.keyFilter = keyFilter }
         fun policy(policy: CachePolicy) = apply { this.policy = policy }

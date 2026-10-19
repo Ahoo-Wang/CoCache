@@ -81,6 +81,7 @@ object CacheProxies {
                 "invalidate" -> target.invalidate(args[0] as Any)
                 "invalidateAll" -> target.invalidateAll(args[0] as Collection<Any>)
                 "getName" -> target.name
+                "async" -> target.async()
                 "add" -> (target as SetCache<Any, Any>).add(args[0] as Any, args[1] as Collection<Any>)
                 "remove" -> (target as SetCache<Any, Any>).remove(args[0] as Any, args[1] as Collection<Any>)
                 "clear" -> (target as SetCache<Any, Any>).clear(args[0] as Any)

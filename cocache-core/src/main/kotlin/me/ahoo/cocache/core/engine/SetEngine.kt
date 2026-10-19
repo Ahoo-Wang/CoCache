@@ -13,6 +13,8 @@
 
 package me.ahoo.cocache.core.engine
 
+import me.ahoo.cocache.api.AsyncCacheLoader
+import me.ahoo.cocache.api.AsyncSetCache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
@@ -21,8 +23,11 @@ import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.internal.Futures
+import me.ahoo.cocache.core.internal.thenNext
 import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 
 /**
  * L1 是唯一副本的集合缓存引擎（RFC 0003 §4.8）。
@@ -39,6 +44,9 @@ internal class SetEngine<K : Any, E : Any>(
 
     private val elementCodec = spec.elementCodec
     private val backendFormat = context.backend.format
+    private val view = AsyncView()
+
+    override fun async(): AsyncSetCache<K, E> = view
 
     override fun get(key: K): Set<E> = entryOf(key).value ?: emptySet()
 
@@ -77,7 +85,14 @@ internal class SetEngine<K : Any, E : Any>(
 
     private fun loadThrough(storageKey: String): Loaded<Set<E>> {
         val stamp = stamps.current(storageKey)
-        val entry = when (val read = store.read(storageKey, null, null)) {
+        return loaded(storageKey, store.read(storageKey, null, null), stamp)
+    }
+
+    /**
+     * 同步与异步共用：读到 L1 之后的判定与 L2 填充。
+     */
+    private fun loaded(storageKey: String, read: RemoteRead, stamp: Long): Loaded<Set<E>> {
+        val entry = when (read) {
             is RemoteRead.Hit -> onHit(storageKey, read)
 
             is RemoteRead.Miss, is RemoteRead.Leased -> {
@@ -87,6 +102,37 @@ internal class SetEngine<K : Any, E : Any>(
         }
         fillLocal(storageKey, entry, stamp)
         return Loaded(entry, stamp)
+    }
+
+    /**
+     * [entryOf] 的异步版本：读己之写重试相同；L1 读失败以原始异常失败（没有可降级的数据源）。
+     */
+    private fun entryOfAsync(key: K): CompletableFuture<LocalEntry<Set<E>>> {
+        val storageKey = storageKey(key)
+        val entry = local.getIfPresent(storageKey)
+        if (entry != null && entry.expiresAt > clock.nowMillis()) {
+            return CompletableFuture.completedFuture(entry)
+        }
+        val observed = stamps.current(storageKey)
+        return flights.executeAsync(
+            storageKey,
+            executor
+        ) { loadThroughAsync(storageKey) }.thenNext(executor) { loaded ->
+            if (loaded.stamp >= observed) {
+                CompletableFuture.completedFuture(loaded.entry)
+            } else {
+                flights.executeAsync(storageKey, executor) { loadThroughAsync(storageKey) }.thenNext(executor) {
+                    CompletableFuture.completedFuture(it.entry)
+                }
+            }
+        }
+    }
+
+    private fun loadThroughAsync(storageKey: String): CompletableFuture<Loaded<Set<E>>> {
+        val stamp = stamps.current(storageKey)
+        return Futures.attempt { asyncStore.readAsync(storageKey, null, null) }.thenNext(executor) { read ->
+            CompletableFuture.completedFuture(loaded(storageKey, read, stamp))
+        }
     }
 
     /**
@@ -163,6 +209,27 @@ internal class SetEngine<K : Any, E : Any>(
         if (entries.isEmpty()) {
             return
         }
+        val plan = putAllPlan(entries, ttl)
+        write(plan.keys, { frame ->
+            if (plan.puts.isNotEmpty()) {
+                store.putAll(plan.puts, plan.putFrame(frame))
+            }
+            if (plan.clears.isNotEmpty()) {
+                store.invalidate(plan.clears, plan.clearFrame(frame))
+            }
+        }, throwWriteFailure("putAll"))
+    }
+
+    private inner class PutAllPlan(val keys: Collection<String>, val puts: List<Put>, val clears: List<String>) {
+        fun putFrame(frame: ByteArray): ByteArray = if (clears.isEmpty()) frame else frameOf(puts.map { it.key })
+
+        fun clearFrame(frame: ByteArray): ByteArray = if (puts.isEmpty()) frame else frameOf(clears)
+    }
+
+    /**
+     * 同步与异步共用：非空集合整体覆盖（批量），空集合等价于 [clear]（批量删除）；编码后碰撞的存储 key 以后出现的为准。
+     */
+    private fun putAllPlan(entries: Map<K, Set<E>>, ttl: Duration?): PutAllPlan {
         val latest = LinkedHashMap<String, Set<E>>(entries.size)
         entries.forEach { (key, value) -> latest[storageKey(key)] = value }
         val bounded = ttl?.boundedTtl()
@@ -170,14 +237,7 @@ internal class SetEngine<K : Any, E : Any>(
             Put(storageKey, Envelope.Members(encode(value)), bounded)
         }
         val clears = latest.filterValues { it.isEmpty() }.keys.toList()
-        write(latest.keys, { frame ->
-            if (puts.isNotEmpty()) {
-                store.putAll(puts, if (clears.isEmpty()) frame else frameOf(puts.map { it.key }))
-            }
-            if (clears.isNotEmpty()) {
-                store.invalidate(clears, if (puts.isEmpty()) frame else frameOf(clears))
-            }
-        }, throwWriteFailure("putAll"))
+        return PutAllPlan(latest.keys, puts, clears)
     }
 
     override fun add(key: K, elements: Collection<E>) {
@@ -222,10 +282,163 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     override fun invalidate(key: K) {
-        throw UnsupportedOperationException("SetCache[$name] - invalidate would destroy the only copy; use clear(key).")
+        unsupportedInvalidate()
     }
 
     override fun invalidateAll(keys: Collection<K>) {
+        unsupportedInvalidate()
+    }
+
+    private fun unsupportedInvalidate(): Nothing =
         throw UnsupportedOperationException("SetCache[$name] - invalidate would destroy the only copy; use clear(key).")
+
+    /**
+     * 异步视图（RFC 0004）：与同步方法语义相同，L1 读失败以原始异常失败。
+     */
+    private inner class AsyncView : AsyncSetCache<K, E> {
+        override val name: String
+            get() = this@SetEngine.name
+
+        override fun get(key: K): CompletableFuture<Set<E>?> = toUser {
+            entryOfAsync(
+                key
+            ).map { it.value ?: emptySet() }
+        }
+
+        override fun get(key: K, loader: AsyncCacheLoader<K, Set<E>>): CompletableFuture<Set<E>?> = CompletableFuture.failedFuture(
+            UnsupportedOperationException(
+                "SetCache[$name] - the remote copy is authoritative; loading from a source is not supported."
+            )
+        )
+
+        override fun getAll(keys: Collection<K>): CompletableFuture<Map<K, Set<E>>> = toUser {
+            val futures = LinkedHashMap<K, CompletableFuture<LocalEntry<Set<E>>>>()
+            keys.forEach { key -> futures.getOrPut(key) { entryOfAsync(key) } }
+            CompletableFuture.allOf(*futures.values.toTypedArray()).thenNext(executor) {
+                val result = LinkedHashMap<K, Set<E>>()
+                futures.forEach { (key, future) -> future.join().value?.let { result[key] = it } }
+                CompletableFuture.completedFuture(result)
+            }
+        }
+
+        override fun lookup(key: K): CompletableFuture<Lookup<Set<E>>> = toUser {
+            entryOfAsync(
+                key
+            ).map { lookupOf(it) }
+        }
+
+        override fun put(key: K, value: Set<E>): CompletableFuture<Void?> = toUser {
+            putAsync(
+                key,
+                value,
+                policy.valueTtl()
+            )
+        }
+
+        override fun put(key: K, value: Set<E>, ttl: Duration): CompletableFuture<Void?> = toUser {
+            putAsync(
+                key,
+                value,
+                ttl
+            )
+        }
+
+        override fun putAll(entries: Map<K, Set<E>>): CompletableFuture<Void?> = toUser {
+            putAllAsync(entries, policy.valueTtl())
+        }
+
+        override fun putAll(entries: Map<K, Set<E>>, ttl: Duration): CompletableFuture<Void?> = toUser {
+            putAllAsync(entries, ttl)
+        }
+
+        override fun invalidate(key: K): CompletableFuture<Void?> = toUser { unsupportedInvalidate() }
+
+        override fun invalidateAll(keys: Collection<K>): CompletableFuture<Void?> = toUser { unsupportedInvalidate() }
+
+        override fun add(key: K, elements: Collection<E>): CompletableFuture<Void?> = toUser {
+            if (elements.isEmpty()) {
+                return@toUser Futures.done()
+            }
+            val storageKey = storageKey(key)
+            val members = encode(elements)
+            writeAsync(
+                listOf(storageKey),
+                { frame -> asyncStore.addMembersAsync(storageKey, members, policy.valueTtl(), frame) },
+                throwWriteFailure("add")
+            )
+        }
+
+        override fun remove(key: K, elements: Collection<E>): CompletableFuture<Void?> = toUser {
+            if (elements.isEmpty()) {
+                return@toUser Futures.done()
+            }
+            val storageKey = storageKey(key)
+            val members = encode(elements)
+            writeAsync(
+                listOf(storageKey),
+                { frame -> asyncStore.removeMembersAsync(storageKey, members, policy.valueTtl(), frame) },
+                throwWriteFailure("remove")
+            )
+        }
+
+        override fun clear(key: K): CompletableFuture<Void?> = toUser { clearAsync(storageKey(key)) }
+
+        override fun sync(): SetCache<K, E> = this@SetEngine
+
+        override fun toString(): String = "AsyncView(${this@SetEngine})"
+
+        private fun putAsync(key: K, value: Set<E>, ttl: Duration?): CompletableFuture<Void?> {
+            val storageKey = storageKey(key)
+            if (value.isEmpty()) {
+                return clearAsync(storageKey)
+            }
+            val envelope = Envelope.Members(encode(value))
+            val bounded = ttl?.boundedTtl()
+            return writeAsync(
+                listOf(storageKey),
+                { frame -> asyncStore.putAsync(storageKey, envelope, bounded, frame) },
+                throwWriteFailure("put")
+            )
+        }
+
+        private fun putAllAsync(entries: Map<K, Set<E>>, ttl: Duration?): CompletableFuture<Void?> {
+            if (entries.isEmpty()) {
+                return Futures.done()
+            }
+            val plan = putAllPlan(entries, ttl)
+            return writeAsync(plan.keys, { frame ->
+                val written = if (plan.puts.isEmpty()) {
+                    Futures.done()
+                } else {
+                    asyncStore.putAllAsync(
+                        plan.puts,
+                        plan.putFrame(frame)
+                    )
+                }
+                written.thenNext(executor) {
+                    if (plan.clears.isEmpty()) {
+                        Futures.done()
+                    } else {
+                        asyncStore.invalidateAsync(
+                            plan.clears,
+                            plan.clearFrame(frame)
+                        )
+                    }
+                }
+            }, throwWriteFailure("putAll"))
+        }
+
+        private fun clearAsync(storageKey: String): CompletableFuture<Void?> = writeAsync(
+            listOf(storageKey),
+            { frame -> asyncStore.invalidateAsync(listOf(storageKey), frame) },
+            throwWriteFailure("clear")
+        )
+
+        private fun <T, R> CompletableFuture<T>.map(fn: (T) -> R): CompletableFuture<R> =
+            thenNext(executor) { CompletableFuture.completedFuture(fn(it)) }
+
+        private fun <T> toUser(block: () -> CompletableFuture<T>): CompletableFuture<T> = Futures.relay(
+            Futures.attempt(block)
+        )
     }
 }

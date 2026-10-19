@@ -72,6 +72,11 @@ abstract class EngineSpec {
      */
     protected abstract fun simulateReconnect()
 
+    /**
+     * 访问缓存的方式：同步 API（默认），或经异步视图（[AsyncEngineSpec] 等，RFC 0004 §10.1）。
+     */
+    protected open val access: CacheAccess = CacheAccess.SYNC
+
     protected lateinit var backend: HookedBackend
     protected lateinit var nodeA: CacheRuntime
     protected lateinit var nodeB: CacheRuntime
@@ -112,7 +117,13 @@ abstract class EngineSpec {
         .clock(clock)
         .refreshExecutor(directExecutor)
         .retryPolicy(RetryPolicy(initialBackoff = Duration.ofMillis(10), maxBackoff = Duration.ofMillis(50)))
+        .also { configureNode(it) }
         .build()
+
+    /**
+     * 调整 [nodeA] / [nodeB] 的运行时（如异步路径的执行器）。
+     */
+    protected open fun configureNode(builder: CacheRuntime.Builder) = Unit
 
     protected open fun policy(): CachePolicy = CachePolicy(
         ttl = Duration.ofMinutes(10),
@@ -144,10 +155,13 @@ abstract class EngineSpec {
             loader = this@EngineSpec.loader
             this.policy = policy
             block()
+            access.source(this)
         }
     }
 
-    protected fun CacheRuntime.cache(spec: CacheSpec<String, String> = spec()): Cache<String, String> = create(spec)
+    protected fun CacheRuntime.cache(spec: CacheSpec<String, String> = spec()): Cache<String, String> = access.cache(
+        create(spec)
+    )
 
     protected fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 

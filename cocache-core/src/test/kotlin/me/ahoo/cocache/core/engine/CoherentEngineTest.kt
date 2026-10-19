@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.engine
 
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -32,6 +33,7 @@ import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LocalPolicy
+import me.ahoo.cocache.test.CacheAccess
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.EngineSpec.TestCodec
 import me.ahoo.cocache.test.HookedBackend
@@ -45,9 +47,14 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 引擎的降级、批量与刷新分支（TCK 之外的白盒用例）。
+ * 引擎的降级、批量与刷新分支（TCK 之外的白盒用例）。[AsyncCoherentEngineTest] 经异步视图重跑全部用例。
  */
-class CoherentEngineTest {
+open class CoherentEngineTest {
+    /**
+     * 访问缓存的方式：同步 API，或经异步视图（RFC 0004）。
+     */
+    protected open val access: CacheAccess = CacheAccess.SYNC
+
     private val clock = ManualClock()
     private val memory = InMemoryBackend(clock)
     private val backend = HookedBackend(memory)
@@ -105,11 +112,23 @@ class CoherentEngineTest {
             loader = this@CoherentEngineTest.loader
             this.policy = policy
             block()
+            access.source(this)
         }
 
-    private fun CacheRuntime.engine(spec: CacheSpec<String, String> = spec()): CoherentEngine<String, String> = create(
-        spec
-    ) as CoherentEngine<String, String>
+    /**
+     * 用例拿到的缓存：经 [access] 访问，另暴露引擎的白盒状态。
+     */
+    private class TestCache(val engine: CoherentEngine<String, String>, access: CacheAccess) :
+        Cache<String, String> by access.cache(engine) {
+        val metrics get() = engine.metrics
+        val pendingInvalidationCount get() = engine.pendingInvalidationCount
+        val localSize get() = engine.localSize
+
+        fun close() = engine.close()
+    }
+
+    private fun CacheRuntime.engine(spec: CacheSpec<String, String> = spec()): TestCache =
+        TestCache(create(spec) as CoherentEngine<String, String>, access)
 
     private fun key(key: String) = "cocache:$name:$key"
 
@@ -643,4 +662,11 @@ class CoherentEngineTest {
         cache.metrics.leaseWaits.assert().isEqualTo(1)
         loads.get().assert().isEqualTo(0)
     }
+}
+
+/**
+ * [CoherentEngineTest] 的全部白盒用例经异步视图重跑（数据源换成在调用线程上执行的异步数据源）。
+ */
+class AsyncCoherentEngineTest : CoherentEngineTest() {
+    override val access: CacheAccess = CacheAccess.ASYNC
 }

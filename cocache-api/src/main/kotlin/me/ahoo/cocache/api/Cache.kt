@@ -100,4 +100,11 @@ interface Cache<K : Any, V : Any> {
      * 批量失效，语义同 [invalidate]。
      */
     fun invalidateAll(keys: Collection<K>)
+
+    /**
+     * 同一个缓存的异步视图（RFC 0004）：共享 L2、失效戳、在途加载与 lease，每次返回同一个对象。
+     *
+     * 内置引擎与接口式声明的代理都支持；其它实现默认抛出 [UnsupportedOperationException]。
+     */
+    fun async(): AsyncCache<K, V> = throw UnsupportedOperationException("${javaClass.name} does not support async().")
 }

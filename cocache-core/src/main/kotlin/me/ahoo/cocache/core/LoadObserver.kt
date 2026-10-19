@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core
 
+import java.util.concurrent.CompletableFuture
 import java.util.function.Supplier
 
 /**
@@ -31,6 +32,19 @@ interface LoadObserver {
      * @param block 被观测的操作
      */
     fun <T> observe(cacheName: String, operation: LoadOperation, keyCount: Int, block: Supplier<T>): T
+
+    /**
+     * 观测一次异步操作（RFC 0004 §8.1）：从调用 `block` 到其 future 完成。
+     *
+     * 实现必须在调用方线程上同步调用 `block` 恰好一次，并返回一个以其结果或原始异常完成的 future。
+     * 默认不观测（直接返回 `block` 的 future）：委托给 [observe] 只能测到“发起”的耗时，结果总是成功，比没有观测更具误导性。
+     */
+    fun <T> observeAsync(
+        cacheName: String,
+        operation: LoadOperation,
+        keyCount: Int,
+        block: Supplier<CompletableFuture<T>>
+    ): CompletableFuture<T> = block.get()
 
     companion object {
         /**

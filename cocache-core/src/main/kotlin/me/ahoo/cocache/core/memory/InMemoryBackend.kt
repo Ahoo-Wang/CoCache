@@ -14,6 +14,8 @@
 package me.ahoo.cocache.core.memory
 
 import me.ahoo.cocache.api.CacheClock
+import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
+import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -29,6 +31,7 @@ import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -63,7 +66,7 @@ class InMemoryBackend @JvmOverloads constructor(
         listeners[namespace]?.forEach { it.onInvalidated(decoded.keys, decoded.origin) }
     }
 
-    private inner class Channel : InvalidationChannel {
+    private inner class Channel : AsyncInvalidationChannel {
         override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
             val namespaceListeners = listeners.computeIfAbsent(namespace) { CopyOnWriteArrayList() }
             namespaceListeners.add(listener)
@@ -74,6 +77,13 @@ class InMemoryBackend @JvmOverloads constructor(
 
         override fun publish(namespace: String, frame: ByteArray) {
             this@InMemoryBackend.publish(namespace, frame)
+        }
+
+        override fun publishAsync(namespace: String, frame: ByteArray): CompletableFuture<Void?> = completing {
+            publish(
+                namespace,
+                frame
+            )
         }
     }
 
@@ -90,7 +100,10 @@ class InMemoryBackend @JvmOverloads constructor(
         val expireAt: Long = FOREVER,
     )
 
-    private inner class Store(private val namespace: String) : RemoteStore {
+    /**
+     * 原生异步（RFC 0004 §4.1）：内存操作不阻塞，异步方法就地执行并返回已完成的 future，从不同步抛出。
+     */
+    private inner class Store(private val namespace: String) : AsyncRemoteStore {
         private val slots = ConcurrentHashMap<String, Slot>()
 
         private fun now() = clock.nowMillis()
@@ -260,6 +273,53 @@ class InMemoryBackend @JvmOverloads constructor(
             publish(namespace, frame)
         }
 
+        override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
+            supply { read(key, lease, refresh) }
+
+        override fun readAllAsync(keys: Collection<String>, leases: Map<String, LeaseRequest>): CompletableFuture<Map<String, RemoteRead>> =
+            supply { readAll(keys, leases) }
+
+        override fun fillAsync(fill: Fill): CompletableFuture<Boolean> = supply { fill(fill) }
+
+        override fun fillAllAsync(fills: List<Fill>): CompletableFuture<List<Boolean>> = supply { fillAll(fills) }
+
+        override fun releaseAsync(key: String, token: Token): CompletableFuture<Void?> = completing {
+            release(
+                key,
+                token
+            )
+        }
+
+        override fun putAsync(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
+            completing { put(key, envelope, ttl, frame) }
+
+        override fun putAllAsync(puts: List<Put>, frame: ByteArray): CompletableFuture<Void?> = completing {
+            putAll(
+                puts,
+                frame
+            )
+        }
+
+        override fun invalidateAsync(keys: Collection<String>, frame: ByteArray): CompletableFuture<Void?> = completing {
+            invalidate(
+                keys,
+                frame
+            )
+        }
+
+        override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
+            supply { reclaim(key, observed, lease) }
+
+        override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
+            completing { addMembers(key, members, ttl, frame) }
+
+        override fun removeMembersAsync(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray
+        ): CompletableFuture<Void?> = completing { removeMembers(key, members, ttl, frame) }
+
         private fun union(existing: List<ByteArray>, added: Collection<ByteArray>): List<ByteArray> {
             val result = ArrayList(existing)
             for (member in added) {
@@ -269,6 +329,20 @@ class InMemoryBackend @JvmOverloads constructor(
             }
             return result
         }
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun <T> supply(block: () -> T): CompletableFuture<T> {
+        return try {
+            CompletableFuture.completedFuture(block())
+        } catch (e: Throwable) {
+            CompletableFuture.failedFuture(e)
+        }
+    }
+
+    private inline fun completing(block: () -> Unit): CompletableFuture<Void?> = supply {
+        block()
+        null
     }
 
     companion object {

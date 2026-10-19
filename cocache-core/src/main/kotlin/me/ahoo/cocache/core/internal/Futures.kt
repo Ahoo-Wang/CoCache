@@ -1,0 +1,152 @@
+/*
+ * Copyright [2021-present] [ahoo wang <ahoowang@qq.com> (https://github.com/Ahoo-Wang)].
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package me.ahoo.cocache.core.internal
+
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
+
+/**
+ * 异步路径的 future 工具（RFC 0004 §5.2）。
+ *
+ * - 续接：上一步已完成时就地执行（没有 I/O 线程参与，省去一次切换）；否则只在 I/O 完成线程上把续接提交给执行器，
+ *   续接本身从不在 I/O 线程上执行。
+ * - 异常：续接收到的异常总是解包后的原始异常；续接抛出的异常变为失败的 future。
+ * - 返回给用户的 future 一律经 [relay] 新建并显式完成，不直接返回依赖阶段（依赖阶段会包装为 `CompletionException`）。
+ */
+internal object Futures {
+    private val DONE: CompletableFuture<Void?> = CompletableFuture.completedFuture(null)
+
+    /**
+     * 已完成的 `Void` future（内部使用，从不交给用户）。
+     */
+    fun done(): CompletableFuture<Void?> = DONE
+
+    /**
+     * 剥掉 JDK 加上的 [CompletionException] / [ExecutionException]。
+     */
+    fun unwrap(error: Throwable): Throwable {
+        var current = error
+        while ((current is CompletionException || current is ExecutionException) && current.cause != null) {
+            current = current.cause!!
+        }
+        return current
+    }
+
+    /**
+     * 调用 [block]，把同步抛出转为失败的 future。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    inline fun <R> attempt(block: () -> CompletableFuture<R>): CompletableFuture<R> {
+        return try {
+            block()
+        } catch (e: Throwable) {
+            CompletableFuture.failedFuture(e)
+        }
+    }
+
+    /**
+     * 新建一个 future，以 [source] 的结果或解包后的原始异常完成。取消它不影响 [source]。
+     */
+    fun <T> relay(source: CompletableFuture<out T>): CompletableFuture<T> {
+        val target = CompletableFuture<T>()
+        relay(source, target)
+        return target
+    }
+
+    fun <T> relay(source: CompletableFuture<out T>, target: CompletableFuture<T>) {
+        source.whenComplete { value, error ->
+            if (error != null) target.completeExceptionally(unwrap(error)) else target.complete(value)
+        }
+    }
+
+    /**
+     * 与 [relay] 相同，但总在 [executor] 上完成（[source] 可能在不属于引擎的线程上完成时使用）。
+     */
+    fun <T> relayOn(executor: Executor, source: CompletableFuture<out T>): CompletableFuture<T> {
+        val target = CompletableFuture<T>()
+        source.whenComplete { value, error ->
+            dispatch(executor, target) {
+                if (error != null) target.completeExceptionally(unwrap(error)) else target.complete(value)
+            }
+        }
+        return target
+    }
+
+    /**
+     * 在 [executor] 上执行 [task]；执行器拒绝时以该异常完成 [target]。
+     */
+    fun dispatch(executor: Executor, target: CompletableFuture<*>, task: Runnable) {
+        try {
+            executor.execute(task)
+        } catch (e: RejectedExecutionException) {
+            target.completeExceptionally(e)
+        }
+    }
+
+    /**
+     * 已完成 future 的结果：成功时 `(value, null)`，失败时 `(null, 原始异常)`。
+     */
+    fun <T> outcome(future: CompletableFuture<T>): Pair<T?, Throwable?> {
+        return try {
+            future.getNow(null) to null
+        } catch (e: CancellationException) {
+            null to e
+        } catch (e: CompletionException) {
+            null to unwrap(e)
+        }
+    }
+}
+
+/**
+ * 上一步完成（成功或失败）之后继续，见 [Futures]。
+ */
+internal fun <T, R> CompletableFuture<T>.handleNext(
+    executor: Executor,
+    fn: (T?, Throwable?) -> CompletableFuture<R>
+): CompletableFuture<R> {
+    if (isDone) {
+        return invokeHandler(this, fn)
+    }
+    val result = CompletableFuture<R>()
+    whenComplete { _, _ ->
+        Futures.dispatch(executor, result) { Futures.relay(invokeHandler(this, fn), result) }
+    }
+    return result
+}
+
+/**
+ * 上一步成功之后继续；失败原样（解包后）传递。
+ */
+internal fun <T, R> CompletableFuture<T>.thenNext(
+    executor: Executor,
+    fn: (T) -> CompletableFuture<R>
+): CompletableFuture<R> {
+    return handleNext(executor) { value, error ->
+        if (error != null) {
+            CompletableFuture.failedFuture(error)
+        } else {
+            @Suppress("UNCHECKED_CAST")
+            fn(value as T)
+        }
+    }
+}
+
+private fun <T, R> invokeHandler(future: CompletableFuture<T>, fn: (T?, Throwable?) -> CompletableFuture<R>): CompletableFuture<R> {
+    val (value, error) = Futures.outcome(future)
+    return Futures.attempt { fn(value, error) }
+}

@@ -570,3 +570,20 @@ interface LoadObserver {
 2. **6.3 / PR 2：Redis**：`RedisRemoteStore` 与通道的原生异步实现、同步方法改为等待异步实现；Redis 上的异步 TCK 矩阵；JMH（§11，PR 中附数据）。
 3. **6.3 / PR 3：Spring 与文档**：`CoCacheSpringCache.retrieve`、starter 配置项与 bean 解析、`MicrometerLoadObserver.observeAsync`、AOT 提示、弃用告警；architecture.md（§1 非目标、§5 线程模型、§7、§9.2、§9.5、§10、§13、§14）、wiki（中英文：异步 API 指南、配置、可观测、扩展后端）、`skills/`、changelog；版本号 6.3.0。
 4. **6.4：`cocache-coroutines`**（Q1 已批准）：模块、BOM、示例、wiki。
+
+---
+
+## 14. 实施记录
+
+### 6.3 / PR 1（api + core + 内存后端 + TCK）
+
+与正文不同、已在 [architecture.md](../architecture.md) §5.6、§9.1 中按实现写明的四处：
+
+| 正文 | 实现 | 理由 |
+|------|------|------|
+| §5.2：每个 L1 / 数据源完成后切换到异步执行器；A9：未命中时 future 在异步执行器上完成；§5.2.1：`loadAsync` 在异步执行器上调用 | 上一步**已完成**时续接就地执行，否则才切换到异步执行器。返回的 future 在调用方线程或异步执行器上完成，`loadAsync` 同理；仍然从不在 I/O 线程上执行 | 已完成的 future 没有 I/O 线程参与（如内存后端、同步完成的数据源），切换只增加开销；TCK 中按线程名编排的钩子也因此仍作用于发起调用的线程 |
+| §5.3：拿不到回源许可时按 2→50 ms 退避经定时器轮询 | 登记为等待者，许可释放时按登记顺序唤醒，`acquireTimeout` 由定时器触发拒绝（`LoadPermits`） | 轮询下 N 个等待者每轮只有一个能前进：1000 个等待者、`acquireTimeout` 10 s 时实测被拒绝；唤醒同样不占线程，且公平 |
+| §5.7：异步数据源的刷新 `asyncExecutor.execute { … }` | 在刷新执行器上发起，以异步路径推进，不在刷新执行器的线程上等待 | 尊重用户配置的刷新执行器（拒绝与计数语义不变）；发起只是一次非阻塞调用 |
+| §5.1：JDK 17 的阻塞执行器“超出时由调用方执行” | 满时拒绝（`RejectedExecutionException`，释放 lease） | 调用方是异步执行器的线程，由调用方执行会让同步数据源跑在异步执行器上，违反 A9 / 不变量 #6 |
+
+另外：`LoadPolicy` 是 `data class`，新增的 `asyncTimeout` 改变了它的 `copy` 签名（Kotlin 调用方重新编译即可；`@JvmOverloads` 构造函数保持兼容）。

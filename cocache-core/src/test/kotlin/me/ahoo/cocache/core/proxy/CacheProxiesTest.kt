@@ -73,6 +73,8 @@ class CacheProxiesTest {
         cache.greet("6").assert().isEqualTo("hello u-6")
         cache.get("7") { "loaded-$it" }.assert().isEqualTo("loaded-7")
         CacheProxies.targetOf(cache).assert().isSameAs(engine)
+        cache.async().assert().isSameAs(engine.async())
+        cache.async().get("1").join().assert().isEqualTo("u-1")
         CacheProxies.targetOf(engine).assert().isNull()
         CacheProxies.targetOf(
             java.lang.reflect.Proxy.newProxyInstance(
@@ -113,6 +115,8 @@ class CacheProxiesTest {
         cache.add("k", listOf("a", "b"))
         cache.remove("k", listOf("a"))
         cache["k"].assert().containsExactly("b")
+        cache.async().assert().isSameAs(set.async())
+        cache.async().get("k").join().assert().isEqualTo(setOf("b"))
         cache.clear("k")
         cache["k"].assert().isEmpty()
         runCatching {
