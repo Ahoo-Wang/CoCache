@@ -5,7 +5,48 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v6.0.0 (Current)
+## v6.1.0 (Current)
+
+**Module Group:** `me.ahoo.cocache` · Minor release. The Redis wire format and the invalidation channel are unchanged, so 6.0 and 6.1 instances can share Redis and be upgraded one at a time.
+
+### Spring AOT and GraalVM native images
+
+Applications that use the starter now build with Spring AOT and run as GraalVM native images. CoCache registers the hints it needs at build time:
+
+- JDK proxies for `@CoCache` and `@JoinCacheable` interfaces, and reflection on those interfaces (default methods included);
+- the key type's `toString()` for the default key encoder;
+- the SpEL root types of `keyExpression` and `joinKeyExpression`;
+- Jackson binding for the value type when the default codec applies.
+
+Cache beans are created by factory methods that AOT can generate code for. A custom `Codec` or types that only your own code reflects on still need your hints. See [Native images](./native.md).
+
+### Configurable executors
+
+```yaml
+cocache:
+  refresh-executor: applicationTaskExecutor          # refresh-ahead loads
+  spring-cache:
+    retrieve-executor: applicationTaskExecutor       # Spring Cache async retrieve
+```
+
+Both name an `Executor` bean, resolved by name. An unknown name or a bean that isn't an `Executor` fails startup. CoCache never shuts down an executor you supply. Prefer a virtual-thread executor for `retrieve`: a pool that queues tasks behind ones waiting on them can deadlock nested async `@Cacheable(sync = true)` calls. See [Configuration](./configuration.md#executors).
+
+### SetCache eviction check
+
+With any `SetCache`, CoCache reads every primary's `maxmemory-policy` at startup. `allkeys-*` can evict the set's only copy, so it logs a warning by default. `cocache.redis.set-cache-eviction-check` selects `warn`, `fail` or `off`. The check is skipped when `CONFIG` isn't available (managed Redis, ACL). `RedisBackend.maxmemoryPolicies()` exposes the lookup for applications without Spring.
+
+### Agent skills and docs
+
+- The agent skills are split by outcome: `cocache-develop`, `cocache-migrate` and `cocache-extend`, each with `claude plugin eval` cases and a validator in CI.
+- The documentation site has an animated home page that shows the read and write paths, and a new logo.
+
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.1.0")
+```
+
+## v6.0.0
 
 **Module Group:** `me.ahoo.cocache` · **Major release.** CoCache is rebuilt on the coherence protocol in [RFC 0003](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0003-target-architecture.md). **No rolling upgrade:** the Redis value layout and the invalidation channel changed, so 5.x and 6.0 instances cannot share Redis. Follow the [migration guide](./migration-6.md) and switch every instance at once.
 
