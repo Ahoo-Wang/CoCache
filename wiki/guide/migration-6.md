@@ -17,7 +17,7 @@ description: Everything that changes between CoCache 5.x and 6.0 — modules, pa
 Then deal with the keys 5.x left behind:
 
 - With the default layout, a 6.0 key and a 5.x key are both `cocache:{cacheName}:{key}`, so 6.0 reads old values. Any 5.x value (string, hash, or native set, including the `_nil_` sentinel) is recognized as foreign content (format 0), reclaimed only if it is still unchanged, and reloaded from the source. No manual cleanup is needed.
-- **A 5.x `SetElementsCache` is the exception**: its set was the only copy, and 6.0 reads it as foreign content, so a `SetCache` on the same key starts empty. Copy the data over once with `put(key, fullSet)` (or use a new `keyPrefix` and copy from the old keys).
+- **A 5.x `SetElementsCache` is the exception**: its native Redis set was the only copy, and a 6.0 `SetCache` can't read it. A read of such a key returns an empty set (the content is counted in `cocache.unknown.formats` and left in Redis) until the key is rewritten, and `add` replaces the old set instead of extending it. Before switching, copy each set over with `put(key, fullSet)`, or give the `SetCache` a new `keyPrefix` and copy from the old keys.
 - To free memory at once, delete the old keys by prefix (`SCAN` with `MATCH`, then `UNLINK`).
 
 `redis-cli GET` no longer shows JSON: every value starts with a 36-byte binary header. Programs that read CoCache keys directly from Redis, for example with `HGET` on a hash-encoded cache, are no longer supported.
@@ -61,7 +61,7 @@ Durations are still seconds.
 | `@CoCache(missingTtl)` | `absentTtl` |
 | `@CoCache(clientSideTtl)` | `localMaxAge`. **`0` (unlimited) has no equivalent**, see [below](#semantics). |
 | `@CoCache(refreshAhead)` | `refreshWindow`. `0` still means off. |
-| `@CoCache(keyPrefix)` default `cocache:{name}:` | `keyPrefix` default `cocache:`, followed by the namespace. Spring `${…}` placeholders are no longer resolved. |
+| `@CoCache(keyPrefix)` default `cocache:{name}:` | `keyPrefix` default `cocache:`, followed by the namespace. The annotation no longer resolves Spring `${…}` placeholders. The `key-prefix` property does, see [Properties](#properties). |
 | `@CoCache(keyExpression)` | `keyExpression` (same SpEL template, key as root object) |
 | — | new: `namespace`, `loader`, `codec` |
 | `@CaffeineCache(maximumSize, initialCapacity, expireAfterAccess)` | same names |
@@ -77,7 +77,7 @@ In 6.0, `FOREVER` is accepted only by `ttl` and `expireAfterAccess`, and `0` onl
 |-----|-----|
 | `CacheSource<K, V>.loadCacheValue(key): CacheValue<V>?` | `CacheLoader<K, V>.load(key): V?` |
 | `loadCacheValues(keys): Map<K, CacheValue<V>>` | `loadAll(keys): Map<K, V>` |
-| The source chose each value's `ttlAt` | The policy decides (`ttl` with jitter). Per entry: `CacheSpec.ttlOf(key, value)`, see [Per-entry TTL](./configuration.md#per-entry-ttl). |
+| The source chose each value's `ttlAt` | The policy decides (`ttl` with jitter). Per entry: `CacheSpec.ttlOf(key, value)`, see [Per-entry TTL](./caches.md#ttl-of). |
 | Bean named `{cacheName}.CacheSource`, else the unique `CacheSource<K, V>` | `@CoCache(loader = "beanName")`, else the unique `CacheLoader<K, V>`. Several candidates fail startup. |
 | `CacheSource.noOp()`: every miss stored a negative entry in Redis | No loader: a miss returns `null` and writes nothing to Redis |
 
@@ -97,7 +97,7 @@ In 6.0, `FOREVER` is accepted only by `ttl` and `expireAfterAccess`, and `0` onl
 | `SetElementsCache.addElements` / `removeElements` | `SetCache.add` / `remove` / `clear` |
 | `CacheValue`, `PresentValue`, `MissingValue`, `TtlAt`, `CacheClock` object | internal, or replaced by `java.time` types and an injectable `CacheClock` |
 
-`SetCache` is only for sets whose only copy is Redis: it has no loader, and `invalidate` throws. If the set's data lives in your database, declare `Cache<K, Set<E>>` and invalidate. See [Set caches](./configuration.md#set-elements).
+`SetCache` is only for sets whose only copy is Redis: it has no loader, and `invalidate` throws. If the set's data lives in your database, declare `Cache<K, Set<E>>` and invalidate. See [Set caches](./caches.md#set-cache).
 
 ## Components {#components}
 
@@ -131,7 +131,7 @@ JoinCache is still there, under `me.ahoo.cocache.api.join`, but it is now a **re
 ## Spring Cache {#spring-cache}
 
 - `CoCacheManager` is now `CoCacheSpringCacheManager`, built from a `CacheRuntime`.
-- `@Cacheable(sync = true)` now loads through a lease- and stamp-protected path. Use it wherever you need CoCache's guarantees: without `sync`, Spring's unconditional `put` can overwrite an invalidation.
+- `@Cacheable(sync = true)` now loads through a lease- and stamp-protected path. Use it wherever you need CoCache's guarantees: without `sync`, Spring's unconditional `put` can overwrite an invalidation. At startup, the starter logs a `WARN` for each `@Cacheable` on a CoCache cache without `sync = true`. `cocache.spring-cache.require-sync: true` fails startup instead.
 - `put(key, null)` now invalidates instead of storing a negative entry.
 - With `spring-tx`, the manager is transaction-aware: `@CacheEvict` and `@CachePut` inside a transaction run after commit. For direct calls, use `TransactionalInvalidator`.
 
@@ -152,7 +152,7 @@ Removed 5.x keys fail startup with a message that names the replacement.
 | `cocache.metrics.client-side-hits` | removed: there is no L2 hit counter |
 | `cocache.next.*` (6.0 previews) | `cocache.*` |
 
-New: every policy field under `cocache.defaults.*` and `cocache.caches.[name].*`, and `cocache.redis.command-timeout`, `heartbeat`, `invalidate-batch-size`, `client-name`. See [Configuration](./configuration.md#properties).
+New: every policy field under `cocache.defaults.*` and `cocache.caches.[name].*`, including `key-prefix` (placeholders allowed, for example `${spring.application.name}:`); `cocache.redis.command-timeout`, `heartbeat`, `invalidate-batch-size`, `client-name`, `channel-mode`; `cocache.backend` (`redis` or `memory`); and `cocache.spring-cache.require-sync`. See [Configuration](./configuration.md#properties).
 
 ## Redis {#redis}
 
@@ -160,15 +160,15 @@ New: every policy field under `cocache.defaults.*` and `cocache.caches.[name].*`
 |-|-----|-----|
 | Client | Spring Data Redis, Lettuce or Jedis | Native Lettuce. CoCache builds its own client from `spring.data.redis.*`. **Jedis is not supported**: add Lettuce (it doesn't affect your own Redis client). |
 | Topologies | standalone, Sentinel, Cluster | standalone, Sentinel, Cluster. Static master-replica fails startup. |
-| Minimum version | — | Redis 7.0+ or Valkey 7.2+ |
+| Minimum version | — | Redis 7.0+. Valkey 7.2+ should work but isn't tested in CI. |
 | Key | `keyPrefix` + key, default prefix `cocache:{name}:` | `{keyPrefix}{namespace}:{key}`, default `cocache:{name}:{key}`. A custom `keyPrefix: "user:"` gave `user:42` and now gives `user:UserCache:42`. |
 | Value | JSON string, hash, or set, with an in-band `_nil_` sentinel | 36-byte binary header + codec bytes. Sets are hashes with `!f` and `+{member}` fields. |
 | TTL precision | seconds | milliseconds |
 | Channel | the cache name, for example `UserCache` | `cocache:inv:{namespace}`, for example `cocache:inv:UserCache` |
-| Message | `{key}@@{publisherId}` text | binary frame (`InvalidationFrame`), see [Operations](./operations.md#external-eviction) |
+| Message | `{key}@@{publisherId}` text | binary frame (`InvalidationFrame`), see [Operations](../operations/troubleshooting.md#external-invalidation) |
 | Invalidation | `DEL`, then `PUBLISH` (2 round trips) | one atomic script (`pubsub` mode) |
 
-External programs that evicted with `DEL` + `PUBLISH {cacheName} key@@id` must switch to the [6.0 protocol](./operations.md#external-eviction).
+External programs that evicted with `DEL` + `PUBLISH {cacheName} key@@id` must switch to the [6.0 protocol](../operations/troubleshooting.md#external-invalidation).
 
 ## Actuator {#actuator}
 
@@ -176,11 +176,12 @@ External programs that evicted with `DEL` + `PUBLISH {cacheName} key@@id` must s
 |-----|-----|
 | `GET /actuator/cocache` | `GET /actuator/cocache`: name, L2 size, load counts, and every metric counter |
 | `GET /actuator/cocache/{name}` | `GET /actuator/cocache/{name}` |
-| `GET /actuator/cocache/{name}/{key}` (loaded on a miss) | removed |
-| `DELETE /actuator/cocache/{name}/{key}` | removed: call `invalidate` from your application |
+| `GET /actuator/cocache/{name}/{key}` (loaded the key on a miss) | `GET /actuator/cocache/{name}/{key}`: inspects the key's L2 copy and L1 state **without loading**. `{key}` is the encoded key. |
+| `DELETE /actuator/cocache/{name}/{key}` | `DELETE /actuator/cocache/{name}/{key}`: invalidates the key on every instance, as `invalidate(key)` does |
 | `cocacheClient` endpoint (`GET /{name}`, `GET /{name}/{key}`, `DELETE /{name}`) | removed. `DELETE /actuator/cocache/{name}` clears this instance's L2. |
+| — | new health indicator `cocache`: `DOWN` when the Redis subscription heartbeat fails |
 
-Remove `cocacheClient` from `management.endpoints.web.exposure.include`.
+Remove `cocacheClient` from `management.endpoints.web.exposure.include`. See [Observability](../operations/observability.md#actuator-endpoint).
 
 ## Metrics {#metrics}
 
@@ -202,7 +203,7 @@ All meters keep the `cache` tag.
 | `cocache.l2.size` | `cocache.local.size` |
 | `cocache.eviction.publish.failures` (no `cache` tag) | removed. Invalidation and broadcast are one script, so a failure counts in `cocache.write.failures`, and a final failure in `cocache.invalidations.dropped`. |
 
-New: `lease.waits`, `lease.wait.timeouts`, `fill.rejections`, `degraded.fills`, `reclaims`, `unknown.formats`, `refresh.rejections`, `remote.failures`, `write.failures`, `invalidation.retries`, `invalidations.dropped`. See [Operations](./operations.md#metrics).
+New: `lease.waits`, `lease.wait.timeouts`, `fill.rejections`, `degraded.fills`, `reclaims`, `unknown.formats`, `refresh.rejections`, `remote.failures`, `write.failures`, `invalidation.retries`, `invalidations.dropped`. See [Operations](../operations/observability.md#metrics).
 
 ## Behavior changes {#semantics}
 

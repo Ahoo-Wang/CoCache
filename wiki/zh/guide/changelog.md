@@ -23,7 +23,7 @@ description: CoCache 版本发布历史和重要变更。
 
 - **`JoinCache`**：两个缓存的只读组合视图，内部是两次批量读；用 `@JoinCacheable` 声明，`@EnableCoCache(joinCaches = […])` 注册。见 [JoinCache](./join-cache.md)。
 - **本地开发与测试不需要 Redis**：`cocache.backend: memory` 让所有缓存运行在进程内后端上（仅限单进程）。声明 `CacheClock` bean（如 `ManualClock`）即可在测试中推进时间。
-- **按 key 排查**：`GET /actuator/cocache/{name}/{key}` 查看某个 key 的 L2 副本与 L1 状态，不回源；同一路径的 `DELETE` 在全集群失效它。见[运维](./operations.md#inspect-key)。
+- **按 key 排查**：`GET /actuator/cocache/{name}/{key}` 查看某个 key 的 L2 副本与 L1 状态，不回源；同一路径的 `DELETE` 在全集群失效它。见[运维](../operations/observability.md#inspect-key)。
 - **健康检查** `cocache`：Redis 心跳失败时为 DOWN；仍在重试的失效列在详情中。
 - **Spring Cache 检查**：用在 CoCache 缓存上、但没有 `sync = true` 的 `@Cacheable` 会逐个告警（非 sync 路径不受 lease 保护）；`cocache.spring-cache.require-sync=true` 时改为启动失败。
 - **全局 key 前缀**：`cocache.defaults.key-prefix`（以及按缓存的 `cocache.caches.[name].key-prefix`），例如多个应用共用一个 Redis 时设为 `${spring.application.name}:`。
@@ -78,7 +78,7 @@ Redis Cluster 中普通 `PUBLISH` 会到达每个节点；`SPUBLISH`/`SSUBSCRIBE
 
 ### 从 CoCache 之外淘汰
 
-[运维指南](./operations.md#external-eviction)公开了失效协议（存储 key、频道、`key@@publisherId` 消息），并给出 `redis-cli` 与 CDC 消费者示例：绕过 CoCache 的写入方先 `DEL` 存储 key，再 `PUBLISH`。
+[运维指南](../operations/troubleshooting.md#external-invalidation)公开了失效协议（存储 key、频道、`key@@publisherId` 消息），并给出 `redis-cli` 与 CDC 消费者示例：绕过 CoCache 的写入方先 `DEL` 存储 key，再 `PUBLISH`。
 
 ### Redis Cluster 测试
 
@@ -163,7 +163,7 @@ interface UserCache : Cache<String, User>
 
 ### Micrometer 指标
 
-classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入），starter 绑定 `cocache.*` 指标，按 `cache` 标签区分：`hits{level=l2|l1}`、`misses`、`loads`（timer）、`load.failures`、`filtered`、`stale.discards`、`evictions.received`、`resets`、`l2.size`，以及不带标签的 `eviction.publish.failures`。完整说明见[运维](./operations.md#metrics)。
+classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入），starter 绑定 `cocache.*` 指标，按 `cache` 标签区分：`hits{level=l2|l1}`、`misses`、`loads`（timer）、`load.failures`、`filtered`、`stale.discards`、`evictions.received`、`resets`、`l2.size`，以及不带标签的 `eviction.publish.failures`。完整说明见[运维](../operations/observability.md#metrics)。
 
 - 统计由编排层以 `LongAdder` 累计，可通过 `CoherentCache.stats` 直接读取。
 - L2 命中计数（`hits{level=l2}`）默认关闭，用 `cocache.metrics.client-side-hits=true` 开启：在最热的路径上计数会使 L2 命中吞吐下降 8%–15%（JMH，1–8 线程）。其余指标都不在命中路径上，命中路径吞吐不变。

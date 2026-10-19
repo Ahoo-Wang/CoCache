@@ -15,7 +15,8 @@ pnpm fix:mermaid     # auto-fixes common Mermaid syntax issues
 ## Structure
 
 ```
-guide/          for users: introduction, quick-start, configuration, spring-cache, join-cache, operations, migration-6 (5.x → 6.0), changelog
+guide/          for users: index (why CoCache), quick-start, concepts, caches, freshness, join-cache, spring-cache, testing, configuration (reference), migration-6 (5.x → 6.0), changelog
+operations/     for operators: index (deployment), observability (metrics, health, endpoint, logs), troubleshooting (runbooks, external invalidation)
 architecture/   for integrators: index (goals, modules, runtime, wire format, wiring), consistency, extending (backend SPI + TCK)
 zh/             one-to-one Chinese mirror of the above
 .vitepress/config/{en,zh}.ts   nav + sidebar (keep the two in step)

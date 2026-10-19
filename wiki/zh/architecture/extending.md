@@ -1,36 +1,35 @@
 ---
 title: 扩展 CoCache
-description: 自定义后端（CoherenceBackend、RemoteStore、InvalidationChannel）、编解码、loader 与 key 过滤器的 SPI 约定，以及验证它们的 TCK。
+description: 实现 CoherenceBackend（RemoteStore 与 InvalidationChannel）或 Codec：SPI 的精确约定、cocache-test 的 TCK 套件及其运行方式、编解码器规则，以及不应定制的部分。
 ---
 
 # 扩展 CoCache
 
-扩展点都是接口：`me.ahoo.cocache.api` 中的 `CacheLoader` 与 `Codec`，`me.ahoo.cocache.api.spi` 中的后端 SPI（两者都在 `cocache-api`，没有依赖），以及 `me.ahoo.cocache.core` 中的 spec 函数 `KeyEncoder`、`KeyFilter` 与 `TtlFunction`。L2 固定为 Caffeine，不是扩展点。用 `cocache-test` 中的 TCK 验证新后端：
+| 你想要 | 实现 | 验证 |
+|--------|------|------|
+| 把 L1 存到 Redis 以外的地方，或者以不同方式访问 Redis | [`CoherenceBackend`](#backend) | [`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`](#tck) |
+| 改变值转换为字节的方式 | [`Codec<V>`](#codecs) | 自己的往返测试 |
+| 加载、编码 key、拒绝不可能存在的 key、按条目决定寿命 | [函数](#functions)：`CacheLoader`、`KeyEncoder`、`KeyFilter`、`TtlFunction` | 自己的测试 |
 
-```kotlin
-testImplementation("me.ahoo.cocache:cocache-test")
-```
+SPI 位于 `me.ahoo.cocache.api.spi`（`cocache-api`，零依赖）。后端运行时只需要 `cocache-api`，测试时需要 `cocache-test`。
 
-| 你实现的 | 约定 | 验证 |
-|----------|------|------|
-| `CoherenceBackend`（及其 `RemoteStore` 与 `InvalidationChannel`） | [后端](#backend) | `BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec` |
-| `Codec<V>` | [编解码](#codecs) | 自己的往返测试 |
-| `CacheLoader<K, V>`、`KeyEncoder<K>`、`KeyFilter`、`TtlFunction<K, V>` | [函数](#functions) | 自己的测试 |
-
-在 Spring Boot 应用中，`CoherenceBackend` bean 会取代 Redis 后端；`Codec<V>` bean 会被所有值类型为 `V` 的缓存采用。
+在 Spring Boot 应用中，声明一个 `CoherenceBackend` bean 即可替换 Redis 后端（starter 会退让），Spring 会在关闭时关闭它。值类型为 `V` 的每个接口式缓存都会使用唯一的 `Codec<V>` bean，除非该缓存用 `@CoCache(codec = "beanName")` 指定了别的。
 
 ## 后端 {#backend}
 
 ```kotlin
 interface CoherenceBackend : AutoCloseable {
-    val atomicBroadcast: Boolean          // 能否在写入的同一个原子步骤中广播？
-    val format: Int                       // 本实现写入的线格式版本
+    val atomicBroadcast: Boolean               // 写入能否在同一个原子步骤中发布它的帧？
+    val format: Int                            // 本实现写入的线格式版本
     val channel: InvalidationChannel
-    fun store(namespace: String): RemoteStore
+    fun store(namespace: String): RemoteStore  // 每个缓存调用一次
 }
 ```
 
-L1 存储与失效通道是同一个后端的两个面：串行化写入的一方也应负责通知。引擎为每个缓存调用一次 `store(namespace)`，并为该命名空间订阅 `channel`。
+L1 存储与失效通道是同一个对象的两个面：串行化写入的一方也应该发出失效。
+
+- **`atomicBroadcast`**。为 `true` 时，存储的每个写方法都必须在修改的同一个原子步骤中发布它的 `frame`。为 `false` 时，引擎在每次写入成功之后调用 `channel.publish(namespace, frame)`。原子更好：写入与发布之间的崩溃会丢失消息。只声明你能保证的能力，TCK 会分别检查两种情况。
+- **`format`**。引擎把它与 `RemoteRead.Hit.format` 比较：存储的格式更高时绕开且从不覆盖；`0` 表示不是你的协议写入的内容，引擎按损坏处理。从 `1` 开始，只能通过两阶段升级递增。
 
 ### `RemoteStore` {#remote-store}
 
@@ -49,51 +48,115 @@ interface RemoteStore : AutoCloseable {
 }
 ```
 
-存储只处理字节与令牌，不持有任何策略：TTL、刷新窗口、令牌都由引擎作为参数传入。key 已经包含前缀与命名空间。每个 key 处于以下状态之一：
+传入的 key 是完整的，已包含前缀与命名空间。存储只处理字节与令牌，不持有任何策略：每个 TTL、窗口与令牌都是参数。涉及的类型：
 
-```mermaid
-stateDiagram-v2
-    [*] --> Absent
-    Absent --> Leased: 未命中时带 lease 读取
-    Leased --> Value: 用匹配的令牌填充
-    Leased --> Absent: 释放、lease 过期、失效
-    Value --> Value: put（覆盖）
-    Value --> Refreshing: 在刷新窗口内读取
-    Refreshing --> Value: 用刷新令牌填充、释放、令牌过期
-    Value --> Absent: 失效、过期
-    Refreshing --> Absent: 失效
-```
+| 类型 | 形状 |
+|------|------|
+| `Envelope` | `Scalar(bytes)`、`Members(字节列表)` 或 `Absent`（负缓存） |
+| `RemoteRead` | `Hit(envelope, format, ttl, refreshGranted)`、`Miss(leaseGranted)` 或 `Leased(remaining)`。`ttl == null` 表示没有到期时间 |
+| `Token` | 24 字节：`NodeId`（16）+ 序号（8）。唯一、永不重复。按字节比较 |
+| `LeaseRequest(token, ttl)` | 未命中时放置的 lease，`ttl` 后到期 |
+| `RefreshRequest(window, token, tokenTtl)` | 值在 `window` 内时放置的刷新令牌。签发早于 `tokenTtl` 的令牌可以被接管 |
+| `Fill(key, token, envelope, ttl)` | 仅当 `key` 持有 `token` 时，以 `ttl` 写入 `envelope` |
+| `Digest` | 内容的 SHA-1：标量 → 载荷字节；集合 → 按返回顺序把每个成员写成 `int32 长度 + 字节`；负缓存 → 空 |
 
-“Value”包括值、负缓存（`Envelope.Absent`）与集合（`Envelope.Members`）。约定：
+逐个方法的约定。状态机见[一致性](./consistency.md#l1-fence)。
 
-- **每个方法对单个 key 原子执行。** 批量方法对每个 key 原子，不要求跨 key 原子。
-- **`read`**：key 不存在且带 `lease` 时，写入 lease 占位并返回 `Miss(leaseGranted = true)`；处于 lease 状态时返回 `Leased(remaining)`；标量值的剩余 TTL 在 `refresh.window` 内且没有未过期的令牌时，写入刷新令牌并返回 `Hit(refreshGranted = true)`。签发超过 `tokenTtl` 的令牌视为过期。`Hit.format` 是存储的格式版本，不是本协议写入的内容为 `0`。
-- **`fill`** 仅当 key 中仍是 `fill.token`（lease 或刷新令牌）时写入，返回是否写入。**`release`** 仅当令牌匹配时删除 lease 占位，或清除刷新令牌。
-- **`put`、`invalidate`、`addMembers`、`removeMembers` 销毁任何令牌。** `addMembers` 把不存在的 key、负缓存或 lease 替换为新集合；`removeMembers` 只作用于集合，移空时删除 key。
-- **`reclaim`** 仅当当前内容的 `Digest` 等于 `observed` 时把 key 转为 lease 占位（标量：载荷；负缓存：空；集合：按返回顺序拼接 `int32 长度 + 成员`）。它绝不能删除已经变化的内容。
-- **每次状态转换都重设到期时间**（`ttl == null` 表示永不过期）。lease 或负缓存的 TTL 绝不能泄漏到新值上。使用毫秒精度。
-- **读路径从不删除。**
-- **广播。** `atomicBroadcast` 为 `true` 时，每个写方法都必须在同一个原子步骤中把 `frame` 发布到命名空间的频道；为 `false` 时，引擎在写入成功后调用 `channel.publish`。
-- **失败时抛出异常。** 降级、重试还是重抛由引擎决定。
+| 方法 | 必须 |
+|------|------|
+| `read` | key 不存在且 `lease != null`：放置 lease（`lease.ttl` 后到期），返回 `Miss(true)`。不存在且没有 lease：返回 `Miss(false)`，不写入任何内容。处于 lease 状态：返回 `Leased(remaining)`。有值：返回带剩余 TTL 的 `Hit`。标量值的剩余 TTL `> 0` 且 `≤ refresh.window`，并且没有令牌或令牌签发早于 `refresh.tokenTtl`：写入刷新令牌（保留 TTL），返回 `refreshGranted = true`。永不过期的值不授予令牌。不是你写入的内容：返回 `Hit(…, format = 0)`。两个请求都为 `null` 时，`read` 是纯读取，不写入任何内容 |
+| `readAll` | 对每个 key 执行 `read`，只为 `leases` 中的 key 申请 lease。返回全部 key。任一 key 失败时，先释放本次调用中已经授予的 lease（否则所有实例都要等待 `lease-ttl`），再抛出 |
+| `fill` / `fillAll` | 仅当 key 当前持有的正是 `fill.token`（作为 lease 或刷新令牌）时写入，并把到期时间重设为 `fill.ttl`。返回是否写入 |
+| `release` | 令牌与 lease 匹配：删除 key。令牌与值上的刷新令牌匹配：清除令牌，保留值及其 TTL。否则什么也不做 |
+| `put` | 覆盖任何状态，销毁任何令牌，设置到期时间，广播 `frame`。`Members` 会替换整个集合 |
+| `invalidate` | 删除每个 key，销毁任何令牌，广播 `frame`。对每个 key 原子。批次可以拆分 |
+| `reclaim` | 仅当 key 当前内容的摘要等于 `observed` 且不是 lease 时，把它替换为 lease。返回是否替换。绝不删除已经变化的内容 |
+| `addMembers` | key 是集合：原子地加入成员。否则（不存在、负缓存、lease、标量）：替换为只含这些成员的集合。销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播 |
+| `removeMembers` | 仅当 key 是集合时：移除成员，集合变空时删除 key，否则重设到期时间。任何情况下都广播 |
+
+对所有方法：
+
+- **对每个 key 原子**。批量方法对每个 key 原子，不要求跨 key 原子。
+- **每次状态转换都重设到期时间**，精度为毫秒。lease 或负缓存的寿命绝不能泄漏到新值上。
+- **读取时从不删除。**
+- **失败时抛出异常**。不要吞掉错误或在内部重试：降级、重试还是重新抛出由引擎决定，并由引擎计数。
+- **断线时拒绝命令**，而不是缓冲后重放。
 
 ### `InvalidationChannel` {#invalidation-channel}
 
 ```kotlin
 interface InvalidationChannel {
     fun subscribe(namespace: String, listener: InvalidationListener): Subscription
-    fun publish(namespace: String, frame: ByteArray)   // 仅当 atomicBroadcast == false
+    fun publish(namespace: String, frame: ByteArray)   // 仅在 atomicBroadcast == false 时被调用
 }
 interface InvalidationListener {
     fun onInvalidated(keys: List<String>, origin: NodeId)
     fun onReset()
 }
+fun interface Subscription : AutoCloseable
 ```
 
-- **投递至多一次。** `frame` 是 `InvalidationFrame`（`[版本][nodeId][数量]([长度][key])*`）。解码后用其中的 key 与来源调用 `onInvalidated`。订阅者会忽略自己的 `NodeId`，通道不需要过滤。
-- **`onReset` 是必需的。** 每次订阅建立或重新建立*并得到服务端确认*时，以及任何可能丢失消息的时候（心跳失败、消费组再均衡），都要对该连接上的每个订阅者调用它。订阅者会清空 L2。没有重置，一个丢失的事件会让 L2 陈旧到 `localMaxAge`。
-- 订阅新的命名空间不得重置其它命名空间。
+- **帧**。`frame` 由引擎用 `InvalidationFrame.encode(origin, storageKeys)` 构造。用 `InvalidationFrame.decode` 解码后投递给该命名空间的每个订阅者，丢弃畸形帧。不要按来源过滤：订阅者会忽略自己的 `NodeId`。
+- **至多一次可以接受，沉默不行**。每次订阅建立或重新建立**并得到确认**时，以及任何消息可能丢失的时候（心跳失败、消费组重平衡、序号出现空洞），都要对该订阅的每个订阅者调用 `onReset()`。订阅者随后清空它的 L2。没有重置，丢失的消息会让 L2 陈旧到 `local-max-age`。
+- **在 `subscribe` 返回之前完成重置**。第一个订阅者的重置必须在 `subscribe` 返回时已经执行，否则迟到的重置会清掉订阅之后才填充的副本。已有订阅上的后续订阅者立即收到一次 `onReset()`。
+- **隔离**。订阅新的命名空间不能重置其它命名空间。某个订阅者抛出异常，不能让其它订阅者错过消息。
+- **失败**。`subscribe` 失败时抛出异常，不留下任何部分注册：运行时会回滚这个缓存。
+- 关闭 `Subscription` 即取消该订阅者的订阅。
 
-## 编解码 {#codecs}
+## TCK {#tck}
+
+`cocache-test` 是已发布的 TCK，每个后端都必须通过。
+
+```kotlin
+testImplementation("me.ahoo.cocache:cocache-test")
+```
+
+| 套件 | 覆盖 | 你提供 |
+|------|------|--------|
+| `BackendProtocolSpec` | `RemoteStore` 约定：授予 lease、令牌校验、到期时间重设、释放、刷新令牌、回收、批量读、集合更新、广播帧、订阅时重置 | `createBackend()`、`elapse(duration)`。可选覆盖 `shortTtl`（默认 300 ms） |
+| `EngineSpec` | 两个运行时共用你的后端：跨实例单次加载、等待 lease 超时、加载期间的失效、同实例失效与读取的竞态、并发 `put`、读己之写、loader 失败、Redis 失败、失效重试、重连重置、`local-max-age`、批量读、提前刷新、回收、更新的格式、回源并发上限 | `createBackend()`、`clock`、`elapse(duration)`、`simulateReconnect()` |
+| `SetEngineSpec` | 两个运行时上的 `SetCache`：原子的并发加入、空集合删除、拒绝 `invalidate`、写入与读取失败 | `createBackend()`、`clock`、`elapse(duration)` |
+
+套件会用 `HookedBackend` 包装你的后端。它可以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`）、改写读取结果、在写入前后执行钩子（从而用 latch 而不是 sleep 编排竞态），还能覆盖 `atomicBroadcast` 来验证非原子路径。你自己的测试也可以用它。
+
+`elapse(duration)` 必须让你的存储与引擎的时间同时前进：
+
+- **进程内后端**：推进后端与 `clock` 共用的 `ManualClock`。
+- **真实服务端**：为引擎推进 `ManualClock`，同时在服务端把测试 key 的剩余 TTL 缩短 `duration`。`BackendProtocolSpec` 中的短时长也可以直接 sleep：令牌签发时间取自服务端时钟。
+
+`simulateReconnect()` 必须断开订阅，让通道重新订阅，例如在服务端杀掉它的连接。
+
+内存后端的 TCK 类就是一个最小模板：
+
+```kotlin
+class MyBackendProtocolTest : BackendProtocolSpec() {
+    private val clock = ManualClock()
+    override fun createBackend(): CoherenceBackend = MyBackend(clock)
+    override fun elapse(duration: Duration) = clock.advance(duration)
+}
+
+class MyEngineTest : EngineSpec() {
+    private val manualClock = ManualClock()
+    private lateinit var backend: MyBackend
+    override val clock: CacheClock = manualClock
+    override fun createBackend(): CoherenceBackend = MyBackend(manualClock).also { backend = it }
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+    override fun simulateReconnect() = backend.dropSubscription()
+}
+
+class MySetEngineTest : SetEngineSpec() {
+    private val manualClock = ManualClock()
+    override val clock: CacheClock = manualClock
+    override fun createBackend(): CoherenceBackend = MyBackend(manualClock)
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+}
+```
+
+用构建工具的常规测试任务运行（JUnit 5）。`cocache-redis` 把三个套件各跑三遍：经典 Pub/Sub、非原子（用 ACL 禁止探测频道）与 sharded。你的后端支持几种模式，就对每种模式都跑一遍。
+
+`InMemoryBackend` 在一个进程内实现了完整的协议。多个运行时共用一个实例就像多个应用实例，因此它也很适合作为应用测试的后端。
+
+## 编解码器 {#codecs}
 
 ```kotlin
 interface Codec<V> {
@@ -102,35 +165,28 @@ interface Codec<V> {
 }
 ```
 
-`decode` 遇到无法读取的字节时应抛出异常，引擎随后把该条目当作损坏：按未命中处理，条件回收，然后重新加载。修改 codec 的字节格式就是修改该缓存的线格式：使用新的命名空间或 `keyPrefix`，或者让 `decode` 同时接受两种格式。
+- **`decode` 遇到读不了的字节时抛出异常**。引擎随后按损坏处理：未命中、条件回收、重新加载。不要返回默认对象。
+- **线程安全、无状态**。一个实例服务所有线程。
+- **从不处理 `null`**。负缓存由引擎处理。
+- **集合元素的编解码器必须是规范的**。`SetCache` 的成员按编码后的字节比较，所以相等的元素必须总是编码成相同的字节。字段顺序不稳定的 JSON 会破坏这一点。
+- **字节格式是该缓存线格式的一部分**。在运行中的集群里改变它，会让新旧实例互相回收对方的值。不兼容的变更请使用新的命名空间或 key 前缀，或者在滚动期间让 `decode` 同时接受两种形式。
+- **保持载荷小**。所有命令共用一条连接，一个大值会拖慢排在它后面的命令。
+
+`StringCodec`（UTF-8）在 `cocache-core` 中，`JacksonCodec`（`jacksonCodec<V>(mapper)`）在 `cocache-codec-jackson` 中。没有编解码器 bean 的接口式缓存使用应用的 `ObjectMapper` 构造 `JacksonCodec`。
 
 ## 函数 {#functions}
 
-- **`CacheLoader<K, V>`**：`load(key)` 返回值，或返回 `null` 表示“不存在”（写入负缓存，存活 `absentTtl`）。`loadAll(keys)` 一次加载所有 L2 与 L1 都未命中的 key，结果中缺少的 key 写入负缓存。默认实现逐个调用 `load`，应覆盖为一次查询。loader 在调用方线程上执行，不得读取自己缓存中的同一个 key，否则调用快速失败。
-- **`KeyEncoder<K>`**：把 key 转为 `{keyPrefix}{namespace}:` 之后的字符串，必须是单射。默认为 `toString()`。
-- **`KeyFilter.notExist(storageKey)`**：只能对确定不存在的 key 返回 `true`。对布隆过滤器而言，意味着它必须由全部已有 key 构建。
-- **`TtlFunction<K, V>`**（`ttlOf`）：按条目决定寿命，见[按条目决定寿命](../guide/configuration.md#per-entry-ttl)。
+| 函数 | 约定 |
+|------|------|
+| `CacheLoader<K, V>` | `load(key)` 返回值，或用 `null` 表示“不存在”（以负缓存存储 `absent-ttl`）。`loadAll(keys)` 批量加载，结果中缺少的 key 视为不存在。默认逐个调用 `load`，请覆盖为一次查询。在调用方线程上执行。不能读取自己缓存中的同一个 key（会快速失败）。必须读主库，而不是滞后的从库 |
+| `KeyEncoder<K>` | 把 key 转换为 `{keyPrefix}{namespace}:` 之后的字符串。必须**单射**（不同的 key 得到不同的字符串）、确定，并且在每个实例与每个版本上都相同。默认是 `toString()`，它会拒绝没有重写 `toString()` 的类型 |
+| `KeyFilter` | `notExist(storageKey)` 收到的是完整的存储 key。只有确定不存在的 key 才能返回 `true`：布隆过滤器必须包含所有存在的 key。返回 `true` 时跳过 Redis 与 loader，不缓存任何内容 |
+| `TtlFunction<K, V>`（`ttlOf`） | 按条目决定的寿命。非 null 的结果替代 `ttl` 且不加抖动。收敛到 1 ms 与 100 年之间。不作用于负缓存 |
 
-## TCK {#tck}
+## 不应定制的部分 {#not-pluggable}
 
-| 套件 | 覆盖内容 | 你需要提供 |
-|------|----------|------------|
-| `BackendProtocolSpec` | `RemoteStore` 状态机：lease、令牌、到期时间重设、广播、回收、释放 | `createBackend()`、`elapse(duration)` |
-| `EngineSpec` | 两个运行时共享一个后端：加载、填充、失效与写入的全部交错，等待 lease、刷新、故障与重试、重置 | `createBackend()`、`clock`、`elapse(duration)`、`simulateReconnect()` |
-| `SetEngineSpec` | 两个运行时之间的 `SetCache` 元素更新 | `createBackend()`、`clock`、`elapse(duration)` |
-
-这些套件用 `HookedBackend` 包装你的后端，注入钩子与故障，用 latch 而不是 sleep 编排竞态。内存后端可以在 `elapse` 中推进 `ManualClock`；真实后端可以 sleep，因为套件使用很短的 TTL（必要时覆盖 `BackendProtocolSpec` 的 `shortTtl`）。
-
-```kotlin
-class InMemoryEngineTest : EngineSpec() {
-    private val manualClock = ManualClock()
-    private lateinit var memory: InMemoryBackend
-
-    override val clock: CacheClock = manualClock
-    override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock).also { memory = it }
-    override fun elapse(duration: Duration) = manualClock.advance(duration)
-    override fun simulateReconnect() = memory.reconnect()
-}
-```
-
-`InMemoryBackend` 在单个进程内实现同一协议。多个运行时共享一个实例即可模拟多个节点，因此它也很适合用作应用自己测试中的后端。
+- **L2**。它始终是有界的 Caffeine 缓存，过期在读取时与 ticking clock 比较。可插拔的 L2 会让命中路径变成多态，并可能让两个缓存误共享同一个 L2。用 `local-maximum-size` 调整它。
+- **栅栏与写入顺序**。lease、刷新令牌、失效戳、两次递增、只从 L1 填充 L2，这些就是协议本身。后端实现 L1 的一侧，其余由引擎负责。
+- **存储中的策略**。抖动、负缓存寿命与刷新窗口属于引擎，存储只看到传给它的时长。
+- **大版本内的 Redis 线格式**。其它代码可以为诊断读取 CoCache 的 key，但只能通过[失效协议](../operations/troubleshooting.md#external-invalidation)写入。
+- **缓存之间共享状态**。每个有状态组件都由 `CacheRuntime.create` 按缓存创建。传入 spec 与无状态函数，绝不传入 L2 实例、存储或失效戳。

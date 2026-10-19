@@ -89,7 +89,8 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 
 | You want to… | Read |
 |--------------|------|
-| Use CoCache | [Guide](https://cocache.ahoo.me/guide/): introduction, quick start, configuration, Spring Cache, operations, 5.x → 6.0 migration, changelog |
+| Use CoCache | [Guide](https://cocache.ahoo.me/guide/): introduction, quick start, configuration, Spring Cache, 5.x → 6.0 migration, changelog |
+| Run it in production | [Operations](https://cocache.ahoo.me/operations/): deployment, observability, troubleshooting |
 | Understand or extend it | [Architecture](https://cocache.ahoo.me/architecture/): design, consistency, SPI and TCK |
 | Change CoCache itself | [`CONTRIBUTING.md`](CONTRIBUTING.md), then [`docs/architecture.md`](docs/architecture.md) |
 | Work on it as an AI agent | [`AGENTS.md`](AGENTS.md) and the [`skills/cocache`](skills/cocache/SKILL.md) skill |

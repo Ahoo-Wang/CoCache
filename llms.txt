@@ -10,7 +10,9 @@ Declare a cache as an interface (`@CoCache interface UserCache : Cache<String, U
 - [Quick Start](https://cocache.ahoo.me/guide/quick-start): dependency, cache interface or spec bean, loader, usage
 - [Configuration](https://cocache.ahoo.me/guide/configuration): `@CoCache`/`@CaffeineCache`, `CacheSpec` and `CachePolicy`, `cocache.*` properties, `CacheSpecCustomizer`, codecs
 - [Spring Cache](https://cocache.ahoo.me/guide/spring-cache): `@Cacheable` through `CoCacheSpringCacheManager`, `sync = true`, transactions
-- [Operations](https://cocache.ahoo.me/guide/operations): the `cocache` actuator endpoint, Micrometer metrics, Redis failure behavior, troubleshooting
+- [Deployment](https://cocache.ahoo.me/operations/): Redis versions and topologies, maxmemory-policy, TLS, channel modes, sizing, rolling deploys, key layout, ACLs
+- [Observability](https://cocache.ahoo.me/operations/observability): every `cocache.*` meter and alerts, the `cocache` health indicator, the actuator endpoint (inspect and invalidate one key), logs
+- [Troubleshooting](https://cocache.ahoo.me/operations/troubleshooting): runbooks (stale values, resets, stampedes, dropped invalidations, Redis down, startup failures) and the external invalidation protocol
 - [Migrating from 5.x to 6.0](https://cocache.ahoo.me/guide/migration-6): renamed APIs, annotation attributes, configuration keys, wire format change
 - [Changelog](https://cocache.ahoo.me/guide/changelog): releases
 
