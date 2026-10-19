@@ -24,21 +24,22 @@ TTL 是安全网，不是机制：它兜底协议之外的问题。协议之内�
 cocache-api                    用户 API + 全部 SPI，零运行时依赖
   Cache / SetCache / Lookup / CacheLoader / Codec / CacheClock
   CacheReadException / CacheWriteException
-  annotation：@CoCache、@CaffeineCache
+  annotation：@CoCache、@CaffeineCache、@JoinCacheable
+  join：JoinCache、JoinValue、JoinKeyExtractor（两个缓存的只读组合视图）
   spi：CoherenceBackend、RemoteStore、InvalidationChannel、InvalidationListener、Subscription、
        Envelope、RemoteRead、LeaseRequest、RefreshRequest、Fill、Token、NodeId、Digest、InvalidationFrame
 cocache-core                   引擎与运行时；依赖 Caffeine、kotlin-logging
-  CacheRuntime、CacheSpec / SetCacheSpec（KeyEncoder、TtlFunction、KeyFilter）、CacheAdmin、CacheMetrics、RetryPolicy
+  CacheRuntime、CacheSpec / SetCacheSpec（KeyEncoder、TtlFunction、KeyFilter）、CacheAdmin、CacheMetrics、RetryPolicy、ExternalInvalidator
   engine：AbstractEngine、CoherentEngine、SetEngine、InvalidationRetrier
   internal：SingleFlight、InvalidationStamps
   policy：CachePolicy、LeasePolicy、LoadPolicy、LocalPolicy、InvalidateFailureMode、ReadFailureMode
-  proxy：CacheProxies；memory：InMemoryBackend；clock：TickingClock、ManualClock；codec：StringCodec
+  proxy：CacheProxies、JoinCacheProxies；join：SimpleJoinCache；memory：InMemoryBackend；clock：TickingClock、ManualClock；codec：StringCodec
 cocache-redis                  Lettuce 原生后端，不依赖 Spring
   RedisBackend、RedisBackendOptions、RedisChannelMode、RedisScripts、RedisRemoteStore、
   PubSubInvalidationChannel、ShardedInvalidationChannel
 cocache-codec-jackson          Jackson 3（tools.jackson）Codec：JacksonCodec、jacksonCodec<V>()
 cocache-spring                 Spring 适配（不依赖 Boot）：CoCacheSpringCacheManager、CoCacheSpringCache、TransactionalInvalidator
-cocache-spring-boot-starter    自动配置、@EnableCoCache、注解翻译、spec bean 注册、配置分层、actuator 端点、Micrometer
+cocache-spring-boot-starter    自动配置、@EnableCoCache（caches、joinCaches）、注解翻译、spec bean 注册、配置分层、actuator 端点与健康检查、Micrometer、Spring Cache sync 检查
 cocache-test                   已发布的 TCK：BackendProtocolSpec、EngineSpec、SetEngineSpec、HookedBackend
 cocache-bom / cocache-dependencies / cocache-example
 ```
@@ -52,6 +53,9 @@ cocache-bom / cocache-dependencies / cocache-example
 - **引擎（`CoherentEngine` / `SetEngine`）**：读穿透、合并回源、两层栅栏、写入顺序、失败处理、提前刷新。
 - **运行时（`CacheRuntime`）**：每个进程一个，持有 `NodeId`、时钟、后端、刷新执行器、失效重试调度器，按 spec 新建引擎并订阅失效。
 - **L2 固定为 Caffeine**，不是 SPI。
+- **JoinCache 只是组合视图**：`get` / `getAll` 先读主缓存，再按去重后的关联 key 批量读关联缓存（各自走完整的读路径与栅栏），自己不存任何数据、不写入。`invalidate(key)` 只失效主缓存，`invalidate(firstKey, joinKey)` 同时失效两者。两个缓存各自的 TTL 与失效互不影响，视图不提供跨缓存的原子快照。
+- **默认 `KeyEncoder` 是 `toString()`**，每种 key 类型首次编码时检查是否重写了 `toString()`（没有重写时每个实例都映射到不同存储 key），不满足即拒绝；`String` key 只多一次引用比较。
+- **`ExternalInvalidator`**：缓存之外的写入方按同一协议失效（删除 L1 key 并广播帧，原子广播的后端在同一脚本内完成），不需要创建缓存。
 
 ## 3. 数据模型与线格式
 

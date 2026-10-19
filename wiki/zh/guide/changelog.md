@@ -19,6 +19,18 @@ description: CoCache 版本发布历史和重要变更。
 - **Spring：** `@EnableCoCache` 配合 `@CoCache` 接口或 `CacheSpec` bean；`CacheSpecCustomizer`；分层的 `cocache.defaults.*` / `cocache.caches.[name].*` 配置并带完整的 IDE 元数据；`CoCacheSpringCacheManager`（一致的回源请用 `@Cacheable(sync = true)`）；`TransactionalInvalidator`（事务提交后失效）。
 - **可观测性：** actuator 端点 `cocache`，以及按 `cache` 打标签的 `cocache.*` Micrometer 指标。
 
+### 开发体验
+
+- **`JoinCache`**：两个缓存的只读组合视图，内部是两次批量读；用 `@JoinCacheable` 声明，`@EnableCoCache(joinCaches = […])` 注册。见 [JoinCache](./join-cache.md)。
+- **本地开发与测试不需要 Redis**：`cocache.backend: memory` 让所有缓存运行在进程内后端上（仅限单进程）。声明 `CacheClock` bean（如 `ManualClock`）即可在测试中推进时间。
+- **按 key 排查**：`GET /actuator/cocache/{name}/{key}` 查看某个 key 的 L2 副本与 L1 状态，不回源；同一路径的 `DELETE` 在全集群失效它。见[运维](./operations.md#inspect-key)。
+- **健康检查** `cocache`：Redis 心跳失败时为 DOWN；仍在重试的失效列在详情中。
+- **Spring Cache 检查**：用在 CoCache 缓存上、但没有 `sync = true` 的 `@Cacheable` 会逐个告警（非 sync 路径不受 lease 保护）；`cocache.spring-cache.require-sync=true` 时改为启动失败。
+- **全局 key 前缀**：`cocache.defaults.key-prefix`（以及按缓存的 `cocache.caches.[name].key-prefix`），例如多个应用共用一个 Redis 时设为 `${spring.application.name}:`。
+- **key 类型检查**：默认的 `toString()` 编码器拒绝没有重写 `toString()` 的 key 类型，否则缓存永远不会命中。
+- **`ExternalInvalidator`**：CDC 消费者、批处理任务按同一协议失效，不需要创建缓存。
+- 面向 Java：`LeasePolicy`、`LoadPolicy`、`LocalPolicy`、`RetryPolicy`、`RedisBackendOptions` 加了 `@JvmOverloads`，spec 构建器新增 `updatePolicy(Consumer)`。
+
 ### 迁移速查
 
 | 5.x | 6.0 |

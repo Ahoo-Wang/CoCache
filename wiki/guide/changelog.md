@@ -19,6 +19,18 @@ description: Release history and notable changes for CoCache.
 - **Spring:** `@EnableCoCache` with `@CoCache` interfaces or `CacheSpec` beans, `CacheSpecCustomizer`, layered `cocache.defaults.*` / `cocache.caches.[name].*` properties with full IDE metadata, the `CoCacheSpringCacheManager` (use `@Cacheable(sync = true)` for coherent loads), and `TransactionalInvalidator` (invalidate after commit).
 - **Observability:** the `cocache` actuator endpoint and `cocache.*` Micrometer meters tagged by `cache`.
 
+### Developer experience
+
+- **`JoinCache`**: a read-only view that joins two caches with two batch reads, declared with `@JoinCacheable` and registered with `@EnableCoCache(joinCaches = […])`. See [JoinCache](./join-cache.md).
+- **No Redis for local development and tests:** `cocache.backend: memory` runs every cache on the in-process backend (single process only). A `CacheClock` bean such as `ManualClock` lets tests advance time.
+- **Per-key troubleshooting:** `GET /actuator/cocache/{name}/{key}` shows the L2 copy and the L1 state of one key without loading it; `DELETE` on the same path invalidates it cluster-wide. See [Operations](./operations.md#inspect-key).
+- **Health indicator** `cocache`: DOWN when the Redis heartbeat fails; pending invalidations are listed in the details.
+- **Spring Cache check:** a WARN for each `@Cacheable` on a CoCache cache without `sync = true` (the non-sync path isn't lease-protected); `cocache.spring-cache.require-sync=true` fails startup instead.
+- **Global key prefix:** `cocache.defaults.key-prefix` (and per cache `cocache.caches.[name].key-prefix`), for example `${spring.application.name}:` when several apps share one Redis.
+- **Key type check:** the default `toString()` key encoder rejects key types that don't override `toString()`, which would otherwise never hit.
+- **`ExternalInvalidator`:** invalidate from CDC consumers or batch jobs with the same protocol, without creating a cache.
+- `@JvmOverloads` on `LeasePolicy`, `LoadPolicy`, `LocalPolicy`, `RetryPolicy` and `RedisBackendOptions`, and `updatePolicy(Consumer)` on spec builders, for Java.
+
 ### Migration at a glance
 
 | 5.x | 6.0 |

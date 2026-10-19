@@ -136,7 +136,14 @@ After the source of truth commits:
 1. `DEL {storageKey}` removes the L1 copy and destroys any lease, so a load in flight can no longer write the old row back.
 2. `PUBLISH cocache:inv:{namespace} {frame}` makes every instance drop its L2 copy. With `channel-mode: sharded`, use `SPUBLISH`.
 
-`InvalidationFrame` in `cocache-api` (no runtime dependencies) builds the frame:
+On the JVM, `ExternalInvalidator` in `cocache-core` does both steps with the same backend the caches use (in one script when the backend broadcasts atomically), without creating a cache:
+
+```kotlin
+val invalidator = ExternalInvalidator(backend)   // the CoherenceBackend bean
+invalidator.invalidate("UserCache", listOf("42", "43"))   // namespace, encoded keys
+```
+
+Pass `keyPrefix` when the cache doesn't use the default `cocache:`. Without CoCache on the classpath, `InvalidationFrame` in `cocache-api` (no runtime dependencies) builds the frame:
 
 ```kotlin
 class UserChangeInvalidator(private val redis: RedisCommands<String, ByteArray>) {

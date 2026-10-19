@@ -136,7 +136,14 @@ classpath 上有 Micrometer 时（`spring-boot-starter-actuator` 会引入），
 1. `DEL {storageKey}` 删除 L1 副本并销毁 lease，所以在途的加载不能再把旧数据写回。
 2. `PUBLISH cocache:inv:{namespace} {frame}` 让每个实例丢弃 L2 副本。`channel-mode: sharded` 时使用 `SPUBLISH`。
 
-`cocache-api`（没有运行时依赖）中的 `InvalidationFrame` 负责构造帧：
+JVM 上可以直接用 `cocache-core` 的 `ExternalInvalidator`：它使用与缓存相同的后端完成这两步（后端支持原子广播时在同一个脚本内完成），不需要创建缓存：
+
+```kotlin
+val invalidator = ExternalInvalidator(backend)   // CoherenceBackend bean
+invalidator.invalidate("UserCache", listOf("42", "43"))   // 命名空间、编码后的 key
+```
+
+缓存不使用默认前缀 `cocache:` 时传入 `keyPrefix`。classpath 上没有 CoCache 时，用 `cocache-api`（没有运行时依赖）中的 `InvalidationFrame` 构造帧：
 
 ```kotlin
 class UserChangeInvalidator(private val redis: RedisCommands<String, ByteArray>) {

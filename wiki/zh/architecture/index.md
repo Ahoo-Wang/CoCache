@@ -45,7 +45,7 @@ flowchart BT
 | `cocache-redis` | `RedisBackend`：Lua 协议、线格式、Pub/Sub 与 Sharded 通道。依赖 `lettuce-core`，不依赖 Spring |
 | `cocache-codec-jackson` | `JacksonCodec`（Jackson 3，`tools.jackson`） |
 | `cocache-spring` | `CoCacheSpringCacheManager`、`TransactionalInvalidator`。供不用 Boot 的 Spring 应用使用 |
-| `cocache-spring-boot-starter` | 自动配置、`@EnableCoCache`、spec bean 注册、`CoCacheProperties`、`CacheSpecCustomizer`、`cocache` Actuator 端点、Micrometer 绑定 |
+| `cocache-spring-boot-starter` | 自动配置、`@EnableCoCache`（`caches`、`joinCaches`）、spec bean 注册、`CoCacheProperties`、`CacheSpecCustomizer`、`cocache` Actuator 端点与健康检查、Micrometer 绑定、Spring Cache `sync` 检查 |
 | `cocache-test` | 新后端与引擎的 TCK |
 | `cocache-bom` | 版本对齐 |
 
@@ -109,6 +109,7 @@ sequenceDiagram
 
 - **接口式声明**（`@EnableCoCache`）：bean 名为缓存名，bean 类型为接口本身。泛型取自接口继承的 `Cache<K, V>` 或 `SetCache<K, E>`，必须是具体类型。
 - **spec bean**：`CacheSpecRegistrar`（一个 `BeanFactoryPostProcessor`）从工厂方法声明的返回类型读取 `K` 与 `V`，不实例化 spec，并注册一个 `Cache<K, V>` bean，bean 名为 spec bean 名去掉 `Spec`（没有该后缀时加 `Cache`）。这个 bean 就是引擎本身，没有代理。
+- **组合缓存**（`@EnableCoCache(joinCaches = …)`）：每个 `@JoinCacheable` 接口注册一个 bean，bean 名为组合缓存名。创建时按名称解析主缓存与关联缓存（接口式或 spec bean 均可），并先于它们销毁。见 [JoinCache](../guide/join-cache.md)。
 - bean 名已被占用时启动失败，同一个缓存名使用两次也会启动失败。
 - 缓存在首次注入时创建。所有单例创建完成后，如果 `cocache.caches` 中出现不存在的缓存名，`CacheAssembler` 让启动失败。
 

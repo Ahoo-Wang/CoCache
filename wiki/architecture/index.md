@@ -45,7 +45,7 @@ flowchart BT
 | `cocache-redis` | `RedisBackend`: the Lua protocol, the wire format, and the Pub/Sub and Sharded channels. Depends on `lettuce-core`, not on Spring. |
 | `cocache-codec-jackson` | `JacksonCodec` (Jackson 3, `tools.jackson`) |
 | `cocache-spring` | `CoCacheSpringCacheManager`, `TransactionalInvalidator`. For Spring applications without Boot. |
-| `cocache-spring-boot-starter` | Auto-configuration, `@EnableCoCache`, spec-bean registration, `CoCacheProperties`, `CacheSpecCustomizer`, the `cocache` actuator endpoint, Micrometer binding |
+| `cocache-spring-boot-starter` | Auto-configuration, `@EnableCoCache` (`caches`, `joinCaches`), spec-bean registration, `CoCacheProperties`, `CacheSpecCustomizer`, the `cocache` actuator endpoint and health indicator, Micrometer binding, the Spring Cache `sync` check |
 | `cocache-test` | The TCK for new backends and engines |
 | `cocache-bom` | Version alignment |
 
@@ -109,6 +109,7 @@ sequenceDiagram
 
 - **Interface declarations** (`@EnableCoCache`): the bean name is the cache name and the bean type is the interface. Generic types come from the `Cache<K, V>` or `SetCache<K, E>` the interface extends and must be concrete.
 - **Spec beans**: `CacheSpecRegistrar`, a `BeanFactoryPostProcessor`, reads `K` and `V` from the factory method's declared return type without instantiating the spec, and registers a `Cache<K, V>` bean named after the spec bean minus `Spec` (or plus `Cache`). That bean is the engine itself, with no proxy.
+- **Join caches** (`@EnableCoCache(joinCaches = …)`): one bean per `@JoinCacheable` interface, named after the join cache. It resolves its first and join caches by name when created (interface or spec-bean caches) and is destroyed before them. See [JoinCache](../guide/join-cache.md).
 - A bean name that is already taken fails startup, and so does a cache name used twice.
 - Caches are created on first injection. After all singletons exist, `CacheAssembler` fails startup if `cocache.caches` names a cache that doesn't exist.
 
