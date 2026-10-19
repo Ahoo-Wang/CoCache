@@ -1,52 +1,21 @@
 import DefaultTheme from 'vitepress/theme'
 import type { Theme } from 'vitepress'
 import { useRouter } from 'vitepress'
+import { defineAsyncComponent } from 'vue'
 import './custom.css'
-
-const hasSetup = Symbol('mermaid-setup')
 
 export default {
   extends: DefaultTheme,
+  enhanceApp({ app }) {
+    // 与 Wow 文档一致：vitepress-plugin-mermaid 把 ```mermaid 代码块转换为 <Mermaid>，组件负责渲染、明暗主题与缩放
+    app.component('Mermaid', defineAsyncComponent(() => import('./Mermaid.vue')))
+  },
   setup() {
     if (typeof window !== 'undefined') {
       const router = useRouter()
       router.onAfterRouteChanged = (to: string) => {
         ;(window as any).gtag?.('event', 'page_view', { page_path: to })
       }
-    }
-    if (typeof window !== 'undefined' && !(window as any)[hasSetup]) {
-      ;(window as any)[hasSetup] = true
-      import('vitepress-mermaid-renderer').then(({ createMermaidRenderer }) => {
-        const isDark = document.documentElement.classList.contains('dark')
-        createMermaidRenderer({
-          theme: isDark ? 'dark' : 'default',
-          // mermaid 12 默认改用新布局与外观；固定经典布局与外观，保持现有图表的排版与配色
-          layout: 'dagre',
-          look: 'classic',
-          startOnLoad: true,
-          flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
-          sequence: { useMaxWidth: true, diagramMarginX: 50, diagramMarginY: 10 },
-          classDiagram: { useMaxWidth: true },
-          stateDiagram: { useMaxWidth: true },
-          er: { useMaxWidth: true },
-          gantt: { useMaxWidth: true },
-          pie: { useMaxWidth: true },
-          journey: { useMaxWidth: true },
-          gitGraph: { useMaxWidth: true },
-          mindmap: { useMaxWidth: true },
-          quadrantChart: { useMaxWidth: true },
-          themeVariables: {
-            primaryColor: '#2d333b',
-            primaryTextColor: '#e6edf3',
-            primaryBorderColor: '#6d5dfc',
-            lineColor: '#8b949e',
-            secondaryColor: '#161b22',
-            tertiaryColor: '#21262d',
-            fontFamily: 'Inter, sans-serif',
-            fontSize: '14px',
-          },
-        })
-      })
     }
   },
 } satisfies Theme

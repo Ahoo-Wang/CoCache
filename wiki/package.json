@@ -13,7 +13,8 @@
   "packageManager": "pnpm@12.11.2",
   "devDependencies": {
     "mermaid": "^12.1.0",
+    "svg-pan-zoom": "^3.6.2",
     "vitepress": "^1.6.4",
-    "vitepress-mermaid-renderer": "^1.2.2"
+    "vitepress-plugin-mermaid": "^2.0.17"
   }
 }
