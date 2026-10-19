@@ -66,6 +66,7 @@ class AnnotatedCacheTest {
         keyPrefix = "t:",
         keyExpression = "#{toUpperCase()}",
         ttl = 600,
+        ttlJitter = 0,
         codec = "namedCodec"
     )
     @CaffeineCache
