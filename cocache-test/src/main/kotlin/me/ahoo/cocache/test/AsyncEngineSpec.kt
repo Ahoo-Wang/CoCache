@@ -246,9 +246,18 @@ abstract class AsyncEngineSpec : EngineSpec() {
                 reader = fork("reader") { engine["k"] }
                 readerRead.awaitOrFail("reader read the old value")
             }
-            backend.ioExecutor = io
+            // L1 的结果在 invalidate 返回之后才送达：收尾一定经执行器（否则结果已完成时就地收尾，执行器不参与）
+            val delivered = CountDownLatch(1)
+            backend.ioExecutor = Executor { task ->
+                io.execute {
+                    delivered.awaitOrFail("write issued")
+                    task.run()
+                }
+            }
             switch.rejecting = true
             val write = engine.async().invalidate("k")
+            write.isDone.assert().isFalse()
+            delivered.countDown()
             write.handle { _, e -> e }.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
                 .assert().isInstanceOf(RejectedExecutionException::class.java)
             backend.beforeInvalidate = null
