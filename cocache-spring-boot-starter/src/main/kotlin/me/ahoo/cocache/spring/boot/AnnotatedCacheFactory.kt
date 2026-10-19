@@ -29,6 +29,7 @@ import me.ahoo.cocache.core.proxy.CacheProxies
 import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.core.ResolvableType
 import org.springframework.expression.Expression
+import org.springframework.expression.common.LiteralExpression
 import org.springframework.expression.common.TemplateParserContext
 import org.springframework.expression.spel.standard.SpelExpressionParser
 import tools.jackson.databind.ObjectMapper
@@ -44,6 +45,8 @@ import java.time.Duration
  * - 时长单位为秒；[CoCache.FOREVER] 只能用于 `ttl`（永不过期）与 `@CaffeineCache.expireAfterAccess`（不启用），
  *   `refreshWindow = 0` 表示关闭提前刷新。
  * - 用户接口中的抽象方法必须对应 [Cache] / [SetCache] 的方法（参数类型兼容），否则启动失败（代理按方法名分派）。
+ *
+ * 内部实现（starter 接线使用），不在兼容性承诺之内。
  */
 class AnnotatedCacheFactory(
     private val beanFactory: ListableBeanFactory,
@@ -103,6 +106,10 @@ class AnnotatedCacheFactory(
     private fun keyEncoderOf(annotation: CoCache?): KeyEncoder<Any> {
         val expression = annotation?.keyExpression?.takeIf { it.isNotBlank() } ?: return KeyEncoder.ofToString()
         val parsed: Expression = PARSER.parseExpression(expression, TemplateParserContext())
+        // 没有 #{...} 的模板是常量：所有 key 都映射到同一个存储 key
+        require(parsed !is LiteralExpression) {
+            "@CoCache.keyExpression[$expression] is a constant; use a template such as \"#{#root.id}\"."
+        }
         return KeyEncoder { key ->
             requireNotNull(
                 parsed.getValue(key, String::class.java)

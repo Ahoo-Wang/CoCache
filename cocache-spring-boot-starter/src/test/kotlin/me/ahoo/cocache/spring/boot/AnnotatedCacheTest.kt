@@ -124,6 +124,9 @@ class AnnotatedCacheTest {
     @CoCache(loader = "namedLoader")
     interface LoaderSetCache : SetCache<String, String>
 
+    @CoCache(keyExpression = "id")
+    interface ConstantKeyCache : Cache<String, String>
+
     interface OverloadCache : Cache<String, String> {
         // 与 Cache 方法同名同参数个数，但参数类型不兼容：代理按名分派会 ClassCastException
         fun get(key: String, fallback: String): String?
@@ -345,6 +348,13 @@ class AnnotatedCacheTest {
                 assertThat(context).hasFailed()
                 context.startupFailure.assert().hasStackTraceContaining("Cache[NoRefreshCache] - absentTtl")
             }
+    }
+
+    @Test
+    fun constantKeyExpressionFails() {
+        // 没有 #{...} 的模板是常量：所有 key 都会映射到同一个条目
+        createFailure(ConstantKeyCache::class.java).assert().isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageContaining("is a constant")
     }
 
     @Test

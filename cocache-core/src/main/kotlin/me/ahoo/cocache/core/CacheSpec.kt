@@ -38,6 +38,8 @@ fun interface KeyEncoder<K> {
 /**
  * [KeyEncoder.ofToString] 的实现。命中路径只多一次引用比较：`String` 直接通过，其它类型与上次校验过的类型比较，
  * 不同时才查 [DECLARES_TO_STRING]（按类型缓存的反射结果）。
+ *
+ * 只能识别“没有重写 toString()”这一种错误：重写了但对不同实例返回相同文本的类型（如以类方式编译的 Kotlin lambda）无法识别。
  */
 private class ToStringKeyEncoder<K : Any> : KeyEncoder<K> {
     // 良性竞争：最坏情况是重复查一次按类型缓存的结果
@@ -50,7 +52,10 @@ private class ToStringKeyEncoder<K : Any> : KeyEncoder<K> {
                 "Key type [${type.name}] does not override toString(): every instance would map to a different storage key " +
                     "and the cache would never hit. Use a data class / record, override toString(), or provide a KeyEncoder."
             }
-            verified = type
+            // 只记住第一个通过校验的类型：混合类型的 key 不反复写这个字段（避免缓存行在核间来回）；其它类型走 ClassValue
+            if (verified == null) {
+                verified = type
+            }
         }
         return key.toString()
     }

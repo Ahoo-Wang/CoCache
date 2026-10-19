@@ -154,7 +154,7 @@ data class TenantKey(val tenantId: String, val id: String)
 interface TenantUserCache : Cache<TenantKey, User>
 ```
 
-The expression is evaluated on **every** read, including L2 hits, because the encoded key is how L2 is looked up. Prefer a key type with a suitable `toString()` on hot paths.
+The expression is evaluated on **every** read, including L2 hits, because the encoded key is how L2 is looked up. Prefer a key type with a suitable `toString()` on hot paths. A template without any `#{…}` would be a constant that maps every key to the same entry, so startup rejects it.
 
 **With a spec**, set a `KeyEncoder`, which is a plain function:
 
@@ -255,6 +255,7 @@ val members: Set<String> = online[roomId] // empty set when absent
 
 - **No loader.** A set cache has no source to reload from; `@CoCache(loader = …)` on one fails startup, and `get(key, loader)` throws.
 - **`invalidate` throws `UnsupportedOperationException`**, because it would destroy the only copy. Use `clear`.
+- **`put(key, emptySet())` equals `clear(key)`**: an empty set is stored as no key.
 - **TTL defaults to forever.** Each `add` or `remove` resets the expiry when you set one.
 - **Failures are loud.** Writes throw `CacheWriteException` (they are idempotent, so retry). Reads throw the Redis error, since there is no source to fall back to.
 - **Durability is Redis durability.** Use a `maxmemory-policy` that never evicts keys without a TTL (not `allkeys-*`). An asynchronous-replication failover can lose recent writes.
@@ -294,8 +295,8 @@ CoCache refuses to start rather than run a cache that can't behave as declared. 
 | Several `CacheLoader<K, V>` or `Codec<V>` beans match | A silent pick could use the wrong source or format |
 | `loader` on a `SetCache` | A set cache has no source; misses would silently return empty |
 | `FOREVER` on an attribute other than `ttl` / `expireAfterAccess`, or a zero or negative duration (except `ttlJitter`, `refreshWindow`) | Meaningless or unsafe lifetimes |
-| `refreshWindow` not less than `ttl − ttlJitter` and less than `localMaxAge` | A fresh copy would start inside the window and refresh on every hit |
+| `refreshWindow` not less than `ttl − ttlJitter` (the effective jitter), or not less than `localMaxAge` | A fresh copy would start inside the window and refresh on every hit |
 | Duplicate cache name, namespace, or bean name | Two caches would share keys or invalidations |
-| `cocache.caches.[name]` for a cache that doesn't exist, or an unknown legacy property | Almost always a typo; see [Configuration Reference](./configuration.md#validation) |
+| `cocache.caches.[name]` for a cache that doesn't exist, or a removed property name (listed in [Upgrading from 5.x](./migration-6.md#properties)) | Almost always a typo; see [Configuration Reference](./configuration.md#validation) |
 
 The `toString()` check on key types runs on the first read of each key type, not at startup.

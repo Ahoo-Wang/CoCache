@@ -18,7 +18,7 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 配置项排在最后，运维无需重新构建就能调整缓存。这也意味着 `cocache.defaults.*` 会覆盖注解中写的值。
 
 ::: tip 集合缓存保持自己的寿命
-`cocache.defaults.ttl` 与 `ttl-forever` 不作用于 [`SetCache`](./caches.md#set-cache)：它的唯一副本在 Redis 中，全局寿命会让集合过期并消失。只有 `cocache.caches.[name].ttl` 能改变集合缓存的寿命，`defaults` 的其它配置项照常生效。
+`cocache.defaults.ttl` 与 `ttl-forever` 不作用于 [`SetCache`](./caches.md#set-cache)：它的唯一副本在 Redis 中，全局寿命会让集合过期并消失。`cocache.defaults.absent-ttl` 与 `refresh-window` 同样跳过集合缓存，因为它没有数据源。只有 `cocache.caches.[name].ttl` / `ttl-forever` 能改变集合缓存的寿命，`defaults` 的其它配置项照常生效。
 :::
 
 ## 顶层配置项 {#properties}
@@ -45,7 +45,7 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `absent-ttl` | 时长 | `1m` | `@CoCache.absentTtl` | 负缓存的寿命 |
 | `local-max-age` | 时长 | `5m` | `@CoCache.localMaxAge` | L2 副本的最长寿命 |
 | `degraded-local-max-age` | 时长 | `10s` | — | 无法写入 Redis 的 L2 副本的最长寿命 |
-| `refresh-window` | 时长 | 关闭 | `@CoCache.refreshWindow` | 提前刷新窗口。这里必须为正数，见[校验](#validation)。 |
+| `refresh-window` | 时长 | 关闭 | `@CoCache.refreshWindow` | 提前刷新窗口。`0`：关闭（也会关掉声明中开启的窗口），见[校验](#validation)。 |
 | `lease-ttl` | 时长 | `10s` | — | 持有者一直不写回时 lease 的寿命，应大于 loader 的 p99 |
 | `lease-wait` | 时长 | `200ms` | — | 未命中时等待其它实例加载的最长时间，超时后自行加载 |
 | `load-max-concurrent` | integer | `0`（不限制） | — | 每个实例上每个缓存同时进行的数据源加载数上限 |
@@ -135,7 +135,7 @@ classpath 中有 `spring-boot-starter-actuator` 时：
 CoCache 不会带着无法兑现的配置运行，而是让启动失败：
 
 - **未知的缓存名**出现在 `cocache.caches` 下（几乎总是拼写错误）。错误信息会列出已声明的缓存。
-- **未知的遗留配置项。** 少数已停用的配置名，如 `cocache.redis.strict-failure` 或 `cocache.load.*` 下的任何项，会让启动失败，错误信息给出替代项。
+- **已删除的配置名**（列在[从 5.x 升级](./migration-6.md#properties)中），如 `cocache.redis.strict-failure` 或 `cocache.load.*` 下的任何项，会让启动失败，错误信息给出替代项。
 - **不合法的策略。** 所有时长必须为正，且不超过 100 年；只有 `ttl-jitter`、`lease-wait` 与 `load-acquire-timeout` 可以为 0。`refresh-window` 必须小于 `ttl − ttl-jitter`（按实际抖动计算），也必须小于 `local-max-age`。
 
 `refresh-window: 0` 表示关闭提前刷新，因此配置项也可以关掉声明中开启的窗口。

@@ -62,9 +62,17 @@ class SimpleJoinCache<K1 : Any, V1 : Any, K2 : Any, V2 : Any>(
         firstCache.invalidate(key)
     }
 
+    /**
+     * 两者都会尝试失效：一方抛出时另一方仍然执行，异常合并后抛出。
+     */
     override fun invalidate(firstKey: K1, joinKey: K2) {
-        firstCache.invalidate(firstKey)
-        joinCache.invalidate(joinKey)
+        val failure = runCatching { firstCache.invalidate(firstKey) }.exceptionOrNull()
+        val joinFailure = runCatching { joinCache.invalidate(joinKey) }.exceptionOrNull()
+        val error = failure ?: joinFailure ?: return
+        if (failure != null && joinFailure != null) {
+            error.addSuppressed(joinFailure)
+        }
+        throw error
     }
 
     override fun toString(): String {

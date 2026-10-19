@@ -12,7 +12,7 @@ Level 2 Distributed Coherence Cache Framework
 
 > **Documentation:** [English](https://cocache.ahoo.me/) | [中文](https://cocache.ahoo.me/zh/)
 
-CoCache gives Spring Boot services local-memory read latency without serving stale data indefinitely. Each instance keeps an in-process copy (L2, Caffeine) in front of a shared copy (L1, Redis) in front of your data source. Redis serializes every write per key, so a slow load can never overwrite a newer invalidation, and every `put` or `invalidate` tells the other instances to drop their local copy in the same round trip.
+CoCache gives Spring Boot services local-memory read latency without serving stale data indefinitely. Each instance keeps an in-process copy (L2, Caffeine) in front of a shared copy (L1, Redis) in front of your data source. Redis serializes every write per key, so a slow load can never overwrite a newer invalidation, and every `put` or `invalidate` tells the other instances to drop their local copy in the same round trip (with the default atomic broadcast; sharded or non-atomic mode takes two round trips).
 
 ```mermaid
 flowchart LR
@@ -60,7 +60,7 @@ fun userSpec(repo: UserRepository): CacheSpec<String, User> = cacheSpec("user") 
 }
 ```
 
-The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each step. Coming from 5.x? Read the [5.x → 6.0 migration guide](https://cocache.ahoo.me/guide/migration-6).
+The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each step. Coming from 5.x? Read [Upgrading from 5.x](https://cocache.ahoo.me/guide/migration-6).
 
 ## Features
 

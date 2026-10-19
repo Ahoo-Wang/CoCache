@@ -25,6 +25,8 @@ import org.springframework.beans.factory.SmartInitializingSingleton
  *
  * 所有单例创建完成后校验：配置文件中出现未声明的缓存名时启动失败（多半是拼写错误）。缓存名不区分大小写
  * （环境变量绑定的 key 是小写）；“已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供。
+ *
+ * 内部实现（starter 接线使用），不在兼容性承诺之内。
  */
 class CacheAssembler(
     private val runtime: CacheRuntime,

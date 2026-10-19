@@ -65,7 +65,7 @@ The check matches by cache name and skips operations that name no cache (those u
 | `evict(key)` (`@CacheEvict`) | `cache.invalidate(key)` on every instance |
 | `clear()` (`allEntries = true`) | Clears **this instance's L2 only**. Redis is shared and is never cleared wholesale. |
 | `retrieve(key)` (async and reactive) | Runs the blocking lookup on a daemon thread pool. |
-| `retrieve(key, loader)` (async and reactive with `sync = true`) | Loads through the same lease-protected path as `get(key, loader)`, waiting for the async loader on that pool. |
+| `retrieve(key, loader)` (async and reactive with `sync = true`) | Loads through the same lease-protected path as `get(key, loader)`, waiting for the async loader on that pool. Each waiting call holds one executor thread for the duration of the load: the default executor uses a virtual thread per task on JDK 21+, and a bounded daemon pool (`max(8, 4 × CPUs)` threads, extra tasks queue) on JDK 17. A custom executor passed to `CoCacheSpringCacheManager(runtime, executor)` must not also be the thread that completes the loader's future, or a saturated pool deadlocks. |
 
 ### Null results {#null}
 

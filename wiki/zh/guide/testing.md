@@ -29,7 +29,7 @@ class UserServiceTest {
 }
 ```
 
-- 即使配置了 Spring Data Redis，也不会连接 Redis。starter 会记录一条 `WARN`，说明该后端只适用于单进程。
+- 即使配置了 Spring Data Redis，CoCache 也不会连接 Redis。starter 会记录一条 `WARN`，说明该后端只适用于单进程。classpath 中有 Spring Data Redis 与 actuator 时，Spring Boot 自带的 Redis 健康检查仍会连接 Redis；用 `management.health.redis.enabled=false` 关闭它。
 - 缓存、loader、`TransactionalInvalidator`、Spring Cache 与 actuator 端点都与生产环境一样工作。
 - 内存中的“Redis”与 Spring 上下文同生命周期，而 Spring 会在测试类之间复用上下文。请失效测试用到的 key（或使用 `@DirtiesContext`），避免一个测试的条目泄漏到下一个。
 

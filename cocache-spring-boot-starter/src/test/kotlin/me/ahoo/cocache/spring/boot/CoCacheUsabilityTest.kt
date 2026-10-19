@@ -280,6 +280,12 @@ class CoCacheUsabilityTest {
 
         @Cacheable("not-cocache")
         open fun otherCache(id: String): String = "o-$id"
+
+        /**
+         * 显式指定其它 CacheManager：不经过 CoCache，不告警。
+         */
+        @Cacheable(cacheNames = ["user"], cacheManager = "otherCacheManager")
+        open fun otherManager(id: String): String = "m-$id"
     }
 
     @CacheConfig(cacheNames = ["profile"])
@@ -363,6 +369,29 @@ class CoCacheUsabilityTest {
                 .any { it.contains("UserService#unsynced") && it.contains("[user") && it.contains("sync = true") }
                 .assert().withFailMessage { "sync warning not logged: $logs" }.isTrue()
         }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class OwnCacheManagerConfig {
+        @Bean
+        fun cacheManager(): org.springframework.cache.CacheManager =
+            org.springframework.cache.concurrent.ConcurrentMapCacheManager()
+    }
+
+    @Test
+    fun syncCheckSkipsWhenAnotherCacheManagerWins() {
+        // 用户自己的 CacheManager 生效（CoCache 的退让）：@Cacheable 不经过 CoCache，即使要求 sync 也不失败
+        runner.withUserConfiguration(
+            SpecConfig::class.java,
+            CustomBackendConfig::class.java,
+            CachingConfig::class.java,
+            OwnCacheManagerConfig::class.java
+        )
+            .withPropertyValues("cocache.spring-cache.require-sync=true")
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                context.getBean(SpringCacheSyncCheck::class.java).violations.assert().isEmpty()
+            }
     }
 
     @Test

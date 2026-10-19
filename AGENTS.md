@@ -32,7 +32,7 @@ docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 
 | Purpose | Command |
 |---------|---------|
-| Full gate (same as CI): tests, detekt, dokka, license headers, JMH compile, coverage ≥ 95% lines / ≥ 90% branches | `./gradlew check` |
+| Full gate (same as CI): tests, detekt, license headers, JMH compile, coverage ≥ 95% lines / ≥ 90% branches (Dokka runs when the javadoc jar is built for publishing) | `./gradlew check` |
 | Compile only | `./gradlew build -x test` |
 | One module | `./gradlew :cocache-core:test` |
 | One class or method | `./gradlew :cocache-core:test --tests "me.ahoo.cocache.core.engine.CoherentEngineTest"` |

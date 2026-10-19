@@ -152,7 +152,7 @@ class MySetEngineTest : SetEngineSpec() {
 }
 ```
 
-Run them with your build's normal test task (JUnit 5). `cocache-redis` runs all three suites three times: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. Do the same for every mode your backend supports.
+Run them with your build's normal test task (JUnit 5). `cocache-redis` runs `BackendProtocolSpec` and `EngineSpec` in three modes: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. `SetEngineSpec` runs on classic Pub/Sub only. Run the suites for every mode your backend supports.
 
 `InMemoryBackend` implements the whole protocol in one process. Several runtimes sharing one instance behave like several instances, which makes it a good backend for application tests.
 

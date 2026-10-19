@@ -94,8 +94,12 @@ configure(libraryProjects) {
     apply<JacocoPlugin>()
     apply<JavaLibraryPlugin>()
     configure<JavaPluginExtension> {
+        // Kotlin 插件自己注册 sources jar（kotlinSourcesJar），再调用 withSourcesJar() 会在 .module 中重复登记
         withJavadocJar()
-        withSourcesJar()
+    }
+    // javadoc jar 放 Dokka 生成的 HTML（Java 的 javadoc 读不了 Kotlin 源码，否则是空 jar）
+    tasks.named<Jar>("javadocJar") {
+        from(tasks.named("dokkaGeneratePublicationHtml"))
     }
     apply(plugin = "org.jetbrains.kotlin.jvm")
     configure<KotlinJvmProjectExtension> {
@@ -107,6 +111,9 @@ configure(libraryProjects) {
         compilerOptions {
             freeCompilerArgs = listOf("-Xjsr305=strict", "-jvm-default=enable")
             javaParameters = true
+            // 产物的元数据与标准库 API 固定在 Spring Boot 4 支持的最低 Kotlin 版本，用户用较老的 Kotlin 编译器与 stdlib 也能使用
+            apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_2)
+            languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_2)
         }
     }
     tasks.withType<JavaCompile> {

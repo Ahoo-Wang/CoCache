@@ -16,6 +16,7 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.KeyInspection
+import org.springframework.boot.actuate.endpoint.InvalidEndpointRequestException
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
@@ -25,7 +26,7 @@ import org.springframework.boot.actuate.endpoint.annotation.Selector
  * 6.0 缓存运维端点（RFC 0003 §4.14）：列出缓存及其指标、查看单个缓存、清空本节点的 L2、按 key 查看与强制失效。
  *
  * 按 key 的操作以**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分）为路径参数，适用于任意 key 类型；
- * key 中可以含 `/`（匹配剩余的全部路径段）。缓存不存在时返回 `null`（HTTP 404）。
+ * key 中可以含 `/`（匹配剩余的全部路径段）。缓存不存在时返回 `null`：GET 为 HTTP 404，DELETE 为 HTTP 204（什么也不做）；空 key 为 HTTP 400。
  */
 @Endpoint(id = CoCacheEndpoint.ID)
 class CoCacheEndpoint(private val runtime: CacheRuntime) {
@@ -83,7 +84,17 @@ class CoCacheEndpoint(private val runtime: CacheRuntime) {
      */
     data class InvalidationReport(val cache: String, val key: String)
 
-    private fun encodedKeyOf(segments: Array<String>): String = segments.joinToString("/")
+    /**
+     * 剩余路径段以 `/` 连接为编码后的 key。Spring 会去掉空段与首尾空白，因此含 `//`、首尾 `/` 或空白的 key 无法经端点精确寻址；
+     * 空 key（如结尾的 `/`）按非法请求（400）拒绝，不会失效空串 key。
+     */
+    private fun encodedKeyOf(segments: Array<String>): String {
+        val key = segments.joinToString("/")
+        if (key.isEmpty()) {
+            throw InvalidEndpointRequestException("Key must not be empty.", "Key must not be empty.")
+        }
+        return key
+    }
 
     data class CacheReport(
         val name: String,

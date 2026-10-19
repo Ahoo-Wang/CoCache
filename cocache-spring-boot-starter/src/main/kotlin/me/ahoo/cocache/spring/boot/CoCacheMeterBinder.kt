@@ -27,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
- * 把 6.0 每个缓存的 [CacheMetrics] 绑定为 Micrometer 指标（`cocache.*`，以 `cache` 标签区分）。
+ * 把每个缓存的 [CacheMetrics] 绑定为 Micrometer 指标（`cocache.*`，以 `cache` 标签区分）。
  *
  * 指标读取累计值，不在缓存的读写路径上额外记录。缓存在首次注入时才创建，因此绑定按 [CacheRuntime.cacheNames]
  * 增量进行：[bindTo] 绑定当时已有的缓存并记住 registry，之后创建的缓存由 [bindNewCaches] 补绑

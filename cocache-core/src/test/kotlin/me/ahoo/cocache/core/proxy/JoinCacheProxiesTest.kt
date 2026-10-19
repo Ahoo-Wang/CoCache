@@ -98,8 +98,10 @@ class JoinCacheProxiesTest {
     }
 
     @Test
-    fun narrowedReturnTypesAreAccepted() {
-        JoinCacheProxies.create(NarrowedJoinCache::class.java, target).name.assert().isEqualTo("users")
+    fun narrowedReturnTypesAreRejected() {
+        // 目标返回的是 LinkedHashMap：收窄为 HashMap 会在调用时 ClassCastException，因此创建时就拒绝
+        runCatching { JoinCacheProxies.create(NarrowedJoinCache::class.java, target) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java).hasMessageContaining("getAll")
     }
 
     @Test

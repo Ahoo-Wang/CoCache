@@ -51,6 +51,17 @@ description: Release history and notable changes for CoCache.
 
 Removed 5.x property keys fail startup with a message that names the replacement. Some renames change meaning (for example, L2 is now always bounded by `localMaxAge`, 5 minutes by default): see [Behavior changes](./migration-6.md#semantics).
 
+### Dependencies
+
+| Dependency | Version |
+|------------|---------|
+| JDK (minimum) | 17 (tested on 17 and 25) |
+| Spring Boot | 4.1.1 |
+| Kotlin | 2.4.21 (artifacts target Kotlin API and language level 2.2) |
+| Lettuce | 7.5.2.RELEASE |
+| Caffeine | 3.2.4 |
+| Jackson | 3.1.5 (`tools.jackson`) |
+
 ### Gradle Setup
 
 ```kotlin

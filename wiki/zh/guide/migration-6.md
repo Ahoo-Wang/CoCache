@@ -1,9 +1,9 @@
 ---
-title: 从 5.x 迁移到 6.0
+title: 从 5.x 升级
 description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注解、API、配置项、Redis 线格式、指标、Actuator、移除的能力，以及如何切换集群。
 ---
 
-# 从 5.x 迁移到 6.0
+# 从 5.x 升级
 
 6.0 是一次重写。接口式声明（`@CoCache interface UserCache : Cache<String, User>`）仍然可用，只需更换 import 并修改几个改名的属性；但它周围几乎全部改变了：API、SPI、模块、配置项、Redis 线格式和失效通道。本页列出每一项变化及其替代方案。
 
@@ -87,7 +87,7 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 |-----|-----|
 | `cache[key]` / `get(key)` | `cache[key]` / `get(key)` |
 | `getCache(key): CacheValue<V>?` | `lookup(key): Lookup<V>`（`Present(value, expiresAt)` / `Absent(expiresAt)`） |
-| `getTtlAt(key)` | `lookup(key).expiresAt`（`Instant`，毫秒精度） |
+| `getTtlAt(key)` | `lookup(key).expiresAt`：返回的这份副本的到期时间（命中 L2 时是 L2 副本的到期时间，受 `localMaxAge` / `degradedLocalMaxAge` 限制），精度为缓存时钟的刻度。要看 Redis 中的 TTL，用 [actuator 查看 key](../operations/observability.md#inspect-key) 或 `CacheAdmin.inspect`。 |
 | `getCaches(keys)` / `getAll(keys)` | `getAll(keys)`，现在会与并发的单 key 加载合并 |
 | `cache[key] = value` / `set(key, value)` | `put(key, value)` |
 | `set(key, ttlAt, value)` | `put(key, value, ttl: Duration)` |
@@ -203,7 +203,7 @@ JoinCache 仍然保留，位于 `me.ahoo.cocache.api.join`，但现在是**只�
 | `cocache.l2.size` | `cocache.local.size` |
 | `cocache.eviction.publish.failures`（无 `cache` 标签） | 删除。失效与广播在同一个脚本中完成，失败计入 `cocache.write.failures`，最终失败计入 `cocache.invalidations.dropped` |
 
-新增：`lease.waits`、`lease.wait.timeouts`、`fill.rejections`、`degraded.fills`、`reclaims`、`unknown.formats`、`refresh.rejections`、`remote.failures`、`write.failures`、`invalidation.retries`、`invalidations.dropped`。见[运维](../operations/observability.md#metrics)。
+新增：`cocache.lease.waits`、`cocache.lease.wait.timeouts`、`cocache.fill.rejections`、`cocache.degraded.fills`、`cocache.reclaims`、`cocache.unknown.formats`、`cocache.refresh.rejections`、`cocache.remote.failures`、`cocache.write.failures`、`cocache.invalidation.retries`、`cocache.invalidations.dropped`。见[运维](../operations/observability.md#metrics)。
 
 ## 行为变化 {#semantics}
 

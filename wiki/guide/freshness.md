@@ -80,7 +80,10 @@ fun externalInvalidator(backend: CoherenceBackend) = ExternalInvalidator(backend
 // after committing the change:
 externalInvalidator.invalidate("UserCache", "42")                         // namespace, encoded key
 externalInvalidator.invalidate("UserCache", listOf("42", "43"))           // several keys
-externalInvalidator.invalidate("ProductCache", "7", keyPrefix = "shop:")  // non-default prefix
+
+// a cache with a non-default key prefix gets its own invalidator
+val shopInvalidator = ExternalInvalidator(backend, "shop:")
+shopInvalidator.invalidate("ProductCache", "7")
 ```
 
 ```java [Java]
@@ -88,13 +91,14 @@ ExternalInvalidator invalidator = new ExternalInvalidator(backend);
 
 invalidator.invalidate("UserCache", "42");
 invalidator.invalidate("UserCache", List.of("42", "43"));
-invalidator.invalidate("ProductCache", "7", "shop:");
+new ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7");
 ```
 
 :::
 
 - Pass the cache's **namespace** (the cache name unless set) and the **encoded key**: the `toString()` or `keyExpression` result, as it appears in the storage key.
-- Pass `keyPrefix` when the cache doesn't use `cocache:`.
+- Pass `keyPrefix` to the constructor when the cache doesn't use `cocache:`.
+- Calls are idempotent: if one throws (for example, the delete succeeded but the broadcast failed), retry it.
 - It deletes the keys from Redis and broadcasts the invalidation (in one script with the default channel mode). Every instance, including caches in the same process, drops its L2 copy.
 - It doesn't retry. If Redis fails, it throws; retry the call yourself.
 
@@ -146,7 +150,7 @@ cocache:
 - A failed or skipped refresh only logs. The value expires normally, so staleness bounds never depend on refresh.
 - Refreshes run on a bounded pool (at most 4 threads, queue of 1024). When it is full, refreshes are skipped and counted in `cocache.refresh.rejections`.
 
-To turn off a window that the annotation enables, set `@CoCache(refreshWindow = 0)` or set `refreshWindow = null` in a [customizer](./caches.md#customizer).
+To turn off a window that a declaration enables, use any of: `refresh-window: 0` in the [properties](./configuration.md#policy-properties), `@CoCache(refreshWindow = 0)`, or `refreshWindow = null` in a [customizer](./caches.md#customizer).
 
 ## When Redis is down during a write {#redis-down}
 

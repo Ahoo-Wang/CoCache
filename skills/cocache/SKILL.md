@@ -11,7 +11,7 @@ CoCache (6.x) is a Java/Kotlin two-level distributed coherent cache:
 - **Data source**: a `CacheLoader<K, V>`; `null` means "not found" and is cached for `absentTtl`.
 - **Coherence**: a miss takes a lease in Redis and only the lease holder may fill, so a slow load never overwrites a newer invalidation. `put` and `invalidate` write and broadcast in one Lua script; peers drop their L2 copy when the message arrives. Lost messages are bounded by `localMaxAge` (default 5 min) and channel resets.
 
-Packages are `me.ahoo.cocache.*` (5.x used `me.ahoo.cache.*`). The normative design is `docs/architecture.md` in the CoCache repository.
+Packages are `me.ahoo.cocache.*`. The normative design is `docs/architecture.md` in the CoCache repository.
 
 ## Start Here
 

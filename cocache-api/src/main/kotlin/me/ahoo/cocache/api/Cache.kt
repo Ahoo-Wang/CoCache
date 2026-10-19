@@ -16,7 +16,7 @@ package me.ahoo.cocache.api
 import java.time.Duration
 
 /**
- * 两级一致性缓存（6.0）：进程内 L2 → 共享 L1 → 数据源。
+ * 两级一致性缓存：进程内 L2 → 共享 L1 → 数据源。
  *
  * 一致性目标见 RFC 0003 §1.2：陈旧度有上界（G1）、失效不被吞没（G2）、命中路径便宜（G3）。
  *

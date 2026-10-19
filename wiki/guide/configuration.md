@@ -18,7 +18,7 @@ Each cache's settings are built in layers. A later layer overrides an earlier on
 Properties come last so operators can retune a cache without a rebuild. This means `cocache.defaults.*` overrides what an annotation says, too.
 
 ::: tip Set caches keep their lifetime
-`cocache.defaults.ttl` and `ttl-forever` don't apply to a [`SetCache`](./caches.md#set-cache): its only copy is Redis, so a global lifetime would make sets expire and disappear. Only `cocache.caches.[name].ttl` changes a set cache's lifetime. Every other `defaults` key applies as usual.
+`cocache.defaults.ttl` and `ttl-forever` don't apply to a [`SetCache`](./caches.md#set-cache): its only copy is Redis, so a global lifetime would make sets expire and disappear. `cocache.defaults.absent-ttl` and `refresh-window` are skipped too, since a set cache has no source. Only `cocache.caches.[name].ttl` / `ttl-forever` change a set cache's lifetime. Every other `defaults` key applies as usual.
 :::
 
 ## Top-level properties {#properties}
@@ -45,7 +45,7 @@ These keys work under both `cocache.defaults.` and `cocache.caches.[name].`.
 | `absent-ttl` | duration | `1m` | `@CoCache.absentTtl` | Lifetime of a negative entry |
 | `local-max-age` | duration | `5m` | `@CoCache.localMaxAge` | Maximum age of an L2 copy |
 | `degraded-local-max-age` | duration | `10s` | — | Maximum age of an L2 copy that couldn't be written to Redis |
-| `refresh-window` | duration | off | `@CoCache.refreshWindow` | Refresh-ahead window. Must be positive here; see [validation](#validation). |
+| `refresh-window` | duration | off | `@CoCache.refreshWindow` | Refresh-ahead window. `0`: off (also removes a window the declaration enables); see [validation](#validation). |
 | `lease-ttl` | duration | `10s` | — | How long a lease lives if its holder never fills it. Keep it above the loader's p99. |
 | `lease-wait` | duration | `200ms` | — | How long a miss waits for another instance's load before loading itself |
 | `load-max-concurrent` | integer | `0` (unlimited) | — | Maximum concurrent source loads per cache per instance |
@@ -135,7 +135,7 @@ See [Observability](/operations/observability) for the endpoint paths and meter 
 CoCache fails startup instead of running with a configuration it can't honor:
 
 - **Unknown cache names** under `cocache.caches` (almost always a typo). The message lists the declared caches.
-- **Unknown legacy keys.** A few retired property names, such as `cocache.redis.strict-failure` or anything under `cocache.load.*`, fail startup with a message naming the replacement.
+- **Removed property names** (listed in [Upgrading from 5.x](./migration-6.md#properties)), such as `cocache.redis.strict-failure` or anything under `cocache.load.*`, fail startup with a message naming the replacement.
 - **Invalid policies.** Every duration must be positive and at most 100 years; only `ttl-jitter`, `lease-wait`, and `load-acquire-timeout` may be zero. `refresh-window` must be less than `ttl − ttl-jitter` (the effective jitter) and less than `local-max-age`.
 
 `refresh-window: 0` turns refresh-ahead off, so a property can also remove a window that the declaration enables.

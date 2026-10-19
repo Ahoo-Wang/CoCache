@@ -58,9 +58,14 @@ class ExternalInvalidatorTest {
             val invalidator = ExternalInvalidator(backend)
             invalidator.invalidate("user", listOf("1", "1"))
             awaitCondition { cache["1"] == "v1" }
-            // 自定义前缀：删除的是对应的存储 key
-            invalidator.invalidate("user", listOf("2"), keyPrefix = "app:")
             invalidator.close()
+            invalidator.close()
+            runCatching {
+                invalidator.invalidate(
+                    "user",
+                    "1"
+                )
+            }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
         }
     }
 
@@ -69,5 +74,28 @@ class ExternalInvalidatorTest {
         val backend = HookedBackend(InMemoryBackend())
         ExternalInvalidator(backend).use { it.invalidate("user", emptyList()) }
         backend.reads.get().assert().isZero()
+    }
+
+    @Test
+    fun customKeyPrefixAndEmptyKeyValidation() {
+        val memory = InMemoryBackend()
+        CacheRuntime.builder().backend(memory).build().use { node ->
+            val cache = node.create(
+                cacheSpec<String, String>("user") {
+                    codec = StringCodec
+                    keyPrefix = "app:"
+                    loader = CacheLoader { database[it] }
+                }
+            )
+            database["1"] = "v0"
+            cache["1"]
+            database["1"] = "v1"
+            ExternalInvalidator(memory, "app:").use { invalidator ->
+                runCatching { invalidator.invalidate("user", "") }.exceptionOrNull()
+                    .assert().isInstanceOf(IllegalArgumentException::class.java)
+                invalidator.invalidate("user", "1")
+            }
+            awaitCondition { cache["1"] == "v1" }
+        }
     }
 }

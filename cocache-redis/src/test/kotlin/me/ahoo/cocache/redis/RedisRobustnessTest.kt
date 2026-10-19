@@ -17,6 +17,7 @@ import io.lettuce.core.RedisException
 import io.lettuce.core.cluster.SlotHash
 import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import io.lettuce.core.cluster.pubsub.StatefulRedisClusterPubSubConnection
+import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -27,6 +28,9 @@ import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assumptions
@@ -86,6 +90,34 @@ class RedisRobustnessTest {
             val read = store.read(key("changed"), lease, null) as RemoteRead.Hit
             RedisTestSupport.withCommands { it.set(key("changed"), "other") }
             store.reclaim(key("changed"), Digest.of(read.envelope), lease).assert().isFalse()
+        }
+    }
+
+    /**
+     * 集合缓存 key 上是外来内容：原生 Set 与没有 `!f` 的 Hash 都读作空集合，`add` 整体覆盖它们，`remove` 不改动外来 Hash。
+     */
+    @Test
+    fun setCacheTreatsForeignContentAsAbsentAndAddReplacesIt() {
+        RedisTestSupport.backend().use { backend ->
+            CacheRuntime.builder().backend(backend).build().use { runtime ->
+                val index: SetCache<String, String> = runtime.create(
+                    setCacheSpec<String, String>(namespace) { elementCodec = StringCodec }
+                )
+                RedisTestSupport.withCommands { commands ->
+                    commands.sadd(key("native"), "x")
+                    commands.hset(key("hash"), "field", "value")
+                    commands.hset(key("untouched"), "+a", "")
+                }
+                for (name in listOf("native", "hash")) {
+                    index[name].assert().isEmpty()
+                    index.add(name, listOf("a"))
+                    awaitCondition { index[name] == setOf("a") }
+                }
+                index.remove("untouched", listOf("a"))
+                RedisTestSupport.withCommands { commands ->
+                    commands.hexists(key("untouched"), "+a").assert().isTrue()
+                }
+            }
         }
     }
 

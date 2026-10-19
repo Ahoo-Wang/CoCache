@@ -80,7 +80,10 @@ fun externalInvalidator(backend: CoherenceBackend) = ExternalInvalidator(backend
 // 提交变更之后：
 externalInvalidator.invalidate("UserCache", "42")                         // namespace，编码后的 key
 externalInvalidator.invalidate("UserCache", listOf("42", "43"))           // 多个 key
-externalInvalidator.invalidate("ProductCache", "7", keyPrefix = "shop:")  // 非默认前缀
+
+// 使用非默认 key 前缀的缓存用单独的实例
+val shopInvalidator = ExternalInvalidator(backend, "shop:")
+shopInvalidator.invalidate("ProductCache", "7")
 ```
 
 ```java [Java]
@@ -88,13 +91,14 @@ ExternalInvalidator invalidator = new ExternalInvalidator(backend);
 
 invalidator.invalidate("UserCache", "42");
 invalidator.invalidate("UserCache", List.of("42", "43"));
-invalidator.invalidate("ProductCache", "7", "shop:");
+new ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7");
 ```
 
 :::
 
 - 传入缓存的 **namespace**（未设置时就是缓存名）和**编码后的 key**：即 `toString()` 或 `keyExpression` 的结果，与它在存储 key 中的样子一致。
-- 缓存不用 `cocache:` 前缀时传入 `keyPrefix`。
+- 缓存不用 `cocache:` 前缀时，在构造函数中传入 `keyPrefix`。
+- 调用是幂等的：抛出异常时（例如删除成功而广播失败）请重试。
 - 它从 Redis 删除 key 并广播失效（默认通道模式下在同一个脚本中完成）。所有实例，包括同一进程中的缓存，都会丢弃 L2 副本。
 - 它不重试。Redis 故障时直接抛出，请自行重试。
 
@@ -146,7 +150,7 @@ cocache:
 - 刷新失败或被跳过只记日志。值照常过期，所以陈旧度上界从不依赖刷新。
 - 刷新在一个有界线程池中执行（最多 4 个线程，队列 1024）。池满时跳过刷新，计入 `cocache.refresh.rejections`。
 
-要关闭注解开启的窗口，设置 `@CoCache(refreshWindow = 0)`，或在[定制器](./caches.md#customizer)中把 `refreshWindow` 设为 `null`。
+要关闭声明中开启的窗口，可以任选其一：在[配置项](./configuration.md#policy-properties)中写 `refresh-window: 0`、`@CoCache(refreshWindow = 0)`，或在[定制器](./caches.md#customizer)中把 `refreshWindow` 设为 `null`。
 
 ## 写入时 Redis 故障 {#redis-down}
 

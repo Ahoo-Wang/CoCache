@@ -14,7 +14,7 @@
 package me.ahoo.cocache.api
 
 /**
- * 读取时 L1 失败，且缓存配置为严格读失败模式（`ReadFailureMode.THROW`，对应 5.x 的 `strictFailure = true`）。
+ * 读取时 L1 失败，且缓存配置为严格读失败模式（`ReadFailureMode.THROW`）。
  *
  * 默认模式下 L1 读失败会降级为直接回源，不会抛出本异常。
  */

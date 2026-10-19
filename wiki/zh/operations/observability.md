@@ -50,7 +50,7 @@ Prometheus 名称遵循 Micrometer 的约定：`cocache.misses` 变为 `cocache_
 | `cocache.fill.rejections` | counter | 持有 lease、但 Redis 拒绝填充的加载：失效销毁了 lease、loader 慢于 `lease-ttl`，或者填充失败 |
 | `cocache.degraded.fills` | counter | 只写入 L2、以 `degraded-local-max-age` 限龄的加载：Redis 读取失败、等待 lease 超时、填充被拒绝、值的格式未知，或者该 key 的失效仍在重试 |
 | `cocache.stale.discards` | counter | 读取期间该 key 发生了失效，因而被丢弃的 L2 填充。这是 L2 栅栏在起作用 |
-| `cocache.reclaims` | counter | 本实例无法解码的 L1 值（外来内容或编解码失败）。读路径在值未变的前提下把它转为 lease 并回源 |
+| `cocache.reclaims` | counter | 本实例无法解码的 L1 值（外来内容或编解码失败）。随后由单独的 reclaim 脚本在值未变的前提下把它转为 lease，本实例再回源 |
 | `cocache.unknown.formats` | counter | 以比本实例更新的线格式写入的 L1 值。直接回源，不覆盖任何内容 |
 
 ### 写入、失效与通道 {#metrics-writes}
@@ -141,7 +141,7 @@ management:
 | `GET /actuator/cocache/{name}/{key}` | [查看一个 key](#inspect-key) 在 L2 与 L1 中的状态 | 本实例，外加一次 Redis 读取 |
 | `DELETE /actuator/cocache/{name}/{key}` | [失效一个 key](#invalidate-key) | **所有实例** |
 
-`{name}` 是缓存名，不存在时返回 `404`。
+`{name}` 是缓存名。缓存不存在时，`GET` 返回 `404`，`DELETE` 返回无内容的 `204`（按 key 的 `DELETE` 成功时返回 `200` 及结果）。空的 `{key}` 以 `400` 拒绝。Spring 会去掉空的路径段与首尾空白，因此含 `//`、首尾 `/` 或首尾空格的 key 无法经端点精确寻址。
 
 缓存报告：
 

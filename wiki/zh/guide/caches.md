@@ -154,7 +154,7 @@ data class TenantKey(val tenantId: String, val id: String)
 interface TenantUserCache : Cache<TenantKey, User>
 ```
 
-表达式在**每次**读取时求值，包括 L2 命中，因为 L2 正是按编码后的 key 查找的。热点路径上优先使用 `toString()` 合适的 key 类型。
+表达式在**每次**读取时求值，包括 L2 命中，因为 L2 正是按编码后的 key 查找的。热点路径上优先使用 `toString()` 合适的 key 类型。不含任何 `#{…}` 的模板是常量，会把所有 key 映射到同一个条目，因此启动时被拒绝。
 
 **spec 声明**设置 `KeyEncoder`，它只是一个普通函数：
 
@@ -255,6 +255,7 @@ val members: Set<String> = online[roomId] // 不存在时为空集合
 
 - **没有 loader。** 集合缓存没有可重新加载的数据源；在它上面写 `@CoCache(loader = …)` 启动失败，`get(key, loader)` 会抛出异常。
 - **`invalidate` 抛出 `UnsupportedOperationException`**，因为它会销毁唯一副本。请用 `clear`。
+- **`put(key, emptySet())` 等同于 `clear(key)`**：空集合不保留 key。
 - **TTL 默认永不过期。** 设置了 TTL 时，每次 `add` 或 `remove` 都会重设到期时间。
 - **故障会显式暴露。** 写入抛出 `CacheWriteException`（它们是幂等的，可以重试）。读取直接抛出 Redis 错误，因为没有数据源可以降级。
 - **持久性等于 Redis 的持久性。** `maxmemory-policy` 不能淘汰没有 TTL 的 key（不要用 `allkeys-*`）。异步复制下的故障切换可能丢失最近的写入。
@@ -294,8 +295,8 @@ CoCache 宁可启动失败，也不运行一个无法按声明工作的缓存。
 | 匹配到多个 `CacheLoader<K, V>` 或 `Codec<V>` bean | 静默挑一个可能用错数据源或格式 |
 | `SetCache` 上设置了 `loader` | 集合缓存没有数据源，未命中会悄悄返回空集合 |
 | 在 `ttl` / `expireAfterAccess` 之外的属性上用 `FOREVER`，或时长为 0 或负数（`ttlJitter`、`refreshWindow` 除外） | 无意义或不安全的寿命 |
-| `refreshWindow` 不小于 `ttl − ttlJitter`，或不小于 `localMaxAge` | 新副本一出生就在窗口内，每次命中都会触发刷新 |
+| `refreshWindow` 不小于 `ttl − ttlJitter`（按实际抖动计算），或不小于 `localMaxAge` | 新副本一出生就在窗口内，每次命中都会触发刷新 |
 | 缓存名、namespace 或 bean 名重复 | 两个缓存会共享 key 或失效消息 |
-| `cocache.caches.[name]` 指向不存在的缓存，或出现未知的遗留配置项 | 几乎总是拼写错误；见[配置参考](./configuration.md#validation) |
+| `cocache.caches.[name]` 指向不存在的缓存，或使用了已删除的配置名（列在[从 5.x 升级](./migration-6.md#properties)中） | 几乎总是拼写错误；见[配置参考](./configuration.md#validation) |
 
 key 类型的 `toString()` 检查发生在每种 key 类型第一次读取时，而不是启动时。

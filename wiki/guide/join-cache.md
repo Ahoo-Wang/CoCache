@@ -85,7 +85,7 @@ A `null` join key means "nothing to join": the result has `joinKey = null` and `
 | `get(key)` | Reads the first cache (loading on a miss). Absent, or a negative entry: returns `null`. Otherwise extracts the join key and reads the join cache; an absent second value gives `secondValue = null`. |
 | `getAll(keys)` | One `getAll` on the first cache, then one `getAll` on the join cache over the **distinct** non-null join keys (skipped if there are none). Contains only keys whose first value exists. |
 | `invalidate(key)` | Invalidates **only the first cache**. The second value is shared with other entries and belongs to its own writers. |
-| `invalidate(firstKey, joinKey)` | Invalidates both. |
+| `invalidate(firstKey, joinKey)` | Invalidates both. If one throws, the other still runs and the errors are combined. A `SetCache` component doesn't support `invalidate` (use `clear` on the set directly). |
 
 Because `getAll` is two batch reads, listing 100 extensions that point to 20 users costs at most one batched Redis read and one `loadAll` per cache, regardless of how many entries share a user.
 
@@ -114,6 +114,7 @@ Startup fails, naming the view and the attribute, when:
 - `firstCacheName` or `joinCacheName` is blank or matches no cache,
 - a named cache isn't a `Cache<K1, V1>` (or `Cache<K2, V2>`),
 - the interface's type arguments aren't concrete or `@JoinCacheable` is missing,
+- `joinKeyExpression` has no `#{…}` (it would be a constant, so every value joins the same key), the `joinKeyExtractor` bean isn't a `JoinKeyExtractor<V1, K2>`,
 - both `joinKeyExpression` and `joinKeyExtractor` are set, `joinKeyExpression` is used with a non-`String` join key, or the extractor lookup by type finds zero or several beans.
 
 ## Without Spring {#without-spring}

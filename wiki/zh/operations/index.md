@@ -62,6 +62,7 @@ starter 按以下顺序从 Spring Boot 的 Redis 连接信息中选择拓扑：
 - 失效照常工作。删除不需要内存，脚本也不带会让 Redis 拒绝执行的标志。
 - 读取不再取得 lease。每次未命中都直接回源，不写 L1，结果以 `degraded-local-max-age` 留在 L2 中。`cocache.degraded.fills` 上升，跨实例合并回源失效。
 - 需要分配内存的写入（例如向已有集合加入成员）可能因 OOM 失败，调用方收到 `CacheWriteException`。
+- 写入不会只生效一半。只有脚本尚未写入任何东西时，Redis 才会在它第一条需要分配内存的命令处拒绝执行，因此被拒绝的写入不改变任何状态。第一条写入是删除的脚本（`put` 就是这样替换旧值的）会执行到底，即使因此超过 `maxmemory`。
 
 ## TLS {#tls}
 

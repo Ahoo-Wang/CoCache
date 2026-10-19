@@ -51,7 +51,7 @@ class UserCacheConfiguration {
     }
 
     /**
-     * 取代 5.x 的 `{cacheName}.ClientSideCache` 等 bean 名约定：按缓存名修改声明。
+     * 按缓存名修改声明：这里把 UserCache 的负缓存寿命改为 30 秒。
      */
     @Bean
     fun userCacheCustomizer(): CacheSpecCustomizer = object : CacheSpecCustomizer {

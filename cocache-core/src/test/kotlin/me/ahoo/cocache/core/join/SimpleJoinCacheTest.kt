@@ -136,4 +136,30 @@ class SimpleJoinCacheTest {
         join.invalidate("u1", "u1")
         join["u1"].assert().isEqualTo(JoinValue("u1", "u1", "user-u1"))
     }
+
+    @Test
+    fun invalidatingBothRunsEvenWhenOneSideFails() {
+        val firstFailure = IllegalStateException("first down")
+        val joinFailure = IllegalStateException("join down")
+        val failingFirst = io.mockk.mockk<Cache<String, String>> {
+            io.mockk.every { name } returns "failing-first"
+            io.mockk.every { invalidate(any()) } throws firstFailure
+        }
+        val failingJoin = io.mockk.mockk<Cache<String, String>>(relaxed = true) {
+            io.mockk.every { invalidate(any()) } throws joinFailure
+        }
+        // 主缓存失败时关联缓存仍然失效
+        val view = SimpleJoinCache("view", failingFirst, second, extractor)
+        second.put("u1", "user")
+        runCatching { view.invalidate("k", "u1") }.exceptionOrNull().assert().isSameAs(firstFailure)
+        runtime.admin("second")?.clearLocal()
+        // 两边都失败：主缓存的异常带上关联缓存的异常
+        val both = SimpleJoinCache("both", failingFirst, failingJoin, extractor)
+        val error = runCatching { both.invalidate("k", "u1") }.exceptionOrNull()
+        error.assert().isSameAs(firstFailure)
+        firstFailure.suppressed.toList().assert().contains(joinFailure)
+        // 只有关联缓存失败
+        val joinOnly = SimpleJoinCache("joinOnly", first, failingJoin, extractor)
+        runCatching { joinOnly.invalidate("k", "u1") }.exceptionOrNull().assert().isSameAs(joinFailure)
+    }
 }

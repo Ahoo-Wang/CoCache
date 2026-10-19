@@ -206,9 +206,18 @@ class CoCacheOperationsTest {
             val after = requireNotNull(endpoint.inspect("user", arrayOf("u", "1")))
             after.local.assert().isNull()
             after.remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
-            // 幂等；未知缓存返回 null（HTTP 404）
+            // 幂等；未知缓存返回 null（GET 为 404，DELETE 为 204）
             endpoint.invalidate("user", arrayOf("u", "1")).assert().isNotNull()
             endpoint.invalidate("missing", arrayOf("k")).assert().isNull()
+            // 空 key（如结尾的 '/'）按非法请求拒绝，不会失效空串 key
+            runCatching { endpoint.invalidate("user", emptyArray()) }.exceptionOrNull()
+                .assert().isInstanceOf(
+                    org.springframework.boot.actuate.endpoint.InvalidEndpointRequestException::class.java
+                )
+            runCatching { endpoint.inspect("user", emptyArray()) }.exceptionOrNull()
+                .assert().isInstanceOf(
+                    org.springframework.boot.actuate.endpoint.InvalidEndpointRequestException::class.java
+                )
 
             @Suppress("UNCHECKED_CAST")
             val index = context.getBean("index") as SetCache<String, String>

@@ -109,8 +109,10 @@ internal class SetEngine<K : Any, E : Any>(
             }
             return localEntry(null, null, policy.degradedLocalMaxAge)
         }
+        // 先解码再计入命中：形状不符（集合 key 上是本协议的标量，通常是命名空间冲突）抛出，且不计为命中
+        val value = decode(read.envelope)
         metrics.remoteHit()
-        return localEntry(decode(read.envelope), read.ttl, policy.localMaxAge)
+        return localEntry(value, read.ttl, policy.localMaxAge)
     }
 
     private fun decode(envelope: Envelope): Set<E>? = when (envelope) {

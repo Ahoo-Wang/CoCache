@@ -221,7 +221,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
         return KeyInspection.LocalCopy(
             state = state,
-            value = entry.value?.let { KeyInspection.abbreviate(it.toString()) },
+            value = entry.value?.let { KeyInspection.display(it) },
             expiresAt = Instant.ofEpochMilli(entry.expiresAt),
             refreshAt = entry.refreshAt.takeIf { it != FOREVER }?.let { Instant.ofEpochMilli(it) },
             expired = entry.expiresAt <= clock.nowMillis(),
@@ -270,7 +270,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
         return KeyInspection.RemoteCopy(
             state = state,
-            value = value?.let { KeyInspection.abbreviate(it.toString()) },
+            value = value?.let { KeyInspection.display(it) },
             ttl = read.ttl,
             format = read.format,
         )

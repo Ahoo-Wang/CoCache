@@ -36,7 +36,7 @@ import java.lang.reflect.Proxy
  * @param requireSync 为 `true` 时发现违规即启动失败，否则只记录告警
  * @param cacheNames CoCache 的缓存名（已创建的与已声明但尚未创建的）
  */
-class SpringCacheSyncCheck(
+internal class SpringCacheSyncCheck(
     private val beanFactory: ConfigurableListableBeanFactory,
     private val requireSync: Boolean,
     private val cacheNames: () -> Set<String>,
@@ -56,7 +56,8 @@ class SpringCacheSyncCheck(
 
     override fun afterSingletonsInstantiated() {
         val sources = beanFactory.getBeanProvider(CacheOperationSource::class.java).orderedStream().toList()
-        if (sources.isEmpty()) {
+        // 用户自己的 CacheManager 生效时（CoCache 的 CacheManager 退让），@Cacheable 不经过 CoCache
+        if (sources.isEmpty() || !beanFactory.containsBean(COCACHE_CACHE_MANAGER)) {
             return
         }
         val names = cacheNames()
@@ -82,6 +83,12 @@ class SpringCacheSyncCheck(
         }
     }
 
+    /**
+     * 显式指定了其它 CacheManager 的操作不经过 CoCache。
+     */
+    private fun targetsCoCache(operation: CacheableOperation): Boolean =
+        operation.cacheManager.isEmpty() || operation.cacheManager == COCACHE_CACHE_MANAGER
+
     private fun scan(sources: List<CacheOperationSource>, names: Set<String>): List<Violation> {
         val found = LinkedHashMap<String, Violation>()
         for (beanName in beanFactory.beanDefinitionNames) {
@@ -93,7 +100,7 @@ class SpringCacheSyncCheck(
                 ReflectionUtils.doWithMethods(type) { method ->
                     val operations = source.getCacheOperations(method, type).orEmpty()
                     val unsynced = operations.filterIsInstance<CacheableOperation>()
-                        .filter { !it.isSync }
+                        .filter { !it.isSync && targetsCoCache(it) }
                         .flatMap { op -> op.cacheNames.filter { it in names } }
                         .distinct()
                     if (unsynced.isNotEmpty()) {
@@ -123,6 +130,10 @@ class SpringCacheSyncCheck(
             return null
         }
         return AopProxyUtils.ultimateTargetClass(beanFactory.getBean(beanName))
+    }
+
+    private companion object {
+        const val COCACHE_CACHE_MANAGER = "cocacheCacheManager"
     }
 }
 

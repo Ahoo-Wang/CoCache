@@ -96,6 +96,12 @@ class JoinCacheTest {
     )
     interface BothExtractorsJoinCache : JoinCache<String, Ext, String, User>
 
+    @JoinCacheable(firstCacheName = "ExtCache", joinCacheName = "UserCache", joinKeyExpression = "userId")
+    interface ConstantExpressionJoinCache : JoinCache<String, Ext, String, User>
+
+    @JoinCacheable(firstCacheName = "ExtCache", joinCacheName = "UserCache", joinKeyExtractor = "tagUserId")
+    interface WrongExtractorJoinCache : JoinCache<String, Ext, String, User>
+
     @JoinCacheable(firstCacheName = "MissingCache", joinCacheName = "UserCache", joinKeyExpression = "#{userId}")
     interface MissingCacheJoinCache : JoinCache<String, Ext, String, User>
 
@@ -268,6 +274,12 @@ class JoinCacheTest {
             .hasMessageContaining("requires the join key type to be String")
         failureOf(BothExtractorsJoinCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining("not both")
+        // 没有 #{...} 的模板是常量：所有值都会关联到同一个 key
+        failureOf(ConstantExpressionJoinCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("is a constant")
+        // 按名称指定的提取器类型不符：启动时失败，而不是首次读取时 ClassCastException
+        failureOf(WrongExtractorJoinCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("bean[tagUserId] is not a")
     }
 
     @Test

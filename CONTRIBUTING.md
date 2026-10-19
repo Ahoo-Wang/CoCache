@@ -71,6 +71,16 @@ See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in
   MAJOR. Backward-compatible features bump MINOR. Fixes bump PATCH. The Redis wire format changes only
   in a MAJOR version.
 - `version` in `gradle.properties` is the next release version.
+- What the compatibility promise covers:
+  - Covered: `cocache-api` (user API and SPI), the public types of `cocache-core`, `cocache-redis`,
+    `cocache-codec-jackson` and `cocache-spring`, the annotations and `CoCacheProperties` keys of the
+    starter, metric names, endpoint paths and the wire format. Sealed types (`Lookup`, `RemoteRead`,
+    `Envelope`) gain subtypes only in a MAJOR version.
+  - Not covered: auto-configuration classes and other starter wiring (`CacheAssembler`,
+    `AnnotatedCacheFactory`, bean methods), `CacheProxies` / `JoinCacheProxies` (used by the starter),
+    and the generated `copy` / `componentN` functions of configuration data classes (policies,
+    `RedisBackendOptions`, `KeyInspection`, properties), which may gain properties in a MINOR version.
+    Construct those types with named arguments or their builders.
 - To release:
   1. Open a PR titled `chore(release): bump version to X.Y.Z`. It sets `version=` in
      `gradle.properties`, adds the release to `wiki/guide/changelog.md` (en + zh, with a migration

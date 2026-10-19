@@ -172,7 +172,22 @@ data class KeyInspection(
             if (text.length <= MAX_VALUE_LENGTH) {
                 return text
             }
-            return text.substring(0, MAX_VALUE_LENGTH) + "…(${text.length} chars)"
+            // 不拆开代理对
+            val splitsPair = Character.isHighSurrogate(text[MAX_VALUE_LENGTH - 1])
+            val end = if (splitsPair) MAX_VALUE_LENGTH - 1 else MAX_VALUE_LENGTH
+            return text.substring(0, end) + "…(${text.length} chars)"
+        }
+
+        /**
+         * 用于展示的值：`toString()` 抛出（如未初始化的懒加载代理）时返回说明文字，查看本身不失败。
+         */
+        @Suppress("TooGenericExceptionCaught")
+        fun display(value: Any): String {
+            return try {
+                abbreviate(value.toString())
+            } catch (e: Exception) {
+                "<toString() failed: ${e.javaClass.name}>"
+            }
         }
     }
 }

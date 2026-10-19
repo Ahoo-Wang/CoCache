@@ -62,6 +62,7 @@ When Redis reaches `maxmemory` under `noeviction`:
 - Invalidations keep working. Deletes don't need memory, and the scripts carry no flags that would make Redis reject them.
 - Reads stop taking leases. Every miss loads from the source, nothing is written to L1, and the result stays in L2 for `degraded-local-max-age`. `cocache.degraded.fills` rises, and cross-instance coalescing stops.
 - Writes that allocate memory, such as adding members to an existing set, can fail with an OOM error, which reaches the caller as `CacheWriteException`.
+- A write never half-applies. Redis rejects a script at its first memory-allocating command only if the script hasn't written anything yet, so a rejected write changes nothing. A script whose first write is a delete (a `put` replaces the old value this way) runs to the end, even if that takes Redis past `maxmemory`.
 
 ## TLS {#tls}
 

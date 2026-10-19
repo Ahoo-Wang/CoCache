@@ -22,6 +22,7 @@ import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.beans.factory.ObjectProvider
+import org.springframework.beans.factory.SmartInitializingSingleton
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor
 import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
@@ -162,7 +163,7 @@ class CoCacheAutoConfiguration {
         runtime: CacheRuntime,
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
-    ): SpringCacheSyncCheck = SpringCacheSyncCheck(beanFactory, properties.springCache.requireSync) {
+    ): SmartInitializingSingleton = SpringCacheSyncCheck(beanFactory, properties.springCache.requireSync) {
         runtime.cacheNames + CacheBeanDefinitions.declaredCacheNames(beanFactory)
     }
 
@@ -183,7 +184,7 @@ class CoCacheAutoConfiguration {
 
         @Bean
         @JvmStatic
-        fun cocacheSpecRegistrar(): CacheSpecRegistrar = CacheSpecRegistrar()
+        fun cocacheSpecRegistrar(): BeanFactoryPostProcessor = CacheSpecRegistrar()
 
         /**
          * 尽早（容器后处理阶段，任何缓存创建之前）拒绝 5.x 已删除的配置项。

@@ -25,13 +25,13 @@ import java.util.function.Supplier
 import org.springframework.cache.Cache as SpringCache
 
 /**
- * 把 6.0 的 [Cache] 适配为 Spring [SpringCache]（RFC 0003 §4.12）。
+ * 把 [Cache] 适配为 Spring [SpringCache]（RFC 0003 §4.12）。
  *
  * - 负缓存视为未命中：否则 `@Cacheable` 遇到负缓存将永远不调用方法。
  * - `put(key, null)`（如 `@CachePut` 返回 null）映射为失效。
  * - [get] (key, valueLoader) 经引擎受 lease 保护地回源并按 key 合并并发加载，满足 `@Cacheable(sync = true)`。
  *   不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → put”，put 是无条件写入，
- *   回源期间发生的失效可能被覆盖；需要 6.0 的一致性保证时请使用 `sync = true`。
+ *   回源期间发生的失效可能被覆盖；需要上述一致性保证时请使用 `sync = true`。
  * - [clear] 只清空本节点的本地副本：L1 是共享存储，不支持整体清空。
  * - [retrieve] 在 [executor] 上执行阻塞查找，不占用调用方线程。
  */

@@ -1,6 +1,6 @@
 # Migrating from CoCache 5.x to 6.x
 
-6.0 replaces 5.x entirely: new packages (`me.ahoo.cache.*` → `me.ahoo.cocache.*`), a new Redis wire format, and new configuration keys. The full guide is the wiki page [Migrating from 5.x to 6.0](https://cocache.ahoo.me/guide/migration-6). This page is the checklist an agent needs.
+6.0 replaces 5.x entirely: new packages (`me.ahoo.cache.*` → `me.ahoo.cocache.*`), a new Redis wire format, and new configuration keys. The full guide is the wiki page [Upgrading from 5.x](https://cocache.ahoo.me/guide/migration-6). This page is the checklist an agent needs.
 
 ## Rollout
 

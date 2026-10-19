@@ -227,7 +227,7 @@ return 1
     val ADD_MEMBERS = Script(
         PRELUDE + """
 local key = KEYS[1]
-if redis.call('TYPE', key)['ok'] ~= 'hash' then
+if redis.call('TYPE', key)['ok'] ~= 'hash' or redis.call('HEXISTS', key, '!f') == 0 then
   redis.call('DEL', key)
   redis.call('HSET', key, '!f', '1')
 end
@@ -244,7 +244,7 @@ return 1
     val REMOVE_MEMBERS = Script(
         PRELUDE + """
 local key = KEYS[1]
-if redis.call('TYPE', key)['ok'] == 'hash' then
+if redis.call('TYPE', key)['ok'] == 'hash' and redis.call('HEXISTS', key, '!f') == 1 then
   for i = 4, #ARGV do redis.call('HDEL', key, '+' .. ARGV[i]) end
   if redis.call('HLEN', key) <= 1 then
     redis.call('DEL', key)

@@ -235,7 +235,7 @@ enum class ReadFailureMode {
     DEGRADE,
 
     /**
-     * 抛出 [me.ahoo.cocache.api.CacheReadException]（对应 5.x 的 `strictFailure = true`）。
+     * 抛出 [me.ahoo.cocache.api.CacheReadException]。
      * 只作用于读取；填充、释放令牌等尽力而为的操作仍然降级。
      */
     THROW,

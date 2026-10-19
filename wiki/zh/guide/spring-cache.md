@@ -65,7 +65,7 @@ cocache:
 | `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)` |
 | `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 是共享的，从不整体清空。 |
 | `retrieve(key)`（异步与响应式） | 在守护线程池上执行阻塞查找。 |
-| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | 与 `get(key, loader)` 一样经受 lease 保护的路径回源，在该线程池上等待异步 loader 完成。 |
+| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | 与 `get(key, loader)` 一样经受 lease 保护的路径回源，在该线程池上等待异步 loader 完成。每个等待中的调用在回源期间占用一个执行器线程：默认执行器在 JDK 21+ 上每个任务一个虚拟线程，在 JDK 17 上是有上限的守护线程池（`max(8, 4 × CPU 数)` 个线程，多余任务排队）。传给 `CoCacheSpringCacheManager(runtime, executor)` 的自定义执行器不能同时是完成 loader future 的线程，否则线程池占满时会死锁。 |
 
 ### null 结果 {#null}
 

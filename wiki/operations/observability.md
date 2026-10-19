@@ -50,7 +50,7 @@ There is no L2 hit counter: counting the hottest path would cost measurable thro
 | `cocache.fill.rejections` | counter | Loads that held a lease, but Redis refused the fill: an invalidation destroyed the lease, the loader outlived `lease-ttl`, or the fill failed |
 | `cocache.degraded.fills` | counter | Loads written to L2 only, for `degraded-local-max-age`: Redis read failed, lease wait timed out, fill rejected, value in an unknown format, or an invalidation of the key still pending |
 | `cocache.stale.discards` | counter | L2 fills dropped because an invalidation of the key arrived while the read was in flight. This is the L2 fence working. |
-| `cocache.reclaims` | counter | L1 values this instance couldn't decode (foreign content or codec failure). The read script converts the value into a lease, if it is still unchanged, and reloads. |
+| `cocache.reclaims` | counter | L1 values this instance couldn't decode (foreign content or codec failure). A separate reclaim script then converts the value into a lease, if it is still unchanged, and the instance reloads. |
 | `cocache.unknown.formats` | counter | L1 values written in a newer wire format than this instance knows. Loaded from the source, nothing overwritten. |
 
 ### Writes, invalidations, channel {#metrics-writes}
@@ -141,7 +141,7 @@ management:
 | `GET /actuator/cocache/{name}/{key}` | [Inspects one key](#inspect-key) in L2 and L1 | this instance, plus one Redis read |
 | `DELETE /actuator/cocache/{name}/{key}` | [Invalidates one key](#invalidate-key) | **every instance** |
 
-`{name}` is the cache name. An unknown name returns `404`.
+`{name}` is the cache name. For an unknown name, `GET` returns `404` and `DELETE` returns `204` with no body (a successful per-key `DELETE` returns `200` with a report). An empty `{key}` is rejected with `400`. Spring drops empty path segments and surrounding whitespace, so a key containing `//`, a leading or trailing `/`, or surrounding spaces can't be addressed exactly through the endpoint.
 
 A cache report:
 

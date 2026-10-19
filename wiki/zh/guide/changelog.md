@@ -51,6 +51,17 @@ description: CoCache 版本发布历史和重要变更。
 
 已删除的 5.x 配置项会让启动失败，错误信息会给出替代项。部分改名同时改变了语义（例如 L2 现在总受 `localMaxAge` 限龄，默认 5 分钟），详见[行为变化](./migration-6.md#semantics)。
 
+### 依赖
+
+| 依赖 | 版本 |
+|------|------|
+| JDK（最低） | 17（在 17 与 25 上测试） |
+| Spring Boot | 4.1.1 |
+| Kotlin | 2.4.21（产物的 Kotlin API 与语言级别为 2.2） |
+| Lettuce | 7.5.2.RELEASE |
+| Caffeine | 3.2.4 |
+| Jackson | 3.1.5（`tools.jackson`） |
+
 ### Gradle 配置
 
 ```kotlin

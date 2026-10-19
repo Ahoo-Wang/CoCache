@@ -24,7 +24,7 @@ import java.util.function.Supplier
 /**
  * 把 [EnableCoCache] 列出的接口注册为 bean；缓存在首次注入时由 [AnnotatedCacheFactory] 创建。
  */
-class AnnotatedCacheRegistrar : ImportBeanDefinitionRegistrar {
+internal class AnnotatedCacheRegistrar : ImportBeanDefinitionRegistrar {
     override fun registerBeanDefinitions(importingClassMetadata: AnnotationMetadata, registry: BeanDefinitionRegistry) {
         val attributes = importingClassMetadata.getAnnotationAttributes(EnableCoCache::class.java.name) ?: return
 

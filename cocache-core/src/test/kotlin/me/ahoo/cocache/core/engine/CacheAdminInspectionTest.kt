@@ -195,6 +195,18 @@ class CacheAdminInspectionTest {
         val remote = runtime.userAdmin().inspect("id-1").remote
         remote.value.assert().isEqualTo("x".repeat(KeyInspection.MAX_VALUE_LENGTH) + "…(${long.length} chars)")
         KeyInspection.abbreviate("short").assert().isEqualTo("short")
+        // 截断处不拆开代理对
+        val emoji = "x".repeat(KeyInspection.MAX_VALUE_LENGTH - 1) + "😀" + "tail"
+        KeyInspection.abbreviate(emoji).assert().startsWith("x".repeat(KeyInspection.MAX_VALUE_LENGTH - 1) + "…")
+    }
+
+    @Test
+    fun displayToleratesFailingToString() {
+        val broken = object {
+            override fun toString(): String = throw IllegalStateException("lazy proxy")
+        }
+        KeyInspection.display(broken).assert().isEqualTo("<toString() failed: java.lang.IllegalStateException>")
+        KeyInspection.display(42).assert().isEqualTo("42")
     }
 
     @Test

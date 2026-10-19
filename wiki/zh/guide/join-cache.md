@@ -85,7 +85,7 @@ fun userIdOf() = JoinKeyExtractor<UserExtendInfo, String> { it.userId }
 | `get(key)` | 读主缓存（未命中时加载）。不存在或是负缓存：返回 `null`。否则提取关联 key 并读关联缓存；关联值不存在时 `secondValue = null`。 |
 | `getAll(keys)` | 对主缓存一次 `getAll`，再对**去重后**的非空关联 key 做一次关联缓存的 `getAll`（没有关联 key 时跳过）。结果只包含主值存在的 key。 |
 | `invalidate(key)` | **只失效主缓存。** 关联值被其它条目共享，由它自己的写入方负责。 |
-| `invalidate(firstKey, joinKey)` | 两者都失效。 |
+| `invalidate(firstKey, joinKey)` | 两者都失效。一方抛出时另一方照常执行，异常合并后抛出。作为组成部分的 `SetCache` 不支持 `invalidate`（直接对集合使用 `clear`）。 |
 
 因为 `getAll` 就是两次批量读取，列出指向 20 个用户的 100 条扩展信息，每个缓存最多只需一次批量 Redis 读取和一次 `loadAll`，与有多少条目共享同一个用户无关。
 
@@ -114,6 +114,7 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 - `firstCacheName` 或 `joinCacheName` 为空，或对应不上任何缓存，
 - 指定的缓存不是 `Cache<K1, V1>`（或 `Cache<K2, V2>`），
 - 接口的类型参数不是具体类型，或缺少 `@JoinCacheable`，
+- `joinKeyExpression` 中没有 `#{…}`（会成为常量，所有值都关联到同一个 key），或 `joinKeyExtractor` 指定的 bean 不是 `JoinKeyExtractor<V1, K2>`，
 - 同时设置了 `joinKeyExpression` 与 `joinKeyExtractor`、对非 `String` 的关联 key 使用 `joinKeyExpression`，或按类型查找提取器时找到零个或多个 bean。
 
 ## 不用 Spring {#without-spring}

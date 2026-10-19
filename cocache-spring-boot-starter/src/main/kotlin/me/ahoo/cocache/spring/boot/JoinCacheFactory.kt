@@ -23,6 +23,7 @@ import me.ahoo.cocache.core.join.SimpleJoinCache
 import me.ahoo.cocache.core.proxy.JoinCacheProxies
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.core.ResolvableType
+import org.springframework.expression.common.LiteralExpression
 import org.springframework.expression.common.TemplateParserContext
 import org.springframework.expression.spel.standard.SpelExpressionParser
 
@@ -35,7 +36,7 @@ import org.springframework.expression.spel.standard.SpelExpressionParser
  * - 关联 key：`joinKeyExpression`（SpEL 模板，以主值为根对象，要求 `K2` 为 `String`）、`joinKeyExtractor` 指定的 bean，
  *   两者都为空时按泛型 `JoinKeyExtractor<V1, K2>` 唯一匹配；找不到或有多个候选时启动失败。
  */
-class JoinCacheFactory(private val beanFactory: ConfigurableListableBeanFactory) {
+internal class JoinCacheFactory(private val beanFactory: ConfigurableListableBeanFactory) {
     fun <C : JoinCache<*, *, *, *>> create(type: Class<C>): C {
         val name = joinCacheNameOf(type)
         val annotation = checkNotNull(type.getAnnotation(JoinCacheable::class.java)) {
@@ -80,9 +81,7 @@ class JoinCacheFactory(private val beanFactory: ConfigurableListableBeanFactory)
      * 缓存名 → bean 名：接口式声明的 bean 名就是缓存名；spec 声明的 bean 名由 spec bean 名推导，缓存名在 spec 中。
      */
     private fun cacheBeanNameOf(cacheName: String): String? {
-        if (beanFactory.containsBean(cacheName) && beanFactory.isTypeMatch(cacheName, Cache::class.java)) {
-            return cacheName
-        }
+        // 先按缓存名精确匹配 spec 声明的缓存（其 bean 名可能不同于缓存名），再按 bean 名匹配接口式缓存
         val specCache = beanFactory.beanDefinitionNames.firstOrNull { beanName ->
             val specBean = beanFactory.getBeanDefinition(
                 beanName
@@ -93,8 +92,11 @@ class JoinCacheFactory(private val beanFactory: ConfigurableListableBeanFactory)
                 else -> false
             }
         }
+        if (specCache != null) {
+            return specCache
+        }
         // 同名但不是缓存的 bean 交给类型校验给出明确的错误
-        return specCache ?: cacheName.takeIf { beanFactory.containsBean(it) }
+        return cacheName.takeIf { beanFactory.containsBean(it) }
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -115,12 +117,18 @@ class JoinCacheFactory(private val beanFactory: ConfigurableListableBeanFactory)
                     "use @JoinCacheable.joinKeyExtractor instead."
             }
             val parsed = PARSER.parseExpression(expression, TemplateParserContext())
+            check(parsed !is LiteralExpression) {
+                "Join cache[$name] - @JoinCacheable.joinKeyExpression[$expression] is a constant; use a template such as \"#{#root.userId}\"."
+            }
             return JoinKeyExtractor { firstValue -> parsed.getValue(firstValue, String::class.java) }
         }
+        val type = ResolvableType.forClassWithGenerics(JoinKeyExtractor::class.java, firstValueType, joinKeyType)
         if (beanName.isNotBlank()) {
+            check(beanFactory.isTypeMatch(beanName, type)) {
+                "Join cache[$name] - @JoinCacheable.joinKeyExtractor bean[$beanName] is not a $type."
+            }
             return beanFactory.getBean(beanName, JoinKeyExtractor::class.java) as JoinKeyExtractor<Any, Any>
         }
-        val type = ResolvableType.forClassWithGenerics(JoinKeyExtractor::class.java, firstValueType, joinKeyType)
         val candidates = beanFactory.getBeanNamesForType(type)
         check(candidates.size == 1) {
             "Join cache[$name] - expected exactly one $type bean, found ${candidates.toList()}; " +

@@ -44,7 +44,7 @@ The result: for each key, the database sees **one load per cluster**, as long as
 
 ### Negative caching {#negative-caching}
 
-When the loader returns `null` (or `loadAll` leaves a key out), CoCache stores a **negative entry** in Redis for `absentTtl`. Reads for that key then return `null` without calling the loader, which protects the database from repeated lookups of keys that don't exist. Use `lookup(key)` when you need to tell a confirmed absence (`Lookup.Absent`) from a value (`Lookup.Present`).
+When the loader returns `null` (or `loadAll` leaves a key out), CoCache stores a **negative entry** in Redis for `absentTtl`. Reads for that key then return `null` without calling the loader, which protects the database from repeated lookups of keys that don't exist. Use `lookup(key)` when you need to tell a confirmed absence (`Lookup.Absent`) from a value (`Lookup.Present`). Its `expiresAt` is the expiry of the copy that answered: on an L2 hit that is the L2 copy, capped at `localMaxAge` (`degradedLocalMaxAge` for a copy that wasn't written to Redis), so it can be earlier than the Redis TTL. Precision is the cache clock's tick (100 ms by default). To see the Redis TTL of a key, use the [actuator endpoint](/operations/observability#inspect-key) or `CacheAdmin.inspect`.
 
 A key that is merely absent from Redis is a miss, never a negative entry. A cache without a loader (filled only by `put`) therefore never writes negative entries to Redis: a miss returns `null`, and only the local instance remembers that answer, for at most `absentTtl`.
 
@@ -101,7 +101,7 @@ By default the delete and the publish run in one Lua script, so there is no wind
 | The Pub/Sub connection | The heartbeat detects it within seconds. On reconnect every instance clears its L2, and local copies are capped at `localMaxAge` regardless. The health indicator reports `DOWN` meanwhile. | — |
 | Your loader | The exception reaches the caller and every caller waiting on the same load. Nothing is cached. | — |
 
-While Redis is down, every miss reaches the database. Protect it with `load-max-concurrent`: loads beyond the limit fail fast with `SourceLoadRejectedException` instead of piling up. [Keeping Data Fresh](./freshness.md#redis-down) covers write failures in detail, and [Troubleshooting](/operations/troubleshooting) covers diagnosis.
+While Redis is down, every miss reaches the database. Protect it with `load-max-concurrent`: a load beyond the limit waits up to `load-acquire-timeout` (default 1 s) for a slot, then fails with `SourceLoadRejectedException` instead of piling up. [Keeping Data Fresh](./freshness.md#redis-down) covers write failures in detail, and [Troubleshooting](/operations/troubleshooting) covers diagnosis.
 
 ## Further reading {#further-reading}
 

@@ -199,9 +199,12 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 @Bean
 fun externalInvalidator(backend: CoherenceBackend) = ExternalInvalidator(backend)
 
+@Bean
+fun orderInvalidator(backend: CoherenceBackend) = ExternalInvalidator(backend, "orders:")  // 非默认的 key 前缀
+
 // 数据提交之后
-invalidator.invalidate("UserCache", listOf("42", "43"))            // 命名空间、编码后的 key
-invalidator.invalidate("OrderCache", "7/9", keyPrefix = "orders:")  // 非默认的 key 前缀
+externalInvalidator.invalidate("UserCache", listOf("42", "43"))  // 命名空间、编码后的 key
+orderInvalidator.invalidate("OrderCache", "7/9")
 ```
 
 第一个参数是**命名空间**（缓存设置了 `namespace` 时用它，否则就是缓存名），key 是**编码后的 key**（[含义](./observability.md#encoded-key)）。不在 Spring 中时，传入缓存使用的同一个 `CoherenceBackend`，或者连接同一个 Redis、使用同一种通道模式的任意 `RedisBackend`。

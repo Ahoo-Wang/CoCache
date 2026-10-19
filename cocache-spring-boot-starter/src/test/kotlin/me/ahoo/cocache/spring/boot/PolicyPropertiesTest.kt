@@ -58,13 +58,20 @@ class PolicyPropertiesTest {
 
     @Test
     fun defaultTtlDoesNotExpireSetCaches() {
-        runner.withPropertyValues("cocache.defaults.ttl=60", "cocache.defaults.absent-ttl=5").run { context ->
+        runner.withPropertyValues(
+            "cocache.defaults.ttl=60",
+            "cocache.defaults.absent-ttl=5",
+            "cocache.defaults.refresh-window=10",
+            "cocache.defaults.local-max-age=90",
+        ).run { context ->
             assertThat(context).hasNotFailed()
             val properties = context.getBean(CoCacheProperties::class.java)
             val setPolicy = properties.setPolicyFor("index", SetCacheSpec.DEFAULT_POLICY)
             setPolicy.ttl.assert().isNull()
-            // 其它默认项照常生效
-            setPolicy.absentTtl.assert().isEqualTo(Duration.ofSeconds(5))
+            // 负缓存寿命与提前刷新对集合缓存没有意义，不继承；其它默认项照常生效
+            setPolicy.absentTtl.assert().isEqualTo(SetCacheSpec.DEFAULT_POLICY.absentTtl)
+            setPolicy.refreshWindow.assert().isNull()
+            setPolicy.localMaxAge.assert().isEqualTo(Duration.ofSeconds(90))
             properties.policyFor("user", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(60))
 
             @Suppress("UNCHECKED_CAST")

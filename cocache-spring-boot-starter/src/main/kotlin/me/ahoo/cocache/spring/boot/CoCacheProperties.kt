@@ -80,11 +80,18 @@ data class CoCacheProperties @ConstructorBinding constructor(
     }
 
     /**
-     * 集合缓存的策略：`cocache.defaults.ttl` / `ttl-forever` 不作用于集合缓存（其 L1 是唯一副本，全局寿命会让集合过期丢失），
-     * 只有 `cocache.caches.[name].*` 能改变它的寿命。其它默认项照常生效。
+     * 集合缓存的策略：`cocache.defaults.ttl` / `ttl-forever` / `absent-ttl` / `refresh-window` 不作用于集合缓存
+     * （其 L1 是唯一副本，全局寿命会让集合过期丢失；没有数据源，负缓存与提前刷新都不适用），
+     * 只有 `cocache.caches.[name].*` 能改变它们。其它默认项照常生效。
      */
     fun setPolicyFor(cacheName: String, declared: CachePolicy): CachePolicy {
-        val withDefaults = defaults.copy(ttl = null, ttlForever = null).applyTo(declared)
+        // 集合缓存没有数据源：全局的寿命、负缓存寿命与提前刷新都不适用（提前刷新还会让校验因无关配置失败）
+        val withDefaults = defaults.copy(
+            ttl = null,
+            ttlForever = null,
+            absentTtl = null,
+            refreshWindow = null
+        ).applyTo(declared)
         return cacheProperties(cacheName)?.applyTo(withDefaults) ?: withDefaults
     }
 
@@ -172,12 +179,12 @@ data class CoCacheProperties @ConstructorBinding constructor(
      */
     data class PolicyProperties @ConstructorBinding constructor(
         /**
-         * 命中值寿命（未写单位按秒；内置默认 1h）。
+         * 命中值寿命（未写单位按秒；内置默认 1h）。`cocache.defaults.ttl` 不作用于集合缓存（其 L1 是唯一副本）。
          */
         @DurationUnit(ChronoUnit.SECONDS)
         val ttl: Duration?,
         /**
-         * 为 `true` 时命中值永不过期（覆盖 ttl）。
+         * 为 `true` 时命中值永不过期（覆盖 ttl）。`cocache.defaults.ttl-forever` 不作用于集合缓存。
          */
         val ttlForever: Boolean?,
         /**
@@ -201,7 +208,7 @@ data class CoCacheProperties @ConstructorBinding constructor(
         @DurationUnit(ChronoUnit.SECONDS)
         val degradedLocalMaxAge: Duration?,
         /**
-         * 提前刷新窗口：剩余寿命小于该值时命中触发后台刷新；必须小于 ttl - ttl-jitter 与 local-max-age（未写单位按秒；内置默认关闭）。
+         * 提前刷新窗口：剩余寿命小于该值时命中触发后台刷新；必须小于 ttl - ttl-jitter 与 local-max-age（未写单位按秒；内置默认关闭；0 表示关闭）。
          */
         @DurationUnit(ChronoUnit.SECONDS)
         val refreshWindow: Duration?,

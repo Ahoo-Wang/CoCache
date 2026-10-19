@@ -199,9 +199,12 @@ A write that bypasses CoCache (direct SQL, a batch job, a service in another lan
 @Bean
 fun externalInvalidator(backend: CoherenceBackend) = ExternalInvalidator(backend)
 
+@Bean
+fun orderInvalidator(backend: CoherenceBackend) = ExternalInvalidator(backend, "orders:")  // non-default key prefix
+
 // after the change is committed
-invalidator.invalidate("UserCache", listOf("42", "43"))            // namespace, encoded keys
-invalidator.invalidate("OrderCache", "7/9", keyPrefix = "orders:")  // non-default key prefix
+externalInvalidator.invalidate("UserCache", listOf("42", "43"))  // namespace, encoded keys
+orderInvalidator.invalidate("OrderCache", "7/9")
 ```
 
 The first argument is the **namespace** (the cache name unless the cache sets `namespace`), and the keys are **encoded keys** ([what that means](./observability.md#encoded-key)). Outside Spring, pass the same `CoherenceBackend` the caches use, or any `RedisBackend` with the same Redis and channel mode.

@@ -1,9 +1,9 @@
 ---
-title: Migrating from 5.x to 6.0
+title: Upgrading from 5.x
 description: Everything that changes between CoCache 5.x and 6.0 — modules, packages, annotations, API, properties, Redis wire format, metrics, actuator, removed features, and how to switch a cluster over.
 ---
 
-# Migrating from 5.x to 6.0
+# Upgrading from 5.x
 
 6.0 is a rewrite. The interface-style declaration (`@CoCache interface UserCache : Cache<String, User>`) still works with new imports and a few renamed attributes, but almost everything around it changed: the API, the SPI, the modules, the properties, the Redis wire format, and the invalidation channel. This page lists every change and what replaces it.
 
@@ -87,7 +87,7 @@ In 6.0, `FOREVER` is accepted only by `ttl` and `expireAfterAccess`, and `0` onl
 |-----|-----|
 | `cache[key]` / `get(key)` | `cache[key]` / `get(key)` |
 | `getCache(key): CacheValue<V>?` | `lookup(key): Lookup<V>` (`Present(value, expiresAt)` / `Absent(expiresAt)`) |
-| `getTtlAt(key)` | `lookup(key).expiresAt` (an `Instant`, millisecond precision) |
+| `getTtlAt(key)` | `lookup(key).expiresAt`: the expiry of the returned copy (on an L2 hit, the L2 copy, capped at `localMaxAge` / `degradedLocalMaxAge`), with the cache clock's tick precision. For the Redis TTL, use the [actuator inspect](../operations/observability.md#inspect-key) or `CacheAdmin.inspect`. |
 | `getCaches(keys)` / `getAll(keys)` | `getAll(keys)`, now coalesced with concurrent single-key loads |
 | `cache[key] = value` / `set(key, value)` | `put(key, value)` |
 | `set(key, ttlAt, value)` | `put(key, value, ttl: Duration)` |
@@ -203,7 +203,7 @@ All meters keep the `cache` tag.
 | `cocache.l2.size` | `cocache.local.size` |
 | `cocache.eviction.publish.failures` (no `cache` tag) | removed. Invalidation and broadcast are one script, so a failure counts in `cocache.write.failures`, and a final failure in `cocache.invalidations.dropped`. |
 
-New: `lease.waits`, `lease.wait.timeouts`, `fill.rejections`, `degraded.fills`, `reclaims`, `unknown.formats`, `refresh.rejections`, `remote.failures`, `write.failures`, `invalidation.retries`, `invalidations.dropped`. See [Operations](../operations/observability.md#metrics).
+New: `cocache.lease.waits`, `cocache.lease.wait.timeouts`, `cocache.fill.rejections`, `cocache.degraded.fills`, `cocache.reclaims`, `cocache.unknown.formats`, `cocache.refresh.rejections`, `cocache.remote.failures`, `cocache.write.failures`, `cocache.invalidation.retries`, `cocache.invalidations.dropped`. See [Operations](../operations/observability.md#metrics).
 
 ## Behavior changes {#semantics}
 

@@ -44,7 +44,7 @@ flowchart TD
 
 ### 负缓存 {#negative-caching}
 
-loader 返回 `null`（或 `loadAll` 的结果中缺少某个 key）时，CoCache 在 Redis 中写入一条**负缓存**，存活 `absentTtl`。此后对该 key 的读取直接返回 `null`，不再调用 loader，数据库不会被不存在的 key 反复查询。需要区分“确认不存在”（`Lookup.Absent`）与“有值”（`Lookup.Present`）时，用 `lookup(key)`。
+loader 返回 `null`（或 `loadAll` 的结果中缺少某个 key）时，CoCache 在 Redis 中写入一条**负缓存**，存活 `absentTtl`。此后对该 key 的读取直接返回 `null`，不再调用 loader，数据库不会被不存在的 key 反复查询。需要区分“确认不存在”（`Lookup.Absent`）与“有值”（`Lookup.Present`）时，用 `lookup(key)`。它的 `expiresAt` 是给出结果的那份副本的到期时间：命中 L2 时是 L2 副本的到期时间，受 `localMaxAge` 限制（未写入 Redis 的副本受 `degradedLocalMaxAge` 限制），因此可能早于 Redis 中的 TTL。精度为缓存时钟的刻度（默认 100 ms）。要查看某个 key 在 Redis 中的 TTL，用 [actuator 端点](../operations/observability.md#inspect-key)或 `CacheAdmin.inspect`。
 
 Redis 中单纯没有这个 key 只是未命中，永远不等于负缓存。因此没有 loader 的缓存（只靠 `put` 填充）从不向 Redis 写负缓存：未命中返回 `null`，这个答案只在本实例记住，最多 `absentTtl`。
 
@@ -101,7 +101,7 @@ sequenceDiagram
 | Pub/Sub 连接 | 心跳在数秒内发现。重连时每个实例清空 L2，而本地副本无论如何都受 `localMaxAge` 限制。期间健康检查报告 `DOWN`。 | — |
 | 你的 loader | 异常抛给调用方以及所有等待同一次加载的调用方，不缓存任何东西。 | — |
 
-Redis 故障期间，每次未命中都会打到数据库。用 `load-max-concurrent` 保护它：超出上限的加载快速失败，抛出 `SourceLoadRejectedException`，而不是层层堆积。写入失败的细节见[保持数据新鲜](./freshness.md#redis-down)，排查见[故障排查](../operations/troubleshooting.md)。
+Redis 故障期间，每次未命中都会打到数据库。用 `load-max-concurrent` 保护它：超出上限的加载最多等待 `load-acquire-timeout`（默认 1 s）获取名额，之后抛出 `SourceLoadRejectedException` 失败，而不是层层堆积。写入失败的细节见[保持数据新鲜](./freshness.md#redis-down)，排查见[故障排查](../operations/troubleshooting.md)。
 
 ## 延伸阅读 {#further-reading}
 

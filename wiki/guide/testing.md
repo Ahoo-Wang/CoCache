@@ -29,7 +29,7 @@ class UserServiceTest {
 }
 ```
 
-- Nothing connects to Redis, even if Spring Data Redis is configured. The starter logs a `WARN` saying the backend is single-process.
+- CoCache doesn't connect to Redis, even if Spring Data Redis is configured. The starter logs a `WARN` saying the backend is single-process. Spring Boot's own Redis health indicator still connects when Spring Data Redis and the actuator are on the classpath; turn it off with `management.health.redis.enabled=false`.
 - Caches, loaders, `TransactionalInvalidator`, Spring Cache, and the actuator endpoint all work as in production.
 - The in-memory "Redis" lives as long as the Spring context, and Spring reuses contexts across test classes. Invalidate the keys a test touches (or use `@DirtiesContext`) so one test's entries don't leak into the next.
 

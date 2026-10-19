@@ -26,7 +26,7 @@ import java.util.function.Supplier
  *
  * 组合视图在启动时（单例预实例化）由 [JoinCacheFactory] 创建，按名称取出主缓存与关联缓存的 bean。
  */
-class JoinCacheRegistrar : ImportBeanDefinitionRegistrar {
+internal class JoinCacheRegistrar : ImportBeanDefinitionRegistrar {
     override fun registerBeanDefinitions(importingClassMetadata: AnnotationMetadata, registry: BeanDefinitionRegistry) {
         val attributes = importingClassMetadata.getAnnotationAttributes(EnableCoCache::class.java.name) ?: return
 
