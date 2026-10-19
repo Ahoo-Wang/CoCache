@@ -121,6 +121,8 @@ testImplementation("me.ahoo.cocache:cocache-test")
 | `SetEngineSpec` | 两个运行时上的 `SetCache`：原子的并发加入、空集合删除、拒绝 `invalidate`、写入与读取失败 | `createBackend()`、`clock`、`elapse(duration)` |
 | `MultiNodeSpec` | 三个运行时共用你的后端：失效先于 lease、晚于 lease 且另一实例正在等待、晚于 fill 而早于写 L2；其它实例的写入落在读取与 L2 填充之间；不同实例的并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全部实例中每个 key 只回源一次、只刷新一次 | `createBackend()`、`clock`、`elapse(duration)` |
 | `FaultSpec` | L1 故障下的后端：存储失败期间副本以 `degraded-local-max-age` 限龄、fill 失败及其 lease、放弃或溢出队列的失效重试、已生效却报错且可安全重试的 `put` 与 `invalidate`，以及（可选）断线期间被拒绝的写入在重连后不被重放 | `createBackend()`、`clock`、`elapse(duration)`；可选 `disconnect()` |
+| `AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec` | 对应套件的每个用例经[异步视图](../guide/async.md)重跑；`AsyncEngineSpec` 另有异步专有的用例：取消、future 在哪个线程上完成、等待 lease 与回源许可不占线程、原始异常、不同步抛出、`load-async-timeout`、同步与异步调用合并为一次加载、重入 | 与对应套件相同的成员 |
+| `AsyncBackendProtocolSpec` | `BackendProtocolSpec` 的每个用例经 `AsyncRemoteStore` 的方法重跑（不同步抛出、原始异常），另加同一 key 上同步与异步调用的一致性 | 与 `BackendProtocolSpec` 相同的成员。只用于实现了 `AsyncRemoteStore` 的后端 |
 
 套件会用 `HookedBackend` 包装你的后端。它可以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`）、改写读取结果、在读取与 fill 之后以及写入前后执行钩子（从而用 latch 而不是 sleep 编排竞态；`afterPut` 或 `afterInvalidate` 抛出即模拟已生效却报错的写入），还能覆盖 `atomicBroadcast` 来验证非原子路径。你自己的测试也可以用它。
 
@@ -167,7 +169,21 @@ class MyFaultTest : FaultSpec() {
 }
 ```
 
+每个用例经 `createBackend()` 新建后端。你的后端会打开连接或线程时，请把 `closesBackend` 覆盖为 `true`，套件会在每个用例结束后关闭它；默认为 `false`，因为后端可能是共享的。
+
 用构建工具的常规测试任务运行（JUnit 6）。`cocache-redis` 把 `BackendProtocolSpec`、`EngineSpec`、`MultiNodeSpec` 与 `FaultSpec` 在三种模式下各跑一遍：经典 Pub/Sub、非原子（用 ACL 禁止探测频道）与 sharded；`SetEngineSpec` 只在经典 Pub/Sub 下运行。`FaultSpec` 的断线用例在单机经典 Pub/Sub 上运行，`cocache-redis` 另有清空脚本缓存之后 `NOSCRIPT` 回退的用例。你的后端支持几种模式，就对每种模式都跑这些套件。
+
+## 异步后端 {#async}
+
+只实现 `RemoteStore` 的后端不需要改动就能配合[异步视图](../guide/async.md)：引擎在阻塞执行器上调用它的同步方法。要不占这些线程地服务异步调用方，请实现可选的子接口：
+
+- `AsyncRemoteStore extends RemoteStore` 增加 `readAsync`、`readAllAsync`、`fillAsync`、`fillAllAsync`、`releaseAsync`、`putAsync`、`putAllAsync`、`invalidateAsync`、`reclaimAsync`、`addMembersAsync` 与 `removeMembersAsync`，语义与对应的同步方法完全相同。
+- `AsyncInvalidationChannel extends InvalidationChannel` 增加 `publishAsync`，引擎在非原子后端上使用它。
+- **从不同步抛出。** 以失败的 future 代替，异常类型与同步方法相同，不是 `CompletionException`。
+- **每个操作都要有上限。** 永不完成的 future 会让该实例上的这个 key 一直卡到 `load-async-timeout`。
+- **可以在任何线程上完成。** 引擎在执行引擎代码或用户代码之前会切换到自己的执行器，所以在 I/O 线程上完成没有问题；但完成时的工作要轻，不要在那里调用编解码器或用户代码。
+
+然后运行 `AsyncBackendProtocolSpec` 与四个异步引擎套件。
 
 `InMemoryBackend` 在一个进程内实现了完整的协议。多个运行时共用一个实例就像多个应用实例，因此它也很适合作为应用测试的后端。
 
@@ -195,7 +211,8 @@ interface Codec<V> {
 |------|------|
 | `CacheLoader<K, V>` | `load(key)` 返回值，或用 `null` 表示“不存在”（以负缓存存储 `absent-ttl`）。`loadAll(keys)` 批量加载，结果中缺少的 key 视为不存在。默认逐个调用 `load`，请覆盖为一次查询。在调用方线程上执行。不能读取自己缓存中的同一个 key（会快速失败）。必须读主库，而不是滞后的从库 |
 | `KeyEncoder<K>` | 把 key 转换为 `{keyPrefix}{namespace}:` 之后的字符串。必须**单射**（不同的 key 得到不同的字符串）、确定，并且在每个实例与每个版本上都相同。默认是 `toString()`，它会拒绝没有重写 `toString()` 的类型 |
-| `KeyFilter` | `notExist(storageKey)` 收到的是完整的存储 key。只有确定不存在的 key 才能返回 `true`：布隆过滤器必须包含所有存在的 key。返回 `true` 时跳过 Redis 与 loader，不缓存任何内容 |
+| `AsyncCacheLoader<K, V>` | `CacheLoader` 的异步形式：`loadAsync(key)` 返回 `CompletionStage`，以 `null` 完成表示“不存在”。必须很快返回、不阻塞：它在调用方线程或异步执行器上执行，看不到调用方的 ThreadLocal。受 `load-async-timeout` 约束。见[异步 API](../guide/async.md#loader) |
+| `KeyFilter` | `notExist(storageKey)` 收到的是完整的存储 key。只有确定不存在的 key 才能返回 `true`：布隆过滤器必须包含所有存在的 key。返回 `true` 时跳过 Redis 与 loader，不缓存任何内容。必须是本地、不阻塞的判断：异步调用方在自己的线程上调用它，那可能是事件循环 |
 | `TtlFunction<K, V>`（`ttlOf`） | 按条目决定的寿命。非 null 的结果替代 `ttl` 且不加抖动。收敛到 1 ms 与 100 年之间。不作用于负缓存 |
 
 ## 不应定制的部分 {#not-pluggable}

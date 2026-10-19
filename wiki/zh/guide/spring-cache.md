@@ -66,8 +66,8 @@ cocache:
 | `put(key, value)`（`@CachePut`） | `cache.put(key, value)`。值为 `null` 时改为 `invalidate(key)`。 |
 | `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)` |
 | `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 是共享的，从不整体清空。 |
-| `retrieve(key)`（异步与响应式） | 在 `retrieve` 执行器（见下一行）上执行阻塞查找。 |
-| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | 与 `get(key, loader)` 一样经受 lease 保护的路径回源，在 `retrieve` 执行器上等待异步 loader 完成。每个等待中的调用在回源期间占用一个执行器线程：默认执行器在 JDK 21+ 上每个任务一个虚拟线程；在 JDK 17–20 上是不排队、按需增长的守护线程池（最多 512 个线程，超出时在调用方线程执行），因此嵌套的异步 `@Cacheable(sync = true)` 方法不会让它死锁。[自定义执行器](#executor)不能把任务排在等待它的任务之后，也不能是完成 loader future 的线程。 |
+| `retrieve(key)`（异步与响应式） | 缓存[异步视图](./async.md)上的异步 `lookup`。L2 命中返回已完成的 future，不切换线程；负缓存以 `null` 完成（视为未命中）。 |
+| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | [异步视图](./async.md)上的异步 `get(key, loader)`：与 `get(key, loader)` 一样经受 lease 保护的路径回源，**没有线程等待**异步 loader。loader 在调用方线程或 CoCache 的异步执行器上被调用，看不到调用方的 ThreadLocal。失败时 future 以原始异常完成。 |
 
 ### null 结果 {#null}
 
@@ -75,25 +75,15 @@ cocache:
 
 通过 `get(key)` 读到负缓存时视为未命中，这是有意为之：CoCache 在 loader 找不到数据时都会写负缓存，若把它当作缓存的 `null`，不带 sync 的 `@Cacheable` 方法将永远不会执行。
 
-## retrieve 执行器 {#executor}
+## retrieve 执行器（已弃用） {#executor}
 
-`retrieve` 默认在 CoCache 内置的执行器上运行；`cocache.spring-cache.retrieve-executor` 可以指定一个 `Executor` bean：
+6.3 起，`retrieve` 经缓存的[异步视图](./async.md)，不再需要执行器。6.3 之前，每个等待中的调用都占一个线程，执行器还必须不排队，才能避免嵌套的异步 `@Cacheable(sync = true)` 死锁；现在这两点都不存在了。
 
-```yaml
-spring:
-  threads:
-    virtual:
-      enabled: true          # applicationTaskExecutor 使用虚拟线程
-cocache:
-  spring-cache:
-    retrieve-executor: applicationTaskExecutor
-```
+- `cocache.spring-cache.retrieve-executor` 已弃用：设置时启动告警并被忽略，7.0 删除。
+- `CoCacheSpringCacheManager(runtime, executor)`、`CoCacheSpringCache(cache, admin, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 同样已弃用，执行器被忽略。
+- 异步视图在 `cocache.async-executor` 与 `cocache.blocking-executor` 上运行；经 `retrieve` 调用的同步 loader 在阻塞执行器上执行。见[配置参考](./configuration.md#executors)。
 
-- 只按名称查找该 bean。名称不存在，或该 bean 不是 `Executor` 时，启动失败。
-- 该执行器不能把任务排在等待它的任务之后。嵌套的异步 `@Cacheable(sync = true)` 方法会等待内层调用；在固定线程池或有界队列上（如 Spring Boot 默认的平台线程 `applicationTaskExecutor`），内层调用可能永远排在队列里。虚拟线程执行器是安全的。
-- 该配置项作用于 starter 的 `cocacheCacheManager`。自己声明的管理器通过 `CoCacheSpringCacheManager(runtime, executor)` 传入执行器。
-
-[配置参考](./configuration.md#executors)列出了两个执行器配置项与内置默认值。
+Spring Cache 的 `put` 与 `evict` 只有阻塞签名。响应式方法上的 `@CachePut`、`@CacheEvict` 与不带 sync 的 `@Cacheable` 会在完成回调中调用它们，占用该线程一次 Redis 往返。请继续使用 `sync = true`；写路径不能阻塞时调用 `cache.async().invalidate(key)`。
 
 ## 优先 evict 而不是 put {#evict}
 
@@ -122,7 +112,7 @@ fun localCacheManager(): CacheManager = CaffeineCacheManager()
 fun getUser(id: String): User? = repo.findById(id)
 ```
 
-`CoCacheSpringCacheManager(runtime, executor)` 还可以传入 `retrieve` 使用的执行器。把 bean 命名为 `cocacheCacheManager` 可让 [sync 检查](#sync-check)继续运行。检查按缓存名匹配，并把没有 `cacheManager` 属性的操作视为指向 CoCache，所以请给 CoCache 缓存起一个其它管理器不用的名字。
+把 bean 命名为 `cocacheCacheManager` 可让 [sync 检查](#sync-check)继续运行。检查按缓存名匹配，并把没有 `cacheManager` 属性的操作视为指向 CoCache，所以请给 CoCache 缓存起一个其它管理器不用的名字。
 
 ## 不用 Spring Boot {#without-spring-boot}
 

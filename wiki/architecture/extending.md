@@ -121,6 +121,8 @@ testImplementation("me.ahoo.cocache:cocache-test")
 | `SetEngineSpec` | `SetCache` across two runtimes: atomic concurrent adds, empty-set deletion, `invalidate` rejected, write and read failures | `createBackend()`, `clock`, `elapse(duration)` |
 | `MultiNodeSpec` | Three runtimes on your backend: invalidation before a lease, after a lease while another instance waits on it, and after a fill but before the L2 write; a remote write landing between a read and its L2 fill; concurrent `put`s from different instances (events arriving in reverse order on non-atomic backends); misses while an invalidation retry is pending; exactly one source load and one refresh per key across all instances | `createBackend()`, `clock`, `elapse(duration)` |
 | `FaultSpec` | Your backend under L1 faults: copies bounded by `degraded-local-max-age` while the store fails, a failed fill and its lease, invalidation retries that give up or overflow the queue, `put` and `invalidate` that take effect but report an error and are safe to retry, and (optional) writes rejected while disconnected are not replayed after the reconnect | `createBackend()`, `clock`, `elapse(duration)`; optionally `disconnect()` |
+| `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec` | Every case of the corresponding suite again through the [async view](../guide/async.md), plus async-only cases in `AsyncEngineSpec`: cancellation, the thread a future completes on, lease and permit waits that hold no threads, original exceptions, no synchronous throws, `load-async-timeout`, sync and async calls joining one load, reentrancy | The same members as the corresponding suite |
+| `AsyncBackendProtocolSpec` | Every `BackendProtocolSpec` case through the `AsyncRemoteStore` methods (no synchronous throws, original exceptions), plus sync and async calls on one key agreeing | The same members as `BackendProtocolSpec`. Only for backends that implement `AsyncRemoteStore`. |
 
 The suites wrap your backend in `HookedBackend`, which injects faults (`failAll`, `failWrites`, `failFill`, `failRelease`), rewrites read results, runs hooks after reads and fills and around writes so races are orchestrated with latches instead of sleeps (a throwing `afterPut` or `afterInvalidate` simulates a write that took effect but reported an error), and can override `atomicBroadcast` to exercise the non-atomic path. Use it in your own tests too.
 
@@ -167,7 +169,21 @@ class MyFaultTest : FaultSpec() {
 }
 ```
 
+Each case creates a backend through `createBackend()`. If yours opens connections or threads, override `closesBackend` to `true` so the suites close it after each case; it defaults to `false` because a backend may be shared.
+
 Run them with your build's normal test task (JUnit 6). `cocache-redis` runs `BackendProtocolSpec`, `EngineSpec`, `MultiNodeSpec`, and `FaultSpec` in three modes: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. `SetEngineSpec` runs on classic Pub/Sub only. The disconnect case of `FaultSpec` runs on standalone classic Pub/Sub, and `cocache-redis` adds its own case for the `NOSCRIPT` fallback after the script cache is flushed. Run the suites for every mode your backend supports.
+
+## Async backends {#async}
+
+A backend that implements only `RemoteStore` works with the [async view](../guide/async.md) unchanged: the engine calls its synchronous methods on the blocking executor. To serve async callers without those threads, implement the optional sub-interfaces:
+
+- `AsyncRemoteStore extends RemoteStore` adds `readAsync`, `readAllAsync`, `fillAsync`, `fillAllAsync`, `releaseAsync`, `putAsync`, `putAllAsync`, `invalidateAsync`, `reclaimAsync`, `addMembersAsync` and `removeMembersAsync`. Each has exactly the semantics of its synchronous counterpart.
+- `AsyncInvalidationChannel extends InvalidationChannel` adds `publishAsync`, which the engine uses on non-atomic backends.
+- **Never throw synchronously.** Fail the returned future instead, with the same exception types as the synchronous methods, not a `CompletionException`.
+- **Bound every operation.** A future that never completes stalls that key on that instance until `load-async-timeout`.
+- **Complete on any thread.** The engine switches to its own executor before running engine code or user code, so completing on an I/O thread is fine. Keep that completion cheap, and don't call codecs or user code there.
+
+Then run `AsyncBackendProtocolSpec` and the four async engine suites.
 
 `InMemoryBackend` implements the whole protocol in one process. Several runtimes sharing one instance behave like several instances, which makes it a good backend for application tests.
 
@@ -195,7 +211,8 @@ interface Codec<V> {
 |----------|----------|
 | `CacheLoader<K, V>` | `load(key)` returns the value, or `null` for "doesn't exist" (stored as a negative entry for `absent-ttl`). `loadAll(keys)` loads a batch, and keys missing from its result are negative. The default calls `load` per key, so override it with one query. Runs on the caller's thread. Must not read its own cache for the same key (that fails fast). Must read the primary, not a lagging replica. |
 | `KeyEncoder<K>` | Turns a key into the string after `{keyPrefix}{namespace}:`. Must be **injective** (distinct keys, distinct strings), deterministic, and identical on every instance and version. The default is `toString()`, which rejects types that don't override it. |
-| `KeyFilter` | `notExist(storageKey)` receives the full storage key. Return `true` only for keys that certainly don't exist: a Bloom filter must contain every existing key. A `true` answer skips Redis and the loader, and caches nothing. |
+| `AsyncCacheLoader<K, V>` | The asynchronous form of `CacheLoader`: `loadAsync(key)` returns a `CompletionStage`, and completing it with `null` means "doesn't exist". Must return quickly without blocking: it runs on the calling thread or the async executor, without the caller's thread-locals. Bounded by `load-async-timeout`. See [Async API](../guide/async.md#loader). |
+| `KeyFilter` | `notExist(storageKey)` receives the full storage key. Return `true` only for keys that certainly don't exist: a Bloom filter must contain every existing key. A `true` answer skips Redis and the loader, and caches nothing. Must be a local, non-blocking check: async callers invoke it on their own thread, which may be an event loop. |
 | `TtlFunction<K, V>` (`ttlOf`) | A per-entry lifetime. A non-null result replaces `ttl` and gets no jitter. Clamped to between 1 ms and 100 years. Not applied to negative entries. |
 
 ## What not to customize {#not-pluggable}

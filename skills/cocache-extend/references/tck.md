@@ -9,12 +9,17 @@ Use this reference to wire and run the `cocache-test` suites against a backend, 
 | `BackendProtocolSpec` | The `RemoteStore` contract: lease grant, token checks, expiry resets, release, refresh tokens, reclaim, batch reads, set updates, broadcast frames, reset on subscribe | `createBackend()`, `elapse(duration)`; optionally `shortTtl` |
 | `EngineSpec` | Two runtimes on your backend: single load across instances, lease-wait timeout, invalidation during a load, invalidate-vs-read race, concurrent `put`s, read-your-writes, loader failure, store failure, invalidation retry, reconnect reset, `local-max-age`, batch reads, refresh-ahead, reclaim, newer format, load limit | `createBackend()`, `clock`, `elapse(duration)`, `simulateReconnect()`; optionally `policy()` |
 | `SetEngineSpec` | `SetCache` across two runtimes: concurrent adds, empty-set deletion, rejected `invalidate`, write and read failures | `createBackend()`, `clock`, `elapse(duration)` |
-| `MultiNodeSpec` (6.2+) | Three runtimes on your backend: invalidation before a lease, after a lease while another node waits, after a fill but before the L2 write; a remote write between a read and its L2 fill; cross-node concurrent `put`s; misses while an invalidation retry is pending; one source load and one refresh per key cluster-wide | `createBackend()`, `clock`, `elapse(duration)` |
-| `FaultSpec` (6.2+) | L1 faults: copies bounded by `degradedLocalMaxAge`, failed fill and its lease, retries that give up or overflow, `put` / `invalidate` that take effect but throw and are safe to retry; optionally, writes rejected while disconnected are not replayed | `createBackend()`, `clock`, `elapse(duration)`; optionally `disconnect()` |
+| `MultiNodeSpec` (6.3+) | Three runtimes on your backend: invalidation before a lease, after a lease while another node waits, after a fill but before the L2 write; a remote write between a read and its L2 fill; cross-node concurrent `put`s; misses while an invalidation retry is pending; one source load and one refresh per key cluster-wide | `createBackend()`, `clock`, `elapse(duration)` |
+| `FaultSpec` (6.3+) | L1 faults: copies bounded by `degradedLocalMaxAge`, failed fill and its lease, retries that give up or overflow, `put` / `invalidate` that take effect but throw and are safe to retry; optionally, writes rejected while disconnected are not replayed | `createBackend()`, `clock`, `elapse(duration)`; optionally `disconnect()` |
+
+| `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec` (6.3+) | Every case of the corresponding suite through `cache.async()`, plus async-only cases in `AsyncEngineSpec`: cancellation, completion thread, lease and permit waits holding no threads, original exceptions, no synchronous throws, `asyncTimeout`, sync and async joining one load, reentrancy | The same members as the corresponding suite |
+| `AsyncBackendProtocolSpec` (6.3+) | Every `BackendProtocolSpec` case through the `AsyncRemoteStore` methods, plus sync and async calls agreeing | The same members as `BackendProtocolSpec`; only for backends implementing `AsyncRemoteStore` |
 
 ```kotlin
 testImplementation("me.ahoo.cocache:cocache-test")
 ```
+
+Each case creates a backend through `createBackend()`. Override `closesBackend = true` (6.3+) when your backend opens connections or threads, so the suites close it after each case; the default is `false` because a backend may be shared.
 
 ## Template
 

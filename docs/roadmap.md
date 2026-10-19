@@ -71,24 +71,33 @@ JMH 对比见 RFC 0003 §7.1。
 | 执行器可配置 | 运维 | `cocache.spring-cache.retrieve-executor`、`cocache.refresh-executor` 按 bean 名指定执行器（可用 `applicationTaskExecutor`），用户提供的执行器不随运行时关闭 | 绑定与元数据测试；指定的执行器确实被使用；未知 bean 名启动失败 |
 | `SetCache` 驱逐检查 | 安全 | 有 `SetCache` 时启动读取各主节点的 `maxmemory-policy`：`allkeys-*` 会驱逐集合的唯一副本；`cocache.redis.set-cache-eviction-check: warn \| fail \| off`，默认 `warn`；`CONFIG` 不可用时跳过并记录 | 单机与集群上读取策略；ACL 禁用 `CONFIG` 时跳过；告警与失败模式测试 |
 
-## 6.1 之后
+## v6.3：异步 API 与 6.1 之后的改进
+
+6.2 没有单独发布：原计划在 6.2 交付的内容随 6.3.0 一并发布。
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
-| `putAll` 批量写入 | G3 | 按 slot 分组、一个脚本写入并广播，逐 key 遵守写入方顺序 | 未实现 |
-| 链路追踪 | 可观测 | 只在未命中与回源路径接入 Micrometer `Observation`，命中路径零开销 | 未实现 |
-| L2 命中计数 | 可观测 | 分条带计数器；8 线程 JMH 回退在噪声内才默认开启 | 未提供 |
+| 异步 API（[RFC 0004](rfc/0004-async-api.md)） | G3 尾延迟、非阻塞栈 | `cache.async()` 视图（与同步 API 共享 L2、栅栏、SingleFlight 与 lease）、`AsyncCacheLoader`、可选的原生异步 SPI `AsyncRemoteStore` / `AsyncInvalidationChannel`；Redis 后端原生异步；Spring Cache `retrieve` 经异步视图；异步 TCK（`Async*Spec`） | ✅ 三个 PR（core + 内存后端 + TCK、Redis、Spring 与文档）；JMH 见 RFC 0004 §14 |
+| `putAll` 批量写入 | G3 | 按 slot 分组、一个脚本写入并广播，逐 key 遵守写入方顺序 | ✅ |
+| 链路追踪 | 可观测 | 只在未命中与回源路径接入 Micrometer `Observation`，命中路径零开销 | ✅ `LoadObserver`、`MicrometerLoadObserver` |
 | TCK `MultiNodeSpec` | G2 验收 | 多节点覆盖 §4.4 的全部交错、全集群单次回源与单次刷新的计数断言 | ✅ 三个运行时共享一个后端（同一进程内的多个节点，不是多进程）；内存后端与 Redis 三种通道模式（单机与 Cluster）都运行 |
 | TCK `FaultSpec` | G1 验收 | 断线时命令不被重放、故障切换后的 `NOSCRIPT` 回退等故障场景 | ✅ 降级限龄、fill 失败、重试放弃与溢出、“已生效但报错”的写入；断线用例由后端可选实现 `disconnect()`（Redis 单机经 TCP 代理），`NOSCRIPT` 回退是 `cocache-redis` 自己的用例 |
 | Valkey CI | 兼容性 | Valkey 上运行 `cocache-redis` 与 starter 测试 | ✅ CI 任务 Test (Valkey)：单机 Valkey 8 |
 | 集合基准 `setRead` | G3 | 成员数 10 / 100 / 1000 的吞吐与内存，决定 Hash 编码是否保留（RFC 0003 §8 Q1） | ✅ `SetCacheBenchmark`；保留 Hash（RFC 0003 §8.1） |
-| 集合读脚本改用 `HKEYS` | G3 | 读脚本以 `HKEYS` + `HGET !f` 取代 `HGETALL`，不再返回空值；存储布局不变，不是线格式变更。服务端实测 1000 个成员时读吞吐约 1.8 倍（RFC 0003 §8.1） | 未实现 |
-| 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
+| 集合读脚本改用 `HKEYS` | G3 | 读脚本以 `HKEYS` + `HGET !f` 取代 `HGETALL`，不再返回空值；存储布局不变，不是线格式变更。服务端实测 1000 个成员时读吞吐约 1.8 倍（RFC 0003 §8.1） | 待 #654 合并 |
+| L2 命中计数 | 可观测 | 分条带计数器；8 线程 JMH 回退在噪声内才默认开启 | 待 #655 合并 |
+
+## 6.3 之后
+
+| 项 | 目标 | 内容 | 现状 |
+|----|------|------|------|
+| `cocache-coroutines` | 易用 | Kotlin 挂起扩展（`cache.suspending()`、`SuspendingCacheLoader`），依赖 `kotlinx-coroutines-core` 只出现在该模块（RFC 0004 §7） | 计划 6.4 |
 | 异步命令超时改用 Lettuce `TimeoutOptions` | G3 | 异步视图的命令超时目前由 `CompletableFuture.orTimeout` 计时（JDK 的单线程延迟调度器，每条命令一次调度与撤销），8 线程闭环基准低于 RFC 0004 §11 的 90% 的一部分来自这里；改由 Lettuce 自己的命令超时触发、在 `bounded` 中只做异常映射（RFC 0004 §14） | 未实现 |
+| 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
 
 6.0 已交付按 key 查看与失效（actuator `GET` / `DELETE /actuator/cocache/{name}/{key}`、`CacheAdmin.inspect`）与 `ExternalInvalidator`。
 
 ## 暂缓
 
-异步 API 与协程（JDK 21 虚拟线程已覆盖多数场景；6.0 预留扩展方式，见 RFC 0003 §8 Q8）、按字节限制 L2 与压缩 codec、Sharded 模式的原子广播（分桶布局，RFC 0003 §8 Q2）。等指标证明有需要时再排期。
+按字节限制 L2 与压缩 codec、Sharded 模式的原子广播（分桶布局，RFC 0003 §8 Q2）。等指标证明有需要时再排期。

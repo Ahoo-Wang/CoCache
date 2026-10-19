@@ -18,7 +18,7 @@
 |---|---|---|
 | `cocache-develop` | 引入 CoCache、声明缓存（接口或 `CacheSpec`）、loader 与 codec、提交后失效与外部写入方、Spring Cache、`JoinCache`、`SetCache`、配置与生产就绪、测试；审查 findings；陈旧数据、命中率、回源打满、Redis 故障或启动失败的根因，授权后修复 | 不做 5.x 升级及其审查/诊断（`cocache-migrate`），不实现 `CoherenceBackend`（`cocache-extend`） |
 | `cocache-migrate` | 5.x 到 6.x：模块、包、注解、`CacheSource`、API、bean 命名约定、属性、指标与 actuator、Redis 线格式与频道、`SetElementsCache` 数据拷贝、外部失效方、无滚动升级的切换与回滚；以及对这次升级的审查和故障 | 不用于纯 6.x 的新功能或问题（`cocache-develop`），不用于其他缓存库或通用 Spring Boot 升级 |
-| `cocache-extend` | 在 CoCache 仓库之外实现或修复 `CoherenceBackend`（`RemoteStore` + `InvalidationChannel`），包括新存储、新失效通道与装饰器，以 `BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`（6.2 起另有 `MultiNodeSpec`、`FaultSpec`）在每种模式下通过为完成证据 | 不用于应用里的 `Codec`/`KeyEncoder`/配置 shipped `RedisBackend`（`cocache-develop`），不改 CoCache 自己的后端 |
+| `cocache-extend` | 在 CoCache 仓库之外实现或修复 `CoherenceBackend`（`RemoteStore` + `InvalidationChannel`），包括新存储、新失效通道与装饰器，以 `BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`（6.3 起另有 `MultiNodeSpec`、`FaultSpec` 与异步版本 `Async*Spec`）在每种模式下通过为完成证据 | 不用于应用里的 `Codec`/`KeyEncoder`/配置 shipped `RedisBackend`（`cocache-develop`），不改 CoCache 自己的后端 |
 
 ## Selection
 
