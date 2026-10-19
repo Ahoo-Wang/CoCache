@@ -23,7 +23,8 @@ import java.util.concurrent.CompletableFuture
  * - 所有方法都不同步抛出：失败以原始异常（不包装为 `CompletionException`）异常完成返回的 future。
  *   注意 JDK 的 `join()` / `get()` 与依赖阶段（`thenApply` 等）仍会按 JDK 的规则包装。
  * - L2 命中时返回已完成的 future；其余情况 future 在调用方线程（结果已同步可得时）或异步执行器上完成，
- *   从不在 L1 客户端的 I/O 线程上完成。
+ *   从不在 L1 客户端的 I/O 线程上完成。调用方在它上面注册的依赖阶段按 JDK 的规则执行：在完成它的线程上，
+ *   或在随后调用 `get()` / `join()` 的线程上（等待者会执行尚未执行的依赖阶段）。
  * - 每次调用返回一个新的 future：取消它只影响本次调用，不取消共享的加载。
  *
  * @param K 业务 key
