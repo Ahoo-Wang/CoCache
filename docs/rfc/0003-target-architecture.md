@@ -1,6 +1,6 @@
 # RFC 0003：目标架构（第一性原理重构，6.0）
 
-- 状态：草案 v3（已经过两轮对抗验证，见 §10）；§9 步骤 1–4 已在 `me.ahoo.cocache` 包中实现（`cocache-redis` 为 Lettuce 后端；starter 以 `cocache.next.*` 过渡前缀、默认关闭的方式并存；Sharded 通道已实现（`RedisBackendOptions.channelMode = SHARDED`）；JMH 对比见 §7.1；Q9 已定：6.0 不提供接口式声明），SPI 与线格式以代码为准（`me.ahoo.cocache.api.spi`、`me.ahoo.cocache.redis.RedisScripts`）
+- 状态：草案 v3（已经过两轮对抗验证，见 §10）；§9 步骤 1–4 已在 `me.ahoo.cocache` 包中实现（`cocache-redis` 为 Lettuce 后端；starter 以 `cocache.next.*` 过渡前缀、默认关闭的方式并存；Sharded 通道已实现（`RedisBackendOptions.channelMode = SHARDED`）；JMH 对比见 §7.1）。Q9 经维护者复议改为：保留 `@CoCache` 接口式声明，主接口命名为 `Cache`（见 §8 Q9）。SPI 与线格式以代码为准（`me.ahoo.cocache.api.spi`、`me.ahoo.cocache.redis.RedisScripts`）
 - 前提：**不考虑兼容性**。API、SPI、模块、Redis 线格式、配置项都可以推倒重来
 - 关系：吸收并取代 [RFC 0001](0001-l1-write-back-lease.md)（lease 成为唯一的写回保护原语，6.0 只破坏一次线格式，不再单独发布 lease）；[RFC 0002](0002-resp3-client-tracking.md) 变为新后端 SPI 下的一种可选通道
 
@@ -20,7 +20,7 @@
 | D8 | **数据源只加载，策略决定寿命** | 现在 `CacheSource` 返回带 `ttlAt` 的 `CacheValue`，TTL 策略被数据源和编排层各持一半。按 key 或值决定寿命用 `CacheSpec.ttlOf(K, V)` |
 | D9 | **时间可注入、毫秒精度** | 现在 API 模块里的 `object CacheClock` 会启动静态线程，测试无法控制时间，Redis 秒级 TTL 带来 ±1 s 漂移 |
 | D10 | **失败语义：填充可降级；显式写入抛出；失效默认可靠重试** | `invalidate` 通常在数据库事务提交后调用，抛出异常既不能回滚，也不该回滚，所以默认交给有界重试队列。`put`/`add`/`remove` 是调用方的显式写入，失败就抛出 |
-| D11 | **删除 JoinCache 子系统与接口式声明**（`@CoCache` / `@JoinCacheable` 注解、JDK 代理、SpEL 提取器、工厂），声明只用 spec bean | 组合读模型是用户层逻辑，两次 `getAll` 就能写出来；接口式声明只是给 spec 换个写法，却要一整套扫描、代理与注解，且代理本身让 L2 命中慢约 14%（§7.1，Q9） |
+| D11 | **删除 JoinCache 子系统**（`@JoinCacheable`、`JoinCache`、SpEL 提取器、代理与工厂） | 组合读模型是用户层逻辑，两次 `getAll` 就能写出来，不值得在核心里保留一整套声明与代理机制。接口式声明 `@CoCache` 保留（Q9），但只是 spec 的另一种写法 |
 
 三个目标不变，但要说得更精确（§1.2）。
 
@@ -103,7 +103,7 @@
 
 ```
                         ┌────────────────────────────────────────────┐
-  用户代码  ───────────▶ │ CoCache<K,V> / SetCache<K,E>   (cocache-api) │
+  用户代码  ───────────▶ │ Cache<K,V> / SetCache<K,E>   (cocache-api) │
                         └───────────────┬────────────────────────────┘
                                         │ CacheRuntime.create(CacheSpec)
 ┌───────────────────────────────────────▼─────────────────────────────────────┐
@@ -158,7 +158,7 @@ cocache-bom
 API 与 SPI 中的时间类型一律使用 `java.time.Duration` / `java.time.Instant`。`kotlin.time.Duration` 是内联值类，会让 JVM 方法名被改写（例如 `put-<hash>`），Java 调用方和第三方实现都无法使用。
 
 ```kotlin
-interface CoCache<K : Any, V : Any> {
+interface Cache<K : Any, V : Any> {
     val name: String
 
     /** 读穿透；不存在（含负缓存）返回 null。 */
@@ -185,7 +185,7 @@ sealed interface Lookup<out V> {
     data class Absent(val expiresAt: Instant?) : Lookup<Nothing>
 }
 
-interface SetCache<K : Any, E : Any> : CoCache<K, Set<E>> {
+interface SetCache<K : Any, E : Any> : Cache<K, Set<E>> {
     fun add(key: K, elements: Collection<E>)
     fun remove(key: K, elements: Collection<E>)
 }
@@ -302,7 +302,7 @@ interface InvalidationListener {
 
 **key 布局**：`{prefix}{namespace}:{encodedKey}`，`prefix` 默认 `cocache:`，`namespace` 默认是缓存名，二者都可以在 spec 中配置。key 布局属于冻结的线格式（不变量 #9）。
 
-**标量（`CoCache<K, V>`）：String = 36 字节定长头 + 载荷**
+**标量（`Cache<K, V>`）：String = 36 字节定长头 + 载荷**
 
 | 偏移 | 长度 | 字段 |
 |------|------|------|
@@ -518,7 +518,7 @@ v2 曾把 `SetCache` 分成 `SOURCE` 与 `REMOTE` 两种模式。第二轮验证
 
 | 数据的权威在哪里 | 声明方式 | 写法 |
 |------------------|----------|------|
-| 数据源 | 普通的 `CoCache<K, Set<E>>`（集合作为一个标量值，由 `Codec` 编码） | 先更新数据源，再 `invalidate` |
+| 数据源 | 普通的 `Cache<K, Set<E>>`（集合作为一个标量值，由 `Codec` 编码） | 先更新数据源，再 `invalidate` |
 | L1 本身 | `SetCache<K, E>`（集合以 Hash 形状存储，§4.3） | 只用 `add` / `remove`，由 L1 串行化 |
 
 `SetCache` 的规则：
@@ -578,7 +578,7 @@ val runtime = CacheRuntime.builder()
     .clock(TickingClock())
     .build()
 
-val users: CoCache<String, User> = runtime.create(
+val users: Cache<String, User> = runtime.create(
     cacheSpec<String, User>("user") {
         keyEncoder { it }                 // 默认 toString
         codec(JacksonCodec(jsonMapper))
@@ -594,17 +594,34 @@ val users: CoCache<String, User> = runtime.create(
 
 ### 4.12 Spring 集成（starter）
 
-- **声明方式（唯一）**：`@Bean fun userSpec(): CacheSpec<String, User> = cacheSpec("user") { … }`。
+- **两种声明方式，同一个引擎**：接口式声明在启动时翻译为 spec，之后与 spec bean 完全相同（同一套 `CacheSpecCustomizer`、配置文件、引擎与 TCK）。
+- **声明方式一：接口式（推荐给 Spring 用户，与 5.x 写法一致）**：
+
+  ```kotlin
+  @CoCache(ttl = 120, localMaxAge = 60)
+  @CaffeineCache(maximumSize = 100_000)
+  interface UserCache : Cache<String, User>
+
+  @EnableCoCache(caches = [UserCache::class])
+  @SpringBootApplication
+  class App
+  ```
+
+  - 每个接口注册为一个 bean：bean 名为缓存名（默认接口简单类名，与 5.x 相同），类型为接口本身。与已有 bean 重名时启动失败。
+  - 泛型取自接口继承的 `Cache<K, V>` / `SetCache<K, E>`，必须是具体类型，否则启动失败。
+  - 数据源：`@CoCache(loader = "beanName")`，否则按 `CacheLoader<K, V>` 唯一匹配（多个候选时启动失败），找不到则没有数据源。
+  - 编解码：`@CoCache(codec = "beanName")`，否则按 `Codec<V>` 唯一匹配，找不到则按值类型使用 Jackson。
+  - key：`@CoCache(keyExpression = "#{id}")` 为 SpEL 模板（以业务 key 为根对象，只在 starter 中解析），否则 `toString()`。
+  - 注解中的时长单位为秒（与 5.x 一致），`UNSET` 表示交给默认值与配置文件；配置文件 `cocache.caches.[name].*` 的优先级高于注解。
+  - 代理（`CacheProxies`，core）：`Cache` / `SetCache` 的方法按方法名直接调用引擎，不经 `Method.invoke`，异常原样抛出；用户接口的 default 方法经 `InvocationHandler.invokeDefault` 执行。代理开销见 §7.1。
+  - 命名：主接口叫 `Cache`、注解叫 `@CoCache`，与 5.x 的心智模型一致（`Cache` 与 Spring 的 `org.springframework.cache.Cache` 同名，5.x 已是如此；CoCache 自己的 Spring Cache 适配在内部以别名引用后者）。
+- **声明方式二：spec bean（底层方式，也用于不用注解的场景）**：`@Bean fun userSpec(): CacheSpec<String, User> = cacheSpec("user") { … }`。
   - starter 的 `BeanFactoryPostProcessor` 从工厂方法**声明的泛型返回类型**解析 `K`、`V`，不实例化 spec。
-  - 为每个 spec 注册一个 `CoCache<K, V>` bean（`SetCacheSpec` 对应 `SetCache<K, E>`）：bean 名为 spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` 后缀；用 `setTargetType(ResolvableType)` 声明泛型，实例延迟创建。与已有 bean 重名时启动失败。
+  - 为每个 spec 注册一个 `Cache<K, V>` bean（`SetCacheSpec` 对应 `SetCache<K, E>`）：bean 名为 spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` 后缀；用 `setTargetType(ResolvableType)` 声明泛型，实例延迟创建。与已有 bean 重名时启动失败。
   - 泛型无法解析时启动失败，例如返回原始类型、通配符，或者通过 `registerBean(Supplier)` 注册。
-  - 按泛型注入；同一组 `K, V` 有多个候选时用 `@Qualifier`。
-- **不提供接口式声明（Q9）**：5.x 的 `@CoCache interface UserCache : Cache<…>` 与 `@EnableCoCache` 扫描在 6.0 中删除，不提供替代的注解或生成类。
-  - 理由：接口式声明不携带 spec 之外的信息，却需要扫描、注解解析、代理或字节码生成，以及“接口与 spec 重名”等额外规则；JDK 代理让 L2 命中慢约 14%（§7.1），生成类则要引入 ByteBuddy。spec bean 与 `CacheSpecCustomizer`、配置文件已经覆盖了接口式声明的全部用途。
-  - 用户若想保留业务语义化的类型名，可以在自己的代码中定义 `typealias UserCache = CoCache<String, User>`（Kotlin），或用 `@Qualifier` 注入。
-  - v1 中“MethodHandle 分发表”的说法已撤回：JDK 18+ 的 `Method.invoke` 本身就基于 MethodHandle，存在表里的 MethodHandle 不是常量，JIT 无法内联。
-- **数据源**：在 spec 中显式指定（`loader = …`）。
-- **key 编码**：在 spec 中用 `keyEncoder` 指定（默认 `toString()`）。5.x 的 SpEL key 表达式随注解一起删除，core 与 starter 都不再依赖 `spring-expression`。
+  - 数据源与 key 编码在 spec 中显式指定（`loader`、`keyEncoder`）。
+- 同一个缓存名既有接口声明又有 spec bean 时，创建第二个时因缓存名重复而启动失败。
+- v1 中“MethodHandle 分发表”的说法已撤回：JDK 18+ 的 `Method.invoke` 本身就基于 MethodHandle，存在表里的 MethodHandle 不是常量，JIT 无法内联。当前代理改为按方法名直接分派。
 - **Spring Cache 适配**：`cocache-spring` 提供 `CoCacheSpringCacheManager`（starter 自动配置）。语义：负缓存视为未命中，`sync = true` 按 key 合并，`clear` 只清本地，`put(k, null)` 映射为 `invalidate`。
 - **事务**：`invalidate` 必须在提交之后执行。`cocache-spring` 提供 `TransactionalInvalidator`（starter 在有 spring-tx 时自动配置）：事务内调用时登记到当前事务的 `afterCommit`，同一事务内对同一缓存的失效合并为一次 `invalidateAll`，回滚时不失效；没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己提交之后失效。在提交之前失效本身就是一个 G2 漏洞：并发的回源可能读到提交前的数据。
 
@@ -645,7 +662,7 @@ val users: CoCache<String, User> = runtime.create(
 | `TtlPolicy`（含兼容构造函数）、`strictFailure`、`recordClientSideHits` | `CachePolicy`、§4.13 的规则、分条带计数器 |
 | `CacheSource` 返回带 `ttlAt` 的 `CacheValue` | `CacheLoader` + `ttlOf(K, V)` |
 | JoinCache 全套（`JoinCache`、`JoinValue`、`JoinKeyExtractor`、`@JoinCacheable`、SpEL 提取器、代理与工厂） | 文档中的组合示例（两次 `getAll`） |
-| 接口式声明：`@CoCache`、`@CaffeineCache` 注解、`@EnableCoCache` 扫描、`CacheInvocationHandler` 与 `CacheProxyFactory`、`CacheDelegated`/`CacheMetadataCapable`、SpEL `ExpKeyConverter` | spec bean（Q9），`keyEncoder`，`CacheSpecCustomizer` 与配置文件 |
+| 5.x 接口式声明的实现：`me.ahoo.cache` 包下的 `@CoCache`、`@CaffeineCache`、`@EnableCoCache`、`CacheInvocationHandler`、`CacheProxyFactory`、`CacheDelegated`/`CacheMetadataCapable`、基于 `kotlin-reflect` 的元数据解析 | 6.0 的同名注解（`me.ahoo.cocache.api.annotation`）、`@EnableCoCache`（starter）、`CacheProxies`（core），注解启动时翻译为 spec |
 | core 对 `spring-expression`、`kotlin-reflect` 的依赖 | 移到 starter |
 | `StringRedisTemplate`、`RedisMessageListenerContainer` | Lettuce 原生 |
 
@@ -666,7 +683,7 @@ val users: CoCache<String, User> = runtime.create(
 11. **有状态组件只能由运行时创建**：用户只提供 spec 和工厂。
 12. **CoCache 的 L1 连接只访问主节点**，断线时拒绝命令而不是缓冲重放。
 13. **存储脚本只执行协议，不持有策略**：TTL、刷新窗口、令牌都由引擎作为参数传入。
-14. **没有代理层**：用户拿到的 `CoCache` 就是引擎本身，异常原样抛出，不存在 `InvocationTargetException` 包装。
+14. **代理不包装异常**：接口式声明的代理按方法名直接调用引擎，异常原样抛出；spec bean 注入的就是引擎本身，没有代理层。
 15. **命中路径的改动必须附带数据**：1 线程与 8 线程，至少 5 轮交替运行，报告中位数与置信区间，并包含至少三个配置不同的缓存。
 
 ---
@@ -676,7 +693,7 @@ val users: CoCache<String, User> = runtime.create(
 | 路径 | 5.4 | 6.0 目标 | 验证方式 |
 |------|-----|----------|----------|
 | L2 命中（spec bean） | 直接调用引擎（基线） | 不退化（差异在噪声内） | `l2Hit`，三个配置不同的缓存 |
-| L2 命中（5.4 经代理，参照） | 已补测：比直接调用慢约 14% | 不适用（6.0 没有代理层，Q9） | `l2HitViaProxy` |
+| L2 命中（接口式声明，经代理） | 5.4 经代理：比直接调用慢约 14% | 不劣于 5.4 经代理 | `l2HitViaInterface` 对 `l2HitViaProxy`，见 §7.1 |
 | L1 命中 | 1 RTT（TTL + GET） | 1 RTT（PTTL + GET），吞吐不退化；每个 key 内存 +36 B | `l1Read`，标量值 64 B / 1 KB / 10 KB；测内存 |
 | 集合 L1 命中 | 1 RTT（TTL + SMEMBERS） | 1 RTT（PTTL + HGETALL）；公布吞吐与内存差异 | 新增 `setRead`，成员数 10 / 100 / 1000 |
 | 未命中回源 | 读 + 回源 + 写，共 2 RTT | 读（含 lease）+ 回源 + fill，共 2 RTT | `missLoad` |
@@ -695,6 +712,8 @@ val users: CoCache<String, User> = runtime.create(
 | | 8 | 95,243,583 | 146,660,460 | +54% |
 | L2 命中（5.4 经 JDK 代理） | 1 | 29,550,427 | — | 代理本身比直接调用慢约 14% |
 | | 8 | 96,508,118 | — | |
+| L2 命中（接口式声明，经 6.0 代理；另一组 3 轮交替运行） | 1 | 5.4 经代理 29,543,891 | 48,601,358 | +64%（同组 6.0 直接调用为 59,754,507，代理开销约 19%） |
+| | 8 | 5.4 经代理 116,307,947 | 148,915,869 | +28%（同组 6.0 直接调用为 209,251,809，代理开销约 29%） |
 | L2 命中（轮流访问三个配置不同的缓存） | 1 | 5,002,489 | 6,150,139 | +23% |
 | | 8 | 11,692,804 | 12,958,644 | +11% |
 | L1 读 | 1 | 9,854 | 9,771 | −1%（噪声内） |
@@ -711,6 +730,7 @@ val users: CoCache<String, User> = runtime.create(
 结论：
 
 - **G3 成立**：L2 命中显著提升；写入与失效从 2 次往返降为 1 次，吞吐接近翻倍；批量读改为共享连接多路复用后提升约三分之一。
+- **接口式声明**：经 6.0 代理的命中仍比用户现在使用的 5.4（同样经代理）快 28%–64%；需要极致命中性能的缓存可以改用 spec bean（直接注入引擎）。
 - **多缓存的命中代价**：轮流访问三个配置不同的缓存时，每次命中的成本约为单缓存的 2.7 倍（5.4 约为 2 倍），原因是调用点变成多态（Caffeine 按配置生成不同的节点类，`KeyEncoder` 等 lambda 也各不相同）。两个版本都受影响，6.0 仍然更快。D6 的“单态”只针对 CoCache 自己的调用层，这一点已在 D6 中说明。
 - **L1 读**：第一版读脚本多一次 `TYPE` 并在每次执行时重新定义写路径的辅助函数，8 线程下低约 8%（6 轮中位数）。改为 `PTTL` + `pcall GET` 并精简读脚本之后，1 线程持平，8 线程的差异落在多轮波动范围内。
 
@@ -730,7 +750,7 @@ val users: CoCache<String, User> = runtime.create(
 | Q6 | 故障切换丢写 | Redis 异步复制可能丢失 `DEL` 或 fill，旧值回到 L1。旧主节点在丢写之前可能已经发出广播，各节点淘汰 L2 后又会从旧值重新填充；非 sharded 的集群 Pub/Sub 也不一定会因此重连。所以这种情况的上界是 L1 侧的 `ttl` 与 L2 侧的 `localMaxAge`（A4）。需要更强保证的部署可以在切换后执行全量失效（运维操作） |
 | Q7 | JDK 基线 | 维持 17（Spring Boot 4 的下限）。代码对虚拟线程友好：I/O 路径上没有 `synchronized` |
 | Q8 | 是否引入协程 / 异步 API | **6.0 不引入**。L2 命中是纳秒级、没有 I/O，挂起函数只会增加成本（G3）；api 必须零依赖，Java 用户无法自然使用挂起函数；同步与挂起两套 API 会让协议证明和 TCK 都翻倍；阻塞 loader 的高并发由虚拟线程解决。只有在 WebFlux / 协程栈配合非阻塞 loader（R2DBC、WebClient）时才有收益。**预留**：§4.5 的未命中路径用 Future 包装 I/O。有需求时，在 core 中增加基于 `CompletableFuture` 的 `AsyncCoCache` 与 `AsyncCacheLoader`（L2 命中返回已完成的 Future；异步 loader 的线程模型单独定义），并新增可选模块 `cocache-coroutines`，用少量扩展函数提供挂起版本：先同步查 L2，未命中再 `await()`。协程依赖只出现在该模块中。触发条件：reactive 用户提出需求，或者指标显示事件循环线程上出现阻塞的未命中读取 |
-| Q9 | `@CoCache` 接口式声明 | **已定（维护者，2026-10-19）：6.0 不提供接口式声明，只保留 spec bean 方式**。不引入 ByteBuddy，不保留 JDK 代理（代理让 L2 命中慢约 14%，§7.1）。迁移方式见 §9 步骤 5 |
+| Q9 | `@CoCache` 接口式声明 | **已定（维护者复议，2026-10-19）：保留**。初版结论“只保留 spec bean”低估了接口式声明对用户的便利；代理成本应与用户现在使用的 5.4（同样经代理）比较，而不是与 6.0 直接调用比较。实现：注解启动时翻译为 spec，JDK 代理按方法名直接分派（不引入 ByteBuddy）；主接口改名为 `Cache`、注解沿用 `@CoCache`，与 5.x 写法一致 |
 | Q10 | `invalidateAll` 在 Cluster 下的成本 | 默认按 slot 原子（约 N 个脚本、N 次广播）。若 N 很大，可以选择“按 slot `DEL`，最后发一个合并帧”的非原子模式，用一次广播换掉 N 次 |
 
 ---
@@ -741,19 +761,19 @@ val users: CoCache<String, User> = runtime.create(
 
 0. **先修 5.x**：§10 C1（同实例失效吞没、`setCache` 的 L2 写入无保护）是 5.x 现存的缺陷，先在 5.4.x 中修复并补上复现用例（[#628](https://github.com/Ahoo-Wang/CoCache/issues/628)）。
 1. **TCK 先行**：`cocache-test` 新增 `BackendProtocolSpec`（状态机、令牌、到期时间重设、原子广播能力、reclaim、release、NOSCRIPT 回退）和 `ManualClock`；`InMemoryBackend` 首先通过。
-2. **api + core**：`CoCache`、`CacheSpec`、`CacheRuntime`、`CoherentEngine`、批量 SingleFlight、`CachePolicy`。把 `DefaultCoherentCacheSpec` 的 in-flight 系列用例迁移到新引擎，并补上 §10 中每个协议发现的复现用例。
+2. **api + core**：`Cache`、`CacheSpec`、`CacheRuntime`、`CoherentEngine`、批量 SingleFlight、`CachePolicy`。把 `DefaultCoherentCacheSpec` 的 in-flight 系列用例迁移到新引擎，并补上 §10 中每个协议发现的复现用例。
 3. **cocache-redis**：Lua 协议、线格式、命令多路复用、Router、心跳、环境探测；单机、Cluster 与 Valkey CI；JMH 对比 5.4（§7）。
-4. **cocache-spring + starter**：spec 注册、配置分层与校验、Spring Cache 适配、事务内失效 `TransactionalInvalidator`（已完成，过渡前缀 `cocache.next.*`）；actuator、Micrometer 随后补齐。
+4. **cocache-spring + starter**：spec 注册、`@CoCache` 接口式声明与 `@EnableCoCache`、配置分层与校验、Spring Cache 适配、事务内失效 `TransactionalInvalidator`（已完成，过渡前缀 `cocache.next.*`）；actuator、Micrometer 随后补齐。
 5. **切换、删除与文档**（一个破坏性 PR，前置条件：观测接入与 `TransactionalInvalidator` 已合入；Sharded 通道已合入或明确推迟到 6.x）：
    - **切换**：6.0 自动配置改为默认启用，过渡前缀 `cocache.next.*` 改为正式前缀 `cocache.*`，`CoCacheNextAutoConfiguration` 等类去掉 `Next`。
-   - **删除 5.x**：`cocache-spring-redis`、`cocache-spring-cache` 两个模块；`cocache-api`、`cocache-core`、`cocache-spring`、starter、`cocache-test` 中 `me.ahoo.cache.*` 包下的全部代码，包括 `@CoCache` / `@CaffeineCache` / `@JoinCacheable` 注解、`@EnableCoCache`、代理与工厂、JoinCache、SpEL key 转换器（Q9、D11）；core 去掉 `spring-expression` 与 `kotlin-reflect` 依赖；5.x 的 JMH 基准。
-   - **示例**：`cocache-example` 改为 spec bean 声明，starter 测试随之迁移。
+   - **删除 5.x**：`cocache-spring-redis`、`cocache-spring-cache` 两个模块；`cocache-api`、`cocache-core`、`cocache-spring`、starter、`cocache-test` 中 `me.ahoo.cache.*` 包下的全部代码，包括 `@CoCache` / `@CaffeineCache` / `@JoinCacheable` 注解、`@EnableCoCache`、代理与工厂、JoinCache、SpEL key 转换器（6.0 有各自的替代，D11 的 JoinCache 除外）；core 去掉 `spring-expression` 与 `kotlin-reflect` 依赖；5.x 的 JMH 基准。
+   - **示例**：`cocache-example` 改用 6.0 的 `@CoCache` 与 `@EnableCoCache`（另附一个 spec bean 示例），starter 测试随之迁移。
    - **文档**：重写 `docs/architecture.md`（以本 RFC 为准，删除“已知的固有窗口”）、wiki（中英文）、`skills/cocache/`、AGENTS.md 的不变量与 TCK 表；版本号改为 6.0.0。
    - **迁移指南**（changelog）：
-     - 接口式声明 → spec bean：`@CoCache(ttl = 120) interface UserCache : Cache<String, User>` 改为 `@Bean fun userSpec(): CacheSpec<String, User> = cacheSpec("UserCache") { codec = jacksonCodec(mapper); loader = …; policy { ttl = Duration.ofSeconds(120) } }`，注入点改为 `CoCache<String, User>`（同类型有多个缓存时用 `@Qualifier("user")`，bean 名由 spec bean 名 `userSpec` 推出；也可以定义 `typealias`）。缓存名沿用 5.x 的接口简单类名，L1 key 前缀保持 `cocache:{name}:`。
+     - 接口式声明：写法不变，只换 import（`me.ahoo.cache.api.annotation.CoCache` → `me.ahoo.cocache.api.annotation.CoCache`，`me.ahoo.cache.api.Cache` → `me.ahoo.cocache.api.Cache`，`me.ahoo.cache.spring.EnableCoCache` → `me.ahoo.cocache.spring.boot.EnableCoCache`）。注解属性改名：`ttlAmplitude` → `ttlJitter`、`missingTtl` → `absentTtl`、`clientSideTtl` → `localMaxAge`、`refreshAhead` → `refreshWindow`。数据源由 `{name}.CacheSource` bean 改为按 `CacheLoader<K, V>` 泛型匹配（或 `@CoCache(loader = …)`）。缓存名与 L1 key 前缀保持不变。
      - `{cacheName}.ClientSideCache` 等 bean 名后缀约定 → `CacheSpecCustomizer` 与 `cocache.caches.[name].*`。
      - `getCache` / `CacheValue` / `set(key, ttlAt, value)` → `get` / `lookup` / `put(key, value, ttl)`；`set(key, null)` → `invalidate`。
-     - `SetElementsCache` → `SetCache`（只用于 L1 是唯一副本的集合；数据源中的集合改用 `CoCache<K, Set<E>>` + `invalidate`）。
+     - `SetElementsCache` → `SetCache`（只用于 L1 是唯一副本的集合；数据源中的集合改用 `Cache<K, Set<E>>` + `invalidate`）。
      - **不能滚动升级**：线格式与失效频道都已改变，5.x 与 6.0 节点不能在同一集群中混跑，需要整体切换。切换后 L1 中 5.x 留下的值会被识别为格式 0，按损坏条件回收后回源，无需手工清理；也可以在切换时按前缀删除旧 key 以立即释放内存。
 
 验收：architecture.md 删除“已知的固有窗口”；`MultiNodeSpec` 覆盖 §4.4 的全部交错（失效先于 lease、晚于 lease、晚于 fill；同节点失效与并发读；同节点与跨节点的并发 `put`；失效重试期间的未命中）、全集群单次回源和单次刷新；`FaultSpec` 覆盖 Redis 故障时的降级限龄、失效重试与溢出、写入抛出后重试的幂等性、断线时命令不被重放、故障切换后的 NOSCRIPT。
@@ -797,7 +817,7 @@ v1 由三路独立的对抗审查验证：协议正确性（构造交错反例�
 | ID | 严重度 | 发现 | 5.x | 处理 |
 |----|--------|------|-----|------|
 | v3-1 | 重要 | 同一节点两个并发的 `put`：后执行 Lua 的线程先写 L2，先执行 Lua 的线程后写 L2，前后两次戳校验都能通过，L2 留下较旧的值；两次写入的事件都被本节点过滤。v2 的“修改 L1 后用新戳保护写 L2”挡不住这种情况，因为戳只表达“期间有没有失效”，不表达 L1 中的写入顺序 | 是（[#628](https://github.com/Ahoo-Wang/CoCache/issues/628) 的修复方案需相应调整） | §4.4：`put` 不写 L2，修改 L1 前后各递增一次戳并淘汰 L2；不变量 #1“L2 只由读 L1 的路径填充” |
-| v3-2 | 重要 | `SOURCE` 模式的增量 `add`/`remove` 与数据库中的写入顺序无关，乱序到达时 L1 留下已删除的元素，直到 TTL | 是 | §4.8：`SetCache` 只用于 L1 是唯一副本的场景；数据源中的集合用普通 `CoCache<K, Set<E>>` + `invalidate` |
+| v3-2 | 重要 | `SOURCE` 模式的增量 `add`/`remove` 与数据库中的写入顺序无关，乱序到达时 L1 留下已删除的元素，直到 TTL | 是 | §4.8：`SetCache` 只用于 L1 是唯一副本的场景；数据源中的集合用普通 `Cache<K, Set<E>>` + `invalidate` |
 | v3-3 | 重要 | 失效写 L1 失败进入重试队列后，L1 仍是旧值，本节点的未命中会把旧值以 `localMaxAge` 填入 L2；重试成功时本节点的事件又被过滤 | 不适用（5.x 不重试） | §4.13：排队中的 key 未命中时跳过 L1；重试成功后本地再递增戳并淘汰 L2 |
 | v3-4 | 次要 | `RemoteRead.Hit` 带 digest，每次 L1 命中都要在 Lua 里计算 SHA-1，违反 G3 | — | digest 只在解码失败时由客户端计算 |
 | v3-5 | 次要 | L1 作为唯一副本的两个前提没有写明：`maxmemory-policy` 不能是 `allkeys-*`；持久性等于 Redis 的持久性 | 是（5.x `SetElementsCache` 同样如此，未写明） | §4.8 前提与启动检查 |

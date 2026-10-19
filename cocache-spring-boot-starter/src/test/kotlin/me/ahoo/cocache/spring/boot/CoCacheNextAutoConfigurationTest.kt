@@ -13,8 +13,8 @@
 
 package me.ahoo.cocache.spring.boot
 
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.CoCache
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
@@ -120,10 +120,10 @@ class CoCacheNextAutoConfigurationTest {
     fun registersTypedCacheBeansForSpecs() {
         runner.withUserConfiguration(InMemoryConfig::class.java).run { context ->
             assertThat(context).hasNotFailed()
-            val type = ResolvableType.forClassWithGenerics(CoCache::class.java, String::class.java, String::class.java)
+            val type = ResolvableType.forClassWithGenerics(Cache::class.java, String::class.java, String::class.java)
             context.getBeanNamesForType(type).toSet().assert().containsExactlyInAnyOrder("user", "profileCache")
             @Suppress("UNCHECKED_CAST")
-            val user = context.getBean("user") as CoCache<String, String>
+            val user = context.getBean("user") as Cache<String, String>
             user["1"].assert().isEqualTo("user-1")
             @Suppress("UNCHECKED_CAST")
             val index = context.getBean("index") as SetCache<String, String>
@@ -210,7 +210,7 @@ class CoCacheNextAutoConfigurationTest {
             .run { context ->
                 assertThat(context).hasNotFailed()
                 @Suppress("UNCHECKED_CAST")
-                val user = context.getBean("user") as CoCache<String, String>
+                val user = context.getBean("user") as Cache<String, String>
                 user.put("k", "v")
                 val backend = context.getBean(CoherenceBackend::class.java)
                 (
@@ -227,7 +227,7 @@ class CoCacheNextAutoConfigurationTest {
                     ).read("custom-set:index:k", null, null) is me.ahoo.cocache.api.spi.RemoteRead.Hit
                     ).assert().isTrue()
                 @Suppress("UNCHECKED_CAST")
-                val profile = context.getBean("profileCache") as CoCache<String, String>
+                val profile = context.getBean("profileCache") as Cache<String, String>
                 profile.put("k", "v")
                 (
                     backend.store(
@@ -309,7 +309,7 @@ class CoCacheNextAutoConfigurationTest {
                 assertThat(context).hasNotFailed()
                 (context.getBean(CoherenceBackend::class.java) is RedisBackend).assert().isTrue()
                 @Suppress("UNCHECKED_CAST")
-                val cache = context.getBean("starterUser") as CoCache<String, String>
+                val cache = context.getBean("starterUser") as Cache<String, String>
                 cache["1"].assert().isEqualTo("u-1")
                 cache.invalidate("1")
             }

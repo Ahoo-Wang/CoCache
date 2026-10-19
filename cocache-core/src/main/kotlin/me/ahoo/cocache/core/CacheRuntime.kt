@@ -14,8 +14,8 @@
 package me.ahoo.cocache.core
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
-import me.ahoo.cocache.api.CoCache
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.NodeId
@@ -71,7 +71,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     /**
      * 按声明创建缓存。同一运行时内缓存名与命名空间都不得重复。
      */
-    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): CoCache<K, V> {
+    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> {
         return register(spec.name, spec.namespace) { store -> CoherentEngine(spec, store, context) }
     }
 
@@ -103,7 +103,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     /**
      * 按名称查找已创建的缓存。
      */
-    fun cache(name: String): CoCache<*, *>? = names[name]?.engine as CoCache<*, *>?
+    fun cache(name: String): Cache<*, *>? = names[name]?.engine as Cache<*, *>?
 
     /**
      * 按名称查看缓存的运行统计。
