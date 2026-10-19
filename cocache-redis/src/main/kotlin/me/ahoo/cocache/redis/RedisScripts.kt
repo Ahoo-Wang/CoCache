@@ -42,7 +42,10 @@ internal object RedisScripts {
     const val RESULT_SCALAR = 2L
     const val RESULT_SET = 3L
 
-    private const val PRELUDE = """
+    /**
+     * 所有脚本共用的辅助函数。读脚本只引入这一部分：每次执行都会重新定义脚本中的函数，读路径不应为写路径的辅助函数付出成本。
+     */
+    private const val CORE = """
 local ZERO_TOKEN = string.rep('\0', 24)
 local function now_ms()
   local t = redis.call('TIME')
@@ -54,6 +57,12 @@ end
 local function is_ours(v)
   return string.len(v) >= 36 and string.byte(v, 1) == 192
 end
+"""
+
+    /**
+     * 写脚本额外使用的辅助函数。
+     */
+    private const val PRELUDE = CORE + """
 local function expire(key, ttl)
   local ms = tonumber(ttl)
   if ms > 0 then redis.call('PEXPIRE', key, ms) end
@@ -79,21 +88,21 @@ end
      * 读取。ARGV：lease 令牌（空串为不申请）、lease 寿命、刷新窗口（空串为不申请）、刷新令牌、刷新令牌寿命。
      */
     val READ = Script(
-        PRELUDE + """
+        CORE + """
 local key = KEYS[1]
-local kind = redis.call('TYPE', key)['ok']
-if kind == 'none' then
+local pttl = redis.call('PTTL', key)
+if pttl == -2 then
   if ARGV[1] ~= '' then
     redis.call('SET', key, header('L', ARGV[1], now_ms()), 'PX', ARGV[2])
     return {0, 1}
   end
   return {0, 0}
 end
-local pttl = redis.call('PTTL', key)
-if kind == 'hash' then
+-- 常见路径是 String：直接 GET（与 5.x 相同的两条命令）；类型不符（集合的 Hash）时退回 HGETALL
+local v = redis.pcall('GET', key)
+if type(v) == 'table' then
   return {3, pttl, redis.call('HGETALL', key)}
 end
-local v = redis.call('GET', key)
 if not is_ours(v) then return {2, pttl, v, 0} end
 local state = string.sub(v, 3, 3)
 if state == 'L' then return {1, pttl} end
