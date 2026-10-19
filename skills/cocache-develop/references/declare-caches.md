@@ -92,8 +92,9 @@ class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
 - `null` is cached as a negative entry for `absentTtl`. Throw when the lookup failed; nothing is cached and every coalesced caller sees the exception.
 - The loader runs on the calling thread, so the transaction, security context and MDC are visible. Read the primary, not a lagging replica.
 - Reading the same key from inside its own loader on the same thread fails fast with `IllegalStateException`.
-- Interface resolution: `@CoCache(loader = "beanName")`, else the single `CacheLoader<K, V>` bean, else none. Several candidates fail startup. With no loader, misses return `null` and nothing negative is written to Redis.
+- Interface resolution: `@CoCache(loader = "beanName")`, else the single `CacheLoader<K, V>` bean, else (6.3+) the single `AsyncCacheLoader<K, V>` bean, else none. Several candidates, or one of each kind, fail startup; a bean implementing both is used as a `CacheLoader`. With no loader, misses return `null` and nothing negative is written to Redis.
 - `cache.get(key) { k -> ... }` loads a miss with a per-call loader under the same protection; `@Cacheable(sync = true)` uses it.
+- 6.3+: `asyncLoader = AsyncCacheLoader { id -> repo.findById(id).toFuture() }` for non-blocking sources (set `loader` or `asyncLoader`, not both). `cache.async()` returns an `AsyncCache` on the same cache: same L2, fences and leases, methods with the same names returning `CompletableFuture`. Futures fail with the original exception and never complete on the Redis I/O thread; `loadAsync` must not block and sees no caller thread-locals; a synchronous loader under the async view runs on `cocache.blocking-executor`. Bounded by `load-async-timeout`.
 
 ## Codecs
 

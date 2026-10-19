@@ -9,6 +9,7 @@ Use this map while implementing or reviewing a `CoherenceBackend`. It lists what
 - [Rules across all methods](#rules-across-all-methods)
 - [Invalidation channel](#invalidation-channel)
 - [Invariants to review against](#invariants-to-review-against)
+- [Async store (optional, 6.3+)](#async-store-optional-63)
 - [Wiring](#wiring)
 
 ## Shapes
@@ -88,6 +89,15 @@ interface InvalidationListener {
 5. Tokens are released or expire; every state transition sets its expiry explicitly.
 6. The store executes protocol only; no policy, no shared state between caches.
 7. Reject while disconnected; never replay buffered writes.
+
+## Async store (optional, 6.3+)
+
+A backend that implements only `RemoteStore` keeps working with `cache.async()`: the engine runs its synchronous methods on the blocking executor. To serve async callers without those threads, also implement `AsyncRemoteStore` (an `xxxAsync` twin of every `RemoteStore` method) and, for non-atomic broadcast, `AsyncInvalidationChannel.publishAsync`.
+
+- Same semantics as the synchronous method; never throw synchronously; fail the future with the same exception types as the synchronous path, not `CompletionException`.
+- Bound every operation (a command timeout): a future that never completes stalls that key until the cache's `load-async-timeout`.
+- Completing on an I/O thread is fine, because the engine switches threads before engine or user code runs; keep that completion free of codecs and user code.
+- Prove it with `AsyncBackendProtocolSpec` and the four async engine suites.
 
 ## Wiring
 

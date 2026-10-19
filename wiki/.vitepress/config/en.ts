@@ -16,6 +16,7 @@ const guide: DefaultTheme.SidebarItem[] = [
       { text: 'Keeping Data Fresh', link: '/guide/freshness' },
       { text: 'JoinCache', link: '/guide/join-cache' },
       { text: 'Spring Cache', link: '/guide/spring-cache' },
+      { text: 'Async API', link: '/guide/async' },
       { text: 'Testing', link: '/guide/testing' },
       { text: 'Native Images', link: '/guide/native' },
       { text: 'Configuration Reference', link: '/guide/configuration' },

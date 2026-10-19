@@ -146,6 +146,13 @@ class CoCacheAotTest {
                 hints.assert().matches(RuntimeHintsPredicates.proxies().forInterfaces(type))
                 hints.assert().matches(reflection.onType(type).withMemberCategory(MemberCategory.INVOKE_PUBLIC_METHODS))
             }
+        // 异步视图的公共方法（与声明无关的固定提示）
+        listOf(
+            me.ahoo.cocache.api.AsyncCache::class.java,
+            me.ahoo.cocache.api.AsyncSetCache::class.java
+        ).forEach { type ->
+            hints.assert().matches(reflection.onType(type).withMemberCategory(MemberCategory.INVOKE_PUBLIC_METHODS))
+        }
         // default 方法经 InvocationHandler.invokeDefault 调用
         hints.assert().matches(reflection.onMethodInvocation(UserCache::class.java, "nameOf"))
         hints.assert().matches(reflection.onMethodInvocation(ExtJoinCache::class.java, "userOf"))

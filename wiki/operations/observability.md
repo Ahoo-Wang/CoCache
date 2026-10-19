@@ -41,6 +41,7 @@ There is no L2 hit counter: counting the hottest path would cost measurable thro
 | `cocache.loads` | function timer | Loader calls, with total time. A `loadAll` batch counts once. Includes calls that threw. |
 | `cocache.load.failures` | counter | Loader calls that threw. The exception reaches the caller and every coalesced waiter. |
 | `cocache.load.rejections` | counter | Loads rejected by `load-max-concurrent`: no permit within `load-acquire-timeout`. The caller got `SourceLoadRejectedException`. |
+| `cocache.load.timeouts` | counter | `AsyncCacheLoader` loads that took longer than `load-async-timeout`. The caller got `SourceLoadTimeoutException` and the lease was released. See [Async API](../guide/async.md#timeouts). |
 | `cocache.refreshes` | counter | Refresh-ahead tasks that ran |
 | `cocache.refresh.rejections` | counter | Refreshes the refresh executor rejected. The value is served until it expires normally. |
 
@@ -90,7 +91,7 @@ When `micrometer-observation` is on the classpath and the context has an `Observ
 | Contextual (span) name | `cocache {operation} {cache}`, for example `cocache load UserCache` |
 | `cache` (low cardinality) | The cache name |
 | `operation` (low cardinality) | `load` (a miss, `get(key, loader)`, or a batch falling back to one key), `loadAll` (one batch load), `refresh` (a refresh-ahead load), `lease.wait` (waiting for another instance's lease) |
-| `outcome` (low cardinality) | `success` or `error`. On `error` the exception is recorded on the observation and rethrown unchanged. |
+| `outcome` (low cardinality) | `success` or `error`, plus `timeout` when an async load exceeds `load-async-timeout`. On `error` the exception is recorded on the observation and rethrown unchanged. |
 | `key.count` (high cardinality, spans only) | Keys in the call: 1, or the batch size for `loadAll` |
 
 What is observed, and what isn't:
@@ -98,9 +99,10 @@ What is observed, and what isn't:
 - Only the loader call itself, and the wait for another instance's lease when there is one. L2 hits, L1 reads, and fills create no observation, and with no observer configured the engine doesn't even allocate. A load rejected by `load-max-concurrent` is not observed.
 - The key is never recorded: it is high cardinality and may be personal data.
 - The loader runs on the caller's thread inside the observation's scope, so spans your loader creates (JDBC, HTTP) become children of `cocache.load`, which is itself a child of the request span. Refresh-ahead runs on the refresh executor, so its spans have a parent only if that executor propagates context.
+- An async load is observed from the call to `loadAsync` until its future completes. The synchronous part of `loadAsync` runs inside the observation's scope, so a reactive client that captures the context there (through Micrometer context propagation) creates child spans.
 - With Spring Boot's metrics, each observation also feeds a `cocache.load` timer and a `cocache.load.active` long task timer, tagged `cache`, `operation`, `outcome` (plus Micrometer's own `error` tag on the timer). They overlap with the [`cocache.loads`](#metrics-loads) function timer, which stays the cheap always-on one.
 
-Turn it off with `cocache.observation.enabled: false`, or with Spring Boot's `management.observations.enable.cocache: false`. A `LoadObserver` bean of your own replaces the Micrometer one. Without Spring, pass it to `CacheRuntime.builder().loadObserver(…)`. Implementations must run the block once on the calling thread and rethrow its exceptions unchanged.
+Turn it off with `cocache.observation.enabled: false`, or with Spring Boot's `management.observations.enable.cocache: false`. A `LoadObserver` bean of your own replaces the Micrometer one. Without Spring, pass it to `CacheRuntime.builder().loadObserver(…)`. Implementations must run the block once on the calling thread and rethrow its exceptions unchanged. To see async loads, also override `observeAsync`: the default runs the block without observing it.
 
 ## Health indicator {#health}
 
@@ -178,7 +180,7 @@ A cache report:
 }
 ```
 
-The `metrics` keys map to the meters in order: `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
+The `metrics` keys map to the meters in order: `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, `loadTimeouts` is `cocache.load.timeouts`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
 
 ### Encoded keys {#encoded-key}
 

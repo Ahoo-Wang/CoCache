@@ -61,8 +61,9 @@ At build time the starter reads the cache bean definitions and registers these h
 | The first cache's value type, when `@JoinCacheable(joinKeyExpression)` is set | Public methods and fields | SpEL evaluates the expression with the first value as root object |
 | The value type (element type for a `SetCache`) of an interface cache without a codec | Jackson binding | That cache uses the default `JacksonCodec` |
 | `Cache`, `SetCache`, `JoinCache` | Public methods | Proxy dispatch and validation |
+| `AsyncCache`, `AsyncSetCache` | Public methods | The [async view](./async.md) returned by `cache.async()` |
 | The Caffeine classes behind L2 | Constructors and fields | Caffeine loads its generated classes by name |
-| `Executors.newVirtualThreadPerTaskExecutor` | Invoke | The default Spring Cache retrieve executor uses virtual threads when the JDK has them |
+| `Executors.newVirtualThreadPerTaskExecutor` | Invoke | The runtime's default blocking executor uses virtual threads when the JDK has them |
 
 An interface cache counts as "without a codec" when it has no `@CoCache(codec)` and no bean of type `Codec<V>` matches its value type, which are the same rules the starter uses to pick the codec ([Codecs](./caches.md#codecs)).
 

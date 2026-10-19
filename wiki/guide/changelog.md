@@ -5,7 +5,59 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v6.1.0 (Current)
+## v6.3.0 (Current)
+
+**Module Group:** `me.ahoo.cocache` · Minor release. 6.2 was not released on its own: the work planned for 6.2 ships in 6.3.0. The Redis wire format and the invalidation channel are unchanged, so 6.0, 6.1 and 6.3 instances can share Redis and be upgraded one at a time.
+
+### Async API
+
+Every cache now has an asynchronous view on the same engine ([RFC 0004](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0004-async-api.md)). See the [Async API](./async.md) guide.
+
+```kotlin
+val async = userCache.async()                 // same L2, fences, in-flight loads and leases
+async.get("42").thenAccept { user -> ... }
+async.put("42", user).thenCompose { async.get("42") }
+```
+
+- `Cache.async()` / `SetCache.async()` return `AsyncCache` / `AsyncSetCache`. The methods have the same names and semantics as the synchronous API and return `CompletableFuture`. An L2 hit returns an already-completed future.
+- `AsyncCacheLoader` (`loadAsync`, `loadAllAsync`) loads from non-blocking sources. Set it as `asyncLoader` in a spec; `@CoCache` interfaces find it by type or by `loader = "…"`. Either kind of loader works with both APIs.
+- No thread is parked: waits for another instance's lease and for load permits are scheduled, and futures complete on the async executor, never on the Lettuce I/O thread. Futures fail with the original exception, cancelling one doesn't cancel the shared load, and async methods never throw synchronously.
+- New settings:
+  - `cocache.async-executor` and `cocache.blocking-executor`, each naming an `Executor` bean;
+  - `load-async-timeout` (default 30 seconds) per cache, with the new `SourceLoadTimeoutException` and the `cocache.load.timeouts` metric.
+- The Redis backend implements the new optional SPI `AsyncRemoteStore` / `AsyncInvalidationChannel` natively. Third-party backends keep working unchanged, because the engine runs their synchronous methods on the blocking executor.
+- **Spring Cache:** `retrieve` uses the async view, so async and reactive `@Cacheable(sync = true)` methods load without holding a thread.
+- **Performance:** the synchronous hit path is unchanged (JMH within noise of the code before the async work, at 1 and 8 threads). An async L2 hit runs at about 90% of a synchronous one. With 32 requests in flight, one thread completes about 12 times as many Redis reads or writes as a blocking thread.
+
+### Batch writes with putAll
+
+`putAll(entries)` and `putAll(entries, ttl)` write several keys as one write: one script per Redis slot group, one broadcast per group, and the same stale-write-back protection as `put`. See [Keeping Data Fresh](./freshness.md).
+
+### Load-path tracing
+
+With an `ObservationRegistry` bean, the starter registers a `MicrometerLoadObserver`. It wraps every source load and every wait for another instance's lease in a `cocache.load` observation, with tags `cache`, `operation` and `outcome`. Hits create no observation. The new `LoadObserver` SPI lets you plug in your own. See [Observability](../operations/observability.md#tracing).
+
+### Compatibility kit and CI
+
+- New TCK suites: `MultiNodeSpec` (three runtimes, every invalidation interleaving, one load and one refresh per key cluster-wide), `FaultSpec` (L1 faults, retries, writes that took effect but reported an error, no replay after a reconnect), and async variants of every suite (`AsyncBackendProtocolSpec`, `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`).
+- The Redis backend and the starter are tested on Valkey 8 in CI.
+- A `SetCache` read benchmark (`setRead`) confirmed the Hash encoding.
+
+### Upgrade notes
+
+- `cocache.spring-cache.retrieve-executor`, `CoCacheSpringCacheManager(runtime, executor)` and `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` are deprecated: the executor is ignored, and the property logs a warning at startup. They are removed in 7.0. The body of an async `@Cacheable(sync = true)` method now runs on `cocache.blocking-executor` (virtual threads on JDK 21+), as it ran on the retrieve executor before. `CoCacheSpringCache(cache, admin, executor)` is kept: its executor runs that body.
+- `Cache.async()` is a default method that throws `UnsupportedOperationException`. A `Cache` you implement yourself, for example a test double, needs to override it only if callers use the async view.
+- A custom `LoadObserver` sees async loads only if it overrides `observeAsync`.
+- **Kotlin callers must recompile** against 6.3, or they fail with `NoSuchMethodError`. `LoadPolicy` gained `asyncTimeout`, which changes `copy` and the synthetic constructor behind Kotlin default arguments, so this applies to Kotlin code that calls `copy` or omits `LoadPolicy` arguments. `CoCacheSpringCacheManager(runtime)` is no longer a constructor with a default argument, so it applies to Kotlin code that omits the executor too. Java callers are unaffected.
+- TCK: `HookedBackend.closesDelegate` (default `false`, as before) and each suite's `closesBackend` let the suites close a backend created per case. Turn it on if your backend opens connections or threads. Hooks that pick out a caller should use `HookedBackend.issuer()`, because async calls complete on other threads.
+
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.3.0")
+```
+
+## v6.1.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release. The Redis wire format and the invalidation channel are unchanged, so 6.0 and 6.1 instances can share Redis and be upgraded one at a time.
 

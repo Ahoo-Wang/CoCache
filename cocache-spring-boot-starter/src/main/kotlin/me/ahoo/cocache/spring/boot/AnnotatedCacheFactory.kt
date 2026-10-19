@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.spring.boot
 
+import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
@@ -39,7 +40,8 @@ import java.time.Duration
  * 把接口式声明（[CoCache]、[CaffeineCache]）翻译为 [CacheSpec] / [SetCacheSpec]，经 [CacheAssembler] 创建引擎，再包上代理。
  *
  * - 泛型取自接口继承的 `Cache<K, V>` / `SetCache<K, E>`，必须是具体类型。
- * - 数据源：`loader` 指定的 bean，否则按 `CacheLoader<K, V>` 唯一匹配，找不到则没有数据源。
+ * - 数据源：`loader` 指定的 bean（`CacheLoader` 或 `AsyncCacheLoader`），否则按 `CacheLoader<K, V>`、`AsyncCacheLoader<K, V>`
+ *   唯一匹配（两种各有一个候选时启动失败，需用 `loader` 指明；同时实现两者的 bean 按同步数据源使用），找不到则没有数据源。
  * - 编解码：`codec` 指定的 bean，否则按 `Codec<V>` 唯一匹配，找不到则按值类型使用 Jackson。
  * - key：`keyExpression` 为 SpEL 模板（以业务 key 为根对象），否则 `toString()`。
  * - 时长单位为秒；[CoCache.FOREVER] 只能用于 `ttl`（永不过期）与 `@CaffeineCache.expireAfterAccess`（不启用），
@@ -75,7 +77,10 @@ class AnnotatedCacheFactory(
         annotation?.keyPrefix?.takeIf { it.isNotBlank() }?.let { builder.keyPrefix = it }
         builder.keyEncoder = keyEncoderOf(annotation)
         builder.codec = codecOf(annotation?.codec, valueType)
-        builder.loader = loaderOf(annotation?.loader, keyType, valueType)
+        when (val source = sourceOf(annotation?.loader, keyType, valueType)) {
+            is CacheLoader<*, *> -> builder.loader = source as CacheLoader<Any, Any>
+            is AsyncCacheLoader<*, *> -> builder.asyncLoader = source as AsyncCacheLoader<Any, Any>
+        }
         builder.policy = policyOf(type, cacheName, annotation, CachePolicy.DEFAULT)
         return builder.build()
     }
@@ -130,21 +135,34 @@ class AnnotatedCacheFactory(
             ?: JacksonCodec(mapper, mapper.typeFactory.constructType(valueType.type))
     }
 
-    @Suppress("UNCHECKED_CAST")
-    private fun loaderOf(
-        beanName: String?,
-        keyType: ResolvableType,
-        valueType: ResolvableType
-    ): CacheLoader<Any, Any>? {
+    /**
+     * 数据源：[CacheLoader] 或 [AsyncCacheLoader]（RFC 0004 §3.4），没有时为 `null`。
+     */
+    private fun sourceOf(beanName: String?, keyType: ResolvableType, valueType: ResolvableType): Any? {
         if (!beanName.isNullOrBlank()) {
-            return beanFactory.getBean(beanName, CacheLoader::class.java) as CacheLoader<Any, Any>
+            val bean = beanFactory.getBean(beanName)
+            check(bean is CacheLoader<*, *> || bean is AsyncCacheLoader<*, *>) {
+                "@CoCache(loader = \"$beanName\") must name a CacheLoader or an AsyncCacheLoader bean, but it is ${bean.javaClass.name}."
+            }
+            return bean
         }
-        val type = ResolvableType.forClassWithGenerics(CacheLoader::class.java, keyType, valueType)
+        val sync = candidatesOf(CacheLoader::class.java, keyType, valueType)
+        // 同时实现两者的 bean 按同步数据源使用，不算作异步候选
+        val async = candidatesOf(AsyncCacheLoader::class.java, keyType, valueType).filterNot { it in sync }
+        check(sync.isEmpty() || async.isEmpty()) {
+            "Both CacheLoader ${sync.toList()} and AsyncCacheLoader ${async.toList()} beans match Cache<$keyType, $valueType>; " +
+                "specify @CoCache(loader = \"beanName\")."
+        }
+        return (sync.firstOrNull() ?: async.firstOrNull())?.let { beanFactory.getBean(it) }
+    }
+
+    private fun candidatesOf(loaderType: Class<*>, keyType: ResolvableType, valueType: ResolvableType): List<String> {
+        val type = ResolvableType.forClassWithGenerics(loaderType, keyType, valueType)
         val candidates = beanFactory.getBeanNamesForType(type)
         check(candidates.size <= 1) {
-            "Multiple CacheLoader beans match $type: ${candidates.toList()}; specify @CoCache(loader = \"beanName\")."
+            "Multiple ${loaderType.simpleName} beans match $type: ${candidates.toList()}; specify @CoCache(loader = \"beanName\")."
         }
-        return candidates.firstOrNull()?.let { beanFactory.getBean(it) as CacheLoader<Any, Any> }
+        return candidates.toList()
     }
 
     private fun policyOf(type: Class<*>, cacheName: String, annotation: CoCache?, base: CachePolicy): CachePolicy {

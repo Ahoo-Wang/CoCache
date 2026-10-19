@@ -1,6 +1,15 @@
 {
   "properties": [
     {
+      "name": "cocache.spring-cache.retrieve-executor",
+      "type": "java.lang.String",
+      "description": "Deprecated since 6.3: Spring Cache retrieve uses the cache's async view and no executor; the value is ignored.",
+      "deprecation": {
+        "level": "warning",
+        "reason": "Since 6.3 retrieve uses the async view and no executor; removed in 7.0."
+      }
+    },
+    {
       "name": "cocache.redis.strict-failure",
       "type": "java.lang.Boolean",
       "description": "Removed in 6.0.",
@@ -114,6 +123,28 @@
         {
           "value": "memory",
           "description": "In-process InMemoryBackend for local development and tests: single process only, no cross-instance coherence."
+        }
+      ]
+    },
+    {
+      "name": "cocache.async-executor",
+      "providers": [
+        {
+          "name": "spring-bean-reference",
+          "parameters": {
+            "target": "java.util.concurrent.Executor"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cocache.blocking-executor",
+      "providers": [
+        {
+          "name": "spring-bean-reference",
+          "parameters": {
+            "target": "java.util.concurrent.Executor"
+          }
         }
       ]
     }
