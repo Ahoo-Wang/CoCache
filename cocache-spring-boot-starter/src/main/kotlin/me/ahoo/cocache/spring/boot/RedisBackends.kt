@@ -23,17 +23,37 @@ import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDeta
  * 不复用应用的连接工厂：客户端选项是全局的，不能为 CoCache 改动应用的连接行为。
  */
 object RedisBackends {
+    /**
+     * 连接目标：单机（含 Sentinel URI）或集群。
+     */
+    sealed interface Target {
+        data class Standalone(val uri: RedisURI) : Target
+
+        data class Cluster(val uris: List<RedisURI>) : Target
+    }
+
     fun create(details: DataRedisConnectionDetails, options: RedisBackendOptions): RedisBackend {
+        return when (val target = resolve(details)) {
+            is Target.Cluster -> RedisBackend.cluster(target.uris, options)
+            is Target.Standalone -> RedisBackend.standalone(target.uri, options)
+        }
+    }
+
+    /**
+     * 解析连接目标：集群优先，其次 Sentinel，最后单机。
+     */
+    fun resolve(details: DataRedisConnectionDetails): Target {
         val ssl = details.sslBundle != null
         details.cluster?.let { cluster ->
-            val uris = cluster.nodes.map { node ->
-                auth(
-                    RedisURI.Builder.redis(node.host, node.port),
-                    details.username,
-                    details.password
-                ).withSsl(ssl).build()
-            }
-            return RedisBackend.cluster(uris, options)
+            return Target.Cluster(
+                cluster.nodes.map { node ->
+                    auth(
+                        RedisURI.Builder.redis(node.host, node.port),
+                        details.username,
+                        details.password
+                    ).withSsl(ssl).build()
+                }
+            )
         }
         details.sentinel?.let { sentinel ->
             val first = sentinel.nodes.first()
@@ -43,7 +63,7 @@ object RedisBackends {
                 sentinel.master
             ).withDatabase(sentinel.database).withSsl(ssl)
             sentinel.nodes.drop(1).forEach { builder.withSentinel(it.host, it.port) }
-            return RedisBackend.standalone(auth(builder, details.username, details.password).build(), options)
+            return Target.Standalone(auth(builder, details.username, details.password).build())
         }
         val standalone = requireNotNull(
             details.standalone
@@ -52,7 +72,7 @@ object RedisBackends {
             standalone.host,
             standalone.port
         ).withDatabase(standalone.database).withSsl(ssl)
-        return RedisBackend.standalone(auth(builder, details.username, details.password).build(), options)
+        return Target.Standalone(auth(builder, details.username, details.password).build())
     }
 
     private fun auth(builder: RedisURI.Builder, username: String?, password: String?): RedisURI.Builder {
