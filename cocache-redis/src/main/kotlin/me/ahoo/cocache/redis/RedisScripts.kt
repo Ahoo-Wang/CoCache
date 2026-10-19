@@ -93,15 +93,22 @@ local key = KEYS[1]
 local pttl = redis.call('PTTL', key)
 if pttl == -2 then
   if ARGV[1] ~= '' then
-    redis.call('SET', key, header('L', ARGV[1], now_ms()), 'PX', ARGV[2])
+    -- 内存不足（noeviction）等写入失败时降级为不带 lease 的未命中，而不是让读失败
+    local placed = redis.pcall('SET', key, header('L', ARGV[1], now_ms()), 'PX', ARGV[2])
+    if placed['err'] then return {0, 0} end
     return {0, 1}
   end
   return {0, 0}
 end
--- 常见路径是 String：直接 GET（与 5.x 相同的两条命令）；类型不符（集合的 Hash）时退回 HGETALL
+-- 常见路径是 String：直接 GET（与 5.x 相同的两条命令）；类型不符时退回 HGETALL（集合的 Hash）
 local v = redis.pcall('GET', key)
 if type(v) == 'table' then
-  return {3, pttl, redis.call('HGETALL', key)}
+  local flat = redis.pcall('HGETALL', key)
+  if flat['err'] then
+    -- 其它类型（原生 Set / List / ZSet 等，如 5.x 遗留）：以空内容的无法识别值返回，由引擎按损坏回收（摘要为空串）
+    return {2, pttl, '', 0}
+  end
+  return {3, pttl, flat}
 end
 if not is_ours(v) then return {2, pttl, v, 0} end
 local state = string.sub(v, 3, 3)
@@ -111,7 +118,9 @@ if state == 'V' and ARGV[3] ~= '' and pttl > 0 and pttl <= tonumber(ARGV[3]) the
   local now = now_ms()
   local issued = struct.unpack('>d', string.sub(v, 29, 36))
   if token == ZERO_TOKEN or now - issued > tonumber(ARGV[5]) then
-    redis.call('SETRANGE', key, 4, ARGV[4] .. struct.pack('>d', now))
+    -- 写入失败（内存不足等）时降级为不授予刷新令牌的普通命中
+    local granted = redis.pcall('SETRANGE', key, 4, ARGV[4] .. struct.pack('>d', now))
+    if type(granted) == 'table' then return {2, pttl, v, 0} end
     return {2, pttl, v, 1}
   end
 end
@@ -175,7 +184,7 @@ return 1
 
     /**
      * 条件回收。ARGV：期望摘要（十六进制）、lease 令牌、lease 寿命。
-     * 摘要：标量为载荷（无法识别的 String 为整个值），负缓存为空串，集合为按返回顺序拼接的 `int32 长度 + 成员`。
+     * 摘要：标量为载荷（无法识别的 String 为整个值），负缓存与其它类型（原生 Set / List 等）为空串，集合为按返回顺序拼接的 `int32 长度 + 成员`。
      */
     val RECLAIM = Script(
         PRELUDE + """
@@ -202,7 +211,8 @@ elseif kind == 'hash' then
   end
   content = table.concat(parts)
 else
-  return 0
+  -- 其它类型（原生 Set / List / ZSet 等）：读脚本以空内容返回，摘要按空串计算
+  content = ''
 end
 if redis.sha1hex(content) ~= ARGV[1] then return 0 end
 redis.call('DEL', key)

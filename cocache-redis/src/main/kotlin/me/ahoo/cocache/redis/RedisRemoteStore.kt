@@ -13,9 +13,11 @@
 
 package me.ahoo.cocache.redis
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
+import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
@@ -50,10 +52,45 @@ internal class RedisRemoteStore(
         return connections.evalAsync(RedisScripts.READ, listOf(key.bytes()), args)
     }
 
+    /**
+     * 并发发出，在共享连接上多路复用（约一次往返）。
+     *
+     * 等待全部结果：任一失败时，其余读取取得的 lease 要先释放（不等待）再抛出第一个异常，
+     * 否则调用方拿不到这些令牌，所有节点都要白白等待 `lease.ttl`。
+     */
+    @Suppress("TooGenericExceptionCaught")
     override fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
-        // 并发发出，在共享连接上多路复用（约一次往返）
         val futures = keys.associateWith { readAsync(it, leases[it], null) }
-        return futures.mapValues { (_, future) -> decodeRead(connections.await(future)) }
+        val results = LinkedHashMap<String, RemoteRead>(futures.size)
+        var failure: RuntimeException? = null
+        for ((key, future) in futures) {
+            try {
+                results[key] = decodeRead(connections.await(future))
+            } catch (e: RuntimeException) {
+                val first = failure
+                if (first == null) failure = e else first.addSuppressed(e)
+            }
+        }
+        val error = failure ?: return results
+        results.forEach { (key, read) ->
+            val lease = leases[key]
+            if (read is RemoteRead.Miss && read.leaseGranted && lease != null) {
+                releaseAsync(key, lease.token)
+            }
+        }
+        throw error
+    }
+
+    /**
+     * 尽力释放令牌（不等待）：失败只记录，lease 最终由 `lease.ttl` 回收。
+     */
+    private fun releaseAsync(key: String, token: Token) {
+        connections.evalAsync<List<Any?>>(RedisScripts.RELEASE, listOf(key.bytes()), listOf(token.toBytes()))
+            .whenComplete { _, error ->
+                if (error != null) {
+                    log.warn(error) { "Release lease of key[$key] failed - reclaimed after lease ttl." }
+                }
+            }
     }
 
     override fun fill(fill: Fill): Boolean = connections.await(fillAsync(fill)).firstFlag()
@@ -86,14 +123,40 @@ internal class RedisRemoteStore(
 
     override fun invalidate(keys: Collection<String>, frame: ByteArray) {
         val groups = connections.groupBySlot(keys.map { it.bytes() }).flatMap { it.chunked(invalidateBatchSize) }
-        val futures = groups.map { group ->
+        val frames = framesOf(keys, frame, groups)
+        val futures = groups.mapIndexed { index, group ->
             connections.evalAsync<List<Any?>>(
                 RedisScripts.INVALIDATE,
                 group,
-                listOf(channel, frame)
+                listOf(channel, frames[index])
             )
         }
         futures.forEach { connections.await(it) }
+    }
+
+    /**
+     * 每组脚本只广播本组的 key（同一发布者），避免 N 个 key 分成多组时每组都重复广播全部 key（O(N²)）。
+     * 只有一组、不在脚本中广播，或帧中的 key 与 [keys] 不一致（无法安全拆分）时，原样使用 [frame]。
+     */
+    private fun framesOf(keys: Collection<String>, frame: ByteArray, groups: List<List<ByteArray>>): List<ByteArray> {
+        if (groups.size <= 1 || channel.isEmpty()) {
+            return List(groups.size) { frame }
+        }
+        val decoded = try {
+            InvalidationFrame.decode(frame)
+        } catch (e: IllegalArgumentException) {
+            log.warn(e) { "Malformed invalidation frame - broadcast it unchanged." }
+            return List(groups.size) { frame }
+        }
+        if (decoded.keys.toSet() != keys.toSet()) {
+            return List(groups.size) { frame }
+        }
+        return groups.map { group ->
+            InvalidationFrame.encode(
+                decoded.origin,
+                group.map { String(it, Charsets.UTF_8) }
+            )
+        }
     }
 
     override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {
@@ -139,6 +202,7 @@ internal class RedisRemoteStore(
     }
 
     companion object {
+        private val log = KotlinLogging.logger {}
         private val EMPTY = ByteArray(0)
         private const val FIELD_FORMAT = "!f"
         private const val MEMBER_PREFIX = '+'.code.toByte()

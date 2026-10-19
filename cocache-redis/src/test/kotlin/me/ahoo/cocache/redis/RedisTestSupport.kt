@@ -63,19 +63,30 @@ object RedisTestSupport {
     /**
      * 非原子广播的后端：用 ACL 禁止向探测频道发布（只允许 `cocache:inv:*`），探测失败后后端退回“写入后由引擎发布”。
      */
-    fun nonAtomicBackend(): RedisBackend {
-        val user = "cocache-nonatomic"
-        val password = "nonatomic-secret"
+    fun nonAtomicBackend(): RedisBackend = aclBackend(
+        "cocache-nonatomic",
+        listOf("~*", "resetchannels", "&cocache:inv:*", "+@all")
+    )
+
+    /**
+     * 以受限 ACL 用户连接的后端（各节点都设置该用户，ACL 不随复制同步）。[rules] 为 `ACL SETUSER` 的规则。
+     */
+    fun aclBackend(
+        user: String,
+        rules: List<String>,
+        options: RedisBackendOptions = RedisBackendOptions(clientName = "cocache-tck-" + java.util.UUID.randomUUID())
+    ): RedisBackend {
+        val password = "$user-secret"
         forEachNode { commands ->
+            val args = io.lettuce.core.protocol.CommandArgs(io.lettuce.core.codec.StringCodec.UTF8)
+                .add("SETUSER").add(user).add("reset").add("on").add(">$password")
+            rules.forEach { args.add(it) }
             commands.dispatch(
                 io.lettuce.core.protocol.CommandType.ACL,
                 io.lettuce.core.output.StatusOutput(io.lettuce.core.codec.StringCodec.UTF8),
-                io.lettuce.core.protocol.CommandArgs(io.lettuce.core.codec.StringCodec.UTF8)
-                    .add("SETUSER").add(user).add("reset").add("on").add(">$password")
-                    .add("~*").add("resetchannels").add("&cocache:inv:*").add("+@all")
+                args
             )
         }
-        val options = RedisBackendOptions(clientName = "cocache-tck-" + java.util.UUID.randomUUID())
         val nodes = clusterNodes
         if (nodes != null) {
             return RedisBackend.cluster(
@@ -87,6 +98,53 @@ object RedisTestSupport {
             RedisURI.builder(standaloneUri).withAuthentication(user, password).build(),
             options
         )
+    }
+
+    /**
+     * 以默认用户执行任意命令（单机或集群，命令按 key 路由）。
+     */
+    fun <T> withCommands(block: (io.lettuce.core.cluster.api.sync.RedisClusterCommands<String, String>) -> T): T {
+        val nodes = clusterNodes
+        if (nodes != null) {
+            val client = RedisClusterClient.create(nodes)
+            try {
+                client.connect().use { return block(it.sync()) }
+            } finally {
+                client.shutdown()
+            }
+        }
+        val client = RedisClient.create(standaloneUri)
+        try {
+            client.connect().use { return block(it.sync()) }
+        } finally {
+            client.shutdown()
+        }
+    }
+
+    /**
+     * 订阅经典频道 [channel]（集群中 `PUBLISH` 经集群总线到达任意节点），收到的消息交给 [onMessage]；关闭返回值即退订。
+     */
+    fun subscribeRaw(channel: String, onMessage: (ByteArray) -> Unit): AutoCloseable {
+        val listener = object : io.lettuce.core.pubsub.RedisPubSubAdapter<ByteArray, ByteArray>() {
+            override fun message(channel: ByteArray, message: ByteArray) = onMessage(message)
+        }
+        val codec = io.lettuce.core.codec.ByteArrayCodec.INSTANCE
+        val nodes = clusterNodes
+        val client: io.lettuce.core.AbstractRedisClient
+        val connection: io.lettuce.core.pubsub.StatefulRedisPubSubConnection<ByteArray, ByteArray>
+        if (nodes != null) {
+            client = RedisClusterClient.create(nodes)
+            connection = client.connectPubSub(codec)
+        } else {
+            client = RedisClient.create(standaloneUri)
+            connection = client.connectPubSub(codec)
+        }
+        connection.addListener(listener)
+        connection.sync().subscribe(channel.toByteArray(Charsets.UTF_8))
+        return AutoCloseable {
+            connection.close()
+            client.shutdown()
+        }
     }
 
     private fun forEachNode(block: (io.lettuce.core.api.sync.RedisCommands<String, String>) -> Unit) {
@@ -223,6 +281,18 @@ object RedisTestSupport {
                     clientName
                 ).forEach { id -> commands.clientKill(KillArgs.Builder.id(id)) }
             }
+        } finally {
+            client.shutdown()
+        }
+    }
+
+    /**
+     * 名为 [clientName] 的订阅连接的 client id（单机）。
+     */
+    fun pubSubClientIds(clientName: String): List<Long> {
+        val client = RedisClient.create(standaloneUri)
+        try {
+            client.connect().use { return pubSubClientIds(it.sync().clientList(), clientName) }
         } finally {
             client.shutdown()
         }

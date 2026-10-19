@@ -54,9 +54,15 @@ object InvalidationFrame {
             require(version == VERSION) { "Unknown invalidation frame version[$version]." }
             val origin = NodeId(ByteArray(NodeId.SIZE).also { buffer.get(it) })
             val count = buffer.readVarint()
+            // 不信任长度前缀：每个 key 至少占 1 字节（长度前缀），超过剩余字节数的计数或长度必然是畸形帧，避免按其预分配内存
+            require(count <= buffer.remaining()) { "Key count[$count] exceeds remaining bytes in invalidation frame." }
             val keys = ArrayList<String>(count)
             repeat(count) {
-                val bytes = ByteArray(buffer.readVarint()).also { buffer.get(it) }
+                val length = buffer.readVarint()
+                require(
+                    length <= buffer.remaining()
+                ) { "Key length[$length] exceeds remaining bytes in invalidation frame." }
+                val bytes = ByteArray(length).also { buffer.get(it) }
                 keys.add(String(bytes, Charsets.UTF_8))
             }
             require(!buffer.hasRemaining()) { "Trailing bytes in invalidation frame." }

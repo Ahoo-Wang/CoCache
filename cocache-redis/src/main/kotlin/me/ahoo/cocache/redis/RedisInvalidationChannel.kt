@@ -14,6 +14,10 @@
 package me.ahoo.cocache.redis
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.lettuce.core.Delegating
+import io.lettuce.core.RedisChannelHandler
+import io.lettuce.core.api.StatefulConnection
+import io.lettuce.core.protocol.DefaultEndpoint
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
@@ -32,12 +36,13 @@ import java.util.concurrent.TimeUnit
  * Redis 失效通道的公共部分：每个后端一条订阅连接，按频道（命名空间）分发给订阅者。
  *
  * - 订阅（含断线重连后 Lettuce 自动重新订阅）得到服务端确认时，重置该频道的所有订阅者。
- * - 心跳：周期性 PING 订阅连接，失败或超时即重置所有订阅者（半开连接期间的事件可能已丢失）。
+ * - 心跳：周期性 PING 订阅连接，失败或超时即重置所有订阅者（半开连接期间的事件可能已丢失），并强制断开订阅连接，由 Lettuce 自动重连并重新订阅。
+ * - 订阅失败时撤销本次创建的频道条目；单个订阅者抛出异常不影响其余订阅者。
  *
  * 子类提供具体的订阅、退订、发布与心跳命令，并在初始化末尾调用 [start]。
  */
 internal abstract class RedisInvalidationChannel(
-    protected val connections: RedisConnections,
+    internal val connections: RedisConnections,
     private val heartbeat: Duration,
     private val ackTimeout: Duration,
 ) : InvalidationChannel, AutoCloseable {
@@ -80,13 +85,20 @@ internal abstract class RedisInvalidationChannel(
             // 确认回调会重置该频道的全部订阅者，包括刚加入的这个；等它执行完再返回
             val ack = CountDownLatch(1)
             pendingAcks[channel] = ack
+            var subscribed = false
             try {
                 connections.await(subscribeAsync(channel.toByteArray(Charsets.UTF_8)))
+                subscribed = true
                 if (!ack.await(ackTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
                     log.warn { "Invalidation channel[$channel] - subscribe acknowledgement not received in $ackTimeout." }
                 }
             } finally {
                 pendingAcks.remove(channel, ack)
+                if (!subscribed) {
+                    // 订阅失败：撤销本次创建的频道条目，否则该命名空间永久收不到失效，之后的订阅者也会跳过 SUBSCRIBE
+                    channelListeners.remove(listener)
+                    listeners.remove(channel, channelListeners)
+                }
             }
         } else {
             listener.onReset()
@@ -104,8 +116,19 @@ internal abstract class RedisInvalidationChannel(
         try {
             ping()
         } catch (e: Exception) {
-            log.warn(e) { "Invalidation channel heartbeat failed - reset all subscribers." }
+            log.warn(e) { "Invalidation channel heartbeat failed - reset all subscribers and force reconnect." }
             resetAll()
+            forceReconnect()
+        }
+    }
+
+    /**
+     * 心跳失败后强制重连订阅连接：半开 TCP 连接上 Lettuce 仍认为已连接，不会自行重连。
+     * 断开底层通道后由 Lettuce 的自动重连恢复连接并重新订阅，确认回调再重置订阅者。
+     */
+    protected open fun forceReconnect() {
+        if (!disconnect(connections.pubSub)) {
+            log.warn { "Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive." }
         }
     }
 
@@ -131,6 +154,7 @@ internal abstract class RedisInvalidationChannel(
     /**
      * 收到消息：解码并分发给该频道的订阅者，畸形帧告警后丢弃。
      */
+    @Suppress("TooGenericExceptionCaught")
     protected fun dispatch(channel: ByteArray, message: ByteArray) {
         val channelListeners = listeners[String(channel, Charsets.UTF_8)] ?: return
         val decoded = try {
@@ -139,7 +163,14 @@ internal abstract class RedisInvalidationChannel(
             log.warn(e) { "Ignore malformed invalidation frame on channel[${String(channel, Charsets.UTF_8)}]." }
             return
         }
-        channelListeners.forEach { it.onInvalidated(decoded.keys, decoded.origin) }
+        // 某个订阅者抛出异常不能让其余订阅者错过本次失效
+        channelListeners.forEach { listener ->
+            try {
+                listener.onInvalidated(decoded.keys, decoded.origin)
+            } catch (e: RuntimeException) {
+                log.error(e) { "Invalidation listener failed on channel[${String(channel, Charsets.UTF_8)}]." }
+            }
+        }
     }
 
     /**
@@ -161,6 +192,20 @@ internal abstract class RedisInvalidationChannel(
         const val CHANNEL_PREFIX = "cocache:inv:"
 
         fun channelOf(namespace: String): String = CHANNEL_PREFIX + namespace
+
+        /**
+         * 断开连接的底层通道（Lettuce 公开的 [DefaultEndpoint.disconnect]），触发自动重连；
+         * 无法定位到端点（如 Cluster 经典 Pub/Sub 的默认连接）时返回 `false`。
+         */
+        fun disconnect(connection: StatefulConnection<*, *>): Boolean {
+            var writer: Any? = (connection as? RedisChannelHandler<*, *>)?.channelWriter
+            while (writer is Delegating<*>) {
+                writer = writer.delegate
+            }
+            val endpoint = writer as? DefaultEndpoint ?: return false
+            endpoint.disconnect()
+            return true
+        }
 
         fun create(connections: RedisConnections, options: RedisBackendOptions): RedisInvalidationChannel {
             val heartbeat = options.heartbeat
