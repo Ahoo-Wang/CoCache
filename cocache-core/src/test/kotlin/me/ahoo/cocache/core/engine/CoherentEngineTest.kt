@@ -165,6 +165,52 @@ class CoherentEngineTest {
     }
 
     @Test
+    fun strictReadFailureThrowsInsteadOfDegrading() {
+        val strict = CachePolicy(
+            ttl = Duration.ofMinutes(10),
+            ttlJitter = Duration.ZERO,
+            readFailure = me.ahoo.cocache.core.policy.ReadFailureMode.THROW
+        )
+        val cache = runtime().engine(spec(strict))
+        database["k"] = "v"
+        backend.failAll = true
+        val single = runCatching { cache["k"] }.exceptionOrNull()
+        single.assert().isInstanceOf(me.ahoo.cocache.api.CacheReadException::class.java)
+        (single as me.ahoo.cocache.api.CacheReadException).operation.assert().isEqualTo("read")
+        single.cacheName.assert().isEqualTo(name)
+        runCatching {
+            cache.getAll(
+                listOf("k")
+            )
+        }.exceptionOrNull().assert().isInstanceOf(me.ahoo.cocache.api.CacheReadException::class.java)
+        backend.failAll = false
+        loads.get().assert().isEqualTo(0)
+        cache.metrics.remoteFailures.assert().isEqualTo(2)
+        cache["k"].assert().isEqualTo("v")
+    }
+
+    @Test
+    fun strictReclaimFailureThrows() {
+        val strict = CachePolicy(
+            ttl = Duration.ofMinutes(10),
+            ttlJitter = Duration.ZERO,
+            readFailure = me.ahoo.cocache.core.policy.ReadFailureMode.THROW
+        )
+        val cache = runtime().engine(spec(strict))
+        database["k"] = "v"
+        silentPut("k", Envelope.Scalar(TestCodec.CORRUPT))
+        backend.afterRead = { _, read ->
+            backend.failAll = true
+            read
+        }
+        runCatching { cache["k"] }.exceptionOrNull().assert().isInstanceOf(
+            me.ahoo.cocache.api.CacheReadException::class.java
+        )
+        backend.failAll = false
+        backend.afterRead = null
+    }
+
+    @Test
     fun keyFilterThatAllowsLoadsNormally() {
         val cache = runtime().engine(spec { keyFilter = KeyFilter { false } })
         database["k"] = "v"

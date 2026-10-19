@@ -64,6 +64,7 @@ class CachePolicyTest {
             .load(load)
             .local(local)
             .invalidateFailure(InvalidateFailureMode.THROW)
+            .readFailure(ReadFailureMode.THROW)
             .build()
         val copy = policy.toBuilder().build()
         copy.ttl.assert().isEqualTo(Duration.ofMinutes(2))
@@ -76,6 +77,8 @@ class CachePolicyTest {
         copy.load.assert().isEqualTo(load)
         copy.local.assert().isEqualTo(local)
         copy.invalidateFailure.assert().isEqualTo(InvalidateFailureMode.THROW)
+        copy.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
+        CachePolicy.DEFAULT.readFailure.assert().isEqualTo(ReadFailureMode.DEGRADE)
     }
 
     @Test

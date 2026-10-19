@@ -157,6 +157,7 @@ class CoCacheNextAutoConfigurationTest {
                 "cocache.next.caches.user.lease-wait=PT1S",
                 "cocache.next.caches.user.load-max-concurrent=3",
                 "cocache.next.caches.user.invalidate-failure=throw",
+                "cocache.next.caches.user.read-failure=throw",
                 "cocache.next.caches.index.ttl-forever=true",
             )
             .run { context ->
@@ -173,6 +174,7 @@ class CoCacheNextAutoConfigurationTest {
                 user.load.maxConcurrent.assert().isEqualTo(3)
                 user.local.maximumSize.assert().isEqualTo(50)
                 user.invalidateFailure.assert().isEqualTo(InvalidateFailureMode.THROW)
+                user.readFailure.assert().isEqualTo(me.ahoo.cocache.core.policy.ReadFailureMode.THROW)
                 properties.policyFor("profile", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofMinutes(2))
                 properties.policyFor("index", CachePolicy.DEFAULT).ttl.assert().isNull()
             }

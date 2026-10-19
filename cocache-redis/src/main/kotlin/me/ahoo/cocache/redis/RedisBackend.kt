@@ -118,6 +118,7 @@ class RedisBackend private constructor(
             client.options = ClientOptions.builder()
                 .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
                 .autoReconnect(true)
+                .apply { options.sslOptions?.let { sslOptions(it) } }
                 .build()
             return RedisBackend(client, true, owned, options)
         }
@@ -137,6 +138,7 @@ class RedisBackend private constructor(
                 ClusterClientOptions.builder()
                     .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
                     .autoReconnect(true)
+                    .apply { options.sslOptions?.let { sslOptions(it) } }
                     .topologyRefreshOptions(
                         ClusterTopologyRefreshOptions.builder().enableAllAdaptiveRefreshTriggers().build()
                     )
