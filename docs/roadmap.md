@@ -81,7 +81,8 @@ JMH 对比见 RFC 0003 §7.1。
 | TCK `MultiNodeSpec` | G2 验收 | 多进程覆盖 §4.4 的全部交错、全集群单次回源与单次刷新的计数断言 | 未实现。`EngineSpec` 已用两个运行时共享一个后端覆盖其中大部分交错 |
 | TCK `FaultSpec` | G1 验收 | 断线时命令不被重放、故障切换后的 `NOSCRIPT` 回退等故障场景 | 未实现。`EngineSpec` 用 `HookedBackend` 注入故障覆盖降级与重试 |
 | Valkey CI | 兼容性 | Valkey 7.2+ 上运行 `cocache-redis` 与 starter 测试 | 未实现；兼容性只按协议推断 |
-| 集合基准 `setRead` | G3 | 成员数 10 / 100 / 1000 的吞吐与内存，决定 Hash 编码是否保留（RFC 0003 §8 Q1） | 未实现 |
+| 集合基准 `setRead` | G3 | 成员数 10 / 100 / 1000 的吞吐与内存，决定 Hash 编码是否保留（RFC 0003 §8 Q1） | 已完成：`SetCacheBenchmark`；保留 Hash（RFC 0003 §8.1） |
+| 集合读脚本改用 `HKEYS` | G3 | 读脚本以 `HKEYS` + `HGET !f` 取代 `HGETALL`，不再返回空值；存储布局不变，不是线格式变更。服务端实测 1000 个成员时读吞吐约 1.8 倍（RFC 0003 §8.1） | 未实现 |
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
 
