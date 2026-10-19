@@ -17,9 +17,11 @@ import me.ahoo.cache.spring.boot.starter.CoCacheAutoConfiguration
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
+import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.context.properties.EnableConfigurationProperties
@@ -27,6 +29,8 @@ import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfigurat
 import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails
 import org.springframework.cache.CacheManager
 import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 /**
  * CoCache 6.0 自动配置（`cocache.next.enabled=true` 时启用）。
@@ -62,6 +66,17 @@ class CoCacheNextAutoConfiguration {
     @ConditionalOnMissingBean(CacheManager::class)
     @ConditionalOnBean(CacheRuntime::class)
     fun cocacheNextCacheManager(runtime: CacheRuntime): CacheManager = CoCacheSpringCacheManager(runtime)
+
+    /**
+     * 事务内失效登记到提交之后执行（有 spring-tx 时启用）。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnClass(TransactionSynchronizationManager::class)
+    class TransactionalInvalidatorConfiguration {
+        @Bean
+        @ConditionalOnMissingBean
+        fun cocacheNextTransactionalInvalidator(): TransactionalInvalidator = TransactionalInvalidator()
+    }
 
     companion object {
         @Bean

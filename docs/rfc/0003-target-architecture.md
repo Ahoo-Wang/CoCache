@@ -606,7 +606,7 @@ val users: CoCache<String, User> = runtime.create(
 - **数据源**：在 spec 中显式指定（`loader = …`）。
 - **key 编码**：在 spec 中用 `keyEncoder` 指定（默认 `toString()`）。5.x 的 SpEL key 表达式随注解一起删除，core 与 starter 都不再依赖 `spring-expression`。
 - **Spring Cache 适配**：`cocache-spring` 提供 `CoCacheSpringCacheManager`（starter 自动配置）。语义：负缓存视为未命中，`sync = true` 按 key 合并，`clear` 只清本地，`put(k, null)` 映射为 `invalidate`。
-- **事务**：`invalidate` 必须在提交之后执行。starter 提供 `TransactionalInvalidator`，事务内调用时登记到 `afterCommit`。在提交之前失效本身就是一个 G2 漏洞：并发的回源可能读到提交前的数据。
+- **事务**：`invalidate` 必须在提交之后执行。`cocache-spring` 提供 `TransactionalInvalidator`（starter 在有 spring-tx 时自动配置）：事务内调用时登记到当前事务的 `afterCommit`，同一事务内对同一缓存的失效合并为一次 `invalidateAll`，回滚时不失效；没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己提交之后失效。在提交之前失效本身就是一个 G2 漏洞：并发的回源可能读到提交前的数据。
 
 ### 4.13 失败语义
 
@@ -743,7 +743,7 @@ val users: CoCache<String, User> = runtime.create(
 1. **TCK 先行**：`cocache-test` 新增 `BackendProtocolSpec`（状态机、令牌、到期时间重设、原子广播能力、reclaim、release、NOSCRIPT 回退）和 `ManualClock`；`InMemoryBackend` 首先通过。
 2. **api + core**：`CoCache`、`CacheSpec`、`CacheRuntime`、`CoherentEngine`、批量 SingleFlight、`CachePolicy`。把 `DefaultCoherentCacheSpec` 的 in-flight 系列用例迁移到新引擎，并补上 §10 中每个协议发现的复现用例。
 3. **cocache-redis**：Lua 协议、线格式、命令多路复用、Router、心跳、环境探测；单机、Cluster 与 Valkey CI；JMH 对比 5.4（§7）。
-4. **cocache-spring + starter**：spec 注册、配置分层与校验、Spring Cache 适配（已完成，过渡前缀 `cocache.next.*`）；事务内失效、actuator、Micrometer 随后补齐。
+4. **cocache-spring + starter**：spec 注册、配置分层与校验、Spring Cache 适配、事务内失效 `TransactionalInvalidator`（已完成，过渡前缀 `cocache.next.*`）；actuator、Micrometer 随后补齐。
 5. **切换、删除与文档**（一个破坏性 PR，前置条件：观测接入与 `TransactionalInvalidator` 已合入；Sharded 通道已合入或明确推迟到 6.x）：
    - **切换**：6.0 自动配置改为默认启用，过渡前缀 `cocache.next.*` 改为正式前缀 `cocache.*`，`CoCacheNextAutoConfiguration` 等类去掉 `Next`。
    - **删除 5.x**：`cocache-spring-redis`、`cocache-spring-cache` 两个模块；`cocache-api`、`cocache-core`、`cocache-spring`、starter、`cocache-test` 中 `me.ahoo.cache.*` 包下的全部代码，包括 `@CoCache` / `@CaffeineCache` / `@JoinCacheable` 注解、`@EnableCoCache`、代理与工厂、JoinCache、SpEL key 转换器（Q9、D11）；core 去掉 `spring-expression` 与 `kotlin-reflect` 依赖；5.x 的 JMH 基准。
