@@ -171,16 +171,17 @@ abstract class AsyncEngineSpec : EngineSpec() {
             val completedOn = AtomicReference<String>()
             val future = async.get("k")
             future.whenComplete { _, _ -> completedOn.compareAndSet(null, Thread.currentThread().name) }
-            future.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("v")
+            // 先等回调执行再 get：JDK 的 get / join 会在等待线程上执行尚未执行的依赖阶段
             awaitCondition("completion recorded") { completedOn.get() != null }
+            future.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("v")
             completedOn.get().assert().withFailMessage { "completed on ${completedOn.get()}" }.doesNotStartWith(
                 "tck-io"
             )
             val write = async.put("k", "v2")
             val writtenOn = AtomicReference<String>()
             write.whenComplete { _, _ -> writtenOn.compareAndSet(null, Thread.currentThread().name) }
-            write.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
             awaitCondition("write completion recorded") { writtenOn.get() != null }
+            write.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
             writtenOn.get().assert().doesNotStartWith("tck-io")
         } finally {
             backend.ioExecutor = null
@@ -339,9 +340,10 @@ abstract class AsyncEngineSpec : EngineSpec() {
             val completedOn = AtomicReference<String>()
             joined.whenComplete { _, _ -> completedOn.compareAndSet(null, Thread.currentThread().name) }
             release.countDown()
+            // 先等回调执行再 join / get：JDK 的 get / join 会在等待线程上执行尚未执行的依赖阶段
+            awaitCondition("completion recorded") { completedOn.get() != null }
             syncLeader.join().assert().isEqualTo("v-k")
             joined.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("v-k")
-            awaitCondition("completion recorded") { completedOn.get() != null }
             completedOn.get().assert().startsWith("tck-async")
             calls.get().assert().isEqualTo(1)
         } finally {

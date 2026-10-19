@@ -111,9 +111,10 @@ class AsyncSingleFlightTest {
         val completedOn = CompletableFuture<String>()
         joined.whenComplete { _, _ -> completedOn.complete(Thread.currentThread().name) }
         release.countDown()
+        // 先等回调执行再 join：JDK 的 join 会在等待线程上执行尚未执行的依赖阶段
+        completedOn.get(10, java.util.concurrent.TimeUnit.SECONDS).assert().isEqualTo("engine")
         leader.join().assert().isEqualTo("v")
         joined.join().assert().isEqualTo("v")
-        completedOn.join().assert().isEqualTo("engine")
         dispatched.get().assert().isEqualTo(1)
     }
 
