@@ -34,7 +34,8 @@ description: CoCache 版本发布历史和重要变更。
 | `cocache.redis.eviction-channel=sharded` | `cocache.redis.channel-mode=sharded` |
 | `cocache.load.*` | `cocache.defaults.load-max-concurrent` / `load-acquire-timeout` |
 | actuator `cocacheClient` | 已删除，改用 `cocache` |
-| Jedis、JoinCache、可替换的 L2、显式写入负缓存 | 已删除 |
+| `JoinCache`（`me.ahoo.cache.api.join`） | `me.ahoo.cocache.api.join.JoinCache`：两个缓存的只读组合视图，用 `@EnableCoCache(joinCaches = […])` 注册；`evict` → `invalidate`，不再有 `set`（见 [JoinCache](./join-cache.md)） |
+| Jedis、可替换的 L2、显式写入负缓存 | 已删除 |
 
 已删除的 5.x 配置项会让启动失败，错误信息会给出替代项。部分改名同时改变了语义（例如 L2 现在总受 `localMaxAge` 限龄，默认 5 分钟），详见[行为变化](./migration-6.md#semantics)。
 

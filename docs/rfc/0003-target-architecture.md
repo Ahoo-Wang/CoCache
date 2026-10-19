@@ -20,7 +20,7 @@
 | D8 | **数据源只加载，策略决定寿命** | 现在 `CacheSource` 返回带 `ttlAt` 的 `CacheValue`，TTL 策略被数据源和编排层各持一半。按 key 或值决定寿命用 `CacheSpec.ttlOf(K, V)` |
 | D9 | **时间可注入、毫秒精度** | 现在 API 模块里的 `object CacheClock` 会启动静态线程，测试无法控制时间，Redis 秒级 TTL 带来 ±1 s 漂移 |
 | D10 | **失败语义：填充可降级；显式写入抛出；失效默认可靠重试** | `invalidate` 通常在数据库事务提交后调用，抛出异常既不能回滚，也不该回滚，所以默认交给有界重试队列。`put`/`add`/`remove` 是调用方的显式写入，失败就抛出 |
-| D11 | **删除 JoinCache 子系统**（`@JoinCacheable`、`JoinCache`、SpEL 提取器、代理与工厂） | 组合读模型是用户层逻辑，两次 `getAll` 就能写出来，不值得在核心里保留一整套声明与代理机制。接口式声明 `@CoCache` 保留（Q9），但只是 spec 的另一种写法 |
+| D11 | ~~**删除 JoinCache 子系统**~~ **已撤销（维护者决定，2026-10-19）**：6.0 保留 JoinCache，改为两个缓存的只读组合视图（`JoinCache` 不再是 `Cache` 子类型，没有写入），`@JoinCacheable` + `@EnableCoCache(joinCaches)` 注册，内部是两次 `getAll`。原决策：删除 JoinCache 子系统（`@JoinCacheable`、`JoinCache`、SpEL 提取器、代理与工厂） | 组合读模型是用户层逻辑，两次 `getAll` 就能写出来，不值得在核心里保留一整套声明与代理机制。接口式声明 `@CoCache` 保留（Q9），但只是 spec 的另一种写法 |
 
 三个目标不变，但要说得更精确（§1.2）。
 
@@ -143,7 +143,7 @@ cocache-test                   TCK：BackendProtocolSpec、EngineSpec、SetEngin
 cocache-bom
 ```
 
-删除：`cocache-spring-redis`、`cocache-spring-cache`（分别并入 `cocache-redis` 与 `cocache-spring`），以及整个 JoinCache 子系统。
+删除：`cocache-spring-redis`、`cocache-spring-cache`（分别并入 `cocache-redis` 与 `cocache-spring`），以及整个 JoinCache 子系统（D11 已撤销：JoinCache 以只读视图的形式保留）。
 
 依赖方向：`api ← core ← redis`，`api ← codec-jackson`，`core ← spring`，starter 依赖以上全部。core 不再依赖 `spring-expression` 和 `kotlin-reflect`：注解解析与 SpEL 只在 starter 中出现。
 
@@ -670,7 +670,7 @@ val users: Cache<String, User> = runtime.create(
 | `object CacheClock`（静态线程） | 可注入的 `CacheClock` |
 | `TtlPolicy`（含兼容构造函数）、`strictFailure`、`recordClientSideHits` | `CachePolicy`、§4.13 的规则、分条带计数器 |
 | `CacheSource` 返回带 `ttlAt` 的 `CacheValue` | `CacheLoader` + `ttlOf(K, V)` |
-| JoinCache 全套（`JoinCache`、`JoinValue`、`JoinKeyExtractor`、`@JoinCacheable`、SpEL 提取器、代理与工厂） | 文档中的组合示例（两次 `getAll`） |
+| 5.x JoinCache（`CacheValue` 版的 `JoinCache`、代理与工厂） | 6.0 的只读 `JoinCache` 视图（`me.ahoo.cocache.api.join`，D11 已撤销） |
 | 5.x 接口式声明的实现：`me.ahoo.cache` 包下的 `@CoCache`、`@CaffeineCache`、`@EnableCoCache`、`CacheInvocationHandler`、`CacheProxyFactory`、`CacheDelegated`/`CacheMetadataCapable`、基于 `kotlin-reflect` 的元数据解析 | 6.0 的同名注解（`me.ahoo.cocache.api.annotation`）、`@EnableCoCache`（starter）、`CacheProxies`（core），注解启动时翻译为 spec |
 | core 对 `spring-expression`、`kotlin-reflect` 的依赖 | 移到 starter |
 | `StringRedisTemplate`、`RedisMessageListenerContainer` | Lettuce 原生 |
@@ -867,7 +867,7 @@ v1 由三路独立的对抗审查验证：协议正确性（构造交错反例�
 | TLS | 经 Spring Data Redis | SSL bundle → Lettuce `SslOptions` | ✅ |
 | 失效通道 | Pub/Sub、Sharded Pub/Sub | Pub/Sub、Sharded（slot 迁移后自动重新订阅并重置，5.x 的 #629 在 6.0 中已处理） | ✅ |
 | 集合元素增删 | `SetElementsCache`（与数据源语义混用） | `SetCache`（L1 是唯一副本，禁止 loader） | 🔁（收窄） |
-| JoinCache | `@JoinCacheable`、`JoinCache` | 无，用两次 `getAll` 组合 | ❌ |
+| JoinCache | `@JoinCacheable`、`JoinCache` | `JoinCache` 只读视图（两次 `getAll`），`@EnableCoCache(joinCaches)` 注册（D11 已撤销） | ✅ |
 | 布隆过滤器 | `BloomKeyFilter`（Guava） | `KeyFilter` 函数，由用户包装 | 🔁 |
 | Spring Cache | `CoCacheManager`，`sync` 按 key 合并 | `CoCacheSpringCacheManager`，`sync` 走 lease 保护的回源 | ✅ |
 | 指标 | Micrometer 计数器、L2 命中计数可选 | `CacheMetrics` + Micrometer 绑定（`cocache.*`）；L2 命中计数暂不提供（需 JMH 证明开销） | ✅（L2 命中计数 🚧） |

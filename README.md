@@ -71,6 +71,7 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 - **Refresh ahead.** With `refreshWindow`, one node per key reloads a hot value before it expires.
 - **Batch reads.** `getAll` reads L1 in about one round trip and calls `CacheLoader.loadAll` once.
 - **`SetCache`.** Atomic element add and remove for sets whose only copy is Redis.
+- **`JoinCache`.** A read-only view that joins two caches (for example an order and its user) with two batch reads, declared with `@JoinCacheable`.
 - **Spring Cache and transactions.** `@Cacheable` through `CoCacheSpringCacheManager`, and `TransactionalInvalidator` to invalidate after commit.
 - **Observability.** Micrometer metrics and the `cocache` actuator endpoint.
 - **Redis topologies.** Standalone, Sentinel, and Cluster through Lettuce, with classic or sharded Pub/Sub (`cocache.redis.channel-mode`).
