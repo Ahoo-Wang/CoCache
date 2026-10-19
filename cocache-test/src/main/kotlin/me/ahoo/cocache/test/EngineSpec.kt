@@ -13,10 +13,10 @@
 
 package me.ahoo.cocache.test
 
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
-import me.ahoo.cocache.api.CoCache
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.CoherenceBackend
@@ -146,7 +146,7 @@ abstract class EngineSpec {
         }
     }
 
-    protected fun CacheRuntime.cache(spec: CacheSpec<String, String> = spec()): CoCache<String, String> = create(spec)
+    protected fun CacheRuntime.cache(spec: CacheSpec<String, String> = spec()): Cache<String, String> = create(spec)
 
     protected fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 
@@ -591,7 +591,7 @@ abstract class EngineSpec {
 
     @Test
     fun recursiveLoadOfTheSameKeyFailsFast() {
-        lateinit var cache: CoCache<String, String>
+        lateinit var cache: Cache<String, String>
         cache = nodeA.cache(
             spec {
                 loader = CacheLoader { key -> cache[key] }

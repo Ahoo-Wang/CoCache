@@ -13,7 +13,7 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.CoCache
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.SetCacheSpec
@@ -25,7 +25,7 @@ import org.springframework.core.ResolvableType
 import java.util.function.Supplier
 
 /**
- * 把每个 [CacheSpec] / [SetCacheSpec] bean 注册为对应的 [CoCache] / [SetCache] bean（RFC 0003 §4.12）。
+ * 把每个 [CacheSpec] / [SetCacheSpec] bean 注册为对应的 [Cache] / [SetCache] bean（RFC 0003 §4.12）。
  *
  * - 泛型取自工厂方法**声明的**返回类型，不实例化声明；无法解析时启动失败（如返回原始类型）。
  * - bean 名：声明 bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` 后缀。
@@ -34,7 +34,7 @@ import java.util.function.Supplier
 class CacheSpecRegistrar : BeanFactoryPostProcessor {
     override fun postProcessBeanFactory(beanFactory: ConfigurableListableBeanFactory) {
         val registry = beanFactory as? BeanDefinitionRegistry ?: return
-        register(beanFactory, registry, CacheSpec::class.java, CoCache::class.java) { assembler, spec ->
+        register(beanFactory, registry, CacheSpec::class.java, Cache::class.java) { assembler, spec ->
             assembler.create(spec as CacheSpec<Any, Any>)
         }
         register(beanFactory, registry, SetCacheSpec::class.java, SetCache::class.java) { assembler, spec ->

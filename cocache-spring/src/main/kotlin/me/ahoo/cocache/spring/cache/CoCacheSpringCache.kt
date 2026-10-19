@@ -13,7 +13,7 @@
 
 package me.ahoo.cocache.spring.cache
 
-import me.ahoo.cocache.api.CoCache
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.core.CacheAdmin
 import org.springframework.cache.support.SimpleValueWrapper
@@ -25,7 +25,7 @@ import java.util.function.Supplier
 import org.springframework.cache.Cache as SpringCache
 
 /**
- * 把 6.0 的 [CoCache] 适配为 Spring [SpringCache]（RFC 0003 §4.12）。
+ * 把 6.0 的 [Cache] 适配为 Spring [SpringCache]（RFC 0003 §4.12）。
  *
  * - 负缓存视为未命中：否则 `@Cacheable` 遇到负缓存将永远不调用方法。
  * - `put(key, null)`（如 `@CachePut` 返回 null）映射为失效。
@@ -34,7 +34,7 @@ import org.springframework.cache.Cache as SpringCache
  * - [retrieve] 在 [executor] 上执行阻塞查找，不占用调用方线程。
  */
 class CoCacheSpringCache(
-    private val cache: CoCache<Any, Any>,
+    private val cache: Cache<Any, Any>,
     private val admin: CacheAdmin?,
     private val executor: Executor,
 ) : SpringCache {

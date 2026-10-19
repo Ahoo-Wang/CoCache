@@ -20,9 +20,9 @@ package me.ahoo.cocache.api
  * - [invalidate] 会销毁唯一副本，因此总是抛出 [UnsupportedOperationException]；删除数据用 [clear]。
  * - 数据持久性等于 L1 的持久性；L1 不得使用会淘汰无 TTL key 的内存策略（如 Redis `allkeys-*`）。
  *
- * 数据权威在数据源中的集合，应声明为普通的 `CoCache<K, Set<E>>` 并用 [invalidate] 维护。
+ * 数据权威在数据源中的集合，应声明为普通的 `Cache<K, Set<E>>` 并用 [invalidate] 维护。
  */
-interface SetCache<K : Any, E : Any> : CoCache<K, Set<E>> {
+interface SetCache<K : Any, E : Any> : Cache<K, Set<E>> {
     /**
      * 读取集合；不存在时返回空集合（空集合与不存在等价）。
      */
