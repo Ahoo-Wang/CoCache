@@ -160,7 +160,7 @@ JoinCache 仍然保留，位于 `me.ahoo.cocache.api.join`，但现在是**只�
 |-|-----|-----|
 | 客户端 | Spring Data Redis，Lettuce 或 Jedis | 原生 Lettuce。CoCache 按 `spring.data.redis.*` 自建客户端。**不支持 Jedis**：需要引入 Lettuce（不影响应用自己的 Redis 客户端） |
 | 拓扑 | 单机、Sentinel、Cluster | 单机、Sentinel、Cluster。静态主从启动失败 |
-| 最低版本 | — | Redis 7.0+。Valkey 7.2+ 应当可用，但未纳入 CI 测试 |
+| 最低版本 | — | Redis 7.0+ 或 Valkey 7.2+。CI 测试单机 Valkey 8 |
 | key | `keyPrefix` + key，默认前缀 `cocache:{name}:` | `{keyPrefix}{namespace}:{key}`，默认为 `cocache:{name}:{key}`。自定义 `keyPrefix: "user:"` 在 5.x 中得到 `user:42`，现在得到 `user:UserCache:42` |
 | 值 | JSON 字符串、Hash 或 Set，带内哨兵 `_nil_` | 36 字节二进制头 + codec 字节。集合是带 `!f` 与 `+{member}` 字段的 Hash |
 | TTL 精度 | 秒 | 毫秒 |

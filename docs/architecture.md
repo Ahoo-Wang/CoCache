@@ -297,7 +297,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **重置时机**：频道的第一个订阅者发出订阅后，等待服务端确认（最多 `commandTimeout`），确认回调对该频道的订阅者调用 `onReset`，所以 `subscribe` 返回时重置已经完成；同一频道的后续订阅者直接收到一次 `onReset`。断线重连后 Lettuce 自动重新订阅，确认时再次重置。
 - **心跳**：订阅连接每隔 `heartbeat`（默认 5 s）`PING`，失败或超时即重置全部订阅者并强制断开该连接，由 Lettuce 重连、重新订阅（确认后再次重置），半开连接在秒级内被发现。最近一次心跳的结果以只读状态暴露（`RedisBackend.heartbeatHealthy` / `heartbeatFailure`，供健康检查使用），心跳成功即恢复正常。CoCache 自建的客户端另开启 TCP keepalive（有 epoll / io_uring 时再加 `TCP_USER_TIMEOUT`）。Cluster 的经典 Pub/Sub 无法取得底层连接，只告警并依赖 keepalive。Cluster 的 `sharded` 模式 `PING` 确认了订阅的节点；slot 的主节点不再是确认节点时（故障切换），重置订阅者、退订旧节点并向新主节点重新订阅。
 - **slot 迁移**（`sharded`）：原节点让出 slot 时会主动发送 `sunsubscribe`，Lettuce 不会自动重新订阅。收到非主动退订时立即重置订阅者并重新订阅；失败由心跳重试，直到确认。
-- **兼容性**：Redis 7.0+（用到 `TIME`、`SETRANGE`、`SPUBLISH`）。Valkey 7.2+ 按协议应当兼容，但尚未纳入 CI。
+- **兼容性**：Redis 7.0+（用到 `TIME`、`SETRANGE`、`SPUBLISH`）。Valkey 7.2+ 实现了同样的命令；CI 在单机 Valkey 8 上运行 `cocache-redis` 与 starter 测试。
 
 ## 9. 运行时与 Spring 集成
 
@@ -427,11 +427,11 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 
 - `HookedBackend` 包装任意后端以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`）、改写读取结果、在写入前后编排竞态，并能覆盖 `atomicBroadcast` 以验证非原子路径。
 - 时间：内存后端用 `ManualClock` 推进；Redis 测试用 `RedisTestSupport.shiftTtl` 缩短 key 的剩余寿命来模拟时间流逝。到期时间是毫秒精度，不需要 ±1 s 偏差。
-- `cocache-redis` 中 `BackendProtocolSpec` 与 `EngineSpec` 在 `pubsub`、非原子（ACL 禁止探测频道）与 `sharded` 三种后端上各跑一遍，`SetEngineSpec` 只在 `pubsub` 后端上运行；设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时连接 Redis Cluster。
+- `cocache-redis` 中 `BackendProtocolSpec` 与 `EngineSpec` 在 `pubsub`、非原子（ACL 禁止探测频道）与 `sharded` 三种后端上各跑一遍，`SetEngineSpec` 只在 `pubsub` 后端上运行；设置 `SPRING_DATA_REDIS_HOST` / `SPRING_DATA_REDIS_PORT` 时连接其他单机实例（CI 的 Valkey 任务），设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时连接 Redis Cluster。
 - 竞态用 latch 编排，禁止 sleep；等待 `finished` latch，让死掉的后台线程使用例失败；跨节点效果用带超时的轮询断言。
 - 每个修复的缺陷都要有复现用例（`EngineSpec` 中的同节点竞态用例是范例）。
 
-尚未实现（见 [roadmap](roadmap.md)）：多进程交错的 `MultiNodeSpec`、Redis 故障注入的 `FaultSpec`、Valkey CI、`NOSCRIPT` 回退的专门用例。
+尚未实现（见 [roadmap](roadmap.md)）：多进程交错的 `MultiNodeSpec`、Redis 故障注入的 `FaultSpec`、`NOSCRIPT` 回退的专门用例。
 
 ## 13. 性能验证
 

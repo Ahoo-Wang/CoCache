@@ -26,7 +26,7 @@ CoCache 根据 `spring.data.redis.*` 自建 Lettuce 客户端，不共用应用�
 
 | 项 | 要求 |
 |----|------|
-| 版本 | **Redis 7.0 及以上**。脚本用到 `TIME` 与 `SETRANGE`，`sharded` 模式用到 `SPUBLISH`。Valkey 7.2+ 实现了同样的命令，应当可用，但未纳入 CI 测试 |
+| 版本 | **Redis 7.0 及以上**。脚本用到 `TIME` 与 `SETRANGE`，`sharded` 模式用到 `SPUBLISH`。Valkey 7.2+ 实现了同样的命令。CI 在单机 Valkey 8 上运行 Redis 后端与 starter 测试 |
 | 客户端 | Lettuce，由 starter 引入。不支持 Jedis；引入 Lettuce 不影响应用自己基于 Jedis 的客户端 |
 | 脚本 | 必须允许 `EVAL` / `EVALSHA`。脚本不带 shebang 标志 |
 | Pub/Sub | `SUBSCRIBE` / `PUBLISH`，`sharded` 模式下为 `SSUBSCRIBE` / `SPUBLISH` |
