@@ -158,6 +158,22 @@ class RedisRobustnessTest {
     }
 
     /**
+     * 读取各主节点的 maxmemory-policy；CONFIG 不可用（ACL 无权限）时返回 null，不抛出。
+     */
+    @Test
+    fun readsMaxmemoryPolicyOrReturnsNullWhenUnavailable() {
+        RedisTestSupport.backend().use { backend ->
+            val policies = requireNotNull(backend.maxmemoryPolicies())
+            policies.assert().isNotEmpty()
+            policies.values.forEach { it.assert().isNotBlank() }
+        }
+        val rules = "~cocache:* resetchannels &cocache:inv:* &cocache:probe:* +@all -config".split(" ")
+        RedisTestSupport.aclBackend("cocache-noconfig", rules).use { backend ->
+            backend.maxmemoryPolicies().assert().isNull()
+        }
+    }
+
+    /**
      * 批量读取中一个 key 失败：其余读取取得的 lease 被释放，而不是等 lease.ttl 到期。
      */
     @Test

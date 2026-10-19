@@ -63,21 +63,29 @@
 
 JMH 对比见 RFC 0003 §7.1。
 
-## 6.0 之后
+## v6.1：可部署性
 
-以下各项在 RFC 0003 中规划，但没有随 6.0 交付：
+| 项 | 目标 | 内容 | 验收 |
+|----|------|------|------|
+| Spring AOT / GraalVM 原生镜像 | 可部署 | 构建期为 `@CoCache` / `@JoinCacheable` 接口的 JDK 代理、`keyExpression` / `joinKeyExpression` 的根对象与默认 Jackson codec 的值类型登记 RuntimeHints；注册的 bean 定义可由 AOT 生成代码 | starter 中的 AOT 处理测试（生成、编译并运行生成的初始化器）；example 的原生镜像冒烟构建（独立 CI 工作流，不作为 PR 必需检查） |
+| 执行器可配置 | 运维 | `cocache.spring-cache.retrieve-executor`、`cocache.refresh-executor` 按 bean 名指定执行器（可用 `applicationTaskExecutor`），用户提供的执行器不随运行时关闭 | 绑定与元数据测试；指定的执行器确实被使用；未知 bean 名启动失败 |
+| `SetCache` 驱逐检查 | 安全 | 有 `SetCache` 时启动读取各主节点的 `maxmemory-policy`：`allkeys-*` 会驱逐集合的唯一副本（有限寿命的集合在 `volatile-*` 下同样会被驱逐）；`cocache.redis.set-cache-eviction-check: warn \| fail \| off`，默认 `warn`；`CONFIG` 不可用时跳过并记录 | 单机与集群上读取策略；ACL 禁用 `CONFIG` 时跳过；告警与失败模式测试 |
+
+## 6.1 之后
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
-| TCK `MultiNodeSpec` | G2 验收 | 多进程覆盖 §4.4 的全部交错（失效先于 lease、晚于 lease、晚于 fill；同节点与跨节点并发 `put`；失效重试期间的未命中）、全集群单次回源与单次刷新的计数断言 | 未实现。`EngineSpec` 已用两个运行时共享一个后端覆盖其中大部分交错 |
-| TCK `FaultSpec` | G1 验收 | Redis 故障时的降级限龄、失效重试与溢出、写入抛出后重试的幂等性、断线时命令不被重放、故障切换后的 `NOSCRIPT` 回退 | 未实现。`EngineSpec` 用 `HookedBackend` 注入故障覆盖降级与重试；断线不重放与 `NOSCRIPT` 回退没有专门用例 |
+| `putAll` 批量写入 | G3 | 按 slot 分组、一个脚本写入并广播，逐 key 遵守写入方顺序 | 未实现 |
+| 链路追踪 | 可观测 | 只在未命中与回源路径接入 Micrometer `Observation`，命中路径零开销 | 未实现 |
+| L2 命中计数 | 可观测 | 分条带计数器；8 线程 JMH 回退在噪声内才默认开启 | 未提供 |
+| TCK `MultiNodeSpec` | G2 验收 | 多进程覆盖 §4.4 的全部交错、全集群单次回源与单次刷新的计数断言 | 未实现。`EngineSpec` 已用两个运行时共享一个后端覆盖其中大部分交错 |
+| TCK `FaultSpec` | G1 验收 | 断线时命令不被重放、故障切换后的 `NOSCRIPT` 回退等故障场景 | 未实现。`EngineSpec` 用 `HookedBackend` 注入故障覆盖降级与重试 |
 | Valkey CI | 兼容性 | Valkey 7.2+ 上运行 `cocache-redis` 与 starter 测试 | 未实现；兼容性只按协议推断 |
 | 集合基准 `setRead` | G3 | 成员数 10 / 100 / 1000 的吞吐与内存，决定 Hash 编码是否保留（RFC 0003 §8 Q1） | 未实现 |
-| L2 命中计数 | 可观测 | 分条带计数器；8 线程 JMH 回退在噪声内才默认开启 | 未提供 |
-| `CacheAdmin` 按 key 查看与强制失效 | 运维 | 不回源查看 L2 与 L1、强制失效、查看策略 | 未提供；现有 `CacheAdmin` 只有统计、本地副本数与清空本地副本 |
-| 外部失效工具 | G1 | 随 `cocache-redis` 发布构造帧并原子执行 `DEL` + `PUBLISH` 的脚本与 CLI | 未提供；协议见 architecture.md §6.2 |
-| `SetCache` 启动检查 | 安全 | 检查 `maxmemory-policy` 不是 `allkeys-*` | 未实现；只写在文档中 |
+| 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
+
+6.0 已交付按 key 查看与失效（actuator `GET` / `DELETE /actuator/cocache/{name}/{key}`、`CacheAdmin.inspect`）与 `ExternalInvalidator`。
 
 ## 暂缓
 
