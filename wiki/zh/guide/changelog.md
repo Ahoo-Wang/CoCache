@@ -5,7 +5,46 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v5.4.0（当前版本）
+## v6.0.0（当前版本）
+
+**模块组：** `me.ahoo.cocache` · **主版本。** CoCache 按 [RFC 0003](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0003-target-architecture.md) 的一致性协议重建。**不能滚动升级：** Redis 中的值格式与失效频道都已改变，5.x 与 6.0 实例不能共享 Redis。请按[迁移指南](./migration-6.md)整体切换。
+
+### 主要变化
+
+- **消除了陈旧回写。** 回源只有持有 lease 令牌时才写 Redis，每次填充 L2 都校验失效戳。5.x 的“已知固有窗口”不再存在：协议内的竞态不会在 Redis 中留下陈旧值。
+- **命中路径更快。** L2 命中比 5.4 快 54–59%，接口代理命中快 28–64%，`put` / `invalidate` 约快一倍（JMH，RFC 0003 §7.1）。
+- **全集群每个 key 只回源一次**；提前刷新全集群每个 key 只刷新一次；批量 `getAll` 先读 L2，再一次往返读 Redis，最后一次 `loadAll` 回源。
+- **可选择的失败模式：** `read-failure: degrade | throw`、`invalidate-failure: retry | throw`、有界的失效重试队列、回源并发上限（`load-max-concurrent`）。
+- **基于原生 Lettuce 的 Redis 后端**（`cocache-redis`，不依赖 Spring）：单机、Sentinel、Cluster；TLS 通过 Spring Boot SSL bundle 或 `rediss://`；Pub/Sub 或 Sharded Pub/Sub（`cocache.redis.channel-mode`）。
+- **Spring：** `@EnableCoCache` 配合 `@CoCache` 接口或 `CacheSpec` bean；`CacheSpecCustomizer`；分层的 `cocache.defaults.*` / `cocache.caches.[name].*` 配置并带完整的 IDE 元数据；`CoCacheSpringCacheManager`（一致的回源请用 `@Cacheable(sync = true)`）；`TransactionalInvalidator`（事务提交后失效）。
+- **可观测性：** actuator 端点 `cocache`，以及按 `cache` 打标签的 `cocache.*` Micrometer 指标。
+
+### 迁移速查
+
+| 5.x | 6.0 |
+|-----|-----|
+| `me.ahoo.cache.*` | `me.ahoo.cocache.*`；`@EnableCoCache` 位于 `me.ahoo.cocache.spring.boot` |
+| `cocache-spring-redis`、`cocache-spring-cache` | `cocache-redis`、`cocache-spring`（另有 `cocache-codec-jackson`） |
+| `ttlAmplitude`、`missingTtl`、`clientSideTtl`、`refreshAhead` | `ttlJitter`、`absentTtl`、`localMaxAge`、`refreshWindow` |
+| `{name}.CacheSource` bean | 按泛型匹配的 `CacheLoader<K, V>` bean，或 `@CoCache(loader = …)` |
+| `{name}.ClientSideCache` 等 bean 名后缀 | `CacheSpecCustomizer`、`cocache.caches.[name].*` |
+| `getCache` / `set(key, ttlAt, value)` / `evict` | `get` / `lookup` / `put(key, value, ttl)` / `invalidate` |
+| `SetElementsCache` | `SetCache` |
+| `cocache.redis.strict-failure=true` | `cocache.defaults.read-failure=throw` |
+| `cocache.redis.eviction-channel=sharded` | `cocache.redis.channel-mode=sharded` |
+| `cocache.load.*` | `cocache.defaults.load-max-concurrent` / `load-acquire-timeout` |
+| actuator `cocacheClient` | 已删除，改用 `cocache` |
+| Jedis、JoinCache、可替换的 L2、显式写入负缓存 | 已删除 |
+
+已删除的 5.x 配置项会让启动失败，错误信息会给出替代项。部分改名同时改变了语义（例如 L2 现在总受 `localMaxAge` 限龄，默认 5 分钟），详见[行为变化](./migration-6.md#semantics)。
+
+### Gradle 配置
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.0.0")
+```
+
+## v5.4.0
 
 **模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。默认失效通道与 Redis 线格式不变，5.3.x 与 5.4 实例可共享 Redis。新通道默认关闭。
 
