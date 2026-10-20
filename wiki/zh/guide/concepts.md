@@ -32,7 +32,7 @@ flowchart TD
     LD --> F1["凭 lease 写入 Redis，<br>填充 L2 后返回"]
 ```
 
-1. **L2 命中。** 一次 Caffeine 查找加一次过期判断。没有 I/O，没有锁，也不计数。
+1. **L2 命中。** 一次 Caffeine 查找加一次过期判断。没有 I/O，没有锁；除非开启 [L2 命中计数](../operations/observability.md#metrics-reads)，也不计数。
 2. **L2 未命中。** 本实例上的并发调用共享一次加载（`SingleFlight`），由领头的调用读取 Redis。
 3. **L1 命中。** 值（或负缓存）进入 L2 并返回。
 4. **L1 未命中。** 发现 key 不存在的那个 Redis 脚本同时把 **lease** 交给本实例。领头的调用在调用方线程上执行你的 loader，因此事务、安全上下文与 MDC 都可用。只有 lease 仍然完好时，结果才会写入 Redis。

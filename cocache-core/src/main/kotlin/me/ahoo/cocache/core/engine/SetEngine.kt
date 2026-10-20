@@ -73,6 +73,7 @@ internal class SetEngine<K : Any, E : Any>(
         val storageKey = storageKey(key)
         val entry = local.getIfPresent(storageKey)
         if (entry != null && entry.expiresAt > clock.nowMillis()) {
+            countLocalHit()
             return entry
         }
         val observed = stamps.current(storageKey)
@@ -111,6 +112,7 @@ internal class SetEngine<K : Any, E : Any>(
         val storageKey = storageKey(key)
         val entry = local.getIfPresent(storageKey)
         if (entry != null && entry.expiresAt > clock.nowMillis()) {
+            countLocalHit()
             return CompletableFuture.completedFuture(entry)
         }
         val observed = stamps.current(storageKey)

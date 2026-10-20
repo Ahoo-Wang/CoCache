@@ -97,7 +97,7 @@ TLS 用 Spring Boot 的标准配置项开启。CoCache 对它连接的每个节�
 
 每个缓存在每个实例上都有自己的 L2，上限为 `local-maximum-size`（默认 10,000 条；接口式声明用 `@CaffeineCache(maximumSize)`）。堆内存大约是：条目数 ×（解码后的值 + key 字符串 + 约 100 字节的条目开销），再对所有缓存求和。关注 `cocache.local.size`。按热点数据集规划 L2，而不是整个 key 空间：L2 未命中只多一次 Redis 往返，不会回源。
 
-没有 L2 命中计数器（它会拖慢最热的路径）。评估 L2 时，用应用的请求速率对比 `cocache.misses`。
+L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热的路径。评估 L2 时，用应用的请求速率对比 `cocache.misses`，或者用 [`cocache.metrics.local-hits`](../guide/configuration.md#properties) 开启该计数。
 
 ### Redis 内存 {#sizing-redis}
 

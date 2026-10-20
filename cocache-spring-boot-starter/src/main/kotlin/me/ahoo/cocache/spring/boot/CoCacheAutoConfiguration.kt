@@ -112,6 +112,7 @@ class CoCacheAutoConfiguration {
      * 有唯一的 [CacheClock] bean 时运行时使用它（否则运行时自建 `TickingClock`）。
      * 设置了 `cocache.refresh-executor` 时按 bean 名取得提前刷新执行器（否则运行时自建并管理内置执行器）。
      * 有唯一的 [LoadObserver] bean（如 [CoCacheObservationAutoConfiguration] 注册的 Micrometer 观测器）时用它观测回源。
+     * `cocache.metrics.local-hits=true` 时记录 L2 命中数（默认关闭，见 `CacheRuntime.Builder.recordLocalHits`）。
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
@@ -122,8 +123,10 @@ class CoCacheAutoConfiguration {
         loadObserver: ObjectProvider<LoadObserver>,
         properties: CoCacheProperties,
         beanFactory: ListableBeanFactory,
+        environment: Environment,
     ): CacheRuntime {
         val builder = CacheRuntime.builder().backend(backend)
+            .recordLocalHits(environment.getProperty(LOCAL_HITS_PROPERTY, Boolean::class.java, false))
         clock.ifUnique?.let { builder.clock(it) }
         loadObserver.ifUnique?.let { builder.loadObserver(it) }
         properties.refreshExecutor?.let {
@@ -222,6 +225,7 @@ class CoCacheAutoConfiguration {
         private val log = LogFactory.getLog(CoCacheAutoConfiguration::class.java)
         private const val TRANSACTION_SYNCHRONIZATION = "org.springframework.transaction.support.TransactionSynchronizationManager"
         internal const val REFRESH_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.refresh-executor"
+        internal const val LOCAL_HITS_PROPERTY = "${CoCacheProperties.PREFIX}.metrics.local-hits"
         internal const val RETRIEVE_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.spring-cache.retrieve-executor"
         internal const val ASYNC_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.async-executor"
         internal const val BLOCKING_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.blocking-executor"

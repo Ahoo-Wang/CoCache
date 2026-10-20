@@ -42,6 +42,10 @@ With an `ObservationRegistry` bean, the starter registers a `MicrometerLoadObser
 
 The `SetCache` read script fetches members with `HKEYS` and the format version with `HGET`, instead of `HGETALL` with every member's empty value. The stored layout is unchanged. In server-side throughput, reads are 1.33, 1.55 and 1.76 times as fast at 10, 100 and 1000 members. ACL errors raised inside the read script now reach the caller instead of being read as unrecognized content.
 
+### L2 hit counter
+
+`cocache.metrics.local-hits=true` (without Spring: `CacheRuntime.builder().recordLocalHits(true)`) counts reads answered by L2 as `cocache.hits{level=l2}` and the endpoint key `localHits`, so reads split exactly into L2 hits, misses and filtered reads. It is off by default because it adds an atomic increment to every L2 hit: with it on, L2 hit throughput drops by about 3–9% in JMH (1 and 8 threads, depending on the call site). With it off, throughput matches 6.1. The 5.x property `cocache.metrics.client-side-hits` now points to it. See [Observability](../operations/observability.md#metrics-reads).
+
 ### Fixes
 
 - With non-atomic broadcast (`channel-mode: sharded`, or when the atomic-broadcast probe fails), a write that failed but partly took effect is now broadcast too. Before, a `putAll` that failed in one slot group, or a `put` applied in Redis whose reply was lost, left other instances reading the old local copy until `local-max-age`. Synchronous `putAll` and `invalidateAll` on Redis now wait for every slot group before they throw.

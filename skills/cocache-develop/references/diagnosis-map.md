@@ -17,7 +17,7 @@ Use this map to locate the first incorrect stage before changing anything. Prefe
 | `GET /actuator/cocache/{name}/{key}` | L2 and L1 state of one encoded key, without loading, filling or counting |
 | `GET /actuator/cocache/{name}` | Per-instance counters: loads, L1 hits, misses, lease waits, fill rejections, degraded fills, reclaims, resets, dropped invalidations |
 | `GET /actuator/health/cocache` | `heartbeat.error`, `channelMode`, `atomicBroadcast`, `pendingInvalidations` |
-| Micrometer `cocache.*` meters (tag `cache`) | Rates over time; no L2 hit counter |
+| Micrometer `cocache.*` meters (tag `cache`) | Rates over time; L2 hits only with `cocache.metrics.local-hits=true` |
 | Logs | `Invalidation channel heartbeat failed`, `... dropped: L1 keeps the stale value ...`, `corrupted payload, reclaim and reload` |
 | Read-only `redis-cli` | `TYPE`, `PTTL`, `GETRANGE key 2 2` (state byte `V`/`M`/`L`), `PUBSUB NUMSUB cocache:inv:{namespace}`, `CLIENT LIST` with `cocache.redis.client-name` |
 

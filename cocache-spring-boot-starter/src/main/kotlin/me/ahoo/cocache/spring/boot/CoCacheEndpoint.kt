@@ -111,7 +111,7 @@ class CoCacheEndpoint(private val runtime: CacheRuntime) {
             localSize = localSize,
             loads = snapshot.loads,
             loadNanos = snapshot.loadNanos,
-            metrics = CacheCounters.ALL.associate { it.key to it.read(snapshot) },
+            metrics = CacheCounters.ALL.filter { it.recorded(snapshot) }.associate { it.key to it.read(snapshot) },
         )
     }
 }

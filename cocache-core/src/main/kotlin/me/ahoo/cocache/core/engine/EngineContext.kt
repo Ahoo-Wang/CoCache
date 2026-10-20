@@ -32,6 +32,7 @@ internal class EngineContext(
     val retrier: InvalidationRetrier,
     val loadObserver: LoadObserver = LoadObserver.NOOP,
     val async: AsyncContext = AsyncContext.direct(),
+    val recordLocalHits: Boolean = false,
 ) {
     private val sequence = AtomicLong()
 

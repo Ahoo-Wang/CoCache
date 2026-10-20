@@ -42,6 +42,10 @@ async.put("42", user).thenCompose { async.get("42") }
 
 `SetCache` 的读脚本用 `HKEYS` 取成员、用 `HGET` 取格式版本，不再用 `HGETALL` 连同每个成员的空值一起返回。存储布局不变。服务端吞吐在 10、100、1000 个成员时分别是原来的 1.33、1.55、1.76 倍。读脚本内的 ACL 错误现在会抛给调用方，不再被当作无法识别的内容。
 
+### L2 命中计数
+
+`cocache.metrics.local-hits=true`（不用 Spring 时：`CacheRuntime.builder().recordLocalHits(true)`）把由 L2 回答的读取计入 `cocache.hits{level=l2}` 与端点字段 `localHits`，读取因此能精确地分成 L2 命中、未命中与被过滤三类。默认关闭，因为它给每次 L2 命中加一次原子自增：开启后 L2 命中吞吐下降约 3%–9%（JMH，1 与 8 线程，视调用点而定）；关闭时与 6.1 持平。5.x 的 `cocache.metrics.client-side-hits` 现在提示改用它。见[可观测性](../operations/observability.md#metrics-reads)。
+
 ### 修复
 
 - 非原子广播（`channel-mode: sharded`，或原子广播探测失败）时，失败但已部分生效的写入现在也会广播。之前一组 slot 失败的 `putAll`，或 Redis 已执行但应答丢失的 `put`，会让其它实例一直读旧的本地副本，直到 `local-max-age`。Redis 上同步的 `putAll` 与 `invalidateAll` 现在等全部 slot 组结束后才抛出。
