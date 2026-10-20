@@ -39,6 +39,10 @@ import org.springframework.context.annotation.Configuration
 import java.util.concurrent.TimeUnit
 
 class CoCacheObservabilityTest {
+    companion object {
+        private const val LOCAL_HITS = "localHits"
+    }
+
     private val autoConfigurations = AutoConfigurations.of(
         CoCacheAutoConfiguration::class.java,
         CoCacheMetricsAutoConfiguration::class.java,
@@ -151,9 +155,11 @@ class CoCacheObservabilityTest {
             loads.totalTime(TimeUnit.NANOSECONDS).assert().isGreaterThan(0.0)
             registry.localSize("user").assert().isEqualTo(1.0)
 
-            // L2 命中不计数
+            // L2 命中默认不计数，也不注册 level=l2
             user["1"].assert().isEqualTo("user-1")
             registry.count("cocache.misses", "user").assert().isEqualTo(1.0)
+            registry.find("cocache.hits").tag(CoCacheMeterBinder.TAG_CACHE, "user")
+                .tag(CoCacheMeterBinder.TAG_LEVEL, "l2").meter().assert().isNull()
 
             // 本节点 L2 被清空后，从 L1 读回
             context.getBean(CacheRuntime::class.java).admin("user")?.clearLocal()
@@ -162,10 +168,33 @@ class CoCacheObservabilityTest {
                 .tag(CoCacheMeterBinder.TAG_LEVEL, "l1").functionCounter().count().assert().isEqualTo(1.0)
             loads.count().assert().isEqualTo(1.0)
 
-            CacheCounters.ALL.forEach {
+            CacheCounters.ALL.filter { it.key != LOCAL_HITS }.forEach {
                 registry.find(it.meter).tag(CoCacheMeterBinder.TAG_CACHE, "index").functionCounter()
                     .assert().withFailMessage { "${it.meter} is not bound for index" }.isNotNull()
             }
+        }
+    }
+
+    @Test
+    fun localHitsAreCountedWhenEnabled() {
+        runner.withPropertyValues("cocache.metrics.local-hits=true").run { context ->
+            val registry = SimpleMeterRegistry()
+            context.getBean(CoCacheMeterBinder::class.java).bindTo(registry)
+            val endpoint = context.getBean(CoCacheEndpoint::class.java)
+
+            @Suppress("UNCHECKED_CAST")
+            val user = context.getBean("user") as Cache<String, String>
+            user["1"].assert().isEqualTo("user-1")
+            user["1"].assert().isEqualTo("user-1")
+            user["1"].assert().isEqualTo("user-1")
+
+            val l2Hits = registry.get("cocache.hits").tag(CoCacheMeterBinder.TAG_CACHE, "user")
+                .tag(CoCacheMeterBinder.TAG_LEVEL, "l2").functionCounter()
+            l2Hits.count().assert().isEqualTo(2.0)
+            registry.count("cocache.misses", "user").assert().isEqualTo(1.0)
+            val report = requireNotNull(endpoint.cache("user"))
+            report.metrics[LOCAL_HITS].assert().isEqualTo(2L)
+            report.metrics.keys.assert().containsExactlyElementsOf(CacheCounters.ALL.map { it.key })
         }
     }
 
@@ -225,7 +254,7 @@ class CoCacheObservabilityTest {
             report.loads.assert().isEqualTo(1L)
             report.loadNanos.assert().isGreaterThan(0L)
             report.metrics["misses"].assert().isEqualTo(1L)
-            report.metrics.keys.assert().containsExactlyElementsOf(CacheCounters.ALL.map { it.key })
+            report.metrics.keys.assert().containsExactlyElementsOf(CacheCounters.ALL.map { it.key } - LOCAL_HITS)
             endpoint.cache("missing").assert().isNull()
 
             endpoint.clearLocal("user")

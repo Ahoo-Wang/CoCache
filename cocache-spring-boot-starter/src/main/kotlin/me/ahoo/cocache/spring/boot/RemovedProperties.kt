@@ -32,7 +32,7 @@ internal object RemovedProperties {
         "cocache.redis.strict-failure" to "use cocache.defaults.read-failure=throw (or cocache.caches.[name].read-failure=throw) instead",
         "cocache.redis.eviction-channel" to "use cocache.redis.channel-mode (pubsub | sharded) instead",
         "cocache.redis.missing-guard-sentinel" to "it has no replacement in 6.0; remove it",
-        "cocache.metrics.client-side-hits" to "it has no replacement in 6.0; remove it",
+        "cocache.metrics.client-side-hits" to "use cocache.metrics.local-hits=true instead",
         "cocache.load.max-concurrent" to "use cocache.defaults.load-max-concurrent (or cocache.caches.[name].load-max-concurrent) instead",
         "cocache.load.acquire-timeout" to "use cocache.defaults.load-acquire-timeout (or cocache.caches.[name].load-acquire-timeout) instead",
         "cocache.load" to "use cocache.defaults.load-* (or cocache.caches.[name].load-*) instead",

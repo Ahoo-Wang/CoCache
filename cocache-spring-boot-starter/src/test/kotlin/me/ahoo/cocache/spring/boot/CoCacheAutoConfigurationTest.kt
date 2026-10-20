@@ -486,7 +486,7 @@ class CoCacheAutoConfigurationTest {
             "cocache.load.other=1" to "cocache.defaults.load-*",
             "cocache.redis.eviction-channel=sharded" to "cocache.redis.channel-mode",
             "cocache.redis.missing-guard-sentinel=x" to "no replacement",
-            "cocache.metrics.client-side-hits=true" to "no replacement",
+            "cocache.metrics.client-side-hits=true" to "cocache.metrics.local-hits",
             "cocache.next.enabled=true" to "cocache.next.* became cocache.*",
         )
         cases.forEach { (property, replacement) ->

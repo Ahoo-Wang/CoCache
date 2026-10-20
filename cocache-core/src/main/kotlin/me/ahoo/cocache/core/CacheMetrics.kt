@@ -16,9 +16,19 @@ package me.ahoo.cocache.core
 import java.util.concurrent.atomic.LongAdder
 
 /**
- * 单个缓存的运行统计（只增不减的累计值）。全部记录在未命中、写入或失效路径上，L2 命中路径不计数。
+ * 单个缓存的运行统计（只增不减的累计值）。
+ *
+ * 读取按层互斥计数：每次读取（批量读取按 key）计入 [localHits]（L2 命中）、[misses]（L2 未命中）或 [filtered]
+ * （key 过滤器判定不存在）之一；未命中之后再由 L1 命中计入 [remoteHits]、由回源计入 [loads]。
+ *
+ * 除 [localHits] 外全部记录在未命中、写入或失效路径上。[localHits] 默认不记录（L2 命中路径不承担计数开销），
+ * 由 `CacheRuntime.Builder.recordLocalHits(true)` 开启；开启后 L2 命中路径上唯一的记录是一次 [LongAdder] 自增：
+ * 不加锁、不分配，多线程下按线程分散到不同单元。
+ *
+ * @property localHitsRecorded 是否记录 [localHits]；为 `false` 时 [localHits] 恒为 0，导出方不应把它当作“没有 L2 命中”
  */
-class CacheMetrics internal constructor() {
+class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) {
+    private val localHitAdder = LongAdder()
     private val remoteHitAdder = LongAdder()
     private val missAdder = LongAdder()
     private val filteredAdder = LongAdder()
@@ -43,6 +53,15 @@ class CacheMetrics internal constructor() {
     private val invalidationDroppedAdder = LongAdder()
     private val resetAdder = LongAdder()
 
+    /**
+     * 由 L2（本地副本）直接返回的读取数：未过期的本地副本，含负缓存与进入刷新窗口的副本。
+     * 只在 [localHitsRecorded] 时记录。
+     */
+    val localHits: Long get() = localHitAdder.sum()
+
+    /**
+     * L2 未命中后由 L1 返回的读取数（每次 L1 读取计一次，合并的并发读取只计一次）。
+     */
     val remoteHits: Long get() = remoteHitAdder.sum()
     val misses: Long get() = missAdder.sum()
     val filtered: Long get() = filteredAdder.sum()
@@ -71,6 +90,7 @@ class CacheMetrics internal constructor() {
     val invalidationsDropped: Long get() = invalidationDroppedAdder.sum()
     val resets: Long get() = resetAdder.sum()
 
+    internal fun localHit() = localHitAdder.increment()
     internal fun remoteHit() = remoteHitAdder.increment()
     internal fun miss() = missAdder.increment()
     internal fun filtered() = filteredAdder.increment()

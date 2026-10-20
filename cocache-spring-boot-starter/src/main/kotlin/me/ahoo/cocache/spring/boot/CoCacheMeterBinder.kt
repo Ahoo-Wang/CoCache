@@ -68,7 +68,7 @@ class CoCacheMeterBinder(private val runtime: CacheRuntime) : MeterBinder, Smart
     private fun bindCache(registry: MeterRegistry, admin: CacheAdmin) {
         val tags = Tags.of(TAG_CACHE, admin.name)
         val metrics = admin.metrics
-        CacheCounters.ALL.forEach { counter ->
+        CacheCounters.ALL.filter { it.recorded(metrics) }.forEach { counter ->
             FunctionCounter.builder(counter.meter, metrics) { counter.read(it).toDouble() }
                 .description(counter.description)
                 .tags(counter.level?.let { tags.and(TAG_LEVEL, it) } ?: tags)

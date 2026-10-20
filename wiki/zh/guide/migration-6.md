@@ -149,7 +149,7 @@ JoinCache 仍然保留，位于 `me.ahoo.cocache.api.join`，但现在是**只�
 | `cocache.redis.missing-guard-sentinel` | 删除：负缓存是值头中的状态字节，不再有哨兵 |
 | `cocache.load.max-concurrent` | `cocache.defaults.load-max-concurrent` |
 | `cocache.load.acquire-timeout` | `cocache.defaults.load-acquire-timeout` |
-| `cocache.metrics.client-side-hits` | 删除：没有 L2 命中计数 |
+| `cocache.metrics.client-side-hits` | `cocache.metrics.local-hits`（6.3；6.0 与 6.1 中没有） |
 | `cocache.next.*`（6.0 预览） | `cocache.*` |
 
 新增：`cocache.defaults.*` 与 `cocache.caches.[name].*` 下的全部策略字段，包括 `key-prefix`（支持占位符，例如 `${spring.application.name}:`）；`cocache.redis.command-timeout`、`heartbeat`、`invalidate-batch-size`、`client-name`、`channel-mode`；`cocache.backend`（`redis` 或 `memory`）；以及 `cocache.spring-cache.require-sync`。见[配置](./configuration.md#properties)。
@@ -189,7 +189,7 @@ JoinCache 仍然保留，位于 `me.ahoo.cocache.api.join`，但现在是**只�
 
 | 5.x | 6.0 |
 |-----|-----|
-| `cocache.hits{level=l2}` | 删除 |
+| `cocache.hits{level=l2}` | `cocache.hits{level=l2}`，需 `cocache.metrics.local-hits=true`（6.3；6.0 与 6.1 中没有） |
 | `cocache.hits{level=l1}` | `cocache.hits{level=l1}` |
 | `cocache.misses` | `cocache.misses` |
 | `cocache.loads`（timer） | `cocache.loads`（function timer） |

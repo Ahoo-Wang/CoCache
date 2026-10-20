@@ -44,7 +44,8 @@
       "description": "Removed in 6.0.",
       "deprecation": {
         "level": "error",
-        "reason": "Removed in 6.0 without replacement."
+        "reason": "Removed in 6.0.",
+        "replacement": "cocache.metrics.local-hits"
       }
     },
     {
@@ -88,6 +89,12 @@
       "type": "java.lang.Boolean",
       "description": "Whether to record a Micrometer Observation (cocache.load) around each source load and lease wait. Needs micrometer-observation and an ObservationRegistry bean.",
       "defaultValue": true
+    },
+    {
+      "name": "cocache.metrics.local-hits",
+      "type": "java.lang.Boolean",
+      "description": "Whether to count L2 hits (CacheMetrics.localHits, meter cocache.hits{level=l2}). Off by default: counting adds one LongAdder increment to every L2 hit.",
+      "defaultValue": false
     }
   ],
   "hints": [
