@@ -118,7 +118,14 @@ JMH 对比见 RFC 0003 §7.1。
 | 读不懂的内容不再静默丢弃 | G1 | 没有数据源的读取遇到 5.x 遗留值或无法解码的值时，6.0–6.4 会回收并删除唯一副本（`SetCache` 读成空集合）；新增 `foreignFormat` 策略（`fail` / `reclaim`），没有数据源时默认 `fail` | 6.5.0 已交付 |
 | `CoCache5Migrator` | 易用 | 把 5.x 的字符串（JSON）、原生 SET、hash 与负缓存转换为 6.x 格式，保留 TTL，可重复执行，原地迁移前备份，支持 `dryRun` / `rollback` / `dropBackups` | 6.5.0 已交付 |
 
-## 6.5 之后
+## v6.6：外来格式写入 fail closed — 已完成
+
+| 项 | 目标 | 内容 | 现状 |
+|----|------|------|------|
+| 增删成员不再清掉读不懂的内容 | G1 | 6.0–6.5 中，没有数据源的 `SetCache` 对未迁移的 5.x 原生 SET 调用一次 `add` 就会替换全部成员，之后迁移工具跳过该 key；`foreign-format: fail` 时 `add` / `remove` 现在抛出 `CacheWriteException`，原子地保留内容与 TTL、不广播。`cocache-api` 的 SPI 新增带默认实现的 `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` 及异步版本 | 6.6.0 已交付（#679） |
+| 更高格式版本的值不再读作不存在 | G1 | 没有数据源的读取命中更高版本写入的值时，`fail` 下抛出 `CacheReadException`（`ForeignFormatException.newer = true`），保留 key、不写 L2 | 6.6.0 已交付（#679） |
+
+## 6.6 之后
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|

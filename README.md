@@ -25,7 +25,7 @@ flowchart LR
 ## Quick start
 
 ```kotlin
-implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.5.0")
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.6.0")
 implementation("org.springframework.boot:spring-boot-starter-data-redis")
 ```
 

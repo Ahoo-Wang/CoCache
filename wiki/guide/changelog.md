@@ -5,9 +5,9 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## Unreleased
+## v6.6.0 (Current)
 
-**Module Group:** `me.ahoo.cocache` · Planned as 6.6.0. Minor release: the `cocache-api` SPI gains `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` and their `AsyncRemoteStore` counterparts, all with default implementations, so existing backends keep compiling and running. Two behavior changes tighten fail-closed handling for caches without a loader: `SetCache` writes fail on content they can't read, and reads without a loader fail on values written by a newer version (below). The Redis wire format and the invalidation channel are unchanged, so 6.6.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
+**Module Group:** `me.ahoo.cocache` · Minor release: the `cocache-api` SPI gains `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` and their `AsyncRemoteStore` counterparts, all with default implementations, so existing backends keep compiling and running. Two behavior changes tighten fail-closed handling for caches without a loader: `SetCache` writes fail on content they can't read, and reads without a loader fail on values written by a newer version (below). The Redis wire format and the invalidation channel are unchanged, so 6.6.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
 ### Behavior change: `SetCache` writes fail on content they can't read
 
@@ -24,7 +24,7 @@ description: Release history and notable changes for CoCache.
 - `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` and their `AsyncRemoteStore` counterparts: like `addMembers` / `removeMembers`, but they leave content that isn't a set of the store's protocol untouched and return its format. The defaults read first and then write, which isn't atomic and can't recognize a newer format. Backends should override them with one atomic check-and-write, as the Redis and in-memory backends do. See [Extending](../architecture/extending.md#remote-store).
 - `ForeignFormatException` has a new `newer` property and constructor parameter. The 6.5.0 constructor is kept.
 
-## v6.5.0 (Current)
+## v6.5.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release. Additive API in `cocache-core` and `cocache-redis`, and one changed default for reads without a loader (below). The Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis and be upgraded one at a time.
 
