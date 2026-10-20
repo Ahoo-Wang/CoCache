@@ -13,9 +13,11 @@
 
 package me.ahoo.cocache.example
 
+import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.example.cache.UserCache
 import me.ahoo.cocache.example.cache.UserExtendInfoJoinCache
+import me.ahoo.cocache.example.controller.CoroutineController
 import me.ahoo.cocache.example.controller.TestController
 import me.ahoo.cocache.example.model.User
 import org.assertj.core.api.Assertions.assertThat
@@ -46,6 +48,9 @@ class AppServerTest {
     @Autowired
     lateinit var controller: TestController
 
+    @Autowired
+    lateinit var coroutineController: CoroutineController
+
     @Test
     fun cachesWork() {
         val id = java.util.UUID.randomUUID().toString()
@@ -61,5 +66,21 @@ class AppServerTest {
         assertThat(controller.getBySpring(id, "from-method")).isEqualTo(User(id, "from-method"))
         assertThat(controller.getBySpring(id, "cached")).isEqualTo(User(id, "from-method"))
         assertThat(userCache[id]).isEqualTo(User(id, "from-method"))
+    }
+
+    @Test
+    fun coroutinesWork(): Unit = runBlocking {
+        val id = java.util.UUID.randomUUID().toString()
+        assertThat(coroutineController.user(id)).isEqualTo(User(id, "user-$id"))
+        // 调用级 loader 只在未命中时执行：第二次读取命中，不再调用它
+        assertThat(coroutineController.remoteUser("r-$id", "remote")).isEqualTo(User("r-$id", "remote"))
+        assertThat(coroutineController.remoteUser("r-$id", "ignored")).isEqualTo(User("r-$id", "remote"))
+        // 不存在的昵称被负缓存；写数据源后失效，下一次读取加载到新值
+        assertThat(coroutineController.profile(id)).isNull()
+        coroutineController.updateProfile(id, "first")
+        assertThat(coroutineController.profile(id)).isEqualTo("first")
+        coroutineController.updateProfile(id, "second")
+        assertThat(coroutineController.profile(id)).isEqualTo("second")
+        assertThat(cacheManager.cacheNames).contains("profile")
     }
 }

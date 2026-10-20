@@ -1,6 +1,6 @@
 ---
 title: Kotlin Coroutines
-description: Suspending CoCache from Kotlin coroutines with the optional cocache-coroutines module — cache.suspending(), SuspendingCacheLoader, loader context and dispatchers, cancellation, exceptions, and re-entry.
+description: Suspending CoCache from Kotlin coroutines with the optional cocache-coroutines module — cache.suspending(), SuspendingCacheLoader, loader context and dispatchers, cancellation, exceptions, re-entry, and WebFlux.
 ---
 
 # Kotlin Coroutines
@@ -91,3 +91,28 @@ A loader that reads the key it is loading, from the same cache, would wait for i
 ## Spring {#spring}
 
 The starter doesn't look for `SuspendingCacheLoader` beans. Declare the cache as a `CacheSpec` bean and set `suspendingLoader { … }` in it, or adapt the loader yourself with `asAsyncCacheLoader()` and expose it as an `AsyncCacheLoader` bean. When the module is on the classpath, the starter registers native-image hints for the suspending views.
+
+## WebFlux {#webflux}
+
+In a WebFlux application, controller methods can be `suspend fun`s that call the suspending view. Spring needs `kotlinx-coroutines-reactor` on the classpath to run them; `spring-boot-starter-webflux` doesn't bring it, and its version comes from Spring Boot.
+
+```kotlin
+@RestController
+class ProfileController(
+    @Qualifier("profile") profileCache: Cache<String, String>,
+    private val profileRepository: ProfileRepository,
+) {
+    private val profiles = profileCache.suspending()   // create once, keep in a field
+
+    @GetMapping("profile/{id}")
+    suspend fun profile(@PathVariable id: String): String? = profiles.get(id)
+
+    @PutMapping("profile/{id}")
+    suspend fun update(@PathVariable id: String, @RequestParam nickname: String) {
+        profileRepository.save(id, nickname)   // update the source first
+        profiles.invalidate(id)                // then invalidate (inside a transaction: after commit)
+    }
+}
+```
+
+The [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example) app has the complete version: `CoroutineController` reads with `cache.suspending()`, uses a per-call loader, and invalidates after a write; the `profile` cache in `UserCacheConfiguration` declares its source with `suspendingLoader { … }`.

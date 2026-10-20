@@ -58,6 +58,9 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("tools.jackson.module:jackson-module-kotlin")
     implementation("org.springframework.boot:spring-boot-starter-webflux")
+    // 协程示例：挂起视图与 suspendingLoader；WebFlux 执行 suspend 处理器方法需要 kotlinx-coroutines-reactor（版本由 Spring Boot 管理）
+    implementation(project(":cocache-coroutines"))
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
 //    implementation("org.springframework.cloud:spring-cloud-commons")
     implementation("org.springdoc:springdoc-openapi-starter-webflux-ui")
     kapt("org.springframework.boot:spring-boot-configuration-processor")
