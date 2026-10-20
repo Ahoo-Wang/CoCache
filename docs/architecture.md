@@ -251,8 +251,8 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **取消**：取消等待的协程会取消这次调用返回的那个 future；异步视图为每次调用新建 future，共享的加载不受影响（与 §5.6 相同）。
 - **调用级 loader**（`get(key) { … }`）：以调用方的协程上下文去掉 `Job` 启动（`future {}`）。它在调用方的 dispatcher 上执行；没有 dispatcher 或 dispatcher 是 `runBlocking` 的事件循环时改用 `Dispatchers.Default`（加载可能比事件循环活得更久）。`ThreadContextElement` 随之传递。它脱离结构化并发：调用方被取消、其作用域结束或运行时关闭都不取消加载。
 - **spec 级 loader**（`suspendingLoader(context) { … }` / `asAsyncCacheLoader(context)`）：在给定的 `context` 中启动（默认 `Dispatchers.Default`），作为 spec 的 `asyncLoader`，受 `LoadPolicy.asyncTimeout` 约束。超时不取消协程（与 `AsyncCacheLoader` 相同）。每个 loader 一个 `SupervisorJob`（父 Job 为 `context` 中的 Job）：一次失败不取消其它加载，取消父 Job 取消之后的加载。
-- **数据源自己抛出的 `CancellationException`**（加载协程仍活动时，如数据源内部的 `withTimeout`）转为 `SourceLoadCancelledException`：加载可能被共享，原样传出会让每个调用方都当作自己被取消。
-- **同 key 重入**：引擎基于线程的检查（§5.6“重入”）只覆盖数据源的同步部分；loader 挂起后在别的线程上继续时，由随协程上下文传递的元素 `LoadingKeys` 覆盖：经挂起视图读取正在加载的 key（`get`、`getAll`、`lookup`）立即以 `IllegalStateException` 失败，而不是等待自己直到 `asyncTimeout`。调用级 loader 按视图背后的缓存实例匹配；spec 级 loader 按缓存名匹配（声明时不知道运行时），不继承调用方的记录（跨缓存循环要到 `asyncTimeout` 才失败）；单独使用的 `asAsyncCacheLoader` 没有这项检查。
+- **以取消结束的加载**转为 `SourceLoadCancelledException`（`RuntimeException`，与 `SourceLoadTimeoutException` 一致）：在加载协程内，数据源自己抛出的 `CancellationException`（如数据源内部的 `withTimeout`）；在 loader future 的边界上，加载协程被取消或在已取消的作用域中启动（spec 的 `context` 中的 Job 已被取消）。加载可能被共享，原样传出会让挂起的调用方当作自己被取消而吞掉；转换后同步、异步与挂起的调用方都收到它。`SupervisorJob` 永不完成，因此 `context` 中的 Job 应是长生命周期的，loader 应创建一次、反复使用。
+- **同 key 重入**：引擎基于线程的检查（§5.6“重入”）只覆盖数据源的同步部分；loader 挂起后在别的线程上继续时，由随协程上下文传递的元素 `LoadingKeys` 覆盖：经挂起视图读取正在加载的 key（`get`、`getAll`、`lookup`）立即以 `IllegalStateException` 失败，而不是等待自己直到 `asyncTimeout`。按 key（`K`）的相等性匹配，不按编码后的存储 key。调用级 loader 按视图背后的缓存实例匹配；spec 级 loader 按缓存名匹配（声明时不知道运行时），不继承调用方的记录（跨缓存循环要到 `asyncTimeout` 才失败）；单独使用的 `asAsyncCacheLoader` 没有这项检查。
 - 不阻塞任何线程；loader 不在 Lettuce I/O 线程上执行（引擎在调用 `loadAsync` 之前已切换线程，§5.6）。
 
 ## 6. 写路径

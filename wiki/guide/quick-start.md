@@ -48,7 +48,7 @@ dependencies {
 
 :::
 
-The BOM `me.ahoo.cocache:cocache-bom` manages the versions of all CoCache modules if you use more than the starter.
+The BOM `me.ahoo.cocache:cocache-bom` manages the versions of all CoCache modules if you use more than the starter, for example the optional `me.ahoo.cocache:cocache-coroutines` for [Kotlin coroutines](./coroutines.md) (6.4+).
 
 ## 2. Point it at Redis {#redis}
 

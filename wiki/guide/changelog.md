@@ -7,7 +7,7 @@ description: Release history and notable changes for CoCache.
 
 ## v6.4.0 (Unreleased)
 
-**Module Group:** `me.ahoo.cocache` · Minor release, additive. The Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis.
+**Module Group:** `me.ahoo.cocache` · Minor release, additive. Existing modules are unchanged, and the Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis and be upgraded one at a time.
 
 ### Kotlin coroutines
 
@@ -25,7 +25,8 @@ cacheSpec<String, User>("user") {
 - `Cache.suspending()` / `SetCache.suspending()` return `SuspendingCache` / `SuspendingSetCache`, with the same methods as the synchronous API. They share the same L2, fences, in-flight loads and leases.
 - `SuspendingCacheLoader` is a suspending data source. Set it with `suspendingLoader(context)` (default `Dispatchers.Default`), or convert it with `asAsyncCacheLoader()`. A per-call loader, `get(key) { … }`, runs in the caller's coroutine context without its `Job`.
 - Cancelling a waiting coroutine doesn't cancel a shared load. Exceptions are the original ones. A loader that reads the key it is loading, from the same cache, fails at once with `IllegalStateException`, even after it suspends.
-- A loader's own `CancellationException` (for example from a `withTimeout` inside it) becomes `SourceLoadCancelledException` for every caller that shares the load. Spec-level loads run under one `SupervisorJob`, so one failure doesn't cancel later loads.
+- A load that ends in cancellation fails with `SourceLoadCancelledException` (a `RuntimeException`) for every caller that shares it: synchronous, async or suspending. This covers a `CancellationException` from the loader itself (for example a `withTimeout` inside it) and a cancelled `Job` in the spec's `context`. Spec-level loads run under one `SupervisorJob`, so one failure doesn't cancel later loads.
+- Java sees the extensions on the facade classes `SuspendingCaches` and `SuspendingCacheLoaders`.
 - The module depends on `kotlinx-coroutines-core` 1.10.2, the version Spring Boot 4.1 manages, declared in `cocache-dependencies`; no other module does. The starter registers native-image hints for the suspending views when the module is on the classpath.
 - The synchronous and async hit paths are unchanged.
 

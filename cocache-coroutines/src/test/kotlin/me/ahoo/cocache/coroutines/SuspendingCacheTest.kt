@@ -45,6 +45,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.coroutineContext
+import kotlin.coroutines.startCoroutine
 
 /**
  * 挂起视图特有的语义（RFC 0004 §7）：取消、原始异常、与同步和异步调用合并、单线程 dispatcher 下不死锁、同 key 重入快速失败、
@@ -231,6 +232,9 @@ class SuspendingCacheTest {
         // 其它 key 与其它缓存不受影响
         val other = plain("other").suspending()
         cache.get("n") { key -> other.get(key) { "o-$it" } + "|" + cache.get("x") { "x" } }.assert().isEqualTo("o-n|x")
+        // loader 中批量读取其它 key 不受影响
+        cache.put("y", "y")
+        cache.get("p") { cache.getAll(listOf("y"))["y"] }.assert().isEqualTo("y")
     }
 
     @Test
@@ -401,13 +405,116 @@ class SuspendingCacheTest {
         // 一次失败不取消父 Job，之后的加载照常
         cache.get("b").assert().isEqualTo("v-b")
         parent.isActive.assert().isTrue()
-        // 取消父 Job 会取消之后的加载
+        // 取消父 Job 会取消之后的加载：以 SourceLoadCancelledException 失败，而不是 CancellationException（否则挂起的调用方会把它当作自己被取消）
         parent.cancel()
+        val suspending = runCatching { cache.get("c") }.exceptionOrNull()
+        suspending.assert().isInstanceOf(SourceLoadCancelledException::class.java)
+        requireNotNull(suspending).cause.assert().isInstanceOf(kotlinx.coroutines.CancellationException::class.java)
+        (suspending as SourceLoadCancelledException).cacheName.assert().isEqualTo("job")
+        // 同步与异步的调用方同样
         runCatching {
-            cache.get(
-                "c"
-            )
-        }.exceptionOrNull().assert().isInstanceOf(kotlinx.coroutines.CancellationException::class.java)
+            cache.async().sync()["d"]
+        }.exceptionOrNull().assert().isInstanceOf(SourceLoadCancelledException::class.java)
+        cache.async().get(
+            "e"
+        ).handle { _, e -> e }.get().assert().isInstanceOf(SourceLoadCancelledException::class.java)
+    }
+
+    @Test
+    fun cancellingTheLoaderJobDuringALoadFailsEveryCaller(): Unit = runBlocking<Unit> {
+        val parent = Job()
+        val started = CompletableDeferred<Unit>()
+        val cache = runtime.create(
+            cacheSpec<String, String>("job-during") {
+                codec = StringCodec
+                suspendingLoader(parent + Dispatchers.IO) {
+                    started.complete(Unit)
+                    CompletableDeferred<String>().await()
+                }
+            }
+        )
+        val suspending = async(Dispatchers.Default) { runCatching { cache.suspending().get("k") }.exceptionOrNull() }
+        started.await()
+        val async = cache.async().get("k")
+        parent.cancel()
+        withTimeout(10_000) { suspending.await() }.assert().isInstanceOf(SourceLoadCancelledException::class.java)
+        async.handle { _, e -> e }.get().assert().isInstanceOf(SourceLoadCancelledException::class.java)
+        // 加载开始之前就已取消的 Job：之后的每次未命中同样
+        runCatching { cache["other"] }.exceptionOrNull().assert().isInstanceOf(SourceLoadCancelledException::class.java)
+    }
+
+    @Test
+    fun aStandaloneAsyncLoaderOnACancelledJobFails() {
+        val parent = Job().apply { cancel() }
+        val loader = SuspendingCacheLoader<String, String> { "never" }.asAsyncCacheLoader(parent)
+        val error = loader.loadAsync("k").toCompletableFuture().handle { _, e -> e }.get()
+        error.assert().isInstanceOf(SourceLoadCancelledException::class.java)
+        (error as SourceLoadCancelledException).cacheName.assert().isNull()
+        requireNotNull(error.message).assert().contains("Cache[?]")
+        loader.loadAllAsync(listOf("k")).toCompletableFuture().handle { _, e -> e }.get()
+            .assert().isInstanceOf(SourceLoadCancelledException::class.java)
+    }
+
+    @Test
+    fun setViewNeverReturnsNull(): Unit = runBlocking<Unit> {
+        val pending = java.util.concurrent.CompletableFuture<Set<String>?>()
+        val async = io.mockk.mockk<me.ahoo.cocache.api.AsyncSetCache<String, String>>()
+        io.mockk.every { async.name } returns "mocked"
+        io.mockk.every { async.get("null") } returns java.util.concurrent.CompletableFuture.completedFuture(null)
+        io.mockk.every { async.get("pending") } returns pending
+        val failure = IllegalStateException("down")
+        io.mockk.every { async.get("failed") } returns java.util.concurrent.CompletableFuture.failedFuture(failure)
+        val view = async.suspending()
+        view.get("null").assert().isEmpty()
+        // 先挂起等待、再完成：走等待路径
+        val waiting = async(start = CoroutineStart.UNDISPATCHED) { view.get("pending") }
+        waiting.isCompleted.assert().isFalse()
+        pending.complete(null)
+        withTimeout(10_000) { waiting.await() }.assert().isEmpty()
+        runCatching { view.get("failed") }.exceptionOrNull().assert().isSameAs(failure)
+        val members = java.util.concurrent.CompletableFuture<Set<String>?>()
+        io.mockk.every { async.get("members") } returns members
+        val waitingMembers = async(start = CoroutineStart.UNDISPATCHED) { view.get("members") }
+        members.complete(setOf("a"))
+        withTimeout(10_000) { waitingMembers.await() }.assert().isEqualTo(setOf("a"))
+    }
+
+    @Test
+    fun aCallerWithoutADispatcherLoadsOnDefault() {
+        val cache = plain().suspending()
+        val thread = AtomicReference<String>()
+        val result = java.util.concurrent.CompletableFuture<String?>()
+        val call: suspend () -> String? = {
+            cache.get("k") {
+                thread.set(Thread.currentThread().name)
+                "v"
+            }
+        }
+        // 没有 dispatcher 的上下文（不经任何协程构建器）
+        call.startCoroutine(
+            kotlin.coroutines.Continuation(kotlin.coroutines.EmptyCoroutineContext) { result.complete(it.getOrThrow()) }
+        )
+        result.get(10, java.util.concurrent.TimeUnit.SECONDS).assert().isEqualTo("v")
+        thread.get().assert().startsWith("DefaultDispatcher-worker")
+    }
+
+    @Test
+    fun publicShape(): Unit = runBlocking<Unit> {
+        // 与 SourceLoadTimeoutException / SourceLoadRejectedException 同一父类型
+        val cancelled = SourceLoadCancelledException("c", kotlinx.coroutines.CancellationException("x"))
+        (cancelled is RuntimeException).assert().isTrue()
+        (cancelled is IllegalStateException).assert().isFalse()
+        // Java 的门面类名
+        Class.forName("me.ahoo.cocache.coroutines.SuspendingCaches").assert().isNotNull()
+        Class.forName("me.ahoo.cocache.coroutines.SuspendingCacheLoaders").assert().isNotNull()
+        // SuspendingSetCache.get 与 SetCache.get 一样不返回 null
+        val set = runtime.create(setCacheSpec<String, String>("members") { elementCodec = StringCodec }).suspending()
+        val members: Set<String> = set.get("absent")
+        members.assert().isEmpty()
+        set.add("k", listOf("a"))
+        // 等待路径（未命中 L2 时）同样不返回 null
+        runtime.admin("members")?.clearLocal()
+        set.get("k").assert().isEqualTo(setOf("a"))
     }
 
     @Test

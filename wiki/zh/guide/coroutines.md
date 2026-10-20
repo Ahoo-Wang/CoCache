@@ -27,7 +27,7 @@ suspend fun rename(id: String, user: User) {
 }
 ```
 
-- `Cache.suspending()` 返回 `SuspendingCache`，`SetCache.suspending()` 返回带 `add`、`remove`、`clear` 的 `SuspendingSetCache`；`AsyncCache.suspending()` 同样可用。
+- `Cache.suspending()` 返回 `SuspendingCache`，`SetCache.suspending()` 返回带 `add`、`remove`、`clear` 的 `SuspendingSetCache`，它的 `get` 与 `SetCache.get` 一样不存在时返回空集合，从不返回 `null`；`AsyncCache.suspending()` 同样可用。
 - 每个方法调用异步视图并等待结果。L2 命中立即返回、不挂起，因为异步视图返回的是已完成的 future。
 - CoCache 等待 Redis、其它实例的 lease 或你的数据源时，不阻塞任何线程。
 
@@ -43,7 +43,9 @@ cacheSpec<String, User>("user") {
 ```
 
 - `suspendingLoader(loader)` / `suspendingLoader(context, loader)` 设置 spec 的 `asyncLoader`。每次加载在 `context` 中启动一个协程，默认是 `Dispatchers.Default`；loader 会调用阻塞代码时请传 `Dispatchers.IO`。
-- 这些加载都在同一个 `SupervisorJob` 下运行，一次加载失败不影响其它加载。`context` 带 `Job` 时，它就是父 Job：取消它会取消进行中与之后的所有加载。
+- 这些加载都在同一个 `SupervisorJob` 下运行，一次加载失败不影响其它加载。`context` 带 `Job` 时，它就是父 Job：取消它会取消进行中与之后的所有加载，这些加载对同步、异步与挂起的调用方都以 `SourceLoadCancelledException` 失败；加载开始之前 Job 就已取消时同样如此。
+- 这个 `SupervisorJob` 永远不会完成。请给 `context` 一个长生命周期的 `Job`（例如应用级的），不要用结构化作用域的 `Job`，否则那个作用域永远结束不了。
+- loader 请创建一次、反复使用。每次调用 `suspendingLoader` 或 `asAsyncCacheLoader` 都会在 `Job` 下新建一个 `SupervisorJob`，每次加载都新建会让子 Job 越积越多。
 - `loadAll` 默认并发调用 `load`；数据源支持批量查询时请覆盖为一次批量查询。
 - 想自己设置时，`asAsyncCacheLoader()` / `asAsyncCacheLoader(context)` 把 `SuspendingCacheLoader` 转为 `AsyncCacheLoader`。这样单独使用时没有[重入检查](#reentry)，因为它不知道自己属于哪个缓存。
 - 缓存的 loader 跑在某个单线程 dispatcher 上时，不要在跑在同一个 dispatcher 上的协程里调用**同步** API：线程阻塞等待一次需要这个线程才能完成的加载，会死锁。这种情况请用挂起视图。
@@ -79,7 +81,7 @@ loader 的协程仍处于活动状态时，如果 loader 自己抛出 `Cancellat
 
 ## 重入 {#reentry}
 
-loader 读取同一缓存中自己正在加载的 key，会一直等待自己直到 `load-async-timeout`。CoCache 让它立即以 `IllegalStateException` 失败，与同步 API 一样。这项检查随 loader 的协程上下文传递，所以 loader 挂起后在别的线程上继续时同样有效。它覆盖经挂起视图的读取（`get`、`getAll`、`lookup`），其它 key 与其它名字的缓存不受影响。
+loader 读取同一缓存中自己正在加载的 key，会一直等待自己直到 `load-async-timeout`。CoCache 让它立即以 `IllegalStateException` 失败，与同步 API 一样。这项检查随 loader 的协程上下文传递，所以 loader 挂起后在别的线程上继续时同样有效。它覆盖经挂起视图的读取（`get`、`getAll`、`lookup`），其它 key 与其它名字（或其它实例）的缓存不受影响。key 按 `K` 的值比较，不按编码后的存储 key：两个不相等的 key 编码成同一个存储 key 时检查不到，要到 `load-async-timeout` 才失败。
 
 - **调用级 loader** 按缓存实例匹配：另一个运行时上的同名缓存（如多节点测试）是另一个缓存。
 - **spec 级 loader**（`suspendingLoader`）按缓存名匹配，因为声明时还不知道它属于哪个运行时。

@@ -48,7 +48,7 @@ dependencies {
 
 :::
 
-如果用到 starter 之外的模块，可以引入 BOM `me.ahoo.cocache:cocache-bom` 统一管理所有 CoCache 模块的版本。
+如果用到 starter 之外的模块（例如用于 [Kotlin 协程](./coroutines.md) 的可选模块 `me.ahoo.cocache:cocache-coroutines`，6.4+），可以引入 BOM `me.ahoo.cocache:cocache-bom` 统一管理所有 CoCache 模块的版本。
 
 ## 2. 连接 Redis {#redis}
 
