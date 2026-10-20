@@ -33,12 +33,12 @@ import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.SingleFlight
-import me.ahoo.cocache.core.internal.handleNext
 import me.ahoo.cocache.core.policy.CachePolicy
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -204,6 +204,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      *
      * 第二次递增与淘汰（以及 [onFailure]：抛出写入异常或登记重试，都不阻塞、不调用用户代码）在 L1 future 的完成线程上就地执行，
      * 不经执行器：执行器拒绝任务时也必须执行，否则在两次递增之间开始的填充会把旧值写进 L2（G2）。只有返回 future 的完成切换到执行器。
+     * 非原子广播的派发被拒绝时同样就地广播（[publishAfterWrite]）。
      */
     @Suppress("TooGenericExceptionCaught")
     protected fun writeAsync(
@@ -218,7 +219,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         val mutated = Futures.attempt {
             val frame = frameOf(keys)
             val written = Futures.attempt { mutate(frame) }
-            if (atomicBroadcast) written else written.handleNext(executor) { _, error -> publishAfter(frame, error) }
+            if (atomicBroadcast) written else publishAfterWrite(written, frame)
         }
         if (mutated.isDone) {
             // 已完成（没有 I/O 线程参与）：就地收尾并返回
@@ -233,6 +234,29 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             }
         }
         return written
+    }
+
+    /**
+     * 非原子广播的续接：[written] 完成后（无论成败）调用 [publishAfter]。已完成时就地执行；否则从完成线程派发到执行器，
+     * 执行器拒绝时在完成线程上就地执行（`publishAsync` 不阻塞、不调用用户代码）：拒绝不能跳过广播（G2），
+     * 也不能把写入的结果换成 `RejectedExecutionException`（成功的写入因此计为失败、`invalidate` 因此登记多余的重试）。
+     */
+    private fun publishAfterWrite(written: CompletableFuture<Void?>, frame: ByteArray): CompletableFuture<Void?> {
+        if (written.isDone) {
+            return publishAfter(frame, Futures.outcome(written).second)
+        }
+        val published = CompletableFuture<Void?>()
+        written.whenComplete { _, error ->
+            val publish = Runnable {
+                Futures.relay(Futures.attempt { publishAfter(frame, error?.let { Futures.unwrap(it) }) }, published)
+            }
+            try {
+                executor.execute(publish)
+            } catch (_: RejectedExecutionException) {
+                publish.run()
+            }
+        }
+        return published
     }
 
     /**
