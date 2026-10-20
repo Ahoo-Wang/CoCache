@@ -234,6 +234,10 @@ internal class RedisRemoteStore(
     /**
      * 等待全部组结束后再抛出按发出顺序的第一个异常（其余附为 suppressed）：调用方在失败后尽力广播（非原子模式），
      * 广播不能先于仍在执行的组，否则其它节点可能在广播之后、该组写入之前从 L1 读到旧值并填充 L2。
+     *
+     * 例外是命令超时：客户端放弃等待时，已发出的命令可能仍在 Redis 端执行，失败后补发的广播可能先于它生效，
+     * 此时其它节点的旧副本由 `localMaxAge` 兜底。逐组等待，每组各自受 `commandTimeout` 限制，
+     * 失败路径上的最坏等待因此是“组数 × commandTimeout”（各组的命令是并发发出的，通常远小于此）。
      */
     @Suppress("TooGenericExceptionCaught")
     private fun awaitAll(futures: List<CompletableFuture<List<Any?>>>) {
