@@ -135,12 +135,15 @@ internal abstract class RedisInvalidationChannel(
         }
     }
 
+    /**
+     * PING 失败（包括抛出 `Error`）时重置全部订阅者并强制重连：重置不能因为 PING 抛出的类型被跳过，否则这一拍本地副本没有清。
+     */
     @Suppress("TooGenericExceptionCaught")
     private fun probe() {
         try {
             ping()
             lastHeartbeatFailure = null
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             lastHeartbeatFailure = e.toString()
             log.warn(e) { "Invalidation channel heartbeat failed - reset all subscribers and force reconnect." }
             resetAll()
@@ -170,11 +173,23 @@ internal abstract class RedisInvalidationChannel(
     }
 
     private fun resetAll() {
-        listeners.values.forEach { channelListeners -> channelListeners.forEach { it.onReset() } }
+        listeners.forEach { (channel, channelListeners) -> channelListeners.forEach { resetQuietly(channel, it) } }
     }
 
     protected fun reset(channel: String) {
-        listeners[channel]?.forEach { it.onReset() }
+        listeners[channel]?.forEach { resetQuietly(channel, it) }
+    }
+
+    /**
+     * 某个订阅者的重置抛出异常（包括 `Error`）不能让其余订阅者错过重置，也不能跳过随后的强制重连或逃出心跳任务、Lettuce 的回调。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun resetQuietly(channel: String, listener: InvalidationListener) {
+        try {
+            listener.onReset()
+        } catch (e: Throwable) {
+            log.error(e) { "Invalidation listener reset failed on channel[$channel]." }
+        }
     }
 
     /**

@@ -20,6 +20,7 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
@@ -188,5 +189,38 @@ class AsyncDispatchTest {
         opened.countDown()
         a.get(10, TimeUnit.SECONDS).assert().isEqualTo("v-a")
         bThenA.get(10, TimeUnit.SECONDS).assert().isEqualTo("v-a")
+    }
+
+    /**
+     * 用户代码在异步执行器的续接里（带内联标记）调用同步 API：同步未命中 K 时，K 的 leader 在归还回源许可时唤醒 B 的异步等待者。
+     * B 的续接不能在 K 的 owner 作用域内就地执行，否则 B 的回调再读 K 会被误判为同一线程的重入（6.4.0 派发出去，正常合并到 K）。
+     */
+    @Test
+    fun continuationsWokenBySyncLeaderAreNotInlinedIntoItsOwnerScope() {
+        val bThenK = AtomicReference<CompletableFuture<String?>>()
+        lateinit var cache: Cache<String, String>
+        cache = runtime.create(
+            cacheSpec<String, String>("sync-owner") {
+                codec = StringCodec
+                asyncLoader = AsyncCacheLoader { key ->
+                    if (key == "k") {
+                        // K 持有唯一的回源许可：B 登记为等待者；K 归还许可时（在 K 的 leader 作用域内）唤醒它
+                        bThenK.set(cache.async().get("b").thenApply { cache["k"] })
+                    }
+                    CompletableFuture.completedFuture("v-$key")
+                }
+                policy { load = LoadPolicy(maxConcurrent = 1) }
+            }
+        )
+        cache.put("x", "v-x")
+        val opened = CountDownLatch(1)
+        gate.set(opened)
+        val x = cache.async().get("x")
+        backend.ioExecutor = null
+        // x 的 L1 结果经派发后在执行器线程上完成，用户回调随之在那里同步读取 K
+        val k = x.thenApply { cache["k"] }
+        opened.countDown()
+        k.get(10, TimeUnit.SECONDS).assert().isEqualTo("v-k")
+        requireNotNull(bThenK.get()).get(10, TimeUnit.SECONDS).assert().isEqualTo("v-k")
     }
 }

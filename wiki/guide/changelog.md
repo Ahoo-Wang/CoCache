@@ -28,7 +28,7 @@ Behavior changes:
 ### Fixes
 
 - **The heartbeat stopped for good on Lettuce 6.8 (Spring Boot 4.0).** Since 6.0.0, on the Lettuce version that Spring Boot 4.0 manages, the forced reconnect after a failed heartbeat threw `NoClassDefFoundError` (it used Lettuce 7's `Delegating` interface). The error escaped the heartbeat task, so the subscription connection was never checked again and the node could no longer heal itself after a half-open connection. Forcing a reconnect no longer uses that interface. The heartbeat task now also logs any error, including `Error`s, and carries on with the next heartbeat. The whole `cocache-redis` test suite passes on Lettuce 6.8.2 and 7.5.2.
-- **No false reentry after inline continuations.** A data source that completes another key's load on the same thread no longer runs that key's callbacks inside its own load. Before this fix, such a callback that read the key being loaded failed with `IllegalStateException` ("Recursive call on the same key"). This only affected unreleased changes, not 6.4.0.
+- **No false reentry after inline continuations.** While a thread loads a key, either as the leader of a synchronous call or inside a data source, other keys' async continuations that complete on that thread are no longer run in place. This covers a data source that completes another key's load, and a synchronous leader that hands its load permit to another key's async waiter. Before this fix, a callback of that other key that read the key being loaded failed with `IllegalStateException` ("Recursive call on the same key"). This only affected unreleased changes, not 6.4.0.
 
 ## v6.4.0 (Current)
 
