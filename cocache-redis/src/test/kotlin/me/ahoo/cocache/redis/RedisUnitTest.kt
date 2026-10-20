@@ -639,6 +639,15 @@ class RedisUnitTest {
                     "reconnected"
                 ) { runCatching { connection.sync().clientId() != before }.getOrDefault(false) }
             }
+            // 配置了命令监听器：端点外再包一层 CommandListenerWriter，同样逐层拆开
+            client.addListener(object : io.lettuce.core.event.command.CommandListener {})
+            client.connect().use { connection ->
+                val before = connection.sync().clientId()
+                RedisInvalidationChannel.disconnect(connection).assert().isTrue()
+                awaitCondition(
+                    "reconnected with a command listener"
+                ) { runCatching { connection.sync().clientId() != before }.getOrDefault(false) }
+            }
         } finally {
             client.shutdown()
         }
