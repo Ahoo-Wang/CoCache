@@ -5,6 +5,25 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased
+
+**Module Group:** `me.ahoo.cocache` · Planned as 6.6.0. Minor release: the `cocache-api` SPI gains `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` and their `AsyncRemoteStore` counterparts, all with default implementations, so existing backends keep compiling and running. Two behavior changes tighten fail-closed handling for caches without a loader: `SetCache` writes fail on content they can't read, and reads without a loader fail on values written by a newer version (below). The Redis wire format and the invalidation channel are unchanged, so 6.6.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Behavior change: `SetCache` writes fail on content they can't read
+
+- `SetCache.add` and `remove` now follow `foreign-format` like reads do. With `fail`, the default for a `SetCache`, adding or removing members on a key that holds content the cache can't read throws `CacheWriteException` with a `ForeignFormatException` cause. Such content is an unmigrated 5.x native set, string or hash, a hash without the 6.x format field, a 6.x scalar value, or a set written by a newer CoCache version. The check and the write are one atomic step: the key keeps its content and TTL, nothing is broadcast, and the write counts in `cocache.unknown.formats` and `cocache.write.failures`.
+- In 6.5.0 and earlier, one `add` on an unmigrated native set replaced all its members, and the key then looked migrated, so `CoCache5Migrator` skipped it and the old members were lost for good. `remove` silently did nothing and reported success. Set `foreign-format: reclaim` on the cache to keep that behavior.
+- Whole-value writes (`put`, `putAll`, on a `Cache` or a `SetCache`) still replace any content, because the caller supplies the whole value. The replaced 5.x content isn't backed up by the migrator, which skips the key afterwards. See [Caches whose only copy is Redis](./migration-6.md#foreign-format).
+
+### Behavior change: newer-format values fail without a loader
+
+- A read without a loader that hits a value written by a newer CoCache version (during a mixed-version rollout) now fails like unreadable content under `foreign-format: fail`: it throws `CacheReadException` with a `ForeignFormatException` cause (`newer = true`), keeps the key, doesn't fill L2, and counts in `cocache.unknown.formats`. It used to read the value as absent, which silently drops data when Redis is the only copy. `foreign-format: reclaim` keeps the old behavior. Reads with a loader are unchanged: they load from the source and leave the newer value alone.
+
+### SPI
+
+- `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` and their `AsyncRemoteStore` counterparts: like `addMembers` / `removeMembers`, but they leave content that isn't a set of the store's protocol untouched and return its format. The defaults read first and then write, which isn't atomic and can't recognize a newer format. Backends should override them with one atomic check-and-write, as the Redis and in-memory backends do. See [Extending](../architecture/extending.md#remote-store).
+- `ForeignFormatException` has a new `newer` property and constructor parameter. The 6.5.0 constructor is kept.
+
 ## v6.5.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release. Additive API in `cocache-core` and `cocache-redis`, and one changed default for reads without a loader (below). The Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis and be upgraded one at a time.

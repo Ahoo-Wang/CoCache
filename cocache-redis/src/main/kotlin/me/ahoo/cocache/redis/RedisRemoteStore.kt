@@ -350,6 +350,34 @@ internal class RedisRemoteStore(
             connections.bounded(membersCommand(RedisScripts.REMOVE_MEMBERS, key, members, ttl, frame))
         ) { null }
 
+    override fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
+        connections.await(
+            membersCommand(RedisScripts.ADD_MEMBERS_IF_READABLE, key, members, ttl, frame)
+        ).unreadableFormat()
+
+    override fun addMembersIfReadableAsync(
+        key: String,
+        members: Collection<ByteArray>,
+        ttl: Duration?,
+        frame: ByteArray
+    ): CompletableFuture<Int?> = connections.mapped(
+        connections.bounded(membersCommand(RedisScripts.ADD_MEMBERS_IF_READABLE, key, members, ttl, frame))
+    ) { it.unreadableFormat() }
+
+    override fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
+        connections.await(
+            membersCommand(RedisScripts.REMOVE_MEMBERS_IF_READABLE, key, members, ttl, frame)
+        ).unreadableFormat()
+
+    override fun removeMembersIfReadableAsync(
+        key: String,
+        members: Collection<ByteArray>,
+        ttl: Duration?,
+        frame: ByteArray
+    ): CompletableFuture<Int?> = connections.mapped(
+        connections.bounded(membersCommand(RedisScripts.REMOVE_MEMBERS_IF_READABLE, key, members, ttl, frame))
+    ) { it.unreadableFormat() }
+
     private fun membersCommand(
         script: RedisScripts.Script,
         key: String,
@@ -414,6 +442,11 @@ internal class RedisRemoteStore(
         ): ByteArray = (duration?.toMillis()?.coerceAtLeast(1) ?: 0L).toString().bytes()
 
         private fun List<Any?>.firstFlag(): Boolean = firstOrNull() == 1L
+
+        /**
+         * `*_IF_READABLE` 脚本的结果：`{1}` 已写入（`null`），`{0, 格式版本}` 拒绝。
+         */
+        private fun List<Any?>.unreadableFormat(): Int? = if (firstFlag()) null else (get(1) as Long).toInt()
 
         private fun ttlOf(pttl: Long): Duration? = if (pttl < 0) null else Duration.ofMillis(pttl.coerceAtLeast(1))
 

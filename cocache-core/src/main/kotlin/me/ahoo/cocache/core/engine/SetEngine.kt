@@ -257,11 +257,34 @@ internal class SetEngine<K : Any, E : Any>(
         }
         val storageKey = storageKey(key)
         val members = encode(elements)
-        write(
-            listOf(storageKey),
-            { frame -> store.addMembers(storageKey, members, policy.valueTtl(), frame) },
-            throwWriteFailure("add")
-        )
+        val ttl = policy.valueTtl()
+        write(listOf(storageKey), { frame ->
+            if (failsOnForeign) {
+                refuseForeign(storageKey, store.addMembersIfReadable(storageKey, members, ttl, frame))
+            } else {
+                store.addMembers(storageKey, members, ttl, frame)
+            }
+        }, throwWriteFailure("add"))
+    }
+
+    /**
+     * 元素增删是否拒绝落在读不懂的内容上（与读取同一规则：没有数据源，未配置时为 `FAIL`）。
+     * `RECLAIM` 时整体覆盖它（`add`）或不修改它（`remove`），6.5.0 及以前的行为。
+     */
+    private val failsOnForeign: Boolean = (policy.foreignFormat ?: ForeignFormatMode.FAIL) == ForeignFormatMode.FAIL
+
+    /**
+     * 后端拒绝了写入（[format] 非空：key 中是读不懂的内容，未修改、未广播）：计入 `unknownFormats` 并抛出，
+     * 由 [write] 包装为 `CacheWriteException`。
+     */
+    private fun refuseForeign(storageKey: String, format: Int?): Void? {
+        if (format == null) {
+            return null
+        }
+        metrics.unknownFormat()
+        val failure = ForeignFormatException(name, storageKey, format, null, newer = format > backendFormat)
+        log.warn { failure.message }
+        throw failure
     }
 
     override fun remove(key: K, elements: Collection<E>) {
@@ -270,11 +293,14 @@ internal class SetEngine<K : Any, E : Any>(
         }
         val storageKey = storageKey(key)
         val members = encode(elements)
-        write(
-            listOf(storageKey),
-            { frame -> store.removeMembers(storageKey, members, policy.valueTtl(), frame) },
-            throwWriteFailure("remove")
-        )
+        val ttl = policy.valueTtl()
+        write(listOf(storageKey), { frame ->
+            if (failsOnForeign) {
+                refuseForeign(storageKey, store.removeMembersIfReadable(storageKey, members, ttl, frame))
+            } else {
+                store.removeMembers(storageKey, members, ttl, frame)
+            }
+        }, throwWriteFailure("remove"))
     }
 
     override fun clear(key: K) {
@@ -372,11 +398,19 @@ internal class SetEngine<K : Any, E : Any>(
             }
             val storageKey = storageKey(key)
             val members = encode(elements)
-            writeAsync(
-                listOf(storageKey),
-                { frame -> asyncStore.addMembersAsync(storageKey, members, policy.valueTtl(), frame) },
-                throwWriteFailure("add")
-            )
+            val ttl = policy.valueTtl()
+            writeAsync(listOf(storageKey), { frame ->
+                if (failsOnForeign) {
+                    asyncStore.addMembersIfReadableAsync(
+                        storageKey,
+                        members,
+                        ttl,
+                        frame
+                    ).thenApply { refuseForeign(storageKey, it) }
+                } else {
+                    asyncStore.addMembersAsync(storageKey, members, ttl, frame)
+                }
+            }, throwWriteFailure("add"))
         }
 
         override fun remove(key: K, elements: Collection<E>): CompletableFuture<Void?> = toUser {
@@ -385,11 +419,19 @@ internal class SetEngine<K : Any, E : Any>(
             }
             val storageKey = storageKey(key)
             val members = encode(elements)
-            writeAsync(
-                listOf(storageKey),
-                { frame -> asyncStore.removeMembersAsync(storageKey, members, policy.valueTtl(), frame) },
-                throwWriteFailure("remove")
-            )
+            val ttl = policy.valueTtl()
+            writeAsync(listOf(storageKey), { frame ->
+                if (failsOnForeign) {
+                    asyncStore.removeMembersIfReadableAsync(
+                        storageKey,
+                        members,
+                        ttl,
+                        frame
+                    ).thenApply { refuseForeign(storageKey, it) }
+                } else {
+                    asyncStore.removeMembersAsync(storageKey, members, ttl, frame)
+                }
+            }, throwWriteFailure("remove"))
         }
 
         override fun clear(key: K): CompletableFuture<Void?> = toUser { clearAsync(storageKey(key)) }

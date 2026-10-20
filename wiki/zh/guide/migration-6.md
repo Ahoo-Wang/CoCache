@@ -17,7 +17,7 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 然后处理 5.x 留下的 key：
 
 - **有数据源的缓存**：默认布局下，6.x 的 key 与 5.x 的 key 都是 `cocache:{cacheName}:{key}`，所以 6.x 会读到旧值。任何 5.x 的值（String、Hash 或原生 Set，包括 `_nil_` 哨兵）都会被识别为外来内容（格式 0），仅在未被修改时回收，然后从数据源重新加载，无需手工清理。
-- **没有数据源的缓存，以及所有 5.x 的 `SetElementsCache`**：Redis 中是唯一副本，没有可以重新加载的地方。**在 6.x 启动之前迁移这些 key**，见 [Redis 是唯一副本的缓存](#redis-as-store)。从 6.5 起，6.x 读到未迁移的 key 时读取失败，而不是返回“不存在”。
+- **没有数据源的缓存，以及所有 5.x 的 `SetElementsCache`**：Redis 中是唯一副本，没有可以重新加载的地方。**在 6.x 启动之前迁移这些 key**，见 [Redis 是唯一副本的缓存](#redis-as-store)。从 6.5 起，6.x 读到未迁移的 key 时读取失败，而不是返回“不存在”。从 6.6.0 起，对它调用 `SetCache.add` 或 `remove` 同样失败。
 - 要立即释放内存，按前缀删除旧 key（`SCAN` 配合 `MATCH`，再 `UNLINK`）。
 
 `redis-cli GET` 不再显示 JSON：每个值都以 36 字节的二进制头开始。直接从 Redis 读取 CoCache key 的程序（例如对 Hash 编码的缓存执行 `HGET`）不再受支持。
@@ -26,7 +26,7 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 
 本节适用于没有数据源（5.x 中没有 `CacheSource`）、以 Redis 为权威存储的缓存，以及所有 5.x 的 `SetElementsCache`。只存放在 Redis 中的授权数据是典型的例子。这些缓存没有可以重新加载的地方，6.x 不能丢弃 5.x 写入的内容：在任何 6.x 实例接收流量之前，用 `CoCache5Migrator` 转换数据。
 
-### 不迁移：读取失败 {#foreign-format}
+### 不迁移：读取与集合写入失败 {#foreign-format}
 
 没有数据源的读取遇到 6.x 读不懂的内容时，抛出 `CacheReadException`，其 `cause` 为 `ForeignFormatException`。这类内容包括 5.x 的值、原生 Set 或 Hash、`_nil_` 哨兵，以及编解码器无法解码的值。key 在 Redis 中原样保留，这次读取计入 `cocache.unknown.formats`。因此漏跑迁移的结果是读取失败（fail closed），而不是回答“不存在”。`read-failure: degrade` 时同样如此。
 
@@ -39,7 +39,11 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 | `fail` | 抛出 `CacheReadException`，Redis 与 L2 都不改动 | 没有数据源的读取：`SetCache`，以及没有 loader 的 `Cache` |
 | `reclaim` | key 未变时回收，然后重新加载。`SetCache` 读到空集合，内容保留到下一次写入覆盖 | 有数据源的读取，包括对没有 loader 的缓存调用 `get(key, loader)` |
 
-`cocache.defaults.foreign-format` 不作用于 `SetCache`。写入不受保护：`put` 会替换这个 key，对未迁移的原生 Set 调用 `SetCache.add` 会替换整个集合。在 6.x 接收写入之前完成迁移。
+`cocache.defaults.foreign-format` 不作用于 `SetCache`。
+
+同一策略也保护 `SetCache.add` 与 `remove`（从 6.6.0 起）。为 `fail` 时（`SetCache` 的默认值），在 6.x 读不懂的内容上增删成员会抛出 `CacheWriteException`，其 `cause` 为 `ForeignFormatException`。这类内容包括未迁移的原生 Set、String 或 Hash，没有 6.x 格式字段的 Hash，以及更高版本的 CoCache 写入的集合。检查与写入在同一个原子脚本中完成：key 的成员与 TTL 不变，不广播，这次写入计入 `cocache.unknown.formats` 与 `cocache.write.failures`。之后仍可迁移这个 key。6.5.0 及以前（以及 `reclaim` 时），一次 `add` 就会用新成员替换整个原生 Set，之后 key 看起来已经迁移，`CoCache5Migrator` 会跳过它，旧成员永久丢失。
+
+整体写入不受保护：`put` 与 `putAll`（`Cache` 与 `SetCache` 都是）会替换 key 中的任何内容，因为调用方给出的是完整的值。这个 key 的 5.x 内容随之丢失，`CoCache5Migrator` 也会跳过这个 key，不会为它留备份。在 6.x 接收写入之前完成迁移。
 
 ### 用 `CoCache5Migrator` 迁移 {#cocache5-migrator}
 

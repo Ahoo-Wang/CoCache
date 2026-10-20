@@ -85,6 +85,20 @@ internal class BlockingAsyncStore(
         frame: ByteArray
     ): CompletableFuture<Void?> = completing { store.removeMembers(key, members, ttl, frame) }
 
+    override fun addMembersIfReadableAsync(
+        key: String,
+        members: Collection<ByteArray>,
+        ttl: Duration?,
+        frame: ByteArray
+    ): CompletableFuture<Int?> = offload { store.addMembersIfReadable(key, members, ttl, frame) }
+
+    override fun removeMembersIfReadableAsync(
+        key: String,
+        members: Collection<ByteArray>,
+        ttl: Duration?,
+        frame: ByteArray
+    ): CompletableFuture<Int?> = offload { store.removeMembersIfReadable(key, members, ttl, frame) }
+
     companion object {
         fun of(
             store: RemoteStore,

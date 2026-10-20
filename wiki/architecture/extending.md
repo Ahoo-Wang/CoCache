@@ -46,6 +46,9 @@ interface RemoteStore : AutoCloseable {
     fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean
     fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
     fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
+    // since 6.6.0; default: read, then addMembers / removeMembers (not atomic)
+    fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
+    fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
 }
 ```
 
@@ -76,6 +79,7 @@ The contract, method by method. The state machine is in [Consistency](./consiste
 | `reclaim` | Only if the key's current content has digest `observed` and isn't a lease: replace it with the lease. Return whether you did. Never delete content that changed. |
 | `addMembers` | Key holds a set: add the members atomically. Otherwise (absent, negative entry, lease, scalar): replace it with a set of these members. Destroy any token, set the expiry (`null` removes it), broadcast. |
 | `removeMembers` | Only if the key holds a set: remove the members, delete the key when the set becomes empty, otherwise reset the expiry. Broadcast in every case. |
+| `addMembersIfReadable` / `removeMembersIfReadable` | Like `addMembers` / `removeMembers`, except when the key holds content that isn't a set of your protocol: content you didn't write, a scalar value, or a set in a newer format than yours. Then change nothing, broadcast nothing, and return that content's format (`0` for content you didn't write). Return `null` after a normal write. Absent keys, negative entries, and leases are written normally. A `SetCache` with `foreign-format: fail` (its default) calls these instead of the plain methods, because overwriting is deleting its only copy. Optional: the default reads first and then writes, which isn't atomic and can't recognize a newer format, so override it with one atomic check-and-write. |
 
 Across all methods:
 
@@ -177,7 +181,7 @@ Run them with your build's normal test task (JUnit 6). `cocache-redis` runs `Bac
 
 A backend that implements only `RemoteStore` works with the [async view](../guide/async.md) unchanged: the engine calls its synchronous methods on the blocking executor. To serve async callers without those threads, implement the optional sub-interfaces:
 
-- `AsyncRemoteStore extends RemoteStore` adds `readAsync`, `readAllAsync`, `fillAsync`, `fillAllAsync`, `releaseAsync`, `putAsync`, `putAllAsync`, `invalidateAsync`, `reclaimAsync`, `addMembersAsync` and `removeMembersAsync`. Each has exactly the semantics of its synchronous counterpart.
+- `AsyncRemoteStore extends RemoteStore` adds `readAsync`, `readAllAsync`, `fillAsync`, `fillAllAsync`, `releaseAsync`, `putAsync`, `putAllAsync`, `invalidateAsync`, `reclaimAsync`, `addMembersAsync`, `removeMembersAsync`, and (with defaults built on `readAsync`) `addMembersIfReadableAsync` and `removeMembersIfReadableAsync`. Each has exactly the semantics of its synchronous counterpart.
 - `AsyncInvalidationChannel extends InvalidationChannel` adds `publishAsync`, which the engine uses on non-atomic backends.
 - **Never throw synchronously.** Fail the returned future instead, with the same exception types as the synchronous methods, not a `CompletionException`.
 - **Bound every operation.** A future that never completes stalls that key on that instance until `load-async-timeout`.

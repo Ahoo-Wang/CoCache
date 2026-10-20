@@ -28,5 +28,12 @@ class ForeignFormatExceptionTest {
         val undecodable = ForeignFormatException("policy", "cocache:policy:p1", 1, cause)
         undecodable.message.assert().contains("format[1]: decoding failed")
         undecodable.cause.assert().isSameAs(cause)
+        undecodable.newer.assert().isFalse()
+
+        val newer = ForeignFormatException("policy", "cocache:policy:p1", 2, null, newer = true)
+        newer.message.assert().contains("format[2]: written by a newer CoCache version")
+        newer.message.assert().contains("upgrade this node")
+        newer.message.assert().doesNotContain("CoCache5Migrator")
+        newer.newer.assert().isTrue()
     }
 }

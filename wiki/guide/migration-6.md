@@ -17,7 +17,7 @@ description: Everything that changes between CoCache 5.x and 6.0 — modules, pa
 Then deal with the keys 5.x left behind:
 
 - **Caches with a loader:** with the default layout, a 6.x key and a 5.x key are both `cocache:{cacheName}:{key}`, so 6.x reads old values. Any 5.x value (string, hash, or native set, including the `_nil_` sentinel) is recognized as foreign content (format 0), reclaimed only if it is still unchanged, and reloaded from the source. No manual cleanup is needed.
-- **Caches without a loader, and every 5.x `SetElementsCache`:** Redis holds the only copy, so there is nothing to reload. **Migrate these keys before 6.x starts**, as described in [Caches whose only copy is Redis](#redis-as-store). Since 6.5, a 6.x read of an unmigrated key fails instead of returning "not found".
+- **Caches without a loader, and every 5.x `SetElementsCache`:** Redis holds the only copy, so there is nothing to reload. **Migrate these keys before 6.x starts**, as described in [Caches whose only copy is Redis](#redis-as-store). Since 6.5, a 6.x read of an unmigrated key fails instead of returning "not found". Since 6.6.0, so does a `SetCache.add` or `remove` on it.
 - To free memory at once, delete the old keys by prefix (`SCAN` with `MATCH`, then `UNLINK`).
 
 `redis-cli GET` no longer shows JSON: every value starts with a 36-byte binary header. Programs that read CoCache keys directly from Redis, for example with `HGET` on a hash-encoded cache, are no longer supported.
@@ -26,7 +26,7 @@ Then deal with the keys 5.x left behind:
 
 This section applies to caches with no loader (no `CacheSource` in 5.x), where Redis is the store of record, and to every 5.x `SetElementsCache`. Authorization data kept only in Redis is a typical case. These caches have nothing to reload from, so 6.x must not discard what 5.x wrote: convert the data with `CoCache5Migrator` before any 6.x instance takes traffic.
 
-### Without migration: reads fail {#foreign-format}
+### Without migration: reads and set writes fail {#foreign-format}
 
 A read that has no loader and finds content 6.x can't read throws `CacheReadException`, whose `cause` is `ForeignFormatException`. Such content includes a 5.x value, a native set or hash, the `_nil_` sentinel, or a value the codec can't decode. The key stays in Redis untouched, and the read counts in `cocache.unknown.formats`. A forgotten migration therefore makes reads fail (fail closed) instead of answering "not found". This also holds with `read-failure: degrade`.
 
@@ -39,7 +39,11 @@ The `foreign-format` policy (`cocache.caches.[name].foreign-format`, or `CachePo
 | `fail` | Throw `CacheReadException`. Redis and L2 are left unchanged. | Reads without a loader: `SetCache`, and `Cache` without a loader |
 | `reclaim` | Reclaim the key if it is unchanged, then reload. A `SetCache` reads an empty set, and the content stays until a write replaces it. | Reads with a loader, including `get(key, loader)` on a cache without one |
 
-`cocache.defaults.foreign-format` doesn't apply to `SetCache`. Writes aren't guarded: a `put` replaces the key, and a `SetCache.add` on an unmigrated native set replaces the whole set. Migrate before 6.x takes writes.
+`cocache.defaults.foreign-format` doesn't apply to `SetCache`.
+
+The same policy guards `SetCache.add` and `remove` (since 6.6.0). With `fail`, the default for a `SetCache`, adding or removing members on a key that holds content 6.x can't read throws `CacheWriteException`, whose `cause` is `ForeignFormatException`. Such content is an unmigrated native set, string or hash, a hash without the 6.x format field, or a set written by a newer CoCache version. The check and the write are one atomic script: the key keeps its members and TTL, nothing is broadcast, and the write counts in `cocache.unknown.formats` and `cocache.write.failures`. The key can still be migrated afterwards. In 6.5.0 and earlier, and with `reclaim`, a single `add` replaced the whole native set with the new members, and the key then looked migrated, so `CoCache5Migrator` skipped it and the old members were lost for good.
+
+Whole-value writes aren't guarded: `put` and `putAll` (on a `Cache` or a `SetCache`) replace whatever the key holds, because the caller supplies the complete value. The 5.x content of that key is then gone, and `CoCache5Migrator` skips the key, so no backup of it is made. Migrate before 6.x takes writes.
 
 ### Migrating with `CoCache5Migrator` {#cocache5-migrator}
 

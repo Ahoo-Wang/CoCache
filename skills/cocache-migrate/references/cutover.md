@@ -45,7 +45,8 @@ Never run both versions on the same keys and channels, even briefly during a rol
 A 5.x cache without a `CacheSource` (Redis is the store of record) and every 5.x `SetElementsCache` hold the only copy of their data in Redis. 6.x cannot reload it, so the data must be converted before 6.x serves traffic.
 
 - On 6.5+, a 6.x read without a loader that finds unmigrated content throws `CacheReadException` (cause `ForeignFormatException`) and keeps the key (`foreign-format: fail`, the default without a loader). On 6.0–6.4 the same read deleted the key and returned `null`, and a `SetCache` read an empty set while `add` replaced the old members. Target 6.5+ for these caches; never set `foreign-format: reclaim` on them.
-- Writes are not guarded: a `put`, or a `SetCache.add` on an unmigrated native set, replaces the old data.
+- On 6.6.0+, a `SetCache.add` or `remove` on unmigrated content throws `CacheWriteException` (cause `ForeignFormatException`) and keeps the key; on 6.0–6.5.0 one `add` replaced the whole native set and the migrator then skipped the key. Target 6.6.0+ for `SetCache`.
+- Whole-value writes are not guarded: a `put` or `putAll` replaces the old data, and the migrator then skips that key (no backup).
 
 1. Decide the 6.x shape: if the data's truth lives in a database, use a `Cache` with a loader and no data copy; otherwise `Cache` without a loader, or `SetCache` for sets with element writes.
 2. Convert with `CoCache5Migrator` (`cocache-redis`, 6.5+), passing the target 6.x specs and the 5.x key prefixes or explicit keys: `CoCache5Migration.scalar(spec, CoCache5Format.string() | set { … } | hash { … })`, `CoCache5Migration.set(setSpec)`. Run `dryRun` first; it only reads. The upgrade guide section "Caches whose only copy is Redis" of the target release documents the API, the report and the steps.

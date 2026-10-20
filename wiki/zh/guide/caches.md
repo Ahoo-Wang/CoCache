@@ -259,7 +259,7 @@ val members: Set<String> = online[roomId] // 不存在时为空集合
 - **`put(key, emptySet())` 等同于 `clear(key)`**：空集合不保留 key。`putAll` 对每一项遵循同样的规则（[批量写入](./freshness.md#batch-writes)）。
 - **TTL 默认永不过期。** 设置了 TTL 时，每次 `add` 或 `remove` 都会重设到期时间。
 - **故障会显式暴露。** 写入抛出 `CacheWriteException`（它们是幂等的，可以重试）。读取直接抛出 Redis 错误，因为没有数据源可以降级。
-- **读不懂的内容会抛出。** 元素无法解码时读取抛出异常，更高格式写入的集合抛出 `IllegalStateException`。不是 CoCache 写入的内容（比如同一个 key 上的 Redis 原生 Set）读作空集合，在 L2 中最多保留 `degradedLocalMaxAge`，并被下一次 `put` 或 `add` 替换。
+- **读不懂的内容会抛出。** 元素无法解码时读取抛出异常，更高格式写入的集合抛出 `IllegalStateException`。不是 CoCache 写入的内容（比如 5.x 在同一个 key 上留下的 Redis 原生 Set）使读取抛出 `CacheReadException`；在它或更高格式写入的集合上调用 `add` / `remove` 抛出 `CacheWriteException`，key 不变，只有 `put` 会整体覆盖它。`foreign-format: reclaim` 时这类内容读作空集合，下一次 `add` 替换它（见[从 5.x 升级](./migration-6.md#foreign-format)）。
 - **持久性等于 Redis 的持久性。** `maxmemory-policy` 不能淘汰没有 TTL 的 key（不要用 `allkeys-*`）。异步复制下的故障切换可能丢失最近的写入。
 
 如果集合的权威数据在数据库中，不要用 `SetCache`。声明为 `Cache<K, Set<E>>`，更新数据库后 `invalidate`。

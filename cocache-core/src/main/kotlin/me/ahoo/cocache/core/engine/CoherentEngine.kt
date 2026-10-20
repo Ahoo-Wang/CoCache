@@ -255,6 +255,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     ): LocalEntry<V> {
         return when (val outcome = hitOutcome(read)) {
             HitOutcome.Newer -> {
+                newerFormatFailure(storageKey, read, source != null)?.let { throw it }
                 metrics.unknownFormat()
                 loadBypassingRemote(key, storageKey, stamp, source)
             }
@@ -283,8 +284,23 @@ internal class CoherentEngine<K : Any, V : Any>(
         if (mode == ForeignFormatMode.RECLAIM) {
             return null
         }
+        return readFailure(ForeignFormatException(name, storageKey, read.format, error))
+    }
+
+    /**
+     * 同步与异步共用：读到更高版本写入的值（滚动升级期间）。有数据源时返回 `null`，调用方绕过 L1 回源（既不回收也不写回）。
+     * 没有数据源时 L1 是唯一副本，绕过 L1 只能得到“不存在”：按 [ForeignFormatMode] 决定（未配置为 `FAIL`），
+     * `FAIL` 返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2），`RECLAIM` 返回 `null`（按不存在处理）。
+     */
+    private fun newerFormatFailure(storageKey: String, read: RemoteRead.Hit, hasSource: Boolean): CacheReadException? {
+        if (hasSource || policy.foreignFormat == ForeignFormatMode.RECLAIM) {
+            return null
+        }
+        return readFailure(ForeignFormatException(name, storageKey, read.format, null, newer = true))
+    }
+
+    private fun readFailure(failure: ForeignFormatException): CacheReadException {
         metrics.unknownFormat()
-        val failure = ForeignFormatException(name, storageKey, read.format, error)
         log.warn { failure.message }
         return CacheReadException(name, "read", failure)
     }
@@ -619,9 +635,10 @@ internal class CoherentEngine<K : Any, V : Any>(
         var foreign: CacheReadException? = null
         for (storageKey in led.keys) {
             val stamp = loadStamps.getValue(storageKey)
-            when (val step = batchStep(storageKey, reads[storageKey], stamp, leases[storageKey])) {
+            when (val step = batchStep(storageKey, reads[storageKey], stamp, leases[storageKey], loader != null)) {
                 is BatchStep.Load -> toLoad[storageKey] = step.token
                 is BatchStep.Done -> result[storageKey] = Loaded(step.entry, stamp)
+                is BatchStep.Failed -> foreign = foreign ?: step.error
                 // 与单 key 路径一致：条件回收后回源（否则损坏的载荷会一直留到 L1 过期）
                 is BatchStep.Corrupt -> {
                     val failure = foreignFormatFailure(storageKey, step.read, step.error, loader != null)
@@ -656,13 +673,20 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 同步与异步共用的批量读取判定：命中的 key 直接填入 L2；其余 key 需要回源（取得 lease 时凭它写回 L1）或条件回收。
      */
-    private fun batchStep(storageKey: String, read: RemoteRead?, stamp: Long, lease: LeaseRequest?): BatchStep<V> {
+    private fun batchStep(
+        storageKey: String,
+        read: RemoteRead?,
+        stamp: Long,
+        lease: LeaseRequest?,
+        hasSource: Boolean
+    ): BatchStep<V> {
         if (read !is RemoteRead.Hit) {
             return BatchStep.Load((read as? RemoteRead.Miss)?.takeIf { it.leaseGranted }?.let { lease?.token })
         }
         return when (val outcome = hitOutcome(read)) {
             HitOutcome.Newer -> {
-                // 更高版本写入的值：既不回收也不写回
+                // 更高版本写入的值：既不回收也不写回；没有数据源时按 foreignFormat 失败（命中没有取得 lease，无需释放）
+                newerFormatFailure(storageKey, read, hasSource)?.let { return BatchStep.Failed(it) }
                 metrics.unknownFormat()
                 BatchStep.Load(null)
             }
@@ -1176,10 +1200,12 @@ internal class CoherentEngine<K : Any, V : Any>(
         operation: LoadOperation
     ): CompletableFuture<LocalEntry<V>> {
         return when (val outcome = hitOutcome(read)) {
-            HitOutcome.Newer -> {
-                metrics.unknownFormat()
-                bypassAsync(key, storageKey, stamp, source, operation)
-            }
+            HitOutcome.Newer -> newerFormatFailure(storageKey, read, source != null)
+                ?.let { CompletableFuture.failedFuture(it) }
+                ?: run {
+                    metrics.unknownFormat()
+                    bypassAsync(key, storageKey, stamp, source, operation)
+                }
 
             is HitOutcome.Corrupt -> foreignFormatFailure(storageKey, read, outcome.error, source != null)
                 ?.let { CompletableFuture.failedFuture(it) }
@@ -1482,22 +1508,17 @@ internal class CoherentEngine<K : Any, V : Any>(
             val toLoad = LinkedHashMap<String, Token?>()
             for (storageKey in led.keys) {
                 val stamp = loadStamps.getValue(storageKey)
-                when (val step = batchStep(storageKey, readResults[storageKey], stamp, leases[storageKey])) {
+                val lease = leases[storageKey]
+                when (val step = batchStep(storageKey, readResults[storageKey], stamp, lease, asyncSource != null)) {
                     is BatchStep.Load -> toLoad[storageKey] = step.token
                     is BatchStep.Done -> result[storageKey] = Loaded(step.entry, stamp)
-                    is BatchStep.Corrupt -> corrupt[storageKey] = foreignFormatFailure(
-                        storageKey,
-                        step.read,
-                        step.error,
-                        asyncSource != null
-                    )?.let { CompletableFuture.failedFuture(it) } ?: onCorruptAsync(
+                    is BatchStep.Failed -> corrupt[storageKey] = CompletableFuture.failedFuture(step.error)
+                    is BatchStep.Corrupt -> corrupt[storageKey] = corruptStepAsync(
                         led.getValue(storageKey),
                         storageKey,
-                        step.read,
+                        step,
                         stamp,
-                        leases.getValue(storageKey),
-                        asyncSource,
-                        step.error
+                        leases.getValue(storageKey)
                     )
                 }
             }
@@ -1515,6 +1536,19 @@ internal class CoherentEngine<K : Any, V : Any>(
             }
         }.releasingOnRejection { leases.mapValues { it.value.token } }
     }
+
+    /**
+     * 批量读取中读不懂的 key：`FAIL` 时以要抛出的异常失败，否则与单 key 路径一样条件回收后回源。
+     */
+    private fun corruptStepAsync(
+        key: K,
+        storageKey: String,
+        step: BatchStep.Corrupt,
+        stamp: Long,
+        lease: LeaseRequest
+    ): CompletableFuture<LocalEntry<V>> = foreignFormatFailure(storageKey, step.read, step.error, asyncSource != null)
+        ?.let { CompletableFuture.failedFuture(it) }
+        ?: onCorruptAsync(key, storageKey, step.read, stamp, lease, asyncSource, step.error)
 
     /**
      * [loadAndFillBatch] 的异步版本：回源失败时等全部 lease 释放后再以原始异常失败。
@@ -1855,6 +1889,8 @@ private sealed interface BatchStep<out V> {
     class Done<V>(val entry: LocalEntry<V>) : BatchStep<V>
 
     class Corrupt(val read: RemoteRead.Hit, val error: Exception) : BatchStep<Nothing>
+
+    class Failed(val error: CacheReadException) : BatchStep<Nothing>
 }
 
 /**

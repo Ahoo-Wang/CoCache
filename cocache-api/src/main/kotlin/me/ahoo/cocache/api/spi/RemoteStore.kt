@@ -101,6 +101,7 @@ interface RemoteStore : AutoCloseable {
 
     /**
      * 原子地加入集合成员：key 不存在、为负缓存或处于 lease 状态时先清除，再创建集合；清除刷新令牌；重设到期时间；广播。
+     * 其它内容（不是本协议的集合）被整体覆盖；不能覆盖时用 [addMembersIfReadable]。
      */
     fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
 
@@ -109,5 +110,46 @@ interface RemoteStore : AutoCloseable {
      */
     fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
 
+    /**
+     * 同 [addMembers]，但 key 中是不能当作本协议集合的内容时，不修改 key、不广播，返回该内容的格式版本。这类内容是：
+     * 不是本协议写入的内容（如 CoCache 5.x 留下的原生 Set / String / Hash，返回 `0`）、本协议的标量值、
+     * 更高格式版本写入的集合（返回其版本）。key 不存在、为负缓存或处于 lease 状态时照常写入。
+     *
+     * 没有数据源的集合缓存（L1 是唯一副本）用它代替 [addMembers]：整体覆盖读不懂的内容就是删除唯一副本。
+     *
+     * 默认实现先 [read] 再 [addMembers]：检查与写入之间不原子，也认不出更高的格式版本。实现应当覆盖它，在一次原子操作中检查并写入。
+     *
+     * @return 写入时为 `null`；否则为阻止写入的内容的格式版本（`0` 表示不是本协议写入）
+     */
+    fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? {
+        unreadableSetFormat(read(key, null, null))?.let { return it }
+        addMembers(key, members, ttl, frame)
+        return null
+    }
+
+    /**
+     * 同 [removeMembers]，但 key 中是不能当作本协议集合的内容（见 [addMembersIfReadable]）时，不修改 key、不广播，返回该内容的格式版本。
+     *
+     * 默认实现先 [read] 再 [removeMembers]（不原子，认不出更高的格式版本）；实现应当覆盖它。
+     *
+     * @return 执行时为 `null`；否则为阻止执行的内容的格式版本
+     */
+    fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? {
+        unreadableSetFormat(read(key, null, null))?.let { return it }
+        removeMembers(key, members, ttl, frame)
+        return null
+    }
+
     override fun close() = Unit
+}
+
+/**
+ * [RemoteStore.addMembersIfReadable] 等默认实现的判定：命中且不是本协议的集合（格式低于 1，或是标量值）时返回其格式版本。
+ * 负缓存、lease、不存在都可以写入。
+ */
+internal fun unreadableSetFormat(read: RemoteRead): Int? {
+    if (read !is RemoteRead.Hit) {
+        return null
+    }
+    return read.format.takeIf { it < 1 || read.envelope is Envelope.Scalar }
 }

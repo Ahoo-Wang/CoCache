@@ -263,6 +263,16 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             store.removeMembers(key, members, ttl, frame)
         }
 
+        override fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? {
+            guard("addMembers", fail = failWrites)
+            return store.addMembersIfReadable(key, members, ttl, frame)
+        }
+
+        override fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? {
+            guard("removeMembers", fail = failWrites)
+            return store.removeMembersIfReadable(key, members, ttl, frame)
+        }
+
         override fun close() = store.close()
     }
 
@@ -393,6 +403,24 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             frame: ByteArray
         ): CompletableFuture<Void?> = hooked("removeMembers", fail = failWrites) {
             store.removeMembersAsync(key, members, ttl, frame)
+        }
+
+        override fun addMembersIfReadableAsync(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray
+        ): CompletableFuture<Int?> = hooked("addMembers", fail = failWrites) {
+            store.addMembersIfReadableAsync(key, members, ttl, frame)
+        }
+
+        override fun removeMembersIfReadableAsync(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray
+        ): CompletableFuture<Int?> = hooked("removeMembers", fail = failWrites) {
+            store.removeMembersIfReadableAsync(key, members, ttl, frame)
         }
     }
 }

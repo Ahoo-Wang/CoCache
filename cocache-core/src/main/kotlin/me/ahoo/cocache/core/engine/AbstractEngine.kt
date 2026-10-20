@@ -28,6 +28,7 @@ import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheMetrics
+import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.internal.Futures
@@ -165,10 +166,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 非原子广播时 L1 失败也尽力广播：失败的写入可能已部分生效（`putAll` 跨多个 slot 组时有的组已写入，
      * 或写入已在 L1 生效却报错），不广播的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）。多余的广播只淘汰副本，无害。
      * 前提是 [mutate] 返回或抛出时它的全部 L1 命令都已结束（否则广播可能先于仍在执行的命令）。
+     * 例外是 [ForeignFormatException]：后端拒绝了写入，L1 原样未动，不广播。
      *
      * @param onFailure L1 失败时调用（在第二次递增之前，因此登记的状态对随后的读取可见）
      */
-    @Suppress("TooGenericExceptionCaught")
+    @Suppress("TooGenericExceptionCaught", "InstanceOfCheckForException")
     protected fun write(keys: Collection<String>, mutate: (ByteArray) -> Unit, onFailure: (Exception) -> Unit) {
         keys.forEach {
             stamps.invalidate(it)
@@ -179,7 +181,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             try {
                 mutate(frame)
             } catch (e: Exception) {
-                if (!atomicBroadcast) {
+                if (!atomicBroadcast && e !is ForeignFormatException) {
                     publishAfterFailure(frame, e)
                 }
                 throw e
@@ -266,6 +268,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     private fun publishAfter(frame: ByteArray, error: Throwable?): CompletableFuture<Void?> {
         if (error == null) {
             return asyncChannel.publishAsync(namespace, frame)
+        }
+        if (error is ForeignFormatException) {
+            // 后端拒绝了写入（L1 未修改），没有需要广播的变化
+            return CompletableFuture.failedFuture(error)
         }
         val failed = CompletableFuture<Void?>()
         Futures.attempt { asyncChannel.publishAsync(namespace, frame) }.whenComplete { _, publishError ->

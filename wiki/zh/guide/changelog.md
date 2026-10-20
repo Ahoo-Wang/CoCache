@@ -5,6 +5,25 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布
+
+**模块组：** `me.ahoo.cocache` · 计划为 6.6.0。次版本：`cocache-api` 的 SPI 新增 `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` 及 `AsyncRemoteStore` 中对应的异步方法，都带默认实现，已有的后端照常编译与运行。两项行为变化收紧没有数据源的缓存的 fail closed 处理：`SetCache` 的写入遇到读不懂的内容时失败，没有数据源的读取遇到更高版本写入的值时失败（见下文）。Redis 线格式与失效频道不变，6.6.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。
+
+### 行为变化：`SetCache` 的写入遇到读不懂的内容时失败
+
+- `SetCache.add` 与 `remove` 现在与读取一样遵循 `foreign-format`。为 `fail` 时（`SetCache` 的默认值），在本缓存读不懂的内容上增删成员抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。这类内容包括未迁移的 5.x 原生 Set、String 或 Hash，没有 6.x 格式字段的 Hash，6.x 的标量值，以及更高版本的 CoCache 写入的集合。检查与写入是一个原子步骤：key 的内容与 TTL 不变，不广播，这次写入计入 `cocache.unknown.formats` 与 `cocache.write.failures`。
+- 6.5.0 及以前，对未迁移的原生 Set 调用一次 `add` 就会替换它的全部成员，之后 key 看起来已经迁移，`CoCache5Migrator` 跳过它，旧成员永久丢失；`remove` 静默地什么也不做并报告成功。给缓存设置 `foreign-format: reclaim` 即可保留这一行为。
+- 整体写入（`put`、`putAll`，`Cache` 与 `SetCache` 都是）照旧覆盖任何内容，因为调用方给出的是完整的值。被覆盖的 5.x 内容不会被迁移工具备份，迁移工具之后会跳过这个 key。见 [Redis 是唯一副本的缓存](./migration-6.md#foreign-format)。
+
+### 行为变化：没有数据源时更高格式版本的值读取失败
+
+- 没有数据源的读取命中更高版本的 CoCache 写入的值（混合版本滚动升级期间）时，现在与 `foreign-format: fail` 下读不懂的内容一样失败：抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，`newer = true`），保留 key、不写 L2，计入 `cocache.unknown.formats`。此前读作不存在，在 Redis 是唯一副本时就是悄悄丢数据。`foreign-format: reclaim` 保留旧行为。有数据源的读取不变：回源，且不改动更高版本的值。
+
+### SPI
+
+- `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` 及 `AsyncRemoteStore` 中对应的异步方法：同 `addMembers` / `removeMembers`，但不改动不是本协议集合的内容，并返回它的格式版本。默认实现先读后写，不原子，也认不出更高的格式版本；后端应覆盖为一次原子的检查加写入，Redis 与内存后端即如此。见[扩展](../architecture/extending.md#remote-store)。
+- `ForeignFormatException` 新增 `newer` 属性与构造参数，保留 6.5.0 的构造函数。
+
 ## v6.5.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本。`cocache-core` 与 `cocache-redis` 新增 API；没有数据源的读取有一项默认行为变化（见下文）。Redis 线格式与失效频道不变，6.x 实例可以共用 Redis 并逐台升级。

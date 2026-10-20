@@ -298,4 +298,74 @@ abstract class SetEngineSpec {
         backend.afterRead = null
         nodeA.metrics(cacheName)?.unknownFormats.assert().isEqualTo(1L)
     }
+
+    /**
+     * 不经过引擎直接写 L1。
+     */
+    private fun writeRemoteSilently(key: String, envelope: Envelope) {
+        backend.delegate.store(cacheName).put(
+            "cocache:$cacheName:$key",
+            envelope,
+            null,
+            InvalidationFrame.encode(NodeId.random(), emptyList())
+        )
+    }
+
+    private fun assertForeignWrite(error: Throwable?, operation: String) {
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        (error as CacheWriteException).operation.assert().isEqualTo(operation)
+        val cause = requireNotNull(error.cause as? ForeignFormatException)
+        cause.storageKey.assert().isEqualTo("cocache:$cacheName:k")
+    }
+
+    /**
+     * 元素增删落在本缓存读不懂的内容上（这里是同一个 key 上的标量值；Redis 上还有 5.x 的原生 Set、没有格式字段的 Hash、
+     * 更高格式版本）：没有数据源，默认 `FAIL`。写入以 [CacheWriteException]（cause 为 [ForeignFormatException]）失败，
+     * 不修改 L1；否则一次 `add` 就会用一个成员替换掉唯一副本中的全部内容。
+     */
+    @Test
+    fun memberWritesOverUnreadableContentFailByDefault() {
+        val cache = nodeA.setCache()
+        val other = nodeB.setCache()
+        writeRemoteSilently("k", Envelope.Scalar("x".toByteArray()))
+        assertForeignWrite(runCatching { cache.add("k", listOf("a")) }.exceptionOrNull(), "add")
+        assertForeignWrite(runCatching { cache.remove("k", listOf("a")) }.exceptionOrNull(), "remove")
+        nodeA.metrics(cacheName)?.unknownFormats.assert().isEqualTo(2L)
+        nodeA.metrics(cacheName)?.writeFailures.assert().isEqualTo(2L)
+        val kept = backend.delegate.store(cacheName).read("cocache:$cacheName:k", null, null) as RemoteRead.Hit
+        (kept.envelope as Envelope.Scalar).bytes.assert().isEqualTo("x".toByteArray())
+        // 整体覆盖（put）不受影响：调用方给出的是全部内容
+        other.put("k", setOf("b"))
+        cache.add("k", listOf("a"))
+        cache["k"].assert().containsExactlyInAnyOrder("a", "b")
+    }
+
+    /**
+     * 负缓存是本协议的状态，不是读不懂的内容：元素写入照常进行。
+     */
+    @Test
+    fun memberWritesOverNegativeEntriesSucceed() {
+        val cache = nodeA.setCache()
+        writeRemoteSilently("k", Envelope.Absent)
+        cache.remove("k", listOf("a"))
+        cache.add("k", listOf("a"))
+        cache["k"].assert().containsExactly("a")
+    }
+
+    /**
+     * 显式 `RECLAIM`：读不懂的内容被元素写入整体覆盖（6.5.0 及以前的行为），`remove` 不修改它。
+     */
+    @Test
+    fun memberWritesReplaceUnreadableContentWhenReclaimIsConfigured() {
+        val cache = nodeA.setCache(
+            SetCacheSpec.DEFAULT_POLICY.toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
+        )
+        writeRemoteSilently("k", Envelope.Scalar("x".toByteArray()))
+        cache.remove("k", listOf("a"))
+        (backend.delegate.store(cacheName).read("cocache:$cacheName:k", null, null) as RemoteRead.Hit)
+            .envelope.assert().isInstanceOf(Envelope.Scalar::class.java)
+        cache.add("k", listOf("a"))
+        cache["k"].assert().containsExactly("a")
+        nodeA.metrics(cacheName)?.writeFailures.assert().isEqualTo(0L)
+    }
 }
