@@ -191,4 +191,32 @@ class FuturesTest {
             executor.count.get().assert().isEqualTo(2)
         }
     }
+
+    /**
+     * 线程上只在执行派发的任务期间有标记对象：结束后移除，只读取（未标记的线程上完成续接、withoutInline）从不创建。
+     * 否则 I/O 线程、commonPool 等线程上会留下本模块的对象，在需要重新部署的容器里钉住 classloader。
+     */
+    @Test
+    fun markLeavesNothingOnTheThread() {
+        val field = Futures::class.java.getDeclaredField("inline").apply { isAccessible = true }
+        val local = field.get(Futures) as ThreadLocal<*>
+        val executor = Counting()
+        // 未标记的线程上完成续接：派发，不创建对象
+        val pending = CompletableFuture<String>()
+        val next = pending.handleNext(executor) { value, _ ->
+            // 派发的任务期间有标记
+            local.get().assert().isNotNull()
+            CompletableFuture.completedFuture(value)
+        }
+        pending.complete("v")
+        next.join().assert().isEqualTo("v")
+        local.get().assert().isNull()
+        Futures.withoutInline { local.get() }.assert().isNull()
+        // 嵌套派发（在调用方线程上执行任务的执行器）：结束后恢复外层，最外层结束后移除
+        Futures.dispatch(executor, CompletableFuture<Void?>()) {
+            Futures.dispatch(Counting(), CompletableFuture<Void?>()) { local.get().assert().isNotNull() }
+            local.get().assert().isNotNull()
+        }
+        local.get().assert().isNull()
+    }
 }

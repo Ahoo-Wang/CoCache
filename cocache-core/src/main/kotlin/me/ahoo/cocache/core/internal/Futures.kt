@@ -39,14 +39,18 @@ internal object Futures {
     const val MAX_INLINE_DEPTH = 16
 
     /**
-     * 当前线程正在执行哪个执行器经 [dispatch] 派发的任务、其中就地续接嵌套了几层。I/O、定时器、阻塞执行器与用户的线程上为空。
+     * 当前线程正在执行哪个执行器经 [dispatch] 派发的任务、其中就地续接嵌套了几层。
      */
     private class Inline {
         var executor: Executor? = null
         var depth: Int = 0
     }
 
-    private val inline = ThreadLocal.withInitial(::Inline)
+    /**
+     * 只在执行派发的任务期间有值（[Marked] 设置，结束时 `remove`）：没有值即没有标记。读取从不创建对象，
+     * 所以 I/O 线程、`commonPool` 等只是完成过 future 的线程上不会留下本类的对象（需要重新部署的容器里会钉住 classloader）。
+     */
+    private val inline = ThreadLocal<Inline?>()
 
     /**
      * 已完成的 `Void` future（内部使用，从不交给用户）。
@@ -121,7 +125,7 @@ internal object Futures {
      */
     fun continueOn(executor: Executor, target: CompletableFuture<*>, task: Runnable) {
         val state = inline.get()
-        if (state.executor !== executor || state.depth >= MAX_INLINE_DEPTH) {
+        if (state == null || state.executor !== executor || state.depth >= MAX_INLINE_DEPTH) {
             dispatch(executor, target, task)
             return
         }
@@ -135,12 +139,16 @@ internal object Futures {
 
     /**
      * 在 [block] 执行期间清除当前线程的续接标记，结束（含异常）时恢复：期间完成的 future 的续接改为派发，不在 [block] 的作用域内就地执行。
-     * 数据源调用（`SingleFlight.loading`）用它：否则数据源同步完成的另一个 key 的续接会在本 key 的重入检查作用域内执行，
-     * 回调里再读本 key 会被误判为同一线程的重入。
+     * 本线程对某些 key 有重入守卫的作用域都用它：数据源调用（`SingleFlight.loading`）与同步 leader（`SingleFlight.execute` /
+     * `executeAll` 的 block）。否则其间完成的另一个 key 的续接（数据源同步完成的 future、归还回源许可唤醒的异步等待者）
+     * 会在本 key 的作用域内执行，回调里再读本 key 会被误判为同一线程的重入。没有标记时直接执行，不创建对象。
      */
     fun <T> withoutInline(block: () -> T): T {
         val state = inline.get()
-        val outerExecutor = state.executor
+        val outerExecutor = state?.executor
+        if (state == null || outerExecutor == null) {
+            return block()
+        }
         state.executor = null
         try {
             return block()
@@ -154,16 +162,28 @@ internal object Futures {
      */
     private class Marked(private val executor: Executor, private val task: Runnable) : Runnable {
         override fun run() {
-            val state = inline.get()
-            val outerExecutor = state.executor
-            val outerDepth = state.depth
-            state.executor = executor
-            state.depth = 0
+            val outer = inline.get()
+            if (outer == null) {
+                val state = Inline()
+                state.executor = executor
+                inline.set(state)
+                try {
+                    task.run()
+                } finally {
+                    inline.remove()
+                }
+                return
+            }
+            // 执行器在调用方线程上就地执行任务（已带标记）：沿用同一个对象，结束时恢复原来的标记
+            val outerExecutor = outer.executor
+            val outerDepth = outer.depth
+            outer.executor = executor
+            outer.depth = 0
             try {
                 task.run()
             } finally {
-                state.executor = outerExecutor
-                state.depth = outerDepth
+                outer.executor = outerExecutor
+                outer.depth = outerDepth
             }
         }
     }

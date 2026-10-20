@@ -56,7 +56,8 @@ internal class SingleFlight<K : Any, R> {
             return await(existing)
         }
         val result = try {
-            block()
+            // 本线程是 key 的同步 owner：其间完成的别的 future 的续接派发出去，不在 owner 的作用域内就地执行（Futures.withoutInline）
+            Futures.withoutInline(block)
         } catch (error: Throwable) {
             calls.remove(key, call)
             call.future.completeExceptionally(error)
@@ -112,7 +113,7 @@ internal class SingleFlight<K : Any, R> {
         val results = LinkedHashMap<K, R>()
         if (led.isNotEmpty()) {
             val loaded = try {
-                block(led.keys.toList())
+                Futures.withoutInline { block(led.keys.toList()) }
             } catch (error: Throwable) {
                 abandon(led, error)
                 throw error

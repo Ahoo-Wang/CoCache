@@ -28,7 +28,7 @@ description: CoCache 版本发布历史和重要变更。
 ### 修复
 
 - **Lettuce 6.8（Spring Boot 4.0）上心跳永久停止。** 自 6.0.0 起，在 Spring Boot 4.0 管理的 Lettuce 版本上，心跳失败后的强制重连会抛出 `NoClassDefFoundError`（它用到了 Lettuce 7 的 `Delegating` 接口）。这个错误逃出了心跳任务，订阅连接从此不再被检查，半开连接之后节点无法自愈。强制重连已不再使用这个接口。心跳任务现在也会记录任何错误（包括 `Error`），然后继续下一次心跳。`cocache-redis` 的全部测试在 Lettuce 6.8.2 与 7.5.2 上都通过。
-- **就地续接不再误判重入。** 数据源在同一线程上完成另一个 key 的加载时，那个 key 的回调不再在本次加载的作用域内执行。修复之前，这样的回调再读正在加载的 key 会以 `IllegalStateException`（"Recursive call on the same key"）失败。只影响未发布的改动，6.4.0 不受影响。
+- **就地续接不再误判重入。** 线程在加载某个 key 期间（作为同步调用的 leader，或在数据源中），在这个线程上完成的其它 key 的异步续接不再就地执行。这包括数据源完成另一个 key 的加载，以及同步 leader 把回源许可交给另一个 key 的异步等待者。修复之前，那个 key 的回调再读正在加载的 key 会以 `IllegalStateException`（"Recursive call on the same key"）失败。只影响未发布的改动，6.4.0 不受影响。
 
 ## v6.4.0（当前版本）
 
