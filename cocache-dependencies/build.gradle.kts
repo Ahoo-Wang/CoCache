@@ -18,6 +18,7 @@ dependencies {
     api(platform(libs.fluent.assert.bom))
     constraints {
         api(libs.kotlin.logging)
+        api(libs.kotlinx.coroutines.core)
         api(libs.springdoc.openapi.starter.webflux.ui)
         api(libs.mockk)
         api(libs.detekt.formatting)

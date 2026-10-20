@@ -149,7 +149,10 @@ class CoCacheAotTest {
         // 异步视图的公共方法（与声明无关的固定提示）
         listOf(
             me.ahoo.cocache.api.AsyncCache::class.java,
-            me.ahoo.cocache.api.AsyncSetCache::class.java
+            me.ahoo.cocache.api.AsyncSetCache::class.java,
+            // cocache-coroutines 在类路径上（测试依赖）：挂起视图按类名登记
+            me.ahoo.cocache.coroutines.SuspendingCache::class.java,
+            me.ahoo.cocache.coroutines.SuspendingSetCache::class.java
         ).forEach { type ->
             hints.assert().matches(reflection.onType(type).withMemberCategory(MemberCategory.INVOKE_PUBLIC_METHODS))
         }

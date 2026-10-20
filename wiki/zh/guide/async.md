@@ -75,7 +75,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 ## Kotlin 协程 {#coroutines}
 
-计划在 6.4 提供带挂起扩展的 `cocache-coroutines` 模块。在此之前，`kotlinx.coroutines.future.await()` 适用于异步视图返回的每个 future，并抛出原始异常。
+可选模块 `cocache-coroutines`（6.4+）提供挂起视图 `cache.suspending()` 与 `SuspendingCacheLoader`，见 [Kotlin 协程](./coroutines.md)。不用它时，`kotlinx.coroutines.future.await()` 适用于异步视图返回的每个 future，并抛出原始异常。
 
 ## 运维 {#operations}
 

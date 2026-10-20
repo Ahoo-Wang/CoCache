@@ -75,7 +75,7 @@ The async executor and the blocking executor are configurable. See [Configuratio
 
 ## Kotlin coroutines {#coroutines}
 
-A `cocache-coroutines` module with suspending extensions is planned for 6.4. Until then, `kotlinx.coroutines.future.await()` works on every future the async view returns, and it rethrows the original exception.
+The optional `cocache-coroutines` module (6.4+) adds a suspending view, `cache.suspending()`, and `SuspendingCacheLoader`. See [Kotlin Coroutines](./coroutines.md). Without it, `kotlinx.coroutines.future.await()` works on every future the async view returns, and it rethrows the original exception.
 
 ## Operating it {#operations}
 

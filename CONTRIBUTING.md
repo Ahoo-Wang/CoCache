@@ -76,7 +76,7 @@ See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in
 - What the compatibility promise covers:
   - Covered: `cocache-api` (user API and SPI), the public types of `cocache-core` (including
     `JoinCacheProxies`, which the docs recommend for non-Spring join caches), `cocache-redis`,
-    `cocache-codec-jackson` and `cocache-spring`, the published TCK in `cocache-test`
+    `cocache-codec-jackson`, `cocache-spring` and `cocache-coroutines`, the published TCK in `cocache-test`
     (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, their async variants
     `AsyncBackendProtocolSpec`, `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`,
     `CacheAccess`, `HookedBackend`, `Concurrency`), the
