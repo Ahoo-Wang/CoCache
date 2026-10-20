@@ -106,7 +106,7 @@ JMH 对比见 RFC 0003 §7.1。
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
-| 协程示例 | 易用 | `cocache-example` 中的 WebFlux + 协程示例（RFC 0004 §7） | 未开始 |
+| 协程示例 | 易用 | `cocache-example` 中的 WebFlux + 协程示例（RFC 0004 §7）：`CoroutineController`（`suspend fun` 处理器、`cache.suspending()`、调用级 loader、写后失效）与 `suspendingLoader` 声明的 `profile` 缓存 | ✅ 已完成 |
 | 异步命令超时改用 Lettuce `TimeoutOptions` | G3 | 异步视图的命令超时目前由 `CompletableFuture.orTimeout` 计时（JDK 的单线程延迟调度器，每条命令一次调度与撤销），8 线程闭环基准低于 RFC 0004 §11 的 90% 的一部分来自这里；改由 Lettuce 自己的命令超时触发、在 `bounded` 中只做异常映射（RFC 0004 §14） | 未实现 |
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
