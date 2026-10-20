@@ -763,6 +763,62 @@ abstract class EngineSpec {
         remoteValue("k").assert().isEqualTo("new-format")
     }
 
+    /**
+     * 没有数据源时，更高版本写入的值（混合版本滚动升级期间）与读不懂的内容一样默认 `FAIL`：
+     * L1 是唯一副本，当作不存在会让调用方把“不存在”当作真实结果。抛出、保留 key、不写 L2、计入 `unknownFormats`。
+     */
+    @Test
+    fun newerFormatWithoutLoaderFailsAndIsKept() {
+        val cache = nodeA.cache(spec { loader = null })
+        cache.put("k", "v")
+        cache.put("other", "o")
+        val newer: (RemoteRead) -> RemoteRead = { read ->
+            if (read is RemoteRead.Hit) {
+                read.copy(
+                    format = read.format + 1
+                )
+            } else {
+                read
+            }
+        }
+        backend.afterRead = { _, read -> newer(read) }
+        backend.afterReadAll = { reads -> reads.mapValues { newer(it.value) } }
+        val error = runCatching { cache["k"] }.exceptionOrNull()
+        runCatching { cache.lookup("k") }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        val batchError = runCatching { cache.getAll(listOf("k", "other", "absent")) }.exceptionOrNull()
+        backend.afterRead = null
+        backend.afterReadAll = null
+        error.assert().isInstanceOf(CacheReadException::class.java)
+        val cause = requireNotNull(error?.cause as? ForeignFormatException)
+        cause.storageKey.assert().isEqualTo(storageKey("k"))
+        cause.format.assert().isEqualTo(backend.format + 1)
+        batchError.assert().isInstanceOf(CacheReadException::class.java)
+        batchError?.cause.assert().isInstanceOf(ForeignFormatException::class.java)
+        // 单 key 两次 + 批量两个 key
+        nodeA.metrics().unknownFormats.assert().isEqualTo(4)
+        nodeA.metrics().reclaims.assert().isEqualTo(0)
+        remote("absent").assert().isEqualTo(RemoteRead.Miss(false))
+        remoteValue("k").assert().isEqualTo("v")
+        // 没有写入 L2：恢复后照常读到
+        cache["k"].assert().isEqualTo("v")
+        cache.getAll(listOf("k", "other")).assert().isEqualTo(mapOf("k" to "v", "other" to "o"))
+    }
+
+    /**
+     * 显式 `RECLAIM`：没有数据源时更高版本写入的值按不存在处理（6.5.0 及以前的行为），不回收、不覆盖。
+     */
+    @Test
+    fun newerFormatWithoutLoaderReadsAbsentWhenReclaimIsConfigured() {
+        val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
+        val cache = nodeA.cache(spec(reclaim) { loader = null })
+        cache.put("k", "v")
+        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = read.format + 1) else read }
+        cache["k"].assert().isNull()
+        backend.afterRead = null
+        nodeA.metrics().unknownFormats.assert().isEqualTo(1)
+        remoteValue("k").assert().isEqualTo("v")
+    }
+
     @Test
     fun loadConcurrencyLimitRejects() {
         val limited = policy().toBuilder().load(LoadPolicy(maxConcurrent = 1, acquireTimeout = Duration.ZERO)).build()

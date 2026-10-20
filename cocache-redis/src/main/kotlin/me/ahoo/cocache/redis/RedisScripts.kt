@@ -259,6 +259,8 @@ return 1
 
     /**
      * 加入集合成员。ARGV：TTL、频道、帧、成员…
+     *
+     * 只用于 `foreignFormat = RECLAIM`：读不懂的内容被整体覆盖。默认（`FAIL`）用 [ADD_MEMBERS_IF_READABLE]。
      */
     val ADD_MEMBERS = Script(
         PRELUDE + """
@@ -278,6 +280,8 @@ return 1
 
     /**
      * 移除集合成员，移空则删除。ARGV：TTL、频道、帧、成员…
+     *
+     * 只用于 `foreignFormat = RECLAIM`：读不懂的内容不修改。默认（`FAIL`）用 [REMOVE_MEMBERS_IF_READABLE]。
      */
     val REMOVE_MEMBERS = Script(
         PRELUDE + """
@@ -294,6 +298,75 @@ if redis.call('TYPE', key)['ok'] == 'hash' and redis.call('HEXISTS', key, '!f') 
 end
 publish(ARGV[2], ARGV[3])
 return 1
+"""
+    )
+
+    /**
+     * 元素增删前的检查（只有 `*_IF_READABLE` 脚本引入）：返回 key 中不能当作本协议集合的内容的格式版本，可以写入时返回 `nil`。
+     * 不能当作集合：其它 Redis 类型（5.x 的原生 Set、List 等）与不是本协议写入的 String（`0`）、没有 `!f` 或 `!f` 无效的 Hash（`0`）、
+     * 本协议的标量值（其版本）、`!f` 高于本版本的集合（其版本）。不存在、负缓存、lease 占位可以写入。
+     */
+    private const val UNREADABLE_SET = """
+local function unreadable_set(key)
+  local kind = redis.call('TYPE', key)['ok']
+  if kind == 'none' then return nil end
+  if kind == 'string' then
+    local v = redis.call('GET', key)
+    if not is_ours(v) then return 0 end
+    local state = string.sub(v, 3, 3)
+    if state == 'M' or state == 'L' then return nil end
+    if state == 'V' then return string.byte(v, 2) end
+    return 0
+  end
+  if kind ~= 'hash' then return 0 end
+  local f = tonumber(redis.call('HGET', key, '!f') or '')
+  if f == nil or f < 1 then return 0 end
+  if f > $FORMAT then return f end
+  return nil
+end
+"""
+
+    /**
+     * 加入集合成员，但 key 中是读不懂的内容时不修改、不广播（没有数据源的集合缓存默认使用）。ARGV 同 [ADD_MEMBERS]。
+     * 返回 `{1}` 表示已写入，`{0, 格式版本}` 表示拒绝。
+     */
+    val ADD_MEMBERS_IF_READABLE = Script(
+        PRELUDE + UNREADABLE_SET + """
+local key = KEYS[1]
+local unreadable = unreadable_set(key)
+if unreadable then return {0, unreadable} end
+-- 只剩不存在、负缓存、lease 与本版本的集合：前三者先清除再创建集合
+if redis.call('TYPE', key)['ok'] ~= 'hash' then
+  redis.call('DEL', key)
+  redis.call('HSET', key, '!f', '1')
+end
+for i = 4, #ARGV do redis.call('HSET', key, '+' .. ARGV[i], '') end
+if tonumber(ARGV[1]) > 0 then redis.call('PEXPIRE', key, ARGV[1]) else redis.call('PERSIST', key) end
+publish(ARGV[2], ARGV[3])
+return {1}
+"""
+    )
+
+    /**
+     * 移除集合成员，但 key 中是读不懂的内容时不修改、不广播。ARGV 与返回值同 [ADD_MEMBERS_IF_READABLE]。
+     */
+    val REMOVE_MEMBERS_IF_READABLE = Script(
+        PRELUDE + UNREADABLE_SET + """
+local key = KEYS[1]
+local unreadable = unreadable_set(key)
+if unreadable then return {0, unreadable} end
+if redis.call('TYPE', key)['ok'] == 'hash' then
+  for i = 4, #ARGV do redis.call('HDEL', key, '+' .. ARGV[i]) end
+  if redis.call('HLEN', key) <= 1 then
+    redis.call('DEL', key)
+  elseif tonumber(ARGV[1]) > 0 then
+    redis.call('PEXPIRE', key, ARGV[1])
+  else
+    redis.call('PERSIST', key)
+  end
+end
+publish(ARGV[2], ARGV[3])
+return {1}
 """
     )
 

@@ -26,7 +26,7 @@ val members: Set<String> = online[roomId] // empty set when absent
 - No loader: `@CoCache(loader = ...)` fails startup and `get(key, loader)` throws.
 - `invalidate` and `invalidateAll` throw `UnsupportedOperationException`; use `clear`. `put(key, emptySet())` equals `clear(key)`.
 - TTL defaults to forever; `cocache.defaults.ttl` does not apply to set caches, only `cocache.caches.[name].ttl`. Each write resets a configured expiry.
-- Writes throw `CacheWriteException` (idempotent, retry). Reads throw the Redis error: there is no source to fall back to. An undecodable element throws; a set in a newer format throws `IllegalStateException`.
+- Writes throw `CacheWriteException` (idempotent, retry). Reads throw the Redis error: there is no source to fall back to. An undecodable element throws; a set in a newer format throws `IllegalStateException`. Content CoCache didn't write (e.g. an unmigrated 5.x native set) makes reads throw `CacheReadException`, and `add` / `remove` on it or on a newer-format set throw `CacheWriteException` (cause `ForeignFormatException`) and leave the key unchanged (6.5.1+, `foreign-format: fail`, the default); `put` replaces it.
 - The element codec must be canonical: members compare by encoded bytes.
 - Spec form: `setCacheSpec<K, E>("name") { elementCodec = ... }` registers a `SetCache<K, E>` bean.
 

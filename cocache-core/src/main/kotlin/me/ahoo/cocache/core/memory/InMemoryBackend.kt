@@ -240,18 +240,53 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         override fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
+            addMembers(key, members, ttl, frame, checked = false)
+        }
+
+        override fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
+            addMembers(key, members, ttl, frame, checked = true)
+
+        /**
+         * 本后端只存本协议的内容：不能当作集合的只有标量值（[checked] 时拒绝，返回本后端的格式版本）。
+         */
+        private fun addMembers(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray,
+            checked: Boolean
+        ): Int? {
+            var refused: Int? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
+                if (checked && slot?.state == State.VALUE) {
+                    refused = FORMAT
+                    return@compute slot
+                }
                 val existing = if (slot?.state == State.SET) (slot.envelope as Envelope.Members).members else emptyList()
                 Slot(State.SET, Envelope.Members(union(existing, members)), expireAt = expireAt(ttl))
             }
-            publish(namespace, frame)
+            if (refused == null) {
+                publish(namespace, frame)
+            }
+            return refused
         }
 
         override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
+            removeMembers(key, members, ttl, frame, checked = false)
+        }
+
+        override fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
+            removeMembers(key, members, ttl, frame, checked = true)
+
+        private fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray, checked: Boolean): Int? {
+            var refused: Int? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (slot?.state != State.SET) {
+                if (checked && slot?.state == State.VALUE) {
+                    refused = FORMAT
+                    slot
+                } else if (slot?.state != State.SET) {
                     slot
                 } else {
                     val remaining = (slot.envelope as Envelope.Members).members.filter { member ->
@@ -270,7 +305,10 @@ class InMemoryBackend @JvmOverloads constructor(
                     }
                 }
             }
-            publish(namespace, frame)
+            if (refused == null) {
+                publish(namespace, frame)
+            }
+            return refused
         }
 
         override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
@@ -319,6 +357,20 @@ class InMemoryBackend @JvmOverloads constructor(
             ttl: Duration?,
             frame: ByteArray
         ): CompletableFuture<Void?> = completing { removeMembers(key, members, ttl, frame) }
+
+        override fun addMembersIfReadableAsync(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray
+        ): CompletableFuture<Int?> = supply { addMembersIfReadable(key, members, ttl, frame) }
+
+        override fun removeMembersIfReadableAsync(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray
+        ): CompletableFuture<Int?> = supply { removeMembersIfReadable(key, members, ttl, frame) }
 
         private fun union(existing: List<ByteArray>, added: Collection<ByteArray>): List<ByteArray> {
             val result = ArrayList(existing)

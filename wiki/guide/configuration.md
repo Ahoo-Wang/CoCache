@@ -60,7 +60,7 @@ These keys work under both `cocache.defaults.` and `cocache.caches.[name].`.
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | Maximum L2 entries per instance |
 | `invalidate-failure` | `retry` \| `throw` | `retry` | — | A failed Redis invalidation: queue for background retry, or throw `CacheWriteException` |
 | `read-failure` | `degrade` \| `throw` | `degrade` | — | A failed Redis read: load from the source, or throw `CacheReadException` |
-| `foreign-format` | `fail` \| `reclaim` | `fail` without a loader, `reclaim` with one | — | Content the cache can't read (written by 5.x or another program, or undecodable): throw `CacheReadException` and keep it, or reclaim and reload. `cocache.defaults.foreign-format` doesn't apply to `SetCache`. See [Upgrading from 5.x](./migration-6.md#foreign-format). |
+| `foreign-format` | `fail` \| `reclaim` | `fail` without a loader, `reclaim` with one | — | Content the cache can't read (written by 5.x or another program, or undecodable): throw `CacheReadException` and keep it, or reclaim and reload. Without a loader, `fail` also applies to a value written by a newer CoCache version, and to `SetCache.add` / `remove` on unreadable content (they throw `CacheWriteException` and leave the key unchanged); `put` always replaces. `cocache.defaults.foreign-format` doesn't apply to `SetCache`. See [Upgrading from 5.x](./migration-6.md#foreign-format). |
 | `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | First part of every storage key ([below](#key-prefix)) |
 
 [Keeping Data Fresh](./freshness.md#lifetimes) explains how to choose these values.

@@ -14,6 +14,7 @@
 package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.CacheReadException
+import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
@@ -29,6 +30,7 @@ import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CompletionException
 
 /**
  * 集合缓存读到非本协议内容或更高版本格式时的处理（L1 是唯一副本，没有数据源可回源）。
@@ -93,5 +95,42 @@ class SetEngineFormatTest {
         backend.afterRead = null
         // 没有写入 L2：恢复后照常读到
         index["k"].assert().containsExactly("a")
+    }
+
+    /**
+     * 非原子广播的后端：写入失败后通常仍尽力广播（写入可能已部分生效），但后端拒绝的元素写入没有修改 L1，不广播。
+     */
+    @Test
+    fun refusedMemberWritesAreNotBroadcastWithoutAtomicBroadcast() {
+        val nonAtomic = HookedBackend(memory).apply { atomicBroadcastOverride = false }
+        val writer = CacheRuntime.builder().backend(nonAtomic).build()
+        val observer = CacheRuntime.builder().backend(memory).build()
+        try {
+            val cache: SetCache<String, String> = writer.create(setCacheSpec("plain") { elementCodec = StringCodec })
+            observer.create(setCacheSpec<String, String>("plain") { elementCodec = StringCodec })
+            memory.store("plain").put(
+                "cocache:plain:k",
+                Envelope.Scalar("x".toByteArray()),
+                null,
+                InvalidationFrame.encode(NodeId.random(), emptyList())
+            )
+            val received = requireNotNull(observer.metrics("plain")).invalidationsReceived
+
+            val error = runCatching { cache.add("k", listOf("a")) }.exceptionOrNull()
+            error.assert().isInstanceOf(CacheWriteException::class.java)
+            error?.cause.assert().isInstanceOf(ForeignFormatException::class.java)
+            val asyncError = cache.async().remove("k", listOf("a")).handle { _, e -> e }.join()
+            val unwrapped = if (asyncError is CompletionException) asyncError.cause else asyncError
+            unwrapped.assert().isInstanceOf(CacheWriteException::class.java)
+            unwrapped?.cause.assert().isInstanceOf(ForeignFormatException::class.java)
+            requireNotNull(observer.metrics("plain")).invalidationsReceived.assert().isEqualTo(received)
+
+            // 对照：成功的写入会广播（内存后端自己也广播，这里收到两次）
+            cache.add("other", listOf("a"))
+            requireNotNull(observer.metrics("plain")).invalidationsReceived.assert().isGreaterThan(received)
+        } finally {
+            writer.close()
+            observer.close()
+        }
     }
 }

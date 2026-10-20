@@ -259,7 +259,7 @@ val members: Set<String> = online[roomId] // empty set when absent
 - **`put(key, emptySet())` equals `clear(key)`**: an empty set is stored as no key. `putAll` follows the same rule for each entry ([batch writes](./freshness.md#batch-writes)).
 - **TTL defaults to forever.** Each `add` or `remove` resets the expiry when you set one.
 - **Failures are loud.** Writes throw `CacheWriteException` (they are idempotent, so retry). Reads throw the Redis error, since there is no source to fall back to.
-- **Unreadable content throws.** An element the codec can't decode makes the read throw, and a set written in a newer format throws `IllegalStateException`. Content CoCache didn't write (for example a native Redis Set at the same key) reads as an empty set, stays in L2 for at most `degradedLocalMaxAge`, and is replaced by the next `put` or `add`.
+- **Unreadable content throws.** An element the codec can't decode makes the read throw, and a set written in a newer format throws `IllegalStateException`. Content CoCache didn't write (for example a native Redis Set left by 5.x at the same key) makes the read throw `CacheReadException`, and an `add` or `remove` on it, or on a set in a newer format, throws `CacheWriteException` and leaves the key unchanged. Only `put` replaces it. With `foreign-format: reclaim` such content reads as an empty set instead, and the next `add` replaces it ([upgrading from 5.x](./migration-6.md#foreign-format)).
 - **Durability is Redis durability.** Use a `maxmemory-policy` that never evicts keys without a TTL (not `allkeys-*`). An asynchronous-replication failover can lose recent writes.
 
 If the set's truth lives in your database, don't use `SetCache`. Declare `Cache<K, Set<E>>`, update the database, and `invalidate`.

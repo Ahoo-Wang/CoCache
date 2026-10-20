@@ -51,6 +51,7 @@ Keys arrive complete, with prefix and namespace.
 | `reclaim` | Only if current content has digest `observed` and is not a lease: replace it with the lease; return whether done. Never delete changed content. |
 | `addMembers` | Set: add atomically. Anything else: replace with a set of these members. Destroy tokens, set expiry (`null` removes it), broadcast. |
 | `removeMembers` | Only on a set: remove, delete the key when empty, otherwise reset expiry. Broadcast in every case. |
+| `addMembersIfReadable` / `removeMembersIfReadable` (6.5.1+, optional) | Like the plain methods, but if the key holds something that is not a set of your protocol (content you didn't write, a scalar, a set in a newer format): change nothing, broadcast nothing, return that content's format (`0` = not yours); return `null` after a normal write. Absent, negative and leased keys are written. `SetCache` with `foreign-format: fail` (default) uses these. Default reads then writes (not atomic, can't see newer formats): override with one atomic check-and-write. |
 
 ## Rules across all methods
 

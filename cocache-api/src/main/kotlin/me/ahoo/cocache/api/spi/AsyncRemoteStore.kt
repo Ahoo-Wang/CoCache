@@ -93,6 +93,44 @@ interface AsyncRemoteStore : RemoteStore {
         ttl: Duration?,
         frame: ByteArray
     ): CompletableFuture<Void?>
+
+    /**
+     * 异步的 [RemoteStore.addMembersIfReadable]：不能当作本协议集合的内容不修改、不广播，以其格式版本完成；写入时以 `null` 完成。
+     *
+     * 默认实现先 [readAsync] 再 [addMembersAsync]（不原子，认不出更高的格式版本）；实现应当覆盖它。
+     */
+    fun addMembersIfReadableAsync(
+        key: String,
+        members: Collection<ByteArray>,
+        ttl: Duration?,
+        frame: ByteArray
+    ): CompletableFuture<Int?> = readAsync(key, null, null).thenCompose { read ->
+        val unreadable = unreadableSetFormat(read)
+        if (unreadable != null) {
+            CompletableFuture.completedFuture(unreadable)
+        } else {
+            addMembersAsync(key, members, ttl, frame).thenApply { null }
+        }
+    }
+
+    /**
+     * 异步的 [RemoteStore.removeMembersIfReadable]：不能当作本协议集合的内容不修改、不广播，以其格式版本完成；执行时以 `null` 完成。
+     *
+     * 默认实现先 [readAsync] 再 [removeMembersAsync]（不原子，认不出更高的格式版本）；实现应当覆盖它。
+     */
+    fun removeMembersIfReadableAsync(
+        key: String,
+        members: Collection<ByteArray>,
+        ttl: Duration?,
+        frame: ByteArray
+    ): CompletableFuture<Int?> = readAsync(key, null, null).thenCompose { read ->
+        val unreadable = unreadableSetFormat(read)
+        if (unreadable != null) {
+            CompletableFuture.completedFuture(unreadable)
+        } else {
+            removeMembersAsync(key, members, ttl, frame).thenApply { null }
+        }
+    }
 }
 
 /**

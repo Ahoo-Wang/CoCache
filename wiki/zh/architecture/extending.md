@@ -46,6 +46,9 @@ interface RemoteStore : AutoCloseable {
     fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean
     fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
     fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
+    // 6.5.1 起；默认实现：先 read，再 addMembers / removeMembers（不原子）
+    fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
+    fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
 }
 ```
 
@@ -76,6 +79,7 @@ interface RemoteStore : AutoCloseable {
 | `reclaim` | 仅当 key 当前内容的摘要等于 `observed` 且不是 lease 时，把它替换为 lease。返回是否替换。绝不删除已经变化的内容 |
 | `addMembers` | key 是集合：原子地加入成员。否则（不存在、负缓存、lease、标量）：替换为只含这些成员的集合。销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播 |
 | `removeMembers` | 仅当 key 是集合时：移除成员，集合变空时删除 key，否则重设到期时间。任何情况下都广播 |
+| `addMembersIfReadable` / `removeMembersIfReadable` | 同 `addMembers` / `removeMembers`，但 key 中不是本协议集合的内容（不是你写入的内容、标量值、比你的格式更高的集合）时：什么都不改、不广播，返回该内容的格式版本（不是你写入的内容为 `0`）。正常写入后返回 `null`。key 不存在、负缓存、lease 照常写入。`foreign-format: fail`（默认）的 `SetCache` 用它们代替普通方法，因为覆盖就是删除唯一副本。可选：默认实现先读后写，不原子，也认不出更高的格式，应覆盖为一次原子的检查加写入 |
 
 对所有方法：
 
@@ -177,7 +181,7 @@ class MyFaultTest : FaultSpec() {
 
 只实现 `RemoteStore` 的后端不需要改动就能配合[异步视图](../guide/async.md)：引擎在阻塞执行器上调用它的同步方法。要不占这些线程地服务异步调用方，请实现可选的子接口：
 
-- `AsyncRemoteStore extends RemoteStore` 增加 `readAsync`、`readAllAsync`、`fillAsync`、`fillAllAsync`、`releaseAsync`、`putAsync`、`putAllAsync`、`invalidateAsync`、`reclaimAsync`、`addMembersAsync` 与 `removeMembersAsync`，语义与对应的同步方法完全相同。
+- `AsyncRemoteStore extends RemoteStore` 增加 `readAsync`、`readAllAsync`、`fillAsync`、`fillAllAsync`、`releaseAsync`、`putAsync`、`putAllAsync`、`invalidateAsync`、`reclaimAsync`、`addMembersAsync`、`removeMembersAsync`，以及（默认实现基于 `readAsync`）`addMembersIfReadableAsync` 与 `removeMembersIfReadableAsync`，语义与对应的同步方法完全相同。
 - `AsyncInvalidationChannel extends InvalidationChannel` 增加 `publishAsync`，引擎在非原子后端上使用它。
 - **从不同步抛出。** 以失败的 future 代替，异常类型与同步方法相同，不是 `CompletionException`。
 - **每个操作都要有上限。** 永不完成的 future 会让该实例上的这个 key 一直卡到 `load-async-timeout`。
