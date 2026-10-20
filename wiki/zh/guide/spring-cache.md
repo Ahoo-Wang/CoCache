@@ -80,7 +80,7 @@ cocache:
 6.3 起，`retrieve` 经缓存的[异步视图](./async.md)，不再需要单独的执行器。6.3 之前，每个等待中的调用都占一个线程，执行器还必须不排队，才能避免嵌套的异步 `@Cacheable(sync = true)` 死锁；现在这两点都不存在了。
 
 - `cocache.spring-cache.retrieve-executor` 已弃用：设置时启动告警并被忽略，7.0 删除。
-- `CoCacheSpringCacheManager(runtime, executor)`、`CoCacheSpringCache(cache, admin, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 同样已弃用，执行器被忽略。
+- `CoCacheSpringCacheManager(runtime, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 同样已弃用，执行器被忽略。`CoCacheSpringCache(cache, admin, executor)` 没有弃用：其执行器执行 `retrieve(key, loader)` 的方法体，`CoCacheSpringCacheManager` 传入运行时的阻塞执行器。
 - 异步视图在 `cocache.async-executor` 与 `cocache.blocking-executor` 上运行；经 `retrieve` 调用的同步 loader 与异步 `@Cacheable(sync = true)` 方法的方法体都在阻塞执行器上执行。见[配置参考](./configuration.md#executors)。
 
 Spring Cache 的 `put` 与 `evict` 只有阻塞签名。响应式方法上的 `@CachePut`、`@CacheEvict` 与不带 sync 的 `@Cacheable` 会在完成回调中调用它们，占用该线程一次 Redis 往返。请继续使用 `sync = true`；写路径不能阻塞时调用 `cache.async().invalidate(key)`。

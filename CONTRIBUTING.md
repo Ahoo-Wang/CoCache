@@ -70,7 +70,7 @@ See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in
 - CoCache follows [Semantic Versioning](https://semver.org/). Breaking API or behavior changes bump
   MAJOR. Backward-compatible features bump MINOR. Fixes bump PATCH. The Redis wire format changes only
   in a MAJOR version.
-- `version` in `gradle.properties` is the next release version.
+- `version` in `gradle.properties` is the latest released version. The release PR changes it (see below).
 - The baseline is JDK 17, Kotlin metadata and API version 2.2, and Spring Boot 4.x. Raising any of
   them is a MAJOR change.
 - What the compatibility promise covers:
@@ -86,7 +86,7 @@ See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in
     `AnnotatedCacheFactory`, bean methods), `CacheProxies` (used by the starter),
     and the generated `copy` / `componentN` functions of configuration data classes (policies,
     `RedisBackendOptions`, `KeyInspection`, properties), which may gain properties in a MINOR version.
-    Construct those types with named arguments or their builders.
+    Construct policy types with their builders, or recompile when you upgrade to a new MINOR version.
 - To release:
   1. Open a PR titled `chore(release): bump version to X.Y.Z`. It sets `version=` in
      `gradle.properties`, adds the release to `wiki/guide/changelog.md` (en + zh, with a migration

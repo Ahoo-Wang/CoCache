@@ -1,6 +1,6 @@
 # RFC 0004：异步 API
 
-- 状态：**已批准（2026-10-19，维护者）**，待实施（§13）。范围按全文确定：异步读与写、`AsyncSetCache`、`AsyncInvalidationChannel`、A1–A14。本 RFC 就是 AGENTS.md 要求的“先问再改”：它修改 `cocache-api`（新增用户 API 与 SPI 接口、`Cache` / `SetCache` 各加一个 default 方法），并为可选模块 `cocache-coroutines` 引入新依赖 `kotlinx-coroutines-core`（§7，**已批准**，只用于该模块）。**不改线格式**，Lua 脚本不变。审阅中的修改：默认异步执行器由 `commonPool` 改为运行时自建的池（§5.1、§12 Q2）；补充同步与异步混合合并时不变量的论证（§5.4）；验收中写明同步命中不退化与 lease 等待的线程数测试（§10.1、§11）
+- 状态：**已实施（6.3.0：#653、#656、#657）**，2026-10-19 由维护者批准。范围按全文确定：异步读与写、`AsyncSetCache`、`AsyncInvalidationChannel`、A1–A14。本 RFC 就是 AGENTS.md 要求的“先问再改”：它修改 `cocache-api`（新增用户 API 与 SPI 接口、`Cache` / `SetCache` 各加一个 default 方法），并为可选模块 `cocache-coroutines` 引入新依赖 `kotlinx-coroutines-core`（§7，**已批准**，只用于该模块）。**不改线格式**，Lua 脚本不变。审阅中的修改：默认异步执行器由 `commonPool` 改为运行时自建的池（§5.1、§12 Q2）；补充同步与异步混合合并时不变量的论证（§5.4）；验收中写明同步命中不退化与 lease 等待的线程数测试（§10.1、§11）
 - 前提：6.x 小版本，**只做增量**。同步 API、同步 SPI、同步命中路径的行为与性能不变；所有新增接口方法都是 default 方法（`-jvm-default=enable`），对已有第三方实现二进制兼容。
 - 关系：兑现 [RFC 0003](0003-target-architecture.md) §8 Q8 的预留（当时的名字是 `AsyncCoCache`，本文改为 `AsyncCache`，与 `Cache` 对应）。规范以 [architecture.md](../architecture.md) 为准；本 RFC 实施时同步修改其 §1 非目标、§5 线程模型、§9.5 与 §14 不变量（§9）。
 - 触发条件：维护者已决定需要异步 API（Q8 的触发条件之一：reactive 用户的需求）。

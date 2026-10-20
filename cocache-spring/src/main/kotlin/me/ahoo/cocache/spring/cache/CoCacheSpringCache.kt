@@ -103,7 +103,7 @@ class CoCacheSpringCache(
     override fun retrieve(key: Any): CompletableFuture<*>? {
         // 不用 thenApply：它会把失败包成 CompletionException，调用方应看到原始异常
         val result = CompletableFuture<SpringCache.ValueWrapper?>()
-        cache.async().lookup(key).whenComplete { lookup, error ->
+        attempt { cache.async().lookup(key) }.whenComplete { lookup, error ->
             if (error != null) {
                 result.completeExceptionally(unwrap(error))
             } else {
@@ -121,7 +121,21 @@ class CoCacheSpringCache(
      */
     @Suppress("UNCHECKED_CAST")
     override fun <T : Any> retrieve(key: Any, valueLoader: Supplier<CompletableFuture<T>>): CompletableFuture<T> {
-        return cache.async().get(key, AsyncCacheLoader { _ -> dispatch(valueLoader) }) as CompletableFuture<T>
+        val loader = AsyncCacheLoader<Any, Any> { _ -> dispatch(valueLoader) }
+        return attempt { cache.async().get(key, loader) } as CompletableFuture<T>
+    }
+
+    /**
+     * 不同步抛出：`cache.async()`（如自定义 [Cache] 的默认实现抛出 UnsupportedOperationException）或其方法同步抛出时，
+     * 转为以该异常失败的 future。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private inline fun <R> attempt(block: () -> CompletableFuture<R>): CompletableFuture<R> {
+        return try {
+            block()
+        } catch (error: Throwable) {
+            CompletableFuture.failedFuture(error)
+        }
     }
 
     @Suppress("TooGenericExceptionCaught")

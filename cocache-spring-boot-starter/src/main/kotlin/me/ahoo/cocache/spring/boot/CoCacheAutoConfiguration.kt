@@ -25,6 +25,7 @@ import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.SmartInitializingSingleton
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor
+import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
@@ -224,10 +225,14 @@ class CoCacheAutoConfiguration {
         internal const val RETRIEVE_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.spring-cache.retrieve-executor"
         internal const val ASYNC_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.async-executor"
         internal const val BLOCKING_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.blocking-executor"
+        internal const val RUNTIME_BEAN = "cocacheRuntime"
 
         /**
          * 按 bean 名（不按类型：避免多个组件意外共用同一个有状态 bean）取得执行器；
          * bean 不存在或不是 [Executor] 时以指明配置项的消息启动失败。
+         *
+         * 登记 `cocacheRuntime` 依赖该执行器：容器关闭时先关闭运行时（其中的刷新、续接与阻塞调用随之停止），再销毁执行器，
+         * 否则执行器可能先被关闭，运行时关闭期间提交的任务被拒绝。
          */
         internal fun executorBean(beanFactory: ListableBeanFactory, property: String, beanName: String): Executor {
             check(beanFactory.containsBean(beanName)) {
@@ -237,7 +242,9 @@ class CoCacheAutoConfiguration {
                 "$property=$beanName - bean '$beanName' is a ${beanFactory.getType(beanName)?.name}, " +
                     "not a java.util.concurrent.Executor."
             }
-            return beanFactory.getBean(beanName, Executor::class.java)
+            val executor = beanFactory.getBean(beanName, Executor::class.java)
+            (beanFactory as? ConfigurableBeanFactory)?.registerDependentBean(beanName, RUNTIME_BEAN)
+            return executor
         }
 
         @Bean

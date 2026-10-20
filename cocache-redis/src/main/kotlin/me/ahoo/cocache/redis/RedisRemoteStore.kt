@@ -199,7 +199,7 @@ internal class RedisRemoteStore(
      * 只广播本组的 key，并发执行；原子性只在单个组内成立。
      */
     override fun putAll(puts: List<Put>, frame: ByteArray) {
-        putAllCommands(puts, frame).forEach { connections.await(it) }
+        awaitAll(putAllCommands(puts, frame))
     }
 
     override fun putAllAsync(puts: List<Put>, frame: ByteArray): CompletableFuture<Void?> =
@@ -228,7 +228,25 @@ internal class RedisRemoteStore(
     }
 
     override fun invalidate(keys: Collection<String>, frame: ByteArray) {
-        invalidateCommands(keys, frame).forEach { connections.await(it) }
+        awaitAll(invalidateCommands(keys, frame))
+    }
+
+    /**
+     * 等待全部组结束后再抛出按发出顺序的第一个异常（其余附为 suppressed）：调用方在失败后尽力广播（非原子模式），
+     * 广播不能先于仍在执行的组，否则其它节点可能在广播之后、该组写入之前从 L1 读到旧值并填充 L2。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun awaitAll(futures: List<CompletableFuture<List<Any?>>>) {
+        var failure: Exception? = null
+        futures.forEach { future ->
+            try {
+                connections.await(future)
+            } catch (e: Exception) {
+                val first = failure
+                if (first == null) failure = e else first.addSuppressed(e)
+            }
+        }
+        failure?.let { throw it }
     }
 
     override fun invalidateAsync(keys: Collection<String>, frame: ByteArray): CompletableFuture<Void?> =
