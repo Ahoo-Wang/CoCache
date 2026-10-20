@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.engine
 
+import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.Envelope
@@ -34,21 +35,29 @@ import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LocalPolicy
 import me.ahoo.cocache.test.CacheAccess
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.EngineSpec.TestCodec
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 引擎的降级、批量与刷新分支（TCK 之外的白盒用例）。[AsyncCoherentEngineTest] 经异步视图重跑全部用例。
  */
+@Suppress("LargeClass")
 open class CoherentEngineTest {
     /**
      * 访问缓存的方式：同步 API，或经异步视图（RFC 0004）。
@@ -91,15 +100,16 @@ open class CoherentEngineTest {
             maxBackoff = Duration.ofMillis(5)
         ),
         backend: me.ahoo.cocache.api.spi.CoherenceBackend = this.backend,
-        clock: me.ahoo.cocache.api.CacheClock = this.clock
+        clock: me.ahoo.cocache.api.CacheClock = this.clock,
+        asyncExecutor: Executor? = null
     ): CacheRuntime {
-        return CacheRuntime.builder()
+        val builder = CacheRuntime.builder()
             .backend(backend)
             .clock(clock)
             .refreshExecutor { refreshExecutor.execute(it) }
             .retryPolicy(retryPolicy)
-            .build()
-            .also { runtimes.add(it) }
+        asyncExecutor?.let { builder.asyncExecutor(it) }
+        return builder.build().also { runtimes.add(it) }
     }
 
     private fun spec(
@@ -450,6 +460,137 @@ open class CoherentEngineTest {
         val error = runCatching { cache.put("k", "v1") }.exceptionOrNull()
         error.assert().isInstanceOf(me.ahoo.cocache.api.CacheWriteException::class.java)
         requireNotNull(error).cause.assert().isSameAs(writeFailure)
+    }
+
+    /**
+     * 拒绝前 [remaining] 个任务、之后就地执行的异步执行器（模拟短暂饱和）。
+     */
+    private class RejectingExecutor(remaining: Int) : Executor {
+        private val remaining = AtomicInteger(remaining)
+        val rejected = AtomicInteger()
+
+        fun reset(remaining: Int) = this.remaining.set(remaining)
+
+        override fun execute(command: Runnable) {
+            if (remaining.getAndDecrement() > 0) {
+                rejected.incrementAndGet()
+                throw RejectedExecutionException("saturated")
+            }
+            command.run()
+        }
+    }
+
+    /**
+     * L1 的结果在另一个线程上、且只在 [HoppingNonAtomic.gate] 打开之后送达的非原子后端：
+     * 异步写入返回时 L1 尚未完成，广播与返回 future 的完成一定经执行器派发（结果已完成时就地执行，执行器不参与）。
+     */
+    private inner class HoppingNonAtomic : AutoCloseable {
+        private val io = Executors.newSingleThreadExecutor {
+            Thread(it, "tck-io").apply { isDaemon = true }
+        }
+        val gate = AtomicReference(CountDownLatch(0))
+        val backend = nonAtomic().apply {
+            ioExecutor = Executor { task ->
+                val opened = gate.get()
+                io.execute {
+                    opened.awaitOrFail("write issued")
+                    task.run()
+                }
+            }
+        }
+
+        /**
+         * 执行写入并返回调用方看到的异常：同步访问直接调用；异步访问在 L1 送达之前拿到 future，再打开闸门等待它完成。
+         */
+        fun outcome(
+            cache: TestCache,
+            async: (AsyncCache<String, String>) -> CompletableFuture<Void?>,
+            sync: (Cache<String, String>) -> Unit
+        ): Throwable? {
+            if (access == CacheAccess.SYNC) {
+                return runCatching { sync(cache) }.exceptionOrNull()
+            }
+            val opened = CountDownLatch(1)
+            gate.set(opened)
+            val write = async(cache.engine.async())
+            write.isDone.assert().isFalse()
+            opened.countDown()
+            return write.handle { _, error -> error }.get(
+                Concurrency.TIMEOUT.toMillis(),
+                TimeUnit.MILLISECONDS
+            )
+        }
+
+        override fun close() {
+            gate.get().countDown()
+            io.shutdownNow()
+        }
+    }
+
+    /**
+     * 非原子广播：执行器拒绝广播的派发时就地广播，写入的结果不被 `RejectedExecutionException` 替换（成功仍是成功，失败仍是原始异常）。
+     */
+    @Test
+    fun rejectedBroadcastDispatchStillPublishesAndKeepsTheWriteOutcome() {
+        HoppingNonAtomic().use { hopping ->
+            // 异步写入向执行器提交两个任务：广播的派发（被拒绝）与返回 future 的完成（执行）
+            val executor = RejectingExecutor(1)
+            val cacheA = runtime(backend = hopping.backend, asyncExecutor = executor).engine()
+            val cacheB = runtime(backend = hopping.backend).engine()
+            database["k"] = "v0"
+            cacheB["k"].assert().isEqualTo("v0")
+            hopping.outcome(cacheA, { it.put("k", "v1") }) { it.put("k", "v1") }.assert().isNull()
+            awaitCondition("B sees the put") { cacheB["k"] == "v1" }
+            cacheA.metrics.writeFailures.assert().isEqualTo(0)
+
+            executor.reset(1)
+            val writeFailure = IllegalStateException("reply lost")
+            hopping.backend.afterPut = { throw writeFailure }
+            val error = hopping.outcome(cacheA, { it.put("k", "v2") }) { it.put("k", "v2") }
+            error.assert().isInstanceOf(me.ahoo.cocache.api.CacheWriteException::class.java)
+            requireNotNull(error).cause.assert().isSameAs(writeFailure)
+            awaitCondition("B sees the put that failed but took effect") { cacheB["k"] == "v2" }
+            hopping.backend.afterPut = null
+
+            executor.reset(1)
+            hopping.outcome(cacheA, { it.invalidate("k") }) { it.invalidate("k") }.assert().isNull()
+            database["k"] = "v3"
+            awaitCondition("B sees the invalidation") { cacheB["k"] == "v3" }
+            // 成功的 invalidate 不登记重试
+            cacheA.pendingInvalidationCount.assert().isEqualTo(0)
+            cacheA.metrics.writeFailures.assert().isEqualTo(1)
+            // 同步路径不经执行器
+            val expectedRejections = if (access == CacheAccess.SYNC) 0 else 3
+            executor.rejected.get().assert().isEqualTo(expectedRejections)
+        }
+    }
+
+    /**
+     * 执行器拒绝一切任务：广播照样发出，写入不计为失败；异步调用方看到的是返回 future 的完成被拒绝（文档化的语义），
+     * 而不是写入失败（`invalidate` 不登记重试）。同步路径不经执行器，不受影响。
+     */
+    @Test
+    fun saturatedExecutorStillPublishesTheWrite() {
+        HoppingNonAtomic().use { hopping ->
+            val cacheA = runtime(backend = hopping.backend, asyncExecutor = RejectingExecutor(Int.MAX_VALUE)).engine()
+            val cacheB = runtime(backend = hopping.backend).engine()
+            database["k"] = "v0"
+            cacheB["k"].assert().isEqualTo("v0")
+            val putError = hopping.outcome(cacheA, { it.put("k", "v1") }) { it.put("k", "v1") }
+            awaitCondition("B sees the put") { cacheB["k"] == "v1" }
+            val invalidateError = hopping.outcome(cacheA, { it.invalidate("k") }) { it.invalidate("k") }
+            database["k"] = "v2"
+            awaitCondition("B sees the invalidation") { cacheB["k"] == "v2" }
+            if (access == CacheAccess.SYNC) {
+                putError.assert().isNull()
+                invalidateError.assert().isNull()
+            } else {
+                putError.assert().isInstanceOf(RejectedExecutionException::class.java)
+                invalidateError.assert().isInstanceOf(RejectedExecutionException::class.java)
+            }
+            cacheA.metrics.writeFailures.assert().isEqualTo(0)
+            cacheA.pendingInvalidationCount.assert().isEqualTo(0)
+        }
     }
 
     @Test
