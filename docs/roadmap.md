@@ -71,7 +71,7 @@ JMH 对比见 RFC 0003 §7.1。
 | 执行器可配置 | 运维 | `cocache.spring-cache.retrieve-executor`、`cocache.refresh-executor` 按 bean 名指定执行器（可用 `applicationTaskExecutor`），用户提供的执行器不随运行时关闭 | 绑定与元数据测试；指定的执行器确实被使用；未知 bean 名启动失败 |
 | `SetCache` 驱逐检查 | 安全 | 有 `SetCache` 时启动读取各主节点的 `maxmemory-policy`：`allkeys-*` 会驱逐集合的唯一副本；`cocache.redis.set-cache-eviction-check: warn \| fail \| off`，默认 `warn`；`CONFIG` 不可用时跳过并记录 | 单机与集群上读取策略；ACL 禁用 `CONFIG` 时跳过；告警与失败模式测试 |
 
-## v6.3：异步 API 与 6.1 之后的改进
+## v6.3：异步 API 与 6.1 之后的改进 — 已完成
 
 6.2 没有单独发布：原计划在 6.2 交付的内容随 6.3.0 一并发布。
 
@@ -96,17 +96,17 @@ JMH 对比见 RFC 0003 §7.1。
 | 非原子模式下执行器拒绝写入收尾 | G2 | 非原子广播时，用户配置的 `cocache.async-executor` 拒绝任务会让写入结果被 `RejectedExecutionException` 替换，广播也被跳过（`AbstractEngine.writeAsync` 中广播的派发被拒）。修法：派发被拒时在完成线程上直接 `publishAsync`，并保留写入的原始结果或异常 | ✅ 默认的 `ForkJoinPool` 不拒绝任务，不受影响；`CoherentEngineTest`（同步与异步视图）用拒绝任务的执行器与延迟送达的 L1 结果复现 |
 | 命令超时后的补发广播 | G2 | 同步 `putAll` / `invalidate` 失败后补发的广播可能先于仍在 Redis 端执行的超时命令生效，旧副本由 `localMaxAge` 兜底；失败路径最坏等待为“组数 × `commandTimeout`”（见 architecture.md §4.2） | ✅ 评估后维持现状：超时后无从得知命令是否执行，有上界的追加等待只能缩小窗口、不能关闭，却让失败路径更慢；理由记入 architecture.md §4.2 |
 
-## v6.4：Kotlin 协程
+## v6.4：Kotlin 协程 — 已完成
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
-| `cocache-coroutines` | 易用 | Kotlin 挂起视图（`cache.suspending()` / `SetCache.suspending()`、`SuspendingCacheLoader`、`suspendingLoader`），异步视图的薄封装；`kotlinx-coroutines-core` 只出现在该模块（RFC 0004 §7） | ✅ 已实现，待 6.4.0 发布；与 RFC 的差异见 RFC 0004 §14 |
+| `cocache-coroutines` | 易用 | Kotlin 挂起视图（`cache.suspending()` / `SetCache.suspending()`、`SuspendingCacheLoader`、`suspendingLoader`），异步视图的薄封装；`kotlinx-coroutines-core` 只出现在该模块（RFC 0004 §7） | ✅ 6.4.0 |
+
+## 6.4 之后
+
+| 项 | 目标 | 内容 | 现状 |
+|----|------|------|------|
 | 协程示例 | 易用 | `cocache-example` 中的 WebFlux + 协程示例（RFC 0004 §7） | 未开始 |
-
-## 6.3 之后
-
-| 项 | 目标 | 内容 | 现状 |
-|----|------|------|------|
 | 异步命令超时改用 Lettuce `TimeoutOptions` | G3 | 异步视图的命令超时目前由 `CompletableFuture.orTimeout` 计时（JDK 的单线程延迟调度器，每条命令一次调度与撤销），8 线程闭环基准低于 RFC 0004 §11 的 90% 的一部分来自这里；改由 Lettuce 自己的命令超时触发、在 `bounded` 中只做异常映射（RFC 0004 §14） | 未实现 |
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |

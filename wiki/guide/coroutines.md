@@ -5,7 +5,7 @@ description: Suspending CoCache from Kotlin coroutines with the optional cocache
 
 # Kotlin Coroutines
 
-The optional `cocache-coroutines` module (6.4+, not yet released) adds a suspending view over the [async API](./async.md). It is the same cache: the same L2, the same invalidation fences, the same in-flight loads and the same Redis leases. Methods have the same names as the synchronous API, they suspend instead of blocking, and they throw the original exception.
+The optional `cocache-coroutines` module (6.4+) adds a suspending view over the [async API](./async.md). It is the same cache: the same L2, the same invalidation fences, the same in-flight loads and the same Redis leases. Methods have the same names as the synchronous API, they suspend instead of blocking, and they throw the original exception.
 
 ## Adding the module {#install}
 
@@ -81,7 +81,7 @@ Production JVMs normally don't run with `-ea`. If your tests compare exception i
 
 ## Re-entry {#reentry}
 
-A loader that reads the key it is loading, from the same cache, would wait for itself until `load-async-timeout`. Instead, it fails at once with `IllegalStateException`, as it does on the synchronous API. The check goes with the loader's coroutine context, so it holds after the loader suspends and resumes on another thread. It covers reads through the suspending view (`get`, `getAll`, `lookup`). Other keys, and caches with other names (or other instances), are not affected. Keys are compared as `K` values, not as encoded storage keys: two unequal keys that encode to the same storage key aren't caught, and fail only at `load-async-timeout`.
+A loader that reads the key it is loading, from the same cache, would wait for itself until `load-async-timeout`. Instead, it fails at once with `IllegalStateException`, as it does on the synchronous API. The check goes with the loader's coroutine context, so it holds after the loader suspends and resumes on another thread. It covers reads through the suspending view (`get`, `getAll`, `lookup`). Other keys, and other caches, are not affected: for per-call loaders that means caches with other names or other instances, for spec-level loaders caches with other names (see below). Keys are compared as `K` values, not as encoded storage keys: two unequal keys that encode to the same storage key aren't caught, and fail only at `load-async-timeout`.
 
 - **Per-call loaders** are matched by cache instance: a same-named cache on another runtime, as in a multi-node test, is a different cache.
 - **Spec-level loaders** (`suspendingLoader`) are matched by cache name, because the spec doesn't know its runtime yet.

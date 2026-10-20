@@ -15,7 +15,7 @@ This page takes a Spring Boot application from no cache to a working two-level c
 
 ```kotlin [Gradle (Kotlin)]
 dependencies {
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.3.1")
+    implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.4.0")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
     implementation("org.springframework.boot:spring-boot-starter-actuator") // optional: the cocache endpoint
 }
@@ -23,7 +23,7 @@ dependencies {
 
 ```groovy [Gradle (Groovy)]
 dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:6.3.1'
+    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:6.4.0'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
     implementation 'org.springframework.boot:spring-boot-starter-actuator' // optional: the cocache endpoint
 }
@@ -33,7 +33,7 @@ dependencies {
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>6.3.1</version>
+    <version>6.4.0</version>
 </dependency>
 <dependency>
     <groupId>org.springframework.boot</groupId>

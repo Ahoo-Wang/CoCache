@@ -13,6 +13,8 @@ Declare a cache as an interface (`@CoCache interface UserCache : Cache<String, U
 - [Keeping Data Fresh](https://cocache.ahoo.me/guide/freshness): write then invalidate, `invalidate` vs `put`, `TransactionalInvalidator`, `ExternalInvalidator`, choosing lifetimes
 - [JoinCache](https://cocache.ahoo.me/guide/join-cache): `@JoinCacheable` read-only views over two caches, `@EnableCoCache(joinCaches = [...])`
 - [Spring Cache](https://cocache.ahoo.me/guide/spring-cache): `CoCacheSpringCacheManager`, `@Cacheable(sync = true)`, the sync check, transactions
+- [Async API](https://cocache.ahoo.me/guide/async): `cache.async()`, `AsyncCacheLoader`, threads and executors, `load-async-timeout`, exceptions and cancellation, Spring Cache `retrieve`
+- [Kotlin Coroutines](https://cocache.ahoo.me/guide/coroutines): the optional `cocache-coroutines` module, `cache.suspending()`, `SuspendingCacheLoader` and `suspendingLoader`, loader context and dispatchers, cancellation, re-entry
 - [Testing](https://cocache.ahoo.me/guide/testing): memory backend in `@SpringBootTest`, `ManualClock`, `InMemoryBackend` unit tests, `HookedBackend` fault injection
 - [Native Images](https://cocache.ahoo.me/guide/native): Spring AOT and GraalVM native images, the hints the starter registers (proxies, SpEL roots, Jackson bindings), and the hints you provide (spec-cache codecs, custom codecs, SpEL beyond the root object)
 - [Configuration Reference](https://cocache.ahoo.me/guide/configuration): every `cocache.*` property with type, default and unit; precedence layering

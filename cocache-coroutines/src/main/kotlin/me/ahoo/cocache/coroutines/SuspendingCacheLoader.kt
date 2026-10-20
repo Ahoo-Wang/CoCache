@@ -25,6 +25,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.future.future
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.coroutines.LoadCancellation.cancellationAsFailure
+import me.ahoo.cocache.coroutines.LoadCancellation.cancelledAsFailure
 import java.util.concurrent.CompletionStage
 import kotlin.coroutines.CoroutineContext
 
