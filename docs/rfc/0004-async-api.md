@@ -226,7 +226,7 @@ interface AsyncInvalidationChannel : InvalidationChannel {
 ### 4.3 Redis 后端
 
 - 每个 `xxxAsync` 是现有实现去掉 `connections.await(…)`：`readAsync` 直接返回 `evalAsync(READ…).thenApply(::decodeRead)`；`readAllAsync` 以 `allOf` 合并，任一失败时与同步版本一样先尽力释放其余已取得的 lease，再以第一个异常完成；`putAllAsync` / `invalidateAsync` 合并各 slot 组的 future。
-- **超时与异常类型与同步路径一致**：每个 future 加 `orTimeout(commandTimeout)`；超时时取消底层命令 future（与 `await` 的 `future.cancel(false)` 相同），并转换为同样的 `RedisException("Command timed out after …")`；`ExecutionException` / `CompletionException` 解包为原始的运行时异常。这样 `readFailure`、`invalidateFailure` 的判定在同步与异步路径上完全相同。
+- **超时与异常类型与同步路径一致**（6.4 之后计时改由 Lettuce 的命令超时与时间轮承担，见 §14）：每个 future 加 `orTimeout(commandTimeout)`；超时时取消底层命令 future（与 `await` 的 `future.cancel(false)` 相同），并转换为同样的 `RedisException("Command timed out after …")`；`ExecutionException` / `CompletionException` 解包为原始的运行时异常。这样 `readFailure`、`invalidateFailure` 的判定在同步与异步路径上完全相同。
 - 同步方法改为 `connections.await(xxxAsync(…))`：同步与异步只有一份协议实现。
 - `NOSCRIPT` 回退（`evalAsync` 的 `exceptionallyCompose`）本来就是异步的，不变。
 - 断线时拒绝命令（`REJECT_COMMANDS`）不变：被拒绝的命令立即以异常完成。
@@ -525,7 +525,7 @@ interface LoadObserver {
 ### 10.2 模块测试
 
 - core：`SingleFlight.executeAsync` / `executeAllAsync` 的单元测试（先注销再发布：在发布回调里重新执行必然开始新调用；副本取消；混合同步异步）；许可与超时的定时器；运行时关闭。
-- redis：`orTimeout` 与同步 `await` 的异常类型一致；`readAllAsync` 部分失败时释放 lease；`NOSCRIPT` 回退在异步方法上同样生效。
+- redis：异步超时（§14 之后由 Lettuce 的命令超时与时间轮计时）与同步 `await` 的异常类型一致；`readAllAsync` 部分失败时释放 lease；`NOSCRIPT` 回退在异步方法上同样生效。
 - spring / starter：`retrieve` 不再使用执行器（L2 命中为已完成 future、未命中不占线程）；嵌套的异步 `sync = true` 在单线程执行器下不死锁；`AsyncCacheLoader` bean 的解析与冲突；`cocache.async-executor` / `cocache.blocking-executor` 绑定；弃用告警；`MicrometerLoadObserver.observeAsync`；AOT 提示测试。
 - 覆盖率门槛（≥ 95% 行 / ≥ 90% 分支）对新代码同样适用。
 

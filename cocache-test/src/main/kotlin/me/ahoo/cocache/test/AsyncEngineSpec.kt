@@ -586,8 +586,8 @@ abstract class AsyncEngineSpec : EngineSpec() {
         const val WAITERS = 1000
 
         /**
-         * 等待期间允许新增的线程数，与 [WAITERS] 无关。原为 4，在 Redis 上实测为 5：定时器线程、JDK 的延迟调度线程
-         * （异步命令超时 `orTimeout` 首次使用时创建），以及 L1 客户端按需创建的 I/O 线程都是常数级的固定开销。
+         * 等待期间允许新增的线程数，与 [WAITERS] 无关。原为 4，在 Redis 上实测为 5：定时器线程、命令超时的计时线程
+         * （JDK 的延迟调度线程或 Lettuce 的时间轮线程，首次使用时创建），以及 L1 客户端按需创建的 I/O 线程都是常数级的固定开销。
          * 取 8 留出余量；每个等待者占一个线程时增量会是 [WAITERS] 量级（1000），断言仍然有区分度。
          */
         const val CONSTANT_THREADS = 8

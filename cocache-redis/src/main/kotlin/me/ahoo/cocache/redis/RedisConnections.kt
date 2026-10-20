@@ -15,6 +15,7 @@ package me.ahoo.cocache.redis
 
 import io.lettuce.core.AbstractRedisClient
 import io.lettuce.core.RedisClient
+import io.lettuce.core.RedisCommandTimeoutException
 import io.lettuce.core.RedisException
 import io.lettuce.core.RedisNoScriptException
 import io.lettuce.core.ScriptOutputType
@@ -28,6 +29,7 @@ import io.lettuce.core.cluster.api.StatefulRedisClusterConnection
 import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import io.lettuce.core.codec.ByteArrayCodec
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection
+import io.netty.util.Timer
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
@@ -39,8 +41,14 @@ import java.util.concurrent.TimeoutException
  * 命令连接与订阅连接（单机或集群），统一脚本执行。
  *
  * 并发的异步命令在同一条共享连接上多路复用；调用方线程同步等待结果，续接中不做任何阻塞工作。
+ *
+ * @param timeouts 异步命令由谁计时（[CommandTimeouts]）
  */
-internal class RedisConnections(client: AbstractRedisClient, private val commandTimeout: Duration) : AutoCloseable {
+internal class RedisConnections(
+    client: AbstractRedisClient,
+    private val commandTimeout: Duration,
+    private val timeouts: CommandTimeouts = CommandTimeouts.TIMER,
+) : AutoCloseable {
     val cluster: Boolean = client is RedisClusterClient
     private val connection: StatefulConnection<ByteArray, ByteArray>
     private val scripting: RedisScriptingAsyncCommands<ByteArray, ByteArray>
@@ -68,6 +76,11 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
             else -> throw IllegalArgumentException("Unsupported Redis client: ${client.javaClass.name}.")
         }
     }
+
+    /**
+     * 客户端资源的时间轮（Netty `HashedWheelTimer`，Lettuce 的命令超时也用它）：[CommandTimeouts.guarded] 时为异步命令计时（在连接建立之后取得）。
+     */
+    private val timer: Timer = client.resources.timer()
 
     /**
      * 异步执行脚本：EVALSHA，遇到 NOSCRIPT（故障切换、重启、resharding 后脚本缓存丢失）时改用 EVAL（会重新缓存）。
@@ -113,28 +126,34 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
         mapped(bounded(base.spublish(channel, message).toCompletableFuture())) { null }
 
     /**
-     * [await] 的异步版本（RFC 0004 §4.3）：超时与异常类型与同步等待一致。超过 `commandTimeout` 时取消命令并以
-     * [RedisException] 失败；执行异常解包为原始的运行时异常（不是运行时异常的包装为 [RedisException]）。
-     * 返回的是新的 future（取消它不影响命令），在 Lettuce 的 I/O 线程或 JDK 的延迟线程上完成：引擎会切换线程。
+     * [await] 的异步版本（RFC 0004 §4.3）：超时与异常类型与同步等待一致。超过 `commandTimeout` 时以 [RedisException]
+     * 失败（不再等待应答）；执行异常解包为原始的运行时异常（不是运行时异常的包装为 [RedisException]）。
+     * 返回的是新的 future（取消它不影响命令），在 Lettuce 的 I/O 线程、事件执行器或时间轮线程上完成：引擎会切换线程。
+     *
+     * 自建客户端的超时由 Lettuce 的命令超时触发，这里把它的 [RedisCommandTimeoutException] 映射为同样的异常；
+     * [CommandTimeouts.guarded] 时另由 [timer] 计时，命令完成时撤销（RFC 0004 §14）。都不经 JDK 的单线程延迟调度器。
      */
     fun <T> bounded(future: CompletableFuture<T>): CompletableFuture<T> {
-        val pending = CompletableFuture<T>()
-        future.whenComplete { value, error ->
-            if (error == null) pending.complete(value) else pending.completeExceptionally(failureOf(error))
-        }
-        // orTimeout 作用于自己的副本（它会完成 future 本身），命令完成时 JDK 撤销超时任务
-        pending.orTimeout(commandTimeout.toMillis(), TimeUnit.MILLISECONDS)
         val result = CompletableFuture<T>()
-        pending.whenComplete { value, error ->
-            when (error) {
-                null -> result.complete(value)
-                is TimeoutException -> {
-                    future.cancel(false)
-                    result.completeExceptionally(RedisException("Command timed out after $commandTimeout.", error))
-                }
-
-                else -> result.completeExceptionally(error)
+        if (!timeouts.guarded) {
+            future.whenComplete { value, error ->
+                if (error == null) result.complete(value) else result.completeExceptionally(failureOf(error))
             }
+            return result
+        }
+        val timeout = try {
+            timer.newTimeout({
+                if (result.completeExceptionally(timedOut(TimeoutException()))) {
+                    future.cancel(false)
+                }
+            }, commandTimeout.toNanos(), TimeUnit.NANOSECONDS)
+        } catch (_: IllegalStateException) {
+            // 时间轮已停止：客户端已关闭，命令本身会以连接关闭失败
+            null
+        }
+        future.whenComplete { value, error ->
+            timeout?.cancel()
+            if (error == null) result.complete(value) else result.completeExceptionally(failureOf(error))
         }
         return result
     }
@@ -161,20 +180,32 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
 
     private fun failureOf(error: Throwable): RuntimeException {
         val cause = if (error is CompletionException || error is ExecutionException) error.cause ?: error else error
+        if (timeouts.clientTimed && cause is RedisCommandTimeoutException) {
+            return timedOut(cause)
+        }
         return cause as? RuntimeException ?: RedisException(cause)
     }
 
     /**
+     * 同步与异步路径、各种计时方式共用的超时异常。
+     */
+    private fun timedOut(cause: Throwable): RedisException =
+        RedisException("Command timed out after $commandTimeout.", cause)
+
+    /**
      * 同步等待：超时、执行异常都转换为运行时异常抛出。
+     *
+     * 等待本身受 `commandTimeout` 限制（与客户端是否计时无关）；[CommandTimeouts.clientTimed] 时客户端的超时可能先于
+     * 等待触发，映射为同样的异常。
      */
     fun <T> await(future: CompletableFuture<T>): T {
         val failure: RuntimeException = try {
             return future.get(commandTimeout.toMillis(), TimeUnit.MILLISECONDS)
         } catch (e: ExecutionException) {
-            e.cause as? RuntimeException ?: RedisException(e.cause)
+            failureOf(e)
         } catch (e: TimeoutException) {
             future.cancel(false)
-            RedisException("Command timed out after $commandTimeout.", e)
+            timedOut(e)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             RedisException("Interrupted while waiting for Redis.", e)
@@ -244,4 +275,28 @@ internal class RedisConnections(client: AbstractRedisClient, private val command
             return error is RedisNoScriptException || error.message?.startsWith("NOSCRIPT") == true
         }
     }
+}
+
+/**
+ * 异步命令由谁计时（RFC 0004 §14）。
+ *
+ * @property clientTimed 客户端按 `commandTimeout` 为命令计时（[RedisBackend.timeoutOptions]），它的超时映射为与同步等待相同的异常
+ * @property guarded 后端另以客户端资源的时间轮计时（客户端的计时不覆盖全程，或未知）
+ */
+internal enum class CommandTimeouts(val clientTimed: Boolean, val guarded: Boolean) {
+    /**
+     * 自建的单机客户端：命令从发出到完成都由 Lettuce 计时，异步结果只做异常映射。
+     */
+    CLIENT(clientTimed = true, guarded = false),
+
+    /**
+     * 自建的集群客户端：Lettuce 只为已写入节点连接的命令计时，等待建立节点连接（首次访问某节点、拓扑变化后）的命令不计时，
+     * 由时间轮兜底。
+     */
+    CLIENT_WRITTEN(clientTimed = true, guarded = true),
+
+    /**
+     * 调用方的客户端：选项未知，由时间轮计时，客户端自己的异常原样传递。
+     */
+    TIMER(clientTimed = false, guarded = true),
 }

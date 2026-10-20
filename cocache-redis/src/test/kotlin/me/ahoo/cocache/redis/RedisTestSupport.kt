@@ -204,6 +204,13 @@ object RedisTestSupport {
         }
     }
 
+    /**
+     * 暂停所有节点（集群中含从节点）上的客户端命令 [millis] 毫秒：暂停期间发出的命令在服务端排队。
+     */
+    fun pauseClients(millis: Long) {
+        forEachNode { it.clientPause(millis) }
+    }
+
     private fun forEachNode(block: (io.lettuce.core.api.sync.RedisCommands<String, String>) -> Unit) {
         val nodes = clusterNodes
         if (nodes != null) {
