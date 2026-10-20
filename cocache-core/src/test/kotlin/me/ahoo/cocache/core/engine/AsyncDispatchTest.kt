@@ -98,9 +98,11 @@ class AsyncDispatchTest {
         val completedOn = CompletableFuture<String>()
         future.whenComplete { _, _ -> completedOn.complete(Thread.currentThread().name) }
         opened.countDown()
+        // 先等回调执行完再等结果：在 future 上等待的线程按 JDK 规则可能代为执行它尚未执行的依赖阶段
+        val thread = completedOn.get(10, TimeUnit.SECONDS)
         val value = future.get(10, TimeUnit.SECONDS)
         gate.set(CountDownLatch(0))
-        return Triple(value, completedOn.get(10, TimeUnit.SECONDS), dispatches.get() to blockingDispatches.get())
+        return Triple(value, thread, dispatches.get() to blockingDispatches.get())
     }
 
     @Test
