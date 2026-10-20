@@ -38,6 +38,7 @@ docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 | One class or method | `./gradlew :cocache-core:test --tests "me.ahoo.cocache.core.engine.CoherentEngineTest"` |
 | Lint (**rewrites files**: `autoCorrect = true`) | `./gradlew detekt` |
 | Runtime compatibility on a newer JDK | `./gradlew test -PtestJavaVersion=25` |
+| Runtime compatibility on Spring Boot 4.0 (CI job `Test (Spring Boot 4.0)`; artifacts still compile against the catalog's Boot version, only the test runtime classpath is forced to that `spring-boot-dependencies`) | `./gradlew -PtestSpringBootVersion=4.0.8 :cocache-redis:test :cocache-spring-boot-starter:test :cocache-example:test` |
 | Redis modules on a local Redis Cluster (needs `redis-server` 7+) | `.github/scripts/start-redis-cluster.sh`, then `SPRING_DATA_REDIS_CLUSTER_NODES=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002 ./gradlew :cocache-redis:test :cocache-spring-boot-starter:test` |
 | Redis modules on Valkey (CI job `Test (Valkey)`; the port avoids the Redis container) | `docker run -d --name cocache-valkey -p 6380:6379 valkey/valkey:8-alpine`, then `SPRING_DATA_REDIS_PORT=6380 ./gradlew :cocache-redis:test --rerun :cocache-spring-boot-starter:test --rerun` |
 | Hit-path benchmark (`CoCacheBenchmark`; never run by `check`; `--rerun` because Gradle otherwise reuses the last result; `-PjmhIncludes` is a regex, so `l2Hit` also runs `l2HitViaInterface` and `l2HitMixed`) | `./gradlew :cocache-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit` |

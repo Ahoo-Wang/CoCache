@@ -24,6 +24,22 @@
       "matchDatasources": ["java-version"],
       "matchUpdateTypes": ["major"],
       "enabled": false
+    },
+    {
+      "description": "The Spring Boot 4.0 compatibility job in CI tracks 4.0.x patches only; the build's Spring Boot version lives in libs.versions.toml",
+      "matchFileNames": [".github/workflows/ci.yml"],
+      "matchPackageNames": ["org.springframework.boot:spring-boot-dependencies"],
+      "allowedVersions": "/^4\\.0\\./"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Versions in workflows annotated with a `# renovate:` comment",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+: (?<currentValue>\\S+)"
+      ]
     }
   ]
 }

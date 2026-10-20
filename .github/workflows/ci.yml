@@ -17,6 +17,7 @@
 # - Test (JDK 25)：产物仍按 JDK 17 编译，测试运行在最新 LTS 上，验证运行时兼容性
 # - Test (Redis Cluster)：Redis 相关模块的测试在 3 主 3 从的 Redis Cluster 上运行（slot 路由、pipeline、Pub/Sub）
 # - Test (Valkey)：Redis 相关模块的测试在 Valkey 单机上运行（Lua 脚本、ACL 报错、CONFIG、Sharded Pub/Sub 的兼容性）
+# - Test (Spring Boot 4.0)：产物仍按 Spring Boot 4.1 编译，Redis 相关模块与示例的测试运行在 Spring Boot 4.0 管理的依赖上（Lettuce 6.8、Spring Data Redis 4.0），验证 "Spring Boot 4.x" 基线
 name: CI
 on:
   push:
@@ -233,5 +234,51 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-reports-valkey
+          path: '**/build/reports/tests/'
+          retention-days: 7
+
+  test-spring-boot-4-0:
+    name: Test (Spring Boot 4.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # 支持的最老 Spring Boot 小版本的最新补丁；Renovate 只在 4.0.x 内更新它（renovate.json 的 customManagers）
+      # renovate: datasource=maven depName=org.springframework.boot:spring-boot-dependencies
+      SPRING_BOOT_4_0_VERSION: 4.0.8
+    services:
+      redis:
+        image: redis:8-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      # 只替换测试运行时类路径：编译与发布的依赖版本不变，模拟用户在 Boot 4.0 应用里使用已发布的产物
+      - name: Test Redis modules and the example on Spring Boot 4.0
+        run: >-
+          ./gradlew --continue
+          -PtestSpringBootVersion="$SPRING_BOOT_4_0_VERSION"
+          :cocache-redis:test
+          :cocache-spring-boot-starter:test
+          :cocache-example:test
+
+      - name: Upload test reports
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-spring-boot-4-0
           path: '**/build/reports/tests/'
           retention-days: 7
