@@ -5,9 +5,9 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布
+## v6.4.1（当前版本）
 
-**模块组：** `me.ahoo.cocache` · 没有 API 变化，Redis 线格式与失效频道也不变。
+**模块组：** `me.ahoo.cocache` · 修订版本。API 与配置都没有变化。Redis 线格式与失效频道都没有变化，6.4.1 的实例可以与任何 6.x 实例共用 Redis，逐台升级。
 
 ### 异步 Redis 命令的超时
 
@@ -28,9 +28,9 @@ description: CoCache 版本发布历史和重要变更。
 ### 修复
 
 - **Lettuce 6.8（Spring Boot 4.0）上心跳永久停止。** 自 6.0.0 起，在 Spring Boot 4.0 管理的 Lettuce 版本上，心跳失败后的强制重连会抛出 `NoClassDefFoundError`（它用到了 Lettuce 7 的 `Delegating` 接口）。这个错误逃出了心跳任务，订阅连接从此不再被检查，半开连接之后节点无法自愈。强制重连已不再使用这个接口。心跳任务现在也会记录任何错误（包括 `Error`），然后继续下一次心跳。`cocache-redis` 的全部测试在 Lettuce 6.8.2 与 7.5.2 上都通过。
-- **就地续接不再误判重入。** 线程在加载某个 key 期间（作为同步调用的 leader，或在数据源中），在这个线程上完成的其它 key 的异步续接不再就地执行。这包括数据源完成另一个 key 的加载，以及同步 leader 把回源许可交给另一个 key 的异步等待者。修复之前，那个 key 的回调再读正在加载的 key 会以 `IllegalStateException`（"Recursive call on the same key"）失败。只影响未发布的改动，6.4.0 不受影响。
+- **就地续接不再误判重入。** 线程在加载某个 key 期间（作为同步调用的 leader，或在数据源中），在这个线程上完成的其它 key 的异步续接不再就地执行。这包括数据源完成另一个 key 的加载，以及同步 leader 把回源许可交给另一个 key 的异步等待者。修复之前，那个 key 的回调再读正在加载的 key 会以 `IllegalStateException`（"Recursive call on the same key"）失败。问题来自 6.4.0 之后的改动，没有任何已发布版本受影响。
 
-## v6.4.0（当前版本）
+## v6.4.0
 
 **模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。已有模块没有 API 变化，Redis 线格式与失效频道也不变，6.x 实例可以共用 Redis，逐台升级。
 

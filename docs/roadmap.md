@@ -102,13 +102,19 @@ JMH 对比见 RFC 0003 §7.1。
 |----|------|------|------|
 | `cocache-coroutines` | 易用 | Kotlin 挂起视图（`cache.suspending()` / `SetCache.suspending()`、`SuspendingCacheLoader`、`suspendingLoader`），异步视图的薄封装；`kotlinx-coroutines-core` 只出现在该模块（RFC 0004 §7） | ✅ 6.4.0 |
 
+## v6.4.1：修复与异步性能 — 已完成
+
+| 项 | 目标 | 内容 | 现状 |
+|----|------|------|------|
+| 8 线程异步闭环低于 RFC 0004 §11 的 90% | G3 | 6.3 实测为同步的 80%–93%（RFC 0004 §14“6.3 / PR 2”）；去掉 `orTimeout` 后不变，主因已查明：异步链每一级都派发到执行器（L1 命中 4 次、未命中 7 次，A9 只要求 1 次、3 次），每次多余的派发在 `ForkJoinPool` 上引起一次唤醒；A9 要求的那一次切换约占 5–7 个百分点（[调查报告](investigations/async-8t-gap.md)） | ✅ 6.4.1：上一步在同一执行器派发的续接中完成时就地执行（`Futures.continueOn`），L1 命中每次只派发 1 次、未命中至多 3 次；与 6.4.0 交替对比，L1 命中 1 线程 +5.5%、8 线程 +8%，未命中 8 线程至少约 +8%（只有 2 对有效数据），写入与 L2 命中持平 |
+| 异步命令超时改用 Lettuce `TimeoutOptions` | G3 | 异步视图的命令超时目前由 `CompletableFuture.orTimeout` 计时（JDK 的单线程延迟调度器，每条命令一次调度与撤销），8 线程闭环基准低于 RFC 0004 §11 的 90% 的一部分来自这里；改由 Lettuce 自己的命令超时触发、在 `bounded` 中只做异常映射（RFC 0004 §14） | ✅ 6.4.1：单机只由 Lettuce 计时；集群中等待建立节点连接的命令 Lettuce 不计时，另以它的时间轮兜底。收益是不再依赖 JDK 的单线程延迟调度器；“8 线程差距部分来自 `orTimeout`”的假设未被证实（8 线程 99.1%–101.8%，见 RFC 0004 §14） |
+| Lettuce 6.8（Spring Boot 4.0）兼容 | G1 | Spring Boot 4.0 管理的 Lettuce 6.8 没有 Lettuce 7 的 `Delegating` 接口与维护期间的超时放宽：6.0–6.4.0 在 6.8 上心跳失败后强制重连抛出 `NoClassDefFoundError`，心跳任务永久停止 | ✅ 6.4.1：强制重连不再依赖 `Delegating`，维护期间的放宽在 6.x 上跳过；心跳任务兜住任何 `Throwable`，订阅者的重置互不影响；CI 在 Spring Boot 4.0 上测试 Redis 模块与示例（#675） |
+| 协程示例 | 易用 | `cocache-example` 中的 WebFlux + 协程示例（RFC 0004 §7）：`CoroutineController`（`suspend fun` 处理器、`cache.suspending()`、调用级 loader、写后失效）与 `suspendingLoader` 声明的 `profile` 缓存 | ✅ 6.4.1 |
+
 ## 6.4 之后
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
-| 协程示例 | 易用 | `cocache-example` 中的 WebFlux + 协程示例（RFC 0004 §7）：`CoroutineController`（`suspend fun` 处理器、`cache.suspending()`、调用级 loader、写后失效）与 `suspendingLoader` 声明的 `profile` 缓存 | ✅ 已完成 |
-| 异步命令超时改用 Lettuce `TimeoutOptions` | G3 | 异步视图的命令超时目前由 `CompletableFuture.orTimeout` 计时（JDK 的单线程延迟调度器，每条命令一次调度与撤销），8 线程闭环基准低于 RFC 0004 §11 的 90% 的一部分来自这里；改由 Lettuce 自己的命令超时触发、在 `bounded` 中只做异常映射（RFC 0004 §14） | ✅ 已实现（未发布）：单机只由 Lettuce 计时；集群中等待建立节点连接的命令 Lettuce 不计时，另以它的时间轮兜底。收益是不再依赖 JDK 的单线程延迟调度器；“8 线程差距部分来自 `orTimeout`”的假设未被证实（8 线程 99.1%–101.8%，见 RFC 0004 §14） |
-| 8 线程异步闭环低于 RFC 0004 §11 的 90% | G3 | 6.3 实测为同步的 80%–93%（RFC 0004 §14“6.3 / PR 2”）；去掉 `orTimeout` 后不变，主因已查明：异步链每一级都派发到执行器（L1 命中 4 次、未命中 7 次，A9 只要求 1 次、3 次），每次多余的派发在 `ForkJoinPool` 上引起一次唤醒；A9 要求的那一次切换约占 5–7 个百分点（[调查报告](investigations/async-8t-gap.md)） | ✅ 已修复（未发布）：上一步在同一执行器派发的续接中完成时就地执行（`Futures.continueOn`），L1 命中每次只派发 1 次、未命中至多 3 次；与 6.4.0 交替对比，L1 命中 1 线程 +5.5%、8 线程 +8%，未命中 8 线程至少约 +8%（只有 2 对有效数据），写入与 L2 命中持平 |
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
 
