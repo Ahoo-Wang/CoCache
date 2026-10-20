@@ -7,7 +7,24 @@ description: Release history and notable changes for CoCache.
 
 ## Unreleased
 
-**Module Group:** `me.ahoo.cocache` · No API change, and the Redis wire format and the invalidation channel are unchanged.
+**Module Group:** `me.ahoo.cocache` · Planned as 6.5.0. Additive API in `cocache-core` and `cocache-redis`, and one changed default for reads without a loader (below). The Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis and be upgraded one at a time.
+
+### Migrating caches whose only copy is Redis
+
+`CoCache5Migrator` (`cocache-redis`) converts CoCache 5.x data to the 6.x format, for caches with no loader where Redis is the store of record, and for 5.x `SetElementsCache`s. It covers every 5.x value format: JSON or plain strings, native sets (to a `SetCache` or a `Cache<K, Set<String>>`), hashes, and negative entries, and keeps each key's remaining TTL. It can be run again, reports read, written, skipped and failed keys per cache, stops at the first key it can't decode, and supports a read-only `dryRun`. In-place migration backs up each 5.x value first, and `rollback` restores the backups. See [Caches whose only copy is Redis](./migration-6.md#redis-as-store).
+
+```kotlin
+CoCache5Migrator.standalone(uri).use { migrator ->
+    migrator.migrate(CoCache5Migration.scalar(policySpec, CoCache5Format.string()).sourcePrefix("app:policy:").build())
+}
+```
+
+### Behavior change: reads without a loader fail on content they can't read
+
+- New policy `foreignFormat` (`fail` or `reclaim`; property `foreign-format`) decides what a read does when the key holds content the cache can't read: a value 6.x didn't write (format 0, for example left by 5.x, or a native set or hash), or a value its codec can't decode.
+- **Default for reads without a loader (`SetCache`, and `Cache` without a loader) is now `fail`**: the read throws `CacheReadException` with a `ForeignFormatException` cause, leaves Redis and L2 unchanged, and counts in `cocache.unknown.formats`, also with `read-failure: degrade`. Up to 6.4 such a read reclaimed the key, which deletes the only copy, and returned `null`. A `SetCache` returned an empty set. Both looked like a real "not found" to the caller.
+- Reads with a loader, including `get(key, loader)`, keep reclaiming and reloading (`reclaim`). Set `foreign-format: reclaim` on a cache to restore the old behavior. `cocache.defaults.foreign-format` doesn't apply to `SetCache`.
+- Who sees a change: only applications that have unreadable content under a cache without a loader. Before 6.5 that content was silently discarded on the first read.
 
 ### Async Redis command timeouts
 

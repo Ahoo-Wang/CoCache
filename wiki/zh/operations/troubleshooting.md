@@ -144,7 +144,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 - **外来内容**（格式 `0`）：不是 CoCache 写入的，例如旧客户端、脚本，或者前缀与命名空间相同的另一个应用。
 - **编解码失败**（格式 `1`）：值的类发生了不兼容的变化（字段改名、类型变化），或者两个应用用不同的编解码器或值类型共享同一个缓存。
 
-**CoCache 的行为**。读路径从不盲目删除。它请求 Redis：仅当 key 仍是它读到的那份字节时（在脚本内比较 SHA-1），才把 key 转为 lease。成功则回源并正常填充；key 在此期间变了，就不写 L1 直接回源。每次读取最多回收一次。
+**CoCache 的行为**。没有数据源的读取（`SetCache`，或没有 loader 的 `Cache`）无从重新加载，默认（`foreign-format: fail`）抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），key 保持原样，计入 `cocache.unknown.formats` 而不是 `cocache.reclaims`。CoCache 5.x 留下的内容需要[迁移](../guide/migration-6.md#redis-as-store)。有数据源的读取同样从不盲目删除。它请求 Redis：仅当 key 仍是它读到的那份字节时（在脚本内比较 SHA-1），才把 key 转为 lease。成功则回源并正常填充；key 在此期间变了，就不写 L1 直接回源。每次读取最多回收一次。
 
 **处理**。
 
@@ -155,7 +155,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 **现象**。`cocache.unknown.formats` 上升。查看结果显示 `UNREADABLE`，原因是 `Written by a newer format[…] than this node[…]`。
 
-**原因**。某个实例写入了本实例不认识的更新线格式。本实例回源、不写 L1，结果以 `degraded-local-max-age` 留在 L2 中，这样新旧实例不会互相覆盖。`SetCache` 没有可回源的数据源：在本实例上读取更新格式的集合会抛出 `IllegalStateException`；不是 CoCache 写入的内容（例如遗留的原生 Redis Set）读作空集合，直到被 `put` 或 `add` 覆盖。
+**原因**。某个实例写入了本实例不认识的更新线格式。本实例回源、不写 L1，结果以 `degraded-local-max-age` 留在 L2 中，这样新旧实例不会互相覆盖。`SetCache` 没有可回源的数据源：在本实例上读取更新格式的集合会抛出 `IllegalStateException`；不是 CoCache 写入的内容（例如遗留的原生 Redis Set）抛出 `CacheReadException`（见[损坏或无法读取的载荷](#corrupt-payloads)），`foreign-format: reclaim` 时读作空集合。
 
 **处理**。格式升级滚动发布期间属于正常，所有实例升级到新版本后就会停止。非发布期间出现时，找出运行新版本的实例。见[滚动发布](./index.md#rolling-deploys)。
 

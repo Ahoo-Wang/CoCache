@@ -59,7 +59,7 @@ Run only the stages the request and its authorization cover. Audit, planning and
 
 - Do not run 5.x and 6.x writers against the same keys and channels.
 - Do not delete Redis keys, copy sets or publish invalidations without the exact environment, key pattern and authorization. In Redis Cluster, scan per master.
-- Never switch a `SetElementsCache` without copying its sets first: a 6.x `SetCache` reads them as empty and `add` replaces them.
+- Never switch a cache whose only copy is Redis (no `CacheSource`, or a `SetElementsCache`) without migrating its data first with `CoCache5Migrator` (6.5+): before 6.5 a 6.x read deletes or ignores the old data, and `add` replaces old sets.
 - Do not leave external readers or writers of CoCache keys on the 5.x protocol.
 - Do not translate `clientSideTtl = 0` into an unbounded L2; 6.x `localMaxAge` is always finite.
 

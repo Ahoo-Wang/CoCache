@@ -7,7 +7,24 @@ description: CoCache 版本发布历史和重要变更。
 
 ## 未发布
 
-**模块组：** `me.ahoo.cocache` · 没有 API 变化，Redis 线格式与失效频道也不变。
+**模块组：** `me.ahoo.cocache` · 计划为 6.5.0。`cocache-core` 与 `cocache-redis` 新增 API；没有数据源的读取有一项默认行为变化（见下文）。Redis 线格式与失效频道不变，6.x 实例可以共用 Redis 并逐台升级。
+
+### 迁移 Redis 是唯一副本的缓存
+
+`CoCache5Migrator`（`cocache-redis`）把 CoCache 5.x 的数据转换为 6.x 格式，用于没有数据源、以 Redis 为权威存储的缓存，以及 5.x 的 `SetElementsCache`。它覆盖 5.x 的全部值格式：JSON 或普通字符串、原生 Set（迁移为 `SetCache` 或 `Cache<K, Set<String>>`）、Hash 与负缓存，并保留每个 key 的剩余寿命。它可以重复执行，按缓存报告读取、写入、跳过与失败的 key 数，遇到第一个无法解码的 key 即中止，并提供只读的 `dryRun`。原地迁移先备份每个 5.x 值，`rollback` 从备份恢复。见 [Redis 是唯一副本的缓存](./migration-6.md#redis-as-store)。
+
+```kotlin
+CoCache5Migrator.standalone(uri).use { migrator ->
+    migrator.migrate(CoCache5Migration.scalar(policySpec, CoCache5Format.string()).sourcePrefix("app:policy:").build())
+}
+```
+
+### 行为变化：没有数据源的读取遇到读不懂的内容时失败
+
+- 新策略 `foreignFormat`（`fail` 或 `reclaim`；配置项 `foreign-format`）决定 key 中是本缓存读不懂的内容时读取怎么做：不是 6.x 写入的值（格式 0，例如 5.x 遗留的值、原生 Set 或 Hash），或编解码器无法解码的值。
+- **没有数据源的读取（`SetCache`，以及没有 loader 的 `Cache`）默认改为 `fail`**：抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），Redis 与 L2 都不改动，计入 `cocache.unknown.formats`；`read-failure: degrade` 时同样如此。6.4 及以前，这样的读取会回收这个 key（即删除唯一副本）并返回 `null`，`SetCache` 返回空集合，调用方都会当作真实的“不存在”。
+- 有数据源的读取（包括 `get(key, loader)`）照旧回收并重新加载（`reclaim`）。给缓存设置 `foreign-format: reclaim` 即可恢复旧行为。`cocache.defaults.foreign-format` 不作用于 `SetCache`。
+- 受影响的只有在没有数据源的缓存下存在读不懂内容的应用；6.5 之前这些内容在第一次读取时被静默丢弃。
 
 ### 异步 Redis 命令的超时
 

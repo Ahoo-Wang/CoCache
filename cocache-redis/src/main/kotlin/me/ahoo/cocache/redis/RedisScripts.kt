@@ -62,7 +62,7 @@ end
     /**
      * 写脚本额外使用的辅助函数。
      */
-    private const val PRELUDE = CORE + """
+    internal const val PRELUDE = CORE + """
 local function expire(key, ttl)
   local ms = tonumber(ttl)
   if ms > 0 then redis.call('PEXPIRE', key, ms) end

@@ -14,6 +14,7 @@
 package me.ahoo.cocache.test
 
 import me.ahoo.cocache.api.CacheClock
+import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
@@ -21,8 +22,13 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.ForeignFormatException
+import me.ahoo.cocache.core.SetCacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
@@ -75,8 +81,13 @@ abstract class SetEngineSpec {
      */
     protected open val access: CacheAccess = CacheAccess.SYNC
 
-    protected fun CacheRuntime.setCache(): SetCache<String, String> = access.setCache(
-        create(setCacheSpec(cacheName) { elementCodec = StringCodec })
+    protected fun CacheRuntime.setCache(policy: CachePolicy = SetCacheSpec.DEFAULT_POLICY): SetCache<String, String> = access.setCache(
+        create(
+            setCacheSpec(cacheName) {
+                elementCodec = StringCodec
+                this.policy = policy
+            }
+        )
     )
 
     @Test
@@ -255,5 +266,36 @@ abstract class SetEngineSpec {
             InvalidationFrame.encode(NodeId.random(), emptyList())
         )
         runCatching { cache["k"] }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+    }
+
+    /**
+     * 不是本协议写入的内容（如 5.x 留下的原生 Set）：没有数据源，默认 `FAIL`，抛出且不写 L2、不修改 L1。
+     */
+    @Test
+    fun unrecognizedContentFailsByDefault() {
+        val cache = nodeA.setCache()
+        cache.add("k", listOf("a"))
+        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = 0) else read }
+        val error = runCatching { cache["k"] }.exceptionOrNull()
+        backend.afterRead = null
+        error.assert().isInstanceOf(CacheReadException::class.java)
+        requireNotNull(error?.cause as? ForeignFormatException).format.assert().isEqualTo(0)
+        nodeA.metrics(cacheName)?.unknownFormats.assert().isEqualTo(1L)
+        cache["k"].assert().containsExactly("a")
+    }
+
+    /**
+     * 显式 `RECLAIM`：按不存在处理（读到空集合），不删除，6.4 及以前的行为。
+     */
+    @Test
+    fun unrecognizedContentReadsEmptyWhenConfigured() {
+        val cache = nodeA.setCache(
+            SetCacheSpec.DEFAULT_POLICY.toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
+        )
+        cache.add("k", listOf("a"))
+        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = 0) else read }
+        cache["k"].assert().isEmpty()
+        backend.afterRead = null
+        nodeA.metrics(cacheName)?.unknownFormats.assert().isEqualTo(1L)
     }
 }
