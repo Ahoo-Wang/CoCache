@@ -17,8 +17,10 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.coroutines.suspendingLoader
 import me.ahoo.cocache.example.model.User
 import me.ahoo.cocache.example.model.UserExtendInfo
+import me.ahoo.cocache.example.repository.ProfileRepository
 import me.ahoo.cocache.spring.boot.CacheSpecCustomizer
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -47,6 +49,17 @@ class UserCacheConfiguration {
     fun productSpec(): CacheSpec<String, String> = cacheSpec("product") {
         codec = StringCodec
         loader = CacheLoader { id -> "product-$id" }
+        policy { ttl = Duration.ofMinutes(10) }
+    }
+
+    /**
+     * 挂起的数据源：`suspendingLoader` 把 suspend 函数设为 spec 的异步数据源，每次加载在 `Dispatchers.Default` 上启动一个协程
+     * （数据源调用阻塞代码时传 `Dispatchers.IO`）。starter 不查找 `SuspendingCacheLoader` bean，所以在 spec 中声明。
+     */
+    @Bean
+    fun profileSpec(profileRepository: ProfileRepository): CacheSpec<String, String> = cacheSpec("profile") {
+        codec = StringCodec
+        suspendingLoader { id -> profileRepository.find(id) }
         policy { ttl = Duration.ofMinutes(10) }
     }
 

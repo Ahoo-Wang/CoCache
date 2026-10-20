@@ -22,7 +22,8 @@ import org.springframework.boot.runApplication
 import org.springframework.cache.annotation.EnableCaching
 
 /**
- * 示例应用：接口式声明（[UserCache]、[UserExtendInfoCache]）、组合视图（[UserExtendInfoJoinCache]）、spec bean（`productSpec`）与 Spring Cache 注解。
+ * 示例应用：接口式声明（[UserCache]、[UserExtendInfoCache]）、组合视图（[UserExtendInfoJoinCache]）、spec bean（`productSpec`）、Spring Cache 注解，
+ * 以及 WebFlux + 协程（[me.ahoo.cocache.example.controller.CoroutineController]）。
  */
 @EnableCoCache(
     caches = [UserCache::class, UserExtendInfoCache::class],

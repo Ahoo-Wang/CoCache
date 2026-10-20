@@ -1,6 +1,6 @@
 ---
 title: Kotlin 协程
-description: 经可选模块 cocache-coroutines 在 Kotlin 协程中挂起地使用 CoCache：cache.suspending()、SuspendingCacheLoader、loader 的上下文与 dispatcher、取消、异常与重入。
+description: 经可选模块 cocache-coroutines 在 Kotlin 协程中挂起地使用 CoCache：cache.suspending()、SuspendingCacheLoader、loader 的上下文与 dispatcher、取消、异常、重入与 WebFlux。
 ---
 
 # Kotlin 协程
@@ -91,3 +91,28 @@ loader 读取同一缓存中自己正在加载的 key，会一直等待自己直
 ## Spring {#spring}
 
 starter 不会查找 `SuspendingCacheLoader` bean。请把缓存声明为 `CacheSpec` bean，在其中设置 `suspendingLoader { … }`；或者自己用 `asAsyncCacheLoader()` 转换后，作为 `AsyncCacheLoader` bean 暴露。模块在类路径上时，starter 为挂起视图登记原生镜像提示。
+
+## WebFlux {#webflux}
+
+在 WebFlux 应用中，控制器方法可以写成调用挂起视图的 `suspend fun`。Spring 执行它们需要类路径上有 `kotlinx-coroutines-reactor`；`spring-boot-starter-webflux` 不带它，版本由 Spring Boot 管理。
+
+```kotlin
+@RestController
+class ProfileController(
+    @Qualifier("profile") profileCache: Cache<String, String>,
+    private val profileRepository: ProfileRepository,
+) {
+    private val profiles = profileCache.suspending()   // 创建一次，保存在字段中复用
+
+    @GetMapping("profile/{id}")
+    suspend fun profile(@PathVariable id: String): String? = profiles.get(id)
+
+    @PutMapping("profile/{id}")
+    suspend fun update(@PathVariable id: String, @RequestParam nickname: String) {
+        profileRepository.save(id, nickname)   // 先更新数据源
+        profiles.invalidate(id)                // 再失效（在事务中时：提交之后）
+    }
+}
+```
+
+完整版本见 [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example)：`CoroutineController` 用 `cache.suspending()` 读取、使用调用级 loader、写后失效；`UserCacheConfiguration` 中的 `profile` 缓存用 `suspendingLoader { … }` 声明数据源。
