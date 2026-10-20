@@ -25,6 +25,9 @@
 # 用法见 `scripts/jmh-compare.sh --help`。
 set -euo pipefail
 
+# 整个脚本包在 { … } 里，bash 先解析完再执行：运行期间切换分支或修改本文件不会打乱正在运行的实例。
+{
+
 usage() {
     cat <<'EOF'
 用法：scripts/jmh-compare.sh -b <基准[,基准...]> [选项]
@@ -339,9 +342,11 @@ def cmd_summary(runs_tsv, out_md, *meta):
     out.append("|------|-----:|---------------------------|-----------------------|----------------------|---------:|------|")
     for key in sorted(groups, key=lambda k: (k[0], k[1])):
         by_round = groups[key]
-        base = [v["base"] for v in by_round.values() if "base" in v]
-        new = [v["new"] for v in by_round.values() if "new" in v]
-        ratios = [v["new"] / v["base"] for v in by_round.values() if "base" in v and "new" in v and v["base"]]
+        # 只用两侧都有效的轮次，两侧中位数与比值出自同一组配对。
+        paired = [v for v in by_round.values() if "base" in v and "new" in v and v["base"]]
+        base = [v["base"] for v in paired]
+        new = [v["new"] for v in paired]
+        ratios = [v["new"] / v["base"] for v in paired]
         out.append(
             "| %s | %d | %s | %s | %s | %d/%s | %s |"
             % (key[0], key[1], spread(ratios, pct), spread(base, fmt), spread(new, fmt), len(ratios), info["rounds"], units[key])
@@ -505,3 +510,5 @@ py summary "${runs_tsv}" "${out_dir}/summary.md" \
     "retries=${max_retries}" "rounds=${rounds}" "skipped=${skipped}" \
     "jmh=fork ${forks}，预热 ${warmup_iterations}×${warmup_time}，测量 ${iterations}×${measure_time}"
 log "完成：${out_dir}/summary.md（原始 JSON 在 ${out_dir}/raw）"
+exit 0
+}
