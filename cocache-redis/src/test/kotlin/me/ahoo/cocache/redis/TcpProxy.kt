@@ -21,23 +21,25 @@ import java.net.Socket
 import kotlin.concurrent.thread
 
 /**
- * 本机 TCP 转发，用于模拟断线：[cut] 关闭监听端口与全部已转发的连接，客户端重连时被拒绝（connection refused），
- * 恢复时在同一端口重新监听。
+ * 本机 TCP 转发，用于模拟断线：[cut] 关闭全部已转发的连接，此后新连接一经接受就被关闭（客户端的握手失败、继续重连），
+ * 恢复后照常转发。
+ *
+ * 断线期间监听端口始终保持绑定：若关闭后在同一端口重新监听，端口空闲的间隙可能被本机任一出站连接取作临时端口，
+ * 恢复时 `bind` 以 `Address already in use` 失败（CI 上偶发）。
  */
 class TcpProxy(private val targetHost: String, private val targetPort: Int) : AutoCloseable {
     private val lock = Any()
     private val sockets = HashSet<Socket>()
-    private var server: ServerSocket = listen(0)
-    private var closed = false
+    private val server: ServerSocket = listen()
+    private var refusing = false
 
     val port: Int = server.localPort
 
     val address: String = server.inetAddress.hostAddress
 
-    private fun listen(port: Int): ServerSocket {
+    private fun listen(): ServerSocket {
         val server = ServerSocket()
-        server.reuseAddress = true
-        server.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), port), BACKLOG)
+        server.bind(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), BACKLOG)
         thread(isDaemon = true, name = "tcp-proxy-${server.localPort}") { acceptLoop(server) }
         return server
     }
@@ -50,7 +52,7 @@ class TcpProxy(private val targetHost: String, private val targetPort: Int) : Au
                 return
             }
             synchronized(lock) {
-                if (server.isClosed) client.close() else connect(client)
+                if (server.isClosed || refusing) client.close() else connect(client)
             }
         }
     }
@@ -84,7 +86,6 @@ class TcpProxy(private val targetHost: String, private val targetPort: Int) : Au
     }
 
     private fun disconnectAll() {
-        server.close()
         sockets.forEach { it.close() }
         sockets.clear()
     }
@@ -93,19 +94,18 @@ class TcpProxy(private val targetHost: String, private val targetPort: Int) : Au
      * 断开全部连接并拒绝重连，关闭返回值即恢复。
      */
     fun cut(): AutoCloseable {
-        synchronized(lock) { disconnectAll() }
+        synchronized(lock) {
+            refusing = true
+            disconnectAll()
+        }
         return AutoCloseable {
-            synchronized(lock) {
-                if (!closed) {
-                    server = listen(port)
-                }
-            }
+            synchronized(lock) { refusing = false }
         }
     }
 
     override fun close() {
         synchronized(lock) {
-            closed = true
+            server.close()
             disconnectAll()
         }
     }
