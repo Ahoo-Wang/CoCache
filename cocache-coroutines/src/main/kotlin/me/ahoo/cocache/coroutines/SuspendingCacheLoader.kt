@@ -15,6 +15,8 @@ package me.ahoo.cocache.coroutines
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -42,21 +44,42 @@ fun interface SuspendingCacheLoader<K : Any, V : Any> {
 }
 
 /**
- * 转为 [AsyncCacheLoader]：每次加载在 [context] 中启动一个协程（默认 `Dispatchers.Default`；[context] 没有 dispatcher 时同样是它），
- * 以它的结果或原始异常完成。[context] 带 `Job` 时取消它会取消进行中的加载。
- *
- * 引擎的 `load-async-timeout` 到期时调用方以 `SourceLoadTimeoutException` 失败，协程不会被取消（与 [AsyncCacheLoader] 相同）。
+ * 转为 [AsyncCacheLoader]，在 `Dispatchers.Default` 中执行，见另一个重载。
  */
-fun <K : Any, V : Any> SuspendingCacheLoader<K, V>.asAsyncCacheLoader(
-    context: CoroutineContext = Dispatchers.Default
-): AsyncCacheLoader<K, V> = SuspendingAsyncLoader(this, context, null)
+fun <K : Any, V : Any> SuspendingCacheLoader<K, V>.asAsyncCacheLoader(): AsyncCacheLoader<K, V> =
+    asAsyncCacheLoader(Dispatchers.Default)
 
 /**
- * 把 [loader] 设为声明的异步数据源（`asyncLoader`），在 [context] 中执行（默认 `Dispatchers.Default`）。
- * 经挂起视图在 [loader] 中读取本缓存正在加载的 key 立即失败（`IllegalStateException`）。
+ * 转为 [AsyncCacheLoader]：每次加载在 [context] 中启动一个协程（[context] 没有 dispatcher 时为 `Dispatchers.Default`），
+ * 以它的结果或原始异常完成。
+ *
+ * - 加载协程都挂在一个 `SupervisorJob` 下：一次加载失败不影响其它加载；[context] 带 `Job` 时它是这个 `SupervisorJob` 的父 Job，
+ *   取消它会取消进行中与之后的加载。
+ * - 数据源自己抛出的 `CancellationException`（如数据源内部的 `withTimeout`）转为 [SourceLoadCancelledException]：
+ *   否则合并到这次加载的所有调用方都会把它当作自己被取消。
+ * - 引擎的 `load-async-timeout` 到期时调用方以 `SourceLoadTimeoutException` 失败，协程不会被取消（与 [AsyncCacheLoader] 相同）。
+ * - 单独使用（不经 [suspendingLoader]）时没有同 key 重入检查：转换时不知道它属于哪个缓存。
+ */
+fun <K : Any, V : Any> SuspendingCacheLoader<K, V>.asAsyncCacheLoader(context: CoroutineContext): AsyncCacheLoader<K, V> =
+    SuspendingAsyncLoader(this, context, null)
+
+/**
+ * 把 [loader] 设为声明的异步数据源（`asyncLoader`），在 `Dispatchers.Default` 中执行，见另一个重载。
+ */
+fun <K : Any, V : Any> CacheSpec.Builder<K, V>.suspendingLoader(loader: SuspendingCacheLoader<K, V>) {
+    suspendingLoader(Dispatchers.Default, loader)
+}
+
+/**
+ * 把 [loader] 设为声明的异步数据源（`asyncLoader`），在 [context] 中执行；语义见 [asAsyncCacheLoader]。
+ *
+ * 另外，经挂起视图在 [loader] 中读取本缓存正在加载的 key 立即失败（`IllegalStateException`）。这项检查按缓存名匹配：
+ * 声明时还不知道缓存属于哪个运行时，同一进程中另一个运行时的同名缓存也会被视为本缓存。
+ * spec 级 loader 没有调用方，不继承调用方的重入记录：跨缓存的循环（A 的 loader 读 B、B 的 loader 又读 A 的同一个 key）
+ * 只能等到 `load-async-timeout` 才失败。
  */
 fun <K : Any, V : Any> CacheSpec.Builder<K, V>.suspendingLoader(
-    context: CoroutineContext = Dispatchers.Default,
+    context: CoroutineContext,
     loader: SuspendingCacheLoader<K, V>
 ) {
     asyncLoader = SuspendingAsyncLoader(loader, context, name)
@@ -64,17 +87,20 @@ fun <K : Any, V : Any> CacheSpec.Builder<K, V>.suspendingLoader(
 
 internal class SuspendingAsyncLoader<K : Any, V : Any>(
     private val loader: SuspendingCacheLoader<K, V>,
-    private val context: CoroutineContext,
+    context: CoroutineContext,
     private val cacheName: String?,
 ) : AsyncCacheLoader<K, V> {
+    // 一个 SupervisorJob（而不是每次加载各建一个）：每次新建的话，它们都是 context 中 Job 的子 Job 且永不完成，会一直累积
+    private val scope = CoroutineScope(context + SupervisorJob(context[Job]))
+
     override fun loadAsync(key: K): CompletionStage<out V?> =
-        scope(listOf(key)).future { loader.load(key) }
+        scope.future(loadingKeys(listOf(key))) { cancellationAsFailure(cacheName) { loader.load(key) } }
 
     override fun loadAllAsync(keys: Collection<K>): CompletionStage<out Map<K, V>> =
-        scope(keys).future { loader.loadAll(keys) }
+        scope.future(loadingKeys(keys)) { cancellationAsFailure(cacheName) { loader.loadAll(keys) } }
 
-    private fun scope(keys: Collection<K>): CoroutineScope =
-        CoroutineScope(if (cacheName == null) context else context + LoadingKeys.adding(context, cacheName, keys))
+    private fun loadingKeys(keys: Collection<K>): CoroutineContext =
+        if (cacheName == null) kotlin.coroutines.EmptyCoroutineContext else LoadingKeys.adding(null, cacheName, keys)
 
     override fun toString(): String = "SuspendingAsyncLoader($loader)"
 }

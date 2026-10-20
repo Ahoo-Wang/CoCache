@@ -25,7 +25,8 @@ cacheSpec<String, User>("user") {
 - `Cache.suspending()` / `SetCache.suspending()` return `SuspendingCache` / `SuspendingSetCache`, with the same methods as the synchronous API. They share the same L2, fences, in-flight loads and leases.
 - `SuspendingCacheLoader` is a suspending data source. Set it with `suspendingLoader(context)` (default `Dispatchers.Default`), or convert it with `asAsyncCacheLoader()`. A per-call loader, `get(key) { … }`, runs in the caller's coroutine context without its `Job`.
 - Cancelling a waiting coroutine doesn't cancel a shared load. Exceptions are the original ones. A loader that reads the key it is loading, from the same cache, fails at once with `IllegalStateException`, even after it suspends.
-- The module depends on `kotlinx-coroutines-core` 1.11.0 (managed in `cocache-dependencies`); no other module does. The starter registers native-image hints for the suspending views when the module is on the classpath.
+- A loader's own `CancellationException` (for example from a `withTimeout` inside it) becomes `SourceLoadCancelledException` for every caller that shares the load. Spec-level loads run under one `SupervisorJob`, so one failure doesn't cancel later loads.
+- The module depends on `kotlinx-coroutines-core` 1.10.2, the version Spring Boot 4.1 manages, declared in `cocache-dependencies`; no other module does. The starter registers native-image hints for the suspending views when the module is on the classpath.
 - The synchronous and async hit paths are unchanged.
 
 ### Gradle Setup

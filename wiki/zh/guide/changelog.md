@@ -25,7 +25,8 @@ cacheSpec<String, User>("user") {
 - `Cache.suspending()` / `SetCache.suspending()` 返回 `SuspendingCache` / `SuspendingSetCache`，方法与同步 API 相同，共享同一个 L2、栅栏、在途加载与 lease。
 - `SuspendingCacheLoader` 是挂起的数据源：用 `suspendingLoader(context)`（默认 `Dispatchers.Default`）设置，或用 `asAsyncCacheLoader()` 转换。调用级 loader `get(key) { … }` 在调用方的协程上下文去掉 `Job` 之后的上下文中执行。
 - 取消等待的协程不会取消共享的加载；异常是原始异常。loader 读取同一缓存中自己正在加载的 key 立即以 `IllegalStateException` 失败，挂起之后同样如此。
-- 本模块依赖 `kotlinx-coroutines-core` 1.11.0（版本在 `cocache-dependencies` 中声明），其它模块都不依赖它。模块在类路径上时，starter 为挂起视图登记原生镜像提示。
+- loader 自己抛出的 `CancellationException`（如其中的 `withTimeout`）对共享这次加载的每个调用方都转为 `SourceLoadCancelledException`。spec 级加载都在同一个 `SupervisorJob` 下，一次失败不取消之后的加载。
+- 本模块依赖 `kotlinx-coroutines-core` 1.10.2（即 Spring Boot 4.1 管理的版本，在 `cocache-dependencies` 中声明），其它模块都不依赖它。模块在类路径上时，starter 为挂起视图登记原生镜像提示。
 - 同步与异步的命中路径不变。
 
 ### Gradle 配置

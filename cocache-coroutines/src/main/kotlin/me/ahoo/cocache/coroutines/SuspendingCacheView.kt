@@ -14,8 +14,8 @@
 package me.ahoo.cocache.coroutines
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.future.future
 import me.ahoo.cocache.api.AsyncCache
@@ -24,36 +24,41 @@ import me.ahoo.cocache.api.AsyncSetCache
 import me.ahoo.cocache.api.Lookup
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionStage
 import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.coroutineContext
 
 /**
  * [SuspendingCache] 的实现：每个方法调用异步视图的同名方法并等待结果，不复制任何引擎逻辑。
+ *
+ * 读方法的唯一挂起点在尾部（`awaitResult` 内联后为 `return future.await()`），编译器不为它们生成状态机对象：
+ * L2 命中（已完成的 future）除异步视图本身的分配外不再分配（RFC 0004 §7）。
  */
 internal open class SuspendingCacheView<K : Any, V : Any>(private val async: AsyncCache<K, V>) : SuspendingCache<K, V> {
     override val name: String
         get() = async.name
 
     override suspend fun get(key: K): V? {
-        checkNotLoading(listOf(key))
+        LoadingKeys.check(coroutineContext, async, name, key)
         return async.get(key).awaitResult()
     }
 
     override suspend fun get(key: K, loader: suspend (K) -> V?): V? {
-        val context = currentCoroutineContext()
-        LoadingKeys.check(context, name, listOf(key))
-        // 去掉调用方的 Job：调用方被取消不取消（可能被共享的）加载；其余元素（dispatcher、MDC、追踪）保留
-        val scope = CoroutineScope(context.minusKey(Job) + LoadingKeys.adding(context, name, listOf(key)))
-        return async.get(key, AsyncCacheLoader { scope.future { loader(it) } }).awaitResult()
+        val context = coroutineContext
+        LoadingKeys.check(context, async, name, key)
+        // 上下文与作用域只在真正加载时才构造（loadAsync 内），命中不付这些分配
+        return async.get(key, CallerLoader(async, name, context, loader)).awaitResult()
     }
 
     override suspend fun getAll(keys: Collection<K>): Map<K, V> {
-        checkNotLoading(keys)
+        LoadingKeys.checkAll(coroutineContext, async, name, keys)
         return async.getAll(keys).awaitResult()
     }
 
     override suspend fun lookup(key: K): Lookup<V> {
-        checkNotLoading(listOf(key))
+        LoadingKeys.check(coroutineContext, async, name, key)
         return async.lookup(key).awaitResult()
     }
 
@@ -83,10 +88,6 @@ internal open class SuspendingCacheView<K : Any, V : Any>(private val async: Asy
 
     override fun async(): AsyncCache<K, V> = async
 
-    private suspend fun checkNotLoading(keys: Collection<K>) {
-        LoadingKeys.check(currentCoroutineContext(), name, keys)
-    }
-
     override fun toString(): String = "SuspendingCache($async)"
 }
 
@@ -109,11 +110,43 @@ internal class SuspendingSetCacheView<K : Any, E : Any>(private val async: Async
 }
 
 /**
+ * 调用级 loader（`get(key) { … }`）：加载时才以调用方的上下文去掉 `Job` 启动协程。
+ * 调用方的 dispatcher 是事件循环（`runBlocking`）时改用 `Dispatchers.Default`：加载可能比调用方活得更久，
+ * 事件循环结束后提交给它的任务会被转到内部的 DefaultExecutor。
+ */
+private class CallerLoader<K : Any, V : Any>(
+    private val owner: Any,
+    private val cacheName: String,
+    private val context: CoroutineContext,
+    private val loader: suspend (K) -> V?,
+) : AsyncCacheLoader<K, V> {
+    override fun loadAsync(key: K): CompletionStage<out V?> {
+        val loading = LoadingKeys.adding(context[LoadingKeys], owner, listOf(key))
+        return CoroutineScope(dispatcherOf(context.minusKey(Job)) + loading).future {
+            cancellationAsFailure(cacheName) { loader(key) }
+        }
+    }
+}
+
+private const val EVENT_LOOP = "kotlinx.coroutines.EventLoop"
+
+private fun dispatcherOf(context: CoroutineContext): CoroutineContext {
+    var type: Class<*>? = context[ContinuationInterceptor]?.javaClass
+    while (type != null) {
+        if (type.name == EVENT_LOOP) {
+            return context + Dispatchers.Default
+        }
+        type = type.superclass
+    }
+    return context
+}
+
+/**
  * 已完成且成功时直接取结果（L2 命中不挂起）；否则挂起等待。取消等待只取消这个 future（异步视图为每次调用新建 future，
- * 取消它不影响共享的加载）。失败时抛出 future 中保存的原始异常。
+ * 取消它不影响共享的加载）。失败时抛出 future 中保存的原始异常。内联：调用方的挂起点因此在尾部。
  */
 @Suppress("UNCHECKED_CAST")
-internal suspend fun <T> CompletableFuture<T>.awaitResult(): T {
+internal suspend inline fun <T> CompletableFuture<T>.awaitResult(): T {
     if (isDone && !isCompletedExceptionally) {
         return getNow(null) as T
     }
@@ -121,24 +154,32 @@ internal suspend fun <T> CompletableFuture<T>.awaitResult(): T {
 }
 
 /**
- * 正在由当前协程（及其子协程）加载的 key：同一缓存同一 key 的重入读取立即失败，而不是等待自己的加载直到 `load-async-timeout`。
- * 引擎的同 key 重入检查基于线程，只覆盖数据源的同步部分；挂起之后在别的线程上继续时由这个元素覆盖。
+ * 正在由当前协程（及其子协程）加载的 key：经挂起视图对同一缓存同一 key 的重入读取立即失败，而不是等待自己的加载直到
+ * `load-async-timeout`。引擎的同 key 重入检查基于线程，只覆盖数据源的同步部分；挂起之后在别的线程上继续时由这个元素覆盖。
+ *
+ * 每项的 owner 是调用级 loader 所在视图背后的异步视图实例（按实例匹配），或 spec 级 loader 的缓存名（声明时只知道名字）。
  */
-internal class LoadingKeys private constructor(private val keys: Set<Pair<String, Any>>) :
+internal class LoadingKeys private constructor(private val entries: List<Pair<Any, Any>>) :
     AbstractCoroutineContextElement(LoadingKeys) {
+    private fun contains(async: Any, name: String, key: Any): Boolean =
+        entries.any { (owner, loading) -> loading == key && (owner === async || owner == name) }
+
     companion object Key : CoroutineContext.Key<LoadingKeys> {
-        fun adding(context: CoroutineContext, cacheName: String, keys: Collection<Any>): LoadingKeys {
-            val current = context[LoadingKeys]?.keys.orEmpty()
-            return LoadingKeys(current + keys.map { cacheName to it })
+        fun adding(current: LoadingKeys?, owner: Any, keys: Collection<Any>): LoadingKeys =
+            LoadingKeys(current?.entries.orEmpty() + keys.map { owner to it })
+
+        fun check(context: CoroutineContext, async: Any, name: String, key: Any) {
+            val loading = context[LoadingKeys] ?: return
+            check(!loading.contains(async, name, key)) { "Recursive call on the same key[$key] is not supported." }
         }
 
-        fun check(context: CoroutineContext, cacheName: String, keys: Collection<Any>) {
+        fun checkAll(context: CoroutineContext, async: Any, name: String, keys: Collection<Any>) {
             val loading = context[LoadingKeys] ?: return
-            keys.firstOrNull { (cacheName to it) in loading.keys }?.let {
-                throw IllegalStateException("Recursive call on the same key[$it] is not supported.")
+            keys.forEach { key ->
+                check(!loading.contains(async, name, key)) { "Recursive call on the same key[$key] is not supported." }
             }
         }
     }
 
-    override fun toString(): String = "LoadingKeys($keys)"
+    override fun toString(): String = "LoadingKeys($entries)"
 }

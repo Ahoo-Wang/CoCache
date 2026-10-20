@@ -11,6 +11,10 @@
  * limitations under the License.
  */
 
+plugins {
+    alias(libs.plugins.jmh)
+}
+
 description = "CoCache Kotlin coroutines: suspending views over the async API"
 
 dependencies {
@@ -18,6 +22,26 @@ dependencies {
     // 只出现在本模块（RFC 0004 §7，A12）：cocache-api、cocache-core 与其它模块不依赖它
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core")
     testImplementation(project(":cocache-test"))
+    jmh(platform(project(":cocache-dependencies")))
+    jmh("ch.qos.logback:logback-classic")
+}
+
+jmh {
+    jmhVersion = libs.versions.openjdk.jmh
+    fork = 1
+    warmupIterations = 3
+    warmup = "3s"
+    iterations = 5
+    timeOnIteration = "5s"
+    threads = providers.gradleProperty("jmhThreads").map(String::toInt).orElse(1)
+    includes = providers.gradleProperty("jmhIncludes").map { it.split(',') }.orElse(emptyList())
+    resultFormat = "JSON"
+    jvmArgs = listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logback-jmh.xml")
+}
+
+// 基准源码随 check 编译，防止腐化；运行基准需显式执行 jmh 任务。
+tasks.named("check") {
+    dependsOn("jmhClasses")
 }
 
 tasks.withType<Test> {

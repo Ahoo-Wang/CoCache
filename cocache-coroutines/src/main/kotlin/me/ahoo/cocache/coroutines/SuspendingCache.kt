@@ -28,6 +28,8 @@ import java.time.Duration
  * - 失败抛出原始异常（与同步 API 相同，不包装为 `CompletionException`）。
  * - 取消调用方协程只结束本次等待；共享的加载照常完成并填充缓存（与异步视图相同）。
  * - 不阻塞任何线程：等待都是挂起。
+ *
+ * 由 [suspending] 创建，不打算由第三方实现：今后新增方法不视为破坏性变化。
  */
 interface SuspendingCache<K : Any, V : Any> {
     val name: String
@@ -40,9 +42,13 @@ interface SuspendingCache<K : Any, V : Any> {
     /**
      * 读取；未命中时用 [loader] 加载，受与声明的数据源相同的保护（lease、失效戳、按 key 合并）。
      *
-     * [loader] 在调用方的协程上下文去掉 `Job` 之后的上下文中启动：在调用方的 dispatcher 上执行（没有时为 `Dispatchers.Default`），
-     * `ThreadContextElement`（MDC、追踪）随之传递；调用方被取消不会取消这次加载，它可能被同一 key 的其它调用方共享。
-     * 在 [loader] 中经挂起视图读取同一缓存的同一 key 立即失败（`IllegalStateException`），而不是等待自己。
+     * [loader] 在调用方的协程上下文去掉 `Job` 之后的上下文中启动：
+     * - 在调用方的 dispatcher 上执行；没有 dispatcher，或调用方的 dispatcher 是 `runBlocking` 的事件循环时，在 `Dispatchers.Default` 上执行。
+     * - `ThreadContextElement`（如 kotlinx-coroutines-slf4j 的 `MDCContext`、追踪上下文）随之传递。
+     * - 它脱离结构化并发：调用方被取消、调用方的作用域结束、甚至运行时关闭，都不会取消这次加载（它可能被同一 key 的其它调用方共享），
+     *   加载协程可能比它们活得更久，直到数据源返回。
+     * - [loader] 自己抛出的 `CancellationException`（如其中的 `withTimeout`）转为 [SourceLoadCancelledException]。
+     * - 在 [loader] 中经挂起视图读取同一缓存实例的同一 key 立即失败（`IllegalStateException`），而不是等待自己。
      */
     suspend fun get(key: K, loader: suspend (K) -> V?): V?
 
@@ -69,7 +75,7 @@ interface SuspendingCache<K : Any, V : Any> {
 }
 
 /**
- * 集合缓存的挂起视图，见 [SuspendingCache]。
+ * 集合缓存的挂起视图，见 [SuspendingCache]。不打算由第三方实现。
  */
 interface SuspendingSetCache<K : Any, E : Any> : SuspendingCache<K, Set<E>> {
     suspend fun add(key: K, elements: Collection<E>)

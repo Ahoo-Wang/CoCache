@@ -614,10 +614,13 @@ interface LoadObserver {
 
 | 正文 | 实现 | 理由 |
 |------|------|------|
-| `kotlinx-coroutines-core` 1.10.x | 1.11.0（2026-05 发布，基于 Kotlin stdlib 2.2.20，与产物的 `apiVersion` 2.2 一致），在 `cocache-dependencies` 中声明 | 当前稳定版；Spring Boot 4.1 管理的是 1.10.2，本模块只用两个版本都有的 API（`future {}`、`CompletionStage.await()`），用户经 Boot 的依赖管理解析到 1.10.2 也能运行 |
+| `kotlinx-coroutines-core` 1.10.x | 1.10.2，在 `cocache-dependencies` 中声明 | 与 Spring Boot 4.1 管理的版本一致：CI 测的就是多数用户实际拿到的组合 |
 | `SuspendingCache` 的方法表 | 另有 `putAll(entries, ttl)` 与 `async()`；另加 `SuspendingSetCache`（`SetCache.suspending()`，`add` / `remove` / `clear`）与 `AsyncCache.suspending()` / `AsyncSetCache.suspending()` | 与同步 API、异步视图一一对应 |
-| 同 key 重入（§5.4 的不变量）未单独讨论 | 协程上下文元素 `LoadingKeys`（缓存名 + key）：调用级与 `suspendingLoader` 设置的 loader 在带它的上下文中执行，经挂起视图的 `get` / `getAll` / `lookup` 遇到正在加载的 key 立即以 `IllegalStateException` 失败 | 引擎基于线程的检查只覆盖 `loadAsync` 的同步部分；loader 挂起后在别的线程上继续时，重入会等待自己直到 `asyncTimeout`。`asAsyncCacheLoader` 不知道缓存名，单独使用时没有这项检查 |
-| 调用级 loader 的 dispatcher 未写明 | 以调用方上下文去掉 `Job` 后经 `future {}` 启动：在调用方的 dispatcher 上执行（没有时为 `Dispatchers.Default`） | 单线程 dispatcher 下调用方挂起等待、不占线程，loader 在同一线程上执行也不死锁（有用例） |
+| 同 key 重入（§5.4 的不变量）未单独讨论 | 协程上下文元素 `LoadingKeys`：调用级 loader 按视图背后的缓存实例记录，`suspendingLoader` 设置的 loader 按缓存名记录；经挂起视图的 `get` / `getAll` / `lookup` 遇到正在加载的 key 立即以 `IllegalStateException` 失败 | 引擎基于线程的检查只覆盖 `loadAsync` 的同步部分；loader 挂起后在别的线程上继续时，重入会等待自己直到 `asyncTimeout`。spec 声明时不知道运行时，只能按名字（另一个运行时的同名缓存会被视为同一个）；spec 级加载没有调用方，不继承调用方的记录；`asAsyncCacheLoader` 单独使用时没有这项检查 |
+| 调用级 loader 的 dispatcher 未写明 | 以调用方上下文去掉 `Job` 后经 `future {}` 启动：在调用方的 dispatcher 上执行；没有 dispatcher 或是 `runBlocking` 的事件循环时为 `Dispatchers.Default`。上下文与作用域在 `loadAsync` 内才构造 | 单线程 dispatcher 下调用方挂起等待、不占线程，loader 在同一线程上执行也不死锁（有用例）；加载脱离结构化并发，可能比事件循环活得更久；命中不付构造上下文的分配 |
+| spec 级 `context` 中的 `Job` 未讨论 | 每个 loader 一个 `SupervisorJob(context[Job])`，加载协程是它的子协程 | 直接挂在普通 Job 下时，一次失败就会取消父 Job，之后的加载全部以 `CancellationException` 失败，协程调用方还会把它当作取消悄悄吞掉 |
+| 数据源抛出的 `CancellationException` 未讨论 | 加载协程仍活动时转为 `SourceLoadCancelledException`（`cause` 为原异常） | 加载可能被共享：原样传出会让每个合并的调用方都当作自己被取消 |
+| §7 的签名带默认参数 | `suspendingLoader` 与 `asAsyncCacheLoader` 改为两个重载 | 默认参数会生成 `$default` 合成方法，日后调整参数时影响二进制兼容 |
 | TCK 的协程版本 | `cocache-test` 不增加 `SuspendingEngineSpec`：本模块的测试经 `CacheAccess` 的实现把 `EngineSpec`、`SetEngineSpec`、`MultiNodeSpec` 全部改由挂起视图重跑（内存后端） | TCK 是公开 API，放进去会让 `cocache-test` 依赖 `kotlinx-coroutines-core`，违反 A12；挂起视图不是新的后端协议，后端无需为它通过额外的规范 |
 | `cocache-example` 的 WebFlux + 协程示例 | 未做，记在 roadmap v6.4 | 与模块本身无关，单独提交 |
 | starter | 不识别 `SuspendingCacheLoader` bean（§7 未要求）；类路径上有本模块时按类名为 `SuspendingCache` / `SuspendingSetCache` 登记 AOT 提示 | starter 不依赖本模块 |

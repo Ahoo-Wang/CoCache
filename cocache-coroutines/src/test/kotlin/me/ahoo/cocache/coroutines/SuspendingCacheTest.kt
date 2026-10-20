@@ -167,10 +167,17 @@ class SuspendingCacheTest {
         }
         entered.awaitOrFail("sync load started")
         val async = cache.async().get("k")
-        val suspending = fork("suspending") { runBlocking { cache.suspending().get("k") } }
+        val suspendingDone = CountDownLatch(1)
+        val suspending = fork("suspending") {
+            runBlocking { cache.suspending().get("k") }.also { suspendingDone.countDown() }
+        }
         awaitCondition("suspending caller waiting") {
             suspending.thread.state == Thread.State.WAITING || suspending.thread.state == Thread.State.TIMED_WAITING
         }
+        // 加载完成之前，异步与挂起的调用方都没有返回：它们在等同一次加载
+        async.isDone.assert().isFalse()
+        suspendingDone.count.assert().isEqualTo(1L)
+        loads.get().assert().isEqualTo(1)
         release.countDown()
         first.join().assert().isEqualTo("shared")
         async.get().assert().isEqualTo("shared")
@@ -255,6 +262,10 @@ class SuspendingCacheTest {
             }
         }.assert().isEqualTo("v")
         seen.get().assert().isEqualTo("caller")
+        // 调用方在 runBlocking 的事件循环上：loader 改在 Dispatchers.Default 上执行
+        val thread = AtomicReference<String>()
+        cache.get("event-loop") { thread.set(Thread.currentThread().name); "e" }
+        thread.get().assert().startsWith("DefaultDispatcher-worker")
         // loader 的 Job 不是调用方 Job 的子 Job
         requireNotNull(loaderJob.get()).assert().isNotSameAs(callerJob)
         callerJob?.children?.toList().orEmpty().assert().doesNotContain(loaderJob.get())
@@ -301,6 +312,147 @@ class SuspendingCacheTest {
 
     @Test
     fun loadingKeysDescribeThemselves() {
-        LoadingKeys.adding(kotlin.coroutines.EmptyCoroutineContext, "c", listOf("k")).toString().assert().contains("c")
+        LoadingKeys.adding(null, "c", listOf("k")).toString().assert().contains("c")
+    }
+
+    /** 把一个 ThreadLocal 带进协程（与 kotlinx-coroutines-slf4j 的 MDCContext 同一机制）。 */
+    private class TraceContext(private val value: String) : kotlinx.coroutines.ThreadContextElement<String?> {
+        companion object Key : kotlin.coroutines.CoroutineContext.Key<TraceContext> {
+            val current = ThreadLocal<String?>()
+        }
+
+        override val key: kotlin.coroutines.CoroutineContext.Key<*> get() = Key
+
+        override fun updateThreadContext(context: kotlin.coroutines.CoroutineContext): String? =
+            current.get().also { current.set(value) }
+
+        override fun restoreThreadContext(context: kotlin.coroutines.CoroutineContext, oldState: String?) = current.set(oldState)
+    }
+
+    @Test
+    fun threadContextElementsReachTheCallLevelLoader(): Unit = runBlocking<Unit> {
+        val cache = plain().suspending()
+        val seen = AtomicReference<String?>()
+        withContext(TraceContext("trace-1")) {
+            cache.get("k") {
+                withContext(Dispatchers.IO) { /* 换一个线程后仍在 */ }
+                seen.set(TraceContext.current.get())
+                "v"
+            }
+        }
+        seen.get().assert().isEqualTo("trace-1")
+    }
+
+    @Test
+    fun aCancellationExceptionFromTheLoaderIsAFailureForEveryCaller(): Unit = runBlocking<Unit> {
+        val cache = plain().suspending()
+        val release = CompletableDeferred<Unit>()
+        val started = CompletableDeferred<Unit>()
+        val loader: suspend (String) -> String? = {
+            started.complete(Unit)
+            release.await()
+            // 数据源内部的超时：协程本身仍处于活动状态
+            withTimeout(1) { delay(1_000) }
+            "never"
+        }
+        val first = async(Dispatchers.Default) { runCatching { cache.get("k", loader) }.exceptionOrNull() }
+        started.await()
+        val second = async(Dispatchers.Default) { runCatching { cache.get("k", loader) }.exceptionOrNull() }
+        release.complete(Unit)
+        listOf(first.await(), second.await()).forEach { error ->
+            error.assert().isInstanceOf(SourceLoadCancelledException::class.java)
+            requireNotNull(error).cause.assert().isInstanceOf(kotlinx.coroutines.TimeoutCancellationException::class.java)
+            (error as SourceLoadCancelledException).cacheName.assert().isEqualTo("plain")
+        }
+        // spec 级 loader 同样转换
+        val spec = runtime.create(
+            cacheSpec<String, String>("spec-cancel") {
+                codec = StringCodec
+                suspendingLoader { withTimeout(1) { delay(1_000) }; "never" }
+            }
+        ).suspending()
+        runCatching { spec.get("k") }.exceptionOrNull().assert().isInstanceOf(SourceLoadCancelledException::class.java)
+    }
+
+    @Test
+    fun aFailingLoadDoesNotCancelLaterLoadsOfAContextWithAJob(): Unit = runBlocking<Unit> {
+        val parent = Job()
+        val failing = java.util.concurrent.atomic.AtomicBoolean(true)
+        val cache = runtime.create(
+            cacheSpec<String, String>("job") {
+                codec = StringCodec
+                suspendingLoader(parent + Dispatchers.IO) { key ->
+                    check(!failing.getAndSet(false)) { "first load fails" }
+                    "v-$key"
+                }
+            }
+        ).suspending()
+        runCatching { cache.get("a") }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+        // 一次失败不取消父 Job，之后的加载照常
+        cache.get("b").assert().isEqualTo("v-b")
+        parent.isActive.assert().isTrue()
+        // 取消父 Job 会取消之后的加载
+        parent.cancel()
+        runCatching { cache.get("c") }.exceptionOrNull().assert().isInstanceOf(kotlinx.coroutines.CancellationException::class.java)
+    }
+
+    @Test
+    fun specLevelLoadsAreBoundedByAsyncTimeout(): Unit = runBlocking<Unit> {
+        val stillRunning = CompletableDeferred<Unit>()
+        val cache = runtime.create(
+            cacheSpec<String, String>("slow") {
+                codec = StringCodec
+                policy = me.ahoo.cocache.core.policy.CachePolicy(
+                    load = me.ahoo.cocache.core.policy.LoadPolicy(asyncTimeout = Duration.ofMillis(200))
+                )
+                suspendingLoader {
+                    delay(500)
+                    stillRunning.complete(Unit)
+                    "late"
+                }
+            }
+        ).suspending()
+        runCatching { cache.get("k") }.exceptionOrNull()
+            .assert().isInstanceOf(me.ahoo.cocache.core.SourceLoadTimeoutException::class.java)
+        // 超时不取消加载协程（与 AsyncCacheLoader 相同），迟到的结果被丢弃
+        withTimeout(10_000) { stillRunning.await() }
+    }
+
+    @Test
+    fun cancellingTheCallerOfASpecLevelLoadLetsItFill(): Unit = runBlocking<Unit> {
+        val release = CompletableDeferred<Unit>()
+        val started = CompletableDeferred<Unit>()
+        val cache = runtime.create(
+            cacheSpec<String, String>("spec-cancel-caller") {
+                codec = StringCodec
+                suspendingLoader { key ->
+                    loads.incrementAndGet()
+                    started.complete(Unit)
+                    release.await()
+                    "v-$key"
+                }
+            }
+        ).suspending()
+        val caller = launch(Dispatchers.Default) { cache.get("k") }
+        started.await()
+        caller.cancel()
+        caller.join()
+        release.complete(Unit)
+        awaitCondition("the abandoned load filled the cache") { runBlocking { cache.async().lookup("k").get() } is Lookup.Present }
+        cache.get("k").assert().isEqualTo("v-k")
+        loads.get().assert().isEqualTo(1)
+    }
+
+    @Test
+    fun reentryIsMatchedByCacheInstanceNotByName(): Unit = runBlocking<Unit> {
+        // 另一个运行时上的同名缓存（多节点布局）不是同一个缓存，不误报
+        val other = CacheRuntime.builder().backend(InMemoryBackend()).build()
+        try {
+            val here = plain("same").suspending()
+            val there = other.create(cacheSpec<String, String>("same") { codec = StringCodec }).suspending()
+            here.get("k") { key -> "here:" + there.get(key) { "there" } }.assert().isEqualTo("here:there")
+        } finally {
+            other.close()
+        }
     }
 }
