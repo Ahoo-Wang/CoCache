@@ -50,6 +50,7 @@ async.put("42", user).thenCompose { async.get("42") }
 
 - 非原子广播（`channel-mode: sharded`，或原子广播探测失败）时，失败但已部分生效的写入现在也会广播。之前一组 slot 失败的 `putAll`，或 Redis 已执行但应答丢失的 `put`，会让其它实例一直读旧的本地副本，直到 `local-max-age`。Redis 上同步的 `putAll` 与 `invalidateAll` 现在等全部 slot 组结束后才抛出。
 - 读到刷新窗口内的本地副本时，若上一次刷新恰好刚完成，同一实例可能对同一 key 再刷新一次。这次多余的刷新只多一次 Redis 读取，现在不再发生。
+- 按 bean 名指定的执行器（`cocache.refresh-executor`，以及新的 `cocache.async-executor` / `cocache.blocking-executor`）在应用关闭时可能先于 CoCache 运行时被销毁，运行时关闭期间提交的任务因此被拒绝。这个问题从 6.1 起就存在。现在运行时先关闭。
 
 ### 兼容性测试套件与 CI
 

@@ -146,7 +146,7 @@ cocache-bom / cocache-dependencies / cocache-example
 | 收到远端事件 | 戳 → 淘汰 L2（`origin == 本节点 NodeId` 的事件被过滤） |
 | `onReset` / `clearLocal` | 全部戳递增 → 清空 L2 |
 
-后端 `atomicBroadcast = false` 时，引擎在存储操作成功后调用 `channel.publish`；发布失败按写入失败处理（§7）。存储操作失败时引擎**也尽力发布同一帧**再报错：失败的写入可能已部分生效（`putAll` 跨多个 slot 组时有的组已写入，或已在 L1 生效却报错），不发布的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）；这次发布的失败只告警（附为写入异常的 suppressed），调用方看到的仍是写入的原始异常，多余的广播只淘汰副本。因此存储的写入方法返回或抛出时，它发出的全部 L1 命令都必须已经结束（`RedisRemoteStore` 的同步 `putAll` / `invalidate` 等全部组结束后才抛出第一个异常，异步版本同样等全部组），否则广播可能先于仍在执行的命令。
+后端 `atomicBroadcast = false` 时，引擎在存储操作成功后调用 `channel.publish`；发布失败按写入失败处理（§7）。存储操作失败时引擎**也尽力发布同一帧**再报错：失败的写入可能已部分生效（`putAll` 跨多个 slot 组时有的组已写入，或已在 L1 生效却报错），不发布的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）；这次发布的失败只告警（附为写入异常的 suppressed），调用方看到的仍是写入的原始异常，多余的广播只淘汰副本。因此存储的写入方法返回或抛出时，它发出的全部 L1 命令都必须已经结束（`RedisRemoteStore` 的同步 `putAll` / `invalidate` 等全部组结束后才抛出第一个异常，异步版本同样等全部组），否则广播可能先于仍在执行的命令。例外是命令超时：客户端放弃等待时已发出的命令可能仍在 Redis 端执行，补发的广播可能先于它生效，这时其它节点的旧副本由 `localMaxAge` 兜底（G1 的上界不变）。同步路径逐组等待、每组各受 `commandTimeout` 限制，失败时最坏等待为“组数 × `commandTimeout`”。
 
 ### 4.3 为什么这样做
 

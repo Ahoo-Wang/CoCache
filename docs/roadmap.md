@@ -63,7 +63,7 @@
 
 JMH 对比见 RFC 0003 §7.1。
 
-## v6.1：可部署性
+## v6.1：可部署性 — 已完成
 
 | 项 | 目标 | 内容 | 验收 |
 |----|------|------|------|
@@ -86,6 +86,15 @@ JMH 对比见 RFC 0003 §7.1。
 | 集合基准 `setRead` | G3 | 成员数 10 / 100 / 1000 的吞吐与内存，决定 Hash 编码是否保留（RFC 0003 §8 Q1） | ✅ `SetCacheBenchmark`；保留 Hash（RFC 0003 §8.1） |
 | 集合读脚本改用 `HKEYS` | G3 | 读脚本以 `HKEYS` + `HGET !f` 取代 `HGETALL`，不再返回空值；存储布局不变，不是线格式变更。服务端实测 1000 个成员时读吞吐约 1.8 倍（RFC 0003 §8.1） | ✅ 服务端读吞吐 10 / 100 / 1000 个成员为 1.33 / 1.55 / 1.76 倍；最小 ACL 需加 `+hkeys +hget`（运维文档） |
 | L2 命中计数 | 可观测 | 分条带计数器（`LongAdder`）；8 线程 JMH 回退在噪声内才默认开启 | ✅ #655：默认关闭，`cocache.metrics.local-hits` / `recordLocalHits(true)` 开启；开启时 JMH 回退超出噪声（`l2HitViaInterface` 1 线程 −7.7%、8 线程 −8.9%，`l2Hit` −4%~−5%），关闭时与 main 持平（数据见 #655） |
+
+## 6.3.1
+
+6.3.0 发版审查中记下的已知问题，计划在 6.3.1 修复。
+
+| 项 | 目标 | 内容 | 现状 |
+|----|------|------|------|
+| 非原子模式下执行器拒绝写入收尾 | G2 | 非原子广播时，用户配置的 `cocache.async-executor` 拒绝任务会让写入结果被 `RejectedExecutionException` 替换，广播也被跳过（`AbstractEngine.writeAsync` 中 `handleNext(executor)` 的派发被拒）。修法：派发被拒时在完成线程上直接 `publishAsync`，并保留写入的原始异常 | 未修复；默认的 `ForkJoinPool` 不拒绝任务，不受影响 |
+| 命令超时后的补发广播 | G2 | 同步 `putAll` / `invalidate` 失败后补发的广播可能先于仍在 Redis 端执行的超时命令生效，旧副本由 `localMaxAge` 兜底；失败路径最坏等待为“组数 × `commandTimeout`”（见 architecture.md §4.2） | 已记录，评估是否改为等待命令真正结束 |
 
 ## 6.3 之后
 

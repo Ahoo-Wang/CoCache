@@ -50,6 +50,7 @@ The `SetCache` read script fetches members with `HKEYS` and the format version w
 
 - With non-atomic broadcast (`channel-mode: sharded`, or when the atomic-broadcast probe fails), a write that failed but partly took effect is now broadcast too. Before, a `putAll` that failed in one slot group, or a `put` applied in Redis whose reply was lost, left other instances reading the old local copy until `local-max-age`. Synchronous `putAll` and `invalidateAll` on Redis now wait for every slot group before they throw.
 - A read that saw a local copy inside the refresh window just as the previous refresh finished could start a second refresh of the same key on the same instance. That second refresh only cost an extra Redis read, and it no longer happens.
+- Executors named by bean (`cocache.refresh-executor`, and the new `cocache.async-executor` / `cocache.blocking-executor`) could be destroyed before the CoCache runtime when the application shut down, so work submitted while the runtime closed was rejected. This was present since 6.1. The runtime now closes first.
 
 ### Compatibility kit and CI
 
@@ -61,7 +62,7 @@ The `SetCache` read script fetches members with `HKEYS` and the format version w
 
 - `cocache.spring-cache.retrieve-executor`, `CoCacheSpringCacheManager(runtime, executor)` and `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` are deprecated: the executor is ignored, and the property logs a warning at startup. They are removed in 7.0. `CoCacheSpringCache(cache, admin, executor)` is not deprecated: its executor runs the method body.
 - **Async and reactive `@Cacheable(sync = true)` methods** behave differently in two ways:
-  - The method body runs on `cocache.blocking-executor`: virtual threads on JDK 21+. On JDK 17 it's a pool of up to 512 threads that rejects new loads when full (`RejectedExecutionException`). The old retrieve executor ran them on the calling thread instead.
+  - The method body runs on `cocache.blocking-executor`: virtual threads on JDK 21+. On JDK 17 it's a pool of up to 512 threads that rejects new loads when full (`RejectedExecutionException`). When full, the old retrieve executor ran them on the calling thread instead.
   - The load is bounded by `load-async-timeout` (default 30 seconds): past it the call fails with `SourceLoadTimeoutException`, while the method body keeps running.
 - `Cache.async()` is a default method that throws `UnsupportedOperationException`. A `Cache` you implement yourself, for example a test double, needs to override it only if callers use the async view.
 - A custom `LoadObserver` sees async loads only if it overrides `observeAsync`.
