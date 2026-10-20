@@ -17,7 +17,7 @@ publish-plugin = "2.0.0"
 jmh-plugin = "0.7.3"
 openjdk-jmh = "1.37"
 # 与 Spring Boot 管理的 native-build-tools-plugin 版本一致（spring-boot-dependencies 的同名属性）
-graalvm-native = "1.1.8"
+graalvm-native = "1.1.14"
 
 [libraries]
 spring-boot-dependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
