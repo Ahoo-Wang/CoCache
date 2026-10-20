@@ -27,10 +27,7 @@ Behavior changes:
 
 ### Fixes
 
-- **Lettuce 6.8 (Spring Boot 4.0).** The Redis backend works with the Lettuce version that Spring Boot 4.0 manages:
-  - The setting that turns off relaxed timeouts during maintenance exists only in Lettuce 7. Without this fix, the unreleased timeout change above would have made building a client fail with `NoSuchMethodError` on Lettuce 6. CoCache now skips the setting there, and Lettuce 6 doesn't relax timeouts anyway.
-  - Since 6.0, a failed heartbeat on Lettuce 6 threw `NoClassDefFoundError` while forcing a reconnect, which stopped the heartbeat for good. The error came from Lettuce 7's `Delegating` interface, which forcing a reconnect no longer uses.
-  - The whole `cocache-redis` test suite passes on Lettuce 6.8.2 and 7.5.2.
+- **The heartbeat stopped for good on Lettuce 6.8 (Spring Boot 4.0).** Since 6.0.0, on the Lettuce version that Spring Boot 4.0 manages, the forced reconnect after a failed heartbeat threw `NoClassDefFoundError` (it used Lettuce 7's `Delegating` interface). The error escaped the heartbeat task, so the subscription connection was never checked again and the node could no longer heal itself after a half-open connection. Forcing a reconnect no longer uses that interface. The heartbeat task now also logs any error, including `Error`s, and carries on with the next heartbeat. The whole `cocache-redis` test suite passes on Lettuce 6.8.2 and 7.5.2.
 - **No false reentry after inline continuations.** A data source that completes another key's load on the same thread no longer runs that key's callbacks inside its own load. Before this fix, such a callback that read the key being loaded failed with `IllegalStateException` ("Recursive call on the same key"). This only affected unreleased changes, not 6.4.0.
 
 ## v6.4.0 (Current)

@@ -120,8 +120,23 @@ internal abstract class RedisInvalidationChannel(
     internal var lastHeartbeatFailure: String? = null
         private set
 
+    /**
+     * 心跳任务：任何异常都不能逃出去。`scheduleWithFixedDelay` 的任务抛出异常（包括 `Error`）后不再执行，节点从此失去自愈能力（G1）；
+     * 例如 6.0–6.4.0 在 Lettuce 6 上强制重连时抛出 `NoClassDefFoundError`，心跳就此停止。`VirtualMachineError` 也不重新抛出：
+     * 停掉心跳无助于 JVM 恢复，`OutOfMemoryError` 也可能只是暂时的。
+     */
     @Suppress("TooGenericExceptionCaught")
     private fun beat() {
+        try {
+            probe()
+        } catch (e: Throwable) {
+            lastHeartbeatFailure = e.toString()
+            log.error(e) { "Invalidation channel heartbeat task failed - continue with the next heartbeat." }
+        }
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun probe() {
         try {
             ping()
             lastHeartbeatFailure = null
