@@ -22,6 +22,8 @@ import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.AsyncSetCache
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.coroutines.LoadCancellation.cancellationAsFailure
+import me.ahoo.cocache.coroutines.LoadCancellation.cancelledAsFailure
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
@@ -89,6 +91,18 @@ internal open class SuspendingCacheView<K : Any, V : Any>(private val async: Asy
     override fun async(): AsyncCache<K, V> = async
 
     override fun toString(): String = "SuspendingCache($async)"
+
+    /**
+     * 已完成且成功时直接取结果（L2 命中不挂起）；否则挂起等待。取消等待只取消这个 future（异步视图为每次调用新建 future，
+     * 取消它不影响共享的加载）。失败时抛出 future 中保存的原始异常。内联：调用方的挂起点因此在尾部。
+     */
+    @Suppress("UNCHECKED_CAST")
+    protected suspend inline fun <T> CompletableFuture<T>.awaitResult(): T {
+        if (isDone && !isCompletedExceptionally) {
+            return getNow(null) as T
+        }
+        return await()
+    }
 }
 
 internal class SuspendingSetCacheView<K : Any, E : Any>(private val async: AsyncSetCache<K, E>) :
@@ -138,35 +152,25 @@ private class CallerLoader<K : Any, V : Any>(
             cancellationAsFailure(cacheName) { loader(key) }
         }.cancelledAsFailure(cacheName)
     }
-}
 
-/**
- * `runBlocking` 的事件循环的基类。kotlinx-coroutines 没有公开的判断方法，这里依赖它的内部类名：
- * 升级 kotlinx-coroutines 时请复查（类名变化时识别失效，调用级 loader 会留在事件循环上，`SuspendingCacheTest` 中的用例会失败）。
- */
-private const val EVENT_LOOP = "kotlinx.coroutines.EventLoop"
+    private companion object {
+        /**
+         * `runBlocking` 的事件循环的基类。kotlinx-coroutines 没有公开的判断方法，这里依赖它的内部类名：
+         * 升级 kotlinx-coroutines 时请复查（类名变化时识别失效，调用级 loader 会留在事件循环上，`SuspendingCacheTest` 中的用例会失败）。
+         */
+        const val EVENT_LOOP = "kotlinx.coroutines.EventLoop"
 
-private fun dispatcherOf(context: CoroutineContext): CoroutineContext {
-    var type: Class<*>? = context[ContinuationInterceptor]?.javaClass
-    while (type != null) {
-        if (type.name == EVENT_LOOP) {
-            return context + Dispatchers.Default
+        fun dispatcherOf(context: CoroutineContext): CoroutineContext {
+            var type: Class<*>? = context[ContinuationInterceptor]?.javaClass
+            while (type != null) {
+                if (type.name == EVENT_LOOP) {
+                    return context + Dispatchers.Default
+                }
+                type = type.superclass
+            }
+            return context
         }
-        type = type.superclass
     }
-    return context
-}
-
-/**
- * 已完成且成功时直接取结果（L2 命中不挂起）；否则挂起等待。取消等待只取消这个 future（异步视图为每次调用新建 future，
- * 取消它不影响共享的加载）。失败时抛出 future 中保存的原始异常。内联：调用方的挂起点因此在尾部。
- */
-@Suppress("UNCHECKED_CAST")
-internal suspend inline fun <T> CompletableFuture<T>.awaitResult(): T {
-    if (isDone && !isCompletedExceptionally) {
-        return getNow(null) as T
-    }
-    return await()
 }
 
 /**

@@ -5,9 +5,9 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v6.4.0（未发布）
+## v6.4.0（当前版本）
 
-**模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。已有模块不变，Redis 线格式与失效频道也不变，6.x 实例可以共用 Redis，逐台升级。
+**模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。已有模块没有 API 变化，Redis 线格式与失效频道也不变，6.x 实例可以共用 Redis，逐台升级。
 
 ### Kotlin 协程
 
@@ -27,7 +27,7 @@ cacheSpec<String, User>("user") {
 - 取消等待的协程不会取消共享的加载；异常是原始异常。loader 读取同一缓存中自己正在加载的 key 立即以 `IllegalStateException` 失败，挂起之后同样如此。
 - 以取消结束的加载，对共享它的每个调用方（同步、异步与挂起）都以 `SourceLoadCancelledException`（`RuntimeException`）失败：包括 loader 自己抛出的 `CancellationException`（如其中的 `withTimeout`），以及 spec 的 `context` 中已被取消的 `Job`。spec 级加载都在同一个 `SupervisorJob` 下，一次失败不取消之后的加载。
 - Java 经门面类 `SuspendingCaches` 与 `SuspendingCacheLoaders` 看到这些扩展函数。
-- 本模块依赖 `kotlinx-coroutines-core` 1.10.2（即 Spring Boot 4.1 管理的版本，在 `cocache-dependencies` 中声明），其它模块都不依赖它。模块在类路径上时，starter 为挂起视图登记原生镜像提示。
+- 本模块依赖 `kotlinx-coroutines-core` 1.10.2。其它模块的运行时都不依赖协程；`cocache-dependencies` 平台声明了 1.10.2 的版本约束，与 Spring Boot 4.1 管理的版本相同。模块在类路径上时，starter 为挂起视图登记原生镜像提示。
 - 同步与异步的命中路径不变。
 
 ### Gradle 配置
@@ -36,7 +36,7 @@ cacheSpec<String, User>("user") {
 implementation("me.ahoo.cocache:cocache-coroutines:6.4.0")
 ```
 
-## v6.3.1（当前版本）
+## v6.3.1
 
 **模块组：** `me.ahoo.cocache` · 修订版本。API 与配置都没有变化。Redis 线格式与失效频道都没有变化，6.3.1 的实例可以与任何 6.x 实例共用 Redis，逐台升级。
 

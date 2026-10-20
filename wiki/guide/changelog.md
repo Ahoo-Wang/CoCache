@@ -5,9 +5,9 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v6.4.0 (Unreleased)
+## v6.4.0 (Current)
 
-**Module Group:** `me.ahoo.cocache` · Minor release, additive. Existing modules are unchanged, and the Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis and be upgraded one at a time.
+**Module Group:** `me.ahoo.cocache` · Minor release, additive. No API change in existing modules, and the Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis and be upgraded one at a time.
 
 ### Kotlin coroutines
 
@@ -27,7 +27,7 @@ cacheSpec<String, User>("user") {
 - Cancelling a waiting coroutine doesn't cancel a shared load. Exceptions are the original ones. A loader that reads the key it is loading, from the same cache, fails at once with `IllegalStateException`, even after it suspends.
 - A load that ends in cancellation fails with `SourceLoadCancelledException` (a `RuntimeException`) for every caller that shares it: synchronous, async or suspending. This covers a `CancellationException` from the loader itself (for example a `withTimeout` inside it) and a cancelled `Job` in the spec's `context`. Spec-level loads run under one `SupervisorJob`, so one failure doesn't cancel later loads.
 - Java sees the extensions on the facade classes `SuspendingCaches` and `SuspendingCacheLoaders`.
-- The module depends on `kotlinx-coroutines-core` 1.10.2, the version Spring Boot 4.1 manages, declared in `cocache-dependencies`; no other module does. The starter registers native-image hints for the suspending views when the module is on the classpath.
+- The module depends on `kotlinx-coroutines-core` 1.10.2. No other module needs coroutines at runtime. The `cocache-dependencies` platform declares a 1.10.2 version constraint, the same version Spring Boot 4.1 manages. The starter registers native-image hints for the suspending views when the module is on the classpath.
 - The synchronous and async hit paths are unchanged.
 
 ### Gradle Setup
@@ -36,7 +36,7 @@ cacheSpec<String, User>("user") {
 implementation("me.ahoo.cocache:cocache-coroutines:6.4.0")
 ```
 
-## v6.3.1 (Current)
+## v6.3.1
 
 **Module Group:** `me.ahoo.cocache` · Patch release. No API or configuration change. The Redis wire format and the invalidation channel are unchanged, so 6.3.1 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
