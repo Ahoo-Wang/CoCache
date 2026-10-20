@@ -156,6 +156,30 @@ configure(libraryProjects) {
     }
 }
 
+// 产物始终按 libs.versions.toml 的 Spring Boot 版本编译与发布；-PtestSpringBootVersion=4.0.8 只把测试运行时类路径
+// 强制为该版本的 spring-boot-dependencies（Lettuce、Spring Data Redis、Jackson……一并降级），验证已发布的产物在较老的 Boot 上可用
+providers.gradleProperty("testSpringBootVersion").orNull?.let { version ->
+    configure(libraryProjects + serverProjects) {
+        val testSpringBootPlatform = configurations.create("testSpringBootPlatform") {
+            isCanBeResolved = false
+            isCanBeConsumed = false
+        }
+        dependencies.add(testSpringBootPlatform.name, dependencies.enforcedPlatform("org.springframework.boot:spring-boot-dependencies:$version"))
+        // 测试运行时，以及 cocache-example 的测试 AOT 处理（processTestAot 在测试类路径上启动应用上下文，生成的源码再按同一组依赖编译）；
+        // 主代码与测试代码的编译类路径保持不变
+        val testRuntimeConfigurations = setOf("testRuntimeClasspath", "processTestAotClasspath", "aotTestCompileClasspath", "aotTestRuntimeClasspath")
+        configurations.matching { it.name in testRuntimeConfigurations }.configureEach {
+            extendsFrom(testSpringBootPlatform)
+            // cocache-dependencies 引入的 4.1 平台也改指该版本：AOT 处理类路径复制依赖时会与强制版本冲突
+            resolutionStrategy.eachDependency {
+                if (requested.group == "org.springframework.boot" && requested.name == "spring-boot-dependencies") {
+                    useVersion(version)
+                }
+            }
+        }
+    }
+}
+
 configure(publishProjects) {
     val isBom = bomProjects.contains(this)
     apply<MavenPublishPlugin>()
