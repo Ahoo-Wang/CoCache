@@ -15,7 +15,7 @@ description: 五分钟为 Spring Boot 应用加上二级一致性缓存，确认
 
 ```kotlin [Gradle (Kotlin)]
 dependencies {
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.4.0")
+    implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.4.1")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
     implementation("org.springframework.boot:spring-boot-starter-actuator") // 可选：cocache 端点
 }
@@ -23,7 +23,7 @@ dependencies {
 
 ```groovy [Gradle (Groovy)]
 dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:6.4.0'
+    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:6.4.1'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
     implementation 'org.springframework.boot:spring-boot-starter-actuator' // 可选：cocache 端点
 }
@@ -33,7 +33,7 @@ dependencies {
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>6.4.0</version>
+    <version>6.4.1</version>
 </dependency>
 <dependency>
     <groupId>org.springframework.boot</groupId>

@@ -233,12 +233,36 @@ class RedisBackend private constructor(
          * 精度为一个刻度，默认 100 ms），超时以 `RedisCommandTimeoutException` 完成（RFC 0004 §14）。单机的异步视图只做异常映射；
          * 集群中它替换 Lettuce 默认的 60 s 连接超时，不增加开销。
          * 关闭维护期间的放宽（Lettuce 7 默认在收到维护通知时把超时放宽 10 s），上界始终是 [commandTimeout]，与同步等待一致。
+         * 这一项只有 Lettuce 7 才有（`relaxedTimeoutsDuringMaintenance`、`DISABLED_TIMEOUT`）：Spring Boot 4.0 管理的 Lettuce 6.8
+         * 没有维护通知，也没有这两个符号，此时跳过，维护期间的超时行为保持 Lettuce 的默认（6.x 上即不放宽）。
          */
-        internal fun timeoutOptions(commandTimeout: Duration): TimeoutOptions = TimeoutOptions.builder()
-            .timeoutCommands(true)
-            .fixedTimeout(commandTimeout)
-            .relaxedTimeoutsDuringMaintenance(TimeoutOptions.DISABLED_TIMEOUT)
-            .build()
+        internal fun timeoutOptions(commandTimeout: Duration): TimeoutOptions {
+            val builder = TimeoutOptions.builder()
+                .timeoutCommands(true)
+                .fixedTimeout(commandTimeout)
+            disableMaintenanceRelaxation(builder)
+            return builder.build()
+        }
+
+        /**
+         * 关闭维护期间的超时放宽；当前 Lettuce 没有这一项（6.x）时什么也不做并返回 `false`。
+         * [relax] 只供测试替换：符号在执行到时才解析，缺失时抛出 `NoSuchMethodError` / `NoSuchFieldError`。
+         */
+        internal fun disableMaintenanceRelaxation(
+            builder: TimeoutOptions.Builder,
+            relax: (TimeoutOptions.Builder) -> Unit = ::relaxNever
+        ): Boolean {
+            return try {
+                relax(builder)
+                true
+            } catch (_: IncompatibleClassChangeError) {
+                false
+            }
+        }
+
+        private fun relaxNever(builder: TimeoutOptions.Builder) {
+            builder.relaxedTimeoutsDuringMaintenance(TimeoutOptions.DISABLED_TIMEOUT)
+        }
 
         /**
          * 带连接名的副本（不修改调用方的 URI）。

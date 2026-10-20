@@ -26,12 +26,32 @@ CoCache5Migrator.standalone(uri).use { migrator ->
 - 有数据源的读取（包括 `get(key, loader)`）照旧回收并重新加载（`reclaim`）。给缓存设置 `foreign-format: reclaim` 即可恢复旧行为。`cocache.defaults.foreign-format` 不作用于 `SetCache`。
 - 受影响的只有在没有数据源的缓存下存在读不懂内容的应用；6.5 之前这些内容在第一次读取时被静默丢弃。
 
+## v6.4.1（当前版本）
+
+**模块组：** `me.ahoo.cocache` · 修订版本。API 与配置都没有变化。Redis 线格式与失效频道都没有变化，6.4.1 的实例可以与任何 6.x 实例共用 Redis，逐台升级。
+
 ### 异步 Redis 命令的超时
 
 - 异步 Redis 命令的超时不再经 JDK 的单线程延迟调度器（`CompletableFuture.orTimeout`）计时（[RFC 0004 §14](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0004-async-api.md)）。CoCache 自建的客户端改由 Lettuce 自己的命令超时（`TimeoutOptions`，固定为 `cocache.redis.command-timeout`）为每条命令计时，它替换 Lettuce 默认的 60 秒超时，不增加开销。单机 Redis 上只有这一个计时器。Cluster 中 Lettuce 在命令写入节点连接时才开始计时，所以等待建立节点连接的命令仍由 CoCache 另外计时，改用 Lettuce 的 Netty 时间轮。传给 `RedisBackend.of` 的客户端保留自己的选项，它的异步命令由 CoCache 在同一个时间轮上计时。
-- 超时仍以同样的 `RedisException("Command timed out after …")` 失败，同步与异步路径相同。时间轮默认每 100 毫秒一个刻度，异步超时最多晚一个刻度触发。Lettuce 7 在服务端维护期间会放宽命令超时，CoCache 关闭了这项放宽，上界保持为 `command-timeout`。异步路径上，`NOSCRIPT` 之后重试的 `EVAL` 是一条新命令，单独计时。
+- 超时仍以同样的 `RedisException("Command timed out after …")` 失败，同步与异步路径相同。异步路径上，`NOSCRIPT` 之后重试的 `EVAL` 是一条新命令，单独计时。
 
-## v6.4.0（当前版本）
+行为变化：
+
+- 异步超时的精度为时间轮的一个刻度（默认 100 毫秒），最多比 `command-timeout` 晚一个刻度触发；此前精确到毫秒。
+- CoCache 自建的客户端上，Lettuce 的命令超时从 60 秒改为 `command-timeout`（默认 2 秒），并关闭 Lettuce 7 在服务端维护期间的超时放宽。这也约束 Lettuce 自己发出的命令：重连后的自动重订阅，以及 Cluster 拓扑刷新时的 `CLUSTER NODES` / `INFO`。超时的重订阅在服务端照常执行，连接真的断开时由心跳强制重连；超时的拓扑刷新由下一次自适应触发重试。很大或很忙的 Cluster 中 `CLUSTER NODES` 慢于 `command-timeout` 时，应调大它。建立连接时的握手不受影响。
+- CoCache 自建的客户端上，超时异常的 cause 可能是 Lettuce 的 `RedisCommandTimeoutException`，而不再是 `TimeoutException`；外层异常的类型与消息不变。
+
+### 异步视图减少线程切换
+
+- 上一步在同一个异步执行器正在执行的任务中完成时，异步续接就地执行，不再重新提交给执行器（[调查报告](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/investigations/async-8t-gap.md)）。经异步视图的一次 L1 命中只切换 1 次线程（原为 4 次），一次未命中至多 3 次（原为 7 次）。在 Lettuce 的 I/O 线程、定时器线程、阻塞执行器或数据源自己的线程上完成的结果仍交给异步执行器，续接从不在 I/O 线程上执行。就地执行最多嵌套 16 层，超过后重新派发。
+- 在默认的 `ForkJoinPool` 上，每次多余的切换都可能唤醒一个空闲线程。与 6.4.0 交替对比（同轮配对中位数），异步 L1 命中 1 线程快 5.5%、8 线程快 8%，异步未命中 8 线程至少快约 8%（只有 2 对有效数据）。写入与 L2 命中不变。
+
+### 修复
+
+- **Lettuce 6.8（Spring Boot 4.0）上心跳永久停止。** 自 6.0.0 起，在 Spring Boot 4.0 管理的 Lettuce 版本上，心跳失败后的强制重连会抛出 `NoClassDefFoundError`（它用到了 Lettuce 7 的 `Delegating` 接口）。这个错误逃出了心跳任务，订阅连接从此不再被检查，半开连接之后节点无法自愈。强制重连已不再使用这个接口。心跳任务现在也会记录任何错误（包括 `Error`），然后继续下一次心跳。`cocache-redis` 的全部测试在 Lettuce 6.8.2 与 7.5.2 上都通过。
+- **就地续接不再误判重入。** 线程在加载某个 key 期间（作为同步调用的 leader，或在数据源中），在这个线程上完成的其它 key 的异步续接不再就地执行。这包括数据源完成另一个 key 的加载，以及同步 leader 把回源许可交给另一个 key 的异步等待者。修复之前，那个 key 的回调再读正在加载的 key 会以 `IllegalStateException`（"Recursive call on the same key"）失败。问题来自 6.4.0 之后的改动，没有任何已发布版本受影响。
+
+## v6.4.0
 
 **模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。已有模块没有 API 变化，Redis 线格式与失效频道也不变，6.x 实例可以共用 Redis，逐台升级。
 

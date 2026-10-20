@@ -639,6 +639,15 @@ class RedisUnitTest {
                     "reconnected"
                 ) { runCatching { connection.sync().clientId() != before }.getOrDefault(false) }
             }
+            // 配置了命令监听器：端点外再包一层 CommandListenerWriter，同样逐层拆开
+            client.addListener(object : io.lettuce.core.event.command.CommandListener {})
+            client.connect().use { connection ->
+                val before = connection.sync().clientId()
+                RedisInvalidationChannel.disconnect(connection).assert().isTrue()
+                awaitCondition(
+                    "reconnected with a command listener"
+                ) { runCatching { connection.sync().clientId() != before }.getOrDefault(false) }
+            }
         } finally {
             client.shutdown()
         }
@@ -673,6 +682,88 @@ class RedisUnitTest {
             )
         )
         updateCache()
+    }
+
+    /**
+     * 心跳任务抛出 Error（6.0–6.4.0 在 Lettuce 6 上强制重连时的 `NoClassDefFoundError`）之后，下一次心跳照常执行：
+     * `scheduleWithFixedDelay` 的任务一旦抛出就不再执行，节点会失去自愈能力。
+     */
+    @Test
+    fun heartbeatKeepsRunningAfterTheTaskThrowsAnError() {
+        FailingHeartbeat(
+            mapOf(1 to IllegalStateException("half-open"), 2 to OutOfMemoryError("transient")),
+            NoClassDefFoundError("io/lettuce/core/Delegating")
+        ).use { channel ->
+            awaitCondition("heartbeat continues after errors") { channel.pings.get() >= 4 }
+            // PING 抛出 Error 时同样重置并强制重连
+            channel.reconnects.get().assert().isEqualTo(2)
+            // 之后的心跳成功：失败记录被清除
+            awaitCondition("heartbeat recovered") { channel.lastHeartbeatFailure == null }
+        }
+    }
+
+    /**
+     * PING 抛出 Error、某个订阅者的重置抛出异常：其余订阅者照常重置，强制重连照常执行。
+     */
+    @Test
+    fun heartbeatResetsEveryListenerAndReconnectsWhenPingThrowsAnError() {
+        val failingResets = AtomicInteger()
+        val failing = object : InvalidationListener {
+            override fun onInvalidated(keys: List<String>, origin: NodeId) = Unit
+
+            override fun onReset() {
+                failingResets.incrementAndGet()
+                throw IllegalStateException("reset failed")
+            }
+        }
+        val healthy = RecordingListener()
+        val subscribers = mapOf("cocache:inv:a" to listOf(failing, healthy), "cocache:inv:b" to listOf(healthy))
+        FailingHeartbeat(mapOf(1 to StackOverflowError("ping")), null, subscribers).use { channel ->
+            awaitCondition("heartbeat reconnected") { channel.reconnects.get() >= 1 }
+            failingResets.get().assert().isEqualTo(1)
+            healthy.resets.get().assert().isEqualTo(2)
+        }
+    }
+
+    /**
+     * 按 [failures]（第几次 PING → 抛出的异常）失败的心跳，强制重连时抛出 [reconnectError]（为 `null` 时不抛出）；
+     * [subscribers] 在心跳启动之前登记。
+     */
+    private class FailingHeartbeat(
+        private val failures: Map<Int, Throwable>,
+        private val reconnectError: Throwable?,
+        subscribers: Map<String, List<InvalidationListener>> = emptyMap()
+    ) : RedisInvalidationChannel(mockk(relaxed = true), HEARTBEAT, HEARTBEAT) {
+        val pings = AtomicInteger()
+        val reconnects = AtomicInteger()
+
+        init {
+            subscribers.forEach { (channel, channelListeners) -> listeners[channel] = CopyOnWriteArrayList(channelListeners) }
+            start()
+        }
+
+        override fun subscribeAsync(channel: ByteArray): CompletableFuture<Void> = done()
+
+        override fun unsubscribeAsync(channel: ByteArray): CompletableFuture<Void> = done()
+
+        override fun publish(namespace: String, frame: ByteArray) = Unit
+
+        override fun publishAsync(namespace: String, frame: ByteArray): CompletableFuture<Void?> = done()
+
+        override fun ping() {
+            failures[pings.incrementAndGet()]?.let { throw it }
+        }
+
+        override fun forceReconnect() {
+            reconnects.incrementAndGet()
+            reconnectError?.let { throw it }
+        }
+
+        private fun <T> done(): CompletableFuture<T> = CompletableFuture.completedFuture(null)
+
+        private companion object {
+            val HEARTBEAT: Duration = Duration.ofMillis(10)
+        }
     }
 
     private fun connectionsOf(pubSub: StatefulRedisPubSubConnection<ByteArray, ByteArray>): RedisConnections {
