@@ -14,6 +14,7 @@ description: CoCache 版本发布历史和重要变更。
 - 异步 Redis 命令的超时不再经 JDK 的单线程延迟调度器（`CompletableFuture.orTimeout`）计时（[RFC 0004 §14](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0004-async-api.md)）。CoCache 自建的客户端改由 Lettuce 自己的命令超时（`TimeoutOptions`，固定为 `cocache.redis.command-timeout`）为每条命令计时，它替换 Lettuce 默认的 60 秒超时，不增加开销。单机 Redis 上只有这一个计时器。Cluster 中 Lettuce 在命令写入节点连接时才开始计时，所以等待建立节点连接的命令仍由 CoCache 另外计时，改用 Lettuce 的 Netty 时间轮。传给 `RedisBackend.of` 的客户端保留自己的选项，它的异步命令由 CoCache 在同一个时间轮上计时。
 - 超时仍以同样的 `RedisException("Command timed out after …")` 失败，同步与异步路径相同。时间轮默认每 100 毫秒一个刻度，异步超时最多晚一个刻度触发。Lettuce 7 在服务端维护期间会放宽命令超时，CoCache 关闭了这项放宽，上界保持为 `command-timeout`。异步路径上，`NOSCRIPT` 之后重试的 `EVAL` 是一条新命令，单独计时。
 
+## v6.4.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。已有模块没有 API 变化，Redis 线格式与失效频道也不变，6.x 实例可以共用 Redis，逐台升级。
 

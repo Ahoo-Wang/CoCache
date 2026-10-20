@@ -14,6 +14,7 @@ description: Release history and notable changes for CoCache.
 - Async Redis commands no longer schedule their timeout on the JDK's single-threaded delay scheduler (`CompletableFuture.orTimeout`) ([RFC 0004 §14](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0004-async-api.md)). Clients that CoCache creates now time every command with Lettuce's own command timeout (`TimeoutOptions`, fixed at `cocache.redis.command-timeout`), which replaces Lettuce's default 60-second timeout at no extra cost. On a standalone Redis this is the only timer. In a Cluster, Lettuce starts timing a command only when it's written to a node connection, so a command that waits for a node connection to open keeps its own timer, now on Lettuce's Netty timer wheel. A client passed to `RedisBackend.of` keeps its own options, and CoCache times its async commands on the same wheel.
 - Timeouts fail with the same `RedisException("Command timed out after …")` as before, on the synchronous and async paths. The wheel ticks every 100 ms by default, so an async timeout can fire up to one tick late. Lettuce 7 relaxes command timeouts during server maintenance events. CoCache turns that off, so the bound stays at `command-timeout`. On the async path, the `EVAL` retry after `NOSCRIPT` is a new command with its own timeout.
 
+## v6.4.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive. No API change in existing modules, and the Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis and be upgraded one at a time.
 
