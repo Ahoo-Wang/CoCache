@@ -13,14 +13,17 @@
 
 package me.ahoo.cocache.core.engine
 
+import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
@@ -41,11 +44,11 @@ class SetEngineFormatTest {
         runtime.close()
     }
 
-    private fun seedForeign(key: String) {
+    private fun seedForeign(key: String, namespace: String = "index") {
         memory.store(
-            "index"
+            namespace
         ).put(
-            "cocache:index:$key",
+            "cocache:$namespace:$key",
             Envelope.Scalar(ByteArray(0)),
             null,
             InvalidationFrame.encode(NodeId.random(), emptyList())
@@ -54,12 +57,28 @@ class SetEngineFormatTest {
     }
 
     @Test
-    fun foreignContentReadsAsAbsentAndIsReplacedByWrites() {
+    fun foreignContentFailsByDefaultAndIsKept() {
         seedForeign("k")
-        index["k"].assert().isEmpty()
+        val error = runCatching { index["k"] }.exceptionOrNull()
+        error.assert().isInstanceOf(CacheReadException::class.java)
+        error?.cause.assert().isInstanceOf(ForeignFormatException::class.java)
         requireNotNull(runtime.metrics("index")).unknownFormats.assert().isEqualTo(1)
-        // 读路径不删除它
         (memory.store("index").read("cocache:index:k", null, null) is RemoteRead.Hit).assert().isTrue()
+    }
+
+    @Test
+    fun foreignContentReadsAsAbsentAndIsReplacedByWritesWhenReclaimIsConfigured() {
+        val index: SetCache<String, String> = runtime.create(
+            setCacheSpec("index-reclaim") {
+                elementCodec = StringCodec
+                policy { foreignFormat = ForeignFormatMode.RECLAIM }
+            }
+        )
+        seedForeign("k", "index-reclaim")
+        index["k"].assert().isEmpty()
+        requireNotNull(runtime.metrics("index-reclaim")).unknownFormats.assert().isEqualTo(1)
+        // 读路径不删除它
+        (memory.store("index-reclaim").read("cocache:index-reclaim:k", null, null) is RemoteRead.Hit).assert().isTrue()
         backend.afterRead = null
         index.add("k", listOf("a"))
         index["k"].assert().containsExactly("a")

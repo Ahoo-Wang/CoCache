@@ -16,15 +16,18 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.AsyncSetCache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetCacheSpec
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.thenNext
+import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -140,8 +143,9 @@ internal class SetEngine<K : Any, E : Any>(
     /**
      * L1 是唯一副本，没有数据源可以回源，因此格式检查与 [CoherentEngine] 不同：
      * - 更高版本写入的集合读不懂，也不能当作别的值返回：抛出，且不写 L2；
-     * - 不是本协议写入的内容（如旧版本留下的原生 Set）不是本缓存的数据：按不存在处理、以降级限龄进入 L2，
-     *   读路径不删除它，下一次 `put` / `add` 会整体覆盖。
+     * - 不是本协议写入的内容（如 5.x 留下的原生 Set）：按 [ForeignFormatMode] 处理（没有数据源，默认 `FAIL`）。
+     *   `FAIL` 抛出 [CacheReadException]，不写 L2——L1 是唯一副本，读成空集合会让调用方把“不存在”当作真实结果；
+     *   `RECLAIM` 按不存在处理、以降级限龄进入 L2，读路径不删除它，下一次 `put` / `add` 会整体覆盖。
      */
     private fun onHit(storageKey: String, read: RemoteRead.Hit): LocalEntry<Set<E>> {
         if (read.format > backendFormat) {
@@ -153,6 +157,11 @@ internal class SetEngine<K : Any, E : Any>(
         }
         if (read.format < MIN_FORMAT) {
             metrics.unknownFormat()
+            if ((policy.foreignFormat ?: ForeignFormatMode.FAIL) == ForeignFormatMode.FAIL) {
+                val failure = ForeignFormatException(name, storageKey, read.format, null)
+                log.warn { failure.message }
+                throw CacheReadException(name, "read", failure)
+            }
             log.warn {
                 "SetCache[$name] - key[$storageKey] - unrecognized remote content, treated as absent until it is rewritten."
             }

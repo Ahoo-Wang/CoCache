@@ -144,7 +144,7 @@ Commands are rejected while disconnected, not buffered, and each command waits a
 - **Foreign content** (format `0`): something other than CoCache wrote the key, such as an old client, a script, or another application with the same prefix and namespace.
 - **Codec failure** (format `1`): the value class changed incompatibly (renamed field, changed type), or two applications share a cache with different codecs or value types.
 
-**What CoCache does.** The read path never deletes blindly. It asks Redis to convert the key into a lease only if the key still holds exactly the bytes it read (compared by SHA-1 inside the script). If that succeeds, it reloads from the source and fills normally. If the key changed in the meantime, it loads without writing L1. Each read reclaims at most once.
+**What CoCache does.** A read without a loader (a `SetCache`, or a `Cache` without a loader) has nothing to reload, so by default (`foreign-format: fail`) it throws `CacheReadException` with a `ForeignFormatException` cause, leaves the key as it is, and counts in `cocache.unknown.formats` instead of `cocache.reclaims`. Content left by CoCache 5.x needs a [migration](../guide/migration-6.md#redis-as-store). A read with a loader never deletes blindly either. It asks Redis to convert the key into a lease only if the key still holds exactly the bytes it read (compared by SHA-1 inside the script). If that succeeds, it reloads from the source and fills normally. If the key changed in the meantime, it loads without writing L1. Each read reclaims at most once.
 
 **Fix.**
 
@@ -155,7 +155,7 @@ Commands are rejected while disconnected, not buffered, and each command waits a
 
 **Symptom.** `cocache.unknown.formats` rises. Inspection shows `UNREADABLE` with `Written by a newer format[…] than this node[…]`.
 
-**Cause.** Some instance writes a newer wire format than this one knows. This instance loads from the source, doesn't write L1, and keeps the result in L2 for `degraded-local-max-age`, so old and new instances don't overwrite each other. A `SetCache` has no source to load from: reading a set in a newer format throws `IllegalStateException` on this instance, and content CoCache didn't write (such as a leftover native Redis set) reads as an empty set until a `put` or `add` replaces it.
+**Cause.** Some instance writes a newer wire format than this one knows. This instance loads from the source, doesn't write L1, and keeps the result in L2 for `degraded-local-max-age`, so old and new instances don't overwrite each other. A `SetCache` has no source to load from: reading a set in a newer format throws `IllegalStateException` on this instance, and content CoCache didn't write (such as a leftover native Redis set) throws `CacheReadException` (see [Corrupt or unreadable payloads](#corrupt-payloads)), or reads as an empty set with `foreign-format: reclaim`.
 
 **Fix.** Expected while a format upgrade rolls out. It stops when every instance runs the new version. Outside a deploy, find the instance on the newer version. See [rolling deploys](./index.md#rolling-deploys).
 

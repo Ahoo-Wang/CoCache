@@ -294,6 +294,33 @@ object RedisTestSupport {
     }
 
     /**
+     * 删除匹配 [pattern] 的全部 key（集群中遍历全部主节点）。
+     */
+    fun deleteKeys(pattern: String) {
+        withKeys { commands ->
+            var cursor: ScanCursor = ScanCursor.INITIAL
+            do {
+                val page: KeyScanCursor<String> = commands.scan(cursor, ScanArgs.Builder.matches(pattern).limit(1000))
+                page.keys.forEach { commands.del(it) }
+                cursor = page
+            } while (!page.isFinished)
+        }
+    }
+
+    /**
+     * 连接测试 Redis（单机或集群）的 5.x 迁移器。
+     */
+    fun migrator(
+        options: me.ahoo.cocache.redis.migration.CoCache5MigrationOptions = me.ahoo.cocache.redis.migration.CoCache5MigrationOptions()
+    ): me.ahoo.cocache.redis.migration.CoCache5Migrator {
+        val nodes = clusterNodes
+        if (nodes != null) {
+            return me.ahoo.cocache.redis.migration.CoCache5Migrator.cluster(nodes, options)
+        }
+        return me.ahoo.cocache.redis.migration.CoCache5Migrator.standalone(standaloneUri, options)
+    }
+
+    /**
      * 把匹配 [pattern] 的 key 的剩余寿命缩短 [duration]（缩到 0 及以下即删除）；永不过期的 key 不变。
      */
     fun shiftTtl(pattern: String, duration: Duration) {

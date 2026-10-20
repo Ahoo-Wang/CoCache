@@ -65,8 +65,12 @@ class CachePolicyTest {
             .local(local)
             .invalidateFailure(InvalidateFailureMode.THROW)
             .readFailure(ReadFailureMode.THROW)
+            .foreignFormat(ForeignFormatMode.FAIL)
             .build()
         val copy = policy.toBuilder().build()
+        copy.foreignFormat.assert().isEqualTo(ForeignFormatMode.FAIL)
+        copy.toString().assert().contains("foreignFormat=FAIL")
+        CachePolicy.DEFAULT.foreignFormat.assert().isNull()
         copy.ttl.assert().isEqualTo(Duration.ofMinutes(2))
         copy.ttlJitter.assert().isEqualTo(Duration.ofSeconds(3))
         copy.absentTtl.assert().isEqualTo(Duration.ofSeconds(4))
@@ -79,6 +83,67 @@ class CachePolicyTest {
         copy.invalidateFailure.assert().isEqualTo(InvalidateFailureMode.THROW)
         copy.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
         CachePolicy.DEFAULT.readFailure.assert().isEqualTo(ReadFailureMode.DEGRADE)
+    }
+
+    /**
+     * Kotlin DSL 与 Java 调用方读写的构建器字段从策略初始化。
+     */
+    @Test
+    fun builderStartsFromThePolicy() {
+        val policy = CachePolicy(ttl = null, foreignFormat = ForeignFormatMode.RECLAIM)
+        val builder = policy.toBuilder()
+        builder.ttl.assert().isNull()
+        builder.ttlJitter.assert().isEqualTo(policy.ttlJitter)
+        builder.absentTtl.assert().isEqualTo(policy.absentTtl)
+        builder.localMaxAge.assert().isEqualTo(policy.localMaxAge)
+        builder.degradedLocalMaxAge.assert().isEqualTo(policy.degradedLocalMaxAge)
+        builder.refreshWindow.assert().isNull()
+        builder.lease.assert().isEqualTo(policy.lease)
+        builder.load.assert().isEqualTo(policy.load)
+        builder.local.assert().isEqualTo(policy.local)
+        builder.invalidateFailure.assert().isEqualTo(policy.invalidateFailure)
+        builder.readFailure.assert().isEqualTo(policy.readFailure)
+        builder.foreignFormat.assert().isEqualTo(ForeignFormatMode.RECLAIM)
+        builder.foreignFormat = null
+        builder.build().foreignFormat.assert().isNull()
+    }
+
+    /**
+     * 6.4 及以前编译的调用方使用的两个构造函数（11 个参数的版本与 Kotlin 默认参数的合成版本）仍然存在，`foreignFormat` 为未设置。
+     */
+    @Test
+    fun constructorsOf64RemainBinaryCompatible() {
+        val types = arrayOf(
+            Duration::class.java, Duration::class.java, Duration::class.java, Duration::class.java, Duration::class.java,
+            Duration::class.java, LeasePolicy::class.java, LoadPolicy::class.java, LocalPolicy::class.java,
+            InvalidateFailureMode::class.java, ReadFailureMode::class.java
+        )
+        val full = CachePolicy::class.java.getConstructor(*types).newInstance(
+            Duration.ofMinutes(2), Duration.ZERO, Duration.ofSeconds(4), Duration.ofMinutes(1), Duration.ofSeconds(5),
+            null, LeasePolicy(), LoadPolicy(), LocalPolicy(), InvalidateFailureMode.THROW, ReadFailureMode.THROW
+        )
+        full.ttl.assert().isEqualTo(Duration.ofMinutes(2))
+        full.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
+        full.foreignFormat.assert().isNull()
+
+        // 旧调用方的 CachePolicy(ttl = null)：只传第一个参数，其余由默认值掩码（第 0 位以外全部置位）补齐
+        val defaults = CachePolicy::class.java.getConstructor(
+            *types,
+            Int::class.javaPrimitiveType,
+            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker")
+        ).newInstance(*arrayOfNulls<Any>(types.size), 0b111_1111_1110, null)
+        defaults.ttl.assert().isNull()
+        defaults.ttlJitter.assert().isEqualTo(CachePolicy.DEFAULT_TTL_JITTER)
+        defaults.readFailure.assert().isEqualTo(ReadFailureMode.DEGRADE)
+        defaults.foreignFormat.assert().isNull()
+
+        // 旧调用方的 CachePolicy()：全部参数取默认值
+        val allDefaults = CachePolicy::class.java.getConstructor(
+            *types,
+            Int::class.javaPrimitiveType,
+            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker")
+        ).newInstance(*arrayOfNulls<Any>(types.size), 0b111_1111_1111, null)
+        allDefaults.toString().assert().isEqualTo(CachePolicy.DEFAULT.toString())
     }
 
     @Test

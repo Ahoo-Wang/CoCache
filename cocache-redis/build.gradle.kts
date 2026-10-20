@@ -22,6 +22,8 @@ dependencies {
     implementation("io.github.oshai:kotlin-logging-jvm")
     api("io.lettuce:lettuce-core")
     testImplementation(project(":cocache-test"))
+    testImplementation(project(":cocache-codec-jackson"))
+    testImplementation("tools.jackson.module:jackson-module-kotlin")
     jmh(platform(project(":cocache-dependencies")))
     jmh("ch.qos.logback:logback-classic")
 }

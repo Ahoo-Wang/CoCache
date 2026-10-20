@@ -56,7 +56,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | `cocache.degraded.fills` | counter | Loads written to L2 only, for `degraded-local-max-age`: Redis read failed, lease wait timed out, fill rejected, value in an unknown format, or an invalidation of the key still pending |
 | `cocache.stale.discards` | counter | L2 fills dropped because an invalidation of the key arrived while the read was in flight. This is the L2 fence working. |
 | `cocache.reclaims` | counter | L1 values this instance couldn't decode (foreign content or codec failure). A separate reclaim script then converts the value into a lease, if it is still unchanged, and the instance reloads. |
-| `cocache.unknown.formats` | counter | L1 values written in a newer wire format than this instance knows. Loaded from the source, nothing overwritten. |
+| `cocache.unknown.formats` | counter | L1 values written in a newer wire format than this instance knows (loaded from the source, nothing overwritten), and unreadable content rejected by `foreign-format: fail` (the read throws `CacheReadException`; the default without a loader). |
 
 ### Writes, invalidations, channel {#metrics-writes}
 

@@ -16,6 +16,7 @@ package me.ahoo.cocache.test
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.Lookup
@@ -27,10 +28,12 @@ import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
@@ -646,6 +649,106 @@ abstract class EngineSpec {
         cache["k"].assert().isEqualTo("v")
         nodeA.metrics().reclaims.assert().isEqualTo(1)
         remoteValue("k").assert().isEqualTo("v")
+    }
+
+    /**
+     * 没有数据源时 L1 是唯一副本：读不懂的内容（格式 0，如 5.x 遗留；同版本解码失败）默认 `FAIL`，
+     * 抛出 [CacheReadException]（cause 为 [ForeignFormatException]），不回收、不写 L2，降级读失败模式下同样抛出。
+     */
+    @Test
+    fun foreignContentWithoutLoaderFailsAndIsKept() {
+        val cache = nodeA.cache(spec { loader = null })
+        writeRemoteSilently("k", TestCodec.CORRUPT)
+        repeat(2) {
+            val error = runCatching { cache["k"] }.exceptionOrNull()
+            error.assert().isInstanceOf(CacheReadException::class.java)
+            val cause = requireNotNull(error?.cause as? ForeignFormatException)
+            cause.storageKey.assert().isEqualTo(storageKey("k"))
+            // 同版本内容解码失败：格式为本节点的版本
+            cause.format.assert().isEqualTo(backend.format)
+        }
+        nodeA.metrics().unknownFormats.assert().isEqualTo(2)
+        nodeA.metrics().reclaims.assert().isEqualTo(0)
+        val kept = remote("k") as RemoteRead.Hit
+        (kept.envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
+        runCatching { cache.lookup("k") }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+    }
+
+    /**
+     * 格式 0（不是本协议写入的内容）与同版本解码失败走同一条判定。
+     */
+    @Test
+    fun unrecognizedFormatWithoutLoaderFails() {
+        val cache = nodeA.cache(spec { loader = null })
+        cache.put("k", "v")
+        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = 0) else read }
+        val error = runCatching { cache["k"] }.exceptionOrNull()
+        backend.afterRead = null
+        error.assert().isInstanceOf(CacheReadException::class.java)
+        requireNotNull(error?.cause as? ForeignFormatException).format.assert().isEqualTo(0)
+        remoteValue("k").assert().isEqualTo("v")
+    }
+
+    /**
+     * 批量读取：读不懂的 key 使整批失败，其余 key 申请到的 lease 先释放（不留占位）。
+     */
+    @Test
+    fun foreignContentFailsGetAllWithoutLeakingLeases() {
+        val cache = nodeA.cache(spec { loader = null })
+        cache.put("ok", "v")
+        writeRemoteSilently("bad", TestCodec.CORRUPT)
+        writeRemoteSilently("worse", TestCodec.CORRUPT)
+        val error = runCatching {
+            cache.getAll(listOf("ok", "bad", "absent", "worse"))
+        }.exceptionOrNull()
+        error.assert().isInstanceOf(CacheReadException::class.java)
+        // 以其中一个读不懂的 key 失败，两个都计数且保留
+        requireNotNull(
+            error?.cause as? ForeignFormatException
+        ).storageKey.assert().isIn(storageKey("bad"), storageKey("worse"))
+        nodeA.metrics().unknownFormats.assert().isEqualTo(2)
+        remote("absent").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("bad").assert().isInstanceOf(RemoteRead.Hit::class.java)
+        remote("worse").assert().isInstanceOf(RemoteRead.Hit::class.java)
+        cache["ok"].assert().isEqualTo("v")
+    }
+
+    /**
+     * 显式 `RECLAIM`：没有数据源时同样条件回收（6.4 及以前的行为），内容被删除，读取返回不存在。
+     */
+    @Test
+    fun foreignContentWithoutLoaderIsReclaimedWhenConfigured() {
+        val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
+        val cache = nodeA.cache(spec(reclaim) { loader = null })
+        writeRemoteSilently("k", TestCodec.CORRUPT)
+        cache["k"].assert().isNull()
+        nodeA.metrics().reclaims.assert().isEqualTo(1)
+        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+    }
+
+    /**
+     * 显式 `FAIL`：有数据源也不回收、不回源。
+     */
+    @Test
+    fun foreignContentFailsWithLoaderWhenConfigured() {
+        val fail = policy().toBuilder().foreignFormat(ForeignFormatMode.FAIL).build()
+        val cache = nodeA.cache(spec(fail))
+        database["k"] = "v"
+        writeRemoteSilently("k", TestCodec.CORRUPT)
+        runCatching { cache["k"] }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        loads.get().assert().isEqualTo(0)
+        remote("k").assert().isInstanceOf(RemoteRead.Hit::class.java)
+    }
+
+    /**
+     * 默认值按这次读取有没有数据源决定：没有 spec 数据源的缓存经 `get(key, loader)` 读取时有数据源，照常回收并回源。
+     */
+    @Test
+    fun foreignContentIsReclaimedWhenTheCallSuppliesALoader() {
+        val cache = nodeA.cache(spec { loader = null })
+        writeRemoteSilently("k", TestCodec.CORRUPT)
+        cache.get("k") { "loaded" }.assert().isEqualTo("loaded")
+        remoteValue("k").assert().isEqualTo("loaded")
     }
 
     @Test

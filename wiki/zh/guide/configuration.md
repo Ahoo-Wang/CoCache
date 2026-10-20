@@ -60,6 +60,7 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | 每个实例 L2 的最大条目数 |
 | `invalidate-failure` | `retry` \| `throw` | `retry` | — | Redis 失效失败时：进入后台重试队列，或抛出 `CacheWriteException` |
 | `read-failure` | `degrade` \| `throw` | `degrade` | — | Redis 读取失败时：从数据源加载，或抛出 `CacheReadException` |
+| `foreign-format` | `fail` \| `reclaim` | 没有数据源时 `fail`，有数据源时 `reclaim` | — | 本缓存读不懂的内容（5.x 或其它程序写入的、或无法解码的）：抛出 `CacheReadException` 并保留它，或回收后重新加载。`cocache.defaults.foreign-format` 不作用于 `SetCache`。见[从 5.x 升级](./migration-6.md#foreign-format) |
 | `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | 每个存储 key 的开头（见[下文](#key-prefix)） |
 
 如何选择这些值，见[保持数据新鲜](./freshness.md#lifetimes)。

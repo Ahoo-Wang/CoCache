@@ -14,6 +14,7 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.ReadFailureMode
@@ -97,8 +98,8 @@ data class CoCacheProperties @ConstructorBinding constructor(
     }
 
     /**
-     * 集合缓存的策略：`cocache.defaults.ttl` / `ttl-forever` / `absent-ttl` / `refresh-window` 不作用于集合缓存
-     * （其 L1 是唯一副本，全局寿命会让集合过期丢失；没有数据源，负缓存与提前刷新都不适用），
+     * 集合缓存的策略：`cocache.defaults.ttl` / `ttl-forever` / `absent-ttl` / `refresh-window` / `foreign-format` 不作用于集合缓存
+     * （其 L1 是唯一副本，全局寿命会让集合过期丢失，全局的 `reclaim` 会让未迁移的集合读成空集合；没有数据源，负缓存与提前刷新都不适用），
      * 只有 `cocache.caches.[name].*` 能改变它们。其它默认项照常生效。
      */
     fun setPolicyFor(cacheName: String, declared: CachePolicy): CachePolicy {
@@ -107,7 +108,8 @@ data class CoCacheProperties @ConstructorBinding constructor(
             ttl = null,
             ttlForever = null,
             absentTtl = null,
-            refreshWindow = null
+            refreshWindow = null,
+            foreignFormat = null
         ).applyTo(declared)
         return cacheProperties(cacheName)?.applyTo(withDefaults) ?: withDefaults
     }
@@ -291,6 +293,12 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         @DurationUnit(ChronoUnit.SECONDS)
         val loadAsyncTimeout: Duration? = null,
+        /**
+         * 读到本缓存读不懂的 L1 内容（5.x 或其它程序写入的值、同版本解码失败）时的处理方式：`fail`（抛出 `CacheReadException`，
+         * 不修改 L1）或 `reclaim`（条件回收后回源）。未设置时按读取有没有数据源决定：有数据源 `reclaim`，没有数据源 `fail`。
+         * `cocache.defaults.foreign-format` 不作用于集合缓存（L1 是唯一副本）。
+         */
+        val foreignFormat: ForeignFormatMode? = null,
     ) {
         fun applyTo(policy: CachePolicy): CachePolicy {
             val builder = policy.toBuilder()
@@ -300,6 +308,7 @@ data class CoCacheProperties @ConstructorBinding constructor(
             localMaximumSize?.let { builder.local = policy.local.copy(maximumSize = it) }
             invalidateFailure?.let { builder.invalidateFailure = it }
             readFailure?.let { builder.readFailure = it }
+            foreignFormat?.let { builder.foreignFormat = it }
             return builder.build()
         }
 

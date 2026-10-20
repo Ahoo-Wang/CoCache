@@ -30,6 +30,7 @@ import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.LoadOperation
 import me.ahoo.cocache.core.SourceLoadRejectedException
@@ -37,6 +38,7 @@ import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.handleNext
 import me.ahoo.cocache.core.internal.thenNext
+import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.ReadFailureMode
 import me.ahoo.cocache.core.policy.boundedTtl
@@ -257,9 +259,34 @@ internal class CoherentEngine<K : Any, V : Any>(
                 loadBypassingRemote(key, storageKey, stamp, source)
             }
 
-            is HitOutcome.Corrupt -> onCorrupt(key, storageKey, read, stamp, lease, source, outcome.error)
+            is HitOutcome.Corrupt -> {
+                foreignFormatFailure(storageKey, read, outcome.error, source != null)?.let { throw it }
+                onCorrupt(key, storageKey, read, stamp, lease, source, outcome.error)
+            }
+
             is HitOutcome.Decoded -> onRemoteHit(storageKey, outcome.value, read, stamp)
         }
+    }
+
+    /**
+     * 同步与异步共用：读到读不懂的内容（格式 0 或同版本解码失败）时按 [ForeignFormatMode] 决定。
+     * `FAIL` 返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）；`RECLAIM` 返回 `null`，调用方照常条件回收。
+     * 未配置时按这次读取有没有数据源决定：没有数据源时 L1 是唯一副本，回收就是删除。与 `readFailure` 无关。
+     */
+    private fun foreignFormatFailure(
+        storageKey: String,
+        read: RemoteRead.Hit,
+        error: Exception,
+        hasSource: Boolean
+    ): CacheReadException? {
+        val mode = policy.foreignFormat ?: if (hasSource) ForeignFormatMode.RECLAIM else ForeignFormatMode.FAIL
+        if (mode == ForeignFormatMode.RECLAIM) {
+            return null
+        }
+        metrics.unknownFormat()
+        val failure = ForeignFormatException(name, storageKey, read.format, error)
+        log.warn { failure.message }
+        return CacheReadException(name, "read", failure)
     }
 
     /**
@@ -588,21 +615,31 @@ internal class CoherentEngine<K : Any, V : Any>(
             emptyMap()
         }
         val toLoad = LinkedHashMap<String, Token?>()
+        // FAIL 策略下的读不懂的 key：先完成其余 key（释放或凭 lease 写回），再抛出，与异步路径一致
+        var foreign: CacheReadException? = null
         for (storageKey in led.keys) {
             val stamp = loadStamps.getValue(storageKey)
             when (val step = batchStep(storageKey, reads[storageKey], stamp, leases[storageKey])) {
                 is BatchStep.Load -> toLoad[storageKey] = step.token
                 is BatchStep.Done -> result[storageKey] = Loaded(step.entry, stamp)
                 // 与单 key 路径一致：条件回收后回源（否则损坏的载荷会一直留到 L1 过期）
-                is BatchStep.Corrupt -> result[storageKey] = Loaded(
-                    onCorrupt(led.getValue(storageKey), storageKey, step.read, stamp, leases.getValue(storageKey), loader, step.error),
-                    stamp
-                )
+                is BatchStep.Corrupt -> {
+                    val failure = foreignFormatFailure(storageKey, step.read, step.error, loader != null)
+                    if (failure != null) {
+                        foreign = foreign ?: failure
+                        continue
+                    }
+                    result[storageKey] = Loaded(
+                        onCorrupt(led.getValue(storageKey), storageKey, step.read, stamp, leases.getValue(storageKey), loader, step.error),
+                        stamp
+                    )
+                }
             }
         }
         if (toLoad.isNotEmpty()) {
             loadAndFillBatch(led, toLoad, loadStamps, result)
         }
+        foreign?.let { throw it }
         return result
     }
 
@@ -1144,16 +1181,10 @@ internal class CoherentEngine<K : Any, V : Any>(
                 bypassAsync(key, storageKey, stamp, source, operation)
             }
 
-            is HitOutcome.Corrupt -> onCorruptAsync(
-                key,
-                storageKey,
-                read,
-                stamp,
-                lease,
-                source,
-                outcome.error,
-                operation
-            )
+            is HitOutcome.Corrupt -> foreignFormatFailure(storageKey, read, outcome.error, source != null)
+                ?.let { CompletableFuture.failedFuture(it) }
+                ?: onCorruptAsync(key, storageKey, read, stamp, lease, source, outcome.error, operation)
+
             is HitOutcome.Decoded -> completed(onRemoteHit(storageKey, outcome.value, read, stamp))
         }
     }
@@ -1454,7 +1485,12 @@ internal class CoherentEngine<K : Any, V : Any>(
                 when (val step = batchStep(storageKey, readResults[storageKey], stamp, leases[storageKey])) {
                     is BatchStep.Load -> toLoad[storageKey] = step.token
                     is BatchStep.Done -> result[storageKey] = Loaded(step.entry, stamp)
-                    is BatchStep.Corrupt -> corrupt[storageKey] = onCorruptAsync(
+                    is BatchStep.Corrupt -> corrupt[storageKey] = foreignFormatFailure(
+                        storageKey,
+                        step.read,
+                        step.error,
+                        asyncSource != null
+                    )?.let { CompletableFuture.failedFuture(it) } ?: onCorruptAsync(
                         led.getValue(storageKey),
                         storageKey,
                         step.read,
