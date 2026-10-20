@@ -23,13 +23,28 @@ import java.util.concurrent.RejectedExecutionException
 /**
  * 异步路径的 future 工具（RFC 0004 §5.2）。
  *
- * - 续接：上一步已完成时就地执行（没有 I/O 线程参与，省去一次切换）；否则只在 I/O 完成线程上把续接提交给执行器，
- *   续接本身从不在 I/O 线程上执行。
+ * - 续接：上一步已完成时就地执行（没有 I/O 线程参与，省去一次切换）；上一步在同一执行器派发的续接中完成时也就地执行
+ *   （[continueOn]，嵌套不超过 [MAX_INLINE_DEPTH] 层）；否则把续接提交给执行器。续接本身从不在 I/O 线程上执行。
  * - 异常：续接收到的异常总是解包后的原始异常；续接抛出的异常变为失败的 future。
  * - 返回给用户的 future 一律经 [relay] 新建并显式完成，不直接返回依赖阶段（依赖阶段会包装为 `CompletionException`）。
  */
 internal object Futures {
     private val DONE: CompletableFuture<Void?> = CompletableFuture.completedFuture(null)
+
+    /**
+     * 就地续接的最大嵌套层数：超过时改为派发（新任务从第 0 层开始），避免长链在一个线程上递归过深。
+     */
+    const val MAX_INLINE_DEPTH = 16
+
+    /**
+     * 当前线程正在执行哪个执行器经 [dispatch] 派发的任务、其中就地续接嵌套了几层。I/O、定时器、阻塞执行器与用户的线程上为空。
+     */
+    private class Inline {
+        var executor: Executor? = null
+        var depth: Int = 0
+    }
+
+    private val inline = ThreadLocal.withInitial(::Inline)
 
     /**
      * 已完成的 `Void` future（内部使用，从不交给用户）。
@@ -88,13 +103,50 @@ internal object Futures {
     }
 
     /**
-     * 在 [executor] 上执行 [task]；执行器拒绝时以该异常完成 [target]。
+     * 在 [executor] 上执行 [task]；执行器拒绝时以该异常完成 [target]。任务执行期间当前线程标记为 [executor] 的续接（见 [continueOn]）。
      */
     fun dispatch(executor: Executor, target: CompletableFuture<*>, task: Runnable) {
         try {
-            executor.execute(task)
+            executor.execute(Marked(executor, task))
         } catch (e: RejectedExecutionException) {
             target.completeExceptionally(e)
+        }
+    }
+
+    /**
+     * 上一步刚完成时执行续接 [task]：当前线程正在执行 [executor] 派发的任务（上一步在那里完成）且嵌套未超过 [MAX_INLINE_DEPTH]
+     * 时就地执行，否则经 [dispatch] 派发。I/O 线程、定时器线程、阻塞执行器与用户的线程上没有标记，总是派发（A9）。
+     */
+    fun continueOn(executor: Executor, target: CompletableFuture<*>, task: Runnable) {
+        val state = inline.get()
+        if (state.executor !== executor || state.depth >= MAX_INLINE_DEPTH) {
+            dispatch(executor, target, task)
+            return
+        }
+        state.depth++
+        try {
+            task.run()
+        } finally {
+            state.depth--
+        }
+    }
+
+    /**
+     * 执行期间把当前线程标记为 [executor] 的续接，结束（含异常）时恢复原来的标记（执行器可能在调用方线程上就地执行任务）。
+     */
+    private class Marked(private val executor: Executor, private val task: Runnable) : Runnable {
+        override fun run() {
+            val state = inline.get()
+            val outerExecutor = state.executor
+            val outerDepth = state.depth
+            state.executor = executor
+            state.depth = 0
+            try {
+                task.run()
+            } finally {
+                state.executor = outerExecutor
+                state.depth = outerDepth
+            }
         }
     }
 
@@ -124,7 +176,7 @@ internal fun <T, R> CompletableFuture<T>.handleNext(
     }
     val result = CompletableFuture<R>()
     whenComplete { _, _ ->
-        Futures.dispatch(executor, result) { Futures.relay(invokeHandler(this, fn), result) }
+        Futures.continueOn(executor, result) { Futures.relay(invokeHandler(this, fn), result) }
     }
     return result
 }

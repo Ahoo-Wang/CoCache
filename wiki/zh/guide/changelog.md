@@ -14,6 +14,11 @@ description: CoCache 版本发布历史和重要变更。
 - 异步 Redis 命令的超时不再经 JDK 的单线程延迟调度器（`CompletableFuture.orTimeout`）计时（[RFC 0004 §14](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0004-async-api.md)）。CoCache 自建的客户端改由 Lettuce 自己的命令超时（`TimeoutOptions`，固定为 `cocache.redis.command-timeout`）为每条命令计时，它替换 Lettuce 默认的 60 秒超时，不增加开销。单机 Redis 上只有这一个计时器。Cluster 中 Lettuce 在命令写入节点连接时才开始计时，所以等待建立节点连接的命令仍由 CoCache 另外计时，改用 Lettuce 的 Netty 时间轮。传给 `RedisBackend.of` 的客户端保留自己的选项，它的异步命令由 CoCache 在同一个时间轮上计时。
 - 超时仍以同样的 `RedisException("Command timed out after …")` 失败，同步与异步路径相同。时间轮默认每 100 毫秒一个刻度，异步超时最多晚一个刻度触发。Lettuce 7 在服务端维护期间会放宽命令超时，CoCache 关闭了这项放宽，上界保持为 `command-timeout`。异步路径上，`NOSCRIPT` 之后重试的 `EVAL` 是一条新命令，单独计时。
 
+### 异步视图减少线程切换
+
+- 上一步在同一个异步执行器正在执行的任务中完成时，异步续接就地执行，不再重新提交给执行器（[调查报告](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/investigations/async-8t-gap.md)）。经异步视图的一次 L1 命中只切换 1 次线程（原为 4 次），一次未命中至多 3 次（原为 7 次）。在 Lettuce 的 I/O 线程、定时器线程、阻塞执行器或数据源自己的线程上完成的结果仍交给异步执行器，续接从不在 I/O 线程上执行。就地执行最多嵌套 16 层，超过后重新派发。
+- 在默认的 `ForkJoinPool` 上，每次多余的切换都可能唤醒一个空闲线程。与 6.4.0 交替对比（同轮配对中位数），异步 L1 命中 1 线程快 5.5%、8 线程快 8%，异步未命中 8 线程快约 18%。写入与 L2 命中不变。
+
 ## v6.4.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。已有模块没有 API 变化，Redis 线格式与失效频道也不变，6.x 实例可以共用 Redis，逐台升级。
