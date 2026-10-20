@@ -5,9 +5,9 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## Unreleased
+## v6.5.0 (Current)
 
-**Module Group:** `me.ahoo.cocache` · Planned as 6.5.0. Additive API in `cocache-core` and `cocache-redis`, and one changed default for reads without a loader (below). The Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis and be upgraded one at a time.
+**Module Group:** `me.ahoo.cocache` · Minor release. Additive API in `cocache-core` and `cocache-redis`, and one changed default for reads without a loader (below). The Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis and be upgraded one at a time.
 
 ### Migrating caches whose only copy is Redis
 
@@ -26,7 +26,7 @@ CoCache5Migrator.standalone(uri).use { migrator ->
 - Reads with a loader, including `get(key, loader)`, keep reclaiming and reloading (`reclaim`). Set `foreign-format: reclaim` on a cache to restore the old behavior. `cocache.defaults.foreign-format` doesn't apply to `SetCache`.
 - Who sees a change: only applications that have unreadable content under a cache without a loader. Before 6.5 that content was silently discarded on the first read.
 
-## v6.4.1 (Current)
+## v6.4.1
 
 **Module Group:** `me.ahoo.cocache` · Patch release. No API or configuration change. The Redis wire format and the invalidation channel are unchanged, so 6.4.1 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
