@@ -44,7 +44,7 @@ The `SetCache` read script fetches members with `HKEYS` and the format version w
 
 ### L2 hit counter
 
-`cocache.metrics.local-hits=true` (without Spring: `CacheRuntime.builder().recordLocalHits(true)`) counts reads answered by L2 as `cocache.hits{level=l2}` and the endpoint key `localHits`, so reads split exactly into L2 hits, misses and filtered reads. It is off by default because it adds an atomic increment to every L2 hit. The 5.x property `cocache.metrics.client-side-hits` now points to it. See [Observability](../operations/observability.md#metrics-reads).
+`cocache.metrics.local-hits=true` (without Spring: `CacheRuntime.builder().recordLocalHits(true)`) counts reads answered by L2 as `cocache.hits{level=l2}` and the endpoint key `localHits`, so reads split exactly into L2 hits, misses and filtered reads. It is off by default because it adds an atomic increment to every L2 hit: with it on, L2 hit throughput drops by about 3–9% in JMH (1 and 8 threads, depending on the call site). With it off, throughput matches 6.1. The 5.x property `cocache.metrics.client-side-hits` now points to it. See [Observability](../operations/observability.md#metrics-reads).
 
 ### Fixes
 

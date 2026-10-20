@@ -85,7 +85,7 @@ JMH 对比见 RFC 0003 §7.1。
 | Valkey CI | 兼容性 | Valkey 上运行 `cocache-redis` 与 starter 测试 | ✅ CI 任务 Test (Valkey)：单机 Valkey 8 |
 | 集合基准 `setRead` | G3 | 成员数 10 / 100 / 1000 的吞吐与内存，决定 Hash 编码是否保留（RFC 0003 §8 Q1） | ✅ `SetCacheBenchmark`；保留 Hash（RFC 0003 §8.1） |
 | 集合读脚本改用 `HKEYS` | G3 | 读脚本以 `HKEYS` + `HGET !f` 取代 `HGETALL`，不再返回空值；存储布局不变，不是线格式变更。服务端实测 1000 个成员时读吞吐约 1.8 倍（RFC 0003 §8.1） | ✅ 服务端读吞吐 10 / 100 / 1000 个成员为 1.33 / 1.55 / 1.76 倍；最小 ACL 需加 `+hkeys +hget`（运维文档） |
-| L2 命中计数 | 可观测 | 分条带计数器（`LongAdder`）；8 线程 JMH 回退在噪声内才默认开启 | ✅ #655：默认关闭，`cocache.metrics.local-hits` / `recordLocalHits(true)` 开启；开启时 1 线程 JMH `l2HitViaInterface` −8%、`l2HitMixed` −5%，超出噪声（数据见 PR） |
+| L2 命中计数 | 可观测 | 分条带计数器（`LongAdder`）；8 线程 JMH 回退在噪声内才默认开启 | ✅ #655：默认关闭，`cocache.metrics.local-hits` / `recordLocalHits(true)` 开启；开启时 JMH 回退超出噪声（`l2HitViaInterface` 1 线程 −7.7%、8 线程 −8.9%，`l2Hit` −4%~−5%），关闭时与 main 持平（数据见 #655） |
 
 ## 6.3 之后
 
