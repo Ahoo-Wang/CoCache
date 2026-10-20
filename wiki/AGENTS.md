@@ -42,4 +42,4 @@ The wiki explains **how to use** CoCache and **why it behaves** as it does. Othe
 - **Add a diagram only when it explains a mechanism** that prose explains worse, such as a read path or a sequence. Don't add decorative diagrams. The theme styles Mermaid globally, so don't add per-node `style` lines.
 - Mermaid: use `<br>` for line breaks, and never `;` in sequence-diagram message text (Mermaid reads it as a statement separator).
 - Write any text containing `<…>`, such as `Cache<K, V>`, in backticks. Otherwise Vue parses it as HTML.
-- The current version appears only in `guide/quick-start.md` and `guide/changelog.md` (both languages), the root `README.md`, and the `v6.0` nav label. The release steps are in `CONTRIBUTING.md`.
+- The current version appears only in `guide/quick-start.md` and `guide/changelog.md` (both languages), the root `README.md`, and the nav version label. The release steps are in `CONTRIBUTING.md`.

@@ -7,7 +7,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ## v6.3.0（当前版本）
 
-**Module Group：** `me.ahoo.cocache` · 次版本。6.2 没有单独发布：原计划在 6.2 交付的内容随 6.3.0 一并发布。Redis 线格式与失效频道都没有变化，6.0、6.1 与 6.3 的实例可以共用 Redis，逐台升级。
+**模块组：** `me.ahoo.cocache` · 次版本。6.2 没有单独发布：原计划在 6.2 交付的内容随 6.3.0 一并发布。Redis 线格式与失效频道都没有变化，6.0、6.1 与 6.3 的实例可以共用 Redis，逐台升级。
 
 ### 异步 API
 
@@ -24,7 +24,8 @@ async.put("42", user).thenCompose { async.get("42") }
 - 不挂起线程：等待其它实例的 lease 与回源许可都经调度完成，future 在异步执行器上完成，从不在 Lettuce 的 I/O 线程上。future 以原始异常失败，取消一个 future 不会取消共享的加载，异步方法从不同步抛出。
 - 新配置：
   - `cocache.async-executor` 与 `cocache.blocking-executor`，各自指定一个 `Executor` bean 的名称；
-  - 每个缓存的 `load-async-timeout`（默认 30 秒），以及新的 `SourceLoadTimeoutException` 与 `cocache.load.timeouts` 指标。
+  - 每个缓存的 `load-async-timeout`（默认 30 秒），以及新的 `SourceLoadTimeoutException` 与 `cocache.load.timeouts` 指标；
+  - `cocache.observation.enabled`（默认 `true`），用于[回源路径追踪](#回源路径追踪)。类路径上有 Spring Boot Actuator 与 Micrometer tracing bridge 时追踪默认开启，设为 `false` 可关闭。
 - Redis 后端原生实现新的可选 SPI `AsyncRemoteStore` / `AsyncInvalidationChannel`。第三方后端无需改动：引擎在阻塞执行器上调用它们的同步方法。
 - **Spring Cache：** `retrieve` 经异步视图，异步与响应式的 `@Cacheable(sync = true)` 方法回源时不占用线程。
 - **性能：** 同步命中路径不变（JMH 在 1 与 8 线程下与异步改动之前的代码相比，差异在噪声内）。一次异步 L2 命中约为同步命中的 90%。32 个在途请求下，一个线程完成的 Redis 读写约为一个阻塞线程的 12 倍。
@@ -45,6 +46,11 @@ async.put("42", user).thenCompose { async.get("42") }
 
 `cocache.metrics.local-hits=true`（不用 Spring 时：`CacheRuntime.builder().recordLocalHits(true)`）把由 L2 回答的读取计入 `cocache.hits{level=l2}` 与端点字段 `localHits`，读取因此能精确地分成 L2 命中、未命中与被过滤三类。默认关闭，因为它给每次 L2 命中加一次原子自增。5.x 的 `cocache.metrics.client-side-hits` 现在提示改用它。见[可观测性](../operations/observability.md#metrics-reads)。
 
+### 修复
+
+- 非原子广播（`channel-mode: sharded`，或原子广播探测失败）时，失败但已部分生效的写入现在也会广播。之前一组 slot 失败的 `putAll`，或 Redis 已执行但应答丢失的 `put`，会让其它实例一直读旧的本地副本，直到 `local-max-age`。Redis 上同步的 `putAll` 与 `invalidateAll` 现在等全部 slot 组结束后才抛出。
+- 读到刷新窗口内的本地副本时，若上一次刷新恰好刚完成，同一实例可能对同一 key 再刷新一次。这次多余的刷新只多一次 Redis 读取，现在不再发生。
+
 ### 兼容性测试套件与 CI
 
 - 新的 TCK 套件：`MultiNodeSpec`（三个运行时、所有失效交错、全集群每个 key 只回源一次与刷新一次）、`FaultSpec`（L1 故障、重试、已生效但报错的写入、重连后不重放），以及每个套件的异步版本（`AsyncBackendProtocolSpec`、`AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec`）。
@@ -53,12 +59,15 @@ async.put("42", user).thenCompose { async.get("42") }
 
 ### 升级注意
 
-- `cocache.spring-cache.retrieve-executor`、`CoCacheSpringCacheManager(runtime, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 已弃用：执行器被忽略，配置项在启动时告警。7.0 删除。异步 `@Cacheable(sync = true)` 方法的方法体改在 `cocache.blocking-executor`（JDK 21+ 为虚拟线程）上执行，与之前在 retrieve 执行器上执行一样。`CoCacheSpringCache(cache, admin, executor)` 保留，其执行器执行方法体。
+- `cocache.spring-cache.retrieve-executor`、`CoCacheSpringCacheManager(runtime, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 已弃用：执行器被忽略，配置项在启动时告警。7.0 删除。`CoCacheSpringCache(cache, admin, executor)` 没有弃用：其执行器执行方法体。
+- **异步与响应式的 `@Cacheable(sync = true)` 方法**有两处行为变化：
+  - 方法体在 `cocache.blocking-executor` 上执行：JDK 21+ 为虚拟线程；JDK 17 上是最多 512 个线程的线程池，满了就拒绝新的加载（`RejectedExecutionException`）。原来的 retrieve 执行器满时会改在调用方线程上执行。
+  - 加载受 `load-async-timeout`（默认 30 秒）约束：超时后调用以 `SourceLoadTimeoutException` 失败，方法体仍会继续执行。
 - `Cache.async()` 是默认抛出 `UnsupportedOperationException` 的 default 方法。你自己实现的 `Cache`（例如测试替身）只有在调用方使用异步视图时才需要覆盖它。
 - 自定义的 `LoadObserver` 只有覆盖 `observeAsync` 才能看到异步加载。
-- **Kotlin 调用方需要针对 6.3 重新编译**，否则报 `NoSuchMethodError`。`LoadPolicy` 新增 `asyncTimeout`，改变了 `copy` 与 Kotlin 默认参数背后的合成构造函数，调用 `copy` 或省略 `LoadPolicy` 参数的 Kotlin 代码都受影响；`CoCacheSpringCacheManager(runtime)` 不再是带默认参数的构造函数，省略执行器的 Kotlin 代码同样受影响。Java 调用方不受影响。
+- **Kotlin 调用方需要针对 6.3 重新编译**，否则报 `NoSuchMethodError`。`LoadPolicy` 新增 `asyncTimeout`，改变了 `copy` 与 Kotlin 默认参数背后的合成构造函数，调用 `copy` 或省略 `LoadPolicy` 参数的 Kotlin 代码都受影响。`CoCacheProperties` 与 `PolicyProperties` 的构造函数和 `copy` 也变了，自己构造 starter 配置属性的代码同样受影响。Java 调用方不受影响。
 - **Redis ACL**：使用最小 ACL 的用户须在升级前加上 `+hkeys +hget`，否则 `SetCache` 读取会以 ACL 错误失败。`+hgetall` 仍需保留：条件回收与 6.0 / 6.1 实例还在使用它。见 [ACL](../operations/index.md#acl)。
-- TCK：`HookedBackend.closesDelegate`（默认 `false`，与之前相同）与各套件的 `closesBackend` 让套件关闭每个用例新建的后端，后端会打开连接或线程时请开启。按调用方筛选的钩子请改用 `HookedBackend.issuer()`，因为异步调用在其它线程上完成。
+- TCK：`HookedBackend.closesDelegate`（默认 `false`，与之前相同）与各套件的 `closesBackend` 让套件关闭每个用例新建的后端，后端会打开连接或线程时请开启。`BackendProtocolSpec` 与 `AsyncBackendProtocolSpec` 总是关闭自己创建的后端，没有这个开关。按调用方筛选的钩子请改用 `HookedBackend.issuer()`，因为异步调用在其它线程上完成。
 
 ### Gradle 配置
 

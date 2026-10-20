@@ -146,7 +146,7 @@ cocache-bom / cocache-dependencies / cocache-example
 | 收到远端事件 | 戳 → 淘汰 L2（`origin == 本节点 NodeId` 的事件被过滤） |
 | `onReset` / `clearLocal` | 全部戳递增 → 清空 L2 |
 
-后端 `atomicBroadcast = false` 时，引擎在存储操作成功后调用 `channel.publish`；发布失败按写入失败处理（§7）。
+后端 `atomicBroadcast = false` 时，引擎在存储操作成功后调用 `channel.publish`；发布失败按写入失败处理（§7）。存储操作失败时引擎**也尽力发布同一帧**再报错：失败的写入可能已部分生效（`putAll` 跨多个 slot 组时有的组已写入，或已在 L1 生效却报错），不发布的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）；这次发布的失败只告警（附为写入异常的 suppressed），调用方看到的仍是写入的原始异常，多余的广播只淘汰副本。因此存储的写入方法返回或抛出时，它发出的全部 L1 命令都必须已经结束（`RedisRemoteStore` 的同步 `putAll` / `invalidate` 等全部组结束后才抛出第一个异常，异步版本同样等全部组），否则广播可能先于仍在执行的命令。
 
 ### 4.3 为什么这样做
 
@@ -220,7 +220,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 ### 5.5 提前刷新
 
-- `refreshWindow` 非 null、spec 有 loader、L2 副本到达 `refreshAt` 时，命中照常返回当前值，并把一次刷新提交到刷新执行器。每个节点每个 key 同一时刻至多一次（`refreshing` 集合），刷新经 SingleFlight 与并发未命中合并。
+- `refreshWindow` 非 null、spec 有 loader、L2 副本到达 `refreshAt` 时，命中照常返回当前值，并把一次刷新提交到刷新执行器。每个节点每个 key 同一时刻至多一次（`refreshing` 集合），刷新经 SingleFlight 与并发未命中合并。取得 `refreshing` 之后再确认 L2 仍是触发时读到的那一份副本：命中路径“读副本”与“取守卫”之间上一次刷新可能已完成（它先替换副本、再释放守卫），这时的触发来自旧的观察，直接放弃，否则同一节点会对同一 key 多刷新一次。
 - 刷新先 `read(k, refresh = RefreshRequest(window, 新令牌, lease.ttl))`：取得令牌的节点回源并 `fill(r)`；没取得的节点只从 L1 重新填充 L2；L1 已无值时退回普通 `loadThrough`。
 - 结果：全集群每个 key 一次刷新。`invalidate`、`put`、元素写入都会销毁刷新令牌。
 - 执行器拒绝时计入 `refreshRejected` 并跳过；刷新失败只告警，值照常到期，G1 不变。默认执行器是有界守护线程池（≤ 4 线程，队列 1024，满时拒绝）。
@@ -232,7 +232,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **命中**：与同步路径相同的 L2 查找与过期比较，返回已完成的 future（在调用方线程上）。
 - **续接**（`Futures.handleNext` / `thenNext`）：上一步已完成时就地执行（结果已同步可得，没有 I/O 线程参与，例如内存后端），否则只在完成线程上把续接提交给**异步执行器**，续接本身从不在 L1 客户端的 I/O 线程上执行。因此返回的 future 在调用方线程或异步执行器上完成（调用方注册的依赖阶段按 JDK 规则也可能在随后调用 `get()` / `join()` 的线程上执行，TCK 断言完成线程时先等依赖阶段执行完再等待结果）；`AsyncCacheLoader.loadAsync` 同样在调用方线程或异步执行器上被调用。
 - **数据源适配**：`asyncLoader` 在当前线程上调用，取其结果的副本再加 `LoadPolicy.asyncTimeout`（默认 30 s，由 JDK 的延迟线程以 `completeOnTimeout` 的私有哨兵值计时，不经 `cocache-timer`；数据源自己以 `TimeoutException` 失败时原样传递），超时以 `SourceLoadTimeoutException` 失败、计入 `loadTimeouts` 并释放 lease 与回源许可，数据源的 future 不被取消、迟到的结果被丢弃；同步 `loader` 在异步路径上**只在阻塞执行器上执行**，从不在异步执行器上执行，不加超时。同步 API 遇到 `asyncLoader` 时在调用方线程上调用 `loadAsync` 并等待（同样受 `asyncTimeout` 约束，异常解包）。
-- **不挂起线程**：等待其它节点的 lease 经定时器调度重读（退避、截止时间、令牌与戳都与同步路径相同）；等不到回源许可时登记为等待者，许可释放时按登记顺序被唤醒，`acquireTimeout` 后被拒绝。等待期间不占任何线程。
+- **不挂起线程**：等待其它节点的 lease 经定时器调度重读（退避、截止时间、令牌与戳都与同步路径相同）；等不到回源许可时登记为等待者，许可释放时按登记顺序被唤醒，`acquireTimeout` 后被拒绝。等待期间不占任何线程。按登记顺序只在异步等待者之间成立：同步调用方的限时获取直接争用同一个信号量，不排在已登记的异步等待者之后（许可释放的瞬间可能先被同步调用方拿走）；同步与异步混用且许可长期饱和时，异步调用方被拒绝的比例可能更高，但不会泄漏许可或越过 `acquireTimeout`。
 - **SingleFlight**：同步与异步调用共用一张表。异步 leader 在注册之后、在调用方线程上开始（第一件事是取戳），其 future 完成时先注销、再发布；读己之写至多重试一次，与同步路径相同。同步调用合并到异步调用时只阻塞自己的线程；异步调用合并到同步调用时，结果经异步执行器送达（否则用户的续接会跑在同步 leader 的线程上）。每个调用方拿到自己的 future：取消只影响自己，不取消共享加载、不取消数据源的 future。
 - **重入**：除同步调用的拥有线程外，引擎在调用数据源期间（同步数据源的整个执行、异步数据源 `loadAsync` 的同步部分）为这些 key 设置线程守卫，期间本线程对同一 key 的同步或异步调用快速失败。异步数据源在一次 I/O 之后再读同一 key 形成的环无法检测，由 `asyncTimeout` 打破。
 - **写入**（`AbstractEngine.writeAsync`）：顺序同 §4.2；编码在第一次递增之前、在调用方线程上完成；第二次递增与淘汰挂在 L1 的 future 上（无论成败），在返回的 future 完成之前执行，取消返回的 future 不会跳过它。非原子广播的后端经 `AsyncInvalidationChannel.publishAsync` 发布。
@@ -253,7 +253,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 | `add` / `remove` | Lua：成员写入 + 重设 TTL + 销毁令牌 + `PUBLISH` | 1 |
 
 - `put` 的寿命：`ttlOf ?: 策略寿命`；`put(key, value, ttl)` 用给定时长。都钳到 `[1 ms, 100 年]`。
-- `putAll` 每个 key 的寿命按 `put` 逐个计算（各自独立抖动）；`putAll(entries, ttl)` 用同一时长。空 map 不做任何事；编码后碰撞的存储 key 以后出现的为准，每个存储 key 只编码一次。失败抛出 `CacheWriteException`（`operation = "putAll"`），部分 key 可能已生效。非原子广播时引擎在批量写入成功后发布一帧（含全部 key）。`RemoteStore.putAll` 的默认实现逐个调用 `put`，帧按 key 拆分（每个 key 只广播自己；帧无法拆分时原样使用）。
+- `putAll` 每个 key 的寿命按 `put` 逐个计算（各自独立抖动）；`putAll(entries, ttl)` 用同一时长。空 map 不做任何事；编码后碰撞的存储 key 以后出现的为准，每个存储 key 只编码一次。失败抛出 `CacheWriteException`（`operation = "putAll"`），部分 key 可能已生效。非原子广播时引擎在批量写入结束后发布一帧（含全部 key），写入失败时同样发布（§4.2）。`RemoteStore.putAll` 的默认实现逐个调用 `put`，帧按 key 拆分（每个 key 只广播自己；帧无法拆分时原样使用）。
 - 调用方必须**先提交数据源，再 `invalidate`**（事务内用 `TransactionalInvalidator`，§9.4）。在提交之前失效本身就是 G2 漏洞：并发回源可能读到提交前的数据。
 - 原子广播消除的是 `DEL` 与 `PUBLISH` 之间的客户端窗口；投递仍是至多一次，丢失由 `onReset`、心跳与 `localMaxAge` 兜底。
 

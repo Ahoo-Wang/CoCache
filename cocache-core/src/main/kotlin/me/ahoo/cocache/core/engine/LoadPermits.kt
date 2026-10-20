@@ -24,6 +24,9 @@ import java.util.concurrent.TimeUnit
  * - 同步获取：在调用方线程上限时等待（现状）。
  * - 异步获取：拿不到时登记为等待者，不挂起线程；许可释放时按登记顺序交给等待者，超时由定时器触发。
  *   每次释放都会唤醒等待者，而不是让等待者轮询：轮询下 N 个等待者每轮只有一个能前进。
+ * - 公平性只在异步等待者之间成立：同步获取（[tryAcquire]）直接争用信号量，不排在已登记的异步等待者之后；
+ *   许可被释放的瞬间，正在等待的同步调用方可能先于队首的异步等待者拿到它。异步等待者仍在 `acquireTimeout` 内被唤醒或被拒绝，
+ *   许可不会泄漏；只是同步与异步混用、许可长期饱和时，异步调用方被拒绝的比例可能更高。
  */
 internal class LoadPermits(permits: Int, private val async: AsyncContext) {
     private val semaphore = Semaphore(permits)

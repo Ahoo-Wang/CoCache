@@ -134,7 +134,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             val now = clock.nowMillis()
             if (entry.expiresAt > now) {
                 if (entry.refreshAt <= now) {
-                    refreshAsync(key, storageKey)
+                    refreshAsync(key, storageKey, entry)
                 }
                 countLocalHit()
                 return entry
@@ -547,7 +547,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             return null
         }
         if (entry.refreshAt <= now) {
-            refreshAsync(key, storageKey)
+            refreshAsync(key, storageKey, entry)
         }
         countLocalHit()
         return entry
@@ -725,9 +725,15 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 异步数据源的刷新在刷新执行器上发起、以异步路径执行，不在刷新执行器的线程上等待（RFC 0004 §5.7）。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun refreshAsync(key: K, storageKey: String) {
+    private fun refreshAsync(key: K, storageKey: String, observed: LocalEntry<V>) {
         // 没有数据源的缓存（如只经 Spring Cache 写入）无法回源刷新
         if (loader == null || closed.get() || !refreshing.add(storageKey)) {
+            return
+        }
+        // 调用方读到副本之后、取得守卫之前，上一次刷新可能已完成：它先替换副本再释放守卫，
+        // 因此副本已不是读到的那一份时，这次触发来自旧的观察，不再刷新（否则同一节点对同一 key 多刷新一次）
+        if (local.getIfPresent(storageKey) !== observed) {
+            refreshing.remove(storageKey)
             return
         }
         try {
@@ -1660,7 +1666,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                 val now = clock.nowMillis()
                 if (entry.expiresAt > now) {
                     if (entry.refreshAt <= now) {
-                        refreshAsync(key, storageKey)
+                        refreshAsync(key, storageKey, entry)
                     }
                     countLocalHit()
                     return@attempt CompletableFuture.completedFuture(entry.value)
