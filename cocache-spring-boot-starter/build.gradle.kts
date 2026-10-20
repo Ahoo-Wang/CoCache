@@ -42,6 +42,8 @@ dependencies {
     // 校验原生镜像提示中的 Caffeine 生成类名（cocache-core 的 implementation 依赖，测试编译期需要可见）
     testImplementation("com.github.ben-manes.caffeine:caffeine")
     testImplementation(project(":cocache-test"))
+    // 验证可选模块的挂起视图在类路径上时登记 AOT 提示
+    testImplementation(project(":cocache-coroutines"))
 }
 
 kapt {

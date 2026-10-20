@@ -41,13 +41,15 @@ cocache-redis                  Lettuce 原生后端，不依赖 Spring
   RedisBackend、RedisBackendOptions、RedisChannelMode、RedisScripts、RedisRemoteStore、
   PubSubInvalidationChannel、ShardedInvalidationChannel
 cocache-codec-jackson          Jackson 3（tools.jackson）Codec：JacksonCodec、jacksonCodec<V>()
+cocache-coroutines             可选的 Kotlin 协程挂起视图（6.4，RFC 0004 §7）；kotlinx-coroutines-core 只出现在这个模块
+  SuspendingCache、SuspendingSetCache、SuspendingCacheLoader、suspending()、suspendingLoader()、asAsyncCacheLoader()
 cocache-spring                 Spring 适配（不依赖 Boot）：CoCacheSpringCacheManager、CoCacheSpringCache、TransactionalInvalidator
 cocache-spring-boot-starter    自动配置、@EnableCoCache（caches、joinCaches）、注解翻译、spec bean 注册、配置分层、actuator 端点与健康检查、Micrometer、Spring Cache sync 检查
 cocache-test                   已发布的 TCK：BackendProtocolSpec、EngineSpec、SetEngineSpec、MultiNodeSpec、FaultSpec 及其 Async* 版本、CacheAccess、HookedBackend
 cocache-bom / cocache-dependencies / cocache-example
 ```
 
-依赖方向严格单向：`api ← core ← redis`，`api ← codec-jackson`，`core ← spring`，`core ← test`；starter 依赖 `spring`、`redis`、`codec-jackson`。core 不依赖 `spring-expression` 与 `kotlin-reflect`：SpEL 与注解解析只在 starter 中出现。新后端只需依赖 `cocache-api`（实现 SPI）与 `cocache-test`（通过 TCK）。
+依赖方向严格单向：`api ← core ← redis`，`api ← codec-jackson`，`core ← spring`，`core ← coroutines`，`core ← test`；starter 依赖 `spring`、`redis`、`codec-jackson`。core 不依赖 `spring-expression` 与 `kotlin-reflect`：SpEL 与注解解析只在 starter 中出现。新后端只需依赖 `cocache-api`（实现 SPI）与 `cocache-test`（通过 TCK）。
 
 ### 职责划分
 
@@ -241,6 +243,16 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **`KeyFilter`** 在调用方线程上调用，必须是本地、不阻塞的判断。
 - **异常**：返回的 future 以原始异常完成（不包装为 `CompletionException`）；异步方法从不同步抛出（包括 `KeyEncoder`、`Codec` 抛出、重入与 `SetCache` 的不支持操作）。
 - **只实现同步 SPI 的后端**：引擎经 `BlockingAsyncStore` / `BlockingAsyncChannel` 把同步调用放到阻塞执行器上；原生异步的后端实现 `AsyncRemoteStore`（与 `AsyncInvalidationChannel`），内存后端是原生异步的（就地执行、返回已完成的 future）。
+
+### 5.7 挂起视图（`cocache-coroutines`，RFC 0004 §7）
+
+挂起视图是异步视图的薄封装：每个方法调用异步视图的同名方法并等待其 future，不复制任何引擎逻辑，§5.6 的语义全部沿用。已成功完成的 future（L2 命中）直接取结果，不挂起；等待经 `kotlinx.coroutines.future.await`，失败时抛出 future 中的原始异常。
+
+- **取消**：取消等待的协程会取消这次调用返回的那个 future；异步视图为每次调用新建 future，共享的加载不受影响（与 §5.6 相同）。
+- **调用级 loader**（`get(key) { … }`）：以调用方的协程上下文去掉 `Job` 启动（`future {}`）。它在调用方的 dispatcher 上执行（没有时为 `Dispatchers.Default`），`ThreadContextElement` 随之传递，调用方被取消不取消加载。
+- **spec 级 loader**（`suspendingLoader(context) { … }` / `asAsyncCacheLoader(context)`）：在给定的 `context` 中启动（默认 `Dispatchers.Default`），作为 spec 的 `asyncLoader`，受 `LoadPolicy.asyncTimeout` 约束。超时不取消协程（与 `AsyncCacheLoader` 相同）。
+- **同 key 重入**：引擎基于线程的检查（§5.6“重入”）只覆盖数据源的同步部分；loader 挂起后在别的线程上继续时，由随协程上下文传递的元素 `LoadingKeys`（缓存名 + key）覆盖：经挂起视图读取正在加载的 key（`get`、`getAll`、`lookup`）立即以 `IllegalStateException` 失败，而不是等待自己直到 `asyncTimeout`。
+- 不阻塞任何线程；loader 不在 Lettuce I/O 线程上执行（引擎在调用 `loadAsync` 之前已切换线程，§5.6）。
 
 ## 6. 写路径
 

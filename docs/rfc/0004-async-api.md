@@ -607,3 +607,19 @@ interface LoadObserver {
 | §6：`retrieve(key)` 以 `thenApply` 映射 | 以 `whenComplete` 完成新的 future | `thenApply` 把失败包成 `CompletionException`，违反 A7 |
 
 另外：`CoCacheSpringCacheManager` 的主构造函数不再带默认参数（6.1 为 `@JvmOverloads constructor(runtime, executor = DEFAULT_EXECUTOR)`），省略执行器的 Kotlin 调用方链接到的 `$default` 合成构造函数已不存在，需要重新编译；Java 调用方不受影响。
+
+### 6.4 / `cocache-coroutines`
+
+与 §7 不同、已在 [architecture.md](../architecture.md) §5.7 中按实现写明的几处：
+
+| 正文 | 实现 | 理由 |
+|------|------|------|
+| `kotlinx-coroutines-core` 1.10.x | 1.11.0（2026-05 发布，基于 Kotlin stdlib 2.2.20，与产物的 `apiVersion` 2.2 一致），在 `cocache-dependencies` 中声明 | 当前稳定版；Spring Boot 4.1 管理的是 1.10.2，本模块只用两个版本都有的 API（`future {}`、`CompletionStage.await()`），用户经 Boot 的依赖管理解析到 1.10.2 也能运行 |
+| `SuspendingCache` 的方法表 | 另有 `putAll(entries, ttl)` 与 `async()`；另加 `SuspendingSetCache`（`SetCache.suspending()`，`add` / `remove` / `clear`）与 `AsyncCache.suspending()` / `AsyncSetCache.suspending()` | 与同步 API、异步视图一一对应 |
+| 同 key 重入（§5.4 的不变量）未单独讨论 | 协程上下文元素 `LoadingKeys`（缓存名 + key）：调用级与 `suspendingLoader` 设置的 loader 在带它的上下文中执行，经挂起视图的 `get` / `getAll` / `lookup` 遇到正在加载的 key 立即以 `IllegalStateException` 失败 | 引擎基于线程的检查只覆盖 `loadAsync` 的同步部分；loader 挂起后在别的线程上继续时，重入会等待自己直到 `asyncTimeout`。`asAsyncCacheLoader` 不知道缓存名，单独使用时没有这项检查 |
+| 调用级 loader 的 dispatcher 未写明 | 以调用方上下文去掉 `Job` 后经 `future {}` 启动：在调用方的 dispatcher 上执行（没有时为 `Dispatchers.Default`） | 单线程 dispatcher 下调用方挂起等待、不占线程，loader 在同一线程上执行也不死锁（有用例） |
+| TCK 的协程版本 | `cocache-test` 不增加 `SuspendingEngineSpec`：本模块的测试经 `CacheAccess` 的实现把 `EngineSpec`、`SetEngineSpec`、`MultiNodeSpec` 全部改由挂起视图重跑（内存后端） | TCK 是公开 API，放进去会让 `cocache-test` 依赖 `kotlinx-coroutines-core`，违反 A12；挂起视图不是新的后端协议，后端无需为它通过额外的规范 |
+| `cocache-example` 的 WebFlux + 协程示例 | 未做，记在 roadmap v6.4 | 与模块本身无关，单独提交 |
+| starter | 不识别 `SuspendingCacheLoader` bean（§7 未要求）；类路径上有本模块时按类名为 `SuspendingCache` / `SuspendingSetCache` 登记 AOT 提示 | starter 不依赖本模块 |
+
+另外：kotlinx-coroutines 的调试模式（JVM 带 `-ea` 时自动开启）会把线程名改为“线程名 @coroutine#N”，并可能抛出补全堆栈的异常副本（原始异常为其 `cause`）；本模块的测试关闭调试模式（`kotlinx.coroutines.debug=off`），以便 TCK 按线程名编排钩子、断言原始异常实例。挂起视图不改同步与异步的命中路径，因此没有 JMH 数据。

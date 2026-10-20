@@ -5,6 +5,35 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## v6.4.0（未发布）
+
+**模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。Redis 线格式与失效频道不变，6.x 实例可以共用 Redis。
+
+### Kotlin 协程
+
+新的可选模块 `cocache-coroutines` 在异步 API 之上提供挂起视图（[RFC 0004 §7](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0004-async-api.md)），见 [Kotlin 协程](./coroutines.md)。
+
+```kotlin
+val users = userCache.suspending()
+val user = users.get("42")                    // 挂起而不是阻塞；L2 命中不挂起
+
+cacheSpec<String, User>("user") {
+    suspendingLoader { id -> userRepository.findById(id) }
+}
+```
+
+- `Cache.suspending()` / `SetCache.suspending()` 返回 `SuspendingCache` / `SuspendingSetCache`，方法与同步 API 相同，共享同一个 L2、栅栏、在途加载与 lease。
+- `SuspendingCacheLoader` 是挂起的数据源：用 `suspendingLoader(context)`（默认 `Dispatchers.Default`）设置，或用 `asAsyncCacheLoader()` 转换。调用级 loader `get(key) { … }` 在调用方的协程上下文去掉 `Job` 之后的上下文中执行。
+- 取消等待的协程不会取消共享的加载；异常是原始异常。loader 读取同一缓存中自己正在加载的 key 立即以 `IllegalStateException` 失败，挂起之后同样如此。
+- 本模块依赖 `kotlinx-coroutines-core` 1.11.0（版本在 `cocache-dependencies` 中声明），其它模块都不依赖它。模块在类路径上时，starter 为挂起视图登记原生镜像提示。
+- 同步与异步的命中路径不变。
+
+### Gradle 配置
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-coroutines:6.4.0")
+```
+
 ## v6.3.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本。6.2 没有单独发布：原计划在 6.2 交付的内容随 6.3.0 一并发布。Redis 线格式与失效频道都没有变化，6.0、6.1 与 6.3 的实例可以共用 Redis，逐台升级。

@@ -17,6 +17,7 @@ const guide: DefaultTheme.SidebarItem[] = [
       { text: 'JoinCache', link: '/zh/guide/join-cache' },
       { text: 'Spring Cache', link: '/zh/guide/spring-cache' },
       { text: '异步 API', link: '/zh/guide/async' },
+      { text: 'Kotlin 协程', link: '/zh/guide/coroutines' },
       { text: '测试', link: '/zh/guide/testing' },
       { text: '原生镜像', link: '/zh/guide/native' },
       { text: '配置参考', link: '/zh/guide/configuration' },

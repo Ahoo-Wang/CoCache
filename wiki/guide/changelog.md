@@ -5,6 +5,35 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## v6.4.0 (Unreleased)
+
+**Module Group:** `me.ahoo.cocache` · Minor release, additive. The Redis wire format and the invalidation channel are unchanged, so 6.x instances can share Redis.
+
+### Kotlin coroutines
+
+The new optional module `cocache-coroutines` adds a suspending view over the async API ([RFC 0004 §7](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0004-async-api.md)). See [Kotlin Coroutines](./coroutines.md).
+
+```kotlin
+val users = userCache.suspending()
+val user = users.get("42")                    // suspends instead of blocking; an L2 hit doesn't suspend
+
+cacheSpec<String, User>("user") {
+    suspendingLoader { id -> userRepository.findById(id) }
+}
+```
+
+- `Cache.suspending()` / `SetCache.suspending()` return `SuspendingCache` / `SuspendingSetCache`, with the same methods as the synchronous API. They share the same L2, fences, in-flight loads and leases.
+- `SuspendingCacheLoader` is a suspending data source. Set it with `suspendingLoader(context)` (default `Dispatchers.Default`), or convert it with `asAsyncCacheLoader()`. A per-call loader, `get(key) { … }`, runs in the caller's coroutine context without its `Job`.
+- Cancelling a waiting coroutine doesn't cancel a shared load. Exceptions are the original ones. A loader that reads the key it is loading, from the same cache, fails at once with `IllegalStateException`, even after it suspends.
+- The module depends on `kotlinx-coroutines-core` 1.11.0 (managed in `cocache-dependencies`); no other module does. The starter registers native-image hints for the suspending views when the module is on the classpath.
+- The synchronous and async hit paths are unchanged.
+
+### Gradle Setup
+
+```kotlin
+implementation("me.ahoo.cocache:cocache-coroutines:6.4.0")
+```
+
 ## v6.3.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release. 6.2 was not released on its own: the work planned for 6.2 ships in 6.3.0. The Redis wire format and the invalidation channel are unchanged, so 6.0, 6.1 and 6.3 instances can share Redis and be upgraded one at a time.
