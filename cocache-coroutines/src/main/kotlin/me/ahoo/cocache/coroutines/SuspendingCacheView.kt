@@ -94,6 +94,18 @@ internal open class SuspendingCacheView<K : Any, V : Any>(private val async: Asy
 internal class SuspendingSetCacheView<K : Any, E : Any>(private val async: AsyncSetCache<K, E>) :
     SuspendingCacheView<K, Set<E>>(async),
     SuspendingSetCache<K, E> {
+    override suspend fun get(key: K): Set<E> {
+        LoadingKeys.check(coroutineContext, async, name, key)
+        val future = async.get(key)
+        if (future.isDone && !future.isCompletedExceptionally) {
+            return future.getNow(null).orEmpty()
+        }
+        // 尾调用：命中路径不生成状态机
+        return awaitMembers(future)
+    }
+
+    private suspend fun awaitMembers(future: CompletableFuture<Set<E>?>): Set<E> = future.await().orEmpty()
+
     override suspend fun add(key: K, elements: Collection<E>) {
         async.add(key, elements).awaitResult()
     }
@@ -124,10 +136,14 @@ private class CallerLoader<K : Any, V : Any>(
         val loading = LoadingKeys.adding(context[LoadingKeys], owner, listOf(key))
         return CoroutineScope(dispatcherOf(context.minusKey(Job)) + loading).future {
             cancellationAsFailure(cacheName) { loader(key) }
-        }
+        }.cancelledAsFailure(cacheName)
     }
 }
 
+/**
+ * `runBlocking` 的事件循环的基类。kotlinx-coroutines 没有公开的判断方法，这里依赖它的内部类名：
+ * 升级 kotlinx-coroutines 时请复查（类名变化时识别失效，调用级 loader 会留在事件循环上，`SuspendingCacheTest` 中的用例会失败）。
+ */
 private const val EVENT_LOOP = "kotlinx.coroutines.EventLoop"
 
 private fun dispatcherOf(context: CoroutineContext): CoroutineContext {

@@ -7,7 +7,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ## v6.4.0（未发布）
 
-**模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。Redis 线格式与失效频道不变，6.x 实例可以共用 Redis。
+**模块组：** `me.ahoo.cocache` · 次版本，仅新增 API。已有模块不变，Redis 线格式与失效频道也不变，6.x 实例可以共用 Redis，逐台升级。
 
 ### Kotlin 协程
 
@@ -25,7 +25,8 @@ cacheSpec<String, User>("user") {
 - `Cache.suspending()` / `SetCache.suspending()` 返回 `SuspendingCache` / `SuspendingSetCache`，方法与同步 API 相同，共享同一个 L2、栅栏、在途加载与 lease。
 - `SuspendingCacheLoader` 是挂起的数据源：用 `suspendingLoader(context)`（默认 `Dispatchers.Default`）设置，或用 `asAsyncCacheLoader()` 转换。调用级 loader `get(key) { … }` 在调用方的协程上下文去掉 `Job` 之后的上下文中执行。
 - 取消等待的协程不会取消共享的加载；异常是原始异常。loader 读取同一缓存中自己正在加载的 key 立即以 `IllegalStateException` 失败，挂起之后同样如此。
-- loader 自己抛出的 `CancellationException`（如其中的 `withTimeout`）对共享这次加载的每个调用方都转为 `SourceLoadCancelledException`。spec 级加载都在同一个 `SupervisorJob` 下，一次失败不取消之后的加载。
+- 以取消结束的加载，对共享它的每个调用方（同步、异步与挂起）都以 `SourceLoadCancelledException`（`RuntimeException`）失败：包括 loader 自己抛出的 `CancellationException`（如其中的 `withTimeout`），以及 spec 的 `context` 中已被取消的 `Job`。spec 级加载都在同一个 `SupervisorJob` 下，一次失败不取消之后的加载。
+- Java 经门面类 `SuspendingCaches` 与 `SuspendingCacheLoaders` 看到这些扩展函数。
 - 本模块依赖 `kotlinx-coroutines-core` 1.10.2（即 Spring Boot 4.1 管理的版本，在 `cocache-dependencies` 中声明），其它模块都不依赖它。模块在类路径上时，starter 为挂起视图登记原生镜像提示。
 - 同步与异步的命中路径不变。
 

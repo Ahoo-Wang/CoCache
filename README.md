@@ -72,6 +72,7 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 - **Batch reads.** `getAll` reads L1 in about one round trip and calls `CacheLoader.loadAll` once.
 - **`SetCache`.** Atomic element add and remove for sets whose only copy is Redis.
 - **`JoinCache`.** A read-only view that joins two caches (for example an order and its user) with two batch reads, declared with `@JoinCacheable`.
+- **Async API and coroutines.** `cache.async()` returns `CompletableFuture`s on the same cache without parking a thread (6.3), and the optional `cocache-coroutines` module adds `cache.suspending()` and `SuspendingCacheLoader` (6.4).
 - **Spring Cache and transactions.** `@Cacheable` through `CoCacheSpringCacheManager`, and `TransactionalInvalidator` to invalidate after commit.
 - **Observability.** Micrometer metrics, a `cocache` health indicator, and the `cocache` actuator endpoint, which can inspect or invalidate a single key.
 - **Local development without Redis.** `cocache.backend: memory` runs caches in process for tests and local runs.

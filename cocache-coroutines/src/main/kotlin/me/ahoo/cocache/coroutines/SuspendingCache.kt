@@ -11,6 +11,8 @@
  * limitations under the License.
  */
 
+@file:JvmName("SuspendingCaches")
+
 package me.ahoo.cocache.coroutines
 
 import me.ahoo.cocache.api.AsyncCache
@@ -49,6 +51,7 @@ interface SuspendingCache<K : Any, V : Any> {
      *   加载协程可能比它们活得更久，直到数据源返回。
      * - [loader] 自己抛出的 `CancellationException`（如其中的 `withTimeout`）转为 [SourceLoadCancelledException]。
      * - 在 [loader] 中经挂起视图读取同一缓存实例的同一 key 立即失败（`IllegalStateException`），而不是等待自己。
+     *   按 key（`K`）的相等性匹配，不按编码后的存储 key：两个不相等的 key 编码成同一个存储 key 时，要等到 `load-async-timeout` 才失败。
      */
     suspend fun get(key: K, loader: suspend (K) -> V?): V?
 
@@ -78,6 +81,11 @@ interface SuspendingCache<K : Any, V : Any> {
  * 集合缓存的挂起视图，见 [SuspendingCache]。不打算由第三方实现。
  */
 interface SuspendingSetCache<K : Any, E : Any> : SuspendingCache<K, Set<E>> {
+    /**
+     * 集合的全部成员；不存在时为空集合（与同步的 `SetCache.get` 相同，从不返回 `null`）。
+     */
+    override suspend fun get(key: K): Set<E>
+
     suspend fun add(key: K, elements: Collection<E>)
 
     suspend fun remove(key: K, elements: Collection<E>)

@@ -11,6 +11,8 @@
  * limitations under the License.
  */
 
+@file:JvmName("SuspendingCacheLoaders")
+
 package me.ahoo.cocache.coroutines
 
 import kotlinx.coroutines.CoroutineScope
@@ -54,7 +56,10 @@ fun <K : Any, V : Any> SuspendingCacheLoader<K, V>.asAsyncCacheLoader(): AsyncCa
  * 以它的结果或原始异常完成。
  *
  * - 加载协程都挂在一个 `SupervisorJob` 下：一次加载失败不影响其它加载；[context] 带 `Job` 时它是这个 `SupervisorJob` 的父 Job，
- *   取消它会取消进行中与之后的加载。
+ *   取消它会取消进行中与之后的加载，这些加载以 [SourceLoadCancelledException] 失败（同步、异步与挂起的调用方都是）。
+ * - 这个 `SupervisorJob` 永远不会完成：[context] 中的 Job 请用一个长生命周期的 Job（如应用级的），不要用结构化作用域的 Job，
+ *   否则那个作用域永远结束不了。
+ * - 每次调用都新建一个 `SupervisorJob`：请创建一次、反复使用返回的 loader，不要每次加载都调用本函数，否则子 Job 会越积越多。
  * - 数据源自己抛出的 `CancellationException`（如数据源内部的 `withTimeout`）转为 [SourceLoadCancelledException]：
  *   否则合并到这次加载的所有调用方都会把它当作自己被取消。
  * - 引擎的 `load-async-timeout` 到期时调用方以 `SourceLoadTimeoutException` 失败，协程不会被取消（与 [AsyncCacheLoader] 相同）。
@@ -75,7 +80,8 @@ fun <K : Any, V : Any> CacheSpec.Builder<K, V>.suspendingLoader(loader: Suspendi
 /**
  * 把 [loader] 设为声明的异步数据源（`asyncLoader`），在 [context] 中执行；语义见 [asAsyncCacheLoader]。
  *
- * 另外，经挂起视图在 [loader] 中读取本缓存正在加载的 key 立即失败（`IllegalStateException`）。这项检查按缓存名匹配：
+ * 另外，经挂起视图在 [loader] 中读取本缓存正在加载的 key 立即失败（`IllegalStateException`）。这项检查按 key（`K`）匹配，
+ * 不按编码后的存储 key：两个不相等的 key 编码成同一个存储 key 时检查不到，要等到 `load-async-timeout` 才失败。它按缓存名匹配：
  * 声明时还不知道缓存属于哪个运行时，同一进程中另一个运行时的同名缓存也会被视为本缓存。
  * spec 级 loader 没有调用方，不继承调用方的重入记录：跨缓存的循环（A 的 loader 读 B、B 的 loader 又读 A 的同一个 key）
  * 只能等到 `load-async-timeout` 才失败。
@@ -96,10 +102,14 @@ internal class SuspendingAsyncLoader<K : Any, V : Any>(
     private val scope = CoroutineScope(context + SupervisorJob(context[Job]))
 
     override fun loadAsync(key: K): CompletionStage<out V?> =
-        scope.future(loadingKeys(listOf(key))) { cancellationAsFailure(cacheName) { loader.load(key) } }
+        scope.future(loadingKeys(listOf(key))) {
+            cancellationAsFailure(cacheName) { loader.load(key) }
+        }.cancelledAsFailure(cacheName)
 
     override fun loadAllAsync(keys: Collection<K>): CompletionStage<out Map<K, V>> =
-        scope.future(loadingKeys(keys)) { cancellationAsFailure(cacheName) { loader.loadAll(keys) } }
+        scope.future(loadingKeys(keys)) {
+            cancellationAsFailure(cacheName) { loader.loadAll(keys) }
+        }.cancelledAsFailure(cacheName)
 
     private fun loadingKeys(keys: Collection<K>): CoroutineContext =
         if (cacheName == null) kotlin.coroutines.EmptyCoroutineContext else LoadingKeys.adding(null, cacheName, keys)

@@ -619,7 +619,8 @@ interface LoadObserver {
 | 同 key 重入（§5.4 的不变量）未单独讨论 | 协程上下文元素 `LoadingKeys`：调用级 loader 按视图背后的缓存实例记录，`suspendingLoader` 设置的 loader 按缓存名记录；经挂起视图的 `get` / `getAll` / `lookup` 遇到正在加载的 key 立即以 `IllegalStateException` 失败 | 引擎基于线程的检查只覆盖 `loadAsync` 的同步部分；loader 挂起后在别的线程上继续时，重入会等待自己直到 `asyncTimeout`。spec 声明时不知道运行时，只能按名字（另一个运行时的同名缓存会被视为同一个）；spec 级加载没有调用方，不继承调用方的记录；`asAsyncCacheLoader` 单独使用时没有这项检查 |
 | 调用级 loader 的 dispatcher 未写明 | 以调用方上下文去掉 `Job` 后经 `future {}` 启动：在调用方的 dispatcher 上执行；没有 dispatcher 或是 `runBlocking` 的事件循环时为 `Dispatchers.Default`。上下文与作用域在 `loadAsync` 内才构造 | 单线程 dispatcher 下调用方挂起等待、不占线程，loader 在同一线程上执行也不死锁（有用例）；加载脱离结构化并发，可能比事件循环活得更久；命中不付构造上下文的分配 |
 | spec 级 `context` 中的 `Job` 未讨论 | 每个 loader 一个 `SupervisorJob(context[Job])`，加载协程是它的子协程 | 直接挂在普通 Job 下时，一次失败就会取消父 Job，之后的加载全部以 `CancellationException` 失败，协程调用方还会把它当作取消悄悄吞掉 |
-| 数据源抛出的 `CancellationException` 未讨论 | 加载协程仍活动时转为 `SourceLoadCancelledException`（`cause` 为原异常） | 加载可能被共享：原样传出会让每个合并的调用方都当作自己被取消 |
+| 数据源抛出的 `CancellationException`、spec `context` 中的 Job 被取消未讨论 | 以取消结束的加载转为 `SourceLoadCancelledException`（`RuntimeException`，`cause` 为原异常）：加载协程内转换数据源自己抛出的取消，loader future 的边界上转换加载协程被取消（含 Job 在加载开始之前就已取消） | 加载可能被共享：原样传出会让挂起的调用方都当作自己被取消而吞掉；同步、异步与挂起三类调用方收到同一个普通异常 |
+| `SuspendingSetCache` 未列出 | `get` 覆盖为返回非空的 `Set<E>`；两个文件以 `@file:JvmName` 给 Java 稳定的门面类名 `SuspendingCaches`、`SuspendingCacheLoaders` | 与同步的 `SetCache.get` 一致；发布后门面类名即 API |
 | §7 的签名带默认参数 | `suspendingLoader` 与 `asAsyncCacheLoader` 改为两个重载 | 默认参数会生成 `$default` 合成方法，日后调整参数时影响二进制兼容 |
 | TCK 的协程版本 | `cocache-test` 不增加 `SuspendingEngineSpec`：本模块的测试经 `CacheAccess` 的实现把 `EngineSpec`、`SetEngineSpec`、`MultiNodeSpec` 全部改由挂起视图重跑（内存后端） | TCK 是公开 API，放进去会让 `cocache-test` 依赖 `kotlinx-coroutines-core`，违反 A12；挂起视图不是新的后端协议，后端无需为它通过额外的规范 |
 | `cocache-example` 的 WebFlux + 协程示例 | 未做，记在 roadmap v6.4 | 与模块本身无关，单独提交 |

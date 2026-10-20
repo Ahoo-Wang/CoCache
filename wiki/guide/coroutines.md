@@ -27,7 +27,7 @@ suspend fun rename(id: String, user: User) {
 }
 ```
 
-- `Cache.suspending()` returns a `SuspendingCache`, and `SetCache.suspending()` returns a `SuspendingSetCache` with `add`, `remove` and `clear`. `AsyncCache.suspending()` works too.
+- `Cache.suspending()` returns a `SuspendingCache`, and `SetCache.suspending()` returns a `SuspendingSetCache` with `add`, `remove` and `clear`; its `get` returns an empty set, never `null`, like `SetCache.get`. `AsyncCache.suspending()` works too.
 - Each method calls the async view and awaits the result. An L2 hit returns at once without suspending, because the async view returns an already-completed future.
 - No thread is blocked while CoCache waits for Redis, for another instance's lease, or for your data source.
 
@@ -43,7 +43,9 @@ cacheSpec<String, User>("user") {
 ```
 
 - `suspendingLoader(loader)` / `suspendingLoader(context, loader)` set the spec's `asyncLoader`. Each load starts a coroutine in `context`, which defaults to `Dispatchers.Default`. Pass `Dispatchers.IO` if the loader calls blocking code.
-- The loads run under one `SupervisorJob`, so one failed load doesn't affect the others. If `context` has a `Job`, it is the parent: cancelling it cancels running loads and every later one.
+- The loads run under one `SupervisorJob`, so one failed load doesn't affect the others. If `context` has a `Job`, it is the parent: cancelling it cancels running loads and every later one, and they fail with `SourceLoadCancelledException` for every caller, synchronous, async or suspending. This holds even when the `Job` was already cancelled before the load started.
+- That `SupervisorJob` never completes. Give `context` a long-lived `Job`, such as an application-wide one, not the `Job` of a structured scope: that scope would never finish.
+- Create the loader once and reuse it. Each `suspendingLoader` or `asAsyncCacheLoader` call creates a new `SupervisorJob` under the `Job`, so creating one per load piles up child jobs.
 - `loadAll` defaults to calling `load` concurrently. Override it with one batch query when the source has one.
 - `asAsyncCacheLoader()` / `asAsyncCacheLoader(context)` turn a `SuspendingCacheLoader` into an `AsyncCacheLoader` if you want to set it yourself. Used that way, it has no [re-entry check](#reentry), because it doesn't know which cache it belongs to.
 - Don't call the **synchronous** API from a coroutine running on a single-thread dispatcher, if the cache's loader runs on that same dispatcher. The thread blocks waiting for a load that needs that thread, so it deadlocks. Use the suspending view there.
@@ -79,7 +81,7 @@ Production JVMs normally don't run with `-ea`. If your tests compare exception i
 
 ## Re-entry {#reentry}
 
-A loader that reads the key it is loading, from the same cache, would wait for itself until `load-async-timeout`. Instead, it fails at once with `IllegalStateException`, as it does on the synchronous API. The check goes with the loader's coroutine context, so it holds after the loader suspends and resumes on another thread. It covers reads through the suspending view (`get`, `getAll`, `lookup`). Other keys, and caches with other names, are not affected.
+A loader that reads the key it is loading, from the same cache, would wait for itself until `load-async-timeout`. Instead, it fails at once with `IllegalStateException`, as it does on the synchronous API. The check goes with the loader's coroutine context, so it holds after the loader suspends and resumes on another thread. It covers reads through the suspending view (`get`, `getAll`, `lookup`). Other keys, and caches with other names (or other instances), are not affected. Keys are compared as `K` values, not as encoded storage keys: two unequal keys that encode to the same storage key aren't caught, and fail only at `load-async-timeout`.
 
 - **Per-call loaders** are matched by cache instance: a same-named cache on another runtime, as in a multi-node test, is a different cache.
 - **Spec-level loaders** (`suspendingLoader`) are matched by cache name, because the spec doesn't know its runtime yet.

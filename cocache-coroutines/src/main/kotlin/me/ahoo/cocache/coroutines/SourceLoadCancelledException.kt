@@ -15,16 +15,35 @@ package me.ahoo.cocache.coroutines
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.isActive
+import java.util.concurrent.CompletableFuture
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * 挂起的数据源自己抛出了 `CancellationException`（如数据源内部的 `withTimeout` 超时），而加载协程本身并没有被取消。
+ * 挂起数据源的一次加载以取消结束：数据源自己抛出了 `CancellationException`（如数据源内部的 `withTimeout` 超时），
+ * 或加载协程被取消（如 spec 的 `context` 中的 Job 已被取消，包括加载开始之前就已取消）。
  *
- * 加载可能被多个调用方共享：原样传出的话，每个调用方都会把它当作自己被取消（`launch` 会悄悄吞掉），因此转为普通异常，
- * 与同步、异步数据源的失败一样传给所有调用方。原始异常是 [cause]。
+ * 加载可能被多个调用方共享：原样传出的话，挂起的调用方会把它当作自己被取消（`launch` 会悄悄吞掉），因此转为普通异常，
+ * 与同步、异步数据源的失败一样传给所有调用方（同步、异步与挂起的调用方都收到它）。原始异常是 [cause]。
+ * 与 `SourceLoadTimeoutException`、`SourceLoadRejectedException` 一样是 [RuntimeException]。
  */
 class SourceLoadCancelledException(val cacheName: String?, cause: CancellationException) :
-    IllegalStateException("Cache[${cacheName ?: "?"}] - the suspending source was cancelled: ${cause.message}", cause)
+    RuntimeException("Cache[${cacheName ?: "?"}] - the suspending source was cancelled: ${cause.message}", cause)
+
+/**
+ * 加载 future 的边界：以取消结束的加载（加载协程被取消，或在已取消的作用域中启动）改以 [SourceLoadCancelledException] 完成。
+ */
+internal fun <T> CompletableFuture<T>.cancelledAsFailure(cacheName: String?): CompletableFuture<T> {
+    val result = CompletableFuture<T>()
+    // `future {}` 以原始异常完成（不包装为 CompletionException）
+    whenComplete { value, error ->
+        when (error) {
+            null -> result.complete(value)
+            is CancellationException -> result.completeExceptionally(SourceLoadCancelledException(cacheName, error))
+            else -> result.completeExceptionally(error)
+        }
+    }
+    return result
+}
 
 /**
  * 执行数据源：加载协程仍处于活动状态时，数据源抛出的 `CancellationException` 转为 [SourceLoadCancelledException]；
