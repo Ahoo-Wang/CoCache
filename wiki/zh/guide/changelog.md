@@ -5,16 +5,16 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v6.3.1
+## v6.3.1（当前版本）
 
-**模块组：** `me.ahoo.cocache` · 修订版本。API、配置与线格式都没有变化。
+**模块组：** `me.ahoo.cocache` · 修订版本。API 与配置都没有变化。Redis 线格式与失效频道都没有变化，6.3.1 的实例可以与任何 6.x 实例共用 Redis，逐台升级。
 
 ### 修复
 
 - **异步执行器拒绝任务不再吞掉写入的广播。** 只影响以单独命令广播失效的后端（`channel-mode: sharded`，或启动时原子广播探测失败）。异步的 `put`、`putAll`、`invalidate` 或集合写入之后，如果你配置的 `cocache.async-executor` 拒绝了发送广播的任务，广播会被跳过，写入的结果也被换成 `RejectedExecutionException`：其它实例可能在 `localMaxAge` 内继续返回旧的本地副本，成功的写入被计为写入失败，成功的 `invalidate` 还会登记多余的重试。现在执行器拒绝时广播在完成线程上直接发出，写入保留自己的结果或异常。如果执行器同样拒绝完成返回给你的 future，该 future 仍以 `RejectedExecutionException` 失败，与此前相同。默认执行器（`ForkJoinPool`）不拒绝任务，默认配置不受影响。
 - **命令超时后的广播：只补充文档，不改行为。** 同步 `putAll` 或 `invalidate` 超时后补发的广播，可能先于超时的命令在 Redis 端执行而到达其它实例。我们评估了等待命令真正结束的做法，决定维持现状：超时后无从得知命令是否、何时执行，任何有上界的等待都只能缩小窗口、不能关闭它。这个窗口内的旧副本仍受 `localMaxAge` 限制。见 [architecture.md §4.2](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md)。
 
-## v6.3.0（当前版本）
+## v6.3.0
 
 **模块组：** `me.ahoo.cocache` · 次版本。6.2 没有单独发布：原计划在 6.2 交付的内容随 6.3.0 一并发布。Redis 线格式与失效频道都没有变化，6.0、6.1 与 6.3 的实例可以共用 Redis，逐台升级。
 

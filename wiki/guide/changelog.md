@@ -5,16 +5,16 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v6.3.1
+## v6.3.1 (Current)
 
-**Module Group:** `me.ahoo.cocache` · Patch release. No API, configuration, or wire-format change.
+**Module Group:** `me.ahoo.cocache` · Patch release. No API or configuration change. The Redis wire format and the invalidation channel are unchanged, so 6.3.1 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
 ### Fixes
 
 - **A rejecting async executor no longer drops a write's broadcast.** Only applies when the backend broadcasts invalidations as a separate command (`channel-mode: sharded`, or when the atomic-broadcast probe failed at startup). If the `cocache.async-executor` you configured rejected the task that sends the broadcast after an async `put`, `putAll`, `invalidate` or set write, the broadcast was skipped and the write's outcome was replaced with `RejectedExecutionException`. Other instances could then serve their old local copy for up to `localMaxAge`, a successful write counted as a write failure, and a successful `invalidate` scheduled a needless retry. The broadcast now goes out on the completing thread when the executor rejects it, and the write keeps its own result or exception. If the executor also rejects completing the future returned to you, that future still fails with `RejectedExecutionException`, as before. The default executor (`ForkJoinPool`) doesn't reject tasks, so the default setup was not affected.
 - **Broadcast after a command timeout: documented, not changed.** When a synchronous `putAll` or `invalidate` times out, the broadcast sent after the failure can reach other instances before the timed-out command runs in Redis. We evaluated waiting for the command to finish and kept the current behavior: after a timeout there is no way to know whether or when the command runs, and any bounded wait narrows the window without closing it. Stale copies in this window are still bounded by `localMaxAge`. See [architecture.md §4.2](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md).
 
-## v6.3.0 (Current)
+## v6.3.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release. 6.2 was not released on its own: the work planned for 6.2 ships in 6.3.0. The Redis wire format and the invalidation channel are unchanged, so 6.0, 6.1 and 6.3 instances can share Redis and be upgraded one at a time.
 
