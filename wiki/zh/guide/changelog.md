@@ -5,9 +5,9 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布
+## v6.5.0（当前版本）
 
-**模块组：** `me.ahoo.cocache` · 计划为 6.5.0。`cocache-core` 与 `cocache-redis` 新增 API；没有数据源的读取有一项默认行为变化（见下文）。Redis 线格式与失效频道不变，6.x 实例可以共用 Redis 并逐台升级。
+**模块组：** `me.ahoo.cocache` · 次版本。`cocache-core` 与 `cocache-redis` 新增 API；没有数据源的读取有一项默认行为变化（见下文）。Redis 线格式与失效频道不变，6.x 实例可以共用 Redis 并逐台升级。
 
 ### 迁移 Redis 是唯一副本的缓存
 
@@ -26,7 +26,7 @@ CoCache5Migrator.standalone(uri).use { migrator ->
 - 有数据源的读取（包括 `get(key, loader)`）照旧回收并重新加载（`reclaim`）。给缓存设置 `foreign-format: reclaim` 即可恢复旧行为。`cocache.defaults.foreign-format` 不作用于 `SetCache`。
 - 受影响的只有在没有数据源的缓存下存在读不懂内容的应用；6.5 之前这些内容在第一次读取时被静默丢弃。
 
-## v6.4.1（当前版本）
+## v6.4.1
 
 **模块组：** `me.ahoo.cocache` · 修订版本。API 与配置都没有变化。Redis 线格式与失效频道都没有变化，6.4.1 的实例可以与任何 6.x 实例共用 Redis，逐台升级。
 

@@ -111,7 +111,14 @@ JMH 对比见 RFC 0003 §7.1。
 | Lettuce 6.8（Spring Boot 4.0）兼容 | G1 | Spring Boot 4.0 管理的 Lettuce 6.8 没有 Lettuce 7 的 `Delegating` 接口与维护期间的超时放宽：6.0–6.4.0 在 6.8 上心跳失败后强制重连抛出 `NoClassDefFoundError`，心跳任务永久停止 | ✅ 6.4.1：强制重连不再依赖 `Delegating`，维护期间的放宽在 6.x 上跳过；心跳任务兜住任何 `Throwable`，订阅者的重置互不影响；CI 在 Spring Boot 4.0 上测试 Redis 模块与示例（#675） |
 | 协程示例 | 易用 | `cocache-example` 中的 WebFlux + 协程示例（RFC 0004 §7）：`CoroutineController`（`suspend fun` 处理器、`cache.suspending()`、调用级 loader、写后失效）与 `suspendingLoader` 声明的 `profile` 缓存 | ✅ 6.4.1 |
 
-## 6.4 之后
+## v6.5：5.x 数据迁移 — 已完成
+
+| 项 | 目标 | 内容 | 现状 |
+|----|------|------|------|
+| 读不懂的内容不再静默丢弃 | G1 | 没有数据源的读取遇到 5.x 遗留值或无法解码的值时，6.0–6.4 会回收并删除唯一副本（`SetCache` 读成空集合）；新增 `foreignFormat` 策略（`fail` / `reclaim`），没有数据源时默认 `fail` | 6.5.0 已交付 |
+| `CoCache5Migrator` | 易用 | 把 5.x 的字符串（JSON）、原生 SET、hash 与负缓存转换为 6.x 格式，保留 TTL，可重复执行，原地迁移前备份，支持 `dryRun` / `rollback` / `dropBackups` | 6.5.0 已交付 |
+
+## 6.5 之后
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
