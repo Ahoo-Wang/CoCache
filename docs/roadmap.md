@@ -107,7 +107,8 @@ JMH 对比见 RFC 0003 §7.1。
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
 | 协程示例 | 易用 | `cocache-example` 中的 WebFlux + 协程示例（RFC 0004 §7）：`CoroutineController`（`suspend fun` 处理器、`cache.suspending()`、调用级 loader、写后失效）与 `suspendingLoader` 声明的 `profile` 缓存 | ✅ 已完成 |
-| 异步命令超时改用 Lettuce `TimeoutOptions` | G3 | 异步视图的命令超时目前由 `CompletableFuture.orTimeout` 计时（JDK 的单线程延迟调度器，每条命令一次调度与撤销），8 线程闭环基准低于 RFC 0004 §11 的 90% 的一部分来自这里；改由 Lettuce 自己的命令超时触发、在 `bounded` 中只做异常映射（RFC 0004 §14） | 未实现 |
+| 异步命令超时改用 Lettuce `TimeoutOptions` | G3 | 异步视图的命令超时目前由 `CompletableFuture.orTimeout` 计时（JDK 的单线程延迟调度器，每条命令一次调度与撤销），8 线程闭环基准低于 RFC 0004 §11 的 90% 的一部分来自这里；改由 Lettuce 自己的命令超时触发、在 `bounded` 中只做异常映射（RFC 0004 §14） | ✅ 已实现（未发布）：单机只由 Lettuce 计时；集群中等待建立节点连接的命令 Lettuce 不计时，另以它的时间轮兜底。收益是不再依赖 JDK 的单线程延迟调度器；“8 线程差距部分来自 `orTimeout`”的假设未被证实（8 线程 99.1%–101.8%，见 RFC 0004 §14） |
+| 8 线程异步闭环低于 RFC 0004 §11 的 90% | G3 | 6.3 实测为同步的 80%–93%（RFC 0004 §14“6.3 / PR 2”）；去掉 `orTimeout` 后不变，原因尚未查明（候选之一是 A9 要求的线程切换） | 待调查，暂不追踪 |
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
 

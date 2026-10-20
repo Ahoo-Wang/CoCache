@@ -20,6 +20,7 @@ import io.lettuce.core.RedisClient
 import io.lettuce.core.RedisException
 import io.lettuce.core.RedisURI
 import io.lettuce.core.SocketOptions
+import io.lettuce.core.TimeoutOptions
 import io.lettuce.core.cluster.ClusterClientOptions
 import io.lettuce.core.cluster.ClusterTopologyRefreshOptions
 import io.lettuce.core.cluster.RedisClusterClient
@@ -68,7 +69,13 @@ class RedisBackend private constructor(
 
     init {
         // 构造失败时按相反顺序关闭已建立的部分（心跳线程、连接、自建的客户端与资源），避免泄漏
-        connections = closeOnFailure(::shutdownOwned) { RedisConnections(client, options.commandTimeout) }
+        // 自建的客户端按 commandTimeout 为每条命令计时（timeoutOptions），见 CommandTimeouts
+        val timeouts = when {
+            !ownsClient -> CommandTimeouts.TIMER
+            client is RedisClusterClient -> CommandTimeouts.CLIENT_WRITTEN
+            else -> CommandTimeouts.CLIENT
+        }
+        connections = closeOnFailure(::shutdownOwned) { RedisConnections(client, options.commandTimeout, timeouts) }
         invalidationChannel = closeOnFailure({
             connections.close()
             shutdownOwned()
@@ -222,6 +229,18 @@ class RedisBackend private constructor(
             .build()
 
         /**
+         * 自建客户端的命令超时：每条命令（含订阅连接上的命令）由 Lettuce 按 [commandTimeout] 计时（Netty 时间轮，
+         * 精度为一个刻度，默认 100 ms），超时以 `RedisCommandTimeoutException` 完成（RFC 0004 §14）。单机的异步视图只做异常映射；
+         * 集群中它替换 Lettuce 默认的 60 s 连接超时，不增加开销。
+         * 关闭维护期间的放宽（Lettuce 7 默认在收到维护通知时把超时放宽 10 s），上界始终是 [commandTimeout]，与同步等待一致。
+         */
+        internal fun timeoutOptions(commandTimeout: Duration): TimeoutOptions = TimeoutOptions.builder()
+            .timeoutCommands(true)
+            .fixedTimeout(commandTimeout)
+            .relaxedTimeoutsDuringMaintenance(TimeoutOptions.DISABLED_TIMEOUT)
+            .build()
+
+        /**
          * 带连接名的副本（不修改调用方的 URI）。
          */
         private fun RedisURI.named(clientName: String?): RedisURI {
@@ -240,6 +259,7 @@ class RedisBackend private constructor(
                 .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
                 .autoReconnect(true)
                 .socketOptions(socketOptions())
+                .timeoutOptions(timeoutOptions(options.commandTimeout))
                 .apply { options.sslOptions?.let { sslOptions(it) } }
                 .build()
             return RedisBackend(client, true, owned, options)
@@ -261,6 +281,7 @@ class RedisBackend private constructor(
                     .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
                     .autoReconnect(true)
                     .socketOptions(socketOptions())
+                    .timeoutOptions(timeoutOptions(options.commandTimeout))
                     .apply { options.sslOptions?.let { sslOptions(it) } }
                     .topologyRefreshOptions(
                         ClusterTopologyRefreshOptions.builder().enableAllAdaptiveRefreshTriggers().build()
@@ -274,6 +295,7 @@ class RedisBackend private constructor(
          * 使用已有客户端（[RedisClient] 或 [RedisClusterClient]）。后端关闭时不关闭该客户端。
          *
          * 客户端选项由调用方负责：断线行为应为 [ClientOptions.DisconnectedBehavior.REJECT_COMMANDS]，否则记录告警。
+         * 异步命令的超时仍由后端以 `commandTimeout` 另外计时（客户端自己的命令超时未知，客户端资源的时间轮）。
          */
         @JvmStatic
         @JvmOverloads

@@ -59,7 +59,7 @@ The async executor and the blocking executor are configurable. See [Configuratio
 ## Timeouts {#timeouts}
 
 - An `AsyncCacheLoader` load may take at most `load-async-timeout` (30 seconds by default). Past it, the call fails with `SourceLoadTimeoutException`, the lease is released, and `cocache.load.timeouts` counts it. CoCache doesn't cancel your loader's future, and a late result is dropped. A `TimeoutException` your loader raises itself (for example from Reactor's `timeout`) is passed through unchanged.
-- Each Redis command is bounded by `cocache.redis.command-timeout` (2 seconds by default) and fails with the same `RedisException` as the synchronous path.
+- Each Redis command is bounded by `cocache.redis.command-timeout` (2 seconds by default) and fails with the same `RedisException` as the synchronous path. The timer is Lettuce's timer wheel, so an async timeout can fire up to one tick (100 ms by default) late.
 - Synchronous loaders have no async timeout: a blocked thread can't be interrupted.
 
 ## Exceptions and cancellation {#exceptions}

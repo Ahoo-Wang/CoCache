@@ -13,7 +13,10 @@
 
 package me.ahoo.cocache.redis
 
+import io.lettuce.core.ClientOptions
+import io.lettuce.core.RedisCommandTimeoutException
 import io.lettuce.core.RedisException
+import io.lettuce.core.TimeoutOptions
 import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -34,6 +37,7 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * Redis 原生异步存储的故障与边界（RFC 0004 §4.3）：脚本缓存丢失、命令超时、非运行时异常、取消在途命令、在途期间断连。
@@ -64,10 +68,10 @@ class RedisAsyncStoreFaultTest {
     private fun <T> CompletableFuture<T>.failure(): Throwable? = handle { _, e -> e }.get(10, TimeUnit.SECONDS)
 
     /**
-     * 暂停所有客户端的命令 [millis] 毫秒（服务端行为，暂停期间发出的命令在服务端排队）。仅限单机。
+     * 暂停所有客户端的命令 [millis] 毫秒（服务端行为，暂停期间发出的命令在服务端排队）。集群中暂停所有节点。
      */
     private fun pauseClients(millis: Long) {
-        RedisTestSupport.withCommands { it.clientPause(millis) }
+        RedisTestSupport.pauseClients(millis)
     }
 
     @Test
@@ -122,27 +126,87 @@ class RedisAsyncStoreFaultTest {
     }
 
     /**
-     * 命令超过 `commandTimeout`：与同步等待相同的 [RedisException]，底层命令被取消，连接随后照常可用。
+     * 命令超过 `commandTimeout`：与同步等待相同的 [RedisException]，连接随后照常可用。自建单机客户端的超时由 Lettuce 的
+     * 命令超时触发（cause 为 [RedisCommandTimeoutException]），不经 JDK 的延迟调度器（RFC 0004 §14）。单机与集群。
      */
     @Test
     fun asyncCommandTimeoutFailsLikeTheSyncPathAndTheConnectionRecovers() {
-        assumeFalse(RedisTestSupport.isCluster)
         val backend = RedisTestSupport.backend(RedisBackendOptions(commandTimeout = Duration.ofMillis(200))).closing()
         val store = backend.store(namespace) as AsyncRemoteStore
-        pauseClients(1_000)
+        // 先缓存脚本：否则 NOSCRIPT 回退的 EVAL 是另一条命令，暂停期间各自计时
+        store.readAsync(key("warm"), null, null).await()
+        pauseClients(PAUSE_MILLIS)
         val error = store.readAsync(key("slow"), null, null).failure()
         error.assert().isInstanceOf(RedisException::class.java)
-        error?.message.assert().contains("timed out")
-        // 批量操作：全部完成后以第一个异常失败（与同步版本相同的异常类型）
+        error?.message.assert().isEqualTo("Command timed out after PT0.2S.")
+        if (!RedisTestSupport.isCluster) {
+            // 单机只由 Lettuce 计时；集群中时间轮与 Lettuce 同时计时，先到者生效
+            error?.cause.assert().isInstanceOf(RedisCommandTimeoutException::class.java)
+        }
+        // 批量操作（集群中跨节点：首次访问的节点在暂停期间建立连接，Lettuce 尚未计时，由时间轮兜底）：全部完成后以第一个异常失败（与同步版本相同的异常类型）
         val leases = mapOf(key("b1") to LeaseRequest(token(), Duration.ofSeconds(30)))
         listOf(
             store.readAllAsync(listOf(key("b1"), key("b2")), leases),
             store.fillAllAsync(listOf(Fill(key("b1"), token(), scalar("v"), null))),
             store.putAllAsync(listOf(Put(key("b3"), scalar("p"), null)), frame(key("b3"))),
             store.invalidateAsync(listOf(key("b1"), key("b2")), frame(key("b1"), key("b2"))),
-        ).forEach { future -> future.failure().assert().isInstanceOf(RedisException::class.java) }
+        ).forEachIndexed { index, future ->
+            val failure = future.failure()
+            failure.assert().withFailMessage { "batch #$index did not fail" }.isNotNull()
+            failure.assert().isInstanceOf(RedisException::class.java)
+            failure?.message.assert().isEqualTo("Command timed out after PT0.2S.")
+        }
+        Thread.sleep(PAUSE_MILLIS)
+        store.readAsync(key("slow"), null, null).await().assert().isEqualTo(RemoteRead.Miss(false))
+    }
+
+    /**
+     * 同步路径的超时不变：等待本身受 `commandTimeout` 限制，无论等待还是客户端的超时先触发，异常都相同。
+     */
+    @Test
+    fun syncCommandTimeoutIsUnchangedWhenTheClientTimesCommands() {
+        val backend = RedisTestSupport.backend(RedisBackendOptions(commandTimeout = Duration.ofMillis(200))).closing()
+        val store = backend.store(namespace)
+        store.read(key("warm"), null, null)
+        pauseClients(PAUSE_MILLIS)
+        val error = runCatching { store.read(key("slow"), null, null) }.exceptionOrNull()
+        error.assert().isInstanceOf(RedisException::class.java)
+        error?.message.assert().isEqualTo("Command timed out after PT0.2S.")
+        Thread.sleep(PAUSE_MILLIS)
+        store.read(key("slow"), null, null).assert().isEqualTo(RemoteRead.Miss(false))
+    }
+
+    /**
+     * 调用方的客户端（`RedisBackend.of`）不为命令计时时，异步超时仍由后端以 `commandTimeout` 计时：同样的异常，连接照常可用。
+     */
+    @Test
+    fun asyncCommandTimeoutStillHoldsForAClientWithoutCommandTimeouts() {
+        assumeFalse(RedisTestSupport.isCluster)
+        val client = RedisTestSupport.standaloneClient()
+        client.options = ClientOptions.builder()
+            .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
+            .timeoutOptions(TimeoutOptions.builder().timeoutCommands(false).build())
+            .build()
+        closeables.add(AutoCloseable { client.shutdown() })
+        val backend = RedisBackend.of(client, RedisBackendOptions(commandTimeout = Duration.ofMillis(200))).closing()
+        val store = backend.store(namespace) as AsyncRemoteStore
+        store.readAsync(key("warm"), null, null).await()
+        pauseClients(1_000)
+        val error = store.readAsync(key("slow"), null, null).failure()
+        error.assert().isInstanceOf(RedisException::class.java)
+        error?.message.assert().isEqualTo("Command timed out after PT0.2S.")
+        error?.cause.assert().isInstanceOf(TimeoutException::class.java)
         Thread.sleep(1_000)
         store.readAsync(key("slow"), null, null).await().assert().isEqualTo(RemoteRead.Miss(false))
+    }
+
+    @Test
+    fun ownedClientsTimeCommandsWithoutRelaxingDuringMaintenance() {
+        val options = RedisBackend.timeoutOptions(Duration.ofMillis(1500))
+        options.isTimeoutCommands.assert().isTrue()
+        options.isApplyConnectionTimeout.assert().isFalse()
+        options.source.getTimeout(null).assert().isEqualTo(Duration.ofMillis(1500).toNanos())
+        options.relaxedTimeout.isNegative.assert().isTrue()
     }
 
     /**
@@ -204,9 +268,87 @@ class RedisAsyncStoreFaultTest {
             connections.mapped(
                 CompletableFuture.failedFuture<String>(CompletionException(runtime))
             ) { it }.failure().assert().isSameAs(runtime)
+            // 客户端不计时：客户端自己的超时原样传递（消息里的时长不是 commandTimeout）
+            val lettuceTimeout = RedisCommandTimeoutException("Command timed out after 1 second(s)")
+            connections.bounded(CompletableFuture.failedFuture<String>(lettuceTimeout)).failure()
+                .assert().isSameAs(lettuceTimeout)
         } finally {
             connections.close()
             client.shutdown()
         }
+    }
+
+    /**
+     * 客户端按 `commandTimeout` 计时：它的超时在异步与同步路径上都映射为同样的 [RedisException]，其它失败照常解包。
+     */
+    @Test
+    fun clientTimedCommandsMapTheClientTimeoutLikeTheSyncWait() {
+        assumeFalse(RedisTestSupport.isCluster)
+        val client = RedisTestSupport.standaloneClient()
+        val connections = RedisConnections(client, Duration.ofSeconds(2), CommandTimeouts.CLIENT)
+        try {
+            val lettuceTimeout = RedisCommandTimeoutException("Command timed out after 2 second(s)")
+            val asyncFailure = connections.bounded(CompletableFuture.failedFuture<String>(lettuceTimeout)).failure()
+            asyncFailure.assert().isInstanceOf(RedisException::class.java)
+            asyncFailure?.message.assert().isEqualTo("Command timed out after PT2S.")
+            asyncFailure?.cause.assert().isSameAs(lettuceTimeout)
+            val syncFailure = runCatching {
+                connections.await(CompletableFuture.failedFuture<String>(lettuceTimeout))
+            }.exceptionOrNull()
+            syncFailure?.message.assert().isEqualTo("Command timed out after PT2S.")
+            syncFailure?.cause.assert().isSameAs(lettuceTimeout)
+            val runtime = IllegalStateException("runtime")
+            connections.bounded(
+                CompletableFuture.failedFuture<String>(CompletionException(runtime))
+            ).failure().assert().isSameAs(runtime)
+            connections.bounded(CompletableFuture.completedFuture("v")).await().assert().isEqualTo("v")
+            // 客户端计时全程时 bounded 不另外计时：超过 commandTimeout 仍未完成的 future 不会被后端超时
+            val shortTimeouts = RedisConnections(client, Duration.ofMillis(50), CommandTimeouts.CLIENT)
+            val pending = CompletableFuture<String>()
+            val bounded = shortTimeouts.bounded(pending)
+            Thread.sleep(300)
+            bounded.isDone.assert().isFalse()
+            pending.complete("late")
+            bounded.await().assert().isEqualTo("late")
+            shortTimeouts.close()
+        } finally {
+            connections.close()
+            client.shutdown()
+        }
+    }
+
+    /**
+     * 集群的自建客户端（[CommandTimeouts.CLIENT_WRITTEN]）：时间轮兜底未交给客户端计时的命令，客户端自己的超时同样映射。
+     */
+    @Test
+    fun guardedClientTimedCommandsTimeOutOnTheTimerAndMapTheClientTimeout() {
+        assumeFalse(RedisTestSupport.isCluster)
+        val client = RedisTestSupport.standaloneClient()
+        val connections = RedisConnections(client, Duration.ofMillis(100), CommandTimeouts.CLIENT_WRITTEN)
+        try {
+            val pending = CompletableFuture<String>()
+            val error = connections.bounded(pending).failure()
+            error?.message.assert().isEqualTo("Command timed out after PT0.1S.")
+            error?.cause.assert().isInstanceOf(TimeoutException::class.java)
+            // 超时后不再等待：迟到的结果被丢弃，命令 future 被取消
+            pending.isCancelled.assert().isTrue()
+            val lettuceTimeout = RedisCommandTimeoutException("Command timed out after 100 millisecond(s)")
+            val mapped = connections.bounded(CompletableFuture.failedFuture<String>(lettuceTimeout)).failure()
+            mapped?.message.assert().isEqualTo("Command timed out after PT0.1S.")
+            mapped?.cause.assert().isSameAs(lettuceTimeout)
+            connections.bounded(CompletableFuture.completedFuture("v")).await().assert().isEqualTo("v")
+        } finally {
+            connections.close()
+            client.shutdown()
+        }
+        // 时间轮已停止（客户端已关闭）：不计时，结果照常传递
+        connections.bounded(CompletableFuture.completedFuture("v")).await().assert().isEqualTo("v")
+    }
+
+    private companion object {
+        /**
+         * 超时用例的暂停时长：集群中逐个节点暂停需要时间，留足余量让暂停覆盖全部命令。
+         */
+        const val PAUSE_MILLIS = 2_000L
     }
 }

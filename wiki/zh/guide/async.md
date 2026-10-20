@@ -59,7 +59,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 ## 超时 {#timeouts}
 
 - 一次 `AsyncCacheLoader` 加载最多 `load-async-timeout`（默认 30 秒）。超时后调用以 `SourceLoadTimeoutException` 失败，释放 lease，并计入 `cocache.load.timeouts`。CoCache 不取消你的 loader 的 future，迟到的结果被丢弃。你的 loader 自己抛出的 `TimeoutException`（例如来自 Reactor 的 `timeout`）原样传递。
-- 每条 Redis 命令受 `cocache.redis.command-timeout`（默认 2 秒）约束，失败时与同步路径一样是 `RedisException`。
+- 每条 Redis 命令受 `cocache.redis.command-timeout`（默认 2 秒）约束，失败时与同步路径一样是 `RedisException`。计时器是 Lettuce 的时间轮，异步超时最多晚一个刻度（默认 100 毫秒）触发。
 - 同步 loader 没有异步超时：阻塞的线程无法被打断。
 
 ## 异常与取消 {#exceptions}
