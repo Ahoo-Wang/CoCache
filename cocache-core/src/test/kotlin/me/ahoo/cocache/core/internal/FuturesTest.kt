@@ -182,13 +182,19 @@ class FuturesTest {
             Futures.withoutInline { inside.complete("v") }
             next.join().assert().isEqualTo("v")
             executor.count.get().assert().isEqualTo(2)
+            // 嵌套：内层看到的是已清除的标记，结束后仍是清除状态，外层结束后才恢复
+            val nested = CompletableFuture<String>()
+            val nestedNext = nested.handleNext(executor) { value, _ -> CompletableFuture.completedFuture(value) }
+            Futures.withoutInline { Futures.withoutInline { nested.complete("n") } }
+            nestedNext.join().assert().isEqualTo("n")
+            executor.count.get().assert().isEqualTo(3)
             // 作用域以异常结束后标记恢复：再次就地执行
             runCatching { Futures.withoutInline<Unit> { throw failure } }.exceptionOrNull().assert().isSameAs(failure)
             val after = CompletableFuture<String>()
             val inline = after.handleNext(executor) { value, _ -> CompletableFuture.completedFuture(value) }
             after.complete("w")
             inline.join().assert().isEqualTo("w")
-            executor.count.get().assert().isEqualTo(2)
+            executor.count.get().assert().isEqualTo(3)
         }
     }
 
