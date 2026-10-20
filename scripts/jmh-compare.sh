@@ -401,6 +401,8 @@ def median(xs):
 
 
 def fmt(x):
+    if abs(x) >= 10000:
+        return "{:,.0f}".format(x)
     if abs(x) >= 100:
         return "%.1f" % x
     if abs(x) >= 1:
