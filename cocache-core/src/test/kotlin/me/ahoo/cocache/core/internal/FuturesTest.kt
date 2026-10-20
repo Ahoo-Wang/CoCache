@@ -170,4 +170,25 @@ class FuturesTest {
             pool.shutdownNow()
         }
     }
+
+    @Test
+    fun withoutInlineDispatchesInsideItsScopeAndRestoresTheMark() {
+        val executor = Counting()
+        val failure = IllegalStateException("boom")
+        Futures.dispatch(executor, CompletableFuture<Void?>()) {
+            // 作用域内完成的续接派发出去
+            val inside = CompletableFuture<String>()
+            val next = inside.handleNext(executor) { value, _ -> CompletableFuture.completedFuture(value) }
+            Futures.withoutInline { inside.complete("v") }
+            next.join().assert().isEqualTo("v")
+            executor.count.get().assert().isEqualTo(2)
+            // 作用域以异常结束后标记恢复：再次就地执行
+            runCatching { Futures.withoutInline<Unit> { throw failure } }.exceptionOrNull().assert().isSameAs(failure)
+            val after = CompletableFuture<String>()
+            val inline = after.handleNext(executor) { value, _ -> CompletableFuture.completedFuture(value) }
+            after.complete("w")
+            inline.join().assert().isEqualTo("w")
+            executor.count.get().assert().isEqualTo(2)
+        }
+    }
 }

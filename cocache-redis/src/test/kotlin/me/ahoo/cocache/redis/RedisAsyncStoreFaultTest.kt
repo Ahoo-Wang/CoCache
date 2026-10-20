@@ -206,7 +206,32 @@ class RedisAsyncStoreFaultTest {
         options.isTimeoutCommands.assert().isTrue()
         options.isApplyConnectionTimeout.assert().isFalse()
         options.source.getTimeout(null).assert().isEqualTo(Duration.ofMillis(1500).toNanos())
-        options.relaxedTimeout.isNegative.assert().isTrue()
+        if (lettuceHasMaintenanceRelaxation()) {
+            options.relaxedTimeout.isNegative.assert().isTrue()
+        }
+    }
+
+    /**
+     * 当前类路径上的 Lettuce 是否有维护期间的超时放宽（7.x 有，6.x 没有）：本类的用例在两个版本上都要通过。
+     */
+    private fun lettuceHasMaintenanceRelaxation(): Boolean =
+        TimeoutOptions::class.java.methods.any { it.name == "getRelaxedTimeout" }
+
+    /**
+     * Lettuce 6.x（Spring Boot 4.0 管理的版本）没有维护期间的放宽：缺少的符号在执行到时才抛出，跳过这一项，其余选项照常生效。
+     */
+    @Test
+    fun maintenanceRelaxationIsSkippedWhenLettuceLacksIt() {
+        val builder = TimeoutOptions.builder().timeoutCommands(true).fixedTimeout(Duration.ofMillis(1500))
+        val missingMethod: (TimeoutOptions.Builder) -> Unit = { throw NoSuchMethodError("relaxedTimeouts") }
+        val missingField: (TimeoutOptions.Builder) -> Unit = { throw NoSuchFieldError("DISABLED_TIMEOUT") }
+        RedisBackend.disableMaintenanceRelaxation(builder, missingMethod).assert().isFalse()
+        RedisBackend.disableMaintenanceRelaxation(builder, missingField).assert().isFalse()
+        val options = builder.build()
+        options.isTimeoutCommands.assert().isTrue()
+        options.source.getTimeout(null).assert().isEqualTo(Duration.ofMillis(1500).toNanos())
+        val supported = lettuceHasMaintenanceRelaxation()
+        RedisBackend.disableMaintenanceRelaxation(TimeoutOptions.builder()).assert().isEqualTo(supported)
     }
 
     /**
