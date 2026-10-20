@@ -13,8 +13,8 @@
 
 package me.ahoo.cocache.coroutines
 
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.isActive
 import kotlin.coroutines.cancellation.CancellationException
 
 /**

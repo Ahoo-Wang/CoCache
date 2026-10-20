@@ -60,7 +60,9 @@ fun <K : Any, V : Any> SuspendingCacheLoader<K, V>.asAsyncCacheLoader(): AsyncCa
  * - 引擎的 `load-async-timeout` 到期时调用方以 `SourceLoadTimeoutException` 失败，协程不会被取消（与 [AsyncCacheLoader] 相同）。
  * - 单独使用（不经 [suspendingLoader]）时没有同 key 重入检查：转换时不知道它属于哪个缓存。
  */
-fun <K : Any, V : Any> SuspendingCacheLoader<K, V>.asAsyncCacheLoader(context: CoroutineContext): AsyncCacheLoader<K, V> =
+fun <K : Any, V : Any> SuspendingCacheLoader<K, V>.asAsyncCacheLoader(
+    context: CoroutineContext
+): AsyncCacheLoader<K, V> =
     SuspendingAsyncLoader(this, context, null)
 
 /**

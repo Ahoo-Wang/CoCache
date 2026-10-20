@@ -264,7 +264,10 @@ class SuspendingCacheTest {
         seen.get().assert().isEqualTo("caller")
         // 调用方在 runBlocking 的事件循环上：loader 改在 Dispatchers.Default 上执行
         val thread = AtomicReference<String>()
-        cache.get("event-loop") { thread.set(Thread.currentThread().name); "e" }
+        cache.get("event-loop") {
+            thread.set(Thread.currentThread().name)
+            "e"
+        }
         thread.get().assert().startsWith("DefaultDispatcher-worker")
         // loader 的 Job 不是调用方 Job 的子 Job
         requireNotNull(loaderJob.get()).assert().isNotSameAs(callerJob)
@@ -326,7 +329,9 @@ class SuspendingCacheTest {
         override fun updateThreadContext(context: kotlin.coroutines.CoroutineContext): String? =
             current.get().also { current.set(value) }
 
-        override fun restoreThreadContext(context: kotlin.coroutines.CoroutineContext, oldState: String?) = current.set(oldState)
+        override fun restoreThreadContext(context: kotlin.coroutines.CoroutineContext, oldState: String?) = current.set(
+            oldState
+        )
     }
 
     @Test
@@ -361,14 +366,19 @@ class SuspendingCacheTest {
         release.complete(Unit)
         listOf(first.await(), second.await()).forEach { error ->
             error.assert().isInstanceOf(SourceLoadCancelledException::class.java)
-            requireNotNull(error).cause.assert().isInstanceOf(kotlinx.coroutines.TimeoutCancellationException::class.java)
+            requireNotNull(
+                error
+            ).cause.assert().isInstanceOf(kotlinx.coroutines.TimeoutCancellationException::class.java)
             (error as SourceLoadCancelledException).cacheName.assert().isEqualTo("plain")
         }
         // spec 级 loader 同样转换
         val spec = runtime.create(
             cacheSpec<String, String>("spec-cancel") {
                 codec = StringCodec
-                suspendingLoader { withTimeout(1) { delay(1_000) }; "never" }
+                suspendingLoader {
+                    withTimeout(1) { delay(1_000) }
+                    "never"
+                }
             }
         ).suspending()
         runCatching { spec.get("k") }.exceptionOrNull().assert().isInstanceOf(SourceLoadCancelledException::class.java)
@@ -393,7 +403,11 @@ class SuspendingCacheTest {
         parent.isActive.assert().isTrue()
         // 取消父 Job 会取消之后的加载
         parent.cancel()
-        runCatching { cache.get("c") }.exceptionOrNull().assert().isInstanceOf(kotlinx.coroutines.CancellationException::class.java)
+        runCatching {
+            cache.get(
+                "c"
+            )
+        }.exceptionOrNull().assert().isInstanceOf(kotlinx.coroutines.CancellationException::class.java)
     }
 
     @Test
@@ -438,7 +452,9 @@ class SuspendingCacheTest {
         caller.cancel()
         caller.join()
         release.complete(Unit)
-        awaitCondition("the abandoned load filled the cache") { runBlocking { cache.async().lookup("k").get() } is Lookup.Present }
+        awaitCondition(
+            "the abandoned load filled the cache"
+        ) { runBlocking { cache.async().lookup("k").get() } is Lookup.Present }
         cache.get("k").assert().isEqualTo("v-k")
         loads.get().assert().isEqualTo(1)
     }

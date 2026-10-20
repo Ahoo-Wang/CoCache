@@ -625,4 +625,11 @@ interface LoadObserver {
 | `cocache-example` 的 WebFlux + 协程示例 | 未做，记在 roadmap v6.4 | 与模块本身无关，单独提交 |
 | starter | 不识别 `SuspendingCacheLoader` bean（§7 未要求）；类路径上有本模块时按类名为 `SuspendingCache` / `SuspendingSetCache` 登记 AOT 提示 | starter 不依赖本模块 |
 
-另外：kotlinx-coroutines 的调试模式（JVM 带 `-ea` 时自动开启）会把线程名改为“线程名 @coroutine#N”，并可能抛出补全堆栈的异常副本（原始异常为其 `cause`）；本模块的测试关闭调试模式（`kotlinx.coroutines.debug=off`），以便 TCK 按线程名编排钩子、断言原始异常实例。挂起视图不改同步与异步的命中路径，因此没有 JMH 数据。
+另外：kotlinx-coroutines 的调试模式（JVM 带 `-ea` 时自动开启）会把线程名改为“线程名 @coroutine#N”，并可能抛出补全堆栈的异常副本（原始异常为其 `cause`）；本模块的测试关闭调试模式（`kotlinx.coroutines.debug=off`），以便 TCK 按线程名编排钩子、断言原始异常实例。挂起视图不改同步与异步的命中路径。挂起视图自身的 L2 命中开销（`SuspendingBenchmark`，内存后端，`startCoroutineUninterceptedOrReturn` 直接发起、命中时同步返回；每侧 3 轮交替，开跑前负载 < 2.5，单位 Mops/s）：
+
+| 线程 | 异步视图 `asyncL2Hit`（3 轮） | 挂起视图 `suspendingL2Hit`（3 轮） | 中位数之比 |
+|------|------|------|------|
+| 1 | 60.8 / 74.8 / 75.0，中位数 74.8 | 67.0 / 65.8 / 68.7，中位数 67.0 | 约 90% |
+| 8 | 240.7 / 271.0 / 250.1，中位数 250.1 | 211.4 / 246.3 / 236.5，中位数 236.5 | 约 95% |
+
+差额是一次上下文查找（`LoadingKeys`）与一层调用。读方法不生成状态机（挂起点在尾部），命中不分配协程状态。
