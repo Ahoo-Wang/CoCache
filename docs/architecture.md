@@ -500,7 +500,8 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
   - **每次只跑一个基准**（精确正则 `^.*\.<name>$`）：同一个 `jmh` 任务里排在后段的基准在 8 线程下会因长时间满载而明显变慢（实测低 20%–30%），单独运行时回到基线（RFC 0004 §14）。
   - **同轮交替、配对比值**：基线在临时 worktree 中构建，每轮两侧各跑一次且先后顺序逐轮轮换；结论看同轮配对比值 new/base 的中位数与 [min–max]，不看两侧各自的均值，因为数值会随轮次整体漂移。
   - **负载门槛与作废**：每次开跑前等待 1 分钟负载降到门槛以下（默认 max(2, 核数 × 0.4)）；迭代 CV 超过 3%，或运行期间负载升高超过 min(线程数, 核数) + 1.5（自身贡献之外还有别的负载），该次运行作废并自动重试。
-  - **本机互斥**：锁 `${TMPDIR}/cocache-jmh.lock` 保证同一时间只有一个基准任务（含构建）；多个会话同时跑基准会互相污染。
+  - **本机互斥**：全机共享的锁 `/tmp/cocache-jmh.lock`（macOS 的 `TMPDIR` 按用户隔离，不用它）保证同一时间只有一个基准任务（含构建），不经脚本启动的 JMH 进程也会等它结束；多个会话同时跑基准会互相污染。
+  - 基线 ref 不会自动 fetch，需要最新基线时先 `git fetch origin`。
 - 异步视图的基准：`l2HitAsync`、`l2HitAsyncMixed`、`l1ReadAsync`、`l1HitViaEngine` / `l1HitViaEngineAsync`、`missLoadAsync`、`setAsync`、`invalidateAsync`（闭环，每次操作后等待），以及在途请求基准 `l1HitInFlightAsync` / `setInFlightAsync` 与同步对照 `l1HitSequential` / `setSequential`（每次调用 32 个请求）。
 - 1 线程与 8 线程，与上一版本**至少交替运行 5 轮**（脚本默认），比较配对比值的中位数与区间，包含 `l2HitMixed`。同一台机器上 8 线程的结果在多次运行之间波动约 ±4%，差异小于噪声时不作结论。
 
