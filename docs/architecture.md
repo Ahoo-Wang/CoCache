@@ -148,7 +148,7 @@ cocache-bom / cocache-dependencies / cocache-example
 | 收到远端事件 | 戳 → 淘汰 L2（`origin == 本节点 NodeId` 的事件被过滤） |
 | `onReset` / `clearLocal` | 全部戳递增 → 清空 L2 |
 
-后端 `atomicBroadcast = false` 时，引擎在存储操作成功后调用 `channel.publish`；发布失败按写入失败处理（§7）。存储操作失败时引擎**也尽力发布同一帧**再报错：失败的写入可能已部分生效（`putAll` 跨多个 slot 组时有的组已写入，或已在 L1 生效却报错），不发布的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）；这次发布的失败只告警（附为写入异常的 suppressed），调用方看到的仍是写入的原始异常，多余的广播只淘汰副本。因此存储的写入方法返回或抛出时，它发出的全部 L1 命令都必须已经结束（`RedisRemoteStore` 的同步 `putAll` / `invalidate` 等全部组结束后才抛出第一个异常，异步版本同样等全部组），否则广播可能先于仍在执行的命令。例外是命令超时：客户端放弃等待时已发出的命令可能仍在 Redis 端执行，补发的广播可能先于它生效，这时其它节点的旧副本由 `localMaxAge` 兜底（G1 的上界不变）。同步路径逐组等待、每组各受 `commandTimeout` 限制，失败时最坏等待为“组数 × `commandTimeout`”。
+后端 `atomicBroadcast = false` 时，引擎在存储操作成功后调用 `channel.publish`；发布失败按写入失败处理（§7）。存储操作失败时引擎**也尽力发布同一帧**再报错：失败的写入可能已部分生效（`putAll` 跨多个 slot 组时有的组已写入，或已在 L1 生效却报错），不发布的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）；这次发布的失败只告警（附为写入异常的 suppressed），调用方看到的仍是写入的原始异常，多余的广播只淘汰副本。因此存储的写入方法返回或抛出时，它发出的全部 L1 命令都必须已经结束（`RedisRemoteStore` 的同步 `putAll` / `invalidate` 等全部组结束后才抛出第一个异常，异步版本同样等全部组），否则广播可能先于仍在执行的命令。例外是命令超时：客户端放弃等待时已发出的命令可能仍在 Redis 端执行，补发的广播可能先于它生效，这时其它节点的旧副本由 `localMaxAge` 兜底（G1 的上界不变）。同步路径逐组等待、每组各受 `commandTimeout` 限制，失败时最坏等待为“组数 × `commandTimeout`”。不在失败路径上继续等超时的命令真正结束（6.3.1 评估后的结论）：超时后客户端取消了命令，没有应答就无从得知它是否、何时执行（Redis 无法中止已开始的脚本），有上界的追加等待只能缩小、不能关闭这个窗口，却会让失败路径的耗时翻倍、在 Redis 变慢时占住更多调用线程；而窗口内的陈旧本来就受 `localMaxAge` 限制。
 
 ### 4.3 为什么这样做
 
@@ -239,7 +239,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **重入**：除同步调用的拥有线程外，引擎在调用数据源期间（同步数据源的整个执行、异步数据源 `loadAsync` 的同步部分）为这些 key 设置线程守卫，期间本线程对同一 key 的同步或异步调用快速失败。异步数据源在一次 I/O 之后再读同一 key 形成的环无法检测，由 `asyncTimeout` 打破。
 - **写入**（`AbstractEngine.writeAsync`）：顺序同 §4.2；编码在第一次递增之前、在调用方线程上完成；第二次递增与淘汰挂在 L1 的 future 上（无论成败），在返回的 future 完成之前执行，取消返回的 future 不会跳过它。非原子广播的后端经 `AsyncInvalidationChannel.publishAsync` 发布。
 - **提前刷新**：同步数据源照旧在刷新执行器上执行；异步数据源的刷新在刷新执行器上发起、以异步路径推进，不在刷新执行器的线程上等待。
-- **执行器拒绝任务**：续接被拒绝时该步不执行，返回的 future 以 `RejectedExecutionException` 失败；必须执行的收尾不依赖执行器：写入方的第二次递增与淘汰（只涉及戳与 Caffeine）在 L1 future 的完成线程上就地执行，回源许可在加载链结束时恰好归还一次，取得的 lease / 刷新令牌在链因拒绝失败时尽力释放（令牌不匹配时 release 什么也不做，重复释放无害）。
+- **执行器拒绝任务**：续接被拒绝时该步不执行，返回的 future 以 `RejectedExecutionException` 失败；必须执行的收尾不依赖执行器：写入方的第二次递增与淘汰（只涉及戳与 Caffeine）在 L1 future 的完成线程上就地执行；非原子广播的派发被拒绝时同样在完成线程上就地广播（`publishAsync` 不阻塞），写入的结果不被替换：成功的写入不计为失败、`invalidate` 不登记重试，失败的写入保留原始异常（6.3.1 之前拒绝会跳过广播，并把写入的结果换成 `RejectedExecutionException`）。返回 future 的完成本身被拒绝时，调用方照常看到 `RejectedExecutionException`；回源许可在加载链结束时恰好归还一次，取得的 lease / 刷新令牌在链因拒绝失败时尽力释放（令牌不匹配时 release 什么也不做，重复释放无害）。
 - **`KeyFilter`** 在调用方线程上调用，必须是本地、不阻塞的判断。
 - **异常**：返回的 future 以原始异常完成（不包装为 `CompletionException`）；异步方法从不同步抛出（包括 `KeyEncoder`、`Codec` 抛出、重入与 `SetCache` 的不支持操作）。
 - **只实现同步 SPI 的后端**：引擎经 `BlockingAsyncStore` / `BlockingAsyncChannel` 把同步调用放到阻塞执行器上；原生异步的后端实现 `AsyncRemoteStore`（与 `AsyncInvalidationChannel`），内存后端是原生异步的（就地执行、返回已完成的 future）。

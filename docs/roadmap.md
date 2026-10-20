@@ -87,14 +87,14 @@ JMH 对比见 RFC 0003 §7.1。
 | 集合读脚本改用 `HKEYS` | G3 | 读脚本以 `HKEYS` + `HGET !f` 取代 `HGETALL`，不再返回空值；存储布局不变，不是线格式变更。服务端实测 1000 个成员时读吞吐约 1.8 倍（RFC 0003 §8.1） | ✅ 服务端读吞吐 10 / 100 / 1000 个成员为 1.33 / 1.55 / 1.76 倍；最小 ACL 需加 `+hkeys +hget`（运维文档） |
 | L2 命中计数 | 可观测 | 分条带计数器（`LongAdder`）；8 线程 JMH 回退在噪声内才默认开启 | ✅ #655：默认关闭，`cocache.metrics.local-hits` / `recordLocalHits(true)` 开启；开启时 JMH 回退超出噪声（`l2HitViaInterface` 1 线程 −7.7%、8 线程 −8.9%，`l2Hit` −4%~−5%），关闭时与 main 持平（数据见 #655） |
 
-## 6.3.1
+## v6.3.1：修复
 
-6.3.0 发版审查中记下的已知问题，计划在 6.3.1 修复。
+6.3.0 发版审查中记下的已知问题。
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
-| 非原子模式下执行器拒绝写入收尾 | G2 | 非原子广播时，用户配置的 `cocache.async-executor` 拒绝任务会让写入结果被 `RejectedExecutionException` 替换，广播也被跳过（`AbstractEngine.writeAsync` 中 `handleNext(executor)` 的派发被拒）。修法：派发被拒时在完成线程上直接 `publishAsync`，并保留写入的原始异常 | 未修复；默认的 `ForkJoinPool` 不拒绝任务，不受影响 |
-| 命令超时后的补发广播 | G2 | 同步 `putAll` / `invalidate` 失败后补发的广播可能先于仍在 Redis 端执行的超时命令生效，旧副本由 `localMaxAge` 兜底；失败路径最坏等待为“组数 × `commandTimeout`”（见 architecture.md §4.2） | 已记录，评估是否改为等待命令真正结束 |
+| 非原子模式下执行器拒绝写入收尾 | G2 | 非原子广播时，用户配置的 `cocache.async-executor` 拒绝任务会让写入结果被 `RejectedExecutionException` 替换，广播也被跳过（`AbstractEngine.writeAsync` 中广播的派发被拒）。修法：派发被拒时在完成线程上直接 `publishAsync`，并保留写入的原始结果或异常 | ✅ 默认的 `ForkJoinPool` 不拒绝任务，不受影响；`CoherentEngineTest`（同步与异步视图）用拒绝任务的执行器与延迟送达的 L1 结果复现 |
+| 命令超时后的补发广播 | G2 | 同步 `putAll` / `invalidate` 失败后补发的广播可能先于仍在 Redis 端执行的超时命令生效，旧副本由 `localMaxAge` 兜底；失败路径最坏等待为“组数 × `commandTimeout`”（见 architecture.md §4.2） | ✅ 评估后维持现状：超时后无从得知命令是否执行，有上界的追加等待只能缩小窗口、不能关闭，却让失败路径更慢；理由记入 architecture.md §4.2 |
 
 ## v6.4：Kotlin 协程
 
