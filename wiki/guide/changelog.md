@@ -7,7 +7,7 @@ description: Release history and notable changes for CoCache.
 
 ## Unreleased
 
-**Module Group:** `me.ahoo.cocache` · Planned as 6.5.1. Patch release: it only tightens fail-closed behavior for caches without a loader (below), and adds two optional `RemoteStore` methods with default implementations, so existing backends keep compiling and running. The Redis wire format and the invalidation channel are unchanged, so 6.5.1 instances can share Redis with any 6.x instance and be upgraded one at a time.
+**Module Group:** `me.ahoo.cocache` · Planned as 6.6.0. Minor release: the `cocache-api` SPI gains `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` and their `AsyncRemoteStore` counterparts, all with default implementations, so existing backends keep compiling and running. Two behavior changes tighten fail-closed handling for caches without a loader: `SetCache` writes fail on content they can't read, and reads without a loader fail on values written by a newer version (below). The Redis wire format and the invalidation channel are unchanged, so 6.6.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
 ### Behavior change: `SetCache` writes fail on content they can't read
 

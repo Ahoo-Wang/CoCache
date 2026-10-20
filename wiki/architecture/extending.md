@@ -46,7 +46,7 @@ interface RemoteStore : AutoCloseable {
     fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean
     fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
     fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
-    // since 6.5.1; default: read, then addMembers / removeMembers (not atomic)
+    // since 6.6.0; default: read, then addMembers / removeMembers (not atomic)
     fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
     fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
 }

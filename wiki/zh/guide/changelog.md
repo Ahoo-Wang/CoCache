@@ -7,7 +7,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ## 未发布
 
-**模块组：** `me.ahoo.cocache` · 计划为 6.5.1。修订版本：只收紧没有数据源的缓存的 fail closed 行为（见下文），并给 `RemoteStore` 增加两个带默认实现的可选方法，已有的后端照常编译与运行。Redis 线格式与失效频道不变，6.5.1 实例可以与任何 6.x 实例共用 Redis 并逐台升级。
+**模块组：** `me.ahoo.cocache` · 计划为 6.6.0。次版本：`cocache-api` 的 SPI 新增 `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` 及 `AsyncRemoteStore` 中对应的异步方法，都带默认实现，已有的后端照常编译与运行。两项行为变化收紧没有数据源的缓存的 fail closed 处理：`SetCache` 的写入遇到读不懂的内容时失败，没有数据源的读取遇到更高版本写入的值时失败（见下文）。Redis 线格式与失效频道不变，6.6.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。
 
 ### 行为变化：`SetCache` 的写入遇到读不懂的内容时失败
 
