@@ -12,12 +12,26 @@ description: Release history and notable changes for CoCache.
 ### Async Redis command timeouts
 
 - Async Redis commands no longer schedule their timeout on the JDK's single-threaded delay scheduler (`CompletableFuture.orTimeout`) ([RFC 0004 §14](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0004-async-api.md)). Clients that CoCache creates now time every command with Lettuce's own command timeout (`TimeoutOptions`, fixed at `cocache.redis.command-timeout`), which replaces Lettuce's default 60-second timeout at no extra cost. On a standalone Redis this is the only timer. In a Cluster, Lettuce starts timing a command only when it's written to a node connection, so a command that waits for a node connection to open keeps its own timer, now on Lettuce's Netty timer wheel. A client passed to `RedisBackend.of` keeps its own options, and CoCache times its async commands on the same wheel.
-- Timeouts fail with the same `RedisException("Command timed out after …")` as before, on the synchronous and async paths. The wheel ticks every 100 ms by default, so an async timeout can fire up to one tick late. Lettuce 7 relaxes command timeouts during server maintenance events. CoCache turns that off, so the bound stays at `command-timeout`. On the async path, the `EVAL` retry after `NOSCRIPT` is a new command with its own timeout.
+- Timeouts fail with the same `RedisException("Command timed out after …")` as before, on the synchronous and async paths. On the async path, the `EVAL` retry after `NOSCRIPT` is a new command with its own timeout.
+
+Behavior changes:
+
+- An async timeout is now precise to one tick of the timer wheel (100 ms by default), so it can fire up to one tick after `command-timeout`. It used to be precise to the millisecond.
+- On clients that CoCache creates, Lettuce's command timeout drops from 60 seconds to `command-timeout` (2 seconds by default), and Lettuce 7's relaxed timeouts during server maintenance are turned off. This also bounds the commands that Lettuce sends itself: the re-subscribe after a reconnect, and `CLUSTER NODES` / `INFO` during a Cluster topology refresh. A re-subscribe that times out still runs on the server, and the heartbeat forces a reconnect if the connection is really gone. A topology refresh that times out is retried by the next adaptive trigger. In a very large or busy Cluster, raise `command-timeout` if `CLUSTER NODES` takes longer than that. The connection handshake isn't affected.
+- On clients that CoCache creates, the cause of a timeout can now be Lettuce's `RedisCommandTimeoutException` instead of `TimeoutException`. The outer exception type and message are unchanged.
 
 ### Fewer thread hops on the async view
 
 - An async continuation now runs in place when the step before it completed inside a task that the same async executor is already running, instead of being submitted to the executor again ([investigation](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/investigations/async-8t-gap.md)). An L1 hit through the async view now makes one executor hop instead of four, and a miss at most three instead of seven. Results that complete on a Lettuce I/O thread, a timer thread, the blocking executor or a loader's own thread are still handed to the async executor, so no continuation runs on an I/O thread. Nesting is capped at 16 levels, after which the continuation is dispatched again.
-- On the default `ForkJoinPool`, each extra hop could wake an idle worker. Compared with 6.4.0 (median of paired runs), an async L1 hit is 5.5% faster with 1 thread and 8% faster with 8 threads, and an async miss is about 18% faster with 8 threads. Writes and L2 hits are unchanged.
+- On the default `ForkJoinPool`, each extra hop could wake an idle worker. Compared with 6.4.0 (median of paired runs), an async L1 hit is 5.5% faster with 1 thread and 8% faster with 8 threads, and an async miss is at least about 8% faster with 8 threads (only 2 valid paired runs). Writes and L2 hits are unchanged.
+
+### Fixes
+
+- **Lettuce 6.8 (Spring Boot 4.0).** The Redis backend works with the Lettuce version that Spring Boot 4.0 manages:
+  - The setting that turns off relaxed timeouts during maintenance exists only in Lettuce 7. Without this fix, the unreleased timeout change above would have made building a client fail with `NoSuchMethodError` on Lettuce 6. CoCache now skips the setting there, and Lettuce 6 doesn't relax timeouts anyway.
+  - Since 6.0, a failed heartbeat on Lettuce 6 threw `NoClassDefFoundError` while forcing a reconnect, which stopped the heartbeat for good. The error came from Lettuce 7's `Delegating` interface, which forcing a reconnect no longer uses.
+  - The whole `cocache-redis` test suite passes on Lettuce 6.8.2 and 7.5.2.
+- **No false reentry after inline continuations.** A data source that completes another key's load on the same thread no longer runs that key's callbacks inside its own load. Before this fix, such a callback that read the key being loaded failed with `IllegalStateException` ("Recursive call on the same key"). This only affected unreleased changes, not 6.4.0.
 
 ## v6.4.0 (Current)
 

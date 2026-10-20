@@ -151,4 +151,42 @@ class AsyncDispatchTest {
         invalidateOn.assert().isEqualTo("test-async")
         invalidateCounts.assert().isEqualTo(1 to 0)
     }
+
+    /**
+     * 数据源在执行器的续接里被调用（带内联标记），并在 `loading(A)` 作用域内同步完成另一个 key（B）的数据源 future：
+     * B 的续接不能在 A 的作用域内就地执行，否则 B 的回调再读 A 会被误判为同一线程的重入（6.4.0 派发出去，正常合并到 A）。
+     */
+    @Test
+    fun continuationsCompletedInsideALoaderAreNotInlinedIntoItsLoadingScope() {
+        val pendingB = CompletableFuture<String>()
+        val cache = runtime.create(
+            cacheSpec<String, String>("reentry") {
+                codec = StringCodec
+                asyncLoader = AsyncCacheLoader { key ->
+                    when (key) {
+                        "b" -> pendingB
+                        "a" -> {
+                            // 在 loading(a) 作用域内同步完成 B 的数据源
+                            pendingB.complete("v-b")
+                            CompletableFuture.completedFuture("v-a")
+                        }
+                        else -> CompletableFuture.completedFuture("v-$key")
+                    }
+                }
+            }
+        )
+        val async = cache.async()
+        // B 先开始，等待它的数据源；B 完成后的回调读取 A
+        val bThenA = async.get("b").thenCompose { async.get("a") }
+        // 让 A 从执行器的续接里开始：x 的 L1 结果在“I/O 线程”上送达，经派发后在执行器线程上完成，用户回调随之在那里执行
+        cache.put("x", "v-x")
+        val opened = CountDownLatch(1)
+        gate.set(opened)
+        val x = async.get("x")
+        backend.ioExecutor = null
+        val a = x.thenCompose { async.get("a") }
+        opened.countDown()
+        a.get(10, TimeUnit.SECONDS).assert().isEqualTo("v-a")
+        bThenA.get(10, TimeUnit.SECONDS).assert().isEqualTo("v-a")
+    }
 }

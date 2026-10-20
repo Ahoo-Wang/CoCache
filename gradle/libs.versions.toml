@@ -16,7 +16,7 @@ kotlin = "2.4.21"
 publish-plugin = "2.0.0"
 jmh-plugin = "0.7.3"
 openjdk-jmh = "1.37"
-# 与 Spring Boot 管理的 native-build-tools-plugin 版本一致（spring-boot-dependencies 的同名属性）
+# GraalVM Native Build Tools 插件，只用于 cocache-example 的原生镜像构建；版本由 Renovate 维护
 graalvm-native = "1.1.14"
 
 [libraries]

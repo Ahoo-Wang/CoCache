@@ -186,7 +186,8 @@ internal class SingleFlight<K : Any, R> {
         }
         val added = keys.filter { current.add(it) }
         try {
-            return block()
+            // 数据源可能同步完成别的 key 的 future：那些续接派发出去，不在这些 key 的重入检查作用域内执行（Futures.withoutInline）
+            return Futures.withoutInline(block)
         } finally {
             current.removeAll(added.toSet())
             if (current.isEmpty()) {

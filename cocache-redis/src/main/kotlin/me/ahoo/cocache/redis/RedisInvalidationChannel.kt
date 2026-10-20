@@ -14,9 +14,11 @@
 package me.ahoo.cocache.redis
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.lettuce.core.Delegating
+import io.lettuce.core.CommandListenerWriter
 import io.lettuce.core.RedisChannelHandler
+import io.lettuce.core.RedisChannelWriter
 import io.lettuce.core.api.StatefulConnection
+import io.lettuce.core.protocol.CommandExpiryWriter
 import io.lettuce.core.protocol.DefaultEndpoint
 import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
@@ -205,11 +207,19 @@ internal abstract class RedisInvalidationChannel(
         /**
          * 断开连接的底层通道（Lettuce 公开的 [DefaultEndpoint.disconnect]），触发自动重连；
          * 无法定位到端点（如 Cluster 经典 Pub/Sub 的默认连接）时返回 `false`。
+         *
+         * 端点外可能包着命令超时（[CommandExpiryWriter]，Lettuce 7 的 `MaintenanceAwareExpiryWriter` 是它的子类）与命令监听
+         * （[CommandListenerWriter]）的写入器，逐层拆开。不用 Lettuce 7 的 `Delegating` 接口：Spring Boot 4.0 管理的 Lettuce 6.8
+         * 没有它，两个写入器的 `getDelegate()` 则在 6.8 与 7.x 上都有。
          */
         fun disconnect(connection: StatefulConnection<*, *>): Boolean {
-            var writer: Any? = (connection as? RedisChannelHandler<*, *>)?.channelWriter
-            while (writer is Delegating<*>) {
-                writer = writer.delegate
+            var writer: RedisChannelWriter? = (connection as? RedisChannelHandler<*, *>)?.channelWriter
+            while (true) {
+                writer = when (writer) {
+                    is CommandExpiryWriter -> writer.delegate
+                    is CommandListenerWriter -> writer.delegate
+                    else -> break
+                }
             }
             val endpoint = writer as? DefaultEndpoint ?: return false
             endpoint.disconnect()

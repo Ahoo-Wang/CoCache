@@ -33,6 +33,8 @@ internal object Futures {
 
     /**
      * 就地续接的最大嵌套层数：超过时改为派发（新任务从第 0 层开始），避免长链在一个线程上递归过深。
+     * 执行器在调用方线程上执行任务时（就地执行的执行器、`CallerRunsPolicy`），派发也只是在同一个栈上继续，这个上限限制不住栈深
+     * （与 6.4.0 相同）。
      */
     const val MAX_INLINE_DEPTH = 16
 
@@ -128,6 +130,22 @@ internal object Futures {
             task.run()
         } finally {
             state.depth--
+        }
+    }
+
+    /**
+     * 在 [block] 执行期间清除当前线程的续接标记，结束（含异常）时恢复：期间完成的 future 的续接改为派发，不在 [block] 的作用域内就地执行。
+     * 数据源调用（`SingleFlight.loading`）用它：否则数据源同步完成的另一个 key 的续接会在本 key 的重入检查作用域内执行，
+     * 回调里再读本 key 会被误判为同一线程的重入。
+     */
+    fun <T> withoutInline(block: () -> T): T {
+        val state = inline.get()
+        val outerExecutor = state.executor
+        state.executor = null
+        try {
+            return block()
+        } finally {
+            state.executor = outerExecutor
         }
     }
 
