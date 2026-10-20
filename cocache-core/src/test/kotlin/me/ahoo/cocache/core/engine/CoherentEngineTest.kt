@@ -89,7 +89,9 @@ open class CoherentEngineTest {
         retryPolicy: RetryPolicy = RetryPolicy(
             initialBackoff = Duration.ofMillis(5),
             maxBackoff = Duration.ofMillis(5)
-        )
+        ),
+        backend: me.ahoo.cocache.api.spi.CoherenceBackend = this.backend,
+        clock: me.ahoo.cocache.api.CacheClock = this.clock
     ): CacheRuntime {
         return CacheRuntime.builder()
             .backend(backend)
@@ -397,6 +399,59 @@ open class CoherentEngineTest {
         cacheB.metrics.invalidationsReceived.assert().isGreaterThanOrEqualTo(1)
     }
 
+    /**
+     * 非原子广播：L1 写入已（部分）生效却报错时也要广播，否则其它节点会一直读旧的 L2 直到 localMaxAge（G2）。
+     */
+    /**
+     * 真正的非原子后端：存储自己从不广播（内存存储的广播发到节点没有订阅的频道），节点只能收到引擎经 [channel] 发出的广播。
+     */
+    private fun nonAtomic(
+        channel: me.ahoo.cocache.api.spi.InvalidationChannel = InMemoryBackend(clock).channel
+    ): HookedBackend = HookedBackend(
+        object : me.ahoo.cocache.api.spi.CoherenceBackend by memory {
+            override val atomicBroadcast: Boolean = false
+            override val channel: me.ahoo.cocache.api.spi.InvalidationChannel = channel
+        }
+    )
+
+    @Test
+    fun nonAtomicBackendPublishesAfterAWriteThatFailedButTookEffect() {
+        val nonAtomic = nonAtomic()
+        val cacheA = runtime(backend = nonAtomic).engine()
+        val cacheB = runtime(backend = nonAtomic).engine()
+        database["k"] = "v0"
+        database["a"] = "a0"
+        database["b"] = "b0"
+        listOf("k", "a", "b").forEach { cacheB[it] }
+        nonAtomic.afterPut = { throw IllegalStateException("reply lost") }
+        runCatching { cacheA.put("k", "v1") }.exceptionOrNull()
+            .assert().isInstanceOf(me.ahoo.cocache.api.CacheWriteException::class.java)
+        awaitCondition("B sees the put") { cacheB["k"] == "v1" }
+        runCatching { cacheA.putAll(mapOf("a" to "a1", "b" to "b1")) }.exceptionOrNull()
+            .assert().isInstanceOf(me.ahoo.cocache.api.CacheWriteException::class.java)
+        awaitCondition("B sees the putAll") { cacheB["a"] == "a1" && cacheB["b"] == "b1" }
+        cacheB.metrics.invalidationsReceived.assert().isGreaterThanOrEqualTo(2)
+    }
+
+    /**
+     * 广播本身也失败时，调用方看到的仍是写入的原始异常。
+     */
+    @Test
+    fun failedBroadcastAfterAFailedWriteKeepsTheWriteFailure() {
+        val channel = InMemoryBackend(clock).channel
+        val failing = nonAtomic(
+            object : me.ahoo.cocache.api.spi.InvalidationChannel by channel {
+                override fun publish(namespace: String, frame: ByteArray) = throw IllegalStateException("publish down")
+            }
+        )
+        val writeFailure = IllegalStateException("reply lost")
+        failing.afterPut = { throw writeFailure }
+        val cache = runtime(backend = failing).engine()
+        val error = runCatching { cache.put("k", "v1") }.exceptionOrNull()
+        error.assert().isInstanceOf(me.ahoo.cocache.api.CacheWriteException::class.java)
+        requireNotNull(error).cause.assert().isSameAs(writeFailure)
+    }
+
     @Test
     fun nonAtomicBackendPublishesThroughTheChannel() {
         backend.atomicBroadcastOverride = false
@@ -479,6 +534,44 @@ open class CoherentEngineTest {
         cache.invalidate("a")
         cache.pendingInvalidationCount.assert().isEqualTo(1)
         cache.getAll(listOf("a")).assert().isEqualTo(mapOf("a" to "a1"))
+    }
+
+    /**
+     * 命中路径先读 L2 副本、再取刷新守卫：其间上一次刷新已完成（副本已替换、守卫已释放）时，
+     * 不能凭读到的旧副本再发起一次刷新（RedisAsyncEngineTest 在 JDK 25 上偶发：同一节点刷新两次）。
+     * 时钟在“读到副本”与“取守卫”之间被调用，借它在这个间隙里让另一个线程完成第一次刷新。
+     */
+    @Test
+    fun refreshIsNotStartedAgainFromAStaleLocalCopy() {
+        val policy = CachePolicy(
+            ttl = Duration.ofSeconds(10),
+            ttlJitter = Duration.ZERO,
+            localMaxAge = Duration.ofSeconds(8),
+            refreshWindow = Duration.ofSeconds(5)
+        )
+        val armed = java.util.concurrent.atomic.AtomicBoolean(false)
+        lateinit var cache: TestCache
+        val hooked = me.ahoo.cocache.api.CacheClock {
+            if (Thread.currentThread().name == "stale-reader" && armed.compareAndSet(true, false)) {
+                // 读者已读到旧副本、尚未取守卫：另一个线程触发并完成第一次刷新
+                me.ahoo.cocache.test.Concurrency.fork("first-refresh") { cache["k"] }.join().assert().isEqualTo("v0")
+                awaitCondition(
+                    "first refresh replaced the local copy"
+                ) { cache.engine.inspect("k").local?.value == "v1" }
+            }
+            clock.nowMillis()
+        }
+        cache = runtime(clock = hooked).engine(spec(policy))
+        database["k"] = "v0"
+        cache["k"].assert().isEqualTo("v0")
+        database["k"] = "v1"
+        clock.advance(Duration.ofSeconds(6))
+        armed.set(true)
+        me.ahoo.cocache.test.Concurrency.fork("stale-reader") { cache["k"] }.join().assert().isEqualTo("v0")
+        armed.get().assert().isFalse()
+        cache.metrics.refreshes.assert().isEqualTo(1)
+        loads.get().assert().isEqualTo(2)
+        cache["k"].assert().isEqualTo("v1")
     }
 
     @Test

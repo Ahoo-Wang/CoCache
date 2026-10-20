@@ -223,6 +223,20 @@ class CoCacheSpringCacheTest {
     }
 
     @Test
+    fun retrieveNeverThrowsSynchronously() {
+        // 自定义 Cache 的 async() 默认抛出 UnsupportedOperationException
+        val unsupported = UnsupportedOperationException("no async view")
+        val native = io.mockk.mockk<me.ahoo.cocache.api.Cache<Any, Any>> {
+            io.mockk.every { name } returns "custom"
+            io.mockk.every { async() } throws unsupported
+        }
+        val spring = CoCacheSpringCache(native, null, java.util.concurrent.Executor { it.run() })
+        requireNotNull(spring.retrieve("k")).handle { _, e -> e }.join().assert().isSameAs(unsupported)
+        spring.retrieve<String>("k") { CompletableFuture.completedFuture("never") }
+            .handle { _, e -> e }.join().assert().isSameAs(unsupported)
+    }
+
+    @Test
     fun retrieveRunsTheMethodBodyOnTheExecutor() {
         val tasks = AtomicInteger()
         val executor = java.util.concurrent.Executor {
@@ -256,6 +270,30 @@ class CoCacheSpringCacheTest {
             .handle { _, e -> e }.join().assert().isInstanceOf(
                 java.util.concurrent.RejectedExecutionException::class.java
             )
+    }
+
+    /**
+     * 6.1 的 `@JvmOverloads constructor(runtime, executor = DEFAULT_EXECUTOR)` 生成的合成构造函数仍然存在：
+     * 针对 6.1 编译、省略执行器的 Kotlin 调用方链接到它。
+     */
+    @Test
+    fun kotlinDefaultArgumentConstructorOf61IsKept() {
+        val synthetic = CoCacheSpringCacheManager::class.java.getDeclaredConstructor(
+            CacheRuntime::class.java,
+            java.util.concurrent.Executor::class.java,
+            Int::class.javaPrimitiveType,
+            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker")
+        )
+        synthetic.isSynthetic.assert().isTrue()
+        // 掩码 0b10：第二个参数（executor）取默认值
+        val manager = synthetic.newInstance(runtime, null, 0b10, null)
+        manager.getCache("user").assert().isNotNull()
+        CoCacheSpringCacheManager::class.java.getConstructor(CacheRuntime::class.java).assert().isNotNull()
+        CoCacheSpringCacheManager::class.java.getConstructor(
+            CacheRuntime::class.java,
+            java.util.concurrent.Executor::class.java
+        )
+            .assert().isNotNull()
     }
 
     @Suppress("DEPRECATION")

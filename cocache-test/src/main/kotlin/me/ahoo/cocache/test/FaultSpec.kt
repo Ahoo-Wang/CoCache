@@ -171,10 +171,17 @@ abstract class FaultSpec {
         database["k"] = "v1"
         cacheB.invalidate("k")
         cacheB["k"].assert().isEqualTo("v1")
-        cacheA["k"].assert().isEqualTo("v0")
+        if (backend.atomicBroadcast) {
+            // 原子广播：脚本没有执行，广播也没有发出，A 的降级副本留到 degradedLocalMaxAge
+            cacheA["k"].assert().isEqualTo("v0")
+        } else {
+            // 非原子广播：L1 失败时引擎仍尽力广播（失败的写入可能已部分生效），频道可用时 A 立即淘汰副本
+            awaitCondition("A dropped its degraded copy") { cacheA["k"] == "v1" }
+        }
         elapse(policy.degradedLocalMaxAge.plusSeconds(1))
         cacheA["k"].assert().isEqualTo("v1")
-        nodeA.metrics().degradedFills.assert().isEqualTo(2)
+        // 原子广播：首次加载与限龄到期后各一次；非原子广播另有收到广播后的一次
+        nodeA.metrics().degradedFills.assert().isEqualTo(if (backend.atomicBroadcast) 2 else 3)
         nodeA.metrics().remoteFailures.assert().isGreaterThanOrEqualTo(2)
         backend.failAll = false
         remote("k").assert().isEqualTo(RemoteRead.Miss(false))

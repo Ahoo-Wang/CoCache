@@ -295,6 +295,69 @@ class ExecutorPropertiesTest {
         }
     }
 
+    /**
+     * 销毁时记录运行时是否已经关闭（关闭后 `create` 抛出 IllegalStateException）。
+     */
+    class OrderedExecutor(private val name: String, private val runtimeClosedAtDestroy: MutableMap<String, Boolean>) :
+        Executor,
+        org.springframework.beans.factory.DisposableBean {
+        lateinit var runtime: me.ahoo.cocache.core.CacheRuntime
+
+        override fun execute(command: Runnable) = command.run()
+
+        override fun destroy() {
+            val probe = cacheSpec<String, String>("probe-$name") { codec = StringCodec }
+            runtimeClosedAtDestroy[name] = runCatching { runtime.create(probe) }.exceptionOrNull() is IllegalStateException
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class OrderedExecutorConfig {
+        @Bean
+        fun runtimeClosedAtDestroy(): MutableMap<String, Boolean> = java.util.concurrent.ConcurrentHashMap()
+
+        @Bean
+        fun orderedRefresh(runtimeClosedAtDestroy: MutableMap<String, Boolean>) = OrderedExecutor(
+            "refresh",
+            runtimeClosedAtDestroy
+        )
+
+        @Bean
+        fun orderedAsync(runtimeClosedAtDestroy: MutableMap<String, Boolean>) = OrderedExecutor(
+            "async",
+            runtimeClosedAtDestroy
+        )
+
+        @Bean
+        fun orderedBlocking(runtimeClosedAtDestroy: MutableMap<String, Boolean>) = OrderedExecutor(
+            "blocking",
+            runtimeClosedAtDestroy
+        )
+    }
+
+    @Test
+    fun userExecutorsAreDestroyedAfterTheRuntime() {
+        lateinit var closedAtDestroy: Map<String, Boolean>
+        runner.withPropertyValues(
+            "cocache.refresh-executor=orderedRefresh",
+            "cocache.async-executor=orderedAsync",
+            "cocache.blocking-executor=orderedBlocking",
+        ).withUserConfiguration(OrderedExecutorConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val runtime = context.getBean(me.ahoo.cocache.core.CacheRuntime::class.java)
+            listOf("orderedRefresh", "orderedAsync", "orderedBlocking").forEach { name ->
+                context.beanFactory.getDependentBeans(
+                    name
+                ).toList().assert().contains(CoCacheAutoConfiguration.RUNTIME_BEAN)
+                context.getBean(name, OrderedExecutor::class.java).runtime = runtime
+            }
+            @Suppress("UNCHECKED_CAST")
+            closedAtDestroy = context.getBean("runtimeClosedAtDestroy") as Map<String, Boolean>
+        }
+        // 容器关闭时先关闭运行时，再销毁它使用的执行器
+        closedAtDestroy.assert().isEqualTo(mapOf("refresh" to true, "async" to true, "blocking" to true))
+    }
+
     @Test
     fun runtimeDoesNotShutDownUserExecutor() {
         lateinit var pool: ExecutorService

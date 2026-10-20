@@ -34,13 +34,17 @@ class CoCacheSpringCacheManager(
 ) : CacheManager {
     /**
      * 6.3 起 `retrieve` 经缓存的异步视图，方法体在运行时的阻塞执行器上执行：[executor] 被忽略，7.0 删除此构造函数。
+     *
+     * [executor] 的默认值只为二进制兼容：它让编译器生成与 6.1（`@JvmOverloads constructor(runtime, executor = DEFAULT_EXECUTOR)`）
+     * 相同的 `$default` 合成构造函数，针对 6.1 编译、省略执行器的 Kotlin 调用方无需重新编译。
+     * 源码中的 `CoCacheSpringCacheManager(runtime)` 仍解析到主构造函数（不使用默认值的重载优先）。
      */
     @Deprecated(
         "Since 6.3, retrieve uses the async view and the runtime blocking executor; the executor is ignored.",
         ReplaceWith("CoCacheSpringCacheManager(runtime)")
     )
-    @Suppress("UNUSED_PARAMETER")
-    constructor(runtime: CacheRuntime, executor: Executor) : this(runtime)
+    @Suppress("UNUSED_PARAMETER", "DEPRECATION")
+    constructor(runtime: CacheRuntime, executor: Executor = DEFAULT_EXECUTOR) : this(runtime)
 
     private val caches = ConcurrentHashMap<String, SpringCache>()
 

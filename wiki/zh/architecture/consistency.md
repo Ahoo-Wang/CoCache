@@ -168,7 +168,7 @@ SingleFlight 还保证：每个实例上每个 key 同一时刻只有一次加�
 | `pubsub`（默认） | 在写脚本内 `PUBLISH` | L1 修改与广播是同一个原子步骤，没有客户端窗口 |
 | `sharded` | 脚本之后立即 `SPUBLISH` | 两者之间的崩溃会丢失消息。其它实例最多在 `local-max-age` 内返回 L2 副本，L1 已经正确 |
 
-`pubsub` 模式下，后端启动时探测脚本能否向另一个 slot 的频道发布。不能时（部分托管服务或 ACL），它像 `sharded` 一样在写入之后发布。见[部署](../operations/index.md#channel-mode)。
+`pubsub` 模式下，后端启动时探测脚本能否向另一个 slot 的频道发布。不能时（部分托管服务或 ACL），它像 `sharded` 一样在写入之后发布。写入失败时也会发布，因为失败的写入可能已部分生效（跨多个 slot 组的 `putAll`，或 Redis 已执行但应答丢失的写入）；多余的失效只淘汰副本。见[部署](../operations/index.md#channel-mode)。
 
 ## 读路径 {#read-path}
 

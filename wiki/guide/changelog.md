@@ -24,7 +24,8 @@ async.put("42", user).thenCompose { async.get("42") }
 - No thread is parked: waits for another instance's lease and for load permits are scheduled, and futures complete on the async executor, never on the Lettuce I/O thread. Futures fail with the original exception, cancelling one doesn't cancel the shared load, and async methods never throw synchronously.
 - New settings:
   - `cocache.async-executor` and `cocache.blocking-executor`, each naming an `Executor` bean;
-  - `load-async-timeout` (default 30 seconds) per cache, with the new `SourceLoadTimeoutException` and the `cocache.load.timeouts` metric.
+  - `load-async-timeout` (default 30 seconds) per cache, with the new `SourceLoadTimeoutException` and the `cocache.load.timeouts` metric;
+  - `cocache.observation.enabled` (default `true`) for [load-path tracing](#load-path-tracing). With Spring Boot Actuator and a Micrometer tracing bridge on the classpath, tracing is on by default; set it to `false` to turn it off.
 - The Redis backend implements the new optional SPI `AsyncRemoteStore` / `AsyncInvalidationChannel` natively. Third-party backends keep working unchanged, because the engine runs their synchronous methods on the blocking executor.
 - **Spring Cache:** `retrieve` uses the async view, so async and reactive `@Cacheable(sync = true)` methods load without holding a thread.
 - **Performance:** the synchronous hit path is unchanged (JMH within noise of the code before the async work, at 1 and 8 threads). An async L2 hit runs at about 90% of a synchronous one. With 32 requests in flight, one thread completes about 12 times as many Redis reads or writes as a blocking thread.
@@ -41,6 +42,11 @@ With an `ObservationRegistry` bean, the starter registers a `MicrometerLoadObser
 
 The `SetCache` read script fetches members with `HKEYS` and the format version with `HGET`, instead of `HGETALL` with every member's empty value. The stored layout is unchanged. In server-side throughput, reads are 1.33, 1.55 and 1.76 times as fast at 10, 100 and 1000 members. ACL errors raised inside the read script now reach the caller instead of being read as unrecognized content.
 
+### Fixes
+
+- With non-atomic broadcast (`channel-mode: sharded`, or when the atomic-broadcast probe fails), a write that failed but partly took effect is now broadcast too. Before, a `putAll` that failed in one slot group, or a `put` applied in Redis whose reply was lost, left other instances reading the old local copy until `local-max-age`. Synchronous `putAll` and `invalidateAll` on Redis now wait for every slot group before they throw.
+- A read that saw a local copy inside the refresh window just as the previous refresh finished could start a second refresh of the same key on the same instance. That second refresh only cost an extra Redis read, and it no longer happens.
+
 ### Compatibility kit and CI
 
 - New TCK suites: `MultiNodeSpec` (three runtimes, every invalidation interleaving, one load and one refresh per key cluster-wide), `FaultSpec` (L1 faults, retries, writes that took effect but reported an error, no replay after a reconnect), and async variants of every suite (`AsyncBackendProtocolSpec`, `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`).
@@ -49,12 +55,15 @@ The `SetCache` read script fetches members with `HKEYS` and the format version w
 
 ### Upgrade notes
 
-- `cocache.spring-cache.retrieve-executor`, `CoCacheSpringCacheManager(runtime, executor)` and `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` are deprecated: the executor is ignored, and the property logs a warning at startup. They are removed in 7.0. The body of an async `@Cacheable(sync = true)` method now runs on `cocache.blocking-executor` (virtual threads on JDK 21+), as it ran on the retrieve executor before. `CoCacheSpringCache(cache, admin, executor)` is kept: its executor runs that body.
+- `cocache.spring-cache.retrieve-executor`, `CoCacheSpringCacheManager(runtime, executor)` and `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` are deprecated: the executor is ignored, and the property logs a warning at startup. They are removed in 7.0. `CoCacheSpringCache(cache, admin, executor)` is not deprecated: its executor runs the method body.
+- **Async and reactive `@Cacheable(sync = true)` methods** behave differently in two ways:
+  - The method body runs on `cocache.blocking-executor`: virtual threads on JDK 21+. On JDK 17 it's a pool of up to 512 threads that rejects new loads when full (`RejectedExecutionException`). The old retrieve executor ran them on the calling thread instead.
+  - The load is bounded by `load-async-timeout` (default 30 seconds): past it the call fails with `SourceLoadTimeoutException`, while the method body keeps running.
 - `Cache.async()` is a default method that throws `UnsupportedOperationException`. A `Cache` you implement yourself, for example a test double, needs to override it only if callers use the async view.
 - A custom `LoadObserver` sees async loads only if it overrides `observeAsync`.
-- **Kotlin callers must recompile** against 6.3, or they fail with `NoSuchMethodError`. `LoadPolicy` gained `asyncTimeout`, which changes `copy` and the synthetic constructor behind Kotlin default arguments, so this applies to Kotlin code that calls `copy` or omits `LoadPolicy` arguments. `CoCacheSpringCacheManager(runtime)` is no longer a constructor with a default argument, so it applies to Kotlin code that omits the executor too. Java callers are unaffected.
+- **Kotlin callers must recompile** against 6.3, or they fail with `NoSuchMethodError`. `LoadPolicy` gained `asyncTimeout`, which changes `copy` and the synthetic constructor behind Kotlin default arguments, so this applies to Kotlin code that calls `copy` or omits `LoadPolicy` arguments. The constructors and `copy` of `CoCacheProperties` and `PolicyProperties` changed too, for code that builds the starter's properties itself. Java callers are unaffected.
 - **Redis ACL:** a user with a minimal ACL needs `+hkeys +hget` before the upgrade, or `SetCache` reads fail with an ACL error. Keep `+hgetall`: conditional reclaim and 6.0/6.1 instances still use it. See [ACL](../operations/index.md#acl).
-- TCK: `HookedBackend.closesDelegate` (default `false`, as before) and each suite's `closesBackend` let the suites close a backend created per case. Turn it on if your backend opens connections or threads. Hooks that pick out a caller should use `HookedBackend.issuer()`, because async calls complete on other threads.
+- TCK: `HookedBackend.closesDelegate` (default `false`, as before) and each suite's `closesBackend` let the suites close a backend created per case. Turn it on if your backend opens connections or threads. `BackendProtocolSpec` and `AsyncBackendProtocolSpec` always close the backend they create and have no such switch. Hooks that pick out a caller should use `HookedBackend.issuer()`, because async calls complete on other threads.
 
 ### Gradle Setup
 

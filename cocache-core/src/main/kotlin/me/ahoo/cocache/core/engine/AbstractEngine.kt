@@ -33,7 +33,7 @@ import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.SingleFlight
-import me.ahoo.cocache.core.internal.thenNext
+import me.ahoo.cocache.core.internal.handleNext
 import me.ahoo.cocache.core.policy.CachePolicy
 import java.time.Duration
 import java.time.Instant
@@ -148,6 +148,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 第二次递增使“在第一次递增之后取戳、在修改 L1 之前读到旧值”的并发填充失效；
      * 本节点自己的广播会被过滤，不能依赖它清除本地副本。
      *
+     * 非原子广播时 L1 失败也尽力广播：失败的写入可能已部分生效（`putAll` 跨多个 slot 组时有的组已写入，
+     * 或写入已在 L1 生效却报错），不广播的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）。多余的广播只淘汰副本，无害。
+     * 前提是 [mutate] 返回或抛出时它的全部 L1 命令都已结束（否则广播可能先于仍在执行的命令）。
+     *
      * @param onFailure L1 失败时调用（在第二次递增之前，因此登记的状态对随后的读取可见）
      */
     @Suppress("TooGenericExceptionCaught")
@@ -158,7 +162,14 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
         try {
             val frame = frameOf(keys)
-            mutate(frame)
+            try {
+                mutate(frame)
+            } catch (e: Exception) {
+                if (!atomicBroadcast) {
+                    publishAfterFailure(frame, e)
+                }
+                throw e
+            }
             if (!atomicBroadcast) {
                 context.backend.channel.publish(namespace, frame)
             }
@@ -192,8 +203,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
         val mutated = Futures.attempt {
             val frame = frameOf(keys)
-            val written = mutate(frame)
-            if (atomicBroadcast) written else written.thenNext(executor) { asyncChannel.publishAsync(namespace, frame) }
+            val written = Futures.attempt { mutate(frame) }
+            if (atomicBroadcast) written else written.handleNext(executor) { _, error -> publishAfter(frame, error) }
         }
         if (mutated.isDone) {
             // 已完成（没有 I/O 线程参与）：就地收尾并返回
@@ -208,6 +219,38 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             }
         }
         return written
+    }
+
+    /**
+     * 非原子广播：写入成功后广播；写入失败时也尽力广播（见 [write]），广播的失败只告警，返回的 future 以写入的原始异常失败。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun publishAfter(frame: ByteArray, error: Throwable?): CompletableFuture<Void?> {
+        if (error == null) {
+            return asyncChannel.publishAsync(namespace, frame)
+        }
+        val failed = CompletableFuture<Void?>()
+        Futures.attempt { asyncChannel.publishAsync(namespace, frame) }.whenComplete { _, publishError ->
+            if (publishError != null) {
+                warnPublishAfterFailure(Futures.unwrap(publishError))
+            }
+            failed.completeExceptionally(error)
+        }
+        return failed
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun publishAfterFailure(frame: ByteArray, error: Exception) {
+        try {
+            context.backend.channel.publish(namespace, frame)
+        } catch (e: Exception) {
+            error.addSuppressed(e)
+            warnPublishAfterFailure(e)
+        }
+    }
+
+    private fun warnPublishAfterFailure(error: Throwable) {
+        log.warn(error) { "Cache[$name] - failed to broadcast the invalidation after a failed write." }
     }
 
     /**

@@ -168,7 +168,7 @@ Each instance has one subscription connection and dispatches messages to caches 
 | `pubsub` (default) | `PUBLISH` inside the write script | The L1 change and the broadcast are one atomic step. No client-side window. |
 | `sharded` | `SPUBLISH` right after the script | A crash between the two loses the message. Peers then serve their L2 copy for up to `local-max-age`. L1 is already correct. |
 
-In `pubsub` mode the backend probes at startup whether a script may publish to a channel in another slot. Where it may not (some managed services, or an ACL), it publishes after the write, like `sharded`. See [Deployment](../operations/index.md#channel-mode).
+In `pubsub` mode the backend probes at startup whether a script may publish to a channel in another slot. Where it may not (some managed services, or an ACL), it publishes after the write, like `sharded`. It publishes even when the write fails, because a failed write may have partly taken effect (a `putAll` that spans several slot groups, or a write applied in Redis whose reply was lost). An extra invalidation only evicts copies. See [Deployment](../operations/index.md#channel-mode).
 
 ## Read path {#read-path}
 
