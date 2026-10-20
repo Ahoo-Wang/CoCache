@@ -358,4 +358,147 @@ class CoCache5MigratorTest {
             CoCache5Migration.scalar(policySpec, CoCache5Format.string()).sourcePrefix("a").sourceKey("b", "b").build()
         }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
     }
+
+    /**
+     * 从 Java 定义的迁移（静态工厂、`Function` 解码器、keyMapper、显式 key）在真实 Redis 上往返。
+     */
+    @Test
+    fun javaDefinedMigrationsRoundTrip() {
+        val indexKey = "cosec-$run:index"
+        Redis5x.string("cocache:upper-$run:k", "hello")
+        Redis5x.set("cocache:joined-$run:k", listOf("b", "a"))
+        Redis5x.hash("cocache:pairs-$run:k", mapOf("a" to "1", "b" to "2"))
+        Redis5x.set(indexKey, listOf("p1"))
+        Redis5x.set("cocache:tags-$run:ABC", listOf("t1", "t2"))
+        val migrations = CoCache5JavaUsage.migrations(run, indexKey)
+
+        migrator.dryRun(*migrations.toTypedArray()).caches.sumOf { it.written }.assert().isEqualTo(5L)
+        val report = migrator.migrate(migrations)
+
+        report.caches.map { it.written }.assert().containsExactly(1L, 1L, 1L, 1L, 1L)
+        report.caches.map { it.backedUp }.assert().containsExactly(1L, 0L, 1L, 0L, 0L)
+        val runtime = runtime()
+        runtime.create(cacheSpec<String, String>("upper-$run") { codec = StringCodec })["k"].assert().isEqualTo("HELLO")
+        runtime.create(
+            cacheSpec<String, String>("joined-$run") {
+                codec = StringCodec
+                keyPrefix = "java:"
+            }
+        )["k"].assert().isEqualTo("a,b")
+        runtime.create(cacheSpec<String, String>("pairs-$run") { codec = StringCodec })["k"].assert().isEqualTo("1=2")
+        runtime.create(
+            setCacheSpec<String, String>("index-$run") {
+                elementCodec = StringCodec
+            }
+        )[""].assert().containsExactly("p1")
+        runtime.create(setCacheSpec<String, String>("tags-$run") { elementCodec = StringCodec })["abc"]
+            .assert().containsExactlyInAnyOrder("t1", "t2")
+        // 写到新 key 的迁移：5.x key 不动
+        Redis5x.members("cocache:tags-$run:ABC").assert().containsExactlyInAnyOrder("t1", "t2")
+    }
+
+    /**
+     * 显式列出的 key 也可以原地迁移（目标等于来源），回滚与清理按列出的 key 查找备份。
+     */
+    @Test
+    fun explicitKeyMigratesInPlaceAndRollsBack() {
+        val key = "cocache:policy-$run:p1"
+        Redis5x.string(key, json(Policy("p1", "allow")))
+        val explicit = CoCache5Migration.scalar(policySpec, CoCache5Format.string()).sourceKey(key, "p1").build()
+
+        migrator.migrate(explicit).cache("policy-$run")?.backedUp.assert().isEqualTo(1L)
+        runtime().create(policySpec)["p1"].assert().isEqualTo(Policy("p1", "allow"))
+
+        migrator.rollback(explicit).cache("policy-$run")?.written.assert().isEqualTo(1L)
+        Redis5x.get(key).assert().isEqualTo(json(Policy("p1", "allow")))
+        Redis5x.exists("cocache5-backup:$key").assert().isFalse()
+
+        migrator.migrate(explicit)
+        migrator.dropBackups(explicit).cache("policy-$run")?.written.assert().isEqualTo(1L)
+        migrator.rollback(explicit).cache("policy-$run")?.written.assert().isEqualTo(0L)
+    }
+
+    @Test
+    fun unexpectedRedisTypeAborts() {
+        RedisTestSupport.withCommands { it.rpush("cocache:token-$run:list", "a") }
+
+        val error = runCatching { migrator.migrate(tokens) }.exceptionOrNull()
+
+        error.assert().isInstanceOf(CoCache5MigrationException::class.java)
+        error?.message.assert().contains("unexpected Redis type[list]")
+        (error as CoCache5MigrationException).report.cache("token-$run")?.failed.assert().isEqualTo(1L)
+    }
+
+    /**
+     * 前缀中的 glob 特殊字符按字面匹配：不会扫到形似的其它 key。
+     */
+    @Test
+    fun sourcePrefixIsMatchedLiterally() {
+        val prefix = "we*ird[1]?-$run:"
+        Redis5x.string("${prefix}k", "v")
+        Redis5x.string("weXird1Z-$run:k", "decoy")
+        val literal = CoCache5Migration.scalar(tokenSpec, CoCache5Format.string()).sourcePrefix(prefix).build()
+
+        val report = requireNotNull(migrator.migrate(literal).cache("token-$run"))
+
+        report.read.assert().isEqualTo(1L)
+        runtime().create(tokenSpec)["k"].assert().isEqualTo("v")
+        Redis5x.get("weXird1Z-$run:k").assert().isEqualTo("decoy")
+    }
+
+    @Test
+    fun rollbackBeforeMigratingChangesNothing() {
+        Redis5x.string("cosec-$run:policy:p1", json(Policy("p1", "allow")))
+        val copy = CoCache5Migration.scalar(
+            policySpec,
+            CoCache5Format.string()
+        ).sourcePrefix("cosec-$run:policy:").build()
+
+        migrator.rollback(
+            copy
+        ).cache("policy-$run").assert().isEqualTo(CoCache5CacheReport("policy-$run", 0, 0, 0, 0, 0, 0))
+        Redis5x.get("cosec-$run:policy:p1").assert().isEqualTo(json(Policy("p1", "allow")))
+    }
+
+    @Test
+    fun backupsOfExplicitKeysMustNotFallUnderAScannedPrefix() {
+        RedisTestSupport.migrator(CoCache5MigrationOptions(backupPrefix = "bk-$run:")).use { bad ->
+            val scanned = CoCache5Migration.scalar(
+                tokenSpec,
+                CoCache5Format.string()
+            ).sourcePrefix("bk-$run:x:").build()
+            val explicit = CoCache5Migration.set(indexSpec).sourceKey("x:index", "").build()
+            runCatching {
+                bad.migrate(scanned, explicit)
+            }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        }
+    }
+
+    /**
+     * 列出的 key 不存在（例如从未写入过的全局索引）：跳过，不报错。
+     */
+    @Test
+    fun absentExplicitKeyIsSkipped() {
+        val report = requireNotNull(migrator.migrate(index).cache("index-$run"))
+
+        report.assert().isEqualTo(CoCache5CacheReport("index-$run", 1, 0, 1, 0, 0, 0))
+        Redis5x.exists("cocache:index-$run:").assert().isFalse()
+    }
+
+    /**
+     * 回滚只删除迁移写入的 6.x 目标：目标 key 上不是 CoCache 6 的内容保留。
+     */
+    @Test
+    fun rollbackKeepsTargetsItDidNotWrite() {
+        Redis5x.string("cosec-$run:policy:p1", json(Policy("p1", "allow")))
+        Redis5x.string("cocache:policy-$run:p1", "left over")
+        val copy = CoCache5Migration.scalar(
+            policySpec,
+            CoCache5Format.string()
+        ).sourcePrefix("cosec-$run:policy:").build()
+
+        migrator.rollback(copy).cache("policy-$run")?.written.assert().isEqualTo(0L)
+
+        Redis5x.get("cocache:policy-$run:p1").assert().isEqualTo("left over")
+    }
 }

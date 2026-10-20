@@ -132,7 +132,7 @@ class CoCache5Migrator private constructor(
                 try {
                     migrateKey(migration, key, counts, dryRun)
                 } catch (@Suppress("TooGenericExceptionCaught") e: RuntimeException) {
-                    throw failure(done, counts, migration, key, e.message ?: e.javaClass.name, e)
+                    throw failure(done, counts, migration, key, e.toString(), e)
                 }
             }
             log.info { "Migration[${migration.name}]${if (dryRun) " (dry run)" else ""} - ${counts.toReport()}." }
@@ -381,7 +381,7 @@ class CoCache5Migrator private constructor(
 
     private class Snapshot(val type: String, val pttl: Long, val dump: ByteArray, val content: Any, val ours: Boolean)
 
-    private class Counts(val name: String) {
+    private class Counts(private val name: String) {
         var read = 0L
         var written = 0L
         var skipped = 0L
@@ -431,6 +431,18 @@ return 1
 
         private val GLOB_SPECIALS = setOf('*', '?', '[', ']', '\\')
 
+        /**
+         * 自建的客户端在连接失败时同样关闭（否则线程与事件循环泄漏）。
+         */
+        private fun owning(client: AbstractRedisClient, options: CoCache5MigrationOptions): CoCache5Migrator {
+            return try {
+                CoCache5Migrator(client, true, options)
+            } catch (@Suppress("TooGenericExceptionCaught") e: RuntimeException) {
+                client.shutdown()
+                throw e
+            }
+        }
+
         private fun glob(prefix: String): String = buildString {
             prefix.forEach { if (it in GLOB_SPECIALS) append('\\').append(it) else append(it) }
         }
@@ -444,7 +456,7 @@ return 1
             uri: RedisURI,
             options: CoCache5MigrationOptions = CoCache5MigrationOptions()
         ): CoCache5Migrator =
-            CoCache5Migrator(RedisClient.create(uri), true, options)
+            owning(RedisClient.create(uri), options)
 
         /**
          * 连接 Redis Cluster（自建客户端，随 [close] 关闭）。`SCAN` 遍历全部主节点。
@@ -455,7 +467,7 @@ return 1
             uris: List<RedisURI>,
             options: CoCache5MigrationOptions = CoCache5MigrationOptions()
         ): CoCache5Migrator =
-            CoCache5Migrator(RedisClusterClient.create(uris), true, options)
+            owning(RedisClusterClient.create(uris), options)
 
         /**
          * 使用调用方的客户端（`RedisClient` 或 `RedisClusterClient`），[close] 只关闭本迁移器的连接。

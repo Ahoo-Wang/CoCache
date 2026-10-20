@@ -117,7 +117,7 @@ class CoCache5Migration private constructor(builder: Builder) {
     val namespace: String = builder.namespace ?: builder.name
     val sourcePrefix: String = builder.sourcePrefix ?: "cocache:${builder.name}:"
     val sourceKeys: Map<String, String> = LinkedHashMap(builder.sourceKeys)
-    internal val keyMapper: CoCache5KeyMapper = builder.keyMapper
+    private val keyMapper: CoCache5KeyMapper = builder.keyMapper
     internal val converter: Converter = builder.converter()
 
     /**
@@ -169,10 +169,14 @@ class CoCache5Migration private constructor(builder: Builder) {
 
     class Builder internal constructor(internal val name: String, private val converter: Converter) {
         internal var keyPrefix: String = CacheSpec.DEFAULT_KEY_PREFIX
+            private set
         internal var namespace: String? = null
+            private set
         internal var sourcePrefix: String? = null
+            private set
         internal val sourceKeys = LinkedHashMap<String, String>()
         internal var keyMapper: CoCache5KeyMapper = CoCache5KeyMapper.IDENTITY
+            private set
 
         /**
          * 6.x 的 key 前缀（默认 `cocache:`）。从 spec 创建时取自 spec。

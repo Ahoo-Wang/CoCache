@@ -664,6 +664,8 @@ abstract class EngineSpec {
             error.assert().isInstanceOf(CacheReadException::class.java)
             val cause = requireNotNull(error?.cause as? ForeignFormatException)
             cause.storageKey.assert().isEqualTo(storageKey("k"))
+            // 同版本内容解码失败：格式为本节点的版本
+            cause.format.assert().isEqualTo(backend.format)
         }
         nodeA.metrics().unknownFormats.assert().isEqualTo(2)
         nodeA.metrics().reclaims.assert().isEqualTo(0)
@@ -695,11 +697,19 @@ abstract class EngineSpec {
         val cache = nodeA.cache(spec { loader = null })
         cache.put("ok", "v")
         writeRemoteSilently("bad", TestCodec.CORRUPT)
-        runCatching {
-            cache.getAll(listOf("ok", "bad", "absent"))
-        }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        writeRemoteSilently("worse", TestCodec.CORRUPT)
+        val error = runCatching {
+            cache.getAll(listOf("ok", "bad", "absent", "worse"))
+        }.exceptionOrNull()
+        error.assert().isInstanceOf(CacheReadException::class.java)
+        // 以其中一个读不懂的 key 失败，两个都计数且保留
+        requireNotNull(
+            error?.cause as? ForeignFormatException
+        ).storageKey.assert().isIn(storageKey("bad"), storageKey("worse"))
+        nodeA.metrics().unknownFormats.assert().isEqualTo(2)
         remote("absent").assert().isEqualTo(RemoteRead.Miss(false))
         remote("bad").assert().isInstanceOf(RemoteRead.Hit::class.java)
+        remote("worse").assert().isInstanceOf(RemoteRead.Hit::class.java)
         cache["ok"].assert().isEqualTo("v")
     }
 

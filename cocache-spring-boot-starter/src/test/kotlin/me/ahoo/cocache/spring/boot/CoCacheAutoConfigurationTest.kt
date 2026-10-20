@@ -215,8 +215,10 @@ class CoCacheAutoConfigurationTest {
             refreshWindow = Duration.ofSeconds(30),
             leaseTtl = Duration.ofSeconds(4),
             loadAcquireTimeout = Duration.ofMillis(5),
+            foreignFormat = ForeignFormatMode.RECLAIM,
         )
         val policy = properties.applyTo(CachePolicy.DEFAULT)
+        policy.foreignFormat.assert().isEqualTo(ForeignFormatMode.RECLAIM)
         policy.ttl.assert().isEqualTo(Duration.ofMinutes(3))
         policy.ttlJitter.assert().isEqualTo(Duration.ofSeconds(1))
         policy.absentTtl.assert().isEqualTo(Duration.ofSeconds(2))
@@ -587,6 +589,7 @@ class CoCacheAutoConfigurationTest {
         leaseTtl: Duration? = null,
         loadAcquireTimeout: Duration? = null,
         loadAsyncTimeout: Duration? = null,
+        foreignFormat: ForeignFormatMode? = null,
     ) = CoCacheProperties.PolicyProperties(
         ttl,
         ttlForever,
@@ -603,7 +606,8 @@ class CoCacheAutoConfigurationTest {
         null,
         null,
         null,
-        loadAsyncTimeout
+        loadAsyncTimeout,
+        foreignFormat
     )
 
     /**
