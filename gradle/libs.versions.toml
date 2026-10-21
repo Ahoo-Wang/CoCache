@@ -17,7 +17,7 @@ publish-plugin = "2.0.0"
 jmh-plugin = "0.7.3"
 openjdk-jmh = "1.37"
 # GraalVM Native Build Tools 插件，只用于 cocache-example 的原生镜像构建；版本由 Renovate 维护
-graalvm-native = "1.1.14"
+graalvm-native = "1.1.16"
 
 [libraries]
 spring-boot-dependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "spring-boot" }
