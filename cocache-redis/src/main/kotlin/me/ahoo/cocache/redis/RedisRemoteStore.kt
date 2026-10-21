@@ -399,9 +399,9 @@ internal class RedisRemoteStore(
         envelope: Envelope.Scalar,
         ttl: Duration?,
         frame: ByteArray,
-        unreadableAsAbsent: Boolean
+        foreignAsAbsent: Boolean
     ): RemoteConditionalWrite = decodeConditionalWrite(
-        connections.await(putIfMatchCommand(key, expected, envelope, ttl, frame, unreadableAsAbsent))
+        connections.await(putIfMatchCommand(key, expected, envelope, ttl, frame, foreignAsAbsent))
     )
 
     override fun putIfMatchAsync(
@@ -410,9 +410,9 @@ internal class RedisRemoteStore(
         envelope: Envelope.Scalar,
         ttl: Duration?,
         frame: ByteArray,
-        unreadableAsAbsent: Boolean
+        foreignAsAbsent: Boolean
     ): CompletableFuture<RemoteConditionalWrite> = connections.mapped(
-        connections.bounded(putIfMatchCommand(key, expected, envelope, ttl, frame, unreadableAsAbsent))
+        connections.bounded(putIfMatchCommand(key, expected, envelope, ttl, frame, foreignAsAbsent))
     ) { decodeConditionalWrite(it) }
 
     @Suppress("LongParameterList")
@@ -422,11 +422,11 @@ internal class RedisRemoteStore(
         envelope: Envelope.Scalar,
         ttl: Duration?,
         frame: ByteArray,
-        unreadableAsAbsent: Boolean
+        foreignAsAbsent: Boolean
     ): CompletableFuture<List<Any?>> {
         val args = listOf(
             expected?.toString()?.bytes() ?: EMPTY,
-            (if (unreadableAsAbsent) "1" else "0").bytes(),
+            (if (foreignAsAbsent) "1" else "0").bytes(),
             millis(ttl),
             channel,
             frame,
@@ -510,7 +510,7 @@ internal class RedisRemoteStore(
          */
         internal fun decodeConditionalRead(result: List<Any?>): RemoteConditionalRead = when (result[0] as Long) {
             RedisScripts.COND_ABSENT -> RemoteConditionalRead.Absent
-            RedisScripts.COND_UNCHANGED -> RemoteConditionalRead.Unchanged
+            RedisScripts.COND_UNCHANGED -> RemoteConditionalRead.Unchanged((result[1] as Long).toInt())
             RedisScripts.COND_VALUE -> RemoteConditionalRead.Changed(
                 Envelope.Scalar(result[2] as ByteArray),
                 (result[1] as Long).toInt()
@@ -523,11 +523,11 @@ internal class RedisRemoteStore(
          * 解码条件写入脚本的结果（见 [RedisScripts.PUT_IF_MATCH]）：冲突时第二项为当前摘要（十六进制），没有值时缺省。
          */
         internal fun decodeConditionalWrite(result: List<Any?>): RemoteConditionalWrite = when (result[0] as Long) {
-            1L -> RemoteConditionalWrite.Written
-            0L -> RemoteConditionalWrite.Conflict(
+            RedisScripts.PUT_WRITTEN -> RemoteConditionalWrite.Written
+            RedisScripts.PUT_CONFLICT -> RemoteConditionalWrite.Conflict(
                 (result.getOrNull(1) as ByteArray?)?.let { Digest(hexToBytes(String(it, Charsets.US_ASCII))) }
             )
-            RedisScripts.COND_UNREADABLE -> RemoteConditionalWrite.Unreadable((result[1] as Long).toInt())
+            RedisScripts.PUT_UNREADABLE -> RemoteConditionalWrite.Unreadable((result[1] as Long).toInt())
             else -> throw IllegalStateException("Unknown conditional write result code[${result[0]}].")
         }
 

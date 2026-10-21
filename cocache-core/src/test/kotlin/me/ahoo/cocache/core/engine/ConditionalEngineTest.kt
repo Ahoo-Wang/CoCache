@@ -16,11 +16,17 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Codec
+import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.Digest
+import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.cacheSpec
@@ -31,6 +37,7 @@ import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import java.time.Duration
 import java.util.concurrent.CompletionException
 
 /**
@@ -125,5 +132,51 @@ class ConditionalEngineTest {
         )
         unwrap(cache.async().putIfMatch("k", null, "v").handle { _, e -> e }.join()).assert().isSameAs(failure)
         memory.store("failing").read("cocache:failing:k", null, null).assert().isEqualTo(RemoteRead.Miss(false))
+    }
+
+    /**
+     * 只实现同步 SPI、不覆盖条件写入的存储（第三方后端在 6.6 编译的样子）：引擎经阻塞执行器调用同步方法。
+     */
+    private class DefaultsStore(private val delegate: RemoteStore) : RemoteStore by delegate {
+        override fun readIfChanged(key: String, known: Digest?) = super<RemoteStore>.readIfChanged(key, known)
+
+        override fun putIfMatch(
+            key: String,
+            expected: Digest?,
+            envelope: Envelope.Scalar,
+            ttl: Duration?,
+            frame: ByteArray,
+            foreignAsAbsent: Boolean
+        ): RemoteConditionalWrite = super<RemoteStore>.putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
+    }
+
+    /**
+     * SPI 默认实现不提供条件写入：引擎原样抛出 [UnsupportedOperationException]（不包装、不广播、不修改 L1），
+     * 而不是先读后写、让两个并发的写入方都成功。条件读取的默认实现（先读后比较）照常可用。
+     */
+    @Test
+    fun backendsWithoutConditionalWritesFailLoudly() {
+        val defaults = object : CoherenceBackend by memory {
+            override fun store(namespace: String): RemoteStore = DefaultsStore(memory.store(namespace))
+        }
+        val runtime = CacheRuntime.builder().backend(
+            HookedBackend(defaults).apply { atomicBroadcastOverride = false }
+        ).build()
+        try {
+            val cache = create(runtime)
+            create(observer)
+            cache.put("k", "v")
+            val baseline = received()
+            runCatching { cache.putIfMatch("k", null, "x") }.exceptionOrNull()
+                .assert().isInstanceOf(UnsupportedOperationException::class.java)
+            unwrap(cache.async().putIfMatch("k", null, "x").handle { _, e -> e }.join())
+                .assert().isInstanceOf(UnsupportedOperationException::class.java)
+            received().assert().isEqualTo(baseline)
+            val digest = Digest.of(Envelope.Scalar("v".toByteArray()))
+            cache.getIfChanged("k", digest).assert().isEqualTo(ConditionalGet.Unchanged)
+            cache.async().getIfChanged("k", null).join().assert().isEqualTo(ConditionalGet.Present("v", digest))
+        } finally {
+            runtime.close()
+        }
     }
 }

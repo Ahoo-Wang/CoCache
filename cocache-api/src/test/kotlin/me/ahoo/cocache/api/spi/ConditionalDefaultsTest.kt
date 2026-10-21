@@ -19,8 +19,9 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
 /**
- * `readIfChanged` / `putIfMatch` 的默认实现（第三方后端不重写时）：先读再比较摘要，摘要相符时再 `put`（不原子）。
- * 未命中、lease、负缓存是没有值；格式低于 1 的内容与集合读不懂。
+ * SPI 默认实现（第三方后端不重写时）：
+ * - `readIfChanged`：先读再在客户端比较摘要（正确，只是不省带宽）。未命中、lease、负缓存是没有值；格式低于 1 的内容与集合读不懂。
+ * - `putIfMatch`：不提供（抛出 / 以 [UnsupportedOperationException] 完成），因为“先读后写”会丢失更新；不读、不写。
  */
 class ConditionalDefaultsTest {
     private class RecordingStore(var current: RemoteRead) : AsyncRemoteStore {
@@ -100,11 +101,6 @@ class ConditionalDefaultsTest {
         readIfChangedAsync("k", known).join(),
     )
 
-    private fun RecordingStore.writes(expected: Digest?, unreadableAsAbsent: Boolean = false): List<RemoteConditionalWrite> = listOf(
-        putIfMatch("k", expected, value, null, frame, unreadableAsAbsent),
-        putIfMatchAsync("k", expected, value, null, frame, unreadableAsAbsent).join(),
-    )
-
     @Test
     fun missesLeasesAndNegativeEntriesHoldNoValue() {
         val empty = listOf(
@@ -113,19 +109,14 @@ class ConditionalDefaultsTest {
             RemoteRead.Hit(Envelope.Absent, 1, null),
         )
         for (read in empty) {
-            val store = RecordingStore(read)
-            store.reads(digest).assert().containsOnly(RemoteConditionalRead.Absent)
-            store.writes(digest).assert().containsOnly(RemoteConditionalWrite.Conflict(null))
-            store.writes.assert().isEmpty()
-            store.writes(null).assert().containsOnly(RemoteConditionalWrite.Written)
-            store.writes.assert().containsExactly("put", "putAsync")
+            RecordingStore(read).reads(digest).assert().containsOnly(RemoteConditionalRead.Absent)
         }
     }
 
     @Test
-    fun valuesCompareByPayloadDigest() {
+    fun valuesCompareByPayloadDigestAndReportTheirFormat() {
         val store = RecordingStore(RemoteRead.Hit(value, 1, null))
-        store.reads(digest).assert().containsOnly(RemoteConditionalRead.Unchanged)
+        store.reads(digest).assert().containsOnly(RemoteConditionalRead.Unchanged(1))
         store.reads(other).forEach { read ->
             val changed = read as RemoteConditionalRead.Changed
             changed.envelope.assert().isEqualTo(value)
@@ -133,24 +124,29 @@ class ConditionalDefaultsTest {
             changed.toString().assert().contains("format=1")
         }
         (store.readIfChanged("k", null) as RemoteConditionalRead.Changed).envelope.assert().isEqualTo(value)
-        store.writes(null).assert().containsOnly(RemoteConditionalWrite.Conflict(digest))
-        store.writes(other).assert().containsOnly(RemoteConditionalWrite.Conflict(digest))
-        store.writes.assert().isEmpty()
-        store.writes(digest).assert().containsOnly(RemoteConditionalWrite.Written)
-        store.writes.assert().containsExactly("put", "putAsync")
+        RecordingStore(
+            RemoteRead.Hit(value, 2, null)
+        ).reads(digest).assert().containsOnly(RemoteConditionalRead.Unchanged(2))
     }
 
     @Test
-    fun unreadableContentIsRefusedUnlessTreatedAsAbsent() {
-        val foreign = RecordingStore(RemoteRead.Hit(Envelope.Scalar("{}".toByteArray()), 0, null))
-        foreign.reads(null).assert().containsOnly(RemoteConditionalRead.Unreadable(0))
-        foreign.writes(null).assert().containsOnly(RemoteConditionalWrite.Unreadable(0))
-        val set = RecordingStore(RemoteRead.Hit(Envelope.Members(listOf("m".toByteArray())), 1, null))
-        set.reads(null).assert().containsOnly(RemoteConditionalRead.Unreadable(1))
-        set.writes(null).assert().containsOnly(RemoteConditionalWrite.Unreadable(1))
-        set.writes.assert().isEmpty()
-        set.writes(digest, unreadableAsAbsent = true).assert().containsOnly(RemoteConditionalWrite.Conflict(null))
-        set.writes(null, unreadableAsAbsent = true).assert().containsOnly(RemoteConditionalWrite.Written)
-        set.writes.assert().containsExactly("put", "putAsync")
+    fun unreadableContentIsReported() {
+        RecordingStore(RemoteRead.Hit(Envelope.Scalar("{}".toByteArray()), 0, null)).reads(null)
+            .assert().containsOnly(RemoteConditionalRead.Unreadable(0))
+        RecordingStore(RemoteRead.Hit(Envelope.Members(listOf("m".toByteArray())), 1, null)).reads(null)
+            .assert().containsOnly(RemoteConditionalRead.Unreadable(1))
+    }
+
+    /**
+     * 条件写入没有默认实现：不原子的“先读后写”会让两个并发的写入方都成功，因此宁可失败，也不读、不写。
+     */
+    @Test
+    fun conditionalWritesAreUnsupportedByDefault() {
+        val store = RecordingStore(RemoteRead.Miss(false))
+        runCatching { store.putIfMatch("k", null, value, null, frame, false) }.exceptionOrNull()
+            .assert().isInstanceOf(UnsupportedOperationException::class.java)
+        store.putIfMatchAsync("k", digest, value, null, frame, true).handle { _, error -> error }.join()
+            .assert().isInstanceOf(UnsupportedOperationException::class.java)
+        store.writes.assert().isEmpty()
     }
 }

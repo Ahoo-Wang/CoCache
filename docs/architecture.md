@@ -73,7 +73,7 @@ cocache-bom / cocache-dependencies / cocache-example
 - API 与 SPI 的时间类型一律是 `java.time.Duration` / `Instant`；API 与 SPI 中不使用 `value class` 与 `kotlin.time.Duration`（JVM 名称改写会让 Java 调用方和第三方实现无法使用）。
 - `CacheLoader<K, V>` 是 `fun interface`：`load(key): V?`，`loadAll` 默认逐个调用 `load`。数据源只负责加载，寿命由策略与 `CacheSpec.ttlOf` 决定。
 - **异步视图**（§5.6）：`Cache.async(): AsyncCache<K, V>`、`SetCache.async(): AsyncSetCache<K, E>`，方法名与同步 API 相同，返回 `CompletableFuture`。`async()` 是 default 方法（默认抛出 `UnsupportedOperationException`），内置引擎与接口式声明的代理都支持，每次返回同一个对象，`async().sync()` 是引擎本身。
-- **条件读写**（§6.4，6.7）：`getIfChanged(key, known: Digest?): ConditionalGet<V>`（`Unchanged` | `Present(value, digest)` | `Absent`）与 `putIfMatch(key, expected: Digest?, value[, ttl]): ConditionalPut`（`Written(digest)` | `Conflict(current: Digest?)`），异步视图与挂起视图有同名方法。都是 default 方法（默认抛出 `UnsupportedOperationException`，异步视图以它完成），内置的 `Cache` 引擎与接口式声明的代理支持，`SetCache` 不支持。
+- **条件读写**（§6.4，6.7；挂起视图的同名方法同样有默认实现）：`getIfChanged(key, known: Digest?): ConditionalGet<V>`（`Unchanged` | `Present(value, digest)` | `Absent`）与 `putIfMatch(key, expected: Digest?, value[, ttl]): ConditionalPut`（`Written(digest)` | `Conflict(current: Digest?)`），异步视图与挂起视图有同名方法。都是 default 方法（默认抛出 `UnsupportedOperationException`，异步视图以它完成），内置的 `Cache` 引擎与接口式声明的代理支持，`SetCache` 不支持。
 - `AsyncCacheLoader<K, V>`：`loadAsync(key): CompletionStage<out V?>`，`loadAllAsync` 默认逐个调用并合并。`CacheSpec` 的 `loader` 与 `asyncLoader` 至多设置一个，引擎在两个方向上适配（§5.6）。
 
 ### 3.2 存储 key 与频道
@@ -316,17 +316,19 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 | 项 | `getIfChanged(key, known)` | `putIfMatch(key, expected, value[, ttl])` |
 |----|----|----|
-| L1 | 一个脚本 `READ_IF_CHANGED`：`V` 状态且载荷摘要等于 `known` 时只回复结果码 `{1}`，不传输正文；否则回复 `{2, 格式, 载荷}`、`{0}`（没有值）或 `{3, 格式}`（读不懂的内容，不传输正文） | 一个脚本 `PUT_IF_MATCH`：检查当前内容，符合期望时按 `PUT` 的规则写入（`DEL` + `SET` + 到期时间，销毁令牌）并 `PUBLISH`；不符合时不修改、不广播，回复当前摘要 |
+| L1 | 一个脚本 `READ_IF_CHANGED`：`V` 状态且载荷摘要等于 `known` 时只回复结果码与格式版本 `{1, 格式}`，不传输正文（引擎再确认格式在本节点能读的范围内）；否则回复 `{2, 格式, 载荷}`、`{0}`（没有值）或 `{3, 格式}`（读不懂的内容，不传输正文） | 一个脚本 `PUT_IF_MATCH`：检查当前内容，符合期望时按 `PUT` 的规则写入（`DEL` + `SET` + 到期时间，销毁令牌）并 `PUBLISH`；不符合时不修改、不广播，回复当前摘要 |
 | “没有值” | key 不存在、`L`（lease 占位）、`M`（负缓存）返回 `Absent` | `expected = null` 只匹配这三种状态；`expected = d` 只匹配载荷摘要为 `d` 的 `V` |
 | L2 | 不读、不写、不取戳：确认的是 L1，L2 可能更旧（仍受 `localMaxAge` 约束） | 写入方顺序同 `put`（§4.2），不写 L2 |
 | 回源 / lease | 从不回源，不申请 lease 或刷新令牌 | 覆盖 lease 占位时销毁它（与 `put` 相同，持有者的 `fill` 失败） |
-| 读不懂的内容 | 不是本协议写入的、更高格式版本、集合（标量缓存上）、解码失败：按 `foreignFormat` 处理；从不回源，未配置时按“没有数据源”即 `FAIL`。`FAIL`：计入 `unknownFormats`，抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，更高版本 `newer = true`）；`RECLAIM`：视为没有值（`Absent`），不修改 L1 | 脚本识别同样的内容（解码失败除外，脚本看不到 `Codec`）。`FAIL`：不修改、不广播，计入 `unknownFormats` 与 `writeFailures`，抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）；`RECLAIM`：视为没有值（`expected = null` 时整体覆盖）。同版本但解码失败的值是一个普通的值：调用方拿不到它的摘要，写入只会冲突 |
+| 读不懂的内容 | 计入 `unknownFormats`，抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，更高版本 `newer = true`），不修改 L1。例外只有不是本协议写入的内容（格式 0）：按 `foreignFormat` 处理，从不回源，未配置时按“没有数据源”即 `FAIL`（抛出）；`RECLAIM` 时视为没有值（`Absent`）。更高格式版本、集合（标量缓存上）、解码失败的值从不视为没有值 | 与读取同样分类（引擎以 `foreignAsAbsent` 告诉脚本格式 0 能否视为没有值）：更高格式版本与集合总是拒绝，格式 0 在 `FAIL`（默认）时拒绝、`RECLAIM` 时视为没有值（`expected = null` 时整体覆盖）。拒绝：不修改、不广播，计入 `unknownFormats` 与 `writeFailures`，抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。脚本看不到 `Codec`，同版本但解码失败的值对写入是一个普通的值：调用方拿不到它的摘要，写入只会冲突、从不覆盖，随后的读取抛出 |
 | L1 故障 | 总是抛出 `CacheReadException`，与 `readFailure` 无关：没有可降级的答案 | 抛出 `CacheWriteException`。结果未知（超时）时先重读：`current` 等于自己写入的值的摘要即已写入 |
 | 计数 | 摘要未变计入 `conditionalUnchanged` | 冲突计入 `conditionalConflicts`（不计入 `writeFailures`） |
 
-- **为什么用摘要而不是版本号**：线格式冻结（§3.3），标量头里没有版本字段；载荷摘要只依赖 `Codec` 的输出，不需要新的 key 或字段，混合版本部署不受影响（旧节点的 `put` 照常改变摘要）。代价是 Redis 每次条件读写都把载荷读进 Lua 并计算一次 SHA-1，期间不处理其它命令：在 Redis 7.4 上实测 8 MB 的值一次约 20 ms，其中读进 Lua 约 13 ms（普通的 L1 读取经 `READ` 脚本同样要付），SHA-1 约 7 ms。条件读取省下的是网络传输与客户端解码，不是 Redis 的 CPU；文档很大、实例很多时要按这个代价估算确认周期。
+- **分类为什么这样定**：读与写必须对同一份内容给出同一个答案，否则“读—改—条件写”循环会出错：读取说“没有值”而写入说“冲突”时循环永远不结束，调用方拿冲突里的摘要重试则会从空值出发覆盖它。`RECLAIM` 只放宽格式 0（6.x 之前或其它程序写入、迁移前的数据）；更高格式版本的值在滚动升级期间被旧节点当作没有值覆盖就是降级，因此总是拒绝。
+- **为什么用摘要而不是版本号**：线格式冻结（§3.3），标量头里没有版本字段；载荷摘要只依赖 `Codec` 的输出，不需要新的 key 或字段，混合版本部署不受影响（旧节点的 `put` 照常改变摘要）。摘要只覆盖载荷，`Unchanged` 因此附带格式版本，由引擎确认。
+- **为什么不在写入时保存摘要**（让条件读取成为 O(1) 的比较）：标量头只有 1 个保留字节，放不下 20 字节的摘要，加长头部就是格式升级（两阶段发布，§3.3）；同 slot 的旁路 key（hash tag）改变 key 布局，而且混合版本部署中 6.6 及以前的节点的 `put`、`fill`、`invalidate` 不维护它，会让条件读取对已经变化的值回答 `Unchanged`。两者都违反 G1/G2 或线格式冻结，留到下一次格式演进再考虑。代价是 Redis 每次条件读写都把载荷读进 Lua 并计算一次 SHA-1，期间不处理其它命令：在 Redis 7.4 上实测 8 MB 的值一次约 20 ms，其中读进 Lua 约 13 ms（普通的 L1 读取经 `READ` 脚本同样要付），SHA-1 约 7 ms。条件读取省下的是网络传输与客户端解码，不是 Redis 的 CPU；文档很大、实例很多时要按这个代价估算确认周期。
 - **与 `put` 的关系**：`put` 不检查，并发的 `put` 仍是“后写者胜”；需要不丢更新的写入方全部改用 `putIfMatch`。`putIfMatch` 的写入使所有节点的在途填充失效，与 `put` 相同。
-- **SPI**：`RemoteStore.readIfChanged` / `putIfMatch` 与 `AsyncRemoteStore` 中对应的异步方法有默认实现（先 `read`，在客户端比较摘要，再 `put`）：**不原子**（并发的条件写入可能都成功），条件读取总是传输正文。Redis 与内存后端以一次原子操作覆盖它们。`unreadableAsAbsent` 参数由引擎按 `foreignFormat` 传入（存储不持有策略）。
+- **SPI**：`RemoteStore.readIfChanged` 与 `readIfChangedAsync` 的默认实现先 `read`、在客户端比较摘要：结果正确，只是总是传输正文。`putIfMatch` 与 `putIfMatchAsync` 的默认实现抛出（异步以它完成）`UnsupportedOperationException`，引擎原样抛给调用方、不广播：不原子的“先读后写”会让两个并发的写入方都得到 `Written`（丢失更新），宁可不支持。异步默认实现不委托给同步方法（不能在调用方线程上阻塞），原生异步的存储必须同时覆盖两者。Redis 与内存后端以一次原子操作覆盖它们。`foreignAsAbsent` 参数由引擎按 `foreignFormat` 传入（存储不持有策略）。
 - `SetCache` 不支持（元素增删本身是原子的）；其它 `Cache` 实现默认抛出 `UnsupportedOperationException`。
 
 ## 7. 失败语义
@@ -516,7 +518,7 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 | 你实现 | 继承 |
 |--------|------|
 | `CoherenceBackend`（L1 协议 + 失效通道） | `BackendProtocolSpec`（状态机、令牌、到期时间重设、release、reclaim、批量读、批量覆盖写入、集合、广播帧与订阅重置） |
-| 后端在引擎下的端到端行为 | `EngineSpec`（两个运行时共享一个后端：跨节点单次回源、lease 等待超时、同节点失效与并发读、同节点并发 `put`、读己之写、失效重试、`localMaxAge`、批量、跨节点单次刷新、损坏回收、未知格式、读不懂的内容按 `foreignFormat` 失败或回收、没有数据源时更高格式版本按 `foreignFormat` 失败或按不存在处理、`putAll` 的跨节点失效与在途加载栅栏、条件读写（摘要未变、绕过 L2、负缓存与 lease 是没有值、冲突不广播、并发“读—改—条件写”不丢更新、到期时间、读不懂的内容按 `foreignFormat` 失败或视为没有值、L1 故障；只依赖不原子的 `putIfMatch` 默认实现的后端以 `atomicConditionalWrites = false` 跳过并发用例）等）与 `SetEngineSpec`（集合缓存，含格式 0 的 `FAIL` / `RECLAIM`，元素写入落在读不懂的内容上时 `FAIL` 拒绝、`RECLAIM` 覆盖，负缓存上照常写入） |
+| 后端在引擎下的端到端行为 | `EngineSpec`（两个运行时共享一个后端：跨节点单次回源、lease 等待超时、同节点失效与并发读、同节点并发 `put`、读己之写、失效重试、`localMaxAge`、批量、跨节点单次刷新、损坏回收、未知格式、读不懂的内容按 `foreignFormat` 失败或回收、没有数据源时更高格式版本按 `foreignFormat` 失败或按不存在处理、`putAll` 的跨节点失效与在途加载栅栏、条件读写（摘要未变、绕过 L2、负缓存与 lease 是没有值、冲突不广播、并发“读—改—条件写”不丢更新、到期时间、读不懂的内容失败（`RECLAIM` 也不把本协议的集合与解码失败的值当作没有值）、L1 故障；不支持条件写入的后端以 `supportsConditionalWrites = false` 跳过条件写入的用例；支持的必须原子，并发用例强制竞争、断言恰好一个写入方胜出）等）与 `SetEngineSpec`（集合缓存，含格式 0 的 `FAIL` / `RECLAIM`，元素写入落在读不懂的内容上时 `FAIL` 拒绝、`RECLAIM` 覆盖，负缓存上照常写入） |
 | 多节点交错（§4.3、§5、§7） | `MultiNodeSpec`（三个运行时共享一个后端：失效先于 lease、晚于 lease 且有节点在等待、晚于 fill 而早于写 L2；跨节点写入落在读 L1 与写 L2 之间；跨节点并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全集群每个 key 单次回源与单次刷新的计数断言） |
 | 异步视图（§5.6） | `AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec`：经 `CacheAccess.ASYNC` 把对应规范的每个用例改由 `async()` 视图读写（同步数据源换成在调用线程上执行的异步数据源）重跑；`AsyncEngineSpec` 另有取消、完成线程、lease 等待与回源许可等待只用常数个线程（各 1000 个等待者）、原始异常、不同步抛出、`asyncTimeout` 释放 lease、同步与异步互相合并、重入、同步数据源只在阻塞执行器上执行、运行时关闭时的等待等用例 |
 | 原生异步的后端（`AsyncRemoteStore`） | `AsyncBackendProtocolSpec`：`BackendProtocolSpec` 的每个用例经异步方法重跑（不得同步抛出，失败为原始异常），另加同步与异步交替调用的一致性 |
@@ -571,4 +573,4 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
 16. **starter 注册的缓存 bean 必须能由 AOT 生成代码重建**：只用静态工厂方法与可序列化的构造参数，不用实例提供者，不依赖 bean 定义属性（§9.6）。
 17. **取消不传播**：取消调用方的 future 不取消共享加载、不取消数据源的 future、不跳过写入方的第二次递增（§5.6）。
 18. **异步视图不挂起线程、不同步抛出**：等待 lease 与回源许可都不占线程；失败以原始异常（不包装为 `CompletionException`）完成返回的 future（§5.6）。
-19. **条件读写只确认 L1**：`getIfChanged` 不读写 L2、不回源、不申请令牌、不修改 L1；`putIfMatch` 的比较与写入在一个原子操作中完成，冲突与拒绝不修改 L1、不广播，写入方顺序同 `put`。“没有值”是不存在、lease 占位与负缓存；摘要只比较本协议标量值的载荷（§6.4）。
+19. **条件读写只确认 L1**：`getIfChanged` 不读写 L2、不回源、不申请令牌、不修改 L1；`putIfMatch` 的比较与写入在一个原子操作中完成，冲突与拒绝不修改 L1、不广播，写入方顺序同 `put`；后端不能原子地完成时不支持它（不提供“先读后写”）。“没有值”是不存在、lease 占位与负缓存；读与写对读不懂的内容分类相同，只有格式 0 的内容能在 `RECLAIM` 下视为没有值；摘要只比较本协议标量值的载荷（§6.4）。

@@ -324,7 +324,7 @@ class InMemoryBackend @JvmOverloads constructor(
                 State.VALUE -> {
                     val envelope = slot.envelope as Envelope.Scalar
                     if (known != null && Digest.of(envelope) == known) {
-                        RemoteConditionalRead.Unchanged
+                        RemoteConditionalRead.Unchanged(FORMAT)
                     } else {
                         RemoteConditionalRead.Changed(envelope, FORMAT)
                     }
@@ -333,7 +333,8 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * 比较与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。
+         * 比较与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。本后端只存本协议的内容，没有格式 0 的内容，
+         * 因此 [foreignAsAbsent] 不起作用：集合总是拒绝。
          */
         override fun putIfMatch(
             key: String,
@@ -341,7 +342,7 @@ class InMemoryBackend @JvmOverloads constructor(
             envelope: Envelope.Scalar,
             ttl: Duration?,
             frame: ByteArray,
-            unreadableAsAbsent: Boolean
+            foreignAsAbsent: Boolean
         ): RemoteConditionalWrite {
             var outcome: RemoteConditionalWrite = RemoteConditionalWrite.Written
             slots.compute(key) { _, current ->
@@ -349,9 +350,7 @@ class InMemoryBackend @JvmOverloads constructor(
                 val digest = when (slot?.state) {
                     null, State.LEASED, State.MISSING -> null
                     State.VALUE -> Digest.of(slot.envelope)
-                    State.SET -> if (unreadableAsAbsent) {
-                        null
-                    } else {
+                    State.SET -> {
                         outcome = RemoteConditionalWrite.Unreadable(FORMAT)
                         return@compute slot
                     }
@@ -377,9 +376,9 @@ class InMemoryBackend @JvmOverloads constructor(
             envelope: Envelope.Scalar,
             ttl: Duration?,
             frame: ByteArray,
-            unreadableAsAbsent: Boolean
+            foreignAsAbsent: Boolean
         ): CompletableFuture<RemoteConditionalWrite> = supply {
-            putIfMatch(key, expected, envelope, ttl, frame, unreadableAsAbsent)
+            putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
         }
 
         override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =

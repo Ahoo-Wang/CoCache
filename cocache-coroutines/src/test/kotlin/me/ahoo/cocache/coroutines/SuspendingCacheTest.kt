@@ -26,8 +26,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
+import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
@@ -577,5 +579,35 @@ class SuspendingCacheTest {
         } finally {
             other.close()
         }
+    }
+
+    /**
+     * 6.7 新增的条件读写带默认实现（抛出 [UnsupportedOperationException]），6.6 时写成的实现无需改动。
+     */
+    @Test
+    fun conditionalMethodsHaveUnsupportedDefaults(): Unit = runBlocking {
+        val plain = object : SuspendingCache<String, String> {
+            override val name: String = "plain"
+            override suspend fun get(key: String): String? = null
+            override suspend fun get(key: String, loader: suspend (String) -> String?): String? = null
+            override suspend fun getAll(keys: Collection<String>): Map<String, String> = emptyMap()
+            override suspend fun lookup(key: String): Lookup<String> = Lookup.Absent(null)
+            override suspend fun put(key: String, value: String) = Unit
+            override suspend fun put(key: String, value: String, ttl: Duration) = Unit
+            override suspend fun putAll(entries: Map<String, String>) = Unit
+            override suspend fun putAll(entries: Map<String, String>, ttl: Duration) = Unit
+            override suspend fun invalidate(key: String) = Unit
+            override suspend fun invalidateAll(keys: Collection<String>) = Unit
+            override fun async(): AsyncCache<String, String> = throw UnsupportedOperationException()
+        }
+        val known = Digest(ByteArray(20))
+        runCatching {
+            plain.getIfChanged("k", known)
+        }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
+        runCatching {
+            plain.putIfMatch("k", null, "v")
+        }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
+        runCatching { plain.putIfMatch("k", known, "v", Duration.ofSeconds(1)) }.exceptionOrNull()
+            .assert().isInstanceOf(UnsupportedOperationException::class.java)
     }
 }

@@ -75,19 +75,22 @@ interface SuspendingCache<K : Any, V : Any> {
     suspend fun invalidateAll(keys: Collection<K>)
 
     /**
-     * 条件读取，语义同 [Cache.getIfChanged]。
+     * 条件读取，语义同 [Cache.getIfChanged]。6.7 新增：默认抛出 [UnsupportedOperationException]，已有的实现无需改动。
      */
-    suspend fun getIfChanged(key: K, known: Digest?): ConditionalGet<V>
+    suspend fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> =
+        throw UnsupportedOperationException("${javaClass.name} does not support getIfChanged().")
 
     /**
-     * 条件写入，语义同 [Cache.putIfMatch]。
+     * 条件写入，语义同 [Cache.putIfMatch]。6.7 新增：默认抛出 [UnsupportedOperationException]。
      */
-    suspend fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut
+    suspend fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut =
+        throw UnsupportedOperationException("${javaClass.name} does not support putIfMatch().")
 
     /**
-     * 以指定时长条件写入，语义同 [Cache.putIfMatch] (key, expected, value, ttl)。
+     * 以指定时长条件写入，语义同 [Cache.putIfMatch] (key, expected, value, ttl)。6.7 新增：默认抛出 [UnsupportedOperationException]。
      */
-    suspend fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut
+    suspend fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
+        throw UnsupportedOperationException("${javaClass.name} does not support putIfMatch().")
 
     /**
      * 同一缓存的异步视图。

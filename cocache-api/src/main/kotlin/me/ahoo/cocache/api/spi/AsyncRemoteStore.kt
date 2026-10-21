@@ -143,7 +143,8 @@ interface AsyncRemoteStore : RemoteStore {
     /**
      * 异步的 [RemoteStore.putIfMatch]：当前内容符合期望时写入并广播，以 [RemoteConditionalWrite.Written] 完成；否则不修改、不广播。
      *
-     * 默认实现先 [readAsync] 再 [putAsync]（不原子）；实现应当覆盖它。
+     * 默认实现以 [UnsupportedOperationException] 完成（理由同 [RemoteStore.putIfMatch]）。只覆盖了同步方法的原生异步存储也是如此：
+     * 默认实现不能在调用方线程上阻塞地调用同步方法，支持条件写入的原生异步存储必须同时覆盖两者。
      */
     @Suppress("LongParameterList")
     fun putIfMatchAsync(
@@ -152,15 +153,10 @@ interface AsyncRemoteStore : RemoteStore {
         envelope: Envelope.Scalar,
         ttl: Duration?,
         frame: ByteArray,
-        unreadableAsAbsent: Boolean
-    ): CompletableFuture<RemoteConditionalWrite> = readAsync(key, null, null).thenCompose { read ->
-        val refusal = conditionalRefusal(read, expected, unreadableAsAbsent)
-        if (refusal != null) {
-            CompletableFuture.completedFuture(refusal)
-        } else {
-            putAsync(key, envelope, ttl, frame).thenApply<RemoteConditionalWrite> { RemoteConditionalWrite.Written }
-        }
-    }
+        foreignAsAbsent: Boolean
+    ): CompletableFuture<RemoteConditionalWrite> = CompletableFuture.failedFuture(
+        UnsupportedOperationException("${javaClass.name} does not support putIfMatchAsync().")
+    )
 }
 
 /**

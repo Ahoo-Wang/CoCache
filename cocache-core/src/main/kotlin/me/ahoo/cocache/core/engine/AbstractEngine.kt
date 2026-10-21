@@ -166,7 +166,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 非原子广播时 L1 失败也尽力广播：失败的写入可能已部分生效（`putAll` 跨多个 slot 组时有的组已写入，
      * 或写入已在 L1 生效却报错），不广播的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）。多余的广播只淘汰副本，无害。
      * 前提是 [mutate] 返回或抛出时它的全部 L1 命令都已结束（否则广播可能先于仍在执行的命令）。
-     * 例外是 [ForeignFormatException]：后端拒绝了写入，L1 原样未动，不广播。
+     * 例外是 [ForeignFormatException] 与 [UnsupportedOperationException]：后端拒绝了写入（或不支持这个操作），L1 原样未动，不广播。
      *
      * @param onFailure L1 失败时调用（在第二次递增之前，因此登记的状态对随后的读取可见）
      */
@@ -194,7 +194,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             try {
                 mutate(frame)
             } catch (e: Exception) {
-                if (!atomicBroadcast && e !is ForeignFormatException) {
+                if (!atomicBroadcast && !isRefusal(e)) {
                     publishAfterFailure(frame, e)
                 }
                 throw e
@@ -300,8 +300,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             // 条件写入的冲突没有修改 L1，没有需要广播的变化
             return if (changed()) asyncChannel.publishAsync(namespace, frame) else Futures.done()
         }
-        if (error is ForeignFormatException) {
-            // 后端拒绝了写入（L1 未修改），没有需要广播的变化
+        if (isRefusal(error)) {
+            // 后端拒绝了写入或不支持它（L1 未修改），没有需要广播的变化
             return CompletableFuture.failedFuture(error)
         }
         val failed = CompletableFuture<Void?>()
@@ -496,6 +496,13 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
          * 无条件写入：总是修改 L1。
          */
         val ALWAYS_CHANGED: () -> Boolean = { true }
+
+        /**
+         * 后端没有修改 L1 就拒绝了写入：读不懂的内容，或后端不支持这个操作（SPI 默认实现）。
+         */
+        fun isRefusal(
+            error: Throwable
+        ): Boolean = error is ForeignFormatException || error is UnsupportedOperationException
 
         fun <V> buildLocal(policy: CachePolicy): Cache<String, LocalEntry<V>> {
             val local = policy.local

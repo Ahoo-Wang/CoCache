@@ -73,10 +73,11 @@ fun update(key: String, change: (Document?) -> Document) {
 
 - **摘要**是值经编解码器编码后的字节的 SHA-1。`ConditionalGet.Present` 与 `ConditionalPut.Written` 都返回它。编解码器把相等的值编码成不同的字节时（例如无序的 map），摘要也不同。
 - **`putIfMatch(key, expected, value)`** 在一个 Redis 脚本中比较并写入。`expected = null` 时只在 Redis 中没有值时写入：key 不存在、有加载用的 lease，或者是负缓存。否则只在值的摘要等于 `expected` 时写入。冲突返回 `Conflict(current)`（Redis 中没有值时为 `null`），什么都不改：不写入、不改寿命、不发失效消息。写入成功就是一次 `put`：寿命规则相同（`ttlOf` 或策略，或 `ttl` 参数），同样失效所有实例的 L2，本实例的下一次读取能看到它。
-- **`getIfChanged(key, known)`** 询问 Redis 值的摘要是否仍是 `known`。是则返回 `Unchanged`，不传输值：Redis 只回复一个整数，确认一个大值只花一次往返，而不是它在网络上的大小。Redis 仍要在脚本中读取这个值并计算 SHA-1，在 Redis 7.4 上 8 MB 的值约 20 ms。否则返回 `Present(value, digest)` 或 `Absent`。用它重新确认内存中持有的值：保存摘要，定期或在收到失效时调用 `getIfChanged`。
+- **`getIfChanged(key, known)`** 询问 Redis 值的摘要是否仍是 `known`。是则返回 `Unchanged`，不传输值：Redis 只回复两个整数，确认一个大值只花一次往返，而不是它在网络上的大小。它不省 Redis 的 CPU：脚本每次都读取这个值并计算 SHA-1，期间 Redis 不处理其它命令（在 Redis 7.4 上 8 MB 的值约 20 ms，其中约 13 ms 是普通的 L1 读取同样要付的读取）。按实例数 × 值的个数 × 大小估算确认周期。否则返回 `Present(value, digest)` 或 `Absent`。用它重新确认内存中持有的值：保存摘要，定期或在收到失效时调用 `getIfChanged`。
 - **两者都绕过 L2。** 只读写 Redis，从不经 loader 加载，也不填充 L2。缓存的 L2 可能比 `getIfChanged` 返回的旧，差距在 `localMaxAge` 之内。
 - **失败：** Redis 故障时 `getIfChanged` 抛出 `CacheReadException`，与 `read-failure` 无关，因为没有可以降级的答案。`putIfMatch` 抛出 `CacheWriteException`。它不是幂等的：超时之后先调用 `getIfChanged`，当前摘要正是 `Written` 本应返回的那个时，说明已经写入。
-- **读不懂的内容**（5.x 的数据、更高版本的 CoCache 写入的值、集合、编解码器无法解码的值）按 `foreign-format` 处理，与没有 loader 的缓存相同：`fail`（默认）时两个方法都抛出，`cause` 为 `ForeignFormatException`，key 不被修改；`reclaim` 时这类内容视为没有值，`putIfMatch(key, null, value)` 会替换它。
+- **读不懂的内容**不会被一个方法当作空值、被另一个方法当作值。更高版本的 CoCache 写入的值或集合：两个方法都抛出，`cause` 为 `ForeignFormatException`，key 不被修改。编解码器无法解码的值：`getIfChanged` 抛出；`putIfMatch` 看不到编解码器，遇到它只会返回 `Conflict`，从不覆盖。不是 CoCache 6 写入的内容（5.x 的数据）按 `foreign-format` 处理，与没有 loader 的缓存相同：`fail`（默认）时两个方法都抛出；`reclaim` 时视为没有值，`getIfChanged` 返回 `Absent`，`putIfMatch(key, null, value)` 会替换它。
+- **自定义后端**必须原子地实现条件写入，否则就不实现：SPI 的 `putIfMatch` 默认抛出 `UnsupportedOperationException`，调用方会看到它。
 - **所有写入方都必须用 `putIfMatch`。** 普通的 `put` 不检查，仍会压过并发的“读取—修改—写回”。
 - `SetCache` 不支持它们，因为它的 `add` 与 `remove` 本身就是原子的。异步视图与[挂起视图](./coroutines.md)有同名方法。
 

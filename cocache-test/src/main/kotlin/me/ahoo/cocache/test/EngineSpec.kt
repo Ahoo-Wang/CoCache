@@ -54,7 +54,9 @@ import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -94,10 +96,15 @@ abstract class EngineSpec {
     protected open val closesBackend: Boolean = false
 
     /**
-     * 后端是否原子地实现条件写入（覆盖了 `RemoteStore.putIfMatch`）。只依赖 SPI 默认实现（先读后写，不原子）的后端
-     * 覆盖为 `false`，跳过并发“读—改—条件写”的用例：默认实现在并发下会丢失更新。
+     * 后端是否支持条件写入（`RemoteStore.putIfMatch` / `AsyncRemoteStore.putIfMatchAsync`）。SPI 的默认实现抛出
+     * `UnsupportedOperationException`：没有实现它的后端覆盖为 `false`，跳过条件写入的用例。为 `true`（默认）时
+     * 条件写入必须原子，不原子的实现无法通过强制竞争的并发用例。
      */
-    protected open val atomicConditionalWrites: Boolean = true
+    protected open val supportsConditionalWrites: Boolean = true
+
+    private fun assumeConditionalWrites() {
+        Assumptions.assumeTrue(supportsConditionalWrites, "the backend does not support putIfMatch")
+    }
 
     protected lateinit var backend: HookedBackend
     protected lateinit var nodeA: CacheRuntime
@@ -1033,6 +1040,7 @@ abstract class EngineSpec {
      */
     @Test
     fun negativeEntriesAndLeasesHoldNoValue() {
+        assumeConditionalWrites()
         val cache = storeOfRecord()
         backend.delegate.store(
             cacheName
@@ -1065,6 +1073,7 @@ abstract class EngineSpec {
      */
     @Test
     fun putIfMatchWritesOnlyWhenTheDigestMatches() {
+        assumeConditionalWrites()
         val cache = storeOfRecord()
         val other = nodeB.cache(spec { loader = null })
         cache.putIfMatch("k", null, "v1").assert().isEqualTo(ConditionalPut.Written(digestOf("v1")))
@@ -1092,6 +1101,7 @@ abstract class EngineSpec {
      */
     @Test
     fun putIfMatchConflictDoesNotBroadcast() {
+        assumeConditionalWrites()
         val cache = storeOfRecord()
         val other = nodeB.cache(spec { loader = null })
         cache.put("k", "v1")
@@ -1109,38 +1119,52 @@ abstract class EngineSpec {
 
     /**
      * N 个线程（分布在两个节点上）在同一个 key 上做“读—改—条件写”循环：没有一次更新丢失。
+     * 第一轮强制竞争：全部线程读到同一个值后才同时写，因此恰好一个写入成功，其余都冲突（不原子的实现会让多个成功）。
      */
     @Test
     fun concurrentReadModifyWriteLosesNoUpdate() {
-        Assumptions.assumeTrue(atomicConditionalWrites, "the backend relies on the non-atomic putIfMatch default")
+        assumeConditionalWrites()
         val caches = listOf(storeOfRecord(), nodeB.cache(spec { loader = null }))
         val threads = 8
         val increments = 25
-        val start = CountDownLatch(1)
+        val firstRead = CyclicBarrier(threads)
+        val firstWins = AtomicInteger()
         val workers = (0 until threads).map { index ->
             val cache = caches[index % caches.size]
             fork("cas-$index") {
-                start.awaitOrFail("start")
-                repeat(increments) { increment(cache, "counter") }
+                if (increment(cache, "counter", firstRead) == 0) {
+                    firstWins.incrementAndGet()
+                }
+                repeat(increments - 1) { increment(cache, "counter") }
             }
         }
-        start.countDown()
         workers.forEach { it.join() }
+        firstWins.get().assert().withFailMessage { "exactly one writer of the contended round must win" }.isEqualTo(1)
+        val conflicts = nodeA.metrics().conditionalConflicts + nodeB.metrics().conditionalConflicts
+        conflicts.assert().isGreaterThanOrEqualTo((threads - 1).toLong())
         val final = caches[0].getIfChanged("counter", null) as ConditionalGet.Present
         final.value.assert().isEqualTo((threads * increments).toString())
         remoteValue("counter").assert().isEqualTo((threads * increments).toString())
     }
 
-    private fun increment(cache: Cache<String, String>, key: String) {
+    /**
+     * 一次增量；返回期间遇到的冲突次数。[barrier] 非空时第一次读取之后在它上面等齐全部线程再写。
+     */
+    private fun increment(cache: Cache<String, String>, key: String, barrier: CyclicBarrier? = null): Int {
+        var conflicts = 0
+        var gate = barrier
         while (true) {
             val current = cache.getIfChanged(key, null)
             val (value, digest) = when (current) {
                 is ConditionalGet.Present -> current.value.toInt() to current.digest
                 else -> 0 to null
             }
+            gate?.await(BARRIER_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            gate = null
             if (cache.putIfMatch(key, digest, (value + 1).toString()) is ConditionalPut.Written) {
-                return
+                return conflicts
             }
+            conflicts++
         }
     }
 
@@ -1149,6 +1173,7 @@ abstract class EngineSpec {
      */
     @Test
     fun putIfMatchSetsTtlLikePutAndConflictsKeepIt() {
+        assumeConditionalWrites()
         val cache = storeOfRecord()
         cache.putIfMatch("k", null, "v1", Duration.ofMinutes(1))
         val ttl = requireNotNull((remote("k") as RemoteRead.Hit).ttl)
@@ -1177,6 +1202,7 @@ abstract class EngineSpec {
      */
     @Test
     fun conditionalOperationsFailOnUnreadableContentByDefault() {
+        assumeConditionalWrites()
         val cache = nodeA.cache(spec())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         backend.delegate.store(cacheName).addMembers(storageKey("set"), listOf("a".toByteArray()), null, frame)
@@ -1191,7 +1217,7 @@ abstract class EngineSpec {
         writeError.cause.assert().isInstanceOf(ForeignFormatException::class.java)
         (remote("set") as RemoteRead.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
 
-        // 同版本内容解码失败：读取失败；写入只看摘要（调用方拿不到它的摘要），因此是冲突
+        // 同版本内容解码失败：读取失败；写入的脚本看不到 Codec，只看摘要：调用方拿不到它的摘要，因此只会冲突、从不覆盖
         val corrupt = runCatching { cache.getIfChanged("corrupt", null) }.exceptionOrNull()
         corrupt.assert().isInstanceOf(CacheReadException::class.java)
         requireNotNull(corrupt?.cause as? ForeignFormatException).format.assert().isEqualTo(backend.format)
@@ -1205,21 +1231,39 @@ abstract class EngineSpec {
     }
 
     /**
-     * 显式 `RECLAIM`：读不懂的内容视为没有值，条件读取返回 `Absent`（不修改 L1），`expected = null` 的条件写入整体覆盖它。
+     * 显式 `RECLAIM` 只放宽不是本协议写入的内容（格式 0，见各后端自己的测试）：本协议的集合与解码失败的值仍然读不懂，
+     * 读取抛出、写入拒绝或冲突，从不当作没有值（否则 CAS 循环会从空值出发覆盖它，或者永远读到 `Absent`、写入永远冲突）。
      */
     @Test
-    fun conditionalOperationsTreatUnreadableContentAsAbsentWhenReclaimIsConfigured() {
+    fun reclaimDoesNotTreatProtocolContentAsAbsent() {
+        assumeConditionalWrites()
         val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
         val cache = storeOfRecord(reclaim)
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         backend.delegate.store(cacheName).addMembers(storageKey("set"), listOf("a".toByteArray()), null, frame)
+        writeRemoteSilently("corrupt", TestCodec.CORRUPT)
 
-        cache.getIfChanged("set", null).assert().isEqualTo(ConditionalGet.Absent)
+        runCatching {
+            cache.getIfChanged(
+                "set",
+                null
+            )
+        }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        runCatching {
+            cache.putIfMatch("set", null, "v")
+        }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
         (remote("set") as RemoteRead.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
-        cache.putIfMatch("set", digestOf("x"), "v").assert().isEqualTo(ConditionalPut.Conflict(null))
-        cache.putIfMatch("set", null, "v").assert().isEqualTo(ConditionalPut.Written(digestOf("v")))
-        remoteValue("set").assert().isEqualTo("v")
-        nodeA.metrics().unknownFormats.assert().isEqualTo(1)
+
+        runCatching {
+            cache.getIfChanged("corrupt", null)
+        }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        cache.putIfMatch(
+            "corrupt",
+            null,
+            "v"
+        ).assert().isEqualTo(ConditionalPut.Conflict(Digest.of(Envelope.Scalar(TestCodec.CORRUPT))))
+        ((remote("corrupt") as RemoteRead.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
+        nodeA.metrics().unknownFormats.assert().isEqualTo(3)
     }
 
     /**
@@ -1227,6 +1271,7 @@ abstract class EngineSpec {
      */
     @Test
     fun conditionalOperationsThrowWhenRemoteFails() {
+        assumeConditionalWrites()
         val cache = nodeA.cache(spec())
         backend.failAll = true
         runCatching {
@@ -1246,6 +1291,10 @@ abstract class EngineSpec {
         nodeA.metrics().remoteFailures.assert().isGreaterThanOrEqualTo(1)
         nodeA.metrics().writeFailures.assert().isEqualTo(1)
         loads.get().assert().isEqualTo(0)
+    }
+
+    private companion object {
+        const val BARRIER_TIMEOUT_SECONDS = 30L
     }
 
     /**

@@ -56,7 +56,8 @@ while (true) {
 - `putIfMatch(key, expected, value)`: one atomic compare-and-write; `expected = null` means "only if Redis holds no value" (absent, lease or negative entry). A conflict changes nothing and broadcasts nothing. A write behaves like `put` (TTL, fencing, no L2 fill).
 - `getIfChanged(key, known)`: `Unchanged` without transferring the value when its digest still equals `known`, otherwise `Present(value, digest)` or `Absent`. Use it to revalidate a value held in memory. Redis still hashes the value in the script.
 - Neither touches L2 or the loader. `getIfChanged` throws `CacheReadException` on a Redis failure regardless of `read-failure`; `putIfMatch` throws `CacheWriteException` and is not idempotent: after a timeout, re-read before retrying.
-- Unreadable content follows `foreign-format` (default `fail`: throw, key untouched; `reclaim`: counts as no value). Not available on `SetCache`.
+- Unreadable content: newer-format values and sets always throw, key untouched. A value the codec can't decode makes the read throw, and the write only conflicts on it. Format-0 (5.x) content follows `foreign-format` (default `fail`: throw; `reclaim`: counts as no value). Not available on `SetCache`, nor on backends that don't implement `putIfMatch` (`UnsupportedOperationException`).
+- Cost: an unchanged `getIfChanged` saves wire bytes, not Redis CPU. Redis reads and SHA-1s the value on every call, about 20 ms for 8 MB on Redis 7.4.
 
 ## Inside a transaction
 

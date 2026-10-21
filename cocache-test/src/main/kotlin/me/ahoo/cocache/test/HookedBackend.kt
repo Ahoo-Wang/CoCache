@@ -286,10 +286,10 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             envelope: Envelope.Scalar,
             ttl: Duration?,
             frame: ByteArray,
-            unreadableAsAbsent: Boolean
+            foreignAsAbsent: Boolean
         ): RemoteConditionalWrite {
             guard("put", fail = failWrites)
-            return store.putIfMatch(key, expected, envelope, ttl, frame, unreadableAsAbsent)
+            return store.putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
         }
 
         override fun close() = store.close()
@@ -421,9 +421,9 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             envelope: Envelope.Scalar,
             ttl: Duration?,
             frame: ByteArray,
-            unreadableAsAbsent: Boolean
+            foreignAsAbsent: Boolean
         ): CompletableFuture<RemoteConditionalWrite> = hooked("put", fail = failWrites) {
-            store.putIfMatchAsync(key, expected, envelope, ttl, frame, unreadableAsAbsent)
+            store.putIfMatchAsync(key, expected, envelope, ttl, frame, foreignAsAbsent)
         }
 
         override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =

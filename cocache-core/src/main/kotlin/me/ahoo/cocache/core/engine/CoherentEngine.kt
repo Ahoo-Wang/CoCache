@@ -937,11 +937,13 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     // ---------------------------------------------------------------------------------------------
     // 条件读写（按摘要比较）：只针对 L1，不读写 L2、不回源、不申请 lease。从不回源，因此读不懂的内容按“没有数据源”
-    // 处理：未配置 foreignFormat 时为 FAIL。同步与异步共用 [conditionalGetOf]、[refuseUnreadable]、[conditionalPutOf]。
+    // 处理：未配置 foreignFormat 时为 FAIL。读与写对内容的分类相同：只有不是本协议写入的内容（格式 0）可以在 RECLAIM 下
+    // 视为没有值；本协议的集合、更高格式版本、解码失败的值总是读不懂（读取抛出；写入抛出，或因摘要不符而冲突）。
+    // 同步与异步共用 [conditionalGetOf]、[refuseUnreadable]、[conditionalPutOf]。
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * 条件读写遇到读不懂的内容时是否拒绝（抛出）；否则视为没有值。
+     * `RECLAIM` 之外（含未配置）条件读写遇到格式 0 的内容时拒绝（抛出）；`RECLAIM` 时视为没有值。
      */
     private val conditionalFailsOnForeign: Boolean = (policy.foreignFormat ?: ForeignFormatMode.FAIL) == ForeignFormatMode.FAIL
 
@@ -969,7 +971,10 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun conditionalGetOf(storageKey: String, read: RemoteConditionalRead): ConditionalGet<V> = when (read) {
-        RemoteConditionalRead.Unchanged -> {
+        // 摘要只覆盖载荷：再确认这个值仍是本节点读得懂的格式
+        is RemoteConditionalRead.Unchanged -> if (read.format < MIN_FORMAT || read.format > backendFormat) {
+            unreadableGet(storageKey, read.format, null)
+        } else {
             metrics.conditionalUnchanged()
             ConditionalGet.Unchanged
         }
@@ -988,11 +993,12 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 读不懂的内容：计入 `unknownFormats`；`FAIL` 抛出（不修改 L1），`RECLAIM` 视为没有值（也不修改 L1）。
+     * 读不懂的内容：计入 `unknownFormats`，抛出（不修改 L1）。唯一的例外是 `RECLAIM` 下格式 0 的内容：视为没有值（也不修改 L1），
+     * 与 `PUT_IF_MATCH` 的 `foreignAsAbsent` 一致。
      */
     private fun unreadableGet(storageKey: String, format: Int, error: Exception?): ConditionalGet<V> {
         metrics.unknownFormat()
-        if (!conditionalFailsOnForeign) {
+        if (format < MIN_FORMAT && !conditionalFailsOnForeign) {
             log.warn { "Cache[$name] - key[$storageKey] - unreadable remote content (format[$format]), treated as absent." }
             return ConditionalGet.Absent
         }
@@ -1030,9 +1036,20 @@ internal class CoherentEngine<K : Any, V : Any>(
                 refuseUnreadable(storageKey, result)
             },
             { outcome == RemoteConditionalWrite.Written },
-            throwWriteFailure("putIfMatch")
+            conditionalWriteFailure
         )
         return conditionalPutOf(envelope, requireNotNull(outcome))
+    }
+
+    /**
+     * 后端不支持条件写入（SPI 默认实现）时原样抛出 [UnsupportedOperationException]，与不支持的 `Cache` 实现一致；
+     * 其余失败包装为 `CacheWriteException`。
+     */
+    private val conditionalWriteFailure: (Exception) -> Unit = { error ->
+        if (error is UnsupportedOperationException) {
+            throw error
+        }
+        throw CacheWriteException(name, "putIfMatch", error)
     }
 
     /**
@@ -1852,7 +1869,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                     }
             },
             { outcome.get() == RemoteConditionalWrite.Written },
-            throwWriteFailure("putIfMatch")
+            conditionalWriteFailure
         ).thenApply { conditionalPutOf(envelope, requireNotNull(outcome.get())) }
     }
 

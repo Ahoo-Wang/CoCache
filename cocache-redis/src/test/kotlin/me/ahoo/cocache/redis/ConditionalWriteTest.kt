@@ -35,7 +35,6 @@ import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.redis.migration.Redis5x
 import me.ahoo.cocache.test.Concurrency.awaitCondition
-import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
@@ -43,8 +42,9 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.TimeUnit
 
 /**
  * 按摘要的条件读写在真实 Redis 上的线上行为（standalone、Cluster、Valkey）：
@@ -85,7 +85,7 @@ class ConditionalWriteTest {
     private fun digestOf(value: String) = Digest.of(Envelope.Scalar(value.toByteArray()))
 
     /**
-     * 直接执行条件读取脚本，看 Redis 的回复本身：摘要未变时回复只有结果码（一个整数），正文不上线。
+     * 直接执行条件读取脚本，看 Redis 的回复本身：摘要未变时回复只有结果码与格式版本（两个整数），正文不上线。
      */
     @Test
     fun unchangedReadRepliesWithoutTheBody() {
@@ -99,7 +99,9 @@ class ConditionalWriteTest {
             it.eval<List<Any?>>(source, ScriptOutputType.MULTI, arrayOf(key), known)
         }
 
-        reply(digestOf(document).toString()).assert().containsExactly(RedisScripts.COND_UNCHANGED)
+        reply(
+            digestOf(document).toString()
+        ).assert().containsExactly(RedisScripts.COND_UNCHANGED, RedisScripts.FORMAT.toLong())
         val changed = reply(digestOf("older").toString())
         changed.size.assert().isEqualTo(3)
         (changed[2] as String).length.assert().isEqualTo(document.length)
@@ -188,14 +190,29 @@ class ConditionalWriteTest {
     }
 
     /**
-     * 显式 `RECLAIM`：读不懂的内容视为没有值；`expected = null` 的条件写入整体覆盖它（换成本协议的值与新的到期时间）。
+     * 显式 `RECLAIM`：只有不是本协议写入的内容（格式 0，这里是 5.x 的原生 Set）视为没有值，`expected = null` 的条件写入
+     * 整体覆盖它（换成本协议的值与新的到期时间）。更高版本写入的值与本协议的集合仍然拒绝：滚动升级期间旧节点不能降级覆盖新值。
      */
     @Test
-    fun reclaimTreatsUnreadableContentAsAbsent() {
+    fun reclaimTreatsOnlyForeignContentAsAbsent() {
         val name = "reclaim-$run"
         val key = "cocache:$name:k"
         Redis5x.set(key, listOf("a"), ttlSeconds = 3600)
         val cache = cache(name, ForeignFormatMode.RECLAIM, ttl = Duration.ofMinutes(1))
+        writeNewerValue("cocache:$name:newer", 3_600_000)
+        Redis5x.hash("cocache:$name:set", mapOf("!f" to "1", "+a" to ""))
+        assertForeignRead(runCatching { cache.getIfChanged("newer", null) }.exceptionOrNull(), "cocache:$name:newer", 2)
+        assertForeignWrite(
+            runCatching { cache.putIfMatch("newer", null, "v") }.exceptionOrNull(),
+            "cocache:$name:newer",
+            2
+        )
+        assertForeignRead(runCatching { cache.getIfChanged("set", null) }.exceptionOrNull(), "cocache:$name:set", 1)
+        assertForeignWrite(runCatching { cache.putIfMatch("set", null, "v") }.exceptionOrNull(), "cocache:$name:set", 1)
+        Redis5x.type("cocache:$name:newer").assert().isEqualTo("string")
+        Redis5x.pttl("cocache:$name:newer").assert().isBetween(3_000_000L, 3_600_000L)
+        Redis5x.fields("cocache:$name:set").assert().isEqualTo(mapOf("!f" to "1", "+a" to ""))
+
         cache.getIfChanged("k", null).assert().isEqualTo(ConditionalGet.Absent)
         Redis5x.type(key).assert().isEqualTo("set")
         cache.putIfMatch("k", digestOf("a"), "v").assert().isEqualTo(ConditionalPut.Conflict(null))
@@ -267,11 +284,19 @@ class ConditionalWriteTest {
         val changed = store.readIfChanged(key("value"), digestOf("other")) as RemoteConditionalRead.Changed
         changed.envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
         changed.format.assert().isEqualTo(RedisScripts.FORMAT)
-        store.readIfChangedAsync(key("value"), digestOf("v")).join().assert().isEqualTo(RemoteConditionalRead.Unchanged)
+        store.readIfChangedAsync(
+            key("value"),
+            digestOf("v")
+        ).join().assert().isEqualTo(RemoteConditionalRead.Unchanged(RedisScripts.FORMAT))
         mapOf("set" to 1, "foreign" to 0, "zero" to 0, "newer" to 2, "unknown-state" to 0).forEach { (id, format) ->
             store.readIfChanged(key(id), null).assert().isEqualTo(RemoteConditionalRead.Unreadable(format))
             store.putIfMatch(key(id), null, Envelope.Scalar("w".toByteArray()), null, frame, false)
                 .assert().isEqualTo(RemoteConditionalWrite.Unreadable(format))
+            // foreignAsAbsent 只放宽格式 0：本协议的集合与更高版本的内容仍然拒绝
+            if (format != 0) {
+                store.putIfMatch(key(id), null, Envelope.Scalar("w".toByteArray()), null, frame, true)
+                    .assert().isEqualTo(RemoteConditionalWrite.Unreadable(format))
+            }
         }
         Redis5x.get(key("foreign")).assert().isEqualTo("plain")
 
@@ -281,13 +306,18 @@ class ConditionalWriteTest {
             .join().assert().isEqualTo(RemoteConditionalWrite.Written)
         store.putIfMatch(key("leased"), null, Envelope.Scalar("w".toByteArray()), null, frame, false)
             .assert().isEqualTo(RemoteConditionalWrite.Written)
-        store.putIfMatch(key("newer"), null, Envelope.Scalar("w".toByteArray()), null, frame, true)
+        store.putIfMatch(key("foreign"), null, Envelope.Scalar("w".toByteArray()), null, frame, true)
             .assert().isEqualTo(RemoteConditionalWrite.Written)
-        store.readIfChanged(key("newer"), digestOf("w")).assert().isEqualTo(RemoteConditionalRead.Unchanged)
+        store.readIfChanged(
+            key("foreign"),
+            digestOf("w")
+        ).assert().isEqualTo(RemoteConditionalRead.Unchanged(RedisScripts.FORMAT))
+        Redis5x.type(key("newer")).assert().isEqualTo("string")
     }
 
     /**
      * 三个运行时（各自的连接与 L2）上 12 个线程同时对一个计数做“读—改—条件写”，一半经异步视图：每次增量恰好生效一次。
+     * 第一轮强制竞争：全部线程读到同一个值后才同时写，恰好一个成功，因此冲突至少有 `threads - 1` 次。
      */
     @Test
     fun concurrentReadModifyWriteAcrossRuntimesLosesNoUpdate() {
@@ -298,18 +328,18 @@ class ConditionalWriteTest {
             val caches = listOf(cache(name)) + others.map { cache(name, on = it) }
             val threads = 12
             val increments = 20
-            val start = CountDownLatch(1)
+            val firstRead = CyclicBarrier(threads)
             val workers = (0 until threads).map { index ->
                 val cache = caches[index % caches.size]
                 fork("cas-$index") {
-                    start.awaitOrFail("start")
-                    var conflicts = 0
-                    repeat(increments) { conflicts += increment(cache, async = index % 2 == 1) }
+                    val async = index % 2 == 1
+                    var conflicts = increment(cache, async, firstRead)
+                    repeat(increments - 1) { conflicts += increment(cache, async) }
                     conflicts
                 }
             }
-            start.countDown()
             val conflicts = workers.sumOf { it.join() }
+            conflicts.assert().isGreaterThanOrEqualTo(threads - 1)
             caches[1].getIfChanged("n", null)
                 .assert().isEqualTo(
                     ConditionalGet.Present(
@@ -326,13 +356,16 @@ class ConditionalWriteTest {
     }
 
     /**
-     * 一次增量；返回期间遇到的冲突次数。
+     * 一次增量；返回期间遇到的冲突次数。[barrier] 非空时第一次读取之后在它上面等齐全部线程再写。
      */
-    private fun increment(cache: Cache<String, String>, async: Boolean): Int {
+    private fun increment(cache: Cache<String, String>, async: Boolean, barrier: CyclicBarrier? = null): Int {
         var conflicts = 0
+        var gate = barrier
         while (true) {
             val current = if (async) cache.async().getIfChanged("n", null).join() else cache.getIfChanged("n", null)
             val (value, digest) = (current as? ConditionalGet.Present)?.let { it.value.toInt() to it.digest } ?: (0 to null)
+            gate?.await(BARRIER_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            gate = null
             val next = (value + 1).toString()
             val result = if (async) {
                 cache.async().putIfMatch(
@@ -348,5 +381,9 @@ class ConditionalWriteTest {
             }
             conflicts++
         }
+    }
+
+    private companion object {
+        const val BARRIER_TIMEOUT_SECONDS = 30L
     }
 }

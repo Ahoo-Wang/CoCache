@@ -110,9 +110,9 @@ internal class BlockingAsyncStore(
         envelope: Envelope.Scalar,
         ttl: Duration?,
         frame: ByteArray,
-        unreadableAsAbsent: Boolean
+        foreignAsAbsent: Boolean
     ): CompletableFuture<RemoteConditionalWrite> = offload {
-        store.putIfMatch(key, expected, envelope, ttl, frame, unreadableAsAbsent)
+        store.putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
     }
 
     companion object {

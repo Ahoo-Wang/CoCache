@@ -371,12 +371,19 @@ return {1}
     )
 
     /**
-     * 条件读写的结果码：没有值（不存在、lease、负缓存）、摘要未变、值（附格式版本与载荷）、读不懂的内容（附格式版本）。
+     * 条件读取的结果码：没有值（不存在、lease、负缓存）、摘要未变（附格式版本）、值（附格式版本与载荷）、读不懂的内容（附格式版本）。
      */
     const val COND_ABSENT = 0L
     const val COND_UNCHANGED = 1L
     const val COND_VALUE = 2L
     const val COND_UNREADABLE = 3L
+
+    /**
+     * 条件写入的结果码：冲突（附当前摘要，没有值时缺省）、已写入、读不懂的内容（附格式版本）。
+     */
+    const val PUT_CONFLICT = 0L
+    const val PUT_WRITTEN = 1L
+    const val PUT_UNREADABLE = 3L
 
     /**
      * 条件读写的检查（只有 [READ_IF_CHANGED] 与 [PUT_IF_MATCH] 引入）：返回 key 的状态与附加值，不修改 key。
@@ -409,7 +416,7 @@ end
 
     /**
      * 条件读取。ARGV：已知摘要（十六进制，空串为没有）。
-     * 返回 `{0}` 没有值、`{1}` 摘要未变（不返回正文）、`{2, 格式版本, 载荷}`、`{3, 格式版本}` 读不懂的内容。
+     * 返回 `{0}` 没有值、`{1, 格式版本}` 摘要未变（不返回正文）、`{2, 格式版本, 载荷}`、`{3, 格式版本}` 读不懂的内容。
      * 摘要同 [RECLAIM]：标量为载荷的 SHA-1。
      */
     val READ_IF_CHANGED = Script(
@@ -417,14 +424,15 @@ end
 local state, format, payload = conditional_state(KEYS[1])
 if state == 'none' then return {0} end
 if state == 'unreadable' then return {3, format} end
-if ARGV[1] ~= '' and redis.sha1hex(payload) == ARGV[1] then return {1} end
+if ARGV[1] ~= '' and redis.sha1hex(payload) == ARGV[1] then return {1, format} end
 return {2, format, payload}
 """
     )
 
     /**
      * 条件写入：当前内容符合期望时整体覆盖写入标量值（同 [PUT]）并广播，否则不修改、不广播。
-     * ARGV：期望摘要（十六进制，空串为“没有值”）、读不懂的内容是否视为没有值（`1` / `0`）、TTL、频道、帧、载荷。
+     * ARGV：期望摘要（十六进制，空串为“没有值”）、不是本协议写入的内容（格式 0）是否视为没有值（`1` / `0`）、TTL、频道、帧、载荷。
+     * 本协议的集合与更高格式版本的内容总是拒绝。
      * 返回 `{1}` 已写入、`{0}` 冲突且当前没有值、`{0, 当前摘要}` 冲突、`{3, 格式版本}` 读不懂的内容。
      */
     val PUT_IF_MATCH = Script(
@@ -432,7 +440,7 @@ return {2, format, payload}
 local key = KEYS[1]
 local state, format, payload = conditional_state(key)
 if state == 'unreadable' then
-  if ARGV[2] ~= '1' then return {3, format} end
+  if ARGV[2] ~= '1' or format ~= 0 then return {3, format} end
   state = 'none'
 end
 if state == 'none' then

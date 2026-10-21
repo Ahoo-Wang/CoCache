@@ -19,8 +19,10 @@ package me.ahoo.cocache.api.spi
 sealed interface RemoteConditionalRead {
     /**
      * key 中是本协议的标量值，其摘要等于 `known`：不返回正文。
+     *
+     * @param format 当前值的线格式版本：摘要只覆盖载荷，引擎据此确认这个值仍是本节点读得懂的格式
      */
-    data object Unchanged : RemoteConditionalRead
+    data class Unchanged(val format: Int) : RemoteConditionalRead
 
     /**
      * key 中是本协议的标量值，摘要不等于 `known`（或 `known` 为 `null`）。
@@ -55,12 +57,12 @@ sealed interface RemoteConditionalWrite {
     /**
      * 当前内容与期望不符：未修改、未广播。
      *
-     * @param current 当前值的 [Digest]；`null` 表示没有值（不存在、lease 占位、负缓存，或按请求视为没有值的读不懂的内容）
+     * @param current 当前值的 [Digest]；`null` 表示没有值（不存在、lease 占位、负缓存，或按 `foreignAsAbsent` 视为没有值的格式 0 内容）
      */
     data class Conflict(val current: Digest?) : RemoteConditionalWrite
 
     /**
-     * key 中是不能当作本协议标量值的内容（同 [RemoteConditionalRead.Unreadable]），且请求没有把它视为没有值：未修改、未广播。
+     * key 中是不能当作本协议标量值的内容（同 [RemoteConditionalRead.Unreadable]），且没有按 `foreignAsAbsent` 视为没有值：未修改、未广播。
      */
     data class Unreadable(val format: Int) : RemoteConditionalWrite
 }
