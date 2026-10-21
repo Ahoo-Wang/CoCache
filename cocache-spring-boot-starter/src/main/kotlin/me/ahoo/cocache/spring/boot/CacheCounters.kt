@@ -99,5 +99,15 @@ internal object CacheCounters {
             "Invalidations dropped after retries were exhausted"
         ) { it.invalidationsDropped },
         CacheCounter("resets", "cocache.resets", "Channel resets that cleared L2") { it.resets },
+        CacheCounter(
+            "conditionalUnchanged",
+            "cocache.conditional.unchanged",
+            "getIfChanged calls that confirmed the L1 value without transferring it"
+        ) { it.conditionalUnchanged },
+        CacheCounter(
+            "conditionalConflicts",
+            "cocache.conditional.conflicts",
+            "putIfMatch calls rejected because the L1 content did not match"
+        ) { it.conditionalConflicts },
     )
 }

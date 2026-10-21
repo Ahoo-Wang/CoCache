@@ -22,6 +22,8 @@ import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
+import me.ahoo.cocache.api.spi.RemoteConditionalRead
+import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Token
@@ -273,6 +275,23 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             return store.removeMembersIfReadable(key, members, ttl, frame)
         }
 
+        override fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead {
+            guard("read")
+            return store.readIfChanged(key, known)
+        }
+
+        override fun putIfMatch(
+            key: String,
+            expected: Digest?,
+            envelope: Envelope.Scalar,
+            ttl: Duration?,
+            frame: ByteArray,
+            foreignAsAbsent: Boolean
+        ): RemoteConditionalWrite {
+            guard("put", fail = failWrites)
+            return store.putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
+        }
+
         override fun close() = store.close()
     }
 
@@ -392,6 +411,20 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
 
         override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
             hooked("reclaim") { store.reclaimAsync(key, observed, lease) }
+
+        override fun readIfChangedAsync(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
+            hooked("read") { store.readIfChangedAsync(key, known) }
+
+        override fun putIfMatchAsync(
+            key: String,
+            expected: Digest?,
+            envelope: Envelope.Scalar,
+            ttl: Duration?,
+            frame: ByteArray,
+            foreignAsAbsent: Boolean
+        ): CompletableFuture<RemoteConditionalWrite> = hooked("put", fail = failWrites) {
+            store.putIfMatchAsync(key, expected, envelope, ttl, frame, foreignAsAbsent)
+        }
 
         override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
             hooked("addMembers", fail = failWrites) { store.addMembersAsync(key, members, ttl, frame) }

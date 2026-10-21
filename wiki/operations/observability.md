@@ -56,14 +56,16 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | `cocache.degraded.fills` | counter | Loads written to L2 only, for `degraded-local-max-age`: Redis read failed, lease wait timed out, fill rejected, value in an unknown format, or an invalidation of the key still pending |
 | `cocache.stale.discards` | counter | L2 fills dropped because an invalidation of the key arrived while the read was in flight. This is the L2 fence working. |
 | `cocache.reclaims` | counter | L1 values this instance couldn't decode (foreign content or codec failure). A separate reclaim script then converts the value into a lease, if it is still unchanged, and the instance reloads. |
-| `cocache.unknown.formats` | counter | L1 values written in a newer wire format than this instance knows (loaded from the source, nothing overwritten; without a loader the read throws under `foreign-format: fail`), unreadable content rejected by `foreign-format: fail` (the read throws `CacheReadException`; the default without a loader), and `SetCache.add` / `remove` calls refused on unreadable content (they throw `CacheWriteException` and also count in `cocache.write.failures`). |
+| `cocache.unknown.formats` | counter | L1 values written in a newer wire format than this instance knows (loaded from the source, nothing overwritten; without a loader the read throws under `foreign-format: fail`), unreadable content rejected by `foreign-format: fail` (the read throws `CacheReadException`; the default without a loader), and `SetCache.add` / `remove` and `putIfMatch` calls refused on unreadable content (they throw `CacheWriteException` and also count in `cocache.write.failures`), and `getIfChanged` calls that hit unreadable content. |
 
 ### Writes, invalidations, channel {#metrics-writes}
 
 | Meter | Type | Counts |
 |-------|------|--------|
 | `cocache.remote.failures` | counter | Redis operations on the read side that failed: read, fill, release, reclaim, refresh |
-| `cocache.write.failures` | counter | `put`, `invalidate`, `invalidateAll`, and `SetCache` writes that failed on Redis (first attempt) |
+| `cocache.write.failures` | counter | `put`, `putIfMatch`, `invalidate`, `invalidateAll`, and `SetCache` writes that failed on Redis (first attempt). A `putIfMatch` conflict isn't a failure. |
+| `cocache.conditional.conflicts` | counter | `putIfMatch` calls that didn't write because Redis held a different value ([conditional writes](../guide/freshness.md#conditional-writes)). A steady rate means writers often race on the same key. |
+| `cocache.conditional.unchanged` | counter | `getIfChanged` calls that confirmed the value without transferring it |
 | `cocache.invalidation.retries` | counter | Retry attempts of failed invalidations |
 | `cocache.invalidations.dropped` | counter | Invalidations given up after all retries, on a full retry queue, or at shutdown. L1 still holds the old value. |
 | `cocache.invalidations.received` | counter | Invalidation messages from other instances or external writers (one per message, which may carry many keys) |
@@ -179,7 +181,7 @@ A cache report:
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
-  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1 }
+  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0 }
 }
 ```
 

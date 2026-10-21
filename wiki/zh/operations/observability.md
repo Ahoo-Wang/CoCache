@@ -56,14 +56,16 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.degraded.fills` | counter | 只写入 L2、以 `degraded-local-max-age` 限龄的加载：Redis 读取失败、等待 lease 超时、填充被拒绝、值的格式未知，或者该 key 的失效仍在重试 |
 | `cocache.stale.discards` | counter | 读取期间该 key 发生了失效，因而被丢弃的 L2 填充。这是 L2 栅栏在起作用 |
 | `cocache.reclaims` | counter | 本实例无法解码的 L1 值（外来内容或编解码失败）。随后由单独的 reclaim 脚本在值未变的前提下把它转为 lease，本实例再回源 |
-| `cocache.unknown.formats` | counter | 以比本实例更新的线格式写入的 L1 值（直接回源，不覆盖任何内容；没有数据源时在 `foreign-format: fail` 下读取抛出），被 `foreign-format: fail` 拒绝的读不懂的内容（读取抛出 `CacheReadException`；没有数据源时的默认值），以及落在读不懂的内容上而被拒绝的 `SetCache.add` / `remove`（抛出 `CacheWriteException`，同时计入 `cocache.write.failures`） |
+| `cocache.unknown.formats` | counter | 以比本实例更新的线格式写入的 L1 值（直接回源，不覆盖任何内容；没有数据源时在 `foreign-format: fail` 下读取抛出），被 `foreign-format: fail` 拒绝的读不懂的内容（读取抛出 `CacheReadException`；没有数据源时的默认值），落在读不懂的内容上而被拒绝的 `SetCache.add` / `remove` 与 `putIfMatch`（抛出 `CacheWriteException`，同时计入 `cocache.write.failures`），以及读到读不懂的内容的 `getIfChanged` |
 
 ### 写入、失效与通道 {#metrics-writes}
 
 | 指标 | 类型 | 计数对象 |
 |------|------|----------|
 | `cocache.remote.failures` | counter | 读取侧失败的 Redis 操作：读取、填充、释放、回收、刷新 |
-| `cocache.write.failures` | counter | 在 Redis 上失败的 `put`、`invalidate`、`invalidateAll` 与 `SetCache` 写入（首次尝试） |
+| `cocache.write.failures` | counter | 在 Redis 上失败的 `put`、`putIfMatch`、`invalidate`、`invalidateAll` 与 `SetCache` 写入（首次尝试）。`putIfMatch` 的冲突不算失败 |
+| `cocache.conditional.conflicts` | counter | 因 Redis 中是另一个值而没有写入的 `putIfMatch`（[条件写入](../guide/freshness.md#conditional-writes)）。持续出现说明写入方经常在同一个 key 上竞争 |
+| `cocache.conditional.unchanged` | counter | 确认值未变、没有传输值的 `getIfChanged` |
 | `cocache.invalidation.retries` | counter | 失败失效的重试次数 |
 | `cocache.invalidations.dropped` | counter | 重试耗尽、重试队列已满或关闭时被放弃的失效。L1 中仍是旧值 |
 | `cocache.invalidations.received` | counter | 来自其它实例或外部写入方的失效消息（按消息计，一条消息可能包含多个 key） |
@@ -179,7 +181,7 @@ management:
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
-  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1 }
+  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0 }
 }
 ```
 

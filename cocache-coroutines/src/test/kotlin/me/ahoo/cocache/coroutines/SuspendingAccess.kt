@@ -21,8 +21,11 @@ import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.AsyncSetCache
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.ConditionalGet
+import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.test.CacheAccess
 import java.time.Duration
@@ -86,6 +89,19 @@ internal open class SuspendingBackedCache<K : Any, V : Any>(private val view: Su
     override fun invalidate(key: K) = call { view.invalidate(key) }
 
     override fun invalidateAll(keys: Collection<K>) = call { view.invalidateAll(keys) }
+
+    override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> = call { view.getIfChanged(key, known) }
+
+    override fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut = call {
+        view.putIfMatch(
+            key,
+            expected,
+            value
+        )
+    }
+
+    override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
+        call { view.putIfMatch(key, expected, value, ttl) }
 
     override fun async(): AsyncCache<K, V> = view.async()
 }

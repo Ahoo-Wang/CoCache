@@ -19,6 +19,8 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
+import me.ahoo.cocache.api.ConditionalGet
+import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -26,6 +28,8 @@ import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
+import me.ahoo.cocache.api.spi.RemoteConditionalRead
+import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Token
@@ -50,6 +54,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 
 /**
@@ -930,6 +935,150 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // 条件读写（按摘要比较）：只针对 L1，不读写 L2、不回源、不申请 lease。从不回源，因此读不懂的内容按“没有数据源”
+    // 处理：未配置 foreignFormat 时为 FAIL。读与写对内容的分类相同：只有不是本协议写入的内容（格式 0）可以在 RECLAIM 下
+    // 视为没有值；本协议的集合、更高格式版本、解码失败的值总是读不懂（读取抛出；写入抛出，或因摘要不符而冲突）。
+    // 同步与异步共用 [conditionalGetOf]、[refuseUnreadable]、[conditionalPutOf]。
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * `RECLAIM` 之外（含未配置）条件读写遇到格式 0 的内容时拒绝（抛出）；`RECLAIM` 时视为没有值。
+     */
+    private val conditionalFailsOnForeign: Boolean = (policy.foreignFormat ?: ForeignFormatMode.FAIL) == ForeignFormatMode.FAIL
+
+    @Suppress("TooGenericExceptionCaught")
+    override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> {
+        val storageKey = storageKey(key)
+        val read = try {
+            store.readIfChanged(storageKey, known)
+        } catch (e: Exception) {
+            throw conditionalReadFailure(e)
+        }
+        return conditionalGetOf(storageKey, read)
+    }
+
+    /**
+     * 条件读取没有可降级的答案（它确认的就是 L1）：无论 `readFailure` 如何都抛出。
+     */
+    private fun conditionalReadFailure(error: Exception): CacheReadException {
+        metrics.remoteFailure()
+        return CacheReadException(name, "getIfChanged", error)
+    }
+
+    /**
+     * 同步与异步共用：把后端的条件读取结果换算为用户结果。格式不在 [MIN_FORMAT, 本节点版本] 内、集合、解码失败都是读不懂的内容。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun conditionalGetOf(storageKey: String, read: RemoteConditionalRead): ConditionalGet<V> = when (read) {
+        // 摘要只覆盖载荷：再确认这个值仍是本节点读得懂的格式
+        is RemoteConditionalRead.Unchanged -> if (read.format < MIN_FORMAT || read.format > backendFormat) {
+            unreadableGet(storageKey, read.format, null)
+        } else {
+            metrics.conditionalUnchanged()
+            ConditionalGet.Unchanged
+        }
+
+        RemoteConditionalRead.Absent -> ConditionalGet.Absent
+        is RemoteConditionalRead.Unreadable -> unreadableGet(storageKey, read.format, null)
+        is RemoteConditionalRead.Changed -> if (read.format < MIN_FORMAT || read.format > backendFormat) {
+            unreadableGet(storageKey, read.format, null)
+        } else {
+            try {
+                ConditionalGet.Present(codec.decode(read.envelope.bytes), Digest.of(read.envelope))
+            } catch (e: Exception) {
+                unreadableGet(storageKey, read.format, e)
+            }
+        }
+    }
+
+    /**
+     * 读不懂的内容：计入 `unknownFormats`，抛出（不修改 L1）。唯一的例外是 `RECLAIM` 下格式 0 的内容：视为没有值（也不修改 L1），
+     * 与 `PUT_IF_MATCH` 的 `foreignAsAbsent` 一致。
+     */
+    private fun unreadableGet(storageKey: String, format: Int, error: Exception?): ConditionalGet<V> {
+        metrics.unknownFormat()
+        if (format < MIN_FORMAT && !conditionalFailsOnForeign) {
+            log.warn { "Cache[$name] - key[$storageKey] - unreadable remote content (format[$format]), treated as absent." }
+            return ConditionalGet.Absent
+        }
+        val failure = ForeignFormatException(name, storageKey, format, error, newer = format > backendFormat)
+        log.warn { failure.message }
+        throw CacheReadException(name, "getIfChanged", failure)
+    }
+
+    override fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut =
+        putIfMatchWithTtl(key, expected, value, spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl())
+
+    override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
+        putIfMatchWithTtl(key, expected, value, ttl)
+
+    /**
+     * 与 [putWithTtl] 相同的写入顺序（戳、L2 淘汰在 L1 前后各一次）；冲突与拒绝不修改 L1，非原子广播的后端也不广播。
+     */
+    private fun putIfMatchWithTtl(key: K, expected: Digest?, value: V, ttl: Duration?): ConditionalPut {
+        val storageKey = storageKey(key)
+        val envelope = Envelope.Scalar(codec.encode(value))
+        val bounded = ttl?.boundedTtl()
+        var outcome: RemoteConditionalWrite? = null
+        write(
+            listOf(storageKey),
+            { frame ->
+                val result = store.putIfMatch(
+                    storageKey,
+                    expected,
+                    envelope,
+                    bounded,
+                    frame,
+                    !conditionalFailsOnForeign
+                )
+                outcome = result
+                refuseUnreadable(storageKey, result)
+            },
+            { outcome == RemoteConditionalWrite.Written },
+            conditionalWriteFailure
+        )
+        return conditionalPutOf(envelope, requireNotNull(outcome))
+    }
+
+    /**
+     * 后端不支持条件写入（SPI 默认实现）时原样抛出 [UnsupportedOperationException]，与不支持的 `Cache` 实现一致；
+     * 其余失败包装为 `CacheWriteException`。
+     */
+    private val conditionalWriteFailure: (Exception) -> Unit = { error ->
+        if (error is UnsupportedOperationException) {
+            throw error
+        }
+        throw CacheWriteException(name, "putIfMatch", error)
+    }
+
+    /**
+     * 后端拒绝了写入（key 中是读不懂的内容，未修改、未广播）：计入 `unknownFormats` 并抛出，由 [write] 包装为 `CacheWriteException`
+     * （同时计入 `writeFailures`），与 `SetCache` 的元素写入相同。
+     */
+    private fun refuseUnreadable(storageKey: String, result: RemoteConditionalWrite): Void? {
+        if (result !is RemoteConditionalWrite.Unreadable) {
+            return null
+        }
+        metrics.unknownFormat()
+        val failure =
+            ForeignFormatException(name, storageKey, result.format, null, newer = result.format > backendFormat)
+        log.warn { failure.message }
+        throw failure
+    }
+
+    private fun conditionalPutOf(envelope: Envelope.Scalar, result: RemoteConditionalWrite): ConditionalPut = when (result) {
+        RemoteConditionalWrite.Written -> ConditionalPut.Written(Digest.of(envelope))
+        is RemoteConditionalWrite.Conflict -> {
+            metrics.conditionalConflict()
+            ConditionalPut.Conflict(result.current)
+        }
+
+        is RemoteConditionalWrite.Unreadable -> throw IllegalStateException(
+            "Cache[$name] - unreachable: refused write."
+        )
+    }
+
     override fun invalidate(key: K) {
         invalidateStorageKeys(listOf(storageKey(key)))
     }
@@ -1689,6 +1838,41 @@ internal class CoherentEngine<K : Any, V : Any>(
         )
     }
 
+    private fun getIfChangedAsync(key: K, known: Digest?): CompletableFuture<ConditionalGet<V>> {
+        val storageKey = storageKey(key)
+        return Futures.attempt {
+            asyncStore.readIfChangedAsync(
+                storageKey,
+                known
+            )
+        }.handleNext(executor) { read, error ->
+            when {
+                error is Exception -> CompletableFuture.failedFuture(conditionalReadFailure(error))
+                error != null -> CompletableFuture.failedFuture(error)
+                else -> CompletableFuture.completedFuture(conditionalGetOf(storageKey, requireNotNull(read)))
+            }
+        }
+    }
+
+    private fun putIfMatchAsync(key: K, expected: Digest?, value: V, ttl: Duration?): CompletableFuture<ConditionalPut> {
+        val storageKey = storageKey(key)
+        val envelope = Envelope.Scalar(codec.encode(value))
+        val bounded = ttl?.boundedTtl()
+        val outcome = AtomicReference<RemoteConditionalWrite?>()
+        return writeAsync(
+            listOf(storageKey),
+            { frame ->
+                asyncStore.putIfMatchAsync(storageKey, expected, envelope, bounded, frame, !conditionalFailsOnForeign)
+                    .thenApply {
+                        outcome.set(it)
+                        refuseUnreadable(storageKey, it)
+                    }
+            },
+            { outcome.get() == RemoteConditionalWrite.Written },
+            conditionalWriteFailure
+        ).thenApply { conditionalPutOf(envelope, requireNotNull(outcome.get())) }
+    }
+
     private fun invalidateAsync(storageKeys: List<String>): CompletableFuture<Void?> {
         if (storageKeys.isEmpty()) {
             return Futures.done()
@@ -1807,6 +1991,24 @@ internal class CoherentEngine<K : Any, V : Any>(
         override fun invalidateAll(keys: Collection<K>): CompletableFuture<Void?> = writeToUser {
             invalidateAsync(keys.map { storageKey(it) }.distinct())
         }
+
+        override fun getIfChanged(key: K, known: Digest?): CompletableFuture<ConditionalGet<V>> = Futures.relay(
+            Futures.attempt { getIfChangedAsync(key, known) }
+        )
+
+        override fun putIfMatch(key: K, expected: Digest?, value: V): CompletableFuture<ConditionalPut> = Futures.relay(
+            Futures.attempt {
+                putIfMatchAsync(
+                    key,
+                    expected,
+                    value,
+                    spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl()
+                )
+            }
+        )
+
+        override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): CompletableFuture<ConditionalPut> =
+            Futures.relay(Futures.attempt { putIfMatchAsync(key, expected, value, ttl) })
 
         override fun sync(): Cache<K, V> = this@CoherentEngine
 

@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.api
 
+import me.ahoo.cocache.api.spi.Digest
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
@@ -85,6 +86,36 @@ interface AsyncCache<K : Any, V : Any> {
      * 批量失效，语义同 [Cache.invalidateAll]。
      */
     fun invalidateAll(keys: Collection<K>): CompletableFuture<Void?>
+
+    /**
+     * 条件读取，语义同 [Cache.getIfChanged]。失败时以 [CacheReadException] 完成。
+     *
+     * 内置引擎支持（`SetCache` 除外）；其它实现默认以 [UnsupportedOperationException] 完成。
+     */
+    fun getIfChanged(key: K, known: Digest?): CompletableFuture<ConditionalGet<V>> = CompletableFuture.failedFuture(
+        UnsupportedOperationException("${javaClass.name} does not support getIfChanged().")
+    )
+
+    /**
+     * 条件写入，语义同 [Cache.putIfMatch]。失败时以 [CacheWriteException] 完成；写入完成时本地 L2 已淘汰（读己之写）。
+     *
+     * 内置引擎支持（`SetCache` 除外）；其它实现默认以 [UnsupportedOperationException] 完成。
+     */
+    fun putIfMatch(
+        key: K,
+        expected: Digest?,
+        value: V
+    ): CompletableFuture<ConditionalPut> = CompletableFuture.failedFuture(
+        UnsupportedOperationException("${javaClass.name} does not support putIfMatch().")
+    )
+
+    /**
+     * 以指定时长条件写入，语义同 [Cache.putIfMatch] (key, expected, value, ttl)。
+     */
+    fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): CompletableFuture<ConditionalPut> =
+        CompletableFuture.failedFuture(
+            UnsupportedOperationException("${javaClass.name} does not support putIfMatch().")
+        )
 
     /**
      * 回到同步 API（同一个引擎）。

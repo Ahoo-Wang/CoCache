@@ -17,8 +17,11 @@ import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.AsyncSetCache
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.ConditionalGet
+import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.core.CacheSpec
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -182,6 +185,19 @@ internal open class AsyncBackedCache<K : Any, V : Any>(val target: Cache<K, V>) 
     override fun invalidateAll(keys: Collection<K>) {
         CacheAccess.await { async.invalidateAll(keys) }
     }
+
+    override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> = CacheAccess.await {
+        async.getIfChanged(
+            key,
+            known
+        )
+    }
+
+    override fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut =
+        CacheAccess.await { async.putIfMatch(key, expected, value) }
+
+    override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
+        CacheAccess.await { async.putIfMatch(key, expected, value, ttl) }
 
     override fun async() = async
 

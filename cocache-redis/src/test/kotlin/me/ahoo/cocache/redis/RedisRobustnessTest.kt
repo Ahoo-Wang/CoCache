@@ -371,17 +371,20 @@ class RedisRobustnessTest {
                     frame.keys.size.assert().isLessThanOrEqualTo(2)
                 }
                 decoded.sumOf { it.keys.size }.assert().isEqualTo(keys.size)
+                // 每组一帧：Cluster 上组数取决于 key 落在几个 slot（至少 3 组），等齐全部组再进入下一步，
+                // 否则上一步迟到的帧会落进下一步的断言
+                val groups = decoded.size
 
                 // 帧与 key 不一致（无法安全拆分）或畸形：原样广播
                 frames.clear()
                 val foreign = InvalidationFrame.encode(origin, listOf("other"))
                 store.invalidate(keys, foreign)
-                awaitCondition("unchanged frames") { frames.size >= 3 }
+                awaitCondition("unchanged frames") { frames.size == groups }
                 frames.forEach { it.assert().isEqualTo(foreign) }
                 frames.clear()
                 val malformed = byteArrayOf(9)
                 store.invalidate(keys, malformed)
-                awaitCondition("malformed frames") { frames.size >= 3 }
+                awaitCondition("malformed frames") { frames.size == groups }
                 frames.forEach { it.assert().isEqualTo(malformed) }
             }
         }

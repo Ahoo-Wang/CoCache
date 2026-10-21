@@ -15,6 +15,8 @@ package me.ahoo.cocache.core.proxy
 
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.ConditionalGet
+import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.core.CacheRuntime
@@ -82,6 +84,16 @@ class CacheProxiesTest {
                 arrayOf(Runnable::class.java)
             ) { _, _, _ -> null }
         ).assert().isNull()
+    }
+
+    @Test
+    fun forwardsConditionalMethodsToTheEngine() {
+        val cache = CacheProxies.create(UserCache::class.java, engine)
+        val written = cache.putIfMatch("c", null, "v1") as ConditionalPut.Written
+        cache.getIfChanged("c", written.digest).assert().isEqualTo(ConditionalGet.Unchanged)
+        val second = cache.putIfMatch("c", written.digest, "v2", Duration.ofMinutes(1)) as ConditionalPut.Written
+        cache.putIfMatch("c", written.digest, "v3").assert().isEqualTo(ConditionalPut.Conflict(second.digest))
+        cache.getIfChanged("c", null).assert().isEqualTo(ConditionalGet.Present("v2", second.digest))
     }
 
     @Test

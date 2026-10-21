@@ -140,6 +140,42 @@ interface RemoteStore : AutoCloseable {
         return null
     }
 
+    /**
+     * 条件读取（确认 L1 中的值是否仍是调用方已有的那一份）：key 中是本协议的标量值、且其载荷的 [Digest] 等于 [known] 时
+     * 返回 [RemoteConditionalRead.Unchanged]（附格式版本），不返回正文；否则返回当前状态（值与格式版本、没有值、读不懂的内容）。
+     * 不申请 lease 或刷新令牌，不修改 key。
+     *
+     * 默认实现调用 [read]（总是传输正文，在客户端比较摘要）：结果正确，只是不省带宽；实现应当覆盖它，在 L1 中比较摘要，
+     * 摘要相同时只传输结果码与格式版本。
+     */
+    fun readIfChanged(
+        key: String,
+        known: Digest?
+    ): RemoteConditionalRead = conditionalReadOf(read(key, null, null), known)
+
+    /**
+     * 条件写入（按摘要比较后写入）：仅当 key 的当前内容符合 [expected] 时，原子地整体覆盖写入 [envelope]
+     * （转换同 [put]：销毁任何令牌，按 [ttl] 重设到期时间，`null` 为永不过期）并广播 [frame]；否则不修改 key、不广播。
+     *
+     * - [expected] 为 `null`：仅当 key 中没有值（不存在、lease 占位、负缓存）时写入。
+     * - 否则：仅当 key 中是本协议的标量值、且其载荷的 [Digest] 等于 [expected] 时写入。
+     * - key 中是不能当作本协议标量值的内容（见 [RemoteConditionalRead.Unreadable]）时，不修改 key、不广播，返回
+     *   [RemoteConditionalWrite.Unreadable]。唯一的例外：[foreignAsAbsent] 为 `true` 时，不是本协议写入的内容（格式 `0`）
+     *   视为没有值。本协议的集合与更高格式版本写入的内容从不视为没有值（否则滚动升级期间会被旧节点降级覆盖）。
+     *
+     * 默认实现抛出 [UnsupportedOperationException]（引擎原样抛给调用方）：不原子的“先读后写”会让两个并发的写入方都得到
+     * [RemoteConditionalWrite.Written]、丢失更新，因此不提供。支持条件写入的后端必须在一次原子操作中比较并写入。
+     */
+    @Suppress("LongParameterList")
+    fun putIfMatch(
+        key: String,
+        expected: Digest?,
+        envelope: Envelope.Scalar,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): RemoteConditionalWrite = throw UnsupportedOperationException("${javaClass.name} does not support putIfMatch().")
+
     override fun close() = Unit
 }
 
@@ -152,4 +188,25 @@ internal fun unreadableSetFormat(read: RemoteRead): Int? {
         return null
     }
     return read.format.takeIf { it < 1 || read.envelope is Envelope.Scalar }
+}
+
+/**
+ * [RemoteStore.readIfChanged] 等默认实现的判定：把一次普通读取的结果换算为条件读取的结果。
+ * 未命中、lease、负缓存是没有值；格式低于 1 的内容与集合读不懂。
+ */
+internal fun conditionalReadOf(read: RemoteRead, known: Digest?): RemoteConditionalRead {
+    if (read !is RemoteRead.Hit) {
+        return RemoteConditionalRead.Absent
+    }
+    val envelope = read.envelope
+    return when {
+        read.format < 1 -> RemoteConditionalRead.Unreadable(0)
+        envelope is Envelope.Absent -> RemoteConditionalRead.Absent
+        envelope is Envelope.Scalar -> if (known != null && Digest.of(envelope) == known) {
+            RemoteConditionalRead.Unchanged(read.format)
+        } else {
+            RemoteConditionalRead.Changed(envelope, read.format)
+        }
+        else -> RemoteConditionalRead.Unreadable(read.format)
+    }
 }

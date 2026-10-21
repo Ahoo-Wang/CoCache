@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.api
 
+import me.ahoo.cocache.api.spi.Digest
 import java.time.Duration
 
 /**
@@ -100,6 +101,69 @@ interface Cache<K : Any, V : Any> {
      * 批量失效，语义同 [invalidate]。
      */
     fun invalidateAll(keys: Collection<K>)
+
+    /**
+     * 条件读取：直接读 L1（本缓存的权威副本），确认调用方已有的值是否仍是 L1 中的那一份。
+     *
+     * - L1 中的值的摘要等于 [known] 时返回 [ConditionalGet.Unchanged]：后端在 L1 中比较摘要，不传输正文
+     *   （Redis 后端只回复结果码与格式版本）。省下的是网络与解码，不是 Redis 的 CPU：脚本每次都把值读进 Lua 并计算 SHA-1，
+     *   期间 Redis 不处理其它命令（Redis 7.4 上 8 MB 的值约 20 ms，其中约 13 ms 是普通的 L1 读取同样要付的读入）。
+     *   确认周期 × 实例数 × 值大小决定 Redis 的负担，大文档要据此估算。
+     * - 否则返回 [ConditionalGet.Present]（值与新摘要）或 [ConditionalGet.Absent]（L1 中没有值：不存在、lease 占位、负缓存）。
+     *   [known] 为 `null` 时就是一次绕过 L2、带摘要的读取，供 [putIfMatch] 的“读—改—写”使用。
+     *
+     * 不读也不写本地 L2，不回源，不申请 lease，不修改 L1：确认的是 L1 本身，L2 可能更旧（陈旧度仍受 `localMaxAge` 约束）。
+     * L1 读取失败时总是抛出 [CacheReadException]（与 `readFailure` 无关：没有可降级的答案）。
+     * 读不懂的内容（更高版本写入的、集合、解码失败）总是抛出 [CacheReadException]（`cause` 为 `ForeignFormatException`），
+     * 不修改 L1。不是本协议写入的内容（格式 0，如 5.x 遗留）按 `foreignFormat` 处理：未配置或 `FAIL` 时同样抛出，
+     * `RECLAIM` 时视为没有值（[ConditionalGet.Absent]），与 [putIfMatch] 的分类一致。
+     *
+     * 内置引擎支持（`SetCache` 除外）；其它实现默认抛出 [UnsupportedOperationException]。
+     *
+     * @param known 调用方已有的值的摘要（上一次 [getIfChanged] 或 [putIfMatch] 返回的）；`null` 表示没有
+     * @throws CacheReadException L1 读取失败，或读到读不懂的内容
+     */
+    fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> = throw UnsupportedOperationException(
+        "${javaClass.name} does not support getIfChanged()."
+    )
+
+    /**
+     * 条件写入（按摘要比较后写入）：仅当 L1 中的当前内容符合 [expected] 时写入 [value]，按策略决定到期时间（同 [put]）。
+     * 比较与写入在 L1 中原子完成（Redis 后端是一个 Lua 脚本），失效只在写入时广播。
+     *
+     * - [expected] 为 `null`：仅当 L1 中没有值（不存在、lease 占位、负缓存）时写入（“仅当不存在”）。
+     * - 否则：仅当 L1 中的值的摘要等于 [expected] 时写入。
+     * - 不符合时返回 [ConditionalPut.Conflict]（附当前摘要），不写入、不广播、不改变到期时间：调用方用 [getIfChanged] 重读后重试。
+     *
+     * 写入时与 [put] 相同：使在途填充失效、销毁令牌、不填充本地 L2（下一次读取从 L1 填充）。
+     * L1 中是更高版本写入的值或集合时总是抛出 [CacheWriteException]（`cause` 为 `ForeignFormatException`），不修改 L1、不广播；
+     * 不是本协议写入的内容（格式 0）按 `foreignFormat` 处理：未配置或 `FAIL` 时同样抛出，`RECLAIM` 时视为没有值
+     * （`expected = null` 时整体覆盖它）。同版本但 `Codec` 解码失败的值对写入是一个普通的值（比较在 L1 中进行，看不到 `Codec`）：
+     * 调用方拿不到它的摘要，写入只会以 [ConditionalPut.Conflict] 结束、从不覆盖它，随后的 [getIfChanged] 抛出。
+     *
+     * 内置引擎支持（`SetCache` 除外：元素增删本身是原子的）；其它实现默认抛出 [UnsupportedOperationException]。
+     * 后端不支持条件写入（SPI 的默认实现）时，内置引擎同样原样抛出 [UnsupportedOperationException]。
+     *
+     * @param expected L1 中应有的值的摘要（[getIfChanged] 返回的）；`null` 表示应当没有值
+     * @return 写入时为 [ConditionalPut.Written]（附写入的值的摘要），否则为 [ConditionalPut.Conflict]
+     * @throws CacheWriteException L1 写入失败（结果可能未知：重读后再决定是否重试；当前摘要等于自己写入的值的摘要即已写入），
+     *   或 L1 中是读不懂的内容
+     */
+    fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut = throw UnsupportedOperationException(
+        "${javaClass.name} does not support putIfMatch()."
+    )
+
+    /**
+     * 以指定时长条件写入，语义同 [putIfMatch]。
+     */
+    fun putIfMatch(
+        key: K,
+        expected: Digest?,
+        value: V,
+        ttl: Duration
+    ): ConditionalPut = throw UnsupportedOperationException(
+        "${javaClass.name} does not support putIfMatch()."
+    )
 
     /**
      * 同一个缓存的异步视图（RFC 0004）：共享 L2、失效戳、在途加载与 lease，每次返回同一个对象。

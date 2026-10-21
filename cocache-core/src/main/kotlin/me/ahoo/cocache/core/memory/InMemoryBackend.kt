@@ -26,6 +26,8 @@ import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
+import me.ahoo.cocache.api.spi.RemoteConditionalRead
+import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Subscription
@@ -309,6 +311,74 @@ class InMemoryBackend @JvmOverloads constructor(
                 publish(namespace, frame)
             }
             return refused
+        }
+
+        /**
+         * 本后端只存本协议的内容：读不懂的只有集合（返回本后端的格式版本）。
+         */
+        override fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead {
+            val slot = slots[key].live()
+            return when (slot?.state) {
+                null, State.LEASED, State.MISSING -> RemoteConditionalRead.Absent
+                State.SET -> RemoteConditionalRead.Unreadable(FORMAT)
+                State.VALUE -> {
+                    val envelope = slot.envelope as Envelope.Scalar
+                    if (known != null && Digest.of(envelope) == known) {
+                        RemoteConditionalRead.Unchanged(FORMAT)
+                    } else {
+                        RemoteConditionalRead.Changed(envelope, FORMAT)
+                    }
+                }
+            }
+        }
+
+        /**
+         * 比较与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。本后端只存本协议的内容，没有格式 0 的内容，
+         * 因此 [foreignAsAbsent] 不起作用：集合总是拒绝。
+         */
+        override fun putIfMatch(
+            key: String,
+            expected: Digest?,
+            envelope: Envelope.Scalar,
+            ttl: Duration?,
+            frame: ByteArray,
+            foreignAsAbsent: Boolean
+        ): RemoteConditionalWrite {
+            var outcome: RemoteConditionalWrite = RemoteConditionalWrite.Written
+            slots.compute(key) { _, current ->
+                val slot = current.live()
+                val digest = when (slot?.state) {
+                    null, State.LEASED, State.MISSING -> null
+                    State.VALUE -> Digest.of(slot.envelope)
+                    State.SET -> {
+                        outcome = RemoteConditionalWrite.Unreadable(FORMAT)
+                        return@compute slot
+                    }
+                }
+                if (digest != expected) {
+                    outcome = RemoteConditionalWrite.Conflict(digest)
+                    return@compute slot
+                }
+                Slot(State.VALUE, envelope, expireAt = expireAt(ttl))
+            }
+            if (outcome == RemoteConditionalWrite.Written) {
+                publish(namespace, frame)
+            }
+            return outcome
+        }
+
+        override fun readIfChangedAsync(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
+            supply { readIfChanged(key, known) }
+
+        override fun putIfMatchAsync(
+            key: String,
+            expected: Digest?,
+            envelope: Envelope.Scalar,
+            ttl: Duration?,
+            frame: ByteArray,
+            foreignAsAbsent: Boolean
+        ): CompletableFuture<RemoteConditionalWrite> = supply {
+            putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
         }
 
         override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =

@@ -5,6 +5,25 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布（计划为 6.7.0）
+
+**模块组：** `me.ahoo.cocache` · 次版本，只有新增：`Cache`、`AsyncCache` 与 `SuspendingCache` 以 default 方法新增条件读写（没有覆盖它们的实现抛出 `UnsupportedOperationException`），`cocache-api` 的 SPI 新增 `RemoteStore.readIfChanged` / `putIfMatch` 及 `AsyncRemoteStore` 中对应的异步方法（都带默认实现）。已有的调用方、自定义 `Cache` / `SuspendingCache` 实现与自定义后端照常编译与运行。Redis 线格式与失效频道不变（新脚本只读取现有格式），6.7.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。
+
+### 条件读写
+
+用于 Redis 是唯一副本、值以“读取—修改—写回”更新的缓存，见[条件写入](./freshness.md#conditional-writes)。
+
+- `putIfMatch(key, expected, value[, ttl])` 只在 Redis 中仍是摘要为 `expected` 的值时写入（`null`：只在 Redis 中没有值时写入）。比较与写入是一个 Lua 脚本，只在写入时广播失效。返回 `Written(digest)` 或 `Conflict(current)`。写入成功时的寿命与栅栏规则同 `put`。
+- `getIfChanged(key, known)` 读 Redis、从不读 L2，值的摘要仍等于 `known` 时返回 `Unchanged`，不传输值；否则返回 `Present(value, digest)` 或 `Absent`。它省的是网络传输，不是 Redis 的 CPU：脚本每次调用都读取并哈希这个值，在 Redis 7.4 上 8 MB 的值约 20 ms（其中约 13 ms 是普通的 L1 读取同样要付的读取）。摘要不在写入时保存，因为那需要改变线格式。
+- 摘要是值编码后的字节的 SHA-1，即 `reclaim` 对标量值一直使用的摘要。
+- 读与写对读不懂的内容分类相同。更高版本的 CoCache 写入的值与集合总是抛出，`cause` 为 `ForeignFormatException`，内容不被修改；`reclaim` 也从不把它们当作没有值。不是 CoCache 6 写入的内容按 `foreign-format` 处理：`fail`（默认）抛出，`reclaim` 视为没有值。编解码器无法解码的值使 `getIfChanged` 抛出，`putIfMatch` 遇到它只会冲突。Redis 故障时 `getIfChanged` 抛出 `CacheReadException`，与 `read-failure` 无关。
+- 新指标 `cocache.conditional.conflicts` 与 `cocache.conditional.unchanged`（[可观测性](../operations/observability.md#metrics-writes)）。
+
+### SPI
+
+- `RemoteStore.readIfChanged` / `putIfMatch`、`AsyncRemoteStore.readIfChangedAsync` / `putIfMatchAsync`，以及结果类型 `RemoteConditionalRead` / `RemoteConditionalWrite`。`readIfChanged` 的默认实现先读、在客户端比较：正确，只是总是传输值。`putIfMatch` 的默认实现抛出 `UnsupportedOperationException`（异步版本以它失败）：先读后 `put` 的默认实现在并发下会丢失更新。后端只有像 Redis 与内存后端那样用一次原子操作覆盖两者，才支持条件写入。见[扩展](../architecture/extending.md#remote-store)。
+- TCK（`EngineSpec`）覆盖这两个操作。没有实现 `putIfMatch` 的后端设置 `supportsConditionalWrites = false` 跳过这些用例；否则必须全部通过，其中的并发用例让所有写入方在同一个摘要上竞争。
+
 ## v6.6.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本：`cocache-api` 的 SPI 新增 `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` 及 `AsyncRemoteStore` 中对应的异步方法，都带默认实现，已有的后端照常编译与运行。两项行为变化收紧没有数据源的缓存的 fail closed 处理：`SetCache` 的写入遇到读不懂的内容时失败，没有数据源的读取遇到更高版本写入的值时失败（见下文）。Redis 线格式与失效频道不变，6.6.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。

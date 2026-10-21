@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.proxy
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.spi.Digest
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
@@ -80,6 +81,8 @@ object CacheProxies {
                 "putAll" -> putAll(args)
                 "invalidate" -> target.invalidate(args[0] as Any)
                 "invalidateAll" -> target.invalidateAll(args[0] as Collection<Any>)
+                "getIfChanged" -> target.getIfChanged(args[0] as Any, args[1] as Digest?)
+                "putIfMatch" -> putIfMatch(args)
                 "getName" -> target.name
                 "async" -> target.async()
                 "add" -> (target as SetCache<Any, Any>).add(args[0] as Any, args[1] as Collection<Any>)
@@ -105,6 +108,13 @@ object CacheProxies {
             } else {
                 target.put(args[0] as Any, args[1] as Any, args[2] as Duration)
             }
+        }
+
+        private fun putIfMatch(args: Array<out Any?>): Any {
+            if (args.size == 3) {
+                return target.putIfMatch(args[0] as Any, args[1] as Digest?, args[2] as Any)
+            }
+            return target.putIfMatch(args[0] as Any, args[1] as Digest?, args[2] as Any, args[3] as Duration)
         }
 
         @Suppress("UNCHECKED_CAST")

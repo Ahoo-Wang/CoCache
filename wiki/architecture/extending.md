@@ -49,6 +49,11 @@ interface RemoteStore : AutoCloseable {
     // since 6.6.0; default: read, then addMembers / removeMembers (not atomic)
     fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
     fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
+    // since 6.7.0; readIfChanged default: read, compare on the client; putIfMatch default: throws UnsupportedOperationException
+    fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead
+    fun putIfMatch(
+        key: String, expected: Digest?, envelope: Envelope.Scalar, ttl: Duration?, frame: ByteArray, foreignAsAbsent: Boolean
+    ): RemoteConditionalWrite
 }
 ```
 
@@ -64,6 +69,8 @@ Keys arrive complete, with prefix and namespace. A store handles bytes and token
 | `Fill(key, token, envelope, ttl)` | Write `envelope` with `ttl` only if `key` holds `token` |
 | `Put(key, envelope, ttl)` | One entry of `putAll`: overwrite `key` like `put` |
 | `Digest` | SHA-1 of the content: scalar → payload bytes, set → each member as `int32 length + bytes` in returned order, negative entry → empty |
+| `RemoteConditionalRead` | `Unchanged(format)`, `Changed(envelope, format)` (a scalar value), `Absent` (absent, lease, or negative entry), or `Unreadable(format)` |
+| `RemoteConditionalWrite` | `Written`, `Conflict(current)` (`current == null`: no value), or `Unreadable(format)` |
 
 The contract, method by method. The state machine is in [Consistency](./consistency.md#l1-fence).
 
@@ -80,6 +87,8 @@ The contract, method by method. The state machine is in [Consistency](./consiste
 | `addMembers` | Key holds a set: add the members atomically. Otherwise (absent, negative entry, lease, scalar): replace it with a set of these members. Destroy any token, set the expiry (`null` removes it), broadcast. |
 | `removeMembers` | Only if the key holds a set: remove the members, delete the key when the set becomes empty, otherwise reset the expiry. Broadcast in every case. |
 | `addMembersIfReadable` / `removeMembersIfReadable` | Like `addMembers` / `removeMembers`, except when the key holds content that isn't a set of your protocol: content you didn't write, a scalar value, or a set in a newer format than yours. Then change nothing, broadcast nothing, and return that content's format (`0` for content you didn't write). Return `null` after a normal write. Absent keys, negative entries, and leases are written normally. A `SetCache` with `foreign-format: fail` (its default) calls these instead of the plain methods, because overwriting is deleting its only copy. Optional: the default reads first and then writes, which isn't atomic and can't recognize a newer format, so override it with one atomic check-and-write. |
+| `readIfChanged` | Pure, like `read` with no requests. A scalar value of your protocol whose payload digest equals `known`: return `Unchanged(format)` without sending the payload back (the digest covers only the payload, so the engine checks the format). Another scalar value: `Changed(envelope, format)`. Absent key, lease, or negative entry: `Absent`. Anything else (content you didn't write, a set, a newer format): `Unreadable(format)`. Optional: the default calls `read` and compares on the client, so it always transfers the payload. Override it to compare in your store, which is the point of the method. |
+| `putIfMatch` | One atomic compare-and-write. Current content matches when `expected == null` and the key holds no value (absent, lease, negative entry), or when it's a scalar value whose payload digest equals `expected`. Content `readIfChanged` would call `Unreadable`: return `Unreadable(format)`, except that content you didn't write (format `0`) matches as no value when `foreignAsAbsent` is set. A set, or content in a newer format, is never treated as no value, or an older instance would downgrade it during a rolling upgrade. On a match, write like `put` (destroy tokens, set the expiry, broadcast `frame`) and return `Written`. Otherwise change nothing, broadcast nothing, and return `Conflict(digest of the current value, or null)`. The default throws `UnsupportedOperationException`, which the engine passes to the caller unchanged: a read-then-put default would let two concurrent writers both succeed. Implement it only if your store can compare and write atomically. A native `AsyncRemoteStore` must override `putIfMatchAsync` too: its default fails with the same exception rather than block on the sync method. |
 
 Across all methods:
 
@@ -121,7 +130,7 @@ testImplementation("me.ahoo.cocache:cocache-test")
 | Suite | Covers | You provide |
 |-------|--------|-------------|
 | `BackendProtocolSpec` | The `RemoteStore` contract: lease grant, token checks, expiry resets, release, refresh tokens, reclaim, batch reads and writes, set updates, broadcast frames, reset on subscribe | `createBackend()`, `elapse(duration)`. Optionally `shortTtl` (default 300 ms). |
-| `EngineSpec` | Two runtimes on your backend: single load across instances, lease-wait timeout, invalidation during a load, same-instance invalidate-vs-read race, concurrent `put`s, read-your-writes, loader failure, Redis failure, invalidation retry, reconnect reset, `local-max-age`, batch reads, refresh-ahead, reclaim, newer format, load limit | `createBackend()`, `clock`, `elapse(duration)`, `simulateReconnect()` |
+| `EngineSpec` | Two runtimes on your backend: single load across instances, lease-wait timeout, invalidation during a load, same-instance invalidate-vs-read race, concurrent `put`s, read-your-writes, loader failure, Redis failure, invalidation retry, reconnect reset, `local-max-age`, batch reads, refresh-ahead, reclaim, newer format, load limit, conditional reads and writes (including concurrent read-modify-write losing no update) | `createBackend()`, `clock`, `elapse(duration)`, `simulateReconnect()`. If your store doesn't implement `putIfMatch`, override `supportsConditionalWrites = false` to skip the conditional-write cases. Otherwise they must pass, including a concurrent case that forces every writer to race on one digest and asserts exactly one wins. |
 | `SetEngineSpec` | `SetCache` across two runtimes: atomic concurrent adds, empty-set deletion, `invalidate` rejected, write and read failures | `createBackend()`, `clock`, `elapse(duration)` |
 | `MultiNodeSpec` | Three runtimes on your backend: invalidation before a lease, after a lease while another instance waits on it, and after a fill but before the L2 write; a remote write landing between a read and its L2 fill; concurrent `put`s from different instances (events arriving in reverse order on non-atomic backends); misses while an invalidation retry is pending; exactly one source load and one refresh per key across all instances | `createBackend()`, `clock`, `elapse(duration)` |
 | `FaultSpec` | Your backend under L1 faults: copies bounded by `degraded-local-max-age` while the store fails, a failed fill and its lease, invalidation retries that give up or overflow the queue, `put` and `invalidate` that take effect but report an error and are safe to retry, and (optional) writes rejected while disconnected are not replayed after the reconnect | `createBackend()`, `clock`, `elapse(duration)`; optionally `disconnect()` |
@@ -181,7 +190,7 @@ Run them with your build's normal test task (JUnit 6). `cocache-redis` runs `Bac
 
 A backend that implements only `RemoteStore` works with the [async view](../guide/async.md) unchanged: the engine calls its synchronous methods on the blocking executor. To serve async callers without those threads, implement the optional sub-interfaces:
 
-- `AsyncRemoteStore extends RemoteStore` adds `readAsync`, `readAllAsync`, `fillAsync`, `fillAllAsync`, `releaseAsync`, `putAsync`, `putAllAsync`, `invalidateAsync`, `reclaimAsync`, `addMembersAsync`, `removeMembersAsync`, and (with defaults built on `readAsync`) `addMembersIfReadableAsync` and `removeMembersIfReadableAsync`. Each has exactly the semantics of its synchronous counterpart.
+- `AsyncRemoteStore extends RemoteStore` adds `readAsync`, `readAllAsync`, `fillAsync`, `fillAllAsync`, `releaseAsync`, `putAsync`, `putAllAsync`, `invalidateAsync`, `reclaimAsync`, `addMembersAsync`, `removeMembersAsync`, and (with defaults built on `readAsync`) `addMembersIfReadableAsync`, `removeMembersIfReadableAsync`, and `readIfChangedAsync`, plus `putIfMatchAsync`, whose default fails with `UnsupportedOperationException`. Each has exactly the semantics of its synchronous counterpart.
 - `AsyncInvalidationChannel extends InvalidationChannel` adds `publishAsync`, which the engine uses on non-atomic backends.
 - **Never throw synchronously.** Fail the returned future instead, with the same exception types as the synchronous methods, not a `CompletionException`.
 - **Bound every operation.** A future that never completes stalls that key on that instance until `load-async-timeout`.

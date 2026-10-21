@@ -131,6 +131,32 @@ interface AsyncRemoteStore : RemoteStore {
             removeMembersAsync(key, members, ttl, frame).thenApply { null }
         }
     }
+
+    /**
+     * 异步的 [RemoteStore.readIfChanged]：摘要相同时以 [RemoteConditionalRead.Unchanged] 完成，不返回正文。
+     *
+     * 默认实现调用 [readAsync]（总是传输正文）；实现应当覆盖它。
+     */
+    fun readIfChangedAsync(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
+        readAsync(key, null, null).thenApply { conditionalReadOf(it, known) }
+
+    /**
+     * 异步的 [RemoteStore.putIfMatch]：当前内容符合期望时写入并广播，以 [RemoteConditionalWrite.Written] 完成；否则不修改、不广播。
+     *
+     * 默认实现以 [UnsupportedOperationException] 完成（理由同 [RemoteStore.putIfMatch]）。只覆盖了同步方法的原生异步存储也是如此：
+     * 默认实现不能在调用方线程上阻塞地调用同步方法，支持条件写入的原生异步存储必须同时覆盖两者。
+     */
+    @Suppress("LongParameterList")
+    fun putIfMatchAsync(
+        key: String,
+        expected: Digest?,
+        envelope: Envelope.Scalar,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): CompletableFuture<RemoteConditionalWrite> = CompletableFuture.failedFuture(
+        UnsupportedOperationException("${javaClass.name} does not support putIfMatchAsync().")
+    )
 }
 
 /**

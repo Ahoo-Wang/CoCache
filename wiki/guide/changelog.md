@@ -5,6 +5,25 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased (planned 6.7.0)
+
+**Module Group:** `me.ahoo.cocache` · Minor release, additive only: `Cache`, `AsyncCache` and `SuspendingCache` gain conditional reads and writes as default methods (they throw `UnsupportedOperationException` in implementations that don't override them), and the `cocache-api` SPI gains `RemoteStore.readIfChanged` / `putIfMatch` and their `AsyncRemoteStore` counterparts with default implementations. Existing callers, custom `Cache` / `SuspendingCache` implementations, and custom backends keep compiling and running unchanged. The Redis wire format and the invalidation channel are unchanged (the new scripts only read the existing format), so 6.7.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Conditional reads and writes
+
+For caches whose only copy is Redis and whose values are updated by read-modify-write. See [Conditional writes](./freshness.md#conditional-writes).
+
+- `putIfMatch(key, expected, value[, ttl])` writes only if Redis still holds the value with digest `expected` (`null`: only if Redis holds no value). Compare and write are one Lua script, and the invalidation is broadcast only when the value is written. It returns `Written(digest)` or `Conflict(current)`. A successful write follows the same TTL and fencing rules as `put`.
+- `getIfChanged(key, known)` reads Redis, never L2, and returns `Unchanged` without transferring the value when its digest still equals `known`. Otherwise it returns `Present(value, digest)` or `Absent`. It saves wire bytes, not Redis CPU: the script reads and hashes the value on every call, about 20 ms for an 8 MB value on Redis 7.4 (about 13 ms of it is the read a plain L1 read also pays). The digest isn't stored at write time, because that needs a wire-format change.
+- The digest is the SHA-1 of the value's encoded bytes, the same digest `reclaim` already used for scalar values.
+- Read and write classify unreadable content the same way. Values written by a newer CoCache and sets always throw with a `ForeignFormatException` cause and are left untouched; `reclaim` never treats them as absent. Content CoCache 6 didn't write follows `foreign-format`: `fail` (the default) throws, `reclaim` counts it as no value. A value the codec can't decode makes `getIfChanged` throw, and `putIfMatch` only ever conflicts on it. `getIfChanged` throws `CacheReadException` when Redis fails, regardless of `read-failure`.
+- New meters `cocache.conditional.conflicts` and `cocache.conditional.unchanged` ([Observability](../operations/observability.md#metrics-writes)).
+
+### SPI
+
+- `RemoteStore.readIfChanged` / `putIfMatch`, `AsyncRemoteStore.readIfChangedAsync` / `putIfMatchAsync`, and the result types `RemoteConditionalRead` / `RemoteConditionalWrite`. The `readIfChanged` defaults read and compare on the client: correct, but they always transfer the value. The `putIfMatch` defaults throw `UnsupportedOperationException` (the async one fails with it): a read-then-put default would lose updates under concurrency. A backend supports conditional writes only by overriding both with one atomic operation, as the Redis and in-memory backends do. See [Extending](../architecture/extending.md#remote-store).
+- The TCK (`EngineSpec`) covers both operations. A backend that doesn't implement `putIfMatch` sets `supportsConditionalWrites = false` to skip those cases. Otherwise they must pass, including a concurrent case that forces every writer to race on one digest.
+
 ## v6.6.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release: the `cocache-api` SPI gains `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` and their `AsyncRemoteStore` counterparts, all with default implementations, so existing backends keep compiling and running. Two behavior changes tighten fail-closed handling for caches without a loader: `SetCache` writes fail on content they can't read, and reads without a loader fail on values written by a newer version (below). The Redis wire format and the invalidation channel are unchanged, so 6.6.0 instances can share Redis with any 6.x instance and be upgraded one at a time.

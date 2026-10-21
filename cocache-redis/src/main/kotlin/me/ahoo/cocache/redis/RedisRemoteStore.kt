@@ -22,6 +22,8 @@ import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
+import me.ahoo.cocache.api.spi.RemoteConditionalRead
+import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import java.time.Duration
@@ -378,6 +380,61 @@ internal class RedisRemoteStore(
         connections.bounded(membersCommand(RedisScripts.REMOVE_MEMBERS_IF_READABLE, key, members, ttl, frame))
     ) { it.unreadableFormat() }
 
+    override fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead =
+        decodeConditionalRead(connections.await(readIfChangedCommand(key, known)))
+
+    override fun readIfChangedAsync(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
+        connections.mapped(connections.bounded(readIfChangedCommand(key, known))) { decodeConditionalRead(it) }
+
+    private fun readIfChangedCommand(key: String, known: Digest?): CompletableFuture<List<Any?>> =
+        connections.evalAsync(
+            RedisScripts.READ_IF_CHANGED,
+            listOf(key.bytes()),
+            listOf(known?.toString()?.bytes() ?: EMPTY)
+        )
+
+    override fun putIfMatch(
+        key: String,
+        expected: Digest?,
+        envelope: Envelope.Scalar,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): RemoteConditionalWrite = decodeConditionalWrite(
+        connections.await(putIfMatchCommand(key, expected, envelope, ttl, frame, foreignAsAbsent))
+    )
+
+    override fun putIfMatchAsync(
+        key: String,
+        expected: Digest?,
+        envelope: Envelope.Scalar,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): CompletableFuture<RemoteConditionalWrite> = connections.mapped(
+        connections.bounded(putIfMatchCommand(key, expected, envelope, ttl, frame, foreignAsAbsent))
+    ) { decodeConditionalWrite(it) }
+
+    @Suppress("LongParameterList")
+    private fun putIfMatchCommand(
+        key: String,
+        expected: Digest?,
+        envelope: Envelope.Scalar,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): CompletableFuture<List<Any?>> {
+        val args = listOf(
+            expected?.toString()?.bytes() ?: EMPTY,
+            (if (foreignAsAbsent) "1" else "0").bytes(),
+            millis(ttl),
+            channel,
+            frame,
+            envelope.bytes,
+        )
+        return connections.evalAsync(RedisScripts.PUT_IF_MATCH, listOf(key.bytes()), args)
+    }
+
     private fun membersCommand(
         script: RedisScripts.Script,
         key: String,
@@ -447,6 +504,39 @@ internal class RedisRemoteStore(
          * `*_IF_READABLE` 脚本的结果：`{1}` 已写入（`null`），`{0, 格式版本}` 拒绝。
          */
         private fun List<Any?>.unreadableFormat(): Int? = if (firstFlag()) null else (get(1) as Long).toInt()
+
+        /**
+         * 解码条件读取脚本的结果（结果码见 [RedisScripts.READ_IF_CHANGED]）。
+         */
+        internal fun decodeConditionalRead(result: List<Any?>): RemoteConditionalRead = when (result[0] as Long) {
+            RedisScripts.COND_ABSENT -> RemoteConditionalRead.Absent
+            RedisScripts.COND_UNCHANGED -> RemoteConditionalRead.Unchanged((result[1] as Long).toInt())
+            RedisScripts.COND_VALUE -> RemoteConditionalRead.Changed(
+                Envelope.Scalar(result[2] as ByteArray),
+                (result[1] as Long).toInt()
+            )
+            RedisScripts.COND_UNREADABLE -> RemoteConditionalRead.Unreadable((result[1] as Long).toInt())
+            else -> throw IllegalStateException("Unknown conditional read result code[${result[0]}].")
+        }
+
+        /**
+         * 解码条件写入脚本的结果（见 [RedisScripts.PUT_IF_MATCH]）：冲突时第二项为当前摘要（十六进制），没有值时缺省。
+         */
+        internal fun decodeConditionalWrite(result: List<Any?>): RemoteConditionalWrite = when (result[0] as Long) {
+            RedisScripts.PUT_WRITTEN -> RemoteConditionalWrite.Written
+            RedisScripts.PUT_CONFLICT -> RemoteConditionalWrite.Conflict(
+                (result.getOrNull(1) as ByteArray?)?.let { Digest(hexToBytes(String(it, Charsets.US_ASCII))) }
+            )
+            RedisScripts.PUT_UNREADABLE -> RemoteConditionalWrite.Unreadable((result[1] as Long).toInt())
+            else -> throw IllegalStateException("Unknown conditional write result code[${result[0]}].")
+        }
+
+        private fun hexToBytes(hex: String): ByteArray {
+            require(hex.length % 2 == 0) { "Malformed digest[$hex]." }
+            return ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(HEX_RADIX).toByte() }
+        }
+
+        private const val HEX_RADIX = 16
 
         private fun ttlOf(pttl: Long): Duration? = if (pttl < 0) null else Duration.ofMillis(pttl.coerceAtLeast(1))
 

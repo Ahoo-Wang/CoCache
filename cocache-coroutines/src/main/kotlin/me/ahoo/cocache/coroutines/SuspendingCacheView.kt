@@ -21,7 +21,10 @@ import kotlinx.coroutines.future.future
 import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.AsyncSetCache
+import me.ahoo.cocache.api.ConditionalGet
+import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.coroutines.LoadCancellation.cancellationAsFailure
 import me.ahoo.cocache.coroutines.LoadCancellation.cancelledAsFailure
 import java.time.Duration
@@ -87,6 +90,17 @@ internal open class SuspendingCacheView<K : Any, V : Any>(private val async: Asy
     override suspend fun invalidateAll(keys: Collection<K>) {
         async.invalidateAll(keys).awaitResult()
     }
+
+    override suspend fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> = async.getIfChanged(
+        key,
+        known
+    ).awaitResult()
+
+    override suspend fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut =
+        async.putIfMatch(key, expected, value).awaitResult()
+
+    override suspend fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
+        async.putIfMatch(key, expected, value, ttl).awaitResult()
 
     override fun async(): AsyncCache<K, V> = async
 

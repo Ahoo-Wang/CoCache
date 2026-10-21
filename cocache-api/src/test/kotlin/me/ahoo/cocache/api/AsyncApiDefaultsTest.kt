@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.api
 
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -68,5 +69,70 @@ class AsyncApiDefaultsTest {
         runCatching { set.async() }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
         runCatching { (set as Cache<String, Set<String>>).async() }.exceptionOrNull()
             .assert().isInstanceOf(UnsupportedOperationException::class.java)
+    }
+
+    private class PlainAsyncCache : AsyncCache<String, String> {
+        override val name: String = "plain"
+        override fun get(key: String): CompletableFuture<String?> = CompletableFuture.completedFuture(null)
+        override fun get(key: String, loader: AsyncCacheLoader<String, String>): CompletableFuture<String?> =
+            CompletableFuture.completedFuture(null)
+        override fun getAll(
+            keys: Collection<String>
+        ): CompletableFuture<Map<String, String>> = CompletableFuture.completedFuture(
+            emptyMap()
+        )
+        override fun lookup(key: String): CompletableFuture<Lookup<String>> = CompletableFuture.completedFuture(
+            Lookup.Absent(null)
+        )
+        override fun put(key: String, value: String): CompletableFuture<Void?> = CompletableFuture.completedFuture(null)
+        override fun put(
+            key: String,
+            value: String,
+            ttl: Duration
+        ): CompletableFuture<Void?> = CompletableFuture.completedFuture(
+            null
+        )
+        override fun putAll(entries: Map<String, String>): CompletableFuture<Void?> = CompletableFuture.completedFuture(
+            null
+        )
+        override fun putAll(
+            entries: Map<String, String>,
+            ttl: Duration
+        ): CompletableFuture<Void?> = CompletableFuture.completedFuture(
+            null
+        )
+        override fun invalidate(key: String): CompletableFuture<Void?> = CompletableFuture.completedFuture(null)
+        override fun invalidateAll(
+            keys: Collection<String>
+        ): CompletableFuture<Void?> = CompletableFuture.completedFuture(
+            null
+        )
+        override fun sync(): Cache<String, String> = throw UnsupportedOperationException()
+    }
+
+    /**
+     * 条件读写是 6.7 新增的默认方法：不支持的实现同步 API 抛出、异步 API 以 [UnsupportedOperationException] 完成（从不同步抛出）。
+     */
+    @Test
+    fun implementationsWithoutConditionalSupportFailLoudly() {
+        val set = PlainSetCache()
+        val known = Digest(ByteArray(20))
+        runCatching {
+            set.getIfChanged("k", known)
+        }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
+        runCatching {
+            set.putIfMatch("k", null, setOf("a"))
+        }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
+        runCatching { set.putIfMatch("k", known, setOf("a"), Duration.ofSeconds(1)) }.exceptionOrNull()
+            .assert().isInstanceOf(UnsupportedOperationException::class.java)
+
+        val async = PlainAsyncCache()
+        listOf(
+            async.getIfChanged("k", null),
+            async.putIfMatch("k", null, "v"),
+            async.putIfMatch("k", known, "v", Duration.ofSeconds(1)),
+        ).forEach { future ->
+            future.handle { _, error -> error }.join().assert().isInstanceOf(UnsupportedOperationException::class.java)
+        }
     }
 }

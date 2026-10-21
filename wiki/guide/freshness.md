@@ -51,6 +51,36 @@ userCache.putAll(users.associateBy { it.id }, Duration.ofMinutes(5))   // one ex
 
 A custom `Cache` implementation that doesn't override `putAll` falls back to calling `put` once per entry.
 
+## Conditional writes {#conditional-writes}
+
+When Redis is the only copy and several writers update one value by reading it, changing it, and writing it back (for example a document that holds many records), a plain `put` loses updates: two writers read the same version and the second `put` overwrites the first. Since 6.7, `putIfMatch` writes only if Redis still holds the value the writer read, and `getIfChanged` reads that value from Redis together with its digest:
+
+```kotlin
+fun update(key: String, change: (Document?) -> Document) {
+    while (true) {
+        val current = cache.getIfChanged(key, null)              // reads Redis, never L2
+        val (document, digest) = when (current) {
+            is ConditionalGet.Present -> current.value to current.digest
+            else -> null to null                                  // Absent: no value yet
+        }
+        when (cache.putIfMatch(key, digest, change(document))) {
+            is ConditionalPut.Written -> return
+            is ConditionalPut.Conflict -> continue               // someone else wrote first: read again
+        }
+    }
+}
+```
+
+- **The digest** is the SHA-1 of the value's bytes as the codec encoded them. `ConditionalGet.Present` and `ConditionalPut.Written` both return it. A codec that encodes equal values to different bytes (an unordered map, say) produces different digests.
+- **`putIfMatch(key, expected, value)`** compares and writes in one Redis script. With `expected = null` it writes only if Redis holds no value: the key is absent, a load lease is in place, or the key holds a negative entry. Otherwise it writes only if the value's digest equals `expected`. A conflict returns `Conflict(current)` (`null` when Redis holds no value) and changes nothing: no write, no TTL change, no invalidation message. A successful write is a `put`: same TTL rules (`ttlOf` or policy, or the `ttl` argument), same invalidation of every instance's L2, and this instance's next read sees it.
+- **`getIfChanged(key, known)`** asks Redis whether the value still has digest `known`. If it does, the answer is `Unchanged` and the value isn't transferred: Redis sends back two integers, so confirming a large value costs a round trip, not its size on the wire. It doesn't save Redis CPU: the script still reads the value and computes its SHA-1 every time, and Redis serves nothing else meanwhile (about 20 ms for an 8 MB value on Redis 7.4, of which about 13 ms is the read that a plain L1 read pays too). Size the revalidation interval with instances × values × size in mind. Otherwise it returns `Present(value, digest)` or `Absent`. Use it to revalidate a value you hold in memory: keep the digest, and call `getIfChanged` on a schedule or when an invalidation arrives.
+- **Both bypass L2.** They read and write Redis only, never load from the loader, and never fill L2. The cache's L2 may be older than what `getIfChanged` returns, within `localMaxAge`.
+- **Failures:** `getIfChanged` throws `CacheReadException` when Redis fails, whatever `read-failure` says, because there is nothing to degrade to. `putIfMatch` throws `CacheWriteException`. It isn't idempotent: after a timeout, call `getIfChanged` first. If the current digest is the one `Written` would have returned, the write went through.
+- **Unreadable content** is never treated as an empty value by one method and as a value by the other. A value written by a newer CoCache, or a set, makes both methods throw with a `ForeignFormatException` cause and leaves the key alone. A value the codec can't decode makes `getIfChanged` throw. `putIfMatch` can't see the codec, so on such a value it only ever returns `Conflict` and never overwrites it. Content CoCache 6 didn't write (5.x data) follows `foreign-format`, as for a cache without a loader: with `fail` (the default) both methods throw; with `reclaim` it counts as no value, so `getIfChanged` returns `Absent` and `putIfMatch(key, null, value)` replaces it.
+- **Custom backends** must implement the conditional write atomically or not at all: the SPI's default `putIfMatch` throws `UnsupportedOperationException`, which reaches the caller.
+- **Every writer must use `putIfMatch`.** A plain `put` doesn't check and still wins over a concurrent read-modify-write.
+- `SetCache` doesn't support them, since its `add` and `remove` are already atomic. The async view and the [suspending view](./coroutines.md) have the same methods.
+
 ## Inside a transaction {#transactions}
 
 Inside a Spring transaction, "after the commit" is not where your code runs. `TransactionalInvalidator` (registered by the starter when `spring-tx` is present) moves the invalidation there:
