@@ -140,6 +140,43 @@ interface RemoteStore : AutoCloseable {
         return null
     }
 
+    /**
+     * 条件读取（确认 L1 中的值是否仍是调用方已有的那一份）：key 中是本协议的标量值、且其载荷的 [Digest] 等于 [known] 时
+     * 返回 [RemoteConditionalRead.Unchanged]，不返回正文；否则返回当前状态（值与格式版本、没有值、读不懂的内容）。
+     * 不申请 lease 或刷新令牌，不修改 key。
+     *
+     * 默认实现调用 [read]（总是传输正文，在客户端比较摘要）；实现应当覆盖它，在 L1 中比较摘要，摘要相同时只传输结果码。
+     */
+    fun readIfChanged(
+        key: String,
+        known: Digest?
+    ): RemoteConditionalRead = conditionalReadOf(read(key, null, null), known)
+
+    /**
+     * 条件写入（按摘要比较后写入）：仅当 key 的当前内容符合 [expected] 时，原子地整体覆盖写入 [envelope]
+     * （转换同 [put]：销毁任何令牌，按 [ttl] 重设到期时间，`null` 为永不过期）并广播 [frame]；否则不修改 key、不广播。
+     *
+     * - [expected] 为 `null`：仅当 key 中没有值（不存在、lease 占位、负缓存）时写入。
+     * - 否则：仅当 key 中是本协议的标量值、且其载荷的 [Digest] 等于 [expected] 时写入。
+     * - key 中是不能当作本协议标量值的内容（见 [RemoteConditionalRead.Unreadable]）时：[unreadableAsAbsent] 为 `true`
+     *   则视为没有值，否则返回 [RemoteConditionalWrite.Unreadable]，不修改 key、不广播。
+     *
+     * 默认实现先 [read] 再 [put]：检查与写入之间不原子，并发的条件写入可能都成功（丢失更新）。实现应当覆盖它，在一次原子操作中比较并写入。
+     */
+    @Suppress("LongParameterList")
+    fun putIfMatch(
+        key: String,
+        expected: Digest?,
+        envelope: Envelope.Scalar,
+        ttl: Duration?,
+        frame: ByteArray,
+        unreadableAsAbsent: Boolean
+    ): RemoteConditionalWrite {
+        conditionalRefusal(read(key, null, null), expected, unreadableAsAbsent)?.let { return it }
+        put(key, envelope, ttl, frame)
+        return RemoteConditionalWrite.Written
+    }
+
     override fun close() = Unit
 }
 
@@ -152,4 +189,47 @@ internal fun unreadableSetFormat(read: RemoteRead): Int? {
         return null
     }
     return read.format.takeIf { it < 1 || read.envelope is Envelope.Scalar }
+}
+
+/**
+ * [RemoteStore.readIfChanged] 等默认实现的判定：把一次普通读取的结果换算为条件读取的结果。
+ * 未命中、lease、负缓存是没有值；格式低于 1 的内容与集合读不懂。
+ */
+internal fun conditionalReadOf(read: RemoteRead, known: Digest?): RemoteConditionalRead {
+    if (read !is RemoteRead.Hit) {
+        return RemoteConditionalRead.Absent
+    }
+    val envelope = read.envelope
+    return when {
+        read.format < 1 -> RemoteConditionalRead.Unreadable(0)
+        envelope is Envelope.Absent -> RemoteConditionalRead.Absent
+        envelope is Envelope.Scalar -> if (known != null && Digest.of(envelope) == known) {
+            RemoteConditionalRead.Unchanged
+        } else {
+            RemoteConditionalRead.Changed(envelope, read.format)
+        }
+        else -> RemoteConditionalRead.Unreadable(read.format)
+    }
+}
+
+/**
+ * [RemoteStore.putIfMatch] 等默认实现的判定：可以写入时返回 `null`，否则返回拒绝的结果。
+ */
+internal fun conditionalRefusal(
+    read: RemoteRead,
+    expected: Digest?,
+    unreadableAsAbsent: Boolean
+): RemoteConditionalWrite? {
+    val current: Digest? = when (val state = conditionalReadOf(read, null)) {
+        is RemoteConditionalRead.Changed -> Digest.of(state.envelope)
+        is RemoteConditionalRead.Unreadable -> if (unreadableAsAbsent) {
+            null
+        } else {
+            return RemoteConditionalWrite.Unreadable(
+                state.format
+            )
+        }
+        else -> null
+    }
+    return if (current == expected) null else RemoteConditionalWrite.Conflict(current)
 }

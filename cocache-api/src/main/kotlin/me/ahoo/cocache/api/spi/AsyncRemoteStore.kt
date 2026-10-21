@@ -131,6 +131,36 @@ interface AsyncRemoteStore : RemoteStore {
             removeMembersAsync(key, members, ttl, frame).thenApply { null }
         }
     }
+
+    /**
+     * 异步的 [RemoteStore.readIfChanged]：摘要相同时以 [RemoteConditionalRead.Unchanged] 完成，不返回正文。
+     *
+     * 默认实现调用 [readAsync]（总是传输正文）；实现应当覆盖它。
+     */
+    fun readIfChangedAsync(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
+        readAsync(key, null, null).thenApply { conditionalReadOf(it, known) }
+
+    /**
+     * 异步的 [RemoteStore.putIfMatch]：当前内容符合期望时写入并广播，以 [RemoteConditionalWrite.Written] 完成；否则不修改、不广播。
+     *
+     * 默认实现先 [readAsync] 再 [putAsync]（不原子）；实现应当覆盖它。
+     */
+    @Suppress("LongParameterList")
+    fun putIfMatchAsync(
+        key: String,
+        expected: Digest?,
+        envelope: Envelope.Scalar,
+        ttl: Duration?,
+        frame: ByteArray,
+        unreadableAsAbsent: Boolean
+    ): CompletableFuture<RemoteConditionalWrite> = readAsync(key, null, null).thenCompose { read ->
+        val refusal = conditionalRefusal(read, expected, unreadableAsAbsent)
+        if (refusal != null) {
+            CompletableFuture.completedFuture(refusal)
+        } else {
+            putAsync(key, envelope, ttl, frame).thenApply<RemoteConditionalWrite> { RemoteConditionalWrite.Written }
+        }
+    }
 }
 
 /**

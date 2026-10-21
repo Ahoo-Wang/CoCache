@@ -170,8 +170,21 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      *
      * @param onFailure L1 失败时调用（在第二次递增之前，因此登记的状态对随后的读取可见）
      */
-    @Suppress("TooGenericExceptionCaught", "InstanceOfCheckForException")
     protected fun write(keys: Collection<String>, mutate: (ByteArray) -> Unit, onFailure: (Exception) -> Unit) {
+        write(keys, mutate, ALWAYS_CHANGED, onFailure)
+    }
+
+    /**
+     * 同 [write]，但 [mutate] 正常返回后由 [changed] 判定 L1 是否被修改（条件写入的冲突不修改 L1）：
+     * 未修改时非原子广播的后端不广播（原子广播的后端由存储自己决定）。戳与 L2 淘汰照常执行，只多淘汰一次本地副本。
+     */
+    @Suppress("TooGenericExceptionCaught", "InstanceOfCheckForException")
+    protected fun write(
+        keys: Collection<String>,
+        mutate: (ByteArray) -> Unit,
+        changed: () -> Boolean,
+        onFailure: (Exception) -> Unit
+    ) {
         keys.forEach {
             stamps.invalidate(it)
             local.invalidate(it)
@@ -186,7 +199,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
                 }
                 throw e
             }
-            if (!atomicBroadcast) {
+            if (!atomicBroadcast && changed()) {
                 context.backend.channel.publish(namespace, frame)
             }
         } catch (e: Exception) {
@@ -208,10 +221,20 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 不经执行器：执行器拒绝任务时也必须执行，否则在两次递增之间开始的填充会把旧值写进 L2（G2）。只有返回 future 的完成切换到执行器。
      * 非原子广播的派发被拒绝时同样就地广播（[publishAfterWrite]）。
      */
+    protected fun writeAsync(
+        keys: Collection<String>,
+        mutate: (ByteArray) -> CompletableFuture<Void?>,
+        onFailure: (Exception) -> Unit
+    ): CompletableFuture<Void?> = writeAsync(keys, mutate, ALWAYS_CHANGED, onFailure)
+
+    /**
+     * 同 [writeAsync]，[changed] 的含义同 [write]：在 [mutate] 的 future 正常完成之后调用。
+     */
     @Suppress("TooGenericExceptionCaught")
     protected fun writeAsync(
         keys: Collection<String>,
         mutate: (ByteArray) -> CompletableFuture<Void?>,
+        changed: () -> Boolean,
         onFailure: (Exception) -> Unit
     ): CompletableFuture<Void?> {
         keys.forEach {
@@ -221,7 +244,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         val mutated = Futures.attempt {
             val frame = frameOf(keys)
             val written = Futures.attempt { mutate(frame) }
-            if (atomicBroadcast) written else publishAfterWrite(written, frame)
+            if (atomicBroadcast) written else publishAfterWrite(written, frame, changed)
         }
         if (mutated.isDone) {
             // 已完成（没有 I/O 线程参与）：就地收尾并返回
@@ -243,14 +266,21 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 执行器拒绝时在完成线程上就地执行（`publishAsync` 不阻塞、不调用用户代码）：拒绝不能跳过广播（G2），
      * 也不能把写入的结果换成 `RejectedExecutionException`（成功的写入因此计为失败、`invalidate` 因此登记多余的重试）。
      */
-    private fun publishAfterWrite(written: CompletableFuture<Void?>, frame: ByteArray): CompletableFuture<Void?> {
+    private fun publishAfterWrite(
+        written: CompletableFuture<Void?>,
+        frame: ByteArray,
+        changed: () -> Boolean
+    ): CompletableFuture<Void?> {
         if (written.isDone) {
-            return publishAfter(frame, Futures.outcome(written).second)
+            return publishAfter(frame, Futures.outcome(written).second, changed)
         }
         val published = CompletableFuture<Void?>()
         written.whenComplete { _, error ->
             val publish = Runnable {
-                Futures.relay(Futures.attempt { publishAfter(frame, error?.let { Futures.unwrap(it) }) }, published)
+                Futures.relay(
+                    Futures.attempt { publishAfter(frame, error?.let { Futures.unwrap(it) }, changed) },
+                    published
+                )
             }
             try {
                 executor.execute(publish)
@@ -265,9 +295,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 非原子广播：写入成功后广播；写入失败时也尽力广播（见 [write]），广播的失败只告警，返回的 future 以写入的原始异常失败。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun publishAfter(frame: ByteArray, error: Throwable?): CompletableFuture<Void?> {
+    private fun publishAfter(frame: ByteArray, error: Throwable?, changed: () -> Boolean): CompletableFuture<Void?> {
         if (error == null) {
-            return asyncChannel.publishAsync(namespace, frame)
+            // 条件写入的冲突没有修改 L1，没有需要广播的变化
+            return if (changed()) asyncChannel.publishAsync(namespace, frame) else Futures.done()
         }
         if (error is ForeignFormatException) {
             // 后端拒绝了写入（L1 未修改），没有需要广播的变化
@@ -460,6 +491,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
          * 格式版本 `0` 表示无法识别的内容（如旧版本写入的值），按损坏处理。
          */
         const val MIN_FORMAT = 1
+
+        /**
+         * 无条件写入：总是修改 L1。
+         */
+        val ALWAYS_CHANGED: () -> Boolean = { true }
 
         fun <V> buildLocal(policy: CachePolicy): Cache<String, LocalEntry<V>> {
             val local = policy.local

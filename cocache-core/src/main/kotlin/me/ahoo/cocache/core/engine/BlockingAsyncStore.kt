@@ -23,6 +23,8 @@ import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
+import me.ahoo.cocache.api.spi.RemoteConditionalRead
+import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Subscription
@@ -98,6 +100,20 @@ internal class BlockingAsyncStore(
         ttl: Duration?,
         frame: ByteArray
     ): CompletableFuture<Int?> = offload { store.removeMembersIfReadable(key, members, ttl, frame) }
+
+    override fun readIfChangedAsync(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
+        offload { store.readIfChanged(key, known) }
+
+    override fun putIfMatchAsync(
+        key: String,
+        expected: Digest?,
+        envelope: Envelope.Scalar,
+        ttl: Duration?,
+        frame: ByteArray,
+        unreadableAsAbsent: Boolean
+    ): CompletableFuture<RemoteConditionalWrite> = offload {
+        store.putIfMatch(key, expected, envelope, ttl, frame, unreadableAsAbsent)
+    }
 
     companion object {
         fun of(

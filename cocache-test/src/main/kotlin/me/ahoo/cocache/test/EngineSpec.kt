@@ -19,12 +19,17 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Codec
+import me.ahoo.cocache.api.ConditionalGet
+import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -42,6 +47,7 @@ import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -86,6 +92,12 @@ abstract class EngineSpec {
      * 每个用例新建后端的实现应覆盖为 `true`。
      */
     protected open val closesBackend: Boolean = false
+
+    /**
+     * 后端是否原子地实现条件写入（覆盖了 `RemoteStore.putIfMatch`）。只依赖 SPI 默认实现（先读后写，不原子）的后端
+     * 覆盖为 `false`，跳过并发“读—改—条件写”的用例：默认实现在并发下会丢失更新。
+     */
+    protected open val atomicConditionalWrites: Boolean = true
 
     protected lateinit var backend: HookedBackend
     protected lateinit var nodeA: CacheRuntime
@@ -981,6 +993,259 @@ abstract class EngineSpec {
         cache["k"].assert().isEqualTo("v1")
         remoteValue("k").assert().isEqualTo("v1")
         loads.get().assert().isEqualTo(1)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 条件读写（getIfChanged / putIfMatch）：没有数据源的缓存（L1 是唯一副本）上的“读—改—写”。
+    // ---------------------------------------------------------------------------------------------
+
+    protected fun storeOfRecord(policy: CachePolicy = policy()): Cache<String, String> = nodeA.cache(
+        spec(policy) { loader = null }
+    )
+
+    protected fun digestOf(value: String): Digest = Digest.of(Envelope.Scalar(TestCodec.encode(value)))
+
+    /**
+     * 摘要相同时 `Unchanged`；否则返回值与新摘要。总是读 L1：本节点 L2 中的旧副本不影响结果，结果也不写入 L2。
+     */
+    @Test
+    fun getIfChangedConfirmsAgainstRemoteBypassingLocal() {
+        val cache = storeOfRecord()
+        cache.getIfChanged("k", null).assert().isEqualTo(ConditionalGet.Absent)
+        cache.put("k", "v1")
+        val first = cache.getIfChanged("k", null)
+        first.assert().isEqualTo(ConditionalGet.Present("v1", digestOf("v1")))
+        cache.getIfChanged("k", digestOf("v1")).assert().isEqualTo(ConditionalGet.Unchanged)
+        nodeA.metrics().conditionalUnchanged.assert().isEqualTo(1)
+
+        // L2 中是 v1，L1 被绕过协议改成了 v2（没有广播）：普通读取仍读到 L2 的旧副本，条件读取读到 L1
+        cache["k"].assert().isEqualTo("v1")
+        writeRemoteSilently("k", TestCodec.encode("v2"))
+        cache.getIfChanged("k", digestOf("v1")).assert().isEqualTo(ConditionalGet.Present("v2", digestOf("v2")))
+        cache["k"].assert().isEqualTo("v1")
+
+        cache.invalidate("k")
+        cache.getIfChanged("k", digestOf("v2")).assert().isEqualTo(ConditionalGet.Absent)
+    }
+
+    /**
+     * 负缓存与 lease 占位都是“没有值”：条件读取返回 `Absent`，`expected = null` 的条件写入覆盖它们（与 put 相同，销毁 lease）。
+     */
+    @Test
+    fun negativeEntriesAndLeasesHoldNoValue() {
+        val cache = storeOfRecord()
+        backend.delegate.store(
+            cacheName
+        ).put(storageKey("negative"), Envelope.Absent, null, InvalidationFrame.encode(NodeId.random(), emptyList()))
+        val lease = LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1))
+        backend.delegate.store(
+            cacheName
+        ).read(storageKey("leased"), lease, null).assert().isEqualTo(RemoteRead.Miss(true))
+
+        cache.getIfChanged("negative", null).assert().isEqualTo(ConditionalGet.Absent)
+        cache.getIfChanged("leased", digestOf("x")).assert().isEqualTo(ConditionalGet.Absent)
+        cache.putIfMatch("negative", digestOf(""), "v").assert().isEqualTo(ConditionalPut.Conflict(null))
+        cache.putIfMatch("negative", null, "v").assert().isEqualTo(ConditionalPut.Written(digestOf("v")))
+        cache.putIfMatch("leased", null, "v").assert().isEqualTo(ConditionalPut.Written(digestOf("v")))
+        remoteValue("negative").assert().isEqualTo("v")
+        remoteValue("leased").assert().isEqualTo("v")
+        // lease 已被销毁：持有者的填充被拒绝
+        backend.delegate.store(cacheName).fill(
+            me.ahoo.cocache.api.spi.Fill(
+                storageKey("leased"),
+                lease.token,
+                Envelope.Scalar(TestCodec.encode("stale")),
+                null
+            )
+        ).assert().isFalse()
+    }
+
+    /**
+     * 只有摘要相符（或 `expected = null` 且没有值）时写入；冲突返回当前摘要，不修改 L1，不计入写入失败。
+     */
+    @Test
+    fun putIfMatchWritesOnlyWhenTheDigestMatches() {
+        val cache = storeOfRecord()
+        val other = nodeB.cache(spec { loader = null })
+        cache.putIfMatch("k", null, "v1").assert().isEqualTo(ConditionalPut.Written(digestOf("v1")))
+        other["k"].assert().isEqualTo("v1")
+
+        cache.putIfMatch("k", null, "x").assert().isEqualTo(ConditionalPut.Conflict(digestOf("v1")))
+        cache.putIfMatch("k", digestOf("stale"), "x").assert().isEqualTo(ConditionalPut.Conflict(digestOf("v1")))
+        remoteValue("k").assert().isEqualTo("v1")
+        nodeA.metrics().conditionalConflicts.assert().isEqualTo(2)
+        nodeA.metrics().writeFailures.assert().isEqualTo(0)
+
+        val written = cache.putIfMatch("k", digestOf("v1"), "v2")
+        written.assert().isEqualTo(ConditionalPut.Written(digestOf("v2")))
+        // 写入广播失效：另一个节点的 L2 被淘汰；本节点读己之写
+        awaitCondition("other node sees v2") { other["k"] == "v2" }
+        cache["k"].assert().isEqualTo("v2")
+        cache.getIfChanged("k", (written as ConditionalPut.Written).digest).assert().isEqualTo(ConditionalGet.Unchanged)
+
+        cache.putIfMatch("absent", digestOf("v1"), "x").assert().isEqualTo(ConditionalPut.Conflict(null))
+        remote("absent").assert().isEqualTo(RemoteRead.Miss(false))
+    }
+
+    /**
+     * 冲突不广播：随后一次成功写入的失效是另一个节点收到的唯一一次（同一频道按序送达）。
+     */
+    @Test
+    fun putIfMatchConflictDoesNotBroadcast() {
+        val cache = storeOfRecord()
+        val other = nodeB.cache(spec { loader = null })
+        cache.put("k", "v1")
+        other["k"].assert().isEqualTo("v1")
+        awaitCondition("the put reached the other node") { nodeB.metrics().invalidationsReceived >= 1 }
+        val received = nodeB.metrics().invalidationsReceived
+
+        cache.putIfMatch("k", digestOf("stale"), "x").assert().isInstanceOf(ConditionalPut.Conflict::class.java)
+        cache.putIfMatch("k", null, "x").assert().isInstanceOf(ConditionalPut.Conflict::class.java)
+        cache.putIfMatch("marker", null, "m").assert().isInstanceOf(ConditionalPut.Written::class.java)
+        awaitCondition("marker broadcast") { nodeB.metrics().invalidationsReceived > received }
+        nodeB.metrics().invalidationsReceived.assert().isEqualTo(received + 1)
+        other["k"].assert().isEqualTo("v1")
+    }
+
+    /**
+     * N 个线程（分布在两个节点上）在同一个 key 上做“读—改—条件写”循环：没有一次更新丢失。
+     */
+    @Test
+    fun concurrentReadModifyWriteLosesNoUpdate() {
+        Assumptions.assumeTrue(atomicConditionalWrites, "the backend relies on the non-atomic putIfMatch default")
+        val caches = listOf(storeOfRecord(), nodeB.cache(spec { loader = null }))
+        val threads = 8
+        val increments = 25
+        val start = CountDownLatch(1)
+        val workers = (0 until threads).map { index ->
+            val cache = caches[index % caches.size]
+            fork("cas-$index") {
+                start.awaitOrFail("start")
+                repeat(increments) { increment(cache, "counter") }
+            }
+        }
+        start.countDown()
+        workers.forEach { it.join() }
+        val final = caches[0].getIfChanged("counter", null) as ConditionalGet.Present
+        final.value.assert().isEqualTo((threads * increments).toString())
+        remoteValue("counter").assert().isEqualTo((threads * increments).toString())
+    }
+
+    private fun increment(cache: Cache<String, String>, key: String) {
+        while (true) {
+            val current = cache.getIfChanged(key, null)
+            val (value, digest) = when (current) {
+                is ConditionalGet.Present -> current.value.toInt() to current.digest
+                else -> 0 to null
+            }
+            if (cache.putIfMatch(key, digest, (value + 1).toString()) is ConditionalPut.Written) {
+                return
+            }
+        }
+    }
+
+    /**
+     * 写入时与 put 相同地设置到期时间（策略或显式时长；`ttl = null` 永不过期）；冲突与条件读取不改变到期时间。
+     */
+    @Test
+    fun putIfMatchSetsTtlLikePutAndConflictsKeepIt() {
+        val cache = storeOfRecord()
+        cache.putIfMatch("k", null, "v1", Duration.ofMinutes(1))
+        val ttl = requireNotNull((remote("k") as RemoteRead.Hit).ttl)
+        ttl.assert().isBetween(Duration.ofSeconds(50), Duration.ofMinutes(1))
+
+        cache.putIfMatch("k", null, "x", Duration.ofDays(1)).assert().isInstanceOf(ConditionalPut.Conflict::class.java)
+        cache.getIfChanged("k", digestOf("v1")).assert().isEqualTo(ConditionalGet.Unchanged)
+        requireNotNull((remote("k") as RemoteRead.Hit).ttl).assert().isLessThanOrEqualTo(ttl)
+
+        cache.putIfMatch("k", digestOf("v1"), "v2").assert().isInstanceOf(ConditionalPut.Written::class.java)
+        requireNotNull(
+            (remote("k") as RemoteRead.Hit).ttl
+        ).assert().isBetween(Duration.ofMinutes(9), Duration.ofMinutes(10))
+
+        val forever = nodeB.cache(spec(policy().toBuilder().ttl(null).build()) { loader = null })
+        forever.putIfMatch("forever", null, "v").assert().isInstanceOf(ConditionalPut.Written::class.java)
+        (remote("forever") as RemoteRead.Hit).ttl.assert().isNull()
+        forever.putIfMatch("forever", digestOf("v"), "v2", Duration.ofMinutes(1))
+        requireNotNull((remote("forever") as RemoteRead.Hit).ttl).assert().isLessThanOrEqualTo(Duration.ofMinutes(1))
+    }
+
+    /**
+     * 读不懂的内容（这里是同一个 key 上的集合、解码失败的值）：默认 `FAIL`，条件读取以 [CacheReadException]、
+     * 条件写入以 [CacheWriteException] 失败（cause 为 [ForeignFormatException]），不修改 L1、计入 `unknownFormats`。
+     * 降级读失败模式与有数据源时同样如此（条件读写从不回源）。
+     */
+    @Test
+    fun conditionalOperationsFailOnUnreadableContentByDefault() {
+        val cache = nodeA.cache(spec())
+        val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
+        backend.delegate.store(cacheName).addMembers(storageKey("set"), listOf("a".toByteArray()), null, frame)
+        writeRemoteSilently("corrupt", TestCodec.CORRUPT)
+
+        val readError = runCatching { cache.getIfChanged("set", null) }.exceptionOrNull()
+        readError.assert().isInstanceOf(CacheReadException::class.java)
+        requireNotNull(readError?.cause as? ForeignFormatException).storageKey.assert().isEqualTo(storageKey("set"))
+        val writeError = runCatching { cache.putIfMatch("set", null, "v") }.exceptionOrNull()
+        writeError.assert().isInstanceOf(CacheWriteException::class.java)
+        (writeError as CacheWriteException).operation.assert().isEqualTo("putIfMatch")
+        writeError.cause.assert().isInstanceOf(ForeignFormatException::class.java)
+        (remote("set") as RemoteRead.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
+
+        // 同版本内容解码失败：读取失败；写入只看摘要（调用方拿不到它的摘要），因此是冲突
+        val corrupt = runCatching { cache.getIfChanged("corrupt", null) }.exceptionOrNull()
+        corrupt.assert().isInstanceOf(CacheReadException::class.java)
+        requireNotNull(corrupt?.cause as? ForeignFormatException).format.assert().isEqualTo(backend.format)
+        cache.putIfMatch("corrupt", null, "v").assert().isEqualTo(
+            ConditionalPut.Conflict(Digest.of(Envelope.Scalar(TestCodec.CORRUPT)))
+        )
+        ((remote("corrupt") as RemoteRead.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
+        nodeA.metrics().unknownFormats.assert().isEqualTo(3)
+        nodeA.metrics().writeFailures.assert().isEqualTo(1)
+        loads.get().assert().isEqualTo(0)
+    }
+
+    /**
+     * 显式 `RECLAIM`：读不懂的内容视为没有值，条件读取返回 `Absent`（不修改 L1），`expected = null` 的条件写入整体覆盖它。
+     */
+    @Test
+    fun conditionalOperationsTreatUnreadableContentAsAbsentWhenReclaimIsConfigured() {
+        val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
+        val cache = storeOfRecord(reclaim)
+        val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
+        backend.delegate.store(cacheName).addMembers(storageKey("set"), listOf("a".toByteArray()), null, frame)
+
+        cache.getIfChanged("set", null).assert().isEqualTo(ConditionalGet.Absent)
+        (remote("set") as RemoteRead.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
+        cache.putIfMatch("set", digestOf("x"), "v").assert().isEqualTo(ConditionalPut.Conflict(null))
+        cache.putIfMatch("set", null, "v").assert().isEqualTo(ConditionalPut.Written(digestOf("v")))
+        remoteValue("set").assert().isEqualTo("v")
+        nodeA.metrics().unknownFormats.assert().isEqualTo(1)
+    }
+
+    /**
+     * L1 失败：条件读取总是抛出 [CacheReadException]（没有可降级的答案，与 `readFailure` 无关），条件写入抛出 [CacheWriteException]。
+     */
+    @Test
+    fun conditionalOperationsThrowWhenRemoteFails() {
+        val cache = nodeA.cache(spec())
+        backend.failAll = true
+        runCatching {
+            cache.getIfChanged(
+                "k",
+                null
+            )
+        }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        runCatching {
+            cache.putIfMatch(
+                "k",
+                null,
+                "v"
+            )
+        }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
+        backend.failAll = false
+        nodeA.metrics().remoteFailures.assert().isGreaterThanOrEqualTo(1)
+        nodeA.metrics().writeFailures.assert().isEqualTo(1)
+        loads.get().assert().isEqualTo(0)
     }
 
     /**

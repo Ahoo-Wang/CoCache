@@ -18,8 +18,11 @@ package me.ahoo.cocache.coroutines
 import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.AsyncSetCache
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.ConditionalGet
+import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.spi.Digest
 import java.time.Duration
 
 /**
@@ -70,6 +73,21 @@ interface SuspendingCache<K : Any, V : Any> {
     suspend fun invalidate(key: K)
 
     suspend fun invalidateAll(keys: Collection<K>)
+
+    /**
+     * 条件读取，语义同 [Cache.getIfChanged]。
+     */
+    suspend fun getIfChanged(key: K, known: Digest?): ConditionalGet<V>
+
+    /**
+     * 条件写入，语义同 [Cache.putIfMatch]。
+     */
+    suspend fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut
+
+    /**
+     * 以指定时长条件写入，语义同 [Cache.putIfMatch] (key, expected, value, ttl)。
+     */
+    suspend fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut
 
     /**
      * 同一缓存的异步视图。

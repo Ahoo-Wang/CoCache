@@ -5,6 +5,25 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased (planned 6.7.0)
+
+**Module Group:** `me.ahoo.cocache` · Minor release, additive only: `Cache` and `AsyncCache` gain conditional reads and writes as default methods, the `cocache-api` SPI gains `RemoteStore.readIfChanged` / `putIfMatch` and their `AsyncRemoteStore` counterparts with default implementations, and `SuspendingCache` gains the same methods. Existing callers, custom `Cache` implementations, and custom backends keep compiling and running unchanged. The Redis wire format and the invalidation channel are unchanged (the new scripts only read the existing format), so 6.7.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Conditional reads and writes
+
+For caches whose only copy is Redis and whose values are updated by read-modify-write. See [Conditional writes](./freshness.md#conditional-writes).
+
+- `putIfMatch(key, expected, value[, ttl])` writes only if Redis still holds the value with digest `expected` (`null`: only if Redis holds no value). Compare and write are one Lua script, and the invalidation is broadcast only when the value is written. It returns `Written(digest)` or `Conflict(current)`. A successful write follows the same TTL and fencing rules as `put`.
+- `getIfChanged(key, known)` reads Redis, never L2, and returns `Unchanged` without transferring the value when its digest still equals `known`. Otherwise it returns `Present(value, digest)` or `Absent`.
+- The digest is the SHA-1 of the value's encoded bytes, the same digest `reclaim` already used for scalar values.
+- Both follow `foreign-format` as reads without a loader do: with `fail` (the default) unreadable content throws with a `ForeignFormatException` cause and is left untouched, and with `reclaim` it counts as no value. `getIfChanged` throws `CacheReadException` when Redis fails, regardless of `read-failure`.
+- New meters `cocache.conditional.conflicts` and `cocache.conditional.unchanged` ([Observability](../operations/observability.md#metrics-writes)).
+
+### SPI
+
+- `RemoteStore.readIfChanged` / `putIfMatch`, `AsyncRemoteStore.readIfChangedAsync` / `putIfMatchAsync`, and the result types `RemoteConditionalRead` / `RemoteConditionalWrite`. The defaults read, compare on the client, and then `put`: they aren't atomic, and the conditional read always transfers the value. Backends should override them with one atomic operation, as the Redis and in-memory backends do. See [Extending](../architecture/extending.md#remote-store).
+- The TCK (`EngineSpec`) covers both operations, so backends that pass it get the parity checks for free.
+
 ## v6.6.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release: the `cocache-api` SPI gains `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` and their `AsyncRemoteStore` counterparts, all with default implementations, so existing backends keep compiling and running. Two behavior changes tighten fail-closed handling for caches without a loader: `SetCache` writes fail on content they can't read, and reads without a loader fail on values written by a newer version (below). The Redis wire format and the invalidation channel are unchanged, so 6.6.0 instances can share Redis with any 6.x instance and be upgraded one at a time.

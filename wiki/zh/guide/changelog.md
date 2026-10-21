@@ -5,6 +5,25 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布（计划为 6.7.0）
+
+**模块组：** `me.ahoo.cocache` · 次版本，只有新增：`Cache` 与 `AsyncCache` 以 default 方法新增条件读写，`cocache-api` 的 SPI 新增 `RemoteStore.readIfChanged` / `putIfMatch` 及 `AsyncRemoteStore` 中对应的异步方法（都带默认实现），`SuspendingCache` 新增同名方法。已有的调用方、自定义 `Cache` 实现与自定义后端照常编译与运行。Redis 线格式与失效频道不变（新脚本只读取现有格式），6.7.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。
+
+### 条件读写
+
+用于 Redis 是唯一副本、值以“读取—修改—写回”更新的缓存，见[条件写入](./freshness.md#conditional-writes)。
+
+- `putIfMatch(key, expected, value[, ttl])` 只在 Redis 中仍是摘要为 `expected` 的值时写入（`null`：只在 Redis 中没有值时写入）。比较与写入是一个 Lua 脚本，只在写入时广播失效。返回 `Written(digest)` 或 `Conflict(current)`。写入成功时的寿命与栅栏规则同 `put`。
+- `getIfChanged(key, known)` 读 Redis、从不读 L2，值的摘要仍等于 `known` 时返回 `Unchanged`，不传输值；否则返回 `Present(value, digest)` 或 `Absent`。
+- 摘要是值编码后的字节的 SHA-1，即 `reclaim` 对标量值一直使用的摘要。
+- 两者与没有 loader 的读取一样按 `foreign-format` 处理：`fail`（默认）时读不懂的内容抛出，`cause` 为 `ForeignFormatException`，内容不被修改；`reclaim` 时视为没有值。Redis 故障时 `getIfChanged` 抛出 `CacheReadException`，与 `read-failure` 无关。
+- 新指标 `cocache.conditional.conflicts` 与 `cocache.conditional.unchanged`（[可观测性](../operations/observability.md#metrics-writes)）。
+
+### SPI
+
+- `RemoteStore.readIfChanged` / `putIfMatch`、`AsyncRemoteStore.readIfChangedAsync` / `putIfMatchAsync`，以及结果类型 `RemoteConditionalRead` / `RemoteConditionalWrite`。默认实现先读、在客户端比较，再 `put`：不原子，条件读取总是传输值。后端应当像 Redis 与内存后端那样覆盖为一次原子操作。见[扩展](../architecture/extending.md#remote-store)。
+- TCK（`EngineSpec`）覆盖这两个操作，通过它的后端自动得到一致性检查。
+
 ## v6.6.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本：`cocache-api` 的 SPI 新增 `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` 及 `AsyncRemoteStore` 中对应的异步方法，都带默认实现，已有的后端照常编译与运行。两项行为变化收紧没有数据源的缓存的 fail closed 处理：`SetCache` 的写入遇到读不懂的内容时失败，没有数据源的读取遇到更高版本写入的值时失败（见下文）。Redis 线格式与失效频道不变，6.6.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。

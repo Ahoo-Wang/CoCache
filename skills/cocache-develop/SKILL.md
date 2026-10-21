@@ -56,7 +56,7 @@ Resolve the CoCache version from the build (`./gradlew :module:dependencies --co
 | Primary scope | Load |
 |---|---|
 | Declaring caches: interface or spec bean, names, storage keys, key encoding, loaders, codecs, `ttlOf`, `KeyFilter`, customizers, startup validation | `references/declare-caches.md` |
-| Write paths: invalidate after commit, `invalidate` vs `put`, external writers, choosing `ttl`/`absent-ttl`/`local-max-age`, refresh-ahead, Redis down during writes | `references/freshness.md` |
+| Write paths: invalidate after commit, `invalidate` vs `put`, read-modify-write with `getIfChanged` / `putIfMatch`, external writers, choosing `ttl`/`absent-ttl`/`local-max-age`, refresh-ahead, Redis down during writes | `references/freshness.md` |
 | `@Cacheable`/`@CachePut`/`@CacheEvict`, `sync = true`, the sync check, several cache managers | `references/spring-cache.md` |
 | A read-only view over two caches (`JoinCache`, `@JoinCacheable`) | `references/join-cache.md` |
 | A Redis-only set (`SetCache`) or a set that lives in the database | `references/set-cache.md` |

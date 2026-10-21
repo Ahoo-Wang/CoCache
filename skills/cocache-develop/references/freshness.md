@@ -6,6 +6,7 @@ Use this reference when code changes cached data, when a writer lives outside th
 
 - [The write rule](#the-write-rule)
 - [invalidate or put](#invalidate-or-put)
+- [Read-modify-write on a Redis-only value](#read-modify-write-on-a-redis-only-value)
 - [Inside a transaction](#inside-a-transaction)
 - [Writers outside the application](#writers-outside-the-application)
 - [Choosing lifetimes](#choosing-lifetimes)
@@ -39,6 +40,23 @@ Inventory every write path of the cached data (services, repositories, SQL, batc
 Prefer `invalidate`: it cannot cache a value that differs from the source. Use `put` only when the writer holds the final value and reloading is expensive; `put(key, value, ttl)` sets an explicit lifetime. After either call, the next read on the same instance sees the change; others see it when the message arrives.
 
 For many keys, `putAll(entries)` (or `putAll(entries, ttl)`) applies `put` to each key in one fenced write: one Redis script per slot group and one invalidation message, no stale write-back from in-flight loads, not atomic across keys, throws `CacheWriteException` like `put`.
+
+## Read-modify-write on a Redis-only value
+
+When Redis is the only copy (no loader) and several writers update one value by reading, changing and writing it back, `put` loses updates. On 6.7.0+ use the digest-conditional pair instead, and make every writer use it:
+
+```kotlin
+while (true) {
+    val current = cache.getIfChanged(key, null)                          // Redis only, never L2
+    val (doc, digest) = (current as? ConditionalGet.Present)?.let { it.value to it.digest } ?: (null to null)
+    if (cache.putIfMatch(key, digest, change(doc)) is ConditionalPut.Written) break   // Conflict: read again
+}
+```
+
+- `putIfMatch(key, expected, value)`: one atomic compare-and-write; `expected = null` means "only if Redis holds no value" (absent, lease or negative entry). A conflict changes nothing and broadcasts nothing. A write behaves like `put` (TTL, fencing, no L2 fill).
+- `getIfChanged(key, known)`: `Unchanged` without transferring the value when its digest still equals `known`, otherwise `Present(value, digest)` or `Absent`. Use it to revalidate a value held in memory. Redis still hashes the value in the script.
+- Neither touches L2 or the loader. `getIfChanged` throws `CacheReadException` on a Redis failure regardless of `read-failure`; `putIfMatch` throws `CacheWriteException` and is not idempotent: after a timeout, re-read before retrying.
+- Unreadable content follows `foreign-format` (default `fail`: throw, key untouched; `reclaim`: counts as no value). Not available on `SetCache`.
 
 ## Inside a transaction
 

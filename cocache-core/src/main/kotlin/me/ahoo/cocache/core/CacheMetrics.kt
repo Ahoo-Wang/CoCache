@@ -52,6 +52,8 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     private val invalidationRetryAdder = LongAdder()
     private val invalidationDroppedAdder = LongAdder()
     private val resetAdder = LongAdder()
+    private val conditionalUnchangedAdder = LongAdder()
+    private val conditionalConflictAdder = LongAdder()
 
     /**
      * 由 L2（本地副本）直接返回的读取数：未过期的本地副本，含负缓存与进入刷新窗口的副本。
@@ -90,6 +92,16 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     val invalidationsDropped: Long get() = invalidationDroppedAdder.sum()
     val resets: Long get() = resetAdder.sum()
 
+    /**
+     * `getIfChanged` 确认 L1 中的值未变（没有传输正文）的次数。
+     */
+    val conditionalUnchanged: Long get() = conditionalUnchangedAdder.sum()
+
+    /**
+     * `putIfMatch` 因 L1 中的当前内容与期望不符而未写入的次数（不计入 [writeFailures]）。
+     */
+    val conditionalConflicts: Long get() = conditionalConflictAdder.sum()
+
     internal fun localHit() = localHitAdder.increment()
     internal fun remoteHit() = remoteHitAdder.increment()
     internal fun miss() = missAdder.increment()
@@ -118,4 +130,6 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     internal fun invalidationRetry() = invalidationRetryAdder.increment()
     internal fun invalidationDropped() = invalidationDroppedAdder.increment()
     internal fun reset() = resetAdder.increment()
+    internal fun conditionalUnchanged() = conditionalUnchangedAdder.increment()
+    internal fun conditionalConflict() = conditionalConflictAdder.increment()
 }
