@@ -5,7 +5,7 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布（计划为 6.7.0）
+## v6.7.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本，只有新增：`Cache`、`AsyncCache` 与 `SuspendingCache` 以 default 方法新增条件读写（没有覆盖它们的实现抛出 `UnsupportedOperationException`），`cocache-api` 的 SPI 新增 `RemoteStore.readIfChanged` / `putIfMatch` 及 `AsyncRemoteStore` 中对应的异步方法（都带默认实现）。已有的调用方、自定义 `Cache` / `SuspendingCache` 实现与自定义后端照常编译与运行。Redis 线格式与失效频道不变（新脚本只读取现有格式），6.7.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。
 
@@ -24,7 +24,7 @@ description: CoCache 版本发布历史和重要变更。
 - `RemoteStore.readIfChanged` / `putIfMatch`、`AsyncRemoteStore.readIfChangedAsync` / `putIfMatchAsync`，以及结果类型 `RemoteConditionalRead` / `RemoteConditionalWrite`。`readIfChanged` 的默认实现先读、在客户端比较：正确，只是总是传输值。`putIfMatch` 的默认实现抛出 `UnsupportedOperationException`（异步版本以它失败）：先读后 `put` 的默认实现在并发下会丢失更新。后端只有像 Redis 与内存后端那样用一次原子操作覆盖两者，才支持条件写入。见[扩展](../architecture/extending.md#remote-store)。
 - TCK（`EngineSpec`）覆盖这两个操作。没有实现 `putIfMatch` 的后端设置 `supportsConditionalWrites = false` 跳过这些用例；否则必须全部通过，其中的并发用例让所有写入方在同一个摘要上竞争。
 
-## v6.6.0（当前版本）
+## v6.6.0
 
 **模块组：** `me.ahoo.cocache` · 次版本：`cocache-api` 的 SPI 新增 `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` 及 `AsyncRemoteStore` 中对应的异步方法，都带默认实现，已有的后端照常编译与运行。两项行为变化收紧没有数据源的缓存的 fail closed 处理：`SetCache` 的写入遇到读不懂的内容时失败，没有数据源的读取遇到更高版本写入的值时失败（见下文）。Redis 线格式与失效频道不变，6.6.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。
 
