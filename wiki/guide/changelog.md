@@ -5,7 +5,7 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## Unreleased (planned 6.7.0)
+## v6.7.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive only: `Cache`, `AsyncCache` and `SuspendingCache` gain conditional reads and writes as default methods (they throw `UnsupportedOperationException` in implementations that don't override them), and the `cocache-api` SPI gains `RemoteStore.readIfChanged` / `putIfMatch` and their `AsyncRemoteStore` counterparts with default implementations. Existing callers, custom `Cache` / `SuspendingCache` implementations, and custom backends keep compiling and running unchanged. The Redis wire format and the invalidation channel are unchanged (the new scripts only read the existing format), so 6.7.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
@@ -24,7 +24,7 @@ For caches whose only copy is Redis and whose values are updated by read-modify-
 - `RemoteStore.readIfChanged` / `putIfMatch`, `AsyncRemoteStore.readIfChangedAsync` / `putIfMatchAsync`, and the result types `RemoteConditionalRead` / `RemoteConditionalWrite`. The `readIfChanged` defaults read and compare on the client: correct, but they always transfer the value. The `putIfMatch` defaults throw `UnsupportedOperationException` (the async one fails with it): a read-then-put default would lose updates under concurrency. A backend supports conditional writes only by overriding both with one atomic operation, as the Redis and in-memory backends do. See [Extending](../architecture/extending.md#remote-store).
 - The TCK (`EngineSpec`) covers both operations. A backend that doesn't implement `putIfMatch` sets `supportsConditionalWrites = false` to skip those cases. Otherwise they must pass, including a concurrent case that forces every writer to race on one digest.
 
-## v6.6.0 (Current)
+## v6.6.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release: the `cocache-api` SPI gains `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` and their `AsyncRemoteStore` counterparts, all with default implementations, so existing backends keep compiling and running. Two behavior changes tighten fail-closed handling for caches without a loader: `SetCache` writes fail on content they can't read, and reads without a loader fail on values written by a newer version (below). The Redis wire format and the invalidation channel are unchanged, so 6.6.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 

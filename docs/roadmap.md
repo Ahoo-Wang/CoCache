@@ -125,7 +125,14 @@ JMH 对比见 RFC 0003 §7.1。
 | 增删成员不再清掉读不懂的内容 | G1 | 6.0–6.5 中，没有数据源的 `SetCache` 对未迁移的 5.x 原生 SET 调用一次 `add` 就会替换全部成员，之后迁移工具跳过该 key；`foreign-format: fail` 时 `add` / `remove` 现在抛出 `CacheWriteException`，原子地保留内容与 TTL、不广播。`cocache-api` 的 SPI 新增带默认实现的 `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` 及异步版本 | 6.6.0 已交付（#679） |
 | 更高格式版本的值不再读作不存在 | G1 | 没有数据源的读取命中更高版本写入的值时，`fail` 下抛出 `CacheReadException`（`ForeignFormatException.newer = true`），保留 key、不写 L2 | 6.6.0 已交付（#679） |
 
-## 6.6 之后
+## v6.7：按摘要的条件读写 — 已完成
+
+| 项 | 目标 | 内容 | 现状 |
+|----|------|------|------|
+| 条件写入 | G1 | `putIfMatch`：按载荷摘要比较并写入，一个原子步骤，冲突时不写、不广播；SPI 默认实现直接抛出 `UnsupportedOperationException`，不退化为先读后写 | 6.7.0 已交付（#683） |
+| 条件读取 | G1、G3 | `getIfChanged`：摘要未变时只返回 `Unchanged`，不传输正文；读写两侧对读不懂的内容判定一致 | 6.7.0 已交付（#683） |
+
+## 6.7 之后
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
