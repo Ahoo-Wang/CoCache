@@ -244,7 +244,7 @@ jobs:
     env:
       # 支持的最老 Spring Boot 小版本的最新补丁；Renovate 只在 4.0.x 内更新它（renovate.json 的 customManagers）
       # renovate: datasource=maven depName=org.springframework.boot:spring-boot-dependencies
-      SPRING_BOOT_4_0_VERSION: 4.0.8
+      SPRING_BOOT_4_0_VERSION: 4.0.9
     services:
       redis:
         image: redis:8-alpine
