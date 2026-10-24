@@ -164,7 +164,7 @@ settings:
 
 overrides:
   vite: ^6.4.4
-  katex: ^0.19.0
+  katex: ^0.19.1
 
 importers:
 
@@ -1174,8 +1174,8 @@ packages:
     resolution: {integrity: sha512-5Hh7Y1wQbvY5ooGgPbDaL5iYLAPzMTUrjMulskHLH6wnv/A+1q5rgEaiuqEjB+oxGXIVZs1FF+R/KPN3ZSQYYg==}
     engines: {node: '>=12'}
 
-  katex@0.19.0:
-    resolution: {integrity: sha512-v6Tznz3zJ7u3niRCoDTsumM2+HA2XXcCu+WAacCeHD2z3p9A9Ks987o5FzfTGBN0e8A0vjEgIDvLbICrXpdw/Q==}
+  katex@0.19.1:
+    resolution: {integrity: sha512-jG8uKntjSEcm2EpQOh0XturpPuuC9r3Sq5HLHdsFdWZT27E672SF19QEi+of0/YeOy15lDgRhKvr5614uRrEfA==}
     hasBin: true
 
   khroma@2.1.0:
@@ -2441,7 +2441,7 @@ snapshots:
 
   internmap@2.0.3: {}
 
-  katex@0.19.0:
+  katex@0.19.1:
     dependencies:
       commander: 15.0.0
 
@@ -2491,7 +2491,7 @@ snapshots:
       dompurify: 3.4.16
       elkjs: 0.9.3
       es-toolkit: 1.52.0
-      katex: 0.19.0
+      katex: 0.19.1
       khroma: 2.1.0
       marked: 16.4.2
       roughjs: 4.6.6
