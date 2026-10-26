@@ -3,7 +3,7 @@
 spring-boot = "4.1.1"
 kotlin-logging = "8.0.4"
 # cocache-coroutines 专用（RFC 0004 §7）；与 Spring Boot 4.1 管理的版本一致，CI 测的就是多数用户实际拿到的组合
-kotlinx-coroutines = "1.10.2"
+kotlinx-coroutines = "1.11.0"
 springdoc = "3.1.1"
 # testing
 junit = "6.1.3"
