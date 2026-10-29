@@ -34,8 +34,10 @@ import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.ForeignFormatException
+import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.SourceLoadRejectedException
+import me.ahoo.cocache.core.TtlFunction
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.ForeignFormatMode
@@ -744,6 +746,111 @@ abstract class EngineSpec {
         nodeB.metrics().refreshes.assert().isEqualTo(1)
     }
 
+    /**
+     * 没取得刷新令牌的节点退避：A 持有令牌回源期间，B 从 L1 重新填充的副本仍在窗口内。刷新点若不退避，
+     * B 的每次命中都会再读一次 L1（A 崩溃时持续到令牌签发超过 `lease.ttl`）。退避后 B 在刷新点之前一次 L1 也不读，
+     * 到刷新点时取到 A 写回的新值，仍早于旧值在 L1 到期。
+     */
+    @Test
+    fun refreshWithoutTokenBacksOffInsteadOfPollingRemote() {
+        val wait = Duration.ofSeconds(1)
+        val refreshing = CachePolicy(
+            ttl = Duration.ofSeconds(10),
+            ttlJitter = Duration.ZERO,
+            refreshWindow = Duration.ofSeconds(5),
+            lease = LeasePolicy(ttl = Duration.ofSeconds(30), wait = wait),
+        )
+        val cacheA = nodeA.cache(spec(refreshing))
+        val cacheB = nodeB.cache(spec(refreshing))
+        database["k"] = "v0"
+        cacheA["k"]
+        cacheB["k"]
+        database["k"] = "v1"
+        // L1 剩余 4 s，在窗口内
+        elapse(Duration.ofSeconds(6))
+        val loading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        afterLoad = {
+            loading.countDown()
+            release.awaitOrFail("release the refresh load")
+        }
+        val holder = fork("refresh-holder") { cacheA["k"] }
+        loading.awaitOrFail("A took the refresh token and is loading")
+        afterLoad = null
+
+        cacheB["k"].assert().isEqualTo("v0")
+        // B 没取得令牌，只从 L1 重新填充 L2：新副本的刷新点退避到 lease.wait 之后，且早于 L1 到期
+        awaitCondition("B refilled with a backed-off refresh point") {
+            val refreshAt = localCopyOf(nodeB, "k")?.refreshAt
+            refreshAt != null && refreshAt.toEpochMilli() > clock.nowMillis()
+        }
+        val refilled = requireNotNull(localCopyOf(nodeB, "k"))
+        val refreshAt = requireNotNull(refilled.refreshAt).toEpochMilli()
+        (refreshAt - clock.nowMillis()).assert().isGreaterThanOrEqualTo(wait.toMillis())
+        refreshAt.assert().isLessThan(refilled.expiresAt.toEpochMilli())
+        // 上界：刷新点之前 B 的命中不读 L1，也不再发起刷新
+        val reads = backend.reads.get()
+        repeat(HITS) { cacheB["k"].assert().isEqualTo("v0") }
+        (backend.reads.get() - reads).assert().isEqualTo(0)
+        nodeB.metrics().refreshes.assert().isEqualTo(1)
+
+        release.countDown()
+        holder.join().assert().isEqualTo("v0")
+        awaitCondition("A's refresh filled L1") { remoteValue("k") == "v1" }
+        // fill 不广播：B 到刷新点时再读一次 L1，取到新值（新值在窗口外，不取令牌、不回源）
+        elapse(Duration.ofMillis(refreshAt - clock.nowMillis()))
+        val beforePickup = backend.reads.get()
+        awaitCondition("B picked up the refreshed value") { cacheB["k"] == "v1" }
+        clock.nowMillis().assert().isLessThan(refilled.expiresAt.toEpochMilli())
+        (backend.reads.get() - beforePickup).assert().isEqualTo(1)
+        nodeB.metrics().refreshes.assert().isEqualTo(2)
+        loads.get().assert().isEqualTo(2)
+    }
+
+    /**
+     * 寿命不长于刷新窗口的值（`ttlOf` 或 `put(k, v, ttl)` 给出）不参与提前刷新：副本一出生就在窗口内，若设刷新点，
+     * 持有令牌的节点每次写回之后（`fill` 清零令牌）又能取得新令牌，每次命中都回源一次。值照常到期、重新加载。
+     */
+    @Test
+    fun valuesNotOutlivingTheRefreshWindowAreNotRefreshed() {
+        val short = Duration.ofSeconds(4)
+        val refreshing = CachePolicy(
+            ttl = Duration.ofSeconds(10),
+            ttlJitter = Duration.ZERO,
+            refreshWindow = Duration.ofSeconds(5),
+        )
+        val shortLived = spec(refreshing) { ttlOf = TtlFunction { _, _ -> short } }
+        val cacheA = nodeA.cache(shortLived)
+        val cacheB = nodeB.cache(shortLived)
+        database["k"] = "v"
+        database["p"] = "x"
+        cacheA["k"].assert().isEqualTo("v")
+        cacheB["k"].assert().isEqualTo("v")
+        cacheA.put("p", "x", short)
+        cacheB["p"].assert().isEqualTo("x")
+        // 上界：除了第一次未命中，命中不回源
+        repeat(HITS) {
+            cacheA["k"]
+            cacheB["k"]
+            cacheB["p"]
+        }
+        loads.get().assert().isEqualTo(1)
+        nodeA.metrics().refreshes.assert().isEqualTo(0)
+        nodeB.metrics().refreshes.assert().isEqualTo(0)
+        localCopyOf(nodeA, "k")?.refreshAt.assert().isNull()
+        localCopyOf(nodeB, "p")?.refreshAt.assert().isNull()
+
+        elapse(short)
+        cacheA["k"].assert().isEqualTo("v")
+        loads.get().assert().isEqualTo(2)
+    }
+
+    /**
+     * 节点上 [key] 的 L2 副本（只读快照，不影响 L2）。注意它也读一次 L1（计入 [HookedBackend.reads]）。
+     */
+    private fun localCopyOf(node: CacheRuntime, key: String): KeyInspection.LocalCopy? =
+        requireNotNull(node.admin(cacheName)).inspect(key).local
+
     @Test
     fun recursiveLoadOfTheSameKeyFailsFast() {
         lateinit var cache: Cache<String, String>
@@ -1421,6 +1528,11 @@ abstract class EngineSpec {
 
     private companion object {
         const val BARRIER_TIMEOUT_SECONDS = 30L
+
+        /**
+         * 计数类用例的命中次数。
+         */
+        const val HITS = 50
     }
 
     /**

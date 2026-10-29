@@ -813,6 +813,52 @@ open class CoherentEngineTest {
     }
 
     @Test
+    fun refillWithoutTokenBacksOffAtLeastTheMinimumAndNeverPastExpiry() {
+        // lease.wait = 0（未命中不等待别的节点）：刷新的退避取下限，不退化为每次命中都读 L1
+        val policy = CachePolicy(
+            ttl = Duration.ofSeconds(10),
+            ttlJitter = Duration.ZERO,
+            refreshWindow = Duration.ofSeconds(5),
+            lease = LeasePolicy(wait = Duration.ZERO),
+        )
+        val cache = runtime().engine(spec(policy))
+        val refreshAt = { cache.engine.inspect("k").local?.refreshAt?.toEpochMilli() }
+        database["k"] = "v0"
+        cache["k"]
+        clock.advance(Duration.ofSeconds(6))
+        // 另一个节点持有刷新令牌
+        memory.store(
+            name
+        ).read(key("k"), null, RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1)))
+        cache["k"].assert().isEqualTo("v0")
+        val backedOff = clock.nowMillis() + 100
+        awaitCondition { refreshAt() == backedOff }
+        cache.metrics.refreshes.assert().isEqualTo(1)
+
+        // 离 L1 到期只剩 1 毫秒：剩余寿命的一半不足 1 毫秒，不设刷新点，副本照常到期
+        clock.advance(Duration.ofMillis(3999))
+        cache["k"].assert().isEqualTo("v0")
+        awaitCondition { cache.metrics.refreshes == 2L && refreshAt() == null }
+        cache["k"].assert().isEqualTo("v0")
+        cache.metrics.refreshes.assert().isEqualTo(2)
+        loads.get().assert().isEqualTo(1)
+    }
+
+    @Test
+    fun valuesWithoutExpiryAreNotRefreshed() {
+        // 永不过期的值没有“到期前”：即使设置了窗口也不设刷新点
+        val policy = CachePolicy(ttl = null, refreshWindow = Duration.ofSeconds(5))
+        val cache = runtime().engine(spec(policy))
+        database["k"] = "v0"
+        cache["k"]
+        cache.engine.inspect("k").local?.refreshAt.assert().isNull()
+        clock.advance(Duration.ofMinutes(1))
+        cache["k"].assert().isEqualTo("v0")
+        cache.metrics.refreshes.assert().isEqualTo(0)
+        loads.get().assert().isEqualTo(1)
+    }
+
+    @Test
     fun droppedInvalidationIsCounted() {
         val cache = runtime(
             RetryPolicy(maxAttempts = 1, initialBackoff = Duration.ofMillis(1), maxBackoff = Duration.ofMillis(1))

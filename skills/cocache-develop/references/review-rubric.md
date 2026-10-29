@@ -36,7 +36,7 @@ Use this rubric after resolving the actual diff and reading each changed cache d
 
 ## Tests and evidence
 
-- Behavior changes have focused tests: read caching, invalidation after commit and none on rollback, negative entries, expiry with a `ManualClock`, cross-instance invalidation with two runtimes, and failure behavior with `HookedBackend` where relevant.
+- Behavior changes have focused tests: read caching, invalidation after commit, the committed value after a rollback, negative entries, expiry with a `ManualClock`, cross-instance invalidation with two runtimes, and failure behavior with `HookedBackend` where relevant.
 - Race tests use latches and polling with timeouts, not sleeps.
 - Memory-backend evidence is not presented as proof of Redis topology, ACL or channel behavior.
 

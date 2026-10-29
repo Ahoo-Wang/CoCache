@@ -142,11 +142,14 @@ public void rename(String id, String name) {
 :::
 
 - 同一事务内对同一缓存的多次失效合并为一次 `invalidateAll`，去重并保持顺序。
-- 回滚时什么都不失效，因为数据没有变化。
-- `REQUIRES_NEW` 的内层事务在它自己提交之后失效。
+- 回滚时同样失效已登记的 key。loader 在你的线程上执行并参与事务，写入之后的读取可能已经把未提交的行放进 Redis，所有实例在 `ttl` 内都会读到它。多余的失效无害。
+- `REQUIRES_NEW` 的内层事务在它自己结束时失效。
+- 迟到的登记不会丢失。在其它同步的 `afterCommit` 中登记的失效立即执行；如果它是这个事务的第一次登记，则在 `afterCompletion` 中执行。在 `afterCompletion` 中（例如 `@TransactionalEventListener(AFTER_COMMIT)`）登记时立即失效。
+- 一个缓存失败不影响其余缓存：全部失效之后，抛出第一个异常，其余作为它的 suppressed（只在 [`invalidate-failure: throw`](#redis-down) 时）。回滚之后的失败由 Spring 记录日志，不抛出。
 - 没有活动事务时立即失效。
+- 它只看得到线程绑定的事务（`PlatformTransactionManager`，如 JDBC、JPA）。在响应式事务中（`ReactiveTransactionManager`，如 R2DBC，包括 `@Transactional` 挂起函数），它立即失效，也就是在提交之前。这种情况请在事务结束之后、事务边界之外失效。
 
-CoCache 缓存上的 `@CacheEvict` 与 `@CachePut` 同样推迟到提交之后，见 [Spring Cache](./spring-cache.md#transactions)。
+CoCache 缓存上的 `@CacheEvict` 与 `@CachePut` 同样推迟到提交之后，但回滚时不执行，见 [Spring Cache](./spring-cache.md#transactions)。
 
 ## 应用之外的写入方 {#external-writers}
 
@@ -229,7 +232,9 @@ cocache:
 ```
 
 - 窗口必须小于 `ttl − ttl-jitter`，也必须小于 `local-max-age`，否则每个新副本一出生就在窗口内。按默认值（`local-max-age` 为 5 分钟），窗口必须小于 5 分钟。
-- 每个 key 只有一个实例能在 Redis 中抢到刷新令牌并调用 loader，其它实例读回刷新后的值。集群对每个 key 只重新加载一次。
+- 每个 key 只有一个实例能在 Redis 中抢到刷新令牌并调用 loader。集群对每个 key 只重新加载一次。
+- 其它实例照常返回自己的副本，退避一段时间后再读一次 Redis：`lease-wait`（至少 100 ms），且不超过旧值剩余寿命的一半。所以它们在旧值过期之前取到重新加载的值；重新加载期间，无论 key 多热，它们读 Redis 的次数都有上界。
+- 寿命不长于窗口的值（来自较短的 `ttlOf` 或 `put(key, value, ttl)`）不刷新：它一出生就在窗口内，每次命中都会重新加载它。它照常过期，在下一次未命中时重新加载。同样，在值的窗口内才第一次读到它的实例，不为这份副本发起刷新；其它实例上的副本照常发起。
 - 只有带 loader 的缓存会刷新。负缓存不刷新。
 - 刷新失败或被跳过只记日志。值照常过期，所以陈旧度上界从不依赖刷新。
 - 刷新在一个有界线程池中执行（最多 4 个线程，队列 1024）。池满时跳过刷新，计入 `cocache.refresh.rejections`。[`cocache.refresh-executor`](./configuration.md#executors) 可以指定改用另一个 `Executor` bean。

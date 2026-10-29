@@ -212,7 +212,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
                                                   // 没有数据源时只得到“未决的不存在”（§5.1）
 ```
 
-- **L2 副本的到期时间** = `min(now + L1 剩余寿命, now + maxAge)`；`maxAge` 是 `localMaxAge` 或 `degradedLocalMaxAge`。`refreshAt` = L1 到期时间 − `refreshWindow`（只对有限寿命的值）。时钟是 `TickingClock`（100 ms 刷新一次的 volatile 值），命中判断是一次 volatile 读加一次比较。
+- **L2 副本的到期时间** = `min(now + L1 剩余寿命, now + maxAge)`；`maxAge` 是 `localMaxAge` 或 `degradedLocalMaxAge`。`refreshAt` = L1 到期时间 − `refreshWindow`（只对有限寿命的值；L1 剩余寿命不长于窗口时见 §5.5）。时钟是 `TickingClock`（100 ms 刷新一次的 volatile 值），命中判断是一次 volatile 读加一次比较。
 - **寿命**：值的寿命 = `ttlOf(key, value)`（非 null 时优先，不加抖动）否则 `ttl ± 抖动`（实际幅度 ≤ `ttl / 2`，至少 1 ms）；`ttl = null` 为永不过期。负缓存总是 `absentTtl`（不抖动）。所有寿命钳到 `[1 ms, 100 年]`。
 - **线程模型**：同步 API 上 loader 总是在调用方（SingleFlight leader）线程上同步执行，事务、SecurityContext、MDC 等 ThreadLocal 可用。Lettuce 的 Future 只包装 L1 I/O，引擎在调用方线程上等待，不在事件循环线程上执行任何续接。异步视图的线程模型见 §5.6。
 - **L1 未命中就是未命中**：key 不存在、处于 `L` 状态都不是负缓存；负缓存只有状态 `M`。
@@ -259,6 +259,10 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 - `refreshWindow` 非 null、spec 有 loader、L2 副本到达 `refreshAt` 时，命中照常返回当前值，并把一次刷新提交到刷新执行器。每个节点每个 key 同一时刻至多一次（`refreshing` 集合），刷新经 SingleFlight 与并发未命中合并。取得 `refreshing` 之后再确认 L2 仍是触发时读到的那一份副本：命中路径“读副本”与“取守卫”之间上一次刷新可能已完成（它先替换副本、再释放守卫），这时的触发来自旧的观察，直接放弃，否则同一节点会对同一 key 多刷新一次。
 - 刷新先 `read(k, refresh = RefreshRequest(window, 新令牌, lease.ttl))`：取得令牌的节点回源并 `fill(r)`；没取得的节点只从 L1 重新填充 L2；L1 已无值时退回普通 `loadThrough`。
+- **没取得令牌时退避**（`CoherentEngine.refill`，同步与异步共用）：重新填充时 L1 若仍在窗口内，说明令牌在别的节点手里、它正在回源。按 L1 剩余寿命算出的刷新点这时不晚于现在，不退避的话本节点的每次命中都会再读一次 L1；持有者崩溃时这种轮询持续到令牌签发超过 `lease.ttl`，放大倍数是热点 key 数 × 节点数。因此这份副本的刷新点设为 `now + min(b, 剩余寿命 / 2)`，`b = max(lease.wait, 100 ms)`：`lease.wait` 是未命中等待别的节点回源的时长，刷新在同一时间尺度上再看一次；下限 100 ms 是默认时钟（`TickingClock`）的刷新间隔，`lease.wait` 可以为 0。
+  - 刷新点总是早于 L1 到期（不足 1 ms 时不设）：持有者写回之后，非持有节点在旧值到期之前取到新值，不因刷新多出一次未命中。`fill` 不广播（广播会淘汰所有节点的副本，下一次命中变成未命中，抵消提前刷新），所以非持有节点只靠这次再读取到新值。再读时若令牌签发已超过 `lease.ttl`（持有者崩溃），它接管令牌回源。
+  - 每个节点每个 key 在一个刷新周期内的 L1 读取次数与命中频率无关：约为“持有者回源耗时 / b”，加上临近到期时按剩余寿命减半的几次（至多约 log2(2b / 1 ms) 次；默认时钟每 100 ms 才前进一次，实际只有两三次）。
+- **寿命不长于窗口的值不参与提前刷新**：除上面的重新填充之外（回源写回、读到 L1、降级填充），L1 剩余寿命不长于窗口时不设刷新点（`refreshAt = FOREVER`）。否则副本一出生就在窗口内：持有令牌的节点每次 `fill` 之后令牌被清零，下一次命中又取得新令牌、再回源一次，被放大的是数据源。策略 `ttl` 给出的寿命由 §9.4 的校验保证长于窗口；`ttlOf` 或 `put(k, v, ttl)` 给出的更短寿命不报错，这样的值不刷新，照常到期、下一次未命中时重新加载。代价：在一个值的最后一个窗口内才读到 L1 的节点（第一次读或 L2 刚被淘汰）也不发起刷新。其它节点的副本照常触发，全集群仍然只刷新一次；只有所有节点的副本都是这种副本时，key 才按普通未命中重新加载。
 - 结果：全集群每个 key 一次刷新。`invalidate`、`put`、元素写入都会销毁刷新令牌。
 - 执行器拒绝时计入 `refreshRejected` 并跳过；刷新失败只告警，值照常到期，G1 不变。默认执行器是有界守护线程池（≤ 4 线程，队列 1024，满时拒绝）。
 
@@ -303,7 +307,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 - `put` 的寿命：`ttlOf ?: 策略寿命`；`put(key, value, ttl)` 用给定时长。都钳到 `[1 ms, 100 年]`。
 - `putAll` 每个 key 的寿命按 `put` 逐个计算（各自独立抖动）；`putAll(entries, ttl)` 用同一时长。空 map 不做任何事；编码后碰撞的存储 key 以后出现的为准，每个存储 key 只编码一次。失败抛出 `CacheWriteException`（`operation = "putAll"`），部分 key 可能已生效。非原子广播时引擎在批量写入结束后发布一帧（含全部 key），写入失败时同样发布（§4.2）。`RemoteStore.putAll` 的默认实现逐个调用 `put`，帧按 key 拆分（每个 key 只广播自己；帧无法拆分时原样使用）。
-- 调用方必须**先提交数据源，再 `invalidate`**（事务内用 `TransactionalInvalidator`，§9.4）。在提交之前失效本身就是 G2 漏洞：并发回源可能读到提交前的数据。
+- 调用方必须**先提交数据源，再 `invalidate`**（事务内用 `TransactionalInvalidator`，§9.5）。在提交之前失效本身就是 G2 漏洞：并发回源可能读到提交前的数据。
 - 原子广播消除的是 `DEL` 与 `PUBLISH` 之间的客户端窗口；投递仍是至多一次，丢失由 `onReset`、心跳与 `localMaxAge` 兜底。
 
 ### 6.1 `put` 与 `invalidate` 的取舍
@@ -385,7 +389,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
   - 头部的保留字节只有 1 字节；签发时间字段会被 6.x 的读脚本在授予刷新令牌时覆盖（版本被当前时间替换，之后的比较是错的）。
   - 令牌位置在值上只用于刷新令牌：用标记占住它、签发时间设为 `+inf`，6.x 的读脚本就永远不会授予刷新令牌，也就永远不会覆盖它；fill、release 按完整的 24 字节比较令牌，不会匹配。代价是下一条。
 - **非原子广播**（`sharded` 通道模式，或原子广播探测失败，§8.1）：引擎在脚本之后经通道广播。写入成功时广播；返回 `Stale(current)` 且 `current` 等于给出的版本时**也广播**（6.9 起），版本更旧时不广播。理由同 §6.4：写入已在 L1 生效而单独的 `SPUBLISH` 失败时，调用方得到 `CacheWriteException` 并重放同一版本，脚本返回 `Stale`；不广播的话其它节点的 L2 陈旧至 `localMaxAge`。相等的版本也可能来自重复投递，那次多余的广播只淘汰副本。原子广播的后端上写入与广播在同一个脚本中，`Stale` 照常不广播。
-- **不支持提前刷新**：头部放不下刷新令牌与版本，带版本的内容从不授予刷新令牌。没有令牌的提前刷新只能从 L1 重新填充 L2，而 L1 的剩余寿命不变，刷新窗口内每次命中都会再触发一次 L1 读取，因此 `CacheSpec` 拒绝 `versioned` 与 `refreshWindow` 同时出现；starter 的 `cocache.defaults.refresh-window` 不作用于带版本的缓存（`CoCacheProperties.versionedPolicyFor`），`cocache.caches.[name].refresh-window` 仍然作用并因此启动失败。按版本推送的写入方本来就不需要提前刷新。
+- **不支持提前刷新**：头部放不下刷新令牌与版本，带版本的内容从不授予刷新令牌。没有令牌的提前刷新只能从 L1 重新填充 L2，带版本的值永远等不到写回，刷新窗口内只是按退避（§5.5）一次次重读 L1 直到到期，因此 `CacheSpec` 拒绝 `versioned` 与 `refreshWindow` 同时出现；starter 的 `cocache.defaults.refresh-window` 不作用于带版本的缓存（`CoCacheProperties.versionedPolicyFor`），`cocache.caches.[name].refresh-window` 仍然作用并因此启动失败。按版本推送的写入方本来就不需要提前刷新。
 - **不回收**：同版本但解码失败的带版本值不经 `reclaim` 转为 lease（`RECLAIM` 脚本与内存后端都拒绝）：lease 占位放不下版本，回收之后迟到的旧版本会被写入。有数据源的读取绕过 L1 回源（L2 降级限龄），等更高的版本覆盖它；没有数据源时按 `foreignFormat`（§5.4）。
 - **丢失版本的写入**：`put`、`putAll`、`putIfMatch`（写入没有版本的值）、`invalidate`（删除 key）与 L1 到期都会丢掉版本，之后任何版本都能写入。需要顺序保证的写入方全部使用 `putIfNewer` / `invalidateIfNewer`；`invalidate` 留给运维清除。
 - **混合版本部署**：6.x 节点能读带版本的内容（见 §3.3），但它们的写入（`put`、`invalidate`、`putIfMatch`、对解码失败内容的 `reclaim`）写入没有版本的内容。只有全部写入方升级到 6.8 之后才有顺序保证；带版本的缓存只能在 6.8 上声明，这通常就是同一个条件。
@@ -519,7 +523,7 @@ val users: Cache<String, User> = runtime.create(
 - 策略字段：`ttl`、`ttl-forever`、`ttl-jitter`、`absent-ttl`、`local-max-age`、`degraded-local-max-age`、`refresh-window`、`lease-ttl`、`lease-wait`、`load-max-concurrent`、`load-acquire-timeout`、`load-async-timeout`、`local-maximum-size`、`invalidate-failure`、`read-failure`、`foreign-format`。策略时长不写单位时按**秒**解析，也可以写 `500ms`、`2m`、`PT2M`；`refresh-window: 0` 表示关闭（可以关掉声明中的提前刷新）。`cocache.defaults.ttl` / `ttl-forever` 不作用于 `SetCache`（L1 是唯一副本，全局寿命会让集合过期丢失），`cocache.defaults.absent-ttl` / `refresh-window` / `foreign-format` 同样跳过 `SetCache`（全局的 `reclaim` 会让未迁移的集合读成空集合）；只有 `cocache.caches.[name].ttl` / `ttl-forever` 能改变集合缓存的寿命。`cocache.redis.*`（`command-timeout`、`heartbeat`、`invalidate-batch-size`、`client-name`、`channel-mode`）的时长不写单位时按毫秒解析。
 - 配置文件中的 `ttl` 不影响 `ttlOf`。
 - 启动失败的情形：`cocache.caches` 中出现未声明的缓存名（所有单例创建后由 `CacheAssembler` 校验；缓存名不区分大小写匹配）；使用了已删除的配置项（`RemovedProperties`；错误信息给出替代项，如果有的话，例如 `cocache.redis.strict-failure` → `read-failure: throw`；`missing-guard-sentinel`、`client-side-hits` 没有替代项）；策略不合法。
-- 策略约束（`CachePolicy` 构造时校验）：所有时长为正且 ≤ 100 年（`ttlJitter`、`lease.wait`、`load.acquireTimeout` 可以为 0）；抖动实际幅度不超过 `ttl / 2`；`refreshWindow < ttl − 实际抖动` 且 `refreshWindow < localMaxAge`，否则新副本一出生就在窗口内。
+- 策略约束（`CachePolicy` 构造时校验）：所有时长为正且 ≤ 100 年（`ttlJitter`、`lease.wait`、`load.acquireTimeout` 可以为 0）；抖动实际幅度不超过 `ttl / 2`；`refreshWindow < ttl − 实际抖动` 且 `refreshWindow < localMaxAge`，否则新副本一出生就在窗口内。校验只覆盖策略 `ttl`：`ttlOf` 或 `put(k, v, ttl)` 给出的不长于窗口的寿命不报错，这样的值不参与提前刷新（§5.5）。
 
 ### 9.5 Spring Cache 与事务
 
@@ -530,7 +534,14 @@ val users: Cache<String, User> = runtime.create(
 - `retrieve` 经缓存的异步视图（RFC 0004 §6）：`retrieve(key)` 是异步 `lookup`，L2 命中返回已完成的 future（不切换线程），负缓存以 `null` 完成；`retrieve(key, loader)`（响应式 / `CompletableFuture` 方法上的 `sync = true`）是异步 `get(key, AsyncCacheLoader)`，与 `get(key, loader)` 一样经引擎受 lease 与失效戳保护的路径回源，**没有线程等待**异步 loader；方法体（`valueLoader.get()`，可能先阻塞再返回）派发到运行时的阻塞执行器（`CacheRuntime.blockingExecutor`）执行，从不在异步执行器上执行（6.1 中它在 retrieve 执行器上，同样不在调用方线程上，看不到调用方的 ThreadLocal）；`retrieve(key)` 与 `retrieve(key, loader)` 的失败都以原始异常完成。因此不再需要单独的 retrieve 执行器，嵌套的异步 `sync = true` 也不再有内层任务排在外层任务之后的死锁条件。`CoCacheSpringCacheManager(runtime, executor)` 构造函数、`CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 与 `cocache.spring-cache.retrieve-executor` 自 6.3 弃用（执行器被忽略），7.0 删除；`CoCacheSpringCache(cache, admin, executor)` 的执行器执行方法体。
 - 已知限制：Spring Cache 的 `put` / `evict` 只有同步签名，响应式方法上的 `@CachePut`、`@CacheEvict` 与不带 `sync` 的 `@Cacheable` 在完成回调中同步调用它们，各占用该线程一次 L1 往返；需要非阻塞失效时直接调用 `cache.async().invalidate(key)`。
 - 暴露给 Spring Cache 的缓存通常没有 spec 数据源（数据源是被注解的方法）：不带 `sync` 的 `@Cacheable` 经 `lookup` 读取，L1 读失败时默认抛出 `CacheReadException`（§5.1，交给 Spring 的 `CacheErrorHandler`，默认重新抛出），设置 `readFailure = DEGRADE` 时读到未命中且不缓存、随后执行方法；`sync = true` 带 loader，照常降级。`@CacheEvict` 失败默认抛出 `CacheWriteException`（§7）；方法本身就是数据源、删除总是安全时可以设置 `invalidateFailure = RETRY` 恢复 6.8 的行为。
-- `TransactionalInvalidator`：事务内调用时登记到当前事务的 `afterCommit`，同一事务内对同一缓存的失效合并为一次 `invalidateAll`，回滚时不失效，没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己提交之后失效。有 spring-tx 时 CacheManager 的 `@CacheEvict` / `@CachePut` 同样推迟到提交之后。
+- `TransactionalInvalidator`：事务内调用时登记到当前事务，没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己结束之后失效。同一事务内对同一缓存的失效合并为一次 `invalidateAll`（去重，保持登记顺序）。
+  - **提交**：在 `afterCommit` 中失效，异常（`invalidate-failure: throw`，没有数据源的缓存默认如此，§7）抛给调用方。
+  - **回滚或提交结果未知**：在 `afterCompletion` 中同样失效。同步 API 的 loader 在调用方线程上参与事务，事务内的读穿透可能已经凭 lease 把未提交的数据写入 L1；不失效的话，全集群在 `ttl` 内读到从未提交的数据。多余的失效无害。
+  - **迟到的登记不丢失**。Spring 对同步列表的快照调用 `afterCommit`：在其它同步的 `afterCommit` 中登记时，本事务的失效已经执行过则立即失效（`flushed` 标记），本事务第一次登记（新注册的同步收不到 `afterCommit`）则在 `afterCompletion` 中失效。排在前面的同步的 `afterCommit` 抛出、后面的 `afterCommit` 都不再调用时，同样在 `afterCompletion` 中失效。`afterCompletion` 中（`@TransactionalEventListener(AFTER_COMMIT)` 在这里执行）同步已经清除，立即失效。每个事务只执行一次，`afterCompletion` 是兜底。
+  - **一个缓存失败不影响其余缓存**：逐个缓存执行，全部执行之后抛出第一个异常，其余作为它的 suppressed。`afterCompletion` 中的异常由 Spring 记录日志，不抛给调用方，也不掩盖回滚的原因。
+  - **只支持线程绑定的同步**（`PlatformTransactionManager`）。响应式事务（`ReactiveTransactionManager`，如 R2DBC，包括 `@Transactional` 挂起函数）的同步在 Reactor 上下文中，`TransactionalInvalidator` 看不到，会立即失效，即在提交之前；这类事务由调用方在事务结束之后失效。不告警：同步调用无法识别响应式事务（它们不设置线程绑定的标记），而“`isActualTransactionActive()` 为真但同步未激活”正是 `afterCompletion` 中的状态，会误报。
+  - 测试：`cocache-spring` 的 `TransactionalInvalidatorTest`，事务管理器是 `AbstractPlatformTransactionManager` 的内存实现（写入在提交之前只对本事务可见）。
+- 有 spring-tx 时 CacheManager 的 `@CacheEvict` / `@CachePut` 同样推迟到提交之后。这由 Spring 的 `TransactionAwareCacheDecorator` 执行，回滚时不执行：同一事务内先 `@CacheEvict` 再 `@Cacheable(sync = true)` 读穿透，回滚之后未提交的数据留在 L1 直到 `ttl`。这种写法改用 `TransactionalInvalidator`。
 
 ### 9.6 Spring AOT 与原生镜像
 
@@ -644,3 +655,4 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
 18. **异步视图不挂起线程、不同步抛出**：等待 lease 与回源许可都不占线程；失败以原始异常（不包装为 `CompletionException`）完成返回的 future（§5.6）。
 19. **条件读写只确认 L1**：`getIfChanged` 不读写 L2、不回源、不申请令牌、不修改 L1；`putIfMatch` 的比较与写入在一个原子操作中完成，冲突与拒绝不修改 L1、不广播（非原子广播时，摘要等于这次写入的冲突除外），写入方顺序同 `put`；后端不能原子地完成时不支持它（不提供“先读后写”）。“没有值”是不存在、lease 占位与负缓存；读与写对读不懂的内容分类相同，只有格式 0 的内容能在 `RECLAIM` 下视为没有值；摘要只比较本协议标量值的载荷（§6.4）。
 20. **按版本有序的写入**：比较与写入在一个原子操作中完成，版本不更新时不修改 L1、不广播（非原子广播时，相等的版本除外）、不改变到期时间；没有版本的内容排在任何版本之前；写入销毁令牌，持有令牌的填充永远写不回（版本更高也不行）；带版本的内容不持有令牌、不授予刷新令牌、不被回收；版本存放在格式 1 的头部，6.x 的读者照常读取（§3.3、§6.5）。后端不能原子地完成时不支持它，声明为带版本的缓存在创建时失败。
+21. **副本出生时不在刷新窗口内**：L2 副本的刷新点要么晚于创建时刻，要么不设。没取得刷新令牌的重新填充把刷新点退避到 L1 到期之前，其余情形下 L1 剩余寿命不长于窗口时不设刷新点（§5.5）。否则每次命中都会触发刷新：没有令牌的节点按命中频率读 L1，持有令牌的节点按命中频率回源。

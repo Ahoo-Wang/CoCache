@@ -152,14 +152,36 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 
     /**
      * L2 副本：到期时间不晚于 L1 剩余寿命，也不晚于 [maxAge]。
+     *
+     * 刷新点在 L1 到期前 `refreshWindow`（只对有限寿命的值）。L1 剩余寿命不长于窗口时，这样算出的刷新点不晚于现在，
+     * 副本一出生就在窗口内，每次命中都会触发刷新，因此（§5.5）：
+     * - [backoff] 为 0（默认）：不设刷新点。否则持有刷新令牌的节点每次写回之后（`fill` 清零令牌）都能再取得令牌，
+     *   一次接一次地回源。寿命不长于窗口的值（`ttlOf`、`put(k, v, ttl)` 给出的短寿命）因此不参与提前刷新，
+     *   在窗口内才读到 L1 的副本也不发起刷新。
+     * - [backoff] 为正（没取得刷新令牌的重新填充：令牌在别的节点手里）：刷新点退避到 `now + min(backoff, 剩余寿命 / 2)`，
+     *   到时再读一次 L1，取持有者写回的值（`fill` 不广播）。刷新点总是早于 L1 到期；不足 1 毫秒时不设刷新点。
+     *
+     * @param backoff 毫秒
      */
-    protected fun localEntry(value: V?, ttl: Duration?, maxAge: Duration): LocalEntry<V> {
+    protected fun localEntry(value: V?, ttl: Duration?, maxAge: Duration, backoff: Long = 0): LocalEntry<V> {
         val now = clock.nowMillis()
         val remoteExpiresAt = ttl?.let { now + it.toMillis() } ?: FOREVER
         val expiresAt = minOf(remoteExpiresAt, now + maxAge.toMillis())
-        val window = policy.refreshWindow
-        val refreshAt = if (window != null && value != null && remoteExpiresAt != FOREVER) remoteExpiresAt - window.toMillis() else FOREVER
+        val refreshAt = if (value != null) refreshAtOf(now, remoteExpiresAt, backoff) else FOREVER
         return LocalEntry(value, expiresAt, refreshAt)
+    }
+
+    private fun refreshAtOf(now: Long, remoteExpiresAt: Long, backoff: Long): Long {
+        val window = policy.refreshWindow
+        if (window == null || remoteExpiresAt == FOREVER) {
+            return FOREVER
+        }
+        val refreshAt = remoteExpiresAt - window.toMillis()
+        if (refreshAt > now) {
+            return refreshAt
+        }
+        val delay = minOf(backoff, (remoteExpiresAt - now) / 2)
+        return if (delay > 0) now + delay else FOREVER
     }
 
     protected fun lookupOf(entry: LocalEntry<V>): Lookup<V> {
