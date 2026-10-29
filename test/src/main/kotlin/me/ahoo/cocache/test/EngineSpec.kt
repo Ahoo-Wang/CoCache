@@ -42,6 +42,7 @@ import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.core.policy.ReadFailureMode
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -524,6 +525,30 @@ abstract class EngineSpec {
         cache["k"].assert().isEqualTo("v")
         cache.get("k") { "unused" }.assert().isEqualTo("v")
         cache.getAll(listOf("k", "other")).assert().isEqualTo(mapOf("k" to "v", "other" to "fallback"))
+    }
+
+    /**
+     * 显式 `readFailure = DEGRADE`：没有数据源的读取在 L1 失败时读到不存在（单 key、`lookup` 与批量），不抛出，计入 `remoteFailures`，
+     * 但不写入任何一层：恢复后照常读到 L1 中的值，故障期间同一个 key 上带 loader 的读取也不被挡住。
+     * 供把“读不到”当作安全答案的缓存使用（如撤销表：Redis 故障即视为未撤销）。
+     */
+    @Test
+    fun remoteReadFailureWithoutLoaderDegradesWithoutCachingWhenConfigured() {
+        val degrade = policy().toBuilder().readFailure(ReadFailureMode.DEGRADE).build()
+        val cache = nodeA.cache(spec(degrade) { loader = null })
+        nodeB.cache(spec { loader = null }).put("k", "v")
+        backend.failAll = true
+        cache["k"].assert().isNull()
+        cache.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
+        cache.getAll(listOf("k", "other")).assert().isEmpty()
+        cache["j"].assert().isNull()
+        cache.get("j") { "fallback" }.assert().isEqualTo("fallback")
+        backend.failAll = false
+        nodeA.metrics().remoteFailures.assert().isEqualTo(5)
+        nodeA.metrics().degradedFills.assert().isEqualTo(1)
+        cache["k"].assert().isEqualTo("v")
+        cache.getAll(listOf("k")).assert().isEqualTo(mapOf("k" to "v"))
+        remote("j").assert().isEqualTo(RemoteRead.Miss(false))
     }
 
     /**

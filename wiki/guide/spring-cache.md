@@ -80,7 +80,7 @@ Negative entries read as a miss through `get(key)` on purpose: CoCache stores th
 A cache used through Spring Cache usually has no loader of its own: the annotated method is the source. Since 6.9 such a cache treats reads and invalidations without a source as having no fallback:
 
 - `@Cacheable(sync = true)` passes the method as the loader, so a Redis read failure still runs the method and keeps the result in L2 for `degraded-local-max-age`.
-- A non-sync `@Cacheable` reads through `get(key)`, which has no loader. A Redis read failure throws `CacheReadException`, and Spring hands it to the `CacheErrorHandler`. The default handler rethrows it. A `LoggingCacheErrorHandler` logs it and runs the method instead.
+- A non-sync `@Cacheable` reads through `get(key)`, which has no loader. A Redis read failure throws `CacheReadException`, and Spring hands it to the `CacheErrorHandler`. The default handler rethrows it. A `LoggingCacheErrorHandler` logs it and runs the method instead. Alternatively, set `read-failure: degrade` on the cache: the read then returns a miss without caching it, so Spring runs the method.
 - `@CacheEvict` throws `CacheWriteException` when the Redis delete fails, because `invalidate-failure` defaults to `throw` without a loader. Here the method is the source and a delete is always safe, so set `invalidate-failure: retry` on these caches to queue failed evictions for retry as in 6.8. See [Configuration](./configuration.md#policy-properties).
 
 ## The retrieve executor (deprecated) {#executor}

@@ -289,8 +289,9 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         val invalidateFailure: InvalidateFailureMode?,
         /**
-         * 读取 L1 失败时的处理方式：`degrade`（默认，降级回源）或 `throw`（对应 5.x 的 `cocache.redis.strict-failure=true`）。
-         * 没有数据源的读取没有可降级的答案，总是抛出。
+         * 读取 L1 失败时的处理方式：`degrade`（降级回源）或 `throw`（对应 5.x 的 `cocache.redis.strict-failure=true`）。
+         * 未设置时按这次读取有没有数据源决定：有数据源 `degrade`，没有数据源 `throw`（没有可降级的答案）。没有数据源时显式设置
+         * `degrade`：读到不存在，不缓存（如撤销表：Redis 故障即视为未撤销）。
          */
         val readFailure: ReadFailureMode?,
         /**

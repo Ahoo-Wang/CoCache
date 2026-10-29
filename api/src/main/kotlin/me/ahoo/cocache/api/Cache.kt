@@ -33,7 +33,8 @@ interface Cache<K : Any, V : Any> {
     /**
      * 读穿透：L2 → L1 → 数据源。不存在（含负缓存）返回 `null`。
      *
-     * 没有数据源的缓存在 L1 读取失败时抛出 [CacheReadException]（L1 是唯一副本，没有可降级的答案）。
+     * 没有数据源的缓存在 L1 读取失败时默认抛出 [CacheReadException]（L1 是唯一副本，没有可降级的答案）；
+     * 显式配置读失败模式为降级时返回 `null`，不缓存。
      */
     operator fun get(key: K): V?
 

@@ -208,7 +208,7 @@ flowchart TD
 
 | 失败 | 发生什么 | 为什么仍然安全 |
 |------|----------|----------------|
-| Redis 读取失败 | 默认：从数据源加载，只写 L2，限龄 `degraded-local-max-age`。或者抛出（`read-failure: throw`）。没有 loader 的读取总是抛出 | 没有 lease 就不写 L1。L2 副本受戳保护且寿命很短。没有 loader 时没有可降级的答案，缓存“不存在”会把 L1 中的值藏起来 |
+| Redis 读取失败 | 默认：从数据源加载，只写 L2，限龄 `degraded-local-max-age`。或者抛出（`read-failure: throw`）。没有 loader 的读取默认抛出，显式设置 `read-failure: degrade` 时返回 `null` | 没有 lease 就不写 L1。L2 副本受戳保护且寿命很短。没有 loader 时没有可降级的答案，缓存“不存在”会把 L1 中的值藏起来，因此两种情况都不缓存 |
 | 填充或释放失败、超时 | 记录日志并计数，结果照常返回 | 填充受令牌保护：如果它生效了，就一定生效在任何失效之前，因为失效会销毁令牌。没有释放的 lease 在 `lease-ttl` 后到期 |
 | `invalidate` 失败 | 本地效果先生效（两次递增与淘汰）。有 loader 时默认在后台重试（8 次，退避 100 ms 到 10 s，最多排队 10,000 个），不抛出。期间本实例上该 key 的未命中跳过 L1。成功后本实例再递增并淘汰一次。没有 loader 时默认抛出 `CacheWriteException` | 本实例不会返回或重新填充旧值。其它实例以 L1 的剩余寿命为上界。放弃时计入 `invalidations.dropped` 并记录错误日志。没有 loader 时延迟的删除可能删掉更新的值，因此交给调用方决定 |
 | `put` 或集合写入失败 | 本地效果先生效，然后抛出 `CacheWriteException`。超时时 Redis 可能已经执行 | 尝试前后都淘汰了 L2，不会留下陈旧的本地副本。这些调用幂等 |

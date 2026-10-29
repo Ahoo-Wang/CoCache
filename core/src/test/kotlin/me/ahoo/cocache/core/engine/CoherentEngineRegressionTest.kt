@@ -31,6 +31,7 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.ReadFailureMode
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -141,7 +142,33 @@ class CoherentEngineRegressionTest {
      */
     @Test
     fun callSiteLoaderJoiningAFailedLoaderlessReadUsesItsOwnLoader() {
-        val cache = runtime().engine(spec { loader = null })
+        val (plain, withLoader) = joinAFailingLoaderlessRead(spec { loader = null })
+        plain.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        withLoader.assert().isEqualTo("loaded")
+    }
+
+    /**
+     * 显式 `readFailure = DEGRADE`：不带 loader 的一方读到不存在（不缓存），合并到它的带 loader 的一方同样不接受这个结果，
+     * 用自己的 loader 降级。
+     */
+    @Test
+    fun callSiteLoaderJoiningADegradedLoaderlessReadUsesItsOwnLoader() {
+        val degrade = CachePolicy(
+            ttl = Duration.ofMinutes(10),
+            ttlJitter = Duration.ZERO,
+            readFailure = ReadFailureMode.DEGRADE
+        )
+        val (plain, withLoader) = joinAFailingLoaderlessRead(spec(degrade) { loader = null })
+        plain.getOrThrow().assert().isNull()
+        withLoader.assert().isEqualTo("loaded")
+    }
+
+    /**
+     * 不带 loader 的读取在 L1 读取中途被挡住，带 loader 的读取合并到它；随后两者的 L1 读取都失败。
+     * 返回两者的结果（前者可能失败）；带 loader 的一方的降级填充是唯一的一次。
+     */
+    private fun joinAFailingLoaderlessRead(spec: CacheSpec<String, String>): Pair<Result<String?>, String?> {
+        val cache = runtime().engine(spec)
         val reading = CountDownLatch(1)
         val release = CountDownLatch(1)
         backend.afterRead = { _, _ ->
@@ -149,16 +176,16 @@ class CoherentEngineRegressionTest {
             release.awaitOrFail("release")
             throw RemoteUnavailableException("read")
         }
-        val plain = fork("plain") { cache["k"] }
+        val plain = fork("plain") { runCatching { cache["k"] } }
         reading.awaitOrFail("plain read")
         val withLoader = fork("loader") { cache.get("k") { "loaded" } }
         awaitCondition("joined the plain read") { withLoader.thread.state == Thread.State.WAITING }
         backend.afterRead = null
         backend.failAll = true
         release.countDown()
-        plain.joinFailure().assert().isInstanceOf(CacheReadException::class.java)
-        withLoader.join().assert().isEqualTo("loaded")
+        val results = plain.join() to withLoader.join()
         cache.metrics.degradedFills.assert().isEqualTo(1)
+        return results
     }
 
     /**

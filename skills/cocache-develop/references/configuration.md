@@ -53,7 +53,7 @@ Valid under `cocache.defaults.` and `cocache.caches.[name].`. Bare numbers are s
 | `load-async-timeout` (6.3+) | `30s` | Upper bound for one `AsyncCacheLoader` load; past it the call fails with `SourceLoadTimeoutException` and the lease is released. Not applied to synchronous loaders |
 | `local-maximum-size` | `10000` | L2 entries per instance |
 | `invalidate-failure` | `retry` with a loader, `throw` without one (6.9+; before: `retry`) | `throw`: surface `CacheWriteException`. Without a loader a delayed retry deletes later writes |
-| `read-failure` | `degrade` | `throw`: surface `CacheReadException`. A read without a loader always throws (6.9+) |
+| `read-failure` | `degrade` with a loader, `throw` without one (6.9+; before: `degrade`) | `throw`: surface `CacheReadException`. Without a loader, set `degrade` explicitly only when "unreadable" is a safe answer (e.g. a revocation list): the read returns `null` and caches nothing, so every read during the failure hits Redis |
 | `key-prefix` | `cocache:` | First part of every storage key; placeholders allowed |
 
 - Quote and bracket cache names in YAML (`"[UserCache]"`). Names match case-insensitively, so `COCACHE_CACHES_USERCACHE_TTL=10m` works. An undeclared name fails startup.

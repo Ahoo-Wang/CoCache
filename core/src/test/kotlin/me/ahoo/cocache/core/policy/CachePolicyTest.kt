@@ -83,7 +83,8 @@ class CachePolicyTest {
         copy.local.assert().isEqualTo(local)
         copy.invalidateFailure.assert().isEqualTo(InvalidateFailureMode.THROW)
         copy.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
-        CachePolicy.DEFAULT.readFailure.assert().isEqualTo(ReadFailureMode.DEGRADE)
+        // 未配置：引擎按这次读取有没有数据源决定（有 DEGRADE，没有 THROW）
+        CachePolicy.DEFAULT.readFailure.assert().isNull()
     }
 
     /**
@@ -135,9 +136,9 @@ class CachePolicyTest {
         ).newInstance(*arrayOfNulls<Any>(types.size), 0b111_1111_1110, null)
         defaults.ttl.assert().isNull()
         defaults.ttlJitter.assert().isEqualTo(CachePolicy.DEFAULT_TTL_JITTER)
-        defaults.readFailure.assert().isEqualTo(ReadFailureMode.DEGRADE)
+        defaults.readFailure.assert().isNull()
         defaults.foreignFormat.assert().isNull()
-        // 6.9 起 invalidateFailure 的默认值也是未设置（参数类型在 JVM 上不变，旧调用方无需重新编译）
+        // 6.9 起 readFailure 与 invalidateFailure 的默认值也是未设置（参数类型在 JVM 上不变，旧调用方无需重新编译）
         defaults.invalidateFailure.assert().isNull()
 
         // 旧调用方的 CachePolicy()：全部参数取默认值

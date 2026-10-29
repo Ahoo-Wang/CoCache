@@ -221,7 +221,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             readWaitingLease(storageKey, lease)
         } catch (e: Exception) {
             if (source == null) {
-                return unanswered("read", stamp, e)
+                return unanswered("read", storageKey, stamp, e)
             }
             onReadFailure("read", storageKey, e)
             return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
@@ -494,24 +494,42 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 没有数据源的读取遇到 L1 读失败：没有可降级的答案（L1 是唯一副本，绕过它只能得到“不存在”），
-     * 无论 `readFailure` 如何都以 [CacheReadException] 失败（fail closed），不写 L2，与 `getIfChanged` 一致。
-     * 结果经 SingleFlight 共享：合并到它的带 loader 的读取不接受它（[usable]），改用自己的数据源降级。
+     * 没有数据源的读取遇到 L1 读失败：L1 是唯一副本，绕过它只能得到“不存在”。
+     * - `readFailure` 未设置（没有数据源时即 `THROW`）或 `THROW`：没有可降级的答案，以 [CacheReadException] 失败（fail closed），
+     *   与 `getIfChanged` 一致；
+     * - 显式 `DEGRADE`：读到不存在，计入 `remoteFailures`，但**不写入任何一层**：它不是已决的负缓存，下一次读取重新访问 L1。
+     *
+     * 两者都不写 L2。结果经 SingleFlight 共享：它是 `unresolved` 的，合并到它的带 loader 的读取不接受它（[usable]），改用自己的数据源降级。
      */
-    private fun unanswered(operation: String, stamp: Long, error: Exception): Loaded<V> =
-        Loaded(noAnswer, stamp, readFailureWithoutSource(operation, error))
+    private fun unanswered(operation: String, storageKey: String, stamp: Long, error: Exception): Loaded<V> {
+        if (policy.readFailure == ReadFailureMode.DEGRADE) {
+            onRemoteFailure(operation, storageKey, error)
+            return Loaded(absentNow(), stamp)
+        }
+        return Loaded(noAnswer, stamp, readFailureWithoutSource(operation, error))
+    }
 
     /**
-     * [unanswered] 的批量版本：整批计数一次，共享一个异常。
+     * [unanswered] 的批量版本：整批计数一次，共享一个结果。
      */
     private fun unansweredAll(
         keys: Collection<String>,
         loadStamps: Map<String, Long>,
         error: Exception
     ): Map<String, Loaded<V>> {
+        if (policy.readFailure == ReadFailureMode.DEGRADE) {
+            onRemoteFailure("readAll", keys.first(), error)
+            val absent = absentNow()
+            return keys.associateWith { Loaded(absent, loadStamps.getValue(it)) }
+        }
         val failure = readFailureWithoutSource("readAll", error)
         return keys.associateWith { Loaded(noAnswer, loadStamps.getValue(it), failure) }
     }
+
+    /**
+     * 不写入任何一层的“不存在”（`unresolved`）：只作为这次读取的返回值，到期时间是现在（`lookup` 返回的 `Absent.expiresAt`）。
+     */
+    private fun absentNow(): LocalEntry<V> = LocalEntry(null, clock.nowMillis(), unresolved = true)
 
     private fun readFailureWithoutSource(operation: String, error: Exception): CacheReadException {
         metrics.remoteFailure()
@@ -1423,8 +1441,8 @@ internal class CoherentEngine<K : Any, V : Any>(
         loaded.failure?.let { CompletableFuture.failedFuture(it) } ?: completed(loaded.entry)
 
     /**
-     * 异步路径上 L1 读失败而没有可降级的答案（[unanswered]）：这次读取没有数据源，且失败可以按读取失败处理
-     * （是 [Exception]、运行时未关闭，同 [onReadFailureAsync]）。返回要包装的异常，否则 `null`。
+     * 异步路径上没有数据源的 L1 读失败（[unanswered]）：这次读取没有数据源，且失败可以按读取失败处理
+     * （是 [Exception]、运行时未关闭，同 [onReadFailureAsync]）。返回这个异常，否则 `null`。
      */
     private fun unanswerable(error: Throwable?, hasSource: Boolean): Exception? =
         (error as? Exception)?.takeIf { !hasSource && !context.async.closed }
@@ -1446,7 +1464,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val lease = LeaseRequest(context.nextToken(), policy.lease.ttl)
         return readWaitingLeaseAsync(storageKey, lease).handleNext(executor) { read, error ->
             unanswerable(error, source != null)?.let {
-                return@handleNext CompletableFuture.completedFuture(unanswered("read", stamp, it))
+                return@handleNext CompletableFuture.completedFuture(unanswered("read", storageKey, stamp, it))
             }
             val entry = if (error != null) {
                 onReadFailureAsync(

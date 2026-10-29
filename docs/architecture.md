@@ -205,8 +205,8 @@ loadThrough:                                      // 在 leader（调用方）�
            fill 成功：L2 限龄 localMaxAge；没有 lease 或 fill 被拒绝：L2 限龄 degradedLocalMaxAge
            回源、ttlOf、Codec 抛出时先 release lease 再抛出
   Leased → 等待超时：loadBypassingRemote
-  L1 异常 → 没有数据源：抛出 CacheReadException（§5.1）
-           readFailure = DEGRADE：loadBypassingRemote；THROW：抛出 CacheReadException
+  L1 异常 → 没有数据源：readFailure 未设置或 THROW 时抛出 CacheReadException；显式 DEGRADE 时返回不存在，不写任何一层（§5.1）
+           有数据源：readFailure 未设置或 DEGRADE 时 loadBypassingRemote；THROW 时抛出 CacheReadException
 
 loadBypassingRemote:                              // 回源，不写 L1；L2 限龄 degradedLocalMaxAge，仍受戳保护
                                                   // 没有数据源时只得到“未决的不存在”（§5.1）
@@ -223,8 +223,11 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 “没有数据源”按**这次读取**判断（与 `foreignFormat` 相同）：`get(key, loader)` 的 loader 是数据源。没有数据源时绕过 L1 只能得到“不存在”，因此（6.9 起）：
 
-- **L1 读失败**（单 key 的 `read`、批量的 `readAll`）**无论 `readFailure` 如何都抛出 `CacheReadException`**，不写 L2（fail closed），与 `getIfChanged`（§6.4）和 `SetCache`（§6.3）的“没有可降级的答案”一致。批量读整批失败（以 `readAll` 失败）。计入 `remoteFailures`，不计 `degradedFills`。6.8 及以前降级为不存在，并以已决的负缓存在 L2 保留 `degradedLocalMaxAge`：故障期间读到 `null`，之后的 `get(key, loader)` 也被它挡住、不调用 loader。
-- 这次失败的结果经 SingleFlight 共享，但它是不写 L2 的未决占位：合并到它的带 loader 的读取不接受它，用自己的 loader 降级（`Loaded.failure`）。
+- **L1 读失败**（单 key 的 `read`、批量的 `readAll`）按 `readFailure` 处理，而它未设置时按这次读取有没有数据源决定：没有数据源即 `THROW`。
+  - 未设置或 `THROW`：抛出 `CacheReadException`，不写 L2（fail closed），与 `getIfChanged`（§6.4）和 `SetCache`（§6.3）的“没有可降级的答案”一致。批量读整批失败（以 `readAll` 失败）。计入 `remoteFailures`，不计 `degradedFills`。
+  - 显式 `DEGRADE`：读到不存在（`get` 返回 `null`，`lookup` 返回 `Absent`，批量读取中该 key 缺席），计入 `remoteFailures`，**不写入任何一层**：不写 L1，也不写 L2，更不是已决的负缓存，每次故障都重新访问 L1。供把“读不到”当作安全答案的缓存使用（如 CoSec 的撤销表：Redis 故障即视为未撤销）；代价是故障期间每次读取都打到 L1。
+  - 6.8 及以前（`readFailure` 默认 `DEGRADE`）降级为不存在，并以已决的负缓存在 L2 保留 `degradedLocalMaxAge`：故障期间读到 `null`，之后的 `get(key, loader)` 也被它挡住、不调用 loader。显式 `DEGRADE` 恢复的只是“读到不存在、不抛出”，不恢复这个缓存。
+- 这次读取的结果经 SingleFlight 共享，但它是不写 L2 的未决占位（抛出时附带 `Loaded.failure`）：合并到它的带 loader 的读取不接受它，用自己的 loader 降级。
 - 其余绕过 L1 的分支（等待 lease 超时、失效重试中、更高格式版本且为 `RECLAIM`、回收失败）照常以降级限龄进入 L2，但写成**未决的**不存在：`get(key)` 读到 `null`，`get(key, loader)` 不被它挡住。
 
 ### 5.2 `get(key, loader)`
@@ -393,7 +396,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 | 类别 | 操作 | L1 故障时 |
 |------|------|-----------|
-| 填充 | 读、`fill`、`reclaim`、刷新 | 默认 `readFailure = DEGRADE`：按未命中处理，回源结果只进 L2 并以 `degradedLocalMaxAge` 限龄，计入 `remoteFailures` / `degradedFills`。`readFailure = THROW`：L1 读失败抛出 `CacheReadException`；`fill`、`release` 等尽力而为的操作仍然降级。**没有数据源的读取**（没有 spec 数据源，也不是 `get(key, loader)`）L1 读失败时总是抛出 `CacheReadException`，不写 L2：没有可降级的答案（§5.1，6.9 起） |
+| 填充 | 读、`fill`、`reclaim`、刷新 | 默认 `readFailure = DEGRADE`：按未命中处理，回源结果只进 L2 并以 `degradedLocalMaxAge` 限龄，计入 `remoteFailures` / `degradedFills`。`readFailure = THROW`：L1 读失败抛出 `CacheReadException`；`fill`、`release` 等尽力而为的操作仍然降级。`readFailure` 未设置时按这次读取有没有数据源决定（6.9 起）：**没有数据源的读取**（没有 spec 数据源，也不是 `get(key, loader)`）为 `THROW`，L1 读失败时抛出 `CacheReadException`，不写 L2，没有可降级的答案；显式 `DEGRADE` 时读到不存在，不写入任何一层（§5.1） |
 | 失效 | `invalidate`、`invalidateAll` | 本地效果（两次递增戳、淘汰 L2）先生效。`invalidateFailure` 未设置时按缓存有没有数据源决定（6.9 起）：有数据源为 `RETRY`，没有数据源为 `THROW`（见下）。`RETRY`：登记为“重试中”并交给有界重试队列（`RetryPolicy`：最多 8 次，退避 100 ms 起翻倍至 10 s，容量 10 000），**不抛出**。重试期间该 key 的未命中与刷新跳过 L1 直接回源（L2 降级限龄）；重试成功后本节点再递增一次戳并淘汰 L2。放弃（耗尽、溢出、运行时关闭）时记录错误、计入 `invalidationsDropped`，其它节点的陈旧上界为 L1 剩余寿命（L2 到期后从旧的 L1 重新填充）。`invalidateFailure = THROW` 时抛出 `CacheWriteException` |
 | 显式写入 | `put`、`putAll`、`add`、`remove`、`clear` | 本地效果先生效，然后抛出 `CacheWriteException`。结果未知（超时）时 L1 可能已生效；这些操作幂等，可以安全重试 |
 | 按版本写入 | `putIfNewer`、`invalidateIfNewer` | 同显式写入，抛出 `CacheWriteException`；按版本幂等：结果未知时重放同一个版本，已写入则返回 `Stale(version)`（§6.5） |
@@ -523,7 +526,7 @@ val users: Cache<String, User> = runtime.create(
 - **启动检查**（`SpringCacheSyncCheck`，`SmartInitializingSingleton`）：存在 `CacheOperationSource`（`@EnableCaching`）时，按 bean 类型（不实例化 bean；CGLIB 取父类，JDK 代理取已创建单例的目标类）解析缓存操作，含 `@CacheConfig` 的类级缓存名。指向 CoCache 缓存名（已创建与已声明）且 `sync = false` 的 `CacheableOperation` 记录告警（`类名#方法名` 与缓存名）；`cocache.spring-cache.require-sync=true` 时启动失败。只按缓存名判断；指定了其它 `cacheManager` 或自定义 `cacheResolver` 的操作跳过。没有 `@EnableCaching`，或不存在名为 `cocacheCacheManager` 的 bean（用户以其它名字声明了自己的 `CacheManager`，starter 的管理器退让）时不做任何事。
 - `retrieve` 经缓存的异步视图（RFC 0004 §6）：`retrieve(key)` 是异步 `lookup`，L2 命中返回已完成的 future（不切换线程），负缓存以 `null` 完成；`retrieve(key, loader)`（响应式 / `CompletableFuture` 方法上的 `sync = true`）是异步 `get(key, AsyncCacheLoader)`，与 `get(key, loader)` 一样经引擎受 lease 与失效戳保护的路径回源，**没有线程等待**异步 loader；方法体（`valueLoader.get()`，可能先阻塞再返回）派发到运行时的阻塞执行器（`CacheRuntime.blockingExecutor`）执行，从不在异步执行器上执行（6.1 中它在 retrieve 执行器上，同样不在调用方线程上，看不到调用方的 ThreadLocal）；`retrieve(key)` 与 `retrieve(key, loader)` 的失败都以原始异常完成。因此不再需要单独的 retrieve 执行器，嵌套的异步 `sync = true` 也不再有内层任务排在外层任务之后的死锁条件。`CoCacheSpringCacheManager(runtime, executor)` 构造函数、`CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 与 `cocache.spring-cache.retrieve-executor` 自 6.3 弃用（执行器被忽略），7.0 删除；`CoCacheSpringCache(cache, admin, executor)` 的执行器执行方法体。
 - 已知限制：Spring Cache 的 `put` / `evict` 只有同步签名，响应式方法上的 `@CachePut`、`@CacheEvict` 与不带 `sync` 的 `@Cacheable` 在完成回调中同步调用它们，各占用该线程一次 L1 往返；需要非阻塞失效时直接调用 `cache.async().invalidate(key)`。
-- 暴露给 Spring Cache 的缓存通常没有 spec 数据源（数据源是被注解的方法）：不带 `sync` 的 `@Cacheable` 经 `lookup` 读取，L1 读失败时抛出 `CacheReadException`（§5.1，交给 Spring 的 `CacheErrorHandler`，默认重新抛出）；`sync = true` 带 loader，照常降级。`@CacheEvict` 失败默认抛出 `CacheWriteException`（§7）；方法本身就是数据源、删除总是安全时可以设置 `invalidateFailure = RETRY` 恢复 6.8 的行为。
+- 暴露给 Spring Cache 的缓存通常没有 spec 数据源（数据源是被注解的方法）：不带 `sync` 的 `@Cacheable` 经 `lookup` 读取，L1 读失败时默认抛出 `CacheReadException`（§5.1，交给 Spring 的 `CacheErrorHandler`，默认重新抛出），设置 `readFailure = DEGRADE` 时读到未命中且不缓存、随后执行方法；`sync = true` 带 loader，照常降级。`@CacheEvict` 失败默认抛出 `CacheWriteException`（§7）；方法本身就是数据源、删除总是安全时可以设置 `invalidateFailure = RETRY` 恢复 6.8 的行为。
 - `TransactionalInvalidator`：事务内调用时登记到当前事务的 `afterCommit`，同一事务内对同一缓存的失效合并为一次 `invalidateAll`，回滚时不失效，没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己提交之后失效。有 spring-tx 时 CacheManager 的 `@CacheEvict` / `@CachePut` 同样推迟到提交之后。
 
 ### 9.6 Spring AOT 与原生镜像
@@ -566,7 +569,7 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 | 异步执行器 / 阻塞执行器 | 自建 `ForkJoinPool`（CPU 数）/ JDK 21+ 虚拟线程，否则 ≤ 512 线程不排队 | §9.1 |
 | `local.maximumSize` | 10 000 | L2 总是有界；不使用条目级 `Expiry`（每次读取都写节点元数据，热点 key 无法随线程扩展），过期在读取时判断 |
 | `invalidateFailure` | 未设置：有数据源的缓存 `RETRY`，没有数据源的缓存 `THROW` | 有数据源时删除总是安全的，失效通常在提交之后调用，抛出既不能也不该回滚；没有数据源时延迟的重试会删掉之后的写入（§7） |
-| `readFailure` | `DEGRADE` | 只作用于有数据源的读取：没有数据源的读取没有可降级的答案，L1 读失败总是抛出（§5.1） |
+| `readFailure` | 未设置：有数据源的读取 `DEGRADE`，没有数据源的读取 `THROW` | 没有数据源的读取没有可降级的答案；显式 `DEGRADE` 时读到不存在且不缓存（§5.1） |
 | `foreignFormat` | 未设置：有数据源的读取 `RECLAIM`，没有数据源的读取 `FAIL` | 没有数据源时回收就是删除唯一副本（§5.4） |
 | `SetCacheSpec` 的 `ttl` | 永不过期 | L1 是唯一副本 |
 | `keyPrefix` | `cocache:` | |
@@ -580,7 +583,7 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 | 你实现 | 继承 |
 |--------|------|
 | `CoherenceBackend`（L1 协议 + 失效通道） | `BackendProtocolSpec`（状态机、令牌、到期时间重设、release、reclaim、批量读、批量覆盖写入、集合、广播帧与订阅重置） |
-| 后端在引擎下的端到端行为 | `EngineSpec`（两个运行时共享一个后端：跨节点单次回源、lease 等待超时、同节点失效与并发读、同节点并发 `put`、读己之写、失效重试、`localMaxAge`、批量、跨节点单次刷新、损坏回收、未知格式、读不懂的内容按 `foreignFormat` 失败或回收、没有数据源时更高格式版本按 `foreignFormat` 失败或按不存在处理、没有数据源时 L1 读失败抛出而绕过 L1 的不存在是未决的、没有数据源时显式 `RETRY` 的失效重试、`putAll` 的跨节点失效与在途加载栅栏、条件读写（摘要未变、绕过 L2、负缓存与 lease 是没有值、冲突不广播（非原子广播时重放的冲突广播）、并发“读—改—条件写”不丢更新、到期时间、读不懂的内容失败（`RECLAIM` 也不把本协议的集合与解码失败的值当作没有值）、L1 故障；不支持条件写入的后端以 `supportsConditionalWrites = false` 跳过条件写入的用例；支持的必须原子，并发用例强制竞争、断言恰好一个写入方胜出）等）与 `SetEngineSpec`（集合缓存，含格式 0 的 `FAIL` / `RECLAIM`，元素写入落在读不懂的内容上时 `FAIL` 拒绝、`RECLAIM` 覆盖，负缓存上照常写入） |
+| 后端在引擎下的端到端行为 | `EngineSpec`（两个运行时共享一个后端：跨节点单次回源、lease 等待超时、同节点失效与并发读、同节点并发 `put`、读己之写、失效重试、`localMaxAge`、批量、跨节点单次刷新、损坏回收、未知格式、读不懂的内容按 `foreignFormat` 失败或回收、没有数据源时更高格式版本按 `foreignFormat` 失败或按不存在处理、没有数据源时 L1 读失败默认抛出、显式 `DEGRADE` 时读到不存在且不写任何一层、绕过 L1 的不存在是未决的、没有数据源时显式 `RETRY` 的失效重试、`putAll` 的跨节点失效与在途加载栅栏、条件读写（摘要未变、绕过 L2、负缓存与 lease 是没有值、冲突不广播（非原子广播时重放的冲突广播）、并发“读—改—条件写”不丢更新、到期时间、读不懂的内容失败（`RECLAIM` 也不把本协议的集合与解码失败的值当作没有值）、L1 故障；不支持条件写入的后端以 `supportsConditionalWrites = false` 跳过条件写入的用例；支持的必须原子，并发用例强制竞争、断言恰好一个写入方胜出）等）与 `SetEngineSpec`（集合缓存，含格式 0 的 `FAIL` / `RECLAIM`，元素写入落在读不懂的内容上时 `FAIL` 拒绝、`RECLAIM` 覆盖，负缓存上照常写入） |
 | 支持版本的后端（`versionedWrites`，§6.5） | `VersionedSpec`（两个运行时共享一个后端。协议：整体写入保存版本、按版本写入只在版本更高时写入、有符号 64 位比较（跨越 2^32 与 2^53）、按版本写入销毁 lease 而持有者的 fill 被拒绝、带版本的内容不授予刷新令牌也不被回收、墓碑读作负缓存、带版本的负缓存经 fill 写成墓碑。引擎：有序、相等版本幂等、旧版本不修改不广播不改寿命、非原子广播时重放的相等版本广播、寿命同 `put`、墓碑挡住迟到的旧版本、lease 持有者回源期间落地的写入胜出（回源读到的版本更高也被拒绝）、回源保存版本、数据源返回的带版本的不存在写成墓碑、条目到期之后任何版本都能写入、回源写回 L1 之后落地的更新版本、多线程乱序写入收敛到最高版本、结果未知时重放安全、普通写入与 `null` 回源没有版本、读不懂的内容拒绝、解码失败的带版本值不回收）；`AsyncVersionedSpec` 经异步视图重跑 |
 | 多节点交错（§4.3、§5、§7） | `MultiNodeSpec`（三个运行时共享一个后端：失效先于 lease、晚于 lease 且有节点在等待、晚于 fill 而早于写 L2；跨节点写入落在读 L1 与写 L2 之间；跨节点并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全集群每个 key 单次回源与单次刷新的计数断言） |
 | 异步视图（§5.6） | `AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec`：经 `CacheAccess.ASYNC` 把对应规范的每个用例改由 `async()` 视图读写（同步数据源换成在调用线程上执行的异步数据源）重跑；`AsyncEngineSpec` 另有取消、完成线程、lease 等待与回源许可等待只用常数个线程（各 1000 个等待者）、原始异常、不同步抛出、`asyncTimeout` 释放 lease、同步与异步互相合并、重入、同步数据源只在阻塞执行器上执行、运行时关闭时的等待等用例 |

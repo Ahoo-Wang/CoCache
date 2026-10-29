@@ -122,7 +122,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 | 操作 | Redis 故障期间 |
 |------|----------------|
-| `get`、`getAll`、`lookup` | 默认（`read-failure: degrade`）：从数据源加载，结果以 `degraded-local-max-age`（10 s）留在 L2 中，不写 L1。`read-failure: throw` 时抛出 `CacheReadException`。没有 loader（缓存没有 loader，也不是 `get(key, loader)`）时总是抛出 `CacheReadException`，什么也不缓存 |
+| `get`、`getAll`、`lookup` | 默认（`read-failure: degrade`）：从数据源加载，结果以 `degraded-local-max-age`（10 s）留在 L2 中，不写 L1。`read-failure: throw` 时抛出 `CacheReadException`。没有 loader（缓存没有 loader，也不是 `get(key, loader)`）时默认抛出 `CacheReadException`，什么也不缓存；显式设置 `read-failure: degrade` 时返回 `null`（`getAll` 中缺席），同样什么也不缓存 |
 | 填充、释放 lease、刷新 | 尽力而为：记录日志并计数，从不抛出 |
 | `invalidate`、`invalidateAll` | 本地效果立即生效，然后在后台重试（[见上文](#invalidations-dropped)）。`invalidate-failure: throw`（没有 loader 时的默认值）时抛出 `CacheWriteException` |
 | `put`、`SetCache` 写入 | 本地效果立即生效，然后抛出 `CacheWriteException`。超时之后写入可能已经到达 Redis。这些调用幂等，可以安全重试 |

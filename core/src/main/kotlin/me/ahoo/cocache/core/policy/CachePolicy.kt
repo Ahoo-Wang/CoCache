@@ -27,7 +27,8 @@ import java.util.concurrent.ThreadLocalRandom
  * @param refreshWindow 提前刷新窗口；`null` 表示关闭
  * @param invalidateFailure 失效写入 L1 失败时的处理方式；`null`（默认）按缓存有没有数据源决定：有数据源时
  *   [InvalidateFailureMode.RETRY]，没有数据源时（L1 是唯一副本）[InvalidateFailureMode.THROW]
- * @param readFailure 读取 L1 失败时的处理方式
+ * @param readFailure 读取 L1 失败时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ReadFailureMode.DEGRADE]，
+ *   没有数据源时（L1 是唯一副本）[ReadFailureMode.THROW]
  * @param foreignFormat 读到本缓存读不懂的 L1 内容（格式 0：5.x 或其它程序写入的值、原生 Set / Hash 等其它 Redis 类型；
  *   以及同版本内容解码失败）时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ForeignFormatMode.RECLAIM]，
  *   没有数据源时（`SetCache`、没有 loader 的 `Cache`）[ForeignFormatMode.FAIL]
@@ -43,7 +44,7 @@ class CachePolicy(
     val load: LoadPolicy = LoadPolicy(),
     val local: LocalPolicy = LocalPolicy(),
     val invalidateFailure: InvalidateFailureMode? = null,
-    val readFailure: ReadFailureMode = ReadFailureMode.DEGRADE,
+    val readFailure: ReadFailureMode? = null,
     val foreignFormat: ForeignFormatMode? = null,
 ) {
     /**
@@ -62,7 +63,7 @@ class CachePolicy(
         load: LoadPolicy = LoadPolicy(),
         local: LocalPolicy = LocalPolicy(),
         invalidateFailure: InvalidateFailureMode? = null,
-        readFailure: ReadFailureMode = ReadFailureMode.DEGRADE,
+        readFailure: ReadFailureMode? = null,
     ) : this(
         ttl, ttlJitter, absentTtl, localMaxAge, degradedLocalMaxAge, refreshWindow, lease, load, local, invalidateFailure, readFailure, null
     )
@@ -127,7 +128,7 @@ class CachePolicy(
         var load: LoadPolicy = policy.load
         var local: LocalPolicy = policy.local
         var invalidateFailure: InvalidateFailureMode? = policy.invalidateFailure
-        var readFailure: ReadFailureMode = policy.readFailure
+        var readFailure: ReadFailureMode? = policy.readFailure
         var foreignFormat: ForeignFormatMode? = policy.foreignFormat
 
         fun ttl(ttl: Duration?) = apply { this.ttl = ttl }
@@ -145,7 +146,7 @@ class CachePolicy(
             invalidateFailure: InvalidateFailureMode?
         ) = apply { this.invalidateFailure = invalidateFailure }
 
-        fun readFailure(readFailure: ReadFailureMode) = apply { this.readFailure = readFailure }
+        fun readFailure(readFailure: ReadFailureMode?) = apply { this.readFailure = readFailure }
         fun foreignFormat(foreignFormat: ForeignFormatMode?) = apply { this.foreignFormat = foreignFormat }
 
         fun build(): CachePolicy = CachePolicy(
@@ -270,17 +271,22 @@ enum class InvalidateFailureMode {
 }
 
 /**
- * 读取 L1 失败时的处理方式（RFC 0003 §4.13）。
+ * 读取 L1 失败时的处理方式（RFC 0003 §4.13）。未配置时按这次读取有没有数据源决定（见 [CachePolicy.readFailure]）。
  */
 enum class ReadFailureMode {
     /**
-     * 降级为直接回源，结果只以降级限龄进入 L2，不写 L1（默认）。L1 故障时由回源并发上限保护数据源。
+     * 降级为直接回源，结果只以降级限龄进入 L2，不写 L1。L1 故障时由回源并发上限保护数据源。有数据源的读取的默认值。
+     *
+     * 没有数据源的读取只能显式选择它：读到“不存在”（返回 `null`，批量读取中缺席），不写入任何一层、不缓存，
+     * 每次故障都重新访问 L1，计入 `remoteFailures`。适用于把“读不到”当作安全答案的缓存（如撤销表：Redis 故障即视为未撤销）。
      */
     DEGRADE,
 
     /**
      * 抛出 [me.ahoo.cocache.api.CacheReadException]。
      * 只作用于读取；填充、释放令牌等尽力而为的操作仍然降级。
+     *
+     * 没有数据源的读取的默认值：L1 是唯一副本，读不到时没有可降级的答案（fail closed）。
      */
     THROW,
 }

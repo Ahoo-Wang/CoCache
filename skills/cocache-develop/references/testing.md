@@ -64,7 +64,7 @@ Close every runtime after the test. `runtime.metrics(name)` exposes counters (lo
 
 ## Redis failures
 
-`HookedBackend(delegate)` (test dependency `me.ahoo.cocache:cocache-test`) switches: `failAll`, `failWrites`, `failFill`, `failRelease`. Expected behavior: reads degrade to the source, `put` throws `CacheWriteException`, `invalidate` does not throw and queues a retry (`runtime.admin(name)?.pendingInvalidationCount`). Without a loader (6.9+), reads throw `CacheReadException` and `invalidate` throws `CacheWriteException` by default. The retry runs on real time, so poll with a timeout instead of sleeping a fixed amount.
+`HookedBackend(delegate)` (test dependency `me.ahoo.cocache:cocache-test`) switches: `failAll`, `failWrites`, `failFill`, `failRelease`. Expected behavior: reads degrade to the source, `put` throws `CacheWriteException`, `invalidate` does not throw and queues a retry (`runtime.admin(name)?.pendingInvalidationCount`). Without a loader (6.9+), reads throw `CacheReadException` (or return `null` without caching under an explicit `read-failure: degrade`) and `invalidate` throws `CacheWriteException` by default. The retry runs on real time, so poll with a timeout instead of sleeping a fixed amount.
 
 ## Race tests
 

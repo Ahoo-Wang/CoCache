@@ -14,9 +14,9 @@
 package me.ahoo.cocache.api
 
 /**
- * 读取时 L1 失败，且缓存配置为严格读失败模式（`ReadFailureMode.THROW`）。
+ * 读取时 L1 失败，且缓存配置为严格读失败模式（`ReadFailureMode.THROW`），或这次读取没有数据源而读失败模式未设置（6.9 起：没有可降级的答案）。
  *
- * 默认模式下 L1 读失败会降级为直接回源，不会抛出本异常。
+ * 有数据源的读取默认降级为直接回源，不会抛出本异常。
  */
 class CacheReadException(
     val cacheName: String,

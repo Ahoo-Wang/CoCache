@@ -122,7 +122,7 @@ An invalidation is dropped when its retries run out, the queue is full, or the a
 
 | Operation | Behavior while Redis fails |
 |-----------|----------------------------|
-| `get`, `getAll`, `lookup` | Default (`read-failure: degrade`): load from the source, keep the result in L2 for `degraded-local-max-age` (10 s), write nothing to L1. With `read-failure: throw`: `CacheReadException`. Without a loader (no loader on the cache, and not `get(key, loader)`): always `CacheReadException`, nothing cached. |
+| `get`, `getAll`, `lookup` | Default (`read-failure: degrade`): load from the source, keep the result in L2 for `degraded-local-max-age` (10 s), write nothing to L1. With `read-failure: throw`: `CacheReadException`. Without a loader (no loader on the cache, and not `get(key, loader)`): `CacheReadException` by default, nothing cached; with an explicit `read-failure: degrade`, `null` (absent from `getAll`), still nothing cached. |
 | Fill, lease release, refresh | Best effort: logged and counted, never thrown |
 | `invalidate`, `invalidateAll` | Local effect at once, then retried in the background ([above](#invalidations-dropped)). With `invalidate-failure: throw`, the default without a loader: `CacheWriteException`. |
 | `put`, `SetCache` writes | Local effect at once, then `CacheWriteException`. After a timeout the write may have reached Redis anyway. These calls are idempotent, so retrying is safe. |
