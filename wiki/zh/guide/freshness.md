@@ -141,11 +141,14 @@ public void rename(String id, String name) {
 :::
 
 - 同一事务内对同一缓存的多次失效合并为一次 `invalidateAll`，去重并保持顺序。
-- 回滚时什么都不失效，因为数据没有变化。
-- `REQUIRES_NEW` 的内层事务在它自己提交之后失效。
+- 回滚时同样失效已登记的 key。loader 在你的线程上执行并参与事务，写入之后的读取可能已经把未提交的行放进 Redis，所有实例在 `ttl` 内都会读到它。多余的失效无害。
+- `REQUIRES_NEW` 的内层事务在它自己结束时失效。
+- 迟到的登记不会丢失。在其它同步的 `afterCommit` 中登记的失效立即执行；如果它是这个事务的第一次登记，则在 `afterCompletion` 中执行。在 `afterCompletion` 中（例如 `@TransactionalEventListener(AFTER_COMMIT)`）登记时立即失效。
+- 一个缓存失败不影响其余缓存：全部失效之后，抛出第一个异常，其余作为它的 suppressed（只在 [`invalidate-failure: throw`](#redis-down) 时）。回滚之后的失败由 Spring 记录日志，不抛出。
 - 没有活动事务时立即失效。
+- 它只看得到线程绑定的事务（`PlatformTransactionManager`，如 JDBC、JPA）。在响应式事务中（`ReactiveTransactionManager`，如 R2DBC，包括 `@Transactional` 挂起函数），它立即失效，也就是在提交之前。这种情况请在事务结束之后、事务边界之外失效。
 
-CoCache 缓存上的 `@CacheEvict` 与 `@CachePut` 同样推迟到提交之后，见 [Spring Cache](./spring-cache.md#transactions)。
+CoCache 缓存上的 `@CacheEvict` 与 `@CachePut` 同样推迟到提交之后，但回滚时不执行，见 [Spring Cache](./spring-cache.md#transactions)。
 
 ## 应用之外的写入方 {#external-writers}
 

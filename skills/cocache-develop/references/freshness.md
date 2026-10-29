@@ -85,14 +85,16 @@ cache.getVersioned(id)                       // Versioned(value, version)?
 @Transactional
 fun rename(id: String, name: String) {
     repo.rename(id, name)
-    invalidator.invalidate(userCache, id)    // after commit; skipped on rollback
+    invalidator.invalidate(userCache, id)    // after commit; also after a rollback
 }
 ```
 
 - Invalidations of one cache in one transaction merge into one deduplicated `invalidateAll`.
-- `REQUIRES_NEW` invalidates after its own commit; without an active transaction it invalidates immediately.
+- On rollback it invalidates too: the loader joins the transaction, so a read after the write may have cached the uncommitted row.
+- `REQUIRES_NEW` invalidates when it ends; without an active transaction it invalidates immediately. Registrations from another synchronization's `afterCommit` or `afterCompletion` are not lost.
+- Only thread-bound transactions are visible. In a reactive transaction (R2DBC, `@Transactional` suspend functions) it invalidates immediately, before the commit; invalidate after the transaction ends instead.
 - It takes a `Cache`; for a `JoinCache`, pass the component cache.
-- `@CacheEvict` and `@CachePut` through the transaction-aware cache manager are deferred the same way (see `spring-cache.md`).
+- `@CacheEvict` and `@CachePut` through the transaction-aware cache manager are deferred to after the commit too, but skipped on rollback (see `spring-cache.md`).
 
 ## Writers outside the application
 

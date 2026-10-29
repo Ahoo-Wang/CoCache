@@ -10,4 +10,4 @@ PASS only if the answer does all of these:
 1. Explains that invalidating before the commit lets a concurrent read reload and cache the old row
 2. Moves the invalidation after the commit with TransactionalInvalidator (or an equivalent after-commit hook) instead of calling cache.invalidate inside the transaction
 3. Prefers invalidate over put after the write, or justifies put; does not claim put fills the local L2
-4. Proposes a concrete test without Redis (cocache.backend=memory or an InMemoryBackend runtime) covering the reload after commit and no invalidation on rollback
+4. Proposes a concrete test without Redis (cocache.backend=memory or an InMemoryBackend runtime) covering the reload after commit and the committed value after a rollback

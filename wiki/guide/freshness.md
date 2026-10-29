@@ -141,11 +141,14 @@ public void rename(String id, String name) {
 :::
 
 - Invalidations of one cache within one transaction are merged into a single `invalidateAll`, deduplicated, in order.
-- On rollback, nothing is invalidated, because nothing changed.
-- A `REQUIRES_NEW` inner transaction invalidates after its own commit.
+- On rollback, the registered keys are invalidated too. The loader runs on your thread and joins the transaction, so a read after your write may already have put the uncommitted row in Redis, where every instance would read it until `ttl`. An extra invalidation is harmless.
+- A `REQUIRES_NEW` inner transaction invalidates when it ends.
+- Late registrations are not lost. One made in another synchronization's `afterCommit` runs right away, or in `afterCompletion` if it is the transaction's first. In `afterCompletion` itself, for example in an `@TransactionalEventListener(AFTER_COMMIT)`, it invalidates immediately.
+- One failing cache doesn't stop the others: all are invalidated, then the first failure is thrown with the rest suppressed (only with [`invalidate-failure: throw`](#redis-down)). After a rollback, Spring logs the failure instead of throwing it.
 - Without an active transaction, it invalidates immediately.
+- Only thread-bound transactions (`PlatformTransactionManager`, such as JDBC or JPA) are visible to it. In a reactive transaction (`ReactiveTransactionManager`, such as R2DBC, including `@Transactional` suspend functions), it invalidates immediately, which is before the commit. There, invalidate after the transaction ends, outside its boundary.
 
-`@CacheEvict` and `@CachePut` on CoCache caches are deferred to after the commit in the same way. See [Spring Cache](./spring-cache.md#transactions).
+`@CacheEvict` and `@CachePut` on CoCache caches are deferred to after the commit as well, but skipped on rollback. See [Spring Cache](./spring-cache.md#transactions).
 
 ## Writers outside your application {#external-writers}
 
