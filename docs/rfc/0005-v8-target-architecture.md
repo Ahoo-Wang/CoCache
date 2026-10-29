@@ -13,7 +13,7 @@
   - 迁移的基线是 7.B（§8）。规范仍以 architecture.md 为准，本 RFC 实施时同步修改它。
 - 来源：
   - 2026-10-28 对 6.8.0 的架构审查（附录 A）。可先行的修复已在 6.9.0 发布（#697、#698、#700、#701）。
-  - 两轮对抗验证（§12）。第二轮发现 6.9.0 中仍有两个缺陷（附录 B），计划在 6.9.1 修复。
+  - 两轮对抗验证（§12）。第二轮发现 6.9.0 中仍有两个缺陷（附录 B），已在 6.9.1 修复（#704）。
 
 ---
 
@@ -756,7 +756,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 | 超时取消 Lettuce 命令；`sharded` 未确认频道每次心跳重置；读超时释放 lease；订阅生命周期竞态；格式字节按无符号解析 | A.R1、A.R2、A.L1、A.R3、A.L7 | 6.9.0 已交付（#701） |
 | `TransactionalInvalidator` 回滚失效、迟到登记、逐缓存失败隔离 | A.T1、A.T2 | 6.9.0 已交付（#697） |
 | 提前刷新退避；寿命 ≤ 刷新窗口不设刷新点 | A.D3 | 6.9.0 已交付（#698） |
-| 中断时取消命令、释放令牌；`fill` / `fillAll` 超时或中断时释放令牌 | P5、P13（附录 B） | 6.9.1 待修复 |
+| 中断时取消命令、释放令牌；`fill` / `fillAll` 超时或中断时释放令牌 | P5、P13（附录 B） | 6.9.1 已交付（#704） |
 | `reclaim` 超时释放 lease | C7 | 待排期 |
 | L2 填充用 `compute` + 条件复核（§4.5） | A.D4、C4 | 待排期 |
 | 单调时钟 | A.C1 | 待排期 |
@@ -774,7 +774,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ## 10. 实施顺序
 
-0. **6.9.1**：附录 B 的两个缺陷。
+0. **6.9.1**（已交付，#704）：附录 B 的两个缺陷。
 1. **6.x / 7.x**：§9 中“待排期”的项；Lincheck 用例与 TLA+ 模型进入仓库与 CI；starter 的事务装饰器。
 2. **7.x**：
    - sans-IO 重构：每条路径一个 PR（单 key 读 → 批量 → 刷新 → 写入），同步与异步 TCK 全绿、JMH 达标；flight 层接受 Lincheck；确定性仿真接到新核心上。
@@ -1005,5 +1005,5 @@ v2 由两路独立的只读会话验证。
 
 | 编号 | 严重度 | 发现 | 依据 | 位置 | 去向 |
 |------|--------|------|------|------|------|
-| B.1 | 中 | 中断路径绕过了 #701。`await` 被中断时不取消 `CommandCall`，被中断的 `put` 在 Cluster 中可以迟到执行（A.R1 同类）。`releaseAfterTimeout` 只在超时时释放，被中断的读取留下 lease 到 `lease.ttl`（A.L1 同类）；`readAll` 的第一个等待被中断之后，其余等待立即失败，它们取得的 lease 都不释放 | 读代码（作者复核） | `RedisConnections.await`、`RedisRemoteStore.releaseAfterTimeout` | 6.9.1：中断时与超时一样取消命令、释放令牌，并按结果未知处理；TCK 复现 |
-| B.2 | 低 | `fill` / `fillAll` 超时或失败时不释放令牌。被 `CommandCall` 完成、没有写出的 fill 留下 lease 到 `lease.ttl`，全集群对该 key 的未命中都先等 `lease.wait` | 读代码（作者复核） | `CoherentEngine.fillRemote` 及其批量与异步版本 | 6.9.1：超时或中断时尽力释放（同一条连接，排在 fill 之后；令牌不匹配时无害） |
+| B.1 | 中 | 中断路径绕过了 #701。`await` 被中断时不取消 `CommandCall`，被中断的 `put` 在 Cluster 中可以迟到执行（A.R1 同类）。`releaseAfterTimeout` 只在超时时释放，被中断的读取留下 lease 到 `lease.ttl`（A.L1 同类）；`readAll` 的第一个等待被中断之后，其余等待立即失败，它们取得的 lease 都不释放 | 读代码（作者复核） | `RedisConnections.await`、`RedisRemoteStore.releaseAfterTimeout` | 6.9.1 已修复（#704）：中断时与超时一样取消命令、释放令牌，并按结果未知处理；TCK 复现 |
+| B.2 | 低 | `fill` / `fillAll` 超时或失败时不释放令牌。被 `CommandCall` 完成、没有写出的 fill 留下 lease 到 `lease.ttl`，全集群对该 key 的未命中都先等 `lease.wait` | 读代码（作者复核） | `CoherentEngine.fillRemote` 及其批量与异步版本 | 6.9.1 已修复（#704）：超时或中断时尽力释放（同一条连接，排在 fill 之后；令牌不匹配时无害） |
