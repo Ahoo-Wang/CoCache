@@ -132,7 +132,14 @@ JMH 对比见 RFC 0003 §7.1。
 | 条件写入 | G1 | `putIfMatch`：按载荷摘要比较并写入，一个原子步骤，冲突时不写、不广播；SPI 默认实现直接抛出 `UnsupportedOperationException`，不退化为先读后写 | 6.7.0 已交付（#683） |
 | 条件读取 | G1、G3 | `getIfChanged`：摘要未变时只返回 `Unchanged`，不传输正文；读写两侧对读不懂的内容判定一致 | 6.7.0 已交付（#683） |
 
-## 6.7 之后
+## v6.8：按版本有序的写入 — 已完成
+
+| 项 | 目标 | 内容 | 现状 |
+|----|------|------|------|
+| 按版本写入 | G1、G2 | `putIfNewer` / `invalidateIfNewer`：版本更高时写入，比较与写入一个原子步骤（Redis 一次往返）；相等是幂等的空操作，旧版本被拒绝，都不写、不广播、不改寿命。写入销毁 lease 与刷新令牌。版本存放在格式 1 头部的令牌位置，6.x 的读者照常读取 | 6.8.0 已交付（#693） |
+| 带版本的回源与读取 | G1 | `versionedLoader` 回源时保存版本；`Versioned(null, n)` 写成墓碑，挡住重放的旧状态；`getVersioned` 返回值与版本。SPI 新增 `CoherenceBackend.versionedWrites`、`RemoteStore.putIfNewer`（默认拒绝）与 `Fill.version`，TCK 新增 `VersionedSpec` | 6.8.0 已交付（#693、#694） |
+
+## 6.8 之后
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
