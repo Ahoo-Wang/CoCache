@@ -18,19 +18,25 @@ import io.lettuce.core.RedisClient
 import io.lettuce.core.RedisCommandTimeoutException
 import io.lettuce.core.RedisException
 import io.lettuce.core.RedisNoScriptException
-import io.lettuce.core.ScriptOutputType
 import io.lettuce.core.api.StatefulConnection
 import io.lettuce.core.api.StatefulRedisConnection
 import io.lettuce.core.api.async.BaseRedisAsyncCommands
-import io.lettuce.core.api.async.RedisScriptingAsyncCommands
 import io.lettuce.core.cluster.RedisClusterClient
 import io.lettuce.core.cluster.SlotHash
 import io.lettuce.core.cluster.api.StatefulRedisClusterConnection
 import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import io.lettuce.core.codec.ByteArrayCodec
+import io.lettuce.core.output.CommandOutput
+import io.lettuce.core.output.NestedMultiOutput
+import io.lettuce.core.protocol.AsyncCommand
+import io.lettuce.core.protocol.Command
+import io.lettuce.core.protocol.CommandArgs
+import io.lettuce.core.protocol.CommandType
+import io.lettuce.core.protocol.RedisCommand
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection
 import io.netty.util.Timer
 import java.time.Duration
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ExecutionException
@@ -51,7 +57,6 @@ internal class RedisConnections(
 ) : AutoCloseable {
     val cluster: Boolean = client is RedisClusterClient
     private val connection: StatefulConnection<ByteArray, ByteArray>
-    private val scripting: RedisScriptingAsyncCommands<ByteArray, ByteArray>
     private val base: BaseRedisAsyncCommands<ByteArray, ByteArray>
     val pubSub: StatefulRedisPubSubConnection<ByteArray, ByteArray>
 
@@ -60,7 +65,6 @@ internal class RedisConnections(
             is RedisClusterClient -> {
                 val commands = client.connect(ByteArrayCodec.INSTANCE)
                 connection = commands
-                scripting = commands.async()
                 base = commands.async()
                 pubSub = connectPubSub(commands) { client.connectPubSub(ByteArrayCodec.INSTANCE) }
             }
@@ -68,7 +72,6 @@ internal class RedisConnections(
             is RedisClient -> {
                 val commands = client.connect(ByteArrayCodec.INSTANCE)
                 connection = commands
-                scripting = commands.async()
                 base = commands.async()
                 pubSub = connectPubSub(commands) { client.connectPubSub(ByteArrayCodec.INSTANCE) }
             }
@@ -84,24 +87,62 @@ internal class RedisConnections(
 
     /**
      * 异步执行脚本：EVALSHA，遇到 NOSCRIPT（故障切换、重启、resharding 后脚本缓存丢失）时改用 EVAL（会重新缓存）。
+     *
+     * 返回的 future 超时被取消（[bounded]、[await]）时，尚未写出的命令不再写出（[CommandCall]）。
      */
     fun <T> evalAsync(script: RedisScripts.Script, keys: List<ByteArray>, args: List<ByteArray>): CompletableFuture<T> {
-        val keyArray = keys.toTypedArray()
-        val argArray = args.toTypedArray()
-        val first: CompletableFuture<T> = scripting.evalsha<T>(
-            script.sha,
-            ScriptOutputType.MULTI,
-            keyArray,
-            *argArray
-        ).toCompletableFuture()
-        return first.exceptionallyCompose { error ->
-            val cause = if (error is CompletionException) error.cause ?: error else error
-            if (isNoScript(cause)) {
-                scripting.eval<T>(script.source, ScriptOutputType.MULTI, keyArray, *argArray).toCompletableFuture()
+        val call = CommandCall<T>()
+        send(call, CommandType.EVALSHA, scriptArgs(keys, args) { add(script.sha) }) { error ->
+            if (isNoScript(error)) {
+                send(
+                    call,
+                    CommandType.EVAL,
+                    scriptArgs(keys, args) { add(script.source) }
+                ) { call.completeExceptionally(it) }
             } else {
-                CompletableFuture.failedFuture(cause)
+                call.completeExceptionally(error)
             }
         }
+        return call
+    }
+
+    /**
+     * 以 `dispatch` 发出脚本命令（与 Lettuce 的 `evalsha` / `eval` 相同的参数与输出），它返回最外层的命令，[CommandCall] 超时时
+     * 完成的是这一条。结果交给 [call]，失败（已解包）交给 [onError]；[onError] 抛出时以该异常完成 [call]，不让调用方永远等待。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun <T> send(
+        call: CommandCall<T>,
+        type: CommandType,
+        args: CommandArgs<ByteArray, ByteArray>,
+        onError: (Throwable) -> Unit
+    ) {
+        @Suppress("UNCHECKED_CAST")
+        val output = NestedMultiOutput(ByteArrayCodec.INSTANCE) as CommandOutput<ByteArray, ByteArray, T>
+        val command = AsyncCommand(Command(type, output, args))
+        command.whenComplete { value, error ->
+            if (error == null) {
+                call.complete(value)
+                return@whenComplete
+            }
+            try {
+                onError(if (error is CompletionException) error.cause ?: error else error)
+            } catch (e: Throwable) {
+                call.completeExceptionally(e)
+            }
+        }
+        call.track(connection.dispatch(command))
+    }
+
+    private fun scriptArgs(
+        keys: List<ByteArray>,
+        args: List<ByteArray>,
+        script: CommandArgs<ByteArray, ByteArray>.() -> Unit
+    ): CommandArgs<ByteArray, ByteArray> = CommandArgs(ByteArrayCodec.INSTANCE).apply {
+        script()
+        add(keys.size.toLong())
+        addKeys(keys)
+        addValues(args)
     }
 
     fun <T> eval(script: RedisScripts.Script, keys: List<ByteArray>, args: List<ByteArray>): T = await(
@@ -127,8 +168,9 @@ internal class RedisConnections(
 
     /**
      * [await] 的异步版本（RFC 0004 §4.3）：超时与异常类型与同步等待一致。超过 `commandTimeout` 时以 [RedisException]
-     * 失败（不再等待应答）；执行异常解包为原始的运行时异常（不是运行时异常的包装为 [RedisException]）。
-     * 返回的是新的 future（取消它不影响命令），在 Lettuce 的 I/O 线程、事件执行器或时间轮线程上完成：引擎会切换线程。
+     * 失败（不再等待应答），并取消 [future]：脚本（[evalAsync]）尚未写出的命令随之不再写出（[CommandCall]）。
+     * 执行异常解包为原始的运行时异常（不是运行时异常的包装为 [RedisException]）。
+     * 返回的是新的 future（调用方取消它只放弃等待，不影响命令），在 Lettuce 的 I/O 线程、事件执行器或时间轮线程上完成：引擎会切换线程。
      *
      * 自建客户端的超时由 Lettuce 的命令超时触发，这里把它的 [RedisCommandTimeoutException] 映射为同样的异常；
      * [CommandTimeouts.guarded] 时另由 [timer] 计时，命令完成时撤销（RFC 0004 §14）。都不经 JDK 的单线程延迟调度器。
@@ -195,8 +237,8 @@ internal class RedisConnections(
     /**
      * 同步等待：超时、执行异常都转换为运行时异常抛出。
      *
-     * 等待本身受 `commandTimeout` 限制（与客户端是否计时无关）；[CommandTimeouts.clientTimed] 时客户端的超时可能先于
-     * 等待触发，映射为同样的异常。
+     * 等待本身受 `commandTimeout` 限制（与客户端是否计时无关），超时时取消 [future]（同 [bounded]）；
+     * [CommandTimeouts.clientTimed] 时客户端的超时可能先于等待触发，映射为同样的异常。
      */
     fun <T> await(future: CompletableFuture<T>): T {
         val failure: RuntimeException = try {
@@ -251,15 +293,15 @@ internal class RedisConnections(
         connection.close()
     }
 
-    private companion object {
-        const val MAXMEMORY_POLICY = "maxmemory-policy"
-        const val STANDALONE = "redis"
+    companion object {
+        private const val MAXMEMORY_POLICY = "maxmemory-policy"
+        private const val STANDALONE = "redis"
 
         /**
          * 建立订阅连接；失败时关闭已建立的命令连接（避免泄漏）再抛出。
          */
         @Suppress("TooGenericExceptionCaught")
-        inline fun <C : StatefulRedisPubSubConnection<ByteArray, ByteArray>> connectPubSub(
+        private inline fun <C : StatefulRedisPubSubConnection<ByteArray, ByteArray>> connectPubSub(
             commands: StatefulConnection<ByteArray, ByteArray>,
             connect: () -> C
         ): C {
@@ -271,9 +313,51 @@ internal class RedisConnections(
             }
         }
 
-        fun isNoScript(error: Throwable): Boolean {
+        private fun isNoScript(error: Throwable): Boolean {
             return error is RedisNoScriptException || error.message?.startsWith("NOSCRIPT") == true
         }
+
+        /**
+         * 命令超时（后端计时的 [timedOut]，或客户端的 [RedisCommandTimeoutException]）：结果未知，命令可能已在 Redis 端执行。
+         */
+        fun isTimeout(error: Throwable): Boolean = generateSequence(error) { it.cause.takeIf { cause -> cause !== it } }
+            .any { it is RedisCommandTimeoutException || it is TimeoutException }
+    }
+}
+
+/**
+ * 一条脚本调用的结果：先是 `EVALSHA`，NOSCRIPT 之后是 `EVAL`（[track] 记录当前的那条 Lettuce 命令）。
+ *
+ * 超时时 [RedisConnections.bounded] 与 [RedisConnections.await] 调用 [cancel]，它同时以异常完成当前的 Lettuce 命令。Lettuce 写出前
+ * 跳过已完成的命令（`CommandHandler` 的 `isWriteable`；断线期间缓冲的命令重连后同样跳过），所以尚未写出的命令不会在调用方看到超时之后
+ * 才执行（稍后生效的 `put` 覆盖更新的值，`SetCache` 永不过期时错误永久保留）：集群中等待建立节点连接（首次访问某节点、拓扑变化后）
+ * 的命令 Lettuce 不计时，调用方的客户端（`RedisBackend.of`）断线时可能缓冲命令。已写出的命令无从撤回：Redis 照常执行，应答被丢弃。
+ *
+ * 完成的必须是 `dispatch` 返回的最外层命令：集群中它是 `ClusterCommand`，`isDone` 只看它自己的完成标记（Lettuce 6.8 与 7.5 相同），
+ * 取消内层的 `AsyncCommand` 时它仍会在节点连接建立后写出。
+ */
+private class CommandCall<T> : CompletableFuture<T>() {
+    @Volatile
+    private var command: RedisCommand<*, *, *>? = null
+
+    /**
+     * 记录当前的命令；调用已被取消时立即完成它（与 [cancel] 并发时，两边至少有一方看到对方的写入）。
+     */
+    fun track(command: RedisCommand<*, *, *>) {
+        this.command = command
+        if (isCancelled) {
+            abort(command)
+        }
+    }
+
+    override fun cancel(mayInterruptIfRunning: Boolean): Boolean {
+        val cancelled = super.cancel(mayInterruptIfRunning)
+        command?.let(::abort)
+        return cancelled
+    }
+
+    private fun abort(command: RedisCommand<*, *, *>) {
+        command.completeExceptionally(CancellationException("Abandoned after the command timeout."))
     }
 }
 

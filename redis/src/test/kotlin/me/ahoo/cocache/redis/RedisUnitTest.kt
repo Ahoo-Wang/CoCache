@@ -18,7 +18,6 @@ import io.lettuce.core.RedisClient
 import io.lettuce.core.RedisCommandTimeoutException
 import io.lettuce.core.RedisConnectionException
 import io.lettuce.core.RedisException
-import io.lettuce.core.RedisFuture
 import io.lettuce.core.RedisURI
 import io.lettuce.core.api.StatefulRedisConnection
 import io.lettuce.core.cluster.SlotHash
@@ -116,6 +115,23 @@ class RedisUnitTest {
                 listOf(9L)
             )
         }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+    }
+
+    /**
+     * 格式字节按无符号解析，与 Lua 的 `string.byte` 一致：有符号时 0x80 以上的更高格式成了负数，引擎把它当作读不懂的内容回收，
+     * 而不是绕过（读路径不回收更高格式写入的值）。
+     */
+    @Test
+    fun decodesTheFormatByteAsUnsigned() {
+        listOf('V', 'M').forEach { state ->
+            val header = ByteArray(RedisScripts.HEADER_SIZE).also {
+                it[0] = RedisScripts.MAGIC
+                it[1] = 0x80.toByte()
+                it[2] = state.code.toByte()
+            }
+            val read = RedisRemoteStore.decodeRead(listOf(2L, -1L, header + "p".toByteArray(), 0L)) as RemoteRead.Hit
+            read.format.assert().isEqualTo(0x80)
+        }
     }
 
     /**
@@ -356,15 +372,16 @@ class RedisUnitTest {
         handler.sunsubscribed("cocache:inv:absent".toByteArray(), 0)
         listener.resets.get().assert().isZero()
 
-        // 服务端退订（slot 迁移）：立即重置并重新订阅；重新订阅失败时由心跳重试，确认后不再重试
+        // 服务端退订（slot 迁移）：立即重置并重新订阅；重新订阅失败时由心跳重置并重试，确认后不再重试
         failNext.set(true)
         handler.sunsubscribed(ns, 0)
         listener.resets.get().assert().isEqualTo(1)
         awaitCondition("resubscribe attempted") { subscribes.get() == 3 }
         channel.ping()
         subscribes.get().assert().isEqualTo(4)
+        // 退订、未确认期间的心跳、确认各重置一次
         handler.ssubscribed(ns, 1)
-        listener.resets.get().assert().isEqualTo(2)
+        listener.resets.get().assert().isEqualTo(3)
         channel.ping()
         subscribes.get().assert().isEqualTo(4)
 
@@ -804,63 +821,8 @@ class RedisUnitTest {
         }
     }
 
-    private fun connectionsOf(pubSub: StatefulRedisPubSubConnection<ByteArray, ByteArray>): RedisConnections {
-        val connections = mockk<RedisConnections>()
-        every { connections.pubSub } returns pubSub
-        every { connections.await(any<CompletableFuture<Any?>>()) } answers { firstArg<CompletableFuture<Any?>>().get() }
-        return connections
-    }
-
-    /**
-     * 按方法名应答的代理，未列出的方法抛出 [UnsupportedOperationException]。
-     */
-    private inline fun <reified T> stub(vararg answers: Pair<String, (Array<out Any?>) -> Any?>): T {
-        val byName = answers.toMap()
-        return proxy { method, args ->
-            val answer = byName[method.name] ?: throw UnsupportedOperationException(method.name)
-            answer(args)
-        }
-    }
-
-    private class RecordingListener : InvalidationListener {
-        val resets = AtomicInteger()
-        val received = CopyOnWriteArrayList<List<String>>()
-
-        override fun onInvalidated(keys: List<String>, origin: NodeId) {
-            received.add(keys)
-        }
-
-        override fun onReset() {
-            resets.incrementAndGet()
-        }
-    }
-
-    private inline fun <reified T> proxy(crossinline handler: (java.lang.reflect.Method, Array<out Any?>) -> Any?): T {
-        return java.lang.reflect.Proxy.newProxyInstance(
-            T::class.java.classLoader,
-            arrayOf(T::class.java)
-        ) { _, method, args ->
-            handler(method, args ?: emptyArray())
-        } as T
-    }
-
     /**
      * 这些用例验证单机客户端的行为，连接 localhost:6379；集群环境（CI 的集群任务）下跳过。
      */
     private fun assumeStandalone() = Assumptions.assumeFalse(RedisTestSupport.isCluster, "standalone Redis only")
-
-    private fun <T> completed(value: T): RedisFuture<T> = FutureAdapter(CompletableFuture.completedFuture(value))
-
-    private fun <T> failed(error: Throwable): RedisFuture<T> = FutureAdapter(CompletableFuture.failedFuture(error))
-
-    private class FutureAdapter<T>(private val future: CompletableFuture<T>) :
-        RedisFuture<T>,
-        java.util.concurrent.CompletionStage<T> by future,
-        java.util.concurrent.Future<T> by future {
-        override fun getError(): String? = null
-
-        override fun await(timeout: Long, unit: java.util.concurrent.TimeUnit): Boolean = true
-
-        override fun toCompletableFuture(): CompletableFuture<T> = future
-    }
 }

@@ -22,7 +22,8 @@ import kotlin.concurrent.thread
 
 /**
  * 本机 TCP 转发，用于模拟断线：[cut] 关闭全部已转发的连接，此后新连接一经接受就被关闭（客户端的握手失败、继续重连），
- * 恢复后照常转发。
+ * 恢复后照常转发。[stall] 模拟建立缓慢的连接：新连接被接受但暂不转发（客户端的握手等待应答），恢复后才开始转发。
+ * [cut] 期间客户端的重连握手立即失败，Lettuce 随后让新命令以该连接错误快速失败；[stall] 期间重连停在握手上，断线期间的命令被缓冲。
  *
  * 断线期间监听端口始终保持绑定：若关闭后在同一端口重新监听，端口空闲的间隙可能被本机任一出站连接取作临时端口，
  * 恢复时 `bind` 以 `Address already in use` 失败（CI 上偶发）。
@@ -30,8 +31,10 @@ import kotlin.concurrent.thread
 class TcpProxy(private val targetHost: String, private val targetPort: Int) : AutoCloseable {
     private val lock = Any()
     private val sockets = HashSet<Socket>()
+    private val stalled = ArrayList<Socket>()
     private val server: ServerSocket = listen()
     private var refusing = false
+    private var stalling = false
 
     val port: Int = server.localPort
 
@@ -52,7 +55,11 @@ class TcpProxy(private val targetHost: String, private val targetPort: Int) : Au
                 return
             }
             synchronized(lock) {
-                if (server.isClosed || refusing) client.close() else connect(client)
+                when {
+                    server.isClosed || refusing -> client.close()
+                    stalling -> stalled.add(client)
+                    else -> connect(client)
+                }
             }
         }
     }
@@ -103,10 +110,32 @@ class TcpProxy(private val targetHost: String, private val targetPort: Int) : Au
         }
     }
 
+    /**
+     * 新连接被接受但暂不转发（客户端的握手等待应答，不会失败），关闭返回值即开始转发这些连接。
+     * [disconnect] 时同时断开全部已转发的连接（客户端随即重连，重连停在握手上），否则已转发的连接不受影响。
+     */
+    fun stall(disconnect: Boolean = false): AutoCloseable {
+        synchronized(lock) {
+            stalling = true
+            if (disconnect) {
+                disconnectAll()
+            }
+        }
+        return AutoCloseable {
+            synchronized(lock) {
+                stalling = false
+                stalled.forEach { connect(it) }
+                stalled.clear()
+            }
+        }
+    }
+
     override fun close() {
         synchronized(lock) {
             server.close()
             disconnectAll()
+            stalled.forEach { it.close() }
+            stalled.clear()
         }
     }
 

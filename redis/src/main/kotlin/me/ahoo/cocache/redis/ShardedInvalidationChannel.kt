@@ -33,7 +33,9 @@ import java.util.concurrent.ConcurrentHashMap
  *   已降为副本的旧主节点、slot 迁移的退订通知丢失等），视为订阅丢失：重置订阅者、在旧节点上退订并重新订阅到当前所属节点。
  * - slot 迁移：原节点让出 slot 时向订阅者主动发送 `sunsubscribe`，Lettuce 不会自动重新订阅（#629）。
  *   收到非主动退订的 `sunsubscribed` 时立即重置订阅者并重新订阅（路由到新的所属节点），重新订阅得到确认时再重置一次；
- *   重新订阅失败（如拓扑尚未刷新）时由心跳重试，直到确认。来自非确认节点的退订（上面清理旧节点时的回执）被忽略。
+ *   迟迟得不到确认（如拓扑尚未刷新，`SSUBSCRIBE` 发到了旧节点）时，每次心跳都重置订阅者并重试订阅，直到确认：
+ *   未确认期间收不到远端事件，与经典模式“心跳失败即重置”一致，陈旧上界是心跳周期加重新订阅的耗时（G1），而不是 `localMaxAge`。
+ *   来自非确认节点的退订（上面清理旧节点时的回执）被忽略。
  * - 心跳：单机 PING 订阅连接；Cluster 中 PING 承载订阅的各节点连接（确认订阅的节点），失败的节点连接被强制断开重连。
  */
 internal class ShardedInvalidationChannel(
@@ -45,7 +47,7 @@ internal class ShardedInvalidationChannel(
     private val clusterPubSub = connections.pubSub as? StatefulRedisClusterPubSubConnection<ByteArray, ByteArray>
 
     /**
-     * 被服务端退订（slot 迁移）后尚未重新确认的频道，心跳时重试订阅。
+     * 订阅丢失（服务端退订、确认节点不再是所属主节点）后尚未重新确认的频道，心跳时重置订阅者并重试订阅。
      */
     private val unconfirmed: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
@@ -93,7 +95,11 @@ internal class ShardedInvalidationChannel(
 
     @Suppress("TooGenericExceptionCaught")
     override fun ping() {
-        unconfirmed.forEach(::resubscribe)
+        // 仍未确认：期间收不到远端事件，本地副本却会从 L1 重新填充，每次心跳都要清掉（与经典模式心跳失败时相同）
+        unconfirmed.forEach { channel ->
+            reset(channel)
+            resubscribe(channel)
+        }
         val cluster = clusterPubSub
         if (cluster == null) {
             connections.await(connections.pubSub.async().ping().toCompletableFuture())
