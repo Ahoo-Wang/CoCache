@@ -189,6 +189,21 @@ class CoherentEngineRegressionTest {
             .assert().isInstanceOf(CacheReadException::class.java)
     }
 
+    /**
+     * 运行时关闭之后，没有数据源的异步读取在 L1 失败时以原始异常失败，与有数据源时相同（关闭时不降级、不包装为 CacheReadException）。
+     */
+    @Test
+    fun loaderlessAsyncReadFailureAfterCloseFailsWithTheRemoteError() {
+        val runtime = runtime()
+        val cache = runtime.engine(spec { loader = null })
+        runtime.close()
+        backend.failAll = true
+        cache.async().get("k").handle { _, error -> error }.join()
+            .assert().isInstanceOf(RemoteUnavailableException::class.java)
+        cache.async().getAll(listOf("k")).handle { _, error -> error }.join()
+            .assert().isInstanceOf(RemoteUnavailableException::class.java)
+    }
+
     @Test
     fun hugeTtlFromTtlFunctionIsBounded() {
         val cache = runtime().engine(spec { ttlOf = TtlFunction { _, _ -> Duration.ofSeconds(Long.MAX_VALUE) } })

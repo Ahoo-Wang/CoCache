@@ -1123,9 +1123,9 @@ internal class CoherentEngine<K : Any, V : Any>(
         envelope: Envelope.Scalar,
         result: RemoteConditionalWrite?
     ): Boolean = when (result) {
-        RemoteConditionalWrite.Written -> true
         is RemoteConditionalWrite.Conflict -> result.current == Digest.of(envelope)
-        else -> false
+        // 拒绝（Unreadable）已在 mutate 中抛出，这里只剩 Written
+        else -> result == RemoteConditionalWrite.Written
     }
 
     /**
@@ -1249,9 +1249,9 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 这可能是按 §6.5 重放的、已在 L1 生效而广播失败的写入（理由同 [conditionalChanged]）。版本更旧时不广播。
      */
     private fun versionedChanged(version: Long, result: RemoteVersionedWrite?): Boolean = when (result) {
-        RemoteVersionedWrite.Written -> true
         is RemoteVersionedWrite.Stale -> result.current == version
-        else -> false
+        // 拒绝（Unreadable）已在 mutate 中抛出，这里只剩 Written
+        else -> result == RemoteVersionedWrite.Written
     }
 
     private fun requireVersion(version: Long) {
