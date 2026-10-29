@@ -5,9 +5,9 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## Unreleased
+## v6.9.0 (Current)
 
-**Module Group:** `me.ahoo.cocache` · Planned as 6.9.0. Minor release with two default changes for caches without a loader, where Redis holds the only copy, and a broadcast fix for conditional and versioned writes. No API is removed. `CachePolicy.invalidateFailure` and `CachePolicy.readFailure` become nullable; their JVM signatures are unchanged, so compiled callers keep running. The Redis wire format and the invalidation channel are unchanged, so 6.9.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
+**Module Group:** `me.ahoo.cocache` · Minor release with two default changes for caches without a loader, where Redis holds the only copy, and fixes from an architecture review of 6.8.0: transactional invalidation, refresh-ahead, Redis command timeouts and subscriptions, and a broadcast fix for conditional and versioned writes. No API is removed. `CachePolicy.invalidateFailure` and `CachePolicy.readFailure` become nullable; their JVM signatures are unchanged, so compiled callers keep running. The Redis wire format and the invalidation channel are unchanged, so 6.9.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
 ### Behavior change: reads without a loader fail when Redis fails
 
@@ -31,11 +31,34 @@ description: Release history and notable changes for CoCache.
 - Without atomic broadcast (the `sharded` channel mode, or when the startup probe falls back), a `putIfNewer` or `putIfMatch` could be written to Redis while its separate publish failed. The caller got `CacheWriteException` and replayed it as documented, but the replay returned `Stale(version)` or `Conflict(own digest)` and published nothing, so other instances kept their stale L2 copy until `local-max-age`.
 - The engine now also publishes when `putIfNewer` / `invalidateIfNewer` returns `Stale` with the version it was given, and when `putIfMatch` conflicts with the digest of its own value. An extra invalidation only drops copies. An older version and other conflicts still publish nothing. Atomic broadcast is unchanged.
 
+### Fix: transactional invalidation
+
+These fixes apply to `TransactionalInvalidator`. See [Transactions](./freshness.md#transactions).
+
+- **Rollback.** A rollback, or a commit whose outcome is unknown, now also invalidates the keys registered in the transaction. A load inside the transaction runs on the caller's thread, so it can read the transaction's uncommitted rows and write them to Redis under its lease. In 6.8.0 a rollback left that value in Redis for its `ttl`.
+- **Late registrations.** An invalidation registered from another synchronization's `afterCommit`, or after this one already ran, is no longer lost. It runs in `afterCompletion`, or at once. The same holds when an earlier synchronization's `afterCommit` throws.
+- **Failures.** One failing cache no longer stops the others. Every registered cache is invalidated, then the first exception is thrown and the rest are added to it as suppressed. Exceptions in `afterCompletion` (rollback, fallback) are logged by Spring, not thrown to the caller.
+- **Not covered.** `@CacheEvict` and `@CachePut` go through Spring's `TransactionAwareCacheDecorator`, which acts only after commit, so they still don't run on rollback. Reactive transactions (R2DBC, `@Transactional` suspend functions) aren't visible to this class and invalidate at once, before commit; invalidate after the transaction ends instead.
+
+### Fix: refresh-ahead
+
+- **Backoff without the token.** An instance that doesn't get the refresh token backs off before reading Redis again: by the smaller of `max(lease-wait, 100 ms)` and half the value's remaining lifetime. Before, it re-read Redis on every hit while another instance reloaded, and for up to `lease-ttl` if that instance crashed. Redis reads per instance and key during a refresh no longer grow with the hit rate. The instance still picks up the new value before the old one expires.
+- **Short lifetimes.** A value whose remaining lifetime is no longer than `refresh-window` is no longer refreshed ahead. It expires and reloads on the next miss. This covers lifetimes set by `ttlOf` or `put(key, value, ttl)`. In 6.8.0 every hit on such a value reloaded from the source.
+
+### Fix: Redis timeouts and subscriptions
+
+- **Timed-out scripts.** A script that timed out is never written to Redis afterwards. Before, a command Lettuce had not sent yet could still run after the caller saw the timeout, and overwrite a newer value: in Redis Cluster, a command waiting for a node connection; with `RedisBackend.of` and a client that buffers while disconnected, a buffered command. A command already sent still runs on Redis and its reply is dropped, as before. With `RedisBackend.of`, keep `DisconnectedBehavior.REJECT_COMMANDS`: without it, commands wait the full `command-timeout` instead of failing fast.
+- **Leases after a read timeout.** A read that times out releases, in the background and best effort, the lease or refresh token it may have been granted. Other instances no longer wait `lease-wait` on every miss of that key for `lease-ttl`.
+- **`sharded` channel mode.** A channel whose subscription was lost and isn't confirmed again yet resets its subscribers on every heartbeat, not only once. Staleness stays within the heartbeat plus the resubscribe time.
+- **Concurrent subscribe and unsubscribe.** Subscribing and unsubscribing the same channel at the same time (several runtimes sharing one backend) no longer leaves a subscriber without invalidations.
+- **Format byte.** The format byte of a Redis value is read as unsigned. This only matters for format numbers of 128 and above.
+
 ### TCK
 
 - `EngineSpec`, `FaultSpec` and `VersionedSpec` (and their async versions) gain cases for these behaviors, including `read-failure: degrade` without a loader. `VersionedSpec.refusedVersionsChangeNothingAndDoNotBroadcast` now expects equal versions to broadcast on backends without atomic broadcast.
+- `EngineSpec` gains two refresh-ahead cases: an instance without the token backs off, and values that don't outlive `refresh-window` aren't refreshed. `MultiNodeSpec.refreshAheadLoadsOncePerKeyAcrossNodes` advances the clock past the backoff before it checks the other instances.
 
-## v6.8.0 (Current)
+## v6.8.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive only: `Cache`, `AsyncCache` and `SuspendingCache` gain version-ordered writes as default methods (they throw `UnsupportedOperationException` in implementations that don't override them), `CacheSpec` can declare a cache versioned, and the `cocache-api` SPI gains `CoherenceBackend.versionedWrites` and `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync` with defaults. Existing callers, custom `Cache` / `SuspendingCache` implementations, and custom backends keep compiling and running unchanged. The Redis key layout, header layout, format version and invalidation channel are unchanged. 6.0 to 6.7 instances read versioned values (below), so 6.8.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
