@@ -21,6 +21,8 @@ import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.core.CacheSpec
 import java.time.Duration
@@ -73,6 +75,12 @@ interface CacheAccess {
             override fun <K : Any, E : Any> setCache(cache: SetCache<K, E>): SetCache<K, E> = AsyncBackedSetCache(cache)
 
             override fun <K : Any, V : Any> source(builder: CacheSpec.Builder<K, V>) {
+                builder.versionedLoader?.let { versioned ->
+                    builder.versionedLoader = null
+                    // 数据源只产出值（out 投影），按 Versioned<V?> 使用是安全的
+                    @Suppress("UNCHECKED_CAST")
+                    builder.versionedAsyncLoader = InlineAsyncLoader(versioned as CacheLoader<K, Versioned<V?>>)
+                }
                 val loader = builder.loader ?: return
                 builder.loader = null
                 builder.asyncLoader = InlineAsyncLoader(loader)
@@ -198,6 +206,20 @@ internal open class AsyncBackedCache<K : Any, V : Any>(val target: Cache<K, V>) 
 
     override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
         CacheAccess.await { async.putIfMatch(key, expected, value, ttl) }
+
+    override fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
+        CacheAccess.await { async.putIfNewer(key, value, version) }
+
+    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+        CacheAccess.await { async.putIfNewer(key, value, version, ttl) }
+
+    override fun invalidateIfNewer(key: K, version: Long): VersionedPut =
+        CacheAccess.await { async.invalidateIfNewer(key, version) }
+
+    override fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+        CacheAccess.await { async.invalidateIfNewer(key, version, ttl) }
+
+    override fun getVersioned(key: K): Versioned<V>? = CacheAccess.await { async.getVersioned(key) }
 
     override fun async() = async
 

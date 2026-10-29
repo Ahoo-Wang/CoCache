@@ -66,3 +66,25 @@ sealed interface RemoteConditionalWrite {
      */
     data class Unreadable(val format: Int) : RemoteConditionalWrite
 }
+
+/**
+ * [RemoteStore.putIfNewer] 的结果（6.8）。
+ */
+sealed interface RemoteVersionedWrite {
+    /**
+     * 已写入并广播。
+     */
+    data object Written : RemoteVersionedWrite
+
+    /**
+     * key 中的版本不小于给出的版本：未修改、未广播。
+     *
+     * @param current key 中的版本
+     */
+    data class Stale(val current: Long) : RemoteVersionedWrite
+
+    /**
+     * key 中是不能当作本协议标量值的内容（同 [RemoteConditionalWrite.Unreadable]）：未修改、未广播。
+     */
+    data class Unreadable(val format: Int) : RemoteVersionedWrite
+}

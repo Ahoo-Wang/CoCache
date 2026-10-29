@@ -47,6 +47,7 @@ cacheSpec<String, User>("user") {
 - That `SupervisorJob` never completes. Give `context` a long-lived `Job`, such as an application-wide one, not the `Job` of a structured scope: that scope would never finish.
 - Create the loader once and reuse it. Each `suspendingLoader` or `asAsyncCacheLoader` call creates a new `SupervisorJob` under the `Job`, so creating one per load piles up child jobs.
 - `loadAll` defaults to calling `load` concurrently. Override it with one batch query when the source has one.
+- `suspendingVersionedLoader(loader)` / `suspendingVersionedLoader(context, loader)` (since 6.8) take a `SuspendingCacheLoader<K, Versioned<V?>>` (return `Versioned(null, n)` for a key deleted at version `n`) and set the spec's `versionedAsyncLoader`, which makes the cache [versioned](./freshness.md#versioned-writes). They behave like `suspendingLoader` in every other way. The suspending view has `putIfNewer`, `invalidateIfNewer` and `getVersioned`.
 - `asAsyncCacheLoader()` / `asAsyncCacheLoader(context)` turn a `SuspendingCacheLoader` into an `AsyncCacheLoader` if you want to set it yourself. Used that way, it has no [re-entry check](#reentry), because it doesn't know which cache it belongs to.
 - Don't call the **synchronous** API from a coroutine running on a single-thread dispatcher, if the cache's loader runs on that same dispatcher. The thread blocks waiting for a load that needs that thread, so it deadlocks. Use the suspending view there.
 

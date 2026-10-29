@@ -24,6 +24,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.future.future
 import me.ahoo.cocache.api.AsyncCacheLoader
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.coroutines.LoadCancellation.cancellationAsFailure
 import me.ahoo.cocache.coroutines.LoadCancellation.cancelledAsFailure
@@ -93,6 +94,29 @@ fun <K : Any, V : Any> CacheSpec.Builder<K, V>.suspendingLoader(
     loader: SuspendingCacheLoader<K, V>
 ) {
     asyncLoader = SuspendingAsyncLoader(loader, context, name)
+}
+
+/**
+ * 把 [loader] 设为声明的带版本的异步数据源（`versionedAsyncLoader`，6.8），在 `Dispatchers.Default` 中执行，见另一个重载。
+ */
+fun <K : Any, V : Any> CacheSpec.Builder<K, V>.suspendingVersionedLoader(
+    loader: SuspendingCacheLoader<K, out Versioned<V?>>
+) {
+    suspendingVersionedLoader(Dispatchers.Default, loader)
+}
+
+/**
+ * 把 [loader] 设为声明的带版本的异步数据源（`versionedAsyncLoader`，6.8），在 [context] 中执行：返回值与版本，
+ * 回源写入 L1 时一起保存（缓存因此是带版本的）。返回 `Versioned(null, n)` 表示“在版本 n 时不存在”，写入墓碑；
+ * 返回 `null` 表示数据源中从来没有这个 key。执行、取消、重入检查与 [suspendingLoader] 相同。
+ */
+fun <K : Any, V : Any> CacheSpec.Builder<K, V>.suspendingVersionedLoader(
+    context: CoroutineContext,
+    loader: SuspendingCacheLoader<K, out Versioned<V?>>
+) {
+    // 数据源只产出值（out 投影），按 Versioned<V?> 使用是安全的
+    @Suppress("UNCHECKED_CAST")
+    versionedAsyncLoader = SuspendingAsyncLoader(loader as SuspendingCacheLoader<K, Versioned<V?>>, context, name)
 }
 
 internal class SuspendingAsyncLoader<K : Any, V : Any>(

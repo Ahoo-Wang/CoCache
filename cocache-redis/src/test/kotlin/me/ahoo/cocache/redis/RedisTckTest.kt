@@ -29,6 +29,7 @@ import me.ahoo.cocache.test.EngineSpec
 import me.ahoo.cocache.test.FaultSpec
 import me.ahoo.cocache.test.MultiNodeSpec
 import me.ahoo.cocache.test.SetEngineSpec
+import me.ahoo.cocache.test.VersionedSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -338,6 +339,58 @@ class RedisShardedFaultTest : FaultSpec() {
     override val clock: CacheClock = manualClock
 
     override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend()
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+}
+
+/**
+ * 按版本有序的写入的 TCK（6.8）：三种后端（pubsub、非原子、sharded）。
+ */
+class RedisVersionedTest : VersionedSpec() {
+    override val closesBackend: Boolean = true
+
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.backend()
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+}
+
+class RedisNonAtomicVersionedTest : VersionedSpec() {
+    override val closesBackend: Boolean = true
+
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.nonAtomicBackend().also {
+        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
+    }
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+}
+
+class RedisShardedVersionedTest : VersionedSpec() {
+    override val closesBackend: Boolean = true
+
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend().also {
+        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
+    }
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)

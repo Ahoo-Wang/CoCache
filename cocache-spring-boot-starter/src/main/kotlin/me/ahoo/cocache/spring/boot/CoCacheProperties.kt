@@ -115,6 +115,15 @@ data class CoCacheProperties @ConstructorBinding constructor(
     }
 
     /**
+     * 带版本的缓存（6.8）的策略：`cocache.defaults.refresh-window` 不作用于它们（带版本的缓存不支持提前刷新，
+     * 全局的刷新窗口会让它们因无关配置启动失败），只有 `cocache.caches.[name].refresh-window` 会作用（并因此启动失败）。其它默认项照常生效。
+     */
+    fun versionedPolicyFor(cacheName: String, declared: CachePolicy): CachePolicy {
+        val withDefaults = defaults.copy(refreshWindow = null).applyTo(declared)
+        return cacheProperties(cacheName)?.applyTo(withDefaults) ?: withDefaults
+    }
+
+    /**
      * 配置文件中的 key 前缀：`cocache.caches.[name].key-prefix` 优先，其次 `cocache.defaults.key-prefix`；都没有时为 `null`
      * （沿用声明与定制器的值）。与策略字段同一规则：配置文件覆盖声明（含注解或 spec 中显式写出的 `keyPrefix`）。
      */

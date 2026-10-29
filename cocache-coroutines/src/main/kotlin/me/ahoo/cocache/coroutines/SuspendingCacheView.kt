@@ -24,6 +24,8 @@ import me.ahoo.cocache.api.AsyncSetCache
 import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.coroutines.LoadCancellation.cancellationAsFailure
 import me.ahoo.cocache.coroutines.LoadCancellation.cancelledAsFailure
@@ -101,6 +103,23 @@ internal open class SuspendingCacheView<K : Any, V : Any>(private val async: Asy
 
     override suspend fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
         async.putIfMatch(key, expected, value, ttl).awaitResult()
+
+    override suspend fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
+        async.putIfNewer(key, value, version).awaitResult()
+
+    override suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+        async.putIfNewer(key, value, version, ttl).awaitResult()
+
+    override suspend fun invalidateIfNewer(key: K, version: Long): VersionedPut =
+        async.invalidateIfNewer(key, version).awaitResult()
+
+    override suspend fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+        async.invalidateIfNewer(key, version, ttl).awaitResult()
+
+    override suspend fun getVersioned(key: K): Versioned<V>? {
+        LoadingKeys.check(coroutineContext, async, name, key)
+        return async.getVersioned(key).awaitResult()
+    }
 
     override fun async(): AsyncCache<K, V> = async
 

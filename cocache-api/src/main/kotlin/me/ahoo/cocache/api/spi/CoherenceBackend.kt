@@ -27,6 +27,15 @@ interface CoherenceBackend : AutoCloseable {
      */
     val format: Int
 
+    /**
+     * 是否支持按版本有序的写入（6.8）：存储原子地实现 [RemoteStore.putIfNewer]（原生异步的存储同时实现
+     * [AsyncRemoteStore.putIfNewerAsync]），fill / put / putAll 时保存 [Envelope.Scalar.version]、读取时原样返回。
+     *
+     * 默认 `false`：声明为带版本的缓存在创建时即失败，而不是在第一次写入时。
+     */
+    val versionedWrites: Boolean
+        get() = false
+
     val channel: InvalidationChannel
 
     /**

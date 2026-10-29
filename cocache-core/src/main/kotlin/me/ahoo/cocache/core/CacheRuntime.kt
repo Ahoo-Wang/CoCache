@@ -28,6 +28,9 @@ import me.ahoo.cocache.core.engine.CoherentEngine
 import me.ahoo.cocache.core.engine.EngineContext
 import me.ahoo.cocache.core.engine.InvalidationRetrier
 import me.ahoo.cocache.core.engine.SetEngine
+import me.ahoo.cocache.core.engine.VersionedCache
+import me.ahoo.cocache.core.engine.VersionedFormat
+import me.ahoo.cocache.core.engine.versionedEngineSpec
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -69,7 +72,15 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     private val namespaces = ConcurrentHashMap.newKeySet<String>()
     private val closed = AtomicBoolean(false)
 
-    private class Registration(val engine: AbstractEngine<*, *>, val store: RemoteStore, var subscription: Subscription? = null)
+    /**
+     * @param cache 用户拿到的缓存：引擎本身，或带版本的缓存包在引擎外的 [VersionedCache]
+     */
+    private class Registration(
+        val engine: AbstractEngine<*, *>,
+        val store: RemoteStore,
+        val cache: Any,
+        var subscription: Subscription? = null
+    )
 
     init {
         clock = builder.clock ?: TickingClock().also { owned.add(it) }
@@ -105,30 +116,54 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
 
     /**
      * 按声明创建缓存。同一运行时内缓存名与命名空间都不得重复。
+     *
+     * 带版本的缓存（[CacheSpec.versioned]）要求后端支持版本（[CoherenceBackend.versionedWrites]），否则抛出
+     * [UnsupportedOperationException]，不注册任何东西。
      */
     fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> {
-        return register(spec.name, spec.namespace) { store -> CoherentEngine(spec, store, context) }
+        if (spec.versioned) {
+            return createVersioned(spec)
+        }
+        return register(spec.name, spec.namespace, { it }) { store -> CoherentEngine(spec, store, context) }
+    }
+
+    private fun <K : Any, V : Any> createVersioned(spec: CacheSpec<K, V>): Cache<K, V> {
+        if (!backend.versionedWrites) {
+            throw UnsupportedOperationException(
+                "Cache[${spec.name}] is versioned, but backend ${backend.javaClass.name} does not support versioned writes " +
+                    "(CoherenceBackend.versionedWrites = false)."
+            )
+        }
+        val engineSpec = spec.versionedEngineSpec()
+        return register(spec.name, spec.namespace, { VersionedCache(it) }) { store ->
+            CoherentEngine(engineSpec, store, context, VersionedFormat(spec.codec))
+        }
     }
 
     /**
      * 按声明创建集合缓存。
      */
     fun <K : Any, E : Any> create(spec: SetCacheSpec<K, E>): SetCache<K, E> {
-        return register(spec.name, spec.namespace) { store -> SetEngine(spec, store, context) }
+        return register(spec.name, spec.namespace, { it }) { store -> SetEngine(spec, store, context) }
     }
 
+    /**
+     * @param expose 用户拿到的缓存（[cache] 按名称返回的也是它）
+     */
     @Suppress("TooGenericExceptionCaught")
-    private fun <C> register(
+    private fun <C, R : Any> register(
         name: String,
         namespace: String,
+        expose: (C) -> R,
         factory: (RemoteStore) -> C
-    ): C where C : AbstractEngine<*, *> {
+    ): R where C : AbstractEngine<*, *> {
         check(!closed.get()) { "CacheRuntime is closed." }
         require(names[name] == null) { "Cache[$name] already exists." }
         require(namespaces.add(namespace)) { "Namespace[$namespace] is already used by another cache." }
         val store = backend.store(namespace)
         val engine = factory(store)
-        val registration = Registration(engine, store)
+        val exposed = expose(engine)
+        val registration = Registration(engine, store, exposed)
         if (names.putIfAbsent(name, registration) != null) {
             namespaces.remove(namespace)
             throw IllegalArgumentException("Cache[$name] already exists.")
@@ -147,13 +182,13 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             throw e
         }
         log.info { "Cache[$name] - created on namespace[$namespace], node[$nodeId]." }
-        return engine
+        return exposed
     }
 
     /**
      * 按名称查找已创建的缓存。
      */
-    fun cache(name: String): Cache<*, *>? = names[name]?.engine as Cache<*, *>?
+    fun cache(name: String): Cache<*, *>? = names[name]?.cache as Cache<*, *>?
 
     /**
      * 按名称查看缓存的运行统计。

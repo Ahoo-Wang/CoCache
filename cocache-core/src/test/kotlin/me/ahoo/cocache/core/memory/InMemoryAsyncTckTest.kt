@@ -26,6 +26,7 @@ import me.ahoo.cocache.test.AsyncEngineSpec
 import me.ahoo.cocache.test.AsyncFaultSpec
 import me.ahoo.cocache.test.AsyncMultiNodeSpec
 import me.ahoo.cocache.test.AsyncSetEngineSpec
+import me.ahoo.cocache.test.AsyncVersionedSpec
 import me.ahoo.cocache.test.CacheAccess
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -166,4 +167,31 @@ class SyncOnlyBackend(private val delegate: CoherenceBackend) : CoherenceBackend
     }
 
     override fun store(namespace: String): RemoteStore = object : RemoteStore by delegate.store(namespace) {}
+}
+
+class InMemoryAsyncVersionedTest : AsyncVersionedSpec() {
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock)
+
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+}
+
+/**
+ * 只实现同步 SPI 的后端：按版本写入经阻塞执行器（`BlockingAsyncStore.putIfNewerAsync`）。
+ */
+class SyncOnlyBackendAsyncVersionedTest : AsyncVersionedSpec() {
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = SyncOnlyBackend(InMemoryBackend(manualClock))
+
+    override fun configureNode(builder: CacheRuntime.Builder) {
+        builder.blockingExecutor(Executor { it.run() })
+    }
+
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
 }

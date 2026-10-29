@@ -14,6 +14,7 @@
 package me.ahoo.cocache.redis
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -25,7 +26,9 @@ import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteConditionalRead
 import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.Token
+import java.nio.ByteBuffer
 import java.time.Duration
 import java.util.IdentityHashMap
 import java.util.concurrent.CompletableFuture
@@ -155,7 +158,10 @@ internal class RedisRemoteStore(
     private fun fillCommand(fill: Fill): CompletableFuture<List<Any?>> {
         val args = ArrayList<ByteArray>()
         args.add(fill.token.toBytes())
-        addShape(args, fill.envelope, fill.ttl)
+        // 填充的版本（墓碑的版本只能经 Fill.version 传递）
+        args.add(shapeOf(fill.envelope, fill.version))
+        args.add(millis(fill.ttl))
+        addPayload(args, fill.envelope)
         return connections.evalAsync(RedisScripts.FILL, listOf(fill.key.bytes()), args)
     }
 
@@ -188,7 +194,7 @@ internal class RedisRemoteStore(
 
     private fun putCommand(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray): CompletableFuture<List<Any?>> {
         val args = ArrayList<ByteArray>()
-        args.add(kindOf(envelope).bytes())
+        args.add(shapeOf(envelope))
         args.add(millis(ttl))
         args.add(channel)
         args.add(frame)
@@ -220,7 +226,7 @@ internal class RedisRemoteStore(
             args.add(frames[index])
             group.forEach { key ->
                 val put = putOf.getValue(key)
-                args.add(kindOf(put.envelope).bytes())
+                args.add(shapeOf(put.envelope))
                 args.add(millis(put.ttl))
                 args.add(payloadCount(put.envelope).toString().bytes())
                 addPayload(args, put.envelope)
@@ -415,6 +421,62 @@ internal class RedisRemoteStore(
         connections.bounded(putIfMatchCommand(key, expected, envelope, ttl, frame, foreignAsAbsent))
     ) { decodeConditionalWrite(it) }
 
+    override fun putIfNewer(
+        key: String,
+        envelope: Envelope,
+        version: Long,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): RemoteVersionedWrite = decodeVersionedWrite(
+        connections.await(putIfNewerCommand(key, envelope, version, ttl, frame, foreignAsAbsent))
+    )
+
+    override fun putIfNewerAsync(
+        key: String,
+        envelope: Envelope,
+        version: Long,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): CompletableFuture<RemoteVersionedWrite> {
+        if (envelope is Envelope.Members) {
+            return CompletableFuture.failedFuture(notScalar())
+        }
+        return connections.mapped(
+            connections.bounded(putIfNewerCommand(key, envelope, version, ttl, frame, foreignAsAbsent))
+        ) { decodeVersionedWrite(it) }
+    }
+
+    @Suppress("LongParameterList")
+    private fun putIfNewerCommand(
+        key: String,
+        envelope: Envelope,
+        version: Long,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): CompletableFuture<List<Any?>> {
+        val args = ArrayList<ByteArray>(6)
+        args.add(
+            when (envelope) {
+                is Envelope.Scalar -> versionedShape(STATE_VALUE, version)
+                Envelope.Absent -> versionedShape(STATE_MISSING, version)
+                is Envelope.Members -> throw notScalar()
+            }
+        )
+        args.add((if (foreignAsAbsent) "1" else "0").bytes())
+        args.add(millis(ttl))
+        args.add(channel)
+        args.add(frame)
+        if (envelope is Envelope.Scalar) {
+            args.add(envelope.bytes)
+        }
+        return connections.evalAsync(RedisScripts.PUT_IF_NEWER, listOf(key.bytes()), args)
+    }
+
+    private fun notScalar() = IllegalArgumentException("putIfNewer takes a scalar value or Envelope.Absent, not a set.")
+
     @Suppress("LongParameterList")
     private fun putIfMatchCommand(
         key: String,
@@ -457,7 +519,7 @@ internal class RedisRemoteStore(
     }
 
     private fun addShape(args: MutableList<ByteArray>, envelope: Envelope, ttl: Duration?) {
-        args.add(kindOf(envelope).bytes())
+        args.add(shapeOf(envelope))
         args.add(millis(ttl))
         addPayload(args, envelope)
     }
@@ -476,10 +538,25 @@ internal class RedisRemoteStore(
         Envelope.Absent -> 0
     }
 
-    private fun kindOf(envelope: Envelope): String = when (envelope) {
-        is Envelope.Scalar -> "V"
-        is Envelope.Members -> "S"
-        Envelope.Absent -> "M"
+    /**
+     * 写脚本的形状参数（见 [RedisScripts.PRELUDE]）：`V` / `S` / `M`；带版本的值后跟 8 字节版本。
+     */
+    private fun shapeOf(
+        envelope: Envelope
+    ): ByteArray = shapeOf(envelope, (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION)
+
+    /**
+     * 带 [version] 的形状：值与负缓存带版本时后跟 8 字节版本（负缓存带版本即墓碑）；集合没有版本。
+     */
+    private fun shapeOf(envelope: Envelope, version: Long): ByteArray {
+        if (envelope is Envelope.Members) {
+            return SHAPE_SET
+        }
+        val state = if (envelope is Envelope.Scalar) STATE_VALUE else STATE_MISSING
+        if (version != Versioned.NO_VERSION) {
+            return versionedShape(state, version)
+        }
+        return if (state == STATE_VALUE) SHAPE_VALUE else SHAPE_MISSING
     }
 
     companion object {
@@ -488,6 +565,37 @@ internal class RedisRemoteStore(
         private const val MEMBER_PREFIX = '+'.code.toByte()
         private const val STATE_VALUE = 'V'.code.toByte()
         private const val STATE_MISSING = 'M'.code.toByte()
+        private val SHAPE_VALUE = byteArrayOf(STATE_VALUE)
+        private val SHAPE_MISSING = byteArrayOf(STATE_MISSING)
+        private val SHAPE_SET = byteArrayOf('S'.code.toByte())
+
+        private fun versionedShape(state: Byte, version: Long): ByteArray =
+            ByteBuffer.allocate(1 + RedisScripts.VERSION_SIZE).put(state).putLong(version).array()
+
+        /**
+         * 头部令牌位置的版本（6.8）：以 [RedisScripts.VERSION_MARK] 开头时取其后的 8 字节，否则没有版本。
+         * 先比较第一个字节：令牌的第一个字节是随机的，绝大多数读取一次比较就结束。
+         */
+        internal fun versionOf(raw: ByteArray): Long {
+            val mark = RedisScripts.VERSION_MARK
+            val offset = RedisScripts.VERSION_OFFSET
+            for (i in mark.indices) {
+                if (raw[offset + i] != mark[i]) {
+                    return Versioned.NO_VERSION
+                }
+            }
+            return ByteBuffer.wrap(raw, offset + mark.size, RedisScripts.VERSION_SIZE).long
+        }
+
+        /**
+         * 解码按版本写入脚本的结果（见 [RedisScripts.PUT_IF_NEWER]）：版本不更新时第二项为当前版本（8 字节）。
+         */
+        internal fun decodeVersionedWrite(result: List<Any?>): RemoteVersionedWrite = when (result[0] as Long) {
+            RedisScripts.VERSION_WRITTEN -> RemoteVersionedWrite.Written
+            RedisScripts.VERSION_STALE -> RemoteVersionedWrite.Stale(ByteBuffer.wrap(result[1] as ByteArray).long)
+            RedisScripts.VERSION_UNREADABLE -> RemoteVersionedWrite.Unreadable((result[1] as Long).toInt())
+            else -> throw IllegalStateException("Unknown versioned write result code[${result[0]}].")
+        }
 
         private fun String.bytes(): ByteArray = toByteArray(Charsets.UTF_8)
 
@@ -569,7 +677,7 @@ internal class RedisRemoteStore(
             val format = raw[1].toInt()
             return when (raw[2]) {
                 STATE_VALUE -> RemoteRead.Hit(
-                    Envelope.Scalar(raw.copyOfRange(RedisScripts.HEADER_SIZE, raw.size)),
+                    Envelope.Scalar(raw.copyOfRange(RedisScripts.HEADER_SIZE, raw.size), versionOf(raw)),
                     format,
                     ttl,
                     refreshGranted

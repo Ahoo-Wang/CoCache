@@ -7,6 +7,7 @@ Use this reference when code changes cached data, when a writer lives outside th
 - [The write rule](#the-write-rule)
 - [invalidate or put](#invalidate-or-put)
 - [Read-modify-write on a Redis-only value](#read-modify-write-on-a-redis-only-value)
+- [Versioned writers](#versioned-writers)
 - [Inside a transaction](#inside-a-transaction)
 - [Writers outside the application](#writers-outside-the-application)
 - [Choosing lifetimes](#choosing-lifetimes)
@@ -58,6 +59,23 @@ while (true) {
 - Neither touches L2 or the loader. `getIfChanged` throws `CacheReadException` on a Redis failure regardless of `read-failure`; `putIfMatch` throws `CacheWriteException` and is not idempotent: after a timeout, re-read before retrying.
 - Unreadable content: newer-format values and sets always throw, key untouched. A value the codec can't decode makes the read throw, and the write only conflicts on it. Format-0 (5.x) content follows `foreign-format` (default `fail`: throw; `reclaim`: counts as no value). Not available on `SetCache`, nor on backends that don't implement `putIfMatch` (`UnsupportedOperationException`).
 - Cost: an unchanged `getIfChanged` saves wire bytes, not Redis CPU. Redis reads and SHA-1s the value on every call, about 20 ms for 8 MB on Redis 7.4.
+
+## Versioned writers
+
+When the writer knows each value's version (an event-sourced aggregate, a CDC stream) and redelivery or replay can send older versions again, a plain `put` can regress Redis. On 6.8.0+ declare the cache versioned and write with the version:
+
+```kotlin
+cacheSpec<String, View>("view") { codec = …; versionedLoader = CacheLoader { id -> Versioned(view, version) } }  // or versioned = true
+cache.putIfNewer(id, view, version)          // Written, or Stale(current) when Redis holds this version or newer
+cache.invalidateIfNewer(id, version)         // tombstone: reads as absent, blocks older versions
+cache.getVersioned(id)                       // Versioned(value, version)?
+```
+
+- One Lua round trip, atomic. Equal version: idempotent no-op; older: refused; neither writes, broadcasts nor changes the TTL. A write behaves like `put` and wins over a load holding the lease, even one that read a higher version. Content without a version (plain `put`, plain loader, negative entry, absent) is older than any version.
+- A versioned loader returns `Versioned(null, n)` for a key deleted at version `n` (the fill writes a tombstone, so older replays can't resurrect it) and `null` for a key that never existed (plain negative entry). `getVersioned` returns `null` for both; a living tombstone still refuses older versions.
+- Every ordering writer must use `putIfNewer` / `invalidateIfNewer`: `put`, `putIfMatch`, `invalidate` and expiry drop the version. Ordering holds only while the entry lives: give values and tombstones (value lifetime by default) a TTL covering the redelivery window.
+- Versioned caches reject `refresh-window` (`cocache.defaults.refresh-window` skips them). Creating one fails on a backend without `versionedWrites`; Redis and in-memory support it. Coroutines: `suspendingVersionedLoader`.
+- `putIfNewer` throws `CacheWriteException` on Redis failure; replaying the same version is safe (returns `Stale`).
 
 ## Inside a transaction
 

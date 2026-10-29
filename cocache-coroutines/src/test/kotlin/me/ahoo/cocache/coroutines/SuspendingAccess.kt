@@ -25,6 +25,8 @@ import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.test.CacheAccess
@@ -42,6 +44,14 @@ internal object SuspendingAccess : CacheAccess {
         SuspendingBackedSetCache(cache.suspending())
 
     override fun <K : Any, V : Any> source(builder: CacheSpec.Builder<K, V>) {
+        builder.versionedLoader?.let { versioned ->
+            builder.versionedLoader = null
+            @Suppress("UNCHECKED_CAST")
+            builder.suspendingVersionedLoader(
+                Dispatchers.Unconfined,
+                BlockingSuspendingLoader(versioned as CacheLoader<K, Versioned<V?>>)
+            )
+        }
         val loader = builder.loader ?: return
         builder.loader = null
         builder.suspendingLoader(Dispatchers.Unconfined, BlockingSuspendingLoader(loader))
@@ -102,6 +112,24 @@ internal open class SuspendingBackedCache<K : Any, V : Any>(private val view: Su
 
     override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
         call { view.putIfMatch(key, expected, value, ttl) }
+
+    override fun putIfNewer(key: K, value: V, version: Long): VersionedPut = call {
+        view.putIfNewer(
+            key,
+            value,
+            version
+        )
+    }
+
+    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+        call { view.putIfNewer(key, value, version, ttl) }
+
+    override fun invalidateIfNewer(key: K, version: Long): VersionedPut = call { view.invalidateIfNewer(key, version) }
+
+    override fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+        call { view.invalidateIfNewer(key, version, ttl) }
+
+    override fun getVersioned(key: K): Versioned<V>? = call { view.getVersioned(key) }
 
     override fun async(): AsyncCache<K, V> = view.async()
 }

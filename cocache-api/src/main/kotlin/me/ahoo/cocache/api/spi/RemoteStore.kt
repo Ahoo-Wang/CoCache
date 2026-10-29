@@ -176,6 +176,30 @@ interface RemoteStore : AutoCloseable {
         foreignAsAbsent: Boolean
     ): RemoteConditionalWrite = throw UnsupportedOperationException("${javaClass.name} does not support putIfMatch().")
 
+    /**
+     * 按版本有序的写入（6.8）：仅当 [version] 大于 key 中的版本时，原子地整体覆盖写入 [envelope] 并保存 [version]
+     * （转换同 [put]：销毁任何令牌，按 [ttl] 重设到期时间，`null` 为永不过期）、广播 [frame]；否则不修改 key、不广播。
+     *
+     * - [envelope] 是标量值，或 [Envelope.Absent]（墓碑：带版本的负缓存）；[Envelope.Scalar.version] 被忽略，保存的是 [version]。
+     * - key 中的版本：本协议写入的、带版本的标量值或负缓存的版本。没有版本的值与负缓存、lease 占位、不存在都视为
+     *   [me.ahoo.cocache.api.Versioned.NO_VERSION]，总是写入。
+     * - [version] 不大于 key 中的版本时返回 [RemoteVersionedWrite.Stale]（附 key 中的版本）。
+     * - key 中是读不懂的内容时与 [putIfMatch] 的分类相同：本协议的集合与更高格式版本写入的内容总是返回
+     *   [RemoteVersionedWrite.Unreadable]；不是本协议写入的内容（格式 `0`）在 [foreignAsAbsent] 为 `true` 时视为没有版本，否则拒绝。
+     *
+     * 默认实现抛出 [UnsupportedOperationException]：不原子的“先读后写”会让迟到的旧版本覆盖新版本，因此不提供。
+     * 实现它的后端同时把 [CoherenceBackend.versionedWrites] 设为 `true`。
+     */
+    @Suppress("LongParameterList")
+    fun putIfNewer(
+        key: String,
+        envelope: Envelope,
+        version: Long,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): RemoteVersionedWrite = throw UnsupportedOperationException("${javaClass.name} does not support putIfNewer().")
+
     override fun close() = Unit
 }
 

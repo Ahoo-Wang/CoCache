@@ -13,26 +13,36 @@
 
 package me.ahoo.cocache.api.spi
 
+import me.ahoo.cocache.api.Versioned
+
 /**
  * L1 中一个 key 的内容（不含控制信息）。字节内容由 [me.ahoo.cocache.api.Codec] 产生。
  */
 sealed interface Envelope {
     /**
      * 标量值。
+     *
+     * @param version 与值一起保存的版本（6.8，按版本有序的写入）；[Versioned.NO_VERSION] 表示没有版本。
+     *   支持版本的后端（[CoherenceBackend.versionedWrites]）在 [RemoteStore.fill]、[RemoteStore.put]、[RemoteStore.putAll] 时保存它，
+     *   读取时原样返回（[RemoteStore.putIfMatch] 写入没有版本的值）；版本不属于载荷，不影响 [Digest]
      */
-    class Scalar(bytes: ByteArray) : Envelope {
+    class Scalar @JvmOverloads constructor(bytes: ByteArray, val version: Long = Versioned.NO_VERSION) : Envelope {
         private val value = bytes.copyOf()
 
         val bytes: ByteArray
             get() = value.copyOf()
 
         override fun equals(other: Any?): Boolean {
-            return this === other || (other is Scalar && value.contentEquals(other.value))
+            return this === other || (other is Scalar && version == other.version && value.contentEquals(other.value))
         }
 
-        override fun hashCode(): Int = value.contentHashCode()
+        override fun hashCode(): Int = 31 * value.contentHashCode() + version.hashCode()
 
-        override fun toString(): String = "Scalar(${value.size} bytes)"
+        override fun toString(): String = if (version == Versioned.NO_VERSION) {
+            "Scalar(${value.size} bytes)"
+        } else {
+            "Scalar(${value.size} bytes, version=$version)"
+        }
     }
 
     /**

@@ -21,6 +21,7 @@ import me.ahoo.cocache.test.CacheAccess
 import me.ahoo.cocache.test.EngineSpec
 import me.ahoo.cocache.test.MultiNodeSpec
 import me.ahoo.cocache.test.SetEngineSpec
+import me.ahoo.cocache.test.VersionedSpec
 import java.time.Duration
 
 /**
@@ -52,6 +53,20 @@ class SuspendingSetEngineTest : SetEngineSpec() {
 }
 
 class SuspendingMultiNodeTest : MultiNodeSpec() {
+    private val manualClock = ManualClock()
+
+    override val access: CacheAccess = SuspendingAccess
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock)
+
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+}
+
+/**
+ * 按版本有序的写入（6.8）经挂起视图重跑；数据源换成 `suspendingVersionedLoader`。
+ */
+class SuspendingVersionedTest : VersionedSpec() {
     private val manualClock = ManualClock()
 
     override val access: CacheAccess = SuspendingAccess

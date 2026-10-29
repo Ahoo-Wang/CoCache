@@ -83,6 +83,9 @@ object CacheProxies {
                 "invalidateAll" -> target.invalidateAll(args[0] as Collection<Any>)
                 "getIfChanged" -> target.getIfChanged(args[0] as Any, args[1] as Digest?)
                 "putIfMatch" -> putIfMatch(args)
+                "putIfNewer" -> putIfNewer(args)
+                "invalidateIfNewer" -> invalidateIfNewer(args)
+                "getVersioned" -> target.getVersioned(args[0] as Any)
                 "getName" -> target.name
                 "async" -> target.async()
                 "add" -> (target as SetCache<Any, Any>).add(args[0] as Any, args[1] as Collection<Any>)
@@ -115,6 +118,20 @@ object CacheProxies {
                 return target.putIfMatch(args[0] as Any, args[1] as Digest?, args[2] as Any)
             }
             return target.putIfMatch(args[0] as Any, args[1] as Digest?, args[2] as Any, args[3] as Duration)
+        }
+
+        private fun putIfNewer(args: Array<out Any?>): Any {
+            if (args.size == 3) {
+                return target.putIfNewer(args[0] as Any, args[1] as Any, args[2] as Long)
+            }
+            return target.putIfNewer(args[0] as Any, args[1] as Any, args[2] as Long, args[3] as Duration)
+        }
+
+        private fun invalidateIfNewer(args: Array<out Any?>): Any {
+            if (args.size == 2) {
+                return target.invalidateIfNewer(args[0] as Any, args[1] as Long)
+            }
+            return target.invalidateIfNewer(args[0] as Any, args[1] as Long, args[2] as Duration)
         }
 
         @Suppress("UNCHECKED_CAST")

@@ -54,6 +54,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     private val resetAdder = LongAdder()
     private val conditionalUnchangedAdder = LongAdder()
     private val conditionalConflictAdder = LongAdder()
+    private val staleVersionAdder = LongAdder()
 
     /**
      * 由 L2（本地副本）直接返回的读取数：未过期的本地副本，含负缓存与进入刷新窗口的副本。
@@ -102,6 +103,11 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
      */
     val conditionalConflicts: Long get() = conditionalConflictAdder.sum()
 
+    /**
+     * `putIfNewer` / `invalidateIfNewer` 因 L1 中已有不更旧的版本而未写入的次数（重复投递与迟到的旧版本；不计入 [writeFailures]）。
+     */
+    val staleVersions: Long get() = staleVersionAdder.sum()
+
     internal fun localHit() = localHitAdder.increment()
     internal fun remoteHit() = remoteHitAdder.increment()
     internal fun miss() = missAdder.increment()
@@ -132,4 +138,5 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     internal fun reset() = resetAdder.increment()
     internal fun conditionalUnchanged() = conditionalUnchangedAdder.increment()
     internal fun conditionalConflict() = conditionalConflictAdder.increment()
+    internal fun staleVersion() = staleVersionAdder.increment()
 }

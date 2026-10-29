@@ -47,6 +47,7 @@ cacheSpec<String, User>("user") {
 - 这个 `SupervisorJob` 永远不会完成。请给 `context` 一个长生命周期的 `Job`（例如应用级的），不要用结构化作用域的 `Job`，否则那个作用域永远结束不了。
 - loader 请创建一次、反复使用。每次调用 `suspendingLoader` 或 `asAsyncCacheLoader` 都会在 `Job` 下新建一个 `SupervisorJob`，每次加载都新建会让子 Job 越积越多。
 - `loadAll` 默认并发调用 `load`；数据源支持批量查询时请覆盖为一次批量查询。
+- `suspendingVersionedLoader(loader)` / `suspendingVersionedLoader(context, loader)`（6.8 起）接收 `SuspendingCacheLoader<K, Versioned<V?>>`（在版本 `n` 时已删除的 key 返回 `Versioned(null, n)`），设置 spec 的 `versionedAsyncLoader`，缓存因此是[带版本的](./freshness.md#versioned-writes)；其它行为与 `suspendingLoader` 相同。挂起视图有 `putIfNewer`、`invalidateIfNewer` 与 `getVersioned`。
 - 想自己设置时，`asAsyncCacheLoader()` / `asAsyncCacheLoader(context)` 把 `SuspendingCacheLoader` 转为 `AsyncCacheLoader`。这样单独使用时没有[重入检查](#reentry)，因为它不知道自己属于哪个缓存。
 - 缓存的 loader 跑在某个单线程 dispatcher 上时，不要在跑在同一个 dispatcher 上的协程里调用**同步** API：线程阻塞等待一次需要这个线程才能完成的加载，会死锁。这种情况请用挂起视图。
 

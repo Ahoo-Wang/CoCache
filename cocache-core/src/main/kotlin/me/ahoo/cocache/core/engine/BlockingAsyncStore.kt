@@ -27,6 +27,7 @@ import me.ahoo.cocache.api.spi.RemoteConditionalRead
 import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.internal.Futures
@@ -113,6 +114,17 @@ internal class BlockingAsyncStore(
         foreignAsAbsent: Boolean
     ): CompletableFuture<RemoteConditionalWrite> = offload {
         store.putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
+    }
+
+    override fun putIfNewerAsync(
+        key: String,
+        envelope: Envelope,
+        version: Long,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): CompletableFuture<RemoteVersionedWrite> = offload {
+        store.putIfNewer(key, envelope, version, ttl, frame, foreignAsAbsent)
     }
 
     companion object {

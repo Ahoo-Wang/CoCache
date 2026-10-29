@@ -109,5 +109,10 @@ internal object CacheCounters {
             "cocache.conditional.conflicts",
             "putIfMatch calls rejected because the L1 content did not match"
         ) { it.conditionalConflicts },
+        CacheCounter(
+            "staleVersions",
+            "cocache.versioned.stale",
+            "putIfNewer / invalidateIfNewer calls refused because L1 already held a version at least as new"
+        ) { it.staleVersions },
     )
 }

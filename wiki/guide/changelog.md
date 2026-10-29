@@ -5,6 +5,31 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## v6.8.0 (Unreleased)
+
+**Module Group:** `me.ahoo.cocache` · Minor release, additive only: `Cache`, `AsyncCache` and `SuspendingCache` gain version-ordered writes as default methods (they throw `UnsupportedOperationException` in implementations that don't override them), `CacheSpec` can declare a cache versioned, and the `cocache-api` SPI gains `CoherenceBackend.versionedWrites` and `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync` with defaults. Existing callers, custom `Cache` / `SuspendingCache` implementations, and custom backends keep compiling and running unchanged. The Redis key layout, header layout, format version and invalidation channel are unchanged. 6.0 to 6.7 instances read versioned values (below), so 6.8.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Versioned writes
+
+For writers that know each value's version, such as an event-sourced aggregate with one writer and increasing versions whose events can be redelivered. See [Versioned writes](./freshness.md#versioned-writes).
+
+- Declare a cache versioned with `versioned = true`, or with a `versionedLoader` / `versionedAsyncLoader` returning `Versioned(value, version)` (`suspendingVersionedLoader` in `cocache-coroutines`). Creating one fails at once on a backend without `versionedWrites`. The Redis and in-memory backends support it.
+- `putIfNewer(key, value, version[, ttl])` writes only if `version` is greater than the version in Redis, in one Lua script. An equal version is an idempotent no-op and an older one is refused; both return `Stale(current)` and change, broadcast and re-expire nothing. A successful write is a `put`: it fences out loads in flight, including one holding the lease that read a higher version.
+- `invalidateIfNewer(key, version[, ttl])` writes a tombstone: a negative entry with a version that blocks older redelivery for the value's lifetime.
+- A versioned loader's miss-fill stores the version, so later writes compare against it. A loader returning `Versioned(null, n)` (deleted at version `n`) writes the same tombstone as `invalidateIfNewer(key, n)`; `null` (never existed) stays a plain negative entry. `getVersioned(key)` reads through and returns the value with its version, or `null` for an absent key or a tombstone.
+- Ordering holds while the entry lives: after a value or tombstone expires, any version can be written again. Size `ttl` to your redelivery horizon.
+- A versioned cache doesn't support `refresh-window`. `cocache.defaults.refresh-window` skips it.
+- New meter `cocache.versioned.stale` ([Observability](../operations/observability.md#metrics-writes)).
+
+### Wire format
+
+A versioned value or tombstone is a format-1 String with the usual 36-byte header and payload. Only the token slot holds something new: a 16-byte mark, the 8-byte version, and an issue time of `+inf`. Older instances read the payload as before, their read script (unchanged in 6.8) never grants a refresh token on such a value, and their fill and release never match it. Their writes (`put`, `invalidate`, `putIfMatch`) replace it with content without a version, so ordering holds only once every writer of a versioned cache runs 6.8. See [Wire format](../architecture/index.md#wire-format).
+
+### SPI
+
+- `CoherenceBackend.versionedWrites` (default `false`), `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync` (defaults refuse with `UnsupportedOperationException`: a read-then-put default would let a late version overwrite a newer one), `RemoteVersionedWrite`, `Fill.version` (a new constructor; the 6.7 constructor, `copy` and `componentN` are unchanged), and `Envelope.Scalar.version`. A backend that supports versions overrides both methods atomically, stores `Envelope.Scalar.version` on `fill`, `put` and `putAll` and returns it on reads. See [Extending](../architecture/extending.md#remote-store).
+- The TCK gains `VersionedSpec` and `AsyncVersionedSpec` for backends with `versionedWrites`.
+
 ## v6.7.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive only: `Cache`, `AsyncCache` and `SuspendingCache` gain conditional reads and writes as default methods (they throw `UnsupportedOperationException` in implementations that don't override them), and the `cocache-api` SPI gains `RemoteStore.readIfChanged` / `putIfMatch` and their `AsyncRemoteStore` counterparts with default implementations. Existing callers, custom `Cache` / `SuspendingCache` implementations, and custom backends keep compiling and running unchanged. The Redis wire format and the invalidation channel are unchanged (the new scripts only read the existing format), so 6.7.0 instances can share Redis with any 6.x instance and be upgraded one at a time.

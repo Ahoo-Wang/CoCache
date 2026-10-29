@@ -19,6 +19,8 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 
 ::: tip 集合缓存保持自己的寿命
 `cocache.defaults.ttl` 与 `ttl-forever` 不作用于 [`SetCache`](./caches.md#set-cache)：它的唯一副本在 Redis 中，全局寿命会让集合过期并消失。`cocache.defaults.absent-ttl` 与 `refresh-window` 同样跳过集合缓存，因为它没有数据源。只有 `cocache.caches.[name].ttl` / `ttl-forever` 能改变集合缓存的寿命，`defaults` 的其它配置项照常生效。
+
+`cocache.defaults.refresh-window` 同样不作用于[带版本的缓存](./freshness.md#versioned-writes)，因为它们不支持提前刷新；对它设置 `cocache.caches.[name].refresh-window` 会让启动失败。
 :::
 
 ## 顶层配置项 {#properties}

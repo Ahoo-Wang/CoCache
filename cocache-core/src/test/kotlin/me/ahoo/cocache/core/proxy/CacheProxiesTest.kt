@@ -19,6 +19,8 @@ import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
@@ -94,6 +96,23 @@ class CacheProxiesTest {
         val second = cache.putIfMatch("c", written.digest, "v2", Duration.ofMinutes(1)) as ConditionalPut.Written
         cache.putIfMatch("c", written.digest, "v3").assert().isEqualTo(ConditionalPut.Conflict(second.digest))
         cache.getIfChanged("c", null).assert().isEqualTo(ConditionalGet.Present("v2", second.digest))
+    }
+
+    @Test
+    fun forwardsVersionedMethodsToTheEngine() {
+        val versioned = runtime.create(
+            cacheSpec<String, String>("versioned-user") {
+                codec = StringCodec
+                versioned = true
+            }
+        )
+        val cache = CacheProxies.create(UserCache::class.java, versioned)
+        cache.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Written)
+        cache.putIfNewer("k", "v0", 0, Duration.ofMinutes(1)).assert().isEqualTo(VersionedPut.Stale(1))
+        cache.getVersioned("k").assert().isEqualTo(Versioned("v1", 1))
+        cache.invalidateIfNewer("k", 1).assert().isEqualTo(VersionedPut.Stale(1))
+        cache.invalidateIfNewer("k", 2, Duration.ofMinutes(1)).assert().isEqualTo(VersionedPut.Written)
+        cache["k"].assert().isNull()
     }
 
     @Test

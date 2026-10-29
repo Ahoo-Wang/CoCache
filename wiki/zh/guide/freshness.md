@@ -81,6 +81,41 @@ fun update(key: String, change: (Document?) -> Document) {
 - **所有写入方都必须用 `putIfMatch`。** 普通的 `put` 不检查，仍会压过并发的“读取—修改—写回”。
 - `SetCache` 不支持它们，因为它的 `add` 与 `remove` 本身就是原子的。异步视图与[挂起视图](./coroutines.md)有同名方法。
 
+## 按版本写入 {#versioned-writes}
+
+有些写入方知道自己写入的每个值的版本：事件溯源的聚合只有一个写入方、版本严格递增，CDC 流带着提交序号。写入方可以在提交之后立即把新状态推入 Redis，但重投与重放会再次送来旧版本，普通的 `put` 写入旧版本就会替换新版本。6.8 起，声明为**带版本**的缓存把版本与值保存在一起，并按版本对写入排序：
+
+```kotlin
+val views = runtime.create(cacheSpec<String, OrderView>("order-view") {
+    codec = jacksonCodec<OrderView>(mapper)
+    versionedLoader = CacheLoader { id ->
+        val state = repository.find(id) ?: return@CacheLoader null          // 从来不存在：普通负缓存
+        Versioned(if (state.deleted) null else state.view, state.version)   // 在 state.version 时已删除：墓碑
+    }
+})
+
+// 写入方，每次提交之后（重放与重投时也是）
+when (views.putIfNewer(id, view, version)) {
+    VersionedPut.Written -> Unit                  // 更新：已写入并广播
+    is VersionedPut.Stale -> Unit                 // Redis 中已是这个版本或更新的版本
+}
+views.invalidateIfNewer(id, deletedAtVersion)     // 删除：写入墓碑，挡住旧版本
+
+views.getVersioned(id)                            // Versioned(view, version)，或 null
+```
+
+- **声明它。** 设置 `versioned = true`，或返回 `Versioned(value, version)` 的 `versionedLoader` / `versionedAsyncLoader`（[挂起](./coroutines.md)的构建器有 `suspendingVersionedLoader`）。loader 返回 `Versioned(null, n)` 表示 key 在版本 `n` 时已删除：回源写入与 `invalidateIfNewer(key, n)` 相同的墓碑，重放的旧状态不能让它重新出现。返回 `null` 表示 key 从来不存在，缓存一个寿命为 `absent-ttl` 的普通负缓存，任何带版本的写入都会替换它。其它缓存上的按版本方法抛出 `UnsupportedOperationException`；后端不支持版本时，创建带版本的缓存立即失败。Redis 与内存后端都支持。
+- **`putIfNewer(key, value, version[, ttl])`** 在一个 Redis 脚本中比较并写入，一次往返。只在 `version` 大于 Redis 中的版本时写入，返回 `Written`。版本相等是重复投递，更小是迟到的旧版本：两者都返回 `Stale(current)`，什么都不改：不写入、不改寿命、不发失效消息。版本按有符号 64 位整数比较。没有版本的值排在任何版本之前：普通 `put` 写入的值、不知道版本的 loader 加载的值、负缓存、加载用的 lease、不存在的 key。写入成功就是一次 `put`：在途的加载都写不回，所有实例的 L2 都被淘汰。
+- **在途的加载不会胜出。** 读取方持有加载用的 lease 时 `putIfNewer` 落地，它的写回被拒绝，哪怕它从数据源读到的版本更高：写入方的下一个版本反正会经 `putIfNewer` 到来。先完成的加载保存 loader 给出的版本，之后的写入与它比较。
+- **`invalidateIfNewer(key, version[, ttl])`** 写入墓碑：读取方看到 key 不存在（不调用 loader），这个版本及更旧版本的 `putIfNewer` 返回 `Stale`。更新的版本可以让 key 重新出现。墓碑的寿命与值相同（带抖动的 `ttl`，或 `ttl` 参数），不是 `absent-ttl`。到期之后迟到的旧版本可以再次写入，所以墓碑的寿命要覆盖重投的时间窗口。
+- **`getVersioned(key)`** 与 `get` 一样读穿透，返回值及其版本。墓碑与不存在的 key 一样返回 `null`；墓碑存活期间，它的版本及更旧版本的 `putIfNewer` 仍被拒绝。没有版本的值的版本是 `Versioned.NO_VERSION`。
+- **版本顺序只在条目存活期间成立。** 值或墓碑到期之后，key 中没有版本，任何版本（包括更旧的）都能再次写入。按重投的时间窗口设置 `ttl`（以及墓碑的 `ttl`）。重放到最新位置的写入方最终总会写入最新的版本，所以到期之后的陈旧度以那次重放为界。
+- **普通写入会丢掉版本。** `put`、`putAll`、`putIfMatch` 与 `invalidate` 写入没有版本的内容，到期也一样，之后任何版本都能写入。需要顺序保证的写入方全部使用 `putIfNewer` / `invalidateIfNewer`，`invalidate` 留给运维清除。
+- **不支持提前刷新。** 带版本的缓存拒绝 `refresh-window`；`cocache.defaults.refresh-window` 不作用于带版本的缓存。写入方会推送新版本，值不需要刷新。
+- **失败：** Redis 故障时 `putIfNewer` 抛出 `CacheWriteException`。重试同一个版本是安全的：第一次已经写入时，重试返回 `Stale(version)`。读不懂的内容的分类与[条件写入](#conditional-writes)相同。
+- **混合版本：** 6.0 到 6.7 的实例可以与 6.8 共用 Redis 并读取带版本的值，但它们的写入不保留版本。带版本的缓存的写入方全部升级到 6.8。
+- 异步视图与挂起视图有同名方法。指标 `cocache.versioned.stale` 统计被拒绝的版本。
+
 ## 在事务中 {#transactions}
 
 在 Spring 事务中，“提交之后”并不是你的代码运行的位置。`TransactionalInvalidator`（classpath 中有 `spring-tx` 时由 starter 注册）把失效挪到那里：

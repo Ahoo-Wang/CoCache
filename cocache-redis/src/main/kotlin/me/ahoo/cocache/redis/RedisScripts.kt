@@ -22,6 +22,8 @@ import java.security.MessageDigest
  * - 标量、负缓存、lease 占位是 String：36 字节定长头 + 载荷。
  *   头：`[0]` magic `0xC0`、`[1]` 格式版本、`[2]` 状态（`V` 值 / `M` 负缓存 / `L` lease）、`[3]` 保留、
  *   `[4..27]` 令牌（lease 或刷新令牌，全零表示无）、`[28..35]` 令牌签发时间（服务端 `TIME`，毫秒，大端 double）。
+ *   带版本的值与负缓存（6.8）：`[4..19]` 为 [VERSION_MARK]、`[20..27]` 为版本（大端有符号 64 位）、`[28..35]` 为 `+inf`。
+ *   它们不持有令牌：任何节点的 fill / release 都不会匹配，6.x 的读脚本按“签发时间”判断永远不会抢占它（不授予刷新令牌）。
  * - 集合是 Hash：字段 `!f` 为格式版本，成员字段为 `+` + 成员字节，值为空串。
  *
  * 约定：
@@ -33,6 +35,13 @@ internal object RedisScripts {
     const val FORMAT = 1
     const val HEADER_SIZE = 36
     const val MAGIC: Byte = 0xC0.toByte()
+
+    /**
+     * 带版本的内容在令牌位置的前 16 字节（6.8）：`0xC0` + `cocache:version`。令牌的前 16 字节是随机的 `NodeId`，不会与它相同。
+     */
+    val VERSION_MARK: ByteArray = byteArrayOf(MAGIC) + "cocache:version".toByteArray(Charsets.US_ASCII)
+    const val VERSION_OFFSET = 4
+    const val VERSION_SIZE = 8
 
     /**
      * 读取结果码：未命中（附 lease 是否取得）、他人持有 lease（附剩余毫秒）、标量命中、集合命中。
@@ -61,21 +70,31 @@ end
 
     /**
      * 写脚本额外使用的辅助函数。
+     *
+     * 形状参数 `kind`：`S` 集合、`V` 值、`M` 负缓存；值与负缓存带版本时（6.8）后跟 8 字节版本（大端有符号），
+     * 头部的令牌位置写入 `VERSION_MARK` + 版本、签发时间写入 `+inf`（见类注释）。
      */
     internal const val PRELUDE = CORE + """
+local VERSION_MARK = '\192cocache:version'
 local function expire(key, ttl)
   local ms = tonumber(ttl)
   if ms > 0 then redis.call('PEXPIRE', key, ms) end
 end
+local function scalar_header(kind)
+  local version = string.sub(kind, 2)
+  if version == '' then return header(string.sub(kind, 1, 1), ZERO_TOKEN, 0) end
+  return header(string.sub(kind, 1, 1), VERSION_MARK .. version, math.huge)
+end
 local function write(key, kind, ttl, first)
   redis.call('DEL', key)
-  if kind == 'S' then
+  local shape = string.sub(kind, 1, 1)
+  if shape == 'S' then
     redis.call('HSET', key, '!f', '1')
     for i = first, #ARGV do redis.call('HSET', key, '+' .. ARGV[i], '') end
-  elseif kind == 'V' then
-    redis.call('SET', key, header('V', ZERO_TOKEN, 0) .. ARGV[first])
+  elseif shape == 'V' then
+    redis.call('SET', key, scalar_header(kind) .. ARGV[first])
   else
-    redis.call('SET', key, header('M', ZERO_TOKEN, 0))
+    redis.call('SET', key, scalar_header(kind))
   end
   expire(key, ttl)
 end
@@ -190,14 +209,15 @@ local i = 3
 for k = 1, #KEYS do
   local key, kind, ttl = KEYS[k], ARGV[i], ARGV[i + 1]
   local first, last = i + 3, i + 2 + tonumber(ARGV[i + 2])
+  local shape = string.sub(kind, 1, 1)
   redis.call('DEL', key)
-  if kind == 'S' then
+  if shape == 'S' then
     redis.call('HSET', key, '!f', '1')
     for j = first, last do redis.call('HSET', key, '+' .. ARGV[j], '') end
-  elseif kind == 'V' then
-    redis.call('SET', key, header('V', ZERO_TOKEN, 0) .. ARGV[first])
+  elseif shape == 'V' then
+    redis.call('SET', key, scalar_header(kind) .. ARGV[first])
   else
-    redis.call('SET', key, header('M', ZERO_TOKEN, 0))
+    redis.call('SET', key, scalar_header(kind))
   end
   expire(key, ttl)
   i = last + 1
@@ -221,6 +241,7 @@ return 1
     /**
      * 条件回收。ARGV：期望摘要（十六进制）、lease 令牌、lease 寿命。
      * 摘要：标量为载荷（无法识别的 String 为整个值），负缓存与其它类型（原生 Set / List 等）为空串，集合为按返回顺序拼接的 `int32 长度 + 成员`。
+     * 带版本的内容（6.8）从不回收：lease 占位放不下版本，回收会让迟到的旧版本写入；读不懂它的节点绕过 L1 回源，等新版本覆盖它。
      */
     val RECLAIM = Script(
         PRELUDE + """
@@ -230,7 +251,7 @@ local content
 if kind == 'string' then
   local v = redis.call('GET', key)
   if is_ours(v) then
-    if string.sub(v, 3, 3) == 'L' then return 0 end
+    if string.sub(v, 3, 3) == 'L' or string.sub(v, 5, 20) == VERSION_MARK then return 0 end
     content = string.sub(v, 37)
   else
     content = v
@@ -450,6 +471,67 @@ else
   if current ~= ARGV[1] then return {0, current} end
 end
 write(key, 'V', ARGV[3], 6)
+publish(ARGV[4], ARGV[5])
+return {1}
+"""
+    )
+
+    /**
+     * 按版本写入的结果码：版本不更新（附当前版本，8 字节）、已写入、读不懂的内容（附格式版本）。
+     */
+    const val VERSION_STALE = 0L
+    const val VERSION_WRITTEN = 1L
+    const val VERSION_UNREADABLE = 3L
+
+    /**
+     * 按版本写入的检查（只有 [PUT_IF_NEWER] 引入）：返回 key 的状态与附加值，不修改 key。分类与 [CONDITIONAL_STATE] 相同：
+     * - `'none'`：不存在、lease 占位、没有版本的值或负缓存（视为没有版本，总是写入）；
+     * - `'versioned', 格式版本, 版本`：本协议写入的带版本的值或负缓存（版本为 8 字节）；
+     * - `'unreadable', 格式版本`：不是本协议写入的 String、其它 Redis 类型、没有 `!f` 或 `!f` 无效的 Hash（`0`），
+     *   本协议的集合（其 `!f`），更高版本写入的 String（其版本）。
+     */
+    private const val VERSIONED_STATE = """
+local function versioned_state(key)
+  local kind = redis.call('TYPE', key)['ok']
+  if kind == 'none' then return 'none' end
+  if kind == 'string' then
+    local v = redis.call('GET', key)
+    if not is_ours(v) then return 'unreadable', 0 end
+    local f = string.byte(v, 2)
+    if f > $FORMAT then return 'unreadable', f end
+    if f < 1 then return 'unreadable', 0 end
+    local state = string.sub(v, 3, 3)
+    if state == 'L' then return 'none' end
+    if state ~= 'V' and state ~= 'M' then return 'unreadable', 0 end
+    if string.sub(v, 5, 20) == VERSION_MARK then return 'versioned', f, string.sub(v, 21, 28) end
+    return 'none'
+  end
+  if kind ~= 'hash' then return 'unreadable', 0 end
+  local f = tonumber(redis.call('HGET', key, '!f') or '')
+  if f == nil or f < 1 then return 'unreadable', 0 end
+  return 'unreadable', f
+end
+-- a > b：8 字节大端有符号整数。Lua 的数是 double，按高 32 位（有符号）与低 32 位（无符号）分别比较才精确
+local function newer(a, b)
+  local ah, bh = struct.unpack('>i4', a), struct.unpack('>i4', b)
+  if ah ~= bh then return ah > bh end
+  return struct.unpack('>I4', a, 5) > struct.unpack('>I4', b, 5)
+end
+"""
+
+    /**
+     * 按版本写入（6.8）：给出的版本大于 key 中的版本时整体覆盖写入（同 [PUT]，销毁令牌、重设到期时间）并广播，否则不修改、不广播。
+     * ARGV：形状与版本（`V` / `M` + 8 字节版本）、不是本协议写入的内容（格式 0）是否视为没有版本（`1` / `0`）、TTL、频道、帧、载荷（`M` 没有）。
+     * 本协议的集合与更高格式版本的内容总是拒绝。
+     * 返回 `{1}` 已写入、`{0, 当前版本}` 版本不更新、`{3, 格式版本}` 读不懂的内容。
+     */
+    val PUT_IF_NEWER = Script(
+        PRELUDE + VERSIONED_STATE + """
+local key = KEYS[1]
+local state, format, current = versioned_state(key)
+if state == 'unreadable' and (ARGV[2] ~= '1' or format ~= 0) then return {3, format} end
+if state == 'versioned' and not newer(string.sub(ARGV[1], 2), current) then return {0, current} end
+write(key, ARGV[1], ARGV[3], 6)
 publish(ARGV[4], ARGV[5])
 return {1}
 """

@@ -13,10 +13,15 @@
 
 package me.ahoo.cocache.spring.boot
 
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
@@ -87,6 +92,47 @@ class PolicyPropertiesTest {
         runner.withPropertyValues("cocache.defaults.ttl=60", "cocache.caches.index.ttl=30").run { context ->
             val properties = context.getBean(CoCacheProperties::class.java)
             properties.setPolicyFor("index", SetCacheSpec.DEFAULT_POLICY).ttl.assert().isEqualTo(Duration.ofSeconds(30))
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class VersionedConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun viewSpec(): CacheSpec<String, String> = cacheSpec("view") {
+            codec = StringCodec
+            versioned = true
+        }
+    }
+
+    /**
+     * 带版本的缓存不支持提前刷新（6.8）：`cocache.defaults.refresh-window` 不作用于它们，其它默认项照常生效；
+     * 只有显式的 `cocache.caches.[name].refresh-window` 作用于它，并因此启动失败。
+     */
+    @Test
+    fun defaultRefreshWindowSkipsVersionedCaches() {
+        val versioned = ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+            .withUserConfiguration(VersionedConfig::class.java)
+        versioned.withPropertyValues("cocache.defaults.refresh-window=10", "cocache.defaults.ttl=60").run { context ->
+            assertThat(context).hasNotFailed()
+            val properties = context.getBean(CoCacheProperties::class.java)
+            val policy = properties.versionedPolicyFor("view", CachePolicy.DEFAULT)
+            policy.refreshWindow.assert().isNull()
+            policy.ttl.assert().isEqualTo(Duration.ofSeconds(60))
+
+            @Suppress("UNCHECKED_CAST")
+            val view = context.getBean("view") as Cache<String, String>
+            view.putIfNewer("k", "v", 1).assert().isEqualTo(VersionedPut.Written)
+            requireNotNull(
+                context.getBean(CacheRuntime::class.java).metrics("view")
+            ).staleVersions.assert().isEqualTo(0L)
+        }
+        versioned.withPropertyValues("cocache.caches.view.refresh-window=10").run { context ->
+            assertThat(context).hasFailed()
+            assertThat(context.startupFailure).rootCause().hasMessageContaining("refreshWindow")
         }
     }
 }
