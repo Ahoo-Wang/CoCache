@@ -5,9 +5,9 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布
+## v6.9.0（当前版本）
 
-**模块组：** `me.ahoo.cocache` · 计划为 6.9.0。次版本：没有 loader 的缓存（Redis 是唯一副本）有两项默认值变化，条件写入与按版本写入有一项广播修复。没有删除任何 API。`CachePolicy.invalidateFailure` 与 `CachePolicy.readFailure` 改为可空，JVM 签名不变，已编译的调用方照常运行。Redis 线格式与失效频道不变，6.9.0 实例可以与任何 6.x 实例共用 Redis，逐台升级。
+**模块组：** `me.ahoo.cocache` · 次版本：没有 loader 的缓存（Redis 是唯一副本）有两项默认值变化；另有对 6.8.0 架构审查发现的修复：事务内的失效、提前刷新、Redis 命令超时与订阅，以及条件写入与按版本写入的一项广播修复。没有删除任何 API。`CachePolicy.invalidateFailure` 与 `CachePolicy.readFailure` 改为可空，JVM 签名不变，已编译的调用方照常运行。Redis 线格式与失效频道不变，6.9.0 实例可以与任何 6.x 实例共用 Redis，逐台升级。
 
 ### 行为变化：没有 loader 的读取在 Redis 故障时失败
 
@@ -31,11 +31,34 @@ description: CoCache 版本发布历史和重要变更。
 - 没有原子广播时（`sharded` 频道模式，或启动探测回退时），`putIfNewer` 或 `putIfMatch` 可能已写入 Redis，而单独的发布失败了。调用方得到 `CacheWriteException` 并按文档重放，但重放返回 `Stale(version)` 或 `Conflict(自己的摘要)`，不发布任何消息，其它实例的 L2 副本一直陈旧到 `local-max-age`。
 - 现在 `putIfNewer` / `invalidateIfNewer` 返回的 `Stale` 版本等于给出的版本时，以及 `putIfMatch` 冲突且当前摘要等于自己的值的摘要时，引擎也发布失效。多余的失效只会丢弃副本。更旧的版本与其它冲突仍不发布。原子广播不变。
 
+### 修复：事务内的失效
+
+以下修复针对 `TransactionalInvalidator`，见[事务](./freshness.md#transactions)。
+
+- **回滚**：事务回滚、或提交结果未知时，现在同样失效本事务中登记的 key。事务内的加载在调用方线程上执行，可能读到本事务未提交的行，并凭 lease 写入 Redis；6.8.0 中回滚会让这个值在 Redis 中留到 `ttl`。
+- **迟到的登记**：在另一个同步的 `afterCommit` 中登记、或在本类的同步执行之后才登记的失效，不再丢失，而是在 `afterCompletion` 中执行，或立即执行。排在前面的同步的 `afterCommit` 抛出时同样如此。
+- **失败**：一个缓存失败不再影响其余缓存。全部登记的缓存都失效之后，抛出第一个异常，其余作为它的 suppressed。`afterCompletion` 中的异常（回滚、兜底）由 Spring 记录日志，不抛给调用方。
+- **不覆盖的情形**：`@CacheEvict` 与 `@CachePut` 经 Spring 的 `TransactionAwareCacheDecorator`，它只在提交之后执行，所以回滚时仍不执行。响应式事务（R2DBC、`@Transactional` 挂起函数）本类看不到，会在提交之前立即失效；这类事务请在事务结束之后失效。
+
+### 修复：提前刷新
+
+- **没取得令牌时退避**：没取得刷新令牌的实例，再次读取 Redis 之前先退避，退避时长取 `max(lease-wait, 100 ms)` 与值剩余寿命的一半中较小的一个。以前另一个实例回源期间，它每次命中都重读 Redis；那个实例崩溃时，这种重读会持续到 `lease-ttl`。现在刷新期间每个实例、每个 key 的 Redis 读取次数不再随命中频率增长，并且仍会在旧值到期之前取到新值。
+- **寿命较短的值**：剩余寿命不长于 `refresh-window` 的值不再提前刷新，它照常到期，下一次未命中时重新加载。`ttlOf` 或 `put(key, value, ttl)` 设置的寿命同样适用。6.8.0 中这样的值每次命中都会回源。
+
+### 修复：Redis 超时与订阅
+
+- **超时的脚本**：超时的脚本之后永远不会再写入 Redis。以前 Lettuce 尚未发出的命令，可能在调用方看到超时之后照样执行，覆盖更新的值。这类命令有两种：Redis Cluster 中等待节点连接的命令；`RedisBackend.of` 配合断线时缓冲命令的客户端时，被缓冲的命令。已经发出的命令仍会在 Redis 上执行，应答被丢弃，与以前相同。使用 `RedisBackend.of` 时请保留 `DisconnectedBehavior.REJECT_COMMANDS`，否则命令要等满 `command-timeout` 才失败，而不是立即失败。
+- **读取超时后的 lease**：超时的读取在后台尽力释放它可能已取得的 lease 或刷新令牌。其它实例不再在 `lease-ttl` 内，对这个 key 的每次未命中都先等 `lease-wait`。
+- **`sharded` 频道模式**：订阅丢失、尚未重新确认的频道，在每次心跳时都重置订阅者，而不只重置一次。陈旧度保持在心跳周期加重新订阅时长之内。
+- **并发的订阅与退订**：同时订阅与退订同一频道（多个运行时共用一个后端）时，订阅者不再永久收不到失效。
+- **格式字节**：Redis 中值的格式字节按无符号读取。只有格式号 ≥ 128 时才有区别。
+
 ### TCK
 
 - `EngineSpec`、`FaultSpec` 与 `VersionedSpec`（及其异步版本）新增上述行为的用例，包括没有 loader 时的 `read-failure: degrade`。`VersionedSpec.refusedVersionsChangeNothingAndDoNotBroadcast` 现在要求没有原子广播的后端上相等的版本会广播。
+- `EngineSpec` 新增两个提前刷新的用例：没取得令牌的实例会退避；寿命不长于 `refresh-window` 的值不提前刷新。`MultiNodeSpec.refreshAheadLoadsOncePerKeyAcrossNodes` 先把时钟推过退避，再检查其它实例。
 
-## v6.8.0（当前版本）
+## v6.8.0
 
 **模块组：** `me.ahoo.cocache` · 次版本，只有新增：`Cache`、`AsyncCache` 与 `SuspendingCache` 以 default 方法新增按版本有序的写入（没有覆盖它们的实现抛出 `UnsupportedOperationException`），`CacheSpec` 可以把缓存声明为带版本的，`cocache-api` 的 SPI 新增 `CoherenceBackend.versionedWrites` 与 `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync`（都带默认实现）。已有的调用方、自定义 `Cache` / `SuspendingCache` 实现与自定义后端照常编译与运行。Redis 的 key 布局、头部布局、格式版本与失效频道不变；6.0 到 6.7 的实例能读取带版本的值（见下文），6.8.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。
 
