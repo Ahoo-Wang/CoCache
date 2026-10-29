@@ -341,8 +341,8 @@ architecture.md §14 的其余不变量（第 1–20 条）保留，按 V12 重�
 |----|------|------|
 | 没有数据源的 L1 读失败 fail closed；`invalidate` 重试不越过之后的写入；非原子广播下的重放也广播 | A.D1、A.D2、A.R4 | 修复中（独立 PR） |
 | 超时取消 Lettuce 命令；`sharded` 未确认频道每次心跳重置；读超时释放 lease；订阅生命周期竞态；格式字节按无符号解析 | A.R1、A.R2、A.L1、A.R3、A.L7 | 修复中（独立 PR） |
-| `TransactionalInvalidator` 回滚失效、迟到登记、逐缓存失败隔离 | A.T1、A.T2 | 修复中（独立 PR） |
-| 提前刷新退避；寿命 ≤ 刷新窗口不设刷新点 | A.D3 | 修复中（独立 PR） |
+| `TransactionalInvalidator` 回滚失效、迟到登记、逐缓存失败隔离 | A.T1、A.T2 | 修复中（#697） |
+| 提前刷新退避；寿命 ≤ 刷新窗口不设刷新点 | A.D3 | 修复中（#698） |
 | L2 填充用 `compute`（§4.5） | A.D4 | 待排期 |
 | 单调时钟（§4.5） | A.C1 | 待排期 |
 | 同步跟随者可中断 | A.S1 | 待排期（上界属于 v8 的 `load.timeout`） |
@@ -385,14 +385,14 @@ architecture.md §14 的其余不变量（第 1–20 条）保留，按 V12 重�
 |------|--------|------|------|------|------|
 | D1 | 高 | 没有数据源的 `Cache` 在 L1 读失败（默认 `DEGRADE`）时返回 `null`、不报错，并作为已决的负缓存写入 L2（`degradedLocalMaxAge`）；之后 `get(key, loader)` 命中它，不调用 loader | 复现 | `CoherentEngine.loadThrough`、`completeBypass` | 6.x 修复；v8 §4.1 |
 | D2 | 高（权威副本） | 默认 `RETRY` 的延迟重试会删除其它节点之后写入的值 | 复现 | `CoherentEngine.scheduleRetry` | 6.x 修复；v8 §4.1 |
-| D3 | 中 | 没取得刷新令牌的节点按往返频率轮询 L1（持有者回源期间，另一节点的 50 次命中触发 25 次 L1 读取）；`ttlOf` 或显式 `ttl` ≤ 刷新窗口时，持有者背靠背回源 | 复现（前者）、读代码（后者） | `CoherentEngine.refill`、`AbstractEngine.localEntry`、`CachePolicy` 的校验 | 6.x 修复；v8 §4.6 |
+| D3 | 中 | 没取得刷新令牌的节点按往返频率轮询 L1（持有者回源期间，另一节点的 50 次命中触发 25 次 L1 读取）；`ttlOf` 或显式 `ttl` ≤ 刷新窗口时，持有者背靠背回源 | 复现（前者）、读代码（后者） | `CoherentEngine.refill`、`AbstractEngine.localEntry`、`CachePolicy` 的校验 | 6.x 修复（#698）；v8 §4.6 |
 | D4 | 中低 | L2 填充“校验—写入—复核—撤销”不可线性化：写入方返回之后，旧值仍可能短暂可见；撤销还会误删新副本 | 读代码 | `AbstractEngine.fillLocal` | 6.x 待排期；v8 §4.5 |
 | R1 | 中高 | 超时只取消 `exceptionallyCompose` 派生的 future，Lettuce 命令不被取消；Cluster 中等待节点连接的命令在超时之后仍会执行 | 读代码 | `RedisConnections.bounded`、`await`、`evalAsync` | 6.x 修复；v8 §4.6 |
 | R2 | 中低 | `sharded` 频道进入未确认状态后只重置一次，之后心跳只重试订阅；陈旧上界退化为 `localMaxAge` | 读代码 | `ShardedInvalidationChannel.ping` | 6.x 修复 |
 | R3 | 低 | `subscribe` 与 `Subscription.close` 并发时，订阅者可能加入已被移除的列表，永久收不到失效；经典模式不处理服务端退订 | 读代码 | `RedisInvalidationChannel.subscribe` | 6.x 修复 |
 | R4 | 中 | 非原子广播时，条件写入写 L1 成功、广播失败，重放得到 `Stale` 或冲突之后永不广播 | 读代码 | `CoherentEngine.writeIfNewer`、`AbstractEngine.write` | 6.x 修复；v8 §4.6 |
-| T1 | 中高 | 事务回滚时不失效；事务内的回源可能把未提交的数据写进 L1 | 读代码 | `TransactionalInvalidator` | 6.x 修复；v8 §4.9 |
-| T2 | 中低 | 在另一个同步的 `afterCommit` 中登记的失效会丢失；`flush` 遇到第一个异常即停止。`@TransactionalEventListener(AFTER_COMMIT)` 不受影响（它在 `afterCompletion` 中执行） | 读代码（含 spring-tx 7.0.9 字节码） | `TransactionalInvalidator` | 6.x 修复；v8 §4.9 |
+| T1 | 中高 | 事务回滚时不失效；事务内的回源可能把未提交的数据写进 L1 | 读代码 | `TransactionalInvalidator` | 6.x 修复（#697）；v8 §4.9 |
+| T2 | 中低 | 在另一个同步的 `afterCommit` 中登记的失效会丢失；`flush` 遇到第一个异常即停止。`@TransactionalEventListener(AFTER_COMMIT)` 不受影响（它在 `afterCompletion` 中执行） | 读代码（含 spring-tx 7.0.9 字节码） | `TransactionalInvalidator` | 6.x 修复（#697）；v8 §4.9 |
 | P1 | 中低 | 接口式代理遇到 Kotlin loader 抛出的受检异常时，由 JDK 包装为 `UndeclaredThrowableException`，与“代理不包装异常”不符 | 读代码（JDK 语义） | `CacheProxies.Handler` | 文档；v8 Q7 |
 | C1 | 低 | 时钟用墙钟：墙钟回拨 Δ，L2 副本就多活 Δ | 读代码 | `TickingClock` | 6.x 待排期；v8 §4.5 |
 | S1 | 低 | 同步跟随者用 `join()` 等待，不可中断、无上限 | 读代码 | `SingleFlight.await` | 6.x 待排期；v8 §4.6 |
