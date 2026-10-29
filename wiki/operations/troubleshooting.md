@@ -125,11 +125,11 @@ An invalidation is dropped when its retries run out, the queue is full, or the a
 | `get`, `getAll`, `lookup` | Default (`read-failure: degrade`): load from the source, keep the result in L2 for `degraded-local-max-age` (10 s), write nothing to L1. With `read-failure: throw`: `CacheReadException`. Without a loader (no loader on the cache, and not `get(key, loader)`): `CacheReadException` by default, nothing cached; with an explicit `read-failure: degrade`, `null` (absent from `getAll`), still nothing cached. |
 | Fill, lease release, refresh | Best effort: logged and counted, never thrown |
 | `invalidate`, `invalidateAll` | Local effect at once, then retried in the background ([above](#invalidations-dropped)). With `invalidate-failure: throw`, the default without a loader: `CacheWriteException`. |
-| `put`, `SetCache` writes | Local effect at once, then `CacheWriteException`. After a timeout the write may have reached Redis anyway, unless it was still waiting to be sent: then it is dropped and never applied later. These calls are idempotent, so retrying is safe. |
+| `put`, `SetCache` writes | Local effect at once, then `CacheWriteException`. After a timeout, or when the waiting thread is interrupted, the write may have reached Redis anyway, unless it was still waiting to be sent: then it is dropped and never applied later. These calls are idempotent, so retrying is safe. |
 | `SetCache` reads | Throw the Redis exception: there is no source to fall back to |
 | Channel | Heartbeat fails, every L2 is cleared, and it is cleared again when the subscription is restored |
 
-Commands are rejected while disconnected, not buffered, and each command waits at most `command-timeout` (2 s). With Redis down, each miss therefore costs one fast failure plus a load. A read that times out may still run in Redis later and take a lease for the key; CoCache releases that lease right away (best effort), so other instances don't wait `lease-wait` on the key.
+Commands are rejected while disconnected, not buffered, and each command waits at most `command-timeout` (2 s). With Redis down, each miss therefore costs one fast failure plus a load. A read that times out or is interrupted may still run in Redis later and take a lease for the key, and a fill that times out may be dropped before it is sent and leave its lease behind. CoCache releases such leases right away (best effort), so other instances don't wait `lease-wait` on the key.
 
 **Fix.** Restore Redis. Meanwhile, `load-max-concurrent` protects the source. Nothing needs to be done afterwards: retries finish on their own, and every L2 is reset when its subscription comes back. Check `cocache.invalidations.dropped` and re-invalidate any dropped keys.
 

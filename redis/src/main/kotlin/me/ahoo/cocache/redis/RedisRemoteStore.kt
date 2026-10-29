@@ -48,49 +48,64 @@ internal class RedisRemoteStore(
     private val invalidateBatchSize: Int,
 ) : AsyncRemoteStore {
 
-    @Suppress("TooGenericExceptionCaught")
-    override fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
-        val result = try {
-            connections.await(readCommand(key, lease, refresh))
-        } catch (e: RuntimeException) {
-            releaseAfterTimeout(key, lease, refresh, e)
-            throw e
-        }
-        return decodeRead(result)
-    }
+    override fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead =
+        decodeRead(awaitReleasing(key, readCommand(key, lease, refresh), tokensOf(lease, refresh)))
 
     override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
         connections.mapped(boundedRead(key, lease, refresh)) { decodeRead(it) }
 
-    /**
-     * 受 `commandTimeout` 限制的读取；超时时尽力释放这次读取请求的令牌（[releaseAfterTimeout]）。
-     */
     private fun boundedRead(
         key: String,
         lease: LeaseRequest?,
         refresh: RefreshRequest?
-    ): CompletableFuture<List<Any?>> {
-        val read = connections.bounded(readCommand(key, lease, refresh))
-        read.whenComplete { _, error ->
-            if (error != null) {
-                releaseAfterTimeout(key, lease, refresh, error)
-            }
+    ): CompletableFuture<List<Any?>> = boundedReleasing(key, readCommand(key, lease, refresh), tokensOf(lease, refresh))
+
+    private fun tokensOf(lease: LeaseRequest?, refresh: RefreshRequest?): List<Token> =
+        listOfNotNull(lease?.token, refresh?.token)
+
+    /**
+     * 同步等待取得或交回令牌的命令（读取、回收、填充、释放）；结果未知时尽力释放 [tokens]（[releaseIfUnknown]）再抛出。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun <T> awaitReleasing(key: String, future: CompletableFuture<T>, tokens: List<Token>): T {
+        try {
+            return connections.await(future)
+        } catch (e: RuntimeException) {
+            releaseIfUnknown(key, tokens, e)
+            throw e
         }
-        return read
     }
 
     /**
-     * 读取超时（结果未知）：读脚本可能已在 Redis 端授予了令牌（未命中时的 lease、刷新窗口内的刷新令牌），调用方却随后绕过 L1，
-     * 没人会再释放它；lease 留到 `lease.ttl`，全集群对该 key 的未命中都要先等 `lease.wait`。尽力释放（不等待）：令牌不匹配时
-     * release 什么也不做；释放与读取按 key 路由到同一连接，按序执行在读取之后（读取未写出就被取消时，释放同样无害）。
+     * [awaitReleasing] 的异步版本：受 `commandTimeout` 限制（[RedisConnections.bounded]），结果未知时尽力释放 [tokens]。
+     */
+    private fun <T> boundedReleasing(
+        key: String,
+        future: CompletableFuture<T>,
+        tokens: List<Token>
+    ): CompletableFuture<T> {
+        val bounded = connections.bounded(future)
+        bounded.whenComplete { _, error ->
+            if (error != null) {
+                releaseIfUnknown(key, tokens, error)
+            }
+        }
+        return bounded
+    }
+
+    /**
+     * 结果未知（超时、等待被中断，[RedisConnections.isUnknownOutcome]）时尽力释放 [tokens]：命令可能已在 Redis 端执行
+     * （读取、回收授予了 lease 或刷新令牌），也可能被取消、永远不会执行（fill 没有写出，lease 仍在；释放没有写出），调用方随后都不会
+     * 再交回这些令牌；lease 留到 `lease.ttl`，全集群对该 key 的未命中都要先等 `lease.wait`。
+     *
+     * 释放用异步命令，不等待（等待被中断时中断标志已恢复，再等待会立即失败）。令牌不匹配时 release 什么也不做（fill 已执行、令牌已被
+     * 释放）；释放与原命令按 key 路由到同一连接，按序执行在它之后（原命令被取消、没有写出时，释放同样无害）。
      * 其它失败不释放：断线、拒绝时释放同样会失败，lease 由 `lease.ttl` 回收。
      */
-    private fun releaseAfterTimeout(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, error: Throwable) {
-        if (!RedisConnections.isTimeout(error)) {
-            return
+    private fun releaseIfUnknown(key: String, tokens: List<Token>, error: Throwable) {
+        if (RedisConnections.isUnknownOutcome(error)) {
+            tokens.forEach { releaseQuietly(key, it) }
         }
-        lease?.let { releaseQuietly(key, it.token) }
-        refresh?.let { releaseQuietly(key, it.token) }
     }
 
     private fun readCommand(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<List<Any?>> {
@@ -108,7 +123,8 @@ internal class RedisRemoteStore(
      * 并发发出，在共享连接上多路复用（约一次往返）。
      *
      * 等待全部结果：任一失败时，其余读取取得的 lease 要先释放（不等待）再抛出第一个异常，
-     * 否则调用方拿不到这些令牌，所有节点都要白白等待 `lease.ttl`；超时的读取同样尽力释放（[releaseAfterTimeout]）。
+     * 否则调用方拿不到这些令牌，所有节点都要白白等待 `lease.ttl`；结果未知的读取同样尽力释放（[releaseIfUnknown]）。
+     * 第一个等待被中断之后，其余尚未完成的等待立即以中断失败（[RedisConnections.await]），它们的读取都已发出，同样各自释放。
      */
     @Suppress("TooGenericExceptionCaught")
     override fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
@@ -117,9 +133,8 @@ internal class RedisRemoteStore(
         var failure: RuntimeException? = null
         for ((key, future) in futures) {
             try {
-                results[key] = decodeRead(connections.await(future))
+                results[key] = decodeRead(awaitReleasing(key, future, tokensOf(leases[key], null)))
             } catch (e: RuntimeException) {
-                releaseAfterTimeout(key, leases[key], null, e)
                 val first = failure
                 if (first == null) failure = e else first.addSuppressed(e)
             }
@@ -189,10 +204,14 @@ internal class RedisRemoteStore(
         }
     }
 
-    override fun fill(fill: Fill): Boolean = connections.await(fillCommand(fill)).firstFlag()
+    /**
+     * 结果未知时尽力释放令牌（[releaseIfUnknown]）：被取消、没有写出的 fill 否则留下 lease 到 `lease.ttl`；fill 已执行时令牌不匹配，
+     * 释放什么也不做。
+     */
+    override fun fill(fill: Fill): Boolean = awaitReleasing(fill.key, fillCommand(fill), listOf(fill.token)).firstFlag()
 
     override fun fillAsync(fill: Fill): CompletableFuture<Boolean> =
-        connections.mapped(connections.bounded(fillCommand(fill))) { it.firstFlag() }
+        connections.mapped(boundedReleasing(fill.key, fillCommand(fill), listOf(fill.token))) { it.firstFlag() }
 
     private fun fillCommand(fill: Fill): CompletableFuture<List<Any?>> {
         val args = ArrayList<ByteArray>()
@@ -204,9 +223,36 @@ internal class RedisRemoteStore(
         return connections.evalAsync(RedisScripts.FILL, listOf(fill.key.bytes()), args)
     }
 
+    /**
+     * 并发发出、逐个等待；第一个失败即抛出，并放弃其余的 fill（[abandon]）。
+     */
+    @Suppress("TooGenericExceptionCaught")
     override fun fillAll(fills: List<Fill>): List<Boolean> {
         val futures = fills.map { fillCommand(it) }
-        return futures.map { connections.await(it).firstFlag() }
+        return fills.mapIndexed { index, fill ->
+            try {
+                awaitReleasing(fill.key, futures[index], listOf(fill.token)).firstFlag()
+            } catch (e: RuntimeException) {
+                abandon(fills, futures, index + 1)
+                throw e
+            }
+        }
+    }
+
+    /**
+     * 批量 fill 失败时放弃其余的 fill（自 [from] 起）：调用方不再等待它们（引擎按整批失败处理），结果都未知。尚未完成的取消
+     * （尚未写出的不再写出）并尽力释放令牌，已完成的结果未知时同样释放；不逐个等待，失败路径上的等待不超过一个 `commandTimeout`。
+     */
+    private fun abandon(fills: List<Fill>, futures: List<CompletableFuture<List<Any?>>>, from: Int) {
+        for (index in from until fills.size) {
+            val future = futures[index]
+            // 取消成功即尚未完成；取消失败即已完成，取它的异常（正常完成时没有）
+            val unknown = future.cancel(false) ||
+                future.handle { _, error -> error != null && RedisConnections.isUnknownOutcome(error) }.getNow(false)
+            if (unknown) {
+                releaseQuietly(fills[index].key, fills[index].token)
+            }
+        }
     }
 
     override fun fillAllAsync(fills: List<Fill>): CompletableFuture<List<Boolean>> {
@@ -214,12 +260,16 @@ internal class RedisRemoteStore(
         return connections.mapped(allDone(futures)) { futures.map { it.join() } }
     }
 
+    /**
+     * 结果未知时再尽力释放一次（[releaseIfUnknown]）：超时或等待被中断的释放被取消，尚未写出时永远不会执行（等待被中断时标志已在，
+     * 释放多半还没写出就被取消）；已执行时重复的释放什么也不做。
+     */
     override fun release(key: String, token: Token) {
-        connections.await(releaseCommand(key, token))
+        awaitReleasing(key, releaseCommand(key, token), listOf(token))
     }
 
     override fun releaseAsync(key: String, token: Token): CompletableFuture<Void?> =
-        connections.mapped(connections.bounded(releaseCommand(key, token))) { null }
+        connections.mapped(boundedReleasing(key, releaseCommand(key, token), listOf(token))) { null }
 
     private fun releaseCommand(key: String, token: Token): CompletableFuture<List<Any?>> =
         connections.evalAsync(RedisScripts.RELEASE, listOf(key.bytes()), listOf(token.toBytes()))
@@ -363,11 +413,16 @@ internal class RedisRemoteStore(
         }
     }
 
+    /**
+     * 回收成功时取得 lease：结果未知时与读取一样尽力释放（[releaseIfUnknown]）。
+     */
     override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean =
-        connections.await(reclaimCommand(key, observed, lease)).firstFlag()
+        awaitReleasing(key, reclaimCommand(key, observed, lease), listOf(lease.token)).firstFlag()
 
     override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
-        connections.mapped(connections.bounded(reclaimCommand(key, observed, lease))) { it.firstFlag() }
+        connections.mapped(boundedReleasing(key, reclaimCommand(key, observed, lease), listOf(lease.token))) {
+            it.firstFlag()
+        }
 
     private fun reclaimCommand(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<List<Any?>> {
         val args = listOf(observed.toString().bytes(), lease.token.toBytes(), millis(lease.ttl))

@@ -88,7 +88,7 @@ internal class RedisConnections(
     /**
      * 异步执行脚本：EVALSHA，遇到 NOSCRIPT（故障切换、重启、resharding 后脚本缓存丢失）时改用 EVAL（会重新缓存）。
      *
-     * 返回的 future 超时被取消（[bounded]、[await]）时，尚未写出的命令不再写出（[CommandCall]）。
+     * 返回的 future 被取消（超时：[bounded]、[await]；等待被中断：[await]）时，尚未写出的命令不再写出（[CommandCall]）。
      */
     fun <T> evalAsync(script: RedisScripts.Script, keys: List<ByteArray>, args: List<ByteArray>): CompletableFuture<T> {
         val call = CommandCall<T>()
@@ -107,7 +107,7 @@ internal class RedisConnections(
     }
 
     /**
-     * 以 `dispatch` 发出脚本命令（与 Lettuce 的 `evalsha` / `eval` 相同的参数与输出），它返回最外层的命令，[CommandCall] 超时时
+     * 以 `dispatch` 发出脚本命令（与 Lettuce 的 `evalsha` / `eval` 相同的参数与输出），它返回最外层的命令，[CommandCall] 被取消时
      * 完成的是这一条。结果交给 [call]，失败（已解包）交给 [onError]；[onError] 抛出时以该异常完成 [call]，不让调用方永远等待。
      */
     @Suppress("TooGenericExceptionCaught")
@@ -235,10 +235,12 @@ internal class RedisConnections(
         RedisException("Command timed out after $commandTimeout.", cause)
 
     /**
-     * 同步等待：超时、执行异常都转换为运行时异常抛出。
+     * 同步等待：超时、等待被中断、执行异常都转换为运行时异常抛出。
      *
-     * 等待本身受 `commandTimeout` 限制（与客户端是否计时无关），超时时取消 [future]（同 [bounded]）；
-     * [CommandTimeouts.clientTimed] 时客户端的超时可能先于等待触发，映射为同样的异常。
+     * 等待本身受 `commandTimeout` 限制（与客户端是否计时无关）。超时或等待被中断时结果未知（[isUnknownOutcome]），两者处理相同：
+     * 取消 [future]（同 [bounded]），尚未写出的脚本命令不再写出（[CommandCall]）；被中断时恢复中断标志。中断来自调用方
+     * （`Future.cancel(true)`、Resilience4j `TimeLimiter`、`shutdownNow`），也来自同一线程上之前被中断的等待：标志恢复之后，
+     * 其后尚未完成的等待都立即以中断失败。[CommandTimeouts.clientTimed] 时客户端的超时可能先于等待触发，映射为同样的异常。
      */
     fun <T> await(future: CompletableFuture<T>): T {
         val failure: RuntimeException = try {
@@ -250,6 +252,7 @@ internal class RedisConnections(
             timedOut(e)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
+            future.cancel(false)
             RedisException("Interrupted while waiting for Redis.", e)
         }
         throw failure
@@ -318,20 +321,26 @@ internal class RedisConnections(
         }
 
         /**
-         * 命令超时（后端计时的 [timedOut]，或客户端的 [RedisCommandTimeoutException]）：结果未知，命令可能已在 Redis 端执行。
+         * 结果未知：命令超时（后端计时的 [timedOut]，或客户端的 [RedisCommandTimeoutException]），或等待被中断（[await]）。
+         * 命令可能已在 Redis 端执行，也可能被取消、永远不会执行。
          */
-        fun isTimeout(error: Throwable): Boolean = generateSequence(error) { it.cause.takeIf { cause -> cause !== it } }
-            .any { it is RedisCommandTimeoutException || it is TimeoutException }
+        fun isUnknownOutcome(error: Throwable): Boolean {
+            val causes = generateSequence(error) { it.cause.takeIf { cause -> cause !== it } }
+            return causes.any {
+                it is RedisCommandTimeoutException || it is TimeoutException || it is InterruptedException
+            }
+        }
     }
 }
 
 /**
  * 一条脚本调用的结果：先是 `EVALSHA`，NOSCRIPT 之后是 `EVAL`（[track] 记录当前的那条 Lettuce 命令）。
  *
- * 超时时 [RedisConnections.bounded] 与 [RedisConnections.await] 调用 [cancel]，它同时以异常完成当前的 Lettuce 命令。Lettuce 写出前
- * 跳过已完成的命令（`CommandHandler` 的 `isWriteable`；断线期间缓冲的命令重连后同样跳过），所以尚未写出的命令不会在调用方看到超时之后
- * 才执行（稍后生效的 `put` 覆盖更新的值，`SetCache` 永不过期时错误永久保留）：集群中等待建立节点连接（首次访问某节点、拓扑变化后）
- * 的命令 Lettuce 不计时，调用方的客户端（`RedisBackend.of`）断线时可能缓冲命令。已写出的命令无从撤回：Redis 照常执行，应答被丢弃。
+ * 超时时 [RedisConnections.bounded] 与 [RedisConnections.await]、等待被中断时 [RedisConnections.await] 调用 [cancel]，它同时以异常
+ * 完成当前的 Lettuce 命令。Lettuce 写出前跳过已完成的命令（`CommandHandler` 的 `isWriteable`；断线期间缓冲的命令重连后同样跳过），
+ * 所以尚未写出的命令不会在调用方看到失败之后才执行（稍后生效的 `put` 覆盖更新的值，`SetCache` 永不过期时错误永久保留）：
+ * 集群中等待建立节点连接（首次访问某节点、拓扑变化后）的命令 Lettuce 不计时，调用方的客户端（`RedisBackend.of`）断线时可能缓冲命令。
+ * 已写出的命令无从撤回：Redis 照常执行，应答被丢弃。
  *
  * 完成的必须是 `dispatch` 返回的最外层命令：集群中它是 `ClusterCommand`，`isDone` 只看它自己的完成标记（Lettuce 6.8 与 7.5 相同），
  * 取消内层的 `AsyncCommand` 时它仍会在节点连接建立后写出。
@@ -357,7 +366,7 @@ private class CommandCall<T> : CompletableFuture<T>() {
     }
 
     private fun abort(command: RedisCommand<*, *, *>) {
-        command.completeExceptionally(CancellationException("Abandoned after the command timeout."))
+        command.completeExceptionally(CancellationException("Abandoned: the caller stopped waiting."))
     }
 }
 
