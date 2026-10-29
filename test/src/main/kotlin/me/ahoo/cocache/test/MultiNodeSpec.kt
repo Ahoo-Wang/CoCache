@@ -425,6 +425,8 @@ abstract class MultiNodeSpec {
             // 异步视图上刷新的 fill 可能在命中线程返回之后才完成
             awaitCondition("refresh fills reached L1") { keys.all { remoteValue(it) == "$it-1" } }
         }
+        // fill 不广播：非持有节点的刷新点退避到原 L1 到期之前（至迟在剩余寿命的一半处），到时再从 L1 重新填充
+        elapse(Duration.ofSeconds(3))
         awaitCondition("every node refilled from L1") { caches.all { cache -> keys.all { cache[it] == "$it-1" } } }
         keys.forEach { key -> loadsOf(key).assert().withFailMessage { "loads of $key" }.isEqualTo(2) }
     }

@@ -204,6 +204,10 @@ flowchart TD
 
 With a `refresh-window`, an L2 copy records when its L1 value enters the window. A hit after that point returns the current value and submits one background refresh per key per instance. The refresh reads with a **refresh token** request. Redis grants the token only to a value whose remaining TTL is within the window and that has no live token, so one instance in the cluster reloads and fills with the token. The others refill L2 from L1. `invalidate`, `put`, and set updates destroy the token, so a refresh is fenced like any fill. A token older than `lease-ttl` can be taken over. A refresh that is rejected by the executor or fails only logs: the value expires normally.
 
+An instance that doesn't get the token finds the value still inside the window, so a plain refill would leave its copy due for refresh on every hit, polling Redis at the hit rate until the holder fills (or, if the holder crashed, until its token outlives `lease-ttl`). Instead the refilled copy's refresh point is `min(b, remaining / 2)` from now, where `b` is `lease-wait` with a 100 ms floor. The next read comes after the holder has had time to fill, and always before the old value expires. The fill doesn't broadcast (a broadcast would turn every instance's next hit into a miss), so this re-read is how the other instances get the new value. If the token has outlived `lease-ttl` by then, the re-reader takes it over.
+
+Any other copy created with no more than the window left (a fill, an L1 hit, a degraded fill) gets no refresh point. Each fill clears the token, so a value whose lifetime is within the window, from a short `ttlOf` or `put(key, value, ttl)`, would otherwise be reloaded by the token holder on every hit. Such values just expire. See [architecture.md §5.5](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md).
+
 ## Failure handling {#failures}
 
 | Failure | What happens | Why it stays safe |
