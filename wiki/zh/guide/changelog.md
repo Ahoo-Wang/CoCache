@@ -5,6 +5,36 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布
+
+**模块组：** `me.ahoo.cocache` · 计划为 6.9.0。次版本：没有 loader 的缓存（Redis 是唯一副本）有两项默认值变化，条件写入与按版本写入有一项广播修复。没有删除任何 API。`CachePolicy.invalidateFailure` 与 `CachePolicy.readFailure` 改为可空，JVM 签名不变，已编译的调用方照常运行。Redis 线格式与失效频道不变，6.9.0 实例可以与任何 6.x 实例共用 Redis，逐台升级。
+
+### 行为变化：没有 loader 的读取在 Redis 故障时失败
+
+- `read-failure`（`CachePolicy.readFailure`）默认改为未设置，按这次读取决定：有 loader 时与以前一样是 `degrade`，没有 loader 时是 `throw`。显式设置的 `degrade` 或 `throw` 照常生效。
+- 因此默认情况下，没有 loader 的读取（没有 loader 的 `Cache` 经 `get`、`lookup` 或 `getAll` 读取）在 Redis 读取失败时抛出 `CacheReadException`，也不在 L2 中缓存任何东西。这样的读取没有可降级的数据源：跳过 Redis 只能得到“不存在”。这与 `getIfChanged` 和 `SetCache` 一致。
+- 把“读不到”当作安全答案的无 loader 缓存（如撤销表：Redis 故障即视为未撤销）显式设置 `read-failure: degrade`。读取随后返回 `null`（`getAll` 中缺席，`lookup` 返回 `Absent`），计入 `cocache.remote.failures`，但不写入 L1 或 L2，故障期间的每次读取都会再次访问 Redis。
+- 6.8.0 及以前，读取返回 `null`，并把这个 `null` 作为负缓存在 L2 中保留 `degraded-local-max-age`（10 秒）。故障期间调用方把存在的 key 读成不存在；恢复后的这 10 秒内 `get(key)` 仍返回 `null`，`get(key, loader)` 也返回 `null`、不调用它的 loader。显式设置 `degrade` 不会恢复这份缓存。
+- `get(key, loader)` 有数据源，照常降级。它合并到一次失败的、没有 loader 的读取时，改用自己的 loader 加载，而不是跟着失败。
+- 没有 loader 时其余跳过 Redis 的读取（等待 lease 超时、失效仍在重试、更高格式版本且 `foreign-format: reclaim`、回收失败）仍返回 `null`，但不再把它缓存为负缓存，`get(key, loader)` 因此不会被它挡住。
+- Spring Cache：不带 sync 的 `@Cacheable` 是没有 loader 的读取，Redis 读取失败会交给 Spring 的 `CacheErrorHandler`（见 [Spring Cache](./spring-cache.md#failures)）。
+
+### 行为变化：没有 loader 时 `invalidate-failure` 默认为 `throw`
+
+- `invalidate-failure`（`CachePolicy.invalidateFailure`）默认改为未设置，按缓存决定：有 loader 时与以前一样是 `retry`，没有 loader 时是 `throw`。显式设置的 `retry` 或 `throw` 照常生效。
+- 没有 loader 时延迟的重试会丢失更新：实例 A 的 `invalidate` 失败、进入重试队列；实例 B 随后 `put` 写入这个 key；约 100 ms 后 A 的重试删掉了 B 的值。有 loader 时删除总是安全的，下一次读取会重新加载。
+- Spring Cache 的缓存通常没有 loader，`@CacheEvict` 失败因此改为抛出 `CacheWriteException`（经 Spring 的 `CacheErrorHandler`），不再重试。那里被注解的方法就是数据源、删除是安全的：在这些缓存上设置 `invalidate-failure: retry` 即可保持 6.8 的行为。
+- `CachePolicy.invalidateFailure` 与 `CachePolicy.Builder.invalidateFailure` 的类型改为 `InvalidateFailureMode?`，`readFailure` 改为 `ReadFailureMode?`。读取这个属性的 Kotlin 代码看到可空类型。针对 6.8 及以前编译的二进制（包括 6.4 的构造函数）得到新的默认值。
+
+### 修复：没有原子广播时，重放的条件写入与按版本写入会广播
+
+- 没有原子广播时（`sharded` 频道模式，或启动探测回退时），`putIfNewer` 或 `putIfMatch` 可能已写入 Redis，而单独的发布失败了。调用方得到 `CacheWriteException` 并按文档重放，但重放返回 `Stale(version)` 或 `Conflict(自己的摘要)`，不发布任何消息，其它实例的 L2 副本一直陈旧到 `local-max-age`。
+- 现在 `putIfNewer` / `invalidateIfNewer` 返回的 `Stale` 版本等于给出的版本时，以及 `putIfMatch` 冲突且当前摘要等于自己的值的摘要时，引擎也发布失效。多余的失效只会丢弃副本。更旧的版本与其它冲突仍不发布。原子广播不变。
+
+### TCK
+
+- `EngineSpec`、`FaultSpec` 与 `VersionedSpec`（及其异步版本）新增上述行为的用例，包括没有 loader 时的 `read-failure: degrade`。`VersionedSpec.refusedVersionsChangeNothingAndDoNotBroadcast` 现在要求没有原子广播的后端上相等的版本会广播。
+
 ## v6.8.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本，只有新增：`Cache`、`AsyncCache` 与 `SuspendingCache` 以 default 方法新增按版本有序的写入（没有覆盖它们的实现抛出 `UnsupportedOperationException`），`CacheSpec` 可以把缓存声明为带版本的，`cocache-api` 的 SPI 新增 `CoherenceBackend.versionedWrites` 与 `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync`（都带默认实现）。已有的调用方、自定义 `Cache` / `SuspendingCache` 实现与自定义后端照常编译与运行。Redis 的 key 布局、头部布局、格式版本与失效频道不变；6.0 到 6.7 的实例能读取带版本的值（见下文），6.8.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。

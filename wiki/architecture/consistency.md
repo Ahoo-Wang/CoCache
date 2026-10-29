@@ -212,9 +212,9 @@ Any other copy created with no more than the window left (a fill, an L1 hit, a d
 
 | Failure | What happens | Why it stays safe |
 |---------|--------------|-------------------|
-| Redis read fails | Default: load from the source, L2 only, `degraded-local-max-age`. Or throw (`read-failure: throw`). | No L1 write without a lease. The L2 copy is stamp-fenced and short-lived. |
+| Redis read fails | Default: load from the source, L2 only, `degraded-local-max-age`. Or throw (`read-failure: throw`). A read without a loader throws by default, or returns `null` with an explicit `read-failure: degrade`. | No L1 write without a lease. The L2 copy is stamp-fenced and short-lived. Without a loader there is no answer to degrade to, and caching "absent" would hide the value in L1, so nothing is cached either way. |
 | Fill or release fails, or times out | Logged and counted. The result is returned. | A fill is token-guarded: if it was applied, it was applied before any invalidation, because an invalidation would have destroyed the token. An unreleased lease expires after `lease-ttl`. |
-| `invalidate` fails | Local effect first (both bumps and evictions). Default: retried in the background (8 attempts, 100 ms to 10 s backoff, 10,000 queued), not thrown. Meanwhile, misses for the key on this instance skip L1. After success, the instance bumps and evicts once more. | This instance never serves or refills the old value. Other instances are bounded by L1's remaining TTL. A give-up is counted in `invalidations.dropped` and logged as an error. |
+| `invalidate` fails | Local effect first (both bumps and evictions). Default with a loader: retried in the background (8 attempts, 100 ms to 10 s backoff, 10,000 queued), not thrown. Meanwhile, misses for the key on this instance skip L1. After success, the instance bumps and evicts once more. Default without a loader: `CacheWriteException`. | This instance never serves or refills the old value. Other instances are bounded by L1's remaining TTL. A give-up is counted in `invalidations.dropped` and logged as an error. Without a loader a delayed delete could remove a newer value, so the caller decides. |
 | `put` or set write fails | Local effect first, then `CacheWriteException`. On a timeout, Redis may have applied it. | L2 was evicted on both sides of the attempt, so no stale local copy. The calls are idempotent. |
 | Redis disconnected | Commands are rejected, not buffered. | A buffered `put` that already failed for the caller could otherwise replay later and overwrite a newer value. |
 | Loader throws | The lease is released at once. The exception goes to the caller and every coalesced waiter. | Other instances don't wait for `lease-ttl`. |
@@ -233,7 +233,7 @@ These bounds are the precise form of goal G1. "Stale" means serving a value olde
 | The same instance after `invalidate` / `put` returns | **0** | Read-your-writes |
 | Other instances' L2, message delivered | Message latency | Normally milliseconds |
 | Other instances' L2, message lost and the connection noticed | `min(local-max-age, heartbeat + reconnect time)` | The heartbeat fails or the subscription is re-established, which resets L2 |
-| Other instances' L2, message lost silently | `local-max-age` | Default 5 minutes. Also the bound in `sharded` mode when a writer crashes between script and publish. |
+| Other instances' L2, message lost silently | `local-max-age` | Default 5 minutes. Also the bound in `sharded` mode when a writer crashes between script and publish. A `putIfMatch` or `putIfNewer` whose publish failed is published again when the caller replays it. |
 | L2 copy that bypassed L1 (degraded fill) | `degraded-local-max-age` | Redis failure, lease wait timeout, rejected fill, unknown format, pending invalidation |
 | Invalidation still being retried | Until the retry succeeds | The writing instance skips L1. Others may refill L2 from the old L1 value. |
 | Invalidation dropped | L1's remaining TTL, on every instance | Each L2 copy expires and refills from the old L1 value. Unbounded with `ttl-forever`. Counted and logged. |

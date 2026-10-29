@@ -101,7 +101,7 @@ A read before the record existed cached a negative entry, and it lasts up to `ab
 
 **Symptom.** `cocache.write.failures` and `cocache.invalidation.retries` rise. The health details show `pendingInvalidations` above 0. Worst case, `cocache.invalidations.dropped` rises with the `ERROR` log `Cache[…] - invalidate […] dropped: L1 keeps the stale value until its remote TTL[…] expires.`
 
-**Cause.** An `invalidate` couldn't reach Redis. By default (`invalidate-failure: retry`), the local effect happens at once, the call returns normally, and the invalidation is retried in the background: up to 8 attempts, backing off from 100 ms to 10 s, with up to 10,000 queued. While a retry is pending, misses for that key on this instance skip L1 and load from the source. Other instances still have the old value in L1.
+**Cause.** An `invalidate` couldn't reach Redis. On a cache with a loader, by default (`invalidate-failure: retry`), the local effect happens at once, the call returns normally, and the invalidation is retried in the background: up to 8 attempts, backing off from 100 ms to 10 s, with up to 10,000 queued. While a retry is pending, misses for that key on this instance skip L1 and load from the source. Other instances still have the old value in L1.
 
 An invalidation is dropped when its retries run out, the queue is full, or the application shuts down with retries pending. L1 then keeps the old value until its remaining `ttl` ends (forever with `ttl-forever`), and every instance can reload it into L2.
 
@@ -110,7 +110,7 @@ An invalidation is dropped when its retries run out, the queue is full, or the a
 **Fix.**
 
 - Invalidate the dropped keys again once Redis is back: `DELETE /actuator/cocache/{name}/{key}`, or `cache.invalidateAll(keys)`.
-- To fail the caller instead of retrying, set `invalidate-failure: throw`. The call then throws `CacheWriteException`.
+- To fail the caller instead of retrying, set `invalidate-failure: throw`. The call then throws `CacheWriteException`. This is the default for a cache without a loader: Redis holds its only copy, and a delayed retry would delete a value another instance wrote after the failure.
 - To change the retry policy, declare your own `CacheRuntime` bean built with `RetryPolicy(maxAttempts, initialBackoff, maxBackoff, capacity)`. The starter's runtime backs off when one exists.
 - Shut instances down gracefully, so the retry queue is short at exit.
 
@@ -122,9 +122,9 @@ An invalidation is dropped when its retries run out, the queue is full, or the a
 
 | Operation | Behavior while Redis fails |
 |-----------|----------------------------|
-| `get`, `getAll`, `lookup` | Default (`read-failure: degrade`): load from the source, keep the result in L2 for `degraded-local-max-age` (10 s), write nothing to L1. With `read-failure: throw`: `CacheReadException`. |
+| `get`, `getAll`, `lookup` | Default (`read-failure: degrade`): load from the source, keep the result in L2 for `degraded-local-max-age` (10 s), write nothing to L1. With `read-failure: throw`: `CacheReadException`. Without a loader (no loader on the cache, and not `get(key, loader)`): `CacheReadException` by default, nothing cached; with an explicit `read-failure: degrade`, `null` (absent from `getAll`), still nothing cached. |
 | Fill, lease release, refresh | Best effort: logged and counted, never thrown |
-| `invalidate`, `invalidateAll` | Local effect at once, then retried in the background ([above](#invalidations-dropped)). With `invalidate-failure: throw`: `CacheWriteException`. |
+| `invalidate`, `invalidateAll` | Local effect at once, then retried in the background ([above](#invalidations-dropped)). With `invalidate-failure: throw`, the default without a loader: `CacheWriteException`. |
 | `put`, `SetCache` writes | Local effect at once, then `CacheWriteException`. After a timeout the write may have reached Redis anyway, unless it was still waiting to be sent: then it is dropped and never applied later. These calls are idempotent, so retrying is safe. |
 | `SetCache` reads | Throw the Redis exception: there is no source to fall back to |
 | Channel | Heartbeat fails, every L2 is cleared, and it is cleared again when the subscription is restored |

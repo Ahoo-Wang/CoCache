@@ -56,8 +56,19 @@ internal class LocalEntry<V>(
 
 /**
  * 一次加载的结果及其开始时的失效戳。
+ *
+ * @param failure 这次加载没有答案时要抛出的异常（没有数据源的读取遇到 L1 失败）。此时 [entry] 是没有写入 L2 的 `unresolved` 占位：
+ *   合并到这次加载的带 loader 的读取不接受它，改用自己的数据源
  */
-internal class Loaded<V>(val entry: LocalEntry<V>, val stamp: Long)
+internal class Loaded<V>(val entry: LocalEntry<V>, val stamp: Long, val failure: Exception? = null) {
+    /**
+     * 这次加载的答案；没有答案时抛出 [failure]。
+     */
+    fun answer(): LocalEntry<V> {
+        failure?.let { throw it }
+        return entry
+    }
+}
 
 internal const val FOREVER = Long.MAX_VALUE
 
@@ -197,8 +208,9 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     }
 
     /**
-     * 同 [write]，但 [mutate] 正常返回后由 [changed] 判定 L1 是否被修改（条件写入的冲突不修改 L1）：
-     * 未修改时非原子广播的后端不广播（原子广播的后端由存储自己决定）。戳与 L2 淘汰照常执行，只多淘汰一次本地副本。
+     * 同 [write]，但 [mutate] 正常返回后由 [changed] 判定是否需要广播：L1 被这次写入修改，或可能已被之前同样的写入修改
+     * （条件写入的重放：上一次已在 L1 生效、单独的广播却失败了）。不需要时非原子广播的后端不广播（原子广播的后端由存储自己决定）。
+     * 戳与 L2 淘汰照常执行，只多淘汰一次本地副本。
      */
     @Suppress("TooGenericExceptionCaught", "InstanceOfCheckForException")
     protected fun write(
@@ -319,7 +331,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     @Suppress("TooGenericExceptionCaught")
     private fun publishAfter(frame: ByteArray, error: Throwable?, changed: () -> Boolean): CompletableFuture<Void?> {
         if (error == null) {
-            // 条件写入的冲突没有修改 L1，没有需要广播的变化
+            // 条件写入的冲突没有修改 L1；只有可能是重放时才需要广播（见 write）
             return if (changed()) asyncChannel.publishAsync(namespace, frame) else Futures.done()
         }
         if (isRefusal(error)) {

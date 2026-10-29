@@ -443,8 +443,11 @@ abstract class VersionedSpec {
         cacheA.putIfNewer("k", "older", 0).assert().isEqualTo(VersionedPut.Stale(1))
         cacheA.invalidateIfNewer("k", 1).assert().isEqualTo(VersionedPut.Stale(1))
         cacheA.putIfNewer("marker", "m", 1).assert().isEqualTo(VersionedPut.Written)
-        awaitCondition("marker broadcast") { nodeB.metrics().invalidationsReceived > received }
-        nodeB.metrics().invalidationsReceived.assert().isEqualTo(received + 1)
+        // 非原子广播的后端上，相等的版本可能是已生效却没能广播的写入的重放，仍然广播（见 replayOfAnAppliedVersionedWriteBroadcasts）。
+        // 等到期望的条数全部到达：Redis Cluster 上经不同节点发布的消息之间没有顺序，标记可能先于它们到达
+        val expected = received + (if (backend.atomicBroadcast) 0 else 2) + 1
+        awaitCondition("marker broadcast") { nodeB.metrics().invalidationsReceived >= expected }
+        nodeB.metrics().invalidationsReceived.assert().isEqualTo(expected)
 
         remoteVersioned("k").assert().isEqualTo(Versioned("v1", 1))
         requireNotNull(remoteTtl("k")).assert().isLessThanOrEqualTo(ttl)
@@ -684,6 +687,44 @@ abstract class VersionedSpec {
         cache.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Stale(1))
         cache.getVersioned("k").assert().isEqualTo(Versioned("v1", 1))
         nodeA.metrics().writeFailures.assert().isEqualTo(1)
+    }
+
+    /**
+     * 非原子广播的后端上，按版本写入已在 L1 生效而单独的广播失败（调用方得到 [CacheWriteException]）时，按 §6.5 重放同一版本返回
+     * [VersionedPut.Stale] 且当前版本等于给出的版本：这时仍要广播，否则其它节点的 L2 陈旧至 `localMaxAge`。墓碑相同。
+     */
+    @Test
+    fun replayOfAnAppliedVersionedWriteBroadcasts() {
+        backend.atomicBroadcastOverride = false
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        writeSilently("k", scalar("v1", 1), 1)
+        cacheB["k"].assert().isEqualTo("v1")
+        // putIfNewer(k, v2, 2) 已在 L1 生效、广播没有发出
+        writeSilently("k", scalar("v2", 2), 2)
+        cacheB["k"].assert().isEqualTo("v1")
+
+        cacheA.putIfNewer("k", "v2", 2).assert().isEqualTo(VersionedPut.Stale(2))
+        awaitCondition("the replay reached B") { cacheB["k"] == "v2" }
+
+        writeSilently("k", Envelope.Absent, 3)
+        cacheB["k"].assert().isEqualTo("v2")
+        cacheA.invalidateIfNewer("k", 3).assert().isEqualTo(VersionedPut.Stale(3))
+        awaitCondition("the tombstone replay reached B") { cacheB["k"] == null }
+    }
+
+    /**
+     * 不广播地直接按版本写 L1（模拟已生效但广播丢失的写入）。
+     */
+    private fun writeSilently(key: String, envelope: Envelope, version: Long) {
+        store().putIfNewer(
+            storageKey(key),
+            envelope,
+            version,
+            null,
+            InvalidationFrame.encode(NodeId.random(), emptyList()),
+            false
+        ).assert().isEqualTo(RemoteVersionedWrite.Written)
     }
 
     /**

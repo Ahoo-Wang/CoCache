@@ -13,7 +13,9 @@
 
 package me.ahoo.cocache.core.engine
 
+import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -29,14 +31,20 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.ReadFailureMode
 import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Concurrency.awaitOrFail
+import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.cocache.test.EngineSpec.TestCodec
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.RemoteUnavailableException
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -126,6 +134,101 @@ class CoherentEngineRegressionTest {
         cache["k"].assert().isNull()
         cache.get("k") { "loaded-$it" }.assert().isEqualTo("loaded-k")
         cache["k"].assert().isEqualTo("loaded-k")
+    }
+
+    /**
+     * 没有数据源的读取在 L1 失败时没有答案（抛出），它的结果经 SingleFlight 共享：合并到它的带 loader 的读取不跟着失败，
+     * 改用自己的 loader 降级回源。
+     */
+    @Test
+    fun callSiteLoaderJoiningAFailedLoaderlessReadUsesItsOwnLoader() {
+        val (plain, withLoader) = joinAFailingLoaderlessRead(spec { loader = null })
+        plain.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        withLoader.assert().isEqualTo("loaded")
+    }
+
+    /**
+     * 显式 `readFailure = DEGRADE`：不带 loader 的一方读到不存在（不缓存），合并到它的带 loader 的一方同样不接受这个结果，
+     * 用自己的 loader 降级。
+     */
+    @Test
+    fun callSiteLoaderJoiningADegradedLoaderlessReadUsesItsOwnLoader() {
+        val degrade = CachePolicy(
+            ttl = Duration.ofMinutes(10),
+            ttlJitter = Duration.ZERO,
+            readFailure = ReadFailureMode.DEGRADE
+        )
+        val (plain, withLoader) = joinAFailingLoaderlessRead(spec(degrade) { loader = null })
+        plain.getOrThrow().assert().isNull()
+        withLoader.assert().isEqualTo("loaded")
+    }
+
+    /**
+     * 不带 loader 的读取在 L1 读取中途被挡住，带 loader 的读取合并到它；随后两者的 L1 读取都失败。
+     * 返回两者的结果（前者可能失败）；带 loader 的一方的降级填充是唯一的一次。
+     */
+    private fun joinAFailingLoaderlessRead(spec: CacheSpec<String, String>): Pair<Result<String?>, String?> {
+        val cache = runtime().engine(spec)
+        val reading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        backend.afterRead = { _, _ ->
+            reading.countDown()
+            release.awaitOrFail("release")
+            throw RemoteUnavailableException("read")
+        }
+        val plain = fork("plain") { runCatching { cache["k"] } }
+        reading.awaitOrFail("plain read")
+        val withLoader = fork("loader") { cache.get("k") { "loaded" } }
+        awaitCondition("joined the plain read") { withLoader.thread.state == Thread.State.WAITING }
+        backend.afterRead = null
+        backend.failAll = true
+        release.countDown()
+        val results = plain.join() to withLoader.join()
+        cache.metrics.degradedFills.assert().isEqualTo(1)
+        return results
+    }
+
+    /**
+     * [callSiteLoaderJoiningAFailedLoaderlessReadUsesItsOwnLoader] 的异步与批量版本。
+     */
+    @Test
+    fun asyncAndBatchJoinersOfAFailedLoaderlessReadUseTheirOwnLoader() {
+        val cache = runtime().engine(spec { loader = null })
+        val reading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        backend.afterReadAll = { _ ->
+            reading.countDown()
+            release.awaitOrFail("release")
+            throw RemoteUnavailableException("readAll")
+        }
+        val batch = fork("batch") { cache.async().getAll(listOf("k", "other")).handle { _, error -> error }.join() }
+        reading.awaitOrFail("batch read")
+        val withLoader = cache.async().get("k", AsyncCacheLoader { CompletableFuture.completedFuture("loaded") })
+        val plain = cache.async().get("other")
+        withLoader.isDone.assert().isFalse()
+        backend.afterReadAll = null
+        backend.failAll = true
+        release.countDown()
+        batch.join().assert().isInstanceOf(CacheReadException::class.java)
+        withLoader.join().assert().isEqualTo("loaded")
+        plain.handle { _, error -> error }.join().assert().isInstanceOf(CacheReadException::class.java)
+        runCatching { cache.getAll(listOf("k", "other")) }.exceptionOrNull()
+            .assert().isInstanceOf(CacheReadException::class.java)
+    }
+
+    /**
+     * 运行时关闭之后，没有数据源的异步读取在 L1 失败时以原始异常失败，与有数据源时相同（关闭时不降级、不包装为 CacheReadException）。
+     */
+    @Test
+    fun loaderlessAsyncReadFailureAfterCloseFailsWithTheRemoteError() {
+        val runtime = runtime()
+        val cache = runtime.engine(spec { loader = null })
+        runtime.close()
+        backend.failAll = true
+        cache.async().get("k").handle { _, error -> error }.join()
+            .assert().isInstanceOf(RemoteUnavailableException::class.java)
+        cache.async().getAll(listOf("k")).handle { _, error -> error }.join()
+            .assert().isInstanceOf(RemoteUnavailableException::class.java)
     }
 
     @Test

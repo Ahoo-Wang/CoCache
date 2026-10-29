@@ -44,6 +44,7 @@ import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.core.policy.ReadFailureMode
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -501,6 +502,91 @@ abstract class EngineSpec {
         remoteValue("k").assert().isEqualTo("v")
     }
 
+    /**
+     * 没有数据源时 L1 是唯一副本：L1 读失败没有可降级的答案（绕过 L1 只能得到“不存在”），降级读失败模式下也抛出
+     * [CacheReadException]（单 key 与批量），不写 L2。恢复后照常读到 L1 中的值；调用方给出的 loader 是数据源，照常降级回源。
+     */
+    @Test
+    fun remoteReadFailureWithoutLoaderFailsClosed() {
+        val cache = nodeA.cache(spec { loader = null })
+        nodeB.cache(spec { loader = null }).put("k", "v")
+        backend.failAll = true
+        listOf<Pair<String, () -> Any?>>(
+            "read" to { cache["k"] },
+            "read" to { cache.lookup("k") },
+            "readAll" to { cache.getAll(listOf("k", "other")) },
+        ).forEach { (operation, read) ->
+            val error = runCatching { read() }.exceptionOrNull()
+            error.assert().isInstanceOf(CacheReadException::class.java)
+            (error as CacheReadException).operation.assert().isEqualTo(operation)
+            error.cause.assert().isInstanceOf(RemoteUnavailableException::class.java)
+        }
+        cache.get("other") { "fallback" }.assert().isEqualTo("fallback")
+        backend.failAll = false
+        nodeA.metrics().degradedFills.assert().isEqualTo(1)
+        cache["k"].assert().isEqualTo("v")
+        cache.get("k") { "unused" }.assert().isEqualTo("v")
+        cache.getAll(listOf("k", "other")).assert().isEqualTo(mapOf("k" to "v", "other" to "fallback"))
+    }
+
+    /**
+     * 显式 `readFailure = DEGRADE`：没有数据源的读取在 L1 失败时读到不存在（单 key、`lookup` 与批量），不抛出，计入 `remoteFailures`，
+     * 但不写入任何一层：恢复后照常读到 L1 中的值，故障期间同一个 key 上带 loader 的读取也不被挡住。
+     * 供把“读不到”当作安全答案的缓存使用（如撤销表：Redis 故障即视为未撤销）。
+     */
+    @Test
+    fun remoteReadFailureWithoutLoaderDegradesWithoutCachingWhenConfigured() {
+        val degrade = policy().toBuilder().readFailure(ReadFailureMode.DEGRADE).build()
+        val cache = nodeA.cache(spec(degrade) { loader = null })
+        nodeB.cache(spec { loader = null }).put("k", "v")
+        backend.failAll = true
+        cache["k"].assert().isNull()
+        cache.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
+        cache.getAll(listOf("k", "other")).assert().isEmpty()
+        cache["j"].assert().isNull()
+        cache.get("j") { "fallback" }.assert().isEqualTo("fallback")
+        backend.failAll = false
+        nodeA.metrics().remoteFailures.assert().isEqualTo(5)
+        nodeA.metrics().degradedFills.assert().isEqualTo(1)
+        cache["k"].assert().isEqualTo("v")
+        cache.getAll(listOf("k")).assert().isEqualTo(mapOf("k" to "v"))
+        remote("j").assert().isEqualTo(RemoteRead.Miss(false))
+    }
+
+    /**
+     * 没有数据源时，绕过 L1 的读取（这里是等待 lease 超时）只能得到“不存在”：它只是没有答案，不是已决的负缓存，
+     * 不挡住随后带 loader 的读取。
+     */
+    @Test
+    fun bypassedReadWithoutLoaderDoesNotBlockACallSiteLoader() {
+        val impatient = policy().toBuilder().lease(
+            LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ZERO)
+        ).build()
+        val cacheA = nodeA.cache(spec(impatient) { loader = null })
+        val cacheB = nodeB.cache(spec { loader = null })
+        val loading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val holder = fork("holder") {
+            cacheB.get("k") { _ ->
+                loading.countDown()
+                release.awaitOrFail("release")
+                "b"
+            }
+        }
+        loading.awaitOrFail("B loading")
+        cacheA["k"].assert().isNull()
+        nodeA.metrics().leaseWaitTimeouts.assert().isEqualTo(1)
+        val calls = AtomicInteger()
+        cacheA.get("k") { _ ->
+            calls.incrementAndGet()
+            "a"
+        }.assert().isEqualTo("a")
+        calls.get().assert().isEqualTo(1)
+        release.countDown()
+        holder.join().assert().isEqualTo("b")
+        remoteValue("k").assert().isEqualTo("b")
+    }
+
     @Test
     fun failedInvalidateIsRetriedAndBypassesTheStaleRemoteMeanwhile() {
         val cache = nodeA.cache()
@@ -524,6 +610,26 @@ abstract class EngineSpec {
         val error = runCatching { cache.invalidate("k") }.exceptionOrNull()
         error.assert().isInstanceOf(CacheWriteException::class.java)
         (error as CacheWriteException).operation.assert().isEqualTo("invalidate")
+    }
+
+    /**
+     * 显式 `RETRY`：没有数据源的缓存也照常登记重试（延迟的删除可能删掉其间其它写入方的写入，由配置者承担）。
+     * 重试期间读取绕过 L1，只能得到“不存在”：没有答案，不挡住带 loader 的读取。
+     */
+    @Test
+    fun failedInvalidateWithoutLoaderIsRetriedWhenConfigured() {
+        val retry = policy().toBuilder().invalidateFailure(InvalidateFailureMode.RETRY).build()
+        val cache = nodeA.cache(spec(retry) { loader = null })
+        val admin = requireNotNull(nodeA.admin(cacheName))
+        cache.put("k", "v0")
+        backend.failWrites = true
+        cache.invalidate("k")
+        admin.pendingInvalidationCount.assert().isEqualTo(1)
+        cache["k"].assert().isNull()
+        cache.get("k") { "loaded" }.assert().isEqualTo("loaded")
+        backend.failWrites = false
+        awaitCondition("retry deleted the remote value") { remote("k") == RemoteRead.Miss(false) }
+        awaitCondition("retry succeeded") { admin.pendingInvalidationCount == 0 }
     }
 
     @Test
@@ -1222,6 +1328,26 @@ abstract class EngineSpec {
         awaitCondition("marker broadcast") { nodeB.metrics().invalidationsReceived > received }
         nodeB.metrics().invalidationsReceived.assert().isEqualTo(received + 1)
         other["k"].assert().isEqualTo("v1")
+    }
+
+    /**
+     * 非原子广播的后端上，条件写入已在 L1 生效而单独的广播失败（调用方得到 [CacheWriteException]）时，重放同一次写入会冲突，
+     * 且冲突摘要等于这次写入的摘要：这时仍要广播，否则其它节点的 L2 陈旧至 `localMaxAge`。多余的广播只淘汰副本。
+     */
+    @Test
+    fun replayOfAnAppliedConditionalWriteBroadcasts() {
+        assumeConditionalWrites()
+        backend.atomicBroadcastOverride = false
+        val cache = storeOfRecord()
+        val other = nodeB.cache(spec { loader = null })
+        writeRemoteSilently("k", TestCodec.encode("v1"))
+        other["k"].assert().isEqualTo("v1")
+        // putIfMatch(k, v1 → v2) 已在 L1 生效、广播没有发出
+        writeRemoteSilently("k", TestCodec.encode("v2"))
+        other["k"].assert().isEqualTo("v1")
+
+        cache.putIfMatch("k", digestOf("v1"), "v2").assert().isEqualTo(ConditionalPut.Conflict(digestOf("v2")))
+        awaitCondition("the replay reached the other node") { other["k"] == "v2" }
     }
 
     /**

@@ -75,6 +75,14 @@ cocache:
 
 通过 `get(key)` 读到负缓存时视为未命中，这是有意为之：CoCache 在 loader 找不到数据时都会写负缓存，若把它当作缓存的 `null`，不带 sync 的 `@Cacheable` 方法将永远不会执行。
 
+### Redis 故障时 {#failures}
+
+经 Spring Cache 使用的缓存通常没有自己的 loader：被注解的方法就是数据源。6.9 起，这样的缓存把没有数据源的读取与失效视为没有退路：
+
+- `@Cacheable(sync = true)` 把方法作为 loader 传入，Redis 读取失败时照常执行方法，结果以 `degraded-local-max-age` 留在 L2 中。
+- 不带 sync 的 `@Cacheable` 经 `get(key)` 读取，没有 loader。Redis 读取失败时抛出 `CacheReadException`，由 Spring 交给 `CacheErrorHandler`：默认的处理器重新抛出，`LoggingCacheErrorHandler` 记录日志后改为执行方法。也可以在缓存上设置 `read-failure: degrade`：读取返回未命中且不缓存，Spring 随后执行方法。
+- `@CacheEvict` 在 Redis 删除失败时抛出 `CacheWriteException`，因为没有 loader 时 `invalidate-failure` 默认为 `throw`。这里方法就是数据源、删除总是安全的，可以在这些缓存上设置 `invalidate-failure: retry`，像 6.8 一样把失败的删除放进重试队列。见[配置](./configuration.md#policy-properties)。
+
 ## retrieve 执行器（已弃用） {#executor}
 
 6.3 起，`retrieve` 经缓存的[异步视图](./async.md)，不再需要单独的执行器。6.3 之前，每个等待中的调用都占一个线程，执行器还必须不排队，才能避免嵌套的异步 `@Cacheable(sync = true)` 死锁；现在这两点都不存在了。
