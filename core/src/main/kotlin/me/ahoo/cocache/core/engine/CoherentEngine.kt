@@ -115,6 +115,12 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private val refreshing = ConcurrentHashMap.newKeySet<String>()
 
+    /**
+     * 没取得刷新令牌、L1 仍在窗口内时，再读 L1 之前的退避（毫秒，见 [refill]）：`lease.wait`，即未命中等待别的节点回源的时长，
+     * 至少 [MIN_REFRESH_BACKOFF]（`lease.wait` 可以为 0，为 0 的退避等于每次命中都读 L1）。
+     */
+    private val refreshBackoff: Long = maxOf(policy.lease.wait, MIN_REFRESH_BACKOFF).toMillis()
+
     private val view = AsyncView()
 
     override fun async(): AsyncCache<K, V> = view
@@ -892,8 +898,12 @@ internal class CoherentEngine<K : Any, V : Any>(
         return RefreshStep.LoadWithToken
     }
 
+    /**
+     * 没取得刷新令牌时从 L1 重新填充 L2（同步与异步共用）。L1 仍在窗口内说明令牌在别的节点手里、它正在回源：
+     * 刷新点退避 [refreshBackoff]（见 [localEntry]），否则本节点的每次命中都会再读一次 L1，持有者崩溃时持续到令牌签发超过 `lease.ttl`。
+     */
     private fun refill(storageKey: String, step: RefreshStep.Refill<V>, stamp: Long): LocalEntry<V> {
-        val entry = localEntry(step.value, step.ttl, policy.localMaxAge)
+        val entry = localEntry(step.value, step.ttl, policy.localMaxAge, refreshBackoff)
         fillLocal(storageKey, entry, stamp)
         return entry
     }
@@ -2187,6 +2197,11 @@ internal class CoherentEngine<K : Any, V : Any>(
         val MAX_BACKOFF_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(50)
 
         fun nextBackoff(backoff: Long): Long = minOf(backoff * 2, MAX_BACKOFF_NANOS)
+
+        /**
+         * [refreshBackoff] 的下限：默认时钟（`TickingClock`）的刷新间隔，更短的退避在它看来与不退避相同。
+         */
+        val MIN_REFRESH_BACKOFF: Duration = Duration.ofMillis(100)
 
         /**
          * 异步数据源超时的哨兵值（不可能是数据源的结果）。

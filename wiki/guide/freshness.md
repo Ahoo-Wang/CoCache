@@ -228,7 +228,9 @@ cocache:
 ```
 
 - The window must be less than `ttl − ttl-jitter` and less than `local-max-age`, or every fresh copy would start inside it. With the defaults (5 min `local-max-age`), the window must be under 5 minutes.
-- Only one instance per key wins the refresh token in Redis and calls the loader. The others re-read the refreshed value. The cluster reloads each key once.
+- Only one instance per key wins the refresh token in Redis and calls the loader. The cluster reloads each key once.
+- The other instances keep serving their copy and read Redis again after a back-off: `lease-wait` (at least 100 ms), and never more than half the old value's remaining lifetime. So they pick up the reloaded value before the old one expires, and while the reload runs they read Redis a bounded number of times, however hot the key is.
+- A value that lives no longer than the window, from a short `ttlOf` or `put(key, value, ttl)`, is not refreshed: it would start inside the window, and every hit would reload it. It expires and reloads on the next miss. Likewise, an instance that first reads a value inside its window doesn't start a refresh for that copy; copies on other instances still do.
 - Only caches with a loader refresh. Negative entries are not refreshed.
 - A failed or skipped refresh only logs. The value expires normally, so staleness bounds never depend on refresh.
 - Refreshes run on a bounded pool (at most 4 threads, queue of 1024). When it is full, refreshes are skipped and counted in `cocache.refresh.rejections`. [`cocache.refresh-executor`](./configuration.md#executors) names another `Executor` bean to use instead.
