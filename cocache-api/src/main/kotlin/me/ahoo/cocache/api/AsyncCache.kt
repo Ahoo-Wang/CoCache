@@ -118,6 +118,45 @@ interface AsyncCache<K : Any, V : Any> {
         )
 
     /**
+     * 按版本有序的写入，语义同 [Cache.putIfNewer]。失败时以 [CacheWriteException] 完成；写入完成时本地 L2 已淘汰（读己之写）。
+     *
+     * 只有声明为带版本的缓存支持；其它缓存与实现默认以 [UnsupportedOperationException] 完成。
+     */
+    fun putIfNewer(key: K, value: V, version: Long): CompletableFuture<VersionedPut> = CompletableFuture.failedFuture(
+        UnsupportedOperationException("${javaClass.name} does not support putIfNewer().")
+    )
+
+    /**
+     * 以指定时长按版本写入，语义同 [Cache.putIfNewer] (key, value, version, ttl)。
+     */
+    fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): CompletableFuture<VersionedPut> =
+        CompletableFuture.failedFuture(
+            UnsupportedOperationException("${javaClass.name} does not support putIfNewer().")
+        )
+
+    /**
+     * 按版本有序的删除（墓碑），语义同 [Cache.invalidateIfNewer]。
+     */
+    fun invalidateIfNewer(key: K, version: Long): CompletableFuture<VersionedPut> = CompletableFuture.failedFuture(
+        UnsupportedOperationException("${javaClass.name} does not support invalidateIfNewer().")
+    )
+
+    /**
+     * 以指定时长写入墓碑，语义同 [Cache.invalidateIfNewer] (key, version, ttl)。
+     */
+    fun invalidateIfNewer(key: K, version: Long, ttl: Duration): CompletableFuture<VersionedPut> =
+        CompletableFuture.failedFuture(
+            UnsupportedOperationException("${javaClass.name} does not support invalidateIfNewer().")
+        )
+
+    /**
+     * 读穿透并返回版本，语义同 [Cache.getVersioned]。不存在时以 `null` 完成。
+     */
+    fun getVersioned(key: K): CompletableFuture<Versioned<V>?> = CompletableFuture.failedFuture(
+        UnsupportedOperationException("${javaClass.name} does not support getVersioned().")
+    )
+
+    /**
      * 回到同步 API（同一个引擎）。
      */
     fun sync(): Cache<K, V>

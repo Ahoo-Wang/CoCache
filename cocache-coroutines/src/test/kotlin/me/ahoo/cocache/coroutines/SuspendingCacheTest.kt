@@ -29,6 +29,8 @@ import kotlinx.coroutines.yield
 import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
@@ -609,5 +611,38 @@ class SuspendingCacheTest {
         }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
         runCatching { plain.putIfMatch("k", known, "v", Duration.ofSeconds(1)) }.exceptionOrNull()
             .assert().isInstanceOf(UnsupportedOperationException::class.java)
+        // 6.8 新增的按版本写入同样带默认实现
+        listOf<suspend () -> Any?>(
+            { plain.putIfNewer("k", "v", 1) },
+            { plain.putIfNewer("k", "v", 1, Duration.ofSeconds(1)) },
+            { plain.invalidateIfNewer("k", 1) },
+            { plain.invalidateIfNewer("k", 1, Duration.ofSeconds(1)) },
+            { plain.getVersioned("k") },
+        ).forEach { call ->
+            runCatching { call() }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
+        }
+    }
+
+    /**
+     * 带版本的挂起数据源（默认在 `Dispatchers.Default` 上执行）：回源保存版本，随后的按版本写入与之比较。
+     */
+    @Test
+    fun suspendingVersionedLoaderStoresTheVersion(): Unit = runBlocking<Unit> {
+        val cache = runtime.create(
+            cacheSpec<String, String>("versioned") {
+                codec = StringCodec
+                suspendingVersionedLoader(
+                    object : SuspendingCacheLoader<String, Versioned<String>> {
+                        override suspend fun load(key: String): Versioned<String>? = Versioned("loaded-$key", 5)
+                    }
+                )
+            }
+        ).suspending()
+        cache.getVersioned("k").assert().isEqualTo(Versioned("loaded-k", 5))
+        cache.putIfNewer("k", "old", 4).assert().isEqualTo(VersionedPut.Stale(5))
+        cache.putIfNewer("k", "new", 6, Duration.ofMinutes(1)).assert().isEqualTo(VersionedPut.Written)
+        cache.get("k").assert().isEqualTo("new")
+        cache.invalidateIfNewer("k", 7).assert().isEqualTo(VersionedPut.Written)
+        cache.get("k").assert().isNull()
     }
 }

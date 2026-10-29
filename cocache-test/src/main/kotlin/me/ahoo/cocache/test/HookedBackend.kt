@@ -26,6 +26,7 @@ import me.ahoo.cocache.api.spi.RemoteConditionalRead
 import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.Token
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -53,6 +54,8 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         get() = atomicBroadcastOverride ?: delegate.atomicBroadcast
     override val format: Int
         get() = delegate.format
+    override val versionedWrites: Boolean
+        get() = delegate.versionedWrites
     override val channel: InvalidationChannel
         get() = delegate.channel
 
@@ -115,6 +118,12 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
      */
     @Volatile
     var afterFill: ((String, Boolean) -> Unit)? = null
+
+    /**
+     * 按版本写入（`putIfNewer`，6.8）在 L1 执行之后、返回之前调用，参数为 key 与结果；抛出即模拟“已生效但向调用方报错”的写入。
+     */
+    @Volatile
+    var afterVersionedWrite: ((String, RemoteVersionedWrite) -> Unit)? = null
 
     /**
      * 异步方法的结果改在这个执行器上送达（模拟 L1 客户端的 I/O 线程，RFC 0004 §10.1）；为 `null` 时原样返回。
@@ -292,6 +301,20 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             return store.putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
         }
 
+        override fun putIfNewer(
+            key: String,
+            envelope: Envelope,
+            version: Long,
+            ttl: Duration?,
+            frame: ByteArray,
+            foreignAsAbsent: Boolean
+        ): RemoteVersionedWrite {
+            guard("put", fail = failWrites)
+            val result = store.putIfNewer(key, envelope, version, ttl, frame, foreignAsAbsent)
+            afterVersionedWrite?.invoke(key, result)
+            return result
+        }
+
         override fun close() = store.close()
     }
 
@@ -424,6 +447,22 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             foreignAsAbsent: Boolean
         ): CompletableFuture<RemoteConditionalWrite> = hooked("put", fail = failWrites) {
             store.putIfMatchAsync(key, expected, envelope, ttl, frame, foreignAsAbsent)
+        }
+
+        override fun putIfNewerAsync(
+            key: String,
+            envelope: Envelope,
+            version: Long,
+            ttl: Duration?,
+            frame: ByteArray,
+            foreignAsAbsent: Boolean
+        ): CompletableFuture<RemoteVersionedWrite> = hooked("put", fail = failWrites) {
+            val issuer = Thread.currentThread().name
+            store.putIfNewerAsync(key, envelope, version, ttl, frame, foreignAsAbsent)
+                .hooked(issuer, afterVersionedWrite != null) { result ->
+                    afterVersionedWrite?.invoke(key, result)
+                    result
+                }
         }
 
         override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =

@@ -16,6 +16,7 @@ package me.ahoo.cocache.core
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.core.policy.CachePolicy
 import java.time.Duration
 import java.util.function.Consumer
@@ -103,6 +104,24 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
      * 异步数据源（RFC 0004）；与 [loader] 至多设置一个，引擎在同步与异步路径之间自动适配。
      */
     val asyncLoader: AsyncCacheLoader<K, V>? = builder.asyncLoader
+
+    /**
+     * 带版本的数据源（6.8）：返回值与它的版本，回源写入 L1 时一起保存（`null` 表示不存在，写入没有版本的负缓存）。
+     * 与 [loader]、[asyncLoader]、[versionedAsyncLoader] 至多设置一个；设置时缓存即为带版本的（[versioned]）。
+     */
+    val versionedLoader: CacheLoader<K, Versioned<V>>? = builder.versionedLoader
+
+    /**
+     * 带版本的异步数据源（6.8），见 [versionedLoader]。
+     */
+    val versionedAsyncLoader: AsyncCacheLoader<K, Versioned<V>>? = builder.versionedAsyncLoader
+
+    /**
+     * 是否为带版本的缓存（6.8，按版本有序的写入）：显式声明，或设置了带版本的数据源。
+     * 只有带版本的缓存支持 `putIfNewer`、`invalidateIfNewer`、`getVersioned`；后端不支持版本（`CoherenceBackend.versionedWrites`）时创建即失败。
+     * 带版本的缓存不支持提前刷新（`refreshWindow`）：L1 头部放不下刷新令牌与版本。
+     */
+    val versioned: Boolean = builder.versioned || versionedLoader != null || versionedAsyncLoader != null
     val ttlOf: TtlFunction<K, V>? = builder.ttlOf
     val keyFilter: KeyFilter? = builder.keyFilter
     val policy: CachePolicy = builder.policy
@@ -110,6 +129,12 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
     init {
         requireValidName(name, namespace)
         require(loader == null || asyncLoader == null) { "Cache[$name] - set either loader or asyncLoader, not both." }
+        require(listOfNotNull(loader, asyncLoader, versionedLoader, versionedAsyncLoader).size <= 1) {
+            "Cache[$name] - set at most one of loader, asyncLoader, versionedLoader and versionedAsyncLoader."
+        }
+        require(!versioned || policy.refreshWindow == null) {
+            "Cache[$name] - a versioned cache does not support refreshWindow: the L1 header has no room for a refresh token next to the version."
+        }
     }
 
     override fun toString(): String = "CacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"
@@ -124,6 +149,9 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         it.codec = codec
         it.loader = loader
         it.asyncLoader = asyncLoader
+        it.versionedLoader = versionedLoader
+        it.versionedAsyncLoader = versionedAsyncLoader
+        it.versioned = versioned
         it.ttlOf = ttlOf
         it.keyFilter = keyFilter
         it.policy = policy
@@ -136,6 +164,13 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         var codec: Codec<V>? = null
         var loader: CacheLoader<K, V>? = null
         var asyncLoader: AsyncCacheLoader<K, V>? = null
+        var versionedLoader: CacheLoader<K, Versioned<V>>? = null
+        var versionedAsyncLoader: AsyncCacheLoader<K, Versioned<V>>? = null
+
+        /**
+         * 声明为带版本的缓存（见 [CacheSpec.versioned]）；设置带版本的数据源时不必再设置。
+         */
+        var versioned: Boolean = false
         var ttlOf: TtlFunction<K, V>? = null
         var keyFilter: KeyFilter? = null
         var policy: CachePolicy = CachePolicy.DEFAULT
@@ -146,6 +181,13 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         fun codec(codec: Codec<V>) = apply { this.codec = codec }
         fun loader(loader: CacheLoader<K, V>) = apply { this.loader = loader }
         fun asyncLoader(asyncLoader: AsyncCacheLoader<K, V>) = apply { this.asyncLoader = asyncLoader }
+        fun versionedLoader(
+            versionedLoader: CacheLoader<K, Versioned<V>>
+        ) = apply { this.versionedLoader = versionedLoader }
+        fun versionedAsyncLoader(
+            versionedAsyncLoader: AsyncCacheLoader<K, Versioned<V>>
+        ) = apply { this.versionedAsyncLoader = versionedAsyncLoader }
+        fun versioned(versioned: Boolean) = apply { this.versioned = versioned }
         fun ttlOf(ttlOf: TtlFunction<K, V>) = apply { this.ttlOf = ttlOf }
         fun keyFilter(keyFilter: KeyFilter) = apply { this.keyFilter = keyFilter }
         fun policy(policy: CachePolicy) = apply { this.policy = policy }

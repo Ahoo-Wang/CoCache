@@ -166,6 +166,65 @@ interface Cache<K : Any, V : Any> {
     )
 
     /**
+     * 按版本有序的写入（6.8）：仅当 [version] 大于 L1 中的版本时写入 [value]，按策略决定到期时间（同 [put]）。
+     * 比较与写入在 L1 中原子完成（Redis 后端是一个 Lua 脚本，一次往返），失效只在写入时广播。
+     *
+     * - 等于 L1 中的版本：幂等的空操作（重复投递）；小于：迟到的旧版本被拒绝。两者都返回 [VersionedPut.Stale]（附 L1 中的版本），
+     *   不写入、不广播、不改变到期时间。
+     * - L1 中没有版本的内容（`put` 写入的值、不带版本的回源、负缓存、lease 占位、不存在）排在任何版本之前：总是写入。
+     * - 写入时与 [put] 相同：销毁 lease 与刷新令牌，在途填充因此写不回（哪怕它读到的版本更高）；不填充本地 L2。
+     *
+     * 只有声明为带版本的缓存（`CacheSpec.versioned`）支持；后端不支持时创建缓存即失败。其它缓存与实现抛出 [UnsupportedOperationException]。
+     * L1 中是读不懂的内容时与 [putIfMatch] 的分类相同：抛出 [CacheWriteException]（`cause` 为 `ForeignFormatException`）。
+     *
+     * 普通的 [put]、[putIfMatch]、[invalidate] 与 L1 到期都会丢弃版本，之后任何版本都能写入：需要顺序保证的写入方全部使用本方法。
+     *
+     * @param version 这份值的版本，不能是 [Versioned.NO_VERSION]
+     * @throws CacheWriteException L1 写入失败（结果可能未知；重放同一版本是安全的：已写入时返回 [VersionedPut.Stale]）
+     */
+    fun putIfNewer(key: K, value: V, version: Long): VersionedPut = throw UnsupportedOperationException(
+        "${javaClass.name} does not support putIfNewer()."
+    )
+
+    /**
+     * 以指定时长按版本写入，语义同 [putIfNewer]。
+     */
+    fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut = throw UnsupportedOperationException(
+        "${javaClass.name} does not support putIfNewer()."
+    )
+
+    /**
+     * 按版本有序的删除（6.8）：仅当 [version] 大于 L1 中的版本时写入一个带版本的墓碑（负缓存 + 版本），比较规则与结果同 [putIfNewer]。
+     *
+     * 墓碑对读取就是不存在（与负缓存相同，不回源），并挡住迟到的旧版本：之后低于或等于 [version] 的 [putIfNewer] 返回
+     * [VersionedPut.Stale]。寿命是值的寿命（策略 `ttl` 加抖动，`ttlOf` 不适用）；到期之后迟到的旧版本可以再次写入，
+     * 因此墓碑的寿命要覆盖重复投递的时间窗口。与 [invalidate]（删除 key，之后读取回源）不同。
+     *
+     * @param version 删除时的版本，不能是 [Versioned.NO_VERSION]
+     * @throws CacheWriteException L1 写入失败（结果可能未知，重放同一版本是安全的）
+     */
+    fun invalidateIfNewer(key: K, version: Long): VersionedPut = throw UnsupportedOperationException(
+        "${javaClass.name} does not support invalidateIfNewer()."
+    )
+
+    /**
+     * 以指定时长写入墓碑，语义同 [invalidateIfNewer]。
+     */
+    fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut = throw UnsupportedOperationException(
+        "${javaClass.name} does not support invalidateIfNewer()."
+    )
+
+    /**
+     * 读穿透（同 [get]：L2 → L1 → 数据源），同时返回值的版本。不存在（含负缓存与墓碑）返回 `null`；
+     * 没有版本的值的版本是 [Versioned.NO_VERSION]。
+     *
+     * 只有声明为带版本的缓存支持（L2 副本与值一起保存版本，命中不访问 L1）；其它缓存与实现抛出 [UnsupportedOperationException]。
+     */
+    fun getVersioned(key: K): Versioned<V>? = throw UnsupportedOperationException(
+        "${javaClass.name} does not support getVersioned()."
+    )
+
+    /**
      * 同一个缓存的异步视图（RFC 0004）：共享 L2、失效戳、在途加载与 lease，每次返回同一个对象。
      *
      * 内置引擎与接口式声明的代理都支持；其它实现默认抛出 [UnsupportedOperationException]。

@@ -157,6 +157,24 @@ interface AsyncRemoteStore : RemoteStore {
     ): CompletableFuture<RemoteConditionalWrite> = CompletableFuture.failedFuture(
         UnsupportedOperationException("${javaClass.name} does not support putIfMatchAsync().")
     )
+
+    /**
+     * 异步的 [RemoteStore.putIfNewer]：版本更新时写入并广播，以 [RemoteVersionedWrite.Written] 完成；否则不修改、不广播。
+     *
+     * 默认实现以 [UnsupportedOperationException] 完成（理由同 [RemoteStore.putIfNewer]，不在调用方线程上阻塞地调用同步方法）：
+     * 支持版本的原生异步存储必须同时覆盖两者。
+     */
+    @Suppress("LongParameterList")
+    fun putIfNewerAsync(
+        key: String,
+        envelope: Envelope,
+        version: Long,
+        ttl: Duration?,
+        frame: ByteArray,
+        foreignAsAbsent: Boolean
+    ): CompletableFuture<RemoteVersionedWrite> = CompletableFuture.failedFuture(
+        UnsupportedOperationException("${javaClass.name} does not support putIfNewerAsync().")
+    )
 }
 
 /**

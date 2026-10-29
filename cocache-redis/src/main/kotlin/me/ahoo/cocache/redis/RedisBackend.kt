@@ -57,6 +57,11 @@ class RedisBackend private constructor(
     override val format: Int = RedisScripts.FORMAT
 
     /**
+     * 按版本有序的写入（6.8）：[RedisScripts.PUT_IF_NEWER]，一次往返。
+     */
+    override val versionedWrites: Boolean = true
+
+    /**
      * 失效通道模式。
      */
     val channelMode: RedisChannelMode = options.channelMode

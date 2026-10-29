@@ -14,6 +14,7 @@
 package me.ahoo.cocache.core.memory
 
 import me.ahoo.cocache.api.CacheClock
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
 import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
@@ -30,6 +31,7 @@ import me.ahoo.cocache.api.spi.RemoteConditionalRead
 import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
 import java.time.Duration
@@ -48,6 +50,8 @@ class InMemoryBackend @JvmOverloads constructor(
     override val atomicBroadcast: Boolean = true
 
     override val format: Int = FORMAT
+
+    override val versionedWrites: Boolean = true
 
     private val stores = ConcurrentHashMap<String, Store>()
     private val listeners = ConcurrentHashMap<String, CopyOnWriteArrayList<InvalidationListener>>()
@@ -93,6 +97,9 @@ class InMemoryBackend @JvmOverloads constructor(
 
     /**
      * 不可变槽位：每次转换都生成新槽位并重设到期时间。
+     *
+     * @param version 值或负缓存的版本（6.8）；[Versioned.NO_VERSION] 表示没有版本。与 Redis 后端相同：带版本的槽位从不授予刷新令牌、
+     *   从不被回收（版本只保存在值上，转为 lease 就丢了），只有整体写入能替换它
      */
     private class Slot(
         val state: State,
@@ -100,7 +107,10 @@ class InMemoryBackend @JvmOverloads constructor(
         val token: Token? = null,
         val tokenIssuedAt: Long = 0,
         val expireAt: Long = FOREVER,
+        val version: Long = Versioned.NO_VERSION,
     )
+
+    private fun versionOf(envelope: Envelope): Long = (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION
 
     /**
      * 原生异步（RFC 0004 §4.1）：内存操作不阻塞，异步方法就地执行并返回已完成的 future，从不同步抛出。
@@ -144,7 +154,7 @@ class InMemoryBackend @JvmOverloads constructor(
 
                     refresh != null && grantsRefresh(slot, refresh) -> {
                         result = RemoteRead.Hit(slot.envelope, FORMAT, remaining(slot), refreshGranted = true)
-                        Slot(slot.state, slot.envelope, refresh.token, now(), slot.expireAt)
+                        Slot(slot.state, slot.envelope, refresh.token, now(), slot.expireAt, slot.version)
                     }
 
                     else -> {
@@ -165,7 +175,7 @@ class InMemoryBackend @JvmOverloads constructor(
         )
 
         private fun grantsRefresh(slot: Slot, refresh: RefreshRequest): Boolean {
-            if (slot.state != State.VALUE || slot.expireAt == FOREVER) {
+            if (slot.state != State.VALUE || slot.expireAt == FOREVER || slot.version != Versioned.NO_VERSION) {
                 return false
             }
             if (slot.expireAt - now() > refresh.window.toMillis()) {
@@ -188,7 +198,12 @@ class InMemoryBackend @JvmOverloads constructor(
                 val slot = current.live()
                 if (slot?.token == fill.token) {
                     filled = true
-                    Slot(stateOf(fill.envelope), fill.envelope, expireAt = expireAt(fill.ttl))
+                    Slot(
+                        stateOf(fill.envelope),
+                        fill.envelope,
+                        expireAt = expireAt(fill.ttl),
+                        version = versionOf(fill.envelope)
+                    )
                 } else {
                     slot
                 }
@@ -204,13 +219,13 @@ class InMemoryBackend @JvmOverloads constructor(
                 when {
                     slot == null || slot.token != token -> slot
                     slot.state == State.LEASED -> null
-                    else -> Slot(slot.state, slot.envelope, expireAt = slot.expireAt)
+                    else -> Slot(slot.state, slot.envelope, expireAt = slot.expireAt, version = slot.version)
                 }
             }
         }
 
         override fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
-            slots[key] = Slot(stateOf(envelope), envelope, expireAt = expireAt(ttl))
+            slots[key] = Slot(stateOf(envelope), envelope, expireAt = expireAt(ttl), version = versionOf(envelope))
             publish(namespace, frame)
         }
 
@@ -218,7 +233,9 @@ class InMemoryBackend @JvmOverloads constructor(
          * 每个 key 的转换同 [put]，整批只广播一次 [frame]。
          */
         override fun putAll(puts: List<Put>, frame: ByteArray) {
-            puts.forEach { slots[it.key] = Slot(stateOf(it.envelope), it.envelope, expireAt = expireAt(it.ttl)) }
+            puts.forEach {
+                slots[it.key] = Slot(stateOf(it.envelope), it.envelope, expireAt = expireAt(it.ttl), version = versionOf(it.envelope))
+            }
             publish(namespace, frame)
         }
 
@@ -231,7 +248,7 @@ class InMemoryBackend @JvmOverloads constructor(
             var reclaimed = false
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (slot != null && slot.state != State.LEASED && Digest.of(slot.envelope) == observed) {
+                if (slot != null && reclaimable(slot) && Digest.of(slot.envelope) == observed) {
                     reclaimed = true
                     leaseSlot(lease)
                 } else {
@@ -240,6 +257,13 @@ class InMemoryBackend @JvmOverloads constructor(
             }
             return reclaimed
         }
+
+        /**
+         * lease 占位没有可回收的内容；带版本的槽位不回收（转为 lease 会丢掉版本，与 Redis 后端相同）。
+         */
+        private fun reclaimable(
+            slot: Slot
+        ): Boolean = slot.state != State.LEASED && slot.version == Versioned.NO_VERSION
 
         override fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
             addMembers(key, members, ttl, frame, checked = false)
@@ -359,12 +383,56 @@ class InMemoryBackend @JvmOverloads constructor(
                     outcome = RemoteConditionalWrite.Conflict(digest)
                     return@compute slot
                 }
-                Slot(State.VALUE, envelope, expireAt = expireAt(ttl))
+                Slot(State.VALUE, envelope, expireAt = expireAt(ttl), version = envelope.version)
             }
             if (outcome == RemoteConditionalWrite.Written) {
                 publish(namespace, frame)
             }
             return outcome
+        }
+
+        /**
+         * 比较版本与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。没有版本的值与负缓存、lease、不存在都总是写入；
+         * 集合总是拒绝（本后端没有格式 0 的内容，[foreignAsAbsent] 不起作用）。
+         */
+        override fun putIfNewer(
+            key: String,
+            envelope: Envelope,
+            version: Long,
+            ttl: Duration?,
+            frame: ByteArray,
+            foreignAsAbsent: Boolean
+        ): RemoteVersionedWrite {
+            require(envelope !is Envelope.Members) { "putIfNewer takes a scalar value or Envelope.Absent, not a set." }
+            var outcome: RemoteVersionedWrite = RemoteVersionedWrite.Written
+            slots.compute(key) { _, current ->
+                val slot = current.live()
+                if (slot?.state == State.SET) {
+                    outcome = RemoteVersionedWrite.Unreadable(FORMAT)
+                    return@compute slot
+                }
+                if (slot != null && slot.version != Versioned.NO_VERSION && slot.version >= version) {
+                    outcome = RemoteVersionedWrite.Stale(slot.version)
+                    return@compute slot
+                }
+                val stored = if (envelope is Envelope.Scalar) Envelope.Scalar(envelope.bytes, version) else envelope
+                Slot(stateOf(envelope), stored, expireAt = expireAt(ttl), version = version)
+            }
+            if (outcome == RemoteVersionedWrite.Written) {
+                publish(namespace, frame)
+            }
+            return outcome
+        }
+
+        override fun putIfNewerAsync(
+            key: String,
+            envelope: Envelope,
+            version: Long,
+            ttl: Duration?,
+            frame: ByteArray,
+            foreignAsAbsent: Boolean
+        ): CompletableFuture<RemoteVersionedWrite> = supply {
+            putIfNewer(key, envelope, version, ttl, frame, foreignAsAbsent)
         }
 
         override fun readIfChangedAsync(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =

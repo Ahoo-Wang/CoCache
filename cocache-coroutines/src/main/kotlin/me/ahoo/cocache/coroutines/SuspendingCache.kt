@@ -22,6 +22,8 @@ import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.Digest
 import java.time.Duration
 
@@ -91,6 +93,36 @@ interface SuspendingCache<K : Any, V : Any> {
      */
     suspend fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
         throw UnsupportedOperationException("${javaClass.name} does not support putIfMatch().")
+
+    /**
+     * 按版本有序的写入，语义同 [Cache.putIfNewer]。6.8 新增：默认抛出 [UnsupportedOperationException]。
+     */
+    suspend fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
+        throw UnsupportedOperationException("${javaClass.name} does not support putIfNewer().")
+
+    /**
+     * 以指定时长按版本写入，语义同 [Cache.putIfNewer] (key, value, version, ttl)。6.8 新增：默认抛出 [UnsupportedOperationException]。
+     */
+    suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+        throw UnsupportedOperationException("${javaClass.name} does not support putIfNewer().")
+
+    /**
+     * 按版本有序的删除（墓碑），语义同 [Cache.invalidateIfNewer]。6.8 新增：默认抛出 [UnsupportedOperationException]。
+     */
+    suspend fun invalidateIfNewer(key: K, version: Long): VersionedPut =
+        throw UnsupportedOperationException("${javaClass.name} does not support invalidateIfNewer().")
+
+    /**
+     * 以指定时长写入墓碑，语义同 [Cache.invalidateIfNewer] (key, version, ttl)。6.8 新增：默认抛出 [UnsupportedOperationException]。
+     */
+    suspend fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+        throw UnsupportedOperationException("${javaClass.name} does not support invalidateIfNewer().")
+
+    /**
+     * 读取并返回版本，语义同 [Cache.getVersioned]。6.8 新增：默认抛出 [UnsupportedOperationException]。
+     */
+    suspend fun getVersioned(key: K): Versioned<V>? =
+        throw UnsupportedOperationException("${javaClass.name} does not support getVersioned().")
 
     /**
      * 同一缓存的异步视图。

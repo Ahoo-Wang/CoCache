@@ -22,6 +22,8 @@ import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -32,6 +34,7 @@ import me.ahoo.cocache.api.spi.RemoteConditionalRead
 import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.ForeignFormatException
@@ -71,10 +74,10 @@ internal class CoherentEngine<K : Any, V : Any>(
     private val spec: CacheSpec<K, V>,
     store: RemoteStore,
     context: EngineContext,
+    private val format: ValueFormat<V> = CodecFormat(spec.codec),
 ) : AbstractEngine<K, V>(spec.name, spec.namespace, spec.keyPrefix, spec.keyEncoder, spec.policy, store, context),
     Cache<K, V> {
 
-    private val codec = spec.codec
     private val keyFilter = spec.keyFilter
     private val backendFormat = context.backend.format
     private val permits: LoadPermits? = policy.load.maxConcurrent.takeIf { it > 0 }?.let {
@@ -365,12 +368,12 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     private fun decode(envelope: Envelope): V? = when (envelope) {
-        is Envelope.Scalar -> codec.decode(envelope.bytes)
+        is Envelope.Scalar -> format.decode(envelope)
         Envelope.Absent -> null
         is Envelope.Members -> throw IllegalStateException("Cache[$name] - expected a scalar but found a set.")
     }
 
-    private fun envelopeOf(value: V?): Envelope = value?.let { Envelope.Scalar(codec.encode(it)) } ?: Envelope.Absent
+    private fun envelopeOf(value: V?): Envelope = value?.let { format.encode(it) } ?: Envelope.Absent
 
     private fun ttlOf(key: K, value: V?): Duration? {
         if (value == null) {
@@ -896,7 +899,7 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     private fun putWithTtl(key: K, value: V, ttl: Duration?) {
         val storageKey = storageKey(key)
-        val envelope = Envelope.Scalar(codec.encode(value))
+        val envelope = format.encode(value)
         val bounded = ttl?.boundedTtl()
         write(
             listOf(storageKey),
@@ -931,7 +934,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val latest = LinkedHashMap<String, Map.Entry<K, V>>(entries.size)
         entries.entries.forEach { latest[storageKey(it.key)] = it }
         return latest.map { (storageKey, entry) ->
-            Put(storageKey, Envelope.Scalar(codec.encode(entry.value)), ttlOf(entry.key, entry.value)?.boundedTtl())
+            Put(storageKey, format.encode(entry.value), ttlOf(entry.key, entry.value)?.boundedTtl())
         }
     }
 
@@ -985,7 +988,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             unreadableGet(storageKey, read.format, null)
         } else {
             try {
-                ConditionalGet.Present(codec.decode(read.envelope.bytes), Digest.of(read.envelope))
+                ConditionalGet.Present(format.decode(read.envelope), Digest.of(read.envelope))
             } catch (e: Exception) {
                 unreadableGet(storageKey, read.format, e)
             }
@@ -1018,7 +1021,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private fun putIfMatchWithTtl(key: K, expected: Digest?, value: V, ttl: Duration?): ConditionalPut {
         val storageKey = storageKey(key)
-        val envelope = Envelope.Scalar(codec.encode(value))
+        val envelope = format.encode(value)
         val bounded = ttl?.boundedTtl()
         var outcome: RemoteConditionalWrite? = null
         write(
@@ -1060,11 +1063,14 @@ internal class CoherentEngine<K : Any, V : Any>(
         if (result !is RemoteConditionalWrite.Unreadable) {
             return null
         }
+        throw refusedFormat(storageKey, result.format)
+    }
+
+    private fun refusedFormat(storageKey: String, format: Int): ForeignFormatException {
         metrics.unknownFormat()
-        val failure =
-            ForeignFormatException(name, storageKey, result.format, null, newer = result.format > backendFormat)
+        val failure = ForeignFormatException(name, storageKey, format, null, newer = format > backendFormat)
         log.warn { failure.message }
-        throw failure
+        return failure
     }
 
     private fun conditionalPutOf(envelope: Envelope.Scalar, result: RemoteConditionalWrite): ConditionalPut = when (result) {
@@ -1075,6 +1081,117 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
 
         is RemoteConditionalWrite.Unreadable -> throw IllegalStateException(
+            "Cache[$name] - unreachable: refused write."
+        )
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 按版本有序的写入（6.8）：比较与写入由后端在 L1 中原子完成，写入方顺序同 put（不写 L2）；版本不更新时不修改 L1、不广播。
+    // 只由带版本的缓存（VersionedCache，引擎的值是 Versioned）调用；value 为 null 时写入墓碑（带版本的负缓存）。
+    // 读不懂的内容的分类与条件写入相同。同步与异步共用 [refuseUnreadableVersion]、[versionedPutOf]。
+    // ---------------------------------------------------------------------------------------------
+
+    override fun putIfNewer(key: K, value: V, version: Long): VersionedPut = throw notVersioned("putIfNewer")
+
+    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut = throw notVersioned(
+        "putIfNewer"
+    )
+
+    override fun invalidateIfNewer(key: K, version: Long): VersionedPut = throw notVersioned("invalidateIfNewer")
+
+    override fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut = throw notVersioned(
+        "invalidateIfNewer"
+    )
+
+    override fun getVersioned(key: K): Versioned<V>? = throw notVersioned("getVersioned")
+
+    /**
+     * 引擎本身（普通缓存）不保存版本：按版本的操作只在声明为带版本的缓存（[VersionedCache]）上可用。
+     */
+    private fun notVersioned(operation: String) = UnsupportedOperationException(
+        "Cache[$name] - $operation() needs a versioned cache: declare it with CacheSpec.versioned or a versioned loader."
+    )
+
+    /**
+     * 按版本写入的默认寿命：值同 [put]（`ttlOf` 优先，否则策略寿命加抖动）；墓碑为策略寿命加抖动（`ttlOf` 需要值）。
+     */
+    internal fun versionedTtl(
+        key: K,
+        value: V?
+    ): Duration? = value?.let { spec.ttlOf?.ttlOf(key, it) } ?: policy.valueTtl()
+
+    internal fun writeIfNewer(key: K, value: V?, version: Long, ttl: Duration?): VersionedPut {
+        requireVersion(version)
+        val storageKey = storageKey(key)
+        val envelope = envelopeOf(value)
+        val bounded = ttl?.boundedTtl()
+        var outcome: RemoteVersionedWrite? = null
+        write(
+            listOf(storageKey),
+            { frame ->
+                val result = store.putIfNewer(storageKey, envelope, version, bounded, frame, !conditionalFailsOnForeign)
+                outcome = result
+                refuseUnreadableVersion(storageKey, result)
+            },
+            { outcome == RemoteVersionedWrite.Written },
+            versionedWriteFailure(versionedOperation(value))
+        )
+        return versionedPutOf(requireNotNull(outcome))
+    }
+
+    internal fun writeIfNewerAsync(key: K, value: V?, version: Long, ttl: Duration?): CompletableFuture<VersionedPut> {
+        requireVersion(version)
+        val storageKey = storageKey(key)
+        val envelope = envelopeOf(value)
+        val bounded = ttl?.boundedTtl()
+        val outcome = AtomicReference<RemoteVersionedWrite?>()
+        return writeAsync(
+            listOf(storageKey),
+            { frame ->
+                asyncStore.putIfNewerAsync(storageKey, envelope, version, bounded, frame, !conditionalFailsOnForeign)
+                    .thenApply {
+                        outcome.set(it)
+                        refuseUnreadableVersion(storageKey, it)
+                    }
+            },
+            { outcome.get() == RemoteVersionedWrite.Written },
+            versionedWriteFailure(versionedOperation(value))
+        ).thenApply { versionedPutOf(requireNotNull(outcome.get())) }
+    }
+
+    private fun requireVersion(version: Long) {
+        require(
+            version != Versioned.NO_VERSION
+        ) { "Cache[$name] - version must not be Versioned.NO_VERSION (Long.MIN_VALUE)." }
+    }
+
+    private fun versionedOperation(value: V?): String = if (value == null) "invalidateIfNewer" else "putIfNewer"
+
+    /**
+     * 同 [conditionalWriteFailure]：后端不支持（SPI 默认实现）时原样抛出 [UnsupportedOperationException]，其余包装为 `CacheWriteException`。
+     */
+    private fun versionedWriteFailure(operation: String): (Exception) -> Unit = { error ->
+        if (error is UnsupportedOperationException) {
+            throw error
+        }
+        throw CacheWriteException(name, operation, error)
+    }
+
+    private fun refuseUnreadableVersion(storageKey: String, result: RemoteVersionedWrite): Void? {
+        if (result !is RemoteVersionedWrite.Unreadable) {
+            return null
+        }
+        throw refusedFormat(storageKey, result.format)
+    }
+
+    private fun versionedPutOf(result: RemoteVersionedWrite): VersionedPut = when (result) {
+        RemoteVersionedWrite.Written -> VersionedPut.Written
+        is RemoteVersionedWrite.Stale -> {
+            metrics.staleVersion()
+            VersionedPut.Stale(result.current)
+        }
+
+        is RemoteVersionedWrite.Unreadable -> throw IllegalStateException(
             "Cache[$name] - unreachable: refused write."
         )
     }
@@ -1817,7 +1934,7 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     private fun putAsync(key: K, value: V, ttl: Duration?): CompletableFuture<Void?> {
         val storageKey = storageKey(key)
-        val envelope = Envelope.Scalar(codec.encode(value))
+        val envelope = format.encode(value)
         val bounded = ttl?.boundedTtl()
         return writeAsync(
             listOf(storageKey),
@@ -1856,7 +1973,7 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     private fun putIfMatchAsync(key: K, expected: Digest?, value: V, ttl: Duration?): CompletableFuture<ConditionalPut> {
         val storageKey = storageKey(key)
-        val envelope = Envelope.Scalar(codec.encode(value))
+        val envelope = format.encode(value)
         val bounded = ttl?.boundedTtl()
         val outcome = AtomicReference<RemoteConditionalWrite?>()
         return writeAsync(
@@ -2009,6 +2126,21 @@ internal class CoherentEngine<K : Any, V : Any>(
 
         override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): CompletableFuture<ConditionalPut> =
             Futures.relay(Futures.attempt { putIfMatchAsync(key, expected, value, ttl) })
+
+        override fun putIfNewer(key: K, value: V, version: Long): CompletableFuture<VersionedPut> =
+            CompletableFuture.failedFuture(notVersioned("putIfNewer"))
+
+        override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): CompletableFuture<VersionedPut> =
+            CompletableFuture.failedFuture(notVersioned("putIfNewer"))
+
+        override fun invalidateIfNewer(key: K, version: Long): CompletableFuture<VersionedPut> =
+            CompletableFuture.failedFuture(notVersioned("invalidateIfNewer"))
+
+        override fun invalidateIfNewer(key: K, version: Long, ttl: Duration): CompletableFuture<VersionedPut> =
+            CompletableFuture.failedFuture(notVersioned("invalidateIfNewer"))
+
+        override fun getVersioned(key: K): CompletableFuture<Versioned<V>?> =
+            CompletableFuture.failedFuture(notVersioned("getVersioned"))
 
         override fun sync(): Cache<K, V> = this@CoherentEngine
 

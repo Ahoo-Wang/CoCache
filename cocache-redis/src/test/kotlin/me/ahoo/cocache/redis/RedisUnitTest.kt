@@ -38,11 +38,13 @@ import io.mockk.mockkConstructor
 import io.mockk.mockkStatic
 import io.mockk.spyk
 import io.mockk.verify
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assumptions
@@ -114,6 +116,42 @@ class RedisUnitTest {
                 listOf(9L)
             )
         }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+    }
+
+    /**
+     * 按版本写入的结果码与头部中的版本（6.8）：版本只在令牌位置以 `VERSION_MARK` 开头时存在。
+     */
+    @Test
+    fun decodesVersionedWritesAndHeaderVersions() {
+        RedisRemoteStore.decodeVersionedWrite(listOf(1L)).assert().isEqualTo(RemoteVersionedWrite.Written)
+        RedisRemoteStore.decodeVersionedWrite(
+            listOf(0L, java.nio.ByteBuffer.allocate(8).putLong(-3L).array())
+        ).assert().isEqualTo(RemoteVersionedWrite.Stale(-3L))
+        RedisRemoteStore.decodeVersionedWrite(listOf(3L, 2L)).assert().isEqualTo(RemoteVersionedWrite.Unreadable(2))
+        runCatching { RedisRemoteStore.decodeVersionedWrite(listOf(9L)) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalStateException::class.java)
+
+        val header = ByteArray(RedisScripts.HEADER_SIZE).also {
+            it[0] = RedisScripts.MAGIC
+            it[1] = 1
+            it[2] = 'V'.code.toByte()
+        }
+        RedisRemoteStore.versionOf(header).assert().isEqualTo(Versioned.NO_VERSION)
+        RedisScripts.VERSION_MARK.copyInto(header, RedisScripts.VERSION_OFFSET)
+        RedisRemoteStore.versionOf(header).assert().isEqualTo(0L)
+        // 令牌恰好以 0xC0 开头、但不是完整的标记：仍然没有版本
+        header[RedisScripts.VERSION_OFFSET + 1] = 0
+        RedisRemoteStore.versionOf(header).assert().isEqualTo(Versioned.NO_VERSION)
+    }
+
+    @Test
+    fun putIfNewerRejectsSetsWithoutTouchingRedis() {
+        val store = RedisRemoteStore(mockk(), ByteArray(0), 512)
+        val members = Envelope.Members(listOf("a".toByteArray()))
+        runCatching { store.putIfNewer("k", members, 1, null, ByteArray(0), false) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+        store.putIfNewerAsync("k", members, 1, null, ByteArray(0), false).handle { _, error -> error }.join()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 
     @Test

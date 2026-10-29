@@ -135,4 +135,34 @@ class AsyncApiDefaultsTest {
             future.handle { _, error -> error }.join().assert().isInstanceOf(UnsupportedOperationException::class.java)
         }
     }
+
+    /**
+     * 按版本有序的写入是 6.8 新增的默认方法：不支持的实现同步 API 抛出、异步 API 以 [UnsupportedOperationException] 完成。
+     */
+    @Test
+    fun implementationsWithoutVersionSupportFailLoudly() {
+        val set = PlainSetCache()
+        listOf<() -> Any?>(
+            { set.putIfNewer("k", setOf("a"), 1) },
+            { set.putIfNewer("k", setOf("a"), 1, Duration.ofSeconds(1)) },
+            { set.invalidateIfNewer("k", 1) },
+            { set.invalidateIfNewer("k", 1, Duration.ofSeconds(1)) },
+            { set.getVersioned("k") },
+        ).forEach { call ->
+            runCatching { call() }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
+        }
+
+        val async = PlainAsyncCache()
+        listOf(
+            async.putIfNewer("k", "v", 1),
+            async.putIfNewer("k", "v", 1, Duration.ofSeconds(1)),
+            async.invalidateIfNewer("k", 1),
+            async.invalidateIfNewer("k", 1, Duration.ofSeconds(1)),
+            async.getVersioned("k"),
+        ).forEach { future ->
+            future.handle { _, error -> error }.join().assert().isInstanceOf(UnsupportedOperationException::class.java)
+        }
+        Versioned("v", 2).assert().isEqualTo(Versioned("v", 2))
+        VersionedPut.Stale(2).current.assert().isEqualTo(2L)
+    }
 }

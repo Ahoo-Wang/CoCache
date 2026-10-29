@@ -23,6 +23,7 @@ import me.ahoo.cocache.test.AsyncEngineSpec
 import me.ahoo.cocache.test.AsyncFaultSpec
 import me.ahoo.cocache.test.AsyncMultiNodeSpec
 import me.ahoo.cocache.test.AsyncSetEngineSpec
+import me.ahoo.cocache.test.AsyncVersionedSpec
 import me.ahoo.cocache.test.CacheAccess
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
@@ -273,6 +274,38 @@ class RedisShardedAsyncFaultTest : AsyncFaultSpec() {
     override val clock: CacheClock = manualClock
 
     override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend()
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+}
+
+class RedisAsyncVersionedTest : AsyncVersionedSpec() {
+    override val closesBackend: Boolean = true
+
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.backend()
+
+    override fun elapse(duration: Duration) {
+        manualClock.advance(duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+    }
+}
+
+class RedisNonAtomicAsyncVersionedTest : AsyncVersionedSpec() {
+    override val closesBackend: Boolean = true
+
+    private val manualClock = ManualClock()
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = RedisTestSupport.nonAtomicBackend().also {
+        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
+    }
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
