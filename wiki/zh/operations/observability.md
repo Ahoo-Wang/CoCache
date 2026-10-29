@@ -66,6 +66,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.write.failures` | counter | 在 Redis 上失败的 `put`、`putIfMatch`、`invalidate`、`invalidateAll` 与 `SetCache` 写入（首次尝试）。`putIfMatch` 的冲突不算失败 |
 | `cocache.conditional.conflicts` | counter | 因 Redis 中是另一个值而没有写入的 `putIfMatch`（[条件写入](../guide/freshness.md#conditional-writes)）。持续出现说明写入方经常在同一个 key 上竞争 |
 | `cocache.conditional.unchanged` | counter | 确认值未变、没有传输值的 `getIfChanged` |
+| `cocache.versioned.stale` | counter | 因 Redis 中已是这个版本或更新的版本而没有写入的 `putIfNewer` / `invalidateIfNewer`（[按版本写入](../guide/freshness.md#versioned-writes)）：重复投递与迟到的旧版本 |
 | `cocache.invalidation.retries` | counter | 失败失效的重试次数 |
 | `cocache.invalidations.dropped` | counter | 重试耗尽、重试队列已满或关闭时被放弃的失效。L1 中仍是旧值 |
 | `cocache.invalidations.received` | counter | 来自其它实例或外部写入方的失效消息（按消息计，一条消息可能包含多个 key） |
@@ -181,7 +182,7 @@ management:
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
-  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0 }
+  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0 }
 }
 ```
 

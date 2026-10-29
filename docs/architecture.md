@@ -376,7 +376,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **丢失版本的写入**：`put`、`putAll`、`putIfMatch`（写入没有版本的值）、`invalidate`（删除 key）与 L1 到期都会丢掉版本，之后任何版本都能写入。需要顺序保证的写入方全部使用 `putIfNewer` / `invalidateIfNewer`；`invalidate` 留给运维清除。
 - **混合版本部署**：6.x 节点能读带版本的内容（见 §3.3），但它们的写入（`put`、`invalidate`、`putIfMatch`、对解码失败内容的 `reclaim`）写入没有版本的内容。只有全部写入方升级到 6.8 之后才有顺序保证；带版本的缓存只能在 6.8 上声明，这通常就是同一个条件。
 - **实现**：`CacheRuntime.create` 为带版本的声明创建 `CoherentEngine<K, Versioned<V>>`（声明经 `versionedEngineSpec` 转换，`ValueFormat` 为 `VersionedFormat`：载荷是 `Codec<V>` 的输出，版本随 `Envelope.Scalar` 进出 L1），外面包一层 `VersionedCache` 门面在 `V` 与 `Versioned<V>` 之间转换。读路径、栅栏、合并回源、批量与异步视图都沿用引擎，没有第二份协议实现。普通缓存的引擎与命中路径不变（`LocalEntry` 与 `READ` 脚本没有改动）；带版本的缓存的 L2 命中多一次委托与一次字段读取，`getVersioned` 不多。
-- **SPI**：`CoherenceBackend.versionedWrites`（默认 `false`）、`RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync`（默认抛出 / 以 `UnsupportedOperationException` 完成：不原子的“先读后写”会让迟到的旧版本覆盖新版本）、`RemoteVersionedWrite`、`Envelope.Scalar.version`（默认 `NO_VERSION`，参与相等比较，不影响摘要；支持版本的后端在整体写入时保存它、读取时原样返回）。
+- **SPI**：`CoherenceBackend.versionedWrites`（默认 `false`）、`RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync`（默认抛出 / 以 `UnsupportedOperationException` 完成：不原子的“先读后写”会让迟到的旧版本覆盖新版本）、`RemoteVersionedWrite`、`Envelope.Scalar.version`（默认 `NO_VERSION`，参与相等比较，不影响摘要；支持版本的后端在 `fill`、`put`、`putAll` 时保存它、读取时原样返回；`putIfMatch` 写入没有版本的值）。
 
 ## 7. 失败语义
 

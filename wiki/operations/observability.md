@@ -66,6 +66,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | `cocache.write.failures` | counter | `put`, `putIfMatch`, `invalidate`, `invalidateAll`, and `SetCache` writes that failed on Redis (first attempt). A `putIfMatch` conflict isn't a failure. |
 | `cocache.conditional.conflicts` | counter | `putIfMatch` calls that didn't write because Redis held a different value ([conditional writes](../guide/freshness.md#conditional-writes)). A steady rate means writers often race on the same key. |
 | `cocache.conditional.unchanged` | counter | `getIfChanged` calls that confirmed the value without transferring it |
+| `cocache.versioned.stale` | counter | `putIfNewer` / `invalidateIfNewer` calls that didn't write because Redis held that version or a newer one ([versioned writes](../guide/freshness.md#versioned-writes)): duplicate deliveries and late, older versions |
 | `cocache.invalidation.retries` | counter | Retry attempts of failed invalidations |
 | `cocache.invalidations.dropped` | counter | Invalidations given up after all retries, on a full retry queue, or at shutdown. L1 still holds the old value. |
 | `cocache.invalidations.received` | counter | Invalidation messages from other instances or external writers (one per message, which may carry many keys) |
@@ -181,7 +182,7 @@ A cache report:
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
-  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0 }
+  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0 }
 }
 ```
 

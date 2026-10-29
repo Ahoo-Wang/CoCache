@@ -81,6 +81,37 @@ fun update(key: String, change: (Document?) -> Document) {
 - **Every writer must use `putIfMatch`.** A plain `put` doesn't check and still wins over a concurrent read-modify-write.
 - `SetCache` doesn't support them, since its `add` and `remove` are already atomic. The async view and the [suspending view](./coroutines.md) have the same methods.
 
+## Versioned writes {#versioned-writes}
+
+Some writers know the version of every value they write: an event-sourced aggregate has one writer and strictly increasing versions, a CDC stream carries commit sequence numbers. The writer can push each new state into Redis right after the commit, but redelivery and replay send older versions again, and a plain `put` of an older version would replace the newer one. Since 6.8, a cache declared *versioned* stores the version next to each value and orders writes by it:
+
+```kotlin
+val views = runtime.create(cacheSpec<String, OrderView>("order-view") {
+    codec = jacksonCodec<OrderView>(mapper)
+    versionedLoader = CacheLoader { id -> repository.find(id)?.let { Versioned(it.view, it.version) } }
+})
+
+// the writer, after each commit (also on replay and redelivery)
+when (views.putIfNewer(id, view, version)) {
+    VersionedPut.Written -> Unit                  // newer: written and broadcast
+    is VersionedPut.Stale -> Unit                 // Redis already holds this version or a newer one
+}
+views.invalidateIfNewer(id, deletedAtVersion)     // deletion: a tombstone that blocks older versions
+
+views.getVersioned(id)                            // Versioned(view, version), or null
+```
+
+- **Declare it.** Set `versioned = true`, or a `versionedLoader` / `versionedAsyncLoader` that returns `Versioned(value, version)` (the [suspending](./coroutines.md) builder has `suspendingVersionedLoader`). The versioned methods throw `UnsupportedOperationException` on any other cache, and creating a versioned cache fails at once on a backend that doesn't support versions. The Redis and in-memory backends do.
+- **`putIfNewer(key, value, version[, ttl])`** compares and writes in one Redis script, so it's one round trip. It writes only when `version` is greater than the version in Redis, and returns `Written`. An equal version is a duplicate delivery and an older one is late; both return `Stale(current)` and change nothing: no write, no TTL change, no invalidation message. Versions compare as signed 64-bit numbers. A value without a version counts as older than any version: a plain `put`, a load from a loader that doesn't know versions, a negative entry, a load lease, or no key at all. A successful write is a `put`: it fences out every load in flight and evicts every instance's L2.
+- **A load in flight never wins.** If a reader holds the load lease while `putIfNewer` lands, its write-back is refused, even when it read a higher version from the source. The writer's next version arrives through `putIfNewer` anyway. A load that completes first stores the loader's version, and later writes compare against it.
+- **`invalidateIfNewer(key, version[, ttl])`** writes a tombstone: readers see the key as absent (without calling the loader), and `putIfNewer` with that version or an older one returns `Stale`. A newer version can bring the key back. The tombstone lives as long as a value would (`ttl` with jitter, or the `ttl` argument), not `absent-ttl`. Once it expires, a late older version can be written again, so give tombstones a lifetime that covers your redelivery window.
+- **`getVersioned(key)`** reads through like `get` and returns the value with its version, or `null` when the key is absent or a tombstone. A value without a version reports `Versioned.NO_VERSION`.
+- **Plain writes drop the version.** `put`, `putAll`, `putIfMatch` and `invalidate` write content without a version, and so does expiry, after which any version can be written. Every writer that needs ordering must use `putIfNewer` / `invalidateIfNewer`. Keep `invalidate` for operator purges.
+- **No refresh-ahead.** A versioned cache rejects `refresh-window`; `cocache.defaults.refresh-window` skips versioned caches. Writers push new versions, so values don't need to be refreshed.
+- **Failures:** `putIfNewer` throws `CacheWriteException` when Redis fails. Retrying the same version is safe: if the first attempt went through, the retry returns `Stale(version)`. Unreadable content is classified as for [conditional writes](#conditional-writes).
+- **Mixed versions:** instances on 6.0 to 6.7 can share Redis with 6.8 and read versioned values, but their writes don't keep versions. Upgrade every writer of a versioned cache to 6.8.
+- The async view and the suspending view have the same methods. A meter, `cocache.versioned.stale`, counts refused versions.
+
 ## Inside a transaction {#transactions}
 
 Inside a Spring transaction, "after the commit" is not where your code runs. `TransactionalInvalidator` (registered by the starter when `spring-tx` is present) moves the invalidation there:

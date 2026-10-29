@@ -28,6 +28,7 @@ import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
+import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.RemoteVersionedWrite
@@ -61,7 +62,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * 按版本有序的写入的 TCK（6.8，`docs/architecture.md` §6.5）：两个节点（运行时）共享同一个后端。
  * 只适用于声明 [CoherenceBackend.versionedWrites] 的后端；不支持版本的后端不必继承它（声明带版本的缓存会在创建时失败）。
  *
- * - 协议（直接调用 [RemoteStore]）：版本随整体写入保存、读取原样返回；按版本写入销毁 lease、填充因此被拒绝；
+ * - 协议（直接调用 [RemoteStore]）：版本随 fill / put / putAll 保存、读取原样返回（putIfMatch 写入没有版本的值）；按版本写入销毁 lease、填充因此被拒绝；
  *   带版本的内容不授予刷新令牌、不被回收；墓碑读作负缓存；版本按有符号 64 位整数比较。
  * - 引擎（经 [access]，同步或异步视图）：有序、相等版本幂等、旧版本拒绝且不广播不改寿命、墓碑挡住迟到的旧版本、
  *   lease 持有者回源期间落地的按版本写入胜出、回源保存版本且与随后的写入比较、并发写入收敛到最高版本、结果未知时重放安全。
@@ -223,6 +224,10 @@ abstract class VersionedSpec {
         remoteVersioned("all").assert().isEqualTo(Versioned("v3", 3))
         store.put(storageKey("plain"), scalar("p"), null, frame("plain"))
         remoteVersioned("plain").assert().isEqualTo(Versioned("p", Versioned.NO_VERSION))
+        // 条件写入写入没有版本的值（信封自带的版本被忽略）
+        store.putIfMatch(storageKey("put"), Digest.of(scalar("v9")), scalar("m", 5), null, frame("put"), false)
+            .assert().isEqualTo(RemoteConditionalWrite.Written)
+        remoteVersioned("put").assert().isEqualTo(Versioned("m", Versioned.NO_VERSION))
     }
 
     /**

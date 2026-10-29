@@ -23,8 +23,8 @@ sealed interface Envelope {
      * 标量值。
      *
      * @param version 与值一起保存的版本（6.8，按版本有序的写入）；[Versioned.NO_VERSION] 表示没有版本。
-     *   支持版本的后端（[CoherenceBackend.versionedWrites]）在整体写入（[RemoteStore.fill]、[RemoteStore.put] 等）时保存它，
-     *   读取时原样返回；版本不属于载荷，不影响 [Digest]
+     *   支持版本的后端（[CoherenceBackend.versionedWrites]）在 [RemoteStore.fill]、[RemoteStore.put]、[RemoteStore.putAll] 时保存它，
+     *   读取时原样返回（[RemoteStore.putIfMatch] 写入没有版本的值）；版本不属于载荷，不影响 [Digest]
      */
     class Scalar @JvmOverloads constructor(bytes: ByteArray, val version: Long = Versioned.NO_VERSION) : Envelope {
         private val value = bytes.copyOf()

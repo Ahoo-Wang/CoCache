@@ -147,6 +147,8 @@ The String header:
 
 A token is the issuing runtime's `NodeId` (16 bytes) plus a per-process sequence number (8 bytes). Tokens are built by the client, never reused, so a destroyed token can't match again.
 
+A [versioned](../guide/freshness.md#versioned-writes) value or tombstone (since 6.8) keeps this header, the format version `1`, its state and its payload. Only the token slot changes: bytes 4–19 hold a fixed mark (`0xC0` followed by `cocache:version`), bytes 20–27 the version (big-endian signed 64-bit), and the issue time is `+inf`. No real token starts with the mark, so no fill or release matches it, and with an issue time of `+inf` no instance's read script ever grants a refresh token on it. Instances on 6.0 to 6.7 therefore read versioned values unchanged.
+
 Content the protocol didn't write (no magic byte, an unknown state, a Hash without `!f`, another Redis type) reads as format `0` and is treated as corrupt: reclaimed only if unchanged, then reloaded. A format higher than the instance knows is loaded around, never overwritten. Together these allow a two-phase format upgrade: first ship a version that reads N+1 and writes N, then one that writes N+1.
 
 ## Fixed and pluggable {#pluggable}

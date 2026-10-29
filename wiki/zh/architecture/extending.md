@@ -54,6 +54,10 @@ interface RemoteStore : AutoCloseable {
     fun putIfMatch(
         key: String, expected: Digest?, envelope: Envelope.Scalar, ttl: Duration?, frame: ByteArray, foreignAsAbsent: Boolean
     ): RemoteConditionalWrite
+    // 6.8.0 起；默认：抛出 UnsupportedOperationException。实现时同时设置 CoherenceBackend.versionedWrites = true
+    fun putIfNewer(
+        key: String, envelope: Envelope, version: Long, ttl: Duration?, frame: ByteArray, foreignAsAbsent: Boolean
+    ): RemoteVersionedWrite
 }
 ```
 
@@ -61,7 +65,7 @@ interface RemoteStore : AutoCloseable {
 
 | 类型 | 形状 |
 |------|------|
-| `Envelope` | `Scalar(bytes)`、`Members(字节列表)` 或 `Absent`（负缓存） |
+| `Envelope` | `Scalar(bytes, version)`、`Members(字节列表)` 或 `Absent`（负缓存）。`version`（6.8 起）默认为 `Versioned.NO_VERSION`，参与相等比较，不影响摘要 |
 | `RemoteRead` | `Hit(envelope, format, ttl, refreshGranted)`、`Miss(leaseGranted)` 或 `Leased(remaining)`。`ttl == null` 表示没有到期时间 |
 | `Token` | 24 字节：`NodeId`（16）+ 序号（8）。唯一、永不重复。按字节比较 |
 | `LeaseRequest(token, ttl)` | 未命中时放置的 lease，`ttl` 后到期 |
@@ -71,6 +75,7 @@ interface RemoteStore : AutoCloseable {
 | `Digest` | 内容的 SHA-1：标量 → 载荷字节；集合 → 按返回顺序把每个成员写成 `int32 长度 + 字节`；负缓存 → 空 |
 | `RemoteConditionalRead` | `Unchanged(format)`、`Changed(envelope, format)`（标量值）、`Absent`（不存在、lease 或负缓存）或 `Unreadable(format)` |
 | `RemoteConditionalWrite` | `Written`、`Conflict(current)`（`current == null`：没有值）或 `Unreadable(format)` |
+| `RemoteVersionedWrite` | `Written`、`Stale(current)` 或 `Unreadable(format)` |
 
 逐个方法的约定。状态机见[一致性](./consistency.md#l1-fence)。
 
@@ -89,6 +94,7 @@ interface RemoteStore : AutoCloseable {
 | `addMembersIfReadable` / `removeMembersIfReadable` | 同 `addMembers` / `removeMembers`，但 key 中不是本协议集合的内容（不是你写入的内容、标量值、比你的格式更高的集合）时：什么都不改、不广播，返回该内容的格式版本（不是你写入的内容为 `0`）。正常写入后返回 `null`。key 不存在、负缓存、lease 照常写入。`foreign-format: fail`（默认）的 `SetCache` 用它们代替普通方法，因为覆盖就是删除唯一副本。可选：默认实现先读后写，不原子，也认不出更高的格式，应覆盖为一次原子的检查加写入 |
 | `readIfChanged` | 纯读取，同不带请求的 `read`。本协议的标量值且载荷摘要等于 `known`：返回 `Unchanged(format)`，不回传载荷（摘要只覆盖载荷，引擎据格式版本再确认）。其它标量值：`Changed(envelope, format)`。key 不存在、lease 或负缓存：`Absent`。其余内容（不是你写入的内容、集合、更高的格式）：`Unreadable(format)`。可选：默认实现调用 `read` 并在客户端比较，因此总是传输载荷；应覆盖为在存储中比较，这正是这个方法的意义 |
 | `putIfMatch` | 一次原子的比较加写入。`expected == null` 且 key 中没有值（不存在、lease、负缓存），或 key 中是载荷摘要等于 `expected` 的标量值时匹配。`readIfChanged` 视为 `Unreadable` 的内容：返回 `Unreadable(format)`；唯一的例外是设置了 `foreignAsAbsent` 时，不是你写入的内容（格式 `0`）按没有值匹配。集合与更高格式的内容从不视为没有值，否则滚动升级期间旧实例会把它降级覆盖。匹配时按 `put` 写入（销毁令牌、设置到期时间、广播 `frame`），返回 `Written`；否则什么都不改、不广播，返回 `Conflict(当前值的摘要，或 null)`。默认实现抛出 `UnsupportedOperationException`，引擎原样抛给调用方：先读后 `put` 的默认实现会让两个并发的写入方都成功。只有能原子地比较并写入的存储才实现它；原生的 `AsyncRemoteStore` 还必须覆盖 `putIfMatchAsync`，它的默认实现同样以这个异常失败，而不是阻塞地调用同步方法 |
+| `putIfNewer` | 只用于设置了 `CoherenceBackend.versionedWrites = true` 的后端（默认 `false`：[带版本的缓存](../guide/freshness.md#versioned-writes)在创建时失败）。一次原子的按版本比较加写入。key 的版本是与标量值或负缓存一起保存的版本；没有版本的值或负缓存、lease、不存在的 key 都视为 `NO_VERSION`，总是写入。`version` 更大时：按 `put` 写入 `envelope`（标量值，或表示墓碑的 `Absent`），与它一起保存 `version`，返回 `Written`。否则什么都不改、不广播，返回 `Stale(current)`。读不懂的内容按 `putIfMatch` 的规则分类。带版本的内容不持有令牌：`fill` 与 `release` 不得匹配它，`read` 不得在它上面授予刷新令牌，`reclaim` 必须拒绝它，因为 lease 放不下版本。`fill`、`put` 与 `putAll` 保存 `Envelope.Scalar.version`，`read` 原样返回；`putIfMatch` 写入没有版本的值。默认实现以 `UnsupportedOperationException` 抛出（同步）或失败（异步），理由同 `putIfMatch` |
 
 对所有方法：
 
@@ -131,6 +137,7 @@ testImplementation("me.ahoo.cocache:cocache-test")
 |------|------|--------|
 | `BackendProtocolSpec` | `RemoteStore` 约定：授予 lease、令牌校验、到期时间重设、释放、刷新令牌、回收、批量读写、集合更新、广播帧、订阅时重置 | `createBackend()`、`elapse(duration)`。可选覆盖 `shortTtl`（默认 300 ms） |
 | `EngineSpec` | 两个运行时共用你的后端：跨实例单次加载、等待 lease 超时、加载期间的失效、同实例失效与读取的竞态、并发 `put`、读己之写、loader 失败、Redis 失败、失效重试、重连重置、`local-max-age`、批量读、提前刷新、回收、更新的格式、回源并发上限、条件读写（含并发“读—改—写”不丢更新） | `createBackend()`、`clock`、`elapse(duration)`、`simulateReconnect()`。存储没有实现 `putIfMatch` 时覆盖 `supportsConditionalWrites = false`，跳过条件写入的用例；否则必须全部通过，其中的并发用例让所有写入方在同一个摘要上竞争，并断言恰好一个胜出 |
+| `VersionedSpec` | 只用于支持 `versionedWrites` 的后端。协议（整体写入保存版本、按有符号 64 位整数比较、按版本写入销毁被持有的 lease、带版本的内容不授予刷新令牌也不被回收、墓碑），以及两个运行时共用你的后端：有序、相等版本幂等、拒绝旧版本且不广播不改寿命、墓碑挡住迟到的旧版本、按版本写入胜过持有 lease 的回源、回源保存 loader 给出的版本、并发乱序的写入方收敛到最高版本、结果未知后重放安全。`AsyncVersionedSpec` 经异步视图重跑 | `createBackend()`、`clock`、`elapse(duration)` |
 | `SetEngineSpec` | 两个运行时上的 `SetCache`：原子的并发加入、空集合删除、拒绝 `invalidate`、写入与读取失败 | `createBackend()`、`clock`、`elapse(duration)` |
 | `MultiNodeSpec` | 三个运行时共用你的后端：失效先于 lease、晚于 lease 且另一实例正在等待、晚于 fill 而早于写 L2；其它实例的写入落在读取与 L2 填充之间；不同实例的并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全部实例中每个 key 只回源一次、只刷新一次 | `createBackend()`、`clock`、`elapse(duration)` |
 | `FaultSpec` | L1 故障下的后端：存储失败期间副本以 `degraded-local-max-age` 限龄、fill 失败及其 lease、放弃或溢出队列的失效重试、已生效却报错且可安全重试的 `put` 与 `invalidate`，以及（可选）断线期间被拒绝的写入在重连后不被重放 | `createBackend()`、`clock`、`elapse(duration)`；可选 `disconnect()` |
@@ -190,7 +197,7 @@ class MyFaultTest : FaultSpec() {
 
 只实现 `RemoteStore` 的后端不需要改动就能配合[异步视图](../guide/async.md)：引擎在阻塞执行器上调用它的同步方法。要不占这些线程地服务异步调用方，请实现可选的子接口：
 
-- `AsyncRemoteStore extends RemoteStore` 增加 `readAsync`、`readAllAsync`、`fillAsync`、`fillAllAsync`、`releaseAsync`、`putAsync`、`putAllAsync`、`invalidateAsync`、`reclaimAsync`、`addMembersAsync`、`removeMembersAsync`，以及（默认实现基于 `readAsync`）`addMembersIfReadableAsync`、`removeMembersIfReadableAsync` 与 `readIfChangedAsync`，以及默认以 `UnsupportedOperationException` 失败的 `putIfMatchAsync`，语义与对应的同步方法完全相同。
+- `AsyncRemoteStore extends RemoteStore` 增加 `readAsync`、`readAllAsync`、`fillAsync`、`fillAllAsync`、`releaseAsync`、`putAsync`、`putAllAsync`、`invalidateAsync`、`reclaimAsync`、`addMembersAsync`、`removeMembersAsync`，以及（默认实现基于 `readAsync`）`addMembersIfReadableAsync`、`removeMembersIfReadableAsync` 与 `readIfChangedAsync`，以及默认以 `UnsupportedOperationException` 失败的 `putIfMatchAsync` 与 `putIfNewerAsync`，语义与对应的同步方法完全相同。
 - `AsyncInvalidationChannel extends InvalidationChannel` 增加 `publishAsync`，引擎在非原子后端上使用它。
 - **从不同步抛出。** 以失败的 future 代替，异常类型与同步方法相同，不是 `CompletionException`。
 - **每个操作都要有上限。** 永不完成的 future 会让该实例上的这个 key 一直卡到 `load-async-timeout`。

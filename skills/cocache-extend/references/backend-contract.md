@@ -18,6 +18,7 @@ Use this map while implementing or reviewing a `CoherenceBackend`. It lists what
 interface CoherenceBackend : AutoCloseable {
     val atomicBroadcast: Boolean               // can a write publish its frame in the same atomic step?
     val format: Int                            // wire format version this implementation writes
+    val versionedWrites: Boolean               // 6.8.0+, default false: putIfNewer implemented atomically
     val channel: InvalidationChannel
     fun store(namespace: String): RemoteStore  // called once per cache
 }
@@ -28,7 +29,7 @@ interface CoherenceBackend : AutoCloseable {
 
 | Type | Shape |
 |---|---|
-| `Envelope` | `Scalar(bytes)`, `Members(list of bytes)`, `Absent` (negative entry) |
+| `Envelope` | `Scalar(bytes, version)`, `Members(list of bytes)`, `Absent` (negative entry); `version` (6.8.0+) defaults to `Versioned.NO_VERSION` |
 | `RemoteRead` | `Hit(envelope, format, ttl, refreshGranted)`, `Miss(leaseGranted)`, `Leased(remaining)`; `ttl == null` means no expiry |
 | `Token` | 24 bytes (node id + sequence); compare by bytes |
 | `LeaseRequest(token, ttl)` | Lease to place on a miss |
@@ -54,6 +55,7 @@ Keys arrive complete, with prefix and namespace.
 | `addMembersIfReadable` / `removeMembersIfReadable` (6.6.0+, optional) | Like the plain methods, but if the key holds something that is not a set of your protocol (content you didn't write, a scalar, a set in a newer format): change nothing, broadcast nothing, return that content's format (`0` = not yours); return `null` after a normal write. Absent, negative and leased keys are written. `SetCache` with `foreign-format: fail` (default) uses these. Default reads then writes (not atomic, can't see newer formats): override with one atomic check-and-write. |
 | `readIfChanged` (6.7.0+, optional) | Pure. A scalar of your protocol whose payload digest equals `known`: `Unchanged(format)`, payload not sent back. Other scalar: `Changed(envelope, format)`. Absent, lease, negative entry: `Absent`. Anything else (not yours, a set, a newer format): `Unreadable(format)`. Default calls `read` and compares on the client (always transfers the payload): override to compare in the store. |
 | `putIfMatch` / `putIfMatchAsync` (6.7.0+, atomic or not at all) | One atomic compare-and-write: matches when `expected == null` and the key holds no value (absent, lease, negative entry), or a scalar whose payload digest equals `expected`. `Unreadable` content returns `Unreadable(format)`; only format-0 content (not yours) matches as no value, and only when `foreignAsAbsent`. Sets and newer formats never do. Match: write like `put`, return `Written`. Otherwise change nothing, broadcast nothing, return `Conflict(current digest or null)`. Defaults throw `UnsupportedOperationException` (no read-then-put fallback); a native async store must override both. TCK: `supportsConditionalWrites = false` skips the cases when unimplemented. |
+| `putIfNewer` / `putIfNewerAsync` (6.8.0+, only with `versionedWrites = true`) | One atomic compare-by-version: write `envelope` (scalar, or `Absent` for a tombstone) with `version` like `put` only if `version` is greater than the stored version; content without a version, leases and absent keys count as `NO_VERSION`. Otherwise change nothing, broadcast nothing, return `Stale(current)`. Unreadable content as in `putIfMatch`. Versioned content holds no token: fill/release never match it, `read` never grants a refresh token on it, `reclaim` refuses it. `fill` / `put` / `putAll` store `Envelope.Scalar.version` and reads return it; `putIfMatch` writes without a version. Defaults throw. TCK: `VersionedSpec` / `AsyncVersionedSpec`. |
 
 ## Rules across all methods
 

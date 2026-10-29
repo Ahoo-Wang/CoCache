@@ -383,7 +383,8 @@ class InMemoryBackend @JvmOverloads constructor(
                     outcome = RemoteConditionalWrite.Conflict(digest)
                     return@compute slot
                 }
-                Slot(State.VALUE, envelope, expireAt = expireAt(ttl), version = envelope.version)
+                // 与 Redis 的 PUT_IF_MATCH 相同：条件写入写入没有版本的值
+                Slot(State.VALUE, Envelope.Scalar(envelope.bytes), expireAt = expireAt(ttl))
             }
             if (outcome == RemoteConditionalWrite.Written) {
                 publish(namespace, frame)
