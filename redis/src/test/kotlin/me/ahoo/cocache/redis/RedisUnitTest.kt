@@ -39,11 +39,13 @@ import io.mockk.spyk
 import io.mockk.verify
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteVersionedWrite
+import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assumptions
@@ -51,6 +53,7 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -168,6 +171,34 @@ class RedisUnitTest {
             .assert().isInstanceOf(IllegalArgumentException::class.java)
         store.putIfNewerAsync("k", members, 1, null, ByteArray(0), false).handle { _, error -> error }.join()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    /**
+     * 批量 fill 第一个失败即抛出并放弃其余：尚未完成的取消并释放令牌，已完成而结果未知（客户端超时）的同样释放；
+     * 正常完成的、以其它异常失败（断线拒绝）的不释放。
+     */
+    @Test
+    fun fillAllAbandonsTheRestAfterTheFirstFailure() {
+        val node = NodeId.random()
+        val fills = List(5) { Fill("k$it", Token(node, it.toLong()), Envelope.Absent, null) }
+        val calls = List(fills.size) { CompletableFuture<List<Any?>>() }
+        val released = CopyOnWriteArrayList<String>()
+        val connections = mockk<RedisConnections>()
+        every { connections.evalAsync<List<Any?>>(RedisScripts.FILL, any(), any()) } returnsMany calls
+        every { connections.evalAsync<List<Any?>>(RedisScripts.RELEASE, any(), any()) } answers {
+            released.add(String(secondArg<List<ByteArray>>().single()))
+            CompletableFuture.completedFuture(listOf(1L))
+        }
+        val timedOut = RedisException("Command timed out after PT1S.", TimeoutException())
+        every { connections.await(calls[0]) } throws timedOut
+        calls[1].complete(listOf(1L))
+        calls[2].completeExceptionally(RedisCommandTimeoutException("Command timed out"))
+        calls[3].completeExceptionally(RedisException("Connection closed"))
+        val store = RedisRemoteStore(connections, ByteArray(0), 512)
+
+        runCatching { store.fillAll(fills) }.exceptionOrNull().assert().isSameAs(timedOut)
+        released.assert().containsExactly("k0", "k2", "k4")
+        calls[4].isCancelled.assert().isTrue()
     }
 
     @Test

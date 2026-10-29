@@ -125,11 +125,11 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 | `get`、`getAll`、`lookup` | 默认（`read-failure: degrade`）：从数据源加载，结果以 `degraded-local-max-age`（10 s）留在 L2 中，不写 L1。`read-failure: throw` 时抛出 `CacheReadException`。没有 loader（缓存没有 loader，也不是 `get(key, loader)`）时默认抛出 `CacheReadException`，什么也不缓存；显式设置 `read-failure: degrade` 时返回 `null`（`getAll` 中缺席），同样什么也不缓存 |
 | 填充、释放 lease、刷新 | 尽力而为：记录日志并计数，从不抛出 |
 | `invalidate`、`invalidateAll` | 本地效果立即生效，然后在后台重试（[见上文](#invalidations-dropped)）。`invalidate-failure: throw`（没有 loader 时的默认值）时抛出 `CacheWriteException` |
-| `put`、`SetCache` 写入 | 本地效果立即生效，然后抛出 `CacheWriteException`。超时之后写入可能已经到达 Redis；超时时仍在等待发出的写入则被丢弃，之后不会再生效。这些调用幂等，可以安全重试 |
+| `put`、`SetCache` 写入 | 本地效果立即生效，然后抛出 `CacheWriteException`。超时或等待的线程被中断之后，写入可能已经到达 Redis；此时仍在等待发出的写入则被丢弃，之后不会再生效。这些调用幂等，可以安全重试 |
 | `SetCache` 读取 | 抛出 Redis 异常：没有可以降级的数据源 |
 | 通道 | 心跳失败，所有 L2 被清空，订阅恢复时再清空一次 |
 
-断线期间命令被拒绝而不是缓冲，每条命令最多等待 `command-timeout`（2 s）。所以 Redis 不可用时，每次未命中的代价是一次快速失败加一次加载。超时的读取之后仍可能在 Redis 中执行并取得该 key 的 lease；CoCache 随即尽力释放它，其它实例不必为这个 key 等待 `lease-wait`。
+断线期间命令被拒绝而不是缓冲，每条命令最多等待 `command-timeout`（2 s）。所以 Redis 不可用时，每次未命中的代价是一次快速失败加一次加载。超时或被中断的读取之后仍可能在 Redis 中执行并取得该 key 的 lease；超时的填充可能在发出之前就被丢弃，留下它的 lease。CoCache 随即尽力释放这些 lease，其它实例不必为这个 key 等待 `lease-wait`。
 
 **处理**。恢复 Redis。在此期间 `load-max-concurrent` 保护数据源。恢复后不需要额外操作：重试会自行完成，每个实例的订阅恢复时都会重置 L2。检查 `cocache.invalidations.dropped`，对被放弃的 key 重新失效。
 

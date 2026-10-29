@@ -5,6 +5,21 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased
+
+**Module Group:** `me.ahoo.cocache` · Planned as 6.9.1. Patch release that completes two Redis fixes from 6.9.0 on paths they missed, found by the second review round of RFC 0005 (appendix B). No API, wire format or channel changes, so 6.9.1 instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Fix: interrupted Redis calls
+
+- **Interrupted scripts.** A script whose caller is interrupted while waiting for Redis is handled like a timeout: it is never written to Redis afterwards, and the call fails with `RedisException("Interrupted while waiting for Redis.")` with the interrupt flag still set. In 6.9.0 an interrupted `put` could still run later, in Redis Cluster while it waited for a node connection, and overwrite a newer value. Interrupts come from `Future.cancel(true)`, Resilience4j `TimeLimiter`, or `ExecutorService.shutdownNow`. Once the flag is set, every later wait on that thread fails at once in the same way, such as the remaining keys of a `getAll`.
+- **Leases after an interrupted read.** A read whose wait is interrupted releases, in the background and best effort, the lease or refresh token it may have been granted, as a timed-out read already did. For `getAll`, this covers every key that hadn't returned yet. In 6.9.0 each such key kept its lease for `lease-ttl`, and other instances waited `lease-wait` on every miss of it.
+
+### Fix: leases after a failed fill
+
+- A fill (the write-back of a loaded value) that times out or whose wait is interrupted releases its lease in the background, best effort. In 6.9.0 a fill dropped before it was sent kept its lease for `lease-ttl`. If the fill already ran, the release finds no matching token and changes nothing. A fill rejected while disconnected still leaves its lease to `lease-ttl`.
+- A batch fill (`getAll`) stops at its first failure and gives up the rest: it releases their leases instead of waiting for each, so a failing batch still waits at most one `command-timeout`.
+- A lease release that times out or is interrupted is sent again, since it may have been dropped before it was sent.
+
 ## v6.9.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release with two default changes for caches without a loader, where Redis holds the only copy, and fixes from an architecture review of 6.8.0: transactional invalidation, refresh-ahead, Redis command timeouts and subscriptions, and a broadcast fix for conditional and versioned writes. No API is removed. `CachePolicy.invalidateFailure` and `CachePolicy.readFailure` become nullable; their JVM signatures are unchanged, so compiled callers keep running. The Redis wire format and the invalidation channel are unchanged, so 6.9.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
