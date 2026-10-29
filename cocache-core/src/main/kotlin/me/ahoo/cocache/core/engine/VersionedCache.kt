@@ -31,14 +31,16 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 
 /**
- * 带版本的缓存（6.8，按版本有序的写入）：引擎的值是 [Versioned]，读写路径（栅栏、合并回源、批量、异步）全部沿用 [CoherentEngine]，
- * 版本随值进入 L1（[VersionedFormat]）与 L2 副本。本类只在用户的 `V` 与引擎的 `Versioned<V>` 之间转换，不包含协议逻辑：
+ * 带版本的缓存（6.8，按版本有序的写入）：引擎的值是 `Versioned<V?>`，读写路径（栅栏、合并回源、批量、异步）全部沿用 [CoherentEngine]，
+ * 版本随值进入 L1（[VersionedFormat]）与 L2 副本。本类只在用户的 `V` 与引擎的 `Versioned<V?>` 之间转换，不包含协议逻辑：
  * 普通写入（`put`、`putIfMatch`）写入没有版本的值，按版本的写入经 [CoherentEngine.writeIfNewer]。
+ *
+ * `value` 为 `null` 的 `Versioned` 只来自带版本的数据源（“在这个版本时不存在”，回源写入墓碑）：对用户就是不存在。
  *
  * 不是代理：异常原样传递。命中路径比普通缓存多一次委托与一次字段读取，普通缓存不受影响。
  */
 internal class VersionedCache<K : Any, V : Any>(
-    private val engine: CoherentEngine<K, Versioned<V>>,
+    private val engine: CoherentEngine<K, Versioned<V?>>,
 ) : Cache<K, V> {
     private val view = AsyncView()
 
@@ -76,7 +78,7 @@ internal class VersionedCache<K : Any, V : Any>(
         engine.putIfMatch(key, expected, unversioned(value), ttl)
 
     override fun putIfNewer(key: K, value: V, version: Long): VersionedPut {
-        val versioned = Versioned(value, version)
+        val versioned = Versioned<V?>(value, version)
         return engine.writeIfNewer(key, versioned, version, engine.versionedTtl(key, versioned))
     }
 
@@ -89,14 +91,14 @@ internal class VersionedCache<K : Any, V : Any>(
     override fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
         engine.writeIfNewer(key, null, version, ttl)
 
-    override fun getVersioned(key: K): Versioned<V>? = engine.get(key)
+    override fun getVersioned(key: K): Versioned<V>? = presentOf(engine.get(key))
 
     override fun async(): AsyncCache<K, V> = view
 
     override fun toString(): String = "VersionedCache($engine)"
 
     private inner class AsyncView : AsyncCache<K, V> {
-        private val async: AsyncCache<K, Versioned<V>> = engine.async()
+        private val async: AsyncCache<K, Versioned<V?>> = engine.async()
 
         override val name: String
             get() = engine.name
@@ -141,7 +143,7 @@ internal class VersionedCache<K : Any, V : Any>(
             async.putIfMatch(key, expected, unversioned(value), ttl)
 
         override fun putIfNewer(key: K, value: V, version: Long): CompletableFuture<VersionedPut> = versionedWrite {
-            val versioned = Versioned(value, version)
+            val versioned = Versioned<V?>(value, version)
             engine.writeIfNewerAsync(key, versioned, version, engine.versionedTtl(key, versioned))
         }
 
@@ -154,7 +156,7 @@ internal class VersionedCache<K : Any, V : Any>(
         override fun invalidateIfNewer(key: K, version: Long, ttl: Duration): CompletableFuture<VersionedPut> =
             versionedWrite { engine.writeIfNewerAsync(key, null, version, ttl) }
 
-        override fun getVersioned(key: K): CompletableFuture<Versioned<V>?> = async.get(key)
+        override fun getVersioned(key: K): CompletableFuture<Versioned<V>?> = mapped(async.get(key)) { presentOf(it) }
 
         override fun sync(): Cache<K, V> = this@VersionedCache
 
@@ -189,21 +191,35 @@ internal class VersionedCache<K : Any, V : Any>(
     }
 
     private companion object {
-        fun <V : Any> unversioned(value: V): Versioned<V> = Versioned(value, Versioned.NO_VERSION)
+        fun <V : Any> unversioned(value: V): Versioned<V?> = Versioned(value, Versioned.NO_VERSION)
 
-        fun <K : Any, V : Any> unversioned(entries: Map<K, V>): Map<K, Versioned<V>> = entries.mapValues {
+        fun <K : Any, V : Any> unversioned(entries: Map<K, V>): Map<K, Versioned<V?>> = entries.mapValues {
             unversioned(it.value)
         }
 
-        fun <K : Any, V : Any> valuesOf(entries: Map<K, Versioned<V>>): Map<K, V> = entries.mapValues { it.value.value }
+        /**
+         * 有值时就是同一个对象（`value` 不为 `null` 的 `Versioned<V?>` 即 `Versioned<V>`），不分配；带版本的不存在为 `null`。
+         */
+        @Suppress("UNCHECKED_CAST")
+        fun <V : Any> presentOf(versioned: Versioned<V?>?): Versioned<V>? =
+            versioned?.takeIf { it.value != null } as Versioned<V>?
 
-        fun <V : Any> lookupOf(lookup: Lookup<Versioned<V>>): Lookup<V> = when (lookup) {
-            is Lookup.Present -> Lookup.Present(lookup.value.value, lookup.expiresAt)
+        fun <K : Any, V : Any> valuesOf(entries: Map<K, Versioned<V?>>): Map<K, V> {
+            val values = LinkedHashMap<K, V>(entries.size)
+            entries.forEach { (key, versioned) -> versioned.value?.let { values[key] = it } }
+            return values
+        }
+
+        fun <V : Any> lookupOf(lookup: Lookup<Versioned<V?>>): Lookup<V> = when (lookup) {
+            is Lookup.Present -> lookup.value.value?.let { Lookup.Present(it, lookup.expiresAt) } ?: Lookup.Absent(lookup.expiresAt)
             is Lookup.Absent -> lookup
         }
 
-        fun <V : Any> conditionalGetOf(read: ConditionalGet<Versioned<V>>): ConditionalGet<V> = when (read) {
-            is ConditionalGet.Present -> ConditionalGet.Present(read.value.value, read.digest)
+        /**
+         * 条件读取只读到标量值（墓碑与负缓存是 `Absent`），它们总有值。
+         */
+        fun <V : Any> conditionalGetOf(read: ConditionalGet<Versioned<V?>>): ConditionalGet<V> = when (read) {
+            is ConditionalGet.Present -> ConditionalGet.Present(requireNotNull(read.value.value), read.digest)
             ConditionalGet.Unchanged -> ConditionalGet.Unchanged
             ConditionalGet.Absent -> ConditionalGet.Absent
         }
@@ -215,10 +231,10 @@ internal class VersionedCache<K : Any, V : Any>(
  */
 internal class UnversionedLoader<K : Any, V : Any>(
     private val delegate: CacheLoader<K, V>
-) : CacheLoader<K, Versioned<V>> {
-    override fun load(key: K): Versioned<V>? = delegate.load(key)?.let { Versioned(it, Versioned.NO_VERSION) }
+) : CacheLoader<K, Versioned<V?>> {
+    override fun load(key: K): Versioned<V?>? = delegate.load(key)?.let { Versioned(it, Versioned.NO_VERSION) }
 
-    override fun loadAll(keys: Collection<K>): Map<K, Versioned<V>> =
+    override fun loadAll(keys: Collection<K>): Map<K, Versioned<V?>> =
         delegate.loadAll(keys).mapValues { Versioned(it.value, Versioned.NO_VERSION) }
 }
 
@@ -227,30 +243,33 @@ internal class UnversionedLoader<K : Any, V : Any>(
  */
 internal class UnversionedAsyncLoader<K : Any, V : Any>(
     private val delegate: AsyncCacheLoader<K, V>
-) : AsyncCacheLoader<K, Versioned<V>> {
-    override fun loadAsync(key: K): CompletionStage<out Versioned<V>?> =
+) : AsyncCacheLoader<K, Versioned<V?>> {
+    override fun loadAsync(key: K): CompletionStage<out Versioned<V?>?> =
         delegate.loadAsync(key).thenApply { value -> value?.let { Versioned(it, Versioned.NO_VERSION) } }
 
-    override fun loadAllAsync(keys: Collection<K>): CompletionStage<out Map<K, Versioned<V>>> =
+    override fun loadAllAsync(keys: Collection<K>): CompletionStage<out Map<K, Versioned<V?>>> =
         delegate.loadAllAsync(
             keys
         ).thenApply { values -> values.mapValues { Versioned(it.value, Versioned.NO_VERSION) } }
 }
 
 /**
- * 带版本的缓存的引擎声明：值类型为 [Versioned]，数据源与 `ttlOf` 按此转换（不带版本的数据源的值没有版本）。
- * 引擎经 [VersionedFormat] 编解码，[PayloadCodec] 只为满足必填项。
+ * 带版本的缓存的引擎声明：值类型为 `Versioned<V?>`，数据源与 `ttlOf` 按此转换（不带版本的数据源的值没有版本；
+ * 带版本的不存在没有值可交给 `ttlOf`，按策略寿命）。引擎经 [VersionedFormat] 编解码，[PayloadCodec] 只为满足必填项。
  */
-internal fun <K : Any, V : Any> CacheSpec<K, V>.versionedEngineSpec(): CacheSpec<K, Versioned<V>> {
+@Suppress("UNCHECKED_CAST")
+internal fun <K : Any, V : Any> CacheSpec<K, V>.versionedEngineSpec(): CacheSpec<K, Versioned<V?>> {
     val userTtlOf = ttlOf
-    return CacheSpec.builder<K, Versioned<V>>(name).also {
+    return CacheSpec.builder<K, Versioned<V?>>(name).also {
         it.namespace = namespace
         it.keyPrefix = keyPrefix
         it.keyEncoder = keyEncoder
         it.codec = PayloadCodec(codec)
-        it.loader = versionedLoader ?: loader?.let { source -> UnversionedLoader(source) }
-        it.asyncLoader = versionedAsyncLoader ?: asyncLoader?.let { source -> UnversionedAsyncLoader(source) }
-        it.ttlOf = userTtlOf?.let { function -> TtlFunction { key, value -> function.ttlOf(key, value.value) } }
+        // 数据源只产出值（out 投影），按 Versioned<V?> 使用是安全的
+        it.loader = versionedLoader as CacheLoader<K, Versioned<V?>>? ?: loader?.let { source -> UnversionedLoader(source) }
+        it.asyncLoader = versionedAsyncLoader as AsyncCacheLoader<K, Versioned<V?>>?
+            ?: asyncLoader?.let { source -> UnversionedAsyncLoader(source) }
+        it.ttlOf = userTtlOf?.let { function -> TtlFunction { key, value -> value.value?.let { present -> function.ttlOf(key, present) } } }
         it.keyFilter = keyFilter
         it.policy = policy
     }.build()

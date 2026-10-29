@@ -373,7 +373,13 @@ internal class CoherentEngine<K : Any, V : Any>(
         is Envelope.Members -> throw IllegalStateException("Cache[$name] - expected a scalar but found a set.")
     }
 
-    private fun envelopeOf(value: V?): Envelope = value?.let { format.encode(it) } ?: Envelope.Absent
+    private fun envelopeOf(value: V?): Envelope = value?.let { format.envelopeOf(it) } ?: Envelope.Absent
+
+    /**
+     * 回源写回 L1 的填充：与内容一起带上值的版本（带版本的缓存；墓碑的版本只能经 [Fill.version] 传递）。
+     */
+    private fun fillOf(storageKey: String, token: Token, value: V?, envelope: Envelope, ttl: Duration?): Fill =
+        Fill(storageKey, token, envelope, ttl, value?.let { format.versionOf(it) } ?: Versioned.NO_VERSION)
 
     private fun ttlOf(key: K, value: V?): Duration? {
         if (value == null) {
@@ -408,7 +414,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             token?.let { release(storageKey, it) }
             throw e
         }
-        val filled = token != null && fillRemote(Fill(storageKey, token, prepared.envelope, prepared.ttl))
+        val filled = token != null && fillRemote(fillOf(storageKey, token, value, prepared.envelope, prepared.ttl))
         return completeLoad(storageKey, stamp, token, value, prepared.ttl, filled)
     }
 
@@ -737,7 +743,10 @@ internal class CoherentEngine<K : Any, V : Any>(
     private fun prepareBatch(led: Map<String, K>, toLoad: Map<String, Token?>, values: Map<K, V>): PreparedBatch {
         val ttls = toLoad.keys.associateWith { storageKey -> led.getValue(storageKey).let { ttlOf(it, values[it]) } }
         val fills = toLoad.mapNotNull { (storageKey, token) ->
-            token?.let { Fill(storageKey, it, envelopeOf(values[led.getValue(storageKey)]), ttls[storageKey]) }
+            token?.let {
+                val value = values[led.getValue(storageKey)]
+                fillOf(storageKey, it, value, envelopeOf(value), ttls[storageKey])
+            }
         }
         return PreparedBatch(ttls, fills)
     }
@@ -1546,7 +1555,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         if (token == null) {
             return completed(completeLoad(storageKey, stamp, null, value, prepared.ttl, false))
         }
-        val fill = Fill(storageKey, token, prepared.envelope, prepared.ttl)
+        val fill = fillOf(storageKey, token, value, prepared.envelope, prepared.ttl)
         return Futures.attempt { asyncStore.fillAsync(fill) }.handleNext(executor) { filled, error ->
             if (error is Exception) {
                 onRemoteFailure("fill", storageKey, error)

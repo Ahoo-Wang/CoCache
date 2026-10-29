@@ -16,7 +16,8 @@ For writers that know each value's version, such as an event-sourced aggregate w
 - Declare a cache versioned with `versioned = true`, or with a `versionedLoader` / `versionedAsyncLoader` returning `Versioned(value, version)` (`suspendingVersionedLoader` in `cocache-coroutines`). Creating one fails at once on a backend without `versionedWrites`. The Redis and in-memory backends support it.
 - `putIfNewer(key, value, version[, ttl])` writes only if `version` is greater than the version in Redis, in one Lua script. An equal version is an idempotent no-op and an older one is refused; both return `Stale(current)` and change, broadcast and re-expire nothing. A successful write is a `put`: it fences out loads in flight, including one holding the lease that read a higher version.
 - `invalidateIfNewer(key, version[, ttl])` writes a tombstone: a negative entry with a version that blocks older redelivery for the value's lifetime.
-- A versioned loader's miss-fill stores the version, so later writes compare against it. `getVersioned(key)` reads through and returns the value with its version.
+- A versioned loader's miss-fill stores the version, so later writes compare against it. A loader returning `Versioned(null, n)` (deleted at version `n`) writes the same tombstone as `invalidateIfNewer(key, n)`; `null` (never existed) stays a plain negative entry. `getVersioned(key)` reads through and returns the value with its version, or `null` for an absent key or a tombstone.
+- Ordering holds while the entry lives: after a value or tombstone expires, any version can be written again. Size `ttl` to your redelivery horizon.
 - A versioned cache doesn't support `refresh-window`. `cocache.defaults.refresh-window` skips it.
 - New meter `cocache.versioned.stale` ([Observability](../operations/observability.md#metrics-writes)).
 
@@ -26,7 +27,7 @@ A versioned value or tombstone is a format-1 String with the usual 36-byte heade
 
 ### SPI
 
-- `CoherenceBackend.versionedWrites` (default `false`), `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync` (defaults refuse with `UnsupportedOperationException`: a read-then-put default would let a late version overwrite a newer one), `RemoteVersionedWrite`, and `Envelope.Scalar.version`. A backend that supports versions overrides both methods atomically, stores `Envelope.Scalar.version` on `fill`, `put` and `putAll` and returns it on reads. See [Extending](../architecture/extending.md#remote-store).
+- `CoherenceBackend.versionedWrites` (default `false`), `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync` (defaults refuse with `UnsupportedOperationException`: a read-then-put default would let a late version overwrite a newer one), `RemoteVersionedWrite`, `Fill.version` (a new constructor; the 6.7 constructor, `copy` and `componentN` are unchanged), and `Envelope.Scalar.version`. A backend that supports versions overrides both methods atomically, stores `Envelope.Scalar.version` on `fill`, `put` and `putAll` and returns it on reads. See [Extending](../architecture/extending.md#remote-store).
 - The TCK gains `VersionedSpec` and `AsyncVersionedSpec` for backends with `versionedWrites`.
 
 ## v6.7.0 (Current)

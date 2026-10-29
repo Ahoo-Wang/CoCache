@@ -158,7 +158,10 @@ internal class RedisRemoteStore(
     private fun fillCommand(fill: Fill): CompletableFuture<List<Any?>> {
         val args = ArrayList<ByteArray>()
         args.add(fill.token.toBytes())
-        addShape(args, fill.envelope, fill.ttl)
+        // 填充的版本（墓碑的版本只能经 Fill.version 传递）
+        args.add(shapeOf(fill.envelope, fill.version))
+        args.add(millis(fill.ttl))
+        addPayload(args, fill.envelope)
         return connections.evalAsync(RedisScripts.FILL, listOf(fill.key.bytes()), args)
     }
 
@@ -538,17 +541,22 @@ internal class RedisRemoteStore(
     /**
      * 写脚本的形状参数（见 [RedisScripts.PRELUDE]）：`V` / `S` / `M`；带版本的值后跟 8 字节版本。
      */
-    private fun shapeOf(envelope: Envelope): ByteArray = when (envelope) {
-        is Envelope.Scalar -> scalarShape(envelope)
-        is Envelope.Members -> SHAPE_SET
-        Envelope.Absent -> SHAPE_MISSING
-    }
+    private fun shapeOf(
+        envelope: Envelope
+    ): ByteArray = shapeOf(envelope, (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION)
 
-    private fun scalarShape(envelope: Envelope.Scalar): ByteArray {
-        if (envelope.version == Versioned.NO_VERSION) {
-            return SHAPE_VALUE
+    /**
+     * 带 [version] 的形状：值与负缓存带版本时后跟 8 字节版本（负缓存带版本即墓碑）；集合没有版本。
+     */
+    private fun shapeOf(envelope: Envelope, version: Long): ByteArray {
+        if (envelope is Envelope.Members) {
+            return SHAPE_SET
         }
-        return versionedShape(STATE_VALUE, envelope.version)
+        val state = if (envelope is Envelope.Scalar) STATE_VALUE else STATE_MISSING
+        if (version != Versioned.NO_VERSION) {
+            return versionedShape(state, version)
+        }
+        return if (state == STATE_VALUE) SHAPE_VALUE else SHAPE_MISSING
     }
 
     companion object {

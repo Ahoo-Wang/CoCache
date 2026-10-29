@@ -70,7 +70,7 @@ interface RemoteStore : AutoCloseable {
 | `Token` | 24 字节：`NodeId`（16）+ 序号（8）。唯一、永不重复。按字节比较 |
 | `LeaseRequest(token, ttl)` | 未命中时放置的 lease，`ttl` 后到期 |
 | `RefreshRequest(window, token, tokenTtl)` | 值在 `window` 内时放置的刷新令牌。签发早于 `tokenTtl` 的令牌可以被接管 |
-| `Fill(key, token, envelope, ttl)` | 仅当 `key` 持有 `token` 时，以 `ttl` 写入 `envelope` |
+| `Fill(key, token, envelope, ttl[, version])` | 仅当 `key` 持有 `token` 时，以 `ttl` 写入 `envelope`。`version`（6.8 起，不属于 `copy`）默认取标量的版本；带版本的 `Absent` 即墓碑 |
 | `Put(key, envelope, ttl)` | `putAll` 中的一项：按 `put` 覆盖 `key` |
 | `Digest` | 内容的 SHA-1：标量 → 载荷字节；集合 → 按返回顺序把每个成员写成 `int32 长度 + 字节`；负缓存 → 空 |
 | `RemoteConditionalRead` | `Unchanged(format)`、`Changed(envelope, format)`（标量值）、`Absent`（不存在、lease 或负缓存）或 `Unreadable(format)` |
@@ -83,7 +83,7 @@ interface RemoteStore : AutoCloseable {
 |------|------|
 | `read` | key 不存在且 `lease != null`：放置 lease（`lease.ttl` 后到期），返回 `Miss(true)`。不存在且没有 lease：返回 `Miss(false)`，不写入任何内容。处于 lease 状态：返回 `Leased(remaining)`。有值：返回带剩余 TTL 的 `Hit`。标量值的剩余 TTL `> 0` 且 `≤ refresh.window`，并且没有令牌或令牌签发早于 `refresh.tokenTtl`：写入刷新令牌（保留 TTL），返回 `refreshGranted = true`。永不过期的值不授予令牌。不是你写入的内容：返回 `Hit(…, format = 0)`。两个请求都为 `null` 时，`read` 是纯读取，不写入任何内容 |
 | `readAll` | 对每个 key 执行 `read`，只为 `leases` 中的 key 申请 lease。返回全部 key。任一 key 失败时，先释放本次调用中已经授予的 lease（否则所有实例都要等待 `lease-ttl`），再抛出 |
-| `fill` / `fillAll` | 仅当 key 当前持有的正是 `fill.token`（作为 lease 或刷新令牌）时写入，并把到期时间重设为 `fill.ttl`。返回是否写入 |
+| `fill` / `fillAll` | 仅当 key 当前持有的正是 `fill.token`（作为 lease 或刷新令牌）时写入，并把到期时间重设为 `fill.ttl`。返回是否写入。支持 `versionedWrites` 的后端把 `fill.version` 与内容一起保存：带版本的 loader 返回的 `Versioned(null, n)` 以带版本 `n` 的 `Absent` 到达，必须写成与 `putIfNewer` 相同的墓碑 |
 | `release` | 令牌与 lease 匹配：删除 key。令牌与值上的刷新令牌匹配：清除令牌，保留值及其 TTL。否则什么也不做 |
 | `put` | 覆盖任何状态，销毁任何令牌，设置到期时间，广播 `frame`。`Members` 会替换整个集合 |
 | `putAll` | 对每一项执行 `put`，对每个 key 原子，不要求跨 key 原子。`frame` 携带全部 key：每个 key 恰好随其写入广播一次（可以拆分帧，例如按 slot 分组）。可选实现：默认逐项调用 `put`，每次只广播该 key |

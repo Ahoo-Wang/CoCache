@@ -34,7 +34,7 @@ interface CoherenceBackend : AutoCloseable {
 | `Token` | 24 bytes (node id + sequence); compare by bytes |
 | `LeaseRequest(token, ttl)` | Lease to place on a miss |
 | `RefreshRequest(window, token, tokenTtl)` | Refresh token to place on a value inside `window`; older than `tokenTtl` may be taken over |
-| `Fill(key, token, envelope, ttl)` | Write only if the key holds `token` |
+| `Fill(key, token, envelope, ttl[, version])` | Write only if the key holds `token`; `version` (6.8.0+) is stored with the content, and `Absent` with a version is a tombstone |
 | `Digest` | SHA-1 of the content as defined in the SPI KDoc |
 
 Keys arrive complete, with prefix and namespace.

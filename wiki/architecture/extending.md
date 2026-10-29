@@ -70,7 +70,7 @@ Keys arrive complete, with prefix and namespace. A store handles bytes and token
 | `Token` | 24 bytes: `NodeId` (16) + sequence (8). Unique, never reused. Compare by bytes. |
 | `LeaseRequest(token, ttl)` | Lease to place on a miss, expiring after `ttl` |
 | `RefreshRequest(window, token, tokenTtl)` | Refresh token to place on a value inside `window`. A token older than `tokenTtl` may be taken over. |
-| `Fill(key, token, envelope, ttl)` | Write `envelope` with `ttl` only if `key` holds `token` |
+| `Fill(key, token, envelope, ttl[, version])` | Write `envelope` with `ttl` only if `key` holds `token`. `version` (since 6.8, not part of `copy`) defaults to the scalar's version; `Absent` with a version is a tombstone. |
 | `Put(key, envelope, ttl)` | One entry of `putAll`: overwrite `key` like `put` |
 | `Digest` | SHA-1 of the content: scalar → payload bytes, set → each member as `int32 length + bytes` in returned order, negative entry → empty |
 | `RemoteConditionalRead` | `Unchanged(format)`, `Changed(envelope, format)` (a scalar value), `Absent` (absent, lease, or negative entry), or `Unreadable(format)` |
@@ -83,7 +83,7 @@ The contract, method by method. The state machine is in [Consistency](./consiste
 |--------|------|
 | `read` | Absent key and `lease != null`: place the lease (expiring after `lease.ttl`) and return `Miss(true)`. Absent and no lease: `Miss(false)`, write nothing. Leased key: `Leased(remaining)`. Value: `Hit` with the remaining TTL. A scalar value whose remaining TTL is `> 0` and `≤ refresh.window`, with no token or a token older than `refresh.tokenTtl`: store the refresh token (keeping the TTL) and return `refreshGranted = true`. Never on a value without expiry. Content you didn't write: `Hit(…, format = 0)`. With both requests `null`, `read` is pure and writes nothing. |
 | `readAll` | `read` for each key, requesting a lease only for keys in `leases`. Return every key. If any key fails, release the leases already granted in this call (otherwise every instance waits for `lease-ttl`), then throw. |
-| `fill` / `fillAll` | Write only if the key currently holds exactly `fill.token`, as a lease or a refresh token, and reset the expiry to `fill.ttl`. Return whether you wrote. |
+| `fill` / `fillAll` | Write only if the key currently holds exactly `fill.token`, as a lease or a refresh token, and reset the expiry to `fill.ttl`. Return whether you wrote. A backend with `versionedWrites` stores `fill.version` with the content: a versioned loader's `Versioned(null, n)` arrives as `Absent` with version `n` and must become the same tombstone `putIfNewer` writes. |
 | `release` | Token matches a lease: delete the key. Token matches a refresh token on a value: clear the token, keep the value and its TTL. Otherwise do nothing. |
 | `put` | Overwrite any state, destroying any token, set the expiry, broadcast `frame`. A `Members` envelope replaces the whole set. |
 | `putAll` | `put` for each entry, atomic per key, not across keys. `frame` carries every key: broadcast each key exactly once with its write (you may split the frame, for example per slot group). Optional: the default calls `put` once per entry with a one-key frame. |

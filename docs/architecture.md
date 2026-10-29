@@ -358,9 +358,10 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 | `putIfNewer(key, value, version[, ttl])` | 一个脚本 `PUT_IF_NEWER`：`version` 大于 L1 中的版本时按 `PUT` 的规则写入（`DEL` + 带版本的头 + 载荷 + 到期时间，销毁令牌）并 `PUBLISH`，返回 `Written`；否则不修改、不广播、不改变到期时间，返回 `Stale(current)`（相等是重复投递，幂等的空操作；更小是迟到的旧版本），计入 `staleVersions`（不计入 `writeFailures`）。寿命同 `put`：`ttlOf` 或策略寿命加抖动，或显式 `ttl` |
 | `invalidateIfNewer(key, version[, ttl])` | 同上，写入的是墓碑：状态 `M` + 版本。读取时就是负缓存（不回源）；挡住不更新的版本。寿命默认是值的寿命（策略 `ttl` 加抖动，不是 `absentTtl`：墓碑要覆盖重复投递的时间窗口）；到期之后迟到的旧版本可以再次写入 |
 | L1 中的版本 | 带版本的 `V` / `M` 的版本。没有版本的值与负缓存（`put`、普通回源、6.x 写入）、lease 占位、不存在都视为 `Versioned.NO_VERSION`（`Long.MIN_VALUE`），任何版本都能写入。`NO_VERSION` 不能作为写入的版本（`IllegalArgumentException`）。比较是有符号 64 位整数比较：Lua 的数是 double，脚本把 8 字节拆成高 32 位（有符号）与低 32 位（无符号）分别比较，2^53 以上同样精确 |
-| 回源 | 带版本的数据源的结果连同版本凭 lease 写回（`fill` 保存 `Envelope.Scalar.version`）；返回 `null` 时写入没有版本的负缓存（`absentTtl`）。批量回源同样如此 |
+| 回源 | 带版本的数据源（`CacheLoader<K, out Versioned<V?>>`）的结果连同版本凭 lease 写回（`Fill.version`）。返回 `Versioned(null, n)`（“在版本 n 时不存在”，如已删除的聚合）时写回与 `invalidateIfNewer(key, n)` 相同的墓碑，寿命同墓碑：否则重放的旧状态会以更高的版本越过没有版本的负缓存，让已删除的 key 重新出现。返回 `null`（数据源中从来没有这个 key）时写入没有版本的负缓存（`absentTtl`）。批量回源同样如此 |
 | 栅栏 | 不变：按版本写入销毁 lease 与刷新令牌，持有 lease 的回源写回被拒绝，**哪怕它读到的版本更高**（写入方胜出，数据源随后的写入会带来更高的版本）。回源不会覆盖更新的版本是结构性的：`fill` 只在令牌匹配时写入，而带版本的内容不持有令牌 |
-| `getVersioned(key)` | 与 `get` 同一条读路径（L2 → L1 → 数据源），返回值与版本；不存在（含墓碑）为 `null`，没有版本的值的版本是 `NO_VERSION` |
+| `getVersioned(key)` | 与 `get` 同一条读路径（L2 → L1 → 数据源），返回值与版本；不存在与墓碑都为 `null`（墓碑存活期间更旧的版本仍被拒绝），没有版本的值的版本是 `NO_VERSION` |
+| 寿命 | 版本顺序只在条目存活期间成立：值或墓碑到期之后 key 中没有版本，任何版本（包括更旧的）都能写入（TTL 是安全网，§1）。寿命应覆盖重复投递的时间窗口；重放到最新位置的写入方最终写入最新版本，到期之后的陈旧度以那次重放为界 |
 | L2 | 写入方顺序同 `put`（§4.2），不写 L2。L2 副本与值一起保存版本（引擎的值是 `Versioned<V>`），`getVersioned` 命中 L2 时不访问 L1 |
 | 读不懂的内容 | 与 `putIfMatch` 同样分类（引擎以 `foreignAsAbsent` 告诉脚本格式 0 能否视为没有版本）：更高格式版本与集合总是拒绝，格式 0 在 `FAIL`（默认）时拒绝、`RECLAIM` 时视为没有版本。拒绝：不修改、不广播，计入 `unknownFormats` 与 `writeFailures`，抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。版本在头部，与 `Codec` 无关：同版本但解码失败的值照常按版本比较，更高的版本覆盖它 |
 | L1 故障 | 抛出 `CacheWriteException`。结果未知时重放同一个版本是安全的：已写入则返回 `Stale(version)` |
@@ -375,8 +376,8 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **不回收**：同版本但解码失败的带版本值不经 `reclaim` 转为 lease（`RECLAIM` 脚本与内存后端都拒绝）：lease 占位放不下版本，回收之后迟到的旧版本会被写入。有数据源的读取绕过 L1 回源（L2 降级限龄），等更高的版本覆盖它；没有数据源时按 `foreignFormat`（§5.4）。
 - **丢失版本的写入**：`put`、`putAll`、`putIfMatch`（写入没有版本的值）、`invalidate`（删除 key）与 L1 到期都会丢掉版本，之后任何版本都能写入。需要顺序保证的写入方全部使用 `putIfNewer` / `invalidateIfNewer`；`invalidate` 留给运维清除。
 - **混合版本部署**：6.x 节点能读带版本的内容（见 §3.3），但它们的写入（`put`、`invalidate`、`putIfMatch`、对解码失败内容的 `reclaim`）写入没有版本的内容。只有全部写入方升级到 6.8 之后才有顺序保证；带版本的缓存只能在 6.8 上声明，这通常就是同一个条件。
-- **实现**：`CacheRuntime.create` 为带版本的声明创建 `CoherentEngine<K, Versioned<V>>`（声明经 `versionedEngineSpec` 转换，`ValueFormat` 为 `VersionedFormat`：载荷是 `Codec<V>` 的输出，版本随 `Envelope.Scalar` 进出 L1），外面包一层 `VersionedCache` 门面在 `V` 与 `Versioned<V>` 之间转换。读路径、栅栏、合并回源、批量与异步视图都沿用引擎，没有第二份协议实现。普通缓存的引擎与命中路径不变（`LocalEntry` 与 `READ` 脚本没有改动）；带版本的缓存的 L2 命中多一次委托与一次字段读取，`getVersioned` 不多。
-- **SPI**：`CoherenceBackend.versionedWrites`（默认 `false`）、`RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync`（默认抛出 / 以 `UnsupportedOperationException` 完成：不原子的“先读后写”会让迟到的旧版本覆盖新版本）、`RemoteVersionedWrite`、`Envelope.Scalar.version`（默认 `NO_VERSION`，参与相等比较，不影响摘要；支持版本的后端在 `fill`、`put`、`putAll` 时保存它、读取时原样返回；`putIfMatch` 写入没有版本的值）。
+- **实现**：`CacheRuntime.create` 为带版本的声明创建 `CoherentEngine<K, Versioned<V?>>`（`value` 为 `null` 只来自带版本的数据源，表示带版本的不存在：写回时是墓碑，对用户是不存在）（声明经 `versionedEngineSpec` 转换，`ValueFormat` 为 `VersionedFormat`：载荷是 `Codec<V>` 的输出，版本随 `Envelope.Scalar` 进出 L1），外面包一层 `VersionedCache` 门面在 `V` 与 `Versioned<V?>` 之间转换。读路径、栅栏、合并回源、批量与异步视图都沿用引擎，没有第二份协议实现。普通缓存的引擎与命中路径不变（`LocalEntry` 与 `READ` 脚本没有改动）；带版本的缓存的 L2 命中多一次委托与一次字段读取，`getVersioned` 不多。
+- **SPI**：`CoherenceBackend.versionedWrites`（默认 `false`）、`RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync`（默认抛出 / 以 `UnsupportedOperationException` 完成：不原子的“先读后写”会让迟到的旧版本覆盖新版本）、`RemoteVersionedWrite`、`Fill.version`（6.7 的构造函数、`copy`、`componentN` 不变，带版本的构造函数给出墓碑的版本）、`Envelope.Scalar.version`（默认 `NO_VERSION`，参与相等比较，不影响摘要；支持版本的后端在 `fill`、`put`、`putAll` 时保存它、读取时原样返回；`putIfMatch` 写入没有版本的值）。
 
 ## 7. 失败语义
 
@@ -567,7 +568,7 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 |--------|------|
 | `CoherenceBackend`（L1 协议 + 失效通道） | `BackendProtocolSpec`（状态机、令牌、到期时间重设、release、reclaim、批量读、批量覆盖写入、集合、广播帧与订阅重置） |
 | 后端在引擎下的端到端行为 | `EngineSpec`（两个运行时共享一个后端：跨节点单次回源、lease 等待超时、同节点失效与并发读、同节点并发 `put`、读己之写、失效重试、`localMaxAge`、批量、跨节点单次刷新、损坏回收、未知格式、读不懂的内容按 `foreignFormat` 失败或回收、没有数据源时更高格式版本按 `foreignFormat` 失败或按不存在处理、`putAll` 的跨节点失效与在途加载栅栏、条件读写（摘要未变、绕过 L2、负缓存与 lease 是没有值、冲突不广播、并发“读—改—条件写”不丢更新、到期时间、读不懂的内容失败（`RECLAIM` 也不把本协议的集合与解码失败的值当作没有值）、L1 故障；不支持条件写入的后端以 `supportsConditionalWrites = false` 跳过条件写入的用例；支持的必须原子，并发用例强制竞争、断言恰好一个写入方胜出）等）与 `SetEngineSpec`（集合缓存，含格式 0 的 `FAIL` / `RECLAIM`，元素写入落在读不懂的内容上时 `FAIL` 拒绝、`RECLAIM` 覆盖，负缓存上照常写入） |
-| 支持版本的后端（`versionedWrites`，§6.5） | `VersionedSpec`（两个运行时共享一个后端。协议：整体写入保存版本、按版本写入只在版本更高时写入、有符号 64 位比较（跨越 2^32 与 2^53）、按版本写入销毁 lease 而持有者的 fill 被拒绝、带版本的内容不授予刷新令牌也不被回收、墓碑读作负缓存。引擎：有序、相等版本幂等、旧版本不修改不广播不改寿命、寿命同 `put`、墓碑挡住迟到的旧版本、lease 持有者回源期间落地的写入胜出（回源读到的版本更高也被拒绝）、回源保存版本、回源写回 L1 之后落地的更新版本、多线程乱序写入收敛到最高版本、结果未知时重放安全、普通写入与 `null` 回源没有版本、读不懂的内容拒绝、解码失败的带版本值不回收）；`AsyncVersionedSpec` 经异步视图重跑 |
+| 支持版本的后端（`versionedWrites`，§6.5） | `VersionedSpec`（两个运行时共享一个后端。协议：整体写入保存版本、按版本写入只在版本更高时写入、有符号 64 位比较（跨越 2^32 与 2^53）、按版本写入销毁 lease 而持有者的 fill 被拒绝、带版本的内容不授予刷新令牌也不被回收、墓碑读作负缓存、带版本的负缓存经 fill 写成墓碑。引擎：有序、相等版本幂等、旧版本不修改不广播不改寿命、寿命同 `put`、墓碑挡住迟到的旧版本、lease 持有者回源期间落地的写入胜出（回源读到的版本更高也被拒绝）、回源保存版本、数据源返回的带版本的不存在写成墓碑、条目到期之后任何版本都能写入、回源写回 L1 之后落地的更新版本、多线程乱序写入收敛到最高版本、结果未知时重放安全、普通写入与 `null` 回源没有版本、读不懂的内容拒绝、解码失败的带版本值不回收）；`AsyncVersionedSpec` 经异步视图重跑 |
 | 多节点交错（§4.3、§5、§7） | `MultiNodeSpec`（三个运行时共享一个后端：失效先于 lease、晚于 lease 且有节点在等待、晚于 fill 而早于写 L2；跨节点写入落在读 L1 与写 L2 之间；跨节点并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全集群每个 key 单次回源与单次刷新的计数断言） |
 | 异步视图（§5.6） | `AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec`：经 `CacheAccess.ASYNC` 把对应规范的每个用例改由 `async()` 视图读写（同步数据源换成在调用线程上执行的异步数据源）重跑；`AsyncEngineSpec` 另有取消、完成线程、lease 等待与回源许可等待只用常数个线程（各 1000 个等待者）、原始异常、不同步抛出、`asyncTimeout` 释放 lease、同步与异步互相合并、重入、同步数据源只在阻塞执行器上执行、运行时关闭时的等待等用例 |
 | 原生异步的后端（`AsyncRemoteStore`） | `AsyncBackendProtocolSpec`：`BackendProtocolSpec` 的每个用例经异步方法重跑（不得同步抛出，失败为原始异常），另加同步与异步交替调用的一致性 |

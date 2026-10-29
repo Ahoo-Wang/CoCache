@@ -106,15 +106,16 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
     val asyncLoader: AsyncCacheLoader<K, V>? = builder.asyncLoader
 
     /**
-     * 带版本的数据源（6.8）：返回值与它的版本，回源写入 L1 时一起保存（`null` 表示不存在，写入没有版本的负缓存）。
+     * 带版本的数据源（6.8）：返回值与它的版本，回源写入 L1 时一起保存。返回 `Versioned(null, n)` 表示“在版本 n 时不存在”
+     * （如已删除的聚合），写入与 `invalidateIfNewer(key, n)` 相同的墓碑；返回 `null` 表示数据源中从来没有这个 key，写入没有版本的负缓存。
      * 与 [loader]、[asyncLoader]、[versionedAsyncLoader] 至多设置一个；设置时缓存即为带版本的（[versioned]）。
      */
-    val versionedLoader: CacheLoader<K, Versioned<V>>? = builder.versionedLoader
+    val versionedLoader: CacheLoader<K, out Versioned<V?>>? = builder.versionedLoader
 
     /**
      * 带版本的异步数据源（6.8），见 [versionedLoader]。
      */
-    val versionedAsyncLoader: AsyncCacheLoader<K, Versioned<V>>? = builder.versionedAsyncLoader
+    val versionedAsyncLoader: AsyncCacheLoader<K, out Versioned<V?>>? = builder.versionedAsyncLoader
 
     /**
      * 是否为带版本的缓存（6.8，按版本有序的写入）：显式声明，或设置了带版本的数据源。
@@ -164,8 +165,8 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         var codec: Codec<V>? = null
         var loader: CacheLoader<K, V>? = null
         var asyncLoader: AsyncCacheLoader<K, V>? = null
-        var versionedLoader: CacheLoader<K, Versioned<V>>? = null
-        var versionedAsyncLoader: AsyncCacheLoader<K, Versioned<V>>? = null
+        var versionedLoader: CacheLoader<K, out Versioned<V?>>? = null
+        var versionedAsyncLoader: AsyncCacheLoader<K, out Versioned<V?>>? = null
 
         /**
          * 声明为带版本的缓存（见 [CacheSpec.versioned]）；设置带版本的数据源时不必再设置。
@@ -182,10 +183,10 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         fun loader(loader: CacheLoader<K, V>) = apply { this.loader = loader }
         fun asyncLoader(asyncLoader: AsyncCacheLoader<K, V>) = apply { this.asyncLoader = asyncLoader }
         fun versionedLoader(
-            versionedLoader: CacheLoader<K, Versioned<V>>
+            versionedLoader: CacheLoader<K, out Versioned<V?>>
         ) = apply { this.versionedLoader = versionedLoader }
         fun versionedAsyncLoader(
-            versionedAsyncLoader: AsyncCacheLoader<K, Versioned<V>>
+            versionedAsyncLoader: AsyncCacheLoader<K, out Versioned<V?>>
         ) = apply { this.versionedAsyncLoader = versionedAsyncLoader }
         fun versioned(versioned: Boolean) = apply { this.versioned = versioned }
         fun ttlOf(ttlOf: TtlFunction<K, V>) = apply { this.ttlOf = ttlOf }

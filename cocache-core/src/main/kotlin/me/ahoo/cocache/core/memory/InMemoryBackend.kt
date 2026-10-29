@@ -198,17 +198,23 @@ class InMemoryBackend @JvmOverloads constructor(
                 val slot = current.live()
                 if (slot?.token == fill.token) {
                     filled = true
-                    Slot(
-                        stateOf(fill.envelope),
-                        fill.envelope,
-                        expireAt = expireAt(fill.ttl),
-                        version = versionOf(fill.envelope)
-                    )
+                    val envelope = withVersion(fill.envelope, fill.version)
+                    Slot(stateOf(envelope), envelope, expireAt = expireAt(fill.ttl), version = fill.version)
                 } else {
                     slot
                 }
             }
             return filled
+        }
+
+        /**
+         * 填充的版本（墓碑的版本只能经 [Fill.version] 传递）：标量的信封与槽位带同一个版本。
+         */
+        private fun withVersion(envelope: Envelope, version: Long): Envelope {
+            if (envelope !is Envelope.Scalar) {
+                return envelope
+            }
+            return Envelope.Scalar(envelope.bytes, version)
         }
 
         override fun fillAll(fills: List<Fill>): List<Boolean> = fills.map { fill(it) }

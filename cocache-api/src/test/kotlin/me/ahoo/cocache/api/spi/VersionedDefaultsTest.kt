@@ -129,4 +129,25 @@ class VersionedDefaultsTest {
         RemoteVersionedWrite.Stale(3).current.assert().isEqualTo(3L)
         RemoteVersionedWrite.Unreadable(2).format.assert().isEqualTo(2)
     }
+
+    /**
+     * [Fill.version]：四个参数的构造函数取标量的版本（负缓存没有版本）；墓碑经带版本的构造函数给出。
+     * 版本参与相等比较；`copy` 按信封重新取值（不保留墓碑的版本，与 6.7 的二进制兼容）。
+     */
+    @Test
+    fun fillCarriesTheVersionOfItsContent() {
+        val token = Token(NodeId.random(), 1)
+        Fill("k", token, Envelope.Scalar("v".toByteArray(), 4), null).version.assert().isEqualTo(4L)
+        Fill("k", token, Envelope.Absent, null).version.assert().isEqualTo(Versioned.NO_VERSION)
+        val tombstone = Fill("k", token, Envelope.Absent, null, 7)
+        tombstone.version.assert().isEqualTo(7L)
+        tombstone.assert().isEqualTo(Fill("k", token, Envelope.Absent, null, 7))
+        tombstone.hashCode().assert().isEqualTo(Fill("k", token, Envelope.Absent, null, 7).hashCode())
+        tombstone.assert().isNotEqualTo(Fill("k", token, Envelope.Absent, null))
+        tombstone.assert().isNotEqualTo(Fill("other", token, Envelope.Absent, null, 7))
+        tombstone.equals(tombstone).assert().isTrue()
+        tombstone.equals("k").assert().isFalse()
+        tombstone.toString().assert().contains("version=7")
+        tombstone.copy().version.assert().isEqualTo(Versioned.NO_VERSION)
+    }
 }

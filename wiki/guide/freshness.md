@@ -88,7 +88,10 @@ Some writers know the version of every value they write: an event-sourced aggreg
 ```kotlin
 val views = runtime.create(cacheSpec<String, OrderView>("order-view") {
     codec = jacksonCodec<OrderView>(mapper)
-    versionedLoader = CacheLoader { id -> repository.find(id)?.let { Versioned(it.view, it.version) } }
+    versionedLoader = CacheLoader { id ->
+        val state = repository.find(id) ?: return@CacheLoader null          // never existed: plain negative entry
+        Versioned(if (state.deleted) null else state.view, state.version)   // deleted at state.version: tombstone
+    }
 })
 
 // the writer, after each commit (also on replay and redelivery)
@@ -101,11 +104,12 @@ views.invalidateIfNewer(id, deletedAtVersion)     // deletion: a tombstone that 
 views.getVersioned(id)                            // Versioned(view, version), or null
 ```
 
-- **Declare it.** Set `versioned = true`, or a `versionedLoader` / `versionedAsyncLoader` that returns `Versioned(value, version)` (the [suspending](./coroutines.md) builder has `suspendingVersionedLoader`). The versioned methods throw `UnsupportedOperationException` on any other cache, and creating a versioned cache fails at once on a backend that doesn't support versions. The Redis and in-memory backends do.
+- **Declare it.** Set `versioned = true`, or a `versionedLoader` / `versionedAsyncLoader` that returns `Versioned(value, version)` (the [suspending](./coroutines.md) builder has `suspendingVersionedLoader`). A loader that returns `Versioned(null, n)` reports a key deleted at version `n`: the load writes the same tombstone as `invalidateIfNewer(key, n)`, so a replayed older state can't bring it back. Returning `null` means the key never existed and caches a plain negative entry for `absent-ttl`, which any versioned write replaces. The versioned methods throw `UnsupportedOperationException` on any other cache, and creating a versioned cache fails at once on a backend that doesn't support versions. The Redis and in-memory backends do.
 - **`putIfNewer(key, value, version[, ttl])`** compares and writes in one Redis script, so it's one round trip. It writes only when `version` is greater than the version in Redis, and returns `Written`. An equal version is a duplicate delivery and an older one is late; both return `Stale(current)` and change nothing: no write, no TTL change, no invalidation message. Versions compare as signed 64-bit numbers. A value without a version counts as older than any version: a plain `put`, a load from a loader that doesn't know versions, a negative entry, a load lease, or no key at all. A successful write is a `put`: it fences out every load in flight and evicts every instance's L2.
 - **A load in flight never wins.** If a reader holds the load lease while `putIfNewer` lands, its write-back is refused, even when it read a higher version from the source. The writer's next version arrives through `putIfNewer` anyway. A load that completes first stores the loader's version, and later writes compare against it.
 - **`invalidateIfNewer(key, version[, ttl])`** writes a tombstone: readers see the key as absent (without calling the loader), and `putIfNewer` with that version or an older one returns `Stale`. A newer version can bring the key back. The tombstone lives as long as a value would (`ttl` with jitter, or the `ttl` argument), not `absent-ttl`. Once it expires, a late older version can be written again, so give tombstones a lifetime that covers your redelivery window.
-- **`getVersioned(key)`** reads through like `get` and returns the value with its version, or `null` when the key is absent or a tombstone. A value without a version reports `Versioned.NO_VERSION`.
+- **`getVersioned(key)`** reads through like `get` and returns the value with its version. It returns `null` for a tombstone, the same as for an absent key; while the tombstone lives, `putIfNewer` with its version or a lower one is still refused. A value without a version reports `Versioned.NO_VERSION`.
+- **Ordering holds while the entry lives.** Once a value or tombstone expires, the key holds no version, and any version can be written again, including an older one. Size `ttl` (and the tombstone `ttl`) to your redelivery horizon. A writer that replays its stream to the head ends on the newest version anyway, so after an expiry the staleness is bounded by that replay.
 - **Plain writes drop the version.** `put`, `putAll`, `putIfMatch` and `invalidate` write content without a version, and so does expiry, after which any version can be written. Every writer that needs ordering must use `putIfNewer` / `invalidateIfNewer`. Keep `invalidate` for operator purges.
 - **No refresh-ahead.** A versioned cache rejects `refresh-window`; `cocache.defaults.refresh-window` skips versioned caches. Writers push new versions, so values don't need to be refreshed.
 - **Failures:** `putIfNewer` throws `CacheWriteException` when Redis fails. Retrying the same version is safe: if the first attempt went through, the retry returns `Stale(version)`. Unreadable content is classified as for [conditional writes](#conditional-writes).

@@ -17,6 +17,7 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
+import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.CoherenceBackend
@@ -99,9 +100,9 @@ abstract class VersionedSpec {
     protected lateinit var cacheName: String
 
     /**
-     * 模拟数据源：每个 key 的当前值与版本。
+     * 模拟数据源：每个 key 的当前值与版本；`value` 为 `null` 表示在这个版本时已删除（带版本的不存在）。
      */
-    protected val database = ConcurrentHashMap<String, Versioned<String>>()
+    protected val database = ConcurrentHashMap<String, Versioned<String?>>()
     protected val loads = AtomicInteger()
 
     /**
@@ -146,15 +147,15 @@ abstract class VersionedSpec {
         lease = LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)),
     )
 
-    protected val loader = object : CacheLoader<String, Versioned<String>> {
-        override fun load(key: String): Versioned<String>? {
+    protected val loader = object : CacheLoader<String, Versioned<String?>> {
+        override fun load(key: String): Versioned<String?>? {
             loads.incrementAndGet()
             val value = database[key]
             afterLoad?.invoke(key)
             return value
         }
 
-        override fun loadAll(keys: Collection<String>): Map<String, Versioned<String>> =
+        override fun loadAll(keys: Collection<String>): Map<String, Versioned<String?>> =
             keys.mapNotNull { key -> database[key]?.let { key to it } }.toMap()
     }
 
@@ -380,6 +381,29 @@ abstract class VersionedSpec {
         remoteVersioned("k").assert().isEqualTo(Versioned("v4", 4))
     }
 
+    /**
+     * 带版本的负缓存经填充写入（[Fill.version]）：凭 lease 写入墓碑，与按版本写入的墓碑相同。
+     */
+    @Test
+    fun fillOfAVersionedAbsenceWritesATombstone() {
+        val store = store()
+        val key = storageKey("k")
+        val lease = LeaseRequest(token(), Duration.ofSeconds(30))
+        store.read(key, lease, null).assert().isEqualTo(RemoteRead.Miss(true))
+        store.fill(Fill(key, lease.token, Envelope.Absent, Duration.ofMinutes(1), 7)).assert().isTrue()
+        (remote("k") as RemoteRead.Hit).envelope.assert().isEqualTo(Envelope.Absent)
+        store.putIfNewer(
+            key,
+            scalar("v6"),
+            6,
+            null,
+            frame("k"),
+            false
+        ).assert().isEqualTo(RemoteVersionedWrite.Stale(7))
+        store.putIfNewer(key, scalar("v8"), 8, null, frame("k"), false).assert().isEqualTo(RemoteVersionedWrite.Written)
+        remoteVersioned("k").assert().isEqualTo(Versioned("v8", 8))
+    }
+
     // ---------------------------------------------------------------------------------------------
     // 引擎
     // ---------------------------------------------------------------------------------------------
@@ -473,6 +497,57 @@ abstract class VersionedSpec {
         cacheA.invalidateIfNewer("k", 4, Duration.ofMinutes(1)).assert().isEqualTo(VersionedPut.Written)
         elapse(Duration.ofMinutes(2))
         cacheA.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Written)
+    }
+
+    /**
+     * 版本顺序只在条目存活期间成立：带版本的值或墓碑到期之后，key 中没有版本，任何版本（包括更旧的）都能写入。
+     * 墓碑存活期间读取（含 `getVersioned`）得到不存在，更旧的版本被拒绝。
+     */
+    @Test
+    fun expiredEntriesAcceptAnyVersion() {
+        val cache = nodeA.cache()
+        cache.putIfNewer("value", "v5", 5, Duration.ofMinutes(1)).assert().isEqualTo(VersionedPut.Written)
+        cache.putIfNewer("value", "v4", 4).assert().isEqualTo(VersionedPut.Stale(5))
+        cache.invalidateIfNewer("tombstone", 5, Duration.ofMinutes(1)).assert().isEqualTo(VersionedPut.Written)
+        cache.getVersioned("tombstone").assert().isNull()
+        cache.putIfNewer("tombstone", "t4", 4).assert().isEqualTo(VersionedPut.Stale(5))
+
+        elapse(Duration.ofMinutes(2))
+        remote("value").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("tombstone").assert().isEqualTo(RemoteRead.Miss(false))
+        cache.putIfNewer("value", "v1", 1).assert().isEqualTo(VersionedPut.Written)
+        cache.putIfNewer("tombstone", "t1", 1).assert().isEqualTo(VersionedPut.Written)
+        cache.getVersioned("value").assert().isEqualTo(Versioned("v1", 1))
+        cache.getVersioned("tombstone").assert().isEqualTo(Versioned("t1", 1))
+    }
+
+    /**
+     * 带版本的数据源返回“在版本 N 时不存在”：回源写入墓碑（值的寿命，不是 `absentTtl`），读取得到不存在且不再回源，
+     * N 及更旧的版本被拒绝，N+1 写入。批量回源同样如此。数据源中从来没有的 key 是没有版本的负缓存（见 [plainWritesAndAbsentLoadsCarryNoVersion]）。
+     */
+    @Test
+    fun versionedAbsenceFromTheLoaderIsATombstone() {
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        database["k"] = Versioned(null, 5)
+        cacheA["k"].assert().isNull()
+        cacheA.getVersioned("k").assert().isNull()
+        cacheA.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
+        cacheB["k"].assert().isNull()
+        loads.get().assert().isEqualTo(1)
+        (remote("k") as RemoteRead.Hit).envelope.assert().isEqualTo(Envelope.Absent)
+        requireNotNull(remoteTtl("k")).assert().isBetween(Duration.ofMinutes(9), Duration.ofMinutes(10))
+
+        cacheB.putIfNewer("k", "v4", 4).assert().isEqualTo(VersionedPut.Stale(5))
+        cacheB.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Stale(5))
+        cacheB.putIfNewer("k", "v6", 6).assert().isEqualTo(VersionedPut.Written)
+        awaitCondition("A sees the newer version") { cacheA.getVersioned("k") == Versioned("v6", 6) }
+
+        database["deleted"] = Versioned(null, 3)
+        database["alive"] = Versioned("a", 3)
+        cacheA.getAll(listOf("deleted", "alive")).assert().isEqualTo(mapOf("alive" to "a"))
+        cacheB.putIfNewer("deleted", "old", 2).assert().isEqualTo(VersionedPut.Stale(3))
+        cacheB.putIfNewer("deleted", "new", 4).assert().isEqualTo(VersionedPut.Written)
     }
 
     /**

@@ -46,7 +46,11 @@ internal object SuspendingAccess : CacheAccess {
     override fun <K : Any, V : Any> source(builder: CacheSpec.Builder<K, V>) {
         builder.versionedLoader?.let { versioned ->
             builder.versionedLoader = null
-            builder.suspendingVersionedLoader(Dispatchers.Unconfined, BlockingSuspendingLoader(versioned))
+            @Suppress("UNCHECKED_CAST")
+            builder.suspendingVersionedLoader(
+                Dispatchers.Unconfined,
+                BlockingSuspendingLoader(versioned as CacheLoader<K, Versioned<V?>>)
+            )
         }
         val loader = builder.loader ?: return
         builder.loader = null

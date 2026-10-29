@@ -72,7 +72,8 @@ cache.getVersioned(id)                       // Versioned(value, version)?
 ```
 
 - One Lua round trip, atomic. Equal version: idempotent no-op; older: refused; neither writes, broadcasts nor changes the TTL. A write behaves like `put` and wins over a load holding the lease, even one that read a higher version. Content without a version (plain `put`, plain loader, negative entry, absent) is older than any version.
-- Every ordering writer must use `putIfNewer` / `invalidateIfNewer`: `put`, `putIfMatch`, `invalidate` and expiry drop the version. Give tombstones (value lifetime by default) a TTL covering the redelivery window.
+- A versioned loader returns `Versioned(null, n)` for a key deleted at version `n` (the fill writes a tombstone, so older replays can't resurrect it) and `null` for a key that never existed (plain negative entry). `getVersioned` returns `null` for both; a living tombstone still refuses older versions.
+- Every ordering writer must use `putIfNewer` / `invalidateIfNewer`: `put`, `putIfMatch`, `invalidate` and expiry drop the version. Ordering holds only while the entry lives: give values and tombstones (value lifetime by default) a TTL covering the redelivery window.
 - Versioned caches reject `refresh-window` (`cocache.defaults.refresh-window` skips them). Creating one fails on a backend without `versionedWrites`; Redis and in-memory support it. Coroutines: `suspendingVersionedLoader`.
 - `putIfNewer` throws `CacheWriteException` on Redis failure; replaying the same version is safe (returns `Stale`).
 

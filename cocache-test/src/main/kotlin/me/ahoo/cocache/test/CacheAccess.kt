@@ -77,7 +77,9 @@ interface CacheAccess {
             override fun <K : Any, V : Any> source(builder: CacheSpec.Builder<K, V>) {
                 builder.versionedLoader?.let { versioned ->
                     builder.versionedLoader = null
-                    builder.versionedAsyncLoader = InlineAsyncLoader(versioned)
+                    // 数据源只产出值（out 投影），按 Versioned<V?> 使用是安全的
+                    @Suppress("UNCHECKED_CAST")
+                    builder.versionedAsyncLoader = InlineAsyncLoader(versioned as CacheLoader<K, Versioned<V?>>)
                 }
                 val loader = builder.loader ?: return
                 builder.loader = null
