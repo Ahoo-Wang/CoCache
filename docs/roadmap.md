@@ -156,16 +156,18 @@ JMH 对比见 RFC 0003 §7.1。
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
-| 中断与 fill 失败时释放令牌 | G1、G2 | `await` 被中断时与超时一样取消命令、释放令牌；`fill` / `fillAll` 超时或中断时释放令牌（RFC 0005 附录 B） | 6.9.1 已交付（#704） |
+| 中断与 fill 失败时释放令牌 | G1、G2 | `await` 被中断时与超时一样取消命令、释放令牌；`fill` / `fillAll`、`reclaim` 与 `release` 在结果未知时同样释放令牌（RFC 0005 附录 B） | 6.9.1 已交付（#704） |
 
 ## 6.9 之后
+
+下一步要做的事、验收标准与需要维护者决定的问题见 [待办清单](todo.md)。
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
 | L2 填充可线性化、单调时钟、可中断的跟随者 | G1、G2 | RFC 0005 §4.5、§4.6（A.D4、A.C1、A.S1） | 待排期 |
-| 其余审查项 | G1、运维 | `reclaim` 超时释放 lease；驱逐策略检查改读 `INFO memory`、按声明检查；端点对未知缓存的 `DELETE` 返回 404；修正 architecture.md §6.3 关于启动检查的说法（RFC 0005 §9） | 待排期 |
+| 其余审查项 | G1、运维 | 驱逐策略检查改读 `INFO memory`、按声明检查；端点对未知缓存的 `DELETE` 返回 404；修正 architecture.md §6.3 关于启动检查的说法（RFC 0005 §9） | 待排期 |
 | starter 的事务装饰器 | G2 | 取代 `TransactionAwareCacheManagerProxy`，`@CacheEvict` 在回滚时同样失效；回滚时失效写事务内凭 lease 写进 L1 的 key（RFC 0005 §4.9） | 7.x |
 
 6.0 已交付按 key 查看与失效（actuator `GET` / `DELETE /actuator/cocache/{name}/{key}`、`CacheAdmin.inspect`）与 `ExternalInvalidator`。
