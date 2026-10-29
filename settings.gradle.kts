@@ -16,15 +16,21 @@ plugins {
 }
 rootProject.name = "CoCache"
 
-include(":cocache-bom")
-include(":cocache-dependencies")
-include(":cocache-api")
-include(":cocache-core")
-include(":cocache-spring")
-include(":cocache-coroutines")
-include(":cocache-redis")
-include(":cocache-codec-jackson")
-include(":cocache-spring-boot-starter")
-include(":cocache-test")
-include(":cocache-example")
+// 目录名不带 `cocache-` 前缀；项目名（也是发布的 artifactId 与 Gradle 任务路径）保留前缀
+listOf(
+    "bom",
+    "dependencies",
+    "api",
+    "core",
+    "spring",
+    "coroutines",
+    "redis",
+    "codec-jackson",
+    "spring-boot-starter",
+    "test",
+    "example",
+).forEach { dir ->
+    include(":cocache-$dir")
+    project(":cocache-$dir").projectDir = file(dir)
+}
 include(":code-coverage-report")

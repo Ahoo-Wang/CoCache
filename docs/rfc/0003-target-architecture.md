@@ -713,7 +713,7 @@ val users: Cache<String, User> = runtime.create(
 
 ### 7.1 实测（2026-10-19，本机单机 Redis 7，JDK 17）
 
-`CoCacheBenchmark`（6.0，`cocache-redis/src/jmh`）与 `RedisCacheBenchmark`（5.4，`cocache-spring-redis/src/jmh`）方法一一对应。命中路径两侧交替运行至少 3 轮，取中位数；其余路径各 1 轮。单位 ops/s。
+`CoCacheBenchmark`（6.0，`redis/src/jmh`）与 `RedisCacheBenchmark`（5.4，`cocache-spring-redis/src/jmh`）方法一一对应。命中路径两侧交替运行至少 3 轮，取中位数；其余路径各 1 轮。单位 ops/s。
 
 | 路径 | 线程 | 5.4 | 6.0 | 变化 |
 |------|------|-----|-----|------|
@@ -764,7 +764,7 @@ val users: Cache<String, User> = runtime.create(
 
 ### 8.1 Q1 实测：`setRead`（2026-10-19）
 
-环境：Apple M4（10 核），Docker 中的单机 Redis 7.4.11（默认 `set-max-intset-entries 512`、`set-max-listpack-entries 128`、`hash-max-listpack-entries 512`），JDK 17。基准 `SetCacheBenchmark`（`cocache-redis/src/jmh`）：Hash 经生产的 `RemoteStore`；备选“原生 Set + 同 slot 控制 Hash”（`{…}:c` 存 `!f`、`{…}:s` 存成员）只在基准内用等价 Lua 原型实现，读取同样先 `pcall GET` 再分派。成员为 `member-000001` 形式的非整数字符串。
+环境：Apple M4（10 核），Docker 中的单机 Redis 7.4.11（默认 `set-max-intset-entries 512`、`set-max-listpack-entries 128`、`hash-max-listpack-entries 512`），JDK 17。基准 `SetCacheBenchmark`（`redis/src/jmh`）：Hash 经生产的 `RemoteStore`；备选“原生 Set + 同 slot 控制 Hash”（`{…}:c` 存 `!f`、`{…}:s` 存成员）只在基准内用等价 Lua 原型实现，读取同样先 `pcall GET` 再分派。成员为 `member-000001` 形式的非整数字符串。
 
 **内存**（`MEMORY USAGE … SAMPLES 0`，备选为两个 key 之和，每个成员数在 30 次 fork 中一致）：
 
