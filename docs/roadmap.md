@@ -145,7 +145,7 @@ JMH 对比见 RFC 0003 §7.1。
 |----|------|------|------|
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
-| 没有数据源的缓存 fail closed | G1、G2 | L1 读失败时抛出，不再返回并缓存“不存在”（A.D1）；`invalidate` 的重试不越过之后的写入（A.D2）；非原子广播下条件写入的重放也广播（A.R4）。编号见 [RFC 0005](rfc/0005-v8-target-architecture.md) 附录 A，下同 | 修复中（独立 PR） |
+| 没有数据源的缓存 fail closed | G1、G2 | L1 读失败时抛出，不再返回并缓存“不存在”（A.D1）；`invalidate` 的重试不越过之后的写入（A.D2）；非原子广播下条件写入的重放也广播（A.R4）。编号见 [RFC 0005](rfc/0005-v8-target-architecture.md) 附录 A，下同 | 修复中（#700） |
 | Redis 失败路径 | G1、G2 | 超时取消 Lettuce 命令（A.R1）；`sharded` 未确认的频道每次心跳重置（A.R2）；读超时释放 lease（A.L1）；订阅生命周期竞态（A.R3） | 修复中（独立 PR） |
 | 事务内的失效 | G2 | 回滚同样失效（A.T1）；迟到的登记与逐缓存的失败隔离（A.T2） | 修复中（#697） |
 | 提前刷新退避 | G3、保护数据源 | 没取得令牌的重新填充退避；寿命 ≤ 刷新窗口的副本不设刷新点（A.D3） | 修复中（#698） |
