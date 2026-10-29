@@ -20,7 +20,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'cocache-*/src/main/**'
+      - '*/src/main/**'
       - 'example/**'
       - 'gradle/**'
       - '*.gradle.kts'
