@@ -443,10 +443,11 @@ abstract class VersionedSpec {
         cacheA.putIfNewer("k", "older", 0).assert().isEqualTo(VersionedPut.Stale(1))
         cacheA.invalidateIfNewer("k", 1).assert().isEqualTo(VersionedPut.Stale(1))
         cacheA.putIfNewer("marker", "m", 1).assert().isEqualTo(VersionedPut.Written)
-        awaitCondition("marker broadcast") { nodeB.metrics().invalidationsReceived > received }
-        // 非原子广播的后端上，相等的版本可能是已生效却没能广播的写入的重放，仍然广播（见 replayOfAnAppliedVersionedWriteBroadcasts）
-        val equalVersions = if (backend.atomicBroadcast) 0 else 2
-        nodeB.metrics().invalidationsReceived.assert().isEqualTo(received + equalVersions + 1)
+        // 非原子广播的后端上，相等的版本可能是已生效却没能广播的写入的重放，仍然广播（见 replayOfAnAppliedVersionedWriteBroadcasts）。
+        // 等到期望的条数全部到达：Redis Cluster 上经不同节点发布的消息之间没有顺序，标记可能先于它们到达
+        val expected = received + (if (backend.atomicBroadcast) 0 else 2) + 1
+        awaitCondition("marker broadcast") { nodeB.metrics().invalidationsReceived >= expected }
+        nodeB.metrics().invalidationsReceived.assert().isEqualTo(expected)
 
         remoteVersioned("k").assert().isEqualTo(Versioned("v1", 1))
         requireNotNull(remoteTtl("k")).assert().isLessThanOrEqualTo(ttl)
