@@ -76,6 +76,7 @@ fun update(key: String, change: (Document?) -> Document) {
 - **`getIfChanged(key, known)`** 询问 Redis 值的摘要是否仍是 `known`。是则返回 `Unchanged`，不传输值：Redis 只回复两个整数，确认一个大值只花一次往返，而不是它在网络上的大小。它不省 Redis 的 CPU：脚本每次都读取这个值并计算 SHA-1，期间 Redis 不处理其它命令（在 Redis 7.4 上 8 MB 的值约 20 ms，其中约 13 ms 是普通的 L1 读取同样要付的读取）。按实例数 × 值的个数 × 大小估算确认周期。否则返回 `Present(value, digest)` 或 `Absent`。用它重新确认内存中持有的值：保存摘要，定期或在收到失效时调用 `getIfChanged`。
 - **两者都绕过 L2。** 只读写 Redis，从不经 loader 加载，也不填充 L2。缓存的 L2 可能比 `getIfChanged` 返回的旧，差距在 `localMaxAge` 之内。
 - **失败：** Redis 故障时 `getIfChanged` 抛出 `CacheReadException`，与 `read-failure` 无关，因为没有可以降级的答案。`putIfMatch` 抛出 `CacheWriteException`。它不是幂等的：超时之后先调用 `getIfChanged`，当前摘要正是 `Written` 本应返回的那个时，说明已经写入。
+- **没有原子广播时**（`sharded` [频道模式](../operations/index.md#channel-mode)，或启动探测回退时），失效消息在脚本之后单独发布。写入已落到 Redis 而这次发布失败时，调用抛出 `CacheWriteException`。随后重放同一次写入会返回 `Conflict(current)`，其摘要就是你自己的值的摘要，CoCache 这时会再发布一次失效，让其它实例丢弃陈旧的副本。其它冲突不发布任何消息。
 - **读不懂的内容**不会被一个方法当作空值、被另一个方法当作值。更高版本的 CoCache 写入的值或集合：两个方法都抛出，`cause` 为 `ForeignFormatException`，key 不被修改。编解码器无法解码的值：`getIfChanged` 抛出；`putIfMatch` 看不到编解码器，遇到它只会返回 `Conflict`，从不覆盖。不是 CoCache 6 写入的内容（5.x 的数据）按 `foreign-format` 处理，与没有 loader 的缓存相同：`fail`（默认）时两个方法都抛出；`reclaim` 时视为没有值，`getIfChanged` 返回 `Absent`，`putIfMatch(key, null, value)` 会替换它。
 - **自定义后端**必须原子地实现条件写入，否则就不实现：SPI 的 `putIfMatch` 默认抛出 `UnsupportedOperationException`，调用方会看到它。
 - **所有写入方都必须用 `putIfMatch`。** 普通的 `put` 不检查，仍会压过并发的“读取—修改—写回”。
@@ -112,7 +113,7 @@ views.getVersioned(id)                            // Versioned(view, version)，
 - **版本顺序只在条目存活期间成立。** 值或墓碑到期之后，key 中没有版本，任何版本（包括更旧的）都能再次写入。按重投的时间窗口设置 `ttl`（以及墓碑的 `ttl`）。重放到最新位置的写入方最终总会写入最新的版本，所以到期之后的陈旧度以那次重放为界。
 - **普通写入会丢掉版本。** `put`、`putAll`、`putIfMatch` 与 `invalidate` 写入没有版本的内容，到期也一样，之后任何版本都能写入。需要顺序保证的写入方全部使用 `putIfNewer` / `invalidateIfNewer`，`invalidate` 留给运维清除。
 - **不支持提前刷新。** 带版本的缓存拒绝 `refresh-window`；`cocache.defaults.refresh-window` 不作用于带版本的缓存。写入方会推送新版本，值不需要刷新。
-- **失败：** Redis 故障时 `putIfNewer` 抛出 `CacheWriteException`。重试同一个版本是安全的：第一次已经写入时，重试返回 `Stale(version)`。读不懂的内容的分类与[条件写入](#conditional-writes)相同。
+- **失败：** Redis 故障时 `putIfNewer` 抛出 `CacheWriteException`。重试同一个版本是安全的：第一次已经写入时，重试返回 `Stale(version)`。没有原子广播时，版本等于你给出的版本的 `Stale` 也会发布失效，以防第一次已经写入、而单独的发布失败了。更旧的版本不发布任何消息。读不懂的内容的分类与[条件写入](#conditional-writes)相同。
 - **混合版本：** 6.0 到 6.7 的实例可以与 6.8 共用 Redis 并读取带版本的值，但它们的写入不保留版本。带版本的缓存的写入方全部升级到 6.8。
 - 异步视图与挂起视图有同名方法。指标 `cocache.versioned.stale` 统计被拒绝的版本。
 
@@ -239,10 +240,11 @@ cocache:
 
 **`invalidate`** 先执行本地效果（丢弃本实例的 L2）。如果 Redis 删除失败：
 
-- 默认（`invalidate-failure: retry`）调用**不抛出**。失效通常在提交之后执行，抛出异常什么也回滚不了。删除交给有界的重试队列：最多 8 次，退避从 100 毫秒起翻倍到 10 秒，最多同时排队 10 000 个。
+- 有 loader 时，默认（`invalidate-failure: retry`）调用**不抛出**。失效通常在提交之后执行，抛出异常什么也回滚不了。删除交给有界的重试队列：最多 8 次，退避从 100 毫秒起翻倍到 10 秒，最多同时排队 10 000 个。
 - 重试期间，本实例上该 key 的未命中跳过 Redis（其中仍是旧值），直接从数据源加载。
 - 重试耗尽或队列溢出时，CoCache 记录错误日志并计入 `cocache.invalidations.dropped`。其它实例此后可能从 Redis 重新加载旧值，直到它过期，所以上界是该值的剩余寿命。`ttl-forever` 时没有上界：Redis 恢复后请再失效一次。
 - 设置 `invalidate-failure: throw` 时，调用改为抛出 `CacheWriteException`，由你决定如何处理。
+- 没有 loader 时默认就是 `throw`。Redis 是唯一副本，延迟的重试并不安全：失败之后另一个实例写入了这个 key，重试就会删掉那个更新的值。只有 loader 能重新加载时删除才是安全的。在这样的缓存上设置 `invalidate-failure: retry` 即接受这个风险；重试期间本实例的读取返回 `null`，但不把它当作负缓存缓存起来，因此 `get(key, loader)` 仍会调用它的 loader。
 
 **`put`** 与 **`putAll`**，以及 `SetCache` 的写入 `add`、`remove`、`clear`，会抛出 `CacheWriteException`。超时之后结果可能未知，但这些操作都是幂等的，可以安全重试。
 

@@ -52,7 +52,7 @@ interface CacheAdmin {
 
     /**
      * 按编码后的 key 走正常的失效路径（两次递增戳、淘汰 L2、删除 L1 并广播，全集群生效），幂等。
-     * 失败处理与 `invalidate` 相同（默认进入重试队列）。`SetCache` 上等价于 `clear(key)`：L1 是唯一副本，会删除该集合。
+     * 失败处理与 `invalidate` 相同（有数据源的缓存默认进入重试队列，没有数据源的默认抛出）。`SetCache` 上等价于 `clear(key)`：L1 是唯一副本，会删除该集合。
      *
      * @param encodedKey 编码后的 key（不含 `{keyPrefix}{namespace}:`）
      */

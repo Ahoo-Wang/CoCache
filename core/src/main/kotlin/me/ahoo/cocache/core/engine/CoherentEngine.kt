@@ -106,6 +106,13 @@ internal class CoherentEngine<K : Any, V : Any>(
         ?: spec.loader?.let { AsyncSource.Blocking(it) }
 
     /**
+     * 失效写入 L1 失败时的处理方式：未配置时按有没有数据源决定。有数据源时删除总是安全的（之后回源），重试；
+     * 没有数据源时 L1 是唯一副本，延迟的重试会删掉其间其它写入方写入的值（丢更新），因此抛出。
+     */
+    private val invalidateFailure: InvalidateFailureMode = policy.invalidateFailure
+        ?: if (loader != null) InvalidateFailureMode.RETRY else InvalidateFailureMode.THROW
+
+    /**
      * 失效写入 L1 失败、仍在重试中的存储 key：未命中时跳过 L1（L1 中仍是旧值）。
      */
     private val pendingInvalidations = ConcurrentHashMap<String, Int>()
@@ -116,6 +123,11 @@ internal class CoherentEngine<K : Any, V : Any>(
     private val refreshing = ConcurrentHashMap.newKeySet<String>()
 
     private val view = AsyncView()
+
+    /**
+     * 没有答案的加载（[unanswered]）的占位：从不写入 L2；`unresolved`，带 loader 的读取不接受它。
+     */
+    private val noAnswer = LocalEntry<V>(null, 0, unresolved = true)
 
     override fun async(): AsyncCache<K, V> = view
 
@@ -181,15 +193,15 @@ internal class CoherentEngine<K : Any, V : Any>(
         val observed = stamps.current(storageKey)
         val loaded = flights.execute(storageKey) { loadThrough(key, storageKey, source) }
         if (loaded.stamp >= observed && usable(loaded.entry, source != null)) {
-            return loaded.entry
+            return loaded.answer()
         }
         // 新一轮加载必然开始于上一轮结束之后（SingleFlight 先注销、再发布），因此至多重试一次
-        val retried = flights.execute(storageKey) { loadThrough(key, storageKey, source) }.entry
-        if (usable(retried, source != null)) {
-            return retried
+        val retried = flights.execute(storageKey) { loadThrough(key, storageKey, source) }
+        if (usable(retried.entry, source != null)) {
+            return retried.answer()
         }
         // 两次都合并到了不带数据源的加载（get(key) 与 get(key, loader) 并发）：自己回源，写回仍受戳保护
-        return loadThrough(key, storageKey, source).entry
+        return loadThrough(key, storageKey, source).answer()
     }
 
     /**
@@ -208,6 +220,9 @@ internal class CoherentEngine<K : Any, V : Any>(
         val read = try {
             readWaitingLease(storageKey, lease)
         } catch (e: Exception) {
+            if (source == null) {
+                return unanswered("read", stamp, e)
+            }
             onReadFailure("read", storageKey, e)
             return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
@@ -457,20 +472,50 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 不经过 L1 的回源：L1 故障、等待 lease 超时、未知格式、失效重试中。L2 以降级限龄填充（仍受戳保护）。
+     * 不经过 L1 的回源：L1 故障、等待 lease 超时、未知格式、失效重试中、回收失败。L2 以降级限龄填充（仍受戳保护）。
      */
     private fun loadBypassingRemote(
         key: K,
         storageKey: String,
         stamp: Long,
         source: CacheLoader<K, V>?
-    ): LocalEntry<V> = completeBypass(key, storageKey, stamp, loadFromSource(key, source))
+    ): LocalEntry<V> = completeBypass(key, storageKey, stamp, loadFromSource(key, source), source != null)
 
-    private fun completeBypass(key: K, storageKey: String, stamp: Long, value: V?): LocalEntry<V> {
+    /**
+     * 同步与异步共用。没有数据源时绕过 L1 只能得到“不存在”：它只是没有答案（`unresolved`，带 loader 的读取不接受它），
+     * 不是已决的负缓存。L1 读失败不走这里，见 [unanswered]。
+     */
+    private fun completeBypass(key: K, storageKey: String, stamp: Long, value: V?, hasSource: Boolean): LocalEntry<V> {
         metrics.degradedFill()
-        val entry = localEntry(value, ttlOf(key, value), policy.degradedLocalMaxAge)
+        val degraded = localEntry(value, ttlOf(key, value), policy.degradedLocalMaxAge)
+        val entry = if (hasSource) degraded else LocalEntry<V>(null, degraded.expiresAt, unresolved = true)
         fillLocal(storageKey, entry, stamp)
         return entry
+    }
+
+    /**
+     * 没有数据源的读取遇到 L1 读失败：没有可降级的答案（L1 是唯一副本，绕过它只能得到“不存在”），
+     * 无论 `readFailure` 如何都以 [CacheReadException] 失败（fail closed），不写 L2，与 `getIfChanged` 一致。
+     * 结果经 SingleFlight 共享：合并到它的带 loader 的读取不接受它（[usable]），改用自己的数据源降级。
+     */
+    private fun unanswered(operation: String, stamp: Long, error: Exception): Loaded<V> =
+        Loaded(noAnswer, stamp, readFailureWithoutSource(operation, error))
+
+    /**
+     * [unanswered] 的批量版本：整批计数一次，共享一个异常。
+     */
+    private fun unansweredAll(
+        keys: Collection<String>,
+        loadStamps: Map<String, Long>,
+        error: Exception
+    ): Map<String, Loaded<V>> {
+        val failure = readFailureWithoutSource("readAll", error)
+        return keys.associateWith { Loaded(noAnswer, loadStamps.getValue(it), failure) }
+    }
+
+    private fun readFailureWithoutSource(operation: String, error: Exception): CacheReadException {
+        metrics.remoteFailure()
+        return CacheReadException(name, operation, error)
     }
 
     @Suppress("TooGenericExceptionCaught")
@@ -621,7 +666,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         return pending.mapValues { (storageKey, sourceKeys) ->
             val result = loaded[storageKey]
             if (result != null && result.stamp >= observed.getValue(storageKey)) {
-                result.entry
+                result.answer()
             } else {
                 loadMiss(sourceKeys.first(), storageKey, loader)
             }
@@ -635,15 +680,30 @@ internal class CoherentEngine<K : Any, V : Any>(
     @Suppress("TooGenericExceptionCaught")
     private fun loadAllThrough(led: Map<String, K>): Map<String, Loaded<V>> {
         val loadStamps = led.keys.associateWith { stamps.current(it) }
-        val result = LinkedHashMap<String, Loaded<V>>()
         val readKeys = batchReadKeys(led)
         val leases = batchLeases(readKeys)
         val reads = try {
             if (readKeys.isEmpty()) emptyMap() else store.readAll(readKeys, leases)
         } catch (e: Exception) {
+            if (loader == null) {
+                return unansweredAll(led.keys, loadStamps, e)
+            }
             onReadFailure("readAll", readKeys.first(), e)
             emptyMap()
         }
+        return stepAll(led, reads, loadStamps, leases)
+    }
+
+    /**
+     * [loadAllThrough] 读到 L1 之后：逐 key 判定，再批量回源、条件回收（同 [stepAllAsync]）。
+     */
+    private fun stepAll(
+        led: Map<String, K>,
+        reads: Map<String, RemoteRead>,
+        loadStamps: Map<String, Long>,
+        leases: Map<String, LeaseRequest>
+    ): Map<String, Loaded<V>> {
+        val result = LinkedHashMap<String, Loaded<V>>()
         val toLoad = LinkedHashMap<String, Token?>()
         // FAIL 策略下的读不懂的 key：先完成其余 key（释放或凭 lease 写回），再抛出，与异步路径一致
         var foreign: CacheReadException? = null
@@ -1026,7 +1086,8 @@ internal class CoherentEngine<K : Any, V : Any>(
         putIfMatchWithTtl(key, expected, value, ttl)
 
     /**
-     * 与 [putWithTtl] 相同的写入顺序（戳、L2 淘汰在 L1 前后各一次）；冲突与拒绝不修改 L1，非原子广播的后端也不广播。
+     * 与 [putWithTtl] 相同的写入顺序（戳、L2 淘汰在 L1 前后各一次）；冲突与拒绝不修改 L1。非原子广播的后端上拒绝不广播，
+     * 冲突只在可能是重放时广播（[conditionalChanged]）。
      */
     private fun putIfMatchWithTtl(key: K, expected: Digest?, value: V, ttl: Duration?): ConditionalPut {
         val storageKey = storageKey(key)
@@ -1047,10 +1108,24 @@ internal class CoherentEngine<K : Any, V : Any>(
                 outcome = result
                 refuseUnreadable(storageKey, result)
             },
-            { outcome == RemoteConditionalWrite.Written },
+            { conditionalChanged(envelope, outcome) },
             conditionalWriteFailure
         )
         return conditionalPutOf(envelope, requireNotNull(outcome))
+    }
+
+    /**
+     * 非原子广播的后端上，条件写入之后是否广播（同步与异步共用）。写入成功时广播；冲突摘要等于这次写入的摘要时也广播：
+     * 这可能是重放，上一次同样的写入已在 L1 生效，单独的广播却失败了（调用方因此得到 `CacheWriteException`），
+     * 不广播的话其它节点的 L2 陈旧至 `localMaxAge`。多余的广播只淘汰副本，无害。
+     */
+    private fun conditionalChanged(
+        envelope: Envelope.Scalar,
+        result: RemoteConditionalWrite?
+    ): Boolean = when (result) {
+        RemoteConditionalWrite.Written -> true
+        is RemoteConditionalWrite.Conflict -> result.current == Digest.of(envelope)
+        else -> false
     }
 
     /**
@@ -1095,7 +1170,8 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     // ---------------------------------------------------------------------------------------------
-    // 按版本有序的写入（6.8）：比较与写入由后端在 L1 中原子完成，写入方顺序同 put（不写 L2）；版本不更新时不修改 L1、不广播。
+    // 按版本有序的写入（6.8）：比较与写入由后端在 L1 中原子完成，写入方顺序同 put（不写 L2）；版本不更新时不修改 L1，
+    // 也不广播（非原子广播的后端上，相等的版本可能是重放，仍然广播，见 [versionedChanged]）。
     // 只由带版本的缓存（VersionedCache，引擎的值是 Versioned）调用；value 为 null 时写入墓碑（带版本的负缓存）。
     // 读不懂的内容的分类与条件写入相同。同步与异步共用 [refuseUnreadableVersion]、[versionedPutOf]。
     // ---------------------------------------------------------------------------------------------
@@ -1142,7 +1218,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                 outcome = result
                 refuseUnreadableVersion(storageKey, result)
             },
-            { outcome == RemoteVersionedWrite.Written },
+            { versionedChanged(version, outcome) },
             versionedWriteFailure(versionedOperation(value))
         )
         return versionedPutOf(requireNotNull(outcome))
@@ -1163,9 +1239,19 @@ internal class CoherentEngine<K : Any, V : Any>(
                         refuseUnreadableVersion(storageKey, it)
                     }
             },
-            { outcome.get() == RemoteVersionedWrite.Written },
+            { versionedChanged(version, outcome.get()) },
             versionedWriteFailure(versionedOperation(value))
         ).thenApply { versionedPutOf(requireNotNull(outcome.get())) }
+    }
+
+    /**
+     * 非原子广播的后端上，按版本写入之后是否广播（同步与异步共用）。写入成功时广播；当前版本等于给出的版本时也广播：
+     * 这可能是按 §6.5 重放的、已在 L1 生效而广播失败的写入（理由同 [conditionalChanged]）。版本更旧时不广播。
+     */
+    private fun versionedChanged(version: Long, result: RemoteVersionedWrite?): Boolean = when (result) {
+        RemoteVersionedWrite.Written -> true
+        is RemoteVersionedWrite.Stale -> result.current == version
+        else -> false
     }
 
     private fun requireVersion(version: Long) {
@@ -1224,10 +1310,10 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 同步与异步共用：配置为抛出时抛出 [CacheWriteException]，否则登记重试。
+     * 同步与异步共用：[invalidateFailure] 为抛出时抛出 [CacheWriteException]，否则登记重试。
      */
     private fun onInvalidateFailure(storageKeys: List<String>, error: Exception) {
-        if (policy.invalidateFailure == InvalidateFailureMode.THROW) {
+        if (invalidateFailure == InvalidateFailureMode.THROW) {
             throw CacheWriteException(name, "invalidate", error)
         }
         scheduleRetry(storageKeys, error)
@@ -1314,21 +1400,34 @@ internal class CoherentEngine<K : Any, V : Any>(
             executor
         ) { loadThroughAsync(key, storageKey, source) }.thenNext(executor) { loaded ->
             if (loaded.stamp >= observed && usable(loaded.entry, hasSource)) {
-                completed(loaded.entry)
+                answerAsync(loaded)
             } else {
                 flights.executeAsync(
                     storageKey,
                     executor
                 ) { loadThroughAsync(key, storageKey, source) }.thenNext(executor) { retried ->
                     if (usable(retried.entry, hasSource)) {
-                        completed(retried.entry)
+                        answerAsync(retried)
                     } else {
-                        loadThroughAsync(key, storageKey, source).thenNext(executor) { completed(it.entry) }
+                        loadThroughAsync(key, storageKey, source).thenNext(executor) { answerAsync(it) }
                     }
                 }
             }
         }
     }
+
+    /**
+     * [Loaded.answer] 的异步版本：没有答案时以 [Loaded.failure] 失败。
+     */
+    private fun answerAsync(loaded: Loaded<V>): CompletableFuture<LocalEntry<V>> =
+        loaded.failure?.let { CompletableFuture.failedFuture(it) } ?: completed(loaded.entry)
+
+    /**
+     * 异步路径上 L1 读失败而没有可降级的答案（[unanswered]）：这次读取没有数据源，且失败可以按读取失败处理
+     * （是 [Exception]、运行时未关闭，同 [onReadFailureAsync]）。返回要包装的异常，否则 `null`。
+     */
+    private fun unanswerable(error: Throwable?, hasSource: Boolean): Exception? =
+        (error as? Exception)?.takeIf { !hasSource && !context.async.closed }
 
     /**
      * [loadThrough] 的异步版本：在 SingleFlight 注册之后、在调用方线程上开始，第一件事是取戳。
@@ -1345,40 +1444,51 @@ internal class CoherentEngine<K : Any, V : Any>(
                 .thenNext(executor) { CompletableFuture.completedFuture(Loaded(it, stamp)) }
         }
         val lease = LeaseRequest(context.nextToken(), policy.lease.ttl)
-        val entry = run {
-            readWaitingLeaseAsync(storageKey, lease).handleNext(executor) { read, error ->
-                if (error != null) {
-                    onReadFailureAsync(
-                        "read",
-                        storageKey,
-                        error
-                    ) { bypassAsync(key, storageKey, stamp, source, operation) }
-                } else {
-                    when (read) {
-                        is RemoteRead.Hit -> onHitAsync(key, storageKey, read, stamp, lease, source, operation)
-                        is RemoteRead.Miss -> loadAndFillAsync(
-                            key,
-                            storageKey,
-                            stamp,
-                            lease.token.takeIf { read.leaseGranted },
-                            source,
-                            operation
-                        )
-
-                        is RemoteRead.Leased -> {
-                            metrics.leaseWaitTimeout()
-                            bypassAsync(key, storageKey, stamp, source, operation)
-                        }
-
-                        null -> CompletableFuture.failedFuture(
-                            IllegalStateException("Cache[$name] - remote read returned null.")
-                        )
-                    }
-                }
+        return readWaitingLeaseAsync(storageKey, lease).handleNext(executor) { read, error ->
+            unanswerable(error, source != null)?.let {
+                return@handleNext CompletableFuture.completedFuture(unanswered("read", stamp, it))
             }
+            val entry = if (error != null) {
+                onReadFailureAsync(
+                    "read",
+                    storageKey,
+                    error
+                ) { bypassAsync(key, storageKey, stamp, source, operation) }
+            } else {
+                onReadAsync(key, storageKey, read, stamp, lease, source, operation)
+            }
+            entry.thenNext(executor) { CompletableFuture.completedFuture(Loaded(it, stamp)) }
+        }.releasingOnRejection { mapOf(storageKey to lease.token) }
+    }
+
+    @Suppress("LongParameterList")
+    private fun onReadAsync(
+        key: K,
+        storageKey: String,
+        read: RemoteRead?,
+        stamp: Long,
+        lease: LeaseRequest,
+        source: AsyncSource<K, V>?,
+        operation: LoadOperation
+    ): CompletableFuture<LocalEntry<V>> = when (read) {
+        is RemoteRead.Hit -> onHitAsync(key, storageKey, read, stamp, lease, source, operation)
+        is RemoteRead.Miss -> loadAndFillAsync(
+            key,
+            storageKey,
+            stamp,
+            lease.token.takeIf { read.leaseGranted },
+            source,
+            operation
+        )
+
+        is RemoteRead.Leased -> {
+            metrics.leaseWaitTimeout()
+            bypassAsync(key, storageKey, stamp, source, operation)
         }
-        return entry.thenNext(executor) { CompletableFuture.completedFuture(Loaded(it, stamp)) }
-            .releasingOnRejection { mapOf(storageKey to lease.token) }
+
+        null -> CompletableFuture.failedFuture(
+            IllegalStateException("Cache[$name] - remote read returned null.")
+        )
     }
 
     /**
@@ -1591,7 +1701,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         operation: LoadOperation
     ): CompletableFuture<LocalEntry<V>> {
         return loadFromSourceAsync(key, storageKey, source, operation).thenNext(executor) { value ->
-            completed(completeBypass(key, storageKey, stamp, value))
+            completed(completeBypass(key, storageKey, stamp, value, source != null))
         }
     }
 
@@ -1736,7 +1846,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             val entries = pending.mapValues { (storageKey, sourceKeys) ->
                 val result = loaded[storageKey]
                 if (result != null && result.stamp >= observed.getValue(storageKey)) {
-                    completed(result.entry)
+                    answerAsync(result)
                 } else {
                     loadMissAsync(sourceKeys.first(), storageKey, asyncSource)
                 }
@@ -1765,51 +1875,65 @@ internal class CoherentEngine<K : Any, V : Any>(
         val reads = if (readKeys.isEmpty()) {
             CompletableFuture.completedFuture(emptyMap())
         } else {
-            Futures.attempt { asyncStore.readAllAsync(readKeys, leases) }.handleNext(executor) { reads, error ->
-                if (error != null) {
-                    onReadFailureAsync(
-                        "readAll",
-                        readKeys.first(),
-                        error
-                    ) { CompletableFuture.completedFuture(emptyMap()) }
-                } else {
-                    CompletableFuture.completedFuture(reads ?: emptyMap())
-                }
-            }
+            Futures.attempt { asyncStore.readAllAsync(readKeys, leases) }
         }
-        return reads.thenNext<Map<String, RemoteRead>, Map<String, Loaded<V>>>(executor) { readResults ->
-            val result = LinkedHashMap<String, Loaded<V>>()
-            val corrupt = LinkedHashMap<String, CompletableFuture<LocalEntry<V>>>()
-            val toLoad = LinkedHashMap<String, Token?>()
-            for (storageKey in led.keys) {
-                val stamp = loadStamps.getValue(storageKey)
-                val lease = leases[storageKey]
-                when (val step = batchStep(storageKey, readResults[storageKey], stamp, lease, asyncSource != null)) {
-                    is BatchStep.Load -> toLoad[storageKey] = step.token
-                    is BatchStep.Done -> result[storageKey] = Loaded(step.entry, stamp)
-                    is BatchStep.Failed -> corrupt[storageKey] = CompletableFuture.failedFuture(step.error)
-                    is BatchStep.Corrupt -> corrupt[storageKey] = corruptStepAsync(
-                        led.getValue(storageKey),
-                        storageKey,
-                        step,
-                        stamp,
-                        leases.getValue(storageKey)
-                    )
-                }
+        return reads.handleNext<Map<String, RemoteRead>, Map<String, Loaded<V>>>(executor) { readResults, error ->
+            unanswerable(error, asyncSource != null)?.let {
+                return@handleNext CompletableFuture.completedFuture(unansweredAll(led.keys, loadStamps, it))
             }
-            val loaded = if (toLoad.isEmpty()) {
-                CompletableFuture.completedFuture(emptyMap())
+            if (error != null) {
+                onReadFailureAsync(
+                    "readAll",
+                    readKeys.first(),
+                    error
+                ) { CompletableFuture.completedFuture(emptyMap<String, RemoteRead>()) }
+                    .thenNext(executor) { stepAllAsync(led, it, loadStamps, leases) }
             } else {
-                loadAndFillBatchAsync(led, toLoad, loadStamps)
-            }
-            loaded.thenNext(executor) { batch ->
-                result.putAll(batch)
-                allOf(corrupt).thenNext(executor) { reclaimed ->
-                    reclaimed.forEach { (storageKey, entry) -> result[storageKey] = Loaded(entry, loadStamps.getValue(storageKey)) }
-                    CompletableFuture.completedFuture(result)
-                }
+                stepAllAsync(led, readResults ?: emptyMap(), loadStamps, leases)
             }
         }.releasingOnRejection { leases.mapValues { it.value.token } }
+    }
+
+    /**
+     * [loadAllThroughAsync] 读到 L1 之后：逐 key 判定，再批量回源、条件回收。
+     */
+    private fun stepAllAsync(
+        led: Map<String, K>,
+        readResults: Map<String, RemoteRead>,
+        loadStamps: Map<String, Long>,
+        leases: Map<String, LeaseRequest>
+    ): CompletableFuture<Map<String, Loaded<V>>> {
+        val result = LinkedHashMap<String, Loaded<V>>()
+        val corrupt = LinkedHashMap<String, CompletableFuture<LocalEntry<V>>>()
+        val toLoad = LinkedHashMap<String, Token?>()
+        for (storageKey in led.keys) {
+            val stamp = loadStamps.getValue(storageKey)
+            val lease = leases[storageKey]
+            when (val step = batchStep(storageKey, readResults[storageKey], stamp, lease, asyncSource != null)) {
+                is BatchStep.Load -> toLoad[storageKey] = step.token
+                is BatchStep.Done -> result[storageKey] = Loaded(step.entry, stamp)
+                is BatchStep.Failed -> corrupt[storageKey] = CompletableFuture.failedFuture(step.error)
+                is BatchStep.Corrupt -> corrupt[storageKey] = corruptStepAsync(
+                    led.getValue(storageKey),
+                    storageKey,
+                    step,
+                    stamp,
+                    leases.getValue(storageKey)
+                )
+            }
+        }
+        val loaded = if (toLoad.isEmpty()) {
+            CompletableFuture.completedFuture(emptyMap())
+        } else {
+            loadAndFillBatchAsync(led, toLoad, loadStamps)
+        }
+        return loaded.thenNext(executor) { batch ->
+            result.putAll(batch)
+            allOf(corrupt).thenNext(executor) { reclaimed ->
+                reclaimed.forEach { (storageKey, entry) -> result[storageKey] = Loaded(entry, loadStamps.getValue(storageKey)) }
+                CompletableFuture.completedFuture(result)
+            }
+        }
     }
 
     /**
@@ -1994,7 +2118,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                         refuseUnreadable(storageKey, it)
                     }
             },
-            { outcome.get() == RemoteConditionalWrite.Written },
+            { conditionalChanged(envelope, outcome.get()) },
             conditionalWriteFailure
         ).thenApply { conditionalPutOf(envelope, requireNotNull(outcome.get())) }
     }

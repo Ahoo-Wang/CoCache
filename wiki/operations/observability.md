@@ -53,7 +53,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | Meter | Type | Counts |
 |-------|------|--------|
 | `cocache.fill.rejections` | counter | Loads that held a lease, but Redis refused the fill: an invalidation destroyed the lease, the loader outlived `lease-ttl`, or the fill failed |
-| `cocache.degraded.fills` | counter | Loads written to L2 only, for `degraded-local-max-age`: Redis read failed, lease wait timed out, fill rejected, value in an unknown format, or an invalidation of the key still pending |
+| `cocache.degraded.fills` | counter | Loads written to L2 only, for `degraded-local-max-age`: Redis read failed, lease wait timed out, fill rejected, value in an unknown format, or an invalidation of the key still pending. A read without a loader isn't counted when Redis fails: it throws instead. |
 | `cocache.stale.discards` | counter | L2 fills dropped because an invalidation of the key arrived while the read was in flight. This is the L2 fence working. |
 | `cocache.reclaims` | counter | L1 values this instance couldn't decode (foreign content or codec failure). A separate reclaim script then converts the value into a lease, if it is still unchanged, and the instance reloads. |
 | `cocache.unknown.formats` | counter | L1 values written in a newer wire format than this instance knows (loaded from the source, nothing overwritten; without a loader the read throws under `foreign-format: fail`), unreadable content rejected by `foreign-format: fail` (the read throws `CacheReadException`; the default without a loader), and `SetCache.add` / `remove` and `putIfMatch` calls refused on unreadable content (they throw `CacheWriteException` and also count in `cocache.write.failures`), and `getIfChanged` calls that hit unreadable content. |
@@ -246,7 +246,7 @@ curl -s -X DELETE localhost:8080/actuator/cocache/UserCache/42
 # {"cache":"UserCache","key":"42"}
 ```
 
-This runs the normal invalidation path, as `cache.invalidate(key)` does: L1 is deleted, every instance drops its L2 copy, and the next read loads from the source. It is idempotent. If Redis fails, it follows the cache's `invalidate-failure` setting (by default queued for retry and `200` returned; with `throw`, an error). On a `SetCache` it is `clear(key)`, which **deletes the set's only copy**.
+This runs the normal invalidation path, as `cache.invalidate(key)` does: L1 is deleted, every instance drops its L2 copy, and the next read loads from the source. It is idempotent. If Redis fails, it follows the cache's `invalidate-failure` setting (by default, with a loader, queued for retry and `200` returned; with `throw`, the default without a loader, an error). On a `SetCache` it is `clear(key)`, which **deletes the set's only copy**.
 
 ## Logs {#logs}
 

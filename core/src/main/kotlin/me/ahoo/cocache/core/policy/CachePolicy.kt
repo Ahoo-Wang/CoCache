@@ -25,7 +25,8 @@ import java.util.concurrent.ThreadLocalRandom
  * @param localMaxAge L2 副本的最长寿命：失效事件丢失时 L2 陈旧度的上界
  * @param degradedLocalMaxAge 未写入 L1 的填充（L1 故障、等待 lease 超时、fill 被拒绝）在 L2 中的最长寿命
  * @param refreshWindow 提前刷新窗口；`null` 表示关闭
- * @param invalidateFailure 失效写入 L1 失败时的处理方式
+ * @param invalidateFailure 失效写入 L1 失败时的处理方式；`null`（默认）按缓存有没有数据源决定：有数据源时
+ *   [InvalidateFailureMode.RETRY]，没有数据源时（L1 是唯一副本）[InvalidateFailureMode.THROW]
  * @param readFailure 读取 L1 失败时的处理方式
  * @param foreignFormat 读到本缓存读不懂的 L1 内容（格式 0：5.x 或其它程序写入的值、原生 Set / Hash 等其它 Redis 类型；
  *   以及同版本内容解码失败）时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ForeignFormatMode.RECLAIM]，
@@ -41,7 +42,7 @@ class CachePolicy(
     val lease: LeasePolicy = LeasePolicy(),
     val load: LoadPolicy = LoadPolicy(),
     val local: LocalPolicy = LocalPolicy(),
-    val invalidateFailure: InvalidateFailureMode = InvalidateFailureMode.RETRY,
+    val invalidateFailure: InvalidateFailureMode? = null,
     val readFailure: ReadFailureMode = ReadFailureMode.DEGRADE,
     val foreignFormat: ForeignFormatMode? = null,
 ) {
@@ -60,7 +61,7 @@ class CachePolicy(
         lease: LeasePolicy = LeasePolicy(),
         load: LoadPolicy = LoadPolicy(),
         local: LocalPolicy = LocalPolicy(),
-        invalidateFailure: InvalidateFailureMode = InvalidateFailureMode.RETRY,
+        invalidateFailure: InvalidateFailureMode? = null,
         readFailure: ReadFailureMode = ReadFailureMode.DEGRADE,
     ) : this(
         ttl, ttlJitter, absentTtl, localMaxAge, degradedLocalMaxAge, refreshWindow, lease, load, local, invalidateFailure, readFailure, null
@@ -125,7 +126,7 @@ class CachePolicy(
         var lease: LeasePolicy = policy.lease
         var load: LoadPolicy = policy.load
         var local: LocalPolicy = policy.local
-        var invalidateFailure: InvalidateFailureMode = policy.invalidateFailure
+        var invalidateFailure: InvalidateFailureMode? = policy.invalidateFailure
         var readFailure: ReadFailureMode = policy.readFailure
         var foreignFormat: ForeignFormatMode? = policy.foreignFormat
 
@@ -141,7 +142,7 @@ class CachePolicy(
         fun load(load: LoadPolicy) = apply { this.load = load }
         fun local(local: LocalPolicy) = apply { this.local = local }
         fun invalidateFailure(
-            invalidateFailure: InvalidateFailureMode
+            invalidateFailure: InvalidateFailureMode?
         ) = apply { this.invalidateFailure = invalidateFailure }
 
         fun readFailure(readFailure: ReadFailureMode) = apply { this.readFailure = readFailure }
@@ -249,16 +250,21 @@ data class LocalPolicy @JvmOverloads constructor(
 }
 
 /**
- * 失效写入 L1 失败时的处理方式。
+ * 失效写入 L1 失败时的处理方式。未配置时按缓存有没有数据源决定（见 [CachePolicy.invalidateFailure]）。
  */
 enum class InvalidateFailureMode {
     /**
-     * 进入有界重试队列，不抛出（默认）。失效通常在事务提交之后调用，抛出既不能回滚也不该回滚。
+     * 进入有界重试队列，不抛出。失效通常在事务提交之后调用，抛出既不能回滚也不该回滚。
+     *
+     * 有数据源的缓存的默认值：删除总是安全的，之后回源即可。没有数据源时（L1 是唯一副本）延迟的重试会删掉
+     * 失败之后其它写入方写入的值（丢更新），显式配置即接受这个代价。
      */
     RETRY,
 
     /**
-     * 抛出 [me.ahoo.cocache.api.CacheWriteException]。
+     * 抛出 [me.ahoo.cocache.api.CacheWriteException]，不登记重试。
+     *
+     * 没有数据源的缓存的默认值：L1 是唯一副本，调用方得知失败后自行决定（如重试 `invalidate`，或改为写入新值）。
      */
     THROW,
 }

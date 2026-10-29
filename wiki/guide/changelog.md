@@ -5,6 +5,34 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased
+
+**Module Group:** `me.ahoo.cocache` · Planned as 6.9.0. Minor release with two default changes for caches without a loader, where Redis holds the only copy, and a broadcast fix for conditional and versioned writes. No API is removed. `CachePolicy.invalidateFailure` becomes nullable; its JVM signature is unchanged, so compiled callers keep running. The Redis wire format and the invalidation channel are unchanged, so 6.9.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Behavior change: reads without a loader fail when Redis fails
+
+- A read without a loader (a `Cache` with no loader, read through `get`, `lookup` or `getAll`) now throws `CacheReadException` when the Redis read fails, whatever `read-failure` says, and caches nothing in L2. Such a read has no source to degrade to: skipping Redis can only answer "absent". This matches `getIfChanged` and `SetCache`.
+- In 6.8.0 and earlier the read returned `null` and kept that `null` in L2 as a negative entry for `degraded-local-max-age` (10 s). During the outage callers saw a present key as absent, and for those 10 s after recovery `get(key)` still returned `null` and `get(key, loader)` returned `null` without calling its loader.
+- `get(key, loader)` has a source and still degrades. If it joins a read without a loader that fails, it loads with its own loader instead of sharing the failure.
+- The other reads that skip Redis without a loader (lease wait timeout, pending invalidation, `foreign-format: reclaim` on a newer format, failed reclaim) still return `null` but no longer cache it as a negative entry, so `get(key, loader)` isn't blocked by it.
+- Spring Cache: a non-sync `@Cacheable` reads without a loader, so a Redis read failure reaches Spring's `CacheErrorHandler` (see [Spring Cache](./spring-cache.md#failures)).
+
+### Behavior change: `invalidate-failure` defaults to `throw` without a loader
+
+- `invalidate-failure` (`CachePolicy.invalidateFailure`) is now unset by default and decided per cache: `retry` with a loader, as before, and `throw` without one. An explicit `retry` or `throw` still applies.
+- Without a loader a delayed retry loses updates. Instance A's `invalidate` fails and is queued for retry; instance B then writes the key with `put`; about 100 ms later A's retry deletes B's value. With a loader, deleting is always safe because the next read reloads.
+- Spring Cache caches usually have no loader, so a failed `@CacheEvict` now throws `CacheWriteException` (through Spring's `CacheErrorHandler`) instead of retrying. The annotated method is the source there and a delete is safe: set `invalidate-failure: retry` on those caches to keep the 6.8 behavior.
+- `CachePolicy.invalidateFailure` and `CachePolicy.Builder.invalidateFailure` are now `InvalidateFailureMode?`. Kotlin code that reads the property sees a nullable type. Binaries compiled against 6.8 or earlier, including the 6.4 constructor, get the new default.
+
+### Fix: replayed conditional and versioned writes broadcast without atomic broadcast
+
+- Without atomic broadcast (the `sharded` channel mode, or when the startup probe falls back), a `putIfNewer` or `putIfMatch` could be written to Redis while its separate publish failed. The caller got `CacheWriteException` and replayed it as documented, but the replay returned `Stale(version)` or `Conflict(own digest)` and published nothing, so other instances kept their stale L2 copy until `local-max-age`.
+- The engine now also publishes when `putIfNewer` / `invalidateIfNewer` returns `Stale` with the version it was given, and when `putIfMatch` conflicts with the digest of its own value. An extra invalidation only drops copies. An older version and other conflicts still publish nothing. Atomic broadcast is unchanged.
+
+### TCK
+
+- `EngineSpec`, `FaultSpec` and `VersionedSpec` (and their async versions) gain cases for these behaviors. `VersionedSpec.refusedVersionsChangeNothingAndDoNotBroadcast` now expects equal versions to broadcast on backends without atomic broadcast.
+
 ## v6.8.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive only: `Cache`, `AsyncCache` and `SuspendingCache` gain version-ordered writes as default methods (they throw `UnsupportedOperationException` in implementations that don't override them), `CacheSpec` can declare a cache versioned, and the `cocache-api` SPI gains `CoherenceBackend.versionedWrites` and `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync` with defaults. Existing callers, custom `Cache` / `SuspendingCache` implementations, and custom backends keep compiling and running unchanged. The Redis key layout, header layout, format version and invalidation channel are unchanged. 6.0 to 6.7 instances read versioned values (below), so 6.8.0 instances can share Redis with any 6.x instance and be upgraded one at a time.

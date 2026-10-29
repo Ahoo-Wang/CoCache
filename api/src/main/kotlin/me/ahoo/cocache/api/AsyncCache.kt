@@ -78,7 +78,7 @@ interface AsyncCache<K : Any, V : Any> {
     fun putAll(entries: Map<K, V>, ttl: Duration): CompletableFuture<Void?>
 
     /**
-     * 失效，语义同 [Cache.invalidate]：L1 失败时默认登记重试并正常完成，配置为抛出时以 [CacheWriteException] 完成。
+     * 失效，语义同 [Cache.invalidate]：L1 失败时有数据源的缓存默认登记重试并正常完成，没有数据源或配置为抛出时以 [CacheWriteException] 完成。
      */
     fun invalidate(key: K): CompletableFuture<Void?>
 

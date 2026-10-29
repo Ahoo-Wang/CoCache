@@ -60,8 +60,8 @@ These keys work under both `cocache.defaults.` and `cocache.caches.[name].`.
 | `load-acquire-timeout` | duration | `1s` | — | How long a load waits for a permit before throwing `SourceLoadRejectedException` |
 | `load-async-timeout` | duration | `30s` | — | How long one `AsyncCacheLoader` load may take. Past it the call fails with `SourceLoadTimeoutException` and the lease is released. Doesn't apply to synchronous loaders. See [Async API](./async.md#timeouts). |
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | Maximum L2 entries per instance |
-| `invalidate-failure` | `retry` \| `throw` | `retry` | — | A failed Redis invalidation: queue for background retry, or throw `CacheWriteException` |
-| `read-failure` | `degrade` \| `throw` | `degrade` | — | A failed Redis read: load from the source, or throw `CacheReadException` |
+| `invalidate-failure` | `retry` \| `throw` | `retry` with a loader, `throw` without one | — | A failed Redis invalidation: queue for background retry, or throw `CacheWriteException`. Without a loader Redis holds the only copy, and a delayed retry would delete a value written after the failure, so the default is `throw`. See [When Redis is down during a write](./freshness.md#redis-down). |
+| `read-failure` | `degrade` \| `throw` | `degrade` | — | A failed Redis read: load from the source, or throw `CacheReadException`. A read without a loader has nothing to degrade to and always throws. |
 | `foreign-format` | `fail` \| `reclaim` | `fail` without a loader, `reclaim` with one | — | Content the cache can't read (written by 5.x or another program, or undecodable): throw `CacheReadException` and keep it, or reclaim and reload. Without a loader, `fail` also applies to a value written by a newer CoCache version, and to `SetCache.add` / `remove` on unreadable content (they throw `CacheWriteException` and leave the key unchanged); `put` always replaces. `cocache.defaults.foreign-format` doesn't apply to `SetCache`. See [Upgrading from 5.x](./migration-6.md#foreign-format). |
 | `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | First part of every storage key ([below](#key-prefix)) |
 

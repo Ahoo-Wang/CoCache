@@ -32,6 +32,8 @@ interface Cache<K : Any, V : Any> {
 
     /**
      * 读穿透：L2 → L1 → 数据源。不存在（含负缓存）返回 `null`。
+     *
+     * 没有数据源的缓存在 L1 读取失败时抛出 [CacheReadException]（L1 是唯一副本，没有可降级的答案）。
      */
     operator fun get(key: K): V?
 
@@ -93,7 +95,8 @@ interface Cache<K : Any, V : Any> {
     /**
      * 失效两级缓存并广播。必须在数据源提交之后调用（事务内应登记到提交之后）。
      *
-     * L1 写入失败时默认进入重试队列而不抛出（见 RFC 0003 §4.13）。
+     * L1 写入失败时，有数据源的缓存默认进入重试队列而不抛出（见 RFC 0003 §4.13）；没有数据源的缓存默认抛出
+     * [CacheWriteException]：L1 是唯一副本，延迟的重试会删掉失败之后写入的值。
      */
     fun invalidate(key: K)
 
@@ -146,7 +149,8 @@ interface Cache<K : Any, V : Any> {
      *
      * @param expected L1 中应有的值的摘要（[getIfChanged] 返回的）；`null` 表示应当没有值
      * @return 写入时为 [ConditionalPut.Written]（附写入的值的摘要），否则为 [ConditionalPut.Conflict]
-     * @throws CacheWriteException L1 写入失败（结果可能未知：重读后再决定是否重试；当前摘要等于自己写入的值的摘要即已写入），
+     * @throws CacheWriteException L1 写入失败（结果可能未知：重读后再决定是否重试；当前摘要等于自己写入的值的摘要即已写入；
+     *   没有原子广播的后端上，重放得到这样的冲突时会补发失效），
      *   或 L1 中是读不懂的内容
      */
     fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut = throw UnsupportedOperationException(
@@ -180,7 +184,8 @@ interface Cache<K : Any, V : Any> {
      * 普通的 [put]、[putIfMatch]、[invalidate] 与 L1 到期都会丢弃版本，之后任何版本都能写入：需要顺序保证的写入方全部使用本方法。
      *
      * @param version 这份值的版本，不能是 [Versioned.NO_VERSION]
-     * @throws CacheWriteException L1 写入失败（结果可能未知；重放同一版本是安全的：已写入时返回 [VersionedPut.Stale]）
+     * @throws CacheWriteException L1 写入失败（结果可能未知；重放同一版本是安全的：已写入时返回 [VersionedPut.Stale]，
+     *   没有原子广播的后端上这次重放会补发失效）
      */
     fun putIfNewer(key: K, value: V, version: Long): VersionedPut = throw UnsupportedOperationException(
         "${javaClass.name} does not support putIfNewer()."

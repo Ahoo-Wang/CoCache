@@ -186,7 +186,7 @@ class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
 - **默认的 `loadAll`** 逐个调用 `load`。如果用到 `getAll`，请用一次批量查询覆盖它。
 - **loader 在调用方线程上执行**，事务、`SecurityContext` 与 MDC 都可用。经[异步视图](./async.md)调用时改在阻塞执行器上执行。
 - **不要在 loader 内同线程读取同一个 key**，那会以 `IllegalStateException` 快速失败。
-- **接口式声明**先按 `CacheLoader<K, V>`、再按 `AsyncCacheLoader<K, V>` 类型查找 loader。匹配到多个 bean，或两种各一个时启动失败，用 `@CoCache(loader = "…")` 指定一个。一个都没有时缓存没有 loader：未命中返回 `null`，缓存只能由 `put` 填充。
+- **接口式声明**先按 `CacheLoader<K, V>`、再按 `AsyncCacheLoader<K, V>` 类型查找 loader。匹配到多个 bean，或两种各一个时启动失败，用 `@CoCache(loader = "…")` 指定一个。一个都没有时缓存没有 loader：未命中返回 `null`，缓存只能由 `put` 填充。这时 Redis 是唯一副本，Redis 读取失败会抛出 `CacheReadException` 而不是读成 `null`，`invalidate` 失败会抛出 `CacheWriteException` 而不是重试（见 [Redis 故障时](./concepts.md#failures)）。
 - **按调用提供 loader**：`cache.get(key) { k -> … }` 用给定的 loader 加载未命中的值，保护方式不变。Spring 的 `@Cacheable(sync = true)` 用的就是它。
 - **非阻塞的数据源**：实现 `AsyncCacheLoader<K, V>`（`loadAsync` 返回 `CompletionStage`），在 spec 中设为 `asyncLoader`。一个缓存只有一个数据源，同步或异步；两种 API 都能配合任意一种。见[异步 API](./async.md#loader)。
 

@@ -255,7 +255,7 @@ class VersionedCacheTest {
     }
 
     /**
-     * 非原子广播的后端：版本不更新时引擎不广播（存储没有修改 L1）。
+     * 非原子广播的后端：版本更旧时引擎不广播（存储没有修改 L1）。相等的版本可能是重放，仍然广播（`VersionedSpec`）。
      */
     @Test
     fun staleVersionsAreNotBroadcastWithoutAtomicBroadcast() {
@@ -274,7 +274,7 @@ class VersionedCacheTest {
             val received = requireNotNull(runtime.metrics("shared")).invalidationsReceived
             received.assert().isGreaterThan(0L)
             cache.putIfNewer("k", "v0", 0).assert().isEqualTo(VersionedPut.Stale(1))
-            cache.async().invalidateIfNewer("k", 1).join().assert().isEqualTo(VersionedPut.Stale(1))
+            cache.async().invalidateIfNewer("k", 0).join().assert().isEqualTo(VersionedPut.Stale(1))
             requireNotNull(runtime.metrics("shared")).invalidationsReceived.assert().isEqualTo(received)
             observer["k"].assert().isEqualTo("v1")
         }

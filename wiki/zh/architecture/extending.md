@@ -137,10 +137,10 @@ testImplementation("me.ahoo.cocache:cocache-test")
 |------|------|--------|
 | `BackendProtocolSpec` | `RemoteStore` 约定：授予 lease、令牌校验、到期时间重设、释放、刷新令牌、回收、批量读写、集合更新、广播帧、订阅时重置 | `createBackend()`、`elapse(duration)`。可选覆盖 `shortTtl`（默认 300 ms） |
 | `EngineSpec` | 两个运行时共用你的后端：跨实例单次加载、等待 lease 超时、加载期间的失效、同实例失效与读取的竞态、并发 `put`、读己之写、loader 失败、Redis 失败、失效重试、重连重置、`local-max-age`、批量读、提前刷新、回收、更新的格式、回源并发上限、条件读写（含并发“读—改—写”不丢更新） | `createBackend()`、`clock`、`elapse(duration)`、`simulateReconnect()`。存储没有实现 `putIfMatch` 时覆盖 `supportsConditionalWrites = false`，跳过条件写入的用例；否则必须全部通过，其中的并发用例让所有写入方在同一个摘要上竞争，并断言恰好一个胜出 |
-| `VersionedSpec` | 只用于支持 `versionedWrites` 的后端。协议（整体写入保存版本、按有符号 64 位整数比较、按版本写入销毁被持有的 lease、带版本的内容不授予刷新令牌也不被回收、墓碑），以及两个运行时共用你的后端：有序、相等版本幂等、拒绝旧版本且不广播不改寿命、墓碑挡住迟到的旧版本、按版本写入胜过持有 lease 的回源、回源保存 loader 给出的版本、并发乱序的写入方收敛到最高版本、结果未知后重放安全。`AsyncVersionedSpec` 经异步视图重跑 | `createBackend()`、`clock`、`elapse(duration)` |
+| `VersionedSpec` | 只用于支持 `versionedWrites` 的后端。协议（整体写入保存版本、按有符号 64 位整数比较、按版本写入销毁被持有的 lease、带版本的内容不授予刷新令牌也不被回收、墓碑），以及两个运行时共用你的后端：有序、相等版本幂等、拒绝旧版本且不广播不改寿命（没有原子广播时相等的版本会再次广播，重放因此能补上丢失的发布）、墓碑挡住迟到的旧版本、按版本写入胜过持有 lease 的回源、回源保存 loader 给出的版本、并发乱序的写入方收敛到最高版本、结果未知后重放安全。`AsyncVersionedSpec` 经异步视图重跑 | `createBackend()`、`clock`、`elapse(duration)` |
 | `SetEngineSpec` | 两个运行时上的 `SetCache`：原子的并发加入、空集合删除、拒绝 `invalidate`、写入与读取失败 | `createBackend()`、`clock`、`elapse(duration)` |
 | `MultiNodeSpec` | 三个运行时共用你的后端：失效先于 lease、晚于 lease 且另一实例正在等待、晚于 fill 而早于写 L2；其它实例的写入落在读取与 L2 填充之间；不同实例的并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全部实例中每个 key 只回源一次、只刷新一次 | `createBackend()`、`clock`、`elapse(duration)` |
-| `FaultSpec` | L1 故障下的后端：存储失败期间副本以 `degraded-local-max-age` 限龄、fill 失败及其 lease、放弃或溢出队列的失效重试、已生效却报错且可安全重试的 `put` 与 `invalidate`，以及（可选）断线期间被拒绝的写入在重连后不被重放 | `createBackend()`、`clock`、`elapse(duration)`；可选 `disconnect()` |
+| `FaultSpec` | L1 故障下的后端：存储失败期间副本以 `degraded-local-max-age` 限龄、fill 失败及其 lease、没有 loader 的缓存失效失败时抛出而不重试、放弃或溢出队列的失效重试、已生效却报错且可安全重试的 `put` 与 `invalidate`，以及（可选）断线期间被拒绝的写入在重连后不被重放 | `createBackend()`、`clock`、`elapse(duration)`；可选 `disconnect()` |
 | `AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec` | 对应套件的每个用例经[异步视图](../guide/async.md)重跑；`AsyncEngineSpec` 另有异步专有的用例：取消、future 在哪个线程上完成、等待 lease 与回源许可不占线程、原始异常、不同步抛出、`load-async-timeout`、同步与异步调用合并为一次加载、重入 | 与对应套件相同的成员 |
 | `AsyncBackendProtocolSpec` | `BackendProtocolSpec` 的每个用例经 `AsyncRemoteStore` 的方法重跑（不同步抛出、原始异常），另加同一 key 上同步与异步调用的一致性 | 与 `BackendProtocolSpec` 相同的成员。只用于实现了 `AsyncRemoteStore` 的后端 |
 

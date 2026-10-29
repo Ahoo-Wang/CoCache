@@ -26,8 +26,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * - 同一事务内对同一缓存的多次失效合并为一次 [Cache.invalidateAll]（去重，保持登记顺序）。
  * - 事务回滚时不失效：数据源没有变化。
  * - 嵌套的新事务（`REQUIRES_NEW`）在各自提交之后失效。
- * - 提交后的失效默认不会抛出（失败进入重试队列，见 `InvalidateFailureMode.RETRY`）；
- *   配置为 `THROW` 时，异常在提交之后抛给调用方，此时数据源已经提交。
+ * - 有数据源的缓存上，提交后的失效默认不会抛出（失败进入重试队列，见 `InvalidateFailureMode.RETRY`）；
+ *   没有数据源的缓存默认、或配置为 `THROW` 时，异常在提交之后抛给调用方，此时数据源已经提交。
  */
 class TransactionalInvalidator {
 

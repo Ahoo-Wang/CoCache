@@ -23,7 +23,8 @@ class CachePolicyTest {
         val policy = CachePolicy.DEFAULT
         policy.ttl.assert().isEqualTo(Duration.ofHours(1))
         policy.localMaxAge.assert().isEqualTo(Duration.ofMinutes(5))
-        policy.invalidateFailure.assert().isEqualTo(InvalidateFailureMode.RETRY)
+        // 未配置：引擎按有没有数据源决定（有 RETRY，没有 THROW）
+        policy.invalidateFailure.assert().isNull()
         policy.toString().assert().contains("ttl=PT1H")
     }
 
@@ -136,6 +137,8 @@ class CachePolicyTest {
         defaults.ttlJitter.assert().isEqualTo(CachePolicy.DEFAULT_TTL_JITTER)
         defaults.readFailure.assert().isEqualTo(ReadFailureMode.DEGRADE)
         defaults.foreignFormat.assert().isNull()
+        // 6.9 起 invalidateFailure 的默认值也是未设置（参数类型在 JVM 上不变，旧调用方无需重新编译）
+        defaults.invalidateFailure.assert().isNull()
 
         // 旧调用方的 CachePolicy()：全部参数取默认值
         val allDefaults = CachePolicy::class.java.getConstructor(

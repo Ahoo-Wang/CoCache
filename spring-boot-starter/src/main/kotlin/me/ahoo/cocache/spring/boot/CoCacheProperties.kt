@@ -284,11 +284,13 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         val localMaximumSize: Long?,
         /**
-         * 失效写入 L1 失败时的处理方式：`retry`（默认，有界重试队列）或 `throw`。
+         * 失效写入 L1 失败时的处理方式：`retry`（有界重试队列）或 `throw`。未设置时按缓存有没有数据源决定：有数据源 `retry`，
+         * 没有数据源 `throw`（L1 是唯一副本，延迟的重试会删掉失败之后写入的值）。
          */
         val invalidateFailure: InvalidateFailureMode?,
         /**
          * 读取 L1 失败时的处理方式：`degrade`（默认，降级回源）或 `throw`（对应 5.x 的 `cocache.redis.strict-failure=true`）。
+         * 没有数据源的读取没有可降级的答案，总是抛出。
          */
         val readFailure: ReadFailureMode?,
         /**

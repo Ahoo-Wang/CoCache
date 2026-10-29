@@ -101,7 +101,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 **现象**。`cocache.write.failures` 与 `cocache.invalidation.retries` 上升，健康详情中的 `pendingInvalidations` 大于 0。最坏情况下 `cocache.invalidations.dropped` 上升，并有 `ERROR` 日志 `Cache[…] - invalidate […] dropped: L1 keeps the stale value until its remote TTL[…] expires.`
 
-**原因**。某次 `invalidate` 没能写到 Redis。默认（`invalidate-failure: retry`）下，本地效果立即生效，调用正常返回，失效在后台重试：最多 8 次，退避从 100 ms 起翻倍到 10 s，最多排队 10,000 个。重试期间，本实例上该 key 的未命中会跳过 L1 直接回源。其它实例的 L1 中仍是旧值。
+**原因**。某次 `invalidate` 没能写到 Redis。在有 loader 的缓存上，默认（`invalidate-failure: retry`）下，本地效果立即生效，调用正常返回，失效在后台重试：最多 8 次，退避从 100 ms 起翻倍到 10 s，最多排队 10,000 个。重试期间，本实例上该 key 的未命中会跳过 L1 直接回源。其它实例的 L1 中仍是旧值。
 
 重试耗尽、队列已满或应用在仍有重试时关闭，失效就会被放弃。此时 L1 保留旧值直到其剩余 `ttl` 结束（`ttl-forever` 时永远保留），每个实例都可能把它重新加载进 L2。
 
@@ -110,7 +110,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 **处理**。
 
 - Redis 恢复后再次失效被放弃的 key：`DELETE /actuator/cocache/{name}/{key}`，或者 `cache.invalidateAll(keys)`。
-- 想让调用方失败而不是重试，设置 `invalidate-failure: throw`，调用会抛出 `CacheWriteException`。
+- 想让调用方失败而不是重试，设置 `invalidate-failure: throw`，调用会抛出 `CacheWriteException`。没有 loader 的缓存默认就是这样：Redis 是它的唯一副本，延迟的重试会删掉失败之后其它实例写入的值。
 - 要调整重试策略，自行声明 `CacheRuntime` bean，用 `RetryPolicy(maxAttempts, initialBackoff, maxBackoff, capacity)` 构建。存在这样的 bean 时，starter 的运行时会退让。
 - 优雅停机，让退出时的重试队列尽量短。
 
@@ -122,9 +122,9 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 | 操作 | Redis 故障期间 |
 |------|----------------|
-| `get`、`getAll`、`lookup` | 默认（`read-failure: degrade`）：从数据源加载，结果以 `degraded-local-max-age`（10 s）留在 L2 中，不写 L1。`read-failure: throw` 时抛出 `CacheReadException` |
+| `get`、`getAll`、`lookup` | 默认（`read-failure: degrade`）：从数据源加载，结果以 `degraded-local-max-age`（10 s）留在 L2 中，不写 L1。`read-failure: throw` 时抛出 `CacheReadException`。没有 loader（缓存没有 loader，也不是 `get(key, loader)`）时总是抛出 `CacheReadException`，什么也不缓存 |
 | 填充、释放 lease、刷新 | 尽力而为：记录日志并计数，从不抛出 |
-| `invalidate`、`invalidateAll` | 本地效果立即生效，然后在后台重试（[见上文](#invalidations-dropped)）。`invalidate-failure: throw` 时抛出 `CacheWriteException` |
+| `invalidate`、`invalidateAll` | 本地效果立即生效，然后在后台重试（[见上文](#invalidations-dropped)）。`invalidate-failure: throw`（没有 loader 时的默认值）时抛出 `CacheWriteException` |
 | `put`、`SetCache` 写入 | 本地效果立即生效，然后抛出 `CacheWriteException`。超时之后写入可能已经到达 Redis。这些调用幂等，可以安全重试 |
 | `SetCache` 读取 | 抛出 Redis 异常：没有可以降级的数据源 |
 | 通道 | 心跳失败，所有 L2 被清空，订阅恢复时再清空一次 |

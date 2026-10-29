@@ -126,16 +126,25 @@ abstract class FaultSpec {
         database[key]
     }
 
-    private fun spec(policy: CachePolicy = policy()): CacheSpec<String, String> = cacheSpec(cacheName) {
+    private fun spec(
+        policy: CachePolicy = policy(),
+        block: CacheSpec.Builder<String, String>.() -> Unit = {}
+    ): CacheSpec<String, String> = cacheSpec(cacheName) {
         codec = TestCodec
         loader = this@FaultSpec.loader
         this.policy = policy
+        block()
         access.source(this)
     }
 
     private fun CacheRuntime.cache(policy: CachePolicy = policy()): Cache<String, String> = access.cache(
         create(spec(policy))
     )
+
+    /**
+     * 没有数据源的缓存（L1 是唯一副本，只由写入方写入）。
+     */
+    private fun CacheRuntime.loaderlessCache(): Cache<String, String> = access.cache(create(spec { loader = null }))
 
     private fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 
@@ -237,6 +246,27 @@ abstract class FaultSpec {
         elapse(requireNotNull(policy.ttl).plusSeconds(1))
         cacheA["k"].assert().isEqualTo("v1")
         cacheB["k"].assert().isEqualTo("v1")
+    }
+
+    /**
+     * 没有数据源的缓存（L1 是唯一副本）：失效写入 L1 失败默认抛出 [CacheWriteException]，不登记重试。
+     * 否则延迟的重试会删掉其间其它节点写入的值（丢更新）。有数据源时删除总是安全的，默认仍是重试。
+     */
+    @Test
+    fun failedInvalidateWithoutLoaderThrowsInsteadOfDeletingALaterWrite() {
+        val cacheA = nodeA.loaderlessCache()
+        val cacheB = nodeB.loaderlessCache()
+        cacheB.put("k", "v1")
+        backend.failWrites = true
+        val error = runCatching { cacheA.invalidate("k") }.exceptionOrNull()
+        backend.failWrites = false
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        (error as CacheWriteException).operation.assert().isEqualTo("invalidate")
+        nodeA.admin().pendingInvalidationCount.assert().isEqualTo(0)
+        cacheB.put("k", "v2")
+        nodeA.metrics().invalidationRetries.assert().isEqualTo(0)
+        remoteValue("k").assert().isEqualTo("v2")
+        cacheA["k"].assert().isEqualTo("v2")
     }
 
     /**
