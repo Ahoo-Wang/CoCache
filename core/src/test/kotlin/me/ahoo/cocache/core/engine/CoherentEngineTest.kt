@@ -845,6 +845,20 @@ open class CoherentEngineTest {
     }
 
     @Test
+    fun valuesWithoutExpiryAreNotRefreshed() {
+        // 永不过期的值没有“到期前”：即使设置了窗口也不设刷新点
+        val policy = CachePolicy(ttl = null, refreshWindow = Duration.ofSeconds(5))
+        val cache = runtime().engine(spec(policy))
+        database["k"] = "v0"
+        cache["k"]
+        cache.engine.inspect("k").local?.refreshAt.assert().isNull()
+        clock.advance(Duration.ofMinutes(1))
+        cache["k"].assert().isEqualTo("v0")
+        cache.metrics.refreshes.assert().isEqualTo(0)
+        loads.get().assert().isEqualTo(1)
+    }
+
+    @Test
     fun droppedInvalidationIsCounted() {
         val cache = runtime(
             RetryPolicy(maxAttempts = 1, initialBackoff = Duration.ofMillis(1), maxBackoff = Duration.ofMillis(1))
