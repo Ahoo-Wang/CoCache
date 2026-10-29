@@ -179,6 +179,27 @@ object RedisTestSupport {
     }
 
     /**
+     * 集群的主节点（取自拓扑）。仅限 Cluster。
+     */
+    fun masters(): List<RedisClusterNode> {
+        val client = RedisClusterClient.create(requireNotNull(clusterNodes) { "Redis Cluster only" })
+        try {
+            client.connect().use { connection ->
+                return connection.partitions.filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
+            }
+        } finally {
+            client.shutdown()
+        }
+    }
+
+    /**
+     * 在每个节点上缓存 [scripts]（`SCRIPT LOAD`），之后的 `EVALSHA` 不会得到 NOSCRIPT。
+     */
+    internal fun loadScripts(vararg scripts: RedisScripts.Script) {
+        forEachNode { commands -> scripts.forEach { commands.scriptLoad(String(it.source, Charsets.UTF_8)) } }
+    }
+
+    /**
      * 清空每个主节点的脚本缓存（`SCRIPT FLUSH`），模拟故障切换、重启或 resharding 后的脚本缓存丢失。
      */
     fun flushScripts() {

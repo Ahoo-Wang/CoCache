@@ -42,7 +42,7 @@ starter 按以下顺序从 Spring Boot 的 Redis 连接信息中选择拓扑：
 | `host` / `port` / `url` | 单机 | key 遵循 `database`。Pub/Sub 不区分数据库，见 [key 布局](#key-layout) |
 | `masterreplica.nodes` | **启动失败** | 不支持静态主从：读脚本会写入 lease 与刷新令牌，只能在主节点上执行。请使用 Sentinel 或 Cluster，或者自行声明 `CoherenceBackend` bean |
 
-不使用 starter 时，用 `RedisBackend.standalone(uri, options)`（单机或 Sentinel URI）、`RedisBackend.cluster(uris, options)` 构建后端，或者用 `RedisBackend.of(client, options)` 传入自己管理的客户端。使用 `of` 时，请把客户端的 `disconnectedBehavior` 设为 `REJECT_COMMANDS`，否则 CoCache 会记录告警：Lettuce 默认在断线期间缓冲命令并在重连后重放，一个已经向调用方报错的 `put` 可能稍后执行，覆盖更新的值。
+不使用 starter 时，用 `RedisBackend.standalone(uri, options)`（单机或 Sentinel URI）、`RedisBackend.cluster(uris, options)` 构建后端，或者用 `RedisBackend.of(client, options)` 传入自己管理的客户端。使用 `of` 时，请把客户端的 `disconnectedBehavior` 设为 `REJECT_COMMANDS`，否则 CoCache 会记录告警：Lettuce 默认在断线期间缓冲命令，Redis 不可用时每条命令都要等满 `command-timeout` 才失败，而不是立即失败。缓冲中超时的写入会被丢弃，不会在重连后重放。
 
 ### 持久化与故障切换 {#failover}
 

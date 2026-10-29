@@ -40,6 +40,9 @@ import java.util.concurrent.TimeUnit
  * - 订阅（含断线重连后 Lettuce 自动重新订阅）得到服务端确认时，重置该频道的所有订阅者。
  * - 心跳：周期性 PING 订阅连接，失败或超时即重置所有订阅者（半开连接期间的事件可能已丢失），并强制断开订阅连接，由 Lettuce 自动重连并重新订阅。
  * - 订阅失败时撤销本次创建的频道条目；单个订阅者抛出异常不影响其余订阅者。
+ * - 订阅与退订串行执行（[subscriptionLock]），同一连接上的 SUBSCRIBE / UNSUBSCRIBE 因此与频道条目的增删同序。
+ *   经典模式不处理服务端的 `unsubscribed`：Redis 不会主动退订经典频道，唯一的退订来自这里，且不会晚于之后的订阅生效；
+ *   Sharded 模式的服务端退订（slot 迁移）见 [ShardedInvalidationChannel]。
  *
  * 子类提供具体的订阅、退订、发布与心跳命令，并在初始化末尾调用 [start]。
  */
@@ -55,6 +58,13 @@ internal abstract class RedisInvalidationChannel(
      * 否则迟到的重置会清掉订阅之后才填充的本地副本。
      */
     private val pendingAcks = ConcurrentHashMap<String, CountDownLatch>()
+
+    /**
+     * 串行化订阅与退订（含等待服务端应答）。否则多个运行时共享一个后端时：订阅者可能加入刚被最后一个订阅者移除的旧列表，
+     * 随后的 UNSUBSCRIBE 让它永久收不到失效；首次订阅失败时会把并发加入的订阅者一并移除；退订的 UNSUBSCRIBE 也可能晚于
+     * 随后的 SUBSCRIBE 生效。只在创建、关闭缓存时争用，不在读写路径上；确认、心跳与消息分发都不取这把锁。
+     */
+    private val subscriptionLock = Any()
     private val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "cocache-redis-heartbeat").apply { isDaemon = true }
     }
@@ -77,35 +87,60 @@ internal abstract class RedisInvalidationChannel(
 
     override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
         val channel = channelOf(namespace)
-        var created = false
-        val channelListeners = listeners.computeIfAbsent(channel) {
-            created = true
-            CopyOnWriteArrayList()
-        }
-        channelListeners.add(listener)
-        if (created) {
-            // 确认回调会重置该频道的全部订阅者，包括刚加入的这个；等它执行完再返回
-            val ack = CountDownLatch(1)
-            pendingAcks[channel] = ack
-            var subscribed = false
-            try {
-                connections.await(subscribeAsync(channel.toByteArray(Charsets.UTF_8)))
-                subscribed = true
-                if (!ack.await(ackTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
-                    log.warn { "Invalidation channel[$channel] - subscribe acknowledgement not received in $ackTimeout." }
-                }
-            } finally {
-                pendingAcks.remove(channel, ack)
-                if (!subscribed) {
-                    // 订阅失败：撤销本次创建的频道条目，否则该命名空间永久收不到失效，之后的订阅者也会跳过 SUBSCRIBE
-                    channelListeners.remove(listener)
-                    listeners.remove(channel, channelListeners)
-                }
+        var joined = false
+        val channelListeners = synchronized(subscriptionLock) {
+            val existing = listeners[channel]
+            if (existing == null) {
+                subscribeFirst(channel, listener)
+            } else {
+                existing.add(listener)
+                joined = true
+                existing
             }
-        } else {
+        }
+        if (joined) {
             listener.onReset()
         }
-        return Subscription {
+        return Subscription { unsubscribe(channel, channelListeners, listener) }
+    }
+
+    /**
+     * 频道的第一个订阅者：登记频道条目并 SUBSCRIBE；确认回调会重置该频道的全部订阅者，包括这一个，等它执行完再返回。
+     * 订阅失败时撤销条目，否则该命名空间永久收不到失效，之后的订阅者也会跳过 SUBSCRIBE。持有 [subscriptionLock] 时调用。
+     */
+    private fun subscribeFirst(
+        channel: String,
+        listener: InvalidationListener
+    ): CopyOnWriteArrayList<InvalidationListener> {
+        val channelListeners = CopyOnWriteArrayList(listOf(listener))
+        listeners[channel] = channelListeners
+        val ack = CountDownLatch(1)
+        pendingAcks[channel] = ack
+        var subscribed = false
+        try {
+            connections.await(subscribeAsync(channel.toByteArray(Charsets.UTF_8)))
+            subscribed = true
+            if (!ack.await(ackTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
+                log.warn { "Invalidation channel[$channel] - subscribe acknowledgement not received in $ackTimeout." }
+            }
+        } finally {
+            pendingAcks.remove(channel, ack)
+            if (!subscribed) {
+                listeners.remove(channel, channelListeners)
+            }
+        }
+        return channelListeners
+    }
+
+    /**
+     * 移除订阅者；频道的最后一个订阅者离开时移除条目并 UNSUBSCRIBE（在 [subscriptionLock] 内等待应答，之后的订阅才发出 SUBSCRIBE）。
+     */
+    private fun unsubscribe(
+        channel: String,
+        channelListeners: CopyOnWriteArrayList<InvalidationListener>,
+        listener: InvalidationListener
+    ) {
+        synchronized(subscriptionLock) {
             channelListeners.remove(listener)
             if (channelListeners.isEmpty() && listeners.remove(channel, channelListeners)) {
                 connections.await(unsubscribeAsync(channel.toByteArray(Charsets.UTF_8)))
