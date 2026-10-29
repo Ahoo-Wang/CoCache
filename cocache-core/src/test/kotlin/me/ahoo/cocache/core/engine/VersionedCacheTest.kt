@@ -26,6 +26,8 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.TtlFunction
@@ -315,5 +317,98 @@ class VersionedCacheTest {
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         runCatching { store.putIfNewer("k", Envelope.Members(emptyList()), 1, null, frame, false) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    /**
+     * 按版本写入的默认寿命：值按 `ttlOf`（否则策略寿命），墓碑与数据源返回的带版本的不存在按策略寿命（`ttlOf` 需要值）；
+     * 策略寿命为永不过期时都不过期。
+     */
+    @Test
+    fun versionedWritesFollowTtlOfAndForeverPolicies() {
+        val cache = versioned("ttl") {
+            ttlOf = TtlFunction { _, value -> if (value == "short") Duration.ofSeconds(30) else null }
+            versionedLoader = CacheLoader { Versioned(null, 9) }
+            policy {
+                ttl = Duration.ofMinutes(10)
+                ttlJitter = Duration.ZERO
+            }
+        }
+        cache.putIfNewer("short", "short", 1)
+        requireNotNull(
+            (remote("short", "ttl") as RemoteRead.Hit).ttl
+        ).assert().isLessThanOrEqualTo(Duration.ofSeconds(30))
+        cache.putIfNewer("long", "long", 1)
+        requireNotNull((remote("long", "ttl") as RemoteRead.Hit).ttl).assert().isGreaterThan(Duration.ofMinutes(9))
+        cache["deleted"].assert().isNull()
+        requireNotNull((remote("deleted", "ttl") as RemoteRead.Hit).ttl).assert().isGreaterThan(Duration.ofMinutes(9))
+        cache.putIfNewer("deleted", "old", 9).assert().isEqualTo(VersionedPut.Stale(9))
+
+        val forever = versioned("forever") { policy { ttl = null } }
+        forever.putIfNewer("k", "v", 1)
+        (remote("k", "forever") as RemoteRead.Hit).ttl.assert().isNull()
+        forever.async().invalidateIfNewer("k", 2).join()
+        (remote("k", "forever") as RemoteRead.Hit).ttl.assert().isNull()
+    }
+
+    /**
+     * 后端声明了 `versionedWrites` 但存储没有实现 `putIfNewer`（SPI 默认实现）：[UnsupportedOperationException] 原样传给调用方，
+     * 不包装、不计为写入失败的广播。
+     */
+    @Test
+    fun storesWithoutPutIfNewerFailUnwrapped() {
+        val claiming = object : CoherenceBackend by memory {
+            override val versionedWrites: Boolean = true
+
+            override fun store(namespace: String): RemoteStore {
+                val delegate = memory.store(namespace)
+                return object : RemoteStore by delegate {
+                    override fun putIfNewer(
+                        key: String,
+                        envelope: Envelope,
+                        version: Long,
+                        ttl: Duration?,
+                        frame: ByteArray,
+                        foreignAsAbsent: Boolean
+                    ): RemoteVersionedWrite = throw UnsupportedOperationException("no putIfNewer")
+                }
+            }
+        }
+        CacheRuntime.builder().backend(claiming).build().use { other ->
+            val cache = other.create(
+                cacheSpec<String, String>("doc") {
+                    codec = StringCodec
+                    versioned = true
+                }
+            )
+            runCatching { cache.putIfNewer("k", "v", 1) }.exceptionOrNull()
+                .assert().isInstanceOf(UnsupportedOperationException::class.java)
+            cache.async().invalidateIfNewer("k", 1).handle { _, error -> error }.join()
+                .assert().isInstanceOf(UnsupportedOperationException::class.java)
+        }
+    }
+
+    /**
+     * 调用方给出的 loader 返回 `null`：没有版本的不存在（同步与异步）。
+     */
+    @Test
+    fun callSiteLoadersReturningNullAreAbsent() {
+        val cache = versioned("call-site")
+        cache.get("a") { null }.assert().isNull()
+        cache.async().get("b", AsyncCacheLoader { CompletableFuture.completedFuture(null) }).join().assert().isNull()
+        cache.getVersioned("a").assert().isNull()
+        val plainAsync = versioned(
+            "plain-async"
+        ) { asyncLoader = AsyncCacheLoader { CompletableFuture.completedFuture(null) } }
+        plainAsync.async().getAll(listOf("x", "y")).join().assert().isEmpty()
+    }
+
+    @Test
+    fun formatsRefuseToEncodeAVersionedAbsence() {
+        runCatching { VersionedFormat(StringCodec).encode(Versioned(null, 1)) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+        runCatching { PayloadCodec(StringCodec).encode(Versioned(null, 1)) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+        VersionedFormat(StringCodec).versionOf(Versioned("v", 3)).assert().isEqualTo(3L)
+        CodecFormat(StringCodec).versionOf("v").assert().isEqualTo(Versioned.NO_VERSION)
     }
 }

@@ -13,8 +13,11 @@
 
 package me.ahoo.cocache.spring.boot
 
+import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.RemoteRead
@@ -34,6 +37,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 
 /**
  * 配置文件对策略的语义：`refresh-window: 0` 关闭提前刷新；全局寿命不作用于集合缓存。
@@ -105,6 +109,18 @@ class PolicyPropertiesTest {
             codec = StringCodec
             versioned = true
         }
+
+        @Bean
+        fun loadedViewSpec(): CacheSpec<String, String> = cacheSpec("loaded-view") {
+            codec = StringCodec
+            versionedLoader = CacheLoader { Versioned("v-$it", 1) }
+        }
+
+        @Bean
+        fun asyncViewSpec(): CacheSpec<String, String> = cacheSpec("async-view") {
+            codec = StringCodec
+            versionedAsyncLoader = AsyncCacheLoader { CompletableFuture.completedFuture(Versioned("a-$it", 1)) }
+        }
     }
 
     /**
@@ -126,6 +142,12 @@ class PolicyPropertiesTest {
             @Suppress("UNCHECKED_CAST")
             val view = context.getBean("view") as Cache<String, String>
             view.putIfNewer("k", "v", 1).assert().isEqualTo(VersionedPut.Written)
+            @Suppress("UNCHECKED_CAST")
+            val loaded = context.getBean("loadedView") as Cache<String, String>
+            loaded.getVersioned("k").assert().isEqualTo(Versioned("v-k", 1))
+            @Suppress("UNCHECKED_CAST")
+            val async = context.getBean("asyncView") as Cache<String, String>
+            async.getVersioned("k").assert().isEqualTo(Versioned("a-k", 1))
             requireNotNull(
                 context.getBean(CacheRuntime::class.java).metrics("view")
             ).staleVersions.assert().isEqualTo(0L)
