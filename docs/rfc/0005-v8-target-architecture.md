@@ -757,7 +757,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 | `TransactionalInvalidator` 回滚失效、迟到登记、逐缓存失败隔离 | A.T1、A.T2 | 6.9.0 已交付（#697） |
 | 提前刷新退避；寿命 ≤ 刷新窗口不设刷新点 | A.D3 | 6.9.0 已交付（#698） |
 | 中断时取消命令、释放令牌；`fill` / `fillAll` 超时或中断时释放令牌 | P5、P13（附录 B） | 6.9.1 已交付（#704） |
-| `reclaim` 超时释放 lease | C7 | 待排期 |
+| `reclaim` 超时释放 lease | C7 | 6.9.1 已交付（#704） |
 | L2 填充用 `compute` + 条件复核（§4.5） | A.D4、C4 | 待排期 |
 | 单调时钟 | A.C1 | 待排期 |
 | 同步跟随者可中断 | A.S1 | 待排期 |
