@@ -529,7 +529,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 | 项 | 来源 | 状态 |
 |----|------|------|
 | 没有数据源的 L1 读失败 fail closed；`invalidate` 重试不越过之后的写入；非原子广播下的重放也广播 | A.D1、A.D2、A.R4 | 修复中（#700） |
-| #700 的补充：允许显式配置的 `read-failure: degrade` 对没有数据源的读取生效（返回 `null`、不缓存、计数）。否则 CoSec 撤销表在 Redis 故障时的放行（CoSec 有用例守着它）在 6.9 中无法表达 | M3 | 待决定 |
+| #700 的补充：允许显式配置的 `read-failure: degrade` 对没有数据源的读取生效（返回 `null`、不缓存、计数）。否则 CoSec 撤销表在 Redis 故障时的放行（CoSec 有用例守着它）在 6.9 中无法表达 | M3 | 修复中（#700，维护者已批准） |
 | 超时取消 Lettuce 命令；`sharded` 未确认频道每次心跳重置；读超时释放 lease；订阅生命周期竞态；格式字节按无符号解析 | A.R1、A.R2、A.L1、A.R3、A.L7 | 修复中（#701） |
 | `reclaim` 超时释放 lease | C7 | 待排期 |
 | `TransactionalInvalidator` 回滚失效、迟到登记、逐缓存失败隔离 | A.T1、A.T2 | 修复中（#697） |
@@ -550,7 +550,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ## 10. 实施顺序
 
-0. **6.x**：§9 中“修复中”“待决定”“待排期”的项；Lincheck 用例与 TLA+ 模型进入仓库与 CI。
+0. **6.x**：§9 中“修复中”与“待排期”的项；Lincheck 用例与 TLA+ 模型进入仓库与 CI。
 1. **7.x**：sans-IO 重构，每条路径一个 PR（单 key 读 → 批量 → 刷新 → 写入），每个 PR 的同步与异步 TCK 全绿、JMH 达标；flight 层接受 Lincheck；确定性仿真接到新核心上；v8 形状的 SPI 与参数化 TCK 与旧接口并存。
 2. **7.x 末版**：读格式 2；§9 中列出的配置别名与各项告警。
 3. **8.0**：API 类型（V1–V3）、SPI 切换（V4）、配置语义（V10）、Spring（V11）、格式 2 的写入与降级工具（V8）、文档重排（V12）。
