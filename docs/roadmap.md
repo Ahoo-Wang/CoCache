@@ -156,24 +156,26 @@ JMH 对比见 RFC 0003 §7.1。
 |----|------|------|------|
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
+| 6.9.1：中断与 fill 失败时释放令牌 | G1、G2 | `await` 被中断时与超时一样取消命令、释放令牌；`fill` / `fillAll` 超时或中断时释放令牌（RFC 0005 附录 B） | 待修复 |
 | L2 填充可线性化、单调时钟、可中断的跟随者 | G1、G2 | RFC 0005 §4.5、§4.6（A.D4、A.C1、A.S1） | 待排期 |
 | 其余审查项 | G1、运维 | `reclaim` 超时释放 lease；驱逐策略检查改读 `INFO memory`、按声明检查；端点对未知缓存的 `DELETE` 返回 404；修正 architecture.md §6.3 关于启动检查的说法（RFC 0005 §9） | 待排期 |
+| starter 的事务装饰器 | G2 | 取代 `TransactionAwareCacheManagerProxy`，`@CacheEvict` 在回滚时同样失效；回滚时失效写事务内凭 lease 写进 L1 的 key（RFC 0005 §4.9） | 7.x |
 
 6.0 已交付按 key 查看与失效（actuator `GET` / `DELETE /actuator/cocache/{name}/{key}`、`CacheAdmin.inspect`）与 `ExternalInvalidator`。
 
-## v8：目标架构（[RFC 0005](rfc/0005-v8-target-architecture.md)）— 设计中（草案 v2，第一轮对抗验证已完成）
+## v8：目标架构（[RFC 0005](rfc/0005-v8-target-architecture.md)）— 设计中（草案 v3，第二轮对抗验证已完成）
 
-7.0 维持既定范围（删除 6.x 的弃用项）。v8 的前置工作放在 7.x 小版本，不破坏兼容的部分在 6.x 先行（RFC 0005 §9、§10）。
+7.0 维持既定范围（删除 6.x 的弃用项）。v8 的前置工作放在 7.x，其中桥接版本 7.B 冻结读格式 2、配置别名与前向兼容的声明；一个 namespace 的全部读者先升级到 7.B，写入方最后升级到 v8。不破坏兼容的部分在 6.x 先行（RFC 0005 §9、§10）。
 
 | 项 | 目标 | 内容 | 现状 |
 |----|------|------|------|
-| 权威与派生分型 | G1、G2 | 按“L1 中没有是否等于不存在”分为 `Cache` / `VersionedCache` 与 `Store` / `VersionedStore` / `SetStore`；派生缓存必须声明数据来源；`Unknown` 只表示故障，默认抛出（V1、V2） | 草案 v2 |
-| 能力即类型 | 简化 | 能力子接口取代默认抛出的方法，带版本的类型没有丢失版本的写入；SPI 异步为主、阻塞为显式的第二形状，能力用访问器表达，TCK fail closed（V3、V4） | 草案 v2 |
-| 一份协议、两个驱动 | 简化、可检验 | sans-IO 协议核心与共用的 flight 层，7.x 内部重构先行，TCK 证明等价、JMH 把关（V5） | 草案 v2 |
-| 失败路径确定 | G1、G2 | 区分“确定未执行”与“结果未知”、派生 `put` 的补偿失效、令牌守恒、等待有界、刷新有界（V7） | 草案 v2 |
-| 线格式 2 | G3、可演进 | 按需扩展的头部（版本段、SHA-1 摘要段）；`fill` 不让版本后退；逐脚本的兼容矩阵；条件读取 O(1)；7.x 末版先能读，回退下限是 7.x 末版（V8） | 草案 v2 |
-| 可检验的栅栏 | G2 | Lincheck、TLA+、确定性多节点仿真、跨版本脚本 TCK（V9） | 草案 v2 |
-| 配置与 Spring | 正确性、易用 | `defaults` / `overrides` 三层配置、时长必须带单位、`CoCacheFactory`；写事务内已登记 key 的回源私有；端点默认只读并提供只广播的失效（V10、V11） | 草案 v2 |
+| 权威与派生分型 | G1、G2 | 按“L1 丢了能否按需重建”分为 `Cache` / `VersionedCache` 与 `Store` / `VersionedStore` / `SetStore`；派生缓存必须声明数据来源（`externallySourced()`）；`Unknown` 只表示故障，默认抛出（V1、V2） | 草案 v3 |
+| 能力即类型 | 简化 | 能力子接口取代默认抛出的方法，带版本的类型没有丢失版本的写入；SPI 异步为主、阻塞为显式的第二形状，能力用访问器表达，TCK fail closed；带版本副本的 `evict` 编码为状态 `E`（V3、V4） | 草案 v3 |
+| 一份协议、两个驱动 | 简化、可检验 | sans-IO 协议核心与共用的 flight 层，7.x 内部重构先行，TCK 证明等价、JMH 把关（V5） | 草案 v3 |
+| 失败路径确定 | G1、G2 | 按可观察的事实区分“确定未执行”与“结果未知”（含中断）、补偿失效只用于 `RETRY`、令牌守恒（含 `fill`）、等待有界、刷新有界（V7） | 草案 v3 |
+| 线格式 2 | G3、可演进 | 按需扩展的头部（版本段、SHA-1 摘要段、可跳过的扩展区）与状态 `E`；7.B 之前定稿；`fill` 不让版本后退；逐脚本的兼容矩阵；`write-format` 让 API 升级与格式切换分开（V8） | 草案 v3 |
+| 可检验的栅栏 | G2 | Lincheck、TLA+、确定性多节点仿真、跨版本脚本 TCK（V9） | 草案 v3 |
+| 配置与 Spring | 正确性、易用 | `defaults` / `overrides`（取上限）三层配置、全局层跳过不适用与锁定的字段、`CoCacheFactory` 与 `lock` / `constrain`；回滚时失效事务内的填充、已登记 key 的回源私有；端点默认只读（V10、V11） | 草案 v3 |
 
 ## 暂缓
 
