@@ -171,7 +171,7 @@ class UserService(
 }
 ```
 
-`TransactionalInvalidator` runs the invalidation after the transaction commits, and not at all on rollback. Invalidating before the commit would let a concurrent read reload the old row. Outside a transaction it invalidates immediately. [Keeping Data Fresh](./freshness.md) explains the rule and the alternatives.
+`TransactionalInvalidator` runs the invalidation after the transaction commits. It also runs after a rollback, because a read inside the transaction may have cached the uncommitted row. Invalidating before the commit would let a concurrent read reload the old row. Outside a transaction it invalidates immediately. [Keeping Data Fresh](./freshness.md) explains the rule and the alternatives.
 
 ## 6. Check that it works {#check}
 

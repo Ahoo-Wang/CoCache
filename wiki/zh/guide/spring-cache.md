@@ -93,6 +93,8 @@ Spring Cache 的 `put` 与 `evict` 只有阻塞签名。响应式方法上的 `@
 
 classpath 中有 `spring-tx` 时，starter 用 Spring 的 `TransactionAwareCacheManagerProxy` 包装管理器：事务内的 `@CacheEvict` 与 `@CachePut` 在提交之后执行，回滚时不执行。在提交之前失效，并发的读取可能把旧数据缓存起来。
 
+回滚时不执行留下一个缺口：同一事务内的 `@Cacheable(sync = true)` 读取刚写入的行时，回滚之后未提交的行留在 Redis 中直到 `ttl`。`TransactionalInvalidator` 在回滚时同样失效，读取自己写入的事务请使用它。
+
 直接调用时使用 `TransactionalInvalidator`（见[保持数据新鲜](./freshness.md#transactions)）。
 
 ## 与其它缓存管理器并存 {#other-managers}

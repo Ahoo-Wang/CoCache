@@ -93,6 +93,8 @@ After a write, prefer `@CacheEvict` to `@CachePut`. Evicting lets the next read 
 
 With `spring-tx` on the classpath, the starter wraps the manager in Spring's `TransactionAwareCacheManagerProxy`: `@CacheEvict` and `@CachePut` inside a transaction run after the commit, and not at all on rollback. Invalidating before the commit would let a concurrent read cache the old row.
 
+Skipping on rollback leaves one gap. If a `@Cacheable(sync = true)` read in the same transaction loads the row you just wrote, the uncommitted row stays in Redis until `ttl` after a rollback. `TransactionalInvalidator` also invalidates on rollback, so use it in transactions that read what they write.
+
 For direct calls, use `TransactionalInvalidator` (see [Keeping Data Fresh](./freshness.md#transactions)).
 
 ## Alongside other cache managers {#other-managers}
