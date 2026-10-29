@@ -144,9 +144,19 @@ for t in "${thread_arr[@]}"; do
 done
 
 repo_root="$(git rev-parse --show-toplevel)"
-module_dir="${module#:}"
-module_dir="${module_dir//://}"
-[ -d "${repo_root}/${module_dir}" ] || die "模块目录不存在：${repo_root}/${module_dir}"
+
+# Gradle 项目路径 → 某一侧源码树中的模块目录。目录已去掉 `cocache-` 前缀（项目名不变），
+# 更早的基线仍是带前缀的目录，所以两侧各自解析。
+module_dir_in() {
+    local src="${1}" dir="${module#:}"
+    dir="${dir//://}"
+    if [ -d "${src}/${dir}" ]; then
+        printf '%s' "${dir}"
+    else
+        printf '%s' "${dir#cocache-}"
+    fi
+}
+[ -d "${repo_root}/$(module_dir_in "${repo_root}")" ] || die "模块目录不存在：${repo_root}/$(module_dir_in "${repo_root}")"
 
 ncpu="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
 if [ -z "${load_threshold}" ]; then
@@ -341,7 +351,7 @@ build_side() {
     log "构建 ${side} 侧 jmh jar（${src}）"
     run_child "${out_dir}/logs/build-${side}.log" "${src}/gradlew" -p "${src}" -q --console=plain "${module}:jmhJar" \
         || die "${side} 侧构建失败，见 ${out_dir}/logs/build-${side}.log"
-    jar="$(ls -t "${src}/${module_dir}"/build/libs/*-jmh.jar 2>/dev/null | head -n 1 || true)"
+    jar="$(ls -t "${src}/$(module_dir_in "${src}")"/build/libs/*-jmh.jar 2>/dev/null | head -n 1 || true)"
     [ -n "${jar}" ] || die "${side} 侧找不到 *-jmh.jar"
     mkdir -p "${out_dir}/${side}"
     cp "${jar}" "${out_dir}/${side}/benchmarks.jar"

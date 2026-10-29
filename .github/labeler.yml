@@ -4,33 +4,33 @@
 # ---- 模块 ----
 "module: api":
   - changed-files:
-      - any-glob-to-any-file: cocache-api/**
+      - any-glob-to-any-file: api/**
 "module: core":
   - changed-files:
-      - any-glob-to-any-file: cocache-core/**
+      - any-glob-to-any-file: core/**
 "module: spring":
   - changed-files:
-      - any-glob-to-any-file: cocache-spring/**
+      - any-glob-to-any-file: spring/**
 "module: redis":
   - changed-files:
-      - any-glob-to-any-file: cocache-redis/**
+      - any-glob-to-any-file: redis/**
 "module: codec-jackson":
   - changed-files:
-      - any-glob-to-any-file: cocache-codec-jackson/**
+      - any-glob-to-any-file: codec-jackson/**
 "module: starter":
   - changed-files:
-      - any-glob-to-any-file: cocache-spring-boot-starter/**
+      - any-glob-to-any-file: spring-boot-starter/**
 "module: test":
   - changed-files:
-      - any-glob-to-any-file: cocache-test/**
+      - any-glob-to-any-file: test/**
 "module: example":
   - changed-files:
-      - any-glob-to-any-file: cocache-example/**
+      - any-glob-to-any-file: example/**
 "module: bom":
   - changed-files:
       - any-glob-to-any-file:
-          - cocache-bom/**
-          - cocache-dependencies/**
+          - bom/**
+          - dependencies/**
 
 # ---- 变更类型（路径）----
 documentation:
@@ -45,7 +45,7 @@ tests:
   - changed-files:
       - any-glob-to-any-file:
           - "**/src/test/**"
-          - cocache-test/**
+          - test/**
 benchmark:
   - changed-files:
       - any-glob-to-any-file: "**/src/jmh/**"

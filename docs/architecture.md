@@ -592,7 +592,7 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
 ./gradlew :cocache-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit   # 单次试跑；check 只编译不运行
 ```
 
-- 基准：`cocache-redis/src/jmh` 的 `CoCacheBenchmark`，方法 `l2Hit`、`l2HitViaInterface`、`l2HitMixed`（轮流访问三个配置不同的缓存）、`l1Read`、`l1SequentialRead`、`l1BatchRead`、`missLoad`、`set`、`invalidate`。`-PjmhIncludes` 是正则，`l2Hit` 同时匹配三个 L2 基准。
+- 基准：`redis/src/jmh` 的 `CoCacheBenchmark`，方法 `l2Hit`、`l2HitViaInterface`、`l2HitMixed`（轮流访问三个配置不同的缓存）、`l1Read`、`l1SequentialRead`、`l1BatchRead`、`missLoad`、`set`、`invalidate`。`-PjmhIncludes` 是正则，`l2Hit` 同时匹配三个 L2 基准。
 - 必须加 `--rerun`：参数不变时 Gradle 判定 `jmh` 任务为最新，静默沿用上次的结果。
 - 前后对比用 `scripts/jmh-compare.sh`，它固化了下面的方法，输出可直接贴进 PR 的 Markdown 表格（原始 JSON 保留在输出目录）：
   - **每次只跑一个基准**（精确正则 `^.*\.<name>$`）：同一个 `jmh` 任务里排在后段的基准在 8 线程下会因长时间满载而明显变慢（实测低 20%–30%），单独运行时回到基线（RFC 0004 §14）。

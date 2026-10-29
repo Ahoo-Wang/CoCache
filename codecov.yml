@@ -14,5 +14,5 @@ coverage:
         target: 85%
         threshold: 1%
 ignore:
-  - "cocache-test/.*"
-  - "cocache-example/.*"
+  - "^test/.*"
+  - "^example/.*"

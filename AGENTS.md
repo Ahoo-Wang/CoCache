@@ -49,6 +49,8 @@ If your shell exports `SPRING_DATA_REDIS_*` variables (for example `SPRING_DATA_
 
 ## Where code goes
 
+Module directories drop the `cocache-` prefix (`core/`, `redis/`, …); Gradle project names and published artifactIds keep it (`:cocache-core`, `me.ahoo.cocache:cocache-core`). The mapping lives in `settings.gradle.kts`.
+
 Dependencies point one way: `api ← core ← redis`, `api ← codec-jackson`, `core ← spring`, and `core ← coroutines`. `kotlinx-coroutines-core` appears only in `cocache-coroutines`. The starter depends on `spring`, `redis`, and `codec-jackson`. Only the starter may use SpEL or annotation scanning.
 
 - `cocache-api` holds the user API (`Cache`, `SetCache`, `CacheLoader`, `Codec`, `Lookup`, `@CoCache`) and every SPI (`me.ahoo.cocache.api.spi`), and has zero runtime dependencies. Changing it is a public-API change.

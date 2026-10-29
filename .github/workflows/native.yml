@@ -20,8 +20,8 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'cocache-*/src/main/**'
-      - 'cocache-example/**'
+      - '*/src/main/**'
+      - 'example/**'
       - 'gradle/**'
       - '*.gradle.kts'
       - '.github/scripts/smoke-example.sh'
@@ -82,7 +82,7 @@ jobs:
         env:
           SMOKE_LOG: ${{ runner.temp }}/smoke-aot-jvm.log
         run: |
-          jar="$(find cocache-example/build/libs -name 'cocache-example-*.jar' ! -name '*-plain.jar' | head -n 1)"
+          jar="$(find example/build/libs -name 'cocache-example-*.jar' ! -name '*-plain.jar' | head -n 1)"
           .github/scripts/smoke-example.sh java -Dspring.aot.enabled=true -jar "$jar"
 
       - name: Build native image
@@ -94,7 +94,7 @@ jobs:
       - name: Smoke test (native image)
         env:
           SMOKE_LOG: ${{ runner.temp }}/smoke-native.log
-        run: .github/scripts/smoke-example.sh cocache-example/build/native/nativeCompile/cocache-example
+        run: .github/scripts/smoke-example.sh example/build/native/nativeCompile/cocache-example
 
       - name: Upload smoke logs
         if: ${{ failure() }}
