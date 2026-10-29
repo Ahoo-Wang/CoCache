@@ -2,7 +2,7 @@
 
 本文是 CoCache 的**唯一架构事实来源**：设计目标、模块边界、协议、失败语义与必须保持的不变量。修改一致性、存储、编解码、代理或 Spring 装配相关代码前先读本文；行为变化时在同一个 PR 中更新本文。
 
-设计推导、被否决的方案与对抗验证记录见 [RFC 0003](rfc/0003-target-architecture.md)。本文与 RFC 不一致时以代码为准，并修正本文；SPI 与线格式的定义以 `me.ahoo.cocache.api.spi` 与 `me.ahoo.cocache.redis.RedisScripts` 为准。
+设计推导、被否决的方案与对抗验证记录见 [RFC 0003](rfc/0003-target-architecture.md)；下一个大版本（v8）的目标架构草案见 [RFC 0005](rfc/0005-v8-target-architecture.md)，它不是现行规范。本文与 RFC 不一致时以代码为准，并修正本文；SPI 与线格式的定义以 `me.ahoo.cocache.api.spi` 与 `me.ahoo.cocache.redis.RedisScripts` 为准。
 
 ## 1. 目标
 
