@@ -518,12 +518,6 @@ internal class RedisRemoteStore(
         return args
     }
 
-    private fun addShape(args: MutableList<ByteArray>, envelope: Envelope, ttl: Duration?) {
-        args.add(shapeOf(envelope))
-        args.add(millis(ttl))
-        addPayload(args, envelope)
-    }
-
     private fun addPayload(args: MutableList<ByteArray>, envelope: Envelope) {
         when (envelope) {
             is Envelope.Scalar -> args.add(envelope.bytes)
