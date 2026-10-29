@@ -42,7 +42,7 @@ The starter picks the topology from Spring Boot's Redis connection details, in t
 | `host` / `port` / `url` | Standalone | `database` is honored for keys. Pub/Sub ignores databases, see [Key layout](#key-layout). |
 | `masterreplica.nodes` | **Startup fails** | Static master-replica is not supported: the read script writes leases and refresh tokens, so it must run on a master. Use Sentinel or Cluster, or declare your own `CoherenceBackend` bean. |
 
-Without the starter, build the backend yourself with `RedisBackend.standalone(uri, options)` (standalone or Sentinel URI), `RedisBackend.cluster(uris, options)`, or `RedisBackend.of(client, options)` for a client you own. With `of`, set the client's `disconnectedBehavior` to `REJECT_COMMANDS`, otherwise CoCache logs a warning: Lettuce's default buffers commands while disconnected and replays them later, so a `put` that already failed for the caller could overwrite a newer value.
+Without the starter, build the backend yourself with `RedisBackend.standalone(uri, options)` (standalone or Sentinel URI), `RedisBackend.cluster(uris, options)`, or `RedisBackend.of(client, options)` for a client you own. With `of`, set the client's `disconnectedBehavior` to `REJECT_COMMANDS`, otherwise CoCache logs a warning: Lettuce's default buffers commands while disconnected, so during an outage every command waits the full `command-timeout` instead of failing at once. A buffered write that times out is dropped, not replayed after the reconnect.
 
 ### Persistence and failover {#failover}
 

@@ -48,12 +48,50 @@ internal class RedisRemoteStore(
     private val invalidateBatchSize: Int,
 ) : AsyncRemoteStore {
 
+    @Suppress("TooGenericExceptionCaught")
     override fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
-        return decodeRead(connections.await(readCommand(key, lease, refresh)))
+        val result = try {
+            connections.await(readCommand(key, lease, refresh))
+        } catch (e: RuntimeException) {
+            releaseAfterTimeout(key, lease, refresh, e)
+            throw e
+        }
+        return decodeRead(result)
     }
 
     override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
-        connections.mapped(connections.bounded(readCommand(key, lease, refresh))) { decodeRead(it) }
+        connections.mapped(boundedRead(key, lease, refresh)) { decodeRead(it) }
+
+    /**
+     * 受 `commandTimeout` 限制的读取；超时时尽力释放这次读取请求的令牌（[releaseAfterTimeout]）。
+     */
+    private fun boundedRead(
+        key: String,
+        lease: LeaseRequest?,
+        refresh: RefreshRequest?
+    ): CompletableFuture<List<Any?>> {
+        val read = connections.bounded(readCommand(key, lease, refresh))
+        read.whenComplete { _, error ->
+            if (error != null) {
+                releaseAfterTimeout(key, lease, refresh, error)
+            }
+        }
+        return read
+    }
+
+    /**
+     * 读取超时（结果未知）：读脚本可能已在 Redis 端授予了令牌（未命中时的 lease、刷新窗口内的刷新令牌），调用方却随后绕过 L1，
+     * 没人会再释放它；lease 留到 `lease.ttl`，全集群对该 key 的未命中都要先等 `lease.wait`。尽力释放（不等待）：令牌不匹配时
+     * release 什么也不做；释放与读取按 key 路由到同一连接，按序执行在读取之后（读取未写出就被取消时，释放同样无害）。
+     * 其它失败不释放：断线、拒绝时释放同样会失败，lease 由 `lease.ttl` 回收。
+     */
+    private fun releaseAfterTimeout(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, error: Throwable) {
+        if (!RedisConnections.isTimeout(error)) {
+            return
+        }
+        lease?.let { releaseQuietly(key, it.token) }
+        refresh?.let { releaseQuietly(key, it.token) }
+    }
 
     private fun readCommand(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<List<Any?>> {
         val args = listOf(
@@ -70,7 +108,7 @@ internal class RedisRemoteStore(
      * 并发发出，在共享连接上多路复用（约一次往返）。
      *
      * 等待全部结果：任一失败时，其余读取取得的 lease 要先释放（不等待）再抛出第一个异常，
-     * 否则调用方拿不到这些令牌，所有节点都要白白等待 `lease.ttl`。
+     * 否则调用方拿不到这些令牌，所有节点都要白白等待 `lease.ttl`；超时的读取同样尽力释放（[releaseAfterTimeout]）。
      */
     @Suppress("TooGenericExceptionCaught")
     override fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
@@ -81,6 +119,7 @@ internal class RedisRemoteStore(
             try {
                 results[key] = decodeRead(connections.await(future))
             } catch (e: RuntimeException) {
+                releaseAfterTimeout(key, leases[key], null, e)
                 val first = failure
                 if (first == null) failure = e else first.addSuppressed(e)
             }
@@ -99,7 +138,7 @@ internal class RedisRemoteStore(
         leases: Map<String, LeaseRequest>
     ): CompletableFuture<Map<String, RemoteRead>> {
         val futures = keys.associateWith { key ->
-            connections.mapped(connections.bounded(readCommand(key, leases[key], null))) { decodeRead(it) }
+            connections.mapped(boundedRead(key, leases[key], null)) { decodeRead(it) }
         }
         val result = CompletableFuture<Map<String, RemoteRead>>()
         CompletableFuture.allOf(*futures.values.toTypedArray()).whenComplete { _, _ ->
@@ -639,6 +678,7 @@ internal class RedisRemoteStore(
         }
 
         private const val HEX_RADIX = 16
+        private const val BYTE_MASK = 0xFF
 
         private fun ttlOf(pttl: Long): Duration? = if (pttl < 0) null else Duration.ofMillis(pttl.coerceAtLeast(1))
 
@@ -668,7 +708,8 @@ internal class RedisRemoteStore(
             if (raw.size < RedisScripts.HEADER_SIZE || raw[0] != RedisScripts.MAGIC) {
                 return RemoteRead.Hit(Envelope.Scalar(raw), UNRECOGNIZED, ttl)
             }
-            val format = raw[1].toInt()
+            // 无符号（与 Lua 的 string.byte 一致）：有符号时 0x80 以上的更高格式成了负数，被当作读不懂的内容回收
+            val format = raw[1].toInt() and BYTE_MASK
             return when (raw[2]) {
                 STATE_VALUE -> RemoteRead.Hit(
                     Envelope.Scalar(raw.copyOfRange(RedisScripts.HEADER_SIZE, raw.size), versionOf(raw)),

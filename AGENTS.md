@@ -72,6 +72,7 @@ Read `docs/architecture.md` before you touch coherence, storage, codec, proxy, o
 - **The loader runs on the caller's thread.** Futures wrap I/O only. Nothing runs on a Lettuce event-loop thread.
 - **Only the runtime creates stateful components.** Users pass specs and stateless functions, never an L2, store, or connection.
 - **L1 connections reach primaries only and reject commands while disconnected.** Buffered replay could apply a `put` that already failed for the caller.
+- **A timed-out script is never written afterwards.** On timeout, `RedisConnections` completes the outermost command that `StatefulConnection.dispatch` returned. In Cluster that is Lettuce's `ClusterCommand`, whose `isDone` ignores the inner `AsyncCommand`: cancelling the future from `evalsha()` still lets a command queued for a node connection run later.
 - **The proxy never wraps exceptions.** Callers always see the original exception.
 - **Set-element writes are only for `SetCache`**, where L1 is the only copy and there is no loader. Sets owned by a data source are a plain `Cache<K, Set<E>>` maintained with `invalidate`.
 - **The wire format is frozen within a major version.** This covers the key layout, the scalar header, the set fields, the invalidation frame, and channel names.

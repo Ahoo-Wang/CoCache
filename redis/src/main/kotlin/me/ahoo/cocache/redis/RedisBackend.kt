@@ -323,7 +323,8 @@ class RedisBackend private constructor(
         /**
          * 使用已有客户端（[RedisClient] 或 [RedisClusterClient]）。后端关闭时不关闭该客户端。
          *
-         * 客户端选项由调用方负责：断线行为应为 [ClientOptions.DisconnectedBehavior.REJECT_COMMANDS]，否则记录告警。
+         * 客户端选项由调用方负责：断线行为应为 [ClientOptions.DisconnectedBehavior.REJECT_COMMANDS]，否则记录告警（断线期间命令被缓冲，
+         * 各自等满 `commandTimeout` 才失败；超时的脚本命令不会在重连后重放）。
          * 异步命令的超时仍由后端以 `commandTimeout` 另外计时（客户端自己的命令超时未知，客户端资源的时间轮）。
          */
         @JvmStatic
@@ -332,8 +333,8 @@ class RedisBackend private constructor(
             val behavior = client.options.disconnectedBehavior
             if (behavior != ClientOptions.DisconnectedBehavior.REJECT_COMMANDS) {
                 log.warn {
-                    "Redis client disconnectedBehavior is $behavior, not REJECT_COMMANDS: commands buffered while disconnected " +
-                        "may be replayed after a failure was already reported (e.g. a stale put overwriting a newer value)."
+                    "Redis client disconnectedBehavior is $behavior, not REJECT_COMMANDS: commands are buffered while disconnected, " +
+                        "so each one waits for the command timeout instead of failing fast."
                 }
             }
             return RedisBackend(client, false, null, options)
