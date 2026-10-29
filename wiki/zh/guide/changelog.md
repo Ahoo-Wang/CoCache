@@ -5,7 +5,7 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## v6.8.0（未发布）
+## v6.8.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本，只有新增：`Cache`、`AsyncCache` 与 `SuspendingCache` 以 default 方法新增按版本有序的写入（没有覆盖它们的实现抛出 `UnsupportedOperationException`），`CacheSpec` 可以把缓存声明为带版本的，`cocache-api` 的 SPI 新增 `CoherenceBackend.versionedWrites` 与 `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync`（都带默认实现）。已有的调用方、自定义 `Cache` / `SuspendingCache` 实现与自定义后端照常编译与运行。Redis 的 key 布局、头部布局、格式版本与失效频道不变；6.0 到 6.7 的实例能读取带版本的值（见下文），6.8.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。
 
@@ -30,7 +30,7 @@ description: CoCache 版本发布历史和重要变更。
 - `CoherenceBackend.versionedWrites`（默认 `false`）、`RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync`（默认以 `UnsupportedOperationException` 拒绝：“先读后写”的默认实现会让迟到的版本覆盖更新的版本）、`RemoteVersionedWrite`、`Fill.version`（新的构造函数；6.7 的构造函数、`copy` 与 `componentN` 不变）与 `Envelope.Scalar.version`。支持版本的后端原子地覆盖两个方法，在 `fill`、`put` 与 `putAll` 时保存 `Envelope.Scalar.version`、读取时原样返回。见[扩展](../architecture/extending.md#remote-store)。
 - TCK 新增 `VersionedSpec` 与 `AsyncVersionedSpec`，用于支持 `versionedWrites` 的后端。
 
-## v6.7.0（当前版本）
+## v6.7.0
 
 **模块组：** `me.ahoo.cocache` · 次版本，只有新增：`Cache`、`AsyncCache` 与 `SuspendingCache` 以 default 方法新增条件读写（没有覆盖它们的实现抛出 `UnsupportedOperationException`），`cocache-api` 的 SPI 新增 `RemoteStore.readIfChanged` / `putIfMatch` 及 `AsyncRemoteStore` 中对应的异步方法（都带默认实现）。已有的调用方、自定义 `Cache` / `SuspendingCache` 实现与自定义后端照常编译与运行。Redis 线格式与失效频道不变（新脚本只读取现有格式），6.7.0 实例可以与任何 6.x 实例共用 Redis 并逐台升级。
 

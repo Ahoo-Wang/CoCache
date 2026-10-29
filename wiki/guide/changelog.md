@@ -5,7 +5,7 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v6.8.0 (Unreleased)
+## v6.8.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive only: `Cache`, `AsyncCache` and `SuspendingCache` gain version-ordered writes as default methods (they throw `UnsupportedOperationException` in implementations that don't override them), `CacheSpec` can declare a cache versioned, and the `cocache-api` SPI gains `CoherenceBackend.versionedWrites` and `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync` with defaults. Existing callers, custom `Cache` / `SuspendingCache` implementations, and custom backends keep compiling and running unchanged. The Redis key layout, header layout, format version and invalidation channel are unchanged. 6.0 to 6.7 instances read versioned values (below), so 6.8.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
@@ -30,7 +30,7 @@ A versioned value or tombstone is a format-1 String with the usual 36-byte heade
 - `CoherenceBackend.versionedWrites` (default `false`), `RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync` (defaults refuse with `UnsupportedOperationException`: a read-then-put default would let a late version overwrite a newer one), `RemoteVersionedWrite`, `Fill.version` (a new constructor; the 6.7 constructor, `copy` and `componentN` are unchanged), and `Envelope.Scalar.version`. A backend that supports versions overrides both methods atomically, stores `Envelope.Scalar.version` on `fill`, `put` and `putAll` and returns it on reads. See [Extending](../architecture/extending.md#remote-store).
 - The TCK gains `VersionedSpec` and `AsyncVersionedSpec` for backends with `versionedWrites`.
 
-## v6.7.0 (Current)
+## v6.7.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release, additive only: `Cache`, `AsyncCache` and `SuspendingCache` gain conditional reads and writes as default methods (they throw `UnsupportedOperationException` in implementations that don't override them), and the `cocache-api` SPI gains `RemoteStore.readIfChanged` / `putIfMatch` and their `AsyncRemoteStore` counterparts with default implementations. Existing callers, custom `Cache` / `SuspendingCache` implementations, and custom backends keep compiling and running unchanged. The Redis wire format and the invalidation channel are unchanged (the new scripts only read the existing format), so 6.7.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
