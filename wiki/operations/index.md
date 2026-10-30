@@ -55,7 +55,9 @@ A `SetCache` is different: Redis holds its only copy, so its durability is Redis
 | Your caches | Allowed policies | Why |
 |-------------|------------------|-----|
 | Only `Cache` | Any. `allkeys-lru` or `allkeys-lfu` turn Redis into a bounded cache. | An evicted value or negative entry is a miss. An evicted lease means the loader's fill is rejected, and the value stays in that instance's L2 for `degraded-local-max-age`. Nothing goes stale. |
-| Any `SetCache` | `noeviction`, or a `volatile-*` policy | Redis holds the set's only copy, so `allkeys-*` would silently lose members. `SetCache` keys have no expiry by default, so `volatile-*` never evicts them. At startup CoCache reads every primary's policy and warns on `allkeys-*` (`cocache.redis.set-cache-eviction-check`: `warn`, `fail` or `off`); it skips the check when `CONFIG` isn't available. A `SetCache` given a finite `ttl` can still be evicted under `volatile-*`. |
+| Any `SetCache` | `noeviction`, or a `volatile-*` policy | Redis holds the set's only copy, so `allkeys-*` would silently lose members. `SetCache` keys have no expiry by default, so `volatile-*` never evicts them. A `SetCache` given a finite `ttl` can still be evicted under `volatile-*`. |
+
+At startup, if any `SetCache` is declared (created or still lazy), CoCache reads every primary's policy from `INFO memory`. It doesn't need `CONFIG`, which managed services often block. It warns on `allkeys-*`, or stops startup with `cocache.redis.set-cache-eviction-check: fail` (`off` skips the check). Under `volatile-*` it warns about each `SetCache` with a finite `ttl`. If the Redis user can't run `INFO`, the check uses `cocache.redis.assume-maxmemory-policy`. Without that setting it warns, or stops startup in `fail` mode, rather than skipping the check silently. Up to 6.9.0 the check read `CONFIG GET` and skipped silently when that failed, and it skipped `SetCache` beans that weren't created yet.
 
 When Redis reaches `maxmemory` under `noeviction`:
 
@@ -158,13 +160,13 @@ CoCache needs these permissions on its Redis user:
 |------|--------|
 | Keys | Read and write on your key prefixes (`~cocache:*` by default). Also `~cocache:probe:*` in `pubsub` mode. |
 | Channels | `&cocache:inv:*`. In `pubsub` mode also `&cocache:probe:*`, or the backend falls back to non-atomic broadcast. |
-| Commands, direct | `EVALSHA`, `EVAL` (fallback after `NOSCRIPT`), `PING` (heartbeat), `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, or in `sharded` mode `SPUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, plus the connection commands (`HELLO`, `AUTH`, `CLIENT`, `SELECT`) |
+| Commands, direct | `EVALSHA`, `EVAL` (fallback after `NOSCRIPT`), `PING` (heartbeat), `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, or in `sharded` mode `SPUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, plus the connection commands (`HELLO`, `AUTH`, `CLIENT`, `SELECT`). `INFO` for the [startup eviction check](#maxmemory-policy) when you use a `SetCache`. |
 | Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HKEYS`, `HGET`, `HSET`, `HDEL`, `HEXISTS`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
 
 A starting point, checked against Redis 7.4 by running every CoCache script as this user:
 
 ```
-ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
+ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
 ```
 
 Since 6.3.0, CoCache reads `SetCache` members with `HKEYS` and `HGET` instead of `HGETALL`. Add both to an existing user before you upgrade. Otherwise set reads fail with an ACL error, worded differently across Redis versions, and stored data isn't touched. Keep `HGETALL`: conditional reclaim and older instances still use it.

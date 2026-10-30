@@ -256,7 +256,8 @@ internal class RedisConnections(
     }
 
     /**
-     * 各主节点的 `maxmemory-policy`（`CONFIG GET`），键为 `host:port`。`CONFIG` 被禁用、改名或无权限时抛出。
+     * 各主节点的 `maxmemory-policy`（`INFO memory` 的 `maxmemory_policy` 字段），键为 `host:port`。
+     * 托管 Redis 通常禁用或改名 `CONFIG`，但允许 `INFO`。`INFO` 被禁用、改名或无权限时抛出。
      */
     fun maxmemoryPolicies(): Map<String, String> {
         val connection = connection
@@ -264,19 +265,15 @@ internal class RedisConnections(
             return connection.partitions
                 .filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
                 .associate { node ->
-                    val config = await(
-                        connection.getConnection(node.nodeId).async().configGet(MAXMEMORY_POLICY).toCompletableFuture()
-                    )
-                    "${node.uri.host}:${node.uri.port}" to policyOf(config)
+                    val commands = connection.getConnection(node.nodeId).async()
+                    val info = await(commands.info(MEMORY_SECTION).toCompletableFuture())
+                    "${node.uri.host}:${node.uri.port}" to maxmemoryPolicyOf(info)
                 }
         }
         val standalone = connection as StatefulRedisConnection<ByteArray, ByteArray>
-        val config = await(standalone.async().configGet(MAXMEMORY_POLICY).toCompletableFuture())
-        return mapOf(STANDALONE to policyOf(config))
+        val info = await(standalone.async().info(MEMORY_SECTION).toCompletableFuture())
+        return mapOf(STANDALONE to maxmemoryPolicyOf(info))
     }
-
-    private fun policyOf(config: Map<String, String>): String =
-        requireNotNull(config[MAXMEMORY_POLICY]) { "CONFIG GET $MAXMEMORY_POLICY returned no value." }
 
     /**
      * 按 slot 分组（集群）；单机为一组。
@@ -294,8 +291,18 @@ internal class RedisConnections(
     }
 
     companion object {
-        private const val MAXMEMORY_POLICY = "maxmemory-policy"
+        private const val MEMORY_SECTION = "memory"
+        private const val MAXMEMORY_POLICY_FIELD = "maxmemory_policy:"
         private const val STANDALONE = "redis"
+
+        /**
+         * 从 `INFO memory` 的回复（`field:value` 行，以 CRLF 分隔）中取出 `maxmemory_policy`；没有这个字段时抛出。
+         */
+        internal fun maxmemoryPolicyOf(info: String): String = info.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.startsWith(MAXMEMORY_POLICY_FIELD) }
+            ?.substring(MAXMEMORY_POLICY_FIELD.length)
+            ?: throw RedisException("INFO $MEMORY_SECTION returned no ${MAXMEMORY_POLICY_FIELD.dropLast(1)}.")
 
         /**
          * 建立订阅连接；失败时关闭已建立的命令连接（避免泄漏）再抛出。

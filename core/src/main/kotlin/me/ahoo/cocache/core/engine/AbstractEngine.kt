@@ -80,7 +80,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected val namespace: String,
     keyPrefix: String,
     private val keyEncoder: KeyEncoder<K>,
-    protected val policy: CachePolicy,
+    internal val policy: CachePolicy,
     protected val store: RemoteStore,
     protected val context: EngineContext,
 ) : InvalidationListener, CacheAdmin, AutoCloseable {

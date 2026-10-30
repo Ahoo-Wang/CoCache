@@ -71,19 +71,31 @@ internal class RedisRemoteStore(
         refresh: RefreshRequest?
     ): CompletableFuture<List<Any?>> {
         val read = connections.bounded(readCommand(key, lease, refresh))
-        read.whenComplete { _, error ->
+        return releasingAfterTimeout(read, key, lease, refresh)
+    }
+
+    /**
+     * 可能授予令牌的命令（读取、条件回收）失败时，按 [releaseAfterTimeout] 尽力释放这次请求的令牌。
+     */
+    private fun releasingAfterTimeout(
+        command: CompletableFuture<List<Any?>>,
+        key: String,
+        lease: LeaseRequest?,
+        refresh: RefreshRequest?
+    ): CompletableFuture<List<Any?>> {
+        command.whenComplete { _, error ->
             if (error != null) {
                 releaseAfterTimeout(key, lease, refresh, error)
             }
         }
-        return read
+        return command
     }
 
     /**
-     * 读取超时（结果未知）：读脚本可能已在 Redis 端授予了令牌（未命中时的 lease、刷新窗口内的刷新令牌），调用方却随后绕过 L1，
-     * 没人会再释放它；lease 留到 `lease.ttl`，全集群对该 key 的未命中都要先等 `lease.wait`。尽力释放（不等待）：令牌不匹配时
-     * release 什么也不做；释放与读取按 key 路由到同一连接，按序执行在读取之后（读取未写出就被取消时，释放同样无害）。
-     * 其它失败不释放：断线、拒绝时释放同样会失败，lease 由 `lease.ttl` 回收。
+     * 读取或条件回收超时（结果未知）：脚本可能已在 Redis 端授予了令牌（读取未命中时的 lease、刷新窗口内的刷新令牌，
+     * 条件回收换上的 lease），调用方却随后绕过 L1，没人会再释放它；lease 留到 `lease.ttl`，全集群对该 key 的未命中都要先等
+     * `lease.wait`。尽力释放（不等待）：令牌不匹配时 release 什么也不做；释放与原命令按 key 路由到同一连接，按序执行在它之后
+     * （原命令未写出就被取消时，释放同样无害）。其它失败不释放：断线、拒绝时释放同样会失败，lease 由 `lease.ttl` 回收。
      */
     private fun releaseAfterTimeout(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, error: Throwable) {
         if (!RedisConnections.isTimeout(error)) {
@@ -363,11 +375,24 @@ internal class RedisRemoteStore(
         }
     }
 
-    override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean =
-        connections.await(reclaimCommand(key, observed, lease)).firstFlag()
+    /**
+     * 超时时尽力释放这次请求的 lease（[releaseAfterTimeout]）：脚本可能已在 Redis 端把内容换成了它。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {
+        val result = try {
+            connections.await(reclaimCommand(key, observed, lease))
+        } catch (e: RuntimeException) {
+            releaseAfterTimeout(key, lease, null, e)
+            throw e
+        }
+        return result.firstFlag()
+    }
 
-    override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
-        connections.mapped(connections.bounded(reclaimCommand(key, observed, lease))) { it.firstFlag() }
+    override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> {
+        val reclaim = releasingAfterTimeout(connections.bounded(reclaimCommand(key, observed, lease)), key, lease, null)
+        return connections.mapped(reclaim) { it.firstFlag() }
+    }
 
     private fun reclaimCommand(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<List<Any?>> {
         val args = listOf(observed.toString().bytes(), lease.token.toBytes(), millis(lease.ttl))

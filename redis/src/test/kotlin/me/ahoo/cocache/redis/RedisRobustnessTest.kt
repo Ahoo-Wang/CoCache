@@ -225,19 +225,38 @@ class RedisRobustnessTest {
     }
 
     /**
-     * 读取各主节点的 maxmemory-policy；CONFIG 不可用（ACL 无权限）时返回 null，不抛出。
+     * 读取各主节点的 maxmemory-policy（INFO memory）：不需要 CONFIG（托管 Redis 通常禁用它）；INFO 也不可用时返回 null，不抛出。
      */
     @Test
     fun readsMaxmemoryPolicyOrReturnsNullWhenUnavailable() {
+        val expected = RedisTestSupport.withCommands { it.configGet("maxmemory-policy").getValue("maxmemory-policy") }
         RedisTestSupport.backend().use { backend ->
             val policies = requireNotNull(backend.maxmemoryPolicies())
             policies.assert().isNotEmpty()
-            policies.values.forEach { it.assert().isNotBlank() }
+            // 测试环境的各主节点配置一致：与 CONFIG GET 读到的相同
+            policies.values.forEach { it.assert().isEqualTo(expected) }
         }
-        val rules = "~cocache:* resetchannels &cocache:inv:* &cocache:probe:* +@all -config".split(" ")
-        RedisTestSupport.aclBackend("cocache-noconfig", rules).use { backend ->
+        val noConfig = "~cocache:* resetchannels &cocache:inv:* &cocache:probe:* +@all -config".split(" ")
+        RedisTestSupport.aclBackend("cocache-noconfig", noConfig).use { backend ->
+            requireNotNull(backend.maxmemoryPolicies()).values.forEach { it.assert().isEqualTo(expected) }
+        }
+        // 集群中 Lettuce 发现拓扑也需要 INFO，只在单机上验证 INFO 被禁用的情形
+        Assumptions.assumeFalse(RedisTestSupport.isCluster)
+        val noInfo = "~cocache:* resetchannels &cocache:inv:* &cocache:probe:* +@all -info".split(" ")
+        RedisTestSupport.aclBackend("cocache-noinfo", noInfo).use { backend ->
             backend.maxmemoryPolicies().assert().isNull()
         }
+    }
+
+    /**
+     * INFO memory 的回复按行解析（CRLF 分隔、带节标题）；没有 maxmemory_policy 字段时按读不到处理（RedisException）。
+     */
+    @Test
+    fun parsesTheMaxmemoryPolicyFieldOfInfoMemory() {
+        val info = "# Memory\r\nused_memory:1024\r\nmaxmemory:0\r\nmaxmemory_policy:volatile-lfu\r\nallocator_frag_ratio:1.0\r\n"
+        RedisConnections.maxmemoryPolicyOf(info).assert().isEqualTo("volatile-lfu")
+        runCatching { RedisConnections.maxmemoryPolicyOf("# Memory\r\nused_memory:1024\r\n") }.exceptionOrNull()
+            .assert().isInstanceOf(RedisException::class.java).hasMessageContaining("maxmemory_policy")
     }
 
     /**

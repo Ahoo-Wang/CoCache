@@ -34,8 +34,13 @@ import me.ahoo.cocache.redis.RedisChannelMode
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.springframework.boot.actuate.endpoint.InvocationContext
+import org.springframework.boot.actuate.endpoint.SecurityContext
 import org.springframework.boot.actuate.endpoint.invoke.convert.ConversionServiceParameterValueMapper
 import org.springframework.boot.actuate.endpoint.web.EndpointMediaTypes
+import org.springframework.boot.actuate.endpoint.web.ExposableWebEndpoint
+import org.springframework.boot.actuate.endpoint.web.WebEndpointHttpMethod
+import org.springframework.boot.actuate.endpoint.web.WebEndpointResponse
 import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpointDiscoverer
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
@@ -43,6 +48,7 @@ import org.springframework.boot.health.contributor.HealthIndicator
 import org.springframework.boot.health.contributor.Status
 import org.springframework.boot.test.context.FilteredClassLoader
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
+import org.springframework.context.ApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
@@ -206,7 +212,7 @@ class CoCacheOperationsTest {
             val after = requireNotNull(endpoint.inspect("user", arrayOf("u", "1")))
             after.local.assert().isNull()
             after.remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
-            // 幂等；未知缓存返回 null（GET 为 404，DELETE 为 204）
+            // 幂等；未知缓存返回 null（HTTP 上 GET 与 DELETE 都是 404，见 unknownCacheDeletesReturnNotFoundOverTheWeb）
             endpoint.invalidate("user", arrayOf("u", "1")).assert().isNotNull()
             endpoint.invalidate("missing", arrayOf("k")).assert().isNull()
             // 空 key（如结尾的 '/'）按非法请求拒绝，不会失效空串 key
@@ -230,21 +236,26 @@ class CoCacheOperationsTest {
         }
     }
 
+    private fun webEndpoint(context: ApplicationContext): ExposableWebEndpoint {
+        val discoverer = WebEndpointDiscoverer(
+            context,
+            ConversionServiceParameterValueMapper(),
+            EndpointMediaTypes.DEFAULT,
+            emptyList(),
+            emptyList(),
+            emptyList(),
+            emptyList(),
+            emptyList(),
+        )
+        return discoverer.endpoints.first { it.endpointId.toString() == CoCacheEndpoint.ID }
+    }
+
     @Test
     fun endpointOperationsAreDiscoveredForTheWeb() {
         runner.run { context ->
             assertThat(context).hasNotFailed()
-            val discoverer = WebEndpointDiscoverer(
-                context,
-                ConversionServiceParameterValueMapper(),
-                EndpointMediaTypes.DEFAULT,
-                emptyList(),
-                emptyList(),
-                emptyList(),
-                emptyList(),
-                emptyList(),
-            )
-            val endpoint = discoverer.endpoints.first { it.endpointId.toString() == CoCacheEndpoint.ID }
+            val endpoint = webEndpoint(context)
+            // web 扩展的 DELETE 替换端点上的同名操作，而不是并列注册
             val paths = endpoint.operations.map { "${it.requestPredicate.httpMethod} ${it.requestPredicate.path}" }
             paths.assert().containsExactlyInAnyOrder(
                 "GET cocache",
@@ -254,5 +265,53 @@ class CoCacheOperationsTest {
                 "DELETE cocache/{name}/{*key}",
             )
         }
+    }
+
+    /**
+     * HTTP 上未知缓存的 DELETE 返回 404（6.9.0 及之前为 204，拼错的缓存名静默成功）；已知缓存照旧 204 / 200。
+     */
+    @Test
+    fun unknownCacheDeletesReturnNotFoundOverTheWeb() {
+        runner.run { context ->
+            assertThat(context).hasNotFailed()
+            assertThat(context).hasSingleBean(CoCacheEndpointWebExtension::class.java)
+            val operations = webEndpoint(context).operations.filter {
+                it.requestPredicate.httpMethod == WebEndpointHttpMethod.DELETE
+            }
+
+            fun delete(path: String, arguments: Map<String, Any>): WebEndpointResponse<*> {
+                val operation = operations.single { it.requestPredicate.path == path }
+                return operation.invoke(InvocationContext(SecurityContext.NONE, arguments)) as WebEndpointResponse<*>
+            }
+            delete("cocache/{name}", mapOf("name" to "missing")).status.assert().isEqualTo(404)
+            delete("cocache/{name}", mapOf("name" to "user")).status.assert().isEqualTo(204)
+            delete(
+                "cocache/{name}/{*key}",
+                mapOf("name" to "missing", "key" to arrayOf("k"))
+            ).status.assert().isEqualTo(404)
+            val invalidated = delete("cocache/{name}/{*key}", mapOf("name" to "user", "key" to arrayOf("u", "1")))
+            invalidated.status.assert().isEqualTo(200)
+            invalidated.body.assert().isEqualTo(CoCacheEndpoint.InvalidationReport("user", "u/1"))
+
+            val endpoint = context.getBean(CoCacheEndpoint::class.java)
+            endpoint.clearLocal("user").assert().isTrue()
+            endpoint.clearLocal("missing").assert().isFalse()
+        }
+    }
+
+    /**
+     * 只经 JMX 暴露时不注册 web 扩展：端点本身照常工作。
+     */
+    @Test
+    fun webExtensionRequiresWebExposure() {
+        ApplicationContextRunner()
+            .withConfiguration(autoConfigurations)
+            .withUserConfiguration(InMemoryConfig::class.java)
+            .withPropertyValues("management.endpoints.jmx.exposure.include=cocache", "spring.jmx.enabled=true")
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                assertThat(context).hasSingleBean(CoCacheEndpoint::class.java)
+                assertThat(context).doesNotHaveBean(CoCacheEndpointWebExtension::class.java)
+            }
     }
 }

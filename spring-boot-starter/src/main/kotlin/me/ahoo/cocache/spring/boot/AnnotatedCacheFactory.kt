@@ -70,6 +70,14 @@ class AnnotatedCacheFactory(
         }
     }
 
+    /**
+     * 集合缓存接口翻译成的 spec（尚未叠加定制器与配置文件）。驱逐检查用它得到尚未创建的集合缓存的 `ttl`。
+     */
+    internal fun setSpecOf(type: Class<*>): SetCacheSpec<Any, Any> {
+        val cacheName = cacheNameOf(type)
+        return withCacheName(cacheName) { setSpecOf(type, cacheName, type.getAnnotation(CoCache::class.java)) }
+    }
+
     private fun specOf(type: Class<*>, cacheName: String, annotation: CoCache?): CacheSpec<Any, Any> {
         val (keyType, valueType) = generics(type, Cache::class.java)
         val builder = CacheSpec.builder<Any, Any>(cacheName)

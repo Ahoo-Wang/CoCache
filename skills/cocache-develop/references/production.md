@@ -23,13 +23,15 @@ Use this reference before CoCache reaches production, when reviewing deployment 
 | Caches | Allowed | Why |
 |---|---|---|
 | Only `Cache` | Any; `allkeys-lru`/`allkeys-lfu` make Redis a bounded cache | Evicted values are misses; nothing goes stale |
-| Any `SetCache` | `noeviction` or `volatile-*` | Redis holds the only copy; `allkeys-*` silently drops members |
+| Any `SetCache` | `noeviction`, or `volatile-*` for sets without a `ttl` | Redis holds the only copy; `allkeys-*` silently drops members |
+
+With a `SetCache` (created or lazy), the starter reads every primary's policy from `INFO memory` at startup: `allkeys-*` warns (`cocache.redis.set-cache-eviction-check: fail` stops startup), `volatile-*` with a finite-`ttl` set warns. Without `+info`, set `cocache.redis.assume-maxmemory-policy`; otherwise the check warns, or fails in `fail` mode.
 
 Under `noeviction` at `maxmemory`, invalidations still work, reads stop taking leases (every miss loads; `cocache.degraded.fills` rises), and allocating writes fail with `CacheWriteException`.
 
 ## ACL
 
-CoCache needs read/write on its key prefixes (`~cocache:*` by default, plus `~cocache:probe:*` in `pubsub` mode), channels `&cocache:inv:*` (plus `&cocache:probe:*` in `pubsub` mode), direct commands `EVALSHA`, `EVAL`, `PING`, the publish/subscribe family for the chosen mode and the connection commands, and the in-script commands `GET SET DEL PTTL TYPE HGETALL HKEYS HGET HSET HDEL HEXISTS HLEN PEXPIRE PERSIST SETRANGE TIME`. Copy the exact `ACL SETUSER` line from the deployment guide of the resolved version. Upgrading to 6.3: add `+hkeys +hget` before the upgrade, and keep `+hgetall`. Denying `PING` makes every heartbeat fail, clears every L2 each period, and keeps health `DOWN`.
+CoCache needs read/write on its key prefixes (`~cocache:*` by default, plus `~cocache:probe:*` in `pubsub` mode), channels `&cocache:inv:*` (plus `&cocache:probe:*` in `pubsub` mode), direct commands `EVALSHA`, `EVAL`, `PING`, `INFO` (eviction check, with a `SetCache`), the publish/subscribe family for the chosen mode and the connection commands, and the in-script commands `GET SET DEL PTTL TYPE HGETALL HKEYS HGET HSET HDEL HEXISTS HLEN PEXPIRE PERSIST SETRANGE TIME`. Copy the exact `ACL SETUSER` line from the deployment guide of the resolved version. Upgrading to 6.3: add `+hkeys +hget` before the upgrade, and keep `+hgetall`. Denying `PING` makes every heartbeat fail, clears every L2 each period, and keeps health `DOWN`.
 
 ## Rolling-safe changes
 

@@ -28,6 +28,7 @@ import io.lettuce.core.resource.MappingSocketAddressResolver
 import io.mockk.every
 import io.mockk.mockk
 import me.ahoo.cocache.api.spi.AsyncRemoteStore
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -48,7 +49,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 
 /**
- * 命令超时之后（结果未知）：尚未写出的命令不再写出（超时时取消 Lettuce 命令），超时的读取可能取得的令牌被尽力释放。
+ * 命令超时之后（结果未知）：尚未写出的命令不再写出（超时时取消 Lettuce 命令），超时的读取与条件回收可能取得的令牌被尽力释放。
  */
 class RedisCommandTimeoutTest {
     private val namespace = "timeout-" + UUID.randomUUID().toString().substring(0, 8)
@@ -241,6 +242,39 @@ class RedisCommandTimeoutTest {
         // 刷新令牌同样被收回：下一次刷新窗口内的读取能取得令牌
         val next = store.read(refreshed, null, refresh()) as RemoteRead.Hit
         next.refreshGranted.assert().isTrue()
+    }
+
+    /**
+     * 条件回收超时：脚本可能已把内容换成这次请求的 lease，引擎却随后绕过 L1 回源，没人会再释放它；
+     * 全集群对该 key 的未命中在 `lease.ttl` 内都要先等 `lease.wait`（RFC 0005 C7）。
+     */
+    @Test
+    fun timedOutReclaimReleasesTheLeaseItMayHaveTaken() {
+        val timeout = Duration.ofMillis(200)
+        val backend = RedisTestSupport.backend(RedisBackendOptions(commandTimeout = timeout)).closing()
+        val store = backend.store(namespace) as AsyncRemoteStore
+        // 同一 slot、脚本已缓存：理由同 timedOutReadReleasesTheTokensItMayHaveTaken
+        RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RECLAIM, RedisScripts.RELEASE)
+        val warm = key("{reclaim}warm")
+        store.read(warm, null, null)
+        val sync = key("{reclaim}sync")
+        val async = key("{reclaim}async")
+        val observed = listOf(sync, async).associateWith {
+            store.put(it, scalar("corrupt"), Duration.ofMinutes(1), frame(it))
+            Digest.of((store.read(it, null, null) as RemoteRead.Hit).envelope)
+        }
+        fun lease() = LeaseRequest(token(), Duration.ofMinutes(1))
+        RedisTestSupport.pauseClients(PAUSE_MILLIS)
+        val pending = store.reclaimAsync(async, observed.getValue(async), lease())
+        runCatching {
+            store.reclaim(sync, observed.getValue(sync), lease())
+        }.exceptionOrNull().assertTimedOut(timeout)
+        pending.failure().assertTimedOut(timeout)
+        // 暂停结束后回收照常执行并换上 lease，随后执行的释放把它收回：key 不再是 lease 占位
+        awaitCondition("pause over") { runCatching { store.read(warm, null, null) }.isSuccess }
+        listOf(sync, async).forEach {
+            store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        }
     }
 
     private companion object {

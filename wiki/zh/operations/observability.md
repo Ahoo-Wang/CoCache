@@ -172,7 +172,7 @@ management:
 | `GET /actuator/cocache/{name}/{key}` | [查看一个 key](#inspect-key) 在 L2 与 L1 中的状态 | 本实例，外加一次 Redis 读取 |
 | `DELETE /actuator/cocache/{name}/{key}` | [失效一个 key](#invalidate-key) | **所有实例** |
 
-`{name}` 是缓存名。缓存不存在时，`GET` 返回 `404`，`DELETE` 返回无内容的 `204`（按 key 的 `DELETE` 成功时返回 `200` 及结果）。空的 `{key}` 以 `400` 拒绝。Spring 会去掉空的路径段与首尾空白，因此含 `//`、首尾 `/` 或首尾空格的 key 无法经端点精确寻址。
+`{name}` 是缓存名。缓存不存在时，`GET` 与 `DELETE` 都返回 `404`，不做任何修改。6.9.0 及之前 `DELETE` 返回 `204`，拼错的缓存名看起来也成功了。`DELETE /actuator/cocache/{name}` 成功时返回 `204`，按 key 的 `DELETE` 成功时返回 `200` 及结果。空的 `{key}` 以 `400` 拒绝。Spring 会去掉空的路径段与首尾空白，因此含 `//`、首尾 `/` 或首尾空格的 key 无法经端点精确寻址。
 
 缓存报告：
 

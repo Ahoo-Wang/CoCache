@@ -531,15 +531,15 @@ if (!stamps.isValid(storageKey, stamp)) {
 | 没有数据源的 L1 读失败 fail closed；`invalidate` 重试不越过之后的写入；非原子广播下的重放也广播 | A.D1、A.D2、A.R4 | 已合并（#700） |
 | #700 的补充：允许显式配置的 `read-failure: degrade` 对没有数据源的读取生效（返回 `null`、不缓存、计数）。否则 CoSec 撤销表在 Redis 故障时的放行（CoSec 有用例守着它）在 6.9 中无法表达 | M3 | 已合并（#700） |
 | 超时取消 Lettuce 命令；`sharded` 未确认频道每次心跳重置；读超时释放 lease；订阅生命周期竞态；格式字节按无符号解析 | A.R1、A.R2、A.L1、A.R3、A.L7 | 已合并（#701） |
-| `reclaim` 超时释放 lease | C7 | 待排期 |
+| `reclaim` 超时释放 lease | C7 | 已修复（随下一版本发布） |
 | `TransactionalInvalidator` 回滚失效、迟到登记、逐缓存失败隔离 | A.T1、A.T2 | 已合并（#697） |
 | 提前刷新退避；寿命 ≤ 刷新窗口不设刷新点 | A.D3 | 已合并（#698） |
 | L2 填充用 `compute` + 条件复核（§4.5） | A.D4、C4 | 待排期 |
 | 单调时钟（§4.5） | A.C1 | 待排期 |
 | 同步跟随者可中断 | A.S1 | 待排期（上界属于 v8 的 `load.timeout`） |
 | L2 key 不含前缀 | §4.5 | 待 JMH 验证 |
-| 驱逐策略检查改读 `INFO memory`、按声明检查 | M11 | 待排期 |
-| 未知缓存名的端点 `DELETE` 返回 404；修正 architecture.md §6.3 关于启动检查的说法 | M13、A.L10 | 待排期 |
+| 驱逐策略检查改读 `INFO memory`、按声明检查 | M11 | 已修复（随下一版本发布）。6.x 不破坏兼容：读不到策略且没有配置 `assume-maxmemory-policy` 时按 `set-cache-eviction-check` 处理（默认 `warn` 告警，`fail` 启动失败），v8 再改为一律启动失败 |
+| 未知缓存名的端点 `DELETE` 返回 404；修正 architecture.md §6.3 关于启动检查的说法 | M13、A.L10 | 已修复（随下一版本发布） |
 | Lincheck 用例、TLA+ 模型 | V9 | 待排期 |
 | 协议核心与 flight 层的 sans-IO 重构（内部，API 不变） | V5 | 7.x |
 | v8 形状的 SPI、能力访问器与参数化 TCK（与旧接口并存） | V4 | 7.x |
@@ -650,6 +650,6 @@ v1 由两路独立的只读会话验证：一致性（G1 / G2，对照 6.8 代�
 | L7 | 低 | 客户端以有符号的 `raw[1].toInt()` 解析格式字节，脚本用无符号的 `string.byte`（格式号 ≥ 128 时才有差异） | 读代码 | `RedisRemoteStore` | 6.x 修复（#701） |
 | L8 | 低 | 策略时长不带单位时按秒、`cocache.redis.*` 按毫秒；`cocache.defaults.*` 覆盖显式声明 | 读代码 | `CoCacheProperties` | v8 §4.8 |
 | L9 | 低 | 创建缓存时，`backend.store` 或工厂抛出会让 namespace 保持占用 | 读代码 | `CacheRuntime` 的注册流程 | 6.x 待排期 |
-| L10 | 低 | architecture.md §6.3 写着“启动时不检查这两点”（`maxmemory-policy` 与持久性），而 6.1 起已有 `SetCacheEvictionCheck`（第一轮验证 M11 顺带发现） | 读代码 | `docs/architecture.md` §6.3、`SetCacheEvictionCheck` | 6.x 待排期 |
+| L10 | 低 | architecture.md §6.3 写着“启动时不检查这两点”（`maxmemory-policy` 与持久性），而 6.1 起已有 `SetCacheEvictionCheck`（第一轮验证 M11 顺带发现） | 读代码 | `docs/architecture.md` §6.3、`SetCacheEvictionCheck` | 6.x 修复（随 M11 一起） |
 
 未发现缺陷的部分：Lua 脚本的状态转换与到期时间重设、令牌比较、`READ` 对 `pttl = -1 / -2` 的处理、带符号 64 位的版本比较、Cluster 分组与 CROSSSLOT、`InvalidationFrame` 解码的边界、`readAllAsync` 的完成与 lease 释放、`CacheRuntime.close` 的顺序、`invalidateEncoded` 经过栅栏、`REQUIRES_NEW` 的作用域。

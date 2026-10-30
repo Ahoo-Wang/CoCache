@@ -414,6 +414,7 @@ class CoCacheAutoConfigurationTest {
                 "cocache.redis.command-timeout=1500",
                 "cocache.redis.channel-mode=sharded",
                 "cocache.redis.set-cache-eviction-check=fail",
+                "cocache.redis.assume-maxmemory-policy=volatile-lru",
             )
             .run { context ->
                 assertThat(context).hasNotFailed()
@@ -428,6 +429,7 @@ class CoCacheAutoConfigurationTest {
                 properties.redis.commandTimeout.assert().isEqualTo(Duration.ofMillis(1500))
                 properties.redis.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.SHARDED)
                 properties.redis.setCacheEvictionCheck.assert().isEqualTo(CoCacheProperties.EvictionCheck.FAIL)
+                properties.redis.assumeMaxmemoryPolicy.assert().isEqualTo("volatile-lru")
                 properties.redis.toOptions().channelMode.assert().isEqualTo(
                     me.ahoo.cocache.redis.RedisChannelMode.SHARDED
                 )

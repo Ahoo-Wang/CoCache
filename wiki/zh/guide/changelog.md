@@ -5,6 +5,32 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布
+
+**模块组：** `me.ahoo.cocache` · 计划作为 6.10.0 发布（新增一项配置与 `CacheRuntime.policy`）。修复 6.8.0 架构审查中余下的 6.x 项。没有删除任何 API。Redis 线格式与失效频道不变，可以与任何 6.x 实例共用 Redis，逐台升级。
+
+### 行为变化：`SetCache` 驱逐检查不再静默跳过
+
+- 启动检查从 `INFO memory` 读取 `maxmemory-policy`，不再用 `CONFIG GET`。禁用 `CONFIG` 的托管服务通常允许 `INFO`。使用 `SetCache` 时 Redis 用户需要 `+info`，[ACL 起点](../operations/index.md#acl)已加上它。
+- 仍然读不到策略时不再静默跳过：设置了新增的 `cocache.redis.assume-maxmemory-policy` 时按它判断，否则记录告警，`cocache.redis.set-cache-eviction-check: fail` 时启动失败。要在禁止 `INFO` 的 Redis 上保留 `fail` 模式，请授予 `+info`，或把 `assume-maxmemory-policy` 设为部署实际使用的策略。
+- 检查所有已声明的 `SetCache`，包括启动时尚未创建的延迟初始化 bean（如 `spring.main.lazy-initialization=true`）。它们的 `ttl` 与创建时一样叠加注解、定制器与配置文件得到。检查不会创建它们。
+- `volatile-*` 下为每个 `ttl` 有限的 `SetCache` 告警：Redis 可能在到期前淘汰它。这只是告警，`fail` 模式下也一样。
+- 见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。
+
+### 行为变化：端点对未知缓存的 `DELETE` 返回 `404`
+
+- 缓存名不存在时，`DELETE /actuator/cocache/{name}` 与 `DELETE /actuator/cocache/{name}/{key}` 返回 `404`，不再返回 `204`，拼错的缓存名不再看起来成功了。已知缓存仍返回 `204` 与 `200`。
+- `CoCacheEndpoint.clearLocal` 返回 `Boolean`（缓存是否存在），不再返回 `Unit`。经 JMX 调用时返回这个值。
+
+### 修复：超时的条件回收不再留下 lease
+
+- 读取有 loader 或配置了 `foreign-format: reclaim` 时，Redis 中读不懂的内容（损坏或未迁移的值）会被条件回收：仍是读到的那份内容时换成读取方的 lease。条件回收超时时，脚本仍可能在客户端放弃之后执行；引擎随后绕过 Redis 回源，其它实例在 `lease-ttl` 内对这个 key 的每次未命中都先等 `lease-wait`。现在超时之后在后台尽力释放这个 lease，与 6.9.0 起读取的 lease 相同。
+
+### API
+
+- `CacheRuntime.policy(name)` 返回已创建缓存生效的 `CachePolicy`。
+- 新增配置 `cocache.redis.assume-maxmemory-policy`（见[配置](./configuration.md)）。
+
 ## v6.9.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本：没有 loader 的缓存（Redis 是唯一副本）有两项默认值变化；另有对 6.8.0 架构审查发现的修复：事务内的失效、提前刷新、Redis 命令超时与订阅，以及条件写入与按版本写入的一项广播修复。没有删除任何 API。`CachePolicy.invalidateFailure` 与 `CachePolicy.readFailure` 改为可空，JVM 签名不变，已编译的调用方照常运行。Redis 线格式与失效频道不变，6.9.0 实例可以与任何 6.x 实例共用 Redis，逐台升级。

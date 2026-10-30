@@ -157,7 +157,7 @@ JMH 对比见 RFC 0003 §7.1。
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
 | L2 填充可线性化、单调时钟、可中断的跟随者 | G1、G2 | RFC 0005 §4.5、§4.6（A.D4、A.C1、A.S1） | 待排期 |
-| 其余审查项 | G1、运维 | `reclaim` 超时释放 lease；驱逐策略检查改读 `INFO memory`、按声明检查；端点对未知缓存的 `DELETE` 返回 404；修正 architecture.md §6.3 关于启动检查的说法（RFC 0005 §9） | 待排期 |
+| 其余审查项 | G1、运维 | `reclaim` 超时释放 lease；驱逐策略检查改读 `INFO memory`、按声明检查；端点对未知缓存的 `DELETE` 返回 404；修正 architecture.md §6.3 关于启动检查的说法（RFC 0005 §9） | ✅ 已修复，随下一版本发布：驱逐检查读不到策略时按 `assume-maxmemory-policy` 判断，否则按 `set-cache-eviction-check` 告警或启动失败，不再静默跳过；`volatile-*` 下 `ttl` 有限的集合缓存告警 |
 
 6.0 已交付按 key 查看与失效（actuator `GET` / `DELETE /actuator/cocache/{name}/{key}`、`CacheAdmin.inspect`）与 `ExternalInvalidator`。
 
