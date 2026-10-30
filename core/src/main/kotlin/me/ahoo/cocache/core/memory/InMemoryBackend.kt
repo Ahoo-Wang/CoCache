@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.memory
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
@@ -61,15 +62,38 @@ class InMemoryBackend @JvmOverloads constructor(
     override fun store(namespace: String): RemoteStore = stores.computeIfAbsent(namespace) { Store(it) }
 
     /**
-     * 模拟订阅连接断开并重新建立：通知所有订阅者重置。
+     * 模拟订阅连接断开并重新建立：通知所有订阅者重置。与 Redis 后端相同，某个订阅者的重置抛出异常（包括 `Error`）记录后继续，
+     * 不影响其余订阅者。
      */
+    @Suppress("TooGenericExceptionCaught")
     fun reconnect() {
-        listeners.values.forEach { namespaceListeners -> namespaceListeners.forEach { it.onReset() } }
+        listeners.forEach { (namespace, namespaceListeners) ->
+            namespaceListeners.forEach { listener ->
+                try {
+                    listener.onReset()
+                } catch (e: Throwable) {
+                    log.error(e) { "Invalidation listener reset failed on namespace[$namespace]." }
+                }
+            }
+        }
     }
 
+    /**
+     * 与 Redis 后端相同：某个订阅者抛出异常（包括 `Error`）记录后继续分发，不影响其余订阅者，也不传给写入方；
+     * `VirtualMachineError` 照常抛出。
+     */
+    @Suppress("TooGenericExceptionCaught")
     private fun publish(namespace: String, frame: ByteArray) {
         val decoded = InvalidationFrame.decode(frame)
-        listeners[namespace]?.forEach { it.onInvalidated(decoded.keys, decoded.origin) }
+        listeners[namespace]?.forEach { listener ->
+            try {
+                listener.onInvalidated(decoded.keys, decoded.origin)
+            } catch (e: VirtualMachineError) {
+                throw e
+            } catch (e: Throwable) {
+                log.error(e) { "Invalidation listener failed on namespace[$namespace]." }
+            }
+        }
     }
 
     private inner class Channel : AsyncInvalidationChannel {
@@ -545,5 +569,6 @@ class InMemoryBackend @JvmOverloads constructor(
     companion object {
         const val FORMAT = 1
         private const val FOREVER = Long.MAX_VALUE
+        private val log = KotlinLogging.logger {}
     }
 }

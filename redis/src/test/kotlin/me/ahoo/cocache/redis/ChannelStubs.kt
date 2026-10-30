@@ -58,6 +58,15 @@ internal class RecordingListener : InvalidationListener {
     }
 }
 
+/**
+ * 每次回调都抛出 [error] 的订阅者。
+ */
+internal class ThrowingListener(@Volatile var error: Throwable) : InvalidationListener {
+    override fun onInvalidated(keys: List<String>, origin: NodeId) = throw error
+
+    override fun onReset() = throw error
+}
+
 internal inline fun <reified T> proxy(crossinline handler: (java.lang.reflect.Method, Array<out Any?>) -> Any?): T {
     return java.lang.reflect.Proxy.newProxyInstance(
         T::class.java.classLoader,

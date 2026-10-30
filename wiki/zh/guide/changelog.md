@@ -5,6 +5,20 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布
+
+**模块组：** `me.ahoo.cocache` · 计划作为 6.10.0 发布。API、线格式与频道都不变，可以与任何 6.x 实例共用 Redis，逐台升级。
+
+### 修复：抛出异常的失效订阅者不再让其它订阅者错过消息
+
+- 失效订阅者抛出 `Error`（或 Kotlin 代码抛出的受检异常）时，排在它之后的订阅者照常收到这条消息。6.9.1 及之前 Redis 通道对每个订阅者只兜住 `RuntimeException`；现在兜住任何 `Throwable`，记录后继续，只重新抛出 `VirtualMachineError`。重置本来就互不影响。
+- 内存后端（`InMemoryBackend`，供测试使用）同样隔离订阅者。订阅者的异常不再传给发布这条消息的 `put` 或 `invalidate` 的调用方。
+
+### 文档
+
+- `Subscription.close()` 不等待已在投递中的回调，这样的回调可能在 `close()` 返回之后才到达。它只保证之后到达的消息与重置不再投递。见[扩展 CoCache](../architecture/extending.md)。
+- [部署](../operations/index.md#channel-mode)写明了没有原子广播时（`sharded` 模式，或探测降级之后）写入成功、随后的发布失败意味着什么。
+
 ## v6.9.1（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 修订版本：补全 6.9.0 两项 Redis 修复漏掉的路径，由 RFC 0005 第二轮审查发现（附录 B）。API、线格式与频道都不变，6.9.1 实例可以与任何 6.x 实例共用 Redis，逐台升级。

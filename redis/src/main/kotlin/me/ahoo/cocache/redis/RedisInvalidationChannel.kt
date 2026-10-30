@@ -217,6 +217,8 @@ internal abstract class RedisInvalidationChannel(
 
     /**
      * 某个订阅者的重置抛出异常（包括 `Error`）不能让其余订阅者错过重置，也不能跳过随后的强制重连或逃出心跳任务、Lettuce 的回调。
+     * `VirtualMachineError` 同样不重新抛出（与 [dispatch] 不同）：重置是消息丢失之后的兜底，跳过它，其余订阅者的陈旧上界就从
+     * 心跳周期退回 `localMaxAge`。
      */
     @Suppress("TooGenericExceptionCaught")
     private fun resetQuietly(channel: String, listener: InvalidationListener) {
@@ -229,6 +231,10 @@ internal abstract class RedisInvalidationChannel(
 
     /**
      * 收到消息：解码并分发给该频道的订阅者，畸形帧告警后丢弃。
+     *
+     * 某个订阅者抛出异常（包括 `Error`，以及 Kotlin 代码抛出的受检异常）记录后继续分发，不能让其余订阅者错过本次失效；
+     * 6.9.1 及之前只兜住 `RuntimeException`，一个抛出 `Error` 的订阅者会让排在它之后的订阅者收不到这条消息。
+     * `VirtualMachineError` 照常抛出，交给 Lettuce 与 Netty：消息本来就是至多一次投递，因此错过的订阅者由 `localMaxAge` 兜底。
      */
     @Suppress("TooGenericExceptionCaught")
     protected fun dispatch(channel: ByteArray, message: ByteArray) {
@@ -239,11 +245,12 @@ internal abstract class RedisInvalidationChannel(
             log.warn(e) { "Ignore malformed invalidation frame on channel[${String(channel, Charsets.UTF_8)}]." }
             return
         }
-        // 某个订阅者抛出异常不能让其余订阅者错过本次失效
         channelListeners.forEach { listener ->
             try {
                 listener.onInvalidated(decoded.keys, decoded.origin)
-            } catch (e: RuntimeException) {
+            } catch (e: VirtualMachineError) {
+                throw e
+            } catch (e: Throwable) {
                 log.error(e) { "Invalidation listener failed on channel[${String(channel, Charsets.UTF_8)}]." }
             }
         }

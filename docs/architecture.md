@@ -443,6 +443,8 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 两种模式互不相通，**全集群必须一致**。
 
 - **每个后端一条订阅连接**，按频道（namespace）分发给订阅者；注册新缓存不会重置已有缓存。
+- **订阅者互不影响**：某个订阅者的 `onInvalidated` 或 `onReset` 抛出异常（包括 `Error`）时记录并继续，其余订阅者照常收到这条消息或重置（内存后端相同）。分发时 `VirtualMachineError` 照常抛出，交给 Lettuce 与 Netty，排在后面的订阅者错过这条消息（至多一次投递，由 `localMaxAge` 兜底）；重置时不重新抛出，因为重置是消息丢失之后的兜底，不能跳过。6.9.1 及之前分发只兜住 `RuntimeException`，抛出 `Error` 的订阅者会让排在它之后的订阅者收不到这条消息。
+- **关闭订阅不等待正在投递的回调**（`Subscription.close`）：`close()` 只保证之后到达的消息与重置不再投递，返回时已在投递中的回调可能在它返回之后才到达。引擎的订阅者只递增戳、淘汰 L2，关闭之后迟到的回调无害。
 - **重置时机**：频道的第一个订阅者发出订阅后，等待服务端确认（最多 `commandTimeout`），确认回调对该频道的订阅者调用 `onReset`，所以 `subscribe` 返回时重置已经完成；同一频道的后续订阅者直接收到一次 `onReset`。断线重连后 Lettuce 自动重新订阅，确认时再次重置。
 - **订阅与退订串行执行**（含等待服务端应答，`RedisInvalidationChannel` 的 `subscriptionLock`；确认、心跳与消息分发不取这把锁）。否则多个运行时共享一个后端时：订阅者可能加入刚被最后一个订阅者移除的旧列表，随后的 `UNSUBSCRIBE` 让它永久收不到失效；首次订阅失败时会把并发加入的订阅者一并移除；退订的 `UNSUBSCRIBE` 也可能晚于随后的 `SUBSCRIBE` 生效。经典模式不处理服务端的 `unsubscribed`：Redis 不会主动退订经典频道，唯一的退订来自 CoCache 自己，串行执行后不会晚于之后的订阅生效。
 - **心跳**：订阅连接每隔 `heartbeat`（默认 5 s）`PING`，失败或超时即重置全部订阅者并强制断开该连接，由 Lettuce 重连、重新订阅（确认后再次重置），半开连接在秒级内被发现。最近一次心跳的结果以只读状态暴露（`RedisBackend.heartbeatHealthy` / `heartbeatFailure`，供健康检查使用），心跳成功即恢复正常。CoCache 自建的客户端另开启 TCP keepalive（有 epoll / io_uring 时再加 `TCP_USER_TIMEOUT`）。Cluster 的经典 Pub/Sub 无法取得底层连接，只告警并依赖 keepalive。Cluster 的 `sharded` 模式 `PING` 确认了订阅的节点；slot 的主节点不再是确认节点时（故障切换），重置订阅者、退订旧节点并向新主节点重新订阅，确认之前同下条每次心跳再重置。
