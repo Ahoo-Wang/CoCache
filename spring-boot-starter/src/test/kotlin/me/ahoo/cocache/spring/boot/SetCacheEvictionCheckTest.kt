@@ -207,8 +207,14 @@ class SetCacheEvictionCheckTest {
     @CoCache(name = "LazyIndex", ttl = 600)
     interface LazyIndexCache : SetCache<String, String>
 
+    @CoCache(name = "EagerIndex")
+    interface EagerIndexCache : SetCache<String, String>
+
+    @CoCache(name = "Profile")
+    interface ProfileCache : me.ahoo.cocache.api.Cache<String, String>
+
     @Configuration(proxyBeanMethods = false)
-    @EnableCoCache(caches = [LazyIndexCache::class])
+    @EnableCoCache(caches = [LazyIndexCache::class, EagerIndexCache::class, ProfileCache::class])
     class LazyDeclarations {
         @Bean(destroyMethod = "close")
         fun backend(): CoherenceBackend = InMemoryBackend()
@@ -248,8 +254,10 @@ class SetCacheEvictionCheckTest {
             .run { context ->
                 assertThat(context).hasNotFailed()
                 val runtime = context.getBean(CacheRuntime::class.java)
-                runtime.cacheNames.assert().containsExactlyInAnyOrder("eager", "tag", "user")
+                runtime.cacheNames.assert().containsExactlyInAnyOrder("EagerIndex", "Profile", "eager", "tag", "user")
+                // 已创建的接口式声明（EagerIndex）取运行时中的策略；不是集合缓存的接口式声明（Profile）不在其中
                 val expected = mapOf(
+                    "EagerIndex" to null,
                     "LazyIndex" to Duration.ofSeconds(120),
                     "eager" to null,
                     "tag" to Duration.ofMinutes(5)
