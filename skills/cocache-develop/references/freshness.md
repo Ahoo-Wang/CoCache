@@ -139,7 +139,7 @@ Each lifetime bounds one kind of staleness. Bare numbers under `cocache.defaults
 ## Redis down during a write
 
 - `invalidate`: the local L2 copy is dropped first. With a loader, by default (`invalidate-failure: retry`) the call does not throw; the delete is queued (8 attempts, 100 ms to 10 s backoff, 10 000 pending) and misses for that key on this instance skip Redis meanwhile. Exhausted or overflowing retries log an error and count `cocache.invalidations.dropped`; other instances may then serve the old value until its remaining `ttl` (forever with `ttl-forever`), so invalidate again once Redis is back. `invalidate-failure: throw` raises `CacheWriteException` instead. Without a loader (6.9+) `throw` is the default: Redis is the only copy, and a delayed delete would remove a value written after the failure.
-- `put` and `SetCache` writes throw `CacheWriteException`; the outcome may be unknown after a timeout, and retrying is safe because they are idempotent.
+- `put` and `SetCache` writes throw `CacheWriteException`; the outcome may be unknown after a timeout or an interrupted wait, and retrying is safe because they are idempotent.
 - The retry limits come from `RetryPolicy` on the `CacheRuntime`; in Spring Boot declare your own `CacheRuntime` bean to change them.
 
 ## Staleness bounds

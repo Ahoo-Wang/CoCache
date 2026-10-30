@@ -22,16 +22,27 @@ description: Release history and notable changes for CoCache.
 - `DELETE /actuator/cocache/{name}` and `DELETE /actuator/cocache/{name}/{key}` return `404` for an unknown cache name instead of `204`, so a misspelled name no longer looks like success. Known caches still return `204` and `200`.
 - `CoCacheEndpoint.clearLocal` returns `Boolean` (whether the cache exists) instead of `Unit`. Over JMX the operation returns that value.
 
-### Fix: a timed-out reclaim no longer leaves its lease behind
-
-- Unreadable content in Redis (a corrupt or unmigrated value) is reclaimed when the read has a loader, or with `foreign-format: reclaim`: replaced by the reader's lease if it is still the content that was read. When that reclaim timed out, the script could still run after the client gave up. The engine then loaded without Redis, and other instances waited `lease-wait` on every miss of that key for `lease-ttl`. The lease is now released after a timeout, in the background and best effort, as a read's lease has been since 6.9.0.
-
 ### API
 
 - `CacheRuntime.policy(name)` returns the effective `CachePolicy` of a created cache.
 - New property `cocache.redis.assume-maxmemory-policy` (see [Configuration](./configuration.md)).
 
-## v6.9.0 (Current)
+## v6.9.1 (Current)
+
+**Module Group:** `me.ahoo.cocache` · Patch release that completes two Redis fixes from 6.9.0 on paths they missed, found by the second review round of RFC 0005 (appendix B). No API, wire format or channel changes, so 6.9.1 instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Fix: interrupted Redis calls
+
+- **Interrupted scripts.** A script whose caller is interrupted while waiting for Redis is handled like a timeout: it is never written to Redis afterwards, and the call fails with `RedisException("Interrupted while waiting for Redis.")` with the interrupt flag still set. In 6.9.0 an interrupted `put` could still run later, in Redis Cluster while it waited for a node connection, and overwrite a newer value. Interrupts come from `Future.cancel(true)`, Resilience4j `TimeLimiter`, or `ExecutorService.shutdownNow`. Once the flag is set, every later wait on that thread fails at once in the same way, such as the remaining keys of a `getAll`.
+- **Leases after an interrupted read.** A read whose wait is interrupted releases, in the background and best effort, the lease or refresh token it may have been granted, as a timed-out read already did. For `getAll`, this covers every key that hadn't returned yet. In 6.9.0 each such key kept its lease for `lease-ttl`, and other instances waited `lease-wait` on every miss of it.
+
+### Fix: leases after a failed fill
+
+- A fill (the write-back of a loaded value) that times out or whose wait is interrupted releases its lease in the background, best effort. In 6.9.0 a fill dropped before it was sent kept its lease for `lease-ttl`. If the fill already ran, the release finds no matching token and changes nothing. A fill rejected while disconnected still leaves its lease to `lease-ttl`.
+- A batch fill (`getAll`) stops at its first failure and gives up the rest: it releases their leases instead of waiting for each, so a failing batch still waits at most one `command-timeout`.
+- A lease release that times out or is interrupted is sent again, since it may have been dropped before it was sent.
+
+## v6.9.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release with two default changes for caches without a loader, where Redis holds the only copy, and fixes from an architecture review of 6.8.0: transactional invalidation, refresh-ahead, Redis command timeouts and subscriptions, and a broadcast fix for conditional and versioned writes. No API is removed. `CachePolicy.invalidateFailure` and `CachePolicy.readFailure` become nullable; their JVM signatures are unchanged, so compiled callers keep running. The Redis wire format and the invalidation channel are unchanged, so 6.9.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 

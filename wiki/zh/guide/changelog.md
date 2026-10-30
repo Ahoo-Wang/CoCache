@@ -22,16 +22,27 @@ description: CoCache 版本发布历史和重要变更。
 - 缓存名不存在时，`DELETE /actuator/cocache/{name}` 与 `DELETE /actuator/cocache/{name}/{key}` 返回 `404`，不再返回 `204`，拼错的缓存名不再看起来成功了。已知缓存仍返回 `204` 与 `200`。
 - `CoCacheEndpoint.clearLocal` 返回 `Boolean`（缓存是否存在），不再返回 `Unit`。经 JMX 调用时返回这个值。
 
-### 修复：超时的条件回收不再留下 lease
-
-- 读取有 loader 或配置了 `foreign-format: reclaim` 时，Redis 中读不懂的内容（损坏或未迁移的值）会被条件回收：仍是读到的那份内容时换成读取方的 lease。条件回收超时时，脚本仍可能在客户端放弃之后执行；引擎随后绕过 Redis 回源，其它实例在 `lease-ttl` 内对这个 key 的每次未命中都先等 `lease-wait`。现在超时之后在后台尽力释放这个 lease，与 6.9.0 起读取的 lease 相同。
-
 ### API
 
 - `CacheRuntime.policy(name)` 返回已创建缓存生效的 `CachePolicy`。
 - 新增配置 `cocache.redis.assume-maxmemory-policy`（见[配置](./configuration.md)）。
 
-## v6.9.0（当前版本）
+## v6.9.1（当前版本）
+
+**模块组：** `me.ahoo.cocache` · 修订版本：补全 6.9.0 两项 Redis 修复漏掉的路径，由 RFC 0005 第二轮审查发现（附录 B）。API、线格式与频道都不变，6.9.1 实例可以与任何 6.x 实例共用 Redis，逐台升级。
+
+### 修复：被中断的 Redis 调用
+
+- **被中断的脚本**：等待 Redis 时调用方线程被中断，按超时处理：脚本之后永远不会再写入 Redis，调用以 `RedisException("Interrupted while waiting for Redis.")` 失败，中断标志保留。6.9.0 中被中断的 `put` 仍可能迟到执行（Redis Cluster 中等待节点连接时），覆盖更新的值。中断来自 `Future.cancel(true)`、Resilience4j `TimeLimiter` 或 `ExecutorService.shutdownNow`。中断标志在时，同一线程上之后的等待都立即以同样的方式失败，例如 `getAll` 其余的 key。
+- **读取被中断后的 lease**：等待被中断的读取在后台尽力释放它可能已取得的 lease 或刷新令牌，与超时的读取相同。`getAll` 中所有尚未返回的 key 都会释放。6.9.0 中这些 key 的 lease 留到 `lease-ttl`，其它实例对它的每次未命中都先等 `lease-wait`。
+
+### 修复：填充失败后的 lease
+
+- 超时或等待被中断的填充（回源结果写回 L1）在后台尽力释放它的 lease。6.9.0 中发出之前就被丢弃的填充，lease 留到 `lease-ttl`。填充已经执行时，释放找不到匹配的令牌，什么也不改变。断线时被拒绝的填充，lease 仍由 `lease-ttl` 回收。
+- 批量填充（`getAll`）在第一个失败处停止，放弃其余的填充：释放它们的 lease，不再逐个等待，失败的批量最多等待一个 `command-timeout`。
+- 超时或被中断的 lease 释放会再发一次：它可能在发出之前就被丢弃。
+
+## v6.9.0
 
 **模块组：** `me.ahoo.cocache` · 次版本：没有 loader 的缓存（Redis 是唯一副本）有两项默认值变化；另有对 6.8.0 架构审查发现的修复：事务内的失效、提前刷新、Redis 命令超时与订阅，以及条件写入与按版本写入的一项广播修复。没有删除任何 API。`CachePolicy.invalidateFailure` 与 `CachePolicy.readFailure` 改为可空，JVM 签名不变，已编译的调用方照常运行。Redis 线格式与失效频道不变，6.9.0 实例可以与任何 6.x 实例共用 Redis，逐台升级。
 

@@ -268,7 +268,7 @@ class CoCacheOperationsTest {
     }
 
     /**
-     * HTTP 上未知缓存的 DELETE 返回 404（6.9.0 及之前为 204，拼错的缓存名静默成功）；已知缓存照旧 204 / 200。
+     * HTTP 上未知缓存的 DELETE 返回 404（6.9.1 及之前为 204，拼错的缓存名静默成功）；已知缓存照旧 204 / 200。
      */
     @Test
     fun unknownCacheDeletesReturnNotFoundOverTheWeb() {

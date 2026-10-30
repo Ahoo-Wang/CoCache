@@ -57,7 +57,7 @@ starter 按以下顺序从 Spring Boot 的 Redis 连接信息中选择拓扑：
 | 只有 `Cache` | 任意。`allkeys-lru` 或 `allkeys-lfu` 让 Redis 成为有界缓存 | 值或负缓存被淘汰就是未命中。lease 被淘汰时，加载方的填充被拒绝，值只以 `degraded-local-max-age` 留在该实例的 L2 中。不会产生陈旧数据 |
 | 有任何 `SetCache` | `noeviction` 或 `volatile-*` | Redis 保存的是集合的唯一副本，`allkeys-*` 会悄悄丢失成员。`SetCache` 的 key 默认没有到期时间，`volatile-*` 不会淘汰它们。设置了有限 `ttl` 的 `SetCache` 在 `volatile-*` 下仍可能被淘汰 |
 
-只要声明了 `SetCache`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。遇到 `allkeys-*` 时告警，`cocache.redis.set-cache-eviction-check: fail` 时启动失败（`off` 不检查）。`volatile-*` 下为每个 `ttl` 有限的 `SetCache` 告警。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时告警，`fail` 模式下启动失败，而不是静默跳过检查。6.9.0 及之前，检查读取 `CONFIG GET`，失败时静默跳过，也不检查尚未创建的 `SetCache` bean。
+只要声明了 `SetCache`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。遇到 `allkeys-*` 时告警，`cocache.redis.set-cache-eviction-check: fail` 时启动失败（`off` 不检查）。`volatile-*` 下为每个 `ttl` 有限的 `SetCache` 告警。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时告警，`fail` 模式下启动失败，而不是静默跳过检查。6.9.1 及之前，检查读取 `CONFIG GET`，失败时静默跳过，也不检查尚未创建的 `SetCache` bean。
 
 `noeviction` 下 Redis 达到 `maxmemory` 时：
 
