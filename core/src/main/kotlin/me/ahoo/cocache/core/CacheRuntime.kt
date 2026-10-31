@@ -160,8 +160,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         check(!closed.get()) { "CacheRuntime is closed." }
         require(names[name] == null) { "Cache[$name] already exists." }
         require(namespaces.add(namespace)) { "Namespace[$namespace] is already used by another cache." }
-        val store = backend.store(namespace)
-        val engine = factory(store)
+        val (store, engine) = createEngine(name, namespace, factory)
         val exposed = expose(engine)
         val registration = Registration(engine, store, exposed)
         if (names.putIfAbsent(name, registration) != null) {
@@ -183,6 +182,27 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         }
         log.info { "Cache[$name] - created on namespace[$namespace], node[$nodeId]." }
         return exposed
+    }
+
+    /**
+     * 创建存储与引擎。失败时回滚：释放命名空间、关闭已创建的存储，否则同名、同命名空间永远无法重试（RFC 0005 附录 A.L9）。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun <C : AbstractEngine<*, *>> createEngine(
+        name: String,
+        namespace: String,
+        factory: (RemoteStore) -> C
+    ): Pair<RemoteStore, C> {
+        var store: RemoteStore? = null
+        try {
+            val created = backend.store(namespace)
+            store = created
+            return created to factory(created)
+        } catch (e: Exception) {
+            namespaces.remove(namespace)
+            store?.let { closeQuietly("store of $name") { it.close() } }
+            throw e
+        }
     }
 
     /**

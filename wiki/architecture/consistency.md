@@ -139,7 +139,7 @@ sequenceDiagram
 
 This works because **single-flight deregisters a call before it publishes the result**. A waiter that wakes up and retries can't join the same stale call again, so one retry is always enough.
 
-Single-flight also guarantees: one load per key per instance at a time, every waiter gets the leader's result or its original exception, a loader that reads its own key on the same thread fails fast instead of deadlocking, and a batch leader finishes its own keys before waiting on keys led by others.
+Single-flight also guarantees: one load per key per instance at a time, every waiter gets the leader's result or its original exception (a synchronous waiter that is interrupted stops waiting on its own: it throws `InterruptedException` with its interrupt flag set, while the leader and the other waiters carry on), a loader that reads its own key on the same thread fails fast instead of deadlocking, and a batch leader finishes its own keys before waiting on keys led by others.
 
 ## Writer order {#writer-order}
 

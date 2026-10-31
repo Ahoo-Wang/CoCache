@@ -411,6 +411,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **回源并发上限**（`LoadPolicy`，bulkhead）：只计 SingleFlight leader，批量回源占一个许可；在 `acquireTimeout` 内拿不到许可时抛出 `SourceLoadRejectedException`（被拒绝的回源会释放 lease）。L1 故障时由它保护数据源。
 - 同线程对同一 key 的重入（loader 内再读同一个 key）快速失败（`IllegalStateException`）。
 - loader 的异常原样抛给调用方与所有合并的等待者。
+- **同步跟随者的等待响应中断**（RFC 0005 附录 A.S1）：合并到别人加载的同步调用方（单 key 与批量）被中断时，恢复中断标志并抛出 `InterruptedException`，只影响它自己；leader 照常加载、发布，其它等待者照常拿到结果。等待开始时中断标志已置位、结果尚未就绪的，同样立即失败；结果已经就绪的照常返回。6.9.1 及之前跟随者用 `join()` 等待，不响应中断。leader 自身不响应中断（它的等待在 loader 与 L1 命令里）。
 - **异步视图**：上表的语义不变，异常改为完成返回的 future（原始异常，不同步抛出）。此外：异步数据源超过 `asyncTimeout` 时以 `SourceLoadTimeoutException` 失败（释放 lease）；异步执行器拒绝任务时以 `RejectedExecutionException` 失败；运行时关闭时尚未触发的定时等待（lease 重读、回源许可）以 `IllegalStateException` 失败，不降级回源。
 
 ## 8. Redis 后端（`cocache-redis`）
@@ -476,7 +477,8 @@ val users: Cache<String, User> = runtime.create(
 ```
 
 - `CacheSpec` / `SetCacheSpec` 是不可变数据。所有有状态组件（L2、栅栏、SingleFlight、存储、订阅）都由 `runtime.create` 按 spec 新建，用户只提供 spec 与无状态函数（`Codec`、`CacheLoader`、`KeyEncoder`、`TtlFunction`、`KeyFilter`），所以两个缓存不可能共享一个 L2。
-- 缓存名或 namespace 重复时 `create` 失败；订阅失败时回滚注册。
+- 缓存名或 namespace 重复时 `create` 失败；创建存储、构造引擎或订阅失败时回滚注册：释放 namespace，关闭已创建的引擎与存储，同名、同 namespace 可以重试（6.9.1 及之前存储或引擎创建失败时 namespace 一直被占用，RFC 0005 附录 A.L9）。
+- **时钟**：默认的 `TickingClock` 由守护线程每 100 ms 刷新一个 volatile 字段，命中路径只做一次 volatile 读。它是单调的：启动时取一次墙钟，之后按 `System.nanoTime()` 的增量推进，墙钟回拨或向前跳都不会让 L2 副本多活或提前到期（6.9.1 及之前每次刷新读墙钟，回拨 Δ 时 L2 副本多活 Δ，RFC 0005 附录 A.C1）。L2 只用时钟计算相对寿命，到期时间跨网络只以相对时长传输，因此与墙钟的累计偏差没有影响。
 - `CacheRuntime.close()` 按创建的逆序关闭订阅、引擎与存储，再关闭运行时自己创建的时钟、执行器与重试调度器（未执行的重试计入丢弃）。后端由调用方关闭。
 - **异步视图的执行资源**（`CacheRuntime.Builder`）：`asyncExecutor`（默认运行时自建的 `ForkJoinPool`：并行度为 CPU 数、守护线程 `cocache-async-*`；它的线程在 `join()` 上阻塞时会补偿线程，替换为固定大小的普通线程池时没有这个保证）；`blockingExecutor`（默认 JDK 21+ 每个任务一个虚拟线程，否则不排队的守护线程池 `cocache-blocking-*`，最多 512 线程，满时拒绝而不是由调用方执行：调用方是异步执行器的线程）；定时器 `cocache-timer`（单线程，只把工作提交给异步执行器）。调用方给出的执行器不随运行时关闭。关闭时先让尚未触发的定时等待失败，再停定时器，最后关闭自建的执行器。
 - `CacheRuntime.cache(name)` / `metrics(name)` / `admin(name)` 按名称查找。
@@ -512,7 +514,7 @@ val users: Cache<String, User> = runtime.create(
   - 编解码：`@CoCache(codec = "beanName")`，否则按 `Codec<V>` 唯一匹配，找不到则用应用的 Jackson 3 `ObjectMapper` 按值类型构造 `JacksonCodec`。
   - key：`keyExpression` 为 SpEL 模板（以业务 key 为根对象），否则 `toString()`。
   - 注解时长单位为秒，`UNSET`（-1）表示交给默认值与配置文件；`FOREVER` 只用于 `@CoCache.ttl`（永不过期）与 `@CaffeineCache.expireAfterAccess`（不按空闲淘汰）；`refreshWindow = 0` 表示关闭。
-  - 代理：`Cache` / `SetCache` 的方法按方法名直接调用引擎，不经 `Method.invoke`，**异常原样抛出**；用户接口的 default 方法经 `InvocationHandler.invokeDefault` 执行；其它抽象方法（名称、参数个数与类型、返回类型不与 `Cache` / `SetCache` 方法匹配）在创建缓存时即启动失败，并提示改为 default 方法；`equals` / `hashCode` 按代理身份。
+  - 代理：`Cache` / `SetCache` 的方法按方法名直接调用引擎，不经 `Method.invoke`，**异常原样抛出**。例外是 JDK 代理自身的规则：接口方法没有声明的受检异常（Kotlin loader 抛出的 `IOException`、跟随者被中断时的 `InterruptedException` 等）由 JDK 包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`（RFC 0005 附录 A.P1）；spec 声明注入的是引擎本身，不受影响。用户接口的 default 方法经 `InvocationHandler.invokeDefault` 执行；其它抽象方法（名称、参数个数与类型、返回类型不与 `Cache` / `SetCache` 方法匹配）在创建缓存时即启动失败，并提示改为 default 方法；`equals` / `hashCode` 按代理身份。
 - **spec bean**：`@Bean fun userSpec(): CacheSpec<String, User> = cacheSpec("user") { … }`。
   - `CacheSpecRegistrar`（`BeanFactoryPostProcessor`）从工厂方法**声明的**泛型返回类型解析 `K`、`V`，不实例化 spec；无法解析（原始类型、通配符）时启动失败。
   - 为每个 spec 注册一个 `Cache<K, V>` bean（`SetCacheSpec` → `SetCache<K, E>`）：bean 名为 spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache`；与已有 bean 重名时启动失败。注入的就是引擎本身，没有代理层。
@@ -651,7 +653,7 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
 11. **有状态组件只能由运行时创建**：用户只提供 spec 和无状态函数。
 12. **CoCache 的 L1 连接只访问主节点**，断线时拒绝命令而不是缓冲重放；超时或等待被中断而放弃的脚本命令若尚未写出，就不再写出（完成 `dispatch` 返回的最外层命令，集群中是 `ClusterCommand`，§8）。
 13. **存储脚本只执行协议，不持有策略**：TTL、刷新窗口、令牌都由引擎作为参数传入。
-14. **代理不包装异常**：接口式声明的代理按方法名直接调用引擎，异常原样抛出；spec bean 注入的就是引擎本身。
+14. **代理不包装异常**：接口式声明的代理按方法名直接调用引擎，异常原样抛出（接口方法没有声明的受检异常由 JDK 包装为 `UndeclaredThrowableException`，这是 JDK 代理的规则，§9）；spec bean 注入的就是引擎本身。
 15. **命中路径的改动必须附带数据**：1 线程与 8 线程，至少 5 轮交替运行，报告中位数与置信区间，并包含配置不同的多个缓存（`l2HitMixed`）。
 16. **starter 注册的缓存 bean 必须能由 AOT 生成代码重建**：只用静态工厂方法与可序列化的构造参数，不用实例提供者，不依赖 bean 定义属性（§9.6）。
 17. **取消不传播**：取消调用方的 future 不取消共享加载、不取消数据源的 future、不跳过写入方的第二次递增（§5.6）。

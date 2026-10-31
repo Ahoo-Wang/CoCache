@@ -86,7 +86,7 @@
 ### 2.4 失败路径不够确定
 
 - A.R1（超时后命令仍被写出）、A.R4（非原子广播下重放不广播）、A.L1（读超时遗留 lease）、A.D3（刷新轮询与背靠背回源）：6.9.0 已修复。
-- A.S1：同步 SingleFlight 的跟随者用 `join()` 等待，不可中断、无上限。尚未修复。
+- A.S1：同步 SingleFlight 的跟随者用 `join()` 等待，不可中断、无上限。可中断已修复（随下一版本发布）；等待的上限属于 v8 的 `load.timeout`。
 - 即使超时能取消到底层，已经写出的命令也照常执行，而且可以排在其它连接上更晚的写入之后（C5）。6.x 把这类写入当作“幂等，可以安全重试”（architecture.md §7），这对无条件写入不成立。
 
 ### 2.5 检验手段只覆盖想到的交错
@@ -759,8 +759,8 @@ if (!stamps.isValid(storageKey, stamp)) {
 | 中断时取消命令、释放令牌；`fill` / `fillAll` 超时或中断时释放令牌 | P5、P13（附录 B） | 6.9.1 已交付（#704） |
 | `reclaim` 超时释放 lease | C7 | 6.9.1 已交付（#704） |
 | L2 填充用 `compute` + 条件复核（§4.5） | A.D4、C4 | 待排期 |
-| 单调时钟 | A.C1 | 待排期 |
-| 同步跟随者可中断 | A.S1 | 待排期 |
+| 单调时钟 | A.C1 | 已修复（随下一版本发布） |
+| 同步跟随者可中断 | A.S1 | 已修复（随下一版本发布）：被中断的跟随者恢复中断标志并抛出 `InterruptedException`，只影响它自己 |
 | L2 key 不含前缀 | §4.5 | 待 JMH 验证 |
 | 驱逐策略检查改读 `INFO memory`、按声明检查 | M11 | 待排期 |
 | 未知缓存名的端点 `DELETE` 返回 404；修正 architecture.md §6.3 | M13、A.L10 | 待排期 |
@@ -976,9 +976,9 @@ v2 由两路独立的只读会话验证。
 | R4 | 中 | 非原子广播时条件写入的重放永不广播 | 读代码 | `CoherentEngine.writeIfNewer` | 6.9.0 已修复（#700）；v8 §4.6 |
 | T1 | 中高 | 事务回滚时不失效；事务内的回源可能把未提交的数据写进 L1 | 读代码 | `TransactionalInvalidator` | 6.9.0 已修复（#697）；`@CacheEvict` 的同类缺口见 v8 §4.9 |
 | T2 | 中低 | 在另一个同步的 `afterCommit` 中登记的失效会丢失；`flush` 遇到第一个异常即停止 | 读代码（含 spring-tx 7.0.9 字节码） | `TransactionalInvalidator` | 6.9.0 已修复（#697） |
-| P1 | 中低 | 接口式代理遇到受检异常时由 JDK 包装为 `UndeclaredThrowableException` | 读代码（JDK 语义） | `CacheProxies.Handler` | 文档；v8 Q7 |
-| C1 | 低 | 时钟用墙钟，回拨时 L2 副本多活 | 读代码 | `TickingClock` | 6.x 待排期；v8 §4.5 |
-| S1 | 低 | 同步跟随者用 `join()` 等待，不可中断、无上限 | 读代码 | `SingleFlight.await` | 6.x 待排期；v8 §4.4 |
+| P1 | 中低 | 接口式代理遇到受检异常时由 JDK 包装为 `UndeclaredThrowableException` | 读代码（JDK 语义） | `CacheProxies.Handler` | 文档已写明（architecture.md §9、wiki）；v8 Q7 |
+| C1 | 低 | 时钟用墙钟，回拨时 L2 副本多活 | 读代码 | `TickingClock` | 6.x 修复（随下一版本发布）；v8 §4.5 |
+| S1 | 低 | 同步跟随者用 `join()` 等待，不可中断、无上限 | 读代码 | `SingleFlight.await` | 可中断：6.x 修复（随下一版本发布）；上限：v8 §4.4 |
 | L1 | 低 | 读 L1 超时之后不释放读脚本可能已授予的 lease | 读代码 | `RedisRemoteStore.read` | 6.9.0 已修复（#701）；中断路径见 B.1 |
 | L2 | 低 | 同步的 `SetCache.getAll` 逐个 key 串行访问 L1 | 读代码 | `SetEngine.getAll` | 6.x 待排期 |
 | L3 | 低 | 策略 `ttl` 永不过期时，墓碑也永不过期 | 读代码 | `CoherentEngine.versionedTtl` | 文档；v8 `tombstoneTtl` |
@@ -987,7 +987,7 @@ v2 由两路独立的只读会话验证。
 | L6 | 低 | `@CacheEvict(allEntries = true)` 只清本节点 L2；端点的按 key 删除对 `SetCache` 会删除唯一副本 | 读代码 | `CoCacheSpringCache.clear`、`CoCacheEndpoint` | v8 §4.9 |
 | L7 | 低 | 格式字节按有符号解析 | 读代码 | `RedisRemoteStore` | 6.9.0 已修复（#701） |
 | L8 | 低 | 策略时长不带单位按秒、`cocache.redis.*` 按毫秒；`defaults` 覆盖显式声明 | 读代码 | `CoCacheProperties` | v8 §4.8 |
-| L9 | 低 | 创建缓存时 `backend.store` 或工厂抛出会让 namespace 保持占用 | 读代码 | `CacheRuntime` 的注册流程 | 6.x 待排期 |
+| L9 | 低 | 创建缓存时 `backend.store` 或工厂抛出会让 namespace 保持占用 | 读代码 | `CacheRuntime` 的注册流程 | 6.x 修复（随下一版本发布） |
 | L10 | 低 | architecture.md §6.3 说“启动时不检查这两点”，与 `SetCacheEvictionCheck` 不符 | 读代码 | `docs/architecture.md` §6.3 | 6.x 待排期 |
 
 未发现缺陷的部分：

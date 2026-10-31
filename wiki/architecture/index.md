@@ -88,7 +88,7 @@ val users: Cache<String, User> = runtime.create(
 - `NodeId` is 16 random bytes per runtime. It makes tokens globally unique and lets an instance ignore its own messages.
 - `close()` closes subscriptions, engines, and stores in reverse creation order, then the clock and executors the runtime created. Pending invalidation retries are counted as dropped. The caller closes the backend.
 
-**Time.** `CacheClock` returns epoch milliseconds. The default `TickingClock` refreshes a volatile field every 100 ms, which is cheaper on the hit path than `System.currentTimeMillis()` on some platforms. Expiry crosses the wire only as relative durations (`PEXPIRE`, `PTTL`), so clock skew between instances doesn't matter. Tests inject `ManualClock`.
+**Time.** `CacheClock` returns epoch milliseconds. The default `TickingClock` refreshes a volatile field every 100 ms, which is cheaper on the hit path than `System.currentTimeMillis()` on some platforms. It is monotonic: it reads the wall clock once at startup and then advances by `System.nanoTime()`, so a wall-clock step (an NTP correction, a manual change) neither extends nor cuts short an L2 copy. Expiry crosses the wire only as relative durations (`PEXPIRE`, `PTTL`), so clock skew between instances doesn't matter. Tests inject `ManualClock`.
 
 ## From declaration to bean {#wiring}
 
@@ -114,7 +114,7 @@ sequenceDiagram
 
 | Style | Bean name | Bean |
 |-------|-----------|------|
-| Interface: `@CoCache interface UserCache : Cache<String, User>`, listed in `@EnableCoCache(caches = …)` | the cache name (`@CoCache(name)`, default the interface's simple name) | A JDK proxy. `Cache` / `SetCache` methods dispatch to the engine by name, without reflection, so exceptions reach you unwrapped. Your `default` methods run through `InvocationHandler.invokeDefault`. |
+| Interface: `@CoCache interface UserCache : Cache<String, User>`, listed in `@EnableCoCache(caches = …)` | the cache name (`@CoCache(name)`, default the interface's simple name) | A JDK proxy. `Cache` / `SetCache` methods dispatch to the engine by name, without reflection, so exceptions reach you unwrapped. The exception is the JDK's own proxy rule: a checked exception the interface method doesn't declare, such as an `IOException` thrown by a Kotlin loader or the `InterruptedException` of an interrupted waiter, arrives wrapped in `UndeclaredThrowableException`, with the original as its `cause`. Your `default` methods run through `InvocationHandler.invokeDefault`. |
 | Spec bean: `@Bean fun userSpec(): CacheSpec<String, User>` | the spec bean name minus `Spec` (`userSpec` → `user`), or plus `Cache` | The engine itself. `CacheSpecRegistrar` reads `K` and `V` from the factory method's declared return type without instantiating the spec. |
 | Join cache: `@JoinCacheable interface …`, listed in `@EnableCoCache(joinCaches = …)` | the join cache name | A read-only view over two caches, resolved by name. See [JoinCache](../guide/join-cache.md). |
 

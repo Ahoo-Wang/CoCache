@@ -5,6 +5,27 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布
+
+**模块组：** `me.ahoo.cocache` · 修复 6.8.0 架构审查中的三项低严重度发现，并补充一处文档，均在 `cocache-core`。API、线格式与频道都不变。
+
+### 修复：被中断的等待者停止等待
+
+- 合并到别人对同一 key 的加载的同步调用（`get`、`getAll`）现在响应中断：抛出 `InterruptedException` 并保留中断标志，只有这个调用方停止等待，加载照常进行，其它等待者照常拿到结果。6.9.1 及之前等待者在加载结束前忽略中断，`Future.cancel(true)`、`TimeLimiter` 或 `ExecutorService.shutdownNow` 都停不下它。
+- 经 `@CoCache` 接口调用时，这个 `InterruptedException` 被 JDK 包装为 `UndeclaredThrowableException`：JDK 对接口方法没有声明的受检异常都这样处理（见下）。
+
+### 修复：L2 副本不受墙钟跳变影响
+
+- 默认时钟启动时读一次墙钟，之后按 `System.nanoTime()` 推进。6.9.1 及之前每 100 ms 重读墙钟，墙钟回拨一小时（NTP 校正、人工调整）会让 L2 副本多活一小时，向前跳则让它提前到期。命中路径仍然只是一次 volatile 读。
+
+### 修复：创建缓存失败后可以重试
+
+- 创建缓存时 `backend.store` 或构造引擎失败，namespace 会一直被占用，重试同一个缓存以 `Namespace[…] is already used by another cache.` 失败。现在会释放 namespace，并关闭已创建的存储。
+
+### 文档：接口式代理与受检异常
+
+- `@CoCache` 接口的代理原样传递异常，只有 JDK 另有规定的情形例外：接口方法没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`）被包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`。spec 声明注入的是引擎本身，不受影响。见[架构](../architecture/index.md)。
+
 ## v6.9.1（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 修订版本：补全 6.9.0 两项 Redis 修复漏掉的路径，由 RFC 0005 第二轮审查发现（附录 B）。API、线格式与频道都不变，6.9.1 实例可以与任何 6.x 实例共用 Redis，逐台升级。

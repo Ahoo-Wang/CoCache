@@ -88,7 +88,7 @@ val users: Cache<String, User> = runtime.create(
 - `NodeId` 是每个运行时 16 个随机字节。它让令牌全局唯一，也让实例能忽略自己发出的消息。
 - `close()` 按创建的逆序关闭订阅、引擎与存储，再关闭运行时自己创建的时钟与执行器。尚未执行的失效重试计入丢弃。后端由调用方关闭。
 
-**时间**。`CacheClock` 返回纪元毫秒。默认的 `TickingClock` 每 100 ms 刷新一次 volatile 字段，在部分平台上比 `System.currentTimeMillis()` 更适合命中路径。到期时间只以相对时长跨网络传输（`PEXPIRE`、`PTTL`），所以实例之间的时钟偏差没有影响。测试注入 `ManualClock`。
+**时间**。`CacheClock` 返回纪元毫秒。默认的 `TickingClock` 每 100 ms 刷新一次 volatile 字段，在部分平台上比 `System.currentTimeMillis()` 更适合命中路径。它是单调的：启动时读一次墙钟，之后按 `System.nanoTime()` 推进，墙钟跳变（NTP 校正、人工调整）既不会让 L2 副本多活，也不会让它提前到期。到期时间只以相对时长跨网络传输（`PEXPIRE`、`PTTL`），所以实例之间的时钟偏差没有影响。测试注入 `ManualClock`。
 
 ## 从声明到 bean {#wiring}
 
@@ -114,7 +114,7 @@ sequenceDiagram
 
 | 方式 | bean 名 | bean |
 |------|---------|------|
-| 接口：`@CoCache interface UserCache : Cache<String, User>`，列在 `@EnableCoCache(caches = …)` 中 | 缓存名（`@CoCache(name)`，默认接口简单类名） | JDK 代理。`Cache` / `SetCache` 的方法按方法名分派给引擎，不经反射，异常原样到达调用方。接口中的 `default` 方法经 `InvocationHandler.invokeDefault` 执行 |
+| 接口：`@CoCache interface UserCache : Cache<String, User>`，列在 `@EnableCoCache(caches = …)` 中 | 缓存名（`@CoCache(name)`，默认接口简单类名） | JDK 代理。`Cache` / `SetCache` 的方法按方法名分派给引擎，不经反射，异常原样到达调用方。例外是 JDK 代理自身的规则：接口方法没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`、被中断的等待者的 `InterruptedException`）由 JDK 包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`。接口中的 `default` 方法经 `InvocationHandler.invokeDefault` 执行 |
 | spec bean：`@Bean fun userSpec(): CacheSpec<String, User>` | spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` | 引擎本身。`CacheSpecRegistrar` 从工厂方法声明的返回类型读取 `K` 与 `V`，不实例化 spec |
 | 组合缓存：`@JoinCacheable interface …`，列在 `@EnableCoCache(joinCaches = …)` 中 | 组合缓存名 | 两个缓存之上的只读视图，按名称解析。见 [JoinCache](../guide/join-cache.md) |
 

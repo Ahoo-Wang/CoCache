@@ -164,4 +164,60 @@ class CacheRuntimeTest {
             runtime.cacheNames.assert().containsExactly("user")
         }
     }
+
+    /**
+     * 创建存储失败时释放命名空间（RFC 0005 附录 A.L9）：否则同名、同命名空间的重试一直以“命名空间已被占用”失败。
+     */
+    @Test
+    fun failedStoreCreationReleasesTheNamespace() {
+        val delegate = InMemoryBackend()
+        val attempts = AtomicInteger()
+        val flaky = object : me.ahoo.cocache.api.spi.CoherenceBackend by delegate {
+            override fun store(namespace: String): me.ahoo.cocache.api.spi.RemoteStore {
+                check(attempts.incrementAndGet() > 1) { "store failed" }
+                return delegate.store(namespace)
+            }
+        }
+        CacheRuntime.builder().backend(flaky).build().use { runtime ->
+            runCatching { runtime.create(spec("user")) }.exceptionOrNull()
+                .assert().isInstanceOf(IllegalStateException::class.java).hasMessage("store failed")
+            runtime.cache("user").assert().isNull()
+            runtime.create(spec("user")).assert().isNotNull()
+            runtime.cacheNames.assert().containsExactly("user")
+        }
+    }
+
+    /**
+     * 构造引擎失败时同样释放命名空间，并关闭已创建的存储（RFC 0005 附录 A.L9）。
+     */
+    @Test
+    fun failedEngineCreationReleasesTheNamespaceAndClosesTheStore() {
+        val delegate = InMemoryBackend()
+        val failFormat = java.util.concurrent.atomic.AtomicBoolean(true)
+        val closedStores = AtomicInteger()
+        val flaky = object : me.ahoo.cocache.api.spi.CoherenceBackend by delegate {
+            // 引擎构造时读取后端的格式版本
+            override val format: Int
+                get() = if (failFormat.get()) throw IllegalStateException("format unavailable") else delegate.format
+
+            override fun store(namespace: String): me.ahoo.cocache.api.spi.RemoteStore {
+                val store = delegate.store(namespace)
+                return object : me.ahoo.cocache.api.spi.RemoteStore by store {
+                    override fun close() {
+                        closedStores.incrementAndGet()
+                        store.close()
+                    }
+                }
+            }
+        }
+        CacheRuntime.builder().backend(flaky).build().use { runtime ->
+            runCatching { runtime.create(spec("user")) }.exceptionOrNull()
+                .assert().isInstanceOf(IllegalStateException::class.java).hasMessage("format unavailable")
+            closedStores.get().assert().isEqualTo(1)
+            runtime.cache("user").assert().isNull()
+            failFormat.set(false)
+            runtime.create(spec("user")).assert().isNotNull()
+            runtime.cacheNames.assert().containsExactly("user")
+        }
+    }
 }
