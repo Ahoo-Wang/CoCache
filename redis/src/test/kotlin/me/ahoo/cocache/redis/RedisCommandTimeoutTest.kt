@@ -371,6 +371,38 @@ class RedisCommandTimeoutTest {
     }
 
     /**
+     * 条件回收超时（结果未知）：脚本可能在超时之后才执行、把内容换成这次请求的 lease，引擎却已绕过 L1 回源，
+     * 后端尽力释放这个 lease（RFC 0005 C7）。同步与异步；单机与集群。
+     */
+    @Test
+    fun timedOutReclaimReleasesTheLeaseItMayHaveTaken() {
+        val timeout = Duration.ofMillis(200)
+        val backend = RedisTestSupport.backend(RedisBackendOptions(commandTimeout = timeout)).closing()
+        val store = backend.store(namespace) as AsyncRemoteStore
+        // 同一 slot、脚本已缓存：理由同 timedOutReadReleasesTheTokensItMayHaveTaken
+        RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RECLAIM, RedisScripts.RELEASE)
+        val warm = key("{reclaim}warm")
+        store.read(warm, null, null)
+        val sync = key("{reclaim}sync")
+        val async = key("{reclaim}async")
+        val observed = listOf(sync, async).associateWith {
+            store.put(it, scalar("corrupt"), Duration.ofMinutes(1), frame(it))
+            Digest.of((store.read(it, null, null) as RemoteRead.Hit).envelope)
+        }
+        RedisTestSupport.pauseClients(PAUSE_MILLIS)
+        val pending = store.reclaimAsync(async, observed.getValue(async), lease())
+        runCatching {
+            store.reclaim(sync, observed.getValue(sync), lease())
+        }.exceptionOrNull().assertTimedOut(timeout)
+        pending.failure().assertTimedOut(timeout)
+        // 暂停结束后回收照常执行并换上 lease，随后执行的释放把它收回：key 不再是 lease 占位
+        awaitCondition("pause over") { runCatching { store.read(warm, null, null) }.isSuccess }
+        listOf(sync, async).forEach {
+            store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        }
+    }
+
+    /**
      * 等待读取时被中断（结果未知）与超时一样：读脚本照常执行、授予令牌，后端尽力释放这次读取请求的令牌。批量读取的第一个等待被中断之后，
      * 其余等待随即失败，它们的读取同样已发出、各自取得 lease，都要释放。条件回收（取得 lease）同样。单机与集群。
      */

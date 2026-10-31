@@ -26,7 +26,8 @@ import org.springframework.boot.actuate.endpoint.annotation.Selector
  * 6.0 缓存运维端点（RFC 0003 §4.14）：列出缓存及其指标、查看单个缓存、清空本节点的 L2、按 key 查看与强制失效。
  *
  * 按 key 的操作以**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分）为路径参数，适用于任意 key 类型；
- * key 中可以含 `/`（匹配剩余的全部路径段）。缓存不存在时返回 `null`：GET 为 HTTP 404，DELETE 为 HTTP 204（什么也不做）；空 key 为 HTTP 400。
+ * key 中可以含 `/`（匹配剩余的全部路径段）。缓存不存在时什么也不做，返回 `null`（[clearLocal] 返回 `false`）：HTTP 上都是 404
+ * （DELETE 由 [CoCacheEndpointWebExtension] 映射，否则 web 层把 `null` 映射为 204，拼错的缓存名会静默成功）；空 key 为 HTTP 400。
  */
 @Endpoint(id = CoCacheEndpoint.ID)
 class CoCacheEndpoint(private val runtime: CacheRuntime) {
@@ -46,10 +47,14 @@ class CoCacheEndpoint(private val runtime: CacheRuntime) {
 
     /**
      * 清空本节点的 L2（L1 是共享存储，不受影响）。
+     *
+     * @return 缓存是否存在（不存在时什么也不做）
      */
     @DeleteOperation
-    fun clearLocal(@Selector name: String) {
-        runtime.admin(name)?.clearLocal()
+    fun clearLocal(@Selector name: String): Boolean {
+        val admin = runtime.admin(name) ?: return false
+        admin.clearLocal()
+        return true
     }
 
     /**

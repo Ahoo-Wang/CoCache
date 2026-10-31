@@ -5,6 +5,28 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased
+
+**Module Group:** `me.ahoo.cocache` · Planned as 6.10.0, because it adds a configuration property and `CacheRuntime.policy`. Fixes the remaining 6.x items from the 6.8.0 architecture review. No API is removed. The Redis wire format and the invalidation channel are unchanged, so these instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Behavior change: the `SetCache` eviction check no longer skips silently
+
+- The startup check reads `maxmemory-policy` from `INFO memory` instead of `CONFIG GET`. Managed services that block `CONFIG` usually allow `INFO`. With a `SetCache`, the Redis user needs `+info`; the [ACL starting point](../operations/index.md#acl) now includes it.
+- If the policy still can't be read, the check no longer skips silently. It uses the new `cocache.redis.assume-maxmemory-policy` when set. Otherwise it logs a warning, or stops startup with `cocache.redis.set-cache-eviction-check: fail`. To keep `fail` mode on a Redis that denies `INFO`, grant `+info` or set `assume-maxmemory-policy` to the policy of your deployment.
+- It checks every declared `SetCache`, including lazy beans that aren't created at startup (for example with `spring.main.lazy-initialization=true`). Their `ttl` comes from the same annotation, customizers and properties as at creation. The check doesn't create them.
+- Under `volatile-*` it warns about each `SetCache` with a finite `ttl`, which Redis can evict before it expires. This is only a warning, also in `fail` mode.
+- See [maxmemory-policy](../operations/index.md#maxmemory-policy).
+
+### Behavior change: endpoint `DELETE` on an unknown cache returns `404`
+
+- `DELETE /actuator/cocache/{name}` and `DELETE /actuator/cocache/{name}/{key}` return `404` for an unknown cache name instead of `204`, so a misspelled name no longer looks like success. Known caches still return `204` and `200`.
+- `CoCacheEndpoint.clearLocal` returns `Boolean` (whether the cache exists) instead of `Unit`. Over JMX the operation returns that value.
+
+### API
+
+- `CacheRuntime.policy(name)` returns the effective `CachePolicy` of a created cache.
+- New property `cocache.redis.assume-maxmemory-policy` (see [Configuration](./configuration.md)).
+
 ## v6.9.1 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Patch release that completes two Redis fixes from 6.9.0 on paths they missed, found by the second review round of RFC 0005 (appendix B). No API, wire format or channel changes, so 6.9.1 instances can share Redis with any 6.x instance and be upgraded one at a time.

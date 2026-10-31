@@ -26,9 +26,6 @@
 | L2 填充可线性化 | A.D4、C4 | `fillLocal` 改为在 Caffeine `compute` 内校验失效戳并写入，写后以 `remove(k, entry)` 按身份复核（RFC 0005 §4.5） | 复现“写入方返回之后旧副本仍可见”的交错（latch 或 Lincheck）；`missLoad` 的 JMH 退化 ≤ 2% |
 | 单调时钟 | A.C1 | `TickingClock` 以启动时的墙钟加 `System.nanoTime()` 的增量 | 墙钟回拨时 L2 副本不多活的用例 |
 | 同步跟随者可中断 | A.S1、C12 | `SingleFlight` 的跟随者以 `get()` 等待并响应中断，只影响跟随者自己；leader 不受影响 | 中断跟随者的用例；leader 照常完成 |
-| 驱逐策略检查 | M11、U19 | 改读 `INFO memory` 的 `maxmemory_policy`；按声明检查，而不只检查已创建的缓存；`volatile-*` 且有 `ttl` 有限的唯一副本时告警 | 禁用 `CONFIG` 时仍能检查的用例 |
-| 端点对未知缓存的 `DELETE` | M13 | 返回 404，不再返回 204 | 端点测试 |
-| architecture.md §6.3 | A.L10 | 删掉“启动时不检查这两点”，改为描述 `SetCacheEvictionCheck` | — |
 | `SetCache.getAll` 批量化 | A.L2 | 同步路径不再逐个 key 访问 L1，与异步路径一样并发 | `SetEngineSpec` 中的批量用例 |
 | namespace 前缀重叠 | A.L4 | 拒绝互为前缀、会让存储 key 相撞的 namespace（`a` 与 `a:b`） | `CacheRuntime` 的用例 |
 | 注册失败时释放 namespace | A.L9 | `backend.store` 或工厂抛出时，撤销对 namespace 的占用 | `CacheRuntime` 的用例 |

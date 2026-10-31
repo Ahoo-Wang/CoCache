@@ -172,7 +172,7 @@ management:
 | `GET /actuator/cocache/{name}/{key}` | [Inspects one key](#inspect-key) in L2 and L1 | this instance, plus one Redis read |
 | `DELETE /actuator/cocache/{name}/{key}` | [Invalidates one key](#invalidate-key) | **every instance** |
 
-`{name}` is the cache name. For an unknown name, `GET` returns `404` and `DELETE` returns `204` with no body (a successful per-key `DELETE` returns `200` with a report). An empty `{key}` is rejected with `400`. Spring drops empty path segments and surrounding whitespace, so a key containing `//`, a leading or trailing `/`, or surrounding spaces can't be addressed exactly through the endpoint.
+`{name}` is the cache name. For an unknown name, `GET` and `DELETE` return `404` and change nothing. Up to 6.9.1, `DELETE` returned `204`, so a misspelled name looked like success. A successful `DELETE /actuator/cocache/{name}` returns `204`, and a successful per-key `DELETE` returns `200` with a report. An empty `{key}` is rejected with `400`. Spring drops empty path segments and surrounding whitespace, so a key containing `//`, a leading or trailing `/`, or surrounding spaces can't be addressed exactly through the endpoint.
 
 A cache report:
 

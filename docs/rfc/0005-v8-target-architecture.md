@@ -762,8 +762,8 @@ if (!stamps.isValid(storageKey, stamp)) {
 | 单调时钟 | A.C1 | 待排期 |
 | 同步跟随者可中断 | A.S1 | 待排期 |
 | L2 key 不含前缀 | §4.5 | 待 JMH 验证 |
-| 驱逐策略检查改读 `INFO memory`、按声明检查 | M11 | 待排期 |
-| 未知缓存名的端点 `DELETE` 返回 404；修正 architecture.md §6.3 | M13、A.L10 | 待排期 |
+| 驱逐策略检查改读 `INFO memory`、按声明检查 | M11 | 已修复（随下一版本发布）。6.x 不破坏兼容：读不到策略且没有配置 `assume-maxmemory-policy` 时按 `set-cache-eviction-check` 处理（默认 `warn` 告警，`fail` 启动失败），v8 再改为一律启动失败 |
+| 未知缓存名的端点 `DELETE` 返回 404；修正 architecture.md §6.3 | M13、A.L10 | 已修复（随下一版本发布） |
 | starter 的事务装饰器取代 `TransactionAwareCacheManagerProxy`（`@CacheEvict` 回滚时也失效）；回滚时失效事务内的 L1 填充 | U3 | 7.x |
 | “没有数据源”的告警移到 core；迁移报告与严格模式 | U12 | 7.x |
 | Lincheck 用例、TLA+ 模型 | V9 | 待排期 |
@@ -988,7 +988,7 @@ v2 由两路独立的只读会话验证。
 | L7 | 低 | 格式字节按有符号解析 | 读代码 | `RedisRemoteStore` | 6.9.0 已修复（#701） |
 | L8 | 低 | 策略时长不带单位按秒、`cocache.redis.*` 按毫秒；`defaults` 覆盖显式声明 | 读代码 | `CoCacheProperties` | v8 §4.8 |
 | L9 | 低 | 创建缓存时 `backend.store` 或工厂抛出会让 namespace 保持占用 | 读代码 | `CacheRuntime` 的注册流程 | 6.x 待排期 |
-| L10 | 低 | architecture.md §6.3 说“启动时不检查这两点”，与 `SetCacheEvictionCheck` 不符 | 读代码 | `docs/architecture.md` §6.3 | 6.x 待排期 |
+| L10 | 低 | architecture.md §6.3 说“启动时不检查这两点”，与 `SetCacheEvictionCheck` 不符 | 读代码 | `docs/architecture.md` §6.3 | 6.x 修复（随 M11 一起） |
 
 未发现缺陷的部分：
 - Lua 脚本的状态转换与到期时间重设、令牌比较；
