@@ -89,7 +89,14 @@ Without the starter, pass a Lettuce `SslOptions` in `RedisBackendOptions(sslOpti
 
 In `pubsub` mode, the backend checks at startup whether a script may publish to a channel in another slot. Some managed services, such as ElastiCache Serverless, run `PUBLISH` as `SPUBLISH` and reject that. An ACL that denies the probe channel has the same effect. The backend then publishes after each write instead, and logs `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` The [health indicator](./observability.md#health) shows `atomicBroadcast: false`. Only these definite errors cause the fallback. A timeout during the probe fails startup instead of downgrading for good.
 
-Without atomic broadcast, a crash between the write and the publish loses that message. Peers then keep their L2 copy until `local-max-age`, while L1 is already correct.
+::: warning Without atomic broadcast
+In `sharded` mode, or after the probe fell back, the publish is a separate command that runs after the write script. So:
+
+- A crash between the write and the publish loses that message.
+- A publish that fails after the write succeeded reaches the caller as a failed write. `put` throws `CacheWriteException` although Redis already holds the new value. `invalidate` follows `invalidate-failure`, and a retried invalidation publishes again. Retrying the `put` is safe and publishes again.
+
+In both cases L1 is already correct, and instances that missed the message keep their L2 copy for up to `local-max-age`. The order of a write is in [architecture.md §4.2](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md).
+:::
 
 ## Sizing {#sizing}
 

@@ -41,7 +41,14 @@ interface InvalidationListener {
 
 /**
  * 订阅句柄，关闭即取消订阅。
+ *
+ * 关闭不等待正在投递的回调：[close] 返回时已在投递中的 [InvalidationListener.onInvalidated] 或
+ * [InvalidationListener.onReset] 可能在它返回之后才到达。只有在 [close] 返回之后才到达的消息与重置保证不再投递。
+ * 关闭之后不能再收到回调的订阅者需要自己忽略迟到的回调。
  */
 fun interface Subscription : AutoCloseable {
+    /**
+     * 取消订阅。只保证之后到达的消息不再投递；已在投递中的回调可能在返回之后到达。
+     */
     override fun close()
 }

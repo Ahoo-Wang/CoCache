@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 失效通道的订阅生命周期：订阅丢失后的重置、订阅与退订并发（多个运行时共享一个后端时）。
+ * 失效通道的订阅生命周期：订阅丢失后的重置、订阅与退订并发（多个运行时共享一个后端时）、订阅者之间的隔离。
  */
 class RedisChannelSubscriptionTest {
     /**
@@ -162,6 +162,44 @@ class RedisChannelSubscriptionTest {
             closing.join()
             second.join()
             subscribed.get().assert().withFailMessage { "channel ended unsubscribed while it has a subscriber" }.isTrue()
+        }
+    }
+
+    /**
+     * 排在前面的订阅者抛出 `Error`：其后的订阅者照常收到失效与重置（6.9.1 及之前分发只兜住 `RuntimeException`，
+     * 其后的订阅者收不到这条消息）。`VirtualMachineError` 照常抛出。
+     */
+    @Test
+    fun listenerThrowingAnErrorDoesNotSkipOtherListeners() {
+        var adapter: RedisPubSubAdapter<ByteArray, ByteArray>? = null
+        val async = stub<RedisPubSubAsyncCommands<ByteArray, ByteArray>>("subscribe" to { completed<Void?>(null) })
+        val pubSub = stub<StatefulRedisPubSubConnection<ByteArray, ByteArray>>(
+            "addListener" to { args ->
+                @Suppress("UNCHECKED_CAST")
+                adapter = args[0] as RedisPubSubAdapter<ByteArray, ByteArray>
+                null
+            },
+            "async" to { async },
+        )
+        val failing = ThrowingListener(AssertionError("listener bug"))
+        val healthy = RecordingListener()
+        PubSubInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
+            // 没有订阅确认：第一个订阅者等待超时后返回；后加入的订阅者直接重置一次
+            channel.subscribe("ns", failing)
+            channel.subscribe("ns", healthy)
+            val handler = requireNotNull(adapter)
+            val ns = "cocache:inv:ns".toByteArray()
+
+            handler.message(ns, InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            healthy.received.assert().containsExactly(listOf("k"))
+            handler.subscribed(ns, 1)
+            healthy.resets.get().assert().isEqualTo(2)
+
+            val fatal = OutOfMemoryError("listener")
+            failing.error = fatal
+            runCatching {
+                handler.message(ns, InvalidationFrame.encode(NodeId.random(), listOf("k2")))
+            }.exceptionOrNull().assert().isSameAs(fatal)
         }
     }
 
