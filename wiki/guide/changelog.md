@@ -5,6 +5,27 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased
+
+**Module Group:** `me.ahoo.cocache` · Fixes for three low-severity findings from the 6.8.0 architecture review, plus a documentation note, all in `cocache-core`. No API, wire format or channel changes.
+
+### Fix: an interrupted waiter stops waiting
+
+- A synchronous call that joins another caller's load of the same key (`get`, `getAll`) now responds to interruption. It throws `InterruptedException` with its interrupt flag still set, and only that caller stops waiting: the load continues, and the other waiters still get its result. In 6.9.1 and earlier the waiter ignored interruption until the load finished, so `Future.cancel(true)`, a `TimeLimiter` or `ExecutorService.shutdownNow` couldn't stop it.
+- A call through a `@CoCache` interface receives that `InterruptedException` wrapped in `UndeclaredThrowableException`, as the JDK does for any checked exception an interface method doesn't declare (see below).
+
+### Fix: L2 copies ignore wall-clock steps
+
+- The default clock reads the wall clock once at startup and then advances by `System.nanoTime()`. In 6.9.1 and earlier it re-read the wall clock every 100 ms, so stepping the clock back by an hour (an NTP correction, a manual change) kept L2 copies alive for an extra hour, and stepping it forward expired them early. The hit path still does one volatile read.
+
+### Fix: a failed cache creation can be retried
+
+- When creating a cache failed in `backend.store` or while constructing the engine, its namespace stayed taken, so retrying the same cache failed with `Namespace[…] is already used by another cache.` The namespace is now released, and a store that was already created is closed.
+
+### Docs: checked exceptions through interface proxies
+
+- `@CoCache` interface proxies pass exceptions through unwrapped, except where the JDK requires otherwise: a checked exception the interface method doesn't declare, such as an `IOException` thrown by a Kotlin loader, arrives wrapped in `UndeclaredThrowableException`, with the original as its `cause`. Caches injected from a spec are the engine itself and are unaffected. See [Architecture](../architecture/index.md).
+
 ## v6.9.1 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Patch release that completes two Redis fixes from 6.9.0 on paths they missed, found by the second review round of RFC 0005 (appendix B). No API, wire format or channel changes, so 6.9.1 instances can share Redis with any 6.x instance and be upgraded one at a time.

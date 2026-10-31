@@ -166,7 +166,7 @@ JMH 对比见 RFC 0003 §7.1。
 |----|------|------|------|
 | 外部失效 CLI | G1 | 非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH` 的命令行工具 | 未提供；JVM 上已有 `ExternalInvalidator`，协议见运维文档 |
 | RESP3 client tracking 通道 | G2 | `InvalidationChannel` 的一种实现（[RFC 0002](rfc/0002-resp3-client-tracking.md)） | 预研 |
-| L2 填充可线性化、单调时钟、可中断的跟随者 | G1、G2 | RFC 0005 §4.5、§4.6（A.D4、A.C1、A.S1） | 待排期 |
+| L2 填充可线性化、单调时钟、可中断的跟随者 | G1、G2 | RFC 0005 §4.5、§4.6（A.D4、A.C1、A.S1） | 单调时钟（A.C1）与可中断的跟随者（A.S1）已修复，随下一版本发布；L2 填充可线性化（A.D4）待排期 |
 | 其余审查项 | G1、运维 | 驱逐策略检查改读 `INFO memory`、按声明检查；端点对未知缓存的 `DELETE` 返回 404；修正 architecture.md §6.3 关于启动检查的说法（RFC 0005 §9） | 待排期 |
 | starter 的事务装饰器 | G2 | 取代 `TransactionAwareCacheManagerProxy`，`@CacheEvict` 在回滚时同样失效；回滚时失效写事务内凭 lease 写进 L1 的 key（RFC 0005 §4.9） | 7.x |
 

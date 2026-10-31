@@ -26,6 +26,8 @@ import java.time.Duration
  * 接口式声明的代理（RFC 0003 §4.12）：用户接口继承 [Cache] / [SetCache]，代理把调用转发给引擎。
  *
  * - [Cache] / [SetCache] 的方法直接调用引擎（按方法名分派，不经 `Method.invoke`），异常原样抛出。
+ *   例外是 JDK 代理自身的规则：接口方法没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`）由 JDK 包装为
+ *   [java.lang.reflect.UndeclaredThrowableException]，原始异常是它的 `cause`。
  * - 用户接口的 default 方法经 [InvocationHandler.invokeDefault] 执行。
  * - `equals` / `hashCode` 按代理对象身份；`toString` 显示接口与引擎。
  */
