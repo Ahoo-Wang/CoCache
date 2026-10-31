@@ -259,6 +259,11 @@ onBeforeUnmount(() => {
     flex: 0 0 auto;
 }
 
+/* Mermaid measures a label outside the page, at this line height. With the taller one of .vp-doc, labels get cut off. */
+.vp-doc .mermaid-content p {
+    line-height: 1.5;
+}
+
 .mermaid-toolbar {
     position: absolute;
     top: 0.75rem;
