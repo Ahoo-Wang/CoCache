@@ -151,6 +151,12 @@ abstract class MultiNodeSpec {
         return store.read("cocache:$cacheName:$key", null, null)
     }
 
+    /**
+     * 节点上 [key] 的 L2 副本的刷新点（毫秒）；没有副本或没有刷新点时为 `null`。只读快照，不影响 L2，但读一次 L1。
+     */
+    private fun refreshAtOf(node: CacheRuntime, key: String): Long? =
+        requireNotNull(node.admin(cacheName)).inspect(key).local?.refreshAt?.toEpochMilli()
+
     private fun remoteValue(key: String): String? {
         val read = remote(key) as? RemoteRead.Hit ?: return null
         return (read.envelope as? Envelope.Scalar)?.let { TestCodec.decode(it.bytes) }
@@ -424,6 +430,11 @@ abstract class MultiNodeSpec {
         } else {
             // 异步视图上刷新的 fill 可能在命中线程返回之后才完成
             awaitCondition("refresh fills reached L1") { keys.all { remoteValue(it) == "$it-1" } }
+            // 没取得令牌的节点同样在异步执行器上重新填充：推进时钟之前等每个副本都已替换（刷新点晚于现在）。否则晚到的重新填充
+            // （读到的仍是旧值）从推进后的时钟起算刷新点，晚于推进到的时刻，该节点在用例里再也不读 L1
+            awaitCondition("every node replaced its copy") {
+                nodes.all { node -> keys.all { key -> (refreshAtOf(node, key) ?: 0) > clock.nowMillis() } }
+            }
         }
         // fill 不广播：非持有节点的刷新点退避到原 L1 到期之前（至迟在剩余寿命的一半处），到时再从 L1 重新填充
         elapse(Duration.ofSeconds(3))

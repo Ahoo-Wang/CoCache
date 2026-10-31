@@ -21,12 +21,18 @@ import io.lettuce.core.api.StatefulRedisConnection
 import io.lettuce.core.cluster.SlotHash
 import io.lettuce.core.codec.ByteArrayCodec
 import io.lettuce.core.internal.HostAndPort
+import io.lettuce.core.protocol.CommandHandler
 import io.lettuce.core.protocol.CommandType
 import io.lettuce.core.protocol.RedisCommand
 import io.lettuce.core.resource.DefaultClientResources
 import io.lettuce.core.resource.MappingSocketAddressResolver
+import io.lettuce.core.resource.NettyCustomizer
 import io.mockk.every
 import io.mockk.mockk
+import io.netty.channel.Channel
+import io.netty.channel.ChannelHandlerContext
+import io.netty.channel.ChannelOutboundHandlerAdapter
+import io.netty.channel.ChannelPromise
 import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -45,9 +51,11 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
+import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 
@@ -60,6 +68,11 @@ class RedisCommandTimeoutTest {
     private val node = NodeId.random()
     private var sequence = 0L
     private val closeables = ArrayList<AutoCloseable>()
+
+    /**
+     * 写出的命令：只记录接入它的客户端资源上的连接（[interruptWhileWaiting]）。
+     */
+    private val written = WrittenCommands()
 
     @AfterEach
     fun destroy() {
@@ -105,18 +118,55 @@ class RedisCommandTimeoutTest {
     }
 
     /**
-     * 在后台线程执行 [block]，等它停在等待 Redis 应答上时中断它（`Future.cancel(true)`、Resilience4j `TimeLimiter`、
-     * `shutdownNow` 都这样中断调用方），返回它抛出的异常；后端须恢复中断标志。
+     * 在后台线程执行 [block]，等它停在等待 Redis 应答上、发往 [keys] 的命令都已写出（[written]，客户端资源须接入它）时中断它
+     * （`Future.cancel(true)`、Resilience4j `TimeLimiter`、`shutdownNow` 都这样中断调用方），返回它抛出的异常；后端须恢复中断标志。
+     *
+     * 命令由 Lettuce 的事件循环异步写出：中断先于写出时，被取消的命令不再写出（期望的行为），也就不会授予令牌，用例检验不到释放。
      */
-    private fun interruptWhileWaiting(block: () -> Unit): Throwable? {
+    private fun interruptWhileWaiting(keys: Collection<String>, block: () -> Unit): Throwable? {
+        written.clear()
         val caller = fork("interrupted-caller") {
             val failure = runCatching(block).exceptionOrNull()
             check(Thread.currentThread().isInterrupted) { "The interrupt flag was not restored." }
             failure
         }
-        awaitCondition("caller waiting for Redis") { caller.thread.state == Thread.State.TIMED_WAITING }
+        awaitCondition("caller waiting for Redis, its commands written") {
+            caller.thread.state == Thread.State.TIMED_WAITING && written.containsAll(keys)
+        }
         caller.thread.interrupt()
         return caller.join()
+    }
+
+    /**
+     * 记录写出的命令的首个 key。插在 Lettuce 的 `CommandHandler` 与编码器之间：`CommandHandler` 跳过已完成（被取消）的命令
+     * （`isWriteable`），其余的先放入应答栈再交给这里，所以记录到的命令必然发往 Redis，此后取消也撤不回。
+     */
+    private class WrittenCommands : NettyCustomizer {
+        private val keys = ConcurrentHashMap.newKeySet<String>()
+
+        override fun afterChannelInitialized(channel: Channel) {
+            val pipeline = channel.pipeline()
+            val handler = pipeline.context(CommandHandler::class.java) ?: return
+            pipeline.addBefore(
+                handler.name(),
+                "written-commands",
+                object : ChannelOutboundHandlerAdapter() {
+                    override fun write(ctx: ChannelHandlerContext, msg: Any, promise: ChannelPromise) {
+                        // 单条命令，或一批命令
+                        (msg as? Collection<*> ?: listOf(msg)).forEach { command ->
+                            (command as? RedisCommand<*, *, *>)?.args?.firstEncodedKey?.let {
+                                keys.add(StandardCharsets.UTF_8.decode(it).toString())
+                            }
+                        }
+                        ctx.write(msg, promise)
+                    }
+                }
+            )
+        }
+
+        fun clear() = keys.clear()
+
+        fun containsAll(expected: Collection<String>): Boolean = keys.containsAll(expected)
     }
 
     /**
@@ -371,13 +421,17 @@ class RedisCommandTimeoutTest {
     }
 
     /**
-     * 等待读取时被中断（结果未知）与超时一样：读脚本照常执行、授予令牌，后端尽力释放这次读取请求的令牌。批量读取的第一个等待被中断之后，
-     * 其余等待随即失败，它们的读取同样已发出、各自取得 lease，都要释放。条件回收（取得 lease）同样。单机与集群。
+     * 等待读取时被中断（结果未知）与超时一样：已写出的读脚本照常执行、授予令牌，后端尽力释放这次读取请求的令牌。批量读取的第一个等待被中断之后，
+     * 其余等待随即失败，它们的读取同样已写出、各自取得 lease，都要释放。条件回收（取得 lease）同样。单机与集群。
      */
     @Test
     fun interruptedReadReleasesTheTokensItMayHaveTaken() {
+        val resources = DefaultClientResources.builder().nettyCustomizer(written).build()
+        closeables.add(AutoCloseable { resources.shutdown() })
         // 超时远长于暂停：读取只会因中断失败
-        val backend = RedisTestSupport.backend(RedisBackendOptions(commandTimeout = Duration.ofSeconds(10))).closing()
+        val backend = RedisTestSupport.backend(
+            RedisBackendOptions(commandTimeout = Duration.ofSeconds(10), clientResources = resources)
+        ).closing()
         val store = backend.store(namespace) as AsyncRemoteStore
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RECLAIM, RedisScripts.RELEASE)
         val warm = key("{lease}warm")
@@ -390,10 +444,10 @@ class RedisCommandTimeoutTest {
         val sync = key("{lease}sync")
         val all = listOf(key("{lease}all-0"), key("{lease}all-1"), key("{lease}all-2"))
         RedisTestSupport.pauseClients(PAUSE_MILLIS)
-        interruptWhileWaiting { store.read(sync, lease(), null) }.assertInterrupted()
-        interruptWhileWaiting { store.readAll(all, all.associateWith { lease() }) }.assertInterrupted()
-        interruptWhileWaiting { store.read(refreshed, null, refresh()) }.assertInterrupted()
-        interruptWhileWaiting { store.reclaim(corrupt, observed, lease()) }.assertInterrupted()
+        interruptWhileWaiting(listOf(sync)) { store.read(sync, lease(), null) }.assertInterrupted()
+        interruptWhileWaiting(all) { store.readAll(all, all.associateWith { lease() }) }.assertInterrupted()
+        interruptWhileWaiting(listOf(refreshed)) { store.read(refreshed, null, refresh()) }.assertInterrupted()
+        interruptWhileWaiting(listOf(corrupt)) { store.reclaim(corrupt, observed, lease()) }.assertInterrupted()
         // 暂停结束后读取照常执行并授予令牌，随后执行的释放把它们收回：之后的读取不再看到 lease
         awaitCondition("pause over") { runCatching { store.read(warm, null, null) }.isSuccess }
         (all + sync + corrupt).forEach { store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false)) }
