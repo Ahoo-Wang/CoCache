@@ -26,6 +26,7 @@ import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetCacheSpec
 import me.ahoo.cocache.core.internal.Futures
+import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.thenNext
 import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.boundedTtl
@@ -72,28 +73,53 @@ internal class SetEngine<K : Any, E : Any>(
         return result
     }
 
+    /**
+     * 同步变体：L2 命中就地返回；未命中在调用方线程上运行协程核心（[loadEntry]）。
+     */
     private fun entryOf(key: K): LocalEntry<Set<E>> {
         val storageKey = storageKey(key)
-        val entry = local.getIfPresent(storageKey)
-        if (entry != null && entry.expiresAt > clock.nowMillis()) {
-            countLocalHit()
-            return entry
-        }
-        val observed = stamps.current(storageKey)
-        val loaded = flights.execute(storageKey) { loadThrough(storageKey) }
-        if (loaded.stamp >= observed) {
-            return loaded.entry
-        }
-        return flights.execute(storageKey) { loadThrough(storageKey) }.entry
-    }
-
-    private fun loadThrough(storageKey: String): Loaded<Set<E>> {
-        val stamp = stamps.current(storageKey)
-        return loaded(storageKey, store.read(storageKey, null, null), stamp)
+        return localHit(storageKey) ?: runSync { loadEntry(storageKey) }
     }
 
     /**
-     * 同步与异步共用：读到 L1 之后的判定与 L2 填充。
+     * 异步变体：L2 命中返回已完成的 future，不启动协程；未命中在运行时作用域中运行同一份协程核心。
+     * L1 读失败以原始异常失败（没有可降级的数据源）。
+     */
+    private fun entryOfAsync(key: K): CompletableFuture<LocalEntry<Set<E>>> {
+        val storageKey = storageKey(key)
+        val entry = localHit(storageKey) ?: return context.async.runAsync { loadEntry(storageKey) }
+        return CompletableFuture.completedFuture(entry)
+    }
+
+    private fun localHit(storageKey: String): LocalEntry<Set<E>>? {
+        val entry = local.getIfPresent(storageKey) ?: return null
+        if (entry.expiresAt <= clock.nowMillis()) {
+            return null
+        }
+        countLocalHit()
+        return entry
+    }
+
+    /**
+     * 未命中（同步与异步共用的协程核心，RFC 0005 V5）：经 SingleFlight 合并，读己之写至多重试一次。
+     * 合并之前记下戳（observed），合并到的结果取戳早于它时，说明读取开始于本节点之前的一次写入，重新加载。
+     */
+    private suspend fun loadEntry(storageKey: String): LocalEntry<Set<E>> {
+        val observed = stamps.current(storageKey)
+        val loaded = flights.executeSuspending(storageKey, scope) { loadThrough(storageKey) }
+        if (loaded.stamp >= observed) {
+            return loaded.entry
+        }
+        return flights.executeSuspending(storageKey, scope) { loadThrough(storageKey) }.entry
+    }
+
+    private suspend fun loadThrough(storageKey: String): Loaded<Set<E>> {
+        val stamp = stamps.current(storageKey)
+        return loaded(storageKey, readRemote(storageKey, null, null), stamp)
+    }
+
+    /**
+     * 读到 L1 之后的判定与 L2 填充。
      */
     private fun loaded(storageKey: String, read: RemoteRead, stamp: Long): Loaded<Set<E>> {
         val entry = when (read) {
@@ -106,38 +132,6 @@ internal class SetEngine<K : Any, E : Any>(
         }
         fillLocal(storageKey, entry, stamp)
         return Loaded(entry, stamp)
-    }
-
-    /**
-     * [entryOf] 的异步版本：读己之写重试相同；L1 读失败以原始异常失败（没有可降级的数据源）。
-     */
-    private fun entryOfAsync(key: K): CompletableFuture<LocalEntry<Set<E>>> {
-        val storageKey = storageKey(key)
-        val entry = local.getIfPresent(storageKey)
-        if (entry != null && entry.expiresAt > clock.nowMillis()) {
-            countLocalHit()
-            return CompletableFuture.completedFuture(entry)
-        }
-        val observed = stamps.current(storageKey)
-        return flights.executeAsync(
-            storageKey,
-            executor
-        ) { loadThroughAsync(storageKey) }.thenNext(executor) { loaded ->
-            if (loaded.stamp >= observed) {
-                CompletableFuture.completedFuture(loaded.entry)
-            } else {
-                flights.executeAsync(storageKey, executor) { loadThroughAsync(storageKey) }.thenNext(executor) {
-                    CompletableFuture.completedFuture(it.entry)
-                }
-            }
-        }
-    }
-
-    private fun loadThroughAsync(storageKey: String): CompletableFuture<Loaded<Set<E>>> {
-        val stamp = stamps.current(storageKey)
-        return Futures.attempt { asyncStore.readAsync(storageKey, null, null) }.thenNext(executor) { read ->
-            CompletableFuture.completedFuture(loaded(storageKey, read, stamp))
-        }
     }
 
     /**

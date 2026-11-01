@@ -17,5 +17,7 @@ dependencies {
     api(project(":cocache-api"))
     implementation("com.github.ben-manes.caffeine:caffeine")
     implementation("io.github.oshai:kotlin-logging-jvm")
+    // 协议核心用协程实现（RFC 0005 V5）：同步、异步、挂起三种变体共用一份 suspend 实现
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
     testImplementation(project(":cocache-test"))
 }

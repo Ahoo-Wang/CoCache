@@ -12,6 +12,7 @@ description: CoCache 版本发布历史和重要变更。
 ### 破坏性变更
 
 - 基线改为 JDK 21（原为 JDK 17）。
+- `cocache-core` 在运行时依赖 `kotlinx-coroutines-core`。协议正在改写为一份协程实现，同时服务阻塞、异步与挂起三种 API；`SetCache` 的读取已经用上它。
 
 ## v6.10.0（当前版本）
 

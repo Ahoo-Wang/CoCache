@@ -25,6 +25,8 @@
 
 每个里程碑由若干 PR 组成，每个 PR 的 `./gradlew check` 全绿；触及命中路径或异步路径的 PR 附 `scripts/jmh-compare.sh` 的对比。
 
+M1 按路径拆成若干 PR：基础设施与 `SetCache` 读路径（进行中）→ 单 key 读 → 批量 → 刷新 → 写入（含 `VersionedCache`）→ 删除异步分支、`Futures` 的续接、定时器与许可等待队列，挂起视图直接调用核心。
+
 | 里程碑 | 要做什么 | 验收 |
 |--------|----------|------|
 | M1 协程核心 | 在现有用户 API 与 SPI 之下把协议改写为一份 `suspend` 实现（同步经 `runBlocking`、异步经 `future(UNDISPATCHED)`）；然后删除引擎中的异步分支、`Futures` 的续接、定时器与许可等待队列；`kotlinx-coroutines-core` 进入 core，AGENTS.md 的依赖规则同步修改 | 同步 TCK 与 `Async*` TCK 的语义用例全绿，线程模型用例按新模型重写；L2 命中不退化；同步变体的 L1 命中、未命中退化 ≤ 3%；异步 8 线程闭环不低于 6.10 的 90% |

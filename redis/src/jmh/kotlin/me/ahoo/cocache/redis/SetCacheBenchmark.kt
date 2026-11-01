@@ -29,6 +29,7 @@ import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.policy.LocalPolicy
 import me.ahoo.cocache.core.setCacheSpec
 import org.openjdk.jmh.annotations.Benchmark
 import org.openjdk.jmh.annotations.BenchmarkMode
@@ -41,6 +42,7 @@ import org.openjdk.jmh.annotations.State
 import org.openjdk.jmh.annotations.TearDown
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 
 /**
@@ -49,6 +51,7 @@ import java.util.concurrent.TimeUnit
  * - Hash（现行线格式）：经生产的 [RemoteStore] 读写，即 `READ`（`PTTL` + `GET` 类型不符 + `HKEYS` + `HGET !f`）与 `ADD_MEMBERS` / `REMOVE_MEMBERS`。
  * - 备选（`*Alt`）：原生 Set + 同 slot 的控制 Hash（`{…}:c` 存 `!f`，`{…}:s` 存成员），只在本基准内用等价的 Lua 原型实现，
  *   不是生产代码。读取同样先试 `GET`，与真实读脚本的分派路径一致。
+ * - 经引擎（`setL1HitViaEngine*`）：L2 未命中、L1 命中的完整读路径（SingleFlight、读 L1、解码、填充 L2），比较同步与异步变体的开销。
  *
  * 每个成员数（[size]）的 Redis 内存（`MEMORY USAGE … SAMPLES 0`）在 setup 时打印一次，含非整数成员与整数成员两种。
  *
@@ -66,6 +69,8 @@ open class SetCacheBenchmark {
     private lateinit var backend: RedisBackend
     private lateinit var runtime: CacheRuntime
     private lateinit var cache: SetCache<String, String>
+    private lateinit var l1Hits: SetCache<String, String>
+    private lateinit var l1HitKeys: List<String>
     private lateinit var store: RemoteStore
     private lateinit var client: RedisClient
     private lateinit var connection: StatefulRedisConnection<ByteArray, ByteArray>
@@ -95,6 +100,15 @@ open class SetCacheBenchmark {
         store.addMembers(hashKey, members.map { it.toByteArray() }, null, frame)
         altKeys = altKeysOf("$name:l1")
         altAdd(altKeys, members.map { it.toByteArray() })
+        // L1 命中经引擎：工作集远大于 L2 容量，几乎每次读取都不命中 L2、命中 L1（并填充 L2）
+        l1Hits = runtime.create(
+            setCacheSpec<String, String>("$name-l1-hits") {
+                elementCodec = StringCodec
+                policy = policy.toBuilder().local(LocalPolicy(maximumSize = 16)).build()
+            }
+        )
+        l1HitKeys = (1..L1_HIT_KEYS).map { "l1-$it" }
+        l1HitKeys.forEach { l1Hits.add(it, members) }
         reportMemory(name)
     }
 
@@ -104,6 +118,7 @@ open class SetCacheBenchmark {
         connection.close()
         client.shutdown()
         cache.clear("hot")
+        l1HitKeys.forEach(l1Hits::clear)
         runtime.close()
         backend.close()
     }
@@ -111,6 +126,14 @@ open class SetCacheBenchmark {
     /** L2 命中：进程内查找，返回已解码的不可变集合，与成员数无关。 */
     @Benchmark
     fun setL2Hit(): Set<String> = cache["hot"]
+
+    /** L1 命中经引擎（同步变体：未命中 L2 时以 `runBlocking` 在调用方线程上运行协程核心）。 */
+    @Benchmark
+    fun setL1HitViaEngine(): Set<String> = l1Hits[l1HitKeys[ThreadLocalRandom.current().nextInt(L1_HIT_KEYS)]]
+
+    /** L1 命中经引擎（异步变体，`future(UNDISPATCHED)`），阻塞等待结果。 */
+    @Benchmark
+    fun setL1HitViaEngineAsync(): Set<String>? = l1Hits.async().get(l1HitKeys[ThreadLocalRandom.current().nextInt(L1_HIT_KEYS)]).join()
 
     /** 读 L1（Hash）：一次 EVALSHA（`PTTL` + `GET` 类型不符 + `HKEYS` + `HGET !f`），客户端去掉成员前缀。 */
     @Benchmark
@@ -179,6 +202,8 @@ open class SetCacheBenchmark {
     )
 
     companion object {
+        /** 经引擎读 L1 的工作集大小（L2 只容纳 16 个）。 */
+        private const val L1_HIT_KEYS = 256
         private val NO_TTL = "0".toByteArray()
         private val ENCODED_CHURN = "member-churn".toByteArray()
 

@@ -51,7 +51,7 @@ If your shell exports `SPRING_DATA_REDIS_*` variables (for example `SPRING_DATA_
 
 Module directories drop the `cocache-` prefix (`core/`, `redis/`, …); Gradle project names and published artifactIds keep it (`:cocache-core`, `me.ahoo.cocache:cocache-core`). The mapping lives in `settings.gradle.kts`.
 
-Dependencies point one way: `api ← core ← redis`, `api ← codec-jackson`, `core ← spring`, and `core ← coroutines`. `kotlinx-coroutines-core` appears only in `cocache-coroutines`. The starter depends on `spring`, `redis`, and `codec-jackson`. Only the starter may use SpEL or annotation scanning.
+Dependencies point one way: `api ← core ← redis`, `api ← codec-jackson`, `core ← spring`, and `core ← coroutines`. `kotlinx-coroutines-core` is used by `cocache-core` (the coroutine protocol core, RFC 0005 V5) and `cocache-coroutines`; no other module depends on it directly. The starter depends on `spring`, `redis`, and `codec-jackson`. Only the starter may use SpEL or annotation scanning.
 
 - `cocache-api` holds the user API (`Cache`, `SetCache`, `CacheLoader`, `Codec`, `Lookup`, `@CoCache`) and every SPI (`me.ahoo.cocache.api.spi`), and has zero runtime dependencies. Changing it is a public-API change.
 - `cocache-core` holds the runtime and engines (`CacheRuntime`, `CacheSpec`, `engine/CoherentEngine`, `engine/SetEngine`), the L2 fence and coalescing (`internal/InvalidationStamps`, `internal/SingleFlight`), policy (`policy/CachePolicy`), the interface proxy (`proxy/CacheProxies`), and test helpers that ship (`InMemoryBackend`, `ManualClock`). L2 is always Caffeine; it is not an SPI.

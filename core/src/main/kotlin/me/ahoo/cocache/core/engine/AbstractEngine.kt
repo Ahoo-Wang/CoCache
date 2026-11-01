@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.engine
 import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CoroutineScope
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
@@ -23,7 +24,9 @@ import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.CacheAdmin
@@ -34,6 +37,8 @@ import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.SingleFlight
+import me.ahoo.cocache.core.internal.awaitOriginal
+import me.ahoo.cocache.core.internal.runsInline
 import me.ahoo.cocache.core.policy.CachePolicy
 import java.time.Duration
 import java.time.Instant
@@ -122,6 +127,22 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 异步执行器：异步路径的全部续接都在这里（或已完成时就地）执行，从不在 I/O 线程上执行。
      */
     protected val executor: Executor = context.async.executor
+
+    /**
+     * 协程核心的运行时作用域（RFC 0005 §4.4）：异步变体的共享加载在这里执行。
+     */
+    protected val scope: CoroutineScope = context.async.scope
+
+    /**
+     * 协程核心读取 L1：同步变体就地调用阻塞的 SPI，保留它在超时与中断时的处理（#701、#704）；异步变体等待异步 SPI，不占线程，
+     * 续接回到运行时作用域的调度器上，从不在 L1 客户端的 I/O 线程上执行。
+     */
+    protected suspend fun readRemote(storageKey: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead =
+        if (runsInline()) {
+            store.read(storageKey, lease, refresh)
+        } else {
+            asyncStore.readAsync(storageKey, lease, refresh).awaitOriginal()
+        }
 
     protected fun storageKey(key: K): String = storagePrefix + keyEncoder.encode(key)
 

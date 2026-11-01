@@ -12,6 +12,7 @@ description: Release history and notable changes for CoCache.
 ### Breaking changes
 
 - The baseline is JDK 21 (was JDK 17).
+- `cocache-core` depends on `kotlinx-coroutines-core` at runtime. The protocol is being rewritten as one coroutine implementation behind the blocking, async, and suspending APIs. `SetCache` reads already use it.
 
 ## v6.10.0 (Current)
 
