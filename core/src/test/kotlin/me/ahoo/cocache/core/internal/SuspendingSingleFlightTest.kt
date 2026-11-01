@@ -55,8 +55,6 @@ class SuspendingSingleFlightTest {
     private fun suspending(key: String = "k", block: suspend () -> String): CompletableFuture<String> =
         scope.future(start = CoroutineStart.UNDISPATCHED) { flights.executeSuspending(key, scope, block) }
 
-    private fun Thread.parked(): Boolean = state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING
-
     @Test
     fun syncLeaderRunsInlineOnTheCallerThread() {
         val caller = Thread.currentThread()
@@ -89,7 +87,7 @@ class SuspendingSingleFlightTest {
                 "other"
             }
         }
-        awaitCondition { follower.thread.parked() }
+        awaitCondition { follower.parked }
         flights.inFlight.assert().isEqualTo(1)
         release.countDown()
         leader.join().assert().isEqualTo("v")
@@ -116,7 +114,7 @@ class SuspendingSingleFlightTest {
         started.awaitOrFail()
         val syncFollower = fork { sync { "other" } }
         val asyncFollower = async { "other" }
-        awaitCondition { syncFollower.thread.parked() }
+        awaitCondition { syncFollower.parked }
         release.countDown()
         leader.joinFailure().assert().isSameAs(failure)
         syncFollower.joinFailure().assert().isSameAs(failure)
@@ -130,7 +128,7 @@ class SuspendingSingleFlightTest {
         val failure = IllegalStateException("boom")
         val leader = async { gate.awaitOriginal() }
         val syncFollower = fork { sync { "other" } }
-        awaitCondition { syncFollower.thread.parked() }
+        awaitCondition { syncFollower.parked }
         gate.completeExceptionally(failure)
         causeOf(leader).assert().isSameAs(failure)
         syncFollower.joinFailure().assert().isSameAs(failure)
@@ -214,7 +212,7 @@ class SuspendingSingleFlightTest {
         }
         started.awaitOrFail()
         val follower = fork { sync { "other" } }
-        awaitCondition { follower.thread.parked() }
+        awaitCondition { follower.parked }
         release.countDown()
         leader.join().assert().isEqualTo("v")
         follower.join().assert().isEqualTo("v")
@@ -237,7 +235,7 @@ class SuspendingSingleFlightTest {
         started.awaitOrFail()
         val interrupted = fork { interruptFlagAfter { sync { "other" } } }
         val waiting = fork { sync { "other" } }
-        awaitCondition { interrupted.thread.parked() && waiting.thread.parked() }
+        awaitCondition { interrupted.parked && waiting.parked }
         interrupted.thread.interrupt()
         val failure = interrupted.joinFailure()
         failure.assert().isInstanceOf(FollowerFailure::class.java)
@@ -269,7 +267,7 @@ class SuspendingSingleFlightTest {
         }
         started.awaitOrFail()
         val follower = fork { interruptFlagAfter { sync { "other" } } }
-        awaitCondition { follower.thread.parked() }
+        awaitCondition { follower.parked }
         leader.thread.interrupt()
         val (leaderCause, _) = leader.joinFailure() as FollowerFailure
         leaderCause.assert().isInstanceOf(InterruptedException::class.java)

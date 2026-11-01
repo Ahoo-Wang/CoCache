@@ -37,6 +37,7 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -200,9 +201,9 @@ class SuspendingCacheTest {
             runBlocking(executor.asCoroutineDispatcher()) {
                 withTimeout(10_000) {
                     outer.get("k") { key ->
-                        threads.add(Thread.currentThread().name)
+                        threads.add(Concurrency.currentThreadName())
                         val nested = inner.get(key) {
-                            threads.add(Thread.currentThread().name)
+                            threads.add(Concurrency.currentThreadName())
                             yield()
                             "i-$it"
                         }
@@ -273,7 +274,7 @@ class SuspendingCacheTest {
         // 调用方在 runBlocking 的事件循环上：loader 改在 Dispatchers.Default 上执行
         val thread = AtomicReference<String>()
         cache.get("event-loop") {
-            thread.set(Thread.currentThread().name)
+            thread.set(Concurrency.currentThreadName())
             "e"
         }
         thread.get().assert().startsWith("DefaultDispatcher-worker")
@@ -289,7 +290,7 @@ class SuspendingCacheTest {
             cacheSpec<String, String>("spec") {
                 codec = StringCodec
                 suspendingLoader { key ->
-                    threads.add(Thread.currentThread().name)
+                    threads.add(Concurrency.currentThreadName())
                     loads.incrementAndGet()
                     if (key == "absent") null else "v-$key"
                 }
@@ -307,14 +308,14 @@ class SuspendingCacheTest {
     fun asAsyncCacheLoaderUsesTheGivenContext() {
         val executor = Executors.newSingleThreadExecutor { Thread(it, "loader-context").apply { isDaemon = true } }
         try {
-            val loader = SuspendingCacheLoader<String, String> { "${Thread.currentThread().name}:$it" }
+            val loader = SuspendingCacheLoader<String, String> { "${Concurrency.currentThreadName()}:$it" }
                 .asAsyncCacheLoader(executor.asCoroutineDispatcher())
             loader.loadAsync("k").toCompletableFuture().get().assert().isEqualTo("loader-context:k")
             loader.loadAllAsync(
                 listOf("a")
             ).toCompletableFuture().get().assert().isEqualTo(mapOf("a" to "loader-context:a"))
             loader.toString().assert().contains("SuspendingAsyncLoader")
-            val defaults = SuspendingCacheLoader<String, String> { Thread.currentThread().name }.asAsyncCacheLoader()
+            val defaults = SuspendingCacheLoader<String, String> { Concurrency.currentThreadName() }.asAsyncCacheLoader()
             defaults.loadAsync("k").toCompletableFuture().get().assert().startsWith("DefaultDispatcher-worker")
         } finally {
             executor.shutdownNow()
@@ -490,7 +491,7 @@ class SuspendingCacheTest {
         val result = java.util.concurrent.CompletableFuture<String?>()
         val call: suspend () -> String? = {
             cache.get("k") {
-                thread.set(Thread.currentThread().name)
+                thread.set(Concurrency.currentThreadName())
                 "v"
             }
         }

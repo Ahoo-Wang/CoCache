@@ -24,6 +24,17 @@ import java.util.concurrent.atomic.AtomicReference
 object Concurrency {
     val TIMEOUT: Duration = Duration.ofSeconds(10)
 
+    /**
+     * kotlinx 调试模式（`-ea` 或 `kotlinx.coroutines.debug`）在协程运行期间给线程名加上的后缀（` @名字#编号`）。
+     */
+    private val COROUTINE_SUFFIX = Regex(" @[^@]*#\\d+$")
+
+    /**
+     * 当前线程的名字，去掉 kotlinx 调试模式加上的协程后缀。引擎的读路径运行在协程核心上（同步变体在调用方线程上以 `runBlocking` 运行，
+     * 异步变体在执行器线程上运行协程），按线程名编排竞态或断言完成线程时用它，结果与是否开启调试模式无关。
+     */
+    fun currentThreadName(): String = Thread.currentThread().name.replace(COROUTINE_SUFFIX, "")
+
     fun CountDownLatch.awaitOrFail(what: String = "latch") {
         check(await(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) { "Timed out waiting for $what." }
     }
@@ -55,6 +66,12 @@ object Concurrency {
             isDaemon = true
             start()
         }
+
+        /**
+         * 线程停在等待中：`WAITING`，或 `TIMED_WAITING`（同步路径的跟随者在 `runBlocking` 的事件循环里以限时停顿等待）。
+         */
+        val parked: Boolean
+            get() = thread.state == Thread.State.WAITING || thread.state == Thread.State.TIMED_WAITING
 
         /**
          * 等待结束并返回结果；线程抛出的异常原样抛出。

@@ -21,6 +21,7 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
@@ -97,7 +98,7 @@ class AsyncDispatchTest {
         blockingDispatches.set(0)
         val future = call()
         val completedOn = CompletableFuture<String>()
-        future.whenComplete { _, _ -> completedOn.complete(Thread.currentThread().name) }
+        future.whenComplete { _, _ -> completedOn.complete(Concurrency.currentThreadName()) }
         opened.countDown()
         // 先等回调执行完再等结果：在 future 上等待的线程按 JDK 规则可能代为执行它尚未执行的依赖阶段
         val thread = completedOn.get(10, TimeUnit.SECONDS)

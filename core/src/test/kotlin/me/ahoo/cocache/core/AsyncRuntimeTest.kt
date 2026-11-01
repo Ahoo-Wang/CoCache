@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -61,13 +62,13 @@ class AsyncRuntimeTest {
         val cache = runtime.create(
             spec {
                 loader = CacheLoader { key ->
-                    loadedOn.complete(Thread.currentThread().name)
+                    loadedOn.complete(Concurrency.currentThreadName())
                     key
                 }
             }
         )
         val completedOn = CompletableFuture<String>()
-        cache.async().get("k").whenComplete { _, _ -> completedOn.complete(Thread.currentThread().name) }
+        cache.async().get("k").whenComplete { _, _ -> completedOn.complete(Concurrency.currentThreadName()) }
             .get(10, TimeUnit.SECONDS).assert().isEqualTo("k")
         // 同步数据源只在阻塞执行器上执行
         loadedOn.join().assert().doesNotStartWith("cocache-async")
@@ -89,7 +90,7 @@ class AsyncRuntimeTest {
             val cache = runtime.create(
                 spec {
                     loader = CacheLoader { key ->
-                        loadedOn.complete(Thread.currentThread().name)
+                        loadedOn.complete(Concurrency.currentThreadName())
                         key
                     }
                 }
@@ -112,7 +113,7 @@ class AsyncRuntimeTest {
             executor.maximumPoolSize.assert().isEqualTo(CacheRuntime.MAX_BLOCKING_THREADS)
             executor.rejectedExecutionHandler.assert().isInstanceOf(ThreadPoolExecutor.AbortPolicy::class.java)
             executor.submit<String> {
-                Thread.currentThread().name
+                Concurrency.currentThreadName()
             }.get(10, TimeUnit.SECONDS).assert().startsWith("cocache-blocking")
         } finally {
             executor.shutdownNow()

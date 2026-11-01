@@ -28,6 +28,7 @@ import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -65,7 +66,7 @@ class BlockingAsyncStoreTest {
         val ran = mutableListOf<String>()
         val recording = Executor { task ->
             blocking.execute {
-                ran.add(Thread.currentThread().name)
+                ran.add(Concurrency.currentThreadName())
                 task.run()
             }
         }
@@ -128,7 +129,7 @@ class BlockingAsyncStoreTest {
             override fun subscribe(namespace: String, listener: InvalidationListener): Subscription = Subscription { }
 
             override fun publish(namespace: String, frame: ByteArray) {
-                published.add(Thread.currentThread().name)
+                published.add(Concurrency.currentThreadName())
             }
         }
         val adapted = BlockingAsyncChannel.of(channel, blocking)
@@ -141,7 +142,7 @@ class BlockingAsyncStoreTest {
                 override fun onReset() = Unit
             }
         ).close()
-        published.assert().containsExactly("tck-blocking", Thread.currentThread().name)
+        published.assert().containsExactly("tck-blocking", Concurrency.currentThreadName())
         BlockingAsyncChannel.of(channel) { throw RejectedExecutionException("full") }.publishAsync("ns", frame("k"))
             .handle { _, e -> e }.join().assert().isInstanceOf(RejectedExecutionException::class.java)
     }

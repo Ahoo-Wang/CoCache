@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.internal
 
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -42,7 +43,7 @@ class AsyncSingleFlightTest {
         }
         val asyncJoiner = flights.executeAsync("k", direct) { error("not the leader") }
         val syncJoiner = fork { flights.execute("k") { "other" } }
-        awaitCondition { syncJoiner.thread.state == Thread.State.WAITING }
+        awaitCondition { syncJoiner.parked }
         flights.inFlight.assert().isEqualTo(1)
         pending.complete("v")
         leader.join().assert().isEqualTo("v")
@@ -109,7 +110,7 @@ class AsyncSingleFlightTest {
             Thread(task, "engine").start()
         }) { error("not the leader") }
         val completedOn = CompletableFuture<String>()
-        joined.whenComplete { _, _ -> completedOn.complete(Thread.currentThread().name) }
+        joined.whenComplete { _, _ -> completedOn.complete(Concurrency.currentThreadName()) }
         release.countDown()
         // 先等回调执行再 join：JDK 的 join 会在等待线程上执行尚未执行的依赖阶段
         completedOn.get(10, java.util.concurrent.TimeUnit.SECONDS).assert().isEqualTo("engine")

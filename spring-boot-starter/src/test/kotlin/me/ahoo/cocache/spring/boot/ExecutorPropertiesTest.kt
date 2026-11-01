@@ -20,6 +20,7 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -71,7 +72,7 @@ class ExecutorPropertiesTest {
         fun userSpec(loaderThreads: ConcurrentLinkedQueue<String>): CacheSpec<String, String> = cacheSpec("user") {
             codec = StringCodec
             loader = CacheLoader {
-                loaderThreads.add(Thread.currentThread().name)
+                loaderThreads.add(Concurrency.currentThreadName())
                 "user-$it"
             }
             policy = CachePolicy(
@@ -167,8 +168,8 @@ class ExecutorPropertiesTest {
                 context.getBean("refreshRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(1)
                 context.getBean("retrieveRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(0)
                 loaderThreads(context).toList().assert().containsExactly(
-                    Thread.currentThread().name,
-                    Thread.currentThread().name
+                    Concurrency.currentThreadName(),
+                    Concurrency.currentThreadName()
                 )
             }
     }
@@ -233,7 +234,7 @@ class ExecutorPropertiesTest {
             userCache(context).async().get("1").get(5, TimeUnit.SECONDS).assert().isEqualTo("user-1")
             // 记录执行器就地执行：同步数据源经阻塞执行器在调用方线程上执行
             context.getBean("blockingRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(1)
-            loaderThreads(context).single().assert().isEqualTo(Thread.currentThread().name)
+            loaderThreads(context).single().assert().isEqualTo(Concurrency.currentThreadName())
         }
     }
 

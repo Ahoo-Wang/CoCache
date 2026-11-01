@@ -132,10 +132,10 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     var ioExecutor: Executor? = null
 
     /**
-     * 发起当前存储调用的线程名：钩子用它代替 `Thread.currentThread().name` 编排竞态。
+     * 发起当前存储调用的线程名：钩子用它代替 `Concurrency.currentThreadName()` 编排竞态。
      * 异步方法的钩子在结果的完成线程（如 Lettuce 的 I/O 线程）上执行，执行期间这里返回发起调用的线程名。
      */
-    fun issuer(): String = issuerName.get() ?: Thread.currentThread().name
+    fun issuer(): String = issuerName.get() ?: Concurrency.currentThreadName()
 
     private val issuerName = ThreadLocal<String?>()
 
@@ -357,7 +357,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
             hooked("read") {
                 reads.incrementAndGet()
-                val issuer = Thread.currentThread().name
+                val issuer = Concurrency.currentThreadName()
                 store.readAsync(
                     key,
                     lease,
@@ -368,7 +368,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         override fun readAllAsync(keys: Collection<String>, leases: Map<String, LeaseRequest>): CompletableFuture<Map<String, RemoteRead>> =
             hooked("readAll") {
                 readAlls.incrementAndGet()
-                val issuer = Thread.currentThread().name
+                val issuer = Concurrency.currentThreadName()
                 store.readAllAsync(
                     keys,
                     leases
@@ -377,7 +377,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
 
         override fun fillAsync(fill: Fill): CompletableFuture<Boolean> = hooked("fill", fail = failFill) {
             fills.incrementAndGet()
-            val issuer = Thread.currentThread().name
+            val issuer = Concurrency.currentThreadName()
             store.fillAsync(fill).hooked(issuer, afterFill != null) { filled ->
                 afterFill?.invoke(fill.key, filled)
                 filled
@@ -397,7 +397,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
 
         override fun putAsync(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
             hooked("put", fail = failWrites) {
-                val issuer = Thread.currentThread().name
+                val issuer = Concurrency.currentThreadName()
                 store.putAsync(key, envelope, ttl, frame).hooked(issuer, afterPut != null) {
                     afterPut?.invoke(key)
                     null
@@ -409,7 +409,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             fail = failWrites
         ) {
             putAlls.incrementAndGet()
-            val issuer = Thread.currentThread().name
+            val issuer = Concurrency.currentThreadName()
             store.putAllAsync(puts, frame).hooked(issuer, afterPut != null) {
                 afterPut?.let { hook -> puts.forEach { hook(it.key) } }
                 null
@@ -424,7 +424,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
                 return deliver(CompletableFuture.failedFuture(e))
             }
             return hooked("invalidate", fail = failWrites) {
-                val issuer = Thread.currentThread().name
+                val issuer = Concurrency.currentThreadName()
                 store.invalidateAsync(keys, frame).hooked(issuer, afterInvalidate != null) {
                     afterInvalidate?.invoke(keys)
                     null
@@ -457,7 +457,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             frame: ByteArray,
             foreignAsAbsent: Boolean
         ): CompletableFuture<RemoteVersionedWrite> = hooked("put", fail = failWrites) {
-            val issuer = Thread.currentThread().name
+            val issuer = Concurrency.currentThreadName()
             store.putIfNewerAsync(key, envelope, version, ttl, frame, foreignAsAbsent)
                 .hooked(issuer, afterVersionedWrite != null) { result ->
                     afterVersionedWrite?.invoke(key, result)

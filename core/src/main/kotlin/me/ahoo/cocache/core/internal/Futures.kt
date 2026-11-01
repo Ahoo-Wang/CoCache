@@ -110,6 +110,19 @@ internal object Futures {
     }
 
     /**
+     * 把 [task] 作为 [executor] 派发的任务交给它执行（执行期间带续接标记，见 [continueOn]）；拒绝时抛出 [RejectedExecutionException]。
+     * 协程核心的调度器用它：协程的恢复与 future 链的续接遵守同一套派发规则。
+     */
+    fun execute(executor: Executor, task: Runnable) {
+        executor.execute(Marked(executor, task))
+    }
+
+    /**
+     * 当前线程是否正在执行 [executor] 派发的任务（且不在 [withoutInline] 的作用域内）：此时完成的上一步可以就地继续。
+     */
+    fun onExecutor(executor: Executor): Boolean = inline.get()?.executor === executor
+
+    /**
      * 在 [executor] 上执行 [task]；执行器拒绝时以该异常完成 [target]。任务执行期间当前线程标记为 [executor] 的续接（见 [continueOn]）。
      */
     fun dispatch(executor: Executor, target: CompletableFuture<*>, task: Runnable) {

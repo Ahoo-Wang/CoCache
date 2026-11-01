@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.internal
 
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CancellationException
@@ -159,9 +160,9 @@ class FuturesTest {
         try {
             val source = CompletableFuture<String>()
             val ranOn = source.handleNext(pool) { _, _ ->
-                CompletableFuture.completedFuture(Thread.currentThread().name)
+                CompletableFuture.completedFuture(Concurrency.currentThreadName())
             }.handleNext(pool) { first, _ ->
-                CompletableFuture.completedFuture("$first,${Thread.currentThread().name}")
+                CompletableFuture.completedFuture("$first,${Concurrency.currentThreadName()}")
             }
             io.execute { source.complete("v") }
             ranOn.get(10, TimeUnit.SECONDS).assert().isEqualTo("test-async,test-async")

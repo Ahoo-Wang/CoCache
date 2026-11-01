@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.engine
 
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -82,7 +83,9 @@ class AsyncContextTest {
         val executed = CompletableFuture<String>()
         val async = AsyncContext({ task -> Thread(task, "engine").start() }, Executor { it.run() }, timer)
         try {
-            async.after(0) { CompletableFuture.completedFuture(Thread.currentThread().name) }.get(10, TimeUnit.SECONDS)
+            async.after(
+                0
+            ) { CompletableFuture.completedFuture(Concurrency.currentThreadName()) }.get(10, TimeUnit.SECONDS)
                 .assert().isEqualTo("engine")
             async.after(TimeUnit.SECONDS.toNanos(10)) { executed }.let { pending ->
                 async.close()

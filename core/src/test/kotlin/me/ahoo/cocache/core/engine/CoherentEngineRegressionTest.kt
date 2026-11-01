@@ -179,7 +179,7 @@ class CoherentEngineRegressionTest {
         val plain = fork("plain") { runCatching { cache["k"] } }
         reading.awaitOrFail("plain read")
         val withLoader = fork("loader") { cache.get("k") { "loaded" } }
-        awaitCondition("joined the plain read") { withLoader.thread.state == Thread.State.WAITING }
+        awaitCondition("joined the plain read") { withLoader.parked }
         backend.afterRead = null
         backend.failAll = true
         release.countDown()
