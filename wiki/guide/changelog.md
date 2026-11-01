@@ -5,9 +5,9 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## Unreleased
+## v6.10.0 (Current)
 
-**Module Group:** `me.ahoo.cocache` · Planned as 6.10.0, because it adds a configuration property and `CacheRuntime.policy`. Fixes the remaining 6.x items from the 6.8.0 architecture review and isolates failing invalidation listeners. No API is removed. The Redis wire format and the invalidation channel are unchanged, so these instances can share Redis with any 6.x instance and be upgraded one at a time.
+**Module Group:** `me.ahoo.cocache` · Minor release, because it adds a configuration property and `CacheRuntime.policy`, and the last 6.x feature release: later 6.x releases only fix defects. Fixes the remaining 6.x items from the 6.8.0 architecture review and isolates failing invalidation listeners. No API is removed. The Redis wire format and the invalidation channel are unchanged, so 6.10.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
 ### Behavior change: the `SetCache` eviction check no longer skips silently
 
@@ -51,7 +51,7 @@ description: Release history and notable changes for CoCache.
 - `CacheRuntime.policy(name)` returns the effective `CachePolicy` of a created cache.
 - New property `cocache.redis.assume-maxmemory-policy` (see [Configuration](./configuration.md)).
 
-## v6.9.1 (Current)
+## v6.9.1
 
 **Module Group:** `me.ahoo.cocache` · Patch release that completes two Redis fixes from 6.9.0 on paths they missed, found by the second review round of RFC 0005 (appendix B). No API, wire format or channel changes, so 6.9.1 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
