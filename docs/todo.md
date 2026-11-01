@@ -16,7 +16,10 @@
     - `MembershipCache` 视需要配置 `invalidate-failure: retry`。
   - Wow（依赖 6.8.0）：不需要改代码。
   - Spring Cache 用户：没有 loader 的缓存上，`@CacheEvict` 失败改为抛出；要保持 6.8 的重试，配置 `invalidate-failure: retry`。
-- [ ] **切换 `main` 到 v8**（RFC 0005 §10 第 0 步）：从 `v6.10.0` 切出 `6.x` 维护分支；`main` 改为 8.0.0-SNAPSHOT，基线 JDK 21。
+- [ ] **切换 `main` 到 v8**（RFC 0005 §10 第 0 步）：
+  - 从 `v6.10.0` 切出 `6.x`；`6.x` 上推送触发的 CI 与 wiki 发布改为 `6.x`。
+  - 仓库设置（维护者操作）：GitHub Pages 的部署环境 `github-pages` 允许 `6.x`；`6.x` 的分支保护规则与 `main` 一致。
+  - `main`：基线 JDK 21；停止发布 wiki；CONTRIBUTING 的分支与发版规则。
 
 ## 2. v8 里程碑（RFC 0005 §10）
 
