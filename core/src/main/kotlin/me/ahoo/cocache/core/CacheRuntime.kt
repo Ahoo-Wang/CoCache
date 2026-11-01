@@ -31,6 +31,7 @@ import me.ahoo.cocache.core.engine.SetEngine
 import me.ahoo.cocache.core.engine.VersionedCache
 import me.ahoo.cocache.core.engine.VersionedFormat
 import me.ahoo.cocache.core.engine.versionedEngineSpec
+import me.ahoo.cocache.core.policy.CachePolicy
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -199,6 +200,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      * 按名称取得运维接口。
      */
     fun admin(name: String): CacheAdmin? = names[name]?.engine
+
+    /**
+     * 按名称查看缓存生效的策略（创建时 spec 中的策略，如 starter 中经定制器与配置文件合并之后的结果）。
+     */
+    fun policy(name: String): CachePolicy? = names[name]?.engine?.policy
 
     val cacheNames: Set<String>
         get() = names.keys.toSet()

@@ -714,8 +714,8 @@ if (!stamps.isValid(storageKey, stamp)) {
 | `TransactionalInvalidator` 回滚失效、迟到登记、逐缓存失败隔离 | A.T1、A.T2 | 6.9.0（#697） |
 | 提前刷新退避；寿命 ≤ 刷新窗口不设刷新点 | A.D3 | 6.9.0（#698） |
 | 中断时取消命令、释放令牌；`fill` / `fillAll` 超时或中断时释放令牌；`reclaim` 超时释放 lease | P5、P13、C7（附录 B） | 6.9.1（#704） |
-| 驱逐策略检查改读 `INFO memory`、按声明检查；未知缓存名的端点 `DELETE` 返回 404；修正 architecture.md §6.3 | M11、M13、A.L10 | 6.10.0（#707，待合并） |
-| 一个失效监听器抛出 `Error` 不影响其余监听器；`Subscription.close()` 的契约 | CoSec 反馈 | 6.10.0（#708，待合并） |
+| 驱逐策略检查改读 `INFO memory`、按声明检查；未知缓存名的端点 `DELETE` 返回 404；修正 architecture.md §6.3 | M11、M13、A.L10 | 6.10.0（#707） |
+| 一个失效监听器抛出 `Error` 不影响其余监听器；`Subscription.close()` 的契约 | CoSec 反馈 | 6.10.0（#708） |
 | 注册失败时释放 namespace；单调时钟；同步跟随者可中断；接口式代理与受检异常的文档 | A.L9、A.C1、A.S1、A.P1 | 6.10.0（#711，待合并） |
 
 **移入 v8，6.x 不再做**：
@@ -961,7 +961,7 @@ v2 由两路独立的只读会话验证。
 | L7 | 低 | 格式字节按有符号解析 | 读代码 | `RedisRemoteStore` | 6.9.0 已修复（#701） |
 | L8 | 低 | 策略时长不带单位按秒、`cocache.redis.*` 按毫秒；`defaults` 覆盖显式声明 | 读代码 | `CoCacheProperties` | v8 §4.8 |
 | L9 | 低 | 创建缓存时 `backend.store` 或工厂抛出会让 namespace 保持占用 | 读代码 | `CacheRuntime` 的注册流程 | 6.x 待排期 |
-| L10 | 低 | architecture.md §6.3 说“启动时不检查这两点”，与 `SetCacheEvictionCheck` 不符 | 读代码 | `docs/architecture.md` §6.3 | 6.x 待排期 |
+| L10 | 低 | architecture.md §6.3 说“启动时不检查这两点”，与 `SetCacheEvictionCheck` 不符 | 读代码 | `docs/architecture.md` §6.3 | 6.x 修复（随 M11 一起） |
 
 未发现缺陷的部分：
 - Lua 脚本的状态转换与到期时间重设、令牌比较；

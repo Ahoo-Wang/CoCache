@@ -151,7 +151,8 @@ TLS 遵循 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）。`red
 | 配置项 | 类型 | 默认值 | 含义 |
 |--------|------|--------|------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`：`PUBLISH` / `SUBSCRIBE`，与 Redis 修改原子地完成。`sharded`：`SPUBLISH` / `SSUBSCRIBE`（Redis 7+），在修改之后立即发送。**所有实例必须使用相同的模式**，两种模式互不相通。 |
-| `cocache.redis.set-cache-eviction-check` | `warn` \| `fail` \| `off` | `warn` | 有 `SetCache` 时，启动读取各主节点的 `maxmemory-policy`：`allkeys-*` 会淘汰集合的唯一副本。`warn` 记录告警，`fail` 启动失败，`off` 不检查。`CONFIG` 不可用（托管 Redis、ACL）时跳过。见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。 |
+| `cocache.redis.set-cache-eviction-check` | `warn` \| `fail` \| `off` | `warn` | 有 `SetCache`（包括已声明但尚未创建的延迟初始化 bean）时，启动从 `INFO memory` 读取各主节点的 `maxmemory-policy`。`allkeys-*` 会淘汰集合的唯一副本：`warn` 记录告警，`fail` 启动失败，`off` 不检查。`volatile-*` 且有 `ttl` 有限的 `SetCache` 时只记录告警。读不到策略且没有设置 `assume-maxmemory-policy` 时，`warn` 记录告警，`fail` 启动失败。见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。 |
+| `cocache.redis.assume-maxmemory-policy` | 字符串 | 无 | 驱逐检查读不到 `INFO memory`（Redis 用户没有 `+info`，或服务禁用了它）时按这个策略判断，如 `noeviction`、`volatile-lru`。必须是 `noeviction`、`allkeys-*` 或 `volatile-*`。读得到策略时忽略。 |
 | `cocache.redis.command-timeout` | 时长（毫秒） | `2s` | 单条命令或脚本的最长等待时间 |
 | `cocache.redis.heartbeat` | 时长（毫秒） | `5s` | 订阅连接上的 `PING` 间隔。PING 失败时清空 L2 并重连。 |
 | `cocache.redis.invalidate-batch-size` | integer | `512` | 单个失效脚本处理的 key 数上限 |
