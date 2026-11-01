@@ -5,9 +5,9 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布
+## v6.10.0（当前版本）
 
-**模块组：** `me.ahoo.cocache` · 计划作为 6.10.0 发布（新增一项配置与 `CacheRuntime.policy`）。修复 6.8.0 架构审查中余下的 6.x 项，并隔离失败的失效监听器。没有删除任何 API。Redis 线格式与失效频道不变，可以与任何 6.x 实例共用 Redis，逐台升级。
+**模块组：** `me.ahoo.cocache` · 次版本（新增一项配置与 `CacheRuntime.policy`），也是 6.x 的最后一个功能版本：之后的 6.x 版本只修缺陷。修复 6.8.0 架构审查中余下的 6.x 项，并隔离失败的失效监听器。没有删除任何 API。Redis 线格式与失效频道不变，可以与任何 6.x 实例共用 Redis，逐台升级。
 
 ### 行为变化：`SetCache` 驱逐检查不再静默跳过
 
@@ -51,7 +51,7 @@ description: CoCache 版本发布历史和重要变更。
 - `CacheRuntime.policy(name)` 返回已创建缓存生效的 `CachePolicy`。
 - 新增配置 `cocache.redis.assume-maxmemory-policy`（见[配置](./configuration.md)）。
 
-## v6.9.1（当前版本）
+## v6.9.1
 
 **模块组：** `me.ahoo.cocache` · 修订版本：补全 6.9.0 两项 Redis 修复漏掉的路径，由 RFC 0005 第二轮审查发现（附录 B）。API、线格式与频道都不变，6.9.1 实例可以与任何 6.x 实例共用 Redis，逐台升级。
 
