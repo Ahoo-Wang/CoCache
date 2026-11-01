@@ -7,7 +7,7 @@ description: 五分钟为 Spring Boot 应用加上二级一致性缓存，确认
 
 本页带一个 Spring Boot 应用从没有缓存走到一个可用的二级缓存。代码基于 [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example)。
 
-**你需要** JDK 17+、Spring Boot 4，以及 Redis 7+；也可以什么都不装，用第 2 步的内存后端。
+**你需要** JDK 21+、Spring Boot 4，以及 Redis 7+；也可以什么都不装，用第 2 步的内存后端。
 
 ## 1. 添加依赖 {#dependencies}
 

@@ -5,6 +5,14 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased
+
+**Module Group:** `me.ahoo.cocache` · Planned as 8.0.0, a major release with breaking changes ([RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). 8.x shares no keys or channels with 6.x, so the two can run side by side on one Redis. Fixes for 6.x continue on the `6.x` branch.
+
+### Breaking changes
+
+- The baseline is JDK 21 (was JDK 17).
+
 ## v6.10.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release, because it adds a configuration property and `CacheRuntime.policy`, and the last 6.x feature release: later 6.x releases only fix defects. Fixes the remaining 6.x items from the 6.8.0 architecture review and isolates failing invalidation listeners. No API is removed. The Redis wire format and the invalidation channel are unchanged, so 6.10.0 instances can share Redis with any 6.x instance and be upgraded one at a time.

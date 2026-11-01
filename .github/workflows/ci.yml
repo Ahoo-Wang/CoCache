@@ -14,7 +14,7 @@
 # 主干与 PR 的唯一质量门禁：
 # - Static Analysis：actionlint + Detekt（全模块，SARIF 上传 code scanning）+ 许可证头检查
 # - Test & Coverage：真实 Redis 下运行全部模块的 check（测试、JMH 编译、覆盖率门禁），并上传 Codecov
-# - Test (JDK 25)：产物仍按 JDK 17 编译，测试运行在最新 LTS 上，验证运行时兼容性
+# - Test (JDK 25)：产物仍按 JDK 21 编译，测试运行在最新 LTS 上，验证运行时兼容性
 # - Test (Redis Cluster)：Redis 相关模块的测试在 3 主 3 从的 Redis Cluster 上运行（slot 路由、pipeline、Pub/Sub）
 # - Test (Valkey)：Redis 相关模块的测试在 Valkey 单机上运行（Lua 脚本、ACL 报错、CONFIG、Sharded Pub/Sub 的兼容性）
 # - Test (Spring Boot 4.0)：产物仍按 Spring Boot 4.1 编译，Redis 相关模块与示例的测试运行在 Spring Boot 4.0 管理的依赖上（Lettuce 6.8、Spring Data Redis 4.0），验证 "Spring Boot 4.x" 基线
@@ -47,10 +47,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v6
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
           cache: gradle
 
@@ -87,10 +87,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v6
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
           cache: gradle
 
@@ -133,12 +133,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up JDK 17 (toolchain) and JDK 25 (test runtime)
+      - name: Set up JDK 21 (toolchain) and JDK 25 (test runtime)
         uses: actions/setup-java@v6
         with:
           java-version: |
             25
-            17
+            21
           distribution: 'temurin'
           cache: gradle
 
@@ -146,7 +146,7 @@ jobs:
         run: >-
           ./gradlew test --continue
           -PtestJavaVersion=25
-          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64,JAVA_HOME_25_X64
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64,JAVA_HOME_25_X64
           -Porg.gradle.java.installations.auto-download=false
 
       - name: Upload test reports
@@ -165,10 +165,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v6
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
           cache: gradle
 
@@ -215,10 +215,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v6
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
           cache: gradle
 
@@ -259,10 +259,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v6
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
           cache: gradle
 
