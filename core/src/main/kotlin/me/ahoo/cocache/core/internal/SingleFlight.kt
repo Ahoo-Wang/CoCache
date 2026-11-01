@@ -13,10 +13,14 @@
 
 package me.ahoo.cocache.core.internal
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
+import kotlin.coroutines.coroutineContext
 
 /**
  * 按 key 合并并发调用：同一 key 同一时刻只有一个 leader 执行，其余调用者等待并共享其结果或原始异常。
@@ -28,6 +32,8 @@ import java.util.concurrent.Executor
  *   用户的续接不会跑在同步 leader 的线程上。每个异步调用方拿到自己的 future，取消只影响自己。
  * - 同线程对同一 key 的重入快速失败（否则自我等待死锁）：同步调用的拥有线程，或正在 [loading] 内为该 key 调用 loader 的线程。
  * - 批量调用先完成自己负责的 key，再等待其它调用者负责的 key，避免两个批量调用互相等待。
+ * - 协程核心（RFC 0005 §4.4）经 [executeSuspending] 使用同一张表：leader 在调用方的协程中执行（同步变体即调用方线程），
+ *   可能被单独取消的调用方改由运行时作用域执行；跟随者挂起等待，不占线程。
  */
 internal class SingleFlight<K : Any, R> {
     /**
@@ -233,6 +239,56 @@ internal class SingleFlight<K : Any, R> {
             call.future.completeExceptionally(error)
         }
     }
+
+    /**
+     * 协程核心的执行（RFC 0005 §4.4）：与 [execute] / [executeAsync] 共用一张表，[block] 在注册之后才执行（第一件事是取戳）。
+     *
+     * - 同步变体（[runSync]）：leader 在调用方线程上内联执行 [block]，loader 拿得到调用方线程的 ThreadLocal（不变量 6）。
+     *   leader 被中断时这次加载随之结束，跟随者收到它的失败。
+     * - 异步变体（`AsyncContext.runAsync`）：leader 同样在调用方的协程中执行，省去一次派发；用户取消的只是结果的副本，
+     *   协程只在运行时关闭时被取消。
+     * - 上下文中没有 [ExecutionMode] 的调用方可能被单独取消：leader 在 [scope] 中执行 [block]，调用方只等待结果，
+     *   取消调用方不取消共享的加载。
+     * - 跟随者挂起等待结果，不占线程；等待被取消（同步变体中即线程被中断）只结束它自己的等待，不影响 leader 与其它跟随者。
+     * - 同线程对同一 key 的重入快速失败，规则与 [execute] / [executeAsync] 相同。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    suspend fun executeSuspending(key: K, scope: CoroutineScope, block: suspend () -> R): R {
+        val mode = coroutineContext[ExecutionMode]
+        val inline = mode?.inline == true
+        val call = Call<R>(if (inline) Thread.currentThread() else null)
+        val existing = calls.putIfAbsent(key, call)
+        if (existing != null) {
+            checkNotReentrant(key, existing)
+            return awaitSuspending(existing)
+        }
+        if (mode == null) {
+            scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                // 结果经 call.future 交给全部等待者（含发起的调用方）；这里不重新抛出，否则失败会作为未捕获的异常上报给作用域
+                val outcome = runCatching { block() }
+                calls.remove(key, call)
+                outcome.fold({ call.future.complete(it) }, { call.future.completeExceptionally(it) })
+            }
+            return awaitSuspending(call)
+        }
+        val result = try {
+            // 与 [execute] 相同：其间完成的别的 future 的续接派发出去，不在本 key 的重入守卫作用域内就地执行。
+            // 续接标记是线程局部的，只有始终留在调用方线程上的同步变体可以这样做
+            if (inline) Futures.withoutInlineSuspending(block) else block()
+        } catch (error: Throwable) {
+            calls.remove(key, call)
+            call.future.completeExceptionally(error)
+            throw error
+        }
+        calls.remove(key, call)
+        call.future.complete(result)
+        return result
+    }
+
+    /**
+     * 挂起等待一次调用的结果，失败时抛出原始异常（[awaitOriginal]）。取消这次等待不会取消共享的结果，其它等待者照常拿到它。
+     */
+    private suspend fun awaitSuspending(call: Call<R>): R = call.future.awaitOriginal()
 
     private fun checkNotReentrant(key: K, existing: Call<R>) {
         val current = Thread.currentThread()

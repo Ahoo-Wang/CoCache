@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.internal
 
+import kotlinx.coroutines.future.await
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
@@ -158,6 +159,24 @@ internal object Futures {
     }
 
     /**
+     * [withoutInline] 的挂起版本，供协程核心同步变体的内联 leader 使用（`SingleFlight.executeSuspending`）。
+     * 标记是线程局部的，只在协程始终留在当前线程上时正确：同步变体在 `runBlocking` 的事件循环里执行，挂起后仍在调用方线程上恢复。
+     */
+    suspend fun <T> withoutInlineSuspending(block: suspend () -> T): T {
+        val state = inline.get()
+        val outerExecutor = state?.executor
+        if (state == null || outerExecutor == null) {
+            return block()
+        }
+        state.executor = null
+        try {
+            return block()
+        } finally {
+            state.executor = outerExecutor
+        }
+    }
+
+    /**
      * 执行期间把当前线程标记为 [executor] 的续接，结束（含异常）时恢复原来的标记（执行器可能在调用方线程上就地执行任务）。
      */
     private class Marked(private val executor: Executor, private val task: Runnable) : Runnable {
@@ -234,6 +253,20 @@ internal fun <T, R> CompletableFuture<T>.thenNext(
             fn(value as T)
         }
     }
+}
+
+/**
+ * 挂起等待，失败时抛出解包后的原始异常（协程核心等待 future 一律用它）。
+ *
+ * kotlinx 的 `await()` 在调试模式（`-ea` 或 `kotlinx.coroutines.debug`）下恢复挂起时复制异常（stack trace recovery），
+ * 调用方拿到副本、原始异常成了它的 cause，违反“不包装异常”。这里等待一个总是正常完成的派生 future，在自己的栈帧里抛出原始异常。
+ * 取消等待只取消派生的 future，不影响本 future 与它的其它等待者。
+ */
+internal suspend fun <T> CompletableFuture<T>.awaitOriginal(): T {
+    val outcome = handle { value, error ->
+        if (error == null) Result.success(value) else Result.failure(Futures.unwrap(error))
+    }.await()
+    return outcome.getOrThrow()
 }
 
 private fun <T, R> invokeHandler(future: CompletableFuture<T>, fn: (T?, Throwable?) -> CompletableFuture<R>): CompletableFuture<R> {

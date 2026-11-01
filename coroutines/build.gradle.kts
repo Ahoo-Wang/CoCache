@@ -19,7 +19,7 @@ description = "CoCache Kotlin coroutines: suspending views over the async API"
 
 dependencies {
     api(project(":cocache-core"))
-    // 只出现在本模块（RFC 0004 §7，A12）：cocache-api、cocache-core 与其它模块不依赖它
+    // cocache-core 内部也依赖它（协程核心，RFC 0005 V5）；本模块在 M5 并入 core
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core")
     testImplementation(project(":cocache-test"))
     jmh(platform(project(":cocache-dependencies")))
