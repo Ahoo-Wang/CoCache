@@ -51,6 +51,11 @@ description: CoCache 版本发布历史和重要变更。
 - `CacheRuntime.policy(name)` 返回已创建缓存生效的 `CachePolicy`。
 - 新增配置 `cocache.redis.assume-maxmemory-policy`（见[配置](./configuration.md)）。
 
+### API
+
+- `CacheRuntime.policy(name)` 返回已创建缓存生效的 `CachePolicy`。
+- 新增配置 `cocache.redis.assume-maxmemory-policy`（见[配置](./configuration.md)）。
+
 ## v6.9.1（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 修订版本：补全 6.9.0 两项 Redis 修复漏掉的路径，由 RFC 0005 第二轮审查发现（附录 B）。API、线格式与频道都不变，6.9.1 实例可以与任何 6.x 实例共用 Redis，逐台升级。

@@ -51,6 +51,11 @@ description: Release history and notable changes for CoCache.
 - `CacheRuntime.policy(name)` returns the effective `CachePolicy` of a created cache.
 - New property `cocache.redis.assume-maxmemory-policy` (see [Configuration](./configuration.md)).
 
+### API
+
+- `CacheRuntime.policy(name)` returns the effective `CachePolicy` of a created cache.
+- New property `cocache.redis.assume-maxmemory-policy` (see [Configuration](./configuration.md)).
+
 ## v6.9.1 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Patch release that completes two Redis fixes from 6.9.0 on paths they missed, found by the second review round of RFC 0005 (appendix B). No API, wire format or channel changes, so 6.9.1 instances can share Redis with any 6.x instance and be upgraded one at a time.
