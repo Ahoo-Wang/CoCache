@@ -14,8 +14,8 @@
 package me.ahoo.cocache.core.internal
 
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 
 /**
@@ -248,11 +248,18 @@ internal class SingleFlight<K : Any, R> {
         return if (call.owner == null) Futures.relay(call.future) else Futures.relayOn(executor, call.future)
     }
 
+    /**
+     * 同步跟随者等待 leader 的结果，响应中断（RFC 0005 附录 A.S1）：恢复中断标志并抛出 [InterruptedException]，只影响跟随者自己，
+     * leader 照常执行、发布，其它跟随者照常拿到结果。已完成的结果照常返回，不论中断标志。
+     */
     private fun await(call: Call<R>): R {
         try {
-            return call.future.join()
-        } catch (error: CompletionException) {
+            return call.future.get()
+        } catch (error: ExecutionException) {
             throw error.cause ?: error
+        } catch (error: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw error
         }
     }
 }

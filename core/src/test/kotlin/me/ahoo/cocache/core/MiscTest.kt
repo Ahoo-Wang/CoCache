@@ -13,10 +13,13 @@
 
 package me.ahoo.cocache.core
 
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.clock.TickingClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.engine.InvalidationRetrier
+import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
@@ -24,6 +27,7 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 class MiscTest {
@@ -36,6 +40,59 @@ class MiscTest {
         runCatching {
             TickingClock(Duration.ZERO)
         }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    /**
+     * 单调（RFC 0005 附录 A.C1）：启动后只按单调时钟的增量前进，墙钟回拨或向前跳都不影响。
+     */
+    @Test
+    fun tickingClockIgnoresWallClockSteps() {
+        val nanos = AtomicLong()
+        val wall = AtomicLong(1_000_000_000L)
+        // tick 很长：后台线程启动时刷新一次后就停住，由用例显式刷新
+        TickingClock(Duration.ofHours(1), nanos::get, wall::get).use { clock ->
+            clock.nowMillis().assert().isEqualTo(1_000_000_000L)
+            wall.addAndGet(-Duration.ofHours(1).toMillis())
+            nanos.addAndGet(Duration.ofSeconds(5).toNanos())
+            clock.refresh()
+            clock.nowMillis().assert().isEqualTo(1_000_005_000L)
+            wall.addAndGet(Duration.ofHours(2).toMillis())
+            nanos.addAndGet(Duration.ofMillis(1).toNanos())
+            clock.refresh()
+            clock.nowMillis().assert().isEqualTo(1_000_005_001L)
+        }
+    }
+
+    /**
+     * 墙钟回拨时 L2 副本不多活（RFC 0005 附录 A.C1）：以墙钟计时的话，回拨一小时会让 `localMaxAge` 为 1 s 的副本多活一小时。
+     */
+    @Test
+    fun localCopiesExpireOnTimeWhenTheWallClockStepsBack() {
+        val nanos = AtomicLong()
+        val wall = AtomicLong(System.currentTimeMillis())
+        val loads = AtomicInteger()
+        TickingClock(Duration.ofHours(1), nanos::get, wall::get).use { clock ->
+            CacheRuntime.builder().backend(InMemoryBackend(clock)).clock(clock).build().use { runtime ->
+                val cache = runtime.create(
+                    cacheSpec<String, String>("clock") {
+                        codec = StringCodec
+                        loader = CacheLoader {
+                            loads.incrementAndGet()
+                            "v"
+                        }
+                        policy = CachePolicy(localMaxAge = Duration.ofSeconds(1))
+                    }
+                )
+                cache["k"].assert().isEqualTo("v")
+                // 墙钟回拨一小时，单调时钟前进 2 s：L2 副本已到期，再读 L1（L1 的寿命还长，不回源）
+                wall.addAndGet(-Duration.ofHours(1).toMillis())
+                nanos.addAndGet(Duration.ofSeconds(2).toNanos())
+                clock.refresh()
+                cache["k"].assert().isEqualTo("v")
+                requireNotNull(runtime.metrics("clock")).remoteHits.assert().isEqualTo(1L)
+                loads.get().assert().isEqualTo(1)
+            }
+        }
     }
 
     @Test

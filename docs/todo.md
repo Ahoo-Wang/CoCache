@@ -24,13 +24,9 @@
 | 项 | 来源 | 要做什么 | 验收 |
 |----|------|----------|------|
 | L2 填充可线性化 | A.D4、C4 | `fillLocal` 改为在 Caffeine `compute` 内校验失效戳并写入，写后以 `remove(k, entry)` 按身份复核（RFC 0005 §4.5） | 复现“写入方返回之后旧副本仍可见”的交错（latch 或 Lincheck）；`missLoad` 的 JMH 退化 ≤ 2% |
-| 单调时钟 | A.C1 | `TickingClock` 以启动时的墙钟加 `System.nanoTime()` 的增量 | 墙钟回拨时 L2 副本不多活的用例 |
-| 同步跟随者可中断 | A.S1、C12 | `SingleFlight` 的跟随者以 `get()` 等待并响应中断，只影响跟随者自己；leader 不受影响 | 中断跟随者的用例；leader 照常完成 |
 | `SetCache.getAll` 批量化 | A.L2 | 同步路径不再逐个 key 访问 L1，与异步路径一样并发 | `SetEngineSpec` 中的批量用例 |
 | namespace 前缀重叠 | A.L4 | 拒绝互为前缀、会让存储 key 相撞的 namespace（`a` 与 `a:b`） | `CacheRuntime` 的用例 |
-| 注册失败时释放 namespace | A.L9 | `backend.store` 或工厂抛出时，撤销对 namespace 的占用 | `CacheRuntime` 的用例 |
 | L2 key 不含前缀 | RFC 0005 §4.5 | 用编码后的 key 作为 L2、失效戳与 SingleFlight 的 key，收到帧时剥掉前缀 | 只在 `scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8` 不退化时采用 |
-| 代理与受检异常 | A.P1、Q7 | 在文档中写明：接口式代理遇到 Kotlin loader 抛出的受检异常时，JDK 会包装为 `UndeclaredThrowableException` | 文档（en + zh） |
 | 机器检验 | RFC 0005 §4.10 | 引入 Lincheck，检验 L2 栅栏与 SingleFlight，操作集含 `onReset` / `clearLocal`；新增 TLA+ 模型 `docs/spec/CoCache.tla` | CI 中运行；Lincheck 是新的测试依赖，须先经维护者批准 |
 
 ## 3. 7.x

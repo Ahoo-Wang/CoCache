@@ -27,10 +27,24 @@ description: CoCache 版本发布历史和重要变更。
 - 失效订阅者抛出 `Error`（或 Kotlin 代码抛出的受检异常）时，排在它之后的订阅者照常收到这条消息。6.9.1 及之前 Redis 通道对每个订阅者只兜住 `RuntimeException`；现在兜住任何 `Throwable`，记录后继续，只重新抛出 `VirtualMachineError`。重置本来就互不影响。
 - 内存后端（`InMemoryBackend`，供测试使用）同样隔离订阅者。订阅者的异常不再传给发布这条消息的 `put` 或 `invalidate` 的调用方。
 
+### 修复：被中断的等待者停止等待
+
+- 合并到别人对同一 key 的加载的同步调用（`get`、`getAll`）现在响应中断：抛出 `InterruptedException` 并保留中断标志，只有这个调用方停止等待，加载照常进行，其它等待者照常拿到结果。6.9.1 及之前等待者在加载结束前忽略中断，`Future.cancel(true)`、`TimeLimiter` 或 `ExecutorService.shutdownNow` 都停不下它。
+- 经 `@CoCache` 接口调用时，这个 `InterruptedException` 被 JDK 包装为 `UndeclaredThrowableException`：JDK 对接口方法没有声明的受检异常都这样处理（见下）。
+
+### 修复：L2 副本不受墙钟跳变影响
+
+- 默认时钟启动时读一次墙钟，之后按 `System.nanoTime()` 推进。6.9.1 及之前每 100 ms 重读墙钟，墙钟回拨一小时（NTP 校正、人工调整）会让 L2 副本多活一小时，向前跳则让它提前到期。命中路径仍然只是一次 volatile 读。
+
+### 修复：创建缓存失败后可以重试
+
+- 创建缓存时 `backend.store` 或构造引擎失败，namespace 会一直被占用，重试同一个缓存以 `Namespace[…] is already used by another cache.` 失败。现在会释放 namespace，并关闭已创建的存储。
+
 ### 文档
 
 - `Subscription.close()` 不等待已在投递中的回调，这样的回调可能在 `close()` 返回之后才到达。它只保证之后到达的消息与重置不再投递。见[扩展 CoCache](../architecture/extending.md)。
 - [部署](../operations/index.md#channel-mode)写明了没有原子广播时（`sharded` 模式，或探测降级之后）写入成功、随后的发布失败意味着什么。
+- `@CoCache` 接口的代理原样传递异常，只有 JDK 另有规定的情形例外：接口方法没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`）被包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`。spec 声明注入的是引擎本身，不受影响。见[架构](../architecture/index.md)。
 
 ### API
 

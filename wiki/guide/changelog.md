@@ -27,10 +27,24 @@ description: Release history and notable changes for CoCache.
 - An invalidation listener that throws an `Error`, or a checked exception thrown from Kotlin, no longer keeps the listeners after it from receiving that message. In 6.9.1 and earlier the Redis channel caught only `RuntimeException` around each listener. It now catches every `Throwable`, logs it and goes on, and rethrows only a `VirtualMachineError`. Resets were already isolated.
 - The in-memory backend (`InMemoryBackend`, for tests) isolates listeners the same way. A listener's exception no longer reaches the caller whose `put` or `invalidate` published the message.
 
+### Fix: an interrupted waiter stops waiting
+
+- A synchronous call that joins another caller's load of the same key (`get`, `getAll`) now responds to interruption. It throws `InterruptedException` with its interrupt flag still set, and only that caller stops waiting: the load continues, and the other waiters still get its result. In 6.9.1 and earlier the waiter ignored interruption until the load finished, so `Future.cancel(true)`, a `TimeLimiter` or `ExecutorService.shutdownNow` couldn't stop it.
+- A call through a `@CoCache` interface receives that `InterruptedException` wrapped in `UndeclaredThrowableException`, as the JDK does for any checked exception an interface method doesn't declare (see below).
+
+### Fix: L2 copies ignore wall-clock steps
+
+- The default clock reads the wall clock once at startup and then advances by `System.nanoTime()`. In 6.9.1 and earlier it re-read the wall clock every 100 ms, so stepping the clock back by an hour (an NTP correction, a manual change) kept L2 copies alive for an extra hour, and stepping it forward expired them early. The hit path still does one volatile read.
+
+### Fix: a failed cache creation can be retried
+
+- When creating a cache failed in `backend.store` or while constructing the engine, its namespace stayed taken, so retrying the same cache failed with `Namespace[…] is already used by another cache.` The namespace is now released, and a store that was already created is closed.
+
 ### Docs
 
 - `Subscription.close()` doesn't wait for callbacks already being delivered, so such a callback can arrive after `close()` returns. It only guarantees that messages and resets arriving after it are not delivered. See [Extending CoCache](../architecture/extending.md).
 - [Deployment](../operations/index.md#channel-mode) now spells out what non-atomic broadcast (`sharded` mode, or after the probe fell back) means when the publish fails after the write succeeded.
+- `@CoCache` interface proxies pass exceptions through unwrapped, except where the JDK requires otherwise: a checked exception the interface method doesn't declare, such as an `IOException` thrown by a Kotlin loader, arrives wrapped in `UndeclaredThrowableException`, with the original as its `cause`. Caches injected from a spec are the engine itself and are unaffected. See [Architecture](../architecture/index.md).
 
 ### API
 
