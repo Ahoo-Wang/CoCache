@@ -89,7 +89,14 @@ TLS 用 Spring Boot 的标准配置项开启。CoCache 对它连接的每个节�
 
 `pubsub` 模式下，后端在启动时检查脚本能否向另一个 slot 的频道发布。部分托管服务（如 ElastiCache Serverless）把 `PUBLISH` 当作 `SPUBLISH` 执行，会拒绝这种发布；禁止探测频道的 ACL 效果相同。此时后端改为在每次写入之后单独发布，并记录 `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.`，[健康检查](./observability.md#health)显示 `atomicBroadcast: false`。只有这些确定性的错误才会触发降级；探测超时会让启动失败，而不是永久降级。
 
-没有原子广播时，进程在写入与发布之间崩溃会丢失这条消息。此时 L1 已经正确，其它实例的 L2 副本最多保留到 `local-max-age`。
+::: warning 没有原子广播时
+`sharded` 模式下，或探测降级之后，发布是写脚本之后单独执行的一条命令。因此：
+
+- 进程在写入与发布之间崩溃，会丢失这条消息。
+- 写入成功、随后的发布失败时，调用方看到的是写入失败：`put` 抛出 `CacheWriteException`，尽管 Redis 中已经是新值；`invalidate` 按 `invalidate-failure` 处理，重试的失效会再次发布。重试 `put` 是安全的，并会再次发布。
+
+两种情况下 L1 都已经正确，错过这条消息的实例的 L2 副本最多保留到 `local-max-age`。写入的顺序见 [architecture.md §4.2](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md)。
+:::
 
 ## 容量规划 {#sizing}
 

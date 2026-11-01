@@ -5,6 +5,20 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased
+
+**Module Group:** `me.ahoo.cocache` · Planned as 6.10.0. No API, wire format or channel changes, so these instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Fix: a failing invalidation listener no longer starves the others
+
+- An invalidation listener that throws an `Error`, or a checked exception thrown from Kotlin, no longer keeps the listeners after it from receiving that message. In 6.9.1 and earlier the Redis channel caught only `RuntimeException` around each listener. It now catches every `Throwable`, logs it and goes on, and rethrows only a `VirtualMachineError`. Resets were already isolated.
+- The in-memory backend (`InMemoryBackend`, for tests) isolates listeners the same way. A listener's exception no longer reaches the caller whose `put` or `invalidate` published the message.
+
+### Docs
+
+- `Subscription.close()` doesn't wait for callbacks already being delivered, so such a callback can arrive after `close()` returns. It only guarantees that messages and resets arriving after it are not delivered. See [Extending CoCache](../architecture/extending.md).
+- [Deployment](../operations/index.md#channel-mode) now spells out what non-atomic broadcast (`sharded` mode, or after the probe fell back) means when the publish fails after the write succeeded.
+
 ## v6.9.1 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Patch release that completes two Redis fixes from 6.9.0 on paths they missed, found by the second review round of RFC 0005 (appendix B). No API, wire format or channel changes, so 6.9.1 instances can share Redis with any 6.x instance and be upgraded one at a time.
