@@ -13,6 +13,11 @@ Spring wiring code. It is the normative design and lists the invariants that eve
 
 ## Branching model
 
+> **This is the `6.x` maintenance branch.** 6.10.0 was the last 6.x feature release. `6.x` takes defect
+> fixes only, and 6.10.x patch releases are cut from it. Open fix PRs against `6.x`, work on a branch
+> from `6.x`, and forward-port a fix to `main` (v8 development) when it still applies there. The public
+> wiki is deployed from this branch until 8.0 is released.
+
 - `main` is always releasable and protected. Changes land only through pull requests that pass every
   required check.
 - Work on a short-lived branch from `main`, named `<type>/<short-description>`, for example

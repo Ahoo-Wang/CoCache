@@ -18,7 +18,7 @@ name: Native
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, 6.x ]
     paths:
       - '*/src/main/**'
       - 'example/**'
