@@ -16,7 +16,7 @@ name: Wiki
 
 on:
   push:
-    branches: [ main ]
+    branches: [ 6.x ]
     paths:
       - 'wiki/**'
       - '.github/workflows/deploy-wiki.yml'
