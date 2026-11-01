@@ -1,16 +1,19 @@
 # RFC 0005：v8 目标架构（权威与派生分型、单一协议核心、可检验的栅栏）
 
-- 状态：**草案 v4**（2026-10-31），待维护者审阅。
+- 状态：**草案 v5**（2026-11-01），待维护者审阅。
   - v1（2026-10-28）经第一轮对抗验证修订为 v2：一致性、迁移与运维两路，共 28 条发现。
   - v2 经第二轮修订为 v3：协议与格式 18 条、语义与迁移 20 条，共 38 条。两轮的发现全部已处理，见 §12。
-  - v3 → v4：维护者的四项决定（2026-10-31，§12）：
-    1. **跳过 v7**：6.x 之后直接发布 8.0，不发布 7.x，也没有桥接版本。
-    2. **不考虑兼容与数据迁移**：8.x 不读、不写、不迁移 6.x 的数据；8.x 以与用户前缀无关的布局标记与 6.x 物理隔离（V13）。
-    3. **基线升到 JDK 21**：协议只有一份同步实现，异步视图在虚拟线程上运行它（V4、V5）。
-    4. **配置按 v3 完整实现**（V10）。
+  - v3 → v4：维护者的四项决定（2026-10-31）：跳过 v7；不考虑兼容与数据迁移，8.x 以布局标记与 6.x 物理隔离；基线升到 JDK 21；配置按 v3 完整实现。
+  - v4 → v5：维护者审阅 v4 后的决定（2026-11-01，§12）：
+    1. **协议核心用协程实现**：协议只写一次，写成 `suspend` 函数；同步、异步、挂起三种 API 都是它的变体（V5）。`kotlinx-coroutines-core` 进入 `cocache-core`，`cocache-coroutines` 并入 core。
+    2. **JDK 基线保持 21**：虚拟线程是阻塞 loader 的默认调度器。
+    3. **权威数据（`Store` / `SetStore`）提供一次性拷贝工具**：只把唯一副本从 6.x 布局拷到 8.x 布局；不做运行时兼容（§8）。
+    4. **权威数据的摘要改用 SHA-256**：由客户端计算，存在头部；去掉 `digest = ON_DEMAND`（§4.7）。
+    5. **频道名带上 key 前缀**（§4.7）。
+    6. **8.0 的用户 API 类型按 v4 全部实现**。
 
-    本稿据此删去桥接版本 7.B、格式 1 与格式 2 的共存、配置别名与全部迁移机制，并改写内部结构（§3.2、§4.3、§4.4）。
-  - 8.0 冻结线格式之前，再做一轮对抗验证（§12 末尾）。
+    另外修正了 v4 的三处问题：M1 的等价性裁判、跟随者不该占线程、中断与取消的范围（§12）。
+  - M4 冻结线格式之前，再做一轮对抗验证（§12 末尾）。
   - 目标版本由维护者指定为 **v8**。
 - 前提：v8 是大版本，API、SPI、配置项、线格式与 key、频道布局都重新设计；但三个目标（[architecture.md](../architecture.md) §1 的 G1–G3）与 6.0 的核心协议（lease 栅栏、两次递增的失效戳、原子广播）**不变**。本 RFC 不推翻 [RFC 0003](0003-target-architecture.md)，而是修正它在 6.4–6.8 增量演进中暴露的结构性问题。
 - 关系：
@@ -30,16 +33,16 @@
 | V1 | **权威与派生分成不同的类型，按“L1 丢了这个 key，本进程能否按需从别处重建它”判断**。能，则为 `Cache` / `VersionedCache`（派生副本）；不能，则为 `Store` / `VersionedStore` / `SetStore`（权威副本）。派生缓存**必须声明**数据来源：spec 的数据源，或 `externallySourced()`，即由调用方经 `put`、Spring Cache 或调用级 loader 提供。接口式声明既没有匹配到数据源、也没有声明外部来源时，启动失败 | 6.x 在至少 6 处按“这次读取有没有数据源”在运行时分支（A.D1、A.D2）。“L1 中没有是否等于不存在”对寿命即语义的数据、离线重建的投影、只读消费方都没有确定答案（§12 U7）；“能否按需重建”有 |
 | V2 | **`Unknown` 只表示故障**。读取结果是 `Present` / `Absent` / `Unknown`。`Unknown` 只来自 L1 故障与等待超时；在有数据源的缓存上，只在显式 `readFailure = THROW` 时出现。`get` / `getAll` 遇到它抛出 `CacheReadException`，`lookup` 返回它，`Lookup` 另有不必模式匹配的 `valueOrThrow()` / `fold`。没有数据源的缓存可以在声明中写 `unknownRead = ABSENT`。外部来源的缓存在 L1 中未命中时是“未填充”：带标志进入 L2，带 loader 的调用方不接受它 | v1 把正常未命中与故障归为一类（M2）。删除 `unresolved` 标志会让 L2 命中路径分不清“未填充”与 `Absent`（P3）。`as? Lookup.Present` 一类写法会静默吞掉 `Unknown`（U5） |
 | V3 | **能力即类型**。条件写入、按版本写入、元素写入只出现在声明了它的类型上；删除全部默认抛出 `UnsupportedOperationException` 的方法，`async()` 成为抽象方法。带版本的类型与无版本的类型是兄弟，带版本的类型上没有丢失版本的写入：派生的带版本副本用保留版本栅栏的 `evict`，编码为新状态 `E`。8.x 只以新的能力类型、或不抛出的默认方法演进 | `Cache` 有 9 个方法默认抛出，`SetCache` 拒绝约一半方法；带版本的类型上的 `put` / `invalidate` 撤掉版本栅栏（C6、M12）。复用 `L` 编码 `evict` 不可行（P1）。全部抽象方法之后，8.x 没有新增操作的规则（U13） |
-| V4 | **SPI 只有阻塞形状**。`L1Store`（取代 `RemoteStore`，Q2）的方法同步返回，在调用方线程上执行与等待；没有异步 SPI。能力用抽象的访问器表达，`ForwardingL1Store` 是装饰器的基类。TCK 的 `expectedCapabilities` 没有默认值，断言“提供的能力 = 声明的能力”。SPI 契约写明“确定未执行 / 结果未知”的判定 | 6.x 用两处表达同一事实，还有非原子的默认实现（A.L5）。同步与异步两套 SPI、两套 TCK（`Async*Spec`）只因异步视图不能阻塞线程而存在；基线升到 JDK 21 之后，虚拟线程上的阻塞等待不占载体线程（维护者决定） |
-| V5 | **一份协议实现，异步视图跑在虚拟线程上**。协议只有一份同步实现，在调用方线程上运行。`async()` 在调用方线程上查 L2，命中直接返回已完成的 future；未命中把同一个同步调用提交给虚拟线程执行器。挂起视图建立在异步视图上。flight 层逐 key 应用合并规则；注册超过 `load.timeout` 的 flight 被注销。执行协议期间不响应中断，只有跟随者的等待响应中断 | `CoherentEngine` 2405 行，同步与异步逐分支复制（C1、C7、C9）。v3 用 sans-IO 状态机 + 两个驱动消除复制；只剩一个驱动之后，状态机没有第二个使用者，直线代码更易读、更易审查（§4.4 的取舍，Q17） |
+| V4 | **SPI：`suspend` 为主，Java 用 `CompletableFuture` 适配**。`L1Store`（取代 `RemoteStore`，Q2）的方法是 `suspend` 函数；内置的 Redis 后端以 Lettuce 的异步命令加 `await()` 实现，不占线程；为 Java 实现者提供返回 `CompletableFuture` 的 `FutureL1Store` 适配基类。能力用抽象的访问器表达，`ForwardingL1Store` 是装饰器的基类。TCK 的 `expectedCapabilities` 没有默认值，断言“提供的能力 = 声明的能力”。SPI 契约写明“确定未执行 / 结果未知”的判定 | 6.x 用两处表达同一事实，还有非原子的默认实现（A.L5）；同步与异步两套 SPI、两套 TCK（`Async*Spec`）。协程核心只需要一种形状 |
+| V5 | **一份协程实现，三种变体**。协议只写一次，写成 `suspend` 函数。L2 命中在三种 API 中都是普通函数、内联返回；未命中与写入：同步变体在调用方线程上以 `runBlocking` 运行核心，loader 在调用方线程上执行；异步变体以 `future(start = UNDISPATCHED)` 运行，不占线程；挂起变体直接调用核心。共享加载在运行时的作用域中执行，调用方取消只结束它自己的等待；取得令牌之后的步骤不可取消。flight 层逐 key 应用合并规则；注册超过 `load.timeout` 的 flight 被注销 | `CoherentEngine` 2405 行，同步与异步逐分支复制（C1、C7、C9）。协程让一份直线代码同时服务三种调用方：跟随者挂起在加载的 `Deferred` 上、不占线程；虚拟时间与测试调度器让多节点仿真可以确定性重放（§4.4、§4.10） |
 | V6 | **L2 填充在 key 锁内校验并写入，写后按身份复核**（Caffeine `compute` + `remove(k, entry)`） | 关闭 A.D4 对写入方与远端事件的窗口；Caffeine 的 `clear()` 看不到进行中的 `compute`，对重置要靠复核（C4） |
 | V7 | **失败路径与成功路径一样确定**。按客户端能观察到的事实，区分“确定未执行”与“结果未知”：超时、断线时被排空、等待被中断都属于结果未知。结果未知的写入，安全只能来自顺序。补偿失效只用于失效失败模式为 `RETRY` 的派生缓存。令牌守恒覆盖 `fill` 与 `reclaim`。等待有界，只有跟随者的等待可中断。刷新的触发率与命中率无关 | 已写出的命令照常执行（C5）；中断路径绕过了 #701（P5）；超时与写出无法在客户端区分（P8）；`fill` 失败不释放令牌（P13） |
-| V8 | **线格式 2：唯一的格式，按需扩展的头部**。v8 不读写格式 1。核心 36 字节布局沿用，标志位声明版本段（8 B）与摘要段（20 B 的 SHA-1）；bit 7 是可以整体跳过的扩展区；新增状态 `E`。未知的必须理解的标志位等同于更高格式，供 8.x 内部两阶段演进。全部段与状态在 8.0 发布之前定稿。`fill` 不让版本后退，版本拒绝不污染 L2 | 6.8 把版本塞进令牌位置；`getIfChanged` 每次在 Lua 中计算 SHA-1（8 MB 约 20 ms）；格式不预留就会冻结整个 8.x（P6） |
-| V9 | **栅栏可被机器检验**：Lincheck（flight 层 + L2 + 失效戳）、TLA+ 模型、带种子的多节点故障仿真 | TCK 的竞态用例只覆盖人想到的交错；两轮验证的大部分发现都需要搜索交错才能稳定复现 |
+| V8 | **线格式 2：唯一的格式，按需扩展的头部**。v8 不读写格式 1。核心 36 字节布局沿用，标志位声明版本段（8 B）与摘要段（32 B 的 SHA-256，客户端计算）；bit 7 是可以整体跳过的扩展区；新增状态 `E`。未知的必须理解的标志位等同于更高格式，供 8.x 内部两阶段演进。全部段与状态在 M4 冻结。`fill` 不让版本后退，版本拒绝不污染 L2 | 6.8 把版本塞进令牌位置；`getIfChanged` 每次在 Lua 中计算 SHA-1（8 MB 约 20 ms）；格式不预留就会冻结整个 8.x（P6）；SHA-1 已有可行的选择前缀碰撞，而权威数据的使用者（CoSec）是安全产品 |
+| V9 | **栅栏可被机器检验**：Lincheck（flight 层 + L2 + 失效戳，含 `suspend` 操作）、TLA+ 模型、以测试调度器与虚拟时间驱动的确定性多节点仿真 | TCK 的竞态用例只覆盖人想到的交错；两轮验证的大部分发现都需要搜索交错才能稳定复现 |
 | V10 | **配置分三层，字段级合并**：`defaults`（低于声明）→ 声明 → 定制器 → `overrides`（高于声明：界限类字段取上限，模式类字段直接设定）→ `caches.[name]`。全局层跳过不适用的字段与被锁定的字段，并记录下来；只有按缓存的层出现这类配置时才启动失败。字段有三态。时长必须带单位，注解仍按秒。库用 `CoCacheFactory` 装配；`lock` 可以锁定策略与存储布局、附加约束，`caches.[name].unlock` 是破窗开关。6.x 的配置键不保留别名，出现即启动失败 | 6.x 的 `defaults` 覆盖显式声明（M5），“设定”语义又会放宽更严的声明（U10）；`lock` 撑不起 CoSec 的约束与存储布局（U2） |
 | V11 | **Spring**：<ul><li>写事务内凭 lease 写进 L1 的 key，在事务回滚或结果未知时默认失效。</li><li>starter 以自己的事务装饰器取代 `TransactionAwareCacheManagerProxy`，`@CacheEvict` 经 `TransactionalInvalidator`。</li><li>写事务内、已登记失效的 key，其回源结果私有。</li><li>`Unknown` 在适配器中以 `CacheReadException` 交给 `CacheErrorHandler`。</li></ul> | loader 在调用方的事务内执行（A.T1）；只挡 L1 不够（C2）；一律拦截会让 L1 填不满（M7）；`registered-keys` 对 `@CacheEvict` 用户不起作用（U3） |
 | V12 | **规范只写现行行为**：architecture.md 去掉版本叙述，不变量编号稳定（`I-n`）；§6 以对照表逐条标注 architecture.md §14 的“取代 / 修改 / 保留” | v1 只写了“其余不变量保留”，其中 6 条与本 RFC 冲突（C13）；v2 漏了第 21 条（P18） |
-| V13 | **与 6.x 物理隔离，不迁移数据**。存储 key 在用户前缀之后带布局标记 `v8:`，频道与探测的 key、频道换成 `cocache:v8:` 前缀；6.x 与 8.x 可以同时部署，互不读写。权威数据由应用在 8.x 上重建，6.x 的 key 由 TTL 或运维清除。同一 namespace 的全部读写方一起切到 8.x | 维护者决定不考虑兼容与迁移。共用 key 时，两个版本互相把对方的内容读作更高格式或读不懂的内容：6.x 绕过 L1 或 `FAIL`，8.x 回收或 `FAIL`，6.x 的整体写入还会覆盖 8.x 的内容；只改默认前缀隔离不了沿用自定义前缀的部署 |
+| V13 | **与 6.x 物理隔离，权威数据一次性拷贝**。存储 key 在用户前缀之后带布局标记 `v8:`，频道为 `{keyPrefix}v8:inv:{namespace}`；6.x 与 8.x 可以同时部署，互不读写。派生缓存在 8.x 上回源重建；`Store` / `SetStore` 的唯一副本由 8.0 附带的离线工具在写入冻结期间拷贝。同一 namespace 的全部读写方一起切到 8.x | 维护者决定不做运行时兼容。共用 key 时两个版本互相把对方的内容读作更高格式或读不懂的内容；只改默认前缀隔离不了沿用自定义前缀的部署。唯一副本没有源头可以重建，两个版本又不能装进同一个 JVM 双写（同一包名），不拷贝就会丢数据（CoSec 的撤销表） |
 
 ---
 
@@ -130,7 +133,7 @@ ReadableCache<K, V>             name、get、getAll、lookup、lookupAll、async
 └── SetStore<K, E>              权威集合（ReadableCache<K, Set<E>>）：add、remove、clear、put、putAll
 ```
 
-- 每个接口只声明它支持的操作，全部是抽象方法。异步视图与挂起视图有同构的层次，由引擎以同一个同步实现提供（§4.4）。带版本的类型不继承无版本的写入。
+- 每个接口只声明它支持的操作，全部是抽象方法。异步视图与挂起视图有同构的层次，与同步 API 一起由同一份协程实现提供（§4.4）；挂起视图是 core 的原生 API（`cocache-coroutines` 并入 core）。带版本的类型不继承无版本的写入。
 - `Lookup` = `Present` | `Absent` | `Unknown`（V2，§4.1），另有 `valueOrThrow(): V?`（`Unknown` 时抛出 `CacheReadException`）与 `fold(onPresent, onAbsent, onUnknown)`，供不便穷尽匹配的调用方使用（JDK 17 没有对 sealed 类型的穷尽 `switch`）。
 - spec 与返回类型一一对应：
   - `cacheSpec` → `Cache`，必须声明 `loader`、`asyncLoader` 或 `externallySourced()` 之一；
@@ -143,23 +146,26 @@ ReadableCache<K, V>             name、get、getAll、lookup、lookupAll、async
 ### 3.2 内部结构
 
 ```
-            ┌───────────── 命中路径（手写，同步与异步共用） ─────────────┐
-用户调用 ──▶│ L2 查找 + 过期比较 + “未填充”标志 → 返回                     │
-async() ───▶│ 命中：在调用方线程上返回已完成的 future                       │
-            └───────────────┬─────────────────────────────────────────────┘
-                            │ 未命中 / 写入（async()：提交给虚拟线程执行器）
-                            ▼
-            ┌───────────── flight 层 ───────────────────────────────────────┐
-            │ 注册 → 取戳 → 运行协议 → 比较戳 → 至多重试一次                   │
-            │ 逐 key 的合并规则；超过 load.timeout 注销；中断只作用于跟随者     │
-            └───────────────┬─────────────────────────────────────────────┘
-                            ▼
-            ┌───────────── 协议（一份同步实现） ─────────────────────────────┐
-            │ 单 key 未命中、批量、提前刷新、写入四条路径；                     │
-            │ L2 填充与本节点淘汰是显式的步骤，令牌在 finally 中释放或填充      │
-            └───────────────┬─────────────────────────────────────────────┘
-                            ▼
-              L1Store（阻塞，经 ForwardingL1Store 装饰）、InvalidationChannel、L2、失效戳
+              ┌───────────── 命中路径（普通函数，三种变体共用） ─────────────┐
+用户调用 ────▶│ L2 查找 + 过期比较 + “未填充”标志 → 返回（异步：已完成的 future）│
+              └───────────────┬─────────────────────────────────────────────────┘
+                              │ 未命中 / 写入
+        ┌─────────────────────┼──────────────────────┐
+        ▼                     ▼                      ▼
+  同步：runBlocking     异步：future(UNDISPATCHED)  挂起：直接调用
+  （调用方线程）         （运行时作用域，不占线程）   （调用方协程）
+        └─────────────────────┼──────────────────────┘
+                              ▼
+              ┌───────────── flight 层（suspend） ───────────────────────────────┐
+              │ 注册 → 取戳 → 运行协议 → 比较戳 → 至多重试一次                     │
+              │ 跟随者挂起在 Deferred 上；逐 key 的合并规则；超过 load.timeout 注销 │
+              └───────────────┬─────────────────────────────────────────────────┘
+                              ▼
+              ┌───────────── 协议（一份 suspend 实现） ───────────────────────────┐
+              │ 单 key 未命中、批量、提前刷新、写入；取得令牌之后的步骤 NonCancellable │
+              └───────────────┬─────────────────────────────────────────────────┘
+                              ▼
+          L1Store（suspend，经 ForwardingL1Store 装饰）、InvalidationChannel、L2、失效戳
 ```
 
 ## 4. 核心设计
@@ -257,64 +263,72 @@ async() ───▶│ 命中：在调用方线程上返回已完成的 future 
 
 ```
 CoherenceBackend         store(namespace)、channel、format、atomicBroadcast
-L1Store                  read、readAll、fill、fillAll、release、reclaim、put、putAll、invalidate（阻塞）
+L1Store                  read、readAll、fill、fillAll、release、reclaim、put、putAll、invalidate（suspend）
                          conditional(): ConditionalL1Store?   readIfChanged、putIfMatch、deleteIfMatch
                          versioned(): VersionedL1Store?       putIfNewer、evictKeepingVersion
                          sets(): SetL1Store?                  addMembers、removeMembers（只有“检查并写入”）
+FutureL1Store            同样的操作，返回 CompletableFuture；适配为 L1Store（供 Java 实现者）
 ForwardingL1Store        转发全部操作与能力，装饰器继承它，只覆盖要拦截的部分
-InvalidationChannel      publish、subscribe（阻塞）
+InvalidationChannel      publish、subscribe（suspend）
 ```
 
-- **只有阻塞形状**（V4）：
-  - 后端在调用方线程上执行并等待。调用方可能是平台线程，也可能是异步视图的虚拟线程（§4.4）；虚拟线程上等待 `CompletableFuture` 或 socket 不占载体线程。
-  - Redis 后端照旧以 Lettuce 的异步命令发出、在调用方线程上等待。`readAll` / `fillAll` 先全部发出再逐个等待，仍是约一次往返；集群按 slot 分组同 6.x。
-  - 删除 `AsyncRemoteStore`、`AsyncInvalidationChannel`、`BlockingAsyncStore` / `BlockingAsyncChannel` 与全部 `Async*` TCK 规范。第三方后端只实现一种形状。
+- **`suspend` 是主形状**（V4）：
+  - 内置的 Redis 后端以 Lettuce 的异步命令发出、`await()` 结果，等待期间不占线程。`readAll` / `fillAll` 先全部发出再一起等待，仍是约一次往返；集群按 slot 分组同 6.x。
+  - Java 实现者继承 `FutureL1Store`，返回 `CompletableFuture`，由适配器 `await`。只有阻塞客户端的后端在自己的执行器上完成这些 future。
+  - 删除 `AsyncRemoteStore`、`AsyncInvalidationChannel`、`BlockingAsyncStore` / `BlockingAsyncChannel` 与全部 `Async*` TCK 规范。
 - **能力用抽象的访问器表达**：不支持时返回 `null`，不抛出，也没有默认实现，否则只包装基本操作的装饰器会静默剥掉能力（U15）。`runtime.create` 在创建时检查所需的能力，缺失时抛出，不注册任何东西。SPI 不提供任何非原子的默认实现。
-- **TCK fail closed**：`expectedCapabilities` 没有默认值，规范断言“提供的能力 = 声明的能力”，多出来的能力也算失败。启动日志输出每个 namespace 的能力。
+- **TCK fail closed**：`expectedCapabilities` 没有默认值，规范断言“提供的能力 = 声明的能力”，多出来的能力也算失败。启动日志输出每个 namespace 的能力。TCK 同时覆盖 `FutureL1Store` 的适配。
 - **“确定未执行 / 结果未知”的契约**（P8）：
   - **确定未执行**：在写出之前就被拒绝（如 Lettuce `REJECT_COMMANDS` 的 `Currently not connected`），或在 `dispatch` 之前同步失败。
-  - **结果未知**：其余情形，包括超时、断线时被排空（`Connection disconnected`）、等待被中断，以及脚本的错误回复（除非逐个脚本证明错误只可能发生在第一次写入之前）。
+  - **结果未知**：其余情形，包括超时、断线时被排空（`Connection disconnected`）、等待被取消或中断，以及脚本的错误回复（除非逐个脚本证明错误只可能发生在第一次写入之前）。
   - 其它契约：
-    - 超时与中断取消到底层命令：尚未写出的命令不再写出（6.9.0 / 6.9.1 的 `CommandCall`，#701、#704）。
+    - 超时、取消与中断都取消到底层命令：尚未写出的命令不再写出（6.9.0 / 6.9.1 的 `CommandCall`，#701、#704）。
     - 写入方法返回或抛出时，它发出的全部命令都已结束（否则补发的广播可能先于仍在执行的命令）。
     - 取得或交回令牌的命令结果未知时，尽力释放令牌（6.9.1 已实现，§4.6）。
   - 这些契约写进 SPI 的 KDoc，由 TCK 的 `FaultSpec` 覆盖。
-- **摘要的公开入口**：`Digest.of(Envelope)` 与 `Envelope.Scalar(bytes)` 保留，另提供 `Digest.ofPayload(bytes)`。算法仍是 SHA-1（§4.7）。
-- **命名**（Q2，v4 决定）：SPI 的 `RemoteStore` 改名为 `L1Store`，避免与用户 API 的 `Store` 混淆。
+- **摘要**：`Digest` 改为载荷的 SHA-256（32 字节），由客户端计算（`Digest.of(Envelope)`、`Digest.ofPayload(bytes)`），用于条件读写（§4.7）。条件回收（`reclaim`）的内容比较改用 SPI 内部的 SHA-1 指纹，不对用户公开。
+- **命名**（Q2）：SPI 的 `RemoteStore` 改名为 `L1Store`，避免与用户 API 的 `Store` 混淆。
 
 ### 4.4 协议与 flight 层（V5）
 
-- **一份同步实现**：协议的四条路径（单 key 未命中、批量、提前刷新、写入）各写一次，在调用方线程上运行。L2 填充（`fillLocal`）与本节点淘汰（版本前进的 `fill`，§4.7）是代码中显式的步骤；取得令牌之后的代码在 `try/finally` 中填充或释放，令牌守恒由结构保证（I-F）。
-- **异步视图**：
-  - `async()` 的读取先在调用方线程上查 L2：命中直接返回已完成的 future，不提交任何任务（G3）。
-  - 未命中与写入把同一个同步调用提交给异步执行器，由执行它的线程完成返回的 future。默认执行器是 `Executors.newVirtualThreadPerTaskExecutor()`，可以替换；运行时关闭时只关闭自建的执行器。
-  - 提交被拒绝时调用尚未开始，没有令牌，返回的 future 以 `RejectedExecutionException` 失败。
-  - 取消返回的 future 不中断执行它的线程，不取消共享的加载（I-17）。
-  - `AsyncCacheLoader` 保留：同步路径上调用它并在当前线程上等待，受 `load.timeout` 约束。
-- **挂起视图**：建立在异步视图上（`await()`），与 6.4 相同。
-- **等待**：lease 等待（`parkNanos`）与回源许可等待（限时 `tryAcquire`）在当前线程上阻塞，在虚拟线程上不占载体线程。取代 6.x 异步路径的定时器调度与许可等待队列。
-- **虚拟线程的钉住**：JDK 21–23 上，虚拟线程在 `synchronized` 块内阻塞会钉住载体线程（JEP 491 在 JDK 24 消除）。
-  - CoCache 自身在持锁时不阻塞：Caffeine 的 `compute` 内不做 I/O，SingleFlight 用 `CompletableFuture` 等待，Lettuce 的写出路径用 `ReentrantLock`。
-  - 用户 loader 若在 `synchronized` 内做阻塞 I/O（如部分 JDBC 驱动），在 JDK 21–23 上可能耗尽载体线程。文档建议生产环境使用 JDK 24 及以上；需要时把异步执行器换成平台线程池。
-- **flight 层**：读取 `observed` → 注册 → 取戳 → 运行协议 → 比较 `stamp ≥ observed` → 至多重试一次 → 按合并规则逐 key 决定是否自行运行（§4.1）。异步调用就是虚拟线程上的同步调用，不再区分同步与异步的 leader。另有三条：
+**一份协程实现，三种变体**：协议的四条路径（单 key 未命中、批量、提前刷新、写入）各写一次，写成 `suspend` 函数。L2 填充与本节点淘汰（版本前进的 `fill`，§4.7）是显式的步骤。
+
+| 变体 | L2 命中 | 未命中、写入 | 阻塞的 `CacheLoader` |
+|------|---------|-------------|---------------------|
+| 同步（`get`） | 普通函数，内联返回 | `runBlocking { … }`：协程在调用方线程自己的事件循环上运行 | 在调用方线程上直接调用：事务、`SecurityContext`、MDC 等 ThreadLocal 可用（不变量 6） |
+| 异步（`async().get`） | 返回已完成的 future，不启动协程 | 运行时作用域中的 `future(start = UNDISPATCHED)`：在调用方线程上执行到第一次挂起，之后在运行时的调度器上继续；等待 L1 不占线程 | `withContext(阻塞调度器)`，默认每个调用一个虚拟线程（JDK 21） |
+| 挂起（`suspending().get`） | 普通函数，内联返回 | 在调用方的协程中直接调用核心 | 同异步变体 |
+
+- `AsyncCacheLoader` 以 `await()` 调用，`SuspendingCacheLoader` 直接调用；二者在三种变体中都不切换调度器。
+- **执行上下文**：核心经协程上下文中的元素知道当前是哪种变体，据此决定阻塞 loader 是否切换调度器。同 key 重入的守卫从 `ThreadLocal` 改为协程上下文元素：异步变体执行时会换线程。
+- **共享加载与取消**（不变量 17）：
+  - flight 的加载在运行时自己的 `SupervisorJob` 作用域中执行；调用方（leader 或跟随者）只等待这次加载的 `Deferred`。调用方被取消只结束它自己的等待，不取消共享加载。
+  - 取得令牌之后的释放与填充一律在 `withContext(NonCancellable)` 中执行；运行时关闭时取消作用域，加载在下一次挂起点结束，令牌照常释放或由 `lease.ttl` 回收。
+  - 同步变体中，线程被中断时 `runBlocking` 取消它的协程并抛出 `InterruptedException`：调用方的等待随之结束，共享加载不受影响，规则同上。
+  - loader 运行期间照常看得到取消与中断（协作式取消）；只有 L1 命令与令牌步骤不可取消。v4 在整个协议期间清除中断标志，会让 loader 收不到取消，v5 改正。
+- **跟随者不占线程**：跟随者挂起在 `Deferred` 上。异步变体中一万个调用等待同一次加载，不创建任何线程。
+- **等待**：lease 等待用 `delay`，回源许可用协程的 `Semaphore` 加 `withTimeout`，等待期间不占线程；取代 6.x 异步路径的定时器调度与许可等待队列（`cocache-timer`）。测试中它们走虚拟时间（§4.10）。
+- **flight 层**：读取 `observed` → 注册 → 取戳 → 运行协议 → 比较 `stamp ≥ observed` → 至多重试一次 → 按合并规则逐 key 决定是否自行运行（§4.1）。另有三条：
   - 注册超过 `load.timeout` 的 flight 从表中注销，但不完成它（P16）。新调用方开始新的 flight；leader 迟到的结果只返回给它自己，写回仍受令牌与戳保护。注销早于发布，不破坏“先注销再发布”。
   - 同步 loader 本身无法被外部结束，文档要求它自带超时。
   - 由 Lincheck 检验（§4.10）。
-- **中断**（P5、C12）：
-  - 执行协议期间不响应中断：开始时以 `Thread.interrupted()` 清除并记住标志，结束（含释放令牌）之后再恢复。这样 leader 的释放在恢复了中断标志的线程上也会执行。
-  - 只有跟随者等待 flight 时响应中断，且只影响它自己（6.10.0 已实现，#711）。v8 以非受检的 `SourceLoadInterruptedException` 取代 6.10.0 的 `InterruptedException`，经接口式代理时不再被 JDK 包装（A.P1）。
-  - leader 的 loader 因中断失败时，flight 以 `SourceLoadInterruptedException` 失败，跟随者按合并规则自行运行。
+- **中断与取消的异常**：跟随者的等待被取消或中断时，异步与挂起变体以 `CancellationException` 结束，同步变体抛出 `InterruptedException`（6.10.0 已实现同步跟随者可中断，#711）。leader 的 loader 因中断或取消失败时，flight 以非受检的 `SourceLoadInterruptedException` 失败，跟随者按合并规则自行运行。
 - **`Private` 的读取不申请 lease**（P10）：未命中直接回源、不写任何一层，不让其它节点白等 `lease.wait`。
-- **命中路径**留在引擎里手写，G3 不受影响。
-- **性质测试**：以注入故障的内存后端（`HookedBackend`）在每一步之后注入失败、超时与中断，对任意的故障序列断言：
+- **命中路径**留在引擎里手写，三种变体共用，G3 不受影响。
+- **虚拟线程的钉住**：阻塞 loader 在虚拟线程上执行时，JDK 21–23 上若在 `synchronized` 块内阻塞会钉住载体线程（JEP 491 在 JDK 24 消除）。文档建议生产环境使用 JDK 24 及以上；需要时把阻塞调度器换成平台线程池。同步变体不受影响（loader 在调用方线程上）。
+- **性质测试**：在 `kotlinx-coroutines-test` 的测试调度器上，以注入故障的内存后端在每一步之后注入失败、超时、取消与中断，对任意序列断言：
   - 取得的令牌最终被填充或释放；
   - 填充出示的令牌取得于读取之前；
   - L2 填充的戳取得于读取之前；
   - `Unknown` 与 `Private` 不进入 L2 与 L1；
   - 版本拒绝的刷新不进入 L2；
-  - `Unfilled` 只以带标志的副本进入 L2。
+  - `Unfilled` 只以带标志的副本进入 L2；
+  - 调用方取消不改变共享加载的结果。
 
-**v3 的方案：sans-IO 状态机 + 两个驱动**。v4 不再作为主方案：基线升到 JDK 21 之后只剩一个驱动，状态机没有第二个使用者，每条路径却要拆成“指令”与“恢复”两半，审查与调试都更难。它余下的主要收益是确定性的多节点仿真（以带种子的调度器驱动状态机，可以精确重放）；v4 以带种子的故障仿真代替（§4.10），可以复现但不能逐步重放。是否为此保留状态机，见 Q17。
+**被否决的方案**：
+- **v4 的同步实现 + 虚拟线程上的异步视图**：异步调用的跟随者占线程（需要专门优化），多节点仿真不能确定性重放（v4 的 Q17）。
+- **v3 的 sans-IO 状态机 + 两个驱动**：可以确定性重放，但每条路径都要拆成“指令”与“恢复”两半；协程以直线代码得到同样的可重放性。
+- **以 `CompletableFuture` 链为唯一实现**：即 6.x 异步路径的写法，失败路径上的令牌守恒最难写对。
 
 ### 4.5 L2：栅栏、时钟与 key（V6）
 
@@ -341,6 +355,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 |------|------|
 | 写入失败按客户端能观察到的事实分为“确定未执行”与“结果未知”（§4.3 的契约），以 `CacheWriteException.outcomeUnknown` 区分 | C5、P8 |
 | 被中断的等待按“结果未知”处理，与超时相同：取消命令、尽力释放取得的令牌（6.9.1 已实现，附录 B.1） | P5 |
+| 调用方的取消（协程取消、future 的 `cancel`、线程中断）只结束它自己的等待；共享加载在运行时作用域中继续；取得令牌之后的步骤不可取消（§4.4） | C12、v4 审查 |
 | 结果未知的写入在任何时刻都可能生效。迟到无害的只有有序的写入：`fill`（令牌）、按版本写入（版本）、条件写入（摘要，但有 ABA） | C5、A12、P4 |
 | 派生 `put` / `putAll` 结果未知时，只在缓存的失效失败模式生效值为 `RETRY` 时登记补偿失效（复用 pending）；为 `THROW` 时以 `outcomeUnknown` 抛给调用方。陈旧上界：以这次 `put` 的 `ttl` 为界；在同一条连接上没有发生重连时，补偿失效完成即结束 | C5 5a、P9、U8 |
 | pending 期间，外部来源的缓存上不带 loader 的读取返回“未填充”（对调用方是 `Absent`），不写 L2；带 loader 的调用方照常回源 | U8 |
@@ -361,13 +376,14 @@ if (!stamps.isValid(storageKey, stamp)) {
 | 用途 | 6.x | 8.x |
 |------|-----|-----|
 | 存储 key | `{keyPrefix}{namespace}:{encodedKey}` | `{keyPrefix}v8:{namespace}:{encodedKey}` |
-| 失效频道 | `cocache:inv:{namespace}` | `cocache:v8:inv:{namespace}` |
+| 失效频道 | `cocache:inv:{namespace}` | `{keyPrefix}v8:inv:{namespace}` |
 | 探测 key / 频道（`pubsub` 模式） | `cocache:probe:{a}` / `cocache:probe:{b}` | `cocache:v8:probe:{a}` / `cocache:v8:probe:{b}` |
 
 - 布局标记与用户前缀无关：沿用自定义 `key-prefix` 的部署同样与 6.x 隔离。
-- 默认前缀仍是 `cocache:`，key 的 ACL 模式 `~cocache:*` 不变；频道的 ACL 改为 `&cocache:v8:inv:*`，`pubsub` 模式另加 `&cocache:v8:probe:*`。
+- **频道名带上 key 前缀**（v5）：6.x 的频道只按 namespace 命名，前缀不同的两个应用只要 namespace 相同，就会收到彼此的失效帧。8.x 的频道带上前缀，各应用只收到自己的帧。
+- 默认前缀仍是 `cocache:`，key 的 ACL 模式 `~cocache:*` 不变；频道的 ACL 改为 `&{keyPrefix}v8:inv:*`（默认即 `&cocache:v8:inv:*`），`pubsub` 模式另加 `&cocache:v8:probe:*`。
 - `ExternalInvalidator` 与运维文档按新布局构造 key 与频道。
-- 标记的拼写在实施时定（Q19）。
+- 标记的拼写在实施时定（Q19）。6.x 的 namespace 不受字符限制，6.x 中若恰好有名为 `v8` 的 namespace，它的 key 与 8.x 的布局会相撞；定稿时一并考虑。
 
 **头部**：
 
@@ -375,7 +391,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 |------|------|------|
 | 0–35 | 36 | 核心头部：magic、格式版本（`2`）、状态、**标志位**（6.x 的保留字节）、令牌、令牌签发时间 |
 | 36 | 8 | 版本（bit 0），大端有符号 64 位 |
-| 之后 | 20 | 载荷摘要（bit 1）：载荷的 SHA-1，与 `Digest` / `Digest.of` 相同，由写入方在客户端计算 |
+| 之后 | 32 | 载荷摘要（bit 1）：载荷的 SHA-256，与 `Digest` / `Digest.of` 相同，由写入方在客户端计算 |
 | 之后 | 2 + n | 扩展区（bit 7）：2 字节长度 + 若干 TLV，读者可以整体跳过 |
 | 之后 | n | 载荷 |
 
@@ -396,13 +412,17 @@ if (!stamps.isValid(storageKey, stamp)) {
 **写入哪些段**：
 
 - 派生缓存的普通值、`L`、没有版本的 `M`：不带段。
-- 权威标量的值：带摘要段。`StoreSpec.digest = ON_DEMAND` 时不写摘要段，条件读写退回在 Lua 中现算（U20）。
+- 权威标量的值：一律带摘要段（v5 去掉 v4 的 `digest = ON_DEMAND`，U20）。
 - 带版本的内容：带版本段。`VersionedStore` 只带版本段（它没有条件读写）。
 - 状态 `E`：带版本段，没有载荷。
 
 **读不懂的内容**：v8 不读写格式 1。读到格式 1、格式 0（5.x 遗留）或其它不是本协议写入的内容时，按读不懂处理：派生缓存条件回收（`RECLAIM`），权威缓存 `FAIL`。在物理隔离之下（V13），这只在配置错误或外部工具写入时发生。删除 `foreign-format` 配置与 `VERSION_MARK` 的识别。
 
-**摘要算法**：仍是 SHA-1，`Digest` 的类型、`sha1` 属性与 `Digest.of` 都不变。保留它不再是为了兼容，而是因为 Redis 的 Lua 只有 `redis.sha1hex`：`RECLAIM` 与 `digest = ON_DEMAND` 的条件读写要在脚本中计算摘要。代价：SHA-1 已有可行的选择前缀碰撞（Q6）。
+**摘要算法**（v5）：权威数据的摘要改为 **SHA-256**（32 字节）。
+- 摘要由写入方在客户端计算并写入头部，条件读写的脚本只比较头部的字节，Lua 不需要计算它。所以算法不受 Redis 的 Lua 只有 `redis.sha1hex` 的限制。
+- 改用它的原因：SHA-1 已有可行的选择前缀碰撞，能写入内容的攻击者可以让 `getIfChanged` 对已变化的内容回答 `Unchanged`；权威数据的使用者（CoSec 的策略快照）是安全产品。
+- 只有条件回收仍在脚本中计算摘要：它比较派生缓存的“读不懂的内容是否仍是读到的那一份”，与安全无关，继续用 SHA-1 指纹（SPI 内部，不对用户公开）。
+- `Digest` 的类型改为 SHA-256，CoSec 持久化的修订摘要需要按新算法重新计算（§8）。
 
 **状态 `E`（保留版本栅栏的失效）**（P1）：
 
@@ -440,10 +460,10 @@ if (!stamps.isValid(storageKey, stamp)) {
 | `READ` | 照旧 | 照常授予刷新令牌；`E` 见上表 | 照常（权威缓存不申请 lease，§4.1） | 返回格式与头部，不授予令牌 |
 | `FILL` | 令牌匹配即写入 | 令牌匹配 + 版本规则 | —（权威缓存没有 `fill`） | 拒绝 |
 | `RELEASE` | 照旧（只触及字节 4–35） | 照旧；`E` 不 `DEL` | — | 不匹配 |
-| `RECLAIM` | 现算载荷的摘要后条件回收 | 拒绝，或转为 `E(v)`（实施时定） | 现算载荷的摘要比较，不信任头部摘要 | 拒绝 |
-| `PUT` / `PUT_ALL` / `INVALIDATE` | 整体写入或删除；权威缓存按 `digest` 设置写摘要段 | 同左 | 同左 | 同左（整体覆盖不依赖旧内容） |
+| `RECLAIM` | 现算载荷的 SHA-1 指纹后条件回收 | 拒绝，或转为 `E(v)`（实施时定） | 现算 SHA-1 指纹比较，不信任头部摘要 | 拒绝 |
+| `PUT` / `PUT_ALL` / `INVALIDATE` | 整体写入或删除；权威缓存写摘要段 | 同左 | 同左 | 同左（整体覆盖不依赖旧内容） |
 | `PUT_IF_NEWER` / `EVICT_KEEPING_VERSION` | 当前版本为 `NO_VERSION` | 从版本段读版本 | 当前版本为 `NO_VERSION` | 拒绝 |
-| `READ_IF_CHANGED` / `PUT_IF_MATCH` / `DELETE_IF_MATCH` | 在 Lua 中对载荷计算 SHA-1（`digest = ON_DEMAND`） | **拒绝**（带版本的内容不接受条件写入） | 先判断 `TYPE`，再以 `GETRANGE key 0 55` 只读头部比较 | 拒绝 |
+| `READ_IF_CHANGED` / `PUT_IF_MATCH` / `DELETE_IF_MATCH` | `L` / `M` / 不存在按“没有值”；有载荷却没有摘要段（不是权威缓存写入的值）拒绝 | **拒绝**（带版本的内容不接受条件写入） | 先判断 `TYPE`，再以 `GETRANGE key 0 67` 只读头部比较 | 拒绝 |
 | 集合脚本 | Hash 与 `!f` 不变 | — | — | — |
 
 - **客户端先看格式号、再看状态**（P1、P18）。格式号 ≥ 2 的内容中出现未知状态时，报告为更高格式，不能报成格式 0。否则派生缓存会把它当作读不懂的内容而回收。
@@ -512,6 +532,7 @@ if (!stamps.isValid(storageKey, stamp)) {
    - `registered-keys` 不提供事务内的读己之写：登记之后，本节点其它线程照常从 L1 把已提交的旧值填回 L2，本事务下一次读取可能命中它。
    - 只读事务的快照陈旧不在覆盖范围内（与“loader 读到从库旧数据”同类）；非 Spring 管理的事务，闸门看不到。
    - 计入 `cocache.fills.gated`。
+   - 判断依赖调用方线程上的事务同步（`TransactionSynchronizationManager` 是 ThreadLocal）：同步变体在调用方线程上运行核心，判断照常成立；异步与挂起变体本来就不在 Spring 管理的线程事务中。
 
 **starter 的事务装饰器**（U3）：starter 不再使用 Spring 的 `TransactionAwareCacheManagerProxy`，改用 CoCache 自己的事务感知装饰器：
 - `evict` 登记到 `TransactionalInvalidator`：提交与回滚都失效，并进入 `registered-keys` 的门控；
@@ -540,19 +561,20 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ### 4.10 检验（V9）
 
-- **Lincheck**：对“flight 层 + L2 + 失效戳 + 内存存储”做模型检验。Lincheck 是新的测试依赖，须先经维护者批准（Q18）。
-  - 操作：`get`、`get(key, loader)`（与 `get` 交替，P3）、`getAll`（合并到 `Private` 的单 key flight，P10）、`invalidate`、`put`、`onInvalidated`、`onReset`、`clearLocal`。
+- **Lincheck**：对“flight 层 + L2 + 失效戳 + 内存存储”做模型检验，操作可以是 `suspend` 函数（Lincheck 支持协程）。Lincheck 是新的测试依赖，须先经维护者批准（Q18）。
+  - 操作：`get`、`get(key, loader)`（与 `get` 交替，P3）、`getAll`（合并到 `Private` 的单 key flight，P10）、`invalidate`、`put`、`onInvalidated`、`onReset`、`clearLocal`，以及调用方取消。
   - 顺序规格：“带版本的数据源 + 读己之写”与“带版本的写入方 + 读快照的 loader”。
+  - 可行性先做小实验：真实的 Caffeine 内部状态多，模型检验可能爆炸。不可行时，flight 层用 `ConcurrentHashMap` 替身检验，Caffeine 的 `compute` 与 `clear` 语义另以定向用例覆盖（C4）。
 - **TLA+**：`docs/spec/CoCache.tla` 建模以下内容：
   - N 个节点；一个 key 的 L1 状态机（`ABSENT` / `LEASED` / `VALUE` / `MISSING` / `E`，令牌，版本）。
   - 每个节点的 L2 与失效戳，绕过 SingleFlight 的读取者（P11）。
   - 可丢失、乱序、重复的失效通道，写入方节点对自身帧的过滤。
   - 带提交历史的数据源。
-  - 失败与重放：超时与中断后仍执行的命令；连接替换（被排空的命令可能晚于新连接上的命令执行，P8、P9、P12）；版本拒绝之后的 L2 处理（P2）；持有令牌崩溃。
+  - 失败与重放：超时、取消与中断后仍执行的命令；连接替换（被排空的命令可能晚于新连接上的命令执行，P8、P9、P12）；版本拒绝之后的 L2 处理（P2）；持有令牌崩溃。
 
   性质：G2 的 L1 与 L2 条款、按类型陈述的版本单调（I-K）、令牌最终释放。CI 中以小规模运行 TLC。
-- **带种子的多节点故障仿真**：多个运行时共享一个注入故障的内存后端（`HookedBackend`），以 `ManualClock` 推进时间，由带种子的随机调度注入事件丢失与乱序、超时与中断后仍执行的命令、leader 被中断、持有令牌崩溃，以数据源的提交历史为裁判检查 G1 的上界与 G2。失败时以种子复现；与 v3 基于状态机的确定性仿真相比，不能逐步重放（Q17）。
-- **TCK 只有一套**：`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec` 改为 `L1Store` 的形状，删除 `Async*` 规范。异步视图的语义（L2 命中不提交任务、完成的线程、取消不传播、提交被拒绝）由引擎级用例覆盖。手写交错继续作为回归用例。
+- **确定性多节点仿真**：多个运行时共享一个注入故障的挂起式内存后端，全部协程运行在 `kotlinx-coroutines-test` 的单线程测试调度器上，lease 等待、超时与时钟都走虚拟时间。带种子的调度器选择交错，注入事件丢失与乱序、超时与取消后仍执行的命令、leader 被中断、持有令牌崩溃，以数据源的提交历史为裁判检查 G1 的上界与 G2。失败时以种子逐步重放（取代 v4 的 Q17）。
+- **TCK 只有一套**：`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec` 改为 `suspend` 的 `L1Store` 形状，并覆盖 `FutureL1Store` 的适配；删除 `Async*` 规范。三种变体的语义（L2 命中不启动协程、loader 执行的线程、取消不传播、`runBlocking` 中的中断）由引擎级用例覆盖。手写交错继续作为回归用例。
 
 ### 4.11 文档（V12）
 
@@ -567,7 +589,8 @@ if (!stamps.isValid(storageKey, stamp)) {
 - `LocalEntry.unresolved` 改名为 `unfilled`，语义不变（P3）；`readFailure` 对外部来源与权威缓存的含义（由 `unknownRead` 取代）。
 - 带版本的类型上的 `put`、`putAll`、普通 `invalidate`、`putIfMatch`；`VersionedCache` 使用没有版本的数据源。
 - `CoherenceBackend.versionedWrites`；异步 SPI（`AsyncRemoteStore`、`AsyncInvalidationChannel`）与 `BlockingAsyncStore` / `BlockingAsyncChannel`；抛出的默认方法与非原子的默认实现。`RemoteStore` 改名为 `L1Store`。
-- 引擎中的异步分支（`CoherentEngine` / `SetEngine` 的 `*Async` 路径）、`Futures` 的续接与就地执行、定时器调度的 lease 等待与许可等待队列、`cocache-timer`；`asyncExecutor` 与 `blockingExecutor` 合并为一个异步执行器。
+- 引擎中的异步分支（`CoherentEngine` / `SetEngine` 的 `*Async` 路径）、`Futures` 的续接与就地执行、定时器调度的 lease 等待与许可等待队列、`cocache-timer`；`asyncExecutor` 与 `blockingExecutor` 合并为一个阻塞调度器（默认虚拟线程）。
+- `cocache-coroutines` 模块（并入 core）；`LoadObserver.observeAsync`；`ThreadLocal` 的重入守卫（改为协程上下文元素）；条件读写在 Lua 中计算的 SHA-1 摘要。
 - `Async*` 平行 TCK 规范；`supportsConditionalWrites` 一类能力开关。
 - 权威缓存上的 `InvalidateFailureMode.RETRY`；`LoadPolicy.asyncTimeout`（并入 `load.timeout`）。
 - `cocache.defaults.*` 的旧语义与旧键；配置中不带单位的时长；`setPolicyFor` / `versionedPolicyFor`；starter 对 `TransactionAwareCacheManagerProxy` 的使用。
@@ -583,10 +606,10 @@ if (!stamps.isValid(storageKey, stamp)) {
 - **I-C L2 填充**：校验失效戳与写入 L2 在同一个 key 锁内完成，写后按身份复核；写入方与远端事件处理完成之后，读取开始于它们之前的副本不可见；重置之后，这样的副本至多存在到填充方自己的复核。
 - **I-D 延迟的无条件写入只用于派生副本**：有数据源的缓存，以及外部来源且失效失败模式为 `RETRY` 的缓存；权威副本的删除与写入同步完成或抛出。
 - **I-E 结果未知**：按客户端能观察到的事实判定（超时、断线排空、中断都是结果未知）；确定未执行的写入不会再执行；结果未知的写入在任何时刻都可能生效，它的安全只来自顺序，而摘要条件有 ABA。
-- **I-F 令牌守恒**：取得令牌的每一步（`Read`、`ReadAll`、`Reclaim`、刷新的 `Read`、`Fill`、`FillAll`），在每个失败转移上、在超时与中断时，都有释放；每个 flight 在有限时间内完成或被注销。
+- **I-F 令牌守恒**：取得令牌的每一步（`Read`、`ReadAll`、`Reclaim`、刷新的 `Read`、`Fill`、`FillAll`），在每个失败转移上、在超时、取消与中断时，都有释放；取得令牌之后的步骤不可取消；每个 flight 在有限时间内完成或被注销。
 - **I-G 刷新有界**：每个节点、每个 key 的刷新触发率有一个与命中率无关的上界；带未知标志位或 `E` 的副本不设刷新点。
-- **I-H 等待有界**：跟随者、lease 等待、许可等待都有上界；只有跟随者的等待响应中断，且只影响它自己；执行协议期间不响应中断。
-- **I-I 一份协议**：每个协议分支只有一份（同步）实现；异步视图与挂起视图在其上提供，不复制分支。
+- **I-H 等待有界**：跟随者、lease 等待、许可等待都有上界；调用方的等待响应取消与中断，且只影响它自己；L1 命令与令牌步骤不可取消，loader 照常可以被取消。
+- **I-I 一份协议**：每个协议分支只有一份（`suspend`）实现；同步、异步、挂起三种变体在其上提供，不复制分支。
 - **I-J 事务内的回源**（启用 Spring 集成时）：写事务内凭 lease 写进 L1 的 key，在回滚或结果未知时失效；已登记失效的 key 的回源结果只返回给本次调用。
 - **I-K 版本单调（按类型）**：经 `VersionedCache` / `VersionedStore` 的写入与回源，不让 L1 的版本后退、不抹掉版本；版本拒绝的回源不写 L2。抹掉版本的入口只有：`purge`、到期、同一 namespace 上的其它类型（声明错误）、外部工具；条件脚本拒绝带版本的内容。
 - **I-L 格式演进**：未知的格式版本、未知的必须理解的标志位、格式号 ≥ 2 中的未知状态，既不回收也不写回；新的必须理解的位，只能在一个 namespace 的全部节点都认识之后写入（8.x 内两阶段发布）。
@@ -600,7 +623,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 | 3 读路径从不无条件删除 | 修改 | 按类型与声明（I-A）；加上 I-L |
 | 4 能原子广播就原子广播 | 修改 | 补上：版本前进的 `fill` 广播；非原子广播下的四种重放也广播（§4.6） |
 | 5 SingleFlight | 修改 | 合并规则逐 key 应用（I-B、`Private`）；flight 层共用（I-I）；超时注销（I-F） |
-| 6 loader 的线程 | 修改 | 同步调用在调用方线程上执行 loader；异步视图在虚拟线程上执行同一个调用 |
+| 6 loader 的线程 | 修改 | 同步变体在调用方线程上执行阻塞 loader；异步与挂起变体在阻塞调度器（默认虚拟线程）上执行它；异步与挂起的 loader 不切换调度器 |
 | 7 令牌必须释放或过期 | 取代 | 由 I-F 取代 |
 | 8 每次 L1 状态转换显式重设到期时间 | 保留 | `E` 的到期时间由引擎传入 |
 | 9 线格式冻结 | 修改 | 格式 2 是唯一格式；8.x 内两阶段演进；与 6.x 以布局标记隔离（V13）；摘要算法不变；I-L |
@@ -611,8 +634,8 @@ if (!stamps.isValid(storageKey, stamp)) {
 | 14 代理不包装异常 | 保留 | 受检异常的 JDK 限制写入文档（Q7） |
 | 15 命中路径的改动必须附带数据 | 保留 | |
 | 16 AOT | 保留 | 新的接口与目标类型登记提示 |
-| 17 取消不传播 | 保留 | 取消返回的 future 不中断执行它的线程 |
-| 18 异步视图不挂起线程、不同步抛出 | 修改 | L2 命中不挂起任何线程；未命中只挂起虚拟线程（默认执行器）；不同步抛出 |
+| 17 取消不传播 | 保留 | 共享加载在运行时作用域中，调用方取消只结束自己的等待 |
+| 18 异步视图不挂起线程、不同步抛出 | 保留 | 未命中挂起协程，不占线程（阻塞 loader 在阻塞调度器上执行）；不同步抛出 |
 | 19 条件读写只确认 L1 | 修改 | 移到 `Store`；加入 `deleteIfMatch`；摘要相等只证明已写入；带版本的内容拒绝 |
 | 20 按版本有序的写入 | 重写 | 由 I-K 与 `E` 取代 |
 | 21 副本出生时不在刷新窗口内（#698） | 保留，并入 I-G | |
@@ -621,14 +644,14 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 | 路径 | 预算 | 验证 |
 |------|------|------|
-| L2 命中 | 不退化（1 / 8 线程，含 `l2HitMixed`）；异步视图的 L2 命中在调用方线程上完成，不提交任务；`unfilled` 标志的检查与 6.9 相同 | `scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed,l2HitAsync -t 1,8` |
-| L1 命中、未命中回源（同步） | 重构后的退化 ≤ 3% | `l1HitViaEngine`、`missLoad` |
+| L2 命中 | 不退化（1 / 8 线程，含 `l2HitMixed`）；异步与挂起变体的 L2 命中不启动协程；`unfilled` 标志的检查与 6.9 相同 | `scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed,l2HitAsync -t 1,8` |
+| L1 命中、未命中回源（同步变体，含 `runBlocking`） | 退化 ≤ 3% | `l1HitViaEngine`、`missLoad` |
 | 异步视图的 L1 命中、未命中 | 8 线程闭环吞吐不低于 6.10 异步视图的 90%（RFC 0004 §11 的口径） | `l1HitViaEngineAsync`、`missLoadAsync` |
-| 虚拟线程 | 10 000 个并发的异步未命中只占用默认的载体线程，不随并发数增加平台线程 | 新用例 |
+| 跟随者 | 10 000 个异步调用等待同一次加载时不创建线程 | 新用例 |
 | L2 填充（`compute` + 条件复核） | 未命中路径的退化 ≤ 2% | `missLoad`、`l1Read` |
 | 权威缓存的 `Absent` 与外部来源的“未填充” | 进入 L2，命中成本与普通 L2 命中相同 | 新基准 `l2HitAbsent` |
 | 条件读取（摘要未变） | Redis 端成本与载荷大小无关 | 新基准 `conditionalUnchanged`（1 KB / 1 MB / 8 MB） |
-| 内存 | 派生缓存每个 key +0 B；权威标量 +20 B（`digest = ON_DEMAND` 时 +0 B）；带版本 +8 B；`E` 为 44 B | `MEMORY USAGE` 对照 |
+| 内存 | 派生缓存每个 key +0 B；权威标量 +32 B；带版本 +8 B；`E` 为 44 B | `MEMORY USAGE` 对照 |
 
 ## 8. 切换与破坏性变更
 
@@ -636,10 +659,23 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 - 8.x 与 6.x 的 key、频道与探测都不重叠，可以同时部署在同一个 Redis 上；共存期间 Redis 的内存约为两份。
 - 一个 namespace 的全部读写方作为一组切换：
-  - **派生缓存**：8.x 启动时 L1 为空，回源填充；6.x 的 key 由 TTL 回收，`ttl` 永不过期的由运维按前缀删除。
-  - **权威缓存**（`Store` 一族）：没有迁移工具。应用在 8.x 上重建数据（从它的权威来源重新写入，或由写入方在切换前双写两套 key），再把读者切过去。
-  - **跨服务共享的 namespace**（Wow 的状态视图、CoSec 的快照与撤销表）：所有者与读者在同一个发布窗口切换，或所有者先双写。
-- 没有桥接版本、别名与降级工具。回退到 6.x 就是切回 6.x 的 key；6.x 不读 8.x 写入的内容。
+  - **派生缓存**（`Cache` / `VersionedCache`）：不拷贝。8.x 启动时 L1 为空，回源填充；6.x 的 key 由 TTL 回收，`ttl` 永不过期的由运维按前缀删除。
+  - **权威缓存**（`Store` / `VersionedStore` / `SetStore`）：唯一副本没有源头可以重建，必须拷贝（下）。
+  - **跨服务共享的 namespace**（Wow 的状态视图、CoSec 的快照与撤销表）：所有者与读者在同一个发布窗口切换。
+- **为什么不能双写**：6.x 与 8.x 的包名都是 `me.ahoo.cocache`，一个 JVM 里不能同时装两个版本；滚动发布期间，6.x 实例与 8.x 实例各写各的 key，彼此看不到对方的写入。所以权威数据只能在写入冻结期间拷贝一次。
+- 回退到 6.x 就是切回 6.x 的 key；6.x 不读 8.x 写入的内容，冻结之后在 8.x 上的写入不会回到 6.x。
+
+**一次性拷贝工具**（v5，8.0 附带，离线运行，`cocache-redis` 中）：
+
+- 范围：调用方列出的 `Store` / `VersionedStore` / `SetStore` namespace 与它们 6.x 的 key 前缀。派生缓存不在范围内。
+- 转换：6.x 布局的 key → 8.x 布局（`{keyPrefix}v8:{namespace}:{encodedKey}`）；格式 1 → 格式 2：
+  - 标量值：由工具计算载荷的 SHA-256，写入摘要段；
+  - 带版本的值（6.8 的 `VERSION_MARK`）：版本移入版本段；
+  - 没有版本的负缓存 `M`、lease 占位 `L`：不拷贝（`L` 是进行中的加载，`M` 对权威缓存不适用）；
+  - 集合：Hash 的成员原样拷贝，`!f` 改为 8.x 的值。
+- 保留剩余的 TTL；可以重复执行，目标已存在且内容相同时跳过；提供 `dryRun`；遇到读不懂的内容时报告并跳过，不删除源 key。
+- 步骤：停掉该 namespace 的全部 6.x 写入方 → 运行工具 → 启动 8.x 的写入方 → 切换读者 → 确认之后由运维删除 6.x 的 key。读者在冻结期间照常读 6.x 的 key。
+- 它是离线的一次性工具，不是兼容层：8.x 运行时不读 6.x 的内容（§4.7）。
 
 **没有数据源的 `Cache` 在各版本上的行为**：
 
@@ -661,19 +697,20 @@ if (!stamps.isValid(storageKey, stamp)) {
 | `CacheSpec.versioned` / `versionedLoader` | 有带版本的数据源：`VersionedCache`；没有：`VersionedStore`；运维删除 → `evict` / `purge` |
 | `SetCache` / `SetCacheSpec` | `SetStore` / `SetStoreSpec` |
 | `JoinCache` | 只读用法：`JoinView`；用到 `invalidate`：`JoinCache` |
-| 第三方后端 | 实现 `L1Store`（阻塞形状）与能力访问器，通过新的 TCK |
+| 第三方后端 | 实现 `L1Store`（`suspend`，Java 继承 `FutureL1Store`）与能力访问器，通过新的 TCK |
 | 库在 starter 之外装配缓存 | `CoCacheFactory`；约束与锁定用 `lock` / `constrain` |
 
 **其余破坏性变更**（M15）：
 
 - **基线**：JDK 21。
-- **异步视图**：未命中在虚拟线程上执行；`cocache.async-executor` 与 `cocache.blocking-executor` 合并为一个异步执行器（默认每个任务一个虚拟线程）；`cocache-timer` 删除。
+- **依赖**：`cocache-core` 依赖 `kotlinx-coroutines-core`（版本由 Spring Boot 的 BOM 管理）；Java 用户会间接引入它。
+- **异步与挂起视图**：由协程核心提供，未命中不占线程；`cocache.async-executor` 与 `cocache.blocking-executor` 合并为一个阻塞调度器（默认每个调用一个虚拟线程）；`cocache-timer` 删除。
 - **指标**：新增 `cocache.reads.unknown`、`cocache.fills.gated`、`cocache.refresh.skipped`；`cocache.load.timeouts` 包含同步跟随者的超时。端点的报告带上类型与能力。
 - **`lookup`**：`readFailure = THROW`（含 6.9 没有数据源时的默认值）时，`lookup` 从抛出 `CacheReadException` 变为返回 `Unknown`。依赖它抛出来 fail closed、又用 `as?` / `else` 处理结果的调用方，会从拒绝变成放行（U5）。升级 skill 的审计脚本检查这类写法；JDK 21 的模式匹配 `switch` 能发现 `Unknown`。
 - **`SetStore` 的读失败**：从 6.x 的原始异常变为 `CacheReadException(cause)`，`catch (e: RedisException)` 不再命中。
-- **ACL**：频道模式改为 `&cocache:v8:inv:*`（`pubsub` 模式另加 `&cocache:v8:probe:*`）。
+- **ACL**：频道模式改为 `&{keyPrefix}v8:inv:*`（默认即 `&cocache:v8:inv:*`；`pubsub` 模式另加 `&cocache:v8:probe:*`）。
 - **AOT**：`CoCacheRuntimeHints` 登记新的接口（`Store`、`VersionedCache`、`VersionedStore`、`SetStore`、`JoinView` 与各自的异步视图）；`CacheBeanDefinitions` 的目标类型随之改变；`CoCacheAotTest` 与 `CoCacheAotRuntimeTest` 同步更新。
-- **`cocache-coroutines`**：挂起视图有同构的层次；`suspendingVersionedLoader` 保留；下游公开的工厂签名（如 Wow 的 `StateViewCaches.CacheFactory`）随之改变。
+- **`cocache-coroutines` 并入 core**：挂起视图是 core 的原生 API，有同构的层次；`suspendingVersionedLoader` 保留；依赖 `cocache-coroutines` 的下游改为依赖 core；下游公开的工厂签名（如 Wow 的 `StateViewCaches.CacheFactory`）随之改变。
 - **`CacheSpecCustomizer`**：为 5 种 spec 各提供一个重载，改为 overlay 语义（只设置写出的字段），不能修改类型与存储布局（§4.8）。
 - **`load.timeout`**：同步跟随者从无限等待变为 30 s 后失败；注册超过它的 flight 被注销。
 - **提前刷新**：`VersionedCache` 支持提前刷新，全局的 `refresh-window` 开始作用于它；不需要时在声明中写 `refreshWindow = off()`。
@@ -693,15 +730,15 @@ if (!stamps.isValid(storageKey, stamp)) {
   - **分型**：策略快照、控制面 8 个缓存、两个撤销表（`unknownRead = ABSENT`）、三个影子缓存（带显式 `ttl`）→ `Store`；`MembershipCache` → `Cache` + `externallySourced()`；迁移工具中的 `GlobalPolicyIndexCache` → `SetStore`。
   - **装配**：`CoSecCacheAssembler` → `CoCacheFactory`；`pinnedPolicy` → `lock` + `constrain`，锁定 namespace、keyPrefix、keyEncoder、codec 与“拒绝 loader”。
   - **读取**：`RedisSnapshotDocumentStore` 的 `when (lookup)` 因 `Unknown` 编译失败，可以发现；频道订阅改为新 SPI；“先淘汰本地副本，再通知外部监听者”成为契约。
-  - **摘要**：不受影响（`Digest.of`、`Envelope.Scalar` 保留，算法仍是 SHA-1）。
-  - **切换**：控制面在 8.x 的 key 上重新发布策略快照；撤销表在切换窗口内双写，或按安全要求接受窗口。
+  - **摘要**：`Digest` 改为 SHA-256，CoSec 持久化的修订摘要需要按新算法重新计算；`getIfChanged` 的用法不变。
+  - **切换**：撤销表、策略快照与控制面的唯一副本缓存，在写入冻结期间用拷贝工具拷到 8.x 布局（策略快照也可以由控制面重新发布）；之后启动 8.x 的写入方，读者随后切换。
   - **部署**：托管或代理型 Redis 上，确认 `INFO memory` 可读，或配置 `assume-maxmemory-policy`；ACL 的频道模式。
 - **Wow**：
   - `cacheSpec { suspendingVersionedLoader(…) }` → `versionedCacheSpec`；`StarterCaches` → `CoCacheFactory`。
   - `StateViewCaches.CacheFactory` 改签名，Wow 需要大版本。
   - 全局的 `refresh-window` 开始作用于状态视图，要么在声明中写 `refreshWindow = off()`，要么接受经 HTTP 回源到所有者。
   - 运维手册中的删除改用 `evict`。
-  - **切换**：所有者与全部读者服务在同一个发布窗口切换，或所有者先双写。
+  - **切换**：状态视图是派生缓存，在 8.x 上从事件存储回源重建，不需要拷贝；所有者与全部读者服务在同一个发布窗口切换。
 
 ## 9. 6.x 的收尾
 
@@ -733,26 +770,29 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ## 10. 实施顺序
 
-0. **6.10.0**：合并 #707、#708、#709、#711 后发布；从发布点切出 `6.x` 维护分支。`main` 改为 8.0.0-SNAPSHOT，基线 JDK 21。
-1. **M1 异步视图改在虚拟线程上**：异步视图改为“L2 命中直接返回 + 未命中提交同步调用”。现有的 `Async*` TCK 全绿作为等价性裁判，JMH 对比 6.10.0（§7）。然后删除引擎中的异步分支、`Futures` 的续接、定时器与许可等待队列。用户 API 与 SPI 此时不变。
-2. **M2 flight 层与协议**：合并规则逐 key、`load.timeout`、中断语义、L2 `compute` 填充（I-C）、令牌在 `finally` 中守恒；性质测试与带种子的故障仿真接入。
-3. **M3 SPI**：`L1Store`（阻塞）、能力访问器、`ForwardingL1Store`、TCK fail closed；删除异步 SPI 与 `Async*` 规范。
-4. **M4 线格式 2 与布局**：布局标记、头部的段、状态 `E`、逐脚本规则。第三轮对抗验证在这一步合并之前完成；合并即冻结 8.x 的格式（§4.7 的定稿项）。
-5. **M5 用户 API**：类型（V1–V3）、`Lookup.Unknown`、`CoCacheFactory`、挂起视图。
+0. **6.10.0**（已发布）：从发布点切出 `6.x` 维护分支。`main` 改为 8.0.0-SNAPSHOT，基线 JDK 21。
+1. **M1 协程核心**：在现有的用户 API 与 SPI 之下，把协议改写为一份 `suspend` 实现：同步 API 经 `runBlocking`，异步视图经 `future(UNDISPATCHED)`，现有的挂起视图直接调用。
+   - 等价性裁判：现有的同步 TCK 与 `Async*` TCK 中的**语义用例**保持全绿。断言 6.x 线程模型的用例（结果在哪个线程上完成、等待只占常数个线程等）按新模型重写，不算等价性证据（v4 审查）。
+   - JMH：L2 命中不退化；同步变体（含 `runBlocking`）的 L1 命中、未命中退化 ≤ 3%；异步变体的 8 线程闭环不低于 6.10 的 90%。
+   - 然后删除引擎中的异步分支、`Futures` 的续接、定时器与许可等待队列；`kotlinx-coroutines-core` 进入 core，AGENTS.md 的依赖规则同步修改。
+2. **M2 flight 层与协议**：合并规则逐 key、`load.timeout`、取消与中断的规则（§4.4）、L2 填充改为 `compute` + 按身份复核（I-C）、令牌在 `NonCancellable` 中守恒；接入随机注入取消的性质测试与确定性多节点仿真。
+3. **M3 SPI**：`suspend` 的 `L1Store`、`FutureL1Store` 适配、能力访问器、`ForwardingL1Store`、TCK fail closed；删除异步 SPI 与 `Async*` 规范。
+4. **M4 线格式 2 与布局**：布局标记、带前缀的频道、头部的段（SHA-256 摘要段）、状态 `E`、逐脚本规则，以及一次性拷贝工具。第三轮对抗验证在这一步合并之前完成；合并即冻结 8.x 的格式（§4.7 的定稿项）。
+5. **M5 用户 API**：类型（V1–V3，按 v4 全部实现）、`Lookup.Unknown`、`CoCacheFactory`；`cocache-coroutines` 并入 core。
 6. **M6 配置**（V10）与 **M7 Spring**（V11）。
-7. **M8 检验与文档**：Lincheck（经批准后）、TLA+、architecture.md 重排（V12）、wiki 与升级指南、skills。
+7. **M8 检验与文档**：Lincheck（经批准后）、TLA+、architecture.md 重排（V12）、wiki 与升级指南（含拷贝工具的步骤）、skills。
 8. **8.0.0** 发布；8.x 按 §4.2 的演进规则新增能力，新的必须理解的段两阶段发布。
 
-每个里程碑由若干 PR 组成，每个 PR 的 `./gradlew check` 全绿；触及命中路径或异步路径的 PR 附 `scripts/jmh-compare.sh` 的对比。
+每个里程碑由若干 PR 组成，每个 PR 的 `./gradlew check` 全绿；触及命中路径、同步未命中路径或异步路径的 PR 附 `scripts/jmh-compare.sh` 的对比。
 
 ## 11. 风险与未决问题
 
 - **Q1 范围放在 v8 还是 7.0**：维护者指定 v8，并跳过 v7（v4 决定）。
 - **Q2 命名**：用户 API 的 `Store` 与 SPI 的 `RemoteStore` 容易混淆。SPI 改名为 `L1Store`（v4 默认采用）。
-- **Q3 基线升到 JDK 21**：v4 决定升到 JDK 21，并以此简化 SPI 与异步视图（V4、V5）。生产建议 JDK 24 及以上（JEP 491，§4.4）。
+- **Q3 基线升到 JDK 21**：v4 决定升到 JDK 21；v5 改为协程核心后保持 JDK 21，虚拟线程作为阻塞 loader 的默认调度器（§4.4）。生产建议 JDK 24 及以上（JEP 491）。
 - **Q4 `fill-in-transaction` 的默认值**：`registered-keys` + 默认开启的回滚失效（§4.9）。判定依据：默认值必须覆盖“应用什么也没做”时的残留（回滚），登记只用来进一步缩小窗口。第三轮可以结合下游的事务形态再复核。
 - **Q5 响应式事务**：需要 `cocache-spring` 可选依赖 reactor，须先经维护者批准。
-- **Q6 摘要的抗碰撞**：保留 SHA-1（v4 默认采用）。原因是 Redis 的 Lua 只有 `redis.sha1hex`，`RECLAIM` 与 `digest = ON_DEMAND` 要在脚本中计算摘要（§4.7）。若要更换，需要放弃脚本中的计算（`ON_DEMAND` 删除，`RECLAIM` 改为比较完整内容），并让 `Digest` 携带算法。
+- **Q6 摘要的抗碰撞**：v5 决定权威数据的摘要改用客户端计算的 SHA-256（§4.7）；只有派生缓存的条件回收在脚本中用 SHA-1 指纹，与安全无关。
 - **Q7 代理与受检异常**：JDK 动态代理的限制；构建期生成实现留到 8.x 评估。
 - **Q8 派生 `Cache` 是否保留 `put`**：保留。
 - **Q9 `Store` 的 L2**：是否默认更短的 `localMaxAge`，待用户反馈。
@@ -763,9 +803,10 @@ if (!stamps.isValid(storageKey, stamp)) {
 - **Q14 类型元数据**：把每个 namespace 的类型写入 `cocache:v8:meta:{namespace}`，启动时比对跨应用的声明是否一致。这是线格式的新增；v8 没有兼容负担，可以在 8.0 加入，须维护者决定（M4 之前）。
 - **Q15 `unknownRead = ABSENT` 的短暂缓存**：6.7 的放行把降级结果在 L2 中缓存 10 s，6.9 与 v8 不缓存。Redis 卡顿时，每次读取等满 `command-timeout`（默认 2 s），CoSec 的撤销检查会给每个请求加 2 s。是否在 `Store` 上以极短的限龄（如 1 s）缓存降级结果，待评估。`Store` 没有 loader 会被它挡住，A.D1 的前提不成立。
 - ~~Q16 7.B 的前向兼容声明~~：v4 删除（没有 7.B）。
-- **Q17 是否保留 sans-IO 状态机**：v4 以一份同步实现取代它（§4.4）。保留它的唯一理由是确定性的多节点仿真（逐步重放）；代价是每条路径都要指令化。默认不保留。
+- ~~Q17 是否保留 sans-IO 状态机~~：v5 以协程核心解决，测试调度器与虚拟时间让多节点仿真可以确定性重放（§4.10）。
 - **Q18 Lincheck 作为测试依赖**：须维护者批准（§4.10）。
-- **Q19 布局标记的拼写**：`v8:` 是占位，实施时定（§4.7）。
+- **Q19 布局标记的拼写**：`v8:` 是占位，实施时定（§4.7）；要考虑与 6.x 中同名 namespace 相撞的可能。
+- **Q20 `kotlinx-coroutines-core` 进入 core**：v5 决定批准（§4.4）；AGENTS.md 中“kotlinx 只出现在 `cocache-coroutines`”的规则在 M1 中同步修改。
 
 ## 12. 对抗验证记录
 
@@ -921,15 +962,33 @@ v2 由两路独立的只读会话验证。
 | 配置按 v3 完整实现 | V10 不变，只删除迁移机制 |
 | 默认采用（维护者可以改） | SPI 改名 `L1Store`（Q2）；摘要保留 SHA-1（Q6）；Q10 倾向扩展区；`main` 改为 8.0.0-SNAPSHOT，切出 `6.x` 维护分支 |
 
-### v4 → v5：第三轮（8.0 冻结格式之前进行）
+### v4 → v5：审查与维护者决定（2026-11-01）
+
+作者对 v4 的复查发现：
+
+| # | 发现 | 处理 |
+|---|------|------|
+| 1 | 不迁移数据会丢掉唯一副本：撤销表一类权威数据没有源头可以重建；6.x 与 8.x 同一包名，不能在一个 JVM 里双写；滚动发布期间两边互不可见 | 维护者决定提供一次性拷贝工具（§8） |
+| 2 | M1 的等价性裁判写成“`Async*` TCK 全绿”，但其中一部分用例断言的是 6.x 的线程模型 | §10：语义用例全绿，线程模型用例按新模型重写 |
+| 3 | 异步调用的跟随者每个占一个虚拟线程 | 协程核心中跟随者挂起在 `Deferred` 上，不占线程（§4.4） |
+| 4 | 整个协议期间清除中断标志，loader 收不到取消 | 只有 L1 命令与令牌步骤不可取消，loader 照常可以被取消（§4.4） |
+| 5 | SHA-1 摘要可以碰撞，权威数据的使用者是安全产品 | 维护者决定改用客户端计算的 SHA-256，去掉 `ON_DEMAND`（§4.7） |
+| 6 | 频道只按 namespace 命名，前缀不同的应用互相收到失效帧 | 维护者决定频道带上 key 前缀（§4.7） |
+| 7 | 布局标记可能与 6.x 中名为 `v8` 的 namespace 相撞；`observeAsync` 多余；Lincheck 检验真实 Caffeine 的可行性未知 | Q19；§5；§4.10 先做小实验 |
+
+维护者另外决定：
+- **协议核心用协程实现**，同步、异步、挂起三种变体共用一份 `suspend` 实现；批准 `kotlinx-coroutines-core` 进入 core（Q20）；`cocache-coroutines` 并入 core。取舍见 §4.4 的“被否决的方案”。
+- **JDK 基线保持 21**，虚拟线程作为阻塞 loader 的默认调度器。
+- **8.0 的用户 API 类型按 v4 全部实现**（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`、`JoinView` / `JoinCache`）。
+
+### v5 → v6：第三轮（M4 冻结格式之前进行）
 
 重点：
-- **虚拟线程上的异步视图**：钉住、执行器替换、取消与拒绝、`AsyncCacheLoader` 的等待、L2 命中不提交任务的实现，以及与 RFC 0004 的语义差异。
-- **去掉 sans-IO 之后**：`try/finally` 的令牌守恒与基于 `HookedBackend` 的性质测试，能否覆盖 v3 状态机上的同等性质（I-F）。
-- **格式定稿**：§4.7 的段、`E`、扩展区、Q10 的位置、逐脚本规则与布局标记。
+- **协程核心**：取消与 `NonCancellable` 的边界、`runBlocking` 中的中断、运行时作用域的关闭、执行上下文元素与重入守卫、三种变体的语义一致性，以及与 RFC 0004 异步视图的差异。
+- **格式定稿**：§4.7 的段（SHA-256 摘要段）、`E`、扩展区、Q10 的位置、逐脚本规则、布局标记与带前缀的频道。
+- **拷贝工具**：格式转换（`VERSION_MARK`、集合、TTL）的正确性，以及写入冻结的步骤对 CoSec 是否可行。
 - **配置**：§4.8 三层配置的取上限与夹紧语义、`lock` / `constrain` 的表达力。
 - **Spring**：§4.9 两个事务机制的组合，以及 starter 事务装饰器与 Spring 契约的差异。
-- **切换**：§8 中权威数据的重建与双写对 CoSec、Wow 是否可行。
 
 ## 附录 A：6.8.0 架构审查发现（2026-10-28）
 
