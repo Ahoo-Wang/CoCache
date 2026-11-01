@@ -7,7 +7,20 @@ description: CoCache 版本发布历史和重要变更。
 
 ## 未发布
 
-**模块组：** `me.ahoo.cocache` · 计划作为 6.10.0 发布。API、线格式与频道都不变，可以与任何 6.x 实例共用 Redis，逐台升级。
+**模块组：** `me.ahoo.cocache` · 计划作为 6.10.0 发布（新增一项配置与 `CacheRuntime.policy`）。修复 6.8.0 架构审查中余下的 6.x 项，并隔离失败的失效监听器。没有删除任何 API。Redis 线格式与失效频道不变，可以与任何 6.x 实例共用 Redis，逐台升级。
+
+### 行为变化：`SetCache` 驱逐检查不再静默跳过
+
+- 启动检查从 `INFO memory` 读取 `maxmemory-policy`，不再用 `CONFIG GET`。禁用 `CONFIG` 的托管服务通常允许 `INFO`。使用 `SetCache` 时 Redis 用户需要 `+info`，[ACL 起点](../operations/index.md#acl)已加上它。
+- 仍然读不到策略时不再静默跳过：设置了新增的 `cocache.redis.assume-maxmemory-policy` 时按它判断，否则记录告警，`cocache.redis.set-cache-eviction-check: fail` 时启动失败。要在禁止 `INFO` 的 Redis 上保留 `fail` 模式，请授予 `+info`，或把 `assume-maxmemory-policy` 设为部署实际使用的策略。
+- 检查所有已声明的 `SetCache`，包括启动时尚未创建的延迟初始化 bean（如 `spring.main.lazy-initialization=true`）。它们的 `ttl` 与创建时一样叠加注解、定制器与配置文件得到。检查不会创建它们。
+- `volatile-*` 下为每个 `ttl` 有限的 `SetCache` 告警：Redis 可能在到期前淘汰它。这只是告警，`fail` 模式下也一样。
+- 见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。
+
+### 行为变化：端点对未知缓存的 `DELETE` 返回 `404`
+
+- 缓存名不存在时，`DELETE /actuator/cocache/{name}` 与 `DELETE /actuator/cocache/{name}/{key}` 返回 `404`，不再返回 `204`，拼错的缓存名不再看起来成功了。已知缓存仍返回 `204` 与 `200`。
+- `CoCacheEndpoint.clearLocal` 返回 `Boolean`（缓存是否存在），不再返回 `Unit`。经 JMX 调用时返回这个值。
 
 ### 修复：抛出异常的失效订阅者不再让其它订阅者错过消息
 
@@ -18,6 +31,11 @@ description: CoCache 版本发布历史和重要变更。
 
 - `Subscription.close()` 不等待已在投递中的回调，这样的回调可能在 `close()` 返回之后才到达。它只保证之后到达的消息与重置不再投递。见[扩展 CoCache](../architecture/extending.md)。
 - [部署](../operations/index.md#channel-mode)写明了没有原子广播时（`sharded` 模式，或探测降级之后）写入成功、随后的发布失败意味着什么。
+
+### API
+
+- `CacheRuntime.policy(name)` 返回已创建缓存生效的 `CachePolicy`。
+- 新增配置 `cocache.redis.assume-maxmemory-policy`（见[配置](./configuration.md)）。
 
 ## v6.9.1（当前版本）
 

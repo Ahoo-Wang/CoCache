@@ -49,11 +49,18 @@ class CacheAssembler(
     }
 
     fun <K : Any, E : Any> create(spec: SetCacheSpec<K, E>): SetCache<K, E> = withCacheName(spec.name) {
+        runtime.create(resolve(spec))
+    }
+
+    /**
+     * 集合缓存的生效声明：叠加定制器与配置文件之后、交给运行时之前的 spec。驱逐检查也用它得到尚未创建的集合缓存的 `ttl`。
+     */
+    internal fun <K : Any, E : Any> resolve(spec: SetCacheSpec<K, E>): SetCacheSpec<K, E> = withCacheName(spec.name) {
         val builder = spec.toBuilder()
         customizers.filter { it.supports(spec.name) }.forEach { it.customize(builder) }
         builder.policy = properties.setPolicyFor(spec.name, builder.policy)
         properties.keyPrefixFor(spec.name)?.let { builder.keyPrefix = it }
-        runtime.create(builder.build())
+        builder.build()
     }
 
     override fun afterSingletonsInstantiated() {
