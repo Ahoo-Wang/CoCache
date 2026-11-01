@@ -716,7 +716,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 | 中断时取消命令、释放令牌；`fill` / `fillAll` 超时或中断时释放令牌；`reclaim` 超时释放 lease | P5、P13、C7（附录 B） | 6.9.1（#704） |
 | 驱逐策略检查改读 `INFO memory`、按声明检查；未知缓存名的端点 `DELETE` 返回 404；修正 architecture.md §6.3 | M11、M13、A.L10 | 6.10.0（#707） |
 | 一个失效监听器抛出 `Error` 不影响其余监听器；`Subscription.close()` 的契约 | CoSec 反馈 | 6.10.0（#708） |
-| 注册失败时释放 namespace；单调时钟；同步跟随者可中断；接口式代理与受检异常的文档 | A.L9、A.C1、A.S1、A.P1 | 6.10.0（#711，待合并） |
+| 注册失败时释放 namespace；单调时钟；同步跟随者可中断；接口式代理与受检异常的文档 | A.L9、A.C1、A.S1、A.P1 | 6.10.0（#711） |
 
 **移入 v8，6.x 不再做**：
 
@@ -949,9 +949,9 @@ v2 由两路独立的只读会话验证。
 | R4 | 中 | 非原子广播时条件写入的重放永不广播 | 读代码 | `CoherentEngine.writeIfNewer` | 6.9.0 已修复（#700）；v8 §4.6 |
 | T1 | 中高 | 事务回滚时不失效；事务内的回源可能把未提交的数据写进 L1 | 读代码 | `TransactionalInvalidator` | 6.9.0 已修复（#697）；`@CacheEvict` 的同类缺口见 v8 §4.9 |
 | T2 | 中低 | 在另一个同步的 `afterCommit` 中登记的失效会丢失；`flush` 遇到第一个异常即停止 | 读代码（含 spring-tx 7.0.9 字节码） | `TransactionalInvalidator` | 6.9.0 已修复（#697） |
-| P1 | 中低 | 接口式代理遇到受检异常时由 JDK 包装为 `UndeclaredThrowableException` | 读代码（JDK 语义） | `CacheProxies.Handler` | 文档；v8 Q7 |
-| C1 | 低 | 时钟用墙钟，回拨时 L2 副本多活 | 读代码 | `TickingClock` | 6.x 待排期；v8 §4.5 |
-| S1 | 低 | 同步跟随者用 `join()` 等待，不可中断、无上限 | 读代码 | `SingleFlight.await` | 6.x 待排期；v8 §4.4 |
+| P1 | 中低 | 接口式代理遇到受检异常时由 JDK 包装为 `UndeclaredThrowableException` | 读代码（JDK 语义） | `CacheProxies.Handler` | 6.10.0 文档已写明（#711）；v8 Q7 |
+| C1 | 低 | 时钟用墙钟，回拨时 L2 副本多活 | 读代码 | `TickingClock` | 6.10.0 已修复（#711）；v8 §4.5 |
+| S1 | 低 | 同步跟随者用 `join()` 等待，不可中断、无上限 | 读代码 | `SingleFlight.await` | 可中断：6.10.0 已修复（#711）；上限：v8 §4.4 |
 | L1 | 低 | 读 L1 超时之后不释放读脚本可能已授予的 lease | 读代码 | `RedisRemoteStore.read` | 6.9.0 已修复（#701）；中断路径见 B.1 |
 | L2 | 低 | 同步的 `SetCache.getAll` 逐个 key 串行访问 L1 | 读代码 | `SetEngine.getAll` | 6.x 待排期 |
 | L3 | 低 | 策略 `ttl` 永不过期时，墓碑也永不过期 | 读代码 | `CoherentEngine.versionedTtl` | 文档；v8 `tombstoneTtl` |
@@ -960,8 +960,8 @@ v2 由两路独立的只读会话验证。
 | L6 | 低 | `@CacheEvict(allEntries = true)` 只清本节点 L2；端点的按 key 删除对 `SetCache` 会删除唯一副本 | 读代码 | `CoCacheSpringCache.clear`、`CoCacheEndpoint` | v8 §4.9 |
 | L7 | 低 | 格式字节按有符号解析 | 读代码 | `RedisRemoteStore` | 6.9.0 已修复（#701） |
 | L8 | 低 | 策略时长不带单位按秒、`cocache.redis.*` 按毫秒；`defaults` 覆盖显式声明 | 读代码 | `CoCacheProperties` | v8 §4.8 |
-| L9 | 低 | 创建缓存时 `backend.store` 或工厂抛出会让 namespace 保持占用 | 读代码 | `CacheRuntime` 的注册流程 | 6.x 待排期 |
-| L10 | 低 | architecture.md §6.3 说“启动时不检查这两点”，与 `SetCacheEvictionCheck` 不符 | 读代码 | `docs/architecture.md` §6.3 | 6.x 修复（随 M11 一起） |
+| L9 | 低 | 创建缓存时 `backend.store` 或工厂抛出会让 namespace 保持占用 | 读代码 | `CacheRuntime` 的注册流程 | 6.10.0 已修复（#711） |
+| L10 | 低 | architecture.md §6.3 说“启动时不检查这两点”，与 `SetCacheEvictionCheck` 不符 | 读代码 | `docs/architecture.md` §6.3 | 6.10.0 已修复（#707，随 M11 一起） |
 
 未发现缺陷的部分：
 - Lua 脚本的状态转换与到期时间重设、令牌比较；

@@ -73,6 +73,58 @@ class SingleFlightTest {
         follower.joinFailure().assert().isSameAs(failure)
     }
 
+    /**
+     * 同步跟随者的等待响应中断（RFC 0005 附录 A.S1）：被中断的跟随者（单 key 与批量）以 [InterruptedException] 失败、保留中断标志，
+     * 只影响它自己；leader 照常完成，没被中断的跟随者照常拿到结果。
+     */
+    @Test
+    fun interruptedFollowerFailsAloneAndKeepsItsInterruptFlag() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val leader = fork {
+            flights.execute("k") {
+                started.countDown()
+                release.awaitOrFail()
+                "v"
+            }
+        }
+        started.awaitOrFail()
+        val single = fork { interruptFlagAfter { flights.execute("k") { "other" } } }
+        val batch = fork { interruptFlagAfter { flights.executeAll(listOf("k")) { error("never leads") } } }
+        val waiting = fork { flights.execute("k") { "other" } }
+        awaitCondition {
+            listOf(single, batch, waiting).all { it.thread.state == Thread.State.WAITING }
+        }
+        single.thread.interrupt()
+        batch.thread.interrupt()
+        listOf(single, batch).forEach { follower ->
+            val failure = follower.joinFailure()
+            failure.assert().isInstanceOf(FollowerFailure::class.java)
+            val (cause, interrupted) = failure as FollowerFailure
+            cause.assert().isInstanceOf(InterruptedException::class.java)
+            interrupted.assert().withFailMessage { "the interrupt flag must be restored" }.isEqualTo(true)
+        }
+        flights.inFlight.assert().isEqualTo(1)
+        release.countDown()
+        leader.join().assert().isEqualTo("v")
+        waiting.join().assert().isEqualTo("v")
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * 记下失败时线程的中断标志（`Forked` 线程结束后标志不可再读）。
+     */
+    private data class FollowerFailure(val error: Throwable, val interrupted: Boolean) : RuntimeException(error)
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun <T> interruptFlagAfter(block: () -> T): T {
+        try {
+            return block()
+        } catch (e: Throwable) {
+            throw FollowerFailure(e, Thread.currentThread().isInterrupted)
+        }
+    }
+
     @Test
     fun reentrantCallFailsFast() {
         val error = runCatching { flights.execute("k") { flights.execute("k") { "inner" } } }.exceptionOrNull()
