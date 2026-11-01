@@ -107,7 +107,7 @@ configure(libraryProjects) {
     }
     configure<KotlinJvmProjectExtension> {
         jvmToolchain {
-            languageVersion.set(JavaLanguageVersion.of(17))
+            languageVersion.set(JavaLanguageVersion.of(21))
         }
         // 与 apiVersion 一致：POM 中声明的 kotlin-stdlib 不高于用户的 Kotlin 编译器能读取的版本
         coreLibrariesVersion = "2.2.21"
@@ -131,7 +131,7 @@ configure(libraryProjects) {
         }
         // fix logging missing code for JacocoPlugin
         jvmArgs = listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logback.xml")
-        // 产物始终按 JDK 17 编译；-PtestJavaVersion=25 让测试运行在更新的 JDK 上，验证运行时兼容性
+        // 产物始终按 JDK 21 编译；-PtestJavaVersion=25 让测试运行在更新的 JDK 上，验证运行时兼容性
         providers.gradleProperty("testJavaVersion").orNull?.let { version ->
             javaLauncher.set(
                 project.extensions.getByType<JavaToolchainService>().launcherFor {

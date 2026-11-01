@@ -55,11 +55,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # 产物按 JDK 17 编译（Gradle toolchain）；随后的 GraalVM 成为 JAVA_HOME，负责运行 Gradle 与 native-image
-      - name: Set up JDK 17 (toolchain)
+      # 产物按 JDK 21 编译（Gradle toolchain）；随后的 GraalVM 成为 JAVA_HOME，负责运行 Gradle 与 native-image
+      - name: Set up JDK 21 (toolchain)
         uses: actions/setup-java@v6
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
           cache: gradle
 
@@ -75,7 +75,7 @@ jobs:
       - name: Build AOT-processed jar
         run: >-
           ./gradlew :cocache-example:bootJar
-          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64
           -Porg.gradle.java.installations.auto-download=false
 
       - name: Smoke test (AOT on the JVM)
@@ -88,7 +88,7 @@ jobs:
       - name: Build native image
         run: >-
           ./gradlew :cocache-example:nativeCompile
-          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_17_X64
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64
           -Porg.gradle.java.installations.auto-download=false
 
       - name: Smoke test (native image)

@@ -5,6 +5,14 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布
+
+**模块组：** `me.ahoo.cocache` · 计划作为 8.0.0 发布，是包含破坏性变更的大版本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。8.x 与 6.x 不共用任何 key 与频道，两个版本可以同时部署在同一个 Redis 上。6.x 的修复继续在 `6.x` 分支上进行。
+
+### 破坏性变更
+
+- 基线改为 JDK 21（原为 JDK 17）。
+
 ## v6.10.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本（新增一项配置与 `CacheRuntime.policy`），也是 6.x 的最后一个功能版本：之后的 6.x 版本只修缺陷。修复 6.8.0 架构审查中余下的 6.x 项，并隔离失败的失效监听器。没有删除任何 API。Redis 线格式与失效频道不变，可以与任何 6.x 实例共用 Redis，逐台升级。

@@ -7,7 +7,7 @@ description: Add a two-level coherent cache to a Spring Boot application in five
 
 This page takes a Spring Boot application from no cache to a working two-level cache. The code is based on [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example).
 
-**You need** JDK 17+, Spring Boot 4, and either Redis 7+ or nothing at all (the in-memory backend, step 2).
+**You need** JDK 21+, Spring Boot 4, and either Redis 7+ or nothing at all (the in-memory backend, step 2).
 
 ## 1. Add the dependencies {#dependencies}
 
