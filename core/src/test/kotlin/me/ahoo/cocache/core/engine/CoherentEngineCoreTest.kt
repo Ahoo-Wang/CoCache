@@ -151,9 +151,11 @@ class CoherentEngineCoreTest {
         val clock = ManualClock()
         val memory = InMemoryBackend(clock)
         val backend = HookedBackend(memory)
-        val closing = CacheRuntime.builder().backend(
-            backend
-        ).clock(clock).refreshExecutor(Executor { it.run() }).build()
+        val closing = CacheRuntime.builder()
+            .backend(backend)
+            .clock(clock)
+            .refreshExecutor(Executor { it.run() })
+            .build()
         runtimes += closing
         val window = Duration.ofSeconds(5)
         val cache = closing.create(
