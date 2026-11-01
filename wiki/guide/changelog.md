@@ -7,7 +7,7 @@ description: Release history and notable changes for CoCache.
 
 ## Unreleased
 
-**Module Group:** `me.ahoo.cocache` · Planned as 6.10.0, because it adds a configuration property and `CacheRuntime.policy`. Fixes the remaining 6.x items from the 6.8.0 architecture review. No API is removed. The Redis wire format and the invalidation channel are unchanged, so these instances can share Redis with any 6.x instance and be upgraded one at a time.
+**Module Group:** `me.ahoo.cocache` · Planned as 6.10.0, because it adds a configuration property and `CacheRuntime.policy`. Fixes the remaining 6.x items from the 6.8.0 architecture review and isolates failing invalidation listeners. No API is removed. The Redis wire format and the invalidation channel are unchanged, so these instances can share Redis with any 6.x instance and be upgraded one at a time.
 
 ### Behavior change: the `SetCache` eviction check no longer skips silently
 
@@ -21,6 +21,16 @@ description: Release history and notable changes for CoCache.
 
 - `DELETE /actuator/cocache/{name}` and `DELETE /actuator/cocache/{name}/{key}` return `404` for an unknown cache name instead of `204`, so a misspelled name no longer looks like success. Known caches still return `204` and `200`.
 - `CoCacheEndpoint.clearLocal` returns `Boolean` (whether the cache exists) instead of `Unit`. Over JMX the operation returns that value.
+
+### Fix: a failing invalidation listener no longer starves the others
+
+- An invalidation listener that throws an `Error`, or a checked exception thrown from Kotlin, no longer keeps the listeners after it from receiving that message. In 6.9.1 and earlier the Redis channel caught only `RuntimeException` around each listener. It now catches every `Throwable`, logs it and goes on, and rethrows only a `VirtualMachineError`. Resets were already isolated.
+- The in-memory backend (`InMemoryBackend`, for tests) isolates listeners the same way. A listener's exception no longer reaches the caller whose `put` or `invalidate` published the message.
+
+### Docs
+
+- `Subscription.close()` doesn't wait for callbacks already being delivered, so such a callback can arrive after `close()` returns. It only guarantees that messages and resets arriving after it are not delivered. See [Extending CoCache](../architecture/extending.md).
+- [Deployment](../operations/index.md#channel-mode) now spells out what non-atomic broadcast (`sharded` mode, or after the probe fell back) means when the publish fails after the write succeeded.
 
 ### API
 

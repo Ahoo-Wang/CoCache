@@ -121,9 +121,9 @@ fun interface Subscription : AutoCloseable
 - **Frames.** `frame` is built by the engine with `InvalidationFrame.encode(origin, storageKeys)`. Deliver it to every listener of the namespace, decoded with `InvalidationFrame.decode`. Drop malformed frames. Don't filter by origin: listeners ignore their own `NodeId`.
 - **At most once is enough, silence is not.** Call `onReset()` on every listener of a subscription each time it is established or re-established **and confirmed**, and whenever messages may have been lost (a failed heartbeat, a consumer-group rebalance, a gap in a sequence). The listener then clears its L2. Without resets, a lost message leaves L2 stale until `local-max-age`.
 - **Reset before `subscribe` returns.** The first listener's reset must have run when `subscribe` returns, or a late reset clears copies filled after subscribing. Later listeners on an existing subscription get one `onReset()` right away.
-- **Isolation.** Subscribing a new namespace must not reset other namespaces. A listener that throws must not keep other listeners from receiving the message.
+- **Isolation.** Subscribing a new namespace must not reset other namespaces. A listener that throws, even an `Error`, must not keep other listeners from receiving the message or the reset. The Redis and in-memory backends log the failure and go on. While delivering a message they rethrow only a `VirtualMachineError`.
 - **Failure.** If `subscribe` fails, throw and leave no partial registration: the runtime rolls back the cache.
-- Closing the `Subscription` unsubscribes that listener.
+- Closing the `Subscription` unsubscribes that listener. `close()` only guarantees that messages and resets arriving after it returns are not delivered. A callback already being delivered may reach the listener after `close()` returns, so a listener must tolerate a late callback. The engine's listener does: a late callback only evicts L2 copies.
 
 ## TCK {#tck}
 

@@ -7,7 +7,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ## 未发布
 
-**模块组：** `me.ahoo.cocache` · 计划作为 6.10.0 发布（新增一项配置与 `CacheRuntime.policy`）。修复 6.8.0 架构审查中余下的 6.x 项。没有删除任何 API。Redis 线格式与失效频道不变，可以与任何 6.x 实例共用 Redis，逐台升级。
+**模块组：** `me.ahoo.cocache` · 计划作为 6.10.0 发布（新增一项配置与 `CacheRuntime.policy`）。修复 6.8.0 架构审查中余下的 6.x 项，并隔离失败的失效监听器。没有删除任何 API。Redis 线格式与失效频道不变，可以与任何 6.x 实例共用 Redis，逐台升级。
 
 ### 行为变化：`SetCache` 驱逐检查不再静默跳过
 
@@ -21,6 +21,16 @@ description: CoCache 版本发布历史和重要变更。
 
 - 缓存名不存在时，`DELETE /actuator/cocache/{name}` 与 `DELETE /actuator/cocache/{name}/{key}` 返回 `404`，不再返回 `204`，拼错的缓存名不再看起来成功了。已知缓存仍返回 `204` 与 `200`。
 - `CoCacheEndpoint.clearLocal` 返回 `Boolean`（缓存是否存在），不再返回 `Unit`。经 JMX 调用时返回这个值。
+
+### 修复：抛出异常的失效订阅者不再让其它订阅者错过消息
+
+- 失效订阅者抛出 `Error`（或 Kotlin 代码抛出的受检异常）时，排在它之后的订阅者照常收到这条消息。6.9.1 及之前 Redis 通道对每个订阅者只兜住 `RuntimeException`；现在兜住任何 `Throwable`，记录后继续，只重新抛出 `VirtualMachineError`。重置本来就互不影响。
+- 内存后端（`InMemoryBackend`，供测试使用）同样隔离订阅者。订阅者的异常不再传给发布这条消息的 `put` 或 `invalidate` 的调用方。
+
+### 文档
+
+- `Subscription.close()` 不等待已在投递中的回调，这样的回调可能在 `close()` 返回之后才到达。它只保证之后到达的消息与重置不再投递。见[扩展 CoCache](../architecture/extending.md)。
+- [部署](../operations/index.md#channel-mode)写明了没有原子广播时（`sharded` 模式，或探测降级之后）写入成功、随后的发布失败意味着什么。
 
 ### API
 
