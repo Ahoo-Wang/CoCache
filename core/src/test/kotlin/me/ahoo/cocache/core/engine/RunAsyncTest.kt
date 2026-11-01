@@ -119,4 +119,10 @@ class RunAsyncTest {
             context.close()
         }
     }
+
+    @Test
+    fun dispatcherNamesItsExecutor() {
+        val executor = ForkJoinPool.commonPool()
+        EngineDispatcher(executor).toString().assert().isEqualTo("EngineDispatcher($executor)")
+    }
 }

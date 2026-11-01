@@ -15,9 +15,19 @@ package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheReadException
+import me.ahoo.cocache.api.spi.AsyncRemoteStore
+import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.LeaseRequest
+import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.api.spi.RefreshRequest
+import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.cacheSpec
+import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
@@ -25,6 +35,7 @@ import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
+import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -32,10 +43,13 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * 单 key 读路径运行在协程核心上（RFC 0005 V5）：运行时关闭取消作用域时，进行中的异步读取以关闭失败，取得的 lease 照常交还。
+ * 单 key 读与提前刷新运行在协程核心上（RFC 0005 V5）：运行时关闭取消作用域时，进行中的异步读取以关闭失败，
+ * 申请的 lease 与刷新令牌照常交还；异步 SPI 的实现缺陷按 L1 读失败处理。
  */
 class CoherentEngineCoreTest {
     private val memory = InMemoryBackend()
@@ -44,9 +58,13 @@ class CoherentEngineCoreTest {
     @AfterEach
     fun destroy() {
         runtimes.forEach { it.close() }
+        io.shutdownNow()
     }
 
-    private fun runtime(): CacheRuntime = CacheRuntime.builder().backend(memory).build().also { runtimes += it }
+    private val io = Executors.newSingleThreadExecutor { Thread(it, "l1-io").apply { isDaemon = true } }
+
+    private fun runtime(backend: CoherenceBackend = memory): CacheRuntime =
+        CacheRuntime.builder().backend(backend).build().also { runtimes += it }
 
     private fun spec(block: CacheSpec.Builder<String, String>.() -> Unit) = cacheSpec<String, String>("core") {
         codec = StringCodec
@@ -124,4 +142,77 @@ class CoherentEngineCoreTest {
         releaseHolder.countDown()
         holding.join().assert().isEqualTo("v")
     }
+
+    /**
+     * 提前刷新的 L1 读取尚未送达时关闭运行时：刷新的协程被取消，申请的刷新令牌被交还，另一个调用方随后能取得它。
+     */
+    @Test
+    fun closingTheRuntimeMidRefreshReleasesTheRefreshToken() {
+        val clock = ManualClock()
+        val memory = InMemoryBackend(clock)
+        val backend = HookedBackend(memory)
+        val closing = CacheRuntime.builder().backend(
+            backend
+        ).clock(clock).refreshExecutor(Executor { it.run() }).build()
+        runtimes += closing
+        val window = Duration.ofSeconds(5)
+        val cache = closing.create(
+            spec {
+                asyncLoader = AsyncCacheLoader { CompletableFuture.completedFuture("v") }
+                policy = CachePolicy(
+                    ttl = Duration.ofSeconds(10),
+                    ttlJitter = Duration.ZERO,
+                    localMaxAge = Duration.ofSeconds(8),
+                    refreshWindow = window
+                )
+            }
+        )
+        cache["k"].assert().isEqualTo("v")
+        clock.advance(Duration.ofSeconds(6))
+        val readIssued = CountDownLatch(1)
+        val deliver = CountDownLatch(1)
+        backend.ioExecutor = Executor { task ->
+            readIssued.countDown()
+            io.execute {
+                deliver.awaitOrFail("deliver")
+                task.run()
+            }
+        }
+        // 窗口内的 L2 命中触发刷新：刷新的读取已在 L1 取得令牌，结果被挡在“I/O 线程”上
+        cache["k"].assert().isEqualTo("v")
+        readIssued.awaitOrFail("refresh read issued")
+        closing.close()
+        deliver.countDown()
+
+        val other = RefreshRequest(window, Token(NodeId.random(), 1), Duration.ofSeconds(10))
+        awaitCondition("refresh token released") {
+            val read = memory.store("core").read("cocache:core:k", null, other)
+            read is RemoteRead.Hit && read.refreshGranted
+        }
+    }
+
+    /**
+     * 异步 SPI 的实现以 `null` 完成读取（Java 实现的缺陷）：按 L1 读失败处理，没有数据源时以 [CacheReadException] 失败，
+     * cause 说明原因，而不是在之后的分支上抛出更难懂的异常。
+     */
+    @Test
+    fun aNullAsyncReadIsAReadFailure() {
+        val cache = runtime(NullReadBackend(memory)).create(spec {})
+        val failure = failureOf(cache.async().get("k"))
+        failure.assert().isInstanceOf(CacheReadException::class.java)
+        failure?.cause.assert().isInstanceOf(IllegalStateException::class.java)
+        failure?.cause?.message.assert().isEqualTo("Cache[core] - remote read returned null.")
+    }
+}
+
+/**
+ * 读取以 `null` 完成的后端（模拟有缺陷的 Java 实现），其余操作委托给内存后端。
+ */
+private class NullReadBackend(private val delegate: InMemoryBackend) : CoherenceBackend by delegate {
+    override fun store(namespace: String): RemoteStore = NullReadStore(delegate.store(namespace) as AsyncRemoteStore)
+}
+
+private class NullReadStore(private val delegate: AsyncRemoteStore) : AsyncRemoteStore by delegate {
+    override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
+        CompletableFuture.completedFuture(null)
 }
