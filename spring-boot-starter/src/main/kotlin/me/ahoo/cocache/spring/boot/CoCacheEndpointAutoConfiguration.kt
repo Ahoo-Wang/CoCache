@@ -15,6 +15,7 @@ package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.core.CacheRuntime
 import org.springframework.boot.actuate.autoconfigure.endpoint.condition.ConditionalOnAvailableEndpoint
+import org.springframework.boot.actuate.autoconfigure.endpoint.expose.EndpointExposure
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
@@ -44,4 +45,14 @@ class CoCacheEndpointAutoConfiguration {
     @ConditionalOnBean(CacheRuntime::class)
     @ConditionalOnAvailableEndpoint(CoCacheEndpoint::class)
     fun cocacheEndpoint(runtime: CacheRuntime): CoCacheEndpoint = CoCacheEndpoint(runtime)
+
+    /**
+     * 端点经 HTTP 暴露时，未知缓存的 `DELETE` 返回 404（[CoCacheEndpointWebExtension]）。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(CoCacheEndpoint::class)
+    @ConditionalOnAvailableEndpoint(endpoint = CoCacheEndpoint::class, exposure = [EndpointExposure.WEB])
+    fun cocacheEndpointWebExtension(endpoint: CoCacheEndpoint): CoCacheEndpointWebExtension =
+        CoCacheEndpointWebExtension(endpoint)
 }

@@ -166,11 +166,17 @@ data class CoCacheProperties @ConstructorBinding constructor(
         @DefaultValue("pubsub")
         val channelMode: RedisChannelMode,
         /**
-         * 有 `SetCache` 时启动检查各主节点的 `maxmemory-policy`：`allkeys-*` 会驱逐集合的唯一副本。
-         * `warn`（默认）记录告警，`fail` 启动失败，`off` 不检查。`CONFIG` 不可用时跳过。
+         * 有 `SetCache`（含尚未创建的声明）时启动检查各主节点的 `maxmemory-policy`（读取 `INFO memory`）：`allkeys-*` 会驱逐集合的唯一副本，
+         * `volatile-*` 会驱逐 `ttl` 有限的集合（只告警）。`warn`（默认）记录告警，`fail` 启动失败，`off` 不检查。
+         * 读不到策略且没有配置 `assume-maxmemory-policy` 时同样按此处理。
          */
         @DefaultValue("warn")
         val setCacheEvictionCheck: EvictionCheck,
+        /**
+         * 读不到 `maxmemory-policy`（Redis 用户没有 `INFO` 权限、托管服务禁用了它）时，驱逐检查按这个值判断，
+         * 如 `noeviction`、`volatile-lru`；必须是 `noeviction`、`allkeys-*` 或 `volatile-*`。读得到时以实际的值为准。
+         */
+        val assumeMaxmemoryPolicy: String? = null,
     ) {
         fun toOptions(): RedisBackendOptions = RedisBackendOptions(
             commandTimeout,

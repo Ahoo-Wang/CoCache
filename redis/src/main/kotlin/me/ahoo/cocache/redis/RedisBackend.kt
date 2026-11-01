@@ -109,13 +109,14 @@ class RedisBackend private constructor(
 
     /**
      * 各主节点的 `maxmemory-policy`（键为 `host:port`，单机为 `redis`），供启动检查判断集合缓存的唯一副本会不会被驱逐。
-     * `CONFIG` 不可用（托管 Redis 常禁用或改名、ACL 无权限）时返回 `null`。
+     * 读取 `INFO memory`（托管 Redis 通常禁用 `CONFIG`，但允许 `INFO`）；`INFO` 不可用（被禁用、改名、ACL 无权限）时返回 `null`，
+     * 由调用方决定怎么处理。
      */
     fun maxmemoryPolicies(): Map<String, String>? {
         return try {
             connections.maxmemoryPolicies()
         } catch (e: RedisException) {
-            log.info { "Cannot read maxmemory-policy (${e.message}); skipping the check." }
+            log.info { "Cannot read maxmemory-policy from INFO memory (${e.message})." }
             null
         }
     }

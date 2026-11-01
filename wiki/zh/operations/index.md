@@ -55,7 +55,9 @@ starter 按以下顺序从 Spring Boot 的 Redis 连接信息中选择拓扑：
 | 你的缓存 | 可用的策略 | 原因 |
 |----------|------------|------|
 | 只有 `Cache` | 任意。`allkeys-lru` 或 `allkeys-lfu` 让 Redis 成为有界缓存 | 值或负缓存被淘汰就是未命中。lease 被淘汰时，加载方的填充被拒绝，值只以 `degraded-local-max-age` 留在该实例的 L2 中。不会产生陈旧数据 |
-| 有任何 `SetCache` | `noeviction` 或 `volatile-*` | Redis 保存的是集合的唯一副本，`allkeys-*` 会悄悄丢失成员。`SetCache` 的 key 默认没有到期时间，`volatile-*` 不会淘汰它们。启动时 CoCache 读取各主节点的策略，遇到 `allkeys-*` 时告警（`cocache.redis.set-cache-eviction-check`：`warn`、`fail` 或 `off`）；`CONFIG` 不可用时跳过检查。设置了有限 `ttl` 的 `SetCache` 在 `volatile-*` 下仍可能被淘汰 |
+| 有任何 `SetCache` | `noeviction` 或 `volatile-*` | Redis 保存的是集合的唯一副本，`allkeys-*` 会悄悄丢失成员。`SetCache` 的 key 默认没有到期时间，`volatile-*` 不会淘汰它们。设置了有限 `ttl` 的 `SetCache` 在 `volatile-*` 下仍可能被淘汰 |
+
+只要声明了 `SetCache`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。遇到 `allkeys-*` 时告警，`cocache.redis.set-cache-eviction-check: fail` 时启动失败（`off` 不检查）。`volatile-*` 下为每个 `ttl` 有限的 `SetCache` 告警。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时告警，`fail` 模式下启动失败，而不是静默跳过检查。6.9.1 及之前，检查读取 `CONFIG GET`，失败时静默跳过，也不检查尚未创建的 `SetCache` bean。
 
 `noeviction` 下 Redis 达到 `maxmemory` 时：
 
@@ -89,7 +91,14 @@ TLS 用 Spring Boot 的标准配置项开启。CoCache 对它连接的每个节�
 
 `pubsub` 模式下，后端在启动时检查脚本能否向另一个 slot 的频道发布。部分托管服务（如 ElastiCache Serverless）把 `PUBLISH` 当作 `SPUBLISH` 执行，会拒绝这种发布；禁止探测频道的 ACL 效果相同。此时后端改为在每次写入之后单独发布，并记录 `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.`，[健康检查](./observability.md#health)显示 `atomicBroadcast: false`。只有这些确定性的错误才会触发降级；探测超时会让启动失败，而不是永久降级。
 
-没有原子广播时，进程在写入与发布之间崩溃会丢失这条消息。此时 L1 已经正确，其它实例的 L2 副本最多保留到 `local-max-age`。
+::: warning 没有原子广播时
+`sharded` 模式下，或探测降级之后，发布是写脚本之后单独执行的一条命令。因此：
+
+- 进程在写入与发布之间崩溃，会丢失这条消息。
+- 写入成功、随后的发布失败时，调用方看到的是写入失败：`put` 抛出 `CacheWriteException`，尽管 Redis 中已经是新值；`invalidate` 按 `invalidate-failure` 处理，重试的失效会再次发布。重试 `put` 是安全的，并会再次发布。
+
+两种情况下 L1 都已经正确，错过这条消息的实例的 L2 副本最多保留到 `local-max-age`。写入的顺序见 [architecture.md §4.2](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md)。
+:::
 
 ## 容量规划 {#sizing}
 
@@ -158,13 +167,13 @@ CoCache 的 Redis 用户需要以下权限：
 |------|------|
 | key | 对你的 key 前缀可读写（默认 `~cocache:*`）。`pubsub` 模式下还需要 `~cocache:probe:*` |
 | 频道 | `&cocache:inv:*`。`pubsub` 模式下还需要 `&cocache:probe:*`，否则后端退回非原子广播 |
-| 直接调用的命令 | `EVALSHA`、`EVAL`（`NOSCRIPT` 后的回退）、`PING`（心跳）、`PUBLISH`、`SUBSCRIBE`、`UNSUBSCRIBE`，`sharded` 模式下为 `SPUBLISH`、`SSUBSCRIBE`、`SUNSUBSCRIBE`，以及连接命令（`HELLO`、`AUTH`、`CLIENT`、`SELECT`） |
+| 直接调用的命令 | `EVALSHA`、`EVAL`（`NOSCRIPT` 后的回退）、`PING`（心跳）、`PUBLISH`、`SUBSCRIBE`、`UNSUBSCRIBE`，`sharded` 模式下为 `SPUBLISH`、`SSUBSCRIBE`、`SUNSUBSCRIBE`，以及连接命令（`HELLO`、`AUTH`、`CLIENT`、`SELECT`）。使用 `SetCache` 时还需要 `INFO`，供[启动时的驱逐检查](#maxmemory-policy)使用 |
 | 脚本内的命令 | Redis 7 同样按调用方的 ACL 检查：`GET`、`SET`、`DEL`、`PTTL`、`TYPE`、`HGETALL`、`HKEYS`、`HGET`、`HSET`、`HDEL`、`HEXISTS`、`HLEN`、`PEXPIRE`、`PERSIST`、`SETRANGE`、`TIME` |
 
 一个起点（已在 Redis 7.4 上以该用户执行全部 CoCache 脚本验证）：
 
 ```
-ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
+ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
 ```
 
 自 6.3.0 起，读取 `SetCache` 成员时用 `HKEYS` 与 `HGET` 取代 `HGETALL`。升级前先给已有用户加上这两条命令，否则集合读取会以 ACL 错误失败（措辞随 Redis 版本不同），已存数据不受影响。`HGETALL` 仍需保留：条件回收与旧版本实例还在使用它。

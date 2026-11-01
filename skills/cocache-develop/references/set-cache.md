@@ -33,5 +33,5 @@ val members: Set<String> = online[roomId] // empty set when absent
 ## Operational requirements
 
 - Redis durability is the set's durability: enable AOF or RDB, and expect an asynchronous-replication failover to lose recent writes.
-- `maxmemory-policy` must be `noeviction` or `volatile-*`; `allkeys-*` silently drops members. CoCache does not check this.
+- `maxmemory-policy` must be `noeviction`, or `volatile-*` when the set has no `ttl`; `allkeys-*` silently drops members. The starter checks this at startup (`cocache.redis.set-cache-eviction-check`, default `warn`) by reading `INFO memory`, so the Redis user needs `+info`, or set `cocache.redis.assume-maxmemory-policy`.
 - Never `DEL` a `SetCache` key from outside, and never send it an external invalidation; the actuator per-key `DELETE` on a set cache is `clear`.

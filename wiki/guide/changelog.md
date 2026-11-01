@@ -7,7 +7,25 @@ description: Release history and notable changes for CoCache.
 
 ## Unreleased
 
-**Module Group:** `me.ahoo.cocache` · Fixes for three low-severity findings from the 6.8.0 architecture review, plus a documentation note, all in `cocache-core`. No API, wire format or channel changes.
+**Module Group:** `me.ahoo.cocache` · Planned as 6.10.0, because it adds a configuration property and `CacheRuntime.policy`. Fixes the remaining 6.x items from the 6.8.0 architecture review and isolates failing invalidation listeners. No API is removed. The Redis wire format and the invalidation channel are unchanged, so these instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Behavior change: the `SetCache` eviction check no longer skips silently
+
+- The startup check reads `maxmemory-policy` from `INFO memory` instead of `CONFIG GET`. Managed services that block `CONFIG` usually allow `INFO`. With a `SetCache`, the Redis user needs `+info`; the [ACL starting point](../operations/index.md#acl) now includes it.
+- If the policy still can't be read, the check no longer skips silently. It uses the new `cocache.redis.assume-maxmemory-policy` when set. Otherwise it logs a warning, or stops startup with `cocache.redis.set-cache-eviction-check: fail`. To keep `fail` mode on a Redis that denies `INFO`, grant `+info` or set `assume-maxmemory-policy` to the policy of your deployment.
+- It checks every declared `SetCache`, including lazy beans that aren't created at startup (for example with `spring.main.lazy-initialization=true`). Their `ttl` comes from the same annotation, customizers and properties as at creation. The check doesn't create them.
+- Under `volatile-*` it warns about each `SetCache` with a finite `ttl`, which Redis can evict before it expires. This is only a warning, also in `fail` mode.
+- See [maxmemory-policy](../operations/index.md#maxmemory-policy).
+
+### Behavior change: endpoint `DELETE` on an unknown cache returns `404`
+
+- `DELETE /actuator/cocache/{name}` and `DELETE /actuator/cocache/{name}/{key}` return `404` for an unknown cache name instead of `204`, so a misspelled name no longer looks like success. Known caches still return `204` and `200`.
+- `CoCacheEndpoint.clearLocal` returns `Boolean` (whether the cache exists) instead of `Unit`. Over JMX the operation returns that value.
+
+### Fix: a failing invalidation listener no longer starves the others
+
+- An invalidation listener that throws an `Error`, or a checked exception thrown from Kotlin, no longer keeps the listeners after it from receiving that message. In 6.9.1 and earlier the Redis channel caught only `RuntimeException` around each listener. It now catches every `Throwable`, logs it and goes on, and rethrows only a `VirtualMachineError`. Resets were already isolated.
+- The in-memory backend (`InMemoryBackend`, for tests) isolates listeners the same way. A listener's exception no longer reaches the caller whose `put` or `invalidate` published the message.
 
 ### Fix: an interrupted waiter stops waiting
 
@@ -22,9 +40,16 @@ description: Release history and notable changes for CoCache.
 
 - When creating a cache failed in `backend.store` or while constructing the engine, its namespace stayed taken, so retrying the same cache failed with `Namespace[…] is already used by another cache.` The namespace is now released, and a store that was already created is closed.
 
-### Docs: checked exceptions through interface proxies
+### Docs
 
+- `Subscription.close()` doesn't wait for callbacks already being delivered, so such a callback can arrive after `close()` returns. It only guarantees that messages and resets arriving after it are not delivered. See [Extending CoCache](../architecture/extending.md).
+- [Deployment](../operations/index.md#channel-mode) now spells out what non-atomic broadcast (`sharded` mode, or after the probe fell back) means when the publish fails after the write succeeded.
 - `@CoCache` interface proxies pass exceptions through unwrapped, except where the JDK requires otherwise: a checked exception the interface method doesn't declare, such as an `IOException` thrown by a Kotlin loader, arrives wrapped in `UndeclaredThrowableException`, with the original as its `cause`. Caches injected from a spec are the engine itself and are unaffected. See [Architecture](../architecture/index.md).
+
+### API
+
+- `CacheRuntime.policy(name)` returns the effective `CachePolicy` of a created cache.
+- New property `cocache.redis.assume-maxmemory-policy` (see [Configuration](./configuration.md)).
 
 ## v6.9.1 (Current)
 
