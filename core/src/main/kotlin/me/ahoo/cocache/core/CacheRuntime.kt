@@ -41,7 +41,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ForkJoinPool
 import java.util.concurrent.ForkJoinWorkerThread
 import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
@@ -105,14 +104,14 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     }
 
     /**
-     * 异步路径的执行资源（RFC 0004 §5.1）。运行时自建的执行器与定时器随运行时关闭；调用方给出的执行器不关闭。
-     * 关闭顺序（[owned] 逆序）：先让未触发的定时等待失败，再停定时器，最后关闭自建的执行器。
+     * 异步路径的执行资源（RFC 0004 §5.1）。运行时自建的执行器随运行时关闭；调用方给出的执行器不关闭。
+     * 关闭顺序（[owned] 逆序）：先取消运行时作用域（进行中的异步调用以关闭失败），再关闭自建的执行器。
+     * 等待 lease 的退避与等待回源许可都是挂起（`delay`、信号量），不再需要专门的定时器线程。
      */
     private fun asyncContext(builder: Builder): AsyncContext {
         val executor = builder.asyncExecutor ?: defaultAsyncExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
         val blocking = builder.blockingExecutor ?: defaultBlockingExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
-        val timer = defaultTimer().also { owned.add(AutoCloseable { it.shutdownNow() }) }
-        return AsyncContext(executor, blocking, timer).also { owned.add(it) }
+        return AsyncContext(executor, blocking).also { owned.add(it) }
     }
 
     /**
@@ -364,10 +363,6 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         private fun virtualThreadExecutor(): ExecutorService? = runCatching {
             Executors::class.java.getMethod("newVirtualThreadPerTaskExecutor").invoke(null) as ExecutorService
         }.getOrNull()
-
-        private fun defaultTimer(): ScheduledExecutorService {
-            return ScheduledThreadPoolExecutor(1, daemonThreads("cocache-timer")).apply { removeOnCancelPolicy = true }
-        }
 
         private fun defaultScheduler(): ScheduledExecutorService {
             return Executors.newSingleThreadScheduledExecutor(daemonThreads("cocache-retry"))

@@ -26,8 +26,8 @@ import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetCacheSpec
 import me.ahoo.cocache.core.internal.Futures
+import me.ahoo.cocache.core.internal.awaitOriginal
 import me.ahoo.cocache.core.internal.runSync
-import me.ahoo.cocache.core.internal.thenNext
 import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
@@ -82,13 +82,13 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     /**
-     * 异步变体：L2 命中返回已完成的 future，不启动协程；未命中在运行时作用域中运行同一份协程核心。
-     * L1 读失败以原始异常失败（没有可降级的数据源）。
+     * 异步变体：L2 命中返回已完成的 future，不启动协程；未命中在运行时作用域中运行同一份协程核心（[loadEntry]），再经 [map] 换算。
+     * L1 读失败以原始异常失败（没有可降级的数据源）；`KeyEncoder` 抛出同样以失败的 future 交出，从不同步抛出。
      */
-    private fun entryOfAsync(key: K): CompletableFuture<LocalEntry<Set<E>>> {
+    private fun <R> entryOfAsync(key: K, map: (LocalEntry<Set<E>>) -> R): CompletableFuture<R> = Futures.attempt {
         val storageKey = storageKey(key)
-        val entry = localHit(storageKey) ?: return context.async.runAsync { loadEntry(storageKey) }
-        return CompletableFuture.completedFuture(entry)
+        val entry = localHit(storageKey) ?: return@attempt context.async.runAsync { map(loadEntry(storageKey)) }
+        CompletableFuture.completedFuture(map(entry))
     }
 
     private fun localHit(storageKey: String): LocalEntry<Set<E>>? {
@@ -391,11 +391,7 @@ internal class SetEngine<K : Any, E : Any>(
         override val name: String
             get() = this@SetEngine.name
 
-        override fun get(key: K): CompletableFuture<Set<E>?> = toUser {
-            entryOfAsync(
-                key
-            ).map { it.value ?: emptySet() }
-        }
+        override fun get(key: K): CompletableFuture<Set<E>?> = entryOfAsync(key) { it.value ?: emptySet() }
 
         override fun get(key: K, loader: AsyncCacheLoader<K, Set<E>>): CompletableFuture<Set<E>?> = CompletableFuture.failedFuture(
             UnsupportedOperationException(
@@ -403,21 +399,20 @@ internal class SetEngine<K : Any, E : Any>(
             )
         )
 
-        override fun getAll(keys: Collection<K>): CompletableFuture<Map<K, Set<E>>> = toUser {
-            val futures = LinkedHashMap<K, CompletableFuture<LocalEntry<Set<E>>>>()
-            keys.forEach { key -> futures.getOrPut(key) { entryOfAsync(key) } }
-            CompletableFuture.allOf(*futures.values.toTypedArray()).thenNext(executor) {
+        /**
+         * 每个未命中的 key 各自运行协程核心，并发读 L1（同步变体逐个读取），全部发出之后再按顺序组装。
+         */
+        override fun getAll(keys: Collection<K>): CompletableFuture<Map<K, Set<E>>> = Futures.attempt {
+            val entries = LinkedHashMap<K, CompletableFuture<LocalEntry<Set<E>>>>()
+            keys.forEach { key -> entries.getOrPut(key) { entryOfAsync(key) { it } } }
+            context.async.runAsync {
                 val result = LinkedHashMap<K, Set<E>>()
-                futures.forEach { (key, future) -> future.join().value?.let { result[key] = it } }
-                CompletableFuture.completedFuture(result)
+                entries.forEach { (key, entry) -> entry.awaitOriginal().value?.let { result[key] = it } }
+                result
             }
         }
 
-        override fun lookup(key: K): CompletableFuture<Lookup<Set<E>>> = toUser {
-            entryOfAsync(
-                key
-            ).map { lookupOf(it) }
-        }
+        override fun lookup(key: K): CompletableFuture<Lookup<Set<E>>> = entryOfAsync(key) { lookupOf(it) }
 
         override fun put(key: K, value: Set<E>): CompletableFuture<Void?> = runAsyncCommand {
             putWithTtl(key, value, policy.valueTtl())
@@ -435,9 +430,9 @@ internal class SetEngine<K : Any, E : Any>(
             putAllWithTtl(entries, ttl)
         }
 
-        override fun invalidate(key: K): CompletableFuture<Void?> = toUser { unsupportedInvalidate() }
+        override fun invalidate(key: K): CompletableFuture<Void?> = Futures.attempt { unsupportedInvalidate() }
 
-        override fun invalidateAll(keys: Collection<K>): CompletableFuture<Void?> = toUser { unsupportedInvalidate() }
+        override fun invalidateAll(keys: Collection<K>): CompletableFuture<Void?> = Futures.attempt { unsupportedInvalidate() }
 
         override fun add(key: K, elements: Collection<E>): CompletableFuture<Void?> = runAsyncCommand {
             addMembers(key, elements)
@@ -452,12 +447,5 @@ internal class SetEngine<K : Any, E : Any>(
         override fun sync(): SetCache<K, E> = this@SetEngine
 
         override fun toString(): String = "AsyncView(${this@SetEngine})"
-
-        private fun <T, R> CompletableFuture<T>.map(fn: (T) -> R): CompletableFuture<R> =
-            thenNext(executor) { CompletableFuture.completedFuture(fn(it)) }
-
-        private fun <T> toUser(block: () -> CompletableFuture<T>): CompletableFuture<T> = Futures.relay(
-            Futures.attempt(block)
-        )
     }
 }

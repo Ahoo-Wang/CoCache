@@ -50,7 +50,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 | A result that is already available (an in-memory backend, a loader that completed synchronously) | Continues on the calling thread |
 | A Redis result or a loader future that completes later | Continues on the **async executor**, never on the Lettuce I/O thread |
 | A synchronous loader called through the async view | Runs on the **blocking executor** only |
-| Waiting for another instance's lease, or for a load permit | Holds no thread: a timer re-reads Redis, and a released permit wakes the next waiter |
+| Waiting for another instance's lease, or for a load permit | Holds no thread: the read is suspended and re-reads Redis after a short backoff, and a released permit goes to the next waiter in arrival order (sync and async callers share one queue) |
 
 Your own dependent stages (`thenApply`, `whenComplete`) follow the JDK's rules: they run on the thread that completes the future, or on a thread that later calls `get()` or `join()` on it.
 

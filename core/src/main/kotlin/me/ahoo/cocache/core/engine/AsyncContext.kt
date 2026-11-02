@@ -23,18 +23,14 @@ import me.ahoo.cocache.core.internal.ExecutionMode
 import me.ahoo.cocache.core.internal.Futures
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
 
 /**
  * 异步路径的执行资源（RFC 0004 §5.1）。
  *
  * @param executor 异步执行器：只运行短小的非阻塞续接（解码、L2 填充、发出下一条 L1 命令、调用 `loadAsync`）
  * @param blocking 阻塞执行器：异步路径上的同步 loader 与非原生异步后端的同步 SPI 调用，只在这里执行
- * @param timer 定时器：等待 lease 的退避重读、等待回源许可的重试；定时任务只把工作提交给 [executor]
  *
  * 协程核心（RFC 0005 §4.4）的异步变体运行在 [scope] 中：调度器把任务交给 [executor]（[EngineDispatcher]），`SupervisorJob` 让一次加载的失败不影响其它加载；
  * 共享加载在这里执行，调用方被取消只结束它自己的等待。运行时关闭时取消它。
@@ -42,13 +38,7 @@ import java.util.concurrent.TimeUnit
 internal class AsyncContext(
     val executor: Executor,
     val blocking: Executor,
-    private val timer: ScheduledExecutorService?,
 ) : AutoCloseable {
-    /**
-     * 尚未触发的定时等待：运行时关闭时以 [IllegalStateException] 完成，否则它们永远不会完成。
-     */
-    private val pending = ConcurrentHashMap.newKeySet<CompletableFuture<*>>()
-
     /**
      * 运行时作用域：协程核心的异步变体与共享加载在这里运行。
      */
@@ -85,50 +75,13 @@ internal class AsyncContext(
         private set
 
     /**
-     * 延迟 [delayNanos] 后在 [executor] 上执行 [block]。运行时关闭后以 [IllegalStateException] 失败。
-     */
-    fun <R> after(delayNanos: Long, block: () -> CompletableFuture<R>): CompletableFuture<R> {
-        val result = CompletableFuture<R>()
-        val scheduler = timer ?: return CompletableFuture.failedFuture(IllegalStateException("No timer."))
-        if (closed) {
-            return CompletableFuture.failedFuture(closedError())
-        }
-        pending.add(result)
-        result.whenComplete { _, _ -> pending.remove(result) }
-        if (closed) {
-            // 与 close 并发：close 可能已经遍历过 pending，自己失败，否则这个 future 永远不会完成
-            result.completeExceptionally(closedError())
-            return result
-        }
-        try {
-            val task = scheduler.schedule({
-                Futures.dispatch(executor, result) { Futures.relay(Futures.attempt(block), result) }
-            }, delayNanos, TimeUnit.NANOSECONDS)
-            // 提前完成（取消、关闭）时撤销定时任务
-            result.whenComplete { _, _ -> task.cancel(false) }
-        } catch (e: RejectedExecutionException) {
-            result.completeExceptionally(closedError().initCause(e))
-        }
-        return result
-    }
-
-    /**
-     * 停止接受定时等待，并让尚未触发的等待失败（由运行时在关闭定时器之前调用）。
+     * 取消运行时作用域：进行中的异步调用（含等待 lease、等待回源许可）在下一个挂起点以 [IllegalStateException] 失败
+     * （由运行时在关闭执行器之前调用）。
      */
     override fun close() {
         closed = true
-        pending.toList().forEach { it.completeExceptionally(closedError()) }
         scope.cancel("CacheRuntime closed.")
     }
 
     private fun closedError(): IllegalStateException = IllegalStateException("CacheRuntime closed.")
-
-    companion object {
-        private val DIRECT = Executor { it.run() }
-
-        /**
-         * 测试用：全部就地执行，没有定时器。
-         */
-        fun direct(): AsyncContext = AsyncContext(DIRECT, DIRECT, null)
-    }
 }

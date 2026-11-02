@@ -18,26 +18,21 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.Executor
 import kotlin.coroutines.coroutineContext
 
 /**
- * 按 key 合并并发调用：同一 key 同一时刻只有一个 leader 执行，其余调用者等待并共享其结果或原始异常。
- * 同步调用（[execute]）与异步调用（[executeAsync]）共用一张表，互相合并（RFC 0004 §5.4）。
+ * 按 key 合并并发调用（协程核心，RFC 0005 §4.4）：同一 key 同一时刻只有一个 leader 执行，其余调用者挂起等待并共享其结果或原始异常。
  *
  * - leader 先注销调用、再发布结果：被唤醒的等待者若立即重试，必然开始新的执行（读己之写依赖这一顺序）。
- *   两种 leader 都在注册之后才执行 block（block 的第一件事是取戳）。
- * - 同步调用合并到异步调用时只阻塞自己的线程；异步调用合并到同步调用时经 [Executor] 拿到结果，
- *   用户的续接不会跑在同步 leader 的线程上。每个异步调用方拿到自己的 future，取消只影响自己。
- * - 同线程对同一 key 的重入快速失败（否则自我等待死锁）：同步调用的拥有线程，或正在 [loading] 内为该 key 调用 loader 的线程。
+ *   leader 在注册之后才执行 block（block 的第一件事是取戳）。
+ * - leader 在调用方的协程中执行：同步变体即调用方线程，异步变体省去一次派发；上下文中没有执行变体的调用方改由运行时作用域执行。
+ *   跟随者挂起等待，不占线程；取消只结束它自己的等待。
+ * - 同线程对同一 key 的重入快速失败（否则自我等待死锁）：同步 leader 的拥有线程，或正在 [loading] 内为该 key 调用数据源的线程。
  * - 批量调用先完成自己负责的 key，再等待其它调用者负责的 key，避免两个批量调用互相等待。
- * - 协程核心（RFC 0005 §4.4）经 [executeSuspending] 使用同一张表：leader 在调用方的协程中执行（同步变体即调用方线程），
- *   可能被单独取消的调用方改由运行时作用域执行；跟随者挂起等待，不占线程。
  */
 internal class SingleFlight<K : Any, R> {
     /**
-     * @param owner 同步 leader 的线程；异步调用为 `null`（没有拥有线程）
+     * @param owner 同步 leader 的线程；其它调用为 `null`（没有拥有线程）
      */
     private class Call<R>(val owner: Thread?) {
         val future = CompletableFuture<R>()
@@ -52,135 +47,6 @@ internal class SingleFlight<K : Any, R> {
 
     val inFlight: Int
         get() = calls.size
-
-    @Suppress("TooGenericExceptionCaught")
-    fun execute(key: K, block: () -> R): R {
-        val call = Call<R>(Thread.currentThread())
-        val existing = calls.putIfAbsent(key, call)
-        if (existing != null) {
-            checkNotReentrant(key, existing)
-            return await(existing)
-        }
-        val result = try {
-            // 本线程是 key 的同步 owner：其间完成的别的 future 的续接派发出去，不在 owner 的作用域内就地执行（Futures.withoutInline）
-            Futures.withoutInline(block)
-        } catch (error: Throwable) {
-            calls.remove(key, call)
-            call.future.completeExceptionally(error)
-            throw error
-        }
-        calls.remove(key, call)
-        call.future.complete(result)
-        return result
-    }
-
-    /**
-     * 异步执行：[block] 在注册之后、在调用方线程上被调用，返回的 future 完成时先注销、再发布。
-     * 返回的 future 以原始异常失败（含重入），从不同步抛出。
-     *
-     * @param executor 合并到同步调用时用来送达结果的执行器
-     */
-    fun executeAsync(key: K, executor: Executor, block: () -> CompletableFuture<R>): CompletableFuture<R> {
-        val call = Call<R>(null)
-        val existing = calls.putIfAbsent(key, call)
-        if (existing != null) {
-            return Futures.attempt {
-                checkNotReentrant(key, existing)
-                joinAsync(existing, executor)
-            }
-        }
-        Futures.attempt(block).whenComplete { result, error ->
-            calls.remove(key, call)
-            if (error != null) {
-                call.future.completeExceptionally(
-                    Futures.unwrap(error)
-                )
-            } else {
-                call.future.complete(result)
-            }
-        }
-        return Futures.relay(call.future)
-    }
-
-    /**
-     * 批量执行：[block] 收到本调用负责的 key，必须为每个 key 返回结果。
-     */
-    @Suppress("TooGenericExceptionCaught")
-    fun executeAll(keys: Collection<K>, block: (List<K>) -> Map<K, R>): Map<K, R> {
-        val owner = Thread.currentThread()
-        val led = LinkedHashMap<K, Call<R>>()
-        val joined = LinkedHashMap<K, Call<R>>()
-        try {
-            register(keys, owner, led, joined)
-        } catch (error: Throwable) {
-            abandon(led, error)
-            throw error
-        }
-        val results = LinkedHashMap<K, R>()
-        if (led.isNotEmpty()) {
-            val loaded = try {
-                Futures.withoutInline { block(led.keys.toList()) }
-            } catch (error: Throwable) {
-                abandon(led, error)
-                throw error
-            }
-            publish(led, loaded, results)
-        }
-        for ((key, call) in joined) {
-            results[key] = await(call)
-        }
-        return results
-    }
-
-    /**
-     * 异步批量执行：先为全部 key 注册，再启动本调用负责的整批，最后合并其它调用者的结果。
-     */
-    fun executeAllAsync(
-        keys: Collection<K>,
-        executor: Executor,
-        block: (List<K>) -> CompletableFuture<Map<K, R>>
-    ): CompletableFuture<Map<K, R>> {
-        val led = LinkedHashMap<K, Call<R>>()
-        val joined = LinkedHashMap<K, Call<R>>()
-        try {
-            register(keys, null, led, joined)
-        } catch (@Suppress("TooGenericExceptionCaught") error: Throwable) {
-            abandon(led, error)
-            return CompletableFuture.failedFuture(error)
-        }
-        val own: CompletableFuture<Map<K, R>> = if (led.isEmpty()) {
-            CompletableFuture.completedFuture(emptyMap())
-        } else {
-            val ownResult = CompletableFuture<Map<K, R>>()
-            Futures.attempt { block(led.keys.toList()) }.whenComplete { loaded, error ->
-                if (error != null) {
-                    val cause = Futures.unwrap(error)
-                    abandon(led, cause)
-                    ownResult.completeExceptionally(cause)
-                } else {
-                    val results = LinkedHashMap<K, R>()
-                    publish(led, loaded, results)
-                    ownResult.complete(results)
-                }
-            }
-            ownResult
-        }
-        val others = joined.mapValues { (_, call) -> joinAsync(call, executor) }
-        val all = ArrayList<CompletableFuture<*>>(others.size + 1)
-        all.add(own)
-        all.addAll(others.values)
-        val result = CompletableFuture<Map<K, R>>()
-        CompletableFuture.allOf(*all.toTypedArray()).whenComplete { _, error ->
-            if (error != null) {
-                result.completeExceptionally(Futures.unwrap(error))
-                return@whenComplete
-            }
-            val merged = LinkedHashMap<K, R>(own.join())
-            others.forEach { (key, future) -> merged[key] = future.join() }
-            result.complete(merged)
-        }
-        return result
-    }
 
     /**
      * 在本线程上为 [keys] 调用 loader 期间执行 [block]：其间本线程对这些 key 的同步或异步调用快速失败。
@@ -349,28 +215,6 @@ internal class SingleFlight<K : Any, R> {
         val current = Thread.currentThread()
         check(existing.owner !== current && loadingKeys.get()?.contains(key) != true) {
             "Recursive call on the same key[$key] is not supported."
-        }
-    }
-
-    /**
-     * 合并到异步调用：它本来就在引擎的线程上完成，直接转发；合并到同步调用：经 [executor] 送达。
-     */
-    private fun joinAsync(call: Call<R>, executor: Executor): CompletableFuture<R> {
-        return if (call.owner == null) Futures.relay(call.future) else Futures.relayOn(executor, call.future)
-    }
-
-    /**
-     * 同步跟随者等待 leader 的结果，响应中断（RFC 0005 附录 A.S1）：恢复中断标志并抛出 [InterruptedException]，只影响跟随者自己，
-     * leader 照常执行、发布，其它跟随者照常拿到结果。已完成的结果照常返回，不论中断标志。
-     */
-    private fun await(call: Call<R>): R {
-        try {
-            return call.future.get()
-        } catch (error: ExecutionException) {
-            throw error.cause ?: error
-        } catch (error: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw error
         }
     }
 }
