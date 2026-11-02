@@ -289,10 +289,11 @@ internal class SingleFlight<K : Any, R : Any>(
 
     /**
      * 跟随者等待另一个调用者执行的加载，到这次加载的截止时刻为止；超时以 [onTimeout] 的异常失败。
+     * 已经完成的加载照常交出结果，即使截止时刻已过（批量调用领头自己的 key、在作用域中同步执行完的 leader 都可能越过它）。
      * 同步变体在调用方线程上限时停顿（`runBlocking` 的事件循环计时），异步变体不占线程。
      */
     private suspend fun awaitFollower(call: Call<R>): R {
-        if (timeoutNanos == NO_TIMEOUT) {
+        if (timeoutNanos == NO_TIMEOUT || call.future.isDone) {
             return awaitSuspending(call)
         }
         val remaining = call.registeredAt + timeoutNanos - System.nanoTime()

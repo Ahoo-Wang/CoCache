@@ -490,6 +490,59 @@ class SingleFlightTest {
         bounded.inFlight.assert().isEqualTo(0)
     }
 
+    /**
+     * 批量领头自己的 key 期间越过了合并到的 key 的截止时刻：那次加载已经完成时照常交出结果，仍未完成时立即以超时失败
+     * （默认的 onTimeout 抛出 [IllegalStateException]）。
+     */
+    @Test
+    fun aJoinedKeyPastItsDeadlineYieldsItsReadyResultOrTimesOut() {
+        val timeout = TimeUnit.MILLISECONDS.toNanos(200)
+        val bounded = SingleFlight<String, String>(timeout)
+        val finishing = CountDownLatch(1)
+        val finished = stuckLeader(bounded, finishing, key = "a")
+        val ready = runSync {
+            bounded.executeAllSuspending(listOf("a", "b"), scope) { keys ->
+                finishing.countDown()
+                finished.join()
+                TimeUnit.NANOSECONDS.sleep(timeout)
+                keys.associateWith { "${it}2" }
+            }
+        }
+        ready.assert().isEqualTo(mapOf("a" to "stuck", "b" to "b2"))
+
+        val release = CountDownLatch(1)
+        val stuck = stuckLeader(bounded, release, key = "a")
+        val timedOut = runCatching {
+            runSync {
+                bounded.executeAllSuspending(listOf("a", "b"), scope) { keys ->
+                    TimeUnit.NANOSECONDS.sleep(timeout)
+                    keys.associateWith { "${it}3" }
+                }
+            }
+        }.exceptionOrNull()
+        timedOut.assert().isInstanceOf(IllegalStateException::class.java).hasMessage("Load timed out.")
+        release.countDown()
+        stuck.join().assert().isEqualTo("stuck")
+        bounded.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * 上下文中没有执行变体的调用方：作用域中的 leader 同步执行、越过截止时刻才完成时，发起的调用方照常拿到结果。
+     */
+    @Test
+    fun anUnmodedCallerGetsTheResultOfALeaderThatFinishedPastTheDeadline() {
+        val timeout = TimeUnit.MILLISECONDS.toNanos(200)
+        val bounded = SingleFlight<String, String>(timeout) { LoadTimedOut() }
+        val result = runBlocking {
+            bounded.executeSuspending("k", scope) {
+                TimeUnit.NANOSECONDS.sleep(timeout)
+                "slow"
+            }
+        }
+        result.assert().isEqualTo("slow")
+        bounded.inFlight.assert().isEqualTo(0)
+    }
+
     @Test
     fun reentrantSyncCallFailsFast() {
         val error = runCatching { sync { sync { "inner" } } }.exceptionOrNull()
