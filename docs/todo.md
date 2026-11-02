@@ -27,7 +27,7 @@
 
 M1 已完成：基础设施与 `SetCache` 读路径（#716）→ 单 key 读与提前刷新（#717）→ 批量读（#718）→ 写入（含 `VersionedCache`，#719）→ 数据源适配改为挂起实现，删除 `Futures` 的续接、定时器与许可等待队列（#720）。挂起视图直接调用核心推迟到 M5：`cocache-coroutines` 并入 core 之前，它只能经公开 API 调用核心，为此新增的公开接口会在 M5 删除。
 
-M2 拆成：L2 填充改为 `compute` + 按身份复核（M2a，#721）→ 合并规则逐 key、leader 被中断或取消时跟随者自行运行（M2b，#722）→ `load.timeout`，`LoadPolicy.asyncTimeout` 并入它（M2c，#723）→ L1 命令不可取消地等待、随机注入故障与取消的令牌守恒性质测试（M2d，#724）→ 确定性多节点仿真：测试调度器与虚拟时间、以数据源的提交历史检查 G1 与 G2（M2e，进行中）→ Lincheck 可行性实验（M2f）。`kotlinx-coroutines-test` 作为测试依赖已批准；Lincheck（Q18）先做可行性实验，可行再正式加入（维护者决定，2026-11-02）。L2 key 不含前缀最后按 JMH 决定。
+M2 拆成：L2 填充改为 `compute` + 按身份复核（M2a，#721）→ 合并规则逐 key、leader 被中断或取消时跟随者自行运行（M2b，#722）→ `load.timeout`，`LoadPolicy.asyncTimeout` 并入它（M2c，#723）→ L1 命令不可取消地等待、随机注入故障与取消的令牌守恒性质测试（M2d，#724）→ 确定性多节点仿真：测试调度器与虚拟时间、以数据源的提交历史检查 G1 与 G2（M2e，#725）→ Lincheck 可行性实验（M2f，进行中：可行，有条件，见 [调查](investigations/lincheck-feasibility.md)；单独的 `lincheck` 任务，不在 `check` 中）。`kotlinx-coroutines-test` 作为测试依赖已批准；Lincheck（Q18）先做可行性实验，可行再正式加入（维护者决定，2026-11-02）。L2 key 不含前缀最后按 JMH 决定。
 
 | 里程碑 | 要做什么 | 验收 |
 |--------|----------|------|
