@@ -22,9 +22,27 @@ dependencies {
     testImplementation(project(":cocache-test"))
     // 确定性多节点仿真：测试调度器与虚拟时间（RFC 0005 §4.10）
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test")
+    // 模型检验（RFC 0005 §4.10）：flight 层 + L2 + 失效戳
+    testImplementation("org.jetbrains.lincheck:lincheck")
 }
 
 tasks.withType<Test> {
     // 确定性多节点仿真只重放一个种子：./gradlew :cocache-core:test --tests "*MultiNodeSimulationTest" -PsimSeed=<n>
     providers.gradleProperty("simSeed").orNull?.let { systemProperty("cocache.sim.seed", it) }
+}
+
+// Lincheck 模型检验（RFC 0005 §4.10）单独运行，不在 check 中（约 2 分钟）：./gradlew :cocache-core:lincheck
+// JaCoCo 的探针与 kotlinx 调试模式的协程编号都会被模型检验当作共享状态，执行因此无法重放，所以这里两者都关掉
+val lincheckTests = "*LincheckTest"
+tasks.test {
+    filter { excludeTestsMatching(lincheckTests) }
+}
+tasks.register<Test>("lincheck") {
+    description = "Runs the Lincheck model checks of the flight layer, L2 and invalidation stamps."
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    filter { includeTestsMatching(lincheckTests) }
+    systemProperty("kotlinx.coroutines.debug", "off")
+    extensions.configure<JacocoTaskExtension> { isEnabled = false }
 }

@@ -22,6 +22,7 @@ dependencies {
         api(libs.kotlinx.coroutines.test)
         api(libs.springdoc.openapi.starter.webflux.ui)
         api(libs.mockk)
+        api(libs.lincheck)
         api(libs.detekt.formatting)
     }
 }

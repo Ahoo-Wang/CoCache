@@ -9,6 +9,8 @@ springdoc = "3.1.1"
 junit = "6.1.3"
 fluent-assert = "1.2.1"
 mockk = "1.14.11"
+# 模型检验（RFC 0005 §4.10、Q18：可行性实验之后再决定是否正式加入）
+lincheck = "3.7"
 # plugins
 detekt = "1.23.8"
 dokka = "2.2.0"
@@ -29,6 +31,7 @@ springdoc-openapi-starter-webflux-ui = { module = "org.springdoc:springdoc-opena
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 fluent-assert-bom = { module = "me.ahoo.test:fluent-assert-bom", version.ref = "fluent-assert" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+lincheck = { module = "org.jetbrains.lincheck:lincheck", version.ref = "lincheck" }
 detekt-formatting = { module = "io.gitlab.arturbosch.detekt:detekt-formatting", version.ref = "detekt" }
 [plugins]
 detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
