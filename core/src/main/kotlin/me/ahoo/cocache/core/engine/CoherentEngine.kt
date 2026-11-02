@@ -67,7 +67,6 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
 
 /**
@@ -78,8 +77,8 @@ import java.util.concurrent.locks.LockSupport
  * - 同步路径上 loader 总是在调用方（SingleFlight leader）线程上同步执行。
  * - 异步视图（[async]，RFC 0004）共享同一个 L2、失效戳、SingleFlight 与 lease；协议决策（读到什么就做什么）
  *   由同步与异步共用的函数给出（[hitOutcome]、[completeLoad]、[batchStep]、[refreshStep] 等），两条路径只在“如何等待”上不同。
- * - 读取（单 key、批量）与提前刷新运行在协程核心上（RFC 0005 V5）：同一份 `suspend` 实现（[loadMiss]、[loadPending]、[refreshThrough]），
- *   同步变体经 `runSync` 在调用方线程上运行，异步变体经 `AsyncContext.runAsync` 运行。写入仍是两条一一对应的路径（M1 后续 PR）。
+ * - 读取（单 key、批量）、提前刷新与写入运行在协程核心上（RFC 0005 V5）：同一份 `suspend` 实现（[loadMiss]、[loadPending]、
+ *   [refreshThrough]、[write]），同步变体经 `runSync` 在调用方线程上运行，异步变体经 `AsyncContext.runAsync` 运行。
  */
 @Suppress("TooManyFunctions", "LargeClass")
 internal class CoherentEngine<K : Any, V : Any>(
@@ -1207,41 +1206,62 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     override fun put(key: K, value: V) {
-        putWithTtl(key, value, spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl())
+        runSync { putWithTtl(key, value, putTtl(key, value)) }
     }
 
     override fun put(key: K, value: V, ttl: Duration) {
-        putWithTtl(key, value, ttl)
+        runSync { putWithTtl(key, value, ttl) }
     }
 
-    private fun putWithTtl(key: K, value: V, ttl: Duration?) {
+    /**
+     * `put` 的默认寿命：`ttlOf` 优先，否则策略寿命加抖动。
+     */
+    private fun putTtl(key: K, value: V): Duration? = spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl()
+
+    /**
+     * 编码在第一次递增之前（异步变体在调用方线程上）完成。
+     */
+    private suspend fun putWithTtl(key: K, value: V, ttl: Duration?) {
         val storageKey = storageKey(key)
         val envelope = format.encode(value)
         val bounded = ttl?.boundedTtl()
         write(
             listOf(storageKey),
-            { frame -> store.put(storageKey, envelope, bounded, frame) },
-            throwWriteFailure("put")
+            { frame ->
+                l1Command(
+                    { store.put(storageKey, envelope, bounded, frame) },
+                    { asyncStore.putAsync(storageKey, envelope, bounded, frame) }
+                )
+            },
+            onFailure = throwWriteFailure("put")
         )
     }
 
     override fun putAll(entries: Map<K, V>) {
-        putAllWithTtl(entries) { key, value -> spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl() }
+        if (entries.isNotEmpty()) {
+            runSync { putAllWithTtl(entries, ::putTtl) }
+        }
     }
 
     override fun putAll(entries: Map<K, V>, ttl: Duration) {
-        putAllWithTtl(entries) { _, _ -> ttl }
+        if (entries.isNotEmpty()) {
+            runSync { putAllWithTtl(entries) { _, _ -> ttl } }
+        }
     }
 
     /**
      * 一次 [write] 覆盖全部存储 key：戳与 L2 淘汰的顺序对整批成立，L1 批量写入、整批广播一次。
      */
-    private inline fun putAllWithTtl(entries: Map<K, V>, ttlOf: (K, V) -> Duration?) {
+    private suspend fun putAllWithTtl(entries: Map<K, V>, ttlOf: (K, V) -> Duration?) {
         if (entries.isEmpty()) {
             return
         }
         val puts = putsOf(entries, ttlOf)
-        write(puts.map { it.key }, { frame -> store.putAll(puts, frame) }, throwWriteFailure("putAll"))
+        write(
+            puts.map { it.key },
+            { frame -> l1Command({ store.putAll(puts, frame) }, { asyncStore.putAllAsync(puts, frame) }) },
+            onFailure = throwWriteFailure("putAll")
+        )
     }
 
     /**
@@ -1267,11 +1287,18 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private val conditionalFailsOnForeign: Boolean = (policy.foreignFormat ?: ForeignFormatMode.FAIL) == ForeignFormatMode.FAIL
 
+    override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> = runSync { conditionalGet(key, known) }
+
+    /**
+     * 条件读取（同步与异步共用的协程核心）。
+     */
     @Suppress("TooGenericExceptionCaught")
-    override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> {
+    private suspend fun conditionalGet(key: K, known: Digest?): ConditionalGet<V> {
         val storageKey = storageKey(key)
         val read = try {
-            store.readIfChanged(storageKey, known)
+            l1({ store.readIfChanged(storageKey, known) }, { asyncStore.readIfChangedAsync(storageKey, known) })
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             throw conditionalReadFailure(e)
         }
@@ -1328,30 +1355,27 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     override fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut =
-        putIfMatchWithTtl(key, expected, value, spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl())
+        runSync { putIfMatchWithTtl(key, expected, value, putTtl(key, value)) }
 
     override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
-        putIfMatchWithTtl(key, expected, value, ttl)
+        runSync { putIfMatchWithTtl(key, expected, value, ttl) }
 
     /**
      * 与 [putWithTtl] 相同的写入顺序（戳、L2 淘汰在 L1 前后各一次）；冲突与拒绝不修改 L1。非原子广播的后端上拒绝不广播，
      * 冲突只在可能是重放时广播（[conditionalChanged]）。
      */
-    private fun putIfMatchWithTtl(key: K, expected: Digest?, value: V, ttl: Duration?): ConditionalPut {
+    private suspend fun putIfMatchWithTtl(key: K, expected: Digest?, value: V, ttl: Duration?): ConditionalPut {
         val storageKey = storageKey(key)
         val envelope = format.encode(value)
         val bounded = ttl?.boundedTtl()
+        val foreignAsAbsent = !conditionalFailsOnForeign
         var outcome: RemoteConditionalWrite? = null
         write(
             listOf(storageKey),
             { frame ->
-                val result = store.putIfMatch(
-                    storageKey,
-                    expected,
-                    envelope,
-                    bounded,
-                    frame,
-                    !conditionalFailsOnForeign
+                val result = l1(
+                    { store.putIfMatch(storageKey, expected, envelope, bounded, frame, foreignAsAbsent) },
+                    { asyncStore.putIfMatchAsync(storageKey, expected, envelope, bounded, frame, foreignAsAbsent) }
                 )
                 outcome = result
                 refuseUnreadable(storageKey, result)
@@ -1453,16 +1477,29 @@ internal class CoherentEngine<K : Any, V : Any>(
         value: V?
     ): Duration? = value?.let { spec.ttlOf?.ttlOf(key, it) } ?: policy.valueTtl()
 
-    internal fun writeIfNewer(key: K, value: V?, version: Long, ttl: Duration?): VersionedPut {
+    internal fun writeIfNewer(key: K, value: V?, version: Long, ttl: Duration?): VersionedPut =
+        runSync { writeVersioned(key, value, version, ttl) }
+
+    internal fun writeIfNewerAsync(key: K, value: V?, version: Long, ttl: Duration?): CompletableFuture<VersionedPut> =
+        context.async.runAsync { writeVersioned(key, value, version, ttl) }
+
+    /**
+     * 按版本写入（同步与异步共用的协程核心）。
+     */
+    private suspend fun writeVersioned(key: K, value: V?, version: Long, ttl: Duration?): VersionedPut {
         requireVersion(version)
         val storageKey = storageKey(key)
         val envelope = envelopeOf(value)
         val bounded = ttl?.boundedTtl()
+        val foreignAsAbsent = !conditionalFailsOnForeign
         var outcome: RemoteVersionedWrite? = null
         write(
             listOf(storageKey),
             { frame ->
-                val result = store.putIfNewer(storageKey, envelope, version, bounded, frame, !conditionalFailsOnForeign)
+                val result = l1(
+                    { store.putIfNewer(storageKey, envelope, version, bounded, frame, foreignAsAbsent) },
+                    { asyncStore.putIfNewerAsync(storageKey, envelope, version, bounded, frame, foreignAsAbsent) }
+                )
                 outcome = result
                 refuseUnreadableVersion(storageKey, result)
             },
@@ -1470,26 +1507,6 @@ internal class CoherentEngine<K : Any, V : Any>(
             versionedWriteFailure(versionedOperation(value))
         )
         return versionedPutOf(requireNotNull(outcome))
-    }
-
-    internal fun writeIfNewerAsync(key: K, value: V?, version: Long, ttl: Duration?): CompletableFuture<VersionedPut> {
-        requireVersion(version)
-        val storageKey = storageKey(key)
-        val envelope = envelopeOf(value)
-        val bounded = ttl?.boundedTtl()
-        val outcome = AtomicReference<RemoteVersionedWrite?>()
-        return writeAsync(
-            listOf(storageKey),
-            { frame ->
-                asyncStore.putIfNewerAsync(storageKey, envelope, version, bounded, frame, !conditionalFailsOnForeign)
-                    .thenApply {
-                        outcome.set(it)
-                        refuseUnreadableVersion(storageKey, it)
-                    }
-            },
-            { versionedChanged(version, outcome.get()) },
-            versionedWriteFailure(versionedOperation(value))
-        ).thenApply { versionedPutOf(requireNotNull(outcome.get())) }
     }
 
     /**
@@ -1540,20 +1557,29 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     override fun invalidate(key: K) {
-        invalidateStorageKeys(listOf(storageKey(key)))
+        val storageKey = storageKey(key)
+        runSync { invalidateStorageKeys(listOf(storageKey)) }
     }
 
     override fun invalidateAll(keys: Collection<K>) {
         val storageKeys = keys.map { storageKey(it) }.distinct()
         if (storageKeys.isNotEmpty()) {
-            invalidateStorageKeys(storageKeys)
+            runSync { invalidateStorageKeys(storageKeys) }
         }
     }
 
-    private fun invalidateStorageKeys(storageKeys: List<String>) {
+    private suspend fun invalidateStorageKeys(storageKeys: List<String>) {
+        if (storageKeys.isEmpty()) {
+            return
+        }
         write(
             storageKeys,
-            { frame -> store.invalidate(storageKeys, frame) }
+            { frame ->
+                l1Command(
+                    { store.invalidate(storageKeys, frame) },
+                    { asyncStore.invalidateAsync(storageKeys, frame) }
+                )
+            }
         ) { error -> onInvalidateFailure(storageKeys, error) }
     }
 
@@ -1621,11 +1647,12 @@ internal class CoherentEngine<K : Any, V : Any>(
     override fun describe(envelope: Envelope): Any? = decode(envelope)
 
     override fun invalidateEncoded(encodedKey: String) {
-        invalidateStorageKeys(listOf(storageKeyOf(encodedKey)))
+        val storageKey = storageKeyOf(encodedKey)
+        runSync { invalidateStorageKeys(listOf(storageKey)) }
     }
 
     // ---------------------------------------------------------------------------------------------
-    // 异步路径（RFC 0004 §5）：写入（与上面的同步写入逐分支对应）与协程核心异步变体所用的数据源适配，只在“如何等待”上不同。
+    // 协程核心异步变体所用的数据源适配（RFC 0004 §5.2）：回源许可、超时与观测，M1 的最后一步改写为挂起实现。
     // 续接经 handleNext / thenNext：上一步已完成时就地执行，否则在异步执行器上执行，从不在 I/O 线程上执行。
     // ---------------------------------------------------------------------------------------------
 
@@ -1777,73 +1804,6 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
     }
 
-    private fun putAsync(key: K, value: V, ttl: Duration?): CompletableFuture<Void?> {
-        val storageKey = storageKey(key)
-        val envelope = format.encode(value)
-        val bounded = ttl?.boundedTtl()
-        return writeAsync(
-            listOf(storageKey),
-            { frame -> asyncStore.putAsync(storageKey, envelope, bounded, frame) },
-            throwWriteFailure("put")
-        )
-    }
-
-    private fun putAllAsync(entries: Map<K, V>, ttlOf: (K, V) -> Duration?): CompletableFuture<Void?> {
-        if (entries.isEmpty()) {
-            return Futures.done()
-        }
-        val puts = putsOf(entries, ttlOf)
-        return writeAsync(
-            puts.map { it.key },
-            { frame -> asyncStore.putAllAsync(puts, frame) },
-            throwWriteFailure("putAll")
-        )
-    }
-
-    private fun getIfChangedAsync(key: K, known: Digest?): CompletableFuture<ConditionalGet<V>> {
-        val storageKey = storageKey(key)
-        return Futures.attempt {
-            asyncStore.readIfChangedAsync(
-                storageKey,
-                known
-            )
-        }.handleNext(executor) { read, error ->
-            when {
-                error is Exception -> CompletableFuture.failedFuture(conditionalReadFailure(error))
-                error != null -> CompletableFuture.failedFuture(error)
-                else -> CompletableFuture.completedFuture(conditionalGetOf(storageKey, requireNotNull(read)))
-            }
-        }
-    }
-
-    private fun putIfMatchAsync(key: K, expected: Digest?, value: V, ttl: Duration?): CompletableFuture<ConditionalPut> {
-        val storageKey = storageKey(key)
-        val envelope = format.encode(value)
-        val bounded = ttl?.boundedTtl()
-        val outcome = AtomicReference<RemoteConditionalWrite?>()
-        return writeAsync(
-            listOf(storageKey),
-            { frame ->
-                asyncStore.putIfMatchAsync(storageKey, expected, envelope, bounded, frame, !conditionalFailsOnForeign)
-                    .thenApply {
-                        outcome.set(it)
-                        refuseUnreadable(storageKey, it)
-                    }
-            },
-            { conditionalChanged(envelope, outcome.get()) },
-            conditionalWriteFailure
-        ).thenApply { conditionalPutOf(envelope, requireNotNull(outcome.get())) }
-    }
-
-    private fun invalidateAsync(storageKeys: List<String>): CompletableFuture<Void?> {
-        if (storageKeys.isEmpty()) {
-            return Futures.done()
-        }
-        return writeAsync(storageKeys, { frame -> asyncStore.invalidateAsync(storageKeys, frame) }) { error ->
-            onInvalidateFailure(storageKeys, error)
-        }
-    }
-
     /**
      * 同步路径上等待异步数据源（在调用方线程上调用 `loadAsync` 并等待，受 [asyncTimeout] 约束，异常解包）。
      */
@@ -1924,53 +1884,38 @@ internal class CoherentEngine<K : Any, V : Any>(
             }
         }
 
-        override fun put(key: K, value: V): CompletableFuture<Void?> = writeToUser {
-            putAsync(key, value, spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl())
+        override fun put(key: K, value: V): CompletableFuture<Void?> = runAsyncCommand {
+            putWithTtl(key, value, putTtl(key, value))
         }
 
-        override fun put(key: K, value: V, ttl: Duration): CompletableFuture<Void?> = writeToUser {
-            putAsync(
-                key,
-                value,
-                ttl
-            )
+        override fun put(key: K, value: V, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
+            putWithTtl(key, value, ttl)
         }
 
-        override fun putAll(entries: Map<K, V>): CompletableFuture<Void?> = writeToUser {
-            putAllAsync(entries) { key, value -> spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl() }
+        override fun putAll(entries: Map<K, V>): CompletableFuture<Void?> = runAsyncCommand {
+            putAllWithTtl(entries, ::putTtl)
         }
 
-        override fun putAll(entries: Map<K, V>, ttl: Duration): CompletableFuture<Void?> = writeToUser {
-            putAllAsync(entries) { _, _ -> ttl }
+        override fun putAll(entries: Map<K, V>, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
+            putAllWithTtl(entries) { _, _ -> ttl }
         }
 
-        override fun invalidate(key: K): CompletableFuture<Void?> = writeToUser {
-            invalidateAsync(
-                listOf(storageKey(key))
-            )
+        override fun invalidate(key: K): CompletableFuture<Void?> = runAsyncCommand {
+            invalidateStorageKeys(listOf(storageKey(key)))
         }
 
-        override fun invalidateAll(keys: Collection<K>): CompletableFuture<Void?> = writeToUser {
-            invalidateAsync(keys.map { storageKey(it) }.distinct())
+        override fun invalidateAll(keys: Collection<K>): CompletableFuture<Void?> = runAsyncCommand {
+            invalidateStorageKeys(keys.map { storageKey(it) }.distinct())
         }
 
-        override fun getIfChanged(key: K, known: Digest?): CompletableFuture<ConditionalGet<V>> = Futures.relay(
-            Futures.attempt { getIfChangedAsync(key, known) }
-        )
+        override fun getIfChanged(key: K, known: Digest?): CompletableFuture<ConditionalGet<V>> =
+            context.async.runAsync { conditionalGet(key, known) }
 
-        override fun putIfMatch(key: K, expected: Digest?, value: V): CompletableFuture<ConditionalPut> = Futures.relay(
-            Futures.attempt {
-                putIfMatchAsync(
-                    key,
-                    expected,
-                    value,
-                    spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl()
-                )
-            }
-        )
+        override fun putIfMatch(key: K, expected: Digest?, value: V): CompletableFuture<ConditionalPut> =
+            context.async.runAsync { putIfMatchWithTtl(key, expected, value, putTtl(key, value)) }
 
         override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): CompletableFuture<ConditionalPut> =
-            Futures.relay(Futures.attempt { putIfMatchAsync(key, expected, value, ttl) })
+            context.async.runAsync { putIfMatchWithTtl(key, expected, value, ttl) }
 
         override fun putIfNewer(key: K, value: V, version: Long): CompletableFuture<VersionedPut> =
             CompletableFuture.failedFuture(notVersioned("putIfNewer"))
@@ -2003,10 +1948,6 @@ internal class CoherentEngine<K : Any, V : Any>(
             filteredEntry(storageKey)?.let { return CompletableFuture.completedFuture(map(it)) }
             return context.async.runAsync { map(loadMiss(key, storageKey, source)) }
         }
-
-        private fun writeToUser(block: () -> CompletableFuture<Void?>): CompletableFuture<Void?> = Futures.relay(
-            Futures.attempt(block)
-        )
     }
 
     private companion object {

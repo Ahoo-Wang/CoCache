@@ -528,40 +528,49 @@ open class CoherentEngineTest {
     }
 
     /**
-     * 非原子广播：执行器拒绝广播的派发时就地广播，写入的结果不被 `RejectedExecutionException` 替换（成功仍是成功，失败仍是原始异常）。
+     * 非原子广播：广播在 L1 命令的完成线程上就地发出，不经执行器（协程核心，RFC 0005 V5），一次异步写入只向执行器提交一个任务：
+     * 回到调用方。它被拒绝时，成功的写入以 `RejectedExecutionException` 完成（返回 future 的完成被拒绝，文档化的语义），
+     * 失败的写入仍以原始异常完成；广播照常发出，写入自己的结果照常记录：成功不计为失败、`invalidate` 不登记重试。
      */
     @Test
-    fun rejectedBroadcastDispatchStillPublishesAndKeepsTheWriteOutcome() {
+    fun rejectedCompletionStillPublishesAndKeepsTheWriteOutcome() {
         HoppingNonAtomic().use { hopping ->
-            // 异步写入向执行器提交两个任务：广播的派发（被拒绝）与返回 future 的完成（执行）
             val executor = RejectingExecutor(1)
             val cacheA = runtime(backend = hopping.backend, asyncExecutor = executor).engine()
             val cacheB = runtime(backend = hopping.backend).engine()
+            val sync = access == CacheAccess.SYNC
             database["k"] = "v0"
             cacheB["k"].assert().isEqualTo("v0")
-            hopping.outcome(cacheA, { it.put("k", "v1") }) { it.put("k", "v1") }.assert().isNull()
+            val putError = hopping.outcome(cacheA, { it.put("k", "v1") }) { it.put("k", "v1") }
             awaitCondition("B sees the put") { cacheB["k"] == "v1" }
             cacheA.metrics.writeFailures.assert().isEqualTo(0)
 
             executor.reset(1)
             val writeFailure = IllegalStateException("reply lost")
             hopping.backend.afterPut = { throw writeFailure }
-            val error = hopping.outcome(cacheA, { it.put("k", "v2") }) { it.put("k", "v2") }
-            error.assert().isInstanceOf(me.ahoo.cocache.api.CacheWriteException::class.java)
-            requireNotNull(error).cause.assert().isSameAs(writeFailure)
+            val failedPutError = hopping.outcome(cacheA, { it.put("k", "v2") }) { it.put("k", "v2") }
             awaitCondition("B sees the put that failed but took effect") { cacheB["k"] == "v2" }
             hopping.backend.afterPut = null
+            cacheA.metrics.writeFailures.assert().isEqualTo(1)
 
             executor.reset(1)
-            hopping.outcome(cacheA, { it.invalidate("k") }) { it.invalidate("k") }.assert().isNull()
+            val invalidateError = hopping.outcome(cacheA, { it.invalidate("k") }) { it.invalidate("k") }
             database["k"] = "v3"
             awaitCondition("B sees the invalidation") { cacheB["k"] == "v3" }
             // 成功的 invalidate 不登记重试
             cacheA.pendingInvalidationCount.assert().isEqualTo(0)
             cacheA.metrics.writeFailures.assert().isEqualTo(1)
-            // 同步路径不经执行器
-            val expectedRejections = if (access == CacheAccess.SYNC) 0 else 3
-            executor.rejected.get().assert().isEqualTo(expectedRejections)
+            failedPutError.assert().isInstanceOf(me.ahoo.cocache.api.CacheWriteException::class.java)
+            requireNotNull(failedPutError).cause.assert().isSameAs(writeFailure)
+            if (sync) {
+                putError.assert().isNull()
+                invalidateError.assert().isNull()
+            } else {
+                putError.assert().isInstanceOf(RejectedExecutionException::class.java)
+                invalidateError.assert().isInstanceOf(RejectedExecutionException::class.java)
+            }
+            // 同步路径不经执行器；异步写入每次只派发一次（回到调用方）
+            executor.rejected.get().assert().isEqualTo(if (sync) 0 else 3)
         }
     }
 
