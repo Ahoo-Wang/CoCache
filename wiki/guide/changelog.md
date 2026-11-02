@@ -17,6 +17,10 @@ description: Release history and notable changes for CoCache.
 - Load permits (`load.max-concurrent`) are handed out in arrival order to sync and async callers alike. In 6.x, a blocking caller competed for a released permit directly and could take it before async callers already waiting.
 - An async read in flight when its `CacheRuntime` closes fails with `IllegalStateException("CacheRuntime closed.")`. An async write in flight still finishes its Redis change, broadcast and local invalidation first, then completes with that exception if it succeeded, or with its own failure.
 
+### Behavior change: readers behind an interrupted load load for themselves
+
+- When several readers wait on the same load and the thread running it is interrupted (or its coroutine is cancelled), that thread still gets the original exception. The waiting readers no longer fail with it: each retries once and, if it joins another interrupted load, loads by itself. Batch reads do the same for the affected keys. In 6.x, every waiting reader failed with the interrupted thread's exception.
+
 ### Fix: no stale local copy after a write returns
 
 - A load that read Redis just before a concurrent write could still put the old value into the local (L2) copy after the write returned, briefly, until its own recheck removed it. A read on the same instance right after the write could see the old value. The local copy is now checked and written in one step under the key's lock, so once a write returns, no older value can appear in that instance's local copy.

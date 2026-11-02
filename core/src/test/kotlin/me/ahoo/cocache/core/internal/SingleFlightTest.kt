@@ -15,7 +15,9 @@ package me.ahoo.cocache.core.internal
 
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.future.future
+import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.core.engine.AsyncContext
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -27,6 +29,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ForkJoinPool
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -231,11 +234,11 @@ class SingleFlightTest {
     }
 
     /**
-     * 同步 leader 被中断时加载随之结束：leader 收到 loader 抛出的 [InterruptedException]，跟随者收到同一个失败，
-     * 但跟随者自己没有被中断，中断标志不能被置上（6.x 的合并规则；按合并规则自行运行属于 M2）。
+     * 合并规则（RFC 0005 §4.4）：同步 leader 被中断时加载随之结束，leader 收到 loader 抛出的 [InterruptedException]；
+     * 跟随者不接受这个失败，自行运行（重新注册，由它自己领头），它自己的中断标志不被置上。
      */
     @Test
-    fun interruptedSyncLeaderEndsTheLoadWithoutInterruptingFollowers() {
+    fun followersOfAnInterruptedSyncLeaderRunTheirOwnLoad() {
         val started = CountDownLatch(1)
         val leader = fork {
             interruptFlagAfter {
@@ -247,15 +250,126 @@ class SingleFlightTest {
             }
         }
         started.awaitOrFail()
-        val follower = fork { interruptFlagAfter { sync { "other" } } }
+        val follower = fork { sync { "own" } to Thread.currentThread().isInterrupted }
         awaitCondition { follower.parked }
         leader.thread.interrupt()
         val (leaderCause, _) = leader.joinFailure() as FollowerFailure
         leaderCause.assert().isInstanceOf(InterruptedException::class.java)
-        val (followerCause, followerFlag) = follower.joinFailure() as FollowerFailure
-        followerCause.assert().isSameAs(leaderCause)
-        followerFlag.assert().withFailMessage { "the follower was not interrupted" }.isEqualTo(false)
+        follower.join().assert().isEqualTo("own" to false)
         flights.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * 同步 leader 被中断时，失败不一定是 [InterruptedException]（被中断的 L1 命令恢复中断标志并抛出后端的异常）：以中断标志为准。
+     */
+    @Test
+    fun aSyncLeaderFailingWithItsInterruptFlagSetCountsAsInterrupted() {
+        val followerParked = CountDownLatch(1)
+        val failure = IllegalStateException("Interrupted while waiting for Redis.")
+        val leader = fork {
+            try {
+                sync {
+                    followerParked.awaitOrFail("follower parked")
+                    Thread.currentThread().interrupt()
+                    throw failure
+                }
+            } finally {
+                Thread.interrupted()
+            }
+        }
+        awaitCondition { flights.inFlight == 1 }
+        val follower = fork { sync { "own" } }
+        awaitCondition { follower.parked }
+        followerParked.countDown()
+        leader.joinFailure().assert().isSameAs(failure)
+        follower.join().assert().isEqualTo("own")
+    }
+
+    /**
+     * 重试有上界：跟随者重新注册之后仍合并到被中断的 leader，就绕过 SingleFlight 直接执行自己的加载。
+     * 跟随者的恢复由手动执行的执行器派发，以便在它重新注册之前让第二个 leader 先注册。
+     */
+    @Test
+    fun aFollowerRunsUnregisteredAfterJoiningTwoInterruptedLeaders() {
+        val held = LinkedBlockingQueue<Runnable>()
+        val gated = AsyncContext({ held.add(it) }, ForkJoinPool.commonPool())
+        try {
+            fun interruptibleLeader(value: String): Concurrency.Forked<String> {
+                val started = CountDownLatch(1)
+                val leader = fork {
+                    sync("k") {
+                        started.countDown()
+                        CountDownLatch(1).await()
+                        value
+                    }
+                }
+                started.awaitOrFail("$value started")
+                return leader
+            }
+            val first = interruptibleLeader("first")
+            val ownRuns = AtomicInteger()
+            val follower = gated.runAsync {
+                flights.executeSuspending("k", gated.scope) {
+                    ownRuns.incrementAndGet()
+                    "own"
+                }
+            }
+            first.thread.interrupt()
+            first.joinFailure().assert().isInstanceOf(InterruptedException::class.java)
+            val second = interruptibleLeader("second")
+            // 跟随者恢复：重新注册时合并到第二个 leader
+            requireNotNull(held.poll(5, TimeUnit.SECONDS)).run()
+            follower.isDone.assert().isFalse()
+            second.thread.interrupt()
+            second.joinFailure().assert().isInstanceOf(InterruptedException::class.java)
+            while (!follower.isDone) {
+                requireNotNull(held.poll(5, TimeUnit.SECONDS)).run()
+            }
+            follower.get(5, TimeUnit.SECONDS).assert().isEqualTo("own")
+            ownRuns.get().assert().isEqualTo(1)
+            flights.inFlight.assert().isEqualTo(0)
+        } finally {
+            gated.close()
+        }
+    }
+
+    /**
+     * 批量合并到的 leader 被中断：结果中不含那个 key（调用方改走单 key 路径），自己负责的 key 照常返回。
+     */
+    @Test
+    fun batchOmitsKeysWhoseLeaderWasInterrupted() {
+        val started = CountDownLatch(1)
+        val leader = fork {
+            sync("a") {
+                started.countDown()
+                CountDownLatch(1).await()
+                "a1"
+            }
+        }
+        started.awaitOrFail()
+        val batch = fork { syncAll(listOf("a", "b")) { keys -> keys.associateWith { "${it}2" } } }
+        awaitCondition { batch.parked }
+        leader.thread.interrupt()
+        leader.joinFailure().assert().isInstanceOf(InterruptedException::class.java)
+        batch.join().assert().isEqualTo(mapOf("b" to "b2"))
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * 上下文中没有执行变体的调用方是它在运行时作用域中启动的 leader 的拥有者：leader 被取消时交出原始的取消，
+     * 而不是跟随者看到的内部异常。
+     */
+    @Test
+    fun anUnmodedCallerSeesTheOriginalCancellationOfItsLeader() {
+        val gate = CompletableFuture<String>()
+        val caller = fork {
+            runCatching {
+                runBlocking { flights.executeSuspending("k", scope) { gate.awaitOriginal() } }
+            }.exceptionOrNull()
+        }
+        awaitCondition { flights.inFlight == 1 }
+        context.close()
+        caller.join().assert().isInstanceOf(CancellationException::class.java)
     }
 
     /**
