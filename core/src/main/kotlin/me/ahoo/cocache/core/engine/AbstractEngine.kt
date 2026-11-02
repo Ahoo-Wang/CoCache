@@ -40,6 +40,7 @@ import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.SingleFlight
 import me.ahoo.cocache.core.internal.awaitOriginal
+import me.ahoo.cocache.core.internal.fillGuarded
 import me.ahoo.cocache.core.internal.runsInline
 import me.ahoo.cocache.core.policy.CachePolicy
 import java.time.Duration
@@ -50,6 +51,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * L2 副本：[value] 为 `null` 表示负缓存。到期与刷新时间均为纪元毫秒，[FOREVER] 表示没有。
+ *
+ * 按身份比较：不得改为 data class，也不得重写 `equals`。L2 填充的写后复核按身份撤销自己写入的那一份（[fillGuarded]），
+ * 按值比较会删掉其间别的填充写入的、内容相同的副本。
  *
  * @param unresolved 没有数据源的缓存未命中时的“不存在”：只是没有答案，带 loader 的读取不接受它
  */
@@ -166,16 +170,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected fun frameOf(keys: Collection<String>): ByteArray = InvalidationFrame.encode(nodeId, keys)
 
     /**
-     * 戳保护的 L2 填充：写入前校验、写入后复核，失败则撤销。
+     * 戳保护的 L2 填充：在 key 的锁内校验并写入，写后按身份复核（[fillGuarded]，RFC 0005 §4.5）。
      */
     protected fun fillLocal(storageKey: String, entry: LocalEntry<V>, stamp: Long) {
-        if (!stamps.isValid(storageKey, stamp)) {
-            metrics.staleFillDiscarded()
-            return
-        }
-        local.put(storageKey, entry)
-        if (!stamps.isValid(storageKey, stamp)) {
-            local.invalidate(storageKey)
+        if (!local.asMap().fillGuarded(storageKey, entry) { stamps.isValid(storageKey, stamp) }) {
             metrics.staleFillDiscarded()
         }
     }

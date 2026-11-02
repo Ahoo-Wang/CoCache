@@ -17,6 +17,10 @@ description: Release history and notable changes for CoCache.
 - Load permits (`load.max-concurrent`) are handed out in arrival order to sync and async callers alike. In 6.x, a blocking caller competed for a released permit directly and could take it before async callers already waiting.
 - An async read in flight when its `CacheRuntime` closes fails with `IllegalStateException("CacheRuntime closed.")`. An async write in flight still finishes its Redis change, broadcast and local invalidation first, then completes with that exception if it succeeded, or with its own failure.
 
+### Fix: no stale local copy after a write returns
+
+- A load that read Redis just before a concurrent write could still put the old value into the local (L2) copy after the write returned, briefly, until its own recheck removed it. A read on the same instance right after the write could see the old value. The local copy is now checked and written in one step under the key's lock, so once a write returns, no older value can appear in that instance's local copy.
+
 ### Fix: a failed reload in a batch read no longer strands the rest of the batch
 
 - `getAll` loads and fills the whole batch first, then reclaims corrupt keys one by one. If a corrupt key's reload fails, the other keys are still written back to Redis (or their leases released), and the batch then fails with the first error. In 6.x, the blocking path reclaimed corrupt keys first and stopped at the first failure, leaving the other keys' leases until they expired, so other instances waited `lease.wait` on those keys.
