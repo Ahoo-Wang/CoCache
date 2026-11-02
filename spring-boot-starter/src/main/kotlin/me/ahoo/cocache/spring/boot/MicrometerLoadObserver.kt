@@ -27,7 +27,7 @@ import java.util.function.Supplier
  * 由 ObservationRegistry 上的处理器转为链路追踪的 span 与计时指标。
  *
  * 低基数标签：[CACHE]、[OPERATION]、[OUTCOME]（`success` / `error` / `timeout`：[SourceLoadTimeoutException]，
- * 即异步加载超过 `load-async-timeout`，同步调用方等待它时同样记为 `timeout`）；高基数标签只有 [KEY_COUNT]。
+ * 即异步加载超过 `load-timeout`，同步调用方等待它时同样记为 `timeout`）；高基数标签只有 [KEY_COUNT]。
  * 从不记录 key 本身（高基数，且可能是个人信息）。异常原样抛出并记录到 Observation。
  */
 class MicrometerLoadObserver(private val registry: ObservationRegistry) : LoadObserver {

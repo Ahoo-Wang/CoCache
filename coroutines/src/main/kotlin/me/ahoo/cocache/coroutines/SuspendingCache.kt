@@ -56,7 +56,7 @@ interface SuspendingCache<K : Any, V : Any> {
      *   加载协程可能比它们活得更久，直到数据源返回。
      * - [loader] 自己抛出的 `CancellationException`（如其中的 `withTimeout`）转为 [SourceLoadCancelledException]。
      * - 在 [loader] 中经挂起视图读取同一缓存实例的同一 key 立即失败（`IllegalStateException`），而不是等待自己。
-     *   按 key（`K`）的相等性匹配，不按编码后的存储 key：两个不相等的 key 编码成同一个存储 key 时，要等到 `load-async-timeout` 才失败。
+     *   按 key（`K`）的相等性匹配，不按编码后的存储 key：两个不相等的 key 编码成同一个存储 key 时，要等到 `load-timeout` 才失败。
      */
     suspend fun get(key: K, loader: suspend (K) -> V?): V?
 

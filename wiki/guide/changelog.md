@@ -12,6 +12,7 @@ description: Release history and notable changes for CoCache.
 ### Breaking changes
 
 - The baseline is JDK 21 (was JDK 17).
+- `LoadPolicy.asyncTimeout` is now `LoadPolicy.timeout`, and the property `load-async-timeout` is now `load-timeout` (default `30s`). It bounds more than async loads: readers waiting for another caller's load fail with `SourceLoadTimeoutException` once that load has been in flight that long, and later readers start a new load instead of waiting behind a stuck synchronous loader. In 6.x, a synchronous reader waited indefinitely. `cocache.load.timeouts` counts both kinds of timeout.
 - `cocache-core` depends on `kotlinx-coroutines-core` at runtime. The protocol is being rewritten as one coroutine implementation behind the blocking, async, and suspending APIs. Reads, refresh-ahead, and writes of both cache kinds use it. With assertions enabled (`-ea`, the default in test runs), kotlinx adds a coroutine suffix such as ` @coroutine#3` to thread names while a read runs, including inside a blocking loader.
 - The runtime no longer starts a `cocache-timer` thread. Lease waits and load-permit waits are coroutine suspensions.
 - Load permits (`load.max-concurrent`) are handed out in arrival order to sync and async callers alike. In 6.x, a blocking caller competed for a released permit directly and could take it before async callers already waiting.

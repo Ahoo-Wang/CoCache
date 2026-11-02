@@ -446,7 +446,7 @@ abstract class AsyncEngineSpec : EngineSpec() {
 
     @Test
     fun asyncTimeoutReleasesTheLease() {
-        val impatient = policy().toBuilder().load(LoadPolicy(asyncTimeout = Duration.ofMillis(200))).build()
+        val impatient = policy().toBuilder().load(LoadPolicy(timeout = Duration.ofMillis(200))).build()
         val never = AsyncCacheLoader<String, String> { CompletableFuture() }
         val async = nodeA.rawCache(never, impatient).async()
         val error = async.get("k").handle { _, e -> e }.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)

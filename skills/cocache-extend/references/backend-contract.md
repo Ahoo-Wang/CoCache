@@ -100,7 +100,7 @@ interface InvalidationListener {
 A backend that implements only `RemoteStore` keeps working with `cache.async()`: the engine runs its synchronous methods on the blocking executor. To serve async callers without those threads, also implement `AsyncRemoteStore` (an `xxxAsync` twin of every `RemoteStore` method) and, for non-atomic broadcast, `AsyncInvalidationChannel.publishAsync`.
 
 - Same semantics as the synchronous method; never throw synchronously; fail the future with the same exception types as the synchronous path, not `CompletionException`.
-- Bound every operation (a command timeout): a future that never completes stalls that key until the cache's `load-async-timeout`.
+- Bound every operation (a command timeout): a future that never completes stalls that key until the cache's `load-timeout`.
 - Completing on an I/O thread is fine, because the engine switches threads before engine or user code runs; keep that completion free of codecs and user code.
 - Prove it with `AsyncBackendProtocolSpec` and the four async engine suites.
 

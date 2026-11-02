@@ -65,7 +65,7 @@ fun <K : Any, V : Any> SuspendingCacheLoader<K, V>.asAsyncCacheLoader(): AsyncCa
  * - 每次调用都新建一个 `SupervisorJob`：请创建一次、反复使用返回的 loader，不要每次加载都调用本函数，否则子 Job 会越积越多。
  * - 数据源自己抛出的 `CancellationException`（如数据源内部的 `withTimeout`）转为 [SourceLoadCancelledException]：
  *   否则合并到这次加载的所有调用方都会把它当作自己被取消。
- * - 引擎的 `load-async-timeout` 到期时调用方以 `SourceLoadTimeoutException` 失败，协程不会被取消（与 [AsyncCacheLoader] 相同）。
+ * - 引擎的 `load-timeout` 到期时调用方以 `SourceLoadTimeoutException` 失败，协程不会被取消（与 [AsyncCacheLoader] 相同）。
  * - 单独使用（不经 [suspendingLoader]）时没有同 key 重入检查：转换时不知道它属于哪个缓存。
  */
 fun <K : Any, V : Any> SuspendingCacheLoader<K, V>.asAsyncCacheLoader(
@@ -84,10 +84,10 @@ fun <K : Any, V : Any> CacheSpec.Builder<K, V>.suspendingLoader(loader: Suspendi
  * 把 [loader] 设为声明的异步数据源（`asyncLoader`），在 [context] 中执行；语义见 [asAsyncCacheLoader]。
  *
  * 另外，经挂起视图在 [loader] 中读取本缓存正在加载的 key 立即失败（`IllegalStateException`）。这项检查按 key（`K`）匹配，
- * 不按编码后的存储 key：两个不相等的 key 编码成同一个存储 key 时检查不到，要等到 `load-async-timeout` 才失败。它按缓存名匹配：
+ * 不按编码后的存储 key：两个不相等的 key 编码成同一个存储 key 时检查不到，要等到 `load-timeout` 才失败。它按缓存名匹配：
  * 声明时还不知道缓存属于哪个运行时，同一进程中另一个运行时的同名缓存也会被视为本缓存。
  * spec 级 loader 没有调用方，不继承调用方的重入记录：跨缓存的循环（A 的 loader 读 B、B 的 loader 又读 A 的同一个 key）
- * 只能等到 `load-async-timeout` 才失败。
+ * 只能等到 `load-timeout` 才失败。
  */
 fun <K : Any, V : Any> CacheSpec.Builder<K, V>.suspendingLoader(
     context: CoroutineContext,

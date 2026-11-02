@@ -12,6 +12,7 @@ description: CoCache 版本发布历史和重要变更。
 ### 破坏性变更
 
 - 基线改为 JDK 21（原为 JDK 17）。
+- `LoadPolicy.asyncTimeout` 改为 `LoadPolicy.timeout`，配置项 `load-async-timeout` 改为 `load-timeout`（默认 `30s`）。它不再只约束异步加载：等待别的调用方加载的读取，在这次加载进行了这么久之后以 `SourceLoadTimeoutException` 失败，之后的读取开始新的加载，不再排在卡住的同步 loader 后面。6.x 中同步读取会一直等下去。`cocache.load.timeouts` 两种超时都计数。
 - `cocache-core` 在运行时依赖 `kotlinx-coroutines-core`。协议正在改写为一份协程实现，同时服务阻塞、异步与挂起三种 API；两种缓存的读取、提前刷新与写入都已用上它。开启断言（`-ea`，测试时的默认值）时，读取运行期间 kotlinx 会给线程名加上协程后缀（如 ` @coroutine#3`），阻塞的 loader 里也看得到。
 - 运行时不再启动 `cocache-timer` 线程：等待 lease 与等待回源许可都是协程挂起。
 - 回源许可（`load.max-concurrent`）对同步与异步调用方一律按到达顺序交接。6.x 的阻塞调用方直接争用释放出来的许可，可能抢在已在等待的异步调用方之前。

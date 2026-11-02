@@ -74,7 +74,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     val loadRejected: Long get() = loadRejectedAdder.sum()
 
     /**
-     * 异步数据源超过 `LoadPolicy.asyncTimeout` 的加载数。
+     * 超过 `LoadPolicy.timeout` 的加载数：异步数据源的一次加载，以及等待共享加载超时的跟随者。
      */
     val loadTimeouts: Long get() = loadTimeoutAdder.sum()
     val leaseWaits: Long get() = leaseWaitAdder.sum()

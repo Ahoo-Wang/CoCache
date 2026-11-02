@@ -27,6 +27,7 @@ import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.SourceLoadRejectedException
+import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
@@ -395,6 +396,39 @@ class CoherentEngineCoreTest {
         leader.thread.interrupt()
         leader.joinFailure().assert().isInstanceOf(InterruptedException::class.java)
         batch.join().assert().isEqualTo(mapOf("b" to "v-b", "a" to "v-a"))
+    }
+
+    /**
+     * `load.timeout`（RFC 0005 §4.4）：卡住的同步 loader 不再让其它读取无限等待。等待它的读取在截止时刻以
+     * [SourceLoadTimeoutException] 失败并计入 `loadTimeouts`；截止时刻之后的读取开始新的加载。
+     */
+    @Test
+    fun theLoadTimeoutBoundsReadersBehindAStuckLoader() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val loads = java.util.concurrent.atomic.AtomicInteger()
+        val runtime = runtime()
+        val cache = runtime.create(
+            spec {
+                loader = CacheLoader { key ->
+                    if (loads.incrementAndGet() == 1) {
+                        started.countDown()
+                        release.awaitOrFail("release stuck loader")
+                    }
+                    "v-$key"
+                }
+                policy = CachePolicy(load = LoadPolicy(timeout = Duration.ofMillis(200)))
+            }
+        )
+        val stuck = fork("stuck") { cache["k"] }
+        started.awaitOrFail("stuck loader started")
+        val waiting = fork("waiting") { cache["k"] }
+        waiting.joinFailure().assert().isInstanceOf(SourceLoadTimeoutException::class.java)
+        requireNotNull(runtime.metrics("core")).loadTimeouts.assert().isEqualTo(1)
+        cache["k"].assert().isEqualTo("v-k")
+        release.countDown()
+        stuck.join().assert().isEqualTo("v-k")
+        loads.get().assert().isEqualTo(2)
     }
 
     /**

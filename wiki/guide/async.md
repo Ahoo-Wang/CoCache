@@ -38,7 +38,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 ```
 
 - `loadAsync(key)` returns a `CompletionStage`; completing it with `null` caches a negative entry. Override `loadAllAsync(keys)` for batch reads; the default calls `loadAsync` per key.
-- A spec sets `loader` or `asyncLoader`, not both. CoCache adapts either way: a synchronous `get` waits for an async loader (bounded by `load-async-timeout`), and an asynchronous `get` runs a synchronous loader on the blocking executor.
+- A spec sets `loader` or `asyncLoader`, not both. CoCache adapts either way: a synchronous `get` waits for an async loader (bounded by `load-timeout`), and an asynchronous `get` runs a synchronous loader on the blocking executor.
 - With `@CoCache` interfaces, `loader = "beanName"` can name either kind. Without it, CoCache looks for a unique `CacheLoader<K, V>`, then a unique `AsyncCacheLoader<K, V>`. One of each is ambiguous and fails startup. A bean that implements both is used as a synchronous loader.
 - `loadAsync` must return quickly and must not block. It is called on the calling thread or on the async executor, so it can't see the caller's thread-locals (MDC, security context). Propagate context through your reactive library, or through Micrometer context propagation.
 
@@ -58,7 +58,8 @@ The async executor and the blocking executor are configurable. See [Configuratio
 
 ## Timeouts {#timeouts}
 
-- An `AsyncCacheLoader` load may take at most `load-async-timeout` (30 seconds by default). Past it, the call fails with `SourceLoadTimeoutException`, the lease is released, and `cocache.load.timeouts` counts it. CoCache doesn't cancel your loader's future, and a late result is dropped. A `TimeoutException` your loader raises itself (for example from Reactor's `timeout`) is passed through unchanged.
+- Readers waiting for another caller's load (sync or async) wait at most until that load has been in flight for `load-timeout`, then fail with `SourceLoadTimeoutException`. A reader arriving after that starts a new load instead of joining the stuck one. In 6.x, a synchronous reader waited indefinitely.
+- An `AsyncCacheLoader` load may take at most `load-timeout` (30 seconds by default). Past it, the call fails with `SourceLoadTimeoutException`, the lease is released, and `cocache.load.timeouts` counts it. CoCache doesn't cancel your loader's future, and a late result is dropped. A `TimeoutException` your loader raises itself (for example from Reactor's `timeout`) is passed through unchanged.
 - Each Redis command is bounded by `cocache.redis.command-timeout` (2 seconds by default) and fails with the same `RedisException` as the synchronous path. The timer is Lettuce's timer wheel, so an async timeout can fire up to one tick (100 ms by default) late.
 - Synchronous loaders have no async timeout: a blocked thread can't be interrupted.
 
@@ -67,7 +68,7 @@ The async executor and the blocking executor are configurable. See [Configuratio
 - A failed call completes its future with the **original** exception: `CacheReadException`, `CacheWriteException`, `SourceLoadRejectedException`, `SourceLoadTimeoutException`, or whatever your loader threw. It is never wrapped in `CompletionException`. `join()` and `get()` still wrap it, as the JDK always does. `handle`, `exceptionally`, Reactor's `Mono.fromFuture` and Kotlin's `await()` all see the original.
 - Async methods never throw synchronously. A failing key encoder or codec, a reentrant call, or an unsupported `SetCache` operation all come back as a failed future.
 - Each call returns its own future. Cancelling it cancels only your wait: the shared load continues for the other callers and still writes Redis. Write ordering is unaffected, because the second invalidation step of a write runs whether or not you cancel.
-- A loader that reads its own key fails fast with `IllegalStateException` when it does so before returning its future. If it does so after an I/O step, the call waits until `load-async-timeout`.
+- A loader that reads its own key fails fast with `IllegalStateException` when it does so before returning its future. If it does so after an I/O step, the call waits until `load-timeout`.
 
 ## Spring Cache {#spring-cache}
 

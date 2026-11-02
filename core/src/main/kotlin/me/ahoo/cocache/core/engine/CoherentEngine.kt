@@ -97,7 +97,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private val permits: Semaphore? = policy.load.maxConcurrent.takeIf { it > 0 }?.let { Semaphore(it) }
     private val loadObserver: LoadObserver = context.loadObserver
-    private val asyncTimeout: Duration = policy.load.asyncTimeout
+    private val loadTimeout: Duration = policy.load.timeout
 
     /**
      * 声明的数据源（同步或异步，二选一），同步与异步变体共用（[invoke] 按变体决定在哪里调用）。
@@ -667,7 +667,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 调用数据源，调用期间本线程对这些 key 的重入快速失败：
      * - 同步数据源：同步变体在调用方线程上调用（不变量 6，loader 拿得到调用方线程的 ThreadLocal）；异步变体只在阻塞执行器上执行。
      *   不加超时（阻塞的 loader 无法被打断）。
-     * - 异步数据源：在当前线程上调用 `loadAsync`，等待其结果的副本并加 [asyncTimeout]（`orTimeout` 会修改 future 本身，
+     * - 异步数据源：在当前线程上调用 `loadAsync`，等待其结果的副本并加 [loadTimeout]（`orTimeout` 会修改 future 本身，
      *   不能作用于数据源的 future）。超时以 [SourceLoadTimeoutException] 失败，数据源的 future 不被取消、迟到的结果被丢弃。
      *   引擎的超时以私有哨兵值完成（JDK 的延迟线程触发），与数据源自己抛出的 `TimeoutException` 区分开（A8）。
      *
@@ -700,11 +700,11 @@ internal class CoherentEngine<K : Any, V : Any>(
                     }
                 }
                 val value = Futures.relay<Any?>(started)
-                    .completeOnTimeout(TIMED_OUT, asyncTimeout.toNanos(), TimeUnit.NANOSECONDS)
+                    .completeOnTimeout(TIMED_OUT, loadTimeout.toNanos(), TimeUnit.NANOSECONDS)
                     .awaitOriginal()
                 if (value === TIMED_OUT) {
                     metrics.loadTimeout()
-                    throw SourceLoadTimeoutException(name, asyncTimeout)
+                    throw SourceLoadTimeoutException(name, loadTimeout)
                 }
                 uncheckedCast(value)
             }

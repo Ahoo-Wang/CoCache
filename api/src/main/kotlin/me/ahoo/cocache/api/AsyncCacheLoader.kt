@@ -22,9 +22,9 @@ import java.util.concurrent.CompletionStage
  * - [loadAsync] 必须很快返回、不得阻塞：它在调用方线程（结果已同步可得时）或异步执行器上被调用，
  *   看不到调用方的线程上下文（ThreadLocal）。
  * - 同步抛出的异常与异常完成的 future 等价；返回的 future 可以在任何线程上完成，引擎会切换回自己的线程。
- * - 未完成的加载受 `LoadPolicy.asyncTimeout` 约束。
+ * - 未完成的加载受 `LoadPolicy.timeout` 约束。
  * - 不要在加载中等待同一个 key 的缓存读取：`loadAsync` 的同步部分里这样做会快速失败；一次 I/O 之后再这样做会形成环，
- *   一直等到 `asyncTimeout`。
+ *   一直等到 `LoadPolicy.timeout`。
  */
 fun interface AsyncCacheLoader<K : Any, V : Any> {
     /**
