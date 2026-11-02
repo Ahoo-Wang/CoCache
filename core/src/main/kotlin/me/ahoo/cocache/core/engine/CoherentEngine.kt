@@ -97,6 +97,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     private val permits: Semaphore? = policy.load.maxConcurrent.takeIf { it > 0 }?.let { Semaphore(it) }
     private val loadObserver: LoadObserver = context.loadObserver
     private val loadTimeout: Duration = policy.load.timeout
+    private val ticker = context.ticker
 
     /**
      * 声明的数据源（同步或异步，二选一），同步与异步变体共用（[invoke] 按变体决定在哪里调用）。
@@ -286,7 +287,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val deadline = leaseDeadline(leased)
         var backoff = INITIAL_BACKOFF_NANOS
         while (read is RemoteRead.Leased) {
-            val remaining = deadline - System.nanoTime()
+            val remaining = deadline - ticker.nanoTime()
             if (remaining <= 0) {
                 break
             }
@@ -308,7 +309,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         return readRemote(storageKey, lease, null)
     }
 
-    private fun leaseDeadline(leased: RemoteRead.Leased): Long = System.nanoTime() + minOf(leased.remaining, policy.lease.wait).toNanos()
+    private fun leaseDeadline(leased: RemoteRead.Leased): Long = ticker.nanoTime() + minOf(leased.remaining, policy.lease.wait).toNanos()
 
     private suspend fun onHit(
         key: K,

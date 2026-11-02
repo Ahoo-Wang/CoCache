@@ -20,4 +20,11 @@ dependencies {
     // 协议核心用协程实现（RFC 0005 V5）：同步、异步、挂起三种变体共用一份 suspend 实现
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
     testImplementation(project(":cocache-test"))
+    // 确定性多节点仿真：测试调度器与虚拟时间（RFC 0005 §4.10）
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test")
+}
+
+tasks.withType<Test> {
+    // 确定性多节点仿真只重放一个种子：./gradlew :cocache-core:test --tests "*MultiNodeSimulationTest" -PsimSeed=<n>
+    providers.gradleProperty("simSeed").orNull?.let { systemProperty("cocache.sim.seed", it) }
 }

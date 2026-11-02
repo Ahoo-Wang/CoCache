@@ -41,6 +41,7 @@ docker run -d --name cocache-redis -p 6379:6379 redis:7-alpine
 | Runtime compatibility on Spring Boot 4.0 (CI job `Test (Spring Boot 4.0)`; artifacts still compile against the catalog's Boot version, only the test runtime classpath is forced to that `spring-boot-dependencies`) | `./gradlew -PtestSpringBootVersion=4.0.8 :cocache-redis:test :cocache-spring-boot-starter:test :cocache-example:test` |
 | Redis modules on a local Redis Cluster (needs `redis-server` 7+) | `.github/scripts/start-redis-cluster.sh`, then `SPRING_DATA_REDIS_CLUSTER_NODES=127.0.0.1:7000,127.0.0.1:7001,127.0.0.1:7002 ./gradlew :cocache-redis:test :cocache-spring-boot-starter:test` |
 | Redis modules on Valkey (CI job `Test (Valkey)`; the port avoids the Redis container) | `docker run -d --name cocache-valkey -p 6380:6379 valkey/valkey:8-alpine`, then `SPRING_DATA_REDIS_PORT=6380 ./gradlew :cocache-redis:test --rerun :cocache-spring-boot-starter:test --rerun` |
+| Replay one seed of the deterministic multi-node simulation (prints every step) | `./gradlew :cocache-core:test --tests "*MultiNodeSimulationTest" -PsimSeed=<n>` |
 | Hit-path benchmark (`CoCacheBenchmark`; never run by `check`; `--rerun` because Gradle otherwise reuses the last result; `-PjmhIncludes` is a regex, so `l2Hit` also runs `l2HitViaInterface` and `l2HitMixed`) | `./gradlew :cocache-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit` |
 | Before/after benchmark comparison against a base ref (builds both sides, one benchmark at a time, alternating rounds, load gate, machine-wide lock; prints a Markdown table for the PR; `--help` lists options) | `scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8` |
 | Wiki build, the only dead-link check | `cd wiki && pnpm install && pnpm build` |
@@ -98,6 +99,7 @@ Read `docs/architecture.md` before you touch coherence, storage, codec, proxy, o
   - Orchestrate races with latches, never sleeps.
   - Wait on a `finished` latch, so a dead background thread fails the test instead of passing silently.
   - Assert cross-instance effects by polling with a timeout.
+  - `MultiNodeSimulationTest` also searches cross-node interleavings: seeded, on a test scheduler with virtual time, checked against the source's commit history. A failure prints its seed; replay it with `-PsimSeed`. Engine deadlines must go through the runtime's `Ticker`, not `System.nanoTime()`, or the simulation stops being deterministic.
 - Every fixed defect gets a test that reproduces it. The same-node race cases in `EngineSpec` are the model.
 - The coverage gate is an aggregate across modules (TCK specs are excluded). New branches without tests can fail `check` even when every test passes.
 

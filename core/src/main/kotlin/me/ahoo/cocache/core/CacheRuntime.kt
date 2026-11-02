@@ -14,6 +14,7 @@
 package me.ahoo.cocache.core
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CoroutineDispatcher
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.SetCache
@@ -31,6 +32,7 @@ import me.ahoo.cocache.core.engine.SetEngine
 import me.ahoo.cocache.core.engine.VersionedCache
 import me.ahoo.cocache.core.engine.VersionedFormat
 import me.ahoo.cocache.core.engine.versionedEngineSpec
+import me.ahoo.cocache.core.internal.Ticker
 import me.ahoo.cocache.core.policy.CachePolicy
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
@@ -99,7 +101,8 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             retrier,
             builder.loadObserver,
             asyncContext(builder),
-            builder.recordLocalHits
+            builder.recordLocalHits,
+            builder.ticker
         )
     }
 
@@ -111,7 +114,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     private fun asyncContext(builder: Builder): AsyncContext {
         val executor = builder.asyncExecutor ?: defaultAsyncExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
         val blocking = builder.blockingExecutor ?: defaultBlockingExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
-        return AsyncContext(executor, blocking).also { owned.add(it) }
+        return AsyncContext(executor, blocking, builder.dispatcher).also { owned.add(it) }
     }
 
     /**
@@ -260,6 +263,16 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         var asyncExecutor: Executor? = null
         var blockingExecutor: Executor? = null
         var recordLocalHits: Boolean = false
+
+        /**
+         * 截止时刻的计时源（模块内部）：确定性仿真换成虚拟时间（RFC 0005 §4.10）。
+         */
+        internal var ticker: Ticker = Ticker.SYSTEM
+
+        /**
+         * 运行时作用域的调度器（模块内部）：确定性仿真传入测试调度器，`delay` 与 `withTimeout` 随之走虚拟时间。
+         */
+        internal var dispatcher: CoroutineDispatcher? = null
 
         fun backend(backend: CoherenceBackend) = apply { this.backend = backend }
 

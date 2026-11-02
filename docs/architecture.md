@@ -673,6 +673,11 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 - 竞态用 latch 编排，禁止 sleep；等待 `finished` latch，让死掉的后台线程使用例失败；跨节点效果用带超时的轮询断言。
 - 每个修复的缺陷都要有复现用例（`EngineSpec` 中的同节点竞态用例是范例）。
 - 令牌守恒的性质测试（`cocache-core` 的 `TokenConservationPropertyTest`，不在 TCK 中）：异步变体的协程全部在手动执行器上推进，L1 命令由脚本化的后端挂起；每个种子按随机顺序执行任务、以随机结局（成功、未生效的失败、已生效但超时：存储按约定释放令牌）完成命令、完成或失败数据源、取消调用方的 future、关闭运行时。命令完成的顺序任意（SPI 不保证顺序）。排空之后断言每个调用都已完成、L1 授予的每个令牌之后都以 fill 或 release 交还过。同一个种子可以复现。
+- 确定性多节点仿真（`cocache-core` 的 `MultiNodeSimulationTest`，RFC 0005 §4.10，不在 TCK 中）：三个运行时共享同一个挂起式内存后端（`ScriptedBackend`，与上面的性质测试共用），全部协程运行在 `kotlinx-coroutines-test` 的单线程测试调度器上。
+  - 虚拟时间：等待 lease 的退避、`withTimeout`（回源许可、跟随者的 `load.timeout`）、缓存时钟与 L1 到期都走虚拟时间。截止时刻（等待 lease、`load.timeout`）经运行时内部的计时源（`Ticker`）计算，生产为 `System.nanoTime()`，仿真为虚拟时间；运行时作用域的调度器在仿真中换成测试调度器（`CacheRuntime.Builder` 的模块内部属性）。异步数据源的 `completeOnTimeout` 仍由 JDK 的延迟线程按真实时间计时，仿真中的加载总在它触发之前完成。
+  - 每个种子随机执行：读取（`get`、`getAll`）与写入（数据源提交新版本，再在某个节点上 `invalidate`）；以任意顺序、随机结局完成 L1 命令；以任意顺序投递、重复或丢失失效事件（丢失之后补一个订阅重建，与 Redis 后端以心跳与重新订阅发现丢失一致）；完成或失败加载（快照取于调用时或完成时）；推进虚拟时间；让一个节点崩溃（待完成的命令随机生效但不再送回，之后的命令既不生效也不完成，持有的令牌由 `lease.ttl` 回收）。
+  - 以数据源的提交历史为裁判。G2：读取开始时节点对每个 key 有一个已确认的下限（本节点 `invalidate` 成功返回时那次写入的版本；别的节点的失效事件投递时，那次失效在 L1 上生效时数据源的版本；订阅重建投递时，至今已在 L1 上生效的全部失效），读到的版本不得低于它。G1：排空之后越过 `ttl + lease.ttl + localMaxAge`，每个存活的节点都读到最新版本。另断言令牌守恒、调用都已完成。
+  - 失败消息带种子与最近的步骤；`-PsimSeed=<n>` 只重放这个种子并打印全部步骤（`aSeedReplaysTheSameSteps` 保证同一个种子总是同一条执行）。去掉收到失效时的 L2 淘汰、读己之写的复核、L2 填充的戳校验、重置时的 L2 清空或写入方的第二次淘汰，都会在前 100 个种子内被发现。
 
 `MultiNodeSpec` 的节点是同一进程内共享一个后端的运行时，不覆盖真实的多进程与网络分区。
 
