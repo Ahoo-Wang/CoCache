@@ -832,8 +832,9 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 批量加载未命中的 key（同步与异步共用的协程核心）：与在途的单 key 加载合并；共享到的加载若开始于本次读取已观察到的失效之前，
-     * 或合并到的批量没有这个 key 的结果，改走单 key 路径。
+     * 批量加载未命中的 key（同步与异步共用的协程核心）：与在途的单 key 加载合并。合并规则逐 key 应用（RFC 0005 §4.1），
+     * 与单 key 路径相同：共享到的加载开始于本次读取已观察到的失效之前、结果不可用（带数据源的读取不接受未决的结果，[usable]），
+     * 或合并到的批量没有这个 key 的结果（含合并到的 leader 被中断或取消），都改走单 key 路径。
      */
     private suspend fun loadPending(
         pending: Map<String, List<K>>,
@@ -845,7 +846,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
         return pending.mapValues { (storageKey, sourceKeys) ->
             val result = loaded[storageKey]
-            if (result != null && result.stamp >= observed.getValue(storageKey)) {
+            if (result != null && result.stamp >= observed.getValue(storageKey) && usable(result.entry, source != null)) {
                 result.answer()
             } else {
                 loadMiss(sourceKeys.first(), storageKey, source)

@@ -350,6 +350,54 @@ class CoherentEngineCoreTest {
     }
 
     /**
+     * 第一次回源一直阻塞到被中断的数据源：leader 被中断时，合并到它的读取按合并规则自己回源（RFC 0005 §4.4）。
+     */
+    private inner class InterruptibleSource {
+        val started = CountDownLatch(1)
+        val loads = java.util.concurrent.atomic.AtomicInteger()
+        val cache = runtime().create(
+            spec {
+                loader = object : CacheLoader<String, String> {
+                    override fun load(key: String): String? {
+                        if (loads.incrementAndGet() == 1) {
+                            started.countDown()
+                            CountDownLatch(1).await()
+                        }
+                        return "v-$key"
+                    }
+
+                    override fun loadAll(keys: Collection<String>): Map<String, String> = keys.associateWith { load(it)!! }
+                }
+            }
+        )
+    }
+
+    @Test
+    fun readersJoiningAnInterruptedLeaderLoadThemselves() {
+        val source = InterruptibleSource()
+        val leader = fork("leader") { source.cache["k"] }
+        source.started.awaitOrFail("leader loading")
+        val follower = fork("follower") { source.cache["k"] }
+        awaitCondition("follower joined") { follower.parked }
+        leader.thread.interrupt()
+        leader.joinFailure().assert().isInstanceOf(InterruptedException::class.java)
+        follower.join().assert().isEqualTo("v-k")
+        source.loads.get().assert().isEqualTo(2)
+    }
+
+    @Test
+    fun aBatchJoiningAnInterruptedLeaderLoadsThatKeyItself() {
+        val source = InterruptibleSource()
+        val leader = fork("leader") { source.cache["a"] }
+        source.started.awaitOrFail("leader loading")
+        val batch = fork("batch") { source.cache.getAll(listOf("a", "b")) }
+        awaitCondition("batch joined") { batch.parked }
+        leader.thread.interrupt()
+        leader.joinFailure().assert().isInstanceOf(InterruptedException::class.java)
+        batch.join().assert().isEqualTo(mapOf("b" to "v-b", "a" to "v-a"))
+    }
+
+    /**
      * 异步 SPI 的实现以 `null` 完成读取（Java 实现的缺陷）：按 L1 读失败处理，没有数据源时以 [CacheReadException] 失败，
      * cause 说明原因，而不是在之后的分支上抛出更难懂的异常。
      */
