@@ -286,6 +286,61 @@ internal class SingleFlight<K : Any, R> {
     }
 
     /**
+     * [executeSuspending] 的批量版本（协程核心的批量读取）：先为全部 key 注册，再运行本调用负责的整批，最后等待其它调用者负责的 key，
+     * 避免两个批量调用互相等待。[block] 收到本调用负责的 key，必须为每个 key 返回结果，缺少的 key 的等待者以 [IllegalStateException] 失败。
+     * leader 的位置与 [executeSuspending] 相同：同步变体在调用方线程上内联执行，异步变体在调用方的协程中执行，
+     * 上下文中没有 [ExecutionMode] 的调用方改由 [scope] 执行。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    suspend fun executeAllSuspending(
+        keys: Collection<K>,
+        scope: CoroutineScope,
+        block: suspend (List<K>) -> Map<K, R>
+    ): Map<K, R> {
+        val mode = coroutineContext[ExecutionMode]
+        val inline = mode?.inline == true
+        val led = LinkedHashMap<K, Call<R>>()
+        val joined = LinkedHashMap<K, Call<R>>()
+        try {
+            register(keys, if (inline) Thread.currentThread() else null, led, joined)
+        } catch (error: Throwable) {
+            abandon(led, error)
+            throw error
+        }
+        val results = LinkedHashMap<K, R>()
+        if (led.isNotEmpty()) {
+            val ledKeys = led.keys.toList()
+            if (mode == null) {
+                // 整批的结果经 own 交给发起的调用方（与内联执行相同：缺少的 key 不在结果中），各 key 的结果经 call.future 交给其它等待者；
+                // 这里不重新抛出，否则失败会作为未捕获的异常上报给作用域
+                val own = CompletableFuture<Map<K, R>>()
+                scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                    runCatching { block(ledKeys) }.fold(
+                        { loaded -> own.complete(LinkedHashMap<K, R>().also { publish(led, loaded, it) }) },
+                        { error ->
+                            abandon(led, error)
+                            own.completeExceptionally(error)
+                        }
+                    )
+                }
+                results.putAll(own.awaitOriginal())
+            } else {
+                val loaded = try {
+                    if (inline) Futures.withoutInlineSuspending { block(ledKeys) } else block(ledKeys)
+                } catch (error: Throwable) {
+                    abandon(led, error)
+                    throw error
+                }
+                publish(led, loaded, results)
+            }
+        }
+        for ((key, call) in joined) {
+            results[key] = awaitSuspending(call)
+        }
+        return results
+    }
+
+    /**
      * 挂起等待一次调用的结果，失败时抛出原始异常（[awaitOriginal]）。取消这次等待不会取消共享的结果，其它等待者照常拿到它。
      */
     private suspend fun awaitSuspending(call: Call<R>): R = call.future.awaitOriginal()

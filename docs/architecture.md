@@ -236,10 +236,11 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 ### 5.3 批量读 `getAll`
 
-- 逐个 key 查 L2（进入刷新窗口时同样触发后台刷新）、过 `KeyFilter`；剩余 key 按存储 key 去重后交给 `flights.executeAll`。
+- 逐个 key 查 L2（进入刷新窗口时同样触发后台刷新）、过 `KeyFilter`；剩余 key 按存储 key 去重后交给 `flights.executeAllSuspending`（协程核心，§5.6）。
 - 已在途的 key 等待现有调用；其余 key 由本线程作为 leader，**先完成自己负责的整批，再等待别人的**。
 - leader 的一批：每个 key 注册之后取戳 → 一次 `readAll`（为每个 key 申请 lease；失效重试中的 key 不读 L1）→ 一次 `loader.loadAll` → 一次 `fillAll`。
 - 批量路径**不等待**其它节点的 lease：`Leased` 与更高格式版本的 key 直接回源且不写 L1（L2 降级限龄）；没有数据源时更高格式版本的 key 按 `foreignFormat` 处理（§5.4）。格式 0 或解码失败的 key 与单 key 路径一样条件回收（见 §5.4），再凭新 lease 回源与 `fill`。
+- 顺序：先整批回源并写回，再逐个回收损坏的 key。读不懂的 key（`FAIL`）或回收之后的重新加载失败，都不中断其余 key：先完成其余 key（凭 lease 写回或释放），再抛出第一个失败。回源失败（含 `ttlOf` 与 `Codec` 抛出）或没有数据源时释放整批 lease，等释放完成之后才继续；异步变体并发发出全部释放。6.x 的同步路径先回收、失败即中断，其余 key 的 lease 留到过期。
 - 共享到的结果若开始于本次读取已观察到的失效之前，该 key 改走单 key 路径。
 - Redis：每个 key 一条 EVALSHA，在共享连接上并发发出（约一次往返）；Cluster 按 key 路由，不会 CROSSSLOT。
 
@@ -285,9 +286,9 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
   - `SetCache` 的读路径（`get`、`lookup`、`getAll`）；
   - `Cache` 的单 key 读（`get`、`lookup`、`get(key, loader)`）及其等待 lease、条件回收、回源与写回；
   - 提前刷新；
-  - 批量读取中的单 key 回退与损坏载荷的条件回收。
+  - `Cache` 的批量读（`getAll`，§5.3）。
 
-  批量读取本身与写入仍是上面两条一一对应的路径。
+  写入仍是上面两条一一对应的路径。
   - L2 命中不变：同步 API 内联返回，异步视图返回已完成的 future，都不启动协程。
   - 同步变体（`runSync`）：未命中时以 `runBlocking` 在调用方线程上运行核心，阻塞的 SPI 就地调用，超时与中断的处理不变（§8）。线程被中断时 `runBlocking` 结束等待，恢复中断标志并抛出 `InterruptedException`；核心自己抛出的 `InterruptedException`（被中断的 L1 命令，或跟随者收到 leader 的这类失败）原样抛出，不置中断标志。
   - 异步变体（`AsyncContext.runAsync`）：在运行时作用域中以 `future(start = UNDISPATCHED)` 运行，第一次挂起之前在调用方线程上，之后在异步执行器上继续（作用域的调度器），从不在 L1 客户端的 I/O 线程上执行。L1 命中派发一次，与上面的续接规则相同。用户拿到结果的副本：取消它只影响自己，协程照常运行（它可能是别的调用方等待的 leader）。执行器拒绝派发时 future 以那个 `RejectedExecutionException` 失败；运行时关闭取消作用域，进行中的调用在下一个挂起点以 `IllegalStateException("CacheRuntime closed.")` 失败。
@@ -296,8 +297,8 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
     - 同步变体：等待其它节点的 lease 时在调用方线程上以 `parkNanos` 退避；数据源（含调用级 loader，声明的是异步数据源时在调用方线程上等待它）在调用方线程上执行；回源许可限时获取。
     - 异步变体：重读经定时器调度，回源与许可经上面的异步数据源适配（`loadFromSourceAsync`）。
     - 回源观测在两种变体中分别经 `LoadObserver.observe` 与 `observeAsync`。
-  - 令牌：回源失败（含 `ttlOf` 与 `Codec` 抛出）时先释放 lease 再抛出原始异常。异步变体的释放不可取消（`NonCancellable`）。协程被取消（运行时关闭、执行器拒绝派发）时，单 key 读与刷新尽力释放各自申请的令牌：只发出一条释放命令，令牌不匹配时无害。
-  - SingleFlight 与上面两条路径共用一张表（`executeSuspending`）。leader 在调用方的协程中执行：同步变体即调用方线程（期间同样清除续接标记），异步变体省去一次派发。上下文中没有执行变体的调用方（直接从用户的协程调用）可能被单独取消，共享加载改在运行时作用域中执行。跟随者挂起等待，不占线程，取消只结束它自己的等待。
+  - 令牌：回源失败（含 `ttlOf` 与 `Codec` 抛出）时先释放 lease 再抛出原始异常。异步变体的释放不可取消（`NonCancellable`）。协程被取消（运行时关闭、执行器拒绝派发）时，单 key 读、批量读与刷新尽力释放各自申请的令牌：只发出释放命令、不等待，令牌不匹配时无害。
+  - SingleFlight 与上面两条路径共用一张表（单 key `executeSuspending`，批量 `executeAllSuspending`）。leader 在调用方的协程中执行：同步变体即调用方线程（期间同样清除续接标记），异步变体省去一次派发。上下文中没有执行变体的调用方（直接从用户的协程调用）可能被单独取消，共享加载改在运行时作用域中执行。跟随者挂起等待，不占线程，取消只结束它自己的等待。
   - 等待 future 一律经 `awaitOriginal`：kotlinx 的 `await()` 在调试模式（`-ea` 或 `kotlinx.coroutines.debug`）下恢复挂起时复制异常，原始异常成了副本的 cause；这里等待一个总是正常完成的派生 future，在自己的栈帧里抛出原始异常。调试模式下线程名在协程运行期间带有 `@coroutine#n` 后缀（同步读的 loader 也看得到它），TCK 按线程名编排竞态时用 `Concurrency.currentThreadName()` 去掉它。
 - **只实现同步 SPI 的后端**：引擎经 `BlockingAsyncStore` / `BlockingAsyncChannel` 把同步调用放到阻塞执行器上；原生异步的后端实现 `AsyncRemoteStore`（与 `AsyncInvalidationChannel`），内存后端是原生异步的（就地执行、返回已完成的 future）。
 

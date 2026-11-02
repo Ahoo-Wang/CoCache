@@ -946,6 +946,23 @@ abstract class EngineSpec {
     }
 
     /**
+     * 批量读取中损坏的 key 回收之后重新加载失败：整批以这个失败结束，但其余 key 照常回源并凭 lease 写回 L1，不留下 lease。
+     * 6.x 的同步路径先逐个回收损坏的 key，失败即中断，其余 key 的 lease 留到过期；8.0 先完成整批，再回收。
+     */
+    @Test
+    fun corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch() {
+        val failure = IllegalStateException("reload failed")
+        val cache = nodeA.cache(
+            spec { loader = CacheLoader { key -> if (key == "bad") throw failure else database[key] } }
+        )
+        database["good"] = "v"
+        writeRemoteSilently("bad", TestCodec.CORRUPT)
+        runCatching { cache.getAll(listOf("bad", "good")) }.exceptionOrNull().assert().isSameAs(failure)
+        remoteValue("good").assert().isEqualTo("v")
+        nodeA.metrics().reclaims.assert().isEqualTo(1)
+    }
+
+    /**
      * 显式 `RECLAIM`：没有数据源时同样条件回收（6.4 及以前的行为），内容被删除，读取返回不存在。
      */
     @Test

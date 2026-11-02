@@ -152,6 +152,19 @@ open class CoCacheBenchmark {
     @Benchmark
     fun l1HitViaEngineAsync(): String? = l1Hits.async().get(l1HitKeys[ThreadLocalRandom.current().nextInt(L1_HIT_KEYS)]).join()
 
+    /** 经引擎的批量读（L2 几乎全部不命中）：随机 [ENGINE_BATCH] 个 key，一次 `readAll`（每个 key 一条 EVALSHA，并发发出）+ 解码 + 填充 L2。 */
+    @Benchmark
+    fun l1BatchViaEngine(): Int = l1Hits.getAll(randomL1HitKeys()).size
+
+    /** 经引擎的异步批量读：同上，经异步视图。 */
+    @Benchmark
+    fun l1BatchViaEngineAsync(): Int = l1Hits.async().getAll(randomL1HitKeys()).join().size
+
+    private fun randomL1HitKeys(): List<String> {
+        val random = ThreadLocalRandom.current()
+        return List(ENGINE_BATCH) { l1HitKeys[random.nextInt(L1_HIT_KEYS)] }
+    }
+
     /**
      * 每次调用保持 [IN_FLIGHT] 个在途的异步 L1 命中（经引擎），全部完成后再等待：异步视图的真实收益——
      * 一个线程同时推进多个请求。与 [l1HitSequential] 比较（每次调用同样完成 [IN_FLIGHT] 次读取）。
@@ -237,6 +250,7 @@ open class CoCacheBenchmark {
 
     companion object {
         const val BATCH_SIZE = 100
+        const val ENGINE_BATCH = 16
         const val L1_HIT_KEYS = 10_000
         const val IN_FLIGHT = 32
     }
