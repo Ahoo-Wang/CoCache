@@ -17,8 +17,11 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.future
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
@@ -50,10 +53,8 @@ import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.awaitOriginal
-import me.ahoo.cocache.core.internal.handleNext
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.runsInline
-import me.ahoo.cocache.core.internal.thenNext
 import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.ReadFailureMode
@@ -61,13 +62,12 @@ import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ExecutionException
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.LockSupport
+import kotlin.time.Duration.Companion.nanoseconds
 
 /**
  * 数据源为权威的一致性缓存引擎（RFC 0003 §4.4–§4.6）。
@@ -91,45 +91,32 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     private val keyFilter = spec.keyFilter
     private val backendFormat = context.backend.format
-    private val permits: LoadPermits? = policy.load.maxConcurrent.takeIf { it > 0 }?.let {
-        LoadPermits(
-            it,
-            context.async
-        )
-    }
+
+    /**
+     * 回源并发许可（bulkhead）：同步与异步变体共用一个按到达顺序交接的信号量，只计 SingleFlight leader。
+     */
+    private val permits: Semaphore? = policy.load.maxConcurrent.takeIf { it > 0 }?.let { Semaphore(it) }
     private val loadObserver: LoadObserver = context.loadObserver
     private val asyncTimeout: Duration = policy.load.asyncTimeout
 
     /**
-     * 同步路径的数据源：声明的是异步数据源时，在调用方线程上等待它（受 [asyncTimeout] 约束）。
+     * 声明的数据源（同步或异步，二选一），同步与异步变体共用（[invoke] 按变体决定在哪里调用）。
      */
-    private val loader: CacheLoader<K, V>? = spec.loader ?: spec.asyncLoader?.let { AwaitingLoader(it) }
-
-    /**
-     * 提前刷新所用的数据源：与 [loader] 行为相同，只用于让回源观测区分刷新与未命中加载。
-     */
-    private val refreshLoader: CacheLoader<K, V>? = loader?.let { RefreshLoader(it) }
-
-    /**
-     * 异步路径的数据源：同步数据源只在阻塞执行器上执行。
-     */
-    private val asyncSource: AsyncSource<K, V>? = spec.asyncLoader?.let { AsyncSource.Native(it) }
+    private val source: AsyncSource<K, V>? = spec.asyncLoader?.let { AsyncSource.Native(it) }
         ?: spec.loader?.let { AsyncSource.Blocking(it) }
 
     /**
-     * 协程核心的数据源（预先分配，未命中路径不再为它们分配）：同步变体的 [loader] / [refreshLoader]，异步变体的 [asyncSource]。
+     * 协程核心的数据源（预先分配，未命中路径不再为它们分配）：未命中加载与提前刷新只在回源观测的操作类型上不同。
      */
-    private val blockingSource: CoreSource<K, V>? = loader?.let { CoreSource.Blocking(it) }
-    private val refreshSource: CoreSource<K, V>? = refreshLoader?.let { CoreSource.Blocking(it) }
-    private val asyncCoreSource: CoreSource<K, V>? = asyncSource?.let { CoreSource.Async(it, LoadOperation.LOAD) }
-    private val asyncRefreshSource: CoreSource<K, V>? = asyncSource?.let { CoreSource.Async(it, LoadOperation.REFRESH) }
+    private val loadSource: CoreSource<K, V>? = source?.let { CoreSource(it, LoadOperation.LOAD) }
+    private val refreshSource: CoreSource<K, V>? = source?.let { CoreSource(it, LoadOperation.REFRESH) }
 
     /**
      * 失效写入 L1 失败时的处理方式：未配置时按有没有数据源决定。有数据源时删除总是安全的（之后回源），重试；
      * 没有数据源时 L1 是唯一副本，延迟的重试会删掉其间其它写入方写入的值（丢更新），因此抛出。
      */
     private val invalidateFailure: InvalidateFailureMode = policy.invalidateFailure
-        ?: if (loader != null) InvalidateFailureMode.RETRY else InvalidateFailureMode.THROW
+        ?: if (source != null) InvalidateFailureMode.RETRY else InvalidateFailureMode.THROW
 
     /**
      * 失效写入 L1 失败、仍在重试中的存储 key：未命中时跳过 L1（L1 中仍是旧值）。
@@ -171,7 +158,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             countLocalHit()
             return entry.value
         }
-        return miss(key, storageKey, CoreSource.Blocking(loader)).value
+        return miss(key, storageKey, CoreSource(AsyncSource.Blocking(loader), LoadOperation.LOAD)).value
     }
 
     private fun entryOf(key: K): LocalEntry<V> {
@@ -193,7 +180,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 未命中路径，与命中路径分开以保证 [entryOf] 足够小、可内联。同步变体：在调用方线程上运行协程核心（[loadMiss]）。
      */
-    private fun miss(key: K, storageKey: String, source: CoreSource<K, V>? = blockingSource): LocalEntry<V> {
+    private fun miss(key: K, storageKey: String, source: CoreSource<K, V>? = loadSource): LocalEntry<V> {
         filteredEntry(storageKey)?.let { return it }
         return runSync { loadMiss(key, storageKey, source) }
     }
@@ -316,16 +303,15 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 退避之后重读：同步变体在调用方线程上停顿，异步变体经定时器调度，不占线程。
+     * 退避之后重读：同步变体在调用方线程上停顿；异步变体挂起（`delay`），不占线程，运行时关闭时随作用域取消。
      */
     private suspend fun rereadAfter(storageKey: String, lease: LeaseRequest, delayNanos: Long): RemoteRead {
         if (runsInline()) {
             LockSupport.parkNanos(delayNanos)
             return store.read(storageKey, lease, null)
         }
-        return checkRead(
-            context.async.after(delayNanos) { asyncStore.readAsync(storageKey, lease, null) }.awaitOriginal()
-        )
+        delay(delayNanos.nanoseconds)
+        return readRemote(storageKey, lease, null)
     }
 
     private fun leaseDeadline(leased: RemoteRead.Leased): Long = System.nanoTime() + minOf(leased.remaining, policy.lease.wait).toNanos()
@@ -667,23 +653,100 @@ internal class CoherentEngine<K : Any, V : Any>(
         log.warn(error) { "Cache[$name] - key[$storageKey] - remote $operation failed, degrading." }
     }
 
-    private fun loadFromSource(key: K, source: CacheLoader<K, V>?): V? {
+    /**
+     * 协程核心的单 key 回源（同步与异步共用）：许可、耗时统计与观测（[guardedLoad]）包住数据源调用（[invoke]）。
+     */
+    private suspend fun loadValue(key: K, storageKey: String, source: CoreSource<K, V>?): V? {
         val sourceLoader = source ?: return null
-        val operation = if (sourceLoader === refreshLoader) LoadOperation.REFRESH else LoadOperation.LOAD
-        return guarded(operation, 1) { sourceLoader.load(key) }
+        return guardedLoad(sourceLoader.operation, 1) {
+            invoke(sourceLoader.source, listOf(storageKey), { it.loadAsync(key) }, { it.load(key) })
+        }
     }
 
-    private fun loadAllFromSource(keys: Collection<K>, sourceLoader: CacheLoader<K, V>): Map<K, V> =
-        guarded(LoadOperation.LOAD_ALL, keys.size) { sourceLoader.loadAll(keys) }
+    /**
+     * 调用数据源，调用期间本线程对这些 key 的重入快速失败：
+     * - 同步数据源：同步变体在调用方线程上调用（不变量 6，loader 拿得到调用方线程的 ThreadLocal）；异步变体只在阻塞执行器上执行。
+     *   不加超时（阻塞的 loader 无法被打断）。
+     * - 异步数据源：在当前线程上调用 `loadAsync`，等待其结果的副本并加 [asyncTimeout]（`orTimeout` 会修改 future 本身，
+     *   不能作用于数据源的 future）。超时以 [SourceLoadTimeoutException] 失败，数据源的 future 不被取消、迟到的结果被丢弃。
+     *   引擎的超时以私有哨兵值完成（JDK 的延迟线程触发），与数据源自己抛出的 `TimeoutException` 区分开（A8）。
+     *
+     * 同步变体的重入由 SingleFlight 的拥有线程守卫；异步变体在别的线程上继续，另以 [SingleFlight.loading] 守卫这些 key。
+     */
+    private suspend fun <R> invoke(
+        source: AsyncSource<K, V>,
+        storageKeys: Collection<String>,
+        native: (AsyncCacheLoader<K, V>) -> CompletionStage<out R>,
+        blocking: (CacheLoader<K, V>) -> R
+    ): R {
+        val inline = runsInline()
+        return when (source) {
+            is AsyncSource.Blocking -> if (inline) {
+                blocking(source.loader)
+            } else {
+                CompletableFuture.supplyAsync(
+                    { flights.loading(storageKeys) { blocking(source.loader) } },
+                    context.async.blocking
+                )
+                    .awaitOriginal()
+            }
+
+            is AsyncSource.Native -> {
+                val started = Futures.attempt {
+                    if (inline) {
+                        native(source.loader).toCompletableFuture()
+                    } else {
+                        flights.loading(storageKeys) { native(source.loader).toCompletableFuture() }
+                    }
+                }
+                val value = Futures.relay<Any?>(started)
+                    .completeOnTimeout(TIMED_OUT, asyncTimeout.toNanos(), TimeUnit.NANOSECONDS)
+                    .awaitOriginal()
+                if (value === TIMED_OUT) {
+                    metrics.loadTimeout()
+                    throw SourceLoadTimeoutException(name, asyncTimeout)
+                }
+                uncheckedCast(value)
+            }
+        }
+    }
 
     /**
-     * 协程核心调用数据源：同步变体在调用方线程上调用 [CacheLoader]（[loadFromSource]）；异步变体经 [loadFromSourceAsync]
-     * （异步数据源在当前线程上发起，同步数据源只在阻塞执行器上执行）。
+     * 回源并发上限（只计 leader）、耗时统计与回源观测，只包住回源调用本身。许可在回源结束时恰好归还一次（含失败、取消）。
      */
-    private suspend fun loadValue(key: K, storageKey: String, source: CoreSource<K, V>?): V? = when (source) {
-        null -> null
-        is CoreSource.Blocking -> loadFromSource(key, source.loader)
-        is CoreSource.Async -> loadFromSourceAsync(key, storageKey, source.source, source.operation).awaitOriginal()
+    private suspend fun <R> guardedLoad(operation: LoadOperation, keyCount: Int, block: suspend () -> R): R {
+        val semaphore = permits
+        semaphore?.let { acquirePermit(it) }
+        try {
+            val start = System.nanoTime()
+            var failed = true
+            try {
+                return observedLoad(operation, keyCount, block).also { failed = false }
+            } finally {
+                metrics.load(System.nanoTime() - start, failed)
+            }
+        } finally {
+            semaphore?.release()
+        }
+    }
+
+    /**
+     * 在 `acquireTimeout` 内取得回源许可，否则以 [SourceLoadRejectedException] 拒绝（计入 `loadRejected`）。
+     * 等待挂起协程：同步变体停在调用方线程上（`runBlocking` 的事件循环），异步变体不占线程；同步与异步的等待者按到达顺序交接。
+     * 等待被取消（运行时关闭、线程中断）时不取得许可，也不泄漏许可。
+     */
+    private suspend fun acquirePermit(semaphore: Semaphore) {
+        if (semaphore.tryAcquire()) {
+            return
+        }
+        val acquired = withTimeoutOrNull(policy.load.acquireTimeout.toMillis()) {
+            semaphore.acquire()
+            true
+        }
+        if (acquired == null) {
+            metrics.loadRejected()
+            throw SourceLoadRejectedException(name, policy.load)
+        }
     }
 
     /**
@@ -704,38 +767,11 @@ internal class CoherentEngine<K : Any, V : Any>(
         }.awaitOriginal()
     }
 
-    /**
-     * 回源并发上限（只计 leader）、耗时统计与回源观测（只包住回源调用本身；默认的 [LoadObserver.NOOP] 不产生任何调用）。
-     */
-    private inline fun <R> guarded(operation: LoadOperation, keyCount: Int, crossinline block: () -> R): R {
-        val semaphore = permits
-        if (semaphore != null && !semaphore.tryAcquire(policy.load.acquireTimeout.toNanos())) {
-            metrics.loadRejected()
-            throw SourceLoadRejectedException(name, policy.load)
-        }
-        val start = System.nanoTime()
-        var failed = true
-        try {
-            return observed(operation, keyCount, block).also { failed = false }
-        } finally {
-            metrics.load(System.nanoTime() - start, failed)
-            semaphore?.release()
-        }
-    }
-
-    /**
-     * 回源观测：默认的 [LoadObserver.NOOP] 直接执行，不分配也不调用。
-     */
-    private inline fun <R> observed(operation: LoadOperation, keyCount: Int, crossinline block: () -> R): R {
-        val observer = loadObserver
-        return if (observer === LoadObserver.NOOP) block() else observer.observe(name, operation, keyCount) { block() }
-    }
-
     override fun getAll(keys: Collection<K>): Map<K, V> {
         val resolved = LinkedHashMap<K, LocalEntry<V>?>()
         val pending = collectPending(keys, resolved)
         if (pending.isNotEmpty()) {
-            for ((storageKey, entry) in runSync { loadPending(pending, blockingSource) }) {
+            for ((storageKey, entry) in runSync { loadPending(pending, loadSource) }) {
                 pending.getValue(storageKey).forEach { resolved[it] = entry }
             }
         }
@@ -983,16 +1019,16 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 协程核心的批量回源：同步变体在调用方线程上调用 `loadAll`，异步变体经 [loadAllFromSourceAsync]。
+     * 协程核心的批量回源：与 [loadValue] 相同的许可、统计、观测与调用规则，一次 `loadAll`。
      */
     private suspend fun loadAllValues(
         keys: List<K>,
         storageKeys: Collection<String>,
         source: CoreSource<K, V>
-    ): Map<K, V> = when (source) {
-        is CoreSource.Blocking -> loadAllFromSource(keys, source.loader)
-        is CoreSource.Async -> loadAllFromSourceAsync(keys, storageKeys, source.source).awaitOriginal()
-    }
+    ): Map<K, V> =
+        guardedLoad(LoadOperation.LOAD_ALL, keys.size) {
+            invoke(source.source, storageKeys, { it.loadAllAsync(keys) }, { it.loadAll(keys) })
+        }
 
     /**
      * 释放批量取得的令牌（失败只计数告警），完成之后才继续。异步变体并发发出全部释放，再逐个等待；释放不可取消。
@@ -1091,7 +1127,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     @Suppress("TooGenericExceptionCaught")
     private fun refreshAsync(key: K, storageKey: String, observed: LocalEntry<V>) {
         // 没有数据源的缓存（如只经 Spring Cache 写入）无法回源刷新
-        if (loader == null || closed.get() || !refreshing.add(storageKey)) {
+        if (source == null || closed.get() || !refreshing.add(storageKey)) {
             return
         }
         // 调用方读到副本之后、取得守卫之前，上一次刷新可能已完成：它先替换副本再释放守卫，
@@ -1125,7 +1161,7 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     private fun refreshWithAsyncSource(key: K, storageKey: String) {
         metrics.refresh()
-        context.async.runAsync { refreshShared(key, storageKey, asyncRefreshSource) }.whenComplete { _, error ->
+        context.async.runAsync { refreshShared(key, storageKey, refreshSource) }.whenComplete { _, error ->
             refreshing.remove(storageKey)
             if (error != null) {
                 log.warn(error) { "Cache[$name] - key[$storageKey] - refresh failed." }
@@ -1651,11 +1687,10 @@ internal class CoherentEngine<K : Any, V : Any>(
         runSync { invalidateStorageKeys(listOf(storageKey)) }
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // 协程核心异步变体所用的数据源适配（RFC 0004 §5.2）：回源许可、超时与观测，M1 的最后一步改写为挂起实现。
-    // 续接经 handleNext / thenNext：上一步已完成时就地执行，否则在异步执行器上执行，从不在 I/O 线程上执行。
-    // ---------------------------------------------------------------------------------------------
-
+    /**
+     * 协程被取消（运行时关闭、异步执行器拒绝派发）之后尽力释放令牌：只发出一条非阻塞的释放命令、不等待，失败只告警，
+     * 令牌由 `lease.ttl` 回收。令牌不匹配时释放什么也不做，所以对已填充、已释放或从未取得的令牌重复释放是无害的。
+     */
     @Suppress("TooGenericExceptionCaught")
     private fun releaseQuietly(storageKey: String, token: Token) {
         try {
@@ -1663,168 +1698,13 @@ internal class CoherentEngine<K : Any, V : Any>(
                 if (error != null) {
                     log.warn(
                         error
-                    ) { "Cache[$name] - key[$storageKey] - release after rejection failed, reclaimed after lease ttl." }
+                    ) { "Cache[$name] - key[$storageKey] - release after cancellation failed, reclaimed after lease ttl." }
                 }
             }
         } catch (e: Exception) {
             log.warn(
                 e
-            ) { "Cache[$name] - key[$storageKey] - release after rejection failed, reclaimed after lease ttl." }
-        }
-    }
-
-    private fun loadFromSourceAsync(
-        key: K,
-        storageKey: String,
-        source: AsyncSource<K, V>?,
-        operation: LoadOperation
-    ): CompletableFuture<V?> {
-        val sourceLoader = source ?: return CompletableFuture.completedFuture(null)
-        return guardedAsync(operation, 1) {
-            invoke(sourceLoader, listOf(storageKey), { it.loadAsync(key) }, { it.load(key) })
-        }
-    }
-
-    private fun loadAllFromSourceAsync(
-        keys: Collection<K>,
-        storageKeys: Collection<String>,
-        source: AsyncSource<K, V>
-    ): CompletableFuture<Map<K, V>> = guardedAsync(LoadOperation.LOAD_ALL, keys.size) {
-        invoke(source, storageKeys, { it.loadAllAsync(keys) }, { it.loadAll(keys) })
-    }
-
-    /**
-     * 调用数据源（RFC 0004 §5.2.1），调用期间本线程对这些 key 的重入快速失败：
-     * - 异步数据源：在当前线程上调用，取其结果的副本再加 [asyncTimeout]（`orTimeout` 会修改 future 本身，不能作用于数据源的 future）；
-     * - 同步数据源：只在阻塞执行器上执行，不加超时（阻塞的 loader 无法被打断）。
-     */
-    private fun <R> invoke(
-        source: AsyncSource<K, V>,
-        storageKeys: Collection<String>,
-        native: (AsyncCacheLoader<K, V>) -> java.util.concurrent.CompletionStage<out R>,
-        blocking: (CacheLoader<K, V>) -> R
-    ): CompletableFuture<R> {
-        return when (source) {
-            is AsyncSource.Native -> {
-                val started = Futures.attempt {
-                    flights.loading(
-                        storageKeys
-                    ) { native(source.loader).toCompletableFuture() }
-                }
-                // 引擎的超时以私有哨兵值完成（JDK 的延迟线程触发），与数据源自己抛出的 TimeoutException 区分开（A8）
-                val bounded = Futures.relay<Any?>(
-                    started
-                ).completeOnTimeout(TIMED_OUT, asyncTimeout.toNanos(), TimeUnit.NANOSECONDS)
-                bounded.handleNext(executor) { value, error ->
-                    when {
-                        error != null -> CompletableFuture.failedFuture(error)
-                        value === TIMED_OUT -> {
-                            metrics.loadTimeout()
-                            CompletableFuture.failedFuture(SourceLoadTimeoutException(name, asyncTimeout))
-                        }
-
-                        else -> CompletableFuture.completedFuture(uncheckedCast<R>(value))
-                    }
-                }
-            }
-
-            is AsyncSource.Blocking -> Futures.attempt {
-                CompletableFuture.supplyAsync(
-                    { flights.loading(storageKeys) { blocking(source.loader) } },
-                    context.async.blocking
-                )
-            }
-        }
-    }
-
-    /**
-     * [guarded] 的异步版本：许可不阻塞地获取（拿不到时登记等待，释放时被唤醒，`acquireTimeout` 后被拒绝），在加载完成时释放恰好一次。
-     */
-    private fun <R> guardedAsync(
-        operation: LoadOperation,
-        keyCount: Int,
-        block: () -> CompletableFuture<R>
-    ): CompletableFuture<R> {
-        val semaphore = permits ?: return timedAsync(operation, keyCount, block)
-        val acquired = semaphore.acquireAsync(policy.load.acquireTimeout.toNanos()) {
-            metrics.loadRejected()
-            SourceLoadRejectedException(name, policy.load)
-        }
-        val released = AtomicBoolean()
-        val result = acquired.thenNext(executor) {
-            timedAsync(operation, keyCount, block).handleNext(executor) { value, error ->
-                if (released.compareAndSet(false, true)) {
-                    semaphore.release()
-                }
-                @Suppress("UNCHECKED_CAST")
-                if (error != null) {
-                    CompletableFuture.failedFuture(
-                        error
-                    )
-                } else {
-                    CompletableFuture.completedFuture(value as R)
-                }
-            }
-        }
-        // 执行器拒绝任务时上面的释放步骤会被跳过：拿到了许可就在完成线程上归还（恰好一次），否则许可永久泄漏、同步路径也被拒绝
-        result.whenComplete { _, _ ->
-            if (!acquired.isCompletedExceptionally && released.compareAndSet(false, true)) {
-                semaphore.release()
-            }
-        }
-        return result
-    }
-
-    /**
-     * 回源耗时统计与观测。
-     */
-    private fun <R> timedAsync(
-        operation: LoadOperation,
-        keyCount: Int,
-        block: () -> CompletableFuture<R>
-    ): CompletableFuture<R> {
-        val start = System.nanoTime()
-        return Futures.attempt { observedAsync(operation, keyCount, block) }.handleNext(executor) { value, error ->
-            metrics.load(System.nanoTime() - start, error != null)
-            @Suppress("UNCHECKED_CAST")
-            if (error != null) CompletableFuture.failedFuture(error) else CompletableFuture.completedFuture(value as R)
-        }
-    }
-
-    private fun <R> observedAsync(operation: LoadOperation, keyCount: Int, block: () -> CompletableFuture<R>): CompletableFuture<R> {
-        val observer = loadObserver
-        return if (observer === LoadObserver.NOOP) {
-            block()
-        } else {
-            observer.observeAsync(
-                name,
-                operation,
-                keyCount
-            ) { block() }
-        }
-    }
-
-    /**
-     * 同步路径上等待异步数据源（在调用方线程上调用 `loadAsync` 并等待，受 [asyncTimeout] 约束，异常解包）。
-     */
-    private inner class AwaitingLoader(private val delegate: AsyncCacheLoader<K, V>) : CacheLoader<K, V> {
-        override fun load(key: K): V? = await(delegate.loadAsync(key).toCompletableFuture())
-
-        override fun loadAll(keys: Collection<K>): Map<K, V> = await(delegate.loadAllAsync(keys).toCompletableFuture())
-
-        private fun <T> await(future: CompletableFuture<T>): T {
-            val failure: Throwable = try {
-                return future.get(asyncTimeout.toNanos(), TimeUnit.NANOSECONDS)
-            } catch (e: ExecutionException) {
-                Futures.unwrap(e)
-            } catch (e: TimeoutException) {
-                metrics.loadTimeout()
-                SourceLoadTimeoutException(name, asyncTimeout).apply { initCause(e) }
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-                e
-            }
-            throw failure
+            ) { "Cache[$name] - key[$storageKey] - release after cancellation failed, reclaimed after lease ttl." }
         }
     }
 
@@ -1848,7 +1728,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                     return@attempt CompletableFuture.completedFuture(entry.value)
                 }
             }
-            missAsync(key, storageKey, asyncCoreSource) { it.value }
+            missAsync(key, storageKey, loadSource) { it.value }
         }
 
         override fun get(key: K, loader: AsyncCacheLoader<K, V>): CompletableFuture<V?> = Futures.attempt {
@@ -1858,7 +1738,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                 countLocalHit()
                 return@attempt CompletableFuture.completedFuture(entry.value)
             }
-            missAsync(key, storageKey, CoreSource.Async(AsyncSource.Native(loader), LoadOperation.LOAD)) { it.value }
+            missAsync(key, storageKey, CoreSource(AsyncSource.Native(loader), LoadOperation.LOAD)) { it.value }
         }
 
         override fun lookup(key: K): CompletableFuture<Lookup<V>> = Futures.attempt {
@@ -1867,7 +1747,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             if (entry != null) {
                 return@attempt CompletableFuture.completedFuture(lookupOf(entry))
             }
-            missAsync(key, storageKey, asyncCoreSource) { lookupOf(it) }
+            missAsync(key, storageKey, loadSource) { lookupOf(it) }
         }
 
         override fun getAll(keys: Collection<K>): CompletableFuture<Map<K, V>> = Futures.attempt {
@@ -1877,7 +1757,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                 return@attempt CompletableFuture.completedFuture(valuesOf(resolved))
             }
             context.async.runAsync {
-                for ((storageKey, entry) in loadPending(pending, asyncCoreSource)) {
+                for ((storageKey, entry) in loadPending(pending, loadSource)) {
                     pending.getValue(storageKey).forEach { resolved[it] = entry }
                 }
                 valuesOf(resolved)
@@ -1972,12 +1852,7 @@ internal class CoherentEngine<K : Any, V : Any>(
 }
 
 /**
- * 委托给数据源的刷新数据源（见 `CoherentEngine.refreshLoader`）：只用于让回源观测区分刷新与未命中加载。
- */
-private class RefreshLoader<K : Any, V : Any>(private val delegate: CacheLoader<K, V>) : CacheLoader<K, V> by delegate
-
-/**
- * 异步路径的数据源（RFC 0004 §3.2）。
+ * 数据源（RFC 0004 §3.2）：同步数据源或异步数据源。
  */
 private sealed interface AsyncSource<K : Any, V : Any> {
     class Native<K : Any, V : Any>(val loader: AsyncCacheLoader<K, V>) : AsyncSource<K, V>
@@ -1986,14 +1861,9 @@ private sealed interface AsyncSource<K : Any, V : Any> {
 }
 
 /**
- * 协程核心的数据源（RFC 0005 V5，M1 过渡期）：同步变体在调用方线程上调用 [CacheLoader]，异步变体经 [AsyncSource] 调用；
- * [operation] 供回源观测区分未命中加载与刷新。
+ * 协程核心的数据源（RFC 0005 V5）：声明的或调用级的同步或异步数据源；[operation] 供回源观测区分未命中加载与刷新。
  */
-private sealed interface CoreSource<K : Any, V : Any> {
-    class Blocking<K : Any, V : Any>(val loader: CacheLoader<K, V>) : CoreSource<K, V>
-
-    class Async<K : Any, V : Any>(val source: AsyncSource<K, V>, val operation: LoadOperation) : CoreSource<K, V>
-}
+private class CoreSource<K : Any, V : Any>(val source: AsyncSource<K, V>, val operation: LoadOperation)
 
 /**
  * 读到值时的判定（同步与异步共用）。

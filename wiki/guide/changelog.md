@@ -12,7 +12,9 @@ description: Release history and notable changes for CoCache.
 ### Breaking changes
 
 - The baseline is JDK 21 (was JDK 17).
-- `cocache-core` depends on `kotlinx-coroutines-core` at runtime. The protocol is being rewritten as one coroutine implementation behind the blocking, async, and suspending APIs. Reads, refresh-ahead, and writes of both cache kinds already use it. With assertions enabled (`-ea`, the default in test runs), kotlinx adds a coroutine suffix such as ` @coroutine#3` to thread names while a read runs, including inside a blocking loader.
+- `cocache-core` depends on `kotlinx-coroutines-core` at runtime. The protocol is being rewritten as one coroutine implementation behind the blocking, async, and suspending APIs. Reads, refresh-ahead, and writes of both cache kinds use it. With assertions enabled (`-ea`, the default in test runs), kotlinx adds a coroutine suffix such as ` @coroutine#3` to thread names while a read runs, including inside a blocking loader.
+- The runtime no longer starts a `cocache-timer` thread. Lease waits and load-permit waits are coroutine suspensions.
+- Load permits (`load.max-concurrent`) are handed out in arrival order to sync and async callers alike. In 6.x, a blocking caller competed for a released permit directly and could take it before async callers already waiting.
 - An async read in flight when its `CacheRuntime` closes fails with `IllegalStateException("CacheRuntime closed.")`. An async write in flight still finishes its Redis change, broadcast and local invalidation first, then completes with that exception if it succeeded, or with its own failure.
 
 ### Fix: a failed reload in a batch read no longer strands the rest of the batch

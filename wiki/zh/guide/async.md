@@ -50,7 +50,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 | 结果已经可得（内存后端、同步完成的 loader） | 在调用方线程上继续 |
 | 之后才完成的 Redis 结果或 loader future | 在**异步执行器**上继续，从不在 Lettuce 的 I/O 线程上 |
 | 经异步视图调用的同步 loader | 只在**阻塞执行器**上执行 |
-| 等待其它实例的 lease，或等待回源许可 | 不占线程：定时器重读 Redis，许可释放时唤醒下一个等待者 |
+| 等待其它实例的 lease，或等待回源许可 | 不占线程：读取挂起，短暂退避后重读 Redis；许可释放时按到达顺序交给下一个等待者（同步与异步调用方排在同一个队列里） |
 
 你自己挂上的依赖阶段（`thenApply`、`whenComplete`）遵循 JDK 的规则：在完成 future 的线程上执行，或在随后对它调用 `get()` / `join()` 的线程上执行。
 

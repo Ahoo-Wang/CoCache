@@ -26,12 +26,14 @@ import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
+import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -266,6 +268,85 @@ class CoherentEngineCoreTest {
         failure?.message.assert().isEqualTo("CacheRuntime closed.")
         requireNotNull(closing.metrics("core")).writeFailures.assert().isZero()
         runtime().create(spec { loader = CacheLoader { "loaded" } })["k"].assert().isEqualTo("v")
+    }
+
+    /**
+     * 唯一的回源许可被占用时，持有者在 [holderStarted] 之后一直等 [releaseHolder]；其余 key 记录回源顺序。
+     */
+    private inner class PermitHolder(acquireTimeout: Duration) {
+        val holderStarted = CountDownLatch(1)
+        val releaseHolder = CountDownLatch(1)
+        val loaded = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val runtime = runtime()
+        val cache = runtime.create(
+            spec {
+                loader = CacheLoader { key ->
+                    if (key == "holder") {
+                        holderStarted.countDown()
+                        releaseHolder.awaitOrFail("release holder")
+                    }
+                    loaded += key
+                    "v-$key"
+                }
+                policy = CachePolicy(load = LoadPolicy(maxConcurrent = 1, acquireTimeout = acquireTimeout))
+            }
+        )
+        val holding = fork("holder") { cache["holder"] }
+
+        init {
+            holderStarted.awaitOrFail("holder started")
+        }
+
+        fun release() {
+            releaseHolder.countDown()
+            holding.join().assert().isEqualTo("v-holder")
+        }
+    }
+
+    /**
+     * 等不到回源许可：同步与异步变体都在 `acquireTimeout` 后以 [SourceLoadRejectedException] 失败，许可不丢。
+     */
+    @Test
+    fun permitWaitersTimeOutWithoutLosingThePermit() {
+        val holder = PermitHolder(Duration.ofMillis(50))
+        failureOf(holder.cache.async().get("async")).assert().isInstanceOf(SourceLoadRejectedException::class.java)
+        runCatching { holder.cache["sync"] }.exceptionOrNull().assert().isInstanceOf(
+            SourceLoadRejectedException::class.java
+        )
+        requireNotNull(holder.runtime.metrics("core")).loadRejected.assert().isEqualTo(2)
+        holder.release()
+        holder.cache["after"].assert().isEqualTo("v-after")
+    }
+
+    /**
+     * 同步与异步变体共用一个按到达顺序交接的许可：先到的等待者先回源。
+     */
+    @Test
+    fun permitWaitersAreServedInArrivalOrder() {
+        val holder = PermitHolder(Duration.ofSeconds(10))
+        val first = holder.cache.async().get("first")
+        val second = fork("second") { holder.cache["second"] }
+        awaitCondition("second waiting") { second.parked }
+        val third = holder.cache.async().get("third")
+        holder.release()
+        first.get(10, TimeUnit.SECONDS).assert().isEqualTo("v-first")
+        second.join().assert().isEqualTo("v-second")
+        third.get(10, TimeUnit.SECONDS).assert().isEqualTo("v-third")
+        holder.loaded.assert().containsExactly("holder", "first", "second", "third")
+    }
+
+    /**
+     * 等待回源许可期间关闭运行时：异步等待者以关闭失败，不等满 `acquireTimeout`。
+     */
+    @Test
+    fun closingTheRuntimeFailsPermitWaiters() {
+        val holder = PermitHolder(Duration.ofSeconds(30))
+        val waiting = holder.cache.async().get("waiting")
+        holder.runtime.close()
+        val failure = failureOf(waiting)
+        failure.assert().isInstanceOf(IllegalStateException::class.java)
+        failure?.message.assert().isEqualTo("CacheRuntime closed.")
+        holder.release()
     }
 
     /**

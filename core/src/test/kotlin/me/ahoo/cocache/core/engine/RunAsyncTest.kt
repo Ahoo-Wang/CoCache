@@ -37,7 +37,7 @@ class RunAsyncTest {
 
     @Test
     fun runAsyncCompletesWithTheResult() {
-        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool(), null)
+        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
         try {
             context.runAsync {
                 yield()
@@ -50,7 +50,7 @@ class RunAsyncTest {
 
     @Test
     fun runAsyncFailsWithTheOriginalException() {
-        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool(), null)
+        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
         val failure = IllegalStateException("boom")
         try {
             failureOf(
@@ -71,7 +71,7 @@ class RunAsyncTest {
     fun rejectedDispatchFailsWithTheRejection() {
         val rejection = RejectedExecutionException("full")
         val rejecting = Executor { throw rejection }
-        val context = AsyncContext(rejecting, rejecting, null)
+        val context = AsyncContext(rejecting, rejecting)
         try {
             failureOf(
                 context.runAsync {
@@ -89,7 +89,7 @@ class RunAsyncTest {
      */
     @Test
     fun runAsyncAfterCloseFailsAsClosed() {
-        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool(), null)
+        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
         context.close()
         val failure = failureOf(
             context.runAsync {
@@ -103,7 +103,7 @@ class RunAsyncTest {
 
     @Test
     fun cancellingTheResultDoesNotCancelTheCoroutine() {
-        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool(), null)
+        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
         val gate = CompletableFuture<String>()
         val finished = CompletableFuture<String>()
         try {

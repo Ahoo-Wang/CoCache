@@ -13,24 +13,67 @@
 
 package me.ahoo.cocache.core.internal
 
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.future.future
+import me.ahoo.cocache.core.engine.AsyncContext
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ForkJoinPool
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
+/**
+ * 协程核心的 SingleFlight（[SingleFlight.executeSuspending]、[SingleFlight.executeAllSuspending]）与同步变体的入口（[runSync]）。
+ */
 class SingleFlightTest {
     private val flights = SingleFlight<String, String>()
+    private val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
+    private val scope = context.scope
+
+    @AfterEach
+    fun tearDown() {
+        context.close()
+    }
+
+    /** 同步变体。 */
+    private fun sync(key: String = "k", block: suspend () -> String): String =
+        runSync { flights.executeSuspending(key, scope, block) }
+
+    /** 异步变体：用户拿到结果的副本。 */
+    private fun async(key: String = "k", block: suspend () -> String): CompletableFuture<String> =
+        context.runAsync { flights.executeSuspending(key, scope, block) }
+
+    /** 直接从协程调用（上下文中没有 [ExecutionMode]，调用方可能被单独取消）：返回的 future 就是调用方的协程。 */
+    private fun suspending(key: String = "k", block: suspend () -> String): CompletableFuture<String> =
+        scope.future(start = CoroutineStart.UNDISPATCHED) { flights.executeSuspending(key, scope, block) }
 
     @Test
-    fun followersShareTheLeaderResult() {
+    fun syncLeaderRunsInlineOnTheCallerThread() {
+        val caller = Thread.currentThread()
+        var ranOn: Thread? = null
+        sync {
+            ranOn = Thread.currentThread()
+            "v"
+        }.assert().isEqualTo("v")
+        ranOn.assert().isSameAs(caller)
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    @Test
+    fun syncFollowersShareTheLeaderResult() {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val calls = AtomicInteger()
         val leader = fork {
-            flights.execute("k") {
+            sync {
                 calls.incrementAndGet()
                 started.countDown()
                 release.awaitOrFail()
@@ -39,12 +82,12 @@ class SingleFlightTest {
         }
         started.awaitOrFail()
         val follower = fork {
-            flights.execute("k") {
+            sync {
                 calls.incrementAndGet()
                 "other"
             }
         }
-        awaitCondition { follower.thread.state == Thread.State.WAITING }
+        awaitCondition { follower.parked }
         flights.inFlight.assert().isEqualTo(1)
         release.countDown()
         leader.join().assert().isEqualTo("v")
@@ -53,62 +96,354 @@ class SingleFlightTest {
         flights.inFlight.assert().isEqualTo(0)
     }
 
+    /**
+     * 跟随者收到的是 leader 抛出的原始异常（不变量“不包装异常”）：调试模式下 kotlinx 恢复挂起时会复制异常，这里不能拿到副本。
+     */
     @Test
     fun followersReceiveTheOriginalException() {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val failure = IllegalStateException("boom")
         val leader = fork {
-            flights.execute("k") {
+            sync {
                 started.countDown()
                 release.awaitOrFail()
                 throw failure
             }
         }
         started.awaitOrFail()
-        val follower = fork { flights.execute("k") { "other" } }
-        awaitCondition { follower.thread.state == Thread.State.WAITING }
+        val syncFollower = fork { sync { "other" } }
+        val asyncFollower = async { "other" }
+        awaitCondition { syncFollower.parked }
         release.countDown()
         leader.joinFailure().assert().isSameAs(failure)
-        follower.joinFailure().assert().isSameAs(failure)
+        syncFollower.joinFailure().assert().isSameAs(failure)
+        causeOf(asyncFollower).assert().isSameAs(failure)
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    @Test
+    fun asyncLeaderFailurePropagatesTheOriginalException() {
+        val gate = CompletableFuture<String>()
+        val failure = IllegalStateException("boom")
+        val leader = async { gate.awaitOriginal() }
+        val syncFollower = fork { sync { "other" } }
+        awaitCondition { syncFollower.parked }
+        gate.completeExceptionally(failure)
+        causeOf(leader).assert().isSameAs(failure)
+        syncFollower.joinFailure().assert().isSameAs(failure)
+        flights.inFlight.assert().isEqualTo(0)
     }
 
     /**
-     * 同步跟随者的等待响应中断（RFC 0005 附录 A.S1）：被中断的跟随者（单 key 与批量）以 [InterruptedException] 失败、保留中断标志，
-     * 只影响它自己；leader 照常完成，没被中断的跟随者照常拿到结果。
+     * 异步变体的 leader 在调用方的协程中执行，第一次挂起之前就在调用方线程上（省去一次派发）。
      */
     @Test
-    fun interruptedFollowerFailsAloneAndKeepsItsInterruptFlag() {
+    fun asyncLeaderRunsInTheCallerCoroutine() {
+        val caller = Thread.currentThread()
+        var ranOn: Thread? = null
+        async {
+            ranOn = Thread.currentThread()
+            "v"
+        }.get(5, TimeUnit.SECONDS).assert().isEqualTo("v")
+        ranOn.assert().isSameAs(caller)
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * 取消发起加载的调用方只结束调用方自己的等待，共享加载照常完成并交给其它等待者：
+     * 异步变体取消的是结果的副本；直接从协程调用时，共享加载在运行时作用域中执行。
+     */
+    @Test
+    fun cancellingTheAsyncCallerDoesNotCancelTheSharedLoad() {
+        assertCallerCancellationKeepsTheSharedLoad(::async)
+    }
+
+    @Test
+    fun cancellingTheSuspendingCallerDoesNotCancelTheSharedLoad() {
+        assertCallerCancellationKeepsTheSharedLoad(::suspending)
+    }
+
+    private fun assertCallerCancellationKeepsTheSharedLoad(
+        start: (String, suspend () -> String) -> CompletableFuture<String>
+    ) {
+        val gate = CompletableFuture<String>()
+        val loads = AtomicInteger()
+        val caller = start("k") {
+            loads.incrementAndGet()
+            gate.awaitOriginal()
+        }
+        val follower = async { "other" }
+        caller.cancel(true)
+        caller.isCancelled.assert().isEqualTo(true)
+        flights.inFlight.assert().isEqualTo(1)
+        gate.complete("v")
+        follower.get(5, TimeUnit.SECONDS).assert().isEqualTo("v")
+        awaitCondition { flights.inFlight == 0 }
+        loads.get().assert().isEqualTo(1)
+    }
+
+    /**
+     * 跟随者的等待被取消只结束它自己的等待，不取消共享的结果。
+     */
+    @Test
+    fun cancellingAFollowerDoesNotCancelTheSharedResult() {
+        val gate = CompletableFuture<String>()
+        val leader = async { gate.awaitOriginal() }
+        val cancelled = suspending { "other" }
+        val waiting = async { "other" }
+        cancelled.cancel(true)
+        gate.complete("v")
+        leader.get(5, TimeUnit.SECONDS).assert().isEqualTo("v")
+        waiting.get(5, TimeUnit.SECONDS).assert().isEqualTo("v")
+        cancelled.isCancelled.assert().isEqualTo(true)
+    }
+
+    /**
+     * 同步跟随者被中断：以 [InterruptedException] 失败并保留中断标志，只影响它自己（RFC 0005 §4.4）。
+     */
+    @Test
+    fun interruptedSyncFollowerFailsAloneAndKeepsItsInterruptFlag() {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val leader = fork {
-            flights.execute("k") {
+            sync {
                 started.countDown()
                 release.awaitOrFail()
                 "v"
             }
         }
         started.awaitOrFail()
-        val single = fork { interruptFlagAfter { flights.execute("k") { "other" } } }
-        val batch = fork { interruptFlagAfter { flights.executeAll(listOf("k")) { error("never leads") } } }
-        val waiting = fork { flights.execute("k") { "other" } }
-        awaitCondition {
-            listOf(single, batch, waiting).all { it.thread.state == Thread.State.WAITING }
-        }
-        single.thread.interrupt()
-        batch.thread.interrupt()
-        listOf(single, batch).forEach { follower ->
-            val failure = follower.joinFailure()
-            failure.assert().isInstanceOf(FollowerFailure::class.java)
-            val (cause, interrupted) = failure as FollowerFailure
-            cause.assert().isInstanceOf(InterruptedException::class.java)
-            interrupted.assert().withFailMessage { "the interrupt flag must be restored" }.isEqualTo(true)
-        }
+        val interrupted = fork { interruptFlagAfter { sync { "other" } } }
+        val waiting = fork { sync { "other" } }
+        awaitCondition { interrupted.parked && waiting.parked }
+        interrupted.thread.interrupt()
+        val failure = interrupted.joinFailure()
+        failure.assert().isInstanceOf(FollowerFailure::class.java)
+        val (cause, flag) = failure as FollowerFailure
+        cause.assert().isInstanceOf(InterruptedException::class.java)
+        flag.assert().withFailMessage { "the interrupt flag must be restored" }.isEqualTo(true)
         flights.inFlight.assert().isEqualTo(1)
         release.countDown()
         leader.join().assert().isEqualTo("v")
         waiting.join().assert().isEqualTo("v")
         flights.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * 同步 leader 被中断时加载随之结束：leader 收到 loader 抛出的 [InterruptedException]，跟随者收到同一个失败，
+     * 但跟随者自己没有被中断，中断标志不能被置上（6.x 的合并规则；按合并规则自行运行属于 M2）。
+     */
+    @Test
+    fun interruptedSyncLeaderEndsTheLoadWithoutInterruptingFollowers() {
+        val started = CountDownLatch(1)
+        val leader = fork {
+            interruptFlagAfter {
+                sync {
+                    started.countDown()
+                    CountDownLatch(1).await()
+                    "v"
+                }
+            }
+        }
+        started.awaitOrFail()
+        val follower = fork { interruptFlagAfter { sync { "other" } } }
+        awaitCondition { follower.parked }
+        leader.thread.interrupt()
+        val (leaderCause, _) = leader.joinFailure() as FollowerFailure
+        leaderCause.assert().isInstanceOf(InterruptedException::class.java)
+        val (followerCause, followerFlag) = follower.joinFailure() as FollowerFailure
+        followerCause.assert().isSameAs(leaderCause)
+        followerFlag.assert().withFailMessage { "the follower was not interrupted" }.isEqualTo(false)
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * leader 先注销、再发布：被唤醒的跟随者立即再调用同一个 key，必然开始新的执行（读己之写依赖这一顺序）。
+     */
+    @Test
+    fun deregistersBeforePublishing() {
+        val gate = CompletableFuture<String>()
+        val leader = async { gate.awaitOriginal() }
+        val follower = context.runAsync {
+            val joined = flights.executeSuspending("k", scope) { "other" }
+            val retried = flights.executeSuspending("k", scope) { "fresh" }
+            joined to retried
+        }
+        gate.complete("v")
+        leader.get(5, TimeUnit.SECONDS).assert().isEqualTo("v")
+        follower.get(5, TimeUnit.SECONDS).assert().isEqualTo("v" to "fresh")
+    }
+
+    /**
+     * 正在 [SingleFlight.loading] 内为某个 key 调用数据源的线程，再调用这个 key 快速失败（同步与异步变体），离开作用域后清除。
+     */
+    @Test
+    fun reentryWhileLoadingFailsFast() {
+        async("k") {
+            flights.loading(listOf("k")) {
+                val syncError = runCatching { sync("k") { "x" } }.exceptionOrNull()
+                syncError.assert().isInstanceOf(IllegalStateException::class.java)
+                causeOf(async("k") { "y" }).assert().isInstanceOf(IllegalStateException::class.java)
+            }
+            "v"
+        }.get(5, TimeUnit.SECONDS).assert().isEqualTo("v")
+        sync("k") { "again" }.assert().isEqualTo("again")
+    }
+
+    @Test
+    fun nestedLoadingKeepsOuterKeysUntilItEnds() {
+        async("a") {
+            flights.loading(listOf("a")) {
+                flights.loading(listOf("a", "b")) { Unit }
+                causeOf(async("a") { "x" }).assert().isInstanceOf(IllegalStateException::class.java)
+            }
+            "v"
+        }.get(5, TimeUnit.SECONDS).assert().isEqualTo("v")
+        async("b") { "b" }.get(5, TimeUnit.SECONDS).assert().isEqualTo("b")
+    }
+
+    @Test
+    fun batchWithoutKeysDoesNotCallBlock() {
+        syncAll(emptyList()) { throw AssertionError("not called") }.assert().isEmpty()
+    }
+
+    @Test
+    fun reentrantSyncCallFailsFast() {
+        val error = runCatching { sync { sync { "inner" } } }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalStateException::class.java)
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    @Test
+    fun runSyncOnAnInterruptedThreadFailsAndKeepsTheFlag() {
+        Thread.currentThread().interrupt()
+        try {
+            val error = runCatching {
+                runSync {
+                    kotlinx.coroutines.yield()
+                    "v"
+                }
+            }.exceptionOrNull()
+            error.assert().isInstanceOf(InterruptedException::class.java)
+            Thread.currentThread().isInterrupted.assert().isEqualTo(true)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    private fun syncAll(keys: List<String>, block: suspend (List<String>) -> Map<String, String>): Map<String, String> =
+        runSync { flights.executeAllSuspending(keys, scope, block) }
+
+    private fun asyncAll(keys: List<String>, block: suspend (List<String>) -> Map<String, String>): CompletableFuture<Map<String, String>> =
+        context.runAsync { flights.executeAllSuspending(keys, scope, block) }
+
+    private fun suspendingAll(
+        keys: List<String>,
+        block: suspend (List<String>) -> Map<String, String>
+    ): CompletableFuture<Map<String, String>> =
+        scope.future(start = CoroutineStart.UNDISPATCHED) { flights.executeAllSuspending(keys, scope, block) }
+
+    /**
+     * 批量：本调用负责空闲的 key（去重），合并在途的 key，先完成自己负责的整批再等待其它调用者。
+     */
+    @Test
+    fun batchLeadsFreeKeysAndJoinsInFlightOnes() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val single = fork {
+            sync("a") {
+                started.countDown()
+                release.awaitOrFail()
+                "a1"
+            }
+        }
+        started.awaitOrFail()
+        val led = mutableListOf<String>()
+        val batch = fork {
+            syncAll(listOf("a", "b", "b", "c")) { keys ->
+                led.addAll(keys)
+                keys.associateWith { "${it}2" }
+            }
+        }
+        awaitCondition { batch.parked }
+        led.assert().containsExactly("b", "c")
+        release.countDown()
+        single.join().assert().isEqualTo("a1")
+        batch.join().assert().isEqualTo(mapOf("b" to "b2", "c" to "c2", "a" to "a1"))
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * 整批缺少某个 key 的结果：发起的调用方的结果中没有它，合并到它的等待者以 [IllegalStateException] 失败。
+     * 三种调用方（同步、异步、直接从协程调用）的语义相同。
+     */
+    @Test
+    fun missingResultIsOmittedForTheLeaderAndFailsJoiners() {
+        listOf<(List<String>, suspend (List<String>) -> Map<String, String>) -> Map<String, String>>(
+            { keys, block -> syncAll(keys, block) },
+            { keys, block -> asyncAll(keys, block).get(5, TimeUnit.SECONDS) },
+            { keys, block -> suspendingAll(keys, block).get(5, TimeUnit.SECONDS) },
+        ).forEach { run ->
+            val started = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val leader = fork {
+                run(listOf("a", "b")) {
+                    started.countDown()
+                    release.awaitOrFail()
+                    mapOf("a" to "v")
+                }
+            }
+            started.awaitOrFail()
+            val joiner = async("b") { "other" }
+            release.countDown()
+            leader.join().assert().isEqualTo(mapOf("a" to "v"))
+            causeOf(joiner).assert().isInstanceOf(IllegalStateException::class.java)
+            awaitCondition { flights.inFlight == 0 }
+        }
+    }
+
+    /**
+     * 整批失败：发起的调用方与合并到它的等待者都收到原始异常，全部 key 注销。
+     */
+    @Test
+    fun batchFailureReachesItsJoiners() {
+        listOf<(List<String>, suspend (List<String>) -> Map<String, String>) -> CompletableFuture<Map<String, String>>>(
+            { keys, block -> asyncAll(keys, block) },
+            { keys, block -> suspendingAll(keys, block) },
+        ).forEach { start ->
+            val gate = CompletableFuture<Map<String, String>>()
+            val failure = IllegalStateException("batch failed")
+            val batch = start(listOf("a", "b")) { gate.awaitOriginal() }
+            val joiner = async("a") { "other" }
+            gate.completeExceptionally(failure)
+            causeOf(batch).assert().isSameAs(failure)
+            causeOf(joiner).assert().isSameAs(failure)
+            awaitCondition { flights.inFlight == 0 }
+        }
+        val syncFailure = IllegalStateException("sync batch failed")
+        runCatching { syncAll(listOf("a")) { throw syncFailure } }.exceptionOrNull().assert().isSameAs(syncFailure)
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    @Test
+    fun reentrantBatchFailsFast() {
+        val error = runCatching {
+            sync("k") {
+                syncAll(listOf("j", "k")) { keys -> keys.associateWith { "v" } }.getValue("k")
+            }
+        }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalStateException::class.java)
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    private fun causeOf(future: CompletableFuture<*>): Throwable? = try {
+        future.get(5, TimeUnit.SECONDS)
+        null
+    } catch (e: ExecutionException) {
+        e.cause
+    } catch (e: CancellationException) {
+        e
     }
 
     /**
@@ -123,109 +458,5 @@ class SingleFlightTest {
         } catch (e: Throwable) {
             throw FollowerFailure(e, Thread.currentThread().isInterrupted)
         }
-    }
-
-    @Test
-    fun reentrantCallFailsFast() {
-        val error = runCatching { flights.execute("k") { flights.execute("k") { "inner" } } }.exceptionOrNull()
-        error.assert().isInstanceOf(IllegalStateException::class.java)
-        val batchError = runCatching {
-            flights.execute("k") { flights.executeAll(listOf("k")) { mapOf("k" to "v") }.getValue("k") }
-        }.exceptionOrNull()
-        batchError.assert().isInstanceOf(IllegalStateException::class.java)
-    }
-
-    @Test
-    fun executeAllLeadsFreeKeysAndJoinsInFlightOnes() {
-        val started = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        val single = fork {
-            flights.execute("a") {
-                started.countDown()
-                release.awaitOrFail()
-                "a1"
-            }
-        }
-        started.awaitOrFail()
-        val led = mutableListOf<String>()
-        val batch = fork {
-            flights.executeAll(listOf("a", "b", "b", "c")) { keys ->
-                led.addAll(keys)
-                keys.associateWith { "${it}2" }
-            }
-        }
-        awaitCondition { batch.thread.state == Thread.State.WAITING }
-        release.countDown()
-        single.join()
-        batch.join().assert().isEqualTo(mapOf("b" to "b2", "c" to "c2", "a" to "a1"))
-        led.assert().containsExactly("b", "c")
-        flights.inFlight.assert().isEqualTo(0)
-    }
-
-    @Test
-    fun executeAllPropagatesFailureToJoinedCallers() {
-        val started = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        val failure = IllegalStateException("batch failed")
-        val batch = fork {
-            flights.executeAll(listOf("a")) {
-                started.countDown()
-                release.awaitOrFail()
-                throw failure
-            }
-        }
-        started.awaitOrFail()
-        val follower = fork { flights.execute("a") { "other" } }
-        awaitCondition { follower.thread.state == Thread.State.WAITING }
-        release.countDown()
-        batch.joinFailure().assert().isSameAs(failure)
-        follower.joinFailure().assert().isSameAs(failure)
-        flights.inFlight.assert().isEqualTo(0)
-    }
-
-    @Test
-    fun executeAllMissingResultFailsJoinedCallers() {
-        val started = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        val batch = fork {
-            flights.executeAll(listOf("a", "b")) {
-                started.countDown()
-                release.awaitOrFail()
-                mapOf("a" to "v")
-            }
-        }
-        started.awaitOrFail()
-        val follower = fork { flights.execute("b") { "other" } }
-        awaitCondition { follower.thread.state == Thread.State.WAITING }
-        release.countDown()
-        batch.join().assert().isEqualTo(mapOf("a" to "v"))
-        follower.joinFailure().assert().isInstanceOf(IllegalStateException::class.java)
-    }
-
-    @Test
-    fun executeAllWithOnlyJoinedKeysDoesNotCallBlock() {
-        flights.executeAll(emptyList<String>()) { throw AssertionError("not called") }.assert().isEmpty()
-    }
-
-    @Test
-    fun stampsDetectInvalidation() {
-        val stamps = InvalidationStamps(16)
-        val stamp = stamps.current("k")
-        stamps.isValid("k", stamp).assert().isTrue()
-        stamps.invalidate("k")
-        stamps.isValid("k", stamp).assert().isFalse()
-        val other = stamps.current("other")
-        stamps.invalidateAll()
-        stamps.isValid("other", other).assert().isFalse()
-        runCatching {
-            InvalidationStamps(
-                3
-            )
-        }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
-        runCatching {
-            InvalidationStamps(
-                0
-            )
-        }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 }
