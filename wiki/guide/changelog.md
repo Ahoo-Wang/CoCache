@@ -12,12 +12,17 @@ description: Release history and notable changes for CoCache.
 ### Breaking changes
 
 - The baseline is JDK 21 (was JDK 17).
-- `cocache-core` depends on `kotlinx-coroutines-core` at runtime. The protocol is being rewritten as one coroutine implementation behind the blocking, async, and suspending APIs. `SetCache` reads, `Cache` single-key reads, and refresh-ahead already use it. With assertions enabled (`-ea`, the default in test runs), kotlinx adds a coroutine suffix such as ` @coroutine#3` to thread names while a read runs, including inside a blocking loader.
+- `cocache-core` depends on `kotlinx-coroutines-core` at runtime. The protocol is being rewritten as one coroutine implementation behind the blocking, async, and suspending APIs. `SetCache` reads, `Cache` reads (single-key and batch), and refresh-ahead already use it. With assertions enabled (`-ea`, the default in test runs), kotlinx adds a coroutine suffix such as ` @coroutine#3` to thread names while a read runs, including inside a blocking loader.
 - An async read in flight when its `CacheRuntime` closes fails with `IllegalStateException("CacheRuntime closed.")`.
+
+### Fix: a failed reload in a batch read no longer strands the rest of the batch
+
+- `getAll` loads and fills the whole batch first, then reclaims corrupt keys one by one. If a corrupt key's reload fails, the other keys are still written back to Redis (or their leases released), and the batch then fails with the first error. In 6.x, the blocking path reclaimed corrupt keys first and stopped at the first failure, leaving the other keys' leases until they expired, so other instances waited `lease.wait` on those keys.
 
 ### TCK
 
 - `Concurrency.currentThreadName()` returns the thread name without the kotlinx coroutine suffix. `HookedBackend.issuer()` and the specs use it, so hooks that orchestrate races by thread name work whether or not assertions are enabled.
+- `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` covers the batch fix above, and `EngineSpec.getAllAfterOwnInvalidateNeverSharesALoadStartedBefore` covers read-your-writes for batch reads.
 - `Concurrency.Forked.parked` is true while the thread waits (`WAITING` or `TIMED_WAITING`). A blocking follower now waits inside `runBlocking`, which parks with a timeout, so the specs no longer expect `WAITING` only.
 
 ## v6.10.0 (Current)

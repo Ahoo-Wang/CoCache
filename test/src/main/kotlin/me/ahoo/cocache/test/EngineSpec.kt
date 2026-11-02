@@ -470,6 +470,34 @@ abstract class EngineSpec {
         loads.get().assert().isEqualTo(2)
     }
 
+    /**
+     * 批量读取的读己之写：本节点失效之后的 `getAll` 合并到失效之前开始的在途加载时不接受它的结果，改走单 key 路径重新加载。
+     */
+    @Test
+    fun getAllAfterOwnInvalidateNeverSharesALoadStartedBefore() {
+        val cache = nodeA.cache()
+        database["k"] = "v0"
+        val loaded = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val first = AtomicBoolean(true)
+        afterLoad = {
+            if (first.compareAndSet(true, false)) {
+                loaded.countDown()
+                release.awaitOrFail("release")
+            }
+        }
+        val early = fork("early") { cache["k"] }
+        loaded.awaitOrFail("early load read v0")
+        database["k"] = "v1"
+        cache.invalidate("k")
+        val late = fork("late") { cache.getAll(listOf("k")) }
+        awaitCondition("late joined the in-flight load") { late.parked }
+        release.countDown()
+        early.join().assert().isEqualTo("v0")
+        late.join().assert().isEqualTo(mapOf("k" to "v1"))
+        loads.get().assert().isEqualTo(2)
+    }
+
     @Test
     fun loaderFailureReleasesTheLease() {
         val cacheA = nodeA.cache()
@@ -943,6 +971,23 @@ abstract class EngineSpec {
         remote("bad").assert().isInstanceOf(RemoteRead.Hit::class.java)
         remote("worse").assert().isInstanceOf(RemoteRead.Hit::class.java)
         cache["ok"].assert().isEqualTo("v")
+    }
+
+    /**
+     * 批量读取中损坏的 key 回收之后重新加载失败：整批以这个失败结束，但其余 key 照常回源并凭 lease 写回 L1，不留下 lease。
+     * 6.x 的同步路径先逐个回收损坏的 key，失败即中断，其余 key 的 lease 留到过期；8.0 先完成整批，再回收。
+     */
+    @Test
+    fun corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch() {
+        val failure = IllegalStateException("reload failed")
+        val cache = nodeA.cache(
+            spec { loader = CacheLoader { key -> if (key == "bad") throw failure else database[key] } }
+        )
+        database["good"] = "v"
+        writeRemoteSilently("bad", TestCodec.CORRUPT)
+        runCatching { cache.getAll(listOf("bad", "good")) }.exceptionOrNull().assert().isSameAs(failure)
+        remoteValue("good").assert().isEqualTo("v")
+        nodeA.metrics().reclaims.assert().isEqualTo(1)
     }
 
     /**

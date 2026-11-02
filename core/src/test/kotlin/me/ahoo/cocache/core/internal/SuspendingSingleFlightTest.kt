@@ -303,6 +303,111 @@ class SuspendingSingleFlightTest {
         }
     }
 
+    private fun syncAll(keys: List<String>, block: suspend (List<String>) -> Map<String, String>): Map<String, String> =
+        runSync { flights.executeAllSuspending(keys, scope, block) }
+
+    private fun asyncAll(keys: List<String>, block: suspend (List<String>) -> Map<String, String>): CompletableFuture<Map<String, String>> =
+        context.runAsync { flights.executeAllSuspending(keys, scope, block) }
+
+    private fun suspendingAll(
+        keys: List<String>,
+        block: suspend (List<String>) -> Map<String, String>
+    ): CompletableFuture<Map<String, String>> =
+        scope.future(start = CoroutineStart.UNDISPATCHED) { flights.executeAllSuspending(keys, scope, block) }
+
+    /**
+     * 批量：本调用负责空闲的 key（去重），合并在途的 key，先完成自己负责的整批再等待其它调用者。
+     */
+    @Test
+    fun batchLeadsFreeKeysAndJoinsInFlightOnes() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val single = fork {
+            sync("a") {
+                started.countDown()
+                release.awaitOrFail()
+                "a1"
+            }
+        }
+        started.awaitOrFail()
+        val led = mutableListOf<String>()
+        val batch = fork {
+            syncAll(listOf("a", "b", "b", "c")) { keys ->
+                led.addAll(keys)
+                keys.associateWith { "${it}2" }
+            }
+        }
+        awaitCondition { batch.parked }
+        led.assert().containsExactly("b", "c")
+        release.countDown()
+        single.join().assert().isEqualTo("a1")
+        batch.join().assert().isEqualTo(mapOf("b" to "b2", "c" to "c2", "a" to "a1"))
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * 整批缺少某个 key 的结果：发起的调用方的结果中没有它，合并到它的等待者以 [IllegalStateException] 失败。
+     * 三种调用方（同步、异步、直接从协程调用）的语义相同。
+     */
+    @Test
+    fun missingResultIsOmittedForTheLeaderAndFailsJoiners() {
+        listOf<(List<String>, suspend (List<String>) -> Map<String, String>) -> Map<String, String>>(
+            { keys, block -> syncAll(keys, block) },
+            { keys, block -> asyncAll(keys, block).get(5, TimeUnit.SECONDS) },
+            { keys, block -> suspendingAll(keys, block).get(5, TimeUnit.SECONDS) },
+        ).forEach { run ->
+            val started = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val leader = fork {
+                run(listOf("a", "b")) {
+                    started.countDown()
+                    release.awaitOrFail()
+                    mapOf("a" to "v")
+                }
+            }
+            started.awaitOrFail()
+            val joiner = async("b") { "other" }
+            release.countDown()
+            leader.join().assert().isEqualTo(mapOf("a" to "v"))
+            causeOf(joiner).assert().isInstanceOf(IllegalStateException::class.java)
+            awaitCondition { flights.inFlight == 0 }
+        }
+    }
+
+    /**
+     * 整批失败：发起的调用方与合并到它的等待者都收到原始异常，全部 key 注销。
+     */
+    @Test
+    fun batchFailureReachesItsJoiners() {
+        listOf<(List<String>, suspend (List<String>) -> Map<String, String>) -> CompletableFuture<Map<String, String>>>(
+            { keys, block -> asyncAll(keys, block) },
+            { keys, block -> suspendingAll(keys, block) },
+        ).forEach { start ->
+            val gate = CompletableFuture<Map<String, String>>()
+            val failure = IllegalStateException("batch failed")
+            val batch = start(listOf("a", "b")) { gate.awaitOriginal() }
+            val joiner = async("a") { "other" }
+            gate.completeExceptionally(failure)
+            causeOf(batch).assert().isSameAs(failure)
+            causeOf(joiner).assert().isSameAs(failure)
+            awaitCondition { flights.inFlight == 0 }
+        }
+        val syncFailure = IllegalStateException("sync batch failed")
+        runCatching { syncAll(listOf("a")) { throw syncFailure } }.exceptionOrNull().assert().isSameAs(syncFailure)
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    @Test
+    fun reentrantBatchFailsFast() {
+        val error = runCatching {
+            sync("k") {
+                syncAll(listOf("j", "k")) { keys -> keys.associateWith { "v" } }.getValue("k")
+            }
+        }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalStateException::class.java)
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
     private fun causeOf(future: CompletableFuture<*>): Throwable? = try {
         future.get(5, TimeUnit.SECONDS)
         null

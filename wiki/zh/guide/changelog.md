@@ -12,12 +12,17 @@ description: CoCache 版本发布历史和重要变更。
 ### 破坏性变更
 
 - 基线改为 JDK 21（原为 JDK 17）。
-- `cocache-core` 在运行时依赖 `kotlinx-coroutines-core`。协议正在改写为一份协程实现，同时服务阻塞、异步与挂起三种 API；`SetCache` 的读取、`Cache` 的单 key 读与提前刷新已经用上它。开启断言（`-ea`，测试时的默认值）时，读取运行期间 kotlinx 会给线程名加上协程后缀（如 ` @coroutine#3`），阻塞的 loader 里也看得到。
+- `cocache-core` 在运行时依赖 `kotlinx-coroutines-core`。协议正在改写为一份协程实现，同时服务阻塞、异步与挂起三种 API；`SetCache` 的读取、`Cache` 的读取（单 key 与批量）与提前刷新已经用上它。开启断言（`-ea`，测试时的默认值）时，读取运行期间 kotlinx 会给线程名加上协程后缀（如 ` @coroutine#3`），阻塞的 loader 里也看得到。
 - `CacheRuntime` 关闭时仍在进行的异步读取以 `IllegalStateException("CacheRuntime closed.")` 失败。
+
+### 修复：批量读取中一个 key 重新加载失败，不再拖累整批
+
+- `getAll` 先整批回源并写回，再逐个回收损坏的 key。损坏的 key 重新加载失败时，其余 key 照常写回 Redis（或释放 lease），整批随后以第一个失败结束。6.x 的阻塞路径先回收损坏的 key、失败即中断，其余 key 的 lease 留到过期，其它实例读这些 key 时要先等 `lease.wait`。
 
 ### TCK
 
 - `Concurrency.currentThreadName()` 返回去掉 kotlinx 协程后缀的线程名。`HookedBackend.issuer()` 与各规范都用它，按线程名编排竞态的钩子不论是否开启断言都能工作。
+- `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` 覆盖上面的批量修复，`EngineSpec.getAllAfterOwnInvalidateNeverSharesALoadStartedBefore` 覆盖批量读取的读己之写。
 - `Concurrency.Forked.parked` 在线程等待时（`WAITING` 或 `TIMED_WAITING`）为真。阻塞调用的跟随者现在在 `runBlocking` 中等待，以限时停顿挂起，所以各规范不再只认 `WAITING`。
 
 ## v6.10.0（当前版本）
