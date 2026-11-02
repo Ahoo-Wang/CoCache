@@ -25,7 +25,9 @@
 
 每个里程碑由若干 PR 组成，每个 PR 的 `./gradlew check` 全绿；触及命中路径或异步路径的 PR 附 `scripts/jmh-compare.sh` 的对比。
 
-M1 按路径拆成若干 PR：基础设施与 `SetCache` 读路径（#716）→ 单 key 读与提前刷新（#717）→ 批量读（#718）→ 写入（含 `VersionedCache`，#719）→ 数据源适配改为挂起实现，删除 `Futures` 的续接、定时器与许可等待队列（进行中）。挂起视图直接调用核心推迟到 M5：`cocache-coroutines` 并入 core 之前，它只能经公开 API 调用核心，为此新增的公开接口会在 M5 删除。
+M1 已完成：基础设施与 `SetCache` 读路径（#716）→ 单 key 读与提前刷新（#717）→ 批量读（#718）→ 写入（含 `VersionedCache`，#719）→ 数据源适配改为挂起实现，删除 `Futures` 的续接、定时器与许可等待队列（#720）。挂起视图直接调用核心推迟到 M5：`cocache-coroutines` 并入 core 之前，它只能经公开 API 调用核心，为此新增的公开接口会在 M5 删除。
+
+M2 拆成：L2 填充改为 `compute` + 按身份复核（M2a，进行中）→ 合并规则逐 key、leader 被中断或取消时跟随者自行运行（M2b）→ `load.timeout`（M2c）→ 令牌步骤 `NonCancellable` 与随机注入取消的性质测试（M2d）→ 确定性多节点仿真（M2e）→ Lincheck 可行性实验（M2f）。`kotlinx-coroutines-test` 作为测试依赖已批准；Lincheck（Q18）先做可行性实验，可行再正式加入（维护者决定，2026-11-02）。L2 key 不含前缀最后按 JMH 决定。
 
 | 里程碑 | 要做什么 | 验收 |
 |--------|----------|------|
@@ -44,7 +46,6 @@ M1 按路径拆成若干 PR：基础设施与 `SetCache` 读路径（#716）→ 
 
 | 问题 | 何时需要 |
 |------|----------|
-| Q18 Lincheck 作为测试依赖 | M2 之前 |
 | Q2 SPI 改名为 `L1Store`（默认采用） | M3 之前 |
 | Q10 修订号或写入标识占用的头部位置 | M4 之前（格式定稿） |
 | Q14 把每个 namespace 的类型写入 `cocache:v8:meta:{namespace}`（线格式新增） | M4 之前 |

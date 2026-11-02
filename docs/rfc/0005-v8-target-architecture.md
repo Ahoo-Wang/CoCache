@@ -759,7 +759,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 | 项 | 来源 | v8 中的位置 |
 |----|------|------------|
-| L2 填充用 `compute` + 条件复核 | A.D4、C4 | §4.5、I-C |
+| L2 填充用 `compute` + 条件复核 | A.D4、C4 | §4.5、I-C；8.0 已实现（M2a） |
 | L2 key 不含前缀 | §4.5 | §4.5（待 JMH） |
 | 同步 `SetStore.getAll` 批量化 | A.L2 | §4.4 的批量路径 |
 | namespace 前缀重叠 | A.L4 | `runtime.create` 的布局校验 |
@@ -1004,7 +1004,7 @@ v2 由两路独立的只读会话验证。
 | D1 | 高 | 没有数据源的 `Cache` 在 L1 读失败（默认 `DEGRADE`）时返回 `null`、不报错，并作为已决的负缓存写入 L2；之后 `get(key, loader)` 命中它，不调用 loader | 复现 | `CoherentEngine.loadThrough`、`completeBypass` | 6.9.0 已修复（#700）；v8 §4.1 |
 | D2 | 高（权威副本） | 默认 `RETRY` 的延迟重试会删除其它节点之后写入的值 | 复现 | `CoherentEngine.scheduleRetry` | 6.9.0 已修复（#700）；v8 §4.1 |
 | D3 | 中 | 没取得刷新令牌的节点按往返频率轮询 L1；寿命 ≤ 刷新窗口时持有者背靠背回源 | 复现（前者）、读代码（后者） | `CoherentEngine.refill`、`AbstractEngine.localEntry` | 6.9.0 已修复（#698）；v8 §4.6 |
-| D4 | 中低 | L2 填充“校验—写入—复核—撤销”不可线性化 | 读代码 | `AbstractEngine.fillLocal` | 6.x 待排期；v8 §4.5 |
+| D4 | 中低 | L2 填充“校验—写入—复核—撤销”不可线性化 | 读代码 | `AbstractEngine.fillLocal` | v8 §4.5，8.0 已修复（M2a，`fillGuarded`） |
 | R1 | 中高 | 超时只取消派生的 future，Lettuce 命令不被取消 | 读代码 | `RedisConnections.bounded`、`await` | 6.9.0 已修复（#701）；中断路径见 B.1 |
 | R2 | 中低 | `sharded` 频道未确认期间只重置一次 | 读代码 | `ShardedInvalidationChannel.ping` | 6.9.0 已修复（#701） |
 | R3 | 低 | 订阅与退订并发时订阅者可能永久收不到失效 | 读代码 | `RedisInvalidationChannel.subscribe` | 6.9.0 已修复（#701） |
