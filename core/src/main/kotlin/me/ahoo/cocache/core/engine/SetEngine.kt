@@ -176,53 +176,70 @@ internal class SetEngine<K : Any, E : Any>(
     private fun encode(elements: Collection<E>): List<ByteArray> = elements.map { elementCodec.encode(it) }
 
     override fun put(key: K, value: Set<E>) {
-        putWithTtl(key, value, policy.valueTtl())
+        runSync { putWithTtl(key, value, policy.valueTtl()) }
     }
 
     override fun put(key: K, value: Set<E>, ttl: Duration) {
-        putWithTtl(key, value, ttl)
+        runSync { putWithTtl(key, value, ttl) }
     }
 
-    private fun putWithTtl(key: K, value: Set<E>, ttl: Duration?) {
+    /**
+     * 写入（同步与异步共用的协程核心）：非空集合整体覆盖，空集合等价于 [clear]。
+     */
+    private suspend fun putWithTtl(key: K, value: Set<E>, ttl: Duration?) {
+        val storageKey = storageKey(key)
         if (value.isEmpty()) {
-            clear(key)
+            clearStorageKey(storageKey)
             return
         }
-        val storageKey = storageKey(key)
         val envelope = Envelope.Members(encode(value))
         val bounded = ttl?.boundedTtl()
         write(
             listOf(storageKey),
-            { frame -> store.put(storageKey, envelope, bounded, frame) },
-            throwWriteFailure("put")
+            { frame ->
+                l1Command(
+                    { store.put(storageKey, envelope, bounded, frame) },
+                    { asyncStore.putAsync(storageKey, envelope, bounded, frame) }
+                )
+            },
+            onFailure = throwWriteFailure("put")
         )
     }
 
     override fun putAll(entries: Map<K, Set<E>>) {
-        putAllWithTtl(entries, policy.valueTtl())
+        if (entries.isNotEmpty()) {
+            runSync { putAllWithTtl(entries, policy.valueTtl()) }
+        }
     }
 
     override fun putAll(entries: Map<K, Set<E>>, ttl: Duration) {
-        putAllWithTtl(entries, ttl)
+        if (entries.isNotEmpty()) {
+            runSync { putAllWithTtl(entries, ttl) }
+        }
     }
 
     /**
      * 一次 [write] 覆盖全部存储 key，语义同逐个 [put]：非空集合整体覆盖（批量），空集合等价于 [clear]（批量删除）。
      * 编码后碰撞的存储 key 以后出现的为准。两类都有时各自只广播自己的 key。
      */
-    private fun putAllWithTtl(entries: Map<K, Set<E>>, ttl: Duration?) {
+    private suspend fun putAllWithTtl(entries: Map<K, Set<E>>, ttl: Duration?) {
         if (entries.isEmpty()) {
             return
         }
         val plan = putAllPlan(entries, ttl)
         write(plan.keys, { frame ->
             if (plan.puts.isNotEmpty()) {
-                store.putAll(plan.puts, plan.putFrame(frame))
+                val putFrame = plan.putFrame(frame)
+                l1Command({ store.putAll(plan.puts, putFrame) }, { asyncStore.putAllAsync(plan.puts, putFrame) })
             }
             if (plan.clears.isNotEmpty()) {
-                store.invalidate(plan.clears, plan.clearFrame(frame))
+                val clearFrame = plan.clearFrame(frame)
+                l1Command(
+                    { store.invalidate(plan.clears, clearFrame) },
+                    { asyncStore.invalidateAsync(plan.clears, clearFrame) }
+                )
             }
-        }, throwWriteFailure("putAll"))
+        }, onFailure = throwWriteFailure("putAll"))
     }
 
     private inner class PutAllPlan(val keys: Collection<String>, val puts: List<Put>, val clears: List<String>) {
@@ -246,6 +263,15 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     override fun add(key: K, elements: Collection<E>) {
+        if (elements.isNotEmpty()) {
+            runSync { addMembers(key, elements) }
+        }
+    }
+
+    /**
+     * 加入元素（同步与异步共用的协程核心）：`FAIL` 时后端拒绝落在读不懂的内容上（[refuseForeign]）。
+     */
+    private suspend fun addMembers(key: K, elements: Collection<E>) {
         if (elements.isEmpty()) {
             return
         }
@@ -254,11 +280,18 @@ internal class SetEngine<K : Any, E : Any>(
         val ttl = policy.valueTtl()
         write(listOf(storageKey), { frame ->
             if (failsOnForeign) {
-                refuseForeign(storageKey, store.addMembersIfReadable(storageKey, members, ttl, frame))
+                val format = l1(
+                    { store.addMembersIfReadable(storageKey, members, ttl, frame) },
+                    { asyncStore.addMembersIfReadableAsync(storageKey, members, ttl, frame) }
+                )
+                refuseForeign(storageKey, format)
             } else {
-                store.addMembers(storageKey, members, ttl, frame)
+                l1Command(
+                    { store.addMembers(storageKey, members, ttl, frame) },
+                    { asyncStore.addMembersAsync(storageKey, members, ttl, frame) }
+                )
             }
-        }, throwWriteFailure("add"))
+        }, onFailure = throwWriteFailure("add"))
     }
 
     /**
@@ -282,6 +315,15 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     override fun remove(key: K, elements: Collection<E>) {
+        if (elements.isNotEmpty()) {
+            runSync { removeMembers(key, elements) }
+        }
+    }
+
+    /**
+     * 移除元素（同步与异步共用的协程核心），规则同 [addMembers]。
+     */
+    private suspend fun removeMembers(key: K, elements: Collection<E>) {
         if (elements.isEmpty()) {
             return
         }
@@ -290,16 +332,35 @@ internal class SetEngine<K : Any, E : Any>(
         val ttl = policy.valueTtl()
         write(listOf(storageKey), { frame ->
             if (failsOnForeign) {
-                refuseForeign(storageKey, store.removeMembersIfReadable(storageKey, members, ttl, frame))
+                val format = l1(
+                    { store.removeMembersIfReadable(storageKey, members, ttl, frame) },
+                    { asyncStore.removeMembersIfReadableAsync(storageKey, members, ttl, frame) }
+                )
+                refuseForeign(storageKey, format)
             } else {
-                store.removeMembers(storageKey, members, ttl, frame)
+                l1Command(
+                    { store.removeMembers(storageKey, members, ttl, frame) },
+                    { asyncStore.removeMembersAsync(storageKey, members, ttl, frame) }
+                )
             }
-        }, throwWriteFailure("remove"))
+        }, onFailure = throwWriteFailure("remove"))
     }
 
     override fun clear(key: K) {
         val storageKey = storageKey(key)
-        write(listOf(storageKey), { frame -> store.invalidate(listOf(storageKey), frame) }, throwWriteFailure("clear"))
+        runSync { clearStorageKey(storageKey) }
+    }
+
+    /**
+     * 删除整个集合（同步与异步共用的协程核心）。
+     */
+    private suspend fun clearStorageKey(storageKey: String) {
+        val keys = listOf(storageKey)
+        write(
+            keys,
+            { frame -> l1Command({ store.invalidate(keys, frame) }, { asyncStore.invalidateAsync(keys, frame) }) },
+            onFailure = throwWriteFailure("clear")
+        )
     }
 
     override fun describe(envelope: Envelope): Any? = decode(envelope)
@@ -309,7 +370,7 @@ internal class SetEngine<K : Any, E : Any>(
      */
     override fun invalidateEncoded(encodedKey: String) {
         val storageKey = storageKeyOf(encodedKey)
-        write(listOf(storageKey), { frame -> store.invalidate(listOf(storageKey), frame) }, throwWriteFailure("clear"))
+        runSync { clearStorageKey(storageKey) }
     }
 
     override fun invalidate(key: K) {
@@ -358,128 +419,39 @@ internal class SetEngine<K : Any, E : Any>(
             ).map { lookupOf(it) }
         }
 
-        override fun put(key: K, value: Set<E>): CompletableFuture<Void?> = toUser {
-            putAsync(
-                key,
-                value,
-                policy.valueTtl()
-            )
+        override fun put(key: K, value: Set<E>): CompletableFuture<Void?> = runAsyncCommand {
+            putWithTtl(key, value, policy.valueTtl())
         }
 
-        override fun put(key: K, value: Set<E>, ttl: Duration): CompletableFuture<Void?> = toUser {
-            putAsync(
-                key,
-                value,
-                ttl
-            )
+        override fun put(key: K, value: Set<E>, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
+            putWithTtl(key, value, ttl)
         }
 
-        override fun putAll(entries: Map<K, Set<E>>): CompletableFuture<Void?> = toUser {
-            putAllAsync(entries, policy.valueTtl())
+        override fun putAll(entries: Map<K, Set<E>>): CompletableFuture<Void?> = runAsyncCommand {
+            putAllWithTtl(entries, policy.valueTtl())
         }
 
-        override fun putAll(entries: Map<K, Set<E>>, ttl: Duration): CompletableFuture<Void?> = toUser {
-            putAllAsync(entries, ttl)
+        override fun putAll(entries: Map<K, Set<E>>, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
+            putAllWithTtl(entries, ttl)
         }
 
         override fun invalidate(key: K): CompletableFuture<Void?> = toUser { unsupportedInvalidate() }
 
         override fun invalidateAll(keys: Collection<K>): CompletableFuture<Void?> = toUser { unsupportedInvalidate() }
 
-        override fun add(key: K, elements: Collection<E>): CompletableFuture<Void?> = toUser {
-            if (elements.isEmpty()) {
-                return@toUser Futures.done()
-            }
-            val storageKey = storageKey(key)
-            val members = encode(elements)
-            val ttl = policy.valueTtl()
-            writeAsync(listOf(storageKey), { frame ->
-                if (failsOnForeign) {
-                    asyncStore.addMembersIfReadableAsync(
-                        storageKey,
-                        members,
-                        ttl,
-                        frame
-                    ).thenApply { refuseForeign(storageKey, it) }
-                } else {
-                    asyncStore.addMembersAsync(storageKey, members, ttl, frame)
-                }
-            }, throwWriteFailure("add"))
+        override fun add(key: K, elements: Collection<E>): CompletableFuture<Void?> = runAsyncCommand {
+            addMembers(key, elements)
         }
 
-        override fun remove(key: K, elements: Collection<E>): CompletableFuture<Void?> = toUser {
-            if (elements.isEmpty()) {
-                return@toUser Futures.done()
-            }
-            val storageKey = storageKey(key)
-            val members = encode(elements)
-            val ttl = policy.valueTtl()
-            writeAsync(listOf(storageKey), { frame ->
-                if (failsOnForeign) {
-                    asyncStore.removeMembersIfReadableAsync(
-                        storageKey,
-                        members,
-                        ttl,
-                        frame
-                    ).thenApply { refuseForeign(storageKey, it) }
-                } else {
-                    asyncStore.removeMembersAsync(storageKey, members, ttl, frame)
-                }
-            }, throwWriteFailure("remove"))
+        override fun remove(key: K, elements: Collection<E>): CompletableFuture<Void?> = runAsyncCommand {
+            removeMembers(key, elements)
         }
 
-        override fun clear(key: K): CompletableFuture<Void?> = toUser { clearAsync(storageKey(key)) }
+        override fun clear(key: K): CompletableFuture<Void?> = runAsyncCommand { clearStorageKey(storageKey(key)) }
 
         override fun sync(): SetCache<K, E> = this@SetEngine
 
         override fun toString(): String = "AsyncView(${this@SetEngine})"
-
-        private fun putAsync(key: K, value: Set<E>, ttl: Duration?): CompletableFuture<Void?> {
-            val storageKey = storageKey(key)
-            if (value.isEmpty()) {
-                return clearAsync(storageKey)
-            }
-            val envelope = Envelope.Members(encode(value))
-            val bounded = ttl?.boundedTtl()
-            return writeAsync(
-                listOf(storageKey),
-                { frame -> asyncStore.putAsync(storageKey, envelope, bounded, frame) },
-                throwWriteFailure("put")
-            )
-        }
-
-        private fun putAllAsync(entries: Map<K, Set<E>>, ttl: Duration?): CompletableFuture<Void?> {
-            if (entries.isEmpty()) {
-                return Futures.done()
-            }
-            val plan = putAllPlan(entries, ttl)
-            return writeAsync(plan.keys, { frame ->
-                val written = if (plan.puts.isEmpty()) {
-                    Futures.done()
-                } else {
-                    asyncStore.putAllAsync(
-                        plan.puts,
-                        plan.putFrame(frame)
-                    )
-                }
-                written.thenNext(executor) {
-                    if (plan.clears.isEmpty()) {
-                        Futures.done()
-                    } else {
-                        asyncStore.invalidateAsync(
-                            plan.clears,
-                            plan.clearFrame(frame)
-                        )
-                    }
-                }
-            }, throwWriteFailure("putAll"))
-        }
-
-        private fun clearAsync(storageKey: String): CompletableFuture<Void?> = writeAsync(
-            listOf(storageKey),
-            { frame -> asyncStore.invalidateAsync(listOf(storageKey), frame) },
-            throwWriteFailure("clear")
-        )
 
         private fun <T, R> CompletableFuture<T>.map(fn: (T) -> R): CompletableFuture<R> =
             thenNext(executor) { CompletableFuture.completedFuture(fn(it)) }

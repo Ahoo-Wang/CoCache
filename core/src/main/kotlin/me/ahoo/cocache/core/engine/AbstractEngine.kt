@@ -17,6 +17,9 @@ import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
@@ -34,7 +37,6 @@ import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyInspection
-import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.SingleFlight
 import me.ahoo.cocache.core.internal.awaitOriginal
@@ -44,7 +46,6 @@ import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
-import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -220,7 +221,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     }
 
     /**
-     * 写入方顺序（RFC 0003 §4.4）：戳 → 淘汰 L2 → 修改 L1（并广播）→ 戳 → 淘汰 L2。写入方从不直接写 L2。
+     * 写入方顺序（RFC 0003 §4.4；协程核心，同步与异步共用，RFC 0005 V5）：戳 → 淘汰 L2 → 修改 L1（并广播）→ 戳 → 淘汰 L2。
+     * 写入方从不直接写 L2。
      *
      * 第二次递增使“在第一次递增之后取戳、在修改 L1 之前读到旧值”的并发填充失效；
      * 本节点自己的广播会被过滤，不能依赖它清除本地副本。
@@ -230,28 +232,58 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 前提是 [mutate] 返回或抛出时它的全部 L1 命令都已结束（否则广播可能先于仍在执行的命令）。
      * 例外是 [ForeignFormatException] 与 [UnsupportedOperationException]：后端拒绝了写入（或不支持这个操作），L1 原样未动，不广播。
      *
-     * @param onFailure L1 失败时调用（在第二次递增之前，因此登记的状态对随后的读取可见）
+     * 同步变体在调用方线程上调用阻塞的 SPI。异步变体等待异步 SPI，从修改 L1 到第二次递增（含广播与 [onFailure]）
+     * 不可取消、不经执行器，在 L1 命令的完成线程上就地继续（与 6.x 的异步路径相同，这些步骤都不阻塞、不调用用户代码）：
+     * - 协程被取消（运行时关闭）也要等 L1 命令结束再第二次递增，否则在两次递增之间开始的填充会把旧值写进 L2（G2）；
+     * - 执行器拒绝派发不会跳过这些步骤，也不会把写入的结果换成取消（成功的写入因此计为失败、`invalidate` 因此登记多余的重试）。
+     *   只有回到调用方的那一次派发可能被拒绝，调用方看到 `RejectedExecutionException`。
+     *
+     * @param mutate 修改 L1（经 [l1] / [l1Command] 选择阻塞或异步的 SPI）
+     * @param changed [mutate] 正常返回后是否需要广播：L1 被这次写入修改，或可能已被之前同样的写入修改（条件写入的重放：
+     * 上一次已在 L1 生效、单独的广播却失败了）。不需要时非原子广播的后端不广播（原子广播的后端由存储自己决定）。
+     * 戳与 L2 淘汰照常执行，只多淘汰一次本地副本
+     * @param onFailure L1 失败时调用（在第二次递增之前，因此登记的状态对随后的读取可见），可以抛出
      */
-    protected fun write(keys: Collection<String>, mutate: (ByteArray) -> Unit, onFailure: (Exception) -> Unit) {
-        write(keys, mutate, ALWAYS_CHANGED, onFailure)
-    }
-
-    /**
-     * 同 [write]，但 [mutate] 正常返回后由 [changed] 判定是否需要广播：L1 被这次写入修改，或可能已被之前同样的写入修改
-     * （条件写入的重放：上一次已在 L1 生效、单独的广播却失败了）。不需要时非原子广播的后端不广播（原子广播的后端由存储自己决定）。
-     * 戳与 L2 淘汰照常执行，只多淘汰一次本地副本。
-     */
-    @Suppress("TooGenericExceptionCaught", "InstanceOfCheckForException")
-    protected fun write(
+    protected suspend fun write(
         keys: Collection<String>,
-        mutate: (ByteArray) -> Unit,
-        changed: () -> Boolean,
+        mutate: suspend (ByteArray) -> Unit,
+        changed: () -> Boolean = ALWAYS_CHANGED,
         onFailure: (Exception) -> Unit
     ) {
         keys.forEach {
             stamps.invalidate(it)
             local.invalidate(it)
         }
+        if (runsInline()) {
+            mutateAndBump(keys, mutate, changed, onFailure)
+        } else {
+            withContext(NonCancellable + Dispatchers.Unconfined) { mutateAndBump(keys, mutate, changed, onFailure) }
+        }
+    }
+
+    private suspend fun mutateAndBump(
+        keys: Collection<String>,
+        mutate: suspend (ByteArray) -> Unit,
+        changed: () -> Boolean,
+        onFailure: (Exception) -> Unit
+    ) {
+        try {
+            mutateAndPublish(keys, mutate, changed, onFailure)
+        } finally {
+            keys.forEach {
+                stamps.invalidate(it)
+                local.invalidate(it)
+            }
+        }
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun mutateAndPublish(
+        keys: Collection<String>,
+        mutate: suspend (ByteArray) -> Unit,
+        changed: () -> Boolean,
+        onFailure: (Exception) -> Unit
+    ) {
         try {
             val frame = frameOf(keys)
             try {
@@ -263,157 +295,56 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
                 throw e
             }
             if (!atomicBroadcast && changed()) {
-                context.backend.channel.publish(namespace, frame)
+                publish(frame)
             }
         } catch (e: Exception) {
             metrics.writeFailure()
             onFailure(e)
-        } finally {
-            keys.forEach {
-                stamps.invalidate(it)
-                local.invalidate(it)
-            }
         }
     }
 
     /**
-     * [write] 的异步版本（RFC 0004 §5.6）：顺序相同；第二次递增挂在 L1 的 future 上（无论成败），
-     * 在返回的 future 完成之前执行，取消返回的 future 不会跳过它。[onFailure] 同样在第二次递增之前调用，可以抛出。
-     *
-     * 第二次递增与淘汰（以及 [onFailure]：抛出写入异常或登记重试，都不阻塞、不调用用户代码）在 L1 future 的完成线程上就地执行，
-     * 不经执行器：执行器拒绝任务时也必须执行，否则在两次递增之间开始的填充会把旧值写进 L2（G2）。只有返回 future 的完成切换到执行器。
-     * 非原子广播的派发被拒绝时同样就地广播（[publishAfterWrite]）。
+     * 非原子广播的后端上发布失效帧：同步变体经阻塞的通道，异步变体等待异步通道。
      */
-    protected fun writeAsync(
-        keys: Collection<String>,
-        mutate: (ByteArray) -> CompletableFuture<Void?>,
-        onFailure: (Exception) -> Unit
-    ): CompletableFuture<Void?> = writeAsync(keys, mutate, ALWAYS_CHANGED, onFailure)
+    private suspend fun publish(frame: ByteArray) {
+        l1Command(
+            { context.backend.channel.publish(namespace, frame) },
+            { asyncChannel.publishAsync(namespace, frame) }
+        )
+    }
 
     /**
-     * 同 [writeAsync]，[changed] 的含义同 [write]：在 [mutate] 的 future 正常完成之后调用。
+     * 写入失败之后尽力广播（见 [write]）：广播的失败只告警并附在写入的异常上，调用方看到的仍是写入的原始异常。
      */
     @Suppress("TooGenericExceptionCaught")
-    protected fun writeAsync(
-        keys: Collection<String>,
-        mutate: (ByteArray) -> CompletableFuture<Void?>,
-        changed: () -> Boolean,
-        onFailure: (Exception) -> Unit
-    ): CompletableFuture<Void?> {
-        keys.forEach {
-            stamps.invalidate(it)
-            local.invalidate(it)
-        }
-        val mutated = Futures.attempt {
-            val frame = frameOf(keys)
-            val written = Futures.attempt { mutate(frame) }
-            if (atomicBroadcast) written else publishAfterWrite(written, frame, changed)
-        }
-        if (mutated.isDone) {
-            // 已完成（没有 I/O 线程参与）：就地收尾并返回
-            val failure = finishWrite(keys, Futures.outcome(mutated).second, onFailure)
-            return if (failure == null) Futures.done() else CompletableFuture.failedFuture(failure)
-        }
-        val written = CompletableFuture<Void?>()
-        mutated.whenComplete { _, error ->
-            val failure = finishWrite(keys, error?.let { Futures.unwrap(it) }, onFailure)
-            Futures.dispatch(executor, written) {
-                if (failure == null) written.complete(null) else written.completeExceptionally(failure)
-            }
-        }
-        return written
-    }
-
-    /**
-     * 非原子广播的续接：[written] 完成后（无论成败）调用 [publishAfter]。已完成时就地执行；否则从完成线程派发到执行器，
-     * 执行器拒绝时在完成线程上就地执行（`publishAsync` 不阻塞、不调用用户代码）：拒绝不能跳过广播（G2），
-     * 也不能把写入的结果换成 `RejectedExecutionException`（成功的写入因此计为失败、`invalidate` 因此登记多余的重试）。
-     */
-    private fun publishAfterWrite(
-        written: CompletableFuture<Void?>,
-        frame: ByteArray,
-        changed: () -> Boolean
-    ): CompletableFuture<Void?> {
-        if (written.isDone) {
-            return publishAfter(frame, Futures.outcome(written).second, changed)
-        }
-        val published = CompletableFuture<Void?>()
-        written.whenComplete { _, error ->
-            val publish = Runnable {
-                Futures.relay(
-                    Futures.attempt { publishAfter(frame, error?.let { Futures.unwrap(it) }, changed) },
-                    published
-                )
-            }
-            try {
-                executor.execute(publish)
-            } catch (_: RejectedExecutionException) {
-                publish.run()
-            }
-        }
-        return published
-    }
-
-    /**
-     * 非原子广播：写入成功后广播；写入失败时也尽力广播（见 [write]），广播的失败只告警，返回的 future 以写入的原始异常失败。
-     */
-    @Suppress("TooGenericExceptionCaught")
-    private fun publishAfter(frame: ByteArray, error: Throwable?, changed: () -> Boolean): CompletableFuture<Void?> {
-        if (error == null) {
-            // 条件写入的冲突没有修改 L1；只有可能是重放时才需要广播（见 write）
-            return if (changed()) asyncChannel.publishAsync(namespace, frame) else Futures.done()
-        }
-        if (isRefusal(error)) {
-            // 后端拒绝了写入或不支持它（L1 未修改），没有需要广播的变化
-            return CompletableFuture.failedFuture(error)
-        }
-        val failed = CompletableFuture<Void?>()
-        Futures.attempt { asyncChannel.publishAsync(namespace, frame) }.whenComplete { _, publishError ->
-            if (publishError != null) {
-                warnPublishAfterFailure(Futures.unwrap(publishError))
-            }
-            failed.completeExceptionally(error)
-        }
-        return failed
-    }
-
-    @Suppress("TooGenericExceptionCaught")
-    private fun publishAfterFailure(frame: ByteArray, error: Exception) {
+    private suspend fun publishAfterFailure(frame: ByteArray, error: Exception) {
         try {
-            context.backend.channel.publish(namespace, frame)
+            publish(frame)
         } catch (e: Exception) {
             error.addSuppressed(e)
-            warnPublishAfterFailure(e)
+            log.warn(e) { "Cache[$name] - failed to broadcast the invalidation after a failed write." }
         }
-    }
-
-    private fun warnPublishAfterFailure(error: Throwable) {
-        log.warn(error) { "Cache[$name] - failed to broadcast the invalidation after a failed write." }
     }
 
     /**
-     * 写入的收尾：失败时计数并调用 [onFailure]，然后（无论成败）第二次递增并淘汰 L2。返回写入的结果异常（成功为 `null`）。
+     * 协程核心调用 L1：同步变体调用阻塞的 SPI（[blocking]），异步变体等待异步 SPI（[async]），失败时抛出原始异常。
      */
-    @Suppress("TooGenericExceptionCaught")
-    private fun finishWrite(keys: Collection<String>, error: Throwable?, onFailure: (Exception) -> Unit): Throwable? {
-        try {
-            if (error == null) {
-                return null
-            }
-            if (error !is Exception) {
-                return error
-            }
-            metrics.writeFailure()
-            onFailure(error)
-            return null
-        } catch (e: Throwable) {
-            return e
-        } finally {
-            keys.forEach {
-                stamps.invalidate(it)
-                local.invalidate(it)
-            }
-        }
+    protected suspend inline fun <T> l1(blocking: () -> T, async: () -> CompletableFuture<T>): T =
+        if (runsInline()) blocking() else async().awaitOriginal()
+
+    /**
+     * 同 [l1]，用于没有结果的 L1 命令。
+     */
+    protected suspend inline fun l1Command(blocking: () -> Unit, async: () -> CompletableFuture<Void?>) {
+        if (runsInline()) blocking() else async().awaitOriginal()
+    }
+
+    /**
+     * 异步变体的写入入口：在运行时作用域中运行 [block]，返回结果的副本（`AsyncContext.runAsync`）。
+     */
+    protected fun runAsyncCommand(block: suspend () -> Unit): CompletableFuture<Void?> = context.async.runAsync<Void?> {
+        block()
+        null
     }
 
     protected fun throwWriteFailure(operation: String): (Exception) -> Unit = {

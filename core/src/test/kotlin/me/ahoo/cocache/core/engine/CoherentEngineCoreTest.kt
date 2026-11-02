@@ -241,6 +241,34 @@ class CoherentEngineCoreTest {
     }
 
     /**
+     * 异步写入的 L1 命令尚未送达时关闭运行时：写入照常做完（修改 L1、第二次递增与淘汰 L2），调用方以关闭失败。
+     */
+    @Test
+    fun closingTheRuntimeMidWriteStillFinishesTheWrite() {
+        val backend = HookedBackend(memory)
+        val closing = runtime(backend)
+        val cache = closing.create(spec { loader = CacheLoader { "loaded" } })
+        val issued = CountDownLatch(1)
+        val deliver = CountDownLatch(1)
+        backend.ioExecutor = Executor { task ->
+            issued.countDown()
+            io.execute {
+                deliver.awaitOrFail("deliver")
+                task.run()
+            }
+        }
+        val write = cache.async().put("k", "v")
+        issued.awaitOrFail("put issued")
+        closing.close()
+        deliver.countDown()
+        val failure = failureOf(write)
+        failure.assert().isInstanceOf(IllegalStateException::class.java)
+        failure?.message.assert().isEqualTo("CacheRuntime closed.")
+        requireNotNull(closing.metrics("core")).writeFailures.assert().isZero()
+        runtime().create(spec { loader = CacheLoader { "loaded" } })["k"].assert().isEqualTo("v")
+    }
+
+    /**
      * 异步 SPI 的实现以 `null` 完成读取（Java 实现的缺陷）：按 L1 读失败处理，没有数据源时以 [CacheReadException] 失败，
      * cause 说明原因，而不是在之后的分支上抛出更难懂的异常。
      */
