@@ -84,13 +84,4 @@ internal class AsyncContext(
     }
 
     private fun closedError(): IllegalStateException = IllegalStateException("CacheRuntime closed.")
-
-    companion object {
-        private val DIRECT = Executor { it.run() }
-
-        /**
-         * 测试用：全部就地执行。
-         */
-        fun direct(): AsyncContext = AsyncContext(DIRECT, DIRECT)
-    }
 }
