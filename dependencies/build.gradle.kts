@@ -19,6 +19,7 @@ dependencies {
     constraints {
         api(libs.kotlin.logging)
         api(libs.kotlinx.coroutines.core)
+        api(libs.kotlinx.coroutines.test)
         api(libs.springdoc.openapi.starter.webflux.ui)
         api(libs.mockk)
         api(libs.detekt.formatting)

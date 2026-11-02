@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.engine
 
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -31,6 +32,7 @@ import java.util.concurrent.RejectedExecutionException
  *
  * @param executor 异步执行器：只运行短小的非阻塞续接（解码、L2 填充、发出下一条 L1 命令、调用 `loadAsync`）
  * @param blocking 阻塞执行器：异步路径上的同步 loader 与非原生异步后端的同步 SPI 调用，只在这里执行
+ * @param dispatcher 运行时作用域的调度器；`null` 时为 [EngineDispatcher]（生产）。确定性仿真传入测试调度器（RFC 0005 §4.10）
  *
  * 协程核心（RFC 0005 §4.4）的异步变体运行在 [scope] 中：调度器把任务交给 [executor]（[EngineDispatcher]），`SupervisorJob` 让一次加载的失败不影响其它加载；
  * 共享加载在这里执行，调用方被取消只结束它自己的等待。运行时关闭时取消它。
@@ -38,11 +40,14 @@ import java.util.concurrent.RejectedExecutionException
 internal class AsyncContext(
     val executor: Executor,
     val blocking: Executor,
+    dispatcher: CoroutineDispatcher? = null,
 ) : AutoCloseable {
     /**
      * 运行时作用域：协程核心的异步变体与共享加载在这里运行。
      */
-    val scope: CoroutineScope = CoroutineScope(SupervisorJob() + EngineDispatcher(executor) + CoroutineName("cocache"))
+    val scope: CoroutineScope = CoroutineScope(
+        SupervisorJob() + (dispatcher ?: EngineDispatcher(executor)) + CoroutineName("cocache")
+    )
 
     /**
      * 异步变体：在 [scope] 中运行 [block]；第一次挂起之前在调用方线程上执行，之后在 [executor] 上继续。

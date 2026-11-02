@@ -108,7 +108,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * 合并回源：跟随者的等待与加载的登记都以 `load.timeout` 为上限（RFC 0005 §4.4）。
      */
-    protected val flights = SingleFlight<String, Loaded<V>>(policy.load.timeout.toNanos()) {
+    protected val flights = SingleFlight<String, Loaded<V>>(policy.load.timeout.toNanos(), context.ticker) {
         metrics.loadTimeout()
         SourceLoadTimeoutException(name, policy.load.timeout)
     }

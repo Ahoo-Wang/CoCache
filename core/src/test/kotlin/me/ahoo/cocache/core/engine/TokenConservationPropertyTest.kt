@@ -15,17 +15,7 @@ package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
-import me.ahoo.cocache.api.spi.CoherenceBackend
-import me.ahoo.cocache.api.spi.Digest
-import me.ahoo.cocache.api.spi.Envelope
-import me.ahoo.cocache.api.spi.Fill
-import me.ahoo.cocache.api.spi.LeaseRequest
-import me.ahoo.cocache.api.spi.Put
-import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
-import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.LoadOperation
@@ -37,7 +27,6 @@ import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.test.Concurrency.awaitCondition
-import me.ahoo.cocache.test.RemoteUnavailableException
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -45,7 +34,6 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
-import java.util.concurrent.TimeoutException
 import java.util.function.Supplier
 import kotlin.random.Random
 
@@ -118,8 +106,6 @@ class TokenConservationPropertyTest {
         scenario.leased("a").assert().isFalse()
     }
 
-    private enum class Outcome { OK, FAIL, TIMEOUT }
-
     /**
      * 手动驱动的执行器：任务排队，由测试线程逐个执行。kotlinx 的延迟线程也可能提交任务（等待 lease 的退避），所以线程安全。
      */
@@ -136,190 +122,6 @@ class TokenConservationPropertyTest {
             tasks.isEmpty() -> null
             random == null -> tasks.removeAt(0)
             else -> tasks.removeAt(random.nextInt(tasks.size))
-        }
-    }
-
-    /**
-     * 令牌账本：只有在授予之后生效的交还才算数（释放先于授予到达 L1 时什么也不做）。
-     */
-    private class Ledger {
-        private val granted = LinkedHashMap<Token, String>()
-        private val returned = HashSet<Token>()
-
-        @Synchronized
-        fun grant(token: Token, what: String) {
-            granted[token] = what
-        }
-
-        @Synchronized
-        fun giveBack(token: Token) {
-            if (granted.containsKey(token)) {
-                returned += token
-            }
-        }
-
-        @Synchronized
-        fun unreturned(): Collection<String> = granted.filterKeys { it !in returned }.values
-    }
-
-    /**
-     * 挂起的 L1 命令：[apply] 在 L1 上执行（记录授予与交还），[gives] 是命令交还的令牌，[holds] 是超时时存储自己释放的令牌。
-     */
-    private class Command<T>(
-        val name: String,
-        private val ledger: Ledger,
-        private val store: RemoteStore,
-        private val gives: List<Token>,
-        private val holds: () -> List<Pair<String, Token>>,
-        private val apply: () -> T,
-    ) {
-        val future = CompletableFuture<T>()
-
-        fun resolve(outcome: Outcome) {
-            when (outcome) {
-                Outcome.OK -> future.complete(apply())
-                Outcome.FAIL -> {
-                    gives.forEach(ledger::giveBack)
-                    future.completeExceptionally(RemoteUnavailableException(name))
-                }
-
-                Outcome.TIMEOUT -> {
-                    apply()
-                    holds().forEach { (key, token) ->
-                        store.release(key, token)
-                        ledger.giveBack(token)
-                    }
-                    future.completeExceptionally(TimeoutException("$name timed out."))
-                }
-            }
-        }
-    }
-
-    /**
-     * 挂起每条异步 L1 命令的后端：命令排队，由测试决定何时、以什么结局完成。同步 SPI 直接转给被包装的后端（性质测试只驱动异步变体）。
-     */
-    private class ScriptedBackend(
-        private val delegate: InMemoryBackend,
-        private val ledger: Ledger
-    ) : CoherenceBackend by delegate {
-        private val pending = ArrayList<Command<*>>()
-
-        val pendingCount: Int
-            @Synchronized get() = pending.size
-
-        @Synchronized
-        private fun enqueue(command: Command<*>) {
-            pending += command
-        }
-
-        @Synchronized
-        private fun take(index: (Int) -> Int): Command<*>? =
-            if (pending.isEmpty()) null else pending.removeAt(index(pending.size))
-
-        fun resolveRandom(random: Random, outcome: Outcome): Boolean = take { random.nextInt(it) }?.resolve(outcome) != null
-
-        fun resolveOldest(outcome: Outcome): Boolean = take { 0 }?.resolve(outcome) != null
-
-        fun resolveNewest(outcome: Outcome): Boolean = take { it - 1 }?.resolve(outcome) != null
-
-        override fun store(namespace: String): RemoteStore =
-            ScriptedStore(delegate.store(namespace) as AsyncRemoteStore)
-
-        private inner class ScriptedStore(private val store: AsyncRemoteStore) : AsyncRemoteStore by store {
-            private fun <T> command(
-                name: String,
-                gives: List<Token> = emptyList(),
-                holds: () -> List<Pair<String, Token>> = { emptyList() },
-                apply: () -> T
-            ): CompletableFuture<T> = Command(name, ledger, store, gives, holds, apply).also { enqueue(it) }.future
-
-            private fun grantOf(key: String, read: RemoteRead, lease: LeaseRequest?, refresh: RefreshRequest?) {
-                if (read is RemoteRead.Miss && read.leaseGranted && lease != null) {
-                    ledger.grant(lease.token, "lease on $key")
-                }
-                if (read is RemoteRead.Hit && read.refreshGranted && refresh != null) {
-                    ledger.grant(refresh.token, "refresh token on $key")
-                }
-            }
-
-            override fun readAsync(
-                key: String,
-                lease: LeaseRequest?,
-                refresh: RefreshRequest?
-            ): CompletableFuture<RemoteRead> = command(
-                "read $key",
-                holds = { listOfNotNull(lease?.let { key to it.token }, refresh?.let { key to it.token }) }
-            ) {
-                store.read(key, lease, refresh).also { grantOf(key, it, lease, refresh) }
-            }
-
-            override fun readAllAsync(
-                keys: Collection<String>,
-                leases: Map<String, LeaseRequest>
-            ): CompletableFuture<Map<String, RemoteRead>> = command(
-                "readAll $keys",
-                holds = { leases.map { (key, lease) -> key to lease.token } }
-            ) {
-                store.readAll(keys, leases).onEach { (key, read) -> grantOf(key, read, leases[key], null) }
-            }
-
-            override fun reclaimAsync(
-                key: String,
-                observed: Digest,
-                lease: LeaseRequest
-            ): CompletableFuture<Boolean> = command("reclaim $key", holds = { listOf(key to lease.token) }) {
-                val reclaimed = store.reclaim(key, observed, lease)
-                if (reclaimed) {
-                    ledger.grant(lease.token, "reclaimed lease on $key")
-                }
-                reclaimed
-            }
-
-            override fun fillAsync(fill: Fill): CompletableFuture<Boolean> = command(
-                "fill ${fill.key}",
-                gives = listOf(fill.token),
-                holds = { listOf(fill.key to fill.token) }
-            ) {
-                store.fill(fill).also { ledger.giveBack(fill.token) }
-            }
-
-            override fun fillAllAsync(fills: List<Fill>): CompletableFuture<List<Boolean>> = command(
-                "fillAll ${fills.map { it.key }}",
-                gives = fills.map { it.token },
-                holds = { fills.map { it.key to it.token } }
-            ) {
-                store.fillAll(fills).also { fills.forEach { ledger.giveBack(it.token) } }
-            }
-
-            override fun releaseAsync(key: String, token: Token): CompletableFuture<Void?> = command(
-                "release $key",
-                gives = listOf(token)
-            ) {
-                store.release(key, token)
-                ledger.giveBack(token)
-                null
-            }
-
-            override fun putAsync(
-                key: String,
-                envelope: Envelope,
-                ttl: Duration?,
-                frame: ByteArray
-            ): CompletableFuture<Void?> = command("put $key") {
-                store.put(key, envelope, ttl, frame)
-                null
-            }
-
-            override fun putAllAsync(puts: List<Put>, frame: ByteArray): CompletableFuture<Void?> = command("putAll") {
-                store.putAll(puts, frame)
-                null
-            }
-
-            override fun invalidateAsync(keys: Collection<String>, frame: ByteArray): CompletableFuture<Void?> =
-                command("invalidate $keys") {
-                    store.invalidate(keys, frame)
-                    null
-                }
         }
     }
 
@@ -361,9 +163,9 @@ class TokenConservationPropertyTest {
         private val observed = observed ?: random.nextBoolean()
         private var loaded = 0
 
-        val runtimes: List<CacheRuntime> = List(nodes) {
+        val runtimes: List<CacheRuntime> = List(nodes) { node ->
             CacheRuntime.builder()
-                .backend(backend)
+                .backend(backend.view(node))
                 .clock(clock)
                 .asyncExecutor(executor)
                 .blockingExecutor(executor)

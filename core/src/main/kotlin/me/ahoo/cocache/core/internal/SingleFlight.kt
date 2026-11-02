@@ -37,24 +37,25 @@ import kotlin.time.Duration.Companion.nanoseconds
  *   注销早于发布，不破坏“先注销再发布”。
  *
  * @param timeoutNanos 一次加载的上限；[NO_TIMEOUT] 表示不限
+ * @param ticker 登记时刻与截止时刻的计时源
  * @param onTimeout 跟随者等待超时时抛出的异常
  */
 internal class SingleFlight<K : Any, R : Any>(
     private val timeoutNanos: Long = NO_TIMEOUT,
+    private val ticker: Ticker = Ticker.SYSTEM,
     private val onTimeout: () -> Throwable = { IllegalStateException("Load timed out.") },
 ) {
     /**
      * @param owner 同步 leader 的线程；其它调用为 `null`（没有拥有线程）
      */
-    private class Call<R>(val owner: Thread?) {
+    private class Call<R>(val owner: Thread?, val registeredAt: Long) {
         val future = CompletableFuture<R>()
-        val registeredAt: Long = System.nanoTime()
     }
 
     /**
      * 登记已超过上限的加载（如卡住的同步 loader）：新的调用方注销它，自己开始新的加载。
      */
-    private fun expired(call: Call<R>): Boolean = System.nanoTime() - call.registeredAt >= timeoutNanos
+    private fun expired(call: Call<R>): Boolean = ticker.nanoTime() - call.registeredAt >= timeoutNanos
 
     private val calls = ConcurrentHashMap<K, Call<R>>()
 
@@ -93,7 +94,7 @@ internal class SingleFlight<K : Any, R : Any>(
                 continue
             }
             while (true) {
-                val call = Call<R>(owner)
+                val call = Call<R>(owner, ticker.nanoTime())
                 val existing = calls.putIfAbsent(key, call)
                 if (existing == null) {
                     led[key] = call
@@ -149,7 +150,7 @@ internal class SingleFlight<K : Any, R : Any>(
         val owner = if (mode?.inline == true) Thread.currentThread() else null
         var retried = false
         while (true) {
-            val call = Call<R>(owner)
+            val call = Call<R>(owner, ticker.nanoTime())
             val existing = calls.putIfAbsent(key, call) ?: return lead(key, call, mode, scope, block)
             if (expired(existing)) {
                 // 登记超过上限的加载：注销（不完成它），本调用重新注册、开始新的加载
@@ -296,7 +297,7 @@ internal class SingleFlight<K : Any, R : Any>(
         if (timeoutNanos == NO_TIMEOUT || call.future.isDone) {
             return awaitSuspending(call)
         }
-        val remaining = call.registeredAt + timeoutNanos - System.nanoTime()
+        val remaining = call.registeredAt + timeoutNanos - ticker.nanoTime()
         if (remaining <= 0) {
             throw onTimeout()
         }
