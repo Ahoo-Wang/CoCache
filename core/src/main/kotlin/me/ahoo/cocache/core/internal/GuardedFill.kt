@@ -29,11 +29,7 @@ import java.util.concurrent.ConcurrentMap
  * @param valid 填充所取的戳是否仍然有效；会被调用至多三次
  * @return 写入且保留时为 `true`；校验失败（没有写入）或复核失败（已撤销自己写入的那一份）时为 `false`
  */
-internal inline fun <V : Any> ConcurrentMap<String, V>.fillGuarded(
-    key: String,
-    entry: V,
-    crossinline valid: () -> Boolean
-): Boolean {
+internal fun <V : Any> ConcurrentMap<String, V>.fillGuarded(key: String, entry: V, valid: () -> Boolean): Boolean {
     if (!valid()) {
         return false
     }
