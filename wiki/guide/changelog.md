@@ -22,7 +22,7 @@ description: Release history and notable changes for CoCache.
 ### TCK
 
 - `Concurrency.currentThreadName()` returns the thread name without the kotlinx coroutine suffix. `HookedBackend.issuer()` and the specs use it, so hooks that orchestrate races by thread name work whether or not assertions are enabled.
-- `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` covers the batch fix above.
+- `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` covers the batch fix above, and `EngineSpec.getAllAfterOwnInvalidateNeverSharesALoadStartedBefore` covers read-your-writes for batch reads.
 - `Concurrency.Forked.parked` is true while the thread waits (`WAITING` or `TIMED_WAITING`). A blocking follower now waits inside `runBlocking`, which parks with a timeout, so the specs no longer expect `WAITING` only.
 
 ## v6.10.0 (Current)

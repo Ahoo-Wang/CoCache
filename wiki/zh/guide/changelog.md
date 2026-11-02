@@ -22,7 +22,7 @@ description: CoCache 版本发布历史和重要变更。
 ### TCK
 
 - `Concurrency.currentThreadName()` 返回去掉 kotlinx 协程后缀的线程名。`HookedBackend.issuer()` 与各规范都用它，按线程名编排竞态的钩子不论是否开启断言都能工作。
-- `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` 覆盖上面的批量修复。
+- `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` 覆盖上面的批量修复，`EngineSpec.getAllAfterOwnInvalidateNeverSharesALoadStartedBefore` 覆盖批量读取的读己之写。
 - `Concurrency.Forked.parked` 在线程等待时（`WAITING` 或 `TIMED_WAITING`）为真。阻塞调用的跟随者现在在 `runBlocking` 中等待，以限时停顿挂起，所以各规范不再只认 `WAITING`。
 
 ## v6.10.0（当前版本）

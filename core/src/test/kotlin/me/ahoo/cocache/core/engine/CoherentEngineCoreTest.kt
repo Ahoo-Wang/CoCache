@@ -41,6 +41,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionStage
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
@@ -104,6 +105,52 @@ class CoherentEngineCoreTest {
         val other = runtime()
         other.create(spec { loader = CacheLoader { "v-$it" } })["k"].assert().isEqualTo("v-k")
         requireNotNull(other.metrics("core")).leaseWaits.assert().isZero()
+    }
+
+    /**
+     * 批量回源尚未完成时关闭运行时：读取以关闭失败，整批申请的 lease 都被释放，另一个节点随后的单 key 未命中不等待 lease。
+     */
+    @Test
+    fun closingTheRuntimeMidBatchLoadReleasesTheLeases() {
+        val started = CountDownLatch(1)
+        val closing = runtime()
+        val cache = closing.create(
+            spec {
+                asyncLoader = object : AsyncCacheLoader<String, String> {
+                    override fun loadAsync(key: String): CompletionStage<out String?> =
+                        CompletableFuture.completedFuture("v-$key")
+
+                    override fun loadAllAsync(keys: Collection<String>): CompletionStage<out Map<String, String>> {
+                        started.countDown()
+                        return CompletableFuture()
+                    }
+                }
+            }
+        )
+        val read = cache.async().getAll(listOf("a", "b"))
+        started.awaitOrFail("batch loader started")
+        closing.close()
+        val failure = failureOf(read)
+        failure.assert().isInstanceOf(IllegalStateException::class.java)
+        failure?.message.assert().isEqualTo("CacheRuntime closed.")
+
+        val other = runtime()
+        val otherCache = other.create(spec { loader = CacheLoader { "v-$it" } })
+        otherCache["a"].assert().isEqualTo("v-a")
+        otherCache["b"].assert().isEqualTo("v-b")
+        requireNotNull(other.metrics("core")).leaseWaits.assert().isZero()
+    }
+
+    /**
+     * 没有数据源的批量读取释放 lease 失败：只计入 `remoteFailures` 并告警，读取照常返回（同步与异步变体）。
+     */
+    @Test
+    fun releaseFailureInABatchIsCountedNotThrown() {
+        val runtime = runtime(HookedBackend(memory).apply { failRelease = true })
+        val cache = runtime.create(spec {})
+        cache.getAll(listOf("a")).assert().isEmpty()
+        cache.async().getAll(listOf("b")).get(10, TimeUnit.SECONDS).assert().isEmpty()
+        requireNotNull(runtime.metrics("core")).remoteFailures.assert().isEqualTo(2)
     }
 
     /**

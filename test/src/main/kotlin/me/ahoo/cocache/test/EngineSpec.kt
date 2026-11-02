@@ -470,6 +470,34 @@ abstract class EngineSpec {
         loads.get().assert().isEqualTo(2)
     }
 
+    /**
+     * 批量读取的读己之写：本节点失效之后的 `getAll` 合并到失效之前开始的在途加载时不接受它的结果，改走单 key 路径重新加载。
+     */
+    @Test
+    fun getAllAfterOwnInvalidateNeverSharesALoadStartedBefore() {
+        val cache = nodeA.cache()
+        database["k"] = "v0"
+        val loaded = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val first = AtomicBoolean(true)
+        afterLoad = {
+            if (first.compareAndSet(true, false)) {
+                loaded.countDown()
+                release.awaitOrFail("release")
+            }
+        }
+        val early = fork("early") { cache["k"] }
+        loaded.awaitOrFail("early load read v0")
+        database["k"] = "v1"
+        cache.invalidate("k")
+        val late = fork("late") { cache.getAll(listOf("k")) }
+        awaitCondition("late joined the in-flight load") { late.parked }
+        release.countDown()
+        early.join().assert().isEqualTo("v0")
+        late.join().assert().isEqualTo(mapOf("k" to "v1"))
+        loads.get().assert().isEqualTo(2)
+    }
+
     @Test
     fun loaderFailureReleasesTheLease() {
         val cacheA = nodeA.cache()
