@@ -376,8 +376,12 @@ abstract class MultiNodeSpec {
         val release = CountDownLatch(1)
         afterLoad = { release.awaitOrFail("release bypassing load") }
         val misses = (1..THREADS_PER_NODE).map { fork("writer-node-$it") { caches[0]["k"] } }
+        // 未命中在登记到 SingleFlight 之前计数：再等全部线程停在等待中（leader 在回源里，其余在等它），否则晚登记的线程
+        // 可能在第一次加载结束之后才开始，各自再回源一次
         awaitCondition("misses coalesced behind one load") {
-            loadsOf("k") - loadsBefore == 1 && nodes[0].metrics().misses - missesBefore == THREADS_PER_NODE.toLong()
+            loadsOf("k") - loadsBefore == 1 &&
+                nodes[0].metrics().misses - missesBefore == THREADS_PER_NODE.toLong() &&
+                misses.all { it.parked }
         }
         release.countDown()
         misses.forEach { it.join().assert().isEqualTo("v1") }
