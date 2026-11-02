@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
@@ -178,6 +179,29 @@ class CoherentEngineCoreTest {
         requireNotNull(other.metrics("core")).leaseWaits.assert().isZero()
         releaseHolder.countDown()
         holding.join().assert().isEqualTo("v-held")
+    }
+
+    /**
+     * L2 的 key 不含存储前缀（RFC 0005 §4.5）：别的节点的失效帧按存储 key 淘汰本节点的副本。同一 namespace 上其它前缀的 key
+     * （以及比前缀还短的 key）不属于本缓存：既不淘汰编码后同名的副本，也不出错。
+     */
+    @Test
+    fun invalidationFramesMapStorageKeysToLocalKeys() {
+        val runtime = runtime()
+        val cache = runtime.create(spec { loader = CacheLoader { "v-$it" } })
+        val metrics = requireNotNull(runtime.metrics("core"))
+        val listener = cache as InvalidationListener
+        val other = NodeId.random()
+        cache["k"].assert().isEqualTo("v-k")
+
+        // 与 `cocache:` 等长的前缀：只按长度剥掉前缀会得到同一个 L2 key
+        listener.onInvalidated(listOf("abcdefg:core:k", "x"), other)
+        cache["k"].assert().isEqualTo("v-k")
+        metrics.remoteHits.assert().withFailMessage { "a foreign key evicted the local copy" }.isZero()
+
+        listener.onInvalidated(listOf("cocache:core:k"), other)
+        cache["k"].assert().isEqualTo("v-k")
+        metrics.remoteHits.assert().withFailMessage { "the frame did not evict the local copy" }.isEqualTo(1)
     }
 
     /**

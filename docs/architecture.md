@@ -81,6 +81,7 @@ cocache-bom / cocache-dependencies / cocache-example
 ### 3.2 存储 key 与频道
 
 - 存储 key：`{keyPrefix}{namespace}:{keyEncoder(key)}`。`keyPrefix` 默认 `cocache:`，`namespace` 默认等于缓存名。同一运行时内缓存名与 namespace 都不得重复。
+- L2 的 key 是编码后的 key，不含 `{keyPrefix}{namespace}:`（RFC 0005 §4.5）：每个缓存有自己的 L2，前缀只区分 L1 中的 key。命中路径因此不拼接字符串（`String` key 经默认的 `KeyEncoder` 原样返回，哈希已缓存；JMH 中单个缓存的 L2 命中吞吐约为拼接前缀时的 2.6 倍）。失效戳与 SingleFlight 只在未命中与写入路径上使用，仍按存储 key。收到失效帧时只处理带本缓存前缀的 key，剥掉前缀后淘汰 L2；同一 namespace 上其它前缀的 key 不属于本缓存。
 - 失效频道：`cocache:inv:{namespace}`（不含 `keyPrefix`）。
 - 失效帧（客户端构造，Lua 只负责发布）：`[版本:1B=0x01][nodeId:16B][count:varint]([len:varint][key UTF-8])*`，见 `InvalidationFrame`。解码不信任长度前缀；畸形帧告警后丢弃。
 
