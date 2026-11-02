@@ -19,6 +19,8 @@ import java.util.concurrent.CompletionException
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * future 工具与执行器的续接标记（协程核心，RFC 0005 V5）。
@@ -168,4 +170,31 @@ internal suspend fun <T> CompletableFuture<T>.awaitOriginal(): T {
         if (error == null) Result.success(value) else Result.failure(Futures.unwrap(error))
     }.await()
     return outcome.getOrThrow()
+}
+
+/**
+ * 不可取消地等待，失败时抛出解包后的原始异常（RFC 0005 §4.4、I-H：L1 命令与令牌步骤不可取消）。协程核心等待 L1 命令一律用它。
+ *
+ * 协程被取消（运行时关闭）时仍等到命令完成：取得令牌的读取不会丢掉结果（否则令牌要到 `lease.ttl` 才回收），
+ * 释放也不会抢在仍在途的读取之前到达 L1。等待由存储的命令超时限定；取消在之后的第一个挂起点生效，持有令牌的步骤据此释放它。
+ * 与 [awaitOriginal] 一样以总是成功的结果恢复、在自己的栈帧里抛出原始异常，不受调试模式复制异常的影响。
+ */
+internal suspend fun <T> CompletableFuture<T>.awaitUncancellable(): T {
+    val outcome = if (isDone) {
+        outcomeNow()
+    } else {
+        suspendCoroutine { continuation ->
+            whenComplete { value, error ->
+                continuation.resume(if (error == null) Result.success(value) else Result.failure(Futures.unwrap(error)))
+            }
+        }
+    }
+    return outcome.getOrThrow()
+}
+
+@Suppress("TooGenericExceptionCaught")
+private fun <T> CompletableFuture<T>.outcomeNow(): Result<T> = try {
+    Result.success(join())
+} catch (e: Throwable) {
+    Result.failure(Futures.unwrap(e))
 }

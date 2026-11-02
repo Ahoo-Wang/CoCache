@@ -50,6 +50,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 单 key 读与提前刷新运行在协程核心上（RFC 0005 V5）：运行时关闭取消作用域时，进行中的异步读取以关闭失败，
@@ -145,6 +146,41 @@ class CoherentEngineCoreTest {
     }
 
     /**
+     * 同步读取取得 lease 之后等待回源许可时被中断：`runBlocking` 取消协程并把它运行到结束，lease 在调用方线程上释放之后才抛出
+     * [InterruptedException]；另一个节点随后的未命中不等待 lease。
+     */
+    @Test
+    fun interruptingASyncReaderWaitingForAPermitReleasesItsLease() {
+        val holderStarted = CountDownLatch(1)
+        val releaseHolder = CountDownLatch(1)
+        val cache = runtime().create(
+            spec {
+                loader = CacheLoader { key ->
+                    if (key == "held") {
+                        holderStarted.countDown()
+                        releaseHolder.awaitOrFail("release holder")
+                    }
+                    "v-$key"
+                }
+                policy = CachePolicy(load = LoadPolicy(maxConcurrent = 1, acquireTimeout = Duration.ofSeconds(30)))
+            }
+        )
+        val holding = fork("holder") { cache["held"] }
+        holderStarted.awaitOrFail("holder started")
+        // 等待者在 L1 上取得 k 的 lease，然后停在许可的等待上
+        val waiting = fork("waiter") { cache["k"] }
+        awaitCondition("waiter parked on the permit") { waiting.parked }
+        waiting.thread.interrupt()
+        waiting.joinFailure().assert().isInstanceOf(InterruptedException::class.java)
+
+        val other = runtime()
+        other.create(spec { loader = CacheLoader { "w-$it" } })["k"].assert().isEqualTo("w-k")
+        requireNotNull(other.metrics("core")).leaseWaits.assert().isZero()
+        releaseHolder.countDown()
+        holding.join().assert().isEqualTo("v-held")
+    }
+
+    /**
      * 没有数据源的批量读取释放 lease 失败：只计入 `remoteFailures` 并告警，读取照常返回（同步与异步变体）。
      */
     @Test
@@ -194,7 +230,8 @@ class CoherentEngineCoreTest {
     }
 
     /**
-     * 提前刷新的 L1 读取尚未送达时关闭运行时：刷新的协程被取消，申请的刷新令牌被交还，另一个调用方随后能取得它。
+     * 提前刷新的 L1 读取尚未送达时关闭运行时：读取照常完成（L1 命令不可取消），刷新的协程在之后的挂起点（等待数据源）被取消，
+     * 取得的刷新令牌被交还，另一个调用方随后能取得它。
      */
     @Test
     fun closingTheRuntimeMidRefreshReleasesTheRefreshToken() {
@@ -208,9 +245,13 @@ class CoherentEngineCoreTest {
             .build()
         runtimes += closing
         val window = Duration.ofSeconds(5)
+        val loads = AtomicInteger()
         val cache = closing.create(
             spec {
-                asyncLoader = AsyncCacheLoader { CompletableFuture.completedFuture("v") }
+                // 第一次加载立即完成；刷新的加载不完成，取消在等待它时生效
+                asyncLoader = AsyncCacheLoader {
+                    if (loads.getAndIncrement() == 0) CompletableFuture.completedFuture("v") else CompletableFuture()
+                }
                 policy = CachePolicy(
                     ttl = Duration.ofSeconds(10),
                     ttlJitter = Duration.ZERO,

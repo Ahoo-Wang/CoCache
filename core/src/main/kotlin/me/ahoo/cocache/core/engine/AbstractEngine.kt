@@ -40,7 +40,7 @@ import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.SingleFlight
-import me.ahoo.cocache.core.internal.awaitOriginal
+import me.ahoo.cocache.core.internal.awaitUncancellable
 import me.ahoo.cocache.core.internal.fillGuarded
 import me.ahoo.cocache.core.internal.runsInline
 import me.ahoo.cocache.core.policy.CachePolicy
@@ -154,7 +154,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         if (runsInline()) {
             store.read(storageKey, lease, refresh)
         } else {
-            checkRead(asyncStore.readAsync(storageKey, lease, refresh).awaitOriginal())
+            checkRead(asyncStore.readAsync(storageKey, lease, refresh).awaitUncancellable())
         }
 
     /**
@@ -334,15 +334,16 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 
     /**
      * 协程核心调用 L1：同步变体调用阻塞的 SPI（[blocking]），异步变体等待异步 SPI（[async]），失败时抛出原始异常。
+     * 两种变体的 L1 命令都不可取消（[awaitUncancellable]）。
      */
     protected suspend inline fun <T> l1(blocking: () -> T, async: () -> CompletableFuture<T>): T =
-        if (runsInline()) blocking() else async().awaitOriginal()
+        if (runsInline()) blocking() else async().awaitUncancellable()
 
     /**
      * 同 [l1]，用于没有结果的 L1 命令。
      */
     protected suspend inline fun l1Command(blocking: () -> Unit, async: () -> CompletableFuture<Void?>) {
-        if (runsInline()) blocking() else async().awaitOriginal()
+        if (runsInline()) blocking() else async().awaitUncancellable()
     }
 
     /**

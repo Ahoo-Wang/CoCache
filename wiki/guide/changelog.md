@@ -22,6 +22,10 @@ description: Release history and notable changes for CoCache.
 
 - When several readers wait on the same load and the thread running it is interrupted (or its coroutine is cancelled), that thread still gets the original exception. The waiting readers no longer fail with it: each retries once and, if it joins another interrupted load, loads by itself. Batch reads do the same for the affected keys. In 6.x, every waiting reader failed with the interrupted thread's exception.
 
+### Fix: closing the runtime no longer abandons an async read's Redis command
+
+- When a `CacheRuntime` closed while an async read waited for Redis, the read stopped waiting at once and sent a release without waiting for it. A backend that doesn't apply commands in the order they were sent (or a Redis Cluster redirect) could apply the release first, and the lease the read then took stayed until `lease-ttl`; misses on that key from other instances waited `lease-wait` meanwhile. The read now waits for its command, releases what it took, then fails with `IllegalStateException("CacheRuntime closed.")` as before. This also covers a lease taken by a lease-wait reread when a `LoadObserver` is configured.
+
 ### Fix: no stale local copy after a write returns
 
 - A load that read Redis just before a concurrent write could still put the old value into the local (L2) copy after the write returned, briefly, until its own recheck removed it. A read on the same instance right after the write could see the old value. The local copy is now checked and written in one step under the key's lock, so once a write returns, no older value can appear in that instance's local copy.
