@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -53,14 +54,14 @@ class AsyncCacheableTest {
     open class InnerService(private val threads: ConcurrentLinkedQueue<String>, private val gate: CountDownLatch) {
         @Cacheable(cacheNames = ["inner"], sync = true)
         open fun find(id: String): CompletableFuture<String> {
-            threads.add(Thread.currentThread().name)
+            threads.add(Concurrency.currentThreadName())
             return CompletableFuture.completedFuture("i-$id")
         }
 
         /** 先阻塞再返回（如 `completedFuture(repository.find(id))`）。 */
         @Cacheable(cacheNames = ["inner"], sync = true)
         open fun blocking(id: Long): CompletableFuture<String> {
-            threads.add(Thread.currentThread().name)
+            threads.add(Concurrency.currentThreadName())
             gate.await()
             return CompletableFuture.completedFuture("b-$id")
         }

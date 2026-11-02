@@ -18,6 +18,7 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
@@ -57,7 +58,7 @@ class SetEngineReadTest {
     @Test
     fun asyncReadCompletesOffTheIoThread() {
         target.add("k", listOf("a"))
-        val completedOn = target.async().get("k").thenApply { Thread.currentThread().name }.join()
+        val completedOn = target.async().get("k").thenApply { Concurrency.currentThreadName() }.join()
         completedOn.startsWith("l1-io").assert().withFailMessage { "completed on $completedOn" }.isEqualTo(false)
         target.async().get("k").join().assert().containsExactly("a")
     }

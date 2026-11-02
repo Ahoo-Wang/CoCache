@@ -192,7 +192,7 @@ abstract class AsyncEngineSpec : EngineSpec() {
             val completedOn = AtomicReference<String>()
             val future = async.get("k")
             future.isDone.assert().isFalse()
-            future.whenComplete { _, _ -> completedOn.compareAndSet(null, Thread.currentThread().name) }
+            future.whenComplete { _, _ -> completedOn.compareAndSet(null, Concurrency.currentThreadName()) }
             gate.get().countDown()
             // 先等回调执行再 get：JDK 的 get / join 会在等待线程上执行尚未执行的依赖阶段
             awaitCondition("completion recorded") { completedOn.get() != null }
@@ -202,7 +202,7 @@ abstract class AsyncEngineSpec : EngineSpec() {
             val write = async.put("k", "v2")
             write.isDone.assert().isFalse()
             val writtenOn = AtomicReference<String>()
-            write.whenComplete { _, _ -> writtenOn.compareAndSet(null, Thread.currentThread().name) }
+            write.whenComplete { _, _ -> writtenOn.compareAndSet(null, Concurrency.currentThreadName()) }
             gate.get().countDown()
             awaitCondition("write completion recorded") { writtenOn.get() != null }
             write.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
@@ -253,7 +253,7 @@ abstract class AsyncEngineSpec : EngineSpec() {
             val releaseReader = CountDownLatch(1)
             var reader: Concurrency.Forked<String?>? = null
             backend.afterRead = { _, read ->
-                if (Thread.currentThread().name == "reader") {
+                if (Concurrency.currentThreadName() == "reader") {
                     readerRead.countDown()
                     releaseReader.awaitOrFail("release reader")
                 }
@@ -465,7 +465,7 @@ abstract class AsyncEngineSpec : EngineSpec() {
         val asyncLeader = engine.async().get("k")
         awaitCondition("async leader loading") { source.calls.get() == 1 }
         val syncJoiner = fork("sync-joiner") { engine["k"] }
-        awaitCondition("sync joiner waiting") { syncJoiner.thread.state == Thread.State.WAITING }
+        awaitCondition("sync joiner waiting") { syncJoiner.parked }
         source.complete("other", "o")
         engine.async().get("other").get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("o")
         source.complete("k", "v")
@@ -494,7 +494,7 @@ abstract class AsyncEngineSpec : EngineSpec() {
             loading.awaitOrFail("sync leader loading")
             val joined = engine.async().get("k")
             val completedOn = AtomicReference<String>()
-            joined.whenComplete { _, _ -> completedOn.compareAndSet(null, Thread.currentThread().name) }
+            joined.whenComplete { _, _ -> completedOn.compareAndSet(null, Concurrency.currentThreadName()) }
             release.countDown()
             // 先等回调执行再 join / get：JDK 的 get / join 会在等待线程上执行尚未执行的依赖阶段
             awaitCondition("completion recorded") { completedOn.get() != null }
@@ -517,12 +517,12 @@ abstract class AsyncEngineSpec : EngineSpec() {
             val engine = runtime.create(
                 syncSpec(object : CacheLoader<String, String> {
                     override fun load(key: String): String {
-                        loadedOn.add(Thread.currentThread().name)
+                        loadedOn.add(Concurrency.currentThreadName())
                         return "v-$key"
                     }
 
                     override fun loadAll(keys: Collection<String>): Map<String, String> {
-                        loadedOn.add(Thread.currentThread().name)
+                        loadedOn.add(Concurrency.currentThreadName())
                         return keys.associateWith { "v-$it" }
                     }
                 })

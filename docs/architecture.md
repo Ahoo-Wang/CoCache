@@ -281,12 +281,24 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **执行器拒绝任务**：续接被拒绝时该步不执行，返回的 future 以 `RejectedExecutionException` 失败；必须执行的收尾不依赖执行器：写入方的第二次递增与淘汰（只涉及戳与 Caffeine）在 L1 future 的完成线程上就地执行；非原子广播的派发被拒绝时同样在完成线程上就地广播（`publishAsync` 不阻塞），写入的结果不被替换：成功的写入不计为失败、`invalidate` 不登记重试，失败的写入保留原始异常（6.3.1 之前拒绝会跳过广播，并把写入的结果换成 `RejectedExecutionException`）。返回 future 的完成本身被拒绝时，调用方照常看到 `RejectedExecutionException`；回源许可在加载链结束时恰好归还一次，取得的 lease / 刷新令牌在链因拒绝失败时尽力释放（令牌不匹配时 release 什么也不做，重复释放无害）。
 - **`KeyFilter`** 在调用方线程上调用，必须是本地、不阻塞的判断。
 - **异常**：返回的 future 以原始异常完成（不包装为 `CompletionException`）；异步方法从不同步抛出（包括 `KeyEncoder`、`Codec` 抛出、重入与 `SetCache` 的不支持操作）。
-- **协程核心**（8.0 进行中，RFC 0005 V5、§4.4）：协议正在逐条路径改写为一份 `suspend` 实现，目前覆盖 `SetCache` 的读路径（`get`、`lookup`、`getAll`），其余路径仍是上面两条一一对应的路径。
+- **协程核心**（8.0 进行中，RFC 0005 V5、§4.4）：协议正在逐条路径改写为一份 `suspend` 实现。目前覆盖：
+  - `SetCache` 的读路径（`get`、`lookup`、`getAll`）；
+  - `Cache` 的单 key 读（`get`、`lookup`、`get(key, loader)`）及其等待 lease、条件回收、回源与写回；
+  - 提前刷新；
+  - 批量读取中的单 key 回退与损坏载荷的条件回收。
+
+  批量读取本身与写入仍是上面两条一一对应的路径。
   - L2 命中不变：同步 API 内联返回，异步视图返回已完成的 future，都不启动协程。
   - 同步变体（`runSync`）：未命中时以 `runBlocking` 在调用方线程上运行核心，阻塞的 SPI 就地调用，超时与中断的处理不变（§8）。线程被中断时 `runBlocking` 结束等待，恢复中断标志并抛出 `InterruptedException`；核心自己抛出的 `InterruptedException`（被中断的 L1 命令，或跟随者收到 leader 的这类失败）原样抛出，不置中断标志。
   - 异步变体（`AsyncContext.runAsync`）：在运行时作用域中以 `future(start = UNDISPATCHED)` 运行，第一次挂起之前在调用方线程上，之后在异步执行器上继续（作用域的调度器），从不在 L1 客户端的 I/O 线程上执行。L1 命中派发一次，与上面的续接规则相同。用户拿到结果的副本：取消它只影响自己，协程照常运行（它可能是别的调用方等待的 leader）。执行器拒绝派发时 future 以那个 `RejectedExecutionException` 失败；运行时关闭取消作用域，进行中的调用在下一个挂起点以 `IllegalStateException("CacheRuntime closed.")` 失败。
+  - 调度（`EngineDispatcher`）：协程的恢复与 future 链的续接遵守同一套规则。任务经异步执行器执行，执行期间带续接标记；当前线程已在执行该执行器派发的任务时就地恢复，不再派发（kotlinx 以线程局部的事件循环展开，栈深有界）。所以只有上一步在执行器之外完成时才派发，L1 命中 1 次，未命中至多 3 次，与上面的续接规则相同。执行器拒绝时以携带拒绝的取消结束协程，再交给 `Dispatchers.IO` 跑完收尾。
+  - 等待与回源：
+    - 同步变体：等待其它节点的 lease 时在调用方线程上以 `parkNanos` 退避；数据源（含调用级 loader，声明的是异步数据源时在调用方线程上等待它）在调用方线程上执行；回源许可限时获取。
+    - 异步变体：重读经定时器调度，回源与许可经上面的异步数据源适配（`loadFromSourceAsync`）。
+    - 回源观测在两种变体中分别经 `LoadObserver.observe` 与 `observeAsync`。
+  - 令牌：回源失败（含 `ttlOf` 与 `Codec` 抛出）时先释放 lease 再抛出原始异常。异步变体的释放不可取消（`NonCancellable`）。协程被取消（运行时关闭、执行器拒绝派发）时，单 key 读与刷新尽力释放各自申请的令牌：只发出一条释放命令，令牌不匹配时无害。
   - SingleFlight 与上面两条路径共用一张表（`executeSuspending`）。leader 在调用方的协程中执行：同步变体即调用方线程（期间同样清除续接标记），异步变体省去一次派发。上下文中没有执行变体的调用方（直接从用户的协程调用）可能被单独取消，共享加载改在运行时作用域中执行。跟随者挂起等待，不占线程，取消只结束它自己的等待。
-  - 等待 future 一律经 `awaitOriginal`：kotlinx 的 `await()` 在调试模式（`-ea` 或 `kotlinx.coroutines.debug`）下恢复挂起时复制异常，原始异常成了副本的 cause；这里等待一个总是正常完成的派生 future，在自己的栈帧里抛出原始异常。调试模式下线程名在协程运行期间带有 `@coroutine#n` 后缀。
+  - 等待 future 一律经 `awaitOriginal`：kotlinx 的 `await()` 在调试模式（`-ea` 或 `kotlinx.coroutines.debug`）下恢复挂起时复制异常，原始异常成了副本的 cause；这里等待一个总是正常完成的派生 future，在自己的栈帧里抛出原始异常。调试模式下线程名在协程运行期间带有 `@coroutine#n` 后缀（同步读的 loader 也看得到它），TCK 按线程名编排竞态时用 `Concurrency.currentThreadName()` 去掉它。
 - **只实现同步 SPI 的后端**：引擎经 `BlockingAsyncStore` / `BlockingAsyncChannel` 把同步调用放到阻塞执行器上；原生异步的后端实现 `AsyncRemoteStore`（与 `AsyncInvalidationChannel`），内存后端是原生异步的（就地执行、返回已完成的 future）。
 
 ### 5.7 挂起视图（`cocache-coroutines`，RFC 0004 §7）

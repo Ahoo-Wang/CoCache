@@ -105,7 +105,7 @@ class CoCacheSpringCacheTest {
                 "other"
             }
         }
-        awaitCondition { second.thread.state == Thread.State.WAITING }
+        awaitCondition { second.parked }
         release.countDown()
         first.join().assert().isEqualTo("L")
         second.join().assert().isEqualTo("L")
@@ -147,7 +147,7 @@ class CoCacheSpringCacheTest {
         }
         started.awaitOrFail()
         val second = fork { cache.get<String>("failing") { "other" } }
-        awaitCondition { second.thread.state == Thread.State.WAITING }
+        awaitCondition { second.parked }
         release.countDown()
         first.joinFailure().assert().isInstanceOf(SpringCache.ValueRetrievalException::class.java)
         second.joinFailure().assert().isInstanceOf(SpringCache.ValueRetrievalException::class.java)

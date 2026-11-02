@@ -12,7 +12,13 @@ description: Release history and notable changes for CoCache.
 ### Breaking changes
 
 - The baseline is JDK 21 (was JDK 17).
-- `cocache-core` depends on `kotlinx-coroutines-core` at runtime. The protocol is being rewritten as one coroutine implementation behind the blocking, async, and suspending APIs. `SetCache` reads already use it.
+- `cocache-core` depends on `kotlinx-coroutines-core` at runtime. The protocol is being rewritten as one coroutine implementation behind the blocking, async, and suspending APIs. `SetCache` reads, `Cache` single-key reads, and refresh-ahead already use it. With assertions enabled (`-ea`, the default in test runs), kotlinx adds a coroutine suffix such as ` @coroutine#3` to thread names while a read runs, including inside a blocking loader.
+- An async read in flight when its `CacheRuntime` closes fails with `IllegalStateException("CacheRuntime closed.")`.
+
+### TCK
+
+- `Concurrency.currentThreadName()` returns the thread name without the kotlinx coroutine suffix. `HookedBackend.issuer()` and the specs use it, so hooks that orchestrate races by thread name work whether or not assertions are enabled.
+- `Concurrency.Forked.parked` is true while the thread waits (`WAITING` or `TIMED_WAITING`). A blocking follower now waits inside `runBlocking`, which parks with a timeout, so the specs no longer expect `WAITING` only.
 
 ## v6.10.0 (Current)
 

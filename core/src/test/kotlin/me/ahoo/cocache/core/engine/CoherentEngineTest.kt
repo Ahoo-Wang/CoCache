@@ -693,7 +693,7 @@ open class CoherentEngineTest {
         val armed = java.util.concurrent.atomic.AtomicBoolean(false)
         lateinit var cache: TestCache
         val hooked = me.ahoo.cocache.api.CacheClock {
-            if (Thread.currentThread().name == "stale-reader" && armed.compareAndSet(true, false)) {
+            if (Concurrency.currentThreadName() == "stale-reader" && armed.compareAndSet(true, false)) {
                 // 读者已读到旧副本、尚未取守卫：另一个线程触发并完成第一次刷新
                 me.ahoo.cocache.test.Concurrency.fork("first-refresh") { cache["k"] }.join().assert().isEqualTo("v0")
                 awaitCondition(

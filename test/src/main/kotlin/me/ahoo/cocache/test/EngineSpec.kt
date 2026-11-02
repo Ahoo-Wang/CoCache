@@ -277,7 +277,7 @@ abstract class EngineSpec {
         val followers = (1..3).map { fork { cache["k"] } }
         awaitCondition(
             "followers waiting"
-        ) { followers.all { it.thread.state == Thread.State.WAITING || it.thread.state == Thread.State.TIMED_WAITING } }
+        ) { followers.all { it.parked } }
         release.countDown()
         leader.join().assert().isEqualTo("v")
         followers.forEach { it.join().assert().isEqualTo("v") }
@@ -463,7 +463,7 @@ abstract class EngineSpec {
         database["k"] = "v1"
         cache.invalidate("k")
         val late = fork("late") { cache["k"] }
-        awaitCondition("late joined the in-flight load") { late.thread.state == Thread.State.WAITING }
+        awaitCondition("late joined the in-flight load") { late.parked }
         release.countDown()
         early.join().assert().isEqualTo("v0")
         late.join().assert().isEqualTo("v1")
@@ -703,7 +703,7 @@ abstract class EngineSpec {
         loading.awaitOrFail("single load")
         afterLoad = null
         val batch = fork { cache.getAll(listOf("k", "other")) }
-        awaitCondition("batch waiting") { batch.thread.state == Thread.State.WAITING }
+        awaitCondition("batch waiting") { batch.parked }
         release.countDown()
         single.join().assert().isEqualTo("v")
         batch.join().assert().isEqualTo(mapOf("k" to "v", "other" to "o"))
@@ -1206,7 +1206,7 @@ abstract class EngineSpec {
         database["k"] = "v1"
         cache.putAll(mapOf("k" to "v1", "other" to "o1"))
         val late = fork("late") { cache["k"] }
-        awaitCondition("late joined the in-flight load") { late.thread.state == Thread.State.WAITING }
+        awaitCondition("late joined the in-flight load") { late.parked }
         release.countDown()
         early.join().assert().isEqualTo("v0")
         late.join().assert().isEqualTo("v1")

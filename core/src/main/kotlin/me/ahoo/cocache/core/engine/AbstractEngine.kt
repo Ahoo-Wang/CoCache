@@ -141,8 +141,16 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         if (runsInline()) {
             store.read(storageKey, lease, refresh)
         } else {
-            asyncStore.readAsync(storageKey, lease, refresh).awaitOriginal()
+            checkRead(asyncStore.readAsync(storageKey, lease, refresh).awaitOriginal())
         }
+
+    /**
+     * 异步 SPI 的实现可能以 `null` 完成读取（Java 实现）：按实现缺陷失败，而不是在之后的分支上抛出更难懂的异常。
+     */
+    protected fun checkRead(read: RemoteRead?): RemoteRead {
+        checkNotNull(read) { "Cache[$name] - remote read returned null." }
+        return read
+    }
 
     protected fun storageKey(key: K): String = storagePrefix + keyEncoder.encode(key)
 
