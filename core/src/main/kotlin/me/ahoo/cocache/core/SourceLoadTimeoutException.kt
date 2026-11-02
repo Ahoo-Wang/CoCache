@@ -16,7 +16,8 @@ package me.ahoo.cocache.core
 import java.time.Duration
 
 /**
- * 异步数据源（`AsyncCacheLoader`）的一次加载超过了 [timeout]（`LoadPolicy.asyncTimeout`）。lease 已释放；迟到的结果被丢弃。
+ * 一次加载超过了 [timeout]（`LoadPolicy.timeout`）：异步数据源（`AsyncCacheLoader`）的一次加载（lease 已释放，迟到的结果被丢弃），
+ * 或跟随者等待共享的加载超过了这次加载的截止时刻。
  */
 class SourceLoadTimeoutException(val cacheName: String, val timeout: Duration) :
-    RuntimeException("Cache[$cacheName] - async source load timed out after $timeout.")
+    RuntimeException("Cache[$cacheName] - load timed out after $timeout.")

@@ -16,10 +16,12 @@ package me.ahoo.cocache.core.internal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.coroutineContext
+import kotlin.time.Duration.Companion.nanoseconds
 
 /**
  * 按 key 合并并发调用（协程核心，RFC 0005 §4.4）：同一 key 同一时刻只有一个 leader 执行，其余调用者挂起等待并共享其结果或原始异常。
@@ -30,14 +32,29 @@ import kotlin.coroutines.coroutineContext
  *   跟随者挂起等待，不占线程；取消只结束它自己的等待。
  * - 同线程对同一 key 的重入快速失败（否则自我等待死锁）：同步 leader 的拥有线程，或正在 [loading] 内为该 key 调用数据源的线程。
  * - 批量调用先完成自己负责的 key，再等待其它调用者负责的 key，避免两个批量调用互相等待。
+ * - 有上界（`load.timeout`，RFC 0005 §4.4）：每次加载的截止时刻是它登记时加上 [timeoutNanos]。跟随者等到截止时刻仍没有结果时，
+ *   以 [onTimeout] 的异常失败；截止时刻之后到来的调用方把它注销（不完成它），自己开始新的加载（P16）。原 leader 迟到的结果只交给它自己：
+ *   注销早于发布，不破坏“先注销再发布”。
+ *
+ * @param timeoutNanos 一次加载的上限；[NO_TIMEOUT] 表示不限
+ * @param onTimeout 跟随者等待超时时抛出的异常
  */
-internal class SingleFlight<K : Any, R> {
+internal class SingleFlight<K : Any, R : Any>(
+    private val timeoutNanos: Long = NO_TIMEOUT,
+    private val onTimeout: () -> Throwable = { IllegalStateException("Load timed out.") },
+) {
     /**
      * @param owner 同步 leader 的线程；其它调用为 `null`（没有拥有线程）
      */
     private class Call<R>(val owner: Thread?) {
         val future = CompletableFuture<R>()
+        val registeredAt: Long = System.nanoTime()
     }
+
+    /**
+     * 登记已超过上限的加载（如卡住的同步 loader）：新的调用方注销它，自己开始新的加载。
+     */
+    private fun expired(call: Call<R>): Boolean = System.nanoTime() - call.registeredAt >= timeoutNanos
 
     private val calls = ConcurrentHashMap<K, Call<R>>()
 
@@ -75,13 +92,20 @@ internal class SingleFlight<K : Any, R> {
             if (led.containsKey(key) || joined.containsKey(key)) {
                 continue
             }
-            val call = Call<R>(owner)
-            val existing = calls.putIfAbsent(key, call)
-            if (existing == null) {
-                led[key] = call
-            } else {
+            while (true) {
+                val call = Call<R>(owner)
+                val existing = calls.putIfAbsent(key, call)
+                if (existing == null) {
+                    led[key] = call
+                    break
+                }
+                if (expired(existing)) {
+                    calls.remove(key, existing)
+                    continue
+                }
                 checkNotReentrant(key, existing)
                 joined[key] = existing
+                break
             }
         }
     }
@@ -127,9 +151,14 @@ internal class SingleFlight<K : Any, R> {
         while (true) {
             val call = Call<R>(owner)
             val existing = calls.putIfAbsent(key, call) ?: return lead(key, call, mode, scope, block)
+            if (expired(existing)) {
+                // 登记超过上限的加载：注销（不完成它），本调用重新注册、开始新的加载
+                calls.remove(key, existing)
+                continue
+            }
             checkNotReentrant(key, existing)
             try {
-                return awaitSuspending(existing)
+                return awaitFollower(existing)
             } catch (_: LeaderInterruptedException) {
                 if (retried) {
                     return block()
@@ -162,7 +191,7 @@ internal class SingleFlight<K : Any, R> {
             }
             // 发起的调用方是这次加载的拥有者：被中断或取消时交出原始异常，而不是跟随者看到的那个
             return try {
-                awaitSuspending(call)
+                awaitFollower(call)
             } catch (e: LeaderInterruptedException) {
                 throw e.cause ?: e
             }
@@ -245,7 +274,7 @@ internal class SingleFlight<K : Any, R> {
         }
         for ((key, call) in joined) {
             try {
-                results[key] = awaitSuspending(call)
+                results[key] = awaitFollower(call)
             } catch (_: LeaderInterruptedException) {
                 // 合并规则：合并到的 leader 被中断或取消，结果中不含这个 key，调用方改走单 key 路径
             }
@@ -258,11 +287,33 @@ internal class SingleFlight<K : Any, R> {
      */
     private suspend fun awaitSuspending(call: Call<R>): R = call.future.awaitOriginal()
 
+    /**
+     * 跟随者等待另一个调用者执行的加载，到这次加载的截止时刻为止；超时以 [onTimeout] 的异常失败。
+     * 同步变体在调用方线程上限时停顿（`runBlocking` 的事件循环计时），异步变体不占线程。
+     */
+    private suspend fun awaitFollower(call: Call<R>): R {
+        if (timeoutNanos == NO_TIMEOUT) {
+            return awaitSuspending(call)
+        }
+        val remaining = call.registeredAt + timeoutNanos - System.nanoTime()
+        if (remaining <= 0) {
+            throw onTimeout()
+        }
+        return withTimeoutOrNull(remaining.nanoseconds) { awaitSuspending(call) } ?: throw onTimeout()
+    }
+
     private fun checkNotReentrant(key: K, existing: Call<R>) {
         val current = Thread.currentThread()
         check(existing.owner !== current && loadingKeys.get()?.contains(key) != true) {
             "Recursive call on the same key[$key] is not supported."
         }
+    }
+
+    companion object {
+        /**
+         * 不限制加载的时长（测试与内部使用）。
+         */
+        const val NO_TIMEOUT: Long = Long.MAX_VALUE
     }
 }
 

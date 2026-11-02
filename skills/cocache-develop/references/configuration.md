@@ -50,7 +50,7 @@ Valid under `cocache.defaults.` and `cocache.caches.[name].`. Bare numbers are s
 | `refresh-window` | off | Refresh-ahead; `0` removes a declared window |
 | `lease-ttl` / `lease-wait` | `10s` / `200ms` | Lease lifetime; wait for another instance's load |
 | `load-max-concurrent` / `load-acquire-timeout` | `0` (unlimited) / `1s` | Per-cache, per-instance loader bulkhead; rejection throws `SourceLoadRejectedException` |
-| `load-async-timeout` (6.3+) | `30s` | Upper bound for one `AsyncCacheLoader` load; past it the call fails with `SourceLoadTimeoutException` and the lease is released. Not applied to synchronous loaders |
+| `load-timeout` (8.0; `load-async-timeout` in 6.3+) | `30s` | Upper bound for a load: an `AsyncCacheLoader` load past it fails with `SourceLoadTimeoutException` (lease released); readers waiting for another caller's load fail the same way at that deadline, and later readers start a new load. Give synchronous loaders their own timeout |
 | `local-maximum-size` | `10000` | L2 entries per instance |
 | `invalidate-failure` | `retry` with a loader, `throw` without one (6.9+; before: `retry`) | `throw`: surface `CacheWriteException`. Without a loader a delayed retry deletes later writes |
 | `read-failure` | `degrade` with a loader, `throw` without one (6.9+; before: `degrade`) | `throw`: surface `CacheReadException`. Without a loader, set `degrade` explicitly only when "unreadable" is a safe answer (e.g. a revocation list): the read returns `null` and caches nothing, so every read during the failure hits Redis |

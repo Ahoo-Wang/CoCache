@@ -169,7 +169,7 @@ class CoCacheAutoConfigurationTest {
                 "cocache.caches.user.ttl-jitter=PT0S",
                 "cocache.caches.user.lease-wait=PT1S",
                 "cocache.caches.user.load-max-concurrent=3",
-                "cocache.caches.user.load-async-timeout=7",
+                "cocache.caches.user.load-timeout=7",
                 "cocache.caches.user.invalidate-failure=throw",
                 "cocache.caches.user.read-failure=throw",
                 "cocache.caches.user.foreign-format=reclaim",
@@ -188,7 +188,7 @@ class CoCacheAutoConfigurationTest {
                 user.lease.wait.assert().isEqualTo(Duration.ofSeconds(1))
                 user.lease.ttl.assert().isEqualTo(CachePolicy.DEFAULT.lease.ttl)
                 user.load.maxConcurrent.assert().isEqualTo(3)
-                user.load.asyncTimeout.assert().isEqualTo(Duration.ofSeconds(7))
+                user.load.timeout.assert().isEqualTo(Duration.ofSeconds(7))
                 user.local.maximumSize.assert().isEqualTo(50)
                 user.invalidateFailure.assert().isEqualTo(InvalidateFailureMode.THROW)
                 user.readFailure.assert().isEqualTo(me.ahoo.cocache.core.policy.ReadFailureMode.THROW)
@@ -590,7 +590,7 @@ class CoCacheAutoConfigurationTest {
         refreshWindow: Duration? = null,
         leaseTtl: Duration? = null,
         loadAcquireTimeout: Duration? = null,
-        loadAsyncTimeout: Duration? = null,
+        loadTimeout: Duration? = null,
         foreignFormat: ForeignFormatMode? = null,
     ) = CoCacheProperties.PolicyProperties(
         ttl,
@@ -608,24 +608,24 @@ class CoCacheAutoConfigurationTest {
         null,
         null,
         null,
-        loadAsyncTimeout,
+        loadTimeout,
         foreignFormat
     )
 
     /**
-     * 只覆盖设置了的 load 字段：其余沿用下层的值（此前重建 `LoadPolicy` 时 `asyncTimeout` 被重置为默认值）。
+     * 只覆盖设置了的 load 字段：其余沿用下层的值（此前重建 `LoadPolicy` 时 `timeout` 被重置为默认值）。
      */
     @Test
     fun loadPropertiesKeepUnsetFieldsOfTheLowerLayer() {
         val base = CachePolicy.DEFAULT.toBuilder()
-            .load(me.ahoo.cocache.core.policy.LoadPolicy(maxConcurrent = 2, asyncTimeout = Duration.ofSeconds(3)))
+            .load(me.ahoo.cocache.core.policy.LoadPolicy(maxConcurrent = 2, timeout = Duration.ofSeconds(3)))
             .build()
         val acquire = policyProperties(loadAcquireTimeout = Duration.ofMillis(5)).applyTo(base).load
         acquire.acquireTimeout.assert().isEqualTo(Duration.ofMillis(5))
         acquire.maxConcurrent.assert().isEqualTo(2)
-        acquire.asyncTimeout.assert().isEqualTo(Duration.ofSeconds(3))
-        val async = policyProperties(loadAsyncTimeout = Duration.ofSeconds(9)).applyTo(base).load
-        async.asyncTimeout.assert().isEqualTo(Duration.ofSeconds(9))
+        acquire.timeout.assert().isEqualTo(Duration.ofSeconds(3))
+        val async = policyProperties(loadTimeout = Duration.ofSeconds(9)).applyTo(base).load
+        async.timeout.assert().isEqualTo(Duration.ofSeconds(9))
         async.maxConcurrent.assert().isEqualTo(2)
         async.acquireTimeout.assert().isEqualTo(base.load.acquireTimeout)
     }

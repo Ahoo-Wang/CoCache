@@ -306,11 +306,12 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         val keyPrefix: String?,
         /**
-         * 异步数据源（`AsyncCacheLoader`）一次加载的最长时间，超时以 `SourceLoadTimeoutException` 失败并释放 lease
-         * （未写单位按秒；内置默认 30s）。不作用于同步数据源。
+         * 一次加载的上限（未写单位按秒；内置默认 30s），超过它以 `SourceLoadTimeoutException` 失败：异步数据源（`AsyncCacheLoader`）的一次加载
+         * （释放 lease），以及等待共享加载的读取；在途登记超过它的加载被注销，之后的读取开始新的加载。同步数据源本身无法被外部结束，应自带超时。
+         * 6.x 的 `load-async-timeout`。
          */
         @DurationUnit(ChronoUnit.SECONDS)
-        val loadAsyncTimeout: Duration? = null,
+        val loadTimeout: Duration? = null,
         /**
          * 读到本缓存读不懂的 L1 内容（5.x 或其它程序写入的值、同版本解码失败）时的处理方式：`fail`（抛出 `CacheReadException`，
          * 不修改 L1）或 `reclaim`（条件回收后回源）。未设置时按读取有没有数据源决定：有数据源 `reclaim`，没有数据源 `fail`。
@@ -350,12 +351,12 @@ data class CoCacheProperties @ConstructorBinding constructor(
         }
 
         private fun applyLoad(builder: CachePolicy.Builder, policy: CachePolicy) {
-            // 只覆盖设置了的字段：其余沿用下层（含 asyncTimeout），不能用默认值重建
-            if (loadMaxConcurrent != null || loadAcquireTimeout != null || loadAsyncTimeout != null) {
+            // 只覆盖设置了的字段：其余沿用下层（含 timeout），不能用默认值重建
+            if (loadMaxConcurrent != null || loadAcquireTimeout != null || loadTimeout != null) {
                 builder.load = policy.load.copy(
                     maxConcurrent = loadMaxConcurrent ?: policy.load.maxConcurrent,
                     acquireTimeout = loadAcquireTimeout ?: policy.load.acquireTimeout,
-                    asyncTimeout = loadAsyncTimeout ?: policy.load.asyncTimeout,
+                    timeout = loadTimeout ?: policy.load.timeout,
                 )
             }
         }

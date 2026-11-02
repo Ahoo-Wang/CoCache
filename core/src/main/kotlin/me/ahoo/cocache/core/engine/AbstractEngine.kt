@@ -37,6 +37,7 @@ import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyInspection
+import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.SingleFlight
 import me.ahoo.cocache.core.internal.awaitOriginal
@@ -103,7 +104,14 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 
     protected val clock = context.clock
     protected val stamps = InvalidationStamps()
-    protected val flights = SingleFlight<String, Loaded<V>>()
+
+    /**
+     * 合并回源：跟随者的等待与加载的登记都以 `load.timeout` 为上限（RFC 0005 §4.4）。
+     */
+    protected val flights = SingleFlight<String, Loaded<V>>(policy.load.timeout.toNanos()) {
+        metrics.loadTimeout()
+        SourceLoadTimeoutException(name, policy.load.timeout)
+    }
 
     /**
      * L2 命中计数（开启 `recordLocalHits` 时）。

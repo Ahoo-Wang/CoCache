@@ -44,7 +44,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.loads` | function timer | loader 调用次数与累计耗时。一次 `loadAll` 批量计一次。包含抛出异常的调用 |
 | `cocache.load.failures` | counter | 抛出异常的 loader 调用。异常抛给调用方与所有合并的等待者 |
 | `cocache.load.rejections` | counter | 被 `load-max-concurrent` 拒绝的加载：在 `load-acquire-timeout` 内没有拿到许可，调用方收到 `SourceLoadRejectedException` |
-| `cocache.load.timeouts` | counter | 超过 `load-async-timeout` 的 `AsyncCacheLoader` 加载，调用方收到 `SourceLoadTimeoutException`，lease 已释放。见[异步 API](../guide/async.md#timeouts) |
+| `cocache.load.timeouts` | counter | 超过 `load-timeout` 的加载：`AsyncCacheLoader` 的加载（lease 已释放），以及等待别的调用方加载这么久的读取。它们都收到 `SourceLoadTimeoutException`。见[异步 API](../guide/async.md#timeouts) |
 | `cocache.refreshes` | counter | 执行了的提前刷新任务 |
 | `cocache.refresh.rejections` | counter | 被刷新执行器拒绝的刷新。值照常提供，到期后正常过期 |
 
@@ -97,7 +97,7 @@ classpath 上有 `micrometer-observation`、容器中有 `ObservationRegistry` b
 | 上下文名称（span 名） | `cocache {operation} {cache}`，如 `cocache load UserCache` |
 | `cache`（低基数） | 缓存名 |
 | `operation`（低基数） | `load`（未命中、`get(key, loader)`，或批量读取退回单 key）、`loadAll`（一次批量回源）、`refresh`（提前刷新回源）、`lease.wait`（等待其它实例的 lease） |
-| `outcome`（低基数） | `success` 或 `error`；异步加载超过 `load-async-timeout` 时为 `timeout`。`error` 时异常记录到 Observation 上，并原样抛出 |
+| `outcome`（低基数） | `success` 或 `error`；异步加载超过 `load-timeout` 时为 `timeout`。`error` 时异常记录到 Observation 上，并原样抛出 |
 | `key.count`（高基数，只出现在 span 上） | 本次调用的 key 数：1，`loadAll` 时为批量大小 |
 
 观测范围：

@@ -44,7 +44,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | `cocache.loads` | function timer | Loader calls, with total time. A `loadAll` batch counts once. Includes calls that threw. |
 | `cocache.load.failures` | counter | Loader calls that threw. The exception reaches the caller and every coalesced waiter. |
 | `cocache.load.rejections` | counter | Loads rejected by `load-max-concurrent`: no permit within `load-acquire-timeout`. The caller got `SourceLoadRejectedException`. |
-| `cocache.load.timeouts` | counter | `AsyncCacheLoader` loads that took longer than `load-async-timeout`. The caller got `SourceLoadTimeoutException` and the lease was released. See [Async API](../guide/async.md#timeouts). |
+| `cocache.load.timeouts` | counter | Loads that exceeded `load-timeout`: `AsyncCacheLoader` loads (the lease was released), and readers that waited that long for another caller's load. Each got `SourceLoadTimeoutException`. See [Async API](../guide/async.md#timeouts). |
 | `cocache.refreshes` | counter | Refresh-ahead tasks that ran |
 | `cocache.refresh.rejections` | counter | Refreshes the refresh executor rejected. The value is served until it expires normally. |
 
@@ -97,7 +97,7 @@ When `micrometer-observation` is on the classpath and the context has an `Observ
 | Contextual (span) name | `cocache {operation} {cache}`, for example `cocache load UserCache` |
 | `cache` (low cardinality) | The cache name |
 | `operation` (low cardinality) | `load` (a miss, `get(key, loader)`, or a batch falling back to one key), `loadAll` (one batch load), `refresh` (a refresh-ahead load), `lease.wait` (waiting for another instance's lease) |
-| `outcome` (low cardinality) | `success` or `error`, plus `timeout` when an async load exceeds `load-async-timeout`. On `error` the exception is recorded on the observation and rethrown unchanged. |
+| `outcome` (low cardinality) | `success` or `error`, plus `timeout` when an async load exceeds `load-timeout`. On `error` the exception is recorded on the observation and rethrown unchanged. |
 | `key.count` (high cardinality, spans only) | Keys in the call: 1, or the batch size for `loadAll` |
 
 What is observed, and what isn't:

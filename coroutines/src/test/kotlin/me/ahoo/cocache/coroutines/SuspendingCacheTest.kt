@@ -529,7 +529,7 @@ class SuspendingCacheTest {
             cacheSpec<String, String>("slow") {
                 codec = StringCodec
                 policy = me.ahoo.cocache.core.policy.CachePolicy(
-                    load = me.ahoo.cocache.core.policy.LoadPolicy(asyncTimeout = Duration.ofMillis(200))
+                    load = me.ahoo.cocache.core.policy.LoadPolicy(timeout = Duration.ofMillis(200))
                 )
                 suspendingLoader {
                     delay(500)

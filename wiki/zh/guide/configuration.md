@@ -58,7 +58,7 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `lease-wait` | 时长 | `200ms` | — | 未命中时等待其它实例加载的最长时间，超时后自行加载 |
 | `load-max-concurrent` | integer | `0`（不限制） | — | 每个实例上每个缓存同时进行的数据源加载数上限 |
 | `load-acquire-timeout` | 时长 | `1s` | — | 加载等待许可的最长时间，超时抛出 `SourceLoadRejectedException` |
-| `load-async-timeout` | 时长 | `30s` | — | 一次 `AsyncCacheLoader` 加载的最长时间。超时后调用以 `SourceLoadTimeoutException` 失败并释放 lease。不作用于同步 loader。见[异步 API](./async.md#timeouts)。 |
+| `load-timeout` | 时长 | `30s` | — | 一次加载的上限。`AsyncCacheLoader` 的一次加载超过它时以 `SourceLoadTimeoutException` 失败并释放 lease；等待别的调用方加载的读取，在这次加载进行了这么久之后同样失败，之后的读取开始新的加载，不再排在它后面。同步 loader 无法被外部结束，请给它自己的超时。6.x 中叫 `load-async-timeout`。见[异步 API](./async.md#timeouts)。 |
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | 每个实例 L2 的最大条目数 |
 | `invalidate-failure` | `retry` \| `throw` | 有 loader 时 `retry`，没有时 `throw` | — | Redis 失效失败时：进入后台重试队列，或抛出 `CacheWriteException`。没有 loader 时 Redis 是唯一副本，延迟的重试会删掉失败之后写入的值，因此默认 `throw`。见[写入时 Redis 故障](./freshness.md#redis-down)。 |
 | `read-failure` | `degrade` \| `throw` | 有 loader 时 `degrade`，没有时 `throw` | — | Redis 读取失败时：从数据源加载，或抛出 `CacheReadException`。没有 loader 的读取无处加载，默认抛出。“读不到”是安全答案时（如撤销表：Redis 故障即视为未撤销）显式设置 `degrade`：读取返回 `null` 且不缓存任何东西，故障期间的每次读取都会再次访问 Redis。 |

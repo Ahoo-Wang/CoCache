@@ -422,6 +422,74 @@ class SingleFlightTest {
         syncAll(emptyList()) { throw AssertionError("not called") }.assert().isEmpty()
     }
 
+    private class LoadTimedOut : RuntimeException("timed out")
+
+    /**
+     * 卡住的同步 leader：一直阻塞到 [release]。
+     */
+    private fun stuckLeader(
+        flights: SingleFlight<String, String>,
+        release: CountDownLatch,
+        key: String = "k"
+    ): Concurrency.Forked<String> {
+        val started = CountDownLatch(1)
+        val leader = fork("stuck") {
+            runSync {
+                flights.executeSuspending(key, scope) {
+                    started.countDown()
+                    release.awaitOrFail("release stuck leader")
+                    "stuck"
+                }
+            }
+        }
+        started.awaitOrFail("stuck leader started")
+        return leader
+    }
+
+    /**
+     * `load.timeout`（RFC 0005 §4.4）：跟随者（同步与异步）等到这次加载的截止时刻仍没有结果时，以 onTimeout 的异常失败；
+     * 截止时刻之后到来的调用方注销卡住的加载（不完成它），自己领头；卡住的 leader 迟到的结果只交给它自己。
+     */
+    @Test
+    fun theLoadTimeoutBoundsFollowersAndDeregistersAStuckLoad() {
+        val bounded = SingleFlight<String, String>(TimeUnit.MILLISECONDS.toNanos(200)) { LoadTimedOut() }
+        val release = CountDownLatch(1)
+        val stuck = stuckLeader(bounded, release)
+        val syncFollower = fork("follower") { runSync { bounded.executeSuspending("k", scope) { "other" } } }
+        val asyncFollower = context.runAsync { bounded.executeSuspending("k", scope) { "other" } }
+        syncFollower.joinFailure().assert().isInstanceOf(LoadTimedOut::class.java)
+        causeOf(asyncFollower).assert().isInstanceOf(LoadTimedOut::class.java)
+        // 截止时刻已过：新的调用方注销卡住的加载，自己领头
+        runSync { bounded.executeSuspending("k", scope) { "fresh" } }.assert().isEqualTo("fresh")
+        bounded.inFlight.assert().isEqualTo(0)
+        release.countDown()
+        stuck.join().assert().isEqualTo("stuck")
+        bounded.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * 批量：截止时刻之后，登记时注销卡住的加载、由本批领头；截止时刻之前合并到它的批量在截止时刻以超时失败。
+     */
+    @Test
+    fun batchesAreBoundedByTheLoadTimeoutToo() {
+        val bounded = SingleFlight<String, String>(TimeUnit.MILLISECONDS.toNanos(200)) { LoadTimedOut() }
+        val release = CountDownLatch(1)
+        val stuck = stuckLeader(bounded, release, key = "a")
+        val joined = fork("joined batch") {
+            runSync {
+                bounded.executeAllSuspending(listOf("a", "b"), scope) { keys -> keys.associateWith { "${it}2" } }
+            }
+        }
+        joined.joinFailure().assert().isInstanceOf(LoadTimedOut::class.java)
+        val leading = runSync {
+            bounded.executeAllSuspending(listOf("a", "b"), scope) { keys -> keys.associateWith { "${it}3" } }
+        }
+        leading.assert().isEqualTo(mapOf("a" to "a3", "b" to "b3"))
+        release.countDown()
+        stuck.join().assert().isEqualTo("stuck")
+        bounded.inFlight.assert().isEqualTo(0)
+    }
+
     @Test
     fun reentrantSyncCallFailsFast() {
         val error = runCatching { sync { sync { "inner" } } }.exceptionOrNull()

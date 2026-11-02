@@ -64,7 +64,7 @@ The per-call loader runs in the **caller's coroutine context without its `Job`**
 
 If a loader itself throws `CancellationException` while its coroutine is still active (for example from a `withTimeout` inside it), CoCache rethrows it as `SourceLoadCancelledException`, whose `cause` is the original. A load may be shared, and every caller would otherwise take the exception as its own cancellation (`launch` swallows it silently).
 
-The engine's `load-async-timeout` applies to both kinds of loader. When it fires, the caller fails with `SourceLoadTimeoutException` and the lease is released. The loader's coroutine is not cancelled; its late result is discarded. This works the same as for an [`AsyncCacheLoader`](./async.md#timeouts).
+The engine's `load-timeout` applies to both kinds of loader. When it fires, the caller fails with `SourceLoadTimeoutException` and the lease is released. The loader's coroutine is not cancelled; its late result is discarded. This works the same as for an [`AsyncCacheLoader`](./async.md#timeouts).
 
 ## Cancellation {#cancellation}
 
@@ -82,11 +82,11 @@ Production JVMs normally don't run with `-ea`. If your tests compare exception i
 
 ## Re-entry {#reentry}
 
-A loader that reads the key it is loading, from the same cache, would wait for itself until `load-async-timeout`. Instead, it fails at once with `IllegalStateException`, as it does on the synchronous API. The check goes with the loader's coroutine context, so it holds after the loader suspends and resumes on another thread. It covers reads through the suspending view (`get`, `getAll`, `lookup`). Other keys, and other caches, are not affected: for per-call loaders that means caches with other names or other instances, for spec-level loaders caches with other names (see below). Keys are compared as `K` values, not as encoded storage keys: two unequal keys that encode to the same storage key aren't caught, and fail only at `load-async-timeout`.
+A loader that reads the key it is loading, from the same cache, would wait for itself until `load-timeout`. Instead, it fails at once with `IllegalStateException`, as it does on the synchronous API. The check goes with the loader's coroutine context, so it holds after the loader suspends and resumes on another thread. It covers reads through the suspending view (`get`, `getAll`, `lookup`). Other keys, and other caches, are not affected: for per-call loaders that means caches with other names or other instances, for spec-level loaders caches with other names (see below). Keys are compared as `K` values, not as encoded storage keys: two unequal keys that encode to the same storage key aren't caught, and fail only at `load-timeout`.
 
 - **Per-call loaders** are matched by cache instance: a same-named cache on another runtime, as in a multi-node test, is a different cache.
 - **Spec-level loaders** (`suspendingLoader`) are matched by cache name, because the spec doesn't know its runtime yet.
-- A spec-level load has no caller, so it doesn't inherit the caller's check. A cycle across caches, such as A's loader reading B and B's loader reading the same key of A, fails only at `load-async-timeout`.
+- A spec-level load has no caller, so it doesn't inherit the caller's check. A cycle across caches, such as A's loader reading B and B's loader reading the same key of A, fails only at `load-timeout`.
 - A loader set with `asAsyncCacheLoader` on its own has no check.
 
 ## Spring {#spring}

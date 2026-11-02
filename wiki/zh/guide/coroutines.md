@@ -64,7 +64,7 @@ val user = users.get(id) { key -> userClient.fetch(key) }
 
 loader 的协程仍处于活动状态时，如果 loader 自己抛出 `CancellationException`（例如其中的 `withTimeout`），CoCache 会把它转成 `SourceLoadCancelledException` 重新抛出，原始异常是它的 `cause`。因为加载可能被共享，否则每个调用方都会把它当作自己被取消（`launch` 会悄悄吞掉）。
 
-引擎的 `load-async-timeout` 对两种 loader 都生效。到期时调用方以 `SourceLoadTimeoutException` 失败，lease 被释放。loader 的协程不会被取消，迟到的结果被丢弃，与 [`AsyncCacheLoader`](./async.md#timeouts) 相同。
+引擎的 `load-timeout` 对两种 loader 都生效。到期时调用方以 `SourceLoadTimeoutException` 失败，lease 被释放。loader 的协程不会被取消，迟到的结果被丢弃，与 [`AsyncCacheLoader`](./async.md#timeouts) 相同。
 
 ## 取消 {#cancellation}
 
@@ -82,11 +82,11 @@ loader 的协程仍处于活动状态时，如果 loader 自己抛出 `Cancellat
 
 ## 重入 {#reentry}
 
-loader 读取同一缓存中自己正在加载的 key，会一直等待自己直到 `load-async-timeout`。CoCache 让它立即以 `IllegalStateException` 失败，与同步 API 一样。这项检查随 loader 的协程上下文传递，所以 loader 挂起后在别的线程上继续时同样有效。它覆盖经挂起视图的读取（`get`、`getAll`、`lookup`），其它 key 与其它缓存不受影响：对调用级 loader 指其它名字或其它实例的缓存，对 spec 级 loader 指其它名字的缓存（见下文）。key 按 `K` 的值比较，不按编码后的存储 key：两个不相等的 key 编码成同一个存储 key 时检查不到，要到 `load-async-timeout` 才失败。
+loader 读取同一缓存中自己正在加载的 key，会一直等待自己直到 `load-timeout`。CoCache 让它立即以 `IllegalStateException` 失败，与同步 API 一样。这项检查随 loader 的协程上下文传递，所以 loader 挂起后在别的线程上继续时同样有效。它覆盖经挂起视图的读取（`get`、`getAll`、`lookup`），其它 key 与其它缓存不受影响：对调用级 loader 指其它名字或其它实例的缓存，对 spec 级 loader 指其它名字的缓存（见下文）。key 按 `K` 的值比较，不按编码后的存储 key：两个不相等的 key 编码成同一个存储 key 时检查不到，要到 `load-timeout` 才失败。
 
 - **调用级 loader** 按缓存实例匹配：另一个运行时上的同名缓存（如多节点测试）是另一个缓存。
 - **spec 级 loader**（`suspendingLoader`）按缓存名匹配，因为声明时还不知道它属于哪个运行时。
-- spec 级加载没有调用方，不继承调用方的检查：跨缓存的循环（A 的 loader 读 B，B 的 loader 又读 A 的同一个 key）要到 `load-async-timeout` 才失败。
+- spec 级加载没有调用方，不继承调用方的检查：跨缓存的循环（A 的 loader 读 B，B 的 loader 又读 A 的同一个 key）要到 `load-timeout` 才失败。
 - 单独用 `asAsyncCacheLoader` 设置的 loader 没有这项检查。
 
 ## Spring {#spring}

@@ -38,7 +38,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 ```
 
 - `loadAsync(key)` 返回 `CompletionStage`；以 `null` 完成时写入负缓存。批量读取请覆盖 `loadAllAsync(keys)`，默认对每个 key 调用 `loadAsync`。
-- spec 设置 `loader` 或 `asyncLoader` 之一，不能都设置。CoCache 在两个方向上适配：同步 `get` 等待异步 loader（受 `load-async-timeout` 约束），异步 `get` 在阻塞执行器上运行同步 loader。
+- spec 设置 `loader` 或 `asyncLoader` 之一，不能都设置。CoCache 在两个方向上适配：同步 `get` 等待异步 loader（受 `load-timeout` 约束），异步 `get` 在阻塞执行器上运行同步 loader。
 - `@CoCache` 接口的 `loader = "beanName"` 可以指向任意一种。不指定时，CoCache 先找唯一的 `CacheLoader<K, V>`，再找唯一的 `AsyncCacheLoader<K, V>`；两种各有一个时存在歧义，启动失败。同时实现两者的 bean 按同步 loader 使用。
 - `loadAsync` 必须很快返回，不能阻塞。它在调用方线程或异步执行器上被调用，看不到调用方的 ThreadLocal（MDC、安全上下文）。请经响应式库或 Micrometer context propagation 传递上下文。
 
@@ -58,7 +58,8 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 ## 超时 {#timeouts}
 
-- 一次 `AsyncCacheLoader` 加载最多 `load-async-timeout`（默认 30 秒）。超时后调用以 `SourceLoadTimeoutException` 失败，释放 lease，并计入 `cocache.load.timeouts`。CoCache 不取消你的 loader 的 future，迟到的结果被丢弃。你的 loader 自己抛出的 `TimeoutException`（例如来自 Reactor 的 `timeout`）原样传递。
+- 等待别的调用方加载的读取（同步与异步）最多等到这次加载进行了 `load-timeout`，然后以 `SourceLoadTimeoutException` 失败；在那之后到来的读取开始新的加载，不再合并到卡住的那次。6.x 中同步读取会一直等下去。
+- 一次 `AsyncCacheLoader` 加载最多 `load-timeout`（默认 30 秒）。超时后调用以 `SourceLoadTimeoutException` 失败，释放 lease，并计入 `cocache.load.timeouts`。CoCache 不取消你的 loader 的 future，迟到的结果被丢弃。你的 loader 自己抛出的 `TimeoutException`（例如来自 Reactor 的 `timeout`）原样传递。
 - 每条 Redis 命令受 `cocache.redis.command-timeout`（默认 2 秒）约束，失败时与同步路径一样是 `RedisException`。计时器是 Lettuce 的时间轮，异步超时最多晚一个刻度（默认 100 毫秒）触发。
 - 同步 loader 没有异步超时：阻塞的线程无法被打断。
 
@@ -67,7 +68,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 - 失败的调用以**原始**异常完成 future：`CacheReadException`、`CacheWriteException`、`SourceLoadRejectedException`、`SourceLoadTimeoutException`，或你的 loader 抛出的异常，从不包装为 `CompletionException`。`join()` 与 `get()` 仍会按 JDK 的规则包装；`handle`、`exceptionally`、Reactor 的 `Mono.fromFuture` 与 Kotlin 的 `await()` 都拿到原始异常。
 - 异步方法从不同步抛出。key 编码器或编解码器出错、重入调用、`SetCache` 不支持的操作，都以失败的 future 返回。
 - 每次调用返回自己的 future。取消它只取消你的等待：共享的加载为其它调用方继续进行，照样写入 Redis。写入的顺序不受影响：写入的第二步失效无论是否取消都会执行。
-- 读取自己 key 的 loader：如果在返回 future 之前这样做，快速失败（`IllegalStateException`）；如果在一次 I/O 之后这样做，调用会一直等到 `load-async-timeout`。
+- 读取自己 key 的 loader：如果在返回 future 之前这样做，快速失败（`IllegalStateException`）；如果在一次 I/O 之后这样做，调用会一直等到 `load-timeout`。
 
 ## Spring Cache {#spring-cache}
 

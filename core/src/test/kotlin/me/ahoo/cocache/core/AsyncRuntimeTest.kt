@@ -52,7 +52,7 @@ class AsyncRuntimeTest {
                 this.asyncLoader = asyncLoader
             }
         }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
-        LoadPolicy().asyncTimeout.assert().isEqualTo(LoadPolicy.DEFAULT_ASYNC_TIMEOUT)
+        LoadPolicy().timeout.assert().isEqualTo(LoadPolicy.DEFAULT_TIMEOUT)
     }
 
     @Test
@@ -136,7 +136,7 @@ class AsyncRuntimeTest {
                             else -> CompletableFuture.completedFuture("v-$key")
                         }
                     }
-                    policy { load = LoadPolicy(asyncTimeout = Duration.ofMillis(50)) }
+                    policy { load = LoadPolicy(timeout = Duration.ofMillis(50)) }
                 }
             )
             cache["k"].assert().isEqualTo("v-k")

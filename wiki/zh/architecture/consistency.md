@@ -139,7 +139,14 @@ sequenceDiagram
 
 成立的前提是 **SingleFlight 先注销调用，再发布结果**。被唤醒后重试的等待者不可能再次合并到同一次陈旧的调用，所以重试一次总是足够。
 
-SingleFlight 还保证：每个实例上每个 key 同一时刻只有一次加载；每个等待者得到 leader 的结果或其原始异常（被中断的同步等待者只结束自己的等待：抛出 `InterruptedException` 并保留中断标志，leader 与其它等待者不受影响）；loader 在同一线程上读取自己的 key 会快速失败而不是死锁；批量 leader 先完成自己负责的 key，再等待别人负责的 key。
+SingleFlight 还保证：
+
+- 每个实例上每个 key 同一时刻只有一次加载。
+- 每个等待者得到 leader 的结果或其原始异常；leader 被中断或取消时例外：只有 leader 自己收到那个异常，每个等待者自行加载。
+- 被中断的同步等待者只结束自己的等待：抛出 `InterruptedException` 并保留中断标志，leader 与其它等待者不受影响。
+- 等待有上界。加载进行了 `load-timeout`（默认 30 秒）时，等待者放弃，以 `SourceLoadTimeoutException` 失败。之后到来的读取开始新的加载，不再合并到可能卡住的那一次。卡住的加载的结果只交给它自己的调用方，写入仍受栅栏保护。
+- loader 在同一线程上读取自己的 key 会快速失败而不是死锁。
+- 批量 leader 先完成自己负责的 key，再等待别人负责的 key。
 
 ## 写入方顺序 {#writer-order}
 

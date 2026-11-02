@@ -51,7 +51,11 @@ internal object CacheCounters {
         CacheCounter("loadRejected", "cocache.load.rejections", "Loads rejected by the concurrency limit") {
             it.loadRejected
         },
-        CacheCounter("loadTimeouts", "cocache.load.timeouts", "Async source loads that exceeded load.asyncTimeout") {
+        CacheCounter(
+            "loadTimeouts",
+            "cocache.load.timeouts",
+            "Loads (async source loads and waiting readers) that exceeded load.timeout"
+        ) {
             it.loadTimeouts
         },
         CacheCounter("leaseWaits", "cocache.lease.waits", "Reads that waited for another node's lease") {
