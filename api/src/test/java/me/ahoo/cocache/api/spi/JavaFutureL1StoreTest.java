@@ -22,11 +22,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -87,6 +89,27 @@ class JavaFutureL1StoreTest {
         Fill fill = new Fill("k", new Token(NodeId.random(), 1), VALUE, Duration.ofMinutes(1));
 
         assertSame(failure, assertThrows(IllegalStateException.class, () -> Suspending.await(c -> l1.fill(fill, c))));
+    }
+
+    @Test
+    void cancelledFutureFailsAsAnL1FaultNotAsACancellation() {
+        CompletableFuture<Void> cancelled = new CompletableFuture<>();
+        cancelled.cancel(false);
+        L1Store l1 = FutureL1Store.adapt(new MapStore() {
+            @Override
+            public CompletableFuture<Void> release(String key, Token token) {
+                return cancelled;
+            }
+        });
+        Token token = new Token(NodeId.random(), 1);
+
+        IllegalStateException failure = assertThrows(
+            IllegalStateException.class,
+            () -> Suspending.await(c -> l1.release("k", token, c))
+        );
+        // CancellationException 也是 IllegalStateException 的子类：要求恰好是 IllegalStateException
+        assertEquals(IllegalStateException.class, failure.getClass());
+        assertInstanceOf(CancellationException.class, failure.getCause());
     }
 
     /**

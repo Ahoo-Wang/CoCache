@@ -14,6 +14,7 @@
 package me.ahoo.cocache.api.spi
 
 import java.time.Duration
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ExecutionException
@@ -29,6 +30,8 @@ import kotlin.coroutines.suspendCoroutine
  * - future 可以在 I/O 线程上完成；只有阻塞客户端的实现在自己的执行器上完成 future，不在调用方线程上阻塞。
  * - 失败时同步抛出或返回异常完成的 future 都可以：调用方都得到原始异常。
  * - 每个操作都必须自己限时，不得返回永不完成的 future。调用方从不取消返回的 future。
+ * - 实现自己取消的 future（如用 `cancel` 实现超时）与同步抛出的 `CancellationException` 按 L1 故障（结果未知）处理，
+ *   不是调用方的取消：调用方得到以原取消异常为 cause 的 [IllegalStateException]。
  * - 不得返回 `null`；结果类型非空的 future 也不得以 `null` 完成（`Void` 与集合写入的 `Integer` 除外）。
  * - 能力访问器同 [L1Store]：不支持时返回 `null`，同一个存储每次返回同样的结果。
  *
@@ -103,7 +106,10 @@ interface FutureL1Store {
          * - 已完成的 future 直接取结果，不挂起；未完成时挂起，经 `whenComplete` 恢复。
          * - 只用标准库的 `suspendCoroutine`，不经 kotlinx：等待不响应协程取消（调用一直等到 future 完成，取消在之后的第一个挂起点生效），
          *   从不取消 future；失败时抛出原始异常（解包 [CompletionException] 与 [ExecutionException]），不会在调试模式下被复制。
-         * - 方法同步抛出的异常原样传播。返回 `null`，或结果类型非空的 future 以 `null` 完成时，以指明操作的 [IllegalStateException] 失败。
+         * - 被取消的 future 按 L1 故障（结果未知）处理，不是调用方的取消：在 JVM 上 [CancellationException] 就是协程的取消，
+         *   原样抛出会被引擎当作调用方被取消，因此换成以原取消异常为 cause 的 [IllegalStateException]。方法同步抛出的
+         *   [CancellationException] 同样转换。
+         * - 方法同步抛出的其它异常原样传播。返回 `null`，或结果类型非空的 future 以 `null` 完成时，以指明操作的 [IllegalStateException] 失败。
          * - 能力面在适配时各取一次、各适配一次：访问器每次返回同一个对象，`null` 原样保留。
          */
         @JvmStatic
@@ -188,32 +194,33 @@ private class FutureL1StoreAdapter(private val store: FutureL1Store) : L1Store {
     private val sets = store.sets()?.let(::FutureSetAdapter)
 
     override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead =
-        store.read(key, lease, refresh).awaitValue(store, "read")
+        awaitValue(store, "read") { store.read(key, lease, refresh) }
 
     override suspend fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> =
-        store.readAll(keys, leases).awaitValue(store, "readAll")
+        awaitValue(store, "readAll") { store.readAll(keys, leases) }
 
-    override suspend fun fill(fill: Fill): Boolean = store.fill(fill).awaitValue(store, "fill")
+    override suspend fun fill(fill: Fill): Boolean = awaitValue(store, "fill") { store.fill(fill) }
 
-    override suspend fun fillAll(fills: List<Fill>): List<Boolean> = store.fillAll(fills).awaitValue(store, "fillAll")
+    override suspend fun fillAll(fills: List<Fill>): List<Boolean> =
+        awaitValue(store, "fillAll") { store.fillAll(fills) }
 
     override suspend fun release(key: String, token: Token) {
-        store.release(key, token).awaitNullable(store, "release")
+        awaitNullable(store, "release") { store.release(key, token) }
     }
 
     override suspend fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean =
-        store.reclaim(key, observed, lease).awaitValue(store, "reclaim")
+        awaitValue(store, "reclaim") { store.reclaim(key, observed, lease) }
 
     override suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
-        store.put(key, envelope, ttl, frame).awaitNullable(store, "put")
+        awaitNullable(store, "put") { store.put(key, envelope, ttl, frame) }
     }
 
     override suspend fun putAll(puts: List<Put>, frame: ByteArray) {
-        store.putAll(puts, frame).awaitNullable(store, "putAll")
+        awaitNullable(store, "putAll") { store.putAll(puts, frame) }
     }
 
     override suspend fun invalidate(keys: Collection<String>, frame: ByteArray) {
-        store.invalidate(keys, frame).awaitNullable(store, "invalidate")
+        awaitNullable(store, "invalidate") { store.invalidate(keys, frame) }
     }
 
     override fun conditional(): ConditionalL1Store? = conditional
@@ -225,7 +232,7 @@ private class FutureL1StoreAdapter(private val store: FutureL1Store) : L1Store {
 
 private class FutureConditionalAdapter(private val store: FutureConditionalL1Store) : ConditionalL1Store {
     override suspend fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead =
-        store.readIfChanged(key, known).awaitValue(store, "readIfChanged")
+        awaitValue(store, "readIfChanged") { store.readIfChanged(key, known) }
 
     override suspend fun putIfMatch(
         key: String,
@@ -233,7 +240,9 @@ private class FutureConditionalAdapter(private val store: FutureConditionalL1Sto
         envelope: Envelope.Scalar,
         ttl: Duration?,
         frame: ByteArray
-    ): RemoteConditionalWrite = store.putIfMatch(key, expected, envelope, ttl, frame).awaitValue(store, "putIfMatch")
+    ): RemoteConditionalWrite = awaitValue(store, "putIfMatch") {
+        store.putIfMatch(key, expected, envelope, ttl, frame)
+    }
 }
 
 private class FutureVersionedAdapter(private val store: FutureVersionedL1Store) : VersionedL1Store {
@@ -243,7 +252,9 @@ private class FutureVersionedAdapter(private val store: FutureVersionedL1Store) 
         version: Long,
         ttl: Duration?,
         frame: ByteArray
-    ): RemoteVersionedWrite = store.putIfNewer(key, envelope, version, ttl, frame).awaitValue(store, "putIfNewer")
+    ): RemoteVersionedWrite = awaitValue(store, "putIfNewer") {
+        store.putIfNewer(key, envelope, version, ttl, frame)
+    }
 }
 
 private class FutureSetAdapter(private val store: FutureSetL1Store) : SetL1Store {
@@ -252,46 +263,82 @@ private class FutureSetAdapter(private val store: FutureSetL1Store) : SetL1Store
         members: Collection<ByteArray>,
         ttl: Duration?,
         frame: ByteArray
-    ): Int? = store.addMembers(key, members, ttl, frame).awaitNullable(store, "addMembers")
+    ): Int? = awaitNullable(store, "addMembers") { store.addMembers(key, members, ttl, frame) }
 
     override suspend fun removeMembers(
         key: String,
         members: Collection<ByteArray>,
         ttl: Duration?,
         frame: ByteArray
-    ): Int? = store.removeMembers(key, members, ttl, frame).awaitNullable(store, "removeMembers")
+    ): Int? = awaitNullable(store, "removeMembers") { store.removeMembers(key, members, ttl, frame) }
 }
 
 /**
- * 等待结果类型非空的 future：以 `null` 完成时以指明 [owner] 与 [operation] 的 [IllegalStateException] 失败。
+ * 同 [awaitNullable]，结果类型非空：以 `null` 完成时以指明 [owner] 与 [operation] 的 [IllegalStateException] 失败。
  */
-private suspend fun <T : Any> CompletableFuture<T>?.awaitValue(owner: Any, operation: String): T =
-    awaitNullable(owner, operation) ?: throw IllegalStateException("${owner.javaClass.name}.$operation() completed with null.")
+private suspend fun <T : Any> awaitValue(owner: Any, operation: String, call: () -> CompletableFuture<T>?): T =
+    awaitNullable(owner, operation, call)
+        ?: throw IllegalStateException("${owner.javaClass.name}.$operation() completed with null.")
 
 /**
- * 等待 future，结果可以是 `null`（Java 实现者可能违反非空声明，因此接收者与结果都按可空处理）。
+ * 调用 [call] 并等待它返回的 future，结果可以是 `null`（Java 实现者可能违反非空声明，因此 future 与结果都按可空处理）。
  * - 已完成的 future 直接取结果，不挂起，也不登记回调。
  * - 未完成时挂起，经 `whenComplete` 恢复。标准库的 [suspendCoroutine] 不可取消：调用一直等到 future 完成，从不取消它。
- * - 失败时抛出原始异常（[unwrap]）。不经 kotlinx 的 `await()`，异常不会在调试模式下被复制。
+ * - 失败时抛出 [failureOf] 的结果。不经 kotlinx 的 `await()`，异常不会在调试模式下被复制。
  */
-private suspend fun <T> CompletableFuture<T>?.awaitNullable(owner: Any, operation: String): T? {
-    val future = this ?: throw IllegalStateException("${owner.javaClass.name}.$operation() returned null instead of a future.")
+private suspend fun <T> awaitNullable(owner: Any, operation: String, call: () -> CompletableFuture<T>?): T? {
+    val future = start(owner, operation, call)
     if (future.isDone) {
-        return try {
-            future.join()
-        } catch (e: CompletionException) {
-            throw e.unwrap()
-        }
+        return completedResult(future, owner, operation)
     }
     return suspendCoroutine { continuation ->
         future.whenComplete { value, error ->
             if (error == null) {
                 continuation.resume(value)
             } else {
-                continuation.resumeWithException(error.unwrap())
+                continuation.resumeWithException(failureOf(error, owner, operation))
             }
         }
     }
+}
+
+/**
+ * 调用 [call] 取得 future。同步抛出的异常原样传播，只有 [CancellationException] 换成以它为 cause 的 [IllegalStateException]
+ * （理由见 [failureOf]）；返回 `null` 时以 [IllegalStateException] 失败。
+ */
+private fun <T> start(owner: Any, operation: String, call: () -> CompletableFuture<T>?): CompletableFuture<T> {
+    val future = try {
+        call()
+    } catch (e: CancellationException) {
+        throw IllegalStateException("${owner.javaClass.name}.$operation() threw a CancellationException.", e)
+    }
+    return future
+        ?: throw IllegalStateException("${owner.javaClass.name}.$operation() returned null instead of a future.")
+}
+
+/**
+ * 已完成的 future 的结果。失败时抛出 [failureOf] 的结果：`join` 对被取消的 future 直接抛出 [CancellationException]，
+ * 对其它失败抛出 [CompletionException]。
+ */
+private fun <T> completedResult(future: CompletableFuture<T>, owner: Any, operation: String): T? = try {
+    future.join()
+} catch (e: CompletionException) {
+    throw failureOf(e, owner, operation)
+} catch (e: CancellationException) {
+    throw failureOf(e, owner, operation)
+}
+
+/**
+ * future 失败时抛给调用方的异常：原始异常（[unwrap]）。被取消的 future 是 L1 故障（结果未知），不是调用方的取消：
+ * 在 JVM 上 [CancellationException] 就是协程的取消，原样抛出会被引擎当作调用方被取消（跟随者自行运行、不降级），
+ * 因此换成以原取消异常为 cause 的 [IllegalStateException]。
+ */
+private fun failureOf(error: Throwable, owner: Any, operation: String): Throwable {
+    val original = error.unwrap()
+    if (original is CancellationException) {
+        return IllegalStateException("${owner.javaClass.name}.$operation() future was cancelled.", original)
+    }
+    return original
 }
 
 /**

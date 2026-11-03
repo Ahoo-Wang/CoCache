@@ -20,8 +20,10 @@ import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
 import org.junit.jupiter.params.provider.ValueSource
 import java.time.Duration
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ExecutionException
@@ -34,6 +36,7 @@ import kotlin.concurrent.thread
  * - 转发每个操作（含能力面上的操作），返回 future 的结果；
  * - 已完成的 future 不挂起、不登记回调；未完成时挂起，在完成 future 的线程上恢复；从不取消 future；
  * - 失败时抛出原始异常（解包 CompletionException / ExecutionException），方法同步抛出的异常原样传播；
+ * - 被取消的 future 与同步抛出的 CancellationException 按 L1 故障处理：非取消的 [IllegalStateException]，cause 是原取消异常；
  * - 返回 `null`，或结果类型非空的 future 以 `null` 完成时，以指明操作的 [IllegalStateException] 失败；
  * - 能力面在适配时各适配一次：访问器每次返回同一个对象，`null` 原样保留。
  */
@@ -223,6 +226,47 @@ class FutureL1StoreTest {
         val l1 = FutureL1Store.adapt(store)
 
         Started { l1.put("k", envelope, ttl, frame) }.outcome().exceptionOrNull().assert().isSameAs(original)
+    }
+
+    @ParameterizedTest
+    @CsvSource("true, false", "true, true", "false, false", "false, true")
+    fun `cancelled future fails as an L1 fault, not as a cancellation`(
+        cancelledBeforeTheCall: Boolean,
+        throughDependentStage: Boolean
+    ) {
+        val source = CompletableFuture<Boolean>()
+        val future = if (throughDependentStage) source.thenApply<Boolean> { it } else source
+        if (cancelledBeforeTheCall) {
+            source.cancel(false)
+        }
+        val store = storeWithoutCapabilities()
+        every { store.fill(fill) } returns future
+        val l1 = FutureL1Store.adapt(store)
+
+        val started = Started { l1.fill(fill) }
+        if (!cancelledBeforeTheCall) {
+            source.cancel(false)
+        }
+        val original = assertThrows<CancellationException> { source.join() }
+
+        val failure = started.outcome().exceptionOrNull()
+        failure.assert().isExactlyInstanceOf(IllegalStateException::class.java)
+            .hasMessage("${store.javaClass.name}.fill() future was cancelled.")
+        requireNotNull(failure).cause.assert().isSameAs(original)
+    }
+
+    @Test
+    fun `synchronous CancellationException fails as an L1 fault, not as a cancellation`() {
+        val original = CancellationException("stopped by the store")
+        val store = storeWithoutCapabilities()
+        every { store.put("k", envelope, ttl, frame) } throws original
+        val l1 = FutureL1Store.adapt(store)
+
+        val failure = Started { l1.put("k", envelope, ttl, frame) }.outcome().exceptionOrNull()
+
+        failure.assert().isExactlyInstanceOf(IllegalStateException::class.java)
+            .hasMessage("${store.javaClass.name}.put() threw a CancellationException.")
+        requireNotNull(failure).cause.assert().isSameAs(original)
     }
 
     @Test
