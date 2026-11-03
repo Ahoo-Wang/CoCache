@@ -5,6 +5,18 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased
+
+**Module Group:** `me.ahoo.cocache` · Planned as a 6.10.x patch release. Fixes two Spring transaction paths that lost an invalidation, found by the third review round of RFC 0005. No API, wire format or channel changes, so these instances can share Redis with any 6.x instance and be upgraded one at a time.
+
+### Fix: Spring transactions no longer lose an invalidation
+
+See [Spring Cache transactions](./spring-cache.md#transactions).
+
+- **`@CacheEvict(beforeInvocation = true)` inside a transaction.** Spring calls `evictIfPresent` for it, and its `TransactionAwareCacheDecorator` passes that call straight through, so the key was invalidated only before the commit. A read on another instance between the eviction and the commit could load the committed old row back into Redis, and nothing invalidated it afterwards, so every instance read the old value until `ttl`. `evictIfPresent` still invalidates at once, as Spring requires, and inside a transaction it now also registers the key with `TransactionalInvalidator`, so the commit, a rollback, or a rollback to a savepoint invalidates it again. Without a transaction, or without `spring-tx`, nothing changes.
+- **Rollback to a savepoint (`NESTED`).** When a nested transaction rolls back to its savepoint, Spring doesn't call `afterCompletion` on the outer transaction's synchronizations, and the outer commit later reports a commit. An uncommitted row that a read inside the nested part had put into Redis stayed visible to every instance, and to the outer transaction itself, until the outer transaction ended. `TransactionalInvalidator` now handles `savepointRollback` (Spring 6.2+): it invalidates every key registered so far in the transaction, keeps them registered, and invalidates them again when the transaction ends. A failure there is logged, not thrown: Spring calls `savepointRollback` before it rolls the database back to the savepoint, and an exception would skip that rollback.
+- **Still not covered.** A `@CachePut` inside a nested transaction that rolls back to its savepoint still writes its value when the outer transaction commits, because Spring's decorator defers the put to `afterCommit` and never sees the savepoint rollback. Use `@CacheEvict` in nested transactions.
+
 ## v6.10.0 (Current)
 
 **Module Group:** `me.ahoo.cocache` · Minor release, because it adds a configuration property and `CacheRuntime.policy`, and the last 6.x feature release: later 6.x releases only fix defects. Fixes the remaining 6.x items from the 6.8.0 architecture review and isolates failing invalidation listeners. No API is removed. The Redis wire format and the invalidation channel are unchanged, so 6.10.0 instances can share Redis with any 6.x instance and be upgraded one at a time.

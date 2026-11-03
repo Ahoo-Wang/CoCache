@@ -14,6 +14,7 @@
 package me.ahoo.cocache.spring.tx
 
 import me.ahoo.cocache.api.Cache
+import org.apache.commons.logging.LogFactory
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 
@@ -27,6 +28,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * - 回滚或提交结果未知时同样失效（在 `afterCompletion` 中）：同步 API 的 loader 在调用方线程上参与事务，
  *   事务内的读穿透可能已经把未提交的数据写入 L1。多余的失效无害。
  * - 嵌套的新事务（`REQUIRES_NEW`）在各自结束之后失效。
+ * - 回滚到 savepoint（`NESTED`）时立即失效到目前为止登记的全部 key，登记保留，事务结束时照常再失效一次：
+ *   Spring 此时不调用 `afterCompletion`，外层之后提交时报告 `STATUS_COMMITTED`，嵌套段内写入 L1 的未提交数据
+ *   否则在外层结束之前对全集群（包括外层事务自己）可见。这里的失效不抛出（失败只记录日志），否则 Spring 会跳过数据库的回滚。
  * - 迟到的登记不丢失。在其它同步的 `afterCommit` 中登记时：本事务的失效已经执行过，立即失效；
  *   本事务第一次登记（Spring 不再对此时注册的同步调用 `afterCommit`），在 `afterCompletion` 中失效。
  *   排在前面的同步的 `afterCommit` 抛出时同样在 `afterCompletion` 中失效。
@@ -56,6 +60,16 @@ class TransactionalInvalidator {
             return
         }
         pending().add(cache, keys)
+    }
+
+    /**
+     * 事务内登记 [key]，与 [invalidate] 一样在事务结束之后失效；没有事务时什么也不做。
+     * 供已经立即失效过的调用方在事务结束之后再失效一次（[me.ahoo.cocache.spring.cache.CoCacheSpringCache.evictIfPresent]）。
+     */
+    internal fun <K : Any> invalidateAfterTransaction(cache: Cache<K, *>, key: K) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            pending().add(cache, listOf(key))
+        }
     }
 
     /**
@@ -114,6 +128,28 @@ class TransactionalInvalidator {
             }
             failure?.let { throw it }
         }
+
+        /**
+         * 失效到目前为止登记的全部 key，不标记为已执行：登记保留，事务结束时由 [flush] 照常再失效一次。
+         * 不抛出：一个缓存失败只记录日志，不影响其余缓存，事务结束时的失效兜底并照常报告失败。
+         */
+        @Suppress("TooGenericExceptionCaught")
+        fun invalidateRegistered() {
+            if (flushed) {
+                return
+            }
+            for ((cache, keys) in keysByCache) {
+                try {
+                    cache.invalidateAll(keys)
+                } catch (e: Exception) {
+                    log.warn(
+                        "Failed to invalidate ${keys.size} key(s) of cache [${cache.name}] on savepoint rollback; " +
+                            "they are invalidated again when the transaction completes.",
+                        e
+                    )
+                }
+            }
+        }
     }
 
     private class Synchronization(val owner: TransactionalInvalidator, val pending: Pending) : TransactionSynchronization {
@@ -131,5 +167,20 @@ class TransactionalInvalidator {
         override fun afterCompletion(status: Int) {
             pending.flush()
         }
+
+        /**
+         * 回滚到 savepoint（`NESTED`）：Spring 不对外层事务的同步调用 `afterCompletion`，外层之后提交时报告 `STATUS_COMMITTED`，
+         * 只有这个回调（Spring 6.2 起）看得到这次回滚。嵌套段内的读穿透可能已经把未提交的数据写入 L1，
+         * 因此立即失效到目前为止登记的全部 key（不按 savepoint 分段：外层登记的 key 多失效一次，无害），登记保留。
+         *
+         * 不抛出：Spring 在回滚数据库到 savepoint 之前调用本回调，抛出会跳过数据库的回滚。
+         */
+        override fun savepointRollback(savepoint: Any) {
+            pending.invalidateRegistered()
+        }
+    }
+
+    private companion object {
+        private val log = LogFactory.getLog(TransactionalInvalidator::class.java)
     }
 }

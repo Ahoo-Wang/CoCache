@@ -17,7 +17,9 @@ import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.core.CacheAdmin
+import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.springframework.cache.support.SimpleValueWrapper
+import org.springframework.util.ClassUtils
 import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
@@ -33,6 +35,7 @@ import org.springframework.cache.Cache as SpringCache
  * - [get] (key, valueLoader) 经引擎受 lease 保护地回源并按 key 合并并发加载，满足 `@Cacheable(sync = true)`。
  *   不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → put”，put 是无条件写入，
  *   回源期间发生的失效可能被覆盖；需要上述一致性保证时请使用 `sync = true`。
+ * - [evictIfPresent]（`@CacheEvict(beforeInvocation = true)`）立即失效；事务内还登记到 [TransactionalInvalidator]，事务结束之后再失效。
  * - [clear] 只清空本节点的本地副本：L1 是共享存储，不支持整体清空。
  * - [retrieve] 经缓存的异步视图（RFC 0004 §6）：L2 命中返回已完成的 future，未命中不占用任何线程等待；
  *   `sync = true` 的方法体在 [executor] 上执行。
@@ -91,6 +94,21 @@ class CoCacheSpringCache(
 
     override fun evict(key: Any) {
         cache.invalidate(key)
+    }
+
+    /**
+     * `@CacheEvict(beforeInvocation = true)` 调用它，Spring 的事务装饰器（`TransactionAwareCacheDecorator`）也直接委托它：
+     * 按 Spring 的契约立即失效。事务内只在提交之前失效会丢失失效：提交之前并发的读穿透把已提交的旧值写回 L1，
+     * 提交之后再没有失效（G2）。因此事务内同时登记到 [TransactionalInvalidator]，提交、回滚与回滚到 savepoint 时再失效；
+     * 多余的失效无害。先登记再失效：立即失效抛出、被 `CacheErrorHandler` 吞掉时，事务结束之后的失效照常执行。
+     * 不确定之前是否存在，返回 `false`。
+     */
+    override fun evictIfPresent(key: Any): Boolean {
+        if (TRANSACTIONS) {
+            AFTER_TRANSACTION.invalidateAfterTransaction(cache, key)
+        }
+        cache.invalidate(key)
+        return false
     }
 
     override fun clear() {
@@ -159,5 +177,17 @@ class CoCacheSpringCache(
 
     private fun unwrap(error: Throwable): Throwable {
         return if (error is CompletionException) error.cause ?: error else error
+    }
+
+    private companion object {
+        /**
+         * spring-tx 是可选依赖（`compileOnly`）：不在类路径上时不加载 [TransactionalInvalidator]。
+         */
+        val TRANSACTIONS = ClassUtils.isPresent(
+            "org.springframework.transaction.support.TransactionSynchronizationManager",
+            CoCacheSpringCache::class.java.classLoader
+        )
+
+        val AFTER_TRANSACTION by lazy { TransactionalInvalidator() }
     }
 }

@@ -20,17 +20,15 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.TransactionSystemException
-import org.springframework.transaction.support.AbstractPlatformTransactionManager
-import org.springframework.transaction.support.DefaultTransactionStatus
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate
 import java.time.Duration
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 class TransactionalInvalidatorTest {
@@ -41,6 +39,9 @@ class TransactionalInvalidatorTest {
     private val tx = TransactionTemplate(manager)
     private val newTx = TransactionTemplate(manager).apply {
         propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW
+    }
+    private val nestedTx = TransactionTemplate(manager).apply {
+        propagationBehavior = TransactionDefinition.PROPAGATION_NESTED
     }
 
     @Test
@@ -111,6 +112,98 @@ class TransactionalInvalidatorTest {
             nodeB.close()
             backend.close()
         }
+    }
+
+    /**
+     * 缺陷复现：NESTED 段内读穿透把未提交的值写入 L1，随后回滚到 savepoint。Spring 不对外层的同步调用 `afterCompletion`，
+     * 只调用 `savepointRollback`；外层事务之后提交，这个从未提交的值不应在外层结束之前一直对全集群（以及外层事务自己）可见。
+     */
+    @Test
+    fun savepointRollbackRemovesUncommittedValueLoadedInsideTheNestedTransaction() {
+        val backend = InMemoryBackend()
+        val nodeA = CacheRuntime.builder().backend(backend).build()
+        val nodeB = CacheRuntime.builder().backend(backend).build()
+        try {
+            val spec = cacheSpec<String, String>("user") {
+                codec = StringCodec
+                loader = CacheLoader { manager.read(it) }
+            }
+            val cacheA = nodeA.create(spec)
+            val cacheB = nodeB.create(spec)
+            tx.executeWithoutResult {
+                nestedTx.executeWithoutResult { nested ->
+                    manager.write("u1", "draft")
+                    invalidator.invalidate(cacheA, "u1")
+                    cacheA["u1"].assert().isEqualTo("draft")
+                    nested.setRollbackOnly()
+                }
+                manager.read("u1").assert().isNull()
+                // 外层事务仍在进行：另一个节点（事务之外）与外层事务自己都不应再读到 draft
+                fork { cacheB["u1"] }.join().assert().isNull()
+                cacheA["u1"].assert().isNull()
+            }
+            cacheB["u1"].assert().isNull()
+            cacheA["u1"].assert().isNull()
+        } finally {
+            nodeA.close()
+            nodeB.close()
+            backend.close()
+        }
+    }
+
+    /**
+     * 回滚到 savepoint 时立即失效到目前为止登记的全部 key（包括外层在 savepoint 之前登记的）；登记保留，外层结束时照常再失效一次。
+     * 嵌套段正常结束（释放 savepoint）时什么也不做。
+     */
+    @Test
+    fun savepointRollbackInvalidatesEveryRegisteredKeyAndKeepsThem() {
+        tx.executeWithoutResult {
+            invalidator.invalidate(users, "outer")
+            nestedTx.executeWithoutResult { invalidator.invalidate(users, "released") }
+            users.invalidations.assert().isEmpty()
+            nestedTx.executeWithoutResult { nested ->
+                invalidator.invalidate(users, "nested")
+                invalidator.invalidate(orders, "o1")
+                nested.setRollbackOnly()
+            }
+            users.invalidations.assert().containsExactly(listOf("outer", "released", "nested"))
+            orders.invalidations.assert().containsExactly(listOf("o1"))
+            invalidator.invalidate(users, "after")
+        }
+        users.invalidations.assert().containsExactly(
+            listOf("outer", "released", "nested"),
+            listOf("outer", "released", "nested", "after")
+        )
+        orders.invalidations.assert().containsExactly(listOf("o1"), listOf("o1"))
+    }
+
+    /**
+     * Spring 在回滚数据库到 savepoint 之前调用 `savepointRollback`，回调抛出会跳过数据库的回滚。
+     * 失效失败因此不抛出：嵌套段的写入照常回滚，其余缓存照常失效，外层结束时的失效兜底并照常报告失败。
+     */
+    @Test
+    fun failingInvalidationOnSavepointRollbackDoesNotSkipTheDatabaseRollback() {
+        val failing = RecordingCache("failing", failure = IllegalStateException("remote down"))
+        val business = IllegalArgumentException("business")
+        val error = runCatching {
+            tx.executeWithoutResult {
+                runCatching {
+                    nestedTx.executeWithoutResult {
+                        manager.write("u1", "draft")
+                        invalidator.invalidate(failing, "f")
+                        invalidator.invalidate(users, "a")
+                        throw business
+                    }
+                }.exceptionOrNull().assert().isSameAs(business)
+                manager.read("u1").assert().isNull()
+                failing.invalidations.assert().containsExactly(listOf("f"))
+                users.invalidations.assert().containsExactly(listOf("a"))
+            }
+        }.exceptionOrNull()
+        error.assert().isSameAs(failing.failure)
+        manager.read("u1").assert().isNull()
+        failing.invalidations.assert().containsExactly(listOf("f"), listOf("f"))
+        users.invalidations.assert().containsExactly(listOf("a"), listOf("a"))
     }
 
     @Test
@@ -281,55 +374,5 @@ class TransactionalInvalidatorTest {
             invalidations.add(keys.toList())
             failure?.let { throw it }
         }
-    }
-
-    /**
-     * 内存中的事务管理器：写入先进入当前事务的缓冲，提交之后才对其它线程可见（读已提交）；
-     * 支持挂起（用于 `REQUIRES_NEW`）。
-     */
-    private class InMemoryTransactionManager : AbstractPlatformTransactionManager() {
-        private val committed = ConcurrentHashMap<String, String>()
-
-        /**
-         * 当前线程的事务中未提交的写入；没有事务时为 null。
-         */
-        private val current = ThreadLocal<MutableMap<String, String>?>()
-
-        var failCommit = false
-
-        fun write(key: String, value: String) {
-            requireNotNull(current.get()) { "No transaction." }[key] = value
-        }
-
-        fun read(key: String): String? = current.get()?.get(key) ?: committed[key]
-
-        private class Transaction(val writes: MutableMap<String, String>?)
-
-        override fun doGetTransaction(): Any = Transaction(current.get())
-
-        override fun isExistingTransaction(transaction: Any): Boolean = (transaction as Transaction).writes != null
-
-        override fun doBegin(transaction: Any, definition: TransactionDefinition) = current.set(LinkedHashMap())
-
-        override fun doSuspend(transaction: Any): Any = requireNotNull(current.get()).also { current.remove() }
-
-        @Suppress("UNCHECKED_CAST")
-        override fun doResume(
-            transaction: Any?,
-            suspendedResources: Any
-        ) = current.set(suspendedResources as MutableMap<String, String>)
-
-        override fun doCommit(status: DefaultTransactionStatus) {
-            if (failCommit) {
-                throw TransactionSystemException("Commit failed.")
-            }
-            committed.putAll(requireNotNull(current.get()))
-        }
-
-        override fun doRollback(status: DefaultTransactionStatus) = Unit
-
-        override fun doSetRollbackOnly(status: DefaultTransactionStatus) = Unit
-
-        override fun doCleanupAfterCompletion(transaction: Any) = current.remove()
     }
 }
