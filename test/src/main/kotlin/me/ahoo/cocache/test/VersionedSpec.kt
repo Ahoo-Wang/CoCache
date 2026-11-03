@@ -85,7 +85,8 @@ abstract class VersionedSpec {
     protected abstract fun elapse(duration: Duration)
 
     /**
-     * 访问缓存的方式：同步 API（默认），或经异步视图（[AsyncVersionedSpec]）。
+     * 访问缓存的方式：同步 API（默认），或某个变体（如 [CacheAccess.ASYNC]）。后端实现者只需要默认的 [CacheAccess.SYNC]：
+     * 变体（同步、异步、挂起）是核心的语义，由核心自己的测试覆盖（RFC 0005 §4.10）；仓库内覆盖它，在不同变体下运行本规范。
      */
     protected open val access: CacheAccess = CacheAccess.SYNC
 
@@ -802,11 +803,4 @@ abstract class VersionedSpec {
     private companion object {
         const val BARRIER_TIMEOUT_SECONDS = 30L
     }
-}
-
-/**
- * [VersionedSpec] 的每个用例改由异步视图读写（同步数据源换成在调用线程上执行的异步数据源）。
- */
-abstract class AsyncVersionedSpec : VersionedSpec() {
-    override val access: CacheAccess = CacheAccess.ASYNC
 }

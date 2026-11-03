@@ -32,6 +32,9 @@ import java.util.concurrent.CompletionStage
 
 /**
  * TCK 访问缓存的方式（RFC 0004 §10.1）：同一组用例既可以经同步 API 运行，也可以经异步视图运行。
+ *
+ * 后端实现者只需要默认的 [SYNC]：变体的语义属于核心，由核心自己的测试覆盖（RFC 0005 §4.10）。仓库内的测试覆盖规范的 `access`，
+ * 在异步变体下重跑同一组用例；第三方后端需要异步变体的覆盖时也可以这样做。
  */
 interface CacheAccess {
     /**

@@ -19,12 +19,11 @@ import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.test.AsyncBackendProtocolSpec
-import me.ahoo.cocache.test.AsyncEngineSpec
-import me.ahoo.cocache.test.AsyncFaultSpec
-import me.ahoo.cocache.test.AsyncMultiNodeSpec
-import me.ahoo.cocache.test.AsyncSetEngineSpec
-import me.ahoo.cocache.test.AsyncVersionedSpec
 import me.ahoo.cocache.test.CacheAccess
+import me.ahoo.cocache.test.FaultSpec
+import me.ahoo.cocache.test.MultiNodeSpec
+import me.ahoo.cocache.test.SetEngineSpec
+import me.ahoo.cocache.test.VersionedSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -32,8 +31,9 @@ import java.time.Duration
 import java.util.UUID
 
 /*
- * 异步视图在 Redis 上的 TCK 矩阵（RFC 0004 §10.1）：与同步矩阵相同的三种后端（pubsub、非原子、sharded），
- * Redis 后端原生异步（AsyncRemoteStore / AsyncInvalidationChannel），每个 L1 结果都在 Lettuce 的 I/O 线程上完成。
+ * 异步变体在 Redis 上的 TCK 矩阵：与同步矩阵相同的三种后端（pubsub、非原子、sharded），基础规范经
+ * `override val access = CacheAccess.ASYNC` 改由 `async()` 视图读写。Redis 后端原生异步（AsyncRemoteStore / AsyncInvalidationChannel），
+ * 每个 L1 结果都在 Lettuce 的 I/O 线程上完成；引擎另跑断言这些线程的 [RedisAsyncThreadCases]（其余异步专有用例在 cocache-core）。
  */
 
 private fun elapseProtocol(namespace: String, duration: Duration) {
@@ -70,7 +70,9 @@ class RedisShardedAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
     override fun elapse(duration: Duration) = elapseProtocol(namespace, duration)
 }
 
-class RedisAsyncEngineTest : AsyncEngineSpec() {
+class RedisAsyncEngineTest : RedisAsyncThreadCases() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -93,7 +95,7 @@ class RedisAsyncEngineTest : AsyncEngineSpec() {
 /**
  * 默认的用户路径：异步视图 + 同步数据源（在阻塞执行器上执行）。
  */
-class RedisAsyncWithSyncSourceEngineTest : AsyncEngineSpec() {
+class RedisAsyncWithSyncSourceEngineTest : RedisAsyncThreadCases() {
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -115,7 +117,9 @@ class RedisAsyncWithSyncSourceEngineTest : AsyncEngineSpec() {
     override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(clientName)
 }
 
-class RedisNonAtomicAsyncEngineTest : AsyncEngineSpec() {
+class RedisNonAtomicAsyncEngineTest : RedisAsyncThreadCases() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -136,7 +140,9 @@ class RedisNonAtomicAsyncEngineTest : AsyncEngineSpec() {
     )
 }
 
-class RedisShardedAsyncEngineTest : AsyncEngineSpec() {
+class RedisShardedAsyncEngineTest : RedisAsyncThreadCases() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -154,7 +160,9 @@ class RedisShardedAsyncEngineTest : AsyncEngineSpec() {
     override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(clientName)
 }
 
-class RedisAsyncSetEngineTest : AsyncSetEngineSpec() {
+class RedisAsyncSetEngineTest : SetEngineSpec() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -169,7 +177,9 @@ class RedisAsyncSetEngineTest : AsyncSetEngineSpec() {
     }
 }
 
-class RedisAsyncMultiNodeTest : AsyncMultiNodeSpec() {
+class RedisAsyncMultiNodeTest : MultiNodeSpec() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -184,7 +194,9 @@ class RedisAsyncMultiNodeTest : AsyncMultiNodeSpec() {
     }
 }
 
-class RedisNonAtomicAsyncMultiNodeTest : AsyncMultiNodeSpec() {
+class RedisNonAtomicAsyncMultiNodeTest : MultiNodeSpec() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -201,7 +213,9 @@ class RedisNonAtomicAsyncMultiNodeTest : AsyncMultiNodeSpec() {
     }
 }
 
-class RedisShardedAsyncMultiNodeTest : AsyncMultiNodeSpec() {
+class RedisShardedAsyncMultiNodeTest : MultiNodeSpec() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -219,7 +233,9 @@ class RedisShardedAsyncMultiNodeTest : AsyncMultiNodeSpec() {
 /**
  * 故障 TCK（`pubsub`）：单机时经 [TcpProxy] 连接 Redis，以支持断线用例。
  */
-class RedisAsyncFaultTest : AsyncFaultSpec() {
+class RedisAsyncFaultTest : FaultSpec() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -249,7 +265,9 @@ class RedisAsyncFaultTest : AsyncFaultSpec() {
     }
 }
 
-class RedisNonAtomicAsyncFaultTest : AsyncFaultSpec() {
+class RedisNonAtomicAsyncFaultTest : FaultSpec() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -266,7 +284,9 @@ class RedisNonAtomicAsyncFaultTest : AsyncFaultSpec() {
     }
 }
 
-class RedisShardedAsyncFaultTest : AsyncFaultSpec() {
+class RedisShardedAsyncFaultTest : FaultSpec() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -281,7 +301,9 @@ class RedisShardedAsyncFaultTest : AsyncFaultSpec() {
     }
 }
 
-class RedisAsyncVersionedTest : AsyncVersionedSpec() {
+class RedisAsyncVersionedTest : VersionedSpec() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()
@@ -296,7 +318,9 @@ class RedisAsyncVersionedTest : AsyncVersionedSpec() {
     }
 }
 
-class RedisNonAtomicAsyncVersionedTest : AsyncVersionedSpec() {
+class RedisNonAtomicAsyncVersionedTest : VersionedSpec() {
+    override val access: CacheAccess = CacheAccess.ASYNC
+
     override val closesBackend: Boolean = true
 
     private val manualClock = ManualClock()

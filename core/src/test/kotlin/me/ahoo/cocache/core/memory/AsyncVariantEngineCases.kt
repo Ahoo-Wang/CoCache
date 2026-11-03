@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-package me.ahoo.cocache.test
+package me.ahoo.cocache.core.memory
 
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
@@ -26,9 +26,13 @@ import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.test.CacheAccess
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
+import me.ahoo.cocache.test.EngineSpec
+import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -50,12 +54,18 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * 异步视图的引擎 TCK（RFC 0004 §10.1）：[EngineSpec] 的每个用例都经 `async()` 重跑，另加异步路径专有的用例
+ * 异步变体的引擎级用例（RFC 0005 §4.10）：[EngineSpec] 的每个用例都经 `async()` 重跑，另加异步变体专有的用例
  * （取消、线程、不挂起线程、超时、同步与异步互相合并、重入）。
+ *
+ * 变体的语义属于核心，不属于后端的 TCK：这里以内存后端运行，配置见 `InMemoryAsyncTckTest.kt`（原生异步、保留同步数据源、
+ * 每个 L1 结果换线程送达、只实现同步 SPI）；只有断言真实 L1 客户端线程的三个用例在 Redis 上另有一份（`RedisAsyncThreadCases`）。
  */
 @Suppress("LargeClass")
-abstract class AsyncEngineSpec : EngineSpec() {
-    override val access: CacheAccess = CacheAccess.ASYNC
+abstract class AsyncVariantEngineCases : EngineSpec() {
+    /**
+     * 异步变体：[CacheAccess.ASYNC] 或 [CacheAccess.ASYNC_WITH_SYNC_SOURCE]，由子类选择。
+     */
+    abstract override val access: CacheAccess
 
     /**
      * 命名线程的执行器（用于断言续接在哪里执行），测试结束时关闭。
