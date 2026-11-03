@@ -21,13 +21,37 @@
   - 仓库设置（维护者操作）：GitHub Pages 的部署环境 `github-pages` 允许 `6.x`；`6.x` 的分支保护规则与 `main` 一致。
   - `main`：基线 JDK 21；停止发布 wiki；CONTRIBUTING 的分支与发版规则。
 
+## 0. 交接（2026-11-02，供接手者继续推进）
+
+**当前状态**：`main` 是 8.0 开发线。M1（协程核心，#716–#720）与 M2（flight 层与协议，#721–#727）已完成，下一步是 **M3 SPI**（见 §2 的表格与 RFC 0005 §4.3）。没有进行中（WIP）的分支或 PR。
+
+**下一步：M3 SPI**
+- 目标：`suspend` 的 `L1Store`（Q2 默认采用此名）、`FutureL1Store` 适配、能力访问器、`ForwardingL1Store`、TCK fail closed；删除异步 SPI（`AsyncRemoteStore`、`AsyncInvalidationChannel`、`BlockingAsyncStore`）与 `Async*` 规范。
+- 改 `cocache-api` 的接口与 TCK，属于公开 API 变更：动手前先与维护者确认拆分与命名（AGENTS.md“Boundaries”）。
+- 建议仿照 M1、M2 按 PR 拆小切片，每片都跑全量 `./gradlew check`，触及命中路径或异步路径的附 JMH。
+
+**待维护者决定**
+- 是否在 CI 中加一个单独、不阻塞的作业运行 `./gradlew :cocache-core:lincheck`（约 2 分钟，见 [Lincheck 调查](investigations/lincheck-feasibility.md)）。改工作流，未做。
+- §3 中 M3 之前要定的 Q2（`L1Store` 命名）。
+
+**工作方式（M1、M2 一直沿用）**
+- 每个切片一个分支（`<type>/<描述>`）与一个 squash 合并的 PR，标题用 Conventional Commits，PR 正文英文；只在维护者说“合并”时合并。
+- 先开 PR，JMH 跑完再把 `scripts/jmh-compare.sh` 的表格补进 PR 正文。JMH 运行期间不要在本机跑其它 Gradle 任务（会被负载门槛作废，或污染结果）。
+- 本地 Redis 与环境变量的注意事项见 AGENTS.md“Commands”；测试前取消所有 `SPRING_DATA_REDIS_*` 变量。
+- 每个修复都要有复现用例。协议改动除了常规用例，再用三件工具检查：`TokenConservationPropertyTest`（令牌守恒）、`MultiNodeSimulationTest`（确定性多节点仿真，`-PsimSeed=<n>` 重放）、`./gradlew :cocache-core:lincheck`（单节点交错的模型检验）。变更行为时同步 architecture.md 与 wiki（en + zh）。
+
+**M2 期间留下的已知事项**
+- 异步数据源的超时仍由 JDK 延迟线程按真实时间计时（`completeOnTimeout`），仿真中的加载总在它触发前完成；若改为协程计时，需附 JMH。
+- Lincheck 操作集尚未加入 `get(key, loader)`、`getAll`、`put`、`clearLocal` 与调用方取消（RFC §4.10）。
+- 失效戳与 SingleFlight 仍按存储 key（L2 已按编码后的 key，#727）；只有在命中路径之外有收益时才值得改。
+
 ## 2. v8 里程碑（RFC 0005 §10）
 
 每个里程碑由若干 PR 组成，每个 PR 的 `./gradlew check` 全绿；触及命中路径或异步路径的 PR 附 `scripts/jmh-compare.sh` 的对比。
 
 M1 已完成：基础设施与 `SetCache` 读路径（#716）→ 单 key 读与提前刷新（#717）→ 批量读（#718）→ 写入（含 `VersionedCache`，#719）→ 数据源适配改为挂起实现，删除 `Futures` 的续接、定时器与许可等待队列（#720）。挂起视图直接调用核心推迟到 M5：`cocache-coroutines` 并入 core 之前，它只能经公开 API 调用核心，为此新增的公开接口会在 M5 删除。
 
-M2 拆成：L2 填充改为 `compute` + 按身份复核（M2a，#721）→ 合并规则逐 key、leader 被中断或取消时跟随者自行运行（M2b，#722）→ `load.timeout`，`LoadPolicy.asyncTimeout` 并入它（M2c，#723）→ L1 命令不可取消地等待、随机注入故障与取消的令牌守恒性质测试（M2d，#724）→ 确定性多节点仿真：测试调度器与虚拟时间、以数据源的提交历史检查 G1 与 G2（M2e，#725）→ Lincheck 可行性实验（M2f，#726：可行，有条件，见 [调查](investigations/lincheck-feasibility.md)；单独的 `lincheck` 任务，不在 `check` 中）。`kotlinx-coroutines-test` 作为测试依赖已批准；Lincheck（Q18）先做可行性实验，可行再正式加入（维护者决定，2026-11-02）。L2 key 不含前缀：JMH 中单个缓存的 L2 命中约 2.6 倍、`l2HitMixed` 1 线程 +68%、8 线程 +8%，L1 命中不变，采用（进行中）。
+M2 拆成：L2 填充改为 `compute` + 按身份复核（M2a，#721）→ 合并规则逐 key、leader 被中断或取消时跟随者自行运行（M2b，#722）→ `load.timeout`，`LoadPolicy.asyncTimeout` 并入它（M2c，#723）→ L1 命令不可取消地等待、随机注入故障与取消的令牌守恒性质测试（M2d，#724）→ 确定性多节点仿真：测试调度器与虚拟时间、以数据源的提交历史检查 G1 与 G2（M2e，#725）→ Lincheck 可行性实验（M2f，#726：可行，有条件，见 [调查](investigations/lincheck-feasibility.md)；单独的 `lincheck` 任务，不在 `check` 中）。`kotlinx-coroutines-test` 作为测试依赖已批准；Lincheck（Q18）先做可行性实验，可行再正式加入（维护者决定，2026-11-02）。L2 key 不含前缀：JMH 中单个缓存的 L2 命中约 2.6 倍、`l2HitMixed` 1 线程 +68%、8 线程 +8%，L1 命中不变，采用（#727）。**M2 已完成。**
 
 | 里程碑 | 要做什么 | 验收 |
 |--------|----------|------|
