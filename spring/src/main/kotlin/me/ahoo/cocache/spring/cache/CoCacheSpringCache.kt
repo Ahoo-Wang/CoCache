@@ -104,9 +104,7 @@ class CoCacheSpringCache(
      * 不确定之前是否存在，返回 `false`。
      */
     override fun evictIfPresent(key: Any): Boolean {
-        if (TRANSACTIONS) {
-            AFTER_TRANSACTION.invalidateAfterTransaction(cache, key)
-        }
+        AFTER_TRANSACTION(cache, key)
         cache.invalidate(key)
         return false
     }
@@ -179,15 +177,22 @@ class CoCacheSpringCache(
         return if (error is CompletionException) error.cause ?: error else error
     }
 
-    private companion object {
-        /**
-         * spring-tx 是可选依赖（`compileOnly`）：不在类路径上时不加载 [TransactionalInvalidator]。
-         */
-        val TRANSACTIONS = ClassUtils.isPresent(
-            "org.springframework.transaction.support.TransactionSynchronizationManager",
-            CoCacheSpringCache::class.java.classLoader
-        )
+    internal companion object {
+        private const val TRANSACTION_SYNCHRONIZATION =
+            "org.springframework.transaction.support.TransactionSynchronizationManager"
 
-        val AFTER_TRANSACTION by lazy { TransactionalInvalidator() }
+        private val AFTER_TRANSACTION = afterTransaction(CoCacheSpringCache::class.java.classLoader)
+
+        /**
+         * 事务内登记到事务结束之后再失效（没有事务时什么也不做）。spring-tx 是可选依赖（`compileOnly`）：
+         * 不在 [classLoader] 中时返回空操作，不创建 [TransactionalInvalidator]。
+         */
+        internal fun afterTransaction(classLoader: ClassLoader?): (Cache<Any, Any>, Any) -> Unit {
+            if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, classLoader)) {
+                return { _, _ -> }
+            }
+            val invalidator = TransactionalInvalidator()
+            return { cache, key -> invalidator.invalidateAfterTransaction(cache, key) }
+        }
     }
 }
