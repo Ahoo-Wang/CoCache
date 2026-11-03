@@ -489,7 +489,7 @@ class RedisRobustnessTest {
                 clientName = "cocache-tck-" + UUID.randomUUID()
             )
         ).use { backend ->
-            val channel = backend.channel as ShardedInvalidationChannel
+            val channel = backend.redisChannel as ShardedInvalidationChannel
             val listener = RecordingListener()
             val subscription = channel.subscribe(namespace, listener)
 
@@ -510,7 +510,7 @@ class RedisRobustnessTest {
             }
             val frame = InvalidationFrame.encode(NodeId.random(), listOf("after"))
             awaitCondition("event after resubscribe") {
-                channel.publish(namespace, frame)
+                channel.publish(namespace, frame).join()
                 listener.received.contains(listOf("after"))
             }
             subscription.close()
