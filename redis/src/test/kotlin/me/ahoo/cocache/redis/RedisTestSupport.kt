@@ -31,6 +31,7 @@ import me.ahoo.cocache.api.spi.ConditionalL1Store
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.VersionedL1Store
+import me.ahoo.cocache.test.L1Capability
 import java.time.Duration
 
 /**
@@ -56,6 +57,11 @@ object RedisTestSupport {
     )
 
     val isCluster: Boolean = clusterNodes != null
+
+    /**
+     * Redis 后端的存储提供全部可选能力（三种通道模式、单机与集群都一样），TCK 的 `expectedCapabilities` 声明它。
+     */
+    val CAPABILITIES: Set<L1Capability> = setOf(L1Capability.CONDITIONAL, L1Capability.VERSIONED, L1Capability.SETS)
 
     fun backend(
         options: RedisBackendOptions = RedisBackendOptions(
@@ -160,13 +166,13 @@ object RedisTestSupport {
     }
 
     /**
-     * 经 [proxy] 连接单机 Redis 的后端（用于模拟命令连接断线）。仅限单机。
+     * 经 [proxy] 连接单机 Redis 的后端（用于模拟命令连接断线）。仅限单机。[resources] 非 `null` 时用它建客户端（调用方负责 `shutdown`）。
      */
-    fun proxiedBackend(proxy: TcpProxy): RedisBackend {
+    fun proxiedBackend(proxy: TcpProxy, resources: ClientResources? = null): RedisBackend {
         check(!isCluster) { "Standalone only" }
         return RedisBackend.standalone(
             RedisURI.create(proxy.address, proxy.port),
-            RedisBackendOptions(clientName = "cocache-tck-" + java.util.UUID.randomUUID())
+            RedisBackendOptions(clientName = "cocache-tck-" + java.util.UUID.randomUUID(), clientResources = resources)
         )
     }
 

@@ -19,12 +19,20 @@ import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.test.BackendProtocolSpec
 import me.ahoo.cocache.test.EngineSpec
 import me.ahoo.cocache.test.FaultSpec
+import me.ahoo.cocache.test.L1Capability
 import me.ahoo.cocache.test.MultiNodeSpec
 import me.ahoo.cocache.test.SetEngineSpec
 import me.ahoo.cocache.test.VersionedSpec
 import java.time.Duration
 
+/**
+ * 内存后端的存储提供全部可选能力。
+ */
+private val CAPABILITIES: Set<L1Capability> = setOf(L1Capability.CONDITIONAL, L1Capability.VERSIONED, L1Capability.SETS)
+
 class InMemoryBackendProtocolTest : BackendProtocolSpec() {
+    override val expectedCapabilities: Set<L1Capability> = CAPABILITIES
+
     private val clock = ManualClock()
 
     override fun createBackend(): CoherenceBackend = InMemoryBackend(clock)
@@ -38,6 +46,8 @@ class InMemoryBackendProtocolTest : BackendProtocolSpec() {
 }
 
 class InMemoryEngineTest : EngineSpec() {
+    override val expectedCapabilities: Set<L1Capability> = CAPABILITIES
+
     private val manualClock = ManualClock()
     private lateinit var memory: InMemoryBackend
 
@@ -51,6 +61,8 @@ class InMemoryEngineTest : EngineSpec() {
 }
 
 class InMemorySetEngineTest : SetEngineSpec() {
+    override val expectedCapabilities: Set<L1Capability> = CAPABILITIES
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -61,6 +73,8 @@ class InMemorySetEngineTest : SetEngineSpec() {
 }
 
 class InMemoryMultiNodeTest : MultiNodeSpec() {
+    override val expectedCapabilities: Set<L1Capability> = CAPABILITIES
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -74,6 +88,8 @@ class InMemoryMultiNodeTest : MultiNodeSpec() {
  * 内存后端没有连接，不支持断线用例（[disconnect] 返回 `null`，用例跳过）。
  */
 class InMemoryFaultTest : FaultSpec() {
+    override val expectedCapabilities: Set<L1Capability> = CAPABILITIES
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock
@@ -84,6 +100,8 @@ class InMemoryFaultTest : FaultSpec() {
 }
 
 class InMemoryVersionedTest : VersionedSpec() {
+    override val expectedCapabilities: Set<L1Capability> = CAPABILITIES
+
     private val manualClock = ManualClock()
 
     override val clock: CacheClock = manualClock

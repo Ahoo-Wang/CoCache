@@ -43,12 +43,18 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * L1 协议 TCK（RFC 0003 §4.4，挂起形状见 RFC 0005 §4.3）：每个 [CoherenceBackend] 实现都必须通过。
  * 用例直接调用 [L1Store] 的挂起方法（经 [Suspending.await]）；Java 实现者的 `FutureL1Store` 经 `FutureL1Store.adapt` 接受同样的检验。
- * 集合成员的用例要求存储提供 [L1Store.sets]。
+ * 后端以 [expectedCapabilities] 声明存储的可选能力；集合成员的用例只在没有声明 [L1Capability.SETS] 时跳过。
  *
  * 时间相关用例通过 [elapse] 推进时间：内存后端推进手动时钟，真实后端可以 sleep（用例只使用很短的 TTL）。
  */
 abstract class BackendProtocolSpec {
     protected abstract fun createBackend(): CoherenceBackend
+
+    /**
+     * 后端的存储提供的可选能力（RFC 0005 §4.3），没有默认值：规范断言存储提供的能力与它完全相同（多出来的也算失败）、
+     * 每个访问器稳定；需要某个能力的用例只在它没有声明时跳过。
+     */
+    protected abstract val expectedCapabilities: Set<L1Capability>
 
     /**
      * 让 L1 的时间前进 [duration]。
@@ -88,7 +94,13 @@ abstract class BackendProtocolSpec {
     protected fun l1(block: suspend () -> Unit) = Suspending.await(block)
 
     /**
-     * 存储的集合能力面：集合成员的用例要求它。
+     * 用例需要的能力：[expectedCapabilities] 缺少其中任何一个时跳过这个用例。
+     */
+    protected fun assumeDeclared(vararg capabilities: L1Capability) =
+        CapabilityDeclaration.assume(expectedCapabilities, capabilities)
+
+    /**
+     * 存储的集合能力面：集合成员的用例要求它（先以 [assumeDeclared] 检查声明）。
      */
     protected val sets: SetL1Store
         get() = requireNotNull(store.sets()) { "${store.javaClass.name} does not provide the sets capability." }
@@ -106,6 +118,14 @@ abstract class BackendProtocolSpec {
     private fun L1Read.hit(): L1Read.Hit = this as? L1Read.Hit ?: throw AssertionError("Expected a hit but was $this.")
 
     /**
+     * 存储提供的能力与 [expectedCapabilities] 完全相同（多出来的也算失败），每个访问器每次返回同一个对象或总是 `null`。
+     */
+    @Test
+    fun storeProvidesExactlyTheDeclaredCapabilities() {
+        CapabilityDeclaration.verify(backend, expectedCapabilities)
+    }
+
+    /**
      * 读取的时限（RFC 0005 round 3 D6）：L1 卡顿时，带 `timeout` 的读取在大约这么长的时间内以 L1 故障失败（不是取消），不等命令超时。
      * 结果未知，这次读取请求的 lease 由存储释放（K14）：恢复之后 key 不再是 lease 占位，不必等到 `lease.ttl`。
      */
@@ -119,7 +139,10 @@ abstract class BackendProtocolSpec {
             { store.read(single, lease(ttl = Duration.ofMinutes(10)), null, READ_TIMEOUT) },
             { store.readAll(listOf(batch), mapOf(batch to lease(ttl = Duration.ofMinutes(10))), READ_TIMEOUT) },
         )
-        store.conditional()?.let { conditional -> reads.add { conditional.readIfChanged(single, null, READ_TIMEOUT) } }
+        if (L1Capability.CONDITIONAL in expectedCapabilities) {
+            val conditional = requireNotNull(store.conditional())
+            reads.add { conditional.readIfChanged(single, null, READ_TIMEOUT) }
+        }
         requireNotNull(paused).use {
             reads.forEachIndexed { index, read ->
                 val started = System.nanoTime()
@@ -397,6 +420,7 @@ abstract class BackendProtocolSpec {
 
     @Test
     fun membersAreAddedAtomicallyOverLeases() = l1 {
+        assumeDeclared(L1Capability.SETS)
         val key = key()
         val lease = lease()
         store.read(key, lease, null, null)
@@ -416,6 +440,7 @@ abstract class BackendProtocolSpec {
 
     @Test
     fun addMembersReplacesNegativeEntry() = l1 {
+        assumeDeclared(L1Capability.SETS)
         val key = key()
         val lease = lease()
         store.read(key, lease, null, null)
@@ -428,6 +453,7 @@ abstract class BackendProtocolSpec {
 
     @Test
     fun removeMembersOnlyAffectsSetsAndDeletesWhenEmpty() = l1 {
+        assumeDeclared(L1Capability.SETS)
         val key = key()
         sets.removeMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
         store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
@@ -453,6 +479,7 @@ abstract class BackendProtocolSpec {
      */
     @Test
     fun memberWritesRefuseUnreadableContentAndKeepIt() = l1 {
+        assumeDeclared(L1Capability.SETS)
         val key = key()
         store.put(key, scalar("v"), Duration.ofMinutes(1), frame(key))
         sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isEqualTo(backend.format)
@@ -467,6 +494,9 @@ abstract class BackendProtocolSpec {
         hit.ttl.assert().isNotNull()
     }
 
+    /**
+     * 订阅时回调 `onReset`；每个写入恰好广播它的帧（声明了 [L1Capability.SETS] 时含集合成员的增删）；关闭订阅之后不再收到。
+     */
     @Test
     fun subscribeResetsAndWritesBroadcastFrames() = l1 {
         val received = CopyOnWriteArrayList<Pair<List<String>, NodeId>>()
@@ -488,14 +518,16 @@ abstract class BackendProtocolSpec {
         keys.add(key)
         store.invalidate(listOf(key), frame(key))
         keys.add(key)
-        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key))
-        keys.add(key)
-        sets.removeMembers(key, listOf("a".toByteArray()), null, frame(key))
-        keys.add(key)
+        if (L1Capability.SETS in expectedCapabilities) {
+            sets.addMembers(key, listOf("a".toByteArray()), null, frame(key))
+            keys.add(key)
+            sets.removeMembers(key, listOf("a".toByteArray()), null, frame(key))
+            keys.add(key)
+        }
         if (!backend.atomicBroadcast) {
             keys.forEach { backend.channel.publish(namespace, frame(it)) }
         }
-        awaitCondition("four broadcasts") { received.size >= 4 }
+        awaitCondition("${keys.size} broadcasts") { received.size >= keys.size }
         received.all { it.first == listOf(key) && it.second == node }.assert().isTrue()
 
         subscription.close()

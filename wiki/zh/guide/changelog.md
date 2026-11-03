@@ -75,6 +75,9 @@ description: CoCache 版本发布历史和重要变更。
 
 ### TCK
 
+- **破坏性变更：** 每个套件（`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`、`VersionedSpec`）都有抽象的 `expectedCapabilities: Set<L1Capability>`（`CONDITIONAL`、`VERSIONED`、`SETS`），没有默认值：没有声明它的子类不再能编译。每个套件新增的 `storeProvidesExactlyTheDeclaredCapabilities` 在以下情形失败：存储提供了没有声明的能力、缺少声明了的能力，或 `conditional()`、`versioned()`、`sets()` 再次调用时返回另一个对象。需要某个能力的用例只在它没有声明时跳过：没有 `SETS` 或 `VERSIONED` 时，`SetEngineSpec` 与 `VersionedSpec` 跳过全部用例。删除 `EngineSpec.supportsConditionalWrites`，改为不声明 `CONDITIONAL`。`L1Capability` 只存在于 TCK 中：存储的访问器仍是表达能力的唯一方式。见[声明能力](../architecture/extending.md#expected-capabilities)。
+- `FaultSpec.cancelledCommandsAreL1FaultsNotCancellations` 检查存储底下的客户端取消的命令（`FutureL1Store` 取消的 future、Lettuce 的连接重置）：读取回退到 loader，并把结果交给等在它上面的读取方；`put` 以 `CacheWriteException` 失败；没有调用方看到 `CancellationException`；L1 恢复之后，被取消的读取的 lease 已不存在。覆盖新钩子 `commandCancellation()`（返回 `CommandCancellation`：`hold`、`cancel`、`close`）时运行，默认的 `null` 跳过它。CoCache 在经 `FutureL1Store.adapt` 的内存后端与单机 Redis 上运行它。`HookedBackend.puts` 为单 key 的 `put` 计数。
+- CoCache 在经 `FutureL1Store.adapt` 的内存后端（Java 后端走的路径）与没有任何可选能力的存储上运行整套 TCK。两种视图现在调用同一个存储，所以 Redis 上的异步视图只在经典 Pub/Sub 上把每个引擎套件重跑一遍。
 - **破坏性变更：** TCK 删除了 `AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec` 与 `AsyncVersionedSpec`。改为继承 `EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec` 或 `VersionedSpec`；还想经异步视图运行某个套件时，覆盖 `access = CacheAccess.ASYNC`。异步专有的用例（取消、完成线程、等待不占线程、超时、重入）测的是核心而不是后端，已移到 CoCache 自己的测试中。
 - **破坏性变更：** `BackendProtocolSpec` 改为挂起形状：用例经 `Suspending.await`（TCK 新增，只用 Kotlin 标准库）直接调用 `L1Store`，集合成员的用例要求 `sets()`。删除 `AsyncBackendProtocolSpec`；Java 后端对 `FutureL1Store.adapt` 返回的存储运行 `BackendProtocolSpec`。`HookedBackend` 以 `ForwardingL1Store` 与 `Forwarding*` 能力面包装存储，只保留被包装的存储有的能力面；钩子在调用所在的协程里、被包装的存储返回之后执行，`ioExecutor` 送达每个调用的结果。`HookedBackend.versionedWrites` 随 SPI 属性一起删除。
 - **破坏性变更：** TCK 随上面的 SPI 变化：`L1Fill`、`ContentFingerprint`、`timeout` 参数与 `L1*` 结果类型。`HookedBackend.afterFill` 收到 `L1Fill` 结果，不再是 `Boolean`。
@@ -221,7 +224,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ### SPI
 
-- `CoherenceBackend.versionedWrites`（默认 `false`）、`RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync`（默认以 `UnsupportedOperationException` 拒绝：“先读后写”的默认实现会让迟到的版本覆盖更新的版本）、`RemoteVersionedWrite`、`Fill.version`（新的构造函数；6.7 的构造函数、`copy` 与 `componentN` 不变）与 `Envelope.Scalar.version`。支持版本的后端原子地覆盖两个方法，在 `fill`、`put` 与 `putAll` 时保存 `Envelope.Scalar.version`、读取时原样返回。见[扩展](../architecture/extending.md#remote-store)。
+- `CoherenceBackend.versionedWrites`（默认 `false`）、`RemoteStore.putIfNewer` / `AsyncRemoteStore.putIfNewerAsync`（默认以 `UnsupportedOperationException` 拒绝：“先读后写”的默认实现会让迟到的版本覆盖更新的版本）、`RemoteVersionedWrite`、`Fill.version`（新的构造函数；6.7 的构造函数、`copy` 与 `componentN` 不变）与 `Envelope.Scalar.version`。支持版本的后端原子地覆盖两个方法，在 `fill`、`put` 与 `putAll` 时保存 `Envelope.Scalar.version`、读取时原样返回。见[扩展](../architecture/extending.md#l1-store)。
 - TCK 新增 `VersionedSpec` 与 `AsyncVersionedSpec`，用于支持 `versionedWrites` 的后端。
 
 ## v6.7.0
@@ -240,7 +243,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ### SPI
 
-- `RemoteStore.readIfChanged` / `putIfMatch`、`AsyncRemoteStore.readIfChangedAsync` / `putIfMatchAsync`，以及结果类型 `RemoteConditionalRead` / `RemoteConditionalWrite`。`readIfChanged` 的默认实现先读、在客户端比较：正确，只是总是传输值。`putIfMatch` 的默认实现抛出 `UnsupportedOperationException`（异步版本以它失败）：先读后 `put` 的默认实现在并发下会丢失更新。后端只有像 Redis 与内存后端那样用一次原子操作覆盖两者，才支持条件写入。见[扩展](../architecture/extending.md#remote-store)。
+- `RemoteStore.readIfChanged` / `putIfMatch`、`AsyncRemoteStore.readIfChangedAsync` / `putIfMatchAsync`，以及结果类型 `RemoteConditionalRead` / `RemoteConditionalWrite`。`readIfChanged` 的默认实现先读、在客户端比较：正确，只是总是传输值。`putIfMatch` 的默认实现抛出 `UnsupportedOperationException`（异步版本以它失败）：先读后 `put` 的默认实现在并发下会丢失更新。后端只有像 Redis 与内存后端那样用一次原子操作覆盖两者，才支持条件写入。见[扩展](../architecture/extending.md#l1-store)。
 - TCK（`EngineSpec`）覆盖这两个操作。没有实现 `putIfMatch` 的后端设置 `supportsConditionalWrites = false` 跳过这些用例；否则必须全部通过，其中的并发用例让所有写入方在同一个摘要上竞争。
 
 ## v6.6.0
@@ -259,7 +262,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ### SPI
 
-- `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` 及 `AsyncRemoteStore` 中对应的异步方法：同 `addMembers` / `removeMembers`，但不改动不是本协议集合的内容，并返回它的格式版本。默认实现先读后写，不原子，也认不出更高的格式版本；后端应覆盖为一次原子的检查加写入，Redis 与内存后端即如此。见[扩展](../architecture/extending.md#remote-store)。
+- `RemoteStore.addMembersIfReadable` / `removeMembersIfReadable` 及 `AsyncRemoteStore` 中对应的异步方法：同 `addMembers` / `removeMembers`，但不改动不是本协议集合的内容，并返回它的格式版本。默认实现先读后写，不原子，也认不出更高的格式版本；后端应覆盖为一次原子的检查加写入，Redis 与内存后端即如此。见[扩展](../architecture/extending.md#l1-store)。
 - `ForeignFormatException` 新增 `newer` 属性与构造参数，保留 6.5.0 的构造函数。
 
 ## v6.5.0

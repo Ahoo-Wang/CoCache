@@ -19,15 +19,23 @@ import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.test.CacheAccess
 import me.ahoo.cocache.test.EngineSpec
+import me.ahoo.cocache.test.L1Capability
 import me.ahoo.cocache.test.MultiNodeSpec
 import me.ahoo.cocache.test.SetEngineSpec
 import me.ahoo.cocache.test.VersionedSpec
 import java.time.Duration
 
 /**
+ * 内存后端的存储提供全部可选能力。
+ */
+private val CAPABILITIES: Set<L1Capability> = setOf(L1Capability.CONDITIONAL, L1Capability.VERSIONED, L1Capability.SETS)
+
+/**
  * 同步 TCK 的每个用例经挂起视图重跑（内存后端）：挂起视图只是异步视图的封装，协议行为必须与同步 API 完全一致。
  */
 class SuspendingEngineTest : EngineSpec() {
+    override val expectedCapabilities: Set<L1Capability> = CAPABILITIES
+
     private val manualClock = ManualClock()
     private lateinit var memory: InMemoryBackend
 
@@ -42,6 +50,8 @@ class SuspendingEngineTest : EngineSpec() {
 }
 
 class SuspendingSetEngineTest : SetEngineSpec() {
+    override val expectedCapabilities: Set<L1Capability> = CAPABILITIES
+
     private val manualClock = ManualClock()
 
     override val access: CacheAccess = SuspendingAccess
@@ -53,6 +63,8 @@ class SuspendingSetEngineTest : SetEngineSpec() {
 }
 
 class SuspendingMultiNodeTest : MultiNodeSpec() {
+    override val expectedCapabilities: Set<L1Capability> = CAPABILITIES
+
     private val manualClock = ManualClock()
 
     override val access: CacheAccess = SuspendingAccess
@@ -67,6 +79,8 @@ class SuspendingMultiNodeTest : MultiNodeSpec() {
  * 按版本有序的写入（6.8）经挂起视图重跑；数据源换成 `suspendingVersionedLoader`。
  */
 class SuspendingVersionedTest : VersionedSpec() {
+    override val expectedCapabilities: Set<L1Capability> = CAPABILITIES
+
     private val manualClock = ManualClock()
 
     override val access: CacheAccess = SuspendingAccess

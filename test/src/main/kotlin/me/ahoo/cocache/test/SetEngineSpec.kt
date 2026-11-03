@@ -41,9 +41,17 @@ import java.util.concurrent.CountDownLatch
 
 /**
  * 集合缓存 TCK（RFC 0003 §4.8）：L1 是唯一副本，元素增删由 L1 串行化。
+ *
+ * 集合缓存要求存储提供 [L1Capability.SETS]：没有声明它时，除能力声明的检查之外的用例都跳过。
  */
 abstract class SetEngineSpec {
     protected abstract fun createBackend(): CoherenceBackend
+
+    /**
+     * 后端的存储提供的可选能力（RFC 0005 §4.3），没有默认值：规范断言存储提供的能力与它完全相同（多出来的也算失败）、
+     * 每个访问器稳定。
+     */
+    protected abstract val expectedCapabilities: Set<L1Capability>
 
     protected abstract val clock: CacheClock
 
@@ -81,14 +89,34 @@ abstract class SetEngineSpec {
      */
     protected open val access: CacheAccess = CacheAccess.SYNC
 
-    protected fun CacheRuntime.setCache(policy: CachePolicy = SetCacheSpec.DEFAULT_POLICY): SetCache<String, String> = access.setCache(
-        create(
-            setCacheSpec(cacheName) {
-                elementCodec = StringCodec
-                this.policy = policy
-            }
+    /**
+     * 用例需要的能力：[expectedCapabilities] 缺少其中任何一个时跳过这个用例。
+     */
+    protected fun assumeDeclared(vararg capabilities: L1Capability) =
+        CapabilityDeclaration.assume(expectedCapabilities, capabilities)
+
+    /**
+     * 在运行时上创建本用例的集合缓存。没有声明 [L1Capability.SETS] 时跳过这个用例（每个用例都先经它创建缓存）。
+     */
+    protected fun CacheRuntime.setCache(policy: CachePolicy = SetCacheSpec.DEFAULT_POLICY): SetCache<String, String> {
+        assumeDeclared(L1Capability.SETS)
+        return access.setCache(
+            create(
+                setCacheSpec(cacheName) {
+                    elementCodec = StringCodec
+                    this.policy = policy
+                }
+            )
         )
-    )
+    }
+
+    /**
+     * 存储提供的能力与 [expectedCapabilities] 完全相同（多出来的也算失败），每个访问器每次返回同一个对象或总是 `null`。
+     */
+    @Test
+    fun storeProvidesExactlyTheDeclaredCapabilities() {
+        CapabilityDeclaration.verify(backend.delegate, expectedCapabilities)
+    }
 
     @Test
     fun addCreatesSetVisibleToBothNodes() {

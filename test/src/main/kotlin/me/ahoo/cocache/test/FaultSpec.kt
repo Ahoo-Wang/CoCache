@@ -47,13 +47,19 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * 故障 TCK：两个节点共享同一个后端，验证 L1 故障下的 G1（陈旧有界）与 G2（失效不丢失）。
  *
- * 故障由 [HookedBackend] 注入；断线用例需要后端实现 [disconnect]，否则跳过。
+ * 故障由 [HookedBackend] 注入；断线用例需要后端实现 [disconnect]，底层命令被取消的用例需要后端实现 [commandCancellation]，否则跳过。
  * 与 [EngineSpec] 中单节点的降级与重试用例互补（如 [EngineSpec.remoteReadFailureDegradesToTheSource]、
  * [EngineSpec.failedInvalidateIsRetriedAndBypassesTheStaleRemoteMeanwhile]），这里关注跨节点的陈旧上界、重试的放弃与溢出、
  * 以及“已生效但报错”的写入。
  */
 abstract class FaultSpec {
     protected abstract fun createBackend(): CoherenceBackend
+
+    /**
+     * 后端的存储提供的可选能力（RFC 0005 §4.3），没有默认值：规范断言存储提供的能力与它完全相同（多出来的也算失败）、
+     * 每个访问器稳定。本规范的用例不需要可选能力。
+     */
+    protected abstract val expectedCapabilities: Set<L1Capability>
 
     /**
      * 引擎与后端共用的时钟。
@@ -70,6 +76,12 @@ abstract class FaultSpec {
      * 后端没有连接的概念时返回 `null`（默认），断线用例跳过。
      */
     protected open fun disconnect(): AutoCloseable? = null
+
+    /**
+     * 让底层客户端取消 [createBackend] 所建后端的 L1 命令（见 [CommandCancellation]）：`FutureL1Store` 的实现取消它返回的 future，
+     * Redis 在连接重置时由 Lettuce 取消在途的命令。不支持时返回 `null`（默认），该用例跳过。
+     */
+    protected open fun commandCancellation(): CommandCancellation? = null
 
     /**
      * 访问缓存的方式：同步 API（默认），或某个变体（如 [CacheAccess.ASYNC]）。后端实现者只需要默认的 [CacheAccess.SYNC]：
@@ -109,6 +121,14 @@ abstract class FaultSpec {
         backend.close()
     }
 
+    /**
+     * 存储提供的能力与 [expectedCapabilities] 完全相同（多出来的也算失败），每个访问器每次返回同一个对象或总是 `null`。
+     */
+    @Test
+    fun storeProvidesExactlyTheDeclaredCapabilities() {
+        CapabilityDeclaration.verify(backend.delegate, expectedCapabilities)
+    }
+
     private fun newNode(retryPolicy: RetryPolicy): CacheRuntime = CacheRuntime.builder()
         .backend(backend)
         .clock(clock)
@@ -129,8 +149,9 @@ abstract class FaultSpec {
 
     private fun spec(
         policy: CachePolicy = policy(),
+        name: String = cacheName,
         block: CacheSpec.Builder<String, String>.() -> Unit = {}
-    ): CacheSpec<String, String> = cacheSpec(cacheName) {
+    ): CacheSpec<String, String> = cacheSpec(name) {
         codec = TestCodec
         loader = this@FaultSpec.loader
         this.policy = policy
@@ -138,9 +159,8 @@ abstract class FaultSpec {
         access.source(this)
     }
 
-    private fun CacheRuntime.cache(policy: CachePolicy = policy()): Cache<String, String> = access.cache(
-        create(spec(policy))
-    )
+    private fun CacheRuntime.cache(policy: CachePolicy = policy(), name: String = cacheName): Cache<String, String> =
+        access.cache(create(spec(policy, name)))
 
     /**
      * 没有数据源的缓存（L1 是唯一副本，只由写入方写入）。
@@ -380,6 +400,47 @@ abstract class FaultSpec {
         remoteValue("k").assert().isEqualTo("v1")
         awaitCondition("A reads the remote value") { cacheA["k"] == "v1" }
         cacheB["k"].assert().isEqualTo("v1")
+    }
+
+    /**
+     * 底层客户端取消了在途的命令（RFC 0005 §4.3）：这是结果未知的 L1 故障，不是调用方的取消。引擎按策略降级：
+     * - 读取回源，结果以降级限龄写入 L2；合并在它上面的跟随者照常得到这个结果，不自行回源；
+     * - `put` 以 [CacheWriteException] 失败；
+     * - 调用方从不看到 `CancellationException`（否则引擎把它当作调用方被取消：不降级，跟随者各自重新运行）。
+     *
+     * 恢复之后，被取消的读取请求的 lease 已被释放（K14：可能已在 L1 生效的命令也释放令牌），不必等到 `lease.ttl`，引擎照常写回 L1。
+     * 写入用另一个缓存（另一个命名空间）：同一个引擎上写入递增的分段失效戳可能与读取的 key 碰撞，使降级填充被放弃。
+     */
+    @Test
+    fun cancelledCommandsAreL1FaultsNotCancellations() {
+        val policy = policy()
+        val cache = nodeA.cache()
+        val writes = nodeA.cache(policy, "$cacheName-w")
+        database["k"] = "v"
+        val cancellation = commandCancellation()
+        assumeTrue(cancellation != null, "backend cannot cancel its underlying commands")
+        requireNotNull(cancellation).use {
+            cancellation.hold()
+            val leader = fork("leader") { cache["k"] }
+            awaitCondition("the leader's read held") { backend.reads.get() >= 1 }
+            val followers = (1..3).map { fork("follower-$it") { cache["k"] } }
+            val writer = fork("writer") { writes.put("w", "w1") }
+            awaitCondition("followers and the writer waiting") {
+                backend.puts.get() >= 1 && (followers + writer).all { it.parked }
+            }
+            cancellation.cancel()
+            (listOf(leader) + followers).forEach { reader -> reader.join().assert().isEqualTo("v") }
+            writer.joinFailure().assert().isInstanceOf(CacheWriteException::class.java)
+            loads.get().assert().isEqualTo(1)
+            nodeA.metrics().remoteFailures.assert().isGreaterThanOrEqualTo(1)
+            nodeA.metrics().degradedFills.assert().isEqualTo(1)
+        }
+        awaitCondition("L1 available again") { runCatching { remote("probe") }.isSuccess }
+        awaitCondition("the lease of the cancelled read released") { remote("k") == L1Read.Miss(false) }
+        elapse(policy.degradedLocalMaxAge.plusSeconds(1))
+        cache["k"].assert().isEqualTo("v")
+        remoteValue("k").assert().isEqualTo("v")
+        loads.get().assert().isEqualTo(2)
     }
 
     private companion object {

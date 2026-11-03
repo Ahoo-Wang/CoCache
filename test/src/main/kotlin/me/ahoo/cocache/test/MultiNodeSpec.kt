@@ -57,6 +57,12 @@ abstract class MultiNodeSpec {
     protected abstract fun createBackend(): CoherenceBackend
 
     /**
+     * 后端的存储提供的可选能力（RFC 0005 §4.3），没有默认值：规范断言存储提供的能力与它完全相同（多出来的也算失败）、
+     * 每个访问器稳定。本规范的用例不需要可选能力。
+     */
+    protected abstract val expectedCapabilities: Set<L1Capability>
+
+    /**
      * 引擎与后端共用的时钟。
      */
     protected abstract val clock: CacheClock
@@ -104,6 +110,14 @@ abstract class MultiNodeSpec {
     open fun destroy() {
         nodes.forEach { it.close() }
         backend.close()
+    }
+
+    /**
+     * 存储提供的能力与 [expectedCapabilities] 完全相同（多出来的也算失败），每个访问器每次返回同一个对象或总是 `null`。
+     */
+    @Test
+    fun storeProvidesExactlyTheDeclaredCapabilities() {
+        CapabilityDeclaration.verify(backend.delegate, expectedCapabilities)
     }
 
     private fun newNode(): CacheRuntime = CacheRuntime.builder()

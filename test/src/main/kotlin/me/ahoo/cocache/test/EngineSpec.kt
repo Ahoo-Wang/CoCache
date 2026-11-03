@@ -51,7 +51,6 @@ import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -72,6 +71,13 @@ import java.util.concurrent.atomic.AtomicInteger
 @Suppress("LargeClass")
 abstract class EngineSpec {
     protected abstract fun createBackend(): CoherenceBackend
+
+    /**
+     * 后端的存储提供的可选能力（RFC 0005 §4.3），没有默认值：规范断言存储提供的能力与它完全相同（多出来的也算失败）、
+     * 每个访问器稳定。条件读写的用例只在没有声明 [L1Capability.CONDITIONAL] 时跳过（另需集合内容的用例同样要求
+     * [L1Capability.SETS]）；声明了的条件写入必须原子，不原子的实现无法通过强制竞争的并发用例。
+     */
+    protected abstract val expectedCapabilities: Set<L1Capability>
 
     /**
      * 引擎与后端共用的时钟。
@@ -101,15 +107,10 @@ abstract class EngineSpec {
     protected open val closesBackend: Boolean = false
 
     /**
-     * 后端是否支持条件读写（存储的 `conditional()` 非 `null`）。不支持时引擎在调用时抛出 `UnsupportedOperationException`：
-     * 这样的后端覆盖为 `false`，跳过条件读写的用例。为 `true`（默认）时条件写入必须原子，不原子的实现无法通过强制竞争的并发用例。
-     * M3e 改为声明能力（`expectedCapabilities`）。
+     * 用例需要的能力：[expectedCapabilities] 缺少其中任何一个时跳过这个用例。
      */
-    protected open val supportsConditionalWrites: Boolean = true
-
-    private fun assumeConditionalWrites() {
-        Assumptions.assumeTrue(supportsConditionalWrites, "the backend does not support putIfMatch")
-    }
+    protected fun assumeDeclared(vararg capabilities: L1Capability) =
+        CapabilityDeclaration.assume(expectedCapabilities, capabilities)
 
     protected lateinit var backend: HookedBackend
     protected lateinit var nodeA: CacheRuntime
@@ -229,6 +230,14 @@ abstract class EngineSpec {
         backend.delegate.store(
             cacheName
         ).put(storageKey(key), Envelope.Scalar(bytes), null, InvalidationFrame.encode(NodeId.random(), emptyList()))
+    }
+
+    /**
+     * 存储提供的能力与 [expectedCapabilities] 完全相同（多出来的也算失败），每个访问器每次返回同一个对象或总是 `null`。
+     */
+    @Test
+    fun storeProvidesExactlyTheDeclaredCapabilities() {
+        CapabilityDeclaration.verify(backend.delegate, expectedCapabilities)
     }
 
     @Test
@@ -1260,7 +1269,7 @@ abstract class EngineSpec {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // 条件读写（getIfChanged / putIfMatch）：没有数据源的缓存（L1 是唯一副本）上的“读—改—写”。
+    // 条件读写（getIfChanged / putIfMatch）：没有数据源的缓存（L1 是唯一副本）上的“读—改—写”。需要 L1Capability.CONDITIONAL。
     // ---------------------------------------------------------------------------------------------
 
     protected fun storeOfRecord(policy: CachePolicy = policy()): Cache<String, String> = nodeA.cache(
@@ -1274,6 +1283,7 @@ abstract class EngineSpec {
      */
     @Test
     fun getIfChangedConfirmsAgainstRemoteBypassingLocal() {
+        assumeDeclared(L1Capability.CONDITIONAL)
         val cache = storeOfRecord()
         cache.getIfChanged("k", null).assert().isEqualTo(ConditionalGet.Absent)
         cache.put("k", "v1")
@@ -1297,7 +1307,7 @@ abstract class EngineSpec {
      */
     @Test
     fun negativeEntriesAndLeasesHoldNoValue() {
-        assumeConditionalWrites()
+        assumeDeclared(L1Capability.CONDITIONAL)
         val cache = storeOfRecord()
         val l1 = backend.delegate.store(cacheName)
         Suspending.await {
@@ -1333,7 +1343,7 @@ abstract class EngineSpec {
      */
     @Test
     fun putIfMatchWritesOnlyWhenTheDigestMatches() {
-        assumeConditionalWrites()
+        assumeDeclared(L1Capability.CONDITIONAL)
         val cache = storeOfRecord()
         val other = nodeB.cache(spec { loader = null })
         cache.putIfMatch("k", null, "v1").assert().isEqualTo(ConditionalPut.Written(digestOf("v1")))
@@ -1361,7 +1371,7 @@ abstract class EngineSpec {
      */
     @Test
     fun putIfMatchConflictDoesNotBroadcast() {
-        assumeConditionalWrites()
+        assumeDeclared(L1Capability.CONDITIONAL)
         val cache = storeOfRecord()
         val other = nodeB.cache(spec { loader = null })
         cache.put("k", "v1")
@@ -1383,7 +1393,7 @@ abstract class EngineSpec {
      */
     @Test
     fun replayOfAnAppliedConditionalWriteBroadcasts() {
-        assumeConditionalWrites()
+        assumeDeclared(L1Capability.CONDITIONAL)
         backend.atomicBroadcastOverride = false
         val cache = storeOfRecord()
         val other = nodeB.cache(spec { loader = null })
@@ -1403,7 +1413,7 @@ abstract class EngineSpec {
      */
     @Test
     fun concurrentReadModifyWriteLosesNoUpdate() {
-        assumeConditionalWrites()
+        assumeDeclared(L1Capability.CONDITIONAL)
         val caches = listOf(storeOfRecord(), nodeB.cache(spec { loader = null }))
         val threads = 8
         val increments = 25
@@ -1453,7 +1463,7 @@ abstract class EngineSpec {
      */
     @Test
     fun putIfMatchSetsTtlLikePutAndConflictsKeepIt() {
-        assumeConditionalWrites()
+        assumeDeclared(L1Capability.CONDITIONAL)
         val cache = storeOfRecord()
         cache.putIfMatch("k", null, "v1", Duration.ofMinutes(1))
         val ttl = requireNotNull((remote("k") as L1Read.Hit).ttl)
@@ -1482,7 +1492,7 @@ abstract class EngineSpec {
      */
     @Test
     fun conditionalOperationsFailOnUnreadableContent() {
-        assumeConditionalWrites()
+        assumeDeclared(L1Capability.CONDITIONAL, L1Capability.SETS)
         val cache = nodeA.cache(spec())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         addMembersSilently("set", frame)
@@ -1517,7 +1527,7 @@ abstract class EngineSpec {
      */
     @Test
     fun conditionalOperationsIgnoreReclaim() {
-        assumeConditionalWrites()
+        assumeDeclared(L1Capability.CONDITIONAL, L1Capability.SETS)
         val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
         val cache = nodeA.cache(spec(reclaim))
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
@@ -1554,7 +1564,7 @@ abstract class EngineSpec {
      */
     @Test
     fun conditionalOperationsThrowWhenRemoteFails() {
-        assumeConditionalWrites()
+        assumeDeclared(L1Capability.CONDITIONAL)
         val cache = nodeA.cache(spec())
         backend.failAll = true
         runCatching {

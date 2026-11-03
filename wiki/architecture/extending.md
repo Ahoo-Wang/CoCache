@@ -1,13 +1,13 @@
 ---
 title: Extending CoCache
-description: Implementing a CoherenceBackend (RemoteStore and InvalidationChannel) or a Codec — the exact SPI contracts, the cocache-test TCK suites and how to run them, codec rules, and what not to customize.
+description: Implementing a CoherenceBackend (L1Store and InvalidationChannel, or FutureL1Store from Java) or a Codec — the exact SPI contracts, capabilities, failure and cancellation rules, the cocache-test TCK suites and how to run them, codec rules, and what not to customize.
 ---
 
 # Extending CoCache
 
 | You want to | Implement | Verify with |
 |-------------|-----------|-------------|
-| Store L1 somewhere other than Redis, or talk to Redis differently | [`CoherenceBackend`](#backend) | [`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`](#tck) |
+| Store L1 somewhere other than Redis, or talk to Redis differently | [`CoherenceBackend`](#backend) | [`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`](#tck) |
 | Change how values become bytes | [`Codec<V>`](#codecs) | Your own round-trip tests |
 | Load, encode keys, reject impossible keys, choose lifetimes per entry | [Functions](#functions): `CacheLoader`, `KeyEncoder`, `KeyFilter`, `TtlFunction` | Your own tests |
 
@@ -19,89 +19,180 @@ In a Spring Boot application, a `CoherenceBackend` bean replaces the Redis backe
 
 ```kotlin
 interface CoherenceBackend : AutoCloseable {
-    val atomicBroadcast: Boolean               // can a write publish its frame in the same atomic step?
-    val format: Int                            // wire format version this implementation writes
-    val channel: InvalidationChannel
-    fun store(namespace: String): RemoteStore  // called once per cache
+    val atomicBroadcast: Boolean            // can a write publish its frame in the same atomic step?
+    val format: Int                         // wire format version this implementation writes
+    val channel: InvalidationChannel        // Java: FutureInvalidationChannel.adapt(…)
+    fun store(namespace: String): L1Store   // called once per cache; Java: FutureL1Store.adapt(…)
+    override fun close() = Unit
 }
 ```
 
-L1 storage and the invalidation channel are two faces of one object, because the side that serializes a write should also announce it.
+L1 storage and the invalidation channel are two faces of one object, because the side that serializes a write should also announce it. Connections and threads belong to the backend and close with it: a store has no `close`.
 
 - **`atomicBroadcast`.** If `true`, every write method of the store must publish its `frame` in the same atomic step as the change. If `false`, the engine calls `channel.publish(namespace, frame)` after each successful write. Atomic is better: a crash between write and publish loses the message. Declare only what you can guarantee. The TCK checks both kinds.
-- **`format`.** The engine compares it with `RemoteRead.Hit.format`: a higher stored format is loaded around and never overwritten, and `0` means content your protocol didn't write, which the engine treats as corrupt. Start at `1`, and bump it only through a two-phase upgrade.
+- **`format`.** The engine compares it with `L1Read.Hit.format`: a higher stored format is loaded around and never overwritten, and `0` means content your protocol didn't write, which the engine treats as corrupt. Start at `1`, and bump it only through a two-phase upgrade.
 
-### `RemoteStore` {#remote-store}
+### `L1Store` {#l1-store}
+
+The store's operations are `suspend` functions. A Kotlin backend implements `L1Store` directly; a Java backend implements [`FutureL1Store`](#java) and adapts it.
 
 ```kotlin
-interface RemoteStore : AutoCloseable {
-    fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead
-    fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead>
-    fun fill(fill: Fill): Boolean
-    fun fillAll(fills: List<Fill>): List<Boolean>
-    fun release(key: String, token: Token)
-    fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray)
-    fun putAll(puts: List<Put>, frame: ByteArray)   // default: put per entry
-    fun invalidate(keys: Collection<String>, frame: ByteArray)
-    fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean
-    fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
-    fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
-    // since 6.7.0; readIfChanged default: read, compare on the client; putIfMatch default: throws UnsupportedOperationException
-    fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead
-    fun putIfMatch(key: String, expected: Digest?, envelope: Envelope.Scalar, ttl: Duration?, frame: ByteArray): RemoteConditionalWrite
-    // since 6.8.0; default: throws UnsupportedOperationException. Also set CoherenceBackend.versionedWrites = true.
-    fun putIfNewer(key: String, envelope: Envelope, version: Long, ttl: Duration?, frame: ByteArray): RemoteVersionedWrite
+interface L1Store {
+    suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, timeout: Duration?): L1Read
+    suspend fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>, timeout: Duration?): Map<String, L1Read>
+    suspend fun fill(fill: Fill): L1Fill
+    suspend fun fillAll(fills: List<Fill>): List<L1Fill>
+    suspend fun release(key: String, token: Token)
+    suspend fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean
+    suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray)
+    suspend fun putAll(puts: List<Put>, frame: ByteArray)
+    suspend fun invalidate(keys: Collection<String>, frame: ByteArray)
+    fun conditional(): ConditionalL1Store?  // getIfChanged / putIfMatch, or null
+    fun versioned(): VersionedL1Store?      // versioned caches, or null
+    fun sets(): SetL1Store?                 // SetCache, or null
+}
+interface ConditionalL1Store {
+    suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead
+    suspend fun putIfMatch(key: String, expected: Digest?, envelope: Envelope.Scalar, ttl: Duration?, frame: ByteArray): L1ConditionalWrite
+}
+interface VersionedL1Store {
+    suspend fun putIfNewer(key: String, envelope: Envelope, version: Long, ttl: Duration?, frame: ByteArray): L1VersionedWrite
+}
+interface SetL1Store {
+    suspend fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
+    suspend fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
 }
 ```
 
-Keys arrive complete, with prefix and namespace. A store handles bytes and tokens only, and holds no policy: every TTL, window, and token is an argument. The types:
+Keys arrive complete, with prefix and namespace. A store handles bytes and tokens only, and holds no policy: every TTL, window, time limit and token is an argument. Every operation is abstract; the SPI has no non-atomic defaults. The types:
 
 | Type | Shape |
 |------|-------|
-| `Envelope` | `Scalar(bytes, version)`, `Members(list of bytes)`, or `Absent` (a negative entry). `version` (since 6.8) defaults to `Versioned.NO_VERSION`; it takes part in equality but not in the digest. |
-| `RemoteRead` | `Hit(envelope, format, ttl, refreshGranted)`, `Miss(leaseGranted)`, or `Leased(remaining)`. `ttl == null` means no expiry. |
+| `Envelope` | `Scalar(bytes, version)`, `Members(list of bytes)`, or `Absent` (a negative entry). `version` defaults to `Versioned.NO_VERSION`; it takes part in equality but not in the digest. |
+| `L1Read` | `Hit(envelope, format, ttl, refreshGranted)`, `Miss(leaseGranted)`, or `Leased(remaining)`. `ttl == null` means no expiry. |
 | `Token` | 24 bytes: `NodeId` (16) + sequence (8). Unique, never reused. Compare by bytes. |
 | `LeaseRequest(token, ttl)` | Lease to place on a miss, expiring after `ttl` |
 | `RefreshRequest(window, token, tokenTtl)` | Refresh token to place on a value inside `window`. A token older than `tokenTtl` may be taken over. |
-| `Fill(key, token, envelope, ttl[, version])` | Write `envelope` with `ttl` only if `key` holds `token`. `version` (since 6.8, not part of `copy`) defaults to the scalar's version; `Absent` with a version is a tombstone. |
+| `Fill(key, token, envelope, ttl[, version])` | Write `envelope` with `ttl` only if `key` holds `token`. `version` (not part of `copy`) defaults to the scalar's version; `Absent` with a version is a tombstone. |
+| `L1Fill` | `Filled(advanced)` when the fill wrote, `Rejected(currentVersion)` when it didn't. With today's format a fill never advances a version and is never refused by one: return `Filled(advanced = false)` or `Rejected(currentVersion = null)`. The other values are reserved for the next wire format. |
 | `Put(key, envelope, ttl)` | One entry of `putAll`: overwrite `key` like `put` |
-| `Digest` | SHA-1 of the content: scalar → payload bytes, set → each member as `int32 length + bytes` in returned order, negative entry → empty |
-| `RemoteConditionalRead` | `Unchanged(format)`, `Changed(envelope, format)` (a scalar value), `Absent` (absent, lease, or negative entry), or `Unreadable(format)` |
-| `RemoteConditionalWrite` | `Written`, `Conflict(current)` (`current == null`: no value), or `Unreadable(format)` |
-| `RemoteVersionedWrite` | `Written`, `Stale(current)`, or `Unreadable(format)` |
+| `ContentFingerprint` | SHA-1 of the content, compared by `reclaim`: scalar → payload bytes, set → each member as `int32 length + bytes` in returned order, negative entry → empty. `ContentFingerprint.of(envelope)` computes it. |
+| `Digest` | The content digest compared by conditional reads and writes (`Digest.of(envelope)`, computed the same way today) |
+| `L1ConditionalRead` | `Unchanged(format)`, `Changed(envelope, format)` (a scalar value), `Absent` (absent, lease, or negative entry), or `Unreadable(format)` |
+| `L1ConditionalWrite` | `Written`, `Conflict(current)` (`current == null`: no value), or `Unreadable(format)` |
+| `L1VersionedWrite` | `Written`, `Stale(current)`, or `Unreadable(format)` |
 
 The contract, method by method. The state machine is in [Consistency](./consistency.md#l1-fence).
 
 | Method | Must |
 |--------|------|
 | `read` | Absent key and `lease != null`: place the lease (expiring after `lease.ttl`) and return `Miss(true)`. Absent and no lease: `Miss(false)`, write nothing. Leased key: `Leased(remaining)`. Value: `Hit` with the remaining TTL. A scalar value whose remaining TTL is `> 0` and `≤ refresh.window`, with no token or a token older than `refresh.tokenTtl`: store the refresh token (keeping the TTL) and return `refreshGranted = true`. Never on a value without expiry. Content you didn't write: `Hit(…, format = 0)`. With both requests `null`, `read` is pure and writes nothing. |
-| `readAll` | `read` for each key, requesting a lease only for keys in `leases`. Return every key. If any key fails, release the leases already granted in this call (otherwise every instance waits for `lease-ttl`), then throw. |
-| `fill` / `fillAll` | Write only if the key currently holds exactly `fill.token`, as a lease or a refresh token, and reset the expiry to `fill.ttl`. Return whether you wrote. A backend with `versionedWrites` stores `fill.version` with the content: a versioned loader's `Versioned(null, n)` arrives as `Absent` with version `n` and must become the same tombstone `putIfNewer` writes. |
+| `readAll` | `read` for each key, requesting a lease only for keys in `leases`. Return every key. A failure releases the leases this call may have taken ([below](#failures)). |
+| `fill` / `fillAll` | Write only if the key currently holds exactly `fill.token`, as a lease or a refresh token, and reset the expiry to `fill.ttl`. Return `Filled(advanced = false)` when you wrote and `Rejected(currentVersion = null)` when the token didn't match; `fillAll` returns one result per fill, in order. A store with `versioned()` stores `fill.version` with the content: a versioned loader's `Versioned(null, n)` arrives as `Absent` with version `n` and must become the same tombstone `putIfNewer` writes. |
 | `release` | Token matches a lease: delete the key. Token matches a refresh token on a value: clear the token, keep the value and its TTL. Otherwise do nothing. |
+| `reclaim` | Only if the key's current content has fingerprint `observed` and isn't a lease: replace it with the lease. Return whether you did. Never delete content that changed. |
 | `put` | Overwrite any state, destroying any token, set the expiry, broadcast `frame`. A `Members` envelope replaces the whole set. |
-| `putAll` | `put` for each entry, atomic per key, not across keys. `frame` carries every key: broadcast each key exactly once with its write (you may split the frame, for example per slot group). Optional: the default calls `put` once per entry with a one-key frame. |
+| `putAll` | `put` for each entry, atomic per key, not across keys. `frame` carries every key: broadcast each key exactly once with its write (you may split the frame, for example per slot group). There is no default that calls `put` per entry, because each call would broadcast every key. |
 | `invalidate` | Delete every key, destroying any token, and broadcast `frame`. Atomic per key. Batches may split. |
-| `reclaim` | Only if the key's current content has digest `observed` and isn't a lease: replace it with the lease. Return whether you did. Never delete content that changed. |
-| `addMembersIfReadable` | One atomic check-and-write. Key holds a set of your protocol: add the members. Absent key, negative entry, or lease: replace it with a set of these members. Either way destroy any token, set the expiry (`null` removes it), broadcast, and return `null`. Content that isn't a set of your protocol (content you didn't write, a scalar value, or a set in a newer format than yours): change nothing, broadcast nothing, and return that content's format (`0` for content you didn't write). A `SetCache` has no source, so overwriting such content would delete its only copy; there is no unchecked member write. |
-| `removeMembersIfReadable` | Same check as `addMembersIfReadable`. Key holds a set of your protocol: remove the members, delete the key when the set becomes empty, otherwise reset the expiry. Absent key, negative entry, or lease: change nothing. Broadcast and return `null` in both cases. Unreadable content: change nothing, broadcast nothing, return its format. |
-| `readIfChanged` | Pure, like `read` with no requests. A scalar value of your protocol whose payload digest equals `known`: return `Unchanged(format)` without sending the payload back (the digest covers only the payload, so the engine checks the format). Another scalar value: `Changed(envelope, format)`. Absent key, lease, or negative entry: `Absent`. Anything else (content you didn't write, a set, a newer format): `Unreadable(format)`. Optional: the default calls `read` and compares on the client, so it always transfers the payload. Override it to compare in your store, which is the point of the method. |
-| `putIfMatch` | One atomic compare-and-write. Current content matches when `expected == null` and the key holds no value (absent, lease, negative entry), or when it's a scalar value whose payload digest equals `expected`. Content `readIfChanged` would call `Unreadable` (content you didn't write, a set, a newer format): return `Unreadable(format)`. It never counts as no value: `expected == null` would then overwrite it, and an older instance would downgrade a newer value during a rolling upgrade. On a match, write like `put` (destroy tokens, set the expiry, broadcast `frame`) and return `Written`. Otherwise change nothing, broadcast nothing, and return `Conflict(digest of the current value, or null)`. The default throws `UnsupportedOperationException`, which the engine passes to the caller unchanged: a read-then-put default would let two concurrent writers both succeed. Implement it only if your store can compare and write atomically. A native `AsyncRemoteStore` must override `putIfMatchAsync` too: its default fails with the same exception rather than block on the sync method. |
-| `putIfNewer` | Only for backends that set `CoherenceBackend.versionedWrites = true` (default `false`: [versioned caches](../guide/freshness.md#versioned-writes) then fail at creation). One atomic compare-and-write by version. The key's version is the one stored with a scalar value or negative entry; a value or negative entry without a version, a lease, and an absent key count as `NO_VERSION` and are always written. If `version` is greater: write `envelope` (a scalar, or `Absent` for a tombstone) like `put`, store `version` with it, and return `Written`. Otherwise change nothing, broadcast nothing, and return `Stale(current)`. Classify unreadable content as `putIfMatch` does. Versioned content holds no token: `fill` and `release` must not match it, `read` must never grant a refresh token on it, and `reclaim` must refuse it, because a lease can't carry the version. `fill`, `put` and `putAll` store `Envelope.Scalar.version` and `read` returns it; `putIfMatch` writes a value without a version. The defaults throw (sync) or fail (async) with `UnsupportedOperationException`, for the same reason as `putIfMatch`. |
+| `addMembers` | One atomic check-and-write. Key holds a set of your protocol: add the members. Absent key, negative entry, or lease: replace it with a set of these members. Either way destroy any token, set the expiry (`null` removes it), broadcast, and return `null`. Content that isn't a set of your protocol (content you didn't write, a scalar value, or a set in a newer format than yours): change nothing, broadcast nothing, and return that content's format (`0` for content you didn't write). A `SetCache` has no source, so overwriting such content would delete its only copy; there is no unchecked member write. |
+| `removeMembers` | Same check as `addMembers`. Key holds a set of your protocol: remove the members, delete the key when the set becomes empty, otherwise reset the expiry. Absent key, negative entry, or lease: change nothing. Broadcast and return `null` in both cases. Unreadable content: change nothing, broadcast nothing, return its format. |
+| `readIfChanged` | Pure, like `read` with no requests. A scalar value of your protocol whose payload digest equals `known`: return `Unchanged(format)` without sending the payload back (the digest covers only the payload, so the engine checks the format). Another scalar value: `Changed(envelope, format)`. Absent key, lease, or negative entry: `Absent`. Anything else (content you didn't write, a set, a newer format): `Unreadable(format)`. Compare in your store, so an unchanged value never travels. |
+| `putIfMatch` | One atomic compare-and-write. Current content matches when `expected == null` and the key holds no value (absent, lease, negative entry), or when it's a scalar value whose payload digest equals `expected`. Content `readIfChanged` would call `Unreadable` (content you didn't write, a set, a newer format): return `Unreadable(format)`. It never counts as no value: `expected == null` would then overwrite it, and an older instance would downgrade a newer value during a rolling upgrade. On a match, write like `put` (destroy tokens, set the expiry, broadcast `frame`) and return `Written`. Otherwise change nothing, broadcast nothing, and return `Conflict(digest of the current value, or null)`. A read-then-write would let two concurrent writers both succeed: if your store can't compare and write atomically, return `null` from `conditional()`. |
+| `putIfNewer` | One atomic compare-and-write by version. The key's version is the one stored with a scalar value or negative entry; a value or negative entry without a version, a lease, and an absent key count as `NO_VERSION` and are always written. If `version` is greater: write `envelope` (a scalar, or `Absent` for a tombstone) like `put`, store `version` with it, and return `Written`. Otherwise change nothing, broadcast nothing, and return `Stale(current)`. Classify unreadable content as `putIfMatch` does. Versioned content holds no token: `fill` and `release` must not match it, `read` must never grant a refresh token on it, and `reclaim` must refuse it, because a lease can't carry the version. `fill`, `put` and `putAll` store `Envelope.Scalar.version` and `read` returns it; `putIfMatch` writes a value without a version. |
 
 Across all methods:
 
 - **Atomic per key.** Batch methods are atomic per key, not across keys.
 - **Reset the expiry on every state change**, at millisecond precision. A lease's or a negative entry's lifetime must never leak onto a new value.
 - **Never delete on read.**
-- **Throw on failure.** Don't swallow errors or retry internally: the engine decides whether to degrade, retry, or rethrow, and counts it.
+- **Throw on failure.** Don't swallow errors or retry internally: the engine decides whether to degrade, retry, or rethrow, and counts it. [Failures, time limits and cancellation](#failures) has the rest.
 - **Reject commands while disconnected** rather than buffering and replaying them.
+
+`InMemoryBackend` implements the whole protocol in one process and is the reference implementation. Several runtimes sharing one instance behave like several instances, which also makes it a good backend for application tests.
+
+### Capabilities {#capabilities}
+
+Conditional reads and writes, versioned writes and set-member writes are optional. A store exposes each through an accessor that returns its surface, or `null` when it doesn't support it:
+
+- **Never throw from an accessor,** and return the same result for the store's whole life: the same object every call, or always `null`. The engine may read it once.
+- **The accessors are abstract,** with no default `null`: otherwise a decorator that wraps only the basic operations would silently strip capabilities.
+- **The surfaces are separate interfaces,** not sub-interfaces of `L1Store`, so a [decorator](#decorators) that wants to intercept them overrides the accessor instead of being bypassed.
+- `CacheRuntime.create` checks what a cache needs: a versioned cache needs `versioned()` and a `SetCache` needs `sets()`. When one is missing, creation fails with `UnsupportedOperationException` and registers nothing. A plain cache starts without `conditional()`; its `getIfChanged` and `putIfMatch` then throw `UnsupportedOperationException`. The log line for each created cache lists what its store provides, for example `L1 capabilities[conditional, versioned, sets]`.
+
+The TCK checks that the store provides exactly the capabilities you [declare](#expected-capabilities).
+
+### Failures, time limits and cancellation {#failures}
+
+- **Two kinds of failure.** A command is *definitely not executed* when it was rejected before it was written (for example because the connection is down) or failed synchronously before it was sent. Every other failure has an *unknown outcome*: a timeout, a command drained when the connection dropped, a script's error reply, a command your client cancelled, a reply that fails to decode.
+- **Release tokens after a failure.** When a command that takes or gives back a token (`read`, `readAll`, `fill`, `fillAll`, `release`, `reclaim`) fails with an unknown outcome, release that token asynchronously, without waiting, and resend a failed release with backoff until it runs or the token expires. A release whose token no longer matches does nothing, so a late, repeated or post-reconnect release is harmless. Without it, a lease taken by a command whose reply was lost blocks the key on every instance until `lease.ttl`.
+- **Never report a failure as `CancellationException`.** On the JVM that is coroutine cancellation: the engine would take it for the caller's own cancellation, skip the fallback to the source, and let the readers waiting on that load run their own. A command your client cancels (on a connection reset or close) is a failure with an unknown outcome: throw another exception, with the cancellation as its cause if you like.
+- **Bound every call.** A call must end on its own, through a command timeout for example, never hang. Reads take a `timeout` for that call: `null` means your command timeout; a value is positive, capped at your command timeout, and you bound the call by the shorter of the two. A timeout cancels the underlying command, so a command not written yet is never written.
+- **The engine never cancels a call.** It calls the store inside `NonCancellable`, and thread interrupts don't reach the store, so waiting with a cancellable `await()` is safe.
+- **Write methods return or throw only after every command they sent has ended.** Otherwise a broadcast the engine sends afterwards could overtake a command still running.
+
+### Java backends: `FutureL1Store` {#java}
+
+Kotlin can't overload a `suspend` method with a blocking one of the same name, so a Java backend implements `FutureL1Store`: the same operations with the same semantics, returning `CompletableFuture`. The capability surfaces have `FutureConditionalL1Store`, `FutureVersionedL1Store` and `FutureSetL1Store`, and the channel has `FutureInvalidationChannel`. Return the adapted forms:
+
+```java
+public final class MyBackend implements CoherenceBackend {
+    private final InvalidationChannel channel = FutureInvalidationChannel.adapt(new MyChannel());
+
+    @Override
+    public L1Store store(String namespace) {
+        return FutureL1Store.adapt(new MyStore(namespace));
+    }
+
+    @Override
+    public InvalidationChannel getChannel() {
+        return channel;
+    }
+    // atomicBroadcast, format, close …
+}
+```
+
+- A future may complete on an I/O thread. Only a backend with a blocking client completes its futures on an executor of its own; never block the caller's thread.
+- Failing the future and throwing synchronously both work: the engine sees the original exception, unwrapped from `CompletionException` and `ExecutionException`.
+- Bound every future, as above. The engine never cancels a returned future.
+- A future you cancel yourself (to implement a timeout, say), and a `CancellationException` thrown synchronously, count as a failure with an unknown outcome: the adapter turns it into an `IllegalStateException` with the cancellation as its cause. Releasing the tokens of such a command is still your job.
+- Never return `null`, and never complete a future whose result type is non-null with `null` (`Void` results and the `Integer` of member writes may be `null`).
+- `adapt` reads each capability accessor once and adapts that surface once, so the adapted store's accessors are stable.
+
+### Decorators: `ForwardingL1Store` {#decorators}
+
+A decorator around another backend's store (metrics, tracing, fault injection) extends `ForwardingL1Store` and overrides only what it intercepts. The capability accessors return the wrapped store's surfaces unchanged, so their operations bypass the decorator. To intercept them, override the accessor and return a `ForwardingConditionalL1Store`, `ForwardingVersionedL1Store` or `ForwardingSetL1Store` created once, in the constructor, and `null` when the wrapped store has none:
+
+```kotlin
+class CountingStore(delegate: L1Store) : ForwardingL1Store(delegate) {
+    val conditionalWrites = AtomicInteger()
+
+    private val conditional = delegate.conditional()?.let { surface ->
+        object : ForwardingConditionalL1Store(surface) {
+            override suspend fun putIfMatch(
+                key: String,
+                expected: Digest?,
+                envelope: Envelope.Scalar,
+                ttl: Duration?,
+                frame: ByteArray
+            ): L1ConditionalWrite {
+                conditionalWrites.incrementAndGet()
+                return super.putIfMatch(key, expected, envelope, ttl, frame)
+            }
+        }
+    }
+
+    override fun conditional(): ConditionalL1Store? = conditional
+}
+```
+
+The TCK's `HookedBackend` is built this way.
 
 ### `InvalidationChannel` {#invalidation-channel}
 
 ```kotlin
 interface InvalidationChannel {
-    fun subscribe(namespace: String, listener: InvalidationListener): Subscription
-    fun publish(namespace: String, frame: ByteArray)   // called only when atomicBroadcast == false
+    fun subscribe(namespace: String, listener: InvalidationListener): Subscription  // blocking, once per cache
+    suspend fun publish(namespace: String, frame: ByteArray)  // called only when atomicBroadcast == false
 }
 interface InvalidationListener {
     fun onInvalidated(keys: List<String>, origin: NodeId)
@@ -109,6 +200,8 @@ interface InvalidationListener {
 }
 fun interface Subscription : AutoCloseable
 ```
+
+`publish` follows the store's rules on time limits, cancellation and failures. A Java backend implements `FutureInvalidationChannel` and returns `FutureInvalidationChannel.adapt(…)`.
 
 - **Frames.** `frame` is built by the engine with `InvalidationFrame.encode(origin, storageKeys)`. Deliver it to every listener of the namespace, decoded with `InvalidationFrame.decode`. Drop malformed frames. Don't filter by origin: listeners ignore their own `NodeId`.
 - **At most once is enough, silence is not.** Call `onReset()` on every listener of a subscription each time it is established or re-established **and confirmed**, and whenever messages may have been lost (a failed heartbeat, a consumer-group rebalance, a gap in a sequence). The listener then clears its L2. Without resets, a lost message leaves L2 stale until `local-max-age`.
@@ -127,17 +220,39 @@ testImplementation("me.ahoo.cocache:cocache-test")
 
 | Suite | Covers | You provide |
 |-------|--------|-------------|
-| `BackendProtocolSpec` | The `RemoteStore` contract: lease grant, token checks, expiry resets, release, refresh tokens, reclaim, batch reads and writes, set updates, broadcast frames, reset on subscribe | `createBackend()`, `elapse(duration)`. Optionally `shortTtl` (default 300 ms). |
-| `EngineSpec` | Two runtimes on your backend: single load across instances, lease-wait timeout, invalidation during a load, same-instance invalidate-vs-read race, concurrent `put`s, read-your-writes, loader failure, Redis failure, invalidation retry, reconnect reset, `local-max-age`, batch reads, refresh-ahead, reclaim, newer format, load limit, conditional reads and writes (including concurrent read-modify-write losing no update) | `createBackend()`, `clock`, `elapse(duration)`, `simulateReconnect()`. If your store doesn't implement `putIfMatch`, override `supportsConditionalWrites = false` to skip the conditional-write cases. Otherwise they must pass, including a concurrent case that forces every writer to race on one digest and asserts exactly one wins. |
-| `VersionedSpec` | Only for backends with `versionedWrites`. The protocol (versions stored by whole writes, compared as signed 64-bit numbers, a versioned write destroying a held lease, no refresh tokens or reclaim on versioned content, tombstones) and two runtimes on your backend: ordering, equal-version idempotence, older-version refusal without a broadcast or TTL change (an equal version broadcasts again without atomic broadcast, so a replay repairs a lost publish), tombstones against older redelivery, a versioned write winning over a fill that holds the lease, fills storing the loader's version, concurrent out-of-order writers converging on the highest version, and safe replay after an unknown outcome. | `createBackend()`, `clock`, `elapse(duration)` |
-| `SetEngineSpec` | `SetCache` across two runtimes: atomic concurrent adds, empty-set deletion, `invalidate` rejected, write and read failures | `createBackend()`, `clock`, `elapse(duration)` |
-| `MultiNodeSpec` | Three runtimes on your backend: invalidation before a lease, after a lease while another instance waits on it, and after a fill but before the L2 write; a remote write landing between a read and its L2 fill; concurrent `put`s from different instances (events arriving in reverse order on non-atomic backends); misses while an invalidation retry is pending; exactly one source load and one refresh per key across all instances | `createBackend()`, `clock`, `elapse(duration)` |
-| `FaultSpec` | Your backend under L1 faults: copies bounded by `degraded-local-max-age` while the store fails, a failed fill and its lease, a failed invalidation on a cache without a loader throwing instead of retrying, invalidation retries that give up or overflow the queue, `put` and `invalidate` that take effect but report an error and are safe to retry, and (optional) writes rejected while disconnected are not replayed after the reconnect | `createBackend()`, `clock`, `elapse(duration)`; optionally `disconnect()` |
-| `AsyncBackendProtocolSpec` | Every `BackendProtocolSpec` case through the `AsyncRemoteStore` methods (no synchronous throws, original exceptions), plus sync and async calls on one key agreeing | The same members as `BackendProtocolSpec`. Only for backends that implement `AsyncRemoteStore`. |
+| `BackendProtocolSpec` | The `L1Store` contract, called directly through `Suspending.await`: lease grant, token checks, `L1Fill` results, expiry resets, release, refresh tokens, reclaim, batch reads and writes, set updates, broadcast frames, reset on subscribe, and (optional) a read `timeout` bounding the call under a stalled L1 and releasing its lease | `createBackend()`, `expectedCapabilities`, `elapse(duration)`. Optionally `shortTtl` (default 300 ms) and `pause()`. |
+| `EngineSpec` | Two runtimes on your backend: single load across instances, lease-wait timeout, invalidation during a load, same-instance invalidate-vs-read race, concurrent `put`s, read-your-writes, loader failure, Redis failure, invalidation retry, reconnect reset, `local-max-age`, batch reads, refresh-ahead, reclaim, newer format, load limit, and with `CONDITIONAL` conditional reads and writes (including a concurrent read-modify-write that forces every writer to race on one digest and asserts exactly one wins) | `createBackend()`, `expectedCapabilities`, `clock`, `elapse(duration)`, `simulateReconnect()` |
+| `VersionedSpec` | With `VERSIONED`: the protocol (versions stored by whole writes, compared as signed 64-bit numbers, a versioned write destroying a held lease, no refresh tokens or reclaim on versioned content, tombstones) and two runtimes on your backend: ordering, equal-version idempotence, older-version refusal without a broadcast or TTL change (an equal version broadcasts again without atomic broadcast, so a replay repairs a lost publish), tombstones against older redelivery, a versioned write winning over a fill that holds the lease, fills storing the loader's version, concurrent out-of-order writers converging on the highest version, and safe replay after an unknown outcome | `createBackend()`, `expectedCapabilities`, `clock`, `elapse(duration)` |
+| `SetEngineSpec` | With `SETS`: `SetCache` across two runtimes: atomic concurrent adds, empty-set deletion, `invalidate` rejected, member writes refusing unreadable content, write and read failures | `createBackend()`, `expectedCapabilities`, `clock`, `elapse(duration)` |
+| `MultiNodeSpec` | Three runtimes on your backend: invalidation before a lease, after a lease while another instance waits on it, and after a fill but before the L2 write; a remote write landing between a read and its L2 fill; concurrent `put`s from different instances (events arriving in reverse order on non-atomic backends); misses while an invalidation retry is pending; exactly one source load and one refresh per key across all instances | `createBackend()`, `expectedCapabilities`, `clock`, `elapse(duration)` |
+| `FaultSpec` | Your backend under L1 faults: copies bounded by `degraded-local-max-age` while the store fails, a failed fill and its lease, a failed invalidation on a cache without a loader throwing instead of retrying, invalidation retries that give up or overflow the queue, `put` and `invalidate` that take effect but report an error and are safe to retry; (optional) writes rejected while disconnected are not replayed after the reconnect; (optional) commands your client cancels are L1 failures, not cancellations | `createBackend()`, `expectedCapabilities`, `clock`, `elapse(duration)`; optionally `disconnect()` and `commandCancellation()` |
 
 There is one set of suites for every API. Each suite has a `protected open val access: CacheAccess`, and a backend only needs the default, `CacheAccess.SYNC`. How the blocking, [async](../guide/async.md), and suspending APIs behave (cancellation, the thread a future completes on, waits that hold no threads, and so on) belongs to the core, and CoCache's own tests cover it. CoCache overrides `access` to rerun the suites through the async view (`CacheAccess.ASYNC`). You can do the same if you also want that coverage on your backend.
 
-The suites wrap your backend in `HookedBackend`, which injects faults (`failAll`, `failWrites`, `failFill`, `failRelease`), rewrites read results, runs hooks after reads and fills and around writes so races are orchestrated with latches instead of sleeps (a throwing `afterPut` or `afterInvalidate` simulates a write that took effect but reported an error), and can override `atomicBroadcast` to exercise the non-atomic path. Use it in your own tests too.
+A Java backend runs the same suites on the store that `FutureL1Store.adapt` returns; CoCache runs the whole TCK on its in-memory backend that way.
+
+### Declaring capabilities {#expected-capabilities}
+
+Every suite has an abstract `expectedCapabilities: Set<L1Capability>` with no default, so a subclass that doesn't declare it doesn't compile. Declare the capabilities your store provides:
+
+```kotlin
+override val expectedCapabilities = setOf(L1Capability.CONDITIONAL, L1Capability.VERSIONED, L1Capability.SETS)
+```
+
+```java
+@Override
+protected Set<L1Capability> getExpectedCapabilities() {
+    return EnumSet.of(L1Capability.CONDITIONAL, L1Capability.SETS);
+}
+```
+
+- **The TCK fails closed.** Each suite's `storeProvidesExactlyTheDeclaredCapabilities` fails when the store provides a capability you didn't declare or lacks one you did, and when an accessor returns a different object on another call or switches between `null` and a surface. It checks two fresh namespaces.
+- **Cases skip only for undeclared capabilities.** The conditional cases of `EngineSpec` need `CONDITIONAL`; the set cases of `BackendProtocolSpec`, and every case of `SetEngineSpec`, need `SETS`; every case of `VersionedSpec` needs `VERSIONED`. A capability you declare must pass its cases, including the concurrent ones that only an atomic implementation passes.
+- `L1Capability` exists only in the TCK. In the SPI, the accessors are the only way a store states a capability.
+
+### Wiring the suites {#tck-hooks}
+
+The suites wrap your backend in `HookedBackend`, which injects faults (`failAll`, `failWrites`, `failFill`, `failRelease`), rewrites read results, runs hooks after reads and fills and around writes so races are orchestrated with latches instead of sleeps (a throwing `afterPut` or `afterInvalidate` simulates a write that took effect but reported an error), counts calls (`reads`, `readAlls`, `fills`, `puts`, `putAlls`), and can override `atomicBroadcast` to exercise the non-atomic path. Use it in your own tests too.
 
 `elapse(duration)` must move time forward for both your store and the engine:
 
@@ -146,18 +261,26 @@ The suites wrap your backend in `HookedBackend`, which injects faults (`failAll`
 
 `simulateReconnect()` must break the subscription so your channel resubscribes, for example by killing its connection on the server.
 
-`disconnect()` in `FaultSpec` is optional. If your backend holds connections, override it to cut the command connection and keep it down until the returned handle is closed (CoCache's Redis tests route the backend through a local TCP proxy that closes its listener). Commands issued meanwhile must fail instead of being buffered. The default returns `null`, and the disconnect case is skipped.
+The optional hooks return `null` by default, and their cases are skipped:
+
+- **`BackendProtocolSpec.pause()`** stalls your backend's commands until the returned handle is closed (or for a fixed time of at least ten times the case's read timeout): commands started meanwhile don't complete. CoCache's Redis tests route the backend through a local TCP proxy that holds client data; `InMemoryBackend.stall()` does the same in process.
+- **`FaultSpec.disconnect()`** cuts the command connection and keeps it down until the returned handle is closed. Commands issued meanwhile must fail instead of being buffered. A proxy that closes its listener works for a real server.
+- **`FaultSpec.commandCancellation()`** returns a `CommandCancellation`: `hold()` makes later commands stay in flight in your client, `cancel()` has the client cancel them, and `close()` restores normal operation (a reconnect is fine). The case then checks that a read whose command was cancelled falls back to the loader and serves the readers waiting on it, that a `put` fails with `CacheWriteException`, that no caller sees a `CancellationException`, and that the cancelled read's lease is gone once L1 is back. CoCache's in-memory backend holds and then cancels the futures of its `FutureL1Store`; its Redis tests drop replies at the proxy, have Lettuce reset its connections, which cancels the commands in flight, and reconnect.
 
 The in-memory backend's TCK classes are a minimal template:
 
 ```kotlin
+private val CAPABILITIES = setOf(L1Capability.CONDITIONAL, L1Capability.VERSIONED, L1Capability.SETS)
+
 class MyBackendProtocolTest : BackendProtocolSpec() {
+    override val expectedCapabilities = CAPABILITIES
     private val clock = ManualClock()
     override fun createBackend(): CoherenceBackend = MyBackend(clock)
     override fun elapse(duration: Duration) = clock.advance(duration)
 }
 
 class MyEngineTest : EngineSpec() {
+    override val expectedCapabilities = CAPABILITIES
     private val manualClock = ManualClock()
     private lateinit var backend: MyBackend
     override val clock: CacheClock = manualClock
@@ -167,14 +290,16 @@ class MyEngineTest : EngineSpec() {
 }
 
 class MySetEngineTest : SetEngineSpec() {
+    override val expectedCapabilities = CAPABILITIES
     private val manualClock = ManualClock()
     override val clock: CacheClock = manualClock
     override fun createBackend(): CoherenceBackend = MyBackend(manualClock)
     override fun elapse(duration: Duration) = manualClock.advance(duration)
 }
 
-// MultiNodeSpec has the same members as SetEngineSpec
+// MultiNodeSpec and VersionedSpec have the same members as SetEngineSpec
 class MyFaultTest : FaultSpec() {
+    override val expectedCapabilities = CAPABILITIES
     private val manualClock = ManualClock()
     override val clock: CacheClock = manualClock
     override fun createBackend(): CoherenceBackend = MyBackend(manualClock)
@@ -184,21 +309,7 @@ class MyFaultTest : FaultSpec() {
 
 Each case creates a backend through `createBackend()`. If yours opens connections or threads, override `closesBackend` to `true` so the suites close it after each case; it defaults to `false` because a backend may be shared. `BackendProtocolSpec` always closes the backend it creates, whatever `closesBackend` says.
 
-Run them with your build's normal test task (JUnit 6). `cocache-redis` runs `BackendProtocolSpec`, `EngineSpec`, `MultiNodeSpec`, and `FaultSpec` in three modes: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. `SetEngineSpec` runs on classic Pub/Sub only. The disconnect case of `FaultSpec` runs on standalone classic Pub/Sub, and `cocache-redis` adds its own case for the `NOSCRIPT` fallback after the script cache is flushed. Run the suites for every mode your backend supports.
-
-## Async backends {#async}
-
-A backend that implements only `RemoteStore` works with the [async view](../guide/async.md) unchanged: the engine calls its synchronous methods on the blocking executor. To serve async callers without those threads, implement the optional sub-interfaces:
-
-- `AsyncRemoteStore extends RemoteStore` adds `readAsync`, `readAllAsync`, `fillAsync`, `fillAllAsync`, `releaseAsync`, `putAsync`, `putAllAsync`, `invalidateAsync`, `reclaimAsync`, `addMembersIfReadableAsync`, `removeMembersIfReadableAsync`, and (with a default built on `readAsync`) `readIfChangedAsync`, plus `putIfMatchAsync` and `putIfNewerAsync`, whose defaults fail with `UnsupportedOperationException`. Each has exactly the semantics of its synchronous counterpart.
-- `AsyncInvalidationChannel extends InvalidationChannel` adds `publishAsync`, which the engine uses on non-atomic backends.
-- **Never throw synchronously.** Fail the returned future instead, with the same exception types as the synchronous methods, not a `CompletionException`.
-- **Bound every operation.** A future that never completes stalls that key on that instance until `load-timeout`.
-- **Complete on any thread.** The engine switches to its own executor before running engine code or user code, so completing on an I/O thread is fine. Keep that completion cheap, and don't call codecs or user code there.
-
-Then run `AsyncBackendProtocolSpec` and the four async engine suites.
-
-`InMemoryBackend` implements the whole protocol in one process. Several runtimes sharing one instance behave like several instances, which makes it a good backend for application tests.
+Run them with your build's normal test task (JUnit 6). `cocache-redis` runs `BackendProtocolSpec`, `EngineSpec`, `MultiNodeSpec`, `FaultSpec` and `VersionedSpec` in three modes: classic Pub/Sub, non-atomic (an ACL denies the probe channel), and sharded. `SetEngineSpec` runs on classic Pub/Sub only, and the async view reruns each engine suite once, on classic Pub/Sub. The disconnect and cancellation cases of `FaultSpec` run on standalone classic Pub/Sub, and `cocache-redis` adds its own case for the `NOSCRIPT` fallback after the script cache is flushed. Run the suites for every mode your backend supports.
 
 ## Codecs {#codecs}
 

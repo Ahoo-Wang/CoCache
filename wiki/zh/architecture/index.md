@@ -50,7 +50,7 @@ flowchart BT
 | `cocache-codec-jackson` | `JacksonCodec`（Jackson 3，`tools.jackson`） |
 | `cocache-spring` | `CoCacheSpringCacheManager`、`TransactionalInvalidator`。供不使用 Boot 的 Spring 应用 |
 | `cocache-spring-boot-starter` | 自动配置、`@EnableCoCache`、注解翻译、spec bean 注册、`cocache.*` 配置项、actuator 端点、健康检查、Micrometer 绑定与 Spring Cache `sync` 检查 |
-| `cocache-test` | 已发布的 TCK：`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`、`VersionedSpec`、`CacheAccess`、`HookedBackend`、`Concurrency`、`Suspending` |
+| `cocache-test` | 已发布的 TCK：`BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`、`VersionedSpec`、`L1Capability`、`CommandCancellation`、`CacheAccess`、`HookedBackend`、`Concurrency`、`Suspending` |
 | `cocache-bom` | 版本对齐 |
 
 依赖方向严格单向。注解解析与 SpEL 只出现在 starter 中，所以 core 既不需要 Spring 也不需要 `kotlin-reflect`。新后端运行时只依赖 `cocache-api`，测试时依赖 `cocache-test`。
@@ -62,7 +62,7 @@ flowchart BT
 | **数据源**（`CacheLoader`） | 返回值，或用 `null` 表示“不存在” | 决定寿命 |
 | **策略**（`CachePolicy`） | 寿命、抖动、负缓存寿命、本地与降级限龄、刷新窗口、lease、回源并发、L2 容量、失败模式 | 执行任何动作 |
 | **引擎**（`CoherentEngine`、`SetEngine`） | 逐层读穿透、合并回源、持有两层栅栏、安排写入顺序、处理失败、提前刷新 | 自己做远程存储 |
-| **存储**（`RemoteStore`） | 在字节与令牌上执行 L1 协议。TTL、窗口与令牌都作为参数传入 | 了解值的类型或持有策略 |
+| **存储**（`L1Store`） | 在字节与令牌上执行 L1 协议。TTL、窗口与令牌都作为参数传入 | 了解值的类型或持有策略 |
 | **通道**（`InvalidationChannel`） | 投递失效帧，并在消息可能丢失时通知订阅者 | 过滤或解释 key |
 | **运行时**（`CacheRuntime`） | 每个进程一个：持有 `NodeId`、时钟、后端、刷新执行器与重试队列，并创建每个缓存 | 让两个缓存共享状态 |
 
