@@ -25,9 +25,16 @@ description: CoCache 版本发布历史和重要变更。
 - SPI：L1 SPI 改为挂起形状（[RFC 0005 §4.3](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。`CoherenceBackend.store(namespace)` 返回 `L1Store`，它的操作都是 `suspend` 函数。条件读写、按版本写入与集合成员的增删移到能力面上，由 `conditional()`、`versioned()` 与 `sets()` 返回，存储不支持时返回 `null`。删除 `CoherenceBackend.versionedWrites`，由 `versioned()` 取代。`InvalidationChannel.publish` 改为 `suspend`，`subscribe` 仍是阻塞的。Java 后端实现 `FutureL1Store` 与 `FutureInvalidationChannel`（方法返回 `CompletableFuture`），返回 `FutureL1Store.adapt(…)` 与 `FutureInvalidationChannel.adapt(…)`；装饰器继承 `ForwardingL1Store`。实现自己取消的 future 按 L1 故障处理，不当作调用方被取消。`L1Store` 没有 `close`：连接属于后端，运行时不再关闭存储。引擎从不取消 L1 调用，实现可以用可取消的 `await()` 等待。只实现阻塞的 `RemoteStore` 的后端不再可用：引擎不再把这样的存储放到阻塞执行器上执行。`RemoteStore`、`AsyncRemoteStore` 与 `AsyncInvalidationChannel` 暂时保留，但核心不再使用，8.0 之后的一个里程碑删除它们。
 - `CacheRuntime.create` 检查缓存需要的 L1 能力：带版本的缓存需要 `versioned()`，`SetCache` 需要 `sets()`；缺少时创建以 `UnsupportedOperationException` 失败，不注册任何东西。每个缓存创建时的日志列出它的命名空间的存储提供的能力，例如 `L1 capabilities[conditional, versioned, sets]`。存储没有 `conditional()` 时普通缓存照常创建，`getIfChanged` 与 `putIfMatch` 在调用时抛出 `UnsupportedOperationException`。6.x 在这样的存储上 `getIfChanged` 退回普通读取。
 
+- `SourceLoadCancelledException` 从 `me.ahoo.cocache.coroutines` 移到 `me.ahoo.cocache.core`，并覆盖全部数据源：`CacheLoader` 自己抛出 `CancellationException`，或 `AsyncCacheLoader` 的 future 以它完成（其中的 `withTimeout`、HTTP 客户端取消了请求）时，共享这次加载的每个调用方都以 `SourceLoadCancelledException` 失败，原始异常是它的 `cause`。6.x 中这些调用方收到的就是那个 `CancellationException`，异步调用方的 future 因此看起来像是被取消了。
+
+### 行为变化：关闭运行时会等待在途的 Redis 步骤
+
+- `CacheRuntime.close()` 在关闭执行器之前至多等待 5 秒，让在途的异步调用做完不能跳过的 Redis 步骤：释放 lease、后端不支持原子广播时写入之后的广播，以及已经发出的命令。后端要晚于运行时关闭；Spring Boot starter 已经如此，因为运行时 bean 依赖后端。之前 `close()` 立即返回，紧接着关闭的后端可能让这些步骤失败：其它节点的本地旧副本留到 `local-max-age`，lease 留到 `lease-ttl`。同步调用在调用方自己的线程上运行，不在等待之列。
+
 ### 行为变化：被中断的加载的等待者改为自己加载
 
 - 多个读取等待同一次加载、而执行它的线程被中断（或它的协程被取消）时，这个线程仍收到原始异常；等待的读取不再随之失败，而是各自重试一次，再合并到被中断的加载时就自己加载。批量读取对受影响的 key 同样处理。6.x 中所有等待者都以被中断线程的异常失败。
+- 只有执行加载的线程被中断、或它的协程被取消时，才算加载被中断。其余失败与 6.x 一样交给等待的读取，包括 loader 自己的 `CancellationException`（见上面的 `SourceLoadCancelledException`），以及调用方线程之外的线程上的 `InterruptedException`。
 
 ### 性能：L2 命中不再拼接 Redis key
 

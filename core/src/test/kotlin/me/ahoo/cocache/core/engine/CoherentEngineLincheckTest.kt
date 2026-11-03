@@ -17,8 +17,10 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.RetryPolicy
+import me.ahoo.cocache.core.SourceLoadCancelledException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.internal.Ticker
@@ -30,8 +32,10 @@ import org.jetbrains.lincheck.datastructures.IntGen
 import org.jetbrains.lincheck.datastructures.ModelCheckingOptions
 import org.jetbrains.lincheck.datastructures.Operation
 import org.jetbrains.lincheck.datastructures.Param
+import org.jetbrains.lincheck.datastructures.Validate
 import org.jetbrains.lincheck.datastructures.forClasses
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CancellationException
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicIntegerArray
@@ -122,12 +126,47 @@ class CoherentEngineLincheckTest {
         .check(this::class)
 
     /**
+     * 定向场景：数据源以自己的 `CancellationException` 结束（RFC 0005 第三轮 K5），见 [CancellingSource]。
+     * - 并发的读取合并到同一次加载，共享它的失败；
+     * - 读取与写入并发，写入的失效不因失败的加载丢失；
+     * 之后恢复数据源，读到最新的版本：失败没有被缓存、lease 已释放、没有留下注册的加载（[CancellingSource.nothingLeft]）。
+     */
+    @Test
+    fun cancellingSourceInterleavings() = options(CancellingSourceSpec::class.java)
+        .iterations(0)
+        .invocationsPerIteration(CANCELLING_INVOCATIONS)
+        .addCustomScenario {
+            parallel {
+                thread { actor(CancellingSource::get, 0) }
+                thread { actor(CancellingSource::get, 0) }
+            }
+            post {
+                actor(CancellingSource::restore, 0)
+                actor(CancellingSource::get, 0)
+            }
+        }
+        .addCustomScenario {
+            parallel {
+                thread { actor(CancellingSource::get, 0) }
+                thread {
+                    actor(CancellingSource::write, 0)
+                    actor(CancellingSource::get, 0)
+                }
+            }
+            post {
+                actor(CancellingSource::restore, 0)
+                actor(CancellingSource::get, 0)
+            }
+        }
+        .check(CancellingSource::class)
+
+    /**
      * 共用的选项。不加这些保证时，Caffeine 的内部缓冲与 `LongAdder` 的分段竞争让状态空间爆炸、执行被判定为挂起且无法重放：
      * - Caffeine 的每个调用当作原子步骤（`compute` 与 `clear` 的语义另以定向用例覆盖，C4）；
      * - 计数（`LongAdder`）与日志与交错无关，忽略。
      */
-    private fun options(): ModelCheckingOptions = ModelCheckingOptions()
-        .sequentialSpecification(VersionedSource::class.java)
+    private fun options(spec: Class<*> = VersionedSource::class.java): ModelCheckingOptions = ModelCheckingOptions()
+        .sequentialSpecification(spec)
         .addGuarantee(forClasses { it.startsWith(CAFFEINE) }.allMethods().treatAsAtomic())
         .addGuarantee(forClasses { name -> IGNORED.any { name.startsWith(it) } }.allMethods().ignore())
 
@@ -148,12 +187,101 @@ class CoherentEngineLincheckTest {
         }
     }
 
+    /**
+     * 被检验的对象：数据源处于“取消中”（初始如此）时抛出自己的 `CancellationException`（如对已取消的 future 调用 `join`），
+     * 读取以 [SourceLoadCancelledException] 失败，记为 [CANCELLED]。只经定向场景使用：“取消中”的加载与恢复数据源并发时，
+     * 合并到它的读取会收到开始于恢复之前的失败（与其它回源失败相同），不是这里要检验的性质。
+     */
+    @Param(name = "key", gen = IntGen::class, conf = "0:1")
+    class CancellingSource {
+        private val versions = AtomicIntegerArray(KEYS)
+        private val cancelling = AtomicIntegerArray(IntArray(KEYS) { 1 })
+        private val store = InMemoryBackend(CLOCK).store(NAME)
+        private val engine = CoherentEngine(
+            cacheSpec<String, String>(NAME) {
+                codec = StringCodec
+                loader = CacheLoader { key ->
+                    if (cancelling.get(key.toInt()) == 1) {
+                        throw CancellationException("source cancelled")
+                    }
+                    "$key@${versions.get(key.toInt())}"
+                }
+                policy = CachePolicy(invalidateFailure = InvalidateFailureMode.THROW)
+            },
+            store,
+            CONTEXT
+        )
+
+        @Operation
+        fun get(@Param(name = "key") key: Int): Int = try {
+            requireNotNull(engine[key.toString()]).substringAfter('@').toInt()
+        } catch (_: SourceLoadCancelledException) {
+            CANCELLED
+        }
+
+        @Operation
+        fun write(@Param(name = "key") key: Int) {
+            versions.incrementAndGet(key)
+            engine.invalidate(key.toString())
+        }
+
+        /**
+         * 数据源恢复：提交新版本、结束“取消中”，再 `invalidate`。
+         */
+        @Operation
+        fun restore(@Param(name = "key") key: Int) {
+            versions.incrementAndGet(key)
+            cancelling.set(key, 0)
+            engine.invalidate(key.toString())
+        }
+
+        /**
+         * 失败的加载都交还了 lease：L1 上没有留下 lease（否则之后的读取要等 lease）。
+         */
+        @Validate
+        fun nothingLeft() {
+            repeat(KEYS) { key ->
+                val read = Suspending.await { store.read("cocache:$NAME:$key", null, null) }
+                check(read !is RemoteRead.Leased) { "a lease was left on key[$key]: $read" }
+            }
+        }
+    }
+
+    /**
+     * [CancellingSource] 的顺序规格。
+     */
+    class CancellingSourceSpec {
+        private val versions = IntArray(KEYS)
+        private val cancelling = BooleanArray(KEYS) { true }
+
+        fun get(key: Int): Int = if (cancelling[key]) CANCELLED else versions[key]
+
+        fun write(key: Int) {
+            versions[key]++
+        }
+
+        fun restore(key: Int) {
+            versions[key]++
+            cancelling[key] = false
+        }
+    }
+
     companion object {
         private const val NAME = "lincheck"
         private const val KEYS = 2
         private const val ITERATIONS = 10
         private const val INVOCATIONS = 300
         private const val TARGETED_INVOCATIONS = 2000
+
+        /**
+         * [cancellingSourceInterleavings] 每个场景的执行次数：两个线程各一两个操作，状态空间小，2000 次要 3 分多钟。
+         */
+        private const val CANCELLING_INVOCATIONS = 500
+
+        /**
+         * [CancellingSource.get] 以 [SourceLoadCancelledException] 失败。
+         */
+        private const val CANCELLED = -1
         private const val CAFFEINE = "com.github.benmanes.caffeine."
         private val IGNORED = listOf(
             "java.util.concurrent.atomic.LongAdder",

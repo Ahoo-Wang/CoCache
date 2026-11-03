@@ -25,6 +25,7 @@ import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.Digest
+import me.ahoo.cocache.core.SourceLoadCancelledException
 import java.time.Duration
 
 /**

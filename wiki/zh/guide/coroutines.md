@@ -62,7 +62,7 @@ val user = users.get(id) { key -> userClient.fetch(key) }
 - `ThreadContextElement` 随之传递，如追踪上下文，或经 `kotlinx-coroutines-slf4j` 的 `MDCContext` 传递的 MDC（普通 MDC 是 ThreadLocal，不会跟着协程换线程）。
 - 它脱离结构化并发：加载可能被其它调用方共享，所以调用方被取消、调用方的作用域结束，甚至运行时关闭，都不会取消它。加载协程可能比它们都活得更久，直到数据源返回。
 
-loader 的协程仍处于活动状态时，如果 loader 自己抛出 `CancellationException`（例如其中的 `withTimeout`），CoCache 会把它转成 `SourceLoadCancelledException` 重新抛出，原始异常是它的 `cause`。因为加载可能被共享，否则每个调用方都会把它当作自己被取消（`launch` 会悄悄吞掉）。
+loader 的协程仍处于活动状态时，如果 loader 自己抛出 `CancellationException`（例如其中的 `withTimeout`），CoCache 会把它转成 `SourceLoadCancelledException`（`me.ahoo.cocache.core`）重新抛出，原始异常是它的 `cause`。因为加载可能被共享，否则每个调用方都会把它当作自己被取消（`launch` 会悄悄吞掉）。阻塞与异步数据源同样如此，见[异步 API](./async.md#exceptions)。
 
 引擎的 `load-timeout` 对两种 loader 都生效。到期时调用方以 `SourceLoadTimeoutException` 失败，lease 被释放。loader 的协程不会被取消，迟到的结果被丢弃，与 [`AsyncCacheLoader`](./async.md#timeouts) 相同。
 

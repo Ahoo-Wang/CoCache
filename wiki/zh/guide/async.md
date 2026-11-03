@@ -66,6 +66,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 ## 异常与取消 {#exceptions}
 
 - 失败的调用以**原始**异常完成 future：`CacheReadException`、`CacheWriteException`、`SourceLoadRejectedException`、`SourceLoadTimeoutException`，或你的 loader 抛出的异常，从不包装为 `CompletionException`。`join()` 与 `get()` 仍会按 JDK 的规则包装；`handle`、`exceptionally`、Reactor 的 `Mono.fromFuture` 与 Kotlin 的 `await()` 都拿到原始异常。
+- 唯一的例外是 loader 自己的 `CancellationException`：`CacheLoader` 抛出它，或 `AsyncCacheLoader` 的 future 以它完成（HTTP 请求被取消、其中的 `withTimeout`）。共享这次加载的每个调用方都收到 `SourceLoadCancelledException`，原始异常是它的 `cause`。原样传出的话，每个调用方的 future 都会看起来像是被取消了。
 - 异步方法从不同步抛出。key 编码器或编解码器出错、重入调用、`SetCache` 不支持的操作，都以失败的 future 返回。
 - 每次调用返回自己的 future。取消它只取消你的等待：共享的加载为其它调用方继续进行，照样写入 Redis。写入的顺序不受影响：写入的第二步失效无论是否取消都会执行。
 - 读取自己 key 的 loader：如果在返回 future 之前这样做，快速失败（`IllegalStateException`）；如果在一次 I/O 之后这样做，调用会一直等到 `load-timeout`。

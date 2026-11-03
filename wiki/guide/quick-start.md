@@ -223,7 +223,7 @@ val users: Cache<String, User> = runtime.create(
     }
 )
 
-// on shutdown: caches first, then the backend
+// on shutdown: the runtime first (it waits for in-flight Redis steps), then the backend
 runtime.close()
 backend.close()
 ```

@@ -34,6 +34,7 @@ import me.ahoo.cocache.core.engine.VersionedFormat
 import me.ahoo.cocache.core.engine.versionedEngineSpec
 import me.ahoo.cocache.core.internal.Ticker
 import me.ahoo.cocache.core.policy.CachePolicy
+import java.time.Duration
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -53,7 +54,10 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * 缓存运行时（每个进程一个）：持有节点身份、时钟、后端与执行器，并按声明创建缓存。
  *
- * 关闭时按创建的逆序关闭所有缓存与订阅，并关闭运行时自己创建的时钟与执行器；后端由调用方管理。
+ * 关闭时按创建的逆序关闭所有缓存与订阅，并关闭运行时自己创建的时钟与执行器；后端由调用方管理，**必须晚于运行时关闭**：
+ * [close] 取消运行时作用域之后、关闭执行器之前，至多等待 5 s，让异步变体在途的不可取消步骤（L1 命令、令牌的释放、
+ * 非原子广播的补发）结束。先关闭后端会让这些步骤失败：其它节点读旧的 L2 直到 `localMaxAge`，lease 留到 `lease.ttl`。
+ * 同步调用在调用方线程上运行，不在等待之列，应先停止发起调用。
  */
 class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     val nodeId: NodeId = builder.nodeId ?: NodeId.random()
@@ -107,13 +111,13 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
 
     /**
      * 异步路径的执行资源（RFC 0004 §5.1）。运行时自建的执行器随运行时关闭；调用方给出的执行器不关闭。
-     * 关闭顺序（[owned] 逆序）：先取消运行时作用域（进行中的异步调用以关闭失败），再关闭自建的执行器。
+     * 关闭顺序（[owned] 逆序）：先取消运行时作用域（进行中的异步调用以关闭失败）、有界地等待其中在途的步骤结束，再关闭自建的执行器。
      * 等待 lease 的退避与等待回源许可都是挂起（`delay`、信号量），不再需要专门的定时器线程。
      */
     private fun asyncContext(builder: Builder): AsyncContext {
         val executor = builder.asyncExecutor ?: defaultAsyncExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
         val blocking = builder.blockingExecutor ?: defaultBlockingExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
-        return AsyncContext(executor, blocking, builder.dispatcher).also { owned.add(it) }
+        return AsyncContext(executor, blocking, builder.dispatcher, builder.drainTimeout).also { owned.add(it) }
     }
 
     /**
@@ -306,6 +310,12 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
          * 运行时作用域的调度器（模块内部）：确定性仿真传入测试调度器，`delay` 与 `withTimeout` 随之走虚拟时间。
          */
         internal var dispatcher: CoroutineDispatcher? = null
+
+        /**
+         * 关闭时等待运行时作用域中在途步骤的上限（模块内部）：在测试线程上手动推进执行器与 L1 命令的测试设为 `0`，
+         * 否则关闭会等满上限（推进它们的正是关闭的线程）。
+         */
+        internal var drainTimeout: Duration = AsyncContext.DRAIN_TIMEOUT
 
         fun backend(backend: CoherenceBackend) = apply { this.backend = backend }
 
