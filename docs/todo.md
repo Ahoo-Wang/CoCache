@@ -23,16 +23,16 @@
 
 ## 0. 交接（2026-11-02，供接手者继续推进）
 
-**当前状态**：`main` 是 8.0 开发线。M1（协程核心，#716–#720）与 M2（flight 层与协议，#721–#727）已完成，下一步是 **M3 SPI**（见 §2 的表格与 RFC 0005 §4.3）。没有进行中（WIP）的分支或 PR。
+**当前状态**：`main` 是 8.0 开发线。M1（协程核心，#716–#720）与 M2（flight 层与协议，#721–#727）已完成，**M3 SPI 进行中**。拆分与命名已由维护者确认（2026-11-02，RFC 0005 §4.3、§12“M3 之前”），切片与依赖见 §2。
 
-**下一步：M3 SPI**
-- 目标：`suspend` 的 `L1Store`（Q2 默认采用此名）、`FutureL1Store` 适配、能力访问器、`ForwardingL1Store`、TCK fail closed；删除异步 SPI（`AsyncRemoteStore`、`AsyncInvalidationChannel`、`BlockingAsyncStore`）与 `Async*` 规范。
-- 改 `cocache-api` 的接口与 TCK，属于公开 API 变更：动手前先与维护者确认拆分与命名（AGENTS.md“Boundaries”）。
-- 建议仿照 M1、M2 按 PR 拆小切片，每片都跑全量 `./gradlew check`，触及命中路径或异步路径的附 JMH。
+**M3 的约定**
+- 先删不依赖替代品的遗留（M3·0a、M3·0b、M3·0c），再建新形状；不推倒重来（RFC 0005 §12 决定 7）。
+- M3 的能力面只放已有的操作，不顺带改语义；行为变化只有 M3a 的中断规则与 M3·0c 的 foreign RECLAIM，两者都写进 architecture.md 与 changelog。
+- 改 `cocache-api` 与 TCK 的形状以 RFC 0005 §4.3 为准，偏离时先回到架构会话讨论。
+- JMH：M3a、M3c、M3d 附 `scripts/jmh-compare.sh` 的对比。本机有 JMH 在跑时（`/tmp/cocache-jmh.lock` 被持有，或有 JMH 进程），其它会话不跑 Gradle。
 
 **待维护者决定**
 - 是否在 CI 中加一个单独、不阻塞的作业运行 `./gradlew :cocache-core:lincheck`（约 2 分钟，见 [Lincheck 调查](investigations/lincheck-feasibility.md)）。改工作流，未做。
-- §3 中 M3 之前要定的 Q2（`L1Store` 命名）。
 
 **工作方式（M1、M2 一直沿用）**
 - 每个切片一个分支（`<type>/<描述>`）与一个 squash 合并的 PR，标题用 Conventional Commits，PR 正文英文；只在维护者说“合并”时合并。
@@ -53,13 +53,26 @@ M1 已完成：基础设施与 `SetCache` 读路径（#716）→ 单 key 读与�
 
 M2 拆成：L2 填充改为 `compute` + 按身份复核（M2a，#721）→ 合并规则逐 key、leader 被中断或取消时跟随者自行运行（M2b，#722）→ `load.timeout`，`LoadPolicy.asyncTimeout` 并入它（M2c，#723）→ L1 命令不可取消地等待、随机注入故障与取消的令牌守恒性质测试（M2d，#724）→ 确定性多节点仿真：测试调度器与虚拟时间、以数据源的提交历史检查 G1 与 G2（M2e，#725）→ Lincheck 可行性实验（M2f，#726：可行，有条件，见 [调查](investigations/lincheck-feasibility.md)；单独的 `lincheck` 任务，不在 `check` 中）。`kotlinx-coroutines-test` 作为测试依赖已批准；Lincheck（Q18）先做可行性实验，可行再正式加入（维护者决定，2026-11-02）。L2 key 不含前缀：JMH 中单个缓存的 L2 命中约 2.6 倍、`l2HitMixed` 1 线程 +68%、8 线程 +8%，L1 命中不变，采用（#727）。**M2 已完成。**
 
+M3 拆成（维护者确认，2026-11-02；设计见 RFC 0005 §4.3）：
+
+| 切片 | PR 标题 | 内容 | 依赖 |
+|------|---------|------|------|
+| M3·0a | `refactor(redis)!: remove the CoCache 5.x migrator` | 删除 `CoCache5Migrator` 一族、专属测试与文档引用；foreign-format 的测试保留 | — |
+| M3·0b | `test(tck)!: drop the Async* engine specs` | 删除 5 个 `Async*` 引擎规范，保留 `access` 开关；异步特有用例移到 core 测试；测试矩阵不缩减；`AsyncBackendProtocolSpec` 留到 M3c | — |
+| M3a | `refactor(core)!: wait for L1 commands without blocking in the sync variant` | 引擎的 L1 调用全部经异步 SPI 等待，删掉阻塞分支；中断按 §4.3（在途命令先完成，被中断但已完成的调用保留中断标志，取消后不再调用阻塞 loader）；固定 kotlinx `runBlocking` 行为的用例。JMH：同步路径退化 ≤ 3%，不达标就停 | — |
+| M3b | `feat(api): add the suspend L1Store SPI` | `cocache-api` 只增不改：`L1Store`、三个能力面、`FutureL1Store` 与 `adapt`、`ForwardingL1Store`、`FutureInvalidationChannel`；结果类型暂用 `Remote*`；只有 api 单测 | — |
+| M3·0c | `feat(core)!: drop foreign-format reclaim for caches without a source` | 没有数据源的缓存拒绝 `foreign-format: reclaim`；条件写入、按版本写入与集合写入遇到读不懂的内容一律拒绝；旧 SPI 删除 `foreignAsAbsent` 与整体覆盖的 `addMembers` / `removeMembers`（`*IfReadable` 接替） | M3a（同一批调用点） |
+| M3c | `feat(core)!: run engines and backends on L1Store` | `store()` 返回 `L1Store`、`publish` 挂起、删 `versionedWrites`；引擎在 `NonCancellable` 中调用 L1；`runtime.create` 检查能力并输出到启动日志；InMemory 原生实现、`HookedBackend` 继承 `ForwardingL1Store`、`ScriptedBackend` 改为 `FutureL1Store`；`BackendProtocolSpec` 改为挂起形状，删 `AsyncBackendProtocolSpec`；Redis 暂以自身的异步方法桥接。JMH | M3a、M3b、M3·0c |
+| M3d | `refactor(redis)!: implement L1Store natively and delete the async SPI` | `RedisL1Store`；删 `RedisConnections` 的同步等待与中断分支；删 `RemoteStore`、`AsyncRemoteStore`、`AsyncInvalidationChannel`、`BlockingAsync*`；`Remote*` 改名为 `L1*`；Redis 全矩阵。JMH | M3c |
+| M3e | `test(tck)!: declare L1 capabilities and fail closed` | `expectedCapabilities` 无默认值，断言“提供 = 声明”且稳定；InMemory 经 `FutureL1Store` 跑整套 TCK；缩减 Redis 的异步变体矩阵；wiki extending（en + zh）、`skills/cocache-extend` 按最终形状改 | M3d |
+
 | 里程碑 | 要做什么 | 验收 |
 |--------|----------|------|
 | M1 协程核心 | 在现有用户 API 与 SPI 之下把协议改写为一份 `suspend` 实现（同步经 `runBlocking`、异步经 `future(UNDISPATCHED)`）；然后删除引擎中的异步分支、`Futures` 的续接、定时器与许可等待队列；`kotlinx-coroutines-core` 进入 core，AGENTS.md 的依赖规则同步修改 | 同步 TCK 与 `Async*` TCK 的语义用例全绿，线程模型用例按新模型重写；L2 命中不退化；同步变体的 L1 命中、未命中退化 ≤ 3%；异步 8 线程闭环不低于 6.10 的 90% |
 | M2 flight 层与协议 | 合并规则逐 key、`load.timeout`、取消与中断的规则（共享加载在运行时作用域，令牌步骤 `NonCancellable`）、L2 填充改为 `compute` + 按身份复核（A.D4）；L2 key 不含前缀（只在 JMH 不退化时采用） | 复现 A.D4 的交错；随机注入取消的性质测试与确定性多节点仿真接入；`missLoad` 退化 ≤ 2% |
 | M3 SPI | `suspend` 的 `L1Store`、`FutureL1Store` 适配、能力访问器、`ForwardingL1Store`、TCK fail closed；删除异步 SPI 与 `Async*` 规范 | TCK 断言“提供的能力 = 声明的能力”，并覆盖 `FutureL1Store` |
 | M4 线格式 2 与布局 | 布局标记、带前缀的频道、头部的段（SHA-256 摘要段）、状态 `E`、逐脚本规则；一次性拷贝工具（`Store` / `SetStore`）；`runtime.create` 拒绝会让存储 key 相撞的 namespace（A.L4） | 第三轮对抗验证在合并之前完成；TCK 覆盖各种头部组合与 `E` 的全部脚本；拷贝工具的转换用例（`VERSION_MARK`、集合、TTL）；合并即冻结 8.x 的格式 |
-| M5 用户 API | 类型（V1–V3，按 v4 全部实现）、`Lookup.Unknown`、`CoCacheFactory`；`cocache-coroutines` 并入 core；`SetStore` 的同步批量读不再逐个 key 访问 L1（A.L2） | 不支持的操作在编译期不可调用；`SetEngineSpec` 的批量用例 |
+| M5 用户 API | 类型（V1–V3，按 v4 全部实现）、`Lookup.Unknown`、`CoCacheFactory`；`cocache-coroutines` 并入 core；`SetStore` 的同步批量读不再逐个 key 访问 L1（A.L2）；V7 的失败路径分类：“确定未执行 / 结果未知”的异常类型、`CacheWriteException.outcomeUnknown`、派生 `put` 的补偿失效 | 不支持的操作在编译期不可调用；`SetEngineSpec` 的批量用例；`FaultSpec` 覆盖两类写入失败 |
 | M6 配置 | 三层配置、字段三态、适用性表、取上限与夹紧、`lock` / `constrain` / `unlock`、6.x 键的启动失败（V10） | 每条规则的用例；启动日志与端点输出生效值与来源 |
 | M7 Spring | 回滚时失效事务内的填充、已登记 key 的回源私有、starter 的事务装饰器、`Unknown` 的映射（V11） | 同步、异步、响应式三条路径的用例 |
 | M8 检验与文档 | Lincheck（经批准后）、TLA+、architecture.md 重排（V12）、wiki 与升级指南、skills | Lincheck 与 TLC 在 CI 中运行；wiki 构建通过 |
@@ -70,7 +83,6 @@ M2 拆成：L2 填充改为 `compute` + 按身份复核（M2a，#721）→ 合�
 
 | 问题 | 何时需要 |
 |------|----------|
-| Q2 SPI 改名为 `L1Store`（默认采用） | M3 之前 |
 | Q10 修订号或写入标识占用的头部位置 | M4 之前（格式定稿） |
 | Q14 把每个 namespace 的类型写入 `cocache:v8:meta:{namespace}`（线格式新增） | M4 之前 |
 | Q19 布局标记的拼写 | M4 之前 |

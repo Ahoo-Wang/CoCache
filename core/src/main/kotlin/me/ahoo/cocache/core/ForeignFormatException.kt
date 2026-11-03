@@ -18,7 +18,7 @@ package me.ahoo.cocache.core
  * 读取时作为 [me.ahoo.cocache.api.CacheReadException] 的 `cause` 抛出；`SetCache` 的元素增删落在这类内容上时，
  * 作为 [me.ahoo.cocache.api.CacheWriteException] 的 `cause` 抛出（key 不被修改）。
  *
- * 常见原因是 CoCache 5.x 的数据没有迁移就升级到了 6.x：用 `CoCache5Migrator`（`cocache-redis`）迁移，
+ * 常见原因是 CoCache 5.x 的数据没有迁移就升级到了 6.x：用 6.x 的 `CoCache5Migrator`（`cocache-redis` 6.5 起，8.0 已删除）迁移，
  * 或在数据可以丢弃（有数据源可回源）时把策略设为 `RECLAIM`。滚动升级期间也可能读到更高版本的节点写入的内容（[newer]）。
  *
  * @param storageKey 存储 key
@@ -52,7 +52,7 @@ class ForeignFormatException(
             val advice = if (newer) {
                 "upgrade this node"
             } else {
-                "migrate it (CoCache5Migrator)"
+                "migrate it with CoCache 6.x (CoCache5Migrator)"
             }
             return "Cache[$cacheName] - key[$storageKey] holds content this cache cannot read (format[$format]: $reason). " +
                 "It is kept as is: $advice, or set foreignFormat = RECLAIM if a source can reload it."

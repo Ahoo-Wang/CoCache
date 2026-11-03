@@ -95,14 +95,6 @@ class ForeignFormatWriteTest {
         Redis5x.members(key).assert().containsExactlyInAnyOrder("p1", "p2")
         Redis5x.pttl(key).assert().isBetween(1L, 3_600_000L)
         requireNotNull(runtime.metrics(name)).unknownFormats.assert().isEqualTo(4L)
-
-        // 迁移工具仍然认得它：迁移之后写入照常
-        val report = RedisTestSupport.migrator().use { migrator ->
-            migrator.migrate(CoCache5Migration.set(name, StringCodec).sourceKey(key, "").build())
-        }
-        report.cache(name)?.written.assert().isEqualTo(1L)
-        cache.add("", listOf("p3"))
-        cache[""].assert().containsExactlyInAnyOrder("p1", "p2", "p3")
     }
 
     @Test
