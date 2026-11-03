@@ -386,6 +386,8 @@ class RedisL1StoreUnitTest {
         reads.forEachIndexed { index, read ->
             dispatched.clear()
             val call = started(1, read)
+            // 命令先发出、调用方线程随后才安排计时（bounded）：等计时安排好再检查
+            awaitCondition("read timeout scheduled") { timer.pending.isNotEmpty() }
             timer.pending.single().second.assert().isEqualTo(timeout.toMillis())
             timer.runNext()
             val failure = call.failure()
@@ -406,9 +408,10 @@ class RedisL1StoreUnitTest {
         listOf(null, Duration.ofSeconds(1), Duration.ofHours(1)).forEach { timeout ->
             dispatched.clear()
             val call = started(1) { store.read("k", null, null, timeout) }
-            timer.pending.assert().isEmpty()
             dispatched.single().reply(listOf(0L, 0L))
             call.await().assert().isEqualTo(L1Read.Miss(false))
+            // 调用结束之后再检查：计时只会在挂起之前安排，之前检查可能早于它而误过
+            timer.pending.assert().isEmpty()
         }
         dispatched.clear()
         listOf(Duration.ZERO, Duration.ofMillis(-1)).forEach { timeout ->
