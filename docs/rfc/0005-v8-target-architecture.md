@@ -276,14 +276,14 @@ ReadableCache<K, V>             name、get、getAll、lookup、lookupAll、async
 ### 4.3 SPI（V4）
 
 ```
-CoherenceBackend         store(namespace): L1Store、channel、format、atomicBroadcast
+CoherenceBackend         store(keyspace): L1Store、channel、format、atomicBroadcast（M4a 起收 Keyspace）
 L1Store                  read、readAll、fill、fillAll、release、reclaim、put、putAll、invalidate（suspend，全部抽象）
                          conditional(): ConditionalL1Store?   readIfChanged、putIfMatch、deleteIfMatch（M5）
                          versioned(): VersionedL1Store?       putIfNewer、evictKeepingVersion（M4）
                          sets(): SetL1Store?                  addMembers、removeMembers（只有“检查并写入”）
 FutureL1Store            同名的操作与能力面，返回 CompletableFuture（供 Java 实现者）；FutureL1Store.adapt(store): L1Store
 ForwardingL1Store        转发全部操作与能力，装饰器继承它，只覆盖要拦截的部分；三个能力面各有 Forwarding 基类
-InvalidationChannel      publish（suspend）、subscribe（阻塞）；Java 实现者实现 FutureInvalidationChannel，经 adapt 适配
+InvalidationChannel      publish(keyspace)（suspend）、subscribe(keyspace)（阻塞）；Java 实现者实现 FutureInvalidationChannel，经 adapt 适配
 ```
 
 - **`suspend` 是主形状**（V4）：
@@ -311,6 +311,10 @@ InvalidationChannel      publish（suspend）、subscribe（阻塞）；Java 实
 - **填充的结果**（K12，M3d）：`fill` 返回 `L1Fill = Filled(advanced: Boolean) | Rejected(currentVersion: Long?)`，`fillAll` 逐 key 返回它。`advanced` 表示版本前进，本节点按写入处理（§4.7）；`Rejected` 带当前版本（版本拒绝，刷新路径据此保留副本），令牌不匹配时为 `null`。`Boolean` 区分不了“已前进”“相等”与“版本拒绝”，而 lease 在 `E` 上时客户端读到的是 `Miss`，并不知道版本。结果类型随 M3d 的改名一起定，M4 不再改 SPI。
 - **读取的截止时间**（D6，M3d）：`read` / `readAll` 增加可选的截止时间参数，存储以它与命令超时中较早的一个为限，超时之后照常释放令牌。引擎按缓存的读超时传入（上限为 `command-timeout`，M5 / M6），供不能降级回源、又要限制故障延迟的缓存使用：Redis 卡顿时，CoSec 的撤销检查每个请求最多多等它自己选的界限，而不是 2 s。参数随 M3d 的改名一起加，避免再改 SPI。后端级的快速失败（连续超时之后在冷却期内直接按“确定未执行”失败）涉及所有缓存的故障语义，8.x 另立 RFC。
 - **摘要**（D1）：`Digest` 改为载荷的 SHA-256（32 字节），带算法标识（如 `algorithm`），下游不再以 `.sha1` 一类的名字持有它；由客户端计算（`Digest.of(Envelope)`、`Digest.ofPayload(bytes)`），用于条件读写，读取方拿到载荷时重算校验（§4.7）。条件回收（`reclaim`）比较 SPI 自己的内容指纹类型（K12）：它属于公开的 SPI，但与用户的 `Digest` 是两个类型，算法（脚本中的 SHA-1）与用途（判断读不懂的内容是否仍是读到的那一份）都不同。
+- **keyspace 与段**（M4，架构会话 2026-11-03，由 §4.7 推出）：
+  - 频道带上前缀（§4.7）之后，后端要分别知道前缀与 namespace：`store`、`subscribe`、`publish` 收 SPI 的 `Keyspace(keyPrefix, namespace)`。它校验 namespace 的字符集，给出存储 key 的前缀 `{keyPrefix}v8:{namespace}:`；频道名由后端按 §4.7 的布局构造。namespace 按 keyspace 登记。
+  - `Envelope.Scalar` 带写入标识与摘要：由引擎给出，存储按 §4.7 写成段，读取时原样返回；摘要的校验（K3）因此在引擎中，对所有后端相同。
+  - 具体形状由 M4a–M4c 在 PR 中定稿（[todo.md](../todo.md) §2）。
 - **命名**（Q2，2026-11-02 确认）：
 
   | 6.x | v8 |
@@ -652,7 +656,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ### 4.10 检验（V9）
 
-- **Lincheck**：对“flight 层 + L2 + 失效戳 + 内存存储”做模型检验，操作可以是 `suspend` 函数（Lincheck 支持协程）。Lincheck 是新的测试依赖，须先经维护者批准（Q18）。
+- **Lincheck**：对“flight 层 + L2 + 失效戳 + 内存存储”做模型检验，操作可以是 `suspend` 函数（Lincheck 支持协程）。Lincheck 是新的测试依赖，已经维护者批准（Q18：先做可行性实验 #726，可行后加入；CI 自 2026-11-03 起以非阻塞的 `Lincheck` 作业运行，#738）。
   - 操作：`get`、`get(key, loader)`（与 `get` 交替，P3）、`getAll`（合并到 `Private` 的单 key flight，P10）、`invalidate`、`put`、`onInvalidated`、`onReset`、`clearLocal`，以及调用方取消。
   - 顺序规格：“带版本的数据源 + 读己之写”与“带版本的写入方 + 读快照的 loader”。
   - 可行性先做小实验：真实的 Caffeine 内部状态多，模型检验可能爆炸。不可行时，flight 层用 `ConcurrentHashMap` 替身检验，Caffeine 的 `compute` 与 `clear` 语义另以定向用例覆盖（C4）。
@@ -916,7 +920,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 5. **M5 用户 API**：类型（V1–V3，按 v4 全部实现）、`Lookup.Unknown` 与 `unknownRead` 的取值（S16）、`CoCacheFactory`（校验 `type` 是接口，声明接口与手写实现的区分，S21）；`cocache-coroutines` 并入 core，挂起变体的上下文规则（K2、K6）与重入守卫（K7）；带版本数据源的删除（K16）；`Store` 的类型默认值（D7）；按缓存的读超时接入引擎（D6）；`InvalidationListener` 收到编码 key、`keyPrefix` 为空时启动告警（S4）；评估被取消的写入是否整体放进 `NonCancellable`（K18）。
 6. **M6 配置**（V10）：含“字段 × 层”的语义表、显式哨兵、overrides 只收紧并钳制按调用的寿命（S8、S9、S10）；`constrain` 的值域与 customizer 写锁定字段（S12）；6.x 键按规则检测、`cocache.key-prefix`（S17）；按缓存的读超时的配置键（D6）；每种 spec 的默认策略（S23）；`read-failure` 与 `unknown-read` 的适用性（S11、S16）；“未分层”的标注（S20）；驱逐检查的取值（S22）。
    **M7 Spring**（V11）：含事务上下文在调用入口捕获、记录进入任何共享层的 key、事务内 leader 的结果不共享、按 (namespace, 编码 key) 匹配（S7、S15、S24）；`Unknown` 的不对称与可选的 `CacheErrorHandler`、`afterCommit` 的异常、通知嵌套的告警（S18、S19）。S5、S6 已在 main 与 6.x 修复，M7 的装饰器沿用。
-7. **M8 检验与文档**：Lincheck（经批准后）、TLA+、architecture.md 重排（V12）、wiki 与升级指南（含拷贝工具的两种运行方式、失效中继与运维检查表，§8）、skills。
+7. **M8 检验与文档**：Lincheck（已批准，CI 已运行）、TLA+、architecture.md 重排（V12）、wiki 与升级指南（含拷贝工具的两种运行方式、失效中继与运维检查表，§8）、skills。
 8. **8.0.0** 发布；8.x 按 §4.2 的演进规则新增能力，新的必须理解的段两阶段发布。
 
 每个里程碑由若干 PR 组成，每个 PR 的 `./gradlew check` 全绿；触及命中路径、同步未命中路径或异步路径的 PR 附 `scripts/jmh-compare.sh` 的对比。
@@ -940,7 +944,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 - ~~Q15 `unknownRead = ABSENT` 的短暂缓存~~：已关闭（D6）。不缓存降级结果：按 key 缓存对高基数的撤销表几乎无效，还给权威数据引入一种新的 L2 状态。8.0 做按缓存的读超时（上限为 `command-timeout`，SPI 的读取带截止时间，§4.3）；后端级快速失败涉及所有缓存的故障语义，8.x 另立 RFC。
 - ~~Q16 7.B 的前向兼容声明~~：v4 删除（没有 7.B）。
 - ~~Q17 是否保留 sans-IO 状态机~~：v5 以协程核心解决，测试调度器与虚拟时间让多节点仿真可以确定性重放（§4.10）。
-- **Q18 Lincheck 作为测试依赖**：须维护者批准（§4.10）。
+- **Q18 Lincheck 作为测试依赖**：已决定，批准（维护者，2026-11-02；可行性实验 #726，CI 作业 #738）。
 - ~~Q19 布局标记的拼写~~：已关闭（D5）。沿用 `v8:`，不得含 `{}` 与 glob 元字符；namespace 字符集 `[A-Za-z0-9._-]+`；内部 key 在 `{keyPrefix}v8!…`；格式 1 的内容按更高格式处理，与 6.x 中同名 namespace 相撞也不再有破坏性（§4.7）。
 - **Q20 `kotlinx-coroutines-core` 进入 core**：v5 决定批准（§4.4）；AGENTS.md 中“kotlinx 只出现在 `cocache-coroutines`”的规则在 M1 中同步修改。
 
