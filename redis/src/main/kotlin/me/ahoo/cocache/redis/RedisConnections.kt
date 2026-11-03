@@ -16,6 +16,7 @@ package me.ahoo.cocache.redis
 import io.lettuce.core.AbstractRedisClient
 import io.lettuce.core.RedisClient
 import io.lettuce.core.RedisCommandTimeoutException
+import io.lettuce.core.RedisConnectionException
 import io.lettuce.core.RedisException
 import io.lettuce.core.RedisNoScriptException
 import io.lettuce.core.api.StatefulConnection
@@ -42,6 +43,9 @@ import java.util.concurrent.CompletionException
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * 命令连接与订阅连接（单机或集群），统一脚本执行。
@@ -201,6 +205,74 @@ internal class RedisConnections(
     }
 
     /**
+     * 挂起等待一条命令（RFC 0005 §4.3，[RedisL1Store]）：等待期间不占线程，续接经调用方的调度器恢复（标准库的 `suspendCoroutine`），
+     * 不在 Lettuce 的 I/O 线程上继续。不响应协程的取消（引擎在 `NonCancellable` 中调用存储），一直等到命令结束或超时。
+     *
+     * 限时同 [bounded]：超过 `commandTimeout` 时以 [RedisException] 失败并取消 [command]，尚未写出的脚本命令不再写出（[CommandCall]）。
+     * 失败按 [l1Failure] 映射，从不以 [CancellationException] 抛出。
+     */
+    suspend fun <T> awaitCommand(command: CompletableFuture<T>): T {
+        val bounded = bounded(command)
+        val outcome = if (bounded.isDone) {
+            outcomeOf(bounded)
+        } else {
+            // 以总是成功的 Result 恢复、在自己的栈帧里抛出：经 kotlinx 的调度器以异常恢复时，调试模式会复制异常
+            suspendCoroutine { continuation ->
+                bounded.whenComplete { value, error ->
+                    continuation.resume(if (error == null) Result.success(value) else Result.failure(l1Failure(error)))
+                }
+            }
+        }
+        return outcome.getOrThrow()
+    }
+
+    /**
+     * 挂起等待全部 [commands]（各自限时、失败的映射同 [awaitCommand]）：只挂起一次，全部结束后按顺序返回各自的结果。
+     * 调用方先发出全部命令再调用它，共享连接上多路复用，约一次往返。
+     */
+    suspend fun <T> awaitCommands(commands: List<CompletableFuture<T>>): List<Result<T>> {
+        val bounded = commands.map { bounded(it) }
+        if (bounded.any { !it.isDone }) {
+            suspendCoroutine { continuation ->
+                val remaining = AtomicInteger(bounded.size)
+                bounded.forEach { future ->
+                    future.whenComplete { _, _ ->
+                        if (remaining.decrementAndGet() == 0) {
+                            continuation.resume(Unit)
+                        }
+                    }
+                }
+            }
+        }
+        return bounded.map { outcomeOf(it) }
+    }
+
+    /**
+     * 已完成的 future 的结果；失败按 [l1Failure] 映射（`join` 对以 [CancellationException] 完成的 future 直接抛出它，不包装）。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun <T> outcomeOf(future: CompletableFuture<T>): Result<T> = try {
+        Result.success(future.join())
+    } catch (e: Throwable) {
+        Result.failure(l1Failure(e))
+    }
+
+    /**
+     * L1 故障（RFC 0005 §4.3）：在 [failureOf] 之上，把 Lettuce 取消的命令（连接重置时取消应答栈中的命令、关闭时取消缓冲的命令）
+     * 换成结果未知的 [RedisException]。在 JVM 上 [CancellationException] 就是协程的取消，原样抛出会被引擎当作调用方被取消。
+     */
+    private fun l1Failure(error: Throwable): RuntimeException {
+        val failure = failureOf(error)
+        if (failure is CancellationException) {
+            return RedisException(
+                "Command cancelled by the Redis client (connection reset or closed); its outcome is unknown.",
+                failure
+            )
+        }
+        return failure
+    }
+
+    /**
      * 以 [transform] 的结果完成的新 future；失败（含 [transform] 抛出）以原始异常完成，不像 `thenApply` 那样包装为 [CompletionException]。
      */
     @Suppress("TooGenericExceptionCaught")
@@ -336,6 +408,30 @@ internal class RedisConnections(
             return causes.any {
                 it is RedisCommandTimeoutException || it is TimeoutException || it is InterruptedException
             }
+        }
+
+        /**
+         * Lettuce 在写出之前拒绝命令时的消息（`DefaultEndpoint.validateWrite`）：连接已关闭、请求队列或命令缓冲已满、断线时拒绝命令。
+         * 注意与断线时排空应答栈的 `Connection closed` / `Connection disconnected` 区分：那些命令可能已经写出。
+         */
+        private val NOT_WRITTEN = listOf(
+            "Connection is closed",
+            "Request queue size exceeded",
+            "Command buffer size exceeded",
+            "Currently not connected",
+        )
+
+        /**
+         * 确定未执行（RFC 0005 §4.3 的 P8）：Lettuce 在写出之前就拒绝了命令（[NOT_WRITTEN]），或连接建立不起来
+         * （[RedisConnectionException]，如集群中节点连接失败）。其余失败都是结果未知：超时、断线时被排空、被 Lettuce 取消
+         * （[l1Failure]）、脚本的错误回复等，命令可能已在 Redis 端执行。[RedisL1Store] 据此决定是否释放令牌。
+         */
+        fun isNotExecuted(error: Throwable): Boolean {
+            if (error is RedisConnectionException) {
+                return true
+            }
+            val message = error.message ?: return false
+            return error is RedisException && NOT_WRITTEN.any { message.startsWith(it) }
         }
     }
 }

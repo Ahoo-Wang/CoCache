@@ -589,6 +589,47 @@ class RedisCommandTimeoutTest {
         }
     }
 
+    /**
+     * 原生的 [RedisL1Store]（RFC 0005 §4.3，M3d）：超时的写入尚未写出时不再写出（之后写出会覆盖更新的值）；结果未知的填充与释放
+     * 尽力释放令牌，被取消、没有写出的填充否则留下 lease 到 `lease.ttl`。单机（断线期间缓冲）与集群（等待节点连接）。
+     */
+    @Test
+    fun timedOutL1StoreCommandsAreNeverWrittenAndReleaseTheirTokens() {
+        val timeout = Duration.ofMillis(300)
+        val connection = unwritable(timeout, 6)
+        val store = connection.backend.l1Store(namespace)
+        val keys = connection.keys
+        // 令牌由另一个后端取得（被阻断的后端在集群中还没有到这些 key 的节点连接）
+        val direct = RedisTestSupport.backend().closing().store(namespace)
+        val tokens = keys.drop(3).associateWith { key ->
+            lease().also { direct.read(key, it, null).assert().isEqualTo(RemoteRead.Miss(true)) }.token
+        }
+        fun fill(index: Int) = Fill(keys[index], tokens.getValue(keys[index]), scalar("late"), Duration.ofMinutes(1))
+        RedisTestSupport.loadScripts(
+            RedisScripts.PUT,
+            RedisScripts.PUT_ALL,
+            RedisScripts.READ,
+            RedisScripts.FILL,
+            RedisScripts.RELEASE
+        )
+        val caller = CallerDispatcher().closing()
+        connection.stall().use {
+            listOf(
+                caller.start { store.put(keys[0], scalar("stale"), null, frame(keys[0])) },
+                caller.start {
+                    store.putAll(
+                        listOf(Put(keys[1], scalar("stale"), null), Put(keys[2], scalar("stale"), null)),
+                        frame(keys[1], keys[2])
+                    )
+                },
+                caller.start { store.fill(fill(3)) },
+                caller.start { store.fillAll(listOf(fill(4))) },
+                caller.start { store.release(keys[5], tokens.getValue(keys[5])) },
+            ).forEach { it.failure().assertTimedOut(timeout) }
+        }
+        keys.forEach { connection.store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false)) }
+    }
+
     private companion object {
         /**
          * 暂停时长：留足余量让暂停覆盖全部读取（同步调用逐个等到超时）。
