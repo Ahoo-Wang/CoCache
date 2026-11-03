@@ -20,9 +20,9 @@ import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.Put
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetCacheSpec
 import me.ahoo.cocache.core.internal.Futures
@@ -120,11 +120,11 @@ internal class SetEngine<K : Any, E : Any>(
     /**
      * 读到 L1 之后的判定与 L2 填充。
      */
-    private fun loaded(storageKey: String, read: RemoteRead, stamp: Long): Loaded<Set<E>> {
+    private fun loaded(storageKey: String, read: L1Read, stamp: Long): Loaded<Set<E>> {
         val entry = when (read) {
-            is RemoteRead.Hit -> onHit(storageKey, read)
+            is L1Read.Hit -> onHit(storageKey, read)
 
-            is RemoteRead.Miss, is RemoteRead.Leased -> {
+            is L1Read.Miss, is L1Read.Leased -> {
                 metrics.miss()
                 localEntry(null, null, policy.localMaxAge)
             }
@@ -139,7 +139,7 @@ internal class SetEngine<K : Any, E : Any>(
      * - 不是本协议写入的内容（如 5.x 留下的原生 Set）：抛出 [CacheReadException]，不写 L2、不删除它——L1 是唯一副本，
      *   读成空集合会让调用方把“不存在”当作真实结果。集合缓存不接受 `foreignFormat = RECLAIM`（[SetCacheSpec] 创建时校验）。
      */
-    private fun onHit(storageKey: String, read: RemoteRead.Hit): LocalEntry<Set<E>> {
+    private fun onHit(storageKey: String, read: L1Read.Hit): LocalEntry<Set<E>> {
         if (read.format > backendFormat) {
             metrics.unknownFormat()
             throw IllegalStateException(

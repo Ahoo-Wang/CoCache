@@ -21,8 +21,8 @@ import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.StrippedBackend
@@ -133,8 +133,8 @@ class ConditionalEngineTest {
         )
         unwrap(cache.async().putIfMatch("k", null, "v").handle { _, e -> e }.join()).assert().isSameAs(failure)
         Suspending.await {
-            memory.store("failing").read("cocache:failing:k", null, null)
-        }.assert().isEqualTo(RemoteRead.Miss(false))
+            memory.store("failing").read("cocache:failing:k", null, null, null)
+        }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**

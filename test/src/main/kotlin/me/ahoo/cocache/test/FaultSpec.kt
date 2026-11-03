@@ -20,7 +20,7 @@ import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
@@ -151,13 +151,13 @@ abstract class FaultSpec {
 
     private fun CacheRuntime.admin(): CacheAdmin = requireNotNull(admin(cacheName))
 
-    private fun remote(key: String): RemoteRead {
+    private fun remote(key: String): L1Read {
         val store = backend.delegate.store(cacheName)
-        return Suspending.await { store.read("cocache:$cacheName:$key", null, null) }
+        return Suspending.await { store.read("cocache:$cacheName:$key", null, null, null) }
     }
 
     private fun remoteValue(key: String): String? {
-        val read = remote(key) as? RemoteRead.Hit ?: return null
+        val read = remote(key) as? L1Read.Hit ?: return null
         return (read.envelope as? Envelope.Scalar)?.let { TestCodec.decode(it.bytes) }
     }
 
@@ -194,7 +194,7 @@ abstract class FaultSpec {
         nodeA.metrics().degradedFills.assert().isEqualTo(if (backend.atomicBroadcast) 2 else 3)
         nodeA.metrics().remoteFailures.assert().isGreaterThanOrEqualTo(2)
         backend.failAll = false
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
@@ -348,7 +348,7 @@ abstract class FaultSpec {
             }
         }
         cacheA.invalidate("k")
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
         awaitCondition("retry succeeded") { attempts.get() >= 2 && nodeA.admin().pendingInvalidationCount == 0 }
         backend.afterInvalidate = null
         nodeA.metrics().invalidationsDropped.assert().isEqualTo(0)

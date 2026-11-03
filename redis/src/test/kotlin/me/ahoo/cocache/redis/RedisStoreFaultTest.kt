@@ -17,16 +17,18 @@ import io.lettuce.core.ClientOptions
 import io.lettuce.core.RedisCommandTimeoutException
 import io.lettuce.core.RedisException
 import io.lettuce.core.TimeoutOptions
-import me.ahoo.cocache.api.spi.Digest
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assumptions.assumeFalse
@@ -39,13 +41,14 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
 /**
- * Redis 原生异步存储的故障与边界（RFC 0004 §4.3）：脚本缓存丢失、命令超时、非运行时异常、取消在途命令、在途期间断连。
+ * Redis 存储的故障与边界（RFC 0005 §4.3）：脚本缓存丢失、命令超时、非运行时异常、在途期间断连。
  */
-class RedisAsyncStoreFaultTest {
+class RedisStoreFaultTest {
     private val namespace = "async-fault-" + UUID.randomUUID().toString().substring(0, 8)
     private val node = NodeId.random()
     private var sequence = 0L
     private val closeables = ArrayList<AutoCloseable>()
+    private val caller = CallerDispatcher().also { closeables.add(it) }
 
     @AfterEach
     fun destroy() {
@@ -72,81 +75,68 @@ class RedisAsyncStoreFaultTest {
     private fun pausable() = RedisTestSupport.pausable().closing()
 
     @Test
-    fun everyAsyncOperationSurvivesScriptCacheLoss() {
+    fun everyOperationSurvivesScriptCacheLoss() = Suspending.await<Unit> {
         val backend = RedisTestSupport.backend().closing()
-        val store = backend.remoteStore(namespace)
+        val store = backend.store(namespace)
         val lease = LeaseRequest(token(), Duration.ofSeconds(30))
-        RedisTestSupport.flushScripts()
-        store.readAsync(key("a"), lease, null).await().assert().isEqualTo(RemoteRead.Miss(true))
-        RedisTestSupport.flushScripts()
-        store.fillAsync(Fill(key("a"), lease.token, scalar("v"), Duration.ofMinutes(1))).await().assert().isTrue()
-        RedisTestSupport.flushScripts()
-        (
-            store.readAsync(
-                key("a"),
-                null,
-                RefreshRequest(Duration.ofMinutes(5), token(), Duration.ofSeconds(10))
-            ).await() as RemoteRead.Hit
-            )
-            .envelope.assert().isEqualTo(scalar("v"))
-        RedisTestSupport.flushScripts()
+        val refresh = RefreshRequest(Duration.ofMinutes(5), token(), Duration.ofSeconds(10))
         val leases = mapOf(key("b") to LeaseRequest(token(), Duration.ofSeconds(30)))
-        store.readAllAsync(
-            listOf(key("a"), key("b")),
-            leases
-        ).await()[key("b")].assert().isEqualTo(RemoteRead.Miss(true))
-        RedisTestSupport.flushScripts()
-        store.fillAllAsync(listOf(Fill(key("b"), leases.getValue(key("b")).token, scalar("w"), null))).await()
-            .assert().containsExactly(true)
-        RedisTestSupport.flushScripts()
-        store.releaseAsync(key("b"), token()).await()
-        RedisTestSupport.flushScripts()
-        store.putAsync(key("c"), scalar("p"), null, frame(key("c"))).await()
-        RedisTestSupport.flushScripts()
-        store.putAllAsync(listOf(Put(key("d"), scalar("q"), null)), frame(key("d"))).await()
-        RedisTestSupport.flushScripts()
-        store.reclaimAsync(
-            key("c"),
-            Digest.of(scalar("other")),
-            LeaseRequest(token(), Duration.ofSeconds(30))
-        ).await().assert().isFalse()
-        RedisTestSupport.flushScripts()
-        store.addMembersIfReadableAsync(
-            key("s"),
-            listOf("m".toByteArray()),
-            null,
-            frame(key("s"))
-        ).await().assert().isNull()
-        RedisTestSupport.flushScripts()
-        store.removeMembersIfReadableAsync(
-            key("s"),
-            listOf("m".toByteArray()),
-            null,
-            frame(key("s"))
-        ).await().assert().isNull()
-        RedisTestSupport.flushScripts()
-        store.invalidateAsync(
-            listOf(key("a"), key("b"), key("c"), key("d")),
-            frame(key("a"), key("b"), key("c"), key("d"))
-        ).await()
-        store.read(key("a"), null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        val members = listOf("m".toByteArray())
+        val a = key("a")
+        val b = key("b")
+        val c = key("c")
+        val d = key("d")
+        val s = key("s")
+        // 每个操作之前清空脚本缓存：EVALSHA 得到 NOSCRIPT 后改用 EVAL
+        val operations: List<suspend () -> Unit> = listOf(
+            { store.read(a, lease, null, null).assert().isEqualTo(L1Read.Miss(true)) },
+            {
+                store.fill(
+                    Fill(a, lease.token, scalar("v"), Duration.ofMinutes(1))
+                ).assert().isInstanceOf(L1Fill.Filled::class.java)
+            },
+            { (store.read(a, null, refresh, null) as L1Read.Hit).envelope.assert().isEqualTo(scalar("v")) },
+            { store.readAll(listOf(a, b), leases, null)[b].assert().isEqualTo(L1Read.Miss(true)) },
+            {
+                store.fillAll(listOf(Fill(b, leases.getValue(b).token, scalar("w"), null)))
+                    .assert().containsExactly(L1Fill.Filled(advanced = false))
+            },
+            { store.release(b, token()) },
+            { store.put(c, scalar("p"), null, frame(c)) },
+            { store.putAll(listOf(Put(d, scalar("q"), null)), frame(d)) },
+            {
+                store.reclaim(
+                    c,
+                    ContentFingerprint.of(scalar("other")),
+                    LeaseRequest(token(), Duration.ofSeconds(30))
+                ).assert().isFalse()
+            },
+            { store.setSurface.addMembers(s, members, null, frame(s)).assert().isNull() },
+            { store.setSurface.removeMembers(s, members, null, frame(s)).assert().isNull() },
+            { store.invalidate(listOf(a, b, c, d), frame(a, b, c, d)) },
+        )
+        operations.forEach { operation ->
+            RedisTestSupport.flushScripts()
+            operation()
+        }
+        store.read(a, null, null, null).assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
-     * 命令超过 `commandTimeout`：与同步等待相同的 [RedisException]，连接随后照常可用。自建单机客户端的超时由 Lettuce 的
+     * 命令超过 `commandTimeout`：以 [RedisException] 失败，连接随后照常可用。自建单机客户端的超时由 Lettuce 的
      * 命令超时触发（cause 为 [RedisCommandTimeoutException]），不经 JDK 的延迟调度器（RFC 0004 §14）。单机与集群。
      */
     @Test
-    fun asyncCommandTimeoutFailsLikeTheSyncPathAndTheConnectionRecovers() {
+    fun commandTimeoutFailsTheCallAndTheConnectionRecovers() {
         val redis = pausable()
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(commandTimeout = Duration.ofMillis(200), clientResources = redis.resources)
         ).closing()
-        val store = backend.remoteStore(namespace)
+        val store = backend.store(namespace)
         // 先缓存脚本：否则 NOSCRIPT 回退的 EVAL 是另一条命令，暂停期间各自计时
-        store.readAsync(key("warm"), null, null).await()
+        Suspending.await { store.read(key("warm"), null, null, null) }
         redis.pause(PAUSE_MILLIS)
-        val error = store.readAsync(key("slow"), null, null).failure()
+        val error = caller.start { store.read(key("slow"), null, null, null) }.failure()
         error.assert().isInstanceOf(RedisException::class.java)
         error?.message.assert().isEqualTo("Command timed out after PT0.2S.")
         if (!RedisTestSupport.isCluster) {
@@ -156,44 +146,25 @@ class RedisAsyncStoreFaultTest {
         // 批量操作（集群中跨节点：首次访问的节点在暂停期间建立连接，Lettuce 尚未计时，由时间轮兜底）：全部完成后以第一个异常失败（与同步版本相同的异常类型）
         val leases = mapOf(key("b1") to LeaseRequest(token(), Duration.ofSeconds(30)))
         listOf(
-            store.readAllAsync(listOf(key("b1"), key("b2")), leases),
-            store.fillAllAsync(listOf(Fill(key("b1"), token(), scalar("v"), null))),
-            store.putAllAsync(listOf(Put(key("b3"), scalar("p"), null)), frame(key("b3"))),
-            store.invalidateAsync(listOf(key("b1"), key("b2")), frame(key("b1"), key("b2"))),
-        ).forEachIndexed { index, future ->
-            val failure = future.failure()
+            caller.start { store.readAll(listOf(key("b1"), key("b2")), leases, null) },
+            caller.start { store.fillAll(listOf(Fill(key("b1"), token(), scalar("v"), null))) },
+            caller.start { store.putAll(listOf(Put(key("b3"), scalar("p"), null)), frame(key("b3"))) },
+            caller.start { store.invalidate(listOf(key("b1"), key("b2")), frame(key("b1"), key("b2"))) },
+        ).forEachIndexed { index, call ->
+            val failure = call.failure()
             failure.assert().withFailMessage { "batch #$index did not fail" }.isNotNull()
             failure.assert().isInstanceOf(RedisException::class.java)
             failure?.message.assert().isEqualTo("Command timed out after PT0.2S.")
         }
         Thread.sleep(PAUSE_MILLIS)
-        store.readAsync(key("slow"), null, null).await().assert().isEqualTo(RemoteRead.Miss(false))
+        Suspending.await { store.read(key("slow"), null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
-     * 同步路径的超时不变：等待本身受 `commandTimeout` 限制，无论等待还是客户端的超时先触发，异常都相同。
+     * 调用方的客户端（`RedisBackend.of`）不为命令计时时，超时仍由后端以 `commandTimeout` 计时：同样的异常，连接照常可用。
      */
     @Test
-    fun syncCommandTimeoutIsUnchangedWhenTheClientTimesCommands() {
-        val redis = pausable()
-        val backend = RedisTestSupport.backend(
-            RedisBackendOptions(commandTimeout = Duration.ofMillis(200), clientResources = redis.resources)
-        ).closing()
-        val store = backend.remoteStore(namespace)
-        store.read(key("warm"), null, null)
-        redis.pause(PAUSE_MILLIS)
-        val error = runCatching { store.read(key("slow"), null, null) }.exceptionOrNull()
-        error.assert().isInstanceOf(RedisException::class.java)
-        error?.message.assert().isEqualTo("Command timed out after PT0.2S.")
-        Thread.sleep(PAUSE_MILLIS)
-        store.read(key("slow"), null, null).assert().isEqualTo(RemoteRead.Miss(false))
-    }
-
-    /**
-     * 调用方的客户端（`RedisBackend.of`）不为命令计时时，异步超时仍由后端以 `commandTimeout` 计时：同样的异常，连接照常可用。
-     */
-    @Test
-    fun asyncCommandTimeoutStillHoldsForAClientWithoutCommandTimeouts() {
+    fun commandTimeoutStillHoldsForAClientWithoutCommandTimeouts() {
         assumeFalse(RedisTestSupport.isCluster)
         val redis = pausable()
         val client = RedisTestSupport.standaloneClient(redis.resources)
@@ -203,15 +174,15 @@ class RedisAsyncStoreFaultTest {
             .build()
         closeables.add(AutoCloseable { client.shutdown() })
         val backend = RedisBackend.of(client, RedisBackendOptions(commandTimeout = Duration.ofMillis(200))).closing()
-        val store = backend.remoteStore(namespace)
-        store.readAsync(key("warm"), null, null).await()
+        val store = backend.store(namespace)
+        Suspending.await { store.read(key("warm"), null, null, null) }
         redis.pause(1_000)
-        val error = store.readAsync(key("slow"), null, null).failure()
+        val error = caller.start { store.read(key("slow"), null, null, null) }.failure()
         error.assert().isInstanceOf(RedisException::class.java)
         error?.message.assert().isEqualTo("Command timed out after PT0.2S.")
         error?.cause.assert().isInstanceOf(TimeoutException::class.java)
         Thread.sleep(1_000)
-        store.readAsync(key("slow"), null, null).await().assert().isEqualTo(RemoteRead.Miss(false))
+        Suspending.await { store.read(key("slow"), null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
@@ -249,38 +220,17 @@ class RedisAsyncStoreFaultTest {
     }
 
     /**
-     * 取消返回的 future 只取消调用方的等待：命令照常执行完，连接照常可用。
+     * 命令在途期间连接断开：调用以异常结束（不会永远挂起），不在断线期间缓冲重放。
      */
     @Test
-    fun cancellingAnInFlightAsyncCommandLeavesTheConnectionUsable() {
-        assumeFalse(RedisTestSupport.isCluster)
-        val redis = pausable()
-        val backend = RedisTestSupport.backend(RedisBackendOptions(clientResources = redis.resources)).closing()
-        val store = backend.remoteStore(namespace)
-        // 先缓存脚本：否则暂停期间的 EVALSHA 得到 NOSCRIPT 后才发出 EVAL，晚于随后的读取
-        store.putAsync(key("warm"), scalar("w"), null, frame(key("warm"))).await()
-        store.readAsync(key("warm"), null, null).await()
-        redis.pause(500)
-        val pending = store.putAsync(key("cancel"), scalar("v"), null, frame(key("cancel")))
-        pending.cancel(true).assert().isTrue()
-        // 命令已写出（在代理中排队），暂停结束后照常执行；连接照常可用
-        me.ahoo.cocache.test.Concurrency.awaitCondition("the cancelled put still ran") {
-            (store.readAsync(key("cancel"), null, null).await() as? RemoteRead.Hit)?.envelope == scalar("v")
-        }
-    }
-
-    /**
-     * 命令在途期间连接断开：future 以异常完成（不会永远挂起），不在断线期间缓冲重放。
-     */
-    @Test
-    fun disconnectWhileAnAsyncCommandIsInFlightFailsTheFuture() {
+    fun disconnectWhileACommandIsInFlightFailsTheCall() {
         assumeFalse(RedisTestSupport.isCluster)
         val proxy = RedisTestSupport.proxy().closing()
         val backend = RedisTestSupport.proxiedBackend(proxy).closing()
-        val store = backend.remoteStore(namespace)
-        store.readAsync(key("warm"), null, null).await()
+        val store = backend.store(namespace)
+        Suspending.await { store.read(key("warm"), null, null, null) }
         proxy.pause(1_000)
-        val pending = store.putAsync(key("cut"), scalar("v"), null, frame(key("cut")))
+        val pending = caller.start { store.put(key("cut"), scalar("v"), null, frame(key("cut"))) }
         val restore = proxy.cut()
         pending.failure().assert().isNotNull()
         restore.close()
@@ -301,13 +251,6 @@ class RedisAsyncStoreFaultTest {
                 CompletableFuture.failedFuture<String>(CompletionException(runtime))
             ).failure().assert().isSameAs(runtime)
             connections.bounded(CompletableFuture.completedFuture("v")).await().assert().isEqualTo("v")
-            val transformFailure = IllegalArgumentException("transform")
-            connections.mapped(
-                CompletableFuture.completedFuture("v")
-            ) { throw transformFailure }.failure().assert().isSameAs(transformFailure)
-            connections.mapped(
-                CompletableFuture.failedFuture<String>(CompletionException(runtime))
-            ) { it }.failure().assert().isSameAs(runtime)
             // 客户端不计时：客户端自己的超时原样传递（消息里的时长不是 commandTimeout）
             val lettuceTimeout = RedisCommandTimeoutException("Command timed out after 1 second(s)")
             connections.bounded(CompletableFuture.failedFuture<String>(lettuceTimeout)).failure()
@@ -322,7 +265,7 @@ class RedisAsyncStoreFaultTest {
      * 客户端按 `commandTimeout` 计时：它的超时在异步与同步路径上都映射为同样的 [RedisException]，其它失败照常解包。
      */
     @Test
-    fun clientTimedCommandsMapTheClientTimeoutLikeTheSyncWait() {
+    fun clientTimedCommandsMapTheClientTimeout() {
         assumeFalse(RedisTestSupport.isCluster)
         val client = RedisTestSupport.standaloneClient()
         val connections = RedisConnections(client, Duration.ofSeconds(2), CommandTimeouts.CLIENT)
@@ -332,11 +275,11 @@ class RedisAsyncStoreFaultTest {
             asyncFailure.assert().isInstanceOf(RedisException::class.java)
             asyncFailure?.message.assert().isEqualTo("Command timed out after PT2S.")
             asyncFailure?.cause.assert().isSameAs(lettuceTimeout)
-            val syncFailure = runCatching {
-                connections.await(CompletableFuture.failedFuture<String>(lettuceTimeout))
+            val joinFailure = runCatching {
+                connections.join(CompletableFuture.failedFuture<String>(lettuceTimeout))
             }.exceptionOrNull()
-            syncFailure?.message.assert().isEqualTo("Command timed out after PT2S.")
-            syncFailure?.cause.assert().isSameAs(lettuceTimeout)
+            joinFailure?.message.assert().isEqualTo("Command timed out after PT2S.")
+            joinFailure?.cause.assert().isSameAs(lettuceTimeout)
             val runtime = IllegalStateException("runtime")
             connections.bounded(
                 CompletableFuture.failedFuture<String>(CompletionException(runtime))

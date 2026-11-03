@@ -18,7 +18,7 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -147,9 +147,9 @@ abstract class MultiNodeSpec {
 
     private fun sum(metric: (CacheMetrics) -> Long): Long = nodes.sumOf { metric(it.metrics()) }
 
-    private fun remote(key: String): RemoteRead {
+    private fun remote(key: String): L1Read {
         val store = backend.delegate.store(cacheName)
-        return Suspending.await { store.read("cocache:$cacheName:$key", null, null) }
+        return Suspending.await { store.read("cocache:$cacheName:$key", null, null, null) }
     }
 
     /**
@@ -159,7 +159,7 @@ abstract class MultiNodeSpec {
         requireNotNull(node.admin(cacheName)).inspect(key).local?.refreshAt?.toEpochMilli()
 
     private fun remoteValue(key: String): String? {
-        val read = remote(key) as? RemoteRead.Hit ?: return null
+        val read = remote(key) as? L1Read.Hit ?: return null
         return (read.envelope as? Envelope.Scalar)?.let { TestCodec.decode(it.bytes) }
     }
 
@@ -226,7 +226,7 @@ abstract class MultiNodeSpec {
         database["k"] = "v1"
         caches[0].invalidate("k")
         awaitEventsExcept(writer = 0)
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
         assertConcurrentMissesLoadOncePerKey(caches, listOf("k"))
         loadsOf("k").assert().isEqualTo(2)
     }

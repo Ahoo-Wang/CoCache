@@ -29,10 +29,11 @@ import io.netty.buffer.Unpooled
 import io.netty.util.Timeout
 import io.netty.util.Timer
 import io.netty.util.TimerTask
-import me.ahoo.cocache.api.spi.Digest
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
@@ -151,7 +152,7 @@ class RedisL1StoreUnitTest {
      */
     private fun failedReadWithLease(store: RedisL1Store, lease: LeaseRequest) {
         dispatched.clear()
-        val call = started(1) { store.read("k", lease, null) }
+        val call = started(1) { store.read("k", lease, null, null) }
         dispatched.single().completeExceptionally(RedisException("Connection disconnected"))
         call.failure().assert().isInstanceOf(RedisException::class.java)
         released().assert().containsExactly("k")
@@ -166,7 +167,9 @@ class RedisL1StoreUnitTest {
         val store = store()
         val lease = lease()
         val call =
-            started(1) { store.read("k", lease, RefreshRequest(Duration.ofMinutes(5), token(), Duration.ofMinutes(1))) }
+            started(
+                1
+            ) { store.read("k", lease, RefreshRequest(Duration.ofMinutes(5), token(), Duration.ofMinutes(1)), null) }
         dispatched.single().cancel()
         val failure = call.failure()
         failure.assert().isInstanceOf(RedisException::class.java)
@@ -238,7 +241,7 @@ class RedisL1StoreUnitTest {
     fun failuresWithoutTokensReleaseNothing() {
         val store = store()
         val error = RedisException("Connection disconnected")
-        val read = started(1) { store.read("k", null, null) }
+        val read = started(1) { store.read("k", null, null, null) }
         dispatched.single().completeExceptionally(error)
         read.failure().assert().isSameAs(error)
         dispatched.clear()
@@ -256,7 +259,7 @@ class RedisL1StoreUnitTest {
         val store = store()
         val terminated = RejectedExecutionException("event executor terminated")
         refuse = { command -> terminated.takeIf { command.script == "RELEASE" } }
-        val call = started(2) { store.readAll(listOf("a", "b"), mapOf("a" to lease(), "b" to lease())) }
+        val call = started(2) { store.readAll(listOf("a", "b"), mapOf("a" to lease(), "b" to lease()), null) }
         val first = RedisException("Connection disconnected")
         dispatched[0].completeExceptionally(first)
         dispatched[1].reply(listOf(0L, 1L))
@@ -332,7 +335,7 @@ class RedisL1StoreUnitTest {
         val refused = RejectedExecutionException("event executor terminated")
         refuse = { command -> refused.takeIf { command.script == "READ" && command.key == "b" } }
         val leases = mapOf("a" to lease(), "b" to lease(), "c" to lease())
-        val call = started(1) { store.readAll(listOf("a", "b", "c"), leases) }
+        val call = started(1) { store.readAll(listOf("a", "b", "c"), leases, null) }
         dispatched.single().key.assert().isEqualTo("a")
         call.isDone.assert().isFalse()
         dispatched.single().reply(listOf(0L, 1L))
@@ -367,13 +370,65 @@ class RedisL1StoreUnitTest {
     }
 
     /**
+     * 读取的时限（RFC 0005 round 3 D6）：短于命令超时的 `timeout` 由时间轮计时（客户端只按命令超时计时）。超时以 [RedisException]
+     * 失败，结果未知，这次读取请求的 lease 随即释放（K14）。
+     */
+    @Test
+    fun readTimeoutShorterThanTheCommandTimeoutIsTimedByTheTimer() {
+        val store = store()
+        val timeout = Duration.ofMillis(200)
+        val reads: List<suspend () -> Any?> = listOf(
+            { store.read("k", lease(), null, timeout) },
+            { store.readAll(listOf("k"), mapOf("k" to lease()), timeout) },
+            { store.conditional().readIfChanged("k", null, timeout) },
+        )
+        reads.forEachIndexed { index, read ->
+            dispatched.clear()
+            val call = started(1, read)
+            timer.pending.single().second.assert().isEqualTo(timeout.toMillis())
+            timer.runNext()
+            val failure = call.failure()
+            failure.assert().isInstanceOf(RedisException::class.java)
+            failure?.message.assert().isEqualTo("Command timed out after $timeout.")
+            // 时间轮超时时取消命令：尚未写出的不再写出
+            dispatched.first().isCancelled.assert().isTrue()
+            if (index < 2) released().assert().containsExactly("k") else released().assert().isEmpty()
+        }
+    }
+
+    /**
+     * 不短于命令超时的 `timeout` 以命令超时为上限：仍由客户端计时，不另外计时；`null` 同样。不为正的 `timeout` 在发出之前就被拒绝。
+     */
+    @Test
+    fun readTimeoutIsCappedAtTheCommandTimeoutAndMustBePositive() {
+        val store = store()
+        listOf(null, Duration.ofSeconds(1), Duration.ofHours(1)).forEach { timeout ->
+            dispatched.clear()
+            val call = started(1) { store.read("k", null, null, timeout) }
+            timer.pending.assert().isEmpty()
+            dispatched.single().reply(listOf(0L, 0L))
+            call.await().assert().isEqualTo(L1Read.Miss(false))
+        }
+        dispatched.clear()
+        listOf(Duration.ZERO, Duration.ofMillis(-1)).forEach { timeout ->
+            caller.start { store.read("k", lease(), null, timeout) }.failure()
+                .assert().isInstanceOf(IllegalArgumentException::class.java)
+            caller.start { store.readAll(listOf("k"), emptyMap(), timeout) }.failure()
+                .assert().isInstanceOf(IllegalArgumentException::class.java)
+        }
+        dispatched.assert().isEmpty()
+        connections.readTimeout(Duration.ofMillis(300)).assert().isEqualTo(Duration.ofMillis(300))
+        connections.readTimeout(Duration.ofSeconds(5)).assert().isEqualTo(Duration.ofSeconds(1))
+    }
+
+    /**
      * 解码失败（未知的结果码）：命令已执行、令牌可能已授予，同样释放。
      */
     @Test
     fun undecodableReplyReleasesTheTokens() {
         val store = store()
         val lease = lease()
-        val call = started(1) { store.read("k", lease, null) }
+        val call = started(1) { store.read("k", lease, null, null) }
         dispatched.single().reply(listOf(9L))
         call.failure().assert().isInstanceOf(IllegalStateException::class.java)
         released().assert().containsExactly("k")
@@ -387,7 +442,7 @@ class RedisL1StoreUnitTest {
     fun readAllFailingWithOneSharedExceptionThrowsItAndReleasesEveryLease() {
         val store = store()
         val leases = mapOf("a" to lease(), "b" to lease(), "c" to lease())
-        val call = started(4) { store.readAll(listOf("a", "b", "c", "d"), leases) }
+        val call = started(4) { store.readAll(listOf("a", "b", "c", "d"), leases, null) }
         val drained = RedisException("Connection disconnected")
         dispatched[0].reply(listOf(0L, 1L))
         dispatched[1].completeExceptionally(drained)
@@ -405,7 +460,7 @@ class RedisL1StoreUnitTest {
     @Test
     fun readAllThrowsTheFirstFailureWithTheOthersSuppressed() {
         val store = store()
-        val call = started(2) { store.readAll(listOf("a", "b"), emptyMap()) }
+        val call = started(2) { store.readAll(listOf("a", "b"), emptyMap(), null) }
         val first = RedisException("first")
         val second = RedisException("second")
         dispatched[1].completeExceptionally(second)
@@ -452,7 +507,7 @@ class RedisL1StoreUnitTest {
     @Test
     fun reclaimWithAnUnknownOutcomeReleasesItsLease() {
         val store = store()
-        val call = started(1) { store.reclaim("k", Digest.of(Envelope.Absent), lease()) }
+        val call = started(1) { store.reclaim("k", ContentFingerprint.of(Envelope.Absent), lease()) }
         dispatched.single().completeExceptionally(RedisException("Connection disconnected"))
         call.failure().assert().isInstanceOf(RedisException::class.java)
         released().assert().containsExactly("k")
@@ -551,6 +606,11 @@ class RedisL1StoreUnitTest {
             RedisScripts.PUT.sha to "PUT",
             RedisScripts.PUT_ALL.sha to "PUT_ALL",
             RedisScripts.INVALIDATE.sha to "INVALIDATE",
+            RedisScripts.READ_IF_CHANGED.sha to "READ_IF_CHANGED",
+            RedisScripts.PUT_IF_MATCH.sha to "PUT_IF_MATCH",
+            RedisScripts.PUT_IF_NEWER.sha to "PUT_IF_NEWER",
+            RedisScripts.ADD_MEMBERS_IF_READABLE.sha to "ADD_MEMBERS_IF_READABLE",
+            RedisScripts.REMOVE_MEMBERS_IF_READABLE.sha to "REMOVE_MEMBERS_IF_READABLE",
         )
     }
 }

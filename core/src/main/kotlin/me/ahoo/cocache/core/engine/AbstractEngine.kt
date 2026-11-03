@@ -27,11 +27,11 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.VersionedL1Store
 import me.ahoo.cocache.core.CacheAdmin
@@ -153,9 +153,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 协程核心读取 L1（RFC 0005 §4.3）：不可取消（[uncancellable]），续接回到当前变体的调度器上
      * （同步变体即调用方线程，异步变体即运行时作用域的调度器），从不在 L1 客户端的 I/O 线程上执行。
      * 协程被取消时仍等到读取完成或超时：取得令牌的读取不丢结果，取消在之后的第一个挂起点生效。
+     * 读取的时限暂时一律是存储的命令超时（`timeout = null`）：按缓存的读超时随 M5、M6 接入（RFC 0005 round 3 D6）。
      */
-    protected suspend fun readRemote(storageKey: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead =
-        uncancellable { store.read(storageKey, lease, refresh) }
+    protected suspend fun readRemote(storageKey: String, lease: LeaseRequest?, refresh: RefreshRequest?): L1Read =
+        uncancellable { store.read(storageKey, lease, refresh, null) }
 
     /**
      * [operation] 需要的条件读写能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
@@ -452,19 +453,19 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     @Suppress("TooGenericExceptionCaught")
     private fun remoteCopyOf(storageKey: String): KeyInspection.RemoteCopy {
         val read = try {
-            runSync { uncancellable { store.read(storageKey, null, null) } }
+            runSync { uncancellable { store.read(storageKey, null, null, null) } }
         } catch (e: Exception) {
             return KeyInspection.RemoteCopy(KeyInspection.RemoteState.ERROR, error = e.toString())
         }
         return when (read) {
-            is RemoteRead.Miss -> KeyInspection.RemoteCopy(KeyInspection.RemoteState.MISS)
-            is RemoteRead.Leased -> KeyInspection.RemoteCopy(KeyInspection.RemoteState.LEASED, ttl = read.remaining)
-            is RemoteRead.Hit -> remoteHitOf(read)
+            is L1Read.Miss -> KeyInspection.RemoteCopy(KeyInspection.RemoteState.MISS)
+            is L1Read.Leased -> KeyInspection.RemoteCopy(KeyInspection.RemoteState.LEASED, ttl = read.remaining)
+            is L1Read.Hit -> remoteHitOf(read)
         }
     }
 
     @Suppress("TooGenericExceptionCaught")
-    private fun remoteHitOf(read: RemoteRead.Hit): KeyInspection.RemoteCopy {
+    private fun remoteHitOf(read: L1Read.Hit): KeyInspection.RemoteCopy {
         val unreadable = { reason: String ->
             KeyInspection.RemoteCopy(
                 KeyInspection.RemoteState.UNREADABLE,

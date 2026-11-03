@@ -24,10 +24,10 @@ import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.FutureL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -543,8 +543,8 @@ class CoherentEngineCoreTest {
         closer.join()
 
         val other = RefreshRequest(window, Token(NodeId.random(), 1), Duration.ofSeconds(10))
-        val read = Suspending.await { memory.store("core").read("cocache:core:k", null, other) }
-        (read is RemoteRead.Hit && read.refreshGranted).assert().withFailMessage { "refresh token held: $read" }.isTrue()
+        val read = Suspending.await { memory.store("core").read("cocache:core:k", null, other, null) }
+        (read is L1Read.Hit && read.refreshGranted).assert().withFailMessage { "refresh token held: $read" }.isTrue()
     }
 
     /**
@@ -750,7 +750,7 @@ class CoherentEngineCoreTest {
             every { conditional() } returns null
             every { versioned() } returns null
             every { sets() } returns null
-            every { read(any(), any(), any()) } returns CompletableFuture.completedFuture(null)
+            every { read(any(), any(), any(), null) } returns CompletableFuture.completedFuture(null)
         }
         val backend = object : CoherenceBackend by memory {
             override fun store(namespace: String): L1Store = FutureL1Store.adapt(nullReads)

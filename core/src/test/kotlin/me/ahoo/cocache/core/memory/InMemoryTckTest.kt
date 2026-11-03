@@ -30,6 +30,11 @@ class InMemoryBackendProtocolTest : BackendProtocolSpec() {
     override fun createBackend(): CoherenceBackend = InMemoryBackend(clock)
 
     override fun elapse(duration: Duration) = clock.advance(duration)
+
+    /**
+     * 内存后端的卡顿钩子：卡顿期间超时的操作不执行（相当于尚未写出的命令），不会取得令牌。
+     */
+    override fun pause(): AutoCloseable = (backend as InMemoryBackend).stall()
 }
 
 class InMemoryEngineTest : EngineSpec() {

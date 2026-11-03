@@ -17,12 +17,11 @@ import io.lettuce.core.RedisURI
 import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
@@ -59,12 +58,11 @@ open class CoCacheBenchmark {
     private lateinit var cache: Cache<String, String>
     private lateinit var viaInterface: BenchCache
     private lateinit var mixed: List<Cache<String, String>>
-    private lateinit var store: RemoteStore
+    private lateinit var store: L1Store
     private lateinit var l1Key: String
     private lateinit var batchKeys: List<String>
     private lateinit var asyncCache: AsyncCache<String, String>
     private lateinit var asyncMixed: List<AsyncCache<String, String>>
-    private lateinit var asyncStore: AsyncRemoteStore
     private lateinit var l1Hits: Cache<String, String>
     private lateinit var l1HitKeys: List<String>
 
@@ -86,15 +84,16 @@ open class CoCacheBenchmark {
         }
         cache.put("l1", "l1-value")
         viaInterface = me.ahoo.cocache.core.proxy.CacheProxies.create(BenchCache::class.java, cache)
-        // 存储基准测的是 Redis 存储自身的同步与异步方法（M3d 改为原生的 L1Store）
-        store = backend.remoteStore("bench-$run")
+        // 存储基准测的是 Redis 存储自身（原生挂起的 RedisL1Store，经 awaitBlocking 在调用方线程上等待）
+        store = backend.store("bench-$run")
         l1Key = "cocache:bench-$run:l1"
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         batchKeys = (1..BATCH_SIZE).map { "cocache:bench-$run:batch-$it" }
-        batchKeys.forEach { store.put(it, Envelope.Scalar("batch-value".toByteArray()), Duration.ofMinutes(10), frame) }
+        batchKeys.forEach {
+            awaitBlocking { store.put(it, Envelope.Scalar("batch-value".toByteArray()), Duration.ofMinutes(10), frame) }
+        }
         asyncCache = cache.async()
         asyncMixed = mixed.map { it.async() }
-        asyncStore = backend.remoteStore("bench-$run")
         // L1 命中经引擎：工作集远大于 L2 容量，几乎每次读取都不命中 L2、命中 L1（并填充 L2）
         l1Hits = runtime.create(spec("bench-l1-$run", policy.toBuilder().local(LocalPolicy(maximumSize = 16)).build()))
         l1HitKeys = (1..L1_HIT_KEYS).map { "l1-$it" }
@@ -207,19 +206,15 @@ open class CoCacheBenchmark {
 
     /** 直接读 L1：一次 EVALSHA（PTTL + GET + 头部解析）。 */
     @Benchmark
-    fun l1Read(): RemoteRead = store.read(l1Key, null, null)
-
-    /** 直接异步读 L1：与 [l1Read] 相同的命令，经 `readAsync` 等待。 */
-    @Benchmark
-    fun l1ReadAsync(): RemoteRead = asyncStore.readAsync(l1Key, null, null).join()
+    fun l1Read(): L1Read = awaitBlocking { store.read(l1Key, null, null, null) }
 
     /** 逐个读 L1 的 [BATCH_SIZE] 个 key：[BATCH_SIZE] 次往返，与 [l1BatchRead] 对比。 */
     @Benchmark
-    fun l1SequentialRead(): Int = batchKeys.count { store.read(it, null, null) is RemoteRead.Hit }
+    fun l1SequentialRead(): Int = batchKeys.count { awaitBlocking { store.read(it, null, null, null) } is L1Read.Hit }
 
     /** 批量读 L1 的 [BATCH_SIZE] 个 key：共享连接上并发发出，约一次往返。 */
     @Benchmark
-    fun l1BatchRead(): Int = store.readAll(batchKeys, emptyMap()).size
+    fun l1BatchRead(): Int = awaitBlocking { store.readAll(batchKeys, emptyMap(), null) }.size
 
     /** 完整未命中：读 L1 并取得 lease、回源、凭 lease 写回。 */
     @Benchmark

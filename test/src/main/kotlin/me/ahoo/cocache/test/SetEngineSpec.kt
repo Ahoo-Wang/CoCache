@@ -21,8 +21,8 @@ import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetCacheSpec
@@ -270,7 +270,7 @@ abstract class SetEngineSpec {
     fun unrecognizedContentFails() {
         val cache = nodeA.setCache()
         cache.add("k", listOf("a"))
-        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = 0) else read }
+        backend.afterRead = { _, read -> if (read is L1Read.Hit) read.copy(format = 0) else read }
         val error = runCatching { cache["k"] }.exceptionOrNull()
         backend.afterRead = null
         error.assert().isInstanceOf(CacheReadException::class.java)
@@ -313,8 +313,8 @@ abstract class SetEngineSpec {
         nodeA.metrics(cacheName)?.unknownFormats.assert().isEqualTo(2L)
         nodeA.metrics(cacheName)?.writeFailures.assert().isEqualTo(2L)
         val kept = Suspending.await {
-            backend.delegate.store(cacheName).read("cocache:$cacheName:k", null, null)
-        } as RemoteRead.Hit
+            backend.delegate.store(cacheName).read("cocache:$cacheName:k", null, null, null)
+        } as L1Read.Hit
         (kept.envelope as Envelope.Scalar).bytes.assert().isEqualTo("x".toByteArray())
         // 整体覆盖（put）不受影响：调用方给出的是全部内容
         other.put("k", setOf("b"))

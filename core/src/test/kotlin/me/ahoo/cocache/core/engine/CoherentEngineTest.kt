@@ -19,10 +19,10 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -155,7 +155,7 @@ open class CoherentEngineTest {
 
     private fun foreignLease(key: String): Token {
         val token = Token(NodeId.random(), 1)
-        Suspending.await { memory.store(name).read(key(key), LeaseRequest(token, Duration.ofMinutes(1)), null) }
+        Suspending.await { memory.store(name).read(key(key), LeaseRequest(token, Duration.ofMinutes(1)), null, null) }
         return token
     }
 
@@ -179,9 +179,10 @@ open class CoherentEngineTest {
                 ).read(
                     key("k"),
                     null,
+                    null,
                     null
                 )
-            } as RemoteRead.Hit
+            } as L1Read.Hit
             ).envelope.assert().isEqualTo(Envelope.Scalar("loaded-k".toByteArray()))
     }
 
@@ -260,7 +261,7 @@ open class CoherentEngineTest {
     fun missWithoutGrantedLeaseLoadsWithoutFilling() {
         val cache = runtime().engine()
         database["k"] = "v"
-        backend.afterRead = { _, read -> if (read is RemoteRead.Miss) RemoteRead.Miss(false) else read }
+        backend.afterRead = { _, read -> if (read is L1Read.Miss) L1Read.Miss(false) else read }
         cache["k"].assert().isEqualTo("v")
         cache.metrics.degradedFills.assert().isEqualTo(1)
         cache.metrics.fillRejected.assert().isEqualTo(0)
@@ -293,7 +294,7 @@ open class CoherentEngineTest {
         silentPut("k", Envelope.Scalar(TestCodec.CORRUPT))
         backend.afterRead = { _, read ->
             // 回收之前内容已被并发写入改变
-            if (read is RemoteRead.Hit) silentPut("k", Envelope.Scalar(TestCodec.CORRUPT + byteArrayOf(1)))
+            if (read is L1Read.Hit) silentPut("k", Envelope.Scalar(TestCodec.CORRUPT + byteArrayOf(1)))
             read
         }
         cache["k"].assert().isEqualTo("v")
@@ -331,11 +332,11 @@ open class CoherentEngineTest {
         silentPut("k", Envelope.Scalar("{\"legacy\":true}".toByteArray()))
         backend.afterRead = { _, read ->
             backend.afterRead = null
-            if (read is RemoteRead.Hit) read.copy(format = 0) else read
+            if (read is L1Read.Hit) read.copy(format = 0) else read
         }
         cache["k"].assert().isEqualTo("v")
         cache.metrics.reclaims.assert().isEqualTo(1)
-        (Suspending.await { memory.store(name).read(key("k"), null, null) } as RemoteRead.Hit)
+        (Suspending.await { memory.store(name).read(key("k"), null, null, null) } as L1Read.Hit)
             .envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
     }
 
@@ -344,11 +345,11 @@ open class CoherentEngineTest {
         val cache = runtime().engine()
         database["k"] = "v"
         silentPut("k", Envelope.Scalar("legacy".toByteArray()))
-        backend.afterReadAll = { reads -> reads.mapValues { (_, read) -> if (read is RemoteRead.Hit) read.copy(format = 0) else read } }
+        backend.afterReadAll = { reads -> reads.mapValues { (_, read) -> if (read is L1Read.Hit) read.copy(format = 0) else read } }
         cache.getAll(listOf("k")).assert().isEqualTo(mapOf("k" to "v"))
         cache.metrics.reclaims.assert().isEqualTo(1)
         cache.metrics.degradedFills.assert().isZero()
-        (Suspending.await { memory.store(name).read(key("k"), null, null) } as RemoteRead.Hit)
+        (Suspending.await { memory.store(name).read(key("k"), null, null, null) } as L1Read.Hit)
             .envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
     }
 
@@ -628,7 +629,7 @@ open class CoherentEngineTest {
         silentPut("corrupt", Envelope.Scalar(TestCodec.CORRUPT))
         silentPut("newer", Envelope.Scalar("written-by-newer".toByteArray()))
         backend.afterReadAll = { reads ->
-            reads.mapValues { (k, read) -> if (k == key("newer") && read is RemoteRead.Hit) read.copy(format = read.format + 1) else read }
+            reads.mapValues { (k, read) -> if (k == key("newer") && read is L1Read.Hit) read.copy(format = read.format + 1) else read }
         }
         val values = cache.getAll(listOf("leased", "corrupt", "newer"))
         values.assert().isEqualTo(mapOf("leased" to "l", "corrupt" to "c", "newer" to "n"))
@@ -642,15 +643,16 @@ open class CoherentEngineTest {
                 ).read(
                     key("corrupt"),
                     null,
+                    null,
                     null
                 )
-            } as RemoteRead.Hit
+            } as L1Read.Hit
             ).envelope.assert().isEqualTo(Envelope.Scalar("c".toByteArray()))
         Suspending.await {
             memory.store(
                 name
-            ).read(key("leased"), null, null)
-        }.assert().isInstanceOf(RemoteRead.Leased::class.java)
+            ).read(key("leased"), null, null, null)
+        }.assert().isInstanceOf(L1Read.Leased::class.java)
         (
             Suspending.await {
                 memory.store(
@@ -658,9 +660,10 @@ open class CoherentEngineTest {
                 ).read(
                     key("newer"),
                     null,
+                    null,
                     null
                 )
-            } as RemoteRead.Hit
+            } as L1Read.Hit
             ).envelope.assert().isEqualTo(Envelope.Scalar("written-by-newer".toByteArray()))
     }
 
@@ -670,8 +673,8 @@ open class CoherentEngineTest {
         val failure = IllegalStateException("source down")
         loadFailure = failure
         runCatching { cache.getAll(listOf("a", "b")) }.exceptionOrNull().assert().isSameAs(failure)
-        Suspending.await { memory.store(name).read(key("a"), null, null) }.assert().isEqualTo(RemoteRead.Miss(false))
-        Suspending.await { memory.store(name).read(key("b"), null, null) }.assert().isEqualTo(RemoteRead.Miss(false))
+        Suspending.await { memory.store(name).read(key("a"), null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
+        Suspending.await { memory.store(name).read(key("b"), null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
@@ -807,8 +810,8 @@ open class CoherentEngineTest {
         cacheA["k"]
         refreshExecutor = Executor { it.run() }
         val foreignRefresh = RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1))
-        Suspending.await { memory.store(name).read(key("k"), null, foreignRefresh) }
-        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(envelope = Envelope.Scalar(TestCodec.CORRUPT)) else read }
+        Suspending.await { memory.store(name).read(key("k"), null, foreignRefresh, null) }
+        backend.afterRead = { _, read -> if (read is L1Read.Hit) read.copy(envelope = Envelope.Scalar(TestCodec.CORRUPT)) else read }
         cacheB["k"].assert().isEqualTo("v0")
         backend.afterRead = null
     }
@@ -831,8 +834,8 @@ open class CoherentEngineTest {
         Suspending.await {
             memory.store(
                 name
-            ).read(key("k"), null, null)
-        }.assert().isInstanceOf(RemoteRead.Hit::class.java)
+            ).read(key("k"), null, null, null)
+        }.assert().isInstanceOf(L1Read.Hit::class.java)
 
         refreshExecutor = Executor { throw RejectedExecutionException("full") }
         cache["k"].assert().isEqualTo("v0")
@@ -855,7 +858,7 @@ open class CoherentEngineTest {
         clock.advance(Duration.ofSeconds(6))
         // 另一个节点持有刷新令牌
         val foreignRefresh = RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1))
-        Suspending.await { memory.store(name).read(key("k"), null, foreignRefresh) }
+        Suspending.await { memory.store(name).read(key("k"), null, foreignRefresh, null) }
         cache["k"].assert().isEqualTo("v0")
         val backedOff = clock.nowMillis() + 100
         awaitCondition { refreshAt() == backedOff }
@@ -957,7 +960,7 @@ open class CoherentEngineTest {
         database["k"] = "v"
         val token = foreignLease("k")
         backend.afterRead = { _, read ->
-            if (read is RemoteRead.Leased) {
+            if (read is L1Read.Leased) {
                 // 持有者在等待者第一次读到 lease 之后写回
                 backend.afterRead = null
                 Suspending.await { memory.store(name).fill(Fill(key("k"), token, Envelope.Scalar("filled".toByteArray()), null)) }

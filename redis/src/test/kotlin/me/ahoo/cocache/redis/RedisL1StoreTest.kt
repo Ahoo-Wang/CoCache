@@ -24,20 +24,23 @@ import io.netty.channel.Channel
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelOutboundHandlerAdapter
 import io.netty.channel.ChannelPromise
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteConditionalRead
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assumptions.assumeFalse
@@ -52,18 +55,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * [backend] 的原生存储，与后端共用连接与广播频道（M3d 第一阶段：后端的 `store` 仍经 [RedisRemoteStore] 适配，这里直接构造
- * [RedisL1Store]；第二阶段由 `RedisBackend.store` 返回它）。
+ * [backend] 的原生存储（`RedisBackend.store` 返回的就是它）。
  */
-internal fun RedisBackend.l1Store(
-    namespace: String,
-    invalidateBatchSize: Int = RedisBackendOptions().invalidateBatchSize
-): RedisL1Store {
-    val field = RedisBackend::class.java.getDeclaredField("connections").apply { isAccessible = true }
-    val name = RedisInvalidationChannel.channelOf(namespace)
-    val channel = if (atomicBroadcast) name.toByteArray(Charsets.UTF_8) else ByteArray(0)
-    return RedisL1Store(field.get(this) as RedisConnections, channel, invalidateBatchSize)
-}
+internal fun RedisBackend.l1Store(namespace: String): RedisL1Store = store(namespace) as RedisL1Store
 
 /**
  * 原生的 Redis `L1Store`（RFC 0005 §4.3）直接对 Redis 的用例：每个操作与能力面、广播、在调用方的调度器上恢复、批量先全部发出再等待、
@@ -96,50 +90,56 @@ class RedisL1StoreTest {
     private fun scalar(text: String, version: Long = me.ahoo.cocache.api.Versioned.NO_VERSION) =
         Envelope.Scalar(text.toByteArray(), version)
 
-    private fun <T> run(block: suspend () -> T): T = caller.run(block)
+    private fun <T> run(block: suspend () -> T): T = Suspending.await(block)
 
     private fun Throwable?.assertTimedOut(timeout: Duration) {
         this.assert().isInstanceOf(RedisException::class.java)
         this?.message.assert().isEqualTo("Command timed out after $timeout.")
     }
 
-    private fun RemoteRead?.members(): Set<String> =
-        (this as RemoteRead.Hit).envelope.let { it as Envelope.Members }.members.map { String(it) }.toSet()
+    private fun L1Read?.members(): Set<String> =
+        (this as L1Read.Hit).envelope.let { it as Envelope.Members }.members.map { String(it) }.toSet()
 
     @Test
     fun everyOperationRoundTrips() {
         val store = RedisTestSupport.backend().closing().l1Store(namespace)
         val a = key("a")
         run {
-            store.read(a, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+            store.read(a, null, null, null).assert().isEqualTo(L1Read.Miss(false))
             val first = lease()
-            store.read(a, first, null).assert().isEqualTo(RemoteRead.Miss(true))
-            (store.read(a, lease(), null) as RemoteRead.Leased).remaining.isZero.assert().isFalse()
-            store.fill(Fill(a, token(), scalar("other"), Duration.ofMinutes(1))).assert().isFalse()
-            store.fill(Fill(a, first.token, scalar("v"), Duration.ofMinutes(1))).assert().isTrue()
-            val hit = store.read(a, null, null) as RemoteRead.Hit
+            store.read(a, first, null, null).assert().isEqualTo(L1Read.Miss(true))
+            (store.read(a, lease(), null, null) as L1Read.Leased).remaining.isZero.assert().isFalse()
+            store.fill(
+                Fill(a, token(), scalar("other"), Duration.ofMinutes(1))
+            ).assert().isInstanceOf(L1Fill.Rejected::class.java)
+            store.fill(
+                Fill(a, first.token, scalar("v"), Duration.ofMinutes(1))
+            ).assert().isInstanceOf(L1Fill.Filled::class.java)
+            val hit = store.read(a, null, null, null) as L1Read.Hit
             hit.envelope.assert().isEqualTo(scalar("v"))
             hit.format.assert().isEqualTo(RedisScripts.FORMAT)
             // 带版本的填充：读取原样返回版本
             val d = key("d")
             val versionedLease = lease()
-            store.read(d, versionedLease, null).assert().isEqualTo(RemoteRead.Miss(true))
-            store.fill(Fill(d, versionedLease.token, scalar("dv", 7), Duration.ofMinutes(1))).assert().isTrue()
-            (store.read(d, null, null) as RemoteRead.Hit).envelope.assert().isEqualTo(scalar("dv", 7))
+            store.read(d, versionedLease, null, null).assert().isEqualTo(L1Read.Miss(true))
+            store.fill(
+                Fill(d, versionedLease.token, scalar("dv", 7), Duration.ofMinutes(1))
+            ).assert().isInstanceOf(L1Fill.Filled::class.java)
+            (store.read(d, null, null, null) as L1Read.Hit).envelope.assert().isEqualTo(scalar("dv", 7))
             // 剩余寿命（1 分钟）在刷新窗口（5 分钟）内：取得刷新令牌；释放之后可以再次取得
             val granted = refresh()
-            (store.read(a, null, granted) as RemoteRead.Hit).refreshGranted.assert().isTrue()
-            (store.read(a, null, refresh()) as RemoteRead.Hit).refreshGranted.assert().isFalse()
+            (store.read(a, null, granted, null) as L1Read.Hit).refreshGranted.assert().isTrue()
+            (store.read(a, null, refresh(), null) as L1Read.Hit).refreshGranted.assert().isFalse()
             store.release(a, granted.token)
-            (store.read(a, null, refresh()) as RemoteRead.Hit).refreshGranted.assert().isTrue()
+            (store.read(a, null, refresh(), null) as L1Read.Hit).refreshGranted.assert().isTrue()
 
             // 回收：摘要不符时不动，相符时换成 lease 占位
-            store.reclaim(a, Digest.of(scalar("other")), lease()).assert().isFalse()
+            store.reclaim(a, ContentFingerprint.of(scalar("other")), lease()).assert().isFalse()
             val reclaimed = lease()
-            store.reclaim(a, Digest.of(scalar("v")), reclaimed).assert().isTrue()
-            store.read(a, null, null).assert().isInstanceOf(RemoteRead.Leased::class.java)
+            store.reclaim(a, ContentFingerprint.of(scalar("v")), reclaimed).assert().isTrue()
+            store.read(a, null, null, null).assert().isInstanceOf(L1Read.Leased::class.java)
             store.release(a, reclaimed.token)
-            store.read(a, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+            store.read(a, null, null, null).assert().isEqualTo(L1Read.Miss(false))
             store.invalidate(listOf(d), frame(d))
         }
     }
@@ -154,28 +154,32 @@ class RedisL1StoreTest {
             val c = key("c")
             store.put(b, scalar("b"), null, frame(b))
             val leases = mapOf(a to lease(), c to lease())
-            val reads = store.readAll(listOf(a, b, c, a), leases)
+            val reads = store.readAll(listOf(a, b, c, a), leases, null)
             reads.keys.assert().containsExactly(a, b, c)
-            reads[a].assert().isEqualTo(RemoteRead.Miss(true))
-            (reads[b] as RemoteRead.Hit).ttl.assert().isNull()
-            reads[c].assert().isEqualTo(RemoteRead.Miss(true))
+            reads[a].assert().isEqualTo(L1Read.Miss(true))
+            (reads[b] as L1Read.Hit).ttl.assert().isNull()
+            reads[c].assert().isEqualTo(L1Read.Miss(true))
             store.fillAll(
                 listOf(
                     Fill(a, leases.getValue(a).token, Envelope.Absent, Duration.ofMinutes(1), 3),
                     Fill(c, token(), scalar("c"), null),
                 )
-            ).assert().containsExactly(true, false)
-            store.readAll(emptyList(), emptyMap()).assert().isEmpty()
+            ).assert().containsExactly(L1Fill.Filled(advanced = false), L1Fill.Rejected(currentVersion = null))
+            store.readAll(emptyList(), emptyMap(), null).assert().isEmpty()
             store.fillAll(emptyList()).assert().isEmpty()
 
             store.putAll(
                 listOf(Put(a, scalar("pa"), null), Put(c, scalar("pc", 2), Duration.ofMinutes(1))),
                 frame(a, c)
             )
-            (store.read(a, null, null) as RemoteRead.Hit).envelope.assert().isEqualTo(scalar("pa"))
-            (store.read(c, null, null) as RemoteRead.Hit).envelope.assert().isEqualTo(scalar("pc", 2))
+            (store.read(a, null, null, null) as L1Read.Hit).envelope.assert().isEqualTo(scalar("pa"))
+            (store.read(c, null, null, null) as L1Read.Hit).envelope.assert().isEqualTo(scalar("pc", 2))
             store.invalidate(listOf(a, b, c), frame(a, b, c))
-            store.readAll(listOf(a, b, c), emptyMap()).values.forEach { it.assert().isEqualTo(RemoteRead.Miss(false)) }
+            store.readAll(
+                listOf(a, b, c),
+                emptyMap(),
+                null
+            ).values.forEach { it.assert().isEqualTo(L1Read.Miss(false)) }
         }
     }
 
@@ -195,29 +199,29 @@ class RedisL1StoreTest {
         val foreign = key("foreign")
         RedisTestSupport.withCommands { it.set(foreign, "garbage") }
         run {
-            conditional.readIfChanged(c, null).assert().isEqualTo(RemoteConditionalRead.Absent)
+            conditional.readIfChanged(c, null, null).assert().isEqualTo(L1ConditionalRead.Absent)
             conditional.putIfMatch(
                 c,
                 null,
                 scalar("one"),
                 null,
                 frame(c)
-            ).assert().isEqualTo(RemoteConditionalWrite.Written)
+            ).assert().isEqualTo(L1ConditionalWrite.Written)
             val one = Digest.of(scalar("one"))
             conditional.putIfMatch(c, null, scalar("two"), null, frame(c))
-                .assert().isEqualTo(RemoteConditionalWrite.Conflict(one))
-            conditional.readIfChanged(c, one).assert().isEqualTo(RemoteConditionalRead.Unchanged(RedisScripts.FORMAT))
-            val changed = conditional.readIfChanged(c, Digest.of(scalar("two"))) as RemoteConditionalRead.Changed
+                .assert().isEqualTo(L1ConditionalWrite.Conflict(one))
+            conditional.readIfChanged(c, one, null).assert().isEqualTo(L1ConditionalRead.Unchanged(RedisScripts.FORMAT))
+            val changed = conditional.readIfChanged(c, Digest.of(scalar("two")), null) as L1ConditionalRead.Changed
             changed.envelope.assert().isEqualTo(scalar("one"))
             conditional.putIfMatch(foreign, null, scalar("x"), null, frame(foreign))
-                .assert().isEqualTo(RemoteConditionalWrite.Unreadable(0))
+                .assert().isEqualTo(L1ConditionalWrite.Unreadable(0))
 
-            versioned.putIfNewer(v, scalar("v2"), 2, null, frame(v)).assert().isEqualTo(RemoteVersionedWrite.Written)
-            versioned.putIfNewer(v, scalar("v1"), 1, null, frame(v)).assert().isEqualTo(RemoteVersionedWrite.Stale(2))
-            versioned.putIfNewer(v, Envelope.Absent, 3, null, frame(v)).assert().isEqualTo(RemoteVersionedWrite.Written)
-            (store.read(v, null, null) as RemoteRead.Hit).envelope.assert().isEqualTo(Envelope.Absent)
+            versioned.putIfNewer(v, scalar("v2"), 2, null, frame(v)).assert().isEqualTo(L1VersionedWrite.Written)
+            versioned.putIfNewer(v, scalar("v1"), 1, null, frame(v)).assert().isEqualTo(L1VersionedWrite.Stale(2))
+            versioned.putIfNewer(v, Envelope.Absent, 3, null, frame(v)).assert().isEqualTo(L1VersionedWrite.Written)
+            (store.read(v, null, null, null) as L1Read.Hit).envelope.assert().isEqualTo(Envelope.Absent)
             versioned.putIfNewer(foreign, scalar("x"), 9, null, frame(foreign))
-                .assert().isEqualTo(RemoteVersionedWrite.Unreadable(0))
+                .assert().isEqualTo(L1VersionedWrite.Unreadable(0))
             // 集合不能按版本写入：发出之前同步失败
             runCatching { versioned.putIfNewer(v, Envelope.Members(emptyList()), 4, null, frame(v)) }
                 .exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
@@ -228,11 +232,11 @@ class RedisL1StoreTest {
                 Duration.ofMinutes(1),
                 frame(s)
             ).assert().isNull()
-            store.read(s, null, null).members().assert().containsExactlyInAnyOrder("m1", "m2")
+            store.read(s, null, null, null).members().assert().containsExactlyInAnyOrder("m1", "m2")
             sets.removeMembers(s, listOf("m1".toByteArray()), null, frame(s)).assert().isNull()
-            store.read(s, null, null).members().assert().containsExactly("m2")
+            store.read(s, null, null, null).members().assert().containsExactly("m2")
             sets.removeMembers(s, listOf("m2".toByteArray()), null, frame(s)).assert().isNull()
-            store.read(s, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+            store.read(s, null, null, null).assert().isEqualTo(L1Read.Miss(false))
             sets.addMembers(foreign, listOf("m".toByteArray()), null, frame(foreign)).assert().isEqualTo(0)
             sets.removeMembers(foreign, listOf("m".toByteArray()), null, frame(foreign)).assert().isEqualTo(0)
         }
@@ -243,9 +247,11 @@ class RedisL1StoreTest {
      */
     @Test
     fun writesBroadcastOnTheNamespaceChannel() {
-        val backend = RedisTestSupport.backend().closing()
+        val backend = RedisTestSupport.backend(
+            RedisBackendOptions(clientName = "cocache-tck-" + UUID.randomUUID(), invalidateBatchSize = 1)
+        ).closing()
         assumeTrue(backend.atomicBroadcast)
-        val store = backend.l1Store(namespace, invalidateBatchSize = 1)
+        val store = backend.l1Store(namespace)
         val received = CopyOnWriteArrayList<List<String>>()
         RedisTestSupport.subscribeRaw(RedisInvalidationChannel.channelOf(namespace)) {
             received.add(InvalidationFrame.decode(it).keys)
@@ -272,13 +278,13 @@ class RedisL1StoreTest {
     fun callerResumesOnItsOwnDispatcher() {
         val store = RedisTestSupport.backend().closing().l1Store(namespace)
         val a = key("a")
-        val threads = run {
+        val threads = caller.run {
             val threads = ArrayList<String>()
             store.put(a, scalar("v"), null, frame(a))
             threads.add(Thread.currentThread().name)
-            store.read(a, lease(), refresh())
+            store.read(a, lease(), refresh(), null)
             threads.add(Thread.currentThread().name)
-            store.readAll(listOf(a, key("b")), mapOf(key("b") to lease()))
+            store.readAll(listOf(a, key("b")), mapOf(key("b") to lease()), null)
             threads.add(Thread.currentThread().name)
             store.invalidate(listOf(a, key("b")), frame(a, key("b")))
             threads.add(Thread.currentThread().name)
@@ -296,9 +302,13 @@ class RedisL1StoreTest {
         val written = WrittenCommands()
         val redis = RedisTestSupport.pausable { it.nettyCustomizer(written) }.closing()
         val backend = RedisTestSupport.backend(
-            RedisBackendOptions(commandTimeout = Duration.ofSeconds(10), clientResources = redis.resources)
+            RedisBackendOptions(
+                commandTimeout = Duration.ofSeconds(10),
+                clientResources = redis.resources,
+                invalidateBatchSize = 1
+            )
         ).closing()
-        val store = backend.l1Store(namespace, invalidateBatchSize = 1)
+        val store = backend.l1Store(namespace)
         RedisTestSupport.loadScripts(
             RedisScripts.READ,
             RedisScripts.FILL,
@@ -306,10 +316,10 @@ class RedisL1StoreTest {
             RedisScripts.INVALIDATE
         )
         val warm = key("{batch}warm")
-        run { store.read(warm, null, null) }
+        run { store.read(warm, null, null, null) }
         val keys = List(4) { key("{batch}$it") }
         val batches: List<suspend () -> Unit> = listOf(
-            { store.readAll(keys, keys.associateWith { lease() }) },
+            { store.readAll(keys, keys.associateWith { lease() }, null) },
             { store.fillAll(keys.map { Fill(it, token(), scalar("v"), null) }) },
             { store.putAll(keys.map { Put(it, scalar("v"), null) }, frame(*keys.toTypedArray())) },
             { store.invalidate(keys, frame(*keys.toTypedArray())) },
@@ -338,19 +348,19 @@ class RedisL1StoreTest {
         val a = key("{slow}a")
         val b = key("{slow}b")
         val members = listOf("m".toByteArray())
-        run { store.read(a, null, null) }
+        run { store.read(a, null, null, null) }
         redis.pause(PAUSE_MILLIS)
         val operations: List<suspend () -> Any?> = listOf(
-            { store.read(a, null, null) },
-            { store.readAll(listOf(a, b), emptyMap()) },
+            { store.read(a, null, null, null) },
+            { store.readAll(listOf(a, b), emptyMap(), null) },
             { store.fill(Fill(a, token(), scalar("v"), null)) },
             { store.fillAll(listOf(Fill(a, token(), scalar("v"), null))) },
             { store.release(a, token()) },
-            { store.reclaim(a, Digest.of(scalar("v")), lease()) },
+            { store.reclaim(a, ContentFingerprint.of(scalar("v")), lease()) },
             { store.put(a, scalar("v"), null, frame(a)) },
             { store.putAll(listOf(Put(a, scalar("v"), null)), frame(a)) },
             { store.invalidate(listOf(a, b), frame(a, b)) },
-            { store.conditional().readIfChanged(a, null) },
+            { store.conditional().readIfChanged(a, null, null) },
             { store.conditional().putIfMatch(a, null, scalar("v"), null, frame(a)) },
             { store.versioned().putIfNewer(a, scalar("v"), 1, null, frame(a)) },
             { store.sets().addMembers(b, members, null, frame(b)) },
@@ -362,7 +372,9 @@ class RedisL1StoreTest {
             failure.assert().withFailMessage { "operation #$index did not time out" }.isNotNull()
             failure.assertTimedOut(timeout)
         }
-        awaitCondition("pause over") { runCatching { run { store.read(key("{slow}warm"), null, null) } }.isSuccess }
+        awaitCondition(
+            "pause over"
+        ) { runCatching { run { store.read(key("{slow}warm"), null, null, null) } }.isSuccess }
     }
 
     /**
@@ -387,20 +399,20 @@ class RedisL1StoreTest {
         RedisTestSupport.withCommands { it.set(corrupt, "garbage") }
         val observed = run {
             store.put(refreshed, scalar("v"), Duration.ofMinutes(1), frame(refreshed))
-            store.read(warm, null, null)
-            Digest.of((store.read(corrupt, null, null) as RemoteRead.Hit).envelope)
+            store.read(warm, null, null, null)
+            ContentFingerprint.of((store.read(corrupt, null, null, null) as L1Read.Hit).envelope)
         }
         redis.pause(PAUSE_MILLIS)
         listOf(
-            caller.start { store.read(single, lease(), null) },
-            caller.start { store.readAll(all, all.associateWith { lease() }) },
-            caller.start { store.read(refreshed, null, refresh()) },
+            caller.start { store.read(single, lease(), null, null) },
+            caller.start { store.readAll(all, all.associateWith { lease() }, null) },
+            caller.start { store.read(refreshed, null, refresh(), null) },
             caller.start { store.reclaim(corrupt, observed, lease()) },
         ).forEach { it.failure().assertTimedOut(timeout) }
-        awaitCondition("pause over") { runCatching { run { store.read(warm, null, null) } }.isSuccess }
+        awaitCondition("pause over") { runCatching { run { store.read(warm, null, null, null) } }.isSuccess }
         run {
-            (all + single + corrupt).forEach { store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false)) }
-            (store.read(refreshed, null, refresh()) as RemoteRead.Hit).refreshGranted.assert().isTrue()
+            (all + single + corrupt).forEach { store.read(it, null, null, null).assert().isEqualTo(L1Read.Miss(false)) }
+            (store.read(refreshed, null, refresh(), null) as L1Read.Hit).refreshGranted.assert().isTrue()
         }
     }
 
@@ -417,7 +429,7 @@ class RedisL1StoreTest {
         closeables.add(AutoCloseable { client.shutdown() })
         val backend = RedisBackend.of(client, RedisBackendOptions(commandTimeout = Duration.ofSeconds(10))).closing()
         val store = backend.l1Store(namespace)
-        run { store.read(key("warm"), null, null) }
+        run { store.read(key("warm"), null, null, null) }
         // 命令连接与订阅连接都经代理：两条都断开之后，新命令进入断线缓冲（重连停在握手上）
         val disconnected = CountDownLatch(2)
         val events = client.resources.eventBus().get()
@@ -427,7 +439,7 @@ class RedisL1StoreTest {
         proxy.stall(disconnect = true).closing()
         disconnected.await(10, TimeUnit.SECONDS).assert().isTrue()
         val pending = listOf(
-            caller.start { store.read(key("a"), lease(), null) },
+            caller.start { store.read(key("a"), lease(), null, null) },
             caller.start { store.put(key("b"), scalar("v"), null, frame(key("b"))) },
         )
         // 单线程的调度器按序执行：空任务结束时，两个调用都已发出命令（进入缓冲）并挂起
@@ -454,10 +466,10 @@ class RedisL1StoreTest {
         val store = RedisTestSupport.proxiedBackend(proxy).closing().l1Store(namespace)
         val a = key("a")
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RELEASE)
-        run { store.read(key("warm"), null, null) }
+        run { store.read(key("warm"), null, null, null) }
         RedisTestSupport.withCommands { commands ->
             val lost = proxy.dropReplies()
-            val call = caller.start { store.read(a, LeaseRequest(token(), Duration.ofMinutes(1)), null) }
+            val call = caller.start { store.read(a, LeaseRequest(token(), Duration.ofMinutes(1)), null, null) }
             awaitCondition("the read placed its lease") { commands.exists(a) == 1L }
             val cut = proxy.cut()
             val failure = call.failure()

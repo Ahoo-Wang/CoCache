@@ -17,10 +17,10 @@ import kotlinx.coroutines.future.await
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ForwardingL1Store
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
@@ -31,6 +31,7 @@ import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -59,8 +60,13 @@ class NonCancellableL1Test {
      */
     private val backend = object : CoherenceBackend by memory {
         override fun store(namespace: String): L1Store = object : ForwardingL1Store(memory.store(namespace)) {
-            override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
-                val read = delegate.read(key, lease, refresh)
+            override suspend fun read(
+                key: String,
+                lease: LeaseRequest?,
+                refresh: RefreshRequest?,
+                timeout: Duration?
+            ): L1Read {
+                val read = delegate.read(key, lease, refresh, timeout)
                 waiting.incrementAndGet()
                 gate.await()
                 return read
@@ -79,8 +85,8 @@ class NonCancellableL1Test {
     }
 
     private fun leased(): Boolean = Suspending.await {
-        memory.store(NAME).read("cocache:$NAME:k", null, null)
-    } is RemoteRead.Leased
+        memory.store(NAME).read("cocache:$NAME:k", null, null, null)
+    } is L1Read.Leased
 
     @Test
     fun anInterruptedCallerWaitsForTheCancellableReadAndReleasesTheLease() {

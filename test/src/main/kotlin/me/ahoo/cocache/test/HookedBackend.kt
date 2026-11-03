@@ -15,6 +15,7 @@ package me.ahoo.cocache.test
 
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ConditionalL1Store
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -23,14 +24,15 @@ import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.ForwardingSetL1Store
 import me.ahoo.cocache.api.spi.ForwardingVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteConditionalRead
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.api.spi.VersionedL1Store
@@ -96,13 +98,13 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
      * 单 key 读取返回之前调用，可以改写结果。
      */
     @Volatile
-    var afterRead: ((String, RemoteRead) -> RemoteRead)? = null
+    var afterRead: ((String, L1Read) -> L1Read)? = null
 
     /**
      * 批量读取返回之前调用，可以改写结果。
      */
     @Volatile
-    var afterReadAll: ((Map<String, RemoteRead>) -> Map<String, RemoteRead>)? = null
+    var afterReadAll: ((Map<String, L1Read>) -> Map<String, L1Read>)? = null
 
     /**
      * put 在 L1 生效之后、返回之前调用；putAll 在整批生效之后对每个 key 各调用一次。
@@ -123,16 +125,16 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     var afterInvalidate: ((Collection<String>) -> Unit)? = null
 
     /**
-     * 单 key fill 在 L1 执行之后、返回之前调用，参数为 key 与是否写入成功。
+     * 单 key fill 在 L1 执行之后、返回之前调用，参数为 key 与结果（[L1Fill.Filled] 即写入）。
      */
     @Volatile
-    var afterFill: ((String, Boolean) -> Unit)? = null
+    var afterFill: ((String, L1Fill) -> Unit)? = null
 
     /**
      * 按版本写入（`putIfNewer`，6.8）在 L1 执行之后、返回之前调用，参数为 key 与结果；抛出即模拟“已生效但向调用方报错”的写入。
      */
     @Volatile
-    var afterVersionedWrite: ((String, RemoteVersionedWrite) -> Unit)? = null
+    var afterVersionedWrite: ((String, L1VersionedWrite) -> Unit)? = null
 
     /**
      * 每个存储调用（含钩子）结束之后，改在这个执行器上恢复调用方的协程（模拟 L1 客户端的 I/O 线程，RFC 0004 §10.1）；
@@ -246,24 +248,27 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
 
         override fun sets(): SetL1Store? = sets
 
-        override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
-            val hook = afterRead?.let { { read: RemoteRead -> it(key, read) } }
+        override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, timeout: Duration?): L1Read {
+            val hook = afterRead?.let { { read: L1Read -> it(key, read) } }
             return hooked(hook) {
                 guard("read")
                 reads.incrementAndGet()
-                delegate.read(key, lease, refresh)
+                delegate.read(key, lease, refresh, timeout)
             }
         }
 
-        override suspend fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> =
-            hooked(afterReadAll) {
-                guard("readAll")
-                readAlls.incrementAndGet()
-                delegate.readAll(keys, leases)
-            }
+        override suspend fun readAll(
+            keys: Collection<String>,
+            leases: Map<String, LeaseRequest>,
+            timeout: Duration?
+        ): Map<String, L1Read> = hooked(afterReadAll) {
+            guard("readAll")
+            readAlls.incrementAndGet()
+            delegate.readAll(keys, leases, timeout)
+        }
 
-        override suspend fun fill(fill: Fill): Boolean {
-            val hook = afterFill?.let { { filled: Boolean -> it(fill.key, filled).let { filled } } }
+        override suspend fun fill(fill: Fill): L1Fill {
+            val hook = afterFill?.let { { filled: L1Fill -> it(fill.key, filled).let { filled } } }
             return hooked(hook) {
                 guard("fill", fail = failFill)
                 fills.incrementAndGet()
@@ -271,7 +276,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             }
         }
 
-        override suspend fun fillAll(fills: List<Fill>): List<Boolean> = hooked(null) {
+        override suspend fun fillAll(fills: List<Fill>): List<L1Fill> = hooked(null) {
             guard("fillAll", fail = failFill)
             this@HookedBackend.fills.addAndGet(fills.size)
             delegate.fillAll(fills)
@@ -309,16 +314,20 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             }
         }
 
-        override suspend fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean = hooked(null) {
+        override suspend fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean = hooked(
+            null
+        ) {
             guard("reclaim")
             delegate.reclaim(key, observed, lease)
         }
     }
 
     private inner class HookedConditional(delegate: ConditionalL1Store) : ForwardingConditionalL1Store(delegate) {
-        override suspend fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead = hooked(null) {
+        override suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead = hooked(
+            null
+        ) {
             guard("read")
-            delegate.readIfChanged(key, known)
+            delegate.readIfChanged(key, known, timeout)
         }
 
         override suspend fun putIfMatch(
@@ -327,7 +336,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             envelope: Envelope.Scalar,
             ttl: Duration?,
             frame: ByteArray
-        ): RemoteConditionalWrite = hooked(null) {
+        ): L1ConditionalWrite = hooked(null) {
             guard("put", fail = failWrites)
             delegate.putIfMatch(key, expected, envelope, ttl, frame)
         }
@@ -340,8 +349,8 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             version: Long,
             ttl: Duration?,
             frame: ByteArray
-        ): RemoteVersionedWrite {
-            val hook = afterVersionedWrite?.let { { result: RemoteVersionedWrite -> it(key, result).let { result } } }
+        ): L1VersionedWrite {
+            val hook = afterVersionedWrite?.let { { result: L1VersionedWrite -> it(key, result).let { result } } }
             return hooked(hook) {
                 guard("put", fail = failWrites)
                 delegate.putIfNewer(key, envelope, version, ttl, frame)

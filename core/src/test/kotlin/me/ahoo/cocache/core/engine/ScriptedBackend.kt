@@ -15,6 +15,7 @@ package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ConditionalL1Store
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -24,15 +25,16 @@ import me.ahoo.cocache.api.spi.FutureSetL1Store
 import me.ahoo.cocache.api.spi.FutureVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteConditionalRead
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
@@ -293,11 +295,11 @@ internal class ScriptedBackend(
             return command.future
         }
 
-        private fun grantOf(key: String, read: RemoteRead, lease: LeaseRequest?, refresh: RefreshRequest?) {
-            if (read is RemoteRead.Miss && read.leaseGranted && lease != null) {
+        private fun grantOf(key: String, read: L1Read, lease: LeaseRequest?, refresh: RefreshRequest?) {
+            if (read is L1Read.Miss && read.leaseGranted && lease != null) {
                 ledger.grant(lease.token, "lease on $key")
             }
-            if (read is RemoteRead.Hit && read.refreshGranted && refresh != null) {
+            if (read is L1Read.Hit && read.refreshGranted && refresh != null) {
                 ledger.grant(refresh.token, "refresh token on $key")
             }
         }
@@ -305,27 +307,29 @@ internal class ScriptedBackend(
         override fun read(
             key: String,
             lease: LeaseRequest?,
-            refresh: RefreshRequest?
-        ): CompletableFuture<RemoteRead> = command(
+            refresh: RefreshRequest?,
+            timeout: Duration?
+        ): CompletableFuture<L1Read> = command(
             "read $key",
             holds = { listOfNotNull(lease?.let { key to it.token }, refresh?.let { key to it.token }) }
         ) {
-            now { store.read(key, lease, refresh) }.also { grantOf(key, it, lease, refresh) }
+            now { store.read(key, lease, refresh, timeout) }.also { grantOf(key, it, lease, refresh) }
         }
 
         override fun readAll(
             keys: Collection<String>,
-            leases: Map<String, LeaseRequest>
-        ): CompletableFuture<Map<String, RemoteRead>> = command(
+            leases: Map<String, LeaseRequest>,
+            timeout: Duration?
+        ): CompletableFuture<Map<String, L1Read>> = command(
             "readAll $keys",
             holds = { leases.map { (key, lease) -> key to lease.token } }
         ) {
-            now { store.readAll(keys, leases) }.onEach { (key, read) -> grantOf(key, read, leases[key], null) }
+            now { store.readAll(keys, leases, timeout) }.onEach { (key, read) -> grantOf(key, read, leases[key], null) }
         }
 
         override fun reclaim(
             key: String,
-            observed: Digest,
+            observed: ContentFingerprint,
             lease: LeaseRequest
         ): CompletableFuture<Boolean> = command("reclaim $key", holds = { listOf(key to lease.token) }) {
             val reclaimed = now { store.reclaim(key, observed, lease) }
@@ -335,7 +339,7 @@ internal class ScriptedBackend(
             reclaimed
         }
 
-        override fun fill(fill: Fill): CompletableFuture<Boolean> = command(
+        override fun fill(fill: Fill): CompletableFuture<L1Fill> = command(
             "fill ${fill.key}",
             gives = listOf(fill.token),
             holds = { listOf(fill.key to fill.token) }
@@ -343,7 +347,7 @@ internal class ScriptedBackend(
             now { store.fill(fill) }.also { ledger.giveBack(fill.token) }
         }
 
-        override fun fillAll(fills: List<Fill>): CompletableFuture<List<Boolean>> = command(
+        override fun fillAll(fills: List<Fill>): CompletableFuture<List<L1Fill>> = command(
             "fillAll ${fills.map { it.key }}",
             gives = fills.map { it.token },
             holds = { fills.map { it.key to it.token } }
@@ -383,8 +387,12 @@ internal class ScriptedBackend(
     }
 
     private class PassingConditional(private val surface: ConditionalL1Store) : FutureConditionalL1Store {
-        override fun readIfChanged(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
-            passed { surface.readIfChanged(key, known) }
+        override fun readIfChanged(
+            key: String,
+            known: Digest?,
+            timeout: Duration?
+        ): CompletableFuture<L1ConditionalRead> =
+            passed { surface.readIfChanged(key, known, timeout) }
 
         override fun putIfMatch(
             key: String,
@@ -392,7 +400,7 @@ internal class ScriptedBackend(
             envelope: Envelope.Scalar,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<RemoteConditionalWrite> = passed {
+        ): CompletableFuture<L1ConditionalWrite> = passed {
             surface.putIfMatch(
                 key,
                 expected,
@@ -410,7 +418,7 @@ internal class ScriptedBackend(
             version: Long,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<RemoteVersionedWrite> = passed { surface.putIfNewer(key, envelope, version, ttl, frame) }
+        ): CompletableFuture<L1VersionedWrite> = passed { surface.putIfNewer(key, envelope, version, ttl, frame) }
     }
 
     private class PassingSets(private val surface: SetL1Store) : FutureSetL1Store {

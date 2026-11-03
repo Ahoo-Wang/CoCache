@@ -38,24 +38,28 @@ import java.util.concurrent.ExecutionException
 @Suppress("TooManyFunctions")
 interface FutureL1Store {
     /**
-     * 同 [L1Store.read]：读取，按请求原子地取得 lease 或刷新令牌。
+     * 同 [L1Store.read]：读取，按请求原子地取得 lease 或刷新令牌；[timeout] 为这次调用的时限（`null` 为实现的命令超时，给出时以它为上限）。
      */
-    fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead>
+    fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, timeout: Duration?): CompletableFuture<L1Read>
 
     /**
-     * 同 [L1Store.readAll]：批量读取，只为 [leases] 中的 key 申请 lease。
+     * 同 [L1Store.readAll]：批量读取，只为 [leases] 中的 key 申请 lease；[timeout] 同 [read]。
      */
-    fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): CompletableFuture<Map<String, RemoteRead>>
+    fun readAll(
+        keys: Collection<String>,
+        leases: Map<String, LeaseRequest>,
+        timeout: Duration?
+    ): CompletableFuture<Map<String, L1Read>>
 
     /**
-     * 同 [L1Store.fill]：令牌匹配时写入，以是否写入完成。
+     * 同 [L1Store.fill]：令牌匹配时写入，以 [L1Fill] 完成。
      */
-    fun fill(fill: Fill): CompletableFuture<Boolean>
+    fun fill(fill: Fill): CompletableFuture<L1Fill>
 
     /**
      * 同 [L1Store.fillAll]：批量填充，结果与 [fills] 一一对应。
      */
-    fun fillAll(fills: List<Fill>): CompletableFuture<List<Boolean>>
+    fun fillAll(fills: List<Fill>): CompletableFuture<List<L1Fill>>
 
     /**
      * 同 [L1Store.release]：令牌匹配时释放。
@@ -63,9 +67,9 @@ interface FutureL1Store {
     fun release(key: String, token: Token): CompletableFuture<Void?>
 
     /**
-     * 同 [L1Store.reclaim]：摘要匹配时条件回收为 lease，以是否回收完成。
+     * 同 [L1Store.reclaim]：内容指纹匹配时条件回收为 lease，以是否回收完成。
      */
-    fun reclaim(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean>
+    fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): CompletableFuture<Boolean>
 
     /**
      * 同 [L1Store.put]：整体覆盖写入并广播。
@@ -125,12 +129,12 @@ fun FutureL1Store.asL1Store(): L1Store = FutureL1Store.adapt(this)
  */
 interface FutureConditionalL1Store {
     /**
-     * 同 [ConditionalL1Store.readIfChanged]：摘要相同时以 [RemoteConditionalRead.Unchanged] 完成，不返回正文。
+     * 同 [ConditionalL1Store.readIfChanged]：摘要相同时以 [L1ConditionalRead.Unchanged] 完成，不返回正文；[timeout] 同 [FutureL1Store.read]。
      */
-    fun readIfChanged(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead>
+    fun readIfChanged(key: String, known: Digest?, timeout: Duration?): CompletableFuture<L1ConditionalRead>
 
     /**
-     * 同 [ConditionalL1Store.putIfMatch]：当前内容符合期望时写入并广播，以 [RemoteConditionalWrite.Written] 完成；否则不修改、不广播。
+     * 同 [ConditionalL1Store.putIfMatch]：当前内容符合期望时写入并广播，以 [L1ConditionalWrite.Written] 完成；否则不修改、不广播。
      */
     fun putIfMatch(
         key: String,
@@ -138,7 +142,7 @@ interface FutureConditionalL1Store {
         envelope: Envelope.Scalar,
         ttl: Duration?,
         frame: ByteArray
-    ): CompletableFuture<RemoteConditionalWrite>
+    ): CompletableFuture<L1ConditionalWrite>
 }
 
 /**
@@ -146,7 +150,7 @@ interface FutureConditionalL1Store {
  */
 interface FutureVersionedL1Store {
     /**
-     * 同 [VersionedL1Store.putIfNewer]：版本更新时写入并广播，以 [RemoteVersionedWrite.Written] 完成；否则不修改、不广播。
+     * 同 [VersionedL1Store.putIfNewer]：版本更新时写入并广播，以 [L1VersionedWrite.Written] 完成；否则不修改、不广播。
      */
     fun putIfNewer(
         key: String,
@@ -154,7 +158,7 @@ interface FutureVersionedL1Store {
         version: Long,
         ttl: Duration?,
         frame: ByteArray
-    ): CompletableFuture<RemoteVersionedWrite>
+    ): CompletableFuture<L1VersionedWrite>
 }
 
 /**
@@ -191,22 +195,25 @@ private class FutureL1StoreAdapter(private val store: FutureL1Store) : L1Store {
     private val versioned = store.versioned()?.let(::FutureVersionedAdapter)
     private val sets = store.sets()?.let(::FutureSetAdapter)
 
-    override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead =
-        awaitValue(store, "read") { store.read(key, lease, refresh) }
+    override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, timeout: Duration?): L1Read =
+        awaitValue(store, "read") { store.read(key, lease, refresh, timeout) }
 
-    override suspend fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> =
-        awaitValue(store, "readAll") { store.readAll(keys, leases) }
+    override suspend fun readAll(
+        keys: Collection<String>,
+        leases: Map<String, LeaseRequest>,
+        timeout: Duration?
+    ): Map<String, L1Read> = awaitValue(store, "readAll") { store.readAll(keys, leases, timeout) }
 
-    override suspend fun fill(fill: Fill): Boolean = awaitValue(store, "fill") { store.fill(fill) }
+    override suspend fun fill(fill: Fill): L1Fill = awaitValue(store, "fill") { store.fill(fill) }
 
-    override suspend fun fillAll(fills: List<Fill>): List<Boolean> =
+    override suspend fun fillAll(fills: List<Fill>): List<L1Fill> =
         awaitValue(store, "fillAll") { store.fillAll(fills) }
 
     override suspend fun release(key: String, token: Token) {
         awaitNullable(store, "release") { store.release(key, token) }
     }
 
-    override suspend fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean =
+    override suspend fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean =
         awaitValue(store, "reclaim") { store.reclaim(key, observed, lease) }
 
     override suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
@@ -229,8 +236,8 @@ private class FutureL1StoreAdapter(private val store: FutureL1Store) : L1Store {
 }
 
 private class FutureConditionalAdapter(private val store: FutureConditionalL1Store) : ConditionalL1Store {
-    override suspend fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead =
-        awaitValue(store, "readIfChanged") { store.readIfChanged(key, known) }
+    override suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead =
+        awaitValue(store, "readIfChanged") { store.readIfChanged(key, known, timeout) }
 
     override suspend fun putIfMatch(
         key: String,
@@ -238,7 +245,7 @@ private class FutureConditionalAdapter(private val store: FutureConditionalL1Sto
         envelope: Envelope.Scalar,
         ttl: Duration?,
         frame: ByteArray
-    ): RemoteConditionalWrite = awaitValue(store, "putIfMatch") {
+    ): L1ConditionalWrite = awaitValue(store, "putIfMatch") {
         store.putIfMatch(key, expected, envelope, ttl, frame)
     }
 }
@@ -250,7 +257,7 @@ private class FutureVersionedAdapter(private val store: FutureVersionedL1Store) 
         version: Long,
         ttl: Duration?,
         frame: ByteArray
-    ): RemoteVersionedWrite = awaitValue(store, "putIfNewer") {
+    ): L1VersionedWrite = awaitValue(store, "putIfNewer") {
         store.putIfNewer(key, envelope, version, ttl, frame)
     }
 }

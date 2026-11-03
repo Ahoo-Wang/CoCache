@@ -64,6 +64,6 @@ data class Fill(val key: String, val token: Token, val envelope: Envelope, val t
 }
 
 /**
- * 批量覆盖写入中的一项：语义同 [RemoteStore.put]，按 [ttl] 重设到期时间（`null` 为永不过期）。
+ * 批量覆盖写入中的一项：语义同 [L1Store.put]，按 [ttl] 重设到期时间（`null` 为永不过期）。
  */
 data class Put(val key: String, val envelope: Envelope, val ttl: Duration?)

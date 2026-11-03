@@ -20,7 +20,7 @@ import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.CoherenceBackend
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.SetCacheSpec
@@ -89,8 +89,8 @@ class PolicyPropertiesTest {
             val index = context.getBean("index") as SetCache<String, String>
             index.add("k", listOf("a"))
             val store = context.getBean(CoherenceBackend::class.java).store("index")
-            val read = Suspending.await { store.read("cocache:index:k", null, null) }
-            (read as RemoteRead.Hit).ttl.assert().isNull()
+            val read = Suspending.await { store.read("cocache:index:k", null, null, null) }
+            (read as L1Read.Hit).ttl.assert().isNull()
         }
     }
 

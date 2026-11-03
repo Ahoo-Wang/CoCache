@@ -26,9 +26,10 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
@@ -203,12 +204,12 @@ abstract class EngineSpec {
     /**
      * 不经过引擎直接读 L1。
      */
-    protected fun remote(key: String): RemoteRead = Suspending.await {
-        backend.delegate.store(cacheName).read(storageKey(key), null, null)
+    protected fun remote(key: String): L1Read = Suspending.await {
+        backend.delegate.store(cacheName).read(storageKey(key), null, null, null)
     }
 
     protected fun remoteValue(key: String): String? {
-        val read = remote(key) as? RemoteRead.Hit ?: return null
+        val read = remote(key) as? L1Read.Hit ?: return null
         return (read.envelope as? Envelope.Scalar)?.let { TestCodec.decode(it.bytes) }
     }
 
@@ -340,7 +341,7 @@ abstract class EngineSpec {
         loading.awaitOrFail("A loading")
         cacheB["k"].assert().isEqualTo("v")
         nodeB.metrics().leaseWaitTimeouts.assert().isEqualTo(1)
-        remote("k").assert().isInstanceOf(RemoteRead.Leased::class.java)
+        remote("k").assert().isInstanceOf(L1Read.Leased::class.java)
         release.countDown()
         onA.join()
         remoteValue("k").assert().isEqualTo("v")
@@ -365,7 +366,7 @@ abstract class EngineSpec {
         cacheB.invalidate("k")
         release.countDown()
         onA.join().assert().isEqualTo("v0")
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
         nodeA.metrics().fillRejected.assert().isEqualTo(1)
         awaitCondition("A sees the new value") { cacheA["k"] == "v1" }
         cacheB["k"].assert().isEqualTo("v1")
@@ -518,7 +519,7 @@ abstract class EngineSpec {
         afterLoad = { throw failure }
         runCatching { cacheA["k"] }.exceptionOrNull().assert().isSameAs(failure)
         afterLoad = null
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
         database["k"] = "v"
         cacheB["k"].assert().isEqualTo("v")
         nodeB.metrics().leaseWaits.assert().isEqualTo(0)
@@ -531,7 +532,7 @@ abstract class EngineSpec {
         backend.failAll = true
         cache["k"].assert().isEqualTo("v")
         backend.failAll = false
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
         nodeA.metrics().remoteFailures.assert().isGreaterThanOrEqualTo(1)
         nodeA.metrics().degradedFills.assert().isEqualTo(1)
         cache["k"]
@@ -590,7 +591,7 @@ abstract class EngineSpec {
         nodeA.metrics().degradedFills.assert().isEqualTo(1)
         cache["k"].assert().isEqualTo("v")
         cache.getAll(listOf("k")).assert().isEqualTo(mapOf("k" to "v"))
-        remote("j").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("j").assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
@@ -637,7 +638,7 @@ abstract class EngineSpec {
         cache["k"].assert().isEqualTo("v1")
         remoteValue("k").assert().isEqualTo("v0")
         backend.failWrites = false
-        awaitCondition("retry deleted the stale remote value") { remote("k") == RemoteRead.Miss(false) }
+        awaitCondition("retry deleted the stale remote value") { remote("k") == L1Read.Miss(false) }
         awaitCondition("retry succeeded") { nodeA.metrics().invalidationRetries >= 1 }
         awaitCondition("local copy refreshed from the source") { cache["k"] == "v1" && remoteValue("k") == "v1" }
     }
@@ -668,7 +669,7 @@ abstract class EngineSpec {
         cache["k"].assert().isNull()
         cache.get("k") { "loaded" }.assert().isEqualTo("loaded")
         backend.failWrites = false
-        awaitCondition("retry deleted the remote value") { remote("k") == RemoteRead.Miss(false) }
+        awaitCondition("retry deleted the remote value") { remote("k") == L1Read.Miss(false) }
         awaitCondition("retry succeeded") { admin.pendingInvalidationCount == 0 }
     }
 
@@ -723,7 +724,7 @@ abstract class EngineSpec {
         (backend.readAlls.get() - reads).assert().isEqualTo(1)
         batchLoads.get().assert().isEqualTo(1)
         remoteValue("source").assert().isEqualTo("s")
-        (remote("absent") as RemoteRead.Hit).envelope.assert().isEqualTo(Envelope.Absent)
+        (remote("absent") as L1Read.Hit).envelope.assert().isEqualTo(Envelope.Absent)
         cacheA.getAll(listOf("remote", "source", "absent")).assert().isEqualTo(mapOf("remote" to "r", "source" to "s"))
         batchLoads.get().assert().isEqualTo(1)
     }
@@ -758,7 +759,7 @@ abstract class EngineSpec {
         cache.getAll(listOf("k")).assert().isEqualTo(mapOf("k" to "v"))
         backend.failAll = false
         nodeA.metrics().degradedFills.assert().isEqualTo(1)
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
@@ -941,7 +942,7 @@ abstract class EngineSpec {
         }
         nodeA.metrics().unknownFormats.assert().isEqualTo(2)
         nodeA.metrics().reclaims.assert().isEqualTo(0)
-        val kept = remote("k") as RemoteRead.Hit
+        val kept = remote("k") as L1Read.Hit
         (kept.envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
         runCatching { cache.lookup("k") }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
     }
@@ -953,7 +954,7 @@ abstract class EngineSpec {
     fun unrecognizedFormatWithoutLoaderFails() {
         val cache = nodeA.cache(spec { loader = null })
         cache.put("k", "v")
-        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = 0) else read }
+        backend.afterRead = { _, read -> if (read is L1Read.Hit) read.copy(format = 0) else read }
         val error = runCatching { cache["k"] }.exceptionOrNull()
         backend.afterRead = null
         error.assert().isInstanceOf(CacheReadException::class.java)
@@ -979,9 +980,9 @@ abstract class EngineSpec {
             error?.cause as? ForeignFormatException
         ).storageKey.assert().isIn(storageKey("bad"), storageKey("worse"))
         nodeA.metrics().unknownFormats.assert().isEqualTo(2)
-        remote("absent").assert().isEqualTo(RemoteRead.Miss(false))
-        remote("bad").assert().isInstanceOf(RemoteRead.Hit::class.java)
-        remote("worse").assert().isInstanceOf(RemoteRead.Hit::class.java)
+        remote("absent").assert().isEqualTo(L1Read.Miss(false))
+        remote("bad").assert().isInstanceOf(L1Read.Hit::class.java)
+        remote("worse").assert().isInstanceOf(L1Read.Hit::class.java)
         cache["ok"].assert().isEqualTo("v")
     }
 
@@ -1027,7 +1028,7 @@ abstract class EngineSpec {
         writeRemoteSilently("k", TestCodec.CORRUPT)
         runCatching { cache["k"] }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
         loads.get().assert().isEqualTo(0)
-        remote("k").assert().isInstanceOf(RemoteRead.Hit::class.java)
+        remote("k").assert().isInstanceOf(L1Read.Hit::class.java)
     }
 
     /**
@@ -1046,7 +1047,7 @@ abstract class EngineSpec {
         val cache = nodeA.cache()
         nodeB.cache().put("k", "new-format")
         database["k"] = "v"
-        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = read.format + 1) else read }
+        backend.afterRead = { _, read -> if (read is L1Read.Hit) read.copy(format = read.format + 1) else read }
         cache["k"].assert().isEqualTo("v")
         backend.afterRead = null
         nodeA.metrics().unknownFormats.assert().isEqualTo(1)
@@ -1062,8 +1063,8 @@ abstract class EngineSpec {
         val cache = nodeA.cache(spec { loader = null })
         cache.put("k", "v")
         cache.put("other", "o")
-        val newer: (RemoteRead) -> RemoteRead = { read ->
-            if (read is RemoteRead.Hit) {
+        val newer: (L1Read) -> L1Read = { read ->
+            if (read is L1Read.Hit) {
                 read.copy(
                     format = read.format + 1
                 )
@@ -1087,7 +1088,7 @@ abstract class EngineSpec {
         // 单 key 两次 + 批量两个 key
         nodeA.metrics().unknownFormats.assert().isEqualTo(4)
         nodeA.metrics().reclaims.assert().isEqualTo(0)
-        remote("absent").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("absent").assert().isEqualTo(L1Read.Miss(false))
         remoteValue("k").assert().isEqualTo("v")
         // 没有写入 L2：恢复后照常读到
         cache["k"].assert().isEqualTo("v")
@@ -1114,14 +1115,14 @@ abstract class EngineSpec {
         nodeA.metrics().loadRejected.assert().isEqualTo(1)
         release.countDown()
         first.join().assert().isEqualTo("a")
-        remote("b").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("b").assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
     fun cacheWithoutLoaderReleasesLeaseAndReturnsNull() {
         val cache = nodeA.cache(spec { loader = null })
         cache["k"].assert().isNull()
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
         cache.put("k", "v")
         cache["k"].assert().isEqualTo("v")
         cache.getAll(listOf("k", "absent")).assert().isEqualTo(mapOf("k" to "v"))
@@ -1177,7 +1178,7 @@ abstract class EngineSpec {
         )
         cache.putAll(mapOf("short" to "s", "policy" to "p"))
         cache.putAll(mapOf("explicit" to "e"), Duration.ofSeconds(1))
-        requireNotNull((remote("policy") as RemoteRead.Hit).ttl).assert().isGreaterThan(Duration.ofMinutes(9))
+        requireNotNull((remote("policy") as L1Read.Hit).ttl).assert().isGreaterThan(Duration.ofMinutes(9))
         elapse(Duration.ofSeconds(2))
         cache["short"].assert().isNull()
         cache["explicit"].assert().isNull()
@@ -1308,7 +1309,7 @@ abstract class EngineSpec {
             )
         }
         val lease = LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1))
-        Suspending.await { l1.read(storageKey("leased"), lease, null) }.assert().isEqualTo(RemoteRead.Miss(true))
+        Suspending.await { l1.read(storageKey("leased"), lease, null, null) }.assert().isEqualTo(L1Read.Miss(true))
 
         cache.getIfChanged("negative", null).assert().isEqualTo(ConditionalGet.Absent)
         cache.getIfChanged("leased", digestOf("x")).assert().isEqualTo(ConditionalGet.Absent)
@@ -1324,7 +1325,7 @@ abstract class EngineSpec {
             Envelope.Scalar(TestCodec.encode("stale")),
             null
         )
-        Suspending.await { l1.fill(stale) }.assert().isFalse()
+        Suspending.await { l1.fill(stale) }.assert().isInstanceOf(L1Fill.Rejected::class.java)
     }
 
     /**
@@ -1352,7 +1353,7 @@ abstract class EngineSpec {
         cache.getIfChanged("k", (written as ConditionalPut.Written).digest).assert().isEqualTo(ConditionalGet.Unchanged)
 
         cache.putIfMatch("absent", digestOf("v1"), "x").assert().isEqualTo(ConditionalPut.Conflict(null))
-        remote("absent").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("absent").assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
@@ -1455,23 +1456,23 @@ abstract class EngineSpec {
         assumeConditionalWrites()
         val cache = storeOfRecord()
         cache.putIfMatch("k", null, "v1", Duration.ofMinutes(1))
-        val ttl = requireNotNull((remote("k") as RemoteRead.Hit).ttl)
+        val ttl = requireNotNull((remote("k") as L1Read.Hit).ttl)
         ttl.assert().isBetween(Duration.ofSeconds(50), Duration.ofMinutes(1))
 
         cache.putIfMatch("k", null, "x", Duration.ofDays(1)).assert().isInstanceOf(ConditionalPut.Conflict::class.java)
         cache.getIfChanged("k", digestOf("v1")).assert().isEqualTo(ConditionalGet.Unchanged)
-        requireNotNull((remote("k") as RemoteRead.Hit).ttl).assert().isLessThanOrEqualTo(ttl)
+        requireNotNull((remote("k") as L1Read.Hit).ttl).assert().isLessThanOrEqualTo(ttl)
 
         cache.putIfMatch("k", digestOf("v1"), "v2").assert().isInstanceOf(ConditionalPut.Written::class.java)
         requireNotNull(
-            (remote("k") as RemoteRead.Hit).ttl
+            (remote("k") as L1Read.Hit).ttl
         ).assert().isBetween(Duration.ofMinutes(9), Duration.ofMinutes(10))
 
         val forever = nodeB.cache(spec(policy().toBuilder().ttl(null).build()) { loader = null })
         forever.putIfMatch("forever", null, "v").assert().isInstanceOf(ConditionalPut.Written::class.java)
-        (remote("forever") as RemoteRead.Hit).ttl.assert().isNull()
+        (remote("forever") as L1Read.Hit).ttl.assert().isNull()
         forever.putIfMatch("forever", digestOf("v"), "v2", Duration.ofMinutes(1))
-        requireNotNull((remote("forever") as RemoteRead.Hit).ttl).assert().isLessThanOrEqualTo(Duration.ofMinutes(1))
+        requireNotNull((remote("forever") as L1Read.Hit).ttl).assert().isLessThanOrEqualTo(Duration.ofMinutes(1))
     }
 
     /**
@@ -1494,7 +1495,7 @@ abstract class EngineSpec {
         writeError.assert().isInstanceOf(CacheWriteException::class.java)
         (writeError as CacheWriteException).operation.assert().isEqualTo("putIfMatch")
         writeError.cause.assert().isInstanceOf(ForeignFormatException::class.java)
-        (remote("set") as RemoteRead.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
+        (remote("set") as L1Read.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
 
         // 同版本内容解码失败：读取失败；写入的脚本看不到 Codec，只看摘要：调用方拿不到它的摘要，因此只会冲突、从不覆盖
         val corrupt = runCatching { cache.getIfChanged("corrupt", null) }.exceptionOrNull()
@@ -1503,7 +1504,7 @@ abstract class EngineSpec {
         cache.putIfMatch("corrupt", null, "v").assert().isEqualTo(
             ConditionalPut.Conflict(Digest.of(Envelope.Scalar(TestCodec.CORRUPT)))
         )
-        ((remote("corrupt") as RemoteRead.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
+        ((remote("corrupt") as L1Read.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
         nodeA.metrics().unknownFormats.assert().isEqualTo(3)
         nodeA.metrics().writeFailures.assert().isEqualTo(1)
         loads.get().assert().isEqualTo(0)
@@ -1532,7 +1533,7 @@ abstract class EngineSpec {
         runCatching {
             cache.putIfMatch("set", null, "v")
         }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
-        (remote("set") as RemoteRead.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
+        (remote("set") as L1Read.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
 
         runCatching {
             cache.getIfChanged("corrupt", null)
@@ -1542,7 +1543,7 @@ abstract class EngineSpec {
             null,
             "v"
         ).assert().isEqualTo(ConditionalPut.Conflict(Digest.of(Envelope.Scalar(TestCodec.CORRUPT))))
-        ((remote("corrupt") as RemoteRead.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
+        ((remote("corrupt") as L1Read.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
         nodeA.metrics().unknownFormats.assert().isEqualTo(3)
         nodeA.metrics().reclaims.assert().isEqualTo(0)
         loads.get().assert().isEqualTo(0)

@@ -93,14 +93,46 @@ class SpiTypesTest {
         scalar.equals("x").assert().isFalse()
     }
 
+    /**
+     * 条件回收的内容指纹（RFC 0005 round 3 K12）：SPI 自己的类型，计算方式与目前的 [Digest] 相同（同一份线格式），类型不同。
+     */
+    @Test
+    fun contentFingerprintIsStableAndDistinguishesShapes() {
+        val scalar = ContentFingerprint.of(Envelope.Scalar("ab".toByteArray()))
+        scalar.assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar("ab".toByteArray())))
+        scalar.hashCode().assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar("ab".toByteArray())).hashCode())
+        scalar.bytes.size.assert().isEqualTo(ContentFingerprint.SIZE)
+        scalar.toString().assert().isEqualTo(Digest.of(Envelope.Scalar("ab".toByteArray())).toString())
+        // 字节是副本：改动它不影响指纹
+        scalar.bytes.fill(0)
+        scalar.assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar("ab".toByteArray())))
+        val members = ContentFingerprint.of(Envelope.Members(listOf("a".toByteArray(), "b".toByteArray())))
+        members.assert().isNotEqualTo(ContentFingerprint.of(Envelope.Members(listOf("ab".toByteArray()))))
+        members.assert().isNotEqualTo(scalar)
+        ContentFingerprint.of(Envelope.Absent).assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar(ByteArray(0))))
+        scalar.equals(scalar).assert().isTrue()
+        scalar.equals(Digest.of(Envelope.Scalar("ab".toByteArray()))).assert().isFalse()
+        runCatching { ContentFingerprint(ByteArray(32)) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    @Test
+    fun fillOutcomesAreValueObjects() {
+        L1Fill.Filled(advanced = false).assert().isEqualTo(L1Fill.Filled(false))
+        L1Fill.Filled(advanced = true).assert().isNotEqualTo(L1Fill.Filled(false))
+        L1Fill.Rejected(currentVersion = null).assert().isEqualTo(L1Fill.Rejected(null))
+        L1Fill.Rejected(currentVersion = 3).currentVersion.assert().isEqualTo(3L)
+        L1Fill.Rejected(null).assert().isNotEqualTo(L1Fill.Filled(false))
+    }
+
     @Test
     fun requestsAndReadsAreValueObjects() {
         val token = Token(NodeId.random(), 1)
         LeaseRequest(token, Duration.ofSeconds(1)).assert().isEqualTo(LeaseRequest(token, Duration.ofSeconds(1)))
         RefreshRequest(Duration.ofSeconds(1), token, Duration.ofSeconds(2)).token.assert().isEqualTo(token)
         Fill("k", token, Envelope.Absent, null).key.assert().isEqualTo("k")
-        RemoteRead.Hit(Envelope.Absent, 1, null).refreshGranted.assert().isFalse()
-        RemoteRead.Leased(Duration.ofSeconds(1)).remaining.assert().isEqualTo(Duration.ofSeconds(1))
+        L1Read.Hit(Envelope.Absent, 1, null).refreshGranted.assert().isFalse()
+        L1Read.Leased(Duration.ofSeconds(1)).remaining.assert().isEqualTo(Duration.ofSeconds(1))
     }
 
     @Test

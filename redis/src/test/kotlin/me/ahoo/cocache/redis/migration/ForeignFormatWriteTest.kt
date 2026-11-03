@@ -29,7 +29,9 @@ import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.redis.RedisInvalidationChannel
 import me.ahoo.cocache.redis.RedisTestSupport
+import me.ahoo.cocache.redis.setSurface
 import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -211,16 +213,16 @@ class ForeignFormatWriteTest {
      * 存储层的判定（脚本内原子完成）：不存在、负缓存、lease 占位、本版本的集合可以写；其余拒绝并返回格式版本。
      */
     @Test
-    fun storeChecksEveryShapeAtomically() {
+    fun storeChecksEveryShapeAtomically() = Suspending.await<Unit> {
         val namespace = "store-$run"
-        val store = backend.remoteStore(namespace)
+        val store = backend.store(namespace)
         fun key(name: String) = "cocache:$namespace:$name"
         val members = listOf("m".toByteArray())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
 
         store.put(key("negative"), Envelope.Absent, null, frame)
-        store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null)
-        store.addMembersIfReadable(key("set"), members, null, frame).assert().isNull()
+        store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
+        store.setSurface.addMembers(key("set"), members, null, frame).assert().isNull()
         store.put(key("scalar"), Envelope.Scalar("v".toByteArray()), null, frame)
         Redis5x.hash(key("invalid"), mapOf("!f" to "x", "+a" to ""))
         Redis5x.hash(key("zero"), mapOf("!f" to "0", "+a" to ""))
@@ -233,29 +235,29 @@ class ForeignFormatWriteTest {
             )
         }
 
-        store.addMembersIfReadable(key("absent"), members, null, frame).assert().isNull()
-        store.addMembersIfReadable(key("negative"), members, null, frame).assert().isNull()
-        store.addMembersIfReadableAsync(key("leased"), members, Duration.ofMinutes(1), frame).join().assert().isNull()
-        store.removeMembersIfReadableAsync(
+        store.setSurface.addMembers(key("absent"), members, null, frame).assert().isNull()
+        store.setSurface.addMembers(key("negative"), members, null, frame).assert().isNull()
+        store.setSurface.addMembers(key("leased"), members, Duration.ofMinutes(1), frame).assert().isNull()
+        store.setSurface.removeMembers(
             key("set"),
             listOf("x".toByteArray()),
             Duration.ofMinutes(1),
             frame
-        ).join().assert().isNull()
+        ).assert().isNull()
         Redis5x.type(key("negative")).assert().isEqualTo("hash")
         Redis5x.type(key("leased")).assert().isEqualTo("hash")
         store.put(key("negative"), Envelope.Absent, null, frame)
-        store.removeMembersIfReadable(key("negative"), members, null, frame).assert().isNull()
+        store.setSurface.removeMembers(key("negative"), members, null, frame).assert().isNull()
         Redis5x.type(key("negative")).assert().isEqualTo("string")
         Redis5x.pttl(key("set")).assert().isBetween(1L, 60_000L)
-        store.removeMembersIfReadable(key("set"), members, null, frame).assert().isNull()
+        store.setSurface.removeMembers(key("set"), members, null, frame).assert().isNull()
         Redis5x.exists(key("set")).assert().isFalse()
 
-        store.addMembersIfReadable(key("scalar"), members, null, frame).assert().isEqualTo(1)
-        store.removeMembersIfReadableAsync(key("scalar"), members, null, frame).join().assert().isEqualTo(1)
-        store.addMembersIfReadable(key("invalid"), members, null, frame).assert().isEqualTo(0)
-        store.addMembersIfReadable(key("zero"), members, null, frame).assert().isEqualTo(0)
-        store.addMembersIfReadable(key("unknown-state"), members, null, frame).assert().isEqualTo(0)
+        store.setSurface.addMembers(key("scalar"), members, null, frame).assert().isEqualTo(1)
+        store.setSurface.removeMembers(key("scalar"), members, null, frame).assert().isEqualTo(1)
+        store.setSurface.addMembers(key("invalid"), members, null, frame).assert().isEqualTo(0)
+        store.setSurface.addMembers(key("zero"), members, null, frame).assert().isEqualTo(0)
+        store.setSurface.addMembers(key("unknown-state"), members, null, frame).assert().isEqualTo(0)
         Redis5x.fields(key("invalid")).assert().isEqualTo(mapOf("!f" to "x", "+a" to ""))
         Redis5x.fields(key("zero")).assert().isEqualTo(mapOf("!f" to "0", "+a" to ""))
     }

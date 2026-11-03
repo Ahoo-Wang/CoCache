@@ -16,18 +16,20 @@ package me.ahoo.cocache.redis
 import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.ConditionalL1Store
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteConditionalRead
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.api.spi.VersionedL1Store
@@ -39,9 +41,10 @@ import java.util.concurrent.CompletableFuture
 /**
  * 一个命名空间的 L1 存储，原生挂起（RFC 0005 §4.3）：每个操作一次 Lua 往返（[RedisScripts]），以 Lettuce 的异步命令发出、
  * 挂起等待结果（[RedisConnections.awaitCommand]）。等待期间不占线程，续接经调用方的调度器恢复，不在 Lettuce 的 I/O 线程上继续；
- * 线格式与 [RedisRemoteStore] 相同（同一组脚本与参数）。
+ * 线格式不变（6.x 的脚本与参数）。
  *
- * - **限时**：每条命令受 `commandTimeout` 限制；超时时尚未写出的脚本命令不再写出（`CommandCall`）。
+ * - **限时**：每条命令受 `commandTimeout` 限制；读取另可带这次调用的 `timeout`，以两者中较短的一个为限（RFC 0005 round 3 D6，
+ *   [RedisConnections.readTimeout]）。超时时尚未写出的脚本命令不再写出（`CommandCall`）。
  * - **批量**：[readAll]、[fillAll] 先发出全部命令再一起等待（共享连接上多路复用，约一次往返）；[putAll]、[invalidate] 按 slot 分组
  *   （Cluster）再按 `invalidateBatchSize` 切分，各组并发执行，全部结束之后才返回或抛出。
  * - **令牌**（RFC 0005 round 3 K14）：取得或交回令牌的命令（读取、回收、填充、释放）失败时，除非确定未执行
@@ -67,10 +70,11 @@ internal class RedisL1Store(
      * 解码失败同样释放：命令已执行。
      */
     @Suppress("TooGenericExceptionCaught")
-    override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
+    override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, timeout: Duration?): L1Read {
+        val bound = connections.readTimeout(timeout)
         val command = readCommand(key, lease, refresh)
         try {
-            return RedisRemoteStore.decodeRead(connections.awaitCommand(command))
+            return decodeRead(connections.awaitCommand(command, bound))
         } catch (e: RuntimeException) {
             if (!RedisConnections.isNotExecuted(e)) {
                 lease?.let { releaseQuietly(key, it.token, it.ttl) }
@@ -85,19 +89,24 @@ internal class RedisL1Store(
      * 否则调用方拿不到这些令牌，所有节点都要白白等待 `lease.ttl`；结果未知的读取同样尽力释放自己的 lease。
      */
     @Suppress("TooGenericExceptionCaught")
-    override suspend fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
+    override suspend fun readAll(
+        keys: Collection<String>,
+        leases: Map<String, LeaseRequest>,
+        timeout: Duration?
+    ): Map<String, L1Read> {
+        val bound = connections.readTimeout(timeout)
         if (keys.isEmpty()) {
             return emptyMap()
         }
         // 重复的 key 只读一次：否则第二次读到的是第一次取得的 lease，第一次的令牌无人交回
         val distinct = if (keys is Set<String>) keys.toList() else keys.distinct()
-        val sent = sendAll(distinct.size) { readCommand(distinct[it], leases[distinct[it]], null) }
-        val reads = LinkedHashMap<String, RemoteRead>(distinct.size)
+        val sent = sendAll(distinct.size, bound) { readCommand(distinct[it], leases[distinct[it]], null) }
+        val reads = LinkedHashMap<String, L1Read>(distinct.size)
         var failure: Throwable? = sent.refused
         sent.outcomes.forEachIndexed { index, outcome ->
             val key = distinct[index]
             try {
-                reads[key] = RedisRemoteStore.decodeRead(outcome.getOrThrow())
+                reads[key] = decodeRead(outcome.getOrThrow())
             } catch (e: RuntimeException) {
                 leases[key]?.let { releaseUnlessNotExecuted(key, it.token, it.ttl, e) }
                 failure = failure.suppressing(e)
@@ -106,7 +115,7 @@ internal class RedisL1Store(
         val error = failure ?: return reads
         reads.forEach { (key, read) ->
             val lease = leases[key]
-            if (read is RemoteRead.Miss && read.leaseGranted && lease != null) {
+            if (read is L1Read.Miss && read.leaseGranted && lease != null) {
                 releaseQuietly(key, lease.token, lease.ttl)
             }
         }
@@ -127,9 +136,9 @@ internal class RedisL1Store(
     /**
      * 结果未知时尽力释放令牌：被取消、没有写出的 fill 否则留下 lease 到 `lease.ttl`；fill 已执行时令牌不匹配，释放什么也不做。
      */
-    override suspend fun fill(fill: Fill): Boolean {
+    override suspend fun fill(fill: Fill): L1Fill {
         val command = fillCommand(fill)
-        return releasingOnFailure(fill.key, fill.token) { connections.awaitCommand(command).firstFlag() }
+        return releasingOnFailure(fill.key, fill.token) { fillOf(connections.awaitCommand(command)) }
     }
 
     /**
@@ -137,17 +146,17 @@ internal class RedisL1Store(
      * 结果未知的填充各自尽力释放令牌。
      */
     @Suppress("TooGenericExceptionCaught")
-    override suspend fun fillAll(fills: List<Fill>): List<Boolean> {
+    override suspend fun fillAll(fills: List<Fill>): List<L1Fill> {
         if (fills.isEmpty()) {
             return emptyList()
         }
-        val sent = sendAll(fills.size) { fillCommand(fills[it]) }
-        val filled = ArrayList<Boolean>(fills.size)
+        val sent = sendAll(fills.size, null) { fillCommand(fills[it]) }
+        val filled = ArrayList<L1Fill>(fills.size)
         var failure: Throwable? = sent.refused
         sent.outcomes.forEachIndexed { index, outcome ->
             val fill = fills[index]
             try {
-                filled.add(outcome.getOrThrow().firstFlag())
+                filled.add(fillOf(outcome.getOrThrow()))
             } catch (e: RuntimeException) {
                 releaseUnlessNotExecuted(fill.key, fill.token, null, e)
                 failure = failure.suppressing(e)
@@ -156,6 +165,11 @@ internal class RedisL1Store(
         failure?.let { throw it }
         return filled
     }
+
+    /**
+     * [RedisScripts.FILL] 的结果：`1` 写入，`0` 令牌不匹配。当前格式的 lease 不带版本：填充从不让版本前进，也没有版本拒绝。
+     */
+    private fun fillOf(result: List<Any?>): L1Fill = if (result.firstFlag()) FILLED else TOKEN_MISMATCH
 
     private fun fillCommand(fill: Fill): CompletableFuture<List<Any?>> {
         val args = ArrayList<ByteArray>()
@@ -182,7 +196,7 @@ internal class RedisL1Store(
      * 回收成功时取得 lease：失败时（确定未执行除外）与读取一样尽力释放。
      */
     @Suppress("TooGenericExceptionCaught")
-    override suspend fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {
+    override suspend fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean {
         val args = listOf(observed.toString().bytes(), lease.token.toBytes(), millis(lease.ttl))
         val command = connections.evalAsync<List<Any?>>(RedisScripts.RECLAIM, listOf(key.bytes()), args)
         try {
@@ -214,7 +228,7 @@ internal class RedisL1Store(
         val keyBytes = byKey.values.map { put -> put.key.bytes().also { putOf[it] = put } }
         val groups = groupsOf(keyBytes)
         val frames = framesOf(byKey.keys, frame, groups)
-        val sent = sendAll(groups.size) { index ->
+        val sent = sendAll(groups.size, null) { index ->
             val group = groups[index]
             val args = ArrayList<ByteArray>()
             args.add(channel)
@@ -234,7 +248,7 @@ internal class RedisL1Store(
     override suspend fun invalidate(keys: Collection<String>, frame: ByteArray) {
         val groups = groupsOf(keys.map { it.bytes() })
         val frames = framesOf(keys, frame, groups)
-        val sent = sendAll(groups.size) { index ->
+        val sent = sendAll(groups.size, null) { index ->
             connections.evalAsync<List<Any?>>(RedisScripts.INVALIDATE, groups[index], listOf(channel, frames[index]))
         }
         throwFirstFailure(sent)
@@ -260,12 +274,13 @@ internal class RedisL1Store(
     }
 
     /**
-     * 依次发出 [count] 条命令（[send]），再一起等待已发出的全部结束（[RedisConnections.awaitCommands]，约一次往返）。
+     * 依次发出 [count] 条命令（[send]），再一起等待已发出的全部结束（[RedisConnections.awaitCommands]，约一次往返），
+     * 每条至多等 [timeout]（`null` 为 `commandTimeout`）。
      * 某条发出时同步失败（确定未执行）就不再发出其后的命令，但仍等已发出的结束：调用方照常处理它们（释放取得的令牌），
      * 写入方法返回或抛出时它发出的全部命令都已结束。
      */
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun <T> sendAll(count: Int, send: (Int) -> CompletableFuture<T>): Sent<T> {
+    private suspend fun <T> sendAll(count: Int, timeout: Duration?, send: (Int) -> CompletableFuture<T>): Sent<T> {
         val commands = ArrayList<CompletableFuture<T>>(count)
         var refused: RuntimeException? = null
         try {
@@ -275,7 +290,7 @@ internal class RedisL1Store(
         } catch (e: RuntimeException) {
             refused = e
         }
-        return Sent(connections.awaitCommands(commands), refused)
+        return Sent(connections.awaitCommands(commands, timeout ?: connections.readTimeout(null)), refused)
     }
 
     /**
@@ -378,11 +393,11 @@ internal class RedisL1Store(
     }
 
     private inner class ConditionalFacet : ConditionalL1Store {
-        override suspend fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead {
+        override suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead {
+            val bound = connections.readTimeout(timeout)
             val args = listOf(known?.toString()?.bytes() ?: EMPTY)
-            return RedisRemoteStore.decodeConditionalRead(
-                connections.awaitCommand(connections.evalAsync(RedisScripts.READ_IF_CHANGED, listOf(key.bytes()), args))
-            )
+            val command = connections.evalAsync<List<Any?>>(RedisScripts.READ_IF_CHANGED, listOf(key.bytes()), args)
+            return decodeConditionalRead(connections.awaitCommand(command, bound))
         }
 
         override suspend fun putIfMatch(
@@ -391,9 +406,9 @@ internal class RedisL1Store(
             envelope: Envelope.Scalar,
             ttl: Duration?,
             frame: ByteArray
-        ): RemoteConditionalWrite {
+        ): L1ConditionalWrite {
             val args = listOf(expected?.toString()?.bytes() ?: EMPTY, millis(ttl), channel, frame, envelope.bytes)
-            return RedisRemoteStore.decodeConditionalWrite(
+            return decodeConditionalWrite(
                 connections.awaitCommand(connections.evalAsync(RedisScripts.PUT_IF_MATCH, listOf(key.bytes()), args))
             )
         }
@@ -406,7 +421,7 @@ internal class RedisL1Store(
             version: Long,
             ttl: Duration?,
             frame: ByteArray
-        ): RemoteVersionedWrite {
+        ): L1VersionedWrite {
             val args = ArrayList<ByteArray>(5)
             args.add(
                 when (envelope) {
@@ -424,7 +439,7 @@ internal class RedisL1Store(
             if (envelope is Envelope.Scalar) {
                 args.add(envelope.bytes)
             }
-            return RedisRemoteStore.decodeVersionedWrite(
+            return decodeVersionedWrite(
                 connections.awaitCommand(connections.evalAsync(RedisScripts.PUT_IF_NEWER, listOf(key.bytes()), args))
             )
         }
@@ -470,10 +485,14 @@ internal class RedisL1Store(
         private val SHAPE_VALUE = byteArrayOf(STATE_VALUE)
         private val SHAPE_MISSING = byteArrayOf(STATE_MISSING)
         private val SHAPE_SET = byteArrayOf('S'.code.toByte())
+        private const val MEMBER_PREFIX = '+'.code.toByte()
 
         /**
          * 重发释放的退避：首次重发的间隔与上限。
          */
+        private val FILLED: L1Fill = L1Fill.Filled(advanced = false)
+        private val TOKEN_MISMATCH: L1Fill = L1Fill.Rejected(currentVersion = null)
+
         private val MIN_RELEASE_BACKOFF = Duration.ofMillis(100)
         private val MAX_RELEASE_BACKOFF = Duration.ofSeconds(2)
 
@@ -532,6 +551,131 @@ internal class RedisL1Store(
 
         private fun versionedShape(state: Byte, version: Long): ByteArray =
             ByteBuffer.allocate(1 + RedisScripts.VERSION_SIZE).put(state).putLong(version).array()
+
+        /**
+         * 头部令牌位置的版本（6.8）：以 [RedisScripts.VERSION_MARK] 开头时取其后的 8 字节，否则没有版本。
+         * 先比较第一个字节：令牌的第一个字节是随机的，绝大多数读取一次比较就结束。
+         */
+        internal fun versionOf(raw: ByteArray): Long {
+            val mark = RedisScripts.VERSION_MARK
+            val offset = RedisScripts.VERSION_OFFSET
+            for (i in mark.indices) {
+                if (raw[offset + i] != mark[i]) {
+                    return Versioned.NO_VERSION
+                }
+            }
+            return ByteBuffer.wrap(raw, offset + mark.size, RedisScripts.VERSION_SIZE).long
+        }
+
+        /**
+         * 解码按版本写入脚本的结果（见 [RedisScripts.PUT_IF_NEWER]）：版本不更新时第二项为当前版本（8 字节）。
+         */
+        internal fun decodeVersionedWrite(result: List<Any?>): L1VersionedWrite = when (result[0] as Long) {
+            RedisScripts.VERSION_WRITTEN -> L1VersionedWrite.Written
+            RedisScripts.VERSION_STALE -> L1VersionedWrite.Stale(ByteBuffer.wrap(result[1] as ByteArray).long)
+            RedisScripts.VERSION_UNREADABLE -> L1VersionedWrite.Unreadable((result[1] as Long).toInt())
+            else -> throw IllegalStateException("Unknown versioned write result code[${result[0]}].")
+        }
+
+        /**
+         * 解码条件读取脚本的结果（结果码见 [RedisScripts.READ_IF_CHANGED]）。
+         */
+        internal fun decodeConditionalRead(result: List<Any?>): L1ConditionalRead = when (result[0] as Long) {
+            RedisScripts.COND_ABSENT -> L1ConditionalRead.Absent
+            RedisScripts.COND_UNCHANGED -> L1ConditionalRead.Unchanged((result[1] as Long).toInt())
+            RedisScripts.COND_VALUE -> L1ConditionalRead.Changed(
+                Envelope.Scalar(result[2] as ByteArray),
+                (result[1] as Long).toInt()
+            )
+            RedisScripts.COND_UNREADABLE -> L1ConditionalRead.Unreadable((result[1] as Long).toInt())
+            else -> throw IllegalStateException("Unknown conditional read result code[${result[0]}].")
+        }
+
+        /**
+         * 解码条件写入脚本的结果（见 [RedisScripts.PUT_IF_MATCH]）：冲突时第二项为当前摘要（十六进制），没有值时缺省。
+         */
+        internal fun decodeConditionalWrite(result: List<Any?>): L1ConditionalWrite = when (result[0] as Long) {
+            RedisScripts.PUT_WRITTEN -> L1ConditionalWrite.Written
+            RedisScripts.PUT_CONFLICT -> L1ConditionalWrite.Conflict(
+                (result.getOrNull(1) as ByteArray?)?.let { Digest(hexToBytes(String(it, Charsets.US_ASCII))) }
+            )
+            RedisScripts.PUT_UNREADABLE -> L1ConditionalWrite.Unreadable((result[1] as Long).toInt())
+            else -> throw IllegalStateException("Unknown conditional write result code[${result[0]}].")
+        }
+
+        private fun hexToBytes(hex: String): ByteArray {
+            require(hex.length % 2 == 0) { "Malformed digest[$hex]." }
+            return ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(HEX_RADIX).toByte() }
+        }
+
+        private const val HEX_RADIX = 16
+        private const val BYTE_MASK = 0xFF
+
+        private fun ttlOf(pttl: Long): Duration? = if (pttl < 0) null else Duration.ofMillis(pttl.coerceAtLeast(1))
+
+        /**
+         * 解码读脚本结果（结果码见 [RedisScripts]）。无法识别的内容以格式版本 `0` 返回，由引擎按损坏处理。
+         */
+        @Suppress("UNCHECKED_CAST")
+        internal fun decodeRead(result: List<Any?>): L1Read {
+            return when (result[0] as Long) {
+                RedisScripts.RESULT_MISS -> L1Read.Miss(result[1] == 1L)
+                RedisScripts.RESULT_LEASED -> L1Read.Leased(Duration.ofMillis((result[1] as Long).coerceAtLeast(0)))
+                RedisScripts.RESULT_SCALAR -> decodeScalar(
+                    result[2] as ByteArray,
+                    ttlOf(result[1] as Long),
+                    result[3] == 1L
+                )
+                RedisScripts.RESULT_SET -> decodeSet(
+                    result[2] as List<ByteArray>,
+                    result[3] as ByteArray,
+                    ttlOf(result[1] as Long)
+                )
+                else -> throw IllegalStateException("Unknown read result code[${result[0]}].")
+            }
+        }
+
+        private fun decodeScalar(raw: ByteArray, ttl: Duration?, refreshGranted: Boolean): L1Read.Hit {
+            if (raw.size < RedisScripts.HEADER_SIZE || raw[0] != RedisScripts.MAGIC) {
+                return L1Read.Hit(Envelope.Scalar(raw), UNRECOGNIZED, ttl)
+            }
+            // 无符号（与 Lua 的 string.byte 一致）：有符号时 0x80 以上的更高格式成了负数，被当作读不懂的内容回收
+            val format = raw[1].toInt() and BYTE_MASK
+            return when (raw[2]) {
+                STATE_VALUE -> L1Read.Hit(
+                    Envelope.Scalar(raw.copyOfRange(RedisScripts.HEADER_SIZE, raw.size), versionOf(raw)),
+                    format,
+                    ttl,
+                    refreshGranted
+                )
+                STATE_MISSING -> L1Read.Hit(Envelope.Absent, format, ttl)
+                else -> L1Read.Hit(
+                    Envelope.Scalar(raw.copyOfRange(RedisScripts.HEADER_SIZE, raw.size)),
+                    UNRECOGNIZED,
+                    ttl
+                )
+            }
+        }
+
+        /**
+         * 集合：[fields] 为 Hash 的全部字段名（`HKEYS`），[format] 为 `!f` 的值（字段不存在时为空串）。
+         * 只取 `+` 前缀的成员字段，`!f` 与其它字段忽略。
+         */
+        private fun decodeSet(fields: List<ByteArray>, format: ByteArray, ttl: Duration?): L1Read.Hit {
+            val members = ArrayList<ByteArray>(fields.size)
+            for (field in fields) {
+                if (field.isNotEmpty() && field[0] == MEMBER_PREFIX) {
+                    members.add(field.copyOfRange(1, field.size))
+                }
+            }
+            val version = String(format, Charsets.UTF_8).toIntOrNull() ?: UNRECOGNIZED
+            return L1Read.Hit(Envelope.Members(members), version, ttl)
+        }
+
+        /**
+         * 无法识别的内容（不是 CoCache 6.0 写入的值）：引擎按损坏处理（条件回收后回源）。
+         */
+        const val UNRECOGNIZED = 0
 
         private fun String.bytes(): ByteArray = toByteArray(Charsets.UTF_8)
 

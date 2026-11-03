@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger
 internal fun connectionsOf(pubSub: StatefulRedisPubSubConnection<ByteArray, ByteArray>): RedisConnections {
     val connections = mockk<RedisConnections>()
     every { connections.pubSub } returns pubSub
-    every { connections.await(any<CompletableFuture<Any?>>()) } answers { firstArg<CompletableFuture<Any?>>().get() }
+    every { connections.join(any<CompletableFuture<Any?>>()) } answers { firstArg<CompletableFuture<Any?>>().get() }
     return connections
 }
 

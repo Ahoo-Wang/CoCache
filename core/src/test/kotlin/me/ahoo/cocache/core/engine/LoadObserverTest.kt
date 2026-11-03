@@ -288,7 +288,7 @@ class LoadObserverTest {
         Suspending.await {
             memory.store(
                 name
-            ).read("cocache:$name:k", LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null)
+            ).read("cocache:$name:k", LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
         }
         cache["k"].assert().isEqualTo("v")
         observer.operations().assert().containsExactly(LoadOperation.LEASE_WAIT to 1, LoadOperation.LOAD to 1)

@@ -18,8 +18,8 @@ import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.codec.StringCodec
@@ -55,7 +55,7 @@ class SetEngineFormatTest {
                 InvalidationFrame.encode(NodeId.random(), emptyList())
             )
         }
-        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = 0) else read }
+        backend.afterRead = { _, read -> if (read is L1Read.Hit) read.copy(format = 0) else read }
     }
 
     @Test
@@ -69,15 +69,15 @@ class SetEngineFormatTest {
             Suspending.await {
                 memory.store(
                     "index"
-                ).read("cocache:index:k", null, null)
-            } is RemoteRead.Hit
+                ).read("cocache:index:k", null, null, null)
+            } is L1Read.Hit
             ).assert().isTrue()
     }
 
     @Test
     fun newerFormatFailsInsteadOfReturningWrongData() {
         index.add("k", listOf("a"))
-        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = read.format + 1) else read }
+        backend.afterRead = { _, read -> if (read is L1Read.Hit) read.copy(format = read.format + 1) else read }
         runCatching { index["k"] }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
         requireNotNull(runtime.metrics("index")).unknownFormats.assert().isEqualTo(1)
         backend.afterRead = null

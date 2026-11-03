@@ -15,6 +15,7 @@ package me.ahoo.cocache.core.memory
 
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ConditionalL1Store
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -25,14 +26,15 @@ import me.ahoo.cocache.api.spi.FutureSetL1Store
 import me.ahoo.cocache.api.spi.FutureVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteConditionalRead
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
@@ -66,15 +68,22 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
         private val versioned = store.versioned()?.let { FutureVersioned(it) }
         private val sets = store.sets()?.let { FutureSets(it) }
 
-        override fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
-            supplying { store.read(key, lease, refresh) }
+        override fun read(
+            key: String,
+            lease: LeaseRequest?,
+            refresh: RefreshRequest?,
+            timeout: Duration?
+        ): CompletableFuture<L1Read> = supplying { store.read(key, lease, refresh, timeout) }
 
-        override fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): CompletableFuture<Map<String, RemoteRead>> =
-            supplying { store.readAll(keys, leases) }
+        override fun readAll(
+            keys: Collection<String>,
+            leases: Map<String, LeaseRequest>,
+            timeout: Duration?
+        ): CompletableFuture<Map<String, L1Read>> = supplying { store.readAll(keys, leases, timeout) }
 
-        override fun fill(fill: Fill): CompletableFuture<Boolean> = supplying { store.fill(fill) }
+        override fun fill(fill: Fill): CompletableFuture<L1Fill> = supplying { store.fill(fill) }
 
-        override fun fillAll(fills: List<Fill>): CompletableFuture<List<Boolean>> = supplying { store.fillAll(fills) }
+        override fun fillAll(fills: List<Fill>): CompletableFuture<List<L1Fill>> = supplying { store.fillAll(fills) }
 
         override fun release(key: String, token: Token): CompletableFuture<Void?> = completing {
             store.release(
@@ -83,7 +92,7 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
             )
         }
 
-        override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
+        override fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): CompletableFuture<Boolean> =
             supplying { store.reclaim(key, observed, lease) }
 
         override fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
@@ -104,8 +113,12 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
     }
 
     private class FutureConditional(private val surface: ConditionalL1Store) : FutureConditionalL1Store {
-        override fun readIfChanged(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
-            supplying { surface.readIfChanged(key, known) }
+        override fun readIfChanged(
+            key: String,
+            known: Digest?,
+            timeout: Duration?
+        ): CompletableFuture<L1ConditionalRead> =
+            supplying { surface.readIfChanged(key, known, timeout) }
 
         override fun putIfMatch(
             key: String,
@@ -113,7 +126,7 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
             envelope: Envelope.Scalar,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<RemoteConditionalWrite> = supplying {
+        ): CompletableFuture<L1ConditionalWrite> = supplying {
             surface.putIfMatch(
                 key,
                 expected,
@@ -131,7 +144,7 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
             version: Long,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<RemoteVersionedWrite> = supplying {
+        ): CompletableFuture<L1VersionedWrite> = supplying {
             surface.putIfNewer(
                 key,
                 envelope,
