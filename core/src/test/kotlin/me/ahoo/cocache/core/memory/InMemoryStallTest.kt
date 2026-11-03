@@ -66,6 +66,21 @@ class InMemoryStallTest {
         Suspending.await { store.read("k", null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
     }
 
+    /**
+     * 关闭已被新的卡顿取代的旧卡顿：新的卡顿照常生效，直到它自己被关闭。
+     */
+    @Test
+    fun closingASupersededStallKeepsTheNewerOne() {
+        val backend = InMemoryBackend(commandTimeout = Duration.ofMillis(50))
+        val store = backend.store("ns")
+        val older = backend.stall()
+        val newer = backend.stall()
+        older.close()
+        runCatching { Suspending.await { store.read("k", null, null, null) } }.isFailure.assert().isTrue()
+        newer.close()
+        Suspending.await { store.read("k", null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
+    }
+
     @Test
     fun nonPositiveReadTimeoutIsRejected() {
         val store = InMemoryBackend().store("ns")

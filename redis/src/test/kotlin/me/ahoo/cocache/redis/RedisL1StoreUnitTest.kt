@@ -33,6 +33,7 @@ import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
@@ -560,6 +561,50 @@ class RedisL1StoreUnitTest {
             call.await()
             dispatched.forEach { command -> command.carries(frame).assert().isTrue() }
         }
+    }
+
+    /**
+     * 不在脚本中广播的存储（非原子模式，频道为空）：分成多组时不拆帧，由引擎在写入之后另行发布整帧。
+     */
+    @Test
+    fun storeWithoutAtomicBroadcastDoesNotSplitFrames() {
+        val store = RedisL1Store(connections, ByteArray(0), 1)
+        val frame = frame("a", "b")
+        val call = started(2) { store.invalidate(listOf("a", "b"), frame) }
+        dispatched.forEach { it.reply(listOf(1L)) }
+        call.await()
+        dispatched.forEach { command -> command.carries(frame).assert().isTrue() }
+    }
+
+    /**
+     * 批量读取的 key 是 [Set] 时按它的顺序读，不再去重；结果包含全部 key。
+     */
+    @Test
+    fun readAllOfASetReadsEveryKeyOnce() {
+        val store = store()
+        val call = started(2) { store.readAll(linkedSetOf("a", "b"), emptyMap(), null) }
+        dispatched.map { it.key }.assert().containsExactly("a", "b")
+        dispatched.forEach { it.reply(listOf(0L, 0L)) }
+        call.await().assert().isEqualTo(mapOf("a" to L1Read.Miss(false), "b" to L1Read.Miss(false)))
+    }
+
+    /**
+     * 解码条件读写的结果：未知的结果码与畸形的摘要以 [IllegalStateException] / [IllegalArgumentException] 失败，不当作某个结果。
+     */
+    @Test
+    fun unknownConditionalResultsFailToDecode() {
+        runCatching { RedisL1Store.decodeConditionalRead(listOf(9L)) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalStateException::class.java)
+        runCatching { RedisL1Store.decodeConditionalWrite(listOf(9L)) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalStateException::class.java)
+        runCatching {
+            RedisL1Store.decodeConditionalWrite(
+                listOf(RedisScripts.PUT_CONFLICT, "abc".toByteArray())
+            )
+        }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+        RedisL1Store.decodeConditionalWrite(listOf(RedisScripts.PUT_CONFLICT))
+            .assert().isEqualTo(L1ConditionalWrite.Conflict(null))
     }
 
     /**
