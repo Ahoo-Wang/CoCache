@@ -21,6 +21,7 @@ import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -57,7 +58,7 @@ class RedisStoreFaultTest {
 
     private fun <T : AutoCloseable> T.closing(): T = also { closeables.add(it) }
 
-    private fun key(name: String) = "cocache:$namespace:$name"
+    private fun key(name: String) = "cocache:v8:$namespace:$name"
 
     private fun token() = Token(node, ++sequence)
 
@@ -77,7 +78,7 @@ class RedisStoreFaultTest {
     @Test
     fun everyOperationSurvivesScriptCacheLoss() = Suspending.await<Unit> {
         val backend = RedisTestSupport.backend().closing()
-        val store = backend.store(namespace)
+        val store = backend.store(Keyspace("cocache:", namespace))
         val lease = LeaseRequest(token(), Duration.ofSeconds(30))
         val refresh = RefreshRequest(Duration.ofMinutes(5), token(), Duration.ofSeconds(10))
         val leases = mapOf(key("b") to LeaseRequest(token(), Duration.ofSeconds(30)))
@@ -132,7 +133,7 @@ class RedisStoreFaultTest {
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(commandTimeout = Duration.ofMillis(200), clientResources = redis.resources)
         ).closing()
-        val store = backend.store(namespace)
+        val store = backend.store(Keyspace("cocache:", namespace))
         // 先缓存脚本：否则 NOSCRIPT 回退的 EVAL 是另一条命令，暂停期间各自计时
         Suspending.await { store.read(key("warm"), null, null, null) }
         redis.pause(PAUSE_MILLIS)
@@ -174,7 +175,7 @@ class RedisStoreFaultTest {
             .build()
         closeables.add(AutoCloseable { client.shutdown() })
         val backend = RedisBackend.of(client, RedisBackendOptions(commandTimeout = Duration.ofMillis(200))).closing()
-        val store = backend.store(namespace)
+        val store = backend.store(Keyspace("cocache:", namespace))
         Suspending.await { store.read(key("warm"), null, null, null) }
         redis.pause(1_000)
         val error = caller.start { store.read(key("slow"), null, null, null) }.failure()
@@ -227,7 +228,7 @@ class RedisStoreFaultTest {
         assumeFalse(RedisTestSupport.isCluster)
         val proxy = RedisTestSupport.proxy().closing()
         val backend = RedisTestSupport.proxiedBackend(proxy).closing()
-        val store = backend.store(namespace)
+        val store = backend.store(Keyspace("cocache:", namespace))
         Suspending.await { store.read(key("warm"), null, null, null) }
         proxy.pause(1_000)
         val pending = caller.start { store.put(key("cut"), scalar("v"), null, frame(key("cut"))) }

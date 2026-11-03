@@ -184,13 +184,14 @@ new ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7");
 :::
 
 - 传入缓存的 **namespace**（未设置时就是缓存名）和**编码后的 key**：即 `toString()` 或 `keyExpression` 的结果，与它在存储 key 中的样子一致。
-- 缓存不用 `cocache:` 前缀时，在构造函数中传入 `keyPrefix`。
+- 缓存不用 `cocache:` 前缀时，在构造函数中传入 `keyPrefix`。前缀也决定频道，传错时帧到不了该缓存的任何实例。
+- namespace 不符合 `[A-Za-z0-9._-]+` 时抛出 `IllegalArgumentException`，与缓存相同。
 - 调用是幂等的：抛出异常时（例如删除成功而广播失败）请重试。
 - 它从 Redis 删除 key 并广播失效（默认通道模式下在同一个脚本中完成）。所有实例，包括同一进程中的缓存，都会丢弃 L2 副本。
 - 它不重试。Redis 故障时直接抛出，请自行重试。
 - 编码后的 key 为空串时抛出 `IllegalArgumentException`；传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`。`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
 
-在 JVM 之外，任何 Redis 客户端都能用两条命令做到同样的事：`DEL {keyPrefix}{namespace}:{encodedKey}`，然后向 `cocache:inv:{namespace}` `PUBLISH` 一个小的二进制帧（sharded 模式用 `SPUBLISH`）。帧格式见[故障排查](../operations/troubleshooting.md#external-invalidation)。省略 `PUBLISH` 会让其它实例的 L2 陈旧最多 `localMaxAge`。
+在 JVM 之外，任何 Redis 客户端都能用两条命令做到同样的事：`DEL {keyPrefix}v8:{namespace}:{encodedKey}`，然后向 `{keyPrefix}v8:inv:{namespace}` `PUBLISH` 一个小的二进制帧（sharded 模式用 `SPUBLISH`）。帧格式见[故障排查](../operations/troubleshooting.md#external-invalidation)。省略 `PUBLISH` 会让其它实例的 L2 陈旧最多 `localMaxAge`。
 
 ## 选择寿命 {#lifetimes}
 

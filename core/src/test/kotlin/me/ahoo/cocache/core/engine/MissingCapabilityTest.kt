@@ -14,6 +14,7 @@
 package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.CacheClock
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.LoadObserver
@@ -72,7 +73,12 @@ class MissingCapabilityTest {
         }
         val cache =
             VersionedCache(
-                CoherentEngine(spec.versionedEngineSpec(), backend.store("doc"), context, VersionedFormat(spec.codec))
+                CoherentEngine(
+                    spec.versionedEngineSpec(),
+                    backend.store(Keyspace("cocache:", "doc")),
+                    context,
+                    VersionedFormat(spec.codec)
+                )
             )
 
         assertUnsupported(runCatching { cache.putIfNewer("k", "v", 1) }.exceptionOrNull(), "putIfNewer", "versioned")
@@ -88,8 +94,8 @@ class MissingCapabilityTest {
         )
         Suspending.await {
             memory.store(
-                "doc"
-            ).read("cocache:doc:k", null, null, null)
+                Keyspace("cocache:", "doc")
+            ).read("cocache:v8:doc:k", null, null, null)
         }.assert().isEqualTo(L1Read.Miss(false))
     }
 
@@ -98,7 +104,7 @@ class MissingCapabilityTest {
         val engine =
             SetEngine(
                 setCacheSpec<String, String>("index") { elementCodec = StringCodec },
-                backend.store("index"),
+                backend.store(Keyspace("cocache:", "index")),
                 context
             )
         engine.put("k", setOf("a"))

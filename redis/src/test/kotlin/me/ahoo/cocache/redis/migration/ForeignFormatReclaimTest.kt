@@ -57,7 +57,7 @@ class ForeignFormatReclaimTest {
     @Test
     fun cacheWithoutSourceRejectsReclaimAndKeepsTheData() {
         val name = "policy-$run"
-        val key = "cocache:$name:p1"
+        val key = "cocache:v8:$name:p1"
         val json = mapper.writeValueAsString(Policy("p1", "deny"))
         Redis5x.string(key, json)
 
@@ -84,7 +84,7 @@ class ForeignFormatReclaimTest {
     @Test
     fun setCacheRejectsReclaimAndKeepsTheData() {
         val name = "index-$run"
-        val key = "cocache:$name:"
+        val key = "cocache:v8:$name:"
         Redis5x.set(key, listOf("p1", "p2"))
 
         val error = runCatching {
@@ -110,7 +110,7 @@ class ForeignFormatReclaimTest {
     fun cacheWithSourceReclaimsAndReloads() {
         for (mode in listOf(null, ForeignFormatMode.RECLAIM)) {
             val name = "reload-${mode ?: "default"}-$run"
-            fun key(id: String) = "cocache:$name:$id"
+            fun key(id: String) = "cocache:v8:$name:$id"
             Redis5x.string(key("json"), mapper.writeValueAsString(Policy("p1", "deny")))
             Redis5x.string(key("string"), "v1")
             Redis5x.hash(key("hash"), mapOf("a" to "1", "b" to "2"))

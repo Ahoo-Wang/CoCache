@@ -27,6 +27,7 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -91,8 +92,7 @@ internal const val FOREVER = Long.MAX_VALUE
  */
 internal abstract class AbstractEngine<K : Any, V : Any>(
     override val name: String,
-    protected val namespace: String,
-    keyPrefix: String,
+    protected val keyspace: Keyspace,
     private val keyEncoder: KeyEncoder<K>,
     internal val policy: CachePolicy,
     protected val store: L1Store,
@@ -128,7 +128,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected val closed = AtomicBoolean(false)
     private val nodeId: NodeId = context.nodeId
     private val atomicBroadcast = context.backend.atomicBroadcast
-    private val storagePrefix = "$keyPrefix$namespace:"
+
+    /**
+     * 存储 key 的前缀 `{keyPrefix}v8:{namespace}:`（[Keyspace.storagePrefix]，创建时已算好）。
+     */
+    private val storagePrefix = keyspace.storagePrefix
 
     /**
      * 非原子广播的后端上，写入之后经它发布失效帧。
@@ -348,7 +352,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 非原子广播的后端上发布失效帧（在 [write] 的 `NonCancellable` 中，同 L1 命令不可取消）。
      */
     private suspend fun publish(frame: ByteArray) {
-        channel.publish(namespace, frame)
+        channel.publish(keyspace, frame)
     }
 
     /**
@@ -380,14 +384,17 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         )
     }
 
+    /**
+     * 零 key 的帧是存储创建时的频道探测（RFC 0005 §4.7，K8）：什么也不做，不计入收到的失效。
+     */
     override fun onInvalidated(keys: List<String>, origin: NodeId) {
-        if (origin == nodeId) {
+        if (origin == nodeId || keys.isEmpty()) {
             return
         }
         metrics.invalidationReceived()
         keys.forEach {
             stamps.invalidate(it)
-            // 同一 namespace 上其它前缀的部署发来的 key 不属于本缓存，L2 中不会有它
+            // 频道按 keyspace 划分，帧中只应有本缓存的 key；外部写入方给错前缀的 key 不在 L2 中
             if (it.startsWith(storagePrefix)) {
                 local.invalidate(localKeyOf(it))
             }
@@ -504,7 +511,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
     }
 
-    override fun toString(): String = "${javaClass.simpleName}(name='$name', namespace='$namespace')"
+    override fun toString(): String =
+        "${javaClass.simpleName}(name='$name', keyPrefix='${keyspace.keyPrefix}', namespace='${keyspace.namespace}')"
 
     protected companion object {
         val log = KotlinLogging.logger {}

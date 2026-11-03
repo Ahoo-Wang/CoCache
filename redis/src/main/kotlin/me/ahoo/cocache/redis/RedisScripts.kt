@@ -491,11 +491,13 @@ return {1}
     )
 
     /**
-     * 原子广播探测：向一个与 key 不在同一 slot 的频道发布。把 PUBLISH 当作 SPUBLISH 执行的环境会报跨 slot 错误。
+     * 探测脚本：以 `KEYS[1]` 执行，向频道 `ARGV[1]` 发布 `ARGV[2]`，与写入脚本的广播相同。两处使用：
+     * - 原子广播探测：向一个与 key 不在同一 slot 的频道发布。把 PUBLISH 当作 SPUBLISH 执行的环境会报跨 slot 错误。
+     * - 按存储探测实际频道（RFC 0005 §4.7，K8）：以该存储的 key 前缀为 `KEYS[1]`，向它的频道发布一个零 key 的帧。
      */
     val PROBE = Script(
         """
-redis.call('PUBLISH', ARGV[1], '')
+redis.call('PUBLISH', ARGV[1], ARGV[2])
 return 1
 """
     )

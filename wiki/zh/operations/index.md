@@ -117,7 +117,7 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 | lease | String | key + 36 字节头，存活到加载结束（最多 `lease-ttl`） |
 | 集合（`SetCache`） | Hash | key + 一个 `!f` 字段 + 每个成员一个 `+{member}` 字段 |
 
-另加 Redis 自身的每 key 开销。用 `redis-cli MEMORY USAGE cocache:UserCache:42` 实测一个典型 key。除非缓存使用 `ttl-forever` 或是 `SetCache`，每个值都有到期时间（`ttl`，加减 `ttl-jitter`）。
+另加 Redis 自身的每 key 开销。用 `redis-cli MEMORY USAGE cocache:v8:UserCache:42` 实测一个典型 key。除非缓存使用 `ttl-forever` 或是 `SetCache`，每个值都有到期时间（`ttl`，加减 `ttl-jitter`）。
 
 ### Redis 流量 {#sizing-traffic}
 
@@ -138,7 +138,7 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 |------|----------|----------------------------|
 | 策略字段（`ttl`、`local-max-age`、`lease-*`、`load-*`、失败模式等） | 能 | 各实例按自己的策略运行 |
 | `channel-mode` | L1 能，L2 不能 | 模式不同的实例互相收不到消息。L1 仍然正确，但其它实例的 L2 副本最多陈旧 `local-max-age`。切换期间调低 `local-max-age`，或者所有实例同时切换 |
-| `key-prefix`、`namespace`，或命名空间默认等于缓存名时的缓存名 | **不能** | 新旧实例使用不同的 key，互相忽略对方的失效，一侧的写入会让另一侧陈旧到 `ttl`。所有实例同时切换。命名空间变化也会改变频道 |
+| `key-prefix`、`namespace`，或命名空间默认等于缓存名时的缓存名 | **不能** | 新旧实例使用不同的 key，互相忽略对方的失效，一侧的写入会让另一侧陈旧到 `ttl`。所有实例同时切换。前缀或命名空间变化也会改变频道 |
 | 编解码器的字节格式 | 可以，但代价高 | 双方都把对方的值当作损坏，回收后回源（`cocache.reclaims`）。优先使用新的命名空间，或者让 `decode` 同时接受两种格式 |
 
 旧前缀或旧命名空间下的 key 会随 `ttl` 到期。想提前删除时，用 `redis-cli --scan --pattern 'old-prefix:*' | xargs redis-cli unlink`（集群中逐个主节点执行）。
@@ -147,15 +147,15 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 
 | 内容 | 格式 | 示例 |
 |------|------|------|
-| 存储 key | `{keyPrefix}{namespace}:{encodedKey}` | `cocache:UserCache:42` |
-| 频道 | `cocache:inv:{namespace}` | `cocache:inv:UserCache` |
+| 存储 key | `{keyPrefix}v8:{namespace}:{encodedKey}` | `cocache:v8:UserCache:42` |
+| 频道 | `{keyPrefix}v8:inv:{namespace}` | `cocache:v8:inv:UserCache` |
 
-`keyPrefix` 默认 `cocache:`，`namespace` 默认等于缓存名，`encodedKey` 是 key 的 `toString()` 或 `keyExpression` 的结果。见[存储 key](../guide/caches.md#storage-keys)。
+`keyPrefix` 默认 `cocache:`，可以为空；`namespace` 默认等于缓存名，`encodedKey` 是 key 的 `toString()` 或 `keyExpression` 的结果。布局标记 `v8:` 让 8.x 的 key 与频道和 6.x 的（`{keyPrefix}{namespace}:{encodedKey}` 与 `cocache:inv:{namespace}`）隔离，切换期间两个版本可以共用一个 Redis。CoCache 的内部 key 放在 `{keyPrefix}v8!` 之下，任何命名空间都产生不了这个位置。见[存储 key](../guide/caches.md#storage-keys)。
 
 多个应用可以共用一个 Redis：
 
 - **给每个应用设置自己的 key 前缀**，例如 `cocache.defaults.key-prefix: ${spring.application.name}:`。否则两个应用中同名的缓存会读取并覆盖彼此的值。有意在应用之间共享的缓存，各处必须使用相同的前缀、命名空间、编解码器与通道模式。
-- **频道不带前缀**，而且 Redis Pub/Sub 不区分数据库编号。命名空间相同的应用会收到彼此的消息。每个实例只淘汰与自己存储 key 匹配的副本，所以代价只是一些额外的处理，体现在 `cocache.invalidations.received` 中。如果两个应用使用不同的数据库，但前缀与命名空间都相同，存储 key 会完全一致，对方的消息会无谓地淘汰本方的 L2 副本。请使用不同的前缀或命名空间。
+- **频道带有前缀**。前缀不同的应用即使命名空间相同，也收不到彼此的消息。但 Redis Pub/Sub 不区分数据库编号：使用不同数据库、前缀与命名空间都相同的应用共用一个频道，对方的消息会无谓地淘汰本方的 L2 副本。请使用不同的前缀。
 
 ## 安全 {#security}
 
@@ -165,20 +165,22 @@ CoCache 的 Redis 用户需要以下权限：
 
 | 方面 | 需要 |
 |------|------|
-| key | 对你的 key 前缀可读写（默认 `~cocache:*`）。`pubsub` 模式下还需要 `~cocache:probe:*` |
-| 频道 | `&cocache:inv:*`。`pubsub` 模式下还需要 `&cocache:probe:*`，否则后端退回非原子广播 |
+| key | 对你的 key 前缀可读写（默认 `~cocache:*`）。`pubsub` 模式下还需要探测 key `cocache:v8!probe:{a}`，`~cocache:*` 已经包含它 |
+| 频道 | 每个前缀的 `&{keyPrefix}v8:inv:*`（默认 `&cocache:v8:inv:*`）。`pubsub` 模式下还需要 `&cocache:v8:probe:*`，否则后端退回非原子广播 |
 | 直接调用的命令 | `EVALSHA`、`EVAL`（`NOSCRIPT` 后的回退）、`PING`（心跳）、`PUBLISH`、`SUBSCRIBE`、`UNSUBSCRIBE`，`sharded` 模式下为 `SPUBLISH`、`SSUBSCRIBE`、`SUNSUBSCRIBE`，以及连接命令（`HELLO`、`AUTH`、`CLIENT`、`SELECT`）。使用 `SetCache` 时还需要 `INFO`，供[启动时的驱逐检查](#maxmemory-policy)使用 |
 | 脚本内的命令 | Redis 7 同样按调用方的 ACL 检查：`GET`、`SET`、`DEL`、`PTTL`、`TYPE`、`HGETALL`、`HKEYS`、`HGET`、`HSET`、`HDEL`、`HEXISTS`、`HLEN`、`PEXPIRE`、`PERSIST`、`SETRANGE`、`TIME` |
 
 一个起点（已在 Redis 7.4 上以该用户执行全部 CoCache 脚本验证）：
 
 ```
-ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
+ACL SETUSER cocache on >change-me ~cocache:* &cocache:v8:inv:* &cocache:v8:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
 ```
 
 自 6.3.0 起，读取 `SetCache` 成员时用 `HKEYS` 与 `HGET` 取代 `HGETALL`。升级前先给已有用户加上这两条命令，否则集合读取会以 ACL 错误失败（措辞随 Redis 版本不同），已存数据不受影响。`HGETALL` 仍需保留：条件回收与旧版本实例还在使用它。
 
-使用自定义 `key-prefix` 时，把 `~cocache:*` 换成你的前缀。Redis Cluster 还要允许 Lettuce 发现拓扑所用的命令（`+cluster|nodes`、`+info`）。每个节点都要设置该用户：ACL 不会随复制同步。
+创建缓存时，CoCache 像之后的写入一样向该缓存的频道发布一个空帧。ACL 不放行这个频道时，创建以 `IllegalStateException` 失败，信息给出要放行的模式，例如 `[&cocache:v8:inv:*]`。否则之后的每次写入都会先修改 Redis、再在广播处失败，其它实例陈旧到 `local-max-age`。
+
+使用自定义 `key-prefix` 时，把 `~cocache:*` 换成你的前缀，把 `&cocache:v8:inv:*` 换成 `&{keyPrefix}v8:inv:*`。`pubsub` 模式下保留 `~cocache:v8!probe:*` 与 `&cocache:v8:probe:*`，原子广播的探测不使用前缀。前缀为空时，key 以 `v8:` 与 `v8!` 开头，频道以 `v8:inv:` 开头：放行 `~v8:*`、`~v8!*` 与 `&v8:inv:*`。Redis Cluster 还要允许 Lettuce 发现拓扑所用的命令（`+cluster|nodes`、`+info`）。每个节点都要设置该用户：ACL 不会随复制同步。
 
 常见错误是禁止了 `PING`。此时每个心跳周期都会失败，每次失败都清空所有 L2，健康检查一直是 `DOWN`。
 

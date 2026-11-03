@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.CacheRuntime
@@ -48,8 +49,8 @@ class SetEngineFormatTest {
 
     private fun seedForeign(key: String, namespace: String = "index") {
         Suspending.await {
-            memory.store(namespace).put(
-                "cocache:$namespace:$key",
+            memory.store(Keyspace("cocache:", namespace)).put(
+                "cocache:v8:$namespace:$key",
                 Envelope.Scalar(ByteArray(0)),
                 null,
                 InvalidationFrame.encode(NodeId.random(), emptyList())
@@ -68,8 +69,8 @@ class SetEngineFormatTest {
         (
             Suspending.await {
                 memory.store(
-                    "index"
-                ).read("cocache:index:k", null, null, null)
+                    Keyspace("cocache:", "index")
+                ).read("cocache:v8:index:k", null, null, null)
             } is L1Read.Hit
             ).assert().isTrue()
     }
@@ -97,8 +98,8 @@ class SetEngineFormatTest {
             val cache: SetCache<String, String> = writer.create(setCacheSpec("plain") { elementCodec = StringCodec })
             observer.create(setCacheSpec<String, String>("plain") { elementCodec = StringCodec })
             Suspending.await {
-                memory.store("plain").put(
-                    "cocache:plain:k",
+                memory.store(Keyspace("cocache:", "plain")).put(
+                    "cocache:v8:plain:k",
                     Envelope.Scalar("x".toByteArray()),
                     null,
                     InvalidationFrame.encode(NodeId.random(), emptyList())

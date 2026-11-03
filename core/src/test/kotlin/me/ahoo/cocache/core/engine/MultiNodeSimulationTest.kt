@@ -412,7 +412,7 @@ class MultiNodeSimulationTest {
 
     companion object {
         private const val NAME = "sim"
-        private const val PREFIX = "cocache:$NAME:"
+        private const val PREFIX = "cocache:v8:$NAME:"
         private const val NODES = 3
         private const val MIN_ALIVE = 2
         private const val SEEDS = 300

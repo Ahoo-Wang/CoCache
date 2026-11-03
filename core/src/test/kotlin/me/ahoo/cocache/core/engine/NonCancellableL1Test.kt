@@ -17,6 +17,7 @@ import kotlinx.coroutines.future.await
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ForwardingL1Store
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -59,7 +60,7 @@ class NonCancellableL1Test {
      * 读取在 L1 中执行之后，以可取消的等待等 [gate]。
      */
     private val backend = object : CoherenceBackend by memory {
-        override fun store(namespace: String): L1Store = object : ForwardingL1Store(memory.store(namespace)) {
+        override fun store(keyspace: Keyspace): L1Store = object : ForwardingL1Store(memory.store(keyspace)) {
             override suspend fun read(
                 key: String,
                 lease: LeaseRequest?,
@@ -85,7 +86,7 @@ class NonCancellableL1Test {
     }
 
     private fun leased(): Boolean = Suspending.await {
-        memory.store(NAME).read("cocache:$NAME:k", null, null, null)
+        memory.store(Keyspace("cocache:", NAME)).read("cocache:v8:$NAME:k", null, null, null)
     } is L1Read.Leased
 
     @Test

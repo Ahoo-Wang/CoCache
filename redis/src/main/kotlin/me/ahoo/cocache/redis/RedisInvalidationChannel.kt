@@ -23,6 +23,7 @@ import io.lettuce.core.protocol.DefaultEndpoint
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.Subscription
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -35,9 +36,11 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
- * Redis 失效通道的公共部分：每个后端一条订阅连接，按频道（命名空间）分发给订阅者。
+ * Redis 失效通道的公共部分：每个后端一条订阅连接，按频道分发给订阅者。每个 [Keyspace] 一个频道 `{keyPrefix}v8:inv:{namespace}`
+ * （[channelOf]，RFC 0005 §4.7）：前缀不同、命名空间相同的两个应用各自只收到自己的帧。
  *
  * - 订阅（含断线重连后 Lettuce 自动重新订阅）得到服务端确认时，重置该频道的所有订阅者。
+ * - 读不懂的帧（未知版本、未知类型、解码失败）重置该频道的所有订阅者，不丢弃（D3）：丢弃的就是一次失效。
  * - 心跳：周期性 PING 订阅连接，失败或超时即重置所有订阅者（半开连接期间的事件可能已丢失），并强制断开订阅连接，由 Lettuce 自动重连并重新订阅。
  * - 订阅失败时撤销本次创建的频道条目；单个订阅者抛出异常不影响其余订阅者。
  * - 订阅与退订串行执行（[subscriptionLock]），同一连接上的 SUBSCRIBE / UNSUBSCRIBE 因此与频道条目的增删同序。
@@ -81,12 +84,17 @@ internal abstract class RedisInvalidationChannel(
     protected abstract fun unsubscribeAsync(channel: ByteArray): CompletableFuture<Void>
 
     /**
+     * 阻塞地发布（`PUBLISH` 或 `SPUBLISH`，同 [publish]）：只用于创建存储时的频道探测（[RedisBackend.store]）。
+     */
+    internal abstract fun publishBlocking(channel: ByteArray, frame: ByteArray)
+
+    /**
      * 心跳探测：失败或超时抛出异常。
      */
     internal abstract fun ping()
 
-    override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
-        val channel = channelOf(namespace)
+    override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription {
+        val channel = channelOf(keyspace)
         var joined = false
         val channelListeners = synchronized(subscriptionLock) {
             val existing = listeners[channel]
@@ -106,7 +114,7 @@ internal abstract class RedisInvalidationChannel(
 
     /**
      * 频道的第一个订阅者：登记频道条目并 SUBSCRIBE；确认回调会重置该频道的全部订阅者，包括这一个，等它执行完再返回。
-     * 订阅失败时撤销条目，否则该命名空间永久收不到失效，之后的订阅者也会跳过 SUBSCRIBE。持有 [subscriptionLock] 时调用。
+     * 订阅失败时撤销条目，否则该 keyspace 永久收不到失效，之后的订阅者也会跳过 SUBSCRIBE。持有 [subscriptionLock] 时调用。
      */
     private fun subscribeFirst(
         channel: String,
@@ -230,7 +238,8 @@ internal abstract class RedisInvalidationChannel(
     }
 
     /**
-     * 收到消息：解码并分发给该频道的订阅者，畸形帧告警后丢弃。
+     * 收到消息：解码并分发给该频道的订阅者。读不懂的帧（[InvalidationFrame.decode] 拒绝的未知版本、预留的帧版本 2、截断或尾随字节）
+     * 按该频道的重置处理（RFC 0005 §4.7，D3）：清空 L2、递增全部戳，只会多淘汰，不会丢失效；6.x 告警后丢弃，丢的就是一次失效。
      *
      * 某个订阅者抛出异常（包括 `Error`，以及 Kotlin 代码抛出的受检异常）记录后继续分发，不能让其余订阅者错过本次失效；
      * 6.9.1 及之前只兜住 `RuntimeException`，一个抛出 `Error` 的订阅者会让排在它之后的订阅者收不到这条消息。
@@ -238,11 +247,13 @@ internal abstract class RedisInvalidationChannel(
      */
     @Suppress("TooGenericExceptionCaught")
     protected fun dispatch(channel: ByteArray, message: ByteArray) {
-        val channelListeners = listeners[String(channel, Charsets.UTF_8)] ?: return
+        val name = String(channel, Charsets.UTF_8)
+        val channelListeners = listeners[name] ?: return
         val decoded = try {
             InvalidationFrame.decode(message)
         } catch (e: IllegalArgumentException) {
-            log.warn(e) { "Ignore malformed invalidation frame on channel[${String(channel, Charsets.UTF_8)}]." }
+            log.warn(e) { "Unreadable invalidation frame on channel[$name] - reset subscribers." }
+            channelListeners.forEach { resetQuietly(name, it) }
             return
         }
         channelListeners.forEach { listener ->
@@ -251,7 +262,7 @@ internal abstract class RedisInvalidationChannel(
             } catch (e: VirtualMachineError) {
                 throw e
             } catch (e: Throwable) {
-                log.error(e) { "Invalidation listener failed on channel[${String(channel, Charsets.UTF_8)}]." }
+                log.error(e) { "Invalidation listener failed on channel[$name]." }
             }
         }
     }
@@ -272,9 +283,21 @@ internal abstract class RedisInvalidationChannel(
 
     companion object {
         private val log = KotlinLogging.logger {}
-        const val CHANNEL_PREFIX = "cocache:inv:"
 
-        fun channelOf(namespace: String): String = CHANNEL_PREFIX + namespace
+        /**
+         * 频道名中布局标记之后的部分：频道为 `{keyPrefix}v8:inv:{namespace}`（RFC 0005 §4.7，随 M4 冻结）。
+         */
+        private const val CHANNEL_MARK = Keyspace.LAYOUT_MARK + "inv:"
+
+        /**
+         * [keyspace] 的频道：`{keyPrefix}v8:inv:{namespace}`。
+         */
+        fun channelOf(keyspace: Keyspace): String = keyspace.keyPrefix + CHANNEL_MARK + keyspace.namespace
+
+        /**
+         * 前缀为 [keyPrefix] 的全部频道的 ACL 模式：`&{keyPrefix}v8:inv:*`。
+         */
+        fun channelPatternOf(keyPrefix: String): String = "&$keyPrefix$CHANNEL_MARK*"
 
         /**
          * 断开连接的底层通道（Lettuce 公开的 [DefaultEndpoint.disconnect]），触发自动重连；

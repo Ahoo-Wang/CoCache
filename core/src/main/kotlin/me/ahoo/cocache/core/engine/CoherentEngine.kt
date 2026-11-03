@@ -92,7 +92,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     store: L1Store,
     context: EngineContext,
     private val format: ValueFormat<V> = CodecFormat(spec.codec),
-) : AbstractEngine<K, V>(spec.name, spec.namespace, spec.keyPrefix, spec.keyEncoder, spec.policy, store, context),
+) : AbstractEngine<K, V>(spec.name, spec.keyspace, spec.keyEncoder, spec.policy, store, context),
     Cache<K, V> {
 
     private val keyFilter = spec.keyFilter
@@ -1653,7 +1653,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val frame = frameOf(storageKeys)
         store.invalidate(storageKeys, frame)
         if (!context.backend.atomicBroadcast) {
-            context.backend.channel.publish(namespace, frame)
+            context.backend.channel.publish(keyspace, frame)
         }
     }
 

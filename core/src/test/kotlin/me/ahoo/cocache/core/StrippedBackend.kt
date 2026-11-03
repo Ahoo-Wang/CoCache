@@ -16,6 +16,7 @@ package me.ahoo.cocache.core
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ConditionalL1Store
 import me.ahoo.cocache.api.spi.ForwardingL1Store
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.VersionedL1Store
@@ -29,7 +30,7 @@ internal class StrippedBackend(
     private val versioned: Boolean = true,
     private val sets: Boolean = true,
 ) : CoherenceBackend by backend {
-    override fun store(namespace: String): L1Store = Stripped(backend.store(namespace))
+    override fun store(keyspace: Keyspace): L1Store = Stripped(backend.store(keyspace))
 
     private inner class Stripped(store: L1Store) : ForwardingL1Store(store) {
         override fun conditional(): ConditionalL1Store? = if (conditional) delegate.conditional() else null

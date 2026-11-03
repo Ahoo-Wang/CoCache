@@ -28,6 +28,7 @@ import io.lettuce.core.resource.ClientResources
 import io.lettuce.core.resource.DefaultClientResources
 import io.lettuce.core.resource.MappingSocketAddressResolver
 import me.ahoo.cocache.api.spi.ConditionalL1Store
+import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.VersionedL1Store
@@ -79,11 +80,11 @@ object RedisTestSupport {
     )
 
     /**
-     * 非原子广播的后端：用 ACL 禁止向探测频道发布（只允许 `cocache:inv:*`），探测失败后后端退回“写入后由引擎发布”。
+     * 非原子广播的后端：用 ACL 禁止向探测频道发布（只允许任意前缀的失效频道 `*v8:inv:*`），探测失败后后端退回“写入后由引擎发布”。
      */
     fun nonAtomicBackend(): RedisBackend = aclBackend(
         "cocache-nonatomic",
-        listOf("~*", "resetchannels", "&cocache:inv:*", "+@all")
+        listOf("~*", "resetchannels", "&*v8:inv:*", "+@all")
     )
 
     /**
@@ -119,6 +120,13 @@ object RedisTestSupport {
     }
 
     /**
+     * 删除 [aclBackend] 设置的 ACL 用户（各节点）。先关闭以该用户连接的后端：删除用户会断开它的连接。
+     */
+    fun deleteAclUser(user: String) {
+        forEachNode { commands -> commands.aclDeluser(user) }
+    }
+
+    /**
      * 以默认用户执行任意命令（单机或集群，命令按 key 路由）。
      */
     fun <T> withCommands(block: (io.lettuce.core.cluster.api.sync.RedisClusterCommands<String, String>) -> T): T {
@@ -138,6 +146,16 @@ object RedisTestSupport {
             client.shutdown()
         }
     }
+
+    /**
+     * 同 [subscribeRaw]，但跳过创建存储时的零 key 探测帧（RFC 0005 §4.7，K8）：Cluster 中经典 Pub/Sub 的帧经集群总线异步转发，
+     * 订阅之前创建的存储发出的探测帧可能在订阅之后才到达。
+     */
+    fun subscribeFrames(channel: String, onMessage: (ByteArray) -> Unit): AutoCloseable =
+        subscribeRaw(channel) { if (!isProbeFrame(it)) onMessage(it) }
+
+    private fun isProbeFrame(message: ByteArray): Boolean =
+        runCatching { InvalidationFrame.decode(message).keys.isEmpty() }.getOrDefault(false)
 
     /**
      * 订阅经典频道 [channel]（集群中 `PUBLISH` 经集群总线到达任意节点），收到的消息交给 [onMessage]；关闭返回值即退订。

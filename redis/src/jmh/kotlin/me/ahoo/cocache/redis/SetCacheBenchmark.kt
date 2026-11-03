@@ -24,6 +24,7 @@ import io.lettuce.core.protocol.CommandArgs
 import io.lettuce.core.protocol.CommandType
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
@@ -88,10 +89,10 @@ open class SetCacheBenchmark {
         runtime = CacheRuntime.builder().backend(backend).build()
         val name = "setbench-$run"
         cache = runtime.create(setCacheSpec<String, String>(name) { elementCodec = StringCodec })
-        store = backend.store(name)
+        store = backend.store(Keyspace("cocache:", name))
         sets = requireNotNull(store.sets())
         frame = InvalidationFrame.encode(NodeId.random(), emptyList())
-        channel = "cocache:inv:$name".toByteArray()
+        channel = "cocache:v8:inv:$name".toByteArray()
         client = RedisClient.create(RedisURI.create("localhost", 6379))
         connection = client.connect(ByteArrayCodec.INSTANCE)
 
@@ -99,7 +100,7 @@ open class SetCacheBenchmark {
         // L2 命中用的集合：经引擎写入后读一次，填入 L2
         cache.add("hot", members)
         cache["hot"]
-        hashKey = "cocache:$name:l1"
+        hashKey = "cocache:v8:$name:l1"
         awaitBlocking { sets.addMembers(hashKey, members.map { it.toByteArray() }, null, frame) }
         altKeys = altKeysOf("$name:l1")
         altAdd(altKeys, members.map { it.toByteArray() })
@@ -181,7 +182,7 @@ open class SetCacheBenchmark {
         val commands = connection.sync()
         val rows = listOf("string" to ::stringMember, "integer" to ::integerMember).map { (kind, member) ->
             val members = (1..size).map { member(it).toByteArray() }
-            val hash = "cocache:$name:mem-$kind"
+            val hash = "cocache:v8:$name:mem-$kind"
             awaitBlocking { sets.addMembers(hash, members, null, frame) }
             val alt = altKeysOf("$name:mem-$kind")
             altAdd(alt, members)

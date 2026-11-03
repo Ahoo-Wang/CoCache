@@ -26,6 +26,7 @@ import me.ahoo.cocache.api.spi.FutureSetL1Store
 import me.ahoo.cocache.api.spi.FutureVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Fill
@@ -52,7 +53,7 @@ import java.util.concurrent.CompletableFuture
 class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by backend {
     override val channel: InvalidationChannel = FutureInvalidationChannel.adapt(FutureChannel(backend.channel))
 
-    override fun store(namespace: String): L1Store = FutureL1Store.adapt(FutureStore(backend.store(namespace)))
+    override fun store(keyspace: Keyspace): L1Store = FutureL1Store.adapt(FutureStore(backend.store(keyspace)))
 
     private val lock = Any()
     private var mode = Mode.NORMAL
@@ -99,11 +100,11 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
     }
 
     private class FutureChannel(private val channel: InvalidationChannel) : FutureInvalidationChannel {
-        override fun subscribe(namespace: String, listener: InvalidationListener): Subscription =
-            channel.subscribe(namespace, listener)
+        override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription =
+            channel.subscribe(keyspace, listener)
 
-        override fun publish(namespace: String, frame: ByteArray): CompletableFuture<Void?> = completed {
-            channel.publish(namespace, frame)
+        override fun publish(keyspace: Keyspace, frame: ByteArray): CompletableFuture<Void?> = completed {
+            channel.publish(keyspace, frame)
             null
         }
     }

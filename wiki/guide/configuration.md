@@ -92,7 +92,7 @@ cocache:
 
 ### Key prefix {#key-prefix}
 
-Storage keys are `{keyPrefix}{namespace}:{encodedKey}` (see [Declaring Caches](./caches.md#storage-keys)). Setting the prefix once separates applications that share a Redis:
+Storage keys are `{keyPrefix}v8:{namespace}:{encodedKey}` (see [Declaring Caches](./caches.md#storage-keys)). Setting the prefix once separates applications that share a Redis:
 
 ```yaml
 cocache:
@@ -103,7 +103,7 @@ cocache:
       key-prefix: "shared:"
 ```
 
-`caches.[name].key-prefix` overrides `defaults.key-prefix`, which overrides the declaration and customizers, even a `keyPrefix` written in `@CoCache`. Every instance of an application must use the same prefix, and changing it is a cold start. The invalidation channel `cocache:inv:{namespace}` doesn't include the prefix, so applications with the same namespace on one Redis receive each other's messages; that is wasted work, never wrong data.
+`caches.[name].key-prefix` overrides `defaults.key-prefix`, which overrides the declaration and customizers, even a `keyPrefix` written in `@CoCache`. Every instance of an application must use the same prefix, and changing it is a cold start. The invalidation channel `{keyPrefix}v8:inv:{namespace}` includes the prefix, so applications with different prefixes don't receive each other's messages. The prefix may be empty: keys then start with `v8:` and `v8!`, and the Redis ACL changes to match ([Redis ACL](../operations/index.md#acl)).
 
 ## Executors {#executors}
 

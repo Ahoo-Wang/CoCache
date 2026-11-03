@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Token
@@ -204,8 +205,8 @@ class LoadObserverTest {
         // L1 中的值被静默删除（不广播）：刷新退回普通加载路径，仍以 refresh 观测
         Suspending.await {
             memory.store(
-                name
-            ).invalidate(listOf("cocache:$name:k"), InvalidationFrame.encode(NodeId.random(), emptyList()))
+                Keyspace("cocache:", name)
+            ).invalidate(listOf("cocache:v8:$name:k"), InvalidationFrame.encode(NodeId.random(), emptyList()))
         }
         clock.advance(Duration.ofSeconds(6))
         cache["k"]
@@ -287,8 +288,8 @@ class LoadObserverTest {
         // 其它节点持有 lease：等待超时后直接回源
         Suspending.await {
             memory.store(
-                name
-            ).read("cocache:$name:k", LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
+                Keyspace("cocache:", name)
+            ).read("cocache:v8:$name:k", LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
         }
         cache["k"].assert().isEqualTo("v")
         observer.operations().assert().containsExactly(LoadOperation.LEASE_WAIT to 1, LoadOperation.LOAD to 1)

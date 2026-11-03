@@ -184,13 +184,14 @@ new ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7");
 :::
 
 - Pass the cache's **namespace** (the cache name unless set) and the **encoded key**: the `toString()` or `keyExpression` result, as it appears in the storage key.
-- Pass `keyPrefix` to the constructor when the cache doesn't use `cocache:`.
+- Pass `keyPrefix` to the constructor when the cache doesn't use `cocache:`. The prefix also selects the channel, so a wrong one reaches no instance of the cache.
+- A namespace outside `[A-Za-z0-9._-]+` throws `IllegalArgumentException`, as it does for a cache.
 - Calls are idempotent: if one throws (for example, the delete succeeded but the broadcast failed), retry it.
 - It deletes the keys from Redis and broadcasts the invalidation (in one script with the default channel mode). Every instance, including caches in the same process, drops its L2 copy.
 - It doesn't retry. If Redis fails, it throws; retry the call yourself.
 - An empty encoded key throws `IllegalArgumentException`; an empty collection does nothing. After `close()`, every call throws `IllegalStateException`. `close()` releases the invalidator's own store handles and doesn't close the backend.
 
-Outside the JVM, any Redis client can do the same in two commands: `DEL {keyPrefix}{namespace}:{encodedKey}`, then `PUBLISH cocache:inv:{namespace}` with a small binary frame (`SPUBLISH` in sharded mode). [Troubleshooting](/operations/troubleshooting#external-invalidation) documents the frame format. Skipping the `PUBLISH` leaves other instances' L2 stale for up to `localMaxAge`.
+Outside the JVM, any Redis client can do the same in two commands: `DEL {keyPrefix}v8:{namespace}:{encodedKey}`, then `PUBLISH {keyPrefix}v8:inv:{namespace}` with a small binary frame (`SPUBLISH` in sharded mode). [Troubleshooting](/operations/troubleshooting#external-invalidation) documents the frame format. Skipping the `PUBLISH` leaves other instances' L2 stale for up to `localMaxAge`.
 
 ## Choosing lifetimes {#lifetimes}
 

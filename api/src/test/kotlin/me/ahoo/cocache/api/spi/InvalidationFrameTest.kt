@@ -42,6 +42,19 @@ class InvalidationFrameTest {
         }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 
+    /**
+     * 帧版本 2 预留给“namespace 重置”（RFC 0005 §4.7，D3）：8.0 不解码它，通道按读不懂的帧重置订阅者。
+     */
+    @Test
+    fun rejectsReservedNamespaceResetVersion() {
+        InvalidationFrame.NAMESPACE_RESET_VERSION.assert().isEqualTo(2.toByte())
+        val frame = InvalidationFrame.encode(origin, listOf("k"))
+        frame[0] = InvalidationFrame.NAMESPACE_RESET_VERSION
+        runCatching {
+            InvalidationFrame.decode(frame)
+        }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
+
     @Test
     fun rejectsTruncatedFrame() {
         val frame = InvalidationFrame.encode(origin, listOf("key"))

@@ -15,6 +15,7 @@ package me.ahoo.cocache.core.memory
 
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.test.Concurrency.awaitCondition
@@ -35,7 +36,7 @@ class InMemoryStallTest {
     @Test
     fun stalledOperationRunsOnceResumed() {
         val backend = InMemoryBackend()
-        val store = backend.store("ns")
+        val store = backend.store(Keyspace("cocache:", "ns"))
         val stall = backend.stall()
         val writer = fork("stalled-writer") {
             Suspending.await { store.put("k", Envelope.Scalar("v".toByteArray()), null, frame) }
@@ -50,7 +51,7 @@ class InMemoryStallTest {
     @Test
     fun operationThatTimesOutWhileStalledNeverRuns() {
         val backend = InMemoryBackend(commandTimeout = Duration.ofMillis(100))
-        val store = backend.store("ns")
+        val store = backend.store(Keyspace("cocache:", "ns"))
         backend.stall().use {
             val failure = runCatching {
                 Suspending.await { store.put("k", Envelope.Scalar("v".toByteArray()), null, frame) }
@@ -72,7 +73,7 @@ class InMemoryStallTest {
     @Test
     fun closingASupersededStallKeepsTheNewerOne() {
         val backend = InMemoryBackend(commandTimeout = Duration.ofMillis(50))
-        val store = backend.store("ns")
+        val store = backend.store(Keyspace("cocache:", "ns"))
         val older = backend.stall()
         val newer = backend.stall()
         older.close()
@@ -83,7 +84,7 @@ class InMemoryStallTest {
 
     @Test
     fun nonPositiveReadTimeoutIsRejected() {
-        val store = InMemoryBackend().store("ns")
+        val store = InMemoryBackend().store(Keyspace("cocache:", "ns"))
         listOf(Duration.ZERO, Duration.ofMillis(-1)).forEach { timeout ->
             runCatching { Suspending.await { store.read("k", null, null, timeout) } }.exceptionOrNull()
                 .assert().isInstanceOf(IllegalArgumentException::class.java)

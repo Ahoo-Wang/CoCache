@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.LoadObserver
@@ -53,7 +54,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray
 @Param(name = "key", gen = IntGen::class, conf = "0:1")
 class CoherentEngineLincheckTest {
     private val versions = AtomicIntegerArray(KEYS)
-    private val store = InMemoryBackend(CLOCK).store(NAME)
+    private val store = InMemoryBackend(CLOCK).store(Keyspace("cocache:", NAME))
     private val engine = CoherentEngine(
         cacheSpec<String, String>(NAME) {
             codec = StringCodec
@@ -79,7 +80,7 @@ class CoherentEngineLincheckTest {
     @Operation
     fun remoteWrite(@Param(name = "key") key: Int) {
         versions.incrementAndGet(key)
-        val storageKey = "cocache:$NAME:$key"
+        val storageKey = "cocache:v8:$NAME:$key"
         Suspending.await { store.invalidate(listOf(storageKey), InvalidationFrame.encode(OTHER, listOf(storageKey))) }
         engine.onInvalidated(listOf(storageKey), OTHER)
     }
@@ -196,7 +197,7 @@ class CoherentEngineLincheckTest {
     class CancellingSource {
         private val versions = AtomicIntegerArray(KEYS)
         private val cancelling = AtomicIntegerArray(IntArray(KEYS) { 1 })
-        private val store = InMemoryBackend(CLOCK).store(NAME)
+        private val store = InMemoryBackend(CLOCK).store(Keyspace("cocache:", NAME))
         private val engine = CoherentEngine(
             cacheSpec<String, String>(NAME) {
                 codec = StringCodec
@@ -241,7 +242,7 @@ class CoherentEngineLincheckTest {
         @Validate
         fun nothingLeft() {
             repeat(KEYS) { key ->
-                val read = Suspending.await { store.read("cocache:$NAME:$key", null, null, null) }
+                val read = Suspending.await { store.read("cocache:v8:$NAME:$key", null, null, null) }
                 check(read !is L1Read.Leased) { "a lease was left on key[$key]: $read" }
             }
         }

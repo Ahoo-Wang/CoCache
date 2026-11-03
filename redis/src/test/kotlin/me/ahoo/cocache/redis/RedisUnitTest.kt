@@ -41,6 +41,7 @@ import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.NodeId
@@ -54,6 +55,11 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * 频道单元测试共用的 keyspace，频道为 `cocache:v8:inv:ns`。
+ */
+private val NS = Keyspace("cocache:", "ns")
 
 class RedisUnitTest {
     @Test
@@ -233,8 +239,8 @@ class RedisUnitTest {
                 val result = connections.join(
                     connections.evalAsync<List<Any?>>(
                         RedisScripts.PROBE,
-                        listOf("cocache:probe".toByteArray()),
-                        listOf("cocache:probe:channel".toByteArray())
+                        listOf("cocache:v8!probe".toByteArray()),
+                        listOf("cocache:v8:probe:channel".toByteArray(), ByteArray(0))
                     )
                 )
                 result.assert().containsExactly(1L)
@@ -292,8 +298,12 @@ class RedisUnitTest {
         }
     }
 
+    /**
+     * 心跳失败时重置订阅者；读不懂的帧不投递为失效（按重置处理，见 TCK 的 `unreadableFramesResetTheChannelSubscribers`），
+     * 只投递给订阅了该频道的订阅者。
+     */
     @Test
-    fun channelResetsOnHeartbeatFailureAndIgnoresMalformedFrames() {
+    fun channelResetsOnHeartbeatFailureAndNeverDeliversUnreadableFrames() {
         var adapter: RedisPubSubAdapter<ByteArray, ByteArray>? = null
         val async = proxy<RedisPubSubAsyncCommands<ByteArray, ByteArray>> { method, _ ->
             when (method.name) {
@@ -330,15 +340,18 @@ class RedisUnitTest {
         }
         PubSubInvalidationChannel(connections, Duration.ofMillis(10), Duration.ofMillis(10)).use { channel ->
             // 没有收到订阅确认：等待超时后照常返回
-            val subscription = channel.subscribe("ns", listener)
-            val second = channel.subscribe("ns", listener)
+            val subscription = channel.subscribe(NS, listener)
+            val second = channel.subscribe(NS, listener)
             awaitCondition("heartbeat reset") { resets.get() >= 3 }
 
             val handler = requireNotNull(adapter)
-            handler.message("cocache:inv:ns".toByteArray(), byteArrayOf(9))
-            handler.message("cocache:inv:other".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
-            handler.subscribed("cocache:inv:other".toByteArray(), 1)
-            handler.message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            handler.message("cocache:v8:inv:ns".toByteArray(), byteArrayOf(9))
+            handler.message(
+                "cocache:v8:inv:other".toByteArray(),
+                InvalidationFrame.encode(NodeId.random(), listOf("k"))
+            )
+            handler.subscribed("cocache:v8:inv:other".toByteArray(), 1)
+            handler.message("cocache:v8:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
             // 同一订阅者订阅了两次，收到两次
             received.assert().containsExactly(listOf("k"), listOf("k"))
             second.close()
@@ -374,14 +387,14 @@ class RedisUnitTest {
         val listener = RecordingListener()
         // 心跳周期足够长，由用例直接调用 ping() 驱动
         val channel = ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10))
-        val subscription = channel.subscribe("ns", listener)
-        val other = channel.subscribe("ns2", listener)
+        val subscription = channel.subscribe(NS, listener)
+        val other = channel.subscribe(Keyspace("cocache:", "ns2"), listener)
         subscribes.get().assert().isEqualTo(2)
         val handler = requireNotNull(adapter)
-        val ns = "cocache:inv:ns".toByteArray()
+        val ns = "cocache:v8:inv:ns".toByteArray()
 
         // 没有订阅者的频道被退订（主动退订的回执）：忽略
-        handler.sunsubscribed("cocache:inv:absent".toByteArray(), 0)
+        handler.sunsubscribed("cocache:v8:inv:absent".toByteArray(), 0)
         listener.resets.get().assert().isZero()
 
         // 服务端退订（slot 迁移）：立即重置并重新订阅；重新订阅失败时由心跳重置并重试，确认后不再重试
@@ -411,7 +424,7 @@ class RedisUnitTest {
 
         // 通道关闭后的服务端退订：不再调度重新订阅
         channel.close()
-        handler.sunsubscribed("cocache:inv:ns2".toByteArray(), 0)
+        handler.sunsubscribed("cocache:v8:inv:ns2".toByteArray(), 0)
         subscribes.get().assert().isEqualTo(5)
         other.close()
     }
@@ -445,8 +458,8 @@ class RedisUnitTest {
         ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
             // 只用节点感知的监听器：关闭向普通监听器的转发
             propagation.get().assert().isFalse()
-            channel.subscribe("a", RecordingListener())
-            channel.subscribe("b", RecordingListener())
+            channel.subscribe(Keyspace("cocache:", "a"), RecordingListener())
+            channel.subscribe(Keyspace("cocache:", "b"), RecordingListener())
             // slot 未被覆盖（拓扑刷新中）：跳过
             channel.ping()
             nodePings.get().assert().isZero()
@@ -480,11 +493,11 @@ class RedisUnitTest {
         }
         val healthy = RecordingListener()
         PubSubInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
-            channel.subscribe("ns", failing)
-            channel.subscribe("ns", healthy)
+            channel.subscribe(NS, failing)
+            channel.subscribe(NS, healthy)
             requireNotNull(
                 adapter
-            ).message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            ).message("cocache:v8:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
             healthy.received.assert().containsExactly(listOf("k"))
         }
     }
@@ -502,9 +515,11 @@ class RedisUnitTest {
             "async" to { async }
         )
         PubSubInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
-            runCatching { channel.subscribe("ns", RecordingListener()) }.exceptionOrNull().assert().isNotNull()
+            runCatching {
+                channel.subscribe(NS, RecordingListener())
+            }.exceptionOrNull().assert().isNotNull()
             // 第二个订阅者重新发出 SUBSCRIBE，而不是以为已经订阅
-            channel.subscribe("ns", RecordingListener())
+            channel.subscribe(NS, RecordingListener())
             subscribes.get().assert().isEqualTo(2)
         }
     }
@@ -520,11 +535,11 @@ class RedisUnitTest {
         val pubSub = cluster.pubSub
         val listener = RecordingListener()
         ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
-            channel.subscribe("ns", listener)
+            channel.subscribe(NS, listener)
             val handler = requireNotNull(cluster.listener)
-            val ns = "cocache:inv:ns".toByteArray()
+            val ns = "cocache:v8:inv:ns".toByteArray()
             handler.ssubscribed(owner, ns, 1)
-            channel.subscribedNode("ns").assert().isEqualTo(ShardedInvalidationChannel.HostAndPort("localhost", 7000))
+            channel.subscribedNode(NS).assert().isEqualTo(ShardedInvalidationChannel.HostAndPort("localhost", 7000))
             listener.resets.get().assert().isEqualTo(1)
             channel.ping()
             pinged.assert().containsExactly(7000)
@@ -557,7 +572,7 @@ class RedisUnitTest {
             listener.received.assert().containsExactly(listOf("k"))
             // 未知节点的确认：不记录节点，心跳退回探测所属主节点
             handler.ssubscribed(null, ns, 1)
-            channel.subscribedNode("ns").assert().isNull()
+            channel.subscribedNode(NS).assert().isNull()
             pinged.clear()
             channel.ping()
             pinged.assert().containsExactly(7000)
@@ -785,7 +800,7 @@ class RedisUnitTest {
             }
         }
         val healthy = RecordingListener()
-        val subscribers = mapOf("cocache:inv:a" to listOf(failing, healthy), "cocache:inv:b" to listOf(healthy))
+        val subscribers = mapOf("cocache:v8:inv:a" to listOf(failing, healthy), "cocache:v8:inv:b" to listOf(healthy))
         FailingHeartbeat(mapOf(1 to StackOverflowError("ping")), null, subscribers).use { channel ->
             awaitCondition("heartbeat reconnected") { channel.reconnects.get() >= 1 }
             failingResets.get().assert().isEqualTo(1)
@@ -814,7 +829,9 @@ class RedisUnitTest {
 
         override fun unsubscribeAsync(channel: ByteArray): CompletableFuture<Void> = done()
 
-        override suspend fun publish(namespace: String, frame: ByteArray) = Unit
+        override suspend fun publish(keyspace: Keyspace, frame: ByteArray) = Unit
+
+        override fun publishBlocking(channel: ByteArray, frame: ByteArray) = Unit
 
         override fun ping() {
             failures[pings.incrementAndGet()]?.let { throw it }

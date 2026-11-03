@@ -37,7 +37,7 @@ class App
 | 属性 | 默认值 | 含义 |
 |------|--------|------|
 | `name` | 接口简单类名 | 缓存名，也是 bean 名 |
-| `namespace` | 缓存名 | 每个存储 key 的中间部分，也决定失效频道（见[存储 key](#storage-keys)） |
+| `namespace` | 缓存名 | 每个存储 key 的中间部分，也决定失效频道。只能含字母、数字、`.`、`_` 与 `-`（见[存储 key](#storage-keys)） |
 | `keyPrefix` | `cocache:` | 每个存储 key 的开头 |
 | `keyExpression` | `toString()` | 把 key 转为字符串的 SpEL 模板（见 [key](#keys)） |
 | `ttl` | `3600`（`SetCache` 为永不过期） | 值在 Redis 中的寿命。`CoCache.FOREVER`：永不过期。 |
@@ -124,8 +124,8 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 Redis 中的每个 key 都是：
 
 ```
-{keyPrefix}{namespace}:{encodedKey}
- cocache:   UserCache :42
+{keyPrefix}v8:{namespace}:{encodedKey}
+ cocache:  v8:UserCache :42
 ```
 
 | 部分 | 默认值 | 设置方式 |
@@ -134,8 +134,10 @@ Redis 中的每个 key 都是：
 | `namespace` | 缓存名 | `@CoCache(namespace)`、`CacheSpec.namespace` |
 | `encodedKey` | `key.toString()` | `@CoCache(keyExpression)`、`CacheSpec.keyEncoder` |
 
-- 在一个应用内，缓存名与 namespace 都必须唯一，重复时启动失败。
-- 失效消息走频道 `cocache:inv:{namespace}`，频道不含前缀。
+- `v8:` 标记 8.x 的布局。6.x 的 key（`{keyPrefix}{namespace}:{encodedKey}`）与频道和 8.x 的从不重叠，切换期间两个版本可以共用一个 Redis。
+- namespace 只能含字母、数字、`.`、`_` 与 `-`（`[A-Za-z0-9._-]+`）。含 `:` 的 namespace 在创建时失败，信息给出把 `:` 之前的部分移到 `keyPrefix` 的写法：`namespace = "app:user"` 改为 `keyPrefix = "cocache:app:"` 与 `namespace = "user"`。没有 `:`，一个 namespace 的 key 就不会落进另一个 namespace 的范围。
+- 在一个应用内，缓存名必须唯一，前缀与 namespace 的组合也必须唯一。namespace 相同、前缀不同的两个缓存可以共存。重复时启动失败。
+- 失效消息走频道 `{keyPrefix}v8:inv:{namespace}`，前缀不同的应用收不到彼此的消息。
 - actuator 端点与 `ExternalInvalidator` 接受的都是**编码后的 key**，所以其它工具不必知道 key 的 Kotlin 类型也能定位它。
 - 多个应用共用一个 Redis 时，用 [`cocache.defaults.key-prefix` 配置项](./configuration.md#key-prefix)给每个应用一个不同的前缀（比如 `${spring.application.name}:`）。`@CoCache(keyPrefix)` 是字面文本：其中的占位符不会被解析（在 Kotlin 中 `$` 还会开启字符串模板）。修改运行中缓存的前缀或 namespace 相当于冷启动：旧 key 不再被读取，随各自的寿命过期。
 
@@ -298,7 +300,8 @@ CoCache 宁可启动失败，也不运行一个无法按声明工作的缓存。
 | `SetCache` 上设置了 `loader` | 集合缓存没有数据源，未命中会悄悄返回空集合 |
 | 在 `ttl` / `expireAfterAccess` 之外的时长属性上用 `FOREVER`，时长为 0（`ttlJitter`、`refreshWindow` 除外），或任何时长为负数 | 无意义或不安全的寿命 |
 | `refreshWindow` 不小于 `ttl − ttlJitter`（按实际抖动计算），或不小于 `localMaxAge` | 新副本一出生就在窗口内，每次命中都会触发刷新 |
-| 缓存名、namespace 或 bean 名重复 | 两个缓存会共享 key 或失效消息 |
+| 缓存名、前缀与 namespace 的组合或 bean 名重复 | 两个缓存会共享 key 或失效消息 |
+| namespace 不符合 `[A-Za-z0-9._-]+`，例如含 `:` | 它的 key 可能落进另一个 namespace 的范围；把前缀移到 `keyPrefix` |
 | `cocache.caches.[name]` 指向不存在的缓存，或使用了旧大版本中不再支持的配置名（见[从 5.x 升级](./migration-6.md#properties)） | 几乎总是拼写错误；见[配置参考](./configuration.md#validation) |
 
 key 类型的 `toString()` 检查发生在每种 key 类型第一次读取时，而不是启动时。

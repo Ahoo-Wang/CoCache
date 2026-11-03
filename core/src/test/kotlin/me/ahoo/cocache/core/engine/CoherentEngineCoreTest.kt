@@ -24,6 +24,7 @@ import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.FutureL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
@@ -250,7 +251,11 @@ class CoherentEngineCoreTest {
 
         closer.join().assert().withFailMessage { "close returned before the release completed." }.isZero()
         failureOf(read)?.message.assert().isEqualTo("CacheRuntime closed.")
-        val left = Suspending.await { memory.store("core").read("cocache:core:k", null, null, null) }
+        val left = Suspending.await {
+            memory.store(
+                Keyspace("cocache:", "core")
+            ).read("cocache:v8:core:k", null, null, null)
+        }
         left.assert().isEqualTo(L1Read.Miss(false))
     }
 
@@ -301,7 +306,7 @@ class CoherentEngineCoreTest {
         val releasing = CountDownLatch(1)
         val released = CountDownLatch(1)
         val backend = object : CoherenceBackend by memory {
-            override fun store(namespace: String): L1Store = object : ForwardingL1Store(memory.store(namespace)) {
+            override fun store(keyspace: Keyspace): L1Store = object : ForwardingL1Store(memory.store(keyspace)) {
                 override suspend fun release(key: String, token: Token) {
                     releasing.countDown()
                     gate.await()
@@ -340,10 +345,10 @@ class CoherentEngineCoreTest {
         val publishing = CountDownLatch(1)
         val published = CountDownLatch(1)
         val channel = object : InvalidationChannel by memory.channel {
-            override suspend fun publish(namespace: String, frame: ByteArray) {
+            override suspend fun publish(keyspace: Keyspace, frame: ByteArray) {
                 publishing.countDown()
                 gate.await()
-                memory.channel.publish(namespace, frame)
+                memory.channel.publish(keyspace, frame)
                 published.countDown()
             }
         }
@@ -437,7 +442,7 @@ class CoherentEngineCoreTest {
         cache["k"].assert().isEqualTo("v-k")
         metrics.remoteHits.assert().withFailMessage { "a foreign key evicted the local copy" }.isZero()
 
-        listener.onInvalidated(listOf("cocache:core:k"), other)
+        listener.onInvalidated(listOf("cocache:v8:core:k"), other)
         cache["k"].assert().isEqualTo("v-k")
         metrics.remoteHits.assert().withFailMessage { "the frame did not evict the local copy" }.isEqualTo(1)
     }
@@ -543,7 +548,11 @@ class CoherentEngineCoreTest {
         closer.join()
 
         val other = RefreshRequest(window, Token(NodeId.random(), 1), Duration.ofSeconds(10))
-        val read = Suspending.await { memory.store("core").read("cocache:core:k", null, other, null) }
+        val read = Suspending.await {
+            memory.store(
+                Keyspace("cocache:", "core")
+            ).read("cocache:v8:core:k", null, other, null)
+        }
         (read is L1Read.Hit && read.refreshGranted).assert().withFailMessage { "refresh token held: $read" }.isTrue()
     }
 
@@ -753,7 +762,7 @@ class CoherentEngineCoreTest {
             every { read(any(), any(), any(), null) } returns CompletableFuture.completedFuture(null)
         }
         val backend = object : CoherenceBackend by memory {
-            override fun store(namespace: String): L1Store = FutureL1Store.adapt(nullReads)
+            override fun store(keyspace: Keyspace): L1Store = FutureL1Store.adapt(nullReads)
         }
         val cache = runtime(backend).create(spec {})
         val failure = failureOf(cache.async().get("k"))

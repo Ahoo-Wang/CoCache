@@ -190,7 +190,7 @@ management:
 
 ### 编码后的 key {#encoded-key}
 
-`{key}` 是**编码后的 key**：Redis key 中 `{keyPrefix}{namespace}:` 之后的部分，即 key 的 `toString()` 或缓存 `keyExpression` 的结果，所以端点适用于任意 key 类型。
+`{key}` 是**编码后的 key**：Redis key 中 `{keyPrefix}v8:{namespace}:` 之后的部分，即 key 的 `toString()` 或缓存 `keyExpression` 的结果，所以端点适用于任意 key 类型。
 
 | 缓存 key | 编码后的 key | 请求 |
 |----------|--------------|------|
@@ -211,7 +211,7 @@ curl -s localhost:8080/actuator/cocache/UserCache/42
 ```json
 {
   "cache": "UserCache",
-  "storageKey": "cocache:UserCache:42",
+  "storageKey": "cocache:v8:UserCache:42",
   "local": { "state": "VALUE", "value": "User(id=42, name=Ada)", "expiresAt": "2026-10-19T08:05:00Z", "refreshAt": null, "expired": false },
   "remote": { "state": "VALUE", "value": "User(id=42, name=Ada)", "ttl": "PT58M", "format": 1, "error": null },
   "invalidationPending": false
@@ -262,7 +262,7 @@ logger 都在 `me.ahoo.cocache` 下。值得告警或放进看板的日志：
 | `WARN` | `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.` | `sharded` 模式下心跳发现了故障切换 |
 | `WARN` | `Invalidation channel[…] - resubscribe failed, retry on next heartbeat.` | 重新订阅失败，下次心跳重试 |
 | `WARN` | `Invalidation channel[…] - subscribe acknowledgement not received in …` | Redis 没有在 `command-timeout` 内确认订阅 |
-| `WARN` | `Ignore malformed invalidation frame on channel[…]` | 有人在 CoCache 的频道上发布了非 CoCache 消息。见[外部失效](./troubleshooting.md#external-invalidation) |
+| `WARN` | `Unreadable invalidation frame on channel[…] - reset subscribers.` | CoCache 的频道上出现了本版本读不懂的帧：有人在那里发布了非 CoCache 消息，或更新的 CoCache 发出了本版本不认识的帧类型。该频道上的每个缓存清空 L2，代价是重新加载。见[外部失效](./troubleshooting.md#external-invalidation) |
 | `WARN` | `Cache[…] - key[…] - remote … failed, degrading.` | Redis 读取、填充、释放或回收失败，本次读取改为回源 |
 | `WARN` | `Cache[…] - key[…] - corrupted payload, reclaim and reload.` | 一个 L1 值无法解码 |
 | `WARN` | `Cache[…] - key[…] - refresh failed.` / `refresh rejected.` | 提前刷新没有执行或失败，值正常到期 |

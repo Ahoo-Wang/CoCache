@@ -35,26 +35,27 @@ import kotlin.concurrent.thread
  */
 class FutureInvalidationChannelTest {
     private val frame = InvalidationFrame.encode(NodeId.random(), listOf("k"))
+    private val keyspace = Keyspace("cocache:", "ns")
 
     @Test
     fun `adapt and asInvalidationChannel forward subscribe and publish`() {
         val listener = mockk<InvalidationListener>()
         val subscription = Subscription { }
         val channel = mockk<FutureInvalidationChannel> {
-            every { subscribe("ns", listener) } returns subscription
-            every { publish("ns", frame) } returns CompletableFuture.completedFuture(null)
+            every { subscribe(keyspace, listener) } returns subscription
+            every { publish(keyspace, frame) } returns CompletableFuture.completedFuture(null)
         }
         val adapted = FutureInvalidationChannel.adapt(channel)
 
-        adapted.subscribe("ns", listener).assert().isSameAs(subscription)
-        Suspending.await { adapted.publish("ns", frame) }
+        adapted.subscribe(keyspace, listener).assert().isSameAs(subscription)
+        Suspending.await { adapted.publish(keyspace, frame) }
         // 扩展函数与 adapt 相同
         val extended = channel.asInvalidationChannel()
-        Suspending.await { extended.publish("ns", frame) }
+        Suspending.await { extended.publish(keyspace, frame) }
         extended.toString().assert().contains("FutureInvalidationChannel.adapt")
 
-        verify(exactly = 1) { channel.subscribe("ns", listener) }
-        verify(exactly = 2) { channel.publish("ns", frame) }
+        verify(exactly = 1) { channel.subscribe(keyspace, listener) }
+        verify(exactly = 2) { channel.publish(keyspace, frame) }
     }
 
     @Test
@@ -62,7 +63,7 @@ class FutureInvalidationChannelTest {
         val future = WatchedFuture().apply { complete(null) }
         val adapted = FutureInvalidationChannel.adapt(channelPublishing(future))
 
-        val started = Started { adapted.publish("ns", frame) }
+        val started = Started { adapted.publish(keyspace, frame) }
 
         started.completedOnStart.assert().isTrue()
         started.outcome().isSuccess.assert().isTrue()
@@ -75,7 +76,7 @@ class FutureInvalidationChannelTest {
         val adapted = FutureInvalidationChannel.adapt(channelPublishing(future))
 
         val started = Started {
-            adapted.publish("ns", frame)
+            adapted.publish(keyspace, frame)
             Thread.currentThread()
         }
         started.completedOnStart.assert().isFalse()
@@ -97,7 +98,7 @@ class FutureInvalidationChannelTest {
         }
         val adapted = FutureInvalidationChannel.adapt(channelPublishing(future))
 
-        val started = Started { adapted.publish("ns", frame) }
+        val started = Started { adapted.publish(keyspace, frame) }
         if (!completedBeforeTheCall) {
             future.completeExceptionally(original)
         }
@@ -108,9 +109,9 @@ class FutureInvalidationChannelTest {
     @Test
     fun `synchronous throw propagates as is`() {
         val original = IllegalArgumentException("bad frame")
-        val channel = mockk<FutureInvalidationChannel> { every { publish("ns", frame) } throws original }
+        val channel = mockk<FutureInvalidationChannel> { every { publish(keyspace, frame) } throws original }
 
-        Started { FutureInvalidationChannel.adapt(channel).publish("ns", frame) }.outcome().exceptionOrNull()
+        Started { FutureInvalidationChannel.adapt(channel).publish(keyspace, frame) }.outcome().exceptionOrNull()
             .assert().isSameAs(original)
     }
 
@@ -124,7 +125,7 @@ class FutureInvalidationChannelTest {
         val channel = channelPublishing(future)
         val adapted = FutureInvalidationChannel.adapt(channel)
 
-        val started = Started { adapted.publish("ns", frame) }
+        val started = Started { adapted.publish(keyspace, frame) }
         if (!cancelledBeforeTheCall) {
             future.cancel(false)
         }
@@ -139,12 +140,12 @@ class FutureInvalidationChannelTest {
     @Test
     fun `synchronous CancellationException fails as a fault, not as a cancellation`() {
         val original = CancellationException("stopped by the channel")
-        val channel = mockk<FutureInvalidationChannel> { every { publish("ns", frame) } throws original }
+        val channel = mockk<FutureInvalidationChannel> { every { publish(keyspace, frame) } throws original }
 
         val failure = Started {
             FutureInvalidationChannel.adapt(
                 channel
-            ).publish("ns", frame)
+            ).publish(keyspace, frame)
         }.outcome().exceptionOrNull()
 
         failure.assert().isExactlyInstanceOf(IllegalStateException::class.java)
@@ -154,12 +155,12 @@ class FutureInvalidationChannelTest {
 
     @Test
     fun `null instead of a future fails with an IllegalStateException naming the operation`() {
-        val channel = mockk<FutureInvalidationChannel> { every { publish("ns", frame) } returns uncheckedNull() }
+        val channel = mockk<FutureInvalidationChannel> { every { publish(keyspace, frame) } returns uncheckedNull() }
 
         val failure = Started {
             FutureInvalidationChannel.adapt(
                 channel
-            ).publish("ns", frame)
+            ).publish(keyspace, frame)
         }.outcome().exceptionOrNull()
 
         failure.assert().isExactlyInstanceOf(IllegalStateException::class.java)
@@ -167,7 +168,7 @@ class FutureInvalidationChannelTest {
     }
 
     private fun channelPublishing(future: CompletableFuture<Void?>): FutureInvalidationChannel = mockk {
-        every { publish("ns", frame) } returns future
+        every { publish(keyspace, frame) } returns future
     }
 
     /**

@@ -42,7 +42,7 @@ internal class SetEngine<K : Any, E : Any>(
     spec: SetCacheSpec<K, E>,
     store: L1Store,
     context: EngineContext,
-) : AbstractEngine<K, Set<E>>(spec.name, spec.namespace, spec.keyPrefix, spec.keyEncoder, spec.policy, store, context),
+) : AbstractEngine<K, Set<E>>(spec.name, spec.keyspace, spec.keyEncoder, spec.policy, store, context),
     SetCache<K, E> {
 
     private val elementCodec = spec.elementCodec

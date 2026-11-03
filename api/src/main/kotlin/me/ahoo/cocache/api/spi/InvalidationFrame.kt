@@ -17,12 +17,24 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 /**
- * 失效消息帧（线格式）：`[版本:1][nodeId:16][count:varint]([len:varint][key UTF-8])*`。
+ * 失效消息帧（线格式，随 M4 冻结）：`[版本:1][nodeId:16][count:varint]([len:varint][key UTF-8])*`。
  *
- * 带长度前缀，对 key 的内容没有任何限制；一条消息可以携带多个 key。
+ * 带长度前缀，对 key 的内容没有任何限制；一条消息可以携带多个 key。`count` 为 0 的帧是存储创建时的频道探测，监听者什么也不做。
+ *
+ * 演进规则（RFC 0005 §4.7，K1、D3）：首字节是帧的版本，也是帧的类型。通道读不懂的帧（未知版本、未知类型、解码失败）
+ * 一律按该频道的 [InvalidationListener.onReset] 处理：清空 L2、递增全部戳，只会多淘汰，不会丢失效。8.x 因此可以新增帧而
+ * 不必两阶段发布：8.0 节点把新帧当作读不懂的帧重置，恰好做了正确的事。
  */
 object InvalidationFrame {
+    /**
+     * 失效帧：携带若干存储 key。
+     */
     const val VERSION: Byte = 1
+
+    /**
+     * 预留的帧版本 2：“namespace 重置”（Q12），帧本身在 8.x 加入。8.0 不发出、也不解码它，按读不懂的帧重置。
+     */
+    const val NAMESPACE_RESET_VERSION: Byte = 2
 
     /**
      * 解码结果。
@@ -44,7 +56,9 @@ object InvalidationFrame {
     }
 
     /**
-     * @throws IllegalArgumentException 版本未知或帧不完整
+     * 解码失效帧。通道捕获 [IllegalArgumentException] 并按读不懂的帧重置订阅者，不丢弃（见类注释）。
+     *
+     * @throws IllegalArgumentException 版本未知（含预留的 [NAMESPACE_RESET_VERSION]）、帧不完整或有尾随字节
      */
     @JvmStatic
     fun decode(frame: ByteArray): Decoded {

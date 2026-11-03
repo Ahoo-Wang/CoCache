@@ -31,6 +31,7 @@ import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -74,7 +75,7 @@ class RedisCommandTimeoutTest {
 
     private fun <T> l1(block: suspend () -> T): T = Suspending.await(block)
 
-    private fun key(name: String) = "cocache:$namespace:$name"
+    private fun key(name: String) = "cocache:v8:$namespace:$name"
 
     private fun token() = Token(node, ++sequence)
 
@@ -127,7 +128,7 @@ class RedisCommandTimeoutTest {
         val client = RedisClient.create(RedisURI.create(proxy.address, proxy.port))
         closeables.add(AutoCloseable { client.shutdown() })
         val backend = RedisBackend.of(client, RedisBackendOptions(commandTimeout = timeout)).closing()
-        val store = backend.store(namespace)
+        val store = backend.store(Keyspace("cocache:", namespace))
         // 先缓存脚本：重放的 EVALSHA 不会得到 NOSCRIPT
         l1 { store.read(key("warm"), null, null, null) }
         return Unwritable(
@@ -177,10 +178,12 @@ class RedisCommandTimeoutTest {
                 clientName = "cocache-tck-" + UUID.randomUUID()
             )
         ).closing()
-        val store = backend.store(namespace)
-        // 启动时的探测（cocache:probe:{a}）没有访问过的主节点：后端还没有到它的节点连接
-        val probeSlot = SlotHash.getSlot("cocache:probe:{a}")
-        val target = masters.first { !it.hasSlot(probeSlot) }
+        val keyspace = Keyspace("cocache:", namespace)
+        val store = backend.store(keyspace)
+        // 启动时的原子广播探测（cocache:v8!probe:{a}）与创建存储时的频道探测（以存储前缀为 KEYS[1]）都没有访问过的主节点：
+        // 后端还没有到它的节点连接（三个主节点中至少剩下一个）
+        val visited = listOf(SlotHash.getSlot(RedisBackend.PROBE_KEY_NAME), SlotHash.getSlot(keyspace.storagePrefix))
+        val target = masters.first { master -> visited.none { master.hasSlot(it) } }
         val keys = generateSequence(0) { it + 1 }
             .map { key("late-$it") }
             .filter { target.hasSlot(SlotHash.getSlot(it)) }
@@ -272,7 +275,7 @@ class RedisCommandTimeoutTest {
         RedisTestSupport.loadScripts(RedisScripts.PUT, RedisScripts.READ)
         val runtime = CacheRuntime.builder().backend(connection.backend).build().closing()
         val cache = runtime.create(cacheSpec<String, String>(namespace) { codec = StringCodec })
-        val key = storageKey.removePrefix("cocache:$namespace:")
+        val key = storageKey.removePrefix("cocache:v8:$namespace:")
         connection.stall().use {
             val caller = fork("interrupted-put") {
                 val failure = runCatching { cache.put(key, "stale") }.exceptionOrNull()
@@ -342,7 +345,7 @@ class RedisCommandTimeoutTest {
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
         ).closing()
-        val store = backend.store(namespace)
+        val store = backend.store(Keyspace("cocache:", namespace))
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.FILL, RedisScripts.RELEASE)
         val warm = key("{fill}warm")
         l1 { store.read(warm, null, null, null) }
@@ -373,7 +376,7 @@ class RedisCommandTimeoutTest {
         val store = connection.backend.l1Store(namespace)
         val keys = connection.keys
         // 令牌由另一个后端取得（被阻断的后端在集群中还没有到这些 key 的节点连接）
-        val direct = RedisTestSupport.backend().closing().store(namespace)
+        val direct = RedisTestSupport.backend().closing().store(Keyspace("cocache:", namespace))
         val tokens = keys.drop(3).associateWith { key ->
             lease().also { l1 { direct.read(key, it, null, null) }.assert().isEqualTo(L1Read.Miss(true)) }.token
         }

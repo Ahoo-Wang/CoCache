@@ -16,6 +16,7 @@ package me.ahoo.cocache.core
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.ForeignFormatMode
@@ -107,6 +108,38 @@ class CacheSpecTest {
         fails { CacheSpec.builder<String, String>(" ").codec(StringCodec).build() }
         fails { CacheSpec.builder<String, String>("user").namespace(" ").codec(StringCodec).build() }
         fails { SetCacheSpec.builder<String, String>("index").build() }
+    }
+
+    /**
+     * 命名空间的字符集为 `[A-Za-z0-9._-]+`（RFC 0005 §4.7，D5）：构建时校验，信息带上缓存名；含 `:` 的给出把前缀移到 keyPrefix 的写法。
+     * 默认的命名空间是缓存名，所以缓存名不符合时同样失败。
+     */
+    @Test
+    fun namespaceOutsideTheCharsetFailsWithTheCacheName() {
+        val error = runCatching {
+            CacheSpec.builder<String, String>("user").namespace("app:user").codec(StringCodec).build()
+        }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessage(
+            "Cache[user] - Namespace[app:user] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': " +
+                "move the prefix into keyPrefix, for example keyPrefix = \"cocache:app:\" and namespace = \"user\"."
+        )
+        error?.cause.assert().isInstanceOf(IllegalArgumentException::class.java)
+        runCatching { cacheSpec<String, String>("user cache") { codec = StringCodec } }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessage("Cache[user cache] - Namespace[user cache] must match [A-Za-z0-9._-]+.")
+        runCatching {
+            setCacheSpec<String, String>(
+                "idx"
+            ) {
+                elementCodec = StringCodec
+                namespace = "a:b"
+            }
+        }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageStartingWith("SetCache[idx] - Namespace[a:b] must match")
+        val spec = CacheSpec.builder<String, String>("user").keyPrefix("app:").codec(StringCodec).build()
+        spec.keyspace.assert().isEqualTo(Keyspace("app:", "user"))
+        spec.keyspace.storagePrefix.assert().isEqualTo("app:v8:user:")
     }
 
     /**

@@ -117,7 +117,7 @@ The L2 hit counter `cocache.hits{level=l2}` is off by default because it slows d
 | Lease | String | key + 36-byte header, while a load runs (at most `lease-ttl`) |
 | Set (`SetCache`) | Hash | key + a `!f` field + one `+{member}` field per member |
 
-Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY USAGE cocache:UserCache:42`. Every value has an expiry (`ttl`, plus or minus `ttl-jitter`) unless the cache uses `ttl-forever` or is a `SetCache`.
+Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY USAGE cocache:v8:UserCache:42`. Every value has an expiry (`ttl`, plus or minus `ttl-jitter`) unless the cache uses `ttl-forever` or is a `SetCache`.
 
 ### Redis traffic {#sizing-traffic}
 
@@ -138,7 +138,7 @@ Some configuration changes are not safe to roll out one instance at a time:
 |--------|---------------|-----------------------------------------------|
 | Policy fields (`ttl`, `local-max-age`, `lease-*`, `load-*`, failure modes, …) | Yes | Each instance applies its own policy |
 | `channel-mode` | L1 yes, L2 no | Instances in different modes don't hear each other. L1 stays correct, but peers' L2 copies can be stale for up to `local-max-age`. Lower `local-max-age` for the switch, or switch every instance at once. |
-| `key-prefix`, `namespace`, or the cache name when the namespace defaults to it | **No** | Old and new instances use different keys and ignore each other's invalidations, so a write on one side leaves the other side stale until `ttl`. Switch every instance at once. A changed namespace also changes the channel. |
+| `key-prefix`, `namespace`, or the cache name when the namespace defaults to it | **No** | Old and new instances use different keys and ignore each other's invalidations, so a write on one side leaves the other side stale until `ttl`. Switch every instance at once. A changed prefix or namespace also changes the channel. |
 | A codec's byte format | Works, but costly | Each side sees the other's values as corrupt, reclaims them, and reloads (`cocache.reclaims`). Prefer a new namespace, or a `decode` that accepts both formats. |
 
 Keys under an old prefix or namespace expire with their `ttl`. Delete them earlier with `redis-cli --scan --pattern 'old-prefix:*' | xargs redis-cli unlink` (run per master in a cluster).
@@ -147,15 +147,15 @@ Keys under an old prefix or namespace expire with their `ttl`. Delete them earli
 
 | What | Format | Example |
 |------|--------|---------|
-| Storage key | `{keyPrefix}{namespace}:{encodedKey}` | `cocache:UserCache:42` |
-| Channel | `cocache:inv:{namespace}` | `cocache:inv:UserCache` |
+| Storage key | `{keyPrefix}v8:{namespace}:{encodedKey}` | `cocache:v8:UserCache:42` |
+| Channel | `{keyPrefix}v8:inv:{namespace}` | `cocache:v8:inv:UserCache` |
 
-`keyPrefix` defaults to `cocache:`, `namespace` to the cache name, and `encodedKey` is the key's `toString()` or its `keyExpression` result. See [storage keys](../guide/caches.md#storage-keys).
+`keyPrefix` defaults to `cocache:` and may be empty, `namespace` defaults to the cache name, and `encodedKey` is the key's `toString()` or its `keyExpression` result. The `v8:` marker keeps 8.x keys and channels apart from 6.x ones (`{keyPrefix}{namespace}:{encodedKey}` and `cocache:inv:{namespace}`), so both versions can share one Redis during a cutover. CoCache's internal keys live under `{keyPrefix}v8!`, which no namespace can produce. See [storage keys](../guide/caches.md#storage-keys).
 
 Several applications can share one Redis:
 
 - **Give each application its own key prefix**, for example `cocache.defaults.key-prefix: ${spring.application.name}:`. Without that, two applications with a cache of the same name read and overwrite each other's values. A cache that you deliberately share between applications needs the same prefix, namespace, codec, and channel mode everywhere.
-- **The channel has no prefix**, and Redis Pub/Sub ignores the database number. Applications whose namespaces coincide receive each other's messages. Each instance only evicts storage keys that match its own, so this costs some extra work, visible in `cocache.invalidations.received`. With different databases but identical prefixes and namespaces, the storage keys match, so messages from the other application evict L2 copies needlessly. Use distinct prefixes or namespaces.
+- **The channel carries the prefix.** Applications with different prefixes never receive each other's messages, even when their namespaces coincide. Redis Pub/Sub ignores the database number, though: applications on different databases with identical prefixes and namespaces share a channel, and messages from the other application evict L2 copies needlessly. Use distinct prefixes.
 
 ## Security {#security}
 
@@ -165,20 +165,22 @@ CoCache needs these permissions on its Redis user:
 
 | Area | Needed |
 |------|--------|
-| Keys | Read and write on your key prefixes (`~cocache:*` by default). Also `~cocache:probe:*` in `pubsub` mode. |
-| Channels | `&cocache:inv:*`. In `pubsub` mode also `&cocache:probe:*`, or the backend falls back to non-atomic broadcast. |
+| Keys | Read and write on your key prefixes (`~cocache:*` by default). In `pubsub` mode also the probe key `cocache:v8!probe:{a}`, which `~cocache:*` already covers. |
+| Channels | `&{keyPrefix}v8:inv:*` for each prefix (`&cocache:v8:inv:*` by default). In `pubsub` mode also `&cocache:v8:probe:*`, or the backend falls back to non-atomic broadcast. |
 | Commands, direct | `EVALSHA`, `EVAL` (fallback after `NOSCRIPT`), `PING` (heartbeat), `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, or in `sharded` mode `SPUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, plus the connection commands (`HELLO`, `AUTH`, `CLIENT`, `SELECT`). `INFO` for the [startup eviction check](#maxmemory-policy) when you use a `SetCache`. |
 | Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HKEYS`, `HGET`, `HSET`, `HDEL`, `HEXISTS`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
 
 A starting point, checked against Redis 7.4 by running every CoCache script as this user:
 
 ```
-ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
+ACL SETUSER cocache on >change-me ~cocache:* &cocache:v8:inv:* &cocache:v8:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
 ```
 
 Since 6.3.0, CoCache reads `SetCache` members with `HKEYS` and `HGET` instead of `HGETALL`. Add both to an existing user before you upgrade. Otherwise set reads fail with an ACL error, worded differently across Redis versions, and stored data isn't touched. Keep `HGETALL`: conditional reclaim and older instances still use it.
 
-With a custom `key-prefix`, replace `~cocache:*` with your prefixes. On Redis Cluster, also allow the commands Lettuce uses for topology discovery (`+cluster|nodes`, `+info`). Set the user on every node: ACLs aren't replicated.
+Creating a cache publishes one empty frame to the cache's channel, the way its writes will. If the ACL denies that channel, creation fails with an `IllegalStateException` that names the pattern to allow, for example `[&cocache:v8:inv:*]`. Otherwise every later write would change Redis and then fail at its broadcast, and other instances would stay stale until `local-max-age`.
+
+With a custom `key-prefix`, replace `~cocache:*` with your prefixes and `&cocache:v8:inv:*` with `&{keyPrefix}v8:inv:*`. In `pubsub` mode, keep `~cocache:v8!probe:*` and `&cocache:v8:probe:*` for the atomic-broadcast probe, which doesn't use the prefix. An empty prefix puts keys under `v8:` and `v8!` and channels under `v8:inv:`: allow `~v8:*`, `~v8!*` and `&v8:inv:*`. On Redis Cluster, also allow the commands Lettuce uses for topology discovery (`+cluster|nodes`, `+info`). Set the user on every node: ACLs aren't replicated.
 
 Denying `PING` is a common mistake. The heartbeat then fails every period, each failure clears every L2, and the health indicator stays `DOWN`.
 

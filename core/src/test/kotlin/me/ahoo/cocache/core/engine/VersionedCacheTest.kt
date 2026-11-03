@@ -26,6 +26,7 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.ForwardingVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
@@ -71,7 +72,7 @@ class VersionedCacheTest {
     }
 
     private fun remote(key: String, name: String = "doc"): L1Read =
-        Suspending.await { memory.store(name).read("cocache:$name:$key", null, null, null) }
+        Suspending.await { memory.store(Keyspace("cocache:", name)).read("cocache:v8:$name:$key", null, null, null) }
 
     private fun remoteVersion(key: String, name: String): Long {
         val hit = remote(key, name) as L1Read.Hit
@@ -316,7 +317,7 @@ class VersionedCacheTest {
     fun payloadCodecAndMemoryStoreEdges() {
         val codec = PayloadCodec(StringCodec)
         codec.decode(codec.encode(Versioned("v", 3))).assert().isEqualTo(Versioned("v", Versioned.NO_VERSION))
-        val store = requireNotNull(memory.store("edges").versioned())
+        val store = requireNotNull(memory.store(Keyspace("cocache:", "edges")).versioned())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         runCatching { Suspending.await { store.putIfNewer("k", Envelope.Members(emptyList()), 1, null, frame) } }
             .exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
@@ -360,7 +361,7 @@ class VersionedCacheTest {
     @Test
     fun storesRefusingPutIfNewerFailUnwrapped() {
         val claiming = object : CoherenceBackend by memory {
-            override fun store(namespace: String): L1Store = object : ForwardingL1Store(memory.store(namespace)) {
+            override fun store(keyspace: Keyspace): L1Store = object : ForwardingL1Store(memory.store(keyspace)) {
                 private val refusing = delegate.versioned()?.let { surface ->
                     object : ForwardingVersionedL1Store(surface) {
                         override suspend fun putIfNewer(

@@ -24,6 +24,7 @@ import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.ForwardingSetL1Store
 import me.ahoo.cocache.api.spi.ForwardingVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Fill
@@ -195,7 +196,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     val puts = AtomicInteger()
     val putAlls = AtomicInteger()
 
-    override fun store(namespace: String): L1Store = HookedStore(delegate.store(namespace))
+    override fun store(keyspace: Keyspace): L1Store = HookedStore(delegate.store(keyspace))
 
     private fun guard(operation: String, fail: Boolean = false) {
         if (failAll || fail) {

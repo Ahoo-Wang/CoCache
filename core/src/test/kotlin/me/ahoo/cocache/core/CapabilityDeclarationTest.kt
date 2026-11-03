@@ -17,6 +17,7 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ConditionalL1Store
 import me.ahoo.cocache.api.spi.ForwardingConditionalL1Store
 import me.ahoo.cocache.api.spi.ForwardingL1Store
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.test.BackendProtocolSpec
@@ -66,7 +67,7 @@ class CapabilityDeclarationTest {
         private val backend: CoherenceBackend,
         private val surface: (ConditionalL1Store?, Int) -> ConditionalL1Store?
     ) : CoherenceBackend by backend {
-        override fun store(namespace: String): L1Store = object : ForwardingL1Store(backend.store(namespace)) {
+        override fun store(keyspace: Keyspace): L1Store = object : ForwardingL1Store(backend.store(keyspace)) {
             private var calls = 0
 
             override fun conditional(): ConditionalL1Store? = surface(delegate.conditional(), calls++)

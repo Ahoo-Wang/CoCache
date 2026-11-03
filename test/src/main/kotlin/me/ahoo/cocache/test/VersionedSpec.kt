@@ -26,6 +26,7 @@ import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
@@ -199,14 +200,14 @@ abstract class VersionedSpec {
 
     protected fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 
-    protected fun storageKey(key: String) = "cocache:$cacheName:$key"
+    protected fun storageKey(key: String) = "cocache:v8:$cacheName:$key"
 
     /**
      * 被测后端的存储（不经钩子）。没有声明 [L1Capability.VERSIONED] 时跳过这个用例（协议用例都先经它取得存储）。
      */
     protected fun store(): L1Store {
         assumeDeclared(L1Capability.VERSIONED)
-        return backend.delegate.store(cacheName)
+        return backend.delegate.store(Keyspace("cocache:", cacheName))
     }
 
     /**

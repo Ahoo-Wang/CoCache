@@ -21,6 +21,7 @@ import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.annotation.CaffeineCache
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.codec.StringCodec
@@ -319,8 +320,8 @@ class AnnotatedCacheTest {
             val backend = context.getBean(CoherenceBackend::class.java)
             val stored = Suspending.await {
                 backend.store(
-                    "UserCache"
-                ).read("app:UserCache:u-1", null, null, null)
+                    Keyspace("app:", "UserCache")
+                ).read("app:v8:UserCache:u-1", null, null, null)
             } as L1Read.Hit
             requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(120))
 
@@ -333,8 +334,8 @@ class AnnotatedCacheTest {
             (
                 Suspending.await {
                     backend.store(
-                        "plain"
-                    ).read("cocache:plain:k", null, null, null)
+                        Keyspace("cocache:", "plain")
+                    ).read("cocache:v8:plain:k", null, null, null)
                 } as L1Read.Hit
                 ).ttl.assert().isNull()
 
@@ -355,8 +356,8 @@ class AnnotatedCacheTest {
             val tags = context.getBean("tags") as TagCache
             tags.add("k", listOf("a"))
             tags["k"].assert().containsExactly("a")
-            val store = context.getBean(CoherenceBackend::class.java).store("tag-ns")
-            val stored = Suspending.await { store.read("t:tag-ns:K", null, null, null) } as L1Read.Hit
+            val store = context.getBean(CoherenceBackend::class.java).store(Keyspace("t:", "tag-ns"))
+            val stored = Suspending.await { store.read("t:v8:tag-ns:K", null, null, null) } as L1Read.Hit
             requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(600))
         }
     }
@@ -368,8 +369,8 @@ class AnnotatedCacheTest {
             .run { context ->
                 assertThat(context).hasNotFailed()
                 context.getBean(UserCache::class.java)["1"]
-                val store = context.getBean(CoherenceBackend::class.java).store("UserCache")
-                val stored = Suspending.await { store.read("app:UserCache:u-1", null, null, null) } as L1Read.Hit
+                val store = context.getBean(CoherenceBackend::class.java).store(Keyspace("app:", "UserCache"))
+                val stored = Suspending.await { store.read("app:v8:UserCache:u-1", null, null, null) } as L1Read.Hit
                 requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(10))
             }
     }

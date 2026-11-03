@@ -19,6 +19,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.L1Read
@@ -85,10 +86,10 @@ open class CoCacheBenchmark {
         cache.put("l1", "l1-value")
         viaInterface = me.ahoo.cocache.core.proxy.CacheProxies.create(BenchCache::class.java, cache)
         // 存储基准测的是 Redis 存储自身（原生挂起的 RedisL1Store，经 awaitBlocking 在调用方线程上等待）
-        store = backend.store("bench-$run")
-        l1Key = "cocache:bench-$run:l1"
+        store = backend.store(Keyspace("cocache:", "bench-$run"))
+        l1Key = "cocache:v8:bench-$run:l1"
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
-        batchKeys = (1..BATCH_SIZE).map { "cocache:bench-$run:batch-$it" }
+        batchKeys = (1..BATCH_SIZE).map { "cocache:v8:bench-$run:batch-$it" }
         batchKeys.forEach {
             awaitBlocking { store.put(it, Envelope.Scalar("batch-value".toByteArray()), Duration.ofMinutes(10), frame) }
         }

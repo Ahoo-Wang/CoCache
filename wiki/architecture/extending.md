@@ -22,14 +22,15 @@ interface CoherenceBackend : AutoCloseable {
     val atomicBroadcast: Boolean            // can a write publish its frame in the same atomic step?
     val format: Int                         // wire format version this implementation writes
     val channel: InvalidationChannel        // Java: FutureInvalidationChannel.adapt(…)
-    fun store(namespace: String): L1Store   // called once per cache; Java: FutureL1Store.adapt(…)
+    fun store(keyspace: Keyspace): L1Store  // once per cache, may block; Java: FutureL1Store.adapt(…)
     override fun close() = Unit
 }
 ```
 
 L1 storage and the invalidation channel are two faces of one object, because the side that serializes a write should also announce it. Connections and threads belong to the backend and close with it: a store has no `close`.
 
-- **`atomicBroadcast`.** If `true`, every write method of the store must publish its `frame` in the same atomic step as the change. If `false`, the engine calls `channel.publish(namespace, frame)` after each successful write. Atomic is better: a crash between write and publish loses the message. Declare only what you can guarantee. The TCK checks both kinds.
+- **`Keyspace`.** `store`, `subscribe` and `publish` take a `Keyspace(keyPrefix, namespace)`. Its `storagePrefix` is `{keyPrefix}v8:{namespace}:`, and its constructor rejects a namespace outside `[A-Za-z0-9._-]+`. Name one channel per keyspace from both parts (the Redis backend uses `{keyPrefix}v8:inv:{namespace}`): two keyspaces with the same namespace and different prefixes must not share a channel. A backend with access control checks in `store` that it may publish on the keyspace's channel, and throws if not, instead of letting every write fail at its broadcast after changing L1. The Redis backend publishes one frame with no keys there.
+- **`atomicBroadcast`.** If `true`, every write method of the store must publish its `frame` in the same atomic step as the change. If `false`, the engine calls `channel.publish(keyspace, frame)` after each successful write. Atomic is better: a crash between write and publish loses the message. Declare only what you can guarantee. The TCK checks both kinds.
 - **`format`.** The engine compares it with `L1Read.Hit.format`: a higher stored format is loaded around and never overwritten, and `0` means content your protocol didn't write, which the engine treats as corrupt. Start at `1`, and bump it only through a two-phase upgrade.
 
 ### `L1Store` {#l1-store}
@@ -139,8 +140,8 @@ public final class MyBackend implements CoherenceBackend {
     private final InvalidationChannel channel = FutureInvalidationChannel.adapt(new MyChannel());
 
     @Override
-    public L1Store store(String namespace) {
-        return FutureL1Store.adapt(new MyStore(namespace));
+    public L1Store store(Keyspace keyspace) {
+        return FutureL1Store.adapt(new MyStore(keyspace));
     }
 
     @Override
@@ -191,8 +192,8 @@ The TCK's `HookedBackend` is built this way.
 
 ```kotlin
 interface InvalidationChannel {
-    fun subscribe(namespace: String, listener: InvalidationListener): Subscription  // blocking, once per cache
-    suspend fun publish(namespace: String, frame: ByteArray)  // called only when atomicBroadcast == false
+    fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription  // blocking, once per cache
+    suspend fun publish(keyspace: Keyspace, frame: ByteArray)  // called only when atomicBroadcast == false
 }
 interface InvalidationListener {
     fun onInvalidated(keys: List<String>, origin: NodeId)
@@ -203,10 +204,10 @@ fun interface Subscription : AutoCloseable
 
 `publish` follows the store's rules on time limits, cancellation and failures. A Java backend implements `FutureInvalidationChannel` and returns `FutureInvalidationChannel.adapt(…)`.
 
-- **Frames.** `frame` is built by the engine with `InvalidationFrame.encode(origin, storageKeys)`. Deliver it to every listener of the namespace, decoded with `InvalidationFrame.decode`. Drop malformed frames. Don't filter by origin: listeners ignore their own `NodeId`.
+- **Frames.** `frame` is built by the engine with `InvalidationFrame.encode(origin, storageKeys)`. Deliver it to every listener of the keyspace, decoded with `InvalidationFrame.decode`. When `decode` rejects a frame (an unknown version, including the reserved `NAMESPACE_RESET_VERSION`, a truncated frame, trailing bytes), call `onReset()` on every listener of that channel instead of dropping it: a dropped frame is a lost invalidation. A frame with no keys is valid; deliver it, and listeners ignore it. Don't filter by origin: listeners ignore their own `NodeId`.
 - **At most once is enough, silence is not.** Call `onReset()` on every listener of a subscription each time it is established or re-established **and confirmed**, and whenever messages may have been lost (a failed heartbeat, a consumer-group rebalance, a gap in a sequence). The listener then clears its L2. Without resets, a lost message leaves L2 stale until `local-max-age`.
 - **Reset before `subscribe` returns.** The first listener's reset must have run when `subscribe` returns, or a late reset clears copies filled after subscribing. Later listeners on an existing subscription get one `onReset()` right away.
-- **Isolation.** Subscribing a new namespace must not reset other namespaces. A listener that throws, even an `Error`, must not keep other listeners from receiving the message or the reset. The Redis and in-memory backends log the failure and go on. While delivering a message they rethrow only a `VirtualMachineError`.
+- **Isolation.** Subscribing a new keyspace must not reset other keyspaces. A listener that throws, even an `Error`, must not keep other listeners from receiving the message or the reset. The Redis and in-memory backends log the failure and go on. While delivering a message they rethrow only a `VirtualMachineError`.
 - **Failure.** If `subscribe` fails, throw and leave no partial registration: the runtime rolls back the cache.
 - Closing the `Subscription` unsubscribes that listener. `close()` only guarantees that messages and resets arriving after it returns are not delivered. A callback already being delivered may reach the listener after `close()` returns, so a listener must tolerate a late callback. The engine's listener does: a late callback only evicts L2 copies.
 
@@ -334,7 +335,7 @@ interface Codec<V> {
 | Function | Contract |
 |----------|----------|
 | `CacheLoader<K, V>` | `load(key)` returns the value, or `null` for "doesn't exist" (stored as a negative entry for `absent-ttl`). `loadAll(keys)` loads a batch, and keys missing from its result are negative. The default calls `load` per key, so override it with one query. Runs on the caller's thread. Must not read its own cache for the same key (that fails fast). Must read the primary, not a lagging replica. |
-| `KeyEncoder<K>` | Turns a key into the string after `{keyPrefix}{namespace}:`. Must be **injective** (distinct keys, distinct strings), deterministic, and identical on every instance and version. The default is `toString()`, which rejects types that don't override it. |
+| `KeyEncoder<K>` | Turns a key into the string after `{keyPrefix}v8:{namespace}:`. Must be **injective** (distinct keys, distinct strings), deterministic, and identical on every instance and version. The default is `toString()`, which rejects types that don't override it. |
 | `AsyncCacheLoader<K, V>` | The asynchronous form of `CacheLoader`: `loadAsync(key)` returns a `CompletionStage`, and completing it with `null` means "doesn't exist". Must return quickly without blocking: it runs on the calling thread or the async executor, without the caller's thread-locals. Bounded by `load-timeout`. See [Async API](../guide/async.md#loader). |
 | `KeyFilter` | `notExist(storageKey)` receives the full storage key. Return `true` only for keys that certainly don't exist: a Bloom filter must contain every existing key. A `true` answer skips Redis and the loader, and caches nothing. Must be a local, non-blocking check: async callers invoke it on their own thread, which may be an event loop. |
 | `TtlFunction<K, V>` (`ttlOf`) | A per-entry lifetime. A non-null result replaces `ttl` and gets no jitter. Clamped to between 1 ms and 100 years. Not applied to negative entries. |

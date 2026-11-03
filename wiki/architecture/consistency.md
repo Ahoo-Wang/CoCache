@@ -164,18 +164,20 @@ The second bump happens whether or not the script succeeded. With a backend that
 
 ## The invalidation channel {#invalidation-channel}
 
-Each instance has one subscription connection and dispatches messages to caches by namespace, on the channel `cocache:inv:{namespace}`. Delivery is **at most once**: a message published while an instance is disconnected, or dropped by an output-buffer limit, is gone. Three mechanisms bound the damage:
+Each instance has one subscription connection and dispatches messages to caches by channel, one per prefix and namespace: `{keyPrefix}v8:inv:{namespace}`. Delivery is **at most once**: a message published while an instance is disconnected, or dropped by an output-buffer limit, is gone. Three mechanisms bound the damage:
 
 1. **Reset on (re)subscription.** When Redis confirms a subscription, every cache on that channel bumps all its stamps and clears its L2. The first subscription waits for that confirmation (up to `command-timeout`), so a reset never lands after the cache starts filling. Lettuce resubscribes after a reconnect, and the confirmation resets again. Adding a cache doesn't reset the others.
 2. **Heartbeat.** The subscription connection is pinged every `heartbeat` (5 s). A failed or slow ping resets every cache and forces a reconnect, so a half-open connection is detected within seconds. In `sharded` mode on Redis Cluster, the heartbeat also checks that each channel is still subscribed on the master that owns its slot, and resubscribes after a failover or slot migration. Until Redis confirms the new subscription, every heartbeat resets the caches on that channel again, as a failed ping does.
 3. **`local-max-age`.** No L2 copy outlives it, whatever happens to messages. It must be finite, and it is the bound when a message is lost without the connection noticing.
+
+A frame the channel can't read (an unknown version, a truncated frame, trailing bytes) resets every cache on that channel, the same as a resubscription. Dropping it would lose an invalidation; resetting only evicts copies. A later 8.x can therefore add frames without a two-phase rollout: version `2` is reserved for a namespace reset, and an 8.0 instance that receives one resets, which is the right thing to do. A frame with no keys is valid and does nothing: each instance publishes one when it creates a cache, to check that it may publish on the channel.
 
 | Mode | Broadcast | Consequence |
 |------|-----------|-------------|
 | `pubsub` (default) | `PUBLISH` inside the write script | The L1 change and the broadcast are one atomic step. No client-side window. |
 | `sharded` | `SPUBLISH` right after the script | A crash between the two loses the message. Peers then serve their L2 copy for up to `local-max-age`. L1 is already correct. |
 
-In `pubsub` mode the backend probes at startup whether a script may publish to a channel in another slot. Where it may not (some managed services, or an ACL), it publishes after the write, like `sharded`. It publishes even when the write fails, because a failed write may have partly taken effect (a `putAll` that spans several slot groups, or a write applied in Redis whose reply was lost). An extra invalidation only evicts copies. See [Deployment](../operations/index.md#channel-mode).
+In `pubsub` mode the backend probes at startup whether a script may publish to a channel in another slot (`cocache:v8!probe:{a}` to `cocache:v8:probe:{b}`). Where it may not (some managed services, or an ACL), it publishes after the write, like `sharded`. It publishes even when the write fails, because a failed write may have partly taken effect (a `putAll` that spans several slot groups, or a write applied in Redis whose reply was lost). An extra invalidation only evicts copies. See [Deployment](../operations/index.md#channel-mode).
 
 ## Read path {#read-path}
 
