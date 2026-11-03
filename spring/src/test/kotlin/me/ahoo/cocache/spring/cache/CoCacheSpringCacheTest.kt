@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.spring.cache
 
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
@@ -25,6 +26,8 @@ import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import org.springframework.boot.test.context.FilteredClassLoader
+import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
@@ -96,6 +99,23 @@ class CoCacheSpringCacheTest {
         database["k"] = "v2"
         cache.evictIfPresent("k").assert().isFalse()
         cache.get("k")?.get().assert().isEqualTo("v2")
+    }
+
+    /**
+     * spring-tx 不在类路径上时不登记：事务结束之后不再失效。
+     */
+    @Test
+    fun afterTransactionIsNoOpWithoutSpringTx() {
+        val withoutSpringTx = FilteredClassLoader(TransactionSynchronizationManager::class.java)
+        val noTransactions = CoCacheSpringCache.afterTransaction(withoutSpringTx)
+
+        @Suppress("UNCHECKED_CAST")
+        val native = requireNotNull(runtime.cache("user")) as Cache<Any, Any>
+        TransactionTemplate(InMemoryTransactionManager()).executeWithoutResult {
+            noTransactions(native, "k")
+            native.put("k", "kept")
+        }
+        native["k"].assert().isEqualTo("kept")
     }
 
     /**

@@ -135,9 +135,6 @@ class TransactionalInvalidator {
          */
         @Suppress("TooGenericExceptionCaught")
         fun invalidateRegistered() {
-            if (flushed) {
-                return
-            }
             for ((cache, keys) in keysByCache) {
                 try {
                     cache.invalidateAll(keys)
