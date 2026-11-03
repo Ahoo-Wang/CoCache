@@ -21,7 +21,7 @@ class ForeignFormatExceptionTest {
     fun messageTellsForeignContentFromADecodingFailure() {
         val foreign = ForeignFormatException("policy", "cocache:policy:p1", 0, null)
         foreign.message.assert().contains("format[0]: not written by CoCache 6, e.g. left by CoCache 5.x")
-        foreign.message.assert().contains("CoCache5Migrator")
+        foreign.message.assert().contains("migrate it with CoCache 6.x (CoCache5Migrator)")
         foreign.cacheName.assert().isEqualTo("policy")
 
         val cause = IllegalArgumentException("bad json")
