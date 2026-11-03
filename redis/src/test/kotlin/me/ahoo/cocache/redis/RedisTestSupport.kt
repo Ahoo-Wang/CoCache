@@ -23,6 +23,10 @@ import io.lettuce.core.ScanCursor
 import io.lettuce.core.api.sync.RedisKeyCommands
 import io.lettuce.core.cluster.RedisClusterClient
 import io.lettuce.core.cluster.models.partitions.RedisClusterNode
+import io.lettuce.core.internal.HostAndPort
+import io.lettuce.core.resource.ClientResources
+import io.lettuce.core.resource.DefaultClientResources
+import io.lettuce.core.resource.MappingSocketAddressResolver
 import java.time.Duration
 
 /**
@@ -163,11 +167,15 @@ object RedisTestSupport {
     }
 
     /**
-     * 连接单机 Redis 的客户端（调用方负责 `shutdown`）。仅限单机。
+     * 连接单机 Redis 的客户端（调用方负责 `shutdown`），[resources] 为 `null` 时自建。仅限单机。
      */
-    fun standaloneClient(): RedisClient {
+    fun standaloneClient(resources: ClientResources? = null): RedisClient {
         check(!isCluster) { "Standalone only" }
-        return RedisClient.create(standaloneUri)
+        return if (resources == null) {
+            RedisClient.create(standaloneUri)
+        } else {
+            RedisClient.create(resources, standaloneUri)
+        }
     }
 
     /**
@@ -226,10 +234,54 @@ object RedisTestSupport {
     }
 
     /**
-     * 暂停所有节点（集群中含从节点）上的客户端命令 [millis] 毫秒：暂停期间发出的命令在服务端排队。
+     * 可以暂停的连接：单机一个 [TcpProxy]，集群每个节点（含从节点）一个，[PausableRedis.resources] 把节点地址映射到代理。
+     * [customize] 追加其它客户端资源选项（如 `nettyCustomizer`）。用于命令超时的用例：只暂停用这些资源连接的客户端，
+     * 不用服务端的 `CLIENT PAUSE`（见 [TcpProxy.pause]）。
      */
-    fun pauseClients(millis: Long) {
-        forEachNode { it.clientPause(millis) }
+    fun pausable(customize: (ClientResources.Builder) -> Unit = {}): PausableRedis {
+        val nodes = clusterNodes
+        val targets = if (nodes == null) {
+            listOf(HostAndPort.of(standaloneUri.host, standaloneUri.port))
+        } else {
+            val client = RedisClusterClient.create(nodes)
+            try {
+                client.connect().use { connection ->
+                    connection.partitions.map { HostAndPort.of(it.uri.host, it.uri.port) }
+                }
+            } finally {
+                client.shutdown()
+            }
+        }
+        return PausableRedis(targets.associate { it.port to TcpProxy(it.hostText, it.port) }, customize)
+    }
+
+    /**
+     * 经 [TcpProxy] 连接 Redis 的客户端资源（[pausable]）：Lettuce 解析节点地址时按端口映射到对应的代理。
+     */
+    class PausableRedis internal constructor(
+        private val proxies: Map<Int, TcpProxy>,
+        customize: (ClientResources.Builder) -> Unit,
+    ) : AutoCloseable {
+        val resources: ClientResources = DefaultClientResources.builder()
+            .socketAddressResolver(
+                MappingSocketAddressResolver.create(
+                    java.util.function.Function<HostAndPort, HostAndPort> { address ->
+                        proxies[address.port]?.let { HostAndPort.of(it.address, it.port) } ?: address
+                    }
+                )
+            )
+            .also(customize)
+            .build()
+
+        /**
+         * 暂停经这些代理的连接 [millis] 毫秒：暂停期间发出的命令已写出，到期后按序到达 Redis 并执行（[TcpProxy.pause]）。
+         */
+        fun pause(millis: Long) = proxies.values.forEach { it.pause(millis) }
+
+        override fun close() {
+            resources.shutdown()
+            proxies.values.forEach { it.close() }
+        }
     }
 
     private fun forEachNode(block: (io.lettuce.core.api.sync.RedisCommands<String, String>) -> Unit) {
