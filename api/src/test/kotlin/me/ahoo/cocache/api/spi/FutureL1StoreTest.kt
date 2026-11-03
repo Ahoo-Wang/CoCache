@@ -247,7 +247,9 @@ class FutureL1StoreTest {
         if (!cancelledBeforeTheCall) {
             source.cancel(false)
         }
-        val original = assertThrows<CancellationException> { source.join() }
+        // future 中保存的取消异常本身：较新的 JDK 上 join 每次抛出新建的 CancellationException
+        val original = source.handle<Throwable> { _, error -> error }.join()
+        original.assert().isInstanceOf(CancellationException::class.java)
 
         val failure = started.outcome().exceptionOrNull()
         failure.assert().isExactlyInstanceOf(IllegalStateException::class.java)

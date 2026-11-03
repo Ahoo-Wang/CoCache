@@ -282,7 +282,7 @@ private suspend fun <T : Any> awaitValue(owner: Any, operation: String, call: ()
 
 /**
  * 调用 [call] 并等待它返回的 future，结果可以是 `null`（Java 实现者可能违反非空声明，因此 future 与结果都按可空处理）。
- * - 已完成的 future 直接取结果，不挂起，也不登记回调。
+ * - 已完成的 future 直接取结果，不挂起；成功时也不登记回调。
  * - 未完成时挂起，经 `whenComplete` 恢复。标准库的 [suspendCoroutine] 不可取消：调用一直等到 future 完成，从不取消它。
  * - 失败时抛出 [failureOf] 的结果。不经 kotlinx 的 `await()`，异常不会在调试模式下被复制。
  */
@@ -317,15 +317,14 @@ private fun <T> start(owner: Any, operation: String, call: () -> CompletableFutu
 }
 
 /**
- * 已完成的 future 的结果。失败时抛出 [failureOf] 的结果：`join` 对被取消的 future 直接抛出 [CancellationException]，
- * 对其它失败抛出 [CompletionException]。
+ * 已完成的 future 的结果。失败时抛出 [failureOf] 的结果，异常取自 future 本身而不是 `join`：较新的 JDK（如 25）上
+ * `join` 对被取消的 future 每次抛出新建的 [CancellationException]，不是 future 中保存的那一个。
  */
-private fun <T> completedResult(future: CompletableFuture<T>, owner: Any, operation: String): T? = try {
-    future.join()
-} catch (e: CompletionException) {
-    throw failureOf(e, owner, operation)
-} catch (e: CancellationException) {
-    throw failureOf(e, owner, operation)
+private fun <T> completedResult(future: CompletableFuture<T>, owner: Any, operation: String): T? {
+    if (future.isCompletedExceptionally) {
+        throw failureOf(future.handle<Throwable> { _, error -> error }.join(), owner, operation)
+    }
+    return future.join()
 }
 
 /**
