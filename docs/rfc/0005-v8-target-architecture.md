@@ -434,7 +434,7 @@ if (!stamps.isValid(storageKey, stamp)) {
   - 内部 key 放在 `{keyPrefix}v8!…`，namespace 产生不了这个位置：默认前缀下，namespace `probe` 或 `meta` 的存储 key 不会与它们相撞。
   - 格式 1 的内容按更高格式处理（见“读不懂的内容”）：6.x 中名为 `v8` 或以 `v8:` 开头的 namespace 与 8.x 的布局相撞时，8.x 不会回收或覆盖 6.x 的值。
   - 下游：namespace 含 `:` 的应用须把前缀移到 `keyPrefix`（CoSec 的全部 spec 用 `keyPrefix("")`、把前缀放在 namespace 中），拷贝工具支持源、目标布局不同（§8）。`keyPrefix` 为空时启动告警：标记出现在 key 的开头，ACL 与按前缀的运维都要相应修改（S4）。
-- 默认前缀仍是 `cocache:`，key 的 ACL 模式 `~cocache:*` 不变；频道的 ACL 改为 `&{keyPrefix}v8:inv:*`（默认即 `&cocache:v8:inv:*`），`pubsub` 模式另加 `&cocache:v8:probe:*`。`keyPrefix` 为空时，key 以 `v8:` 与 `v8!` 开头，频道为 `v8:inv:{namespace}`，ACL 写作 `~v8:*`、`~v8!*` 与 `&v8:inv:*`（S4）。
+- 默认前缀仍是 `cocache:`，key 的 ACL 模式 `~cocache:*` 不变；频道的 ACL 改为 `&{keyPrefix}v8:inv:*`（默认即 `&cocache:v8:inv:*`），`pubsub` 模式另加 `&cocache:v8:probe:*`。`keyPrefix` 为空时，key 以 `v8:` 与 `v8!` 开头，频道为 `v8:inv:{namespace}`，ACL 写作 `~v8:*`、`~v8!*` 与 `&v8:inv:*`（S4）；探测 key 与探测频道是固定的、不随前缀变化，`pubsub` 模式下另加 `~cocache:v8!probe:*` 与 `&cocache:v8:probe:*`，否则原子广播的探测被拒绝、后端退回非原子广播并告警（M4a，#752）。
 - **按存储探测实际频道**（K8，M4）：原子广播的探测发布到固定的探测频道，它不代表带前缀的实际频道，ACL 是否放行实际频道因前缀而异。漏配时每个写脚本都在 `PUBLISH` 处报错，而 Redis 脚本出错不回滚，之前的 `SET` / `DEL` 已经生效，其它节点陈旧到 `localMaxAge`。所以 `store(namespace)` 创建时再向实际频道探测一次：以该前缀下的 key 为 `KEYS[1]`，发布一个零 key 的合法帧（监听者什么也不做）。ACL 拒绝时启动失败，不降级为非原子广播：这是配置错误，不是环境属性。运维文档的 ACL 段落同步修改。
 - `ExternalInvalidator` 与运维文档按新布局构造 key 与频道。
 
