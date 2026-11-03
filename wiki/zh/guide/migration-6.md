@@ -47,61 +47,9 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 
 ### 用 `CoCache5Migrator` 迁移 {#cocache5-migrator}
 
-`CoCache5Migrator`（`cocache-redis` 模块，6.5 起）把 5.x 的 key 转换为 6.x 格式，覆盖 5.x 的全部值格式（5.0 到 5.4 的线格式相同）：
+`CoCache5Migrator`（`cocache-redis` 模块）把 5.x 的 key 转换为 6.x 格式。它覆盖 5.x 的全部值格式（含负缓存），保留每个 key 的剩余寿命。原地覆盖的 key 都会先备份，并提供 `dryRun`、`rollback` 与 `dropBackups`。
 
-| 5.x `CodecExecutor` | Redis 类型 | 6.x 缓存 | 迁移 |
-|---------------------|------------|----------|------|
-| `ObjectToJsonCodecExecutor`（默认）、`StringToStringCodecExecutor` | string | `Cache<K, V>` | `scalar(spec, CoCache5Format.string())`：用 6.x 的编解码器解码 5.x 的字节。`ObjectMapper` 设置相同的 `JacksonCodec`、以及 `StringCodec` 与 5.x 的字节相同；否则用 `string { text -> … }` |
-| `SetToSetCodecExecutor` | set | `SetCache<K, E>` | `set(spec)`：成员用元素编解码器解码再编码 |
-| `SetToSetCodecExecutor` | set | `Cache<K, Set<String>>` | `scalar(spec, CoCache5Format.set { it })` |
-| `MapToHashCodecExecutor`、`ObjectToHashCodecExecutor` | hash | `Cache<K, V>` | `scalar(spec, CoCache5Format.hash { it })`，或 `hash(mapConverter::asValue)` |
-| 负缓存（`_nil_`） | 以上任一 | 6.x 负缓存 | 自动处理。5.x 使用了其它哨兵时设置 `CoCache5MigrationOptions.missingGuardSentinel` |
-
-每个 key 的剩余寿命保持不变，没有寿命的 key 迁移后仍然没有。
-
-```kotlin
-// 与应用声明的 spec 相同（或与其 @CoCache 接口对应的 spec）
-val policySpec = cacheSpec<String, Policy>("PolicyCache") {
-    codec = jacksonCodec<Policy>(objectMapper)
-    policy { ttl = null }
-}
-val indexSpec = setCacheSpec<String, String>("GlobalIndexCache") { elementCodec = StringCodec }
-
-val migrations = listOf(
-    // 5.x 的 key "app:policy:{id}" → 6.x 的 key "cocache:PolicyCache:{id}"
-    CoCache5Migration.scalar(policySpec, CoCache5Format.string()).sourcePrefix("app:policy:").build(),
-    // 一个固定的 5.x key → 6.x SetCache 的 key ""
-    CoCache5Migration.set(indexSpec).sourceKey("app:global-index", "").build(),
-)
-
-CoCache5Migrator.standalone(RedisURI.create("redis://localhost:6379")).use { migrator ->
-    println(migrator.dryRun(migrations))   // 只读取与解码
-    println(migrator.migrate(migrations))  // 所有写入方已停止
-}
-```
-
-- **目标**：`scalar(spec, format)` 与 `set(spec)` 从 6.x 的 spec 取 key 前缀、命名空间与编解码器，迁移结果正是应用读取的格式。传入应用使用的 spec，并应用 `cocache.caches.[name].key-prefix` 等配置。没有 spec 时，用 `scalar(name, codec, format)` 或 `set(name, elementCodec)`，再设置 `keyPrefix(…)` 与 `namespace(…)`。
-- **来源**：默认扫描 5.x 的默认前缀 `cocache:{name}:`。用 `sourcePrefix(…)` 修改前缀，或用 `sourceKey(key, encodedKey)` 列出 key，例如 5.x 的 `KeyConverter` 把缓存映射到固定 key 时。6.x 的 key 是 `{keyPrefix}{namespace}:` 加上去掉前缀的 5.x key；5.x 与 6.x 的 key 编码不同时用 `keyMapper(…)`。
-- **客户端**：`CoCache5Migrator.standalone(uri)`、`cluster(uris)`（扫描全部主节点），或用 `of(client)` 传入自己的 `RedisClient` / `RedisClusterClient`。
-
-步骤：
-
-1. **检查**。对生产 Redis 运行 `dryRun(migrations)`。它只读取，报告 `migrate` 将要做的事，遇到第一个无法解码的 key 即失败。
-2. **停止所有写入方**：写这些 key 的全部 5.x 与 6.x 实例，直到第 4 步。原地写入前会比较 key 的 `DUMP`，key 变了就中止，但无法发现所有并发写入。
-3. **迁移**。`migrate(migrations)` 按缓存返回报告：`read`、`written`（含 `negatives`）、`skipped`（已是 6.x 格式，或期间被删除）、`failed` 与 `backedUp`。遇到第一个无法解码、或 Redis 类型与配置的格式不符的 key 时，以 `CoCache5MigrationException` 中止，异常带有该 key 与到此为止的报告；该 key 保持原样。修正原因后重新执行，已迁移的 key 会被跳过。
-4. **启动 6.x** 并验证。
-5. **删除备份**：`dropBackups(migrations)`。之后不能再回滚。
-
-### 回滚 {#migration-rollback}
-
-`migrate` 保留什么，取决于每个 key 写到哪里：
-
-- **原地**：6.x 的 key 与 5.x 的 key 相同，默认布局即如此。覆盖之前，迁移器用 `RESTORE` 把 5.x 的值复制到 `cocache5-backup:{5.x key}`（`CoCache5MigrationOptions.backupPrefix`），类型、内容与剩余寿命不变。
-- **写到新 key**：例如 5.x 使用了自定义前缀，或给 6.x 的 spec 设置了新的 `keyPrefix`。5.x 的 key 不被改动，它本身就是备份。6.x 的 key 必须事先不存在。
-
-回滚时再次停止所有写入方，调用 `rollback(migrations)`，然后重新部署 5.x。它恢复每个备份（然后删除备份），并删除写到新 key 的 6.x 数据。迁移之后 6.x 写入的数据会丢失。`rollback` 可以重复执行。
-
-默认原地迁移并备份，因为它保持现有的 key 布局，不需要修改配置；备份在 `dropBackups` 之前多占一份数据的内存。要让 5.x 数据完全不被改动，给 6.x 的 spec 设置新的 `keyPrefix`：回滚时只需删除新 key。
+它只在 6.x 中提供（6.5 起），8.0 已删除。在 6.x 版本上停止所有写入方、迁移这些数据，再继续升级。API、迁移步骤与回滚见[本指南的 6.x 版本](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/zh/guide/migration-6.md)。
 
 ## 模块 {#modules}
 

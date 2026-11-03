@@ -15,6 +15,7 @@ description: CoCache 版本发布历史和重要变更。
 - `LoadPolicy.asyncTimeout` 改为 `LoadPolicy.timeout`，配置项 `load-async-timeout` 改为 `load-timeout`（默认 `30s`）。它不再只约束异步加载：等待别的调用方加载的读取，在这次加载进行了这么久之后以 `SourceLoadTimeoutException` 失败，之后的读取开始新的加载，不再排在卡住的同步 loader 后面。6.x 中同步读取会一直等下去。`cocache.load.timeouts` 两种超时都计数。
 - `cocache-core` 在运行时依赖 `kotlinx-coroutines-core`。协议正在改写为一份协程实现，同时服务阻塞、异步与挂起三种 API；两种缓存的读取、提前刷新与写入都已用上它。开启断言（`-ea`，测试时的默认值）时，读取运行期间 kotlinx 会给线程名加上协程后缀（如 ` @coroutine#3`），阻塞的 loader 里也看得到。
 - 运行时不再启动 `cocache-timer` 线程：等待 lease 与等待回源许可都是协程挂起。
+- `cocache-redis` 不再包含 CoCache 5.x 迁移工具：删除了 `CoCache5Migrator`、`CoCache5Migration`、`CoCache5Format`、`CoCache5KeyMapper`、`CoCache5MigrationOptions`、`CoCache5MigrationReport`、`CoCache5CacheReport` 与 `CoCache5MigrationException`（包 `me.ahoo.cocache.redis.migration`）。8.x 不需要读 5.x 的数据，因此不再附带这个转换工具。以 Redis 为唯一副本的 5.x 数据，先用 CoCache 6.x（6.5 起）迁移，见[用 `CoCache5Migrator` 迁移](./migration-6.md#cocache5-migrator)。
 - 回源许可（`load.max-concurrent`）对同步与异步调用方一律按到达顺序交接。6.x 的阻塞调用方直接争用释放出来的许可，可能抢在已在等待的异步调用方之前。
 - `CacheRuntime` 关闭时仍在进行的异步读取以 `IllegalStateException("CacheRuntime closed.")` 失败。仍在进行的异步写入先做完 Redis 修改、广播与本地淘汰：成功时再以这个异常完成，失败时以自己的异常完成。
 

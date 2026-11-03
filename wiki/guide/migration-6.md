@@ -47,61 +47,9 @@ Whole-value writes aren't guarded: `put` and `putAll` (on a `Cache` or a `SetCac
 
 ### Migrating with `CoCache5Migrator` {#cocache5-migrator}
 
-`CoCache5Migrator` (module `cocache-redis`, since 6.5) converts 5.x keys to the 6.x format. It covers every 5.x value format (5.0 to 5.4 share one wire format):
+`CoCache5Migrator` (module `cocache-redis`) converts 5.x keys to the 6.x format. It covers every 5.x value format, negative entries included, and keeps each key's remaining TTL. It backs up every key it overwrites in place, and offers `dryRun`, `rollback` and `dropBackups`.
 
-| 5.x `CodecExecutor` | Redis type | 6.x cache | Migration |
-|---------------------|------------|-----------|-----------|
-| `ObjectToJsonCodecExecutor` (the default), `StringToStringCodecExecutor` | string | `Cache<K, V>` | `scalar(spec, CoCache5Format.string())`: decodes the 5.x bytes with the 6.x codec. The bytes are the same for a `JacksonCodec` with the same `ObjectMapper` settings, and for `StringCodec`. Use `string { text -> … }` otherwise. |
-| `SetToSetCodecExecutor` | set | `SetCache<K, E>` | `set(spec)`: members are decoded and encoded with the element codec |
-| `SetToSetCodecExecutor` | set | `Cache<K, Set<String>>` | `scalar(spec, CoCache5Format.set { it })` |
-| `MapToHashCodecExecutor`, `ObjectToHashCodecExecutor` | hash | `Cache<K, V>` | `scalar(spec, CoCache5Format.hash { it })`, or `hash(mapConverter::asValue)` |
-| Negative entry (`_nil_`) | any of the above | 6.x negative entry | Automatic. Set `CoCache5MigrationOptions.missingGuardSentinel` if 5.x used another sentinel. |
-
-The remaining TTL of every key is kept, and keys without a TTL stay without one.
-
-```kotlin
-// The same specs the application declares (or mirrors of its @CoCache interfaces)
-val policySpec = cacheSpec<String, Policy>("PolicyCache") {
-    codec = jacksonCodec<Policy>(objectMapper)
-    policy { ttl = null }
-}
-val indexSpec = setCacheSpec<String, String>("GlobalIndexCache") { elementCodec = StringCodec }
-
-val migrations = listOf(
-    // 5.x keys "app:policy:{id}" → 6.x keys "cocache:PolicyCache:{id}"
-    CoCache5Migration.scalar(policySpec, CoCache5Format.string()).sourcePrefix("app:policy:").build(),
-    // One fixed 5.x key → the 6.x SetCache key ""
-    CoCache5Migration.set(indexSpec).sourceKey("app:global-index", "").build(),
-)
-
-CoCache5Migrator.standalone(RedisURI.create("redis://localhost:6379")).use { migrator ->
-    println(migrator.dryRun(migrations))   // read and decode only
-    println(migrator.migrate(migrations))  // every writer stopped
-}
-```
-
-- **Target.** `scalar(spec, format)` and `set(spec)` take the key prefix, namespace and codec from the 6.x spec, so the result is exactly what the application reads. Pass the spec the application uses, with any `cocache.caches.[name].key-prefix` applied. Without a spec, use `scalar(name, codec, format)` or `set(name, elementCodec)` with `keyPrefix(…)` and `namespace(…)`.
-- **Source.** By default the migrator scans the 5.x default prefix `cocache:{name}:`. Change it with `sourcePrefix(…)`, or list keys with `sourceKey(key, encodedKey)`, for example when a 5.x `KeyConverter` mapped the cache to fixed keys. The 6.x key is `{keyPrefix}{namespace}:` plus the 5.x key without its prefix. Use `keyMapper(…)` when 5.x and 6.x encode keys differently.
-- **Clients.** `CoCache5Migrator.standalone(uri)`, `cluster(uris)` (scans every primary), or `of(client)` with your own `RedisClient` / `RedisClusterClient`.
-
-Steps:
-
-1. **Check.** Run `dryRun(migrations)` against the production Redis. It only reads, and it reports what `migrate` would do or fails at the first key it can't decode.
-2. **Stop every writer**: all 5.x and 6.x instances that write these keys. Writes must stay stopped until step 4. An in-place write compares the key's `DUMP` first and aborts if the key changed, but it can't catch every concurrent write.
-3. **Migrate.** `migrate(migrations)` returns a report per cache: `read`, `written` (`negatives` included), `skipped` (already in the 6.x format, or deleted meanwhile), `failed`, and `backedUp`. The first key it can't decode, or whose Redis type doesn't match the configured format, aborts with `CoCache5MigrationException`, which carries the key and the report so far. That key is left as it was. Fix the cause and run again: keys already migrated are skipped.
-4. **Start 6.x** and verify.
-5. **Drop the backups** with `dropBackups(migrations)`. After this you can't roll back.
-
-### Rollback {#migration-rollback}
-
-What `migrate` keeps depends on where each key goes:
-
-- **In place**: the 6.x key equals the 5.x key, as with the default layout. Before overwriting, the migrator copies the 5.x value with `RESTORE` to `cocache5-backup:{5.x key}` (`CoCache5MigrationOptions.backupPrefix`), with the same type, content and remaining TTL.
-- **To a new key**: for example a custom 5.x prefix, or a new `keyPrefix` on the 6.x spec. The 5.x key isn't touched, so it is its own backup. The 6.x key must not already exist.
-
-To roll back, stop every writer again, call `rollback(migrations)`, then redeploy 5.x. It restores each backup (then deletes it) and deletes the 6.x keys written to new keys. Data written by 6.x after the migration is lost. `rollback` can be run again.
-
-The default is in place with a backup, because it keeps the key layout you already run and needs no configuration change. The backups cost one extra copy of the data until `dropBackups`. To leave the 5.x data completely untouched, give the 6.x specs a new `keyPrefix`: rollback then only deletes the new keys.
+It ships only in 6.x, from 6.5: 8.0 removed it. Migrate this data on a 6.x release, with every writer stopped, before you upgrade any further. The [6.x version of this guide](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/guide/migration-6.md) documents its API, the migration steps and rollback.
 
 ## Modules {#modules}
 
