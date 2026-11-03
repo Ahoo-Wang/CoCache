@@ -44,8 +44,9 @@ import java.util.concurrent.CompletableFuture
  * - **限时**：每条命令受 `commandTimeout` 限制；超时时尚未写出的脚本命令不再写出（`CommandCall`）。
  * - **批量**：[readAll]、[fillAll] 先发出全部命令再一起等待（共享连接上多路复用，约一次往返）；[putAll]、[invalidate] 按 slot 分组
  *   （Cluster）再按 `invalidateBatchSize` 切分，各组并发执行，全部结束之后才返回或抛出。
- * - **令牌**：取得或交回令牌的命令（读取、回收、填充、释放）结果未知时（[RedisConnections.isNotExecuted] 之外的失败），尽力释放
- *   该令牌：异步发出，不等待。释放与原命令按 key 路由到同一连接、排在它之后；令牌不匹配时释放什么也不做。
+ * - **令牌**（RFC 0005 round 3 K14）：取得或交回令牌的命令（读取、回收、填充、释放）失败时，除非确定未执行
+ *   （[RedisConnections.isNotExecuted]），都尽力释放该令牌：异步发出，不等待；释放失败（含断线期间被拒绝）时按退避重发，
+ *   直到执行或令牌过期（[releaseQuietly]）。令牌不匹配时释放什么也不做，迟到或重连之后才到达都无害。
  * - **取消**：Lettuce 取消的命令（连接重置、关闭）以结果未知的 [io.lettuce.core.RedisException] 失败，从不以 `CancellationException` 报告。
  *
  * 提供全部三个能力面：条件读写、按版本有序的写入（[RedisScripts.PUT_IF_NEWER]，一次往返）与集合成员的增删。
@@ -61,10 +62,21 @@ internal class RedisL1Store(
     private val versioned = VersionedFacet()
     private val sets = SetFacet()
 
+    /**
+     * 失败时（确定未执行除外）释放这次请求的 lease 与刷新令牌：读脚本可能已执行、授予了它们，调用方却拿不到结果。
+     * 解码失败同样释放：命令已执行。
+     */
+    @Suppress("TooGenericExceptionCaught")
     override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
         val command = readCommand(key, lease, refresh)
-        return releasingOnFailure(key, lease?.token, refresh?.token) {
-            RedisRemoteStore.decodeRead(connections.awaitCommand(command))
+        try {
+            return RedisRemoteStore.decodeRead(connections.awaitCommand(command))
+        } catch (e: RuntimeException) {
+            if (!RedisConnections.isNotExecuted(e)) {
+                lease?.let { releaseQuietly(key, it.token, it.ttl) }
+                refresh?.let { releaseQuietly(key, it.token, it.tokenTtl) }
+            }
+            throw e
         }
     }
 
@@ -78,15 +90,16 @@ internal class RedisL1Store(
             return emptyMap()
         }
         // 重复的 key 只读一次：否则第二次读到的是第一次取得的 lease，第一次的令牌无人交回
-        val distinct = keys as? Set<String> ?: LinkedHashSet(keys)
-        val outcomes = connections.awaitCommands(distinct.map { readCommand(it, leases[it], null) })
+        val distinct = if (keys is Set<String>) keys.toList() else keys.distinct()
+        val sent = sendAll(distinct.size) { readCommand(distinct[it], leases[distinct[it]], null) }
         val reads = LinkedHashMap<String, RemoteRead>(distinct.size)
-        var failure: Throwable? = null
-        distinct.forEachIndexed { index, key ->
+        var failure: Throwable? = sent.refused
+        sent.outcomes.forEachIndexed { index, outcome ->
+            val key = distinct[index]
             try {
-                reads[key] = RedisRemoteStore.decodeRead(outcomes[index].getOrThrow())
+                reads[key] = RedisRemoteStore.decodeRead(outcome.getOrThrow())
             } catch (e: RuntimeException) {
-                releaseIfUnknown(key, leases[key]?.token, null, e)
+                leases[key]?.let { releaseUnlessNotExecuted(key, it.token, it.ttl, e) }
                 failure = failure.suppressing(e)
             }
         }
@@ -94,7 +107,7 @@ internal class RedisL1Store(
         reads.forEach { (key, read) ->
             val lease = leases[key]
             if (read is RemoteRead.Miss && read.leaseGranted && lease != null) {
-                releaseQuietly(key, lease.token)
+                releaseQuietly(key, lease.token, lease.ttl)
             }
         }
         throw error
@@ -116,7 +129,7 @@ internal class RedisL1Store(
      */
     override suspend fun fill(fill: Fill): Boolean {
         val command = fillCommand(fill)
-        return releasingOnFailure(fill.key, fill.token, null) { connections.awaitCommand(command).firstFlag() }
+        return releasingOnFailure(fill.key, fill.token) { connections.awaitCommand(command).firstFlag() }
     }
 
     /**
@@ -128,14 +141,15 @@ internal class RedisL1Store(
         if (fills.isEmpty()) {
             return emptyList()
         }
-        val outcomes = connections.awaitCommands(fills.map { fillCommand(it) })
+        val sent = sendAll(fills.size) { fillCommand(fills[it]) }
         val filled = ArrayList<Boolean>(fills.size)
-        var failure: Throwable? = null
-        fills.forEachIndexed { index, fill ->
+        var failure: Throwable? = sent.refused
+        sent.outcomes.forEachIndexed { index, outcome ->
+            val fill = fills[index]
             try {
-                filled.add(outcomes[index].getOrThrow().firstFlag())
+                filled.add(outcome.getOrThrow().firstFlag())
             } catch (e: RuntimeException) {
-                releaseIfUnknown(fill.key, fill.token, null, e)
+                releaseUnlessNotExecuted(fill.key, fill.token, null, e)
                 failure = failure.suppressing(e)
             }
         }
@@ -158,19 +172,25 @@ internal class RedisL1Store(
      */
     override suspend fun release(key: String, token: Token) {
         val command = releaseCommand(key, token)
-        releasingOnFailure(key, token, null) { connections.awaitCommand(command) }
+        releasingOnFailure(key, token) { connections.awaitCommand(command) }
     }
 
     private fun releaseCommand(key: String, token: Token): CompletableFuture<List<Any?>> =
         connections.evalAsync(RedisScripts.RELEASE, listOf(key.bytes()), listOf(token.toBytes()))
 
     /**
-     * 回收成功时取得 lease：结果未知时与读取一样尽力释放。
+     * 回收成功时取得 lease：失败时（确定未执行除外）与读取一样尽力释放。
      */
+    @Suppress("TooGenericExceptionCaught")
     override suspend fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {
         val args = listOf(observed.toString().bytes(), lease.token.toBytes(), millis(lease.ttl))
         val command = connections.evalAsync<List<Any?>>(RedisScripts.RECLAIM, listOf(key.bytes()), args)
-        return releasingOnFailure(key, lease.token, null) { connections.awaitCommand(command).firstFlag() }
+        try {
+            return connections.awaitCommand(command).firstFlag()
+        } catch (e: RuntimeException) {
+            releaseUnlessNotExecuted(key, lease.token, lease.ttl, e)
+            throw e
+        }
     }
 
     override suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
@@ -194,7 +214,8 @@ internal class RedisL1Store(
         val keyBytes = byKey.values.map { put -> put.key.bytes().also { putOf[it] = put } }
         val groups = groupsOf(keyBytes)
         val frames = framesOf(byKey.keys, frame, groups)
-        val commands = groups.mapIndexed { index, group ->
+        val sent = sendAll(groups.size) { index ->
+            val group = groups[index]
             val args = ArrayList<ByteArray>()
             args.add(channel)
             args.add(frames[index])
@@ -207,16 +228,16 @@ internal class RedisL1Store(
             }
             connections.evalAsync<List<Any?>>(RedisScripts.PUT_ALL, group, args)
         }
-        throwFirstFailure(connections.awaitCommands(commands))
+        throwFirstFailure(sent)
     }
 
     override suspend fun invalidate(keys: Collection<String>, frame: ByteArray) {
         val groups = groupsOf(keys.map { it.bytes() })
         val frames = framesOf(keys, frame, groups)
-        val commands = groups.mapIndexed { index, group ->
-            connections.evalAsync<List<Any?>>(RedisScripts.INVALIDATE, group, listOf(channel, frames[index]))
+        val sent = sendAll(groups.size) { index ->
+            connections.evalAsync<List<Any?>>(RedisScripts.INVALIDATE, groups[index], listOf(channel, frames[index]))
         }
-        throwFirstFailure(connections.awaitCommands(commands))
+        throwFirstFailure(sent)
     }
 
     private fun groupsOf(keys: List<ByteArray>): List<List<ByteArray>> =
@@ -229,13 +250,38 @@ internal class RedisL1Store(
      * 例外是命令超时：放弃等待时，已写出的命令可能仍在 Redis 端执行，失败后补发的广播可能先于它生效，此时其它节点的旧副本由
      * `localMaxAge` 兜底。各组并发发出、各自限时，失败路径上的等待约为一个 `commandTimeout`。
      */
-    private fun throwFirstFailure(outcomes: List<Result<*>>) {
+    private fun throwFirstFailure(sent: Sent<*>) {
         var failure: Throwable? = null
-        outcomes.forEach { outcome ->
+        sent.outcomes.forEach { outcome ->
             outcome.exceptionOrNull()?.let { failure = failure.suppressing(it) }
         }
+        sent.refused?.let { failure = failure.suppressing(it) }
         failure?.let { throw it }
     }
+
+    /**
+     * 依次发出 [count] 条命令（[send]），再一起等待已发出的全部结束（[RedisConnections.awaitCommands]，约一次往返）。
+     * 某条发出时同步失败（确定未执行）就不再发出其后的命令，但仍等已发出的结束：调用方照常处理它们（释放取得的令牌），
+     * 写入方法返回或抛出时它发出的全部命令都已结束。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun <T> sendAll(count: Int, send: (Int) -> CompletableFuture<T>): Sent<T> {
+        val commands = ArrayList<CompletableFuture<T>>(count)
+        var refused: RuntimeException? = null
+        try {
+            for (index in 0 until count) {
+                commands.add(send(index))
+            }
+        } catch (e: RuntimeException) {
+            refused = e
+        }
+        return Sent(connections.awaitCommands(commands), refused)
+    }
+
+    /**
+     * [sendAll] 的结果：已发出的命令按发出顺序的结果，以及发出时同步失败的那一条的异常（没有时为 `null`）。
+     */
+    private class Sent<T>(val outcomes: List<Result<T>>, val refused: RuntimeException?)
 
     /**
      * 每组脚本只广播本组的 key（同一发布者），避免 N 个 key 分成多组时每组都重复广播全部 key（O(N²)）。
@@ -269,46 +315,63 @@ internal class RedisL1Store(
     override fun sets(): SetL1Store = sets
 
     /**
-     * 执行取得或交回令牌的步骤 [block]（等待命令并解码结果）；失败时结果未知（[releaseIfUnknown]）则尽力释放 [first]、[second]，再原样抛出。
-     * 解码失败同样释放：命令已执行，令牌可能已授予。
+     * 执行交回令牌的步骤 [block]（填充、释放：等待命令并解码结果）；失败时（确定未执行除外）尽力释放 [token]，再原样抛出。
+     * 令牌的寿命不在请求中，按 [UNKNOWN_TOKEN_LIFETIME] 重发。
      */
     @Suppress("TooGenericExceptionCaught")
-    private inline fun <T> releasingOnFailure(key: String, first: Token?, second: Token?, block: () -> T): T {
+    private inline fun <T> releasingOnFailure(key: String, token: Token, block: () -> T): T {
         try {
             return block()
         } catch (e: RuntimeException) {
-            releaseIfUnknown(key, first, second, e)
+            releaseUnlessNotExecuted(key, token, null, e)
             throw e
         }
     }
 
     /**
-     * 结果未知时（[RedisConnections.isNotExecuted] 之外的失败）尽力释放令牌：命令可能已在 Redis 端执行（读取、回收授予了 lease 或刷新令牌），
-     * 也可能被取消、永远不会执行（fill 没有写出，lease 仍在；释放没有写出），调用方随后都不会再交回这些令牌，lease 留到 `lease.ttl`，
-     * 全集群对该 key 的未命中都要先等 `lease.wait`。确定未执行时不释放：命令被拒绝时释放同样会被拒绝，lease 由 `lease.ttl` 回收。
+     * 取得或交回令牌的命令以 [error] 失败：除非确定未执行（[RedisConnections.isNotExecuted]：写出之前就被拒绝，不会取得令牌），
+     * 尽力释放 [token]。命令可能已在 Redis 端执行（读取、回收授予了 lease 或刷新令牌），也可能被取消、永远不会执行
+     * （fill 没有写出，lease 仍在），调用方随后都不会再交回这个令牌；否则 lease 留到 `lease.ttl`，全集群对该 key 的未命中都要先等 `lease.wait`。
      */
-    private fun releaseIfUnknown(key: String, first: Token?, second: Token?, error: Throwable) {
-        if ((first == null && second == null) || RedisConnections.isNotExecuted(error)) {
-            return
+    private fun releaseUnlessNotExecuted(key: String, token: Token, lifetime: Duration?, error: Throwable) {
+        if (!RedisConnections.isNotExecuted(error)) {
+            releaseQuietly(key, token, lifetime)
         }
-        first?.let { releaseQuietly(key, it) }
-        second?.let { releaseQuietly(key, it) }
     }
 
     /**
-     * 尽力释放令牌：异步发出，不等待；失败只记录，lease 最终由 `lease.ttl` 回收。发出时同步失败（如客户端资源已关闭）同样只记录：
+     * 尽力释放令牌：异步发出，不等待（RFC 0005 round 3 K14）。释放失败时（含断线期间被拒绝）在时间轮上按退避重发
+     * （[MIN_RELEASE_BACKOFF] 起倍增，至多 [MAX_RELEASE_BACKOFF]），直到执行、过了令牌的寿命 [lifetime]（`null` 为 [UNKNOWN_TOKEN_LIFETIME]，
+     * 之后令牌已失效）或连接已关闭：断线期间被拒绝的释放因此在重连之后到达，lease 不必等到 `lease.ttl`。令牌不匹配时释放什么也不做，
+     * 迟到、重复或重连之后才到达都无害。放弃时记录告警，lease 最终由 `lease.ttl` 回收。
+     */
+    private fun releaseQuietly(key: String, token: Token, lifetime: Duration?) {
+        val deadline = System.nanoTime() + (lifetime ?: UNKNOWN_TOKEN_LIFETIME).toNanos()
+        sendRelease(key, token, deadline, MIN_RELEASE_BACKOFF)
+    }
+
+    /**
+     * 发出一次释放（受 `commandTimeout` 限制）；失败时安排下一次。发出时同步失败（如客户端资源已关闭）只记录：
      * 调用方抛出的必须是原来的失败，批量读取也要继续处理其余的 key。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun releaseQuietly(key: String, token: Token) {
+    private fun sendRelease(key: String, token: Token, deadline: Long, backoff: Duration) {
         val release = try {
-            releaseCommand(key, token)
+            connections.bounded(releaseCommand(key, token))
         } catch (e: RuntimeException) {
             log.warn(e) { "Release token of key[$key] failed - reclaimed after lease ttl." }
             return
         }
         release.whenComplete { _, error ->
-            if (error != null) {
+            if (error == null) {
+                return@whenComplete
+            }
+            val next = backoff.multipliedBy(2).coerceAtMost(MAX_RELEASE_BACKOFF)
+            val retrying = deadline - System.nanoTime() > backoff.toNanos() &&
+                connections.schedule(backoff) { sendRelease(key, token, deadline, next) }
+            if (retrying) {
+                log.debug(error) { "Release token of key[$key] failed - retry in $backoff." }
+            } else {
                 log.warn(error) { "Release token of key[$key] failed - reclaimed after lease ttl." }
             }
         }
@@ -407,6 +470,17 @@ internal class RedisL1Store(
         private val SHAPE_VALUE = byteArrayOf(STATE_VALUE)
         private val SHAPE_MISSING = byteArrayOf(STATE_MISSING)
         private val SHAPE_SET = byteArrayOf('S'.code.toByte())
+
+        /**
+         * 重发释放的退避：首次重发的间隔与上限。
+         */
+        private val MIN_RELEASE_BACKOFF = Duration.ofMillis(100)
+        private val MAX_RELEASE_BACKOFF = Duration.ofSeconds(2)
+
+        /**
+         * 请求中没有寿命的令牌（填充、释放交回的 lease）重发释放的时限：长于默认的 `lease.ttl`（10 s），过期之后的释放只是空操作。
+         */
+        private val UNKNOWN_TOKEN_LIFETIME = Duration.ofMinutes(1)
 
         /**
          * [first] 为空时就是 [error]；否则把 [error] 附为它的 suppressed 并返回它。同一个异常可能完成多条命令

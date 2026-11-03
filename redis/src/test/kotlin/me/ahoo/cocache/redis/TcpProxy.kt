@@ -27,6 +27,7 @@ import kotlin.concurrent.thread
  * 恢复后照常转发。[stall] 模拟建立缓慢的连接：新连接被接受但暂不转发（客户端的握手等待应答），恢复后才开始转发。
  * [cut] 期间客户端的重连握手立即失败，Lettuce 随后让新命令以该连接错误快速失败；[stall] 期间重连停在握手上，断线期间的命令被缓冲。
  * [pause] 模拟只作用于经本代理的连接的 `CLIENT PAUSE`：客户端发出的命令已写出，到期后才到达 Redis。
+ * [dropReplies] 模拟命令已执行、应答在途中丢失。
  *
  * 断线期间监听端口始终保持绑定：若关闭后在同一端口重新监听，端口空闲的间隙可能被本机任一出站连接取作临时端口，
  * 恢复时 `bind` 以 `Address already in use` 失败（CI 上偶发）。
@@ -44,6 +45,12 @@ class TcpProxy(private val targetHost: String, private val targetPort: Int) : Au
      */
     @Volatile
     private var pausedUntil = System.nanoTime()
+
+    /**
+     * 为 `true` 时 Redis 发回的数据读入后丢弃（[dropReplies]）。
+     */
+    @Volatile
+    private var droppingReplies = false
 
     val port: Int = server.localPort
 
@@ -101,6 +108,8 @@ class TcpProxy(private val targetHost: String, private val targetPort: Int) : Au
                 }
                 if (pausable) {
                     awaitResume()
+                } else if (droppingReplies) {
+                    continue
                 }
                 output.write(buffer, 0, read)
             }
@@ -168,6 +177,15 @@ class TcpProxy(private val targetHost: String, private val targetPort: Int) : Au
                 pausedUntil = until
             }
         }
+    }
+
+    /**
+     * 丢弃 Redis 发回的数据（命令照常到达、执行，应答不到达客户端），关闭返回值即恢复转发。丢弃之后的连接上应答已不完整，
+     * 用例随后应断开它（[cut]）。
+     */
+    fun dropReplies(): AutoCloseable {
+        droppingReplies = true
+        return AutoCloseable { droppingReplies = false }
     }
 
     private fun awaitResume() {

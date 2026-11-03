@@ -443,6 +443,33 @@ class RedisL1StoreTest {
     }
 
     /**
+     * 命令已写出并执行、应答丢失之后断线（RFC 0005 round 3 K14）：Lettuce 以 `Connection disconnected` 排空在途的读取，结果未知。
+     * 存储释放这次读取取得的 lease；断线期间释放被拒绝（`REJECT_COMMANDS`），按退避重发，重连之后到达：lease 在 `lease.ttl`（1 分钟）
+     * 之前就被收回。仅限单机（经 [TcpProxy]）。
+     */
+    @Test
+    fun leaseTakenByAReadWhoseReplyWasLostIsReleasedAfterReconnecting() {
+        assumeFalse(RedisTestSupport.isCluster)
+        val proxy = RedisTestSupport.proxy().closing()
+        val store = RedisTestSupport.proxiedBackend(proxy).closing().l1Store(namespace)
+        val a = key("a")
+        RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RELEASE)
+        run { store.read(key("warm"), null, null) }
+        RedisTestSupport.withCommands { commands ->
+            val lost = proxy.dropReplies()
+            val call = caller.start { store.read(a, LeaseRequest(token(), Duration.ofMinutes(1)), null) }
+            awaitCondition("the read placed its lease") { commands.exists(a) == 1L }
+            val cut = proxy.cut()
+            val failure = call.failure()
+            failure.assert().isInstanceOf(RedisException::class.java)
+            RedisConnections.isNotExecuted(requireNotNull(failure)).assert().isFalse()
+            lost.close()
+            cut.close()
+            awaitCondition("the lease released after reconnecting") { commands.exists(a) == 0L }
+        }
+    }
+
+    /**
      * 记录写出的命令的首个 key（插在 Lettuce 的 `CommandHandler` 之前，同 [RedisCommandTimeoutTest]）：记录到的命令必然发往 Redis。
      */
     private class WrittenCommands : NettyCustomizer {

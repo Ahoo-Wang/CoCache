@@ -89,6 +89,9 @@ internal class RedisConnections(
      */
     private val timer: Timer = client.resources.timer()
 
+    @Volatile
+    private var closed = false
+
     /**
      * 异步执行脚本：EVALSHA，遇到 NOSCRIPT（故障切换、重启、resharding 后脚本缓存丢失）时改用 EVAL（会重新缓存）。
      *
@@ -360,7 +363,29 @@ internal class RedisConnections(
         return keys.groupBy { SlotHash.getSlot(it) }.values
     }
 
+    /**
+     * 在 [delay] 之后于客户端资源的时间轮线程上执行 [task]（[RedisL1Store] 重发失败的释放）。连接已关闭或时间轮已停止时不安排，
+     * 返回 `false`；安排之后连接才关闭的，到期时不再执行。
+     */
+    fun schedule(delay: Duration, task: () -> Unit): Boolean {
+        if (closed) {
+            return false
+        }
+        return try {
+            timer.newTimeout({
+                if (!closed) {
+                    task()
+                }
+            }, delay.toNanos(), TimeUnit.NANOSECONDS)
+            true
+        } catch (_: IllegalStateException) {
+            // 时间轮已停止：客户端资源已关闭
+            false
+        }
+    }
+
     override fun close() {
+        closed = true
         pubSub.close()
         connection.close()
     }

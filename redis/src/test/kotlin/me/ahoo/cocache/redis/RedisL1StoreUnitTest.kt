@@ -21,10 +21,14 @@ import io.lettuce.core.RedisException
 import io.lettuce.core.api.StatefulRedisConnection
 import io.lettuce.core.codec.ByteArrayCodec
 import io.lettuce.core.protocol.RedisCommand
+import io.lettuce.core.resource.ClientResources
 import io.mockk.every
 import io.mockk.mockk
 import io.netty.buffer.ByteBufUtil
 import io.netty.buffer.Unpooled
+import io.netty.util.Timeout
+import io.netty.util.Timer
+import io.netty.util.TimerTask
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -44,12 +48,14 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
 
 /**
  * [RedisL1Store] 在 Lettuce 命令的各种完成方式下的行为：模拟的连接记录 `dispatch` 收到的命令，用例逐条完成它们。
- * Lettuce 取消的命令按 L1 故障报告、确定未执行与结果未知时的令牌释放、同一个异常完成多条命令、批量写入等全部组结束再抛出、解码失败。
+ * Lettuce 取消的命令按 L1 故障报告、确定未执行之外的失败释放令牌（失败的释放按退避重发）、同一个异常完成多条命令、
+ * 批量等已发出的命令全部结束再抛出（含发出时同步失败）、解码失败。
  */
 class RedisL1StoreUnitTest {
     private val node = NodeId.random()
@@ -58,23 +64,30 @@ class RedisL1StoreUnitTest {
     private val caller = CallerDispatcher()
 
     /**
-     * 非空时，发出释放的 `dispatch` 同步抛出它（如客户端资源已关闭时 Lettuce 的命令计时被拒绝）。
+     * 返回非空时，`dispatch` 同步抛出它而不发出命令（如客户端资源已关闭时 Lettuce 的命令计时被拒绝）。
      */
     @Volatile
-    private var refusedReleases: RuntimeException? = null
+    private var refuse: (RedisCommand<*, *, *>) -> RuntimeException? = { null }
+
+    /**
+     * 客户端资源的时间轮：用例逐个执行安排的任务（重发释放）。
+     */
+    private val timer = ManualTimer()
     private val connections: RedisConnections
 
     init {
         val commands = mockk<StatefulRedisConnection<ByteArray, ByteArray>>(relaxed = true)
         every { commands.dispatch(any<RedisCommand<ByteArray, ByteArray, Any>>()) } answers {
             val command = firstArg<RedisCommand<ByteArray, ByteArray, Any>>()
-            refusedReleases?.takeIf { command.script == "RELEASE" }?.let { throw it }
+            refuse(command)?.let { throw it }
             command.also { dispatched.add(it) }
         }
         val client = mockk<RedisClient>()
         every { client.connect(ByteArrayCodec.INSTANCE) } returns commands
         every { client.connectPubSub(ByteArrayCodec.INSTANCE) } returns mockk(relaxed = true)
-        every { client.resources } returns mockk(relaxed = true)
+        val resources = mockk<ClientResources>(relaxed = true)
+        every { resources.timer() } returns timer
+        every { client.resources } returns resources
         // 由客户端计时：后端不另外计时，用例决定每条命令何时、如何完成
         connections = RedisConnections(client, Duration.ofSeconds(1), CommandTimeouts.CLIENT)
     }
@@ -130,6 +143,19 @@ class RedisL1StoreUnitTest {
      * 释放（RELEASE 脚本）发往的 key。
      */
     private fun released(): List<String> = dispatched.filter { it.script == "RELEASE" }.map { it.key }
+
+    private fun lastRelease(): RedisCommand<ByteArray, ByteArray, *> = dispatched.last { it.script == "RELEASE" }
+
+    /**
+     * 以 [lease] 读取 `k`，读取以结果未知的失败结束：存储随即发出第一次释放。
+     */
+    private fun failedReadWithLease(store: RedisL1Store, lease: LeaseRequest) {
+        dispatched.clear()
+        val call = started(1) { store.read("k", lease, null) }
+        dispatched.single().completeExceptionally(RedisException("Connection disconnected"))
+        call.failure().assert().isInstanceOf(RedisException::class.java)
+        released().assert().containsExactly("k")
+    }
 
     /**
      * Lettuce 取消的命令（连接重置时取消应答栈中的命令）：以结果未知的 [RedisException] 失败，cause 是原来的取消；
@@ -228,13 +254,116 @@ class RedisL1StoreUnitTest {
     @Test
     fun releaseThatCannotBeSentKeepsTheOriginalFailure() {
         val store = store()
-        refusedReleases = RejectedExecutionException("event executor terminated")
+        val terminated = RejectedExecutionException("event executor terminated")
+        refuse = { command -> terminated.takeIf { command.script == "RELEASE" } }
         val call = started(2) { store.readAll(listOf("a", "b"), mapOf("a" to lease(), "b" to lease())) }
         val first = RedisException("Connection disconnected")
         dispatched[0].completeExceptionally(first)
         dispatched[1].reply(listOf(0L, 1L))
         call.failure().assert().isSameAs(first)
         dispatched.size.assert().isEqualTo(2)
+    }
+
+    /**
+     * 释放失败（这里是断线期间被拒绝）时在时间轮上按退避重发，直到执行（RFC 0005 round 3 K14）：重连之后才到达的释放收回 lease，
+     * 不必等到 `lease.ttl`。退避从 100 ms 起倍增，至多 2 s；执行之后不再重发。
+     */
+    @Test
+    fun failedReleaseIsResentWithBackoffUntilItRuns() {
+        val store = store()
+        failedReadWithLease(store, lease())
+        val rejected = RedisException("Currently not connected. Commands are rejected.")
+        val delays = List(7) {
+            lastRelease().completeExceptionally(rejected)
+            timer.runNext()
+        }
+        delays.assert().containsExactly(100L, 200L, 400L, 800L, 1600L, 2000L, 2000L)
+        released().size.assert().isEqualTo(8)
+        lastRelease().reply(listOf(1L))
+        timer.pending.assert().isEmpty()
+    }
+
+    /**
+     * 过了令牌的寿命不再重发：令牌已失效，释放只是空操作。
+     */
+    @Test
+    fun releaseIsNotResentAfterTheTokenExpires() {
+        val store = store()
+        failedReadWithLease(store, LeaseRequest(token(), Duration.ofMillis(1)))
+        lastRelease().completeExceptionally(RedisException("Currently not connected. Commands are rejected."))
+        timer.pending.assert().isEmpty()
+    }
+
+    /**
+     * 连接关闭或时间轮停止之后不再重发；已安排的重发在连接关闭之后到期时什么也不做。
+     */
+    @Test
+    fun releaseIsNotResentOnceTheConnectionsAreClosed() {
+        val store = store()
+        val rejected = RedisException("Currently not connected. Commands are rejected.")
+        failedReadWithLease(store, lease())
+        lastRelease().completeExceptionally(rejected)
+        timer.pending.size.assert().isEqualTo(1)
+        connections.close()
+        timer.runNext()
+        released().size.assert().isEqualTo(1)
+        // 关闭之后失败的释放不再安排
+        failedReadWithLease(store, lease())
+        lastRelease().completeExceptionally(rejected)
+        timer.pending.assert().isEmpty()
+    }
+
+    @Test
+    fun releaseIsNotResentOnceTheTimerIsStopped() {
+        val store = store()
+        failedReadWithLease(store, lease())
+        timer.stop()
+        lastRelease().completeExceptionally(RedisException("Currently not connected. Commands are rejected."))
+        timer.pending.assert().isEmpty()
+    }
+
+    /**
+     * 批量命令发出时同步失败（确定未执行）：不再发出其后的命令，但等已发出的结束、照常处理它们（释放其余读取取得的 lease），
+     * 再抛出这个异常；发出失败的命令不释放。
+     */
+    @Test
+    fun readAllThatFailsToSendWaitsForTheSentReads() {
+        val store = store()
+        val refused = RejectedExecutionException("event executor terminated")
+        refuse = { command -> refused.takeIf { command.script == "READ" && command.key == "b" } }
+        val leases = mapOf("a" to lease(), "b" to lease(), "c" to lease())
+        val call = started(1) { store.readAll(listOf("a", "b", "c"), leases) }
+        dispatched.single().key.assert().isEqualTo("a")
+        call.isDone.assert().isFalse()
+        dispatched.single().reply(listOf(0L, 1L))
+        call.failure().assert().isSameAs(refused)
+        released().assert().containsExactly("a")
+    }
+
+    @Test
+    fun fillAllThatFailsToSendWaitsForTheSentFills() {
+        val store = store()
+        val refused = RejectedExecutionException("event executor terminated")
+        refuse = { command -> refused.takeIf { command.script == "FILL" && command.key == "b" } }
+        val call = started(1) { store.fillAll(listOf("a", "b").map { Fill(it, token(), Envelope.Absent, null) }) }
+        call.isDone.assert().isFalse()
+        dispatched.single().reply(listOf(1L))
+        call.failure().assert().isSameAs(refused)
+        released().assert().isEmpty()
+    }
+
+    /**
+     * 写入的某一组发出时同步失败：等已发出的组结束再抛出（写入方法返回或抛出时，它发出的全部命令都已结束）。
+     */
+    @Test
+    fun writeThatFailsToSendAGroupWaitsForTheSentGroups() {
+        val store = store(invalidateBatchSize = 1)
+        val refused = RejectedExecutionException("event executor terminated")
+        refuse = { command -> refused.takeIf { command.key == "b" } }
+        val call = started(1) { store.invalidate(listOf("a", "b"), frame("a", "b")) }
+        call.isDone.assert().isFalse()
+        dispatched.single().reply(listOf(1L))
+        call.failure().assert().isSameAs(refused)
     }
 
     /**
@@ -375,6 +504,36 @@ class RedisL1StoreUnitTest {
             dispatched.forEach { it.reply(listOf(1L)) }
             call.await()
             dispatched.forEach { command -> command.carries(frame).assert().isTrue() }
+        }
+    }
+
+    /**
+     * 手动推进的时间轮：记录安排的任务与延迟（毫秒），[runNext] 执行最早安排的一个；停止之后安排任务抛出 [IllegalStateException]（同 Netty）。
+     */
+    private class ManualTimer : Timer {
+        val pending = CopyOnWriteArrayList<Pair<TimerTask, Long>>()
+
+        @Volatile
+        private var stopped = false
+
+        override fun newTimeout(task: TimerTask, delay: Long, unit: TimeUnit): Timeout {
+            check(!stopped) { "cannot be started once stopped" }
+            pending.add(task to unit.toMillis(delay))
+            return mockk(relaxed = true)
+        }
+
+        override fun stop(): Set<Timeout> {
+            stopped = true
+            return emptySet()
+        }
+
+        /**
+         * 执行最早安排的任务，返回它的延迟（毫秒）。
+         */
+        fun runNext(): Long {
+            val (task, delay) = pending.removeAt(0)
+            task.run(mockk(relaxed = true))
+            return delay
         }
     }
 
