@@ -227,7 +227,7 @@ abstract class VersionedSpec {
         store.put(storageKey("plain"), scalar("p"), null, frame("plain"))
         remoteVersioned("plain").assert().isEqualTo(Versioned("p", Versioned.NO_VERSION))
         // 条件写入写入没有版本的值（信封自带的版本被忽略）
-        store.putIfMatch(storageKey("put"), Digest.of(scalar("v9")), scalar("m", 5), null, frame("put"), false)
+        store.putIfMatch(storageKey("put"), Digest.of(scalar("v9")), scalar("m", 5), null, frame("put"))
             .assert().isEqualTo(RemoteConditionalWrite.Written)
         remoteVersioned("put").assert().isEqualTo(Versioned("m", Versioned.NO_VERSION))
     }
@@ -239,36 +239,33 @@ abstract class VersionedSpec {
     fun putIfNewerComparesAgainstTheStoredVersion() {
         val store = store()
         val key = storageKey("k")
-        store.putIfNewer(key, scalar("v2"), 2, null, frame("k"), false).assert().isEqualTo(RemoteVersionedWrite.Written)
+        store.putIfNewer(key, scalar("v2"), 2, null, frame("k")).assert().isEqualTo(RemoteVersionedWrite.Written)
         remoteVersioned("k").assert().isEqualTo(Versioned("v2", 2))
         store.putIfNewer(
             key,
             scalar("v1"),
             1,
             null,
-            frame("k"),
-            false
+            frame("k")
         ).assert().isEqualTo(RemoteVersionedWrite.Stale(2))
         store.putIfNewer(
             key,
             scalar("v2'"),
             2,
             null,
-            frame("k"),
-            false
+            frame("k")
         ).assert().isEqualTo(RemoteVersionedWrite.Stale(2))
         store.putIfNewer(
             key,
             scalar("v3", 99),
             3,
             null,
-            frame("k"),
-            false
+            frame("k")
         ).assert().isEqualTo(RemoteVersionedWrite.Written)
         remoteVersioned("k").assert().isEqualTo(Versioned("v3", 3))
 
         store.put(key, scalar("plain"), null, frame("k"))
-        store.putIfNewer(key, scalar("v0"), 0, null, frame("k"), false).assert().isEqualTo(RemoteVersionedWrite.Written)
+        store.putIfNewer(key, scalar("v0"), 0, null, frame("k")).assert().isEqualTo(RemoteVersionedWrite.Written)
         remoteVersioned("k").assert().isEqualTo(Versioned("v0", 0))
     }
 
@@ -294,7 +291,7 @@ abstract class VersionedSpec {
         )
         var previous: Long? = null
         for (version in ascending) {
-            store.putIfNewer(key, scalar("v$version"), version, null, frame("k"), false)
+            store.putIfNewer(key, scalar("v$version"), version, null, frame("k"))
                 .assert().withFailMessage { "$version must be newer than $previous" }.isEqualTo(
                     RemoteVersionedWrite.Written
                 )
@@ -304,8 +301,7 @@ abstract class VersionedSpec {
                     scalar("old"),
                     it,
                     null,
-                    frame("k"),
-                    false
+                    frame("k")
                 ).assert().isEqualTo(RemoteVersionedWrite.Stale(version))
             }
             store.putIfNewer(
@@ -313,8 +309,7 @@ abstract class VersionedSpec {
                 scalar("dup"),
                 version,
                 null,
-                frame("k"),
-                false
+                frame("k")
             ).assert().isEqualTo(RemoteVersionedWrite.Stale(version))
             previous = version
         }
@@ -330,7 +325,7 @@ abstract class VersionedSpec {
         val key = storageKey("k")
         val lease = LeaseRequest(token(), Duration.ofSeconds(30))
         store.read(key, lease, null).assert().isEqualTo(RemoteRead.Miss(true))
-        store.putIfNewer(key, scalar("v2"), 2, null, frame("k"), false).assert().isEqualTo(RemoteVersionedWrite.Written)
+        store.putIfNewer(key, scalar("v2"), 2, null, frame("k")).assert().isEqualTo(RemoteVersionedWrite.Written)
         store.fill(Fill(key, lease.token, scalar("v3", 3), null)).assert().isFalse()
         store.release(key, lease.token)
         remoteVersioned("k").assert().isEqualTo(Versioned("v2", 2))
@@ -343,7 +338,7 @@ abstract class VersionedSpec {
     fun versionedContentIsNeverRefreshedOrReclaimed() {
         val store = store()
         val key = storageKey("k")
-        store.putIfNewer(key, scalar("v1"), 1, Duration.ofMinutes(1), frame("k"), false)
+        store.putIfNewer(key, scalar("v1"), 1, Duration.ofMinutes(1), frame("k"))
         val refresh = RefreshRequest(Duration.ofDays(1), token(), Duration.ZERO)
         val read = store.read(key, null, refresh) as RemoteRead.Hit
         read.refreshGranted.assert().isFalse()
@@ -358,7 +353,7 @@ abstract class VersionedSpec {
     fun tombstoneReadsAsAbsentAndKeepsItsVersion() {
         val store = store()
         val key = storageKey("k")
-        store.putIfNewer(key, Envelope.Absent, 3, Duration.ofMinutes(1), frame("k"), false)
+        store.putIfNewer(key, Envelope.Absent, 3, Duration.ofMinutes(1), frame("k"))
             .assert().isEqualTo(RemoteVersionedWrite.Written)
         (remote("k") as RemoteRead.Hit).envelope.assert().isEqualTo(Envelope.Absent)
         store.putIfNewer(
@@ -366,19 +361,17 @@ abstract class VersionedSpec {
             scalar("v2"),
             2,
             null,
-            frame("k"),
-            false
+            frame("k")
         ).assert().isEqualTo(RemoteVersionedWrite.Stale(3))
         store.putIfNewer(
             key,
             Envelope.Absent,
             3,
             null,
-            frame("k"),
-            false
+            frame("k")
         ).assert().isEqualTo(RemoteVersionedWrite.Stale(3))
         store.fill(Fill(key, token(), scalar("v9", 9), null)).assert().isFalse()
-        store.putIfNewer(key, scalar("v4"), 4, null, frame("k"), false).assert().isEqualTo(RemoteVersionedWrite.Written)
+        store.putIfNewer(key, scalar("v4"), 4, null, frame("k")).assert().isEqualTo(RemoteVersionedWrite.Written)
         remoteVersioned("k").assert().isEqualTo(Versioned("v4", 4))
     }
 
@@ -398,10 +391,9 @@ abstract class VersionedSpec {
             scalar("v6"),
             6,
             null,
-            frame("k"),
-            false
+            frame("k")
         ).assert().isEqualTo(RemoteVersionedWrite.Stale(7))
-        store.putIfNewer(key, scalar("v8"), 8, null, frame("k"), false).assert().isEqualTo(RemoteVersionedWrite.Written)
+        store.putIfNewer(key, scalar("v8"), 8, null, frame("k")).assert().isEqualTo(RemoteVersionedWrite.Written)
         remoteVersioned("k").assert().isEqualTo(Versioned("v8", 8))
     }
 
@@ -723,8 +715,7 @@ abstract class VersionedSpec {
             envelope,
             version,
             null,
-            InvalidationFrame.encode(NodeId.random(), emptyList()),
-            false
+            InvalidationFrame.encode(NodeId.random(), emptyList())
         ).assert().isEqualTo(RemoteVersionedWrite.Written)
     }
 
@@ -753,7 +744,7 @@ abstract class VersionedSpec {
     @Test
     fun unreadableContentRefusesVersionedWrites() {
         val cache = nodeA.cache()
-        store().addMembers(storageKey("set"), listOf("a".toByteArray()), null, frame("set"))
+        store().addMembersIfReadable(storageKey("set"), listOf("a".toByteArray()), null, frame("set"))
         val error = runCatching { cache.putIfNewer("set", "v", 1) }.exceptionOrNull()
         error.assert().isInstanceOf(CacheWriteException::class.java)
         error?.cause.assert().isInstanceOf(ForeignFormatException::class.java)
@@ -792,7 +783,7 @@ abstract class VersionedSpec {
     fun corruptVersionedPayloadIsBypassedNotReclaimed() {
         val cache = nodeA.cache()
         database["k"] = Versioned("source", 7)
-        store().putIfNewer(storageKey("k"), Envelope.Scalar(TestCodec.CORRUPT), 5, null, frame("k"), false)
+        store().putIfNewer(storageKey("k"), Envelope.Scalar(TestCodec.CORRUPT), 5, null, frame("k"))
         cache["k"].assert().isEqualTo("source")
         ((remote("k") as RemoteRead.Hit).envelope as Envelope.Scalar).version.assert().isEqualTo(5L)
         cache.putIfNewer("k", "v4", 4).assert().isEqualTo(VersionedPut.Stale(5))

@@ -279,50 +279,6 @@ return 1
     )
 
     /**
-     * 加入集合成员。ARGV：TTL、频道、帧、成员…
-     *
-     * 只用于 `foreignFormat = RECLAIM`：读不懂的内容被整体覆盖。默认（`FAIL`）用 [ADD_MEMBERS_IF_READABLE]。
-     */
-    val ADD_MEMBERS = Script(
-        PRELUDE + """
-local key = KEYS[1]
--- 不是本协议的集合（非 Hash 或没有 !f）时整体覆盖。!f 为更高版本时保留并按本版本写入成员：
--- 格式演进按两阶段进行（先让所有节点能读新格式，再开始写），写入方不会遇到读不懂的版本。
-if redis.call('TYPE', key)['ok'] ~= 'hash' or redis.call('HEXISTS', key, '!f') == 0 then
-  redis.call('DEL', key)
-  redis.call('HSET', key, '!f', '1')
-end
-for i = 4, #ARGV do redis.call('HSET', key, '+' .. ARGV[i], '') end
-if tonumber(ARGV[1]) > 0 then redis.call('PEXPIRE', key, ARGV[1]) else redis.call('PERSIST', key) end
-publish(ARGV[2], ARGV[3])
-return 1
-"""
-    )
-
-    /**
-     * 移除集合成员，移空则删除。ARGV：TTL、频道、帧、成员…
-     *
-     * 只用于 `foreignFormat = RECLAIM`：读不懂的内容不修改。默认（`FAIL`）用 [REMOVE_MEMBERS_IF_READABLE]。
-     */
-    val REMOVE_MEMBERS = Script(
-        PRELUDE + """
-local key = KEYS[1]
-if redis.call('TYPE', key)['ok'] == 'hash' and redis.call('HEXISTS', key, '!f') == 1 then
-  for i = 4, #ARGV do redis.call('HDEL', key, '+' .. ARGV[i]) end
-  if redis.call('HLEN', key) <= 1 then
-    redis.call('DEL', key)
-  elseif tonumber(ARGV[1]) > 0 then
-    redis.call('PEXPIRE', key, ARGV[1])
-  else
-    redis.call('PERSIST', key)
-  end
-end
-publish(ARGV[2], ARGV[3])
-return 1
-"""
-    )
-
-    /**
      * 元素增删前的检查（只有 `*_IF_READABLE` 脚本引入）：返回 key 中不能当作本协议集合的内容的格式版本，可以写入时返回 `nil`。
      * 不能当作集合：其它 Redis 类型（5.x 的原生 Set、List 等）与不是本协议写入的 String（`0`）、没有 `!f` 或 `!f` 无效的 Hash（`0`）、
      * 本协议的标量值（其版本）、`!f` 高于本版本的集合（其版本）。不存在、负缓存、lease 占位可以写入。
@@ -348,7 +304,7 @@ end
 """
 
     /**
-     * 加入集合成员，但 key 中是读不懂的内容时不修改、不广播（没有数据源的集合缓存默认使用）。ARGV 同 [ADD_MEMBERS]。
+     * 加入集合成员，但 key 中是读不懂的内容时不修改、不广播：整体覆盖它就是删除集合缓存的唯一副本。ARGV：TTL、频道、帧、成员…
      * 返回 `{1}` 表示已写入，`{0, 格式版本}` 表示拒绝。
      */
     val ADD_MEMBERS_IF_READABLE = Script(
@@ -369,7 +325,7 @@ return {1}
     )
 
     /**
-     * 移除集合成员，但 key 中是读不懂的内容时不修改、不广播。ARGV 与返回值同 [ADD_MEMBERS_IF_READABLE]。
+     * 移除集合成员，移空则删除；key 中是读不懂的内容时不修改、不广播。ARGV 与返回值同 [ADD_MEMBERS_IF_READABLE]。
      */
     val REMOVE_MEMBERS_IF_READABLE = Script(
         PRELUDE + UNREADABLE_SET + """
@@ -452,26 +408,23 @@ return {2, format, payload}
 
     /**
      * 条件写入：当前内容符合期望时整体覆盖写入标量值（同 [PUT]）并广播，否则不修改、不广播。
-     * ARGV：期望摘要（十六进制，空串为“没有值”）、不是本协议写入的内容（格式 0）是否视为没有值（`1` / `0`）、TTL、频道、帧、载荷。
-     * 本协议的集合与更高格式版本的内容总是拒绝。
+     * ARGV：期望摘要（十六进制，空串为“没有值”）、TTL、频道、帧、载荷。
+     * 读不懂的内容（不是本协议写入的内容、本协议的集合、更高格式版本的内容）总是拒绝，从不视为没有值。
      * 返回 `{1}` 已写入、`{0}` 冲突且当前没有值、`{0, 当前摘要}` 冲突、`{3, 格式版本}` 读不懂的内容。
      */
     val PUT_IF_MATCH = Script(
         PRELUDE + CONDITIONAL_STATE + """
 local key = KEYS[1]
 local state, format, payload = conditional_state(key)
-if state == 'unreadable' then
-  if ARGV[2] ~= '1' or format ~= 0 then return {3, format} end
-  state = 'none'
-end
+if state == 'unreadable' then return {3, format} end
 if state == 'none' then
   if ARGV[1] ~= '' then return {0} end
 else
   local current = redis.sha1hex(payload)
   if current ~= ARGV[1] then return {0, current} end
 end
-write(key, 'V', ARGV[3], 6)
-publish(ARGV[4], ARGV[5])
+write(key, 'V', ARGV[2], 5)
+publish(ARGV[3], ARGV[4])
 return {1}
 """
     )
@@ -521,18 +474,18 @@ end
 
     /**
      * 按版本写入（6.8）：给出的版本大于 key 中的版本时整体覆盖写入（同 [PUT]，销毁令牌、重设到期时间）并广播，否则不修改、不广播。
-     * ARGV：形状与版本（`V` / `M` + 8 字节版本）、不是本协议写入的内容（格式 0）是否视为没有版本（`1` / `0`）、TTL、频道、帧、载荷（`M` 没有）。
-     * 本协议的集合与更高格式版本的内容总是拒绝。
+     * ARGV：形状与版本（`V` / `M` + 8 字节版本）、TTL、频道、帧、载荷（`M` 没有）。
+     * 读不懂的内容（不是本协议写入的内容、本协议的集合、更高格式版本的内容）总是拒绝，从不视为没有版本。
      * 返回 `{1}` 已写入、`{0, 当前版本}` 版本不更新、`{3, 格式版本}` 读不懂的内容。
      */
     val PUT_IF_NEWER = Script(
         PRELUDE + VERSIONED_STATE + """
 local key = KEYS[1]
 local state, format, current = versioned_state(key)
-if state == 'unreadable' and (ARGV[2] ~= '1' or format ~= 0) then return {3, format} end
+if state == 'unreadable' then return {3, format} end
 if state == 'versioned' and not newer(string.sub(ARGV[1], 2), current) then return {0, current} end
-write(key, ARGV[1], ARGV[3], 6)
-publish(ARGV[4], ARGV[5])
+write(key, ARGV[1], ARGV[2], 5)
+publish(ARGV[3], ARGV[4])
 return {1}
 """
     )

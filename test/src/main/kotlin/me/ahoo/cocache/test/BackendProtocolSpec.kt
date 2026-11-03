@@ -326,13 +326,18 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun membersAreAddedAtomicallyOverAnyNonSetState() {
+    fun membersAreAddedAtomicallyOverLeases() {
         val key = key()
         val lease = lease()
         store.read(key, lease, null)
-        store.addMembers(key, listOf("a".toByteArray()), null, frame(key))
+        store.addMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
         store.fill(Fill(key, lease.token, Envelope.Members(listOf("seed".toByteArray())), null)).assert().isFalse()
-        store.addMembers(key, listOf("b".toByteArray(), "a".toByteArray()), null, frame(key))
+        store.addMembersIfReadable(
+            key,
+            listOf("b".toByteArray(), "a".toByteArray()),
+            null,
+            frame(key)
+        ).assert().isNull()
         val members = (store.read(key, null, null).hit().envelope as Envelope.Members).members.map { String(it) }
         members.assert().containsExactlyInAnyOrder("a", "b")
     }
@@ -343,7 +348,7 @@ abstract class BackendProtocolSpec {
         val lease = lease()
         store.read(key, lease, null)
         store.fill(Fill(key, lease.token, Envelope.Absent, Duration.ofMinutes(1)))
-        store.addMembers(key, listOf("a".toByteArray()), null, frame(key))
+        store.addMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
         val hit = store.read(key, null, null).hit()
         (hit.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("a")
         hit.ttl.assert().isNull()
@@ -352,25 +357,42 @@ abstract class BackendProtocolSpec {
     @Test
     fun removeMembersOnlyAffectsSetsAndDeletesWhenEmpty() {
         val key = key()
-        store.removeMembers(key, listOf("a".toByteArray()), null, frame(key))
+        store.removeMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
         store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
 
-        store.addMembers(key, listOf("a".toByteArray(), "b".toByteArray()), null, frame(key))
-        store.removeMembers(key, listOf("a".toByteArray()), Duration.ofMinutes(1), frame(key))
+        store.addMembersIfReadable(key, listOf("a".toByteArray(), "b".toByteArray()), null, frame(key))
+        store.removeMembersIfReadable(
+            key,
+            listOf("a".toByteArray()),
+            Duration.ofMinutes(1),
+            frame(key)
+        ).assert().isNull()
         val hit = store.read(key, null, null).hit()
         (hit.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
         hit.ttl.assert().isNotNull()
 
-        store.removeMembers(key, listOf("b".toByteArray()), null, frame(key))
+        store.removeMembersIfReadable(key, listOf("b".toByteArray()), null, frame(key)).assert().isNull()
         store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
     }
 
+    /**
+     * 集合成员的增删只有“检查并写入”：key 中是不能当作本协议集合的内容（这里是本协议的标量值）时拒绝，返回它的格式版本，
+     * 不修改 key（内容与到期时间都不变），从不整体覆盖它。
+     */
     @Test
-    fun removeMembersOnScalarIsNoOp() {
+    fun memberWritesRefuseUnreadableContentAndKeepIt() {
         val key = key()
-        store.put(key, scalar("v"), null, frame(key))
-        store.removeMembers(key, listOf("v".toByteArray()), null, frame(key))
-        store.read(key, null, null).hit().envelope.assert().isEqualTo(scalar("v"))
+        store.put(key, scalar("v"), Duration.ofMinutes(1), frame(key))
+        store.addMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key)).assert().isEqualTo(backend.format)
+        store.removeMembersIfReadable(
+            key,
+            listOf("v".toByteArray()),
+            null,
+            frame(key)
+        ).assert().isEqualTo(backend.format)
+        val hit = store.read(key, null, null).hit()
+        hit.envelope.assert().isEqualTo(scalar("v"))
+        hit.ttl.assert().isNotNull()
     }
 
     @Test
@@ -394,9 +416,9 @@ abstract class BackendProtocolSpec {
         keys.add(key)
         store.invalidate(listOf(key), frame(key))
         keys.add(key)
-        store.addMembers(key, listOf("a".toByteArray()), null, frame(key))
+        store.addMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key))
         keys.add(key)
-        store.removeMembers(key, listOf("a".toByteArray()), null, frame(key))
+        store.removeMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key))
         keys.add(key)
         if (!backend.atomicBroadcast) {
             keys.forEach { backend.channel.publish(namespace, frame(it)) }

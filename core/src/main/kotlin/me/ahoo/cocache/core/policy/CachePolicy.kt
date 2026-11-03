@@ -31,7 +31,9 @@ import java.util.concurrent.ThreadLocalRandom
  *   没有数据源时（L1 是唯一副本）[ReadFailureMode.THROW]
  * @param foreignFormat 读到本缓存读不懂的 L1 内容（格式 0：5.x 或其它程序写入的值、原生 Set / Hash 等其它 Redis 类型；
  *   以及同版本内容解码失败）时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ForeignFormatMode.RECLAIM]，
- *   没有数据源时（`SetCache`、没有 loader 的 `Cache`）[ForeignFormatMode.FAIL]
+ *   没有数据源时（`SetCache`、没有 loader 的 `Cache`）[ForeignFormatMode.FAIL]。[ForeignFormatMode.RECLAIM] 只能用于有数据源的缓存：
+ *   没有数据源的 `CacheSpec` 与所有 `SetCacheSpec` 设置它时创建即失败。只作用于读取：条件写入、按版本写入与集合元素的增删
+ *   落在读不懂的内容上时总是拒绝
  */
 class CachePolicy(
     val ttl: Duration? = DEFAULT_TTL,
@@ -302,6 +304,7 @@ enum class ReadFailureMode {
  * - 同版本内容解码失败（`Codec` 抛出，例如值类型不兼容地改变）。
  *
  * 更高格式版本（滚动升级期间）不受影响：既不回收也不写回（[me.ahoo.cocache.api.Cache] 回源，`SetCache` 抛出）。
+ * 只决定读取：条件读写、按版本写入与 `SetCache` 的元素增删遇到读不懂的内容时总是拒绝，从不把它当作没有值。
  */
 enum class ForeignFormatMode {
     /**
@@ -313,10 +316,10 @@ enum class ForeignFormatMode {
     FAIL,
 
     /**
-     * 条件回收（比较摘要后转为 lease）并回源，与 6.4 及以前的行为相同。`SetCache` 没有数据源，按不存在处理（读到空集合），
-     * 不回收、不删除，下一次 `put` / `add` 整体覆盖。
+     * 条件回收（比较摘要后转为 lease）并回源。
      *
-     * 有数据源的读取的默认值：数据源是权威，回收后重新加载即可。
+     * 有数据源的读取的默认值：数据源是权威，回收后重新加载即可。只能用于有数据源的缓存：没有数据源的 `CacheSpec` 与所有
+     * `SetCacheSpec` 设置它时创建即失败（L1 是唯一副本，回收就是删除它）。
      */
     RECLAIM,
 }

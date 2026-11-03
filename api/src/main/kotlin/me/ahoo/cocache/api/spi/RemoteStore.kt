@@ -100,45 +100,25 @@ interface RemoteStore : AutoCloseable {
     fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean
 
     /**
-     * 原子地加入集合成员：key 不存在、为负缓存或处于 lease 状态时先清除，再创建集合；清除刷新令牌；重设到期时间；广播。
-     * 其它内容（不是本协议的集合）被整体覆盖；不能覆盖时用 [addMembersIfReadable]。
-     */
-    fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
-
-    /**
-     * 原子地移除集合成员：仅当 key 为集合时生效，移空则删除 key，否则重设到期时间；广播。
-     */
-    fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
-
-    /**
-     * 同 [addMembers]，但 key 中是不能当作本协议集合的内容时，不修改 key、不广播，返回该内容的格式版本。这类内容是：
-     * 不是本协议写入的内容（如 CoCache 5.x 留下的原生 Set / String / Hash，返回 `0`）、本协议的标量值、
-     * 更高格式版本写入的集合（返回其版本）。key 不存在、为负缓存或处于 lease 状态时照常写入。
+     * 原子地检查并加入集合成员：key 不存在、为负缓存或处于 lease 状态时先清除，再创建集合；清除刷新令牌；重设到期时间；广播。
      *
-     * 没有数据源的集合缓存（L1 是唯一副本）用它代替 [addMembers]：整体覆盖读不懂的内容就是删除唯一副本。
+     * key 中是不能当作本协议集合的内容时，不修改 key、不广播，返回该内容的格式版本。这类内容是：不是本协议写入的内容
+     * （如 CoCache 5.x 留下的原生 Set / String / Hash，返回 `0`）、本协议的标量值、更高格式版本写入的集合（返回其版本）。
+     * 集合缓存没有数据源（L1 是唯一副本），整体覆盖读不懂的内容就是删除唯一副本，因此 SPI 不提供不检查的写入。
      *
-     * 默认实现先 [read] 再 [addMembers]：检查与写入之间不原子，也认不出更高的格式版本。实现应当覆盖它，在一次原子操作中检查并写入。
+     * 检查与写入必须在一次原子操作中完成；SPI 不提供“先读后写”的默认实现（两者之间的写入会被覆盖，也认不出更高的格式版本）。
      *
      * @return 写入时为 `null`；否则为阻止写入的内容的格式版本（`0` 表示不是本协议写入）
      */
-    fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? {
-        unreadableSetFormat(read(key, null, null))?.let { return it }
-        addMembers(key, members, ttl, frame)
-        return null
-    }
+    fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
 
     /**
-     * 同 [removeMembers]，但 key 中是不能当作本协议集合的内容（见 [addMembersIfReadable]）时，不修改 key、不广播，返回该内容的格式版本。
-     *
-     * 默认实现先 [read] 再 [removeMembers]（不原子，认不出更高的格式版本）；实现应当覆盖它。
+     * 原子地检查并移除集合成员：仅当 key 为集合时生效，移空则删除 key，否则重设到期时间；不存在、负缓存、lease 占位不修改；广播。
+     * key 中是不能当作本协议集合的内容（见 [addMembersIfReadable]）时，不修改 key、不广播，返回该内容的格式版本。
      *
      * @return 执行时为 `null`；否则为阻止执行的内容的格式版本
      */
-    fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? {
-        unreadableSetFormat(read(key, null, null))?.let { return it }
-        removeMembers(key, members, ttl, frame)
-        return null
-    }
+    fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
 
     /**
      * 条件读取（确认 L1 中的值是否仍是调用方已有的那一份）：key 中是本协议的标量值、且其载荷的 [Digest] 等于 [known] 时
@@ -160,8 +140,8 @@ interface RemoteStore : AutoCloseable {
      * - [expected] 为 `null`：仅当 key 中没有值（不存在、lease 占位、负缓存）时写入。
      * - 否则：仅当 key 中是本协议的标量值、且其载荷的 [Digest] 等于 [expected] 时写入。
      * - key 中是不能当作本协议标量值的内容（见 [RemoteConditionalRead.Unreadable]）时，不修改 key、不广播，返回
-     *   [RemoteConditionalWrite.Unreadable]。唯一的例外：[foreignAsAbsent] 为 `true` 时，不是本协议写入的内容（格式 `0`）
-     *   视为没有值。本协议的集合与更高格式版本写入的内容从不视为没有值（否则滚动升级期间会被旧节点降级覆盖）。
+     *   [RemoteConditionalWrite.Unreadable]。读不懂的内容从不视为没有值：不是本协议写入的内容（格式 `0`）、本协议的集合、
+     *   更高格式版本写入的内容都拒绝（否则 `expected = null` 的写入会整体覆盖它，滚动升级期间还会被旧节点降级覆盖）。
      *
      * 默认实现抛出 [UnsupportedOperationException]（引擎原样抛给调用方）：不原子的“先读后写”会让两个并发的写入方都得到
      * [RemoteConditionalWrite.Written]、丢失更新，因此不提供。支持条件写入的后端必须在一次原子操作中比较并写入。
@@ -172,8 +152,7 @@ interface RemoteStore : AutoCloseable {
         expected: Digest?,
         envelope: Envelope.Scalar,
         ttl: Duration?,
-        frame: ByteArray,
-        foreignAsAbsent: Boolean
+        frame: ByteArray
     ): RemoteConditionalWrite = throw UnsupportedOperationException("${javaClass.name} does not support putIfMatch().")
 
     /**
@@ -184,8 +163,8 @@ interface RemoteStore : AutoCloseable {
      * - key 中的版本：本协议写入的、带版本的标量值或负缓存的版本。没有版本的值与负缓存、lease 占位、不存在都视为
      *   [me.ahoo.cocache.api.Versioned.NO_VERSION]，总是写入。
      * - [version] 不大于 key 中的版本时返回 [RemoteVersionedWrite.Stale]（附 key 中的版本）。
-     * - key 中是读不懂的内容时与 [putIfMatch] 的分类相同：本协议的集合与更高格式版本写入的内容总是返回
-     *   [RemoteVersionedWrite.Unreadable]；不是本协议写入的内容（格式 `0`）在 [foreignAsAbsent] 为 `true` 时视为没有版本，否则拒绝。
+     * - key 中是读不懂的内容时与 [putIfMatch] 的分类相同：不是本协议写入的内容（格式 `0`）、本协议的集合与更高格式版本写入的内容
+     *   都返回 [RemoteVersionedWrite.Unreadable]，从不视为没有版本。
      *
      * 默认实现抛出 [UnsupportedOperationException]：不原子的“先读后写”会让迟到的旧版本覆盖新版本，因此不提供。
      * 实现它的后端同时把 [CoherenceBackend.versionedWrites] 设为 `true`。
@@ -196,22 +175,10 @@ interface RemoteStore : AutoCloseable {
         envelope: Envelope,
         version: Long,
         ttl: Duration?,
-        frame: ByteArray,
-        foreignAsAbsent: Boolean
+        frame: ByteArray
     ): RemoteVersionedWrite = throw UnsupportedOperationException("${javaClass.name} does not support putIfNewer().")
 
     override fun close() = Unit
-}
-
-/**
- * [RemoteStore.addMembersIfReadable] 等默认实现的判定：命中且不是本协议的集合（格式低于 1，或是标量值）时返回其格式版本。
- * 负缓存、lease、不存在都可以写入。
- */
-internal fun unreadableSetFormat(read: RemoteRead): Int? {
-    if (read !is RemoteRead.Hit) {
-        return null
-    }
-    return read.format.takeIf { it < 1 || read.envelope is Envelope.Scalar }
 }
 
 /**

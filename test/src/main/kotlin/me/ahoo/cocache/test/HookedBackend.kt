@@ -264,16 +264,6 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             return store.reclaim(key, observed, lease)
         }
 
-        override fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
-            guard("addMembers", fail = failWrites)
-            store.addMembers(key, members, ttl, frame)
-        }
-
-        override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
-            guard("removeMembers", fail = failWrites)
-            store.removeMembers(key, members, ttl, frame)
-        }
-
         override fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? {
             guard("addMembers", fail = failWrites)
             return store.addMembersIfReadable(key, members, ttl, frame)
@@ -294,11 +284,10 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             expected: Digest?,
             envelope: Envelope.Scalar,
             ttl: Duration?,
-            frame: ByteArray,
-            foreignAsAbsent: Boolean
+            frame: ByteArray
         ): RemoteConditionalWrite {
             guard("put", fail = failWrites)
-            return store.putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
+            return store.putIfMatch(key, expected, envelope, ttl, frame)
         }
 
         override fun putIfNewer(
@@ -306,11 +295,10 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             envelope: Envelope,
             version: Long,
             ttl: Duration?,
-            frame: ByteArray,
-            foreignAsAbsent: Boolean
+            frame: ByteArray
         ): RemoteVersionedWrite {
             guard("put", fail = failWrites)
-            val result = store.putIfNewer(key, envelope, version, ttl, frame, foreignAsAbsent)
+            val result = store.putIfNewer(key, envelope, version, ttl, frame)
             afterVersionedWrite?.invoke(key, result)
             return result
         }
@@ -443,10 +431,9 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             expected: Digest?,
             envelope: Envelope.Scalar,
             ttl: Duration?,
-            frame: ByteArray,
-            foreignAsAbsent: Boolean
+            frame: ByteArray
         ): CompletableFuture<RemoteConditionalWrite> = hooked("put", fail = failWrites) {
-            store.putIfMatchAsync(key, expected, envelope, ttl, frame, foreignAsAbsent)
+            store.putIfMatchAsync(key, expected, envelope, ttl, frame)
         }
 
         override fun putIfNewerAsync(
@@ -454,27 +441,14 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             envelope: Envelope,
             version: Long,
             ttl: Duration?,
-            frame: ByteArray,
-            foreignAsAbsent: Boolean
+            frame: ByteArray
         ): CompletableFuture<RemoteVersionedWrite> = hooked("put", fail = failWrites) {
             val issuer = Concurrency.currentThreadName()
-            store.putIfNewerAsync(key, envelope, version, ttl, frame, foreignAsAbsent)
+            store.putIfNewerAsync(key, envelope, version, ttl, frame)
                 .hooked(issuer, afterVersionedWrite != null) { result ->
                     afterVersionedWrite?.invoke(key, result)
                     result
                 }
-        }
-
-        override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
-            hooked("addMembers", fail = failWrites) { store.addMembersAsync(key, members, ttl, frame) }
-
-        override fun removeMembersAsync(
-            key: String,
-            members: Collection<ByteArray>,
-            ttl: Duration?,
-            frame: ByteArray
-        ): CompletableFuture<Void?> = hooked("removeMembers", fail = failWrites) {
-            store.removeMembersAsync(key, members, ttl, frame)
         }
 
         override fun addMembersIfReadableAsync(

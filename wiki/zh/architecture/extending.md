@@ -44,20 +44,13 @@ interface RemoteStore : AutoCloseable {
     fun putAll(puts: List<Put>, frame: ByteArray)   // 默认：逐项调用 put
     fun invalidate(keys: Collection<String>, frame: ByteArray)
     fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean
-    fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
-    fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray)
-    // 6.6.0 起；默认实现：先 read，再 addMembers / removeMembers（不原子）
     fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
     fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
     // 6.7.0 起；readIfChanged 默认：read 后在客户端比较；putIfMatch 默认：抛出 UnsupportedOperationException
     fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead
-    fun putIfMatch(
-        key: String, expected: Digest?, envelope: Envelope.Scalar, ttl: Duration?, frame: ByteArray, foreignAsAbsent: Boolean
-    ): RemoteConditionalWrite
+    fun putIfMatch(key: String, expected: Digest?, envelope: Envelope.Scalar, ttl: Duration?, frame: ByteArray): RemoteConditionalWrite
     // 6.8.0 起；默认：抛出 UnsupportedOperationException。实现时同时设置 CoherenceBackend.versionedWrites = true
-    fun putIfNewer(
-        key: String, envelope: Envelope, version: Long, ttl: Duration?, frame: ByteArray, foreignAsAbsent: Boolean
-    ): RemoteVersionedWrite
+    fun putIfNewer(key: String, envelope: Envelope, version: Long, ttl: Duration?, frame: ByteArray): RemoteVersionedWrite
 }
 ```
 
@@ -89,11 +82,10 @@ interface RemoteStore : AutoCloseable {
 | `putAll` | 对每一项执行 `put`，对每个 key 原子，不要求跨 key 原子。`frame` 携带全部 key：每个 key 恰好随其写入广播一次（可以拆分帧，例如按 slot 分组）。可选实现：默认逐项调用 `put`，每次只广播该 key |
 | `invalidate` | 删除每个 key，销毁任何令牌，广播 `frame`。对每个 key 原子。批次可以拆分 |
 | `reclaim` | 仅当 key 当前内容的摘要等于 `observed` 且不是 lease 时，把它替换为 lease。返回是否替换。绝不删除已经变化的内容 |
-| `addMembers` | key 是集合：原子地加入成员。否则（不存在、负缓存、lease、标量）：替换为只含这些成员的集合。销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播 |
-| `removeMembers` | 仅当 key 是集合时：移除成员，集合变空时删除 key，否则重设到期时间。任何情况下都广播 |
-| `addMembersIfReadable` / `removeMembersIfReadable` | 同 `addMembers` / `removeMembers`，但 key 中不是本协议集合的内容（不是你写入的内容、标量值、比你的格式更高的集合）时：什么都不改、不广播，返回该内容的格式版本（不是你写入的内容为 `0`）。正常写入后返回 `null`。key 不存在、负缓存、lease 照常写入。`foreign-format: fail`（默认）的 `SetCache` 用它们代替普通方法，因为覆盖就是删除唯一副本。可选：默认实现先读后写，不原子，也认不出更高的格式，应覆盖为一次原子的检查加写入 |
+| `addMembersIfReadable` | 一次原子的检查加写入。key 是本协议的集合：加入成员。key 不存在、负缓存或 lease：替换为只含这些成员的集合。两种情况都销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播，返回 `null`。不是本协议集合的内容（不是你写入的内容、标量值、比你的格式更高的集合）：什么都不改、不广播，返回该内容的格式版本（不是你写入的内容为 `0`）。`SetCache` 没有数据源，覆盖这类内容就是删除唯一副本，因此没有不检查的元素写入 |
+| `removeMembersIfReadable` | 检查同 `addMembersIfReadable`。key 是本协议的集合：移除成员，集合变空时删除 key，否则重设到期时间。key 不存在、负缓存或 lease：不修改。这两种情况都广播并返回 `null`。读不懂的内容：什么都不改、不广播，返回其格式版本 |
 | `readIfChanged` | 纯读取，同不带请求的 `read`。本协议的标量值且载荷摘要等于 `known`：返回 `Unchanged(format)`，不回传载荷（摘要只覆盖载荷，引擎据格式版本再确认）。其它标量值：`Changed(envelope, format)`。key 不存在、lease 或负缓存：`Absent`。其余内容（不是你写入的内容、集合、更高的格式）：`Unreadable(format)`。可选：默认实现调用 `read` 并在客户端比较，因此总是传输载荷；应覆盖为在存储中比较，这正是这个方法的意义 |
-| `putIfMatch` | 一次原子的比较加写入。`expected == null` 且 key 中没有值（不存在、lease、负缓存），或 key 中是载荷摘要等于 `expected` 的标量值时匹配。`readIfChanged` 视为 `Unreadable` 的内容：返回 `Unreadable(format)`；唯一的例外是设置了 `foreignAsAbsent` 时，不是你写入的内容（格式 `0`）按没有值匹配。集合与更高格式的内容从不视为没有值，否则滚动升级期间旧实例会把它降级覆盖。匹配时按 `put` 写入（销毁令牌、设置到期时间、广播 `frame`），返回 `Written`；否则什么都不改、不广播，返回 `Conflict(当前值的摘要，或 null)`。默认实现抛出 `UnsupportedOperationException`，引擎原样抛给调用方：先读后 `put` 的默认实现会让两个并发的写入方都成功。只有能原子地比较并写入的存储才实现它；原生的 `AsyncRemoteStore` 还必须覆盖 `putIfMatchAsync`，它的默认实现同样以这个异常失败，而不是阻塞地调用同步方法 |
+| `putIfMatch` | 一次原子的比较加写入。`expected == null` 且 key 中没有值（不存在、lease、负缓存），或 key 中是载荷摘要等于 `expected` 的标量值时匹配。`readIfChanged` 视为 `Unreadable` 的内容（不是你写入的内容、集合、更高的格式）：返回 `Unreadable(format)`。它从不视为没有值，否则 `expected == null` 会覆盖它，滚动升级期间旧实例还会把更新的值降级覆盖。匹配时按 `put` 写入（销毁令牌、设置到期时间、广播 `frame`），返回 `Written`；否则什么都不改、不广播，返回 `Conflict(当前值的摘要，或 null)`。默认实现抛出 `UnsupportedOperationException`，引擎原样抛给调用方：先读后 `put` 的默认实现会让两个并发的写入方都成功。只有能原子地比较并写入的存储才实现它；原生的 `AsyncRemoteStore` 还必须覆盖 `putIfMatchAsync`，它的默认实现同样以这个异常失败，而不是阻塞地调用同步方法 |
 | `putIfNewer` | 只用于设置了 `CoherenceBackend.versionedWrites = true` 的后端（默认 `false`：[带版本的缓存](../guide/freshness.md#versioned-writes)在创建时失败）。一次原子的按版本比较加写入。key 的版本是与标量值或负缓存一起保存的版本；没有版本的值或负缓存、lease、不存在的 key 都视为 `NO_VERSION`，总是写入。`version` 更大时：按 `put` 写入 `envelope`（标量值，或表示墓碑的 `Absent`），与它一起保存 `version`，返回 `Written`。否则什么都不改、不广播，返回 `Stale(current)`。读不懂的内容按 `putIfMatch` 的规则分类。带版本的内容不持有令牌：`fill` 与 `release` 不得匹配它，`read` 不得在它上面授予刷新令牌，`reclaim` 必须拒绝它，因为 lease 放不下版本。`fill`、`put` 与 `putAll` 保存 `Envelope.Scalar.version`，`read` 原样返回；`putIfMatch` 写入没有版本的值。默认实现以 `UnsupportedOperationException` 抛出（同步）或失败（异步），理由同 `putIfMatch` |
 
 对所有方法：
@@ -198,7 +190,7 @@ class MyFaultTest : FaultSpec() {
 
 只实现 `RemoteStore` 的后端不需要改动就能配合[异步视图](../guide/async.md)：引擎在阻塞执行器上调用它的同步方法。要不占这些线程地服务异步调用方，请实现可选的子接口：
 
-- `AsyncRemoteStore extends RemoteStore` 增加 `readAsync`、`readAllAsync`、`fillAsync`、`fillAllAsync`、`releaseAsync`、`putAsync`、`putAllAsync`、`invalidateAsync`、`reclaimAsync`、`addMembersAsync`、`removeMembersAsync`，以及（默认实现基于 `readAsync`）`addMembersIfReadableAsync`、`removeMembersIfReadableAsync` 与 `readIfChangedAsync`，以及默认以 `UnsupportedOperationException` 失败的 `putIfMatchAsync` 与 `putIfNewerAsync`，语义与对应的同步方法完全相同。
+- `AsyncRemoteStore extends RemoteStore` 增加 `readAsync`、`readAllAsync`、`fillAsync`、`fillAllAsync`、`releaseAsync`、`putAsync`、`putAllAsync`、`invalidateAsync`、`reclaimAsync`、`addMembersIfReadableAsync`、`removeMembersIfReadableAsync`，以及（默认实现基于 `readAsync`）`readIfChangedAsync`，以及默认以 `UnsupportedOperationException` 失败的 `putIfMatchAsync` 与 `putIfNewerAsync`，语义与对应的同步方法完全相同。
 - `AsyncInvalidationChannel extends InvalidationChannel` 增加 `publishAsync`，引擎在非原子后端上使用它。
 - **从不同步抛出。** 以失败的 future 代替，异常类型与同步方法相同，不是 `CompletionException`。
 - **每个操作都要有上限。** 永不完成的 future 会让该实例上的这个 key 一直卡到 `load-timeout`。

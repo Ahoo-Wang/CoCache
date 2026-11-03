@@ -429,29 +429,6 @@ internal class RedisRemoteStore(
         return connections.evalAsync(RedisScripts.RECLAIM, listOf(key.bytes()), args)
     }
 
-    override fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
-        connections.await(membersCommand(RedisScripts.ADD_MEMBERS, key, members, ttl, frame))
-    }
-
-    override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
-        connections.mapped(
-            connections.bounded(membersCommand(RedisScripts.ADD_MEMBERS, key, members, ttl, frame))
-        ) { null }
-
-    override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
-        connections.await(membersCommand(RedisScripts.REMOVE_MEMBERS, key, members, ttl, frame))
-    }
-
-    override fun removeMembersAsync(
-        key: String,
-        members: Collection<ByteArray>,
-        ttl: Duration?,
-        frame: ByteArray
-    ): CompletableFuture<Void?> =
-        connections.mapped(
-            connections.bounded(membersCommand(RedisScripts.REMOVE_MEMBERS, key, members, ttl, frame))
-        ) { null }
-
     override fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
         connections.await(
             membersCommand(RedisScripts.ADD_MEMBERS_IF_READABLE, key, members, ttl, frame)
@@ -498,10 +475,9 @@ internal class RedisRemoteStore(
         expected: Digest?,
         envelope: Envelope.Scalar,
         ttl: Duration?,
-        frame: ByteArray,
-        foreignAsAbsent: Boolean
+        frame: ByteArray
     ): RemoteConditionalWrite = decodeConditionalWrite(
-        connections.await(putIfMatchCommand(key, expected, envelope, ttl, frame, foreignAsAbsent))
+        connections.await(putIfMatchCommand(key, expected, envelope, ttl, frame))
     )
 
     override fun putIfMatchAsync(
@@ -509,10 +485,9 @@ internal class RedisRemoteStore(
         expected: Digest?,
         envelope: Envelope.Scalar,
         ttl: Duration?,
-        frame: ByteArray,
-        foreignAsAbsent: Boolean
+        frame: ByteArray
     ): CompletableFuture<RemoteConditionalWrite> = connections.mapped(
-        connections.bounded(putIfMatchCommand(key, expected, envelope, ttl, frame, foreignAsAbsent))
+        connections.bounded(putIfMatchCommand(key, expected, envelope, ttl, frame))
     ) { decodeConditionalWrite(it) }
 
     override fun putIfNewer(
@@ -520,10 +495,9 @@ internal class RedisRemoteStore(
         envelope: Envelope,
         version: Long,
         ttl: Duration?,
-        frame: ByteArray,
-        foreignAsAbsent: Boolean
+        frame: ByteArray
     ): RemoteVersionedWrite = decodeVersionedWrite(
-        connections.await(putIfNewerCommand(key, envelope, version, ttl, frame, foreignAsAbsent))
+        connections.await(putIfNewerCommand(key, envelope, version, ttl, frame))
     )
 
     override fun putIfNewerAsync(
@@ -531,14 +505,13 @@ internal class RedisRemoteStore(
         envelope: Envelope,
         version: Long,
         ttl: Duration?,
-        frame: ByteArray,
-        foreignAsAbsent: Boolean
+        frame: ByteArray
     ): CompletableFuture<RemoteVersionedWrite> {
         if (envelope is Envelope.Members) {
             return CompletableFuture.failedFuture(notScalar())
         }
         return connections.mapped(
-            connections.bounded(putIfNewerCommand(key, envelope, version, ttl, frame, foreignAsAbsent))
+            connections.bounded(putIfNewerCommand(key, envelope, version, ttl, frame))
         ) { decodeVersionedWrite(it) }
     }
 
@@ -548,10 +521,9 @@ internal class RedisRemoteStore(
         envelope: Envelope,
         version: Long,
         ttl: Duration?,
-        frame: ByteArray,
-        foreignAsAbsent: Boolean
+        frame: ByteArray
     ): CompletableFuture<List<Any?>> {
-        val args = ArrayList<ByteArray>(6)
+        val args = ArrayList<ByteArray>(5)
         args.add(
             when (envelope) {
                 is Envelope.Scalar -> versionedShape(STATE_VALUE, version)
@@ -559,7 +531,6 @@ internal class RedisRemoteStore(
                 is Envelope.Members -> throw notScalar()
             }
         )
-        args.add((if (foreignAsAbsent) "1" else "0").bytes())
         args.add(millis(ttl))
         args.add(channel)
         args.add(frame)
@@ -577,12 +548,10 @@ internal class RedisRemoteStore(
         expected: Digest?,
         envelope: Envelope.Scalar,
         ttl: Duration?,
-        frame: ByteArray,
-        foreignAsAbsent: Boolean
+        frame: ByteArray
     ): CompletableFuture<List<Any?>> {
         val args = listOf(
             expected?.toString()?.bytes() ?: EMPTY,
-            (if (foreignAsAbsent) "1" else "0").bytes(),
             millis(ttl),
             channel,
             frame,

@@ -29,7 +29,6 @@ import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.awaitOriginal
 import me.ahoo.cocache.core.internal.awaitUncancellable
 import me.ahoo.cocache.core.internal.runSync
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -138,9 +137,8 @@ internal class SetEngine<K : Any, E : Any>(
     /**
      * L1 是唯一副本，没有数据源可以回源，因此格式检查与 [CoherentEngine] 不同：
      * - 更高版本写入的集合读不懂，也不能当作别的值返回：抛出，且不写 L2；
-     * - 不是本协议写入的内容（如 5.x 留下的原生 Set）：按 [ForeignFormatMode] 处理（没有数据源，默认 `FAIL`）。
-     *   `FAIL` 抛出 [CacheReadException]，不写 L2——L1 是唯一副本，读成空集合会让调用方把“不存在”当作真实结果；
-     *   `RECLAIM` 按不存在处理、以降级限龄进入 L2，读路径不删除它，下一次 `put` / `add` 会整体覆盖。
+     * - 不是本协议写入的内容（如 5.x 留下的原生 Set）：抛出 [CacheReadException]，不写 L2、不删除它——L1 是唯一副本，
+     *   读成空集合会让调用方把“不存在”当作真实结果。集合缓存不接受 `foreignFormat = RECLAIM`（[SetCacheSpec] 创建时校验）。
      */
     private fun onHit(storageKey: String, read: RemoteRead.Hit): LocalEntry<Set<E>> {
         if (read.format > backendFormat) {
@@ -152,15 +150,9 @@ internal class SetEngine<K : Any, E : Any>(
         }
         if (read.format < MIN_FORMAT) {
             metrics.unknownFormat()
-            if ((policy.foreignFormat ?: ForeignFormatMode.FAIL) == ForeignFormatMode.FAIL) {
-                val failure = ForeignFormatException(name, storageKey, read.format, null)
-                log.warn { failure.message }
-                throw CacheReadException(name, "read", failure)
-            }
-            log.warn {
-                "SetCache[$name] - key[$storageKey] - unrecognized remote content, treated as absent until it is rewritten."
-            }
-            return localEntry(null, null, policy.degradedLocalMaxAge)
+            val failure = ForeignFormatException(name, storageKey, read.format, null)
+            log.warn { failure.message }
+            throw CacheReadException(name, "read", failure)
         }
         // 先解码再计入命中：形状不符（集合 key 上是本协议的标量，通常是命名空间冲突）抛出，且不计为命中
         val value = decode(read.envelope)
@@ -262,7 +254,7 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     /**
-     * 加入元素（同步与异步共用的协程核心）：`FAIL` 时后端拒绝落在读不懂的内容上（[refuseForeign]）。
+     * 加入元素（同步与异步共用的协程核心）：后端拒绝落在读不懂的内容上（[refuseForeign]），从不整体覆盖它。
      */
     private suspend fun addMembers(key: K, elements: Collection<E>) {
         if (elements.isEmpty()) {
@@ -272,21 +264,10 @@ internal class SetEngine<K : Any, E : Any>(
         val members = encode(elements)
         val ttl = policy.valueTtl()
         write(listOf(storageKey), { frame ->
-            if (failsOnForeign) {
-                val format = asyncStore.addMembersIfReadableAsync(storageKey, members, ttl, frame)
-                    .awaitUncancellable()
-                refuseForeign(storageKey, format)
-            } else {
-                asyncStore.addMembersAsync(storageKey, members, ttl, frame).awaitUncancellable()
-            }
+            val format = asyncStore.addMembersIfReadableAsync(storageKey, members, ttl, frame).awaitUncancellable()
+            refuseForeign(storageKey, format)
         }, onFailure = throwWriteFailure("add"))
     }
-
-    /**
-     * 元素增删是否拒绝落在读不懂的内容上（与读取同一规则：没有数据源，未配置时为 `FAIL`）。
-     * `RECLAIM` 时整体覆盖它（`add`）或不修改它（`remove`），6.5.0 及以前的行为。
-     */
-    private val failsOnForeign: Boolean = (policy.foreignFormat ?: ForeignFormatMode.FAIL) == ForeignFormatMode.FAIL
 
     /**
      * 后端拒绝了写入（[format] 非空：key 中是读不懂的内容，未修改、未广播）：计入 `unknownFormats` 并抛出，
@@ -319,13 +300,8 @@ internal class SetEngine<K : Any, E : Any>(
         val members = encode(elements)
         val ttl = policy.valueTtl()
         write(listOf(storageKey), { frame ->
-            if (failsOnForeign) {
-                val format = asyncStore.removeMembersIfReadableAsync(storageKey, members, ttl, frame)
-                    .awaitUncancellable()
-                refuseForeign(storageKey, format)
-            } else {
-                asyncStore.removeMembersAsync(storageKey, members, ttl, frame).awaitUncancellable()
-            }
+            val format = asyncStore.removeMembersIfReadableAsync(storageKey, members, ttl, frame).awaitUncancellable()
+            refuseForeign(storageKey, format)
         }, onFailure = throwWriteFailure("remove"))
     }
 

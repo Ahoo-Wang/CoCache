@@ -144,7 +144,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 - **外来内容**（格式 `0`）：不是 CoCache 写入的，例如旧客户端、脚本，或者前缀与命名空间相同的另一个应用。
 - **编解码失败**（格式 `1`）：值的类发生了不兼容的变化（字段改名、类型变化），或者两个应用用不同的编解码器或值类型共享同一个缓存。
 
-**CoCache 的行为**。没有数据源的读取（`SetCache`，或没有 loader 的 `Cache`）无从重新加载，默认（`foreign-format: fail`）抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），key 保持原样，计入 `cocache.unknown.formats` 而不是 `cocache.reclaims`。在这类内容上调用 `SetCache.add` 或 `remove` 同样失败，抛出 `CacheWriteException`，key 不变（`put` 会整体覆盖它）。CoCache 5.x 留下的内容需要[迁移](../guide/migration-6.md#redis-as-store)。有数据源的读取同样从不盲目删除。它请求 Redis：仅当 key 仍是它读到的那份字节时（在脚本内比较 SHA-1），才把 key 转为 lease。成功则回源并正常填充；key 在此期间变了，就不写 L1 直接回源。每次读取最多回收一次。
+**CoCache 的行为**。没有数据源的读取（`SetCache`，或没有 loader 的 `Cache`）无从重新加载，因此抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`；这类缓存不接受会删除唯一副本的 `foreign-format: reclaim`），key 保持原样，计入 `cocache.unknown.formats` 而不是 `cocache.reclaims`。在这类内容上调用 `SetCache.add` 或 `remove` 同样失败，抛出 `CacheWriteException`，key 不变（`put` 会整体覆盖它）。CoCache 5.x 留下的内容需要[迁移](../guide/migration-6.md#redis-as-store)。有数据源的读取同样从不盲目删除。它请求 Redis：仅当 key 仍是它读到的那份字节时（在脚本内比较 SHA-1），才把 key 转为 lease。成功则回源并正常填充；key 在此期间变了，就不写 L1 直接回源。每次读取最多回收一次。
 
 **处理**。
 
@@ -155,7 +155,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 **现象**。`cocache.unknown.formats` 上升。查看结果显示 `UNREADABLE`，原因是 `Written by a newer format[…] than this node[…]`。
 
-**原因**。某个实例写入了本实例不认识的更新线格式。本实例回源、不写 L1，结果以 `degraded-local-max-age` 留在 L2 中，这样新旧实例不会互相覆盖。没有 loader 的 `Cache` 无从回源：默认（`foreign-format: fail`）读取抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），而不是回答“不存在”（`foreign-format: reclaim` 时按不存在处理）。`SetCache` 没有可回源的数据源：在本实例上读取更新格式的集合会抛出 `IllegalStateException`；不是 CoCache 写入的内容（例如遗留的原生 Redis Set）抛出 `CacheReadException`（见[损坏或无法读取的载荷](#corrupt-payloads)），`foreign-format: reclaim` 时读作空集合。在更新格式的集合上调用 `SetCache.add` 或 `remove` 抛出 `CacheWriteException`，集合不变。
+**原因**。某个实例写入了本实例不认识的更新线格式。本实例回源、不写 L1，结果以 `degraded-local-max-age` 留在 L2 中，这样新旧实例不会互相覆盖。没有 loader 的 `Cache` 无从回源：读取抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），而不是回答“不存在”。`SetCache` 没有可回源的数据源：在本实例上读取更新格式的集合会抛出 `IllegalStateException`；不是 CoCache 写入的内容（例如遗留的原生 Redis Set）抛出 `CacheReadException`（见[损坏或无法读取的载荷](#corrupt-payloads)）。在更新格式的集合上调用 `SetCache.add` 或 `remove` 抛出 `CacheWriteException`，集合不变。
 
 **处理**。格式升级滚动发布期间属于正常，所有实例升级到新版本后就会停止。非发布期间出现时，找出运行新版本的实例。见[滚动发布](./index.md#rolling-deploys)。
 
@@ -175,6 +175,7 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 | `Cache interface[…] declares abstract methods that do not match any Cache method: […]` | 接口上有多余的抽象方法 | 改为 `default` 方法 |
 | `Multiple CacheLoader beans match …` / `Multiple Codec beans match …` | 一个缓存有多个候选 | `@CoCache(loader = "beanName")` / `@CoCache(codec = "beanName")` |
 | `@CoCache(loader = …) is not supported on SetCache interface[…]` | `SetCache` 没有数据源 | 去掉 loader，或改用 `Cache<K, Set<E>>` |
+| `Cache[x] - foreignFormat = RECLAIM needs a data source …` / `SetCache[x] - foreignFormat = RECLAIM is not supported …` | 没有 loader 的缓存或 `SetCache` 设置了 `foreign-format: reclaim`。Redis 中是唯一副本，回收读不懂的内容就是删除它 | 去掉这项设置，或用 `fail`（没有数据源时的默认值）。`cocache.defaults.foreign-format: reclaim` 跳过这些缓存，只有按缓存的设置会失败 |
 | `Cannot create cache[x] - no CoherenceBackend is available: …` | 既没有 Spring Data Redis 连接信息，也没有后端 bean | 配置 `spring.data.redis.*`，本地运行时设置 `cocache.backend: memory`，或声明 `CoherenceBackend` bean |
 | `Cannot create cache[x] - CoCache is disabled (cocache.enabled=false)` | CoCache 关闭时仍声明了缓存 | 启用它，或删除这些声明 |
 | `CoCache does not support Redis master-replica (spring.data.redis.masterreplica.*)` | 静态主从 | 使用单机、Sentinel 或 Cluster |

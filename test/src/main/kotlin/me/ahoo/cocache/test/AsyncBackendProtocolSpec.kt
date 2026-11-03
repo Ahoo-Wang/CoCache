@@ -96,13 +96,11 @@ internal class AsyncBackedStore(private val store: AsyncRemoteStore) : RemoteSto
     override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean =
         CacheAccess.await { store.reclaimAsync(key, observed, lease) }
 
-    override fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
-        CacheAccess.await { store.addMembersAsync(key, members, ttl, frame) }
-    }
+    override fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
+        CacheAccess.await { store.addMembersIfReadableAsync(key, members, ttl, frame) }
 
-    override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
-        CacheAccess.await { store.removeMembersAsync(key, members, ttl, frame) }
-    }
+    override fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
+        CacheAccess.await { store.removeMembersIfReadableAsync(key, members, ttl, frame) }
 
     override fun close() = store.close()
 }

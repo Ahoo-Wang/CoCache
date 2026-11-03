@@ -114,9 +114,19 @@ class RedisAsyncStoreFaultTest {
             LeaseRequest(token(), Duration.ofSeconds(30))
         ).await().assert().isFalse()
         RedisTestSupport.flushScripts()
-        store.addMembersAsync(key("s"), listOf("m".toByteArray()), null, frame(key("s"))).await()
+        store.addMembersIfReadableAsync(
+            key("s"),
+            listOf("m".toByteArray()),
+            null,
+            frame(key("s"))
+        ).await().assert().isNull()
         RedisTestSupport.flushScripts()
-        store.removeMembersAsync(key("s"), listOf("m".toByteArray()), null, frame(key("s"))).await()
+        store.removeMembersIfReadableAsync(
+            key("s"),
+            listOf("m".toByteArray()),
+            null,
+            frame(key("s"))
+        ).await().assert().isNull()
         RedisTestSupport.flushScripts()
         store.invalidateAsync(
             listOf(key("a"), key("b"), key("c"), key("d")),

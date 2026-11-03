@@ -19,7 +19,8 @@ package me.ahoo.cocache.core
  * 作为 [me.ahoo.cocache.api.CacheWriteException] 的 `cause` 抛出（key 不被修改）。
  *
  * 常见原因是 CoCache 5.x 的数据没有迁移就升级到了 6.x：用 6.x 的 `CoCache5Migrator`（`cocache-redis` 6.5 起，8.0 已删除）迁移，
- * 或在数据可以丢弃（有数据源可回源）时把策略设为 `RECLAIM`。滚动升级期间也可能读到更高版本的节点写入的内容（[newer]）。
+ * 或在数据可以丢弃时把有数据源的缓存的策略设为 `RECLAIM`（没有数据源的缓存不接受 `RECLAIM`）。
+ * 滚动升级期间也可能读到更高版本的节点写入的内容（[newer]）。
  *
  * @param storageKey 存储 key
  * @param format L1 内容的格式版本：`0` 表示不是本协议写入的内容；与本节点相同表示同版本内容解码失败（或集合 key 上的标量值）
@@ -55,7 +56,7 @@ class ForeignFormatException(
                 "migrate it with CoCache 6.x (CoCache5Migrator)"
             }
             return "Cache[$cacheName] - key[$storageKey] holds content this cache cannot read (format[$format]: $reason). " +
-                "It is kept as is: $advice, or set foreignFormat = RECLAIM if a source can reload it."
+                "It is kept as is: $advice, or set foreignFormat = RECLAIM on a cache whose loader can reload it."
         }
     }
 }

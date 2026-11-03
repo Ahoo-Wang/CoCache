@@ -118,9 +118,8 @@ interface Cache<K : Any, V : Any> {
      *
      * 不读也不写本地 L2，不回源，不申请 lease，不修改 L1：确认的是 L1 本身，L2 可能更旧（陈旧度仍受 `localMaxAge` 约束）。
      * L1 读取失败时总是抛出 [CacheReadException]（与 `readFailure` 无关：没有可降级的答案）。
-     * 读不懂的内容（更高版本写入的、集合、解码失败）总是抛出 [CacheReadException]（`cause` 为 `ForeignFormatException`），
-     * 不修改 L1。不是本协议写入的内容（格式 0，如 5.x 遗留）按 `foreignFormat` 处理：未配置或 `FAIL` 时同样抛出，
-     * `RECLAIM` 时视为没有值（[ConditionalGet.Absent]），与 [putIfMatch] 的分类一致。
+     * 读不懂的内容（不是本协议写入的内容如 5.x 遗留、更高版本写入的、集合、解码失败）总是抛出 [CacheReadException]
+     * （`cause` 为 `ForeignFormatException`），不修改 L1，从不视为没有值，与 [putIfMatch] 的分类一致（与 `foreignFormat` 无关）。
      *
      * 内置引擎支持（`SetCache` 除外）；其它实现默认抛出 [UnsupportedOperationException]。
      *
@@ -140,9 +139,9 @@ interface Cache<K : Any, V : Any> {
      * - 不符合时返回 [ConditionalPut.Conflict]（附当前摘要），不写入、不广播、不改变到期时间：调用方用 [getIfChanged] 重读后重试。
      *
      * 写入时与 [put] 相同：使在途填充失效、销毁令牌、不填充本地 L2（下一次读取从 L1 填充）。
-     * L1 中是更高版本写入的值或集合时总是抛出 [CacheWriteException]（`cause` 为 `ForeignFormatException`），不修改 L1、不广播；
-     * 不是本协议写入的内容（格式 0）按 `foreignFormat` 处理：未配置或 `FAIL` 时同样抛出，`RECLAIM` 时视为没有值
-     * （`expected = null` 时整体覆盖它）。同版本但 `Codec` 解码失败的值对写入是一个普通的值（比较在 L1 中进行，看不到 `Codec`）：
+     * L1 中是不是本协议写入的内容（格式 0）、更高版本写入的值或集合时总是抛出 [CacheWriteException]
+     * （`cause` 为 `ForeignFormatException`），不修改 L1、不广播，从不把它当作没有值（与 `foreignFormat` 无关）。
+     * 同版本但 `Codec` 解码失败的值对写入是一个普通的值（比较在 L1 中进行，看不到 `Codec`）：
      * 调用方拿不到它的摘要，写入只会以 [ConditionalPut.Conflict] 结束、从不覆盖它，随后的 [getIfChanged] 抛出。
      *
      * 内置引擎支持（`SetCache` 除外：元素增删本身是原子的）；其它实现默认抛出 [UnsupportedOperationException]。

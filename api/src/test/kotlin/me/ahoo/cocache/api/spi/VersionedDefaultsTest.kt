@@ -38,8 +38,18 @@ class VersionedDefaultsTest {
         override fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) = Unit
         override fun invalidate(keys: Collection<String>, frame: ByteArray) = Unit
         override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean = false
-        override fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) = Unit
-        override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) = Unit
+        override fun addMembersIfReadable(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray
+        ): Int? = null
+        override fun removeMembersIfReadable(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray
+        ): Int? = null
         override fun readAsync(
             key: String,
             lease: LeaseRequest?,
@@ -80,19 +90,19 @@ class VersionedDefaultsTest {
             CompletableFuture.completedFuture(null)
         override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
             CompletableFuture.completedFuture(false)
-        override fun addMembersAsync(
+        override fun addMembersIfReadableAsync(
             key: String,
             members: Collection<ByteArray>,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<Void?> =
+        ): CompletableFuture<Int?> =
             CompletableFuture.completedFuture(null)
-        override fun removeMembersAsync(
+        override fun removeMembersIfReadableAsync(
             key: String,
             members: Collection<ByteArray>,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<Void?> = CompletableFuture.completedFuture(null)
+        ): CompletableFuture<Int?> = CompletableFuture.completedFuture(null)
     }
 
     private class PlainBackend : CoherenceBackend {
@@ -108,9 +118,9 @@ class VersionedDefaultsTest {
     fun backendsDoNotSupportVersionsByDefault() {
         PlainBackend().versionedWrites.assert().isFalse()
         val store = PlainStore()
-        runCatching { store.putIfNewer("k", Envelope.Absent, 1, null, ByteArray(0), false) }.exceptionOrNull()
+        runCatching { store.putIfNewer("k", Envelope.Absent, 1, null, ByteArray(0)) }.exceptionOrNull()
             .assert().isInstanceOf(UnsupportedOperationException::class.java)
-        store.putIfNewerAsync("k", Envelope.Absent, 1, null, ByteArray(0), false).handle { _, error -> error }.join()
+        store.putIfNewerAsync("k", Envelope.Absent, 1, null, ByteArray(0)).handle { _, error -> error }.join()
             .assert().isInstanceOf(UnsupportedOperationException::class.java)
     }
 

@@ -27,7 +27,6 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.redis.RedisInvalidationChannel
 import me.ahoo.cocache.redis.RedisTestSupport
@@ -42,9 +41,9 @@ import java.util.concurrent.ExecutionException
 
 /**
  * 没有数据源的缓存（Redis 是唯一副本）在迁移之前的写入与混合版本读取：
- * - `SetCache` 的 `add` / `remove` 落在读不懂的内容上（5.x 原生 Set、没有 `!f` 的 Hash、5.x String、更高 `!f`）时默认失败，
- *   key 原样保留、不广播——此前一次 `add` 会用一个成员替换掉全部旧成员，且之后 key 看起来已经迁移，迁移工具会跳过它；
- * - 更高格式版本的标量值在没有数据源时默认失败，而不是读成不存在。
+ * - `SetCache` 的 `add` / `remove` 落在读不懂的内容上（5.x 原生 Set、没有 `!f` 的 Hash、5.x String、更高 `!f`）时总是失败，
+ *   key 原样保留、不广播——否则一次 `add` 会用一个成员替换掉全部旧成员，且之后 key 看起来已经迁移，迁移工具会跳过它；
+ * - 更高格式版本的标量值在没有数据源时失败，而不是读成不存在。
  */
 class ForeignFormatWriteTest {
     private val run = UUID.randomUUID().toString()
@@ -58,11 +57,8 @@ class ForeignFormatWriteTest {
         RedisTestSupport.deleteKeys("*$run*")
     }
 
-    private fun index(name: String, mode: ForeignFormatMode? = null): SetCache<String, String> = runtime.create(
-        setCacheSpec(name) {
-            elementCodec = StringCodec
-            mode?.let { policy { foreignFormat = it } }
-        }
+    private fun index(name: String): SetCache<String, String> = runtime.create(
+        setCacheSpec(name) { elementCodec = StringCodec }
     )
 
     private fun assertForeignWrite(error: Throwable?, storageKey: String, operation: String, format: Int = 0) {
@@ -163,22 +159,6 @@ class ForeignFormatWriteTest {
     }
 
     /**
-     * 显式 `RECLAIM`：6.5.0 的行为，`add` 整体覆盖读不懂的内容，`remove` 不修改它。
-     */
-    @Test
-    fun memberWritesReplaceForeignContentWhenReclaimIsConfigured() {
-        val name = "reclaim-$run"
-        val key = "cocache:$name:k"
-        Redis5x.set(key, listOf("p1"))
-        val cache = index(name, ForeignFormatMode.RECLAIM)
-        cache.remove("k", listOf("p1"))
-        Redis5x.members(key).assert().containsExactly("p1")
-        cache.add("k", listOf("p2"))
-        cache["k"].assert().containsExactly("p2")
-        Redis5x.type(key).assert().isEqualTo("hash")
-    }
-
-    /**
      * 整体覆盖（`put`）不检查旧内容：调用方给出的是全部内容。代价是迁移工具不会再为这个 key 留备份。
      */
     @Test
@@ -241,7 +221,7 @@ class ForeignFormatWriteTest {
 
         store.put(key("negative"), Envelope.Absent, null, frame)
         store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null)
-        store.addMembers(key("set"), members, null, frame)
+        store.addMembersIfReadable(key("set"), members, null, frame).assert().isNull()
         store.put(key("scalar"), Envelope.Scalar("v".toByteArray()), null, frame)
         Redis5x.hash(key("invalid"), mapOf("!f" to "x", "+a" to ""))
         Redis5x.hash(key("zero"), mapOf("!f" to "0", "+a" to ""))

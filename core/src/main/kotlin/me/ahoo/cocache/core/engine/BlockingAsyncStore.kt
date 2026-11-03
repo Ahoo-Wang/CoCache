@@ -79,16 +79,6 @@ internal class BlockingAsyncStore(
     override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
         offload { store.reclaim(key, observed, lease) }
 
-    override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
-        completing { store.addMembers(key, members, ttl, frame) }
-
-    override fun removeMembersAsync(
-        key: String,
-        members: Collection<ByteArray>,
-        ttl: Duration?,
-        frame: ByteArray
-    ): CompletableFuture<Void?> = completing { store.removeMembers(key, members, ttl, frame) }
-
     override fun addMembersIfReadableAsync(
         key: String,
         members: Collection<ByteArray>,
@@ -111,10 +101,9 @@ internal class BlockingAsyncStore(
         expected: Digest?,
         envelope: Envelope.Scalar,
         ttl: Duration?,
-        frame: ByteArray,
-        foreignAsAbsent: Boolean
+        frame: ByteArray
     ): CompletableFuture<RemoteConditionalWrite> = offload {
-        store.putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
+        store.putIfMatch(key, expected, envelope, ttl, frame)
     }
 
     override fun putIfNewerAsync(
@@ -122,10 +111,9 @@ internal class BlockingAsyncStore(
         envelope: Envelope,
         version: Long,
         ttl: Duration?,
-        frame: ByteArray,
-        foreignAsAbsent: Boolean
+        frame: ByteArray
     ): CompletableFuture<RemoteVersionedWrite> = offload {
-        store.putIfNewer(key, envelope, version, ttl, frame, foreignAsAbsent)
+        store.putIfNewer(key, envelope, version, ttl, frame)
     }
 
     companion object {

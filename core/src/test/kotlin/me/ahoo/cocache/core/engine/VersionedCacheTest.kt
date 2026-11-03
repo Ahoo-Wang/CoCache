@@ -315,7 +315,7 @@ class VersionedCacheTest {
         codec.decode(codec.encode(Versioned("v", 3))).assert().isEqualTo(Versioned("v", Versioned.NO_VERSION))
         val store = memory.store("edges")
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
-        runCatching { store.putIfNewer("k", Envelope.Members(emptyList()), 1, null, frame, false) }.exceptionOrNull()
+        runCatching { store.putIfNewer("k", Envelope.Members(emptyList()), 1, null, frame) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 
@@ -367,8 +367,7 @@ class VersionedCacheTest {
                         envelope: Envelope,
                         version: Long,
                         ttl: Duration?,
-                        frame: ByteArray,
-                        foreignAsAbsent: Boolean
+                        frame: ByteArray
                     ): RemoteVersionedWrite = throw UnsupportedOperationException("no putIfNewer")
                 }
             }

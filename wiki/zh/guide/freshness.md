@@ -77,7 +77,7 @@ fun update(key: String, change: (Document?) -> Document) {
 - **两者都绕过 L2。** 只读写 Redis，从不经 loader 加载，也不填充 L2。缓存的 L2 可能比 `getIfChanged` 返回的旧，差距在 `localMaxAge` 之内。
 - **失败：** Redis 故障时 `getIfChanged` 抛出 `CacheReadException`，与 `read-failure` 无关，因为没有可以降级的答案。`putIfMatch` 抛出 `CacheWriteException`。它不是幂等的：超时之后先调用 `getIfChanged`，当前摘要正是 `Written` 本应返回的那个时，说明已经写入。
 - **没有原子广播时**（`sharded` [频道模式](../operations/index.md#channel-mode)，或启动探测回退时），失效消息在脚本之后单独发布。写入已落到 Redis 而这次发布失败时，调用抛出 `CacheWriteException`。随后重放同一次写入会返回 `Conflict(current)`，其摘要就是你自己的值的摘要，CoCache 这时会再发布一次失效，让其它实例丢弃陈旧的副本。其它冲突不发布任何消息。
-- **读不懂的内容**不会被一个方法当作空值、被另一个方法当作值。更高版本的 CoCache 写入的值或集合：两个方法都抛出，`cause` 为 `ForeignFormatException`，key 不被修改。编解码器无法解码的值：`getIfChanged` 抛出；`putIfMatch` 看不到编解码器，遇到它只会返回 `Conflict`，从不覆盖。不是 CoCache 6 写入的内容（5.x 的数据）按 `foreign-format` 处理，与没有 loader 的缓存相同：`fail`（默认）时两个方法都抛出；`reclaim` 时视为没有值，`getIfChanged` 返回 `Absent`，`putIfMatch(key, null, value)` 会替换它。
+- **读不懂的内容**不会被一个方法当作空值、被另一个方法当作值。更高版本的 CoCache 写入的值或集合：两个方法都抛出，`cause` 为 `ForeignFormatException`，key 不被修改。编解码器无法解码的值：`getIfChanged` 抛出；`putIfMatch` 看不到编解码器，遇到它只会返回 `Conflict`，从不覆盖。不是 CoCache 写入的内容（5.x 的数据，或其它程序写入的值）同样使两个方法都抛出，与 `foreign-format` 无关：它从不被视为没有值，`putIfMatch(key, null, value)` 不会替换它。
 - **自定义后端**必须原子地实现条件写入，否则就不实现：SPI 的 `putIfMatch` 默认抛出 `UnsupportedOperationException`，调用方会看到它。
 - **所有写入方都必须用 `putIfMatch`。** 普通的 `put` 不检查，仍会压过并发的“读取—修改—写回”。
 - `SetCache` 不支持它们，因为它的 `add` 与 `remove` 本身就是原子的。异步视图与[挂起视图](./coroutines.md)有同名方法。
