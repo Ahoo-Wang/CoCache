@@ -20,6 +20,11 @@
       "groupName": "kotlin"
     },
     {
+      "description": "kotlinx-coroutines must equal the version Spring Boot manages (users on Spring dependency management get that version at runtime; bytecode compiled against a newer one fails with NoSuchMethodError). Bump it by hand with Spring Boot's BOM",
+      "matchPackageNames": ["/^org\\.jetbrains\\.kotlinx:kotlinx-coroutines-/"],
+      "enabled": false
+    },
+    {
       "description": "JDK versions in workflows are deliberate: 17 is the bytecode baseline, 25 the latest-LTS test runtime",
       "matchDatasources": ["java-version"],
       "matchUpdateTypes": ["major"],
