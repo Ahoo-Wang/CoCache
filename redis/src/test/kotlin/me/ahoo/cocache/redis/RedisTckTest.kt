@@ -19,6 +19,7 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
@@ -86,7 +87,7 @@ class RedisBackendProtocolTest : BackendProtocolSpec() {
         if (duration <= Duration.ofSeconds(2)) {
             Thread.sleep(duration.toMillis())
         } else {
-            RedisTestSupport.shiftTtl("cocache:$namespace:*", duration)
+            RedisTestSupport.shiftTtl("cocache:v8:$namespace:*", duration)
         }
     }
 }
@@ -110,7 +111,7 @@ class RedisEngineTest : EngineSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 
     override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(clientName)
@@ -129,7 +130,7 @@ class RedisSetEngineTest : SetEngineSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 }
 
@@ -145,7 +146,7 @@ class RedisNonAtomicBackendProtocolTest : BackendProtocolSpec() {
         if (duration <= Duration.ofSeconds(2)) {
             Thread.sleep(duration.toMillis())
         } else {
-            RedisTestSupport.shiftTtl("cocache:$namespace:*", duration)
+            RedisTestSupport.shiftTtl("cocache:v8:$namespace:*", duration)
         }
     }
 }
@@ -168,7 +169,7 @@ class RedisNonAtomicEngineTest : EngineSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 
     override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(
@@ -192,7 +193,7 @@ class RedisShardedBackendProtocolTest : BackendProtocolSpec() {
         if (duration <= Duration.ofSeconds(2)) {
             Thread.sleep(duration.toMillis())
         } else {
-            RedisTestSupport.shiftTtl("cocache:$namespace:*", duration)
+            RedisTestSupport.shiftTtl("cocache:v8:$namespace:*", duration)
         }
     }
 }
@@ -214,7 +215,7 @@ class RedisShardedEngineTest : EngineSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 
     override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(clientName)
@@ -233,7 +234,7 @@ class RedisMultiNodeTest : MultiNodeSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 }
 
@@ -252,7 +253,7 @@ class RedisNonAtomicMultiNodeTest : MultiNodeSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 }
 
@@ -269,7 +270,7 @@ class RedisShardedMultiNodeTest : MultiNodeSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 }
 
@@ -300,7 +301,7 @@ abstract class RedisProxiedFaultSpec : FaultSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 
     override fun disconnect(): AutoCloseable? = proxy?.cut()
@@ -338,8 +339,10 @@ class RedisFaultTest : RedisProxiedFaultSpec() {
         try {
             val (cacheA, cacheB) = runtimes.map { it.create(spec) }
             val (setA, setB) = runtimes.map { it.create(setSpec) }
-            val remote = backend.delegate.store(cacheName)
-            fun remoteRead(key: String) = Suspending.await { remote.read("cocache:$cacheName:$key", null, null, null) }
+            val remote = backend.delegate.store(Keyspace("cocache:", cacheName))
+            fun remoteRead(
+                key: String
+            ) = Suspending.await { remote.read("cocache:v8:$cacheName:$key", null, null, null) }
 
             RedisTestSupport.flushScripts()
             cacheA["k"].assert().isEqualTo("k-v")
@@ -401,7 +404,7 @@ class RedisNonAtomicFaultTest : FaultSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 }
 
@@ -418,7 +421,7 @@ class RedisShardedFaultTest : FaultSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 }
 
@@ -438,7 +441,7 @@ class RedisVersionedTest : VersionedSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 }
 
@@ -457,7 +460,7 @@ class RedisNonAtomicVersionedTest : VersionedSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 }
 
@@ -476,6 +479,6 @@ class RedisShardedVersionedTest : VersionedSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
     }
 }

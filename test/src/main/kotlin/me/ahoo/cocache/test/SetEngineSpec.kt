@@ -21,6 +21,7 @@ import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.CacheRuntime
@@ -311,8 +312,8 @@ abstract class SetEngineSpec {
      * 不经过引擎直接写 L1。
      */
     private fun writeRemoteSilently(key: String, envelope: Envelope) = Suspending.await {
-        backend.delegate.store(cacheName).put(
-            "cocache:$cacheName:$key",
+        backend.delegate.store(Keyspace("cocache:", cacheName)).put(
+            "cocache:v8:$cacheName:$key",
             envelope,
             null,
             InvalidationFrame.encode(NodeId.random(), emptyList())
@@ -323,7 +324,7 @@ abstract class SetEngineSpec {
         error.assert().isInstanceOf(CacheWriteException::class.java)
         (error as CacheWriteException).operation.assert().isEqualTo(operation)
         val cause = requireNotNull(error.cause as? ForeignFormatException)
-        cause.storageKey.assert().isEqualTo("cocache:$cacheName:k")
+        cause.storageKey.assert().isEqualTo("cocache:v8:$cacheName:k")
     }
 
     /**
@@ -341,7 +342,9 @@ abstract class SetEngineSpec {
         nodeA.metrics(cacheName)?.unknownFormats.assert().isEqualTo(2L)
         nodeA.metrics(cacheName)?.writeFailures.assert().isEqualTo(2L)
         val kept = Suspending.await {
-            backend.delegate.store(cacheName).read("cocache:$cacheName:k", null, null, null)
+            backend.delegate.store(
+                Keyspace("cocache:", cacheName)
+            ).read("cocache:v8:$cacheName:k", null, null, null)
         } as L1Read.Hit
         (kept.envelope as Envelope.Scalar).bytes.assert().isEqualTo("x".toByteArray())
         // 整体覆盖（put）不受影响：调用方给出的是全部内容

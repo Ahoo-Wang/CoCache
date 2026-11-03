@@ -20,6 +20,7 @@ import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheMetrics
@@ -172,8 +173,8 @@ abstract class FaultSpec {
     private fun CacheRuntime.admin(): CacheAdmin = requireNotNull(admin(cacheName))
 
     private fun remote(key: String): L1Read {
-        val store = backend.delegate.store(cacheName)
-        return Suspending.await { store.read("cocache:$cacheName:$key", null, null, null) }
+        val store = backend.delegate.store(Keyspace("cocache:", cacheName))
+        return Suspending.await { store.read("cocache:v8:$cacheName:$key", null, null, null) }
     }
 
     private fun remoteValue(key: String): String? {

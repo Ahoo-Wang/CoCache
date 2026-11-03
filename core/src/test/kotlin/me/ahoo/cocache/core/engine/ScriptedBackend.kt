@@ -25,6 +25,7 @@ import me.ahoo.cocache.api.spi.FutureSetL1Store
 import me.ahoo.cocache.api.spi.FutureVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Fill
@@ -245,9 +246,9 @@ internal class ScriptedBackend(
 
     private inner class NodeView(private val node: Int) : CoherenceBackend by delegate {
         override val channel: InvalidationChannel = object : InvalidationChannel by delegate.channel {
-            override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
+            override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription {
                 val target = if (scriptEvents) Queueing(listener) else listener
-                return delegate.channel.subscribe(namespace, target)
+                return delegate.channel.subscribe(keyspace, target)
             }
         }
 
@@ -261,8 +262,8 @@ internal class ScriptedBackend(
             override fun onReset() = listener.onReset()
         }
 
-        override fun store(namespace: String): L1Store = FutureL1Store.adapt(
-            ScriptedStore(node, delegate.store(namespace))
+        override fun store(keyspace: Keyspace): L1Store = FutureL1Store.adapt(
+            ScriptedStore(node, delegate.store(keyspace))
         )
     }
 

@@ -21,6 +21,7 @@ import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.CacheRuntime
@@ -82,8 +83,8 @@ class ConditionalEngineTest {
         val silent = InvalidationFrame.encode(NodeId.random(), emptyList())
         Suspending.await {
             requireNotNull(
-                memory.store("doc").sets()
-            ).addMembers("cocache:doc:set", listOf("a".toByteArray()), null, silent)
+                memory.store(Keyspace("cocache:", "doc")).sets()
+            ).addMembers("cocache:v8:doc:set", listOf("a".toByteArray()), null, silent)
         }
         val baseline = received()
         val error = runCatching { cache.putIfMatch("set", null, "v") }.exceptionOrNull()
@@ -133,7 +134,7 @@ class ConditionalEngineTest {
         )
         unwrap(cache.async().putIfMatch("k", null, "v").handle { _, e -> e }.join()).assert().isSameAs(failure)
         Suspending.await {
-            memory.store("failing").read("cocache:failing:k", null, null, null)
+            memory.store(Keyspace("cocache:", "failing")).read("cocache:v8:failing:k", null, null, null)
         }.assert().isEqualTo(L1Read.Miss(false))
     }
 

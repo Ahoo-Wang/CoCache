@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
@@ -162,8 +163,8 @@ abstract class MultiNodeSpec {
     private fun sum(metric: (CacheMetrics) -> Long): Long = nodes.sumOf { metric(it.metrics()) }
 
     private fun remote(key: String): L1Read {
-        val store = backend.delegate.store(cacheName)
-        return Suspending.await { store.read("cocache:$cacheName:$key", null, null, null) }
+        val store = backend.delegate.store(Keyspace("cocache:", cacheName))
+        return Suspending.await { store.read("cocache:v8:$cacheName:$key", null, null, null) }
     }
 
     /**

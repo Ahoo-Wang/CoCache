@@ -16,6 +16,7 @@ package me.ahoo.cocache.redis
 import io.lettuce.core.cluster.SlotHash
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Suspending
@@ -33,7 +34,9 @@ class RedisShardedChannelTest {
     fun slotMigrationResetsAndKeepsReceivingEvents() {
         Assumptions.assumeTrue(RedisTestSupport.isCluster, "Redis Cluster only")
         val namespace = "sharded-migration-" + UUID.randomUUID()
-        val slot = SlotHash.getSlot(RedisInvalidationChannel.channelOf(namespace).toByteArray(Charsets.UTF_8))
+        val slot = SlotHash.getSlot(
+            RedisInvalidationChannel.channelOf(Keyspace("cocache:", namespace)).toByteArray(Charsets.UTF_8)
+        )
         val resets = AtomicInteger()
         val received = CopyOnWriteArrayList<List<String>>()
         val listener = object : InvalidationListener {
@@ -47,9 +50,9 @@ class RedisShardedChannelTest {
         }
         RedisTestSupport.shardedBackend().use { subscriber ->
             RedisTestSupport.shardedBackend().use { publisher ->
-                val subscription = subscriber.channel.subscribe(namespace, listener)
+                val subscription = subscriber.channel.subscribe(Keyspace("cocache:", namespace), listener)
                 val frame = InvalidationFrame.encode(NodeId.random(), listOf("before"))
-                Suspending.await { publisher.channel.publish(namespace, frame) }
+                Suspending.await { publisher.channel.publish(Keyspace("cocache:", namespace), frame) }
                 awaitCondition("event before migration") { received.contains(listOf("before")) }
                 val resetsBefore = resets.get()
 
@@ -59,7 +62,7 @@ class RedisShardedChannelTest {
                     awaitCondition("reset after migration") { resets.get() > resetsBefore }
                     val after = InvalidationFrame.encode(NodeId.random(), listOf("after"))
                     awaitCondition("event after migration") {
-                        Suspending.await { publisher.channel.publish(namespace, after) }
+                        Suspending.await { publisher.channel.publish(Keyspace("cocache:", namespace), after) }
                         received.contains(listOf("after"))
                     }
                 } finally {

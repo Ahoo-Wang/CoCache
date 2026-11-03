@@ -35,12 +35,17 @@ interface CoherenceBackend : AutoCloseable {
     val channel: InvalidationChannel
 
     /**
-     * 命名空间的存储：所有 key 都已包含命名空间前缀。Java 实现者返回 [FutureL1Store.adapt] 的结果。
+     * [keyspace] 的存储：传给它的 key 都是完整的存储 key（[Keyspace.storagePrefix] 加上编码后的 key）。Java 实现者返回
+     * [FutureL1Store.adapt] 的结果。`runtime.create` 为每个缓存调用一次，阻塞。
      *
      * 可选能力（条件读写、按版本有序的写入、集合）由存储的访问器表达（[L1Store.conditional]、[L1Store.versioned]、[L1Store.sets]）：
      * `runtime.create` 检查缓存需要的能力，缺失时创建失败。
+     *
+     * 有访问控制的后端在这里探测 [keyspace] 的实际频道（RFC 0005 §4.7，K8）：向它发布一个零 key 的帧（监听者什么也不做），
+     * 原子广播时与写入脚本一样以该前缀下的 key 执行。无权发布时创建失败，不降级为非原子广播：否则每个写入都在广播处失败，
+     * 而之前对 L1 的修改已经生效。
      */
-    fun store(namespace: String): L1Store
+    fun store(keyspace: Keyspace): L1Store
 
     override fun close() = Unit
 }

@@ -19,12 +19,12 @@ Each runbook goes from symptom to cause, check, and fix. The tools they rely on 
 
 1. [Inspect the key](./observability.md#inspect-key) on the bad instance. `local` older than `remote` confirms a missed message. `local.expiresAt` is when it heals at the latest.
 2. Check `cocache.resets` and the logs on that instance around the write time for `Invalidation channel heartbeat failed` or reconnects.
-3. Check that this instance uses the same `cocache.redis.channel-mode`, the same namespace, and the same Redis as the writer. The [health indicator](./observability.md#health) shows `channelMode`. Instances in different modes never hear each other.
+3. Check that this instance uses the same `cocache.redis.channel-mode`, the same key prefix and namespace, and the same Redis as the writer. The prefix is part of the channel name. The [health indicator](./observability.md#health) shows `channelMode`. Instances in different modes never hear each other.
 4. Check Redis for dropped subscribers: `redis-cli INFO stats` (`client_output_buffer_limit_disconnections` on recent versions) and `CONFIG GET client-output-buffer-limit` (`pubsub` class).
 
 **Fix.**
 
-- Make the channel mode, namespace, and Redis consistent across instances.
+- Make the channel mode, key prefix, namespace, and Redis consistent across instances.
 - If subscribers are dropped for output-buffer limits, raise the `pubsub` limit, or reduce message volume (batch with `invalidateAll`, or use `sharded` mode in Redis Cluster).
 - If the window is too long for your data, lower `local-max-age`. It is the bound for this failure.
 
@@ -169,7 +169,9 @@ CoCache fails fast on configuration it can't run safely. The message names the p
 | `cocache.caches configures undeclared caches [x]; declared caches: […]` | A `cocache.caches.[name]` entry for a cache that doesn't exist, usually a typo. Names match case-insensitively. | Fix the name, or remove the entry |
 | `Cache[x] - … must be positive …`, `refreshWindow[…] must be less than ttl[…] - ttlJitter[…]`, `refreshWindow[…] must be less than localMaxAge[…]` | An invalid policy after all layers were applied | Fix the value. Durations without a unit are seconds. |
 | `Cache[x] - @CoCache.<attribute> = FOREVER is not supported; FOREVER is only allowed for @CoCache.ttl and @CaffeineCache.expireAfterAccess.` | `FOREVER` on an attribute other than `ttl` or `@CaffeineCache.expireAfterAccess` | Use a duration |
-| `Cache[x] already exists.` / `Namespace[x] is already used by another cache.` | Two declarations with the same cache name or namespace, for example an interface and a spec bean | Rename one, or set a distinct `namespace` |
+| `Cache[x] already exists.` / `Namespace[x] with keyPrefix[p] is already used by another cache.` | Two declarations with the same cache name, or with the same prefix and namespace, for example an interface and a spec bean | Rename one, or set a distinct `namespace` or `keyPrefix` |
+| `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | A namespace with `:` or another character outside the set, often a 6.x prefix written into the namespace | Do what the message suggests: put the part up to the last `:` into `keyPrefix` |
+| `Redis denied publishing to the invalidation channel[…] of Keyspace(…): allow the channel pattern [&…v8:inv:*] …` | The Redis ACL doesn't allow the cache's channel. Creating a cache publishes one empty frame to it, so a missing permission fails at startup instead of at every write. | Allow the pattern in the message, see [Redis ACL](./index.md#acl) |
 | `Cannot register cache interface[…]: the bean name[x] is already in use.` / `Cannot register cache bean[x] for spec bean[…]` | The cache's bean name collides with another bean | Rename the cache (`@CoCache(name)`) or the spec bean |
 | `Cache interface[…] must extend Cache with concrete type arguments.` / `Cache spec bean[…] must declare its generic types` | Generics can't be resolved | Use concrete types, and declare the spec factory method's return type as `CacheSpec<K, V>` |
 | `Cache interface[…] declares abstract methods that do not match any Cache method: […]` | An extra abstract method on the interface | Make it a `default` method |
@@ -216,8 +218,8 @@ An empty encoded key throws `IllegalArgumentException`, and an empty collection 
 
 | Part | Value |
 |------|-------|
-| Storage key | `{keyPrefix}{namespace}:{encodedKey}`, for example `cocache:UserCache:42` |
-| Channel | `cocache:inv:{namespace}`, for example `cocache:inv:UserCache`. No key prefix. |
+| Storage key | `{keyPrefix}v8:{namespace}:{encodedKey}`, for example `cocache:v8:UserCache:42` |
+| Channel | `{keyPrefix}v8:inv:{namespace}`, for example `cocache:v8:inv:UserCache` |
 | Message | A binary frame, below |
 | Publish command | `PUBLISH`, or `SPUBLISH` when the caches use `channel-mode: sharded` |
 
@@ -233,14 +235,14 @@ repeated key count times:
 ```
 
 - Varints are unsigned LEB128: 7 bits per byte, low bits first, high bit set on every byte except the last. Values below 128 are one byte.
-- The keys are full **storage keys**, including prefix and namespace. One frame can carry many keys of the same namespace.
+- The keys are full **storage keys**, including prefix and namespace. One frame can carry many keys of the same cache.
 - The publisher id must differ from every CoCache instance's id: use 16 random bytes. An instance ignores frames that carry its own id.
-- Malformed frames are dropped with a `WARN` and have no effect.
+- A frame CoCache can't read (unknown version, truncated, trailing bytes) clears every L2 copy of the caches on that channel, with a `WARN`. It costs reloads, never a missed invalidation. A frame with no keys does nothing.
 
 For each change, after the source commits:
 
 1. **`DEL` the storage keys.** This removes the L1 copy and destroys any lease or refresh token, so a load already in flight can't write the old value back.
-2. **Publish the frame** on the namespace's channel. Every instance drops its L2 copy.
+2. **Publish the frame** on the cache's channel. Every instance drops its L2 copy.
 
 Delete first. If you publish first, an instance can reload the old L1 value into L2 before the delete, and keep it until `local-max-age`. If you skip the publish, instances keep their L2 copies until `local-max-age`. If you skip the delete, they reload the old value from L1.
 
@@ -266,18 +268,18 @@ def frame(storage_keys: list[str]) -> bytes:
     return bytes(body)
 
 r = redis.Redis()
-keys = ["cocache:UserCache:42"]
+keys = ["cocache:v8:UserCache:42"]
 r.delete(*keys)                                  # in Redis Cluster, one key per call
-r.publish("cocache:inv:UserCache", frame(keys))  # r.spublish(...) in sharded mode
+r.publish("cocache:v8:inv:UserCache", frame(keys))  # r.spublish(...) in sharded mode
 ```
 
 From a shell, for one ASCII key shorter than 128 bytes (`bash`):
 
 ```bash
-key='cocache:UserCache:42'
+key='cocache:v8:UserCache:42'
 redis-cli DEL "$key"
 { printf '\x01'; head -c 16 /dev/urandom; printf '\x01'; printf "\\x$(printf %02x ${#key})"; printf '%s' "$key"; } \
-  | redis-cli -x PUBLISH cocache:inv:UserCache
+  | redis-cli -x PUBLISH cocache:v8:inv:UserCache
 ```
 
 On the JVM without `cocache-core`, `InvalidationFrame.encode(NodeId.random(), storageKeys)` in `cocache-api` (no runtime dependencies) builds the frame.
@@ -294,13 +296,13 @@ CoCache values aren't readable JSON: each starts with a 36-byte binary header. U
 
 | Question | Command |
 |----------|---------|
-| Which keys does a cache have? | `redis-cli --scan --pattern 'cocache:UserCache:*' \| head` (per master in a cluster) |
-| What state is a key in? | `redis-cli TYPE cocache:UserCache:42`: `string` (value, negative entry, or lease) or `hash` (set). For a string, `redis-cli GETRANGE cocache:UserCache:42 2 2` returns the state: `V` value, `M` negative entry, `L` lease. |
-| How long does it live? | `redis-cli PTTL cocache:UserCache:42` (milliseconds, `-1` never expires) |
+| Which keys does a cache have? | `redis-cli --scan --pattern 'cocache:v8:UserCache:*' \| head` (per master in a cluster) |
+| What state is a key in? | `redis-cli TYPE cocache:v8:UserCache:42`: `string` (value, negative entry, or lease) or `hash` (set). For a string, `redis-cli GETRANGE cocache:v8:UserCache:42 2 2` returns the state: `V` value, `M` negative entry, `L` lease. |
+| How long does it live? | `redis-cli PTTL cocache:v8:UserCache:42` (milliseconds, `-1` never expires) |
 | What's in it? | `GET /actuator/cocache/{name}/{key}` decodes both levels. Raw: `redis-cli GETRANGE key 36 -1` returns the codec's bytes. |
-| How much memory? | `redis-cli MEMORY USAGE cocache:UserCache:42` |
-| Who listens on a namespace? | `redis-cli PUBSUB NUMSUB cocache:inv:UserCache`, or `PUBSUB SHARDNUMSUB` in `sharded` mode. In a cluster, counts are per node. |
+| How much memory? | `redis-cli MEMORY USAGE cocache:v8:UserCache:42` |
+| Who listens on a cache's channel? | `redis-cli PUBSUB NUMSUB cocache:v8:inv:UserCache`, or `PUBSUB SHARDNUMSUB` in `sharded` mode. In a cluster, counts are per node. |
 | Which connections are CoCache's? | Set `cocache.redis.client-name`, then `redis-cli CLIENT LIST` and look for that `name`. Subscription connections show `sub=` or `ssub=` above 0. |
-| Are invalidations flowing? | `redis-cli SUBSCRIBE cocache:inv:UserCache` (or `SSUBSCRIBE`) prints each frame. The storage keys are readable in the binary output. |
+| Are invalidations flowing? | `redis-cli SUBSCRIBE cocache:v8:inv:UserCache` (or `SSUBSCRIBE`) prints each frame. The storage keys are readable in the binary output. |
 
 Don't modify CoCache keys by hand, except through the [invalidation protocol](#external-invalidation).

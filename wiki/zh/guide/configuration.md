@@ -92,7 +92,7 @@ cocache:
 
 ### key 前缀 {#key-prefix}
 
-存储 key 是 `{keyPrefix}{namespace}:{encodedKey}`（见[声明缓存](./caches.md#storage-keys)）。统一设置前缀，可以隔离共用一个 Redis 的多个应用：
+存储 key 是 `{keyPrefix}v8:{namespace}:{encodedKey}`（见[声明缓存](./caches.md#storage-keys)）。统一设置前缀，可以隔离共用一个 Redis 的多个应用：
 
 ```yaml
 cocache:
@@ -103,7 +103,7 @@ cocache:
       key-prefix: "shared:"
 ```
 
-`caches.[name].key-prefix` 覆盖 `defaults.key-prefix`，后者又覆盖声明与定制器，包括 `@CoCache` 中显式写出的 `keyPrefix`。同一应用的所有实例必须使用相同的前缀，修改前缀相当于冷启动。失效频道 `cocache:inv:{namespace}` 不含前缀，所以在同一个 Redis 上 namespace 相同的应用会收到彼此的消息；这只是多余的处理，不会产生错误数据。
+`caches.[name].key-prefix` 覆盖 `defaults.key-prefix`，后者又覆盖声明与定制器，包括 `@CoCache` 中显式写出的 `keyPrefix`。同一应用的所有实例必须使用相同的前缀，修改前缀相当于冷启动。失效频道 `{keyPrefix}v8:inv:{namespace}` 带有前缀，前缀不同的应用收不到彼此的消息。前缀可以为空：这时 key 以 `v8:` 与 `v8!` 开头，Redis ACL 要相应修改（见 [Redis ACL](../operations/index.md#acl)）。
 
 ## 执行器 {#executors}
 

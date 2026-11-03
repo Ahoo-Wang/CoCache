@@ -33,12 +33,12 @@ interface FutureInvalidationChannel {
     /**
      * 同 [InvalidationChannel.subscribe]：阻塞地订阅，得到服务端确认并回调 [InvalidationListener.onReset] 之后返回。
      */
-    fun subscribe(namespace: String, listener: InvalidationListener): Subscription
+    fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription
 
     /**
      * 同 [InvalidationChannel.publish]：发布失效帧，发布完成时以 `null` 完成。
      */
-    fun publish(namespace: String, frame: ByteArray): CompletableFuture<Void?>
+    fun publish(keyspace: Keyspace, frame: ByteArray): CompletableFuture<Void?>
 
     companion object {
         /**
@@ -63,11 +63,11 @@ fun FutureInvalidationChannel.asInvalidationChannel(): InvalidationChannel = Fut
  * [FutureInvalidationChannel.adapt] 的实现。
  */
 private class FutureInvalidationChannelAdapter(private val channel: FutureInvalidationChannel) : InvalidationChannel {
-    override fun subscribe(namespace: String, listener: InvalidationListener): Subscription =
-        channel.subscribe(namespace, listener)
+    override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription =
+        channel.subscribe(keyspace, listener)
 
-    override suspend fun publish(namespace: String, frame: ByteArray) {
-        awaitNullable(channel, "publish") { channel.publish(namespace, frame) }
+    override suspend fun publish(keyspace: Keyspace, frame: ByteArray) {
+        awaitNullable(channel, "publish") { channel.publish(keyspace, frame) }
     }
 
     override fun toString(): String = "FutureInvalidationChannel.adapt($channel)"

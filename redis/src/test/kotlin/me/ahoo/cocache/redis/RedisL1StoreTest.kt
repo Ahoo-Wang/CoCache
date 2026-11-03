@@ -29,6 +29,7 @@ import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Fill
@@ -57,7 +58,9 @@ import java.util.concurrent.TimeUnit
 /**
  * [backend] 的原生存储（`RedisBackend.store` 返回的就是它）。
  */
-internal fun RedisBackend.l1Store(namespace: String): RedisL1Store = store(namespace) as RedisL1Store
+internal fun RedisBackend.l1Store(namespace: String): RedisL1Store = store(
+    Keyspace("cocache:", namespace)
+) as RedisL1Store
 
 /**
  * 原生的 Redis `L1Store`（RFC 0005 §4.3）直接对 Redis 的用例：每个操作与能力面、广播、在调用方的调度器上恢复、批量先全部发出再等待、
@@ -77,7 +80,7 @@ class RedisL1StoreTest {
 
     private fun <T : AutoCloseable> T.closing(): T = also { closeables.add(it) }
 
-    private fun key(name: String) = "cocache:$namespace:$name"
+    private fun key(name: String) = "cocache:v8:$namespace:$name"
 
     private fun token() = Token(node, sequence.incrementAndGet())
 
@@ -253,7 +256,7 @@ class RedisL1StoreTest {
         assumeTrue(backend.atomicBroadcast)
         val store = backend.l1Store(namespace)
         val received = CopyOnWriteArrayList<List<String>>()
-        RedisTestSupport.subscribeRaw(RedisInvalidationChannel.channelOf(namespace)) {
+        RedisTestSupport.subscribeFrames(RedisInvalidationChannel.channelOf(Keyspace("cocache:", namespace))) {
             received.add(InvalidationFrame.decode(it).keys)
         }.closing()
         val (a, b, c) = listOf(key("a"), key("b"), key("c"))

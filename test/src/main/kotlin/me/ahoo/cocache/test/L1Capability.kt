@@ -14,6 +14,7 @@
 package me.ahoo.cocache.test
 
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assumptions
@@ -84,7 +85,7 @@ internal object CapabilityDeclaration {
     fun verify(backend: CoherenceBackend, declared: Set<L1Capability>) {
         repeat(2) {
             val namespace = "tck-capabilities-" + UUID.randomUUID().toString().substring(0, 8)
-            val store = backend.store(namespace)
+            val store = backend.store(Keyspace("cocache:", namespace))
             val provided = L1Capability.of(store)
             provided.assert().withFailMessage {
                 "${store.javaClass.name} on namespace[$namespace] provides the L1 capabilities $provided, " +

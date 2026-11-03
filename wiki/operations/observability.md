@@ -190,7 +190,7 @@ The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{leve
 
 ### Encoded keys {#encoded-key}
 
-`{key}` is the **encoded key**: the part of the Redis key after `{keyPrefix}{namespace}:`. That is the key's `toString()`, or the result of the cache's `keyExpression`, so the endpoint works for any key type.
+`{key}` is the **encoded key**: the part of the Redis key after `{keyPrefix}v8:{namespace}:`. That is the key's `toString()`, or the result of the cache's `keyExpression`, so the endpoint works for any key type.
 
 | Cache key | Encoded key | Request |
 |-----------|-------------|---------|
@@ -211,7 +211,7 @@ curl -s localhost:8080/actuator/cocache/UserCache/42
 ```json
 {
   "cache": "UserCache",
-  "storageKey": "cocache:UserCache:42",
+  "storageKey": "cocache:v8:UserCache:42",
   "local": { "state": "VALUE", "value": "User(id=42, name=Ada)", "expiresAt": "2026-10-19T08:05:00Z", "refreshAt": null, "expired": false },
   "remote": { "state": "VALUE", "value": "User(id=42, name=Ada)", "ttl": "PT58M", "format": 1, "error": null },
   "invalidationPending": false
@@ -262,7 +262,7 @@ Loggers live under `me.ahoo.cocache`. Lines worth an alert or a dashboard:
 | `WARN` | `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.` | `sharded` mode, failover detected by the heartbeat |
 | `WARN` | `Invalidation channel[…] - resubscribe failed, retry on next heartbeat.` | Resubscription will be retried |
 | `WARN` | `Invalidation channel[…] - subscribe acknowledgement not received in …` | Redis didn't confirm a subscription within `command-timeout` |
-| `WARN` | `Ignore malformed invalidation frame on channel[…]` | Someone publishes non-CoCache messages on a CoCache channel. See [external invalidation](./troubleshooting.md#external-invalidation). |
+| `WARN` | `Unreadable invalidation frame on channel[…] - reset subscribers.` | A frame this version can't read reached a CoCache channel: someone publishes non-CoCache messages there, or a newer CoCache sends a frame type this one doesn't know. Every cache on the channel clears its L2, so the cost is reloads. See [external invalidation](./troubleshooting.md#external-invalidation). |
 | `WARN` | `Cache[…] - key[…] - remote … failed, degrading.` | A Redis read, fill, release, or reclaim failed. The read was served from the source. |
 | `WARN` | `Cache[…] - key[…] - corrupted payload, reclaim and reload.` | An L1 value couldn't be decoded |
 | `WARN` | `Cache[…] - key[…] - refresh failed.` / `refresh rejected.` | Refresh-ahead didn't run or failed. The value expires normally. |

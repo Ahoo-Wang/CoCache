@@ -17,6 +17,7 @@ import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.ForeignFormatMode
 import java.time.Duration
@@ -91,7 +92,8 @@ fun interface KeyFilter {
 /**
  * 缓存声明（不可变数据）。所有有状态组件都由 [CacheRuntime] 按声明新建，不可能被多个缓存共享。
  *
- * 存储 key 为 `{keyPrefix}{namespace}:{keyEncoder(key)}`。
+ * 存储 key 为 `{keyPrefix}v8:{namespace}:{keyEncoder(key)}`（[keyspace]）。命名空间的字符集为 `[A-Za-z0-9._-]+`，
+ * 不含 `:`：6.x 中写在命名空间里的前缀须移到 [keyPrefix]，否则构建失败（RFC 0005 §4.7）。
  */
 class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
     val name: String = builder.name
@@ -149,6 +151,11 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
      */
     private val hasSource: Boolean
         get() = loader != null || asyncLoader != null || versionedLoader != null || versionedAsyncLoader != null
+
+    /**
+     * 缓存占用的 keyspace（前缀与命名空间）：存储 key 的前缀与失效频道都由它决定。构建时校验命名空间的字符集。
+     */
+    val keyspace: Keyspace = keyspaceOf("Cache", name, keyPrefix, namespace)
 
     override fun toString(): String = "CacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"
 
@@ -232,6 +239,8 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
 
 /**
  * L1 是唯一副本的集合缓存声明：没有数据源（按构造禁止 loader）。默认永不过期。
+ *
+ * 存储 key 与命名空间的规则同 [CacheSpec]。
  */
 class SetCacheSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>) {
     val name: String = builder.name
@@ -251,6 +260,11 @@ class SetCacheSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
                 "and reclaiming unreadable content deletes it. Remove the setting or use FAIL."
         }
     }
+
+    /**
+     * 同 [CacheSpec.keyspace]。
+     */
+    val keyspace: Keyspace = keyspaceOf("SetCache", name, keyPrefix, namespace)
 
     override fun toString(): String = "SetCacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"
 
@@ -325,4 +339,15 @@ fun <K : Any, E : Any> setCacheSpec(name: String, block: SetCacheSpec.Builder<K,
 private fun requireValidName(name: String, namespace: String) {
     require(name.isNotBlank()) { "name must not be blank." }
     require(namespace.isNotBlank()) { "namespace must not be blank." }
+}
+
+/**
+ * 校验命名空间的字符集（[Keyspace]），失败信息带上缓存名。
+ */
+private fun keyspaceOf(kind: String, name: String, keyPrefix: String, namespace: String): Keyspace {
+    try {
+        return Keyspace(keyPrefix, namespace)
+    } catch (e: IllegalArgumentException) {
+        throw IllegalArgumentException("$kind[$name] - ${e.message}", e)
+    }
 }

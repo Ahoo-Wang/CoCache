@@ -19,6 +19,7 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Subscription
@@ -75,7 +76,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         get() = context.async.blocking
     private val registrations = CopyOnWriteArrayList<Registration>()
     private val names = ConcurrentHashMap<String, Registration>()
-    private val namespaces = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * 已登记的 keyspace（前缀与命名空间）：命名空间相同、前缀不同的两个缓存 key 与频道都不重叠，可以共存。
+     */
+    private val keyspaces = ConcurrentHashMap.newKeySet<Keyspace>()
     private val closed = AtomicBoolean(false)
 
     /**
@@ -121,7 +126,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     }
 
     /**
-     * 按声明创建缓存。同一运行时内缓存名与命名空间都不得重复。
+     * 按声明创建缓存。同一运行时内缓存名与 keyspace（[CacheSpec.keyspace]，前缀加命名空间）都不得重复。
      *
      * 创建时检查缓存需要的 L1 能力（RFC 0005 §4.3）：带版本的缓存（[CacheSpec.versioned]）要求存储支持按版本有序的写入
      * （[L1Store.versioned]），否则抛出 [UnsupportedOperationException]，不注册任何东西。普通缓存不要求条件读写：
@@ -131,12 +136,12 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         if (spec.versioned) {
             return createVersioned(spec)
         }
-        return register(spec.name, spec.namespace, NONE, { it }) { store -> CoherentEngine(spec, store, context) }
+        return register(spec.name, spec.keyspace, NONE, { it }) { store -> CoherentEngine(spec, store, context) }
     }
 
     private fun <K : Any, V : Any> createVersioned(spec: CacheSpec<K, V>): Cache<K, V> {
         val engineSpec = spec.versionedEngineSpec()
-        return register(spec.name, spec.namespace, listOf(Capability.VERSIONED), { VersionedCache(it) }) { store ->
+        return register(spec.name, spec.keyspace, listOf(Capability.VERSIONED), { VersionedCache(it) }) { store ->
             CoherentEngine(engineSpec, store, context, VersionedFormat(spec.codec))
         }
     }
@@ -147,7 +152,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     fun <K : Any, E : Any> create(spec: SetCacheSpec<K, E>): SetCache<K, E> {
         return register(
             spec.name,
-            spec.namespace,
+            spec.keyspace,
             listOf(Capability.SETS),
             { it }
         ) { store -> SetEngine(spec, store, context) }
@@ -160,66 +165,69 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     @Suppress("TooGenericExceptionCaught")
     private fun <C, R : Any> register(
         name: String,
-        namespace: String,
+        keyspace: Keyspace,
         required: List<Capability>,
         expose: (C) -> R,
         factory: (L1Store) -> C
     ): R where C : AbstractEngine<*, *> {
         check(!closed.get()) { "CacheRuntime is closed." }
         require(names[name] == null) { "Cache[$name] already exists." }
-        require(namespaces.add(namespace)) { "Namespace[$namespace] is already used by another cache." }
-        val (provided, engine) = createEngine(name, namespace, required, factory)
+        require(keyspaces.add(keyspace)) {
+            "Namespace[${keyspace.namespace}] with keyPrefix[${keyspace.keyPrefix}] is already used by another cache."
+        }
+        val (provided, engine) = createEngine(name, keyspace, required, factory)
         val exposed = expose(engine)
         val registration = Registration(engine, exposed)
         if (names.putIfAbsent(name, registration) != null) {
-            namespaces.remove(namespace)
+            keyspaces.remove(keyspace)
             throw IllegalArgumentException("Cache[$name] already exists.")
         }
         registrations.add(registration)
         // 订阅建立时通道会回调 onReset（清空空的 L2，无害）
         registration.subscription = try {
-            backend.channel.subscribe(namespace, engine)
+            backend.channel.subscribe(keyspace, engine)
         } catch (e: Exception) {
-            // 回滚：否则同名重试会因“已存在”失败，而该命名空间永远收不到失效
+            // 回滚：否则同名重试会因“已存在”失败，而该 keyspace 永远收不到失效
             registrations.remove(registration)
             names.remove(name, registration)
-            namespaces.remove(namespace)
+            keyspaces.remove(keyspace)
             closeQuietly("cache $name") { engine.close() }
             throw e
         }
         log.info {
-            "Cache[$name] - created on namespace[$namespace], node[$nodeId], L1 capabilities${provided.joinToString(
-                prefix = "[",
-                postfix = "]"
-            )}."
+            "Cache[$name] - created on namespace[${keyspace.namespace}], keyPrefix[${keyspace.keyPrefix}], node[$nodeId], " +
+                "L1 capabilities${provided.joinToString(
+                    prefix = "[",
+                    postfix = "]"
+                )}."
         }
         return exposed
     }
 
     /**
-     * 创建存储、检查能力并创建引擎，返回存储提供的能力（启动日志输出）。失败时回滚：释放命名空间，否则同名、同命名空间永远无法重试
-     * （RFC 0005 附录 A.L9）。存储没有 `close`：连接等资源属于后端。
+     * 创建存储、检查能力并创建引擎，返回存储提供的能力（启动日志输出）。失败时回滚：释放 keyspace，否则同名、同 keyspace 永远无法重试
+     * （RFC 0005 附录 A.L9）。存储没有 `close`：连接等资源属于后端。创建存储时后端探测实际频道（K8），无权发布时在这里失败。
      */
     @Suppress("TooGenericExceptionCaught")
     private fun <C : AbstractEngine<*, *>> createEngine(
         name: String,
-        namespace: String,
+        keyspace: Keyspace,
         required: List<Capability>,
         factory: (L1Store) -> C
     ): Pair<List<Capability>, C> {
         try {
-            val store = backend.store(namespace)
+            val store = backend.store(keyspace)
             val provided = Capability.of(store)
             val missing = required - provided.toSet()
             if (missing.isNotEmpty()) {
                 throw UnsupportedOperationException(
                     "Cache[$name] needs the L1 capabilities$missing, but the store of backend ${backend.javaClass.name} " +
-                        "on namespace[$namespace] provides only $provided."
+                        "on namespace[${keyspace.namespace}] provides only $provided."
                 )
             }
             return provided to factory(store)
         } catch (e: Exception) {
-            namespaces.remove(namespace)
+            keyspaces.remove(keyspace)
             throw e
         }
     }

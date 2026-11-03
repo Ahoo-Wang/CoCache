@@ -19,6 +19,7 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
@@ -46,6 +47,9 @@ import java.util.concurrent.atomic.AtomicLong
  * 后端以 [expectedCapabilities] 声明存储的可选能力；集合成员的用例只在没有声明 [L1Capability.SETS] 时跳过。
  *
  * 时间相关用例通过 [elapse] 推进时间：内存后端推进手动时钟，真实后端可以 sleep（用例只使用很短的 TTL）。
+ *
+ * 订阅帧的用例忽略零 key 的帧（或只记录本用例发出的帧）：它们是创建存储时的频道探测（RFC 0005 §4.7，K8），异步投递的通道
+ * （如 Redis Cluster 的经典 Pub/Sub）可能在订阅之后才送达 [setup] 中创建存储时发出的那一帧。
  */
 abstract class BackendProtocolSpec {
     protected abstract fun createBackend(): CoherenceBackend
@@ -64,6 +68,11 @@ abstract class BackendProtocolSpec {
     protected lateinit var backend: CoherenceBackend
     protected lateinit var store: L1Store
     protected lateinit var namespace: String
+
+    /**
+     * 用例的 keyspace：默认前缀 `cocache:` 加 [namespace]。
+     */
+    protected lateinit var keyspace: Keyspace
     private val node = NodeId.random()
     private val sequence = AtomicLong()
 
@@ -80,7 +89,8 @@ abstract class BackendProtocolSpec {
     open fun setup() {
         backend = createBackend()
         namespace = "tck-" + UUID.randomUUID().toString().substring(0, 8)
-        store = backend.store(namespace)
+        keyspace = Keyspace("cocache:", namespace)
+        store = backend.store(keyspace)
     }
 
     @AfterEach
@@ -105,7 +115,7 @@ abstract class BackendProtocolSpec {
     protected val sets: SetL1Store
         get() = requireNotNull(store.sets()) { "${store.javaClass.name} does not provide the sets capability." }
 
-    protected fun key(): String = "cocache:$namespace:" + UUID.randomUUID()
+    protected fun key(): String = keyspace.storageKey(UUID.randomUUID().toString())
 
     protected fun token(): Token = Token(node, sequence.incrementAndGet())
 
@@ -503,14 +513,14 @@ abstract class BackendProtocolSpec {
         val resets = AtomicInteger()
         val listener = object : InvalidationListener {
             override fun onInvalidated(keys: List<String>, origin: NodeId) {
-                received.add(keys to origin)
+                if (keys.isNotEmpty()) received.add(keys to origin)
             }
 
             override fun onReset() {
                 resets.incrementAndGet()
             }
         }
-        val subscription = backend.channel.subscribe(namespace, listener)
+        val subscription = backend.channel.subscribe(keyspace, listener)
         awaitCondition("reset on subscribe") { resets.get() >= 1 }
         val key = key()
         val keys = mutableListOf<String>()
@@ -525,7 +535,7 @@ abstract class BackendProtocolSpec {
             keys.add(key)
         }
         if (!backend.atomicBroadcast) {
-            keys.forEach { backend.channel.publish(namespace, frame(it)) }
+            keys.forEach { backend.channel.publish(keyspace, frame(it)) }
         }
         awaitCondition("${keys.size} broadcasts") { received.size >= keys.size }
         received.all { it.first == listOf(key) && it.second == node }.assert().isTrue()
@@ -534,10 +544,81 @@ abstract class BackendProtocolSpec {
         val countAfterClose = received.size
         store.invalidate(listOf(key), frame(key))
         if (!backend.atomicBroadcast) {
-            backend.channel.publish(namespace, frame(key))
+            backend.channel.publish(keyspace, frame(key))
         }
         Thread.sleep(50)
         received.size.assert().isEqualTo(countAfterClose)
+    }
+
+    /**
+     * 读不懂的帧（未知版本、预留的帧版本 2、截断、尾随字节）按该频道的 `onReset` 处理，不丢弃（RFC 0005 §4.7，D3）：
+     * 丢弃的就是一次失效。零 key 的帧是合法帧（存储创建时的频道探测），照常投递，不重置；之后的帧照常投递。
+     */
+    @Test
+    fun unreadableFramesResetTheChannelSubscribers() = l1 {
+        val received = CopyOnWriteArrayList<List<String>>()
+        val resets = AtomicInteger()
+        val listener = object : InvalidationListener {
+            override fun onInvalidated(keys: List<String>, origin: NodeId) {
+                if (origin == node) received.add(keys)
+            }
+
+            override fun onReset() {
+                resets.incrementAndGet()
+            }
+        }
+        backend.channel.subscribe(keyspace, listener).use {
+            awaitCondition("reset on subscribe") { resets.get() >= 1 }
+            val key = key()
+            val unknownVersion = frame(key).also { it[0] = 9 }
+            val reserved = frame(key).also { it[0] = InvalidationFrame.NAMESPACE_RESET_VERSION }
+            val truncated = frame(key).let { it.copyOf(it.size - 1) }
+            val trailing = frame(key) + byteArrayOf(1)
+            val unreadable = listOf(unknownVersion, reserved, truncated, trailing)
+            unreadable.forEachIndexed { index, frame ->
+                backend.channel.publish(keyspace, frame)
+                awaitCondition("reset by unreadable frame #$index") { resets.get() >= 2 + index }
+            }
+            backend.channel.publish(keyspace, frame())
+            backend.channel.publish(keyspace, frame(key))
+            awaitCondition("frames after the unreadable ones") { received.size >= 2 }
+            received.assert().containsExactly(emptyList(), listOf(key))
+            resets.get().assert().isEqualTo(1 + unreadable.size)
+        }
+    }
+
+    /**
+     * 频道按 keyspace 划分（RFC 0005 §4.7）：命名空间相同、前缀不同的两个 keyspace 收不到彼此的帧。
+     * 6.x 的频道只按命名空间命名，前缀不同的两个应用会收到彼此的帧。
+     */
+    @Test
+    fun channelsAreSeparatedByKeyspace() = l1 {
+        val other = Keyspace("tck-other:", namespace)
+        val ours = CopyOnWriteArrayList<List<String>>()
+        val theirs = CopyOnWriteArrayList<List<String>>()
+        val resets = AtomicInteger()
+        fun recording(into: MutableList<List<String>>) = object : InvalidationListener {
+            override fun onInvalidated(keys: List<String>, origin: NodeId) {
+                if (keys.isNotEmpty()) into.add(keys)
+            }
+
+            override fun onReset() {
+                resets.incrementAndGet()
+            }
+        }
+        backend.channel.subscribe(keyspace, recording(ours)).use {
+            backend.channel.subscribe(other, recording(theirs)).use {
+                awaitCondition("reset on subscribe") { resets.get() >= 2 }
+                val ourKey = key()
+                val theirKey = other.storageKey(UUID.randomUUID().toString())
+                backend.channel.publish(keyspace, frame(ourKey))
+                backend.channel.publish(other, frame(theirKey))
+                awaitCondition("both frames") { ours.isNotEmpty() && theirs.isNotEmpty() }
+                // 同一频道上的帧有序：两者共用频道时，对方的订阅者先收到我们的帧，断言确定失败
+                ours.assert().containsExactly(listOf(ourKey))
+                theirs.assert().containsExactly(listOf(theirKey))
+            }
+        }
     }
 
     /**
@@ -602,20 +683,20 @@ abstract class BackendProtocolSpec {
         val resets = AtomicInteger()
         val listener = object : InvalidationListener {
             override fun onInvalidated(keys: List<String>, origin: NodeId) {
-                received.add(keys to origin)
+                if (keys.isNotEmpty()) received.add(keys to origin)
             }
 
             override fun onReset() {
                 resets.incrementAndGet()
             }
         }
-        backend.channel.subscribe(namespace, listener).use {
+        backend.channel.subscribe(keyspace, listener).use {
             awaitCondition("reset on subscribe") { resets.get() >= 1 }
             val keys = (1..5).map { key() }
             val frame = InvalidationFrame.encode(node, keys)
             store.putAll(keys.map { Put(it, scalar(it), null) }, frame)
             if (!backend.atomicBroadcast) {
-                backend.channel.publish(namespace, frame)
+                backend.channel.publish(keyspace, frame)
             }
             awaitCondition("every key broadcast") { received.flatMap { it.first }.toSet() == keys.toSet() }
             Thread.sleep(50)

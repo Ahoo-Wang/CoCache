@@ -26,6 +26,7 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -200,13 +201,13 @@ abstract class EngineSpec {
 
     protected fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 
-    protected fun storageKey(key: String) = "cocache:$cacheName:$key"
+    protected fun storageKey(key: String) = "cocache:v8:$cacheName:$key"
 
     /**
      * 不经过引擎直接读 L1。
      */
     protected fun remote(key: String): L1Read = Suspending.await {
-        backend.delegate.store(cacheName).read(storageKey(key), null, null, null)
+        backend.delegate.store(Keyspace("cocache:", cacheName)).read(storageKey(key), null, null, null)
     }
 
     protected fun remoteValue(key: String): String? {
@@ -219,7 +220,7 @@ abstract class EngineSpec {
      */
     protected fun addMembersSilently(key: String, frame: ByteArray) = Suspending.await {
         requireNotNull(
-            backend.delegate.store(cacheName).sets()
+            backend.delegate.store(Keyspace("cocache:", cacheName)).sets()
         ).addMembers(storageKey(key), listOf("a".toByteArray()), null, frame)
     }
 
@@ -227,9 +228,12 @@ abstract class EngineSpec {
      * 不广播地直接写 L1（模拟绕过协议的写入或丢失的事件）。
      */
     protected fun writeRemoteSilently(key: String, bytes: ByteArray) = Suspending.await {
-        backend.delegate.store(
-            cacheName
-        ).put(storageKey(key), Envelope.Scalar(bytes), null, InvalidationFrame.encode(NodeId.random(), emptyList()))
+        backend.delegate.store(Keyspace("cocache:", cacheName)).put(
+            storageKey(key),
+            Envelope.Scalar(bytes),
+            null,
+            InvalidationFrame.encode(NodeId.random(), emptyList())
+        )
     }
 
     /**
@@ -281,6 +285,79 @@ abstract class EngineSpec {
         lookup.assert().isInstanceOf(Lookup.Present::class.java)
         (lookup as Lookup.Present).value.assert().isEqualTo("v")
         requireNotNull(lookup.expiresAt).toEpochMilli().assert().isGreaterThan(clock.nowMillis())
+    }
+
+    /**
+     * 8.x 的命名空间不含 `:`（RFC 0005 §4.7，D5）：6.x 中写进命名空间的前缀在创建时失败，提示把它移到 keyPrefix，
+     * 不注册任何东西。
+     */
+    @Test
+    fun namespaceWithColonFailsAtCreation() {
+        val error = runCatching { nodeA.cache(spec { namespace = "app:$cacheName" }) }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalArgumentException::class.java)
+        requireNotNull(error?.message).assert().contains("move the prefix into keyPrefix")
+        nodeA.cache(cacheName).assert().isNull()
+        database["k"] = "v"
+        nodeA.cache()["k"].assert().isEqualTo("v")
+    }
+
+    /**
+     * 零 key 的帧（存储创建时的频道探测，RFC 0005 §4.7，K8）什么也不做：不淘汰 L2，不计入收到的失效。
+     */
+    @Test
+    fun zeroKeyFrameIsIgnored() {
+        val cache = nodeB.cache()
+        database["k"] = "v"
+        cache["k"].assert().isEqualTo("v")
+        val keyspace = Keyspace("cocache:", cacheName)
+        Suspending.await {
+            backend.channel.publish(keyspace, InvalidationFrame.encode(NodeId.random(), emptyList()))
+            backend.channel.publish(keyspace, InvalidationFrame.encode(NodeId.random(), listOf(storageKey("other"))))
+        }
+        // 同一频道上的帧有序：收到第二帧时第一帧已经处理过
+        awaitCondition("the frame after the zero-key one") { nodeB.metrics().invalidationsReceived >= 1 }
+        nodeB.metrics().invalidationsReceived.assert().isEqualTo(1)
+        val reads = backend.reads.get()
+        cache["k"].assert().isEqualTo("v")
+        backend.reads.get().assert().isEqualTo(reads)
+    }
+
+    /**
+     * 命名空间相同、前缀不同的两个缓存相互隔离（RFC 0005 §4.7）：存储 key 不同，失效频道也不同，一个缓存的写入不会让另一个缓存
+     * 收到失效。同一个运行时可以同时创建它们（按 keyspace 登记）。
+     */
+    @Test
+    fun sameNamespaceUnderTwoPrefixesIsIsolated() {
+        val otherName = "$cacheName-other"
+        val other = cacheSpec<String, String>(otherName) {
+            namespace = cacheName
+            keyPrefix = "tck-other:"
+            codec = TestCodec
+            loader = this@EngineSpec.loader
+            policy = policy()
+            access.source(this)
+        }
+        val ours = nodeA.cache()
+        val theirs = nodeA.cache(other)
+        val oursB = nodeB.cache()
+        val theirsB = nodeB.cache(other)
+        fun theirMetrics() = requireNotNull(nodeB.metrics(otherName))
+        ours.put("k", "ours")
+        theirs.put("k", "theirs")
+        awaitCondition("each cache receives its own invalidation") {
+            nodeB.metrics().invalidationsReceived >= 1 && theirMetrics().invalidationsReceived >= 1
+        }
+        oursB["k"].assert().isEqualTo("ours")
+        theirsB["k"].assert().isEqualTo("theirs")
+        remoteValue("k").assert().isEqualTo("ours")
+        loads.get().assert().isEqualTo(0)
+
+        ours.invalidate("k")
+        awaitCondition("node B receives the invalidation") { nodeB.metrics().invalidationsReceived >= 2 }
+        theirMetrics().invalidationsReceived.assert().isEqualTo(1)
+        val reads = backend.reads.get()
+        theirsB["k"].assert().isEqualTo("theirs")
+        backend.reads.get().assert().isEqualTo(reads)
     }
 
     @Test
@@ -1309,7 +1386,7 @@ abstract class EngineSpec {
     fun negativeEntriesAndLeasesHoldNoValue() {
         assumeDeclared(L1Capability.CONDITIONAL)
         val cache = storeOfRecord()
-        val l1 = backend.delegate.store(cacheName)
+        val l1 = backend.delegate.store(Keyspace("cocache:", cacheName))
         Suspending.await {
             l1.put(
                 storageKey("negative"),

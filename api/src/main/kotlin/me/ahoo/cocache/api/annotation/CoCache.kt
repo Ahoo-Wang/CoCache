@@ -31,7 +31,7 @@ annotation class CoCache(
      */
     val name: String = "",
     /**
-     * 命名空间（L1 key 与失效频道的一部分），默认等于缓存名。
+     * 命名空间（L1 key 与失效频道的一部分），默认等于缓存名。字符集为 `[A-Za-z0-9._-]+`，不含 `:`：前缀写在 [keyPrefix] 中。
      */
     val namespace: String = "",
     /**

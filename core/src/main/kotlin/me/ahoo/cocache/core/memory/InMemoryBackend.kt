@@ -27,6 +27,7 @@ import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Fill
@@ -48,7 +49,8 @@ import java.util.concurrent.TimeoutException
 /**
  * 单进程内存后端：完整实现 L1 协议（RFC 0003 §4.4，挂起形状见 RFC 0005 §4.3）与原子广播，提供全部可选能力，供测试与 TCK 使用。
  *
- * 多个运行时共享同一个实例即可模拟多节点。到期时间按注入的 [clock] 判断。
+ * 多个运行时共享同一个实例即可模拟多节点。到期时间按注入的 [clock] 判断。存储与频道都按 [Keyspace] 划分：前缀不同、命名空间相同的
+ * 两个缓存既不共用 key，也收不到彼此的帧。没有访问控制，创建存储时不探测频道。
  *
  * @param commandTimeout 每个存储操作的时限：只在 [stall] 期间起作用（内存操作本身不等待）；读取的 `timeout` 以它为上限
  */
@@ -60,12 +62,12 @@ class InMemoryBackend @JvmOverloads constructor(
 
     override val format: Int = FORMAT
 
-    private val stores = ConcurrentHashMap<String, Store>()
-    private val listeners = ConcurrentHashMap<String, CopyOnWriteArrayList<InvalidationListener>>()
+    private val stores = ConcurrentHashMap<Keyspace, Store>()
+    private val listeners = ConcurrentHashMap<Keyspace, CopyOnWriteArrayList<InvalidationListener>>()
 
     override val channel: InvalidationChannel = Channel()
 
-    override fun store(namespace: String): L1Store = stores.computeIfAbsent(namespace) { Store(it) }
+    override fun store(keyspace: Keyspace): L1Store = stores.computeIfAbsent(keyspace) { Store(it) }
 
     /**
      * 卡顿中时为恢复前一直未完成的门（[stall]），否则为 `null`。
@@ -107,48 +109,57 @@ class InMemoryBackend @JvmOverloads constructor(
      * 模拟订阅连接断开并重新建立：通知所有订阅者重置。与 Redis 后端相同，某个订阅者的重置抛出异常（包括 `Error`）记录后继续，
      * 不影响其余订阅者。
      */
-    @Suppress("TooGenericExceptionCaught")
     fun reconnect() {
-        listeners.forEach { (namespace, namespaceListeners) ->
-            namespaceListeners.forEach { listener ->
-                try {
-                    listener.onReset()
-                } catch (e: Throwable) {
-                    log.error(e) { "Invalidation listener reset failed on namespace[$namespace]." }
-                }
+        listeners.forEach { (keyspace, keyspaceListeners) -> reset(keyspace, keyspaceListeners) }
+    }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun reset(keyspace: Keyspace, keyspaceListeners: List<InvalidationListener>) {
+        keyspaceListeners.forEach { listener ->
+            try {
+                listener.onReset()
+            } catch (e: Throwable) {
+                log.error(e) { "Invalidation listener reset failed on $keyspace." }
             }
         }
     }
 
     /**
      * 与 Redis 后端相同：某个订阅者抛出异常（包括 `Error`）记录后继续分发，不影响其余订阅者，也不传给写入方；
-     * `VirtualMachineError` 照常抛出。
+     * `VirtualMachineError` 照常抛出。读不懂的帧（未知版本、解码失败）按该 keyspace 的重置处理，不丢弃（RFC 0005 §4.7，D3）。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun publish(namespace: String, frame: ByteArray) {
-        val decoded = InvalidationFrame.decode(frame)
-        listeners[namespace]?.forEach { listener ->
+    private fun publish(keyspace: Keyspace, frame: ByteArray) {
+        val keyspaceListeners = listeners[keyspace] ?: return
+        val decoded = try {
+            InvalidationFrame.decode(frame)
+        } catch (e: IllegalArgumentException) {
+            log.warn(e) { "Unreadable invalidation frame on $keyspace - reset subscribers." }
+            reset(keyspace, keyspaceListeners)
+            return
+        }
+        keyspaceListeners.forEach { listener ->
             try {
                 listener.onInvalidated(decoded.keys, decoded.origin)
             } catch (e: VirtualMachineError) {
                 throw e
             } catch (e: Throwable) {
-                log.error(e) { "Invalidation listener failed on namespace[$namespace]." }
+                log.error(e) { "Invalidation listener failed on $keyspace." }
             }
         }
     }
 
     private inner class Channel : InvalidationChannel {
-        override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
-            val namespaceListeners = listeners.computeIfAbsent(namespace) { CopyOnWriteArrayList() }
-            namespaceListeners.add(listener)
+        override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription {
+            val keyspaceListeners = listeners.computeIfAbsent(keyspace) { CopyOnWriteArrayList() }
+            keyspaceListeners.add(listener)
             // 订阅建立即重置（与真实通道的“订阅确认后重置”一致）
             listener.onReset()
-            return Subscription { namespaceListeners.remove(listener) }
+            return Subscription { keyspaceListeners.remove(listener) }
         }
 
-        override suspend fun publish(namespace: String, frame: ByteArray) {
-            this@InMemoryBackend.publish(namespace, frame)
+        override suspend fun publish(keyspace: Keyspace, frame: ByteArray) {
+            this@InMemoryBackend.publish(keyspace, frame)
         }
     }
 
@@ -177,7 +188,7 @@ class InMemoryBackend @JvmOverloads constructor(
      */
     @Suppress("TooManyFunctions")
     private inner class Store(
-        private val namespace: String
+        private val keyspace: Keyspace
     ) : L1Store, ConditionalL1Store, VersionedL1Store, SetL1Store {
         private val slots = ConcurrentHashMap<String, Slot>()
 
@@ -324,7 +335,7 @@ class InMemoryBackend @JvmOverloads constructor(
         override suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
             awaitRunnable(null)
             slots[key] = Slot(stateOf(envelope), envelope, expireAt = expireAt(ttl), version = versionOf(envelope))
-            publish(namespace, frame)
+            publish(keyspace, frame)
         }
 
         /**
@@ -335,13 +346,13 @@ class InMemoryBackend @JvmOverloads constructor(
             puts.forEach {
                 slots[it.key] = Slot(stateOf(it.envelope), it.envelope, expireAt = expireAt(it.ttl), version = versionOf(it.envelope))
             }
-            publish(namespace, frame)
+            publish(keyspace, frame)
         }
 
         override suspend fun invalidate(keys: Collection<String>, frame: ByteArray) {
             awaitRunnable(null)
             keys.forEach { slots.remove(it) }
-            publish(namespace, frame)
+            publish(keyspace, frame)
         }
 
         override suspend fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean {
@@ -387,7 +398,7 @@ class InMemoryBackend @JvmOverloads constructor(
                 Slot(State.SET, Envelope.Members(union(existing, members)), expireAt = expireAt(ttl))
             }
             if (refused == null) {
-                publish(namespace, frame)
+                publish(keyspace, frame)
             }
             return refused
         }
@@ -428,7 +439,7 @@ class InMemoryBackend @JvmOverloads constructor(
                 }
             }
             if (refused == null) {
-                publish(namespace, frame)
+                publish(keyspace, frame)
             }
             return refused
         }
@@ -483,7 +494,7 @@ class InMemoryBackend @JvmOverloads constructor(
                 Slot(State.VALUE, Envelope.Scalar(envelope.bytes), expireAt = expireAt(ttl))
             }
             if (outcome == L1ConditionalWrite.Written) {
-                publish(namespace, frame)
+                publish(keyspace, frame)
             }
             return outcome
         }
@@ -516,7 +527,7 @@ class InMemoryBackend @JvmOverloads constructor(
                 Slot(stateOf(envelope), stored, expireAt = expireAt(ttl), version = version)
             }
             if (outcome == L1VersionedWrite.Written) {
-                publish(namespace, frame)
+                publish(keyspace, frame)
             }
             return outcome
         }

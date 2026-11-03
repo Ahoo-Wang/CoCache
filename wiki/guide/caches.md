@@ -37,7 +37,7 @@ Durations are in **seconds**. Every policy attribute defaults to `CoCache.UNSET`
 | Attribute | Default | Meaning |
 |-----------|---------|---------|
 | `name` | interface simple name | Cache name and bean name |
-| `namespace` | the cache name | Middle part of every storage key, and the invalidation channel ([storage keys](#storage-keys)) |
+| `namespace` | the cache name | Middle part of every storage key, and the invalidation channel. Letters, digits, `.`, `_` and `-` only ([storage keys](#storage-keys)) |
 | `keyPrefix` | `cocache:` | First part of every storage key |
 | `keyExpression` | `toString()` | SpEL template that turns a key into a string ([keys](#keys)) |
 | `ttl` | `3600` (forever for a `SetCache`) | Lifetime of a value in Redis. `CoCache.FOREVER`: never expires. |
@@ -124,8 +124,8 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 Every key in Redis is:
 
 ```
-{keyPrefix}{namespace}:{encodedKey}
- cocache:   UserCache :42
+{keyPrefix}v8:{namespace}:{encodedKey}
+ cocache:  v8:UserCache :42
 ```
 
 | Part | Default | Set with |
@@ -134,8 +134,10 @@ Every key in Redis is:
 | `namespace` | the cache name | `@CoCache(namespace)`, `CacheSpec.namespace` |
 | `encodedKey` | `key.toString()` | `@CoCache(keyExpression)`, `CacheSpec.keyEncoder` |
 
-- Cache names and namespaces must each be unique within an application. A duplicate fails startup.
-- Invalidations travel on the channel `cocache:inv:{namespace}`. The channel doesn't include the prefix.
+- `v8:` marks the 8.x layout. 6.x keys (`{keyPrefix}{namespace}:{encodedKey}`) and channels never overlap with 8.x ones, so both versions can share one Redis during a cutover.
+- A namespace may contain only letters, digits, `.`, `_` and `-` (`[A-Za-z0-9._-]+`). A namespace with `:` fails at creation with a message that shows how to move the part before the `:` into `keyPrefix`: `namespace = "app:user"` becomes `keyPrefix = "cocache:app:"` and `namespace = "user"`. Without `:`, one namespace's keys can never fall inside another namespace's range.
+- Cache names must be unique within an application, and so must prefix-and-namespace pairs. Two caches with the same namespace and different prefixes are fine. A duplicate fails startup.
+- Invalidations travel on the channel `{keyPrefix}v8:inv:{namespace}`, so applications with different prefixes don't receive each other's messages.
 - The **encoded key** is what the actuator endpoint and `ExternalInvalidator` take, so other tools can address a key without knowing its Kotlin type.
 - To share one Redis between applications, give each a different prefix with the [`cocache.defaults.key-prefix` property](./configuration.md#key-prefix) (for example `${spring.application.name}:`). `@CoCache(keyPrefix)` is literal text: placeholders in it are not resolved (and in Kotlin, `$` starts a string template). Changing the prefix or namespace of a running cache is a cold start: old keys are ignored and expire on their own.
 
@@ -298,7 +300,8 @@ CoCache refuses to start rather than run a cache that can't behave as declared. 
 | `loader` on a `SetCache` | A set cache has no source; misses would silently return empty |
 | `FOREVER` on a duration attribute other than `ttl` / `expireAfterAccess`, a zero duration (except `ttlJitter`, `refreshWindow`), or any negative duration | Meaningless or unsafe lifetimes |
 | `refreshWindow` not less than `ttl − ttlJitter` (the effective jitter), or not less than `localMaxAge` | A fresh copy would start inside the window and refresh on every hit |
-| Duplicate cache name, namespace, or bean name | Two caches would share keys or invalidations |
+| Duplicate cache name, prefix-and-namespace pair, or bean name | Two caches would share keys or invalidations |
+| A namespace outside `[A-Za-z0-9._-]+`, such as one with `:` | Its keys could fall inside another namespace's range; move the prefix into `keyPrefix` |
 | `cocache.caches.[name]` for a cache that doesn't exist, or an unsupported property name from an earlier major version (see [Upgrading from 5.x](./migration-6.md#properties)) | Almost always a typo; see [Configuration Reference](./configuration.md#validation) |
 
 The `toString()` check on key types runs on the first read of each key type, not at startup.

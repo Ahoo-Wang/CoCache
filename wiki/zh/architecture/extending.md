@@ -22,14 +22,15 @@ interface CoherenceBackend : AutoCloseable {
     val atomicBroadcast: Boolean            // 写入能否在同一个原子步骤中发布它的帧？
     val format: Int                         // 本实现写入的线格式版本
     val channel: InvalidationChannel        // Java：FutureInvalidationChannel.adapt(…)
-    fun store(namespace: String): L1Store   // 每个缓存调用一次；Java：FutureL1Store.adapt(…)
+    fun store(keyspace: Keyspace): L1Store  // 每个缓存调用一次，可以阻塞；Java：FutureL1Store.adapt(…)
     override fun close() = Unit
 }
 ```
 
 L1 存储与失效通道是同一个对象的两个面：串行化写入的一方也应该发出失效。连接与线程属于后端，随它关闭：存储没有 `close`。
 
-- **`atomicBroadcast`**。为 `true` 时，存储的每个写方法都必须在修改的同一个原子步骤中发布它的 `frame`。为 `false` 时，引擎在每次写入成功之后调用 `channel.publish(namespace, frame)`。原子更好：写入与发布之间的崩溃会丢失消息。只声明你能保证的能力，TCK 会分别检查两种情况。
+- **`Keyspace`**。`store`、`subscribe` 与 `publish` 接收 `Keyspace(keyPrefix, namespace)`。它的 `storagePrefix` 是 `{keyPrefix}v8:{namespace}:`，构造时拒绝 `[A-Za-z0-9._-]+` 之外的命名空间。每个 keyspace 一个频道，名字由前缀与命名空间共同构成（Redis 后端是 `{keyPrefix}v8:inv:{namespace}`）：命名空间相同、前缀不同的两个 keyspace 不能共用频道。有访问控制的后端在 `store` 中检查自己能否在该 keyspace 的频道上发布，不能时抛出，而不是让每次写入在修改 L1 之后才在广播处失败。Redis 后端向那里发布一个不带 key 的帧。
+- **`atomicBroadcast`**。为 `true` 时，存储的每个写方法都必须在修改的同一个原子步骤中发布它的 `frame`。为 `false` 时，引擎在每次写入成功之后调用 `channel.publish(keyspace, frame)`。原子更好：写入与发布之间的崩溃会丢失消息。只声明你能保证的能力，TCK 会分别检查两种情况。
 - **`format`**。引擎把它与 `L1Read.Hit.format` 比较：存储的格式更高时绕开且从不覆盖；`0` 表示不是你的协议写入的内容，引擎按损坏处理。从 `1` 开始，只能通过两阶段升级递增。
 
 ### `L1Store` {#l1-store}
@@ -139,8 +140,8 @@ public final class MyBackend implements CoherenceBackend {
     private final InvalidationChannel channel = FutureInvalidationChannel.adapt(new MyChannel());
 
     @Override
-    public L1Store store(String namespace) {
-        return FutureL1Store.adapt(new MyStore(namespace));
+    public L1Store store(Keyspace keyspace) {
+        return FutureL1Store.adapt(new MyStore(keyspace));
     }
 
     @Override
@@ -191,8 +192,8 @@ TCK 的 `HookedBackend` 就是这样实现的。
 
 ```kotlin
 interface InvalidationChannel {
-    fun subscribe(namespace: String, listener: InvalidationListener): Subscription  // 阻塞，每个缓存一次
-    suspend fun publish(namespace: String, frame: ByteArray)  // 仅在 atomicBroadcast == false 时被调用
+    fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription  // 阻塞，每个缓存一次
+    suspend fun publish(keyspace: Keyspace, frame: ByteArray)  // 仅在 atomicBroadcast == false 时被调用
 }
 interface InvalidationListener {
     fun onInvalidated(keys: List<String>, origin: NodeId)
@@ -203,10 +204,10 @@ fun interface Subscription : AutoCloseable
 
 `publish` 的时限、取消与失败规则同存储。Java 后端实现 `FutureInvalidationChannel`，返回 `FutureInvalidationChannel.adapt(…)`。
 
-- **帧**。`frame` 由引擎用 `InvalidationFrame.encode(origin, storageKeys)` 构造。用 `InvalidationFrame.decode` 解码后投递给该命名空间的每个订阅者，丢弃畸形帧。不要按来源过滤：订阅者会忽略自己的 `NodeId`。
+- **帧**。`frame` 由引擎用 `InvalidationFrame.encode(origin, storageKeys)` 构造。用 `InvalidationFrame.decode` 解码后投递给该 keyspace 的每个订阅者。`decode` 拒绝的帧（未知版本，包括预留的 `NAMESPACE_RESET_VERSION`、截断的帧、尾随字节）不要丢弃，而是对该频道的每个订阅者调用 `onReset()`：丢弃的帧就是丢失的失效。不带 key 的帧是合法帧，照常投递，订阅者会忽略它。不要按来源过滤：订阅者会忽略自己的 `NodeId`。
 - **至多一次可以接受，沉默不行**。每次订阅建立或重新建立**并得到确认**时，以及任何消息可能丢失的时候（心跳失败、消费组重平衡、序号出现空洞），都要对该订阅的每个订阅者调用 `onReset()`。订阅者随后清空它的 L2。没有重置，丢失的消息会让 L2 陈旧到 `local-max-age`。
 - **在 `subscribe` 返回之前完成重置**。第一个订阅者的重置必须在 `subscribe` 返回时已经执行，否则迟到的重置会清掉订阅之后才填充的副本。已有订阅上的后续订阅者立即收到一次 `onReset()`。
-- **隔离**。订阅新的命名空间不能重置其它命名空间。某个订阅者抛出异常（即使是 `Error`），不能让其它订阅者错过消息或重置。Redis 与内存后端记录失败后继续；投递消息时只重新抛出 `VirtualMachineError`。
+- **隔离**。订阅新的 keyspace 不能重置其它 keyspace。某个订阅者抛出异常（即使是 `Error`），不能让其它订阅者错过消息或重置。Redis 与内存后端记录失败后继续；投递消息时只重新抛出 `VirtualMachineError`。
 - **失败**。`subscribe` 失败时抛出异常，不留下任何部分注册：运行时会回滚这个缓存。
 - 关闭 `Subscription` 即取消该订阅者的订阅。`close()` 只保证在它返回之后到达的消息与重置不再投递；已在投递中的回调可能在 `close()` 返回之后才到达订阅者，所以订阅者必须容忍迟到的回调。引擎的订阅者可以：迟到的回调只淘汰 L2 副本。
 
@@ -334,7 +335,7 @@ interface Codec<V> {
 | 函数 | 约定 |
 |------|------|
 | `CacheLoader<K, V>` | `load(key)` 返回值，或用 `null` 表示“不存在”（以负缓存存储 `absent-ttl`）。`loadAll(keys)` 批量加载，结果中缺少的 key 视为不存在。默认逐个调用 `load`，请覆盖为一次查询。在调用方线程上执行。不能读取自己缓存中的同一个 key（会快速失败）。必须读主库，而不是滞后的从库 |
-| `KeyEncoder<K>` | 把 key 转换为 `{keyPrefix}{namespace}:` 之后的字符串。必须**单射**（不同的 key 得到不同的字符串）、确定，并且在每个实例与每个版本上都相同。默认是 `toString()`，它会拒绝没有重写 `toString()` 的类型 |
+| `KeyEncoder<K>` | 把 key 转换为 `{keyPrefix}v8:{namespace}:` 之后的字符串。必须**单射**（不同的 key 得到不同的字符串）、确定，并且在每个实例与每个版本上都相同。默认是 `toString()`，它会拒绝没有重写 `toString()` 的类型 |
 | `AsyncCacheLoader<K, V>` | `CacheLoader` 的异步形式：`loadAsync(key)` 返回 `CompletionStage`，以 `null` 完成表示“不存在”。必须很快返回、不阻塞：它在调用方线程或异步执行器上执行，看不到调用方的 ThreadLocal。受 `load-timeout` 约束。见[异步 API](../guide/async.md#loader) |
 | `KeyFilter` | `notExist(storageKey)` 收到的是完整的存储 key。只有确定不存在的 key 才能返回 `true`：布隆过滤器必须包含所有存在的 key。返回 `true` 时跳过 Redis 与 loader，不缓存任何内容。必须是本地、不阻塞的判断：异步调用方在自己的线程上调用它，那可能是事件循环 |
 | `TtlFunction<K, V>`（`ttlOf`） | 按条目决定的寿命。非 null 的结果替代 `ttl` 且不加抖动。收敛到 1 ms 与 100 年之间。不作用于负缓存 |

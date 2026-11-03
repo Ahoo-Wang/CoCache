@@ -18,6 +18,7 @@ import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Subscription
@@ -81,6 +82,34 @@ class CacheRuntimeTest {
         }
     }
 
+    /**
+     * 按 keyspace（前缀加命名空间）登记（RFC 0005 §4.7）：命名空间相同、前缀不同的两个缓存可以共存，key 互不重叠；
+     * 前缀与命名空间都相同时失败，失败的创建不占用 keyspace。
+     */
+    @Test
+    fun registersByKeyspaceSoTheSameNamespaceUnderAnotherPrefixCoexists() {
+        CacheRuntime.builder().backend(InMemoryBackend()).build().use { runtime ->
+            val ours = runtime.create(spec("ours", "shared"))
+            val theirs = runtime.create(
+                cacheSpec<String, String>("theirs") {
+                    codec = StringCodec
+                    namespace = "shared"
+                    keyPrefix = "other:"
+                }
+            )
+            ours.put("k", "ours")
+            theirs.put("k", "theirs")
+            ours["k"].assert().isEqualTo("ours")
+            theirs["k"].assert().isEqualTo("theirs")
+            requireNotNull(runtime.admin("ours")).inspect("k").storageKey.assert().isEqualTo("cocache:v8:shared:k")
+            requireNotNull(runtime.admin("theirs")).inspect("k").storageKey.assert().isEqualTo("other:v8:shared:k")
+            val error = runCatching { runtime.create(spec("third", "shared")) }.exceptionOrNull()
+            error.assert().isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessage("Namespace[shared] with keyPrefix[cocache:] is already used by another cache.")
+            runtime.cache("third").assert().isNull()
+        }
+    }
+
     @Test
     fun requiresBackend() {
         runCatching { CacheRuntime.builder().build() }.exceptionOrNull().assert().isInstanceOf(
@@ -133,13 +162,13 @@ class CacheRuntimeTest {
         val delegate = InMemoryBackend()
         val failing = object : me.ahoo.cocache.api.spi.CoherenceBackend by delegate {
             override val channel = object : me.ahoo.cocache.api.spi.InvalidationChannel {
-                override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
+                override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription {
                     subscriptions.incrementAndGet()
                     return Subscription { throw IllegalStateException("unsubscribe failed") }
                 }
 
-                override suspend fun publish(namespace: String, frame: ByteArray) = delegate.channel.publish(
-                    namespace,
+                override suspend fun publish(keyspace: Keyspace, frame: ByteArray) = delegate.channel.publish(
+                    keyspace,
                     frame
                 )
             }
@@ -156,15 +185,15 @@ class CacheRuntimeTest {
         val attempts = AtomicInteger()
         val flaky = object : me.ahoo.cocache.api.spi.CoherenceBackend by delegate {
             override val channel = object : me.ahoo.cocache.api.spi.InvalidationChannel {
-                override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
+                override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription {
                     if (attempts.incrementAndGet() == 1) {
                         throw IllegalStateException("subscribe failed")
                     }
-                    return delegate.channel.subscribe(namespace, listener)
+                    return delegate.channel.subscribe(keyspace, listener)
                 }
 
-                override suspend fun publish(namespace: String, frame: ByteArray) = delegate.channel.publish(
-                    namespace,
+                override suspend fun publish(keyspace: Keyspace, frame: ByteArray) = delegate.channel.publish(
+                    keyspace,
                     frame
                 )
             }
@@ -190,9 +219,9 @@ class CacheRuntimeTest {
         val delegate = InMemoryBackend()
         val attempts = AtomicInteger()
         val flaky = object : me.ahoo.cocache.api.spi.CoherenceBackend by delegate {
-            override fun store(namespace: String): L1Store {
+            override fun store(keyspace: Keyspace): L1Store {
                 check(attempts.incrementAndGet() > 1) { "store failed" }
-                return delegate.store(namespace)
+                return delegate.store(keyspace)
             }
         }
         CacheRuntime.builder().backend(flaky).build().use { runtime ->

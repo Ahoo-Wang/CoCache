@@ -16,13 +16,17 @@ package me.ahoo.cocache.api.spi
 /**
  * 失效通道：至多一次投递（RFC 0005 §4.3）。Java 实现者实现 [FutureInvalidationChannel]，经 [FutureInvalidationChannel.adapt] 得到本接口。
  *
- * 实现约定：每次订阅（重新）建立并得到服务端确认之后，必须回调该连接上所有订阅者的 [InvalidationListener.onReset]。
+ * 实现约定：
+ * - 每个 [Keyspace] 一个频道，频道名由实现按前缀与命名空间构造：前缀不同、命名空间相同的两个 keyspace 不得共用频道。
+ * - 每次订阅（重新）建立并得到服务端确认之后，必须回调该连接上所有订阅者的 [InvalidationListener.onReset]。
+ * - 读不懂的帧（未知版本、未知类型、解码失败，见 [InvalidationFrame.decode]）按该频道的 [InvalidationListener.onReset] 处理，
+ *   不得丢弃（RFC 0005 §4.7，D3）：丢弃的就是一次失效，而重置只会多淘汰。
  */
 interface InvalidationChannel {
     /**
-     * 订阅（阻塞）：只在 `runtime.create` 时调用一次，得到服务端确认并回调 [InvalidationListener.onReset] 之后返回。
+     * 订阅 [keyspace] 的频道（阻塞）：只在 `runtime.create` 时调用一次，得到服务端确认并回调 [InvalidationListener.onReset] 之后返回。
      */
-    fun subscribe(namespace: String, listener: InvalidationListener): Subscription
+    fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription
 
     /**
      * 发布失效帧（挂起，在写路径上）：仅当 [CoherenceBackend.atomicBroadcast] 为 `false` 时由引擎在写入之后调用。
@@ -30,13 +34,16 @@ interface InvalidationChannel {
      * 限时、取消与失败的约定同 [L1Store]：引擎从不取消本调用（在 `NonCancellable` 中调用），实现必须自己限时，
      * 故障不得以 `CancellationException` 报告。
      */
-    suspend fun publish(namespace: String, frame: ByteArray)
+    suspend fun publish(keyspace: Keyspace, frame: ByteArray)
 }
 
 /**
  * 失效订阅者。
  */
 interface InvalidationListener {
+    /**
+     * 收到失效帧：[keys] 是完整的存储 key。[keys] 为空的帧是存储创建时的频道探测（[CoherenceBackend.store]），什么也不做。
+     */
     fun onInvalidated(keys: List<String>, origin: NodeId)
 
     /**

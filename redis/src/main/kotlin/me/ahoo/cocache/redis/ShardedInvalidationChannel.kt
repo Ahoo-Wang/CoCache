@@ -20,6 +20,7 @@ import io.lettuce.core.cluster.pubsub.RedisClusterPubSubAdapter
 import io.lettuce.core.cluster.pubsub.RedisClusterPubSubListener
 import io.lettuce.core.cluster.pubsub.StatefulRedisClusterPubSubConnection
 import io.lettuce.core.pubsub.RedisPubSubAdapter
+import me.ahoo.cocache.api.spi.Keyspace
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -74,9 +75,9 @@ internal class ShardedInvalidationChannel(
     }
 
     /**
-     * 确认订阅 [namespace] 的节点（仅 Cluster），测试用。
+     * 确认订阅 [keyspace] 频道的节点（仅 Cluster），测试用。
      */
-    internal fun subscribedNode(namespace: String): HostAndPort? = subscribedNodes[channelOf(namespace)]
+    internal fun subscribedNode(keyspace: Keyspace): HostAndPort? = subscribedNodes[channelOf(keyspace)]
 
     override fun subscribeAsync(channel: ByteArray): CompletableFuture<Void> {
         return connections.pubSub.async().ssubscribe(channel).toCompletableFuture()
@@ -86,8 +87,12 @@ internal class ShardedInvalidationChannel(
         return connections.pubSub.async().sunsubscribe(channel).toCompletableFuture()
     }
 
-    override suspend fun publish(namespace: String, frame: ByteArray) {
-        connections.spublish(channelOf(namespace).toByteArray(Charsets.UTF_8), frame)
+    override suspend fun publish(keyspace: Keyspace, frame: ByteArray) {
+        connections.spublish(channelOf(keyspace).toByteArray(Charsets.UTF_8), frame)
+    }
+
+    override fun publishBlocking(channel: ByteArray, frame: ByteArray) {
+        connections.join(connections.spublishAsync(channel, frame))
     }
 
     @Suppress("TooGenericExceptionCaught")

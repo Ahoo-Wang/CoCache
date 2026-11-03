@@ -14,6 +14,7 @@
 package me.ahoo.cocache.core
 
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
@@ -45,8 +46,8 @@ class ExternalInvalidatorTest {
             }
             Suspending.await {
                 memory.store(
-                    "user"
-                ).read("cocache:user:1", null, null, null)
+                    Keyspace("cocache:", "user")
+                ).read("cocache:v8:user:1", null, null, null)
             }.assert().isEqualTo(L1Read.Miss(false))
             awaitCondition { cache["1"] == "v1" }
         }
@@ -101,6 +102,42 @@ class ExternalInvalidatorTest {
                 invalidator.invalidate("user", "1")
             }
             awaitCondition { cache["1"] == "v1" }
+        }
+    }
+
+    /**
+     * 按 8.x 的布局构造 key 与频道（RFC 0005 §4.7）：前缀决定频道，同一命名空间在别的前缀下的缓存收不到这次失效；
+     * 命名空间不符合字符集时抛出，与缓存相同。
+     */
+    @Test
+    fun invalidatesOnlyTheKeyspaceOfItsPrefix() {
+        val memory = InMemoryBackend()
+        CacheRuntime.builder().backend(memory).build().use { node ->
+            fun cacheUnder(name: String, prefix: String) = node.create(
+                cacheSpec<String, String>(name) {
+                    codec = StringCodec
+                    namespace = "user"
+                    keyPrefix = prefix
+                    loader = CacheLoader { database[it] }
+                }
+            )
+            val app = cacheUnder("app-user", "app:")
+            val other = cacheUnder("other-user", "other:")
+            database["1"] = "v0"
+            app["1"]
+            other["1"]
+            database["1"] = "v1"
+            ExternalInvalidator(memory, "app:").use { invalidator ->
+                runCatching { invalidator.invalidate("app:user", "1") }.exceptionOrNull()
+                    .assert().isInstanceOf(IllegalArgumentException::class.java)
+                invalidator.invalidate("user", "1")
+            }
+            app["1"].assert().isEqualTo("v1")
+            other["1"].assert().isEqualTo("v0")
+            requireNotNull(node.metrics("other-user")).invalidationsReceived.assert().isZero()
+            Suspending.await {
+                memory.store(Keyspace("other:", "user")).read("other:v8:user:1", null, null, null)
+            }.assert().isInstanceOf(L1Read.Hit::class.java)
         }
     }
 }

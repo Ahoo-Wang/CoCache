@@ -214,10 +214,10 @@ class CoCacheUsabilityTest {
                 context.getBean("user")
                 context.getBean("profile")
                 context.getBean("index")
-                storageKeyOf(runtime, "user").assert().isEqualTo("orders:user:k")
+                storageKeyOf(runtime, "user").assert().isEqualTo("orders:v8:user:k")
                 // 配置文件覆盖声明中显式写出的前缀（与策略字段同一规则）
-                storageKeyOf(runtime, "profile").assert().isEqualTo("orders:profile:k")
-                storageKeyOf(runtime, "index").assert().isEqualTo("idx:index:k")
+                storageKeyOf(runtime, "profile").assert().isEqualTo("orders:v8:profile:k")
+                storageKeyOf(runtime, "index").assert().isEqualTo("idx:v8:index:k")
                 @Suppress("UNCHECKED_CAST")
                 val index = context.getBean("index") as SetCache<String, String>
                 index.add("k", listOf("a"))
@@ -233,8 +233,8 @@ class CoCacheUsabilityTest {
                 val runtime = context.getBean(CacheRuntime::class.java)
                 context.getBean("user")
                 context.getBean("profile")
-                storageKeyOf(runtime, "user").assert().isEqualTo("cocache:user:k")
-                storageKeyOf(runtime, "profile").assert().isEqualTo("declared:profile:k")
+                storageKeyOf(runtime, "user").assert().isEqualTo("cocache:v8:user:k")
+                storageKeyOf(runtime, "profile").assert().isEqualTo("declared:v8:profile:k")
             }
         runner.withUserConfiguration(
             SpecConfig::class.java,
@@ -247,8 +247,8 @@ class CoCacheUsabilityTest {
                 val runtime = context.getBean(CacheRuntime::class.java)
                 context.getBean("user")
                 context.getBean("profile")
-                storageKeyOf(runtime, "user").assert().isEqualTo("props:user:k")
-                storageKeyOf(runtime, "profile").assert().isEqualTo("customized:profile:k")
+                storageKeyOf(runtime, "user").assert().isEqualTo("props:v8:user:k")
+                storageKeyOf(runtime, "profile").assert().isEqualTo("customized:v8:profile:k")
             }
     }
 

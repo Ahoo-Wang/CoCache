@@ -19,6 +19,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
@@ -143,19 +144,23 @@ open class CoherentEngineTest {
     private fun CacheRuntime.engine(spec: CacheSpec<String, String> = spec()): TestCache =
         TestCache(create(spec) as CoherentEngine<String, String>, access)
 
-    private fun key(key: String) = "cocache:$name:$key"
+    private fun key(key: String) = "cocache:v8:$name:$key"
 
     private fun silentPut(key: String, envelope: Envelope) {
         Suspending.await {
             memory.store(
-                name
+                Keyspace("cocache:", name)
             ).put(key(key), envelope, null, InvalidationFrame.encode(NodeId.random(), emptyList()))
         }
     }
 
     private fun foreignLease(key: String): Token {
         val token = Token(NodeId.random(), 1)
-        Suspending.await { memory.store(name).read(key(key), LeaseRequest(token, Duration.ofMinutes(1)), null, null) }
+        Suspending.await {
+            memory.store(
+                Keyspace("cocache:", name)
+            ).read(key(key), LeaseRequest(token, Duration.ofMinutes(1)), null, null)
+        }
         return token
     }
 
@@ -175,7 +180,7 @@ open class CoherentEngineTest {
         (
             Suspending.await {
                 memory.store(
-                    name
+                    Keyspace("cocache:", name)
                 ).read(
                     key("k"),
                     null,
@@ -336,7 +341,7 @@ open class CoherentEngineTest {
         }
         cache["k"].assert().isEqualTo("v")
         cache.metrics.reclaims.assert().isEqualTo(1)
-        (Suspending.await { memory.store(name).read(key("k"), null, null, null) } as L1Read.Hit)
+        (Suspending.await { memory.store(Keyspace("cocache:", name)).read(key("k"), null, null, null) } as L1Read.Hit)
             .envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
     }
 
@@ -349,7 +354,7 @@ open class CoherentEngineTest {
         cache.getAll(listOf("k")).assert().isEqualTo(mapOf("k" to "v"))
         cache.metrics.reclaims.assert().isEqualTo(1)
         cache.metrics.degradedFills.assert().isZero()
-        (Suspending.await { memory.store(name).read(key("k"), null, null, null) } as L1Read.Hit)
+        (Suspending.await { memory.store(Keyspace("cocache:", name)).read(key("k"), null, null, null) } as L1Read.Hit)
             .envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
     }
 
@@ -453,7 +458,7 @@ open class CoherentEngineTest {
         val channel = InMemoryBackend(clock).channel
         val failing = nonAtomic(
             object : me.ahoo.cocache.api.spi.InvalidationChannel by channel {
-                override suspend fun publish(namespace: String, frame: ByteArray) = throw IllegalStateException(
+                override suspend fun publish(keyspace: Keyspace, frame: ByteArray) = throw IllegalStateException(
                     "publish down"
                 )
             }
@@ -639,7 +644,7 @@ open class CoherentEngineTest {
         (
             Suspending.await {
                 memory.store(
-                    name
+                    Keyspace("cocache:", name)
                 ).read(
                     key("corrupt"),
                     null,
@@ -650,13 +655,13 @@ open class CoherentEngineTest {
             ).envelope.assert().isEqualTo(Envelope.Scalar("c".toByteArray()))
         Suspending.await {
             memory.store(
-                name
+                Keyspace("cocache:", name)
             ).read(key("leased"), null, null, null)
         }.assert().isInstanceOf(L1Read.Leased::class.java)
         (
             Suspending.await {
                 memory.store(
-                    name
+                    Keyspace("cocache:", name)
                 ).read(
                     key("newer"),
                     null,
@@ -673,8 +678,12 @@ open class CoherentEngineTest {
         val failure = IllegalStateException("source down")
         loadFailure = failure
         runCatching { cache.getAll(listOf("a", "b")) }.exceptionOrNull().assert().isSameAs(failure)
-        Suspending.await { memory.store(name).read(key("a"), null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
-        Suspending.await { memory.store(name).read(key("b"), null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
+        Suspending.await {
+            memory.store(Keyspace("cocache:", name)).read(key("a"), null, null, null)
+        }.assert().isEqualTo(L1Read.Miss(false))
+        Suspending.await {
+            memory.store(Keyspace("cocache:", name)).read(key("b"), null, null, null)
+        }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
@@ -768,7 +777,7 @@ open class CoherentEngineTest {
         cache["k"]
         Suspending.await {
             memory.store(
-                name
+                Keyspace("cocache:", name)
             ).invalidate(listOf(key("k")), InvalidationFrame.encode(NodeId.random(), emptyList()))
         }
         database["k"] = "v1"
@@ -810,7 +819,7 @@ open class CoherentEngineTest {
         cacheA["k"]
         refreshExecutor = Executor { it.run() }
         val foreignRefresh = RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1))
-        Suspending.await { memory.store(name).read(key("k"), null, foreignRefresh, null) }
+        Suspending.await { memory.store(Keyspace("cocache:", name)).read(key("k"), null, foreignRefresh, null) }
         backend.afterRead = { _, read -> if (read is L1Read.Hit) read.copy(envelope = Envelope.Scalar(TestCodec.CORRUPT)) else read }
         cacheB["k"].assert().isEqualTo("v0")
         backend.afterRead = null
@@ -833,7 +842,7 @@ open class CoherentEngineTest {
         loadFailure = null
         Suspending.await {
             memory.store(
-                name
+                Keyspace("cocache:", name)
             ).read(key("k"), null, null, null)
         }.assert().isInstanceOf(L1Read.Hit::class.java)
 
@@ -858,7 +867,7 @@ open class CoherentEngineTest {
         clock.advance(Duration.ofSeconds(6))
         // 另一个节点持有刷新令牌
         val foreignRefresh = RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1))
-        Suspending.await { memory.store(name).read(key("k"), null, foreignRefresh, null) }
+        Suspending.await { memory.store(Keyspace("cocache:", name)).read(key("k"), null, foreignRefresh, null) }
         cache["k"].assert().isEqualTo("v0")
         val backedOff = clock.nowMillis() + 100
         awaitCondition { refreshAt() == backedOff }
@@ -963,7 +972,9 @@ open class CoherentEngineTest {
             if (read is L1Read.Leased) {
                 // 持有者在等待者第一次读到 lease 之后写回
                 backend.afterRead = null
-                Suspending.await { memory.store(name).fill(Fill(key("k"), token, Envelope.Scalar("filled".toByteArray()), null)) }
+                Suspending.await {
+                    memory.store(Keyspace("cocache:", name)).fill(Fill(key("k"), token, Envelope.Scalar("filled".toByteArray()), null))
+                }
             }
             read
         }

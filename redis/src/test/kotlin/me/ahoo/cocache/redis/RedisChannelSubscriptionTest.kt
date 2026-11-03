@@ -18,6 +18,7 @@ import io.lettuce.core.pubsub.RedisPubSubAdapter
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection
 import io.lettuce.core.pubsub.api.async.RedisPubSubAsyncCommands
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
@@ -60,9 +61,9 @@ class RedisChannelSubscriptionTest {
         )
         val listener = RecordingListener()
         ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
-            channel.subscribe("ns", listener)
+            channel.subscribe(Keyspace("cocache:", "ns"), listener)
             val handler = requireNotNull(adapter)
-            val ns = "cocache:inv:ns".toByteArray()
+            val ns = "cocache:v8:inv:ns".toByteArray()
             stale.set(true)
             handler.sunsubscribed(ns, 0)
             listener.resets.get().assert().isEqualTo(1)
@@ -110,10 +111,10 @@ class RedisChannelSubscriptionTest {
             "async" to { async },
         )
         PubSubInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
-            val first = fork("first-subscriber") { channel.subscribe("ns", RecordingListener()) }
+            val first = fork("first-subscriber") { channel.subscribe(Keyspace("cocache:", "ns"), RecordingListener()) }
             subscribing.awaitOrFail("first subscribe sent")
             val joining = RecordingListener()
-            val second = fork("second-subscriber") { channel.subscribe("ns", joining) }
+            val second = fork("second-subscriber") { channel.subscribe(Keyspace("cocache:", "ns"), joining) }
             awaitCondition("second subscriber joined or waiting") { second.joinedOrBlocked() }
             proceed.countDown()
             first.joinFailure().assert().hasRootCauseInstanceOf(RedisException::class.java)
@@ -122,7 +123,7 @@ class RedisChannelSubscriptionTest {
             subscribes.get().assert().isEqualTo(2)
             requireNotNull(
                 adapter
-            ).message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            ).message("cocache:v8:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
             joining.received.assert().containsExactly(listOf("k"))
         }
     }
@@ -153,10 +154,10 @@ class RedisChannelSubscriptionTest {
             "async" to { async },
         )
         PubSubInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
-            val last = channel.subscribe("ns", RecordingListener())
+            val last = channel.subscribe(Keyspace("cocache:", "ns"), RecordingListener())
             val closing = fork("last-unsubscribe") { last.close() }
             unsubscribing.awaitOrFail("unsubscribe sent")
-            val second = fork("new-subscriber") { channel.subscribe("ns", RecordingListener()) }
+            val second = fork("new-subscriber") { channel.subscribe(Keyspace("cocache:", "ns"), RecordingListener()) }
             awaitCondition("new subscriber subscribed or waiting") { second.joinedOrBlocked() }
             proceed.countDown()
             closing.join()
@@ -185,10 +186,10 @@ class RedisChannelSubscriptionTest {
         val healthy = RecordingListener()
         PubSubInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
             // 没有订阅确认：第一个订阅者等待超时后返回；后加入的订阅者直接重置一次
-            channel.subscribe("ns", failing)
-            channel.subscribe("ns", healthy)
+            channel.subscribe(Keyspace("cocache:", "ns"), failing)
+            channel.subscribe(Keyspace("cocache:", "ns"), healthy)
             val handler = requireNotNull(adapter)
-            val ns = "cocache:inv:ns".toByteArray()
+            val ns = "cocache:v8:inv:ns".toByteArray()
 
             handler.message(ns, InvalidationFrame.encode(NodeId.random(), listOf("k")))
             healthy.received.assert().containsExactly(listOf("k"))

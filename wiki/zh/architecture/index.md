@@ -84,7 +84,7 @@ val users: Cache<String, User> = runtime.create(
 ```
 
 - spec 是不可变数据：名称、命名空间、key 前缀、key 编码器、编解码器、loader、`ttlOf`、key 过滤器与策略。用户只提供数据与无状态函数。
-- `runtime.create` 构建缓存的每个有状态部分：L2、失效戳、SingleFlight 表、存储与订阅，两个缓存不可能意外共享其中任何一个。名称或命名空间重复时失败。
+- `runtime.create` 构建缓存的每个有状态部分：L2、失效戳、SingleFlight 表、存储与订阅，两个缓存不可能意外共享其中任何一个。名称重复，或前缀与命名空间的组合重复时失败。
 - `NodeId` 是每个运行时 16 个随机字节。它让令牌全局唯一，也让实例能忽略自己发出的消息。
 - `close()` 按创建的逆序关闭订阅、引擎与存储，再关闭运行时自己创建的时钟与执行器。尚未执行的失效重试计入丢弃。后端由调用方关闭。
 
@@ -107,7 +107,7 @@ sequenceDiagram
     Fac->>Asm: create(spec)
     Asm->>Asm: 依次叠加 CacheSpecCustomizer、<br>cocache.defaults、cocache.caches.[name]
     Asm->>RT: create(spec)
-    RT-->>Asm: 引擎，已订阅 cocache:inv:{namespace}
+    RT-->>Asm: 引擎，已订阅 {keyPrefix}v8:inv:{namespace}
     Asm-->>Fac: 引擎
     Fac-->>Reg: 实现该接口的 JDK 代理
 ```
@@ -126,12 +126,12 @@ sequenceDiagram
 
 | 部分 | 格式 |
 |------|------|
-| 存储 key | `{keyPrefix}{namespace}:{encodedKey}`，默认 `cocache:{cacheName}:{key.toString()}` |
+| 存储 key | `{keyPrefix}v8:{namespace}:{encodedKey}`，默认 `cocache:v8:{cacheName}:{key.toString()}`。命名空间符合 `[A-Za-z0-9._-]+`，内部 key 放在 `{keyPrefix}v8!` 之下 |
 | 值、负缓存、lease | Redis String：36 字节头，后接编解码器的字节 |
 | 集合（`SetCache`） | Redis Hash：字段 `!f` 存格式版本（`"1"`），每个成员是一个值为空串的字段 `+{成员字节}` |
 | 到期时间 | `PEXPIRE` / `PTTL`，毫秒，每次状态转换都显式重设 |
-| 频道 | `cocache:inv:{namespace}`（不含 key 前缀） |
-| 消息 | `[0x01][发布者 NodeId：16 字节][数量：varint]([长度：varint][存储 key：UTF-8])*` |
+| 频道 | `{keyPrefix}v8:inv:{namespace}` |
+| 消息 | `[0x01][发布者 NodeId：16 字节][数量：varint]([长度：varint][存储 key：UTF-8])*`。频道读不懂的帧重置它的缓存而不是被丢弃，版本 `2` 预留给 namespace 重置（[详见](./consistency.md#invalidation-channel)） |
 
 String 头：
 

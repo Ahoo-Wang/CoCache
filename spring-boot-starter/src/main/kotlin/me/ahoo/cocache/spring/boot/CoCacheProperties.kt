@@ -314,7 +314,8 @@ data class CoCacheProperties @ConstructorBinding constructor(
         val readFailure: ReadFailureMode?,
         /**
          * L1 key 前缀（内置默认 `cocache:`），覆盖声明与定制器中的值；可以使用占位符，如 `${spring.application.name}:`。
-         * 失效频道 `cocache:inv:{namespace}` 不含前缀：共用一个 Redis 且 namespace 相同的应用会收到彼此的失效消息（key 不同，只是多余的处理）。
+         * 存储 key 为 `{keyPrefix}v8:{namespace}:{key}`，失效频道为 `{keyPrefix}v8:inv:{namespace}`：前缀不同、namespace 相同的应用
+         * 既不共用 key，也收不到彼此的失效帧。
          */
         val keyPrefix: String?,
         /**

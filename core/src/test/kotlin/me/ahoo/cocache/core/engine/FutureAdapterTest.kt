@@ -22,6 +22,7 @@ import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.FutureInvalidationChannel
 import me.ahoo.cocache.api.spi.FutureL1Store
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.core.CacheRuntime
@@ -64,7 +65,9 @@ class FutureAdapterTest {
         val future = CompletableFuture<Void?>()
         val channel = FutureInvalidationChannel.adapt(mockk { every { publish(any(), any()) } returns future })
         val publishing =
-            async(start = CoroutineStart.UNDISPATCHED) { runCatching { channel.publish("ns", ByteArray(0)) } }
+            async(
+                start = CoroutineStart.UNDISPATCHED
+            ) { runCatching { channel.publish(Keyspace("cocache:", "ns"), ByteArray(0)) } }
         thread { future.completeExceptionally(original) }
 
         publishing.await().exceptionOrNull().assert().isSameAs(original)
@@ -78,7 +81,7 @@ class FutureAdapterTest {
         val future = CompletableFuture<L1Read>()
         val failing = storeReading(future)
         val backend = object : CoherenceBackend by InMemoryBackend() {
-            override fun store(namespace: String): L1Store = FutureL1Store.adapt(failing)
+            override fun store(keyspace: Keyspace): L1Store = FutureL1Store.adapt(failing)
         }
         CacheRuntime.builder().backend(backend).build().use { runtime ->
             val cache = runtime.create(cacheSpec<String, String>("adapted") { codec = StringCodec })

@@ -157,15 +157,27 @@ internal class RedisConnections(
      * 发布失效帧（挂起，[RedisInvalidationChannel] 的 `publish`），限时与失败同 [awaitCommand]。
      */
     suspend fun publish(channel: ByteArray, message: ByteArray) {
-        awaitCommand(base.publish(channel, message).toCompletableFuture())
+        awaitCommand(publishAsync(channel, message))
     }
+
+    /**
+     * `PUBLISH` 的 future（阻塞的路径经 [join] 等待，如创建存储时的频道探测）。
+     */
+    fun publishAsync(channel: ByteArray, message: ByteArray): CompletableFuture<Long> =
+        base.publish(channel, message).toCompletableFuture()
 
     /**
      * `SPUBLISH`：集群中按频道的 slot 路由到所属主节点。挂起，同 [publish]。
      */
     suspend fun spublish(channel: ByteArray, message: ByteArray) {
-        awaitCommand(base.spublish(channel, message).toCompletableFuture())
+        awaitCommand(spublishAsync(channel, message))
     }
+
+    /**
+     * `SPUBLISH` 的 future，同 [publishAsync]。
+     */
+    fun spublishAsync(channel: ByteArray, message: ByteArray): CompletableFuture<Long> =
+        base.spublish(channel, message).toCompletableFuture()
 
     /**
      * 读取的时限（RFC 0005 round 3 D6）：`null` 为 `commandTimeout`；给出时必须为正，以 `commandTimeout` 为上限。
