@@ -23,10 +23,10 @@ import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteConditionalRead
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
@@ -36,6 +36,7 @@ import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.redis.migration.Redis5x
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -249,17 +250,9 @@ class ConditionalWriteTest {
     }
 
     /**
-     * 存储层的判定（一次脚本内原子完成）：没有值的三种状态、本协议的值、读不懂的内容，读与写各自的结果。
+     * 写入读不懂的内容：不是本协议写入的 String、`!f` 为 `0` 的 Hash、更高格式版本的值、状态字节不认识的本协议 String。
      */
-    @Test
-    fun storeClassifiesEveryShape() {
-        val namespace = "store-$run"
-        val store = backend.remoteStore(namespace)
-        fun key(id: String) = "cocache:$namespace:$id"
-        store.put(key("negative"), Envelope.Absent, null, frame)
-        store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null)
-        store.put(key("value"), Envelope.Scalar("v".toByteArray()), null, frame)
-        store.addMembersIfReadable(key("set"), listOf("m".toByteArray()), null, frame)
+    private fun writeUnreadableShapes(key: (String) -> String) {
         Redis5x.string(key("foreign"), "plain")
         Redis5x.hash(key("zero"), mapOf("!f" to "0"))
         writeNewerValue(key("newer"), 60_000)
@@ -271,39 +264,65 @@ class ConditionalWriteTest {
                 key("unknown-state")
             )
         }
+    }
 
+    /**
+     * 存储层的判定（一次脚本内原子完成）：没有值的三种状态、本协议的值、读不懂的内容，读与写各自的结果。
+     */
+    @Test
+    fun storeClassifiesEveryShape() = Suspending.await<Unit> {
+        val namespace = "store-$run"
+        val store = backend.store(namespace)
+        fun key(id: String) = "cocache:$namespace:$id"
+        store.put(key("negative"), Envelope.Absent, null, frame)
+        store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
+        store.put(key("value"), Envelope.Scalar("v".toByteArray()), null, frame)
+        store.setSurface.addMembers(key("set"), listOf("m".toByteArray()), null, frame)
+        writeUnreadableShapes(::key)
+
+        val conditional = store.conditionalSurface
+        val w = Envelope.Scalar("w".toByteArray())
         listOf("absent", "negative", "leased").forEach {
-            store.readIfChanged(key(it), null).assert().isEqualTo(RemoteConditionalRead.Absent)
+            conditional.readIfChanged(key(it), null, null).assert().isEqualTo(L1ConditionalRead.Absent)
         }
-        val changed = store.readIfChanged(key("value"), digestOf("other")) as RemoteConditionalRead.Changed
+        val changed = conditional.readIfChanged(key("value"), digestOf("other"), null) as L1ConditionalRead.Changed
         changed.envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
         changed.format.assert().isEqualTo(RedisScripts.FORMAT)
-        store.readIfChangedAsync(
-            key("value"),
-            digestOf("v")
-        ).join().assert().isEqualTo(RemoteConditionalRead.Unchanged(RedisScripts.FORMAT))
+        conditional.readIfChanged(key("value"), digestOf("v"), null)
+            .assert().isEqualTo(L1ConditionalRead.Unchanged(RedisScripts.FORMAT))
         mapOf("set" to 1, "foreign" to 0, "zero" to 0, "newer" to 2, "unknown-state" to 0).forEach { (id, format) ->
-            store.readIfChanged(key(id), null).assert().isEqualTo(RemoteConditionalRead.Unreadable(format))
-            store.putIfMatch(key(id), null, Envelope.Scalar("w".toByteArray()), null, frame)
-                .assert().isEqualTo(RemoteConditionalWrite.Unreadable(format))
-            store.putIfMatchAsync(key(id), digestOf("plain"), Envelope.Scalar("w".toByteArray()), null, frame)
-                .join().assert().isEqualTo(RemoteConditionalWrite.Unreadable(format))
+            conditional.readIfChanged(key(id), null, null).assert().isEqualTo(L1ConditionalRead.Unreadable(format))
+            conditional.putIfMatch(
+                key(id),
+                null,
+                w,
+                null,
+                frame
+            ).assert().isEqualTo(L1ConditionalWrite.Unreadable(format))
+            conditional.putIfMatch(key(id), digestOf("plain"), w, null, frame)
+                .assert().isEqualTo(L1ConditionalWrite.Unreadable(format))
         }
         Redis5x.get(key("foreign")).assert().isEqualTo("plain")
         Redis5x.fields(key("zero")).assert().isEqualTo(mapOf("!f" to "0"))
 
-        store.putIfMatch(key("value"), null, Envelope.Scalar("w".toByteArray()), null, frame)
-            .assert().isEqualTo(RemoteConditionalWrite.Conflict(digestOf("v")))
-        store.putIfMatchAsync(key("value"), digestOf("v"), Envelope.Scalar("w".toByteArray()), null, frame)
-            .join().assert().isEqualTo(RemoteConditionalWrite.Written)
-        store.putIfMatch(key("leased"), null, Envelope.Scalar("w".toByteArray()), null, frame)
-            .assert().isEqualTo(RemoteConditionalWrite.Written)
-        store.putIfMatch(key("negative"), null, Envelope.Scalar("w".toByteArray()), null, frame)
-            .assert().isEqualTo(RemoteConditionalWrite.Written)
-        store.readIfChanged(
-            key("negative"),
-            digestOf("w")
-        ).assert().isEqualTo(RemoteConditionalRead.Unchanged(RedisScripts.FORMAT))
+        conditional.putIfMatch(
+            key("value"),
+            null,
+            w,
+            null,
+            frame
+        ).assert().isEqualTo(L1ConditionalWrite.Conflict(digestOf("v")))
+        conditional.putIfMatch(
+            key("value"),
+            digestOf("v"),
+            w,
+            null,
+            frame
+        ).assert().isEqualTo(L1ConditionalWrite.Written)
+        conditional.putIfMatch(key("leased"), null, w, null, frame).assert().isEqualTo(L1ConditionalWrite.Written)
+        conditional.putIfMatch(key("negative"), null, w, null, frame).assert().isEqualTo(L1ConditionalWrite.Written)
+        conditional.readIfChanged(key("negative"), digestOf("w"), null)
+            .assert().isEqualTo(L1ConditionalRead.Unchanged(RedisScripts.FORMAT))
         Redis5x.type(key("newer")).assert().isEqualTo("string")
     }
 

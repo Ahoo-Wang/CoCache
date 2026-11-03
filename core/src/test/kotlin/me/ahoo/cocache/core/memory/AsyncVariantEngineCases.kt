@@ -16,7 +16,7 @@ package me.ahoo.cocache.core.memory
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.KeyEncoder
@@ -310,12 +310,12 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
             val engine = runtime.rawCache(source, limited)
             val load = engine.async().get("k")
             awaitCondition("loader called") { source.calls.get() == 1 }
-            remote("k").assert().isInstanceOf(RemoteRead.Leased::class.java)
+            remote("k").assert().isInstanceOf(L1Read.Leased::class.java)
             switch.rejecting = true
             source.complete("k", "v")
             load.handle { _, e -> e }.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
                 .assert().isInstanceOf(RejectedExecutionException::class.java)
-            awaitCondition("lease released") { remote("k") == RemoteRead.Miss(false) }
+            awaitCondition("lease released") { remote("k") == L1Read.Miss(false) }
             switch.rejecting = false
             engine["k"].assert().isEqualTo("v")
             requireNotNull(runtime.metrics(cacheName)).loadRejected.assert().isEqualTo(0)
@@ -426,7 +426,7 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
         val async = nodeA.rawCache(AsyncCacheLoader { CompletableFuture.failedFuture<String?>(failure) }).async()
         val error = async.get("k").handle { _, e -> e }.join()
         error.assert().isSameAs(failure)
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
@@ -455,7 +455,7 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
         val error = async.get("k").handle { _, e -> e }.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
         error.assert().isInstanceOf(SourceLoadTimeoutException::class.java)
         nodeA.metrics().loadTimeouts.assert().isEqualTo(1)
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
         database["k"] = "v"
         nodeB.cache()["k"].assert().isEqualTo("v")
         remoteValue("k").assert().isEqualTo("v")

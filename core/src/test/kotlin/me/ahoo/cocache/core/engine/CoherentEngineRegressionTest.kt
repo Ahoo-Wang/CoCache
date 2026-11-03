@@ -18,10 +18,10 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -128,7 +128,7 @@ class CoherentEngineRegressionTest {
 
     private fun foreignLease(key: String): Token {
         val token = Token(NodeId.random(), 1)
-        Suspending.await { memory.store(name).read(key(key), LeaseRequest(token, Duration.ofMinutes(1)), null) }
+        Suspending.await { memory.store(name).read(key(key), LeaseRequest(token, Duration.ofMinutes(1)), null, null) }
         return token
     }
 
@@ -255,9 +255,9 @@ class CoherentEngineRegressionTest {
         database["k"] = "v"
         database["a"] = "a"
         runCatching { cache["k"] }.exceptionOrNull().assert().isSameAs(failure)
-        Suspending.await { memory.store(name).read(key("k"), null, null) }.assert().isEqualTo(RemoteRead.Miss(false))
+        Suspending.await { memory.store(name).read(key("k"), null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
         runCatching { cache.getAll(listOf("a")) }.exceptionOrNull().assert().isSameAs(failure)
-        Suspending.await { memory.store(name).read(key("a"), null, null) }.assert().isEqualTo(RemoteRead.Miss(false))
+        Suspending.await { memory.store(name).read(key("a"), null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
@@ -280,7 +280,7 @@ class CoherentEngineRegressionTest {
         // 刷新令牌被其它节点持有：旧实现会从 L1 读回 v0 填充 L2
         clock.advance(Duration.ofSeconds(6))
         val foreignRefresh = RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1))
-        Suspending.await { memory.store(name).read(key("k"), null, foreignRefresh) }
+        Suspending.await { memory.store(name).read(key("k"), null, foreignRefresh, null) }
         cache["k"].assert().isEqualTo("v1")
         cache["k"].assert().isEqualTo("v1")
     }
@@ -299,13 +299,13 @@ class CoherentEngineRegressionTest {
         clock.advance(Duration.ofSeconds(6))
         backend.afterRead = { _, read ->
             backend.afterRead = null
-            if (read is RemoteRead.Hit) read.copy(format = read.format + 1) else read
+            if (read is L1Read.Hit) read.copy(format = read.format + 1) else read
         }
         cache["k"]
         // 令牌已释放：其它节点可以立即取得刷新令牌
         val foreignRefresh = RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1))
-        val other = Suspending.await { memory.store(name).read(key("k"), null, foreignRefresh) }
-        (other as RemoteRead.Hit).refreshGranted.assert().isTrue()
+        val other = Suspending.await { memory.store(name).read(key("k"), null, foreignRefresh, null) }
+        (other as L1Read.Hit).refreshGranted.assert().isTrue()
     }
 
     @Test

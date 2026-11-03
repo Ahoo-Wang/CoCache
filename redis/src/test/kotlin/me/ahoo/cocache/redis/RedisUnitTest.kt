@@ -39,21 +39,19 @@ import io.mockk.spyk
 import io.mockk.verify
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Envelope
-import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
-import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -72,10 +70,10 @@ class RedisUnitTest {
 
     @Test
     fun decodesUnrecognizedAndEdgeContent() {
-        val foreign = RedisRemoteStore.decodeRead(
+        val foreign = RedisL1Store.decodeRead(
             listOf(2L, 1000L, "{\"legacy\":true}".toByteArray(), 0L)
-        ) as RemoteRead.Hit
-        foreign.format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
+        ) as L1Read.Hit
+        foreign.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
         foreign.ttl.assert().isEqualTo(Duration.ofSeconds(1))
 
         val header = ByteArray(RedisScripts.HEADER_SIZE).also {
@@ -84,37 +82,37 @@ class RedisUnitTest {
             it[2] = 'X'.code.toByte()
         }
         (
-            RedisRemoteStore.decodeRead(
+            RedisL1Store.decodeRead(
                 listOf(2L, -1L, header + "p".toByteArray(), 0L)
-            ) as RemoteRead.Hit
-            ).format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
+            ) as L1Read.Hit
+            ).format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
 
-        val set = RedisRemoteStore.decodeRead(
+        val set = RedisL1Store.decodeRead(
             listOf(
                 3L,
                 -1L,
                 listOf("+a".toByteArray(), "!f".toByteArray(), "other".toByteArray(), ByteArray(0)),
                 ByteArray(0)
             )
-        ) as RemoteRead.Hit
-        set.format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
+        ) as L1Read.Hit
+        set.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
         (set.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("a")
         set.ttl.assert().isNull()
 
-        val badFormat = RedisRemoteStore.decodeRead(
+        val badFormat = RedisL1Store.decodeRead(
             listOf(3L, 5L, listOf("!f".toByteArray()), "x".toByteArray())
-        ) as RemoteRead.Hit
-        badFormat.format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
+        ) as L1Read.Hit
+        badFormat.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
 
-        val versioned = RedisRemoteStore.decodeRead(
+        val versioned = RedisL1Store.decodeRead(
             listOf(3L, 5L, listOf("+b".toByteArray(), "!f".toByteArray()), "1".toByteArray())
-        ) as RemoteRead.Hit
+        ) as L1Read.Hit
         versioned.format.assert().isEqualTo(RedisScripts.FORMAT)
         (versioned.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
 
-        RedisRemoteStore.decodeRead(listOf(1L, -5L)).assert().isEqualTo(RemoteRead.Leased(Duration.ZERO))
+        RedisL1Store.decodeRead(listOf(1L, -5L)).assert().isEqualTo(L1Read.Leased(Duration.ZERO))
         runCatching {
-            RedisRemoteStore.decodeRead(
+            RedisL1Store.decodeRead(
                 listOf(9L)
             )
         }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
@@ -132,7 +130,7 @@ class RedisUnitTest {
                 it[1] = 0x80.toByte()
                 it[2] = state.code.toByte()
             }
-            val read = RedisRemoteStore.decodeRead(listOf(2L, -1L, header + "p".toByteArray(), 0L)) as RemoteRead.Hit
+            val read = RedisL1Store.decodeRead(listOf(2L, -1L, header + "p".toByteArray(), 0L)) as L1Read.Hit
             read.format.assert().isEqualTo(0x80)
         }
     }
@@ -142,12 +140,12 @@ class RedisUnitTest {
      */
     @Test
     fun decodesVersionedWritesAndHeaderVersions() {
-        RedisRemoteStore.decodeVersionedWrite(listOf(1L)).assert().isEqualTo(RemoteVersionedWrite.Written)
-        RedisRemoteStore.decodeVersionedWrite(
+        RedisL1Store.decodeVersionedWrite(listOf(1L)).assert().isEqualTo(L1VersionedWrite.Written)
+        RedisL1Store.decodeVersionedWrite(
             listOf(0L, java.nio.ByteBuffer.allocate(8).putLong(-3L).array())
-        ).assert().isEqualTo(RemoteVersionedWrite.Stale(-3L))
-        RedisRemoteStore.decodeVersionedWrite(listOf(3L, 2L)).assert().isEqualTo(RemoteVersionedWrite.Unreadable(2))
-        runCatching { RedisRemoteStore.decodeVersionedWrite(listOf(9L)) }.exceptionOrNull()
+        ).assert().isEqualTo(L1VersionedWrite.Stale(-3L))
+        RedisL1Store.decodeVersionedWrite(listOf(3L, 2L)).assert().isEqualTo(L1VersionedWrite.Unreadable(2))
+        runCatching { RedisL1Store.decodeVersionedWrite(listOf(9L)) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalStateException::class.java)
 
         val header = ByteArray(RedisScripts.HEADER_SIZE).also {
@@ -155,50 +153,30 @@ class RedisUnitTest {
             it[1] = 1
             it[2] = 'V'.code.toByte()
         }
-        RedisRemoteStore.versionOf(header).assert().isEqualTo(Versioned.NO_VERSION)
+        RedisL1Store.versionOf(header).assert().isEqualTo(Versioned.NO_VERSION)
         RedisScripts.VERSION_MARK.copyInto(header, RedisScripts.VERSION_OFFSET)
-        RedisRemoteStore.versionOf(header).assert().isEqualTo(0L)
+        RedisL1Store.versionOf(header).assert().isEqualTo(0L)
         // 令牌恰好以 0xC0 开头、但不是完整的标记：仍然没有版本
         header[RedisScripts.VERSION_OFFSET + 1] = 0
-        RedisRemoteStore.versionOf(header).assert().isEqualTo(Versioned.NO_VERSION)
+        RedisL1Store.versionOf(header).assert().isEqualTo(Versioned.NO_VERSION)
     }
 
     @Test
     fun putIfNewerRejectsSetsWithoutTouchingRedis() {
-        val store = RedisRemoteStore(mockk(), ByteArray(0), 512)
+        val store = RedisL1Store(mockk(), ByteArray(0), 512)
         val members = Envelope.Members(listOf("a".toByteArray()))
-        runCatching { store.putIfNewer("k", members, 1, null, ByteArray(0)) }.exceptionOrNull()
+        runCatching {
+            Suspending.await {
+                store.versioned().putIfNewer(
+                    "k",
+                    members,
+                    1,
+                    null,
+                    ByteArray(0)
+                )
+            }
+        }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
-        store.putIfNewerAsync("k", members, 1, null, ByteArray(0)).handle { _, error -> error }.join()
-            .assert().isInstanceOf(IllegalArgumentException::class.java)
-    }
-
-    /**
-     * 批量 fill 第一个失败即抛出并放弃其余：尚未完成的取消并释放令牌，已完成而结果未知（客户端超时）的同样释放；
-     * 正常完成的、以其它异常失败（断线拒绝）的不释放。
-     */
-    @Test
-    fun fillAllAbandonsTheRestAfterTheFirstFailure() {
-        val node = NodeId.random()
-        val fills = List(5) { Fill("k$it", Token(node, it.toLong()), Envelope.Absent, null) }
-        val calls = List(fills.size) { CompletableFuture<List<Any?>>() }
-        val released = CopyOnWriteArrayList<String>()
-        val connections = mockk<RedisConnections>()
-        every { connections.evalAsync<List<Any?>>(RedisScripts.FILL, any(), any()) } returnsMany calls
-        every { connections.evalAsync<List<Any?>>(RedisScripts.RELEASE, any(), any()) } answers {
-            released.add(String(secondArg<List<ByteArray>>().single()))
-            CompletableFuture.completedFuture(listOf(1L))
-        }
-        val timedOut = RedisException("Command timed out after PT1S.", TimeoutException())
-        every { connections.await(calls[0]) } throws timedOut
-        calls[1].complete(listOf(1L))
-        calls[2].completeExceptionally(RedisCommandTimeoutException("Command timed out"))
-        calls[3].completeExceptionally(RedisException("Connection closed"))
-        val store = RedisRemoteStore(connections, ByteArray(0), 512)
-
-        runCatching { store.fillAll(fills) }.exceptionOrNull().assert().isSameAs(timedOut)
-        released.assert().containsExactly("k0", "k2", "k4")
-        calls[4].isCancelled.assert().isTrue()
     }
 
     @Test
@@ -207,35 +185,36 @@ class RedisUnitTest {
             .assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 
+    /**
+     * 阻塞等待（启动时的探测、订阅、心跳）：限时，失败按同一规则映射；不响应中断，等到超时，保留中断标志（中断不到达 L1 命令）。
+     */
     @Test
-    fun awaitTranslatesFailures() {
+    fun joinTranslatesFailuresAndIgnoresInterrupts() {
         assumeStandalone()
         val client = RedisClient.create(RedisURI.create("localhost", 6379))
         try {
             RedisConnections(client, Duration.ofMillis(20)).use { connections ->
-                runCatching {
-                    connections.await(
-                        CompletableFuture<Any>()
-                    )
-                }.exceptionOrNull().assert().isInstanceOf(RedisException::class.java)
+                runCatching { connections.join(CompletableFuture<Any>()) }.exceptionOrNull()
+                    .assert().isInstanceOf(RedisException::class.java)
                 val checked = CompletableFuture.failedFuture<Any>(Exception("checked"))
                 runCatching {
-                    connections.await(
+                    connections.join(
                         checked
                     )
                 }.exceptionOrNull().assert().isInstanceOf(RedisException::class.java)
                 val runtime = IllegalStateException("runtime")
-                runCatching {
-                    connections.await(
-                        CompletableFuture.failedFuture<Any>(runtime)
-                    )
-                }.exceptionOrNull().assert().isSameAs(runtime)
+                runCatching { connections.join(CompletableFuture.failedFuture<Any>(runtime)) }.exceptionOrNull()
+                    .assert().isSameAs(runtime)
+                val cancelled = CompletableFuture<Any>().apply { cancel(false) }
+                val lettuceCancel = runCatching { connections.join(cancelled) }.exceptionOrNull()
+                lettuceCancel.assert().isInstanceOf(RedisException::class.java)
+                lettuceCancel?.cause.assert().isInstanceOf(java.util.concurrent.CancellationException::class.java)
+                connections.join(CompletableFuture.completedFuture("v")).assert().isEqualTo("v")
                 Thread.currentThread().interrupt()
-                runCatching {
-                    connections.await(
-                        CompletableFuture<Any>()
-                    )
-                }.exceptionOrNull().assert().isInstanceOf(RedisException::class.java)
+                val pending = CompletableFuture<Any>()
+                val failure = runCatching { connections.join(pending) }.exceptionOrNull()
+                failure.assert().isInstanceOf(RedisException::class.java)
+                failure?.message.assert().isEqualTo("Command timed out after PT0.02S.")
                 Thread.interrupted().assert().isTrue()
                 connections.groupBySlot(listOf("a".toByteArray(), "b".toByteArray())).size.assert().isEqualTo(1)
             }
@@ -251,14 +230,16 @@ class RedisUnitTest {
         try {
             client.connect().use { it.sync().scriptFlush() }
             RedisConnections(client, Duration.ofSeconds(2)).use { connections ->
-                val result = connections.eval<List<Any?>>(
-                    RedisScripts.PROBE,
-                    listOf("cocache:probe".toByteArray()),
-                    listOf("cocache:probe:channel".toByteArray())
+                val result = connections.join(
+                    connections.evalAsync<List<Any?>>(
+                        RedisScripts.PROBE,
+                        listOf("cocache:probe".toByteArray()),
+                        listOf("cocache:probe:channel".toByteArray())
+                    )
                 )
                 result.assert().containsExactly(1L)
                 val failure = runCatching {
-                    connections.eval<List<Any?>>(RedisScripts.FILL, emptyList(), emptyList())
+                    connections.join(connections.evalAsync<List<Any?>>(RedisScripts.FILL, emptyList(), emptyList()))
                 }.exceptionOrNull()
                 failure.assert().isInstanceOf(RedisException::class.java)
             }
@@ -334,7 +315,7 @@ class RedisUnitTest {
         }
         val connections = mockk<RedisConnections>()
         every { connections.pubSub } returns pubSub
-        every { connections.await(any<CompletableFuture<Any?>>()) } answers { firstArg<CompletableFuture<Any?>>().get() }
+        every { connections.join(any<CompletableFuture<Any?>>()) } answers { firstArg<CompletableFuture<Any?>>().get() }
 
         val resets = AtomicInteger()
         val received = CopyOnWriteArrayList<List<String>>()
@@ -669,11 +650,12 @@ class RedisUnitTest {
         assumeStandalone()
         mockkConstructor(RedisConnections::class) {
             every {
-                anyConstructed<RedisConnections>().eval<List<Any?>>(RedisScripts.PROBE, any(), any())
-            } throws RedisCommandTimeoutException("timeout")
+                anyConstructed<RedisConnections>().evalAsync<List<Any?>>(RedisScripts.PROBE, any(), any())
+            } returns CompletableFuture.failedFuture(RedisCommandTimeoutException("timeout"))
             // 暂时性错误不能永久降级为非原子广播：照常抛出，并关闭已建立的连接与心跳线程
             val error = runCatching { RedisBackend.standalone(RedisURI.create("localhost", 6379)) }.exceptionOrNull()
-            error.assert().isInstanceOf(RedisCommandTimeoutException::class.java)
+            error.assert().isInstanceOf(RedisException::class.java)
+            error?.cause.assert().isInstanceOf(RedisCommandTimeoutException::class.java)
             verify { anyConstructed<RedisConnections>().close() }
         }
     }
@@ -832,7 +814,7 @@ class RedisUnitTest {
 
         override fun unsubscribeAsync(channel: ByteArray): CompletableFuture<Void> = done()
 
-        override fun publish(namespace: String, frame: ByteArray): CompletableFuture<Void?> = done()
+        override suspend fun publish(namespace: String, frame: ByteArray) = Unit
 
         override fun ping() {
             failures[pings.incrementAndGet()]?.let { throw it }

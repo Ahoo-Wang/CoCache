@@ -17,9 +17,9 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 
 /**
- * L1 内容的 SHA-1 摘要，比较“内容是否仍是读到的那一份”：条件回收（[RemoteStore.reclaim]）、
- * 条件读取与条件写入（[RemoteStore.readIfChanged]、[RemoteStore.putIfMatch]，用户 API 为
- * [me.ahoo.cocache.api.Cache.getIfChanged]、[me.ahoo.cocache.api.Cache.putIfMatch]）。
+ * L1 内容的 SHA-1 摘要，比较“内容是否仍是读到的那一份”：条件读取与条件写入（[ConditionalL1Store.readIfChanged]、
+ * [ConditionalL1Store.putIfMatch]，用户 API 为 [me.ahoo.cocache.api.Cache.getIfChanged]、[me.ahoo.cocache.api.Cache.putIfMatch]）。
+ * 条件回收比较的是 SPI 自己的 [ContentFingerprint]（RFC 0005 round 3 K12）：目前两者算法相同，之后本类型改为 SHA-256。
  *
  * 普通读取的命中路径不计算它（只在解码失败、条件读写时计算）。计算方式属于线格式：
  * - 标量：载荷字节。

@@ -22,8 +22,8 @@ import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.FutureInvalidationChannel
 import me.ahoo.cocache.api.spi.FutureL1Store
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
@@ -42,18 +42,18 @@ import kotlin.concurrent.thread
 class FutureAdapterTest {
     private val original = IllegalStateException("L1 down")
 
-    private fun storeReading(future: CompletableFuture<RemoteRead>): FutureL1Store = mockk {
+    private fun storeReading(future: CompletableFuture<L1Read>): FutureL1Store = mockk {
         every { conditional() } returns null
         every { versioned() } returns null
         every { sets() } returns null
-        every { read(any(), any(), any()) } returns future
+        every { read(any(), any(), any(), null) } returns future
     }
 
     @Test
     fun aLaterFailureOfAStoreReachesTheCallerAsTheOriginalInstance() = runBlocking {
-        val future = CompletableFuture<RemoteRead>()
+        val future = CompletableFuture<L1Read>()
         val store = FutureL1Store.adapt(storeReading(future))
-        val reading = async(start = CoroutineStart.UNDISPATCHED) { runCatching { store.read("k", null, null) } }
+        val reading = async(start = CoroutineStart.UNDISPATCHED) { runCatching { store.read("k", null, null, null) } }
         thread { future.completeExceptionally(original) }
 
         reading.await().exceptionOrNull().assert().isSameAs(original)
@@ -75,7 +75,7 @@ class FutureAdapterTest {
      */
     @Test
     fun theEngineSeesTheOriginalInstanceOfALaterFailure() {
-        val future = CompletableFuture<RemoteRead>()
+        val future = CompletableFuture<L1Read>()
         val failing = storeReading(future)
         val backend = object : CoherenceBackend by InMemoryBackend() {
             override fun store(namespace: String): L1Store = FutureL1Store.adapt(failing)

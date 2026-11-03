@@ -21,51 +21,43 @@ import io.lettuce.core.api.StatefulRedisConnection
 import io.lettuce.core.cluster.SlotHash
 import io.lettuce.core.codec.ByteArrayCodec
 import io.lettuce.core.internal.HostAndPort
-import io.lettuce.core.protocol.CommandHandler
 import io.lettuce.core.protocol.CommandType
 import io.lettuce.core.protocol.RedisCommand
 import io.lettuce.core.resource.DefaultClientResources
 import io.lettuce.core.resource.MappingSocketAddressResolver
-import io.lettuce.core.resource.NettyCustomizer
 import io.mockk.every
 import io.mockk.mockk
-import io.netty.channel.Channel
-import io.netty.channel.ChannelHandlerContext
-import io.netty.channel.ChannelOutboundHandlerAdapter
-import io.netty.channel.ChannelPromise
 import me.ahoo.cocache.api.CacheWriteException
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
-import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
-import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 
 /**
- * 命令超时或等待被中断之后（结果未知）：尚未写出的命令不再写出（取消 Lettuce 命令），取得或交回令牌的命令（读取、回收、填充、释放）
- * 尽力释放它们的令牌。
+ * 命令超时之后（结果未知）：尚未写出的命令不再写出（取消 Lettuce 命令），取得或交回令牌的命令（读取、回收、填充、释放）
+ * 尽力释放它们的令牌（RFC 0005 §4.3）。中断不到达存储：同步变体的调用方被中断时，等它的命令结束才返回。
  */
 class RedisCommandTimeoutTest {
     private val namespace = "timeout-" + UUID.randomUUID().toString().substring(0, 8)
@@ -73,17 +65,14 @@ class RedisCommandTimeoutTest {
     private var sequence = 0L
     private val closeables = ArrayList<AutoCloseable>()
 
-    /**
-     * 写出的命令：只记录接入它的客户端资源上的连接（[interruptWhileWaiting]）。
-     */
-    private val written = WrittenCommands()
-
     @AfterEach
     fun destroy() {
         closeables.reversed().forEach { runCatching { it.close() } }
     }
 
     private fun <T : AutoCloseable> T.closing(): T = also { closeables.add(it) }
+
+    private fun <T> l1(block: suspend () -> T): T = Suspending.await(block)
 
     private fun key(name: String) = "cocache:$namespace:$name"
 
@@ -104,82 +93,13 @@ class RedisCommandTimeoutTest {
         this?.message.assert().isEqualTo("Command timed out after $timeout.")
     }
 
-    private fun Throwable?.assertInterrupted() {
-        this.assert().isInstanceOf(RedisException::class.java)
-        this?.message.assert().isEqualTo("Interrupted while waiting for Redis.")
-    }
-
-    /**
-     * 在已被中断的线程上执行 [block]（批量等待中第一个等待被中断之后，其余的等待就是这样），返回它抛出的异常；后端须恢复中断标志。
-     */
-    private fun whileInterrupted(block: () -> Unit): Throwable? {
-        Thread.currentThread().interrupt()
-        try {
-            return runCatching(block).exceptionOrNull()
-        } finally {
-            Thread.interrupted().assert().withFailMessage { "The interrupt flag was not restored." }.isTrue()
-        }
-    }
-
-    /**
-     * 在后台线程执行 [block]，等它停在等待 Redis 应答上、发往 [keys] 的命令都已写出（[written]，客户端资源须接入它）时中断它
-     * （`Future.cancel(true)`、Resilience4j `TimeLimiter`、`shutdownNow` 都这样中断调用方），返回它抛出的异常；后端须恢复中断标志。
-     *
-     * 命令由 Lettuce 的事件循环异步写出：中断先于写出时，被取消的命令不再写出（期望的行为），也就不会授予令牌，用例检验不到释放。
-     */
-    private fun interruptWhileWaiting(keys: Collection<String>, block: () -> Unit): Throwable? {
-        written.clear()
-        val caller = fork("interrupted-caller") {
-            val failure = runCatching(block).exceptionOrNull()
-            check(Thread.currentThread().isInterrupted) { "The interrupt flag was not restored." }
-            failure
-        }
-        awaitCondition("caller waiting for Redis, its commands written") {
-            caller.thread.state == Thread.State.TIMED_WAITING && written.containsAll(keys)
-        }
-        caller.thread.interrupt()
-        return caller.join()
-    }
-
-    /**
-     * 记录写出的命令的首个 key。插在 Lettuce 的 `CommandHandler` 与编码器之间：`CommandHandler` 跳过已完成（被取消）的命令
-     * （`isWriteable`），其余的先放入应答栈再交给这里，所以记录到的命令必然发往 Redis，此后取消也撤不回。
-     */
-    private class WrittenCommands : NettyCustomizer {
-        private val keys = ConcurrentHashMap.newKeySet<String>()
-
-        override fun afterChannelInitialized(channel: Channel) {
-            val pipeline = channel.pipeline()
-            val handler = pipeline.context(CommandHandler::class.java) ?: return
-            pipeline.addBefore(
-                handler.name(),
-                "written-commands",
-                object : ChannelOutboundHandlerAdapter() {
-                    override fun write(ctx: ChannelHandlerContext, msg: Any, promise: ChannelPromise) {
-                        // 单条命令，或一批命令
-                        (msg as? Collection<*> ?: listOf(msg)).forEach { command ->
-                            (command as? RedisCommand<*, *, *>)?.args?.firstEncodedKey?.let {
-                                keys.add(StandardCharsets.UTF_8.decode(it).toString())
-                            }
-                        }
-                        ctx.write(msg, promise)
-                    }
-                }
-            )
-        }
-
-        fun clear() = keys.clear()
-
-        fun containsAll(expected: Collection<String>): Boolean = keys.containsAll(expected)
-    }
-
     /**
      * 发往 [keys] 的命令可以暂时无法写出（[stall]）：单机时缓冲在断开的连接上（调用方的客户端 `RedisBackend.of`，默认的断线行为
      * 在重连期间缓冲命令），集群时等待建立节点连接（Lettuce 不为它们计时）。
      */
     private class Unwritable(
         val backend: RedisBackend,
-        val store: AsyncRemoteStore,
+        val store: L1Store,
         val keys: List<String>,
         private val stalling: () -> AutoCloseable,
         private val writable: () -> Unit,
@@ -207,9 +127,9 @@ class RedisCommandTimeoutTest {
         val client = RedisClient.create(RedisURI.create(proxy.address, proxy.port))
         closeables.add(AutoCloseable { client.shutdown() })
         val backend = RedisBackend.of(client, RedisBackendOptions(commandTimeout = timeout)).closing()
-        val store = backend.remoteStore(namespace)
+        val store = backend.store(namespace)
         // 先缓存脚本：重放的 EVALSHA 不会得到 NOSCRIPT
-        store.read(key("warm"), null, null)
+        l1 { store.read(key("warm"), null, null, null) }
         return Unwritable(
             backend,
             store,
@@ -219,13 +139,16 @@ class RedisCommandTimeoutTest {
                 val restore = proxy.stall(disconnect = true)
                 // 客户端发现断线之后命令才进入缓冲、以超时失败（此前写出的命令以连接关闭失败）
                 awaitCondition("commands are buffered") {
-                    store.readAsync(key("probe"), null, null).failure()?.message == "Command timed out after $timeout."
+                    runCatching { l1 { store.read(key("probe"), null, null, null) } }.exceptionOrNull()?.message ==
+                        "Command timed out after $timeout."
                 }
                 restore
             },
             // 重连后缓冲的命令按序重放，之后的命令排在它们之后
             writable = {
-                awaitCondition("reconnected") { runCatching { store.read(key("warm"), null, null) }.isSuccess }
+                awaitCondition(
+                    "reconnected"
+                ) { runCatching { l1 { store.read(key("warm"), null, null, null) } }.isSuccess }
             }
         )
     }
@@ -254,7 +177,7 @@ class RedisCommandTimeoutTest {
                 clientName = "cocache-tck-" + UUID.randomUUID()
             )
         ).closing()
-        val store = backend.remoteStore(namespace)
+        val store = backend.store(namespace)
         // 启动时的探测（cocache:probe:{a}）没有访问过的主节点：后端还没有到它的节点连接
         val probeSlot = SlotHash.getSlot("cocache:probe:{a}")
         val target = masters.first { !it.hasSlot(probeSlot) }
@@ -271,7 +194,7 @@ class RedisCommandTimeoutTest {
             // 第一次成功的读取说明节点连接已建立（等待它的命令此时已写出或已跳过），之后的命令排在它们之后
             writable = {
                 awaitCondition("node connection established") {
-                    runCatching { store.read(keys[0], null, null) }.isSuccess
+                    runCatching { l1 { store.read(keys[0], null, null, null) } }.isSuccess
                 }
             }
         )
@@ -289,12 +212,21 @@ class RedisCommandTimeoutTest {
         val store = connection.store
         val (sync, async) = connection.keys
         connection.stall().use {
-            val failure = runCatching { store.put(sync, scalar("stale"), null, frame(sync)) }.exceptionOrNull()
+            val failure = runCatching { l1 { store.put(sync, scalar("stale"), null, frame(sync)) } }.exceptionOrNull()
             failure.assertTimedOut(timeout)
-            store.putAsync(async, scalar("stale"), null, frame(async)).failure().assertTimedOut(timeout)
+            runCatching {
+                l1 {
+                    store.put(
+                        async,
+                        scalar("stale"),
+                        null,
+                        frame(async)
+                    )
+                }
+            }.exceptionOrNull().assertTimedOut(timeout)
         }
-        store.read(sync, null, null).assert().isEqualTo(RemoteRead.Miss(false))
-        store.read(async, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        l1 { store.read(sync, null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
+        l1 { store.read(async, null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
@@ -311,34 +243,20 @@ class RedisCommandTimeoutTest {
         // 先缓存脚本：否则迟到的 EVALSHA 得到 NOSCRIPT（放弃的调用不再回退 EVAL），复现不出迟到的写入
         RedisTestSupport.loadScripts(RedisScripts.PUT, RedisScripts.READ)
         node.stall().use {
-            val failure = runCatching { store.put(sync, scalar("stale"), null, frame(sync)) }.exceptionOrNull()
+            val failure = runCatching { l1 { store.put(sync, scalar("stale"), null, frame(sync)) } }.exceptionOrNull()
             failure.assertTimedOut(timeout)
-            store.putAsync(async, scalar("stale"), null, frame(async)).failure().assertTimedOut(timeout)
+            runCatching {
+                l1 {
+                    store.put(
+                        async,
+                        scalar("stale"),
+                        null,
+                        frame(async)
+                    )
+                }
+            }.exceptionOrNull().assertTimedOut(timeout)
         }
-        node.keys.forEach { store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false)) }
-    }
-
-    /**
-     * 等待被中断与超时一样（结果未知）：取消命令，尚未写出的写入永远不再写出。中断来自 `Future.cancel(true)`、`TimeLimiter`、
-     * `shutdownNow`，或批量等待中前一个等待被中断（其余等待随即失败）；否则被中断的 `put` 在重连或节点连接建立之后才执行，
-     * 覆盖之后写入的值。单机（断线期间缓冲）与集群（等待节点连接）。
-     */
-    @Test
-    fun interruptedWriteIsNeverWritten() {
-        val connection = unwritable(Duration.ofMillis(300), 3)
-        val store = connection.store
-        val (single, first, second) = connection.keys
-        RedisTestSupport.loadScripts(RedisScripts.PUT, RedisScripts.PUT_ALL, RedisScripts.READ)
-        connection.stall().use {
-            whileInterrupted { store.put(single, scalar("stale"), null, frame(single)) }.assertInterrupted()
-            whileInterrupted {
-                store.putAll(
-                    listOf(Put(first, scalar("stale"), null), Put(second, scalar("stale"), null)),
-                    frame(first, second)
-                )
-            }.assertInterrupted()
-        }
-        connection.keys.forEach { store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false)) }
+        node.keys.forEach { l1 { store.read(it, null, null, null) }.assert().isEqualTo(L1Read.Miss(false)) }
     }
 
     /**
@@ -368,7 +286,7 @@ class RedisCommandTimeoutTest {
             failure?.cause.assertTimedOut(timeout)
             interrupted.assert().withFailMessage { "The interrupt flag was not restored." }.isTrue()
         }
-        connection.store.read(storageKey, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        l1 { connection.store.read(storageKey, null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
@@ -397,10 +315,6 @@ class RedisCommandTimeoutTest {
             dispatched.single().isDone.assert().isTrue()
 
             dispatched.clear()
-            whileInterrupted { connections.eval<List<Any?>>(RedisScripts.READ, keys, emptyList()) }.assertInterrupted()
-            dispatched.single().isDone.assert().isTrue()
-
-            dispatched.clear()
             lateinit var racing: CompletableFuture<List<Any?>>
             onDispatch = { command -> if (command.type == CommandType.EVAL) racing.cancel(false) }
             racing = connections.evalAsync(RedisScripts.READ, keys, emptyList())
@@ -419,147 +333,6 @@ class RedisCommandTimeoutTest {
     }
 
     /**
-     * 读取超时（结果未知）：读脚本可能在超时之后才执行，授予 lease 或刷新令牌，调用方却已绕过 L1。后端尽力释放这次读取请求的令牌，
-     * 否则 `lease.ttl` 内全集群对该 key 的未命中都要先等 `lease.wait`。同步、异步与批量读取；单机与集群。
-     */
-    @Test
-    fun timedOutReadReleasesTheTokensItMayHaveTaken() {
-        val timeout = Duration.ofMillis(200)
-        val redis = RedisTestSupport.pausable().closing()
-        val backend = RedisTestSupport.backend(
-            RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
-        ).closing()
-        val store = backend.remoteStore(namespace)
-        // 同一 slot：节点连接已建立、脚本已缓存，暂停期间的读取与释放都已写出，暂停结束后按序执行。
-        // 释放的脚本也要已缓存：暂停期间它同样超时，得到 NOSCRIPT 时不再回退 EVAL
-        RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RELEASE)
-        val warm = key("{lease}warm")
-        val refreshed = key("{lease}refresh")
-        store.put(refreshed, scalar("v"), Duration.ofMinutes(1), frame(refreshed))
-        store.read(warm, null, null)
-        val sync = key("{lease}sync")
-        val async = key("{lease}async")
-        val all = key("{lease}all")
-        val allAsync = key("{lease}all-async")
-        redis.pause(PAUSE_MILLIS)
-        val pending = listOf(
-            store.readAsync(async, lease(), null),
-            store.readAllAsync(listOf(allAsync), mapOf(allAsync to lease())),
-        )
-        runCatching { store.read(sync, lease(), null) }.exceptionOrNull().assertTimedOut(timeout)
-        runCatching { store.readAll(listOf(all), mapOf(all to lease())) }.exceptionOrNull().assertTimedOut(timeout)
-        runCatching { store.read(refreshed, null, refresh()) }.exceptionOrNull().assertTimedOut(timeout)
-        pending.forEach { it.failure().assertTimedOut(timeout) }
-        // 暂停结束后读取照常执行并授予令牌，随后执行的释放把它们收回：之后的读取不再看到 lease
-        awaitCondition("pause over") { runCatching { store.read(warm, null, null) }.isSuccess }
-        listOf(sync, async, all, allAsync).forEach {
-            store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false))
-        }
-        // 刷新令牌同样被收回：下一次刷新窗口内的读取能取得令牌
-        val next = store.read(refreshed, null, refresh()) as RemoteRead.Hit
-        next.refreshGranted.assert().isTrue()
-    }
-
-    /**
-     * 条件回收超时（结果未知）：脚本可能在超时之后才执行、把内容换成这次请求的 lease，引擎却已绕过 L1 回源，
-     * 后端尽力释放这个 lease（RFC 0005 C7）。同步与异步；单机与集群。
-     */
-    @Test
-    fun timedOutReclaimReleasesTheLeaseItMayHaveTaken() {
-        val timeout = Duration.ofMillis(200)
-        val redis = RedisTestSupport.pausable().closing()
-        val backend = RedisTestSupport.backend(
-            RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
-        ).closing()
-        val store = backend.remoteStore(namespace)
-        // 同一 slot、脚本已缓存：理由同 timedOutReadReleasesTheTokensItMayHaveTaken
-        RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RECLAIM, RedisScripts.RELEASE)
-        val warm = key("{reclaim}warm")
-        store.read(warm, null, null)
-        val sync = key("{reclaim}sync")
-        val async = key("{reclaim}async")
-        val observed = listOf(sync, async).associateWith {
-            store.put(it, scalar("corrupt"), Duration.ofMinutes(1), frame(it))
-            Digest.of((store.read(it, null, null) as RemoteRead.Hit).envelope)
-        }
-        redis.pause(PAUSE_MILLIS)
-        val pending = store.reclaimAsync(async, observed.getValue(async), lease())
-        runCatching {
-            store.reclaim(sync, observed.getValue(sync), lease())
-        }.exceptionOrNull().assertTimedOut(timeout)
-        pending.failure().assertTimedOut(timeout)
-        // 暂停结束后回收照常执行并换上 lease，随后执行的释放把它收回：key 不再是 lease 占位
-        awaitCondition("pause over") { runCatching { store.read(warm, null, null) }.isSuccess }
-        listOf(sync, async).forEach {
-            store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false))
-        }
-    }
-
-    /**
-     * 等待读取时被中断（结果未知）与超时一样：已写出的读脚本照常执行、授予令牌，后端尽力释放这次读取请求的令牌。批量读取的第一个等待被中断之后，
-     * 其余等待随即失败，它们的读取同样已写出、各自取得 lease，都要释放。条件回收（取得 lease）同样。单机与集群。
-     */
-    @Test
-    fun interruptedReadReleasesTheTokensItMayHaveTaken() {
-        val redis = RedisTestSupport.pausable { it.nettyCustomizer(written) }.closing()
-        // 超时远长于暂停：读取只会因中断失败
-        val backend = RedisTestSupport.backend(
-            RedisBackendOptions(commandTimeout = Duration.ofSeconds(10), clientResources = redis.resources)
-        ).closing()
-        val store = backend.remoteStore(namespace)
-        RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RECLAIM, RedisScripts.RELEASE)
-        val warm = key("{lease}warm")
-        val refreshed = key("{lease}refresh")
-        val corrupt = key("{lease}corrupt")
-        store.put(refreshed, scalar("v"), Duration.ofMinutes(1), frame(refreshed))
-        RedisTestSupport.withCommands { it.set(corrupt, "garbage") }
-        val observed = Digest.of((store.read(corrupt, null, null) as RemoteRead.Hit).envelope)
-        store.read(warm, null, null)
-        val sync = key("{lease}sync")
-        val all = listOf(key("{lease}all-0"), key("{lease}all-1"), key("{lease}all-2"))
-        redis.pause(PAUSE_MILLIS)
-        interruptWhileWaiting(listOf(sync)) { store.read(sync, lease(), null) }.assertInterrupted()
-        interruptWhileWaiting(all) { store.readAll(all, all.associateWith { lease() }) }.assertInterrupted()
-        interruptWhileWaiting(listOf(refreshed)) { store.read(refreshed, null, refresh()) }.assertInterrupted()
-        interruptWhileWaiting(listOf(corrupt)) { store.reclaim(corrupt, observed, lease()) }.assertInterrupted()
-        // 暂停结束后读取照常执行并授予令牌，随后执行的释放把它们收回：之后的读取不再看到 lease
-        awaitCondition("pause over") { runCatching { store.read(warm, null, null) }.isSuccess }
-        (all + sync + corrupt).forEach { store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false)) }
-        val next = store.read(refreshed, null, refresh()) as RemoteRead.Hit
-        next.refreshGranted.assert().isTrue()
-    }
-
-    /**
-     * fill 超时或等待被中断（结果未知）时尽力释放它的令牌：被取消、没有写出的 fill 否则留下 lease 到 `lease.ttl`，
-     * 全集群对该 key 的未命中都要先等 `lease.wait`。释放本身超时或被中断、没有写出时同样重新发出。单机与集群。
-     */
-    @Test
-    fun abandonedFillReleasesItsToken() {
-        val timeout = Duration.ofMillis(300)
-        val connection = unwritable(timeout, 11)
-        val store = connection.store
-        val keys = connection.keys
-        // 令牌由另一个后端取得（被阻断的后端在集群中还没有到这些 key 的节点连接）
-        val direct = RedisTestSupport.backend().closing().remoteStore(namespace)
-        val tokens = keys.associateWith { key ->
-            lease().also { direct.read(key, it, null).assert().isEqualTo(RemoteRead.Miss(true)) }.token
-        }
-        fun fill(index: Int) = Fill(keys[index], tokens.getValue(keys[index]), scalar("late"), Duration.ofMinutes(1))
-        RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.FILL, RedisScripts.RELEASE)
-        connection.stall().use {
-            runCatching { store.fill(fill(0)) }.exceptionOrNull().assertTimedOut(timeout)
-            store.fillAsync(fill(1)).failure().assertTimedOut(timeout)
-            runCatching { store.fillAll(listOf(fill(2), fill(3))) }.exceptionOrNull().assertTimedOut(timeout)
-            store.fillAllAsync(listOf(fill(4), fill(5))).failure().assertTimedOut(timeout)
-            whileInterrupted { store.fill(fill(6)) }.assertInterrupted()
-            whileInterrupted { store.fillAll(listOf(fill(7), fill(8))) }.assertInterrupted()
-            whileInterrupted { store.release(keys[9], tokens.getValue(keys[9])) }.assertInterrupted()
-            store.releaseAsync(keys[10], tokens.getValue(keys[10])).failure().assertTimedOut(timeout)
-        }
-        keys.forEach { store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false)) }
-    }
-
-    /**
      * 超时的 fill 已经写出：Redis 照常执行，值写入；随后的释放令牌不匹配，什么也不做（不删除刚填充的值）。单机与集群。
      */
     @Test
@@ -569,24 +342,65 @@ class RedisCommandTimeoutTest {
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
         ).closing()
-        val store = backend.remoteStore(namespace)
+        val store = backend.store(namespace)
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.FILL, RedisScripts.RELEASE)
         val warm = key("{fill}warm")
-        store.read(warm, null, null)
+        l1 { store.read(warm, null, null, null) }
         val fills = listOf(key("{fill}sync"), key("{fill}async"), key("{fill}all")).map { key ->
             val lease = lease()
-            store.read(key, lease, null).assert().isEqualTo(RemoteRead.Miss(true))
+            l1 { store.read(key, lease, null, null) }.assert().isEqualTo(L1Read.Miss(true))
             Fill(key, lease.token, scalar("filled"), Duration.ofMinutes(1))
         }
         redis.pause(PAUSE_MILLIS)
-        runCatching { store.fill(fills[0]) }.exceptionOrNull().assertTimedOut(timeout)
-        store.fillAsync(fills[1]).failure().assertTimedOut(timeout)
-        runCatching { store.fillAll(listOf(fills[2])) }.exceptionOrNull().assertTimedOut(timeout)
-        awaitCondition("pause over") { runCatching { store.read(warm, null, null) }.isSuccess }
+        runCatching { l1 { store.fill(fills[0]) } }.exceptionOrNull().assertTimedOut(timeout)
+        runCatching { l1 { store.fill(fills[1]) } }.exceptionOrNull().assertTimedOut(timeout)
+        runCatching { l1 { store.fillAll(listOf(fills[2])) } }.exceptionOrNull().assertTimedOut(timeout)
+        awaitCondition("pause over") { runCatching { l1 { store.read(warm, null, null, null) } }.isSuccess }
         fills.forEach { fill ->
-            val read = store.read(fill.key, null, null) as RemoteRead.Hit
+            val read = l1 { store.read(fill.key, null, null, null) } as L1Read.Hit
             read.envelope.assert().isEqualTo(scalar("filled"))
         }
+    }
+
+    /**
+     * 原生的 [RedisL1Store]（RFC 0005 §4.3，M3d）：超时的写入尚未写出时不再写出（之后写出会覆盖更新的值）；结果未知的填充与释放
+     * 尽力释放令牌，被取消、没有写出的填充否则留下 lease 到 `lease.ttl`。单机（断线期间缓冲）与集群（等待节点连接）。
+     */
+    @Test
+    fun timedOutL1StoreCommandsAreNeverWrittenAndReleaseTheirTokens() {
+        val timeout = Duration.ofMillis(300)
+        val connection = unwritable(timeout, 6)
+        val store = connection.backend.l1Store(namespace)
+        val keys = connection.keys
+        // 令牌由另一个后端取得（被阻断的后端在集群中还没有到这些 key 的节点连接）
+        val direct = RedisTestSupport.backend().closing().store(namespace)
+        val tokens = keys.drop(3).associateWith { key ->
+            lease().also { l1 { direct.read(key, it, null, null) }.assert().isEqualTo(L1Read.Miss(true)) }.token
+        }
+        fun fill(index: Int) = Fill(keys[index], tokens.getValue(keys[index]), scalar("late"), Duration.ofMinutes(1))
+        RedisTestSupport.loadScripts(
+            RedisScripts.PUT,
+            RedisScripts.PUT_ALL,
+            RedisScripts.READ,
+            RedisScripts.FILL,
+            RedisScripts.RELEASE
+        )
+        val caller = CallerDispatcher().closing()
+        connection.stall().use {
+            listOf(
+                caller.start { store.put(keys[0], scalar("stale"), null, frame(keys[0])) },
+                caller.start {
+                    store.putAll(
+                        listOf(Put(keys[1], scalar("stale"), null), Put(keys[2], scalar("stale"), null)),
+                        frame(keys[1], keys[2])
+                    )
+                },
+                caller.start { store.fill(fill(3)) },
+                caller.start { store.fillAll(listOf(fill(4))) },
+                caller.start { store.release(keys[5], tokens.getValue(keys[5])) },
+            ).forEach { it.failure().assertTimedOut(timeout) }
+        }
+        keys.forEach { l1 { connection.store.read(it, null, null, null) }.assert().isEqualTo(L1Read.Miss(false)) }
     }
 
     private companion object {

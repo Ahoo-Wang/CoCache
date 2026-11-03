@@ -15,7 +15,7 @@ package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.LoadOperation
@@ -316,7 +316,7 @@ class TokenConservationPropertyTest {
         }
 
         fun leased(key: String): Boolean =
-            Suspending.await { memory.store(NAME).read("cocache:$NAME:$key", null, null) } is RemoteRead.Leased
+            Suspending.await { memory.store(NAME).read("cocache:$NAME:$key", null, null, null) } is L1Read.Leased
     }
 
     companion object {

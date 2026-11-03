@@ -19,9 +19,9 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
@@ -87,8 +87,8 @@ class SyncInterruptTest {
     private fun storageKey(key: String) = "cocache:$NAME:$key"
 
     private fun leased(key: String): Boolean = Suspending.await {
-        memory.store(NAME).read(storageKey(key), null, null)
-    } is RemoteRead.Leased
+        memory.store(NAME).read(storageKey(key), null, null, null)
+    } is L1Read.Leased
 
     /**
      * 调用方的结局：结果（或异常），以及返回时线程的中断标志（线程结束后不可再读）。
@@ -214,7 +214,7 @@ class SyncInterruptTest {
         outcome.result.isSuccess.assert().withFailMessage { "the put failed: ${outcome.result}" }.isTrue()
         outcome.interrupted.assert().withFailMessage { "the interrupt flag must be restored" }.isTrue()
         published.assert().isEqualTo(listOf(listOf(storageKey("k"))))
-        val read = Suspending.await { memory.store(NAME).read(storageKey("k"), null, null) } as RemoteRead.Hit
+        val read = Suspending.await { memory.store(NAME).read(storageKey("k"), null, null, null) } as L1Read.Hit
         read.envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
     }
 
@@ -246,8 +246,8 @@ class SyncInterruptTest {
         Suspending.await {
             memory.store(
                 NAME
-            ).read(storageKey("k"), holder, null)
-        }.assert().isEqualTo(RemoteRead.Miss(true))
+            ).read(storageKey("k"), holder, null, null)
+        }.assert().isEqualTo(L1Read.Miss(true))
         val caller = call("waiter") { cache["k"] }
         awaitParked(caller, 1, "read issued")
         resolve("read")

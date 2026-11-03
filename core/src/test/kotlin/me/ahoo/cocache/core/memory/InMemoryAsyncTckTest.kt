@@ -39,10 +39,16 @@ import java.util.concurrent.Executors
  */
 class InMemoryFutureBackendProtocolTest : BackendProtocolSpec() {
     private val clock = ManualClock()
+    private lateinit var memory: InMemoryBackend
 
-    override fun createBackend(): CoherenceBackend = FutureBackend(InMemoryBackend(clock))
+    override fun createBackend(): CoherenceBackend = FutureBackend(InMemoryBackend(clock).also { memory = it })
 
     override fun elapse(duration: Duration) = clock.advance(duration)
+
+    /**
+     * 经 `FutureL1Store.adapt` 的读取同样带着时限到达内存后端（时限由存储自己执行，适配器原样传递）。
+     */
+    override fun pause(): AutoCloseable = memory.stall()
 }
 
 class InMemoryAsyncEngineTest : AsyncVariantEngineCases() {

@@ -86,8 +86,9 @@ internal class ShardedInvalidationChannel(
         return connections.pubSub.async().sunsubscribe(channel).toCompletableFuture()
     }
 
-    override fun publish(namespace: String, frame: ByteArray): CompletableFuture<Void?> =
-        connections.spublishAsync(channelOf(namespace).toByteArray(Charsets.UTF_8), frame)
+    override suspend fun publish(namespace: String, frame: ByteArray) {
+        connections.spublish(channelOf(namespace).toByteArray(Charsets.UTF_8), frame)
+    }
 
     @Suppress("TooGenericExceptionCaught")
     override fun ping() {
@@ -98,7 +99,7 @@ internal class ShardedInvalidationChannel(
         }
         val cluster = clusterPubSub
         if (cluster == null) {
-            connections.await(connections.pubSub.async().ping().toCompletableFuture())
+            connections.join(connections.pubSub.async().ping().toCompletableFuture())
             return
         }
         subscribedNodes.keys.retainAll(listeners.keys)
@@ -168,7 +169,7 @@ internal class ShardedInvalidationChannel(
     }
 
     private fun ping(cluster: StatefulRedisClusterPubSubConnection<ByteArray, ByteArray>, node: HostAndPort) {
-        connections.await(
+        connections.join(
             cluster.getConnectionAsync(node.host, node.port).thenCompose { it.async().ping().toCompletableFuture() }
         )
     }

@@ -27,6 +27,10 @@ import io.lettuce.core.internal.HostAndPort
 import io.lettuce.core.resource.ClientResources
 import io.lettuce.core.resource.DefaultClientResources
 import io.lettuce.core.resource.MappingSocketAddressResolver
+import me.ahoo.cocache.api.spi.ConditionalL1Store
+import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.SetL1Store
+import me.ahoo.cocache.api.spi.VersionedL1Store
 import java.time.Duration
 
 /**
@@ -465,3 +469,21 @@ object RedisTestSupport {
             .mapNotNull { it["id"]?.toLongOrNull() }
     }
 }
+
+/**
+ * 存储的条件读写能力面（Redis 后端总是提供）。
+ */
+internal val L1Store.conditionalSurface: ConditionalL1Store
+    get() = requireNotNull(conditional()) { "${javaClass.name} does not provide the conditional capability." }
+
+/**
+ * 存储的按版本写入能力面（Redis 后端总是提供）。
+ */
+internal val L1Store.versionedSurface: VersionedL1Store
+    get() = requireNotNull(versioned()) { "${javaClass.name} does not provide the versioned capability." }
+
+/**
+ * 存储的集合能力面（Redis 后端总是提供）。
+ */
+internal val L1Store.setSurface: SetL1Store
+    get() = requireNotNull(sets()) { "${javaClass.name} does not provide the sets capability." }

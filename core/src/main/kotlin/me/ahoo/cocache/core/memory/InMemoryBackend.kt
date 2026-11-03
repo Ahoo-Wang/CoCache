@@ -14,24 +14,28 @@
 package me.ahoo.cocache.core.memory
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ConditionalL1Store
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteConditionalRead
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
@@ -39,14 +43,18 @@ import me.ahoo.cocache.api.spi.VersionedL1Store
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeoutException
 
 /**
  * 单进程内存后端：完整实现 L1 协议（RFC 0003 §4.4，挂起形状见 RFC 0005 §4.3）与原子广播，提供全部可选能力，供测试与 TCK 使用。
  *
  * 多个运行时共享同一个实例即可模拟多节点。到期时间按注入的 [clock] 判断。
+ *
+ * @param commandTimeout 每个存储操作的时限：只在 [stall] 期间起作用（内存操作本身不等待）；读取的 `timeout` 以它为上限
  */
 class InMemoryBackend @JvmOverloads constructor(
     private val clock: CacheClock = CacheClock { System.currentTimeMillis() },
+    private val commandTimeout: Duration = DEFAULT_COMMAND_TIMEOUT,
 ) : CoherenceBackend {
     override val atomicBroadcast: Boolean = true
 
@@ -58,6 +66,42 @@ class InMemoryBackend @JvmOverloads constructor(
     override val channel: InvalidationChannel = Channel()
 
     override fun store(namespace: String): L1Store = stores.computeIfAbsent(namespace) { Store(it) }
+
+    /**
+     * 卡顿中时为恢复前一直未完成的门（[stall]），否则为 `null`。
+     */
+    @Volatile
+    private var stalled: CompletableDeferred<Unit>? = null
+
+    /**
+     * 模拟 L1 卡顿（供 TCK 检验读取的时限，RFC 0005 round 3 D6）：之后开始的存储操作等到恢复再执行，最多等它的时限
+     * （读取为 `timeout` 与 [commandTimeout] 中较短的一个，其它操作为 [commandTimeout]）。超时的操作以 L1 故障
+     * （[IllegalStateException]，cause 为 [TimeoutException]）失败，并且永远不执行：相当于尚未写出的命令不再写出，
+     * 不会取得令牌。关闭返回值即恢复，等待中的操作随即执行。
+     */
+    fun stall(): AutoCloseable {
+        val gate = CompletableDeferred<Unit>()
+        stalled = gate
+        return AutoCloseable {
+            if (stalled === gate) {
+                stalled = null
+            }
+            gate.complete(Unit)
+        }
+    }
+
+    /**
+     * 卡顿中时等到恢复，最多等 [timeout]（`null` 为 [commandTimeout]，给出时以它为上限）；超时时抛出，调用方不再执行操作。
+     */
+    private suspend fun awaitRunnable(timeout: Duration?) {
+        if (timeout != null) {
+            require(!timeout.isNegative && !timeout.isZero) { "timeout[$timeout] must be positive." }
+        }
+        val gate = stalled ?: return
+        val bound = timeout?.coerceAtMost(commandTimeout) ?: commandTimeout
+        withTimeoutOrNull(bound.toMillis()) { gate.await() }
+            ?: throw IllegalStateException("In-memory L1 command timed out after $bound.", TimeoutException())
+    }
 
     /**
      * 模拟订阅连接断开并重新建立：通知所有订阅者重置。与 Redis 后端相同，某个订阅者的重置抛出异常（包括 `Error`）记录后继续，
@@ -128,7 +172,8 @@ class InMemoryBackend @JvmOverloads constructor(
     private fun versionOf(envelope: Envelope): Long = (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION
 
     /**
-     * 原生的 [L1Store]（RFC 0005 §4.3）：内存操作不阻塞，挂起方法就地执行、从不挂起。三个能力面都由存储自己实现，访问器返回它本身。
+     * 原生的 [L1Store]（RFC 0005 §4.3）：内存操作不阻塞，挂起方法就地执行、不挂起（[stall] 期间除外）。三个能力面都由存储自己实现，
+     * 访问器返回它本身。
      */
     @Suppress("TooManyFunctions")
     private inner class Store(
@@ -161,34 +206,33 @@ class InMemoryBackend @JvmOverloads constructor(
 
         override fun sets(): SetL1Store = this
 
-        override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead = readNow(
-            key,
-            lease,
-            refresh
-        )
+        override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, timeout: Duration?): L1Read {
+            awaitRunnable(timeout)
+            return readNow(key, lease, refresh)
+        }
 
-        private fun readNow(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
-            var result: RemoteRead = RemoteRead.Miss(false)
+        private fun readNow(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): L1Read {
+            var result: L1Read = L1Read.Miss(false)
             slots.compute(key) { _, current ->
                 val slot = current.live()
                 when {
                     slot == null -> {
-                        result = RemoteRead.Miss(lease != null)
+                        result = L1Read.Miss(lease != null)
                         lease?.let { leaseSlot(it) }
                     }
 
                     slot.state == State.LEASED -> {
-                        result = RemoteRead.Leased(remaining(slot) ?: Duration.ZERO)
+                        result = L1Read.Leased(remaining(slot) ?: Duration.ZERO)
                         slot
                     }
 
                     refresh != null && grantsRefresh(slot, refresh) -> {
-                        result = RemoteRead.Hit(slot.envelope, FORMAT, remaining(slot), refreshGranted = true)
+                        result = L1Read.Hit(slot.envelope, FORMAT, remaining(slot), refreshGranted = true)
                         Slot(slot.state, slot.envelope, refresh.token, now(), slot.expireAt, slot.version)
                     }
 
                     else -> {
-                        result = RemoteRead.Hit(slot.envelope, FORMAT, remaining(slot))
+                        result = L1Read.Hit(slot.envelope, FORMAT, remaining(slot))
                         slot
                     }
                 }
@@ -214,17 +258,28 @@ class InMemoryBackend @JvmOverloads constructor(
             return slot.token == null || now() - slot.tokenIssuedAt > refresh.tokenTtl.toMillis()
         }
 
-        override suspend fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
-            val result = LinkedHashMap<String, RemoteRead>()
+        override suspend fun readAll(
+            keys: Collection<String>,
+            leases: Map<String, LeaseRequest>,
+            timeout: Duration?
+        ): Map<String, L1Read> {
+            awaitRunnable(timeout)
+            val result = LinkedHashMap<String, L1Read>()
             for (key in keys) {
                 result[key] = readNow(key, leases[key], null)
             }
             return result
         }
 
-        override suspend fun fill(fill: Fill): Boolean = fillNow(fill)
+        override suspend fun fill(fill: Fill): L1Fill {
+            awaitRunnable(null)
+            return fillNow(fill)
+        }
 
-        private fun fillNow(fill: Fill): Boolean {
+        /**
+         * 令牌匹配即写入：本后端的 lease 不带版本，填充从不让版本前进（[L1Fill.Filled.advanced] 为 `false`），也没有版本拒绝。
+         */
+        private fun fillNow(fill: Fill): L1Fill {
             var filled = false
             slots.compute(fill.key) { _, current ->
                 val slot = current.live()
@@ -236,7 +291,7 @@ class InMemoryBackend @JvmOverloads constructor(
                     slot
                 }
             }
-            return filled
+            return if (filled) FILLED else TOKEN_MISMATCH
         }
 
         /**
@@ -249,9 +304,13 @@ class InMemoryBackend @JvmOverloads constructor(
             return Envelope.Scalar(envelope.bytes, version)
         }
 
-        override suspend fun fillAll(fills: List<Fill>): List<Boolean> = fills.map { fillNow(it) }
+        override suspend fun fillAll(fills: List<Fill>): List<L1Fill> {
+            awaitRunnable(null)
+            return fills.map { fillNow(it) }
+        }
 
         override suspend fun release(key: String, token: Token) {
+            awaitRunnable(null)
             slots.compute(key) { _, current ->
                 val slot = current.live()
                 when {
@@ -263,6 +322,7 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         override suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
+            awaitRunnable(null)
             slots[key] = Slot(stateOf(envelope), envelope, expireAt = expireAt(ttl), version = versionOf(envelope))
             publish(namespace, frame)
         }
@@ -271,6 +331,7 @@ class InMemoryBackend @JvmOverloads constructor(
          * 每个 key 的转换同 [put]，整批只广播一次 [frame]。
          */
         override suspend fun putAll(puts: List<Put>, frame: ByteArray) {
+            awaitRunnable(null)
             puts.forEach {
                 slots[it.key] = Slot(stateOf(it.envelope), it.envelope, expireAt = expireAt(it.ttl), version = versionOf(it.envelope))
             }
@@ -278,15 +339,17 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         override suspend fun invalidate(keys: Collection<String>, frame: ByteArray) {
+            awaitRunnable(null)
             keys.forEach { slots.remove(it) }
             publish(namespace, frame)
         }
 
-        override suspend fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {
+        override suspend fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean {
+            awaitRunnable(null)
             var reclaimed = false
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (slot != null && reclaimable(slot) && Digest.of(slot.envelope) == observed) {
+                if (slot != null && reclaimable(slot) && ContentFingerprint.of(slot.envelope) == observed) {
                     reclaimed = true
                     leaseSlot(lease)
                 } else {
@@ -312,6 +375,7 @@ class InMemoryBackend @JvmOverloads constructor(
             ttl: Duration?,
             frame: ByteArray
         ): Int? {
+            awaitRunnable(null)
             var refused: Int? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
@@ -337,6 +401,7 @@ class InMemoryBackend @JvmOverloads constructor(
             ttl: Duration?,
             frame: ByteArray
         ): Int? {
+            awaitRunnable(null)
             var refused: Int? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
@@ -371,17 +436,18 @@ class InMemoryBackend @JvmOverloads constructor(
         /**
          * 本后端只存本协议的内容：读不懂的只有集合（返回本后端的格式版本）。
          */
-        override suspend fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead {
+        override suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead {
+            awaitRunnable(timeout)
             val slot = slots[key].live()
             return when (slot?.state) {
-                null, State.LEASED, State.MISSING -> RemoteConditionalRead.Absent
-                State.SET -> RemoteConditionalRead.Unreadable(FORMAT)
+                null, State.LEASED, State.MISSING -> L1ConditionalRead.Absent
+                State.SET -> L1ConditionalRead.Unreadable(FORMAT)
                 State.VALUE -> {
                     val envelope = slot.envelope as Envelope.Scalar
                     if (known != null && Digest.of(envelope) == known) {
-                        RemoteConditionalRead.Unchanged(FORMAT)
+                        L1ConditionalRead.Unchanged(FORMAT)
                     } else {
-                        RemoteConditionalRead.Changed(envelope, FORMAT)
+                        L1ConditionalRead.Changed(envelope, FORMAT)
                     }
                 }
             }
@@ -396,26 +462,27 @@ class InMemoryBackend @JvmOverloads constructor(
             envelope: Envelope.Scalar,
             ttl: Duration?,
             frame: ByteArray
-        ): RemoteConditionalWrite {
-            var outcome: RemoteConditionalWrite = RemoteConditionalWrite.Written
+        ): L1ConditionalWrite {
+            awaitRunnable(null)
+            var outcome: L1ConditionalWrite = L1ConditionalWrite.Written
             slots.compute(key) { _, current ->
                 val slot = current.live()
                 val digest = when (slot?.state) {
                     null, State.LEASED, State.MISSING -> null
                     State.VALUE -> Digest.of(slot.envelope)
                     State.SET -> {
-                        outcome = RemoteConditionalWrite.Unreadable(FORMAT)
+                        outcome = L1ConditionalWrite.Unreadable(FORMAT)
                         return@compute slot
                     }
                 }
                 if (digest != expected) {
-                    outcome = RemoteConditionalWrite.Conflict(digest)
+                    outcome = L1ConditionalWrite.Conflict(digest)
                     return@compute slot
                 }
                 // 与 Redis 的 PUT_IF_MATCH 相同：条件写入写入没有版本的值
                 Slot(State.VALUE, Envelope.Scalar(envelope.bytes), expireAt = expireAt(ttl))
             }
-            if (outcome == RemoteConditionalWrite.Written) {
+            if (outcome == L1ConditionalWrite.Written) {
                 publish(namespace, frame)
             }
             return outcome
@@ -431,23 +498,24 @@ class InMemoryBackend @JvmOverloads constructor(
             version: Long,
             ttl: Duration?,
             frame: ByteArray
-        ): RemoteVersionedWrite {
+        ): L1VersionedWrite {
             require(envelope !is Envelope.Members) { "putIfNewer takes a scalar value or Envelope.Absent, not a set." }
-            var outcome: RemoteVersionedWrite = RemoteVersionedWrite.Written
+            awaitRunnable(null)
+            var outcome: L1VersionedWrite = L1VersionedWrite.Written
             slots.compute(key) { _, current ->
                 val slot = current.live()
                 if (slot?.state == State.SET) {
-                    outcome = RemoteVersionedWrite.Unreadable(FORMAT)
+                    outcome = L1VersionedWrite.Unreadable(FORMAT)
                     return@compute slot
                 }
                 if (slot != null && slot.version != Versioned.NO_VERSION && slot.version >= version) {
-                    outcome = RemoteVersionedWrite.Stale(slot.version)
+                    outcome = L1VersionedWrite.Stale(slot.version)
                     return@compute slot
                 }
                 val stored = if (envelope is Envelope.Scalar) Envelope.Scalar(envelope.bytes, version) else envelope
                 Slot(stateOf(envelope), stored, expireAt = expireAt(ttl), version = version)
             }
-            if (outcome == RemoteVersionedWrite.Written) {
+            if (outcome == L1VersionedWrite.Written) {
                 publish(namespace, frame)
             }
             return outcome
@@ -467,6 +535,14 @@ class InMemoryBackend @JvmOverloads constructor(
     companion object {
         const val FORMAT = 1
         private const val FOREVER = Long.MAX_VALUE
+
+        /**
+         * 默认的命令超时（与 Redis 后端相同）。
+         */
+        @JvmField
+        val DEFAULT_COMMAND_TIMEOUT: Duration = Duration.ofSeconds(2)
+        private val FILLED: L1Fill = L1Fill.Filled(advanced = false)
+        private val TOKEN_MISMATCH: L1Fill = L1Fill.Rejected(currentVersion = null)
         private val log = KotlinLogging.logger {}
     }
 }

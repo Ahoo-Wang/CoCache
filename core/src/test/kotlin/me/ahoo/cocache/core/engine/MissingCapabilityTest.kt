@@ -14,8 +14,8 @@
 package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.CacheClock
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.StrippedBackend
@@ -89,8 +89,8 @@ class MissingCapabilityTest {
         Suspending.await {
             memory.store(
                 "doc"
-            ).read("cocache:doc:k", null, null)
-        }.assert().isEqualTo(RemoteRead.Miss(false))
+            ).read("cocache:doc:k", null, null, null)
+        }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test

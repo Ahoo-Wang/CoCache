@@ -21,18 +21,20 @@ import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.api.spi.VersionedL1Store
 import me.ahoo.cocache.core.CacheMetrics
@@ -185,17 +187,17 @@ abstract class VersionedSpec {
     /**
      * 不经过引擎直接读 L1。
      */
-    protected fun remote(key: String): RemoteRead = Suspending.await { store().read(storageKey(key), null, null) }
+    protected fun remote(key: String): L1Read = Suspending.await { store().read(storageKey(key), null, null, null) }
 
     /**
      * L1 中的值与版本；没有值（不存在、lease、负缓存或墓碑）时为 `null`。
      */
     protected fun remoteVersioned(key: String): Versioned<String>? {
-        val scalar = (remote(key) as? RemoteRead.Hit)?.envelope as? Envelope.Scalar ?: return null
+        val scalar = (remote(key) as? L1Read.Hit)?.envelope as? Envelope.Scalar ?: return null
         return Versioned(TestCodec.decode(scalar.bytes), scalar.version)
     }
 
-    protected fun remoteTtl(key: String): Duration? = (remote(key) as RemoteRead.Hit).ttl
+    protected fun remoteTtl(key: String): Duration? = (remote(key) as L1Read.Hit).ttl
 
     private fun frame(key: String): ByteArray = InvalidationFrame.encode(NodeId.random(), listOf(storageKey(key)))
 
@@ -217,9 +219,11 @@ abstract class VersionedSpec {
     fun wholeWritesStoreTheEnvelopeVersion() = l1 {
         val store = store()
         val lease = LeaseRequest(token(), Duration.ofSeconds(30))
-        store.read(storageKey("fill"), lease, null).assert().isEqualTo(RemoteRead.Miss(true))
-        store.fill(Fill(storageKey("fill"), lease.token, scalar("v7", 7), Duration.ofMinutes(1))).assert().isTrue()
-        ((remote("fill") as RemoteRead.Hit).envelope as Envelope.Scalar).version.assert().isEqualTo(7L)
+        store.read(storageKey("fill"), lease, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.fill(
+            Fill(storageKey("fill"), lease.token, scalar("v7", 7), Duration.ofMinutes(1))
+        ).assert().isInstanceOf(L1Fill.Filled::class.java)
+        ((remote("fill") as L1Read.Hit).envelope as Envelope.Scalar).version.assert().isEqualTo(7L)
 
         store.put(storageKey("put"), scalar("v9", 9), null, frame("put"))
         remoteVersioned("put").assert().isEqualTo(Versioned("v9", 9))
@@ -231,7 +235,7 @@ abstract class VersionedSpec {
         requireNotNull(
             store.conditional()
         ).putIfMatch(storageKey("put"), Digest.of(scalar("v9")), scalar("m", 5), null, frame("put"))
-            .assert().isEqualTo(RemoteConditionalWrite.Written)
+            .assert().isEqualTo(L1ConditionalWrite.Written)
         remoteVersioned("put").assert().isEqualTo(Versioned("m", Versioned.NO_VERSION))
     }
 
@@ -242,7 +246,7 @@ abstract class VersionedSpec {
     fun putIfNewerComparesAgainstTheStoredVersion() = l1 {
         val store = store()
         val key = storageKey("k")
-        versioned().putIfNewer(key, scalar("v2"), 2, null, frame("k")).assert().isEqualTo(RemoteVersionedWrite.Written)
+        versioned().putIfNewer(key, scalar("v2"), 2, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Written)
         remoteVersioned("k").assert().isEqualTo(Versioned("v2", 2))
         versioned().putIfNewer(
             key,
@@ -250,25 +254,25 @@ abstract class VersionedSpec {
             1,
             null,
             frame("k")
-        ).assert().isEqualTo(RemoteVersionedWrite.Stale(2))
+        ).assert().isEqualTo(L1VersionedWrite.Stale(2))
         versioned().putIfNewer(
             key,
             scalar("v2'"),
             2,
             null,
             frame("k")
-        ).assert().isEqualTo(RemoteVersionedWrite.Stale(2))
+        ).assert().isEqualTo(L1VersionedWrite.Stale(2))
         versioned().putIfNewer(
             key,
             scalar("v3", 99),
             3,
             null,
             frame("k")
-        ).assert().isEqualTo(RemoteVersionedWrite.Written)
+        ).assert().isEqualTo(L1VersionedWrite.Written)
         remoteVersioned("k").assert().isEqualTo(Versioned("v3", 3))
 
         store.put(key, scalar("plain"), null, frame("k"))
-        versioned().putIfNewer(key, scalar("v0"), 0, null, frame("k")).assert().isEqualTo(RemoteVersionedWrite.Written)
+        versioned().putIfNewer(key, scalar("v0"), 0, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Written)
         remoteVersioned("k").assert().isEqualTo(Versioned("v0", 0))
     }
 
@@ -296,7 +300,7 @@ abstract class VersionedSpec {
         for (version in ascending) {
             versioned().putIfNewer(key, scalar("v$version"), version, null, frame("k"))
                 .assert().withFailMessage { "$version must be newer than $previous" }.isEqualTo(
-                    RemoteVersionedWrite.Written
+                    L1VersionedWrite.Written
                 )
             previous?.let {
                 versioned().putIfNewer(
@@ -305,7 +309,7 @@ abstract class VersionedSpec {
                     it,
                     null,
                     frame("k")
-                ).assert().isEqualTo(RemoteVersionedWrite.Stale(version))
+                ).assert().isEqualTo(L1VersionedWrite.Stale(version))
             }
             versioned().putIfNewer(
                 key,
@@ -313,7 +317,7 @@ abstract class VersionedSpec {
                 version,
                 null,
                 frame("k")
-            ).assert().isEqualTo(RemoteVersionedWrite.Stale(version))
+            ).assert().isEqualTo(L1VersionedWrite.Stale(version))
             previous = version
         }
         remoteVersioned("k").assert().isEqualTo(Versioned("v${Long.MAX_VALUE}", Long.MAX_VALUE))
@@ -327,9 +331,9 @@ abstract class VersionedSpec {
         val store = store()
         val key = storageKey("k")
         val lease = LeaseRequest(token(), Duration.ofSeconds(30))
-        store.read(key, lease, null).assert().isEqualTo(RemoteRead.Miss(true))
-        versioned().putIfNewer(key, scalar("v2"), 2, null, frame("k")).assert().isEqualTo(RemoteVersionedWrite.Written)
-        store.fill(Fill(key, lease.token, scalar("v3", 3), null)).assert().isFalse()
+        store.read(key, lease, null, null).assert().isEqualTo(L1Read.Miss(true))
+        versioned().putIfNewer(key, scalar("v2"), 2, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Written)
+        store.fill(Fill(key, lease.token, scalar("v3", 3), null)).assert().isInstanceOf(L1Fill.Rejected::class.java)
         store.release(key, lease.token)
         remoteVersioned("k").assert().isEqualTo(Versioned("v2", 2))
     }
@@ -343,9 +347,13 @@ abstract class VersionedSpec {
         val key = storageKey("k")
         versioned().putIfNewer(key, scalar("v1"), 1, Duration.ofMinutes(1), frame("k"))
         val refresh = RefreshRequest(Duration.ofDays(1), token(), Duration.ZERO)
-        val read = store.read(key, null, refresh) as RemoteRead.Hit
+        val read = store.read(key, null, refresh, null) as L1Read.Hit
         read.refreshGranted.assert().isFalse()
-        store.reclaim(key, Digest.of(scalar("v1")), LeaseRequest(token(), Duration.ofSeconds(30))).assert().isFalse()
+        store.reclaim(
+            key,
+            ContentFingerprint.of(scalar("v1")),
+            LeaseRequest(token(), Duration.ofSeconds(30))
+        ).assert().isFalse()
         remoteVersioned("k").assert().isEqualTo(Versioned("v1", 1))
     }
 
@@ -357,24 +365,24 @@ abstract class VersionedSpec {
         val store = store()
         val key = storageKey("k")
         versioned().putIfNewer(key, Envelope.Absent, 3, Duration.ofMinutes(1), frame("k"))
-            .assert().isEqualTo(RemoteVersionedWrite.Written)
-        (remote("k") as RemoteRead.Hit).envelope.assert().isEqualTo(Envelope.Absent)
+            .assert().isEqualTo(L1VersionedWrite.Written)
+        (remote("k") as L1Read.Hit).envelope.assert().isEqualTo(Envelope.Absent)
         versioned().putIfNewer(
             key,
             scalar("v2"),
             2,
             null,
             frame("k")
-        ).assert().isEqualTo(RemoteVersionedWrite.Stale(3))
+        ).assert().isEqualTo(L1VersionedWrite.Stale(3))
         versioned().putIfNewer(
             key,
             Envelope.Absent,
             3,
             null,
             frame("k")
-        ).assert().isEqualTo(RemoteVersionedWrite.Stale(3))
-        store.fill(Fill(key, token(), scalar("v9", 9), null)).assert().isFalse()
-        versioned().putIfNewer(key, scalar("v4"), 4, null, frame("k")).assert().isEqualTo(RemoteVersionedWrite.Written)
+        ).assert().isEqualTo(L1VersionedWrite.Stale(3))
+        store.fill(Fill(key, token(), scalar("v9", 9), null)).assert().isInstanceOf(L1Fill.Rejected::class.java)
+        versioned().putIfNewer(key, scalar("v4"), 4, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Written)
         remoteVersioned("k").assert().isEqualTo(Versioned("v4", 4))
     }
 
@@ -386,17 +394,19 @@ abstract class VersionedSpec {
         val store = store()
         val key = storageKey("k")
         val lease = LeaseRequest(token(), Duration.ofSeconds(30))
-        store.read(key, lease, null).assert().isEqualTo(RemoteRead.Miss(true))
-        store.fill(Fill(key, lease.token, Envelope.Absent, Duration.ofMinutes(1), 7)).assert().isTrue()
-        (remote("k") as RemoteRead.Hit).envelope.assert().isEqualTo(Envelope.Absent)
+        store.read(key, lease, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.fill(
+            Fill(key, lease.token, Envelope.Absent, Duration.ofMinutes(1), 7)
+        ).assert().isInstanceOf(L1Fill.Filled::class.java)
+        (remote("k") as L1Read.Hit).envelope.assert().isEqualTo(Envelope.Absent)
         versioned().putIfNewer(
             key,
             scalar("v6"),
             6,
             null,
             frame("k")
-        ).assert().isEqualTo(RemoteVersionedWrite.Stale(7))
-        versioned().putIfNewer(key, scalar("v8"), 8, null, frame("k")).assert().isEqualTo(RemoteVersionedWrite.Written)
+        ).assert().isEqualTo(L1VersionedWrite.Stale(7))
+        versioned().putIfNewer(key, scalar("v8"), 8, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Written)
         remoteVersioned("k").assert().isEqualTo(Versioned("v8", 8))
     }
 
@@ -512,8 +522,8 @@ abstract class VersionedSpec {
         cache.putIfNewer("tombstone", "t4", 4).assert().isEqualTo(VersionedPut.Stale(5))
 
         elapse(Duration.ofMinutes(2))
-        remote("value").assert().isEqualTo(RemoteRead.Miss(false))
-        remote("tombstone").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("value").assert().isEqualTo(L1Read.Miss(false))
+        remote("tombstone").assert().isEqualTo(L1Read.Miss(false))
         cache.putIfNewer("value", "v1", 1).assert().isEqualTo(VersionedPut.Written)
         cache.putIfNewer("tombstone", "t1", 1).assert().isEqualTo(VersionedPut.Written)
         cache.getVersioned("value").assert().isEqualTo(Versioned("v1", 1))
@@ -534,7 +544,7 @@ abstract class VersionedSpec {
         cacheA.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
         cacheB["k"].assert().isNull()
         loads.get().assert().isEqualTo(1)
-        (remote("k") as RemoteRead.Hit).envelope.assert().isEqualTo(Envelope.Absent)
+        (remote("k") as L1Read.Hit).envelope.assert().isEqualTo(Envelope.Absent)
         requireNotNull(remoteTtl("k")).assert().isBetween(Duration.ofMinutes(9), Duration.ofMinutes(10))
 
         cacheB.putIfNewer("k", "v4", 4).assert().isEqualTo(VersionedPut.Stale(5))
@@ -566,7 +576,7 @@ abstract class VersionedSpec {
         val onA = fork { cacheA["k"] }
         loaded.awaitOrFail("A holds the lease and read the source")
         afterLoad = null
-        remote("k").assert().isInstanceOf(RemoteRead.Leased::class.java)
+        remote("k").assert().isInstanceOf(L1Read.Leased::class.java)
         cacheB.putIfNewer("k", "v2", 2).assert().isEqualTo(VersionedPut.Written)
         release.countDown()
         onA.join().assert().isEqualTo("v3")
@@ -613,8 +623,8 @@ abstract class VersionedSpec {
         val filled = CountDownLatch(1)
         val release = CountDownLatch(1)
         // 只有这一次回源会写回 L1；异步视图上 fill 可能由异步执行器发起，因此不按线程名过滤
-        backend.afterFill = { key, ok ->
-            if (ok && key == storageKey("k") && filled.count > 0) {
+        backend.afterFill = { key, outcome ->
+            if (outcome is L1Fill.Filled && key == storageKey("k") && filled.count > 0) {
                 filled.countDown()
                 release.awaitOrFail("release filler")
             }
@@ -722,7 +732,7 @@ abstract class VersionedSpec {
                 InvalidationFrame.encode(NodeId.random(), emptyList())
             )
         }
-        written.assert().isEqualTo(RemoteVersionedWrite.Written)
+        written.assert().isEqualTo(L1VersionedWrite.Written)
     }
 
     /**
@@ -749,7 +759,7 @@ abstract class VersionedSpec {
         cache.putIfNewer("k", "v0", 0).assert().isEqualTo(VersionedPut.Written)
 
         cache["missing"].assert().isNull()
-        (remote("missing") as RemoteRead.Hit).envelope.assert().isEqualTo(Envelope.Absent)
+        (remote("missing") as L1Read.Hit).envelope.assert().isEqualTo(Envelope.Absent)
         cache.putIfNewer("missing", "m1", 1).assert().isEqualTo(VersionedPut.Written)
         cache.getVersioned("missing").assert().isEqualTo(Versioned("m1", 1))
     }
@@ -768,7 +778,7 @@ abstract class VersionedSpec {
         val error = runCatching { cache.putIfNewer("set", "v", 1) }.exceptionOrNull()
         error.assert().isInstanceOf(CacheWriteException::class.java)
         error?.cause.assert().isInstanceOf(ForeignFormatException::class.java)
-        (remote("set") as RemoteRead.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
+        (remote("set") as L1Read.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
         nodeA.metrics().unknownFormats.assert().isEqualTo(1)
     }
 
@@ -782,7 +792,7 @@ abstract class VersionedSpec {
             .assert().isInstanceOf(IllegalArgumentException::class.java)
         runCatching { cache.invalidateIfNewer("k", Versioned.NO_VERSION) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
 
         val plain = nodeB.create(
             cacheSpec<String, String>("plain-$cacheName") {
@@ -813,7 +823,7 @@ abstract class VersionedSpec {
             )
         }
         cache["k"].assert().isEqualTo("source")
-        ((remote("k") as RemoteRead.Hit).envelope as Envelope.Scalar).version.assert().isEqualTo(5L)
+        ((remote("k") as L1Read.Hit).envelope as Envelope.Scalar).version.assert().isEqualTo(5L)
         cache.putIfNewer("k", "v4", 4).assert().isEqualTo(VersionedPut.Stale(5))
         cache.putIfNewer("k", "v6", 6).assert().isEqualTo(VersionedPut.Written)
         awaitCondition("A reads the newer write") { cache.getVersioned("k") == Versioned("v6", 6) }

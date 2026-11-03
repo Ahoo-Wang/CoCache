@@ -17,7 +17,7 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
@@ -42,7 +42,39 @@ import java.util.concurrent.atomic.AtomicBoolean
  * L1 协议 TCK。短时长真实等待（令牌签发时间取自服务端时钟），长时长缩短 key 的剩余寿命。
  */
 class RedisBackendProtocolTest : BackendProtocolSpec() {
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.backend()
+    /**
+     * 经 [TcpProxy] 连接的后端：[pause] 只暂停本用例的连接，不用服务端的 `CLIENT PAUSE`。
+     */
+    private lateinit var redis: RedisTestSupport.PausableRedis
+
+    override fun createBackend(): CoherenceBackend {
+        redis = RedisTestSupport.pausable()
+        return RedisTestSupport.backend(
+            RedisBackendOptions(clientName = "cocache-tck-" + UUID.randomUUID(), clientResources = redis.resources)
+        )
+    }
+
+    @AfterEach
+    override fun destroy() {
+        super.destroy()
+        redis.close()
+    }
+
+    /**
+     * 暂停期间发出的命令已写出、到期后按序执行：超时的读取之后才执行、取得 lease，随后的异步释放把它收回（K14）。
+     * 暂停时长固定，关闭返回值什么也不做，用例等暂停自己结束。
+     */
+    override fun pause(): AutoCloseable {
+        // 先建立节点连接、缓存脚本：暂停期间不必握手，读取不会因 NOSCRIPT 回退成另一条命令
+        Suspending.await { store.read(key(), null, null, null) }
+        RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.READ_IF_CHANGED, RedisScripts.RELEASE)
+        redis.pause(PAUSE_MILLIS)
+        return AutoCloseable { }
+    }
+
+    private companion object {
+        const val PAUSE_MILLIS = 3_000L
+    }
 
     override fun elapse(duration: Duration) {
         if (duration <= Duration.ofSeconds(2)) {
@@ -269,11 +301,11 @@ class RedisFaultTest : FaultSpec() {
             val (cacheA, cacheB) = runtimes.map { it.create(spec) }
             val (setA, setB) = runtimes.map { it.create(setSpec) }
             val remote = backend.delegate.store(cacheName)
-            fun remoteRead(key: String) = Suspending.await { remote.read("cocache:$cacheName:$key", null, null) }
+            fun remoteRead(key: String) = Suspending.await { remote.read("cocache:$cacheName:$key", null, null, null) }
 
             RedisTestSupport.flushScripts()
             cacheA["k"].assert().isEqualTo("k-v")
-            (remoteRead("k") as RemoteRead.Hit).envelope
+            (remoteRead("k") as L1Read.Hit).envelope
                 .assert().isEqualTo(Envelope.Scalar(EngineSpec.TestCodec.encode("k-v")))
 
             RedisTestSupport.flushScripts()
@@ -286,7 +318,7 @@ class RedisFaultTest : FaultSpec() {
 
             RedisTestSupport.flushScripts()
             cacheA.invalidate("k")
-            remoteRead("k").assert().isEqualTo(RemoteRead.Miss(false))
+            remoteRead("k").assert().isEqualTo(L1Read.Miss(false))
             awaitCondition("B sees the invalidation") { cacheB["k"] == "k-v" }
 
             RedisTestSupport.flushScripts()
@@ -297,7 +329,7 @@ class RedisFaultTest : FaultSpec() {
             runCatching { cacheA["released"] }.exceptionOrNull().assert().isInstanceOf(
                 IllegalStateException::class.java
             )
-            remoteRead("released").assert().isEqualTo(RemoteRead.Miss(false))
+            remoteRead("released").assert().isEqualTo(L1Read.Miss(false))
 
             RedisTestSupport.flushScripts()
             setA.add("s", listOf("a", "b"))

@@ -14,22 +14,24 @@
 package me.ahoo.cocache.test
 
 import me.ahoo.cocache.api.spi.CoherenceBackend
-import me.ahoo.cocache.api.spi.Digest
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -60,6 +62,13 @@ abstract class BackendProtocolSpec {
     private val sequence = AtomicLong()
 
     protected open val shortTtl: Duration = Duration.ofMillis(300)
+
+    /**
+     * 暂停 [createBackend] 所建后端的 L1 命令（如暂停连接），关闭返回值即恢复（时长固定的暂停可以等它自己结束）。暂停期间开始的命令
+     * 不完成，可以在暂停结束之后执行；暂停至少持续 [READ_TIMEOUT] 的 10 倍。读取时限的用例需要它（RFC 0005 round 3 D6），
+     * 不支持时返回 `null`（默认），该用例跳过。
+     */
+    protected open fun pause(): AutoCloseable? = null
 
     @BeforeEach
     open fun setup() {
@@ -94,31 +103,68 @@ abstract class BackendProtocolSpec {
 
     protected fun scalar(text: String) = Envelope.Scalar(text.toByteArray())
 
-    private fun RemoteRead.hit(): RemoteRead.Hit = this as? RemoteRead.Hit ?: throw AssertionError("Expected a hit but was $this.")
+    private fun L1Read.hit(): L1Read.Hit = this as? L1Read.Hit ?: throw AssertionError("Expected a hit but was $this.")
+
+    /**
+     * 读取的时限（RFC 0005 round 3 D6）：L1 卡顿时，带 `timeout` 的读取在大约这么长的时间内以 L1 故障失败（不是取消），不等命令超时。
+     * 结果未知，这次读取请求的 lease 由存储释放（K14）：恢复之后 key 不再是 lease 占位，不必等到 `lease.ttl`。
+     */
+    @Test
+    fun readTimeoutBoundsTheCallAndReleasesItsLease() {
+        val single = key()
+        val batch = key()
+        val paused = pause()
+        assumeTrue(paused != null, "${backend.javaClass.name} cannot be paused.")
+        val reads = mutableListOf<suspend () -> Unit>(
+            { store.read(single, lease(ttl = Duration.ofMinutes(10)), null, READ_TIMEOUT) },
+            { store.readAll(listOf(batch), mapOf(batch to lease(ttl = Duration.ofMinutes(10))), READ_TIMEOUT) },
+        )
+        store.conditional()?.let { conditional -> reads.add { conditional.readIfChanged(single, null, READ_TIMEOUT) } }
+        requireNotNull(paused).use {
+            reads.forEachIndexed { index, read ->
+                val started = System.nanoTime()
+                val failure = runCatching { l1 { read() } }.exceptionOrNull()
+                val elapsed = Duration.ofNanos(System.nanoTime() - started)
+                failure.assert().withFailMessage { "read #$index did not time out" }.isNotNull()
+                failure.assert().isNotInstanceOf(java.util.concurrent.CancellationException::class.java)
+                elapsed.assert().withFailMessage { "read #$index failed after $elapsed" }
+                    .isGreaterThanOrEqualTo(READ_TIMEOUT.dividedBy(2))
+                    .isLessThan(READ_TIMEOUT_LIMIT)
+            }
+        }
+        awaitCondition("leases released after the pause") {
+            val outcome = runCatching { Suspending.await { store.readAll(listOf(single, batch), emptyMap(), null) } }
+            outcome.getOrNull()?.values?.all { it == L1Read.Miss(false) } == true
+        }
+    }
 
     @Test
     fun missWithoutLeaseRequestGrantsNothing() = l1 {
         val key = key()
-        store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
-        store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
     fun missGrantsLeaseAtomicallyAndOthersSeeLeased() = l1 {
         val key = key()
-        store.read(key, lease(), null).assert().isEqualTo(RemoteRead.Miss(true))
-        val other = store.read(key, lease(), null)
-        other.assert().isInstanceOf(RemoteRead.Leased::class.java)
-        (other as RemoteRead.Leased).remaining.isNegative.assert().isFalse()
+        store.read(key, lease(), null, null).assert().isEqualTo(L1Read.Miss(true))
+        val other = store.read(key, lease(), null, null)
+        other.assert().isInstanceOf(L1Read.Leased::class.java)
+        (other as L1Read.Leased).remaining.isNegative.assert().isFalse()
     }
 
+    /**
+     * 凭 lease 填充写入值。lease 占位不带版本，这次填充没有让版本前进：`advanced` 为 `false`（RFC 0005 §4.7 的定义，round 3 K12），
+     * 否则引擎会按写入处理本节点、不填充 L2。
+     */
     @Test
     fun fillWithLeaseTokenWritesValue() = l1 {
         val key = key()
         val lease = lease()
-        store.read(key, lease, null)
-        store.fill(Fill(key, lease.token, scalar("v"), null)).assert().isTrue()
-        val hit = store.read(key, lease(), null).hit()
+        store.read(key, lease, null, null)
+        store.fill(Fill(key, lease.token, scalar("v"), null)).assert().isEqualTo(L1Fill.Filled(advanced = false))
+        val hit = store.read(key, lease(), null, null).hit()
         hit.envelope.assert().isEqualTo(scalar("v"))
         hit.ttl.assert().isNull()
         hit.format.assert().isEqualTo(backend.format)
@@ -127,86 +173,87 @@ abstract class BackendProtocolSpec {
     @Test
     fun fillWithForeignTokenIsRejected() = l1 {
         val key = key()
-        store.read(key, lease(), null)
-        store.fill(Fill(key, token(), scalar("v"), null)).assert().isFalse()
-        store.read(key, null, null).assert().isInstanceOf(RemoteRead.Leased::class.java)
+        store.read(key, lease(), null, null)
+        // 令牌不匹配：没有当前版本
+        store.fill(Fill(key, token(), scalar("v"), null)).assert().isEqualTo(L1Fill.Rejected(currentVersion = null))
+        store.read(key, null, null, null).assert().isInstanceOf(L1Read.Leased::class.java)
     }
 
     @Test
     fun fillWithoutLeaseIsRejected() = l1 {
         val key = key()
-        store.fill(Fill(key, token(), scalar("v"), null)).assert().isFalse()
-        store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        store.fill(Fill(key, token(), scalar("v"), null)).assert().isInstanceOf(L1Fill.Rejected::class.java)
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
     fun invalidateDestroysLeaseSoStaleFillFails() = l1 {
         val key = key()
         val lease = lease()
-        store.read(key, lease, null)
+        store.read(key, lease, null, null)
         store.invalidate(listOf(key), frame(key))
-        store.fill(Fill(key, lease.token, scalar("stale"), null)).assert().isFalse()
-        store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        store.fill(Fill(key, lease.token, scalar("stale"), null)).assert().isInstanceOf(L1Fill.Rejected::class.java)
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
     fun invalidateAfterFillDeletesValue() = l1 {
         val key = key()
         val lease = lease()
-        store.read(key, lease, null)
+        store.read(key, lease, null, null)
         store.fill(Fill(key, lease.token, scalar("v"), null))
         store.invalidate(listOf(key), frame(key))
-        store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
     fun putDestroysLeaseAndOverwrites() = l1 {
         val key = key()
         val lease = lease()
-        store.read(key, lease, null)
+        store.read(key, lease, null, null)
         store.put(key, scalar("new"), null, frame(key))
-        store.fill(Fill(key, lease.token, scalar("stale"), null)).assert().isFalse()
-        store.read(key, null, null).hit().envelope.assert().isEqualTo(scalar("new"))
+        store.fill(Fill(key, lease.token, scalar("stale"), null)).assert().isInstanceOf(L1Fill.Rejected::class.java)
+        store.read(key, null, null, null).hit().envelope.assert().isEqualTo(scalar("new"))
     }
 
     @Test
     fun releaseDeletesOwnLeaseOnly() = l1 {
         val key = key()
         val lease = lease()
-        store.read(key, lease, null)
+        store.read(key, lease, null, null)
         store.release(key, token())
-        store.read(key, null, null).assert().isInstanceOf(RemoteRead.Leased::class.java)
+        store.read(key, null, null, null).assert().isInstanceOf(L1Read.Leased::class.java)
         store.release(key, lease.token)
-        store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
     fun releaseOnAbsentKeyIsNoOp() = l1 {
         val key = key()
         store.release(key, token())
-        store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
     fun expiredLeaseCanBeTakenAgainAndOldTokenFails() = l1 {
         val key = key()
         val first = lease(ttl = shortTtl)
-        store.read(key, first, null)
+        store.read(key, first, null, null)
         elapse(shortTtl.multipliedBy(2))
         val second = lease()
-        store.read(key, second, null).assert().isEqualTo(RemoteRead.Miss(true))
-        store.fill(Fill(key, first.token, scalar("stale"), null)).assert().isFalse()
-        store.fill(Fill(key, second.token, scalar("fresh"), null)).assert().isTrue()
+        store.read(key, second, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.fill(Fill(key, first.token, scalar("stale"), null)).assert().isInstanceOf(L1Fill.Rejected::class.java)
+        store.fill(Fill(key, second.token, scalar("fresh"), null)).assert().isInstanceOf(L1Fill.Filled::class.java)
     }
 
     @Test
     fun fillResetsExpirySoLeaseTtlDoesNotLeak() = l1 {
         val key = key()
         val lease = lease(ttl = shortTtl)
-        store.read(key, lease, null)
+        store.read(key, lease, null, null)
         store.fill(Fill(key, lease.token, scalar("v"), Duration.ofHours(1)))
         elapse(shortTtl.multipliedBy(2))
-        val hit = store.read(key, null, null).hit()
+        val hit = store.read(key, null, null, null).hit()
         requireNotNull(hit.ttl).assert().isGreaterThan(Duration.ofMinutes(59))
     }
 
@@ -214,9 +261,9 @@ abstract class BackendProtocolSpec {
     fun putWithTtlExpires() = l1 {
         val key = key()
         store.put(key, scalar("v"), shortTtl, frame(key))
-        requireNotNull(store.read(key, null, null).hit().ttl).assert().isLessThanOrEqualTo(shortTtl)
+        requireNotNull(store.read(key, null, null, null).hit().ttl).assert().isLessThanOrEqualTo(shortTtl)
         elapse(shortTtl.multipliedBy(2))
-        store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
@@ -225,16 +272,18 @@ abstract class BackendProtocolSpec {
         store.put(key, scalar("v1"), shortTtl, frame(key))
         store.put(key, scalar("v2"), null, frame(key))
         elapse(shortTtl.multipliedBy(2))
-        store.read(key, null, null).hit().ttl.assert().isNull()
+        store.read(key, null, null, null).hit().ttl.assert().isNull()
     }
 
     @Test
     fun absentEnvelopeIsANegativeEntry() = l1 {
         val key = key()
         val lease = lease()
-        store.read(key, lease, null)
-        store.fill(Fill(key, lease.token, Envelope.Absent, Duration.ofMinutes(1))).assert().isTrue()
-        store.read(key, lease(), null).hit().envelope.assert().isEqualTo(Envelope.Absent)
+        store.read(key, lease, null, null)
+        store.fill(
+            Fill(key, lease.token, Envelope.Absent, Duration.ofMinutes(1))
+        ).assert().isInstanceOf(L1Fill.Filled::class.java)
+        store.read(key, lease(), null, null).hit().envelope.assert().isEqualTo(Envelope.Absent)
     }
 
     @Test
@@ -242,16 +291,18 @@ abstract class BackendProtocolSpec {
         val key = key()
         store.put(key, scalar("v"), Duration.ofSeconds(60), frame(key))
         val outside = RefreshRequest(Duration.ofSeconds(1), token(), Duration.ofSeconds(30))
-        store.read(key, null, outside).hit().refreshGranted.assert().isFalse()
+        store.read(key, null, outside, null).hit().refreshGranted.assert().isFalse()
 
         val first = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
-        store.read(key, null, first).hit().refreshGranted.assert().isTrue()
+        store.read(key, null, first, null).hit().refreshGranted.assert().isTrue()
         val second = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
-        store.read(key, null, second).hit().refreshGranted.assert().isFalse()
+        store.read(key, null, second, null).hit().refreshGranted.assert().isFalse()
 
-        store.fill(Fill(key, second.token, scalar("other"), null)).assert().isFalse()
-        store.fill(Fill(key, first.token, scalar("refreshed"), Duration.ofSeconds(60))).assert().isTrue()
-        store.read(key, null, null).hit().envelope.assert().isEqualTo(scalar("refreshed"))
+        store.fill(Fill(key, second.token, scalar("other"), null)).assert().isInstanceOf(L1Fill.Rejected::class.java)
+        store.fill(
+            Fill(key, first.token, scalar("refreshed"), Duration.ofSeconds(60))
+        ).assert().isInstanceOf(L1Fill.Filled::class.java)
+        store.read(key, null, null, null).hit().envelope.assert().isEqualTo(scalar("refreshed"))
     }
 
     @Test
@@ -259,7 +310,7 @@ abstract class BackendProtocolSpec {
         val key = key()
         store.put(key, scalar("v"), null, frame(key))
         val refresh = RefreshRequest(Duration.ofDays(1), token(), Duration.ofSeconds(30))
-        store.read(key, null, refresh).hit().refreshGranted.assert().isFalse()
+        store.read(key, null, refresh, null).hit().refreshGranted.assert().isFalse()
     }
 
     @Test
@@ -267,11 +318,11 @@ abstract class BackendProtocolSpec {
         val key = key()
         store.put(key, scalar("v"), Duration.ofSeconds(60), frame(key))
         val first = RefreshRequest(Duration.ofSeconds(120), token(), shortTtl)
-        store.read(key, null, first).hit().refreshGranted.assert().isTrue()
+        store.read(key, null, first, null).hit().refreshGranted.assert().isTrue()
         elapse(shortTtl.multipliedBy(2))
         val second = RefreshRequest(Duration.ofSeconds(120), token(), shortTtl)
-        store.read(key, null, second).hit().refreshGranted.assert().isTrue()
-        store.fill(Fill(key, first.token, scalar("late"), null)).assert().isFalse()
+        store.read(key, null, second, null).hit().refreshGranted.assert().isTrue()
+        store.fill(Fill(key, first.token, scalar("late"), null)).assert().isInstanceOf(L1Fill.Rejected::class.java)
     }
 
     @Test
@@ -279,10 +330,12 @@ abstract class BackendProtocolSpec {
         val key = key()
         store.put(key, scalar("v"), Duration.ofSeconds(60), frame(key))
         val refresh = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
-        store.read(key, null, refresh)
+        store.read(key, null, refresh, null)
         store.put(key, scalar("written"), Duration.ofSeconds(60), frame(key))
-        store.fill(Fill(key, refresh.token, scalar("refreshed"), null)).assert().isFalse()
-        store.read(key, null, null).hit().envelope.assert().isEqualTo(scalar("written"))
+        store.fill(
+            Fill(key, refresh.token, scalar("refreshed"), null)
+        ).assert().isInstanceOf(L1Fill.Rejected::class.java)
+        store.read(key, null, null, null).hit().envelope.assert().isEqualTo(scalar("written"))
     }
 
     @Test
@@ -290,11 +343,11 @@ abstract class BackendProtocolSpec {
         val key = key()
         store.put(key, scalar("v"), Duration.ofSeconds(60), frame(key))
         val refresh = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
-        store.read(key, null, refresh)
+        store.read(key, null, refresh, null)
         store.release(key, refresh.token)
-        store.read(key, null, null).hit().envelope.assert().isEqualTo(scalar("v"))
+        store.read(key, null, null, null).hit().envelope.assert().isEqualTo(scalar("v"))
         val again = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
-        store.read(key, null, again).hit().refreshGranted.assert().isTrue()
+        store.read(key, null, again, null).hit().refreshGranted.assert().isTrue()
     }
 
     @Test
@@ -302,15 +355,15 @@ abstract class BackendProtocolSpec {
         val key = key()
         store.put(key, scalar("corrupt"), null, frame(key))
         val lease = lease()
-        store.reclaim(key, Digest.of(scalar("other")), lease).assert().isFalse()
-        store.reclaim(key, Digest.of(scalar("corrupt")), lease).assert().isTrue()
-        store.read(key, null, null).assert().isInstanceOf(RemoteRead.Leased::class.java)
-        store.fill(Fill(key, lease.token, scalar("v"), null)).assert().isTrue()
+        store.reclaim(key, ContentFingerprint.of(scalar("other")), lease).assert().isFalse()
+        store.reclaim(key, ContentFingerprint.of(scalar("corrupt")), lease).assert().isTrue()
+        store.read(key, null, null, null).assert().isInstanceOf(L1Read.Leased::class.java)
+        store.fill(Fill(key, lease.token, scalar("v"), null)).assert().isInstanceOf(L1Fill.Filled::class.java)
     }
 
     @Test
     fun reclaimOnAbsentKeyFails() = l1 {
-        store.reclaim(key(), Digest.of(scalar("x")), lease()).assert().isFalse()
+        store.reclaim(key(), ContentFingerprint.of(scalar("x")), lease()).assert().isFalse()
     }
 
     @Test
@@ -320,38 +373,44 @@ abstract class BackendProtocolSpec {
         val missKey = key()
         val plainKey = key()
         store.put(hitKey, scalar("v"), null, frame(hitKey))
-        store.read(leasedKey, lease(), null)
+        store.read(leasedKey, lease(), null, null)
         val missLease = lease()
         val reads = store.readAll(
             listOf(hitKey, leasedKey, missKey, plainKey),
-            mapOf(missKey to missLease, leasedKey to lease())
+            mapOf(missKey to missLease, leasedKey to lease()),
+            null
         )
         reads.keys.assert().containsExactly(hitKey, leasedKey, missKey, plainKey)
         reads.getValue(hitKey).hit().envelope.assert().isEqualTo(scalar("v"))
-        reads.getValue(leasedKey).assert().isInstanceOf(RemoteRead.Leased::class.java)
-        reads.getValue(missKey).assert().isEqualTo(RemoteRead.Miss(true))
-        reads.getValue(plainKey).assert().isEqualTo(RemoteRead.Miss(false))
+        reads.getValue(leasedKey).assert().isInstanceOf(L1Read.Leased::class.java)
+        reads.getValue(missKey).assert().isEqualTo(L1Read.Miss(true))
+        reads.getValue(plainKey).assert().isEqualTo(L1Read.Miss(false))
 
         val outcomes = store.fillAll(
             listOf(Fill(missKey, missLease.token, scalar("m"), null), Fill(plainKey, token(), scalar("p"), null))
         )
-        outcomes.assert().containsExactly(true, false)
+        outcomes.size.assert().isEqualTo(2)
+        outcomes[0].assert().isInstanceOf(L1Fill.Filled::class.java)
+        // 令牌不匹配：没有当前版本
+        outcomes[1].assert().isEqualTo(L1Fill.Rejected(null))
     }
 
     @Test
     fun membersAreAddedAtomicallyOverLeases() = l1 {
         val key = key()
         val lease = lease()
-        store.read(key, lease, null)
+        store.read(key, lease, null, null)
         sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
-        store.fill(Fill(key, lease.token, Envelope.Members(listOf("seed".toByteArray())), null)).assert().isFalse()
+        store.fill(
+            Fill(key, lease.token, Envelope.Members(listOf("seed".toByteArray())), null)
+        ).assert().isInstanceOf(L1Fill.Rejected::class.java)
         sets.addMembers(
             key,
             listOf("b".toByteArray(), "a".toByteArray()),
             null,
             frame(key)
         ).assert().isNull()
-        val members = (store.read(key, null, null).hit().envelope as Envelope.Members).members.map { String(it) }
+        val members = (store.read(key, null, null, null).hit().envelope as Envelope.Members).members.map { String(it) }
         members.assert().containsExactlyInAnyOrder("a", "b")
     }
 
@@ -359,10 +418,10 @@ abstract class BackendProtocolSpec {
     fun addMembersReplacesNegativeEntry() = l1 {
         val key = key()
         val lease = lease()
-        store.read(key, lease, null)
+        store.read(key, lease, null, null)
         store.fill(Fill(key, lease.token, Envelope.Absent, Duration.ofMinutes(1)))
         sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
-        val hit = store.read(key, null, null).hit()
+        val hit = store.read(key, null, null, null).hit()
         (hit.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("a")
         hit.ttl.assert().isNull()
     }
@@ -371,7 +430,7 @@ abstract class BackendProtocolSpec {
     fun removeMembersOnlyAffectsSetsAndDeletesWhenEmpty() = l1 {
         val key = key()
         sets.removeMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
-        store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
 
         sets.addMembers(key, listOf("a".toByteArray(), "b".toByteArray()), null, frame(key))
         sets.removeMembers(
@@ -380,12 +439,12 @@ abstract class BackendProtocolSpec {
             Duration.ofMinutes(1),
             frame(key)
         ).assert().isNull()
-        val hit = store.read(key, null, null).hit()
+        val hit = store.read(key, null, null, null).hit()
         (hit.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
         hit.ttl.assert().isNotNull()
 
         sets.removeMembers(key, listOf("b".toByteArray()), null, frame(key)).assert().isNull()
-        store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
@@ -403,7 +462,7 @@ abstract class BackendProtocolSpec {
             null,
             frame(key)
         ).assert().isEqualTo(backend.format)
-        val hit = store.read(key, null, null).hit()
+        val hit = store.read(key, null, null, null).hit()
         hit.envelope.assert().isEqualTo(scalar("v"))
         hit.ttl.assert().isNotNull()
     }
@@ -460,10 +519,10 @@ abstract class BackendProtocolSpec {
         val set = key()
         val expiring = key()
         val lease = lease()
-        store.read(leased, lease, null)
+        store.read(leased, lease, null, null)
         store.put(refreshed, scalar("v"), Duration.ofSeconds(60), frame(refreshed))
         val refresh = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
-        store.read(refreshed, null, refresh).hit().refreshGranted.assert().isTrue()
+        store.read(refreshed, null, refresh, null).hit().refreshGranted.assert().isTrue()
         store.put(expiring, scalar("old"), shortTtl, frame(expiring))
 
         store.putAll(
@@ -477,24 +536,26 @@ abstract class BackendProtocolSpec {
             frame(leased, refreshed, absent, set, expiring)
         )
 
-        store.fill(Fill(leased, lease.token, scalar("stale"), null)).assert().isFalse()
-        store.fill(Fill(refreshed, refresh.token, scalar("stale"), null)).assert().isFalse()
+        store.fill(Fill(leased, lease.token, scalar("stale"), null)).assert().isInstanceOf(L1Fill.Rejected::class.java)
+        store.fill(
+            Fill(refreshed, refresh.token, scalar("stale"), null)
+        ).assert().isInstanceOf(L1Fill.Rejected::class.java)
         elapse(shortTtl.multipliedBy(2))
-        store.read(leased, null, null).hit().let {
+        store.read(leased, null, null, null).hit().let {
             it.envelope.assert().isEqualTo(scalar("a"))
             it.ttl.assert().isNull()
         }
-        store.read(refreshed, null, null).hit().let {
+        store.read(refreshed, null, null, null).hit().let {
             it.envelope.assert().isEqualTo(scalar("b"))
             requireNotNull(it.ttl).assert().isLessThanOrEqualTo(Duration.ofMinutes(1))
         }
-        store.read(absent, null, null).hit().envelope.assert().isEqualTo(Envelope.Absent)
-        store.read(set, null, null).hit().let {
+        store.read(absent, null, null, null).hit().envelope.assert().isEqualTo(Envelope.Absent)
+        store.read(set, null, null, null).hit().let {
             (it.envelope as Envelope.Members).members.map { member -> String(member) }
                 .assert().containsExactlyInAnyOrder("x", "y")
             it.ttl.assert().isNull()
         }
-        store.read(expiring, null, null).hit().let {
+        store.read(expiring, null, null, null).hit().let {
             it.envelope.assert().isEqualTo(scalar("e"))
             it.ttl.assert().isNull()
         }
@@ -528,7 +589,19 @@ abstract class BackendProtocolSpec {
             Thread.sleep(50)
             received.flatMap { it.first }.sorted().assert().isEqualTo(keys.sorted())
             received.all { it.second == node }.assert().isTrue()
-            keys.forEach { store.read(it, null, null).hit().envelope.assert().isEqualTo(scalar(it)) }
+            keys.forEach { store.read(it, null, null, null).hit().envelope.assert().isEqualTo(scalar(it)) }
         }
+    }
+
+    protected companion object {
+        /**
+         * 读取时限用例的 `timeout`。
+         */
+        val READ_TIMEOUT: Duration = Duration.ofMillis(200)
+
+        /**
+         * 读取失败所用时间的上限：远小于默认的命令超时（2 s），证明时限是这次调用的 `timeout`，不是命令超时。
+         */
+        val READ_TIMEOUT_LIMIT: Duration = Duration.ofMillis(1500)
     }
 }

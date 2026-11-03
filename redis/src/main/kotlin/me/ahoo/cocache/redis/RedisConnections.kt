@@ -16,6 +16,7 @@ package me.ahoo.cocache.redis
 import io.lettuce.core.AbstractRedisClient
 import io.lettuce.core.RedisClient
 import io.lettuce.core.RedisCommandTimeoutException
+import io.lettuce.core.RedisConnectionException
 import io.lettuce.core.RedisException
 import io.lettuce.core.RedisNoScriptException
 import io.lettuce.core.api.StatefulConnection
@@ -42,11 +43,15 @@ import java.util.concurrent.CompletionException
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * 命令连接与订阅连接（单机或集群），统一脚本执行。
  *
- * 并发的异步命令在同一条共享连接上多路复用；调用方线程同步等待结果，续接中不做任何阻塞工作。
+ * 并发的异步命令在同一条共享连接上多路复用。存储与发布挂起等待（[awaitCommand]），不占线程；只有本身阻塞的路径（启动时的探测与
+ * `INFO`、订阅、心跳）阻塞等待（[join]）。续接中不做任何阻塞工作。
  *
  * @param timeouts 异步命令由谁计时（[CommandTimeouts]）
  */
@@ -85,10 +90,13 @@ internal class RedisConnections(
      */
     private val timer: Timer = client.resources.timer()
 
+    @Volatile
+    private var closed = false
+
     /**
      * 异步执行脚本：EVALSHA，遇到 NOSCRIPT（故障切换、重启、resharding 后脚本缓存丢失）时改用 EVAL（会重新缓存）。
      *
-     * 返回的 future 被取消（超时：[bounded]、[await]；等待被中断：[await]）时，尚未写出的命令不再写出（[CommandCall]）。
+     * 返回的 future 被取消（超时：[bounded]）时，尚未写出的命令不再写出（[CommandCall]）。
      */
     fun <T> evalAsync(script: RedisScripts.Script, keys: List<ByteArray>, args: List<ByteArray>): CompletableFuture<T> {
         val call = CommandCall<T>()
@@ -145,118 +153,161 @@ internal class RedisConnections(
         addValues(args)
     }
 
-    fun <T> eval(script: RedisScripts.Script, keys: List<ByteArray>, args: List<ByteArray>): T = await(
-        evalAsync(script, keys, args)
-    )
-
-    fun publish(channel: ByteArray, message: ByteArray) {
-        await(base.publish(channel, message).toCompletableFuture())
-    }
-
-    fun publishAsync(channel: ByteArray, message: ByteArray): CompletableFuture<Void?> =
-        mapped(bounded(base.publish(channel, message).toCompletableFuture())) { null }
-
     /**
-     * `SPUBLISH`：集群中按频道的 slot 路由到所属主节点。
+     * 发布失效帧（挂起，[RedisInvalidationChannel] 的 `publish`），限时与失败同 [awaitCommand]。
      */
-    fun spublish(channel: ByteArray, message: ByteArray) {
-        await(base.spublish(channel, message).toCompletableFuture())
+    suspend fun publish(channel: ByteArray, message: ByteArray) {
+        awaitCommand(base.publish(channel, message).toCompletableFuture())
     }
 
-    fun spublishAsync(channel: ByteArray, message: ByteArray): CompletableFuture<Void?> =
-        mapped(bounded(base.spublish(channel, message).toCompletableFuture())) { null }
+    /**
+     * `SPUBLISH`：集群中按频道的 slot 路由到所属主节点。挂起，同 [publish]。
+     */
+    suspend fun spublish(channel: ByteArray, message: ByteArray) {
+        awaitCommand(base.spublish(channel, message).toCompletableFuture())
+    }
 
     /**
-     * [await] 的异步版本（RFC 0004 §4.3）：超时与异常类型与同步等待一致。超过 `commandTimeout` 时以 [RedisException]
-     * 失败（不再等待应答），并取消 [future]：脚本（[evalAsync]）尚未写出的命令随之不再写出（[CommandCall]）。
+     * 读取的时限（RFC 0005 round 3 D6）：`null` 为 `commandTimeout`；给出时必须为正，以 `commandTimeout` 为上限。
+     */
+    fun readTimeout(timeout: Duration?): Duration {
+        if (timeout == null) {
+            return commandTimeout
+        }
+        require(!timeout.isNegative && !timeout.isZero) { "timeout[$timeout] must be positive." }
+        return if (timeout < commandTimeout) timeout else commandTimeout
+    }
+
+    /**
+     * 限时的结果（RFC 0004 §4.3）：超过 [timeout]（默认 `commandTimeout`，至多为它）时以 [RedisException] 失败（不再等待应答），
+     * 并取消 [future]：脚本（[evalAsync]）尚未写出的命令随之不再写出（[CommandCall]）。
      * 执行异常解包为原始的运行时异常（不是运行时异常的包装为 [RedisException]）。
-     * 返回的是新的 future（调用方取消它只放弃等待，不影响命令），在 Lettuce 的 I/O 线程、事件执行器或时间轮线程上完成：引擎会切换线程。
+     * 返回的是新的 future（调用方取消它只放弃等待，不影响命令），在 Lettuce 的 I/O 线程、事件执行器或时间轮线程上完成。
      *
      * 自建客户端的超时由 Lettuce 的命令超时触发，这里把它的 [RedisCommandTimeoutException] 映射为同样的异常；
-     * [CommandTimeouts.guarded] 时另由 [timer] 计时，命令完成时撤销（RFC 0004 §14）。都不经 JDK 的单线程延迟调度器。
+     * [CommandTimeouts.guarded] 时，或 [timeout] 短于 `commandTimeout`（Lettuce 只按 `commandTimeout` 计时）时，
+     * 另由 [timer] 计时，命令完成时撤销（RFC 0004 §14）。都不经 JDK 的单线程延迟调度器。
      */
-    fun <T> bounded(future: CompletableFuture<T>): CompletableFuture<T> {
+    fun <T> bounded(future: CompletableFuture<T>, timeout: Duration = commandTimeout): CompletableFuture<T> {
         val result = CompletableFuture<T>()
-        if (!timeouts.guarded) {
+        if (!timeouts.guarded && timeout >= commandTimeout) {
             future.whenComplete { value, error ->
                 if (error == null) result.complete(value) else result.completeExceptionally(failureOf(error))
             }
             return result
         }
-        val timeout = try {
+        val expiry = try {
             timer.newTimeout({
-                if (result.completeExceptionally(timedOut(TimeoutException()))) {
+                if (result.completeExceptionally(timedOut(timeout, TimeoutException()))) {
                     future.cancel(false)
                 }
-            }, commandTimeout.toNanos(), TimeUnit.NANOSECONDS)
+            }, timeout.toNanos(), TimeUnit.NANOSECONDS)
         } catch (_: IllegalStateException) {
             // 时间轮已停止：客户端已关闭，命令本身会以连接关闭失败
             null
         }
         future.whenComplete { value, error ->
-            timeout?.cancel()
+            expiry?.cancel()
             if (error == null) result.complete(value) else result.completeExceptionally(failureOf(error))
         }
         return result
     }
 
     /**
-     * 以 [transform] 的结果完成的新 future；失败（含 [transform] 抛出）以原始异常完成，不像 `thenApply` 那样包装为 [CompletionException]。
+     * 挂起等待一条命令（RFC 0005 §4.3，[RedisL1Store]）：等待期间不占线程，续接经调用方的调度器恢复（标准库的 `suspendCoroutine`），
+     * 不在 Lettuce 的 I/O 线程上继续。不响应协程的取消（引擎在 `NonCancellable` 中调用存储），一直等到命令结束或超时。
+     *
+     * 限时同 [bounded]：超过 [timeout] 时以 [RedisException] 失败并取消 [command]，尚未写出的脚本命令不再写出（[CommandCall]）。
+     * 失败按 [l1Failure] 映射，从不以 [CancellationException] 抛出。
      */
-    @Suppress("TooGenericExceptionCaught")
-    fun <T, R> mapped(future: CompletableFuture<T>, transform: (T) -> R): CompletableFuture<R> {
-        val result = CompletableFuture<R>()
-        future.whenComplete { value, error ->
-            if (error != null) {
-                result.completeExceptionally(if (error is CompletionException) error.cause ?: error else error)
-            } else {
-                try {
-                    result.complete(transform(value))
-                } catch (e: Throwable) {
-                    result.completeExceptionally(e)
+    suspend fun <T> awaitCommand(command: CompletableFuture<T>, timeout: Duration = commandTimeout): T {
+        val bounded = bounded(command, timeout)
+        val outcome = if (bounded.isDone) {
+            outcomeOf(bounded)
+        } else {
+            // 以总是成功的 Result 恢复、在自己的栈帧里抛出：经 kotlinx 的调度器以异常恢复时，调试模式会复制异常
+            suspendCoroutine { continuation ->
+                bounded.whenComplete { value, error ->
+                    continuation.resume(if (error == null) Result.success(value) else Result.failure(l1Failure(error)))
                 }
             }
         }
-        return result
+        return outcome.getOrThrow()
+    }
+
+    /**
+     * 挂起等待全部 [commands]（各自限时、失败的映射同 [awaitCommand]）：只挂起一次，全部结束后按顺序返回各自的结果。
+     * 调用方先发出全部命令再调用它，共享连接上多路复用，约一次往返。
+     */
+    suspend fun <T> awaitCommands(
+        commands: List<CompletableFuture<T>>,
+        timeout: Duration = commandTimeout
+    ): List<Result<T>> {
+        val bounded = commands.map { bounded(it, timeout) }
+        if (bounded.any { !it.isDone }) {
+            suspendCoroutine { continuation ->
+                val remaining = AtomicInteger(bounded.size)
+                bounded.forEach { future ->
+                    future.whenComplete { _, _ ->
+                        if (remaining.decrementAndGet() == 0) {
+                            continuation.resume(Unit)
+                        }
+                    }
+                }
+            }
+        }
+        return bounded.map { outcomeOf(it) }
+    }
+
+    /**
+     * 阻塞等待（只用于本身阻塞的路径：启动时的探测与 `INFO`、订阅与退订、心跳），限时与失败的映射同 [awaitCommand]。
+     * 不响应中断（RFC 0005 §4.3：中断不到达 L1 命令）：等待由 [bounded] 限时，至多一个 `commandTimeout`，被中断时保留中断标志。
+     */
+    fun <T> join(future: CompletableFuture<T>): T {
+        val bounded = bounded(future)
+        // 总是正常完成的派生 future：join 不响应中断，等到完成后恢复中断标志
+        bounded.handle { _, _ -> }.join()
+        return outcomeOf(bounded).getOrThrow()
+    }
+
+    /**
+     * 已完成的 future 的结果；失败按 [l1Failure] 映射（`join` 对以 [CancellationException] 完成的 future 直接抛出它，不包装）。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private fun <T> outcomeOf(future: CompletableFuture<T>): Result<T> = try {
+        Result.success(future.join())
+    } catch (e: Throwable) {
+        Result.failure(l1Failure(e))
+    }
+
+    /**
+     * L1 故障（RFC 0005 §4.3）：在 [failureOf] 之上，把 Lettuce 取消的命令（连接重置时取消应答栈中的命令、关闭时取消缓冲的命令）
+     * 换成结果未知的 [RedisException]。在 JVM 上 [CancellationException] 就是协程的取消，原样抛出会被引擎当作调用方被取消。
+     */
+    private fun l1Failure(error: Throwable): RuntimeException {
+        val failure = failureOf(error)
+        if (failure is CancellationException) {
+            return RedisException(
+                "Command cancelled by the Redis client (connection reset or closed); its outcome is unknown.",
+                failure
+            )
+        }
+        return failure
     }
 
     private fun failureOf(error: Throwable): RuntimeException {
         val cause = if (error is CompletionException || error is ExecutionException) error.cause ?: error else error
         if (timeouts.clientTimed && cause is RedisCommandTimeoutException) {
-            return timedOut(cause)
+            return timedOut(commandTimeout, cause)
         }
         return cause as? RuntimeException ?: RedisException(cause)
     }
 
     /**
-     * 同步与异步路径、各种计时方式共用的超时异常。
+     * 各种计时方式共用的超时异常。
      */
-    private fun timedOut(cause: Throwable): RedisException =
-        RedisException("Command timed out after $commandTimeout.", cause)
-
-    /**
-     * 同步等待：超时、等待被中断、执行异常都转换为运行时异常抛出。
-     *
-     * 等待本身受 `commandTimeout` 限制（与客户端是否计时无关）。超时或等待被中断时结果未知（[isUnknownOutcome]），两者处理相同：
-     * 取消 [future]（同 [bounded]），尚未写出的脚本命令不再写出（[CommandCall]）；被中断时恢复中断标志。中断来自调用方
-     * （`Future.cancel(true)`、Resilience4j `TimeLimiter`、`shutdownNow`），也来自同一线程上之前被中断的等待：标志恢复之后，
-     * 其后尚未完成的等待都立即以中断失败。[CommandTimeouts.clientTimed] 时客户端的超时可能先于等待触发，映射为同样的异常。
-     */
-    fun <T> await(future: CompletableFuture<T>): T {
-        val failure: RuntimeException = try {
-            return future.get(commandTimeout.toMillis(), TimeUnit.MILLISECONDS)
-        } catch (e: ExecutionException) {
-            failureOf(e)
-        } catch (e: TimeoutException) {
-            future.cancel(false)
-            timedOut(e)
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            future.cancel(false)
-            RedisException("Interrupted while waiting for Redis.", e)
-        }
-        throw failure
-    }
+    private fun timedOut(timeout: Duration, cause: Throwable): RedisException =
+        RedisException("Command timed out after $timeout.", cause)
 
     /**
      * 各主节点的 `maxmemory-policy`（`INFO memory` 的 `maxmemory_policy` 字段），键为 `host:port`。
@@ -269,12 +320,12 @@ internal class RedisConnections(
                 .filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
                 .associate { node ->
                     val commands = connection.getConnection(node.nodeId).async()
-                    val info = await(commands.info(MEMORY_SECTION).toCompletableFuture())
+                    val info = join(commands.info(MEMORY_SECTION).toCompletableFuture())
                     "${node.uri.host}:${node.uri.port}" to maxmemoryPolicyOf(info)
                 }
         }
         val standalone = connection as StatefulRedisConnection<ByteArray, ByteArray>
-        val info = await(standalone.async().info(MEMORY_SECTION).toCompletableFuture())
+        val info = join(standalone.async().info(MEMORY_SECTION).toCompletableFuture())
         return mapOf(STANDALONE to maxmemoryPolicyOf(info))
     }
 
@@ -288,7 +339,29 @@ internal class RedisConnections(
         return keys.groupBy { SlotHash.getSlot(it) }.values
     }
 
+    /**
+     * 在 [delay] 之后于客户端资源的时间轮线程上执行 [task]（[RedisL1Store] 重发失败的释放）。连接已关闭或时间轮已停止时不安排，
+     * 返回 `false`；安排之后连接才关闭的，到期时不再执行。
+     */
+    fun schedule(delay: Duration, task: () -> Unit): Boolean {
+        if (closed) {
+            return false
+        }
+        return try {
+            timer.newTimeout({
+                if (!closed) {
+                    task()
+                }
+            }, delay.toNanos(), TimeUnit.NANOSECONDS)
+            true
+        } catch (_: IllegalStateException) {
+            // 时间轮已停止：客户端资源已关闭
+            false
+        }
+    }
+
     override fun close() {
+        closed = true
         pubSub.close()
         connection.close()
     }
@@ -328,14 +401,27 @@ internal class RedisConnections(
         }
 
         /**
-         * 结果未知：命令超时（后端计时的 [timedOut]，或客户端的 [RedisCommandTimeoutException]），或等待被中断（[await]）。
-         * 命令可能已在 Redis 端执行，也可能被取消、永远不会执行。
+         * Lettuce 在写出之前拒绝命令时的消息（`DefaultEndpoint.validateWrite`）：连接已关闭、请求队列或命令缓冲已满、断线时拒绝命令。
+         * 注意与断线时排空应答栈的 `Connection closed` / `Connection disconnected` 区分：那些命令可能已经写出。
          */
-        fun isUnknownOutcome(error: Throwable): Boolean {
-            val causes = generateSequence(error) { it.cause.takeIf { cause -> cause !== it } }
-            return causes.any {
-                it is RedisCommandTimeoutException || it is TimeoutException || it is InterruptedException
+        private val NOT_WRITTEN = listOf(
+            "Connection is closed",
+            "Request queue size exceeded",
+            "Command buffer size exceeded",
+            "Currently not connected",
+        )
+
+        /**
+         * 确定未执行（RFC 0005 §4.3 的 P8）：Lettuce 在写出之前就拒绝了命令（[NOT_WRITTEN]），或连接建立不起来
+         * （[RedisConnectionException]，如集群中节点连接失败）。其余失败都是结果未知：超时、断线时被排空、被 Lettuce 取消
+         * （[l1Failure]）、脚本的错误回复等，命令可能已在 Redis 端执行。[RedisL1Store] 据此决定是否释放令牌。
+         */
+        fun isNotExecuted(error: Throwable): Boolean {
+            if (error is RedisConnectionException) {
+                return true
             }
+            val message = error.message ?: return false
+            return error is RedisException && NOT_WRITTEN.any { message.startsWith(it) }
         }
     }
 }
@@ -343,7 +429,7 @@ internal class RedisConnections(
 /**
  * 一条脚本调用的结果：先是 `EVALSHA`，NOSCRIPT 之后是 `EVAL`（[track] 记录当前的那条 Lettuce 命令）。
  *
- * 超时时 [RedisConnections.bounded] 与 [RedisConnections.await]、等待被中断时 [RedisConnections.await] 调用 [cancel]，它同时以异常
+ * 超时时 [RedisConnections.bounded] 调用 [cancel]，它同时以异常
  * 完成当前的 Lettuce 命令。Lettuce 写出前跳过已完成的命令（`CommandHandler` 的 `isWriteable`；断线期间缓冲的命令重连后同样跳过），
  * 所以尚未写出的命令不会在调用方看到失败之后才执行（稍后生效的 `put` 覆盖更新的值，`SetCache` 永不过期时错误永久保留）：
  * 集群中等待建立节点连接（首次访问某节点、拓扑变化后）的命令 Lettuce 不计时，调用方的客户端（`RedisBackend.of`）断线时可能缓冲命令。

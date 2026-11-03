@@ -14,7 +14,7 @@
 package me.ahoo.cocache.core
 
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.test.Concurrency.awaitCondition
@@ -46,8 +46,8 @@ class ExternalInvalidatorTest {
             Suspending.await {
                 memory.store(
                     "user"
-                ).read("cocache:user:1", null, null)
-            }.assert().isEqualTo(RemoteRead.Miss(false))
+                ).read("cocache:user:1", null, null, null)
+            }.assert().isEqualTo(L1Read.Miss(false))
             awaitCondition { cache["1"] == "v1" }
         }
     }

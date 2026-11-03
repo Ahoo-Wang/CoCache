@@ -18,7 +18,7 @@ import java.time.Duration
 /**
  * 一次 L1 读取的结果。
  */
-sealed interface RemoteRead {
+sealed interface L1Read {
     /**
      * 命中。
      *
@@ -32,15 +32,15 @@ sealed interface RemoteRead {
         val format: Int,
         val ttl: Duration?,
         val refreshGranted: Boolean = false
-    ) : RemoteRead
+    ) : L1Read
 
     /**
      * 未命中。[leaseGranted] 表示是否原子地取得了请求中的 lease。
      */
-    data class Miss(val leaseGranted: Boolean) : RemoteRead
+    data class Miss(val leaseGranted: Boolean) : L1Read
 
     /**
      * 其它节点持有 lease、正在回源。
      */
-    data class Leased(val remaining: Duration) : RemoteRead
+    data class Leased(val remaining: Duration) : L1Read
 }

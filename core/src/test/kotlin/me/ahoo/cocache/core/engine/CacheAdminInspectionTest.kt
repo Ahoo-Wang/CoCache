@@ -19,9 +19,9 @@ import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
@@ -106,8 +106,8 @@ class CacheAdminInspectionTest {
         Suspending.await {
             memory.store(
                 "user"
-            ).read("cocache:user:id-1", null, null)
-        }.assert().isEqualTo(RemoteRead.Miss(false))
+            ).read("cocache:user:id-1", null, null, null)
+        }.assert().isEqualTo(L1Read.Miss(false))
         users[1].assert().isEqualTo("user-1")
         loads.get().assert().isEqualTo(1)
     }
@@ -167,6 +167,7 @@ class CacheAdminInspectionTest {
             store.read(
                 "cocache:user:id-1",
                 LeaseRequest(Token(NodeId.random(), 1), Duration.ofSeconds(10)),
+                null,
                 null
             )
         }
@@ -184,16 +185,17 @@ class CacheAdminInspectionTest {
             store.read(
                 "cocache:user:id-2",
                 null,
+                null,
                 null
             )
-        }.assert().isInstanceOf(RemoteRead.Hit::class.java)
+        }.assert().isInstanceOf(L1Read.Hit::class.java)
 
         Suspending.await { store.put("cocache:user:id-3", Envelope.Members(listOf(byteArrayOf(1))), null, frame()) }
         admin.inspect("id-3").remote.state.assert().isEqualTo(RemoteState.UNREADABLE)
 
-        backend.afterRead = { _, read -> (read as? RemoteRead.Hit)?.copy(format = 0) ?: read }
+        backend.afterRead = { _, read -> (read as? L1Read.Hit)?.copy(format = 0) ?: read }
         admin.inspect("id-3").remote.error.assert().contains("Unrecognized")
-        backend.afterRead = { _, read -> (read as? RemoteRead.Hit)?.copy(format = InMemoryBackend.FORMAT + 1) ?: read }
+        backend.afterRead = { _, read -> (read as? L1Read.Hit)?.copy(format = InMemoryBackend.FORMAT + 1) ?: read }
         admin.inspect("id-3").remote.error.assert().contains("newer format")
         backend.afterRead = null
 

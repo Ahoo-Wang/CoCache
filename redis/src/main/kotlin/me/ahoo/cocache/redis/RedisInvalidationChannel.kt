@@ -20,7 +20,7 @@ import io.lettuce.core.RedisChannelWriter
 import io.lettuce.core.api.StatefulConnection
 import io.lettuce.core.protocol.CommandExpiryWriter
 import io.lettuce.core.protocol.DefaultEndpoint
-import me.ahoo.cocache.api.spi.FutureInvalidationChannel
+import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Subscription
@@ -50,7 +50,7 @@ internal abstract class RedisInvalidationChannel(
     internal val connections: RedisConnections,
     private val heartbeat: Duration,
     private val ackTimeout: Duration,
-) : FutureInvalidationChannel, AutoCloseable {
+) : InvalidationChannel, AutoCloseable {
     protected val listeners = ConcurrentHashMap<String, CopyOnWriteArrayList<InvalidationListener>>()
 
     /**
@@ -118,7 +118,7 @@ internal abstract class RedisInvalidationChannel(
         pendingAcks[channel] = ack
         var subscribed = false
         try {
-            connections.await(subscribeAsync(channel.toByteArray(Charsets.UTF_8)))
+            connections.join(subscribeAsync(channel.toByteArray(Charsets.UTF_8)))
             subscribed = true
             if (!ack.await(ackTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
                 log.warn { "Invalidation channel[$channel] - subscribe acknowledgement not received in $ackTimeout." }
@@ -143,7 +143,7 @@ internal abstract class RedisInvalidationChannel(
         synchronized(subscriptionLock) {
             channelListeners.remove(listener)
             if (channelListeners.isEmpty() && listeners.remove(channel, channelListeners)) {
-                connections.await(unsubscribeAsync(channel.toByteArray(Charsets.UTF_8)))
+                connections.join(unsubscribeAsync(channel.toByteArray(Charsets.UTF_8)))
             }
         }
     }

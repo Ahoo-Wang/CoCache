@@ -34,17 +34,19 @@ import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedPut
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteConditionalRead
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.ForeignFormatException
@@ -254,15 +256,15 @@ internal class CoherentEngine<K : Any, V : Any>(
             return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
         val entry = when (read) {
-            is RemoteRead.Hit -> onHit(key, storageKey, read, stamp, lease, source)
-            is RemoteRead.Miss -> loadAndFill(
+            is L1Read.Hit -> onHit(key, storageKey, read, stamp, lease, source)
+            is L1Read.Miss -> loadAndFill(
                 key,
                 storageKey,
                 stamp,
                 lease.token.takeIf { read.leaseGranted },
                 source
             )
-            is RemoteRead.Leased -> {
+            is L1Read.Leased -> {
                 metrics.leaseWaitTimeout()
                 loadBypassingRemote(key, storageKey, stamp, source)
             }
@@ -285,20 +287,20 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 其它节点持有 lease 时，以短退避重读，最多等待 `min(剩余寿命, lease.wait)`，沿用同一个令牌。
      */
-    private suspend fun readWaitingLease(storageKey: String, lease: LeaseRequest): RemoteRead {
+    private suspend fun readWaitingLease(storageKey: String, lease: LeaseRequest): L1Read {
         val read = readRemote(storageKey, lease, null)
-        if (read !is RemoteRead.Leased) {
+        if (read !is L1Read.Leased) {
             return read
         }
         metrics.leaseWait()
         return observedLoad(LoadOperation.LEASE_WAIT, 1) { awaitLease(storageKey, lease, read) }
     }
 
-    private suspend fun awaitLease(storageKey: String, lease: LeaseRequest, leased: RemoteRead.Leased): RemoteRead {
-        var read: RemoteRead = leased
+    private suspend fun awaitLease(storageKey: String, lease: LeaseRequest, leased: L1Read.Leased): L1Read {
+        var read: L1Read = leased
         val deadline = leaseDeadline(leased)
         var backoff = INITIAL_BACKOFF_NANOS
-        while (read is RemoteRead.Leased) {
+        while (read is L1Read.Leased) {
             val remaining = deadline - ticker.nanoTime()
             if (remaining <= 0) {
                 break
@@ -312,17 +314,17 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 退避之后重读：挂起（`delay`）。同步变体停在调用方线程的事件循环上，线程被中断时立即结束；异步变体不占线程，运行时关闭时随作用域取消。
      */
-    private suspend fun rereadAfter(storageKey: String, lease: LeaseRequest, delayNanos: Long): RemoteRead {
+    private suspend fun rereadAfter(storageKey: String, lease: LeaseRequest, delayNanos: Long): L1Read {
         delay(delayNanos.nanoseconds)
         return readRemote(storageKey, lease, null)
     }
 
-    private fun leaseDeadline(leased: RemoteRead.Leased): Long = ticker.nanoTime() + minOf(leased.remaining, policy.lease.wait).toNanos()
+    private fun leaseDeadline(leased: L1Read.Leased): Long = ticker.nanoTime() + minOf(leased.remaining, policy.lease.wait).toNanos()
 
     private suspend fun onHit(
         key: K,
         storageKey: String,
-        read: RemoteRead.Hit,
+        read: L1Read.Hit,
         stamp: Long,
         lease: LeaseRequest,
         source: CoreSource<K, V>?
@@ -351,7 +353,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private fun foreignFormatFailure(
         storageKey: String,
-        read: RemoteRead.Hit,
+        read: L1Read.Hit,
         error: Exception,
         hasSource: Boolean
     ): CacheReadException? {
@@ -366,7 +368,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 同步与异步共用：读到更高版本写入的值（滚动升级期间）。有数据源时返回 `null`，调用方绕过 L1 回源（既不回收也不写回）。
      * 没有数据源时 L1 是唯一副本，绕过 L1 只能得到“不存在”：返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）。
      */
-    private fun newerFormatFailure(storageKey: String, read: RemoteRead.Hit, hasSource: Boolean): CacheReadException? {
+    private fun newerFormatFailure(storageKey: String, read: L1Read.Hit, hasSource: Boolean): CacheReadException? {
         if (hasSource) {
             return null
         }
@@ -383,7 +385,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 同步与异步共用的命中判定：更高版本写入的值（滚动升级期间）既不回收也不写回；不是本协议写入的内容或解码失败按损坏处理。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun hitOutcome(read: RemoteRead.Hit): HitOutcome<V> {
+    private fun hitOutcome(read: L1Read.Hit): HitOutcome<V> {
         if (read.format > backendFormat) {
             return HitOutcome.Newer
         }
@@ -395,7 +397,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
     }
 
-    private fun onRemoteHit(storageKey: String, value: V?, read: RemoteRead.Hit, stamp: Long): LocalEntry<V> {
+    private fun onRemoteHit(storageKey: String, value: V?, read: L1Read.Hit, stamp: Long): LocalEntry<V> {
         metrics.remoteHit()
         val entry = localEntry(value, read.ttl, policy.localMaxAge)
         fillLocal(storageKey, entry, stamp)
@@ -409,7 +411,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     private suspend fun onCorrupt(
         key: K,
         storageKey: String,
-        read: RemoteRead.Hit,
+        read: L1Read.Hit,
         stamp: Long,
         lease: LeaseRequest,
         source: CoreSource<K, V>?,
@@ -417,7 +419,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     ): LocalEntry<V> {
         logCorrupt(storageKey, error)
         val reclaimed = try {
-            reclaimRemote(storageKey, Digest.of(read.envelope), lease)
+            reclaimRemote(storageKey, ContentFingerprint.of(read.envelope), lease)
         } catch (e: Exception) {
             rethrowIfFatal(e)
             onReadFailure("reclaim", storageKey, e)
@@ -429,7 +431,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         return loadAndFill(key, storageKey, stamp, lease.token, source)
     }
 
-    private suspend fun reclaimRemote(storageKey: String, observed: Digest, lease: LeaseRequest): Boolean =
+    private suspend fun reclaimRemote(storageKey: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean =
         uncancellable { store.reclaim(storageKey, observed, lease) }
 
     private fun logCorrupt(storageKey: String, error: Exception) {
@@ -591,10 +593,13 @@ internal class CoherentEngine<K : Any, V : Any>(
         return CacheReadException(name, operation, error)
     }
 
+    /**
+     * 令牌保护的填充：写入（[L1Fill.Filled]）时为 `true`。`advanced` 与版本拒绝随线格式 2 使用（RFC 0005 §4.7），当前格式的填充不前进版本。
+     */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun fillRemote(fill: Fill): Boolean {
         return try {
-            uncancellable { store.fill(fill) }
+            uncancellable { store.fill(fill) } is L1Fill.Filled
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -917,8 +922,8 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 批量读取 L1，规则同 [readRemote]。
      */
-    private suspend fun readAllRemote(keys: List<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> =
-        uncancellable { store.readAll(keys, leases) }
+    private suspend fun readAllRemote(keys: List<String>, leases: Map<String, LeaseRequest>): Map<String, L1Read> =
+        uncancellable { store.readAll(keys, leases, null) }
 
     /**
      * [loadAllThrough] 读到 L1 之后：逐 key 判定，先批量回源并写回，再逐个条件回收损坏的 key。
@@ -926,7 +931,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private suspend fun stepAll(
         led: Map<String, K>,
-        reads: Map<String, RemoteRead>,
+        reads: Map<String, L1Read>,
         loadStamps: Map<String, Long>,
         leases: Map<String, LeaseRequest>,
         source: CoreSource<K, V>?
@@ -999,13 +1004,13 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private fun batchStep(
         storageKey: String,
-        read: RemoteRead?,
+        read: L1Read?,
         stamp: Long,
         lease: LeaseRequest?,
         hasSource: Boolean
     ): BatchStep<V> {
-        if (read !is RemoteRead.Hit) {
-            return BatchStep.Load((read as? RemoteRead.Miss)?.takeIf { it.leaseGranted }?.let { lease?.token })
+        if (read !is L1Read.Hit) {
+            return BatchStep.Load((read as? L1Read.Miss)?.takeIf { it.leaseGranted }?.let { lease?.token })
         }
         return when (val outcome = hitOutcome(read)) {
             HitOutcome.Newer -> {
@@ -1120,8 +1125,8 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
     }
 
-    private fun filledByKey(fills: List<Fill>, outcomes: List<Boolean>): Map<String, Boolean> =
-        fills.indices.associate { fills[it].key to (outcomes.getOrNull(it) == true) }
+    private fun filledByKey(fills: List<Fill>, outcomes: List<L1Fill>): Map<String, Boolean> =
+        fills.indices.associate { fills[it].key to (outcomes.getOrNull(it) is L1Fill.Filled) }
 
     @Suppress("TooGenericExceptionCaught")
     private suspend fun fillAllRemote(fills: List<Fill>): Map<String, Boolean> {
@@ -1232,8 +1237,8 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 同步与异步共用的刷新判定：取得令牌才回源；没取得令牌只从 L1 重新填充 L2；L1 已无值或内容不可读时退回普通加载。
      */
-    private fun refreshStep(read: RemoteRead): RefreshStep<V> {
-        if (read !is RemoteRead.Hit) {
+    private fun refreshStep(read: L1Read): RefreshStep<V> {
+        if (read !is L1Read.Hit) {
             return RefreshStep.Reload(false)
         }
         if (read.format > backendFormat || read.format < MIN_FORMAT) {
@@ -1337,7 +1342,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val conditional = requireConditional("getIfChanged")
         val storageKey = storageKey(key)
         val read = try {
-            uncancellable { conditional.readIfChanged(storageKey, known) }
+            uncancellable { conditional.readIfChanged(storageKey, known, null) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1358,18 +1363,18 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 同步与异步共用：把后端的条件读取结果换算为用户结果。格式不在 [MIN_FORMAT, 本节点版本] 内、集合、解码失败都是读不懂的内容。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun conditionalGetOf(storageKey: String, read: RemoteConditionalRead): ConditionalGet<V> = when (read) {
+    private fun conditionalGetOf(storageKey: String, read: L1ConditionalRead): ConditionalGet<V> = when (read) {
         // 摘要只覆盖载荷：再确认这个值仍是本节点读得懂的格式
-        is RemoteConditionalRead.Unchanged -> if (read.format < MIN_FORMAT || read.format > backendFormat) {
+        is L1ConditionalRead.Unchanged -> if (read.format < MIN_FORMAT || read.format > backendFormat) {
             unreadableGet(storageKey, read.format, null)
         } else {
             metrics.conditionalUnchanged()
             ConditionalGet.Unchanged
         }
 
-        RemoteConditionalRead.Absent -> ConditionalGet.Absent
-        is RemoteConditionalRead.Unreadable -> unreadableGet(storageKey, read.format, null)
-        is RemoteConditionalRead.Changed -> if (read.format < MIN_FORMAT || read.format > backendFormat) {
+        L1ConditionalRead.Absent -> ConditionalGet.Absent
+        is L1ConditionalRead.Unreadable -> unreadableGet(storageKey, read.format, null)
+        is L1ConditionalRead.Changed -> if (read.format < MIN_FORMAT || read.format > backendFormat) {
             unreadableGet(storageKey, read.format, null)
         } else {
             try {
@@ -1405,7 +1410,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val storageKey = storageKey(key)
         val envelope = format.encode(value)
         val bounded = ttl?.boundedTtl()
-        var outcome: RemoteConditionalWrite? = null
+        var outcome: L1ConditionalWrite? = null
         write(
             listOf(storageKey),
             { frame ->
@@ -1426,11 +1431,11 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private fun conditionalChanged(
         envelope: Envelope.Scalar,
-        result: RemoteConditionalWrite?
+        result: L1ConditionalWrite?
     ): Boolean = when (result) {
-        is RemoteConditionalWrite.Conflict -> result.current == Digest.of(envelope)
+        is L1ConditionalWrite.Conflict -> result.current == Digest.of(envelope)
         // 拒绝（Unreadable）已在 mutate 中抛出，这里只剩 Written
-        else -> result == RemoteConditionalWrite.Written
+        else -> result == L1ConditionalWrite.Written
     }
 
     /**
@@ -1447,8 +1452,8 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 后端拒绝了写入（key 中是读不懂的内容，未修改、未广播）：计入 `unknownFormats` 并抛出，由 [write] 包装为 `CacheWriteException`
      * （同时计入 `writeFailures`），与 `SetCache` 的元素写入相同。
      */
-    private fun refuseUnreadable(storageKey: String, result: RemoteConditionalWrite): Void? {
-        if (result !is RemoteConditionalWrite.Unreadable) {
+    private fun refuseUnreadable(storageKey: String, result: L1ConditionalWrite): Void? {
+        if (result !is L1ConditionalWrite.Unreadable) {
             return null
         }
         throw refusedFormat(storageKey, result.format)
@@ -1461,14 +1466,14 @@ internal class CoherentEngine<K : Any, V : Any>(
         return failure
     }
 
-    private fun conditionalPutOf(envelope: Envelope.Scalar, result: RemoteConditionalWrite): ConditionalPut = when (result) {
-        RemoteConditionalWrite.Written -> ConditionalPut.Written(Digest.of(envelope))
-        is RemoteConditionalWrite.Conflict -> {
+    private fun conditionalPutOf(envelope: Envelope.Scalar, result: L1ConditionalWrite): ConditionalPut = when (result) {
+        L1ConditionalWrite.Written -> ConditionalPut.Written(Digest.of(envelope))
+        is L1ConditionalWrite.Conflict -> {
             metrics.conditionalConflict()
             ConditionalPut.Conflict(result.current)
         }
 
-        is RemoteConditionalWrite.Unreadable -> throw IllegalStateException(
+        is L1ConditionalWrite.Unreadable -> throw IllegalStateException(
             "Cache[$name] - unreachable: refused write."
         )
     }
@@ -1524,7 +1529,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val storageKey = storageKey(key)
         val envelope = envelopeOf(value)
         val bounded = ttl?.boundedTtl()
-        var outcome: RemoteVersionedWrite? = null
+        var outcome: L1VersionedWrite? = null
         write(
             listOf(storageKey),
             { frame ->
@@ -1542,10 +1547,10 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 非原子广播的后端上，按版本写入之后是否广播（同步与异步共用）。写入成功时广播；当前版本等于给出的版本时也广播：
      * 这可能是按 §6.5 重放的、已在 L1 生效而广播失败的写入（理由同 [conditionalChanged]）。版本更旧时不广播。
      */
-    private fun versionedChanged(version: Long, result: RemoteVersionedWrite?): Boolean = when (result) {
-        is RemoteVersionedWrite.Stale -> result.current == version
+    private fun versionedChanged(version: Long, result: L1VersionedWrite?): Boolean = when (result) {
+        is L1VersionedWrite.Stale -> result.current == version
         // 拒绝（Unreadable）已在 mutate 中抛出，这里只剩 Written
-        else -> result == RemoteVersionedWrite.Written
+        else -> result == L1VersionedWrite.Written
     }
 
     private fun requireVersion(version: Long) {
@@ -1566,21 +1571,21 @@ internal class CoherentEngine<K : Any, V : Any>(
         throw CacheWriteException(name, operation, error)
     }
 
-    private fun refuseUnreadableVersion(storageKey: String, result: RemoteVersionedWrite): Void? {
-        if (result !is RemoteVersionedWrite.Unreadable) {
+    private fun refuseUnreadableVersion(storageKey: String, result: L1VersionedWrite): Void? {
+        if (result !is L1VersionedWrite.Unreadable) {
             return null
         }
         throw refusedFormat(storageKey, result.format)
     }
 
-    private fun versionedPutOf(result: RemoteVersionedWrite): VersionedPut = when (result) {
-        RemoteVersionedWrite.Written -> VersionedPut.Written
-        is RemoteVersionedWrite.Stale -> {
+    private fun versionedPutOf(result: L1VersionedWrite): VersionedPut = when (result) {
+        L1VersionedWrite.Written -> VersionedPut.Written
+        is L1VersionedWrite.Stale -> {
             metrics.staleVersion()
             VersionedPut.Stale(result.current)
         }
 
-        is RemoteVersionedWrite.Unreadable -> throw IllegalStateException(
+        is L1VersionedWrite.Unreadable -> throw IllegalStateException(
             "Cache[$name] - unreachable: refused write."
         )
     }
@@ -1860,7 +1865,7 @@ private sealed interface BatchStep<out V> {
 
     class Done<V>(val entry: LocalEntry<V>) : BatchStep<V>
 
-    class Corrupt(val read: RemoteRead.Hit, val error: Exception) : BatchStep<Nothing>
+    class Corrupt(val read: L1Read.Hit, val error: Exception) : BatchStep<Nothing>
 
     class Failed(val error: CacheReadException) : BatchStep<Nothing>
 }

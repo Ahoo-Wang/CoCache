@@ -35,10 +35,14 @@ class ForwardingL1StoreTest {
     private val refresh = RefreshRequest(Duration.ofSeconds(1), Token(node, 2), Duration.ofSeconds(1))
     private val envelope = Envelope.Scalar(byteArrayOf(1))
     private val digest = Digest.of(envelope)
+    private val fingerprint = ContentFingerprint.of(envelope)
+    private val timeout = Duration.ofMillis(500)
+    private val filled = L1Fill.Filled(false)
+    private val rejected = L1Fill.Rejected(null)
     private val ttl = Duration.ofMinutes(1)
     private val frame = InvalidationFrame.encode(node, listOf("k"))
     private val fill = Fill("k", token, envelope, ttl)
-    private val hit = RemoteRead.Hit(envelope, 1, ttl)
+    private val hit = L1Read.Hit(envelope, 1, ttl)
     private val members = listOf(byteArrayOf(2))
 
     @Test
@@ -52,24 +56,24 @@ class ForwardingL1StoreTest {
             every { conditional() } returns conditionalSurface
             every { versioned() } returns null
             every { sets() } returns setSurface
-            coEvery { read("k", lease, refresh) } returns hit
-            coEvery { readAll(keys, leases) } returns mapOf("k" to hit)
-            coEvery { fill(fill) } returns true
-            coEvery { fillAll(listOf(fill)) } returns listOf(false)
+            coEvery { read("k", lease, refresh, timeout) } returns hit
+            coEvery { readAll(keys, leases, timeout) } returns mapOf("k" to hit)
+            coEvery { fill(fill) } returns filled
+            coEvery { fillAll(listOf(fill)) } returns listOf(rejected)
             coJustRun { release("k", token) }
-            coEvery { reclaim("k", digest, lease) } returns true
+            coEvery { reclaim("k", fingerprint, lease) } returns true
             coJustRun { put("k", envelope, ttl, frame) }
             coJustRun { putAll(puts, frame) }
             coJustRun { invalidate(keys, frame) }
         }
         val store = object : ForwardingL1Store(delegate) {}
 
-        Suspending.await { store.read("k", lease, refresh) }.assert().isSameAs(hit)
-        Suspending.await { store.readAll(keys, leases) }.assert().isEqualTo(mapOf("k" to hit))
-        Suspending.await { store.fill(fill) }.assert().isTrue()
-        Suspending.await { store.fillAll(listOf(fill)) }.assert().containsExactly(false)
+        Suspending.await { store.read("k", lease, refresh, timeout) }.assert().isSameAs(hit)
+        Suspending.await { store.readAll(keys, leases, timeout) }.assert().isEqualTo(mapOf("k" to hit))
+        Suspending.await { store.fill(fill) }.assert().isEqualTo(filled)
+        Suspending.await { store.fillAll(listOf(fill)) }.assert().containsExactly(rejected)
         Suspending.await { store.release("k", token) }
-        Suspending.await { store.reclaim("k", digest, lease) }.assert().isTrue()
+        Suspending.await { store.reclaim("k", fingerprint, lease) }.assert().isTrue()
         Suspending.await { store.put("k", envelope, ttl, frame) }
         Suspending.await { store.putAll(puts, frame) }
         Suspending.await { store.invalidate(keys, frame) }
@@ -89,13 +93,13 @@ class ForwardingL1StoreTest {
     fun `forwarding capability surfaces forward every operation`() {
         val conditional = object : ForwardingConditionalL1Store(
             mockk {
-                coEvery { readIfChanged("k", digest) } returns RemoteConditionalRead.Unchanged(1)
-                coEvery { putIfMatch("k", digest, envelope, ttl, frame) } returns RemoteConditionalWrite.Conflict(null)
+                coEvery { readIfChanged("k", digest, timeout) } returns L1ConditionalRead.Unchanged(1)
+                coEvery { putIfMatch("k", digest, envelope, ttl, frame) } returns L1ConditionalWrite.Conflict(null)
             }
         ) {}
         val versioned = object : ForwardingVersionedL1Store(
             mockk {
-                coEvery { putIfNewer("k", Envelope.Absent, 3, ttl, frame) } returns RemoteVersionedWrite.Written
+                coEvery { putIfNewer("k", Envelope.Absent, 3, ttl, frame) } returns L1VersionedWrite.Written
             }
         ) {}
         val sets = object : ForwardingSetL1Store(
@@ -105,12 +109,12 @@ class ForwardingL1StoreTest {
             }
         ) {}
 
-        val unchanged = Suspending.await { conditional.readIfChanged("k", digest) }
-        unchanged.assert().isEqualTo(RemoteConditionalRead.Unchanged(1))
+        val unchanged = Suspending.await { conditional.readIfChanged("k", digest, timeout) }
+        unchanged.assert().isEqualTo(L1ConditionalRead.Unchanged(1))
         val conflict = Suspending.await { conditional.putIfMatch("k", digest, envelope, ttl, frame) }
-        conflict.assert().isEqualTo(RemoteConditionalWrite.Conflict(null))
+        conflict.assert().isEqualTo(L1ConditionalWrite.Conflict(null))
         val written = Suspending.await { versioned.putIfNewer("k", Envelope.Absent, 3, ttl, frame) }
-        written.assert().isSameAs(RemoteVersionedWrite.Written)
+        written.assert().isSameAs(L1VersionedWrite.Written)
         Suspending.await { sets.addMembers("k", members, ttl, frame) }.assert().isEqualTo(0)
         Suspending.await { sets.removeMembers("k", members, ttl, frame) }.assert().isNull()
     }
@@ -118,7 +122,7 @@ class ForwardingL1StoreTest {
     @Test
     fun `overriding an accessor intercepts the capability surface`() {
         val surface = mockk<ConditionalL1Store> {
-            coEvery { putIfMatch("k", null, envelope, ttl, frame) } returns RemoteConditionalWrite.Written
+            coEvery { putIfMatch("k", null, envelope, ttl, frame) } returns L1ConditionalWrite.Written
         }
         val store = CountingStore(mockk { every { conditional() } returns surface })
 
@@ -126,7 +130,7 @@ class ForwardingL1StoreTest {
         conditional.assert().isNotSameAs(surface)
         store.conditional().assert().isSameAs(conditional)
         val written = Suspending.await { conditional.putIfMatch("k", null, envelope, ttl, frame) }
-        written.assert().isSameAs(RemoteConditionalWrite.Written)
+        written.assert().isSameAs(L1ConditionalWrite.Written)
 
         store.conditionalWrites.get().assert().isEqualTo(1)
         coVerify(exactly = 1) { surface.putIfMatch("k", null, envelope, ttl, frame) }
@@ -153,7 +157,7 @@ class ForwardingL1StoreTest {
                     envelope: Envelope.Scalar,
                     ttl: Duration?,
                     frame: ByteArray
-                ): RemoteConditionalWrite {
+                ): L1ConditionalWrite {
                     conditionalWrites.incrementAndGet()
                     return super.putIfMatch(key, expected, envelope, ttl, frame)
                 }

@@ -29,8 +29,6 @@ import io.lettuce.core.resource.DefaultClientResources
 import io.lettuce.core.resource.EpollProvider
 import io.lettuce.core.resource.IOUringProvider
 import me.ahoo.cocache.api.spi.CoherenceBackend
-import me.ahoo.cocache.api.spi.FutureInvalidationChannel
-import me.ahoo.cocache.api.spi.FutureL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.L1Store
 import java.time.Duration
@@ -90,12 +88,13 @@ class RedisBackend private constructor(
     }
 
     /**
-     * 失效通道：[RedisInvalidationChannel] 经 [FutureInvalidationChannel.adapt] 适配（发布挂起，订阅阻塞）。
+     * 失效通道：发布挂起（Lettuce 的异步命令，不占线程），订阅阻塞（RFC 0005 §4.3）。
      */
-    override val channel: InvalidationChannel = FutureInvalidationChannel.adapt(invalidationChannel)
+    override val channel: InvalidationChannel
+        get() = invalidationChannel
 
     /**
-     * 适配之前的通道（模块内部，供测试查看订阅状态）。
+     * 具体类型的通道（模块内部，供测试查看订阅状态）。
      */
     internal val redisChannel: RedisInvalidationChannel
         get() = invalidationChannel
@@ -127,15 +126,10 @@ class RedisBackend private constructor(
     }
 
     /**
-     * 命名空间的存储：[RedisRemoteStore] 的异步方法经 [RedisFutureStore] 与 [FutureL1Store.adapt] 适配（M3d 改为原生的 `L1Store`）。
-     * 提供全部能力：条件读写、按版本有序的写入（[RedisScripts.PUT_IF_NEWER]，一次往返）与集合成员的增删。
+     * 命名空间的存储：原生挂起的 [RedisL1Store]（RFC 0005 §4.3），与后端共用连接。提供全部能力：条件读写、按版本有序的写入
+     * （[RedisScripts.PUT_IF_NEWER]，一次往返）与集合成员的增删。
      */
-    override fun store(namespace: String): L1Store = FutureL1Store.adapt(RedisFutureStore(remoteStore(namespace)))
-
-    /**
-     * 适配之前的存储（模块内部，供测试直接调用同步与异步方法）。
-     */
-    internal fun remoteStore(namespace: String): RedisRemoteStore {
+    override fun store(namespace: String): L1Store {
         val channel = if (atomicBroadcast) {
             RedisInvalidationChannel.channelOf(
                 namespace
@@ -143,7 +137,7 @@ class RedisBackend private constructor(
         } else {
             ByteArray(0)
         }
-        return RedisRemoteStore(connections, channel, invalidateBatchSize)
+        return RedisL1Store(connections, channel, invalidateBatchSize)
     }
 
     /**
@@ -152,7 +146,9 @@ class RedisBackend private constructor(
      */
     private fun probeAtomicBroadcast(): Boolean {
         return try {
-            connections.eval<List<Any?>>(RedisScripts.PROBE, listOf(PROBE_KEY), listOf(PROBE_CHANNEL))
+            connections.join(
+                connections.evalAsync<List<Any?>>(RedisScripts.PROBE, listOf(PROBE_KEY), listOf(PROBE_CHANNEL))
+            )
             true
         } catch (e: RedisException) {
             if (!isBroadcastUnsupported(e)) {

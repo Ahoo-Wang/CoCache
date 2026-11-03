@@ -26,10 +26,10 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.ForwardingVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.VersionedL1Store
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -70,11 +70,11 @@ class VersionedCacheTest {
         return runtime.create(spec)
     }
 
-    private fun remote(key: String, name: String = "doc"): RemoteRead =
-        Suspending.await { memory.store(name).read("cocache:$name:$key", null, null) }
+    private fun remote(key: String, name: String = "doc"): L1Read =
+        Suspending.await { memory.store(name).read("cocache:$name:$key", null, null, null) }
 
     private fun remoteVersion(key: String, name: String): Long {
-        val hit = remote(key, name) as RemoteRead.Hit
+        val hit = remote(key, name) as L1Read.Hit
         return (hit.envelope as Envelope.Scalar).version
     }
 
@@ -168,7 +168,7 @@ class VersionedCacheTest {
             listOf("a", "b", "c", "d", "x")
         ).assert().isEqualTo(mapOf("a" to "1", "b" to "2", "c" to "3", "d" to "4"))
         cache.getVersioned("a").assert().isEqualTo(Versioned("1", Versioned.NO_VERSION))
-        requireNotNull((remote("short") as RemoteRead.Hit).ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(30))
+        requireNotNull((remote("short") as L1Read.Hit).ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(30))
         (cache.lookup("a") as Lookup.Present).value.assert().isEqualTo("1")
         cache.lookup("x").assert().isInstanceOf(Lookup.Absent::class.java)
         cache.get("y") { "loaded-$it" }.assert().isEqualTo("loaded-y")
@@ -338,19 +338,19 @@ class VersionedCacheTest {
         }
         cache.putIfNewer("short", "short", 1)
         requireNotNull(
-            (remote("short", "ttl") as RemoteRead.Hit).ttl
+            (remote("short", "ttl") as L1Read.Hit).ttl
         ).assert().isLessThanOrEqualTo(Duration.ofSeconds(30))
         cache.putIfNewer("long", "long", 1)
-        requireNotNull((remote("long", "ttl") as RemoteRead.Hit).ttl).assert().isGreaterThan(Duration.ofMinutes(9))
+        requireNotNull((remote("long", "ttl") as L1Read.Hit).ttl).assert().isGreaterThan(Duration.ofMinutes(9))
         cache["deleted"].assert().isNull()
-        requireNotNull((remote("deleted", "ttl") as RemoteRead.Hit).ttl).assert().isGreaterThan(Duration.ofMinutes(9))
+        requireNotNull((remote("deleted", "ttl") as L1Read.Hit).ttl).assert().isGreaterThan(Duration.ofMinutes(9))
         cache.putIfNewer("deleted", "old", 9).assert().isEqualTo(VersionedPut.Stale(9))
 
         val forever = versioned("forever") { policy { ttl = null } }
         forever.putIfNewer("k", "v", 1)
-        (remote("k", "forever") as RemoteRead.Hit).ttl.assert().isNull()
+        (remote("k", "forever") as L1Read.Hit).ttl.assert().isNull()
         forever.async().invalidateIfNewer("k", 2).join()
-        (remote("k", "forever") as RemoteRead.Hit).ttl.assert().isNull()
+        (remote("k", "forever") as L1Read.Hit).ttl.assert().isNull()
     }
 
     /**
@@ -369,7 +369,7 @@ class VersionedCacheTest {
                             version: Long,
                             ttl: Duration?,
                             frame: ByteArray
-                        ): RemoteVersionedWrite = throw UnsupportedOperationException("no putIfNewer")
+                        ): L1VersionedWrite = throw UnsupportedOperationException("no putIfNewer")
                     }
                 }
 

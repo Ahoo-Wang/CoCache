@@ -141,7 +141,7 @@ class AsyncLoadObserverTest {
         Suspending.await {
             memory.store(
                 name
-            ).read("cocache:$name:held", LeaseRequest(token, Duration.ofMinutes(1)), null)
+            ).read("cocache:$name:held", LeaseRequest(token, Duration.ofMinutes(1)), null, null)
         }
         val waiting = cache.get("held")
         awaitCondition(

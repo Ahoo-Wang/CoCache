@@ -259,8 +259,8 @@ class CoCacheAutoConfigurationTest {
                     Suspending.await {
                         backend.store(
                             "user"
-                        ).read("custom:user:k", null, null)
-                    } is me.ahoo.cocache.api.spi.RemoteRead.Hit
+                        ).read("custom:user:k", null, null, null)
+                    } is me.ahoo.cocache.api.spi.L1Read.Hit
                     )
                     .assert().isTrue()
                 @Suppress("UNCHECKED_CAST")
@@ -270,8 +270,8 @@ class CoCacheAutoConfigurationTest {
                     Suspending.await {
                         backend.store(
                             "index"
-                        ).read("custom-set:index:k", null, null)
-                    } is me.ahoo.cocache.api.spi.RemoteRead.Hit
+                        ).read("custom-set:index:k", null, null, null)
+                    } is me.ahoo.cocache.api.spi.L1Read.Hit
                     )
                     .assert().isTrue()
                 @Suppress("UNCHECKED_CAST")
@@ -281,8 +281,8 @@ class CoCacheAutoConfigurationTest {
                     Suspending.await {
                         backend.store(
                             "profile"
-                        ).read("cocache:profile:k", null, null)
-                    } is me.ahoo.cocache.api.spi.RemoteRead.Hit
+                        ).read("cocache:profile:k", null, null, null)
+                    } is me.ahoo.cocache.api.spi.L1Read.Hit
                     )
                     .assert().isTrue()
             }
