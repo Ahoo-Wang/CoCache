@@ -15,19 +15,9 @@ package me.ahoo.cocache.coroutines
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.isActive
+import me.ahoo.cocache.core.SourceLoadCancelledException
 import java.util.concurrent.CompletableFuture
 import kotlin.coroutines.cancellation.CancellationException
-
-/**
- * 挂起数据源的一次加载以取消结束：数据源自己抛出了 `CancellationException`（如数据源内部的 `withTimeout` 超时），
- * 或加载协程被取消（如 spec 的 `context` 中的 Job 已被取消，包括加载开始之前就已取消）。
- *
- * 加载可能被多个调用方共享：原样传出的话，挂起的调用方会把它当作自己被取消（`launch` 会悄悄吞掉），因此转为普通异常，
- * 与同步、异步数据源的失败一样传给所有调用方（同步、异步与挂起的调用方都收到它）。原始异常是 [cause]。
- * 与 `SourceLoadTimeoutException`、`SourceLoadRejectedException` 一样是 [RuntimeException]。
- */
-class SourceLoadCancelledException(val cacheName: String?, cause: CancellationException) :
-    RuntimeException("Cache[${cacheName ?: "?"}] - the suspending source was cancelled: ${cause.message}", cause)
 
 /**
  * 以取消结束的加载转为 [SourceLoadCancelledException]（挂起数据源的两个边界共用）。放在 object 里，Java 不会看到多余的 `*Kt` 门面类。

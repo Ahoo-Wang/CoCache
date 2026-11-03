@@ -62,7 +62,7 @@ The per-call loader runs in the **caller's coroutine context without its `Job`**
 - `ThreadContextElement`s go with it, such as a tracing context, or MDC through `MDCContext` from `kotlinx-coroutines-slf4j` (plain MDC is a thread-local and doesn't follow a coroutine to another thread).
 - It is outside structured concurrency. Other callers may share the load, so cancelling the caller, ending the caller's scope, or even closing the runtime doesn't cancel it. The load's coroutine can outlive them all, until the data source returns.
 
-If a loader itself throws `CancellationException` while its coroutine is still active (for example from a `withTimeout` inside it), CoCache rethrows it as `SourceLoadCancelledException`, whose `cause` is the original. A load may be shared, and every caller would otherwise take the exception as its own cancellation (`launch` swallows it silently).
+If a loader itself throws `CancellationException` while its coroutine is still active (for example from a `withTimeout` inside it), CoCache rethrows it as `SourceLoadCancelledException` (`me.ahoo.cocache.core`), whose `cause` is the original. A load may be shared, and every caller would otherwise take the exception as its own cancellation (`launch` swallows it silently). Blocking and async loaders get the same treatment, see [Async API](./async.md#exceptions).
 
 The engine's `load-timeout` applies to both kinds of loader. When it fires, the caller fails with `SourceLoadTimeoutException` and the lease is released. The loader's coroutine is not cancelled; its late result is discarded. This works the same as for an [`AsyncCacheLoader`](./async.md#timeouts).
 

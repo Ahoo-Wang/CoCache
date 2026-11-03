@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -27,12 +28,14 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import me.ahoo.cocache.api.AsyncCache
+import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.SourceLoadCancelledException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
@@ -45,6 +48,7 @@ import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -393,6 +397,38 @@ class SuspendingCacheTest {
         runCatching { spec.get("k") }.exceptionOrNull().assert().isInstanceOf(SourceLoadCancelledException::class.java)
     }
 
+    /**
+     * 挂起变体：数据源自己以取消结束（`AsyncCacheLoader` 的 future 被取消）时，经挂起视图合并到同一次加载的调用方都收到同一个
+     * [SourceLoadCancelledException]，只回源一次（RFC 0005 第三轮 K5）。收到 `CancellationException` 的话，调用方的协程会把它当作自己被取消。
+     */
+    @Test
+    fun aSourcesOwnCancellationIsTheSameFailureForEverySuspendingCaller(): Unit = runBlocking<Unit> {
+        val runs = AtomicInteger()
+        val pending = CompletableFuture<String>()
+        val cache = runtime.create(
+            cacheSpec<String, String>("shared-cancel") {
+                codec = StringCodec
+                asyncLoader = AsyncCacheLoader {
+                    runs.incrementAndGet()
+                    pending
+                }
+            }
+        ).suspending()
+        // UNDISPATCHED：每个调用方执行到第一次挂起（等待异步视图的 future）时已注册，第一个领头，其余合并到它
+        val callers = List(SHARED_CALLERS) {
+            async(start = CoroutineStart.UNDISPATCHED) { runCatching { cache.get("k") }.exceptionOrNull() }
+        }
+        runs.get().assert().isEqualTo(1)
+        pending.cancel(true)
+
+        val failures = callers.awaitAll()
+        val shared = failures.first()
+        shared.assert().isInstanceOf(SourceLoadCancelledException::class.java)
+        (shared as SourceLoadCancelledException).cacheName.assert().isEqualTo("shared-cancel")
+        failures.forEach { it.assert().isSameAs(shared) }
+        runs.get().assert().isEqualTo(1)
+    }
+
     @Test
     fun aFailingLoadDoesNotCancelLaterLoadsOfAContextWithAJob(): Unit = runBlocking<Unit> {
         val parent = Job()
@@ -645,5 +681,12 @@ class SuspendingCacheTest {
         cache.get("k").assert().isEqualTo("new")
         cache.invalidateIfNewer("k", 7).assert().isEqualTo(VersionedPut.Written)
         cache.get("k").assert().isNull()
+    }
+
+    private companion object {
+        /**
+         * 合并到同一次加载的调用方个数（实验 E4）。
+         */
+        const val SHARED_CALLERS = 8
     }
 }

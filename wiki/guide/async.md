@@ -66,6 +66,7 @@ The async executor and the blocking executor are configurable. See [Configuratio
 ## Exceptions and cancellation {#exceptions}
 
 - A failed call completes its future with the **original** exception: `CacheReadException`, `CacheWriteException`, `SourceLoadRejectedException`, `SourceLoadTimeoutException`, or whatever your loader threw. It is never wrapped in `CompletionException`. `join()` and `get()` still wrap it, as the JDK always does. `handle`, `exceptionally`, Reactor's `Mono.fromFuture` and Kotlin's `await()` all see the original.
+- The one exception is a loader's own `CancellationException`: a `CacheLoader` that throws it, or an `AsyncCacheLoader` whose future completes with it (a cancelled HTTP request, a `withTimeout` inside it). It becomes `SourceLoadCancelledException`, with the original as its `cause`, for every caller that shares the load. Passed through as is, it would make each caller's future look cancelled.
 - Async methods never throw synchronously. A failing key encoder or codec, a reentrant call, or an unsupported `SetCache` operation all come back as a failed future.
 - Each call returns its own future. Cancelling it cancels only your wait: the shared load continues for the other callers and still writes Redis. Write ordering is unaffected, because the second invalidation step of a write runs whether or not you cancel.
 - A loader that reads its own key fails fast with `IllegalStateException` when it does so before returning its future. If it does so after an I/O step, the call waits until `load-timeout`.

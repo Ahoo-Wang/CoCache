@@ -170,7 +170,11 @@ class TokenConservationPropertyTest {
                 .clock(clock)
                 .asyncExecutor(executor)
                 .blockingExecutor(executor)
-                .apply { if (this@Scenario.observed) loadObserver(PassThroughObserver) }
+                .apply {
+                    if (this@Scenario.observed) loadObserver(PassThroughObserver)
+                    // 任务与命令由关闭运行时的测试线程推进：关闭不等待，之后由 drain 排空
+                    drainTimeout = Duration.ZERO
+                }
                 .build()
         }
         private val open = BooleanArray(nodes) { true }

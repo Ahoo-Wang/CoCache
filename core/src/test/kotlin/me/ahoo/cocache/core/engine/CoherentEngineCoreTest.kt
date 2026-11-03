@@ -15,11 +15,14 @@ package me.ahoo.cocache.core.engine
 
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.FutureL1Store
+import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
@@ -28,6 +31,7 @@ import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.SourceLoadCancelledException
 import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.cacheSpec
@@ -46,6 +50,7 @@ import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.CountDownLatch
@@ -146,6 +151,237 @@ class CoherentEngineCoreTest {
         otherCache["a"].assert().isEqualTo("v-a")
         otherCache["b"].assert().isEqualTo("v-b")
         requireNotNull(other.metrics("core")).leaseWaits.assert().isZero()
+    }
+
+    /**
+     * 异步变体：数据源自己以取消结束（数据源的 future 被取消，如 HTTP 客户端取消了请求）是普通的回源失败（RFC 0005 第三轮 K5）。
+     * 合并到这次加载的调用方共享这一次回源，leader 与跟随者都收到同一个 [SourceLoadCancelledException]，而不是各自再回源
+     * （实验 E4：8 个调用方回源 8 次）。lease 被释放，失败不被缓存：下一次读取重新回源。挂起变体的用例在 `cocache-coroutines`。
+     */
+    @Test
+    fun anAsyncSourcesOwnCancellationIsSharedByTheWholeLoad() {
+        val loads = AtomicInteger()
+        val pending = CompletableFuture<String>()
+        val runtime = runtime()
+        val cache = runtime.create(
+            spec {
+                asyncLoader = AsyncCacheLoader { key ->
+                    if (loads.getAndIncrement() == 0) pending else CompletableFuture.completedFuture("v-$key")
+                }
+            }
+        )
+        // 都在测试线程上执行到第一次挂起：第一个领头、等待数据源，其余合并到它
+        val reads = List(CALLERS) { cache.async().get("k") }
+        loads.get().assert().isEqualTo(1)
+        pending.cancel(true)
+
+        val failures = reads.map { failureOf(it) }
+        val shared = failures.first()
+        shared.assert().isInstanceOf(SourceLoadCancelledException::class.java)
+        shared?.cause.assert().isInstanceOf(CancellationException::class.java)
+        (shared as SourceLoadCancelledException).cacheName.assert().isEqualTo("core")
+        failures.forEach { it.assert().isSameAs(shared) }
+        loads.get().assert().isEqualTo(1)
+        cache["k"].assert().isEqualTo("v-k")
+        loads.get().assert().isEqualTo(2)
+        requireNotNull(runtime.metrics("core")).leaseWaits.assert().isZero()
+    }
+
+    /**
+     * 同步变体：同步数据源在调用方线程上抛出自己的 `CancellationException`（如对已取消的 future 调用 `join`）。调用方线程没有被中断，
+     * leader 与合并到它的同步调用方都收到同一个 [SourceLoadCancelledException]，只回源一次，中断标志都不置位（K5）。
+     */
+    @Test
+    fun aBlockingSourcesOwnCancellationIsTheSameFailureForEverySyncCaller() {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val loads = AtomicInteger()
+        val cache = runtime().create(
+            spec {
+                loader = CacheLoader { key ->
+                    if (loads.getAndIncrement() == 0) {
+                        started.countDown()
+                        release.awaitOrFail("release")
+                        CompletableFuture<String>().apply { cancel(true) }.join()
+                    }
+                    "v-$key"
+                }
+            }
+        )
+        val leader = fork("leader") { failureAndInterruptFlag { cache["k"] } }
+        started.awaitOrFail("loader started")
+        val followers = List(CALLERS - 1) { fork("follower-$it") { failureAndInterruptFlag { cache["k"] } } }
+        // 同步跟随者停在 runBlocking 的事件循环里等待 leader：此时都已合并到它
+        awaitCondition("followers joined") { followers.all { it.parked } }
+        release.countDown()
+
+        val (shared, leaderInterrupted) = leader.join()
+        shared.assert().isInstanceOf(SourceLoadCancelledException::class.java)
+        shared?.cause.assert().isInstanceOf(CancellationException::class.java)
+        leaderInterrupted.assert().isFalse()
+        followers.map { it.join() }.forEach { (failure, interrupted) ->
+            failure.assert().isSameAs(shared)
+            interrupted.assert().isFalse()
+        }
+        loads.get().assert().isEqualTo(1)
+    }
+
+    /**
+     * 调用 [block]，返回它的失败与之后线程的中断标志（`Forked` 线程结束后标志不可再读）。
+     */
+    private fun failureAndInterruptFlag(block: () -> Any?): Pair<Throwable?, Boolean> =
+        runCatching { block() }.exceptionOrNull() to Thread.currentThread().isInterrupted
+
+    /**
+     * 关闭运行时之后，被取消的加载释放 lease 的命令仍在途：`close` 等它完成才返回（RFC 0005 第三轮 K17），
+     * 之后关闭的执行器与后端不会让它失败，lease 不会留到 `lease.ttl`。
+     */
+    @Test
+    fun closeWaitsForAnInFlightRelease() {
+        val held = HeldRelease()
+        val closing = runtime(held.backend)
+        val read = held.loadOn(closing)
+
+        val closer = fork("closer") { closing.close().let { held.released.count } }
+        held.releasing.awaitOrFail("release issued")
+        awaitCondition("close waiting") { closer.parked || !closer.thread.isAlive }
+        closer.thread.isAlive.assert().withFailMessage { "close returned while the release was in flight." }.isTrue()
+        held.gate.complete(Unit)
+
+        closer.join().assert().withFailMessage { "close returned before the release completed." }.isZero()
+        failureOf(read)?.message.assert().isEqualTo("CacheRuntime closed.")
+        val left = Suspending.await { memory.store("core").read("cocache:core:k", null, null) }
+        left.assert().isEqualTo(RemoteRead.Miss(false))
+    }
+
+    /**
+     * 卡住的步骤不让关闭无限期等待：等满上限（这里 1 ms）之后告警、照常关闭，步骤之后照常完成（K17）。
+     */
+    @Test
+    fun closeStopsWaitingAtTheDrainTimeout() {
+        val held = HeldRelease()
+        val closing = CacheRuntime.builder().backend(held.backend).apply { drainTimeout = Duration.ofMillis(1) }.build()
+        runtimes += closing
+        held.loadOn(closing)
+
+        // 作用域中的协程要等释放完成才结束，而释放停在 gate 上：close 只能等满上限
+        closing.close()
+        held.releasing.awaitOrFail("release issued")
+        held.released.count.assert().withFailMessage { "the release was not held." }.isEqualTo(1)
+        held.gate.complete(Unit)
+        held.released.awaitOrFail("release completed")
+    }
+
+    /**
+     * 关闭的线程在等待期间被中断：不再等待，返回时保留中断标志（K17）。
+     */
+    @Test
+    fun anInterruptedCloseStopsWaitingAndKeepsTheFlag() {
+        val held = HeldRelease()
+        val closing = CacheRuntime.builder().backend(held.backend).apply { drainTimeout = Duration.ofHours(1) }.build()
+        runtimes += closing
+        held.loadOn(closing)
+
+        val closer = fork("closer") { closing.close().let { Thread.currentThread().isInterrupted } }
+        held.releasing.awaitOrFail("release issued")
+        awaitCondition("close waiting") { closer.parked || !closer.thread.isAlive }
+        closer.thread.interrupt()
+
+        closer.join().assert().withFailMessage { "the interrupt flag must be restored." }.isTrue()
+        held.released.count.assert().isEqualTo(1)
+        held.gate.complete(Unit)
+        held.released.awaitOrFail("release completed")
+    }
+
+    /**
+     * 释放 lease 的命令停在 [gate] 上的后端（包装 [memory]）：[releasing] 在命令发出时、[released] 在它完成时倒数。
+     */
+    private inner class HeldRelease {
+        val gate = CompletableDeferred<Unit>()
+        val releasing = CountDownLatch(1)
+        val released = CountDownLatch(1)
+        val backend = object : CoherenceBackend by memory {
+            override fun store(namespace: String): L1Store = object : ForwardingL1Store(memory.store(namespace)) {
+                override suspend fun release(key: String, token: Token) {
+                    releasing.countDown()
+                    gate.await()
+                    super.release(key, token)
+                    released.countDown()
+                }
+            }
+        }
+
+        /**
+         * 在 [runtime] 上发起一次异步读取：取得 lease、等待永不完成的数据源。关闭运行时会取消它、释放 lease。
+         */
+        fun loadOn(runtime: CacheRuntime): CompletableFuture<String?> {
+            val started = CountDownLatch(1)
+            val cache = runtime.create(
+                spec {
+                    asyncLoader = AsyncCacheLoader {
+                        started.countDown()
+                        CompletableFuture<String>()
+                    }
+                }
+            )
+            val read = cache.async().get("k")
+            started.awaitOrFail("loader started")
+            return read
+        }
+    }
+
+    /**
+     * 非原子广播的后端：写入修改 L1 之后补发的广播仍在途时关闭运行时，`close` 等广播发出才返回（K17），
+     * 否则之后关闭的后端会让它失败，其它节点读旧的 L2 直到 `localMaxAge`。
+     */
+    @Test
+    fun closeWaitsForAnInFlightBroadcast() {
+        val gate = CompletableDeferred<Unit>()
+        val publishing = CountDownLatch(1)
+        val published = CountDownLatch(1)
+        val channel = object : InvalidationChannel by memory.channel {
+            override suspend fun publish(namespace: String, frame: ByteArray) {
+                publishing.countDown()
+                gate.await()
+                memory.channel.publish(namespace, frame)
+                published.countDown()
+            }
+        }
+        val backend = object : CoherenceBackend by memory {
+            override val atomicBroadcast: Boolean = false
+            override val channel: InvalidationChannel = channel
+        }
+        val closing = runtime(backend)
+        val cache = closing.create(spec { loader = CacheLoader { "v-$it" } })
+        cache.async().invalidate("k")
+        publishing.awaitOrFail("broadcast issued")
+
+        val closer = fork("closer") { closing.close().let { published.count } }
+        awaitCondition("close waiting") { closer.parked || !closer.thread.isAlive }
+        closer.thread.isAlive.assert().withFailMessage { "close returned while the broadcast was in flight." }.isTrue()
+        gate.complete(Unit)
+
+        closer.join().assert().withFailMessage { "close returned before the broadcast was sent." }.isZero()
+    }
+
+    /**
+     * 在异步执行器的线程上关闭（异步结果的回调里）不等待：调用方正是作用域中仍在收尾的协程，等待它自己只会等满上限。
+     * 上限设为 1 小时，等待了就会让本用例超时。
+     */
+    @Test
+    fun closeOnTheAsyncExecutorDoesNotWaitForItself() {
+        val load = CompletableFuture<String>()
+        val closing = CacheRuntime.builder().backend(memory).apply { drainTimeout = Duration.ofHours(1) }.build()
+        runtimes += closing
+        val cache = closing.create(spec { asyncLoader = AsyncCacheLoader { load } })
+        val closed = cache.async().get("k").thenApply { value ->
+            closing.close()
+            value
+        }
+        // 数据源在测试线程上完成：协程派发回异步执行器，在那里完成结果、执行回调
+        load.complete("v-k")
+
+        closed.get(10, TimeUnit.SECONDS).assert().isEqualTo("v-k")
     }
 
     /**
@@ -257,7 +493,7 @@ class CoherentEngineCoreTest {
 
     /**
      * 提前刷新的 L1 读取尚未送达时关闭运行时：读取照常完成（L1 命令不可取消），刷新的协程在之后的挂起点（等待数据源）被取消，
-     * 取得的刷新令牌被交还，另一个调用方随后能取得它。
+     * 取得的刷新令牌被交还，另一个调用方随后能取得它。`close` 等到交还之后才返回（K17）。
      */
     @Test
     fun closingTheRuntimeMidRefreshReleasesTheRefreshToken() {
@@ -300,18 +536,20 @@ class CoherentEngineCoreTest {
         // 窗口内的 L2 命中触发刷新：刷新的读取已在 L1 取得令牌，结果被挡在“I/O 线程”上
         cache["k"].assert().isEqualTo("v")
         readIssued.awaitOrFail("refresh read issued")
-        closing.close()
+        // 关闭取消作用域之后、等待在途步骤期间，读取才送达
+        val closer = fork("closer") { closing.close() }
+        awaitCondition("close waiting") { closer.parked || !closer.thread.isAlive }
         deliver.countDown()
+        closer.join()
 
         val other = RefreshRequest(window, Token(NodeId.random(), 1), Duration.ofSeconds(10))
-        awaitCondition("refresh token released") {
-            val read = Suspending.await { memory.store("core").read("cocache:core:k", null, other) }
-            read is RemoteRead.Hit && read.refreshGranted
-        }
+        val read = Suspending.await { memory.store("core").read("cocache:core:k", null, other) }
+        (read is RemoteRead.Hit && read.refreshGranted).assert().withFailMessage { "refresh token held: $read" }.isTrue()
     }
 
     /**
      * 异步写入的 L1 命令尚未送达时关闭运行时：写入照常做完（修改 L1、第二次递增与淘汰 L2），调用方以关闭失败。
+     * `close` 等到写入做完才返回（K17）。
      */
     @Test
     fun closingTheRuntimeMidWriteStillFinishesTheWrite() {
@@ -329,8 +567,12 @@ class CoherentEngineCoreTest {
         }
         val write = cache.async().put("k", "v")
         issued.awaitOrFail("put issued")
-        closing.close()
+        // 关闭取消作用域之后、等待在途步骤期间，写入的命令才送达
+        val closer = fork("closer") { closing.close() }
+        awaitCondition("close waiting") { closer.parked || !closer.thread.isAlive }
         deliver.countDown()
+        closer.join()
+        write.isDone.assert().withFailMessage { "close returned before the write finished." }.isTrue()
         val failure = failureOf(write)
         failure.assert().isInstanceOf(IllegalStateException::class.java)
         failure?.message.assert().isEqualTo("CacheRuntime closed.")
@@ -518,5 +760,12 @@ class CoherentEngineCoreTest {
         failure.assert().isInstanceOf(CacheReadException::class.java)
         failure?.cause.assert().isInstanceOf(IllegalStateException::class.java)
         failure?.cause?.message.assert().endsWith(".read() completed with null.")
+    }
+
+    private companion object {
+        /**
+         * 合并到同一次加载的调用方个数（实验 E4）。
+         */
+        const val CALLERS = 8
     }
 }

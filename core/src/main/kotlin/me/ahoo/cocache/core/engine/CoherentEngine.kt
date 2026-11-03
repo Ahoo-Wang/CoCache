@@ -19,6 +19,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.future
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeoutOrNull
@@ -49,6 +50,7 @@ import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.LoadOperation
+import me.ahoo.cocache.core.SourceLoadCancelledException
 import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.Futures
@@ -655,8 +657,30 @@ internal class CoherentEngine<K : Any, V : Any>(
      *   引擎的超时以私有哨兵值完成（JDK 的延迟线程触发），与数据源自己抛出的 `TimeoutException` 区分开（A8）。
      *
      * 同步变体的重入由 SingleFlight 的拥有线程守卫；异步变体在别的线程上继续，另以 [SingleFlight.loading] 守卫这些 key。
+     *
+     * 数据源自己以取消结束（抛出或以 `CancellationException` 完成）时转为 [SourceLoadCancelledException]（[sourceCancellation]）。
      */
     private suspend fun <R> invoke(
+        source: AsyncSource<K, V>,
+        storageKeys: Collection<String>,
+        native: (AsyncCacheLoader<K, V>) -> CompletionStage<out R>,
+        blocking: (CacheLoader<K, V>) -> R
+    ): R = try {
+        invokeSource(source, storageKeys, native, blocking)
+    } catch (e: CancellationException) {
+        throw sourceCancellation(e)
+    }
+
+    /**
+     * 数据源自己的取消（其中的 `withTimeout`、被 HTTP 客户端取消的 future）是普通的回源失败（RFC 0005 第三轮 K5，同 RFC 0004）：
+     * 当前协程仍处于活动状态时转为 [SourceLoadCancelledException]，与其它失败一样交给合并到这次加载的全部调用方。
+     * 原样传出的话，引擎各处会把它当作本协程被取消，跟随者会各自回源，挂起的调用方会把它当作自己被取消。
+     * 当前协程已被取消（运行时关闭、执行器拒绝派发、同步变体的线程被中断）时，它就是这次取消，原样传出。
+     */
+    private suspend fun sourceCancellation(error: CancellationException): Throwable =
+        if (currentCoroutineContext().isActive) SourceLoadCancelledException(name, error) else error
+
+    private suspend fun <R> invokeSource(
         source: AsyncSource<K, V>,
         storageKeys: Collection<String>,
         native: (AsyncCacheLoader<K, V>) -> CompletionStage<out R>,

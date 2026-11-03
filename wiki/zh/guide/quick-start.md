@@ -223,7 +223,7 @@ val users: Cache<String, User> = runtime.create(
     }
 )
 
-// 关闭时：先关缓存，再关后端
+// 关闭时：先关运行时（它会等待在途的 Redis 步骤），再关后端
 runtime.close()
 backend.close()
 ```

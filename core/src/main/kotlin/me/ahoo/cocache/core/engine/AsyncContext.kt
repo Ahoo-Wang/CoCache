@@ -13,19 +13,25 @@
 
 package me.ahoo.cocache.core.engine
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.future.future
+import kotlinx.coroutines.job
 import me.ahoo.cocache.core.internal.ExecutionMode
 import me.ahoo.cocache.core.internal.Futures
+import java.time.Duration
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 
 /**
  * 异步路径的执行资源（RFC 0004 §5.1）。
@@ -33,6 +39,7 @@ import java.util.concurrent.RejectedExecutionException
  * @param executor 异步执行器：只运行短小的非阻塞续接（解码、L2 填充、发出下一条 L1 命令、调用 `loadAsync`）
  * @param blocking 阻塞执行器：异步路径上的同步 loader 只在这里执行
  * @param dispatcher 运行时作用域的调度器；`null` 时为 [EngineDispatcher]（生产）。确定性仿真传入测试调度器（RFC 0005 §4.10）
+ * @param drainTimeout 关闭时等待作用域中在途步骤结束的上限（[close]）；`0` 表示不等待（手动推进执行器的测试）
  *
  * 协程核心（RFC 0005 §4.4）的异步变体运行在 [scope] 中：调度器把任务交给 [executor]（[EngineDispatcher]），`SupervisorJob` 让一次加载的失败不影响其它加载；
  * 共享加载在这里执行，调用方被取消只结束它自己的等待。运行时关闭时取消它。
@@ -41,6 +48,7 @@ internal class AsyncContext(
     val executor: Executor,
     val blocking: Executor,
     dispatcher: CoroutineDispatcher? = null,
+    private val drainTimeout: Duration = DRAIN_TIMEOUT,
 ) : AutoCloseable {
     /**
      * 运行时作用域：协程核心的异步变体与共享加载在这里运行。
@@ -80,13 +88,46 @@ internal class AsyncContext(
         private set
 
     /**
-     * 取消运行时作用域：进行中的异步调用（含等待 lease、等待回源许可）在下一个挂起点以 [IllegalStateException] 失败
-     * （由运行时在关闭执行器之前调用）。
+     * 取消运行时作用域，再至多等待 [drainTimeout]，让作用域中的协程结束（由运行时在关闭执行器之前调用）。
+     *
+     * - 进行中的异步调用（含等待 lease、等待回源许可）在下一个挂起点以 [IllegalStateException] 失败。
+     * - 在途的不可取消步骤照常完成：L1 命令、令牌的释放、写入之后的补发广播与第二次递增、取消之后的收尾。
+     *   等待它们结束再返回（RFC 0005 第三轮 K17）：否则之后关闭的执行器与后端会让它们失败，其它节点陈旧到 `localMaxAge`，
+     *   lease 留到 `lease.ttl`。这些步骤的等待由存储的命令超时限定，上限只防止卡住的命令让关闭无限期等待。
+     * - 在异步执行器的线程上调用时不等待：调用方可能正是作用域中的协程（如异步结果的回调），等待只会等满上限。
+     * - 同步变体的调用在调用方线程上运行，不在作用域中，不等待。
      */
     override fun close() {
         closed = true
         scope.cancel("CacheRuntime closed.")
+        if (drainTimeout > Duration.ZERO && !Futures.onExecutor(executor)) {
+            awaitDrained(scope.coroutineContext.job)
+        }
+    }
+
+    private fun awaitDrained(job: Job) {
+        val drained = CountDownLatch(1)
+        job.invokeOnCompletion { drained.countDown() }
+        try {
+            if (!drained.await(drainTimeout.toNanos(), TimeUnit.NANOSECONDS)) {
+                log.warn {
+                    "CacheRuntime closed with ${job.children.count()} coroutines still running after $drainTimeout; " +
+                        "their L1 steps may fail once the backend is closed."
+                }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
     private fun closedError(): IllegalStateException = IllegalStateException("CacheRuntime closed.")
+
+    companion object {
+        private val log = KotlinLogging.logger {}
+
+        /**
+         * [close] 等待在途步骤的默认上限：容得下几条 L1 命令（Redis 后端的 `commandTimeout` 默认 2 s）。
+         */
+        val DRAIN_TIMEOUT: Duration = Duration.ofSeconds(5)
+    }
 }
