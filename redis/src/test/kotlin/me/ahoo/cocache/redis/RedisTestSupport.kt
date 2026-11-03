@@ -329,19 +329,6 @@ object RedisTestSupport {
     }
 
     /**
-     * 连接测试 Redis（单机或集群）的 5.x 迁移器。
-     */
-    fun migrator(
-        options: me.ahoo.cocache.redis.migration.CoCache5MigrationOptions = me.ahoo.cocache.redis.migration.CoCache5MigrationOptions()
-    ): me.ahoo.cocache.redis.migration.CoCache5Migrator {
-        val nodes = clusterNodes
-        if (nodes != null) {
-            return me.ahoo.cocache.redis.migration.CoCache5Migrator.cluster(nodes, options)
-        }
-        return me.ahoo.cocache.redis.migration.CoCache5Migrator.standalone(standaloneUri, options)
-    }
-
-    /**
      * 把匹配 [pattern] 的 key 的剩余寿命缩短 [duration]（缩到 0 及以下即删除）；永不过期的 key 不变。
      */
     fun shiftTtl(pattern: String, duration: Duration) {
