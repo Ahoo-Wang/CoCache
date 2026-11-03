@@ -538,7 +538,7 @@ val users: Cache<String, User> = runtime.create(
 ### 9.5 Spring Cache 与事务
 
 - `CoCacheSpringCacheManager` 只暴露运行时中已创建的缓存，不按名称自动创建。
-- 负缓存视为未命中（否则 `@Cacheable` 永远不调用方法）；`put(k, null)` 映射为 `invalidate`；`evict` = `invalidate`；`clear` 只清本节点 L2（L1 是共享存储）。
+- 负缓存视为未命中（否则 `@Cacheable` 永远不调用方法）；`put(k, null)` 映射为 `invalidate`；`evict` = `invalidate`；`evictIfPresent`（`@CacheEvict(beforeInvocation = true)`）立即 `invalidate`，事务内同时登记到 `TransactionalInvalidator`（见本节最后一条）；`clear` 只清本节点 L2（L1 是共享存储）。
 - `@Cacheable(sync = true)` 经引擎的 `get(key, loader)` 回源，受 lease 与失效戳保护。不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → `put`”，`put` 是无条件写入，没有这层保护；需要上述一致性保证时用 `sync = true`。
 - **启动检查**（`SpringCacheSyncCheck`，`SmartInitializingSingleton`）：存在 `CacheOperationSource`（`@EnableCaching`）时，按 bean 类型（不实例化 bean；CGLIB 取父类，JDK 代理取已创建单例的目标类）解析缓存操作，含 `@CacheConfig` 的类级缓存名。指向 CoCache 缓存名（已创建与已声明）且 `sync = false` 的 `CacheableOperation` 记录告警（`类名#方法名` 与缓存名）；`cocache.spring-cache.require-sync=true` 时启动失败。只按缓存名判断；指定了其它 `cacheManager` 或自定义 `cacheResolver` 的操作跳过。没有 `@EnableCaching`，或不存在名为 `cocacheCacheManager` 的 bean（用户以其它名字声明了自己的 `CacheManager`，starter 的管理器退让）时不做任何事。
 - `retrieve` 经缓存的异步视图（RFC 0004 §6）：`retrieve(key)` 是异步 `lookup`，L2 命中返回已完成的 future（不切换线程），负缓存以 `null` 完成；`retrieve(key, loader)`（响应式 / `CompletableFuture` 方法上的 `sync = true`）是异步 `get(key, AsyncCacheLoader)`，与 `get(key, loader)` 一样经引擎受 lease 与失效戳保护的路径回源，**没有线程等待**异步 loader；方法体（`valueLoader.get()`，可能先阻塞再返回）派发到运行时的阻塞执行器（`CacheRuntime.blockingExecutor`）执行，从不在异步执行器上执行（6.1 中它在 retrieve 执行器上，同样不在调用方线程上，看不到调用方的 ThreadLocal）；`retrieve(key)` 与 `retrieve(key, loader)` 的失败都以原始异常完成。因此不再需要单独的 retrieve 执行器，嵌套的异步 `sync = true` 也不再有内层任务排在外层任务之后的死锁条件。`CoCacheSpringCacheManager(runtime, executor)` 构造函数、`CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 与 `cocache.spring-cache.retrieve-executor` 自 6.3 弃用（执行器被忽略），7.0 删除；`CoCacheSpringCache(cache, admin, executor)` 的执行器执行方法体。
@@ -547,11 +547,14 @@ val users: Cache<String, User> = runtime.create(
 - `TransactionalInvalidator`：事务内调用时登记到当前事务，没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己结束之后失效。同一事务内对同一缓存的失效合并为一次 `invalidateAll`（去重，保持登记顺序）。
   - **提交**：在 `afterCommit` 中失效，异常（`invalidate-failure: throw`，没有数据源的缓存默认如此，§7）抛给调用方。
   - **回滚或提交结果未知**：在 `afterCompletion` 中同样失效。同步 API 的 loader 在调用方线程上参与事务，事务内的读穿透可能已经凭 lease 把未提交的数据写入 L1；不失效的话，全集群在 `ttl` 内读到从未提交的数据。多余的失效无害。
+  - **回滚到 savepoint**（`NESTED`）：Spring 只调用同步的 `savepointRollback`（6.2 起），不调用 `afterCompletion`，外层之后提交时报告 `STATUS_COMMITTED`。嵌套段内读穿透凭 lease 写入 L1 的未提交数据因此在外层结束之前对全集群（包括外层事务自己）可见。`savepointRollback` 立即失效到目前为止登记的全部 key（不按 savepoint 分段：外层登记的 key 多失效一次，无害），不标记为已执行，登记保留，事务结束时照常再失效。Spring 在把数据库回滚到 savepoint **之前**调用它，抛出会跳过数据库的回滚，所以这里的失效失败只记录日志、不影响其余缓存，由事务结束时的失效兜底并照常报告。
   - **迟到的登记不丢失**。Spring 对同步列表的快照调用 `afterCommit`：在其它同步的 `afterCommit` 中登记时，本事务的失效已经执行过则立即失效（`flushed` 标记），本事务第一次登记（新注册的同步收不到 `afterCommit`）则在 `afterCompletion` 中失效。排在前面的同步的 `afterCommit` 抛出、后面的 `afterCommit` 都不再调用时，同样在 `afterCompletion` 中失效。`afterCompletion` 中（`@TransactionalEventListener(AFTER_COMMIT)` 在这里执行）同步已经清除，立即失效。每个事务只执行一次，`afterCompletion` 是兜底。
   - **一个缓存失败不影响其余缓存**：逐个缓存执行，全部执行之后抛出第一个异常，其余作为它的 suppressed。`afterCompletion` 中的异常由 Spring 记录日志，不抛给调用方，也不掩盖回滚的原因。
   - **只支持线程绑定的同步**（`PlatformTransactionManager`）。响应式事务（`ReactiveTransactionManager`，如 R2DBC，包括 `@Transactional` 挂起函数）的同步在 Reactor 上下文中，`TransactionalInvalidator` 看不到，会立即失效，即在提交之前；这类事务由调用方在事务结束之后失效。不告警：同步调用无法识别响应式事务（它们不设置线程绑定的标记），而“`isActualTransactionActive()` 为真但同步未激活”正是 `afterCompletion` 中的状态，会误报。
-  - 测试：`cocache-spring` 的 `TransactionalInvalidatorTest`，事务管理器是 `AbstractPlatformTransactionManager` 的内存实现（写入在提交之前只对本事务可见）。
+  - 测试：`cocache-spring` 的 `TransactionalInvalidatorTest` 与 `CoCacheSpringCacheTest`，事务管理器是 `AbstractPlatformTransactionManager` 的内存实现（`InMemoryTransactionManager`：写入在提交之前只对本事务可见，支持挂起与 savepoint）；starter 的 `TransactionalCacheTest` 经装配的 `TransactionAwareCacheManagerProxy` 与 `cocacheTransactionalInvalidator` 验证 `@CacheEvict(beforeInvocation = true)` 与回滚到 savepoint。
 - 有 spring-tx 时 CacheManager 的 `@CacheEvict` / `@CachePut` 同样推迟到提交之后。这由 Spring 的 `TransactionAwareCacheDecorator` 执行，回滚时不执行：同一事务内先 `@CacheEvict` 再 `@Cacheable(sync = true)` 读穿透，回滚之后未提交的数据留在 L1 直到 `ttl`。这种写法改用 `TransactionalInvalidator`。
+  - **`@CacheEvict(beforeInvocation = true)`**：Spring 对它调用 `evictIfPresent`，装饰器直接委托，按 Spring 的契约立即执行。只在提交之前失效会丢失失效（G2）：提交之前并发的读穿透把已提交的旧值经 lease 写回 L1，提交之后再没有失效。因此 `CoCacheSpringCache.evictIfPresent` 在事务内先登记到 `TransactionalInvalidator`（`CoCacheSpringCache` 自己的实例，不是 `cocacheTransactionalInvalidator` bean），再立即失效：提交、回滚、回滚到 savepoint 时各再失效一次，多余的失效无害；先登记，立即失效抛出并被 `CacheErrorHandler` 吞掉时，事务结束之后的失效照常执行。没有事务、或 spring-tx 不在类路径上时只立即失效一次。
+  - **已知限制**：装饰器推迟的 `put`（`@CachePut`）只注册 `afterCommit`，看不到回滚到 savepoint：嵌套段内的 `@CachePut` 在嵌套段回滚到 savepoint 之后，仍在外层提交时写入从未提交的值，直到 `ttl`。嵌套事务内改用 `@CacheEvict`。
 
 ### 9.6 Spring AOT 与原生镜像
 

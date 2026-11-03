@@ -5,6 +5,18 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布
+
+**模块组：** `me.ahoo.cocache` · 计划作为 6.10.x 修订版本发布：修复两条丢失失效的 Spring 事务路径，由 RFC 0005 第三轮审查发现。API、线格式与频道都不变，可以与任何 6.x 实例共用 Redis，逐台升级。
+
+### 修复：Spring 事务不再丢失失效
+
+见 [Spring Cache 的事务](./spring-cache.md#transactions)。
+
+- **事务内的 `@CacheEvict(beforeInvocation = true)`**：Spring 对它调用 `evictIfPresent`，Spring 的 `TransactionAwareCacheDecorator` 直接委托这个调用，所以 key 只在提交之前失效。驱逐与提交之间，另一个实例上的读取可能把已提交的旧行重新加载进 Redis，之后再没有失效，所有实例在 `ttl` 内都读到旧值。`evictIfPresent` 仍按 Spring 的要求立即失效，事务内现在还把 key 登记到 `TransactionalInvalidator`，提交、回滚或回滚到 savepoint 时再失效一次。没有事务或没有 `spring-tx` 时行为不变。
+- **回滚到 savepoint（`NESTED`）**：嵌套事务回滚到 savepoint 时，Spring 不对外层事务的同步调用 `afterCompletion`，外层之后提交时报告的是提交。嵌套段内的读取放进 Redis 的未提交行，在外层事务结束之前对所有实例（包括外层事务自己）可见。`TransactionalInvalidator` 现在处理 `savepointRollback`（Spring 6.2 起）：失效本事务到目前为止登记的全部 key，登记保留，事务结束时再失效一次。这里的失败只记录日志、不抛出：Spring 在把数据库回滚到 savepoint 之前调用 `savepointRollback`，抛出会跳过这次回滚。
+- **仍不覆盖的情形**：嵌套事务内的 `@CachePut`，在嵌套事务回滚到 savepoint 之后，仍会在外层事务提交时写入它的值：Spring 的装饰器把 put 推迟到 `afterCommit`，看不到回滚到 savepoint。嵌套事务内请用 `@CacheEvict`。
+
 ## v6.10.0（当前版本）
 
 **模块组：** `me.ahoo.cocache` · 次版本（新增一项配置与 `CacheRuntime.policy`），也是 6.x 的最后一个功能版本：之后的 6.x 版本只修缺陷。修复 6.8.0 架构审查中余下的 6.x 项，并隔离失败的失效监听器。没有删除任何 API。Redis 线格式与失效频道不变，可以与任何 6.x 实例共用 Redis，逐台升级。
