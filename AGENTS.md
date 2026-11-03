@@ -92,7 +92,9 @@ Read `docs/architecture.md` before you touch coherence, storage, codec, proxy, o
   |---------------|--------|
   | `CoherenceBackend` (L1 protocol and invalidation channel) | `BackendProtocolSpec` |
   | The backend under real engines (two runtimes sharing one backend) | `EngineSpec` and `SetEngineSpec` |
-  | Cross-node interleavings and cluster-wide counts (three runtimes); behavior under L1 faults | `MultiNodeSpec` and `FaultSpec` (override `disconnect()` if the backend has connections) |
+  | Cross-node interleavings and cluster-wide counts (three runtimes); behavior under L1 faults | `MultiNodeSpec` and `FaultSpec` (override `disconnect()` and `commandCancellation()` if the backend has connections) |
+
+  Every spec declares `expectedCapabilities` (no default) and fails closed when the store's capability accessors differ from it; capability-gated cases skip only for undeclared capabilities.
 
   `HookedBackend` wraps any backend to inject failures and orchestrate races. Expiry is millisecond-precise, so TTL assertions need no drift offset.
 - Redis tests use `RedisTestSupport`. It picks standalone (`SPRING_DATA_REDIS_HOST` / `SPRING_DATA_REDIS_PORT`, default `localhost:6379`) or Cluster from `SPRING_DATA_REDIS_CLUSTER_NODES`, simulates time with `shiftTtl`, and kills this test's Pub/Sub connection with `killPubSubConnections` to force a reset. To stall a backend's commands, build it on `RedisTestSupport.pausable()` and call `pause`. Never send a server-wide `CLIENT PAUSE`: other test tasks running in parallel and other local builds share that Redis, and their 2 s command timeouts fail. `subscribe` returns only after the subscription is acknowledged and `onReset` has run, so a late reset can't clear L2 mid-test.

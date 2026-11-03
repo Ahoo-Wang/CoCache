@@ -185,9 +185,14 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         }
     }
 
+    /**
+     * 各类存储调用的次数（单 key 读取、批量读取、填充、单 key 覆盖写入、批量覆盖写入）：在调用被包装的存储之前计数，
+     * 故障开关拒绝的调用不计。用例用它等到某个调用已经到达被包装的存储。
+     */
     val reads = AtomicInteger()
     val readAlls = AtomicInteger()
     val fills = AtomicInteger()
+    val puts = AtomicInteger()
     val putAlls = AtomicInteger()
 
     override fun store(namespace: String): L1Store = HookedStore(delegate.store(namespace))
@@ -291,6 +296,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             val hook = afterPut?.let { { _: Unit -> it(key) } }
             hooked(hook) {
                 guard("put", fail = failWrites)
+                puts.incrementAndGet()
                 delegate.put(key, envelope, ttl, frame)
             }
         }

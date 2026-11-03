@@ -65,8 +65,9 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * 按版本有序的写入的 TCK（6.8，`docs/architecture.md` §6.5）：两个节点（运行时）共享同一个后端。
  * 只适用于存储提供按版本写入能力面（`L1Store.versioned()`）的后端；不支持版本的后端不必继承它（声明带版本的缓存会在创建时失败）。
+ * 继承了而没有声明 [L1Capability.VERSIONED] 时，除能力声明的检查之外的用例都跳过。
  *
- * - 协议（直接调用 [L1Store] 与它的能力面）：版本随 fill / put / putAll 保存、读取原样返回（putIfMatch 写入没有版本的值）；按版本写入销毁 lease、填充因此被拒绝；
+ * - 协议（直接调用 [L1Store] 与它的能力面）：版本随 fill / put / putAll 保存、读取原样返回（声明了条件读写时，putIfMatch 写入没有版本的值）；按版本写入销毁 lease、填充因此被拒绝；
  *   带版本的内容不授予刷新令牌、不被回收；墓碑读作负缓存；版本按有符号 64 位整数比较。
  * - 引擎（经 [access]，同步或异步视图）：有序、相等版本幂等、旧版本拒绝且不广播不改寿命、墓碑挡住迟到的旧版本、
  *   lease 持有者回源期间落地的按版本写入胜出、回源保存版本且与随后的写入比较、并发写入收敛到最高版本、结果未知时重放安全。
@@ -76,6 +77,12 @@ import java.util.concurrent.atomic.AtomicInteger
 @Suppress("LargeClass", "TooManyFunctions")
 abstract class VersionedSpec {
     protected abstract fun createBackend(): CoherenceBackend
+
+    /**
+     * 后端的存储提供的可选能力（RFC 0005 §4.3），没有默认值：规范断言存储提供的能力与它完全相同（多出来的也算失败）、
+     * 每个访问器稳定。用例都要求 [L1Capability.VERSIONED]，个别用例另要求 [L1Capability.SETS]。
+     */
+    protected abstract val expectedCapabilities: Set<L1Capability>
 
     /**
      * 引擎与后端共用的时钟。
@@ -163,15 +170,27 @@ abstract class VersionedSpec {
             keys.mapNotNull { key -> database[key]?.let { key to it } }.toMap()
     }
 
+    /**
+     * 用例需要的能力：[expectedCapabilities] 缺少其中任何一个时跳过这个用例。
+     */
+    protected fun assumeDeclared(vararg capabilities: L1Capability) =
+        CapabilityDeclaration.assume(expectedCapabilities, capabilities)
+
+    /**
+     * 本用例的带版本缓存的声明。没有声明 [L1Capability.VERSIONED] 时跳过这个用例（引擎用例都先经它创建缓存）。
+     */
     protected fun spec(
         policy: CachePolicy = policy(),
         block: CacheSpec.Builder<String, String>.() -> Unit = {}
-    ): CacheSpec<String, String> = cacheSpec(cacheName) {
-        codec = TestCodec
-        versionedLoader = this@VersionedSpec.loader
-        this.policy = policy
-        block()
-        access.source(this)
+    ): CacheSpec<String, String> {
+        assumeDeclared(L1Capability.VERSIONED)
+        return cacheSpec(cacheName) {
+            codec = TestCodec
+            versionedLoader = this@VersionedSpec.loader
+            this.policy = policy
+            block()
+            access.source(this)
+        }
     }
 
     protected fun CacheRuntime.cache(spec: CacheSpec<String, String> = spec()): Cache<String, String> = access.cache(
@@ -182,7 +201,21 @@ abstract class VersionedSpec {
 
     protected fun storageKey(key: String) = "cocache:$cacheName:$key"
 
-    protected fun store(): L1Store = backend.delegate.store(cacheName)
+    /**
+     * 被测后端的存储（不经钩子）。没有声明 [L1Capability.VERSIONED] 时跳过这个用例（协议用例都先经它取得存储）。
+     */
+    protected fun store(): L1Store {
+        assumeDeclared(L1Capability.VERSIONED)
+        return backend.delegate.store(cacheName)
+    }
+
+    /**
+     * 存储提供的能力与 [expectedCapabilities] 完全相同（多出来的也算失败），每个访问器每次返回同一个对象或总是 `null`。
+     */
+    @Test
+    fun storeProvidesExactlyTheDeclaredCapabilities() {
+        CapabilityDeclaration.verify(backend.delegate, expectedCapabilities)
+    }
 
     /**
      * 不经过引擎直接读 L1。
@@ -231,12 +264,14 @@ abstract class VersionedSpec {
         remoteVersioned("all").assert().isEqualTo(Versioned("v3", 3))
         store.put(storageKey("plain"), scalar("p"), null, frame("plain"))
         remoteVersioned("plain").assert().isEqualTo(Versioned("p", Versioned.NO_VERSION))
-        // 条件写入写入没有版本的值（信封自带的版本被忽略）
-        requireNotNull(
-            store.conditional()
-        ).putIfMatch(storageKey("put"), Digest.of(scalar("v9")), scalar("m", 5), null, frame("put"))
-            .assert().isEqualTo(L1ConditionalWrite.Written)
-        remoteVersioned("put").assert().isEqualTo(Versioned("m", Versioned.NO_VERSION))
+        if (L1Capability.CONDITIONAL in expectedCapabilities) {
+            // 条件写入写入没有版本的值（信封自带的版本被忽略）
+            requireNotNull(
+                store.conditional()
+            ).putIfMatch(storageKey("put"), Digest.of(scalar("v9")), scalar("m", 5), null, frame("put"))
+                .assert().isEqualTo(L1ConditionalWrite.Written)
+            remoteVersioned("put").assert().isEqualTo(Versioned("m", Versioned.NO_VERSION))
+        }
     }
 
     /**
@@ -769,6 +804,7 @@ abstract class VersionedSpec {
      */
     @Test
     fun unreadableContentRefusesVersionedWrites() {
+        assumeDeclared(L1Capability.VERSIONED, L1Capability.SETS)
         val cache = nodeA.cache()
         Suspending.await {
             requireNotNull(

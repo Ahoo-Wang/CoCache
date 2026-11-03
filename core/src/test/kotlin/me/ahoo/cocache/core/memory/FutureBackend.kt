@@ -39,6 +39,7 @@ import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.api.spi.VersionedL1Store
+import me.ahoo.cocache.test.CommandCancellation
 import me.ahoo.cocache.test.Suspending
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -46,24 +47,69 @@ import java.util.concurrent.CompletableFuture
 /**
  * 以 Java 实现者的形状暴露被包装的后端（RFC 0005 §4.3）：存储是 [FutureL1Store]、通道是 [FutureInvalidationChannel]，
  * 分别经 [FutureL1Store.adapt] 与 [FutureInvalidationChannel.adapt] 交给引擎。每个操作在调用线程上执行被包装的挂起方法
- * （内存后端从不挂起），以已完成或已失败的 future 返回。
+ * （内存后端从不挂起），以已完成或已失败的 future 返回；[cancellation] 期间返回尚未完成、随后被取消的 future。
  */
 class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by backend {
     override val channel: InvalidationChannel = FutureInvalidationChannel.adapt(FutureChannel(backend.channel))
 
     override fun store(namespace: String): L1Store = FutureL1Store.adapt(FutureStore(backend.store(namespace)))
 
+    private val lock = Any()
+    private var mode = Mode.NORMAL
+    private val held = ArrayList<CompletableFuture<*>>()
+
+    private enum class Mode { NORMAL, HOLDING, CANCELLING }
+
+    /**
+     * 底层命令被取消的故障（`FaultSpec.commandCancellation`）：[CommandCancellation.hold] 之后存储的每个操作返回尚未完成的 future，
+     * 操作不执行（相当于尚未写出的命令）；[CommandCancellation.cancel] 取消这些 future，此后到 [CommandCancellation.close]
+     * 之前的操作返回已取消的 future。没有执行的操作不取得令牌，没有要释放的。通道不受影响。
+     */
+    fun cancellation(): CommandCancellation = object : CommandCancellation {
+        override fun hold() = synchronized(lock) { mode = Mode.HOLDING }
+
+        override fun cancel() {
+            val pending = synchronized(lock) {
+                mode = Mode.CANCELLING
+                held.toList().also { held.clear() }
+            }
+            pending.forEach { it.cancel(false) }
+        }
+
+        override fun close() = synchronized(lock) { mode = Mode.NORMAL }
+    }
+
+    /**
+     * 按 [mode] 返回 future：正常时就地执行 [block]，否则返回停住的或已取消的 future（[block] 不执行）。
+     */
+    private fun <T> supplying(block: suspend () -> T): CompletableFuture<T> {
+        synchronized(lock) {
+            when (mode) {
+                Mode.NORMAL -> Unit
+                Mode.HOLDING -> return CompletableFuture<T>().also { held.add(it) }
+                Mode.CANCELLING -> return CompletableFuture<T>().apply { cancel(false) }
+            }
+        }
+        return completed(block)
+    }
+
+    private fun completing(block: suspend () -> Unit): CompletableFuture<Void?> = supplying {
+        block()
+        null
+    }
+
     private class FutureChannel(private val channel: InvalidationChannel) : FutureInvalidationChannel {
         override fun subscribe(namespace: String, listener: InvalidationListener): Subscription =
             channel.subscribe(namespace, listener)
 
-        override fun publish(namespace: String, frame: ByteArray): CompletableFuture<Void?> = completing {
+        override fun publish(namespace: String, frame: ByteArray): CompletableFuture<Void?> = completed {
             channel.publish(namespace, frame)
+            null
         }
     }
 
     @Suppress("TooManyFunctions")
-    private class FutureStore(private val store: L1Store) : FutureL1Store {
+    private inner class FutureStore(private val store: L1Store) : FutureL1Store {
         private val conditional = store.conditional()?.let { FutureConditional(it) }
         private val versioned = store.versioned()?.let { FutureVersioned(it) }
         private val sets = store.sets()?.let { FutureSets(it) }
@@ -112,7 +158,7 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
         override fun sets(): FutureSetL1Store? = sets
     }
 
-    private class FutureConditional(private val surface: ConditionalL1Store) : FutureConditionalL1Store {
+    private inner class FutureConditional(private val surface: ConditionalL1Store) : FutureConditionalL1Store {
         override fun readIfChanged(
             key: String,
             known: Digest?,
@@ -137,7 +183,7 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
         }
     }
 
-    private class FutureVersioned(private val surface: VersionedL1Store) : FutureVersionedL1Store {
+    private inner class FutureVersioned(private val surface: VersionedL1Store) : FutureVersionedL1Store {
         override fun putIfNewer(
             key: String,
             envelope: Envelope,
@@ -155,7 +201,7 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
         }
     }
 
-    private class FutureSets(private val surface: SetL1Store) : FutureSetL1Store {
+    private inner class FutureSets(private val surface: SetL1Store) : FutureSetL1Store {
         override fun addMembers(
             key: String,
             members: Collection<ByteArray>,
@@ -169,16 +215,14 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
     }
 
     private companion object {
+        /**
+         * 在调用线程上执行 [block]，以已完成或已失败的 future 返回。
+         */
         @Suppress("TooGenericExceptionCaught")
-        fun <T> supplying(block: suspend () -> T): CompletableFuture<T> = try {
+        fun <T> completed(block: suspend () -> T): CompletableFuture<T> = try {
             CompletableFuture.completedFuture(Suspending.await(block))
         } catch (e: Throwable) {
             CompletableFuture.failedFuture(e)
-        }
-
-        fun completing(block: suspend () -> Unit): CompletableFuture<Void?> = supplying {
-            block()
-            null
         }
     }
 }
