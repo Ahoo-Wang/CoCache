@@ -72,7 +72,8 @@ abstract class FaultSpec {
     protected open fun disconnect(): AutoCloseable? = null
 
     /**
-     * 访问缓存的方式：同步 API（默认），或经异步视图（[AsyncFaultSpec]，RFC 0004 §10.1）。
+     * 访问缓存的方式：同步 API（默认），或某个变体（如 [CacheAccess.ASYNC]）。后端实现者只需要默认的 [CacheAccess.SYNC]：
+     * 变体（同步、异步、挂起）是核心的语义，由核心自己的测试覆盖（RFC 0005 §4.10）；仓库内覆盖它，在不同变体下运行本规范。
      */
     protected open val access: CacheAccess = CacheAccess.SYNC
 

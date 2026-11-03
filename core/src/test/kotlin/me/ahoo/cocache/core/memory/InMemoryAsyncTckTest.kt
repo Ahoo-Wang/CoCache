@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.memory
 
+import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.InvalidationChannel
@@ -21,21 +22,25 @@ import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.clock.ManualClock
+import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.AsyncBackendProtocolSpec
-import me.ahoo.cocache.test.AsyncEngineSpec
-import me.ahoo.cocache.test.AsyncFaultSpec
-import me.ahoo.cocache.test.AsyncMultiNodeSpec
-import me.ahoo.cocache.test.AsyncSetEngineSpec
-import me.ahoo.cocache.test.AsyncVersionedSpec
 import me.ahoo.cocache.test.CacheAccess
+import me.ahoo.cocache.test.FaultSpec
+import me.ahoo.cocache.test.MultiNodeSpec
+import me.ahoo.cocache.test.SetEngineSpec
+import me.ahoo.cocache.test.VersionedSpec
+import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
 /**
- * 异步视图的 TCK（RFC 0004 §10.1）：内存后端原生异步；[SyncOnlyBackend] 只暴露同步 SPI，验证引擎经阻塞执行器的适配。
+ * 异步变体的用例（RFC 0005 §4.10）：基础规范经 `override val access = CacheAccess.ASYNC` 改由 `async()` 视图读写，
+ * 引擎另加 [AsyncVariantEngineCases] 的专有用例。内存后端原生异步；[SyncOnlyBackend] 只暴露同步 SPI，验证引擎经阻塞执行器的适配。
  */
 class InMemoryAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
     private val clock = ManualClock()
@@ -45,9 +50,11 @@ class InMemoryAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
     override fun elapse(duration: Duration) = clock.advance(duration)
 }
 
-class InMemoryAsyncEngineTest : AsyncEngineSpec() {
+class InMemoryAsyncEngineTest : AsyncVariantEngineCases() {
     private val manualClock = ManualClock()
     private lateinit var memory: InMemoryBackend
+
+    override val access: CacheAccess = CacheAccess.ASYNC
 
     override val clock: CacheClock = manualClock
 
@@ -61,7 +68,7 @@ class InMemoryAsyncEngineTest : AsyncEngineSpec() {
 /**
  * 默认的用户路径：经异步视图读写，声明中的同步数据源保留（在阻塞执行器上执行）。
  */
-class InMemoryAsyncWithSyncSourceEngineTest : AsyncEngineSpec() {
+class InMemoryAsyncWithSyncSourceEngineTest : AsyncVariantEngineCases() {
     private val manualClock = ManualClock()
     private lateinit var memory: InMemoryBackend
 
@@ -79,10 +86,12 @@ class InMemoryAsyncWithSyncSourceEngineTest : AsyncEngineSpec() {
 /**
  * 每个 L1 结果都在另一个线程上送达（模拟真实客户端的 I/O 线程），使异步路径的每一步都切换到异步执行器。
  */
-class InMemoryHoppingAsyncEngineTest : AsyncEngineSpec() {
+class InMemoryHoppingAsyncEngineTest : AsyncVariantEngineCases() {
     private val manualClock = ManualClock()
     private lateinit var memory: InMemoryBackend
     private val io = Executors.newSingleThreadExecutor { Thread(it, "tck-hop-io").apply { isDaemon = true } }
+
+    override val access: CacheAccess = CacheAccess.ASYNC
 
     override val clock: CacheClock = manualClock
 
@@ -105,9 +114,11 @@ class InMemoryHoppingAsyncEngineTest : AsyncEngineSpec() {
     override fun simulateReconnect() = memory.reconnect()
 }
 
-class SyncOnlyBackendAsyncEngineTest : AsyncEngineSpec() {
+class SyncOnlyBackendAsyncEngineTest : AsyncVariantEngineCases() {
     private val manualClock = ManualClock()
     private lateinit var memory: InMemoryBackend
+
+    override val access: CacheAccess = CacheAccess.ASYNC
 
     override val clock: CacheClock = manualClock
 
@@ -125,8 +136,39 @@ class SyncOnlyBackendAsyncEngineTest : AsyncEngineSpec() {
     override fun simulateReconnect() = memory.reconnect()
 }
 
-class InMemoryAsyncSetEngineTest : AsyncSetEngineSpec() {
+class InMemoryAsyncSetEngineTest : SetEngineSpec() {
     private val manualClock = ManualClock()
+
+    override val access: CacheAccess = CacheAccess.ASYNC
+
+    override val clock: CacheClock = manualClock
+
+    override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock)
+
+    override fun elapse(duration: Duration) = manualClock.advance(duration)
+
+    @Test
+    fun unsupportedOperationsFailTheFutureInsteadOfThrowing() {
+        val engine = nodeA.create(setCacheSpec<String, String>(cacheName) { elementCodec = StringCodec })
+        val async = engine.async()
+        async.invalidate(
+            "k"
+        ).handle { _, e -> e }.join().assert().isInstanceOf(UnsupportedOperationException::class.java)
+        async.invalidateAll(
+            listOf("k")
+        ).handle { _, e -> e }.join().assert().isInstanceOf(UnsupportedOperationException::class.java)
+        async.get("k", AsyncCacheLoader { error("unused") }).handle { _, e -> e }.join()
+            .assert().isInstanceOf(UnsupportedOperationException::class.java)
+        async.get("k").join().assert().isEmpty()
+        async.sync().assert().isSameAs(engine)
+        engine.async().assert().isSameAs(async)
+    }
+}
+
+class InMemoryAsyncMultiNodeTest : MultiNodeSpec() {
+    private val manualClock = ManualClock()
+
+    override val access: CacheAccess = CacheAccess.ASYNC
 
     override val clock: CacheClock = manualClock
 
@@ -135,18 +177,10 @@ class InMemoryAsyncSetEngineTest : AsyncSetEngineSpec() {
     override fun elapse(duration: Duration) = manualClock.advance(duration)
 }
 
-class InMemoryAsyncMultiNodeTest : AsyncMultiNodeSpec() {
+class InMemoryAsyncFaultTest : FaultSpec() {
     private val manualClock = ManualClock()
 
-    override val clock: CacheClock = manualClock
-
-    override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock)
-
-    override fun elapse(duration: Duration) = manualClock.advance(duration)
-}
-
-class InMemoryAsyncFaultTest : AsyncFaultSpec() {
-    private val manualClock = ManualClock()
+    override val access: CacheAccess = CacheAccess.ASYNC
 
     override val clock: CacheClock = manualClock
 
@@ -169,8 +203,10 @@ class SyncOnlyBackend(private val delegate: CoherenceBackend) : CoherenceBackend
     override fun store(namespace: String): RemoteStore = object : RemoteStore by delegate.store(namespace) {}
 }
 
-class InMemoryAsyncVersionedTest : AsyncVersionedSpec() {
+class InMemoryAsyncVersionedTest : VersionedSpec() {
     private val manualClock = ManualClock()
+
+    override val access: CacheAccess = CacheAccess.ASYNC
 
     override val clock: CacheClock = manualClock
 
@@ -182,8 +218,10 @@ class InMemoryAsyncVersionedTest : AsyncVersionedSpec() {
 /**
  * 只实现同步 SPI 的后端：按版本写入经阻塞执行器（`BlockingAsyncStore.putIfNewerAsync`）。
  */
-class SyncOnlyBackendAsyncVersionedTest : AsyncVersionedSpec() {
+class SyncOnlyBackendAsyncVersionedTest : VersionedSpec() {
     private val manualClock = ManualClock()
+
+    override val access: CacheAccess = CacheAccess.ASYNC
 
     override val clock: CacheClock = manualClock
 

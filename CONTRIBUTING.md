@@ -40,7 +40,7 @@ Spring wiring code. It is the normative design and lists the invariants that eve
 |------|---------|-------|
 | Coding conventions and static analysis | Detekt + detekt-formatting (`config/detekt/detekt.yml`). Findings are uploaded to GitHub code scanning | CI · Static Analysis |
 | License headers | `checkLicenseHeader` (Apache-2.0 header in every source file and build script) | CI · Static Analysis, `check` |
-| Unit tests | JUnit 6, MockK, fluent-assert, shared TCK specs in `cocache-test` (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec` and their async variants `AsyncBackendProtocolSpec`, `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`) | CI · Test & Coverage |
+| Unit tests | JUnit 6, MockK, fluent-assert, shared TCK specs in `cocache-test` (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`, and `AsyncBackendProtocolSpec` for the async SPI); the async and suspending variants rerun them through `CacheAccess` | CI · Test & Coverage |
 | Integration tests | Real Redis service container (`cocache-redis`, `cocache-spring-boot-starter`) | CI · Test & Coverage |
 | Runtime compatibility | Artifacts compile for JDK 21; the full suite also runs on JDK 25 (`-PtestJavaVersion=25`) | CI · Test (JDK 25) |
 | Spring Boot baseline | Artifacts compile against the Spring Boot version in `gradle/libs.versions.toml`; the `cocache-redis`, starter, and example tests also run with the test runtime classpath forced to the latest Spring Boot 4.0.x dependencies (Lettuce 6.8, Spring Data Redis 4.0; `-PtestSpringBootVersion=4.0.8`) | CI · Test (Spring Boot 4.0) |
@@ -81,9 +81,8 @@ See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in
   - Covered: `cocache-api` (user API and SPI), the public types of `cocache-core` (including
     `JoinCacheProxies`, which the docs recommend for non-Spring join caches), `cocache-redis`,
     `cocache-codec-jackson`, `cocache-spring` and `cocache-coroutines`, the published TCK in `cocache-test`
-    (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, their async variants
-    `AsyncBackendProtocolSpec`, `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`,
-    `CacheAccess`, `HookedBackend`, `Concurrency`), the
+    (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`,
+    `AsyncBackendProtocolSpec`, `CacheAccess`, `HookedBackend`, `Concurrency`), the
     annotations and `CoCacheProperties` keys of the starter, metric names, endpoint paths and the wire
     format. Sealed types (`Lookup`, `RemoteRead`, `Envelope`) gain subtypes only in a MAJOR version.
   - Not covered: auto-configuration classes and other starter wiring (`CacheAssembler`,

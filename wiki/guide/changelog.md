@@ -42,6 +42,7 @@ description: Release history and notable changes for CoCache.
 
 ### TCK
 
+- **Breaking:** the TCK drops `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`, and `AsyncVersionedSpec`. Extend `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, or `VersionedSpec` instead; to also run a suite through the async view, override `access = CacheAccess.ASYNC`. The async-only cases (cancellation, completion threads, waits that hold no threads, timeouts, reentrancy) test the core, not a backend, and now live in CoCache's own tests. `AsyncBackendProtocolSpec` stays for backends that implement `AsyncRemoteStore`.
 - `Concurrency.currentThreadName()` returns the thread name without the kotlinx coroutine suffix. `HookedBackend.issuer()` and the specs use it, so hooks that orchestrate races by thread name work whether or not assertions are enabled.
 - `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` covers the batch fix above, and `EngineSpec.getAllAfterOwnInvalidateNeverSharesALoadStartedBefore` covers read-your-writes for batch reads.
 - `Concurrency.Forked.parked` is true while the thread waits (`WAITING` or `TIMED_WAITING`). A blocking follower now waits inside `runBlocking`, which parks with a timeout, so the specs no longer expect `WAITING` only.

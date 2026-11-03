@@ -42,6 +42,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ### TCK
 
+- **破坏性变更：** TCK 删除了 `AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec` 与 `AsyncVersionedSpec`。改为继承 `EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec` 或 `VersionedSpec`；还想经异步视图运行某个套件时，覆盖 `access = CacheAccess.ASYNC`。异步专有的用例（取消、完成线程、等待不占线程、超时、重入）测的是核心而不是后端，已移到 CoCache 自己的测试中。`AsyncBackendProtocolSpec` 保留，用于实现了 `AsyncRemoteStore` 的后端。
 - `Concurrency.currentThreadName()` 返回去掉 kotlinx 协程后缀的线程名。`HookedBackend.issuer()` 与各规范都用它，按线程名编排竞态的钩子不论是否开启断言都能工作。
 - `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` 覆盖上面的批量修复，`EngineSpec.getAllAfterOwnInvalidateNeverSharesALoadStartedBefore` 覆盖批量读取的读己之写。
 - `Concurrency.Forked.parked` 在线程等待时（`WAITING` 或 `TIMED_WAITING`）为真。阻塞调用的跟随者现在在 `runBlocking` 中等待，以限时停顿挂起，所以各规范不再只认 `WAITING`。
