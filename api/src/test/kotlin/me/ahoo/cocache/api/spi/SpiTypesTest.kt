@@ -111,7 +111,7 @@ class SpiTypesTest {
             override val channel: InvalidationChannel
                 get() = throw UnsupportedOperationException()
 
-            override fun store(namespace: String): RemoteStore = throw UnsupportedOperationException()
+            override fun store(namespace: String): L1Store = throw UnsupportedOperationException()
         }
         backend.close()
         Subscription { }.close()

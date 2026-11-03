@@ -20,7 +20,6 @@ import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
@@ -255,7 +254,7 @@ class ConditionalWriteTest {
     @Test
     fun storeClassifiesEveryShape() {
         val namespace = "store-$run"
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         fun key(id: String) = "cocache:$namespace:$id"
         store.put(key("negative"), Envelope.Absent, null, frame)
         store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null)

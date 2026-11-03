@@ -207,7 +207,7 @@ class RedisCommandTimeoutTest {
         val client = RedisClient.create(RedisURI.create(proxy.address, proxy.port))
         closeables.add(AutoCloseable { client.shutdown() })
         val backend = RedisBackend.of(client, RedisBackendOptions(commandTimeout = timeout)).closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         // 先缓存脚本：重放的 EVALSHA 不会得到 NOSCRIPT
         store.read(key("warm"), null, null)
         return Unwritable(
@@ -254,7 +254,7 @@ class RedisCommandTimeoutTest {
                 clientName = "cocache-tck-" + UUID.randomUUID()
             )
         ).closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         // 启动时的探测（cocache:probe:{a}）没有访问过的主节点：后端还没有到它的节点连接
         val probeSlot = SlotHash.getSlot("cocache:probe:{a}")
         val target = masters.first { !it.hasSlot(probeSlot) }
@@ -429,7 +429,7 @@ class RedisCommandTimeoutTest {
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
         ).closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         // 同一 slot：节点连接已建立、脚本已缓存，暂停期间的读取与释放都已写出，暂停结束后按序执行。
         // 释放的脚本也要已缓存：暂停期间它同样超时，得到 NOSCRIPT 时不再回退 EVAL
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RELEASE)
@@ -471,7 +471,7 @@ class RedisCommandTimeoutTest {
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
         ).closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         // 同一 slot、脚本已缓存：理由同 timedOutReadReleasesTheTokensItMayHaveTaken
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RECLAIM, RedisScripts.RELEASE)
         val warm = key("{reclaim}warm")
@@ -506,7 +506,7 @@ class RedisCommandTimeoutTest {
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(commandTimeout = Duration.ofSeconds(10), clientResources = redis.resources)
         ).closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RECLAIM, RedisScripts.RELEASE)
         val warm = key("{lease}warm")
         val refreshed = key("{lease}refresh")
@@ -540,7 +540,7 @@ class RedisCommandTimeoutTest {
         val store = connection.store
         val keys = connection.keys
         // 令牌由另一个后端取得（被阻断的后端在集群中还没有到这些 key 的节点连接）
-        val direct = RedisTestSupport.backend().closing().store(namespace)
+        val direct = RedisTestSupport.backend().closing().remoteStore(namespace)
         val tokens = keys.associateWith { key ->
             lease().also { direct.read(key, it, null).assert().isEqualTo(RemoteRead.Miss(true)) }.token
         }
@@ -569,7 +569,7 @@ class RedisCommandTimeoutTest {
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
         ).closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.FILL, RedisScripts.RELEASE)
         val warm = key("{fill}warm")
         store.read(warm, null, null)

@@ -15,9 +15,11 @@ package me.ahoo.cocache.core.engine
 
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.future
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeoutOrNull
 import me.ahoo.cocache.api.AsyncCache
@@ -34,13 +36,13 @@ import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteConditionalRead
 import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.RemoteVersionedWrite
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheSpec
@@ -55,6 +57,7 @@ import me.ahoo.cocache.core.internal.awaitUncancellable
 import me.ahoo.cocache.core.internal.ensureNotInterrupted
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.runsInline
+import me.ahoo.cocache.core.internal.uncancellable
 import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.ReadFailureMode
@@ -82,7 +85,7 @@ import kotlin.time.Duration.Companion.nanoseconds
 @Suppress("TooManyFunctions", "LargeClass")
 internal class CoherentEngine<K : Any, V : Any>(
     private val spec: CacheSpec<K, V>,
-    store: RemoteStore,
+    store: L1Store,
     context: EngineContext,
     private val format: ValueFormat<V> = CodecFormat(spec.codec),
 ) : AbstractEngine<K, V>(spec.name, spec.namespace, spec.keyPrefix, spec.keyEncoder, spec.policy, store, context),
@@ -424,10 +427,8 @@ internal class CoherentEngine<K : Any, V : Any>(
         return loadAndFill(key, storageKey, stamp, lease.token, source)
     }
 
-    private suspend fun reclaimRemote(storageKey: String, observed: Digest, lease: LeaseRequest): Boolean {
-        val reclaimed: Boolean? = asyncStore.reclaimAsync(storageKey, observed, lease).awaitUncancellable()
-        return reclaimed == true
-    }
+    private suspend fun reclaimRemote(storageKey: String, observed: Digest, lease: LeaseRequest): Boolean =
+        uncancellable { store.reclaim(storageKey, observed, lease) }
 
     private fun logCorrupt(storageKey: String, error: Exception) {
         log.warn(error) { "Cache[$name] - key[$storageKey] - corrupted payload, reclaim and reload." }
@@ -591,8 +592,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun fillRemote(fill: Fill): Boolean {
         return try {
-            val filled: Boolean? = asyncStore.fillAsync(fill).awaitUncancellable()
-            filled == true
+            uncancellable { store.fill(fill) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -602,12 +602,19 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 协程核心释放令牌（失败只计数告警），完成之后才继续，与 6.x 的顺序一致。释放不可取消（[awaitUncancellable]）：被取消的加载也要交还令牌。
+     * 协程核心释放令牌（失败只计数告警），完成之后才继续，与 6.x 的顺序一致。释放不可取消（[uncancellable]）：被取消的加载也要交还令牌。
+     */
+    private suspend fun releaseToken(storageKey: String, token: Token) {
+        uncancellable { releaseQuietly(storageKey, token) }
+    }
+
+    /**
+     * 释放令牌，失败只计数告警（调用方已在 `NonCancellable` 中）。
      */
     @Suppress("TooGenericExceptionCaught")
-    private suspend fun releaseToken(storageKey: String, token: Token) {
+    private suspend fun releaseQuietly(storageKey: String, token: Token) {
         try {
-            asyncStore.releaseAsync(storageKey, token).awaitUncancellable()
+            store.release(storageKey, token)
         } catch (e: Exception) {
             onRemoteFailure("release", storageKey, e)
         }
@@ -886,10 +893,8 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 批量读取 L1，规则同 [readRemote]。
      */
-    private suspend fun readAllRemote(keys: List<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
-        val reads: Map<String, RemoteRead>? = asyncStore.readAllAsync(keys, leases).awaitUncancellable()
-        return reads ?: emptyMap()
-    }
+    private suspend fun readAllRemote(keys: List<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> =
+        uncancellable { store.readAll(keys, leases) }
 
     /**
      * [loadAllThrough] 读到 L1 之后：逐 key 判定，先批量回源并写回，再逐个条件回收损坏的 key。
@@ -1033,18 +1038,18 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
 
     /**
-     * 释放批量取得的令牌（失败只计数告警），完成之后才继续。并发发出全部释放，再逐个等待；释放不可取消。
+     * 释放批量取得的令牌（失败只计数告警），全部完成之后才继续。并发发出全部释放（每个释放一个子协程，执行到第一次挂起再发出下一个），
+     * 再一起等待；释放不可取消。
      */
-    @Suppress("TooGenericExceptionCaught")
     private suspend fun releaseAll(tokens: Map<String, Token?>) {
-        val releases = tokens.mapNotNull { (storageKey, token) ->
-            token?.let { storageKey to Futures.attempt { asyncStore.releaseAsync(storageKey, it) } }
+        if (tokens.values.all { it == null }) {
+            return
         }
-        for ((storageKey, released) in releases) {
-            try {
-                released.awaitUncancellable()
-            } catch (e: Exception) {
-                onRemoteFailure("release", storageKey, e)
+        uncancellable {
+            coroutineScope {
+                tokens.forEach { (storageKey, token) ->
+                    token?.let { launch(start = CoroutineStart.UNDISPATCHED) { releaseQuietly(storageKey, it) } }
+                }
             }
         }
     }
@@ -1100,8 +1105,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             return emptyMap()
         }
         val outcomes = try {
-            val filled: List<Boolean>? = asyncStore.fillAllAsync(fills).awaitUncancellable()
-            filled ?: emptyList()
+            uncancellable { store.fillAll(fills) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1250,7 +1254,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val bounded = ttl?.boundedTtl()
         write(
             listOf(storageKey),
-            { frame -> asyncStore.putAsync(storageKey, envelope, bounded, frame).awaitUncancellable() },
+            { frame -> store.put(storageKey, envelope, bounded, frame) },
             onFailure = throwWriteFailure("put")
         )
     }
@@ -1277,7 +1281,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val puts = putsOf(entries, ttlOf)
         write(
             puts.map { it.key },
-            { frame -> asyncStore.putAllAsync(puts, frame).awaitUncancellable() },
+            { frame -> store.putAll(puts, frame) },
             onFailure = throwWriteFailure("putAll")
         )
     }
@@ -1306,9 +1310,10 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun conditionalGet(key: K, known: Digest?): ConditionalGet<V> {
+        val conditional = requireConditional("getIfChanged")
         val storageKey = storageKey(key)
         val read = try {
-            asyncStore.readIfChangedAsync(storageKey, known).awaitUncancellable()
+            uncancellable { conditional.readIfChanged(storageKey, known) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1372,6 +1377,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 冲突只在可能是重放时广播（[conditionalChanged]）。
      */
     private suspend fun putIfMatchWithTtl(key: K, expected: Digest?, value: V, ttl: Duration?): ConditionalPut {
+        val conditional = requireConditional("putIfMatch")
         val storageKey = storageKey(key)
         val envelope = format.encode(value)
         val bounded = ttl?.boundedTtl()
@@ -1379,8 +1385,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         write(
             listOf(storageKey),
             { frame ->
-                val result = asyncStore.putIfMatchAsync(storageKey, expected, envelope, bounded, frame)
-                    .awaitUncancellable()
+                val result = conditional.putIfMatch(storageKey, expected, envelope, bounded, frame)
                 outcome = result
                 refuseUnreadable(storageKey, result)
             },
@@ -1405,8 +1410,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 后端不支持条件写入（SPI 默认实现）时原样抛出 [UnsupportedOperationException]，与不支持的 `Cache` 实现一致；
-     * 其余失败包装为 `CacheWriteException`。
+     * 后端以 [UnsupportedOperationException] 拒绝时原样抛出，与不支持的 `Cache` 实现一致；其余失败包装为 `CacheWriteException`。
      */
     private val conditionalWriteFailure: (Exception) -> Unit = { error ->
         if (error is UnsupportedOperationException) {
@@ -1492,6 +1496,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private suspend fun writeVersioned(key: K, value: V?, version: Long, ttl: Duration?): VersionedPut {
         requireVersion(version)
+        val versioned = requireVersioned(versionedOperation(value))
         val storageKey = storageKey(key)
         val envelope = envelopeOf(value)
         val bounded = ttl?.boundedTtl()
@@ -1499,8 +1504,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         write(
             listOf(storageKey),
             { frame ->
-                val result = asyncStore.putIfNewerAsync(storageKey, envelope, version, bounded, frame)
-                    .awaitUncancellable()
+                val result = versioned.putIfNewer(storageKey, envelope, version, bounded, frame)
                 outcome = result
                 refuseUnreadableVersion(storageKey, result)
             },
@@ -1529,7 +1533,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     private fun versionedOperation(value: V?): String = if (value == null) "invalidateIfNewer" else "putIfNewer"
 
     /**
-     * 同 [conditionalWriteFailure]：后端不支持（SPI 默认实现）时原样抛出 [UnsupportedOperationException]，其余包装为 `CacheWriteException`。
+     * 同 [conditionalWriteFailure]：后端以 [UnsupportedOperationException] 拒绝时原样抛出，其余包装为 `CacheWriteException`。
      */
     private fun versionedWriteFailure(operation: String): (Exception) -> Unit = { error ->
         if (error is UnsupportedOperationException) {
@@ -1575,7 +1579,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
         write(
             storageKeys,
-            { frame -> asyncStore.invalidateAsync(storageKeys, frame).awaitUncancellable() }
+            { frame -> store.invalidate(storageKeys, frame) }
         ) { error -> onInvalidateFailure(storageKeys, error) }
     }
 
@@ -1597,13 +1601,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         // 计数：同一 key 的多次失败失效各自登记，任何一次放弃都不能提前解除其它仍在重试的
         storageKeys.forEach { pendingInvalidations.merge(it, 1, Int::plus) }
         val accepted = context.retrier.submit(
-            action = {
-                val frame = frameOf(storageKeys)
-                store.invalidate(storageKeys, frame)
-                if (!context.backend.atomicBroadcast) {
-                    context.backend.channel.publish(namespace, frame)
-                }
-            },
+            action = { runSync { uncancellable { retryInvalidate(storageKeys) } } },
             onRetry = { metrics.invalidationRetry() },
             onSuccess = {
                 storageKeys.forEach {
@@ -1616,6 +1614,17 @@ internal class CoherentEngine<K : Any, V : Any>(
         )
         if (!accepted) {
             dropInvalidation(storageKeys, error)
+        }
+    }
+
+    /**
+     * 重试一次失效（在重试线程上，规则同同步变体）：删除，非原子广播的后端上再发布。
+     */
+    private suspend fun retryInvalidate(storageKeys: List<String>) {
+        val frame = frameOf(storageKeys)
+        store.invalidate(storageKeys, frame)
+        if (!context.backend.atomicBroadcast) {
+            context.backend.channel.publish(namespace, frame)
         }
     }
 

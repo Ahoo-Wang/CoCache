@@ -86,14 +86,15 @@ open class CoCacheBenchmark {
         }
         cache.put("l1", "l1-value")
         viaInterface = me.ahoo.cocache.core.proxy.CacheProxies.create(BenchCache::class.java, cache)
-        store = backend.store("bench-$run")
+        // 存储基准测的是 Redis 存储自身的同步与异步方法（M3d 改为原生的 L1Store）
+        store = backend.remoteStore("bench-$run")
         l1Key = "cocache:bench-$run:l1"
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         batchKeys = (1..BATCH_SIZE).map { "cocache:bench-$run:batch-$it" }
         batchKeys.forEach { store.put(it, Envelope.Scalar("batch-value".toByteArray()), Duration.ofMinutes(10), frame) }
         asyncCache = cache.async()
         asyncMixed = mixed.map { it.async() }
-        asyncStore = store as AsyncRemoteStore
+        asyncStore = backend.remoteStore("bench-$run")
         // L1 命中经引擎：工作集远大于 L2 容量，几乎每次读取都不命中 L2、命中 L1（并填充 L2）
         l1Hits = runtime.create(spec("bench-l1-$run", policy.toBuilder().local(LocalPolicy(maximumSize = 16)).build()))
         l1HitKeys = (1..L1_HIT_KEYS).map { "l1-$it" }

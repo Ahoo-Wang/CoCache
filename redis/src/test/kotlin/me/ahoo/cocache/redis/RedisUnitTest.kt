@@ -832,9 +832,7 @@ class RedisUnitTest {
 
         override fun unsubscribeAsync(channel: ByteArray): CompletableFuture<Void> = done()
 
-        override fun publish(namespace: String, frame: ByteArray) = Unit
-
-        override fun publishAsync(namespace: String, frame: ByteArray): CompletableFuture<Void?> = done()
+        override fun publish(namespace: String, frame: ByteArray): CompletableFuture<Void?> = done()
 
         override fun ping() {
             failures[pings.incrementAndGet()]?.let { throw it }

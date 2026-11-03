@@ -15,7 +15,6 @@ package me.ahoo.cocache.redis
 
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.policy.CachePolicy
@@ -28,7 +27,6 @@ import me.ahoo.cocache.test.EngineSpec
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import java.lang.management.ManagementFactory
 import java.time.Duration
@@ -80,8 +78,8 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
     }
 
     /**
-     * 只在 [gate] 打开后才在 [pool] 上执行的执行器：既作 [HookedBackend.ioExecutor]（原生异步后端的结果送达），
-     * 也作阻塞执行器（只实现同步 SPI 的后端经阻塞执行器调用，`ioExecutor` 对它不起作用）。
+     * 只在 [gate] 打开后才在 [pool] 上执行的执行器：既作 [HookedBackend.ioExecutor]（L1 结果的送达），也作阻塞执行器
+     * （异步路径上的同步数据源）。
      */
     private fun gated(pool: Executor, gate: () -> CountDownLatch, what: String): Executor = Executor { task ->
         val opened = gate()
@@ -118,13 +116,6 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
         }
     }
 
-    /**
-     * 只有原生异步的后端才能做到等待期间不占线程（只实现同步 SPI 的后端经阻塞执行器调用）。
-     */
-    private fun assumeNativeAsync() {
-        assumeTrue(backend.store(cacheName) is AsyncRemoteStore) { "The backend does not implement AsyncRemoteStore." }
-    }
-
     private fun CacheRuntime.rawCache(source: AsyncCacheLoader<String, String>, policy: CachePolicy = policy()): Cache<String, String> =
         create(
             spec(policy) {
@@ -139,7 +130,7 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
         val (blockingPool, _) = named("tck-blocking")
         val (asyncPool, _) = named("tck-async")
         // L1 的结果在回调注册之前不送达：回调一定是在完成时执行的，而不是注册时就地执行。
-        // 原生异步后端经 ioExecutor 送达；只实现同步 SPI 的后端在阻塞执行器上调用，两者都要拦住
+        // L1 的结果经 ioExecutor 送达，同步数据源在阻塞执行器上调用，两者都要拦住
         val gate = AtomicReference(CountDownLatch(1))
         backend.ioExecutor = gated(io, gate::get, "callback registered")
         val runtime = node(
@@ -180,7 +171,6 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
      */
     @Test
     fun leaseWaitsUseConstantThreads() {
-        assumeNativeAsync()
         val keys = (1..WAITERS).map { "k$it" }
         val holder = PendingLoader()
         val asyncA = nodeA.rawCache(holder).async()
@@ -221,7 +211,6 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
      */
     @Test
     fun permitWaitsUseConstantThreads() {
-        assumeNativeAsync()
         val limited = policy().toBuilder().load(
             LoadPolicy(maxConcurrent = 1, acquireTimeout = Duration.ofSeconds(10))
         ).build()

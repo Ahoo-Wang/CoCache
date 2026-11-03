@@ -13,17 +13,18 @@
 
 package me.ahoo.cocache.core.engine
 
+import io.mockk.every
+import io.mockk.mockk
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.FutureL1Store
 import me.ahoo.cocache.api.spi.InvalidationListener
-import me.ahoo.cocache.api.spi.LeaseRequest
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -40,6 +41,7 @@ import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -55,7 +57,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 单 key 读与提前刷新运行在协程核心上（RFC 0005 V5）：运行时关闭取消作用域时，进行中的异步读取以关闭失败，
- * 申请的 lease 与刷新令牌照常交还；异步 SPI 的实现缺陷按 L1 读失败处理。
+ * 申请的 lease 与刷新令牌照常交还；Java 实现的缺陷（future 以 `null` 完成）按 L1 读失败处理。
  */
 class CoherentEngineCoreTest {
     private val memory = InMemoryBackend()
@@ -303,7 +305,7 @@ class CoherentEngineCoreTest {
 
         val other = RefreshRequest(window, Token(NodeId.random(), 1), Duration.ofSeconds(10))
         awaitCondition("refresh token released") {
-            val read = memory.store("core").read("cocache:core:k", null, other)
+            val read = Suspending.await { memory.store("core").read("cocache:core:k", null, other) }
             read is RemoteRead.Hit && read.refreshGranted
         }
     }
@@ -497,27 +499,24 @@ class CoherentEngineCoreTest {
     }
 
     /**
-     * 异步 SPI 的实现以 `null` 完成读取（Java 实现的缺陷）：按 L1 读失败处理，没有数据源时以 [CacheReadException] 失败，
-     * cause 说明原因，而不是在之后的分支上抛出更难懂的异常。
+     * Java 实现的 [FutureL1Store] 以 `null` 完成读取（实现缺陷）：`FutureL1Store.adapt` 以指明操作的 [IllegalStateException] 失败，
+     * 引擎按 L1 读失败处理，没有数据源时以 [CacheReadException] 失败，而不是在之后的分支上抛出更难懂的异常。
      */
     @Test
-    fun aNullAsyncReadIsAReadFailure() {
-        val cache = runtime(NullReadBackend(memory)).create(spec {})
+    fun aNullFutureReadIsAReadFailure() {
+        val nullReads = mockk<FutureL1Store> {
+            every { conditional() } returns null
+            every { versioned() } returns null
+            every { sets() } returns null
+            every { read(any(), any(), any()) } returns CompletableFuture.completedFuture(null)
+        }
+        val backend = object : CoherenceBackend by memory {
+            override fun store(namespace: String): L1Store = FutureL1Store.adapt(nullReads)
+        }
+        val cache = runtime(backend).create(spec {})
         val failure = failureOf(cache.async().get("k"))
         failure.assert().isInstanceOf(CacheReadException::class.java)
         failure?.cause.assert().isInstanceOf(IllegalStateException::class.java)
-        failure?.cause?.message.assert().isEqualTo("Cache[core] - remote read returned null.")
+        failure?.cause?.message.assert().endsWith(".read() completed with null.")
     }
-}
-
-/**
- * 读取以 `null` 完成的后端（模拟有缺陷的 Java 实现），其余操作委托给内存后端。
- */
-private class NullReadBackend(private val delegate: InMemoryBackend) : CoherenceBackend by delegate {
-    override fun store(namespace: String): RemoteStore = NullReadStore(delegate.store(namespace) as AsyncRemoteStore)
-}
-
-private class NullReadStore(private val delegate: AsyncRemoteStore) : AsyncRemoteStore by delegate {
-    override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
-        CompletableFuture.completedFuture(null)
 }

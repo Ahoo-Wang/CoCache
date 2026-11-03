@@ -259,12 +259,7 @@ abstract class SetEngineSpec {
     @Test
     fun scalarInRemoteIsRejected() {
         val cache = nodeA.setCache()
-        backend.delegate.store(cacheName).put(
-            "cocache:$cacheName:k",
-            Envelope.Scalar("x".toByteArray()),
-            null,
-            InvalidationFrame.encode(NodeId.random(), emptyList())
-        )
+        writeRemoteSilently("k", Envelope.Scalar("x".toByteArray()))
         runCatching { cache["k"] }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
     }
 
@@ -287,7 +282,7 @@ abstract class SetEngineSpec {
     /**
      * 不经过引擎直接写 L1。
      */
-    private fun writeRemoteSilently(key: String, envelope: Envelope) {
+    private fun writeRemoteSilently(key: String, envelope: Envelope) = Suspending.await {
         backend.delegate.store(cacheName).put(
             "cocache:$cacheName:$key",
             envelope,
@@ -317,7 +312,9 @@ abstract class SetEngineSpec {
         assertForeignWrite(runCatching { cache.remove("k", listOf("a")) }.exceptionOrNull(), "remove")
         nodeA.metrics(cacheName)?.unknownFormats.assert().isEqualTo(2L)
         nodeA.metrics(cacheName)?.writeFailures.assert().isEqualTo(2L)
-        val kept = backend.delegate.store(cacheName).read("cocache:$cacheName:k", null, null) as RemoteRead.Hit
+        val kept = Suspending.await {
+            backend.delegate.store(cacheName).read("cocache:$cacheName:k", null, null)
+        } as RemoteRead.Hit
         (kept.envelope as Envelope.Scalar).bytes.assert().isEqualTo("x".toByteArray())
         // 整体覆盖（put）不受影响：调用方给出的是全部内容
         other.put("k", setOf("b"))

@@ -113,7 +113,7 @@ CoCache runs background and async work on executors:
 |------|----------|-------------------|
 | Refresh-ahead loads | `cocache.refresh-executor` | A bounded daemon pool (1–4 threads, 1024 queued tasks). A full queue skips the refresh and counts it in `cocache.refresh.rejections`. |
 | Continuations of the [async view](./async.md): decoding, L2 fills, issuing the next Redis command, calling `loadAsync`, completing your future | `cocache.async-executor` | A `ForkJoinPool` owned by the runtime, sized to the CPU count, with daemon threads named `cocache-async-*` |
-| Synchronous loaders called through the async view, and backends that implement only the synchronous SPI | `cocache.blocking-executor` | A virtual thread per task on JDK 21+. On JDK 17–20, a daemon pool that never queues (up to 512 threads, named `cocache-blocking-*`). When it's full, the load is rejected rather than run on the async executor. |
+| Synchronous loaders called through the async view | `cocache.blocking-executor` | A virtual thread per task on JDK 21+. On JDK 17–20, a daemon pool that never queues (up to 512 threads, named `cocache-blocking-*`). When it's full, the load is rejected rather than run on the async executor. |
 
 Each property takes the **name** of an `Executor` bean. CoCache looks the bean up by name only, never by type. A name that matches no bean, or a bean that isn't an `Executor`, fails startup with a message naming the property. The container owns that executor: closing the `CacheRuntime` doesn't shut it down.
 

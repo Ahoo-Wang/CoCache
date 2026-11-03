@@ -22,16 +22,18 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
-import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
+import me.ahoo.cocache.api.spi.ConditionalL1Store
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.SetL1Store
+import me.ahoo.cocache.api.spi.VersionedL1Store
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.ForeignFormatException
@@ -40,14 +42,14 @@ import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.SingleFlight
-import me.ahoo.cocache.core.internal.awaitUncancellable
 import me.ahoo.cocache.core.internal.fillGuarded
+import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.runsInline
+import me.ahoo.cocache.core.internal.uncancellable
 import me.ahoo.cocache.core.policy.CachePolicy
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.CoroutineContext
 
@@ -93,7 +95,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     keyPrefix: String,
     private val keyEncoder: KeyEncoder<K>,
     internal val policy: CachePolicy,
-    protected val store: RemoteStore,
+    protected val store: L1Store,
     protected val context: EngineContext,
 ) : InvalidationListener, CacheAdmin, AutoCloseable {
     override val metrics = CacheMetrics(context.recordLocalHits)
@@ -129,19 +131,18 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     private val storagePrefix = "$keyPrefix$namespace:"
 
     /**
-     * 引擎的全部 L1 命令经异步 SPI 发出（RFC 0005 §4.3，同步与异步变体相同）：原生异步的存储与通道直接使用，
-     * 只实现同步 SPI 的（仅测试替身）同步调用只在阻塞执行器上执行。
+     * 非原子广播的后端上，写入之后经它发布失效帧。
      */
-    protected val asyncStore: AsyncRemoteStore = BlockingAsyncStore.of(store, context.async.blocking)
-    private val asyncChannel: AsyncInvalidationChannel = BlockingAsyncChannel.of(
-        context.backend.channel,
-        context.async.blocking
-    )
+    private val channel: InvalidationChannel = context.backend.channel
 
     /**
-     * 异步执行器：异步路径的全部续接都在这里（或已完成时就地）执行，从不在 I/O 线程上执行。
+     * 存储的能力面（RFC 0005 §4.3）：访问器在存储的生命周期内返回同样的结果，创建时各取一次。
+     * `runtime.create` 已检查缓存需要的能力；没有检查的（M5 之前普通缓存上的条件读写）在调用时以 [UnsupportedOperationException] 失败
+     * （[requireConditional]、[requireVersioned]、[requireSets]）。
      */
-    protected val executor: Executor = context.async.executor
+    private val conditional: ConditionalL1Store? = store.conditional()
+    private val versioned: VersionedL1Store? = store.versioned()
+    private val sets: SetL1Store? = store.sets()
 
     /**
      * 协程核心的运行时作用域（RFC 0005 §4.4）：异步变体的共享加载在这里执行。
@@ -149,20 +150,40 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected val scope: CoroutineScope = context.async.scope
 
     /**
-     * 协程核心读取 L1（RFC 0005 §4.3）：经异步 SPI 发出，不可取消地等待（[awaitUncancellable]），续接回到当前变体的调度器上
+     * 协程核心读取 L1（RFC 0005 §4.3）：不可取消（[uncancellable]），续接回到当前变体的调度器上
      * （同步变体即调用方线程，异步变体即运行时作用域的调度器），从不在 L1 客户端的 I/O 线程上执行。
      * 协程被取消时仍等到读取完成或超时：取得令牌的读取不丢结果，取消在之后的第一个挂起点生效。
      */
     protected suspend fun readRemote(storageKey: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead =
-        checkRead(asyncStore.readAsync(storageKey, lease, refresh).awaitUncancellable())
+        uncancellable { store.read(storageKey, lease, refresh) }
 
     /**
-     * 异步 SPI 的实现可能以 `null` 完成读取（Java 实现）：按实现缺陷失败，而不是在之后的分支上抛出更难懂的异常。
+     * [operation] 需要的条件读写能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
      */
-    protected fun checkRead(read: RemoteRead?): RemoteRead {
-        checkNotNull(read) { "Cache[$name] - remote read returned null." }
-        return read
-    }
+    protected fun requireConditional(
+        operation: String
+    ): ConditionalL1Store = conditional ?: throw unsupported(operation, "conditional")
+
+    /**
+     * [operation] 需要的按版本写入能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
+     */
+    protected fun requireVersioned(
+        operation: String
+    ): VersionedL1Store = versioned ?: throw unsupported(operation, "versioned")
+
+    /**
+     * [operation] 需要的集合能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
+     */
+    protected fun requireSets(operation: String): SetL1Store = sets ?: throw unsupported(operation, "sets")
+
+    /**
+     * 存储没有 [operation] 需要的能力面（RFC 0005 §4.3）：与 6.x 不支持的操作一样以 [UnsupportedOperationException] 失败，
+     * 在调用时、修改任何一层之前抛出。
+     */
+    private fun unsupported(operation: String, capability: String): UnsupportedOperationException =
+        UnsupportedOperationException(
+            "Cache[$name] - $operation() needs the $capability capability, but ${store.javaClass.name} does not provide it."
+        )
 
     protected fun storageKey(key: K): String = storagePrefix + keyEncoder.encode(key)
 
@@ -253,7 +274,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 前提是 [mutate] 返回或抛出时它的全部 L1 命令都已结束（否则广播可能先于仍在执行的命令）。
      * 例外是 [ForeignFormatException] 与 [UnsupportedOperationException]：后端拒绝了写入（或不支持这个操作），L1 原样未动，不广播。
      *
-     * 两种变体都等待异步 SPI，从修改 L1 到第二次递增（含广播与 [onFailure]）不可取消（RFC 0005 §4.3）：
+     * 从修改 L1 到第二次递增（含广播与 [onFailure]）不可取消（RFC 0005 §4.3），[mutate] 因此直接调用存储：
      * 协程被取消（同步变体中线程被中断，异步变体中运行时关闭）也要等 L1 命令结束再第二次递增，否则在两次递增之间开始的填充
      * 会把旧值写进 L2（G2），非原子广播的后端上其它节点也收不到广播。
      * - 同步变体（[SYNC_WRITE]）：续接仍在调用方线程（`runBlocking` 的事件循环）上执行，不在 L1 客户端的 I/O 线程上执行。
@@ -261,7 +282,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      *   执行器拒绝派发不会跳过这些步骤，也不会把写入的结果换成取消（成功的写入因此计为失败、`invalidate` 因此登记多余的重试）。
      *   只有回到调用方的那一次派发可能被拒绝，调用方看到 `RejectedExecutionException`。
      *
-     * @param mutate 修改 L1（经异步 SPI，[awaitUncancellable]）
+     * @param mutate 修改 L1（直接调用 [store] 或它的能力面：整段已在 `NonCancellable` 中）
      * @param changed [mutate] 正常返回后是否需要广播：L1 被这次写入修改，或可能已被之前同样的写入修改（条件写入的重放：
      * 上一次已在 L1 生效、单独的广播却失败了）。不需要时非原子广播的后端不广播（原子广播的后端由存储自己决定）。
      * 戳与 L2 淘汰照常执行，只多淘汰一次本地副本
@@ -323,10 +344,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     }
 
     /**
-     * 非原子广播的后端上发布失效帧：等待异步通道（同 L1 命令，不可取消）。
+     * 非原子广播的后端上发布失效帧（在 [write] 的 `NonCancellable` 中，同 L1 命令不可取消）。
      */
     private suspend fun publish(frame: ByteArray) {
-        asyncChannel.publishAsync(namespace, frame).awaitUncancellable()
+        channel.publish(namespace, frame)
     }
 
     /**
@@ -404,8 +425,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected abstract fun describe(envelope: Envelope): Any?
 
     /**
-     * 只读快照：L2 用 `getIfPresentQuietly`（不影响淘汰统计），L1 用不带 lease 与刷新令牌的 `read`（纯读取）。
-     * 不经过 SingleFlight，不取戳，不写任何一层，不计入指标：与命中路径完全无关。
+     * 只读快照：L2 用 `getIfPresentQuietly`（不影响淘汰统计），L1 用不带 lease 与刷新令牌的 `read`（纯读取，在调用方线程上等待，
+     * 规则同同步变体）。不经过 SingleFlight，不取戳，不写任何一层，不计入指标：与命中路径完全无关。
      */
     override fun inspect(encodedKey: String): KeyInspection {
         val storageKey = storageKeyOf(encodedKey)
@@ -431,7 +452,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     @Suppress("TooGenericExceptionCaught")
     private fun remoteCopyOf(storageKey: String): KeyInspection.RemoteCopy {
         val read = try {
-            store.read(storageKey, null, null)
+            runSync { uncancellable { store.read(storageKey, null, null) } }
         } catch (e: Exception) {
             return KeyInspection.RemoteCopy(KeyInspection.RemoteState.ERROR, error = e.toString())
         }
@@ -508,7 +529,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         val ASYNC_WRITE: CoroutineContext = NonCancellable + Dispatchers.Unconfined
 
         /**
-         * 后端没有修改 L1 就拒绝了写入：读不懂的内容，或后端不支持这个操作（SPI 默认实现）。
+         * 后端没有修改 L1 就拒绝了写入：读不懂的内容，或后端以 [UnsupportedOperationException] 拒绝了这个操作。
          */
         fun isRefusal(
             error: Throwable

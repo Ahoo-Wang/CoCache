@@ -167,7 +167,6 @@ interface RemoteStore : AutoCloseable {
      *   都返回 [RemoteVersionedWrite.Unreadable]，从不视为没有版本。
      *
      * 默认实现抛出 [UnsupportedOperationException]：不原子的“先读后写”会让迟到的旧版本覆盖新版本，因此不提供。
-     * 实现它的后端同时把 [CoherenceBackend.versionedWrites] 设为 `true`。
      */
     @Suppress("LongParameterList")
     fun putIfNewer(

@@ -13,23 +13,33 @@
 
 package me.ahoo.cocache.core.engine
 
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.ConditionalL1Store
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
+import me.ahoo.cocache.api.spi.FutureConditionalL1Store
+import me.ahoo.cocache.api.spi.FutureL1Store
+import me.ahoo.cocache.api.spi.FutureSetL1Store
+import me.ahoo.cocache.api.spi.FutureVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
+import me.ahoo.cocache.api.spi.RemoteConditionalRead
+import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.RemoteVersionedWrite
+import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.api.spi.VersionedL1Store
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.test.RemoteUnavailableException
+import me.ahoo.cocache.test.Suspending
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeoutException
@@ -76,7 +86,7 @@ internal class Command<T>(
     val name: String,
     val node: Int,
     private val ledger: Ledger,
-    private val store: RemoteStore,
+    private val store: L1Store,
     private val gives: List<Token>,
     private val holds: () -> List<Pair<String, Token>>,
     private val apply: () -> T,
@@ -110,11 +120,16 @@ internal class Command<T>(
 
     private fun releaseHeld() {
         holds().forEach { (key, token) ->
-            store.release(key, token)
+            now { store.release(key, token) }
             ledger.giveBack(token)
         }
     }
 }
+
+/**
+ * 在被包装的内存存储上就地执行挂起操作：它从不挂起（[InMemoryBackend]），结果随调用返回。
+ */
+internal fun <T> now(block: suspend () -> T): T = Suspending.await(block)
 
 /**
  * 失效通道上待投递的事件：投递给节点 [node] 的 [listener]。[reset] 为 `true` 时是订阅重建（此前的事件可能已丢失）。
@@ -131,13 +146,14 @@ internal class Event(
 )
 
 /**
- * 确定性测试的挂起式内存后端（RFC 0005 §4.10）：包装 [InMemoryBackend]，每条异步 L1 命令都挂起排队，由测试决定何时、以什么结局完成
+ * 确定性测试的挂起式内存后端（RFC 0005 §4.10）：包装 [InMemoryBackend]，存储是 [FutureL1Store]（经 [FutureL1Store.adapt] 交给引擎），
+ * 基本操作的每条 L1 命令都挂起排队，由测试决定何时、以什么结局完成
  * （SPI 不保证命令按发出的顺序生效，所以完成顺序任意）。每个运行时经 [view] 拿到自己的视图，命令记下发出的节点：
  * - [crash] 一个节点：它的待完成命令随机生效或不生效，但结果再也送不回去；之后的命令既不生效也不完成；发给它的失效事件被丢弃。
  * - [scriptEvents] 为 `true` 时，失效事件不再同步投递，而是排队，由测试按任意顺序投递、重复或丢失（丢失之后补一个订阅重建事件，
  *   与 Redis 后端以心跳与重新订阅发现丢失一致）。
  *
- * 同步 SPI 直接转给被包装的后端：这里只驱动异步变体。
+ * 能力面上的操作（条件读写、按版本写入、集合）不排队，就地转给被包装的存储，以已完成的 future 返回。
  */
 internal class ScriptedBackend(
     private val delegate: InMemoryBackend,
@@ -243,14 +259,26 @@ internal class ScriptedBackend(
             override fun onReset() = listener.onReset()
         }
 
-        override fun store(namespace: String): RemoteStore =
-            ScriptedStore(node, delegate.store(namespace) as AsyncRemoteStore)
+        override fun store(namespace: String): L1Store = FutureL1Store.adapt(
+            ScriptedStore(node, delegate.store(namespace))
+        )
     }
 
+    @Suppress("TooManyFunctions")
     private inner class ScriptedStore(
         private val node: Int,
-        private val store: AsyncRemoteStore
-    ) : AsyncRemoteStore by store {
+        private val store: L1Store
+    ) : FutureL1Store {
+        private val conditional = store.conditional()?.let { PassingConditional(it) }
+        private val versioned = store.versioned()?.let { PassingVersioned(it) }
+        private val sets = store.sets()?.let { PassingSets(it) }
+
+        override fun conditional(): FutureConditionalL1Store? = conditional
+
+        override fun versioned(): FutureVersionedL1Store? = versioned
+
+        override fun sets(): FutureSetL1Store? = sets
+
         private fun <T> command(
             name: String,
             gives: List<Token> = emptyList(),
@@ -274,7 +302,7 @@ internal class ScriptedBackend(
             }
         }
 
-        override fun readAsync(
+        override fun read(
             key: String,
             lease: LeaseRequest?,
             refresh: RefreshRequest?
@@ -282,75 +310,131 @@ internal class ScriptedBackend(
             "read $key",
             holds = { listOfNotNull(lease?.let { key to it.token }, refresh?.let { key to it.token }) }
         ) {
-            store.read(key, lease, refresh).also { grantOf(key, it, lease, refresh) }
+            now { store.read(key, lease, refresh) }.also { grantOf(key, it, lease, refresh) }
         }
 
-        override fun readAllAsync(
+        override fun readAll(
             keys: Collection<String>,
             leases: Map<String, LeaseRequest>
         ): CompletableFuture<Map<String, RemoteRead>> = command(
             "readAll $keys",
             holds = { leases.map { (key, lease) -> key to lease.token } }
         ) {
-            store.readAll(keys, leases).onEach { (key, read) -> grantOf(key, read, leases[key], null) }
+            now { store.readAll(keys, leases) }.onEach { (key, read) -> grantOf(key, read, leases[key], null) }
         }
 
-        override fun reclaimAsync(
+        override fun reclaim(
             key: String,
             observed: Digest,
             lease: LeaseRequest
         ): CompletableFuture<Boolean> = command("reclaim $key", holds = { listOf(key to lease.token) }) {
-            val reclaimed = store.reclaim(key, observed, lease)
+            val reclaimed = now { store.reclaim(key, observed, lease) }
             if (reclaimed) {
                 ledger.grant(lease.token, "reclaimed lease on $key")
             }
             reclaimed
         }
 
-        override fun fillAsync(fill: Fill): CompletableFuture<Boolean> = command(
+        override fun fill(fill: Fill): CompletableFuture<Boolean> = command(
             "fill ${fill.key}",
             gives = listOf(fill.token),
             holds = { listOf(fill.key to fill.token) }
         ) {
-            store.fill(fill).also { ledger.giveBack(fill.token) }
+            now { store.fill(fill) }.also { ledger.giveBack(fill.token) }
         }
 
-        override fun fillAllAsync(fills: List<Fill>): CompletableFuture<List<Boolean>> = command(
+        override fun fillAll(fills: List<Fill>): CompletableFuture<List<Boolean>> = command(
             "fillAll ${fills.map { it.key }}",
             gives = fills.map { it.token },
             holds = { fills.map { it.key to it.token } }
         ) {
-            store.fillAll(fills).also { fills.forEach { ledger.giveBack(it.token) } }
+            now { store.fillAll(fills) }.also { fills.forEach { ledger.giveBack(it.token) } }
         }
 
-        override fun releaseAsync(key: String, token: Token): CompletableFuture<Void?> = command(
+        override fun release(key: String, token: Token): CompletableFuture<Void?> = command(
             "release $key",
             gives = listOf(token)
         ) {
-            store.release(key, token)
+            now { store.release(key, token) }
             ledger.giveBack(token)
             null
         }
 
-        override fun putAsync(
+        override fun put(
             key: String,
             envelope: Envelope,
             ttl: Duration?,
             frame: ByteArray
         ): CompletableFuture<Void?> = command("put $key") {
-            store.put(key, envelope, ttl, frame)
+            now { store.put(key, envelope, ttl, frame) }
             null
         }
 
-        override fun putAllAsync(puts: List<Put>, frame: ByteArray): CompletableFuture<Void?> = command("putAll") {
-            store.putAll(puts, frame)
+        override fun putAll(puts: List<Put>, frame: ByteArray): CompletableFuture<Void?> = command("putAll") {
+            now { store.putAll(puts, frame) }
             null
         }
 
-        override fun invalidateAsync(keys: Collection<String>, frame: ByteArray): CompletableFuture<Void?> =
+        override fun invalidate(keys: Collection<String>, frame: ByteArray): CompletableFuture<Void?> =
             command("invalidate $keys") {
-                store.invalidate(keys, frame)
+                now { store.invalidate(keys, frame) }
                 null
             }
+    }
+
+    private class PassingConditional(private val surface: ConditionalL1Store) : FutureConditionalL1Store {
+        override fun readIfChanged(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
+            passed { surface.readIfChanged(key, known) }
+
+        override fun putIfMatch(
+            key: String,
+            expected: Digest?,
+            envelope: Envelope.Scalar,
+            ttl: Duration?,
+            frame: ByteArray
+        ): CompletableFuture<RemoteConditionalWrite> = passed {
+            surface.putIfMatch(
+                key,
+                expected,
+                envelope,
+                ttl,
+                frame
+            )
+        }
+    }
+
+    private class PassingVersioned(private val surface: VersionedL1Store) : FutureVersionedL1Store {
+        override fun putIfNewer(
+            key: String,
+            envelope: Envelope,
+            version: Long,
+            ttl: Duration?,
+            frame: ByteArray
+        ): CompletableFuture<RemoteVersionedWrite> = passed { surface.putIfNewer(key, envelope, version, ttl, frame) }
+    }
+
+    private class PassingSets(private val surface: SetL1Store) : FutureSetL1Store {
+        override fun addMembers(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray
+        ): CompletableFuture<Int?> =
+            passed { surface.addMembers(key, members, ttl, frame) }
+
+        override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Int?> =
+            passed { surface.removeMembers(key, members, ttl, frame) }
+    }
+
+    private companion object {
+        /**
+         * 能力面上的操作不排队：就地执行，以已完成（或已失败）的 future 返回。
+         */
+        @Suppress("TooGenericExceptionCaught")
+        fun <T> passed(block: suspend () -> T): CompletableFuture<T> = try {
+            CompletableFuture.completedFuture(now(block))
+        } catch (e: Throwable) {
+            CompletableFuture.failedFuture(e)
+        }
     }
 }

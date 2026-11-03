@@ -19,8 +19,8 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.core.clock.TickingClock
 import me.ahoo.cocache.core.engine.AbstractEngine
@@ -79,7 +79,6 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      */
     private class Registration(
         val engine: AbstractEngine<*, *>,
-        val store: RemoteStore,
         val cache: Any,
         var subscription: Subscription? = null
     )
@@ -120,52 +119,54 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     /**
      * 按声明创建缓存。同一运行时内缓存名与命名空间都不得重复。
      *
-     * 带版本的缓存（[CacheSpec.versioned]）要求后端支持版本（[CoherenceBackend.versionedWrites]），否则抛出
-     * [UnsupportedOperationException]，不注册任何东西。
+     * 创建时检查缓存需要的 L1 能力（RFC 0005 §4.3）：带版本的缓存（[CacheSpec.versioned]）要求存储支持按版本有序的写入
+     * （[L1Store.versioned]），否则抛出 [UnsupportedOperationException]，不注册任何东西。普通缓存不要求条件读写：
+     * 存储不支持时（[L1Store.conditional] 为 `null`），`getIfChanged` 与 `putIfMatch` 在调用时抛出 [UnsupportedOperationException]（M5 之前）。
      */
     fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> {
         if (spec.versioned) {
             return createVersioned(spec)
         }
-        return register(spec.name, spec.namespace, { it }) { store -> CoherentEngine(spec, store, context) }
+        return register(spec.name, spec.namespace, NONE, { it }) { store -> CoherentEngine(spec, store, context) }
     }
 
     private fun <K : Any, V : Any> createVersioned(spec: CacheSpec<K, V>): Cache<K, V> {
-        if (!backend.versionedWrites) {
-            throw UnsupportedOperationException(
-                "Cache[${spec.name}] is versioned, but backend ${backend.javaClass.name} does not support versioned writes " +
-                    "(CoherenceBackend.versionedWrites = false)."
-            )
-        }
         val engineSpec = spec.versionedEngineSpec()
-        return register(spec.name, spec.namespace, { VersionedCache(it) }) { store ->
+        return register(spec.name, spec.namespace, listOf(Capability.VERSIONED), { VersionedCache(it) }) { store ->
             CoherentEngine(engineSpec, store, context, VersionedFormat(spec.codec))
         }
     }
 
     /**
-     * 按声明创建集合缓存。
+     * 按声明创建集合缓存。存储必须支持集合成员的增删（[L1Store.sets]），否则抛出 [UnsupportedOperationException]，不注册任何东西。
      */
     fun <K : Any, E : Any> create(spec: SetCacheSpec<K, E>): SetCache<K, E> {
-        return register(spec.name, spec.namespace, { it }) { store -> SetEngine(spec, store, context) }
+        return register(
+            spec.name,
+            spec.namespace,
+            listOf(Capability.SETS),
+            { it }
+        ) { store -> SetEngine(spec, store, context) }
     }
 
     /**
+     * @param required 缓存需要的 L1 能力：存储缺少其中任何一个时抛出，不注册任何东西
      * @param expose 用户拿到的缓存（[cache] 按名称返回的也是它）
      */
     @Suppress("TooGenericExceptionCaught")
     private fun <C, R : Any> register(
         name: String,
         namespace: String,
+        required: List<Capability>,
         expose: (C) -> R,
-        factory: (RemoteStore) -> C
+        factory: (L1Store) -> C
     ): R where C : AbstractEngine<*, *> {
         check(!closed.get()) { "CacheRuntime is closed." }
         require(names[name] == null) { "Cache[$name] already exists." }
         require(namespaces.add(namespace)) { "Namespace[$namespace] is already used by another cache." }
-        val (store, engine) = createEngine(name, namespace, factory)
+        val (provided, engine) = createEngine(name, namespace, required, factory)
         val exposed = expose(engine)
-        val registration = Registration(engine, store, exposed)
+        val registration = Registration(engine, exposed)
         if (names.putIfAbsent(name, registration) != null) {
             namespaces.remove(namespace)
             throw IllegalArgumentException("Cache[$name] already exists.")
@@ -180,31 +181,64 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             names.remove(name, registration)
             namespaces.remove(namespace)
             closeQuietly("cache $name") { engine.close() }
-            closeQuietly("store of $name") { store.close() }
             throw e
         }
-        log.info { "Cache[$name] - created on namespace[$namespace], node[$nodeId]." }
+        log.info {
+            "Cache[$name] - created on namespace[$namespace], node[$nodeId], L1 capabilities${provided.joinToString(
+                prefix = "[",
+                postfix = "]"
+            )}."
+        }
         return exposed
     }
 
     /**
-     * 创建存储与引擎。失败时回滚：释放命名空间、关闭已创建的存储，否则同名、同命名空间永远无法重试（RFC 0005 附录 A.L9）。
+     * 创建存储、检查能力并创建引擎，返回存储提供的能力（启动日志输出）。失败时回滚：释放命名空间，否则同名、同命名空间永远无法重试
+     * （RFC 0005 附录 A.L9）。存储没有 `close`：连接等资源属于后端。
      */
     @Suppress("TooGenericExceptionCaught")
     private fun <C : AbstractEngine<*, *>> createEngine(
         name: String,
         namespace: String,
-        factory: (RemoteStore) -> C
-    ): Pair<RemoteStore, C> {
-        var store: RemoteStore? = null
+        required: List<Capability>,
+        factory: (L1Store) -> C
+    ): Pair<List<Capability>, C> {
         try {
-            val created = backend.store(namespace)
-            store = created
-            return created to factory(created)
+            val store = backend.store(namespace)
+            val provided = Capability.of(store)
+            val missing = required - provided.toSet()
+            if (missing.isNotEmpty()) {
+                throw UnsupportedOperationException(
+                    "Cache[$name] needs the L1 capabilities$missing, but the store of backend ${backend.javaClass.name} " +
+                        "on namespace[$namespace] provides only $provided."
+                )
+            }
+            return provided to factory(store)
         } catch (e: Exception) {
             namespaces.remove(namespace)
-            store?.let { closeQuietly("store of $name") { it.close() } }
             throw e
+        }
+    }
+
+    /**
+     * 存储的可选能力（RFC 0005 §4.3），只用于创建时的检查与启动日志：能力只由存储的访问器表达，不进入 SPI。
+     */
+    private enum class Capability(private val label: String) {
+        CONDITIONAL("conditional"),
+        VERSIONED("versioned"),
+        SETS("sets");
+
+        override fun toString(): String = label
+
+        companion object {
+            /**
+             * [store] 提供的能力，按声明顺序。
+             */
+            fun of(store: L1Store): List<Capability> = listOfNotNull(
+                CONDITIONAL.takeIf { store.conditional() != null },
+                VERSIONED.takeIf { store.versioned() != null },
+                SETS.takeIf { store.sets() != null },
+            )
         }
     }
 
@@ -239,7 +273,6 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         registrations.reversed().forEach { registration ->
             closeQuietly("subscription of ${registration.engine.name}") { registration.subscription?.close() }
             closeQuietly("cache ${registration.engine.name}") { registration.engine.close() }
-            closeQuietly("store of ${registration.engine.name}") { registration.store.close() }
         }
         owned.reversed().forEach { resource -> closeQuietly(resource.toString()) { resource.close() } }
     }
@@ -302,7 +335,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         fun asyncExecutor(asyncExecutor: Executor) = apply { this.asyncExecutor = asyncExecutor }
 
         /**
-         * 阻塞执行器（RFC 0004 §5.1）：异步路径上的同步数据源，以及两种变体中只实现同步 SPI 的后端，只在这里执行。由调用方管理，不应排队。
+         * 阻塞执行器（RFC 0004 §5.1）：异步路径上的同步数据源只在这里执行。由调用方管理，不应排队。
          * 不指定时：JDK 21+ 每个任务一个虚拟线程；否则是运行时自建的不排队守护线程池（最多 512 线程，满时拒绝）。
          */
         fun blockingExecutor(blockingExecutor: Executor) = apply { this.blockingExecutor = blockingExecutor }
@@ -319,6 +352,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     companion object {
         private val log = KotlinLogging.logger {}
         private const val REFRESH_QUEUE_CAPACITY = 1024
+
+        /**
+         * 不要求任何可选能力（普通缓存，见 [create]）。
+         */
+        private val NONE: List<Capability> = emptyList()
 
         @JvmStatic
         fun builder(): Builder = Builder()

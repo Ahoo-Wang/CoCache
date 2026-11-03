@@ -27,6 +27,7 @@ import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -311,7 +312,7 @@ class TokenConservationPropertyTest {
         }
 
         fun leased(key: String): Boolean =
-            memory.store(NAME).read("cocache:$NAME:$key", null, null) is RemoteRead.Leased
+            Suspending.await { memory.store(NAME).read("cocache:$NAME:$key", null, null) } is RemoteRead.Leased
     }
 
     companion object {

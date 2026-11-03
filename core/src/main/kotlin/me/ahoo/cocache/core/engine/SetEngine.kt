@@ -20,14 +20,13 @@ import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetCacheSpec
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.awaitOriginal
-import me.ahoo.cocache.core.internal.awaitUncancellable
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
@@ -41,7 +40,7 @@ import java.util.concurrent.CompletableFuture
  */
 internal class SetEngine<K : Any, E : Any>(
     spec: SetCacheSpec<K, E>,
-    store: RemoteStore,
+    store: L1Store,
     context: EngineContext,
 ) : AbstractEngine<K, Set<E>>(spec.name, spec.namespace, spec.keyPrefix, spec.keyEncoder, spec.policy, store, context),
     SetCache<K, E> {
@@ -189,7 +188,7 @@ internal class SetEngine<K : Any, E : Any>(
         val bounded = ttl?.boundedTtl()
         write(
             listOf(storageKey),
-            { frame -> asyncStore.putAsync(storageKey, envelope, bounded, frame).awaitUncancellable() },
+            { frame -> store.put(storageKey, envelope, bounded, frame) },
             onFailure = throwWriteFailure("put")
         )
     }
@@ -218,11 +217,11 @@ internal class SetEngine<K : Any, E : Any>(
         write(plan.keys, { frame ->
             if (plan.puts.isNotEmpty()) {
                 val putFrame = plan.putFrame(frame)
-                asyncStore.putAllAsync(plan.puts, putFrame).awaitUncancellable()
+                store.putAll(plan.puts, putFrame)
             }
             if (plan.clears.isNotEmpty()) {
                 val clearFrame = plan.clearFrame(frame)
-                asyncStore.invalidateAsync(plan.clears, clearFrame).awaitUncancellable()
+                store.invalidate(plan.clears, clearFrame)
             }
         }, onFailure = throwWriteFailure("putAll"))
     }
@@ -260,11 +259,12 @@ internal class SetEngine<K : Any, E : Any>(
         if (elements.isEmpty()) {
             return
         }
+        val sets = requireSets("add")
         val storageKey = storageKey(key)
         val members = encode(elements)
         val ttl = policy.valueTtl()
         write(listOf(storageKey), { frame ->
-            val format = asyncStore.addMembersIfReadableAsync(storageKey, members, ttl, frame).awaitUncancellable()
+            val format = sets.addMembers(storageKey, members, ttl, frame)
             refuseForeign(storageKey, format)
         }, onFailure = throwWriteFailure("add"))
     }
@@ -296,11 +296,12 @@ internal class SetEngine<K : Any, E : Any>(
         if (elements.isEmpty()) {
             return
         }
+        val sets = requireSets("remove")
         val storageKey = storageKey(key)
         val members = encode(elements)
         val ttl = policy.valueTtl()
         write(listOf(storageKey), { frame ->
-            val format = asyncStore.removeMembersIfReadableAsync(storageKey, members, ttl, frame).awaitUncancellable()
+            val format = sets.removeMembers(storageKey, members, ttl, frame)
             refuseForeign(storageKey, format)
         }, onFailure = throwWriteFailure("remove"))
     }
@@ -317,7 +318,7 @@ internal class SetEngine<K : Any, E : Any>(
         val keys = listOf(storageKey)
         write(
             keys,
-            { frame -> asyncStore.invalidateAsync(keys, frame).awaitUncancellable() },
+            { frame -> store.invalidate(keys, frame) },
             onFailure = throwWriteFailure("clear")
         )
     }

@@ -13,7 +13,12 @@
 
 package me.ahoo.cocache.core
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.core.codec.StringCodec
@@ -21,6 +26,7 @@ import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicInteger
 
 class CacheRuntimeTest {
@@ -132,7 +138,10 @@ class CacheRuntimeTest {
                     return Subscription { throw IllegalStateException("unsubscribe failed") }
                 }
 
-                override fun publish(namespace: String, frame: ByteArray) = delegate.channel.publish(namespace, frame)
+                override suspend fun publish(namespace: String, frame: ByteArray) = delegate.channel.publish(
+                    namespace,
+                    frame
+                )
             }
         }
         val runtime = CacheRuntime.builder().backend(failing).build()
@@ -154,7 +163,10 @@ class CacheRuntimeTest {
                     return delegate.channel.subscribe(namespace, listener)
                 }
 
-                override fun publish(namespace: String, frame: ByteArray) = delegate.channel.publish(namespace, frame)
+                override suspend fun publish(namespace: String, frame: ByteArray) = delegate.channel.publish(
+                    namespace,
+                    frame
+                )
             }
         }
         CacheRuntime.builder().backend(flaky).build().use { runtime ->
@@ -178,7 +190,7 @@ class CacheRuntimeTest {
         val delegate = InMemoryBackend()
         val attempts = AtomicInteger()
         val flaky = object : me.ahoo.cocache.api.spi.CoherenceBackend by delegate {
-            override fun store(namespace: String): me.ahoo.cocache.api.spi.RemoteStore {
+            override fun store(namespace: String): L1Store {
                 check(attempts.incrementAndGet() > 1) { "store failed" }
                 return delegate.store(namespace)
             }
@@ -193,36 +205,79 @@ class CacheRuntimeTest {
     }
 
     /**
-     * 构造引擎失败时同样释放命名空间，并关闭已创建的存储（RFC 0005 附录 A.L9）。
+     * 构造引擎失败时同样释放命名空间（RFC 0005 附录 A.L9）。存储没有 `close`，资源属于后端。
      */
     @Test
-    fun failedEngineCreationReleasesTheNamespaceAndClosesTheStore() {
+    fun failedEngineCreationReleasesTheNamespace() {
         val delegate = InMemoryBackend()
         val failFormat = java.util.concurrent.atomic.AtomicBoolean(true)
-        val closedStores = AtomicInteger()
         val flaky = object : me.ahoo.cocache.api.spi.CoherenceBackend by delegate {
             // 引擎构造时读取后端的格式版本
             override val format: Int
                 get() = if (failFormat.get()) throw IllegalStateException("format unavailable") else delegate.format
-
-            override fun store(namespace: String): me.ahoo.cocache.api.spi.RemoteStore {
-                val store = delegate.store(namespace)
-                return object : me.ahoo.cocache.api.spi.RemoteStore by store {
-                    override fun close() {
-                        closedStores.incrementAndGet()
-                        store.close()
-                    }
-                }
-            }
         }
         CacheRuntime.builder().backend(flaky).build().use { runtime ->
             runCatching { runtime.create(spec("user")) }.exceptionOrNull()
                 .assert().isInstanceOf(IllegalStateException::class.java).hasMessage("format unavailable")
-            closedStores.get().assert().isEqualTo(1)
             runtime.cache("user").assert().isNull()
             failFormat.set(false)
             runtime.create(spec("user")).assert().isNotNull()
             runtime.cacheNames.assert().containsExactly("user")
         }
+    }
+
+    /**
+     * 创建时检查缓存需要的 L1 能力（RFC 0005 §4.3）：带版本的缓存要求 `versioned()`，集合缓存要求 `sets()`。缺失时以
+     * [UnsupportedOperationException] 失败并指明缺少的能力，不注册任何东西：同名、同命名空间之后可以创建不需要它的缓存。
+     */
+    @Test
+    fun missingCapabilitiesFailCreationAndRegisterNothing() {
+        val backend = StrippedBackend(InMemoryBackend(), versioned = false, sets = false)
+        CacheRuntime.builder().backend(backend).build().use { runtime ->
+            val versioned = runCatching {
+                runtime.create(
+                    cacheSpec<String, String>("doc") {
+                        codec = StringCodec
+                        versioned = true
+                    }
+                )
+            }.exceptionOrNull()
+            versioned.assert().isInstanceOf(UnsupportedOperationException::class.java)
+                .hasMessageContaining("Cache[doc] needs the L1 capabilities[versioned]")
+                .hasMessageContaining("provides only [conditional]")
+            val set = runCatching {
+                runtime.create(setCacheSpec<String, String>("index") { elementCodec = StringCodec })
+            }.exceptionOrNull()
+            set.assert().isInstanceOf(UnsupportedOperationException::class.java)
+                .hasMessageContaining("Cache[index] needs the L1 capabilities[sets]")
+            runtime.cacheNames.assert().isEmpty()
+            runtime.cache("doc").assert().isNull()
+            runtime.create(spec("doc")).assert().isNotNull()
+            runtime.create(spec("index")).assert().isNotNull()
+            runtime.cacheNames.assert().containsExactlyInAnyOrder("doc", "index")
+        }
+    }
+
+    /**
+     * 启动日志输出每个命名空间的 L1 能力（RFC 0005 §4.3）。
+     */
+    @Test
+    fun creationLogsTheCapabilitiesOfTheNamespace() {
+        val logger = LoggerFactory.getLogger(CacheRuntime::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            CacheRuntime.builder().backend(InMemoryBackend()).build().use { it.create(spec("full")) }
+            val stripped = StrippedBackend(InMemoryBackend(), conditional = false, versioned = false, sets = false)
+            CacheRuntime.builder().backend(stripped).build().use { it.create(spec("bare", "bare-ns")) }
+        } finally {
+            logger.detachAppender(appender)
+        }
+        val created = appender.list.filter { it.level == Level.INFO }.map { it.formattedMessage }
+            .filter { it.contains("created on namespace") }
+        created.assert().hasSize(2)
+        created[0].assert().startsWith("Cache[full] - created on namespace[full]")
+            .endsWith("L1 capabilities[conditional, versioned, sets].")
+        created[1].assert().startsWith("Cache[bare] - created on namespace[bare-ns]").endsWith("L1 capabilities[].")
     }
 }

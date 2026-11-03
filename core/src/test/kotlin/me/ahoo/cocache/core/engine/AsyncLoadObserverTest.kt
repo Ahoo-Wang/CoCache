@@ -27,6 +27,7 @@ import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.EngineSpec.TestCodec
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -137,12 +138,16 @@ class AsyncLoadObserverTest {
         observer.records.map { it.operation }.assert().contains(LoadOperation.REFRESH)
         // 其它节点持有 lease：等待被观测
         val token = Token(NodeId.random(), 1)
-        memory.store(name).read("cocache:$name:held", LeaseRequest(token, Duration.ofMinutes(1)), null)
+        Suspending.await {
+            memory.store(
+                name
+            ).read("cocache:$name:held", LeaseRequest(token, Duration.ofMinutes(1)), null)
+        }
         val waiting = cache.get("held")
         awaitCondition(
             "waiting"
         ) { observer.records.none { it.operation == LoadOperation.LEASE_WAIT } && !waiting.isDone }
-        memory.store(name).release("cocache:$name:held", token)
+        Suspending.await { memory.store(name).release("cocache:$name:held", token) }
         database["held"] = "h"
         waiting.get(10, TimeUnit.SECONDS).assert().isEqualTo("h")
         observer.records.map { it.operation }.assert().contains(LoadOperation.LEASE_WAIT)

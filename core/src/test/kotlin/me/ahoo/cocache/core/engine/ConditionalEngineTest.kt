@@ -16,28 +16,25 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Codec
-import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.SetCache
-import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
+import me.ahoo.cocache.core.StrippedBackend
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
-import java.time.Duration
 import java.util.concurrent.CompletionException
 
 /**
@@ -83,7 +80,11 @@ class ConditionalEngineTest {
         received().assert().isEqualTo(afterFirst)
 
         val silent = InvalidationFrame.encode(NodeId.random(), emptyList())
-        memory.store("doc").addMembersIfReadable("cocache:doc:set", listOf("a".toByteArray()), null, silent)
+        Suspending.await {
+            requireNotNull(
+                memory.store("doc").sets()
+            ).addMembers("cocache:doc:set", listOf("a".toByteArray()), null, silent)
+        }
         val baseline = received()
         val error = runCatching { cache.putIfMatch("set", null, "v") }.exceptionOrNull()
         error.assert().isInstanceOf(CacheWriteException::class.java)
@@ -131,49 +132,42 @@ class ConditionalEngineTest {
             }
         )
         unwrap(cache.async().putIfMatch("k", null, "v").handle { _, e -> e }.join()).assert().isSameAs(failure)
-        memory.store("failing").read("cocache:failing:k", null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        Suspending.await {
+            memory.store("failing").read("cocache:failing:k", null, null)
+        }.assert().isEqualTo(RemoteRead.Miss(false))
     }
 
     /**
-     * 只实现同步 SPI、不覆盖条件写入的存储（第三方后端在 6.6 编译的样子）：引擎经阻塞执行器调用同步方法。
-     */
-    private class DefaultsStore(private val delegate: RemoteStore) : RemoteStore by delegate {
-        override fun readIfChanged(key: String, known: Digest?) = super<RemoteStore>.readIfChanged(key, known)
-
-        override fun putIfMatch(
-            key: String,
-            expected: Digest?,
-            envelope: Envelope.Scalar,
-            ttl: Duration?,
-            frame: ByteArray
-        ): RemoteConditionalWrite = super<RemoteStore>.putIfMatch(key, expected, envelope, ttl, frame)
-    }
-
-    /**
-     * SPI 默认实现不提供条件写入：引擎原样抛出 [UnsupportedOperationException]（不包装、不广播、不修改 L1），
-     * 而不是先读后写、让两个并发的写入方都成功。条件读取的默认实现（先读后比较）照常可用。
+     * 存储没有条件读写的能力面（[me.ahoo.cocache.api.spi.L1Store.conditional] 为 `null`，RFC 0005 §4.3）：M5 之前普通缓存照常创建，
+     * 条件读写在调用时原样抛出 [UnsupportedOperationException]（同步抛出，异步以失败的 future 交出）：不包装、不广播、不修改 L1 与 L2，
+     * 也不计为写入失败。从不退回“先读后写”，否则两个并发的写入方都会成功。
      */
     @Test
-    fun backendsWithoutConditionalWritesFailLoudly() {
-        val defaults = object : CoherenceBackend by memory {
-            override fun store(namespace: String): RemoteStore = DefaultsStore(memory.store(namespace))
-        }
+    fun storesWithoutTheConditionalCapabilityFailLoudly() {
         val runtime = CacheRuntime.builder().backend(
-            HookedBackend(defaults).apply { atomicBroadcastOverride = false }
+            HookedBackend(StrippedBackend(memory, conditional = false)).apply { atomicBroadcastOverride = false }
         ).build()
         try {
             val cache = create(runtime)
             create(observer)
             cache.put("k", "v")
+            cache["k"].assert().isEqualTo("v")
             val baseline = received()
-            runCatching { cache.putIfMatch("k", null, "x") }.exceptionOrNull()
-                .assert().isInstanceOf(UnsupportedOperationException::class.java)
-            unwrap(cache.async().putIfMatch("k", null, "x").handle { _, e -> e }.join())
-                .assert().isInstanceOf(UnsupportedOperationException::class.java)
-            received().assert().isEqualTo(baseline)
             val digest = Digest.of(Envelope.Scalar("v".toByteArray()))
-            cache.getIfChanged("k", digest).assert().isEqualTo(ConditionalGet.Unchanged)
-            cache.async().getIfChanged("k", null).join().assert().isEqualTo(ConditionalGet.Present("v", digest))
+            listOf(
+                runCatching { cache.putIfMatch("k", null, "x") }.exceptionOrNull(),
+                runCatching { cache.putIfMatch("k", digest, "x", java.time.Duration.ofSeconds(1)) }.exceptionOrNull(),
+                runCatching { cache.getIfChanged("k", digest) }.exceptionOrNull(),
+                unwrap(cache.async().putIfMatch("k", null, "x").handle { _, e -> e }.join()),
+                unwrap(cache.async().getIfChanged("k", null).handle { _, e -> e }.join()),
+            ).forEach { error ->
+                error.assert().isInstanceOf(UnsupportedOperationException::class.java)
+                error?.message.assert().contains("needs the conditional capability")
+            }
+            received().assert().isEqualTo(baseline)
+            requireNotNull(runtime.admin("doc")).localSize.assert().isEqualTo(1)
+            requireNotNull(runtime.metrics("doc")).writeFailures.assert().isEqualTo(0)
+            cache["k"].assert().isEqualTo("v")
         } finally {
             runtime.close()
         }

@@ -17,7 +17,6 @@ import io.lettuce.core.ClientOptions
 import io.lettuce.core.RedisCommandTimeoutException
 import io.lettuce.core.RedisException
 import io.lettuce.core.TimeoutOptions
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -75,7 +74,7 @@ class RedisAsyncStoreFaultTest {
     @Test
     fun everyAsyncOperationSurvivesScriptCacheLoss() {
         val backend = RedisTestSupport.backend().closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         val lease = LeaseRequest(token(), Duration.ofSeconds(30))
         RedisTestSupport.flushScripts()
         store.readAsync(key("a"), lease, null).await().assert().isEqualTo(RemoteRead.Miss(true))
@@ -143,7 +142,7 @@ class RedisAsyncStoreFaultTest {
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(commandTimeout = Duration.ofMillis(200), clientResources = redis.resources)
         ).closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         // 先缓存脚本：否则 NOSCRIPT 回退的 EVAL 是另一条命令，暂停期间各自计时
         store.readAsync(key("warm"), null, null).await()
         redis.pause(PAUSE_MILLIS)
@@ -180,7 +179,7 @@ class RedisAsyncStoreFaultTest {
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(commandTimeout = Duration.ofMillis(200), clientResources = redis.resources)
         ).closing()
-        val store = backend.store(namespace)
+        val store = backend.remoteStore(namespace)
         store.read(key("warm"), null, null)
         redis.pause(PAUSE_MILLIS)
         val error = runCatching { store.read(key("slow"), null, null) }.exceptionOrNull()
@@ -204,7 +203,7 @@ class RedisAsyncStoreFaultTest {
             .build()
         closeables.add(AutoCloseable { client.shutdown() })
         val backend = RedisBackend.of(client, RedisBackendOptions(commandTimeout = Duration.ofMillis(200))).closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         store.readAsync(key("warm"), null, null).await()
         redis.pause(1_000)
         val error = store.readAsync(key("slow"), null, null).failure()
@@ -257,7 +256,7 @@ class RedisAsyncStoreFaultTest {
         assumeFalse(RedisTestSupport.isCluster)
         val redis = pausable()
         val backend = RedisTestSupport.backend(RedisBackendOptions(clientResources = redis.resources)).closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         // 先缓存脚本：否则暂停期间的 EVALSHA 得到 NOSCRIPT 后才发出 EVAL，晚于随后的读取
         store.putAsync(key("warm"), scalar("w"), null, frame(key("warm"))).await()
         store.readAsync(key("warm"), null, null).await()
@@ -278,7 +277,7 @@ class RedisAsyncStoreFaultTest {
         assumeFalse(RedisTestSupport.isCluster)
         val proxy = RedisTestSupport.proxy().closing()
         val backend = RedisTestSupport.proxiedBackend(proxy).closing()
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         store.readAsync(key("warm"), null, null).await()
         proxy.pause(1_000)
         val pending = store.putAsync(key("cut"), scalar("v"), null, frame(key("cut")))

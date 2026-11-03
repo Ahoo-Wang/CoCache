@@ -26,6 +26,7 @@ import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -46,14 +47,14 @@ class SetEngineFormatTest {
     }
 
     private fun seedForeign(key: String, namespace: String = "index") {
-        memory.store(
-            namespace
-        ).put(
-            "cocache:$namespace:$key",
-            Envelope.Scalar(ByteArray(0)),
-            null,
-            InvalidationFrame.encode(NodeId.random(), emptyList())
-        )
+        Suspending.await {
+            memory.store(namespace).put(
+                "cocache:$namespace:$key",
+                Envelope.Scalar(ByteArray(0)),
+                null,
+                InvalidationFrame.encode(NodeId.random(), emptyList())
+            )
+        }
         backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = 0) else read }
     }
 
@@ -64,7 +65,13 @@ class SetEngineFormatTest {
         error.assert().isInstanceOf(CacheReadException::class.java)
         error?.cause.assert().isInstanceOf(ForeignFormatException::class.java)
         requireNotNull(runtime.metrics("index")).unknownFormats.assert().isEqualTo(1)
-        (memory.store("index").read("cocache:index:k", null, null) is RemoteRead.Hit).assert().isTrue()
+        (
+            Suspending.await {
+                memory.store(
+                    "index"
+                ).read("cocache:index:k", null, null)
+            } is RemoteRead.Hit
+            ).assert().isTrue()
     }
 
     @Test
@@ -89,12 +96,14 @@ class SetEngineFormatTest {
         try {
             val cache: SetCache<String, String> = writer.create(setCacheSpec("plain") { elementCodec = StringCodec })
             observer.create(setCacheSpec<String, String>("plain") { elementCodec = StringCodec })
-            memory.store("plain").put(
-                "cocache:plain:k",
-                Envelope.Scalar("x".toByteArray()),
-                null,
-                InvalidationFrame.encode(NodeId.random(), emptyList())
-            )
+            Suspending.await {
+                memory.store("plain").put(
+                    "cocache:plain:k",
+                    Envelope.Scalar("x".toByteArray()),
+                    null,
+                    InvalidationFrame.encode(NodeId.random(), emptyList())
+                )
+            }
             val received = requireNotNull(observer.metrics("plain")).invalidationsReceived
 
             val error = runCatching { cache.add("k", listOf("a")) }.exceptionOrNull()

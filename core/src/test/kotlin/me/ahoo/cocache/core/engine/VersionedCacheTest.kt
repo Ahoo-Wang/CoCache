@@ -23,18 +23,23 @@ import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.ForwardingL1Store
+import me.ahoo.cocache.api.spi.ForwardingVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.RemoteVersionedWrite
+import me.ahoo.cocache.api.spi.VersionedL1Store
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.StrippedBackend
 import me.ahoo.cocache.core.TtlFunction
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -66,7 +71,7 @@ class VersionedCacheTest {
     }
 
     private fun remote(key: String, name: String = "doc"): RemoteRead =
-        memory.store(name).read("cocache:$name:$key", null, null)
+        Suspending.await { memory.store(name).read("cocache:$name:$key", null, null) }
 
     private fun remoteVersion(key: String, name: String): Long {
         val hit = remote(key, name) as RemoteRead.Hit
@@ -115,9 +120,7 @@ class VersionedCacheTest {
 
     @Test
     fun backendsWithoutVersionsFailAtCreation() {
-        val plain = object : CoherenceBackend by memory {
-            override val versionedWrites: Boolean = false
-        }
+        val plain = StrippedBackend(memory, versioned = false)
         CacheRuntime.builder().backend(plain).build().use { other ->
             val error = runCatching {
                 other.create(
@@ -128,7 +131,7 @@ class VersionedCacheTest {
                 )
             }.exceptionOrNull()
             error.assert().isInstanceOf(UnsupportedOperationException::class.java)
-            error?.message.assert().contains("versionedWrites")
+            error?.message.assert().contains("capabilities[versioned]")
             other.cacheNames.assert().isEmpty()
             other.create(cacheSpec<String, String>("doc") { codec = StringCodec }).assert().isNotNull()
         }
@@ -313,10 +316,10 @@ class VersionedCacheTest {
     fun payloadCodecAndMemoryStoreEdges() {
         val codec = PayloadCodec(StringCodec)
         codec.decode(codec.encode(Versioned("v", 3))).assert().isEqualTo(Versioned("v", Versioned.NO_VERSION))
-        val store = memory.store("edges")
+        val store = requireNotNull(memory.store("edges").versioned())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
-        runCatching { store.putIfNewer("k", Envelope.Members(emptyList()), 1, null, frame) }.exceptionOrNull()
-            .assert().isInstanceOf(IllegalArgumentException::class.java)
+        runCatching { Suspending.await { store.putIfNewer("k", Envelope.Members(emptyList()), 1, null, frame) } }
+            .exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 
     /**
@@ -351,25 +354,26 @@ class VersionedCacheTest {
     }
 
     /**
-     * 后端声明了 `versionedWrites` 但存储没有实现 `putIfNewer`（SPI 默认实现）：[UnsupportedOperationException] 原样传给调用方，
+     * 存储提供了按版本写入的能力面，但它以 [UnsupportedOperationException] 拒绝 `putIfNewer`：原样传给调用方，
      * 不包装、不计为写入失败的广播。
      */
     @Test
-    fun storesWithoutPutIfNewerFailUnwrapped() {
+    fun storesRefusingPutIfNewerFailUnwrapped() {
         val claiming = object : CoherenceBackend by memory {
-            override val versionedWrites: Boolean = true
-
-            override fun store(namespace: String): RemoteStore {
-                val delegate = memory.store(namespace)
-                return object : RemoteStore by delegate {
-                    override fun putIfNewer(
-                        key: String,
-                        envelope: Envelope,
-                        version: Long,
-                        ttl: Duration?,
-                        frame: ByteArray
-                    ): RemoteVersionedWrite = throw UnsupportedOperationException("no putIfNewer")
+            override fun store(namespace: String): L1Store = object : ForwardingL1Store(memory.store(namespace)) {
+                private val refusing = delegate.versioned()?.let { surface ->
+                    object : ForwardingVersionedL1Store(surface) {
+                        override suspend fun putIfNewer(
+                            key: String,
+                            envelope: Envelope,
+                            version: Long,
+                            ttl: Duration?,
+                            frame: ByteArray
+                        ): RemoteVersionedWrite = throw UnsupportedOperationException("no putIfNewer")
+                    }
                 }
+
+                override fun versioned(): VersionedL1Store? = refusing
             }
         }
         CacheRuntime.builder().backend(claiming).build().use { other ->

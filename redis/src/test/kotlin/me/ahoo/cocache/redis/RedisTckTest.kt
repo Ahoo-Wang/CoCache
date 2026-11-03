@@ -29,6 +29,7 @@ import me.ahoo.cocache.test.EngineSpec
 import me.ahoo.cocache.test.FaultSpec
 import me.ahoo.cocache.test.MultiNodeSpec
 import me.ahoo.cocache.test.SetEngineSpec
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.cocache.test.VersionedSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
@@ -268,10 +269,11 @@ class RedisFaultTest : FaultSpec() {
             val (cacheA, cacheB) = runtimes.map { it.create(spec) }
             val (setA, setB) = runtimes.map { it.create(setSpec) }
             val remote = backend.delegate.store(cacheName)
+            fun remoteRead(key: String) = Suspending.await { remote.read("cocache:$cacheName:$key", null, null) }
 
             RedisTestSupport.flushScripts()
             cacheA["k"].assert().isEqualTo("k-v")
-            (remote.read("cocache:$cacheName:k", null, null) as RemoteRead.Hit).envelope
+            (remoteRead("k") as RemoteRead.Hit).envelope
                 .assert().isEqualTo(Envelope.Scalar(EngineSpec.TestCodec.encode("k-v")))
 
             RedisTestSupport.flushScripts()
@@ -284,7 +286,7 @@ class RedisFaultTest : FaultSpec() {
 
             RedisTestSupport.flushScripts()
             cacheA.invalidate("k")
-            remote.read("cocache:$cacheName:k", null, null).assert().isEqualTo(RemoteRead.Miss(false))
+            remoteRead("k").assert().isEqualTo(RemoteRead.Miss(false))
             awaitCondition("B sees the invalidation") { cacheB["k"] == "k-v" }
 
             RedisTestSupport.flushScripts()
@@ -295,7 +297,7 @@ class RedisFaultTest : FaultSpec() {
             runCatching { cacheA["released"] }.exceptionOrNull().assert().isInstanceOf(
                 IllegalStateException::class.java
             )
-            remote.read("cocache:$cacheName:released", null, null).assert().isEqualTo(RemoteRead.Miss(false))
+            remoteRead("released").assert().isEqualTo(RemoteRead.Miss(false))
 
             RedisTestSupport.flushScripts()
             setA.add("s", listOf("a", "b"))

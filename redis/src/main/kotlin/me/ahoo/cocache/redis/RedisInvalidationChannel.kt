@@ -20,7 +20,7 @@ import io.lettuce.core.RedisChannelWriter
 import io.lettuce.core.api.StatefulConnection
 import io.lettuce.core.protocol.CommandExpiryWriter
 import io.lettuce.core.protocol.DefaultEndpoint
-import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
+import me.ahoo.cocache.api.spi.FutureInvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Subscription
@@ -50,7 +50,7 @@ internal abstract class RedisInvalidationChannel(
     internal val connections: RedisConnections,
     private val heartbeat: Duration,
     private val ackTimeout: Duration,
-) : AsyncInvalidationChannel, AutoCloseable {
+) : FutureInvalidationChannel, AutoCloseable {
     protected val listeners = ConcurrentHashMap<String, CopyOnWriteArrayList<InvalidationListener>>()
 
     /**

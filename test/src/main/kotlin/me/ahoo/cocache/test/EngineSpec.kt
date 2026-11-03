@@ -100,9 +100,9 @@ abstract class EngineSpec {
     protected open val closesBackend: Boolean = false
 
     /**
-     * 后端是否支持条件写入（`RemoteStore.putIfMatch` / `AsyncRemoteStore.putIfMatchAsync`）。SPI 的默认实现抛出
-     * `UnsupportedOperationException`：没有实现它的后端覆盖为 `false`，跳过条件写入的用例。为 `true`（默认）时
-     * 条件写入必须原子，不原子的实现无法通过强制竞争的并发用例。
+     * 后端是否支持条件读写（存储的 `conditional()` 非 `null`）。不支持时引擎在调用时抛出 `UnsupportedOperationException`：
+     * 这样的后端覆盖为 `false`，跳过条件读写的用例。为 `true`（默认）时条件写入必须原子，不原子的实现无法通过强制竞争的并发用例。
+     * M3e 改为声明能力（`expectedCapabilities`）。
      */
     protected open val supportsConditionalWrites: Boolean = true
 
@@ -203,7 +203,9 @@ abstract class EngineSpec {
     /**
      * 不经过引擎直接读 L1。
      */
-    protected fun remote(key: String): RemoteRead = backend.delegate.store(cacheName).read(storageKey(key), null, null)
+    protected fun remote(key: String): RemoteRead = Suspending.await {
+        backend.delegate.store(cacheName).read(storageKey(key), null, null)
+    }
 
     protected fun remoteValue(key: String): String? {
         val read = remote(key) as? RemoteRead.Hit ?: return null
@@ -211,9 +213,18 @@ abstract class EngineSpec {
     }
 
     /**
+     * 不经过引擎直接在 L1 中创建集合（带 [frame] 广播）。
+     */
+    protected fun addMembersSilently(key: String, frame: ByteArray) = Suspending.await {
+        requireNotNull(
+            backend.delegate.store(cacheName).sets()
+        ).addMembers(storageKey(key), listOf("a".toByteArray()), null, frame)
+    }
+
+    /**
      * 不广播地直接写 L1（模拟绕过协议的写入或丢失的事件）。
      */
-    protected fun writeRemoteSilently(key: String, bytes: ByteArray) {
+    protected fun writeRemoteSilently(key: String, bytes: ByteArray) = Suspending.await {
         backend.delegate.store(
             cacheName
         ).put(storageKey(key), Envelope.Scalar(bytes), null, InvalidationFrame.encode(NodeId.random(), emptyList()))
@@ -1287,13 +1298,17 @@ abstract class EngineSpec {
     fun negativeEntriesAndLeasesHoldNoValue() {
         assumeConditionalWrites()
         val cache = storeOfRecord()
-        backend.delegate.store(
-            cacheName
-        ).put(storageKey("negative"), Envelope.Absent, null, InvalidationFrame.encode(NodeId.random(), emptyList()))
+        val l1 = backend.delegate.store(cacheName)
+        Suspending.await {
+            l1.put(
+                storageKey("negative"),
+                Envelope.Absent,
+                null,
+                InvalidationFrame.encode(NodeId.random(), emptyList())
+            )
+        }
         val lease = LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1))
-        backend.delegate.store(
-            cacheName
-        ).read(storageKey("leased"), lease, null).assert().isEqualTo(RemoteRead.Miss(true))
+        Suspending.await { l1.read(storageKey("leased"), lease, null) }.assert().isEqualTo(RemoteRead.Miss(true))
 
         cache.getIfChanged("negative", null).assert().isEqualTo(ConditionalGet.Absent)
         cache.getIfChanged("leased", digestOf("x")).assert().isEqualTo(ConditionalGet.Absent)
@@ -1303,14 +1318,13 @@ abstract class EngineSpec {
         remoteValue("negative").assert().isEqualTo("v")
         remoteValue("leased").assert().isEqualTo("v")
         // lease 已被销毁：持有者的填充被拒绝
-        backend.delegate.store(cacheName).fill(
-            me.ahoo.cocache.api.spi.Fill(
-                storageKey("leased"),
-                lease.token,
-                Envelope.Scalar(TestCodec.encode("stale")),
-                null
-            )
-        ).assert().isFalse()
+        val stale = me.ahoo.cocache.api.spi.Fill(
+            storageKey("leased"),
+            lease.token,
+            Envelope.Scalar(TestCodec.encode("stale")),
+            null
+        )
+        Suspending.await { l1.fill(stale) }.assert().isFalse()
     }
 
     /**
@@ -1470,9 +1484,7 @@ abstract class EngineSpec {
         assumeConditionalWrites()
         val cache = nodeA.cache(spec())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
-        backend.delegate.store(
-            cacheName
-        ).addMembersIfReadable(storageKey("set"), listOf("a".toByteArray()), null, frame)
+        addMembersSilently("set", frame)
         writeRemoteSilently("corrupt", TestCodec.CORRUPT)
 
         val readError = runCatching { cache.getIfChanged("set", null) }.exceptionOrNull()
@@ -1508,9 +1520,7 @@ abstract class EngineSpec {
         val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
         val cache = nodeA.cache(spec(reclaim))
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
-        backend.delegate.store(
-            cacheName
-        ).addMembersIfReadable(storageKey("set"), listOf("a".toByteArray()), null, frame)
+        addMembersSilently("set", frame)
         writeRemoteSilently("corrupt", TestCodec.CORRUPT)
 
         runCatching {

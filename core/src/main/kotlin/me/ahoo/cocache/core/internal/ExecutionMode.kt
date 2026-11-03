@@ -25,7 +25,7 @@ import kotlin.coroutines.coroutineContext
  * 协议核心的执行变体（RFC 0005 V5、§4.4）：协议只写一份 `suspend` 实现，由三种 API 以不同的方式运行。
  *
  * - 同步变体（[runSync]）：`runBlocking` 在调用方线程自己的事件循环上运行核心；阻塞的 loader 就地执行，在调用方线程上，
- *   事务、`SecurityContext` 等 ThreadLocal 可用（不变量 6）。L1 命令经异步 SPI 发出、挂起等待（RFC 0005 §4.3），
+ *   事务、`SecurityContext` 等 ThreadLocal 可用（不变量 6）。L1 调用挂起、不可取消（`uncancellable`，RFC 0005 §4.3），
  *   调用方线程停在事件循环上，续接仍在它上面执行，从不在 L1 客户端的 I/O 线程上执行。
  * - 异步变体（`AsyncContext.runAsync`）：在运行时作用域中运行核心，执行到第一次挂起之前在调用方线程上；等待 L1 不占线程，
  *   阻塞调用交给阻塞执行器。用户拿到的是结果的副本，取消它不取消协程。
