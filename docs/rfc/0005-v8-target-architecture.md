@@ -282,6 +282,7 @@ InvalidationChannel      publish（suspend）、subscribe（阻塞）；Java 实
   - 删除 `AsyncRemoteStore`、`AsyncInvalidationChannel`、`BlockingAsyncStore` / `BlockingAsyncChannel` 与全部 `Async*` TCK 规范。
 - **取消与中断**：
   - 引擎从不取消 `L1Store` 的调用：核心在 `NonCancellable` 中调用它们，实现用可取消的 `await()` 也安全。调用的结束只由实现决定，每个调用都由实现自己限时（命令超时）；超时时未写出的命令不再写出、尽力释放令牌（6.9.1 的规则）。
+  - 故障不得以 `CancellationException` 报告：在 JVM 上它就是协程的取消，核心会把它当作调用方被取消（不降级、跟随者自行运行）。底层客户端取消的命令（如 Lettuce 在连接重置、关闭时取消的命令）按结果未知的 L1 故障报告；`FutureL1Store.adapt` 把被取消的 future 换成 `IllegalStateException`（#732）。6.x 的两条路径都把 Lettuce 的取消原样交给核心，M3d 改正。
   - 中断不到达存储。同步变体的线程被中断时，`runBlocking`（kotlinx ≥ 1.10）取消协程并等它结束：跟随者、lease 等待与许可等待立即结束；在途的 L1 命令先完成或超时，取消在之后的第一个挂起点生效，令牌由核心按正常路径释放；调用方随后得到 `InterruptedException`，调用在取消生效之前已经完成的，照常返回结果。两种情形都保留中断标志。
   - 代价：被中断的同步调用方至多多等一个命令超时（默认 2 s）。6.10 中它立即以 `RedisException("Interrupted while waiting for Redis.")` 失败、由存储在结果未知时释放令牌。被否决的做法是让 `runBlocking` 立即返回、协程在别的线程上收尾：命令可能在调用方看到失败之后才写出，违反“超时或被中断的脚本不再写出”。
 - **能力用抽象的访问器表达**：不支持时返回 `null`，不抛出，也没有默认实现，否则只包装基本操作的装饰器会静默剥掉能力（U15）。能力面是独立的接口、不继承 `L1Store`：继承时 `ForwardingL1Store` 转发出去的能力面就是被装饰者本身，绕过装饰器。同一个存储的访问器在其生命周期内返回同样的结果。`runtime.create` 在创建时检查所需的能力，缺失时抛出，不注册任何东西；M5 之前 `Cache` 仍有条件写入，`conditional()` 为 `null` 时与 6.x 一样在调用时抛出 `UnsupportedOperationException`。SPI 不提供任何非原子的默认实现。
