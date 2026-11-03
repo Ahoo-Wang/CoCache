@@ -61,11 +61,10 @@ internal suspend fun runsInline(): Boolean = coroutineContext[ExecutionMode]?.in
  * 异步变体不检查：它的协程只在运行时关闭时被取消，关闭之后的规则不变（§5.6）。
  */
 internal suspend fun ensureNotInterrupted() {
-    val context = coroutineContext
-    if (context[ExecutionMode]?.inline != true) {
+    if (!runsInline()) {
         return
     }
-    context.ensureActive()
+    coroutineContext.ensureActive()
     if (Thread.currentThread().isInterrupted) {
         throw InterruptedException("Interrupted before calling the source.")
     }
