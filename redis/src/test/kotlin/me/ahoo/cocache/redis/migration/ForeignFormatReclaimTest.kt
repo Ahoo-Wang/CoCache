@@ -28,12 +28,14 @@ import tools.jackson.module.kotlin.kotlinModule
 import java.util.UUID
 
 /**
+ * `foreignFormat = RECLAIM` 落在没有数据源的缓存上的代价：格式 0 的内容被回收，就是删除唯一副本。
+ *
  * 复现：Redis 是权威存储、没有数据源的缓存（CoSec 的用法）在 5.x 数据上直接升级到 6.x 时，旧数据被当作外来格式回收。
  *
  * 用 `foreignFormat = RECLAIM`（6.4 及以前对所有缓存的行为）固定旧行为，证明数据丢失确实发生；
  * 6.5 起没有数据源的读取默认 `FAIL`，见 [ForeignFormatFailTest]。
  */
-class CoCache5DataLossTest {
+class ForeignFormatReclaimTest {
     data class Policy(val id: String, val effect: String)
 
     private val mapper = JsonMapper.builder().addModule(kotlinModule()).build()

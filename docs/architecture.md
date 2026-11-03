@@ -41,7 +41,6 @@ cocache-core                   引擎与运行时；依赖 Caffeine、kotlin-log
 cocache-redis                  Lettuce 原生后端，不依赖 Spring
   RedisBackend、RedisBackendOptions、RedisChannelMode、RedisScripts、RedisRemoteStore、
   PubSubInvalidationChannel、ShardedInvalidationChannel
-  migration：CoCache5Migrator、CoCache5Migration、CoCache5Format（5.x 数据的离线迁移，§8.2）
 cocache-codec-jackson          Jackson 3（tools.jackson）Codec：JacksonCodec、jacksonCodec<V>()
 cocache-coroutines             可选的 Kotlin 协程挂起视图（6.4，RFC 0004 §7）；kotlinx-coroutines-core 由它与 cocache-core（协程核心，§5.6）使用
   SuspendingCache、SuspendingSetCache、SuspendingCacheLoader、suspending()、suspendingLoader()、asAsyncCacheLoader()
@@ -516,14 +515,9 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 ### 8.2 5.x 数据迁移
 
-`CoCache5Migrator`（`me.ahoo.cocache.redis.migration`）把 5.x（5.0–5.4 线格式相同）写入的 key 离线转换为本格式，供 L1 是唯一副本的缓存（没有数据源的 `Cache`、`SetCache`）升级使用；有数据源的缓存不需要它（§5.4 的 `RECLAIM`）。它自建或使用调用方的 Lettuce 客户端，不经运行时与引擎，**要求迁移期间所有写入方停止**。
+5.x 数据的离线迁移工具 `CoCache5Migrator` 只在 6.x（6.5 起）中提供，8.0 已删除（RFC 0005 §5）。L1 是唯一副本的缓存（没有数据源的 `Cache`、`SetCache`）要保留 5.x 的数据，先在 6.x 上迁移。读到 5.x 遗留的内容（格式 0）时按 §5.4 处理。
 
-- **5.x 格式**（`CoCache5Format`）：String（JSON / 字符串，默认用目标缓存的 `Codec` 解码 UTF-8 字节）、原生 Set（到 `SetCache` 的成员，或到标量值）、Hash（`Map<String, String>` → 值）；负缓存哨兵（String 本身、单元素 Set、单字段 Hash）转为状态 `M`。其它 Redis 类型、类型与配置不符、解码失败都立即中止（`CoCache5MigrationException`，带 key 与到此为止的报告），不跳过。
-- **key**：来源为 5.x 前缀下 `SCAN` 到的 key（默认 `cocache:{name}:`）或显式列出的 key；目标为 `{keyPrefix}{namespace}:` + 映射后的后缀，前缀、命名空间与编解码取自目标 spec。扫描范围互相重叠、或备份 key 落在扫描范围内时拒绝执行。
-- **迁移之前的写入**：没有数据源的缓存在迁移之前，读取（§5.4）与 `SetCache` 的元素增删（§6.3）默认失败，key 原样保留，之后仍可迁移；`put` / `putAll` 整体覆盖 5.x 内容，该 key 之后已是本格式，不再迁移、也不留备份。
-- **每个 key**：一次 Lua 读取 `TYPE`、`PTTL`、`DUMP` 与内容；已是本格式（String 以 magic 开头、Hash 有 `!f`）则跳过（可重复执行）。目标等于来源时为**原地迁移**：先 `RESTORE … REPLACE` 把原值备份到 `{backupPrefix}{5.x key}`（默认 `cocache5-backup:`，类型、内容、剩余寿命不变；单独的命令，备份 key 可以在任意 slot），再以脚本比较 `DUMP` 后按 `PRELUDE` 的 `write` 写入（内容已变则中止）。目标不同时 5.x key 不动，目标必须不存在（已是本格式则跳过，其它内容则中止）。剩余寿命原样保留；写入不广播。
-- **回滚**（`rollback`）：从备份恢复原地迁移的 key 并删除备份，删除写到新 key 的目标。`dropBackups` 删除备份。`dryRun` 只读取与解码。
-- 测试：`cocache-redis` 的 `CoCache5MigratorTest`（往返、重复执行、部分失败后重跑、回滚、备份清理）、`ForeignFormatFailTest`（漏跑迁移时读取 `FAIL`）、`ForeignFormatWriteTest`（漏跑迁移时 `SetCache` 的元素写入 `FAIL`、更高格式版本的值在没有数据源时 `FAIL`、存储脚本的判定）、`CoCache5DataLossTest`（`RECLAIM` 下的数据丢失复现），在单机、Cluster 与 Valkey 上运行。
+- 测试：`cocache-redis` 的 `ForeignFormatFailTest`（漏跑迁移时读取 `FAIL`）、`ForeignFormatWriteTest`（漏跑迁移时 `SetCache` 的元素写入 `FAIL`、更高格式版本的值在没有数据源时 `FAIL`、存储脚本的判定）、`ForeignFormatReclaimTest`（`RECLAIM` 下的数据丢失复现），在单机、Cluster 与 Valkey 上运行。
 
 ## 9. 运行时与 Spring 集成
 
