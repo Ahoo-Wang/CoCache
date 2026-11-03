@@ -11,12 +11,14 @@ Use this reference to wire and run the `cocache-test` suites against a backend, 
 | `SetEngineSpec` | `SetCache` across two runtimes: concurrent adds, empty-set deletion, rejected `invalidate`, write and read failures | `createBackend()`, `clock`, `elapse(duration)` |
 | `MultiNodeSpec` (6.3+) | Three runtimes on your backend: invalidation before a lease, after a lease while another node waits, after a fill but before the L2 write; a remote write between a read and its L2 fill; cross-node concurrent `put`s; misses while an invalidation retry is pending; one source load and one refresh per key cluster-wide | `createBackend()`, `clock`, `elapse(duration)` |
 | `FaultSpec` (6.3+) | L1 faults: copies bounded by `degradedLocalMaxAge`, failed fill and its lease, a failed `invalidate` without a loader throwing (6.9+), retries that give up or overflow, `put` / `invalidate` that take effect but throw and are safe to retry; optionally, writes rejected while disconnected are not replayed | `createBackend()`, `clock`, `elapse(duration)`; optionally `disconnect()` |
-| `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec` (6.3+) | Every case of the corresponding suite through `cache.async()`, plus async-only cases in `AsyncEngineSpec`: cancellation, completion thread, lease and permit waits holding no threads, original exceptions, no synchronous throws, `load.timeout`, sync and async joining one load, reentrancy | The same members as the corresponding suite |
+| `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec`, `AsyncVersionedSpec` (6.3–6.x; removed in 8.0) | 6.x: every case of the corresponding suite through `cache.async()`, plus async-only cases in `AsyncEngineSpec`: cancellation, completion thread, lease and permit waits holding no threads, original exceptions, no synchronous throws, `load.timeout`, sync and async joining one load, reentrancy. 8.0: extend the base suite instead; the async-only cases test the core and run in CoCache's own tests | The same members as the corresponding suite |
 | `AsyncBackendProtocolSpec` (6.3+) | Every `BackendProtocolSpec` case through the `AsyncRemoteStore` methods, plus sync and async calls agreeing | The same members as `BackendProtocolSpec`; only for backends implementing `AsyncRemoteStore` |
 
 ```kotlin
 testImplementation("me.ahoo.cocache:cocache-test")
 ```
+
+Every suite has `protected open val access: CacheAccess` (default `CacheAccess.SYNC`), and a backend needs only the default: how the blocking, async and suspending APIs behave belongs to the core. 8.0: to also run a suite through the async view, override `access = CacheAccess.ASYNC` (this replaces the removed `Async*` engine suites).
 
 Each case creates a backend through `createBackend()`. Override `closesBackend = true` (6.3+) when your backend opens connections or threads, so the suites close it after each case; the default is `false` because a backend may be shared.
 
