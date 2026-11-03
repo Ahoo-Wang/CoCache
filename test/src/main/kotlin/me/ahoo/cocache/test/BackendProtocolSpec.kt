@@ -154,12 +154,16 @@ abstract class BackendProtocolSpec {
         (other as L1Read.Leased).remaining.isNegative.assert().isFalse()
     }
 
+    /**
+     * 凭 lease 填充写入值。lease 占位不带版本，这次填充没有让版本前进：`advanced` 为 `false`（RFC 0005 §4.7 的定义，round 3 K12），
+     * 否则引擎会按写入处理本节点、不填充 L2。
+     */
     @Test
     fun fillWithLeaseTokenWritesValue() = l1 {
         val key = key()
         val lease = lease()
         store.read(key, lease, null, null)
-        store.fill(Fill(key, lease.token, scalar("v"), null)).assert().isInstanceOf(L1Fill.Filled::class.java)
+        store.fill(Fill(key, lease.token, scalar("v"), null)).assert().isEqualTo(L1Fill.Filled(advanced = false))
         val hit = store.read(key, lease(), null, null).hit()
         hit.envelope.assert().isEqualTo(scalar("v"))
         hit.ttl.assert().isNull()
@@ -170,7 +174,8 @@ abstract class BackendProtocolSpec {
     fun fillWithForeignTokenIsRejected() = l1 {
         val key = key()
         store.read(key, lease(), null, null)
-        store.fill(Fill(key, token(), scalar("v"), null)).assert().isInstanceOf(L1Fill.Rejected::class.java)
+        // 令牌不匹配：没有当前版本
+        store.fill(Fill(key, token(), scalar("v"), null)).assert().isEqualTo(L1Fill.Rejected(currentVersion = null))
         store.read(key, null, null, null).assert().isInstanceOf(L1Read.Leased::class.java)
     }
 

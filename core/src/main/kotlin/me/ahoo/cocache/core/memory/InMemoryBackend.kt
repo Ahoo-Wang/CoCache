@@ -172,7 +172,8 @@ class InMemoryBackend @JvmOverloads constructor(
     private fun versionOf(envelope: Envelope): Long = (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION
 
     /**
-     * 原生的 [L1Store]（RFC 0005 §4.3）：内存操作不阻塞，挂起方法就地执行、从不挂起。三个能力面都由存储自己实现，访问器返回它本身。
+     * 原生的 [L1Store]（RFC 0005 §4.3）：内存操作不阻塞，挂起方法就地执行、不挂起（[stall] 期间除外）。三个能力面都由存储自己实现，
+     * 访问器返回它本身。
      */
     @Suppress("TooManyFunctions")
     private inner class Store(
