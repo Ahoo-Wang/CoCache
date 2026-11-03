@@ -62,7 +62,7 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | 每个实例 L2 的最大条目数 |
 | `invalidate-failure` | `retry` \| `throw` | 有 loader 时 `retry`，没有时 `throw` | — | Redis 失效失败时：进入后台重试队列，或抛出 `CacheWriteException`。没有 loader 时 Redis 是唯一副本，延迟的重试会删掉失败之后写入的值，因此默认 `throw`。见[写入时 Redis 故障](./freshness.md#redis-down)。 |
 | `read-failure` | `degrade` \| `throw` | 有 loader 时 `degrade`，没有时 `throw` | — | Redis 读取失败时：从数据源加载，或抛出 `CacheReadException`。没有 loader 的读取无处加载，默认抛出。“读不到”是安全答案时（如撤销表：Redis 故障即视为未撤销）显式设置 `degrade`：读取返回 `null` 且不缓存任何东西，故障期间的每次读取都会再次访问 Redis。 |
-| `foreign-format` | `fail` \| `reclaim` | 没有数据源时 `fail`，有数据源时 `reclaim` | — | 本缓存读不懂的内容（5.x 或其它程序写入的、或无法解码的）：抛出 `CacheReadException` 并保留它，或回收后重新加载。没有数据源时，`fail` 同样作用于更高版本的 CoCache 写入的值，以及落在读不懂的内容上的 `SetCache.add` / `remove`（抛出 `CacheWriteException`，key 不变）；`put` 总是整体覆盖。`cocache.defaults.foreign-format` 不作用于 `SetCache`。见[从 5.x 升级](./migration-6.md#foreign-format) |
+| `foreign-format` | `fail` \| `reclaim` | 没有数据源时 `fail`，有数据源时 `reclaim` | — | 读取遇到本缓存读不懂的内容（5.x 或其它程序写入的、或无法解码的）时：抛出 `CacheReadException` 并保留它，或回收后重新加载。`reclaim` 要求有数据源：落在没有数据源的缓存或 `SetCache` 上的 `cocache.caches.[name].foreign-format: reclaim` 会启动失败，因为内容会被删除。`cocache.defaults.foreign-format` 不作用于 `SetCache`，其值 `reclaim` 也不作用于没有数据源的缓存。只决定读取：`putIfMatch`、`putIfNewer` / `invalidateIfNewer` 与 `SetCache.add` / `remove` 遇到读不懂的内容时总是拒绝（抛出 `CacheWriteException`，key 不变）；`put` 总是整体覆盖。见[从 5.x 升级](./migration-6.md#foreign-format) |
 | `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | 每个存储 key 的开头（见[下文](#key-prefix)） |
 
 如何选择这些值，见[保持数据新鲜](./freshness.md#lifetimes)。

@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.redis.migration
 
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.codec.jackson.jacksonCodec
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
@@ -28,12 +29,12 @@ import tools.jackson.module.kotlin.kotlinModule
 import java.util.UUID
 
 /**
- * `foreignFormat = RECLAIM` 落在没有数据源的缓存上的代价：格式 0 的内容被回收，就是删除唯一副本。
+ * `foreignFormat = RECLAIM` 只用于有数据源的缓存。
  *
- * 复现：Redis 是权威存储、没有数据源的缓存（CoSec 的用法）在 5.x 数据上直接升级到 6.x 时，旧数据被当作外来格式回收。
- *
- * 用 `foreignFormat = RECLAIM`（6.4 及以前对所有缓存的行为）固定旧行为，证明数据丢失确实发生；
- * 6.5 起没有数据源的读取默认 `FAIL`，见 [ForeignFormatFailTest]。
+ * 6.x 允许没有数据源的缓存配置它，代价是格式 0 的内容被回收，就是删除唯一副本：Redis 是权威存储、没有数据源的缓存
+ * （CoSec 的用法）在 5.x 数据上直接升级时，旧数据在第一次读取时被删除；`SetCache` 读成空集合，第一次 `add` 整体覆盖、
+ * 旧成员全部丢失。8.0 起这样的声明在创建时失败，Redis 中的数据一个字节都不动（RFC 0005 §12 “M3 之前”决定 6）；
+ * 没有数据源的读取总是 `FAIL`，见 [ForeignFormatFailTest]。有数据源的缓存照常条件回收后回源。
  */
 class ForeignFormatReclaimTest {
     data class Policy(val id: String, val effect: String)
@@ -50,119 +51,85 @@ class ForeignFormatReclaimTest {
         RedisTestSupport.deleteKeys("*$run*")
     }
 
-    private fun policyCache(name: String) = runtime.create(
-        cacheSpec<String, Policy>(name) {
-            codec = jacksonCodec<Policy>(mapper)
-            policy {
-                ttl = null
-                foreignFormat = ForeignFormatMode.RECLAIM
-            }
-        }
-    )
-
     /**
-     * 5.x `ObjectToJsonCodecExecutor` 写入的 JSON：读到格式 0 → 条件回收为 lease → 没有数据源 → 释放 lease，
-     * Redis 中的权威数据被删除，读取返回“不存在”。
+     * 5.x `ObjectToJsonCodecExecutor` 写入的 JSON、没有数据源的缓存：声明 `RECLAIM` 即创建失败，不注册缓存，5.x 的值原样保留。
      */
     @Test
-    fun jsonValueIsDeletedOnFirstRead() {
+    fun cacheWithoutSourceRejectsReclaimAndKeepsTheData() {
         val name = "policy-$run"
         val key = "cocache:$name:p1"
-        Redis5x.string(key, mapper.writeValueAsString(Policy("p1", "deny")))
-        val cache = policyCache(name)
+        val json = mapper.writeValueAsString(Policy("p1", "deny"))
+        Redis5x.string(key, json)
 
-        cache.get("p1").assert().isNull()
-        Redis5x.exists(key).assert().withFailMessage { "the 5.x value is gone from Redis" }.isFalse()
-        requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(1L)
-    }
-
-    /**
-     * 5.x `StringToStringCodecExecutor` 写入的字符串：同样被删除。
-     */
-    @Test
-    fun stringValueIsDeletedOnFirstRead() {
-        val name = "string-$run"
-        val key = "cocache:$name:k1"
-        Redis5x.string(key, "v1")
-        val cache = runtime.create(
-            cacheSpec<String, String>(name) {
-                codec = StringCodec
-                policy {
-                    ttl = null
-                    foreignFormat = ForeignFormatMode.RECLAIM
+        val error = runCatching {
+            runtime.create(
+                cacheSpec<String, Policy>(name) {
+                    codec = jacksonCodec<Policy>(mapper)
+                    policy {
+                        ttl = null
+                        foreignFormat = ForeignFormatMode.RECLAIM
+                    }
                 }
-            }
-        )
-
-        cache.get("k1").assert().isNull()
-        Redis5x.exists(key).assert().isFalse()
+            )
+        }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalArgumentException::class.java)
+        error?.message.assert().startsWith("Cache[$name] - ").contains("RECLAIM")
+        runtime.cacheNames.assert().doesNotContain(name)
+        Redis5x.get(key).assert().isEqualTo(json)
     }
 
     /**
-     * 5.x `MapToHashCodecExecutor` 写入的 Hash：同样被删除。
+     * 5.x 原生 Set（CoSec 的全局策略索引）、`SetCache`：声明 `RECLAIM` 即创建失败，旧成员原样保留。
      */
     @Test
-    fun hashValueIsDeletedOnFirstRead() {
-        val name = "hash-$run"
-        val key = "cocache:$name:k1"
-        Redis5x.hash(key, mapOf("a" to "1", "b" to "2"))
-        val cache = runtime.create(
-            cacheSpec<String, Map<String, String>>(name) {
-                codec = jacksonCodec<Map<String, String>>(mapper)
-                policy {
-                    ttl = null
-                    foreignFormat = ForeignFormatMode.RECLAIM
-                }
-            }
-        )
-
-        cache.get("k1").assert().isNull()
-        Redis5x.exists(key).assert().isFalse()
-    }
-
-    /**
-     * 5.x 原生 Set 读成 6.x 的标量缓存 `Cache<K, Set<String>>`：同样被删除。
-     */
-    @Test
-    fun nativeSetUnderScalarCacheIsDeletedOnFirstRead() {
-        val name = "set-scalar-$run"
-        val key = "cocache:$name:k1"
-        Redis5x.set(key, listOf("a", "b"))
-        val cache = runtime.create(
-            cacheSpec<String, Set<String>>(name) {
-                codec = jacksonCodec<Set<String>>(mapper)
-                policy {
-                    ttl = null
-                    foreignFormat = ForeignFormatMode.RECLAIM
-                }
-            }
-        )
-
-        cache.get("k1").assert().isNull()
-        Redis5x.exists(key).assert().isFalse()
-    }
-
-    /**
-     * 5.x 原生 Set（CoSec 的全局策略索引）读成 6.x 的 `SetCache`：读成空集合（key 还在），
-     * 随后的第一次 `add` 整体覆盖，旧成员全部丢失。
-     */
-    @Test
-    fun nativeSetUnderSetCacheReadsEmptyAndFirstAddDropsOldMembers() {
+    fun setCacheRejectsReclaimAndKeepsTheData() {
         val name = "index-$run"
         val key = "cocache:$name:"
         Redis5x.set(key, listOf("p1", "p2"))
-        val cache = runtime.create(
-            setCacheSpec<String, String>(name) {
-                elementCodec = StringCodec
-                policy { foreignFormat = ForeignFormatMode.RECLAIM }
-            }
-        )
 
-        cache.get("").assert().isEmpty()
+        val error = runCatching {
+            runtime.create(
+                setCacheSpec<String, String>(name) {
+                    elementCodec = StringCodec
+                    policy { foreignFormat = ForeignFormatMode.RECLAIM }
+                }
+            )
+        }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalArgumentException::class.java)
+        error?.message.assert().startsWith("SetCache[$name] - ").contains("RECLAIM")
+        runtime.cacheNames.assert().doesNotContain(name)
         Redis5x.type(key).assert().isEqualTo("set")
-        requireNotNull(runtime.metrics(name)).unknownFormats.assert().isEqualTo(1L)
+        Redis5x.members(key).assert().containsExactlyInAnyOrder("p1", "p2")
+    }
 
-        cache.add("", listOf("p3"))
-        cache.get("").assert().containsExactly("p3")
+    /**
+     * 有数据源：5.x 写入的 JSON / 字符串、Hash 与原生 Set 都在第一次读取时按摘要条件回收、回源并写回 Redis。
+     * 默认（按数据源决定）与显式 `RECLAIM` 相同。
+     */
+    @Test
+    fun cacheWithSourceReclaimsAndReloads() {
+        for (mode in listOf(null, ForeignFormatMode.RECLAIM)) {
+            val name = "reload-${mode ?: "default"}-$run"
+            fun key(id: String) = "cocache:$name:$id"
+            Redis5x.string(key("json"), mapper.writeValueAsString(Policy("p1", "deny")))
+            Redis5x.string(key("string"), "v1")
+            Redis5x.hash(key("hash"), mapOf("a" to "1", "b" to "2"))
+            Redis5x.set(key("set"), listOf("a", "b"))
+            val cache = runtime.create(
+                cacheSpec<String, String>(name) {
+                    codec = StringCodec
+                    loader = CacheLoader { "loaded-$it" }
+                    policy {
+                        ttl = null
+                        mode?.let { foreignFormat = it }
+                    }
+                }
+            )
+
+            val ids = listOf("json", "string", "hash", "set")
+            ids.forEach { cache[it].assert().isEqualTo("loaded-$it") }
+            requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(ids.size.toLong())
+            ids.forEach { Redis5x.type(key(it)).assert().isEqualTo("string") }
+        }
     }
 }

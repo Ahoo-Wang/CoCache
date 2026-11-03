@@ -992,16 +992,17 @@ abstract class EngineSpec {
     }
 
     /**
-     * 显式 `RECLAIM`：没有数据源时同样条件回收（6.4 及以前的行为），内容被删除，读取返回不存在。
+     * 显式 `RECLAIM`（只能用于有数据源的缓存）：与默认值相同，条件回收后回源。
      */
     @Test
-    fun foreignContentWithoutLoaderIsReclaimedWhenConfigured() {
+    fun foreignContentWithLoaderIsReclaimedWhenConfigured() {
         val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
-        val cache = nodeA.cache(spec(reclaim) { loader = null })
+        val cache = nodeA.cache(spec(reclaim))
+        database["k"] = "v"
         writeRemoteSilently("k", TestCodec.CORRUPT)
-        cache["k"].assert().isNull()
+        cache["k"].assert().isEqualTo("v")
         nodeA.metrics().reclaims.assert().isEqualTo(1)
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remoteValue("k").assert().isEqualTo("v")
     }
 
     /**
@@ -1080,21 +1081,6 @@ abstract class EngineSpec {
         // 没有写入 L2：恢复后照常读到
         cache["k"].assert().isEqualTo("v")
         cache.getAll(listOf("k", "other")).assert().isEqualTo(mapOf("k" to "v", "other" to "o"))
-    }
-
-    /**
-     * 显式 `RECLAIM`：没有数据源时更高版本写入的值按不存在处理（6.5.0 及以前的行为），不回收、不覆盖。
-     */
-    @Test
-    fun newerFormatWithoutLoaderReadsAbsentWhenReclaimIsConfigured() {
-        val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
-        val cache = nodeA.cache(spec(reclaim) { loader = null })
-        cache.put("k", "v")
-        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = read.format + 1) else read }
-        cache["k"].assert().isNull()
-        backend.afterRead = null
-        nodeA.metrics().unknownFormats.assert().isEqualTo(1)
-        remoteValue("k").assert().isEqualTo("v")
     }
 
     @Test
@@ -1475,16 +1461,18 @@ abstract class EngineSpec {
     }
 
     /**
-     * 读不懂的内容（这里是同一个 key 上的集合、解码失败的值）：默认 `FAIL`，条件读取以 [CacheReadException]、
+     * 读不懂的内容（这里是同一个 key 上的集合、解码失败的值）：条件读取以 [CacheReadException]、
      * 条件写入以 [CacheWriteException] 失败（cause 为 [ForeignFormatException]），不修改 L1、计入 `unknownFormats`。
      * 降级读失败模式与有数据源时同样如此（条件读写从不回源）。
      */
     @Test
-    fun conditionalOperationsFailOnUnreadableContentByDefault() {
+    fun conditionalOperationsFailOnUnreadableContent() {
         assumeConditionalWrites()
         val cache = nodeA.cache(spec())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
-        backend.delegate.store(cacheName).addMembers(storageKey("set"), listOf("a".toByteArray()), null, frame)
+        backend.delegate.store(
+            cacheName
+        ).addMembersIfReadable(storageKey("set"), listOf("a".toByteArray()), null, frame)
         writeRemoteSilently("corrupt", TestCodec.CORRUPT)
 
         val readError = runCatching { cache.getIfChanged("set", null) }.exceptionOrNull()
@@ -1510,16 +1498,19 @@ abstract class EngineSpec {
     }
 
     /**
-     * 显式 `RECLAIM` 只放宽不是本协议写入的内容（格式 0，见各后端自己的测试）：本协议的集合与解码失败的值仍然读不懂，
-     * 读取抛出、写入拒绝或冲突，从不当作没有值（否则 CAS 循环会从空值出发覆盖它，或者永远读到 `Absent`、写入永远冲突）。
+     * `foreignFormat` 只决定读取：有数据源、显式 `RECLAIM` 的缓存上，条件读写遇到读不懂的内容同样读取抛出、写入拒绝或冲突，
+     * 从不当作没有值（否则 CAS 循环会从空值出发覆盖它，或者永远读到 `Absent`、写入永远冲突），也不回收、不回源。
+     * 不是本协议写入的内容（格式 0）见各后端自己的测试。
      */
     @Test
-    fun reclaimDoesNotTreatProtocolContentAsAbsent() {
+    fun conditionalOperationsIgnoreReclaim() {
         assumeConditionalWrites()
         val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
-        val cache = storeOfRecord(reclaim)
+        val cache = nodeA.cache(spec(reclaim))
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
-        backend.delegate.store(cacheName).addMembers(storageKey("set"), listOf("a".toByteArray()), null, frame)
+        backend.delegate.store(
+            cacheName
+        ).addMembersIfReadable(storageKey("set"), listOf("a".toByteArray()), null, frame)
         writeRemoteSilently("corrupt", TestCodec.CORRUPT)
 
         runCatching {
@@ -1543,6 +1534,8 @@ abstract class EngineSpec {
         ).assert().isEqualTo(ConditionalPut.Conflict(Digest.of(Envelope.Scalar(TestCodec.CORRUPT))))
         ((remote("corrupt") as RemoteRead.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
         nodeA.metrics().unknownFormats.assert().isEqualTo(3)
+        nodeA.metrics().reclaims.assert().isEqualTo(0)
+        loads.get().assert().isEqualTo(0)
     }
 
     /**

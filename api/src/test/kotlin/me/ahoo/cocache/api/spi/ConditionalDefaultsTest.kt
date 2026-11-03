@@ -45,9 +45,9 @@ class ConditionalDefaultsTest {
 
         override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean = false
 
-        override fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) = Unit
+        override fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? = null
 
-        override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) = Unit
+        override fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? = null
 
         override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
             CompletableFuture.completedFuture(current)
@@ -80,15 +80,15 @@ class ConditionalDefaultsTest {
         override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
             CompletableFuture.completedFuture(false)
 
-        override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
+        override fun addMembersIfReadableAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Int?> =
             CompletableFuture.completedFuture(null)
 
-        override fun removeMembersAsync(
+        override fun removeMembersIfReadableAsync(
             key: String,
             members: Collection<ByteArray>,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<Void?> = CompletableFuture.completedFuture(null)
+        ): CompletableFuture<Int?> = CompletableFuture.completedFuture(null)
     }
 
     private val value = Envelope.Scalar("v".toByteArray())
@@ -143,9 +143,9 @@ class ConditionalDefaultsTest {
     @Test
     fun conditionalWritesAreUnsupportedByDefault() {
         val store = RecordingStore(RemoteRead.Miss(false))
-        runCatching { store.putIfMatch("k", null, value, null, frame, false) }.exceptionOrNull()
+        runCatching { store.putIfMatch("k", null, value, null, frame) }.exceptionOrNull()
             .assert().isInstanceOf(UnsupportedOperationException::class.java)
-        store.putIfMatchAsync("k", digest, value, null, frame, true).handle { _, error -> error }.join()
+        store.putIfMatchAsync("k", digest, value, null, frame).handle { _, error -> error }.join()
             .assert().isInstanceOf(UnsupportedOperationException::class.java)
         store.writes.assert().isEmpty()
     }

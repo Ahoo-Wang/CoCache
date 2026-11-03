@@ -57,12 +57,12 @@ sealed interface RemoteConditionalWrite {
     /**
      * 当前内容与期望不符：未修改、未广播。
      *
-     * @param current 当前值的 [Digest]；`null` 表示没有值（不存在、lease 占位、负缓存，或按 `foreignAsAbsent` 视为没有值的格式 0 内容）
+     * @param current 当前值的 [Digest]；`null` 表示没有值（不存在、lease 占位、负缓存）
      */
     data class Conflict(val current: Digest?) : RemoteConditionalWrite
 
     /**
-     * key 中是不能当作本协议标量值的内容（同 [RemoteConditionalRead.Unreadable]），且没有按 `foreignAsAbsent` 视为没有值：未修改、未广播。
+     * key 中是不能当作本协议标量值的内容（同 [RemoteConditionalRead.Unreadable]），从不视为没有值：未修改、未广播。
      */
     data class Unreadable(val format: Int) : RemoteConditionalWrite
 }

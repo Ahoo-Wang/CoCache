@@ -28,7 +28,6 @@ import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetCacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
@@ -270,10 +269,10 @@ abstract class SetEngineSpec {
     }
 
     /**
-     * 不是本协议写入的内容（如 5.x 留下的原生 Set）：没有数据源，默认 `FAIL`，抛出且不写 L2、不修改 L1。
+     * 不是本协议写入的内容（如 5.x 留下的原生 Set）：没有数据源，总是 `FAIL`（集合缓存不接受 `RECLAIM`），抛出且不写 L2、不修改 L1。
      */
     @Test
-    fun unrecognizedContentFailsByDefault() {
+    fun unrecognizedContentFails() {
         val cache = nodeA.setCache()
         cache.add("k", listOf("a"))
         backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = 0) else read }
@@ -283,21 +282,6 @@ abstract class SetEngineSpec {
         requireNotNull(error?.cause as? ForeignFormatException).format.assert().isEqualTo(0)
         nodeA.metrics(cacheName)?.unknownFormats.assert().isEqualTo(1L)
         cache["k"].assert().containsExactly("a")
-    }
-
-    /**
-     * 显式 `RECLAIM`：按不存在处理（读到空集合），不删除，6.4 及以前的行为。
-     */
-    @Test
-    fun unrecognizedContentReadsEmptyWhenConfigured() {
-        val cache = nodeA.setCache(
-            SetCacheSpec.DEFAULT_POLICY.toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
-        )
-        cache.add("k", listOf("a"))
-        backend.afterRead = { _, read -> if (read is RemoteRead.Hit) read.copy(format = 0) else read }
-        cache["k"].assert().isEmpty()
-        backend.afterRead = null
-        nodeA.metrics(cacheName)?.unknownFormats.assert().isEqualTo(1L)
     }
 
     /**
@@ -321,11 +305,11 @@ abstract class SetEngineSpec {
 
     /**
      * 元素增删落在本缓存读不懂的内容上（这里是同一个 key 上的标量值；Redis 上还有 5.x 的原生 Set、没有格式字段的 Hash、
-     * 更高格式版本）：没有数据源，默认 `FAIL`。写入以 [CacheWriteException]（cause 为 [ForeignFormatException]）失败，
+     * 更高格式版本）：总是拒绝。写入以 [CacheWriteException]（cause 为 [ForeignFormatException]）失败，
      * 不修改 L1；否则一次 `add` 就会用一个成员替换掉唯一副本中的全部内容。
      */
     @Test
-    fun memberWritesOverUnreadableContentFailByDefault() {
+    fun memberWritesOverUnreadableContentFail() {
         val cache = nodeA.setCache()
         val other = nodeB.setCache()
         writeRemoteSilently("k", Envelope.Scalar("x".toByteArray()))
@@ -351,22 +335,5 @@ abstract class SetEngineSpec {
         cache.remove("k", listOf("a"))
         cache.add("k", listOf("a"))
         cache["k"].assert().containsExactly("a")
-    }
-
-    /**
-     * 显式 `RECLAIM`：读不懂的内容被元素写入整体覆盖（6.5.0 及以前的行为），`remove` 不修改它。
-     */
-    @Test
-    fun memberWritesReplaceUnreadableContentWhenReclaimIsConfigured() {
-        val cache = nodeA.setCache(
-            SetCacheSpec.DEFAULT_POLICY.toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
-        )
-        writeRemoteSilently("k", Envelope.Scalar("x".toByteArray()))
-        cache.remove("k", listOf("a"))
-        (backend.delegate.store(cacheName).read("cocache:$cacheName:k", null, null) as RemoteRead.Hit)
-            .envelope.assert().isInstanceOf(Envelope.Scalar::class.java)
-        cache.add("k", listOf("a"))
-        cache["k"].assert().containsExactly("a")
-        nodeA.metrics(cacheName)?.writeFailures.assert().isEqualTo(0L)
     }
 }

@@ -341,7 +341,8 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 同步与异步共用：读到读不懂的内容（格式 0 或同版本解码失败）时按 [ForeignFormatMode] 决定。
      * `FAIL` 返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）；`RECLAIM` 返回 `null`，调用方照常条件回收。
-     * 未配置时按这次读取有没有数据源决定：没有数据源时 L1 是唯一副本，回收就是删除。与 `readFailure` 无关。
+     * 未配置时按这次读取有没有数据源决定：没有数据源时 L1 是唯一副本，回收就是删除。显式的 `RECLAIM` 只出现在有数据源的缓存上
+     * （[me.ahoo.cocache.core.CacheSpec] 创建时校验）。与 `readFailure` 无关。
      */
     private fun foreignFormatFailure(
         storageKey: String,
@@ -358,11 +359,10 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     /**
      * 同步与异步共用：读到更高版本写入的值（滚动升级期间）。有数据源时返回 `null`，调用方绕过 L1 回源（既不回收也不写回）。
-     * 没有数据源时 L1 是唯一副本，绕过 L1 只能得到“不存在”：按 [ForeignFormatMode] 决定（未配置为 `FAIL`），
-     * `FAIL` 返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2），`RECLAIM` 返回 `null`（按不存在处理）。
+     * 没有数据源时 L1 是唯一副本，绕过 L1 只能得到“不存在”：返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）。
      */
     private fun newerFormatFailure(storageKey: String, read: RemoteRead.Hit, hasSource: Boolean): CacheReadException? {
-        if (hasSource || policy.foreignFormat == ForeignFormatMode.RECLAIM) {
+        if (hasSource) {
             return null
         }
         return readFailure(ForeignFormatException(name, storageKey, read.format, null, newer = true))
@@ -980,7 +980,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
         return when (val outcome = hitOutcome(read)) {
             HitOutcome.Newer -> {
-                // 更高版本写入的值：既不回收也不写回；没有数据源时按 foreignFormat 失败（命中没有取得 lease，无需释放）
+                // 更高版本写入的值：既不回收也不写回；没有数据源时失败（命中没有取得 lease，无需释放）
                 newerFormatFailure(storageKey, read, hasSource)?.let { return BatchStep.Failed(it) }
                 metrics.unknownFormat()
                 BatchStep.Load(null)
@@ -1294,16 +1294,10 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     // ---------------------------------------------------------------------------------------------
-    // 条件读写（按摘要比较）：只针对 L1，不读写 L2、不回源、不申请 lease。从不回源，因此读不懂的内容按“没有数据源”
-    // 处理：未配置 foreignFormat 时为 FAIL。读与写对内容的分类相同：只有不是本协议写入的内容（格式 0）可以在 RECLAIM 下
-    // 视为没有值；本协议的集合、更高格式版本、解码失败的值总是读不懂（读取抛出；写入抛出，或因摘要不符而冲突）。
+    // 条件读写（按摘要比较）：只针对 L1，不读写 L2、不回源、不申请 lease。读不懂的内容从不视为没有值，与 foreignFormat 无关：
+    // 不是本协议写入的内容（格式 0）、本协议的集合、更高格式版本、解码失败的值，读取抛出；写入抛出，或因摘要不符而冲突。
     // 同步与异步共用 [conditionalGetOf]、[refuseUnreadable]、[conditionalPutOf]。
     // ---------------------------------------------------------------------------------------------
-
-    /**
-     * `RECLAIM` 之外（含未配置）条件读写遇到格式 0 的内容时拒绝（抛出）；`RECLAIM` 时视为没有值。
-     */
-    private val conditionalFailsOnForeign: Boolean = (policy.foreignFormat ?: ForeignFormatMode.FAIL) == ForeignFormatMode.FAIL
 
     override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> = runSync { conditionalGet(key, known) }
 
@@ -1358,15 +1352,10 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 读不懂的内容：计入 `unknownFormats`，抛出（不修改 L1）。唯一的例外是 `RECLAIM` 下格式 0 的内容：视为没有值（也不修改 L1），
-     * 与 `PUT_IF_MATCH` 的 `foreignAsAbsent` 一致。
+     * 读不懂的内容：计入 `unknownFormats`，抛出（不修改 L1），与条件写入的拒绝一致。
      */
     private fun unreadableGet(storageKey: String, format: Int, error: Exception?): ConditionalGet<V> {
         metrics.unknownFormat()
-        if (format < MIN_FORMAT && !conditionalFailsOnForeign) {
-            log.warn { "Cache[$name] - key[$storageKey] - unreadable remote content (format[$format]), treated as absent." }
-            return ConditionalGet.Absent
-        }
         val failure = ForeignFormatException(name, storageKey, format, error, newer = format > backendFormat)
         log.warn { failure.message }
         throw CacheReadException(name, "getIfChanged", failure)
@@ -1386,12 +1375,11 @@ internal class CoherentEngine<K : Any, V : Any>(
         val storageKey = storageKey(key)
         val envelope = format.encode(value)
         val bounded = ttl?.boundedTtl()
-        val foreignAsAbsent = !conditionalFailsOnForeign
         var outcome: RemoteConditionalWrite? = null
         write(
             listOf(storageKey),
             { frame ->
-                val result = asyncStore.putIfMatchAsync(storageKey, expected, envelope, bounded, frame, foreignAsAbsent)
+                val result = asyncStore.putIfMatchAsync(storageKey, expected, envelope, bounded, frame)
                     .awaitUncancellable()
                 outcome = result
                 refuseUnreadable(storageKey, result)
@@ -1461,7 +1449,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     // 按版本有序的写入（6.8）：比较与写入由后端在 L1 中原子完成，写入方顺序同 put（不写 L2）；版本不更新时不修改 L1，
     // 也不广播（非原子广播的后端上，相等的版本可能是重放，仍然广播，见 [versionedChanged]）。
     // 只由带版本的缓存（VersionedCache，引擎的值是 Versioned）调用；value 为 null 时写入墓碑（带版本的负缓存）。
-    // 读不懂的内容的分类与条件写入相同。同步与异步共用 [refuseUnreadableVersion]、[versionedPutOf]。
+    // 读不懂的内容的分类与条件写入相同：总是拒绝。同步与异步共用 [refuseUnreadableVersion]、[versionedPutOf]。
     // ---------------------------------------------------------------------------------------------
 
     override fun putIfNewer(key: K, value: V, version: Long): VersionedPut = throw notVersioned("putIfNewer")
@@ -1507,12 +1495,11 @@ internal class CoherentEngine<K : Any, V : Any>(
         val storageKey = storageKey(key)
         val envelope = envelopeOf(value)
         val bounded = ttl?.boundedTtl()
-        val foreignAsAbsent = !conditionalFailsOnForeign
         var outcome: RemoteVersionedWrite? = null
         write(
             listOf(storageKey),
             { frame ->
-                val result = asyncStore.putIfNewerAsync(storageKey, envelope, version, bounded, frame, foreignAsAbsent)
+                val result = asyncStore.putIfNewerAsync(storageKey, envelope, version, bounded, frame)
                     .awaitUncancellable()
                 outcome = result
                 refuseUnreadableVersion(storageKey, result)

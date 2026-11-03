@@ -83,7 +83,7 @@ class ConditionalEngineTest {
         received().assert().isEqualTo(afterFirst)
 
         val silent = InvalidationFrame.encode(NodeId.random(), emptyList())
-        memory.store("doc").addMembers("cocache:doc:set", listOf("a".toByteArray()), null, silent)
+        memory.store("doc").addMembersIfReadable("cocache:doc:set", listOf("a".toByteArray()), null, silent)
         val baseline = received()
         val error = runCatching { cache.putIfMatch("set", null, "v") }.exceptionOrNull()
         error.assert().isInstanceOf(CacheWriteException::class.java)
@@ -145,9 +145,8 @@ class ConditionalEngineTest {
             expected: Digest?,
             envelope: Envelope.Scalar,
             ttl: Duration?,
-            frame: ByteArray,
-            foreignAsAbsent: Boolean
-        ): RemoteConditionalWrite = super<RemoteStore>.putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
+            frame: ByteArray
+        ): RemoteConditionalWrite = super<RemoteStore>.putIfMatch(key, expected, envelope, ttl, frame)
     }
 
     /**

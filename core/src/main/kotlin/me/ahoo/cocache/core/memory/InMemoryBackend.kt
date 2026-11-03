@@ -295,27 +295,19 @@ class InMemoryBackend @JvmOverloads constructor(
             slot: Slot
         ): Boolean = slot.state != State.LEASED && slot.version == Versioned.NO_VERSION
 
-        override fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
-            addMembers(key, members, ttl, frame, checked = false)
-        }
-
-        override fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
-            addMembers(key, members, ttl, frame, checked = true)
-
         /**
-         * 本后端只存本协议的内容：不能当作集合的只有标量值（[checked] 时拒绝，返回本后端的格式版本）。
+         * 本后端只存本协议的内容：不能当作集合的只有标量值（拒绝，返回本后端的格式版本）。
          */
-        private fun addMembers(
+        override fun addMembersIfReadable(
             key: String,
             members: Collection<ByteArray>,
             ttl: Duration?,
-            frame: ByteArray,
-            checked: Boolean
+            frame: ByteArray
         ): Int? {
             var refused: Int? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (checked && slot?.state == State.VALUE) {
+                if (slot?.state == State.VALUE) {
                     refused = FORMAT
                     return@compute slot
                 }
@@ -328,18 +320,19 @@ class InMemoryBackend @JvmOverloads constructor(
             return refused
         }
 
-        override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) {
-            removeMembers(key, members, ttl, frame, checked = false)
-        }
-
-        override fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
-            removeMembers(key, members, ttl, frame, checked = true)
-
-        private fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray, checked: Boolean): Int? {
+        /**
+         * 同 [addMembersIfReadable]：标量值拒绝；不存在、负缓存、lease 占位不修改。
+         */
+        override fun removeMembersIfReadable(
+            key: String,
+            members: Collection<ByteArray>,
+            ttl: Duration?,
+            frame: ByteArray
+        ): Int? {
             var refused: Int? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (checked && slot?.state == State.VALUE) {
+                if (slot?.state == State.VALUE) {
                     refused = FORMAT
                     slot
                 } else if (slot?.state != State.SET) {
@@ -387,16 +380,14 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * 比较与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。本后端只存本协议的内容，没有格式 0 的内容，
-         * 因此 [foreignAsAbsent] 不起作用：集合总是拒绝。
+         * 比较与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。本后端只存本协议的内容：读不懂的只有集合，总是拒绝。
          */
         override fun putIfMatch(
             key: String,
             expected: Digest?,
             envelope: Envelope.Scalar,
             ttl: Duration?,
-            frame: ByteArray,
-            foreignAsAbsent: Boolean
+            frame: ByteArray
         ): RemoteConditionalWrite {
             var outcome: RemoteConditionalWrite = RemoteConditionalWrite.Written
             slots.compute(key) { _, current ->
@@ -424,15 +415,14 @@ class InMemoryBackend @JvmOverloads constructor(
 
         /**
          * 比较版本与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。没有版本的值与负缓存、lease、不存在都总是写入；
-         * 集合总是拒绝（本后端没有格式 0 的内容，[foreignAsAbsent] 不起作用）。
+         * 集合总是拒绝（本后端只存本协议的内容，读不懂的只有集合）。
          */
         override fun putIfNewer(
             key: String,
             envelope: Envelope,
             version: Long,
             ttl: Duration?,
-            frame: ByteArray,
-            foreignAsAbsent: Boolean
+            frame: ByteArray
         ): RemoteVersionedWrite {
             require(envelope !is Envelope.Members) { "putIfNewer takes a scalar value or Envelope.Absent, not a set." }
             var outcome: RemoteVersionedWrite = RemoteVersionedWrite.Written
@@ -460,10 +450,9 @@ class InMemoryBackend @JvmOverloads constructor(
             envelope: Envelope,
             version: Long,
             ttl: Duration?,
-            frame: ByteArray,
-            foreignAsAbsent: Boolean
+            frame: ByteArray
         ): CompletableFuture<RemoteVersionedWrite> = supply {
-            putIfNewer(key, envelope, version, ttl, frame, foreignAsAbsent)
+            putIfNewer(key, envelope, version, ttl, frame)
         }
 
         override fun readIfChangedAsync(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
@@ -474,10 +463,9 @@ class InMemoryBackend @JvmOverloads constructor(
             expected: Digest?,
             envelope: Envelope.Scalar,
             ttl: Duration?,
-            frame: ByteArray,
-            foreignAsAbsent: Boolean
+            frame: ByteArray
         ): CompletableFuture<RemoteConditionalWrite> = supply {
-            putIfMatch(key, expected, envelope, ttl, frame, foreignAsAbsent)
+            putIfMatch(key, expected, envelope, ttl, frame)
         }
 
         override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
@@ -516,16 +504,6 @@ class InMemoryBackend @JvmOverloads constructor(
 
         override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
             supply { reclaim(key, observed, lease) }
-
-        override fun addMembersAsync(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
-            completing { addMembers(key, members, ttl, frame) }
-
-        override fun removeMembersAsync(
-            key: String,
-            members: Collection<ByteArray>,
-            ttl: Duration?,
-            frame: ByteArray
-        ): CompletableFuture<Void?> = completing { removeMembers(key, members, ttl, frame) }
 
         override fun addMembersIfReadableAsync(
             key: String,

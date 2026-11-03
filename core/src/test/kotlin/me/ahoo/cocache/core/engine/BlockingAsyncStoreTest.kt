@@ -85,8 +85,6 @@ class BlockingAsyncStoreTest {
         ).assert().isFalse()
         wait(store.putAsync("k", Envelope.Scalar(byteArrayOf(2)), null, frame("k")))
         wait(store.putAllAsync(listOf(Put("p", Envelope.Scalar(byteArrayOf(3)), null)), frame("p")))
-        wait(store.addMembersAsync("s", listOf(byteArrayOf(1)), null, frame("s")))
-        wait(store.removeMembersAsync("s", listOf(byteArrayOf(1)), null, frame("s")))
         wait(store.addMembersIfReadableAsync("s", listOf(byteArrayOf(1)), null, frame("s"))).assert().isNull()
         wait(store.removeMembersIfReadableAsync("s", listOf(byteArrayOf(1)), null, frame("s"))).assert().isNull()
         // 标量值不能当作集合：拒绝并返回其格式版本
@@ -98,7 +96,7 @@ class BlockingAsyncStoreTest {
         ).assert().isEqualTo(memory.format)
         wait(store.invalidateAsync(listOf("k", "p"), frame("k", "p")))
         store.read("k", null, null).assert().isEqualTo(RemoteRead.Miss(false))
-        ran.size.assert().isEqualTo(15)
+        ran.size.assert().isEqualTo(13)
         ran.all { it == "tck-blocking" }.assert().isTrue()
     }
 

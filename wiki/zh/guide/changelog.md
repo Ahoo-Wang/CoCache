@@ -19,6 +19,9 @@ description: CoCache 版本发布历史和重要变更。
 - 回源许可（`load.max-concurrent`）对同步与异步调用方一律按到达顺序交接。6.x 的阻塞调用方直接争用释放出来的许可，可能抢在已在等待的异步调用方之前。
 - `CacheRuntime` 关闭时仍在进行的异步读取以 `IllegalStateException("CacheRuntime closed.")` 失败。仍在进行的异步写入先做完 Redis 修改、广播与本地淘汰：成功时再以这个异常完成，失败时以自己的异常完成。
 - 阻塞调用（`get`、`getAll`、`put`、`invalidate` 等）不再为每条 Redis 命令阻塞线程：命令与异步 API 一样发出，调用方停在 `runBlocking` 中等它们完成。因此中断调用方线程不再放弃 Redis 命令：被中断的调用方至多多等一个 `command-timeout`（默认 `2s`）。6.x 中等待立即以 `RedisException("Interrupted while waiting for Redis.")` 失败：写入把它包装为 `CacheWriteException` 抛出，读取把它当作 Redis 故障（默认从数据源加载）。在途的命令先完成或超时；之后读取释放它取得的 lease、不再调用 loader，调用抛出 `InterruptedException`。在中断生效之前已经完成的调用（如 L1 命中、命令已在途的 `put`）照常返回。两种情形都保留中断标志。超时而放弃的命令仍然不会在之后发出。
+- `foreign-format: reclaim`（`CachePolicy.foreignFormat = RECLAIM`）现在要求有数据源。没有任何 loader 的 `CacheSpec` 与所有 `SetCacheSpec` 设置 `reclaim` 时创建即失败（`IllegalArgumentException`）：没有数据源时 Redis 中是唯一副本，回收读不懂的内容就是删除它。用 Spring 时，`cocache.caches.[name].foreign-format: reclaim` 落在这样的缓存上会启动失败，`cocache.defaults.foreign-format: reclaim` 只作用于有数据源的缓存。有数据源的缓存照常回收后回源（默认如此，显式 `reclaim` 也一样）。8.x 与 5.x、6.x 不共用 key，这类内容只会因配置错误或外部工具写入而出现（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md) §12 决定 6）。
+- 条件写入（`putIfMatch`）、按版本写入（`putIfNewer`、`invalidateIfNewer`）与 `SetCache.add` / `remove` 遇到缓存读不懂的内容时一律拒绝，与 `foreign-format` 无关：抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`），不修改 key；`getIfChanged` 同样抛出 `CacheReadException`。6.x 中 `foreign-format: reclaim` 让它们把不是 CoCache 写入的内容（格式 0）当作没有值：`putIfMatch(key, null, …)` 与 `putIfNewer` 覆盖它，`getIfChanged` 返回 `Absent`，`add` 用新成员替换整个 key。
+- SPI：`RemoteStore.putIfMatch` / `putIfNewer` 及其 `AsyncRemoteStore` 对应方法删除 `foreignAsAbsent` 参数，存储读不懂的内容总是返回 `Unreadable`。删除会覆盖这类内容的 `RemoteStore.addMembers` / `removeMembers` 与 `AsyncRemoteStore.addMembersAsync` / `removeMembersAsync`；由 `addMembersIfReadable` / `removeMembersIfReadable` 及其异步方法接替，它们改为抽象方法，因为“先读后写”的默认实现不原子。Redis 脚本 `ADD_MEMBERS` 与 `REMOVE_MEMBERS` 已删除，`PUT_IF_MATCH` / `PUT_IF_NEWER` 少一个参数。key、值的头部、集合字段、失效帧与频道名都不变。
 
 ### 行为变化：被中断的加载的等待者改为自己加载
 
@@ -46,6 +49,8 @@ description: CoCache 版本发布历史和重要变更。
 - `Concurrency.currentThreadName()` 返回去掉 kotlinx 协程后缀的线程名。`HookedBackend.issuer()` 与各规范都用它，按线程名编排竞态的钩子不论是否开启断言都能工作。
 - `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` 覆盖上面的批量修复，`EngineSpec.getAllAfterOwnInvalidateNeverSharesALoadStartedBefore` 覆盖批量读取的读己之写。
 - `Concurrency.Forked.parked` 在线程等待时（`WAITING` 或 `TIMED_WAITING`）为真。阻塞调用的跟随者现在在 `runBlocking` 中等待，以限时停顿挂起，所以各规范不再只认 `WAITING`。
+- `BackendProtocolSpec` 用 `addMembersIfReadable` / `removeMembersIfReadable` 写集合成员。新增的 `memberWritesRefuseUnreadableContentAndKeepIt` 检查标量值上的元素写入返回其格式版本、不修改任何东西，取代 `removeMembersOnScalarIsNoOp`；`membersAreAddedAtomicallyOverAnyNonSetState` 改名为 `membersAreAddedAtomicallyOverLeases`。
+- `EngineSpec` 与 `SetEngineSpec` 删除没有数据源时的 `reclaim` 用例。`EngineSpec.foreignContentWithLoaderIsReclaimedWhenConfigured` 与 `conditionalOperationsIgnoreReclaim` 覆盖有数据源的缓存上显式的 `reclaim`。`EngineSpec.conditionalOperationsFailOnUnreadableContentByDefault`、`SetEngineSpec.unrecognizedContentFailsByDefault` 与 `SetEngineSpec.memberWritesOverUnreadableContentFailByDefault` 去掉 `ByDefault` 后缀。
 
 ## v6.10.0（当前版本）
 

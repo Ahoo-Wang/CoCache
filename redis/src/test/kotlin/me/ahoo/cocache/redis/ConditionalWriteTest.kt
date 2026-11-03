@@ -15,6 +15,7 @@ package me.ahoo.cocache.redis
 
 import io.lettuce.core.ScriptOutputType
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.ConditionalGet
@@ -68,7 +69,6 @@ class ConditionalWriteTest {
 
     private fun cache(
         name: String,
-        mode: ForeignFormatMode? = null,
         on: CacheRuntime = runtime,
         ttl: Duration? = null
     ): Cache<String, String> = on.create(
@@ -77,7 +77,6 @@ class ConditionalWriteTest {
             policy {
                 this.ttl = ttl
                 ttlJitter = Duration.ZERO
-                mode?.let { foreignFormat = it }
             }
         }
     )
@@ -190,36 +189,32 @@ class ConditionalWriteTest {
     }
 
     /**
-     * 显式 `RECLAIM`：只有不是本协议写入的内容（格式 0，这里是 5.x 的原生 Set）视为没有值，`expected = null` 的条件写入
-     * 整体覆盖它（换成本协议的值与新的到期时间）。更高版本写入的值与本协议的集合仍然拒绝：滚动升级期间旧节点不能降级覆盖新值。
+     * `foreignFormat` 只决定读取。有数据源、显式 `RECLAIM` 的缓存上，条件读写遇到不是本协议写入的内容（格式 0，这里是 5.x 的原生 Set）
+     * 同样失败，内容、类型与到期时间原样保留：从不视为没有值，`expected = null` 的写入不会整体覆盖它。普通读取照常条件回收后回源。
      */
     @Test
-    fun reclaimTreatsOnlyForeignContentAsAbsent() {
+    fun reclaimDoesNotTreatForeignContentAsAbsent() {
         val name = "reclaim-$run"
         val key = "cocache:$name:k"
         Redis5x.set(key, listOf("a"), ttlSeconds = 3600)
-        val cache = cache(name, ForeignFormatMode.RECLAIM, ttl = Duration.ofMinutes(1))
-        writeNewerValue("cocache:$name:newer", 3_600_000)
-        Redis5x.hash("cocache:$name:set", mapOf("!f" to "1", "+a" to ""))
-        assertForeignRead(runCatching { cache.getIfChanged("newer", null) }.exceptionOrNull(), "cocache:$name:newer", 2)
-        assertForeignWrite(
-            runCatching { cache.putIfMatch("newer", null, "v") }.exceptionOrNull(),
-            "cocache:$name:newer",
-            2
+        val cache = runtime.create(
+            cacheSpec<String, String>(name) {
+                codec = StringCodec
+                loader = CacheLoader { "loaded" }
+                policy { foreignFormat = ForeignFormatMode.RECLAIM }
+            }
         )
-        assertForeignRead(runCatching { cache.getIfChanged("set", null) }.exceptionOrNull(), "cocache:$name:set", 1)
-        assertForeignWrite(runCatching { cache.putIfMatch("set", null, "v") }.exceptionOrNull(), "cocache:$name:set", 1)
-        Redis5x.type("cocache:$name:newer").assert().isEqualTo("string")
-        Redis5x.pttl("cocache:$name:newer").assert().isBetween(3_000_000L, 3_600_000L)
-        Redis5x.fields("cocache:$name:set").assert().isEqualTo(mapOf("!f" to "1", "+a" to ""))
-
-        cache.getIfChanged("k", null).assert().isEqualTo(ConditionalGet.Absent)
+        assertForeignRead(runCatching { cache.getIfChanged("k", null) }.exceptionOrNull(), key, 0)
+        assertForeignWrite(runCatching { cache.putIfMatch("k", null, "v") }.exceptionOrNull(), key, 0)
+        assertForeignWrite(runCatching { cache.putIfMatch("k", digestOf("a"), "v") }.exceptionOrNull(), key, 0)
         Redis5x.type(key).assert().isEqualTo("set")
-        cache.putIfMatch("k", digestOf("a"), "v").assert().isEqualTo(ConditionalPut.Conflict(null))
-        cache.putIfMatch("k", null, "v").assert().isEqualTo(ConditionalPut.Written(digestOf("v")))
-        Redis5x.type(key).assert().isEqualTo("string")
-        Redis5x.pttl(key).assert().isBetween(1L, 60_000L)
-        cache.getIfChanged("k", null).assert().isEqualTo(ConditionalGet.Present("v", digestOf("v")))
+        Redis5x.members(key).assert().containsExactly("a")
+        Redis5x.pttl(key).assert().isBetween(3_000_000L, 3_600_000L)
+        requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(0L)
+
+        cache["k"].assert().isEqualTo("loaded")
+        requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(1L)
+        cache.getIfChanged("k", null).assert().isEqualTo(ConditionalGet.Present("loaded", digestOf("loaded")))
     }
 
     /**
@@ -265,7 +260,7 @@ class ConditionalWriteTest {
         store.put(key("negative"), Envelope.Absent, null, frame)
         store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null)
         store.put(key("value"), Envelope.Scalar("v".toByteArray()), null, frame)
-        store.addMembers(key("set"), listOf("m".toByteArray()), null, frame)
+        store.addMembersIfReadable(key("set"), listOf("m".toByteArray()), null, frame)
         Redis5x.string(key("foreign"), "plain")
         Redis5x.hash(key("zero"), mapOf("!f" to "0"))
         writeNewerValue(key("newer"), 60_000)
@@ -290,26 +285,24 @@ class ConditionalWriteTest {
         ).join().assert().isEqualTo(RemoteConditionalRead.Unchanged(RedisScripts.FORMAT))
         mapOf("set" to 1, "foreign" to 0, "zero" to 0, "newer" to 2, "unknown-state" to 0).forEach { (id, format) ->
             store.readIfChanged(key(id), null).assert().isEqualTo(RemoteConditionalRead.Unreadable(format))
-            store.putIfMatch(key(id), null, Envelope.Scalar("w".toByteArray()), null, frame, false)
+            store.putIfMatch(key(id), null, Envelope.Scalar("w".toByteArray()), null, frame)
                 .assert().isEqualTo(RemoteConditionalWrite.Unreadable(format))
-            // foreignAsAbsent 只放宽格式 0：本协议的集合与更高版本的内容仍然拒绝
-            if (format != 0) {
-                store.putIfMatch(key(id), null, Envelope.Scalar("w".toByteArray()), null, frame, true)
-                    .assert().isEqualTo(RemoteConditionalWrite.Unreadable(format))
-            }
+            store.putIfMatchAsync(key(id), digestOf("plain"), Envelope.Scalar("w".toByteArray()), null, frame)
+                .join().assert().isEqualTo(RemoteConditionalWrite.Unreadable(format))
         }
         Redis5x.get(key("foreign")).assert().isEqualTo("plain")
+        Redis5x.fields(key("zero")).assert().isEqualTo(mapOf("!f" to "0"))
 
-        store.putIfMatch(key("value"), null, Envelope.Scalar("w".toByteArray()), null, frame, false)
+        store.putIfMatch(key("value"), null, Envelope.Scalar("w".toByteArray()), null, frame)
             .assert().isEqualTo(RemoteConditionalWrite.Conflict(digestOf("v")))
-        store.putIfMatchAsync(key("value"), digestOf("v"), Envelope.Scalar("w".toByteArray()), null, frame, false)
+        store.putIfMatchAsync(key("value"), digestOf("v"), Envelope.Scalar("w".toByteArray()), null, frame)
             .join().assert().isEqualTo(RemoteConditionalWrite.Written)
-        store.putIfMatch(key("leased"), null, Envelope.Scalar("w".toByteArray()), null, frame, false)
+        store.putIfMatch(key("leased"), null, Envelope.Scalar("w".toByteArray()), null, frame)
             .assert().isEqualTo(RemoteConditionalWrite.Written)
-        store.putIfMatch(key("foreign"), null, Envelope.Scalar("w".toByteArray()), null, frame, true)
+        store.putIfMatch(key("negative"), null, Envelope.Scalar("w".toByteArray()), null, frame)
             .assert().isEqualTo(RemoteConditionalWrite.Written)
         store.readIfChanged(
-            key("foreign"),
+            key("negative"),
             digestOf("w")
         ).assert().isEqualTo(RemoteConditionalRead.Unchanged(RedisScripts.FORMAT))
         Redis5x.type(key("newer")).assert().isEqualTo("string")

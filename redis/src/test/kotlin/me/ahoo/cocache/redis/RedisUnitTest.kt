@@ -167,9 +167,9 @@ class RedisUnitTest {
     fun putIfNewerRejectsSetsWithoutTouchingRedis() {
         val store = RedisRemoteStore(mockk(), ByteArray(0), 512)
         val members = Envelope.Members(listOf("a".toByteArray()))
-        runCatching { store.putIfNewer("k", members, 1, null, ByteArray(0), false) }.exceptionOrNull()
+        runCatching { store.putIfNewer("k", members, 1, null, ByteArray(0)) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
-        store.putIfNewerAsync("k", members, 1, null, ByteArray(0), false).handle { _, error -> error }.join()
+        store.putIfNewerAsync("k", members, 1, null, ByteArray(0)).handle { _, error -> error }.join()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 

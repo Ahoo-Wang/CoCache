@@ -73,9 +73,9 @@ class BatchWriteDefaultsTest {
 
         override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean = false
 
-        override fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) = Unit
+        override fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? = null
 
-        override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray) = Unit
+        override fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? = null
     }
 
     private val origin = NodeId.random()

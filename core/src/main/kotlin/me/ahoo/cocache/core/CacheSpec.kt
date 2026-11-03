@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.ForeignFormatMode
 import java.time.Duration
 import java.util.function.Consumer
 
@@ -136,7 +137,18 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         require(!versioned || policy.refreshWindow == null) {
             "Cache[$name] - a versioned cache does not support refreshWindow: the L1 header has no room for a refresh token next to the version."
         }
+        // 没有数据源时 L1 是唯一副本：回收读不懂的内容就是删除它（RFC 0005 §12 “M3 之前”决定 6）
+        require(policy.foreignFormat != ForeignFormatMode.RECLAIM || hasSource) {
+            "Cache[$name] - foreignFormat = RECLAIM needs a data source (loader, asyncLoader, versionedLoader or versionedAsyncLoader): " +
+                "without one the L1 copy is the only copy, and reclaiming unreadable content deletes it. Remove the setting or use FAIL."
+        }
     }
+
+    /**
+     * 是否设置了数据源（[loader]、[asyncLoader]、[versionedLoader]、[versionedAsyncLoader] 之一）。
+     */
+    private val hasSource: Boolean
+        get() = loader != null || asyncLoader != null || versionedLoader != null || versionedAsyncLoader != null
 
     override fun toString(): String = "CacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"
 
@@ -233,6 +245,11 @@ class SetCacheSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
 
     init {
         requireValidName(name, namespace)
+        // 集合缓存没有数据源：回收读不懂的内容就是删除唯一副本（RFC 0005 §12 “M3 之前”决定 6）
+        require(policy.foreignFormat != ForeignFormatMode.RECLAIM) {
+            "SetCache[$name] - foreignFormat = RECLAIM is not supported: a SetCache has no data source, its L1 copy is the only copy, " +
+                "and reclaiming unreadable content deletes it. Remove the setting or use FAIL."
+        }
     }
 
     override fun toString(): String = "SetCacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"

@@ -18,6 +18,7 @@ import io.lettuce.core.cluster.SlotHash
 import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import io.lettuce.core.cluster.pubsub.StatefulRedisClusterPubSubConnection
 import me.ahoo.cocache.api.CacheReadException
+import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -32,7 +33,6 @@ import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
@@ -97,44 +97,32 @@ class RedisRobustnessTest {
     }
 
     /**
-     * 集合缓存 key 上是外来内容：原生 Set 与没有 `!f` 的 Hash 默认（`FAIL`）读取失败且内容保留；
-     * `RECLAIM` 时读作空集合，`add` 整体覆盖它们，`remove` 不改动外来 Hash。
+     * 集合缓存 key 上是外来内容：原生 Set 与没有 `!f` 的 Hash 读取失败，`add` / `remove` 拒绝，内容保留。
+     * 集合缓存没有数据源，不接受 `RECLAIM`：整体覆盖外来内容就是删除唯一副本。
      */
     @Test
-    fun setCacheTreatsForeignContentAsAbsentAndAddReplacesIt() {
+    fun setCacheFailsOnForeignContentAndKeepsIt() {
         RedisTestSupport.backend().use { backend ->
             CacheRuntime.builder().backend(backend).build().use { runtime ->
-                val failing: SetCache<String, String> = runtime.create(
-                    setCacheSpec<String, String>("$namespace-fail") { elementCodec = StringCodec }
-                )
                 val index: SetCache<String, String> = runtime.create(
-                    setCacheSpec<String, String>(namespace) {
-                        elementCodec = StringCodec
-                        policy { foreignFormat = ForeignFormatMode.RECLAIM }
-                    }
+                    setCacheSpec<String, String>(namespace) { elementCodec = StringCodec }
                 )
                 RedisTestSupport.withCommands { commands ->
                     commands.sadd(key("native"), "x")
-                    commands.hset(key("hash"), "field", "value")
-                    commands.hset(key("untouched"), "+a", "")
-                    commands.sadd("cocache:$namespace-fail:native", "x")
+                    commands.hset(key("hash"), "+a", "")
                 }
-                runCatching { failing["native"] }.exceptionOrNull().assert().isInstanceOf(
-                    CacheReadException::class.java
-                )
-                RedisTestSupport.withCommands {
-                    it.smembers(
-                        "cocache:$namespace-fail:native"
-                    )
-                }.assert().containsExactly("x")
                 for (name in listOf("native", "hash")) {
-                    index[name].assert().isEmpty()
-                    index.add(name, listOf("a"))
-                    awaitCondition { index[name] == setOf("a") }
+                    runCatching { index[name] }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+                    runCatching { index.add(name, listOf("b")) }.exceptionOrNull().assert().isInstanceOf(
+                        CacheWriteException::class.java
+                    )
+                    runCatching { index.remove(name, listOf("a")) }.exceptionOrNull().assert().isInstanceOf(
+                        CacheWriteException::class.java
+                    )
                 }
-                index.remove("untouched", listOf("a"))
                 RedisTestSupport.withCommands { commands ->
-                    commands.hexists(key("untouched"), "+a").assert().isTrue()
+                    commands.smembers(key("native")).assert().containsExactly("x")
+                    commands.hgetall(key("hash")).assert().isEqualTo(mapOf("+a" to ""))
                 }
             }
         }

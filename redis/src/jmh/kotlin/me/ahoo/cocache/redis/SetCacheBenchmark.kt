@@ -97,7 +97,7 @@ open class SetCacheBenchmark {
         cache.add("hot", members)
         cache["hot"]
         hashKey = "cocache:$name:l1"
-        store.addMembers(hashKey, members.map { it.toByteArray() }, null, frame)
+        store.addMembersIfReadable(hashKey, members.map { it.toByteArray() }, null, frame)
         altKeys = altKeysOf("$name:l1")
         altAdd(altKeys, members.map { it.toByteArray() })
         // L1 命中经引擎：工作集远大于 L2 容量，几乎每次读取都不命中 L2、命中 L1（并填充 L2）
@@ -143,11 +143,11 @@ open class SetCacheBenchmark {
     @Benchmark
     fun setL1ReadAlt(): List<Any> = alt(ALT_READ, ScriptOutputType.MULTI, altKeys)
 
-    /** 加入并移除一个成员（Hash）：两次 Lua（各含 PUBLISH），集合大小保持不变。 */
+    /** 加入并移除一个成员（Hash）：两次 Lua（各含读不懂的内容的检查与 PUBLISH），集合大小保持不变。 */
     @Benchmark
     fun setAddRemove() {
-        store.addMembers(hashKey, churn, null, frame)
-        store.removeMembers(hashKey, churn, null, frame)
+        store.addMembersIfReadable(hashKey, churn, null, frame)
+        store.removeMembersIfReadable(hashKey, churn, null, frame)
     }
 
     /** 加入并移除一个成员（备选）：两次 Lua（各含 PUBLISH），每次涉及两个 key。 */
@@ -179,7 +179,7 @@ open class SetCacheBenchmark {
         val rows = listOf("string" to ::stringMember, "integer" to ::integerMember).map { (kind, member) ->
             val members = (1..size).map { member(it).toByteArray() }
             val hash = "cocache:$name:mem-$kind"
-            store.addMembers(hash, members, null, frame)
+            store.addMembersIfReadable(hash, members, null, frame)
             val alt = altKeysOf("$name:mem-$kind")
             altAdd(alt, members)
             val hashBytes = memoryUsage(hash.toByteArray())

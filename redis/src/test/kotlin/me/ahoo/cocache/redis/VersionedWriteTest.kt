@@ -15,6 +15,7 @@ package me.ahoo.cocache.redis
 
 import io.lettuce.core.ScriptOutputType
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedPut
@@ -34,7 +35,7 @@ import java.util.concurrent.ExecutionException
  * 按版本有序的写入在真实 Redis 上的线格式与兼容性（standalone、Cluster、Valkey）：
  * - 带版本的内容仍是格式 1 的 36 字节头：令牌位置是 `VERSION_MARK` + 版本，签发时间是 `+inf`，载荷不变；
  * - 6.x 的读脚本与本版本相同（SHA 不变），6.7.0 的 fill / release 不会匹配带版本的内容；
- * - 读不懂的内容按 `foreignFormat` 分类，与条件写入相同。
+ * - 读不懂的内容总是拒绝，与条件写入相同（与 `foreignFormat` 无关）。
  */
 class VersionedWriteTest {
     private val run = UUID.randomUUID().toString()
@@ -52,6 +53,8 @@ class VersionedWriteTest {
         cacheSpec(name) {
             codec = StringCodec
             versioned = true
+            // RECLAIM 只能用于有数据源的缓存
+            mode?.let { loader = CacheLoader { "loaded" } }
             policy {
                 ttl = Duration.ofMinutes(10)
                 ttlJitter = Duration.ZERO
@@ -128,11 +131,11 @@ class VersionedWriteTest {
     }
 
     /**
-     * 不是本协议写入的内容（格式 0）：默认 `FAIL` 拒绝（不修改、不广播），`RECLAIM` 时视为没有版本、整体覆盖。
-     * 更高格式版本写入的值总是拒绝（滚动升级期间不能被旧节点降级覆盖）。
+     * 不是本协议写入的内容（格式 0）总是拒绝（不修改、不广播），从不视为没有版本；有数据源、显式 `RECLAIM` 的缓存也是如此。
+     * 更高格式版本写入的值同样拒绝（滚动升级期间不能被旧节点降级覆盖）。
      */
     @Test
-    fun foreignContentFollowsForeignFormat() {
+    fun foreignContentIsAlwaysRefused() {
         val failName = "fail-$run"
         val failKey = "cocache:$failName:k"
         RedisTestSupport.withCommands { it.set(failKey, "legacy") }
@@ -147,8 +150,15 @@ class VersionedWriteTest {
         (asyncError?.cause as CacheWriteException).operation.assert().isEqualTo("invalidateIfNewer")
 
         val reclaimName = "reclaim-$run"
-        RedisTestSupport.withCommands { it.set("cocache:$reclaimName:k", "legacy") }
+        val reclaimKey = "cocache:$reclaimName:k"
+        RedisTestSupport.withCommands { it.set(reclaimKey, "legacy") }
         val reclaiming = cache(reclaimName, ForeignFormatMode.RECLAIM)
+        val refused = runCatching { reclaiming.putIfNewer("k", "v1", 1) }.exceptionOrNull()
+        refused.assert().isInstanceOf(CacheWriteException::class.java)
+        requireNotNull(refused?.cause as? ForeignFormatException).format.assert().isEqualTo(0)
+        RedisTestSupport.withCommands { it.get(reclaimKey) }.assert().isEqualTo("legacy")
+        // 读取照常条件回收后回源（没有版本的回源）；之后按版本写入照常进行
+        reclaiming["k"].assert().isEqualTo("loaded")
         reclaiming.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Written)
         reclaiming.getVersioned("k").assert().isEqualTo(Versioned("v1", 1))
 
