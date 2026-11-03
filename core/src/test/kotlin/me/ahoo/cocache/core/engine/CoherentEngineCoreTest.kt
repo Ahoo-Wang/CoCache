@@ -250,8 +250,8 @@ class CoherentEngineCoreTest {
 
         closer.join().assert().withFailMessage { "close returned before the release completed." }.isZero()
         failureOf(read)?.message.assert().isEqualTo("CacheRuntime closed.")
-        val left = Suspending.await { memory.store("core").read("cocache:core:k", null, null) }
-        left.assert().isEqualTo(RemoteRead.Miss(false))
+        val left = Suspending.await { memory.store("core").read("cocache:core:k", null, null, null) }
+        left.assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
