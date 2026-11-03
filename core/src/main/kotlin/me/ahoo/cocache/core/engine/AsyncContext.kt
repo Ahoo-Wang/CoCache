@@ -31,7 +31,7 @@ import java.util.concurrent.RejectedExecutionException
  * 异步路径的执行资源（RFC 0004 §5.1）。
  *
  * @param executor 异步执行器：只运行短小的非阻塞续接（解码、L2 填充、发出下一条 L1 命令、调用 `loadAsync`）
- * @param blocking 阻塞执行器：异步路径上的同步 loader 与非原生异步后端的同步 SPI 调用，只在这里执行
+ * @param blocking 阻塞执行器：异步路径上的同步 loader，以及两种变体中非原生异步后端的同步 SPI 调用，只在这里执行
  * @param dispatcher 运行时作用域的调度器；`null` 时为 [EngineDispatcher]（生产）。确定性仿真传入测试调度器（RFC 0005 §4.10）
  *
  * 协程核心（RFC 0005 §4.4）的异步变体运行在 [scope] 中：调度器把任务交给 [executor]（[EngineDispatcher]），`SupervisorJob` 让一次加载的失败不影响其它加载；

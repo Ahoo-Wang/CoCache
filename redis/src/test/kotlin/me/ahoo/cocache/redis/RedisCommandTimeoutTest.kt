@@ -33,6 +33,7 @@ import io.netty.channel.Channel
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelOutboundHandlerAdapter
 import io.netty.channel.ChannelPromise
+import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -44,6 +45,9 @@ import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.cacheSpec
+import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
@@ -174,6 +178,7 @@ class RedisCommandTimeoutTest {
      * 在重连期间缓冲命令），集群时等待建立节点连接（Lettuce 不为它们计时）。
      */
     private class Unwritable(
+        val backend: RedisBackend,
         val store: AsyncRemoteStore,
         val keys: List<String>,
         private val stalling: () -> AutoCloseable,
@@ -206,6 +211,7 @@ class RedisCommandTimeoutTest {
         // 先缓存脚本：重放的 EVALSHA 不会得到 NOSCRIPT
         store.read(key("warm"), null, null)
         return Unwritable(
+            backend,
             store,
             List(count) { key("late-$it") },
             stalling = {
@@ -258,6 +264,7 @@ class RedisCommandTimeoutTest {
             .take(count)
             .toList()
         return Unwritable(
+            backend,
             store,
             keys,
             stalling = { requireNotNull(proxies[target.uri.port]).stall() },
@@ -332,6 +339,36 @@ class RedisCommandTimeoutTest {
             }.assertInterrupted()
         }
         connection.keys.forEach { store.read(it, null, null).assert().isEqualTo(RemoteRead.Miss(false)) }
+    }
+
+    /**
+     * 经引擎的同步 `put` 被中断（RFC 0005 §4.3，8.0）：中断不到达存储，调用方等它的命令结束（这里是超时）才返回，
+     * 以写入的失败（`CacheWriteException`，原因是超时）结束并保留中断标志；被放弃的命令尚未写出，之后也不再写出。
+     * 6.10 中调用方立即以 `RedisException("Interrupted while waiting for Redis.")` 失败。单机（断线期间缓冲）与集群（等待节点连接）。
+     */
+    @Test
+    fun interruptedSyncPutThroughTheEngineWaitsForItsCommandAndIsNeverWritten() {
+        val timeout = Duration.ofMillis(300)
+        val connection = unwritable(timeout, 1)
+        val storageKey = connection.keys.single()
+        RedisTestSupport.loadScripts(RedisScripts.PUT, RedisScripts.READ)
+        val runtime = CacheRuntime.builder().backend(connection.backend).build().closing()
+        val cache = runtime.create(cacheSpec<String, String>(namespace) { codec = StringCodec })
+        val key = storageKey.removePrefix("cocache:$namespace:")
+        connection.stall().use {
+            val caller = fork("interrupted-put") {
+                val failure = runCatching { cache.put(key, "stale") }.exceptionOrNull()
+                failure to Thread.currentThread().isInterrupted
+            }
+            // 同步变体发出命令之后停在 runBlocking 的事件循环上
+            awaitCondition("caller waiting for its put") { caller.parked }
+            caller.thread.interrupt()
+            val (failure, interrupted) = caller.join()
+            failure.assert().isInstanceOf(CacheWriteException::class.java)
+            failure?.cause.assertTimedOut(timeout)
+            interrupted.assert().withFailMessage { "The interrupt flag was not restored." }.isTrue()
+        }
+        connection.store.read(storageKey, null, null).assert().isEqualTo(RemoteRead.Miss(false))
     }
 
     /**

@@ -46,6 +46,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -252,8 +253,10 @@ abstract class AsyncEngineSpec : EngineSpec() {
             val readerRead = CountDownLatch(1)
             val releaseReader = CountDownLatch(1)
             var reader: Concurrency.Forked<String?>? = null
+            // 读者开始之后的第一次读取就是它的：同步读取也经异步 SPI 发出，只实现同步 SPI 的后端在阻塞执行器上执行，不能按线程名认出读者
+            val readerStarted = AtomicBoolean()
             backend.afterRead = { _, read ->
-                if (Concurrency.currentThreadName() == "reader") {
+                if (readerStarted.get() && readerRead.count > 0) {
                     readerRead.countDown()
                     releaseReader.awaitOrFail("release reader")
                 }
@@ -261,6 +264,7 @@ abstract class AsyncEngineSpec : EngineSpec() {
             }
             backend.beforeInvalidate = {
                 // 第一次递增之后、修改 L1 之前：读者取戳并读到旧值
+                readerStarted.set(true)
                 reader = fork("reader") { engine["k"] }
                 readerRead.awaitOrFail("reader read the old value")
             }
