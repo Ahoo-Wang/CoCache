@@ -151,30 +151,34 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 以调用方给出的 [loader] 回源，与 [get] 走同一条受 lease 与失效戳保护的路径（供 Spring `@Cacheable(sync = true)` 等使用）。
      */
     override fun get(key: K, loader: CacheLoader<K, V>): V? {
-        val storageKey = storageKey(key)
-        val entry = local.getIfPresent(storageKey)
+        val localKey = localKey(key)
+        val entry = local.getIfPresent(localKey)
         // 无数据源缓存的“未命中即不存在”只是没有答案，不能挡住调用方给出的 loader
         if (entry != null && !entry.unresolved && entry.expiresAt > clock.nowMillis()) {
             countLocalHit()
             return entry.value
         }
-        return miss(key, storageKey, CoreSource(AsyncSource.Blocking(loader), LoadOperation.LOAD)).value
+        return miss(
+            key,
+            storageKeyOfLocal(localKey),
+            CoreSource(AsyncSource.Blocking(loader), LoadOperation.LOAD)
+        ).value
     }
 
     private fun entryOf(key: K): LocalEntry<V> {
-        val storageKey = storageKey(key)
-        val entry = local.getIfPresent(storageKey)
+        val localKey = localKey(key)
+        val entry = local.getIfPresent(localKey)
         if (entry != null) {
             val now = clock.nowMillis()
             if (entry.expiresAt > now) {
                 if (entry.refreshAt <= now) {
-                    refreshAsync(key, storageKey, entry)
+                    refreshAsync(key, localKey, entry)
                 }
                 countLocalHit()
                 return entry
             }
         }
-        return miss(key, storageKey)
+        return miss(key, storageKeyOfLocal(localKey))
     }
 
     /**
@@ -810,12 +814,13 @@ internal class CoherentEngine<K : Any, V : Any>(
             if (resolved.containsKey(key)) {
                 continue
             }
-            val storageKey = storageKey(key)
-            val entry = localHit(key, storageKey)
+            val localKey = localKey(key)
+            val entry = localHit(key, localKey)
             resolved[key] = entry
             if (entry != null) {
                 continue
             }
+            val storageKey = storageKeyOfLocal(localKey)
             if (keyFilter?.notExist(storageKey) == true) {
                 metrics.filtered()
                 continue
@@ -837,14 +842,14 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 未过期的 L2 副本（进入刷新窗口时触发后台刷新，并计入 L2 命中）；没有则返回 `null`。
      */
-    private fun localHit(key: K, storageKey: String): LocalEntry<V>? {
-        val entry = local.getIfPresent(storageKey) ?: return null
+    private fun localHit(key: K, localKey: String): LocalEntry<V>? {
+        val entry = local.getIfPresent(localKey) ?: return null
         val now = clock.nowMillis()
         if (entry.expiresAt <= now) {
             return null
         }
         if (entry.refreshAt <= now) {
-            refreshAsync(key, storageKey, entry)
+            refreshAsync(key, localKey, entry)
         }
         countLocalHit()
         return entry
@@ -1137,14 +1142,15 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 异步数据源的刷新在刷新执行器上发起、以异步路径执行，不在刷新执行器的线程上等待（RFC 0004 §5.7）。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun refreshAsync(key: K, storageKey: String, observed: LocalEntry<V>) {
+    private fun refreshAsync(key: K, localKey: String, observed: LocalEntry<V>) {
+        val storageKey = storageKeyOfLocal(localKey)
         // 没有数据源的缓存（如只经 Spring Cache 写入）无法回源刷新
         if (source == null || closed.get() || !refreshing.add(storageKey)) {
             return
         }
         // 调用方读到副本之后、取得守卫之前，上一次刷新可能已完成：它先替换副本再释放守卫，
         // 因此副本已不是读到的那一份时，这次触发来自旧的观察，不再刷新（否则同一节点对同一 key 多刷新一次）
-        if (local.getIfPresent(storageKey) !== observed) {
+        if (local.getIfPresent(localKey) !== observed) {
             refreshing.remove(storageKey)
             return
         }
@@ -1655,7 +1661,7 @@ internal class CoherentEngine<K : Any, V : Any>(
                 storageKeys.forEach {
                     unregisterPending(it)
                     stamps.invalidate(it)
-                    local.invalidate(it)
+                    local.invalidate(localKeyOf(it))
                 }
             },
             onGiveUp = { giveUpError -> dropInvalidation(storageKeys, giveUpError) },
@@ -1701,38 +1707,42 @@ internal class CoherentEngine<K : Any, V : Any>(
             get() = this@CoherentEngine.name
 
         override fun get(key: K): CompletableFuture<V?> = Futures.attempt {
-            val storageKey = storageKey(key)
-            val entry = local.getIfPresent(storageKey)
+            val localKey = localKey(key)
+            val entry = local.getIfPresent(localKey)
             if (entry != null) {
                 val now = clock.nowMillis()
                 if (entry.expiresAt > now) {
                     if (entry.refreshAt <= now) {
-                        refreshAsync(key, storageKey, entry)
+                        refreshAsync(key, localKey, entry)
                     }
                     countLocalHit()
                     return@attempt CompletableFuture.completedFuture(entry.value)
                 }
             }
-            missAsync(key, storageKey, loadSource) { it.value }
+            missAsync(key, storageKeyOfLocal(localKey), loadSource) { it.value }
         }
 
         override fun get(key: K, loader: AsyncCacheLoader<K, V>): CompletableFuture<V?> = Futures.attempt {
-            val storageKey = storageKey(key)
-            val entry = local.getIfPresent(storageKey)
+            val localKey = localKey(key)
+            val entry = local.getIfPresent(localKey)
             if (entry != null && !entry.unresolved && entry.expiresAt > clock.nowMillis()) {
                 countLocalHit()
                 return@attempt CompletableFuture.completedFuture(entry.value)
             }
-            missAsync(key, storageKey, CoreSource(AsyncSource.Native(loader), LoadOperation.LOAD)) { it.value }
+            missAsync(
+                key,
+                storageKeyOfLocal(localKey),
+                CoreSource(AsyncSource.Native(loader), LoadOperation.LOAD)
+            ) { it.value }
         }
 
         override fun lookup(key: K): CompletableFuture<Lookup<V>> = Futures.attempt {
-            val storageKey = storageKey(key)
-            val entry = localHit(key, storageKey)
+            val localKey = localKey(key)
+            val entry = localHit(key, localKey)
             if (entry != null) {
                 return@attempt CompletableFuture.completedFuture(lookupOf(entry))
             }
-            missAsync(key, storageKey, loadSource) { lookupOf(it) }
+            missAsync(key, storageKeyOfLocal(localKey), loadSource) { lookupOf(it) }
         }
 
         override fun getAll(keys: Collection<K>): CompletableFuture<Map<K, V>> = Futures.attempt {

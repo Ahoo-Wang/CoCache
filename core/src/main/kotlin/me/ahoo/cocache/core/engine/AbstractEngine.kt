@@ -168,6 +168,22 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected fun storageKey(key: K): String = storagePrefix + keyEncoder.encode(key)
 
     /**
+     * L2 的 key：编码后的 key，不含存储前缀（RFC 0005 §4.5）。每个缓存有自己的 L2，前缀只用来区分 L1 中的 key，
+     * 命中路径因此不拼接字符串（`String` 的 key 经 `ToStringKeyEncoder` 原样返回，哈希已缓存）。失效戳与 SingleFlight 只在未命中与写入路径上使用，仍按存储 key。
+     */
+    protected fun localKey(key: K): String = keyEncoder.encode(key)
+
+    /**
+     * L2 的 key → 存储 key（未命中路径）。
+     */
+    protected fun storageKeyOfLocal(localKey: String): String = storagePrefix + localKey
+
+    /**
+     * 本缓存的存储 key → L2 的 key。
+     */
+    protected fun localKeyOf(storageKey: String): String = storageKey.substring(storagePrefix.length)
+
+    /**
      * 编码后的 key → 存储 key（运维接口使用）。
      */
     protected fun storageKeyOf(encodedKey: String): String {
@@ -181,7 +197,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 戳保护的 L2 填充：在 key 的锁内校验并写入，写后按身份复核（[fillGuarded]，RFC 0005 §4.5）。
      */
     protected fun fillLocal(storageKey: String, entry: LocalEntry<V>, stamp: Long) {
-        if (!local.asMap().fillGuarded(storageKey, entry) { stamps.isValid(storageKey, stamp) }) {
+        if (!local.asMap().fillGuarded(localKeyOf(storageKey), entry) { stamps.isValid(storageKey, stamp) }) {
             metrics.staleFillDiscarded()
         }
     }
@@ -258,7 +274,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     ) {
         keys.forEach {
             stamps.invalidate(it)
-            local.invalidate(it)
+            local.invalidate(localKeyOf(it))
         }
         if (runsInline()) {
             mutateAndBump(keys, mutate, changed, onFailure)
@@ -278,7 +294,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         } finally {
             keys.forEach {
                 stamps.invalidate(it)
-                local.invalidate(it)
+                local.invalidate(localKeyOf(it))
             }
         }
     }
@@ -369,7 +385,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         metrics.invalidationReceived()
         keys.forEach {
             stamps.invalidate(it)
-            local.invalidate(it)
+            // 同一 namespace 上其它前缀的部署发来的 key 不属于本缓存，L2 中不会有它
+            if (it.startsWith(storagePrefix)) {
+                local.invalidate(localKeyOf(it))
+            }
         }
     }
 
@@ -410,7 +429,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      */
     override fun inspect(encodedKey: String): KeyInspection {
         val storageKey = storageKeyOf(encodedKey)
-        val localCopy = local.policy().getIfPresentQuietly(storageKey)?.let { localCopyOf(it) }
+        val localCopy = local.policy().getIfPresentQuietly(encodedKey)?.let { localCopyOf(it) }
         return KeyInspection(name, storageKey, localCopy, remoteCopyOf(storageKey), isInvalidationPending(storageKey))
     }
 

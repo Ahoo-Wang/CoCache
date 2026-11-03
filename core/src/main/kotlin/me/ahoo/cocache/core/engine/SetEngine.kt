@@ -77,8 +77,8 @@ internal class SetEngine<K : Any, E : Any>(
      * 同步变体：L2 命中就地返回；未命中在调用方线程上运行协程核心（[loadEntry]）。
      */
     private fun entryOf(key: K): LocalEntry<Set<E>> {
-        val storageKey = storageKey(key)
-        return localHit(storageKey) ?: runSync { loadEntry(storageKey) }
+        val localKey = localKey(key)
+        return localHit(localKey) ?: runSync { loadEntry(storageKeyOfLocal(localKey)) }
     }
 
     /**
@@ -86,13 +86,13 @@ internal class SetEngine<K : Any, E : Any>(
      * L1 读失败以原始异常失败（没有可降级的数据源）；`KeyEncoder` 抛出同样以失败的 future 交出，从不同步抛出。
      */
     private fun <R> entryOfAsync(key: K, map: (LocalEntry<Set<E>>) -> R): CompletableFuture<R> = Futures.attempt {
-        val storageKey = storageKey(key)
-        val entry = localHit(storageKey) ?: return@attempt context.async.runAsync { map(loadEntry(storageKey)) }
+        val localKey = localKey(key)
+        val entry = localHit(localKey) ?: return@attempt context.async.runAsync { map(loadEntry(storageKeyOfLocal(localKey))) }
         CompletableFuture.completedFuture(map(entry))
     }
 
-    private fun localHit(storageKey: String): LocalEntry<Set<E>>? {
-        val entry = local.getIfPresent(storageKey) ?: return null
+    private fun localHit(localKey: String): LocalEntry<Set<E>>? {
+        val entry = local.getIfPresent(localKey) ?: return null
         if (entry.expiresAt <= clock.nowMillis()) {
             return null
         }
