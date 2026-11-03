@@ -43,6 +43,14 @@ description: CoCache 版本发布历史和重要变更。
 
 - `getAll` 先整批回源并写回，再逐个回收损坏的 key。损坏的 key 重新加载失败时，其余 key 照常写回 Redis（或释放 lease），整批随后以第一个失败结束。6.x 的阻塞路径先回收损坏的 key、失败即中断，其余 key 的 lease 留到过期，其它实例读这些 key 时要先等 `lease.wait`。
 
+### 修复：Spring 事务不再丢失失效
+
+`6.x` 分支同样修复。见 [Spring Cache 的事务](./spring-cache.md#transactions)。
+
+- **事务内的 `@CacheEvict(beforeInvocation = true)`**：Spring 对它调用 `evictIfPresent`，Spring 的 `TransactionAwareCacheDecorator` 直接委托这个调用，所以 key 只在提交之前失效。驱逐与提交之间，另一个实例上的读取可能把已提交的旧行重新加载进 Redis，之后再没有失效，所有实例在 `ttl` 内都读到旧值。`evictIfPresent` 仍按 Spring 的要求立即失效，事务内现在还把 key 登记到 `TransactionalInvalidator`，提交、回滚或回滚到 savepoint 时再失效一次。没有事务或没有 `spring-tx` 时行为不变。
+- **回滚到 savepoint（`NESTED`）**：嵌套事务回滚到 savepoint 时，Spring 不对外层事务的同步调用 `afterCompletion`，外层之后提交时报告的是提交。嵌套段内的读取放进 Redis 的未提交行，在外层事务结束之前对所有实例（包括外层事务自己）可见。`TransactionalInvalidator` 现在处理 `savepointRollback`（Spring 6.2 起）：失效本事务到目前为止登记的全部 key，登记保留，事务结束时再失效一次。这里的失败只记录日志、不抛出：Spring 在把数据库回滚到 savepoint 之前调用 `savepointRollback`，抛出会跳过这次回滚。
+- **仍不覆盖的情形**：嵌套事务内的 `@CachePut`，在嵌套事务回滚到 savepoint 之后，仍会在外层事务提交时写入它的值：Spring 的装饰器把 put 推迟到 `afterCommit`，看不到回滚到 savepoint。嵌套事务内请用 `@CacheEvict`。
+
 ### TCK
 
 - **破坏性变更：** TCK 删除了 `AsyncEngineSpec`、`AsyncSetEngineSpec`、`AsyncMultiNodeSpec`、`AsyncFaultSpec` 与 `AsyncVersionedSpec`。改为继承 `EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec` 或 `VersionedSpec`；还想经异步视图运行某个套件时，覆盖 `access = CacheAccess.ASYNC`。异步专有的用例（取消、完成线程、等待不占线程、超时、重入）测的是核心而不是后端，已移到 CoCache 自己的测试中。`AsyncBackendProtocolSpec` 保留，用于实现了 `AsyncRemoteStore` 的后端。

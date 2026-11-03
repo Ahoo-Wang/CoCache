@@ -13,17 +13,22 @@
 
 package me.ahoo.cocache.spring.cache
 
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.spring.tx.InMemoryTransactionManager
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import org.springframework.boot.test.context.FilteredClassLoader
+import org.springframework.transaction.support.TransactionSynchronizationManager
+import org.springframework.transaction.support.TransactionTemplate
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
@@ -83,6 +88,97 @@ class CoCacheSpringCacheTest {
         cache.get("k")?.get().assert().isEqualTo("v2")
         cache.clear()
         runtime.admin("user")?.localSize.assert().isEqualTo(0)
+    }
+
+    /**
+     * 没有事务时 `evictIfPresent` 立即失效一次；不确定之前是否存在，返回 `false`。
+     */
+    @Test
+    fun evictIfPresentWithoutTransactionInvalidatesOnce() {
+        cache.get("k")?.get().assert().isEqualTo("v")
+        database["k"] = "v2"
+        cache.evictIfPresent("k").assert().isFalse()
+        cache.get("k")?.get().assert().isEqualTo("v2")
+    }
+
+    /**
+     * spring-tx 不在类路径上时不登记：事务结束之后不再失效。
+     */
+    @Test
+    fun afterTransactionIsNoOpWithoutSpringTx() {
+        val withoutSpringTx = FilteredClassLoader(TransactionSynchronizationManager::class.java)
+        val noTransactions = CoCacheSpringCache.afterTransaction(withoutSpringTx)
+
+        @Suppress("UNCHECKED_CAST")
+        val native = requireNotNull(runtime.cache("user")) as Cache<Any, Any>
+        TransactionTemplate(InMemoryTransactionManager()).executeWithoutResult {
+            noTransactions(native, "k")
+            native.put("k", "kept")
+        }
+        native["k"].assert().isEqualTo("kept")
+    }
+
+    /**
+     * 缺陷复现：事务内的 `@CacheEvict(beforeInvocation = true)`。Spring 调用 `evictIfPresent`，事务感知的装饰器
+     * （`TransactionAwareCacheDecorator`）直接委托它，失效在提交之前执行。提交之前，另一个节点在事务之外读穿透，
+     * 把已提交的旧值 v1 经 lease 写回 L1；提交之后必须再失效一次，否则全集群读到 v1 直到 `ttl`。
+     */
+    @Test
+    fun evictIfPresentInsideTransactionInvalidatesAgainAfterCommit() {
+        val transactions = InMemoryTransactionManager()
+        val tx = TransactionTemplate(transactions)
+        val backend = InMemoryBackend()
+        val nodeA = CacheRuntime.builder().backend(backend).build()
+        val nodeB = CacheRuntime.builder().backend(backend).build()
+        try {
+            val spec = cacheSpec<String, String>("user") {
+                codec = StringCodec
+                loader = CacheLoader { transactions.read(it) }
+            }
+            nodeA.create(spec)
+            val cacheB = nodeB.create(spec)
+            val springCacheA = requireNotNull(CoCacheSpringCacheManager(nodeA).getCache("user"))
+            tx.executeWithoutResult { transactions.write("u1", "v1") }
+            cacheB["u1"].assert().isEqualTo("v1")
+            tx.executeWithoutResult {
+                transactions.write("u1", "v2")
+                springCacheA.evictIfPresent("u1").assert().isFalse()
+                fork { cacheB["u1"] }.join().assert().isEqualTo("v1")
+            }
+            cacheB["u1"].assert().isEqualTo("v2")
+        } finally {
+            nodeA.close()
+            nodeB.close()
+            backend.close()
+        }
+    }
+
+    /**
+     * 事务回滚时同样再失效一次：事务内的读穿透可能已经把未提交的值写入 L1。
+     */
+    @Test
+    fun evictIfPresentInsideTransactionInvalidatesAgainAfterRollback() {
+        val transactions = InMemoryTransactionManager()
+        val tx = TransactionTemplate(transactions)
+        val sharedRuntime = CacheRuntime.builder().backend(InMemoryBackend()).build()
+        try {
+            val native = sharedRuntime.create(
+                cacheSpec<String, String>("user") {
+                    codec = StringCodec
+                    loader = CacheLoader { transactions.read(it) }
+                }
+            )
+            val springCache = requireNotNull(CoCacheSpringCacheManager(sharedRuntime).getCache("user"))
+            tx.executeWithoutResult { status ->
+                transactions.write("u1", "draft")
+                springCache.evictIfPresent("u1")
+                native["u1"].assert().isEqualTo("draft")
+                status.setRollbackOnly()
+            }
+            native["u1"].assert().isNull()
+        } finally {
+            sharedRuntime.close()
+        }
     }
 
     @Test
