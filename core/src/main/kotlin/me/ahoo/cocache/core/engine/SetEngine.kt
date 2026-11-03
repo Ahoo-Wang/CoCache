@@ -27,6 +27,7 @@ import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetCacheSpec
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.awaitOriginal
+import me.ahoo.cocache.core.internal.awaitUncancellable
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.boundedTtl
@@ -196,12 +197,7 @@ internal class SetEngine<K : Any, E : Any>(
         val bounded = ttl?.boundedTtl()
         write(
             listOf(storageKey),
-            { frame ->
-                l1Command(
-                    { store.put(storageKey, envelope, bounded, frame) },
-                    { asyncStore.putAsync(storageKey, envelope, bounded, frame) }
-                )
-            },
+            { frame -> asyncStore.putAsync(storageKey, envelope, bounded, frame).awaitUncancellable() },
             onFailure = throwWriteFailure("put")
         )
     }
@@ -230,14 +226,11 @@ internal class SetEngine<K : Any, E : Any>(
         write(plan.keys, { frame ->
             if (plan.puts.isNotEmpty()) {
                 val putFrame = plan.putFrame(frame)
-                l1Command({ store.putAll(plan.puts, putFrame) }, { asyncStore.putAllAsync(plan.puts, putFrame) })
+                asyncStore.putAllAsync(plan.puts, putFrame).awaitUncancellable()
             }
             if (plan.clears.isNotEmpty()) {
                 val clearFrame = plan.clearFrame(frame)
-                l1Command(
-                    { store.invalidate(plan.clears, clearFrame) },
-                    { asyncStore.invalidateAsync(plan.clears, clearFrame) }
-                )
+                asyncStore.invalidateAsync(plan.clears, clearFrame).awaitUncancellable()
             }
         }, onFailure = throwWriteFailure("putAll"))
     }
@@ -280,16 +273,11 @@ internal class SetEngine<K : Any, E : Any>(
         val ttl = policy.valueTtl()
         write(listOf(storageKey), { frame ->
             if (failsOnForeign) {
-                val format = l1(
-                    { store.addMembersIfReadable(storageKey, members, ttl, frame) },
-                    { asyncStore.addMembersIfReadableAsync(storageKey, members, ttl, frame) }
-                )
+                val format = asyncStore.addMembersIfReadableAsync(storageKey, members, ttl, frame)
+                    .awaitUncancellable()
                 refuseForeign(storageKey, format)
             } else {
-                l1Command(
-                    { store.addMembers(storageKey, members, ttl, frame) },
-                    { asyncStore.addMembersAsync(storageKey, members, ttl, frame) }
-                )
+                asyncStore.addMembersAsync(storageKey, members, ttl, frame).awaitUncancellable()
             }
         }, onFailure = throwWriteFailure("add"))
     }
@@ -332,16 +320,11 @@ internal class SetEngine<K : Any, E : Any>(
         val ttl = policy.valueTtl()
         write(listOf(storageKey), { frame ->
             if (failsOnForeign) {
-                val format = l1(
-                    { store.removeMembersIfReadable(storageKey, members, ttl, frame) },
-                    { asyncStore.removeMembersIfReadableAsync(storageKey, members, ttl, frame) }
-                )
+                val format = asyncStore.removeMembersIfReadableAsync(storageKey, members, ttl, frame)
+                    .awaitUncancellable()
                 refuseForeign(storageKey, format)
             } else {
-                l1Command(
-                    { store.removeMembers(storageKey, members, ttl, frame) },
-                    { asyncStore.removeMembersAsync(storageKey, members, ttl, frame) }
-                )
+                asyncStore.removeMembersAsync(storageKey, members, ttl, frame).awaitUncancellable()
             }
         }, onFailure = throwWriteFailure("remove"))
     }
@@ -358,7 +341,7 @@ internal class SetEngine<K : Any, E : Any>(
         val keys = listOf(storageKey)
         write(
             keys,
-            { frame -> l1Command({ store.invalidate(keys, frame) }, { asyncStore.invalidateAsync(keys, frame) }) },
+            { frame -> asyncStore.invalidateAsync(keys, frame).awaitUncancellable() },
             onFailure = throwWriteFailure("clear")
         )
     }

@@ -52,6 +52,7 @@ import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.awaitOriginal
 import me.ahoo.cocache.core.internal.awaitUncancellable
+import me.ahoo.cocache.core.internal.ensureNotInterrupted
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.runsInline
 import me.ahoo.cocache.core.policy.ForeignFormatMode
@@ -65,7 +66,6 @@ import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.locks.LockSupport
 import kotlin.time.Duration.Companion.nanoseconds
 
 /**
@@ -266,10 +266,13 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 协程核心中不能按 L1 故障降级的异常：取消（运行时关闭、执行器拒绝派发）；异步变体在运行时关闭之后的失败（同 6.x 的异步路径）。
+     * 协程核心中不能按 L1 故障降级的异常：取消（运行时关闭、执行器拒绝派发、同步变体的线程被中断）；中断（同步变体中有观测器时，
+     * 等待 lease 在嵌套的 `runSync` 中被中断）；异步变体在运行时关闭之后的失败（同 6.x 的异步路径）。中断不是 L1 故障，
+     * 不能降级为绕过 L1 回源。
      */
     private suspend fun rethrowIfFatal(error: Exception) {
-        if (error is CancellationException || (!runsInline() && context.async.closed)) {
+        val interrupted = error is CancellationException || error is InterruptedException
+        if (interrupted || (!runsInline() && context.async.closed)) {
             throw error
         }
     }
@@ -302,13 +305,9 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 退避之后重读：同步变体在调用方线程上停顿；异步变体挂起（`delay`），不占线程，运行时关闭时随作用域取消。
+     * 退避之后重读：挂起（`delay`）。同步变体停在调用方线程的事件循环上，线程被中断时立即结束；异步变体不占线程，运行时关闭时随作用域取消。
      */
     private suspend fun rereadAfter(storageKey: String, lease: LeaseRequest, delayNanos: Long): RemoteRead {
-        if (runsInline()) {
-            LockSupport.parkNanos(delayNanos)
-            return store.read(storageKey, lease, null)
-        }
         delay(delayNanos.nanoseconds)
         return readRemote(storageKey, lease, null)
     }
@@ -426,9 +425,6 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     private suspend fun reclaimRemote(storageKey: String, observed: Digest, lease: LeaseRequest): Boolean {
-        if (runsInline()) {
-            return store.reclaim(storageKey, observed, lease)
-        }
         val reclaimed: Boolean? = asyncStore.reclaimAsync(storageKey, observed, lease).awaitUncancellable()
         return reclaimed == true
     }
@@ -595,12 +591,8 @@ internal class CoherentEngine<K : Any, V : Any>(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun fillRemote(fill: Fill): Boolean {
         return try {
-            if (runsInline()) {
-                store.fill(fill)
-            } else {
-                val filled: Boolean? = asyncStore.fillAsync(fill).awaitUncancellable()
-                filled == true
-            }
+            val filled: Boolean? = asyncStore.fillAsync(fill).awaitUncancellable()
+            filled == true
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -614,21 +606,8 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun releaseToken(storageKey: String, token: Token) {
-        if (runsInline()) {
-            release(storageKey, token)
-            return
-        }
         try {
             asyncStore.releaseAsync(storageKey, token).awaitUncancellable()
-        } catch (e: Exception) {
-            onRemoteFailure("release", storageKey, e)
-        }
-    }
-
-    @Suppress("TooGenericExceptionCaught")
-    private fun release(storageKey: String, token: Token) {
-        try {
-            store.release(storageKey, token)
         } catch (e: Exception) {
             onRemoteFailure("release", storageKey, e)
         }
@@ -749,8 +728,12 @@ internal class CoherentEngine<K : Any, V : Any>(
     /**
      * 协程核心的回源观测：默认的 [LoadObserver.NOOP] 直接执行。同步变体经 [LoadObserver.observe]（在调用方线程上），
      * 异步变体经 [LoadObserver.observeAsync]（从调用 block 到它完成）。
+     *
+     * 同步变体中调用方线程已被中断时不再调用观测器与 block 中的数据源（[ensureNotInterrupted]，RFC 0005 §4.3）：
+     * 观测在嵌套的 `runSync` 中执行，外层协程的取消不会传到那里。
      */
     private suspend fun <R> observedLoad(operation: LoadOperation, keyCount: Int, block: suspend () -> R): R {
+        ensureNotInterrupted()
         val observer = loadObserver
         if (observer === LoadObserver.NOOP) {
             return block()
@@ -900,10 +883,10 @@ internal class CoherentEngine<K : Any, V : Any>(
         return stepAll(led, reads, loadStamps, leases, source)
     }
 
+    /**
+     * 批量读取 L1，规则同 [readRemote]。
+     */
     private suspend fun readAllRemote(keys: List<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
-        if (runsInline()) {
-            return store.readAll(keys, leases)
-        }
         val reads: Map<String, RemoteRead>? = asyncStore.readAllAsync(keys, leases).awaitUncancellable()
         return reads ?: emptyMap()
     }
@@ -1050,14 +1033,10 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
 
     /**
-     * 释放批量取得的令牌（失败只计数告警），完成之后才继续。异步变体并发发出全部释放，再逐个等待；释放不可取消。
+     * 释放批量取得的令牌（失败只计数告警），完成之后才继续。并发发出全部释放，再逐个等待；释放不可取消。
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun releaseAll(tokens: Map<String, Token?>) {
-        if (runsInline()) {
-            tokens.forEach { (storageKey, token) -> token?.let { release(storageKey, it) } }
-            return
-        }
         val releases = tokens.mapNotNull { (storageKey, token) ->
             token?.let { storageKey to Futures.attempt { asyncStore.releaseAsync(storageKey, it) } }
         }
@@ -1121,12 +1100,8 @@ internal class CoherentEngine<K : Any, V : Any>(
             return emptyMap()
         }
         val outcomes = try {
-            if (runsInline()) {
-                store.fillAll(fills)
-            } else {
-                val filled: List<Boolean>? = asyncStore.fillAllAsync(fills).awaitUncancellable()
-                filled ?: emptyList()
-            }
+            val filled: List<Boolean>? = asyncStore.fillAllAsync(fills).awaitUncancellable()
+            filled ?: emptyList()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1275,12 +1250,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val bounded = ttl?.boundedTtl()
         write(
             listOf(storageKey),
-            { frame ->
-                l1Command(
-                    { store.put(storageKey, envelope, bounded, frame) },
-                    { asyncStore.putAsync(storageKey, envelope, bounded, frame) }
-                )
-            },
+            { frame -> asyncStore.putAsync(storageKey, envelope, bounded, frame).awaitUncancellable() },
             onFailure = throwWriteFailure("put")
         )
     }
@@ -1307,7 +1277,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val puts = putsOf(entries, ttlOf)
         write(
             puts.map { it.key },
-            { frame -> l1Command({ store.putAll(puts, frame) }, { asyncStore.putAllAsync(puts, frame) }) },
+            { frame -> asyncStore.putAllAsync(puts, frame).awaitUncancellable() },
             onFailure = throwWriteFailure("putAll")
         )
     }
@@ -1344,7 +1314,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     private suspend fun conditionalGet(key: K, known: Digest?): ConditionalGet<V> {
         val storageKey = storageKey(key)
         val read = try {
-            l1({ store.readIfChanged(storageKey, known) }, { asyncStore.readIfChangedAsync(storageKey, known) })
+            asyncStore.readIfChangedAsync(storageKey, known).awaitUncancellable()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1421,10 +1391,8 @@ internal class CoherentEngine<K : Any, V : Any>(
         write(
             listOf(storageKey),
             { frame ->
-                val result = l1(
-                    { store.putIfMatch(storageKey, expected, envelope, bounded, frame, foreignAsAbsent) },
-                    { asyncStore.putIfMatchAsync(storageKey, expected, envelope, bounded, frame, foreignAsAbsent) }
-                )
+                val result = asyncStore.putIfMatchAsync(storageKey, expected, envelope, bounded, frame, foreignAsAbsent)
+                    .awaitUncancellable()
                 outcome = result
                 refuseUnreadable(storageKey, result)
             },
@@ -1544,10 +1512,8 @@ internal class CoherentEngine<K : Any, V : Any>(
         write(
             listOf(storageKey),
             { frame ->
-                val result = l1(
-                    { store.putIfNewer(storageKey, envelope, version, bounded, frame, foreignAsAbsent) },
-                    { asyncStore.putIfNewerAsync(storageKey, envelope, version, bounded, frame, foreignAsAbsent) }
-                )
+                val result = asyncStore.putIfNewerAsync(storageKey, envelope, version, bounded, frame, foreignAsAbsent)
+                    .awaitUncancellable()
                 outcome = result
                 refuseUnreadableVersion(storageKey, result)
             },
@@ -1622,12 +1588,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
         write(
             storageKeys,
-            { frame ->
-                l1Command(
-                    { store.invalidate(storageKeys, frame) },
-                    { asyncStore.invalidateAsync(storageKeys, frame) }
-                )
-            }
+            { frame -> asyncStore.invalidateAsync(storageKeys, frame).awaitUncancellable() }
         ) { error -> onInvalidateFailure(storageKeys, error) }
     }
 

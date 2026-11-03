@@ -49,6 +49,7 @@ import java.time.Instant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.CoroutineContext
 
 /**
  * L2 副本：[value] 为 `null` 表示负缓存。到期与刷新时间均为纪元毫秒，[FOREVER] 表示没有。
@@ -128,7 +129,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     private val storagePrefix = "$keyPrefix$namespace:"
 
     /**
-     * 异步路径（RFC 0004）：原生异步的存储与通道直接使用，否则同步调用只在阻塞执行器上执行。
+     * 引擎的全部 L1 命令经异步 SPI 发出（RFC 0005 §4.3，同步与异步变体相同）：原生异步的存储与通道直接使用，
+     * 只实现同步 SPI 的（仅测试替身）同步调用只在阻塞执行器上执行。
      */
     protected val asyncStore: AsyncRemoteStore = BlockingAsyncStore.of(store, context.async.blocking)
     private val asyncChannel: AsyncInvalidationChannel = BlockingAsyncChannel.of(
@@ -147,15 +149,12 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected val scope: CoroutineScope = context.async.scope
 
     /**
-     * 协程核心读取 L1：同步变体就地调用阻塞的 SPI，保留它在超时与中断时的处理（#701、#704）；异步变体等待异步 SPI，不占线程，
-     * 续接回到运行时作用域的调度器上，从不在 L1 客户端的 I/O 线程上执行。
+     * 协程核心读取 L1（RFC 0005 §4.3）：经异步 SPI 发出，不可取消地等待（[awaitUncancellable]），续接回到当前变体的调度器上
+     * （同步变体即调用方线程，异步变体即运行时作用域的调度器），从不在 L1 客户端的 I/O 线程上执行。
+     * 协程被取消时仍等到读取完成或超时：取得令牌的读取不丢结果，取消在之后的第一个挂起点生效。
      */
     protected suspend fun readRemote(storageKey: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead =
-        if (runsInline()) {
-            store.read(storageKey, lease, refresh)
-        } else {
-            checkRead(asyncStore.readAsync(storageKey, lease, refresh).awaitUncancellable())
-        }
+        checkRead(asyncStore.readAsync(storageKey, lease, refresh).awaitUncancellable())
 
     /**
      * 异步 SPI 的实现可能以 `null` 完成读取（Java 实现）：按实现缺陷失败，而不是在之后的分支上抛出更难懂的异常。
@@ -254,13 +253,15 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 前提是 [mutate] 返回或抛出时它的全部 L1 命令都已结束（否则广播可能先于仍在执行的命令）。
      * 例外是 [ForeignFormatException] 与 [UnsupportedOperationException]：后端拒绝了写入（或不支持这个操作），L1 原样未动，不广播。
      *
-     * 同步变体在调用方线程上调用阻塞的 SPI。异步变体等待异步 SPI，从修改 L1 到第二次递增（含广播与 [onFailure]）
-     * 不可取消、不经执行器，在 L1 命令的完成线程上就地继续（与 6.x 的异步路径相同，这些步骤都不阻塞、不调用用户代码）：
-     * - 协程被取消（运行时关闭）也要等 L1 命令结束再第二次递增，否则在两次递增之间开始的填充会把旧值写进 L2（G2）；
-     * - 执行器拒绝派发不会跳过这些步骤，也不会把写入的结果换成取消（成功的写入因此计为失败、`invalidate` 因此登记多余的重试）。
+     * 两种变体都等待异步 SPI，从修改 L1 到第二次递增（含广播与 [onFailure]）不可取消（RFC 0005 §4.3）：
+     * 协程被取消（同步变体中线程被中断，异步变体中运行时关闭）也要等 L1 命令结束再第二次递增，否则在两次递增之间开始的填充
+     * 会把旧值写进 L2（G2），非原子广播的后端上其它节点也收不到广播。
+     * - 同步变体（[SYNC_WRITE]）：续接仍在调用方线程（`runBlocking` 的事件循环）上执行，不在 L1 客户端的 I/O 线程上执行。
+     * - 异步变体（[ASYNC_WRITE]）：不经执行器，在 L1 命令的完成线程上就地继续（与 6.x 的异步路径相同，这些步骤都不阻塞、不调用用户代码）。
+     *   执行器拒绝派发不会跳过这些步骤，也不会把写入的结果换成取消（成功的写入因此计为失败、`invalidate` 因此登记多余的重试）。
      *   只有回到调用方的那一次派发可能被拒绝，调用方看到 `RejectedExecutionException`。
      *
-     * @param mutate 修改 L1（经 [l1] / [l1Command] 选择阻塞或异步的 SPI）
+     * @param mutate 修改 L1（经异步 SPI，[awaitUncancellable]）
      * @param changed [mutate] 正常返回后是否需要广播：L1 被这次写入修改，或可能已被之前同样的写入修改（条件写入的重放：
      * 上一次已在 L1 生效、单独的广播却失败了）。不需要时非原子广播的后端不广播（原子广播的后端由存储自己决定）。
      * 戳与 L2 淘汰照常执行，只多淘汰一次本地副本
@@ -276,11 +277,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             stamps.invalidate(it)
             local.invalidate(localKeyOf(it))
         }
-        if (runsInline()) {
-            mutateAndBump(keys, mutate, changed, onFailure)
-        } else {
-            withContext(NonCancellable + Dispatchers.Unconfined) { mutateAndBump(keys, mutate, changed, onFailure) }
-        }
+        withContext(if (runsInline()) SYNC_WRITE else ASYNC_WRITE) { mutateAndBump(keys, mutate, changed, onFailure) }
     }
 
     private suspend fun mutateAndBump(
@@ -326,13 +323,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     }
 
     /**
-     * 非原子广播的后端上发布失效帧：同步变体经阻塞的通道，异步变体等待异步通道。
+     * 非原子广播的后端上发布失效帧：等待异步通道（同 L1 命令，不可取消）。
      */
     private suspend fun publish(frame: ByteArray) {
-        l1Command(
-            { context.backend.channel.publish(namespace, frame) },
-            { asyncChannel.publishAsync(namespace, frame) }
-        )
+        asyncChannel.publishAsync(namespace, frame).awaitUncancellable()
     }
 
     /**
@@ -346,20 +340,6 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             error.addSuppressed(e)
             log.warn(e) { "Cache[$name] - failed to broadcast the invalidation after a failed write." }
         }
-    }
-
-    /**
-     * 协程核心调用 L1：同步变体调用阻塞的 SPI（[blocking]），异步变体等待异步 SPI（[async]），失败时抛出原始异常。
-     * 两种变体的 L1 命令都不可取消（[awaitUncancellable]）。
-     */
-    protected suspend inline fun <T> l1(blocking: () -> T, async: () -> CompletableFuture<T>): T =
-        if (runsInline()) blocking() else async().awaitUncancellable()
-
-    /**
-     * 同 [l1]，用于没有结果的 L1 命令。
-     */
-    protected suspend inline fun l1Command(blocking: () -> Unit, async: () -> CompletableFuture<Void?>) {
-        if (runsInline()) blocking() else async().awaitUncancellable()
     }
 
     /**
@@ -516,6 +496,16 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
          * 无条件写入：总是修改 L1。
          */
         val ALWAYS_CHANGED: () -> Boolean = { true }
+
+        /**
+         * 同步变体的 [write]：不可取消，调度器不变（续接仍在调用方线程上）。
+         */
+        val SYNC_WRITE: CoroutineContext = NonCancellable
+
+        /**
+         * 异步变体的 [write]：不可取消，不经执行器（在 L1 命令的完成线程上就地继续）。
+         */
+        val ASYNC_WRITE: CoroutineContext = NonCancellable + Dispatchers.Unconfined
 
         /**
          * 后端没有修改 L1 就拒绝了写入：读不懂的内容，或后端不支持这个操作（SPI 默认实现）。

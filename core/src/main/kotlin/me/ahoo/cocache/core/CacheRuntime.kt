@@ -302,7 +302,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         fun asyncExecutor(asyncExecutor: Executor) = apply { this.asyncExecutor = asyncExecutor }
 
         /**
-         * 阻塞执行器（RFC 0004 §5.1）：异步路径上的同步数据源与只实现同步 SPI 的后端只在这里执行。由调用方管理，不应排队。
+         * 阻塞执行器（RFC 0004 §5.1）：异步路径上的同步数据源，以及两种变体中只实现同步 SPI 的后端，只在这里执行。由调用方管理，不应排队。
          * 不指定时：JDK 21+ 每个任务一个虚拟线程；否则是运行时自建的不排队守护线程池（最多 512 线程，满时拒绝）。
          */
         fun blockingExecutor(blockingExecutor: Executor) = apply { this.blockingExecutor = blockingExecutor }

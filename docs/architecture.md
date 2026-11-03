@@ -292,12 +292,12 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
   - `asyncLoader` 在当前线程上调用（同步变体即调用方线程），等待其结果的副本并加 `LoadPolicy.timeout`（默认 30 s，由 JDK 的延迟线程以 `completeOnTimeout` 的私有哨兵值计时；数据源自己以 `TimeoutException` 失败时原样传递）。超时以 `SourceLoadTimeoutException` 失败、计入 `loadTimeouts` 并释放 lease 与回源许可，数据源的 future 不被取消、迟到的结果被丢弃。
   - 同步 `loader`：同步变体在调用方线程上调用；异步变体**只在阻塞执行器上执行**，从不在异步执行器上执行。不加超时（阻塞的 loader 无法被打断）。
 - **等待不占线程**：
-  - 等待其它节点的 lease：退避、截止时间、令牌与戳在两种变体中相同。同步变体在调用方线程上以 `parkNanos` 退避；异步变体挂起（`delay`，由 kotlinx 的延迟线程计时），不占执行器线程。
+  - 等待其它节点的 lease：退避、截止时间、令牌与戳在两种变体中相同。两种变体都以 `delay` 挂起退避：同步变体停在调用方线程的事件循环上，线程被中断时立即结束（8.0 之前以 `parkNanos` 停顿）；异步变体由 kotlinx 的延迟线程计时，不占执行器线程。
   - 回源许可：同步与异步变体共用一个 kotlinx 信号量，按到达顺序交接；`acquireTimeout` 内拿不到时以 `SourceLoadRejectedException` 拒绝。等待挂起协程（同步变体停在调用方线程上，异步变体不占线程），等待被取消（运行时关闭、线程中断）时不取得、也不泄漏许可。6.x 的同步调用方直接争用信号量，不排在已登记的异步等待者之后。
 - **SingleFlight**：同步与异步调用共用一张表。leader 在注册之后开始（第一件事是取戳），先注销、再发布；读己之写至多重试一次。同步调用合并到异步调用时只阻塞自己的线程；跟随者挂起等待，不占线程。每个调用方拿到自己的 future：取消只影响自己，不取消共享加载、不取消数据源的 future。
   - 合并规则（RFC 0005 §4.4）：leader 因中断或取消失败时，leader 自己收到原始异常，跟随者不接受这个失败，自行运行。判定依据是：
     - `InterruptedException`、`CancellationException`；
-    - 同步 leader 的线程带着中断标志失败（被中断的 L1 命令恢复中断标志并抛出后端的异常，loader 也可能包装它）。
+    - 同步 leader 的线程带着中断标志失败（loader 包装了中断并恢复中断标志）。
 
     跟随者先重新注册一次（leader 已注销，通常由它自己领头）；仍合并到被中断的 leader 时，绕过 SingleFlight 直接加载，所以重试有上界。批量合并到的这类 key 改走单 key 路径。6.x 与 M1 中跟随者收到 leader 的失败。
   - 有上界（`load.timeout`，默认 30 s）：每次加载的截止时刻是它登记时加上 `load.timeout`。
@@ -320,19 +320,24 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
   引擎中已没有成对的同步与异步实现。
   - L2 命中不变：同步 API 内联返回，异步视图返回已完成的 future，都不启动协程。
-  - 同步变体（`runSync`）：未命中时以 `runBlocking` 在调用方线程上运行核心，阻塞的 SPI 就地调用，超时与中断的处理不变（§8）。线程被中断时 `runBlocking` 结束等待，恢复中断标志并抛出 `InterruptedException`；核心自己抛出的 `InterruptedException`（被中断的 L1 命令，或跟随者收到 leader 的这类失败）原样抛出，不置中断标志。
+  - 同步变体（`runSync`）：未命中与写入时以 `runBlocking` 在调用方线程上运行核心。L1 命令与异步变体一样经异步 SPI 发出、不可取消地等待（`awaitUncancellable`，RFC 0005 §4.3）：调用方线程停在 `runBlocking` 的事件循环上，续接仍在它上面执行，从不在 L1 客户端的 I/O 线程上执行；阻塞的 loader 照旧在调用方线程上调用（不变量 6）。写入修改 L1 之后的步骤在 `NonCancellable` 中执行，调度器不变。8.0 之前同步变体就地调用阻塞的 SPI（§8 的同步等待）。
+  - 同步变体被中断（RFC 0005 §4.3）：中断不到达存储。`runBlocking`（kotlinx ≥ 1.10，`RunSyncTest` 固定这一行为）清除中断标志、取消协程，并在调用方线程上把协程运行到结束才返回：
+    - 在途的 L1 命令先完成或超时，取消在之后的第一个挂起点生效（跟随者的等待、回源许可、lease 的退避、等待异步数据源），持有令牌的步骤按正常路径释放令牌。调用阻塞的 loader 与回源观测之前另外检查（`ensureNotInterrupted`）：取消之后不再调用它们；中断落在两个挂起点之间、`runBlocking` 尚未处理时（中断标志仍置位）同样不再调用。写入修改 L1 之后的步骤照常执行。
+    - 取消生效时恢复中断标志并抛出 `InterruptedException`。取消之后协程没有再经过检查取消的挂起点、自己结束了的（如 L1 命中、在途的 `put`），照常交出结果（值或它自己的异常），同样恢复中断标志：被取消的协程总是以取消结束，结果由 `runSync` 另行带出。
+    - 协程没有被取消、核心自己抛出的 `InterruptedException`（loader 被中断，或跟随者收到 leader 的这类失败）原样抛出，不置中断标志。
+    - 代价：被中断的调用方至多多等一个命令超时（默认 2 s）。6.10 中等待立即以 `RedisException("Interrupted while waiting for Redis.")` 失败（读取按 L1 故障处理），由存储在结果未知时释放令牌。让 `runBlocking` 立即返回、协程在别的线程上收尾的做法被否决：命令可能在调用方看到失败之后才写出。
   - 异步变体（`AsyncContext.runAsync`）：在运行时作用域中以 `future(start = UNDISPATCHED)` 运行，第一次挂起之前在调用方线程上，之后在异步执行器上继续（作用域的调度器），从不在 L1 客户端的 I/O 线程上执行。L1 命中派发一次，与上面的续接规则相同。用户拿到结果的副本：取消它只影响自己，协程照常运行（它可能是别的调用方等待的 leader）。执行器拒绝派发时 future 以那个 `RejectedExecutionException` 失败；运行时关闭取消作用域，进行中的调用在下一个挂起点以 `IllegalStateException("CacheRuntime closed.")` 失败；正在等待的 L1 命令先完成，不被放弃（见下面的“令牌”）。
   - 调度（`EngineDispatcher`）：规则见上面的“调度”。执行器拒绝时以携带拒绝的取消结束协程，再交给 `Dispatchers.IO` 跑完收尾。
   - 等待与回源见上面的“数据源适配”与“等待不占线程”。回源观测在两种变体中分别经 `LoadObserver.observe` 与 `observeAsync`。
   - 令牌（RFC 0005 §4.4、I-H：L1 命令与令牌步骤不可取消）：
     - 回源失败（含 `ttlOf` 与 `Codec` 抛出）时先释放 lease 再抛出原始异常。
-    - 异步变体等待 L1 命令不可取消（`awaitUncancellable`）。协程被取消（运行时关闭、执行器拒绝派发）时仍等到命令完成：取得令牌的读取不丢结果，释放也不会抢在仍在途的读取之前到达 L1（SPI 不保证命令按发出的顺序生效）。等待由命令超时限定。
+    - 两种变体等待 L1 命令都不可取消（`awaitUncancellable`）。协程被取消（同步变体的线程被中断；异步变体的运行时关闭、执行器拒绝派发）时仍等到命令完成：取得令牌的读取不丢结果，释放也不会抢在仍在途的读取之前到达 L1（SPI 不保证命令按发出的顺序生效）。等待由命令超时限定。
     - 取消在之后的第一个挂起点生效（等待数据源、回源许可、lease 的退避）。持有令牌的步骤据此释放它，并等释放完成。
     - 有观测器时，回源与等待 lease 在运行时作用域的另一个协程中执行。它的结果经局部变量交回，不经协程的返回值：被取消的协程即使 block 已经返回，也以取消结束、丢掉返回值，而等待 lease 的重读可能已为本调用取得令牌。
     - M2c 及之前：协程被取消时立即放弃等待，单 key 读、批量读与刷新即发即弃地释放令牌。释放先于在途的读取生效时，读取随后取得的令牌要到 `lease.ttl` 才回收（`TokenConservationPropertyTest` 复现）。
   - SingleFlight 与上面两条路径共用一张表（单 key `executeSuspending`，批量 `executeAllSuspending`）。leader 在调用方的协程中执行：同步变体即调用方线程（期间同样清除续接标记），异步变体省去一次派发。上下文中没有执行变体的调用方（直接从用户的协程调用）可能被单独取消，共享加载改在运行时作用域中执行。跟随者挂起等待，不占线程，取消只结束它自己的等待。
   - 等待 future 经 `awaitOriginal`（L1 命令经 `awaitUncancellable`，同样在自己的栈帧里抛出原始异常）：kotlinx 的 `await()` 在调试模式（`-ea` 或 `kotlinx.coroutines.debug`）下恢复挂起时复制异常，原始异常成了副本的 cause；这里等待一个总是正常完成的派生 future，在自己的栈帧里抛出原始异常。调试模式下线程名在协程运行期间带有 `@coroutine#n` 后缀（同步读的 loader 也看得到它），TCK 按线程名编排竞态时用 `Concurrency.currentThreadName()` 去掉它。
-- **只实现同步 SPI 的后端**：引擎经 `BlockingAsyncStore` / `BlockingAsyncChannel` 把同步调用放到阻塞执行器上；原生异步的后端实现 `AsyncRemoteStore`（与 `AsyncInvalidationChannel`），内存后端是原生异步的（就地执行、返回已完成的 future）。
+- **只实现同步 SPI 的后端**：引擎经 `BlockingAsyncStore` / `BlockingAsyncChannel` 把同步调用放到阻塞执行器上，两种变体都是（8.0 起同步变体也经异步 SPI 等待 L1）；原生异步的后端实现 `AsyncRemoteStore`（与 `AsyncInvalidationChannel`），内存后端是原生异步的（就地执行、返回已完成的 future）。
 
 ### 5.7 挂起视图（`cocache-coroutines`，RFC 0004 §7）
 
@@ -456,7 +461,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 |------|------|-----------|
 | 填充 | 读、`fill`、`reclaim`、刷新 | 默认 `readFailure = DEGRADE`：按未命中处理，回源结果只进 L2 并以 `degradedLocalMaxAge` 限龄，计入 `remoteFailures` / `degradedFills`。`readFailure = THROW`：L1 读失败抛出 `CacheReadException`；`fill`、`release` 等尽力而为的操作仍然降级。`readFailure` 未设置时按这次读取有没有数据源决定（6.9 起）：**没有数据源的读取**（没有 spec 数据源，也不是 `get(key, loader)`）为 `THROW`，L1 读失败时抛出 `CacheReadException`，不写 L2，没有可降级的答案；显式 `DEGRADE` 时读到不存在，不写入任何一层（§5.1） |
 | 失效 | `invalidate`、`invalidateAll` | 本地效果（两次递增戳、淘汰 L2）先生效。`invalidateFailure` 未设置时按缓存有没有数据源决定（6.9 起）：有数据源为 `RETRY`，没有数据源为 `THROW`（见下）。`RETRY`：登记为“重试中”并交给有界重试队列（`RetryPolicy`：最多 8 次，退避 100 ms 起翻倍至 10 s，容量 10 000），**不抛出**。重试期间该 key 的未命中与刷新跳过 L1 直接回源（L2 降级限龄）；重试成功后本节点再递增一次戳并淘汰 L2。放弃（耗尽、溢出、运行时关闭）时记录错误、计入 `invalidationsDropped`，其它节点的陈旧上界为 L1 剩余寿命（L2 到期后从旧的 L1 重新填充）。`invalidateFailure = THROW` 时抛出 `CacheWriteException` |
-| 显式写入 | `put`、`putAll`、`add`、`remove`、`clear` | 本地效果先生效，然后抛出 `CacheWriteException`。结果未知（超时、等待被中断）时 L1 可能已生效；这些操作幂等，可以安全重试 |
+| 显式写入 | `put`、`putAll`、`add`、`remove`、`clear` | 本地效果先生效，然后抛出 `CacheWriteException`。结果未知（命令超时）时 L1 可能已生效；这些操作幂等，可以安全重试。调用方被中断时等命令结束（§5.6），不放弃它 |
 | 按版本写入 | `putIfNewer`、`invalidateIfNewer` | 同显式写入，抛出 `CacheWriteException`；按版本幂等：结果未知时重放同一个版本，已写入则返回 `Stale(version)`（§6.5） |
 | 条件读写 | `getIfChanged`、`putIfMatch` | `getIfChanged` 总是抛出 `CacheReadException`（与 `readFailure` 无关）；`putIfMatch` 同显式写入，但不是幂等的：结果未知时先 `getIfChanged`，再决定是否重试（§6.4） |
 
@@ -465,7 +470,8 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **回源并发上限**（`LoadPolicy`，bulkhead）：只计 SingleFlight leader，批量回源占一个许可；在 `acquireTimeout` 内拿不到许可时抛出 `SourceLoadRejectedException`（被拒绝的回源会释放 lease）。L1 故障时由它保护数据源。
 - 同线程对同一 key 的重入（loader 内再读同一个 key）快速失败（`IllegalStateException`）。
 - loader 的异常原样抛给调用方与所有合并的等待者。
-- **同步跟随者的等待响应中断**（RFC 0005 附录 A.S1）：合并到别人加载的同步调用方（单 key 与批量）被中断时，恢复中断标志并抛出 `InterruptedException`，只影响它自己；leader 照常加载、发布，其它等待者照常拿到结果。等待开始时中断标志已置位、结果尚未就绪的，同样立即失败；结果已经就绪的照常返回。6.9.1 及之前跟随者用 `join()` 等待，不响应中断。leader 自身不响应中断（它的等待在 loader 与 L1 命令里）。
+- **同步跟随者的等待响应中断**（RFC 0005 附录 A.S1）：合并到别人加载的同步调用方（单 key 与批量）被中断时，恢复中断标志并抛出 `InterruptedException`，只影响它自己；leader 照常加载、发布，其它等待者照常拿到结果。等待开始时中断标志已置位、结果尚未就绪的，同样立即失败；结果已经就绪的照常返回。6.9.1 及之前跟随者用 `join()` 等待，不响应中断。
+- **被中断的同步调用方**（8.0，RFC 0005 §4.3，§5.6）：在途的 L1 命令先完成或超时，取得的令牌按正常路径释放，取消之后不再调用 loader，然后抛出 `InterruptedException`；取消生效之前已经完成的调用照常返回结果。两种情形都保留中断标志。被中断的调用方因此至多多等一个命令超时（默认 2 s）。6.10 中等待立即以 `RedisException("Interrupted while waiting for Redis.")` 失败：写入包装为 `CacheWriteException` 抛出，读取按 L1 故障处理（默认降级回源）。正在运行的阻塞 loader 自己看到中断（协作式取消）。
 - **跟随者的等待有上界**（`load.timeout`，§5.6 SingleFlight）：合并到别人加载的调用方（同步与异步，单 key 与批量）等到这次加载的截止时刻（登记时加上 `load.timeout`）仍没有结果时，以 `SourceLoadTimeoutException` 失败，计入 `loadTimeouts`；leader 照常加载。截止时刻之后到来的读取开始新的加载。6.x 的同步跟随者无限等待。
 - **异步视图**：上表的语义不变，异常改为完成返回的 future（原始异常，不同步抛出）。此外：异步数据源超过 `load.timeout` 时以 `SourceLoadTimeoutException` 失败（释放 lease）；异步执行器拒绝任务时以 `RejectedExecutionException` 失败；运行时关闭时进行中的异步读取（含等待 lease、等待回源许可）以 `IllegalStateException` 失败，不降级回源。
 
@@ -476,8 +482,8 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - **只访问主节点**：读脚本会写 lease 与刷新令牌，不能在副本上执行。CoCache 自己的连接不继承应用的从库读取配置。
 - **命令连接**：每个后端一条共享连接（Cluster 由 Lettuce 按节点管理），并发的异步命令在其上多路复用。大载荷会造成队头阻塞。
 - **脚本缓存**：每条命令 `EVALSHA`，遇到 `NOSCRIPT`（故障切换、重启、resharding 后）改用 `EVAL` 重试。
-- **原生异步**（RFC 0004 §4.3）：`RedisRemoteStore` 实现 `AsyncRemoteStore`，两种失效通道实现 `AsyncInvalidationChannel`。每个操作只构造一次命令（`xxxCommand`），同步方法等待它；异步方法返回它经 `RedisConnections.bounded` 与 `mapped` 包装后的新 future，等待期间不占线程，同步与异步只有一份协议实现。异步结果的超时与异常类型与同步等待一致：超过 `commandTimeout` 时不再等待应答并以 `RedisException("Command timed out …")` 失败，执行异常解包为原始的运行时异常（不是运行时异常的包装为 `RedisException`）。超时不经 JDK 的延迟调度器，也不经 `cocache-timer`（RFC 0004 §14）：自建客户端的 `TimeoutOptions` 固定为 `commandTimeout`（替换 Lettuce 默认的 60 s 连接超时，并关闭维护期间的放宽），Lettuce 以 Netty 时间轮为每条命令计时，超时以 `RedisCommandTimeoutException` 完成命令，`bounded` 把它映射为上述异常（同步等待与 Lettuce 谁先超时，异常都相同）。单机只有这一个计时器。集群中 Lettuce 在命令写入节点连接时才计时：**等待建立节点连接（首次访问某节点、拓扑变化后）的命令不计时**，只受连接建立的超时限制（`connectTimeout` 默认 10 s，握手受 `RedisURI` 超时限制，默认 60 s）。因此 `bounded` 另以客户端资源的时间轮兜底，命令完成时撤销，异步结果的上界仍是 `commandTimeout` 加至多一个刻度，与连接建立的耗时无关；`of` 传入的客户端选项未知，同样由时间轮计时，客户端自己的异常原样传递（`CommandTimeouts`）。时间轮的精度是一个刻度（默认 100 ms）。这项改动的收益是每条命令不再依赖 JDK 的单线程延迟调度器，不是吞吐：JMH 中 8 线程闭环与 6.4.0 持平（RFC 0004 §14）。`NOSCRIPT` 之后的 `EVAL` 是新命令，在单机异步路径上单独计时（同步等待仍以 `commandTimeout` 限制全程）。超时之后的处理见下两条。`mapped` 代替 `thenApply`，失败不包装为 `CompletionException`。`readAllAsync` 等全部读取完成再判定，任一失败时先尽力释放其余读取取得的 lease；`putAllAsync` / `invalidateAsync` 以按发出顺序的第一个异常失败。异步结果在 Lettuce 的 I/O 线程上完成，引擎切换到异步执行器（§5.6）。
-- **超时或中断后不再写出**：后端放弃等待（`bounded` 的时间轮、同步等待超时或被中断）时，以异常完成脚本当前的 Lettuce 命令（`EVALSHA`，NOSCRIPT 之后的 `EVAL`；`RedisConnections` 的 `CommandCall`）。Lettuce 写出前跳过已完成的命令（`CommandHandler` 的 `isWriteable`；断线期间缓冲的命令重连后同样跳过），所以尚未写出的命令——集群中等待建立节点连接的命令、`of` 传入的客户端断线期间缓冲的命令——不会在调用方看到失败之后才执行，覆盖更新的值（`SetCache` 永不过期时，这样的错误会永久保留）。完成的必须是 `StatefulConnection.dispatch` 返回的最外层命令：集群中它是 `ClusterCommand`，`isDone` 只看它自己的完成标记，取消或完成内层的 `AsyncCommand` 不影响它，节点连接建立后照常写出（对照 Lettuce 6.8.2 与 7.5.2 源码核实，`RedisCommandTimeoutTest` 在集群上复现）。因此脚本以 `dispatch` 发出，参数与输出与 Lettuce 的 `evalsha` / `eval` 相同，不经 `RedisScriptingAsyncCommands`。已写出的命令无从撤回：Redis 照常执行，应答被丢弃（§4.2）。调用方取消返回的 future 只放弃等待，不影响命令。`PUBLISH` / `SPUBLISH` 不在此列：迟到的广播只多淘汰副本。同步等待被中断（`Future.cancel(true)`、Resilience4j `TimeLimiter`、`shutdownNow` 中断调用方线程）与超时处理相同，按结果未知处理：恢复中断标志，完成命令，以 `RedisException("Interrupted while waiting for Redis.")` 失败。中断标志恢复之后，同一线程上其后尚未完成的等待（批量操作其余的等待、引擎随后的 `fill` 与 `release`）都立即以中断失败，同样完成命令。6.9.0 只在超时时完成命令，被中断的 `put` 在集群中等待节点连接时仍可迟到执行，覆盖之后的写入（6.9.1 修复，RFC 0005 附录 B.1）。
+- **原生异步**（RFC 0004 §4.3）：`RedisRemoteStore` 实现 `AsyncRemoteStore`，两种失效通道实现 `AsyncInvalidationChannel`。每个操作只构造一次命令（`xxxCommand`），同步方法等待它；异步方法返回它经 `RedisConnections.bounded` 与 `mapped` 包装后的新 future，等待期间不占线程，同步与异步只有一份协议实现。异步结果的超时与异常类型与同步等待一致：超过 `commandTimeout` 时不再等待应答并以 `RedisException("Command timed out …")` 失败，执行异常解包为原始的运行时异常（不是运行时异常的包装为 `RedisException`）。超时不经 JDK 的延迟调度器，也不经 `cocache-timer`（RFC 0004 §14）：自建客户端的 `TimeoutOptions` 固定为 `commandTimeout`（替换 Lettuce 默认的 60 s 连接超时，并关闭维护期间的放宽），Lettuce 以 Netty 时间轮为每条命令计时，超时以 `RedisCommandTimeoutException` 完成命令，`bounded` 把它映射为上述异常（同步等待与 Lettuce 谁先超时，异常都相同）。单机只有这一个计时器。集群中 Lettuce 在命令写入节点连接时才计时：**等待建立节点连接（首次访问某节点、拓扑变化后）的命令不计时**，只受连接建立的超时限制（`connectTimeout` 默认 10 s，握手受 `RedisURI` 超时限制，默认 60 s）。因此 `bounded` 另以客户端资源的时间轮兜底，命令完成时撤销，异步结果的上界仍是 `commandTimeout` 加至多一个刻度，与连接建立的耗时无关；`of` 传入的客户端选项未知，同样由时间轮计时，客户端自己的异常原样传递（`CommandTimeouts`）。时间轮的精度是一个刻度（默认 100 ms）。这项改动的收益是每条命令不再依赖 JDK 的单线程延迟调度器，不是吞吐：JMH 中 8 线程闭环与 6.4.0 持平（RFC 0004 §14）。`NOSCRIPT` 之后的 `EVAL` 是新命令，在单机异步路径上单独计时（同步等待仍以 `commandTimeout` 限制全程）。超时之后的处理见下两条。`mapped` 代替 `thenApply`，失败不包装为 `CompletionException`。`readAllAsync` 等全部读取完成再判定，任一失败时先尽力释放其余读取取得的 lease；`putAllAsync` / `invalidateAsync` 以按发出顺序的第一个异常失败。异步结果在 Lettuce 的 I/O 线程上完成，引擎切换到异步执行器（异步变体）或调用方线程（同步变体，§5.6）。8.0 起引擎的两种变体只经异步方法等待；同步方法留到 M3d 删除。
+- **超时或中断后不再写出**：后端放弃等待（`bounded` 的时间轮、同步等待超时或被中断）时，以异常完成脚本当前的 Lettuce 命令（`EVALSHA`，NOSCRIPT 之后的 `EVAL`；`RedisConnections` 的 `CommandCall`）。Lettuce 写出前跳过已完成的命令（`CommandHandler` 的 `isWriteable`；断线期间缓冲的命令重连后同样跳过），所以尚未写出的命令——集群中等待建立节点连接的命令、`of` 传入的客户端断线期间缓冲的命令——不会在调用方看到失败之后才执行，覆盖更新的值（`SetCache` 永不过期时，这样的错误会永久保留）。完成的必须是 `StatefulConnection.dispatch` 返回的最外层命令：集群中它是 `ClusterCommand`，`isDone` 只看它自己的完成标记，取消或完成内层的 `AsyncCommand` 不影响它，节点连接建立后照常写出（对照 Lettuce 6.8.2 与 7.5.2 源码核实，`RedisCommandTimeoutTest` 在集群上复现）。因此脚本以 `dispatch` 发出，参数与输出与 Lettuce 的 `evalsha` / `eval` 相同，不经 `RedisScriptingAsyncCommands`。已写出的命令无从撤回：Redis 照常执行，应答被丢弃（§4.2）。调用方取消返回的 future 只放弃等待，不影响命令。`PUBLISH` / `SPUBLISH` 不在此列：迟到的广播只多淘汰副本。存储的同步方法的等待被中断（`Future.cancel(true)`、Resilience4j `TimeLimiter`、`shutdownNow` 中断调用方线程）与超时处理相同，按结果未知处理：恢复中断标志，完成命令，以 `RedisException("Interrupted while waiting for Redis.")` 失败。中断标志恢复之后，同一线程上其后尚未完成的同步等待（批量操作其余的等待）都立即以中断失败，同样完成命令。8.0 起引擎不再调用同步方法，中断不到达存储：被中断的同步调用方等它的命令完成或超时（§5.6、§7）。6.9.0 只在超时时完成命令，被中断的 `put` 在集群中等待节点连接时仍可迟到执行，覆盖之后的写入（6.9.1 修复，RFC 0005 附录 B.1）。
 - **结果未知时释放令牌**：取得或交回令牌的命令超时或等待被中断（结果未知）时，令牌可能已经没人会再释放，`lease.ttl` 内全集群对该 key 的未命中都要先等 `lease.wait`。`RedisRemoteStore` 因此尽力释放这些令牌：异步发出 `RELEASE`，不等待（等待被中断时中断标志已恢复，再等待会立即失败）。令牌不匹配时 `RELEASE` 什么也不做：fill 已经执行、令牌已被释放或抢占，都不影响已写入的值。释放与原命令按 key 路由到同一连接，在它之后执行；原命令未写出就被完成时，释放同样无害。只在结果未知时释放：断线、拒绝等其它失败时释放同样会失败，lease 由 `lease.ttl` 回收。释放本身也可能超时，若恰逢脚本缓存丢失（NOSCRIPT），超时的释放不再回退 `EVAL`，同样由 `lease.ttl` 回收。6.9.0 只在读取超时时释放，被中断的读取、超时或被中断的 fill 与释放都留下 lease（6.9.1 修复，RFC 0005 附录 B）。逐类命令：
   - 读取与回收（`read`、`readAsync`、`readAll`、`readAllAsync`、`reclaim`、`reclaimAsync`）：脚本可能在 Redis 端授予了令牌（未命中的 lease、刷新窗口内的刷新令牌、回收得到的 lease），引擎随后却绕过 L1（§5、§7）。`readAll` 的第一个等待被中断之后，其余等待立即失败，它们的读取都已发出、各自取得了 lease，同样逐个释放。
   - 填充（`fill`、`fillAsync`、`fillAll`、`fillAllAsync`）：被完成、没有写出的 fill 永远不会执行，lease 仍在。`fillAll` 第一个失败即抛出，放弃其余的 fill：尚未完成的完成（不再写出）并释放，已完成而结果未知的同样释放；不逐个等待，失败路径上的等待不超过一个 `commandTimeout`（引擎按整批失败处理）。
@@ -669,6 +675,7 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 - 竞态用 latch 编排，禁止 sleep；等待 `finished` latch，让死掉的后台线程使用例失败；跨节点效果用带超时的轮询断言。
 - 每个修复的缺陷都要有复现用例（`EngineSpec` 中的同节点竞态用例是范例）。
 - 令牌守恒的性质测试（`cocache-core` 的 `TokenConservationPropertyTest`，不在 TCK 中）：异步变体的协程全部在手动执行器上推进，L1 命令由脚本化的后端挂起；每个种子按随机顺序执行任务、以随机结局（成功、未生效的失败、已生效但超时：存储按约定释放令牌）完成命令、完成或失败数据源、取消调用方的 future、关闭运行时。命令完成的顺序任意（SPI 不保证顺序）。排空之后断言每个调用都已完成、L1 授予的每个令牌之后都以 fill 或 release 交还过。同一个种子可以复现。
+- 同步变体被中断（`cocache-core` 的 `SyncInterruptTest`、`RunSyncTest`，§5.6）：上面的性质测试只驱动异步变体（同步变体的调用方线程停在 `runBlocking` 中，测试线程无法按种子推进它），中断规则由定向用例覆盖。L1 命令由 `ScriptedBackend` 挂起，中断分别落在取得 lease 的读取、批量读取、L1 命中、`put`（非原子广播）与等待 lease 的重读（含有观测器时嵌套的 `runSync`）期间，断言调用方在命令完成之后才返回、令牌全部交还、loader 没有运行、中断标志已置。`RunSyncTest` 固定 kotlinx `runBlocking` 被中断时等协程结束的行为，依赖降到 1.8.0 时失败。Redis 上的对应用例是 `RedisCommandTimeoutTest.interruptedSyncPutThroughTheEngineWaitsForItsCommandAndIsNeverWritten`。
 - 确定性多节点仿真（`cocache-core` 的 `MultiNodeSimulationTest`，RFC 0005 §4.10，不在 TCK 中）：三个运行时共享同一个挂起式内存后端（`ScriptedBackend`，与上面的性质测试共用），全部协程运行在 `kotlinx-coroutines-test` 的单线程测试调度器上。
   - 虚拟时间：等待 lease 的退避、`withTimeout`（回源许可、跟随者的 `load.timeout`）、缓存时钟与 L1 到期都走虚拟时间。截止时刻（等待 lease、`load.timeout`）经运行时内部的计时源（`Ticker`）计算，生产为 `System.nanoTime()`，仿真为虚拟时间；运行时作用域的调度器在仿真中换成测试调度器（`CacheRuntime.Builder` 的模块内部属性）。异步数据源的 `completeOnTimeout` 仍由 JDK 的延迟线程按真实时间计时，仿真中的加载总在它触发之前完成。
   - 每个种子随机执行：读取（`get`、`getAll`）与写入（数据源提交新版本，再在某个节点上 `invalidate`）；以任意顺序、随机结局完成 L1 命令；以任意顺序投递、重复或丢失失效事件（丢失之后补一个订阅重建，与 Redis 后端以心跳与重新订阅发现丢失一致）；完成或失败加载（快照取于调用时或完成时）；推进虚拟时间；让一个节点崩溃（待完成的命令随机生效但不再送回，之后的命令既不生效也不完成，持有的令牌由 `lease.ttl` 回收）。
@@ -705,8 +712,8 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
 3. **读路径从不无条件删除**：同版本的损坏只能通过 `reclaim`（比较摘要）转为 lease；更高的未知版本既不回收也不写回；没有数据源的读取默认（`foreignFormat` 未设置）不回收读不懂的内容、也不把更高格式版本当作不存在，而是抛出；L1 读失败时总是抛出，从不把“读不到”当作已决的不存在。
 4. **能原子广播就原子广播**：后端以 `atomicBroadcast` 声明能力；为 `false` 时由引擎在写入成功后发布（条件写入的重放也发布，§6.4、§6.5），TCK 按能力分别验证。
 5. **SingleFlight 先注销调用、再发布结果**（读己之写依赖这个顺序）；同步与异步调用共用一张表，异步调用在注册之后取戳；每个异步调用方拿到自己的 future；同步调用合并到异步调用时只阻塞自己的线程，异步调用合并到同步调用时经异步执行器拿到结果。同线程对同一 key 的重入（同步调用的拥有线程，或正在为该 key 调用数据源的线程）快速失败；批量合并先注册全部 key、先完成自己负责的 key 再等待别人；leader 因中断或取消失败时，跟随者自行运行，而不是收到它的失败。跟随者的等待以加载的截止时刻（登记时加上 `load.timeout`）为上限；登记超过它的加载由之后的调用方按身份注销（不完成它），原 leader 的注销不会移走新的加载。
-6. **同步 API 上 loader 在调用方线程上执行**；异步视图上异步数据源在调用方线程或异步执行器上调用，同步数据源只在阻塞执行器上执行，从不在异步执行器上执行。Future 只包装 I/O，L1 与数据源的 future 完成后先切换到异步执行器（或在已完成时就地）再执行续接，**事件循环线程上不执行续接**。唯一的例外是存储内部、不含用户代码的结果转换：Redis 后端在 Lettuce 的 I/O 线程上把脚本返回值转换为 `RemoteRead`（解析 36 字节头部并拷贝出载荷、集合成员），不调用 `Codec`、不调用任何用户代码；代价是大值（或大集合）的这一次拷贝在 I/O 线程上进行，会推迟同一连接上其它命令的完成（与同一连接上大载荷本身的队头阻塞同量级，§8）。
-7. **令牌必须释放或过期**：loader、`ttlOf`、`Codec` 失败，回源被拒绝或超时，以及刷新令牌用不上时都要 `release`；取得或交回令牌的 L1 命令（读取、回收、`fill`、`release`）结果未知（超时、等待被中断）时，后端尽力释放这些令牌（§8）。引擎从不放弃对 L1 命令的等待：异步变体不可取消地等待，协程被取消时，持有令牌的步骤在之后的挂起点释放它；带着令牌的结果不经可能被取消的协程的返回值传递（§5.6）。
+6. **同步 API 上 loader 在调用方线程上执行**；异步视图上异步数据源在调用方线程或异步执行器上调用，同步数据源只在阻塞执行器上执行，从不在异步执行器上执行。Future 只包装 I/O，L1 与数据源的 future 完成后先切换到异步执行器（同步变体切换回调用方线程，或在已完成时就地）再执行续接，**事件循环线程上不执行续接**。唯一的例外是存储内部、不含用户代码的结果转换：Redis 后端在 Lettuce 的 I/O 线程上把脚本返回值转换为 `RemoteRead`（解析 36 字节头部并拷贝出载荷、集合成员），不调用 `Codec`、不调用任何用户代码；代价是大值（或大集合）的这一次拷贝在 I/O 线程上进行，会推迟同一连接上其它命令的完成（与同一连接上大载荷本身的队头阻塞同量级，§8）。
+7. **令牌必须释放或过期**：loader、`ttlOf`、`Codec` 失败，回源被拒绝或超时，以及刷新令牌用不上时都要 `release`；取得或交回令牌的 L1 命令（读取、回收、`fill`、`release`）结果未知（超时、等待被中断）时，后端尽力释放这些令牌（§8）。引擎从不放弃对 L1 命令的等待：两种变体都经异步 SPI 不可取消地等待，中断不到达存储；协程被取消（运行时关闭、同步变体的线程被中断）时，持有令牌的步骤在之后的挂起点释放它，同步变体取消之后不再调用 loader；带着令牌的结果不经可能被取消的协程的返回值传递（§5.6）。
 8. **每次 L1 状态转换都显式重设到期时间。**
 9. **线格式在一个大版本内冻结**：key 布局、标量头、集合字段、消息帧、频道命名、摘要算法。格式演进通过版本号两阶段完成。
 10. **集合元素增删只用于 L1 是唯一副本的 `SetCache`**，在 L1 中原子完成，且 `SetCache` 不得有 loader。默认（`foreignFormat` 未设置）不覆盖读不懂的内容：检查与写入在同一个原子操作中完成。数据源中的集合只能用 `invalidate` 维护。

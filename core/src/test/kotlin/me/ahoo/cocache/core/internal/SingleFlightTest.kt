@@ -260,12 +260,12 @@ class SingleFlightTest {
     }
 
     /**
-     * 同步 leader 被中断时，失败不一定是 [InterruptedException]（被中断的 L1 命令恢复中断标志并抛出后端的异常）：以中断标志为准。
+     * 同步 leader 被中断时，失败不一定是 [InterruptedException]（loader 包装中断、恢复中断标志）：以中断标志为准。
      */
     @Test
     fun aSyncLeaderFailingWithItsInterruptFlagSetCountsAsInterrupted() {
         val followerParked = CountDownLatch(1)
-        val failure = IllegalStateException("Interrupted while waiting for Redis.")
+        val failure = IllegalStateException("Loader interrupted.")
         val leader = fork {
             try {
                 sync {

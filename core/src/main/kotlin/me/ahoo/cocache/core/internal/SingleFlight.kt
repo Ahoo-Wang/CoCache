@@ -214,8 +214,8 @@ internal class SingleFlight<K : Any, R : Any>(
 
     /**
      * 交给跟随者的失败：leader 因中断或取消失败时换成 [LeaderInterruptedException]（跟随者据此自行运行），其余原样。
-     * 同步变体的 leader 被中断时，失败不一定是 [InterruptedException]（L1 命令被中断时恢复中断标志并抛出后端的异常，
-     * loader 也可能包装它），因此同时以调用方线程的中断标志为准。
+     * 同步变体的 leader 被中断时，失败不一定是 [InterruptedException]（loader 可能包装它并恢复中断标志），
+     * 因此同时以调用方线程的中断标志为准。
      */
     private fun sharedFailure(error: Throwable, inline: Boolean): Throwable {
         val interrupted = error is InterruptedException || error is CancellationException ||

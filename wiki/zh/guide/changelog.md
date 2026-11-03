@@ -18,6 +18,7 @@ description: CoCache 版本发布历史和重要变更。
 - `cocache-redis` 不再包含 CoCache 5.x 迁移工具：删除了 `CoCache5Migrator`、`CoCache5Migration`、`CoCache5Format`、`CoCache5KeyMapper`、`CoCache5MigrationOptions`、`CoCache5MigrationReport`、`CoCache5CacheReport` 与 `CoCache5MigrationException`（包 `me.ahoo.cocache.redis.migration`）。8.x 不需要读 5.x 的数据，因此不再附带这个转换工具。以 Redis 为唯一副本的 5.x 数据，先用 CoCache 6.x（6.5 起）迁移，见[用 `CoCache5Migrator` 迁移](./migration-6.md#cocache5-migrator)。
 - 回源许可（`load.max-concurrent`）对同步与异步调用方一律按到达顺序交接。6.x 的阻塞调用方直接争用释放出来的许可，可能抢在已在等待的异步调用方之前。
 - `CacheRuntime` 关闭时仍在进行的异步读取以 `IllegalStateException("CacheRuntime closed.")` 失败。仍在进行的异步写入先做完 Redis 修改、广播与本地淘汰：成功时再以这个异常完成，失败时以自己的异常完成。
+- 阻塞调用（`get`、`getAll`、`put`、`invalidate` 等）不再为每条 Redis 命令阻塞线程：命令与异步 API 一样发出，调用方停在 `runBlocking` 中等它们完成。因此中断调用方线程不再放弃 Redis 命令：被中断的调用方至多多等一个 `command-timeout`（默认 `2s`）。6.x 中等待立即以 `RedisException("Interrupted while waiting for Redis.")` 失败：写入把它包装为 `CacheWriteException` 抛出，读取把它当作 Redis 故障（默认从数据源加载）。在途的命令先完成或超时；之后读取释放它取得的 lease、不再调用 loader，调用抛出 `InterruptedException`。在中断生效之前已经完成的调用（如 L1 命中、命令已在途的 `put`）照常返回。两种情形都保留中断标志。超时而放弃的命令仍然不会在之后发出。
 
 ### 行为变化：被中断的加载的等待者改为自己加载
 

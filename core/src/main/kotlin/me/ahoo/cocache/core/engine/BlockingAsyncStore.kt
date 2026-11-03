@@ -36,7 +36,8 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
 
 /**
- * 只实现同步 SPI 的后端在异步路径上的适配（RFC 0004 §4.1）：同步方法只在阻塞执行器上执行。
+ * 只实现同步 SPI 的后端（仅测试替身）的适配（RFC 0004 §4.1）：引擎的 L1 命令一律经异步 SPI 发出（RFC 0005 §4.3，两种变体相同），
+ * 同步方法只在阻塞执行器上执行。
  */
 internal class BlockingAsyncStore(
     private val store: RemoteStore,
@@ -136,7 +137,7 @@ internal class BlockingAsyncStore(
 }
 
 /**
- * 只实现同步发布的通道在异步路径上的适配：同步发布只在阻塞执行器上执行。
+ * 只实现同步发布的通道的适配（两种变体）：同步发布只在阻塞执行器上执行。
  */
 internal class BlockingAsyncChannel(
     private val channel: InvalidationChannel,
