@@ -238,6 +238,65 @@ class CoherentEngineCoreTest {
      */
     @Test
     fun closeWaitsForAnInFlightRelease() {
+        val held = HeldRelease()
+        val closing = runtime(held.backend)
+        val read = held.loadOn(closing)
+
+        val closer = fork("closer") { closing.close().let { held.released.count } }
+        held.releasing.awaitOrFail("release issued")
+        awaitCondition("close waiting") { closer.parked || !closer.thread.isAlive }
+        closer.thread.isAlive.assert().withFailMessage { "close returned while the release was in flight." }.isTrue()
+        held.gate.complete(Unit)
+
+        closer.join().assert().withFailMessage { "close returned before the release completed." }.isZero()
+        failureOf(read)?.message.assert().isEqualTo("CacheRuntime closed.")
+        val left = Suspending.await { memory.store("core").read("cocache:core:k", null, null) }
+        left.assert().isEqualTo(RemoteRead.Miss(false))
+    }
+
+    /**
+     * 卡住的步骤不让关闭无限期等待：等满上限（这里 1 ms）之后告警、照常关闭，步骤之后照常完成（K17）。
+     */
+    @Test
+    fun closeStopsWaitingAtTheDrainTimeout() {
+        val held = HeldRelease()
+        val closing = CacheRuntime.builder().backend(held.backend).apply { drainTimeout = Duration.ofMillis(1) }.build()
+        runtimes += closing
+        held.loadOn(closing)
+
+        // 作用域中的协程要等释放完成才结束，而释放停在 gate 上：close 只能等满上限
+        closing.close()
+        held.releasing.awaitOrFail("release issued")
+        held.released.count.assert().withFailMessage { "the release was not held." }.isEqualTo(1)
+        held.gate.complete(Unit)
+        held.released.awaitOrFail("release completed")
+    }
+
+    /**
+     * 关闭的线程在等待期间被中断：不再等待，返回时保留中断标志（K17）。
+     */
+    @Test
+    fun anInterruptedCloseStopsWaitingAndKeepsTheFlag() {
+        val held = HeldRelease()
+        val closing = CacheRuntime.builder().backend(held.backend).apply { drainTimeout = Duration.ofHours(1) }.build()
+        runtimes += closing
+        held.loadOn(closing)
+
+        val closer = fork("closer") { closing.close().let { Thread.currentThread().isInterrupted } }
+        held.releasing.awaitOrFail("release issued")
+        awaitCondition("close waiting") { closer.parked || !closer.thread.isAlive }
+        closer.thread.interrupt()
+
+        closer.join().assert().withFailMessage { "the interrupt flag must be restored." }.isTrue()
+        held.released.count.assert().isEqualTo(1)
+        held.gate.complete(Unit)
+        held.released.awaitOrFail("release completed")
+    }
+
+    /**
+     * 释放 lease 的命令停在 [gate] 上的后端（包装 [memory]）：[releasing] 在命令发出时、[released] 在它完成时倒数。
+     */
+    private inner class HeldRelease {
         val gate = CompletableDeferred<Unit>()
         val releasing = CountDownLatch(1)
         val released = CountDownLatch(1)
@@ -251,29 +310,24 @@ class CoherentEngineCoreTest {
                 }
             }
         }
-        val started = CountDownLatch(1)
-        val closing = runtime(backend)
-        val cache = closing.create(
-            spec {
-                asyncLoader = AsyncCacheLoader {
-                    started.countDown()
-                    CompletableFuture<String>()
+
+        /**
+         * 在 [runtime] 上发起一次异步读取：取得 lease、等待永不完成的数据源。关闭运行时会取消它、释放 lease。
+         */
+        fun loadOn(runtime: CacheRuntime): CompletableFuture<String?> {
+            val started = CountDownLatch(1)
+            val cache = runtime.create(
+                spec {
+                    asyncLoader = AsyncCacheLoader {
+                        started.countDown()
+                        CompletableFuture<String>()
+                    }
                 }
-            }
-        )
-        val read = cache.async().get("k")
-        started.awaitOrFail("loader started")
-
-        val closer = fork("closer") { closing.close().let { released.count } }
-        releasing.awaitOrFail("release issued")
-        awaitCondition("close waiting") { closer.parked || !closer.thread.isAlive }
-        closer.thread.isAlive.assert().withFailMessage { "close returned while the release was in flight." }.isTrue()
-        gate.complete(Unit)
-
-        closer.join().assert().withFailMessage { "close returned before the release completed." }.isZero()
-        failureOf(read)?.message.assert().isEqualTo("CacheRuntime closed.")
-        val left = Suspending.await { memory.store("core").read("cocache:core:k", null, null) }
-        left.assert().isEqualTo(RemoteRead.Miss(false))
+            )
+            val read = cache.async().get("k")
+            started.awaitOrFail("loader started")
+            return read
+        }
     }
 
     /**

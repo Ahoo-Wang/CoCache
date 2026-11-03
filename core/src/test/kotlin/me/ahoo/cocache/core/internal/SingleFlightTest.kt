@@ -218,7 +218,11 @@ class SingleFlightTest {
         flights.inFlight.assert().isEqualTo(1)
         gate.complete("go")
 
-        callers.forEach { causeOf(it).assert().isInstanceOf(TimeoutCancellationException::class.java) }
+        // handle 拿到原始异常：JDK 23 起 get() 把以取消完成的 future 的异常包进新的 CancellationException("get")
+        callers.forEach { caller ->
+            caller.handle { _, error -> error }.get(5, TimeUnit.SECONDS).assert()
+                .isInstanceOf(TimeoutCancellationException::class.java)
+        }
         runs.get().assert().isEqualTo(1)
         flights.inFlight.assert().isEqualTo(0)
     }
