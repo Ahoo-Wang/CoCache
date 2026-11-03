@@ -83,7 +83,7 @@ data class CoCacheProperties @ConstructorBinding constructor(
      */
     val asyncExecutor: String? = null,
     /**
-     * 异步视图上同步数据源与只实现同步 SPI 的后端所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析），不应排队。
+     * 异步视图上同步数据源所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析），不应排队。
      * 未设置时 JDK 21+ 每个任务一个虚拟线程，否则为运行时自建的不排队守护线程池（最多 512 线程，满时拒绝）。
      * bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
      */

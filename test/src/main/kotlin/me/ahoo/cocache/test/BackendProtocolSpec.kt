@@ -19,12 +19,13 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
@@ -38,7 +39,9 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * L1 协议 TCK（RFC 0003 §4.4）：每个 [CoherenceBackend] 实现都必须通过。
+ * L1 协议 TCK（RFC 0003 §4.4，挂起形状见 RFC 0005 §4.3）：每个 [CoherenceBackend] 实现都必须通过。
+ * 用例直接调用 [L1Store] 的挂起方法（经 [Suspending.await]）；Java 实现者的 `FutureL1Store` 经 `FutureL1Store.adapt` 接受同样的检验。
+ * 集合成员的用例要求存储提供 [L1Store.sets]。
  *
  * 时间相关用例通过 [elapse] 推进时间：内存后端推进手动时钟，真实后端可以 sleep（用例只使用很短的 TTL）。
  */
@@ -51,7 +54,7 @@ abstract class BackendProtocolSpec {
     protected abstract fun elapse(duration: Duration)
 
     protected lateinit var backend: CoherenceBackend
-    protected lateinit var store: RemoteStore
+    protected lateinit var store: L1Store
     protected lateinit var namespace: String
     private val node = NodeId.random()
     private val sequence = AtomicLong()
@@ -67,9 +70,19 @@ abstract class BackendProtocolSpec {
 
     @AfterEach
     open fun destroy() {
-        store.close()
         backend.close()
     }
+
+    /**
+     * 用例体：其中直接调用存储与通道的挂起方法（[Suspending.await]）。
+     */
+    protected fun l1(block: suspend () -> Unit) = Suspending.await(block)
+
+    /**
+     * 存储的集合能力面：集合成员的用例要求它。
+     */
+    protected val sets: SetL1Store
+        get() = requireNotNull(store.sets()) { "${store.javaClass.name} does not provide the sets capability." }
 
     protected fun key(): String = "cocache:$namespace:" + UUID.randomUUID()
 
@@ -84,14 +97,14 @@ abstract class BackendProtocolSpec {
     private fun RemoteRead.hit(): RemoteRead.Hit = this as? RemoteRead.Hit ?: throw AssertionError("Expected a hit but was $this.")
 
     @Test
-    fun missWithoutLeaseRequestGrantsNothing() {
+    fun missWithoutLeaseRequestGrantsNothing() = l1 {
         val key = key()
         store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
         store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
     }
 
     @Test
-    fun missGrantsLeaseAtomicallyAndOthersSeeLeased() {
+    fun missGrantsLeaseAtomicallyAndOthersSeeLeased() = l1 {
         val key = key()
         store.read(key, lease(), null).assert().isEqualTo(RemoteRead.Miss(true))
         val other = store.read(key, lease(), null)
@@ -100,7 +113,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun fillWithLeaseTokenWritesValue() {
+    fun fillWithLeaseTokenWritesValue() = l1 {
         val key = key()
         val lease = lease()
         store.read(key, lease, null)
@@ -112,7 +125,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun fillWithForeignTokenIsRejected() {
+    fun fillWithForeignTokenIsRejected() = l1 {
         val key = key()
         store.read(key, lease(), null)
         store.fill(Fill(key, token(), scalar("v"), null)).assert().isFalse()
@@ -120,14 +133,14 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun fillWithoutLeaseIsRejected() {
+    fun fillWithoutLeaseIsRejected() = l1 {
         val key = key()
         store.fill(Fill(key, token(), scalar("v"), null)).assert().isFalse()
         store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
     }
 
     @Test
-    fun invalidateDestroysLeaseSoStaleFillFails() {
+    fun invalidateDestroysLeaseSoStaleFillFails() = l1 {
         val key = key()
         val lease = lease()
         store.read(key, lease, null)
@@ -137,7 +150,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun invalidateAfterFillDeletesValue() {
+    fun invalidateAfterFillDeletesValue() = l1 {
         val key = key()
         val lease = lease()
         store.read(key, lease, null)
@@ -147,7 +160,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun putDestroysLeaseAndOverwrites() {
+    fun putDestroysLeaseAndOverwrites() = l1 {
         val key = key()
         val lease = lease()
         store.read(key, lease, null)
@@ -157,7 +170,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun releaseDeletesOwnLeaseOnly() {
+    fun releaseDeletesOwnLeaseOnly() = l1 {
         val key = key()
         val lease = lease()
         store.read(key, lease, null)
@@ -168,14 +181,14 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun releaseOnAbsentKeyIsNoOp() {
+    fun releaseOnAbsentKeyIsNoOp() = l1 {
         val key = key()
         store.release(key, token())
         store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
     }
 
     @Test
-    fun expiredLeaseCanBeTakenAgainAndOldTokenFails() {
+    fun expiredLeaseCanBeTakenAgainAndOldTokenFails() = l1 {
         val key = key()
         val first = lease(ttl = shortTtl)
         store.read(key, first, null)
@@ -187,7 +200,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun fillResetsExpirySoLeaseTtlDoesNotLeak() {
+    fun fillResetsExpirySoLeaseTtlDoesNotLeak() = l1 {
         val key = key()
         val lease = lease(ttl = shortTtl)
         store.read(key, lease, null)
@@ -198,7 +211,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun putWithTtlExpires() {
+    fun putWithTtlExpires() = l1 {
         val key = key()
         store.put(key, scalar("v"), shortTtl, frame(key))
         requireNotNull(store.read(key, null, null).hit().ttl).assert().isLessThanOrEqualTo(shortTtl)
@@ -207,7 +220,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun putWithoutTtlRemovesPreviousExpiry() {
+    fun putWithoutTtlRemovesPreviousExpiry() = l1 {
         val key = key()
         store.put(key, scalar("v1"), shortTtl, frame(key))
         store.put(key, scalar("v2"), null, frame(key))
@@ -216,7 +229,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun absentEnvelopeIsANegativeEntry() {
+    fun absentEnvelopeIsANegativeEntry() = l1 {
         val key = key()
         val lease = lease()
         store.read(key, lease, null)
@@ -225,7 +238,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun refreshTokenGrantedOnlyInsideWindowAndOnce() {
+    fun refreshTokenGrantedOnlyInsideWindowAndOnce() = l1 {
         val key = key()
         store.put(key, scalar("v"), Duration.ofSeconds(60), frame(key))
         val outside = RefreshRequest(Duration.ofSeconds(1), token(), Duration.ofSeconds(30))
@@ -242,7 +255,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun refreshTokenIsNotGrantedOnForeverValues() {
+    fun refreshTokenIsNotGrantedOnForeverValues() = l1 {
         val key = key()
         store.put(key, scalar("v"), null, frame(key))
         val refresh = RefreshRequest(Duration.ofDays(1), token(), Duration.ofSeconds(30))
@@ -250,7 +263,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun expiredRefreshTokenCanBePreempted() {
+    fun expiredRefreshTokenCanBePreempted() = l1 {
         val key = key()
         store.put(key, scalar("v"), Duration.ofSeconds(60), frame(key))
         val first = RefreshRequest(Duration.ofSeconds(120), token(), shortTtl)
@@ -262,7 +275,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun putDestroysRefreshToken() {
+    fun putDestroysRefreshToken() = l1 {
         val key = key()
         store.put(key, scalar("v"), Duration.ofSeconds(60), frame(key))
         val refresh = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
@@ -273,7 +286,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun releaseClearsRefreshTokenButKeepsValue() {
+    fun releaseClearsRefreshTokenButKeepsValue() = l1 {
         val key = key()
         store.put(key, scalar("v"), Duration.ofSeconds(60), frame(key))
         val refresh = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
@@ -285,7 +298,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun reclaimConvertsUnchangedContentToLease() {
+    fun reclaimConvertsUnchangedContentToLease() = l1 {
         val key = key()
         store.put(key, scalar("corrupt"), null, frame(key))
         val lease = lease()
@@ -296,12 +309,12 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun reclaimOnAbsentKeyFails() {
+    fun reclaimOnAbsentKeyFails() = l1 {
         store.reclaim(key(), Digest.of(scalar("x")), lease()).assert().isFalse()
     }
 
     @Test
-    fun readAllReturnsEveryKeyAndGrantsRequestedLeases() {
+    fun readAllReturnsEveryKeyAndGrantsRequestedLeases() = l1 {
         val hitKey = key()
         val leasedKey = key()
         val missKey = key()
@@ -326,13 +339,13 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun membersAreAddedAtomicallyOverLeases() {
+    fun membersAreAddedAtomicallyOverLeases() = l1 {
         val key = key()
         val lease = lease()
         store.read(key, lease, null)
-        store.addMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
+        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
         store.fill(Fill(key, lease.token, Envelope.Members(listOf("seed".toByteArray())), null)).assert().isFalse()
-        store.addMembersIfReadable(
+        sets.addMembers(
             key,
             listOf("b".toByteArray(), "a".toByteArray()),
             null,
@@ -343,25 +356,25 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun addMembersReplacesNegativeEntry() {
+    fun addMembersReplacesNegativeEntry() = l1 {
         val key = key()
         val lease = lease()
         store.read(key, lease, null)
         store.fill(Fill(key, lease.token, Envelope.Absent, Duration.ofMinutes(1)))
-        store.addMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
+        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
         val hit = store.read(key, null, null).hit()
         (hit.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("a")
         hit.ttl.assert().isNull()
     }
 
     @Test
-    fun removeMembersOnlyAffectsSetsAndDeletesWhenEmpty() {
+    fun removeMembersOnlyAffectsSetsAndDeletesWhenEmpty() = l1 {
         val key = key()
-        store.removeMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
+        sets.removeMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
         store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
 
-        store.addMembersIfReadable(key, listOf("a".toByteArray(), "b".toByteArray()), null, frame(key))
-        store.removeMembersIfReadable(
+        sets.addMembers(key, listOf("a".toByteArray(), "b".toByteArray()), null, frame(key))
+        sets.removeMembers(
             key,
             listOf("a".toByteArray()),
             Duration.ofMinutes(1),
@@ -371,7 +384,7 @@ abstract class BackendProtocolSpec {
         (hit.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
         hit.ttl.assert().isNotNull()
 
-        store.removeMembersIfReadable(key, listOf("b".toByteArray()), null, frame(key)).assert().isNull()
+        sets.removeMembers(key, listOf("b".toByteArray()), null, frame(key)).assert().isNull()
         store.read(key, null, null).assert().isEqualTo(RemoteRead.Miss(false))
     }
 
@@ -380,11 +393,11 @@ abstract class BackendProtocolSpec {
      * 不修改 key（内容与到期时间都不变），从不整体覆盖它。
      */
     @Test
-    fun memberWritesRefuseUnreadableContentAndKeepIt() {
+    fun memberWritesRefuseUnreadableContentAndKeepIt() = l1 {
         val key = key()
         store.put(key, scalar("v"), Duration.ofMinutes(1), frame(key))
-        store.addMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key)).assert().isEqualTo(backend.format)
-        store.removeMembersIfReadable(
+        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isEqualTo(backend.format)
+        sets.removeMembers(
             key,
             listOf("v".toByteArray()),
             null,
@@ -396,7 +409,7 @@ abstract class BackendProtocolSpec {
     }
 
     @Test
-    fun subscribeResetsAndWritesBroadcastFrames() {
+    fun subscribeResetsAndWritesBroadcastFrames() = l1 {
         val received = CopyOnWriteArrayList<Pair<List<String>, NodeId>>()
         val resets = AtomicInteger()
         val listener = object : InvalidationListener {
@@ -416,9 +429,9 @@ abstract class BackendProtocolSpec {
         keys.add(key)
         store.invalidate(listOf(key), frame(key))
         keys.add(key)
-        store.addMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key))
+        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key))
         keys.add(key)
-        store.removeMembersIfReadable(key, listOf("a".toByteArray()), null, frame(key))
+        sets.removeMembers(key, listOf("a".toByteArray()), null, frame(key))
         keys.add(key)
         if (!backend.atomicBroadcast) {
             keys.forEach { backend.channel.publish(namespace, frame(it)) }
@@ -440,7 +453,7 @@ abstract class BackendProtocolSpec {
      * 批量覆盖写入：每个 key 的转换同 put（任意状态 → 新内容，销毁 lease 与刷新令牌，重设到期时间）。
      */
     @Test
-    fun putAllOverwritesEveryKeyAndDestroysTokens() {
+    fun putAllOverwritesEveryKeyAndDestroysTokens() = l1 {
         val leased = key()
         val refreshed = key()
         val absent = key()
@@ -491,7 +504,7 @@ abstract class BackendProtocolSpec {
      * 批量覆盖写入的广播：每个 key 恰好随其写入广播一次（实现可以拆成若干帧，但不重复广播）。
      */
     @Test
-    fun putAllBroadcastsEveryKeyExactlyOnce() {
+    fun putAllBroadcastsEveryKeyExactlyOnce() = l1 {
         val received = CopyOnWriteArrayList<Pair<List<String>, NodeId>>()
         val resets = AtomicInteger()
         val listener = object : InvalidationListener {

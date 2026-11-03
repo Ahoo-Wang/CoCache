@@ -87,4 +87,4 @@ The optional `cocache-coroutines` module (6.4+) adds a suspending view, `cache.s
 
 ## Custom backends {#backends}
 
-A backend doesn't have to change. A store that implements only the synchronous `RemoteStore` keeps working: the async view calls it on the blocking executor. To avoid those threads, implement `AsyncRemoteStore` and `AsyncInvalidationChannel`, and run `AsyncBackendProtocolSpec` and the other async TCK specs. See [Extending](../architecture/extending.md#async).
+In 8.0 the L1 SPI is suspending: a backend's store is an `L1Store`, and its invalidation channel publishes with a `suspend` function. Both views call the same store, and neither holds a thread while Redis answers. A Java backend implements `FutureL1Store` and `FutureInvalidationChannel` and adapts them with `FutureL1Store.adapt` and `FutureInvalidationChannel.adapt`. A store that implements only the blocking `RemoteStore` no longer works. Prove a backend with `BackendProtocolSpec` and the engine suites; to run a suite through the async view too, override `access = CacheAccess.ASYNC`. See the [changelog](./changelog.md#unreleased) for the full SPI change.

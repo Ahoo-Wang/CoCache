@@ -38,6 +38,7 @@ import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.EngineSpec.TestCodec
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -102,7 +103,11 @@ class CacheAdminInspectionTest {
         loads.get().assert().isZero()
         admin.metrics.misses.assert().isZero()
         // 没有留下 lease：下一次读取直接回源并写回 L1
-        memory.store("user").read("cocache:user:id-1", null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        Suspending.await {
+            memory.store(
+                "user"
+            ).read("cocache:user:id-1", null, null)
+        }.assert().isEqualTo(RemoteRead.Miss(false))
         users[1].assert().isEqualTo("user-1")
         loads.get().assert().isEqualTo(1)
     }
@@ -158,20 +163,32 @@ class CacheAdminInspectionTest {
         runtime.users()
         val admin = runtime.userAdmin()
         val store = memory.store("user")
-        store.read("cocache:user:id-1", LeaseRequest(Token(NodeId.random(), 1), Duration.ofSeconds(10)), null)
+        Suspending.await {
+            store.read(
+                "cocache:user:id-1",
+                LeaseRequest(Token(NodeId.random(), 1), Duration.ofSeconds(10)),
+                null
+            )
+        }
         val leased = admin.inspect("id-1").remote
         leased.state.assert().isEqualTo(RemoteState.LEASED)
         requireNotNull(leased.ttl).assert().isPositive()
 
-        store.put("cocache:user:id-2", Envelope.Scalar(TestCodec.CORRUPT), null, frame())
+        Suspending.await { store.put("cocache:user:id-2", Envelope.Scalar(TestCodec.CORRUPT), null, frame()) }
         val corrupt = admin.inspect("id-2").remote
         corrupt.state.assert().isEqualTo(RemoteState.UNREADABLE)
         corrupt.ttl.assert().isNull()
         corrupt.error.assert().contains("corrupted")
         // 查看从不回收：损坏的内容仍在
-        store.read("cocache:user:id-2", null, null).assert().isInstanceOf(RemoteRead.Hit::class.java)
+        Suspending.await {
+            store.read(
+                "cocache:user:id-2",
+                null,
+                null
+            )
+        }.assert().isInstanceOf(RemoteRead.Hit::class.java)
 
-        store.put("cocache:user:id-3", Envelope.Members(listOf(byteArrayOf(1))), null, frame())
+        Suspending.await { store.put("cocache:user:id-3", Envelope.Members(listOf(byteArrayOf(1))), null, frame()) }
         admin.inspect("id-3").remote.state.assert().isEqualTo(RemoteState.UNREADABLE)
 
         backend.afterRead = { _, read -> (read as? RemoteRead.Hit)?.copy(format = 0) ?: read }
@@ -266,7 +283,11 @@ class CacheAdminInspectionTest {
         requireNotNull(inspection.local).value.assert().isEqualTo("[a, b]")
         inspection.invalidationPending.assert().isFalse()
 
-        memory.store("index").put("cocache:index:scalar", Envelope.Scalar(byteArrayOf(1)), null, frame())
+        Suspending.await {
+            memory.store(
+                "index"
+            ).put("cocache:index:scalar", Envelope.Scalar(byteArrayOf(1)), null, frame())
+        }
         admin.inspect("scalar").remote.state.assert().isEqualTo(RemoteState.UNREADABLE)
 
         // SetCache 的强制失效等价于 clear(key)

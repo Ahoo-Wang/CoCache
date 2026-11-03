@@ -16,32 +16,32 @@ package me.ahoo.cocache.core.memory
 import io.github.oshai.kotlinlogging.KotlinLogging
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.Versioned
-import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.ConditionalL1Store
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.RemoteConditionalRead
 import me.ahoo.cocache.api.spi.RemoteConditionalWrite
 import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
 import me.ahoo.cocache.api.spi.RemoteVersionedWrite
+import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.api.spi.VersionedL1Store
 import java.time.Duration
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * 单进程内存后端：完整实现 L1 协议（RFC 0003 §4.4）与原子广播，供测试与 TCK 使用。
+ * 单进程内存后端：完整实现 L1 协议（RFC 0003 §4.4，挂起形状见 RFC 0005 §4.3）与原子广播，提供全部可选能力，供测试与 TCK 使用。
  *
  * 多个运行时共享同一个实例即可模拟多节点。到期时间按注入的 [clock] 判断。
  */
@@ -52,14 +52,12 @@ class InMemoryBackend @JvmOverloads constructor(
 
     override val format: Int = FORMAT
 
-    override val versionedWrites: Boolean = true
-
     private val stores = ConcurrentHashMap<String, Store>()
     private val listeners = ConcurrentHashMap<String, CopyOnWriteArrayList<InvalidationListener>>()
 
     override val channel: InvalidationChannel = Channel()
 
-    override fun store(namespace: String): RemoteStore = stores.computeIfAbsent(namespace) { Store(it) }
+    override fun store(namespace: String): L1Store = stores.computeIfAbsent(namespace) { Store(it) }
 
     /**
      * 模拟订阅连接断开并重新建立：通知所有订阅者重置。与 Redis 后端相同，某个订阅者的重置抛出异常（包括 `Error`）记录后继续，
@@ -96,7 +94,7 @@ class InMemoryBackend @JvmOverloads constructor(
         }
     }
 
-    private inner class Channel : AsyncInvalidationChannel {
+    private inner class Channel : InvalidationChannel {
         override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
             val namespaceListeners = listeners.computeIfAbsent(namespace) { CopyOnWriteArrayList() }
             namespaceListeners.add(listener)
@@ -105,15 +103,8 @@ class InMemoryBackend @JvmOverloads constructor(
             return Subscription { namespaceListeners.remove(listener) }
         }
 
-        override fun publish(namespace: String, frame: ByteArray) {
+        override suspend fun publish(namespace: String, frame: ByteArray) {
             this@InMemoryBackend.publish(namespace, frame)
-        }
-
-        override fun publishAsync(namespace: String, frame: ByteArray): CompletableFuture<Void?> = completing {
-            publish(
-                namespace,
-                frame
-            )
         }
     }
 
@@ -137,9 +128,12 @@ class InMemoryBackend @JvmOverloads constructor(
     private fun versionOf(envelope: Envelope): Long = (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION
 
     /**
-     * 原生异步（RFC 0004 §4.1）：内存操作不阻塞，异步方法就地执行并返回已完成的 future，从不同步抛出。
+     * 原生的 [L1Store]（RFC 0005 §4.3）：内存操作不阻塞，挂起方法就地执行、从不挂起。三个能力面都由存储自己实现，访问器返回它本身。
      */
-    private inner class Store(private val namespace: String) : AsyncRemoteStore {
+    @Suppress("TooManyFunctions")
+    private inner class Store(
+        private val namespace: String
+    ) : L1Store, ConditionalL1Store, VersionedL1Store, SetL1Store {
         private val slots = ConcurrentHashMap<String, Slot>()
 
         private fun now() = clock.nowMillis()
@@ -161,7 +155,19 @@ class InMemoryBackend @JvmOverloads constructor(
             Envelope.Absent -> State.MISSING
         }
 
-        override fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
+        override fun conditional(): ConditionalL1Store = this
+
+        override fun versioned(): VersionedL1Store = this
+
+        override fun sets(): SetL1Store = this
+
+        override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead = readNow(
+            key,
+            lease,
+            refresh
+        )
+
+        private fun readNow(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
             var result: RemoteRead = RemoteRead.Miss(false)
             slots.compute(key) { _, current ->
                 val slot = current.live()
@@ -208,15 +214,17 @@ class InMemoryBackend @JvmOverloads constructor(
             return slot.token == null || now() - slot.tokenIssuedAt > refresh.tokenTtl.toMillis()
         }
 
-        override fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
+        override suspend fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
             val result = LinkedHashMap<String, RemoteRead>()
             for (key in keys) {
-                result[key] = read(key, leases[key], null)
+                result[key] = readNow(key, leases[key], null)
             }
             return result
         }
 
-        override fun fill(fill: Fill): Boolean {
+        override suspend fun fill(fill: Fill): Boolean = fillNow(fill)
+
+        private fun fillNow(fill: Fill): Boolean {
             var filled = false
             slots.compute(fill.key) { _, current ->
                 val slot = current.live()
@@ -241,9 +249,9 @@ class InMemoryBackend @JvmOverloads constructor(
             return Envelope.Scalar(envelope.bytes, version)
         }
 
-        override fun fillAll(fills: List<Fill>): List<Boolean> = fills.map { fill(it) }
+        override suspend fun fillAll(fills: List<Fill>): List<Boolean> = fills.map { fillNow(it) }
 
-        override fun release(key: String, token: Token) {
+        override suspend fun release(key: String, token: Token) {
             slots.compute(key) { _, current ->
                 val slot = current.live()
                 when {
@@ -254,7 +262,7 @@ class InMemoryBackend @JvmOverloads constructor(
             }
         }
 
-        override fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
+        override suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
             slots[key] = Slot(stateOf(envelope), envelope, expireAt = expireAt(ttl), version = versionOf(envelope))
             publish(namespace, frame)
         }
@@ -262,19 +270,19 @@ class InMemoryBackend @JvmOverloads constructor(
         /**
          * 每个 key 的转换同 [put]，整批只广播一次 [frame]。
          */
-        override fun putAll(puts: List<Put>, frame: ByteArray) {
+        override suspend fun putAll(puts: List<Put>, frame: ByteArray) {
             puts.forEach {
                 slots[it.key] = Slot(stateOf(it.envelope), it.envelope, expireAt = expireAt(it.ttl), version = versionOf(it.envelope))
             }
             publish(namespace, frame)
         }
 
-        override fun invalidate(keys: Collection<String>, frame: ByteArray) {
+        override suspend fun invalidate(keys: Collection<String>, frame: ByteArray) {
             keys.forEach { slots.remove(it) }
             publish(namespace, frame)
         }
 
-        override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {
+        override suspend fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {
             var reclaimed = false
             slots.compute(key) { _, current ->
                 val slot = current.live()
@@ -298,7 +306,7 @@ class InMemoryBackend @JvmOverloads constructor(
         /**
          * 本后端只存本协议的内容：不能当作集合的只有标量值（拒绝，返回本后端的格式版本）。
          */
-        override fun addMembersIfReadable(
+        override suspend fun addMembers(
             key: String,
             members: Collection<ByteArray>,
             ttl: Duration?,
@@ -321,9 +329,9 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * 同 [addMembersIfReadable]：标量值拒绝；不存在、负缓存、lease 占位不修改。
+         * 同 [addMembers]：标量值拒绝；不存在、负缓存、lease 占位不修改。
          */
-        override fun removeMembersIfReadable(
+        override suspend fun removeMembers(
             key: String,
             members: Collection<ByteArray>,
             ttl: Duration?,
@@ -363,7 +371,7 @@ class InMemoryBackend @JvmOverloads constructor(
         /**
          * 本后端只存本协议的内容：读不懂的只有集合（返回本后端的格式版本）。
          */
-        override fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead {
+        override suspend fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead {
             val slot = slots[key].live()
             return when (slot?.state) {
                 null, State.LEASED, State.MISSING -> RemoteConditionalRead.Absent
@@ -382,7 +390,7 @@ class InMemoryBackend @JvmOverloads constructor(
         /**
          * 比较与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。本后端只存本协议的内容：读不懂的只有集合，总是拒绝。
          */
-        override fun putIfMatch(
+        override suspend fun putIfMatch(
             key: String,
             expected: Digest?,
             envelope: Envelope.Scalar,
@@ -417,7 +425,7 @@ class InMemoryBackend @JvmOverloads constructor(
          * 比较版本与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。没有版本的值与负缓存、lease、不存在都总是写入；
          * 集合总是拒绝（本后端只存本协议的内容，读不懂的只有集合）。
          */
-        override fun putIfNewer(
+        override suspend fun putIfNewer(
             key: String,
             envelope: Envelope,
             version: Long,
@@ -445,80 +453,6 @@ class InMemoryBackend @JvmOverloads constructor(
             return outcome
         }
 
-        override fun putIfNewerAsync(
-            key: String,
-            envelope: Envelope,
-            version: Long,
-            ttl: Duration?,
-            frame: ByteArray
-        ): CompletableFuture<RemoteVersionedWrite> = supply {
-            putIfNewer(key, envelope, version, ttl, frame)
-        }
-
-        override fun readIfChangedAsync(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
-            supply { readIfChanged(key, known) }
-
-        override fun putIfMatchAsync(
-            key: String,
-            expected: Digest?,
-            envelope: Envelope.Scalar,
-            ttl: Duration?,
-            frame: ByteArray
-        ): CompletableFuture<RemoteConditionalWrite> = supply {
-            putIfMatch(key, expected, envelope, ttl, frame)
-        }
-
-        override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
-            supply { read(key, lease, refresh) }
-
-        override fun readAllAsync(keys: Collection<String>, leases: Map<String, LeaseRequest>): CompletableFuture<Map<String, RemoteRead>> =
-            supply { readAll(keys, leases) }
-
-        override fun fillAsync(fill: Fill): CompletableFuture<Boolean> = supply { fill(fill) }
-
-        override fun fillAllAsync(fills: List<Fill>): CompletableFuture<List<Boolean>> = supply { fillAll(fills) }
-
-        override fun releaseAsync(key: String, token: Token): CompletableFuture<Void?> = completing {
-            release(
-                key,
-                token
-            )
-        }
-
-        override fun putAsync(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
-            completing { put(key, envelope, ttl, frame) }
-
-        override fun putAllAsync(puts: List<Put>, frame: ByteArray): CompletableFuture<Void?> = completing {
-            putAll(
-                puts,
-                frame
-            )
-        }
-
-        override fun invalidateAsync(keys: Collection<String>, frame: ByteArray): CompletableFuture<Void?> = completing {
-            invalidate(
-                keys,
-                frame
-            )
-        }
-
-        override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
-            supply { reclaim(key, observed, lease) }
-
-        override fun addMembersIfReadableAsync(
-            key: String,
-            members: Collection<ByteArray>,
-            ttl: Duration?,
-            frame: ByteArray
-        ): CompletableFuture<Int?> = supply { addMembersIfReadable(key, members, ttl, frame) }
-
-        override fun removeMembersIfReadableAsync(
-            key: String,
-            members: Collection<ByteArray>,
-            ttl: Duration?,
-            frame: ByteArray
-        ): CompletableFuture<Int?> = supply { removeMembersIfReadable(key, members, ttl, frame) }
-
         private fun union(existing: List<ByteArray>, added: Collection<ByteArray>): List<ByteArray> {
             val result = ArrayList(existing)
             for (member in added) {
@@ -528,20 +462,6 @@ class InMemoryBackend @JvmOverloads constructor(
             }
             return result
         }
-    }
-
-    @Suppress("TooGenericExceptionCaught")
-    private inline fun <T> supply(block: () -> T): CompletableFuture<T> {
-        return try {
-            CompletableFuture.completedFuture(block())
-        } catch (e: Throwable) {
-            CompletableFuture.failedFuture(e)
-        }
-    }
-
-    private inline fun completing(block: () -> Unit): CompletableFuture<Void?> = supply {
-        block()
-        null
     }
 
     companion object {

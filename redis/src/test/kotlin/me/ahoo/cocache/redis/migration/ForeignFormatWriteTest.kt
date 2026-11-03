@@ -17,7 +17,6 @@ import io.lettuce.core.ScriptOutputType
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.SetCache
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -214,7 +213,7 @@ class ForeignFormatWriteTest {
     @Test
     fun storeChecksEveryShapeAtomically() {
         val namespace = "store-$run"
-        val store = backend.store(namespace) as AsyncRemoteStore
+        val store = backend.remoteStore(namespace)
         fun key(name: String) = "cocache:$namespace:$name"
         val members = listOf("m".toByteArray())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())

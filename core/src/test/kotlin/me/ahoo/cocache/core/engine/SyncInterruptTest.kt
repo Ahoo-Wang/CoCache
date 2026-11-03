@@ -14,7 +14,6 @@
 package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationChannel
@@ -37,6 +36,7 @@ import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -47,7 +47,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.Supplier
 
 /**
- * 同步变体被中断（RFC 0005 §4.3，M3a）：L1 命令经异步 SPI 挂起等待，中断不到达存储。`runBlocking` 取消协程并等它结束：
+ * 同步变体被中断（RFC 0005 §4.3，M3a）：L1 调用不可取消地挂起等待（`uncancellable`），中断不到达存储。`runBlocking` 取消协程并等它结束：
  * 在途的 L1 命令先完成，取消在之后的第一个挂起点生效，令牌按正常路径释放；取消之后不再调用 loader。
  * 调用方得到 [InterruptedException]，或在取消生效之前已经完成的结果，两种情形都保留中断标志。
  *
@@ -86,7 +86,9 @@ class SyncInterruptTest {
 
     private fun storageKey(key: String) = "cocache:$NAME:$key"
 
-    private fun leased(key: String): Boolean = memory.store(NAME).read(storageKey(key), null, null) is RemoteRead.Leased
+    private fun leased(key: String): Boolean = Suspending.await {
+        memory.store(NAME).read(storageKey(key), null, null)
+    } is RemoteRead.Leased
 
     /**
      * 调用方的结局：结果（或异常），以及返回时线程的中断标志（线程结束后不可再读）。
@@ -175,7 +177,11 @@ class SyncInterruptTest {
      */
     @Test
     fun anInterruptDuringAnL1HitReturnsTheValueWithTheFlagSet() {
-        memory.store(NAME).put(storageKey("k"), Envelope.Scalar("v".toByteArray()), null, frame("k"))
+        Suspending.await {
+            memory.store(
+                NAME
+            ).put(storageKey("k"), Envelope.Scalar("v".toByteArray()), null, frame("k"))
+        }
         val cache = cache()
         val caller = call("reader") { cache["k"] }
         awaitParked(caller, 1, "read issued")
@@ -208,7 +214,7 @@ class SyncInterruptTest {
         outcome.result.isSuccess.assert().withFailMessage { "the put failed: ${outcome.result}" }.isTrue()
         outcome.interrupted.assert().withFailMessage { "the interrupt flag must be restored" }.isTrue()
         published.assert().isEqualTo(listOf(listOf(storageKey("k"))))
-        val read = memory.store(NAME).read(storageKey("k"), null, null) as RemoteRead.Hit
+        val read = Suspending.await { memory.store(NAME).read(storageKey("k"), null, null) } as RemoteRead.Hit
         read.envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
     }
 
@@ -237,7 +243,11 @@ class SyncInterruptTest {
      */
     private fun interruptLeaseWait(runtime: CacheRuntime, cache: me.ahoo.cocache.api.Cache<String, String>) {
         val holder = LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1))
-        memory.store(NAME).read(storageKey("k"), holder, null).assert().isEqualTo(RemoteRead.Miss(true))
+        Suspending.await {
+            memory.store(
+                NAME
+            ).read(storageKey("k"), holder, null)
+        }.assert().isEqualTo(RemoteRead.Miss(true))
         val caller = call("waiter") { cache["k"] }
         awaitParked(caller, 1, "read issued")
         resolve("read")
@@ -267,17 +277,12 @@ class SyncInterruptTest {
     private class RecordingChannel(
         private val delegate: InvalidationChannel,
         private val published: MutableList<List<String>>,
-    ) : AsyncInvalidationChannel {
+    ) : InvalidationChannel {
         override fun subscribe(namespace: String, listener: InvalidationListener): Subscription =
             delegate.subscribe(namespace, listener)
 
-        override fun publish(namespace: String, frame: ByteArray) {
+        override suspend fun publish(namespace: String, frame: ByteArray) {
             published += InvalidationFrame.decode(frame).keys
-        }
-
-        override fun publishAsync(namespace: String, frame: ByteArray): CompletableFuture<Void?> {
-            publish(namespace, frame)
-            return CompletableFuture.completedFuture(null)
         }
     }
 

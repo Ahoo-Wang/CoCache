@@ -30,6 +30,7 @@ import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -87,7 +88,8 @@ class PolicyPropertiesTest {
             @Suppress("UNCHECKED_CAST")
             val index = context.getBean("index") as SetCache<String, String>
             index.add("k", listOf("a"))
-            val read = context.getBean(CoherenceBackend::class.java).store("index").read("cocache:index:k", null, null)
+            val store = context.getBean(CoherenceBackend::class.java).store("index")
+            val read = Suspending.await { store.read("cocache:index:k", null, null) }
             (read as RemoteRead.Hit).ttl.assert().isNull()
         }
     }

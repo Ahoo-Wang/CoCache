@@ -20,7 +20,7 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
 /**
- * 按版本有序的写入（6.8）在 SPI 上的默认值：后端默认不支持（`versionedWrites = false`），`putIfNewer` 不提供“先读后写”的实现
+ * 按版本有序的写入（6.8）在 SPI 上的默认值：`putIfNewer` 不提供“先读后写”的实现
  * （抛出 / 以 [UnsupportedOperationException] 完成）；[Envelope.Scalar] 的版本默认是 [Versioned.NO_VERSION]，参与相等比较、不影响摘要。
  */
 class VersionedDefaultsTest {
@@ -105,18 +105,8 @@ class VersionedDefaultsTest {
         ): CompletableFuture<Int?> = CompletableFuture.completedFuture(null)
     }
 
-    private class PlainBackend : CoherenceBackend {
-        override val atomicBroadcast: Boolean = true
-        override val format: Int = 1
-        override val channel: InvalidationChannel
-            get() = throw UnsupportedOperationException()
-
-        override fun store(namespace: String): RemoteStore = PlainStore()
-    }
-
     @Test
-    fun backendsDoNotSupportVersionsByDefault() {
-        PlainBackend().versionedWrites.assert().isFalse()
+    fun storesDoNotSupportVersionsByDefault() {
         val store = PlainStore()
         runCatching { store.putIfNewer("k", Envelope.Absent, 1, null, ByteArray(0)) }.exceptionOrNull()
             .assert().isInstanceOf(UnsupportedOperationException::class.java)

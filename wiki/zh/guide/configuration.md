@@ -113,7 +113,7 @@ CoCache 在执行器上运行后台工作与异步工作：
 |------|--------|------------|
 | 提前刷新回源 | `cocache.refresh-executor` | 有界守护线程池（1–4 个线程，队列 1024）。队列满时跳过这次刷新，计入 `cocache.refresh.rejections`。 |
 | [异步视图](./async.md)的续接：解码、填充 L2、发出下一条 Redis 命令、调用 `loadAsync`、完成你拿到的 future | `cocache.async-executor` | 运行时自建的 `ForkJoinPool`，并行度为 CPU 数，守护线程名为 `cocache-async-*` |
-| 经异步视图调用的同步 loader，以及只实现同步 SPI 的后端 | `cocache.blocking-executor` | JDK 21+ 上每个任务一个虚拟线程。JDK 17–20 上是不排队的守护线程池（最多 512 个线程，名为 `cocache-blocking-*`）；满时拒绝这次加载，而不是在异步执行器上执行。 |
+| 经异步视图调用的同步 loader | `cocache.blocking-executor` | JDK 21+ 上每个任务一个虚拟线程。JDK 17–20 上是不排队的守护线程池（最多 512 个线程，名为 `cocache-blocking-*`）；满时拒绝这次加载，而不是在异步执行器上执行。 |
 
 每个配置项的值都是 `Executor` bean 的**名称**。CoCache 只按名称查找，从不按类型查找。名称没有对应的 bean，或该 bean 不是 `Executor` 时，启动失败，错误信息指明配置项。该执行器归容器管理：关闭 `CacheRuntime` 不会关闭它。
 

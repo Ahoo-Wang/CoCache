@@ -120,7 +120,7 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
 
     /**
      * 是否为带版本的缓存（6.8，按版本有序的写入）：显式声明，或设置了带版本的数据源。
-     * 只有带版本的缓存支持 `putIfNewer`、`invalidateIfNewer`、`getVersioned`；后端不支持版本（`CoherenceBackend.versionedWrites`）时创建即失败。
+     * 只有带版本的缓存支持 `putIfNewer`、`invalidateIfNewer`、`getVersioned`；后端的存储不支持版本（`L1Store.versioned()` 为 `null`）时创建即失败。
      * 带版本的缓存不支持提前刷新（`refreshWindow`）：L1 头部放不下刷新令牌与版本。
      */
     val versioned: Boolean = builder.versioned || versionedLoader != null || versionedAsyncLoader != null

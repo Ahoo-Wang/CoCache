@@ -29,8 +29,10 @@ import io.lettuce.core.resource.DefaultClientResources
 import io.lettuce.core.resource.EpollProvider
 import io.lettuce.core.resource.IOUringProvider
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.FutureInvalidationChannel
+import me.ahoo.cocache.api.spi.FutureL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
-import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.L1Store
 import java.time.Duration
 
 /**
@@ -55,11 +57,6 @@ class RedisBackend private constructor(
     val clientName: String? = options.clientName
 
     override val format: Int = RedisScripts.FORMAT
-
-    /**
-     * 按版本有序的写入（6.8）：[RedisScripts.PUT_IF_NEWER]，一次往返。
-     */
-    override val versionedWrites: Boolean = true
 
     /**
      * 失效通道模式。
@@ -92,7 +89,15 @@ class RedisBackend private constructor(
         }) { channelMode == RedisChannelMode.PUBSUB && probeAtomicBroadcast() }
     }
 
-    override val channel: InvalidationChannel
+    /**
+     * 失效通道：[RedisInvalidationChannel] 经 [FutureInvalidationChannel.adapt] 适配（发布挂起，订阅阻塞）。
+     */
+    override val channel: InvalidationChannel = FutureInvalidationChannel.adapt(invalidationChannel)
+
+    /**
+     * 适配之前的通道（模块内部，供测试查看订阅状态）。
+     */
+    internal val redisChannel: RedisInvalidationChannel
         get() = invalidationChannel
 
     /**
@@ -121,7 +126,16 @@ class RedisBackend private constructor(
         }
     }
 
-    override fun store(namespace: String): RemoteStore {
+    /**
+     * 命名空间的存储：[RedisRemoteStore] 的异步方法经 [RedisFutureStore] 与 [FutureL1Store.adapt] 适配（M3d 改为原生的 `L1Store`）。
+     * 提供全部能力：条件读写、按版本有序的写入（[RedisScripts.PUT_IF_NEWER]，一次往返）与集合成员的增删。
+     */
+    override fun store(namespace: String): L1Store = FutureL1Store.adapt(RedisFutureStore(remoteStore(namespace)))
+
+    /**
+     * 适配之前的存储（模块内部，供测试直接调用同步与异步方法）。
+     */
+    internal fun remoteStore(namespace: String): RedisRemoteStore {
         val channel = if (atomicBroadcast) {
             RedisInvalidationChannel.channelOf(
                 namespace

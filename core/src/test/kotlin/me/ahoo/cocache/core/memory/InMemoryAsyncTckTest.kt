@@ -16,15 +16,10 @@ package me.ahoo.cocache.core.memory
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.spi.CoherenceBackend
-import me.ahoo.cocache.api.spi.InvalidationChannel
-import me.ahoo.cocache.api.spi.InvalidationListener
-import me.ahoo.cocache.api.spi.RemoteStore
-import me.ahoo.cocache.api.spi.Subscription
-import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.setCacheSpec
-import me.ahoo.cocache.test.AsyncBackendProtocolSpec
+import me.ahoo.cocache.test.BackendProtocolSpec
 import me.ahoo.cocache.test.CacheAccess
 import me.ahoo.cocache.test.FaultSpec
 import me.ahoo.cocache.test.MultiNodeSpec
@@ -35,17 +30,17 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
-import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
 /**
  * 异步变体的用例（RFC 0005 §4.10）：基础规范经 `override val access = CacheAccess.ASYNC` 改由 `async()` 视图读写，
- * 引擎另加 [AsyncVariantEngineCases] 的专有用例。内存后端原生异步；[SyncOnlyBackend] 只暴露同步 SPI，验证引擎经阻塞执行器的适配。
+ * 引擎另加 [AsyncVariantEngineCases] 的专有用例。内存后端是原生的 `L1Store`；[FutureBackend] 以 Java 实现者的形状暴露它，
+ * 验证 `FutureL1Store.adapt` 与 `FutureInvalidationChannel.adapt`。
  */
-class InMemoryAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
+class InMemoryFutureBackendProtocolTest : BackendProtocolSpec() {
     private val clock = ManualClock()
 
-    override fun createBackend(): CoherenceBackend = InMemoryBackend(clock)
+    override fun createBackend(): CoherenceBackend = FutureBackend(InMemoryBackend(clock))
 
     override fun elapse(duration: Duration) = clock.advance(duration)
 }
@@ -114,7 +109,7 @@ class InMemoryHoppingAsyncEngineTest : AsyncVariantEngineCases() {
     override fun simulateReconnect() = memory.reconnect()
 }
 
-class SyncOnlyBackendAsyncEngineTest : AsyncVariantEngineCases() {
+class FutureBackendAsyncEngineTest : AsyncVariantEngineCases() {
     private val manualClock = ManualClock()
     private lateinit var memory: InMemoryBackend
 
@@ -122,14 +117,7 @@ class SyncOnlyBackendAsyncEngineTest : AsyncVariantEngineCases() {
 
     override val clock: CacheClock = manualClock
 
-    override fun createBackend(): CoherenceBackend = SyncOnlyBackend(InMemoryBackend(manualClock).also { memory = it })
-
-    /**
-     * 同步 SPI 在调用线程上执行：用例按线程名编排的钩子才能作用于发起调用的线程（经真正线程池的卸载见专门的用例）。
-     */
-    override fun configureNode(builder: CacheRuntime.Builder) {
-        builder.blockingExecutor(Executor { it.run() })
-    }
+    override fun createBackend(): CoherenceBackend = FutureBackend(InMemoryBackend(manualClock).also { memory = it })
 
     override fun elapse(duration: Duration) = manualClock.advance(duration)
 
@@ -189,20 +177,6 @@ class InMemoryAsyncFaultTest : FaultSpec() {
     override fun elapse(duration: Duration) = manualClock.advance(duration)
 }
 
-/**
- * 只暴露同步 SPI 的后端（隐藏内存后端的异步实现），模拟未升级的第三方后端。
- */
-class SyncOnlyBackend(private val delegate: CoherenceBackend) : CoherenceBackend by delegate {
-    override val channel: InvalidationChannel = object : InvalidationChannel {
-        override fun subscribe(namespace: String, listener: InvalidationListener): Subscription =
-            delegate.channel.subscribe(namespace, listener)
-
-        override fun publish(namespace: String, frame: ByteArray) = delegate.channel.publish(namespace, frame)
-    }
-
-    override fun store(namespace: String): RemoteStore = object : RemoteStore by delegate.store(namespace) {}
-}
-
 class InMemoryAsyncVersionedTest : VersionedSpec() {
     private val manualClock = ManualClock()
 
@@ -216,20 +190,16 @@ class InMemoryAsyncVersionedTest : VersionedSpec() {
 }
 
 /**
- * 只实现同步 SPI 的后端：按版本写入经阻塞执行器（`BlockingAsyncStore.putIfNewerAsync`）。
+ * Java 实现者形状的后端：按版本写入经 `FutureL1Store.adapt` 的能力面。
  */
-class SyncOnlyBackendAsyncVersionedTest : VersionedSpec() {
+class FutureBackendAsyncVersionedTest : VersionedSpec() {
     private val manualClock = ManualClock()
 
     override val access: CacheAccess = CacheAccess.ASYNC
 
     override val clock: CacheClock = manualClock
 
-    override fun createBackend(): CoherenceBackend = SyncOnlyBackend(InMemoryBackend(manualClock))
-
-    override fun configureNode(builder: CacheRuntime.Builder) {
-        builder.blockingExecutor(Executor { it.run() })
-    }
+    override fun createBackend(): CoherenceBackend = FutureBackend(InMemoryBackend(manualClock))
 
     override fun elapse(duration: Duration) = manualClock.advance(duration)
 }

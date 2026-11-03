@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import me.ahoo.cocache.core.internal.Futures
+import me.ahoo.cocache.core.internal.L1Call
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
@@ -30,6 +31,7 @@ import kotlin.coroutines.CoroutineContext
  *   （kotlinx 以线程局部的事件循环展开就地恢复，栈深有界）。只在上一步于执行器之外（I/O 线程、阻塞执行器、数据源的线程）完成时派发。
  * - 执行器拒绝时与 kotlinx 的执行器调度器相同：以携带 [RejectedExecutionException] 的取消结束协程，
  *   再交给 [Dispatchers.IO] 运行到结束（释放令牌等收尾照常执行）。
+ * - 例外是正在执行的 L1 调用（上下文带有 [L1Call]）：不取消，只交给 [Dispatchers.IO]（核心从不取消 L1 调用，RFC 0005 §4.3）。
  */
 internal class EngineDispatcher(private val executor: Executor) : CoroutineDispatcher() {
     override fun isDispatchNeeded(context: CoroutineContext): Boolean = !Futures.onExecutor(executor)
@@ -38,7 +40,9 @@ internal class EngineDispatcher(private val executor: Executor) : CoroutineDispa
         try {
             Futures.execute(executor, block)
         } catch (e: RejectedExecutionException) {
-            context.cancel(CancellationException("The task was rejected.").apply { initCause(e) })
+            if (context[L1Call] == null) {
+                context.cancel(CancellationException("The task was rejected.").apply { initCause(e) })
+            }
             Dispatchers.IO.dispatch(context, block)
         }
     }

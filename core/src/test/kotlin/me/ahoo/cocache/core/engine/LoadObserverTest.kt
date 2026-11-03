@@ -30,6 +30,7 @@ import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.test.EngineSpec.TestCodec
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -201,7 +202,11 @@ class LoadObserverTest {
         database["k"] = "v0"
         cache["k"]
         // L1 中的值被静默删除（不广播）：刷新退回普通加载路径，仍以 refresh 观测
-        memory.store(name).invalidate(listOf("cocache:$name:k"), InvalidationFrame.encode(NodeId.random(), emptyList()))
+        Suspending.await {
+            memory.store(
+                name
+            ).invalidate(listOf("cocache:$name:k"), InvalidationFrame.encode(NodeId.random(), emptyList()))
+        }
         clock.advance(Duration.ofSeconds(6))
         cache["k"]
         observer.operations().assert().containsExactly(LoadOperation.LOAD to 1, LoadOperation.REFRESH to 1)
@@ -280,7 +285,11 @@ class LoadObserverTest {
         val cache = runtime().cache(policy)
         database["k"] = "v"
         // 其它节点持有 lease：等待超时后直接回源
-        memory.store(name).read("cocache:$name:k", LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null)
+        Suspending.await {
+            memory.store(
+                name
+            ).read("cocache:$name:k", LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null)
+        }
         cache["k"].assert().isEqualTo("v")
         observer.operations().assert().containsExactly(LoadOperation.LEASE_WAIT to 1, LoadOperation.LOAD to 1)
         observer.records.first().error.assert().isNull()

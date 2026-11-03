@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Suspending
 import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
 import java.util.UUID
@@ -48,7 +49,7 @@ class RedisShardedChannelTest {
             RedisTestSupport.shardedBackend().use { publisher ->
                 val subscription = subscriber.channel.subscribe(namespace, listener)
                 val frame = InvalidationFrame.encode(NodeId.random(), listOf("before"))
-                publisher.channel.publish(namespace, frame)
+                Suspending.await { publisher.channel.publish(namespace, frame) }
                 awaitCondition("event before migration") { received.contains(listOf("before")) }
                 val resetsBefore = resets.get()
 
@@ -58,7 +59,7 @@ class RedisShardedChannelTest {
                     awaitCondition("reset after migration") { resets.get() > resetsBefore }
                     val after = InvalidationFrame.encode(NodeId.random(), listOf("after"))
                     awaitCondition("event after migration") {
-                        publisher.channel.publish(namespace, after)
+                        Suspending.await { publisher.channel.publish(namespace, after) }
                         received.contains(listOf("after"))
                     }
                 } finally {

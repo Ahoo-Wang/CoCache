@@ -25,6 +25,7 @@ import me.ahoo.cocache.core.internal.Ticker
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
+import me.ahoo.cocache.test.Suspending
 import org.jetbrains.lincheck.datastructures.IntGen
 import org.jetbrains.lincheck.datastructures.ModelCheckingOptions
 import org.jetbrains.lincheck.datastructures.Operation
@@ -75,7 +76,7 @@ class CoherentEngineLincheckTest {
     fun remoteWrite(@Param(name = "key") key: Int) {
         versions.incrementAndGet(key)
         val storageKey = "cocache:$NAME:$key"
-        store.invalidate(listOf(storageKey), InvalidationFrame.encode(OTHER, listOf(storageKey)))
+        Suspending.await { store.invalidate(listOf(storageKey), InvalidationFrame.encode(OTHER, listOf(storageKey))) }
         engine.onInvalidated(listOf(storageKey), OTHER)
     }
 

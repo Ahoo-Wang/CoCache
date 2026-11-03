@@ -14,61 +14,23 @@
 package me.ahoo.cocache.redis
 
 import me.ahoo.cocache.api.CacheClock
-import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.clock.ManualClock
-import me.ahoo.cocache.test.AsyncBackendProtocolSpec
 import me.ahoo.cocache.test.CacheAccess
 import me.ahoo.cocache.test.FaultSpec
 import me.ahoo.cocache.test.MultiNodeSpec
 import me.ahoo.cocache.test.SetEngineSpec
 import me.ahoo.cocache.test.VersionedSpec
-import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.UUID
 
 /*
  * 异步变体在 Redis 上的 TCK 矩阵：与同步矩阵相同的三种后端（pubsub、非原子、sharded），基础规范经
- * `override val access = CacheAccess.ASYNC` 改由 `async()` 视图读写。Redis 后端原生异步（AsyncRemoteStore / AsyncInvalidationChannel），
+ * `override val access = CacheAccess.ASYNC` 改由 `async()` 视图读写。Redis 的存储经 `FutureL1Store.adapt` 适配，
  * 每个 L1 结果都在 Lettuce 的 I/O 线程上完成；引擎另跑断言这些线程的 [RedisAsyncThreadCases]（其余异步专有用例在 cocache-core）。
+ * 协议 TCK（`BackendProtocolSpec`）只有一份挂起形状，见 `RedisTckTest`。
  */
-
-private fun elapseProtocol(namespace: String, duration: Duration) {
-    if (duration <= Duration.ofSeconds(2)) {
-        Thread.sleep(duration.toMillis())
-    } else {
-        RedisTestSupport.shiftTtl("cocache:$namespace:*", duration)
-    }
-}
-
-class RedisAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.backend()
-
-    override fun elapse(duration: Duration) = elapseProtocol(namespace, duration)
-
-    @Test
-    fun redisBackendIsNativelyAsync() {
-        asyncStore.assert().isInstanceOf(AsyncRemoteStore::class.java)
-        backend.channel.assert().isInstanceOf(AsyncInvalidationChannel::class.java)
-    }
-}
-
-class RedisNonAtomicAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.nonAtomicBackend()
-
-    override fun elapse(duration: Duration) = elapseProtocol(namespace, duration)
-}
-
-class RedisShardedAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend().also {
-        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
-    }
-
-    override fun elapse(duration: Duration) = elapseProtocol(namespace, duration)
-}
 
 class RedisAsyncEngineTest : RedisAsyncThreadCases() {
     override val access: CacheAccess = CacheAccess.ASYNC

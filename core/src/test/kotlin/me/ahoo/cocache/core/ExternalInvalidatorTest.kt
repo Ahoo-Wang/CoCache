@@ -19,6 +19,7 @@ import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.ConcurrentHashMap
@@ -42,7 +43,11 @@ class ExternalInvalidatorTest {
             ExternalInvalidator(memory).use { invalidator ->
                 invalidator.invalidate("user", "1")
             }
-            memory.store("user").read("cocache:user:1", null, null).assert().isEqualTo(RemoteRead.Miss(false))
+            Suspending.await {
+                memory.store(
+                    "user"
+                ).read("cocache:user:1", null, null)
+            }.assert().isEqualTo(RemoteRead.Miss(false))
             awaitCondition { cache["1"] == "v1" }
         }
     }

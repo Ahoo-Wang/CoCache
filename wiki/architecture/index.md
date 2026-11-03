@@ -50,7 +50,7 @@ flowchart BT
 | `cocache-codec-jackson` | `JacksonCodec` (Jackson 3, `tools.jackson`) |
 | `cocache-spring` | `CoCacheSpringCacheManager`, `TransactionalInvalidator`. For Spring without Boot. |
 | `cocache-spring-boot-starter` | Auto-configuration, `@EnableCoCache`, annotation translation, spec-bean registration, `cocache.*` properties, the actuator endpoint, health indicator, Micrometer binding, and the Spring Cache `sync` check |
-| `cocache-test` | The published TCK: `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`, `AsyncBackendProtocolSpec` (for the async SPI), `CacheAccess`, `HookedBackend`, `Concurrency` |
+| `cocache-test` | The published TCK: `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`, `CacheAccess`, `HookedBackend`, `Concurrency`, `Suspending` |
 | `cocache-bom` | Version alignment |
 
 Dependencies point one way. Annotation parsing and SpEL exist only in the starter, so the core needs neither Spring nor `kotlin-reflect`. A new backend depends only on `cocache-api`, and on `cocache-test` for its tests.

@@ -86,7 +86,7 @@ open class SetCacheBenchmark {
         runtime = CacheRuntime.builder().backend(backend).build()
         val name = "setbench-$run"
         cache = runtime.create(setCacheSpec<String, String>(name) { elementCodec = StringCodec })
-        store = backend.store(name)
+        store = backend.remoteStore(name)
         frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         channel = "cocache:inv:$name".toByteArray()
         client = RedisClient.create(RedisURI.create("localhost", 6379))

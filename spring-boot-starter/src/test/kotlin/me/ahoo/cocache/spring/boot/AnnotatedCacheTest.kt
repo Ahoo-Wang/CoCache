@@ -26,6 +26,7 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.proxy.CacheProxies
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -316,7 +317,11 @@ class AnnotatedCacheTest {
             users.name.assert().isEqualTo("UserCache")
 
             val backend = context.getBean(CoherenceBackend::class.java)
-            val stored = backend.store("UserCache").read("app:UserCache:u-1", null, null) as RemoteRead.Hit
+            val stored = Suspending.await {
+                backend.store(
+                    "UserCache"
+                ).read("app:UserCache:u-1", null, null)
+            } as RemoteRead.Hit
             requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(120))
 
             val runtime = context.getBean(CacheRuntime::class.java)
@@ -325,7 +330,13 @@ class AnnotatedCacheTest {
             val plain = context.getBean(PlainCache::class.java)
             plain["missing"].assert().isNull()
             plain.put("k", "v")
-            (backend.store("plain").read("cocache:plain:k", null, null) as RemoteRead.Hit).ttl.assert().isNull()
+            (
+                Suspending.await {
+                    backend.store(
+                        "plain"
+                    ).read("cocache:plain:k", null, null)
+                } as RemoteRead.Hit
+                ).ttl.assert().isNull()
 
             context.getBean(UndeclaredCache::class.java)[1].assert().isNull()
             context.getBean(NamedCache::class.java)[7L].assert().isEqualTo("n-7")
@@ -344,9 +355,8 @@ class AnnotatedCacheTest {
             val tags = context.getBean("tags") as TagCache
             tags.add("k", listOf("a"))
             tags["k"].assert().containsExactly("a")
-            val stored = context.getBean(
-                CoherenceBackend::class.java
-            ).store("tag-ns").read("t:tag-ns:K", null, null) as RemoteRead.Hit
+            val store = context.getBean(CoherenceBackend::class.java).store("tag-ns")
+            val stored = Suspending.await { store.read("t:tag-ns:K", null, null) } as RemoteRead.Hit
             requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(600))
         }
     }
@@ -358,9 +368,8 @@ class AnnotatedCacheTest {
             .run { context ->
                 assertThat(context).hasNotFailed()
                 context.getBean(UserCache::class.java)["1"]
-                val stored = context.getBean(
-                    CoherenceBackend::class.java
-                ).store("UserCache").read("app:UserCache:u-1", null, null) as RemoteRead.Hit
+                val store = context.getBean(CoherenceBackend::class.java).store("UserCache")
+                val stored = Suspending.await { store.read("app:UserCache:u-1", null, null) } as RemoteRead.Hit
                 requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(10))
             }
     }

@@ -14,17 +14,23 @@
 package me.ahoo.cocache.api.spi
 
 /**
- * 失效通道：至多一次投递。
+ * 失效通道：至多一次投递（RFC 0005 §4.3）。Java 实现者实现 [FutureInvalidationChannel]，经 [FutureInvalidationChannel.adapt] 得到本接口。
  *
  * 实现约定：每次订阅（重新）建立并得到服务端确认之后，必须回调该连接上所有订阅者的 [InvalidationListener.onReset]。
  */
 interface InvalidationChannel {
+    /**
+     * 订阅（阻塞）：只在 `runtime.create` 时调用一次，得到服务端确认并回调 [InvalidationListener.onReset] 之后返回。
+     */
     fun subscribe(namespace: String, listener: InvalidationListener): Subscription
 
     /**
-     * 仅当 [CoherenceBackend.atomicBroadcast] 为 `false` 时由引擎调用。
+     * 发布失效帧（挂起，在写路径上）：仅当 [CoherenceBackend.atomicBroadcast] 为 `false` 时由引擎在写入之后调用。
+     *
+     * 限时、取消与失败的约定同 [L1Store]：引擎从不取消本调用（在 `NonCancellable` 中调用），实现必须自己限时，
+     * 故障不得以 `CancellationException` 报告。
      */
-    fun publish(namespace: String, frame: ByteArray)
+    suspend fun publish(namespace: String, frame: ByteArray)
 }
 
 /**

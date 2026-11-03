@@ -29,6 +29,7 @@ import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -255,26 +256,35 @@ class CoCacheAutoConfigurationTest {
                 user.put("k", "v")
                 val backend = context.getBean(CoherenceBackend::class.java)
                 (
-                    backend.store(
-                        "user"
-                    ).read("custom:user:k", null, null) is me.ahoo.cocache.api.spi.RemoteRead.Hit
-                    ).assert().isTrue()
+                    Suspending.await {
+                        backend.store(
+                            "user"
+                        ).read("custom:user:k", null, null)
+                    } is me.ahoo.cocache.api.spi.RemoteRead.Hit
+                    )
+                    .assert().isTrue()
                 @Suppress("UNCHECKED_CAST")
                 val index = context.getBean("index") as SetCache<String, String>
                 index.add("k", listOf("a"))
                 (
-                    backend.store(
-                        "index"
-                    ).read("custom-set:index:k", null, null) is me.ahoo.cocache.api.spi.RemoteRead.Hit
-                    ).assert().isTrue()
+                    Suspending.await {
+                        backend.store(
+                            "index"
+                        ).read("custom-set:index:k", null, null)
+                    } is me.ahoo.cocache.api.spi.RemoteRead.Hit
+                    )
+                    .assert().isTrue()
                 @Suppress("UNCHECKED_CAST")
                 val profile = context.getBean("profileCache") as Cache<String, String>
                 profile.put("k", "v")
                 (
-                    backend.store(
-                        "profile"
-                    ).read("cocache:profile:k", null, null) is me.ahoo.cocache.api.spi.RemoteRead.Hit
-                    ).assert().isTrue()
+                    Suspending.await {
+                        backend.store(
+                            "profile"
+                        ).read("cocache:profile:k", null, null)
+                    } is me.ahoo.cocache.api.spi.RemoteRead.Hit
+                    )
+                    .assert().isTrue()
             }
     }
 
