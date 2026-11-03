@@ -21,10 +21,12 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
  * [TcpProxy] 断线期间不释放监听端口：否则恢复时在同一端口重新监听，可能因端口已被别的连接取作临时端口而失败。
+ * 暂停只推迟转发，不丢数据。
  */
 class TcpProxyTest {
     /** 回显服务，作为被转发的目标。 */
@@ -74,5 +76,33 @@ class TcpProxyTest {
             }
         }
         roundTrip().assert().isEqualTo(42)
+    }
+
+    /**
+     * [TcpProxy.pause]：已转发的连接与新连接上客户端发出的数据都等到暂停到期才按序转发。
+     */
+    @Test
+    fun pauseHoldsWhatTheClientSendsUntilItExpires() {
+        Socket(proxy.address, proxy.port).use { socket ->
+            socket.soTimeout = 5_000
+            socket.getOutputStream().write(1)
+            socket.getInputStream().read().assert().isEqualTo(1)
+            val pausedAt = System.nanoTime()
+            proxy.pause(PAUSE_MILLIS)
+            socket.getOutputStream().write(byteArrayOf(2, 3))
+            socket.getInputStream().read().assert().isEqualTo(2)
+            elapsedMillis(pausedAt).assert().isGreaterThanOrEqualTo(PAUSE_MILLIS)
+            socket.getInputStream().read().assert().isEqualTo(3)
+        }
+        val pausedAt = System.nanoTime()
+        proxy.pause(PAUSE_MILLIS)
+        roundTrip().assert().isEqualTo(42)
+        elapsedMillis(pausedAt).assert().isGreaterThanOrEqualTo(PAUSE_MILLIS)
+    }
+
+    private fun elapsedMillis(since: Long): Long = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - since)
+
+    private companion object {
+        const val PAUSE_MILLIS = 300L
     }
 }

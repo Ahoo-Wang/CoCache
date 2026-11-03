@@ -68,11 +68,9 @@ class RedisAsyncStoreFaultTest {
     private fun <T> CompletableFuture<T>.failure(): Throwable? = handle { _, e -> e }.get(10, TimeUnit.SECONDS)
 
     /**
-     * 暂停所有客户端的命令 [millis] 毫秒（服务端行为，暂停期间发出的命令在服务端排队）。集群中暂停所有节点。
+     * 可以暂停的连接（[RedisTestSupport.pausable]），随用例关闭：暂停期间发出的命令已写出，到期后按序执行。只暂停用它连接的客户端。
      */
-    private fun pauseClients(millis: Long) {
-        RedisTestSupport.pauseClients(millis)
-    }
+    private fun pausable() = RedisTestSupport.pausable().closing()
 
     @Test
     fun everyAsyncOperationSurvivesScriptCacheLoss() {
@@ -131,11 +129,14 @@ class RedisAsyncStoreFaultTest {
      */
     @Test
     fun asyncCommandTimeoutFailsLikeTheSyncPathAndTheConnectionRecovers() {
-        val backend = RedisTestSupport.backend(RedisBackendOptions(commandTimeout = Duration.ofMillis(200))).closing()
+        val redis = pausable()
+        val backend = RedisTestSupport.backend(
+            RedisBackendOptions(commandTimeout = Duration.ofMillis(200), clientResources = redis.resources)
+        ).closing()
         val store = backend.store(namespace) as AsyncRemoteStore
         // 先缓存脚本：否则 NOSCRIPT 回退的 EVAL 是另一条命令，暂停期间各自计时
         store.readAsync(key("warm"), null, null).await()
-        pauseClients(PAUSE_MILLIS)
+        redis.pause(PAUSE_MILLIS)
         val error = store.readAsync(key("slow"), null, null).failure()
         error.assert().isInstanceOf(RedisException::class.java)
         error?.message.assert().isEqualTo("Command timed out after PT0.2S.")
@@ -165,10 +166,13 @@ class RedisAsyncStoreFaultTest {
      */
     @Test
     fun syncCommandTimeoutIsUnchangedWhenTheClientTimesCommands() {
-        val backend = RedisTestSupport.backend(RedisBackendOptions(commandTimeout = Duration.ofMillis(200))).closing()
+        val redis = pausable()
+        val backend = RedisTestSupport.backend(
+            RedisBackendOptions(commandTimeout = Duration.ofMillis(200), clientResources = redis.resources)
+        ).closing()
         val store = backend.store(namespace)
         store.read(key("warm"), null, null)
-        pauseClients(PAUSE_MILLIS)
+        redis.pause(PAUSE_MILLIS)
         val error = runCatching { store.read(key("slow"), null, null) }.exceptionOrNull()
         error.assert().isInstanceOf(RedisException::class.java)
         error?.message.assert().isEqualTo("Command timed out after PT0.2S.")
@@ -182,7 +186,8 @@ class RedisAsyncStoreFaultTest {
     @Test
     fun asyncCommandTimeoutStillHoldsForAClientWithoutCommandTimeouts() {
         assumeFalse(RedisTestSupport.isCluster)
-        val client = RedisTestSupport.standaloneClient()
+        val redis = pausable()
+        val client = RedisTestSupport.standaloneClient(redis.resources)
         client.options = ClientOptions.builder()
             .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
             .timeoutOptions(TimeoutOptions.builder().timeoutCommands(false).build())
@@ -191,7 +196,7 @@ class RedisAsyncStoreFaultTest {
         val backend = RedisBackend.of(client, RedisBackendOptions(commandTimeout = Duration.ofMillis(200))).closing()
         val store = backend.store(namespace) as AsyncRemoteStore
         store.readAsync(key("warm"), null, null).await()
-        pauseClients(1_000)
+        redis.pause(1_000)
         val error = store.readAsync(key("slow"), null, null).failure()
         error.assert().isInstanceOf(RedisException::class.java)
         error?.message.assert().isEqualTo("Command timed out after PT0.2S.")
@@ -240,15 +245,16 @@ class RedisAsyncStoreFaultTest {
     @Test
     fun cancellingAnInFlightAsyncCommandLeavesTheConnectionUsable() {
         assumeFalse(RedisTestSupport.isCluster)
-        val backend = RedisTestSupport.backend().closing()
+        val redis = pausable()
+        val backend = RedisTestSupport.backend(RedisBackendOptions(clientResources = redis.resources)).closing()
         val store = backend.store(namespace) as AsyncRemoteStore
         // 先缓存脚本：否则暂停期间的 EVALSHA 得到 NOSCRIPT 后才发出 EVAL，晚于随后的读取
         store.putAsync(key("warm"), scalar("w"), null, frame(key("warm"))).await()
         store.readAsync(key("warm"), null, null).await()
-        pauseClients(500)
+        redis.pause(500)
         val pending = store.putAsync(key("cancel"), scalar("v"), null, frame(key("cancel")))
         pending.cancel(true).assert().isTrue()
-        // 命令在服务端排队，暂停结束后照常执行；连接照常可用
+        // 命令已写出（在代理中排队），暂停结束后照常执行；连接照常可用
         me.ahoo.cocache.test.Concurrency.awaitCondition("the cancelled put still ran") {
             (store.readAsync(key("cancel"), null, null).await() as? RemoteRead.Hit)?.envelope == scalar("v")
         }
@@ -264,7 +270,7 @@ class RedisAsyncStoreFaultTest {
         val backend = RedisTestSupport.proxiedBackend(proxy).closing()
         val store = backend.store(namespace) as AsyncRemoteStore
         store.readAsync(key("warm"), null, null).await()
-        pauseClients(1_000)
+        proxy.pause(1_000)
         val pending = store.putAsync(key("cut"), scalar("v"), null, frame(key("cut")))
         val restore = proxy.cut()
         pending.failure().assert().isNotNull()
@@ -372,7 +378,7 @@ class RedisAsyncStoreFaultTest {
 
     private companion object {
         /**
-         * 超时用例的暂停时长：集群中逐个节点暂停需要时间，留足余量让暂停覆盖全部命令。
+         * 超时用例的暂停时长：留足余量让暂停覆盖全部命令（集群中批量操作还要等待建立节点连接）。
          */
         const val PAUSE_MILLIS = 2_000L
     }

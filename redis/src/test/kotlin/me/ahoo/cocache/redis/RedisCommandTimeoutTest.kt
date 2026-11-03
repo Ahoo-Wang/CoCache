@@ -388,7 +388,10 @@ class RedisCommandTimeoutTest {
     @Test
     fun timedOutReadReleasesTheTokensItMayHaveTaken() {
         val timeout = Duration.ofMillis(200)
-        val backend = RedisTestSupport.backend(RedisBackendOptions(commandTimeout = timeout)).closing()
+        val redis = RedisTestSupport.pausable().closing()
+        val backend = RedisTestSupport.backend(
+            RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
+        ).closing()
         val store = backend.store(namespace) as AsyncRemoteStore
         // 同一 slot：节点连接已建立、脚本已缓存，暂停期间的读取与释放都已写出，暂停结束后按序执行。
         // 释放的脚本也要已缓存：暂停期间它同样超时，得到 NOSCRIPT 时不再回退 EVAL
@@ -401,7 +404,7 @@ class RedisCommandTimeoutTest {
         val async = key("{lease}async")
         val all = key("{lease}all")
         val allAsync = key("{lease}all-async")
-        RedisTestSupport.pauseClients(PAUSE_MILLIS)
+        redis.pause(PAUSE_MILLIS)
         val pending = listOf(
             store.readAsync(async, lease(), null),
             store.readAllAsync(listOf(allAsync), mapOf(allAsync to lease())),
@@ -427,7 +430,10 @@ class RedisCommandTimeoutTest {
     @Test
     fun timedOutReclaimReleasesTheLeaseItMayHaveTaken() {
         val timeout = Duration.ofMillis(200)
-        val backend = RedisTestSupport.backend(RedisBackendOptions(commandTimeout = timeout)).closing()
+        val redis = RedisTestSupport.pausable().closing()
+        val backend = RedisTestSupport.backend(
+            RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
+        ).closing()
         val store = backend.store(namespace) as AsyncRemoteStore
         // 同一 slot、脚本已缓存：理由同 timedOutReadReleasesTheTokensItMayHaveTaken
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RECLAIM, RedisScripts.RELEASE)
@@ -439,7 +445,7 @@ class RedisCommandTimeoutTest {
             store.put(it, scalar("corrupt"), Duration.ofMinutes(1), frame(it))
             Digest.of((store.read(it, null, null) as RemoteRead.Hit).envelope)
         }
-        RedisTestSupport.pauseClients(PAUSE_MILLIS)
+        redis.pause(PAUSE_MILLIS)
         val pending = store.reclaimAsync(async, observed.getValue(async), lease())
         runCatching {
             store.reclaim(sync, observed.getValue(sync), lease())
@@ -458,11 +464,10 @@ class RedisCommandTimeoutTest {
      */
     @Test
     fun interruptedReadReleasesTheTokensItMayHaveTaken() {
-        val resources = DefaultClientResources.builder().nettyCustomizer(written).build()
-        closeables.add(AutoCloseable { resources.shutdown() })
+        val redis = RedisTestSupport.pausable { it.nettyCustomizer(written) }.closing()
         // 超时远长于暂停：读取只会因中断失败
         val backend = RedisTestSupport.backend(
-            RedisBackendOptions(commandTimeout = Duration.ofSeconds(10), clientResources = resources)
+            RedisBackendOptions(commandTimeout = Duration.ofSeconds(10), clientResources = redis.resources)
         ).closing()
         val store = backend.store(namespace) as AsyncRemoteStore
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.RECLAIM, RedisScripts.RELEASE)
@@ -475,7 +480,7 @@ class RedisCommandTimeoutTest {
         store.read(warm, null, null)
         val sync = key("{lease}sync")
         val all = listOf(key("{lease}all-0"), key("{lease}all-1"), key("{lease}all-2"))
-        RedisTestSupport.pauseClients(PAUSE_MILLIS)
+        redis.pause(PAUSE_MILLIS)
         interruptWhileWaiting(listOf(sync)) { store.read(sync, lease(), null) }.assertInterrupted()
         interruptWhileWaiting(all) { store.readAll(all, all.associateWith { lease() }) }.assertInterrupted()
         interruptWhileWaiting(listOf(refreshed)) { store.read(refreshed, null, refresh()) }.assertInterrupted()
@@ -523,7 +528,10 @@ class RedisCommandTimeoutTest {
     @Test
     fun fillThatRunsAfterItsTimeoutKeepsItsValue() {
         val timeout = Duration.ofMillis(200)
-        val backend = RedisTestSupport.backend(RedisBackendOptions(commandTimeout = timeout)).closing()
+        val redis = RedisTestSupport.pausable().closing()
+        val backend = RedisTestSupport.backend(
+            RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
+        ).closing()
         val store = backend.store(namespace) as AsyncRemoteStore
         RedisTestSupport.loadScripts(RedisScripts.READ, RedisScripts.FILL, RedisScripts.RELEASE)
         val warm = key("{fill}warm")
@@ -533,7 +541,7 @@ class RedisCommandTimeoutTest {
             store.read(key, lease, null).assert().isEqualTo(RemoteRead.Miss(true))
             Fill(key, lease.token, scalar("filled"), Duration.ofMinutes(1))
         }
-        RedisTestSupport.pauseClients(PAUSE_MILLIS)
+        redis.pause(PAUSE_MILLIS)
         runCatching { store.fill(fills[0]) }.exceptionOrNull().assertTimedOut(timeout)
         store.fillAsync(fills[1]).failure().assertTimedOut(timeout)
         runCatching { store.fillAll(listOf(fills[2])) }.exceptionOrNull().assertTimedOut(timeout)
@@ -546,7 +554,7 @@ class RedisCommandTimeoutTest {
 
     private companion object {
         /**
-         * 暂停时长：集群中逐个节点暂停需要时间，留足余量让暂停覆盖全部读取。
+         * 暂停时长：留足余量让暂停覆盖全部读取（同步调用逐个等到超时）。
          */
         const val PAUSE_MILLIS = 2_000L
     }
