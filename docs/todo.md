@@ -16,6 +16,7 @@
     - `MembershipCache` 视需要配置 `invalidate-failure: retry`。
   - Wow（依赖 6.8.0）：不需要改代码。
   - Spring Cache 用户：没有 loader 的缓存上，`@CacheEvict` 失败改为抛出；要保持 6.8 的重试，配置 `invalidate-failure: retry`。
+- [ ] **6.x 缺陷 [#747](https://github.com/Ahoo-Wang/CoCache/issues/747)**（2026-11-03 登记，维护者：先登记、继续推进 v8）：断线时 Lettuce 以同一个异常实例使在途命令全部失败，`RedisRemoteStore` 把它 suppress 到自己身上，抛出 `IllegalArgumentException`；批量读因此漏释放其余 key 的 lease，各节点等到 `lease.ttl`。`main` 已在 #746 修复；6.x 的修复与发版由维护者安排。
 - [ ] **切换 `main` 到 v8**（RFC 0005 §10 第 0 步）：
   - 从 `v6.10.0` 切出 `6.x`；`6.x` 上推送触发的 CI 与 wiki 发布改为 `6.x`。
   - 仓库设置（维护者操作）：GitHub Pages 的部署环境 `github-pages` 允许 `6.x`；`6.x` 的分支保护规则与 `main` 一致。
@@ -23,7 +24,7 @@
 
 ## 0. 交接（2026-11-02，供接手者继续推进）
 
-**当前状态**：`main` 是 8.0 开发线。M1（协程核心，#716–#720）与 M2（flight 层与协议，#721–#727）已完成，**M3 SPI 进行中**。拆分与命名已由维护者确认（2026-11-02，RFC 0005 §4.3、§12“M3 之前”），切片与依赖见 §2。M3·0a、M3·0b、M3b、M3a、M3·0c 已合并（#729–#736），M3c 进行中。
+**当前状态**（2026-11-03）：`main` 是 8.0 开发线。M1（协程核心，#716–#720）与 M2（flight 层与协议，#721–#727）已完成。**M3 SPI 只剩 M3e**：拆分与命名已由维护者确认（2026-11-02，RFC 0005 §4.3、§12“M3 之前”），M3·0a、M3·0b、M3b、M3a、M3·0c、M3c、M3d 已合并（#729–#746）。**M4 已拆分**（§2），M4a 与 M3e 并行。
 
 **第三轮对抗验证已完成**（2026-11-03）：RFC 0005 修订为草案 v6，44 条发现（K1–K20、S1–S24）全部处理，维护者确认 D1–D8“全部按推荐”（RFC 0005 §12）。现行代码的缺陷不等 RFC：S5、S6（Spring，main 与 6.x）与 K5、K17（core，main）各自修复；K12、K14、D6 的 SPI 变更转给 M3d；其余按 §2 进入 M4–M8。
 
@@ -31,7 +32,8 @@
 - 先删不依赖替代品的遗留（M3·0a、M3·0b、M3·0c），再建新形状；不推倒重来（RFC 0005 §12 决定 7）。
 - M3 的能力面只放已有的操作，不顺带改语义；行为变化只有 M3a 的中断规则与 M3·0c 的 foreign RECLAIM，两者都写进 architecture.md 与 changelog。
 - 改 `cocache-api` 与 TCK 的形状以 RFC 0005 §4.3 为准，偏离时先回到架构会话讨论。
-- JMH：M3a、M3c、M3d 附 `scripts/jmh-compare.sh` 的对比。本机性能足以在 JMH 运行时并行工作（维护者，2026-11-03）：其它会话照常编辑、编译与测试，不因 JMH 停下；同一时间只跑一组 JMH（脚本的机器锁 `/tmp/cocache-jmh.lock` 保证），受干扰的运行由脚本按负载升高与 CV 作废重试。
+- JMH：M3a、M3c、M3d 附 `scripts/jmh-compare.sh` 的对比。本机性能足以在 JMH 运行时并行工作（维护者，2026-11-03）：其它会话照常编辑、编译与跑单个测试类，不因 JMH 停下；同一时间只跑一组 JMH（脚本的机器锁 `/tmp/cocache-jmh.lock` 保证），受干扰的运行由脚本按负载升高与 CV 作废重试。
+- 但整套构建会把负载推到 9–12（M3c 的筛查因此 60 次作废 40 次、拖过一小时）：锁目录存在时，其它会话不开 `./gradlew check`、lincheck 与整套测试。逐格补跑之间锁会释放几秒，所以门槛是锁**连续 2 分钟**不存在：`while :; do while [ -d /tmp/cocache-jmh.lock ]; do sleep 30; done; sleep 120; [ -d /tmp/cocache-jmh.lock ] || break; done; ./gradlew check`。有效配对少于 3 的格子单独补跑。
 - 基准要精简（维护者，2026-11-03）：按 diff 改动的开销，每种开销只选它占比最大的基准；开销相同、外围工作更多的基准，以及共用同一路径的基准不重复跑。`l2HitMixed` 照常包含。PR 里写明没跑的基准及理由。
 - 一次对比控制在 15 分钟内（维护者，2026-11-03）：先跑筛查，`-r 3 --warmup-iterations 2 --warmup-time 2s --iterations 3 --time 3s`（每次运行约 16 s）；同步基准的中位数退化落在 2%–4% 的格子，只把这一格按默认设置（5 轮、3 s 预热、5 s 测量）补跑，以补跑结果判定。M3a 的筛查：`l1HitViaEngine`、`set`、`l2HitMixed`，1、8 线程，36 次，约 13 分钟（原先 6 个基准、默认设置是 120 次，约 2 小时）。不要在 `./gradlew check` 刚结束、负载还在 7 以上时开跑，否则开头的运行会因 CV 超限反复作废。
 - 维护者通知本机暂停时（本机借给别的项目测量），不跑 Gradle、lincheck、JMH，不起 Docker 容器，只提交、推送、改 PR 正文，由 GitHub CI 验证。被打断的 JMH 作废，恢复后整套重跑；不改到 CI 上跑（共享 runner 达不到 architecture.md §13 的方法）。
@@ -41,7 +43,7 @@
 
 **工作方式（M1、M2 一直沿用）**
 - 每个切片一个分支（`<type>/<描述>`）与一个 squash 合并的 PR，标题用 Conventional Commits，PR 正文英文。维护者授权架构会话（2026-11-02）：审查通过、CI 全绿后由它合并或开启自动合并；需要 JMH 的切片等表格进入 PR 且达标后才合并。偏离 RFC、未定的公开接口、线格式、新依赖、JMH 不达标仍先问维护者。
-- 先开 PR，JMH 跑完再把 `scripts/jmh-compare.sh` 的表格补进 PR 正文。JMH 运行期间不要在本机跑其它 Gradle 任务（会被负载门槛作废，或污染结果）。
+- 先开 PR，JMH 跑完再把 `scripts/jmh-compare.sh` 的表格补进 PR 正文。JMH 运行期间本机其它构建的限制见上面“M3 的约定”。
 - 本地 Redis 与环境变量的注意事项见 AGENTS.md“Commands”；测试前取消所有 `SPRING_DATA_REDIS_*` 变量。
 - 每个修复都要有复现用例。协议改动除了常规用例，再用三件工具检查：`TokenConservationPropertyTest`（令牌守恒）、`MultiNodeSimulationTest`（确定性多节点仿真，`-PsimSeed=<n>` 重放）、`./gradlew :cocache-core:lincheck`（单节点交错的模型检验）。变更行为时同步 architecture.md 与 wiki（en + zh）。
 
@@ -58,13 +60,25 @@ M1 已完成：基础设施与 `SetCache` 读路径（#716）→ 单 key 读与�
 
 M2 拆成：L2 填充改为 `compute` + 按身份复核（M2a，#721）→ 合并规则逐 key、leader 被中断或取消时跟随者自行运行（M2b，#722）→ `load.timeout`，`LoadPolicy.asyncTimeout` 并入它（M2c，#723）→ L1 命令不可取消地等待、随机注入故障与取消的令牌守恒性质测试（M2d，#724）→ 确定性多节点仿真：测试调度器与虚拟时间、以数据源的提交历史检查 G1 与 G2（M2e，#725）→ Lincheck 可行性实验（M2f，#726：可行，有条件，见 [调查](investigations/lincheck-feasibility.md)；单独的 `lincheck` 任务，不在 `check` 中）。`kotlinx-coroutines-test` 作为测试依赖已批准；Lincheck（Q18）先做可行性实验，可行再正式加入（维护者决定，2026-11-02）。L2 key 不含前缀：JMH 中单个缓存的 L2 命中约 2.6 倍、`l2HitMixed` 1 线程 +68%、8 线程 +8%，L1 命中不变，采用（#727）。**M2 已完成。**
 
-M3 拆成（维护者确认，2026-11-02；设计见 RFC 0005 §4.3）。已合并：删除 5.x 迁移工具（M3·0a，#729）→ 删除 `Async*` 引擎规范，异步特有用例移到 core 测试（M3·0b，#731）→ `cocache-api` 新增挂起的 `L1Store`、三个能力面、`FutureL1Store` 与 `adapt`、`ForwardingL1Store`，被取消的 future 按 L1 故障处理（M3b，#732；`FutureInvalidationChannel` 随 M3c 加入）→ 同步变体经异步 SPI 等待 L1，被中断的同步调用方等在途命令结束（M3a，#733；JMH 筛查：同步路径最差 −1.4%）→ 没有数据源的缓存拒绝 `foreign-format: reclaim`，条件、按版本与集合写入遇到读不懂的内容一律拒绝，旧 SPI 删除 `foreignAsAbsent` 与整体覆盖的集合写入（M3·0c，#736）。
+M3 拆成（维护者确认，2026-11-02；设计见 RFC 0005 §4.3）。已合并：删除 5.x 迁移工具（M3·0a，#729）→ 删除 `Async*` 引擎规范，异步特有用例移到 core 测试（M3·0b，#731）→ `cocache-api` 新增挂起的 `L1Store`、三个能力面、`FutureL1Store` 与 `adapt`、`ForwardingL1Store`，被取消的 future 按 L1 故障处理（M3b，#732；`FutureInvalidationChannel` 随 M3c 加入）→ 同步变体经异步 SPI 等待 L1，被中断的同步调用方等在途命令结束（M3a，#733；JMH 筛查：同步路径最差 −1.4%）→ 没有数据源的缓存拒绝 `foreign-format: reclaim`，条件、按版本与集合写入遇到读不懂的内容一律拒绝，旧 SPI 删除 `foreignAsAbsent` 与整体覆盖的集合写入（M3·0c，#736）→ 引擎与后端改为 `L1Store`，`publish` 挂起，`runtime.create` 检查能力并输出到启动日志，Redis 暂经 `FutureL1Store.adapt` 桥接（M3c，#741）→ Redis 原生挂起的 `RedisL1Store`，删除异步 SPI 与桥接，`Remote*` 改名为 `L1*`，Lettuce 取消的命令按结果未知的 L1 故障报告；第三轮转来的 SPI 变更：`fill` 返回 `L1Fill`、`reclaim` 收 `ContentFingerprint`（K12），除确定未执行外的失败都异步释放令牌、失败的释放按退避重发（K14），读取可带这次调用的 `timeout`（D6）（M3d，#746；JMH 筛查：L1 最差 −1.4%，`l2HitMixed` 在噪声内）。
 
 | 切片 | PR 标题 | 内容 | 依赖 |
 |------|---------|------|------|
-| M3c | `feat(core)!: run engines and backends on L1Store` | `store()` 返回 `L1Store`、`publish` 挂起（`cocache-api` 加 `FutureInvalidationChannel` 与 `adapt`，同 `FutureL1Store` 的规则）、删 `versionedWrites`；引擎在 `NonCancellable` 中调用 L1；`runtime.create` 检查能力并输出到启动日志；InMemory 原生实现、`HookedBackend` 继承 `ForwardingL1Store`、`ScriptedBackend` 改为 `FutureL1Store`；`BackendProtocolSpec` 改为挂起形状，删 `AsyncBackendProtocolSpec`；Redis 暂以自身的异步方法桥接。JMH | M3a、M3b、M3·0c |
-| M3d | `refactor(redis)!: implement L1Store natively and delete the async SPI` | `RedisL1Store`；删 `RedisConnections` 的同步等待与中断分支；删 `RemoteStore`、`AsyncRemoteStore`、`AsyncInvalidationChannel`、`BlockingAsync*`；`Remote*` 改名为 `L1*`；Lettuce 取消的命令（连接重置、关闭）按结果未知的 L1 故障报告，不以 `CancellationException` 失败（§4.3），`L1Store` 的 KDoc 写明这条契约；Redis 全矩阵。第三轮转来的 SPI 变更（RFC 0005 §4.3）：`fill` 返回 `L1Fill = Filled(advanced) / Rejected(currentVersion)`、`fillAll` 逐 key 返回，`reclaim` 收 SPI 自己的内容指纹类型（K12）；除“确定未执行”外的任何失败都异步释放令牌，`FaultSpec` 固定（K14）；`read` / `readAll` 增加可选的截止时间参数（D6）。JMH | M3c |
 | M3e | `test(tck)!: declare L1 capabilities and fail closed` | `expectedCapabilities` 无默认值，断言“提供 = 声明”且稳定；InMemory 经 `FutureL1Store` 跑整套 TCK；`FaultSpec` 覆盖底层命令被取消（按 L1 故障，不是调用方取消）；缩减 Redis 的异步变体矩阵；wiki extending（en + zh）、`skills/cocache-extend` 按最终形状改 | M3d |
+
+M4 拆成（架构会话，2026-11-03；设计见 RFC 0005 §4.3、§4.7、§8）。约定：
+- **冻结**：M4a–M4d 全部合并即冻结 8.x 的格式（RFC 0005 §4.7 的定稿项）。M4b → M4c → M4d 都改 `RedisScripts`，依次进行；M4a 与它们的文件基本不重叠，可以并行。
+- **过渡期的权威标量**：M5 引入 `Store` / `VersionedStore` 之前，由**没有数据源的标量缓存**充当权威标量。它的每次标量写入（`put`、`putAll`、`fill`、`putIfMatch`）带写入标识（M4b）与摘要段（M4c），条件读写只认带摘要段的值。M5 分型之后，改由 `Store` / `VersionedStore` 写入，`externallySourced()` 的 `Cache` 不带段。8.0 发布之前，不会有过渡期写入的数据留在用户的 Redis 中。
+- **SPI**（RFC 0005 §4.3）：频道带上前缀之后，后端要分别知道前缀与 namespace，`store`、`subscribe`、`publish` 改收 `Keyspace(keyPrefix, namespace)`（M4a）；`Envelope.Scalar` 带写入标识与摘要，由引擎给出，存储按 §4.7 写成段、读取时原样返回（M4b、M4c）；`VersionedL1Store` 加 `evictKeepingVersion`（M4d）。形状由切片在 PR 中定稿，架构会话审查。
+
+| 切片 | PR 标题 | 内容 | 依赖 |
+|------|---------|------|------|
+| M4a | `feat!: v8 key layout, prefixed channels and namespace charset` | 布局（§4.7 布局表，D5）：存储 key `{keyPrefix}v8:{namespace}:{encodedKey}`、频道 `{keyPrefix}v8:inv:{namespace}`、探测 key / 频道 `cocache:v8!probe:{a}` / `cocache:v8:probe:{b}`，元数据 key 只预留；namespace 字符集 `[A-Za-z0-9._-]+`，含 `:` 的创建失败，namespace 按 keyspace 登记；SPI 的 `Keyspace`；`store(keyspace)` 创建时向实际频道发布一个零 key 的帧，ACL 拒绝时启动失败（K8）；读不懂的失效帧（未知版本、类型、解码失败）按该频道的 `onReset` 处理，预留帧版本 2（D3）；`ExternalInvalidator`、ACL 的运维文档（en + zh）。TCK：含 `:` 的 namespace 失败、未知帧版本触发 `onReset`；Redis：ACL 拒绝实际频道时启动失败 | M3d（与 M3e 并行，后合并者变基） |
+| M4b | `feat!: wire format 2 header with version segment and extension area` | 全部内容（含 `L`、`M` 与集合）改为格式 2：核心头部的标志位（6.x 的保留字节）、版本段（bit 0，取代 `VERSION_MARK`）、扩展区（bit 7）的 TLV 帧格式与写入标识（TLV 类型 1，D2；TLV 长度的编码在此定稿）；载荷偏移由标志位计算，脚本与客户端共用一个函数；未知的必须理解的位等同于更高格式；格式 1 按更高格式处理（D5），删除 `VERSION_MARK` 的识别与 `foreign-format`；`READ` 授予令牌之前先检查格式号（K15），带版本段的内容暂不授予令牌（同 6.x，M4d 放开）；`FILL` / `RELEASE` 以 `GETRANGE 0 35` 只读核心头部（K19）；版本段不得写 `NO_VERSION`（K15）；集合的 `!f = '2'` 与 `!m`（K10）。TCK 与 Redis 用例覆盖各种头部组合（无段、只有版本段、只有扩展区、两者都有）、未知的必须理解的位、未知 TLV 的跳过、集合的 `!m`；architecture.md §3.3 改写。JMH | M3e |
+| M4c | `feat!: SHA-256 digest segment and reader verification` | `Digest` 改为 SHA-256 并带算法标识（D1）；摘要段（bit 1）由写入方在客户端计算；`READ_IF_CHANGED` / `PUT_IF_MATCH` 以 `GETRANGE 0 67` 只比较头部，有载荷却没有摘要段的值拒绝；读取方拿到载荷时重算并比较，不一致或缺摘要段按损坏 `FAIL`（K3）；带摘要段的内容：`READ` 不授予 lease 或刷新令牌、`RECLAIM` 拒绝，派生读者读到时计数 `cocache.type.mismatch` 并告警（D4）。新基准 `conditionalUnchanged` 与权威 L1 读取（1 KB / 1 MB / 8 MB，§7）；`MEMORY USAGE` 对照（§7）。JMH | M4b |
+| M4d | `feat!: state E, evictKeepingVersion and versioned fills` | 状态 `E` 与 §4.7 的逐脚本表（P1）；`VersionedL1Store.evictKeepingVersion`，端点对带版本的缓存按 key 删除时改用它；`FILL` 的版本规则：更小或 `NO_VERSION` 拒绝并在脚本内清零令牌、相等续期不广播、更大写入并广播，返回 `Filled(advanced)` / `Rejected(currentVersion)`；引擎：版本前进的填充按写入处理（递增戳、淘汰本地副本、不填 L2），版本拒绝时刷新路径保留副本并退避，未命中路径（lease 在 `E` 上）返回回源值、以降级限龄写入 L2、计入 `cocache.fill.rejections`；带版本的内容授予刷新令牌（`VersionedCache` 支持提前刷新，写进 changelog）；读到 `E` 或未知标志位的副本不设刷新点（P14）；`RECLAIM` 遇到带版本的内容拒绝（K15）。TCK 覆盖 `E` 的全部脚本与版本规则；`TokenConservationPropertyTest`、`MultiNodeSimulationTest` 覆盖 `E` 上的 lease。JMH | M4c |
+| M4e | `feat(redis): add the 6.x to 8.x copy tool (freeze mode)` | 拷贝工具（§8，`cocache-redis` 中，离线运行，不加依赖）：输入为 8.x 的 spec 与显式的源、目标布局；转换表的每一行；令牌清零、保留剩余 TTL；每个 key 一个原子脚本（目标不存在才写，`PX` 同写，集合整体写入）；冲突策略按 namespace（`skip-if-exists` / `overwrite` / `max-version`，全局的 `--overwrite` 须显式给出）；写目标时广播；`dryRun` 计数与 `--verify-decode`；按 namespace 的转换钩子；`--purge-6x` 精确匹配并排除 `{keyPrefix}v8:` 与 `{keyPrefix}v8!`（K11、K20、S1、S13、S14）。用例覆盖转换表每一行、中途失败重跑、冲突策略、purge 的排除 | M4a、M4d |
+| M4f | `feat(redis): add copy tool follow mode and invalidation relay` | follow 模式：初始拷贝之后订阅 6.x 的频道逐 key 重拷（同样经冲突策略与钩子），定期全量重扫，写 v8 时广播（D8）；双向失效中继：订阅两侧的频道，删除另一种布局下的副本并在另一侧发帧，8.x 一侧的 `VersionedCache` 用 `evictKeepingVersion`（S3）。用例覆盖 follow 的重拷与重扫、中继的两个方向；升级指南留给 M8 | M4e |
 
 | 里程碑 | 要做什么 | 验收 |
 |--------|----------|------|
@@ -75,7 +89,7 @@ M3 拆成（维护者确认，2026-11-02；设计见 RFC 0005 §4.3）。已合�
 | M5 用户 API | 类型（V1–V3，按 v4 全部实现）、`Lookup.Unknown` 与 `unknownRead` 的取值 `THROW` / `ABSENT`（S16）、`CoCacheFactory`（校验 `type` 是接口，区分声明接口与手写实现，S21）；`cocache-coroutines` 并入 core：挂起变体的元素取自调用方、调度器取自运行时（K2、K6），重入守卫增加上下文元素（K7）；带版本数据源以 `Versioned(null, w)` 表达删除（K16）；`Store` 的类型默认值 `localMaxAge` 30 s、`absentTtl` 10 s（D7）；按缓存的读超时接入引擎（D6）；`InvalidationListener` 收到编码 key、`keyPrefix` 为空时启动告警（S4）；评估被取消的写入整体放进 `NonCancellable`（K18）；`SetStore` 的同步批量读不再逐个 key 访问 L1（A.L2）；V7 的失败路径分类：“确定未执行 / 结果未知”的异常类型、`CacheWriteException.outcomeUnknown`、派生 `put` 的补偿失效 | 不支持的操作在编译期不可调用；`SetEngineSpec` 的批量用例；`FaultSpec` 覆盖两类写入失败；引擎用例：`Unconfined` 调用方不在后端的完成线程上恢复、loader 看得到调用方的 `ThreadContextElement`、同步变体的同线程重入仍快速失败 |
 | M6 配置 | 三层配置、字段三态、适用性表、取上限与夹紧、`lock` / `constrain` / `unlock`、6.x 键的启动失败（V10）；“字段 × 层”的语义表、显式哨兵（`forever` / `off` / `unlimited`）、overrides 只收紧陈旧界限并钳制按调用的寿命、有严格序的模式字段取更严、等待界限与带版本类型的 `ttl` 不进 overrides（S8、S9、S10）；`constrain` 的值域含 `Forever`、customizer 写锁定字段时抛出（S12）；6.x 键按规则检测、`cocache.key-prefix`（S17）；按缓存的读超时的配置键（D6）；每种 spec 的默认策略常量（S23）；`read-failure` 与 `unknown-read` 的适用性（S11、S16）；“未分层”的标注（S20）；驱逐检查一律失败的情形与 `store-eviction-check` 的取值（S22） | 每条规则的用例；启动日志与端点输出生效值与来源 |
 | M7 Spring | 回滚时失效事务内的填充、已登记 key 的回源私有、starter 的事务装饰器、`Unknown` 的映射（V11）；事务上下文在调用入口捕获、异步与挂起变体不门控不记录（S7）；记录进入任何共享层的 key、事务内 leader 的结果不与事务外的跟随者共享（S15）；按 (namespace, 编码 key) 匹配（S24）；可选的 `CacheErrorHandler`、`afterCommit` 的异常交给它（S18）；缓存通知与事务通知 order 相同时告警（S19）。S5、S6 已在 main 与 6.x 修复，装饰器沿用 | 同步、异步、响应式三条路径的用例；NESTED 与 savepoint 回滚、降级填充回滚、两种通知嵌套的用例 |
-| M8 检验与文档 | Lincheck（经批准后）、TLA+、architecture.md 重排（V12）、wiki 与升级指南（含拷贝工具的两种运行方式、失效中继、运维检查表与下游清单）、skills | Lincheck 与 TLC 在 CI 中运行；wiki 构建通过 |
+| M8 检验与文档 | Lincheck（已批准，CI 的非阻塞作业，#738）、TLA+、architecture.md 重排（V12）、wiki 与升级指南（含拷贝工具的两种运行方式、失效中继、运维检查表与下游清单）、skills | Lincheck 与 TLC 在 CI 中运行；wiki 构建通过 |
 
 ## 3. 需要维护者决定
 
