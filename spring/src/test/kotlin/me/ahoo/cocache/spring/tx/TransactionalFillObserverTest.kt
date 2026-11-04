@@ -16,6 +16,8 @@ package me.ahoo.cocache.spring.tx
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.cacheSpec
@@ -53,14 +55,24 @@ class TransactionalFillObserverTest {
     @AfterEach
     fun destroy() = runtimes.forEach { it.close() }
 
-    private fun users(observer: FillObserver = TransactionalFillObserver()): Cache<String, String> {
-        val runtime = CacheRuntime.builder().backend(backend).fillObserver(observer).build().also { runtimes += it }
-        return runtime.create(
-            cacheSpec("user") {
-                codec = StringCodec
-                loader = CacheLoader { manager.read(it) }
-            }
-        )
+    private fun runtime(observer: FillObserver): CacheRuntime =
+        CacheRuntime.builder().backend(backend).fillObserver(observer).build().also { runtimes += it }
+
+    private fun userSpec(): CacheSpec<String, String> = cacheSpec("user") {
+        codec = StringCodec
+        loader = CacheLoader { manager.read(it) }
+    }
+
+    private fun users(observer: FillObserver = TransactionalFillObserver()): Cache<String, String> =
+        runtime(observer).create(userSpec())
+
+    /**
+     * 接口式声明：引擎与它的接口代理。
+     */
+    private fun usersWithProxy(): Pair<Cache<String, String>, UserCache> {
+        val proxy = CoCacheFactory(runtime(TransactionalFillObserver())).create(UserCache::class.java, userSpec())
+        @Suppress("UNCHECKED_CAST")
+        return (requireNotNull(CacheProxies.targetOf(proxy)) as Cache<String, String>) to proxy
     }
 
     private fun Cache<String, String>.inspect(key: String): KeyInspection =
@@ -168,10 +180,9 @@ class TransactionalFillObserverTest {
      */
     @Test
     fun registeredKeysLoadPrivately() {
-        val users = users()
+        val (users, proxy) = usersWithProxy()
         manager.write0("6", "old")
         users["6"].assert().isEqualTo("old")
-        val proxy = CacheProxies.create(UserCache::class.java, users)
         tx.executeWithoutResult {
             manager.write("6", "new")
             invalidator.invalidate(proxy, "6")
@@ -270,8 +281,7 @@ class TransactionalFillObserverTest {
      */
     @Test
     fun aWriteIsSupersededByAnInvalidationThroughAnotherObject() {
-        val users = users()
-        val proxy = CacheProxies.create(UserCache::class.java, users)
+        val (users, proxy) = usersWithProxy()
         var written = false
         tx.executeWithoutResult {
             TransactionalOperations.current().afterCommit(users, "15") { written = true }
