@@ -20,33 +20,34 @@ scripts/tlc.sh Findings   # 复现已报告的反例，预期失败
 
 `scripts/tlc.sh` 把固定版本的 `tla2tools.jar`（v1.7.4，校验 SHA-256）下载到 `build/tla/`，每个配置的完整输出写到 `build/tla/<配置>.out`。需要 JDK 11 及以上；`TLC_WORKERS`（默认 `auto`）与 `TLC_HEAP`（默认 `4g`）可调。CI 的非阻塞作业 `TLC` 运行全部配置，失败时上传输出。
 
-CI 运行的配置（都是 2 个节点、n1 上有写入方、每个节点一个读取者；`VersionedCache` 的配置中 L1 的值、墓碑与 `E` 不到期，见文末的“观察”）：
+CI 运行的配置（都是 2 个节点、每个节点一个读取者；除 `LivenessReconnect` 外 n1 上有写入方；`VersionedCache` 的配置中 L1 的值、墓碑与 `E` 不到期，见文末的“观察”；带超时或其它故障的安全性配置不含到期与令牌超时，`MaxNoise = 0`）：
 
 | 配置 | 内容 | 检验的性质 | 不同状态数 | 本机耗时 |
 |------|------|------------|-----------|---------|
-| [`Cache`](Cache.cfg) | `Cache`，提前刷新，两次提交，到期 | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` `RefreshKeepsNewer` | 1,554,363 | 5 s |
-| [`CacheTimeouts`](CacheTimeouts.cfg) | `Cache`，一次超时或连接替换（迟到的命令、K14、`RETRY`、P12） | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` | 3,442,310 | 11 s |
-| [`CacheFaults`](CacheFaults.cfg) | `Cache`，提前刷新，一次崩溃、丢帧、重复帧、重置或回源失败 | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` `RefreshKeepsNewer` | 861,512 | 4 s |
-| [`VersionedCache`](VersionedCache.cfg) | `VersionedCache`，`putIfNewer`、`evict`（`E`）、带版本的填充与刷新 | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` `RefreshKeepsNewer` `VersionMonotonic` | 3,327,850 | 11 s |
-| [`VersionedTimeouts`](VersionedTimeouts.cfg) | `VersionedCache`，一次超时或连接替换 | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` `G2L2LateFill` `VersionMonotonic` | 3,619,315 | 11 s |
-| [`VersionedFaults`](VersionedFaults.cfg) | `VersionedCache`，墓碑，一次崩溃、丢帧、重复帧、重置或回源失败 | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` `VersionMonotonic` | 4,247,441 | 13 s |
-| [`Lagging`](Lagging.cfg) | `VersionedCache`，loader 读从库 | `RefreshKeepsNewer` `VersionMonotonic` | 476,115 | 2 s |
-| [`Liveness`](Liveness.cfg) | `Cache`，弱公平，一次超时 | `TokensReleased` `Converges` | 272,555 | 16 s |
-| [`LivenessVersioned`](LivenessVersioned.cfg) | `VersionedCache`，弱公平，一次超时 | `TokensReleased` | 489,734 | 22 s |
-| [`ConvergesVersioned`](ConvergesVersioned.cfg) | `VersionedCache`，弱公平，L1 可被驱逐，不带故障 | `Converges` | 213,519 | 8 s |
+| [`Cache`](Cache.cfg) | `Cache`，提前刷新，两次提交，到期 | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` `RefreshKeepsNewer` | 1,590,876 | 6 s |
+| [`CacheTimeouts`](CacheTimeouts.cfg) | `Cache`，一次超时或连接替换（迟到的命令、K14、`RETRY`、P12） | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` | 1,252,063 | 5 s |
+| [`CacheFaults`](CacheFaults.cfg) | `Cache`，提前刷新，一次崩溃、丢帧、重复帧、重置或回源失败 | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` `RefreshKeepsNewer` | 868,395 | 3 s |
+| [`VersionedCache`](VersionedCache.cfg) | `VersionedCache`，`putIfNewer`、`evict`（`E`）、带版本的填充与刷新 | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` `RefreshKeepsNewer` `VersionMonotonic` | 2,953,487 | 9 s |
+| [`VersionedTimeouts`](VersionedTimeouts.cfg) | `VersionedCache`，一次超时或连接替换 | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` `G2L2LateFill` `VersionMonotonic` | 1,596,082 | 6 s |
+| [`VersionedFaults`](VersionedFaults.cfg) | `VersionedCache`，墓碑，一次崩溃、丢帧、重复帧、重置或回源失败 | `G2L1` `G2L2` `G2Read` `NoLostInvalidation` `VersionMonotonic` | 1,781,641 | 7 s |
+| [`Lagging`](Lagging.cfg) | `VersionedCache`，loader 读从库 | `RefreshKeepsNewer` `VersionMonotonic` | 477,190 | 3 s |
+| [`Liveness`](Liveness.cfg) | `Cache`，弱公平，一次超时 | `TokensReleased` `Converges` | 282,782 | 17 s |
+| [`LivenessReconnect`](LivenessReconnect.cfg) | `Cache` 的读取者，弱公平，一次超时或连接替换 | `TokensBounded` | 20,222 | 1 s |
+| [`LivenessVersioned`](LivenessVersioned.cfg) | `VersionedCache`，弱公平，一次超时 | `TokensReleased` | 493,041 | 24 s |
+| [`ConvergesVersioned`](ConvergesVersioned.cfg) | `VersionedCache`，弱公平，L1 可被驱逐，不带故障 | `Converges` | 207,575 | 7 s |
 
-合计约 1850 万个不同状态。
+合计约 1150 万个不同状态。
 
-耗时是本机（18 核）的参考值：全部配置约 1.7 分钟、1200 CPU 秒，限制为 4 个 worker 时约 4 分钟。故障与规模每加一档，状态数约增加一个数量级（例如两次超时或连接替换的 `Cache`、一次超时或连接替换且两次提交的 `VersionedCache` 都超过 1000 万），所以每个配置只放一类故障；更大的组合可以在本地改参数运行。
+耗时是本机（18 核）的参考值：全部配置约 1.5 分钟、900 CPU 秒。故障与规模每加一档，状态数约增加一个数量级（例如两次超时或连接替换的 `Cache`、一次超时或连接替换且两次提交的 `VersionedCache` 都超过 1000 万），所以每个配置只放一类故障；更大的组合可以在本地改参数运行。
 
 ## 建模的内容
 
 一个 key，N 个节点共享一个 L1。
 
 - **数据源**：已提交的版本号 `db`（0 表示 key 从未存在，`Deleted` 中的版本表示该版本时已删除）。值以“从哪个版本加载”标识，提交历史就是陈旧度的裁判。`LaggingLoader` 打开时 loader 可以读到任何已提交的旧版本（从库），这在协议之外，只用来检验与版本相关的性质。
-- **L1**：一个 key 的状态机 `A`（不存在）、`L`（lease 占位）、`V`、`M`、`E`（RFC §4.7），带令牌（lease 或刷新令牌）、令牌是否已超过 `lease.ttl`、版本段。每个脚本原子执行：`READ`（申请 lease 或刷新令牌）、`FILL`（令牌与 RFC §4.7 的版本规则：拒绝时脚本内清零令牌，前进时广播，`E` 上相等也广播）、`RELEASE`（`L` 删除，`V` 与 `E` 只清零令牌）、`INVALIDATE`、`PUT_IF_NEWER`（版本相等的 `Stale` 也广播，见 F1）、`EVICT_KEEPING_VERSION`。到期（PX、驱逐）与令牌超过 `lease.ttl` 是任意时刻的事件。
+- **L1**：一个 key 的状态机 `A`（不存在）、`L`（lease 占位）、`V`、`M`、`E`（RFC §4.7），带令牌（lease 或刷新令牌）、令牌是否已超过 `lease.ttl`、版本段。每个脚本原子执行：`READ`（申请 lease 或刷新令牌）、`FILL`（令牌与 RFC §4.7 的版本规则：更小或没有版本时拒绝并在脚本内清零令牌；相等时续期；更大的版本，以及 `E` 上接受的填充，广播并回复 `Filled(advanced = true)`）、`RELEASE`（`L` 删除，`V` 与 `E` 只清零令牌）、`INVALIDATE`、`PUT_IF_NEWER`（版本相等的 `Stale` 也广播，见 F1）、`EVICT_KEEPING_VERSION`。到期（PX、驱逐）与令牌超过 `lease.ttl` 是任意时刻的事件。
 - **节点**：L2 副本与失效戳。L2 填充按 `fillGuarded`（RFC §4.5）分三步：在 compute 内校验戳、写入、按身份复核；单个 key 的淘汰等待进行中的 compute，重置不等待（I-C 的竞态）。
-- **读取者**：每个读取者独立执行 `loadThrough`，不经 SingleFlight（P11 的“绕过 SingleFlight 的读取者”，也覆盖超过 `load.timeout` 被注销的 flight）。未命中：取戳 → `READ`（lease）→ 命中 / 回源并 `FILL` / 等待 lease 后重读一次再绕过 L1；失效重试中绕过 L1。提前刷新：每个节点同一时刻一次，取得令牌才回源，没取得只从 L1 重新填充，L1 没有值或读失败时退回 `loadThrough`。版本前进的 `FILL` 在本节点按写入处理（递增戳、淘汰 L2，不填充 L2）；刷新路径上的版本拒绝保留原副本（P2）；其它未写入 L1 的情形以降级副本进入 L2。
+- **读取者**：每个读取者独立执行 `loadThrough`，不经 SingleFlight（P11 的“绕过 SingleFlight 的读取者”，也覆盖超过 `load.timeout` 被注销的 flight）。未命中：取戳 → `READ`（lease）→ 命中 / 回源并 `FILL` / 等待 lease 后重读一次再绕过 L1；失效重试中绕过 L1。提前刷新：每个节点同一时刻一次，取得令牌才回源，没取得只从 L1 重新填充，L1 没有值或读失败时退回 `loadThrough`。`Filled(advanced = true)` 在本节点按写入处理（递增戳、淘汰 L2，不填充 L2）；刷新路径上的版本拒绝以取得令牌时读到的值重新填充 L2（P2）；其它未写入 L1 的情形以降级副本进入 L2。
 - **写入方**（§4.2）：先提交数据源，再写缓存：戳 → 淘汰 L2 → 脚本 → 戳 → 淘汰 L2。提交与写缓存之间、第一次淘汰与发出脚本之间，本节点与其它节点的读取者都可以取戳、读 L1、回源（第二次递增要防的正是后者，§4.3）。`Cache` 用 `invalidate`，失败模式 `RETRY`（结果未知时登记重试、正常返回，重试期间本节点的读取绕过 L1，重试成功再递增一次戳）；`VersionedCache` 用 `putIfNewer` / `invalidateIfNewer`（数据源中已删除的版本写墓碑）与 `evict`（`E`），结果未知时抛出。
 - **失效通道**：原子广播，脚本内发布。帧可以丢失、乱序（集合）、重复投递。节点过滤自己的帧；写入结果未知时不再过滤（P12），直到同一条连接上之后的命令完成、加一个投递余量：模型在“被放弃的写入不会再执行、它的帧已经送达”时允许恢复过滤，比引擎更宽，因此对安全性是可靠的抽象。丢帧之后由重新订阅重置该节点（心跳）；任意时刻的重置是故障。
 - **命令与连接**：每个节点的命令按发出顺序排队，同一条连接上先进先出，Redis 执行队首。超时（结果未知）之后命令仍可能执行或被丢弃；存储随即在当前连接上异步释放它的令牌（K14），直到执行。连接替换之后，旧连接上的命令可能晚于新连接上的命令执行（P8、P9、P12），也可能永不执行；它们的发出方随后以“结果未知”失败。
@@ -81,6 +82,7 @@ CI 运行的配置（都是 2 个节点、n1 上有写入方、每个节点一�
 | `RefreshKeepsNewer`：刷新写入 L2 的版本不低于 L1 当时的版本，除非淘汰已在路上（本节点会处理的帧在途、本节点自己的写入还没做第二次递增，或丢帧之后等待重置） | 不变式 | RFC §4.7 版本拒绝（P2）、I-K 的 L2 条款 |
 | `G2L2LateFill`：比 `G2L2` 更强：超时之后才执行、使版本前进的 `FILL` 也算本节点的一次写入 | 不变式 | RFC §4.7（版本前进的 fill 是一次写入）与 RFC §4.6（P12）的组合 |
 | `TokensReleased`：每个取得的令牌最终被填充或释放，除非它超过了 `lease.ttl` | 活性 | §14 #7；RFC I-F、K14 |
+| `TokensBounded`：连接替换之下的同一性质，只放过 F4 的接受上界：读取者放弃之后才执行的 `READ` 授予的 lease 留到 `lease.ttl` | 活性 | §8；RFC K14 |
 | `Converges`：写入停止之后，各节点的 L2 不依赖 `localMaxAge` 就收敛到最后一次提交 | 活性 | §1 G1 可以不计时陈述的部分 |
 
 裁判是幽灵变量，协议从不读取它们：`l1db`（L1 上一次销毁令牌时的 `db`）、`l1ver`（L1 广播过的最高版本）、`floorS` / `floorR`（节点经单个 key 的失效 / 重置处理到的数据下限）、`floorF`（`G2L2LateFill` 的下限）、`owed`（节点尚未处理的、已在 L1 执行的写入）、`lost`（节点丢过帧、尚未重置）。
@@ -99,23 +101,26 @@ CI 运行的配置（都是 2 个节点、n1 上有写入方、每个节点一�
 | `FILL` 不比较版本 | `Lagging` | `VersionMonotonic` |
 | 刷新路径在版本拒绝后照常写 L2（P2） | `Lagging` | `RefreshKeepsNewer` |
 | 版本前进的 `FILL` 不淘汰本节点的 L2（P11） | `VersionedCache` | `G2L2` |
-| 存储不释放结果未知的命令的令牌（K14） | `Liveness` | `TokensReleased` |
+| 存储不释放结果未知的命令的令牌（K14） | `Liveness`、`LivenessReconnect` | `TokensReleased`、`TokensBounded` |
 | 版本相等的 `Stale` 不广播（F1 改正之前的规则） | `VersionedCache`、`ConvergesVersioned` | `NoLostInvalidation`、`Converges` |
 
 `E` 上的 `READ` 不看持有者就授予 lease，不违反任何安全性：原持有者的 `FILL` 只是因令牌不匹配被拒绝。
 
 ## 发现
 
-尚未改正的反例在 `Findings*.cfg` 中（`scripts/tlc.sh Findings`，预期失败），不在 CI 中运行；协议改正之后把对应的性质移回 CI 的配置。CI 的配置检验其余性质，因此 `Liveness` 不含连接替换（F4）。
+维护者的决定（2026-11-03）：F1 已改正；F2、F3 由后续的 PR（`fix(core): close TLA+ findings F2–F4`）改正；F4 只改文档，作为接受的上界。
+
+- 尚未改正的反例在 `Findings*.cfg` 中（`scripts/tlc.sh Findings`，预期失败），不在 CI 中运行：F2 在 `FindingsLateFill`，F3 在 `FindingsRefreshRegression`。改正合并之后把它们的性质移进 CI 的配置。
+- F4 以 `TokensBounded` 在 `LivenessReconnect` 中检验：放过的只是读取者放弃之后才执行的 `READ` 授予的 lease，其余令牌照常要求被填充或释放；严格的 `TokensReleased` 在同一配置下给出 F4 的反例。
 
 F1 已改正：维护者选择了改法 (a)（2026-11-03，随 M4c+M4d 实施，RFC §4.7 的表格随之修改），模型以它为规则，`NoLostInvalidation` 与 `Converges` 在带版本的配置中检验。去掉这条规则，`VersionedCache` 与 `ConvergesVersioned` 都给出下面的反例（见“变异检验”）。带版本的 `Converges` 不带故障检验：模型中带版本的写入方在结果未知时抛出、不重放（重放由调用方负责，§6.5），被丢弃的 `putIfNewer` 就再也不会写入。
 
 | 发现 | 性质 | 需要的条件 | 后果的上界 | 配置 |
 |------|------|------------|------------|------|
 | F1（已改正）：`putIfNewer` 被不广播的填充吸收，其它节点收不到失效 | `NoLostInvalidation`、`Converges` | 无故障 | `degradedLocalMaxAge` 或 `localMaxAge` | 已在 CI 的配置中 |
-| F2：超时之后才执行的版本前进的 `FILL` 在本节点被过滤 | `G2L2LateFill` | 连接替换 | 直到写入方的 `putIfNewer` 落地 | [`FindingsLateFill`](FindingsLateFill.cfg) |
-| F3：刷新路径在结果未知或令牌被抢占时以更旧的值替换副本（P2 不完整） | `RefreshKeepsNewer` | loader 读从库，加一次超时 | `degradedLocalMaxAge` | [`FindingsRefreshRegression`](FindingsRefreshRegression.cfg) |
-| F4：连接替换之后异步释放先于被排空的 `READ`，lease 无人释放 | `TokensReleased` | 连接替换 | `lease.ttl` | [`FindingsReconnectLease`](FindingsReconnectLease.cfg) |
+| F2（待改正）：超时之后才执行的版本前进的 `FILL` 在本节点被过滤 | `G2L2LateFill` | 连接替换 | 直到写入方的 `putIfNewer` 落地 | [`FindingsLateFill`](FindingsLateFill.cfg) |
+| F3（待改正）：刷新路径在结果未知或令牌被抢占时以更旧的值替换副本（P2 不完整） | `RefreshKeepsNewer` | loader 读从库，加一次超时 | `degradedLocalMaxAge` | [`FindingsRefreshRegression`](FindingsRefreshRegression.cfg) |
+| F4（接受的上界）：连接替换之后异步释放先于被排空的 `READ`，lease 无人释放 | `TokensReleased`；CI 检验 `TokensBounded` | 连接替换 | `lease.ttl` | [`LivenessReconnect`](LivenessReconnect.cfg) |
 
 ### F1（已改正）：`VersionedCache` 的 `putIfNewer` 被填充吸收时，其它节点收不到失效
 
@@ -130,7 +135,7 @@ F1 已改正：维护者选择了改法 (a)（2026-11-03，随 M4c+M4d 实施，
 
 L1 中没有版本的状态（初始、到期或驱逐之后）都可能这样：相等或更新的版本经不广播的填充进入 L1，写入方随后的 `putIfNewer` 返回 `Stale`，也不广播。派生的 `Cache` 不受影响：`invalidate` 总是删除并广播。`E` 上的填充已经为“淘汰其它节点降级填充的旧副本”而广播（RFC §4.7），`L` 上的填充没有。两种改法：(a) 原子广播的后端上，`PUT_IF_NEWER` 在当前版本等于给出的版本时也广播（非原子广播的重放规则已经如此，代价是重复投递时多一帧）；(b) 带版本的 `FILL` 落在没有版本的内容上时像 `E` 一样广播（代价是每次带版本的未命中填充多一次 `PUBLISH`）。维护者选择了 (a)。
 
-### F2：超时之后才执行、使版本前进的 `FILL`，在本节点被过滤
+### F2（待改正）：超时之后才执行、使版本前进的 `FILL`，在本节点被过滤
 
 `G2L2LateFill`（比 `G2L2` 更强的性质），一个节点、两个读取者、一次连接替换：
 
@@ -140,9 +145,9 @@ L1 中没有版本的状态（初始、到期或驱逐之后）都可能这样�
 4. 旧连接上的 `FILL(2)` 先于这次释放执行：令牌仍匹配，版本前进，写入 `V(2)` 并广播。
 5. 本节点过滤自己的帧：P11 的“本节点递增戳并淘汰本地副本”只在 `FILL` 回复“已前进”时执行，P12 的“不再过滤自身帧”只覆盖写入。读取者 2 写入的版本 1 留在 L2，而 L1 已是版本 2。
 
-写入方随后的 `putIfNewer(2)` 返回 `Stale(2)` 并广播（F1 的改正），这个副本留到那次写入落地或 `localMaxAge`，以先到者为准。按 G2 的字面（本节点没有“处理完”这次填充）这不算违反，但与 RFC §4.7“版本前进的 fill 是一次写入”不一致；改法是让结果未知的 `FILL` 同样使本节点不再过滤自身帧（P12），或在它结果未知时直接按写入递增戳、淘汰本地副本。
+写入方随后的 `putIfNewer(2)` 返回 `Stale(2)` 并广播（F1 的改正），这个副本留到那次写入落地或 `localMaxAge`，以先到者为准。按 G2 的字面（本节点没有“处理完”这次填充）这不算违反，但与 RFC §4.7“版本前进的 fill 是一次写入”不一致；决定的改法：结果未知的带版本 `FILL` 按可能已前进处理，递增戳并淘汰本地副本。
 
-### F3：刷新路径只在版本拒绝时保留副本，结果未知或令牌不匹配时仍以更旧的值替换它
+### F3（待改正）：刷新路径只在版本拒绝时保留副本，结果未知或令牌不匹配时仍以更旧的值替换它
 
 `RefreshKeepsNewer`，`LaggingLoader`（loader 读到从库的旧版本，协议之外）加一次超时：
 
@@ -151,9 +156,9 @@ L1 中没有版本的状态（初始、到期或驱逐之后）都可能这样�
 3. `FILL` 超时，结果未知；存储异步释放令牌（K14）。
 4. 刷新路径按 `completeLoad(filled = false)` 以降级限龄把版本 0 写入 L2，替换了版本 1 的副本。
 
-RFC §4.7 的规则（P2）只覆盖 `FILL` 回复版本拒绝（`Rejected(v)`）的情形；结果未知、令牌不匹配（被抢占）时回复不带版本，刷新路径照常降级填充，L2 退回到比 L1 更旧的版本，直到 `degradedLocalMaxAge`。刷新路径本地就知道触发它的副本的版本，可以在任何没有写入 L1 的结局下都保留副本，或只在回源的版本不低于副本时写入。
+RFC §4.7 的规则（P2）只覆盖 `FILL` 回复版本拒绝（`Rejected(v)`）的情形；结果未知、令牌不匹配（被抢占）时回复不带版本，刷新路径照常降级填充，L2 退回到比 L1 更旧的版本，直到 `degradedLocalMaxAge`。决定的改法：带版本的缓存的 L2 不按版本后退，`compute` 保留更新的副本。
 
-### F4：连接替换之后，异步释放可能先于被排空的 `READ` 执行，lease 留到 `lease.ttl`
+### F4（接受的上界）：连接替换之后，异步释放可能先于被排空的 `READ` 执行，lease 留到 `lease.ttl`
 
 `TokensReleased`（活性），一次连接替换：
 
@@ -162,7 +167,7 @@ RFC §4.7 的规则（P2）只覆盖 `FILL` 回复版本拒绝（`Rejected(v)`�
 3. 存储按 K14 在当前连接（连接 1）上异步释放这个令牌：`RELEASE` 先执行，令牌不匹配，什么也不做，释放就此结束。
 4. 旧连接上的 `READ` 随后执行，写入 lease 占位 `L(t1)`。没有人持有它，也不会再有释放：全集群对这个 key 的未命中先等 `lease.wait`，直到 `lease.ttl` 到期。
 
-architecture.md §8 写道“断线时在途的读取取得的 lease 因此在重连之后就被收回”，前提是释放排在原命令之后（同一连接）；连接替换之后，被排空的命令可能晚于新连接上的命令执行（P8 的前提），这个说法不成立，上界退回 `lease.ttl`。没有连接替换时（`Liveness.cfg`）令牌总会被填充或释放。可能的改法：放弃等待时不认为旧连接上的命令已经结束，等它真正失败或连接关闭之后再释放；或者在文档中把上界写成 `lease.ttl`。
+architecture.md §8 写道“断线时在途的读取取得的 lease 因此在重连之后就被收回”，前提是释放排在原命令之后（同一连接）；连接替换之后，被排空的命令可能晚于新连接上的命令执行（P8 的前提），这个说法不成立，上界退回 `lease.ttl`。没有连接替换时（`Liveness.cfg`）令牌总会被填充或释放。决定：只改文档。lease 通常在重连之后就被收回，释放与被排空的 `READ` 竞争时至多留到 `lease.ttl`；`LivenessReconnect` 以 `TokensBounded` 检验这个上界。
 
 ### 观察：迟到的 `putIfNewer` 越过已到期的版本栅栏
 

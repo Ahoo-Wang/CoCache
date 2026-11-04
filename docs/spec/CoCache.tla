@@ -98,13 +98,14 @@ RemoveAt(s, k) == SubSeq(s, 1, k - 1) \o SubSeq(s, k + 1, Len(s))
 
 (* L1 content: st is A (absent), L (lease placeholder), V (value), M (negative entry), E (§4.7).
    tok is the lease token (L, E) or the refresh token (V); aged: issued more than lease.ttl ago.
-   snap is the source version the content was loaded from; src tells fills from writer writes. *)
-Absent == [st |-> "A", tok |-> 0, aged |-> FALSE, ver |-> NoVer, snap |-> 0, src |-> "fill"]
+   snap is the source version the content was loaded from; src tells fills from writer writes.
+   late (ghost): the token was granted by a READ that ran after its issuer had given up. *)
+Absent == [st |-> "A", tok |-> 0, aged |-> FALSE, late |-> FALSE, ver |-> NoVer, snap |-> 0, src |-> "fill"]
 VerOf(s) == IF Versioned /\ s > 0 THEN s ELSE NoVer
 Content(s, src) ==
-    [st |-> IF s = 0 \/ s \in Deleted THEN "M" ELSE "V", tok |-> 0, aged |-> FALSE,
+    [st |-> IF s = 0 \/ s \in Deleted THEN "M" ELSE "V", tok |-> 0, aged |-> FALSE, late |-> FALSE,
      ver |-> VerOf(s), snap |-> s, src |-> IF Versioned THEN src ELSE "fill"]
-Tombstone(v) == [st |-> "E", tok |-> 0, aged |-> FALSE, ver |-> v, snap |-> 0, src |-> "write"]
+Tombstone(v) == [st |-> "E", tok |-> 0, aged |-> FALSE, late |-> FALSE, ver |-> v, snap |-> 0, src |-> "write"]
 TokenFree == l1.tok = 0 \/ l1.aged
 
 (* L2 copy: own is the reader whose compute wrote it and has not rechecked its stamp yet. *)
@@ -121,7 +122,7 @@ WriteOps == {"INV", "PIN", "EVICT"}
 (* Reader modes: miss (a caller waits for the result), refresh (holds the refresh guard),
    refill (refresh without a token: refills L2 from L1), reload (loadThrough after a refresh). *)
 RIdle == [pc |-> "idle", mode |-> "miss", tok |-> 0, ok |-> FALSE, snap |-> 0, f0 |-> 0,
-          rr |-> FALSE, rep |-> NoRep]
+          seen |-> 0, rr |-> FALSE, rep |-> NoRep]
 WIdle == [pc |-> "idle", op |-> "INV", v |-> 0, rep |-> NoRep]
 
 LoaderSnaps == IF LaggingLoader THEN 0..db ELSE {db}
@@ -145,7 +146,7 @@ Returned(x, s) ==
 (* The value the reader will return and offer to L2 is fixed: check the stamp inside compute (c1 of
    fillGuarded). Valid: write (c2). Invalid: no L2 write, the value is returned. *)
 Fixed(x, s) ==
-    IF x.ok THEN [x EXCEPT !.pc = "c2", !.snap = s, !.tok = 0, !.rr = FALSE, !.rep = NoRep]
+    IF x.ok THEN [x EXCEPT !.pc = "c2", !.snap = s, !.tok = 0, !.seen = 0, !.rr = FALSE, !.rep = NoRep]
     ELSE Returned(x, s)
 
 -----------------------------------------------------------------------------
@@ -155,36 +156,41 @@ Res(nl1, rep, bc, f, inv) == [l1 |-> nl1, rep |-> rep, bc |-> bc, f |-> f, inv |
 Quiet(rep) == Res(l1, rep, FALSE, 0, FALSE)
 Hit(g) == [Rep("hit") EXCEPT !.snap = l1.snap, !.g = g]
 Granted == [Rep("miss") EXCEPT !.g = TRUE]
+Grant(c) == [l1 EXCEPT !.tok = c.tok, !.aged = FALSE, !.late = (c.from = Orphan)]
+ClearToken == [l1 EXCEPT !.tok = 0, !.aged = FALSE, !.late = FALSE]
 
 ExecRead(c) ==                                  \* READ with a lease request (§4.1, §4.7 table E)
-    CASE l1.st = "A" -> Res([Absent EXCEPT !.st = "L", !.tok = c.tok], Granted, FALSE, 0, FALSE)
-      [] l1.st = "E" /\ TokenFree -> Res([l1 EXCEPT !.tok = c.tok, !.aged = FALSE], Granted, FALSE, 0, FALSE)
+    CASE l1.st = "A" -> Res([Absent EXCEPT !.st = "L", !.tok = c.tok, !.late = (c.from = Orphan)], Granted, FALSE, 0, FALSE)
+      [] l1.st = "E" /\ TokenFree -> Res(Grant(c), Granted, FALSE, 0, FALSE)
       [] l1.st \in {"L", "E"} -> Quiet(Rep("leased"))
       [] OTHER -> Quiet(Hit(FALSE))
 
 ExecRefresh(c, win) ==                          \* READ with a refresh request; win: L1 is in the window
-    CASE l1.st = "V" /\ TokenFree /\ win -> Res([l1 EXCEPT !.tok = c.tok, !.aged = FALSE], Hit(TRUE), FALSE, 0, FALSE)
+    CASE l1.st = "V" /\ TokenFree /\ win -> Res(Grant(c), Hit(TRUE), FALSE, 0, FALSE)
       [] l1.st \in {"V", "M"} -> Quiet(Hit(FALSE))
       [] l1.st = "L" -> Quiet(Rep("leased"))
       [] OTHER -> Quiet(Rep("miss"))            \* A, and E read without a lease request
 
-ExecFill(c) ==                                  \* FILL: token, then the version rules of §4.7
+(* FILL: the token, then the version rules of RFC §4.7: a smaller version (or none) is rejected and the
+   token cleared; an equal one renews; a greater one, and any fill accepted on E, broadcasts and is
+   Filled(advanced = TRUE), which the engine treats as a write. *)
+ExecFill(c) ==
     LET w == VerOf(c.snap)
         v == l1.ver
     IN CASE l1.tok # c.tok -> Quiet(Rep("rejected"))
          [] v = NoVer -> Res(Content(c.snap, "fill"), Rep("filled"), FALSE, 0, FALSE)
-         [] w < v -> Res([l1 EXCEPT !.tok = 0, !.aged = FALSE], [Rep("rejected") EXCEPT !.cur = v], FALSE, 0, FALSE)
+         [] w < v -> Res(ClearToken, [Rep("rejected") EXCEPT !.cur = v], FALSE, 0, FALSE)
          [] w = v /\ l1.st # "E" -> Res(Content(c.snap, "fill"), Rep("filled"), FALSE, 0, FALSE)
-         [] OTHER -> Res(Content(c.snap, "fill"), [Rep("filled") EXCEPT !.adv = (w > v)], TRUE, w, FALSE)
+         [] OTHER -> Res(Content(c.snap, "fill"), [Rep("filled") EXCEPT !.adv = TRUE], TRUE, w, FALSE)
 
 ExecRelease(c) ==                               \* RELEASE: L is deleted, V and E keep their content
     CASE l1.tok # c.tok -> Quiet(Rep("ok"))
       [] l1.st = "L" -> Res(Absent, Rep("ok"), FALSE, 0, FALSE)
-      [] OTHER -> Res([l1 EXCEPT !.tok = 0, !.aged = FALSE], Rep("ok"), FALSE, 0, FALSE)
+      [] OTHER -> Res(ClearToken, Rep("ok"), FALSE, 0, FALSE)
 
 (* PUT_IF_NEWER (also the tombstone of invalidateIfNewer). Stale with the same version still
-   publishes: the equal version may have entered L1 through a fill that did not broadcast, and other
-   nodes would keep older copies (TLA+ finding F1, maintainer's decision 2026-11-03). *)
+   publishes (RFC §4.7, TLA+ finding F1): the equal version may have entered L1 through a fill that
+   did not broadcast, and other nodes would keep older copies. *)
 ExecPutIfNewer(c) ==
     CASE c.snap > l1.ver -> Res(Content(c.snap, "write"), Rep("written"), TRUE, c.snap, TRUE)
       [] c.snap = l1.ver -> Res(l1, [Rep("stale") EXCEPT !.cur = l1.ver], TRUE, c.snap, FALSE)
@@ -313,8 +319,9 @@ OnRead(n, i) ==
     /\ \/ /\ p.k = "hit" /\ ~p.g                \* L1 hit, or a refresh without the token: fill L2 from L1
           /\ rd' = [rd EXCEPT ![r] = Fixed([x EXCEPT !.mode = IF @ = "refresh" THEN "refill" ELSE @], p.snap)]
           /\ UNCHANGED <<net, nextTok>>
-       \/ /\ p.g                                \* holds a lease or a refresh token: load
-          /\ rd' = [rd EXCEPT ![r].pc = "ld", ![r].rr = FALSE, ![r].rep = NoRep]
+       \/ /\ p.g                                \* holds a lease or a refresh token: load (a refresh keeps what it read)
+          /\ rd' = [rd EXCEPT ![r].pc = "ld", ![r].rr = FALSE, ![r].rep = NoRep,
+                              ![r].seen = IF x.mode = "refresh" THEN p.snap ELSE 0]
           /\ UNCHANGED <<net, nextTok>>
        \/ /\ p.k = "leased" /\ x.mode # "refresh" /\ ~x.rr   \* back off and read again with the same token
           /\ rd' = [rd EXCEPT ![r].rr = TRUE, ![r].rep = NoRep]
@@ -364,8 +371,8 @@ OnFill(n, i) ==
        \/ /\ p.k = "filled" /\ ~p.adv
           /\ rd' = [rd EXCEPT ![r] = Fixed(x, x.snap)]
           /\ UNCHANGED <<l2, floorS>>
-       \/ /\ p.k = "rejected" /\ p.cur # NoVer /\ x.mode = "refresh"   \* version rejection: keep the copy (P2)
-          /\ rd' = [rd EXCEPT ![r] = RIdle]
+       \/ /\ p.k = "rejected" /\ p.cur # NoVer /\ x.mode = "refresh"   \* version rejection (P2): refill L2 with
+          /\ rd' = [rd EXCEPT ![r] = Fixed([x EXCEPT !.mode = "refill"], x.seen)]  \* what the token's read saw
           /\ UNCHANGED <<l2, floorS>>
        \/ /\ p.k = "rejected" /\ ~(p.cur # NoVer /\ x.mode = "refresh")
           /\ rd' = [rd EXCEPT ![r] = Fixed(x, x.snap)]          \* not filled: degraded L2 copy
@@ -687,7 +694,7 @@ FairSpec == Spec /\ Fairness
 
 TypeOK ==
     /\ db \in 0..MaxVersion
-    /\ l1.st \in {"A", "L", "V", "M", "E"} /\ l1.tok \in 0..MaxTokens /\ l1.aged \in BOOLEAN
+    /\ l1.st \in {"A", "L", "V", "M", "E"} /\ l1.tok \in 0..MaxTokens /\ l1.aged \in BOOLEAN /\ l1.late \in BOOLEAN
     /\ l1.ver \in {NoVer} \cup 0..MaxVersion /\ l1.snap \in 0..MaxVersion /\ l1.src \in {"fill", "write"}
     /\ \A n \in Nodes : l2[n].snap \in -1..MaxVersion /\ l2[n].own \in {0} \cup Rids
     /\ \A n \in Nodes : \A k \in 1..Len(net[n]) : net[n][k].ep \in 0..conn[n]
@@ -742,6 +749,12 @@ G2L2LateFill == ~LaggingLoader =>
 (* I-F: every token is filled or released, unless it ages out (lease.ttl). *)
 TokensReleased ==
     \A t \in 1..MaxTokens : (l1.tok = t /\ ~l1.aged) ~> (l1.tok # t \/ l1.aged)
+
+(* With connection replacement (TLA+ finding F4, an accepted bound): the store's release can run before
+   a drained READ that grants the token after its reader gave up; nobody releases that token and it
+   lives until lease.ttl. Every other token is filled or released. *)
+TokensBounded ==
+    \A t \in 1..MaxTokens : (l1.tok = t /\ ~l1.aged /\ ~l1.late) ~> (l1.tok # t \/ l1.aged)
 
 (* G1 where it can be stated without time: once writers stop, every live node's L2 converges to
    the last commit without relying on L2 expiry (localMaxAge). *)
