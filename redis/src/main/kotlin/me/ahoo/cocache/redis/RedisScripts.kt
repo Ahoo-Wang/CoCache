@@ -639,7 +639,10 @@ end
 """
 
     /**
-     * 按版本写入：给出的版本大于 key 中的版本时整体覆盖写入（同 [PUT]，销毁令牌、重设到期时间）并广播，否则不修改、不广播。
+     * 按版本写入：给出的版本大于 key 中的版本时整体覆盖写入（同 [PUT]，销毁令牌、重设到期时间）并广播。
+     * 相等时不写入，但广播（RFC 0005 §4.7，TLA+ F1）：这个版本可能是填充在 lease 上写入的，那次填充不广播，别的节点的 L2 中
+     * 还可能是更旧的副本；写入方随后的 `putIfNewer` 就是补上这次广播的时机。更小时不修改、不广播：持有那个更大版本的写入方
+     * 自己的 `putIfNewer` 会遇到相等的情形。
      * ARGV：形状（`V` / `M` + 标志位 + 段，必须带版本段且不是 `NO_VERSION`，K15）、TTL、频道、帧、载荷（`M` 没有）。
      * 读不懂的内容（不是本协议写入的内容、本格式的集合、其它格式与带未知的必须理解的位的内容）总是拒绝，从不视为没有版本。
      * 返回 `{1}` 已写入、`{0, 当前版本}` 版本不更新、`{3, 格式版本}` 读不懂的内容；形状不合规时为错误回复。
@@ -652,7 +655,10 @@ local given = shape_version(kind)
 if given == nil then error('CoCache: putIfNewer needs a version segment') end
 local state, format, current = versioned_state(key)
 if state == 'unreadable' then return {3, format} end
-if state == 'versioned' and not newer(given, current) then return {0, current} end
+if state == 'versioned' and not newer(given, current) then
+  if given == current then publish(ARGV[3], ARGV[4]) end
+  return {0, current}
+end
 write(key, kind, ARGV[2], 5)
 publish(ARGV[3], ARGV[4])
 return {1}

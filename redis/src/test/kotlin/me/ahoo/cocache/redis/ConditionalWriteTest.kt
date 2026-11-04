@@ -102,10 +102,17 @@ class ConditionalWriteTest {
         val cache = cache(name)
         cache.put("doc", document)
         fun reply(known: ByteArray): List<Any?> = RedisTestSupport.withBinaryCommands {
-            it.eval<List<Any?>>(RedisScripts.READ_IF_CHANGED.source, ScriptOutputType.MULTI, arrayOf(key.toByteArray()), known)
+            it.eval<List<Any?>>(
+                RedisScripts.READ_IF_CHANGED.source,
+                ScriptOutputType.MULTI,
+                arrayOf(key.toByteArray()),
+                known
+            )
         }
 
-        reply(digestOf(document).bytes).assert().containsExactly(RedisScripts.COND_UNCHANGED, RedisScripts.FORMAT.toLong())
+        reply(
+            digestOf(document).bytes
+        ).assert().containsExactly(RedisScripts.COND_UNCHANGED, RedisScripts.FORMAT.toLong())
         val changed = reply(digestOf("older").bytes)
         changed.size.assert().isEqualTo(3)
         // 核心头部 36、摘要段 32、写入标识的扩展区 28
@@ -278,6 +285,28 @@ class ConditionalWriteTest {
     }
 
     /**
+     * 写入 [storeClassifiesEveryShape] 用到的每种内容：没有值的三种状态、带摘要段的值、没有摘要段的值、带版本的内容（值、墓碑、`E`）、
+     * 集合与读不懂的内容。
+     */
+    private suspend fun writeEveryShape(store: me.ahoo.cocache.api.spi.L1Store, key: (String) -> String) {
+        store.put(key("negative"), Envelope.Absent, null, frame)
+        store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
+        store.put(key("value"), digested("v"), null, frame)
+        store.put(key("bare"), Envelope.Scalar("v".toByteArray()), null, frame)
+        store.put(
+            key("versioned"),
+            Envelope.Scalar("v".toByteArray(), 3, null, Digest.ofPayload("v".toByteArray())),
+            null,
+            frame
+        )
+        store.versionedSurface.putIfNewer(key("tombstone"), Envelope.Absent, 4, null, frame)
+        store.versionedSurface.putIfNewer(key("evicted"), Envelope.Scalar("e".toByteArray()), 5, null, frame)
+        store.versionedSurface.evictKeepingVersion(key("evicted"), null, frame)
+        store.setSurface.addMembers(key("set"), listOf("m".toByteArray()), null, frame)
+        writeUnreadableShapes(key)
+    }
+
+    /**
      * 存储层的判定（一次脚本内原子完成）：没有值的三种状态、本协议的值、读不懂的内容，读与写各自的结果。
      */
     @Test
@@ -285,16 +314,7 @@ class ConditionalWriteTest {
         val namespace = "store-$run"
         val store = backend.store(Keyspace("cocache:", namespace))
         fun key(id: String) = "cocache:$namespace:$id"
-        store.put(key("negative"), Envelope.Absent, null, frame)
-        store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
-        store.put(key("value"), digested("v"), null, frame)
-        store.put(key("bare"), Envelope.Scalar("v".toByteArray()), null, frame)
-        store.put(key("versioned"), Envelope.Scalar("v".toByteArray(), 3, null, Digest.ofPayload("v".toByteArray())), null, frame)
-        store.versionedSurface.putIfNewer(key("tombstone"), Envelope.Absent, 4, null, frame)
-        store.versionedSurface.putIfNewer(key("evicted"), Envelope.Scalar("e".toByteArray()), 5, null, frame)
-        store.versionedSurface.evictKeepingVersion(key("evicted"), null, frame)
-        store.setSurface.addMembers(key("set"), listOf("m".toByteArray()), null, frame)
-        writeUnreadableShapes(::key)
+        writeEveryShape(store, ::key)
 
         val conditional = store.conditionalSurface
         val w = digested("w")

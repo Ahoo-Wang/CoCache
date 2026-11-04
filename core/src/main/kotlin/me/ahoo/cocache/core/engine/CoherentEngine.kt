@@ -518,7 +518,9 @@ internal class CoherentEngine<K : Any, V : Any>(
      * M5 之前没有数据源的缓存充当 `Store`，它的每次标量写入（`put`、`putAll`、填充、`putIfMatch`）都带；带版本的值（`putIfNewer`、
      * 带版本的回源）不带，有数据源的缓存都不带（L1 头部保持 36 字节）。
      */
-    private fun envelopeOf(value: V?): Envelope = value?.let { format.envelopeOf(it, writerId(), authoritative) } ?: Envelope.Absent
+    private fun envelopeOf(
+        value: V?
+    ): Envelope = value?.let { format.envelopeOf(it, writerId(), authoritative) } ?: Envelope.Absent
 
     private fun encode(value: V): Envelope.Scalar = format.encode(value, writerId(), authoritative)
 
@@ -571,7 +573,9 @@ internal class CoherentEngine<K : Any, V : Any>(
             token?.let { releaseToken(storageKey, it) }
             throw e
         }
-        val outcome = token?.let { fillRemote(fillOf(storageKey, it, value, prepared.envelope, prepared.ttl)) } ?: FillOutcome.NONE
+        val outcome = token?.let {
+            fillRemote(fillOf(storageKey, it, value, prepared.envelope, prepared.ttl))
+        } ?: FillOutcome.NONE
         if (outcome == FillOutcome.VERSION_REJECTED && refreshed != null) {
             keepRefreshedCopy(storageKey, refreshed, stamp)?.let { return it }
         }
@@ -660,7 +664,14 @@ internal class CoherentEngine<K : Any, V : Any>(
         stamp: Long,
         source: CoreSource<K, V>?,
         refreshable: Boolean = true
-    ): LocalEntry<V> = completeBypass(key, storageKey, stamp, loadValue(key, storageKey, source), source != null, refreshable)
+    ): LocalEntry<V> = completeBypass(
+        key,
+        storageKey,
+        stamp,
+        loadValue(key, storageKey, source),
+        source != null,
+        refreshable
+    )
 
     /**
      * 同步与异步共用。没有数据源时绕过 L1 只能得到“不存在”：它只是没有答案（`unresolved`，带 loader 的读取不接受它），
@@ -1280,7 +1291,9 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     private fun filledByKey(fills: List<Fill>, outcomes: List<L1Fill>): Map<String, FillOutcome> =
-        fills.indices.associate { fills[it].key to (outcomes.getOrNull(it)?.let { outcome -> fillOutcomeOf(outcome) } ?: FillOutcome.NONE) }
+        fills.indices.associate {
+            fills[it].key to (outcomes.getOrNull(it)?.let { outcome -> fillOutcomeOf(outcome) } ?: FillOutcome.NONE)
+        }
 
     @Suppress("TooGenericExceptionCaught")
     private suspend fun fillAllRemote(fills: List<Fill>): Map<String, FillOutcome> {
@@ -1712,8 +1725,9 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 非原子广播的后端上，按版本写入之后是否广播（同步与异步共用）。写入成功时广播；当前版本等于给出的版本时也广播：
-     * 这可能是按 §6.5 重放的、已在 L1 生效而广播失败的写入（理由同 [conditionalChanged]）。版本更旧时不广播。
+     * 非原子广播的后端上，按版本写入之后是否广播（同步与异步共用），与原子广播的脚本相同。写入成功时广播；当前版本等于给出的版本时
+     * 也广播：这个版本可能是不广播的填充（lease 上的回源）写入的，别的节点还持有更旧的副本（RFC 0005 §4.7，F1），也可能是按 §6.5
+     * 重放的、已在 L1 生效而广播失败的写入（理由同 [conditionalChanged]）。版本更旧时不广播。
      */
     private fun versionedChanged(version: Long, result: L1VersionedWrite?): Boolean = when (result) {
         is L1VersionedWrite.Stale -> result.current == version

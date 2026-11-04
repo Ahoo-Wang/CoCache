@@ -112,8 +112,9 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 
 | 条目 | 存储形式 | 大小 |
 |------|----------|------|
-| 值 | String | key + **36 字节头** + 编解码器输出。没有 loader 的缓存另加 28 字节的写入标识，带版本的值另加 8 字节的版本（见[线格式](../architecture/index.md#wire-format)） |
+| 值 | String | key + **36 字节头** + 编解码器输出。没有 loader 的缓存另加 28 字节的写入标识与 32 字节的摘要（60 字节），带版本的值则是写入标识与 8 字节的版本（36 字节）；有 loader 的带版本缓存另加 8 字节的版本（见[线格式](../architecture/index.md#wire-format)） |
 | 负缓存 | String | key + 36 字节头，存活 `absent-ttl`。带版本的墓碑另加 8 字节的版本 |
+| 被淘汰的带版本 key | String | key + 44 字节（头部与版本），存活墓碑的寿命 |
 | lease | String | key + 36 字节头，存活到加载结束（最多 `lease-ttl`） |
 | 集合（`SetCache`） | Hash | key + 一个 `!f` 字段 + 每个成员一个 `+{member}` 字段 |
 
@@ -168,15 +169,15 @@ CoCache 的 Redis 用户需要以下权限：
 | key | 对你的 key 前缀可读写（默认 `~cocache:*`）。`pubsub` 模式下还需要探测 key `cocache:!probe:{a}`，`~cocache:*` 已经包含它 |
 | 频道 | 每个前缀的 `&{keyPrefix}inv:*`（默认 `&cocache:inv:*`）。`pubsub` 模式下还需要 `&cocache:!probe:*`，否则后端退回非原子广播 |
 | 直接调用的命令 | `EVALSHA`、`EVAL`（`NOSCRIPT` 后的回退）、`PING`（心跳）、`PUBLISH`、`SUBSCRIBE`、`UNSUBSCRIBE`，`sharded` 模式下为 `SPUBLISH`、`SSUBSCRIBE`、`SUNSUBSCRIBE`，以及连接命令（`HELLO`、`AUTH`、`CLIENT`、`SELECT`）。使用 `SetCache` 时还需要 `INFO`，供[启动时的驱逐检查](#maxmemory-policy)使用 |
-| 脚本内的命令 | Redis 7 同样按调用方的 ACL 检查：`GET`、`GETRANGE`、`SET`、`DEL`、`PTTL`、`TYPE`、`HGETALL`、`HKEYS`、`HMGET`、`HSET`、`HDEL`、`HLEN`、`PEXPIRE`、`PERSIST`、`SETRANGE`、`TIME` |
+| 脚本内的命令 | Redis 7 同样按调用方的 ACL 检查：`GET`、`GETRANGE`、`STRLEN`、`SET`、`DEL`、`PTTL`、`TYPE`、`HGETALL`、`HKEYS`、`HMGET`、`HSET`、`HDEL`、`HLEN`、`PEXPIRE`、`PERSIST`、`SETRANGE`、`TIME` |
 
 一个起点（已在 Redis 7.4 上以该用户执行全部 CoCache 脚本验证）：
 
 ```
-ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +getrange +set +del +pttl +type +hgetall +hkeys +hmget +hset +hdel +hlen +pexpire +persist +setrange +time
+ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +getrange +strlen +set +del +pttl +type +hgetall +hkeys +hmget +hset +hdel +hlen +pexpire +persist +setrange +time
 ```
 
-脚本以 `HMGET` 读集合的格式字段，写回与释放令牌时以 `GETRANGE` 只读 36 字节的头部，条件回收使用 `HGETALL`。用户缺少脚本调用的某条命令时，读取与写回会以 ACL 错误失败（措辞随 Redis 版本不同）。
+脚本以 `HMGET` 读集合的格式字段，写回与释放令牌时以 `GETRANGE` 只读头部的开头，条件读写以 `GETRANGE` 与 `STRLEN` 只读头部，条件回收使用 `HGETALL`。用户缺少脚本调用的某条命令时，读取、写回与条件读写会以 ACL 错误失败（措辞随 Redis 版本不同）。
 
 创建缓存时，CoCache 像之后的写入一样向该缓存的频道发布一个空帧。ACL 不放行这个频道时，创建以 `IllegalStateException` 失败，信息给出要放行的模式，例如 `[&cocache:inv:*]`。否则之后的每次写入都会先修改 Redis、再在广播处失败，其它实例陈旧到 `local-max-age`。
 

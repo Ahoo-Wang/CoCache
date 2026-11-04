@@ -52,7 +52,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 
 | 指标 | 类型 | 计数对象 |
 |------|------|----------|
-| `cocache.fill.rejections` | counter | 持有 lease、但 Redis 拒绝填充的加载：失效销毁了 lease、loader 慢于 `lease-ttl`，或者填充失败 |
+| `cocache.fill.rejections` | counter | 持有 lease 或刷新令牌、但 Redis 拒绝填充的加载：失效销毁了令牌、loader 慢于 `lease-ttl`、填充失败，或者（带版本的缓存）loader 返回的版本比 Redis 中的旧 |
 | `cocache.degraded.fills` | counter | 只写入 L2、以 `degraded-local-max-age` 限龄的加载：Redis 读取失败、等待 lease 超时、填充被拒绝、值的格式未知，或者该 key 的失效仍在重试。没有 loader 的读取在 Redis 失败时不计入：它抛出，或在显式设置 `read-failure: degrade` 时返回 `null` 而不缓存任何东西（计入 `cocache.remote.failures`） |
 | `cocache.stale.discards` | counter | 读取期间该 key 发生了失效，因而被丢弃的 L2 填充。这是 L2 栅栏在起作用 |
 | `cocache.reclaims` | counter | 本实例无法解码的 L1 值（外来内容或编解码失败）。随后由单独的 reclaim 脚本在值未变的前提下把它转为 lease，本实例再回源 |
@@ -67,6 +67,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.conditional.conflicts` | counter | 因 Redis 中是另一个值而没有写入的 `putIfMatch`（[条件写入](../guide/freshness.md#conditional-writes)）。持续出现说明写入方经常在同一个 key 上竞争 |
 | `cocache.conditional.unchanged` | counter | 确认值未变、没有传输值的 `getIfChanged` |
 | `cocache.versioned.stale` | counter | 因 Redis 中已是这个版本或更新的版本而没有写入的 `putIfNewer` / `invalidateIfNewer`（[按版本写入](../guide/freshness.md#versioned-writes)）：重复投递与迟到的旧版本 |
+| `cocache.type.mismatch` | counter | 有 loader 的缓存读到没有 loader 的缓存写入的值（带摘要），以及带版本的缓存按 key 淘汰时遇到它的次数。说明同一个 namespace 上还有没有 loader 的缓存：值照常读取，但从不被回收或刷新。每个缓存只记录一次日志 |
 | `cocache.invalidation.retries` | counter | 失败失效的重试次数 |
 | `cocache.invalidations.dropped` | counter | 重试耗尽、重试队列已满或关闭时被放弃的失效。L1 中仍是旧值 |
 | `cocache.invalidations.received` | counter | 来自其它实例或外部写入方的失效消息（按消息计，一条消息可能包含多个 key） |
@@ -182,11 +183,11 @@ management:
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
-  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0 }
+  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0, "typeMismatches": 0 }
 }
 ```
 
-`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
+`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，`staleVersions` 是 `cocache.versioned.stale`，`typeMismatches` 是 `cocache.type.mismatch`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
 
 ### 编码后的 key {#encoded-key}
 
@@ -246,7 +247,7 @@ curl -s -X DELETE localhost:8080/actuator/cocache/UserCache/42
 # {"cache":"UserCache","key":"42"}
 ```
 
-它走正常的失效路径，与 `cache.invalidate(key)` 相同：删除 L1，每个实例丢弃自己的 L2 副本，下一次读取从数据源加载。操作幂等。Redis 失败时按缓存的 `invalidate-failure` 处理（有 loader 时默认进入重试队列并返回 `200`；为 `throw`（没有 loader 时的默认值）时返回错误）。在 `SetCache` 上它等价于 `clear(key)`，会**删除集合的唯一副本**。
+它走正常的失效路径，与 `cache.invalidate(key)` 相同：删除 L1，每个实例丢弃自己的 L2 副本，下一次读取从数据源加载。操作幂等。Redis 失败时按缓存的 `invalidate-failure` 处理（有 loader 时默认进入重试队列并返回 `200`；为 `throw`（没有 loader 时的默认值）时返回错误）。在 `SetCache` 上它等价于 `clear(key)`，会**删除集合的唯一副本**。在[带版本的缓存](../guide/freshness.md#versioned-writes)上它保留版本：key 变为仍然拒绝旧版本的淘汰标记，Redis 失败时返回错误，不重试。
 
 ## 日志 {#logs}
 

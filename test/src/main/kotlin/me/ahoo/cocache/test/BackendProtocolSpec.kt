@@ -57,6 +57,7 @@ import java.util.concurrent.atomic.AtomicLong
  * 订阅帧的用例忽略零 key 的帧（或只记录本用例发出的帧）：它们是创建存储时的频道探测（RFC 0005 §4.7，K8），异步投递的通道
  * （如 Redis Cluster 的经典 Pub/Sub）可能在订阅之后才送达 [setup] 中创建存储时发出的那一帧。
  */
+@Suppress("LargeClass")
 abstract class BackendProtocolSpec {
     protected abstract fun createBackend(): CoherenceBackend
 
@@ -390,7 +391,11 @@ abstract class BackendProtocolSpec {
         (batched.getValue(plain).hit().envelope as Envelope.Scalar).digest.assert().isNull()
         store.conditional()?.let { conditional ->
             expected.filterValues { it.version == Versioned.NO_VERSION }.forEach { (key, envelope) ->
-                conditional.readIfChanged(key, null, null).assert().isEqualTo(L1ConditionalRead.Changed(envelope, backend.format))
+                conditional.readIfChanged(
+                    key,
+                    null,
+                    null
+                ).assert().isEqualTo(L1ConditionalRead.Changed(envelope, backend.format))
             }
         }
     }
@@ -422,9 +427,25 @@ abstract class BackendProtocolSpec {
         store.put(key, stored, null, frame(key))
         conditional.readIfChanged(key, claimed, null).assert().isEqualTo(L1ConditionalRead.Unchanged(backend.format))
         val actual = Digest.ofPayload("actual".toByteArray())
-        conditional.readIfChanged(key, actual, null).assert().isEqualTo(L1ConditionalRead.Changed(stored, backend.format))
-        conditional.putIfMatch(key, actual, digested("x"), null, frame(key)).assert().isEqualTo(L1ConditionalWrite.Conflict(claimed))
-        conditional.putIfMatch(key, claimed, digested("next"), null, frame(key)).assert().isEqualTo(L1ConditionalWrite.Written)
+        conditional.readIfChanged(
+            key,
+            actual,
+            null
+        ).assert().isEqualTo(L1ConditionalRead.Changed(stored, backend.format))
+        conditional.putIfMatch(
+            key,
+            actual,
+            digested("x"),
+            null,
+            frame(key)
+        ).assert().isEqualTo(L1ConditionalWrite.Conflict(claimed))
+        conditional.putIfMatch(
+            key,
+            claimed,
+            digested("next"),
+            null,
+            frame(key)
+        ).assert().isEqualTo(L1ConditionalWrite.Written)
         store.read(key, null, null, null).hit().envelope.assert().isEqualTo(digested("next"))
     }
 
@@ -484,7 +505,11 @@ abstract class BackendProtocolSpec {
         val versionedStore = requireNotNull(store.versioned())
         val key = key()
         versionedStore.putIfNewer(key, scalar("v5"), 5, null, frame(key))
-        versionedStore.evictKeepingVersion(key, Duration.ofMinutes(1), frame(key)).assert().isEqualTo(L1Eviction.Evicted)
+        versionedStore.evictKeepingVersion(
+            key,
+            Duration.ofMinutes(1),
+            frame(key)
+        ).assert().isEqualTo(L1Eviction.Evicted)
         val first = lease(ttl = shortTtl)
         store.read(key, first, null, null).assert().isEqualTo(L1Read.Miss(true))
         store.read(key, lease(), null, null).assert().isInstanceOf(L1Read.Leased::class.java)
@@ -492,8 +517,12 @@ abstract class BackendProtocolSpec {
         // 抢占按申请者的 lease 寿命判断（同一个缓存的节点用同样的 lease 策略）
         val second = lease(ttl = shortTtl)
         store.read(key, second, null, null).assert().isEqualTo(L1Read.Miss(true))
-        store.fill(Fill(key, first.token, Envelope.Scalar("late".toByteArray(), 6), null)).assert().isEqualTo(L1Fill.Rejected(null))
-        store.fill(Fill(key, second.token, Envelope.Scalar("v6".toByteArray(), 6), null)).assert().isEqualTo(L1Fill.Filled(true))
+        store.fill(
+            Fill(key, first.token, Envelope.Scalar("late".toByteArray(), 6), null)
+        ).assert().isEqualTo(L1Fill.Rejected(null))
+        store.fill(
+            Fill(key, second.token, Envelope.Scalar("v6".toByteArray(), 6), null)
+        ).assert().isEqualTo(L1Fill.Filled(true))
         (store.read(key, null, null, null).hit().envelope as Envelope.Scalar).version.assert().isEqualTo(6L)
     }
 

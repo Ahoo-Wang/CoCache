@@ -127,7 +127,7 @@ The wire format is frozen within a major version. The normative definition is `R
 | Part | Format |
 |------|--------|
 | Storage key | `{keyPrefix}{namespace}:{encodedKey}`, default `cocache:{cacheName}:{key.toString()}`. The namespace matches `[A-Za-z0-9._-]+`. Internal keys live under `{keyPrefix}!`. |
-| Value, negative entry, lease | Redis String: a 36-byte core header, the segments its flags declare, then the codec's bytes |
+| Value, negative entry, lease, eviction marker | Redis String: a 36-byte core header, the segments its flags declare, then the codec's bytes |
 | Set (`SetCache`) | Redis Hash: field `!f` holds the format version (`"2"`), each member is a field `+{member bytes}` with an empty value. Field `!m` is a must-understand bitmap (absent means 0); other `!` fields are reserved and readers ignore them. |
 | Expiry | `PEXPIRE` / `PTTL` in milliseconds, reset explicitly on every state change |
 | Channel | `{keyPrefix}inv:{namespace}` |
@@ -139,20 +139,22 @@ Every value 8.x writes is format 2, leases and negative entries included. The St
 |--------|--------|-------|
 | 0 | 1 | Magic `0xC0` |
 | 1 | 1 | Format version (`2`) |
-| 2 | 1 | State: `V` value, `M` negative entry, `L` lease |
+| 2 | 1 | State: `V` value, `M` negative entry, `L` lease, `E` eviction that keeps the version (a version segment, no payload) |
 | 3 | 1 | Flags |
-| 4 | 24 | Token: the lease token in state `L`, the refresh token in state `V`, zeros for none |
+| 4 | 24 | Token: the lease token in states `L` and `E`, the refresh token in state `V`, zeros for none |
 | 28 | 8 | Token issue time: server `TIME` in epoch milliseconds, big-endian IEEE 754 double |
 | 36 | 8 | Version segment (flag bit 0): big-endian signed 64-bit |
-| next | 32 | Digest segment (flag bit 1): reserved for a later 8.0 milestone; this version only skips it |
+| next | 32 | Digest segment (flag bit 1): the SHA-256 of the payload, computed by the writer and checked by the reader |
 | next | 2 + n | Extension area (flag bit 7): a 2-byte length n of the TLVs that follow, then the TLVs |
 | rest | n | Payload from `Codec<V>` (none for `M` and `L`) |
 
 - **Flags.** Bits 0–6 must be understood. Bit 7 marks the extension area, which holds only what an older reader may ignore. A reader treats content with a must-understand bit it doesn't know (bits 2–6 in this version) as a higher format. The payload offset follows from the flags alone, and the Lua scripts and the client compute it with the same function.
 - **TLVs in the extension area.** Each TLV is `[type: 1 byte][length: 1–2 bytes][value]`. A length below 128 takes 1 byte; up to 32767 takes 2 bytes, the first being `0x80 | (length >> 8)`. Readers skip unknown types. Type 1 is the **writer id**: 24 bytes shaped like a token, new on every write.
-- **Which segments are written.** A value of a cache with a loader, a lease and a negative entry carry none, so their header is 36 bytes. Until 8.0 adds its authoritative store types, a cache without a loader plays that role: each value it writes carries a writer id (28 more bytes). A [versioned](../guide/freshness.md#versioned-writes) value or tombstone carries the version segment. The version segment never holds `Versioned.NO_VERSION`.
+- **Which segments are written.** A value of a cache with a loader, a lease and a negative entry carry none, so their header is 36 bytes. Until 8.0 adds its authoritative store types, a cache without a loader plays that role: each value it writes carries a writer id (28 more bytes), and each value without a version also carries the digest segment (32 more bytes, 96 in all). A [versioned](../guide/freshness.md#versioned-writes) value or tombstone carries the version segment and no digest. The version segment never holds `Versioned.NO_VERSION`.
+- **Digest.** The digest segment holds the SHA-256 of the payload (`Digest`, which names its algorithm). The writer computes it on the client. [Conditional reads and writes](../guide/freshness.md#conditional-writes) compare only these header bytes, so Redis reads 78 bytes of header (`GETRANGE`) instead of the whole value and hashes nothing. A reader that receives the payload, a cache without a loader reading from Redis or `getIfChanged` returning a value, recomputes the SHA-256 and treats a mismatch, or a value without a version and without a digest, as corrupt. A value with a digest segment is never reclaimed and never gets a refresh token: it may be another cache's only copy.
+- **State `E`.** Evicting a key of a versioned cache (the endpoint's per-key `DELETE`) keeps its version: the key becomes `E` with the version and no payload (44 bytes). A read sees a miss and takes a lease on it in place, keeping the version and the expiry; the fill is written only if its version is at least the one in `E`, so a late older version is still refused.
 
-A token is the issuing runtime's `NodeId` (16 bytes) plus a per-process sequence number (8 bytes). Tokens are built by the client, never reused, so a destroyed token can't match again. A read grants a lease or refresh token only on format-2 content without an unknown must-understand bit, and a refresh token only on a value without a version or digest segment. A fill or release reads only the 36-byte core header.
+A token is the issuing runtime's `NodeId` (16 bytes) plus a per-process sequence number (8 bytes). Tokens are built by the client, never reused, so a destroyed token can't match again. A read grants a lease or refresh token only on format-2 content without an unknown must-understand bit, and a refresh token only on a value without a digest segment (a versioned value gets one). A fill reads only the core header and the version segment (44 bytes), and a release only the 36-byte core header. When the key holds a version, a fill with an older version (or none) is refused and its token cleared inside the script; an equal version renews the value without an invalidation message; a newer version, or a fill on `E`, writes and broadcasts.
 
 Content in a lower format is content the cache can't read: a cache with a loader reclaims it if unchanged and reloads, and a cache without one fails. That covers content the protocol didn't write (no magic byte, format byte `0`, segments longer than the value, a Hash without a valid `!f`, another Redis type), which reads as format `0`. It also covers any format number below 2. A higher format is never reclaimed or written back: a cache with a loader loads around it, and a cache without one fails. That covers a format above 2, content with an unknown must-understand bit or state, and a set whose `!m` has a bit set.
 

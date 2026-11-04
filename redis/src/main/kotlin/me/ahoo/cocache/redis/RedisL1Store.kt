@@ -470,7 +470,9 @@ internal class RedisL1Store(
         override suspend fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): L1Eviction {
             val args = listOf(millis(ttl), channel, frame)
             return decodeEviction(
-                connections.awaitCommand(connections.evalAsync(RedisScripts.EVICT_KEEPING_VERSION, listOf(key.bytes()), args))
+                connections.awaitCommand(
+                    connections.evalAsync(RedisScripts.EVICT_KEEPING_VERSION, listOf(key.bytes()), args)
+                )
             )
         }
     }
@@ -626,7 +628,9 @@ internal class RedisL1Store(
          */
         internal fun decodeConditionalWrite(result: List<Any?>): L1ConditionalWrite = when (result[0] as Long) {
             RedisScripts.PUT_WRITTEN -> L1ConditionalWrite.Written
-            RedisScripts.PUT_CONFLICT -> L1ConditionalWrite.Conflict((result.getOrNull(1) as ByteArray?)?.let { Digest(it) })
+            RedisScripts.PUT_CONFLICT -> L1ConditionalWrite.Conflict(
+                (result.getOrNull(1) as ByteArray?)?.let { Digest(it) }
+            )
             RedisScripts.PUT_UNREADABLE -> L1ConditionalWrite.Unreadable((result[1] as Long).toInt())
             else -> throw IllegalStateException("Unknown conditional write result code[${result[0]}].")
         }

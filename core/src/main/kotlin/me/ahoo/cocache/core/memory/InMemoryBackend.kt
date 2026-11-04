@@ -281,7 +281,14 @@ class InMemoryBackend @JvmOverloads constructor(
             return L1Read.Miss(true) to slot.withToken(lease.token, now())
         }
 
-        private fun Slot.withToken(token: Token?, issuedAt: Long) = Slot(state, envelope, token, issuedAt, expireAt, version)
+        private fun Slot.withToken(token: Token?, issuedAt: Long) = Slot(
+            state,
+            envelope,
+            token,
+            issuedAt,
+            expireAt,
+            version
+        )
 
         private fun leaseSlot(lease: LeaseRequest) = Slot(
             State.LEASED,
@@ -502,7 +509,9 @@ class InMemoryBackend @JvmOverloads constructor(
             }
             return when (slot.state) {
                 State.MISSING -> ConditionalState.None
-                State.VALUE -> (slot.envelope as Envelope.Scalar).digest?.let { ConditionalState.Value(it) } ?: ConditionalState.Unreadable
+                State.VALUE -> (slot.envelope as Envelope.Scalar).digest?.let {
+                    ConditionalState.Value(it)
+                } ?: ConditionalState.Unreadable
                 else -> ConditionalState.Unreadable
             }
         }
@@ -561,8 +570,8 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * 比较版本与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。没有版本的值与负缓存（含带摘要段的值）、lease、
-         * 不存在都总是写入，`E` 按它的版本比较；集合总是拒绝（本后端只存本协议的内容，读不懂的只有集合）。
+         * 比较版本与写入在同一次 `compute` 中完成（对单个 key 原子）；写入时广播，版本相等时不写入但广播，更小时不广播。没有版本的值
+         * 与负缓存（含带摘要段的值）、lease、不存在都总是写入，`E` 按它的版本比较；集合总是拒绝（本后端只存本协议的内容，读不懂的只有集合）。
          */
         override suspend fun putIfNewer(
             key: String,
@@ -595,7 +604,8 @@ class InMemoryBackend @JvmOverloads constructor(
                 }
                 Slot(stateOf(envelope), stored, expireAt = expireAt(ttl), version = version)
             }
-            if (outcome == L1VersionedWrite.Written) {
+            // 与 Redis 的 PUT_IF_NEWER 相同：写入时广播；版本相等时不写入，但广播（填充在 lease 上写入这个版本时不广播，F1）
+            if (outcome == L1VersionedWrite.Written || (outcome as? L1VersionedWrite.Stale)?.current == version) {
                 publish(keyspace, frame)
             }
             return outcome

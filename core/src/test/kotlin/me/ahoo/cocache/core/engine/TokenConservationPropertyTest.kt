@@ -115,7 +115,14 @@ class TokenConservationPropertyTest {
     @Test
     fun aLeaseWaitRereadThatGrantsTheLeaseIsReleasedAfterClose() {
         val scenario =
-            Scenario(seed = 0, nodes = 2, asyncSource = true, observed = true, leaseWait = Duration.ofSeconds(10), versioned = false)
+            Scenario(
+                seed = 0,
+                nodes = 2,
+                asyncSource = true,
+                observed = true,
+                leaseWait = Duration.ofSeconds(10),
+                versioned = false
+            )
         // 节点 0 取得 lease，加载挂起
         val holder = scenario.caches[0].async().get("a")
         scenario.backend.resolveOldest(Outcome.OK)

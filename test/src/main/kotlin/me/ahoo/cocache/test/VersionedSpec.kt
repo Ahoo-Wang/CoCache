@@ -457,24 +457,36 @@ abstract class VersionedSpec {
         versioned().putIfNewer(key, scalar("v5"), 5, Duration.ofMinutes(1), frame("k"))
 
         val smaller = grantedRefresh(key)
-        store.fill(Fill(key, smaller.token, scalar("v4", 4), Duration.ofMinutes(1))).assert().isEqualTo(L1Fill.Rejected(5))
-        store.fill(Fill(key, smaller.token, scalar("v6", 6), Duration.ofMinutes(1))).assert().isEqualTo(L1Fill.Rejected(null))
+        store.fill(
+            Fill(key, smaller.token, scalar("v4", 4), Duration.ofMinutes(1))
+        ).assert().isEqualTo(L1Fill.Rejected(5))
+        store.fill(
+            Fill(key, smaller.token, scalar("v6", 6), Duration.ofMinutes(1))
+        ).assert().isEqualTo(L1Fill.Rejected(null))
         val unversioned = grantedRefresh(key)
-        store.fill(Fill(key, unversioned.token, scalar("plain"), Duration.ofMinutes(1))).assert().isEqualTo(L1Fill.Rejected(5))
+        store.fill(
+            Fill(key, unversioned.token, scalar("plain"), Duration.ofMinutes(1))
+        ).assert().isEqualTo(L1Fill.Rejected(5))
         remoteVersioned("k").assert().isEqualTo(Versioned("v5", 5))
 
         val equal = grantedRefresh(key)
-        store.fill(Fill(key, equal.token, scalar("v5'", 5), Duration.ofMinutes(2))).assert().isEqualTo(L1Fill.Filled(false))
+        store.fill(
+            Fill(key, equal.token, scalar("v5'", 5), Duration.ofMinutes(2))
+        ).assert().isEqualTo(L1Fill.Filled(false))
         remoteVersioned("k").assert().isEqualTo(Versioned("v5'", 5))
         requireNotNull(remoteTtl("k")).assert().isGreaterThan(Duration.ofMinutes(1))
 
         val greater = grantedRefresh(key)
-        store.fill(Fill(key, greater.token, scalar("v6", 6), Duration.ofMinutes(1))).assert().isEqualTo(L1Fill.Filled(true))
+        store.fill(
+            Fill(key, greater.token, scalar("v6", 6), Duration.ofMinutes(1))
+        ).assert().isEqualTo(L1Fill.Filled(true))
         remoteVersioned("k").assert().isEqualTo(Versioned("v6", 6))
         subscription.use {
             if (backend.delegate.atomicBroadcast) {
                 awaitCondition("the advancing fill broadcast") { frames.any { it.second == greater.token.node } }
-                frames.filter { it.second == greater.token.node }.assert().containsExactly(listOf(key) to greater.token.node)
+                frames.filter { it.second == greater.token.node }.assert().containsExactly(
+                    listOf(key) to greater.token.node
+                )
                 frames.none { it.second == equal.token.node }.assert().isTrue()
             }
         }
@@ -530,7 +542,9 @@ abstract class VersionedSpec {
 
         val equal = lease()
         store.read(key, equal, null, null).assert().isEqualTo(L1Read.Miss(true))
-        store.fill(Fill(key, equal.token, scalar("v5'", 5), Duration.ofMinutes(1))).assert().isEqualTo(L1Fill.Filled(true))
+        store.fill(
+            Fill(key, equal.token, scalar("v5'", 5), Duration.ofMinutes(1))
+        ).assert().isEqualTo(L1Fill.Filled(true))
         remoteVersioned("k").assert().isEqualTo(Versioned("v5'", 5))
     }
 
@@ -573,17 +587,33 @@ abstract class VersionedSpec {
             store.read(storageKey(it), null, null, null).assert().isEqualTo(L1Read.Miss(false))
         }
         store.fill(Fill(storageKey("leased"), lease.token, scalar("v"), null)).assert().isEqualTo(L1Fill.Rejected(null))
-        versioned().putIfNewer(storageKey("plain"), scalar("p1"), 1, null, frame("plain")).assert().isEqualTo(L1VersionedWrite.Written)
+        versioned().putIfNewer(
+            storageKey("plain"),
+            scalar("p1"),
+            1,
+            null,
+            frame("plain")
+        ).assert().isEqualTo(L1VersionedWrite.Written)
         versioned().putIfNewer(storageKey("tombstone"), scalar("t3"), 3, null, frame("tombstone"))
             .assert().isEqualTo(L1VersionedWrite.Stale(3))
 
         val onE = lease()
         store.read(storageKey("tombstone"), onE, null, null).assert().isEqualTo(L1Read.Miss(true))
-        versioned().evictKeepingVersion(storageKey("tombstone"), null, frame("tombstone")).assert().isEqualTo(L1Eviction.Evicted)
-        store.fill(Fill(storageKey("tombstone"), onE.token, scalar("t4", 4), null)).assert().isEqualTo(L1Fill.Rejected(null))
+        versioned().evictKeepingVersion(
+            storageKey("tombstone"),
+            null,
+            frame("tombstone")
+        ).assert().isEqualTo(L1Eviction.Evicted)
+        store.fill(
+            Fill(storageKey("tombstone"), onE.token, scalar("t4", 4), null)
+        ).assert().isEqualTo(L1Fill.Rejected(null))
 
         store.put(storageKey("record"), digested("r"), null, frame("record"))
-        versioned().evictKeepingVersion(storageKey("record"), null, frame("record")).assert().isEqualTo(L1Eviction.Authoritative)
+        versioned().evictKeepingVersion(
+            storageKey("record"),
+            null,
+            frame("record")
+        ).assert().isEqualTo(L1Eviction.Authoritative)
         (remote("record") as L1Read.Hit).envelope.assert().isEqualTo(digested("r"))
         if (L1Capability.SETS in expectedCapabilities) {
             requireNotNull(store.sets()).addMembers(storageKey("set"), listOf("a".toByteArray()), null, frame("set"))
@@ -698,7 +728,8 @@ abstract class VersionedSpec {
     }
 
     /**
-     * 相等的版本是幂等的空操作，旧版本被拒绝：都不修改 L1、不广播、不改变到期时间，计入 `staleVersions`。
+     * 相等的版本是幂等的空操作，旧版本被拒绝：都不修改 L1、不改变到期时间，计入 `staleVersions`。相等的版本仍然广播（这个版本可能是
+     * 不广播的填充写入的，见 [anEqualVersionEvictsCopiesOlderThanAFilledVersion]），更旧的版本不广播；原子与非原子广播的后端一致。
      */
     @Test
     fun refusedVersionsChangeNothingAndDoNotBroadcast() {
@@ -714,9 +745,9 @@ abstract class VersionedSpec {
         cacheA.putIfNewer("k", "older", 0).assert().isEqualTo(VersionedPut.Stale(1))
         cacheA.invalidateIfNewer("k", 1).assert().isEqualTo(VersionedPut.Stale(1))
         cacheA.putIfNewer("marker", "m", 1).assert().isEqualTo(VersionedPut.Written)
-        // 非原子广播的后端上，相等的版本可能是已生效却没能广播的写入的重放，仍然广播（见 replayOfAnAppliedVersionedWriteBroadcasts）。
+        // 相等的版本（putIfNewer 与 invalidateIfNewer 各一次）广播，更旧的不广播。
         // 等到期望的条数全部到达：Redis Cluster 上经不同节点发布的消息之间没有顺序，标记可能先于它们到达
-        val expected = received + (if (backend.atomicBroadcast) 0 else 2) + 1
+        val expected = received + 2 + 1
         awaitCondition("marker broadcast") { nodeB.metrics().invalidationsReceived >= expected }
         nodeB.metrics().invalidationsReceived.assert().isEqualTo(expected)
 
@@ -725,6 +756,28 @@ abstract class VersionedSpec {
         cacheB["k"].assert().isEqualTo("v1")
         nodeA.metrics().staleVersions.assert().isEqualTo(3)
         nodeA.metrics().writeFailures.assert().isEqualTo(0)
+    }
+
+    /**
+     * 相等的版本淘汰其它节点更旧的副本（RFC 0005 §4.7，TLA+ F1）：节点 B 的 L2 中是 v0（这里 L1 被绕过协议删除，如 Redis 的驱逐），
+     * 节点 A 未命中、凭 lease 回源并填充 v1——在 lease 上的填充不广播；写入方随后的 `putIfNewer(v1)` 返回 `Stale(1)`，此时必须广播，
+     * 否则 B 读到 v0 直到 `localMaxAge`。原子与非原子广播的后端都如此。
+     */
+    @Test
+    fun anEqualVersionEvictsCopiesOlderThanAFilledVersion() {
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        database["k"] = Versioned("v0", 0)
+        cacheB.getVersioned("k").assert().isEqualTo(Versioned("v0", 0))
+        deleteSilently("k")
+        database["k"] = Versioned("v1", 1)
+        cacheA.getVersioned("k").assert().isEqualTo(Versioned("v1", 1))
+        remoteVersioned("k").assert().isEqualTo(Versioned("v1", 1))
+        cacheB.getVersioned("k").assert().isEqualTo(Versioned("v0", 0))
+
+        cacheA.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Stale(1))
+        awaitCondition("B drops its v0 copy") { cacheB.getVersioned("k") == Versioned("v1", 1) }
+        loads.get().assert().isEqualTo(2)
     }
 
     /**
@@ -1016,7 +1069,9 @@ abstract class VersionedSpec {
         awaitCondition("the advancing fill reached B") { nodeB.metrics().invalidationsReceived > received }
         val remoteHits = nodeA.metrics().remoteHits
         awaitCondition("A reads the new version") { cacheA.getVersioned("k") == Versioned("v2", 2) }
-        nodeA.metrics().remoteHits.assert().withFailMessage { "the advancing fill does not fill L2" }.isGreaterThan(remoteHits)
+        nodeA.metrics().remoteHits.assert().withFailMessage { "the advancing fill does not fill L2" }.isGreaterThan(
+            remoteHits
+        )
         cacheB.getVersioned("k").assert().isEqualTo(Versioned("v2", 2))
         loads.get().assert().isEqualTo(2)
         nodeA.metrics().fillRejected.assert().isEqualTo(0)
@@ -1099,6 +1154,15 @@ abstract class VersionedSpec {
         remote("plain").assert().isEqualTo(L1Read.Miss(false))
         authoritative["plain"].assert().isNull()
         derived["plain"].assert().isNull()
+    }
+
+    /**
+     * 不广播地直接删除 L1 中的 key（模拟 Redis 驱逐或到期：其它节点的 L2 不受影响）。
+     */
+    private fun deleteSilently(key: String) {
+        Suspending.await {
+            store().invalidate(listOf(storageKey(key)), InvalidationFrame.encode(NodeId.random(), emptyList()))
+        }
     }
 
     /**

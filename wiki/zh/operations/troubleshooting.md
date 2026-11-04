@@ -295,7 +295,7 @@ CoCache 的值不是可读的 JSON：每个值都以 36 字节的二进制头开
 | 问题 | 命令 |
 |------|------|
 | 一个缓存有哪些 key？ | `redis-cli --scan --pattern 'cocache:UserCache:*' \| head`（集群中逐个主节点执行） |
-| key 处于什么状态？ | `redis-cli TYPE cocache:UserCache:42`：`string`（值、负缓存或 lease）或 `hash`（集合）。对 string，`redis-cli GETRANGE cocache:UserCache:42 2 2` 返回状态：`V` 值、`M` 负缓存、`L` lease |
+| key 处于什么状态？ | `redis-cli TYPE cocache:UserCache:42`：`string`（值、负缓存或 lease）或 `hash`（集合）。对 string，`redis-cli GETRANGE cocache:UserCache:42 2 2` 返回状态：`V` 值、`M` 负缓存、`L` lease、`E` 被淘汰的带版本 key |
 | 还能存活多久？ | `redis-cli PTTL cocache:UserCache:42`（毫秒，`-1` 表示永不过期） |
 | 里面是什么？ | `GET /actuator/cocache/{name}/{key}` 会解码两层。原始字节：`redis-cli GETRANGE key 36 -1` 返回编解码器的输出 |
 | 占多少内存？ | `redis-cli MEMORY USAGE cocache:UserCache:42` |

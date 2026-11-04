@@ -464,10 +464,22 @@ abstract class EngineSpec {
         remote("absent").assert().isEqualTo(L1Read.Miss(false))
         nodeA.metrics().unknownFormats.assert().isEqualTo(5)
         nodeA.metrics().reclaims.assert().isEqualTo(0)
-        ((remote("tampered") as L1Read.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.encode("v2"))
+        (
+            (
+                remote(
+                    "tampered"
+                ) as L1Read.Hit
+                ).envelope as Envelope.Scalar
+            ).bytes.assert().isEqualTo(TestCodec.encode("v2"))
 
         cache.get("tampered") { "loaded" }.assert().isEqualTo("loaded")
-        ((remote("tampered") as L1Read.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.encode("v2"))
+        (
+            (
+                remote(
+                    "tampered"
+                ) as L1Read.Hit
+                ).envelope as Envelope.Scalar
+            ).bytes.assert().isEqualTo(TestCodec.encode("v2"))
         cache.get("bare") { "loaded" }.assert().isEqualTo("loaded")
         remoteValue("bare").assert().isEqualTo("loaded")
         cache["bare"].assert().isEqualTo("loaded")

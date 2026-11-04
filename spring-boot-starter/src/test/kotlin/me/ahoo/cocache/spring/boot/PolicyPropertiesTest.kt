@@ -127,19 +127,19 @@ class PolicyPropertiesTest {
     }
 
     /**
-     * 带版本的缓存不支持提前刷新：`cocache.defaults.refresh-window` 不作用于它们，其它默认项照常生效；
-     * 只有显式的 `cocache.caches.[name].refresh-window` 作用于它，并因此启动失败。
+     * 带版本的缓存照常提前刷新（RFC 0005 §4.7）：`cocache.defaults.refresh-window` 与其它默认项一样作用于它们，
+     * `cocache.caches.[name].refresh-window` 同样。
      */
     @Test
-    fun defaultRefreshWindowSkipsVersionedCaches() {
+    fun defaultRefreshWindowAppliesToVersionedCaches() {
         val versioned = ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
             .withUserConfiguration(VersionedConfig::class.java)
         versioned.withPropertyValues("cocache.defaults.refresh-window=10", "cocache.defaults.ttl=60").run { context ->
             assertThat(context).hasNotFailed()
             val properties = context.getBean(CoCacheProperties::class.java)
-            val policy = properties.policyFor("view", CachePolicy.DEFAULT, versioned = true)
-            policy.refreshWindow.assert().isNull()
+            val policy = properties.policyFor("view", CachePolicy.DEFAULT)
+            policy.refreshWindow.assert().isEqualTo(Duration.ofSeconds(10))
             policy.ttl.assert().isEqualTo(Duration.ofSeconds(60))
 
             @Suppress("UNCHECKED_CAST")
@@ -156,8 +156,8 @@ class PolicyPropertiesTest {
             ).staleVersions.assert().isEqualTo(0L)
         }
         versioned.withPropertyValues("cocache.caches.view.refresh-window=10").run { context ->
-            assertThat(context).hasFailed()
-            assertThat(context.startupFailure).rootCause().hasMessageContaining("refreshWindow")
+            assertThat(context).hasNotFailed()
+            requireNotNull(context.getBean(CacheRuntime::class.java).admin("view")).name.assert().isEqualTo("view")
         }
     }
 }

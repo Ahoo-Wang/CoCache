@@ -142,7 +142,13 @@ class WireFormat2Test {
             }
         }
         // 条件写入写入没有版本的值（带摘要段与写入标识）；按版本写入带版本段，墓碑没有载荷也不带写入标识
-        store.conditionalSurface.putIfMatch(key("cas"), null, Envelope.Scalar(payload, 7, writer, digest), null, frame())
+        store.conditionalSurface.putIfMatch(
+            key("cas"),
+            null,
+            Envelope.Scalar(payload, 7, writer, digest),
+            null,
+            frame()
+        )
             .assert().isEqualTo(L1ConditionalWrite.Written)
         raw(key("cas")).assert().isEqualTo(header(flags = 0x82) + digest.bytes + ext + payload)
         store.versionedSurface.putIfNewer(key("newer"), Envelope.Scalar(payload, 1, writer), 9, null, frame())
@@ -167,58 +173,8 @@ class WireFormat2Test {
     @Test
     fun readersUseThePayloadOffsetOfTheFlags(): Unit = l1 {
         val payload = "payload".toByteArray()
-        val writer = token()
         val digest = Digest.ofPayload(payload)
-        data class Case(
-            val id: String,
-            val raw: ByteArray,
-            val envelope: Envelope.Scalar,
-            val refreshed: Boolean,
-            val reclaimed: Boolean,
-            val conditional: Boolean = false
-        )
-        val cases = listOf(
-            Case("none", header() + payload, Envelope.Scalar(payload), true, true),
-            Case("version", header(flags = 0x01) + version(-3) + payload, Envelope.Scalar(payload, -3), true, false),
-            Case(
-                "extension",
-                header(flags = 0x80) + extension(writerTlv(writer)) + payload,
-                Envelope.Scalar(payload, Versioned.NO_VERSION, writer),
-                true,
-                true
-            ),
-            Case(
-                "both",
-                header(flags = 0x81) + version(5) + extension(writerTlv(writer)) + payload,
-                Envelope.Scalar(payload, 5, writer),
-                true,
-                false
-            ),
-            Case(
-                "digest",
-                header(flags = 0x02) + digest.bytes + payload,
-                Envelope.Scalar(payload, Versioned.NO_VERSION, null, digest),
-                false,
-                false,
-                conditional = true
-            ),
-            Case(
-                "digest-extension",
-                header(flags = 0x82) + digest.bytes + extension(writerTlv(writer)) + payload,
-                Envelope.Scalar(payload, Versioned.NO_VERSION, writer, digest),
-                false,
-                false,
-                conditional = true
-            ),
-            Case(
-                "all-segments",
-                header(flags = 0x83) + version(6) + digest.bytes + extension(writerTlv(writer)) + payload,
-                Envelope.Scalar(payload, 6, writer, digest),
-                false,
-                false
-            ),
-        )
-        for (case in cases) {
+        for (case in payloadOffsetCases(payload, digest)) {
             val key = key(case.id)
             write(key, case.raw)
             val read = hit(store.read(key, null, refresh(), null))
@@ -244,6 +200,69 @@ class WireFormat2Test {
         corrupt.format.assert().isEqualTo(RedisScripts.UNRECOGNIZED)
         corrupt.envelope.assert().isEqualTo(Envelope.Scalar(truncated))
         store.reclaim(key("truncated"), ContentFingerprint.of(Envelope.Scalar(truncated)), lease()).assert().isTrue()
+    }
+
+    /**
+     * [readersUseThePayloadOffsetOfTheFlags] 的一种头部组合：读取的信封、能否取得刷新令牌、能否回收、条件读写能否比较。
+     */
+    private class OffsetCase(
+        val id: String,
+        val raw: ByteArray,
+        val envelope: Envelope.Scalar,
+        val refreshed: Boolean,
+        val reclaimed: Boolean,
+        val conditional: Boolean = false
+    )
+
+    private fun payloadOffsetCases(payload: ByteArray, digest: Digest): List<OffsetCase> {
+        val writer = token()
+        return listOf(
+            OffsetCase("none", header() + payload, Envelope.Scalar(payload), true, true),
+            OffsetCase(
+                "version",
+                header(flags = 0x01) + version(-3) + payload,
+                Envelope.Scalar(payload, -3),
+                true,
+                false
+            ),
+            OffsetCase(
+                "extension",
+                header(flags = 0x80) + extension(writerTlv(writer)) + payload,
+                Envelope.Scalar(payload, Versioned.NO_VERSION, writer),
+                true,
+                true
+            ),
+            OffsetCase(
+                "both",
+                header(flags = 0x81) + version(5) + extension(writerTlv(writer)) + payload,
+                Envelope.Scalar(payload, 5, writer),
+                true,
+                false
+            ),
+            OffsetCase(
+                "digest",
+                header(flags = 0x02) + digest.bytes + payload,
+                Envelope.Scalar(payload, Versioned.NO_VERSION, null, digest),
+                false,
+                false,
+                conditional = true
+            ),
+            OffsetCase(
+                "digest-extension",
+                header(flags = 0x82) + digest.bytes + extension(writerTlv(writer)) + payload,
+                Envelope.Scalar(payload, Versioned.NO_VERSION, writer, digest),
+                false,
+                false,
+                conditional = true
+            ),
+            OffsetCase(
+                "all-segments",
+                header(flags = 0x83) + version(6) + digest.bytes + extension(writerTlv(writer)) + payload,
+                Envelope.Scalar(payload, 6, writer, digest),
+                false,
+                false
+            ),
+        )
     }
 
     /**
@@ -574,13 +593,28 @@ class WireFormat2Test {
         val writer = token()
         l1 {
             store.put(key("doc"), Envelope.Scalar(document, Versioned.NO_VERSION, writer, digest), null, frame())
-            conditional.readIfChanged(key("doc"), digest, null).assert().isEqualTo(L1ConditionalRead.Unchanged(RedisScripts.FORMAT))
-            val next = Envelope.Scalar("next".toByteArray(), Versioned.NO_VERSION, token(), Digest.ofPayload("next".toByteArray()))
+            conditional.readIfChanged(
+                key("doc"),
+                digest,
+                null
+            ).assert().isEqualTo(L1ConditionalRead.Unchanged(RedisScripts.FORMAT))
+            val next = Envelope.Scalar(
+                "next".toByteArray(),
+                Versioned.NO_VERSION,
+                token(),
+                Digest.ofPayload("next".toByteArray())
+            )
             conditional.putIfMatch(key("doc"), Digest.ofPayload("stale".toByteArray()), next, null, frame())
                 .assert().isEqualTo(L1ConditionalWrite.Conflict(digest))
             runCatching { conditional.readIfChanged(key("doc"), null, null) }.exceptionOrNull()
                 .assert().isInstanceOf(RedisCommandExecutionException::class.java)
-            conditional.putIfMatch(key("doc"), digest, next, null, frame()).assert().isEqualTo(L1ConditionalWrite.Written)
+            conditional.putIfMatch(
+                key("doc"),
+                digest,
+                next,
+                null,
+                frame()
+            ).assert().isEqualTo(L1ConditionalWrite.Written)
             hit(store.read(key("doc"), null, null, null)).envelope.assert().isEqualTo(next)
         }
     }
@@ -626,9 +660,19 @@ class WireFormat2Test {
     @Test
     fun evictedStateKeepsItsBytesAndExpiry() {
         val payload = "payload".toByteArray()
-        write(key("k"), header(flags = 0x81) + version(9) + extension(writerTlv(token())) + payload, Duration.ofMinutes(10))
+        write(
+            key("k"),
+            header(flags = 0x81) + version(9) + extension(writerTlv(token())) + payload,
+            Duration.ofMinutes(10)
+        )
         val versioned = store.versionedSurface
-        l1 { versioned.evictKeepingVersion(key("k"), Duration.ofMinutes(1), frame()) }.assert().isEqualTo(L1Eviction.Evicted)
+        l1 {
+            versioned.evictKeepingVersion(
+                key("k"),
+                Duration.ofMinutes(1),
+                frame()
+            )
+        }.assert().isEqualTo(L1Eviction.Evicted)
         val evicted = header(state = 'E', flags = 0x01) + version(9)
         raw(key("k")).assert().isEqualTo(evicted)
         raw(key("k"))?.size.assert().isEqualTo(44)
@@ -643,7 +687,11 @@ class WireFormat2Test {
         leased.copyOfRange(36, 44).assert().isEqualTo(version(9))
         pttl().assert().isBetween(1L, 60_000L)
 
-        l1 { store.fill(Fill(key("k"), lease.token, Envelope.Scalar(payload, 8), null)) }.assert().isEqualTo(L1Fill.Rejected(9))
+        l1 {
+            store.fill(
+                Fill(key("k"), lease.token, Envelope.Scalar(payload, 8), null)
+            )
+        }.assert().isEqualTo(L1Fill.Rejected(9))
         raw(key("k")).assert().isEqualTo(evicted)
         pttl().assert().isBetween(1L, 60_000L)
 

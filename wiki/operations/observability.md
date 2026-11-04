@@ -52,7 +52,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 
 | Meter | Type | Counts |
 |-------|------|--------|
-| `cocache.fill.rejections` | counter | Loads that held a lease, but Redis refused the fill: an invalidation destroyed the lease, the loader outlived `lease-ttl`, or the fill failed |
+| `cocache.fill.rejections` | counter | Loads that held a lease or refresh token, but Redis refused the fill: an invalidation destroyed the token, the loader outlived `lease-ttl`, the fill failed, or (versioned caches) the loader returned an older version than Redis holds |
 | `cocache.degraded.fills` | counter | Loads written to L2 only, for `degraded-local-max-age`: Redis read failed, lease wait timed out, fill rejected, value in an unknown format, or an invalidation of the key still pending. A read without a loader isn't counted when Redis fails: it throws, or with an explicit `read-failure: degrade` returns `null` without caching anything (counted in `cocache.remote.failures`). |
 | `cocache.stale.discards` | counter | L2 fills dropped because an invalidation of the key arrived while the read was in flight. This is the L2 fence working. |
 | `cocache.reclaims` | counter | L1 values this instance couldn't decode (foreign content or codec failure). A separate reclaim script then converts the value into a lease, if it is still unchanged, and the instance reloads. |
@@ -67,6 +67,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | `cocache.conditional.conflicts` | counter | `putIfMatch` calls that didn't write because Redis held a different value ([conditional writes](../guide/freshness.md#conditional-writes)). A steady rate means writers often race on the same key. |
 | `cocache.conditional.unchanged` | counter | `getIfChanged` calls that confirmed the value without transferring it |
 | `cocache.versioned.stale` | counter | `putIfNewer` / `invalidateIfNewer` calls that didn't write because Redis held that version or a newer one ([versioned writes](../guide/freshness.md#versioned-writes)): duplicate deliveries and late, older versions |
+| `cocache.type.mismatch` | counter | Reads of a value that a cache without a loader wrote (it carries a digest) by a cache with a loader, and per-key evictions of a versioned cache that met one. Another cache without a loader shares the namespace: the value is read but never reclaimed or refreshed. Logged once per cache. |
 | `cocache.invalidation.retries` | counter | Retry attempts of failed invalidations |
 | `cocache.invalidations.dropped` | counter | Invalidations given up after all retries, on a full retry queue, or at shutdown. L1 still holds the old value. |
 | `cocache.invalidations.received` | counter | Invalidation messages from other instances or external writers (one per message, which may carry many keys) |
@@ -182,11 +183,11 @@ A cache report:
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
-  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0 }
+  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0, "typeMismatches": 0 }
 }
 ```
 
-The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{level=l2}` (present only when the L2 hit counter is on), `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, `loadTimeouts` is `cocache.load.timeouts`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
+The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{level=l2}` (present only when the L2 hit counter is on), `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, `loadTimeouts` is `cocache.load.timeouts`, `staleVersions` is `cocache.versioned.stale`, `typeMismatches` is `cocache.type.mismatch`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
 
 ### Encoded keys {#encoded-key}
 
@@ -246,7 +247,7 @@ curl -s -X DELETE localhost:8080/actuator/cocache/UserCache/42
 # {"cache":"UserCache","key":"42"}
 ```
 
-This runs the normal invalidation path, as `cache.invalidate(key)` does: L1 is deleted, every instance drops its L2 copy, and the next read loads from the source. It is idempotent. If Redis fails, it follows the cache's `invalidate-failure` setting (by default, with a loader, queued for retry and `200` returned; with `throw`, the default without a loader, an error). On a `SetCache` it is `clear(key)`, which **deletes the set's only copy**.
+This runs the normal invalidation path, as `cache.invalidate(key)` does: L1 is deleted, every instance drops its L2 copy, and the next read loads from the source. It is idempotent. If Redis fails, it follows the cache's `invalidate-failure` setting (by default, with a loader, queued for retry and `200` returned; with `throw`, the default without a loader, an error). On a `SetCache` it is `clear(key)`, which **deletes the set's only copy**. On a [versioned cache](../guide/freshness.md#versioned-writes) it keeps the version: the key becomes an eviction marker that still refuses older versions, and a Redis failure returns an error instead of being retried.
 
 ## Logs {#logs}
 

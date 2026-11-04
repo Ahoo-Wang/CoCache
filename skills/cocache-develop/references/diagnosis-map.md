@@ -19,7 +19,7 @@ Use this map to locate the first incorrect stage before changing anything. Prefe
 | `GET /actuator/health/cocache` | `heartbeat.error`, `channelMode`, `atomicBroadcast`, `pendingInvalidations` |
 | Micrometer `cocache.*` meters (tag `cache`) | Rates over time; L2 hits only with `cocache.metrics.local-hits=true` |
 | Logs | `Invalidation channel heartbeat failed`, `... dropped: L1 keeps the stale value ...`, `corrupted payload, reclaim and reload` |
-| Read-only `redis-cli` | `TYPE`, `PTTL`, `GETRANGE key 2 2` (state byte `V`/`M`/`L`), `PUBSUB NUMSUB {keyPrefix}inv:{namespace}` (`PUBSUB SHARDNUMSUB` in `sharded` mode), `CLIENT LIST` with `cocache.redis.client-name` |
+| Read-only `redis-cli` | `TYPE`, `PTTL`, `GETRANGE key 2 2` (state byte `V`/`M`/`L`, and `E` for an evicted versioned key), `PUBSUB NUMSUB {keyPrefix}inv:{namespace}` (`PUBSUB SHARDNUMSUB` in `sharded` mode), `CLIENT LIST` with `cocache.redis.client-name` |
 
 ## Reading a key inspection
 

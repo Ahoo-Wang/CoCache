@@ -208,12 +208,14 @@ interface ConditionalL1Store {
 interface VersionedL1Store {
     /**
      * 仅当 [version] 大于 key 中的版本时，原子地整体覆盖写入 [envelope] 并保存 [version]
-     * （转换同 [L1Store.put]：销毁任何令牌，按 [ttl] 重设到期时间，`null` 为永不过期）、广播 [frame]；否则不修改 key、不广播。
+     * （转换同 [L1Store.put]：销毁任何令牌，按 [ttl] 重设到期时间，`null` 为永不过期）、广播 [frame]；否则不修改 key。
+     * 版本相等时仍在同一次原子操作中广播 [frame]（RFC 0005 §4.7）：这个版本可能是令牌保护的填充写入的，填充在 lease 上不广播，
+     * 别的节点还可能持有更旧的副本。版本更小时不广播。
      *
      * - [envelope] 是标量值，或 [Envelope.Absent]（墓碑）；[Envelope.Scalar.version] 被忽略，保存的是 [version]。
      * - key 中的版本：本协议写入的、带版本的标量值、负缓存或 `E` 的版本。没有版本的值与负缓存（含带摘要段的值）、lease 占位、
      *   不存在都视为 [me.ahoo.cocache.api.Versioned.NO_VERSION]，总是写入。
-     * - [version] 不大于 key 中的版本时返回 [L1VersionedWrite.Stale]（附 key 中的版本）。
+     * - [version] 不大于 key 中的版本时返回 [L1VersionedWrite.Stale]（附 key 中的版本）；相等时同时广播了 [frame]。
      * - key 中是读不懂的内容（不是本协议写入的内容、本协议的集合、更高格式版本写入的内容）时返回 [L1VersionedWrite.Unreadable]。
      *
      * 比较与写入必须在一次原子操作中完成：“先读后写”会让迟到的旧版本覆盖新版本。
