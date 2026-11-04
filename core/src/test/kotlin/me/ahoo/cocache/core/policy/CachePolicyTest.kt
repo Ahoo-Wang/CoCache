@@ -66,9 +66,10 @@ class CachePolicyTest {
             .local(local)
             .invalidateFailure(InvalidateFailureMode.THROW)
             .readFailure(ReadFailureMode.THROW)
+            .readTimeout(Duration.ofMillis(300))
             .build()
         val copy = policy.toBuilder().build()
-        copy.toString().assert().contains("readFailure=THROW)")
+        copy.toString().assert().contains("readFailure=THROW, readTimeout=PT0.3S)")
         copy.ttl.assert().isEqualTo(Duration.ofMinutes(2))
         copy.ttlJitter.assert().isEqualTo(Duration.ofSeconds(3))
         copy.absentTtl.assert().isEqualTo(Duration.ofSeconds(4))
@@ -80,8 +81,10 @@ class CachePolicyTest {
         copy.local.assert().isEqualTo(local)
         copy.invalidateFailure.assert().isEqualTo(InvalidateFailureMode.THROW)
         copy.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
-        // 未配置：引擎按这次读取有没有数据源决定（有 DEGRADE，没有 THROW）
+        copy.readTimeout.assert().isEqualTo(Duration.ofMillis(300))
+        // 未配置：引擎按这次读取有没有数据源决定（有 DEGRADE，没有 THROW）；读取的时限为后端的命令超时
         CachePolicy.DEFAULT.readFailure.assert().isNull()
+        CachePolicy.DEFAULT.readTimeout.assert().isNull()
     }
 
     /**
@@ -117,6 +120,8 @@ class CachePolicyTest {
         fails { CachePolicy(localMaxAge = Duration.ofSeconds(-1)) }
         fails { CachePolicy(degradedLocalMaxAge = Duration.ZERO) }
         fails { CachePolicy(refreshWindow = Duration.ZERO) }
+        fails { CachePolicy(readTimeout = Duration.ZERO) }
+        fails { CachePolicy(readTimeout = Duration.ofMillis(-1)) }
         fails { CachePolicy(ttl = Duration.ofSeconds(10), refreshWindow = Duration.ofSeconds(10)) }
         fails { CachePolicy(localMaxAge = Duration.ofSeconds(10), refreshWindow = Duration.ofSeconds(10)) }
         fails { LeasePolicy(ttl = Duration.ZERO) }

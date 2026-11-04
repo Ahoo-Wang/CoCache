@@ -46,7 +46,7 @@ description: CoCache 版本发布历史和重要变更。
 - SPI：`Envelope.Scalar` 新增 `writer: Token?`（默认 `null`），即写入标识，引擎在没有 loader 的缓存的每次标量写入中给出它。存储在每个写入标量的操作（`put`、`putAll`、`fill`、`fillAll`、`putIfMatch`、`putIfNewer`）中保存它，`read` 与 `readAll` 原样返回；它参与相等比较，不影响摘要。`VersionedL1Store.putIfNewer` 以 `IllegalArgumentException` 拒绝 `Versioned.NO_VERSION`。引擎只读与 `CoherenceBackend.format` 完全相同的内容，更低的格式与格式 `0` 一样是读不懂的内容（6.x 只对 `0` 如此）；更高的格式照旧绕开。`InMemoryBackend.FORMAT` 为 `2`。
 - `ForeignFormatException` 带上本节点的格式：构造函数为 `(cacheName, storageKey, format, nodeFormat, cause)`，`newer` 由两者算出。删除 6.x 的两个构造函数。`SetCache` 读到更新格式的集合时抛出这个异常（仍是 `IllegalStateException`），不再是普通的 `IllegalStateException`。
 - SPI：`L1Store.fill` 返回 `L1Fill`，不再返回 `Boolean`：写入时为 `Filled(advanced)`，没有写入时为 `Rejected(currentVersion)`；`fillAll` 逐项返回它。令牌不匹配是 `Rejected(currentVersion = null)`；版本规则见下。`reclaim` 比较 SPI 自己的 `ContentFingerprint`（内容的 SHA-1，由脚本计算），不再收 `Digest`。
-- SPI：`L1Store.read`、`readAll` 与 `ConditionalL1Store.readIfChanged` 增加这次调用的 `timeout: Duration?`。`null` 为存储自己的命令超时；给出时必须为正，以命令超时为上限，存储以两者中较短的一个限定这次调用。`FutureL1Store`、它的能力面、`adapt` 与各 `Forwarding*` 类同样增加这个参数。引擎暂时一律传 `null`，用户这里还看不到变化；按缓存的读超时之后加入。
+- SPI：`L1Store.read`、`readAll` 与 `ConditionalL1Store.readIfChanged` 增加这次调用的 `timeout: Duration?`。`null` 为存储自己的命令超时；给出时必须为正，以命令超时为上限，存储以两者中较短的一个限定这次调用。`FutureL1Store`、它的能力面、`adapt` 与各 `Forwarding*` 类同样增加这个参数。引擎传入缓存的 `CachePolicy.readTimeout`（见下）。
 - SPI 约定：取得或交回令牌的命令（`read`、`readAll`、`fill`、`fillAll`、`release`、`reclaim`）失败之后，除非命令在发出之前就被拒绝，存储都异步释放该令牌。令牌已不匹配的 `RELEASE` 什么也不做，所以迟到或重复的释放都无害。存储从不以 `CancellationException` 报告失败：在 JVM 上它就是协程的取消，引擎会把它当作调用方被取消。
 - **摘要段**：没有 loader 的缓存写入的值在头部带载荷的 SHA-256（标志位 bit 1，32 字节），与写入标识并列，带版本的值除外：这样的值比有 loader 的缓存的值多 60 字节（[线格式](../architecture/index.md#wire-format)，[RFC 0005 §4.7](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。CoCache 在客户端计算它，拿到载荷时校验：没有 loader 的缓存读到载荷与摘要不一致的值，或不带版本也不带摘要的值，读取以 `CacheReadException`（`cause` 为 `ForeignFormatException`）失败，key 不被修改。带摘要的值从不取得刷新令牌、从不被回收。有 loader 的缓存读到它时计入新指标 `cocache.type.mismatch`（`CacheMetrics.typeMismatches`）并记录一次日志：同一个 namespace 上还有没有 loader 的缓存。
 - `Digest` 是载荷的 SHA-256，带算法标识：`Digest(algorithm, bytes)`（`Digest.SHA_256`）、`Digest(bytes)`、`Digest.ofPayload(bytes)`、`bytes`、`contentEquals(bytes)`，`toString()` 输出 `SHA-256:<hex>`。删除 `Digest.sha1`；6.x 保存的摘要（SHA-1）不会再匹配。
@@ -66,6 +66,14 @@ description: CoCache 版本发布历史和重要变更。
 - starter 不再检查 6.0 删除的配置项（`cocache.redis.strict-failure`、`cocache.redis.eviction-channel`、`cocache.redis.missing-guard-sentinel`、`cocache.metrics.client-side-hits`、`cocache.load.*`、`cocache.next.*`）。它们不再以 `CoCache 6.0 removed these properties` 让启动失败，与其它未知的配置项一样被 Spring Boot 忽略。配置元数据中的相应条目也已删除。
 - 运行时的默认阻塞执行器总是每个任务一个虚拟线程（`Executors.newVirtualThreadPerTaskExecutor()`）。为没有虚拟线程的 JDK 准备的后备（最多 512 个 `cocache-blocking-*` 守护线程的线程池）已删除，starter 也不再为 `Executors` 登记原生镜像的反射提示。
 - wiki 不再收录 5.x 升级指南（`guide/migration-6`），[6.x 分支](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/zh/guide/migration-6.md)保留它。删除 `cocache-migrate` agent skill，8.x 不提供升级 skill。
+
+- SPI：`InvalidationListener.onInvalidated` 收到的是**编码后的 key**，即存储 key 中 `{keyPrefix}{namespace}:` 之后的部分（`KeyEncoder` 的输出、`ExternalInvalidator` 的参数），不是存储 key。通道用新增的 `Keyspace.encodedKeys(…)` 转换帧中的 key（同时去掉不属于这个 keyspace 的 key），并按订阅的先后依次回调同一 keyspace 的订阅者，因此缓存创建之后加入的订阅者被回调时，缓存已经丢弃了本地副本。自己订阅通道、从 key 中剥掉 `"$namespace:"` 的代码必须改为直接使用收到的 key，否则每一条通知都被静默忽略。`BackendProtocolSpec` 的用例 `listenersReceiveEncodedKeysInSubscriptionOrder` 检查这两条规则。
+
+### 新增：按缓存的读取时限与只广播的失效
+
+- `CachePolicy.readTimeout`（`CachePolicy.Builder.readTimeout(…)`，默认不设置）限定缓存的每次 Redis 读取（`get`、`getAll`、`getIfChanged`），存储以它的命令超时为上限。超时按 Redis 读取失败处理：由 `read-failure` 决定，`getIfChanged` 抛出，读取取得的 lease 被释放。用于不能回退到 loader、又不能在 Redis 卡顿时等满 `command-timeout` 的缓存，例如撤销表。配置项之后加入。`EngineSpec` 增加可选的 `pause()` 钩子，用例 `readTimeoutBoundsEveryL1Read` 检查它。
+- `ExternalInvalidator.broadcast(namespace, encodedKeys)` 只发布失效消息、不修改 Redis：各实例丢弃本地副本并从 Redis 重新读取。Redis 中已是正确的值时使用它。`invalidate` 会删除 key，用在没有 loader 的缓存的命名空间上就是删除唯一的一份数据。
+- 以空的 `keyPrefix` 创建缓存时记录告警：它的 key 与频道没有公共前缀，ACL 与按前缀的运维只能逐个写出命名空间。
 
 ### 行为变化：关闭运行时会等待在途的 Redis 步骤
 

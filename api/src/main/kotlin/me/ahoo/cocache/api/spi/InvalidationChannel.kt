@@ -21,6 +21,9 @@ package me.ahoo.cocache.api.spi
  * - 每次订阅（重新）建立并得到服务端确认之后，必须回调该连接上所有订阅者的 [InvalidationListener.onReset]。
  * - 读不懂的帧（未知版本、未知类型、解码失败，见 [InvalidationFrame.decode]）按该频道的 [InvalidationListener.onReset] 处理，
  *   不得丢弃（RFC 0005 §4.7，D3）：丢弃的就是一次失效，而重置只会多淘汰。
+ * - 订阅者收到的是编码 key，不是帧中的存储 key：以 [Keyspace.encodedKeys] 去掉 `{keyPrefix}{namespace}:`（RFC 0005 §4.9，S4）。
+ * - 同一个 keyspace 的订阅者按订阅的先后依次回调，前一个返回之后才回调下一个（帧与重置都是）。缓存在 `runtime.create` 时订阅，
+ *   因此之后订阅的外部监听者收到失效或重置时，引擎已经淘汰了本地副本（递增戳并淘汰 L2）。
  */
 interface InvalidationChannel {
     /**
@@ -42,7 +45,9 @@ interface InvalidationChannel {
  */
 interface InvalidationListener {
     /**
-     * 收到失效帧：[keys] 是完整的存储 key。[keys] 为空的帧是存储创建时的频道探测（[CoherenceBackend.store]），什么也不做。
+     * 收到失效帧：[keys] 是编码 key，即存储 key 中 `{keyPrefix}{namespace}:` 之后的部分（[Keyspace.encodedKeys]，
+     * 与 `KeyEncoder` 的输出、`ExternalInvalidator` 的参数相同），不属于这个 keyspace 的 key 已被去掉。
+     * [keys] 为空的帧是存储创建时的频道探测（[CoherenceBackend.store]），什么也不做。
      */
     fun onInvalidated(keys: List<String>, origin: NodeId)
 

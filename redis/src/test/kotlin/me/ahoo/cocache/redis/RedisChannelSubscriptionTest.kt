@@ -123,7 +123,7 @@ class RedisChannelSubscriptionTest {
             subscribes.get().assert().isEqualTo(2)
             requireNotNull(
                 adapter
-            ).message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            ).message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k")))
             joining.received.assert().containsExactly(listOf("k"))
         }
     }
@@ -190,7 +190,7 @@ class RedisChannelSubscriptionTest {
             val handler = requireNotNull(adapter)
             val ns = "cocache:inv:ns".toByteArray()
 
-            handler.message(ns, InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            handler.message(ns, InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k")))
             healthy.received.assert().containsExactly(listOf("k"))
             handler.subscribed(ns, 1)
             healthy.resets.get().assert().isEqualTo(2)
@@ -198,7 +198,7 @@ class RedisChannelSubscriptionTest {
             val fatal = OutOfMemoryError("listener")
             failing.error = fatal
             runCatching {
-                handler.message(ns, InvalidationFrame.encode(NodeId.random(), listOf("k2")))
+                handler.message(ns, InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k2")))
             }.exceptionOrNull().assert().isSameAs(fatal)
         }
     }

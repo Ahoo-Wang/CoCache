@@ -51,7 +51,7 @@ class RedisShardedChannelTest {
         RedisTestSupport.shardedBackend().use { subscriber ->
             RedisTestSupport.shardedBackend().use { publisher ->
                 val subscription = subscriber.channel.subscribe(Keyspace("cocache:", namespace), listener)
-                val frame = InvalidationFrame.encode(NodeId.random(), listOf("before"))
+                val frame = InvalidationFrame.encode(NodeId.random(), listOf("cocache:$namespace:before"))
                 Suspending.await { publisher.channel.publish(Keyspace("cocache:", namespace), frame) }
                 awaitCondition("event before migration") { received.contains(listOf("before")) }
                 val resetsBefore = resets.get()
@@ -60,7 +60,7 @@ class RedisShardedChannelTest {
                 try {
                     // 迁移期间发布的事件可能丢失，由重置兜底；重新订阅之后的事件必须送达
                     awaitCondition("reset after migration") { resets.get() > resetsBefore }
-                    val after = InvalidationFrame.encode(NodeId.random(), listOf("after"))
+                    val after = InvalidationFrame.encode(NodeId.random(), listOf("cocache:$namespace:after"))
                     awaitCondition("event after migration") {
                         Suspending.await { publisher.channel.publish(Keyspace("cocache:", namespace), after) }
                         received.contains(listOf("after"))

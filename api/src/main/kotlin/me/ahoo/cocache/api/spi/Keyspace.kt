@@ -44,6 +44,13 @@ class Keyspace(val keyPrefix: String, val namespace: String) {
      */
     fun storageKey(encodedKey: String): String = storagePrefix + encodedKey
 
+    /**
+     * 失效帧中的存储 key → 交给 [InvalidationListener] 的编码 key：去掉 [storagePrefix]（与引擎内部剥前缀的规则相同）。
+     * 不以 [storagePrefix] 开头的 key 不属于这个 keyspace（外部写入方给错了前缀），丢弃；顺序不变。
+     */
+    fun encodedKeys(storageKeys: List<String>): List<String> =
+        storageKeys.mapNotNull { if (it.startsWith(storagePrefix)) it.substring(storagePrefix.length) else null }
+
     override fun equals(other: Any?): Boolean {
         return this === other || (other is Keyspace && keyPrefix == other.keyPrefix && namespace == other.namespace)
     }

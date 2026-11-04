@@ -163,10 +163,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 协程核心读取 L1（RFC 0005 §4.3）：不可取消（[uncancellable]），续接回到当前变体的调度器上
      * （同步变体即调用方线程，异步变体即运行时作用域的调度器），从不在 L1 客户端的 I/O 线程上执行。
      * 协程被取消时仍等到读取完成或超时：取得令牌的读取不丢结果，取消在之后的第一个挂起点生效。
-     * 读取的时限暂时一律是存储的命令超时（`timeout = null`）：按缓存的读超时随 M5、M6 接入（RFC 0005 round 3 D6）。
+     * 时限是策略的 `readTimeout`（D6），`null` 为存储的命令超时；超时与其它 L1 读失败相同，取得的令牌由存储释放。
      */
     protected suspend fun readRemote(storageKey: String, lease: LeaseRequest?, refresh: RefreshRequest?): L1Read =
-        uncancellable { store.read(storageKey, lease, refresh, null) }
+        uncancellable { store.read(storageKey, lease, refresh, policy.readTimeout) }
 
     /**
      * [operation] 需要的条件读写能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
@@ -423,6 +423,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     }
 
     /**
+     * [keys] 是编码 key（通道已去掉本缓存的存储前缀与不属于它的 key，S4），也就是 L2 的 key；失效戳仍按存储 key。
      * 零 key 的帧是存储创建时的频道探测（RFC 0005 §4.7，K8）：什么也不做，不计入收到的失效。
      */
     override fun onInvalidated(keys: List<String>, origin: NodeId) {
@@ -431,11 +432,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
         metrics.invalidationReceived()
         keys.forEach {
-            stamps.invalidate(it)
-            // 频道按 keyspace 划分，帧中只应有本缓存的 key；外部写入方给错前缀的 key 不在 L2 中
-            if (it.startsWith(storagePrefix)) {
-                local.invalidate(localKeyOf(it))
-            }
+            stamps.invalidate(storageKeyOfLocal(it))
+            local.invalidate(it)
         }
     }
 

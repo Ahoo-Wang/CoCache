@@ -126,7 +126,8 @@ class InMemoryBackend @JvmOverloads constructor(
     }
 
     /**
-     * 与 Redis 后端相同：某个订阅者抛出异常（包括 `Error`）记录后继续分发，不影响其余订阅者，也不传给写入方；
+     * 与 Redis 后端相同：订阅者按订阅的先后收到编码 key（[Keyspace.encodedKeys]）；
+     * 某个订阅者抛出异常（包括 `Error`）记录后继续分发，不影响其余订阅者，也不传给写入方；
      * `VirtualMachineError` 照常抛出。读不懂的帧（未知版本、解码失败）按该 keyspace 的重置处理，不丢弃（RFC 0005 §4.7，D3）。
      */
     @Suppress("TooGenericExceptionCaught")
@@ -139,9 +140,10 @@ class InMemoryBackend @JvmOverloads constructor(
             reset(keyspace, keyspaceListeners)
             return
         }
+        val keys = keyspace.encodedKeys(decoded.keys)
         keyspaceListeners.forEach { listener ->
             try {
-                listener.onInvalidated(decoded.keys, decoded.origin)
+                listener.onInvalidated(keys, decoded.origin)
             } catch (e: VirtualMachineError) {
                 throw e
             } catch (e: Throwable) {

@@ -212,6 +212,12 @@ The first argument is the **namespace** (the cache name unless the cache sets `n
 
 An empty encoded key throws `IllegalArgumentException`, and an empty collection does nothing. After `close()`, every call throws `IllegalStateException`; `close()` releases the invalidator's own store handles and doesn't close the backend.
 
+`invalidate` deletes the key from Redis. On the namespace of a cache without a loader, Redis holds the only copy, so that deletes the data for good. When Redis already holds the right value and only other instances' L2 copies may be stale, call `broadcast` instead: it publishes the invalidation message without touching Redis, so every instance drops its copy and reloads it from Redis. It is safe on any cache.
+
+```kotlin
+externalInvalidator.broadcast("PolicySnapshot", "tenant-1")  // namespace, encoded key; Redis is left alone
+```
+
 ### Any language: the raw protocol {#raw-protocol}
 
 | Part | Value |

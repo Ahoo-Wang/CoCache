@@ -484,8 +484,9 @@ abstract class VersionedSpec {
         subscription.use {
             if (backend.delegate.atomicBroadcast) {
                 awaitCondition("the advancing fill broadcast") { frames.any { it.second == greater.token.node } }
+                // 订阅者收到编码 key（S4）
                 frames.filter { it.second == greater.token.node }.assert().containsExactly(
-                    listOf(key) to greater.token.node
+                    listOf("k") to greater.token.node
                 )
                 frames.none { it.second == equal.token.node }.assert().isTrue()
             }

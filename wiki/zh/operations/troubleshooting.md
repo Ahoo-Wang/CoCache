@@ -212,6 +212,12 @@ orderInvalidator.invalidate("OrderCache", "7/9")
 
 编码后的 key 为空串时抛出 `IllegalArgumentException`，传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`；`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
 
+`invalidate` 会删除 Redis 中的 key。用在没有 loader 的缓存的命名空间上时，Redis 中是唯一的一份数据，删除就再也找不回来。如果 Redis 中已经是正确的值、只是其它实例的 L2 副本可能陈旧，改用 `broadcast`：它只发布失效消息、不修改 Redis，各实例丢弃本地副本后从 Redis 重新读取，对任何缓存都安全。
+
+```kotlin
+externalInvalidator.broadcast("PolicySnapshot", "tenant-1")  // 命名空间、编码后的 key；不修改 Redis
+```
+
 ### 任意语言：原始协议 {#raw-protocol}
 
 | 部分 | 取值 |

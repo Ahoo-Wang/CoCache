@@ -35,6 +35,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 写入方必须先提交数据源，再调用本方法。调用是幂等的：抛出异常时（例如删除成功而广播失败，或 Cluster
  * 中部分 slot 失败）请重试，否则其它节点的 L2 最长陈旧到 `localMaxAge`。
  *
+ * [invalidate] 删除 L1 中的 key：用在没有数据源的缓存（L1 是唯一副本，RFC 0005 §4.1）的命名空间上，删除的就是唯一的一份数据，
+ * 不能恢复。只想让各节点丢弃 L2 副本、保留 L1 时用 [broadcast]：它只广播失效帧，对任何类型的缓存都安全（RFC 0005 §4.9）。
+ *
  * @param backend 与缓存共用的后端（同一个 Redis 与通道模式）
  * @param keyPrefix 目标缓存的 key 前缀，默认 [CacheSpec.DEFAULT_KEY_PREFIX]
  * @param nodeId 广播帧的来源节点；默认随机，因此所有缓存节点（包括同进程的运行时）都会处理该帧
@@ -91,6 +94,34 @@ class ExternalInvalidator @JvmOverloads constructor(
      */
     fun invalidate(namespace: String, encodedKey: String) {
         invalidate(namespace, listOf(encodedKey))
+    }
+
+    /**
+     * 只广播失效帧，不修改 L1：各节点递增这些 key 的失效戳并淘汰 L2 副本，之后从 L1 重新填充。对没有数据源的缓存同样安全
+     * （不删除唯一副本）。用于 L1 已经是正确内容、只有其它节点的 L2 可能陈旧的场合，例如外部工具已经直接改写了 L1。
+     *
+     * 投递至多一次，与缓存自己的广播相同：帧丢失时各节点的 L2 陈旧到 `localMaxAge` 或下一次订阅重置。
+     *
+     * @param namespace 缓存的命名空间，字符集为 `[A-Za-z0-9._-]+`
+     * @param encodedKeys 编码后的 key（同 [invalidate]），不得为空串
+     * @throws IllegalArgumentException 命名空间不符合字符集，或有空串的 key
+     */
+    fun broadcast(namespace: String, encodedKeys: Collection<String>) {
+        check(!closed.get()) { "ExternalInvalidator is closed." }
+        val keyspace = Keyspace(keyPrefix, namespace)
+        if (encodedKeys.isEmpty()) {
+            return
+        }
+        require(encodedKeys.none { it.isEmpty() }) { "Encoded keys must not be empty." }
+        val frame = InvalidationFrame.encode(nodeId, encodedKeys.distinct().map { keyspace.storageKey(it) })
+        runSync { uncancellable { backend.channel.publish(keyspace, frame) } }
+    }
+
+    /**
+     * 只广播一个 key 的失效帧，见 [broadcast]。
+     */
+    fun broadcast(namespace: String, encodedKey: String) {
+        broadcast(namespace, listOf(encodedKey))
     }
 
     /**

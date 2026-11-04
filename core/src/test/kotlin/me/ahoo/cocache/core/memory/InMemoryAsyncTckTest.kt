@@ -58,6 +58,8 @@ class InMemoryAsyncEngineTest : AsyncVariantEngineCases() {
     override fun elapse(duration: Duration) = manualClock.advance(duration)
 
     override fun simulateReconnect() = memory.reconnect()
+
+    override fun pause(): AutoCloseable = memory.stall()
 }
 
 /**

@@ -360,10 +360,13 @@ class RedisUnitTest {
             handler.message("cocache:inv:ns".toByteArray(), byteArrayOf(9))
             handler.message(
                 "cocache:inv:other".toByteArray(),
-                InvalidationFrame.encode(NodeId.random(), listOf("k"))
+                InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k"))
             )
             handler.subscribed("cocache:inv:other".toByteArray(), 1)
-            handler.message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            handler.message(
+                "cocache:inv:ns".toByteArray(),
+                InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k"))
+            )
             // 同一订阅者订阅了两次，收到两次
             received.assert().containsExactly(listOf("k"), listOf("k"))
             second.close()
@@ -422,7 +425,7 @@ class RedisUnitTest {
         channel.ping()
         subscribes.get().assert().isEqualTo(4)
 
-        handler.smessage(ns, InvalidationFrame.encode(NodeId.random(), listOf("k")))
+        handler.smessage(ns, InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k")))
         listener.received.assert().containsExactly(listOf("k"))
 
         // 待确认期间订阅被关闭：心跳不再重新订阅
@@ -509,7 +512,7 @@ class RedisUnitTest {
             channel.subscribe(NS, healthy)
             requireNotNull(
                 adapter
-            ).message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            ).message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k")))
             healthy.received.assert().containsExactly(listOf("k"))
         }
     }
@@ -580,7 +583,7 @@ class RedisUnitTest {
             handler.sunsubscribed(owner, ns, 0)
             listener.resets.get().assert().isEqualTo(5)
             awaitCondition("resubscribe attempted") { subscribes.get() == 3 }
-            handler.smessage(owner, ns, InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            handler.smessage(owner, ns, InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k")))
             listener.received.assert().containsExactly(listOf("k"))
             // 未知节点的确认：不记录节点，心跳退回探测所属主节点
             handler.ssubscribed(null, ns, 1)

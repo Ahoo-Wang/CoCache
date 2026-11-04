@@ -208,7 +208,7 @@ fun interface Subscription : AutoCloseable
 
 `publish` 的时限、取消与失败规则同存储。Java 后端实现 `FutureInvalidationChannel`，返回 `FutureInvalidationChannel.adapt(…)`。
 
-- **帧**。`frame` 由引擎用 `InvalidationFrame.encode(origin, storageKeys)` 构造。用 `InvalidationFrame.decode` 解码后投递给该 keyspace 的每个订阅者。`decode` 拒绝的帧（未知版本，包括预留的 `NAMESPACE_RESET_VERSION`、截断的帧、尾随字节）不要丢弃，而是对该频道的每个订阅者调用 `onReset()`：丢弃的帧就是丢失的失效。不带 key 的帧是合法帧，照常投递，订阅者会忽略它。不要按来源过滤：订阅者会忽略自己的 `NodeId`。
+- **帧**。`frame` 由引擎用 `InvalidationFrame.encode(origin, storageKeys)` 构造。用 `InvalidationFrame.decode` 解码、key 经 `keyspace.encodedKeys(…)` 转换后投递给该 keyspace 的每个订阅者：订阅者收到的是编码后的 key（存储 key 去掉 `{keyPrefix}{namespace}:`），不属于这个 keyspace 的 key 去掉。同一 keyspace 的订阅者按订阅的先后依次回调，帧与重置都是：缓存在创建时订阅，之后加入的订阅者被回调时，缓存已经丢弃了本地副本。`decode` 拒绝的帧（未知版本，包括预留的 `NAMESPACE_RESET_VERSION`、截断的帧、尾随字节）不要丢弃，而是对该频道的每个订阅者调用 `onReset()`：丢弃的帧就是丢失的失效。不带 key 的帧是合法帧，照常投递，订阅者会忽略它。不要按来源过滤：订阅者会忽略自己的 `NodeId`。
 - **至多一次可以接受，沉默不行**。每次订阅建立或重新建立**并得到确认**时，以及任何消息可能丢失的时候（心跳失败、消费组重平衡、序号出现空洞），都要对该订阅的每个订阅者调用 `onReset()`。订阅者随后清空它的 L2。没有重置，丢失的消息会让 L2 陈旧到 `local-max-age`。
 - **在 `subscribe` 返回之前完成重置**。第一个订阅者的重置必须在 `subscribe` 返回时已经执行，否则迟到的重置会清掉订阅之后才填充的副本。已有订阅上的后续订阅者立即收到一次 `onReset()`。
 - **隔离**。订阅新的 keyspace 不能重置其它 keyspace。某个订阅者抛出异常（即使是 `Error`），不能让其它订阅者错过消息或重置。Redis 与内存后端记录失败后继续；投递消息时只重新抛出 `VirtualMachineError`。
@@ -226,7 +226,7 @@ testImplementation("me.ahoo.cocache:cocache-test")
 | 套件 | 覆盖 | 你提供 |
 |------|------|--------|
 | `BackendProtocolSpec` | 经 `Suspending.await` 直接调用的 `L1Store` 约定：授予 lease、令牌校验、`L1Fill` 结果、到期时间重设、释放、刷新令牌、回收、批量读写、集合更新、广播帧、订阅时重置，以及（可选）L1 卡顿时读取的 `timeout` 限定这次调用并释放它的 lease | `createBackend()`、`expectedCapabilities`、`elapse(duration)`。可选覆盖 `shortTtl`（默认 300 ms）与 `pause()` |
-| `EngineSpec` | 两个运行时共用你的后端：跨实例单次加载、等待 lease 超时、加载期间的失效、同实例失效与读取的竞态、并发 `put`、读己之写、loader 失败、Redis 失败、失效重试、重连重置、`local-max-age`、批量读、提前刷新、回收、更新的格式、回源并发上限，以及声明了 `CONDITIONAL` 时的条件读写（含并发“读—改—写”：让所有写入方在同一个摘要上竞争，并断言恰好一个胜出） | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)`、`simulateReconnect()` |
+| `EngineSpec` | 两个运行时共用你的后端：跨实例单次加载、等待 lease 超时、加载期间的失效、同实例失效与读取的竞态、并发 `put`、读己之写、loader 失败、Redis 失败、失效重试、重连重置、`local-max-age`、批量读、提前刷新、回收、更新的格式、回源并发上限、（可选）L1 卡顿时缓存的 `readTimeout` 限定单 key、批量与条件读取，以及声明了 `CONDITIONAL` 时的条件读写（含并发“读—改—写”：让所有写入方在同一个摘要上竞争，并断言恰好一个胜出） | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)`、`simulateReconnect()`。可选 `pause()`。 |
 | `VersionedSpec` | 需要 `VERSIONED`。协议（整体写入保存版本、按有符号 64 位整数比较、按版本写入销毁被持有的 lease、带版本的内容不授予刷新令牌也不被回收、墓碑），以及两个运行时共用你的后端：有序、相等版本幂等、拒绝旧版本且不广播不改寿命（没有原子广播时相等的版本会再次广播，重放因此能补上丢失的发布）、墓碑挡住迟到的旧版本、按版本写入胜过持有 lease 的回源、回源保存 loader 给出的版本、并发乱序的写入方收敛到最高版本、结果未知后重放安全 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
 | `SetEngineSpec` | 需要 `SETS`。两个运行时上的 `SetCache`：原子的并发加入、空集合删除、拒绝 `invalidate`、元素写入拒绝读不懂的内容、写入与读取失败 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
 | `MultiNodeSpec` | 三个运行时共用你的后端：失效先于 lease、晚于 lease 且另一实例正在等待、晚于 fill 而早于写 L2；其它实例的写入落在读取与 L2 填充之间；不同实例的并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全部实例中每个 key 只回源一次、只刷新一次 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
@@ -268,7 +268,7 @@ protected Set<L1Capability> getExpectedCapabilities() {
 
 可选的钩子默认返回 `null`，对应的用例跳过：
 
-- **`BackendProtocolSpec.pause()`** 让后端的命令停住，直到关闭返回值（或持续一段固定的时间，至少是用例读取时限的 10 倍）：期间开始的命令不完成。CoCache 的 Redis 测试让后端经过一个暂存客户端数据的本机 TCP 代理；`InMemoryBackend.stall()` 在进程内做同样的事。
+- **`BackendProtocolSpec.pause()`** 与 **`EngineSpec.pause()`** 让后端的命令停住，直到关闭返回值（或持续一段固定的时间，至少是用例读取时限的 10 倍）：期间开始的命令不完成。CoCache 的 Redis 测试让后端经过一个暂存客户端数据的本机 TCP 代理；`InMemoryBackend.stall()` 在进程内做同样的事。
 - **`FaultSpec.disconnect()`** 断开命令连接，并保持断开直到关闭返回值。期间发出的命令必须失败，而不是被缓冲。对真实服务端，关闭监听端口的代理就可以。
 - **`FaultSpec.commandCancellation()`** 返回一个 `CommandCancellation`：`hold()` 让之后的命令停在客户端中，`cancel()` 让客户端取消它们，`close()` 恢复正常（可以需要重连）。用例随后检查：命令被取消的读取回退到 loader，并把结果交给等在它上面的读取方；`put` 以 `CacheWriteException` 失败；没有调用方看到 `CancellationException`；L1 恢复之后，被取消的读取的 lease 已不存在。CoCache 的内存后端停住、再取消它的 `FutureL1Store` 返回的 future；Redis 测试在代理处丢弃应答，让 Lettuce 重置连接（取消在途的命令），再重连。
 

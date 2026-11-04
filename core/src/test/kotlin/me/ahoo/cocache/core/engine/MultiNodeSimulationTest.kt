@@ -108,9 +108,9 @@ class MultiNodeSimulationTest {
         val advancedFills: Int
             get() = backend.advancedFills.get()
 
+        // 订阅者收到的是编码 key（S4），即这里的 key
         private val backend = ScriptedBackend(memory, ledger, scriptEvents = true) { keys ->
-            keys.associate { storageKey ->
-                val key = storageKey.removePrefix(PREFIX)
+            keys.associate { key ->
                 val version = versions.getValue(key)
                 applied[key] = maxOf(applied.getValue(key), version)
                 key to version
@@ -439,7 +439,6 @@ class MultiNodeSimulationTest {
 
     companion object {
         private const val NAME = "sim"
-        private const val PREFIX = "cocache:$NAME:"
         private const val NODES = 3
         private const val MIN_ALIVE = 2
         private const val SEEDS = 300

@@ -64,6 +64,8 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `read-failure` | `degrade` \| `throw` | 有 loader 时 `degrade`，没有时 `throw` | — | Redis 读取失败时：从数据源加载，或抛出 `CacheReadException`。没有 loader 的读取无处加载，默认抛出。“读不到”是安全答案时（如撤销表：Redis 故障即视为未撤销）显式设置 `degrade`：读取返回 `null` 且不缓存任何东西，故障期间的每次读取都会再次访问 Redis。 |
 | `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | 每个存储 key 的开头（见[下文](#key-prefix)） |
 
+按缓存的读取时限还没有配置项：在策略上用 `CachePolicy.Builder.readTimeout(…)` 设置。它以这个时长而不是 `command-timeout` 限定缓存的每次 Redis 读取（`get`、`getAll`、`getIfChanged`），超时按 Redis 读取失败处理，由 `read-failure` 决定。不设置时读取最多等 `command-timeout`。
+
 缓存如何对待读不懂的内容不可配置：有数据源的缓存回收它并重新加载，没有数据源的缓存与 `SetCache` 读取失败（见[无法读取的载荷](../operations/troubleshooting.md#corrupt-payloads)）。
 
 如何选择这些值，见[保持数据新鲜](./freshness.md#lifetimes)。
