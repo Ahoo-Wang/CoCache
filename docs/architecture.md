@@ -754,6 +754,7 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
   - 以数据源的提交历史为裁判。G2：读取开始时节点对每个 key 有一个已确认的下限（本节点 `invalidate` 成功返回时那次写入的版本；别的节点的失效事件投递时，那次失效在 L1 上生效时数据源的版本；订阅重建投递时，至今已在 L1 上生效的全部失效），读到的版本不得低于它。G1：排空之后越过 `ttl + lease.ttl + localMaxAge`，每个存活的节点都读到最新版本。另断言令牌守恒、调用都已完成。
   - 失败消息带种子与最近的步骤；`-PsimSeed=<n>` 只重放这个种子并打印全部步骤（`aSeedReplaysTheSameSteps` 保证同一个种子总是同一条执行）。去掉收到失效时的 L2 淘汰、读己之写的复核、L2 填充的戳校验、重置时的 L2 清空或写入方的第二次淘汰，都会在前 100 个种子内被发现。
 - Lincheck 模型检验（`cocache-core` 的 `CoherentEngineLincheckTest`，RFC 0005 §4.10，[可行性调查](investigations/lincheck-feasibility.md)）：对真实的“SingleFlight + Caffeine L2 + 失效戳 + 内存存储”经同步 API 检验可线性化，顺序规格是带版本的数据源（写入 = 提交新版本再 `invalidate`，读取 = 当前版本）。Caffeine 的调用当作原子步骤，计数与日志忽略。有随机场景，也有对已知竞态穷举交错的定向场景（读取合并到写入之前开始的加载；写入方修改 L1 期间的并发填充）。JaCoCo 的探针与 kotlinx 调试模式的协程编号会让执行无法重放，所以它在单独的 `./gradlew :cocache-core:lincheck` 任务中运行（关闭两者），不在 `test` 与 `check` 中（约 2 分钟）。
+- TLA+ 模型（`docs/spec/CoCache.tla`，RFC 0005 §4.10，[说明](spec/README.md)）：一个 key 的多节点协议，L1 状态机（`A` / `L` / `V` / `M` / `E`、令牌与版本）、每个节点的 L2 与失效戳（含 `fillGuarded` 的三步与重置的竞态）、不经 SingleFlight 的读取者、可丢失、乱序、重复的失效通道，以数据源的提交历史为裁判。故障：超时之后仍执行的命令、连接替换之后旧连接上的命令晚于新命令执行、令牌的异步释放（K14）、结果未知的写入（P12）、回源失败、L1 与 L2 到期、持有令牌崩溃。TLC 在小规模下穷举全部交错，检验 G2 的 L1 与 L2 条款、读取方看到的 G2、失效不丢失、I-K 的版本单调、P2，以及令牌最终释放与收敛（活性）。CI 的非阻塞作业 `TLC` 运行 `scripts/tlc.sh`（下载固定版本的 `tla2tools.jar` 并校验 SHA-256）；已报告的反例在 `Findings.cfg` 中，不在 CI 中运行。
 
 `MultiNodeSpec` 的节点是同一进程内共享一个后端的运行时，不覆盖真实的多进程与网络分区。
 
