@@ -78,6 +78,7 @@ export const en: DefaultTheme.Config = {
         text: 'v8.0.0-alpha.1',
         items: [
           { text: 'Changelog', link: '/guide/changelog' },
+          { text: '6.x docs', link: 'https://github.com/Ahoo-Wang/CoCache/tree/6.x/wiki' },
           { text: 'Contributing', link: 'https://github.com/Ahoo-Wang/CoCache/blob/main/CONTRIBUTING.md' },
         ],
       },
