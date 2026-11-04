@@ -22,6 +22,7 @@ import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.SuspendingStore
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.internal.runSync
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -89,6 +90,9 @@ internal class StoreEngine<K : Any, V : Any>(
         val storageKey = storageKeyOf(encodedKey)
         runSync { deleteStorageKeys(listOf(storageKey), DELETE) }
     }
+
+    override val keyDeletion: CacheAdmin.KeyDeletion
+        get() = CacheAdmin.KeyDeletion.DELETE
 
     override fun async(): AsyncStore<K, V> = asyncView
 

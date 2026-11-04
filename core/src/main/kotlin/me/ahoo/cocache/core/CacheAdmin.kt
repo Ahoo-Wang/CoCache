@@ -51,12 +51,60 @@ interface CacheAdmin {
     fun inspect(encodedKey: String): KeyInspection
 
     /**
-     * 按编码后的 key 走正常的失效路径（两次递增戳、淘汰 L2、删除 L1 并广播，全集群生效），幂等。
-     * 失败处理与 `invalidate` 相同（有数据源的缓存默认进入重试队列，没有数据源的默认抛出）。`SetCache` 上等价于 `clear(key)`：L1 是唯一副本，会删除该集合。
+     * 按编码后的 key 删除，全集群生效，幂等。按类型映射（[keyDeletion]，RFC 0005 §4.2）：`Cache` 走正常的失效路径（失败按
+     * `invalidateFailure` 处理）；`VersionedCache` 保留版本（`evict`）；`Store` 同 `delete`、`VersionedStore` 同 `purge`、
+     * `SetStore` 同 `clear(key)`：这三者删除唯一副本，失败时抛出、不重试。
      *
      * @param encodedKey 编码后的 key（不含 `{keyPrefix}{namespace}:`）
      */
     fun invalidateEncoded(encodedKey: String)
+
+    /**
+     * [invalidateEncoded] 对这个缓存做什么。运维入口据此决定按 key 删除是否需要显式开关（RFC 0005 §4.9 运维入口）。
+     */
+    val keyDeletion: KeyDeletion
+
+    /**
+     * 按编码后的 key 清除并丢掉版本（`purge`，RFC 0005 §4.2）：只有带版本的类型支持，其它类型抛出 [UnsupportedOperationException]。
+     * 之后任何版本都能写入；失败时抛出，不重试。
+     *
+     * @param encodedKey 编码后的 key（不含 `{keyPrefix}{namespace}:`）
+     */
+    fun purgeEncoded(encodedKey: String) {
+        throw UnsupportedOperationException(
+            "Cache[$name] - purge is only supported on VersionedCache and VersionedStore."
+        )
+    }
+
+    /**
+     * 按 key 删除（[invalidateEncoded]）的效果，按缓存的类型。
+     */
+    enum class KeyDeletion {
+        /**
+         * `Cache`：删除派生副本，之后从数据源重新加载。
+         */
+        INVALIDATE,
+
+        /**
+         * `VersionedCache`：保留版本的失效（`evict`），迟到的旧版本仍被拒绝。
+         */
+        EVICT,
+
+        /**
+         * `Store`：删除唯一副本（`delete`）。
+         */
+        DELETE,
+
+        /**
+         * `VersionedStore`：删除唯一副本并丢掉版本（`purge`）。
+         */
+        PURGE,
+
+        /**
+         * `SetStore`：删除整个集合（`clear`），它是唯一副本。
+         */
+        CLEAR,
+    }
 }
 
 /**

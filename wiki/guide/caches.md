@@ -83,6 +83,7 @@ Durations are in **seconds**. Every policy attribute defaults to `CoCache.UNSET`
 | `loader` | `""` | Bean name of the data source (`Cache` and `VersionedCache` only). Empty: the single matching bean ([loaders](#loaders)). |
 | `source` | `LOADER` | `Cache` only. `CoCache.Source.EXTERNAL` declares `externallySourced()`: callers supply the values. Can't be combined with `loader`. |
 | `codec` | `""` | Bean name of the `Codec`. Empty: the single bean of type `Codec<V>`, or Jackson. |
+| `unknownRead` | `THROW` | What a read without a loader returns when Redis fails ([`Unknown`](#unknown)): `CoCache.UnknownRead.ABSENT` returns `null`. Only on a `Store`, a `VersionedStore`, or a `Cache` with `source = EXTERNAL`. |
 
 `CoCache.FOREVER` is valid only for `ttl` (and for `@CaffeineCache.expireAfterAccess`, where it means off). On any other duration attribute it fails startup. `@CaffeineCache.maximumSize` is a count, not a duration, so `FOREVER` there is simply `Long.MAX_VALUE` entries. Zero is valid only for `ttlJitter` and `refreshWindow`; any other zero duration, and any negative value other than `UNSET`, fails startup.
 
@@ -320,7 +321,7 @@ Every type reads through L2 and Redis. `lookup(key)` tells three answers apart:
 `Unknown` is a fact about one read, not about the data: it is never cached, never broadcast, and never handed to a caller that has its own source. `lookup(key).valueOrThrow()` returns the value or `null` and throws on `Unknown`. In Java 21, switch exhaustively over the sealed type; `as? Lookup.Present` silently treats `Unknown` as absent.
 
 - **Who gets `Unknown`:** reads without a source (a `Store`, a `VersionedStore`, a `SetStore`, an externally sourced `Cache` read without a loader), and reads with a source when you set `readFailure = THROW`. By default a read with a source loads from it instead.
-- **`unknownRead`** on a `CacheSpec` (externally sourced only), `StoreSpec` or `VersionedStoreSpec` maps `Unknown` for reads without a loader: `THROW` (default) or `ABSENT`, which returns `null` (`Lookup.Absent`) and caches nothing, so the next read asks Redis again. It doesn't apply to `getIfChanged`, `getVersioned` or reads with a loader, and a `SetStore` doesn't have it. It has no property yet; set it in the spec or a [customizer](#customizer).
+- **`unknownRead`** on a `CacheSpec` (externally sourced only), `StoreSpec` or `VersionedStoreSpec` maps `Unknown` for reads without a loader: `THROW` (default) or `ABSENT`, which returns `null` (`Lookup.Absent`) and caches nothing, so the next read asks Redis again. It doesn't apply to `getIfChanged`, `getVersioned` or reads with a loader, and a `SetStore` doesn't have it. Set it in the spec, with `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)` on an interface, or in a [customizer](#customizer); it has no property yet.
 - **`getAll`** finishes every other key first (releasing leases, writing back loads), then throws a `CacheReadException` whose `unknownKeys` are the keys without an answer and whose `partialResult` holds the values it did get. `lookupAll(keys)` returns a `Lookup` for every key instead of throwing.
 - Load timeouts (`load-timeout`) and rejected loads (`load-max-concurrent`) are not Redis failures: they throw their own exceptions, from `lookup` too.
 - Each `Unknown` counts in `cocache.reads.unknown`, including those mapped to absent, and the Redis failure itself in `cocache.remote.failures`.
@@ -457,7 +458,7 @@ CoCache refuses to start rather than run a cache that can't behave as declared. 
 | An interface that extends none, or more than one, of the five types, or without concrete type arguments; a spec bean whose return type doesn't declare them | Keys, loader, and codec are resolved from those types |
 | Abstract interface method that matches no method of the type it extends | The call would fail at runtime instead |
 | A `Cache` without a matching loader and without `source = EXTERNAL`; a `VersionedCache` without a versioned source; a `CacheSpec` with no source or more than one | A cache must say where its data comes from |
-| `loader` or `source = EXTERNAL` on a `Store`, `VersionedStore` or `SetStore`; `unknownRead` on a `CacheSpec` that has a source | These types have no source |
+| `loader` or `source = EXTERNAL` on a `Store`, `VersionedStore` or `SetStore`; `unknownRead` on a `CacheSpec` that has a source; `@CoCache(unknownRead = ABSENT)` on a `Cache` with a loader, a `VersionedCache` or a `SetStore` | These types have no source, or their reads don't take `unknownRead` |
 | Several `CacheLoader<K, V>` or `Codec<V>` beans match | A silent pick could use the wrong source or format |
 | A backend whose store lacks what the type needs ([capabilities](#spec-bean)) | The type's operations couldn't work |
 | A `VersionedStore` whose tombstones would never expire | Every deleted key would stay in Redis forever |

@@ -290,11 +290,12 @@ class TransactionalCacheTest {
             val backend = context.getBean(HookedBackend::class.java)
             val handler = context.getBean(RecordingErrorHandler::class.java)
             val writer = context.getBean(UserWriter::class.java)
+            // 确定未执行的写入照常抛出（结果未知的 put 在 RETRY 下登记补偿、不抛出，RFC 0005 §4.6 U8）
             tx.executeWithoutResult {
                 writer.save("13", "saved")
-                backend.failWrites = true
+                backend.rejectWrites = true
             }
-            backend.failWrites = false
+            backend.rejectWrites = false
             handler.events.assert().containsExactly("put:user:13:saved")
             user(context)["13"].assert().isEqualTo("user-13")
         }

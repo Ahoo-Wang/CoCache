@@ -246,7 +246,7 @@ To turn off a window that a declaration enables, use any of: `refresh-window: 0`
 
 ## When Redis is down during a write {#redis-down}
 
-Every failed write throws `CacheWriteException`, except a `Cache.invalidate` that is retried. Its `outcomeUnknown` says what you know:
+Every failed write throws `CacheWriteException`, except a `Cache.invalidate` that is retried and a `Cache.put` that is compensated (both below). Its `outcomeUnknown` says what you know:
 
 - `false`: definitely not executed. The client rejected the command before sending it (for example while disconnected), or Redis refused the write because the key holds content this version can't read. Nothing changed.
 - `true`: outcome unknown. The command may have run (a timeout, a connection dropped mid-reply), and it may still run later. Only ordered writes stay harmless when they land late: a replayed `putIfNewer`, a conditional write (with the ABA caveat above).
@@ -258,7 +258,13 @@ Every failed write throws `CacheWriteException`, except a `Cache.invalidate` tha
 - If the retries are exhausted or the queue overflows, CoCache logs an error and counts `cocache.invalidations.dropped`. Other instances can then reload the old value from Redis until it expires, so the bound is the value's remaining TTL. With `ttl-forever` there is no bound: invalidate again once Redis is back.
 - With `invalidate-failure: throw`, the call throws `CacheWriteException` instead, and you decide.
 
-**`Store.delete`** and **`deleteIfMatch`**, and `purge` on the versioned types, throw and are never retried: a delayed delete of the only copy could remove a value written after the failure.
+**`Cache.put`** and **`putAll`** on a derived cache follow `invalidate-failure` too:
+
+- With the default `retry`, a put whose outcome is unknown **doesn't throw**. Its value may or may not be in Redis, now or later, so CoCache queues an invalidation of those keys with the same retry queue as a failed `invalidate`. The keys converge to "reload from the source", which holds the value you wrote, and while the retry is pending, misses on this instance skip Redis. If the delayed put lands after the compensating delete, the value it wrote stays until its TTL.
+- A put that definitely didn't run (`outcomeUnknown = false`, for example rejected while disconnected) can't land late, so nothing is queued and it throws.
+- With `invalidate-failure: throw`, every failed put throws, and you decide.
+
+**`Store.delete`** and **`deleteIfMatch`**, and `purge` on the versioned types, throw and are never retried: a delayed delete of the only copy could remove a value written after the failure. For the same reason, writes to a `Store` or `SetStore` are never compensated.
 
 **`put`** and **`putAll`**, and the `SetStore` writes `add`, `remove`, and `clear`, throw `CacheWriteException`. When the outcome is unknown, retrying a `put` is safe for a `Cache` (the next read reloads anyway); on a `Store` the retry is a new last-writer-wins write.
 

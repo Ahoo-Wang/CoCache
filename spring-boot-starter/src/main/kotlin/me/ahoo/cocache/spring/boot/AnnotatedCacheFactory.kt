@@ -34,6 +34,7 @@ import me.ahoo.cocache.core.VersionedCacheSpec
 import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LocalPolicy
+import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.proxy.CacheProxies
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.ListableBeanFactory
@@ -97,6 +98,7 @@ class AnnotatedCacheFactory(
                 "@CoCache(source = EXTERNAL) is only supported on Cache interfaces, not on ${apiType.simpleName} interface[${type.name}]."
             }
         }
+        requireUnknownReadAllowed(type, apiType, annotation)
         return when (apiType) {
             Cache::class.java -> cacheSpecOf(type, cacheName, annotation, keyType, valueType)
             VersionedCache::class.java -> versionedCacheSpecOf(type, cacheName, annotation, keyType, valueType)
@@ -110,6 +112,7 @@ class AnnotatedCacheFactory(
                         { encoder -> it.keyEncoder = encoder }
                     )
                     it.codec = codecOf(annotation?.codec, valueType)
+                    it.unknownRead = unknownReadOf(annotation)
                     it.policy = policyOf(type, cacheName, annotation, StoreSpec.DEFAULT_POLICY)
                 }.build()
             }
@@ -123,6 +126,7 @@ class AnnotatedCacheFactory(
                         { encoder -> it.keyEncoder = encoder }
                     )
                     it.codec = codecOf(annotation?.codec, valueType)
+                    it.unknownRead = unknownReadOf(annotation)
                     it.policy = policyOf(type, cacheName, annotation, VersionedStoreSpec.DEFAULT_POLICY)
                 }.build()
             }
@@ -158,6 +162,7 @@ class AnnotatedCacheFactory(
                 "@CoCache(source = EXTERNAL) cannot name a loader on Cache interface[${type.name}]: an externally sourced cache has no data source."
             }
             builder.externallySourced()
+            builder.unknownRead = unknownReadOf(annotation)
         } else {
             when (val source = sourceOf(annotation?.loader, keyType, valueType)) {
                 is CacheLoader<*, *> -> builder.loader = source as CacheLoader<Any, Any>
@@ -197,6 +202,30 @@ class AnnotatedCacheFactory(
         }
         builder.policy = policyOf(type, cacheName, annotation, CachePolicy.DEFAULT)
         return builder.build()
+    }
+
+    /**
+     * `unknownRead`（RFC 0005 §4.1）只作用于没有数据源的读取：`Store`、`VersionedStore` 与外部来源的 `Cache`。
+     * 其它接口声明 `ABSENT` 时启动失败，而不是静默忽略：有数据源的读取遇到 L1 故障时回源，`SetStore` 不允许放行。
+     */
+    private fun requireUnknownReadAllowed(type: Class<*>, apiType: Class<*>, annotation: CoCache?) {
+        if (annotation?.unknownRead != CoCache.UnknownRead.ABSENT) {
+            return
+        }
+        val allowed = when (apiType) {
+            Store::class.java, VersionedStore::class.java -> true
+            Cache::class.java -> annotation.source == CoCache.Source.EXTERNAL
+            else -> false
+        }
+        check(allowed) {
+            "@CoCache(unknownRead = ABSENT) is not supported on ${apiType.simpleName} interface[${type.name}]: it applies only to " +
+                "reads without a source, on Store, VersionedStore and Cache with source = EXTERNAL."
+        }
+    }
+
+    private fun unknownReadOf(annotation: CoCache?): UnknownReadMode = when (annotation?.unknownRead) {
+        CoCache.UnknownRead.ABSENT -> UnknownReadMode.ABSENT
+        CoCache.UnknownRead.THROW, null -> UnknownReadMode.THROW
     }
 
     /**

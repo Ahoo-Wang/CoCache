@@ -68,6 +68,12 @@ annotation class CoCache(
      * 编解码 bean 名；为空时按泛型 `Codec<V>` 唯一匹配，找不到则按值类型使用 Jackson。
      */
     val codec: String = "",
+    /**
+     * 不带 loader 的读取遇到 L1 读失败（`Lookup.Unknown`）时返回什么（RFC 0005 §4.1）：[UnknownRead.THROW]（默认）抛出
+     * `CacheReadException`，`lookup` 返回 `Unknown`；[UnknownRead.ABSENT] 当作不存在，不写任何一层。
+     * 只能用于没有数据源的读取：`Store`、`VersionedStore` 与 [Source.EXTERNAL] 的 `Cache`；其它接口设为 [UnknownRead.ABSENT] 时启动失败。
+     */
+    val unknownRead: UnknownRead = UnknownRead.THROW,
 ) {
     companion object {
         const val UNSET: Long = -1
@@ -87,6 +93,21 @@ annotation class CoCache(
          * 外部来源（`externallySourced()`）：L1 中没有时是“未填充”，带 loader 的调用方用自己的 loader 回源。
          */
         EXTERNAL,
+    }
+
+    /**
+     * L1 读失败时不带 loader 的读取的结果（[CoCache.unknownRead]，即 spec 的 `unknownRead`）。
+     */
+    enum class UnknownRead {
+        /**
+         * 抛出 `CacheReadException`（`get` / `getAll`），`lookup` 返回 `Lookup.Unknown`：没有答案时拒绝。
+         */
+        THROW,
+
+        /**
+         * 当作不存在（`Lookup.Absent`）：没有答案时放行。不写任何一层，`cocache.reads.unknown` 照常计数。
+         */
+        ABSENT,
     }
 }
 

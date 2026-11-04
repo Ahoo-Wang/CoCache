@@ -38,14 +38,23 @@ class CoCacheEndpointWebExtension(private val delegate: CoCacheEndpoint) {
     }
 
     /**
-     * [CoCacheEndpoint.invalidate]：200 并返回失效的 key；未知缓存 404。
+     * [CoCacheEndpoint.invalidate]：200 并返回删除的 key；未知缓存 404；删除唯一副本而开关没有开启时 403，响应体说明要开启的开关。
      */
     @DeleteOperation
     fun invalidate(
         @Selector name: String,
-        @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>
-    ): WebEndpointResponse<CoCacheEndpoint.InvalidationReport> {
-        val report = delegate.invalidate(name, key) ?: return WebEndpointResponse(WebEndpointResponse.STATUS_NOT_FOUND)
+        @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>,
+        purge: Boolean?,
+    ): WebEndpointResponse<Any> {
+        val report = try {
+            delegate.invalidate(name, key, purge)
+        } catch (e: CoCacheEndpoint.DeletionNotAllowedException) {
+            return WebEndpointResponse(mapOf("error" to e.message), STATUS_FORBIDDEN)
+        } ?: return WebEndpointResponse(WebEndpointResponse.STATUS_NOT_FOUND)
         return WebEndpointResponse(report, WebEndpointResponse.STATUS_OK)
+    }
+
+    private companion object {
+        const val STATUS_FORBIDDEN = 403
     }
 }

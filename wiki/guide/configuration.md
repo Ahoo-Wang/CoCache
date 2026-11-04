@@ -170,6 +170,7 @@ With `spring-boot-starter-actuator` on the classpath:
 | Feature | Switch | Notes |
 |---------|--------|-------|
 | `cocache` endpoint | `management.endpoints.web.exposure.include=cocache`; access via `management.endpoint.cocache.access` | Lists caches and counters, inspects and invalidates single keys |
+| Per-key deletes of the only copy | `management.endpoint.cocache.allow-store-delete` (default `false`): `Store`, `SetStore`; `management.endpoint.cocache.allow-purge` (default `false`): `VersionedStore`, and `?purge=true` on a `VersionedCache` | Without the switch these return `403` and change nothing ([Observability](/operations/observability#invalidate-key)) |
 | `cocache` health indicator | `management.health.cocache.enabled` (default `true`) | `DOWN` only while the Redis invalidation heartbeat fails |
 | Micrometer meters `cocache.*` | Micrometer on the classpath | Tagged by `cache` |
 

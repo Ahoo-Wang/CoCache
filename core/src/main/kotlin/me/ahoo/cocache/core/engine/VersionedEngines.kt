@@ -23,6 +23,7 @@ import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.internal.runSync
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -139,6 +140,14 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
         runSync { evictKeepingVersion(storageKey) }
     }
 
+    override val keyDeletion: CacheAdmin.KeyDeletion
+        get() = CacheAdmin.KeyDeletion.EVICT
+
+    override fun purgeEncoded(encodedKey: String) {
+        val storageKey = storageKeyOf(encodedKey)
+        runSync { deleteStorageKeys(listOf(storageKey), PURGE) }
+    }
+
     override fun async(): AsyncVersionedCache<K, V> = asyncView
 
     override fun suspending(): SuspendingVersionedCache<K, V> = suspendingView
@@ -231,6 +240,11 @@ internal class VersionedStoreEngine<K : Any, V : Any>(
         val storageKey = storageKeyOf(encodedKey)
         runSync { deleteStorageKeys(listOf(storageKey), PURGE) }
     }
+
+    override val keyDeletion: CacheAdmin.KeyDeletion
+        get() = CacheAdmin.KeyDeletion.PURGE
+
+    override fun purgeEncoded(encodedKey: String) = invalidateEncoded(encodedKey)
 
     override fun async(): AsyncVersionedStore<K, V> = asyncView
 

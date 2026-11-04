@@ -83,6 +83,7 @@ class App
 | `loader` | `""` | 数据源的 bean 名（只用于 `Cache` 与 `VersionedCache`）。为空时取唯一匹配的 bean（见 [loader](#loaders)）。 |
 | `source` | `LOADER` | 只用于 `Cache`。`CoCache.Source.EXTERNAL` 即 `externallySourced()`：值由调用方提供。不能与 `loader` 同时设置。 |
 | `codec` | `""` | `Codec` 的 bean 名。为空时取唯一的 `Codec<V>` 类型 bean，没有则用 Jackson。 |
+| `unknownRead` | `THROW` | 不带 loader 的读取遇到 Redis 故障（[`Unknown`](#unknown)）时返回什么：`CoCache.UnknownRead.ABSENT` 返回 `null`。只用于 `Store`、`VersionedStore` 与 `source = EXTERNAL` 的 `Cache`。 |
 
 `CoCache.FOREVER` 只能用于 `ttl`（以及 `@CaffeineCache.expireAfterAccess`，表示关闭），用在其它时长属性上启动失败。`@CaffeineCache.maximumSize` 是条目数而不是时长，在它上面写 `FOREVER` 就是 `Long.MAX_VALUE` 个条目。只有 `ttlJitter` 与 `refreshWindow` 可以为 0；其它时长为 0，或任何时长为 `UNSET` 以外的负数，都会启动失败。
 
@@ -320,7 +321,7 @@ keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
 `Unknown` 是关于这一次读取的事实，不是关于数据的：它从不被缓存、从不广播，也不交给自己有数据源的调用方。`lookup(key).valueOrThrow()` 返回值或 `null`，遇到 `Unknown` 时抛出。在 Java 21 中对这个密封类型做穷尽的 `switch`；`as? Lookup.Present` 会静默地把 `Unknown` 当作不存在。
 
 - **谁会得到 `Unknown`**：没有数据源的读取（`Store`、`VersionedStore`、`SetStore`，以及外部来源的 `Cache` 上不带 loader 的读取），以及设置了 `readFailure = THROW` 时带数据源的读取。默认情况下带数据源的读取改为从数据源加载。
-- **`unknownRead`** 设在 `CacheSpec`（只限外部来源）、`StoreSpec` 或 `VersionedStoreSpec` 上，决定不带 loader 的读取遇到 `Unknown` 时返回什么：`THROW`（默认），或 `ABSENT`：返回 `null`（`Lookup.Absent`）且什么也不缓存，下一次读取重新访问 Redis。它不作用于 `getIfChanged`、`getVersioned` 与带 loader 的读取，`SetStore` 没有它。它暂时没有配置项，请在 spec 或[定制器](#customizer)中设置。
+- **`unknownRead`** 设在 `CacheSpec`（只限外部来源）、`StoreSpec` 或 `VersionedStoreSpec` 上，决定不带 loader 的读取遇到 `Unknown` 时返回什么：`THROW`（默认），或 `ABSENT`：返回 `null`（`Lookup.Absent`）且什么也不缓存，下一次读取重新访问 Redis。它不作用于 `getIfChanged`、`getVersioned` 与带 loader 的读取，`SetStore` 没有它。在 spec 中、接口上的 `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)` 或[定制器](#customizer)中设置；它暂时没有配置项。
 - **`getAll`** 先完成其余每个 key（释放 lease、写回加载结果），再抛出 `CacheReadException`：`unknownKeys` 是没有答案的 key，`partialResult` 是已经得到的值。`lookupAll(keys)` 改为对每个 key 返回一个 `Lookup`，不抛出。
 - 加载超时（`load-timeout`）与被拒绝的加载（`load-max-concurrent`）不是 Redis 故障：它们抛出各自的异常，`lookup` 也一样。
 - 每个 `Unknown` 计入 `cocache.reads.unknown`（含按 `ABSENT` 换算的），那次 Redis 故障本身计入 `cocache.remote.failures`。
@@ -457,7 +458,7 @@ CoCache 宁可启动失败，也不运行一个无法按声明工作的缓存。
 | 接口没有继承五种类型之一、继承了多个，或没有具体的类型参数；spec bean 的返回类型没有写出泛型 | key、loader 与编解码都由这些类型解析 |
 | 接口的抽象方法对应不上它所继承的类型的任何方法 | 否则调用会在运行时失败 |
 | `Cache` 没有匹配到 loader 也没有声明 `source = EXTERNAL`；`VersionedCache` 没有带版本的数据源；`CacheSpec` 没有数据来源或有多个 | 缓存必须说明数据从哪里来 |
-| `Store`、`VersionedStore`、`SetStore` 上设置了 `loader` 或 `source = EXTERNAL`；有数据源的 `CacheSpec` 上设置了 `unknownRead` | 这些类型没有数据源 |
+| `Store`、`VersionedStore`、`SetStore` 上设置了 `loader` 或 `source = EXTERNAL`；有数据源的 `CacheSpec` 上设置了 `unknownRead`；有 loader 的 `Cache`、`VersionedCache` 或 `SetStore` 上写了 `@CoCache(unknownRead = ABSENT)` | 这些类型没有数据源，或它们的读取不接受 `unknownRead` |
 | 匹配到多个 `CacheLoader<K, V>` 或 `Codec<V>` bean | 静默挑一个可能用错数据源或格式 |
 | 后端的存储缺少这种类型需要的能力（见[能力](#spec-bean)） | 这种类型的操作无法工作 |
 | 墓碑永不过期的 `VersionedStore` | 每个删除过的 key 都会永远留在 Redis 中 |

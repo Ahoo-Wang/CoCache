@@ -91,6 +91,8 @@ description: CoCache 版本发布历史和重要变更。
 - 结果未知的带版本写回（填充）按写入处理：实例递增戳、丢掉本地副本（非原子广播时发布失效），因为超时或被排空的 `FILL` 仍可能稍后让版本前进，而它的失效消息在这个实例上被过滤。
 - 填充遵循 Redis 中的版本：带版本的内容上，凭刷新令牌或 lease 的填充在版本更旧（或没有版本）时被拒绝，令牌在同一个脚本中清零；版本相等时续期，不发失效消息；版本更新时写入并广播，加载所在的实例按写入处理：丢掉本地副本，不把结果填进 L2。
 - 端点的按 key `DELETE`（`CacheAdmin.invalidateEncoded`）在带版本的缓存上保留版本：key 变为仍然拒绝旧版本的淘汰标记（状态 `E`，44 字节，寿命同墓碑）。下一次读取在其上取得 lease；loader 落后时，它的结果照常返回并在 L2 中保留 `degraded-local-max-age`，但不写入 Redis（`cocache.fill.rejections`）。失败时抛出，不在后台重试。见[按版本写入](./freshness.md#versioned-writes)。
+- 端点的按 key `DELETE` 默认拒绝删除唯一副本：`Store` 与 `SetStore` 需要 `management.endpoint.cocache.allow-store-delete=true`，`VersionedStore` 需要 `management.endpoint.cocache.allow-purge=true`。没有开启时请求返回 `403`，不做任何修改。见[删除唯一副本需要开关](#endpoint-switches)。
+- 结果未知的 `Cache.put` 或 `putAll` 在默认的 `invalidate-failure: retry` 下不再抛出，而是登记补偿失效。见[补偿结果未知的写入](#compensated-puts)。
 - **修复**：Redis 中已是给出的版本时，`putIfNewer` 与 `invalidateIfNewer` 在所有后端上都发布失效（不写入）；此前只有非原子广播的路径这样做。在 lease 上填充这个版本的加载不广播，写入方自己的 `putIfNewer` 返回 `Stale` 之后，别的实例仍可能持有更旧的副本直到 `local-max-age`。更旧的版本照常不发布。
 - SPI：`Envelope.Scalar` 新增 `digest: Digest?`（默认 `null`），由引擎与写入标识一起给出。存储在每个写入标量的操作中把它保存为摘要段，`read`、`readAll` 与 `readIfChanged` 原样返回，不校验、不重算。`readIfChanged` 与 `putIfMatch` 比较保存的摘要，拒绝没有摘要的值与带版本的内容。`L1Fill` 现在承载版本规则：填充让版本前进或替换了淘汰标记、并且存储广播了它（只含这个 key，来源为填充令牌的节点）时为 `Filled(advanced = true)`，版本规则拒绝时为 `Rejected(currentVersion)`。`VersionedL1Store` 与 `FutureVersionedL1Store` 新增 `evictKeepingVersion(key, ttl, frame)`，返回新的 `L1Eviction`（`Evicted`、`Authoritative`、`Unreadable(format)`）。`L1ConditionalRead.Changed` 按值相等。
 
@@ -115,6 +117,22 @@ description: CoCache 版本发布历史和重要变更。
 ### 行为变化：关闭运行时会等待在途的 Redis 步骤
 
 - `CacheRuntime.close()` 在关闭执行器之前至多等待 5 秒，让在途的异步调用做完不能跳过的 Redis 步骤：释放 lease、后端不支持原子广播时写入之后的广播，以及已经发出的命令。后端要晚于运行时关闭；Spring Boot starter 已经如此，因为运行时 bean 依赖后端。之前 `close()` 立即返回，紧接着关闭的后端可能让这些步骤失败：其它节点的本地旧副本留到 `local-max-age`，lease 留到 `lease-ttl`。同步调用在调用方自己的线程上运行，不在等待之列。
+
+### 行为变化：补偿结果未知的写入 {#compensated-puts}
+
+- 结果未知（超时、应答途中断线）的 `Cache.put` 或 `putAll`，在 `invalidate-failure` 为 `retry`（派生缓存的默认值）时不再抛出。它的值现在或之后可能在 Redis 中，所以 CoCache 用与失败的 `invalidate` 相同的重试队列登记这些 key 的失效，这些 key 收敛到“从数据源重新加载”（[RFC 0005 §4.6](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。登记期间，该实例上的未命中跳过 Redis。迟到的写入晚于补偿的删除执行时，它的值保留到自己的 TTL。
+- 确定未执行的写入（`CacheWriteException.outcomeUnknown = false`）照常抛出，不登记任何东西。`invalidate-failure: throw` 时，失败的写入一律抛出。`Store` 与 `SetStore` 的写入从不补偿。
+- 告警日志为 `Cache[…] - put […] failed, retrying the invalidation.`（失败的 `invalidate` 为 `invalidate […] failed, retrying the invalidation.`）。
+
+### 新增：`@CoCache(unknownRead)`
+
+- `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)` 在接口式声明上设置 spec 的 `unknownRead`：不带 loader 的读取遇到 Redis 故障时返回 `null`，而不是抛出（[`Unknown`](./caches.md#unknown)）。它用于 `Store`、`VersionedStore` 与 `source = EXTERNAL` 的 `Cache`；其它接口上的 `ABSENT` 会启动失败。
+
+### 行为变化：删除唯一副本需要开关 {#endpoint-switches}
+
+- `Store` 或 `SetStore` 上的 `DELETE /actuator/cocache/{name}/{key}` 需要 `management.endpoint.cocache.allow-store-delete=true`，`VersionedStore` 上的（即 purge）需要 `management.endpoint.cocache.allow-purge=true`。两者默认都是 `false`；没有开启时请求返回 `403`，说明要开启的开关，不做任何修改。失效 `Cache` 的 key 与淘汰 `VersionedCache` 的 key 不需要开关（[可观测性](../operations/observability.md#invalidate-key)）。
+- `DELETE /actuator/cocache/{name}/{key}?purge=true` 清除 `VersionedCache` 或 `VersionedStore` 的 key 并丢掉版本，需要 `allow-purge`；其它类型返回 `400`。
+- 按 key `DELETE` 的报告新增字段 `deletion`（`INVALIDATE`、`EVICT`、`DELETE`、`PURGE` 或 `CLEAR`），`CacheAdmin` 新增 `keyDeletion` 与 `purgeEncoded(encodedKey)`。
 
 ### 行为变化：被中断的加载的等待者改为自己加载
 

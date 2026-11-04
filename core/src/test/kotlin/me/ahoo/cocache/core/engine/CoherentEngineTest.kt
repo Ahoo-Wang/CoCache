@@ -34,6 +34,7 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LocalPolicy
 import me.ahoo.cocache.test.CacheAccess
@@ -114,6 +115,15 @@ open class CoherentEngineTest {
         asyncExecutor?.let { builder.asyncExecutor(it) }
         return builder.build().also { runtimes.add(it) }
     }
+
+    /**
+     * 失效失败模式为 THROW 的策略：写入失败照常抛出（RETRY 时结果未知的 `put` 登记补偿、不抛出，RFC 0005 §4.6 U8）。
+     */
+    private val throwing = CachePolicy(
+        ttl = Duration.ofMinutes(10),
+        ttlJitter = Duration.ZERO,
+        invalidateFailure = InvalidateFailureMode.THROW
+    )
 
     private fun spec(
         policy: CachePolicy = CachePolicy(
@@ -489,7 +499,7 @@ open class CoherentEngineTest {
     @Test
     fun nonAtomicBackendPublishesAfterAWriteThatFailedButTookEffect() {
         val nonAtomic = nonAtomic()
-        val cacheA = runtime(backend = nonAtomic).engine()
+        val cacheA = runtime(backend = nonAtomic).engine(spec(throwing))
         val cacheB = runtime(backend = nonAtomic).engine()
         database["k"] = "v0"
         database["a"] = "a0"
@@ -520,7 +530,7 @@ open class CoherentEngineTest {
         )
         val writeFailure = IllegalStateException("reply lost")
         failing.afterPut = { throw writeFailure }
-        val cache = runtime(backend = failing).engine()
+        val cache = runtime(backend = failing).engine(spec(throwing))
         val error = runCatching { cache.put("k", "v1") }.exceptionOrNull()
         error.assert().isInstanceOf(me.ahoo.cocache.api.CacheWriteException::class.java)
         requireNotNull(error).cause.assert().isSameAs(writeFailure)
@@ -600,7 +610,7 @@ open class CoherentEngineTest {
     fun rejectedCompletionStillPublishesAndKeepsTheWriteOutcome() {
         HoppingNonAtomic().use { hopping ->
             val executor = RejectingExecutor(1)
-            val cacheA = runtime(backend = hopping.backend, asyncExecutor = executor).engine()
+            val cacheA = runtime(backend = hopping.backend, asyncExecutor = executor).engine(spec(throwing))
             val cacheB = runtime(backend = hopping.backend).engine()
             val sync = access == CacheAccess.SYNC
             database["k"] = "v0"

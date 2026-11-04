@@ -447,11 +447,12 @@ class TransactionAwareSpringCacheTest {
                 decorated.put("a", "1")
                 decorated.evict("b")
             }
-            backend.failWrites = true
+            // 确定未执行的写入照常抛出（结果未知的 put 在 RETRY 下登记补偿、不抛出，RFC 0005 §4.6 U8）
+            backend.rejectWrites = true
             try {
                 tx.executeWithoutResult { requireNotNull(simple.getCache("user")).put("k", "v") }
             } finally {
-                backend.failWrites = false
+                backend.rejectWrites = false
             }
         }
         val errorLogs = logs.filter { it.level == Level.ERROR }
