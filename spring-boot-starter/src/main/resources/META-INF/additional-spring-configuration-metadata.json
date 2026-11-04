@@ -1,6 +1,15 @@
 {
   "properties": [
     {
+      "name": "cocache.defaults.foreign-format",
+      "type": "java.lang.String",
+      "description": "Removed in 8.0.",
+      "deprecation": {
+        "level": "error",
+        "reason": "Removed in 8.0 without replacement: a cache with a data source reclaims content it cannot read, a cache without one fails, and a newer format is never reclaimed or overwritten."
+      }
+    },
+    {
       "name": "cocache.spring-cache.retrieve-executor",
       "type": "java.lang.String",
       "description": "Deprecated since 6.3: Spring Cache retrieve uses the cache's async view and no executor; the value is ignored.",

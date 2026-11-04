@@ -25,7 +25,6 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.redis.RedisBackend
@@ -174,8 +173,6 @@ class CoCacheAutoConfigurationTest {
                 "cocache.caches.user.load-timeout=7",
                 "cocache.caches.user.invalidate-failure=throw",
                 "cocache.caches.user.read-failure=throw",
-                "cocache.caches.user.foreign-format=reclaim",
-                "cocache.defaults.foreign-format=fail",
                 "cocache.caches.index.ttl-forever=true",
             )
             .run { context ->
@@ -196,13 +193,6 @@ class CoCacheAutoConfigurationTest {
                 user.readFailure.assert().isEqualTo(me.ahoo.cocache.core.policy.ReadFailureMode.THROW)
                 properties.policyFor("profile", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofMinutes(2))
                 properties.policyFor("index", CachePolicy.DEFAULT).ttl.assert().isNull()
-                user.foreignFormat.assert().isEqualTo(ForeignFormatMode.RECLAIM)
-                properties.policyFor(
-                    "profile",
-                    CachePolicy.DEFAULT
-                ).foreignFormat.assert().isEqualTo(ForeignFormatMode.FAIL)
-                // defaults 不作用于集合缓存：未设置时由引擎按“没有数据源”取 FAIL
-                properties.setPolicyFor("index", CachePolicy.DEFAULT).foreignFormat.assert().isNull()
             }
     }
 
@@ -217,10 +207,8 @@ class CoCacheAutoConfigurationTest {
             refreshWindow = Duration.ofSeconds(30),
             leaseTtl = Duration.ofSeconds(4),
             loadAcquireTimeout = Duration.ofMillis(5),
-            foreignFormat = ForeignFormatMode.RECLAIM,
         )
         val policy = properties.applyTo(CachePolicy.DEFAULT)
-        policy.foreignFormat.assert().isEqualTo(ForeignFormatMode.RECLAIM)
         policy.ttl.assert().isEqualTo(Duration.ofMinutes(3))
         policy.ttlJitter.assert().isEqualTo(Duration.ofSeconds(1))
         policy.absentTtl.assert().isEqualTo(Duration.ofSeconds(2))
@@ -602,7 +590,6 @@ class CoCacheAutoConfigurationTest {
         leaseTtl: Duration? = null,
         loadAcquireTimeout: Duration? = null,
         loadTimeout: Duration? = null,
-        foreignFormat: ForeignFormatMode? = null,
     ) = CoCacheProperties.PolicyProperties(
         ttl,
         ttlForever,
@@ -619,8 +606,7 @@ class CoCacheAutoConfigurationTest {
         null,
         null,
         null,
-        loadTimeout,
-        foreignFormat
+        loadTimeout
     )
 
     /**

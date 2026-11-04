@@ -40,8 +40,8 @@ import java.util.concurrent.CompletableFuture
 
 /**
  * 一个命名空间的 L1 存储，原生挂起（RFC 0005 §4.3）：每个操作一次 Lua 往返（[RedisScripts]），以 Lettuce 的异步命令发出、
- * 挂起等待结果（[RedisConnections.awaitCommand]）。等待期间不占线程，续接经调用方的调度器恢复，不在 Lettuce 的 I/O 线程上继续；
- * 线格式不变（6.x 的脚本与参数）。
+ * 挂起等待结果（[RedisConnections.awaitCommand]）。等待期间不占线程，续接经调用方的调度器恢复，不在 Lettuce 的 I/O 线程上继续。
+ * 线格式 2（RFC 0005 §4.7）：版本与写入标识（[Envelope.Scalar.version]、[Envelope.Scalar.writer]）写成头部之后的段，读取时原样返回。
  *
  * - **限时**：每条命令受 `commandTimeout` 限制；读取另可带这次调用的 `timeout`，以两者中较短的一个为限（RFC 0005 round 3 D6，
  *   [RedisConnections.readTimeout]）。超时时尚未写出的脚本命令不再写出（`CommandCall`）。
@@ -407,7 +407,16 @@ internal class RedisL1Store(
             ttl: Duration?,
             frame: ByteArray
         ): L1ConditionalWrite {
-            val args = listOf(expected?.toString()?.bytes() ?: EMPTY, millis(ttl), channel, frame, envelope.bytes)
+            // 条件写入写入没有版本的值，只带写入标识
+            val shape = RedisScripts.scalarShape(STATE_VALUE, Versioned.NO_VERSION, envelope.writer)
+            val args = listOf(
+                expected?.toString()?.bytes() ?: EMPTY,
+                shape,
+                millis(ttl),
+                channel,
+                frame,
+                envelope.bytes
+            )
             return decodeConditionalWrite(
                 connections.awaitCommand(connections.evalAsync(RedisScripts.PUT_IF_MATCH, listOf(key.bytes()), args))
             )
@@ -422,17 +431,13 @@ internal class RedisL1Store(
             ttl: Duration?,
             frame: ByteArray
         ): L1VersionedWrite {
+            // 发出之前同步失败：确定未执行。版本段中不得是 NO_VERSION（RFC 0005 §4.7，K15），脚本同样拒绝
+            require(
+                version != Versioned.NO_VERSION
+            ) { "putIfNewer takes a version, not Versioned.NO_VERSION (Long.MIN_VALUE)." }
+            require(envelope !is Envelope.Members) { "putIfNewer takes a scalar value or Envelope.Absent, not a set." }
             val args = ArrayList<ByteArray>(5)
-            args.add(
-                when (envelope) {
-                    is Envelope.Scalar -> versionedShape(STATE_VALUE, version)
-                    Envelope.Absent -> versionedShape(STATE_MISSING, version)
-                    // 发出之前同步失败：确定未执行
-                    is Envelope.Members -> throw IllegalArgumentException(
-                        "putIfNewer takes a scalar value or Envelope.Absent, not a set."
-                    )
-                }
-            )
+            args.add(shapeOf(envelope, version))
             args.add(millis(ttl))
             args.add(channel)
             args.add(frame)
@@ -482,8 +487,6 @@ internal class RedisL1Store(
         private val EMPTY = ByteArray(0)
         private const val STATE_VALUE = 'V'.code.toByte()
         private const val STATE_MISSING = 'M'.code.toByte()
-        private val SHAPE_VALUE = byteArrayOf(STATE_VALUE)
-        private val SHAPE_MISSING = byteArrayOf(STATE_MISSING)
         private val SHAPE_SET = byteArrayOf('S'.code.toByte())
         private const val MEMBER_PREFIX = '+'.code.toByte()
 
@@ -530,41 +533,19 @@ internal class RedisL1Store(
         }
 
         /**
-         * 写脚本的形状参数（见 [RedisScripts.PRELUDE]）：`V` / `S` / `M`；带版本的值后跟 8 字节版本。
+         * 写脚本的形状参数（见 [RedisScripts.PRELUDE]）：集合为 `S`；标量为状态、标志位与段（[RedisScripts.scalarShape]），
+         * 带上信封的版本与写入标识。
          */
         private fun shapeOf(envelope: Envelope): ByteArray =
             shapeOf(envelope, (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION)
 
         /**
-         * 带 [version] 的形状：值与负缓存带版本时后跟 8 字节版本（负缓存带版本即墓碑）；集合没有版本。
+         * 带 [version] 的形状：值与负缓存带版本时写版本段（负缓存带版本即墓碑）；值带写入标识时写扩展区；集合没有段。
          */
-        private fun shapeOf(envelope: Envelope, version: Long): ByteArray {
-            if (envelope is Envelope.Members) {
-                return SHAPE_SET
-            }
-            val state = if (envelope is Envelope.Scalar) STATE_VALUE else STATE_MISSING
-            if (version != Versioned.NO_VERSION) {
-                return versionedShape(state, version)
-            }
-            return if (state == STATE_VALUE) SHAPE_VALUE else SHAPE_MISSING
-        }
-
-        private fun versionedShape(state: Byte, version: Long): ByteArray =
-            ByteBuffer.allocate(1 + RedisScripts.VERSION_SIZE).put(state).putLong(version).array()
-
-        /**
-         * 头部令牌位置的版本（6.8）：以 [RedisScripts.VERSION_MARK] 开头时取其后的 8 字节，否则没有版本。
-         * 先比较第一个字节：令牌的第一个字节是随机的，绝大多数读取一次比较就结束。
-         */
-        internal fun versionOf(raw: ByteArray): Long {
-            val mark = RedisScripts.VERSION_MARK
-            val offset = RedisScripts.VERSION_OFFSET
-            for (i in mark.indices) {
-                if (raw[offset + i] != mark[i]) {
-                    return Versioned.NO_VERSION
-                }
-            }
-            return ByteBuffer.wrap(raw, offset + mark.size, RedisScripts.VERSION_SIZE).long
+        private fun shapeOf(envelope: Envelope, version: Long): ByteArray = when (envelope) {
+            is Envelope.Members -> SHAPE_SET
+            is Envelope.Scalar -> RedisScripts.scalarShape(STATE_VALUE, version, envelope.writer)
+            Envelope.Absent -> RedisScripts.scalarShape(STATE_MISSING, version, null)
         }
 
         /**
@@ -629,53 +610,82 @@ internal class RedisL1Store(
                 RedisScripts.RESULT_SET -> decodeSet(
                     result[2] as List<ByteArray>,
                     result[3] as ByteArray,
+                    result[4] as ByteArray,
                     ttlOf(result[1] as Long)
                 )
                 else -> throw IllegalStateException("Unknown read result code[${result[0]}].")
             }
         }
 
+        /**
+         * 标量的解码，分类与脚本的 `scalar_format`（[RedisScripts]）一致：先看格式号、再看标志位与状态（RFC 0005 §4.7，P1、P18）。
+         * - 不是本协议写入的内容（不以 magic 开头、太短、格式字节为 0、段超出值的长度）：格式 [UNRECOGNIZED]；其它格式字节
+         *   （6.x 的 1、更高的格式）原样报告。信封都是整个值：低于本格式的按读不懂处理，回收比较的指纹与脚本相同。
+         * - 格式 2 中未知的必须理解的位或未知的状态：[RedisScripts.NEWER_FORMAT]。更高的格式由引擎绕过，信封不被解码。
+         * - 本格式：载荷从 [RedisScripts.payloadOffset] 起，版本段与扩展区中的写入标识随信封返回。
+         */
         private fun decodeScalar(raw: ByteArray, ttl: Duration?, refreshGranted: Boolean): L1Read.Hit {
             if (raw.size < RedisScripts.HEADER_SIZE || raw[0] != RedisScripts.MAGIC) {
                 return L1Read.Hit(Envelope.Scalar(raw), UNRECOGNIZED, ttl)
             }
             // 无符号（与 Lua 的 string.byte 一致）：有符号时 0x80 以上的更高格式成了负数，被当作读不懂的内容回收
             val format = raw[1].toInt() and BYTE_MASK
-            return when (raw[2]) {
-                STATE_VALUE -> L1Read.Hit(
-                    Envelope.Scalar(raw.copyOfRange(RedisScripts.HEADER_SIZE, raw.size), versionOf(raw)),
-                    format,
-                    ttl,
-                    refreshGranted
-                )
-                STATE_MISSING -> L1Read.Hit(Envelope.Absent, format, ttl)
-                else -> L1Read.Hit(
-                    Envelope.Scalar(raw.copyOfRange(RedisScripts.HEADER_SIZE, raw.size)),
-                    UNRECOGNIZED,
-                    ttl
-                )
+            if (format != RedisScripts.FORMAT) {
+                return L1Read.Hit(Envelope.Scalar(raw), format, ttl)
             }
+            val flags = raw[RedisScripts.FLAGS_OFFSET].toInt() and BYTE_MASK
+            val state = raw[RedisScripts.STATE_OFFSET]
+            if (flags and RedisScripts.UNKNOWN_FLAGS != 0 || (state != STATE_VALUE && state != STATE_MISSING)) {
+                return L1Read.Hit(Envelope.Scalar(raw), RedisScripts.NEWER_FORMAT, ttl)
+            }
+            val offset = RedisScripts.payloadOffset(raw, flags)
+            if (offset < 0) {
+                return L1Read.Hit(Envelope.Scalar(raw), UNRECOGNIZED, ttl)
+            }
+            if (state == STATE_MISSING) {
+                return L1Read.Hit(Envelope.Absent, format, ttl)
+            }
+            val version = if (flags and RedisScripts.FLAG_VERSION != 0) {
+                ByteBuffer.wrap(raw, RedisScripts.HEADER_SIZE, RedisScripts.VERSION_SIZE).long
+            } else {
+                Versioned.NO_VERSION
+            }
+            val writer = if (flags and RedisScripts.FLAG_EXTENSION != 0) {
+                RedisScripts.writerOf(raw, RedisScripts.extensionOffset(flags))
+            } else {
+                null
+            }
+            return L1Read.Hit(
+                Envelope.Scalar(raw.copyOfRange(offset, raw.size), version, writer),
+                format,
+                ttl,
+                refreshGranted
+            )
         }
 
         /**
-         * 集合：[fields] 为 Hash 的全部字段名（`HKEYS`），[format] 为 `!f` 的值（字段不存在时为空串）。
-         * 只取 `+` 前缀的成员字段，`!f` 与其它字段忽略。
+         * 集合：[fields] 为 Hash 的全部字段名（`HKEYS`），[format] 与 [mustUnderstand] 为 `!f` 与 `!m` 的值（字段不存在时为空串），
+         * 格式按 [RedisScripts.setFormat]（K10）。只取 `+` 前缀的成员字段，以 `!` 开头的元数据字段与其它字段忽略。
          */
-        private fun decodeSet(fields: List<ByteArray>, format: ByteArray, ttl: Duration?): L1Read.Hit {
+        private fun decodeSet(
+            fields: List<ByteArray>,
+            format: ByteArray,
+            mustUnderstand: ByteArray,
+            ttl: Duration?
+        ): L1Read.Hit {
             val members = ArrayList<ByteArray>(fields.size)
             for (field in fields) {
                 if (field.isNotEmpty() && field[0] == MEMBER_PREFIX) {
                     members.add(field.copyOfRange(1, field.size))
                 }
             }
-            val version = String(format, Charsets.UTF_8).toIntOrNull() ?: UNRECOGNIZED
-            return L1Read.Hit(Envelope.Members(members), version, ttl)
+            return L1Read.Hit(Envelope.Members(members), RedisScripts.setFormat(format, mustUnderstand), ttl)
         }
 
         /**
-         * 无法识别的内容（不是 CoCache 6.0 写入的值）：引擎按损坏处理（条件回收后回源）。
+         * 无法识别的内容（不是本协议写入的值）：引擎按读不懂处理（有数据源时条件回收后回源，没有时失败）。
          */
-        const val UNRECOGNIZED = 0
+        const val UNRECOGNIZED = RedisScripts.UNRECOGNIZED
 
         private fun String.bytes(): ByteArray = toByteArray(Charsets.UTF_8)
 

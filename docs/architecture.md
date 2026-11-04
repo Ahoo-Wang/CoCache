@@ -37,7 +37,7 @@ cocache-core                   引擎与运行时；依赖 Caffeine、kotlin-log
   LoadObserver、SourceLoadRejectedException、SourceLoadTimeoutException、ForeignFormatException
   engine：AbstractEngine、CoherentEngine、SetEngine、VersionedCache、ValueFormat、InvalidationRetrier、AsyncContext、EngineDispatcher
   internal：SingleFlight、InvalidationStamps、Futures、ExecutionMode、uncancellable（L1 调用不可取消）
-  policy：CachePolicy、LeasePolicy、LoadPolicy、LocalPolicy、InvalidateFailureMode、ReadFailureMode、ForeignFormatMode
+  policy：CachePolicy、LeasePolicy、LoadPolicy、LocalPolicy、InvalidateFailureMode、ReadFailureMode
   proxy：CacheProxies、JoinCacheProxies；join：SimpleJoinCache；memory：InMemoryBackend；clock：TickingClock、ManualClock；codec：StringCodec
 cocache-redis                  Lettuce 原生后端，不依赖 Spring
   RedisBackend、RedisBackendOptions、RedisChannelMode、RedisScripts、RedisL1Store（原生挂起的 L1Store，M3d）、RedisConnections、
@@ -101,39 +101,46 @@ cocache-bom / cocache-dependencies / cocache-example
   - 首字节是帧的版本，也是帧的类型。帧版本 2 预留为“namespace 重置”（`InvalidationFrame.NAMESPACE_RESET_VERSION`，Q12），帧本身在 8.x 加入：8.0 节点把它当作读不懂的帧重置，恰好做了正确的事，不需要两阶段发布。
   - **零 key 的帧**是存储创建时的频道探测（§8，K8），合法帧，通道照常投递，引擎什么也不做（不计入收到的失效）。
 
-### 3.3 L1 线格式（Redis，格式版本 1）
+### 3.3 L1 线格式（Redis，格式 2）
 
-**标量、负缓存、lease 占位：String = 36 字节定长头 + 载荷**
+8.x 的全部内容都是格式 2（RFC 0005 §4.7，M4b），lease 占位 `L`、负缓存 `M` 与集合也是。8.x 不考虑与 6.x 的兼容：6.x 的格式 1 在 8.x 中是读不懂的内容，与格式 0 相同（见“读不懂的内容”）。
+
+**标量、负缓存、lease 占位：String = 36 字节的核心头部 + 标志位声明的段 + 载荷**
 
 | 偏移 | 长度 | 字段 |
 |------|------|------|
 | 0 | 1 | magic `0xC0` |
-| 1 | 1 | 格式版本（`1`），无符号字节：Lua 的 `string.byte` 与客户端的解析一致，`0x80` 以上的更高版本不会被读成负数（更高版本既不回收也不写回，§5.4） |
+| 1 | 1 | 格式版本（`2`），无符号字节：Lua 的 `string.byte` 与客户端的解析一致，`0x80` 以上的更高版本不会被读成负数 |
 | 2 | 1 | 状态：`V` 值、`M` 负缓存、`L` lease 占位 |
-| 3 | 1 | 保留（`0`） |
+| 3 | 1 | 标志位（6.x 的保留字节），见下 |
 | 4 | 24 | 令牌：`L` 状态下是 lease 令牌，`V` 状态下是刷新令牌，全零表示无 |
 | 28 | 8 | 令牌签发时间：服务端 `TIME` 的纪元毫秒，大端 IEEE 754 double（Lua `struct.pack('>d')`） |
-| 36 | n | 载荷：`Codec<V>` 的输出（`M`、`L` 无载荷） |
+| 36 | 8 | 版本段（bit 0）：大端有符号 64 位 |
+| 之后 | 32 | 摘要段（bit 1）：载荷的 SHA-256，M4c 起由权威标量写入；本版本只按长度跳过它 |
+| 之后 | 2 + n | 扩展区（bit 7）：2 字节总长 n（大端无符号，其后 TLV 的字节数，不含它自己）+ TLV |
+| 之后 | 其余 | 载荷：`Codec<V>` 的输出（`M`、`L` 没有载荷） |
 
-**带版本的值与负缓存（6.8，§6.5）**：同一个 36 字节头，格式版本仍是 `1`，状态仍是 `V` / `M`，载荷不变；只是令牌位置与签发时间换了内容：
+- **标志位**：bit 0–6 是必须理解的，bit 7 的扩展区只放旧读者可以忽略、整体覆盖时丢失也无害的信息。本版本认识 bit 0、1、7；bit 2–6 是未知的必须理解的位，带有它们的内容等同于更高格式。
+- **载荷偏移只有一个定义**：核心头部之后按标志位的顺序依次跳过版本段、摘要段与扩展区。Lua 的 `payload_start`（`RedisScripts` 的 `FORMAT_RULES`）与客户端的 `RedisScripts.payloadOffset` 逐行对应，需要载荷的脚本（回收、条件读写）与客户端的解码都用它。只有版本段时载荷从字节 44 开始，Lua 中是 `string.sub(v, 45)`（P18）。段超出值的长度时头部损坏，按不是本协议写入的内容（格式 0）处理。
+- **扩展区的 TLV**（D2）：`[类型:1B][长度:1–2B][值]`。长度 0–127 用 1 字节；128–32767 用 2 字节，首字节为 `0x80 | (长度 >> 8)`、次字节为长度的低 8 位。写入方用最短的形式，读者两种都接受。读者逐个读 TLV、跳过未知的类型，取每个类型的第一个；TLV 超出扩展区时读者忽略其余部分，不把值当作损坏（扩展区整体可以忽略）。整体覆盖时扩展区丢失，原地修改（字节 4–35）保留它。
+  - 类型 1 是**写入标识**：24 字节，与令牌同形（`NodeId` + 序号），每次写入新取一个，扩展区共 28 字节（总长 26、类型 1、长度 24）。长度不是 24 时读者按没有处理。8.x 加入按标识比较的条件写入时用它解决现值的 ABA（RFC 0005 §4.2）；本版本只写入、读出，引擎不使用它。
+- **写入哪些段**：派生缓存（有数据源）的值、`L`、没有版本的 `M` 不带段，头部仍是 36 字节，与 6.x 一样大。M5 引入 `Store` / `VersionedStore` 之前，没有数据源的缓存充当权威标量：它的每次标量写入（`put`、`putAll`、调用方给出 loader 时的填充、`putIfMatch`、`putIfNewer`）带写入标识（`Envelope.Scalar.writer`，由引擎给出，存储写成扩展区，读取原样返回）。带版本的值与墓碑（`M`）带版本段，墓碑没有载荷、不带写入标识。摘要段 M4c 起写入。
+- **版本段中不得是 `NO_VERSION`**（`Long.MIN_VALUE`，K15）：客户端不发出（`putIfNewer` 以 `IllegalArgumentException` 拒绝它），写脚本在第一次写入之前以错误回复拒绝（`PUT_ALL` 先检查全部形状）；`PUT_IF_NEWER` 的形状必须带版本段。
+- **令牌**（`Token`，24 B）= `NodeId`（16 B，每个运行时随机生成）+ 进程内单调序号（8 B）。由客户端构造，全局唯一、永不重复签发，所以被销毁的令牌不可能再次匹配（无 ABA）。版本在版本段，带版本的内容的令牌位置也是空的；本版本仍不对它授予令牌（同 6.x），M4d 随状态 `E` 放开。
+- **授予令牌之前先看格式与标志位**（K15）：`READ` 只对格式 2、没有未知的必须理解的位的内容授予 lease 或刷新令牌，刷新令牌只授予没有版本段与摘要段的值（标志位至多是 bit 7）。格式不是 2 或带未知位的内容原样返回，其中的 `L` 也不当作 lease。
+- **`FILL` / `RELEASE` 只读核心头部**（K19）：以 `GETRANGE key 0 35` 读魔数、格式、状态、标志位与令牌，不为比较 24 字节的令牌把整个值读进 Lua（带刷新令牌的 8 MB 值每次写回与释放都会整个读入）。只有格式 2、没有未知的必须理解的位的内容中的令牌能匹配。
 
-| 偏移 | 长度 | 普通内容 | 带版本的内容 |
-|------|------|----------|--------------|
-| 4 | 16 | 令牌的 `NodeId` 部分（无令牌时全零） | 标记 `0xC0` + ASCII `cocache:version`（`RedisScripts.VERSION_MARK`） |
-| 20 | 8 | 令牌的序号部分 | 版本，大端有符号 64 位 |
-| 28 | 8 | 令牌签发时间 | `+inf`（大端 IEEE 754 double） |
+**集合（`SetCache`）：Hash**（K10）。字段 `!f` 为格式版本（`"2"`），`!m` 为必须理解的位图（十进制，缺省为 0；本版本没有已知的位，也不写它），成员字段为 `+` + 成员字节，值为空串；其余以 `!` 开头的字段预留给元数据，读者忽略。8.x 内给集合加信息因此不必改格式号。`!f` 不是 `2` 的集合读不懂（缺失或不是数字为格式 0，其它数字原样报告），`!m` 存在且不是 `0` 的集合等同于更高格式。Hash 只表示“有成员的集合”；lease 与负缓存总是 String 形状。任何整体写入都先 `DEL` 再按新形状写入。
 
-带版本的内容**不持有令牌**：真实令牌以随机的 `NodeId` 开头，不会等于标记，所以任何节点（含 6.x）的 `fill` / `release` 都不会匹配它；签发时间为 `+inf`，6.x 与本版本的读脚本按“`now - 签发时间 > tokenTtl`”判断时永远不会抢占它，因此不授予刷新令牌（`READ` 脚本没有改动，与 6.7.0 的 SHA 相同）。6.x 的客户端解析不看第 3–35 字节，读到的是同一个载荷。线格式的变化只有这一处：令牌位置多了一种内容，key 布局、状态、格式版本、集合字段、失效帧、频道与摘要都不变。
+- **到期时间**：一律 `PEXPIRE` / `PTTL`，毫秒，以相对时长传输，不受节点间时钟偏差影响。参数钳到至少 1 ms；`0` 表示永不过期。**每次状态转换都显式重设到期时间**，lease 的寿命和负缓存的寿命不得泄漏到新值上。只触及字节 4–35 的原地修改（授予刷新令牌、`RELEASE` 清零令牌）保留原到期时间。
+- **读取成本**：标量 `PTTL` + `GET`（一次 EVALSHA）；集合 `PTTL` + `HKEYS` + `HMGET !f !m`（只返回字段名，不返回成员的空值；与 `HGETALL` 的字段顺序相同，摘要不受影响）。读脚本与解析其回复的客户端随同一版本发布，混合版本部署按 SHA 各自加载脚本，可以逐台升级。最小 ACL 因此要加 `+getrange +hmget`（运维文档）。
+- **读不懂的内容**（RFC 0005 §4.7）。客户端先看格式号、再看标志位与状态（P1、P18），分类与脚本的 `scalar_format` / `set_format` 相同：
+  - **低于本格式**（不是本格式写入的内容）：格式 0，即不以 magic 开头或不足 36 字节的 String、格式字节为 `0` 或段超出长度的 String、`!f` 缺失或无效的 Hash、其它 Redis 类型（如原生 Set；以空载荷返回）；以及格式 1，即 6.x 写入的值、lease、带版本的值与集合（格式号原样报告）。有数据源的读取条件回收（比较整个值的指纹）后回源，没有数据源的读取失败（§5.4）；`READ` 不授予令牌、不把其中的 `L` 当作 lease，`FILL` / `RELEASE` 不匹配，条件写入、按版本写入与集合元素写入拒绝。
+  - **更高的格式**：格式号高于 2，以及格式 2 中未知的必须理解的位、未知的状态与 `!m` 中有位的集合（存储报告为格式 3，头部中的格式字节仍是 `2`）。既不回收也不写回：有数据源的读取绕过 L1 回源，没有数据源的读取失败，条件写入、按版本写入与集合元素写入拒绝，`READ` 不授予令牌，`FILL` / `RELEASE` 不匹配。整体覆盖（`put`、`putAll`、`invalidate`）不依赖旧内容，照常写入。
+  - 6.x 的 `foreignFormat` 配置与 `VERSION_MARK` 的识别（6.8 把版本放在令牌位置的标记）已删除。
+- **摘要**（`Digest`，供条件读写；条件回收比较 SPI 自己的 `ContentFingerprint`，算法相同）：本格式的标量取载荷（从载荷偏移起，不含头部与段），读不懂的 String 取整个值，String 与 Hash 以外的类型取空串，负缓存取空串，集合按 L1 返回顺序拼接 `int32 长度 + 成员`，SHA-1。普通读取只在解码失败时计算；条件读写只比较本格式的标量值的载荷（因此与令牌、段、到期时间无关），由脚本在 Redis 中计算（`redis.sha1hex`），客户端对写入的载荷计算同一个值。负缓存与载荷为空的标量摘要相同，条件读写因此把负缓存当作“没有值”，不按摘要比较。M4c 把 `Digest` 改为写在摘要段中的 SHA-256。
 
-**集合（`SetCache`）：Hash**。字段 `!f` 为格式版本（`"1"`），成员字段为 `+` + 成员字节，值为空串。Hash 只表示“有成员的集合”；lease 与负缓存总是 String 形状。任何整体写入都先 `DEL` 再按新形状写入。
-
-- **令牌**（`Token`，24 B）= `NodeId`（16 B，每个运行时随机生成）+ 进程内单调序号（8 B）。由客户端构造，全局唯一、永不重复签发，所以被销毁的令牌不可能再次匹配（无 ABA）。
-- **到期时间**：一律 `PEXPIRE` / `PTTL`，毫秒，以相对时长传输，不受节点间时钟偏差影响。参数钳到至少 1 ms；`0` 表示永不过期。**每次状态转换都显式重设到期时间**，lease 的寿命和负缓存的寿命不得泄漏到新值上。
-- **读取成本**：标量 `PTTL` + `GET`（一次 EVALSHA）；集合 `PTTL` + `HKEYS` + `HGET !f`（只返回字段名，不返回成员的空值；与 `HGETALL` 的字段顺序相同，摘要不受影响）。读脚本与解析其回复的客户端随同一版本发布，混合版本部署按 SHA 各自加载脚本，可以逐台升级。
-- **无法识别的内容**（不以 magic 开头的 String、未知状态、没有 `!f` 的 Hash、其它 Redis 类型如原生 Set；其它程序或其它大版本写入的内容都属此类）以格式版本 `0` 返回，引擎按 `foreignFormat` 处理（§5.4）。String 与 Hash 以外的类型以空载荷返回。
-- **摘要**（`Digest`，供条件回收与条件读写）：标量取载荷（无法识别的 String 取整个值，String 与 Hash 以外的类型取空串），负缓存取空串，集合按 L1 返回顺序拼接 `int32 长度 + 成员`，SHA-1。普通读取只在解码失败时计算；条件读写只比较本协议的标量值（`V` 状态的载荷，不含头部，因此与令牌、到期时间无关），由脚本在 Redis 中计算（`redis.sha1hex`），客户端对写入的载荷计算同一个值。负缓存与载荷为空的标量摘要相同，条件读写因此把负缓存当作“没有值”，不按摘要比较。
-
-线格式（key 布局、频道命名、标量头、集合字段、帧、摘要算法）在一个大版本内冻结。格式演进分两阶段：先发布能读 N+1、仍写 N 的版本，全集群升级后再发布写 N+1 的版本。不同大版本的节点不能共享同一个 Redis。
+线格式（key 布局、频道命名、标量头与段、扩展区的 TLV、集合字段、帧、摘要算法）在一个大版本内冻结：M4a–M4d 全部合并即冻结 8.x 的格式。之后新增必须理解的段、状态或集合的位，一律在 8.x 内两阶段发布：先发布能读懂它的版本，一个 namespace 的全部节点都升级之后才写入（RFC 0005 I-L）；扩展区的新 TLV 与新的 `!` 字段旧读者可以忽略，不需要两阶段。8.x 不考虑与 6.x 的兼容与共存：升级之后，有数据源的缓存回收 6.x 留下的内容并回源，没有数据源的缓存读到它时失败。
 
 ## 4. 栅栏
 
@@ -173,11 +180,11 @@ L2 填充（`fillGuarded`，RFC 0005 §4.5）：
 
 每个转换都由一个 Lua 脚本原子完成（`RedisScripts`：`READ`、`FILL`、`RELEASE`、`PUT`、`PUT_ALL`、`INVALIDATE`、`RECLAIM`、`ADD_MEMBERS_IF_READABLE`、`REMOVE_MEMBERS_IF_READABLE`、`READ_IF_CHANGED`、`PUT_IF_MATCH`、`PUT_IF_NEWER`）。脚本**不带 shebang 标志**：带标志的脚本在 OOM 时被拒绝，而失效恰恰释放内存。写脚本含 `PUBLISH`，不能用 `EVAL_RO`。
 
-- **lease**：读到不存在的 key 且请求了 lease 时，写入 `L` 占位，`PX = lease.ttl`，返回 `Miss(leaseGranted = true)`。读到 `L` 返回 `Leased(remaining)`。节点崩溃留下的 lease 由 `lease.ttl` 回收。
-- **刷新令牌**：读到 `V`，且剩余寿命 `0 < pttl ≤ refreshWindow`，且头部令牌为零或签发超过 `lease.ttl` 时，用 `SETRANGE` 写入调用方令牌与服务端时间（保留原 TTL），返回 `refreshGranted = true`。签发过期的令牌可被抢占，被抢占者的 `fill` 因令牌不匹配失败。
-- **fill**：仅当 key 是本协议的 String 且头部令牌等于 `Fill.token`（lease 或刷新令牌）时整体写入并重设 TTL。
-- **release**：令牌匹配时，`L` 状态删除 key，`V` 状态只清零令牌。
-- **reclaim**：仅当当前内容的摘要等于读到的那份、且不是 `L` 状态、也不是带版本的内容时，原子地转为 lease（带版本的内容转为 lease 就丢了版本，§6.5）。
+- **lease**：读到不存在的 key 且请求了 lease 时，写入 `L` 占位，`PX = lease.ttl`，返回 `Miss(leaseGranted = true)`。读到格式 2 的 `L` 返回 `Leased(remaining)`。节点崩溃留下的 lease 由 `lease.ttl` 回收。
+- **刷新令牌**：读到格式 2、标志位至多是 bit 7（没有版本段、摘要段与未知的必须理解的位，K15）的 `V`，且剩余寿命 `0 < pttl ≤ refreshWindow`，且头部令牌为零或签发超过 `lease.ttl` 时，用 `SETRANGE` 写入调用方令牌与服务端时间（保留原 TTL），返回 `refreshGranted = true`。签发过期的令牌可被抢占，被抢占者的 `fill` 因令牌不匹配失败。
+- **fill**：仅当 key 是 String、核心头部（`GETRANGE key 0 35`，K19）是格式 2、没有未知的必须理解的位，且其中的令牌等于 `Fill.token`（lease 或刷新令牌）时整体写入并重设 TTL。
+- **release**：同样只读核心头部，令牌匹配时，`L` 状态删除 key，`V` 状态只清零令牌。
+- **reclaim**：仅当当前内容的指纹等于读到的那份、且是低于本格式的内容（格式 0、6.x 的格式 1）或格式 2 中没有段的 `V` / `M`（不是 `L`、带版本段、带摘要段或更高格式的内容）时，原子地转为 lease（带版本的内容转为 lease 就丢了版本，§6.5；带摘要段的是权威标量，D4；更高格式的内容从不回收，§3.3）。
 
 ### 4.2 写入方顺序（`AbstractEngine.write`）
 
@@ -246,7 +253,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 
 spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否则会挡住其它节点 `put` 之后的读取），只在 L2 缓存一个“未决的不存在”（`absentTtl`，受 `localMaxAge` 限龄）。这类缓存的 L1 是唯一副本：读到读不懂的内容时默认抛出而不是回收（§5.4）。`get(key, loader)` 不接受未决条目，会用调用方的 loader 回源；合并到不带数据源的在途加载时同样自己回源。
 
-“没有数据源”按**这次读取**判断（与 `foreignFormat` 相同）：`get(key, loader)` 的 loader 是数据源。没有数据源时绕过 L1 只能得到“不存在”，因此（6.9 起）：
+“没有数据源”按**这次读取**判断（读不懂的内容同样如此，§5.4）：`get(key, loader)` 的 loader 是数据源。没有数据源时绕过 L1 只能得到“不存在”，因此（6.9 起）：
 
 - **L1 读失败**（单 key 的 `read`、批量的 `readAll`）按 `readFailure` 处理，而它未设置时按这次读取有没有数据源决定：没有数据源即 `THROW`。
   - 未设置或 `THROW`：抛出 `CacheReadException`，不写 L2（fail closed），与 `getIfChanged`（§6.4）和 `SetCache`（§6.3）的“没有可降级的答案”一致。批量读整批失败（以 `readAll` 失败）。计入 `remoteFailures`，不计 `degradedFills`。
@@ -264,7 +271,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 - 逐个 key 查 L2（进入刷新窗口时同样触发后台刷新）、过 `KeyFilter`；剩余 key 按存储 key 去重后交给 `flights.executeAllSuspending`（协程核心，§5.6）。
 - 已在途的 key 等待现有调用；其余 key 由本线程作为 leader，**先完成自己负责的整批，再等待别人的**。
 - leader 的一批：每个 key 注册之后取戳 → 一次 `readAll`（为每个 key 申请 lease；失效重试中的 key 不读 L1）→ 一次 `loader.loadAll` → 一次 `fillAll`。
-- 批量路径**不等待**其它节点的 lease：`Leased` 与更高格式版本的 key 直接回源且不写 L1（L2 降级限龄）；没有数据源时更高格式版本的 key 失败（§5.4）。格式 0 或解码失败的 key 与单 key 路径一样条件回收（见 §5.4），再凭新 lease 回源与 `fill`。
+- 批量路径**不等待**其它节点的 lease：`Leased` 与更高格式（§3.3）的 key 直接回源且不写 L1（L2 降级限龄）；没有数据源时更高格式的 key 失败（§5.4）。低于本格式（格式 0、6.x 的格式 1）或解码失败的 key 与单 key 路径一样条件回收（见 §5.4），再凭新 lease 回源与 `fill`。
 - 顺序：先整批回源并写回，再逐个回收损坏的 key。读不懂的 key（`FAIL`）或回收之后的重新加载失败，都不中断其余 key：先完成其余 key（凭 lease 写回或释放），再抛出第一个失败。回源失败（含 `ttlOf` 与 `Codec` 抛出）或没有数据源时释放整批 lease，等释放完成之后才继续；异步变体并发发出全部释放。6.x 的同步路径先回收、失败即中断，其余 key 的 lease 留到过期。
 - 合并规则逐 key 应用（RFC 0005 §4.1），与单 key 路径相同。以下三种情况，该 key 改走单 key 路径：
   - 共享到的结果开始于本次读取已观察到的失效之前；
@@ -274,15 +281,15 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 ### 5.4 损坏与格式演进
 
-- **格式版本高于本节点**（滚动升级期间）：计入 `unknownFormats`，**不回收、不写 L1**，否则新旧节点互相覆盖。有数据源时绕过 L1 回源，L2 降级限龄。
+- **更高的格式**（§3.3：格式号高于本节点，滚动升级期间；格式 2 中未知的必须理解的位或状态，存储报告为更高格式）：计入 `unknownFormats`，**不回收、不写 L1**，否则新旧节点互相覆盖。有数据源时绕过 L1 回源，L2 降级限龄。
   没有数据源时绕过 L1 只能得到“不存在”，于是抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，`newer = true`），不写 L2，批量读取与下面的格式 0 相同。理由同下：L1 是唯一副本时，混合版本滚动升级期间读成不存在就是悄悄丢数据。
-- **格式 0 或同版本解码失败**（读不懂的内容）按策略 `foreignFormat`（`ForeignFormatMode`）处理。未配置时按**这次读取有没有数据源**决定：有数据源（spec 的 loader，或 `get(key, loader)` 的 loader）时 `RECLAIM`，没有时 `FAIL`。显式的 `RECLAIM` 只能用于有数据源的缓存：没有任何 loader 的 `CacheSpec` 与所有 `SetCacheSpec` 设置它时创建即失败（`IllegalArgumentException`），因为没有数据源时回收就是删除唯一副本（RFC 0005 §12“M3 之前”决定 6）。`foreignFormat` 只决定读取：元素写入（§6.3）、条件写入（§6.4）与按版本写入（§6.5）落在读不懂的内容上时总是拒绝。
-  - `RECLAIM`：计入 `reclaims`，计算本次读到内容的指纹（SPI 自己的 `ContentFingerprint`，K12），调用 `reclaim`；成功则凭新 lease 正常回源与 `fill`，失败（内容已变或 L1 异常）则不写 L1 回源；回收失败时（确定未执行除外）后端尽力释放这次请求的 lease（§8，K14）。每次读取至多回收一次。
-  - `FAIL`：计入 `unknownFormats`，抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，带存储 key 与格式版本），不回收、不写 L2，与 `readFailure` 无关（降级模式下同样抛出）。批量读取先完成其余 key（释放 lease 或凭 lease 写回），再以第一个这样的 key 失败。理由：没有数据源时回收就是删除唯一副本，调用方会把“不存在”当作真实结果（6.4 及以前即如此：5.x 遗留的数据在第一次读取时被删除）。漏跑迁移（§8.2）的结果因此是读取失败（fail closed）。
-  - 元素写入（§6.3）：`SetCache` 的 `add` / `remove` 落在读不懂的内容上总是以 `CacheWriteException`（`cause` 为 `ForeignFormatException`）失败，原子地不修改 key、不广播，计入 `unknownFormats` 与 `writeFailures`。否则漏跑迁移时一次 `add` 就会用一个成员替换掉 5.x 的全部成员，且之后 key 已是本格式，迁移工具会跳过它。SPI 因此只有“检查并写入”（`SetL1Store.addMembers` / `removeMembers`），没有整体覆盖的元素写入。
-  - 整体覆盖写入（`put`、`putAll`，含 `SetCache.put`）**不受**这个策略约束，有意如此：调用方给出的是 key 的全部内容，覆盖不依赖旧内容。代价是：被覆盖的 5.x 内容不会再被迁移工具备份（key 已是本格式，迁移工具跳过它）；需要保留旧内容时先迁移再写。
+- **低于本格式（格式 0、6.x 的格式 1）或同格式解码失败**（读不懂的内容）按**这次读取有没有数据源**决定，不可配置（8.0 删除了 6.x 的 `foreignFormat`，RFC 0005 §4.7）：有数据源（spec 的 loader，或 `get(key, loader)` 的 loader）时条件回收，没有时失败。没有数据源时回收就是删除唯一副本（RFC 0005 §12“M3 之前”决定 6）。这只决定读取：元素写入（§6.3）、条件写入（§6.4）与按版本写入（§6.5）落在读不懂的内容上时总是拒绝。
+  - 回收：计入 `reclaims`，计算本次读到内容的指纹（SPI 自己的 `ContentFingerprint`，K12），调用 `reclaim`；成功则凭新 lease 正常回源与 `fill`，失败（内容已变、脚本拒绝或 L1 异常）则不写 L1 回源；回收失败时（确定未执行除外）后端尽力释放这次请求的 lease（§8，K14）。每次读取至多回收一次。
+  - 失败：计入 `unknownFormats`，抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，带存储 key、格式版本与本节点的格式版本），不回收、不写 L2，与 `readFailure` 无关（降级模式下同样抛出）。批量读取先完成其余 key（释放 lease 或凭 lease 写回），再以第一个这样的 key 失败。理由：没有数据源时回收就是删除唯一副本，调用方会把“不存在”当作真实结果（6.4 及以前即如此：5.x 遗留的数据在第一次读取时被删除）。
+  - 元素写入（§6.3）：`SetCache` 的 `add` / `remove` 落在读不懂的内容上总是以 `CacheWriteException`（`cause` 为 `ForeignFormatException`）失败，原子地不修改 key、不广播，计入 `unknownFormats` 与 `writeFailures`。否则一次 `add` 就会用一个成员替换掉读不懂的集合的全部成员。SPI 因此只有“检查并写入”（`SetL1Store.addMembers` / `removeMembers`），没有整体覆盖的元素写入。
+  - 整体覆盖写入（`put`、`putAll`，含 `SetCache.put`）**不检查**旧内容，有意如此：调用方给出的是 key 的全部内容，覆盖不依赖旧内容。
 - 读路径**从不无条件删除**。
-- **`SetCache`**（L1 是唯一副本，没有数据源可回源）：格式高于本节点时计入 `unknownFormats` 并抛出（`IllegalStateException`），不写 L2；不是本协议写入的内容（格式 0，如原生 Set）计入 `unknownFormats`，抛出 `CacheReadException` 且不写 L2、不删除（`SetCacheSpec` 不接受 `RECLAIM`）；同版本内容的元素解码失败时读取直接抛出，不计为命中。
+- **`SetCache`**（L1 是唯一副本，没有数据源可回源）：更高的格式（`!f` 大于 `2`、`!m` 中有位，§3.3）计入 `unknownFormats` 并抛出 `ForeignFormatException`（一个 `IllegalStateException`），不写 L2；不是本格式写入的内容（格式 0，如原生 Set；6.x 的集合，`!f = '1'`）计入 `unknownFormats`，抛出 `CacheReadException` 且不写 L2、不删除（集合缓存从不回收）；同格式内容的元素解码失败时读取直接抛出，不计为命中。
 
 ### 5.5 提前刷新
 
@@ -408,7 +415,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 | 项 | 规则 |
 |----|------|
 | loader | 按构造禁止（`SetCacheSpec` 没有 loader 字段）；`get(key, loader)` 抛出 `UnsupportedOperationException` |
-| `add` | key 不存在、为负缓存或 lease 时先 `DEL` 再创建只含这些成员的集合；是本协议的集合时原子加入。重设 TTL（永不过期时 `PERSIST`），`PUBLISH`。其它内容（其它 Redis 类型、不是本协议写入的 String、没有 `!f` 的 Hash、本协议的标量值、`!f` 高于本版本的集合）总是拒绝（`SetL1Store.addMembers` 返回其格式版本，Redis 为 `ADD_MEMBERS_IF_READABLE`），key 不变、不广播，引擎抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。SPI 没有整体覆盖读不懂的内容的元素写入：覆盖它就是删除唯一副本 |
+| `add` | key 不存在、为负缓存或 lease 时先 `DEL` 再创建只含这些成员的集合；是本协议的集合时原子加入。重设 TTL（永不过期时 `PERSIST`），`PUBLISH`。其它内容（其它 Redis 类型、不是本协议写入的 String、本格式的标量值、`!f` 不是 `2` 或 `!m` 中有位的集合、6.x 的格式 1 与更高格式的内容，§3.3）总是拒绝（`SetL1Store.addMembers` 返回其格式版本，Redis 为 `ADD_MEMBERS_IF_READABLE`），key 不变、不广播，引擎抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。SPI 没有整体覆盖读不懂的内容的元素写入：覆盖它就是删除唯一副本 |
 | `remove` | 只在 key 是本协议的集合时生效；移空则删除 key，否则重设 TTL。`PUBLISH`。其它内容的处理同 `add`：拒绝（`removeMembersIfReadable`） |
 | 并发顺序 | 以 L1 的串行化顺序为准 |
 | 读取 | 不取 lease；未命中返回空集合，L2 以戳保护缓存这个结果（`localMaxAge`）。L1 读失败直接抛出原始异常（没有可降级的数据源） |
@@ -435,13 +442,13 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 | “没有值” | key 不存在、`L`（lease 占位）、`M`（负缓存）返回 `Absent` | `expected = null` 只匹配这三种状态；`expected = d` 只匹配载荷摘要为 `d` 的 `V` |
 | L2 | 不读、不写、不取戳：确认的是 L1，L2 可能更旧（仍受 `localMaxAge` 约束） | 写入方顺序同 `put`（§4.2），不写 L2 |
 | 回源 / lease | 从不回源，不申请 lease 或刷新令牌 | 覆盖 lease 占位时销毁它（与 `put` 相同，持有者的 `fill` 失败） |
-| 读不懂的内容 | 计入 `unknownFormats`，抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，更高版本 `newer = true`），不修改 L1，从不回源。不是本协议写入的内容（格式 0）、更高格式版本、集合（标量缓存上）、解码失败的值都从不视为没有值，与 `foreignFormat` 无关 | 与读取同样分类：格式 0、更高格式版本与集合总是拒绝，与 `foreignFormat` 无关。拒绝：不修改、不广播，计入 `unknownFormats` 与 `writeFailures`，抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。脚本看不到 `Codec`，同版本但解码失败的值对写入是一个普通的值：调用方拿不到它的摘要，写入只会冲突、从不覆盖，随后的读取抛出 |
+| 读不懂的内容 | 计入 `unknownFormats`，抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，更高的格式 `newer = true`），不修改 L1，从不回源。不是本格式写入的内容（格式 0、6.x 的格式 1）、更高的格式（含未知的必须理解的位，§3.3）、集合（标量缓存上）、解码失败的值都从不视为没有值 | 与读取同样分类：低于或高于本格式的内容与集合总是拒绝。拒绝：不修改、不广播，计入 `unknownFormats` 与 `writeFailures`，抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。脚本看不到 `Codec`，同版本但解码失败的值对写入是一个普通的值：调用方拿不到它的摘要，写入只会冲突、从不覆盖，随后的读取抛出 |
 | L1 故障 | 总是抛出 `CacheReadException`，与 `readFailure` 无关：没有可降级的答案 | 抛出 `CacheWriteException`。结果未知（超时）时先重读：`current` 等于自己写入的值的摘要即已写入 |
 | 计数 | 摘要未变计入 `conditionalUnchanged` | 冲突计入 `conditionalConflicts`（不计入 `writeFailures`） |
 
 - **分类为什么这样定**：读与写必须对同一份内容给出同一个答案，否则“读—改—条件写”循环会出错：读取说“没有值”而写入说“冲突”时循环永远不结束，调用方拿冲突里的摘要重试则会从空值出发覆盖它。读不懂的内容从不视为没有值：`expected = null` 的写入会整体覆盖它（在 L1 是唯一副本的缓存上就是删除数据），更高格式版本的值在滚动升级期间被旧节点当作没有值覆盖就是降级。SPI 因此没有“把格式 0 视为没有值”的开关（RFC 0005 §12“M3 之前”决定 6）。
 - **为什么用摘要而不是版本号**：线格式冻结（§3.3），标量头里没有版本字段；载荷摘要只依赖 `Codec` 的输出，不需要新的 key 或字段，混合版本部署不受影响（旧节点的 `put` 照常改变摘要）。摘要只覆盖载荷，`Unchanged` 因此附带格式版本，由引擎确认。
-- **为什么不在写入时保存摘要**（让条件读取成为 O(1) 的比较）：标量头只有 1 个保留字节，放不下 20 字节的摘要，加长头部就是格式升级（两阶段发布，§3.3）；同 slot 的旁路 key（hash tag）改变 key 布局，而且混合版本部署中 6.6 及以前的节点的 `put`、`fill`、`invalidate` 不维护它，会让条件读取对已经变化的值回答 `Unchanged`。两者都违反 G1/G2 或线格式冻结，留到下一次格式演进再考虑。代价是 Redis 每次条件读写都把载荷读进 Lua 并计算一次 SHA-1，期间不处理其它命令：在 Redis 7.4 上实测 8 MB 的值一次约 20 ms，其中读进 Lua 约 13 ms（普通的 L1 读取经 `READ` 脚本同样要付），SHA-1 约 7 ms。条件读取省下的是网络传输与客户端解码，不是 Redis 的 CPU；文档很大、实例很多时要按这个代价估算确认周期。
+- **为什么不在写入时保存摘要**（让条件读取成为 O(1) 的比较；6.x 的理由，8.x 的格式 2 在 M4c 加入摘要段，RFC 0005 §4.7）：格式 1 的标量头只有 1 个保留字节，放不下 20 字节的摘要，加长头部就是格式升级（两阶段发布，§3.3）；同 slot 的旁路 key（hash tag）改变 key 布局，而且混合版本部署中 6.6 及以前的节点的 `put`、`fill`、`invalidate` 不维护它，会让条件读取对已经变化的值回答 `Unchanged`。两者都违反 G1/G2 或线格式冻结，留到下一次格式演进再考虑。代价是 Redis 每次条件读写都把载荷读进 Lua 并计算一次 SHA-1，期间不处理其它命令：在 Redis 7.4 上实测 8 MB 的值一次约 20 ms，其中读进 Lua 约 13 ms（普通的 L1 读取经 `READ` 脚本同样要付），SHA-1 约 7 ms。条件读取省下的是网络传输与客户端解码，不是 Redis 的 CPU；文档很大、实例很多时要按这个代价估算确认周期。
 - **非原子广播**（`sharded` 通道模式，或原子广播探测失败，§8.1）：脚本不广播，由引擎在脚本之后经通道广播。写入成功时广播；冲突且当前摘要等于这次写入的载荷摘要时**也广播**（6.9 起）。后者可能是重放：上一次同样的写入已在 L1 生效，单独的广播却失败了（调用方得到 `CacheWriteException`，按上表先重读或直接重放）。不广播的话其它节点的 L2 陈旧至 `localMaxAge`；多余的广播只淘汰副本，无害。其余冲突与拒绝不广播。
 - **与 `put` 的关系**：`put` 不检查，并发的 `put` 仍是“后写者胜”；需要不丢更新的写入方全部改用 `putIfMatch`。`putIfMatch` 的写入使所有节点的在途填充失效，与 `put` 相同。
 - **SPI**：条件读写是存储的能力面 `ConditionalL1Store`（`L1Store.conditional()`，不支持时为 `null`），`readIfChanged` 与 `putIfMatch` 都是抽象的，SPI 不提供任何默认实现：不原子的“先读后写”会让两个并发的写入方都得到 `Written`（丢失更新），宁可不支持。存储没有这个能力面时，`getIfChanged` 与 `putIfMatch` 在调用时、修改任何一层之前抛出 `UnsupportedOperationException`（异步以它完成），不广播（§5.6“能力”）；6.x 的 `readIfChanged` 默认实现先 `read`、在客户端比较，8.0 起也随能力面一起要求。Redis 与内存后端以一次原子操作实现它们。读不懂的内容总是返回 `L1ConditionalWrite.Unreadable`，SPI 没有“视为没有值”的开关。
@@ -463,22 +470,17 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 | `getVersioned(key)` | 与 `get` 同一条读路径（L2 → L1 → 数据源），返回值与版本；不存在与墓碑都为 `null`（墓碑存活期间更旧的版本仍被拒绝），没有版本的值的版本是 `NO_VERSION` |
 | 寿命 | 版本顺序只在条目存活期间成立：值或墓碑到期之后 key 中没有版本，任何版本（包括更旧的）都能写入（TTL 是安全网，§1）。寿命应覆盖重复投递的时间窗口；重放到最新位置的写入方最终写入最新版本，到期之后的陈旧度以那次重放为界 |
 | L2 | 写入方顺序同 `put`（§4.2），不写 L2。L2 副本与值一起保存版本（引擎的值是 `Versioned<V>`），`getVersioned` 命中 L2 时不访问 L1 |
-| 读不懂的内容 | 与 `putIfMatch` 同样分类：格式 0、更高格式版本与集合总是拒绝，从不视为没有版本，与 `foreignFormat` 无关。拒绝：不修改、不广播，计入 `unknownFormats` 与 `writeFailures`，抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。版本在头部，与 `Codec` 无关：同版本但解码失败的值照常按版本比较，更高的版本覆盖它 |
+| 读不懂的内容 | 与 `putIfMatch` 同样分类：低于或高于本格式的内容与集合总是拒绝，从不视为没有版本。拒绝：不修改、不广播，计入 `unknownFormats` 与 `writeFailures`，抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。版本在头部，与 `Codec` 无关：同版本但解码失败的值照常按版本比较，更高的版本覆盖它 |
 | L1 故障 | 抛出 `CacheWriteException`。结果未知时重放同一个版本是安全的：已写入则返回 `Stale(version)`。非原子广播时这次重放也会广播（见下），补上可能丢失的那次广播 |
 
-- **版本为什么放在头部的令牌位置**：线格式在大版本内冻结，而 6.x 的读者必须照常读出这些值（Wow 与其它服务可能共享同一个 Redis 并逐台升级）。可选的位置与否决理由：
-  - 新的状态字节或更高的格式版本：6.x 的读者按“不是本协议写入”或“更高格式”处理（回收后回源、绕过 L1 或读取失败），不是“可读”；格式升级还要两阶段发布（§3.3）。
-  - 放进载荷：6.x 的读者把版本当作载荷交给 `Codec`，解码失败。
-  - 同 slot 的旁路 key：改变 key 布局（需要 hash tag），6.x 节点的 `put`、`fill`、`invalidate` 不维护它，每个值多一个 key 与一次写入。
-  - 头部的保留字节只有 1 字节；签发时间字段会被 6.x 的读脚本在授予刷新令牌时覆盖（版本被当前时间替换，之后的比较是错的）。
-  - 令牌位置在值上只用于刷新令牌：用标记占住它、签发时间设为 `+inf`，6.x 的读脚本就永远不会授予刷新令牌，也就永远不会覆盖它；fill、release 按完整的 24 字节比较令牌，不会匹配。代价是下一条。
+- **版本放在版本段**（8.0，格式 2，§3.3）：标志位的 bit 0 声明它，8 字节紧随核心头部。6.8 把版本放在令牌位置（以标记 `VERSION_MARK` 开头、签发时间为 `+inf`）是因为格式 1 在大版本内冻结、而 6.x 的读者必须照常读出这些值；8.x 不考虑与 6.x 的兼容，格式 2 给头部留出段与扩展区，令牌位置在带版本的内容上也就空了出来。版本段中不得是 `NO_VERSION`（K15）。
 - **非原子广播**（`sharded` 通道模式，或原子广播探测失败，§8.1）：引擎在脚本之后经通道广播。写入成功时广播；返回 `Stale(current)` 且 `current` 等于给出的版本时**也广播**（6.9 起），版本更旧时不广播。理由同 §6.4：写入已在 L1 生效而单独的 `SPUBLISH` 失败时，调用方得到 `CacheWriteException` 并重放同一版本，脚本返回 `Stale`；不广播的话其它节点的 L2 陈旧至 `localMaxAge`。相等的版本也可能来自重复投递，那次多余的广播只淘汰副本。原子广播的后端上写入与广播在同一个脚本中，`Stale` 照常不广播。
-- **不支持提前刷新**：头部放不下刷新令牌与版本，带版本的内容从不授予刷新令牌。没有令牌的提前刷新只能从 L1 重新填充 L2，带版本的值永远等不到写回，刷新窗口内只是按退避（§5.5）一次次重读 L1 直到到期，因此 `CacheSpec` 拒绝 `versioned` 与 `refreshWindow` 同时出现；starter 的 `cocache.defaults.refresh-window` 不作用于带版本的缓存（`CoCacheProperties.policyFor(…, versioned = true)`），`cocache.caches.[name].refresh-window` 仍然作用并因此启动失败。按版本推送的写入方本来就不需要提前刷新。
-- **不回收**：同版本但解码失败的带版本值不经 `reclaim` 转为 lease（`RECLAIM` 脚本与内存后端都拒绝）：lease 占位放不下版本，回收之后迟到的旧版本会被写入。有数据源的读取绕过 L1 回源（L2 降级限龄），等更高的版本覆盖它；没有数据源时失败（§5.4）。
+- **不支持提前刷新**：带版本的内容不授予刷新令牌（格式 2 的令牌位置已经空了出来，M4d 随状态 `E` 与带版本的 `FILL` 规则放开，RFC 0005 §4.7）。没有令牌的提前刷新只能从 L1 重新填充 L2，带版本的值永远等不到写回，刷新窗口内只是按退避（§5.5）一次次重读 L1 直到到期，因此 `CacheSpec` 拒绝 `versioned` 与 `refreshWindow` 同时出现；starter 的 `cocache.defaults.refresh-window` 不作用于带版本的缓存（`CoCacheProperties.policyFor(…, versioned = true)`），`cocache.caches.[name].refresh-window` 仍然作用并因此启动失败。按版本推送的写入方本来就不需要提前刷新。
+- **不回收**：同格式但解码失败的带版本值不经 `reclaim` 转为 lease（`RECLAIM` 脚本见到版本段即拒绝，内存后端同样拒绝）：lease 占位放不下版本，回收之后迟到的旧版本会被写入。有数据源的读取绕过 L1 回源（L2 降级限龄），等更高的版本覆盖它；没有数据源时失败（§5.4）。
 - **丢失版本的写入**：`put`、`putAll`、`putIfMatch`（写入没有版本的值）、`invalidate`（删除 key）与 L1 到期都会丢掉版本，之后任何版本都能写入。需要顺序保证的写入方全部使用 `putIfNewer` / `invalidateIfNewer`；`invalidate` 留给运维清除。
-- **混合版本部署**：6.x 节点能读带版本的内容（见 §3.3），但它们的写入（`put`、`invalidate`、`putIfMatch`、对解码失败内容的 `reclaim`）写入没有版本的内容。只有全部写入方升级到 6.8 之后才有顺序保证；带版本的缓存只能在 6.8 上声明，这通常就是同一个条件。
+- **混合版本部署**：6.8 起的 6.x 节点之间，只有全部写入方升级到 6.8 之后才有顺序保证。8.x 不与 6.x 共存：6.x 写入的带版本内容在 8.x 中是格式 1，按读不懂的内容处理（有数据源时回收后回源，§3.3）。
 - **实现**：`CacheRuntime.create` 为带版本的声明创建 `CoherentEngine<K, Versioned<V?>>`（`value` 为 `null` 只来自带版本的数据源，表示带版本的不存在：写回时是墓碑，对用户是不存在）（声明经 `versionedEngineSpec` 转换，`ValueFormat` 为 `VersionedFormat`：载荷是 `Codec<V>` 的输出，版本随 `Envelope.Scalar` 进出 L1），外面包一层 `VersionedCache` 门面在 `V` 与 `Versioned<V?>` 之间转换。读路径、栅栏、合并回源、批量与异步视图都沿用引擎，没有第二份协议实现。普通缓存的引擎与命中路径不变（`LocalEntry` 与 `READ` 脚本没有改动）；带版本的缓存的 L2 命中多一次委托与一次字段读取，`getVersioned` 不多。
-- **SPI**：存储的能力面 `VersionedL1Store`（`L1Store.versioned()`，不支持时为 `null`；替代 6.x 的 `CoherenceBackend.versionedWrites`）的 `putIfNewer`（抽象，没有不原子的“先读后写”：它会让迟到的旧版本覆盖新版本）、`L1VersionedWrite`、`Fill.version`（6.7 的构造函数、`copy`、`componentN` 不变，带版本的构造函数给出墓碑的版本）、`Envelope.Scalar.version`（默认 `NO_VERSION`，参与相等比较，不影响摘要；`versioned()` 非 `null` 的存储在 `fill`、`put`、`putAll` 时保存它、读取时原样返回；`putIfMatch` 写入没有版本的值）。
+- **SPI**：存储的能力面 `VersionedL1Store`（`L1Store.versioned()`，不支持时为 `null`；替代 6.x 的 `CoherenceBackend.versionedWrites`）的 `putIfNewer`（抽象，没有不原子的“先读后写”：它会让迟到的旧版本覆盖新版本）、`L1VersionedWrite`、`Fill.version`（6.7 的构造函数、`copy`、`componentN` 不变，带版本的构造函数给出墓碑的版本）、`Envelope.Scalar.version`（默认 `NO_VERSION`，参与相等比较，不影响摘要；`versioned()` 非 `null` 的存储在 `fill`、`put`、`putAll` 时保存它、读取时原样返回；`putIfMatch` 写入没有版本的值）。`putIfNewer` 的 `version` 不得是 `NO_VERSION`，存储以 `IllegalArgumentException` 拒绝它（K15）。
 
 ## 7. 失败语义
 
@@ -547,7 +549,7 @@ spec 没有 `loader` 时，未命中释放 lease，不向 L1 写负缓存（否�
 
 5.x 数据的离线迁移工具 `CoCache5Migrator` 只在 6.x（6.5 起）中提供，8.0 已删除（RFC 0005 §5）。L1 是唯一副本的缓存（没有数据源的 `Cache`、`SetCache`）要保留 5.x 的数据，先在 6.x 上迁移。读到 5.x 遗留的内容（格式 0）时按 §5.4 处理。
 
-- 测试：`cocache-redis` 的 `ForeignFormatFailTest`（漏跑迁移时读取 `FAIL`）、`ForeignFormatWriteTest`（漏跑迁移时 `SetCache` 的元素写入拒绝、更高格式版本的值在没有数据源时 `FAIL`、存储脚本的判定）、`ForeignFormatReclaimTest`（没有数据源的缓存与 `SetCache` 声明 `RECLAIM` 时创建失败、数据不动；有数据源时回收后回源），在单机、Cluster 与 Valkey 上运行。
+- 测试：`cocache-redis` 的 `ForeignFormatFailTest`（漏跑迁移时读取 `FAIL`）、`ForeignFormatWriteTest`（漏跑迁移时 `SetCache` 的元素写入拒绝、更高格式的值在没有数据源时失败、存储脚本的判定），线格式 2 的字节级用例在 `WireFormat2Test`（§3.3）、`ForeignFormatReclaimTest`（有数据源时回收后回源），在单机、Cluster 与 Valkey 上运行。
 
 ## 9. 运行时与 Spring 集成
 
@@ -616,7 +618,7 @@ val users: Cache<String, User> = runtime.create(
 优先级（后者覆盖前者）：内置默认值 → 声明（注解或 spec DSL）→ `CacheSpecCustomizer`（按 Spring 顺序）→ `cocache.defaults.*` → `cocache.caches.[name].*`。
 
 - **`key-prefix`**（`cocache.defaults.key-prefix`、`cocache.caches.[name].key-prefix`）不是策略字段，但按同一规则分层：配置文件覆盖声明（包括注解或 spec 中显式写出的 `keyPrefix`）与定制器，`caches.[name]` 覆盖 `defaults`；都未设置时沿用声明（默认 `cocache:`）。配置项中的占位符（如 `${spring.application.name}:`）由 Spring 的配置解析处理；`@CoCache.keyPrefix` 是字面文本，不解析占位符。失效频道不含前缀（§3.2）。
-- 策略字段：`ttl`、`ttl-forever`、`ttl-jitter`、`absent-ttl`、`local-max-age`、`degraded-local-max-age`、`refresh-window`、`lease-ttl`、`lease-wait`、`load-max-concurrent`、`load-acquire-timeout`、`load-timeout`、`local-maximum-size`、`invalidate-failure`、`read-failure`、`foreign-format`。策略时长不写单位时按**秒**解析，也可以写 `500ms`、`2m`、`PT2M`；`refresh-window: 0` 表示关闭（可以关掉声明中的提前刷新）。`cocache.defaults.ttl` / `ttl-forever` 不作用于 `SetCache`（L1 是唯一副本，全局寿命会让集合过期丢失），`cocache.defaults.absent-ttl` / `refresh-window` / `foreign-format` 同样跳过 `SetCache`；`cocache.defaults.foreign-format: reclaim` 还跳过没有数据源的 `CacheSpec`（`reclaim` 只能用于有数据源的缓存，§5.4）；只有 `cocache.caches.[name].ttl` / `ttl-forever` 能改变集合缓存的寿命，`cocache.caches.[name].foreign-format: reclaim` 落在没有数据源的缓存或集合缓存上时启动失败。`cocache.redis.*`（`command-timeout`、`heartbeat`、`invalidate-batch-size`、`client-name`、`channel-mode`）的时长不写单位时按毫秒解析。
+- 策略字段：`ttl`、`ttl-forever`、`ttl-jitter`、`absent-ttl`、`local-max-age`、`degraded-local-max-age`、`refresh-window`、`lease-ttl`、`lease-wait`、`load-max-concurrent`、`load-acquire-timeout`、`load-timeout`、`local-maximum-size`、`invalidate-failure`、`read-failure`（8.0 删除了 `foreign-format`，配置元数据把它标为已删除）。策略时长不写单位时按**秒**解析，也可以写 `500ms`、`2m`、`PT2M`；`refresh-window: 0` 表示关闭（可以关掉声明中的提前刷新）。`cocache.defaults.ttl` / `ttl-forever` 不作用于 `SetCache`（L1 是唯一副本，全局寿命会让集合过期丢失），`cocache.defaults.absent-ttl` / `refresh-window` 同样跳过 `SetCache`；只有 `cocache.caches.[name].ttl` / `ttl-forever` 能改变集合缓存的寿命。`cocache.redis.*`（`command-timeout`、`heartbeat`、`invalidate-batch-size`、`client-name`、`channel-mode`）的时长不写单位时按毫秒解析。
 - 配置文件中的 `ttl` 不影响 `ttlOf`。
 - 启动失败的情形：`cocache.caches` 中出现未声明的缓存名（所有单例创建后由 `CacheAssembler` 校验；缓存名不区分大小写匹配）；使用了已删除的配置项（`RemovedProperties`；错误信息给出替代项，如果有的话，例如 `cocache.redis.strict-failure` → `read-failure: throw`；`missing-guard-sentinel`、`client-side-hits` 没有替代项）；策略不合法。
 - 策略约束（`CachePolicy` 构造时校验）：所有时长为正且 ≤ 100 年（`ttlJitter`、`lease.wait`、`load.acquireTimeout` 可以为 0）；抖动实际幅度不超过 `ttl / 2`；`refreshWindow < ttl − 实际抖动` 且 `refreshWindow < localMaxAge`，否则新副本一出生就在窗口内。校验只覆盖策略 `ttl`：`ttlOf` 或 `put(k, v, ttl)` 给出的不长于窗口的寿命不报错，这样的值不参与提前刷新（§5.5）。
@@ -683,7 +685,6 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 | `local.maximumSize` | 10 000 | L2 总是有界；不使用条目级 `Expiry`（每次读取都写节点元数据，热点 key 无法随线程扩展），过期在读取时判断 |
 | `invalidateFailure` | 未设置：有数据源的缓存 `RETRY`，没有数据源的缓存 `THROW` | 有数据源时删除总是安全的，失效通常在提交之后调用，抛出既不能也不该回滚；没有数据源时延迟的重试会删掉之后的写入（§7） |
 | `readFailure` | 未设置：有数据源的读取 `DEGRADE`，没有数据源的读取 `THROW` | 没有数据源的读取没有可降级的答案；显式 `DEGRADE` 时读到不存在且不缓存（§5.1） |
-| `foreignFormat` | 未设置：有数据源的读取 `RECLAIM`，没有数据源的读取 `FAIL`；显式 `RECLAIM` 只接受有数据源的 `CacheSpec` | 没有数据源时回收就是删除唯一副本（§5.4）。只决定读取：条件写入、按版本写入与元素写入总是拒绝读不懂的内容 |
 | `SetCacheSpec` 的 `ttl` | 永不过期 | L1 是唯一副本 |
 | `keyPrefix` | `cocache:` | |
 | Redis `commandTimeout` / `heartbeat` / `invalidateBatchSize` / `channelMode` | 2 s / 5 s / 512 / `pubsub` | |
@@ -695,8 +696,8 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 
 | 你实现 | 继承 |
 |--------|------|
-| `CoherenceBackend`（L1 协议 + 失效通道） | `BackendProtocolSpec`（挂起形状：用例经 `Suspending.await` 直接调用 `L1Store`；状态机、令牌、到期时间重设、release、reclaim、批量读、批量覆盖写入、集合、广播帧与订阅重置；读不懂的帧（未知版本、预留的帧版本 2、截断、尾随字节）重置订阅者而零 key 的帧照常投递；频道按 keyspace 划分（namespace 相同、前缀不同的两个 keyspace 收不到彼此的帧）；读取的时限：后端实现 `pause` 钩子时，L1 卡顿下带 `timeout` 的读取在大约这么长的时间内以 L1 故障失败，它请求的 lease 在恢复之后被释放，Redis 经 `pausable()`、内存后端经 `stall()`，D6 / K14） |
-| 后端在引擎下的端到端行为 | `EngineSpec`（两个运行时共享一个后端：跨节点单次回源、含 `:` 的 namespace 创建失败、零 key 的帧什么也不做、namespace 相同而前缀不同的两个缓存在 key 与失效上都隔离、lease 等待超时、同节点失效与并发读、同节点并发 `put`、读己之写、失效重试、`localMaxAge`、批量、跨节点单次刷新、损坏回收、未知格式、读不懂的内容按 `foreignFormat` 失败或回收（显式 `RECLAIM` 只在有数据源时）、没有数据源时更高格式版本失败、没有数据源时 L1 读失败默认抛出、显式 `DEGRADE` 时读到不存在且不写任何一层、绕过 L1 的不存在是未决的、没有数据源时显式 `RETRY` 的失效重试、`putAll` 的跨节点失效与在途加载栅栏、条件读写（摘要未变、绕过 L2、负缓存与 lease 是没有值、冲突不广播（非原子广播时重放的冲突广播）、并发“读—改—条件写”不丢更新、到期时间、读不懂的内容失败（`RECLAIM` 也不把本协议的集合与解码失败的值当作没有值、不回收、不回源）、L1 故障；只在没有声明 `CONDITIONAL` 时跳过；声明了的必须原子，并发用例强制竞争、断言恰好一个写入方胜出）等）与 `SetEngineSpec`（集合缓存，要求 `SETS`，含格式 0 的 `FAIL`，元素写入落在读不懂的内容上时拒绝，负缓存上照常写入） |
+| `CoherenceBackend`（L1 协议 + 失效通道） | `BackendProtocolSpec`（挂起形状：用例经 `Suspending.await` 直接调用 `L1Store`；状态机、令牌、到期时间重设、release、reclaim、批量读、批量覆盖写入、写入标识与版本随每个标量写入保存并原样读回、`putIfNewer` 拒绝 `NO_VERSION`、集合、广播帧与订阅重置；读不懂的帧（未知版本、预留的帧版本 2、截断、尾随字节）重置订阅者而零 key 的帧照常投递；频道按 keyspace 划分（namespace 相同、前缀不同的两个 keyspace 收不到彼此的帧）；读取的时限：后端实现 `pause` 钩子时，L1 卡顿下带 `timeout` 的读取在大约这么长的时间内以 L1 故障失败，它请求的 lease 在恢复之后被释放，Redis 经 `pausable()`、内存后端经 `stall()`，D6 / K14） |
+| 后端在引擎下的端到端行为 | `EngineSpec`（两个运行时共享一个后端：跨节点单次回源、含 `:` 的 namespace 创建失败、零 key 的帧什么也不做、namespace 相同而前缀不同的两个缓存在 key 与失效上都隔离、lease 等待超时、同节点失效与并发读、同节点并发 `put`、读己之写、失效重试、`localMaxAge`、批量、跨节点单次刷新、损坏回收、未知格式、读不懂的内容按有没有数据源失败或回收、没有数据源时更高格式版本失败、只有没有数据源的缓存的写入带写入标识、没有数据源时 L1 读失败默认抛出、显式 `DEGRADE` 时读到不存在且不写任何一层、绕过 L1 的不存在是未决的、没有数据源时显式 `RETRY` 的失效重试、`putAll` 的跨节点失效与在途加载栅栏、条件读写（摘要未变、绕过 L2、负缓存与 lease 是没有值、冲突不广播（非原子广播时重放的冲突广播）、并发“读—改—条件写”不丢更新、到期时间、读不懂的内容失败（有数据源时也不把本协议的集合与解码失败的值当作没有值、不回收、不回源）、L1 故障；只在没有声明 `CONDITIONAL` 时跳过；声明了的必须原子，并发用例强制竞争、断言恰好一个写入方胜出）等）与 `SetEngineSpec`（集合缓存，要求 `SETS`，含格式 0 的 `FAIL`，元素写入落在读不懂的内容上时拒绝，负缓存上照常写入） |
 | 支持版本的后端（`versioned()`，§6.5） | `VersionedSpec`（两个运行时共享一个后端。协议：整体写入保存版本、按版本写入只在版本更高时写入、有符号 64 位比较（跨越 2^32 与 2^53）、按版本写入销毁 lease 而持有者的 fill 被拒绝、带版本的内容不授予刷新令牌也不被回收、墓碑读作负缓存、带版本的负缓存经 fill 写成墓碑。引擎：有序、相等版本幂等、旧版本不修改不广播不改寿命、非原子广播时重放的相等版本广播、寿命同 `put`、墓碑挡住迟到的旧版本、lease 持有者回源期间落地的写入胜出（回源读到的版本更高也被拒绝）、回源保存版本、数据源返回的带版本的不存在写成墓碑、条目到期之后任何版本都能写入、回源写回 L1 之后落地的更新版本、多线程乱序写入收敛到最高版本、结果未知时重放安全、普通写入与 `null` 回源没有版本、读不懂的内容拒绝、解码失败的带版本值不回收） |
 | 多节点交错（§4.3、§5、§7） | `MultiNodeSpec`（三个运行时共享一个后端：失效先于 lease、晚于 lease 且有节点在等待、晚于 fill 而早于写 L2；跨节点写入落在读 L1 与写 L2 之间；跨节点并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全集群每个 key 单次回源与单次刷新的计数断言） |
 | 故障下的 G1 / G2 | `FaultSpec`（L1 整体失败时的降级限龄、fill 失败与 lease 寿命、没有数据源时失效失败抛出而不重试（重试会删掉之后的写入）、重试耗尽与队列溢出的放弃、“已在 L1 生效却报错”的 `put` / `invalidate` 可安全重试；可选：断线期间被拒绝的写入在重连后不被重放，后端覆盖 `disconnect()` 才运行；可选：底层客户端取消的命令是 L1 故障而不是调用方的取消（读取降级回源、合并在它上面的跟随者照常得到结果、`put` 以 `CacheWriteException` 失败、调用方看不到 `CancellationException`、恢复之后被取消的读取的 lease 已释放），后端覆盖 `commandCancellation()` 才运行） |
@@ -746,13 +747,13 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
 
 1. **栅栏规则**：任何填充都必须持有读取之前取得的令牌（L1 lease 或刷新令牌；L2 失效戳）。L1 的失效通过销毁令牌完成；L2 的失效方（含 `put`、元素写入）在修改 L1 **之前和之后**各递增一次戳并淘汰 L2。**L2 只由读 L1 的路径填充**，写入方从不直接写 L2。
 2. **L1 未命中就是未命中**：key 不存在或处于 `L` 状态都不代表负缓存；负缓存只有状态 `M` 一种形态。
-3. **读路径从不无条件删除**：同版本的损坏只能通过 `reclaim`（比较摘要）转为 lease；更高的未知版本既不回收也不写回；没有数据源的读取不回收读不懂的内容（没有数据源的声明不接受 `foreignFormat = RECLAIM`）、也不把更高格式版本当作不存在，而是抛出；L1 读失败时总是抛出，从不把“读不到”当作已决的不存在。
+3. **读路径从不无条件删除**：读不懂的内容（同格式的损坏，以及低于本格式的内容：格式 0、6.x 的格式 1）只能通过 `reclaim`（比较指纹）转为 lease；更高的格式（含未知的必须理解的位或状态，§3.3）既不回收也不写回，`RECLAIM` 也拒绝带版本段或摘要段的内容；没有数据源的读取不回收读不懂的内容、也不把更高的格式当作不存在，而是抛出；L1 读失败时总是抛出，从不把“读不到”当作已决的不存在。
 4. **能原子广播就原子广播**：后端以 `atomicBroadcast` 声明能力；为 `false` 时由引擎在写入成功后发布（条件写入的重放也发布，§6.4、§6.5），TCK 按能力分别验证。
 5. **SingleFlight 先注销调用、再发布结果**（读己之写依赖这个顺序）；同步与异步调用共用一张表，异步调用在注册之后取戳；每个异步调用方拿到自己的 future；同步调用合并到异步调用时只阻塞自己的线程，异步调用合并到同步调用时经异步执行器拿到结果。同线程对同一 key 的重入（同步调用的拥有线程，或正在为该 key 调用数据源的线程）快速失败；批量合并先注册全部 key、先完成自己负责的 key 再等待别人；leader 因中断或取消失败时，跟随者自行运行，而不是收到它的失败。跟随者的等待以加载的截止时刻（登记时加上 `load.timeout`）为上限；登记超过它的加载由之后的调用方按身份注销（不完成它），原 leader 的注销不会移走新的加载。
 6. **同步 API 上 loader 在调用方线程上执行**；异步视图上异步数据源在调用方线程或异步执行器上调用，同步数据源只在阻塞执行器上执行，从不在异步执行器上执行。Future 只包装 I/O，L1 与数据源的 future 完成后先切换到异步执行器（同步变体切换回调用方线程，或在已完成时就地）再执行续接，**事件循环线程上不执行续接**。8.0 起 Redis 后端在恢复之后、调用方的调度器上转换脚本返回值（`RedisL1Store`，§8），读取不再在 Lettuce 的 I/O 线程上解析。6.x 的例外是存储内部、不含用户代码的结果转换：Redis 后端在 Lettuce 的 I/O 线程上把脚本返回值转换为 `RemoteRead`（解析 36 字节头部并拷贝出载荷、集合成员），不调用 `Codec`、不调用任何用户代码；代价是大值（或大集合）的这一次拷贝在 I/O 线程上进行，会推迟同一连接上其它命令的完成（与同一连接上大载荷本身的队头阻塞同量级，§8）。
 7. **令牌必须释放或过期**：loader、`ttlOf`、`Codec` 失败，回源被拒绝或超时，以及刷新令牌用不上时都要 `release`；取得或交回令牌的 L1 命令（读取、回收、`fill`、`release`）失败时，除确定未执行外，后端都尽力释放这些令牌，释放失败时按退避重发（§8，K14）。引擎从不取消 L1 调用：两种变体都在 `NonCancellable` 中调用 `L1Store`（`uncancellable`），中断不到达存储，执行器拒绝派发也不取消正在执行的调用；协程被取消（运行时关闭、同步变体的线程被中断）时，持有令牌的步骤在之后的挂起点释放它，同步变体取消之后不再调用 loader；带着令牌的结果不经可能被取消的协程的返回值传递（§5.6）。
 8. **每次 L1 状态转换都显式重设到期时间。**
-9. **线格式在一个大版本内冻结**：key 布局（内部 key 的位置 `!`、namespace 字符集）、标量头、集合字段、消息帧、频道命名、摘要算法。格式演进通过版本号两阶段完成；失效帧例外，见 #22。
+9. **线格式在一个大版本内冻结**：key 布局（内部 key 的位置 `!`、namespace 字符集）、标量头与段（标志位、版本段、扩展区的 TLV 与写入标识）、集合字段（`!f`、`!m`）、消息帧、频道命名、摘要算法。格式 2 是 8.x 唯一的格式；8.x 内新增必须理解的段、状态或集合的位要两阶段发布：先发布能读懂它的版本，一个 namespace 的全部节点都升级之后才写入（RFC 0005 I-L）；扩展区的新 TLV 与新的 `!` 字段旧读者可以忽略，失效帧例外见 #22。
 10. **集合元素增删只用于 L1 是唯一副本的 `SetCache`**，在 L1 中原子完成，且 `SetCache` 不得有 loader。从不覆盖读不懂的内容：检查与写入在同一个原子操作中完成，SPI 没有不检查的元素写入。数据源中的集合只能用 `invalidate` 维护。
 11. **有状态组件只能由运行时创建**：用户只提供 spec 和无状态函数。
 12. **CoCache 的 L1 连接只访问主节点**，断线时拒绝命令而不是缓冲重放；超时而放弃的脚本命令若尚未写出，就不再写出（完成 `dispatch` 返回的最外层命令，集群中是 `ClusterCommand`，§8）。
@@ -762,7 +763,7 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
 16. **starter 注册的缓存 bean 必须能由 AOT 生成代码重建**：只用静态工厂方法与可序列化的构造参数，不用实例提供者，不依赖 bean 定义属性（§9.6）。
 17. **取消不传播**：取消调用方的 future 不取消共享加载、不取消数据源的 future、不跳过写入方的第二次递增（§5.6）。
 18. **异步视图不挂起线程、不同步抛出**：等待 lease 与回源许可都不占线程；失败以原始异常（不包装为 `CompletionException`）完成返回的 future（§5.6）。
-19. **条件读写只确认 L1**：`getIfChanged` 不读写 L2、不回源、不申请令牌、不修改 L1；`putIfMatch` 的比较与写入在一个原子操作中完成，冲突与拒绝不修改 L1、不广播（非原子广播时，摘要等于这次写入的冲突除外），写入方顺序同 `put`；后端不能原子地完成时不支持它（不提供“先读后写”）。“没有值”是不存在、lease 占位与负缓存；读与写对读不懂的内容分类相同，从不把它视为没有值（与 `foreignFormat` 无关）；摘要只比较本协议标量值的载荷（§6.4）。
-20. **按版本有序的写入**：比较与写入在一个原子操作中完成，版本不更新时不修改 L1、不广播（非原子广播时，相等的版本除外）、不改变到期时间；没有版本的内容排在任何版本之前；写入销毁令牌，持有令牌的填充永远写不回（版本更高也不行）；带版本的内容不持有令牌、不授予刷新令牌、不被回收；版本存放在格式 1 的头部，6.x 的读者照常读取（§3.3、§6.5）。后端不能原子地完成时不支持它，声明为带版本的缓存在创建时失败。
+19. **条件读写只确认 L1**：`getIfChanged` 不读写 L2、不回源、不申请令牌、不修改 L1；`putIfMatch` 的比较与写入在一个原子操作中完成，冲突与拒绝不修改 L1、不广播（非原子广播时，摘要等于这次写入的冲突除外），写入方顺序同 `put`；后端不能原子地完成时不支持它（不提供“先读后写”）。“没有值”是不存在、lease 占位与负缓存；读与写对读不懂的内容分类相同，从不把它视为没有值；摘要只比较本协议标量值的载荷（§6.4）。
+20. **按版本有序的写入**：比较与写入在一个原子操作中完成，版本不更新时不修改 L1、不广播（非原子广播时，相等的版本除外）、不改变到期时间；没有版本的内容排在任何版本之前；写入销毁令牌，持有令牌的填充永远写不回（版本更高也不行）；带版本的内容不持有令牌、不授予刷新令牌、不被回收（M4d 随状态 `E` 改写）；版本存放在格式 2 的版本段，不得是 `NO_VERSION`（§3.3、§6.5）。后端不能原子地完成时不支持它，声明为带版本的缓存在创建时失败。
 21. **副本出生时不在刷新窗口内**：L2 副本的刷新点要么晚于创建时刻，要么不设。没取得刷新令牌的重新填充把刷新点退避到 L1 到期之前，其余情形下 L1 剩余寿命不长于窗口时不设刷新点（§5.5）。否则每次命中都会触发刷新：没有令牌的节点按命中频率读 L1，持有令牌的节点按命中频率回源。
 22. **读不懂的失效帧按重置处理**：未知版本、未知类型、解码失败，通道一律按该频道的 `onReset` 处理（清空 L2、递增全部戳），从不丢弃；零 key 的帧是合法帧，引擎什么也不做。因此 8.x 新增帧（预留的帧版本 2 是“namespace 重置”）不需要两阶段发布（§3.2，RFC 0005 §4.7 D3）。

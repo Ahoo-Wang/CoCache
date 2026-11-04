@@ -18,22 +18,27 @@ import org.junit.jupiter.api.Test
 
 class ForeignFormatExceptionTest {
     @Test
-    fun messageTellsForeignContentFromADecodingFailure() {
-        val foreign = ForeignFormatException("policy", "cocache:policy:p1", 0, null)
-        foreign.message.assert().contains("format[0]: not written by CoCache 6, e.g. left by CoCache 5.x")
-        foreign.message.assert().contains("migrate it with CoCache 6.x (CoCache5Migrator)")
-        foreign.cacheName.assert().isEqualTo("policy")
+    fun messageTellsForeignContentNewerFormatsAndDecodingFailures() {
+        // 低于本节点的格式都是不是本格式写入的内容：格式 0（其它程序、5.x）与格式 1（6.x）
+        listOf(0, 1).forEach { format ->
+            val foreign = ForeignFormatException("policy", "cocache:policy:p1", format, 2, null)
+            foreign.message.assert().contains(
+                "format[$format], this node writes format[2]: not written in this node's format"
+            )
+            foreign.message.assert().contains("delete it if it can be dropped")
+            foreign.cacheName.assert().isEqualTo("policy")
+            foreign.newer.assert().isFalse()
+        }
 
         val cause = IllegalArgumentException("bad json")
-        val undecodable = ForeignFormatException("policy", "cocache:policy:p1", 1, cause)
-        undecodable.message.assert().contains("format[1]: decoding failed")
+        val undecodable = ForeignFormatException("policy", "cocache:policy:p1", 2, 2, cause)
+        undecodable.message.assert().contains("format[2], this node writes format[2]: decoding failed")
         undecodable.cause.assert().isSameAs(cause)
         undecodable.newer.assert().isFalse()
 
-        val newer = ForeignFormatException("policy", "cocache:policy:p1", 2, null, newer = true)
-        newer.message.assert().contains("format[2]: written by a newer CoCache version")
+        val newer = ForeignFormatException("policy", "cocache:policy:p1", 3, 2, null)
+        newer.message.assert().contains("format[3], this node writes format[2]: written by a newer CoCache version")
         newer.message.assert().contains("upgrade this node")
-        newer.message.assert().doesNotContain("CoCache5Migrator")
         newer.newer.assert().isTrue()
     }
 }

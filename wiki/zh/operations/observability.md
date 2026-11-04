@@ -56,7 +56,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.degraded.fills` | counter | 只写入 L2、以 `degraded-local-max-age` 限龄的加载：Redis 读取失败、等待 lease 超时、填充被拒绝、值的格式未知，或者该 key 的失效仍在重试。没有 loader 的读取在 Redis 失败时不计入：它抛出，或在显式设置 `read-failure: degrade` 时返回 `null` 而不缓存任何东西（计入 `cocache.remote.failures`） |
 | `cocache.stale.discards` | counter | 读取期间该 key 发生了失效，因而被丢弃的 L2 填充。这是 L2 栅栏在起作用 |
 | `cocache.reclaims` | counter | 本实例无法解码的 L1 值（外来内容或编解码失败）。随后由单独的 reclaim 脚本在值未变的前提下把它转为 lease，本实例再回源 |
-| `cocache.unknown.formats` | counter | 以比本实例更新的线格式写入的 L1 值（直接回源，不覆盖任何内容；没有数据源时读取抛出），被 `foreign-format: fail` 拒绝的读不懂的内容（读取抛出 `CacheReadException`；没有数据源时总是如此），落在读不懂的内容上而被拒绝的 `SetCache.add` / `remove`、`putIfMatch` 与 `putIfNewer` / `invalidateIfNewer`（抛出 `CacheWriteException`，同时计入 `cocache.write.failures`），以及读到读不懂的内容的 `getIfChanged` |
+| `cocache.unknown.formats` | counter | 以比本实例更新的线格式写入、或带本实例不认识的必须理解的标志位的 L1 值（直接回源，不覆盖任何内容；没有数据源时读取抛出），没有数据源的读取遇到的读不懂的内容，如 5.x 或 6.x 的数据（读取抛出 `CacheReadException`），落在读不懂的内容上而被拒绝的 `SetCache.add` / `remove`、`putIfMatch` 与 `putIfNewer` / `invalidateIfNewer`（抛出 `CacheWriteException`，同时计入 `cocache.write.failures`），以及读到读不懂的内容的 `getIfChanged` |
 
 ### 写入、失效与通道 {#metrics-writes}
 

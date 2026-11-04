@@ -408,7 +408,7 @@ class VersionedCacheTest {
 
     @Test
     fun formatsRefuseToEncodeAVersionedAbsence() {
-        runCatching { VersionedFormat(StringCodec).encode(Versioned(null, 1)) }.exceptionOrNull()
+        runCatching { VersionedFormat(StringCodec).encode(Versioned(null, 1), null) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
         runCatching { PayloadCodec(StringCodec).encode(Versioned(null, 1)) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)

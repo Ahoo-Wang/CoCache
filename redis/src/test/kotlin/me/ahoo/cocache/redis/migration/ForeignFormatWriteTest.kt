@@ -29,6 +29,7 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.redis.RedisInvalidationChannel
+import me.ahoo.cocache.redis.RedisScripts
 import me.ahoo.cocache.redis.RedisTestSupport
 import me.ahoo.cocache.redis.setSurface
 import me.ahoo.cocache.test.Concurrency.awaitCondition
@@ -123,12 +124,12 @@ class ForeignFormatWriteTest {
     fun memberWritesOnNewerFormatSetFail() {
         val name = "newer-$run"
         val key = "cocache:$name:k"
-        Redis5x.hash(key, mapOf("!f" to "2", "+a" to ""))
+        Redis5x.hash(key, mapOf("!f" to "3", "+a" to ""))
         val cache = index(name)
 
-        assertForeignWrite(runCatching { cache.add("k", listOf("b")) }.exceptionOrNull(), key, "add", format = 2)
-        assertForeignWrite(runCatching { cache.remove("k", listOf("a")) }.exceptionOrNull(), key, "remove", format = 2)
-        Redis5x.fields(key).assert().isEqualTo(mapOf("!f" to "2", "+a" to ""))
+        assertForeignWrite(runCatching { cache.add("k", listOf("b")) }.exceptionOrNull(), key, "add", format = 3)
+        assertForeignWrite(runCatching { cache.remove("k", listOf("a")) }.exceptionOrNull(), key, "remove", format = 3)
+        Redis5x.fields(key).assert().isEqualTo(mapOf("!f" to "3", "+a" to ""))
     }
 
     /**
@@ -182,10 +183,10 @@ class ForeignFormatWriteTest {
     fun newerFormatValueWithoutLoaderFailsAndIsKept() {
         val name = "newer-value-$run"
         val key = "cocache:$name:k"
-        // 36 字节头：magic、格式版本 2、状态 V、保留、24 字节令牌、8 字节签发时间；载荷 "v"
+        // 36 字节头：magic、格式版本 3、状态 V、标志位、24 字节令牌、8 字节签发时间；载荷 "v"
         RedisTestSupport.withCommands {
             it.eval<String>(
-                "return redis.call('SET', KEYS[1], '\\192\\2V\\0' .. string.rep('\\0', 32) .. 'v')",
+                "return redis.call('SET', KEYS[1], '\\192\\3V\\0' .. string.rep('\\0', 32) .. 'v')",
                 ScriptOutputType.STATUS,
                 key
             )
@@ -201,7 +202,7 @@ class ForeignFormatWriteTest {
             error.assert().isInstanceOf(CacheReadException::class.java)
             val cause = requireNotNull(error?.cause as? ForeignFormatException)
             cause.storageKey.assert().isEqualTo(key)
-            cause.format.assert().isEqualTo(2)
+            cause.format.assert().isEqualTo(3)
         }
         assertNewer(runCatching { cache["k"] }.exceptionOrNull())
         assertNewer(runCatching { cache.getAll(listOf("k", "absent")) }.exceptionOrNull())
@@ -229,10 +230,10 @@ class ForeignFormatWriteTest {
         store.put(key("scalar"), Envelope.Scalar("v".toByteArray()), null, frame)
         Redis5x.hash(key("invalid"), mapOf("!f" to "x", "+a" to ""))
         Redis5x.hash(key("zero"), mapOf("!f" to "0", "+a" to ""))
-        // 本协议的 String 头，但状态字节不认识
+        // 格式 2 的 String 头，但状态字节不认识：报告为更高格式（RFC 0005 §4.7，P1）
         RedisTestSupport.withCommands {
             it.eval<String>(
-                "return redis.call('SET', KEYS[1], '\\192\\1X\\0' .. string.rep('\\0', 32))",
+                "return redis.call('SET', KEYS[1], '\\192\\2X\\0' .. string.rep('\\0', 32))",
                 ScriptOutputType.STATUS,
                 key("unknown-state")
             )
@@ -256,11 +257,16 @@ class ForeignFormatWriteTest {
         store.setSurface.removeMembers(key("set"), members, null, frame).assert().isNull()
         Redis5x.exists(key("set")).assert().isFalse()
 
-        store.setSurface.addMembers(key("scalar"), members, null, frame).assert().isEqualTo(1)
-        store.setSurface.removeMembers(key("scalar"), members, null, frame).assert().isEqualTo(1)
+        store.setSurface.addMembers(key("scalar"), members, null, frame).assert().isEqualTo(RedisScripts.FORMAT)
+        store.setSurface.removeMembers(key("scalar"), members, null, frame).assert().isEqualTo(RedisScripts.FORMAT)
         store.setSurface.addMembers(key("invalid"), members, null, frame).assert().isEqualTo(0)
         store.setSurface.addMembers(key("zero"), members, null, frame).assert().isEqualTo(0)
-        store.setSurface.addMembers(key("unknown-state"), members, null, frame).assert().isEqualTo(0)
+        store.setSurface.addMembers(
+            key("unknown-state"),
+            members,
+            null,
+            frame
+        ).assert().isEqualTo(RedisScripts.NEWER_FORMAT)
         Redis5x.fields(key("invalid")).assert().isEqualTo(mapOf("!f" to "x", "+a" to ""))
         Redis5x.fields(key("zero")).assert().isEqualTo(mapOf("!f" to "0", "+a" to ""))
     }

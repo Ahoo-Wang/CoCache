@@ -39,9 +39,7 @@ class CacheAssembler(
         val builder = spec.toBuilder()
         customizers.filter { it.supports(spec.name) }.forEach { it.customize(builder) }
         val versioned = builder.versioned || builder.versionedLoader != null || builder.versionedAsyncLoader != null
-        val sourced = builder.loader != null || builder.asyncLoader != null || builder.versionedLoader != null ||
-            builder.versionedAsyncLoader != null
-        builder.policy = properties.policyFor(spec.name, builder.policy, versioned, sourced)
+        builder.policy = properties.policyFor(spec.name, builder.policy, versioned)
         properties.keyPrefixFor(spec.name)?.let { builder.keyPrefix = it }
         runtime.create(builder.build())
     }

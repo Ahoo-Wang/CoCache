@@ -66,12 +66,9 @@ class CachePolicyTest {
             .local(local)
             .invalidateFailure(InvalidateFailureMode.THROW)
             .readFailure(ReadFailureMode.THROW)
-            .foreignFormat(ForeignFormatMode.FAIL)
             .build()
         val copy = policy.toBuilder().build()
-        copy.foreignFormat.assert().isEqualTo(ForeignFormatMode.FAIL)
-        copy.toString().assert().contains("foreignFormat=FAIL")
-        CachePolicy.DEFAULT.foreignFormat.assert().isNull()
+        copy.toString().assert().contains("readFailure=THROW)")
         copy.ttl.assert().isEqualTo(Duration.ofMinutes(2))
         copy.ttlJitter.assert().isEqualTo(Duration.ofSeconds(3))
         copy.absentTtl.assert().isEqualTo(Duration.ofSeconds(4))
@@ -92,7 +89,7 @@ class CachePolicyTest {
      */
     @Test
     fun builderStartsFromThePolicy() {
-        val policy = CachePolicy(ttl = null, foreignFormat = ForeignFormatMode.RECLAIM)
+        val policy = CachePolicy(ttl = null, readFailure = ReadFailureMode.THROW)
         val builder = policy.toBuilder()
         builder.ttl.assert().isNull()
         builder.ttlJitter.assert().isEqualTo(policy.ttlJitter)
@@ -104,14 +101,13 @@ class CachePolicyTest {
         builder.load.assert().isEqualTo(policy.load)
         builder.local.assert().isEqualTo(policy.local)
         builder.invalidateFailure.assert().isEqualTo(policy.invalidateFailure)
-        builder.readFailure.assert().isEqualTo(policy.readFailure)
-        builder.foreignFormat.assert().isEqualTo(ForeignFormatMode.RECLAIM)
-        builder.foreignFormat = null
-        builder.build().foreignFormat.assert().isNull()
+        builder.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
+        builder.readFailure = null
+        builder.build().readFailure.assert().isNull()
     }
 
     /**
-     * 6.4 及以前编译的调用方使用的两个构造函数（11 个参数的版本与 Kotlin 默认参数的合成版本）仍然存在，`foreignFormat` 为未设置。
+     * 6.4 及以前编译的调用方使用的两个构造函数（11 个参数的版本与 Kotlin 默认参数的合成版本）仍然存在：8.0 删除 `foreignFormat` 之后它们就是主构造函数。
      */
     @Test
     fun constructorsOf64RemainBinaryCompatible() {
@@ -126,7 +122,6 @@ class CachePolicyTest {
         )
         full.ttl.assert().isEqualTo(Duration.ofMinutes(2))
         full.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
-        full.foreignFormat.assert().isNull()
 
         // 旧调用方的 CachePolicy(ttl = null)：只传第一个参数，其余由默认值掩码（第 0 位以外全部置位）补齐
         val defaults = CachePolicy::class.java.getConstructor(
@@ -137,7 +132,6 @@ class CachePolicyTest {
         defaults.ttl.assert().isNull()
         defaults.ttlJitter.assert().isEqualTo(CachePolicy.DEFAULT_TTL_JITTER)
         defaults.readFailure.assert().isNull()
-        defaults.foreignFormat.assert().isNull()
         // 6.9 起 readFailure 与 invalidateFailure 的默认值也是未设置（参数类型在 JVM 上不变，旧调用方无需重新编译）
         defaults.invalidateFailure.assert().isNull()
 

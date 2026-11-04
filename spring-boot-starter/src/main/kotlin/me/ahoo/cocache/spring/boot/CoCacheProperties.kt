@@ -14,7 +14,6 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.ReadFailureMode
@@ -94,34 +93,20 @@ data class CoCacheProperties @ConstructorBinding constructor(
      * 只有 `cocache.caches.[name].*` 中的同一项会作用（并因此启动失败）：
      * - 带版本的缓存（[versioned]）：`cocache.defaults.refresh-window`。带版本的缓存不支持提前刷新，全局的刷新窗口会让它们
      *   因无关配置启动失败。
-     * - 没有数据源的缓存（[sourced] 为 `false`）：`cocache.defaults.foreign-format: reclaim`。`reclaim` 只能用于有数据源的缓存
-     *   （L1 是唯一副本时回收就是删除它），`fail` 照常生效。
      *
      * @param versioned 是否为带版本的缓存
-     * @param sourced 声明是否有数据源（任一 loader）
      */
     @JvmOverloads
-    fun policyFor(
-        cacheName: String,
-        declared: CachePolicy,
-        versioned: Boolean = false,
-        sourced: Boolean = true
-    ): CachePolicy {
-        var applicable = defaults
-        if (versioned) {
-            applicable = applicable.copy(refreshWindow = null)
-        }
-        if (!sourced && applicable.foreignFormat == ForeignFormatMode.RECLAIM) {
-            applicable = applicable.copy(foreignFormat = null)
-        }
+    fun policyFor(cacheName: String, declared: CachePolicy, versioned: Boolean = false): CachePolicy {
+        val applicable = if (versioned) defaults.copy(refreshWindow = null) else defaults
         val withDefaults = applicable.applyTo(declared)
         return cacheProperties(cacheName)?.applyTo(withDefaults) ?: withDefaults
     }
 
     /**
-     * 集合缓存的策略：`cocache.defaults.ttl` / `ttl-forever` / `absent-ttl` / `refresh-window` / `foreign-format` 不作用于集合缓存
-     * （其 L1 是唯一副本，全局寿命会让集合过期丢失，全局的 `reclaim` 会让集合缓存启动失败；没有数据源，负缓存与提前刷新都不适用），
-     * 只有 `cocache.caches.[name].*` 能改变它们（`foreign-format: reclaim` 因此启动失败）。其它默认项照常生效。
+     * 集合缓存的策略：`cocache.defaults.ttl` / `ttl-forever` / `absent-ttl` / `refresh-window` 不作用于集合缓存
+     * （其 L1 是唯一副本，全局寿命会让集合过期丢失；没有数据源，负缓存与提前刷新都不适用），
+     * 只有 `cocache.caches.[name].*` 能改变它们。其它默认项照常生效。
      */
     fun setPolicyFor(cacheName: String, declared: CachePolicy): CachePolicy {
         // 集合缓存没有数据源：全局的寿命、负缓存寿命与提前刷新都不适用（提前刷新还会让校验因无关配置失败）
@@ -129,8 +114,7 @@ data class CoCacheProperties @ConstructorBinding constructor(
             ttl = null,
             ttlForever = null,
             absentTtl = null,
-            refreshWindow = null,
-            foreignFormat = null
+            refreshWindow = null
         ).applyTo(declared)
         return cacheProperties(cacheName)?.applyTo(withDefaults) ?: withDefaults
     }
@@ -324,14 +308,6 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         @DurationUnit(ChronoUnit.SECONDS)
         val loadTimeout: Duration? = null,
-        /**
-         * 读到本缓存读不懂的 L1 内容（其它程序写入的值、同版本解码失败）时的处理方式：`fail`（抛出 `CacheReadException`，
-         * 不修改 L1）或 `reclaim`（条件回收后回源）。未设置时按读取有没有数据源决定：有数据源 `reclaim`，没有数据源 `fail`。
-         * `reclaim` 只能用于有数据源的缓存：`cocache.caches.[name].foreign-format: reclaim` 落在没有数据源的缓存或集合缓存上时启动失败
-         * （L1 是唯一副本，回收就是删除它）；`cocache.defaults.foreign-format` 不作用于集合缓存，其值 `reclaim` 也不作用于没有数据源的缓存。
-         * 只决定读取：条件写入、按版本写入与集合元素的增删落在读不懂的内容上时总是拒绝。
-         */
-        val foreignFormat: ForeignFormatMode? = null,
     ) {
         fun applyTo(policy: CachePolicy): CachePolicy {
             val builder = policy.toBuilder()
@@ -341,7 +317,6 @@ data class CoCacheProperties @ConstructorBinding constructor(
             localMaximumSize?.let { builder.local = policy.local.copy(maximumSize = it) }
             invalidateFailure?.let { builder.invalidateFailure = it }
             readFailure?.let { builder.readFailure = it }
-            foreignFormat?.let { builder.foreignFormat = it }
             return builder.build()
         }
 

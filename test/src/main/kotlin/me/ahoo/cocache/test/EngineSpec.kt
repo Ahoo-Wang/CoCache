@@ -42,7 +42,6 @@ import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.TtlFunction
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
@@ -357,6 +356,43 @@ abstract class EngineSpec {
         val reads = backend.reads.get()
         theirsB["k"].assert().isEqualTo("theirs")
         backend.reads.get().assert().isEqualTo(reads)
+    }
+
+    /**
+     * 写入标识（RFC 0005 §4.7，D2）：M5 之前没有数据源的缓存充当权威标量，它的每次标量写入（put、putAll、调用方给出 loader 时的填充，
+     * 声明了条件读写时的 putIfMatch）都带一个新的写入标识，与令牌同形、以本节点的 NodeId 开头；有数据源的缓存写入的值与回源填充都不带。
+     */
+    @Test
+    fun onlyCachesWithoutASourceWriteAWriterId() {
+        fun writerOf(key: String) = ((remote(key) as L1Read.Hit).envelope as Envelope.Scalar).writer
+        val conditional = L1Capability.CONDITIONAL in expectedCapabilities
+
+        val derived = nodeA.cache()
+        database["filled"] = "v"
+        derived["filled"].assert().isEqualTo("v")
+        derived.put("put", "p")
+        derived.putAll(mapOf("all" to "a"))
+        if (conditional) {
+            derived.putIfMatch("cas", null, "c").assert().isInstanceOf(ConditionalPut.Written::class.java)
+        }
+        listOfNotNull("filled", "put", "all", "cas".takeIf { conditional }).forEach {
+            writerOf(it).assert().withFailMessage { "A derived write of [$it] carries no writer id." }.isNull()
+        }
+
+        // 同一个 keyspace 上没有数据源的缓存（另一个节点）
+        val authoritative = nodeB.cache(spec { loader = null })
+        authoritative.put("put", "p2")
+        authoritative.putAll(mapOf("all" to "a2", "all-2" to "b2"))
+        authoritative.get("filled-2") { "f2" }.assert().isEqualTo("f2")
+        if (conditional) {
+            authoritative.putIfMatch("cas-2", null, "c2").assert().isInstanceOf(ConditionalPut.Written::class.java)
+        }
+        val writers = listOfNotNull("put", "all", "all-2", "filled-2", "cas-2".takeIf { conditional }).map {
+            requireNotNull(writerOf(it)) { "An authoritative write of [$it] carries a writer id." }
+        }
+        writers.forEach { it.node.assert().isEqualTo(nodeB.nodeId) }
+        writers.toSet().assert().hasSize(writers.size)
+        authoritative["put"].assert().isEqualTo("p2")
     }
 
     @Test
@@ -1089,35 +1125,7 @@ abstract class EngineSpec {
     }
 
     /**
-     * 显式 `RECLAIM`（只能用于有数据源的缓存）：与默认值相同，条件回收后回源。
-     */
-    @Test
-    fun foreignContentWithLoaderIsReclaimedWhenConfigured() {
-        val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
-        val cache = nodeA.cache(spec(reclaim))
-        database["k"] = "v"
-        writeRemoteSilently("k", TestCodec.CORRUPT)
-        cache["k"].assert().isEqualTo("v")
-        nodeA.metrics().reclaims.assert().isEqualTo(1)
-        remoteValue("k").assert().isEqualTo("v")
-    }
-
-    /**
-     * 显式 `FAIL`：有数据源也不回收、不回源。
-     */
-    @Test
-    fun foreignContentFailsWithLoaderWhenConfigured() {
-        val fail = policy().toBuilder().foreignFormat(ForeignFormatMode.FAIL).build()
-        val cache = nodeA.cache(spec(fail))
-        database["k"] = "v"
-        writeRemoteSilently("k", TestCodec.CORRUPT)
-        runCatching { cache["k"] }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
-        loads.get().assert().isEqualTo(0)
-        remote("k").assert().isInstanceOf(L1Read.Hit::class.java)
-    }
-
-    /**
-     * 默认值按这次读取有没有数据源决定：没有 spec 数据源的缓存经 `get(key, loader)` 读取时有数据源，照常回收并回源。
+     * 读不懂的内容按这次读取有没有数据源决定：没有 spec 数据源的缓存经 `get(key, loader)` 读取时有数据源，照常回收并回源。
      */
     @Test
     fun foreignContentIsReclaimedWhenTheCallSuppliesALoader() {
@@ -1597,15 +1605,14 @@ abstract class EngineSpec {
     }
 
     /**
-     * `foreignFormat` 只决定读取：有数据源、显式 `RECLAIM` 的缓存上，条件读写遇到读不懂的内容同样读取抛出、写入拒绝或冲突，
+     * 回收只属于读取：有数据源的缓存上（读取会回收读不懂的内容），条件读写遇到读不懂的内容同样读取抛出、写入拒绝或冲突，
      * 从不当作没有值（否则 CAS 循环会从空值出发覆盖它，或者永远读到 `Absent`、写入永远冲突），也不回收、不回源。
      * 不是本协议写入的内容（格式 0）见各后端自己的测试。
      */
     @Test
-    fun conditionalOperationsIgnoreReclaim() {
+    fun conditionalOperationsNeverReclaim() {
         assumeDeclared(L1Capability.CONDITIONAL, L1Capability.SETS)
-        val reclaim = policy().toBuilder().foreignFormat(ForeignFormatMode.RECLAIM).build()
-        val cache = nodeA.cache(spec(reclaim))
+        val cache = nodeA.cache(spec())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         addMembersSilently("set", frame)
         writeRemoteSilently("corrupt", TestCodec.CORRUPT)

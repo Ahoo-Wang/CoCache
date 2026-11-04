@@ -32,14 +32,14 @@ description: CoCache 5.x 与 6.0 之间的全部变化：模块、包名、注�
 
 6.4 及以前，同样的读取会回收这个 key 并返回 `null`。没有数据源时，回收就是删除唯一副本。`SetCache` 读到空集合，第一次 `add` 会替换旧成员。
 
-`foreign-format` 策略（`cocache.caches.[name].foreign-format`，或 `CachePolicy.foreignFormat`）决定行为：
+6.x 中由 `foreign-format` 策略（`cocache.caches.[name].foreign-format`，或 `CachePolicy.foreignFormat`）决定行为。8.0 删除了它，总是按下表的默认值：有数据源的读取回收，没有数据源的读取失败。
 
 | 取值 | 行为 | 默认用于 |
 |------|------|----------|
 | `fail` | 抛出 `CacheReadException`，Redis 与 L2 都不改动 | 没有数据源的读取：`SetCache`，以及没有 loader 的 `Cache` |
-| `reclaim` | key 未变时回收，然后重新加载。要求有数据源：8.0 起，没有 loader 的 `Cache` 与所有 `SetCache` 设置它时创建即失败。6.x 接受它，`SetCache` 读到空集合，内容保留到下一次写入覆盖 | 有数据源的读取，包括对没有 loader 的缓存调用 `get(key, loader)` |
+| `reclaim` | key 未变时回收，然后重新加载。6.x 在没有 loader 的 `Cache` 与 `SetCache` 上也接受它，`SetCache` 随后读到空集合，内容保留到下一次写入覆盖 | 有数据源的读取，包括对没有 loader 的缓存调用 `get(key, loader)` |
 
-`cocache.defaults.foreign-format` 不作用于 `SetCache`；8.0 起，其值 `reclaim` 也不作用于没有数据源的缓存。
+6.x 中 `cocache.defaults.foreign-format` 不作用于 `SetCache`。
 
 `SetCache.add` 与 `remove` 同样拒绝这类内容（6.6.0 起默认如此，8.0 起一律如此）：在缓存读不懂的内容上增删成员会抛出 `CacheWriteException`，其 `cause` 为 `ForeignFormatException`。这类内容包括未迁移的原生 Set、String 或 Hash，没有 6.x 格式字段的 Hash，以及更高版本的 CoCache 写入的集合。检查与写入在同一个原子脚本中完成：key 的成员与 TTL 不变，不广播，这次写入计入 `cocache.unknown.formats` 与 `cocache.write.failures`。之后仍可迁移这个 key。6.5.0 及以前（以及之后的 6.x 中 `reclaim` 时），一次 `add` 就会用新成员替换整个原生 Set，之后 key 看起来已经迁移，`CoCache5Migrator` 会跳过它，旧成员永久丢失。
 
