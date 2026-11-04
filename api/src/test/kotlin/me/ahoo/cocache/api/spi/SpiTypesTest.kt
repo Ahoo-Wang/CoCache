@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.api.spi
 
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -65,6 +66,21 @@ class SpiTypesTest {
         scalar.equals(scalar).assert().isTrue()
         scalar.equals(Envelope.Absent).assert().isFalse()
         scalar.toString().assert().isEqualTo("Scalar(1 bytes)")
+
+        // 版本与写入标识参与相等比较，各自出现在 toString 中
+        val writer = Token(NodeId(ByteArray(NodeId.SIZE)), 7)
+        val versioned = Envelope.Scalar("v".toByteArray(), 3)
+        val written = Envelope.Scalar("v".toByteArray(), Versioned.NO_VERSION, writer)
+        val both = Envelope.Scalar("v".toByteArray(), 3, writer)
+        versioned.assert().isNotEqualTo(scalar)
+        written.assert().isNotEqualTo(scalar)
+        both.assert().isEqualTo(Envelope.Scalar("v".toByteArray(), 3, Token(NodeId(ByteArray(NodeId.SIZE)), 7)))
+        both.assert().isNotEqualTo(Envelope.Scalar("v".toByteArray(), 3, Token(NodeId(ByteArray(NodeId.SIZE)), 8)))
+        both.assert().isNotEqualTo(Envelope.Scalar("w".toByteArray(), 3, writer))
+        both.hashCode().assert().isEqualTo(Envelope.Scalar("v".toByteArray(), 3, writer).hashCode())
+        versioned.toString().assert().isEqualTo("Scalar(1 bytes, version=3)")
+        written.toString().assert().isEqualTo("Scalar(1 bytes, writer=$writer)")
+        both.toString().assert().isEqualTo("Scalar(1 bytes, version=3, writer=$writer)")
 
         val members = Envelope.Members(listOf("a".toByteArray(), "b".toByteArray()))
         members.size.assert().isEqualTo(2)
