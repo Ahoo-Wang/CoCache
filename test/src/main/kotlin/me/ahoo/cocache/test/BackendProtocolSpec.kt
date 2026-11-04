@@ -455,7 +455,47 @@ abstract class BackendProtocolSpec {
     }
 
     /**
-     * 条件读写只认带摘要段、不带版本的值（RFC 0005 §4.7）：没有摘要段的值（不是没有数据源的缓存写入的）是读不懂的内容，
+     * 条件删除（`ConditionalL1Store.deleteIfMatch`）比较存储中保存的摘要段：相等时删除，返回 `Written`；不相等时冲突，附当前摘要段，
+     * 不修改；没有值（不存在、lease 占位、不带版本的负缓存）时冲突，当前摘要为 `null`；没有摘要段的值与带版本的内容是读不懂的内容，
+     * 拒绝且不修改 key。
+     */
+    @Test
+    fun deleteIfMatchComparesTheStoredDigestSegment() = l1 {
+        assumeDeclared(L1Capability.CONDITIONAL)
+        val conditional = requireNotNull(store.conditional())
+        val key = key()
+        val stored = digested("v")
+        store.put(key, stored, null, frame(key))
+        val wrong = Digest.ofPayload("other".toByteArray())
+        conditional.deleteIfMatch(key, wrong, frame(key)).assert().isEqualTo(L1ConditionalWrite.Conflict(stored.digest))
+        store.read(key, null, null, null).hit().envelope.assert().isEqualTo(stored)
+        val digest = requireNotNull(stored.digest)
+        conditional.deleteIfMatch(key, digest, frame(key)).assert().isEqualTo(L1ConditionalWrite.Written)
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
+        conditional.deleteIfMatch(key, digest, frame(key)).assert().isEqualTo(L1ConditionalWrite.Conflict(null))
+
+        val leased = key()
+        store.read(leased, lease(), null, null)
+        conditional.deleteIfMatch(leased, wrong, frame(leased)).assert().isEqualTo(L1ConditionalWrite.Conflict(null))
+        store.read(leased, null, null, null).assert().isInstanceOf(L1Read.Leased::class.java)
+
+        val bare = key()
+        store.put(bare, scalar("bare"), null, frame(bare))
+        conditional.deleteIfMatch(bare, Digest.ofPayload("bare".toByteArray()), frame(bare))
+            .assert().isEqualTo(L1ConditionalWrite.Unreadable(backend.format))
+        store.read(bare, null, null, null).hit().envelope.assert().isEqualTo(scalar("bare"))
+
+        if (L1Capability.VERSIONED in expectedCapabilities) {
+            val versioned = key()
+            requireNotNull(store.versioned()).putIfNewer(versioned, digested("x"), 3, null, frame(versioned))
+            conditional.deleteIfMatch(versioned, Digest.ofPayload("x".toByteArray()), frame(versioned))
+                .assert().isEqualTo(L1ConditionalWrite.Unreadable(backend.format))
+            store.read(versioned, null, null, null).assert().isInstanceOf(L1Read.Hit::class.java)
+        }
+    }
+
+    /**
+     * 条件读写只认带摘要段、不带版本的值（RFC 0005 §4.7）：没有摘要段的值（不是 `Store` 写入的）是读不懂的内容，
      * 条件读取返回 `Unreadable`、条件写入拒绝且不修改 key；不存在、lease 占位与不带版本的负缓存是“没有值”。
      */
     @Test
@@ -744,6 +784,14 @@ abstract class BackendProtocolSpec {
             sets.addMembers(key, listOf("a".toByteArray()), null, frame(key))
             keys.add(key)
             sets.removeMembers(key, listOf("a".toByteArray()), null, frame(key))
+            keys.add(key)
+        }
+        if (L1Capability.CONDITIONAL in expectedCapabilities) {
+            val conditional = requireNotNull(store.conditional())
+            val stored = digested("cas")
+            conditional.putIfMatch(key, null, stored, null, frame(key))
+            keys.add(key)
+            conditional.deleteIfMatch(key, requireNotNull(stored.digest), frame(key))
             keys.add(key)
         }
         if (!backend.atomicBroadcast) {

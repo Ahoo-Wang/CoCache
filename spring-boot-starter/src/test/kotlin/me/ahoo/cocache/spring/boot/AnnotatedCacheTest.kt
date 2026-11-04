@@ -17,7 +17,9 @@ import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.ReadableCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.annotation.CaffeineCache
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
@@ -53,15 +55,27 @@ class AnnotatedCacheTest {
         fun nameOf(id: String): String? = get(id)?.name
     }
 
-    @CoCache(name = "plain", ttl = CoCache.FOREVER)
+    /**
+     * 外部来源（RFC 0005 §4.1）：值由调用方经 `put` 写入。
+     */
+    @CoCache(name = "plain", ttl = CoCache.FOREVER, source = CoCache.Source.EXTERNAL)
     interface PlainCache : Cache<String, String>
 
-    interface UndeclaredCache : Cache<Int, String>
+    /**
+     * 按泛型 `CacheLoader<String, String>` 匹配数据源（数据源的匹配规则用例）。
+     */
+    @CoCache(name = "sourced")
+    interface SourcedCache : Cache<String, String>
+
+    /**
+     * 没有 `@CoCache` 的权威副本：权威类型没有数据源，不需要注解。
+     */
+    interface UndeclaredCache : Store<Int, String>
 
     @CoCache(loader = "namedLoader", codec = "namedCodec")
     interface NamedCache : Cache<Long, String>
 
-    interface IndexCache : SetCache<String, String>
+    interface IndexCache : SetStore<String, String>
 
     @CoCache(
         name = "tags",
@@ -73,7 +87,7 @@ class AnnotatedCacheTest {
         codec = "namedCodec"
     )
     @CaffeineCache
-    interface TagCache : SetCache<String, String>
+    interface TagCache : SetStore<String, String>
 
     interface GenericCache<V : Any> : Cache<String, V>
 
@@ -96,7 +110,7 @@ class AnnotatedCacheTest {
     }
 
     @Configuration(proxyBeanMethods = false)
-    @EnableCoCache(caches = [PlainCache::class])
+    @EnableCoCache(caches = [SourcedCache::class])
     class AmbiguousLoaderConfig {
         @Bean(destroyMethod = "close")
         fun backend(): CoherenceBackend = InMemoryBackend()
@@ -151,7 +165,7 @@ class AnnotatedCacheTest {
      * 同步与异步数据源各有一个候选：歧义，启动失败。
      */
     @Configuration(proxyBeanMethods = false)
-    @EnableCoCache(caches = [PlainCache::class])
+    @EnableCoCache(caches = [SourcedCache::class])
     class SyncAndAsyncLoaderConfig {
         @Bean(destroyMethod = "close")
         fun backend(): CoherenceBackend = InMemoryBackend()
@@ -177,7 +191,7 @@ class AnnotatedCacheTest {
     }
 
     @Configuration(proxyBeanMethods = false)
-    @EnableCoCache(caches = [PlainCache::class])
+    @EnableCoCache(caches = [SourcedCache::class])
     class DualLoaderConfig {
         @Bean(destroyMethod = "close")
         fun backend(): CoherenceBackend = InMemoryBackend()
@@ -213,7 +227,7 @@ class AnnotatedCacheTest {
     interface InvalidPolicyCache : Cache<String, String>
 
     @CoCache(loader = "namedLoader")
-    interface LoaderSetCache : SetCache<String, String>
+    interface LoaderSetCache : SetStore<String, String>
 
     @CoCache(keyExpression = "id")
     interface ConstantKeyCache : Cache<String, String>
@@ -224,7 +238,7 @@ class AnnotatedCacheTest {
     }
 
     interface UnknownAbstractCache : Cache<String, String> {
-        fun lookupAll(keys: List<String>): Map<String, String>
+        fun peekAll(keys: List<String>): Map<String, String>
     }
 
     interface BadReturnCache : Cache<String, String> {
@@ -245,7 +259,7 @@ class AnnotatedCacheTest {
         override fun put(key: String, value: String, ttl: Duration)
     }
 
-    interface RedeclaredSetCache : SetCache<String, String> {
+    interface RedeclaredSetCache : SetStore<String, String> {
         override fun clear(key: String)
     }
 
@@ -350,7 +364,7 @@ class AnnotatedCacheTest {
     }
 
     @Test
-    fun annotatedSetCacheUsesNamespacePrefixAndKeyExpression() {
+    fun annotatedSetStoreUsesNamespacePrefixAndKeyExpression() {
         runner.withUserConfiguration(AppConfig::class.java).run { context ->
             assertThat(context).hasNotFailed()
             val tags = context.getBean("tags") as TagCache
@@ -398,7 +412,7 @@ class AnnotatedCacheTest {
     fun loaderImplementingBothIsUsedAsSync() {
         runner.withUserConfiguration(DualLoaderConfig::class.java).run { context ->
             assertThat(context).hasNotFailed()
-            context.getBean(PlainCache::class.java)["k"].assert().isEqualTo("sync-k")
+            context.getBean(SourcedCache::class.java)["k"].assert().isEqualTo("sync-k")
         }
     }
 
@@ -449,7 +463,7 @@ class AnnotatedCacheTest {
         AnnotatedCacheFactory.cacheNameOf(PlainCache::class.java).assert().isEqualTo("plain")
     }
 
-    private fun <C : Cache<*, *>> createFailure(type: Class<C>, vararg properties: String): Throwable? {
+    private fun <C : ReadableCache<*, *>> createFailure(type: Class<C>, vararg properties: String): Throwable? {
         var failure: Throwable? = null
         runner.withUserConfiguration(TranslationConfig::class.java).withPropertyValues(*properties).run { context ->
             assertThat(context).hasNotFailed()
@@ -494,9 +508,9 @@ class AnnotatedCacheTest {
     }
 
     @Test
-    fun loaderOnSetCacheFails() {
+    fun loaderOnSetStoreFails() {
         createFailure(LoaderSetCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
-            .hasMessageContaining("not supported on SetCache")
+            .hasMessageContaining("not supported on SetStore")
     }
 
     @Test
@@ -512,7 +526,7 @@ class AnnotatedCacheTest {
         createFailure(OverloadCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining("String get(String, String)")
         createFailure(UnknownAbstractCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
-            .hasMessageContaining("lookupAll")
+            .hasMessageContaining("peekAll")
         createFailure(BadReturnCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining("int lookup(int)")
             .hasMessageContaining("boolean invalidate(long)")

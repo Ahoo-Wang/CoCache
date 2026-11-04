@@ -121,6 +121,7 @@ class TransactionalCacheTest {
         @Bean
         fun profileSpec(): CacheSpec<String, String> = cacheSpec("profile") {
             codec = StringCodec
+            externallySourced()
         }
 
         @Bean

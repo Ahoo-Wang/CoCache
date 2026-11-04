@@ -81,7 +81,7 @@ open class LocalHitsTest {
             block()
             access.source(this)
         }
-        val engine = runtime.create(spec) as CoherentEngine<String, String>
+        val engine = runtime.create(spec) as CacheEngine<String, String>
         return Accessed(access.cache(engine), engine.metrics)
     }
 
@@ -136,7 +136,7 @@ open class LocalHitsTest {
 
     @Test
     fun unresolvedLocalEntryIsNotALocalHitForCallerLoader() {
-        val accessed = cache(recordLocalHits = true) { loader = null }
+        val accessed = cache(recordLocalHits = true) { external() }
         val cache = accessed.cache
         val metrics = accessed.metrics
         cache["k"].assert().isNull()
@@ -150,6 +150,14 @@ open class LocalHitsTest {
         metrics.misses.assert().isEqualTo(2)
         cache.get("k") { "unused" }.assert().isEqualTo("loaded")
         metrics.localHits.assert().isEqualTo(2)
+    }
+
+    /**
+     * 外部来源（`externallySourced()`）：去掉用例默认的数据源。
+     */
+    private fun CacheSpec.Builder<String, String>.external() {
+        loader = null
+        externallySourced()
     }
 }
 

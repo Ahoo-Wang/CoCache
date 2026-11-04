@@ -13,7 +13,7 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.join.JoinCache
+import me.ahoo.cocache.api.join.JoinView
 import org.springframework.beans.factory.support.BeanDefinitionRegistry
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar
 import org.springframework.core.type.AnnotationMetadata
@@ -28,7 +28,7 @@ internal class JoinCacheRegistrar : ImportBeanDefinitionRegistrar {
         val attributes = importingClassMetadata.getAnnotationAttributes(EnableCoCache::class.java.name) ?: return
 
         @Suppress("UNCHECKED_CAST")
-        val types = attributes["joinCaches"] as Array<Class<out JoinCache<*, *, *, *>>>
+        val types = attributes["joinCaches"] as Array<Class<out JoinView<*, *, *, *>>>
         for (type in types) {
             val joinCacheName = JoinCacheFactory.joinCacheNameOf(type)
             check(!registry.containsBeanDefinition(joinCacheName)) {

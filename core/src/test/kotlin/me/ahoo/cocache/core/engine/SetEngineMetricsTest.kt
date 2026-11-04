@@ -14,22 +14,22 @@
 package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.Lookup
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.test.CacheAccess
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 
 /**
- * 集合缓存的分层命中计数：同步与异步视图都把 L2 直接返回的读取计入 `localHits`。
+ * SetStore 的分层命中计数：同步与异步视图都把 L2 直接返回的读取计入 `localHits`。
  */
 class SetEngineMetricsTest {
     private val runtime = CacheRuntime.builder().backend(InMemoryBackend()).recordLocalHits(true).build()
-    private val target: SetCache<String, String> = runtime.create(setCacheSpec("index") { elementCodec = StringCodec })
+    private val target: SetStore<String, String> = runtime.create(setStoreSpec("index") { elementCodec = StringCodec })
     private val metrics = requireNotNull(runtime.metrics("index"))
 
     @AfterEach
@@ -37,7 +37,7 @@ class SetEngineMetricsTest {
         runtime.close()
     }
 
-    private fun assertLocalHits(index: SetCache<String, String>) {
+    private fun assertLocalHits(index: SetStore<String, String>) {
         index.add("k", listOf("a"))
         index["k"].assert().containsExactly("a")
         metrics.localHits.assert().isZero()
@@ -52,11 +52,11 @@ class SetEngineMetricsTest {
 
     @Test
     fun syncReadsServedByL2AreCounted() {
-        assertLocalHits(CacheAccess.SYNC.setCache(target))
+        assertLocalHits(CacheAccess.SYNC.setStore(target))
     }
 
     @Test
     fun asyncReadsServedByL2AreCounted() {
-        assertLocalHits(CacheAccess.ASYNC.setCache(target))
+        assertLocalHits(CacheAccess.ASYNC.setStore(target))
     }
 }

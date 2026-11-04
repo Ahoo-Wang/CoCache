@@ -19,7 +19,7 @@ import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import io.lettuce.core.cluster.pubsub.StatefulRedisClusterPubSubConnection
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -36,7 +36,7 @@ import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
@@ -117,8 +117,8 @@ class RedisRobustnessTest {
     fun setCacheFailsOnForeignContentAndKeepsIt() {
         RedisTestSupport.backend().use { backend ->
             CacheRuntime.builder().backend(backend).build().use { runtime ->
-                val index: SetCache<String, String> = runtime.create(
-                    setCacheSpec<String, String>(namespace) { elementCodec = StringCodec }
+                val index: SetStore<String, String> = runtime.create(
+                    setStoreSpec<String, String>(namespace) { elementCodec = StringCodec }
                 )
                 RedisTestSupport.withCommands { commands ->
                     commands.sadd(key("native"), "x")
@@ -162,9 +162,9 @@ class RedisRobustnessTest {
         }
         // 只有 `!f` 的 Hash：其摘要与“无法识别的空内容”相同，误判为损坏时会被回收成 lease
         RedisTestSupport.withCommands { commands -> commands.hset(key("empty"), "!f", "1") }
-        fun denied(block: () -> Any?) {
+        fun denied(type: Class<out Throwable> = RedisException::class.java, block: () -> Any?) {
             val error = runCatching(block).exceptionOrNull()
-            error.assert().isInstanceOf(RedisException::class.java)
+            error.assert().isInstanceOf(type)
             // 措辞随版本不同：7.0 为 "The user executing the script can't run this command"，7.2+ 为 "ACL failure in script … no permissions"
             val messages = generateSequence(error) { it.cause }.mapNotNull { it.message?.lowercase() }.toList()
             val markers = listOf("acl", "noperm", "permission", "can't run this command")
@@ -181,11 +181,12 @@ class RedisRobustnessTest {
                 denied { Suspending.await { store.read(key("empty"), lease(), null, null) } }
                 if (missing == "-get") denied { Suspending.await { store.read(key("value"), lease(), null, null) } }
                 CacheRuntime.builder().backend(backend).build().use { runtime ->
-                    val index: SetCache<String, String> = runtime.create(
-                        setCacheSpec<String, String>(namespace) { elementCodec = StringCodec }
+                    val index: SetStore<String, String> = runtime.create(
+                        setStoreSpec<String, String>(namespace) { elementCodec = StringCodec }
                     )
-                    denied { index["set"] }
-                    denied { index["empty"] }
+                    // SetStore 的 L1 读失败是 Unknown，以 CacheReadException 抛出，ACL 错误是它的 cause
+                    denied(CacheReadException::class.java) { index["set"] }
+                    denied(CacheReadException::class.java) { index["empty"] }
                 }
             }
         }
@@ -221,8 +222,8 @@ class RedisRobustnessTest {
                 users.put("1", "v1")
                 users.invalidate("1")
                 users.getAll(listOf("1", "2")).assert().hasSize(2)
-                val index: SetCache<String, String> = runtime.create(
-                    setCacheSpec<String, String>("acl-set-$namespace") { elementCodec = StringCodec }
+                val index: SetStore<String, String> = runtime.create(
+                    setStoreSpec<String, String>("acl-set-$namespace") { elementCodec = StringCodec }
                 )
                 index.add("k", listOf("a", "b"))
                 index.remove("k", listOf("a"))

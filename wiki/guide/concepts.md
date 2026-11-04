@@ -17,6 +17,8 @@ This page explains what CoCache does with your reads and writes, at the level yo
 
 L2 is what makes reads fast. L1 is what makes instances agree, and what keeps the database from seeing one load per instance.
 
+What L1 holds depends on the cache's [type](./caches.md#types). For a `Cache` or a `VersionedCache` it is a derived copy: losing it costs a reload from the source. For a `Store`, a `VersionedStore` or a `SetStore` it is the only copy: there is no loader, reads never take a lease, and a key Redis doesn't have is simply absent. The read path below is the derived one; the authoritative types skip the lease and the loader.
+
 ## The read path {#read-path}
 
 ```mermaid
@@ -44,9 +46,9 @@ The result: for each key, the database sees **one load per cluster**, as long as
 
 ### Negative caching {#negative-caching}
 
-When the loader returns `null` (or `loadAll` leaves a key out), CoCache stores a **negative entry** in Redis for `absentTtl`. Reads for that key then return `null` without calling the loader, which protects the database from repeated lookups of keys that don't exist. Use `lookup(key)` when you need to tell a confirmed absence (`Lookup.Absent`) from a value (`Lookup.Present`). Its `expiresAt` is the expiry of the copy that answered: on an L2 hit that is the L2 copy, capped at `localMaxAge` (`degradedLocalMaxAge` for a copy that wasn't written to Redis), so it can be earlier than the Redis TTL. Precision is the cache clock's tick (100 ms by default). To see the Redis TTL of a key, use the [actuator endpoint](/operations/observability#inspect-key) or `CacheAdmin.inspect`.
+When the loader returns `null` (or `loadAll` leaves a key out), CoCache stores a **negative entry** in Redis for `absentTtl`. Reads for that key then return `null` without calling the loader, which protects the database from repeated lookups of keys that don't exist. Use `lookup(key)` when you need to tell a confirmed absence (`Lookup.Absent`) from a value (`Lookup.Present`) and from a read that had no answer because Redis failed (`Lookup.Unknown`, see [reading](./caches.md#unknown)). Its `expiresAt` is the expiry of the copy that answered: on an L2 hit that is the L2 copy, capped at `localMaxAge` (`degradedLocalMaxAge` for a copy that wasn't written to Redis), so it can be earlier than the Redis TTL. Precision is the cache clock's tick (100 ms by default). To see the Redis TTL of a key, use the [actuator endpoint](/operations/observability#inspect-key) or `CacheAdmin.inspect`.
 
-A key that is merely absent from Redis is a miss, never a negative entry. A cache without a loader (filled only by `put`) therefore never writes negative entries to Redis: a miss returns `null`, and only the local instance remembers that answer, for at most `absentTtl`.
+A key that is merely absent from Redis is a miss, never a negative entry. A cache without a source therefore never writes negative entries to Redis. For an externally sourced `Cache` the miss is *unfilled*: a read without a loader returns `null`, only the local instance remembers that answer (for at most `absentTtl`), and a call with its own loader loads anyway. For a `Store` the miss is the answer: the key is absent.
 
 ### Refresh-ahead {#refresh-ahead}
 
@@ -95,9 +97,10 @@ By default the delete and the publish run in one Lua script, so there is no wind
 
 | What fails | Default behavior | Opt-in alternative |
 |------------|------------------|--------------------|
-| Reading Redis | The read loads from the source and keeps the result in L2 for `degradedLocalMaxAge`, without writing Redis. Your callers keep working; the database takes the load. A read without a loader has no source, so by default it throws `CacheReadException` and caches nothing. | `read-failure: throw` throws `CacheReadException`. Without a loader, an explicit `read-failure: degrade` returns `null` and caches nothing. |
-| `invalidate` | Local effects happen first. With a loader, the Redis delete goes to a bounded background retry queue and the call **doesn't throw** (it usually runs after a commit, where throwing can't help). Until it succeeds, misses for that key on this instance skip Redis. Without a loader, the call throws `CacheWriteException`: Redis holds the only copy, and a delayed delete would remove a newer value. | `invalidate-failure: throw` or `retry` sets either behavior explicitly |
-| `put` | Throws `CacheWriteException`. The outcome may be unknown (a timeout), but `put` is idempotent, so retrying is safe. | — |
+| Reading Redis | A read with a source loads from it and keeps the result in L2 for `degradedLocalMaxAge`, without writing Redis. Your callers keep working; the database takes the load. A read without a source (a `Store`, a `SetStore`, an externally sourced `Cache` read without a loader) has no answer: the result is `Lookup.Unknown`, `get` throws `CacheReadException`, and nothing is cached. | `read-failure: throw` makes reads with a source `Unknown` too. `unknownRead = ABSENT` on the spec makes reads without a source return `null` instead. |
+| `Cache.invalidate` | Local effects happen first. The Redis delete goes to a bounded background retry queue and the call **doesn't throw** (it usually runs after a commit, where throwing can't help, and deleting a derived copy is always safe). Until it succeeds, misses for that key on this instance skip Redis. | `invalidate-failure: throw` throws `CacheWriteException` instead |
+| `Store.delete` | Throws `CacheWriteException` and is never retried: Redis holds the only copy, and a delayed delete would remove a newer value. | — |
+| `put` and other writes | Throw `CacheWriteException`. Its `outcomeUnknown` says whether the write may have happened (a timeout) or certainly didn't (rejected before it was sent). | — |
 | The Pub/Sub connection | The heartbeat detects it within seconds. On reconnect every instance clears its L2, and local copies are capped at `localMaxAge` regardless. The health indicator reports `DOWN` meanwhile. | — |
 | Your loader | The exception reaches the caller and every caller waiting on the same load. Nothing is cached. | — |
 

@@ -16,7 +16,7 @@ package me.ahoo.cocache.redis.migration
 import io.lettuce.core.ScriptOutputType
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
@@ -25,9 +25,9 @@ import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
-import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.redis.RedisInvalidationChannel
 import me.ahoo.cocache.redis.RedisScripts
 import me.ahoo.cocache.redis.RedisTestSupport
@@ -60,8 +60,8 @@ class ForeignFormatWriteTest {
         RedisTestSupport.deleteKeys("*$run*")
     }
 
-    private fun index(name: String): SetCache<String, String> = runtime.create(
-        setCacheSpec(name) { elementCodec = StringCodec }
+    private fun index(name: String): SetStore<String, String> = runtime.create(
+        setStoreSpec(name) { elementCodec = StringCodec }
     )
 
     private fun assertForeignWrite(error: Throwable?, storageKey: String, operation: String, format: Int = 0) {
@@ -192,9 +192,8 @@ class ForeignFormatWriteTest {
             )
         }
         val cache = runtime.create(
-            cacheSpec<String, String>(name) {
+            storeSpec<String, String>(name) {
                 codec = StringCodec
-                policy { ttl = null }
             }
         )
 

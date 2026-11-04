@@ -13,18 +13,18 @@
 
 package me.ahoo.cocache.core.engine
 
-import me.ahoo.cocache.api.AsyncCacheLoader
-import me.ahoo.cocache.api.AsyncSetCache
-import me.ahoo.cocache.api.CacheLoader
+import kotlinx.coroutines.CancellationException
+import me.ahoo.cocache.api.AsyncSetStore
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.Lookup
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.SuspendingSetStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.core.ForeignFormatException
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.awaitOriginal
 import me.ahoo.cocache.core.internal.runSync
@@ -33,43 +33,90 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
 /**
- * L1 是唯一副本的集合缓存引擎（RFC 0003 §4.8）。
+ * 权威集合 `SetStore` 的引擎（RFC 0003 §4.8，RFC 0005 §4.1）。
  *
- * 没有数据源：元素增删在 L1 中原子完成并由 L1 串行化；读取只从 L1 填充 L2。
- * L1 故障时读取直接抛出原始异常（没有可降级的数据源）。
+ * 没有数据源：元素增删在 L1 中原子完成并由 L1 串行化；读取只从 L1 填充 L2，不申请 lease。
+ * L1 读失败时读取的结果为 `Unknown`（[Unanswered]）：`get` 抛出 [CacheReadException]，`lookup` 返回 `Lookup.Unknown`；
+ * 不允许 `unknownRead`。
  */
 internal class SetEngine<K : Any, E : Any>(
-    spec: SetCacheSpec<K, E>,
+    spec: SetStoreSpec<K, E>,
     store: L1Store,
     context: EngineContext,
 ) : AbstractEngine<K, Set<E>>(spec.name, spec.keyspace, spec.keyEncoder, spec.policy, store, context),
-    SetCache<K, E> {
+    SetStore<K, E> {
 
     private val elementCodec = spec.elementCodec
     private val view = AsyncView()
+    private val suspendingView = SuspendingSetStoreView(view)
 
-    override fun async(): AsyncSetCache<K, E> = view
+    override fun async(): AsyncSetStore<K, E> = view
 
-    override fun get(key: K): Set<E> = entryOf(key).value ?: emptySet()
+    override fun suspending(): SuspendingSetStore<K, E> = suspendingView
 
-    override fun lookup(key: K): Lookup<Set<E>> = lookupOf(entryOf(key))
+    override fun get(key: K): Set<E> = membersOf(entryOf(key))
+
+    override fun lookup(key: K): Lookup<Set<E>> = lookupAnswerOf(entryOf(key))
+
+    override fun getAll(keys: Collection<K>): Map<K, Set<E>> = membersOf(resolveAll(keys))
+
+    override fun lookupAll(keys: Collection<K>): Map<K, Lookup<Set<E>>> = lookupsOf(resolveAll(keys))
 
     /**
-     * L1 是唯一副本，没有可回源的数据源。
+     * 每个 key 各自经单 key 路径读取（同步变体逐个读取）。
      */
-    override fun get(key: K, loader: CacheLoader<K, Set<E>>): Set<E> {
-        throw UnsupportedOperationException(
-            "SetCache[$name] - the remote copy is authoritative; loading from a source is not supported."
-        )
-    }
-
-    override fun getAll(keys: Collection<K>): Map<K, Set<E>> {
-        val result = LinkedHashMap<K, Set<E>>()
+    private fun resolveAll(keys: Collection<K>): Map<K, LocalEntry<Set<E>>> {
+        val result = LinkedHashMap<K, LocalEntry<Set<E>>>()
         for (key in keys) {
-            entryOf(key).value?.let { result[key] = it }
+            if (!result.containsKey(key)) {
+                result[key] = entryOf(key)
+            }
         }
         return result
     }
+
+    /**
+     * 集合的成员：不存在为空集合；`Unknown` 时抛出（计入 `readsUnknown`）。
+     */
+    private fun membersOf(entry: LocalEntry<Set<E>>): Set<E> {
+        if (entry is Unanswered) {
+            metrics.unknownRead()
+            throw entry.error
+        }
+        return entry.value ?: emptySet()
+    }
+
+    private fun lookupAnswerOf(entry: LocalEntry<Set<E>>): Lookup<Set<E>> {
+        if (entry is Unanswered) {
+            metrics.unknownRead()
+            return Lookup.Unknown(entry.error)
+        }
+        return lookupOf(entry)
+    }
+
+    /**
+     * 批量读取：结果只包含存在的集合；部分 key 为 `Unknown` 时，抛出携带这些 key 与部分结果的 [CacheReadException]。
+     */
+    private fun membersOf(resolved: Map<K, LocalEntry<Set<E>>>): Map<K, Set<E>> {
+        val result = LinkedHashMap<K, Set<E>>()
+        val unknown = LinkedHashMap<K, Unanswered<Set<E>>>()
+        for ((key, entry) in resolved) {
+            if (entry is Unanswered) {
+                metrics.unknownRead()
+                unknown[key] = entry
+                continue
+            }
+            entry.value?.let { result[key] = it }
+        }
+        if (unknown.isEmpty()) {
+            return result
+        }
+        val first = unknown.values.first().error
+        throw CacheReadException(name, "getAll", first.cause ?: first, unknown.keys.toSet(), result.toMap())
+    }
+
+    private fun lookupsOf(resolved: Map<K, LocalEntry<Set<E>>>): Map<K, Lookup<Set<E>>> =
+        resolved.mapValues { lookupAnswerOf(it.value) }
 
     /**
      * 同步变体：L2 命中就地返回；未命中在调用方线程上运行协程核心（[loadEntry]）。
@@ -111,9 +158,24 @@ internal class SetEngine<K : Any, E : Any>(
         return flights.executeSuspending(storageKey, scope) { loadThrough(storageKey) }.entry
     }
 
+    /**
+     * L1 读失败时这次读取没有答案（[Unanswered]），不写任何一层，计入 `remoteFailures`。
+     */
+    @Suppress("TooGenericExceptionCaught")
     private suspend fun loadThrough(storageKey: String): Loaded<Set<E>> {
         val stamp = stamps.current(storageKey)
-        return loaded(storageKey, readRemote(storageKey, null, null), stamp)
+        val read = try {
+            readRemote(storageKey, null, null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: InterruptedException) {
+            throw e
+        } catch (e: Exception) {
+            metrics.remoteFailure()
+            log.warn(e) { "SetStore[$name] - key[$storageKey] - remote read failed: the read has no answer (Unknown)." }
+            return Loaded(Unanswered(CacheReadException(name, "read", e)), stamp)
+        }
+        return loaded(storageKey, read, stamp)
     }
 
     /**
@@ -125,7 +187,7 @@ internal class SetEngine<K : Any, E : Any>(
 
             is L1Read.Miss, is L1Read.Leased -> {
                 metrics.miss()
-                localEntry(null, null, policy.localMaxAge)
+                localEntry(null, policy.absentTtl, policy.localMaxAge)
             }
         }
         fillLocal(storageKey, entry, stamp)
@@ -159,7 +221,7 @@ internal class SetEngine<K : Any, E : Any>(
     private fun decode(envelope: Envelope): Set<E>? = when (envelope) {
         is Envelope.Members -> envelope.members.mapTo(LinkedHashSet()) { elementCodec.decode(it) }
         Envelope.Absent -> null
-        is Envelope.Scalar -> throw IllegalStateException("SetCache[$name] - expected a set but found a scalar.")
+        is Envelope.Scalar -> throw IllegalStateException("SetStore[$name] - expected a set but found a scalar.")
     }
 
     private fun encode(elements: Collection<E>): List<ByteArray> = elements.map { elementCodec.encode(it) }
@@ -330,46 +392,39 @@ internal class SetEngine<K : Any, E : Any>(
         runSync { clearStorageKey(storageKey) }
     }
 
-    override fun invalidate(key: K) {
-        unsupportedInvalidate()
-    }
-
-    override fun invalidateAll(keys: Collection<K>) {
-        unsupportedInvalidate()
-    }
-
-    private fun unsupportedInvalidate(): Nothing =
-        throw UnsupportedOperationException("SetCache[$name] - invalidate would destroy the only copy; use clear(key).")
-
     /**
-     * 异步视图（RFC 0004）：与同步方法语义相同，L1 读失败以原始异常失败。
+     * 异步视图（RFC 0004）：与同步方法语义相同，L1 读失败以 [CacheReadException] 失败。
      */
-    private inner class AsyncView : AsyncSetCache<K, E> {
+    private inner class AsyncView : AsyncSetStore<K, E> {
         override val name: String
             get() = this@SetEngine.name
 
-        override fun get(key: K): CompletableFuture<Set<E>?> = entryOfAsync(key) { it.value ?: emptySet() }
-
-        override fun get(key: K, loader: AsyncCacheLoader<K, Set<E>>): CompletableFuture<Set<E>?> = CompletableFuture.failedFuture(
-            UnsupportedOperationException(
-                "SetCache[$name] - the remote copy is authoritative; loading from a source is not supported."
-            )
-        )
+        override fun get(key: K): CompletableFuture<Set<E>?> = entryOfAsync(key) { membersOf(it) }
 
         /**
          * 每个未命中的 key 各自运行协程核心，并发读 L1（同步变体逐个读取），全部发出之后再按顺序组装。
          */
-        override fun getAll(keys: Collection<K>): CompletableFuture<Map<K, Set<E>>> = Futures.attempt {
+        override fun getAll(
+            keys: Collection<K>
+        ): CompletableFuture<Map<K, Set<E>>> = resolveAllAsync(keys) { membersOf(it) }
+
+        override fun lookup(key: K): CompletableFuture<Lookup<Set<E>>> = entryOfAsync(key) { lookupAnswerOf(it) }
+
+        override fun lookupAll(keys: Collection<K>): CompletableFuture<Map<K, Lookup<Set<E>>>> =
+            resolveAllAsync(keys) { lookupsOf(it) }
+
+        private fun <R> resolveAllAsync(
+            keys: Collection<K>,
+            map: (Map<K, LocalEntry<Set<E>>>) -> R
+        ): CompletableFuture<R> = Futures.attempt {
             val entries = LinkedHashMap<K, CompletableFuture<LocalEntry<Set<E>>>>()
             keys.forEach { key -> entries.getOrPut(key) { entryOfAsync(key) { it } } }
             context.async.runAsync {
-                val result = LinkedHashMap<K, Set<E>>()
-                entries.forEach { (key, entry) -> entry.awaitOriginal().value?.let { result[key] = it } }
-                result
+                val resolved = LinkedHashMap<K, LocalEntry<Set<E>>>()
+                entries.forEach { (key, entry) -> resolved[key] = entry.awaitOriginal() }
+                map(resolved)
             }
         }
-
-        override fun lookup(key: K): CompletableFuture<Lookup<Set<E>>> = entryOfAsync(key) { lookupOf(it) }
 
         override fun put(key: K, value: Set<E>): CompletableFuture<Void?> = runAsyncCommand {
             putWithTtl(key, value, policy.valueTtl())
@@ -387,10 +442,6 @@ internal class SetEngine<K : Any, E : Any>(
             putAllWithTtl(entries, ttl)
         }
 
-        override fun invalidate(key: K): CompletableFuture<Void?> = Futures.attempt { unsupportedInvalidate() }
-
-        override fun invalidateAll(keys: Collection<K>): CompletableFuture<Void?> = Futures.attempt { unsupportedInvalidate() }
-
         override fun add(key: K, elements: Collection<E>): CompletableFuture<Void?> = runAsyncCommand {
             addMembers(key, elements)
         }
@@ -401,7 +452,7 @@ internal class SetEngine<K : Any, E : Any>(
 
         override fun clear(key: K): CompletableFuture<Void?> = runAsyncCommand { clearStorageKey(storageKey(key)) }
 
-        override fun sync(): SetCache<K, E> = this@SetEngine
+        override fun sync(): SetStore<K, E> = this@SetEngine
 
         override fun toString(): String = "AsyncView(${this@SetEngine})"
     }

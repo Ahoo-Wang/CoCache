@@ -22,6 +22,9 @@ import org.springframework.cache.Cache as SpringCache
 /**
  * 以 [CacheRuntime] 中已创建的缓存为来源的 Spring [CacheManager]。不会按名称自动创建缓存。
  * `retrieve` 的方法体在运行时的阻塞执行器（[CacheRuntime.blockingExecutor]）上执行。
+ *
+ * 只暴露派生副本 [Cache]（RFC 0005 §4.2）：`Store`、`VersionedStore`、`SetStore` 与 `VersionedCache` 不接入 Spring Cache，
+ * 按它们的名称查找得到 `null`，也不出现在 [getCacheNames] 中。
  */
 class CoCacheSpringCacheManager(
     private val runtime: CacheRuntime,
@@ -30,10 +33,12 @@ class CoCacheSpringCacheManager(
 
     override fun getCache(name: String): SpringCache? {
         caches[name]?.let { return it }
-        @Suppress("UNCHECKED_CAST")
-        val cache = runtime.cache(name) as Cache<Any, Any>? ?: return null
+        val cache = derivedCache(name) ?: return null
         return caches.computeIfAbsent(name) { CoCacheSpringCache(cache, runtime.admin(name), runtime.blockingExecutor) }
     }
 
-    override fun getCacheNames(): Collection<String> = runtime.cacheNames
+    override fun getCacheNames(): Collection<String> = runtime.cacheNames.filter { derivedCache(it) != null }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun derivedCache(name: String): Cache<Any, Any>? = runtime.cache(name) as? Cache<Any, Any>
 }

@@ -48,7 +48,7 @@ dependencies {
 
 :::
 
-如果用到 starter 之外的模块（例如用于 [Kotlin 协程](./coroutines.md) 的可选模块 `me.ahoo.cocache:cocache-coroutines`），可以引入 BOM `me.ahoo.cocache:cocache-bom` 统一管理所有 CoCache 模块的版本。
+如果用到 starter 之外的模块，可以引入 BOM `me.ahoo.cocache:cocache-bom` 统一管理所有 CoCache 模块的版本。[Kotlin 协程](./coroutines.md)不需要额外的模块：挂起视图是 core 的一部分。
 
 ## 2. 连接 Redis {#redis}
 
@@ -71,7 +71,7 @@ cocache:
 
 ## 3. 声明缓存 {#declare}
 
-缓存是一个继承 `Cache<K, V>` 的接口。把它列在 `@EnableCoCache` 中：
+缓存是一个继承 `Cache<K, V>` 的接口，它是 loader 能重新取得的数据的派生副本。（唯一副本在 Redis 中的数据改用 `Store`，见[选择类型](./caches.md#types)。）把它列在 `@EnableCoCache` 中：
 
 ::: code-group
 
@@ -117,7 +117,7 @@ public class App {}
 
 ## 4. 提供 loader {#loader}
 
-两级都未命中时，CoCache 调用缓存的 `CacheLoader`。把它声明为 bean，按泛型类型匹配：
+两级都未命中时，CoCache 调用缓存的 `CacheLoader`。把它声明为 bean，按泛型类型匹配。没有匹配到 loader 的 `Cache` 接口启动失败，除非它声明了 `@CoCache(source = CoCache.Source.EXTERNAL)`，因为值由调用方提供：
 
 ::: code-group
 
@@ -260,5 +260,5 @@ backend.close();
 ## 下一步 {#next}
 
 - [工作原理](./concepts.md)：读取、写入与陈旧度背后的心智模型。
-- [声明缓存](./caches.md)：key、loader、编解码、spec bean 与集合缓存。
+- [声明缓存](./caches.md)：五种缓存类型、key、loader、编解码与 spec bean。
 - [配置参考](./configuration.md)：所有 `cocache.*` 配置项。

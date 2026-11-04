@@ -46,18 +46,18 @@ Without the starter, build the backend yourself with `RedisBackend.standalone(ur
 
 ### Persistence and failover {#failover}
 
-For `Cache`, Redis is a cache: losing data means misses. Asynchronous replication can lose a recent invalidation in a failover, and the old value can come back into L1. It lasts at most until that value's `ttl` expires. If that matters for a cache, keep `ttl` short, or invalidate the affected caches after a failover.
+For a `Cache` or a `VersionedCache`, Redis is a cache: losing data means misses. Asynchronous replication can lose a recent invalidation in a failover, and the old value can come back into L1. It lasts at most until that value's `ttl` expires. If that matters for a cache, keep `ttl` short, or invalidate the affected caches after a failover.
 
-A `SetCache` is different: Redis holds its only copy, so its durability is Redis's durability. Enable persistence (AOF or RDB) on any Redis that holds `SetCache` data.
+A [`Store`, `VersionedStore` or `SetStore`](../guide/caches.md#store) is different: Redis holds its only copy, so its durability is Redis's durability. Enable persistence (AOF or RDB) on any Redis that holds their data.
 
 ## `maxmemory-policy` {#maxmemory-policy}
 
 | Your caches | Allowed policies | Why |
 |-------------|------------------|-----|
-| Only `Cache` | Any. `allkeys-lru` or `allkeys-lfu` turn Redis into a bounded cache. | An evicted value or negative entry is a miss. An evicted lease means the loader's fill is rejected, and the value stays in that instance's L2 for `degraded-local-max-age`. Nothing goes stale. |
-| Any `SetCache` | `noeviction`, or a `volatile-*` policy | Redis holds the set's only copy, so `allkeys-*` would silently lose members. `SetCache` keys have no expiry by default, so `volatile-*` never evicts them. A `SetCache` given a finite `ttl` can still be evicted under `volatile-*`. |
+| Only `Cache` and `VersionedCache` | Any. `allkeys-lru` or `allkeys-lfu` turn Redis into a bounded cache. | An evicted value or negative entry is a miss. An evicted lease means the loader's fill is rejected, and the value stays in that instance's L2 for `degraded-local-max-age`. Nothing goes stale. |
+| Any `Store`, `VersionedStore` or `SetStore` | `noeviction`, or a `volatile-*` policy | Redis holds their only copy, so `allkeys-*` would silently lose data. Their values have no expiry by default, so `volatile-*` never evicts them. One given a finite `ttl` can still be evicted under `volatile-*`, and so can a `VersionedStore` tombstone, which always expires after `tombstoneTtl`: once it is gone, an older version is accepted again. |
 
-At startup, if any `SetCache` is declared (created or still lazy), CoCache reads every primary's policy from `INFO memory`. It doesn't need `CONFIG`, which managed services often block. It warns on `allkeys-*`, or stops startup with `cocache.redis.set-cache-eviction-check: fail` (`off` skips the check). Under `volatile-*` it warns about each `SetCache` with a finite `ttl`. If the Redis user can't run `INFO`, the check uses `cocache.redis.assume-maxmemory-policy`. Without that setting it warns, or stops startup in `fail` mode, rather than skipping the check silently.
+At startup, if any `Store`, `VersionedStore` or `SetStore` is declared (created or still lazy), CoCache reads every primary's policy from `INFO memory`. It doesn't need `CONFIG`, which managed services often block. It warns on `allkeys-*`, or stops startup with `cocache.redis.store-eviction-check: fail` (`off` skips the check). Under `volatile-*` it warns about each one with a finite `ttl`. If the Redis user can't run `INFO`, the check uses `cocache.redis.assume-maxmemory-policy`. Without that setting it warns, or stops startup in `fail` mode, rather than skipping the check silently.
 
 When Redis reaches `maxmemory` under `noeviction`:
 
@@ -95,7 +95,7 @@ In `pubsub` mode, the backend checks at startup whether a script may publish to 
 In `sharded` mode, or after the probe fell back, the publish is a separate command that runs after the write script. So:
 
 - A crash between the write and the publish loses that message.
-- A publish that fails after the write succeeded reaches the caller as a failed write. `put` throws `CacheWriteException` although Redis already holds the new value. `invalidate` follows `invalidate-failure`, and a retried invalidation publishes again. Retrying the `put` is safe and publishes again.
+- A publish that fails after the write succeeded reaches the caller as a failed write. `put` throws `CacheWriteException` although Redis already holds the new value. `Cache.invalidate` follows `invalidate-failure`, and a retried invalidation publishes again; the authoritative types' deletes throw. Retrying the `put` is safe and publishes again.
 
 In both cases L1 is already correct, and instances that missed the message keep their L2 copy for up to `local-max-age`. The order of a write is in [architecture.md §4.2](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md).
 :::
@@ -112,13 +112,13 @@ The L2 hit counter `cocache.hits{level=l2}` is off by default because it slows d
 
 | Entry | Stored as | Size |
 |-------|-----------|------|
-| Value | String | key + **36-byte header** + codec bytes. A cache without a loader adds a 28-byte writer id and a 32-byte digest (60 bytes), or for a versioned value the writer id and an 8-byte version (36 bytes); a versioned cache with a loader adds the 8-byte version ([wire format](../architecture/index.md#wire-format)). |
+| Value | String | key + **36-byte header** + codec bytes. A `Store` value adds a 28-byte writer id and a 32-byte digest (60 bytes), a `VersionedStore` value the writer id and an 8-byte version (36 bytes), and a `VersionedCache` value the 8-byte version ([wire format](../architecture/index.md#wire-format)). |
 | Negative entry | String | key + 36-byte header, for `absent-ttl`. A versioned tombstone adds the 8-byte version. |
 | Evicted versioned key | String | key + 44 bytes (header and version), for the tombstone lifetime |
 | Lease | String | key + 36-byte header, while a load runs (at most `lease-ttl`) |
-| Set (`SetCache`) | Hash | key + a `!f` field + one `+{member}` field per member |
+| Set (`SetStore`) | Hash | key + a `!f` field + one `+{member}` field per member |
 
-Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY USAGE cocache:UserCache:42`. Every value has an expiry (`ttl`, plus or minus `ttl-jitter`) unless the cache uses `ttl-forever` or is a `SetCache`.
+Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY USAGE cocache:UserCache:42`. Every value has an expiry (`ttl`, plus or minus `ttl-jitter`) unless the cache uses `ttl-forever` or is a `Store`, `VersionedStore` or `SetStore` without a `ttl`.
 
 ### Redis traffic {#sizing-traffic}
 
@@ -129,7 +129,7 @@ Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY U
 
 ## Rolling deploys {#rolling-deploys}
 
-The wire format (key layout, value header and its segments, set fields, message frame, channel names) is frozen within a major version, so instances of one major version can run side by side. A major upgrade is not rolling: stop every instance of the old major version before you start the new one ([upgrade steps](../guide/changelog.md#upgrading-from-6x)). Values in a format this version can't read are reloaded by caches with a loader and fail the read in caches without one. A later must-understand change ships in two phases: first a release that reads it but doesn't write it, then, once every instance runs it, a release that writes it. While instances disagree, a value an instance can't read in full is loaded from the source without overwriting it (`cocache.unknown.formats`).
+The wire format (key layout, value header and its segments, set fields, message frame, channel names) is frozen within a major version, so instances of one major version can run side by side. A major upgrade is not rolling: stop every instance of the old major version before you start the new one ([upgrade steps](../guide/changelog.md#upgrading-from-6x)). Values in a format this version can't read are reloaded by reads with a source and fail reads without one. A later must-understand change ships in two phases: first a release that reads it but doesn't write it, then, once every instance runs it, a release that writes it. While instances disagree, a value an instance can't read in full is loaded from the source without overwriting it (`cocache.unknown.formats`).
 
 Each new instance starts with an empty L2 and fills it from L1, so a deploy shows a burst of `cocache.misses` and `cocache.hits{level=l1}`, not of loads.
 
@@ -168,7 +168,7 @@ CoCache needs these permissions on its Redis user:
 |------|--------|
 | Keys | Read and write on your key prefixes (`~cocache:*` by default). In `pubsub` mode also the probe key `cocache:!probe:{a}`, which `~cocache:*` already covers. |
 | Channels | `&{keyPrefix}inv:*` for each prefix (`&cocache:inv:*` by default). In `pubsub` mode also `&cocache:!probe:*`, or the backend falls back to non-atomic broadcast. |
-| Commands, direct | `EVALSHA`, `EVAL` (fallback after `NOSCRIPT`), `PING` (heartbeat), `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, or in `sharded` mode `SPUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, plus the connection commands (`HELLO`, `AUTH`, `CLIENT`, `SELECT`). `INFO` for the [startup eviction check](#maxmemory-policy) when you use a `SetCache`. |
+| Commands, direct | `EVALSHA`, `EVAL` (fallback after `NOSCRIPT`), `PING` (heartbeat), `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, or in `sharded` mode `SPUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, plus the connection commands (`HELLO`, `AUTH`, `CLIENT`, `SELECT`). `INFO` for the [startup eviction check](#maxmemory-policy) when you use a `Store`, `VersionedStore` or `SetStore`. |
 | Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `GETRANGE`, `STRLEN`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HKEYS`, `HMGET`, `HSET`, `HDEL`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
 
 A starting point, checked against Redis 7.4 by running every CoCache script as this user:

@@ -35,7 +35,12 @@ import org.springframework.cache.Cache as SpringCache
 class DegradingCacheErrorHandlerTest {
     private val backend = InMemoryBackend()
     private val runtime = CacheRuntime.builder().backend(backend).build().apply {
-        create(cacheSpec<String, String>("user") { codec = StringCodec })
+        create(
+            cacheSpec<String, String>("user") {
+                codec = StringCodec
+                externallySourced()
+            }
+        )
     }
     private val cocache = requireNotNull(CoCacheSpringCacheManager(runtime).getCache("user"))
     private val decorated = requireNotNull(

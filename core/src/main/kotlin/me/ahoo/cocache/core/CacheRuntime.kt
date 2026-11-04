@@ -17,7 +17,11 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineDispatcher
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.ReadableCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.VersionedCache
+import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Store
@@ -26,13 +30,14 @@ import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.core.clock.TickingClock
 import me.ahoo.cocache.core.engine.AbstractEngine
 import me.ahoo.cocache.core.engine.AsyncContext
-import me.ahoo.cocache.core.engine.CoherentEngine
+import me.ahoo.cocache.core.engine.CacheEngine
 import me.ahoo.cocache.core.engine.EngineContext
 import me.ahoo.cocache.core.engine.InvalidationRetrier
 import me.ahoo.cocache.core.engine.SetEngine
-import me.ahoo.cocache.core.engine.VersionedCache
-import me.ahoo.cocache.core.engine.VersionedFormat
-import me.ahoo.cocache.core.engine.versionedEngineSpec
+import me.ahoo.cocache.core.engine.StoreEngine
+import me.ahoo.cocache.core.engine.VersionedCacheEngine
+import me.ahoo.cocache.core.engine.VersionedStoreEngine
+import me.ahoo.cocache.core.engine.engineSpec
 import me.ahoo.cocache.core.internal.Ticker
 import me.ahoo.cocache.core.policy.CachePolicy
 import java.time.Duration
@@ -83,11 +88,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     private val closed = AtomicBoolean(false)
 
     /**
-     * @param cache 用户拿到的缓存：引擎本身，或带版本的缓存包在引擎外的 [VersionedCache]
+     * @param cache 用户拿到的缓存（就是引擎本身）
      */
     private class Registration(
         val engine: AbstractEngine<*, *>,
-        val cache: Any,
+        val cache: ReadableCache<*, *>,
         var subscription: Subscription? = null
     )
 
@@ -127,36 +132,54 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     }
 
     /**
-     * 按声明创建缓存。同一运行时内缓存名与 keyspace（[CacheSpec.keyspace]，前缀加命名空间）都不得重复。
-     *
-     * 创建时检查缓存需要的 L1 能力（RFC 0005 §4.3）：带版本的缓存（[CacheSpec.versioned]）要求存储支持按版本有序的写入
-     * （[L1Store.versioned]），否则抛出 [UnsupportedOperationException]，不注册任何东西。普通缓存不要求条件读写：
-     * 存储不支持时（[L1Store.conditional] 为 `null`），`getIfChanged` 与 `putIfMatch` 在调用时抛出 [UnsupportedOperationException]（M5 之前）。
+     * 按声明创建派生副本 `Cache`（RFC 0005 §4.1）。同一运行时内缓存名与 keyspace（[Spec.keyspace]，前缀加命名空间）都不得重复。
+     * 不要求可选的 L1 能力。
      */
-    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> {
-        if (spec.versioned) {
-            return createVersioned(spec)
-        }
-        return register(spec.name, spec.keyspace, NONE, { it }) { store -> CoherentEngine(spec, store, context) }
-    }
-
-    private fun <K : Any, V : Any> createVersioned(spec: CacheSpec<K, V>): Cache<K, V> {
-        val engineSpec = spec.versionedEngineSpec()
-        return register(spec.name, spec.keyspace, listOf(Capability.VERSIONED), { VersionedCache(it) }) { store ->
-            CoherentEngine(engineSpec, store, context, VersionedFormat(spec.codec))
-        }
-    }
+    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> =
+        register(spec.name, spec.keyspace, NONE) { store -> CacheEngine(spec.engineSpec(), store, context) }
 
     /**
-     * 按声明创建集合缓存。存储必须支持集合成员的增删（[L1Store.sets]），否则抛出 [UnsupportedOperationException]，不注册任何东西。
+     * 按声明创建派生的带版本副本 `VersionedCache`。存储必须支持按版本有序的写入（[L1Store.versioned]）。
+     *
+     * 创建时检查缓存需要的 L1 能力（RFC 0005 §4.3）：存储缺少任何一个时抛出 [UnsupportedOperationException]，不注册任何东西。
      */
-    fun <K : Any, E : Any> create(spec: SetCacheSpec<K, E>): SetCache<K, E> {
-        return register(
-            spec.name,
-            spec.keyspace,
-            listOf(Capability.SETS),
-            { it }
-        ) { store -> SetEngine(spec, store, context) }
+    fun <K : Any, V : Any> create(spec: VersionedCacheSpec<K, V>): VersionedCache<K, V> =
+        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED)) { store ->
+            VersionedCacheEngine(spec.engineSpec(), store, context)
+        }
+
+    /**
+     * 按声明创建权威副本 `Store`。存储必须支持条件读写（[L1Store.conditional]）：`getIfChanged`、`putIfMatch` 与 `deleteIfMatch`
+     * 是 `Store` 的操作。
+     */
+    fun <K : Any, V : Any> create(spec: StoreSpec<K, V>): Store<K, V> =
+        register(spec.name, spec.keyspace, listOf(Capability.CONDITIONAL)) { store ->
+            StoreEngine(spec.engineSpec(), store, context)
+        }
+
+    /**
+     * 按声明创建权威的带版本副本 `VersionedStore`。存储必须支持按版本有序的写入（[L1Store.versioned]）。
+     */
+    fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>): VersionedStore<K, V> =
+        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED)) { store ->
+            VersionedStoreEngine(spec.engineSpec(), store, context)
+        }
+
+    /**
+     * 按声明创建权威集合 `SetStore`。存储必须支持集合成员的增删（[L1Store.sets]）。
+     */
+    fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>): SetStore<K, E> =
+        register(spec.name, spec.keyspace, listOf(Capability.SETS)) { store -> SetEngine(spec, store, context) }
+
+    /**
+     * 按声明创建与 spec 类型对应的缓存（[Spec] 的五种实现，见各自的重载）。
+     */
+    fun create(spec: Spec<*, *>): ReadableCache<*, *> = when (spec) {
+        is CacheSpec<*, *> -> create(spec)
+        is VersionedCacheSpec<*, *> -> create(spec)
+        is StoreSpec<*, *> -> create(spec)
+        is VersionedStoreSpec<*, *> -> create(spec)
+        is SetStoreSpec<*, *> -> create(spec)
     }
 
     /**
@@ -164,21 +187,19 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      * @param expose 用户拿到的缓存（[cache] 按名称返回的也是它）
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun <C, R : Any> register(
+    private fun <C> register(
         name: String,
         keyspace: Keyspace,
         required: List<Capability>,
-        expose: (C) -> R,
         factory: (L1Store) -> C
-    ): R where C : AbstractEngine<*, *> {
+    ): C where C : AbstractEngine<*, *>, C : ReadableCache<*, *> {
         check(!closed.get()) { "CacheRuntime is closed." }
         require(names[name] == null) { "Cache[$name] already exists." }
         require(keyspaces.add(keyspace)) {
             "Namespace[${keyspace.namespace}] with keyPrefix[${keyspace.keyPrefix}] is already used by another cache."
         }
         val (provided, engine) = createEngine(name, keyspace, required, factory)
-        val exposed = expose(engine)
-        val registration = Registration(engine, exposed)
+        val registration = Registration(engine, engine)
         if (names.putIfAbsent(name, registration) != null) {
             keyspaces.remove(keyspace)
             throw IllegalArgumentException("Cache[$name] already exists.")
@@ -196,8 +217,8 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             throw e
         }
         log.info {
-            "Cache[$name] - created on namespace[${keyspace.namespace}], keyPrefix[${keyspace.keyPrefix}], node[$nodeId], " +
-                "L1 capabilities${provided.joinToString(
+            "Cache[$name] - created as ${typeOf(engine)} on namespace[${keyspace.namespace}], keyPrefix[${keyspace.keyPrefix}], " +
+                "node[$nodeId], L1 capabilities${provided.joinToString(
                     prefix = "[",
                     postfix = "]"
                 )}."
@@ -205,7 +226,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         if (keyspace.keyPrefix.isEmpty()) {
             log.warn { emptyKeyPrefixWarning(name, keyspace) }
         }
-        return exposed
+        return engine
     }
 
     /**
@@ -259,9 +280,9 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     }
 
     /**
-     * 按名称查找已创建的缓存。
+     * 按名称查找已创建的缓存（五种用户 API 类型之一）。
      */
-    fun cache(name: String): Cache<*, *>? = names[name]?.cache as Cache<*, *>?
+    fun cache(name: String): ReadableCache<*, *>? = names[name]?.cache
 
     /**
      * 按名称查看缓存的运行统计。
@@ -376,9 +397,21 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         private const val REFRESH_QUEUE_CAPACITY = 1024
 
         /**
-         * 不要求任何可选能力（普通缓存，见 [create]）。
+         * 不要求任何可选能力（`Cache`，见 [create]）。
          */
         private val NONE: List<Capability> = emptyList()
+
+        /**
+         * 缓存的用户 API 类型（启动日志与端点输出，供人工核对同一 namespace 的声明，RFC 0005 §4.1）。
+         */
+        internal fun typeOf(cache: ReadableCache<*, *>): String = when (cache) {
+            is Cache<*, *> -> "Cache"
+            is VersionedCache<*, *> -> "VersionedCache"
+            is Store<*, *> -> "Store"
+            is VersionedStore<*, *> -> "VersionedStore"
+            is SetStore<*, *> -> "SetStore"
+            else -> cache.javaClass.simpleName
+        }
 
         @JvmStatic
         fun builder(): Builder = Builder()

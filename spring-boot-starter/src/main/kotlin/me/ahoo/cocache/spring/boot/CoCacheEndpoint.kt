@@ -70,8 +70,9 @@ class CoCacheEndpoint(private val runtime: CacheRuntime) {
     }
 
     /**
-     * 按 key 强制失效，走正常的失效路径（全集群生效），幂等（[me.ahoo.cocache.core.CacheAdmin.invalidateEncoded]）。
-     * `SetCache` 上等价于 `clear(key)`。
+     * 按 key 删除，全集群生效，幂等（[me.ahoo.cocache.core.CacheAdmin.invalidateEncoded]）。按类型映射（RFC 0005 §4.2）：
+     * `Cache` 照常失效；`VersionedCache` 保留版本（`evict`）；`Store` 同 `delete`、`VersionedStore` 同 `purge`、`SetStore` 同 `clear`，
+     * 三者失败时抛出、不重试。
      */
     @DeleteOperation
     fun invalidate(

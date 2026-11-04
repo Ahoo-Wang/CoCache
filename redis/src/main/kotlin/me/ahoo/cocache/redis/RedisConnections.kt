@@ -36,6 +36,7 @@ import io.lettuce.core.protocol.CommandType
 import io.lettuce.core.protocol.RedisCommand
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection
 import io.netty.util.Timer
+import me.ahoo.cocache.api.spi.L1RejectedException
 import java.time.Duration
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
@@ -293,8 +294,11 @@ internal class RedisConnections(
     }
 
     /**
-     * L1 故障（RFC 0005 §4.3）：在 [failureOf] 之上，把 Lettuce 取消的命令（连接重置时取消应答栈中的命令、关闭时取消缓冲的命令）
-     * 换成结果未知的 [RedisException]。在 JVM 上 [CancellationException] 就是协程的取消，原样抛出会被引擎当作调用方被取消。
+     * L1 故障（RFC 0005 §4.3）：在 [failureOf] 之上，
+     * - 把 Lettuce 在写出之前拒绝的命令（[isNotExecuted]）换成 SPI 的 [L1RejectedException]：确定未执行，引擎据此报告
+     *   `CacheWriteException.outcomeUnknown = false`；
+     * - 把 Lettuce 取消的命令（连接重置时取消应答栈中的命令、关闭时取消缓冲的命令）换成结果未知的 [RedisException]。
+     *   在 JVM 上 [CancellationException] 就是协程的取消，原样抛出会被引擎当作调用方被取消。
      */
     private fun l1Failure(error: Throwable): RuntimeException {
         val failure = failureOf(error)
@@ -303,6 +307,9 @@ internal class RedisConnections(
                 "Command cancelled by the Redis client (connection reset or closed); its outcome is unknown.",
                 failure
             )
+        }
+        if (failure !is L1RejectedException && isNotExecuted(failure)) {
+            return L1RejectedException(failure.message ?: failure.javaClass.name, failure)
         }
         return failure
     }
@@ -425,11 +432,12 @@ internal class RedisConnections(
 
         /**
          * 确定未执行（RFC 0005 §4.3 的 P8）：Lettuce 在写出之前就拒绝了命令（[NOT_WRITTEN]），或连接建立不起来
-         * （[RedisConnectionException]，如集群中节点连接失败）。其余失败都是结果未知：超时、断线时被排空、被 Lettuce 取消
-         * （[l1Failure]）、脚本的错误回复等，命令可能已在 Redis 端执行。[RedisL1Store] 据此决定是否释放令牌。
+         * （[RedisConnectionException]，如集群中节点连接失败）；等待命令的方法把它们报告为 [L1RejectedException]（[l1Failure]）。
+         * 其余失败都是结果未知：超时、断线时被排空、被 Lettuce 取消、脚本的错误回复等，命令可能已在 Redis 端执行。
+         * [RedisL1Store] 据此决定是否释放令牌。
          */
         fun isNotExecuted(error: Throwable): Boolean {
-            if (error is RedisConnectionException) {
+            if (error is L1RejectedException || error is RedisConnectionException) {
                 return true
             }
             val message = error.message ?: return false

@@ -10,8 +10,8 @@ description: 在 @Cacheable、@CachePut 与 @CacheEvict 背后使用 CoCache：�
 ## 用法 {#usage}
 
 ```kotlin
-@CoCache(ttl = 600)
-interface UserCache : Cache<String, User>          // 没有 CacheLoader：由被注解的方法加载
+@CoCache(ttl = 600, source = CoCache.Source.EXTERNAL)
+interface UserCache : Cache<String, User>          // 外部来源：由被注解的方法加载
 
 @EnableCaching
 @EnableCoCache(caches = [UserCache::class])
@@ -31,7 +31,8 @@ class UserService(private val repo: UserRepository) {
 
 - 缓存必须先声明；管理器从不按未见过的名字创建缓存。
 - Spring 的 key 必须是缓存的 key 类型（这里是 `String`），方法必须返回缓存的值类型。
-- 被注解的方法充当 loader，所以缓存通常不需要自己的 `CacheLoader`。
+- 只有 `Cache` 能接在 Spring Cache 背后：它是派生副本，被注解的方法就是它的数据源。不要在缓存注解里使用 `Store`、`VersionedStore` 或 `SetStore` 的名字。
+- 被注解的方法充当 loader，所以缓存通常不需要自己的 `CacheLoader`。把它声明为[外部来源](./caches.md#externally-sourced)：接口上写 `source = CoCache.Source.EXTERNAL`，或在 `cacheSpec` 中调用 `externallySourced()`。既没有匹配的 loader bean、也没有 `source = EXTERNAL` 的 `Cache` 接口会让启动失败。
 
 ## 始终使用 `sync = true` {#use-sync-true}
 
@@ -79,13 +80,13 @@ cocache:
 
 ### Redis 故障时 {#failures}
 
-经 Spring Cache 使用的缓存通常没有自己的 loader：被注解的方法就是数据源。这样的缓存把没有数据源的读取与失效视为没有退路：
+经 Spring Cache 使用的缓存通常是[外部来源](./caches.md#externally-sourced)的：被注解的方法就是数据源。带着方法的读取可以退回到方法，不带的读取没有答案：
 
 - `@Cacheable(sync = true)` 把方法作为 loader 传入，Redis 读取失败时照常执行方法，结果以 `degraded-local-max-age` 留在 L2 中。
-- 不带 sync 的 `@Cacheable` 经 `get(key)` 读取，没有 loader。Redis 读取失败时抛出 `CacheReadException`，由 Spring 交给 `CacheErrorHandler`：默认的处理器重新抛出，`LoggingCacheErrorHandler` 记录日志后改为执行方法。也可以在缓存上设置 `read-failure: degrade`：读取返回未命中且不缓存，Spring 随后执行方法。
-- `@CacheEvict` 在 Redis 删除失败时抛出 `CacheWriteException`，因为没有 loader 时 `invalidate-failure` 默认为 `throw`。这里方法就是数据源、删除总是安全的，可以在这些缓存上设置 `invalidate-failure: retry`，把失败的删除放进重试队列。见[配置](./configuration.md#policy-properties)。
+- 不带 sync 的 `@Cacheable` 经 `get(key)` 读取，没有 loader。Redis 读取失败是 [`Lookup.Unknown`](./caches.md#unknown)：`get(key)` 抛出它的 `CacheReadException`，由 Spring 交给 `CacheErrorHandler`：默认的处理器重新抛出，`LoggingCacheErrorHandler` 记录日志后改为执行方法。也可以在缓存的 spec 上声明 `unknownRead = UnknownReadMode.ABSENT`（写在 `cacheSpec` 中；接口缓存写在[定制器](./caches.md#customizer)中）：读取返回未命中且不缓存，Spring 随后执行方法。
+- `@CacheEvict` 调用 `invalidate`。Redis 删除失败时，key 进入后台重试队列，因为每个 `Cache` 的 `invalidate-failure` 默认都是 `retry`：方法就是数据源，删除副本总是安全的。设置 `invalidate-failure: throw` 则改为抛出 `CacheWriteException`。见[配置](./configuration.md#policy-properties)。
 
-于是同一个缓存上的两种 `@Cacheable` 表现不同。Redis 故障期间，不带 sync 的 `@Cacheable` 调用全部失败，因为 Spring 默认的 `CacheErrorHandler` 重新抛出读取失败；`@Cacheable(sync = true)` 则改为执行方法。`read-failure: degrade` 也不能让不带 sync 的方法可用：随后的 `put` 同样失败。
+于是同一个缓存上的两种 `@Cacheable` 表现不同。Redis 故障期间，不带 sync 的 `@Cacheable` 调用全部失败，因为 Spring 默认的 `CacheErrorHandler` 重新抛出读取失败；`@Cacheable(sync = true)` 则改为执行方法。`unknownRead = ABSENT` 也不能让不带 sync 的方法可用：随后的 `put` 同样失败。
 
 要放行这些失败，开启 starter 的降级处理器：
 
@@ -98,7 +99,7 @@ cocache:
 starter 随后为 Spring 的缓存拦截器换上 `DegradingCacheErrorHandler`。它只对 CoCache 缓存生效：读取失败或写入失败记录为一条 `WARN`（不带堆栈，不含 key；堆栈在 `DEBUG` 级别输出），不重新抛出。Spring 随后把这次读取当作未命中、执行方法，结果不缓存。方法就是数据源，缓存的副本可以跳过。其余失败交给原来的处理器（`CachingConfigurer` 给出的，或 Spring 默认的）：
 
 - 其它缓存的失败；
-- CoCache 缓存上失败的失效与清空（`@CacheEvict`，以及结果为 `null` 的 `@CachePut`）。`invalidate-failure: retry` 时它们不会失败；设置为 `throw` 就是要求看到失败。
+- CoCache 缓存上失败的失效与清空（`@CacheEvict`，以及结果为 `null` 的 `@CachePut`）。默认的 `invalidate-failure: retry` 下它们不会失败；设置为 `throw` 就是要求看到失败。
 
 不用 Spring Boot 时，从 `CachingConfigurer.errorHandler()` 返回 `DegradingCacheErrorHandler(yourHandler)`。
 

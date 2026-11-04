@@ -15,18 +15,18 @@ package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.test.Suspending
@@ -59,10 +59,13 @@ class CoCacheAutoConfigurationTest {
         }
 
         @Bean
-        fun profile(): CacheSpec<String, String> = cacheSpec("profile") { codec = StringCodec }
+        fun profile(): CacheSpec<String, String> = cacheSpec("profile") {
+            codec = StringCodec
+            externallySourced()
+        }
 
         @Bean
-        fun indexSpec(): SetCacheSpec<String, String> = setCacheSpec("index") { elementCodec = StringCodec }
+        fun indexSpec(): SetStoreSpec<String, String> = setStoreSpec("index") { elementCodec = StringCodec }
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -76,7 +79,7 @@ class CoCacheAutoConfigurationTest {
                 spec.policy = spec.policy.toBuilder().absentTtl(Duration.ofSeconds(7)).build()
             }
 
-            override fun customize(spec: SetCacheSpec.Builder<*, *>) {
+            override fun customize(spec: SetStoreSpec.Builder<*, *>) {
                 spec.keyPrefix = "custom-set:"
             }
         }
@@ -92,7 +95,10 @@ class CoCacheAutoConfigurationTest {
 
         @Suppress("UNCHECKED_CAST")
         @Bean
-        fun rawSpec(): CacheSpec<*, *> = cacheSpec<String, String>("raw") { codec = StringCodec }
+        fun rawSpec(): CacheSpec<*, *> = cacheSpec<String, String>("raw") {
+            codec = StringCodec
+            externallySourced()
+        }
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -101,7 +107,10 @@ class CoCacheAutoConfigurationTest {
         fun backend(): CoherenceBackend = InMemoryBackend()
 
         @Bean
-        fun userSpec(): CacheSpec<String, String> = cacheSpec("user") { codec = StringCodec }
+        fun userSpec(): CacheSpec<String, String> = cacheSpec("user") {
+            codec = StringCodec
+            externallySourced()
+        }
 
         @Bean
         fun user(): Any = Any()
@@ -140,11 +149,11 @@ class CoCacheAutoConfigurationTest {
             val user = context.getBean("user") as Cache<String, String>
             user["1"].assert().isEqualTo("user-1")
             @Suppress("UNCHECKED_CAST")
-            val index = context.getBean("index") as SetCache<String, String>
+            val index = context.getBean("index") as SetStore<String, String>
             index.add("k", listOf("a"))
             index["k"].assert().containsExactly("a")
             context.getBeanNamesForType(
-                ResolvableType.forClassWithGenerics(SetCache::class.java, String::class.java, String::class.java)
+                ResolvableType.forClassWithGenerics(SetStore::class.java, String::class.java, String::class.java)
             )
                 .toList().assert().containsExactly("index")
             context.getBean(
@@ -253,7 +262,7 @@ class CoCacheAutoConfigurationTest {
                     )
                     .assert().isTrue()
                 @Suppress("UNCHECKED_CAST")
-                val index = context.getBean("index") as SetCache<String, String>
+                val index = context.getBean("index") as SetStore<String, String>
                 index.add("k", listOf("a"))
                 (
                     Suspending.await {
@@ -378,7 +387,10 @@ class CoCacheAutoConfigurationTest {
         }
     }
 
-    @me.ahoo.cocache.api.annotation.CoCache(name = "LazyUser")
+    @me.ahoo.cocache.api.annotation.CoCache(
+        name = "LazyUser",
+        source = me.ahoo.cocache.api.annotation.CoCache.Source.EXTERNAL
+    )
     interface LazyUserCache : Cache<String, String>
 
     @Configuration(proxyBeanMethods = false)
@@ -388,7 +400,10 @@ class CoCacheAutoConfigurationTest {
         fun backend(): CoherenceBackend = InMemoryBackend()
 
         @Bean
-        fun eagerSpec(): CacheSpec<String, String> = cacheSpec("eager") { codec = StringCodec }
+        fun eagerSpec(): CacheSpec<String, String> = cacheSpec("eager") {
+            codec = StringCodec
+            externallySourced()
+        }
     }
 
     /**
@@ -412,7 +427,7 @@ class CoCacheAutoConfigurationTest {
                 "cocache.caches.user.ttl-jitter=0",
                 "cocache.redis.command-timeout=1500",
                 "cocache.redis.channel-mode=sharded",
-                "cocache.redis.set-cache-eviction-check=fail",
+                "cocache.redis.store-eviction-check=fail",
                 "cocache.redis.assume-maxmemory-policy=volatile-lru",
             )
             .run { context ->
@@ -427,7 +442,7 @@ class CoCacheAutoConfigurationTest {
                 ).refreshWindow.assert().isEqualTo(Duration.ofSeconds(30))
                 properties.redis.commandTimeout.assert().isEqualTo(Duration.ofMillis(1500))
                 properties.redis.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.SHARDED)
-                properties.redis.setCacheEvictionCheck.assert().isEqualTo(CoCacheProperties.EvictionCheck.FAIL)
+                properties.redis.storeEvictionCheck.assert().isEqualTo(CoCacheProperties.EvictionCheck.FAIL)
                 properties.redis.assumeMaxmemoryPolicy.assert().isEqualTo("volatile-lru")
                 properties.redis.toOptions().channelMode.assert().isEqualTo(
                     me.ahoo.cocache.redis.RedisChannelMode.SHARDED
@@ -532,7 +547,10 @@ class CoCacheAutoConfigurationTest {
     @Configuration(proxyBeanMethods = false)
     class NoBackendSpecConfig {
         @Bean
-        fun orphanSpec(): CacheSpec<String, String> = cacheSpec("orphan") { codec = StringCodec }
+        fun orphanSpec(): CacheSpec<String, String> = cacheSpec("orphan") {
+            codec = StringCodec
+            externallySourced()
+        }
     }
 
     @Suppress("LongParameterList")

@@ -24,14 +24,16 @@ import java.util.concurrent.ThreadLocalRandom
  * @param absentTtl 负缓存寿命（不抖动）
  * @param localMaxAge L2 副本的最长寿命：失效事件丢失时 L2 陈旧度的上界
  * @param degradedLocalMaxAge 未写入 L1 的填充（L1 故障、等待 lease 超时、fill 被拒绝）在 L2 中的最长寿命
- * @param refreshWindow 提前刷新窗口；`null` 表示关闭
- * @param invalidateFailure 失效写入 L1 失败时的处理方式；`null`（默认）按缓存有没有数据源决定：有数据源时
- *   [InvalidateFailureMode.RETRY]，没有数据源时（L1 是唯一副本）[InvalidateFailureMode.THROW]
- * @param readFailure 读取 L1 失败时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ReadFailureMode.DEGRADE]，
- *   没有数据源时（L1 是唯一副本）[ReadFailureMode.THROW]
+ * @param refreshWindow 提前刷新窗口；`null` 表示关闭。只作用于有数据源的派生缓存
+ * @param invalidateFailure 派生缓存（`Cache`）的失效写入 L1 失败时的处理方式；`null`（默认）为 [InvalidateFailureMode.RETRY]：
+ *   删除副本在任何时刻都安全。权威副本的删除总是同步抛出，不适用本字段
+ * @param readFailure 带数据源的读取（声明的数据源或调用级 loader）在 L1 读失败时的处理方式；`null`（默认）为 [ReadFailureMode.DEGRADE]。
+ *   不带 loader 的读取与权威副本的读取不适用本字段：它们的 L1 读失败是 `Lookup.Unknown`，由声明的 `unknownRead` 决定（RFC 0005 §4.1）
  * @param readTimeout 每次 L1 读取（`read`、`readAll`、`readIfChanged`）的时限（RFC 0005 §4.3，D6）；`null`（默认）为后端的命令超时，
- *   给出时以命令超时为上限（由存储钳制）。超时按 L1 读失败处理（[readFailure]），取得的令牌照常释放。供不能降级回源、
- *   又要限制 L1 卡顿时每次读取多等多久的缓存使用；写入与运维读取不受它限制
+ *   给出时以命令超时为上限（由存储钳制）。超时按 L1 读失败处理（带数据源的读取按 [readFailure]，没有数据源的读取为 `Unknown`），
+ *   取得的令牌照常释放。供不能降级回源、又要限制 L1 卡顿时每次读取多等多久的缓存使用；写入与运维读取不受它限制
+ * @param tombstoneTtl 带版本的墓碑（`invalidateIfNewer`、`deleteIfNewer`、带版本的数据源返回的 `Versioned(null, w)`）与
+ *   保留版本的失效 `E` 的寿命（不抖动）；`null` 表示与值相同（[valueTtl]）。它要覆盖重复投递的时间窗口：到期之后迟到的旧版本可以再次写入
  *
  * 读不懂的 L1 内容（格式号低于本节点格式的、不是本协议写入的、同格式解码失败的）不由策略决定（RFC 0005 §4.7）：
  * 有数据源的读取条件回收后回源，没有数据源的读取失败；更高格式的内容既不回收也不写回。
@@ -49,8 +51,10 @@ class CachePolicy(
     val invalidateFailure: InvalidateFailureMode? = null,
     val readFailure: ReadFailureMode? = null,
     val readTimeout: Duration? = null,
+    val tombstoneTtl: Duration? = null,
 ) {
     init {
+        tombstoneTtl?.let { requirePositive("tombstoneTtl", it) }
         ttl?.let { requirePositive("ttl", it) }
         require(
             !ttlJitter.isNegative && ttlJitter <= MAX_DURATION
@@ -85,6 +89,11 @@ class CachePolicy(
     }
 
     /**
+     * 墓碑与 `E` 的寿命：[tombstoneTtl]，未设置时同 [valueTtl]；`null` 表示永不过期。
+     */
+    fun tombstoneTtl(): Duration? = tombstoneTtl ?: valueTtl()
+
+    /**
      * 实际生效的抖动幅度：不超过寿命的一半，否则短寿命的值会大量以 1 毫秒寿命写入。
      */
     private fun effectiveJitter(ttl: Duration): Duration = minOf(ttlJitter, ttl.dividedBy(2))
@@ -94,7 +103,7 @@ class CachePolicy(
     override fun toString(): String {
         return "CachePolicy(ttl=$ttl, ttlJitter=$ttlJitter, absentTtl=$absentTtl, localMaxAge=$localMaxAge, " +
             "degradedLocalMaxAge=$degradedLocalMaxAge, refreshWindow=$refreshWindow, lease=$lease, load=$load, " +
-            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure, readTimeout=$readTimeout)"
+            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure, readTimeout=$readTimeout, tombstoneTtl=$tombstoneTtl)"
     }
 
     /**
@@ -113,6 +122,7 @@ class CachePolicy(
         var invalidateFailure: InvalidateFailureMode? = policy.invalidateFailure
         var readFailure: ReadFailureMode? = policy.readFailure
         var readTimeout: Duration? = policy.readTimeout
+        var tombstoneTtl: Duration? = policy.tombstoneTtl
 
         fun ttl(ttl: Duration?) = apply { this.ttl = ttl }
         fun ttlJitter(ttlJitter: Duration) = apply { this.ttlJitter = ttlJitter }
@@ -131,6 +141,7 @@ class CachePolicy(
 
         fun readFailure(readFailure: ReadFailureMode?) = apply { this.readFailure = readFailure }
         fun readTimeout(readTimeout: Duration?) = apply { this.readTimeout = readTimeout }
+        fun tombstoneTtl(tombstoneTtl: Duration?) = apply { this.tombstoneTtl = tombstoneTtl }
 
         fun build(): CachePolicy = CachePolicy(
             ttl = ttl,
@@ -145,6 +156,7 @@ class CachePolicy(
             invalidateFailure = invalidateFailure,
             readFailure = readFailure,
             readTimeout = readTimeout,
+            tombstoneTtl = tombstoneTtl,
         )
     }
 
@@ -239,44 +251,54 @@ data class LocalPolicy @JvmOverloads constructor(
 }
 
 /**
- * 失效写入 L1 失败时的处理方式。未配置时按缓存有没有数据源决定（见 [CachePolicy.invalidateFailure]）。
+ * 派生缓存（`Cache`）的失效写入 L1 失败时的处理方式（见 [CachePolicy.invalidateFailure]）。
  */
 enum class InvalidateFailureMode {
     /**
-     * 进入有界重试队列，不抛出。失效通常在事务提交之后调用，抛出既不能回滚也不该回滚。
-     *
-     * 有数据源的缓存的默认值：删除总是安全的，之后回源即可。没有数据源时（L1 是唯一副本）延迟的重试会删掉
-     * 失败之后其它写入方写入的值（丢更新），显式配置即接受这个代价。
+     * 进入有界重试队列，不抛出（默认）。失效通常在事务提交之后调用，抛出既不能回滚也不该回滚；删除副本在任何时刻都安全，之后回源即可。
      */
     RETRY,
 
     /**
      * 抛出 [me.ahoo.cocache.api.CacheWriteException]，不登记重试。
-     *
-     * 没有数据源的缓存的默认值：L1 是唯一副本，调用方得知失败后自行决定（如重试 `invalidate`，或改为写入新值）。
      */
     THROW,
 }
 
 /**
- * 读取 L1 失败时的处理方式（RFC 0003 §4.13）。未配置时按这次读取有没有数据源决定（见 [CachePolicy.readFailure]）。
+ * 带数据源的读取在 L1 读失败时的处理方式（RFC 0003 §4.13，见 [CachePolicy.readFailure]）。
  */
 enum class ReadFailureMode {
     /**
-     * 降级为直接回源，结果只以降级限龄进入 L2，不写 L1。L1 故障时由回源并发上限保护数据源。有数据源的读取的默认值。
-     *
-     * 没有数据源的读取只能显式选择它：读到“不存在”（返回 `null`，批量读取中缺席），不写入任何一层、不缓存，
-     * 每次故障都重新访问 L1，计入 `remoteFailures`。适用于把“读不到”当作安全答案的缓存（如撤销表：Redis 故障即视为未撤销）。
+     * 降级为直接回源，结果只以降级限龄进入 L2，不写 L1。L1 故障时由回源并发上限保护数据源（默认）。
      */
     DEGRADE,
 
     /**
-     * 抛出 [me.ahoo.cocache.api.CacheReadException]。
+     * 读取的结果为 `Lookup.Unknown`：`get` 抛出 [me.ahoo.cocache.api.CacheReadException]，`lookup` 返回它。
      * 只作用于读取；填充、释放令牌等尽力而为的操作仍然降级。
-     *
-     * 没有数据源的读取的默认值：L1 是唯一副本，读不到时没有可降级的答案（fail closed）。
      */
     THROW,
+}
+
+/**
+ * 没有数据源的读取（权威副本的读取，外部来源的缓存上不带 loader 的读取）在 L1 读失败时（`Lookup.Unknown`）返回什么（RFC 0005 §4.1，S16）。
+ *
+ * 只作用于不带 loader 的 `get` / `getAll` / `lookup` / `lookupAll` 及其异步、挂起视图；不作用于 `getIfChanged`、`getVersioned`
+ * 与条件写入，也不作用于带 loader 的读取（它们由 [ReadFailureMode] 决定）。映射发生在调用方返回之前：共享的加载结果仍是
+ * `Unknown`，带 loader 的调用方不会接受它。两种取值都计入 `cocache.reads.unknown`。
+ */
+enum class UnknownReadMode {
+    /**
+     * `get` / `getAll` 抛出 [me.ahoo.cocache.api.CacheReadException]，`lookup` 返回 `Lookup.Unknown`（默认，fail closed）。
+     */
+    THROW,
+
+    /**
+     * 当作不存在：`get` 返回 `null`，`getAll` 中缺席，`lookup` 返回 `Lookup.Absent`；不写入任何一层，下一次读取重新访问 L1。
+     * 适用于把“读不到”当作安全答案的数据（如撤销表：Redis 故障即视为未撤销）。不能用于 `SetStore`。
+     */
+    ABSENT,
 }
 
 /**

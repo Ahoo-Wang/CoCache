@@ -19,9 +19,11 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import io.mockk.every
 import io.mockk.mockk
+import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.SuspendingCache
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
@@ -60,11 +62,12 @@ class TransactionAwareSpringCacheTest {
     private val runtime = CacheRuntime.builder().backend(backend).build()
 
     /**
-     * 与 Spring Cache 的通常用法一样没有数据源：被注解的方法是数据源，`get(key)` 不回源。
+     * 与 Spring Cache 的通常用法一样是外部来源：被注解的方法是数据源，`get(key)` 不回源。
      */
     private val user: Cache<String, String> = runtime.create(
         cacheSpec("user") {
             codec = StringCodec
+            externallySourced()
         }
     )
     private val errors = RecordingErrorHandler()
@@ -526,7 +529,13 @@ class TransactionAwareSpringCacheTest {
         override fun lookup(key: Any): Lookup<Any> = Lookup.Absent(null)
         override fun put(key: Any, value: Any) = throw putFailure
         override fun put(key: Any, value: Any, ttl: Duration) = throw putFailure
+        override fun lookupAll(keys: Collection<Any>): Map<Any, Lookup<Any>> =
+            keys.associateWith { Lookup.Absent(null) }
+        override fun putAll(entries: Map<Any, Any>) = throw putFailure
+        override fun putAll(entries: Map<Any, Any>, ttl: Duration) = throw putFailure
         override fun invalidate(key: Any) = invalidateAll(listOf(key))
         override fun invalidateAll(keys: Collection<Any>) = throw invalidateFailure
+        override fun async(): AsyncCache<Any, Any> = throw UnsupportedOperationException()
+        override fun suspending(): SuspendingCache<Any, Any> = throw UnsupportedOperationException()
     }
 }

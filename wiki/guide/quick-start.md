@@ -48,7 +48,7 @@ dependencies {
 
 :::
 
-The BOM `me.ahoo.cocache:cocache-bom` manages the versions of all CoCache modules if you use more than the starter, for example the optional `me.ahoo.cocache:cocache-coroutines` for [Kotlin coroutines](./coroutines.md).
+The BOM `me.ahoo.cocache:cocache-bom` manages the versions of all CoCache modules if you use more than the starter. [Kotlin coroutines](./coroutines.md) need no extra module: the suspending views are part of the core.
 
 ## 2. Point it at Redis {#redis}
 
@@ -71,7 +71,7 @@ cocache:
 
 ## 3. Declare a cache {#declare}
 
-A cache is an interface that extends `Cache<K, V>`. List it in `@EnableCoCache`:
+A cache is an interface that extends `Cache<K, V>`, a derived copy of data that a loader can fetch again. (Data whose only copy is Redis uses a `Store` instead; see [choosing a type](./caches.md#types).) List it in `@EnableCoCache`:
 
 ::: code-group
 
@@ -117,7 +117,7 @@ The cache is named after the interface (`UserCache`), and so is the bean. Values
 
 ## 4. Give it a loader {#loader}
 
-On a miss in both levels, CoCache calls the cache's `CacheLoader`. Declare one as a bean; it is matched by its generic type:
+On a miss in both levels, CoCache calls the cache's `CacheLoader`. Declare one as a bean; it is matched by its generic type. A `Cache` interface without a matching loader fails startup, unless it declares `@CoCache(source = CoCache.Source.EXTERNAL)` because its callers supply the values:
 
 ::: code-group
 
@@ -260,5 +260,5 @@ backend.close();
 ## Next steps {#next}
 
 - [How It Works](./concepts.md): the mental model behind reads, writes, and staleness.
-- [Declaring Caches](./caches.md): keys, loaders, codecs, spec beans, and set caches.
+- [Declaring Caches](./caches.md): the five cache types, keys, loaders, codecs, and spec beans.
 - [Configuration Reference](./configuration.md): every `cocache.*` property.

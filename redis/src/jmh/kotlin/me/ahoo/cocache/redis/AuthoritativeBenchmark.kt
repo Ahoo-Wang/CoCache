@@ -15,12 +15,14 @@ package me.ahoo.cocache.redis
 
 import io.lettuce.core.RedisURI
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.CachePolicy
 import org.openjdk.jmh.annotations.Benchmark
@@ -56,7 +58,7 @@ open class AuthoritativeBenchmark {
     private val run = UUID.randomUUID().toString().substring(0, 8)
     private lateinit var backend: RedisBackend
     private lateinit var runtime: CacheRuntime
-    private lateinit var authoritative: Cache<String, String>
+    private lateinit var authoritative: Store<String, String>
     private lateinit var derived: Cache<String, String>
     private lateinit var authoritativeAdmin: CacheAdmin
     private lateinit var derivedAdmin: CacheAdmin
@@ -69,7 +71,7 @@ open class AuthoritativeBenchmark {
         val document = "x".repeat(payloadSize)
         val policy = CachePolicy(ttl = null)
         authoritative = runtime.create(
-            cacheSpec<String, String>("bench-record-$run") {
+            storeSpec<String, String>("bench-record-$run") {
                 codec = StringCodec
                 this.policy = policy
             }
@@ -91,7 +93,7 @@ open class AuthoritativeBenchmark {
 
     @TearDown
     fun tearDown() {
-        authoritative.invalidate("doc")
+        authoritative.delete("doc")
         derived.invalidate("doc")
         runtime.close()
         backend.close()
@@ -110,11 +112,11 @@ open class AuthoritativeBenchmark {
     @Benchmark
     fun conditionalUnchanged(): ConditionalGet<String> = authoritative.getIfChanged("doc", digest)
 
-    /** 没有数据源的缓存的 L1 读取：重算 SHA-256 校验摘要段，再解码、填 L2。 */
+    /** `Store` 的 L1 读取：重算 SHA-256 校验摘要段，再解码、填 L2。 */
     @Benchmark
     fun authoritativeL1Read(): String? = authoritative["doc"]
 
-    /** 有数据源的缓存的 L1 读取：不校验，解码、填 L2。 */
+    /** 派生缓存的 L1 读取：不校验，解码、填 L2。 */
     @Benchmark
     fun derivedL1Read(): String? = derived["doc"]
 }

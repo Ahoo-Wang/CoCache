@@ -6,9 +6,11 @@ Use this reference when application code uses `@Cacheable`, `@CachePut`, `@Cache
 
 The starter registers `CoCacheSpringCacheManager` (bean `cocacheCacheManager`; when `spring-tx` is present it is wrapped in CoCache's `TransactionAwareSpringCacheManager`) unless the application defines its own `CacheManager`. It exposes caches already declared with CoCache under the same names and never creates caches from unknown names.
 
+Only a `Cache` (a derived copy) belongs behind Spring Cache: the annotated method is its source. Never name a `Store`, `VersionedStore` or `SetStore` in a cache annotation. A `Cache` whose only source is the annotated methods is externally sourced; without a matching loader bean and without `source = EXTERNAL`, a `Cache` interface fails startup.
+
 ```kotlin
-@CoCache(ttl = 600)
-interface UserCache : Cache<String, User>          // usually no CacheLoader: the method loads
+@CoCache(ttl = 600, source = CoCache.Source.EXTERNAL)
+interface UserCache : Cache<String, User>          // externally sourced: the method loads
 
 @EnableCaching
 @EnableCoCache(caches = [UserCache::class])
@@ -44,7 +46,7 @@ The starter checks at startup (with `@EnableCaching`, when a bean named `cocache
 
 - A `sync = true` method returning `null` produces a negative entry for `absent-ttl`; invalidate the key when the row is created, or shorten `absent-ttl`.
 - Prefer `@CacheEvict` over `@CachePut` after writes.
-- Redis failures, for a cache without its own loader (the usual Spring Cache case): `sync = true` still degrades to the method; a non-sync `@Cacheable` read throws `CacheReadException` to Spring's `CacheErrorHandler` (or, with `read-failure: degrade` on the cache, misses without caching so the method runs); a failed `@CacheEvict` throws `CacheWriteException` because `invalidate-failure` defaults to `throw` without a loader. The method is the source, so a delete is safe: set `invalidate-failure: retry` on such caches to keep queued retries.
+- Redis failures, for an externally sourced cache (the usual Spring Cache case): `sync = true` still degrades to the method (`read-failure: degrade`, the default); a non-sync `@Cacheable` read is `Lookup.Unknown`, so `get(key)` throws `CacheReadException` to Spring's `CacheErrorHandler` (or, with `unknownRead = UnknownReadMode.ABSENT` on the spec or in a customizer, misses without caching so the method runs; there is no property for it); a failed `@CacheEvict` is queued for background retry, because `invalidate-failure` defaults to `retry` for every `Cache`. `invalidate-failure: throw` makes it throw `CacheWriteException` instead.
 - `cocache.spring-cache.degrade-on-error: true` gives the cache interceptor a `DegradingCacheErrorHandler`: read and non-null write failures on CoCache caches are logged, not rethrown, so a non-sync `@Cacheable` runs its method while Redis is down. Invalidation and clear failures, and other caches, still go to the previous handler (its delegate). Without Boot, return `DegradingCacheErrorHandler(handler)` from `CachingConfigurer.errorHandler()`.
 - Spring's `put` / `evict` are blocking: on reactive methods, `@CachePut`, `@CacheEvict` and non-sync `@Cacheable` hold the callback thread for one Redis round trip. Call `cache.async().invalidate(key)` where a write must not block.
 

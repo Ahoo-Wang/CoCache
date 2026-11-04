@@ -9,18 +9,18 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 
 每个缓存的配置分层构建。后一层按字段覆盖前一层；某层没有设置的字段原样传下去：
 
-1. **内置默认值**（`CachePolicy.DEFAULT`；集合缓存为 `SetCacheSpec.DEFAULT_POLICY`）。
-2. **声明**：`@CoCache` / `@CaffeineCache`，或你构建的 `CacheSpec`。
+1. **内置默认值**：`Cache` 与 `VersionedCache` 为 `CachePolicy.DEFAULT`；[权威类型](./caches.md#store-defaults)为 `StoreSpec.DEFAULT_POLICY`、`VersionedStoreSpec.DEFAULT_POLICY` 或 `SetStoreSpec.DEFAULT_POLICY`。
+2. **声明**：`@CoCache` / `@CaffeineCache`，或你构建的 spec（`CacheSpec`、`StoreSpec` 等）。
 3. **`CacheSpecCustomizer` bean**，按 Spring 的顺序。
 4. **`cocache.defaults.*`**，作用于所有缓存。
 5. **`cocache.caches.[name].*`**，作用于单个缓存。
 
 配置项排在最后，运维无需重新构建就能调整缓存。这也意味着 `cocache.defaults.*` 会覆盖注解中写的值。
 
-::: tip 集合缓存保持自己的寿命
-`cocache.defaults.ttl` 与 `ttl-forever` 不作用于 [`SetCache`](./caches.md#set-cache)：它的唯一副本在 Redis 中，全局寿命会让集合过期并消失。`cocache.defaults.absent-ttl` 与 `refresh-window` 同样跳过集合缓存，因为它没有数据源。只有 `cocache.caches.[name].ttl` / `ttl-forever` 能改变集合缓存的寿命，`defaults` 的其它配置项照常生效。
+::: tip 权威类型保持自己的寿命
+`cocache.defaults.ttl`、`ttl-forever` 与 `refresh-window` 不作用于 [`Store`、`VersionedStore` 与 `SetStore`](./caches.md#store)：它们的唯一副本在 Redis 中，全局寿命会让数据过期并消失，它们也没有可以提前刷新的数据源。只有 `cocache.caches.[name].ttl` / `ttl-forever` 能改变它们的寿命。`defaults` 的其它配置项照常生效，包括 `absent-ttl` 与 `local-max-age`：设置它们同样会替换这些类型更短的内置默认值。
 
-`cocache.defaults.refresh-window` 与其它缓存一样作用于[带版本的缓存](./freshness.md#versioned-writes)：它们同样提前刷新。对某一个关闭用 `cocache.caches.[name].refresh-window: 0`。
+`cocache.defaults.refresh-window` 与其它 `Cache` 一样作用于 [`VersionedCache`](./freshness.md#versioned-writes)：它同样提前刷新。对某一个关闭用 `cocache.caches.[name].refresh-window: 0`。
 :::
 
 ## 顶层配置项 {#properties}
@@ -47,11 +47,11 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 
 | 配置项 | 类型 | 内置默认值 | 对应注解 | 含义 |
 |--------|------|------------|----------|------|
-| `ttl` | 时长 | `1h`（集合缓存：永不过期） | `@CoCache.ttl` | 值在 Redis 中的寿命 |
+| `ttl` | 时长 | `1h`（`Store`、`VersionedStore`、`SetStore`：永不过期） | `@CoCache.ttl` | 值在 Redis 中的寿命 |
 | `ttl-forever` | boolean | `false` | `ttl = CoCache.FOREVER` | `true`：值永不过期，覆盖 `ttl` |
 | `ttl-jitter` | 时长 | `1m` | `@CoCache.ttlJitter` | 每个值寿命上的随机 ± 抖动，不超过 `ttl / 2`。`0`：关闭。 |
-| `absent-ttl` | 时长 | `1m` | `@CoCache.absentTtl` | 负缓存的寿命 |
-| `local-max-age` | 时长 | `5m` | `@CoCache.localMaxAge` | L2 副本的最长寿命 |
+| `absent-ttl` | 时长 | `1m`（权威类型：`10s`） | `@CoCache.absentTtl` | 负缓存的寿命 |
+| `local-max-age` | 时长 | `5m`（权威类型：`30s`） | `@CoCache.localMaxAge` | L2 副本的最长寿命 |
 | `degraded-local-max-age` | 时长 | `10s` | — | 无法写入 Redis 的 L2 副本的最长寿命 |
 | `refresh-window` | 时长 | 关闭 | `@CoCache.refreshWindow` | 提前刷新窗口。`0`：关闭（也会关掉声明中开启的窗口），见[校验](#validation)。 |
 | `lease-ttl` | 时长 | `10s` | — | 持有者一直不写回时 lease 的寿命，应大于 loader 的 p99 |
@@ -60,13 +60,13 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `load-acquire-timeout` | 时长 | `1s` | — | 加载等待许可的最长时间，超时抛出 `SourceLoadRejectedException` |
 | `load-timeout` | 时长 | `30s` | — | 一次加载的上限。`AsyncCacheLoader` 的一次加载超过它时以 `SourceLoadTimeoutException` 失败并释放 lease；等待别的调用方加载的读取，在这次加载进行了这么久之后同样失败，之后的读取开始新的加载，不再排在它后面。同步 loader 无法被外部结束，请给它自己的超时。见[异步 API](./async.md#timeouts)。 |
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | 每个实例 L2 的最大条目数 |
-| `invalidate-failure` | `retry` \| `throw` | 有 loader 时 `retry`，没有时 `throw` | — | Redis 失效失败时：进入后台重试队列，或抛出 `CacheWriteException`。没有 loader 时 Redis 是唯一副本，延迟的重试会删掉失败之后写入的值，因此默认 `throw`。见[写入时 Redis 故障](./freshness.md#redis-down)。 |
-| `read-failure` | `degrade` \| `throw` | 有 loader 时 `degrade`，没有时 `throw` | — | Redis 读取失败时：从数据源加载，或抛出 `CacheReadException`。没有 loader 的读取无处加载，默认抛出。“读不到”是安全答案时（如撤销表：Redis 故障即视为未撤销）显式设置 `degrade`：读取返回 `null` 且不缓存任何东西，故障期间的每次读取都会再次访问 Redis。 |
+| `invalidate-failure` | `retry` \| `throw` | `retry` | — | `Cache.invalidate` 失败时：进入后台重试队列，或抛出 `CacheWriteException`。删除派生副本总是安全的，所以默认重试，外部来源的缓存也一样。权威类型的删除总是抛出、从不重试，本配置项不作用于它们。见[写入时 Redis 故障](./freshness.md#redis-down)。 |
+| `read-failure` | `degrade` \| `throw` | `degrade` | — | 有数据源（声明的 loader 或调用级 loader）的读取在 Redis 失败时：从数据源加载，或回答 [`Lookup.Unknown`](./caches.md#unknown)，于是 `get` 抛出 `CacheReadException`。没有数据源的读取（权威类型、外部来源的 `Cache` 上不带 loader 的读取）总是回答 `Unknown`，返回什么由 spec 的 `unknownRead` 决定，它没有配置项。 |
 | `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | 每个存储 key 的开头（见[下文](#key-prefix)） |
 
-按缓存的读取时限还没有配置项：在策略上用 `CachePolicy.Builder.readTimeout(…)` 设置。它以这个时长而不是 `command-timeout` 限定缓存的每次 Redis 读取（`get`、`getAll`、`getIfChanged`），超时按 Redis 读取失败处理，由 `read-failure` 决定。不设置时读取最多等 `command-timeout`。
+按缓存的读取时限还没有配置项：在策略上用 `CachePolicy.Builder.readTimeout(…)` 设置。它以这个时长而不是 `command-timeout` 限定缓存的每次 Redis 读取（`get`、`getAll`、`getIfChanged`），超时按 Redis 读取失败处理：带数据源的读取由 `read-failure` 决定，没有数据源的读取为 [`Lookup.Unknown`](./caches.md#unknown)。不设置时读取最多等 `command-timeout`。
 
-缓存如何对待读不懂的内容不可配置：有数据源的缓存回收它并重新加载，没有数据源的缓存与 `SetCache` 读取失败（见[无法读取的载荷](../operations/troubleshooting.md#corrupt-payloads)）。
+缓存如何对待读不懂的内容不可配置：有数据源的读取回收它并重新加载，没有数据源的读取失败（见[无法读取的载荷](../operations/troubleshooting.md#corrupt-payloads)）。
 
 如何选择这些值，见[保持数据新鲜](./freshness.md#lifetimes)。
 
@@ -154,7 +154,7 @@ TLS 遵循 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）。`red
 | 配置项 | 类型 | 默认值 | 含义 |
 |--------|------|--------|------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`：`PUBLISH` / `SUBSCRIBE`，与 Redis 修改原子地完成。`sharded`：`SPUBLISH` / `SSUBSCRIBE`（Redis 7+），在修改之后立即发送。**所有实例必须使用相同的模式**，两种模式互不相通。 |
-| `cocache.redis.set-cache-eviction-check` | `warn` \| `fail` \| `off` | `warn` | 有 `SetCache`（包括已声明但尚未创建的延迟初始化 bean）时，启动从 `INFO memory` 读取各主节点的 `maxmemory-policy`。`allkeys-*` 会淘汰集合的唯一副本：`warn` 记录告警，`fail` 启动失败，`off` 不检查。`volatile-*` 且有 `ttl` 有限的 `SetCache` 时只记录告警。读不到策略且没有设置 `assume-maxmemory-policy` 时，`warn` 记录告警，`fail` 启动失败。见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。 |
+| `cocache.redis.store-eviction-check` | `warn` \| `fail` \| `off` | `warn` | 有 `Store`、`VersionedStore` 或 `SetStore`（包括已声明但尚未创建的延迟初始化 bean）时，启动从 `INFO memory` 读取各主节点的 `maxmemory-policy`。`allkeys-*` 会淘汰它们的唯一副本：`warn` 记录告警，`fail` 启动失败，`off` 不检查。`volatile-*` 且有 `ttl` 有限的权威缓存时只记录告警。读不到策略且没有设置 `assume-maxmemory-policy` 时，`warn` 记录告警，`fail` 启动失败。见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。 |
 | `cocache.redis.assume-maxmemory-policy` | 字符串 | 无 | 驱逐检查读不到 `INFO memory`（Redis 用户没有 `+info`，或服务禁用了它）时按这个策略判断，如 `noeviction`、`volatile-lru`。必须是 `noeviction`、`allkeys-*` 或 `volatile-*`。读得到策略时忽略。 |
 | `cocache.redis.command-timeout` | 时长（毫秒） | `2s` | 单条命令或脚本的最长等待时间 |
 | `cocache.redis.heartbeat` | 时长（毫秒） | `5s` | 订阅连接上的 `PING` 间隔。PING 失败时清空 L2 并重连。 |
@@ -193,6 +193,7 @@ CoCache 不会带着无法兑现的配置运行，而是让启动失败：
 | 配置 | 位置 |
 |------|------|
 | `ttlOf`、`keyEncoder`、`keyFilter`、`codec`、`loader` | spec 或[定制器](./caches.md#customizer) |
+| `unknownRead`、`tombstoneTtl` | spec 或[定制器](./caches.md#customizer) |
 | `local.initialCapacity`、`local.expireAfterAccess` | `@CaffeineCache`、spec 或定制器 |
 | 时钟 | `CacheClock` bean（如测试中的 `ManualClock`）会被运行时与内存后端使用 |
 | 重试策略、节点 id | 自己声明的 `CacheRuntime` bean |

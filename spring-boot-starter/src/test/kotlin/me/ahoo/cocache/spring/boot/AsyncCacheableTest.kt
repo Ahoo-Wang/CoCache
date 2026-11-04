@@ -101,10 +101,16 @@ class AsyncCacheableTest {
         fun gate(): CountDownLatch = CountDownLatch(1)
 
         @Bean
-        fun innerSpec(): CacheSpec<String, String> = cacheSpec("inner") { codec = StringCodec }
+        fun innerSpec(): CacheSpec<String, String> = cacheSpec("inner") {
+            codec = StringCodec
+            externallySourced()
+        }
 
         @Bean
-        fun outerSpec(): CacheSpec<String, String> = cacheSpec("outer") { codec = StringCodec }
+        fun outerSpec(): CacheSpec<String, String> = cacheSpec("outer") {
+            codec = StringCodec
+            externallySourced()
+        }
 
         @Bean
         fun userSpec(): CacheSpec<String, String> = cacheSpec("user") {

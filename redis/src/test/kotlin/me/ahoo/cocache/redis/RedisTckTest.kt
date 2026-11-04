@@ -25,7 +25,7 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.test.BackendProtocolSpec
 import me.ahoo.cocache.test.CommandCancellation
 import me.ahoo.cocache.test.Concurrency.awaitCondition
@@ -334,7 +334,7 @@ class RedisFaultTest : RedisProxiedFaultSpec() {
                 "$key-v"
             }
         }
-        val setSpec = setCacheSpec<String, String>("$cacheName-set") { elementCodec = StringCodec }
+        val setSpec = setStoreSpec<String, String>("$cacheName-set") { elementCodec = StringCodec }
         val runtimes = (1..2).map { CacheRuntime.builder().backend(backend).clock(clock).build() }
         try {
             val (cacheA, cacheB) = runtimes.map { it.create(spec) }

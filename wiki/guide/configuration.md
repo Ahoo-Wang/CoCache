@@ -9,18 +9,18 @@ description: Every cocache.* property with its type, default and unit, how prope
 
 Each cache's settings are built in layers. A later layer overrides an earlier one, field by field; a field a layer doesn't set passes through:
 
-1. **Built-in defaults** (`CachePolicy.DEFAULT`; `SetCacheSpec.DEFAULT_POLICY` for set caches).
-2. **The declaration**: `@CoCache` / `@CaffeineCache`, or the `CacheSpec` you build.
+1. **Built-in defaults**: `CachePolicy.DEFAULT` for a `Cache` or `VersionedCache`; `StoreSpec.DEFAULT_POLICY`, `VersionedStoreSpec.DEFAULT_POLICY` or `SetStoreSpec.DEFAULT_POLICY` for the [authoritative types](./caches.md#store-defaults).
+2. **The declaration**: `@CoCache` / `@CaffeineCache`, or the spec you build (`CacheSpec`, `StoreSpec`, …).
 3. **`CacheSpecCustomizer` beans**, in Spring order.
 4. **`cocache.defaults.*`**, for every cache.
 5. **`cocache.caches.[name].*`**, for one cache.
 
 Properties come last so operators can retune a cache without a rebuild. This means `cocache.defaults.*` overrides what an annotation says, too.
 
-::: tip Set caches keep their lifetime
-`cocache.defaults.ttl` and `ttl-forever` don't apply to a [`SetCache`](./caches.md#set-cache): its only copy is Redis, so a global lifetime would make sets expire and disappear. `cocache.defaults.absent-ttl` and `refresh-window` are skipped too, since a set cache has no source. Only `cocache.caches.[name].ttl` / `ttl-forever` change a set cache's lifetime. Every other `defaults` key applies as usual.
+::: tip Authoritative types keep their lifetime
+`cocache.defaults.ttl`, `ttl-forever` and `refresh-window` don't apply to a [`Store`, `VersionedStore` or `SetStore`](./caches.md#store): Redis holds its only copy, so a global lifetime would make the data expire and disappear, and it has no source to refresh from. Only `cocache.caches.[name].ttl` / `ttl-forever` change its lifetime. Every other `defaults` key applies as usual, including `absent-ttl` and `local-max-age`: setting them replaces these types' shorter built-in defaults as well.
 
-`cocache.defaults.refresh-window` applies to [versioned caches](./freshness.md#versioned-writes) like any other: they refresh ahead too. Turn it off for one with `cocache.caches.[name].refresh-window: 0`.
+`cocache.defaults.refresh-window` applies to a [`VersionedCache`](./freshness.md#versioned-writes) like any other `Cache`: it refreshes ahead too. Turn it off for one with `cocache.caches.[name].refresh-window: 0`.
 :::
 
 ## Top-level properties {#properties}
@@ -47,11 +47,11 @@ These keys work under both `cocache.defaults.` and `cocache.caches.[name].`.
 
 | Key | Type | Built-in default | Annotation equivalent | Meaning |
 |-----|------|------------------|-----------------------|---------|
-| `ttl` | duration | `1h` (set caches: forever) | `@CoCache.ttl` | Lifetime of a value in Redis |
+| `ttl` | duration | `1h` (`Store`, `VersionedStore`, `SetStore`: forever) | `@CoCache.ttl` | Lifetime of a value in Redis |
 | `ttl-forever` | boolean | `false` | `ttl = CoCache.FOREVER` | `true`: values never expire. Overrides `ttl`. |
 | `ttl-jitter` | duration | `1m` | `@CoCache.ttlJitter` | Random ± spread on each value's lifetime, capped at `ttl / 2`. `0`: off. |
-| `absent-ttl` | duration | `1m` | `@CoCache.absentTtl` | Lifetime of a negative entry |
-| `local-max-age` | duration | `5m` | `@CoCache.localMaxAge` | Maximum age of an L2 copy |
+| `absent-ttl` | duration | `1m` (authoritative types: `10s`) | `@CoCache.absentTtl` | Lifetime of a negative entry |
+| `local-max-age` | duration | `5m` (authoritative types: `30s`) | `@CoCache.localMaxAge` | Maximum age of an L2 copy |
 | `degraded-local-max-age` | duration | `10s` | — | Maximum age of an L2 copy that couldn't be written to Redis |
 | `refresh-window` | duration | off | `@CoCache.refreshWindow` | Refresh-ahead window. `0`: off (also removes a window the declaration enables); see [validation](#validation). |
 | `lease-ttl` | duration | `10s` | — | How long a lease lives if its holder never fills it. Keep it above the loader's p99. |
@@ -60,13 +60,13 @@ These keys work under both `cocache.defaults.` and `cocache.caches.[name].`.
 | `load-acquire-timeout` | duration | `1s` | — | How long a load waits for a permit before throwing `SourceLoadRejectedException` |
 | `load-timeout` | duration | `30s` | — | Upper bound for a load. An `AsyncCacheLoader` load that takes longer fails with `SourceLoadTimeoutException` and releases the lease. Readers waiting for another caller's load fail the same way once the load has been in flight that long, and later readers start a new load instead of waiting behind it. A synchronous loader can't be stopped from outside, so give it its own timeout. See [Async API](./async.md#timeouts). |
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | Maximum L2 entries per instance |
-| `invalidate-failure` | `retry` \| `throw` | `retry` with a loader, `throw` without one | — | A failed Redis invalidation: queue for background retry, or throw `CacheWriteException`. Without a loader Redis holds the only copy, and a delayed retry would delete a value written after the failure, so the default is `throw`. See [When Redis is down during a write](./freshness.md#redis-down). |
-| `read-failure` | `degrade` \| `throw` | `degrade` with a loader, `throw` without one | — | A failed Redis read: load from the source, or throw `CacheReadException`. A read without a loader has nothing to load from: by default it throws. Set `degrade` explicitly when "unreadable" is a safe answer, such as a revocation list where a Redis failure means "not revoked": the read then returns `null` and caches nothing, so every read during the failure goes to Redis again. |
+| `invalidate-failure` | `retry` \| `throw` | `retry` | — | A failed `Cache.invalidate`: queue for background retry, or throw `CacheWriteException`. Deleting a derived copy is always safe, so the default retries, externally sourced caches included. The authoritative types' deletes always throw and are never retried; this key doesn't apply to them. See [When Redis is down during a write](./freshness.md#redis-down). |
+| `read-failure` | `degrade` \| `throw` | `degrade` | — | A failed Redis read that has a source (the declared loader or a per-call one): load from the source, or answer [`Lookup.Unknown`](./caches.md#unknown), so `get` throws `CacheReadException`. Reads without a source (authoritative types, an externally sourced `Cache` read without a loader) always answer `Unknown`; the spec's `unknownRead` decides what they return, and it has no property. |
 | `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | First part of every storage key ([below](#key-prefix)) |
 
-A per-cache read timeout has no property yet: set `CachePolicy.Builder.readTimeout(…)` on the policy. It bounds every Redis read of the cache (`get`, `getAll`, `getIfChanged`) by that duration instead of `command-timeout`, and a read that runs out is a failed Redis read handled by `read-failure`. Without it, reads wait up to `command-timeout`.
+A per-cache read timeout has no property yet: set `CachePolicy.Builder.readTimeout(…)` on the policy. It bounds every Redis read of the cache (`get`, `getAll`, `getIfChanged`) by that duration instead of `command-timeout`, and a read that runs out is a failed Redis read: a read with a source follows `read-failure`, a read without one is [`Lookup.Unknown`](./caches.md#unknown). Without it, reads wait up to `command-timeout`.
 
-How a cache treats content it can't read isn't configurable: a cache with a loader reclaims it and reloads it, and a cache without one, or a `SetCache`, fails the read ([unreadable payloads](../operations/troubleshooting.md#corrupt-payloads)).
+How a cache treats content it can't read isn't configurable: a read with a source reclaims it and reloads, and a read without one fails ([unreadable payloads](../operations/troubleshooting.md#corrupt-payloads)).
 
 [Keeping Data Fresh](./freshness.md#lifetimes) explains how to choose these values.
 
@@ -154,7 +154,7 @@ TLS follows the Spring Boot SSL bundle (`spring.data.redis.ssl.bundle`). A `redi
 | Property | Type | Default | Meaning |
 |----------|------|---------|---------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`: `PUBLISH` / `SUBSCRIBE`, atomic with the Redis change. `sharded`: `SPUBLISH` / `SSUBSCRIBE` (Redis 7+), sent right after the change. **All instances must use the same mode**; the two don't hear each other. |
-| `cocache.redis.set-cache-eviction-check` | `warn` \| `fail` \| `off` | `warn` | With any `SetCache`, including ones declared but not yet created (lazy beans), read every primary's `maxmemory-policy` from `INFO memory` at startup. `allkeys-*` can evict the set's only copy: `warn` logs, `fail` stops startup, `off` skips the check. `volatile-*` with a `SetCache` that has a finite `ttl` only logs a warning. If the policy can't be read and `assume-maxmemory-policy` isn't set, `warn` logs and `fail` stops startup. See [maxmemory-policy](../operations/index.md#maxmemory-policy). |
+| `cocache.redis.store-eviction-check` | `warn` \| `fail` \| `off` | `warn` | With any `Store`, `VersionedStore` or `SetStore`, including ones declared but not yet created (lazy beans), read every primary's `maxmemory-policy` from `INFO memory` at startup. `allkeys-*` can evict their only copy: `warn` logs, `fail` stops startup, `off` skips the check. `volatile-*` with an authoritative cache that has a finite `ttl` only logs a warning. If the policy can't be read and `assume-maxmemory-policy` isn't set, `warn` logs and `fail` stops startup. See [maxmemory-policy](../operations/index.md#maxmemory-policy). |
 | `cocache.redis.assume-maxmemory-policy` | string | none | The policy the eviction check uses when it can't read `INFO memory` (the Redis user lacks `+info`, or the service blocks it), such as `noeviction` or `volatile-lru`. Must be `noeviction`, `allkeys-*` or `volatile-*`. Ignored when the policy can be read. |
 | `cocache.redis.command-timeout` | duration (ms) | `2s` | Maximum wait for one command or script |
 | `cocache.redis.heartbeat` | duration (ms) | `5s` | `PING` interval on the subscription connection. A failed ping clears L2 and reconnects. |
@@ -193,6 +193,7 @@ Some settings exist only in code, because they are functions or objects rather t
 | Setting | Where |
 |---------|-------|
 | `ttlOf`, `keyEncoder`, `keyFilter`, `codec`, `loader` | Spec or [customizer](./caches.md#customizer) |
+| `unknownRead`, `tombstoneTtl` | Spec or [customizer](./caches.md#customizer) |
 | `local.initialCapacity`, `local.expireAfterAccess` | `@CaffeineCache`, spec, or customizer |
 | Clock | A `CacheClock` bean (for example `ManualClock` in tests) is used by the runtime and the in-memory backend |
 | Retry policy, node id | Your own `CacheRuntime` bean |

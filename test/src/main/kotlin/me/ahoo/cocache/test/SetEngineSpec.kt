@@ -17,7 +17,7 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
@@ -26,10 +26,10 @@ import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
@@ -41,9 +41,9 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 
 /**
- * 集合缓存 TCK（RFC 0003 §4.8）：L1 是唯一副本，元素增删由 L1 串行化。
+ * 权威集合 `SetStore` 的 TCK（RFC 0003 §4.8，RFC 0005 §4.1）：L1 是唯一副本，元素增删由 L1 串行化。
  *
- * 集合缓存要求存储提供 [L1Capability.SETS]：没有声明它时，除能力声明的检查之外的用例都跳过。
+ * `SetStore` 要求存储提供 [L1Capability.SETS]：没有声明它时，除能力声明的检查之外的用例都跳过。
  */
 abstract class SetEngineSpec {
     protected abstract fun createBackend(): CoherenceBackend
@@ -99,11 +99,11 @@ abstract class SetEngineSpec {
     /**
      * 在运行时上创建本用例的集合缓存。没有声明 [L1Capability.SETS] 时跳过这个用例（每个用例都先经它创建缓存）。
      */
-    protected fun CacheRuntime.setCache(policy: CachePolicy = SetCacheSpec.DEFAULT_POLICY): SetCache<String, String> {
+    protected fun CacheRuntime.setStore(policy: CachePolicy = SetStoreSpec.DEFAULT_POLICY): SetStore<String, String> {
         assumeDeclared(L1Capability.SETS)
-        return access.setCache(
+        return access.setStore(
             create(
-                setCacheSpec(cacheName) {
+                setStoreSpec(cacheName) {
                     elementCodec = StringCodec
                     this.policy = policy
                 }
@@ -121,8 +121,8 @@ abstract class SetEngineSpec {
 
     @Test
     fun addCreatesSetVisibleToBothNodes() {
-        val cacheA = nodeA.setCache()
-        val cacheB = nodeB.setCache()
+        val cacheA = nodeA.setStore()
+        val cacheB = nodeB.setStore()
         cacheB["k"].assert().isEmpty()
         cacheB.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
         cacheA.add("k", listOf("a", "b"))
@@ -133,7 +133,7 @@ abstract class SetEngineSpec {
 
     @Test
     fun emptyElementWritesAreNoOps() {
-        val cache = nodeA.setCache()
+        val cache = nodeA.setStore()
         cache.add("k", emptyList())
         cache.remove("k", emptyList())
         cache["k"].assert().isEmpty()
@@ -142,7 +142,7 @@ abstract class SetEngineSpec {
 
     @Test
     fun removeLastElementDeletesTheSet() {
-        val cache = nodeA.setCache()
+        val cache = nodeA.setStore()
         cache.add("k", listOf("a", "b"))
         cache.remove("k", listOf("a"))
         cache["k"].assert().containsExactly("b")
@@ -154,8 +154,8 @@ abstract class SetEngineSpec {
 
     @Test
     fun concurrentAddsFromTwoNodesAreAllKept() {
-        val cacheA = nodeA.setCache()
-        val cacheB = nodeB.setCache()
+        val cacheA = nodeA.setStore()
+        val cacheB = nodeB.setStore()
         val start = CountDownLatch(1)
         val writers = (0 until 8).map { index ->
             fork("writer-$index") {
@@ -171,24 +171,9 @@ abstract class SetEngineSpec {
     }
 
     @Test
-    fun invalidateIsRejectedBecauseItWouldDestroyTheOnlyCopy() {
-        val cache = nodeA.setCache()
-        runCatching {
-            cache.invalidate(
-                "k"
-            )
-        }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
-        runCatching {
-            cache.invalidateAll(
-                listOf("k")
-            )
-        }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
-    }
-
-    @Test
     fun clearDeletesOnBothNodes() {
-        val cacheA = nodeA.setCache()
-        val cacheB = nodeB.setCache()
+        val cacheA = nodeA.setStore()
+        val cacheB = nodeB.setStore()
         cacheA.add("k", listOf("a"))
         cacheB["k"].assert().containsExactly("a")
         cacheA.clear("k")
@@ -198,7 +183,7 @@ abstract class SetEngineSpec {
 
     @Test
     fun putReplacesAndEmptyPutClears() {
-        val cache = nodeA.setCache()
+        val cache = nodeA.setStore()
         cache.add("k", listOf("a"))
         cache.put("k", setOf("x", "y"))
         cache["k"].assert().containsExactlyInAnyOrder("x", "y")
@@ -213,8 +198,8 @@ abstract class SetEngineSpec {
 
     @Test
     fun putAllReplacesAndEmptySetsClear() {
-        val cacheA = nodeA.setCache()
-        val cacheB = nodeB.setCache()
+        val cacheA = nodeA.setStore()
+        val cacheB = nodeB.setStore()
         cacheA.add("a", listOf("1"))
         cacheA.add("b", listOf("2"))
         cacheB.getAll(listOf("a", "b")).assert().isEqualTo(mapOf("a" to setOf("1"), "b" to setOf("2")))
@@ -236,7 +221,7 @@ abstract class SetEngineSpec {
 
     @Test
     fun emptyPutAllIsANoOp() {
-        val cache = nodeA.setCache()
+        val cache = nodeA.setStore()
         cache.putAll(emptyMap())
         cache.putAll(emptyMap(), Duration.ofSeconds(1))
         backend.putAlls.get().assert().isEqualTo(0)
@@ -244,7 +229,7 @@ abstract class SetEngineSpec {
 
     @Test
     fun getAllReturnsNonEmptySets() {
-        val cache = nodeA.setCache()
+        val cache = nodeA.setStore()
         cache.add("a", listOf("1"))
         cache.add("b", listOf("2"))
         cache.getAll(listOf("a", "b", "c")).assert().isEqualTo(mapOf("a" to setOf("1"), "b" to setOf("2")))
@@ -252,7 +237,7 @@ abstract class SetEngineSpec {
 
     @Test
     fun writeFailuresThrow() {
-        val cache = nodeA.setCache()
+        val cache = nodeA.setStore()
         backend.failWrites = true
         runCatching {
             cache.add(
@@ -278,16 +263,30 @@ abstract class SetEngineSpec {
         (error as CacheWriteException).operation.assert().isEqualTo("putAll")
     }
 
+    /**
+     * L1 读失败是 `Unknown`（RFC 0005 §4.1）：`get` / `getAll` 抛出 [CacheReadException]（`cause` 为原始异常），`lookup` 返回
+     * [Lookup.Unknown]；不写 L2，恢复后照常读到 L1 中的集合。
+     */
     @Test
-    fun readFailurePropagatesBecauseThereIsNoSource() {
-        val cache = nodeA.setCache()
+    fun readFailureIsUnknownBecauseThereIsNoSource() {
+        val cache = nodeA.setStore()
+        nodeB.setStore().add("k", listOf("a"))
         backend.failAll = true
-        runCatching { cache["k"] }.exceptionOrNull().assert().isInstanceOf(RemoteUnavailableException::class.java)
+        val error = runCatching { cache["k"] }.exceptionOrNull()
+        error.assert().isInstanceOf(CacheReadException::class.java)
+        error?.cause.assert().isInstanceOf(RemoteUnavailableException::class.java)
+        val batch = runCatching { cache.getAll(listOf("k")) }.exceptionOrNull()
+        batch.assert().isInstanceOf(CacheReadException::class.java)
+        (batch as CacheReadException).unknownKeys.assert().containsExactly("k")
+        cache.lookup("k").assert().isInstanceOf(Lookup.Unknown::class.java)
+        cache.lookupAll(listOf("k")).getValue("k").assert().isInstanceOf(Lookup.Unknown::class.java)
+        backend.failAll = false
+        cache["k"].assert().containsExactly("a")
     }
 
     @Test
     fun scalarInRemoteIsRejected() {
-        val cache = nodeA.setCache()
+        val cache = nodeA.setStore()
         writeRemoteSilently("k", Envelope.Scalar("x".toByteArray()))
         runCatching { cache["k"] }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
     }
@@ -297,7 +296,7 @@ abstract class SetEngineSpec {
      */
     @Test
     fun unrecognizedContentFails() {
-        val cache = nodeA.setCache()
+        val cache = nodeA.setStore()
         cache.add("k", listOf("a"))
         backend.afterRead = { _, read -> if (read is L1Read.Hit) read.copy(format = 0) else read }
         val error = runCatching { cache["k"] }.exceptionOrNull()
@@ -334,8 +333,8 @@ abstract class SetEngineSpec {
      */
     @Test
     fun memberWritesOverUnreadableContentFail() {
-        val cache = nodeA.setCache()
-        val other = nodeB.setCache()
+        val cache = nodeA.setStore()
+        val other = nodeB.setStore()
         writeRemoteSilently("k", Envelope.Scalar("x".toByteArray()))
         assertForeignWrite(runCatching { cache.add("k", listOf("a")) }.exceptionOrNull(), "add")
         assertForeignWrite(runCatching { cache.remove("k", listOf("a")) }.exceptionOrNull(), "remove")
@@ -358,7 +357,7 @@ abstract class SetEngineSpec {
      */
     @Test
     fun memberWritesOverNegativeEntriesSucceed() {
-        val cache = nodeA.setCache()
+        val cache = nodeA.setStore()
         writeRemoteSilently("k", Envelope.Absent)
         cache.remove("k", listOf("a"))
         cache.add("k", listOf("a"))

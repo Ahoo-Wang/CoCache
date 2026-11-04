@@ -16,7 +16,7 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.annotation.JoinCacheable
-import me.ahoo.cocache.api.join.JoinCache
+import me.ahoo.cocache.api.join.JoinView
 import org.springframework.aot.hint.BindingReflectionHintsRegistrar
 import org.springframework.aot.hint.ExecutableMode
 import org.springframework.aot.hint.MemberCategory
@@ -89,7 +89,7 @@ internal class CoCacheAotProcessor : BeanFactoryInitializationAotProcessor {
 
     private fun joinCacheHints(type: Class<*>): (RuntimeHints) -> Unit {
         val annotation: JoinCacheable? = type.getAnnotation(JoinCacheable::class.java)
-        val generics = ResolvableType.forClass(type).`as`(JoinCache::class.java).generics
+        val generics = ResolvableType.forClass(type).`as`(JoinView::class.java).generics
         // 主缓存的值类型是 joinKeyExpression 的求值对象
         val expressionRoot = generics.getOrNull(1)?.takeIf { !annotation?.joinKeyExpression.isNullOrBlank() }
         return { hints ->

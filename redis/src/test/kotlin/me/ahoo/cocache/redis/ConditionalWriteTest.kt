@@ -14,12 +14,12 @@
 package me.ahoo.cocache.redis
 
 import io.lettuce.core.ScriptOutputType
-import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -34,6 +34,7 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.redis.migration.Redis5x
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
@@ -72,8 +73,8 @@ class ConditionalWriteTest {
         name: String,
         on: CacheRuntime = runtime,
         ttl: Duration? = null
-    ): Cache<String, String> = on.create(
-        cacheSpec(name) {
+    ): Store<String, String> = on.create(
+        storeSpec(name) {
             codec = StringCodec
             policy {
                 this.ttl = ttl
@@ -85,7 +86,7 @@ class ConditionalWriteTest {
     private fun digestOf(value: String) = Digest.of(Envelope.Scalar(value.toByteArray()))
 
     /**
-     * 像没有数据源的缓存那样写入的值：带载荷的摘要段（RFC 0005 §4.7）。
+     * 像 `Store` 那样写入的值：带载荷的摘要段（RFC 0005 §4.7）。
      */
     private fun digested(value: String) =
         Envelope.Scalar(value.toByteArray(), Versioned.NO_VERSION, null, Digest.ofPayload(value.toByteArray()))
@@ -206,32 +207,35 @@ class ConditionalWriteTest {
     }
 
     /**
-     * 回收只属于读取。有数据源的缓存上，条件读写遇到不是本协议写入的内容（格式 0，这里是原生 Set）
-     * 同样失败，内容、类型与到期时间原样保留：从不视为没有值，`expected = null` 的写入不会整体覆盖它。普通读取照常条件回收后回源。
+     * 回收只属于派生缓存的读取。条件读写遇到不是本协议写入的内容（格式 0，这里是原生 Set）同样失败，内容、类型与到期时间原样保留：
+     * 从不视为没有值，`expected = null` 的写入不会整体覆盖它。同一 namespace 上有数据源的派生缓存的普通读取照常条件回收后回源。
      */
     @Test
     fun reclaimDoesNotTreatForeignContentAsAbsent() {
         val name = "reclaim-$run"
         val key = "cocache:$name:k"
         Redis5x.set(key, listOf("a"), ttlSeconds = 3600)
-        val cache = runtime.create(
-            cacheSpec<String, String>(name) {
-                codec = StringCodec
-                loader = CacheLoader { "loaded" }
-            }
-        )
-        assertForeignRead(runCatching { cache.getIfChanged("k", null) }.exceptionOrNull(), key, 0)
-        assertForeignWrite(runCatching { cache.putIfMatch("k", null, "v") }.exceptionOrNull(), key, 0)
-        assertForeignWrite(runCatching { cache.putIfMatch("k", digestOf("a"), "v") }.exceptionOrNull(), key, 0)
+        val store = cache(name)
+        assertForeignRead(runCatching { store.getIfChanged("k", null) }.exceptionOrNull(), key, 0)
+        assertForeignWrite(runCatching { store.putIfMatch("k", null, "v") }.exceptionOrNull(), key, 0)
+        assertForeignWrite(runCatching { store.putIfMatch("k", digestOf("a"), "v") }.exceptionOrNull(), key, 0)
         Redis5x.type(key).assert().isEqualTo("set")
         Redis5x.members(key).assert().containsExactly("a")
         Redis5x.pttl(key).assert().isBetween(3_000_000L, 3_600_000L)
         requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(0L)
 
-        cache["k"].assert().isEqualTo("loaded")
-        requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(1L)
-        // 有数据源的缓存回源写入的值没有摘要段：条件读写只认带摘要段的值（RFC 0005 §4.7）
-        assertForeignRead(runCatching { cache.getIfChanged("k", null) }.exceptionOrNull(), key, RedisScripts.FORMAT)
+        CacheRuntime.builder().backend(backend).build().use { other ->
+            val derived = other.create(
+                cacheSpec<String, String>(name) {
+                    codec = StringCodec
+                    loader = CacheLoader { "loaded" }
+                }
+            )
+            derived["k"].assert().isEqualTo("loaded")
+            requireNotNull(other.metrics(name)).reclaims.assert().isEqualTo(1L)
+        }
+        // 派生缓存回源写入的值没有摘要段：条件读写只认带摘要段的值（RFC 0005 §4.7）
+        assertForeignRead(runCatching { store.getIfChanged("k", null) }.exceptionOrNull(), key, RedisScripts.FORMAT)
     }
 
     /**
@@ -407,7 +411,7 @@ class ConditionalWriteTest {
     /**
      * 一次增量；返回期间遇到的冲突次数。[barrier] 非空时第一次读取之后在它上面等齐全部线程再写。
      */
-    private fun increment(cache: Cache<String, String>, async: Boolean, barrier: CyclicBarrier? = null): Int {
+    private fun increment(cache: Store<String, String>, async: Boolean, barrier: CyclicBarrier? = null): Int {
         var conflicts = 0
         var gate = barrier
         while (true) {

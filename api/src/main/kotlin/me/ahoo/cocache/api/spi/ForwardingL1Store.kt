@@ -109,6 +109,12 @@ abstract class ForwardingConditionalL1Store(protected val delegate: ConditionalL
         ttl: Duration?,
         frame: ByteArray
     ): L1ConditionalWrite = delegate.putIfMatch(key, expected, envelope, ttl, frame)
+
+    override suspend fun deleteIfMatch(
+        key: String,
+        expected: Digest,
+        frame: ByteArray
+    ): L1ConditionalWrite = delegate.deleteIfMatch(key, expected, frame)
 }
 
 /**

@@ -16,7 +16,9 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
@@ -29,6 +31,7 @@ import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
+import me.ahoo.cocache.core.versionedCacheSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
@@ -72,7 +75,7 @@ class TokenConservationPropertyTest {
     @Test
     fun aVersionRejectedFillOnEvictedContentReturnsItsLease() {
         val scenario = Scenario(seed = 0, nodes = 1, asyncSource = true, versioned = true)
-        val cache = scenario.caches[0]
+        val cache = scenario.caches[0] as VersionedCache<String, String>
         val write = cache.async().putIfNewer("a", "a-written", 5)
         scenario.runAll()
         write.isDone.assert().isTrue()
@@ -225,30 +228,37 @@ class TokenConservationPropertyTest {
         }
         private val open = BooleanArray(nodes) { true }
 
-        val caches: List<Cache<String, String>> = runtimes.map { runtime ->
-            runtime.create(
-                cacheSpec<String, String>(NAME) {
-                    codec = StringCodec
-                    when {
-                        this@Scenario.versioned && this@Scenario.asyncSource -> versionedAsyncLoader = AsyncCacheLoader { key ->
-                            CompletableFuture<Versioned<String?>?>().also { versionedLoads += key to it }
-                        }
+        private val policy = CachePolicy(
+            ttlJitter = Duration.ZERO,
+            lease = LeasePolicy(wait = leaseWait),
+            // 失效失败时抛出而不是转入后台重试：重试在别的线程上按真实时间执行，种子无法复现
+            invalidateFailure = InvalidateFailureMode.THROW
+        )
 
-                        this@Scenario.versioned -> versionedLoader = CacheLoader { key -> Versioned("$key-${loaded++}", randomVersion()) }
-                        this@Scenario.asyncSource -> asyncLoader = AsyncCacheLoader { key ->
-                            CompletableFuture<String?>().also { loads += key to it }
-                        }
+        val caches: List<ReadableCache<String, String>> = runtimes.map { runtime ->
+            if (this@Scenario.versioned) runtime.create(versionedSpec()) else runtime.create(plainSpec())
+        }
 
-                        else -> loader = CacheLoader { key -> "$key-${loaded++}" }
-                    }
-                    policy = CachePolicy(
-                        ttlJitter = Duration.ZERO,
-                        lease = LeasePolicy(wait = leaseWait),
-                        // 失效失败时抛出而不是转入后台重试：重试在别的线程上按真实时间执行，种子无法复现
-                        invalidateFailure = InvalidateFailureMode.THROW
-                    )
+        private fun versionedSpec() = versionedCacheSpec<String, String>(NAME) {
+            codec = StringCodec
+            if (this@Scenario.asyncSource) {
+                versionedAsyncLoader = AsyncCacheLoader { key ->
+                    CompletableFuture<Versioned<String?>?>().also { versionedLoads += key to it }
                 }
-            )
+            } else {
+                versionedLoader = CacheLoader { key -> Versioned("$key-${loaded++}", randomVersion()) }
+            }
+            policy = this@Scenario.policy
+        }
+
+        private fun plainSpec() = cacheSpec<String, String>(NAME) {
+            codec = StringCodec
+            if (this@Scenario.asyncSource) {
+                asyncLoader = AsyncCacheLoader { key -> CompletableFuture<String?>().also { loads += key to it } }
+            } else {
+                loader = CacheLoader { key -> "$key-${loaded++}" }
+            }
+            policy = this@Scenario.policy
         }
 
         fun run() {
@@ -297,16 +307,35 @@ class TokenConservationPropertyTest {
                     val keys = KEYS.shuffled(random).take(1 + random.nextInt(KEYS.size))
                     "getAll $keys" to cache.getAll(keys)
                 }
-                7, 8 -> "put $key" to cache.put(key, "$key-put-${random.nextInt(1000)}")
-                else -> "invalidate $key" to cache.invalidate(key)
+                7, 8 -> put(node, key)
+                else -> invalidate(node, key)
             }
+        }
+
+        /**
+         * 覆盖写入：派生缓存的 `put`；带版本的缓存上没有它，按版本写入。
+         */
+        private fun put(node: Int, key: String): Pair<String, CompletableFuture<*>> = when (val cache = caches[node]) {
+            is VersionedCache -> "putIfNewer $key" to cache.async().putIfNewer(key, "$key-put", randomVersion())
+            else -> "put $key" to (cache as Cache).async().put(key, "$key-put-${random.nextInt(1000)}")
+        }
+
+        /**
+         * 删除：派生缓存的 `invalidate`；带版本的缓存上没有它，运维清除（DEL + 广播，不重试）与它等价。
+         */
+        private fun invalidate(
+            node: Int,
+            key: String
+        ): Pair<String, CompletableFuture<*>> = when (val cache = caches[node]) {
+            is VersionedCache -> "purge $key" to cache.async().purge(key)
+            else -> "invalidate $key" to (cache as Cache).async().invalidate(key)
         }
 
         /**
          * 带版本的缓存上的写入：按版本写入、墓碑，或保留版本的失效（留下 `E`；能力面上的操作就地完成，调用不挂起）。
          */
         private fun startVersionedWrite(node: Int, key: String) {
-            val cache = caches[node].async()
+            val cache = (caches[node] as VersionedCache<String, String>).async()
             calls += when (random.nextInt(3)) {
                 0 -> "putIfNewer $key" to cache.putIfNewer(key, "$key-v", randomVersion())
                 1 -> "invalidateIfNewer $key" to cache.invalidateIfNewer(key, randomVersion())

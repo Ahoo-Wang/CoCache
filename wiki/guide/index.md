@@ -57,8 +57,8 @@ The full list of bounds, including what happens when Redis fails, is in [How It 
 
 - **It is not linearizable.** Another instance can return the old value for the few milliseconds before the invalidation reaches it. If a read must see a write made on a different instance at the same moment, read the source of truth.
 - **It doesn't see writes it isn't told about.** If something updates the database without invalidating (a batch job, another service, manual SQL), caches stay stale until `ttl`. Those writers can use [`ExternalInvalidator`](./freshness.md#external-writers).
-- **A [JoinCache](./join-cache.md) is not a snapshot.** Its two reads are independent and can come from different moments.
-- **A [`SetCache`](./caches.md#set-cache) keeps its only copy in Redis.** Its durability is Redis's durability.
+- **A [join view](./join-cache.md) is not a snapshot.** Its two reads are independent and can come from different moments.
+- **A [`Store`, `VersionedStore` or `SetStore`](./caches.md#store) keeps its only copy in Redis.** Its durability is Redis's durability.
 - **The in-memory backend is single-process.** It exists for development and tests.
 
 ## When not to use it {#when-not}

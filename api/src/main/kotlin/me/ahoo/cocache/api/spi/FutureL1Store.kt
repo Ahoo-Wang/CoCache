@@ -143,6 +143,12 @@ interface FutureConditionalL1Store {
         ttl: Duration?,
         frame: ByteArray
     ): CompletableFuture<L1ConditionalWrite>
+
+    /**
+     * 同 [ConditionalL1Store.deleteIfMatch]：当前值的摘要段等于 [expected] 时删除并广播，以 [L1ConditionalWrite.Written] 完成；
+     * 否则不修改、不广播。
+     */
+    fun deleteIfMatch(key: String, expected: Digest, frame: ByteArray): CompletableFuture<L1ConditionalWrite>
 }
 
 /**
@@ -254,6 +260,9 @@ private class FutureConditionalAdapter(private val store: FutureConditionalL1Sto
     ): L1ConditionalWrite = awaitValue(store, "putIfMatch") {
         store.putIfMatch(key, expected, envelope, ttl, frame)
     }
+
+    override suspend fun deleteIfMatch(key: String, expected: Digest, frame: ByteArray): L1ConditionalWrite =
+        awaitValue(store, "deleteIfMatch") { store.deleteIfMatch(key, expected, frame) }
 }
 
 private class FutureVersionedAdapter(private val store: FutureVersionedL1Store) : VersionedL1Store {

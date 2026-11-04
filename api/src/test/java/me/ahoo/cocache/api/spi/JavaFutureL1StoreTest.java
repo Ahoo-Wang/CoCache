@@ -70,6 +70,9 @@ class JavaFutureL1StoreTest {
 
         assertSame(L1ConditionalWrite.Written.INSTANCE, Suspending.await(c -> conditional.putIfMatch("k", null, VALUE, null, FRAME, c)));
         assertEquals(new L1ConditionalRead.Unchanged(1), Suspending.await(c -> conditional.readIfChanged("k", Digest.of(VALUE), null, c)));
+        assertSame(L1ConditionalWrite.Written.INSTANCE, Suspending.await(c -> conditional.putIfMatch("d", null, VALUE, null, FRAME, c)));
+        assertSame(L1ConditionalWrite.Written.INSTANCE, Suspending.await(c -> conditional.deleteIfMatch("d", Digest.of(VALUE), FRAME, c)));
+        assertEquals(new L1ConditionalWrite.Conflict(null), Suspending.await(c -> conditional.deleteIfMatch("d", Digest.of(VALUE), FRAME, c)));
         List<byte[]> members = List.of(new byte[] {2});
         assertEquals(Integer.valueOf(1), Suspending.<Integer>await(c -> sets.addMembers("k", members, null, FRAME, c)));
         assertNull(Suspending.<Integer>await(c -> sets.addMembers("set", members, null, FRAME, c)));
@@ -217,6 +220,16 @@ class JavaFutureL1StoreTest {
                 return completedFuture(new L1ConditionalWrite.Conflict(current));
             }
             entries.put(key, envelope);
+            return completedFuture(L1ConditionalWrite.Written.INSTANCE);
+        }
+
+        @Override
+        public synchronized CompletableFuture<L1ConditionalWrite> deleteIfMatch(String key, Digest expected, byte[] frame) {
+            Digest current = entries.get(key) instanceof Envelope.Scalar scalar ? Digest.of(scalar) : null;
+            if (!Objects.equals(current, expected)) {
+                return completedFuture(new L1ConditionalWrite.Conflict(current));
+            }
+            entries.remove(key);
             return completedFuture(L1ConditionalWrite.Written.INSTANCE);
         }
 

@@ -105,13 +105,13 @@ class LoadObserverTest {
     private fun CacheRuntime.cache(
         policy: CachePolicy = CachePolicy(ttl = Duration.ofMinutes(10), ttlJitter = Duration.ZERO),
         withLoader: Boolean = true,
-    ): CoherentEngine<String, String> = create(
+    ): CacheEngine<String, String> = create(
         cacheSpec<String, String>(name) {
             codec = TestCodec
-            loader = if (withLoader) this@LoadObserverTest.loader else null
+            if (withLoader) loader = this@LoadObserverTest.loader else externallySourced()
             this.policy = policy
         }
-    ) as CoherentEngine<String, String>
+    ) as CacheEngine<String, String>
 
     @Test
     fun noopRunsTheBlock() {
@@ -148,7 +148,7 @@ class LoadObserverTest {
             }
         )
         other["k"].assert().isEqualTo("v")
-        (other as CoherentEngine<*, *>).metrics.remoteHits.assert().isEqualTo(1)
+        (other as CacheEngine<*, *>).metrics.remoteHits.assert().isEqualTo(1)
         observer.operations().assert().containsExactly(LoadOperation.LOAD to 1)
     }
 

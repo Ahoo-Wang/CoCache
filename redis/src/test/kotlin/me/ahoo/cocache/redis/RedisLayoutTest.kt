@@ -220,6 +220,7 @@ class RedisLayoutTest {
                             namespace = "other-${this@RedisLayoutTest.namespace}"
                             keyPrefix = ""
                             codec = StringCodec
+                            externallySourced()
                         }
                         runCatching { nodeA.create(unlisted) }.exceptionOrNull()
                             .assert().isInstanceOf(IllegalStateException::class.java)

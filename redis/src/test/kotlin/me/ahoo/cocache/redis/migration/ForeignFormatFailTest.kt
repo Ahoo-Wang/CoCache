@@ -20,8 +20,8 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.policy.ReadFailureMode
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.redis.RedisTestSupport
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
@@ -63,9 +63,8 @@ class ForeignFormatFailTest {
         val json = mapper.writeValueAsString(Policy("p1", "deny"))
         Redis5x.string(key, json)
         val cache = runtime.create(
-            cacheSpec<String, Policy>(name) {
+            storeSpec<String, Policy>(name) {
                 codec = jacksonCodec<Policy>(mapper)
-                policy { ttl = null }
             }
         )
 
@@ -81,17 +80,15 @@ class ForeignFormatFailTest {
     }
 
     @Test
-    fun unmigratedValueFailsInStrictReadMode() {
+    fun unmigratedValueFailsForAnExternallySourcedRead() {
         val name = "strict-$run"
         val key = "cocache:$name:k"
         Redis5x.hash(key, mapOf("a" to "1"))
+        // 外部来源的缓存上不带 loader 的读取没有数据源：读不懂的内容不回收，读取失败
         val cache = runtime.create(
             cacheSpec<String, Map<String, String>>(name) {
                 codec = jacksonCodec<Map<String, String>>(mapper)
-                policy {
-                    ttl = null
-                    readFailure = ReadFailureMode.THROW
-                }
+                externallySourced()
             }
         )
 
@@ -104,7 +101,7 @@ class ForeignFormatFailTest {
         val name = "index-$run"
         val key = "cocache:$name:"
         Redis5x.set(key, listOf("p1", "p2"))
-        val cache = runtime.create(setCacheSpec<String, String>(name) { elementCodec = StringCodec })
+        val cache = runtime.create(setStoreSpec<String, String>(name) { elementCodec = StringCodec })
 
         assertForeign(runCatching { cache[""] }.exceptionOrNull(), key)
         Redis5x.members(key).assert().containsExactlyInAnyOrder("p1", "p2")

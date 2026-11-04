@@ -20,11 +20,11 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -65,7 +65,7 @@ class CoCacheObservabilityTest {
         }
 
         @Bean
-        fun indexSpec(): SetCacheSpec<String, String> = setCacheSpec("index") { elementCodec = StringCodec }
+        fun indexSpec(): SetStoreSpec<String, String> = setStoreSpec("index") { elementCodec = StringCodec }
     }
 
     @Test
@@ -117,7 +117,12 @@ class CoCacheObservabilityTest {
                 assertThat(context).doesNotHaveBean(CoCacheEndpoint::class.java)
                 // 没有 binder 时后处理器什么也不做
                 CacheRuntime.builder().backend(InMemoryBackend()).build().use { runtime ->
-                    val cache = runtime.create(cacheSpec<String, String>("orphan") { codec = StringCodec })
+                    val cache = runtime.create(
+                        cacheSpec<String, String>("orphan") {
+                            codec = StringCodec
+                            externallySourced()
+                        }
+                    )
                     context.autowireCapableBeanFactory.initializeBean(cache, "orphan").assert().isSameAs(cache)
                 }
             }
@@ -205,7 +210,12 @@ class CoCacheObservabilityTest {
             val binder = context.getBean(CoCacheMeterBinder::class.java)
             binder.bindTo(registry)
             val runtime = context.getBean(CacheRuntime::class.java)
-            val late = runtime.create(cacheSpec<String, String>("late") { codec = StringCodec })
+            val late = runtime.create(
+                cacheSpec<String, String>("late") {
+                    codec = StringCodec
+                    externallySourced()
+                }
+            )
             registry.find("cocache.misses").tag(CoCacheMeterBinder.TAG_CACHE, "late").meter().assert().isNull()
 
             // 延迟创建的缓存 bean 初始化后由后处理器补绑
@@ -217,7 +227,7 @@ class CoCacheObservabilityTest {
             binder.afterSingletonsInstantiated()
             registry.find("cocache.misses").tag(CoCacheMeterBinder.TAG_CACHE, "late").meters()
                 .assert().hasSize(1)
-            val lateIndex = runtime.create(setCacheSpec<String, String>("late-index") { elementCodec = StringCodec })
+            val lateIndex = runtime.create(setStoreSpec<String, String>("late-index") { elementCodec = StringCodec })
             context.autowireCapableBeanFactory.initializeBean(lateIndex, "lateIndex")
             registry.count("cocache.misses", "late-index").assert().isZero()
             context.autowireCapableBeanFactory.initializeBean(Any(), "other").assert().isNotNull()

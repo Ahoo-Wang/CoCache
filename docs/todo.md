@@ -69,7 +69,7 @@ M3 拆成（维护者确认，2026-11-02；设计见 RFC 0005 §4.3）。已合�
 M4 拆成（架构会话，2026-11-03；设计见 RFC 0005 §4.3、§4.7、§8）。约定：
 - **不兼容 6.x**（维护者，2026-11-03）：没有迁移工具，6.x 与 8.x 不共存；格式 1 与格式 0 一样按读不懂处理（派生缓存回收后回源，没有数据源的缓存 `FAIL`）。代码、KDoc 与文档只描述 8.x 的行为，不写 6.x 的历史；每个切片清理它碰到的地方，其余由 M4·清理 收尾。
 - **冻结**：M4c+M4d 合并即冻结 8.x 的格式（RFC 0005 §4.7 的定稿项）。
-- **M5 之前的临时规则**：M5 引入 `Store` / `VersionedStore` 之前，由**没有数据源的标量缓存**充当权威标量。它的每次标量写入（`put`、`putAll`、`fill`、`putIfMatch`）带写入标识（M4b）与摘要段（M4c），条件读写只认带摘要段的值。M5 分型之后，改由 `Store` / `VersionedStore` 写入，`externallySourced()` 的 `Cache` 不带段。这条规则只在开发中存在，不随 8.0 发布。
+- **M5 之前的临时规则**：M5 引入 `Store` / `VersionedStore` 之前，由**没有数据源的标量缓存**充当权威标量。它的每次标量写入（`put`、`putAll`、`fill`、`putIfMatch`）带写入标识（M4b）与摘要段（M4c），条件读写只认带摘要段的值。M5 分型之后，改由 `Store` / `VersionedStore` 写入，`externallySourced()` 的 `Cache` 不带段。这条规则只在开发中存在，不随 8.0 发布；M5a 已结束它（写入标识只由 `Store` / `VersionedStore` 写入，摘要段只由 `Store` 写入，读取方校验只用于权威类型）。
 - **SPI**（RFC 0005 §4.3）：频道带上前缀之后，后端要分别知道前缀与 namespace，`store`、`subscribe`、`publish` 改收 `Keyspace(keyPrefix, namespace)`（M4a）；`Envelope.Scalar` 带写入标识与摘要，由引擎给出，存储按 §4.7 写成段、读取时原样返回（M4b、M4c）；`VersionedL1Store` 加 `evictKeepingVersion`（M4d）。形状由切片在 PR 中定稿，架构会话审查。
 
 已合并：v8 的 key 布局、带前缀的频道、namespace 字符集、SPI 的 `Keyspace`、按存储探测实际频道（K8）、读不懂的失效帧按 `onReset` 处理（D3）（M4a，#752）→ 去掉布局标记（M4a′，#755）→ 格式 2 的头部：标志位、版本段、扩展区的 TLV 与写入标识、集合的 `!f` / `!m`，格式 1 按读不懂处理，删除 `foreign-format`（M4b，#757；JMH 补跑后最差 −2.1%）。

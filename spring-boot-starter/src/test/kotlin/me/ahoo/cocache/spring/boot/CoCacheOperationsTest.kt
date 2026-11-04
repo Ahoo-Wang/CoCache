@@ -17,18 +17,18 @@ import io.mockk.every
 import io.mockk.mockk
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyInspection
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.cocache.redis.RedisChannelMode
 import me.ahoo.test.asserts.assert
@@ -79,7 +79,7 @@ class CoCacheOperationsTest {
         }
 
         @Bean
-        fun indexSpec(): SetCacheSpec<String, String> = setCacheSpec("index") { elementCodec = StringCodec }
+        fun indexSpec(): SetStoreSpec<String, String> = setStoreSpec("index") { elementCodec = StringCodec }
     }
 
     @Test
@@ -226,7 +226,7 @@ class CoCacheOperationsTest {
                 )
 
             @Suppress("UNCHECKED_CAST")
-            val index = context.getBean("index") as SetCache<String, String>
+            val index = context.getBean("index") as SetStore<String, String>
             index.add("k", listOf("a"))
             requireNotNull(
                 endpoint.inspect("index", arrayOf("k"))

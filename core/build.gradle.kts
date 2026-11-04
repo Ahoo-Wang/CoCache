@@ -17,8 +17,9 @@ dependencies {
     api(project(":cocache-api"))
     implementation("com.github.ben-manes.caffeine:caffeine")
     implementation("io.github.oshai:kotlin-logging-jvm")
-    // 协议核心用协程实现（RFC 0005 V5）：同步、异步、挂起三种变体共用一份 suspend 实现
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
+    // 协议核心用协程实现（RFC 0005 V5）：同步、异步、挂起三种变体共用一份 suspend 实现。
+    // api：挂起的数据源（SuspendingCacheLoader）与挂起视图的使用者都要用到它（版本由 Spring Boot 的 BOM 管理）
+    api("org.jetbrains.kotlinx:kotlinx-coroutines-core")
     testImplementation(project(":cocache-test"))
     // 确定性多节点仿真：测试调度器与虚拟时间（RFC 0005 §4.10）
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test")
@@ -27,6 +28,10 @@ dependencies {
 }
 
 tasks.withType<Test> {
+    // 协程的调试模式（-ea 时自动开启）会把线程名改为“线程名 @coroutine#N”，并在恢复时复制异常以补全堆栈；
+    // TCK 按线程名编排钩子、断言原始异常实例，因此关闭（生产环境不开 -ea 时本来就是关闭的）
+    systemProperty("kotlinx.coroutines.debug", "off")
+    systemProperty("kotlinx.coroutines.stacktrace.recovery", "false")
     // 确定性多节点仿真只重放一个种子：./gradlew :cocache-core:test --tests "*MultiNodeSimulationTest" -PsimSeed=<n>
     providers.gradleProperty("simSeed").orNull?.let { systemProperty("cocache.sim.seed", it) }
 }

@@ -40,6 +40,11 @@ internal interface ValueFormat<V : Any> {
      * 与值一起保存的版本。
      */
     fun versionOf(value: V): Long = Versioned.NO_VERSION
+
+    /**
+     * 是否为带版本的不存在（墓碑）：寿命是墓碑寿命（`tombstoneTtl`），不是值的寿命。
+     */
+    fun isTombstone(value: V): Boolean = false
 }
 
 /**
@@ -55,9 +60,8 @@ internal class CodecFormat<V : Any>(private val codec: Codec<V>) : ValueFormat<V
 }
 
 /**
- * 带版本的缓存：引擎的值是 [Versioned]，载荷是 [Versioned.value] 的编码，版本随标量保存在 L1 的版本段（不在载荷中），
- * L2 副本与值一起保存版本。带版本的值不带摘要段（RFC 0005 §4.7：带版本的内容没有条件读写）；不带版本的值（`put`、`putIfMatch`）
- * 与普通缓存相同。
+ * 带版本的类型（`VersionedCache`、`VersionedStore`）：引擎的值是 [Versioned]，载荷是 [Versioned.value] 的编码，
+ * 版本随标量保存在 L1 的版本段（不在载荷中），L2 副本与值一起保存版本。带版本的值不带摘要段（RFC 0005 §4.7：带版本的内容没有条件读写）。
  *
  * `value` 为 `null` 的 [Versioned] 是带版本的数据源给出的“在这个版本时不存在”：写回 L1 时是墓碑（[Envelope.Absent] + 版本）。
  * 从 L1 读到的墓碑与负缓存相同，解码为 `null`（没有版本）。
@@ -79,13 +83,6 @@ internal class VersionedFormat<V : Any>(private val codec: Codec<V>) : ValueForm
     }
 
     override fun versionOf(value: Versioned<V?>): Long = value.version
-}
 
-/**
- * 带版本的缓存的内部声明所用的 [Codec]：只有载荷，版本由 [VersionedFormat] 处理。引擎不经它编解码，只为满足声明的必填项。
- */
-internal class PayloadCodec<V : Any>(private val codec: Codec<V>) : Codec<Versioned<V?>> {
-    override fun encode(value: Versioned<V?>): ByteArray = codec.encode(requireNotNull(value.value))
-
-    override fun decode(bytes: ByteArray): Versioned<V?> = Versioned(codec.decode(bytes), Versioned.NO_VERSION)
+    override fun isTombstone(value: Versioned<V?>): Boolean = value.value == null
 }

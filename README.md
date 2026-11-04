@@ -64,15 +64,15 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 
 ## Features
 
-- **Two levels, one API.** `get`, `getAll`, `lookup`, `put`, `invalidate`, `invalidateAll` on `Cache<K, V>`, declared as an `@CoCache` interface or a `CacheSpec` bean.
+- **Two levels, one type per role.** `Cache<K, V>` (`get`, `getAll`, `lookup`, `put`, `invalidate`) for data a loader can rebuild, `VersionedCache` for versioned sources, and `Store`, `VersionedStore` and `SetStore` for data whose only copy is Redis. Declare one as an `@CoCache` interface or a spec bean.
 - **Lease-fenced L1.** A miss takes a lease in Redis, and only the lease holder may fill. Concurrent misses across the cluster load once when the loader finishes within `lease-wait`.
 - **Atomic invalidation.** Delete and broadcast happen in one Lua script. Failed invalidations are retried in the background.
 - **Negative caching.** A loader that returns `null` stores "not found" for `absentTtl`.
 - **Refresh ahead.** With `refreshWindow`, one node per key reloads a hot value before it expires.
 - **Batch reads.** `getAll` reads L1 in about one round trip and calls `CacheLoader.loadAll` once.
-- **`SetCache`.** Atomic element add and remove for sets whose only copy is Redis.
+- **`Store` and `SetStore`.** Compare-and-set writes (`putIfMatch`, `deleteIfMatch`) and atomic set element add and remove for data whose only copy is Redis. A read that can't reach Redis returns `Unknown` instead of pretending the key is absent.
 - **`JoinCache`.** A read-only view that joins two caches (for example an order and its user) with two batch reads, declared with `@JoinCacheable`.
-- **Async API and coroutines.** `cache.async()` returns `CompletableFuture`s on the same cache without parking a thread, and the optional `cocache-coroutines` module adds `cache.suspending()` and `SuspendingCacheLoader`.
+- **Async API and coroutines.** `cache.async()` returns `CompletableFuture`s on the same cache without parking a thread, and `cache.suspending()` gives every type a suspending view, with `SuspendingCacheLoader` for loaders.
 - **Spring Cache and transactions.** `@Cacheable` through `CoCacheSpringCacheManager`, and `TransactionalInvalidator` to invalidate after commit.
 - **Observability.** Micrometer metrics, a `cocache` health indicator, and the `cocache` actuator endpoint, which can inspect or invalidate a single key.
 - **Local development without Redis.** `cocache.backend: memory` runs caches in process for tests and local runs.

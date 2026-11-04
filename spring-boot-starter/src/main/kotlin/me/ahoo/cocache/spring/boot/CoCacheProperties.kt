@@ -98,16 +98,15 @@ data class CoCacheProperties @ConstructorBinding constructor(
     }
 
     /**
-     * 集合缓存的策略：`cocache.defaults.ttl` / `ttl-forever` / `absent-ttl` / `refresh-window` 不作用于集合缓存
-     * （其 L1 是唯一副本，全局寿命会让集合过期丢失；没有数据源，负缓存与提前刷新都不适用），
-     * 只有 `cocache.caches.[name].*` 能改变它们。其它默认项照常生效。
+     * 权威副本（`Store`、`VersionedStore`、`SetStore`）的策略：`cocache.defaults.ttl` / `ttl-forever` / `refresh-window` 不作用于它们
+     * （L1 是唯一副本，全局寿命会让数据过期丢失；没有数据源，提前刷新不适用），只有 `cocache.caches.[name].*` 能改变它们。
+     * 其它默认项照常生效。分层的语义随 RFC 0005 M6 重写。
      */
-    fun setPolicyFor(cacheName: String, declared: CachePolicy): CachePolicy {
-        // 集合缓存没有数据源：全局的寿命、负缓存寿命与提前刷新都不适用（提前刷新还会让校验因无关配置失败）
+    fun authoritativePolicyFor(cacheName: String, declared: CachePolicy): CachePolicy {
+        // 权威副本没有数据源：全局的寿命与提前刷新都不适用（提前刷新还会让校验因无关配置失败）
         val withDefaults = defaults.copy(
             ttl = null,
             ttlForever = null,
-            absentTtl = null,
             refreshWindow = null
         ).applyTo(declared)
         return cacheProperties(cacheName)?.applyTo(withDefaults) ?: withDefaults
@@ -156,12 +155,12 @@ data class CoCacheProperties @ConstructorBinding constructor(
         @DefaultValue("pubsub")
         val channelMode: RedisChannelMode,
         /**
-         * 有 `SetCache`（含尚未创建的声明）时启动检查各主节点的 `maxmemory-policy`（读取 `INFO memory`）：`allkeys-*` 会驱逐集合的唯一副本，
-         * `volatile-*` 会驱逐 `ttl` 有限的集合（只告警）。`warn`（默认）记录告警，`fail` 启动失败，`off` 不检查。
+         * 有权威副本（`Store`、`VersionedStore`、`SetStore`，含尚未创建的声明）时启动检查各主节点的 `maxmemory-policy`（读取 `INFO memory`）：
+         * `allkeys-*` 会驱逐唯一副本，`volatile-*` 会驱逐 `ttl` 有限的权威缓存（只告警）。`warn`（默认）记录告警，`fail` 启动失败，`off` 不检查。
          * 读不到策略且没有配置 `assume-maxmemory-policy` 时同样按此处理。
          */
         @DefaultValue("warn")
-        val setCacheEvictionCheck: EvictionCheck,
+        val storeEvictionCheck: EvictionCheck,
         /**
          * 读不到 `maxmemory-policy`（Redis 用户没有 `INFO` 权限、托管服务禁用了它）时，驱逐检查按这个值判断，
          * 如 `noeviction`、`volatile-lru`；必须是 `noeviction`、`allkeys-*` 或 `volatile-*`。读得到时以实际的值为准。
@@ -178,7 +177,7 @@ data class CoCacheProperties @ConstructorBinding constructor(
     }
 
     /**
-     * `SetCache` 驱逐检查的处理方式。
+     * 权威副本驱逐检查的处理方式。
      */
     enum class EvictionCheck {
         WARN,

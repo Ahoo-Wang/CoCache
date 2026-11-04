@@ -14,12 +14,20 @@
 package me.ahoo.cocache.api
 
 /**
- * 显式写入（put、元素增删、clear，或配置为同步失败的失效）在 L1 上失败。
+ * 显式写入（`put`、条件写入、按版本写入、删除、元素增删，或配置为同步失败的失效）在 L1 上失败。
  *
- * 失败时 L1 可能已经生效（如响应超时）；这些操作都是幂等的，调用方可以安全重试。
+ * [outcomeUnknown] 按客户端能观察到的事实区分两类失败（RFC 0005 §4.3、§4.6）：
+ * - `false`：确定未执行。存储在写出之前就拒绝了命令（`me.ahoo.cocache.api.spi.L1RejectedException`，如断线时被拒绝），
+ *   或后端拒绝了这次写入、没有修改 L1（如 key 中是读不懂的内容）。
+ * - `true`：结果未知。命令可能已经生效（超时、断线时被排空、脚本的错误回复），也可能在之后的任何时刻生效，
+ *   并排在其它连接上更晚发出的写入之后。让迟到的执行无害的只有顺序：按版本写入（重放同一版本是安全的）与条件写入（有 ABA）。
  */
-class CacheWriteException(
+class CacheWriteException @JvmOverloads constructor(
     val cacheName: String,
     val operation: String,
-    cause: Throwable
-) : RuntimeException("Cache[$cacheName] - $operation failed on the remote store.", cause)
+    cause: Throwable,
+    val outcomeUnknown: Boolean = true,
+) : RuntimeException(
+    "Cache[$cacheName] - $operation failed on the remote store" + if (outcomeUnknown) " (outcome unknown)." else " (not executed).",
+    cause
+)

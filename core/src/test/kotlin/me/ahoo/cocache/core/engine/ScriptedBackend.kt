@@ -431,6 +431,12 @@ internal class ScriptedBackend(
                 frame
             )
         }
+        override fun deleteIfMatch(
+            key: String,
+            expected: Digest,
+            frame: ByteArray
+        ): CompletableFuture<L1ConditionalWrite> =
+            passed { surface.deleteIfMatch(key, expected, frame) }
     }
 
     private class PassingVersioned(private val surface: VersionedL1Store) : FutureVersionedL1Store {

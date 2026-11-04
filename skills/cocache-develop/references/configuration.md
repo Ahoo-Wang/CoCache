@@ -15,11 +15,11 @@ Use this reference for dependencies, `cocache.*` properties, backend selection, 
 
 ## Dependencies
 
-Spring Boot 4 on JDK 21+: `me.ahoo.cocache:cocache-spring-boot-starter` plus `org.springframework.boot:spring-boot-starter-data-redis` (connection details), optionally the actuator. `me.ahoo.cocache:cocache-bom` manages module versions. Without Spring: `cocache-core`, `cocache-redis`, `cocache-codec-jackson`. `cocache-test` is a test dependency only when using `HookedBackend` or the TCK. CoCache builds its own Lettuce client from `spring.data.redis.*` and never touches the application's connection factory; Jedis is not used by CoCache.
+Spring Boot 4 on JDK 21+: `me.ahoo.cocache:cocache-spring-boot-starter` plus `org.springframework.boot:spring-boot-starter-data-redis` (connection details), optionally the actuator. `me.ahoo.cocache:cocache-bom` manages module versions. Without Spring: `cocache-core`, `cocache-redis`, `cocache-codec-jackson`. `cocache-test` is a test dependency only when using `HookedBackend` or the TCK. Coroutines need no extra module: `cocache-core` exposes `kotlinx-coroutines-core`. CoCache builds its own Lettuce client from `spring.data.redis.*` and never touches the application's connection factory; Jedis is not used by CoCache.
 
 ## Precedence
 
-Lowest to highest, field by field: built-in defaults, the declaration (annotation or spec), `CacheSpecCustomizer` beans, `cocache.defaults.*`, `cocache.caches.[name].*`. Properties come last so operators can retune without a rebuild, so `cocache.defaults.*` overrides annotations too. `cocache.defaults.ttl`, `ttl-forever`, `absent-ttl` and `refresh-window` do not apply to set caches.
+Lowest to highest, field by field: built-in defaults (`CachePolicy.DEFAULT` for `Cache` / `VersionedCache`; `StoreSpec.DEFAULT_POLICY`, `VersionedStoreSpec.DEFAULT_POLICY`, `SetStoreSpec.DEFAULT_POLICY` for the authoritative types), the declaration (annotation or spec), `CacheSpecCustomizer` beans, `cocache.defaults.*`, `cocache.caches.[name].*`. Properties come last so operators can retune without a rebuild, so `cocache.defaults.*` overrides annotations too. `cocache.defaults.ttl`, `ttl-forever` and `refresh-window` do not apply to `Store`, `VersionedStore` or `SetStore`; every other default does, including `absent-ttl` and `local-max-age`, which then replace those types' shorter built-in values.
 
 ## Top-level properties
 
@@ -42,18 +42,18 @@ Valid under `cocache.defaults.` and `cocache.caches.[name].`. Bare numbers are s
 
 | Key | Default | Meaning |
 |---|---|---|
-| `ttl` / `ttl-forever` | `1h` / `false` | Value lifetime in Redis |
+| `ttl` / `ttl-forever` | `1h` (authoritative types: forever) / `false` | Value lifetime in Redis |
 | `ttl-jitter` | `1m` | Random spread, capped at `ttl / 2`; `0` off |
-| `absent-ttl` | `1m` | Negative-entry lifetime |
-| `local-max-age` | `5m` | Maximum age of an L2 copy |
+| `absent-ttl` | `1m` (authoritative types: `10s`) | Negative-entry lifetime |
+| `local-max-age` | `5m` (authoritative types: `30s`) | Maximum age of an L2 copy |
 | `degraded-local-max-age` | `10s` | L2 age of a copy not written to Redis |
 | `refresh-window` | off | Refresh-ahead; `0` removes a declared window |
 | `lease-ttl` / `lease-wait` | `10s` / `200ms` | Lease lifetime; wait for another instance's load |
 | `load-max-concurrent` / `load-acquire-timeout` | `0` (unlimited) / `1s` | Per-cache, per-instance loader bulkhead; rejection throws `SourceLoadRejectedException` |
 | `load-timeout` | `30s` | Upper bound for a load: an `AsyncCacheLoader` load past it fails with `SourceLoadTimeoutException` (lease released); readers waiting for another caller's load fail the same way at that deadline, and later readers start a new load. Give synchronous loaders their own timeout |
 | `local-maximum-size` | `10000` | L2 entries per instance |
-| `invalidate-failure` | `retry` with a loader, `throw` without one | `throw`: surface `CacheWriteException`. Without a loader a delayed retry deletes later writes |
-| `read-failure` | `degrade` with a loader, `throw` without one | `throw`: surface `CacheReadException`. Without a loader, set `degrade` explicitly only when "unreadable" is a safe answer (e.g. a revocation list): the read returns `null` and caches nothing, so every read during the failure hits Redis |
+| `invalidate-failure` | `retry` | `Cache.invalidate` only (externally sourced included). `throw`: surface `CacheWriteException`. Authoritative deletes always throw and never retry |
+| `read-failure` | `degrade` | Reads with a source only (declared or per-call loader). `throw`: answer `Lookup.Unknown`, so `get` throws `CacheReadException`. Reads without a source are always `Unknown`; the spec's `unknownRead` (no property) decides whether they throw or return `null` |
 | `key-prefix` | `cocache:` | First part of every storage key; placeholders allowed |
 
 - Quote and bracket cache names in YAML (`"[UserCache]"`). Names match case-insensitively, so `COCACHE_CACHES_USERCACHE_TTL=10m` works. An undeclared name fails startup.
@@ -70,6 +70,8 @@ The topology comes from `spring.data.redis.*`: `cluster.nodes` (Cluster), `senti
 | `cocache.redis.heartbeat` | `5s` | Subscription `PING`; a failure clears L2 and reconnects |
 | `cocache.redis.invalidate-batch-size` | `512` | Keys per invalidation script |
 | `cocache.redis.client-name` | unset | `CLIENT SETNAME` for CoCache connections |
+| `cocache.redis.store-eviction-check` | `warn` | With any `Store`, `VersionedStore` or `SetStore` (lazy ones included), read `maxmemory-policy` from `INFO memory` at startup: `allkeys-*` warns, or fails startup with `fail`; `off` skips it |
+| `cocache.redis.assume-maxmemory-policy` | unset | Policy the check assumes when `INFO` is not allowed |
 
 Bare numbers under `cocache.redis` are milliseconds; write a unit. In `pubsub` mode the backend probes at startup and falls back to publish-after-write where atomic cross-slot publish is unsupported (health shows `atomicBroadcast: false`).
 
@@ -84,7 +86,7 @@ Expose with `management.endpoints.web.exposure.include: health, cocache`; restri
 | `GET /actuator/cocache` and `GET /actuator/cocache/{name}` | Reports and counters | this instance |
 | `GET /actuator/cocache/{name}/{key}` | Inspects L2 and L1 for one encoded key without loading | this instance plus one Redis read |
 | `DELETE /actuator/cocache/{name}` | Clears this cache's L2 | this instance |
-| `DELETE /actuator/cocache/{name}/{key}` | Invalidates the key (`clear` on a set cache) | every instance |
+| `DELETE /actuator/cocache/{name}/{key}` | Per type: `Cache.invalidate`, `VersionedCache.evict`, `Store.delete`, `VersionedStore.purge`, `SetStore.clear`. Only the `Cache` case retries a Redis failure; the authoritative cases delete the only copy | every instance |
 
 The `cocache` health indicator is `DOWN` only while the subscription heartbeat fails; details show `backend`, `format`, `atomicBroadcast`, `channelMode`, `heartbeat` and `pendingInvalidations`. Keep it out of liveness. Micrometer meters are `cocache.*` tagged `cache`; the L2 hit counter `cocache.hits{level=l2}` is off by default (`cocache.metrics.local-hits=true` turns it on, at a measurable cost to L2 hit throughput).
 
@@ -92,7 +94,7 @@ The `cocache` health indicator is `DOWN` only while the subscription heartbeat f
 
 | Setting | Where |
 |---|---|
-| `ttlOf`, `keyEncoder`, `keyFilter`, `codec`, `loader` | Spec or customizer |
+| `ttlOf`, `keyEncoder`, `keyFilter`, `codec`, `loader`, `unknownRead`, `tombstoneTtl` | Spec or customizer |
 | `initialCapacity`, `expireAfterAccess` | `@CaffeineCache`, spec, or customizer |
 | Clock | A `CacheClock` bean (for example `ManualClock` in tests) |
 | Retry policy, node id | Your own `CacheRuntime` bean (the starter's backs off) |
@@ -112,4 +114,4 @@ runtime.close()
 backend.close()
 ```
 
-For Spring without Boot, add `cocache-spring` and register `CoCacheSpringCacheManager(runtime)` and `TransactionalInvalidator()`.
+`runtime.create(spec)` returns the type matching the spec (`storeSpec` gives a `Store`, and so on); the start log names it (`Cache[name] - created as Store on namespace[...]`). For Spring without Boot, add `cocache-spring` and register `CoCacheSpringCacheManager(runtime)` and `TransactionalInvalidator()`.

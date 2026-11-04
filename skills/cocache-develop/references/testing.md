@@ -64,7 +64,13 @@ Close every runtime after the test. `runtime.metrics(name)` exposes counters (lo
 
 ## Redis failures
 
-`HookedBackend(delegate)` (test dependency `me.ahoo.cocache:cocache-test`) switches: `failAll`, `failWrites`, `failFill`, `failRelease`. Expected behavior: reads degrade to the source, `put` throws `CacheWriteException`, `invalidate` does not throw and queues a retry (`runtime.admin(name)?.pendingInvalidationCount`). Without a loader, reads throw `CacheReadException` (or return `null` without caching under an explicit `read-failure: degrade`) and `invalidate` throws `CacheWriteException` by default. The retry runs on real time, so poll with a timeout instead of sleeping a fixed amount.
+`HookedBackend(delegate)` (test dependency `me.ahoo.cocache:cocache-test`) switches: `failAll`, `failWrites` (writes fail with an unknown outcome), `rejectWrites` (writes throw `L1RejectedException` before reaching the store: `CacheWriteException.outcomeUnknown` is `false`), `failFill`, `failRelease`. Expected behavior:
+
+- A `Cache` with a loader: reads degrade to the source, `put` throws `CacheWriteException`, `invalidate` does not throw and queues a retry (`runtime.admin(name)?.pendingInvalidationCount`). The retry runs on real time, so poll with a timeout instead of sleeping a fixed amount.
+- Reads without a source (`Store`, `VersionedStore`, `SetStore`, an externally sourced `Cache` read without a loader): `lookup` returns `Lookup.Unknown`, `get` throws `CacheReadException`, nothing is cached; with `unknownRead = ABSENT` they return `null`. Assert `cocache.reads.unknown` through `runtime.metrics(name).readsUnknown`.
+- Authoritative writes and deletes (`Store.delete`, `deleteIfMatch`, `purge`, `SetStore.clear`) and `VersionedCache.evict` throw `CacheWriteException` and queue nothing.
+
+Test each type you declare: a `Store` read after a write on another runtime, a conditional write that conflicts, a `VersionedCache` replay of an older version returning `Stale`.
 
 ## Race tests
 

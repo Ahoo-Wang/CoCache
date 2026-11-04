@@ -14,7 +14,7 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.join.JoinValue
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.Ext
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.ExtJoinCache
@@ -70,7 +70,7 @@ class CoCacheAotRuntimeTest {
                 it.getBean(TagCache::class.java).add("k", listOf(Tag("a")))
                 it.getBean(TagCache::class.java)["k"].assert().isEqualTo(setOf(Tag("a")))
                 @Suppress("UNCHECKED_CAST")
-                (it.getBean("label") as SetCache<String, String>).add("k", listOf("x"))
+                (it.getBean("label") as SetStore<String, String>).add("k", listOf("x"))
                 // spec 缓存只注册一次：CacheSpecRegistrar 在运行时跳过生成代码已注册的 bean
                 val stringCacheType = ResolvableType.forClassWithGenerics(
                     Cache::class.java,

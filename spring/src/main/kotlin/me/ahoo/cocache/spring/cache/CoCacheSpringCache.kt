@@ -31,7 +31,8 @@ import java.util.function.Supplier
 import org.springframework.cache.Cache as SpringCache
 
 /**
- * 把 [Cache] 适配为 Spring [SpringCache]（RFC 0005 §4.9）。
+ * 把派生副本 [Cache] 适配为 Spring [SpringCache]（RFC 0005 §4.9）：Spring Cache 背后的缓存是派生副本，被注解的方法就是数据源，
+ * 通常声明为 `externallySourced()`。权威副本（`Store` 一族）不可接入。
  *
  * - 负缓存视为未命中：否则 `@Cacheable` 遇到负缓存将永远不调用方法。
  * - `put(key, null)`（如 `@CachePut` 返回 null）映射为失效。
@@ -61,10 +62,14 @@ class CoCacheSpringCache(
 
     override fun getNativeCache(): Any = cache
 
+    /**
+     * `Lookup.Unknown`（L1 故障，RFC 0005 §4.1）以它的 [me.ahoo.cocache.api.CacheReadException] 抛出，交给 Spring 的 `CacheErrorHandler`。
+     */
     override fun get(key: Any): SpringCache.ValueWrapper? {
         return when (val lookup = cache.lookup(key)) {
             is Lookup.Present -> SimpleValueWrapper(lookup.value)
             is Lookup.Absent -> null
+            is Lookup.Unknown -> throw lookup.error
         }
     }
 

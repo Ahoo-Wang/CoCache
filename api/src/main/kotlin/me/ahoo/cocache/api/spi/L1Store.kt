@@ -45,10 +45,11 @@ import java.time.Duration
  *   可能先于仍在执行的命令到达。
  *
  * **失败**：抛出异常，降级策略由引擎决定。失败分两类：
- * - 确定未执行：命令在写出之前就被拒绝（如断线时拒绝命令），或在发出之前同步失败。
- * - 结果未知：其余情形，包括超时、断线时被排空的命令，以及脚本的错误回复（除非能逐个脚本证明错误只可能发生在第一次写入之前）。
+ * - 确定未执行：命令在写出之前就被拒绝（如断线时拒绝命令），或在发出之前同步失败。实现以 [L1RejectedException] 报告它。
+ * - 结果未知：其余情形，包括超时、断线时被排空的命令，以及脚本的错误回复（除非能逐个脚本证明错误只可能发生在第一次写入之前），
+ *   以其它异常报告。
  *
- * 区分两类失败的异常类型随用户 API 提供（RFC 0005 M5）；在此之前实现按上述分类决定是否释放令牌。
+ * 引擎据此决定写入失败的 `CacheWriteException.outcomeUnknown`；实现据此决定是否释放令牌。
  *
  * **能力**：条件读写、按版本有序的写入、集合成员的增删是可选能力，由 [conditional]、[versioned]、[sets] 访问。
  * - 不支持时返回 `null`，不抛出。
@@ -198,6 +199,17 @@ interface ConditionalL1Store {
         ttl: Duration?,
         frame: ByteArray
     ): L1ConditionalWrite
+
+    /**
+     * 条件删除：仅当 key 中是带摘要段的标量值、且其摘要段等于 [expected] 时，原子地删除 key 并广播 [frame]，返回
+     * [L1ConditionalWrite.Written]；否则不修改 key、不广播。
+     *
+     * - 不符合时返回 [L1ConditionalWrite.Conflict]，附当前值的摘要段；没有值（不存在、lease 占位、不带版本的负缓存）时为 `null`。
+     * - key 中是不能当作带摘要段的标量值的内容（同 [L1ConditionalRead.Unreadable]）时返回 [L1ConditionalWrite.Unreadable]。
+     *
+     * 比较与删除必须在一次原子操作中完成。
+     */
+    suspend fun deleteIfMatch(key: String, expected: Digest, frame: ByteArray): L1ConditionalWrite
 }
 
 /**

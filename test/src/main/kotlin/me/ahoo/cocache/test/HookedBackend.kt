@@ -29,6 +29,7 @@ import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -78,10 +79,16 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     var failAll: Boolean = false
 
     /**
-     * 写入类操作（put、putAll、invalidate、成员增删、条件与按版本的写入）抛出 [RemoteUnavailableException]。
+     * 写入类操作（put、putAll、invalidate、成员增删、条件与按版本的写入）抛出 [RemoteUnavailableException]（结果未知的故障）。
      */
     @Volatile
     var failWrites: Boolean = false
+
+    /**
+     * 写入类操作在发出之前被拒绝：抛出 [L1RejectedException]（确定未执行，RFC 0005 §4.3），不调用被包装的存储。
+     */
+    @Volatile
+    var rejectWrites: Boolean = false
 
     /**
      * 释放令牌时抛出 [RemoteUnavailableException]。
@@ -201,6 +208,9 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     private fun guard(operation: String, fail: Boolean = false) {
         if (failAll || fail) {
             throw RemoteUnavailableException(operation)
+        }
+        if (rejectWrites && operation in WRITES) {
+            throw L1RejectedException("Rejected before it was written: $operation.")
         }
     }
 
@@ -347,6 +357,15 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             guard("put", fail = failWrites)
             delegate.putIfMatch(key, expected, envelope, ttl, frame)
         }
+
+        override suspend fun deleteIfMatch(
+            key: String,
+            expected: Digest,
+            frame: ByteArray
+        ): L1ConditionalWrite = hooked(null) {
+            guard("invalidate", fail = failWrites)
+            delegate.deleteIfMatch(key, expected, frame)
+        }
     }
 
     private inner class HookedVersioned(delegate: VersionedL1Store) : ForwardingVersionedL1Store(delegate) {
@@ -382,5 +401,12 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
                 guard("removeMembers", fail = failWrites)
                 delegate.removeMembers(key, members, ttl, frame)
             }
+    }
+
+    private companion object {
+        /**
+         * [rejectWrites] 作用的操作（[guard] 的操作名）。
+         */
+        val WRITES = setOf("put", "putAll", "invalidate", "addMembers", "removeMembers")
     }
 }

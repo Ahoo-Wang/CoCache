@@ -14,21 +14,23 @@
 package me.ahoo.cocache.core.join
 
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.join.JoinCache
 import me.ahoo.cocache.api.join.JoinKeyExtractor
 import me.ahoo.cocache.api.join.JoinValue
+import me.ahoo.cocache.api.join.JoinView
 
 /**
- * 组合两个独立缓存的 [JoinCache]：只读、无状态，不持有组件缓存的生命周期。
+ * 组合两个独立缓存的只读 [JoinView]：无状态，不持有组件缓存的生命周期。两侧可以是任何 [ReadableCache]。
  *
  * 读取全部委托给组件缓存，因此组件缓存的一致性保证（栅栏、失效、限龄）原样适用；两次读取之间没有原子性。
  */
-class SimpleJoinCache<K1 : Any, V1 : Any, K2 : Any, V2 : Any>(
+open class SimpleJoinView<K1 : Any, V1 : Any, K2 : Any, V2 : Any>(
     override val name: String,
-    val firstCache: Cache<K1, V1>,
-    val joinCache: Cache<K2, V2>,
+    open val firstCache: ReadableCache<K1, V1>,
+    open val joinCache: ReadableCache<K2, V2>,
     val joinKeyExtractor: JoinKeyExtractor<V1, K2>,
-) : JoinCache<K1, V1, K2, V2> {
+) : JoinView<K1, V1, K2, V2> {
 
     override fun get(key: K1): JoinValue<V1, K2, V2>? {
         val firstValue = firstCache[key] ?: return null
@@ -55,6 +57,21 @@ class SimpleJoinCache<K1 : Any, V1 : Any, K2 : Any, V2 : Any>(
         return result
     }
 
+    override fun toString(): String {
+        return "${javaClass.simpleName}(name='$name', firstCache=${firstCache.name}, joinCache=${joinCache.name})"
+    }
+}
+
+/**
+ * 两侧都是派生副本（[Cache]）的 [JoinCache]：读取同 [SimpleJoinView]，另有失效。
+ */
+class SimpleJoinCache<K1 : Any, V1 : Any, K2 : Any, V2 : Any>(
+    name: String,
+    override val firstCache: Cache<K1, V1>,
+    override val joinCache: Cache<K2, V2>,
+    joinKeyExtractor: JoinKeyExtractor<V1, K2>,
+) : SimpleJoinView<K1, V1, K2, V2>(name, firstCache, joinCache, joinKeyExtractor), JoinCache<K1, V1, K2, V2> {
+
     /**
      * 只失效主缓存：关联缓存有独立的生命周期，由其写入方负责失效。
      */
@@ -73,9 +90,5 @@ class SimpleJoinCache<K1 : Any, V1 : Any, K2 : Any, V2 : Any>(
             error.addSuppressed(joinFailure)
         }
         throw error
-    }
-
-    override fun toString(): String {
-        return "SimpleJoinCache(name='$name', firstCache=${firstCache.name}, joinCache=${joinCache.name})"
     }
 }

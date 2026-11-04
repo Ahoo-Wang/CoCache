@@ -22,7 +22,7 @@ import io.lettuce.core.codec.ByteArrayCodec
 import io.lettuce.core.output.IntegerOutput
 import io.lettuce.core.protocol.CommandArgs
 import io.lettuce.core.protocol.CommandType
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.NodeId
@@ -32,7 +32,7 @@ import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.LocalPolicy
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import org.openjdk.jmh.annotations.Benchmark
 import org.openjdk.jmh.annotations.BenchmarkMode
 import org.openjdk.jmh.annotations.Mode
@@ -70,8 +70,8 @@ open class SetCacheBenchmark {
     private val run = UUID.randomUUID().toString().substring(0, 8)
     private lateinit var backend: RedisBackend
     private lateinit var runtime: CacheRuntime
-    private lateinit var cache: SetCache<String, String>
-    private lateinit var l1Hits: SetCache<String, String>
+    private lateinit var cache: SetStore<String, String>
+    private lateinit var l1Hits: SetStore<String, String>
     private lateinit var l1HitKeys: List<String>
     private lateinit var store: L1Store
     private lateinit var sets: SetL1Store
@@ -88,7 +88,7 @@ open class SetCacheBenchmark {
         backend = RedisBackend.standalone(RedisURI.create("localhost", 6379))
         runtime = CacheRuntime.builder().backend(backend).build()
         val name = "setbench-$run"
-        cache = runtime.create(setCacheSpec<String, String>(name) { elementCodec = StringCodec })
+        cache = runtime.create(setStoreSpec<String, String>(name) { elementCodec = StringCodec })
         store = backend.store(Keyspace("cocache:", name))
         sets = requireNotNull(store.sets())
         frame = InvalidationFrame.encode(NodeId.random(), emptyList())
@@ -106,7 +106,7 @@ open class SetCacheBenchmark {
         altAdd(altKeys, members.map { it.toByteArray() })
         // L1 命中经引擎：工作集远大于 L2 容量，几乎每次读取都不命中 L2、命中 L1（并填充 L2）
         l1Hits = runtime.create(
-            setCacheSpec<String, String>("$name-l1-hits") {
+            setStoreSpec<String, String>("$name-l1-hits") {
                 elementCodec = StringCodec
                 policy = policy.toBuilder().local(LocalPolicy(maximumSize = 16)).build()
             }

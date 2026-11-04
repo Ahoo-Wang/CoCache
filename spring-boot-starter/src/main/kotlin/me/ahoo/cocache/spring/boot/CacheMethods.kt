@@ -13,32 +13,29 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.SetCache
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
 /**
  * 启动时校验接口式声明中的抽象方法。
  *
- * 代理（`CacheProxies`）按方法名与参数个数把调用转发给引擎。用户接口重新声明（或重载）的抽象方法如果参数类型不兼容，
- * 运行时会以 `ClassCastException` 失败；这里在创建缓存时就失败，并指出改为 default 方法。
+ * 代理（`CacheProxies`）按接口继承的用户 API 类型（[apiType]）、按方法名与参数个数把调用转发给引擎。用户接口重新声明（或重载）的
+ * 抽象方法如果参数类型不兼容，运行时会以 `ClassCastException` 失败；这里在创建缓存时就失败，并指出改为 default 方法。
  */
 internal object CacheMethods {
-    private val CACHE_METHODS: List<Method> = Cache::class.java.methods.toList()
-    private val SET_CACHE_METHODS: List<Method> = CACHE_METHODS + SetCache::class.java.methods
-
-    fun validate(type: Class<*>, isSet: Boolean) {
-        val supported = if (isSet) SET_CACHE_METHODS else CACHE_METHODS
+    /**
+     * @param apiType 接口继承的用户 API 类型（`CacheProxies.apiTypeOf`）
+     */
+    fun validate(type: Class<*>, apiType: Class<*>) {
+        val supported = apiType.methods.toList()
         val unsupported = type.methods.filter { method ->
             Modifier.isAbstract(method.modifiers) &&
-                method.declaringClass != Cache::class.java &&
-                method.declaringClass != SetCache::class.java &&
+                !method.declaringClass.isAssignableFrom(apiType) &&
                 supported.none { matches(method, it) }
         }
         check(unsupported.isEmpty()) {
             "Cache interface[${type.name}] declares abstract methods that do not match any " +
-                "${if (isSet) "SetCache" else "Cache"} method: ${unsupported.map { signature(it) }}; declare them as default methods."
+                "${apiType.simpleName} method: ${unsupported.map { signature(it) }}; declare them as default methods."
         }
     }
 

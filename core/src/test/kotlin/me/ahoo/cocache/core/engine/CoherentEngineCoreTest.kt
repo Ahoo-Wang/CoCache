@@ -80,9 +80,15 @@ class CoherentEngineCoreTest {
     private fun runtime(backend: CoherenceBackend = memory): CacheRuntime =
         CacheRuntime.builder().backend(backend).build().also { runtimes += it }
 
+    /**
+     * 用例没有给出数据源时是外部来源的缓存。
+     */
     private fun spec(block: CacheSpec.Builder<String, String>.() -> Unit) = cacheSpec<String, String>("core") {
         codec = StringCodec
         block()
+        if (loader == null && asyncLoader == null) {
+            externallySourced()
+        }
     }
 
     private fun failureOf(future: CompletableFuture<*>): Throwable? = try {

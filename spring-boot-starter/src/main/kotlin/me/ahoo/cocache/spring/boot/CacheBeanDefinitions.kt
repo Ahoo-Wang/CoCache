@@ -13,11 +13,10 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.join.JoinCache
+import me.ahoo.cocache.api.ReadableCache
+import me.ahoo.cocache.api.join.JoinView
 import me.ahoo.cocache.api.spi.CoherenceBackend
-import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.Spec
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.beans.factory.NoSuchBeanDefinitionException
 import org.springframework.beans.factory.config.AutowireCapableBeanFactory
@@ -52,14 +51,14 @@ internal object CacheBeanDefinitions {
      * 接口式声明的缓存接口；不是接口式声明的缓存 bean 定义时返回 `null`。
      */
     fun cacheInterfaceOf(definition: BeanDefinition): Class<*>? {
-        return (argumentOf(definition) as? Class<*>)?.takeIf { Cache::class.java.isAssignableFrom(it) }
+        return (argumentOf(definition) as? Class<*>)?.takeIf { ReadableCache::class.java.isAssignableFrom(it) }
     }
 
     /**
      * 组合视图接口；不是组合视图的 bean 定义时返回 `null`。
      */
     fun joinInterfaceOf(definition: BeanDefinition): Class<*>? {
-        return (argumentOf(definition) as? Class<*>)?.takeIf { JoinCache::class.java.isAssignableFrom(it) }
+        return (argumentOf(definition) as? Class<*>)?.takeIf { JoinView::class.java.isAssignableFrom(it) }
     }
 
     /**
@@ -68,9 +67,9 @@ internal object CacheBeanDefinitions {
     fun specBeanOf(definition: BeanDefinition): String? = argumentOf(definition) as? String
 
     /**
-     * spec bean 的缓存名：[SetCacheSpec] 或 [CacheSpec]。
+     * spec bean 的缓存名（五种 [Spec] 之一）。
      */
-    fun specNameOf(spec: Any): String = if (spec is SetCacheSpec<*, *>) spec.name else (spec as CacheSpec<*, *>).name
+    fun specNameOf(spec: Any): String = (spec as Spec<*, *>).name
 
     private fun argumentOf(definition: BeanDefinition): Any? {
         if (definition.beanClassName != CacheBeanDefinitions::class.java.name) {
@@ -118,7 +117,7 @@ internal object CacheBeanDefinitions {
     @JvmStatic
     fun annotatedCache(type: Class<*>, beanFactory: ConfigurableListableBeanFactory): Any {
         @Suppress("UNCHECKED_CAST")
-        val cacheType = type as Class<out Cache<*, *>>
+        val cacheType = type as Class<out ReadableCache<*, *>>
         val cacheName = AnnotatedCacheFactory.cacheNameOf(type)
         return requireComponent(beanFactory, AnnotatedCacheFactory::class.java, cacheName).create(cacheType)
     }
@@ -129,22 +128,17 @@ internal object CacheBeanDefinitions {
     @JvmStatic
     fun joinCache(type: Class<*>, beanFactory: ConfigurableListableBeanFactory): Any {
         @Suppress("UNCHECKED_CAST")
-        return JoinCacheFactory(beanFactory).create(type as Class<out JoinCache<*, *, *, *>>)
+        return JoinCacheFactory(beanFactory).create(type as Class<out JoinView<*, *, *, *>>)
     }
 
     /**
-     * spec 声明的工厂方法（bean 定义的工厂方法，不是给使用者调用的 API）：spec bean 是 [SetCacheSpec] 时创建集合缓存。
+     * spec 声明的工厂方法（bean 定义的工厂方法，不是给使用者调用的 API）：按 spec 的类型创建对应的缓存。
      */
     @JvmStatic
-    @Suppress("UNCHECKED_CAST")
     fun specCache(specName: String, beanFactory: ConfigurableListableBeanFactory): Any {
-        val spec = beanFactory.getBean(specName)
-        val assembler = requireComponent(beanFactory, CacheAssembler::class.java, specNameOf(spec))
-        return if (spec is SetCacheSpec<*, *>) {
-            assembler.create(spec as SetCacheSpec<Any, Any>)
-        } else {
-            assembler.create(spec as CacheSpec<Any, Any>)
-        }
+        val spec = beanFactory.getBean(specName) as Spec<*, *>
+        val assembler = requireComponent(beanFactory, CacheAssembler::class.java, spec.name)
+        return assembler.create(spec)
     }
 
     private const val ANNOTATED_CACHE_METHOD = "annotatedCache"

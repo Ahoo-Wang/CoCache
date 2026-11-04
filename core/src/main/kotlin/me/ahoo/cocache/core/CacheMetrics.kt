@@ -56,6 +56,8 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     private val conditionalConflictAdder = LongAdder()
     private val staleVersionAdder = LongAdder()
     private val typeMismatchAdder = LongAdder()
+    private val unknownReadAdder = LongAdder()
+    private val unversionedAbsentRefusedAdder = LongAdder()
 
     /**
      * 由 L2（本地副本）直接返回的读取数：未过期的本地副本，含负缓存与进入刷新窗口的副本。
@@ -100,7 +102,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     val conditionalUnchanged: Long get() = conditionalUnchangedAdder.sum()
 
     /**
-     * `putIfMatch` 因 L1 中的当前内容与期望不符而未写入的次数（不计入 [writeFailures]）。
+     * `putIfMatch` / `deleteIfMatch` 因 L1 中的当前内容与期望不符而未写入的次数（不计入 [writeFailures]）。
      */
     val conditionalConflicts: Long get() = conditionalConflictAdder.sum()
 
@@ -110,10 +112,21 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     val staleVersions: Long get() = staleVersionAdder.sum()
 
     /**
-     * 本缓存从 L1 读到不属于它这一类的内容的次数（RFC 0005 §4.7，D4）：不写摘要段的缓存（有数据源或带版本的缓存）读到带摘要段的值，
-     * 即同一个 namespace 上还有没有数据源的缓存（权威标量）。这样的值照常读取，但不回收、不取得刷新令牌。
+     * 本缓存从 L1 读到不属于它这一类的内容的次数（RFC 0005 §4.7，D4）：派生副本（`Cache`、`VersionedCache`）读到带摘要段的值，
+     * 即同一个 namespace 上还有 `Store`。这样的值照常读取，但不回收、不取得刷新令牌。
      */
     val typeMismatches: Long get() = typeMismatchAdder.sum()
+
+    /**
+     * 读取的结果为 `Lookup.Unknown`（L1 故障，RFC 0005 §4.1）的次数，按调用方计：含按 `unknownRead = ABSENT` 换算为不存在的、
+     * 抛出 `CacheReadException` 的与 `lookup` 返回 `Unknown` 的。同一次 L1 故障另计入 [remoteFailures]。
+     */
+    val readsUnknown: Long get() = unknownReadAdder.sum()
+
+    /**
+     * 带版本的数据源返回不带版本的 `null`、落在带版本的内容上被 L1 拒绝的次数（K16）：数据源应以 `Versioned(null, version)` 表达删除。
+     */
+    val unversionedAbsentRefusals: Long get() = unversionedAbsentRefusedAdder.sum()
 
     internal fun localHit() = localHitAdder.increment()
     internal fun remoteHit() = remoteHitAdder.increment()
@@ -147,4 +160,6 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     internal fun conditionalConflict() = conditionalConflictAdder.increment()
     internal fun staleVersion() = staleVersionAdder.increment()
     internal fun typeMismatch() = typeMismatchAdder.increment()
+    internal fun unknownRead() = unknownReadAdder.increment()
+    internal fun unversionedAbsentRefused() = unversionedAbsentRefusedAdder.increment()
 }

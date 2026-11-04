@@ -545,7 +545,7 @@ return {1}
     const val PUT_UNREADABLE = 3L
 
     /**
-     * 条件读写的检查（只有 [READ_IF_CHANGED] 与 [PUT_IF_MATCH] 引入）：返回 key 的状态与附加值，不修改 key。
+     * 条件读写的检查（只有 [READ_IF_CHANGED]、[PUT_IF_MATCH] 与 [DELETE_IF_MATCH] 引入）：返回 key 的状态与附加值，不修改 key。
      * 先判断 `TYPE`，再只读最长的头部（`GETRANGE key 0 77`）与 `STRLEN`：成本与载荷大小无关，Lua 不计算摘要（RFC 0005 §4.7）。
      * - `'none'`：不存在、lease 占位、不带版本的负缓存；
      * - `'value', 格式版本, 摘要段`：带摘要段、不带版本段的值（权威标量）；
@@ -604,6 +604,24 @@ elseif current ~= ARGV[1] then
 end
 write(key, ARGV[2], ARGV[3], 6)
 publish(ARGV[4], ARGV[5])
+return {1}
+"""
+    )
+
+    /**
+     * 条件删除：当前值的摘要段等于期望时删除并广播，否则不修改、不广播。ARGV：期望摘要（32 字节）、频道、帧。
+     * 读不懂的内容（见 [CONDITIONAL_STATE]）总是拒绝。返回码同 [PUT_IF_MATCH]：`{1}` 已删除、`{0}` 冲突且当前没有值、
+     * `{0, 当前摘要段}` 冲突、`{3, 格式版本}` 读不懂的内容。
+     */
+    val DELETE_IF_MATCH = Script(
+        PRELUDE + FORMAT_RULES + CONDITIONAL_STATE + """
+local key = KEYS[1]
+local state, format, current = conditional_state(key)
+if state == 'unreadable' then return {3, format} end
+if state == 'none' then return {0} end
+if current ~= ARGV[1] then return {0, current} end
+redis.call('DEL', key)
+publish(ARGV[2], ARGV[3])
 return {1}
 """
     )

@@ -572,6 +572,35 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
+         * 比较与删除在同一次 `compute` 中完成（对单个 key 原子）；只在删除时广播。读不懂的内容（见 [conditionalState]）总是拒绝，
+         * 没有值时是冲突（当前摘要为 `null`）。
+         */
+        override suspend fun deleteIfMatch(key: String, expected: Digest, frame: ByteArray): L1ConditionalWrite {
+            awaitRunnable(null)
+            var outcome: L1ConditionalWrite = L1ConditionalWrite.Written
+            slots.compute(key) { _, current ->
+                val slot = current.live()
+                val digest = when (val state = conditionalState(slot)) {
+                    ConditionalState.None -> null
+                    is ConditionalState.Value -> state.digest
+                    ConditionalState.Unreadable -> {
+                        outcome = L1ConditionalWrite.Unreadable(FORMAT)
+                        return@compute slot
+                    }
+                }
+                if (digest != expected) {
+                    outcome = L1ConditionalWrite.Conflict(digest)
+                    return@compute slot
+                }
+                null
+            }
+            if (outcome == L1ConditionalWrite.Written) {
+                publish(keyspace, frame)
+            }
+            return outcome
+        }
+
+        /**
          * 比较版本与写入在同一次 `compute` 中完成（对单个 key 原子）；写入时广播，版本相等时不写入但广播，更小时不广播。没有版本的值
          * 与负缓存（含带摘要段的值）、lease、不存在都总是写入，`E` 按它的版本比较；集合总是拒绝（本后端只存本协议的内容，读不懂的只有集合）。
          */

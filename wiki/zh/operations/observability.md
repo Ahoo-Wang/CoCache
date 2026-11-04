@@ -26,12 +26,13 @@ Prometheus 名称遵循 Micrometer 的约定：`cocache.misses` 变为 `cocache_
 
 | 指标 | 类型 | 计数对象 |
 |------|------|----------|
-| `cocache.misses` | counter | L2 未命中的读取，按调用计数，在合并同一 key 的并发未命中之前。不含 `KeyFilter` 直接回答的读取。`SetCache` 上是 L1 中没有该集合的读取 |
+| `cocache.misses` | counter | L2 未命中的读取，按调用计数，在合并同一 key 的并发未命中之前。不含 `KeyFilter` 直接回答的读取。`SetStore` 上是 L1 中没有该集合的读取 |
 | `cocache.hits{level=l2}` | counter | 由 L2 回答的读取，包括负缓存。只在 `cocache.metrics.local-hits=true` 时注册 |
 | `cocache.hits{level=l1}` | counter | 由 L1 回答的 L2 未命中，包括负缓存 |
 | `cocache.filtered` | counter | `KeyFilter` 判定“不存在”的读取，不访问 Redis |
 | `cocache.lease.waits` | counter | 发现其它实例正在加载该 key 并等待它的未命中 |
 | `cocache.lease.wait.timeouts` | counter | 停止等待（超过 `lease-wait`，或者对方 lease 的剩余寿命更短时超过该剩余寿命）、自行加载且不写 L1 的未命中 |
+| `cocache.reads.unknown` | counter | 因 Redis 失败而没有答案的读取（[`Lookup.Unknown`](../guide/caches.md#unknown)），按调用方计：抛出 `CacheReadException` 的、`lookup` 返回 `Unknown` 的，以及由 `unknownRead = ABSENT` 换算为 `null` 的。Redis 故障本身另计入 `cocache.remote.failures` |
 
 每次读取（`getAll` 按 key）恰好计入 `hits{level=l2}`、`misses` 或 `filtered` 之一。L2 未命中之后，Redis 中有该 key 时计入 `hits{level=l1}`，调用了 loader 时计入 `loads`。
 
@@ -53,21 +54,22 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | 指标 | 类型 | 计数对象 |
 |------|------|----------|
 | `cocache.fill.rejections` | counter | 持有 lease 或刷新令牌、但 Redis 拒绝填充的加载：失效销毁了令牌、loader 慢于 `lease-ttl`、填充失败，或者（带版本的缓存）loader 返回的版本比 Redis 中的旧 |
-| `cocache.degraded.fills` | counter | 只写入 L2、以 `degraded-local-max-age` 限龄的加载：Redis 读取失败、等待 lease 超时、填充被拒绝、值的格式未知，或者该 key 的失效仍在重试。没有 loader 的读取在 Redis 失败时不计入：它抛出，或在显式设置 `read-failure: degrade` 时返回 `null` 而不缓存任何东西（计入 `cocache.remote.failures`） |
+| `cocache.degraded.fills` | counter | 只写入 L2、以 `degraded-local-max-age` 限龄的加载：Redis 读取失败、等待 lease 超时、填充被拒绝、值的格式未知，或者该 key 的失效仍在重试。没有数据源的读取在 Redis 失败时不计入：它没有答案，也不缓存任何东西（计入 `cocache.reads.unknown` 与 `cocache.remote.failures`） |
+| `cocache.fill.unversioned.absent` | counter | `VersionedCache` 的带版本数据源返回普通 `null`、而 Redis 中该 key 是带版本的内容的加载。Redis 拒绝这个负缓存，读取返回“不存在”，下一次未命中再次加载。删除应表达为 `Versioned(null, version)`（[带版本的数据源](../guide/caches.md#versioned-loaders)）。每个缓存的第一次记录告警 |
 | `cocache.stale.discards` | counter | 读取期间该 key 发生了失效，或（带版本的缓存）L2 中已是比这次填充更新的版本（如 loader 读到落后的从库），因而被丢弃的 L2 填充。这是 L2 栅栏在起作用 |
 | `cocache.reclaims` | counter | 本实例无法解码的 L1 值（外来内容或编解码失败）。随后由单独的 reclaim 脚本在值未变的前提下把它转为 lease，本实例再回源 |
-| `cocache.unknown.formats` | counter | 以比本实例更新的线格式写入、或带本实例不认识的必须理解的标志位的 L1 值（直接回源，不覆盖任何内容；没有数据源时读取抛出），没有数据源的读取遇到的读不懂的内容（读取抛出 `CacheReadException`），落在读不懂的内容上而被拒绝的 `SetCache.add` / `remove`、`putIfMatch` 与 `putIfNewer` / `invalidateIfNewer`（抛出 `CacheWriteException`，同时计入 `cocache.write.failures`），以及读到读不懂的内容的 `getIfChanged` |
+| `cocache.unknown.formats` | counter | 以比本实例更新的线格式写入、或带本实例不认识的必须理解的标志位的 L1 值：有数据源的读取绕过它回源，不覆盖任何内容；外部来源的 `Cache` 上不带 loader 的读取把该 key 当作未填充；权威类型的读取失败（`CacheReadException`；`SetStore` 抛出 `ForeignFormatException`）。另外还有：没有数据源的读取遇到的读不懂的内容（读取抛出 `CacheReadException`）；落在读不懂的内容上而被拒绝的 `SetStore.add` / `remove`、`putIfMatch` / `deleteIfMatch`、`putIfNewer` / `invalidateIfNewer` / `deleteIfNewer` 与 `evict`（抛出 `CacheWriteException`，同时计入 `cocache.write.failures`）；以及读到读不懂的内容的 `getIfChanged` |
 
 ### 写入、失效与通道 {#metrics-writes}
 
 | 指标 | 类型 | 计数对象 |
 |------|------|----------|
 | `cocache.remote.failures` | counter | 读取侧失败的 Redis 操作：读取、填充、释放、回收、刷新 |
-| `cocache.write.failures` | counter | 在 Redis 上失败的 `put`、`putIfMatch`、`invalidate`、`invalidateAll` 与 `SetCache` 写入（首次尝试）。`putIfMatch` 的冲突不算失败 |
-| `cocache.conditional.conflicts` | counter | 因 Redis 中是另一个值而没有写入的 `putIfMatch`（[条件写入](../guide/freshness.md#conditional-writes)）。持续出现说明写入方经常在同一个 key 上竞争 |
+| `cocache.write.failures` | counter | 各种类型在 Redis 上失败的写入与删除（首次尝试）：`put`、`putAll`、`invalidate`、`delete`、条件写入与按版本的写入、`evict`、`purge`，以及 `SetStore` 的写入。冲突与过时的版本不算失败 |
+| `cocache.conditional.conflicts` | counter | 因 Redis 中是另一个值而没有写入的 `putIfMatch` 与 `deleteIfMatch`（[条件写入](../guide/freshness.md#conditional-writes)）。持续出现说明写入方经常在同一个 key 上竞争 |
 | `cocache.conditional.unchanged` | counter | 确认值未变、没有传输值的 `getIfChanged` |
-| `cocache.versioned.stale` | counter | 因 Redis 中已是这个版本或更新的版本而没有写入的 `putIfNewer` / `invalidateIfNewer`（[按版本写入](../guide/freshness.md#versioned-writes)）：重复投递与迟到的旧版本 |
-| `cocache.type.mismatch` | counter | 有 loader 的缓存读到没有 loader 的缓存写入的值（带摘要），以及带版本的缓存按 key 淘汰时遇到它的次数。说明同一个 namespace 上还有没有 loader 的缓存：值照常读取，但从不被回收或刷新。每个缓存只记录一次日志 |
+| `cocache.versioned.stale` | counter | 因 Redis 中已是这个版本或更新的版本而没有写入的 `putIfNewer` / `invalidateIfNewer` / `deleteIfNewer`（[按版本写入](../guide/freshness.md#versioned-writes)）：重复投递与迟到的旧版本 |
+| `cocache.type.mismatch` | counter | `Cache` 或 `VersionedCache` 读到 `Store` 写入的值（带摘要段）的次数，以及在这样的值上被拒绝的 `VersionedCache.evict`。说明同一个 namespace 上还有 `Store`：值照常读取，但从不被回收或刷新，淘汰抛出。每个缓存只记录一次日志。见[五种类型](../guide/caches.md#types) |
 | `cocache.invalidation.retries` | counter | 失败失效的重试次数 |
 | `cocache.invalidations.dropped` | counter | 重试耗尽、重试队列已满或关闭时被放弃的失效。L1 中仍是旧值 |
 | `cocache.invalidations.received` | counter | 来自其它实例或外部写入方的失效消息（按消息计，一条消息可能包含多个 key） |
@@ -80,7 +82,9 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 |------|------|------|------|
 | `increase(cocache_invalidations_dropped_total[5m]) > 0` | 紧急 | 有失效没有写到 Redis，所有实例都可能提供旧值，直到其 `ttl` 到期 | [失效被放弃](./troubleshooting.md#invalidations-dropped) |
 | 健康检查 `cocache` 持续 `DOWN` 超过一分钟 | 紧急 | 本实例收不到失效消息，每次心跳都会清空它的 L2 | [命中率骤降](./troubleshooting.md#resets) |
-| `rate(cocache_remote_failures_total[5m]) > 0` 持续 | 警告 | Redis 故障，读取在回源 | [Redis 不可用](./troubleshooting.md#redis-down) |
+| `rate(cocache_remote_failures_total[5m]) > 0` 持续 | 警告 | Redis 故障，有数据源的读取在回源 | [Redis 不可用](./troubleshooting.md#redis-down) |
+| `rate(cocache_reads_unknown_total[5m]) > 0` | 警告 | 没有数据源的读取没有答案：调用方得到 `CacheReadException` | [Redis 不可用](./troubleshooting.md#redis-down) |
+| `increase(cocache_fill_unversioned_absent_total[10m]) > 0` | 警告 | 带版本的数据源对已删除的行返回普通 `null`，这些 key 的每次未命中都重新加载 | [带版本的数据源](../guide/caches.md#versioned-loaders) |
 | `rate(cocache_load_rejections_total[5m]) > 0` | 警告 | 调用方收到 `SourceLoadRejectedException` | [回源被拒绝](./troubleshooting.md#load-rejections) |
 | 非发布期间 `rate(cocache_resets_total[5m])` 大于 0 | 警告 | 订阅连接不稳定 | [命中率骤降](./troubleshooting.md#resets) |
 | `cocache_lease_wait_timeouts_total` / `cocache_lease_waits_total` 超过 10% | 警告 | loader 慢于 `lease-wait`，跨实例的并发未命中各自回源 | [等待 lease 超时](./troubleshooting.md#lease-wait-timeouts) |
@@ -127,7 +131,7 @@ starter 注册健康检查 `cocache`（bean `cocacheHealthIndicator`）。它只
   "status": "UP",
   "details": {
     "backend": "RedisBackend",
-    "format": 1,
+    "format": 2,
     "atomicBroadcast": true,
     "channelMode": "pubsub",
     "heartbeat": { "healthy": true },
@@ -183,11 +187,11 @@ management:
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
-  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0, "typeMismatches": 0 }
+  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0, "typeMismatches": 0, "readsUnknown": 0, "unversionedAbsentRefusals": 0 }
 }
 ```
 
-`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，`staleVersions` 是 `cocache.versioned.stale`，`typeMismatches` 是 `cocache.type.mismatch`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
+`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，`staleVersions` 是 `cocache.versioned.stale`，`typeMismatches` 是 `cocache.type.mismatch`，`readsUnknown` 是 `cocache.reads.unknown`，`unversionedAbsentRefusals` 是 `cocache.fill.unversioned.absent`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
 
 ### 编码后的 key {#encoded-key}
 
@@ -214,7 +218,7 @@ curl -s localhost:8080/actuator/cocache/UserCache/42
   "cache": "UserCache",
   "storageKey": "cocache:UserCache:42",
   "local": { "state": "VALUE", "value": "User(id=42, name=Ada)", "expiresAt": "2026-10-19T08:05:00Z", "refreshAt": null, "expired": false },
-  "remote": { "state": "VALUE", "value": "User(id=42, name=Ada)", "ttl": "PT58M", "format": 1, "error": null },
+  "remote": { "state": "VALUE", "value": "User(id=42, name=Ada)", "ttl": "PT58M", "format": 2, "error": null },
   "invalidationPending": false
 }
 ```
@@ -222,8 +226,8 @@ curl -s localhost:8080/actuator/cocache/UserCache/42
 | 字段 | 取值 |
 |------|------|
 | `storageKey` | 完整的 Redis key，供 `redis-cli` 使用 |
-| `local` | 本实例的 L2 副本，没有时为 `null`。`state`：`VALUE`、`ABSENT`（负缓存）或 `UNRESOLVED`（没有 loader 的缓存未命中）。`expired: true` 表示已过 `expiresAt`、但 Caffeine 尚未移除的副本，它永远不会被返回 |
-| `remote.state` | `VALUE`、`ABSENT`（负缓存）、`SET`（`SetCache`）、`LEASED`（某个实例正在加载，`ttl` 是 lease 的剩余寿命）、`MISS`、`UNREADABLE`（外来内容、更新的格式、形状不符或编解码失败，原因见 `error`）或 `ERROR`（读取 Redis 失败） |
+| `local` | 本实例的 L2 副本，没有时为 `null`。`state`：`VALUE`、`ABSENT`（负缓存，或权威缓存确认不存在的 key）或 `UNFILLED`（外部来源的 `Cache` 发现不存在的 key：不带 loader 的读取看到 `null`，带 loader 的读取照常加载）。`expired: true` 表示已过 `expiresAt`、但 Caffeine 尚未移除的副本，它永远不会被返回 |
+| `remote.state` | `VALUE`、`ABSENT`（负缓存）、`SET`（`SetStore`）、`LEASED`（某个实例正在加载，`ttl` 是 lease 的剩余寿命）、`MISS`、`UNREADABLE`（外来内容、更新的格式、形状不符或编解码失败，原因见 `error`）或 `ERROR`（读取 Redis 失败） |
 | `remote.ttl` | L1 中的剩余寿命，永不过期时为 `null` |
 | `value` | 用缓存的编解码器解码后的 `toString()`，截断到 256 个字符 |
 | `invalidationPending` | 该 key 的失效写入 Redis 失败，仍在重试。成功之前，未命中会跳过 L1 |
@@ -247,7 +251,15 @@ curl -s -X DELETE localhost:8080/actuator/cocache/UserCache/42
 # {"cache":"UserCache","key":"42"}
 ```
 
-它走正常的失效路径，与 `cache.invalidate(key)` 相同：删除 L1，每个实例丢弃自己的 L2 副本，下一次读取从数据源加载。操作幂等。Redis 失败时按缓存的 `invalidate-failure` 处理（有 loader 时默认进入重试队列并返回 `200`；为 `throw`（没有 loader 时的默认值）时返回错误）。在 `SetCache` 上它等价于 `clear(key)`，会**删除集合的唯一副本**。在[带版本的缓存](../guide/freshness.md#versioned-writes)上它保留版本：key 变为仍然拒绝旧版本的淘汰标记，Redis 失败时返回错误，不重试。
+它在全集群删除这个 key：修改 L1，每个实例丢弃自己的 L2 副本。操作幂等。具体执行什么取决于缓存的[类型](../guide/caches.md#types)：
+
+| 类型 | 执行 | Redis 失败时 |
+|------|------|--------------|
+| `Cache` | `invalidate(key)`：下一次读取从数据源加载 | 按 `invalidate-failure` 处理：默认进入重试队列并返回 `200`；为 `throw` 时返回错误 |
+| `VersionedCache` | `evict(key)`：key 变为仍然拒绝旧版本的淘汰标记（[按版本写入](../guide/freshness.md#versioned-writes)） | 返回错误，不重试 |
+| `Store` | `delete(key)`：**删除唯一副本** | 返回错误，不重试 |
+| `VersionedStore` | `purge(key)`：**删除唯一副本及其版本** | 返回错误，不重试 |
+| `SetStore` | `clear(key)`：**删除集合的唯一副本** | 返回错误，不重试 |
 
 ## 日志 {#logs}
 
