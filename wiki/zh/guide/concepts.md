@@ -11,8 +11,8 @@ description: CoCache 背后的心智模型：两级缓存、读路径、负缓�
 
 | 层级 | 位置 | 存放 | 寿命 |
 |------|------|------|------|
-| **L2** | 每个实例内的 Caffeine | 最近读过的 key 的有界副本（默认 10 000 条） | Redis 中的剩余寿命，且不超过 `localMaxAge`（5 分钟） |
-| **L1** | 所有实例共享的 Redis | 缓存值、负缓存，或加载期间的短暂 lease | 值为 `ttl` ± 抖动（1 小时 ± 1 分钟），负缓存为 `absentTtl`（1 分钟） |
+| **L2** | 每个实例内的 Caffeine | 最近读过的 key 的有界副本（默认 10 000 条） | Redis 中的剩余寿命，且不超过 `localMaxAge`（5 分钟；权威类型为 30 秒） |
+| **L1** | 所有实例共享的 Redis | 缓存值、负缓存，或加载期间的短暂 lease | 值为 `ttl` ± 抖动（1 小时 ± 1 分钟），负缓存为 `absentTtl`（1 分钟）；权威类型默认永不过期 |
 | **数据源** | 你的 `CacheLoader` | 真实数据 | — |
 
 L2 让读取变快。L1 让实例之间保持一致，也让数据库不至于每个实例都被加载一遍。
@@ -100,7 +100,8 @@ sequenceDiagram
 | 读取 Redis | 带数据源的读取直接从数据源加载，结果只在 L2 中保留 `degradedLocalMaxAge`，不写 Redis。调用方照常工作，压力落到数据库上。没有数据源的读取（`Store`、`SetStore`、外部来源的 `Cache` 上不带 loader 的读取）没有答案：结果是 `Lookup.Unknown`，`get` 抛出 `CacheReadException`，什么也不缓存。 | `read-failure: throw` 让带数据源的读取也得到 `Unknown`。spec 上的 `unknownRead = ABSENT` 让没有数据源的读取改为返回 `null`。 |
 | `Cache.invalidate` | 本地效果先生效。Redis 删除交给有界的后台重试队列，调用**不抛出**（它通常在提交之后执行，抛出也于事无补，而删除派生副本在任何时刻都安全）。重试成功之前，本实例上该 key 的未命中跳过 Redis。 | `invalidate-failure: throw` 改为抛出 `CacheWriteException` |
 | `Store.delete` | 抛出 `CacheWriteException`，从不重试：Redis 是唯一副本，延迟的删除会删掉更新的值。 | — |
-| `put` 与其它写入 | 抛出 `CacheWriteException`。它的 `outcomeUnknown` 说明写入可能已经发生（超时），还是确定没有发生（发出之前就被拒绝）。 | — |
+| `Cache.put`、`putAll` | 结果未知时（超时），CoCache 与失败的 `invalidate` 一样登记这些 key 的失效，调用不抛出。写入确定没有发生时（发出之前就被拒绝），抛出 `CacheWriteException`。 | `invalidate-failure: throw` 让每次失败都抛出 |
+| 其它类型的写入 | 抛出 `CacheWriteException`。它的 `outcomeUnknown` 说明写入可能已经发生（超时），还是确定没有发生（发出之前就被拒绝）。不在后台重试任何东西。 | — |
 | Pub/Sub 连接 | 心跳在数秒内发现。重连时每个实例清空 L2，而本地副本无论如何都受 `localMaxAge` 限制。期间健康检查报告 `DOWN`。 | — |
 | 你的 loader | 异常抛给调用方以及所有等待同一次加载的调用方，不缓存任何东西。 | — |
 

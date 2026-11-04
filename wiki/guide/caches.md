@@ -1,11 +1,11 @@
 ---
-title: Declaring Caches
-description: Choose between the five cache types (Cache, VersionedCache, Store, VersionedStore, SetStore), declare them as annotated interfaces or spec beans, and control their names, storage keys, key encoding, loaders, codecs, customizers, and startup validation.
+title: Choosing and Declaring Caches
+description: Choose between the five cache types (Cache, VersionedCache, Store, VersionedStore, SetStore) with one question, declare them as annotated interfaces or spec beans, and control their names, storage keys, key encoding, codecs, default policies, CoCacheFactory, customizers, and startup validation.
 ---
 
-# Declaring Caches
+# Choosing and Declaring Caches
 
-A cache is a name, a key type, a value type, a type that says what Redis holds for it, a way to encode values for Redis, and a policy. This page starts with the type, then shows the two ways to declare one.
+A cache is a name, a key type, a value type, a type that says what Redis holds for it, a way to encode values for Redis, and a policy. This page starts with the type, then shows what every type shares: the two ways to declare one, keys, codecs, reads, and startup checks. Each type has its own guide for its operations.
 
 ## Choosing a type {#types}
 
@@ -14,13 +14,13 @@ Ask one question about your data: **if Redis loses this key, can this process re
 - **Yes**: Redis holds a *derived copy*. Declare a `Cache`, or a `VersionedCache` when the writer orders its writes by version.
 - **No**: Redis holds the *only copy*. Declare a `Store`, a `VersionedStore`, or, for a set of elements, a `SetStore`.
 
-| Type | Redis holds | Data comes from | Writes | Delete |
-|------|-------------|-----------------|--------|--------|
-| `Cache<K, V>` | A derived copy | A `loader` / `asyncLoader`, or the callers (`externallySourced()`) | `put`, `putAll` (last writer wins) | `invalidate`, retried in the background if Redis fails |
-| `VersionedCache<K, V>` | A derived, versioned copy | A versioned loader | `putIfNewer`, `invalidateIfNewer` | `evict` keeps the version fence; `purge` drops it |
-| `Store<K, V>` | The only copy | Your writes | `put`, `putAll`, `putIfMatch` | `delete`, `deleteIfMatch`: synchronous, never retried |
-| `VersionedStore<K, V>` | The only, versioned copy | Your versioned writes | `putIfNewer` | `deleteIfNewer` (tombstone); `purge` |
-| `SetStore<K, E>` | The only copy of a set | Your element writes | `add`, `remove`, `put`, `putAll` | `clear` |
+| Type | Redis holds | Data comes from | Writes | Delete | Guide |
+|------|-------------|-----------------|--------|--------|-------|
+| `Cache<K, V>` | A derived copy | A `loader` / `asyncLoader`, or the callers (`externallySourced()`) | `put`, `putAll` (last writer wins) | `invalidate`, retried in the background if Redis fails | [Cache](./cache.md) |
+| `VersionedCache<K, V>` | A derived, versioned copy | A versioned loader | `putIfNewer`, `invalidateIfNewer` | `evict` keeps the version fence; `purge` drops it | [VersionedCache](./versioned-cache.md) |
+| `Store<K, V>` | The only copy | Your writes | `put`, `putAll`, `putIfMatch` | `delete`, `deleteIfMatch`: synchronous, never retried | [Store](./store.md) |
+| `VersionedStore<K, V>` | The only, versioned copy | Your versioned writes | `putIfNewer` | `deleteIfNewer` (tombstone); `purge` | [VersionedStore](./versioned-store.md) |
+| `SetStore<K, E>` | The only copy of a set | Your element writes | `add`, `remove`, `put`, `putAll` | `clear` | [SetStore](./set-store.md) |
 
 Every type reads the same way (`get`, `getAll`, `lookup`, `lookupAll`) and has an [async view](./async.md) and a [suspending view](./coroutines.md) with the same methods. Each type declares only the operations it supports: a `Store` has no `invalidate`, a `VersionedCache` has no `put`, so calling the wrong one is a compile error, not a runtime surprise.
 
@@ -80,7 +80,7 @@ Durations are in **seconds**. Every policy attribute defaults to `CoCache.UNSET`
 | `absentTtl` | `60`; `10` for authoritative types | Lifetime of a negative entry (derived types), or of a cached "absent" in L2 (authoritative types). Never jittered. |
 | `localMaxAge` | `300`; `30` for authoritative types | Maximum age of an L2 copy: the staleness bound when an invalidation message is lost |
 | `refreshWindow` | off | Refresh a value in the background when it has this long left. `0`: off. Derived caches with a source only. |
-| `loader` | `""` | Bean name of the data source (`Cache` and `VersionedCache` only). Empty: the single matching bean ([loaders](#loaders)). |
+| `loader` | `""` | Bean name of the data source (`Cache` and `VersionedCache` only). Empty: the single matching bean ([loaders](./cache.md#loaders), [versioned loaders](./versioned-cache.md#versioned-loaders)). |
 | `source` | `LOADER` | `Cache` only. `CoCache.Source.EXTERNAL` declares `externallySourced()`: callers supply the values. Can't be combined with `loader`. |
 | `codec` | `""` | Bean name of the `Codec`. Empty: the single bean of type `Codec<V>`, or Jackson. |
 | `unknownRead` | `THROW` | What a read without a loader returns when Redis fails ([`Unknown`](#unknown)): `CoCache.UnknownRead.ABSENT` returns `null`. Only on a `Store`, a `VersionedStore`, or a `Cache` with `source = EXTERNAL`. |
@@ -237,54 +237,7 @@ cacheSpec<TenantKey, User>("TenantUserCache") {
 
 Two keys that encode to the same string are the same cache entry. Make the encoding injective.
 
-## Loaders {#loaders}
-
-A `Cache` declares where its data comes from. `CacheLoader<K, V>` loads what the cache doesn't have. It only loads; the cache decides how long values live.
-
-```kotlin
-class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
-    override fun load(key: String): User? = repo.findById(key)      // null = doesn't exist
-
-    // Optional: getAll calls this once for every key that missed both levels.
-    // Keys missing from the result count as "doesn't exist".
-    override fun loadAll(keys: Collection<String>): Map<String, User> =
-        repo.findAllById(keys).associateBy { it.id }
-}
-```
-
-- **`null` means "doesn't exist"** and is cached as a negative entry for `absentTtl`. Throw if the lookup *failed*: the exception reaches the caller (and every caller sharing the load), and nothing is cached.
-- **The default `loadAll`** calls `load` once per key. Override it with a batch query if you use `getAll`.
-- **The loader runs on the calling thread**, so transactions, `SecurityContext`, and MDC are available. Through the [async view](./async.md) it runs on the blocking executor instead.
-- **Don't read the same key from inside its own loader** on the same thread; that fails fast with `IllegalStateException`.
-- **Interfaces** find the loader by type `CacheLoader<K, V>`, then `AsyncCacheLoader<K, V>`. If several beans match, or one of each, startup fails; name one with `@CoCache(loader = "…")`. If none matches, startup fails too: declare `@CoCache(source = CoCache.Source.EXTERNAL)` when callers supply the values, or extend `Store` when nothing can rebuild them.
-- **Per-call loaders**: `cache.get(key) { k -> … }` loads a miss with the given loader instead, with the same protection. Spring's `@Cacheable(sync = true)` uses this.
-- **Non-blocking sources**: implement `AsyncCacheLoader<K, V>` (`loadAsync` returns a `CompletionStage`) and set it as `asyncLoader` in a spec. A cache has one source, sync or async; both APIs work with either. See [Async API](./async.md#loader).
-
-### Externally sourced caches {#externally-sourced}
-
-`externallySourced()` (`@CoCache(source = EXTERNAL)` on an interface) declares a `Cache` whose values come from its callers: `put`, a Spring Cache, or a per-call loader. It is still a derived copy, so it gets a derived copy's defaults: a 1 h `ttl`, and a failed `invalidate` retried in the background.
-
-- **A miss is "unfilled".** When Redis doesn't have the key, a read without a loader returns `null` (`Lookup.Absent`). That answer goes into L2, fenced like any fill and capped at `absentTtl` and `localMaxAge`, but a call that brings its own loader doesn't accept it: `get(key) { … }` loads anyway. Nothing is written to Redis.
-- **A Redis read failure has no answer.** A read without a loader gets [`Lookup.Unknown`](#unknown): `get` throws `CacheReadException`. Declare `unknownRead = UnknownReadMode.ABSENT` on the spec when "absent" is a safe answer. A read with a per-call loader follows `readFailure` and, by default, loads from that loader.
-- **Unreadable content** (content this version can't decode) makes a read without a loader throw `CacheReadException`; a read with a loader reclaims it and reloads. Content written by a newer CoCache reads as unfilled.
-
-### Versioned loaders {#versioned-loaders}
-
-A `VersionedCache` loads values together with their version. Its source returns `Versioned(value, version)`:
-
-```kotlin
-versionedCacheSpec<String, OrderView>("order-view") {
-    codec = jacksonCodec<OrderView>(mapper)
-    versionedLoader = CacheLoader { id ->
-        val state = repository.find(id) ?: return@CacheLoader null        // never existed
-        Versioned(if (state.deleted) null else state.view, state.version) // deleted: Versioned(null, version)
-    }
-}
-```
-
-**Express a deletion as `Versioned(null, version)`.** It writes a tombstone that blocks older versions. A plain `null` means "never existed" and caches a negative entry without a version. When Redis already holds versioned content for the key (for example after [`evict`](./freshness.md#versioned-writes)), that unversioned `null` is refused: the read returns "absent" but nothing is written to Redis, so every miss reloads until the version fence expires. Each refusal is counted in `cocache.fill.unversioned.absent`, and the first one per cache logs a warning. Interfaces find the source by type `CacheLoader<K, Versioned<V>>` or `AsyncCacheLoader<K, Versioned<V>>`. A `VersionedCache` without one fails startup; data without a versioned source belongs in a `VersionedStore`.
-
-### Per-entry TTL {#ttl-of}
+## Per-entry TTL {#ttl-of}
 
 When lifetime depends on the value, set `ttlOf` (spec or customizer):
 
@@ -298,7 +251,7 @@ cacheSpec<String, Session>("SessionCache") {
 
 A non-null result overrides the policy `ttl` and is not jittered. `null` falls back to the policy. Negative entries always use `absentTtl`, and tombstones use `tombstoneTtl`. The `ttl` property doesn't affect `ttlOf`. `StoreSpec`, `VersionedCacheSpec` and `VersionedStoreSpec` take a `ttlOf` too.
 
-### Rejecting impossible keys {#key-filter}
+## Rejecting impossible keys {#key-filter}
 
 A `KeyFilter` (spec or customizer) is checked after an L2 miss. A key it rejects returns "doesn't exist" without touching Redis or the loader, which is useful in front of a Bloom filter:
 
@@ -352,25 +305,7 @@ If a payload can't be decoded (for example, after an incompatible change to the 
 
 Redis values carry a short binary header before the codec's bytes. `redis-cli GET` shows binary, and other programs must not read or write CoCache keys directly.
 
-## Stores {#store}
-
-`Store<K, V>` is for data whose **only copy is Redis**: a policy snapshot published by a control plane, a revocation list, a session, a one-time code. There is no loader, and reads never take a load lease.
-
-```kotlin
-snapshots.put(id, snapshot)                  // last writer wins
-snapshots[id]                                // null when Redis doesn't have it
-snapshots.delete(id)                         // synchronous; throws if Redis fails
-```
-
-- **Absent means absent.** A key Redis doesn't have, including one that holds another cache's load lease, reads as `Lookup.Absent`, and that answer goes into L2 like a value.
-- **Redis failures are [`Unknown`](#unknown)**: `get` throws `CacheReadException` unless the spec says `unknownRead = ABSENT`.
-- **Deletes never retry.** `delete` and `deleteIfMatch` complete before they return, or throw `CacheWriteException`. A delayed retry could delete a value written after the failure. When deletes must survive retries and reordering, use a `VersionedStore` and `deleteIfNewer`.
-- **Every write carries a writer id and the SHA-256 of the payload** in the value's header. Reads recompute the digest; a value whose payload doesn't match, or that has no digest (another type wrote it), throws `CacheReadException` and is kept as it is.
-- **Conditional writes** (`getIfChanged`, `putIfMatch`, `deleteIfMatch`) let several writers read, change and write one value without losing updates. See [Conditional writes](./freshness.md#conditional-writes).
-- **Durability is Redis durability.** Use a `maxmemory-policy` that never evicts these keys (not `allkeys-*`); the starter [checks this at startup](./configuration.md#redis). An asynchronous-replication failover can lose recent writes.
-- **Unreadable content** (content in a format this version can't read, a value another program wrote, a newer CoCache's value) throws `CacheReadException` and is never deleted, because deleting it would delete the only copy.
-
-### Default policy {#store-defaults}
+## Default policy per type {#store-defaults}
 
 Each type starts from its own default policy in `DefaultPolicies`: `STORE`, `VERSIONED_STORE` and `SET_STORE` for the authoritative types, `CACHE` and `VERSIONED_CACHE` for the derived ones. The endpoint reports values that come from here as `TYPE_DEFAULT`.
 
@@ -383,46 +318,6 @@ Each type starts from its own default policy in `DefaultPolicies`: `STORE`, `VER
 
 The L2 lifetimes are shorter because a lost invalidation can't be corrected by a reload: the only bound left is L2's. Write them out on the declaration, or set them for every authoritative cache with `cocache.defaults.store.*`, when you need longer ones. Data whose lifetime is its meaning (a session, a one-time code, an idempotency key) needs an explicit `ttl`: on these types only the declaration and `cocache.caches.[name].ttl` set it, never a global layer ([what each layer may set](./configuration.md#field-layers)).
 
-## Versioned types {#versioned}
-
-`VersionedCache<K, V>` and `VersionedStore<K, V>` store a version next to each value and order writes by it, so a redelivered or replayed older version can't replace a newer one. Neither has a write that drops the version:
-
-| | `VersionedCache` | `VersionedStore` |
-|-|------------------|------------------|
-| Source | a [versioned loader](#versioned-loaders) | none |
-| Write | `putIfNewer(key, value, version)` | `putIfNewer(key, value, version)` |
-| Delete with ordering | `invalidateIfNewer(key, version)` (tombstone) | `deleteIfNewer(key, version)` (tombstone) |
-| Delete keeping the fence | `evict(key)`: the next read reloads, older versions are still refused | — |
-| Delete dropping the fence | `purge(key)` | `purge(key)` |
-| Read with version | `getVersioned(key)` | `getVersioned(key)` |
-| Writer id in the header | no | yes |
-| Refresh-ahead | yes | no |
-
-[Versioned writes](./freshness.md#versioned-writes) covers the rules. A `VersionedStore` reads like a `Store`: no load lease, absent means absent, a Redis failure is `Unknown`. Its tombstones live for `tombstoneTtl` (1 day by default), which must cover your redelivery window; a `VersionedStore` whose tombstones would never expire fails to build.
-
-## Set stores {#set-store}
-
-`SetStore<K, E>` is for a set whose **only copy is Redis**: an index, a membership list, a set of online sessions. Elements are added and removed atomically in Redis, so concurrent updates from different instances are never lost.
-
-```kotlin
-@CoCache
-interface OnlineUsers : SetStore<String, String>
-
-online.add(roomId, listOf(userId))       // creates the set if needed
-online.remove(roomId, listOf(userId))    // deletes the key when it becomes empty
-online.clear(roomId)
-val members: Set<String> = online[roomId] // empty set when absent
-```
-
-- **No loader**, and no `invalidate`: `clear` deletes the set. `@CoCache(loader = …)` on a set store fails startup.
-- **`put(key, emptySet())` equals `clear(key)`**: an empty set is stored as no key. `putAll` follows the same rule for each entry ([batch writes](./freshness.md#batch-writes)).
-- **TTL defaults to forever.** Each `add` or `remove` resets the expiry when you set one. An absent set stays in L2 for at most `absentTtl` (10 s).
-- **Failures are loud.** Writes throw `CacheWriteException`. A Redis read failure is [`Unknown`](#unknown): `get` throws `CacheReadException`, `lookup` returns `Unknown`. A set store has no `unknownRead`.
-- **Unreadable content throws.** An element the codec can't decode makes the read throw, and a set written in a newer format throws `IllegalStateException`. Content in a format this version can't read (for example a native Redis Set at the same key) makes the read throw `CacheReadException`, and an `add` or `remove` on it, or on a set in a newer format, throws `CacheWriteException` and leaves the key unchanged. Only `put` replaces it. A set store never reclaims such content ([unreadable payloads](../operations/troubleshooting.md#corrupt-payloads)).
-- **Durability is Redis durability**, as for a [Store](#store).
-
-If the set's truth lives in your database, don't use `SetStore`. Declare `Cache<K, Set<E>>`, update the database, and `invalidate`.
-
 ## Libraries and plain runtimes: `CoCacheFactory` {#factory}
 
 `CoCacheFactory` is the entry point for creating caches outside the starter's own declarations. With the starter, inject the `CoCacheFactory` bean: a cache it creates gets the same customizers and `cocache.*` properties as an `@CoCache` interface or a spec bean, shows up on the endpoint and gets meters.
@@ -432,7 +327,7 @@ interface RevokedTokens : Store<String, Instant>
 
 @Bean
 fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): RevokedTokens =
-    factory.create(RevokedTokens::class.java, storeSpec("revoked-tokens") { codec = jacksonCodec<Instant>(mapper) })
+    factory.create(RevokedTokens::class.java, storeSpec<String, Instant>("revoked-tokens") { codec = jacksonCodec<Instant>(mapper) })
 ```
 
 - `create(spec)` returns the type matching the spec (`storeSpec` gives a `Store`, and so on). `create(type, spec)` returns a proxy for your interface. The interface must extend the type the spec declares, and every abstract method it redeclares must match one of that type's methods. A class is rejected: the user API types are not for hand-written implementations. Create the cache with `create(spec)` and delegate to it instead. These checks run before the cache is created.

@@ -25,12 +25,12 @@ Route away and stop: implementing a `CoherenceBackend` (a new L1 store or invali
 Resolve the CoCache version from the build (`./gradlew :module:dependencies --configuration runtimeClasspath`, `mvn dependency:tree`, the BOM, or the lock file) before applying anything:
 
 - **8.x**: the references below apply. Re-check any symbol you use against that exact version.
-- **Another major version**: the references describe 8.x only and do not apply, not even symbol names. Work only from the target's own resolved sources and label version-specific conclusions with that version. For a move to 8.x, follow the upgrade steps in the changelog (https://cocache.ahoo.me/guide/changelog#upgrading-from-6x), then apply the references to the upgraded code.
+- **Another major version**: the references describe 8.x only and do not apply, not even symbol names. Work only from the target's own resolved sources and label version-specific conclusions with that version. For a move to 8.x, follow the upgrade page (https://cocache.ahoo.me/guide/upgrade), then apply the references to the upgraded code.
 - **Unresolvable**: say so and mark version-specific conclusions unverified.
 
 ## Rules that prevent most CoCache bugs
 
-1. Pick the type by one question: if Redis loses this key, can this process rebuild it? Yes: `Cache` (or `VersionedCache`). No: `Store`, `VersionedStore` or `SetStore`. A wrong type expires the only copy or never reloads a rebuildable one.
+1. Pick the type by one question: if Redis loses this key, can this process rebuild it? Yes: `Cache` (or `VersionedCache`); a `Cache` whose values only callers supply is `externallySourced()`. No: `Store`, `VersionedStore` or `SetStore`. A wrong type expires the only copy or never reloads a rebuildable one.
 2. Change the source of truth, commit, then invalidate. Inside a transaction use `TransactionalInvalidator` (or transaction-aware `@CacheEvict`); never invalidate before the commit.
 3. Prefer `invalidate` over `put`. `put` is for a writer that already holds the final value; it does not fill the local L2.
 4. Every writer invalidates, including batch jobs, CDC and other services (`ExternalInvalidator` or the documented raw protocol). `ttl` is a safety net for writers you do not control, not the fix for a missing invalidation.
@@ -39,6 +39,7 @@ Resolve the CoCache version from the build (`./gradlew :module:dependencies --co
 7. A read without a source (authoritative types, an externally sourced `Cache` without a loader) answers `Lookup.Unknown` when Redis fails: handle `CacheReadException`, never treat `Unknown` as absent unless `unknownRead = ABSENT` is safe for that data.
 8. Keys encode injectively and identically on every instance: a key type with a real `toString()`, a `keyExpression`, or a `KeyEncoder`.
 9. Every instance sharing a cache uses the same type, key prefix, namespace, codec and `channel-mode`. Nothing else reads or writes CoCache keys in Redis except through the invalidation protocol.
+10. Code that creates caches outside the starter's declarations (a library, a plugin) uses the `CoCacheFactory` bean, locking the fields it depends on. A cache created with `runtime.create` is unlayered: no `cocache.*` property reaches it.
 
 ## Modes
 
@@ -81,4 +82,4 @@ Then find every writer of the cached data that does not go through those calls (
 
 ## Completion
 
-Report: the resolved CoCache version; changed files and the behavior each change protects; exact test commands and results (including whether they ran on `cocache.backend=memory`, an `InMemoryBackend` runtime, or real Redis); any configuration that must match across instances; and every gap that only staging or production evidence can close. Docs: https://cocache.ahoo.me/guide/ (operations: https://cocache.ahoo.me/operations/).
+Report: the resolved CoCache version; changed files and the behavior each change protects; exact test commands and results (including whether they ran on `cocache.backend=memory`, an `InMemoryBackend` runtime, or real Redis); any configuration that must match across instances; and every gap that only staging or production evidence can close. Docs: https://cocache.ahoo.me/guide/ (choosing a type: https://cocache.ahoo.me/guide/caches#types; operations: https://cocache.ahoo.me/operations/).

@@ -154,7 +154,7 @@ SingleFlight 还保证：
 |------|------|------|
 | `invalidate`、`invalidateAll`、`Store.delete`、`purge` | 递增、淘汰 L2 → 脚本：`DEL` + `PUBLISH` → 递增、淘汰 L2 | 1（每批 512 个 key，Cluster 中每个 slot） |
 | `put`、`putAll` | 递增、淘汰 L2 → 脚本：覆盖 + 到期时间 + `PUBLISH` → 递增、淘汰 L2。不写 L2 | 1 |
-| `putIfMatch`、`deleteIfMatch`、`putIfNewer`、`invalidateIfNewer`、`deleteIfNewer`、`evict` | 递增、淘汰 L2 → 脚本：先比较摘要或版本，再写入 + 到期时间 + `PUBLISH`，或保持 key 不变 → 递增、淘汰 L2。见[条件写入](../guide/freshness.md#conditional-writes)与[按版本写入](../guide/freshness.md#versioned-writes) | 1 |
+| `putIfMatch`、`deleteIfMatch`、`putIfNewer`、`invalidateIfNewer`、`deleteIfNewer`、`evict` | 递增、淘汰 L2 → 脚本：先比较摘要或版本，再写入 + 到期时间 + `PUBLISH`，或保持 key 不变 → 递增、淘汰 L2。见[条件写入](../guide/store.md#conditional-writes)与[按版本写入](../guide/freshness.md#versioned-writes) | 1 |
 | `SetStore.add` / `remove` / `clear` / `put` | 递增、淘汰 L2 → 脚本：成员更新 + 到期时间 + `PUBLISH` → 递增、淘汰 L2 | 1 |
 | 来自其它实例的消息 | 递增、淘汰 L2。跳过本实例 `NodeId` 发出的消息 | — |
 | 重置（订阅得到确认、心跳失败）、`clearLocal` | 递增所有分段，清空 L2 | — |
@@ -217,7 +217,7 @@ flowchart TD
 
 没取得令牌的实例读到的值仍在窗口内，直接重新填充的话，它的副本在每次命中时都该刷新，按命中频率轮询 Redis，直到持有者写回（持有者崩溃时，直到它的令牌签发超过 `lease-ttl`）。因此重新填充的副本把刷新点设在 `min(b, 剩余寿命 / 2)` 之后，`b` 为 `lease-wait`，下限 100 ms。下一次读取发生在持有者有时间写回之后，并且总在旧值到期之前。写回不广播（广播会让每个实例的下一次命中变成未命中），所以其它实例靠这次再读取到新值。届时令牌若已签发超过 `lease-ttl`，再读的实例接管它。
 
-其它情形下（回源写回、读到 L1、降级填充）创建时剩余寿命不长于窗口的副本不设刷新点。每次写回都会清零令牌，所以寿命在窗口内的值（来自较短的 `ttlOf` 或 `put(key, value, ttl)`）否则会在每次命中时被持有令牌的实例重新加载一次。这样的值只是照常到期。见 [architecture.md §5.5](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md)。
+其它情形下（回源写回、读到 L1、降级填充）创建时剩余寿命不长于窗口的副本不设刷新点。每次写回都会清零令牌，所以寿命在窗口内的值（来自较短的 `ttlOf` 或 `put(key, value, ttl)`）否则会在每次命中时被持有令牌的实例重新加载一次。这样的值只是照常到期。见 [`docs/architecture.md`](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md)。
 
 ## 失败处理 {#failures}
 

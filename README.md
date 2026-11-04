@@ -22,6 +22,22 @@ flowchart LR
     L1 -. "invalidation (Pub/Sub)" .-> Peers["Other instances' L2"]
 ```
 
+**Requirements:** JDK 21+, Spring Boot 4, and Redis 7.0+ (or Valkey 7.2+): standalone, Sentinel or Cluster. Tests and local runs need no Redis (`cocache.backend: memory`). Plain Kotlin or Java works too, through `CacheRuntime` and `CoCacheFactory`.
+
+## Pick a type
+
+Ask one question about each piece of data: **if Redis loses this key, can this process rebuild it?**
+
+| Answer | Type | For |
+|--------|------|-----|
+| Yes | `Cache<K, V>` | Rows a `CacheLoader` can fetch again; or, declared `externallySourced()` (`@CoCache(source = EXTERNAL)`), values that callers supply, such as Spring Cache methods |
+| Yes | `VersionedCache<K, V>` | A read model a versioned loader rebuilds, written by version (`putIfNewer`) so replays can't regress it |
+| No | `Store<K, V>` | Data whose only copy is Redis: sessions, revocation lists, one-time codes; compare-and-set with `putIfMatch` / `deleteIfMatch` |
+| No | `VersionedStore<K, V>` | Only-copy data whose writers must survive late or replayed writes |
+| No | `SetStore<K, E>` | A set whose only copy is Redis, with atomic `add` / `remove` |
+
+Each type has only the operations that are safe for its role (a `Store` has no `invalidate`, a `VersionedCache` no `put`), and all of them read the same way, with async and suspending views. [Choosing and Declaring Caches](https://cocache.ahoo.me/guide/caches#types) walks through the choice.
+
 ## Quick start
 
 ```kotlin
@@ -53,29 +69,45 @@ Prefer no annotations? Declare a spec bean instead and inject `Cache<String, Use
 
 ```kotlin
 @Bean
-fun userSpec(repo: UserRepository): CacheSpec<String, User> = cacheSpec("user") {
-    codec = jacksonCodec<User>(JsonMapper.builder().findAndAddModules().build())
+fun userSpec(mapper: ObjectMapper, repo: UserRepository): CacheSpec<String, User> = cacheSpec("user") {
+    codec = jacksonCodec<User>(mapper)   // the application's Jackson 3 ObjectMapper; a spec always names its codec
     loader = CacheLoader { id -> repo.findById(id) }
     policy { ttl = Duration.ofMinutes(2) }
 }
 ```
 
-The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each step.
+Configuration comes in three layers, merged field by field. Every duration needs a unit:
+
+```yaml
+cocache:
+  key-prefix: ${spring.application.name}:   # separates applications that share a Redis
+  defaults:
+    cache:
+      local-max-age: 2m      # below the declarations: fills only fields they leave unset
+  overrides:
+    cache:
+      ttl: 30m               # only tightens: no Cache keeps a value longer
+  caches:
+    "[UserCache]":
+      load-max-concurrent: 32   # one cache, set last
+```
+
+The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each step, and the [Configuration Reference](https://cocache.ahoo.me/guide/configuration) lists every key.
 
 ## Features
 
-- **Two levels, one type per role.** `Cache<K, V>` (`get`, `getAll`, `lookup`, `put`, `invalidate`) for data a loader can rebuild, `VersionedCache` for versioned sources, and `Store`, `VersionedStore` and `SetStore` for data whose only copy is Redis. Declare one as an `@CoCache` interface or a spec bean.
 - **Lease-fenced L1.** A miss takes a lease in Redis, and only the lease holder may fill. Concurrent misses across the cluster load once when the loader finishes within `lease-wait`.
-- **Atomic invalidation.** Delete and broadcast happen in one Lua script. Failed invalidations are retried in the background.
+- **Atomic invalidation.** Delete and broadcast happen in one Lua script. Failed invalidations, and puts whose outcome is unknown, are retried in the background as invalidations.
 - **Negative caching.** A loader that returns `null` stores "not found" for `absentTtl`.
 - **Refresh ahead.** With `refreshWindow`, one node per key reloads a hot value before it expires.
 - **Batch reads.** `getAll` reads L1 in about one round trip and calls `CacheLoader.loadAll` once.
-- **`Store` and `SetStore`.** Compare-and-set writes (`putIfMatch`, `deleteIfMatch`) and atomic set element add and remove for data whose only copy is Redis. A read that can't reach Redis returns `Unknown` instead of pretending the key is absent.
+- **Honest failures.** A read without a source (`Store`, `VersionedStore`, `SetStore`, an externally sourced `Cache`) that can't reach Redis returns `Lookup.Unknown` instead of pretending the key is absent; writes to an only copy throw instead of retrying later.
+- **Three-layer configuration.** `cocache.defaults` below the declarations, `cocache.overrides` that only tighten, `cocache.caches.[name]` for one cache. The actuator endpoint reports each field's effective value and where it came from.
+- **`CoCacheFactory` for libraries.** A library creates its caches through the `CoCacheFactory` bean and locks the fields its correctness depends on, so application configuration can't weaken them.
 - **`JoinCache`.** A read-only view that joins two caches (for example an order and its user) with two batch reads, declared with `@JoinCacheable`.
 - **Async API and coroutines.** `cache.async()` returns `CompletableFuture`s on the same cache without parking a thread, and `cache.suspending()` gives every type a suspending view, with `SuspendingCacheLoader` for loaders.
-- **Spring Cache and transactions.** `@Cacheable` through `CoCacheSpringCacheManager`, and `TransactionalInvalidator` to invalidate after commit.
+- **Spring Cache and transactions.** `@Cacheable(sync = true)` through `CoCacheSpringCacheManager`; `@CacheEvict` and `TransactionalInvalidator` invalidate after the commit, and loads inside a rolled-back write transaction are invalidated.
 - **Observability.** Micrometer metrics, a `cocache` health indicator, and the `cocache` actuator endpoint, which can inspect or invalidate a single key.
-- **Local development without Redis.** `cocache.backend: memory` runs caches in process for tests and local runs.
 - **Redis topologies.** Standalone, Sentinel, and Cluster through Lettuce, with classic or sharded Pub/Sub (`cocache.redis.channel-mode`).
 
 ## Guarantees
@@ -90,10 +122,12 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 
 | You want to… | Read |
 |--------------|------|
-| Use CoCache | [Guide](https://cocache.ahoo.me/guide/): why CoCache, quick start, how it works, declaring caches, keeping data fresh, JoinCache, Spring Cache, testing, configuration reference |
-| Upgrade | [Upgrading from 6.x](https://cocache.ahoo.me/guide/changelog#upgrading-from-6x) in the [changelog](https://cocache.ahoo.me/guide/changelog) |
-| Run it in production | [Operations](https://cocache.ahoo.me/operations/): deployment, observability, troubleshooting |
-| Understand or extend it | [Architecture](https://cocache.ahoo.me/architecture/): design, consistency, SPI and TCK |
+| Start | [Guide](https://cocache.ahoo.me/guide/): why CoCache, [quick start](https://cocache.ahoo.me/guide/quick-start), [how it works](https://cocache.ahoo.me/guide/concepts) |
+| Choose and declare caches | [Choosing and Declaring Caches](https://cocache.ahoo.me/guide/caches), then one guide per type: [`Cache`](https://cocache.ahoo.me/guide/cache), [`VersionedCache`](https://cocache.ahoo.me/guide/versioned-cache), [`Store`](https://cocache.ahoo.me/guide/store), [`VersionedStore`](https://cocache.ahoo.me/guide/versioned-store), [`SetStore`](https://cocache.ahoo.me/guide/set-store) |
+| Use CoCache | [Keeping data fresh](https://cocache.ahoo.me/guide/freshness), [JoinCache](https://cocache.ahoo.me/guide/join-cache), [Spring Cache](https://cocache.ahoo.me/guide/spring-cache), [async](https://cocache.ahoo.me/guide/async), [coroutines](https://cocache.ahoo.me/guide/coroutines), [testing](https://cocache.ahoo.me/guide/testing), [native images](https://cocache.ahoo.me/guide/native), [configuration reference](https://cocache.ahoo.me/guide/configuration) |
+| Upgrade | [Upgrading from 6.x](https://cocache.ahoo.me/guide/upgrade) and the [changelog](https://cocache.ahoo.me/guide/changelog) |
+| Run it in production | [Operations](https://cocache.ahoo.me/operations/): deployment, [observability](https://cocache.ahoo.me/operations/observability), [troubleshooting](https://cocache.ahoo.me/operations/troubleshooting) |
+| Understand or extend it | [Architecture](https://cocache.ahoo.me/architecture/): design, [consistency](https://cocache.ahoo.me/architecture/consistency), [SPI and TCK](https://cocache.ahoo.me/architecture/extending) |
 | Change CoCache itself | [`CONTRIBUTING.md`](CONTRIBUTING.md), then [`docs/architecture.md`](docs/architecture.md) |
 | Work on it as an AI agent | [`AGENTS.md`](AGENTS.md) to change CoCache itself; the [agent skills](skills/README.md) (`cocache-develop`, `cocache-extend`) for applications that use it |
 

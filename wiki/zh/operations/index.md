@@ -48,7 +48,7 @@ starter 按以下顺序从 Spring Boot 的 Redis 连接信息中选择拓扑：
 
 对 `Cache` 与 `VersionedCache` 来说，Redis 只是缓存：丢数据意味着未命中。异步复制在故障切换时可能丢失刚执行的失效，旧值可能回到 L1，最多持续到该值的 `ttl` 到期。如果某个缓存在意这一点，就把 `ttl` 设短，或者在故障切换之后失效相关缓存。
 
-[`Store`、`VersionedStore` 与 `SetStore`](../guide/caches.md#store) 不同：Redis 保存的是它们的唯一副本，所以它们的持久性就是 Redis 的持久性。存放它们的数据的 Redis 必须开启持久化（AOF 或 RDB）。
+[`Store`、`VersionedStore` 与 `SetStore`](../guide/store.md) 不同：Redis 保存的是它们的唯一副本，所以它们的持久性就是 Redis 的持久性。存放它们的数据的 Redis 必须开启持久化（AOF 或 RDB）。
 
 ## `maxmemory-policy` {#maxmemory-policy}
 
@@ -97,7 +97,7 @@ TLS 用 Spring Boot 的标准配置项开启。CoCache 对它连接的每个节�
 - 进程在写入与发布之间崩溃，会丢失这条消息。
 - 写入成功、随后的发布失败时，调用方看到的是写入失败：`put` 抛出 `CacheWriteException`，尽管 Redis 中已经是新值；`Cache.invalidate` 按 `invalidate-failure` 处理，重试的失效会再次发布；权威类型的删除抛出。重试 `put` 是安全的，并会再次发布。
 
-两种情况下 L1 都已经正确，错过这条消息的实例的 L2 副本最多保留到 `local-max-age`。写入的顺序见 [architecture.md §4.2](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md)。
+两种情况下 L1 都已经正确，错过这条消息的实例的 L2 副本最多保留到 `local-max-age`。写入的顺序见[一致性](../architecture/consistency.md#writer-order)。
 :::
 
 ## 容量规划 {#sizing}
@@ -129,7 +129,7 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 
 ## 滚动发布 {#rolling-deploys}
 
-线格式（key 布局、值头与其中的段、集合字段、消息帧、频道命名）在一个大版本内冻结，所以同一大版本的实例可以混跑。跨大版本的升级不能滚动：先停掉旧大版本的全部实例，再启动新版本（见[升级步骤](../guide/changelog.md#upgrading-from-6x)）。遇到本版本读不懂的格式的值，有数据源的读取重新加载，没有数据源的读取失败。之后必须理解的变更分两阶段发布：先发布能读懂、但不写入它的版本，全部实例升级之后，再发布写入它的版本。实例版本不一致期间，遇到读不全的值时直接回源且不覆盖（`cocache.unknown.formats`）。
+线格式（key 布局、值头与其中的段、集合字段、消息帧、频道命名）在一个大版本内冻结，所以同一大版本的实例可以混跑。跨大版本的升级不能滚动：先停掉旧大版本的全部实例，再启动新版本（见[从 6.x 升级](../guide/upgrade.md)）。遇到本版本读不懂的格式的值，有数据源的读取重新加载，没有数据源的读取失败。之后必须理解的变更分两阶段发布：先发布能读懂、但不写入它的版本，全部实例升级之后，再发布写入它的版本。实例版本不一致期间，遇到读不全的值时直接回源且不覆盖（`cocache.unknown.formats`）。
 
 每个新实例启动时 L2 为空，从 L1 填充，所以发布期间会看到 `cocache.misses` 与 `cocache.hits{level=l1}` 的突增，而不是回源的突增。
 
@@ -187,4 +187,4 @@ ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@
 
 ### Actuator 端点 {#endpoint-security}
 
-`GET /actuator/cocache/{name}/{key}` 会展示缓存的值，`DELETE` 会在全集群失效它们。只在管理端口上或认证之后暴露该端点，与其它能读取业务数据的 Actuator 端点一样。只允许查看、不允许删除时，设置 `management.endpoint.cocache.access: read-only`。见[端点](./observability.md#actuator-endpoint)。
+`GET /actuator/cocache/{name}/{key}` 会展示缓存的值，`DELETE` 会在全集群失效它们。只在管理端口上或认证之后暴露该端点，与其它能读取业务数据的 Actuator 端点一样。只允许查看、不允许删除时，设置 `management.endpoint.cocache.access: read-only`。删除唯一副本的请求还需要第二个开关，默认关闭：`Store` 或 `SetStore` 的 key 需要 `management.endpoint.cocache.allow-store-delete`，丢掉带版本 key 的版本的 purge 需要 `management.endpoint.cocache.allow-purge`。见[端点](./observability.md#invalidate-key)。
