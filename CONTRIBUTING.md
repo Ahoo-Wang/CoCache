@@ -46,6 +46,7 @@ Spring wiring code. It is the normative design and lists the invariants that eve
 | Spring Boot baseline | Artifacts compile against the Spring Boot version in `gradle/libs.versions.toml`; the `cocache-redis`, starter, and example tests also run with the test runtime classpath forced to the latest Spring Boot 4.0.x dependencies (Lettuce 6.8, Spring Data Redis 4.0; `-PtestSpringBootVersion=4.0.8`) | CI · Test (Spring Boot 4.0) |
 | Redis Cluster | The `cocache-redis` and starter tests also run on a 3-master Redis Cluster (`.github/scripts/start-redis-cluster.sh`) | CI · Test (Redis Cluster) |
 | Coverage | JaCoCo aggregate gate (lines ≥ 95%, branches ≥ 90%; TCK specs excluded) and Codecov status (project ≥ 95%, patch ≥ 85%) | CI · Test & Coverage |
+| Protocol model (non-blocking) | TLA+ model of the coherence protocol, checked with TLC (`scripts/tlc.sh`; see [`docs/spec/README.md`](docs/spec/README.md)). Not a required check, but a failure must be explained | CI · TLC |
 | Performance (on demand) | JMH `CoCacheBenchmark` compared against the base with `scripts/jmh-compare.sh -b <benchmarks> -t 1,8` (one benchmark at a time, at least five alternating rounds, same-round ratios, load gate; see `docs/architecture.md` §13); paste its table into the PR | Run locally when touching the hit path |
 
 Integration tests need Redis at `localhost:6379`:

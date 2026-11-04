@@ -19,6 +19,7 @@
 # - Test (Valkey)：Redis 相关模块的测试在 Valkey 单机上运行（Lua 脚本、ACL 报错、CONFIG、Sharded Pub/Sub 的兼容性）
 # - Test (Spring Boot 4.0)：产物仍按 Spring Boot 4.1 编译，Redis 相关模块与示例的测试运行在 Spring Boot 4.0 管理的依赖上（Lettuce 6.8、Spring Data Redis 4.0），验证 "Spring Boot 4.x" 基线
 # - Lincheck：flight 层、L2 与失效戳的模型检验（RFC 0005 §4.10，约 2 分钟，不在 check 中）。不列入分支保护的必需检查，失败不阻塞合并，但要查明原因
+# - TLC：多节点协议的 TLA+ 模型（docs/spec，RFC 0005 §4.10）。同样不列入必需检查，失败要查明原因
 name: CI
 on:
   push:
@@ -309,4 +310,30 @@ jobs:
         with:
           name: test-reports-lincheck
           path: 'core/build/reports/tests/'
+          retention-days: 7
+
+  tlc:
+    name: TLC
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      # 脚本下载固定版本的 tla2tools.jar 并校验 SHA-256；不需要 Redis 与 Gradle
+      - name: Model-check the coherence protocol
+        run: scripts/tlc.sh
+
+      - name: Upload TLC output
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: tlc-output
+          path: 'build/tla/*.out'
           retention-days: 7
