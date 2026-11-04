@@ -104,11 +104,11 @@ CI 运行的配置（都是 2 个节点、n1 上有写入方、每个节点一�
 
 ## 发现
 
-反例在 `Findings*.cfg` 中（`scripts/tlc.sh Findings`，预期失败），不在 CI 中运行；协议改正之后把对应的性质移回 CI 的配置。CI 的配置检验其余性质，因此 `VersionedCache` 的配置不含 `NoLostInvalidation`，`LivenessVersioned` 不含 `Converges`，`Liveness` 不含连接替换。
+反例在 `Findings*.cfg` 中（`scripts/tlc.sh Findings`，预期失败），不在 CI 中运行；协议改正之后把对应的性质移回 CI 的配置。CI 的配置检验其余性质，因此 `VersionedCache` 的配置不含 `NoLostInvalidation`，`Liveness` 不含连接替换。`LivenessVersioned` 不含 `Converges` 还有一个与发现无关的原因：模型中带版本的写入方在结果未知时抛出、不重放（重放由调用方负责，§6.5），被丢弃的 `putIfNewer` 就再也不会写入。
 
 | 发现 | 性质 | 需要的条件 | 后果的上界 | 配置 |
 |------|------|------------|------------|------|
-| F1：`putIfNewer` 被不广播的填充吸收，其它节点收不到失效 | `NoLostInvalidation`（`LivenessVersioned` 的参数下 `Converges` 同样失败） | 无故障 | `degradedLocalMaxAge` 或 `localMaxAge` | [`FindingsLostInvalidation`](FindingsLostInvalidation.cfg) |
+| F1：`putIfNewer` 被不广播的填充吸收，其它节点收不到失效 | `NoLostInvalidation`（不带故障时 `Converges` 同样失败，轨迹相同） | 无故障 | `degradedLocalMaxAge` 或 `localMaxAge` | [`FindingsLostInvalidation`](FindingsLostInvalidation.cfg) |
 | F2：超时之后才执行的版本前进的 `FILL` 在本节点被过滤 | `G2L2LateFill` | 连接替换 | 与 F1 叠加时到 `localMaxAge` | [`FindingsLateFill`](FindingsLateFill.cfg) |
 | F3：刷新路径在结果未知或令牌被抢占时以更旧的值替换副本（P2 不完整） | `RefreshKeepsNewer` | loader 读从库，加一次超时 | `degradedLocalMaxAge` | [`FindingsRefreshRegression`](FindingsRefreshRegression.cfg) |
 | F4：连接替换之后异步释放先于被排空的 `READ`，lease 无人释放 | `TokensReleased` | 连接替换 | `lease.ttl` | [`FindingsReconnectLease`](FindingsReconnectLease.cfg) |
