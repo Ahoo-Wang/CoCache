@@ -254,6 +254,8 @@ internal abstract class RedisInvalidationChannel(
     @Suppress("TooGenericExceptionCaught")
     protected fun dispatch(channel: ByteArray, message: ByteArray) {
         val name = String(channel, Charsets.UTF_8)
+        // 订阅时先登记 keyspace、再登记订阅者：没有 keyspace 的频道也没有订阅者
+        val keyspace = keyspaces[name] ?: return
         val channelListeners = listeners[name] ?: return
         val decoded = try {
             InvalidationFrame.decode(message)
@@ -262,7 +264,7 @@ internal abstract class RedisInvalidationChannel(
             channelListeners.forEach { resetQuietly(name, it) }
             return
         }
-        val keys = keyspaces[name]?.encodedKeys(decoded.keys) ?: return
+        val keys = keyspace.encodedKeys(decoded.keys)
         channelListeners.forEach { listener ->
             try {
                 listener.onInvalidated(keys, decoded.origin)
