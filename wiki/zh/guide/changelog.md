@@ -5,9 +5,11 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布 {#unreleased}
+## v8.0.0-alpha.1（预发布） {#v8-0-0-alpha-1}
 
-**模块组：** `me.ahoo.cocache` · 计划作为 8.0.0 发布，是包含破坏性变更的大版本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。8.x 不与 6.x 同时运行在一个 Redis 上：先停 6.x，再启动 8.x（见[从 6.x 升级](./upgrade.md)）。6.x 的修复继续在 `6.x` 分支上进行。
+**模块组：** `me.ahoo.cocache` · 8.0.0 的第一个预发布版本，8.0.0 是包含破坏性变更的大版本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。8.x 不与 6.x 同时运行在一个 Redis 上：先停 6.x，再启动 8.x（见[从 6.x 升级](./upgrade.md)）。6.x 的修复继续在 `6.x` 分支上进行。
+
+**预发布版本，不作兼容性承诺。** 8.0.0 之前，任何预发布版本都可能改变 API、SPI 与 TCK、配置项、指标名、端点路径以及 Redis 线格式。在预发布版本之间升级时，删除全部 CoCache 的 key：有数据源的缓存会重新加载，没有数据源的缓存从空开始。不要用预发布版本保存无法重建的数据。
 
 ### 从 6.x 升级 {#upgrading-from-6x}
 
