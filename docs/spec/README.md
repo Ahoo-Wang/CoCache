@@ -110,8 +110,8 @@ CI 运行的配置（都是 2 个节点、每个节点一个读取者；除 `Liv
 
 维护者的决定（2026-11-03）：F1 已改正；F2、F3 由后续的 PR（`fix(core): close TLA+ findings F2–F4`）改正；F4 只改文档，作为接受的上界。
 
-- 尚未改正的反例在 `Findings*.cfg` 中（`scripts/tlc.sh Findings`，预期失败），不在 CI 中运行：F2 在 `FindingsLateFill`，F3 在 `FindingsRefreshRegression`。改正合并之后把它们的性质移进 CI 的配置。
-- F4 以 `TokensBounded` 在 `LivenessReconnect` 中检验：放过的只是读取者放弃之后才执行的 `READ` 授予的 lease，其余令牌照常要求被填充或释放；严格的 `TokensReleased` 在同一配置下给出 F4 的反例。
+- 反例在 `Findings*.cfg` 中（`scripts/tlc.sh Findings`，预期失败），不在 CI 中运行：F2 在 `FindingsLateFill`，F3 在 `FindingsRefreshRegression`，F4 在 `FindingsReconnectLease`（严格的 `TokensReleased`）。F2、F3 的改正合并之后把它们的性质移进 CI 的配置。
+- F4 的接受上界以 `TokensBounded` 在 CI 的 `LivenessReconnect` 中检验（参数与 `FindingsReconnectLease` 相同）：放过的只是读取者放弃之后才执行的 `READ` 授予的 lease，其余令牌照常要求被填充或释放。
 
 F1 已改正：维护者选择了改法 (a)（2026-11-03，随 M4c+M4d 实施，RFC §4.7 的表格随之修改），模型以它为规则，`NoLostInvalidation` 与 `Converges` 在带版本的配置中检验。去掉这条规则，`VersionedCache` 与 `ConvergesVersioned` 都给出下面的反例（见“变异检验”）。带版本的 `Converges` 不带故障检验：模型中带版本的写入方在结果未知时抛出、不重放（重放由调用方负责，§6.5），被丢弃的 `putIfNewer` 就再也不会写入。
 
@@ -120,7 +120,7 @@ F1 已改正：维护者选择了改法 (a)（2026-11-03，随 M4c+M4d 实施，
 | F1（已改正）：`putIfNewer` 被不广播的填充吸收，其它节点收不到失效 | `NoLostInvalidation`、`Converges` | 无故障 | `degradedLocalMaxAge` 或 `localMaxAge` | 已在 CI 的配置中 |
 | F2（待改正）：超时之后才执行的版本前进的 `FILL` 在本节点被过滤 | `G2L2LateFill` | 连接替换 | 直到写入方的 `putIfNewer` 落地 | [`FindingsLateFill`](FindingsLateFill.cfg) |
 | F3（待改正）：刷新路径在结果未知或令牌被抢占时以更旧的值替换副本（P2 不完整） | `RefreshKeepsNewer` | loader 读从库，加一次超时 | `degradedLocalMaxAge` | [`FindingsRefreshRegression`](FindingsRefreshRegression.cfg) |
-| F4（接受的上界）：连接替换之后异步释放先于被排空的 `READ`，lease 无人释放 | `TokensReleased`；CI 检验 `TokensBounded` | 连接替换 | `lease.ttl` | [`LivenessReconnect`](LivenessReconnect.cfg) |
+| F4（接受的上界）：连接替换之后异步释放先于被排空的 `READ`，lease 无人释放 | `TokensReleased`；CI 检验 `TokensBounded` | 连接替换 | `lease.ttl` | [`FindingsReconnectLease`](FindingsReconnectLease.cfg)；上界：[`LivenessReconnect`](LivenessReconnect.cfg) |
 
 ### F1（已改正）：`VersionedCache` 的 `putIfNewer` 被填充吸收时，其它节点收不到失效
 
