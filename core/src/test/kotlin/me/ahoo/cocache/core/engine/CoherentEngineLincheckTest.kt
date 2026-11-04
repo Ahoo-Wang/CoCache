@@ -270,14 +270,18 @@ class CoherentEngineLincheckTest {
     companion object {
         private const val NAME = "lincheck"
         private const val KEYS = 2
-        private const val ITERATIONS = 10
-        private const val INVOCATIONS = 300
-        private const val TARGETED_INVOCATIONS = 2000
+
+        /**
+         * 预算：完整（`-Plincheck.full`）与 CI 的，见 [LincheckSupport.budget]。
+         */
+        private val ITERATIONS = LincheckSupport.budget(full = 10, ci = 1)
+        private val INVOCATIONS = LincheckSupport.budget(full = 300, ci = 100)
+        private val TARGETED_INVOCATIONS = LincheckSupport.budget(full = 2000, ci = 300)
 
         /**
          * [cancellingSourceInterleavings] 每个场景的执行次数：两个线程各一两个操作，状态空间小，2000 次要 3 分多钟。
          */
-        private const val CANCELLING_INVOCATIONS = 500
+        private val CANCELLING_INVOCATIONS = LincheckSupport.budget(full = 500, ci = 60)
 
         /**
          * [CancellingSource.get] 以 [SourceLoadCancelledException] 失败。

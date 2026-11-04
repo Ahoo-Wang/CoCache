@@ -18,7 +18,7 @@
 # - Test (Redis Cluster)：Redis 相关模块的测试在 3 主 3 从的 Redis Cluster 上运行（slot 路由、pipeline、Pub/Sub）
 # - Test (Valkey)：Redis 相关模块的测试在 Valkey 单机上运行（Lua 脚本、ACL 报错、CONFIG、Sharded Pub/Sub 的兼容性）
 # - Test (Spring Boot 4.0)：产物仍按 Spring Boot 4.1 编译，Redis 相关模块与示例的测试运行在 Spring Boot 4.0 管理的依赖上（Lettuce 6.8、Spring Data Redis 4.0），验证 "Spring Boot 4.x" 基线
-# - Lincheck：flight 层、L2 与失效戳的模型检验（RFC 0005 §4.10，约 2 分钟，不在 check 中）。不列入分支保护的必需检查，失败不阻塞合并，但要查明原因
+# - Lincheck：flight 层、L2 与失效戳的模型检验（RFC 0005 §4.10，CI 的预算，本地约 1 分钟、按类 4 个 JVM 并行，不在 check 中；完整的预算 -Plincheck.full 只在本地运行）。不列入分支保护的必需检查，失败不阻塞合并，但要查明原因
 # - TLC：多节点协议的 TLA+ 模型（docs/spec，RFC 0005 §4.10）。同样不列入必需检查，失败要查明原因
 name: CI
 on:
