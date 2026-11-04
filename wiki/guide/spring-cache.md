@@ -67,9 +67,9 @@ The check runs only when a bean named `cocacheCacheManager` exists: the starter'
 | `get(key, valueLoader)` (`sync = true`) | `cache.get(key, loader)`. A loader exception is wrapped in `ValueRetrievalException`. |
 | `put(key, value)` (`@CachePut`) | `cache.put(key, value)`. A `null` value becomes `invalidate(key)`. |
 | `evict(key)` (`@CacheEvict`) | `cache.invalidate(key)` on every instance. Inside a transaction, see [Transactions](#transactions). |
-| `clear()` (`allEntries = true`) | Clears **this instance's L2 only**. Redis and the other instances keep their entries, because 8.0 can't clear a cache cluster-wide. The first call on each cache logs a `WARN` saying so. Evict keys instead. |
+| `clear()` (`allEntries = true`) | Clears **this instance's L2 only**. Redis and the other instances keep their entries, because CoCache can't clear a cache cluster-wide. The first call on each cache logs a `WARN` saying so. Evict keys instead. |
 | `retrieve(key)` (async and reactive) | An async `lookup` on the cache's [async view](./async.md). An L2 hit returns an already-completed future without switching threads, and a negative entry completes with `null` (a miss). |
-| `retrieve(key, loader)` (async and reactive with `sync = true`) | An async `get(key, loader)` on the [async view](./async.md): it loads through the same lease-protected path as `get(key, loader)`, and **no thread waits** for the async loader. The method body runs on the runtime's blocking executor (`cocache.blocking-executor`), as it ran on the retrieve executor before 6.3, so a body that blocks before it returns a future, such as `completedFuture(repository.find(id))`, doesn't stall CoCache's async executor. It can't see the caller's thread-locals. A failure completes the future with the original exception. |
+| `retrieve(key, loader)` (async and reactive with `sync = true`) | An async `get(key, loader)` on the [async view](./async.md): it loads through the same lease-protected path as `get(key, loader)`, and **no thread waits** for the async loader. The method body runs on the runtime's blocking executor (`cocache.blocking-executor`), so a body that blocks before it returns a future, such as `completedFuture(repository.find(id))`, doesn't stall CoCache's async executor. It can't see the caller's thread-locals. A failure completes the future with the original exception. |
 
 ### Null results {#null}
 
@@ -79,11 +79,11 @@ Negative entries read as a miss through `get(key)` on purpose: CoCache stores th
 
 ### When Redis fails {#failures}
 
-A cache used through Spring Cache usually has no loader of its own: the annotated method is the source. Since 6.9 such a cache treats reads and invalidations without a source as having no fallback:
+A cache used through Spring Cache usually has no loader of its own: the annotated method is the source. Such a cache treats reads and invalidations without a source as having no fallback:
 
 - `@Cacheable(sync = true)` passes the method as the loader, so a Redis read failure still runs the method and keeps the result in L2 for `degraded-local-max-age`.
 - A non-sync `@Cacheable` reads through `get(key)`, which has no loader. A Redis read failure throws `CacheReadException`, and Spring hands it to the `CacheErrorHandler`. The default handler rethrows it. A `LoggingCacheErrorHandler` logs it and runs the method instead. Alternatively, set `read-failure: degrade` on the cache: the read then returns a miss without caching it, so Spring runs the method.
-- `@CacheEvict` throws `CacheWriteException` when the Redis delete fails, because `invalidate-failure` defaults to `throw` without a loader. Here the method is the source and a delete is always safe, so set `invalidate-failure: retry` on these caches to queue failed evictions for retry as in 6.8. See [Configuration](./configuration.md#policy-properties).
+- `@CacheEvict` throws `CacheWriteException` when the Redis delete fails, because `invalidate-failure` defaults to `throw` without a loader. Here the method is the source and a delete is always safe, so set `invalidate-failure: retry` on these caches to queue failed evictions for retry. See [Configuration](./configuration.md#policy-properties).
 
 This makes the two kinds of `@Cacheable` behave differently on the same cache. While Redis is down, every non-sync `@Cacheable` call fails, because Spring's default `CacheErrorHandler` rethrows the read failure. A `@Cacheable(sync = true)` call runs the method instead. `read-failure: degrade` doesn't make a non-sync method available either: the `put` that follows fails the same way.
 
@@ -102,12 +102,11 @@ The starter then gives Spring's cache interceptor a `DegradingCacheErrorHandler`
 
 Without Spring Boot, return `DegradingCacheErrorHandler(yourHandler)` from `CachingConfigurer.errorHandler()`.
 
-## The retrieve executor (deprecated) {#executor}
+## Executors {#executor}
 
-Since 6.3, `retrieve` uses the cache's [async view](./async.md) and needs no executor of its own. Before 6.3 each waiting call held a thread, and the executor had to avoid queueing to keep nested async `@Cacheable(sync = true)` calls from deadlocking. Neither applies any more.
+`retrieve` uses the cache's [async view](./async.md) and needs no executor of its own: no call holds a thread while it waits for a load.
 
-- `cocache.spring-cache.retrieve-executor` is deprecated. When set, startup logs a warning and ignores it. It's removed in 7.0.
-- `CoCacheSpringCacheManager(runtime, executor)` and `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` are deprecated too, and the executor is ignored. `CoCacheSpringCache(cache, admin, executor)` is not deprecated: its executor runs the method body of `retrieve(key, loader)`, and `CoCacheSpringCacheManager` passes the runtime's blocking executor.
+- `CoCacheSpringCacheManager(runtime)` takes no executor. It creates each `CoCacheSpringCache(cache, admin, executor)` with the runtime's blocking executor (`CacheRuntime.blockingExecutor`), which runs the method body of `retrieve(key, loader)`.
 - The async view runs on `cocache.async-executor` and `cocache.blocking-executor`. A synchronous loader called through `retrieve`, and the body of an async `@Cacheable(sync = true)` method, run on the blocking executor. See [Configuration](./configuration.md#executors).
 
 Spring Cache's `put` and `evict` have only blocking signatures. On a reactive method, `@CachePut`, `@CacheEvict` and a non-sync `@Cacheable` call them from the completion callback, which holds that thread for one Redis round trip. Keep using `sync = true`, and call `cache.async().invalidate(key)` where a write path must not block.
@@ -133,9 +132,9 @@ Outside a transaction, every operation runs at once.
 Why the decorator does this:
 
 - **Invalidate after the commit.** Invalidating before the commit would let a concurrent read cache the old row. For `beforeInvocation = true`, the invalidation after the commit removes an old row that a read on another instance loaded between the eviction and the commit.
-- **Invalidate after a rollback too.** A `@Cacheable(sync = true)` read in the same transaction runs inside it and can load a row you wrote but never committed. Spring's decorator skipped `@CacheEvict` on rollback, so that row stayed in Redis until `ttl`.
+- **Invalidate after a rollback too.** A `@Cacheable(sync = true)` read in the same transaction runs inside it and can load a row you wrote but never committed. Spring's decorator skips `@CacheEvict` on rollback, which would leave that row in Redis until `ttl`.
 - **Later evictions win.** At the commit, CoCache runs the invalidations first, then the writes. A `@CachePut` followed by a `@CacheEvict` of the same key ends with the key evicted, and a `@CacheEvict` followed by a `@CachePut` ends with the new value.
-- **Savepoints.** When a `NESTED` transaction (or a programmatic savepoint) rolls back, writes registered after the savepoint are dropped, and registered keys are invalidated at once. In 6.x a `@CachePut` inside a rolled-back nested transaction was still written at the outer commit.
+- **Savepoints.** When a `NESTED` transaction (or a programmatic savepoint) rolls back, writes registered after the savepoint are dropped, and registered keys are invalidated at once.
 
 ### Failures after the commit {#after-commit-failures}
 

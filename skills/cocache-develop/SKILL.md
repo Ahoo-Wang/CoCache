@@ -1,6 +1,6 @@
 ---
 name: "cocache-develop"
-description: "Build, test, review or debug CoCache usage in downstream Java/Kotlin applications with me.ahoo.cocache imports or dependencies, or explicit CoCache requests: cache declarations, loaders, invalidation after commit, Spring Cache, JoinCache, SetCache, configuration, tests; review findings; stale-data, hit-rate, Redis or startup root cause. Not the CoCache repository, generic caching, 5.x upgrades (cocache-migrate) or custom backends (cocache-extend)."
+description: "Build, test, review or debug CoCache usage in downstream Java/Kotlin applications with me.ahoo.cocache imports or dependencies, or explicit CoCache requests: cache declarations, loaders, invalidation after commit, Spring Cache, JoinCache, SetCache, configuration, tests; review findings; stale-data, hit-rate, Redis or startup root cause. Not the CoCache repository, generic caching or custom backends (cocache-extend)."
 ---
 
 # Develop, Review and Debug CoCache Usage
@@ -11,7 +11,7 @@ Use only for a downstream application. The CoCache repository itself (its module
 
 These do not qualify on their own: the words cache, Redis, Caffeine, Spring Cache, `@Cacheable`, TTL or invalidation; other cache libraries (Spring Data Redis `RedisCacheManager`, plain Caffeine, Redisson, JetCache, Ehcache, Hazelcast); CoCache mentioned only to compare, reject or exclude it. Otherwise state that this Skill does not apply and stop using it.
 
-Route away and stop: an upgrade from CoCache 5.x (`me.ahoo.cache.*` packages) belongs to `cocache-migrate`, including reviews and failures of that upgrade; implementing a `CoherenceBackend` (a new L1 store or invalidation channel) belongs to `cocache-extend`. Own every other mode of the task below.
+Route away and stop: implementing a `CoherenceBackend` (a new L1 store or invalidation channel) belongs to `cocache-extend`. Own every other mode of the task below.
 
 ## Contract
 
@@ -24,8 +24,8 @@ Route away and stop: an upgrade from CoCache 5.x (`me.ahoo.cache.*` packages) be
 
 Resolve the CoCache version from the build (`./gradlew :module:dependencies --configuration runtimeClasspath`, `mvn dependency:tree`, the BOM, or the lock file) before applying anything:
 
-- **6.x** (`me.ahoo.cocache.*` packages): the references below apply. Re-check any symbol you use against that exact version.
-- **5.x** (`me.ahoo.cache.*` packages) with no upgrade requested: none of the 6.x references apply, not even symbol names. Work only from the target's own 5.x sources and label version-specific conclusions accordingly. Moving to 6.x is a `cocache-migrate` task.
+- **8.x**: the references below apply. Re-check any symbol you use against that exact version.
+- **Another major version**: the references describe 8.x only and do not apply, not even symbol names. Work only from the target's own resolved sources and label version-specific conclusions with that version. For a move to 8.x, follow the upgrade steps in the changelog (https://cocache.ahoo.me/guide/changelog#upgrading-from-6x), then apply the references to the upgraded code.
 - **Unresolvable**: say so and mark version-specific conclusions unverified.
 
 ## Rules that prevent most CoCache bugs

@@ -141,10 +141,10 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 **原因**。某个 L1 值无法解码：
 
-- **外来内容**（格式 `0`，CoCache 6.x 写入的为 `1`）：不是 CoCache 8.x 写入的，例如升级之前的 CoCache 6.x、旧客户端、脚本，或者前缀与命名空间相同的另一个应用。
+- **外来内容**（格式 `0` 或 `1`）：不是 CoCache 写入的内容，或本版本读不懂的格式，例如来自脚本，或者前缀与命名空间相同的另一个应用。
 - **编解码失败**（格式 `2`）：值的类发生了不兼容的变化（字段改名、类型变化），或者两个应用用不同的编解码器或值类型共享同一个缓存。
 
-**CoCache 的行为**。没有数据源的读取（`SetCache`，或没有 loader 的 `Cache`）无从重新加载，因此抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`；回收就是删除唯一副本），key 保持原样，计入 `cocache.unknown.formats` 而不是 `cocache.reclaims`。在这类内容上调用 `SetCache.add` 或 `remove` 同样失败，抛出 `CacheWriteException`，key 不变（`put` 会整体覆盖它）。CoCache 5.x 留下的内容需要[迁移](../guide/migration-6.md#redis-as-store)。有数据源的读取同样从不盲目删除。它请求 Redis：仅当 key 仍是它读到的那份字节时（在脚本内比较 SHA-1），才把 key 转为 lease。成功则回源并正常填充；key 在此期间变了，就不写 L1 直接回源。每次读取最多回收一次。
+**CoCache 的行为**。没有数据源的读取（`SetCache`，或没有 loader 的 `Cache`）无从重新加载，因此抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`；回收就是删除唯一副本），key 保持原样，计入 `cocache.unknown.formats` 而不是 `cocache.reclaims`。在这类内容上调用 `SetCache.add` 或 `remove` 同样失败，抛出 `CacheWriteException`，key 不变（`put` 会整体覆盖它）。有数据源的读取同样从不盲目删除。它请求 Redis：仅当 key 仍是它读到的那份字节时（在脚本内比较 SHA-1），才把 key 转为 lease。成功则回源并正常填充；key 在此期间变了，就不写 L1 直接回源。每次读取最多回收一次。
 
 **处理**。
 
@@ -165,12 +165,11 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 
 | 错误信息（节选） | 原因 | 处理 |
 |------------------|------|------|
-| `CoCache 6.0 removed these properties: [cocache.…] - …` | 使用了已不存在的配置项 | 按信息改名。见[从 5.x 升级](../guide/migration-6.md#properties) |
 | `cocache.caches configures undeclared caches [x]; declared caches: […]` | `cocache.caches.[name]` 中出现了不存在的缓存，通常是拼写错误。缓存名不区分大小写匹配 | 修正名称或删除该项 |
 | `Cache[x] - … must be positive …`、`refreshWindow[…] must be less than ttl[…] - ttlJitter[…]`、`refreshWindow[…] must be less than localMaxAge[…]` | 所有配置层叠加之后策略不合法 | 修正取值。不写单位的时长按秒解析 |
 | `Cache[x] - @CoCache.<attribute> = FOREVER is not supported; FOREVER is only allowed for @CoCache.ttl and @CaffeineCache.expireAfterAccess.` | 在 `ttl` 与 `@CaffeineCache.expireAfterAccess` 以外的属性上使用了 `FOREVER` | 改用具体时长 |
 | `Cache[x] already exists.` / `Namespace[x] with keyPrefix[p] is already used by another cache.` | 两个声明使用了相同的缓存名，或相同的前缀与命名空间，例如一个接口与一个 spec bean | 改名其中一个，或设置不同的 `namespace` 或 `keyPrefix` |
-| `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | 命名空间含 `:` 或字符集之外的字符，常见于把 6.x 的前缀写进了命名空间 | 按信息的建议：把最后一个 `:` 及之前的部分放进 `keyPrefix` |
+| `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | 命名空间含 `:` 或字符集之外的字符，常见于把 key 前缀写进了命名空间 | 按信息的建议：把最后一个 `:` 及之前的部分放进 `keyPrefix` |
 | `Redis denied publishing to the invalidation channel[…] of Keyspace(…): allow the channel pattern [&…inv:*] …` | Redis ACL 不放行该缓存的频道。创建缓存时会向它发布一个空帧，所以缺少的权限在启动时暴露，而不是在每次写入时 | 放行信息中的模式，见 [Redis ACL](./index.md#acl) |
 | `Cannot register cache interface[…]: the bean name[x] is already in use.` / `Cannot register cache bean[x] for spec bean[…]` | 缓存的 bean 名与其它 bean 冲突 | 修改缓存名（`@CoCache(name)`）或 spec bean 名 |
 | `Cache interface[…] must extend Cache with concrete type arguments.` / `Cache spec bean[…] must declare its generic types` | 无法解析泛型 | 使用具体类型，并把 spec 工厂方法的返回类型声明为 `CacheSpec<K, V>` |

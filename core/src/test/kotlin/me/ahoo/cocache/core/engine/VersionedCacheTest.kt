@@ -49,7 +49,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 
 /**
- * 带版本的缓存（6.8）在 TCK 之外的边界：声明校验、创建时的后端检查、门面上的普通读写（不带版本）、异步视图的异常、
+ * 带版本的缓存在 TCK 之外的边界：声明校验、创建时的后端检查、门面上的普通读写（不带版本）、异步视图的异常、
  * 非原子广播的后端上版本不更新时不广播。
  */
 class VersionedCacheTest {

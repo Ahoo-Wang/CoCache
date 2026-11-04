@@ -58,7 +58,7 @@ The async executor and the blocking executor are configurable. See [Configuratio
 
 ## Timeouts {#timeouts}
 
-- Readers waiting for another caller's load (sync or async) wait at most until that load has been in flight for `load-timeout`, then fail with `SourceLoadTimeoutException`. A reader arriving after that starts a new load instead of joining the stuck one. In 6.x, a synchronous reader waited indefinitely.
+- Readers waiting for another caller's load (sync or async) wait at most until that load has been in flight for `load-timeout`, then fail with `SourceLoadTimeoutException`. A reader arriving after that starts a new load instead of joining the stuck one.
 - An `AsyncCacheLoader` load may take at most `load-timeout` (30 seconds by default). Past it, the call fails with `SourceLoadTimeoutException`, the lease is released, and `cocache.load.timeouts` counts it. CoCache doesn't cancel your loader's future, and a late result is dropped. A `TimeoutException` your loader raises itself (for example from Reactor's `timeout`) is passed through unchanged.
 - Each Redis command is bounded by `cocache.redis.command-timeout` (2 seconds by default) and fails with the same `RedisException` as the synchronous path. The timer is Lettuce's timer wheel, so an async timeout can fire up to one tick (100 ms by default) late.
 - Synchronous loaders have no async timeout: a blocked thread can't be interrupted.
@@ -73,11 +73,11 @@ The async executor and the blocking executor are configurable. See [Configuratio
 
 ## Spring Cache {#spring-cache}
 
-`retrieve(key)` and `retrieve(key, loader)` use the async view, so async and reactive `@Cacheable(sync = true)` methods load through the lease-protected path without holding a thread while they wait. The method body runs on the blocking executor. The old `cocache.spring-cache.retrieve-executor` is deprecated and ignored. See [Spring Cache](./spring-cache.md#executor).
+`retrieve(key)` and `retrieve(key, loader)` use the async view, so async and reactive `@Cacheable(sync = true)` methods load through the lease-protected path without holding a thread while they wait, and they need no executor of their own. The method body runs on the blocking executor. See [Spring Cache](./spring-cache.md#executor).
 
 ## Kotlin coroutines {#coroutines}
 
-The optional `cocache-coroutines` module (6.4+) adds a suspending view, `cache.suspending()`, and `SuspendingCacheLoader`. See [Kotlin Coroutines](./coroutines.md). Without it, `kotlinx.coroutines.future.await()` works on every future the async view returns, and it rethrows the original exception.
+The optional `cocache-coroutines` module adds a suspending view, `cache.suspending()`, and `SuspendingCacheLoader`. See [Kotlin Coroutines](./coroutines.md). Without it, `kotlinx.coroutines.future.await()` works on every future the async view returns, and it rethrows the original exception.
 
 ## Operating it {#operations}
 
@@ -88,4 +88,4 @@ The optional `cocache-coroutines` module (6.4+) adds a suspending view, `cache.s
 
 ## Custom backends {#backends}
 
-In 8.0 the L1 SPI is suspending: a backend's store is an `L1Store`, and its invalidation channel publishes with a `suspend` function. Both views call the same store, and neither holds a thread while Redis answers. A Java backend implements `FutureL1Store` and `FutureInvalidationChannel` and adapts them with `FutureL1Store.adapt` and `FutureInvalidationChannel.adapt`. A store that implements only the blocking `RemoteStore` no longer works. Prove a backend with `BackendProtocolSpec` and the engine suites; to run a suite through the async view too, override `access = CacheAccess.ASYNC`. The contract is in [Extending](../architecture/extending.md#l1-store), and the [changelog](./changelog.md#unreleased) lists the full SPI change.
+The L1 SPI is suspending: a backend's store is an `L1Store`, and its invalidation channel publishes with a `suspend` function. Both views call the same store, and neither holds a thread while Redis answers. A Java backend implements `FutureL1Store` and `FutureInvalidationChannel` and adapts them with `FutureL1Store.adapt` and `FutureInvalidationChannel.adapt`. Prove a backend with `BackendProtocolSpec` and the engine suites; to run a suite through the async view too, override `access = CacheAccess.ASYNC`. The contract is in [Extending](../architecture/extending.md#l1-store), and the [changelog](./changelog.md#unreleased) lists the full SPI change.

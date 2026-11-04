@@ -26,7 +26,6 @@ const guide: DefaultTheme.SidebarItem[] = [
   {
     text: '版本',
     items: [
-      { text: '从 5.x 升级', link: '/zh/guide/migration-6' },
       { text: '更新日志', link: '/zh/guide/changelog' },
     ],
   },

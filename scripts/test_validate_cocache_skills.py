@@ -12,7 +12,7 @@
 # limitations under the License.
 #
 
-"""Regression tests for scripts/validate_cocache_skills.py and the migrate audit script."""
+"""Regression tests for scripts/validate_cocache_skills.py."""
 
 from __future__ import annotations
 
@@ -166,12 +166,11 @@ class CoCacheSkillsValidatorTest(unittest.TestCase):
             agents.symlink_to(outside, target_is_directory=True)
             self.assert_error("agents and openai.yaml must stay inside the Skill")
 
-    def test_the_package_ships_exactly_the_three_skills(self) -> None:
+    def test_the_package_ships_exactly_the_two_skills(self) -> None:
         self.assertEqual(
             {
                 "cocache-develop",
                 "cocache-extend",
-                "cocache-migrate",
             },
             EXPECTED_SKILLS,
         )
@@ -278,8 +277,10 @@ class CoCacheSkillsValidatorTest(unittest.TestCase):
             self.assert_error("resource root must be a regular directory")
 
         with self.subTest(reference="runtime-path-in-script"):
-            script = self.root / "skills" / "cocache-migrate" / "scripts" / "audit-5x-usage.sh"
-            original_script = script.read_text(encoding="utf-8")
+            script = self.root / "skills" / "cocache-develop" / "scripts" / "list-usage.sh"
+            script.parent.mkdir()
+            original_script = "#!/usr/bin/env bash\nset -eu\ngrep -rnE 'me[.]ahoo[.]cocache' \"$1\"\n"
+            path.write_text(original + "\nRun `scripts/list-usage.sh`.\n", encoding="utf-8")
             script.write_text(original_script + "\nread ../../.env\n", encoding="utf-8")
             self.assert_error("runtime content references a parent path")
 
@@ -447,95 +448,6 @@ class CoCacheSkillsValidatorTest(unittest.TestCase):
                 self.assertEqual(fails, bool(errors), errors)
                 if fails:
                     self.assertTrue(any("cocache-develop/SKILL.md: description has 61 words (limit 60)" in error for error in errors))
-
-    def test_5x_audit_reports_versions_packages_and_removed_properties(self) -> None:
-        repository = self.root / "legacy-service"
-        (repository / "src").mkdir(parents=True)
-        (repository / "build.gradle.kts").write_text(
-            'dependencies {\n'
-            '    implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.4.0")\n'
-            '    implementation("me.ahoo.cocache:cocache-spring-redis:5.4.0")\n'
-            '    implementation("redis.clients:jedis")\n'
-            '}\n',
-            encoding="utf-8",
-        )
-        (repository / "src" / "Caches.kt").write_text(
-            "import me.ahoo.cache.api.Cache\n"
-            "@CoCache(ttlAmplitude = 30, clientSideTtl = 0)\n"
-            "interface UserCache : Cache<String, User>\n"
-            '@Bean("UserCache.CacheSource") fun source() = CacheSource<String, User> { null }\n'
-            "fun online(cache: SetElementsCache<String, String>) = cache.addElements(\"room\", setOf(\"u\"))\n",
-            encoding="utf-8",
-        )
-        (repository / "application.yml").write_text(
-            "cocache:\n"
-            "  redis:\n"
-            "    strict-failure: true\n"
-            "  load:\n"
-            "    max-concurrent: 32\n"
-            "management.endpoints.web.exposure.include: health,cocacheClient\n",
-            encoding="utf-8",
-        )
-        (repository / ".env").write_text("cocache.redis.strict-failure=true\n", encoding="utf-8")
-        result = subprocess.run(
-            [str(ROOT / "skills" / "cocache-migrate" / "scripts" / "audit-5x-usage.sh"), str(repository)],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        for expected in (
-            "me.ahoo.cocache:cocache-spring-boot-starter:5.4.0",
-            "cocache-spring-redis",
-            "redis.clients:jedis",
-            "me.ahoo.cache.api.Cache",
-            "ttlAmplitude",
-            "clientSideTtl",
-            '"UserCache.CacheSource"',
-            "SetElementsCache",
-            "strict-failure:",
-            "max-concurrent:",
-            "cocacheClient",
-        ):
-            with self.subTest(expected=expected):
-                self.assertIn(expected, result.stdout)
-        self.assertNotIn(".env", result.stdout)
-
-    def test_5x_audit_requires_target_and_ignores_skill_eval_cases(self) -> None:
-        script = ROOT / "skills" / "cocache-migrate" / "scripts" / "audit-5x-usage.sh"
-        missing_target = subprocess.run(
-            [str(script)],
-            cwd=self.root,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(2, missing_target.returncode)
-        self.assertIn("expected exactly one target application root", missing_target.stderr)
-
-        help_result = subprocess.run([str(script), "--help"], check=False, capture_output=True, text=True)
-        self.assertEqual(0, help_result.returncode)
-        self.assertIn("Usage:", help_result.stdout)
-
-        repository = self.root / "multi-service"
-        fixture = repository / "skills" / "example" / "evals" / "b01-migrate-audit"
-        fixture.mkdir(parents=True)
-        (repository / "build.gradle.kts").write_text(
-            'dependencies { implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.0.0") }\n',
-            encoding="utf-8",
-        )
-        (fixture / "build.gradle.kts").write_text(
-            'dependencies { implementation("me.ahoo.cocache:cocache-spring-boot-starter:5.4.0") }\n',
-            encoding="utf-8",
-        )
-        result = subprocess.run([str(script), str(repository)], check=False, capture_output=True, text=True)
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("6.0.0", result.stdout)
-        self.assertNotIn("5.4.0", result.stdout)
-
-        fixture_result = subprocess.run([str(script), str(fixture)], check=False, capture_output=True, text=True)
-        self.assertEqual(0, fixture_result.returncode, fixture_result.stderr)
-        self.assertIn("5.4.0", fixture_result.stdout)
 
 
 if __name__ == "__main__":

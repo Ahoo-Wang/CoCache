@@ -57,7 +57,7 @@ starter 按以下顺序从 Spring Boot 的 Redis 连接信息中选择拓扑：
 | 只有 `Cache` | 任意。`allkeys-lru` 或 `allkeys-lfu` 让 Redis 成为有界缓存 | 值或负缓存被淘汰就是未命中。lease 被淘汰时，加载方的填充被拒绝，值只以 `degraded-local-max-age` 留在该实例的 L2 中。不会产生陈旧数据 |
 | 有任何 `SetCache` | `noeviction` 或 `volatile-*` | Redis 保存的是集合的唯一副本，`allkeys-*` 会悄悄丢失成员。`SetCache` 的 key 默认没有到期时间，`volatile-*` 不会淘汰它们。设置了有限 `ttl` 的 `SetCache` 在 `volatile-*` 下仍可能被淘汰 |
 
-只要声明了 `SetCache`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。遇到 `allkeys-*` 时告警，`cocache.redis.set-cache-eviction-check: fail` 时启动失败（`off` 不检查）。`volatile-*` 下为每个 `ttl` 有限的 `SetCache` 告警。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时告警，`fail` 模式下启动失败，而不是静默跳过检查。6.9.1 及之前，检查读取 `CONFIG GET`，失败时静默跳过，也不检查尚未创建的 `SetCache` bean。
+只要声明了 `SetCache`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。遇到 `allkeys-*` 时告警，`cocache.redis.set-cache-eviction-check: fail` 时启动失败（`off` 不检查）。`volatile-*` 下为每个 `ttl` 有限的 `SetCache` 告警。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时告警，`fail` 模式下启动失败，而不是静默跳过检查。
 
 `noeviction` 下 Redis 达到 `maxmemory` 时：
 
@@ -128,7 +128,7 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 
 ## 滚动发布 {#rolling-deploys}
 
-线格式（key 布局、值头与其中的段、集合字段、消息帧、频道命名）在一个大版本内冻结，所以同一大版本的实例可以混跑。跨大版本的升级不能滚动：先停 6.x 再启动 8.x（见[从 6.x 升级](../guide/changelog.md#upgrading-from-6x)）。8.x 读不懂 6.x 的值：升级之后有 loader 的缓存重新加载它们，没有 loader 的缓存读到它们时失败。之后必须理解的变更分两阶段发布：先发布能读懂、但不写入它的版本，全部实例升级之后，再发布写入它的版本。实例版本不一致期间，遇到读不全的值时直接回源且不覆盖（`cocache.unknown.formats`）。
+线格式（key 布局、值头与其中的段、集合字段、消息帧、频道命名）在一个大版本内冻结，所以同一大版本的实例可以混跑。跨大版本的升级不能滚动：先停掉旧大版本的全部实例，再启动新版本（见[升级步骤](../guide/changelog.md#upgrading-from-6x)）。遇到本版本读不懂的格式的值，有 loader 的缓存重新加载，没有 loader 的缓存读取失败。之后必须理解的变更分两阶段发布：先发布能读懂、但不写入它的版本，全部实例升级之后，再发布写入它的版本。实例版本不一致期间，遇到读不全的值时直接回源且不覆盖（`cocache.unknown.formats`）。
 
 每个新实例启动时 L2 为空，从 L1 填充，所以发布期间会看到 `cocache.misses` 与 `cocache.hits{level=l1}` 的突增，而不是回源的突增。
 
@@ -150,7 +150,7 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 | 存储 key | `{keyPrefix}{namespace}:{encodedKey}` | `cocache:UserCache:42` |
 | 频道 | `{keyPrefix}inv:{namespace}` | `cocache:inv:UserCache` |
 
-`keyPrefix` 默认 `cocache:`，可以为空；`namespace` 默认等于缓存名，`encodedKey` 是 key 的 `toString()` 或 `keyExpression` 的结果。CoCache 的内部 key 放在 `{keyPrefix}!` 之下，任何命名空间都产生不了这个位置。见[存储 key](../guide/caches.md#storage-keys)。8.x 不与 6.x 的实例共用一个 Redis：先停 6.x 再启动 8.x，步骤见[从 6.x 升级](../guide/changelog.md#upgrading-from-6x)。
+`keyPrefix` 默认 `cocache:`，可以为空；`namespace` 默认等于缓存名，`encodedKey` 是 key 的 `toString()` 或 `keyExpression` 的结果。CoCache 的内部 key 放在 `{keyPrefix}!` 之下，任何命名空间都产生不了这个位置。见[存储 key](../guide/caches.md#storage-keys)。不同大版本的实例不共用 key：见[滚动发布](#rolling-deploys)。
 
 多个应用可以共用一个 Redis：
 
@@ -176,7 +176,7 @@ CoCache 的 Redis 用户需要以下权限：
 ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +getrange +set +del +pttl +type +hgetall +hkeys +hmget +hset +hdel +hlen +pexpire +persist +setrange +time
 ```
 
-8.0 写入线格式 2：脚本以 `HMGET` 读集合的格式字段，写回与释放令牌时以 `GETRANGE` 只读 36 字节的头部。升级前先给已有用户加上 `+hmget +getrange`，否则读取与写回会以 ACL 错误失败（措辞随 Redis 版本不同）。`HGET` 与 `HEXISTS` 不再使用。`HGETALL` 仍需保留：条件回收还在使用它。
+脚本以 `HMGET` 读集合的格式字段，写回与释放令牌时以 `GETRANGE` 只读 36 字节的头部，条件回收使用 `HGETALL`。用户缺少脚本调用的某条命令时，读取与写回会以 ACL 错误失败（措辞随 Redis 版本不同）。
 
 创建缓存时，CoCache 像之后的写入一样向该缓存的频道发布一个空帧。ACL 不放行这个频道时，创建以 `IllegalStateException` 失败，信息给出要放行的模式，例如 `[&cocache:inv:*]`。否则之后的每次写入都会先修改 Redis、再在广播处失败，其它实例陈旧到 `local-max-age`。
 

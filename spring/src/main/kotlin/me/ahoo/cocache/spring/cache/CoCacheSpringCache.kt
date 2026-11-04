@@ -121,7 +121,7 @@ class CoCacheSpringCache(
     }
 
     /**
-     * 只清空本节点的本地副本（L2）：L1 是共享存储，8.0 不支持整体清空，Redis 与其它节点的副本保持不变。
+     * 只清空本节点的本地副本（L2）：L1 是共享存储，不支持整体清空，Redis 与其它节点的副本保持不变。
      * `@CacheEvict(allEntries = true)` 很容易被当作全集群清空，所以每个缓存第一次调用时记录一次告警（U19）。
      * namespace 重置加入之后（RFC 0005 §4.9、Q12）改为全集群清空。
      */
@@ -155,7 +155,7 @@ class CoCacheSpringCache(
     /**
      * 响应式 / `CompletableFuture` 方法上的 `@Cacheable(sync = true)`：与 [get] (key, valueLoader) 一样经引擎受 lease
      * 与失效戳保护的路径回源，而不是“读不到就 put”。没有线程在等待 [valueLoader] 返回的 future；
-     * 方法体本身（`valueLoader.get()`）派发到 [executor] 上执行（与 6.1 一样不在调用方线程上，看不到调用方的 ThreadLocal），
+     * 方法体本身（`valueLoader.get()`）派发到 [executor] 上执行（不在调用方线程上，看不到调用方的 ThreadLocal），
      * 先阻塞再返回的方法体因此不会占住异步执行器。返回的 future 以原始异常失败；[executor] 拒绝时以 RejectedExecutionException 失败。
      */
     @Suppress("UNCHECKED_CAST")

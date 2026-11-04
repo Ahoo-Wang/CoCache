@@ -44,7 +44,7 @@ For many keys, `putAll(entries)` (or `putAll(entries, ttl)`) applies `put` to ea
 
 ## Read-modify-write on a Redis-only value
 
-When Redis is the only copy (no loader) and several writers update one value by reading, changing and writing it back, `put` loses updates. On 6.7.0+ use the digest-conditional pair instead, and make every writer use it:
+When Redis is the only copy (no loader) and several writers update one value by reading, changing and writing it back, `put` loses updates. Use the digest-conditional pair instead, and make every writer use it:
 
 ```kotlin
 while (true) {
@@ -56,13 +56,13 @@ while (true) {
 
 - `putIfMatch(key, expected, value)`: one atomic compare-and-write; `expected = null` means "only if Redis holds no value" (absent, lease or negative entry). A conflict changes nothing and broadcasts nothing. A write behaves like `put` (TTL, fencing, no L2 fill).
 - `getIfChanged(key, known)`: `Unchanged` without transferring the value when its digest still equals `known`, otherwise `Present(value, digest)` or `Absent`. Use it to revalidate a value held in memory. Redis still hashes the value in the script.
-- Neither touches L2 or the loader. `getIfChanged` throws `CacheReadException` on a Redis failure regardless of `read-failure`; `putIfMatch` throws `CacheWriteException` and is not idempotent: after a timeout, re-read before retrying. Without atomic broadcast (6.9+), a conflict whose digest is the caller's own value republishes the invalidation, so a replay repairs a lost publish.
-- Unreadable content: newer-format values and sets always throw, key untouched. A value the codec can't decode makes the read throw, and the write only conflicts on it. Format-0 content (5.x or another program) throws too (8.0+, which removed `foreign-format`; in 6.x `reclaim` counted it as no value). Not available on `SetCache`, nor on backends that don't implement `putIfMatch` (`UnsupportedOperationException`).
+- Neither touches L2 or the loader. `getIfChanged` throws `CacheReadException` on a Redis failure regardless of `read-failure`; `putIfMatch` throws `CacheWriteException` and is not idempotent: after a timeout, re-read before retrying. Without atomic broadcast, a conflict whose digest is the caller's own value republishes the invalidation, so a replay repairs a lost publish.
+- Unreadable content: newer-format values and sets always throw, key untouched. A value the codec can't decode makes the read throw, and the write only conflicts on it. Content in another wire format (format 0 or 1, e.g. written by another program) throws too and is never treated as no value. Not available on `SetCache`, nor on backends that don't implement `putIfMatch` (`UnsupportedOperationException`).
 - Cost: an unchanged `getIfChanged` saves wire bytes, not Redis CPU. Redis reads and SHA-1s the value on every call, about 20 ms for 8 MB on Redis 7.4.
 
 ## Versioned writers
 
-When the writer knows each value's version (an event-sourced aggregate, a CDC stream) and redelivery or replay can send older versions again, a plain `put` can regress Redis. On 6.8.0+ declare the cache versioned and write with the version:
+When the writer knows each value's version (an event-sourced aggregate, a CDC stream) and redelivery or replay can send older versions again, a plain `put` can regress Redis. Declare the cache versioned and write with the version:
 
 ```kotlin
 cacheSpec<String, View>("view") { codec = …; versionedLoader = CacheLoader { id -> Versioned(view, version) } }  // or versioned = true
@@ -74,8 +74,8 @@ cache.getVersioned(id)                       // Versioned(value, version)?
 - One Lua round trip, atomic. Equal version: idempotent no-op; older: refused; neither writes, broadcasts nor changes the TTL. A write behaves like `put` and wins over a load holding the lease, even one that read a higher version. Content without a version (plain `put`, plain loader, negative entry, absent) is older than any version.
 - A versioned loader returns `Versioned(null, n)` for a key deleted at version `n` (the fill writes a tombstone, so older replays can't resurrect it) and `null` for a key that never existed (plain negative entry). `getVersioned` returns `null` for both; a living tombstone still refuses older versions.
 - Every ordering writer must use `putIfNewer` / `invalidateIfNewer`: `put`, `putIfMatch`, `invalidate` and expiry drop the version. Ordering holds only while the entry lives: give values and tombstones (value lifetime by default) a TTL covering the redelivery window.
-- Versioned caches reject `refresh-window` (`cocache.defaults.refresh-window` skips them). Creating one fails when the backend's store has no `versioned()` capability (in 6.x: `versionedWrites = false`); Redis and in-memory support it. Coroutines: `suspendingVersionedLoader`.
-- `putIfNewer` throws `CacheWriteException` on Redis failure; replaying the same version is safe (returns `Stale`). Without atomic broadcast (6.9+), `Stale` with the same version republishes the invalidation.
+- Versioned caches reject `refresh-window` (`cocache.defaults.refresh-window` skips them). Creating one fails when the backend's store has no `versioned()` capability; Redis and in-memory support it. Coroutines: `suspendingVersionedLoader`.
+- `putIfNewer` throws `CacheWriteException` on Redis failure; replaying the same version is safe (returns `Stale`). Without atomic broadcast, `Stale` with the same version republishes the invalidation.
 
 ## Inside a transaction
 
@@ -111,7 +111,7 @@ ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7")   // non-d
 - Arguments are the cache's namespace (the cache name unless set) and encoded keys exactly as they appear in the storage key.
 - It deletes and broadcasts (one script in the default channel mode), does not retry, and throws on failure; calls are idempotent, so the caller retries. `close()` does not close the backend.
 
-Outside the JVM, a process does `DEL {keyPrefix}{namespace}:{encodedKey}` and then publishes a binary invalidation frame on `cocache:inv:{namespace}` (`SPUBLISH` in sharded mode). The frame layout is documented in the CoCache operations guide (troubleshooting, external invalidation); copy it from the docs of the resolved version rather than from memory. Delete before publishing; skipping the publish leaves peers' L2 stale up to `local-max-age`. Never invalidate a `SetCache` from outside: `DEL` destroys its only copy.
+Outside the JVM, a process does `DEL {keyPrefix}{namespace}:{encodedKey}` and then publishes a binary invalidation frame on `{keyPrefix}inv:{namespace}` (`SPUBLISH` in sharded mode). The frame layout is documented in the CoCache operations guide (troubleshooting, external invalidation); copy it from the docs of the resolved version rather than from memory. Delete before publishing; skipping the publish leaves peers' L2 stale up to `local-max-age`. Never invalidate a `SetCache` from outside: `DEL` destroys its only copy.
 
 ## Choosing lifetimes
 
@@ -138,7 +138,7 @@ Each lifetime bounds one kind of staleness. Bare numbers under `cocache.defaults
 
 ## Redis down during a write
 
-- `invalidate`: the local L2 copy is dropped first. With a loader, by default (`invalidate-failure: retry`) the call does not throw; the delete is queued (8 attempts, 100 ms to 10 s backoff, 10 000 pending) and misses for that key on this instance skip Redis meanwhile. Exhausted or overflowing retries log an error and count `cocache.invalidations.dropped`; other instances may then serve the old value until its remaining `ttl` (forever with `ttl-forever`), so invalidate again once Redis is back. `invalidate-failure: throw` raises `CacheWriteException` instead. Without a loader (6.9+) `throw` is the default: Redis is the only copy, and a delayed delete would remove a value written after the failure.
+- `invalidate`: the local L2 copy is dropped first. With a loader, by default (`invalidate-failure: retry`) the call does not throw; the delete is queued (8 attempts, 100 ms to 10 s backoff, 10 000 pending) and misses for that key on this instance skip Redis meanwhile. Exhausted or overflowing retries log an error and count `cocache.invalidations.dropped`; other instances may then serve the old value until its remaining `ttl` (forever with `ttl-forever`), so invalidate again once Redis is back. `invalidate-failure: throw` raises `CacheWriteException` instead. Without a loader `throw` is the default: Redis is the only copy, and a delayed delete would remove a value written after the failure.
 - `put` and `SetCache` writes throw `CacheWriteException`; the outcome may be unknown after a timeout or an interrupted wait, and retrying is safe because they are idempotent.
 - The retry limits come from `RetryPolicy` on the `CacheRuntime`; in Spring Boot declare your own `CacheRuntime` bean to change them.
 

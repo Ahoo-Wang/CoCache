@@ -66,7 +66,7 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 
 ## Names and storage keys
 
-Every Redis key is `{keyPrefix}{namespace}:{encodedKey}`, for example `cocache:UserCache:42`. Invalidations travel on `cocache:inv:{namespace}` (no prefix).
+Every Redis key is `{keyPrefix}{namespace}:{encodedKey}`, for example `cocache:UserCache:42`. Invalidations travel on `{keyPrefix}inv:{namespace}`, for example `cocache:inv:UserCache`.
 
 - `keyPrefix` defaults to `cocache:`; `namespace` to the cache name. Both must be unique per application; duplicates fail startup.
 - `@CoCache(keyPrefix)` is literal text: placeholders are not resolved, and in Kotlin `$` starts a template. Use the `cocache.defaults.key-prefix` property (placeholders allowed) to separate applications on one Redis.
@@ -92,10 +92,10 @@ class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
 - `null` is cached as a negative entry for `absentTtl`. Throw when the lookup failed; nothing is cached and every coalesced caller sees the exception.
 - The loader runs on the calling thread, so the transaction, security context and MDC are visible. Read the primary, not a lagging replica.
 - Reading the same key from inside its own loader on the same thread fails fast with `IllegalStateException`.
-- Interface resolution: `@CoCache(loader = "beanName")`, else the single `CacheLoader<K, V>` bean, else (6.3+) the single `AsyncCacheLoader<K, V>` bean, else none. Several candidates, or one of each kind, fail startup; a bean implementing both is used as a `CacheLoader`. With no loader, misses return `null` and nothing negative is written to Redis.
+- Interface resolution: `@CoCache(loader = "beanName")`, else the single `CacheLoader<K, V>` bean, else the single `AsyncCacheLoader<K, V>` bean, else none. Several candidates, or one of each kind, fail startup; a bean implementing both is used as a `CacheLoader`. With no loader, misses return `null` and nothing negative is written to Redis.
 - `cache.get(key) { k -> ... }` loads a miss with a per-call loader under the same protection; `@Cacheable(sync = true)` uses it.
-- 6.3+: `asyncLoader = AsyncCacheLoader { id -> repo.findById(id).toFuture() }` for non-blocking sources (set `loader` or `asyncLoader`, not both). `cache.async()` returns an `AsyncCache` on the same cache: same L2, fences and leases, methods with the same names returning `CompletableFuture`. Futures fail with the original exception and never complete on the Redis I/O thread; `loadAsync` must not block and sees no caller thread-locals; a synchronous loader under the async view runs on `cocache.blocking-executor`. Bounded by `load-timeout`.
-- 6.4+ (module `cocache-coroutines`): `cache.suspending()` returns a `SuspendingCache` over the same cache (it wraps the async view; L2 hits don't suspend). `suspendingLoader { id -> repo.findById(id) }` sets a suspending source (runs on `Dispatchers.Default` unless a context is given); `get(key) { … }` runs a per-call loader on the caller's dispatcher, without the caller's `Job`. Cancelling a caller never cancels a shared load; re-reading the key being loaded fails fast with `IllegalStateException`.
+- `asyncLoader = AsyncCacheLoader { id -> repo.findById(id).toFuture() }` for non-blocking sources (set `loader` or `asyncLoader`, not both). `cache.async()` returns an `AsyncCache` on the same cache: same L2, fences and leases, methods with the same names returning `CompletableFuture`. Futures fail with the original exception and never complete on the Redis I/O thread; `loadAsync` must not block and sees no caller thread-locals; a synchronous loader under the async view runs on `cocache.blocking-executor`. Bounded by `load-timeout`.
+- Module `cocache-coroutines`: `cache.suspending()` returns a `SuspendingCache` over the same cache (it wraps the async view; L2 hits don't suspend). `suspendingLoader { id -> repo.findById(id) }` sets a suspending source (runs on `Dispatchers.Default` unless a context is given); `get(key) { … }` runs a per-call loader on the caller's dispatcher, without the caller's `Job`. Cancelling a caller never cancels a shared load; re-reading the key being loaded fails fast with `IllegalStateException`.
 
 ## Codecs
 
@@ -126,7 +126,7 @@ fun userCacheCustomizer(): CacheSpecCustomizer = object : CacheSpecCustomizer {
 }
 ```
 
-Customizers run in Spring order after the declaration and before `cocache.*` properties. Override `customize(SetCacheSpec.Builder)` to reach set caches. There are no bean-name conventions in 6.x.
+Customizers run in Spring order after the declaration and before `cocache.*` properties. Override `customize(SetCacheSpec.Builder)` to reach set caches. No bean-name convention configures a cache: loaders and codecs are found by type or by the bean name given in `@CoCache`.
 
 ## Startup validation
 

@@ -67,11 +67,10 @@ flowchart LR
 - **单实例、没有 Redis。** 一个普通的 Caffeine 缓存更简单。
 - **大多数读取之间都会变化的值。** 缓存会忙于失效，每次写入付出一次往返，收益甚微。
 - **非常大的值**（MB 级）。Redis 与网络会成为瓶颈，而且一个大值会拖慢共享连接上的其它命令。
-- **不允许阻塞的响应式或协程代码。** CoCache 的 API 是同步的；它在虚拟线程上运行良好。
 
 ## 环境要求 {#requirements}
 
-- JDK 17 及以上
+- JDK 21 及以上
 - Redis 7.0 及以上：单机、Sentinel 或 Cluster（不支持静态主从）
 - 使用 starter 时：Spring Boot 4
 

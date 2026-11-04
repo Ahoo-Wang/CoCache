@@ -67,9 +67,9 @@ cocache:
 | `get(key, valueLoader)`（`sync = true`） | `cache.get(key, loader)`。loader 的异常包装为 `ValueRetrievalException`。 |
 | `put(key, value)`（`@CachePut`） | `cache.put(key, value)`。值为 `null` 时改为 `invalidate(key)`。 |
 | `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)`。事务内见[事务](#transactions)。 |
-| `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 与其它实例的副本保持不变：8.0 不能在全集群清空一个缓存。每个缓存第一次调用时记录一条 `WARN` 说明这一点。请改为按 key 驱逐。 |
+| `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 与其它实例的副本保持不变：CoCache 不能在全集群清空一个缓存。每个缓存第一次调用时记录一条 `WARN` 说明这一点。请改为按 key 驱逐。 |
 | `retrieve(key)`（异步与响应式） | 缓存[异步视图](./async.md)上的异步 `lookup`。L2 命中返回已完成的 future，不切换线程；负缓存以 `null` 完成（视为未命中）。 |
-| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | [异步视图](./async.md)上的异步 `get(key, loader)`：与 `get(key, loader)` 一样经受 lease 保护的路径回源，**没有线程等待**异步 loader。方法体在运行时的阻塞执行器（`cocache.blocking-executor`）上执行，与 6.3 之前在 retrieve 执行器上执行一样，所以先阻塞再返回 future 的方法体（如 `completedFuture(repository.find(id))`）不会卡住 CoCache 的异步执行器。方法体看不到调用方的 ThreadLocal。失败时 future 以原始异常完成。 |
+| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | [异步视图](./async.md)上的异步 `get(key, loader)`：与 `get(key, loader)` 一样经受 lease 保护的路径回源，**没有线程等待**异步 loader。方法体在运行时的阻塞执行器（`cocache.blocking-executor`）上执行，所以先阻塞再返回 future 的方法体（如 `completedFuture(repository.find(id))`）不会卡住 CoCache 的异步执行器。方法体看不到调用方的 ThreadLocal。失败时 future 以原始异常完成。 |
 
 ### null 结果 {#null}
 
@@ -79,11 +79,11 @@ cocache:
 
 ### Redis 故障时 {#failures}
 
-经 Spring Cache 使用的缓存通常没有自己的 loader：被注解的方法就是数据源。6.9 起，这样的缓存把没有数据源的读取与失效视为没有退路：
+经 Spring Cache 使用的缓存通常没有自己的 loader：被注解的方法就是数据源。这样的缓存把没有数据源的读取与失效视为没有退路：
 
 - `@Cacheable(sync = true)` 把方法作为 loader 传入，Redis 读取失败时照常执行方法，结果以 `degraded-local-max-age` 留在 L2 中。
 - 不带 sync 的 `@Cacheable` 经 `get(key)` 读取，没有 loader。Redis 读取失败时抛出 `CacheReadException`，由 Spring 交给 `CacheErrorHandler`：默认的处理器重新抛出，`LoggingCacheErrorHandler` 记录日志后改为执行方法。也可以在缓存上设置 `read-failure: degrade`：读取返回未命中且不缓存，Spring 随后执行方法。
-- `@CacheEvict` 在 Redis 删除失败时抛出 `CacheWriteException`，因为没有 loader 时 `invalidate-failure` 默认为 `throw`。这里方法就是数据源、删除总是安全的，可以在这些缓存上设置 `invalidate-failure: retry`，像 6.8 一样把失败的删除放进重试队列。见[配置](./configuration.md#policy-properties)。
+- `@CacheEvict` 在 Redis 删除失败时抛出 `CacheWriteException`，因为没有 loader 时 `invalidate-failure` 默认为 `throw`。这里方法就是数据源、删除总是安全的，可以在这些缓存上设置 `invalidate-failure: retry`，把失败的删除放进重试队列。见[配置](./configuration.md#policy-properties)。
 
 于是同一个缓存上的两种 `@Cacheable` 表现不同。Redis 故障期间，不带 sync 的 `@Cacheable` 调用全部失败，因为 Spring 默认的 `CacheErrorHandler` 重新抛出读取失败；`@Cacheable(sync = true)` 则改为执行方法。`read-failure: degrade` 也不能让不带 sync 的方法可用：随后的 `put` 同样失败。
 
@@ -102,12 +102,11 @@ starter 随后为 Spring 的缓存拦截器换上 `DegradingCacheErrorHandler`�
 
 不用 Spring Boot 时，从 `CachingConfigurer.errorHandler()` 返回 `DegradingCacheErrorHandler(yourHandler)`。
 
-## retrieve 执行器（已弃用） {#executor}
+## 执行器 {#executor}
 
-6.3 起，`retrieve` 经缓存的[异步视图](./async.md)，不再需要单独的执行器。6.3 之前，每个等待中的调用都占一个线程，执行器还必须不排队，才能避免嵌套的异步 `@Cacheable(sync = true)` 死锁；现在这两点都不存在了。
+`retrieve` 经缓存的[异步视图](./async.md)，不需要单独的执行器：等待加载的调用不占用线程。
 
-- `cocache.spring-cache.retrieve-executor` 已弃用：设置时启动告警并被忽略，7.0 删除。
-- `CoCacheSpringCacheManager(runtime, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR` 同样已弃用，执行器被忽略。`CoCacheSpringCache(cache, admin, executor)` 没有弃用：其执行器执行 `retrieve(key, loader)` 的方法体，`CoCacheSpringCacheManager` 传入运行时的阻塞执行器。
+- `CoCacheSpringCacheManager(runtime)` 不接收执行器。它以运行时的阻塞执行器（`CacheRuntime.blockingExecutor`）创建每个 `CoCacheSpringCache(cache, admin, executor)`，由该执行器执行 `retrieve(key, loader)` 的方法体。
 - 异步视图在 `cocache.async-executor` 与 `cocache.blocking-executor` 上运行；经 `retrieve` 调用的同步 loader 与异步 `@Cacheable(sync = true)` 方法的方法体都在阻塞执行器上执行。见[配置参考](./configuration.md#executors)。
 
 Spring Cache 的 `put` 与 `evict` 只有阻塞签名。响应式方法上的 `@CachePut`、`@CacheEvict` 与不带 sync 的 `@Cacheable` 会在完成回调中调用它们，占用该线程一次 Redis 往返。请继续使用 `sync = true`；写路径不能阻塞时调用 `cache.async().invalidate(key)`。
@@ -133,9 +132,9 @@ classpath 中有 `spring-tx` 时，starter 用 CoCache 的事务装饰器 `Trans
 装饰器这样做的原因：
 
 - **提交之后失效**。在提交之前失效，并发的读取可能把旧数据缓存起来。对于 `beforeInvocation = true`，提交之后的失效会清掉驱逐与提交之间另一个实例上的读取加载的旧数据。
-- **回滚之后同样失效**。同一事务内的 `@Cacheable(sync = true)` 读取在事务中执行，可能加载到你写入但从未提交的行。Spring 的装饰器在回滚时不执行 `@CacheEvict`，这一行于是留在 Redis 中直到 `ttl`。
+- **回滚之后同样失效**。同一事务内的 `@Cacheable(sync = true)` 读取在事务中执行，可能加载到你写入但从未提交的行。Spring 的装饰器在回滚时不执行 `@CacheEvict`，这一行于是会留在 Redis 中直到 `ttl`。
 - **后面的驱逐优先**。提交时 CoCache 先执行失效，再执行写入。对同一个 key 先 `@CachePut` 再 `@CacheEvict`，结果是 key 被驱逐；先 `@CacheEvict` 再 `@CachePut`，结果是新值。
-- **savepoint**。`NESTED` 事务（或编程式 savepoint）回滚时，丢弃 savepoint 之后登记的写入，并立即失效已登记的 key。6.x 中，回滚了的嵌套事务里的 `@CachePut` 仍会在外层提交时写入。
+- **savepoint**。`NESTED` 事务（或编程式 savepoint）回滚时，丢弃 savepoint 之后登记的写入，并立即失效已登记的 key。
 
 ### 提交之后的失败 {#after-commit-failures}
 

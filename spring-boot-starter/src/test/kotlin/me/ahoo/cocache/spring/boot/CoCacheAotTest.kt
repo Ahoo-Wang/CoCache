@@ -45,7 +45,6 @@ import org.springframework.context.aot.ApplicationContextAotGenerator
 import org.springframework.core.ResolvableType
 import org.springframework.javapoet.ClassName
 import java.time.Duration
-import java.util.concurrent.Executors
 
 /**
  * Spring AOT 构建期：为原生镜像登记代理、反射、key 类型与 Jackson 绑定提示。生成代码的运行见 [CoCacheAotRuntimeTest]。
@@ -168,9 +167,6 @@ class CoCacheAotTest {
         hints.assert().matches(reflection.onType(Token::class.java).negate())
         // 默认 key 编码器反射检查 key 类型的 toString()：接口式与 spec 声明都登记
         hints.assert().matches(reflection.onMethodInvocation(OrderKey::class.java, "toString"))
-        // Spring Cache 默认 retrieve 执行器经反射取得虚拟线程执行器（JDK 21+ 才有该方法，按名称检查提示）
-        requireNotNull(hints.reflection().getTypeHint(Executors::class.java)).methods()
-            .map { it.name }.toList().assert().contains(CoCacheRuntimeHints.VIRTUAL_THREAD_EXECUTOR)
         // 固定提示（aot.factories 中的 RuntimeHintsRegistrar）
         listOf(Cache::class.java, SetCache::class.java, JoinCache::class.java).forEach {
             hints.assert().matches(reflection.onType(it).withMemberCategory(MemberCategory.INVOKE_PUBLIC_METHODS))

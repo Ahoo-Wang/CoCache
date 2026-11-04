@@ -167,8 +167,7 @@ class RedisChannelSubscriptionTest {
     }
 
     /**
-     * 排在前面的订阅者抛出 `Error`：其后的订阅者照常收到失效与重置（6.9.1 及之前分发只兜住 `RuntimeException`，
-     * 其后的订阅者收不到这条消息）。`VirtualMachineError` 照常抛出。
+     * 排在前面的订阅者抛出 `Error`：其后的订阅者照常收到失效与重置。`VirtualMachineError` 照常抛出。
      */
     @Test
     fun listenerThrowingAnErrorDoesNotSkipOtherListeners() {

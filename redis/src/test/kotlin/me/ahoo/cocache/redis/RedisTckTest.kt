@@ -426,7 +426,7 @@ class RedisShardedFaultTest : FaultSpec() {
 }
 
 /**
- * 按版本有序的写入的 TCK（6.8）：三种后端（pubsub、非原子、sharded）。
+ * 按版本有序的写入的 TCK：三种后端（pubsub、非原子、sharded）。
  */
 class RedisVersionedTest : VersionedSpec() {
     override val expectedCapabilities: Set<L1Capability> = RedisTestSupport.CAPABILITIES

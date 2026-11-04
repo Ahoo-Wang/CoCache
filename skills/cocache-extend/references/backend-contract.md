@@ -1,6 +1,6 @@
 # Backend Contract Map
 
-Use this map while implementing or reviewing a `CoherenceBackend`. It lists what to verify in the pinned version's SPI sources and KDoc (`me.ahoo.cocache.api.spi`); if they disagree with this map, the sources win. It describes the 8.0 shape; [6.x backends](#6x-backends) lists what differs before 8.0.
+Use this map while implementing or reviewing a `CoherenceBackend`. It lists what to verify in the pinned version's SPI sources and KDoc (`me.ahoo.cocache.api.spi`); if they disagree with this map, the sources win.
 
 ## Contents
 
@@ -12,7 +12,6 @@ Use this map while implementing or reviewing a `CoherenceBackend`. It lists what
 - [Java backends and decorators](#java-backends-and-decorators)
 - [Invalidation channel](#invalidation-channel)
 - [Invariants to review against](#invariants-to-review-against)
-- [6.x backends](#6x-backends)
 - [Wiring](#wiring)
 
 ## Shapes
@@ -42,11 +41,11 @@ interface L1Store {                         // every operation suspends; no clos
 ```
 
 - `atomicBroadcast = true`: every write method publishes its `frame` atomically with the change. `false`: the engine calls `channel.publish(namespace, frame)` after each successful write; a crash in between loses that message (bounded by `local-max-age`).
-- `format`: the format version your implementation writes (the shipped backends write `2`). In `L1Read.Hit`, report `0` for content your protocol did not write, and the stored format otherwise. The engine reads only content in exactly your `format`. Any lower format is content it can't read, like `0` (8.0; 6.x did so only for `0`): a cache with a source reclaims it and reloads, one without fails. A higher format is loaded around and never overwritten. Report content with features you don't understand (an unknown flag or state) as a higher format, never as a lower one, or caches with a source reclaim it. Bump only through a two-phase rollout.
+- `format`: the format version your implementation writes (the shipped backends write `2`). In `L1Read.Hit`, report `0` for content your protocol did not write, and the stored format otherwise. The engine reads only content in exactly your `format`. Any lower format, like `0`, is content it can't read: a cache with a source reclaims it and reloads, one without fails. A higher format is loaded around and never overwritten. Report content with features you don't understand (an unknown flag or state) as a higher format, never as a lower one, or caches with a source reclaim it. Bump only through a two-phase rollout.
 
 | Type | Shape |
 |---|---|
-| `Envelope` | `Scalar(bytes, version, writer)`, `Members(list of bytes)`, `Absent` (negative entry); `version` defaults to `Versioned.NO_VERSION`, `writer` to `null`. `writer` (8.0) is a write id shaped like a `Token`, set by the engine on every scalar write of a cache without a source: store it on every operation that writes a scalar (`put`, `putAll`, `fill`, `fillAll`, `putIfMatch`, `putIfNewer`) and return it unchanged from `read` and `readAll` |
+| `Envelope` | `Scalar(bytes, version, writer)`, `Members(list of bytes)`, `Absent` (negative entry); `version` defaults to `Versioned.NO_VERSION`, `writer` to `null`. `writer` is a write id shaped like a `Token`, set by the engine on every scalar write of a cache without a source: store it on every operation that writes a scalar (`put`, `putAll`, `fill`, `fillAll`, `putIfMatch`, `putIfNewer`) and return it unchanged from `read` and `readAll` |
 | `L1Read` | `Hit(envelope, format, ttl, refreshGranted)`, `Miss(leaseGranted)`, `Leased(remaining)`; `ttl == null` means no expiry |
 | `Token` | 24 bytes (node id + sequence); compare by bytes |
 | `LeaseRequest(token, ttl)` | Lease to place on a miss |
@@ -82,7 +81,7 @@ Keys arrive complete, with prefix and namespace. The SPI has no default implemen
 | `SetL1Store.removeMembers` | Same check. A set of your protocol: remove, delete the key when empty, otherwise reset expiry. Absent, negative or leased key: change nothing. Broadcast and return `null` in both cases. Unreadable content: change nothing, broadcast nothing, return its format. |
 | `ConditionalL1Store.readIfChanged` | Pure; compare in the store. A scalar of your protocol whose payload digest equals `known`: `Unchanged(format)`, payload not sent back. Other scalar: `Changed(envelope, format)`. Absent, lease, negative entry: `Absent`. Anything else (not yours, a set, a newer format): `Unreadable(format)`. |
 | `ConditionalL1Store.putIfMatch` | One atomic compare-and-write: matches when `expected == null` and the key holds no value (absent, lease, negative entry), or a scalar whose payload digest equals `expected`. Unreadable content returns `Unreadable(format)` and never matches as no value. Match: write like `put`, return `Written`. Otherwise change nothing, broadcast nothing, return `Conflict(current digest or null)`. |
-| `VersionedL1Store.putIfNewer` | One atomic compare-by-version: write `envelope` (scalar, or `Absent` for a tombstone) with `version` like `put` only if `version` is greater than the stored version; content without a version, leases and absent keys count as `NO_VERSION`. Otherwise change nothing, broadcast nothing, return `Stale(current)`. Unreadable content as in `putIfMatch`. `version` is never `Versioned.NO_VERSION`: throw `IllegalArgumentException` before changing anything (8.0). Versioned content holds no token: fill/release never match it, `read` never grants a refresh token on it, `reclaim` refuses it. `putIfMatch` writes without a version. |
+| `VersionedL1Store.putIfNewer` | One atomic compare-by-version: write `envelope` (scalar, or `Absent` for a tombstone) with `version` like `put` only if `version` is greater than the stored version; content without a version, leases and absent keys count as `NO_VERSION`. Otherwise change nothing, broadcast nothing, return `Stale(current)`. Unreadable content as in `putIfMatch`. `version` is never `Versioned.NO_VERSION`: throw `IllegalArgumentException` before changing anything. Versioned content holds no token: fill/release never match it, `read` never grants a refresh token on it, `reclaim` refuses it. `putIfMatch` writes without a version. |
 
 ## Rules across all methods
 
@@ -137,15 +136,6 @@ interface InvalidationListener {
 6. The store executes protocol only; no policy, no shared state between caches.
 7. Reject while disconnected; never replay buffered writes.
 8. A capability is offered only with an atomic implementation, and the accessors are stable.
-
-## 6.x backends
-
-Before 8.0 the store is the blocking `RemoteStore` (with `close`), optionally `AsyncRemoteStore` (an `xxxAsync` twin of each method) and `AsyncInvalidationChannel.publishAsync`. Differences to verify in the pinned 6.x sources:
-
-- One interface instead of capability surfaces: `readIfChanged` (default reads and compares on the client), `putIfMatch` and `putIfNewer` (defaults throw `UnsupportedOperationException`), `addMembersIfReadable` / `removeMembersIfReadable`; `CoherenceBackend.versionedWrites` (default `false`) declares `putIfNewer`.
-- `fill` returns `Boolean`, `reclaim` takes a `Digest`, reads take no `timeout`, and the result types are `RemoteRead`, `RemoteConditionalRead`, `RemoteConditionalWrite`, `RemoteVersionedWrite`.
-- `readAll` releases the leases it granted before throwing; the general rule to release tokens after any failure with an unknown outcome arrives in 8.0.
-- TCK: `EngineSpec.supportsConditionalWrites = false` skips the conditional cases; `AsyncBackendProtocolSpec` covers `AsyncRemoteStore`; 6.x also ships `Async*` engine suites. There is no `expectedCapabilities`.
 
 ## Wiring
 

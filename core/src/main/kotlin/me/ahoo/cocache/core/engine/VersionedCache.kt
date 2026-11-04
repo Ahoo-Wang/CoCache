@@ -31,7 +31,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 
 /**
- * 带版本的缓存（6.8，按版本有序的写入）：引擎的值是 `Versioned<V?>`，读写路径（栅栏、合并回源、批量、异步）全部沿用 [CoherentEngine]，
+ * 带版本的缓存（按版本有序的写入）：引擎的值是 `Versioned<V?>`，读写路径（栅栏、合并回源、批量、异步）全部沿用 [CoherentEngine]，
  * 版本随值进入 L1（[VersionedFormat]）与 L2 副本。本类只在用户的 `V` 与引擎的 `Versioned<V?>` 之间转换，不包含协议逻辑：
  * 普通写入（`put`、`putIfMatch`）写入没有版本的值，按版本的写入经 [CoherentEngine.writeIfNewer]。
  *

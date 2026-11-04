@@ -65,7 +65,7 @@ class RunAsyncTest {
     }
 
     /**
-     * 执行器拒绝派发：kotlinx 取消协程，用户拿到的仍是那个 [RejectedExecutionException]（与 6.x 的续接被拒绝一致）。
+     * 执行器拒绝派发：kotlinx 取消协程，用户拿到的仍是那个 [RejectedExecutionException]。
      */
     @Test
     fun rejectedDispatchFailsWithTheRejection() {

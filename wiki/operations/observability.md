@@ -56,7 +56,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | `cocache.degraded.fills` | counter | Loads written to L2 only, for `degraded-local-max-age`: Redis read failed, lease wait timed out, fill rejected, value in an unknown format, or an invalidation of the key still pending. A read without a loader isn't counted when Redis fails: it throws, or with an explicit `read-failure: degrade` returns `null` without caching anything (counted in `cocache.remote.failures`). |
 | `cocache.stale.discards` | counter | L2 fills dropped because an invalidation of the key arrived while the read was in flight. This is the L2 fence working. |
 | `cocache.reclaims` | counter | L1 values this instance couldn't decode (foreign content or codec failure). A separate reclaim script then converts the value into a lease, if it is still unchanged, and the instance reloads. |
-| `cocache.unknown.formats` | counter | L1 values in a newer wire format than this instance knows, or with a must-understand flag it doesn't know (loaded from the source, nothing overwritten; without a loader the read throws), unreadable content read without a loader, such as 5.x or 6.x data (the read throws `CacheReadException`), and `SetCache.add` / `remove`, `putIfMatch` and `putIfNewer` / `invalidateIfNewer` calls refused on unreadable content (they throw `CacheWriteException` and also count in `cocache.write.failures`), and `getIfChanged` calls that hit unreadable content. |
+| `cocache.unknown.formats` | counter | L1 values in a newer wire format than this instance knows, or with a must-understand flag it doesn't know (loaded from the source, nothing overwritten; without a loader the read throws), unreadable content read without a loader (the read throws `CacheReadException`), and `SetCache.add` / `remove`, `putIfMatch` and `putIfNewer` / `invalidateIfNewer` calls refused on unreadable content (they throw `CacheWriteException` and also count in `cocache.write.failures`), and `getIfChanged` calls that hit unreadable content. |
 
 ### Writes, invalidations, channel {#metrics-writes}
 
@@ -172,7 +172,7 @@ management:
 | `GET /actuator/cocache/{name}/{key}` | [Inspects one key](#inspect-key) in L2 and L1 | this instance, plus one Redis read |
 | `DELETE /actuator/cocache/{name}/{key}` | [Invalidates one key](#invalidate-key) | **every instance** |
 
-`{name}` is the cache name. For an unknown name, `GET` and `DELETE` return `404` and change nothing. Up to 6.9.1, `DELETE` returned `204`, so a misspelled name looked like success. A successful `DELETE /actuator/cocache/{name}` returns `204`, and a successful per-key `DELETE` returns `200` with a report. An empty `{key}` is rejected with `400`. Spring drops empty path segments and surrounding whitespace, so a key containing `//`, a leading or trailing `/`, or surrounding spaces can't be addressed exactly through the endpoint.
+`{name}` is the cache name. For an unknown name, `GET` and `DELETE` return `404` and change nothing. A successful `DELETE /actuator/cocache/{name}` returns `204`, and a successful per-key `DELETE` returns `200` with a report. An empty `{key}` is rejected with `400`. Spring drops empty path segments and surrounding whitespace, so a key containing `//`, a leading or trailing `/`, or surrounding spaces can't be addressed exactly through the endpoint.
 
 A cache report:
 

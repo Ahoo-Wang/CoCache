@@ -17,7 +17,7 @@ A two-level cache trades staleness for latency. It does three things: it **copie
 | **G2 No invalidation is lost** | Once `invalidate` returns, no load that started before it can write the old value back, in Redis or in any instance that has processed the invalidation. The same instance never serves the old value again. |
 | **G3 The hit path is cheap** | A local hit is one concurrent-map lookup and one time comparison, and scales with threads. A Redis hit is one round trip. A `put` or an `invalidate` is one round trip by default (atomic broadcast), two in sharded or non-atomic mode. Concurrent misses for one key load once per cluster. |
 
-**Non-goals.** Linearizable reads: between a write and the arrival of its message, other instances may serve the previous value. Asynchronous or coroutine APIs: the API is synchronous and works well on virtual threads.
+**Non-goals.** Linearizable reads: between a write and the arrival of its message, other instances may serve the previous value.
 
 **TTL is a safety net, not the mechanism.** Races inside the protocol are closed by fences, not by waiting for expiry. That is why `ttl-forever` is safe as long as every write goes through the protocol.
 

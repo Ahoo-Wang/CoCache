@@ -130,7 +130,7 @@ class SyncInterruptTest {
 
     /**
      * 中断落在取得 lease 的读取期间：读取照常完成、取得 lease；取消随后生效，loader 不再运行，lease 释放完成之后调用方才以
-     * [InterruptedException] 返回（6.10 立即以 `RedisException("Interrupted while waiting for Redis.")` 失败，由存储在结果未知时释放）。
+     * [InterruptedException] 返回。
      */
     @Test
     fun anInterruptDuringALeaseGrantingReadReleasesTheLeaseAndSkipsTheLoader() {

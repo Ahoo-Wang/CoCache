@@ -471,7 +471,7 @@ class CoCacheAutoConfigurationTest {
                 CoCacheProperties.EvictionCheck.WARN
             ),
             CoCacheProperties.Backend.REDIS,
-            CoCacheProperties.SpringCache(false, false, null),
+            CoCacheProperties.SpringCache(false, false),
             null
         ).policyFor("USER", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(2))
     }
@@ -488,46 +488,6 @@ class CoCacheAutoConfigurationTest {
             context.startupFailure.assert().hasMessageContaining("undeclared caches [lazy-usr]")
                 .hasMessageContaining("LazyUser")
         }
-    }
-
-    @Test
-    fun removedPropertiesFailStartupWithReplacement() {
-        val cases = mapOf(
-            "cocache.redis.strict-failure=true" to "cocache.defaults.read-failure=throw",
-            "cocache.load.max-concurrent=8" to "cocache.defaults.load-max-concurrent",
-            "cocache.load.acquire-timeout=1s" to "cocache.defaults.load-acquire-timeout",
-            "cocache.load.other=1" to "cocache.defaults.load-*",
-            "cocache.redis.eviction-channel=sharded" to "cocache.redis.channel-mode",
-            "cocache.redis.missing-guard-sentinel=x" to "no replacement",
-            "cocache.metrics.client-side-hits=true" to "cocache.metrics.local-hits",
-            "cocache.next.enabled=true" to "cocache.next.* became cocache.*",
-        )
-        cases.forEach { (property, replacement) ->
-            runner.withUserConfiguration(InMemoryConfig::class.java).withPropertyValues(property).run { context ->
-                assertThat(context).hasFailed()
-                context.startupFailure.assert().hasStackTraceContaining(property.substringBefore('='))
-                    .hasStackTraceContaining(replacement)
-            }
-        }
-        // 环境变量形式同样被识别
-        runner.withUserConfiguration(InMemoryConfig::class.java)
-            .withInitializer { context ->
-                context.environment.propertySources.addFirst(
-                    org.springframework.core.env.SystemEnvironmentPropertySource(
-                        "test-systemEnvironment",
-                        mapOf<String, Any>("COCACHE_REDIS_STRICTFAILURE" to "true")
-                    )
-                )
-            }
-            .run { context ->
-                assertThat(context).hasFailed()
-                context.startupFailure.assert().hasStackTraceContaining("cocache.redis.strictfailure")
-            }
-        RemovedProperties.adviceFor(
-            org.springframework.boot.context.properties.source.ConfigurationPropertyName.of(
-                "cocache.redis.channel-mode"
-            )
-        ).assert().isNull()
     }
 
     @Test
@@ -550,15 +510,12 @@ class CoCacheAutoConfigurationTest {
             "\"cocache.defaults.read-failure\"",
             "\"cocache.redis.channel-mode\"",
             "\"cocache.redis.command-timeout\"",
-            "\"cocache.redis.strict-failure\"",
             "\"cocache.backend\"",
             "\"cocache.defaults.key-prefix\"",
             "\"cocache.spring-cache.require-sync\"",
-            "\"cocache.spring-cache.retrieve-executor\"",
             "\"cocache.refresh-executor\"",
             "\"spring-bean-reference\"",
             "\"management.health.cocache.enabled\"",
-            "\"level\": \"error\"",
         ).forEach { text.assert().contains(it) }
     }
 
@@ -625,17 +582,6 @@ class CoCacheAutoConfigurationTest {
         async.timeout.assert().isEqualTo(Duration.ofSeconds(9))
         async.maxConcurrent.assert().isEqualTo(2)
         async.acquireTimeout.assert().isEqualTo(base.load.acquireTimeout)
-    }
-
-    @Test
-    fun removedPropertiesCheckSkipsNonEnumerableSources() {
-        val environment = org.springframework.core.env.StandardEnvironment()
-        environment.propertySources.addFirst(
-            object : org.springframework.core.env.PropertySource<Any>("opaque", Any()) {
-                override fun getProperty(name: String): Any? = null
-            }
-        )
-        RemovedProperties.check(environment)
     }
 
     @Test

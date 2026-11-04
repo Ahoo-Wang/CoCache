@@ -6,7 +6,7 @@ max_turns: 10
 allowed_tools: [Read, Glob, Grep, Skill]
 ---
 
-Review this diff of a downstream service that uses CoCache 6.0.0 and report only merge-blocking findings with file and line. Do not modify anything.
+Review this diff of a downstream service that uses CoCache 8.0.0 and report only merge-blocking findings with file and line. Do not modify anything.
 
 ```diff
 --- a/src/main/kotlin/shop/ProductCache.kt

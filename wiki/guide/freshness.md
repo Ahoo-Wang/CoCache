@@ -53,7 +53,7 @@ A custom `Cache` implementation that doesn't override `putAll` falls back to cal
 
 ## Conditional writes {#conditional-writes}
 
-When Redis is the only copy and several writers update one value by reading it, changing it, and writing it back (for example a document that holds many records), a plain `put` loses updates: two writers read the same version and the second `put` overwrites the first. Since 6.7, `putIfMatch` writes only if Redis still holds the value the writer read, and `getIfChanged` reads that value from Redis together with its digest:
+When Redis is the only copy and several writers update one value by reading it, changing it, and writing it back (for example a document that holds many records), a plain `put` loses updates: two writers read the same version and the second `put` overwrites the first. `putIfMatch` writes only if Redis still holds the value the writer read, and `getIfChanged` reads that value from Redis together with its digest:
 
 ```kotlin
 fun update(key: String, change: (Document?) -> Document) {
@@ -77,14 +77,14 @@ fun update(key: String, change: (Document?) -> Document) {
 - **Both bypass L2.** They read and write Redis only, never load from the loader, and never fill L2. The cache's L2 may be older than what `getIfChanged` returns, within `localMaxAge`.
 - **Failures:** `getIfChanged` throws `CacheReadException` when Redis fails, whatever `read-failure` says, because there is nothing to degrade to. `putIfMatch` throws `CacheWriteException`. It isn't idempotent: after a timeout, call `getIfChanged` first. If the current digest is the one `Written` would have returned, the write went through.
 - **Without atomic broadcast** (the `sharded` [channel mode](../operations/index.md#channel-mode), or when the startup probe falls back), the invalidation is published after the script. If the write lands in Redis but that publish fails, the call throws `CacheWriteException`. Replaying the same write then returns `Conflict(current)` whose digest is that of your own value, and CoCache publishes the invalidation again so other instances drop their stale copies. Other conflicts publish nothing.
-- **Unreadable content** is never treated as an empty value by one method and as a value by the other. A value written by a newer CoCache, or a set, makes both methods throw with a `ForeignFormatException` cause and leaves the key alone. A value the codec can't decode makes `getIfChanged` throw. `putIfMatch` can't see the codec, so on such a value it only ever returns `Conflict` and never overwrites it. Content CoCache 8.x didn't write (5.x or 6.x data, or a value another program wrote) makes both methods throw too: it never counts as no value, so `putIfMatch(key, null, value)` never replaces it.
+- **Unreadable content** is never treated as an empty value by one method and as a value by the other. A value written by a newer CoCache, or a set, makes both methods throw with a `ForeignFormatException` cause and leaves the key alone. A value the codec can't decode makes `getIfChanged` throw. `putIfMatch` can't see the codec, so on such a value it only ever returns `Conflict` and never overwrites it. Content in a format this version can't read (such as a value another program wrote) makes both methods throw too: it never counts as no value, so `putIfMatch(key, null, value)` never replaces it.
 - **Custom backends** must implement the conditional write atomically or not at all: the SPI's default `putIfMatch` throws `UnsupportedOperationException`, which reaches the caller.
 - **Every writer must use `putIfMatch`.** A plain `put` doesn't check and still wins over a concurrent read-modify-write.
 - `SetCache` doesn't support them, since its `add` and `remove` are already atomic. The async view and the [suspending view](./coroutines.md) have the same methods.
 
 ## Versioned writes {#versioned-writes}
 
-Some writers know the version of every value they write: an event-sourced aggregate has one writer and strictly increasing versions, a CDC stream carries commit sequence numbers. The writer can push each new state into Redis right after the commit, but redelivery and replay send older versions again, and a plain `put` of an older version would replace the newer one. Since 6.8, a cache declared *versioned* stores the version next to each value and orders writes by it:
+Some writers know the version of every value they write: an event-sourced aggregate has one writer and strictly increasing versions, a CDC stream carries commit sequence numbers. The writer can push each new state into Redis right after the commit, but redelivery and replay send older versions again, and a plain `put` of an older version would replace the newer one. A cache declared *versioned* stores the version next to each value and orders writes by it:
 
 ```kotlin
 val views = runtime.create(cacheSpec<String, OrderView>("order-view") {
@@ -114,7 +114,6 @@ views.getVersioned(id)                            // Versioned(view, version), o
 - **Plain writes drop the version.** `put`, `putAll`, `putIfMatch` and `invalidate` write content without a version, and so does expiry, after which any version can be written. Every writer that needs ordering must use `putIfNewer` / `invalidateIfNewer`. Keep `invalidate` for operator purges.
 - **No refresh-ahead.** A versioned cache rejects `refresh-window`; `cocache.defaults.refresh-window` skips versioned caches. Writers push new versions, so values don't need to be refreshed.
 - **Failures:** `putIfNewer` throws `CacheWriteException` when Redis fails. Retrying the same version is safe: if the first attempt went through, the retry returns `Stale(version)`. Without atomic broadcast, a `Stale` result whose version equals the one you passed also publishes the invalidation, in case the first attempt was written but its separate publish failed. An older version publishes nothing. Unreadable content is classified as for [conditional writes](#conditional-writes).
-- **Mixed versions:** instances on 6.0 to 6.7 can share Redis with 6.8 and read versioned values, but their writes don't keep versions. Upgrade every writer of a versioned cache to 6.8.
 - The async view and the suspending view have the same methods. A meter, `cocache.versioned.stale`, counts refused versions.
 
 ## Inside a transaction {#transactions}

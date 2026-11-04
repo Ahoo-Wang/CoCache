@@ -263,9 +263,9 @@ class RedisCommandTimeoutTest {
     }
 
     /**
-     * 经引擎的同步 `put` 被中断（RFC 0005 §4.3，8.0）：中断不到达存储，调用方等它的命令结束（这里是超时）才返回，
+     * 经引擎的同步 `put` 被中断（RFC 0005 §4.3）：中断不到达存储，调用方等它的命令结束（这里是超时）才返回，
      * 以写入的失败（`CacheWriteException`，原因是超时）结束并保留中断标志；被放弃的命令尚未写出，之后也不再写出。
-     * 6.10 中调用方立即以 `RedisException("Interrupted while waiting for Redis.")` 失败。单机（断线期间缓冲）与集群（等待节点连接）。
+     * 单机（断线期间缓冲）与集群（等待节点连接）。
      */
     @Test
     fun interruptedSyncPutThroughTheEngineWaitsForItsCommandAndIsNeverWritten() {

@@ -38,8 +38,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * `cocache.refresh-executor`、`cocache.async-executor`、`cocache.blocking-executor`：按 bean 名解析、实际被使用、名称错误时启动失败；
- * 已弃用的 `cocache.spring-cache.retrieve-executor` 被忽略（6.3 起 `retrieve` 经异步视图，不使用执行器）。
+ * `cocache.refresh-executor`、`cocache.async-executor`、`cocache.blocking-executor`：按 bean 名解析、实际被使用、名称错误时启动失败。
  */
 class ExecutorPropertiesTest {
     private val runner = ApplicationContextRunner()
@@ -88,9 +87,6 @@ class ExecutorPropertiesTest {
     class ExecutorConfig {
         @Bean
         fun refreshRecorder(): RecordingExecutor = RecordingExecutor()
-
-        @Bean
-        fun retrieveRecorder(): RecordingExecutor = RecordingExecutor()
 
         @Bean
         fun asyncRecorder(): RecordingExecutor = RecordingExecutor()
@@ -142,17 +138,14 @@ class ExecutorPropertiesTest {
     fun propertiesBindAndDefaultToNull() {
         runner.withPropertyValues(
             "cocache.refresh-executor=refreshRecorder",
-            "cocache.spring-cache.retrieve-executor=retrieveRecorder",
         ).withUserConfiguration(ExecutorConfig::class.java).run { context ->
             assertThat(context).hasNotFailed()
             val properties = context.getBean(CoCacheProperties::class.java)
             properties.refreshExecutor.assert().isEqualTo("refreshRecorder")
-            properties.springCache.retrieveExecutor.assert().isEqualTo("retrieveRecorder")
         }
         runner.run { context ->
             val properties = context.getBean(CoCacheProperties::class.java)
             properties.refreshExecutor.assert().isNull()
-            properties.springCache.retrieveExecutor.assert().isNull()
             properties.springCache.requireSync.assert().isFalse()
         }
     }
@@ -166,7 +159,6 @@ class ExecutorPropertiesTest {
                 triggerRefresh(context)
                 // 记录执行器在调用方线程上执行刷新：回源同步完成
                 context.getBean("refreshRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(1)
-                context.getBean("retrieveRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(0)
                 loaderThreads(context).toList().assert().containsExactly(
                     Concurrency.currentThreadName(),
                     Concurrency.currentThreadName()
@@ -186,36 +178,14 @@ class ExecutorPropertiesTest {
     }
 
     @Test
-    fun deprecatedRetrieveExecutorIsIgnored() {
-        runner.withPropertyValues("cocache.spring-cache.retrieve-executor=retrieveRecorder")
-            .withUserConfiguration(ExecutorConfig::class.java)
-            .run { context ->
-                assertThat(context).hasNotFailed()
-                val manager = context.getBean(CacheManager::class.java)
-                // 事务感知包装保持不变
-                (manager is me.ahoo.cocache.spring.tx.TransactionAwareSpringCacheManager).assert().isTrue()
-                val cache = requireNotNull(manager.getCache("user"))
-                retrieveValue(cache, "1").assert().isEqualTo("user-1")
-                cache.retrieve("2") { java.util.concurrent.CompletableFuture.completedFuture("ignored") }
-                    .get(5, TimeUnit.SECONDS).assert().isEqualTo("ignored")
-                context.getBean("retrieveRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(0)
-            }
-        // 弃用的配置项只告警：名称不存在也不再导致启动失败
-        runner.withPropertyValues("cocache.spring-cache.retrieve-executor=missingRetrieve").run { context ->
-            assertThat(context).hasNotFailed()
-        }
-    }
-
-    @Test
     fun retrieveUsesTheAsyncView() {
         runner.run { context ->
             assertThat(context).hasNotFailed()
             val cache = requireNotNull(context.getBean(CacheManager::class.java).getCache("user"))
             retrieveValue(cache, "1").assert().isEqualTo("user-1")
-            // 同步数据源只在阻塞执行器上执行：JDK 21+ 为虚拟线程（无名），否则为运行时自建的守护线程池
+            // 同步数据源只在阻塞执行器上执行：默认每个任务一个虚拟线程（无名）
             val thread = loaderThreads(context).single()
-            (thread.isEmpty() || thread.startsWith("cocache-blocking-")).assert()
-                .withFailMessage { "the loader ran on $thread" }.isTrue()
+            thread.assert().withFailMessage { "the loader ran on $thread" }.isEmpty()
             // L2 命中：返回已完成的 future，不切换线程
             requireNotNull(cache.retrieve("1")).isDone.assert().isTrue()
         }

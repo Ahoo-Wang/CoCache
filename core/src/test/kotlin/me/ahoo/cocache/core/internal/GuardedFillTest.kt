@@ -64,9 +64,14 @@ class GuardedFillTest {
     }
 
     /**
-     * 6.x 的算法：先校验，再写入，复核失败时撤销（按 key）。
+     * 对照用的锁外算法：先校验，再写入，复核失败时撤销（按 key）。
      */
-    private fun legacyFill(map: ConcurrentMap<String, Copy>, key: String, entry: Copy, valid: () -> Boolean): Boolean {
+    private fun unlockedFill(
+        map: ConcurrentMap<String, Copy>,
+        key: String,
+        entry: Copy,
+        valid: () -> Boolean
+    ): Boolean {
         if (!valid()) {
             return false
         }
@@ -79,7 +84,7 @@ class GuardedFillTest {
     }
 
     /**
-     * A.D4：预检查刚通过时整个写入方完成（递增戳、淘汰 L2）。6.x 随后仍写入旧值，在复核撤销之前对读取可见：
+     * A.D4：预检查刚通过时整个写入方完成（递增戳、淘汰 L2）。锁外算法随后仍写入旧值，在复核撤销之前对读取可见：
      * 写入方已经返回，本节点随后的读取却读到写入之前的值。锁内校验时不再写入。
      */
     @Test
@@ -105,7 +110,7 @@ class GuardedFillTest {
             map["k"].assert().isNull()
             return map.staleWritesAfterWriter.get()
         }
-        staleWritesAfterWriter { map, entry, valid -> legacyFill(map, "k", entry, valid) }.assert().isEqualTo(1)
+        staleWritesAfterWriter { map, entry, valid -> unlockedFill(map, "k", entry, valid) }.assert().isEqualTo(1)
         staleWritesAfterWriter { map, entry, valid -> map.fillGuarded("k", entry) { valid() } }.assert().isEqualTo(0)
     }
 

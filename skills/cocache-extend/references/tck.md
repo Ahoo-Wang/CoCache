@@ -1,6 +1,6 @@
 # Running the TCK
 
-Use this reference to wire and run the `cocache-test` suites against a backend, and to read a failure. Confirm abstract members and default timings in the pinned `cocache-test` sources. It describes 8.0; [6.x](#6x) lists the differences.
+Use this reference to wire and run the `cocache-test` suites against a backend, and to read a failure. Confirm abstract members and default timings in the pinned `cocache-test` sources.
 
 ## Suites
 
@@ -112,10 +112,3 @@ The suites wrap your backend in `HookedBackend` (a `ForwardingL1Store` that keep
 | A node keeps a value written before another node's invalidation | Channel delivers the event before the write is visible, or drops it without calling `onReset()` |
 
 Fix the backend; never edit, skip or loosen the TCK case. Rerun the single case, then the suite in every mode, and report exact commands and results.
-
-## 6.x
-
-- Suites wire against `RemoteStore`; there is no `expectedCapabilities`, `pause()` or `commandCancellation()`.
-- `EngineSpec.supportsConditionalWrites = false` skips the conditional cases for a store without `putIfMatch`.
-- `AsyncBackendProtocolSpec` (6.3+) reruns `BackendProtocolSpec` through `AsyncRemoteStore`; `AsyncEngineSpec`, `AsyncSetEngineSpec`, `AsyncMultiNodeSpec`, `AsyncFaultSpec` and `AsyncVersionedSpec` (6.3–6.x) rerun the engine suites through `cache.async()`. 8.0 removes all of them.
-- `MultiNodeSpec`, `FaultSpec` and `closesBackend` arrived in 6.3, `VersionedSpec` in 6.8.

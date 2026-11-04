@@ -621,7 +621,7 @@ class SuspendingCacheTest {
     }
 
     /**
-     * 6.7 新增的条件读写带默认实现（抛出 [UnsupportedOperationException]），6.6 时写成的实现无需改动。
+     * 条件读写带默认实现（抛出 [UnsupportedOperationException]），不支持它们的实现无需覆盖。
      */
     @Test
     fun conditionalMethodsHaveUnsupportedDefaults(): Unit = runBlocking {
@@ -648,7 +648,7 @@ class SuspendingCacheTest {
         }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
         runCatching { plain.putIfMatch("k", known, "v", Duration.ofSeconds(1)) }.exceptionOrNull()
             .assert().isInstanceOf(UnsupportedOperationException::class.java)
-        // 6.8 新增的按版本写入同样带默认实现
+        // 按版本写入同样带默认实现
         listOf<suspend () -> Any?>(
             { plain.putIfNewer("k", "v", 1) },
             { plain.putIfNewer("k", "v", 1, Duration.ofSeconds(1)) },

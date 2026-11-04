@@ -261,7 +261,7 @@ val members: Set<String> = online[roomId] // empty set when absent
 - **`put(key, emptySet())` equals `clear(key)`**: an empty set is stored as no key. `putAll` follows the same rule for each entry ([batch writes](./freshness.md#batch-writes)).
 - **TTL defaults to forever.** Each `add` or `remove` resets the expiry when you set one.
 - **Failures are loud.** Writes throw `CacheWriteException` (they are idempotent, so retry). Reads throw the Redis error, since there is no source to fall back to.
-- **Unreadable content throws.** An element the codec can't decode makes the read throw, and a set written in a newer format throws `IllegalStateException`. Content CoCache 8.x didn't write (for example a native Redis Set left by 5.x, or a set written by CoCache 6.x, at the same key) makes the read throw `CacheReadException`, and an `add` or `remove` on it, or on a set in a newer format, throws `CacheWriteException` and leaves the key unchanged. Only `put` replaces it. A set cache never reclaims such content, because reclaiming the only copy deletes it ([upgrading from 5.x](./migration-6.md#foreign-format)).
+- **Unreadable content throws.** An element the codec can't decode makes the read throw, and a set written in a newer format throws `IllegalStateException`. Content in a format this version can't read (for example a native Redis Set at the same key, or a set in a lower format) makes the read throw `CacheReadException`, and an `add` or `remove` on it, or on a set in a newer format, throws `CacheWriteException` and leaves the key unchanged. Only `put` replaces it. A set cache never reclaims such content, because reclaiming the only copy deletes it ([unreadable payloads](../operations/troubleshooting.md#corrupt-payloads)).
 - **Durability is Redis durability.** Use a `maxmemory-policy` that never evicts keys without a TTL (not `allkeys-*`). An asynchronous-replication failover can lose recent writes.
 
 If the set's truth lives in your database, don't use `SetCache`. Declare `Cache<K, Set<E>>`, update the database, and `invalidate`.
@@ -302,6 +302,6 @@ CoCache refuses to start rather than run a cache that can't behave as declared. 
 | `refreshWindow` not less than `ttl − ttlJitter` (the effective jitter), or not less than `localMaxAge` | A fresh copy would start inside the window and refresh on every hit |
 | Duplicate cache name, prefix-and-namespace pair, or bean name | Two caches would share keys or invalidations |
 | A namespace outside `[A-Za-z0-9._-]+`, such as one with `:` | Its keys could fall inside another namespace's range; move the prefix into `keyPrefix` |
-| `cocache.caches.[name]` for a cache that doesn't exist, or an unsupported property name from an earlier major version (see [Upgrading from 5.x](./migration-6.md#properties)) | Almost always a typo; see [Configuration Reference](./configuration.md#validation) |
+| `cocache.caches.[name]` for a cache that doesn't exist | Almost always a typo; see [Configuration Reference](./configuration.md#validation) |
 
 The `toString()` check on key types runs on the first read of each key type, not at startup.

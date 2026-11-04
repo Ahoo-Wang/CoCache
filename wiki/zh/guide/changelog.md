@@ -30,7 +30,7 @@ description: CoCache 版本发布历史和重要变更。
 - `LoadPolicy.asyncTimeout` 改为 `LoadPolicy.timeout`，配置项 `load-async-timeout` 改为 `load-timeout`（默认 `30s`）。它不再只约束异步加载：等待别的调用方加载的读取，在这次加载进行了这么久之后以 `SourceLoadTimeoutException` 失败，之后的读取开始新的加载，不再排在卡住的同步 loader 后面。6.x 中同步读取会一直等下去。`cocache.load.timeouts` 两种超时都计数。
 - `cocache-core` 在运行时依赖 `kotlinx-coroutines-core`。协议正在改写为一份协程实现，同时服务阻塞、异步与挂起三种 API；两种缓存的读取、提前刷新与写入都已用上它。开启断言（`-ea`，测试时的默认值）时，读取运行期间 kotlinx 会给线程名加上协程后缀（如 ` @coroutine#3`），阻塞的 loader 里也看得到。
 - 运行时不再启动 `cocache-timer` 线程：等待 lease 与等待回源许可都是协程挂起。
-- `cocache-redis` 不再包含 CoCache 5.x 迁移工具：删除了 `CoCache5Migrator`、`CoCache5Migration`、`CoCache5Format`、`CoCache5KeyMapper`、`CoCache5MigrationOptions`、`CoCache5MigrationReport`、`CoCache5CacheReport` 与 `CoCache5MigrationException`（包 `me.ahoo.cocache.redis.migration`）。8.x 不需要读 5.x 的数据，因此不再附带这个转换工具。以 Redis 为唯一副本的 5.x 数据，先用 CoCache 6.x（6.5 起）迁移，见[用 `CoCache5Migrator` 迁移](./migration-6.md#cocache5-migrator)。
+- `cocache-redis` 不再包含 CoCache 5.x 迁移工具：删除了 `CoCache5Migrator`、`CoCache5Migration`、`CoCache5Format`、`CoCache5KeyMapper`、`CoCache5MigrationOptions`、`CoCache5MigrationReport`、`CoCache5CacheReport` 与 `CoCache5MigrationException`（包 `me.ahoo.cocache.redis.migration`）。8.x 不需要读 5.x 的数据，因此不再附带这个转换工具。以 Redis 为唯一副本的 5.x 数据，先用 CoCache 6.x（6.5 起）迁移，见[用 `CoCache5Migrator` 迁移](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/zh/guide/migration-6.md)。
 - 回源许可（`load.max-concurrent`）对同步与异步调用方一律按到达顺序交接。6.x 的阻塞调用方直接争用释放出来的许可，可能抢在已在等待的异步调用方之前。
 - `CacheRuntime` 关闭时仍在进行的异步读取以 `IllegalStateException("CacheRuntime closed.")` 失败。仍在进行的异步写入先做完 Redis 修改、广播与本地淘汰：成功时再以这个异常完成，失败时以自己的异常完成。
 - 阻塞调用（`get`、`getAll`、`put`、`invalidate` 等）不再为每条 Redis 命令阻塞线程：命令与异步 API 一样发出，调用方停在 `runBlocking` 中等它们完成。因此中断调用方线程不再放弃 Redis 命令：被中断的调用方至多多等一个 `command-timeout`（默认 `2s`）。6.x 中等待立即以 `RedisException("Interrupted while waiting for Redis.")` 失败：写入把它包装为 `CacheWriteException` 抛出，读取把它当作 Redis 故障（默认从数据源加载）。在途的命令先完成或超时；之后读取释放它取得的 lease、不再调用 loader，调用抛出 `InterruptedException`。在中断生效之前已经完成的调用（如 L1 命中、命令已在途的 `put`）照常返回。两种情形都保留中断标志。超时而放弃的命令仍然不会在之后发出。
@@ -51,8 +51,13 @@ description: CoCache 版本发布历史和重要变更。
 
 - Spring：classpath 中有 `spring-tx` 时，starter 的 `cocacheCacheManager` 是 CoCache 的 `TransactionAwareSpringCacheManager`，它的缓存是 `TransactionAwareSpringCache`。它们取代 Spring 的 `TransactionAwareCacheManagerProxy` 与 `TransactionAwareCacheDecorator`，检查或解包这两个类型的代码不再找到它们。事务内的 `@CacheEvict` 现在回滚时同样失效，之后对同一 key 的驱逐取代之前的 `@CachePut`，提交之后的失败交给 `CacheErrorHandler`，不再抛出。不用 Spring Boot 时，用 `TransactionAwareSpringCacheManager` 代替 `TransactionAwareCacheManagerProxy` 包装 `CoCacheSpringCacheManager`。见 [Spring：CoCache 自己的事务装饰器](#spring-transaction-decorator)。
 - Spring：`TransactionalInvalidator` 每个事务一份登记，不再每个实例一份。经多个实例与 `evictIfPresent` 对同一缓存登记的失效在提交之后合并为一次 `invalidateAll`，失败一起抛出（第一个异常，其余作为 suppressed）。
+- Spring：删除 `CoCacheSpringCacheManager(runtime, executor)` 与 `CoCacheSpringCacheManager.DEFAULT_EXECUTOR`，改用 `CoCacheSpringCacheManager(runtime)`。`CoCacheSpringCache(cache, admin, executor)` 保留：其执行器执行 `retrieve(key, loader)` 的方法体。配置项 `cocache.spring-cache.retrieve-executor` 同样删除：Spring Boot 不再绑定它，设置它也不再告警。
 
 - `SourceLoadCancelledException` 从 `me.ahoo.cocache.coroutines` 移到 `me.ahoo.cocache.core`，并覆盖全部数据源：`CacheLoader` 自己抛出 `CancellationException`，或 `AsyncCacheLoader` 的 future 以它完成（其中的 `withTimeout`、HTTP 客户端取消了请求）时，共享这次加载的每个调用方都以 `SourceLoadCancelledException` 失败，原始异常是它的 `cause`。6.x 中这些调用方收到的就是那个 `CancellationException`，异步调用方的 future 因此看起来像是被取消了。
+
+- starter 不再检查 6.0 删除的配置项（`cocache.redis.strict-failure`、`cocache.redis.eviction-channel`、`cocache.redis.missing-guard-sentinel`、`cocache.metrics.client-side-hits`、`cocache.load.*`、`cocache.next.*`）。它们不再以 `CoCache 6.0 removed these properties` 让启动失败，与其它未知的配置项一样被 Spring Boot 忽略。配置元数据中的相应条目也已删除。
+- 运行时的默认阻塞执行器总是每个任务一个虚拟线程（`Executors.newVirtualThreadPerTaskExecutor()`）。为没有虚拟线程的 JDK 准备的后备（最多 512 个 `cocache-blocking-*` 守护线程的线程池）已删除，starter 也不再为 `Executors` 登记原生镜像的反射提示。
+- wiki 不再收录 5.x 升级指南（`guide/migration-6`），[6.x 分支](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/zh/guide/migration-6.md)保留它。删除 `cocache-migrate` agent skill，8.x 不提供升级 skill。
 
 ### 行为变化：关闭运行时会等待在途的 Redis 步骤
 
@@ -293,7 +298,7 @@ description: CoCache 版本发布历史和重要变更。
 
 - `SetCache.add` 与 `remove` 现在与读取一样遵循 `foreign-format`。为 `fail` 时（`SetCache` 的默认值），在本缓存读不懂的内容上增删成员抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。这类内容包括未迁移的 5.x 原生 Set、String 或 Hash，没有 6.x 格式字段的 Hash，6.x 的标量值，以及更高版本的 CoCache 写入的集合。检查与写入是一个原子步骤：key 的内容与 TTL 不变，不广播，这次写入计入 `cocache.unknown.formats` 与 `cocache.write.failures`。
 - 6.5.0 及以前，对未迁移的原生 Set 调用一次 `add` 就会替换它的全部成员，之后 key 看起来已经迁移，`CoCache5Migrator` 跳过它，旧成员永久丢失；`remove` 静默地什么也不做并报告成功。给缓存设置 `foreign-format: reclaim` 即可保留这一行为。
-- 整体写入（`put`、`putAll`，`Cache` 与 `SetCache` 都是）照旧覆盖任何内容，因为调用方给出的是完整的值。被覆盖的 5.x 内容不会被迁移工具备份，迁移工具之后会跳过这个 key。见 [Redis 是唯一副本的缓存](./migration-6.md#foreign-format)。
+- 整体写入（`put`、`putAll`，`Cache` 与 `SetCache` 都是）照旧覆盖任何内容，因为调用方给出的是完整的值。被覆盖的 5.x 内容不会被迁移工具备份，迁移工具之后会跳过这个 key。见 [Redis 是唯一副本的缓存](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/zh/guide/migration-6.md)。
 
 ### 行为变化：没有数据源时更高格式版本的值读取失败
 
@@ -310,7 +315,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ### 迁移 Redis 是唯一副本的缓存
 
-`CoCache5Migrator`（`cocache-redis`）把 CoCache 5.x 的数据转换为 6.x 格式，用于没有数据源、以 Redis 为权威存储的缓存，以及 5.x 的 `SetElementsCache`。它覆盖 5.x 的全部值格式：JSON 或普通字符串、原生 Set（迁移为 `SetCache` 或 `Cache<K, Set<String>>`）、Hash 与负缓存，并保留每个 key 的剩余寿命。它可以重复执行，按缓存报告读取、写入、跳过与失败的 key 数，遇到第一个无法解码的 key 即中止，并提供只读的 `dryRun`。原地迁移先备份每个 5.x 值，`rollback` 从备份恢复。见 [Redis 是唯一副本的缓存](./migration-6.md#redis-as-store)。
+`CoCache5Migrator`（`cocache-redis`）把 CoCache 5.x 的数据转换为 6.x 格式，用于没有数据源、以 Redis 为权威存储的缓存，以及 5.x 的 `SetElementsCache`。它覆盖 5.x 的全部值格式：JSON 或普通字符串、原生 Set（迁移为 `SetCache` 或 `Cache<K, Set<String>>`）、Hash 与负缓存，并保留每个 key 的剩余寿命。它可以重复执行，按缓存报告读取、写入、跳过与失败的 key 数，遇到第一个无法解码的 key 即中止，并提供只读的 `dryRun`。原地迁移先备份每个 5.x 值，`rollback` 从备份恢复。见 [Redis 是唯一副本的缓存](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/zh/guide/migration-6.md)。
 
 ```kotlin
 CoCache5Migrator.standalone(uri).use { migrator ->
@@ -504,7 +509,7 @@ implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.1.0")
 
 ## v6.0.0
 
-**模块组：** `me.ahoo.cocache` · **主版本。** CoCache 按 [RFC 0003](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0003-target-architecture.md) 的一致性协议重建。**不能滚动升级：** Redis 中的值格式与失效频道都已改变，5.x 与 6.0 实例不能共享 Redis。请按[迁移指南](./migration-6.md)整体切换。
+**模块组：** `me.ahoo.cocache` · **主版本。** CoCache 按 [RFC 0003](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0003-target-architecture.md) 的一致性协议重建。**不能滚动升级：** Redis 中的值格式与失效频道都已改变，5.x 与 6.0 实例不能共享 Redis。请按[迁移指南](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/zh/guide/migration-6.md)整体切换。
 
 ### 主要变化
 
@@ -546,7 +551,7 @@ implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.1.0")
 | `JoinCache`（`me.ahoo.cache.api.join`） | `me.ahoo.cocache.api.join.JoinCache`：两个缓存的只读组合视图，用 `@EnableCoCache(joinCaches = […])` 注册；`evict` → `invalidate`，不再有 `set`（见 [JoinCache](./join-cache.md)） |
 | Jedis、可替换的 L2、显式写入负缓存 | 已删除 |
 
-已删除的 5.x 配置项会让启动失败，错误信息会给出替代项（如果有的话）。部分改名同时改变了语义（例如 L2 现在总受 `localMaxAge` 限龄，默认 5 分钟），详见[行为变化](./migration-6.md#semantics)。
+已删除的 5.x 配置项会让启动失败，错误信息会给出替代项（如果有的话）。部分改名同时改变了语义（例如 L2 现在总受 `localMaxAge` 限龄，默认 5 分钟），详见[行为变化](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/zh/guide/migration-6.md)。
 
 ### 依赖
 

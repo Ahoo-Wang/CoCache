@@ -111,7 +111,7 @@ class AsyncApiDefaultsTest {
     }
 
     /**
-     * 条件读写是 6.7 新增的默认方法：不支持的实现同步 API 抛出、异步 API 以 [UnsupportedOperationException] 完成（从不同步抛出）。
+     * 条件读写是默认方法：不支持的实现同步 API 抛出、异步 API 以 [UnsupportedOperationException] 完成（从不同步抛出）。
      */
     @Test
     fun implementationsWithoutConditionalSupportFailLoudly() {
@@ -137,7 +137,7 @@ class AsyncApiDefaultsTest {
     }
 
     /**
-     * 按版本有序的写入是 6.8 新增的默认方法：不支持的实现同步 API 抛出、异步 API 以 [UnsupportedOperationException] 完成。
+     * 按版本有序的写入是默认方法：不支持的实现同步 API 抛出、异步 API 以 [UnsupportedOperationException] 完成。
      */
     @Test
     fun implementationsWithoutVersionSupportFailLoudly() {
