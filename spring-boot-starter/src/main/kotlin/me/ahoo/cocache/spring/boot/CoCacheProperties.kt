@@ -100,7 +100,7 @@ data class CoCacheProperties @ConstructorBinding constructor(
     val refreshExecutor: String?,
     /**
      * 运行时执行器（阻塞调度器，RFC 0005 §4.4、§5）所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析）：
-     * 异步与挂起视图的续接、共享加载、异步路径上的同步数据源与回源观测都在这里执行，因此它必须容得下阻塞的任务，不应排队。
+     * 异步与挂起视图的续接、共享加载、异步路径上的同步数据源都在这里执行，因此它必须容得下阻塞的任务，不应排队。
      * 未设置时每个任务一个虚拟线程（`cocache-worker-*`）。bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
      */
     val executor: String? = null,

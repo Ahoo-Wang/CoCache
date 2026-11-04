@@ -21,8 +21,8 @@ import java.util.function.Supplier
  * 实现必须在调用方线程上同步执行 `block` 恰好一次，原样返回其结果、原样抛出其异常（异常透明）；
  * 不得把 key 写入观测数据（高基数，且可能是个人信息）。通过 [CacheRuntime.Builder.loadObserver] 设置，默认 [NOOP]。
  *
- * 三种变体都经 [observe]（RFC 0005 §5 删除了 6.x 的 `observeAsync`）：同步变体在调用方线程上调用它；异步与挂起变体在运行时的执行器上
- * 调用它（[CacheRuntime.Builder.executor]，默认一个虚拟线程），`block` 在这个线程上等待回源结束，观测因此覆盖整个回源，
+ * 三种变体都经 [observe]（RFC 0005 §5 删除了 6.x 的 `observeAsync`）：同步变体在调用方线程上调用它；异步与挂起变体在专用的虚拟线程上
+ * 调用它（每次观测一个，`cocache-observe-N`，不占用运行时的执行器），`block` 在这个线程上等待回源结束，观测因此覆盖整个回源，
  * 数据源的同步部分在 `block` 的线程上执行、看得到观测器设置的线程局部状态。
  */
 interface LoadObserver {

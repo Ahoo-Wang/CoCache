@@ -43,7 +43,7 @@ import java.util.concurrent.TimeUnit
 import java.util.function.Supplier
 
 /**
- * 异步路径的回源观测（RFC 0005 §5：只有同步的 [LoadObserver.observe]）：观测在运行时的执行器上进行，从不占用调用方线程，
+ * 异步路径的回源观测（RFC 0005 §5：只有同步的 [LoadObserver.observe]）：观测在专用的虚拟线程上进行（不占用运行时的执行器与调用方线程），
  * 覆盖整个回源（直到数据源的 future 完成）；数据源的同步部分看得到观测器的线程局部状态；命中路径从不观测。
  */
 class AsyncLoadObserverTest {
@@ -133,7 +133,7 @@ class AsyncLoadObserverTest {
         observer.records.map { it.operation to it.keyCount }
             .assert().containsExactly(LoadOperation.LOAD to 1, LoadOperation.LOAD_ALL to 2, LoadOperation.LOAD to 1)
         observer.records.last().error.assert().isSameAs(failure)
-        observer.records.all { it.thread.startsWith(CacheRuntime.WORKER_THREAD_PREFIX) }
+        observer.records.all { it.thread.startsWith(OBSERVATION_THREAD_PREFIX) }
             .assert().withFailMessage { "observed on ${observer.records.map { it.thread }}" }.isTrue()
         seenInScope.assert().containsOnly(LoadOperation.LOAD)
     }
@@ -206,7 +206,8 @@ class AsyncLoadObserverTest {
         runtime.close()
         call.handle { _, e -> e }.get(10, TimeUnit.SECONDS).assert().isInstanceOf(IllegalStateException::class.java)
         observer.records.single().error.assert().isInstanceOf(CancellationException::class.java)
-        val read = Suspending.await { memory.store(Keyspace("cocache:", name)).read("cocache:$name:k", null, null, null) }
+        val store = memory.store(Keyspace("cocache:", name))
+        val read = Suspending.await { store.read("cocache:$name:k", null, null, null) }
         read.assert().isEqualTo(L1Read.Miss(false))
     }
 }

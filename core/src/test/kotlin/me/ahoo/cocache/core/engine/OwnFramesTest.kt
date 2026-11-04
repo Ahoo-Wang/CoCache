@@ -162,7 +162,8 @@ class OwnFramesTest {
         val remoteHits = metrics().remoteHits
         ownFrame("k")
         cache["k"].assert().isEqualTo("v0")
-        metrics().remoteHits.assert().withFailMessage { "the own frame did not evict the copy" }.isEqualTo(remoteHits + 1)
+        metrics().remoteHits.assert()
+            .withFailMessage { "the own frame did not evict the copy" }.isEqualTo(remoteHits + 1)
     }
 
     /**
@@ -190,7 +191,8 @@ class OwnFramesTest {
         ownFrame("b")
         cache["a"].assert().isEqualTo("a1")
         cache["b"].assert().isEqualTo("b1")
-        metrics().remoteHits.assert().withFailMessage { "own frames did not evict the copies" }.isEqualTo(remoteHits + 2)
+        metrics().remoteHits.assert()
+            .withFailMessage { "own frames did not evict the copies" }.isEqualTo(remoteHits + 2)
     }
 
     private companion object {

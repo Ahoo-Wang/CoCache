@@ -16,10 +16,10 @@ package me.ahoo.cocache.core.internal
 import kotlinx.coroutines.runBlocking
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ExecutionException
-import java.util.concurrent.CancellationException
 
 class FuturesTest {
     @Test
@@ -65,6 +65,7 @@ class FuturesTest {
         runCatching { CompletableFuture.failedFuture<String>(CompletionException(failure)).joinOriginal() }
             .exceptionOrNull().assert().isSameAs(failure)
         val cancelled = CompletableFuture<String>().apply { cancel(true) }
-        runCatching { cancelled.joinOriginal() }.exceptionOrNull().assert().isInstanceOf(CancellationException::class.java)
+        val error = runCatching { cancelled.joinOriginal() }.exceptionOrNull()
+        error.assert().isInstanceOf(CancellationException::class.java)
     }
 }

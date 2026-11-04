@@ -53,7 +53,8 @@ class EngineDispatcherTest {
     fun markIsClearedWhenATaskThrows() {
         val direct = EngineDispatcher { it.run() }
         val failure = IllegalStateException("boom")
-        runCatching { direct.dispatch(EmptyCoroutineContext) { throw failure } }.exceptionOrNull().assert().isSameAs(failure)
+        val error = runCatching { direct.dispatch(EmptyCoroutineContext) { throw failure } }.exceptionOrNull()
+        error.assert().isSameAs(failure)
         direct.onDispatchedThread.assert().isFalse()
     }
 
