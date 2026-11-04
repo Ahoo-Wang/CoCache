@@ -735,6 +735,8 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ## 7. 性能预算与验证
 
+验证时点：GA 之前一次完成（§10 M8）。开发期间各切片不跑 JMH（维护者，2026-11-03）：M3a–M4b 每个切片的最差中位数都在 −2.1% 以内。
+
 | 路径 | 预算 | 验证 |
 |------|------|------|
 | L2 命中 | 不退化（1 / 8 线程，含 `l2HitMixed`）；异步与挂起变体的 L2 命中不启动协程；`unfilled` 标志的检查与 6.9 相同 | `scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed,l2HitAsync -t 1,8` |
@@ -871,10 +873,10 @@ if (!stamps.isValid(storageKey, stamp)) {
 5. **M5 用户 API**：类型（V1–V3，按 v4 全部实现）、`Lookup.Unknown` 与 `unknownRead` 的取值（S16）、`CoCacheFactory`（校验 `type` 是接口，声明接口与手写实现的区分，S21）；`cocache-coroutines` 并入 core，挂起变体的上下文规则（K2、K6）与重入守卫（K7）；带版本数据源的删除（K16）；`Store` 的类型默认值（D7）；按缓存的读超时接入引擎（D6）；`InvalidationListener` 收到编码 key、`keyPrefix` 为空时启动告警（S4）；评估被取消的写入是否整体放进 `NonCancellable`（K18）。
 6. **M6 配置**（V10）：含“字段 × 层”的语义表、显式哨兵、overrides 只收紧并钳制按调用的寿命（S8、S9、S10）；`constrain` 的值域与 customizer 写锁定字段（S12）；`cocache.key-prefix`（S17；不检测 6.x 的键，§4.8）；按缓存的读超时的配置键（D6）；每种 spec 的默认策略（S23）；`read-failure` 与 `unknown-read` 的适用性（S11、S16）；“未分层”的标注（S20）；驱逐检查的取值（S22）。
    **M7 Spring**（V11）：含事务上下文在调用入口捕获、记录进入任何共享层的 key、事务内 leader 的结果不共享、按 (namespace, 编码 key) 匹配（S7、S15、S24）；`Unknown` 的不对称与可选的 `CacheErrorHandler`、`afterCommit` 的异常、通知嵌套的告警（S18、S19）。S5、S6 已在 main 与 6.x 修复，M7 的装饰器沿用。
-7. **M8 检验与文档**：Lincheck（已批准，CI 已运行）、TLA+、architecture.md 重排（V12）、wiki 与升级说明（§8）、skills。
+7. **M8 检验与文档**：GA 前的 JMH 对比（§7 的全部预算，基线 v6.10.0；开发期间各切片不跑，维护者 2026-11-03）、Lincheck（已批准，CI 已运行）、TLA+、architecture.md 重排（V12）、wiki 与升级说明（§8）、skills。
 8. **8.0.0** 发布；8.x 按 §4.2 的演进规则新增能力，新的必须理解的段两阶段发布。
 
-每个里程碑由若干 PR 组成，每个 PR 的 `./gradlew check` 全绿；触及命中路径、同步未命中路径或异步路径的 PR 附 `scripts/jmh-compare.sh` 的对比。
+每个里程碑由若干 PR 组成，每个 PR 的 `./gradlew check` 全绿；JMH 对比在 GA 之前一次完成（§7）。
 
 ## 11. 风险与未决问题
 
