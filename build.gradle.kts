@@ -131,6 +131,8 @@ configure(libraryProjects) {
         }
         // fix logging missing code for JacocoPlugin
         jvmArgs = listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logback.xml")
+        // 发现阶段的问题（如返回值不是 Unit 的 @Test 方法，`fun x() = runBlocking { … }`）让构建失败，而不是静默跳过这些测试
+        systemProperty("junit.platform.discovery.issue.severity.critical", "WARNING")
         // 产物始终按 JDK 21 编译；-PtestJavaVersion=25 让测试运行在更新的 JDK 上，验证运行时兼容性
         providers.gradleProperty("testJavaVersion").orNull?.let { version ->
             javaLauncher.set(

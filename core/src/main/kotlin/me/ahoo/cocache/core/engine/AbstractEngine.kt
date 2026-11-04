@@ -225,13 +225,25 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected fun frameOf(keys: Collection<String>): ByteArray = InvalidationFrame.encode(nodeId, keys)
 
     /**
-     * 戳保护的 L2 填充：在 key 的锁内校验并写入，写后按身份复核（[fillGuarded]，RFC 0005 §4.5）。
+     * 戳保护的 L2 填充：在 key 的锁内校验并写入，写后按身份复核（[fillGuarded]，RFC 0005 §4.5）。没有写入（戳已失效，
+     * 或保留了版本更新的副本，[keptCopy]）时计入 `staleFillsDiscarded`。
      */
     protected fun fillLocal(storageKey: String, entry: LocalEntry<V>, stamp: Long) {
-        if (!local.asMap().fillGuarded(localKeyOf(storageKey), entry) { stamps.isValid(storageKey, stamp) }) {
+        val filled = local.asMap().fillGuarded(
+            localKeyOf(storageKey),
+            entry,
+            { current -> keptCopy(current, entry) }
+        ) { stamps.isValid(storageKey, stamp) }
+        if (!filled) {
             metrics.staleFillDiscarded()
         }
     }
+
+    /**
+     * L2 中已有的副本 [current] 比要填充的 [entry] 更新、应当保留时，返回要留下的副本；否则为 `null`，照常填充（在 L2 的锁内调用，
+     * 不得有副作用）。只有带版本的缓存覆盖它：它的 L2 不按版本后退（RFC 0005 I-K 的 L2 条款）。
+     */
+    protected open fun keptCopy(current: LocalEntry<V>, entry: LocalEntry<V>): LocalEntry<V>? = null
 
     /**
      * L2 副本：到期时间不晚于 L1 剩余寿命，也不晚于 [maxAge]。
@@ -373,6 +385,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 已广播（原子广播的后端），而这一帧在本节点被过滤，所以本节点自己递增戳并淘汰本地副本（同写入方修改 L1 之后的那一步），
      * 调用方不填 L2：否则绕过 SingleFlight 的同节点读取者可以把旧版本写回 L2。下一次读取多一次 L1 往返。
      * 非原子广播的后端上由这里发布（不可取消，同 [write]）；发布失败只计数告警，其它节点的旧副本由 `localMaxAge` 兜底。
+     *
+     * 结果未知的带版本填充同样走这里（TLA+ F2）：它可能稍后才执行。现在递增戳只挡住已经读过 L1 的同节点读取者；这之后、
+     * 迟到的 `FILL` 执行之前开始的读取仍可能填入旧版本（本节点的帧被过滤），直到写入方的 `putIfNewer`（版本相等时广播）或 `localMaxAge`。
+     * 非原子广播时这里的发布同样可能早于迟到的执行，其它节点的界相同。
      */
     @Suppress("TooGenericExceptionCaught")
     protected suspend fun afterAdvancedFill(keys: Collection<String>) {

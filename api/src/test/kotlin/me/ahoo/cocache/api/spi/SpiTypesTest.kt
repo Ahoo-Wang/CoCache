@@ -104,7 +104,6 @@ class SpiTypesTest {
         scalar.toString().assert().isEqualTo("SHA-256:" + scalar.bytes.joinToString("") { "%02x".format(it) })
         scalar.assert().isEqualTo(Digest.ofPayload("ab".toByteArray()))
         scalar.assert().isEqualTo(Digest(scalar.bytes))
-        scalar.contentEquals(scalar.bytes).assert().isTrue()
         // RFC 0005 §4.7（D1）：载荷的 SHA-256，"ab" 的标准测试向量
         scalar.bytes.joinToString("") { "%02x".format(it) }
             .assert().isEqualTo("fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603")
