@@ -1013,7 +1013,7 @@ open class CoherentEngineTest {
         listOf(
             metrics.remoteHits, metrics.misses, metrics.filtered, metrics.loads, metrics.loadFailures, metrics.loadRejected,
             metrics.leaseWaits, metrics.leaseWaitTimeouts, metrics.fillRejected, metrics.degradedFills, metrics.staleFillsDiscarded,
-            metrics.reclaims, metrics.unknownFormats, metrics.refreshes, metrics.refreshRejected, metrics.remoteFailures,
+            metrics.reclaims, metrics.unknownFormats, metrics.refreshes, metrics.refreshRejected, metrics.refreshSkipped, metrics.remoteFailures,
             metrics.invalidationsReceived, metrics.writeFailures, metrics.invalidationRetries, metrics.invalidationsDropped, metrics.resets,
         ).all { it >= 0 }.assert().isTrue()
         metrics.loadNanos.assert().isGreaterThanOrEqualTo(0)

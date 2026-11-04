@@ -83,6 +83,11 @@ internal object CacheCounters {
         CacheCounter("refreshRejected", "cocache.refresh.rejections", "Refreshes rejected by the executor") {
             it.refreshRejected
         },
+        CacheCounter(
+            "refreshSkipped",
+            "cocache.refresh.skipped",
+            "Refreshes that were due but did not run: no refresh token, or no refresh point"
+        ) { it.refreshSkipped },
         CacheCounter("remoteFailures", "cocache.remote.failures", "L1 operations that failed") {
             it.remoteFailures
         },

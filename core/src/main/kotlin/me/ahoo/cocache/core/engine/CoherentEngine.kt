@@ -1733,6 +1733,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 刷新点退避 [refreshBackoff]（见 [localEntry]），否则本节点的每次命中都会再读一次 L1，持有者崩溃时持续到令牌签发超过 `lease.ttl`。
      */
     private fun refill(storageKey: String, step: RefreshStep.Refill<V>, stamp: Long): LocalEntry<V> {
+        metrics.refreshSkipped()
         val entry = localEntry(step.value, step.ttl, policy.localMaxAge, refreshBackoff, step.refreshable)
         fillLocal(storageKey, entry, stamp)
         return entry
