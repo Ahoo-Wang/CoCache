@@ -30,6 +30,7 @@ Lowest to highest, field by field: built-in defaults, the declaration (annotatio
 | `cocache.defaults.*` / `cocache.caches.[name].*` | | Policy properties |
 | `cocache.redis.*` | | Redis backend settings |
 | `cocache.spring-cache.require-sync` | `false` | `true` fails startup on a non-sync `@Cacheable` on a CoCache cache |
+| `cocache.spring-cache.degrade-on-error` (8.0+) | `false` | `true`: `DegradingCacheErrorHandler` logs read and write failures on CoCache caches instead of rethrowing them; invalidation failures and other caches go to the previous handler |
 | `cocache.spring-cache.retrieve-executor` | — | Deprecated in 6.3 and ignored with a startup warning: `retrieve` uses the async view and needs no executor. Remove it |
 | `cocache.refresh-executor` | built-in | Bean name of the `Executor` for refresh-ahead loads; CoCache never shuts it down |
 | `cocache.async-executor` (6.3+) | runtime-owned `ForkJoinPool` (`cocache-async-*`) | Bean name of the `Executor` for async-view continuations; short non-blocking work only, never block on it |

@@ -71,6 +71,20 @@ class TransactionalInvalidatorTest {
         orders.invalidations.assert().containsExactly(listOf("o1"))
     }
 
+    /**
+     * 登记按事务划分，不按实例：同一事务内经不同实例登记的失效进入同一个同步，同一缓存仍合并为一次 `invalidateAll`。
+     */
+    @Test
+    fun instancesShareOneRegistrationPerTransaction() {
+        val other = TransactionalInvalidator()
+        tx.executeWithoutResult {
+            invalidator.invalidate(users, "a")
+            other.invalidate(users, "b")
+            TransactionSynchronizationManager.getSynchronizations().assert().hasSize(1)
+        }
+        users.invalidations.assert().containsExactly(listOf("a", "b"))
+    }
+
     @Test
     fun rollbackInvalidates() {
         tx.executeWithoutResult { status ->

@@ -33,6 +33,7 @@ Properties come last so operators can retune a cache without a rebuild. This mea
 | `cocache.caches.[name].*` | policy | — | [Policy properties](#policy-properties) for one cache |
 | `cocache.redis.*` | — | — | [Redis backend](#redis) settings |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`: startup fails if a `@Cacheable` on a CoCache cache lacks `sync = true`. `false`: a warning is logged. See [Spring Cache](./spring-cache.md#sync-check). |
+| `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`: Spring's cache interceptor uses `DegradingCacheErrorHandler`, which logs read and write failures on CoCache caches instead of rethrowing them, so a non-sync `@Cacheable` runs its method while Redis is down. Failed invalidations, and failures on other caches, still go to the previous handler. See [Spring Cache](./spring-cache.md#failures). |
 | `cocache.spring-cache.retrieve-executor` | bean name | — | **Deprecated since 6.3** and ignored with a startup warning: `retrieve` uses the [async view](./async.md) and needs no executor. Removed in 7.0. |
 | `cocache.refresh-executor` | bean name | built-in | The `Executor` bean that runs [refresh-ahead](./freshness.md#refresh-ahead) loads. See [Executors](#executors). |
 | `cocache.async-executor` | bean name | built-in | The `Executor` bean that runs the [async view](./async.md)'s continuations. See [Executors](#executors). |

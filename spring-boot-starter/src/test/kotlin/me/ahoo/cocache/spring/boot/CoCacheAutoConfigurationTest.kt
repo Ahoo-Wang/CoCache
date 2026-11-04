@@ -154,7 +154,7 @@ class CoCacheAutoConfigurationTest {
             (
                 context.getBean(
                     CacheManager::class.java
-                ) is org.springframework.cache.transaction.TransactionAwareCacheManagerProxy
+                ) is me.ahoo.cocache.spring.tx.TransactionAwareSpringCacheManager
                 ).assert().isTrue()
             context.getBean(CacheManager::class.java).getCache("user")?.get("2")?.get().assert().isEqualTo("user-2")
         }
@@ -471,7 +471,7 @@ class CoCacheAutoConfigurationTest {
                 CoCacheProperties.EvictionCheck.WARN
             ),
             CoCacheProperties.Backend.REDIS,
-            CoCacheProperties.SpringCache(false, null),
+            CoCacheProperties.SpringCache(false, false, null),
             null
         ).policyFor("USER", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(2))
     }

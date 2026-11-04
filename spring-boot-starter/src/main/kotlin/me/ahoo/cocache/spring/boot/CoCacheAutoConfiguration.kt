@@ -19,6 +19,8 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
+import me.ahoo.cocache.spring.cache.DegradingCacheErrorHandler
+import me.ahoo.cocache.spring.tx.TransactionAwareSpringCacheManager
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.ListableBeanFactory
@@ -36,7 +38,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails
 import org.springframework.boot.data.redis.autoconfigure.DataRedisProperties
 import org.springframework.cache.CacheManager
-import org.springframework.cache.transaction.TransactionAwareCacheManagerProxy
+import org.springframework.cache.interceptor.CacheAspectSupport
+import org.springframework.cache.interceptor.CacheErrorHandler
+import org.springframework.cache.interceptor.SimpleCacheErrorHandler
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.env.Environment
@@ -169,6 +173,7 @@ class CoCacheAutoConfiguration {
         runtime: CacheRuntime,
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
+        cacheAspects: ObjectProvider<CacheAspectSupport>,
     ): CacheManager {
         // 6.3 起 retrieve 经异步视图，不再使用执行器：旧配置项只告警
         properties.springCache.retrieveExecutor?.let {
@@ -178,11 +183,35 @@ class CoCacheAutoConfiguration {
             )
         }
         val manager = CoCacheSpringCacheManager(runtime)
-        // 有 spring-tx 时把 put / evict / clear 推迟到事务提交之后：提交前失效会让并发回源读到旧数据（G2）
+        // 有 spring-tx 时经 CoCache 的事务装饰器：evict 提交与回滚都失效，put / clear 推迟到提交之后（RFC 0005 §4.9）
         if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, beanFactory.beanClassLoader)) {
             return manager
         }
-        return TransactionAwareCacheManagerProxy(manager)
+        // 事务结束之后的失败交给缓存通知的 CacheErrorHandler（S18）。失败时才取得：此时缓存通知已经配置完成，
+        // 也看得到 degrade-on-error 换上的处理器
+        return TransactionAwareSpringCacheManager(manager) { cacheErrorHandler(cacheAspects) }
+    }
+
+    /**
+     * `cocache.spring-cache.degrade-on-error=true`：缓存通知（[CacheAspectSupport]）改用 [DegradingCacheErrorHandler]，
+     * 原来的处理器（`CachingConfigurer.errorHandler()` 给出的，或 Spring 默认的 [SimpleCacheErrorHandler]）处理其它缓存，
+     * 以及 CoCache 缓存的失效与清空失败。
+     *
+     * 在全部单例创建之后替换：缓存通知的处理器由 `CachingConfigurer` 延迟解析，提前取得会提前创建它。
+     * 已经是 [DegradingCacheErrorHandler] 的（应用自己配置了）不再包装。
+     */
+    @Bean
+    @ConditionalOnBean(CacheRuntime::class)
+    @ConditionalOnProperty(prefix = SPRING_CACHE_PREFIX, name = ["degrade-on-error"], havingValue = "true")
+    fun cocacheDegradingCacheErrorHandler(
+        cacheAspects: ObjectProvider<CacheAspectSupport>,
+    ): SmartInitializingSingleton = SmartInitializingSingleton {
+        cacheAspects.orderedStream().forEach { aspect ->
+            val current = aspect.errorHandler
+            if (current !is DegradingCacheErrorHandler) {
+                aspect.errorHandler = DegradingCacheErrorHandler(current)
+            }
+        }
     }
 
     /**
@@ -230,6 +259,8 @@ class CoCacheAutoConfiguration {
     companion object {
         private val log = LogFactory.getLog(CoCacheAutoConfiguration::class.java)
         private const val TRANSACTION_SYNCHRONIZATION = "org.springframework.transaction.support.TransactionSynchronizationManager"
+        private const val SPRING_CACHE_PREFIX = "${CoCacheProperties.PREFIX}.spring-cache"
+        private val SIMPLE_ERROR_HANDLER = SimpleCacheErrorHandler()
         internal const val REFRESH_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.refresh-executor"
         internal const val LOCAL_HITS_PROPERTY = "${CoCacheProperties.PREFIX}.metrics.local-hits"
         internal const val RETRIEVE_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.spring-cache.retrieve-executor"
@@ -256,6 +287,12 @@ class CoCacheAutoConfiguration {
             (beanFactory as? ConfigurableBeanFactory)?.registerDependentBean(beanName, RUNTIME_BEAN)
             return executor
         }
+
+        /**
+         * 缓存通知的 [CacheErrorHandler]；没有唯一的缓存通知（没有 `@EnableCaching`）时是 Spring 默认的 [SimpleCacheErrorHandler]。
+         */
+        internal fun cacheErrorHandler(cacheAspects: ObjectProvider<CacheAspectSupport>): CacheErrorHandler =
+            cacheAspects.getIfUnique()?.errorHandler ?: SIMPLE_ERROR_HANDLER
 
         @Bean
         @JvmStatic

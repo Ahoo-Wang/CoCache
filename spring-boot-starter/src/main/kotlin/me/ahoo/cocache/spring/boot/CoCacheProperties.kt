@@ -218,6 +218,13 @@ data class CoCacheProperties @ConstructorBinding constructor(
         @DefaultValue("false")
         val requireSync: Boolean,
         /**
+         * 缓存通知改用 `DegradingCacheErrorHandler`（默认 `false`）：CoCache 缓存的读写失败只记录告警，不抛给调用方。
+         * 不带 `sync` 的 `@Cacheable` 在 L1 故障时因此按未命中执行方法（带 `sync = true` 的本来就降级回源），
+         * `@CachePut` 的写入失败不再让调用失败；失效与清空失败、其它缓存的失败仍交给原来的处理器。
+         */
+        @DefaultValue("false")
+        val degradeOnError: Boolean,
+        /**
          * 已弃用：`retrieve`（异步 `@Cacheable`）经缓存的异步视图，不使用执行器，也没有线程等待回源。
          * 设置时启动告警并忽略。异步视图的执行器见 `cocache.async-executor` / `cocache.blocking-executor`。
          */

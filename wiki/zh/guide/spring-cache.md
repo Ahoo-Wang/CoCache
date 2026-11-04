@@ -1,6 +1,6 @@
 ---
 title: Spring Cache
-description: 在 @Cacheable、@CachePut 与 @CacheEvict 背后使用 CoCache：为什么 sync = true 很重要、启动时的 sync 检查、null 的处理、事务，以及与其它缓存管理器并存。
+description: 在 @Cacheable、@CachePut 与 @CacheEvict 背后使用 CoCache：为什么 sync = true 很重要、启动检查、null 的处理、Redis 故障、事务，以及与其它缓存管理器并存。
 ---
 
 # Spring Cache
@@ -55,6 +55,8 @@ cocache:
 
 检查按缓存名匹配。指定了其它 `cacheManager` 或自定义 `cacheResolver` 的操作不一定经过 CoCache，检查会跳过。
 
+缓存通知与事务通知的 order 相同时，同一个检查也记录一条 `WARN`。见[事务通知在外层](#advice-order)。
+
 只有存在名为 `cocacheCacheManager` 的 bean 时检查才会运行：可以是 starter 自己的管理器，也可以是你以这个名字声明的管理器（见[与其它缓存管理器并存](#other-managers)）。你声明任何其它 `CacheManager` 时 starter 的管理器会退让，因此如果你以别的 bean 名自己装配 `CoCacheSpringCacheManager`，检查不适用，`sync = true` 需要你自己保证。
 
 ## Spring 操作如何映射 {#semantics}
@@ -64,8 +66,8 @@ cocache:
 | `get(key)` | 有值即命中。不存在与**负缓存**都视为未命中。 |
 | `get(key, valueLoader)`（`sync = true`） | `cache.get(key, loader)`。loader 的异常包装为 `ValueRetrievalException`。 |
 | `put(key, value)`（`@CachePut`） | `cache.put(key, value)`。值为 `null` 时改为 `invalidate(key)`。 |
-| `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)` |
-| `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 是共享的，从不整体清空。 |
+| `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)`。事务内见[事务](#transactions)。 |
+| `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 与其它实例的副本保持不变：8.0 不能在全集群清空一个缓存。每个缓存第一次调用时记录一条 `WARN` 说明这一点。请改为按 key 驱逐。 |
 | `retrieve(key)`（异步与响应式） | 缓存[异步视图](./async.md)上的异步 `lookup`。L2 命中返回已完成的 future，不切换线程；负缓存以 `null` 完成（视为未命中）。 |
 | `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | [异步视图](./async.md)上的异步 `get(key, loader)`：与 `get(key, loader)` 一样经受 lease 保护的路径回源，**没有线程等待**异步 loader。方法体在运行时的阻塞执行器（`cocache.blocking-executor`）上执行，与 6.3 之前在 retrieve 执行器上执行一样，所以先阻塞再返回 future 的方法体（如 `completedFuture(repository.find(id))`）不会卡住 CoCache 的异步执行器。方法体看不到调用方的 ThreadLocal。失败时 future 以原始异常完成。 |
 
@@ -83,6 +85,23 @@ cocache:
 - 不带 sync 的 `@Cacheable` 经 `get(key)` 读取，没有 loader。Redis 读取失败时抛出 `CacheReadException`，由 Spring 交给 `CacheErrorHandler`：默认的处理器重新抛出，`LoggingCacheErrorHandler` 记录日志后改为执行方法。也可以在缓存上设置 `read-failure: degrade`：读取返回未命中且不缓存，Spring 随后执行方法。
 - `@CacheEvict` 在 Redis 删除失败时抛出 `CacheWriteException`，因为没有 loader 时 `invalidate-failure` 默认为 `throw`。这里方法就是数据源、删除总是安全的，可以在这些缓存上设置 `invalidate-failure: retry`，像 6.8 一样把失败的删除放进重试队列。见[配置](./configuration.md#policy-properties)。
 
+于是同一个缓存上的两种 `@Cacheable` 表现不同。Redis 故障期间，不带 sync 的 `@Cacheable` 调用全部失败，因为 Spring 默认的 `CacheErrorHandler` 重新抛出读取失败；`@Cacheable(sync = true)` 则改为执行方法。`read-failure: degrade` 也不能让不带 sync 的方法可用：随后的 `put` 同样失败。
+
+要放行这些失败，开启 starter 的降级处理器：
+
+```yaml
+cocache:
+  spring-cache:
+    degrade-on-error: true
+```
+
+starter 随后为 Spring 的缓存拦截器换上 `DegradingCacheErrorHandler`。它只对 CoCache 缓存生效：读取失败或写入失败记录为一条 `WARN`（不带堆栈，不含 key；堆栈在 `DEBUG` 级别输出），不重新抛出。Spring 随后把这次读取当作未命中、执行方法，结果不缓存。方法就是数据源，缓存的副本可以跳过。其余失败交给原来的处理器（`CachingConfigurer` 给出的，或 Spring 默认的）：
+
+- 其它缓存的失败；
+- CoCache 缓存上失败的失效与清空（`@CacheEvict`，以及结果为 `null` 的 `@CachePut`）。`invalidate-failure: retry` 时它们不会失败；设置为 `throw` 就是要求看到失败。
+
+不用 Spring Boot 时，从 `CachingConfigurer.errorHandler()` 返回 `DegradingCacheErrorHandler(yourHandler)`。
+
 ## retrieve 执行器（已弃用） {#executor}
 
 6.3 起，`retrieve` 经缓存的[异步视图](./async.md)，不再需要单独的执行器。6.3 之前，每个等待中的调用都占一个线程，执行器还必须不排队，才能避免嵌套的异步 `@Cacheable(sync = true)` 死锁；现在这两点都不存在了。
@@ -99,15 +118,51 @@ Spring Cache 的 `put` 与 `evict` 只有阻塞签名。响应式方法上的 `@
 
 ## 事务 {#transactions}
 
-classpath 中有 `spring-tx` 时，starter 用 Spring 的 `TransactionAwareCacheManagerProxy` 包装管理器：事务内的 `@CacheEvict` 与 `@CachePut` 在提交之后执行，回滚时不执行。在提交之前失效，并发的读取可能把旧数据缓存起来。
+classpath 中有 `spring-tx` 时，starter 用 CoCache 的事务装饰器 `TransactionAwareSpringCacheManager` 包装管理器，取代 Spring 的 `TransactionAwareCacheManagerProxy`。事务内：
 
-`@CacheEvict(beforeInvocation = true)` 按 Spring 的要求在方法之前立即执行。事务内，CoCache 还把 key 登记到 `TransactionalInvalidator`，提交或回滚之后再失效一次。否则驱逐与提交之间的读取可能把旧数据缓存起来，直到 `ttl`。
+| 注解 | Spring 调用 | 行为 |
+|------|-------------|------|
+| `@CacheEvict` | `evict(key)` | 登记到事务。提交之后**以及**回滚之后都失效这个 key。 |
+| `@CacheEvict(beforeInvocation = true)` | `evictIfPresent(key)` | 按 Spring 的要求立即失效，同时登记，提交或回滚之后再失效一次。 |
+| `@CachePut` | `put(key, value)` | 提交之后写入，回滚时丢弃。结果为 `null` 时是一次失效，按 `@CacheEvict` 登记。 |
+| `@CacheEvict(allEntries = true)` | `clear()` | 提交之后清空本实例的 L2，回滚时丢弃。 |
+| `@CacheEvict(allEntries = true, beforeInvocation = true)` | `invalidate()` | 立即清空本实例的 L2。 |
 
-回滚时不执行留下一个缺口：同一事务内的 `@Cacheable(sync = true)` 读取刚写入的行时，回滚之后未提交的行留在 Redis 中直到 `ttl`。`TransactionalInvalidator` 在回滚时同样失效，读取自己写入的事务请使用它。
+事务之外，所有操作立即执行。
 
-回滚到 savepoint 的 `NESTED` 事务留下另一个缺口：其中的 `@CachePut` 仍会在外层事务提交时写入它的值，因为 Spring 的装饰器看不到回滚到 savepoint。嵌套事务内请用 `@CacheEvict`。登记到 `TransactionalInvalidator` 的 key（包括 `@CacheEvict(beforeInvocation = true)` 登记的）在回滚到 savepoint 时失效。
+装饰器这样做的原因：
 
-直接调用时使用 `TransactionalInvalidator`（见[保持数据新鲜](./freshness.md#transactions)）。
+- **提交之后失效**。在提交之前失效，并发的读取可能把旧数据缓存起来。对于 `beforeInvocation = true`，提交之后的失效会清掉驱逐与提交之间另一个实例上的读取加载的旧数据。
+- **回滚之后同样失效**。同一事务内的 `@Cacheable(sync = true)` 读取在事务中执行，可能加载到你写入但从未提交的行。Spring 的装饰器在回滚时不执行 `@CacheEvict`，这一行于是留在 Redis 中直到 `ttl`。
+- **后面的驱逐优先**。提交时 CoCache 先执行失效，再执行写入。对同一个 key 先 `@CachePut` 再 `@CacheEvict`，结果是 key 被驱逐；先 `@CacheEvict` 再 `@CachePut`，结果是新值。
+- **savepoint**。`NESTED` 事务（或编程式 savepoint）回滚时，丢弃 savepoint 之后登记的写入，并立即失效已登记的 key。6.x 中，回滚了的嵌套事务里的 `@CachePut` 仍会在外层提交时写入。
+
+### 提交之后的失败 {#after-commit-failures}
+
+推迟的写入或失效在提交之后失败时，交给缓存拦截器的 `CacheErrorHandler`，与事务之外的失败一样。调用方不会因为一个数据已经提交的操作收到异常，也就不会去重试它。处理器重新抛出时（Spring 默认的 `SimpleCacheErrorHandler` 就是如此），CoCache 以 `ERROR` 记录这个异常，不再抛出。处理器收到的 `cache` 参数是装饰后的缓存。开启 [`degrade-on-error`](#failures) 时，失败的写入记录为一条 `WARN`。
+
+### 事务通知在外层 {#advice-order}
+
+`@EnableCaching` 与 `@EnableTransactionManagement` 的 order 默认都是 `LOWEST_PRECEDENCE`。两者相同时，先注册的 advisor 在外层。上面的描述都假定事务通知在外层，缓存操作因此在事务内执行。
+
+缓存通知在外层时，缓存操作在事务开始之前或结束之后执行，装饰器看不到事务：
+
+- `@CacheEvict` 在提交之后执行，不登记，回滚时也不执行。
+- `@CacheEvict(beforeInvocation = true)` 在事务开始之前失效一次。提交之后不再失效，其间加载的旧数据留到 `ttl`。
+- `@Cacheable(sync = true)` 的方法在加载中开启自己的事务，结果在那个事务提交之后才缓存。
+
+响应式方法上的 `@CacheEvict` 在 `doOnSuccess` 中执行；事务在外层时，这早于提交。装饰器看不到响应式事务（见[保持数据新鲜](./freshness.md#transactions)）。
+
+两者 order 相同时，starter 在启动时记录一条 `WARN`。给事务通知一个更小的 order，让它在外层。自己声明 `@EnableTransactionManagement` 后，Spring Boot 自动配置的那一个会退让：
+
+```kotlin
+@EnableCaching
+@EnableTransactionManagement(order = Ordered.LOWEST_PRECEDENCE - 1)
+@SpringBootApplication
+class App
+```
+
+直接调用时使用 `TransactionalInvalidator`（见[保持数据新鲜](./freshness.md#transactions)）。它与装饰器共用事务的登记，所以只要传入的是 Spring Cache 所用的那个缓存对象，它的失效同样取代之前同一 key 的 `@CachePut`。`cacheSpec` 声明的 bean 就是那个对象；接口式缓存的 bean 是代理，不是。
 
 ## 与其它缓存管理器并存 {#other-managers}
 
@@ -115,8 +170,10 @@ classpath 中有 `spring-tx` 时，starter 用 Spring 的 `TransactionAwareCache
 
 ```kotlin
 @Bean
-fun cocacheCacheManager(runtime: CacheRuntime): CacheManager =
-    TransactionAwareCacheManagerProxy(CoCacheSpringCacheManager(runtime))
+fun cocacheCacheManager(runtime: CacheRuntime, interceptor: ObjectProvider<CacheInterceptor>): CacheManager =
+    TransactionAwareSpringCacheManager(CoCacheSpringCacheManager(runtime)) {
+        interceptor.getIfUnique()?.errorHandler ?: SimpleCacheErrorHandler()
+    }
 
 @Primary
 @Bean
@@ -135,12 +192,14 @@ fun getUser(id: String): User? = repo.findById(id)
 @EnableCaching
 class CacheConfig {
     @Bean
-    fun cacheManager(runtime: CacheRuntime): CacheManager =
-        TransactionAwareCacheManagerProxy(CoCacheSpringCacheManager(runtime))
+    fun cacheManager(runtime: CacheRuntime, interceptor: ObjectProvider<CacheInterceptor>): CacheManager =
+        TransactionAwareSpringCacheManager(CoCacheSpringCacheManager(runtime)) {
+            interceptor.getIfUnique()?.errorHandler ?: SimpleCacheErrorHandler()
+        }
 
     @Bean
     fun transactionalInvalidator() = TransactionalInvalidator()
 }
 ```
 
-管理器提供的是该 `CacheRuntime` 中已经创建的缓存。不使用事务时去掉代理即可。
+管理器提供的是该 `CacheRuntime` 中已经创建的缓存。lambda 把提交之后的失败交给拦截器的错误处理器，每次失败时才取得，此时容器已经启动。不传时装饰器使用 `SimpleCacheErrorHandler`，这些失败只记录日志。不使用事务时去掉装饰器即可。

@@ -19,12 +19,15 @@ import org.springframework.beans.factory.SmartInitializingSingleton
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.cache.interceptor.CacheOperationSource
 import org.springframework.cache.interceptor.CacheableOperation
+import org.springframework.core.Ordered
 import org.springframework.util.ClassUtils
 import org.springframework.util.ReflectionUtils
 import java.lang.reflect.Proxy
 
 /**
- * 启动检查：指向 CoCache 缓存的 `@Cacheable` 是否都声明了 `sync = true`。
+ * Spring Cache 的启动检查。
+ *
+ * **`sync = true`**：指向 CoCache 缓存的 `@Cacheable` 是否都声明了 `sync = true`。
  *
  * 不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → `put`”，`put` 是无条件写入，
  * 不受 lease 与失效戳保护（并发的失效可能被旧值覆盖）；`sync = true` 经引擎的 `get(key, loader)` 回源。
@@ -32,6 +35,12 @@ import java.lang.reflect.Proxy
  * 通过 Spring 的 [CacheOperationSource]（`@EnableCaching` 注册）解析每个 bean 类型上的缓存操作，因此 `@CacheConfig`
  * 的类级缓存名同样生效；没有 `@EnableCaching`（没有 [CacheOperationSource]）时什么也不做。只按缓存名判断：
  * 没有写明缓存名（只用 `cacheResolver`）的操作无法判断，跳过。
+ *
+ * **缓存通知与事务通知的嵌套**（RFC 0005 §4.9 S19）：`@EnableCaching` 与 `@EnableTransactionManagement` 的 order 默认都是
+ * `LOWEST_PRECEDENCE`，order 相同时谁在外层取决于 advisor 的注册顺序。starter 的事务装饰器假定事务通知在外层
+ * （`@CacheEvict` 登记到事务、`@CachePut` 推迟到提交之后、`@CacheEvict(beforeInvocation = true)` 立即失效并登记），
+ * 因此两者 order 相同时告警，建议让事务通知的 order 更小。只看代理模式注册的 advisor；AspectJ 模式没有 advisor，不检查。
+ * 与 `sync` 检查的前提相同：有 `@EnableCaching`、CoCache 的 CacheManager 生效、存在 CoCache 缓存。
  *
  * @param requireSync 为 `true` 时发现违规即启动失败，否则只记录告警
  * @param cacheNames CoCache 的缓存名（已创建的与已声明但尚未创建的）
@@ -54,6 +63,13 @@ internal class SpringCacheSyncCheck(
     var violations: List<Violation> = emptyList()
         private set
 
+    /**
+     * 最近一次检查发现缓存通知与事务通知的 order 相同时，那个 order；否则为 `null`（供测试与诊断查看）。
+     */
+    @Volatile
+    var sameAdviceOrder: Int? = null
+        private set
+
     override fun afterSingletonsInstantiated() {
         val sources = beanFactory.getBeanProvider(CacheOperationSource::class.java).orderedStream().toList()
         // 用户自己的 CacheManager 生效时（CoCache 的 CacheManager 退让），@Cacheable 不经过 CoCache
@@ -64,6 +80,7 @@ internal class SpringCacheSyncCheck(
         if (names.isEmpty()) {
             return
         }
+        checkAdviceOrder()
         val found = scan(sources, names)
         violations = found
         if (found.isEmpty()) {
@@ -81,6 +98,31 @@ internal class SpringCacheSyncCheck(
                     "Use @Cacheable(sync = true)."
             )
         }
+    }
+
+    private fun checkAdviceOrder() {
+        val cacheOrder = advisorOrder(CACHE_ADVISOR) ?: return
+        val transactionOrder = advisorOrder(TRANSACTION_ADVISOR) ?: return
+        if (cacheOrder != transactionOrder) {
+            return
+        }
+        sameAdviceOrder = cacheOrder
+        log.warn(
+            "The Spring Cache advice and the transaction advice have the same order ($cacheOrder), so which one is outermost " +
+                "depends on advisor registration order. CoCache's transactional caching (@CacheEvict registered with the " +
+                "transaction, @CachePut deferred until commit) assumes the transaction advice is outermost: give it a lower order, " +
+                "e.g. @EnableTransactionManagement(order = Ordered.LOWEST_PRECEDENCE - 1)."
+        )
+    }
+
+    /**
+     * advisor 的 order：没有这个 bean（没有对应的 `@Enable...`，或 AspectJ 模式）时为 `null`。
+     */
+    private fun advisorOrder(beanName: String): Int? {
+        if (!beanFactory.containsBean(beanName)) {
+            return null
+        }
+        return (beanFactory.getBean(beanName) as? Ordered)?.order
     }
 
     /**
@@ -134,6 +176,16 @@ internal class SpringCacheSyncCheck(
 
     private companion object {
         const val COCACHE_CACHE_MANAGER = "cocacheCacheManager"
+
+        /**
+         * `CacheManagementConfigUtils.CACHE_ADVISOR_BEAN_NAME`。
+         */
+        const val CACHE_ADVISOR = "org.springframework.cache.config.internalCacheAdvisor"
+
+        /**
+         * `TransactionManagementConfigUtils.TRANSACTION_ADVISOR_BEAN_NAME`（spring-tx 是可选依赖，不引用它的类）。
+         */
+        const val TRANSACTION_ADVISOR = "org.springframework.transaction.config.internalTransactionAdvisor"
     }
 }
 
