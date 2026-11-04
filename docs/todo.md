@@ -39,7 +39,7 @@
 - 维护者通知本机暂停时（本机借给别的项目测量），不跑 Gradle、lincheck、JMH，不起 Docker 容器，只提交、推送、改 PR 正文，由 GitHub CI 验证。被打断的 JMH 作废，恢复后整套重跑；不改到 CI 上跑（共享 runner 达不到 architecture.md §13 的方法）。
 
 **CI**
-- `Lincheck` 作业（2026-11-03 起）运行 `./gradlew :cocache-core:lincheck`，约 2 分钟，不列入必需检查、失败不阻塞合并，但要查明原因（见 [Lincheck 调查](investigations/lincheck-feasibility.md)）。
+- `Lincheck` 作业（2026-11-03 起）运行 `./gradlew :cocache-core:lincheck`（CI 的预算，作业约 约 5 分钟；完整的预算 `-Plincheck.full` 只在本地运行，约 5 分钟），不列入必需检查、失败不阻塞合并，但要查明原因（见 [Lincheck 调查](investigations/lincheck-feasibility.md)）。
 
 **工作方式（M1、M2 一直沿用）**
 - 每个切片一个分支（`<type>/<描述>`）与一个 squash 合并的 PR，标题用 Conventional Commits，PR 正文英文。维护者授权架构会话（2026-11-02）：审查通过、CI 全绿后由它合并或开启自动合并；需要 JMH 的切片等表格进入 PR 且达标后才合并。偏离 RFC、未定的公开接口、线格式、新依赖、JMH 不达标仍先问维护者。
@@ -49,7 +49,6 @@
 
 **M2 期间留下的已知事项**
 - 异步数据源的超时仍由 JDK 延迟线程按真实时间计时（`completeOnTimeout`），仿真中的加载总在它触发前完成；若改为协程计时，需附 JMH。
-- Lincheck 操作集尚未加入 `get(key, loader)`、`getAll`、`put`、`clearLocal` 与调用方取消（RFC §4.10）。
 - 失效戳与 SingleFlight 仍按存储 key（L2 已按编码后的 key，#727）；只有在命中路径之外有收益时才值得改。
 
 ## 2. v8 里程碑（RFC 0005 §10）

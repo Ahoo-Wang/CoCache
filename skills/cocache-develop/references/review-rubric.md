@@ -15,7 +15,7 @@ Use this rubric after resolving the actual diff and reading each changed cache d
 - A write path the diff adds or changes (repository method, SQL, job, consumer, admin endpoint) has a matching invalidation. Writers outside the application use `ExternalInvalidator` or the documented raw protocol, and delete before they publish.
 - `put` after a write is justified (the writer holds the final value); otherwise prefer `invalidate`. `put` is not expected to fill L2.
 - Several writers that read, change and write one `Store` value use `getIfChanged` / `putIfMatch` / `deleteIfMatch`, not `put`; ordered writers use a versioned type with `putIfNewer`.
-- Callers of authoritative writes and deletes (`Store.delete`, `deleteIfMatch`, `purge`, `SetStore` writes, `VersionedCache.evict`) handle `CacheWriteException`: these never retry. A retry after `outcomeUnknown = true` is safe for the operation used.
+- Callers of authoritative writes and deletes (`Store` writes, `Store.delete`, `deleteIfMatch`, `purge`, `SetStore` writes, `VersionedCache.evict`) handle `CacheWriteException`: these never retry. A retry after `outcomeUnknown = true` is safe for the operation used. Code does not rely on `Cache.put` throwing to learn that Redis failed: under the default `invalidate-failure: retry` an outcome-unknown put returns and queues a compensating invalidation.
 - The invalidated key encodes exactly as the reader's key: same type, `keyExpression`/`KeyEncoder`, namespace and prefix.
 - `ttl` was not shortened, or `ttl: forever` removed, to hide a missing invalidation.
 
@@ -41,6 +41,7 @@ Use this rubric after resolving the actual diff and reading each changed cache d
 - A change of `key-prefix`, `namespace`, cache name (when the namespace defaults to it), codec byte format or `channel-mode` is called out as not rolling-safe, with a switch plan.
 - Applications sharing a Redis use distinct key prefixes; authoritative types run on a Redis with a non-`allkeys-*` eviction policy and persistence.
 - Nothing outside CoCache reads or writes CoCache keys directly.
+- A library or other code that creates caches at runtime uses `CoCacheFactory` (and locks the fields its correctness depends on), not `runtime.create`, whose caches no `cocache.*` property reaches.
 - `cocache.backend=memory` is confined to tests and local profiles, never a deployed profile.
 - Retry, bulkhead and failure modes (`invalidate-failure`, `read-failure`, `unknownRead`, `load-max-concurrent`) match how callers handle `CacheWriteException`, `CacheReadException` and `SourceLoadRejectedException`.
 

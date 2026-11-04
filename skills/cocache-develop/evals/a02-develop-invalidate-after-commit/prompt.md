@@ -6,4 +6,4 @@ max_turns: 2
 allowed_tools: [Read, Glob, Grep, Skill]
 ---
 
-Our Spring Boot app uses CoCache 6 (UserCache via @EnableCoCache). Make UserService.rename invalidate the cached user correctly inside its @Transactional method.
+Our Spring Boot app uses CoCache 8 (UserCache via @EnableCoCache). Make UserService.rename invalidate the cached user correctly inside its @Transactional method.

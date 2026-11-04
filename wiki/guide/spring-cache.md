@@ -32,7 +32,7 @@ class UserService(private val repo: UserRepository) {
 - The cache must be declared; the manager never creates caches from names it hasn't seen.
 - Spring's key must have the cache's key type (`String` here), and the method must return the cache's value type.
 - Only a `Cache` can sit behind Spring Cache: it is a derived copy, and the annotated method is its source. Don't name a `Store`, `VersionedStore` or `SetStore` in a cache annotation.
-- The annotated method acts as the loader, so the cache usually has no `CacheLoader` of its own. Declare it [externally sourced](./caches.md#externally-sourced): `source = CoCache.Source.EXTERNAL` on the interface, or `externallySourced()` in a `cacheSpec`. A `Cache` interface with no matching loader bean and no `source = EXTERNAL` fails startup.
+- The annotated method acts as the loader, so the cache usually has no `CacheLoader` of its own. Declare it [externally sourced](./cache.md#externally-sourced): `source = CoCache.Source.EXTERNAL` on the interface, or `externallySourced()` in a `cacheSpec`. A `Cache` interface with no matching loader bean and no `source = EXTERNAL` fails startup.
 
 ## Always use `sync = true` {#use-sync-true}
 
@@ -82,7 +82,7 @@ Negative entries read as a miss through `get(key)` on purpose: CoCache stores th
 
 ### When Redis fails {#failures}
 
-A cache used through Spring Cache is usually [externally sourced](./caches.md#externally-sourced): the annotated method is the source. A read that carries the method can fall back to it; a read that doesn't has no answer:
+A cache used through Spring Cache is usually [externally sourced](./cache.md#externally-sourced): the annotated method is the source. A read that carries the method can fall back to it; a read that doesn't has no answer:
 
 - `@Cacheable(sync = true)` passes the method as the loader, so a Redis read failure still runs the method and keeps the result in L2 for `degraded-local-max-age`.
 - A non-sync `@Cacheable` reads through `get(key)`, which has no loader. On a method that returns `CompletableFuture`, `Mono` or `Flux`, Spring reads through `retrieve(key)` instead. A Redis read failure is [`Lookup.Unknown`](./caches.md#unknown): `get(key)` throws its `CacheReadException`, `retrieve(key)` fails its future with it, and on all three kinds of method Spring hands it to the `CacheErrorHandler`. The default handler rethrows it. A `LoggingCacheErrorHandler` logs it and runs the method instead. Alternatively, declare `unknownRead = UnknownReadMode.ABSENT` on the cache's spec (in the `cacheSpec`; for an interface cache with `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)`, in a [customizer](./caches.md#customizer), or as `cocache.caches.[name].unknown-read: absent`): the read then returns a miss without caching it, so Spring runs the method.

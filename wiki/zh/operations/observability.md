@@ -56,7 +56,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.fill.rejections` | counter | 持有 lease 或刷新令牌、但 Redis 拒绝填充的加载：失效销毁了令牌、loader 慢于 `lease-ttl`、填充失败，或者（带版本的缓存）loader 返回的版本比 Redis 中的旧 |
 | `cocache.degraded.fills` | counter | 只写入 L2、以 `degraded-local-max-age` 限龄的加载：Redis 读取失败、等待 lease 超时、填充被拒绝、值的格式未知，或者该 key 的失效仍在重试。没有数据源的读取在 Redis 失败时不计入：它没有答案，也不缓存任何东西（计入 `cocache.reads.unknown` 与 `cocache.remote.failures`） |
 | `cocache.fills.gated` | counter | Spring 读写事务内保持私有的加载（`fill-in-transaction`），按 key 计：不申请 lease、不写 Redis 与 L2、不与其它调用方共享。每次同时计入未命中与加载。见[事务内的回源](../guide/spring-cache.md#transactional-loads)。 |
-| `cocache.fill.unversioned.absent` | counter | `VersionedCache` 的带版本数据源返回普通 `null`、而 Redis 中该 key 是带版本的内容的加载。Redis 拒绝这个负缓存，读取返回“不存在”，下一次未命中再次加载。删除应表达为 `Versioned(null, version)`（[带版本的数据源](../guide/caches.md#versioned-loaders)）。每个缓存的第一次记录告警 |
+| `cocache.fill.unversioned.absent` | counter | `VersionedCache` 的带版本数据源返回普通 `null`、而 Redis 中该 key 是带版本的内容的加载。Redis 拒绝这个负缓存，读取返回“不存在”，下一次未命中再次加载。删除应表达为 `Versioned(null, version)`（[带版本的数据源](../guide/versioned-cache.md#versioned-loaders)）。每个缓存的第一次记录告警 |
 | `cocache.stale.discards` | counter | 读取期间该 key 发生了失效，或（带版本的缓存）L2 中已是比这次填充更新的版本（如 loader 读到落后的从库），因而被丢弃的 L2 填充。这是 L2 栅栏在起作用 |
 | `cocache.reclaims` | counter | 本实例无法解码的 L1 值（外来内容或编解码失败）。随后由单独的 reclaim 脚本在值未变的前提下把它转为 lease，本实例再回源 |
 | `cocache.unknown.formats` | counter | 以比本实例更新的线格式写入、或带本实例不认识的必须理解的标志位的 L1 值：有数据源的读取绕过它回源，不覆盖任何内容；外部来源的 `Cache` 上不带 loader 的读取把该 key 当作未填充；权威类型的读取失败（`CacheReadException`；`SetStore` 抛出 `ForeignFormatException`）。另外还有：没有数据源的读取遇到的读不懂的内容（读取抛出 `CacheReadException`）；落在读不懂的内容上而被拒绝的 `SetStore.add` / `remove`、`putIfMatch` / `deleteIfMatch`、`putIfNewer` / `invalidateIfNewer` / `deleteIfNewer` 与 `evict`（抛出 `CacheWriteException`，同时计入 `cocache.write.failures`）；以及读到读不懂的内容的 `getIfChanged` |
@@ -67,7 +67,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 |------|------|----------|
 | `cocache.remote.failures` | counter | 读取侧失败的 Redis 操作：读取、填充、释放、回收、刷新 |
 | `cocache.write.failures` | counter | 各种类型在 Redis 上失败的写入与删除（首次尝试）：`put`、`putAll`、`invalidate`、`delete`、条件写入与按版本的写入、`evict`、`purge`，以及 `SetStore` 的写入。冲突与过时的版本不算失败 |
-| `cocache.conditional.conflicts` | counter | 因 Redis 中是另一个值而没有写入的 `putIfMatch` 与 `deleteIfMatch`（[条件写入](../guide/freshness.md#conditional-writes)）。持续出现说明写入方经常在同一个 key 上竞争 |
+| `cocache.conditional.conflicts` | counter | 因 Redis 中是另一个值而没有写入的 `putIfMatch` 与 `deleteIfMatch`（[条件写入](../guide/store.md#conditional-writes)）。持续出现说明写入方经常在同一个 key 上竞争 |
 | `cocache.conditional.unchanged` | counter | 确认值未变、没有传输值的 `getIfChanged` |
 | `cocache.versioned.stale` | counter | 因 Redis 中已是这个版本或更新的版本而没有写入的 `putIfNewer` / `invalidateIfNewer` / `deleteIfNewer`（[按版本写入](../guide/freshness.md#versioned-writes)）：重复投递与迟到的旧版本 |
 | `cocache.type.mismatch` | counter | `Cache` 或 `VersionedCache` 读到 `Store` 写入的值（带摘要段）的次数，以及在这样的值上被拒绝的 `VersionedCache.evict`。说明同一个 namespace 上还有 `Store`：值照常读取，但从不被回收或刷新，淘汰抛出。每个缓存只记录一次日志。见[五种类型](../guide/caches.md#types) |
@@ -86,7 +86,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | 健康检查 `cocache` 持续 `DOWN` 超过一分钟 | 紧急 | 本实例收不到失效消息，每次心跳都会清空它的 L2 | [命中率骤降](./troubleshooting.md#resets) |
 | `rate(cocache_remote_failures_total[5m]) > 0` 持续 | 警告 | Redis 故障，有数据源的读取在回源 | [Redis 不可用](./troubleshooting.md#redis-down) |
 | `rate(cocache_reads_unknown_total[5m]) > 0` | 警告 | 没有数据源的读取没有答案：调用方得到 `CacheReadException` | [Redis 不可用](./troubleshooting.md#redis-down) |
-| `increase(cocache_fill_unversioned_absent_total[10m]) > 0` | 警告 | 带版本的数据源对已删除的行返回普通 `null`，这些 key 的每次未命中都重新加载 | [带版本的数据源](../guide/caches.md#versioned-loaders) |
+| `increase(cocache_fill_unversioned_absent_total[10m]) > 0` | 警告 | 带版本的数据源对已删除的行返回普通 `null`，这些 key 的每次未命中都重新加载 | [带版本的数据源](../guide/versioned-cache.md#versioned-loaders) |
 | `rate(cocache_load_rejections_total[5m]) > 0` | 警告 | 调用方收到 `SourceLoadRejectedException` | [回源被拒绝](./troubleshooting.md#load-rejections) |
 | 非发布期间 `rate(cocache_resets_total[5m])` 大于 0 | 警告 | 订阅连接不稳定 | [命中率骤降](./troubleshooting.md#resets) |
 | `cocache_lease_wait_timeouts_total` / `cocache_lease_waits_total` 超过 10% | 警告 | loader 慢于 `lease-wait`，跨实例的并发未命中各自回源 | [等待 lease 超时](./troubleshooting.md#lease-wait-timeouts) |

@@ -1,6 +1,6 @@
 ---
 name: "cocache-extend"
-description: "Implement or fix a CoCache CoherenceBackend (L1Store or FutureL1Store, plus InvalidationChannel) outside the CoCache repository: a new L1 store, a different invalidation transport, or a decorating backend, verified with the cocache-test TCK (BackendProtocolSpec, EngineSpec, SetEngineSpec, HookedBackend). Not the CoCache repository, application caches, codecs or Redis tuning (cocache-develop)."
+description: "Implement or fix a CoCache CoherenceBackend (L1Store or FutureL1Store, plus InvalidationChannel) outside the CoCache repository: a new L1 store, a different invalidation transport, or a decorating backend, verified with every cocache-test TCK suite (BackendProtocolSpec, EngineSpec, MultiNodeSpec, FaultSpec, SetEngineSpec, VersionedSpec). Not the CoCache repository, application caches, codecs or Redis tuning (cocache-develop)."
 ---
 
 # Implement a CoCache Backend
@@ -27,7 +27,7 @@ Route away and stop: declaring caches, writing a `Codec`, `KeyEncoder`, `KeyFilt
 - [ ] 1 Pin the CoCache version; read the SPI, the in-memory backend and the TCK sources of that version
 - [ ] 2 Map the store's primitives to the L1 state machine (value, negative entry, lease, refresh token, set)
 - [ ] 3 Decide atomicBroadcast, the capabilities and the reset signal of the channel
-- [ ] 4 Wire every TCK suite of that version first, with expectedCapabilities, elapse() and simulateReconnect() (red)
+- [ ] 4 Wire every TCK suite of that version first, with expectedCapabilities, elapse() and, for EngineSpec, simulateReconnect() (red)
 - [ ] 5 Implement the store (L1Store, or FutureL1Store from Java) method by method against BackendProtocolSpec
 - [ ] 6 Implement InvalidationChannel; pass EngineSpec, SetEngineSpec, MultiNodeSpec and FaultSpec
 - [ ] 7 Run the suites per mode; review against the invariants; document limits

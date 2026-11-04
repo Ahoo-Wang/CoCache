@@ -5,17 +5,13 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布
+## 未发布 {#unreleased}
 
-**模块组：** `me.ahoo.cocache` · 计划作为 8.0.0 发布，是包含破坏性变更的大版本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。8.x 不与 6.x 同时运行在一个 Redis 上：先停 6.x，再启动 8.x（见[从 6.x 升级](#upgrading-from-6x)）。6.x 的修复继续在 `6.x` 分支上进行。
+**模块组：** `me.ahoo.cocache` · 计划作为 8.0.0 发布，是包含破坏性变更的大版本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。8.x 不与 6.x 同时运行在一个 Redis 上：先停 6.x，再启动 8.x（见[从 6.x 升级](./upgrade.md)）。6.x 的修复继续在 `6.x` 分支上进行。
 
 ### 从 6.x 升级 {#upgrading-from-6x}
 
-8.x 不与 6.x 同时运行在一个 Redis 上，也没有拷贝工具：升级之后各缓存从数据源重新加载。
-
-1. 停止所有 6.x 实例。
-2. 删除没有数据源的缓存的 key：6.x 中没有 loader 的 `Cache`（8.x 中的 `Store`、`VersionedStore` 或外部来源的 `Cache`）与所有 `SetCache`（8.x 中的 `SetStore`）。6.x 的值是格式 1，8.x 按读不懂的内容处理，这些缓存读到它们会失败。Redis 原本就是它们唯一的副本，所以它们从空开始：按当初写入它们的方式重新写入。删除一个命名空间：`redis-cli --scan --pattern 'cocache:{namespace}:*' | xargs redis-cli unlink`（集群中逐个主节点执行）。
-3. 启动 8.x。有数据源的缓存在第一次读取时回收旧 key 并重新加载。
+8.x 不与 6.x 同时运行在一个 Redis 上，也没有迁移工具：停止所有 6.x 实例，删除没有数据源的缓存的 key，再启动 8.x，有数据源的缓存从数据源重新加载。[从 6.x 升级](./upgrade.md)给出操作步骤，并把 6.x 的类型、配置项、Redis ACL 与后端 SPI 对应到 8.0。下面各节列出全部变更。
 
 ### 用户 API 按角色拆分 {#api-types}
 
@@ -40,7 +36,7 @@ description: CoCache 版本发布历史和重要变更。
 - `CacheSpec`、`StoreSpec` 与 `VersionedStoreSpec` 上的 `unknownRead`（默认 `THROW`，或 `ABSENT`）决定不带 loader 的读取遇到 `Unknown` 时返回什么；`ABSENT` 读到不存在，两层都不缓存。`SetStore` 总是抛出。`CacheSpec` 只有同时声明 `externallySourced()` 才能设置 `ABSENT`。`readFailure` 现在只作用于带 loader 的读取，默认仍是 `DEGRADE`；不带 loader 的读取上的 `readFailure = DEGRADE` 不再把失败变成不存在。
 - 部分 key 为 `Unknown` 的 `getAll` 先完成其余 key，再抛出 `CacheReadException`，带 `unknownKeys` 与其余 key 的 `partialResult`。新的 `lookupAll` 改为逐个 key 返回 `Lookup`。
 - `CacheWriteException.outcomeUnknown` 表示写入是否可能已到达 Redis。只有写入没有发出、或存储拒绝了它且没有修改 Redis 时为 `false`。SPI：存储以新的 `L1RejectedException` 报告发出之前被拒绝的命令，Redis 后端在断线期间即是如此。
-- 带版本的 loader 返回不带版本的 `null`、而 Redis 中是带版本的内容时，这次填充被拒绝：不写入任何东西，计入 `cocache.fill.unversioned.absent`，缓存第一次告警（K16）。
+- 带版本的 loader 返回不带版本的 `null`、而 Redis 中是带版本的内容时，这次填充被拒绝：不写入任何东西，计入 `cocache.fill.unversioned.absent`，缓存第一次告警。
 - 新指标：`cocache.reads.unknown`（`CacheMetrics.readsUnknown`）与 `cocache.fill.unversioned.absent`（`CacheMetrics.unversionedAbsentRefusals`）。端点的本地状态 `UNRESOLVED` 改名为 `UNFILLED`。
 
 默认值与线格式：
@@ -105,7 +101,7 @@ description: CoCache 版本发布历史和重要变更。
 - Redis ACL：频道模式为 `&{keyPrefix}inv:*`（默认 `&cocache:inv:*`），`pubsub` 模式另加 `&cocache:!probe:*`（6.x 为 `&cocache:probe:*`）。`keyPrefix` 为空时，key 与频道没有公共前缀：逐个列出命名空间（`~{namespace}:*`、`&inv:{namespace}`），另加 `~!*`。见 [Redis ACL](../operations/index.md#acl)。
 - 在 Redis 上创建缓存时，向该缓存的频道发布一个不带 key 的帧，原子广播时在写脚本中发布。ACL 不放行这个频道时，创建以 `IllegalStateException` 失败并给出要放行的模式，而不是每次写入都在修改 Redis 之后才在广播处失败。暂时性错误照旧失败，ACL 拒绝也从不把后端降级为非原子广播。`ExternalInvalidator` 第一次用到一个命名空间时同样探测。
 - 频道读不懂的失效帧（未知版本、截断、尾随字节）现在会重置该频道上的每个缓存，清空它的 L2。6.x 告警后丢弃，丢的就是一次失效。帧版本 `2` 预留给之后的 namespace 重置（`InvalidationFrame.NAMESPACE_RESET_VERSION`）。不带 key 的帧什么也不做，也不计入 `cocache.invalidations.received`。
-- SPI：新增值类型 `Keyspace(keyPrefix, namespace)`，标识一个缓存的 key 与频道。`CoherenceBackend.store`、`InvalidationChannel.subscribe` / `publish` 与 `FutureInvalidationChannel.subscribe` / `publish` 改收 `Keyspace`，不再收命名空间字符串。后端按两者构造频道名，解码失败的帧重置订阅者，不带 key 的帧照常投递。`CacheSpec.keyspace` 与 `SetCacheSpec.keyspace` 给出缓存的 keyspace。
+- SPI：新增值类型 `Keyspace(keyPrefix, namespace)`，标识一个缓存的 key 与频道。`CoherenceBackend.store`、`InvalidationChannel.subscribe` / `publish` 与 `FutureInvalidationChannel.subscribe` / `publish` 改收 `Keyspace`，不再收命名空间字符串。后端按两者构造频道名，解码失败的帧重置订阅者，不带 key 的帧照常投递。每种 spec 都有 `Spec.keyspace`，给出缓存的 keyspace。
 - `LoadPolicy.asyncTimeout` 改为 `LoadPolicy.timeout`，配置项 `load-async-timeout` 改为 `load-timeout`（默认 `30s`）。它不再只约束异步加载：等待别的调用方加载的读取，在这次加载进行了这么久之后以 `SourceLoadTimeoutException` 失败，之后的读取开始新的加载，不再排在卡住的同步 loader 后面。6.x 中同步读取会一直等下去。`cocache.load.timeouts` 两种超时都计数。
 - `cocache-core` 在运行时依赖 `kotlinx-coroutines-core`。协议正在改写为一份协程实现，同时服务阻塞、异步与挂起三种 API；两种缓存的读取、提前刷新与写入都已用上它。开启断言（`-ea`，测试时的默认值）时，读取运行期间 kotlinx 会给线程名加上协程后缀（如 ` @coroutine#3`），阻塞的 loader 里也看得到。
 - 运行时不再启动 `cocache-timer` 线程：等待 lease 与等待回源许可都是协程挂起。
@@ -116,25 +112,25 @@ description: CoCache 版本发布历史和重要变更。
 - **线格式 2**：8.x 写入的全部内容都是格式 2，lease、负缓存与集合也是（见[线格式](../architecture/index.md#wire-format)、[RFC 0005 §4.7](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。36 字节头部的第 3 字节（6.x 的保留字节）改为标志位，头部之后是段：版本（8 字节，标志位 bit 0）与 TLV 组成的扩展区（标志位 bit 7）。带版本的值把版本放在版本段而不是令牌位置，6.8 的 `VERSION_MARK` 已删除。集合的 `!f` 字段为 `"2"`；`!m` 字段存在且不是 `"0"` 时集合读不懂。`Cache` 与 `VersionedCache` 的值、lease 与负缓存的头部仍是 36 字节；`Store` 与 `VersionedStore` 写入的每个值另带 28 字节的写入标识。
 - 8.x 不读 6.x 的数据。格式 1（6.x 的格式）与不是 CoCache 写入的内容一样，是缓存读不懂的内容：有 loader 的缓存回收它并从数据源重新加载，没有 loader 的缓存读取失败。8.x 与 6.x 的实例不能共用一个缓存。格式 2 中带本版本不认识的必须理解的标志位（bit 2–6）或状态的内容是更高的格式，存储把它报告为格式 3：有 loader 的缓存绕过它回源，任何读取都不回收、不覆盖它。读取只对没有这类标志位的格式 2 内容授予 lease 或刷新令牌，填充与释放只读 36 字节的头部（`GETRANGE`），版本段中从不是 `Versioned.NO_VERSION`。
 - Redis ACL：脚本现在调用 `GETRANGE`、`STRLEN` 与 `HMGET`，不再调用 `HGET` 与 `HEXISTS`。升级前给已有用户加上 `+getrange +strlen +hmget`，见 [Redis ACL](../operations/index.md#acl)。
-- 删除 `foreign-format`：`CachePolicy.foreignFormat`、`CachePolicy.Builder.foreignFormat`、`ForeignFormatMode`，以及配置项 `cocache.defaults.foreign-format` 与 `cocache.caches.[name].foreign-format`。有 loader 的读取回收读不懂的内容并重新加载，没有 loader 的读取以 `CacheReadException` 失败。6.x 中没有 loader 的缓存上的 `reclaim` 会删除唯一副本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md) §4.7、§12 决定 6）。Spring Boot 不再绑定这个配置项，配置元数据把它标为已删除。
+- 删除 `foreign-format`：`CachePolicy.foreignFormat`、`CachePolicy.Builder.foreignFormat`、`ForeignFormatMode`，以及配置项 `cocache.defaults.foreign-format` 与 `cocache.caches.[name].foreign-format`。有 loader 的读取回收读不懂的内容并重新加载，没有 loader 的读取以 `CacheReadException` 失败。6.x 中没有 loader 的缓存上的 `reclaim` 会删除唯一副本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md) §4.7、§12 决定 6）。Spring Boot 与对待任何不认识的配置项一样忽略它。
 - 条件写入（`putIfMatch`、`deleteIfMatch`）、按版本写入（`putIfNewer`、`invalidateIfNewer`、`deleteIfNewer`）与 `SetStore.add` / `remove` 遇到缓存读不懂的内容时一律拒绝：抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`），不修改 key；`getIfChanged` 同样抛出 `CacheReadException`。6.x 中 `foreign-format: reclaim` 让它们把不是 CoCache 写入的内容（格式 0）当作没有值：`putIfMatch(key, null, …)` 与 `putIfNewer` 覆盖它，`getIfChanged` 返回 `Absent`，`add` 用新成员替换整个 key。
 - SPI：`RemoteStore.putIfMatch` / `putIfNewer` 及其 `AsyncRemoteStore` 对应方法删除 `foreignAsAbsent` 参数，存储读不懂的内容总是返回 `Unreadable`。删除会覆盖这类内容的 `RemoteStore.addMembers` / `removeMembers` 与 `AsyncRemoteStore.addMembersAsync` / `removeMembersAsync`；由 `addMembersIfReadable` / `removeMembersIfReadable` 及其异步方法接替，它们改为抽象方法，因为“先读后写”的默认实现不原子。Redis 脚本 `ADD_MEMBERS` 与 `REMOVE_MEMBERS` 已删除。
 - SPI：L1 SPI 改为挂起形状（[RFC 0005 §4.3](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。`CoherenceBackend.store` 返回 `L1Store`，它的操作都是 `suspend` 函数。条件读写、按版本写入与集合成员的增删移到能力面上，由 `conditional()`、`versioned()` 与 `sets()` 返回，存储不支持时返回 `null`。删除 `CoherenceBackend.versionedWrites`，由 `versioned()` 取代。`InvalidationChannel.publish` 改为 `suspend`，`subscribe` 仍是阻塞的。Java 后端实现 `FutureL1Store` 与 `FutureInvalidationChannel`（方法返回 `CompletableFuture`），返回 `FutureL1Store.adapt(…)` 与 `FutureInvalidationChannel.adapt(…)`；装饰器继承 `ForwardingL1Store`。实现自己取消的 future 按 L1 故障处理，不当作调用方被取消。`L1Store` 没有 `close`：连接属于后端，运行时不再关闭存储。引擎从不取消 L1 调用，实现可以用可取消的 `await()` 等待。只实现阻塞的 `RemoteStore` 的后端不再可用：引擎不再把这样的存储放到阻塞执行器上执行。删除 `RemoteStore`、`AsyncRemoteStore` 与 `AsyncInvalidationChannel`。
 - `CacheRuntime.create` 检查缓存需要的 L1 能力：`Store` 需要 `conditional()`，`VersionedCache` 与 `VersionedStore` 需要 `versioned()`，`SetStore` 需要 `sets()`；缺少时创建以 `UnsupportedOperationException` 失败，不注册任何东西。每个缓存创建时的日志给出它的类型，并列出它的命名空间的存储提供的能力，例如 `created as Store … L1 capabilities[conditional, versioned, sets]`。6.x 在这样的存储上 `getIfChanged` 退回普通读取。
 - SPI：L1 的结果类型改名：`RemoteRead` 改为 `L1Read`，`RemoteConditionalRead` / `RemoteConditionalWrite` 改为 `L1ConditionalRead` / `L1ConditionalWrite`，`RemoteVersionedWrite` 改为 `L1VersionedWrite`。
 - SPI：`Envelope.Scalar` 新增 `writer: Token?`（默认 `null`），即写入标识，引擎在 `Store` 与 `VersionedStore` 的每次标量写入中给出它。存储在每个写入标量的操作（`put`、`putAll`、`fill`、`fillAll`、`putIfMatch`、`putIfNewer`）中保存它，`read` 与 `readAll` 原样返回；它参与相等比较，不影响摘要。`VersionedL1Store.putIfNewer` 以 `IllegalArgumentException` 拒绝 `Versioned.NO_VERSION`。引擎只读与 `CoherenceBackend.format` 完全相同的内容，更低的格式与格式 `0` 一样是读不懂的内容（6.x 只对 `0` 如此）；更高的格式照旧绕开。`InMemoryBackend.FORMAT` 为 `2`。
-- `ForeignFormatException` 带上本节点的格式：构造函数为 `(cacheName, storageKey, format, nodeFormat, cause)`，`newer` 由两者算出。删除 6.x 的两个构造函数。`SetCache` 读到更新格式的集合时抛出这个异常（仍是 `IllegalStateException`），不再是普通的 `IllegalStateException`。
+- `ForeignFormatException` 带上本节点的格式：构造函数为 `(cacheName, storageKey, format, nodeFormat, cause)`，`newer` 由两者算出。删除 6.x 的两个构造函数。`SetStore` 读到更新格式的集合时抛出这个异常（仍是 `IllegalStateException`），不再是普通的 `IllegalStateException`。
 - SPI：`L1Store.fill` 返回 `L1Fill`，不再返回 `Boolean`：写入时为 `Filled(advanced)`，没有写入时为 `Rejected(currentVersion)`；`fillAll` 逐项返回它。令牌不匹配是 `Rejected(currentVersion = null)`；版本规则见下。`reclaim` 比较 SPI 自己的 `ContentFingerprint`（内容的 SHA-1，由脚本计算），不再收 `Digest`。
 - SPI：`L1Store.read`、`readAll` 与 `ConditionalL1Store.readIfChanged` 增加这次调用的 `timeout: Duration?`。`null` 为存储自己的命令超时；给出时必须为正，以命令超时为上限，存储以两者中较短的一个限定这次调用。`FutureL1Store`、它的能力面、`adapt` 与各 `Forwarding*` 类同样增加这个参数。引擎传入缓存的 `CachePolicy.readTimeout`（见下）。
 - SPI 约定：取得或交回令牌的命令（`read`、`readAll`、`fill`、`fillAll`、`release`、`reclaim`）失败之后，除非命令在发出之前就被拒绝，存储都异步释放该令牌。令牌已不匹配的 `RELEASE` 什么也不做，所以迟到或重复的释放都无害。存储从不以 `CancellationException` 报告失败：在 JVM 上它就是协程的取消，引擎会把它当作调用方被取消。
 - **摘要段**：`Store` 写入的值在头部带载荷的 SHA-256（标志位 bit 1，32 字节），与写入标识并列：这样的值比 `Cache` 的值多 60 字节（[线格式](../architecture/index.md#wire-format)，[RFC 0005 §4.7](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。CoCache 在客户端计算它，拿到载荷时校验：`Store` 读到载荷与摘要不一致的值，或不带摘要的值，读取以 `CacheReadException`（`cause` 为 `ForeignFormatException`）失败，key 不被修改。带摘要的值从不取得刷新令牌、从不被回收。`Cache` 或 `VersionedCache` 读到它时计入新指标 `cocache.type.mismatch`（`CacheMetrics.typeMismatches`）并记录一次日志：同一个 namespace 上还有 `Store`。
 - `Digest` 是载荷的 SHA-256，带算法标识：`Digest(algorithm, bytes)`（`Digest.SHA_256`）、`Digest(bytes)`、`Digest.ofPayload(bytes)`、`bytes`，`toString()` 输出 `SHA-256:<hex>`。删除 `Digest.sha1`；6.x 保存的摘要（SHA-1）不会再匹配。
 - 条件读写（`getIfChanged`、`putIfMatch`、`deleteIfMatch`）只作用于 `Store` 写入的值。没有摘要的值（`Cache` 写入的）、带版本的值、墓碑与被淘汰的带版本 key 都是读不懂的内容：`getIfChanged` 抛出 `CacheReadException`，`putIfMatch` 抛出 `CacheWriteException`，`cause` 都是 `ForeignFormatException`。对没有值的 key，`putIfMatch(key, null, value)` 照常写入。脚本只读头部（`GETRANGE` 与 `STRLEN`）、比较保存的摘要，摘要未变的 `getIfChanged` 在 Redis 中的成本与值的大小无关；Lua 不再读取整个值或计算 SHA-1。`getIfChanged` 返回值时，CoCache 重算摘要，不一致就抛出。
-- **带版本的缓存提前刷新**：带版本的值取得刷新令牌，`cocache.defaults.cache.refresh-window` 作用于带版本的缓存；同时带 `versioned` 与 `refreshWindow` 的 `CacheSpec` 是合法的。刷新只写回不比 Redis 中更旧的版本：loader 返回更旧的版本时，实例保留自己的副本，退避之后再试。写入方推送每一个版本的带版本缓存可以设置 `refreshWindow = off()`（或 `cocache.caches.[name].refresh-window: off`）。
+- **带版本的缓存提前刷新**：带版本的值取得刷新令牌，`cocache.defaults.cache.refresh-window` 作用于声明没有写出 `refreshWindow` 的 `VersionedCache`；带 `refreshWindow` 的 `VersionedCacheSpec` 是合法的。刷新只写回不比 Redis 中更旧的版本：loader 返回更旧的版本时，实例保留自己的副本，退避之后再试。写入方推送每一个版本的带版本缓存可以设置 `refreshWindow = off()`（或 `cocache.caches.[name].refresh-window: off`）。
 - 带版本的缓存的本地副本从不退回更旧的版本：刷新的令牌被别的读取抢走、或写回失败，而 loader 返回比副本更旧的版本时，实例保留副本，退避之后再试；被丢弃的填充计入 `cocache.stale.discards`。
 - 结果未知的带版本写回（填充）按写入处理：实例递增戳、丢掉本地副本（非原子广播时发布失效），因为超时或被排空的 `FILL` 仍可能稍后让版本前进，而它的失效消息在这个实例上被过滤。
 - 填充遵循 Redis 中的版本：带版本的内容上，凭刷新令牌或 lease 的填充在版本更旧（或没有版本）时被拒绝，令牌在同一个脚本中清零；版本相等时续期，不发失效消息；版本更新时写入并广播，加载所在的实例按写入处理：丢掉本地副本，不把结果填进 L2。
-- 端点的按 key `DELETE`（`CacheAdmin.invalidateEncoded`）在带版本的缓存上保留版本：key 变为仍然拒绝旧版本的淘汰标记（状态 `E`，44 字节，寿命同墓碑）。下一次读取在其上取得 lease；loader 落后时，它的结果照常返回并在 L2 中保留 `degraded-local-max-age`，但不写入 Redis（`cocache.fill.rejections`）。失败时抛出，不在后台重试。见[按版本写入](./freshness.md#versioned-writes)。
+- 端点的按 key `DELETE`（`CacheAdmin.invalidateEncoded`）在 `VersionedCache` 上保留版本：key 变为仍然拒绝旧版本的淘汰标记（状态 `E`，44 字节，寿命同墓碑）。下一次读取在其上取得 lease；loader 落后时，它的结果照常返回并在 L2 中保留 `degraded-local-max-age`，但不写入 Redis（`cocache.fill.rejections`）。失败时抛出，不在后台重试。见[`evict` 与 `purge`](./versioned-cache.md#evict)。
 - 端点的按 key `DELETE` 默认拒绝删除唯一副本：`Store` 与 `SetStore` 需要 `management.endpoint.cocache.allow-store-delete=true`，`VersionedStore` 需要 `management.endpoint.cocache.allow-purge=true`。没有开启时请求返回 `403`，不做任何修改。见[删除唯一副本需要开关](#endpoint-switches)。
 - 结果未知的 `Cache.put` 或 `putAll` 在默认的 `invalidate-failure: retry` 下不再抛出，而是登记补偿失效。见[补偿结果未知的写入](#compensated-puts)。
 - **修复**：Redis 中已是给出的版本时，`putIfNewer` 与 `invalidateIfNewer` 在所有后端上都发布失效（不写入）；此前只有非原子广播的路径这样做。在 lease 上填充这个版本的加载不广播，写入方自己的 `putIfNewer` 返回 `Stale` 之后，别的实例仍可能持有更旧的副本直到 `local-max-age`。更旧的版本照常不发布。
@@ -423,7 +419,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ### 条件读写
 
-用于 Redis 是唯一副本、值以“读取—修改—写回”更新的缓存，见[条件写入](./freshness.md#conditional-writes)。
+用于 Redis 是唯一副本、值以“读取—修改—写回”更新的缓存，见[条件写入](./store.md#conditional-writes)。
 
 - `putIfMatch(key, expected, value[, ttl])` 只在 Redis 中仍是摘要为 `expected` 的值时写入（`null`：只在 Redis 中没有值时写入）。比较与写入是一个 Lua 脚本，只在写入时广播失效。返回 `Written(digest)` 或 `Conflict(current)`。写入成功时的寿命与栅栏规则同 `put`。
 - `getIfChanged(key, known)` 读 Redis、从不读 L2，值的摘要仍等于 `known` 时返回 `Unchanged`，不传输值；否则返回 `Present(value, digest)` 或 `Absent`。它省的是网络传输，不是 Redis 的 CPU：脚本每次调用都读取并哈希这个值，在 Redis 7.4 上 8 MB 的值约 20 ms（其中约 13 ms 是普通的 L1 读取同样要付的读取）。摘要不在写入时保存，因为那需要改变线格式。

@@ -32,7 +32,7 @@ class UserService(private val repo: UserRepository) {
 - 缓存必须先声明；管理器从不按未见过的名字创建缓存。
 - Spring 的 key 必须是缓存的 key 类型（这里是 `String`），方法必须返回缓存的值类型。
 - 只有 `Cache` 能接在 Spring Cache 背后：它是派生副本，被注解的方法就是它的数据源。不要在缓存注解里使用 `Store`、`VersionedStore` 或 `SetStore` 的名字。
-- 被注解的方法充当 loader，所以缓存通常不需要自己的 `CacheLoader`。把它声明为[外部来源](./caches.md#externally-sourced)：接口上写 `source = CoCache.Source.EXTERNAL`，或在 `cacheSpec` 中调用 `externallySourced()`。既没有匹配的 loader bean、也没有 `source = EXTERNAL` 的 `Cache` 接口会让启动失败。
+- 被注解的方法充当 loader，所以缓存通常不需要自己的 `CacheLoader`。把它声明为[外部来源](./cache.md#externally-sourced)：接口上写 `source = CoCache.Source.EXTERNAL`，或在 `cacheSpec` 中调用 `externallySourced()`。既没有匹配的 loader bean、也没有 `source = EXTERNAL` 的 `Cache` 接口会让启动失败。
 
 ## 始终使用 `sync = true` {#use-sync-true}
 
@@ -82,7 +82,7 @@ cocache:
 
 ### Redis 故障时 {#failures}
 
-经 Spring Cache 使用的缓存通常是[外部来源](./caches.md#externally-sourced)的：被注解的方法就是数据源。带着方法的读取可以退回到方法，不带的读取没有答案：
+经 Spring Cache 使用的缓存通常是[外部来源](./cache.md#externally-sourced)的：被注解的方法就是数据源。带着方法的读取可以退回到方法，不带的读取没有答案：
 
 - `@Cacheable(sync = true)` 把方法作为 loader 传入，Redis 读取失败时照常执行方法，结果以 `degraded-local-max-age` 留在 L2 中。
 - 不带 sync 的 `@Cacheable` 经 `get(key)` 读取，没有 loader；返回 `CompletableFuture`、`Mono` 或 `Flux` 的方法上，Spring 改经 `retrieve(key)` 读取。Redis 读取失败是 [`Lookup.Unknown`](./caches.md#unknown)：`get(key)` 抛出它的 `CacheReadException`，`retrieve(key)` 的 future 以它失败，三种方法上 Spring 都把它交给 `CacheErrorHandler`：默认的处理器重新抛出，`LoggingCacheErrorHandler` 记录日志后改为执行方法。也可以在缓存的 spec 上声明 `unknownRead = UnknownReadMode.ABSENT`（写在 `cacheSpec` 中；接口缓存用 `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)`、写在[定制器](./caches.md#customizer)中，或配置 `cocache.caches.[name].unknown-read: absent`）：读取返回未命中且不缓存，Spring 随后执行方法。

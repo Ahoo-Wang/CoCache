@@ -5,7 +5,7 @@ description: 五分钟为 Spring Boot 应用加上二级一致性缓存，确认
 
 # 快速上手
 
-本页带一个 Spring Boot 应用从没有缓存走到一个可用的二级缓存。代码基于 [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example)。
+本页带一个 Spring Boot 应用从没有缓存走到一个可用的二级缓存。代码基于 [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/example)。
 
 **你需要** JDK 21+、Spring Boot 4，以及 Redis 7+；也可以什么都不装，用第 2 步的内存后端。
 
@@ -71,7 +71,7 @@ cocache:
 
 ## 3. 声明缓存 {#declare}
 
-缓存是一个继承 `Cache<K, V>` 的接口，它是 loader 能重新取得的数据的派生副本。（唯一副本在 Redis 中的数据改用 `Store`，见[选择类型](./caches.md#types)。）把它列在 `@EnableCoCache` 中：
+缓存是一个继承 `Cache<K, V>` 的接口，它是 loader 能重新取得的数据的派生副本。唯一副本在 Redis 中的数据改用 [`Store`](./store.md)：起决定作用的问题是，Redis 丢了一个 key，本进程能否重建它（见[选择类型](./caches.md#types)）。把这个接口列在 `@EnableCoCache` 中：
 
 ::: code-group
 
@@ -196,7 +196,7 @@ curl localhost:8080/actuator/cocache/UserCache/42     # 这个 key 在 L2 与 Re
 
 ## 不用 Spring {#without-spring}
 
-引入 `cocache-core`、`cocache-redis` 与 `cocache-codec-jackson`（版本相同）。每个进程创建一个 `CacheRuntime`，再按声明创建缓存：
+引入 `cocache-core`、`cocache-redis` 与 `cocache-codec-jackson`（版本相同）。每个进程创建一个 `CacheRuntime`，再按声明创建缓存。`CacheRuntime.create` 返回 spec 声明的类型：`cacheSpec` 得到 `Cache`，`storeSpec` 得到 `Store`，依此类推。要遵从应用配置的库改为经 [`CoCacheFactory`](./caches.md#factory) 创建缓存：
 
 ::: code-group
 
@@ -260,5 +260,5 @@ backend.close();
 ## 下一步 {#next}
 
 - [工作原理](./concepts.md)：读取、写入与陈旧度背后的心智模型。
-- [声明缓存](./caches.md)：五种缓存类型、key、loader、编解码与 spec bean。
+- [选择与声明缓存](./caches.md)：五种缓存类型与选出类型的那个问题、key、编解码与 spec bean。每个类型有自己的指南：[Cache](./cache.md)、[VersionedCache](./versioned-cache.md)、[Store](./store.md)、[VersionedStore](./versioned-store.md)、[SetStore](./set-store.md)。
 - [配置参考](./configuration.md)：所有 `cocache.*` 配置项。
