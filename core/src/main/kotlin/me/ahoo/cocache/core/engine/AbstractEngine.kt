@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.engine
 import com.github.benmanes.caffeine.cache.Cache
 import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -244,12 +245,19 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      *   到时再读一次 L1，取持有者写回的值（`fill` 不广播）。刷新点总是早于 L1 到期；不足 1 毫秒时不设刷新点。
      *
      * @param backoff 毫秒
+     * @param refreshable 为 `false` 时不设刷新点：刷新取不到令牌、或只会再读到同样内容的副本（读到 `E`、未知标志位或摘要段，P14、D4）
      */
-    protected fun localEntry(value: V?, ttl: Duration?, maxAge: Duration, backoff: Long = 0): LocalEntry<V> {
+    protected fun localEntry(
+        value: V?,
+        ttl: Duration?,
+        maxAge: Duration,
+        backoff: Long = 0,
+        refreshable: Boolean = true
+    ): LocalEntry<V> {
         val now = clock.nowMillis()
         val remoteExpiresAt = ttl?.let { now + it.toMillis() } ?: FOREVER
         val expiresAt = minOf(remoteExpiresAt, now + maxAge.toMillis())
-        val refreshAt = if (value != null) refreshAtOf(now, remoteExpiresAt, backoff) else FOREVER
+        val refreshAt = if (value != null && refreshable) refreshAtOf(now, remoteExpiresAt, backoff) else FOREVER
         return LocalEntry(value, expiresAt, refreshAt)
     }
 
@@ -358,6 +366,31 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      */
     private suspend fun publish(frame: ByteArray) {
         channel.publish(keyspace, frame)
+    }
+
+    /**
+     * 版本前进的填充是一次写入（[me.ahoo.cocache.api.spi.L1Fill.Filled.advanced]，RFC 0005 §4.7）：存储在填充的同一次原子操作中
+     * 已广播（原子广播的后端），而这一帧在本节点被过滤，所以本节点自己递增戳并淘汰本地副本（同写入方修改 L1 之后的那一步），
+     * 调用方不填 L2：否则绕过 SingleFlight 的同节点读取者可以把旧版本写回 L2。下一次读取多一次 L1 往返。
+     * 非原子广播的后端上由这里发布（不可取消，同 [write]）；发布失败只计数告警，其它节点的旧副本由 `localMaxAge` 兜底。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    protected suspend fun afterAdvancedFill(keys: Collection<String>) {
+        keys.forEach {
+            stamps.invalidate(it)
+            local.invalidate(localKeyOf(it))
+        }
+        if (atomicBroadcast) {
+            return
+        }
+        try {
+            uncancellable { publish(frameOf(keys)) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            metrics.remoteFailure()
+            log.warn(e) { "Cache[$name] - failed to broadcast the invalidation of an advancing fill $keys." }
+        }
     }
 
     /**
@@ -552,11 +585,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         val ASYNC_WRITE: CoroutineContext = NonCancellable + Dispatchers.Unconfined
 
         /**
-         * 后端没有修改 L1 就拒绝了写入：读不懂的内容，或后端以 [UnsupportedOperationException] 拒绝了这个操作。
+         * 后端没有修改 L1 就拒绝了写入：读不懂的内容、保留版本的失效遇到权威标量，或后端以 [UnsupportedOperationException] 拒绝了这个操作。
          */
-        fun isRefusal(
-            error: Throwable
-        ): Boolean = error is ForeignFormatException || error is UnsupportedOperationException
+        fun isRefusal(error: Throwable): Boolean =
+            error is ForeignFormatException || error is AuthoritativeContentException || error is UnsupportedOperationException
 
         fun <V> buildLocal(policy: CachePolicy): Cache<String, LocalEntry<V>> {
             val local = policy.local
@@ -567,3 +599,12 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
     }
 }
+
+/**
+ * 保留版本的失效（`VersionedL1Store.evictKeepingVersion`）遇到带摘要段的值（权威标量，RFC 0005 §4.7，D4）：后端拒绝，L1 原样未动、不广播
+ * （[AbstractEngine.isRefusal]）。作为 [CacheWriteException] 的 `cause` 抛出。
+ */
+internal class AuthoritativeContentException(cacheName: String, storageKey: String) : IllegalStateException(
+    "Cache[$cacheName] - key[$storageKey] holds a value written by a cache without a loader (digest segment): " +
+        "a versioned eviction does not touch it, and it is kept as is. The namespace is shared with an authoritative cache."
+)

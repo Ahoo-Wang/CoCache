@@ -116,7 +116,7 @@ class AsyncApiDefaultsTest {
     @Test
     fun implementationsWithoutConditionalSupportFailLoudly() {
         val set = PlainSetCache()
-        val known = Digest(ByteArray(20))
+        val known = Digest(ByteArray(Digest.SIZE))
         runCatching {
             set.getIfChanged("k", known)
         }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)

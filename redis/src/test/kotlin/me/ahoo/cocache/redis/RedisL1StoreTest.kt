@@ -202,21 +202,27 @@ class RedisL1StoreTest {
         val foreign = key("foreign")
         RedisTestSupport.withCommands { it.set(foreign, "garbage") }
         run {
+            fun digested(text: String) = Envelope.Scalar(
+                text.toByteArray(),
+                me.ahoo.cocache.api.Versioned.NO_VERSION,
+                null,
+                Digest.ofPayload(text.toByteArray())
+            )
             conditional.readIfChanged(c, null, null).assert().isEqualTo(L1ConditionalRead.Absent)
             conditional.putIfMatch(
                 c,
                 null,
-                scalar("one"),
+                digested("one"),
                 null,
                 frame(c)
             ).assert().isEqualTo(L1ConditionalWrite.Written)
             val one = Digest.of(scalar("one"))
-            conditional.putIfMatch(c, null, scalar("two"), null, frame(c))
+            conditional.putIfMatch(c, null, digested("two"), null, frame(c))
                 .assert().isEqualTo(L1ConditionalWrite.Conflict(one))
             conditional.readIfChanged(c, one, null).assert().isEqualTo(L1ConditionalRead.Unchanged(RedisScripts.FORMAT))
             val changed = conditional.readIfChanged(c, Digest.of(scalar("two")), null) as L1ConditionalRead.Changed
-            changed.envelope.assert().isEqualTo(scalar("one"))
-            conditional.putIfMatch(foreign, null, scalar("x"), null, frame(foreign))
+            changed.envelope.assert().isEqualTo(digested("one"))
+            conditional.putIfMatch(foreign, null, digested("x"), null, frame(foreign))
                 .assert().isEqualTo(L1ConditionalWrite.Unreadable(0))
 
             versioned.putIfNewer(v, scalar("v2"), 2, null, frame(v)).assert().isEqualTo(L1VersionedWrite.Written)

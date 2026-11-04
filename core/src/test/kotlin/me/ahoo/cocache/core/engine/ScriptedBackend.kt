@@ -28,6 +28,7 @@ import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
@@ -167,6 +168,20 @@ internal class ScriptedBackend(
     private val pending = ArrayList<Command<*>>()
     private val events = ArrayList<Event>()
     private val crashed = HashSet<Int>()
+
+    /**
+     * 生效的填充中按版本规则前进（`Filled(advanced = true)`）与被版本规则拒绝（`Rejected(版本)`）的次数：随机化的用例据此确认
+     * 它们确实走到了带版本的填充与 `E` 上的 lease（RFC 0005 §4.7）。
+     */
+    val advancedFills = java.util.concurrent.atomic.AtomicInteger()
+    val versionRejectedFills = java.util.concurrent.atomic.AtomicInteger()
+
+    private fun count(outcome: L1Fill) {
+        when {
+            outcome is L1Fill.Filled && outcome.advanced -> advancedFills.incrementAndGet()
+            outcome is L1Fill.Rejected && outcome.currentVersion != null -> versionRejectedFills.incrementAndGet()
+        }
+    }
 
     val pendingCount: Int
         @Synchronized get() = pending.size
@@ -345,7 +360,10 @@ internal class ScriptedBackend(
             gives = listOf(fill.token),
             holds = { listOf(fill.key to fill.token) }
         ) {
-            now { store.fill(fill) }.also { ledger.giveBack(fill.token) }
+            now { store.fill(fill) }.also {
+                ledger.giveBack(fill.token)
+                count(it)
+            }
         }
 
         override fun fillAll(fills: List<Fill>): CompletableFuture<List<L1Fill>> = command(
@@ -353,7 +371,10 @@ internal class ScriptedBackend(
             gives = fills.map { it.token },
             holds = { fills.map { it.key to it.token } }
         ) {
-            now { store.fillAll(fills) }.also { fills.forEach { ledger.giveBack(it.token) } }
+            now { store.fillAll(fills) }.also { outcomes ->
+                fills.forEach { ledger.giveBack(it.token) }
+                outcomes.forEach { count(it) }
+            }
         }
 
         override fun release(key: String, token: Token): CompletableFuture<Void?> = command(
@@ -420,6 +441,9 @@ internal class ScriptedBackend(
             ttl: Duration?,
             frame: ByteArray
         ): CompletableFuture<L1VersionedWrite> = passed { surface.putIfNewer(key, envelope, version, ttl, frame) }
+
+        override fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): CompletableFuture<L1Eviction> =
+            passed { surface.evictKeepingVersion(key, ttl, frame) }
     }
 
     private class PassingSets(private val surface: SetL1Store) : FutureSetL1Store {

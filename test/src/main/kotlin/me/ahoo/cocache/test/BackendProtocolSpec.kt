@@ -16,12 +16,15 @@ package me.ahoo.cocache.test
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ContentFingerprint
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
@@ -127,6 +130,12 @@ abstract class BackendProtocolSpec {
     protected fun frame(vararg keys: String): ByteArray = InvalidationFrame.encode(node, keys.toList())
 
     protected fun scalar(text: String) = Envelope.Scalar(text.toByteArray())
+
+    /**
+     * 像没有数据源的缓存那样写入的值：带载荷的摘要（RFC 0005 §4.7，D1）。
+     */
+    protected fun digested(text: String, writer: Token? = null) =
+        Envelope.Scalar(text.toByteArray(), Versioned.NO_VERSION, writer, Digest.ofPayload(text.toByteArray()))
 
     private fun L1Read.hit(): L1Read.Hit = this as? L1Read.Hit ?: throw AssertionError("Expected a hit but was $this.")
 
@@ -323,16 +332,17 @@ abstract class BackendProtocolSpec {
     }
 
     /**
-     * 写入标识（RFC 0005 §4.3“keyspace 与段”、§4.7，D2）随每个写入标量的操作保存、读取原样返回：put、putAll、fill、fillAll，
-     * 声明了条件读写时的 putIfMatch（写入没有版本的值，标识照样保存），声明了按版本写入时的 putIfNewer 与带版本的整体写入
-     * （版本与标识同时保存）；readAll 同样返回它。没有标识的写入读出 `null`。
+     * 段（RFC 0005 §4.3“keyspace 与段”、§4.7，D1、D2）随每个写入标量的操作保存、读取原样返回：写入标识与摘要经 put、putAll、fill、
+     * fillAll，声明了条件读写时的 putIfMatch（写入没有版本的值，标识与摘要照样保存），声明了按版本写入时的 putIfNewer 与带版本的
+     * 整体写入（版本、标识与摘要同时保存）；readAll 同样返回它们，readIfChanged 返回的值也带它们。没有段的写入读出 `null`。
+     * 存储不校验、不重算摘要：给出什么就保存什么（这里的摘要都是载荷的摘要，校验见引擎的用例）。
      */
     @Test
-    fun writerIdAndVersionRoundTripThroughEveryScalarWrite() = l1 {
+    fun segmentsRoundTripThroughEveryScalarWrite() = l1 {
         val versioned = L1Capability.VERSIONED in expectedCapabilities
         val version = if (versioned) 7L else Versioned.NO_VERSION
         fun written(text: String, version: Long = Versioned.NO_VERSION) =
-            Envelope.Scalar(text.toByteArray(), version, token())
+            Envelope.Scalar(text.toByteArray(), version, token(), Digest.ofPayload(text.toByteArray()))
 
         val expected = LinkedHashMap<String, Envelope.Scalar>()
         val put = written("put", version)
@@ -353,19 +363,19 @@ abstract class BackendProtocolSpec {
             .assert().isInstanceOf(L1Fill.Filled::class.java)
         expected[batchKey] = batch
         store.conditional()?.let { conditional ->
-            // 条件写入写入没有版本的值：信封自带的版本被忽略，写入标识照样保存
+            // 条件写入写入没有版本的值：信封自带的版本被忽略，写入标识与摘要照样保存
             val cas = written("cas", version)
             val casKey = key()
             conditional.putIfMatch(casKey, null, cas, null, frame()).assert()
                 .isEqualTo(L1ConditionalWrite.Written)
-            expected[casKey] = Envelope.Scalar(cas.bytes, Versioned.NO_VERSION, cas.writer)
+            expected[casKey] = Envelope.Scalar(cas.bytes, Versioned.NO_VERSION, cas.writer, cas.digest)
         }
         store.versioned()?.let { versionedStore ->
             val newer = written("newer")
             val newerKey = key()
             versionedStore.putIfNewer(newerKey, newer, 9, null, frame()).assert()
                 .isEqualTo(L1VersionedWrite.Written)
-            expected[newerKey] = Envelope.Scalar(newer.bytes, 9, newer.writer)
+            expected[newerKey] = Envelope.Scalar(newer.bytes, 9, newer.writer, newer.digest)
         }
         val plain = key()
         store.put(plain, scalar("plain"), null, frame())
@@ -377,6 +387,73 @@ abstract class BackendProtocolSpec {
         expected.forEach { (key, envelope) -> batched.getValue(key).hit().envelope.assert().isEqualTo(envelope) }
         (store.read(plain, null, null, null).hit().envelope as Envelope.Scalar).writer.assert().isNull()
         (batched.getValue(plain).hit().envelope as Envelope.Scalar).writer.assert().isNull()
+        (batched.getValue(plain).hit().envelope as Envelope.Scalar).digest.assert().isNull()
+        store.conditional()?.let { conditional ->
+            expected.filterValues { it.version == Versioned.NO_VERSION }.forEach { (key, envelope) ->
+                conditional.readIfChanged(key, null, null).assert().isEqualTo(L1ConditionalRead.Changed(envelope, backend.format))
+            }
+        }
+    }
+
+    /**
+     * 带摘要段的值是权威标量（RFC 0005 §4.7，D4）：读取从不为它授予刷新令牌，条件回收从不回收它（即使指纹相同）。
+     */
+    @Test
+    fun digestContentGetsNoRefreshTokenAndIsNeverReclaimed() = l1 {
+        val key = key()
+        store.put(key, digested("v"), Duration.ofSeconds(60), frame(key))
+        val refresh = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
+        store.read(key, null, refresh, null).hit().refreshGranted.assert().isFalse()
+        store.reclaim(key, ContentFingerprint.of(scalar("v")), lease()).assert().isFalse()
+        store.read(key, null, null, null).hit().envelope.assert().isEqualTo(digested("v"))
+    }
+
+    /**
+     * 条件读写比较存储中保存的摘要段（RFC 0005 §4.7）：不重算载荷，摘要段等于已知摘要即 `Unchanged`；返回的值带摘要段；
+     * 条件写入的冲突附摘要段。
+     */
+    @Test
+    fun conditionalOperationsCompareTheStoredDigestSegment() = l1 {
+        assumeDeclared(L1Capability.CONDITIONAL)
+        val conditional = requireNotNull(store.conditional())
+        val key = key()
+        val claimed = Digest.ofPayload("claimed".toByteArray())
+        val stored = Envelope.Scalar("actual".toByteArray(), Versioned.NO_VERSION, null, claimed)
+        store.put(key, stored, null, frame(key))
+        conditional.readIfChanged(key, claimed, null).assert().isEqualTo(L1ConditionalRead.Unchanged(backend.format))
+        val actual = Digest.ofPayload("actual".toByteArray())
+        conditional.readIfChanged(key, actual, null).assert().isEqualTo(L1ConditionalRead.Changed(stored, backend.format))
+        conditional.putIfMatch(key, actual, digested("x"), null, frame(key)).assert().isEqualTo(L1ConditionalWrite.Conflict(claimed))
+        conditional.putIfMatch(key, claimed, digested("next"), null, frame(key)).assert().isEqualTo(L1ConditionalWrite.Written)
+        store.read(key, null, null, null).hit().envelope.assert().isEqualTo(digested("next"))
+    }
+
+    /**
+     * 条件读写只认带摘要段、不带版本的值（RFC 0005 §4.7）：没有摘要段的值（不是没有数据源的缓存写入的）是读不懂的内容，
+     * 条件读取返回 `Unreadable`、条件写入拒绝且不修改 key；不存在、lease 占位与不带版本的负缓存是“没有值”。
+     */
+    @Test
+    fun conditionalOperationsRefuseValuesWithoutADigest() = l1 {
+        assumeDeclared(L1Capability.CONDITIONAL)
+        val conditional = requireNotNull(store.conditional())
+        val bare = key()
+        store.put(bare, scalar("bare"), null, frame(bare))
+        conditional.readIfChanged(bare, null, null).assert().isEqualTo(L1ConditionalRead.Unreadable(backend.format))
+        conditional.putIfMatch(bare, null, digested("x"), null, frame(bare))
+            .assert().isEqualTo(L1ConditionalWrite.Unreadable(backend.format))
+        conditional.putIfMatch(bare, Digest.ofPayload("bare".toByteArray()), digested("x"), null, frame(bare))
+            .assert().isEqualTo(L1ConditionalWrite.Unreadable(backend.format))
+        store.read(bare, null, null, null).hit().envelope.assert().isEqualTo(scalar("bare"))
+
+        val negative = key()
+        val negativeLease = lease()
+        store.read(negative, negativeLease, null, null)
+        store.fill(Fill(negative, negativeLease.token, Envelope.Absent, Duration.ofMinutes(1)))
+        val leased = key()
+        store.read(leased, lease(), null, null)
+        listOf(key(), negative, leased).forEach {
+            conditional.readIfChanged(it, null, null).assert().isEqualTo(L1ConditionalRead.Absent)
+        }
     }
 
     /**
@@ -395,6 +472,29 @@ abstract class BackendProtocolSpec {
             }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
         }
         store.read(key, null, null, null).hit().envelope.assert().isEqualTo(scalar("kept"))
+    }
+
+    /**
+     * 保留版本的失效（`E`，RFC 0005 §4.7）上签发超过 lease 寿命的 lease 可以被抢占（同刷新令牌），被抢占者的填充因令牌不匹配被拒绝；
+     * 版本不小于 `E` 的填充写入并广播（`advanced`）。
+     */
+    @Test
+    fun leaseOnEvictedContentIsPreemptedAfterItsTtl() = l1 {
+        assumeDeclared(L1Capability.VERSIONED)
+        val versionedStore = requireNotNull(store.versioned())
+        val key = key()
+        versionedStore.putIfNewer(key, scalar("v5"), 5, null, frame(key))
+        versionedStore.evictKeepingVersion(key, Duration.ofMinutes(1), frame(key)).assert().isEqualTo(L1Eviction.Evicted)
+        val first = lease(ttl = shortTtl)
+        store.read(key, first, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.read(key, lease(), null, null).assert().isInstanceOf(L1Read.Leased::class.java)
+        elapse(shortTtl.multipliedBy(2))
+        // 抢占按申请者的 lease 寿命判断（同一个缓存的节点用同样的 lease 策略）
+        val second = lease(ttl = shortTtl)
+        store.read(key, second, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.fill(Fill(key, first.token, Envelope.Scalar("late".toByteArray(), 6), null)).assert().isEqualTo(L1Fill.Rejected(null))
+        store.fill(Fill(key, second.token, Envelope.Scalar("v6".toByteArray(), 6), null)).assert().isEqualTo(L1Fill.Filled(true))
+        (store.read(key, null, null, null).hit().envelope as Envelope.Scalar).version.assert().isEqualTo(6L)
     }
 
     @Test

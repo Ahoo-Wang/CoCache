@@ -124,6 +124,12 @@ abstract class ForwardingVersionedL1Store(protected val delegate: VersionedL1Sto
         ttl: Duration?,
         frame: ByteArray
     ): L1VersionedWrite = delegate.putIfNewer(key, envelope, version, ttl, frame)
+
+    override suspend fun evictKeepingVersion(
+        key: String,
+        ttl: Duration?,
+        frame: ByteArray
+    ): L1Eviction = delegate.evictKeepingVersion(key, ttl, frame)
 }
 
 /**

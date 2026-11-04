@@ -14,6 +14,7 @@
 package me.ahoo.cocache.redis
 
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
@@ -44,24 +45,39 @@ class WireFormatTest {
      */
     @Test
     fun scalarShapesFollowTheFlagOrder() {
-        val plain = RedisScripts.scalarShape('V'.code.toByte(), Versioned.NO_VERSION, null)
+        val plain = RedisScripts.scalarShape('V'.code.toByte(), Versioned.NO_VERSION, null, null)
         plain.assert().isEqualTo(byteArrayOf('V'.code.toByte(), 0))
-        RedisScripts.scalarShape('V'.code.toByte(), Versioned.NO_VERSION, null).assert().isSameAs(plain)
+        RedisScripts.scalarShape('V'.code.toByte(), Versioned.NO_VERSION, null, null).assert().isSameAs(plain)
         RedisScripts.scalarShape(
             'M'.code.toByte(),
             Versioned.NO_VERSION,
+            null,
             null
         ).assert().isEqualTo(byteArrayOf('M'.code.toByte(), 0))
 
-        val both = RedisScripts.scalarShape('V'.code.toByte(), 0x0102030405060708L, writer)
+        val both = RedisScripts.scalarShape('V'.code.toByte(), 0x0102030405060708L, writer, null)
         both.size.assert().isEqualTo(2 + 8 + 28)
         both[1].assert().isEqualTo(0x81.toByte())
         ByteBuffer.wrap(both, 2, 8).long.assert().isEqualTo(0x0102030405060708L)
         both.copyOfRange(10, 14).assert().isEqualTo(byteArrayOf(0, 26, 1, 24))
         both.copyOfRange(14, 38).assert().isEqualTo(writer.toBytes())
 
-        val versionOnly = RedisScripts.scalarShape('M'.code.toByte(), -1, null)
+        val versionOnly = RedisScripts.scalarShape('M'.code.toByte(), -1, null, null)
         versionOnly.assert().isEqualTo(byteArrayOf('M'.code.toByte(), 1) + ByteBuffer.allocate(8).putLong(-1).array())
+
+        // 摘要段在版本段之后、扩展区之前（RFC 0005 §4.7）
+        val digest = Digest.ofPayload("p".toByteArray())
+        val authoritative = RedisScripts.scalarShape('V'.code.toByte(), Versioned.NO_VERSION, writer, digest)
+        authoritative.size.assert().isEqualTo(2 + 32 + 28)
+        authoritative[1].assert().isEqualTo(0x82.toByte())
+        authoritative.copyOfRange(2, 34).assert().isEqualTo(digest.bytes)
+        authoritative.copyOfRange(34, 38).assert().isEqualTo(byteArrayOf(0, 26, 1, 24))
+        val all = RedisScripts.scalarShape('V'.code.toByte(), 9, writer, digest)
+        all[1].assert().isEqualTo(0x83.toByte())
+        ByteBuffer.wrap(all, 2, 8).long.assert().isEqualTo(9L)
+        all.copyOfRange(10, 42).assert().isEqualTo(digest.bytes)
+        RedisScripts.digestOffset(0x83).assert().isEqualTo(44)
+        RedisScripts.digestOffset(0x82).assert().isEqualTo(36)
     }
 
     /**
@@ -120,7 +136,16 @@ class WireFormatTest {
         decode(
             header(0x81) + version + extension + payload
         ).envelope.assert().isEqualTo(Envelope.Scalar(payload, 5, writer))
-        decode(header(0x02) + ByteArray(32) + payload).envelope.assert().isEqualTo(Envelope.Scalar(payload))
+        val digest = Digest.ofPayload(payload)
+        decode(header(0x02) + digest.bytes + payload).envelope.assert()
+            .isEqualTo(Envelope.Scalar(payload, Versioned.NO_VERSION, null, digest))
+        // 摘要段原样返回，不重算（校验在引擎中）
+        decode(header(0x02) + ByteArray(32) + payload).envelope.assert()
+            .isEqualTo(Envelope.Scalar(payload, Versioned.NO_VERSION, null, Digest(ByteArray(32))))
+        decode(header(0x83) + version + digest.bytes + extension + payload).envelope.assert()
+            .isEqualTo(Envelope.Scalar(payload, 5, writer, digest))
+        decode(header(0x82) + digest.bytes + extension + payload).envelope.assert()
+            .isEqualTo(Envelope.Scalar(payload, Versioned.NO_VERSION, writer, digest))
         decode(header(0x01, state = 'M') + version).envelope.assert().isEqualTo(Envelope.Absent)
 
         for (bit in 2..6) {

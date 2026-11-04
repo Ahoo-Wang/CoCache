@@ -26,8 +26,11 @@ import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
@@ -57,6 +60,7 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executor
@@ -68,10 +72,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * 只适用于存储提供按版本写入能力面（`L1Store.versioned()`）的后端；不支持版本的后端不必继承它（声明带版本的缓存会在创建时失败）。
  * 继承了而没有声明 [L1Capability.VERSIONED] 时，除能力声明的检查之外的用例都跳过。
  *
- * - 协议（直接调用 [L1Store] 与它的能力面）：版本随 fill / put / putAll 保存、读取原样返回（声明了条件读写时，putIfMatch 写入没有版本的值）；按版本写入销毁 lease、填充因此被拒绝；
- *   带版本的内容不授予刷新令牌、不被回收；墓碑读作负缓存；版本按有符号 64 位整数比较。
+ * - 协议（直接调用 [L1Store] 与它的能力面）：版本随 fill / put / putAll 保存、读取原样返回（声明了条件读写时，putIfMatch 写入没有版本的值，
+ *   条件读写拒绝带版本的内容）；按版本写入销毁 lease、填充因此被拒绝；带版本的内容授予刷新令牌、不被回收；填充的版本规则；
+ *   保留版本的失效（状态 `E`）的每个脚本；墓碑读作负缓存；版本按有符号 64 位整数比较（RFC 0005 §4.7）。
  * - 引擎（经 [access]，同步或异步视图）：有序、相等版本幂等、旧版本拒绝且不广播不改寿命、墓碑挡住迟到的旧版本、
- *   lease 持有者回源期间落地的按版本写入胜出、回源保存版本且与随后的写入比较、并发写入收敛到最高版本、结果未知时重放安全。
+ *   lease 持有者回源期间落地的按版本写入胜出、回源保存版本且与随后的写入比较、并发写入收敛到最高版本、结果未知时重放安全；
+ *   提前刷新、版本前进的填充按写入处理、版本拒绝的刷新保留副本、运维的按 key 删除保留版本。
  *
  * 竞态用 latch 编排；跨节点效果用带超时的轮询断言。
  */
@@ -237,10 +243,44 @@ abstract class VersionedSpec {
 
     private fun token(): Token = Token(NodeId.random(), System.nanoTime())
 
+    private fun lease(): LeaseRequest = LeaseRequest(token(), Duration.ofSeconds(30))
+
+    /**
+     * 窗口覆盖任何有限寿命的刷新请求。
+     */
+    private fun refresh(): RefreshRequest = RefreshRequest(Duration.ofDays(1), token(), Duration.ofSeconds(30))
+
     private fun scalar(value: String, version: Long = Versioned.NO_VERSION) = Envelope.Scalar(
         TestCodec.encode(value),
         version
     )
+
+    /**
+     * 像没有数据源的缓存那样写入的值：带载荷的摘要（RFC 0005 §4.7）。
+     */
+    private fun digested(value: String, version: Long = Versioned.NO_VERSION) =
+        Envelope.Scalar(TestCodec.encode(value), version, null, Digest.ofPayload(TestCodec.encode(value)))
+
+    /**
+     * 在 [key] 上取得一个刷新令牌（key 中是有限寿命的带版本值）。
+     */
+    private suspend fun grantedRefresh(key: String): RefreshRequest {
+        val refresh = refresh()
+        val read = store().read(key, null, refresh, null) as L1Read.Hit
+        read.refreshGranted.assert().withFailMessage { "a refresh token on [$key]" }.isTrue()
+        return refresh
+    }
+
+    /**
+     * 把收到的非空帧（key 与来源）记录到 [frames] 的订阅者。
+     */
+    private fun recording(frames: MutableList<Pair<List<String>, NodeId>>) = object : InvalidationListener {
+        override fun onInvalidated(keys: List<String>, origin: NodeId) {
+            if (keys.isNotEmpty()) frames.add(keys to origin)
+        }
+
+        override fun onReset() = Unit
+    }
 
     // ---------------------------------------------------------------------------------------------
     // 协议（L1Store 与 VersionedL1Store）
@@ -266,12 +306,17 @@ abstract class VersionedSpec {
         store.put(storageKey("plain"), scalar("p"), null, frame("plain"))
         remoteVersioned("plain").assert().isEqualTo(Versioned("p", Versioned.NO_VERSION))
         if (L1Capability.CONDITIONAL in expectedCapabilities) {
+            val conditional = requireNotNull(store.conditional())
+            // 带版本的内容不接受条件读写（RFC 0005 §4.7）：读不懂，拒绝，不修改
+            conditional.readIfChanged(storageKey("put"), null, null)
+                .assert().isEqualTo(L1ConditionalRead.Unreadable(backend.format))
+            conditional.putIfMatch(storageKey("put"), Digest.of(scalar("v9")), digested("m", 5), null, frame("put"))
+                .assert().isEqualTo(L1ConditionalWrite.Unreadable(backend.format))
+            remoteVersioned("put").assert().isEqualTo(Versioned("v9", 9))
             // 条件写入写入没有版本的值（信封自带的版本被忽略）
-            requireNotNull(
-                store.conditional()
-            ).putIfMatch(storageKey("put"), Digest.of(scalar("v9")), scalar("m", 5), null, frame("put"))
+            conditional.putIfMatch(storageKey("absent"), null, digested("m", 5), null, frame("absent"))
                 .assert().isEqualTo(L1ConditionalWrite.Written)
-            remoteVersioned("put").assert().isEqualTo(Versioned("m", Versioned.NO_VERSION))
+            remoteVersioned("absent").assert().isEqualTo(Versioned("m", Versioned.NO_VERSION))
         }
     }
 
@@ -375,22 +420,177 @@ abstract class VersionedSpec {
     }
 
     /**
-     * 带版本的内容不持有令牌：从不授予刷新令牌（版本与刷新令牌放不下），从不被回收（回收为 lease 会丢掉版本）。
+     * 带版本的内容照常取得刷新令牌（版本在版本段中，令牌位置是空的，RFC 0005 §4.7），从不被回收（回收为 lease 会丢掉版本）。
+     * 墓碑不是值，不取得刷新令牌。
      */
     @Test
-    fun versionedContentIsNeverRefreshedOrReclaimed() = l1 {
+    fun versionedContentIsRefreshedButNeverReclaimed() = l1 {
         val store = store()
         val key = storageKey("k")
         versioned().putIfNewer(key, scalar("v1"), 1, Duration.ofMinutes(1), frame("k"))
-        val refresh = RefreshRequest(Duration.ofDays(1), token(), Duration.ZERO)
-        val read = store.read(key, null, refresh, null) as L1Read.Hit
-        read.refreshGranted.assert().isFalse()
+        val read = store.read(key, null, refresh(), null) as L1Read.Hit
+        read.refreshGranted.assert().isTrue()
+        (read.envelope as Envelope.Scalar).version.assert().isEqualTo(1L)
         store.reclaim(
             key,
             ContentFingerprint.of(scalar("v1")),
             LeaseRequest(token(), Duration.ofSeconds(30))
         ).assert().isFalse()
         remoteVersioned("k").assert().isEqualTo(Versioned("v1", 1))
+
+        versioned().putIfNewer(storageKey("t"), Envelope.Absent, 3, Duration.ofMinutes(1), frame("t"))
+        (store.read(storageKey("t"), null, refresh(), null) as L1Read.Hit).refreshGranted.assert().isFalse()
+    }
+
+    /**
+     * 填充的版本规则（RFC 0005 §4.7）：key 中是持有刷新令牌的带版本值时，
+     * - 更小的版本或没有版本：拒绝，返回当前版本，并在同一次原子操作中清零令牌（同一个令牌再填充只是令牌不匹配，新的刷新令牌立即可以取得）；
+     * - 相等：写入（续期），不广播，`advanced` 为 `false`；
+     * - 更大：写入并在同一次原子操作中广播（原子广播的后端；帧的来源是令牌的节点，只含这个 key），`advanced` 为 `true`。
+     */
+    @Test
+    fun fillFollowsTheVersionRules() = l1 {
+        val store = store()
+        val key = storageKey("k")
+        val frames = CopyOnWriteArrayList<Pair<List<String>, NodeId>>()
+        val subscription = backend.delegate.channel.subscribe(Keyspace("cocache:", cacheName), recording(frames))
+        versioned().putIfNewer(key, scalar("v5"), 5, Duration.ofMinutes(1), frame("k"))
+
+        val smaller = grantedRefresh(key)
+        store.fill(Fill(key, smaller.token, scalar("v4", 4), Duration.ofMinutes(1))).assert().isEqualTo(L1Fill.Rejected(5))
+        store.fill(Fill(key, smaller.token, scalar("v6", 6), Duration.ofMinutes(1))).assert().isEqualTo(L1Fill.Rejected(null))
+        val unversioned = grantedRefresh(key)
+        store.fill(Fill(key, unversioned.token, scalar("plain"), Duration.ofMinutes(1))).assert().isEqualTo(L1Fill.Rejected(5))
+        remoteVersioned("k").assert().isEqualTo(Versioned("v5", 5))
+
+        val equal = grantedRefresh(key)
+        store.fill(Fill(key, equal.token, scalar("v5'", 5), Duration.ofMinutes(2))).assert().isEqualTo(L1Fill.Filled(false))
+        remoteVersioned("k").assert().isEqualTo(Versioned("v5'", 5))
+        requireNotNull(remoteTtl("k")).assert().isGreaterThan(Duration.ofMinutes(1))
+
+        val greater = grantedRefresh(key)
+        store.fill(Fill(key, greater.token, scalar("v6", 6), Duration.ofMinutes(1))).assert().isEqualTo(L1Fill.Filled(true))
+        remoteVersioned("k").assert().isEqualTo(Versioned("v6", 6))
+        subscription.use {
+            if (backend.delegate.atomicBroadcast) {
+                awaitCondition("the advancing fill broadcast") { frames.any { it.second == greater.token.node } }
+                frames.filter { it.second == greater.token.node }.assert().containsExactly(listOf(key) to greater.token.node)
+                frames.none { it.second == equal.token.node }.assert().isTrue()
+            }
+        }
+    }
+
+    /**
+     * 保留版本的失效（RFC 0005 §4.7 的 `E` 表）：带版本的值转为 `E(v)`，
+     * - `READ`：不申请 lease 时是未命中（不是负缓存，也不是 lease）；申请时原地取得 lease，其它读取者看到 `Leased`；
+     * - `RELEASE` 只清零令牌，保留 `E`；
+     * - `FILL` 的版本更小或没有版本：拒绝并清零令牌，返回 v；版本不小于 v：写入并广播（`advanced`）；
+     * - `PUT_IF_NEWER` 与墓碑按 v 比较；`RECLAIM` 拒绝；声明了时，集合脚本与条件脚本把它当作读不懂的内容。
+     */
+    @Test
+    fun evictKeepingVersionLeavesEAndEveryScriptHonoursIt() = l1 {
+        val store = store()
+        val key = storageKey("k")
+        versioned().putIfNewer(key, scalar("v5"), 5, null, frame("k"))
+        versioned().evictKeepingVersion(key, Duration.ofMinutes(1), frame("k")).assert().isEqualTo(L1Eviction.Evicted)
+
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
+        store.read(key, null, refresh(), null).assert().isEqualTo(L1Read.Miss(false))
+        store.readAll(listOf(key), emptyMap(), null).getValue(key).assert().isEqualTo(L1Read.Miss(false))
+        versioned().putIfNewer(key, scalar("v4"), 4, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Stale(5))
+        versioned().putIfNewer(key, Envelope.Absent, 5, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Stale(5))
+        store.reclaim(key, ContentFingerprint.of(Envelope.Absent), lease()).assert().isFalse()
+        if (L1Capability.SETS in expectedCapabilities) {
+            requireNotNull(store.sets()).addMembers(key, listOf("a".toByteArray()), null, frame("k"))
+                .assert().isEqualTo(backend.format)
+        }
+        if (L1Capability.CONDITIONAL in expectedCapabilities) {
+            val conditional = requireNotNull(store.conditional())
+            conditional.readIfChanged(key, null, null).assert().isEqualTo(L1ConditionalRead.Unreadable(backend.format))
+            conditional.putIfMatch(key, null, digested("x"), null, frame("k"))
+                .assert().isEqualTo(L1ConditionalWrite.Unreadable(backend.format))
+        }
+
+        val first = lease()
+        store.read(key, first, null, null).assert().isEqualTo(L1Read.Miss(true))
+        val leased = store.read(key, lease(), null, null)
+        leased.assert().isInstanceOf(L1Read.Leased::class.java)
+        (leased as L1Read.Leased).remaining.assert().isLessThanOrEqualTo(first.ttl)
+        store.release(key, first.token)
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
+        versioned().putIfNewer(key, scalar("v5"), 5, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Stale(5))
+
+        val older = lease()
+        store.read(key, older, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.fill(Fill(key, older.token, scalar("v4", 4), null)).assert().isEqualTo(L1Fill.Rejected(5))
+        store.fill(Fill(key, older.token, scalar("v6", 6), null)).assert().isEqualTo(L1Fill.Rejected(null))
+        val unversioned = lease()
+        store.read(key, unversioned, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.fill(Fill(key, unversioned.token, scalar("plain"), null)).assert().isEqualTo(L1Fill.Rejected(5))
+
+        val equal = lease()
+        store.read(key, equal, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.fill(Fill(key, equal.token, scalar("v5'", 5), Duration.ofMinutes(1))).assert().isEqualTo(L1Fill.Filled(true))
+        remoteVersioned("k").assert().isEqualTo(Versioned("v5'", 5))
+    }
+
+    /**
+     * `E` 保留它自己的到期时间：在其上取得 lease、释放与被拒绝的填充只触及令牌（RFC 0005 §4.7，K15），不把 lease 的寿命带到 `E` 上；
+     * `E` 到期之后 key 中没有版本，任何版本都能写入。lease 的抢占见 `BackendProtocolSpec`。
+     */
+    @Test
+    fun eKeepsItsOwnExpiry() = l1 {
+        val store = store()
+        val key = storageKey("k")
+        versioned().putIfNewer(key, scalar("v5"), 5, null, frame("k"))
+        versioned().evictKeepingVersion(key, Duration.ofMinutes(1), frame("k")).assert().isEqualTo(L1Eviction.Evicted)
+        val rejected = LeaseRequest(token(), Duration.ofMinutes(10))
+        store.read(key, rejected, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.fill(Fill(key, rejected.token, scalar("v4", 4), null)).assert().isEqualTo(L1Fill.Rejected(5))
+        val released = LeaseRequest(token(), Duration.ofMinutes(10))
+        store.read(key, released, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.release(key, released.token)
+
+        elapse(Duration.ofMinutes(2))
+        store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
+        versioned().putIfNewer(key, scalar("v1"), 1, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Written)
+    }
+
+    /**
+     * 保留版本的失效只对带版本的内容保留版本（RFC 0005 §4.7）：没有版本的值与负缓存、lease 占位、不存在都删除；墓碑与 `E` 转为
+     * （新的）`E`，销毁其上的 lease；带摘要段的值（权威标量，D4）返回 [L1Eviction.Authoritative]，声明了时集合返回
+     * [L1Eviction.Unreadable]，两者都不修改 key。
+     */
+    @Test
+    fun evictKeepingVersionDeletesUnversionedContentAndRefusesTheRest() = l1 {
+        val store = store()
+        store.put(storageKey("plain"), scalar("p"), null, frame("plain"))
+        val lease = lease()
+        store.read(storageKey("leased"), lease, null, null).assert().isEqualTo(L1Read.Miss(true))
+        versioned().putIfNewer(storageKey("tombstone"), Envelope.Absent, 3, null, frame("tombstone"))
+        listOf("plain", "leased", "absent", "tombstone").forEach {
+            versioned().evictKeepingVersion(storageKey(it), null, frame(it)).assert().isEqualTo(L1Eviction.Evicted)
+            store.read(storageKey(it), null, null, null).assert().isEqualTo(L1Read.Miss(false))
+        }
+        store.fill(Fill(storageKey("leased"), lease.token, scalar("v"), null)).assert().isEqualTo(L1Fill.Rejected(null))
+        versioned().putIfNewer(storageKey("plain"), scalar("p1"), 1, null, frame("plain")).assert().isEqualTo(L1VersionedWrite.Written)
+        versioned().putIfNewer(storageKey("tombstone"), scalar("t3"), 3, null, frame("tombstone"))
+            .assert().isEqualTo(L1VersionedWrite.Stale(3))
+
+        val onE = lease()
+        store.read(storageKey("tombstone"), onE, null, null).assert().isEqualTo(L1Read.Miss(true))
+        versioned().evictKeepingVersion(storageKey("tombstone"), null, frame("tombstone")).assert().isEqualTo(L1Eviction.Evicted)
+        store.fill(Fill(storageKey("tombstone"), onE.token, scalar("t4", 4), null)).assert().isEqualTo(L1Fill.Rejected(null))
+
+        store.put(storageKey("record"), digested("r"), null, frame("record"))
+        versioned().evictKeepingVersion(storageKey("record"), null, frame("record")).assert().isEqualTo(L1Eviction.Authoritative)
+        (remote("record") as L1Read.Hit).envelope.assert().isEqualTo(digested("r"))
+        if (L1Capability.SETS in expectedCapabilities) {
+            requireNotNull(store.sets()).addMembers(storageKey("set"), listOf("a".toByteArray()), null, frame("set"))
+            versioned().evictKeepingVersion(storageKey("set"), null, frame("set"))
+                .assert().isEqualTo(L1Eviction.Unreadable(backend.format))
+            (remote("set") as L1Read.Hit).envelope.assert().isInstanceOf(Envelope.Members::class.java)
+        }
     }
 
     /**
@@ -782,6 +982,123 @@ abstract class VersionedSpec {
         cacheB["k"].assert().isEqualTo("v2")
         cacheA.invalidateIfNewer("k", 3).assert().isEqualTo(VersionedPut.Stale(3))
         awaitCondition("the tombstone replay reached B") { cacheB["k"] == null }
+    }
+
+    /**
+     * 提前刷新的策略：寿命 10 s，窗口 5 s，L2 限龄 8 s。
+     */
+    private fun refreshingPolicy(): CachePolicy = CachePolicy(
+        ttl = Duration.ofSeconds(10),
+        ttlJitter = Duration.ZERO,
+        localMaxAge = Duration.ofSeconds(8),
+        refreshWindow = Duration.ofSeconds(5),
+        lease = LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)),
+    )
+
+    /**
+     * 带版本的缓存照常提前刷新（RFC 0005 §4.7）：带版本的值取得刷新令牌，持有者回源；版本更大的写回是一次写入（`advanced`）：
+     * 广播（其它节点收到失效），本节点递增戳、淘汰本地副本、不填 L2，下一次读取从 L1 读到新版本。
+     */
+    @Test
+    fun versionedCachesRefreshAheadAndAnAdvancingFillIsAWrite() {
+        val cacheA = nodeA.cache(spec(refreshingPolicy()))
+        val cacheB = nodeB.cache(spec(refreshingPolicy()))
+        database["k"] = Versioned("v1", 1)
+        cacheA.getVersioned("k").assert().isEqualTo(Versioned("v1", 1))
+        cacheB.getVersioned("k").assert().isEqualTo(Versioned("v1", 1))
+        loads.get().assert().isEqualTo(1)
+        val received = nodeB.metrics().invalidationsReceived
+
+        database["k"] = Versioned("v2", 2)
+        elapse(Duration.ofSeconds(6))
+        cacheA["k"].assert().isEqualTo("v1")
+        awaitCondition("A refreshed L1") { remoteVersioned("k") == Versioned("v2", 2) }
+        awaitCondition("the advancing fill reached B") { nodeB.metrics().invalidationsReceived > received }
+        val remoteHits = nodeA.metrics().remoteHits
+        awaitCondition("A reads the new version") { cacheA.getVersioned("k") == Versioned("v2", 2) }
+        nodeA.metrics().remoteHits.assert().withFailMessage { "the advancing fill does not fill L2" }.isGreaterThan(remoteHits)
+        cacheB.getVersioned("k").assert().isEqualTo(Versioned("v2", 2))
+        loads.get().assert().isEqualTo(2)
+        nodeA.metrics().fillRejected.assert().isEqualTo(0)
+    }
+
+    /**
+     * 刷新路径的版本拒绝（RFC 0005 §4.7）：数据源落后于按版本写入，回源得到的版本更旧，`FILL` 拒绝并清零令牌。刷新不写回源得到的旧值，
+     * 保留 L2 中的新版本，刷新点按退避（退避期间的命中不再回源），计入 `fillRejected`。
+     */
+    @Test
+    fun versionRejectedRefreshKeepsTheNewerCopy() {
+        val cache = nodeA.cache(spec(refreshingPolicy()))
+        cache.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Written)
+        cache.getVersioned("k").assert().isEqualTo(Versioned("v5", 5))
+        database["k"] = Versioned("v4", 4)
+
+        elapse(Duration.ofSeconds(6))
+        cache["k"].assert().isEqualTo("v5")
+        awaitCondition("the refresh was rejected") { nodeA.metrics().fillRejected == 1L }
+        loads.get().assert().isEqualTo(1)
+        cache.getVersioned("k").assert().isEqualTo(Versioned("v5", 5))
+        remoteVersioned("k").assert().isEqualTo(Versioned("v5", 5))
+        repeat(3) { cache["k"].assert().isEqualTo("v5") }
+        loads.get().assert().isEqualTo(1)
+        nodeA.metrics().degradedFills.assert().isEqualTo(0)
+    }
+
+    /**
+     * 运维的按 key 删除（`CacheAdmin.invalidateEncoded`）在带版本的缓存上保留版本（RFC 0005 §4.7）：L1 转为 `E` 并广播，迟到的旧版本仍被拒绝。
+     * 下一次未命中在 `E` 上取得 lease：数据源落后时填充被拒绝，回源值照常返回，以降级限龄写入 L2，计入 `fillRejected`，`E` 保留；
+     * 数据源追上之后，填充写入并广播（按写入处理）。
+     */
+    @Test
+    fun adminEvictionKeepsTheVersionFence() {
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        cacheA.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Written)
+        cacheB["k"].assert().isEqualTo("v5")
+        val received = nodeB.metrics().invalidationsReceived
+        requireNotNull(nodeA.admin(cacheName)).invalidateEncoded("k")
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
+        awaitCondition("the eviction reached B") { nodeB.metrics().invalidationsReceived > received }
+        cacheA.putIfNewer("k", "v4", 4).assert().isEqualTo(VersionedPut.Stale(5))
+
+        database["k"] = Versioned("v3", 3)
+        cacheA["k"].assert().isEqualTo("v3")
+        nodeA.metrics().fillRejected.assert().isEqualTo(1)
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
+        cacheA.putIfNewer("k", "v4", 4).assert().isEqualTo(VersionedPut.Stale(5))
+
+        database["k"] = Versioned("v6", 6)
+        elapse(policy().degradedLocalMaxAge.plusSeconds(1))
+        cacheA["k"].assert().isEqualTo("v6")
+        remoteVersioned("k").assert().isEqualTo(Versioned("v6", 6))
+        awaitCondition("B reads the version that replaced E") { cacheB.getVersioned("k") == Versioned("v6", 6) }
+        loads.get().assert().isEqualTo(2)
+    }
+
+    /**
+     * 按 key 删除遇到没有数据源的缓存写入的值（带摘要段，D4）：没有数据源的带版本缓存删除它（它就是这个缓存 `put` 的值，没有版本可保留）；
+     * 有数据源的带版本缓存拒绝，以 [CacheWriteException] 失败，key 保留，计入 `typeMismatches`。
+     */
+    @Test
+    fun adminEvictionOfAnAuthoritativeValue() {
+        val derived = nodeA.cache()
+        val authoritative = nodeB.cache(
+            spec {
+                versionedLoader = null
+                versioned = true
+            }
+        )
+        authoritative.put("plain", "p")
+        val error = runCatching { requireNotNull(nodeA.admin(cacheName)).invalidateEncoded("plain") }.exceptionOrNull()
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        error?.cause.assert().isInstanceOf(IllegalStateException::class.java)
+        remoteVersioned("plain").assert().isEqualTo(Versioned("p", Versioned.NO_VERSION))
+        nodeA.metrics().typeMismatches.assert().isEqualTo(1)
+
+        requireNotNull(nodeB.admin(cacheName)).invalidateEncoded("plain")
+        remote("plain").assert().isEqualTo(L1Read.Miss(false))
+        authoritative["plain"].assert().isNull()
+        derived["plain"].assert().isNull()
     }
 
     /**

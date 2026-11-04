@@ -159,6 +159,12 @@ interface FutureVersionedL1Store {
         ttl: Duration?,
         frame: ByteArray
     ): CompletableFuture<L1VersionedWrite>
+
+    /**
+     * 同 [VersionedL1Store.evictKeepingVersion]：带版本的内容转为 `E`、没有版本的内容删除并广播，以 [L1Eviction.Evicted] 完成；
+     * 否则不修改、不广播。
+     */
+    fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): CompletableFuture<L1Eviction>
 }
 
 /**
@@ -260,6 +266,9 @@ private class FutureVersionedAdapter(private val store: FutureVersionedL1Store) 
     ): L1VersionedWrite = awaitValue(store, "putIfNewer") {
         store.putIfNewer(key, envelope, version, ttl, frame)
     }
+
+    override suspend fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): L1Eviction =
+        awaitValue(store, "evictKeepingVersion") { store.evictKeepingVersion(key, ttl, frame) }
 }
 
 private class FutureSetAdapter(private val store: FutureSetL1Store) : SetL1Store {

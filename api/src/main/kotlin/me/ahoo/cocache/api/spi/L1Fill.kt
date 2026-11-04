@@ -23,16 +23,17 @@ sealed interface L1Fill {
     /**
      * 已写入。
      *
-     * @property advanced 这次填充让 key 中的版本前进：L1 中原有带版本的内容，填充的版本更大，存储同时广播了失效。
-     * 引擎据此按写入处理本节点（RFC 0005 §4.7）。L1 中原来没有版本（lease 占位）时为 `false`；当前格式的填充总是如此。
+     * @property advanced 这次填充是一次写入，存储同时广播了失效（原子广播时）：L1 中原有带版本的值，填充的版本更大；
+     * 或 L1 中是 `E`（保留版本的失效，填充的版本不小于它）。引擎据此按写入处理本节点（RFC 0005 §4.7）：递增戳、淘汰本地副本、
+     * 不填充 L2，非原子广播时由引擎发布。L1 中原来没有版本（lease 占位、没有版本的值），或版本相等的续期时为 `false`。
      */
     data class Filled(val advanced: Boolean) : L1Fill
 
     /**
      * 没有写入。
      *
-     * @property currentVersion 版本规则拒绝时为 key 中的版本（刷新路径据此保留现有副本，RFC 0005 §4.7）；
-     * 令牌不匹配时为 `null`。当前格式没有版本拒绝，拒绝的都是令牌不匹配。
+     * @property currentVersion 版本规则拒绝时为 key 中的版本（填充的版本更小或没有版本；存储已清零令牌。刷新路径据此保留现有副本，
+     * RFC 0005 §4.7）；令牌不匹配时为 `null`。
      */
     data class Rejected(val currentVersion: Long?) : L1Fill
 }
