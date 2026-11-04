@@ -1028,17 +1028,17 @@ abstract class VersionedSpec {
         writeSilently("k", scalar("v2", 2), 2)
         cacheB["k"].assert().isEqualTo("v1")
 
-        val received = nodeB.metrics().invalidationsReceived
         cacheA.putIfNewer("k", "v2", 2).assert().isEqualTo(VersionedPut.Stale(2))
         awaitCondition("the replay reached B") { cacheB["k"] == "v2" }
-        // 被包装的存储本身原子广播时，相等的版本在脚本中也广播一次（共两帧）：等两帧都到达，否则迟到的那一帧会淘汰下面墓碑之前的副本
-        val frames = if (backend.delegate.atomicBroadcast) 2 else 1
-        awaitCondition("every replay frame reached B") { nodeB.metrics().invalidationsReceived >= received + frames }
 
-        writeSilently("k", Envelope.Absent, 3)
-        cacheB["k"].assert().isEqualTo("v2")
-        cacheA.invalidateIfNewer("k", 3).assert().isEqualTo(VersionedPut.Stale(3))
-        awaitCondition("the tombstone replay reached B") { cacheB["k"] == null }
+        // 墓碑的重放用另一个键：被包装的存储本身原子广播时，相等的版本在脚本中也广播一次，
+        // k 上迟到的帧随时可能淘汰 B 的副本，不能用来证明墓碑之前的副本还在
+        writeSilently("t", scalar("t2", 2), 2)
+        cacheB["t"].assert().isEqualTo("t2")
+        writeSilently("t", Envelope.Absent, 3)
+        cacheB["t"].assert().isEqualTo("t2")
+        cacheA.invalidateIfNewer("t", 3).assert().isEqualTo(VersionedPut.Stale(3))
+        awaitCondition("the tombstone replay reached B") { cacheB["t"] == null }
     }
 
     /**
