@@ -13,6 +13,9 @@
 
 package me.ahoo.cocache.core.engine
 
+import kotlinx.coroutines.ThreadContextElement
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
@@ -41,6 +44,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.function.Supplier
+import kotlin.coroutines.CoroutineContext
 
 /**
  * 异步路径的回源观测（RFC 0005 §5：只有同步的 [LoadObserver.observe]）：观测在专用的虚拟线程上进行（不占用运行时的执行器与调用方线程），
@@ -190,6 +194,51 @@ class AsyncLoadObserverTest {
         call.get(10, TimeUnit.SECONDS).assert().isEqualTo("v")
         awaitCondition("observation stopped") { observer.records.isNotEmpty() }
         observer.records.single().error.assert().isNull()
+    }
+
+    /**
+     * 挂起调用方的上下文元素（`ThreadContextElement`：MDC、追踪上下文）在调用观测器时已装上：观测接在调用方的观测之下，
+     * 虽然观测在专用的虚拟线程上进行。
+     */
+    @Test
+    fun observerSeesTheSuspendingCallersThreadContextElements(): Unit = runBlocking<Unit> {
+        val traces = CopyOnWriteArrayList<String?>()
+        val observer = object : LoadObserver {
+            override fun <T> observe(
+                cacheName: String,
+                operation: LoadOperation,
+                keyCount: Int,
+                block: Supplier<T>
+            ): T {
+                traces.add(TraceContext.current.get())
+                return block.get()
+            }
+        }
+        val cache = runtime(observer).create(
+            cacheSpec<String, String>(name) {
+                codec = TestCodec
+                asyncLoader = source
+            }
+        ).suspending()
+        database["k"] = "v"
+        withContext(TraceContext("trace-1")) {
+            cache.get("k").assert().isEqualTo("v")
+        }
+        traces.assert().containsExactly("trace-1")
+        TraceContext.current.get().assert().isNull()
+    }
+
+    /** 把一个 ThreadLocal 带进协程（与 kotlinx-coroutines-slf4j 的 MDCContext 同一机制）。 */
+    private class TraceContext(private val value: String) : ThreadContextElement<String?> {
+        companion object Key : CoroutineContext.Key<TraceContext> {
+            val current = ThreadLocal<String?>()
+        }
+
+        override val key: CoroutineContext.Key<*> get() = Key
+
+        override fun updateThreadContext(context: CoroutineContext): String? = current.get().also { current.set(value) }
+
+        override fun restoreThreadContext(context: CoroutineContext, oldState: String?) = current.set(oldState)
     }
 
     /**

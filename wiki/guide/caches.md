@@ -254,7 +254,7 @@ class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
 
 - **`null` means "doesn't exist"** and is cached as a negative entry for `absentTtl`. Throw if the lookup *failed*: the exception reaches the caller (and every caller sharing the load), and nothing is cached.
 - **The default `loadAll`** calls `load` once per key. Override it with a batch query if you use `getAll`.
-- **The loader runs on the calling thread**, so transactions, `SecurityContext`, and MDC are available. Through the [async view](./async.md) it runs on the blocking executor instead.
+- **The loader runs on the calling thread**, so transactions, `SecurityContext`, and MDC are available. Through the [async view](./async.md) it runs on the runtime's executor (`cocache.executor`) instead.
 - **Don't read the same key from inside its own loader** on the same thread; that fails fast with `IllegalStateException`.
 - **Interfaces** find the loader by type `CacheLoader<K, V>`, then `AsyncCacheLoader<K, V>`. If several beans match, or one of each, startup fails; name one with `@CoCache(loader = "…")`. If none matches, startup fails too: declare `@CoCache(source = CoCache.Source.EXTERNAL)` when callers supply the values, or extend `Store` when nothing can rebuild them.
 - **Per-call loaders**: `cache.get(key) { k -> … }` loads a miss with the given loader instead, with the same protection. Spring's `@Cacheable(sync = true)` uses this.

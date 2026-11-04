@@ -156,7 +156,7 @@ Single-flight also guarantees:
 | `put`, `putAll` | bump, evict L2 → script: overwrite + expiry + `PUBLISH` → bump, evict L2. L2 is not written. | 1 |
 | `putIfMatch`, `deleteIfMatch`, `putIfNewer`, `invalidateIfNewer`, `deleteIfNewer`, `evict` | bump, evict L2 → script: compare the digest or version, then write + expiry + `PUBLISH`, or leave the key as it is → bump, evict L2. See [conditional](../guide/freshness.md#conditional-writes) and [versioned writes](../guide/freshness.md#versioned-writes). | 1 |
 | `SetStore.add` / `remove` / `clear` / `put` | bump, evict L2 → script: member update + expiry + `PUBLISH` → bump, evict L2 | 1 |
-| Message from another instance | bump, evict L2. Messages from this instance's own `NodeId` are skipped. | — |
+| Message from another instance | bump, evict L2. Messages from this instance's own `NodeId` are skipped, except after a write whose outcome is unknown: for `local-max-age` from the failure, the instance handles its own messages for those keys like remote ones (bump, evict L2), so a late write's broadcast also drops the copy this instance loaded in between. Only on backends that broadcast atomically. | — |
 | Reset (subscription confirmed, heartbeat failed), `clearLocal` | bump every stripe, clear L2 | — |
 
 The second bump happens whether or not the script succeeded. With a backend that can't broadcast atomically, the engine publishes right after the script succeeds. A failed publish counts as a failed write.

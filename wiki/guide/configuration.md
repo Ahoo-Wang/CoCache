@@ -87,8 +87,7 @@ Why overrides are this narrow: a smaller minimum tightens only a staleness bound
 | `cocache.invalidate-fills-on-rollback` | boolean | `true` | Needs `spring-tx`. Keys that a synchronous read loaded inside a read-write transaction and wrote to Redis or L2 are invalidated when the transaction rolls back, its commit outcome is unknown, or it rolls back to a savepoint. See [Spring Cache](./spring-cache.md#transactional-loads). |
 | `cocache.fill-in-transaction` | `registered-keys` \| `private` \| `allow` | `registered-keys` | Needs `spring-tx`. Which loads inside a read-write transaction stay private (no lease, no write to Redis or L2, not shared): keys already registered for invalidation in the transaction, every load, or none. Applies to every cache. See [Spring Cache](./spring-cache.md#transactional-loads). |
 | `cocache.refresh-executor` | bean name | built-in | The `Executor` bean that runs [refresh-ahead](./freshness.md#refresh-ahead) loads. See [Executors](#executors). |
-| `cocache.async-executor` | bean name | built-in | The `Executor` bean that runs the [async view](./async.md)'s continuations. See [Executors](#executors). |
-| `cocache.blocking-executor` | bean name | built-in | The `Executor` bean that runs synchronous loaders called through the async view. See [Executors](#executors). |
+| `cocache.executor` | bean name | built-in | The `Executor` bean that runs the [async](./async.md) and [suspending](./coroutines.md) views: their continuations, shared loads, and synchronous loaders called through them. See [Executors](#executors). |
 | `management.health.cocache.enabled` | boolean | `true` | Registers the `cocache` health indicator ([below](#actuator)) |
 | `cocache.observation.enabled` | boolean | `true` | Wraps source loads in a Micrometer `Observation` when an `ObservationRegistry` bean exists. See [tracing](../operations/observability.md#tracing). |
 | `cocache.metrics.local-hits` | boolean | `false` | Counts L2 hits (`cocache.hits{level=l2}`, endpoint key `localHits`) for every cache. Off by default: it adds an atomic increment to every L2 hit. See [metrics](../operations/observability.md#metrics-reads). |
@@ -239,17 +238,16 @@ A cache created directly with `CacheRuntime.create` can't be locked, because no 
 
 ## Executors {#executors}
 
-CoCache runs background and async work on executors:
+CoCache runs background, async and suspending work on two executors:
 
 | Work | Property | Built-in executor |
 |------|----------|-------------------|
 | Refresh-ahead loads | `cocache.refresh-executor` | A bounded daemon pool (1–4 threads, 1024 queued tasks). A full queue skips the refresh and counts it in `cocache.refresh.rejections`. |
-| Continuations of the [async view](./async.md): decoding, L2 fills, issuing the next Redis command, calling `loadAsync`, completing your future | `cocache.async-executor` | A `ForkJoinPool` owned by the runtime, sized to the CPU count, with daemon threads named `cocache-async-*` |
-| Synchronous loaders called through the async view | `cocache.blocking-executor` | One virtual thread per task, owned by the runtime |
+| Every step of the [async](./async.md) and [suspending](./coroutines.md) views after a Redis reply or a loader's future completes (decoding, L2 fills, the next Redis command, calling `loadAsync`, completing your future); shared loads; synchronous loaders called through those views; the method body of Spring Cache's `retrieve(key, loader)` | `cocache.executor` | One virtual thread per task, owned by the runtime, named `cocache-worker-N` |
 
-Each property takes the **name** of an `Executor` bean. CoCache looks the bean up by name only, never by type. A name that matches no bean, or a bean that isn't an `Executor`, fails startup with a message naming the property. The container owns that executor: closing the `CacheRuntime` doesn't shut it down.
+Each property takes the **name** of an `Executor` bean. CoCache looks the bean up by name only, never by type. A name that matches no bean, or a bean that isn't an `Executor`, fails startup with a message naming the property. The container owns that executor: closing the `CacheRuntime` doesn't shut it down, and the container destroys it after the runtime.
 
-Spring Boot's own `applicationTaskExecutor` works for refresh-ahead and as the blocking executor:
+Spring Boot's own `applicationTaskExecutor` works for both when it uses virtual threads:
 
 ```yaml
 spring:
@@ -258,11 +256,11 @@ spring:
       enabled: true          # applicationTaskExecutor uses virtual threads
 cocache:
   refresh-executor: applicationTaskExecutor
-  blocking-executor: applicationTaskExecutor
+  executor: applicationTaskExecutor
 ```
 
-::: warning What each executor may run
-The async executor runs only short, non-blocking work. Never block on it, for example by calling the synchronous API from a continuation. The built-in `ForkJoinPool` compensates for a thread that blocks in `join()`, but a fixed-size pool you supply doesn't. The blocking executor runs synchronous loaders, so it must not queue: a loader can wait on another load.
+::: warning `cocache.executor` must tolerate blocking tasks
+It runs blocking work (synchronous loaders, Spring method bodies) next to the continuations of every async and suspending call. Don't give it a queue or only a few threads: blocked loaders would hold every thread while the continuations they wait for queue behind them, and a loader can wait on another load. Use virtual threads or a platform pool that doesn't queue. On JDK 21–23, a loader that blocks inside `synchronized` pins the carrier thread of its virtual thread (JEP 491 fixes this in JDK 24), so prefer JDK 24 or later, or a platform thread pool. The blocking API never uses this executor: its loaders run on the calling thread. Tracing doesn't use it either: an observed async load is observed on a virtual thread of its own.
 :::
 
 Spring Cache `retrieve` uses the async view, waits on no thread, and needs no executor of its own. See [Spring Cache](./spring-cache.md#executor).

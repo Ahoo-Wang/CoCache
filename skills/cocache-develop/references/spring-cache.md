@@ -42,7 +42,7 @@ The starter checks at startup (with `@EnableCaching`, when a bean named `cocache
 | `put` (`@CachePut`) | `cache.put`; a `null` value becomes `invalidate` |
 | `evict` (`@CacheEvict`) | `cache.invalidate` on every instance |
 | `clear()` (`allEntries = true`) | Clears this instance's L2 only; Redis is never cleared wholesale. Logs a `WARN` the first time on each cache. Evict keys instead |
-| `retrieve` (async, reactive) | The cache's async view, so no thread waits and an L2 hit returns a completed future; with `sync = true` the same protected load, and the method body runs on `cocache.blocking-executor` (it may block before it returns the future) |
+| `retrieve` (async, reactive) | The cache's async view, so no thread waits and an L2 hit returns a completed future; with `sync = true` the same protected load, and the method body runs on the runtime's executor, `cocache.executor` (it may block before it returns the future) |
 
 - A `sync = true` method returning `null` produces a negative entry for `absent-ttl`; invalidate the key when the row is created, or shorten `absent-ttl`.
 - Prefer `@CacheEvict` over `@CachePut` after writes.

@@ -72,7 +72,7 @@ The check runs only when a bean named `cocacheCacheManager` exists: the starter'
 | `evict(key)` (`@CacheEvict`) | `cache.invalidate(key)` on every instance. Inside a transaction, see [Transactions](#transactions). |
 | `clear()` (`allEntries = true`) | Clears **this instance's L2 only**. Redis and the other instances keep their entries, because CoCache can't clear a cache cluster-wide. The first call on each cache logs a `WARN` saying so. Evict keys instead. |
 | `retrieve(key)` (async and reactive) | An async `lookup` on the cache's [async view](./async.md). An L2 hit returns an already-completed future without switching threads, and a negative entry completes with `null` (a miss). A Redis read failure fails the future, as it fails `get(key)` (see [When Redis fails](#failures)). |
-| `retrieve(key, loader)` (async and reactive with `sync = true`) | An async `get(key, loader)` on the [async view](./async.md): it loads through the same lease-protected path as `get(key, loader)`, and **no thread waits** for the async loader. The method body runs on the runtime's blocking executor (`cocache.blocking-executor`), so a body that blocks before it returns a future, such as `completedFuture(repository.find(id))`, doesn't stall CoCache's async executor. It can't see the caller's thread-locals. A failure completes the future with the original exception. |
+| `retrieve(key, loader)` (async and reactive with `sync = true`) | An async `get(key, loader)` on the [async view](./async.md): it loads through the same lease-protected path as `get(key, loader)`, and **no thread waits** for the async loader. The method body runs on the runtime's executor (`cocache.executor`), not on the calling thread, so a body that blocks before it returns a future, such as `completedFuture(repository.find(id))`, holds one of that executor's threads, never the caller's. It can't see the caller's thread-locals. A failure completes the future with the original exception. |
 
 ### Null results {#null}
 
@@ -109,8 +109,8 @@ Without Spring Boot, return `DegradingCacheErrorHandler(yourHandler)` from `Cach
 
 `retrieve` uses the cache's [async view](./async.md) and needs no executor of its own: no call holds a thread while it waits for a load.
 
-- `CoCacheSpringCacheManager(runtime)` takes no executor. It creates each `CoCacheSpringCache(cache, admin, executor)` with the runtime's blocking executor (`CacheRuntime.blockingExecutor`), which runs the method body of `retrieve(key, loader)`.
-- The async view runs on `cocache.async-executor` and `cocache.blocking-executor`. A synchronous loader called through `retrieve`, and the body of an async `@Cacheable(sync = true)` method, run on the blocking executor. See [Configuration](./configuration.md#executors).
+- `CoCacheSpringCacheManager(runtime)` takes no executor. It creates each `CoCacheSpringCache(cache, admin, executor)` with the runtime's executor (`CacheRuntime.executor`), which runs the method body of `retrieve(key, loader)`.
+- The async view runs on `cocache.executor`. A synchronous loader called through `retrieve`, and the body of an async `@Cacheable(sync = true)` method, run there too, so that executor must tolerate blocking tasks (the default starts one virtual thread per task). See [Configuration](./configuration.md#executors).
 
 Spring Cache's `put` and `evict` have only blocking signatures. On a reactive method, `@CachePut`, `@CacheEvict` and a non-sync `@Cacheable` call them from the completion callback, which holds that thread for one Redis round trip. Keep using `sync = true`, and call `cache.async().invalidate(key)` where a write path must not block.
 

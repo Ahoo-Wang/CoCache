@@ -52,8 +52,7 @@ Validation chain: when a global layer makes `refresh-window` not less than `loca
 | `cocache.invalidate-fills-on-rollback` | `true` | Needs `spring-tx`: keys a synchronous read loaded inside a read-write transaction are invalidated on rollback, unknown commit outcome and rollback to a savepoint |
 | `cocache.fill-in-transaction` | `registered-keys` | Needs `spring-tx`: which loads in a read-write transaction are private (no lease, no Redis or L2 write, not shared): `registered-keys` (keys registered for invalidation in it), `private` (all), `allow` (none); every cache |
 | `cocache.refresh-executor` | built-in | Bean name of the `Executor` for refresh-ahead loads; CoCache never shuts it down |
-| `cocache.async-executor` | runtime-owned `ForkJoinPool` (`cocache-async-*`) | Bean name of the `Executor` for async-view continuations; short non-blocking work only, never block on it |
-| `cocache.blocking-executor` | one virtual thread per task | Bean name of the `Executor` for synchronous loaders called through the async view; must not queue |
+| `cocache.executor` | one virtual thread per task (`cocache-worker-N`) | Bean name of the one `Executor` of the async and suspending views: every continuation, shared loads, synchronous loaders called through those views, and Spring `retrieve(key, loader)` method bodies. It must tolerate blocking tasks: no queue, not just a few threads. On JDK 21–23 a loader blocking inside `synchronized` pins a virtual thread's carrier (fixed in JDK 24), so prefer JDK 24+ or a platform pool. Resolved by name only; CoCache never shuts it down. The blocking API never uses it |
 | `management.health.cocache.enabled` | `true` | Registers the `cocache` health indicator |
 
 ## Policy properties

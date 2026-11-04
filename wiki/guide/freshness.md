@@ -252,6 +252,8 @@ Every failed write throws `CacheWriteException`, except a `Cache.invalidate` tha
 - `false`: definitely not executed. The client rejected the command before sending it (for example while disconnected), or Redis refused the write because the key holds content this version can't read. Nothing changed.
 - `true`: outcome unknown. The command may have run (a timeout, a connection dropped mid-reply), and it may still run later. Only ordered writes stay harmless when they land late: a replayed `putIfNewer`, a conditional write (with the ABA caveat above).
 
+A write whose outcome is unknown can land later and then broadcasts its invalidation as usual. An instance normally skips its own messages, so a stale copy it loaded between the failure and the late write would survive. For `local-max-age` after the failure, the writing instance therefore handles its own messages for those keys like any other instance's, and the late broadcast drops that copy too. With `channel-mode: sharded` (or when the atomic-broadcast probe failed), a late write carries no broadcast, and `local-max-age` bounds the copy.
+
 **`Cache.invalidate`** applies its local effects first (this instance's L2 is dropped). If the Redis delete fails:
 
 - The default (`invalidate-failure: retry`) **doesn't throw**: deleting a derived copy is always safe, and invalidations usually run after a commit, where an exception can't roll anything back. The delete goes to a bounded retry queue: up to 8 attempts, backing off from 100 ms to 10 s, at most 10 000 pending. This holds for externally sourced caches too.

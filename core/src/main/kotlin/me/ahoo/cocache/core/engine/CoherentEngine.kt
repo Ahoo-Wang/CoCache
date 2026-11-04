@@ -1155,6 +1155,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      *   观测在嵌套的 `runSync` 中执行，外层协程的取消不会传到那里。
      * - 异步与挂起变体在专用的虚拟线程上调用它（[OBSERVATION]，每次观测一个，从不占用调用方线程），这个线程在观测期间等待 block 结束。
      *   不用运行时的执行器：等待的线程占住执行器，而 block 的续接要经同一个执行器派发，有界的执行器会因此死锁。
+     *   观测器在调用方的上下文元素（`ThreadContextElement`：MDC、追踪上下文）之下调用，挂起调用方的观测因此接在它自己的观测之下。
      *   block 在运行时作用域中、从这个线程上开始执行：第一次挂起之前的部分（如调用数据源）看得到观测器设置的线程局部状态
      *   （Micrometer 的当前观测），运行时关闭时随作用域取消。
      */
@@ -1176,10 +1177,13 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         return try {
             CompletableFuture.supplyAsync(
                 {
-                    observer.observe(name, operation, keyCount) {
-                        scope.future(caller, CoroutineStart.UNDISPATCHED) { block().also { produced.value = it } }
-                            .joinOriginal()
-                    }
+                    // 外层协程不挂起，只为在调用观测器期间装上调用方的 ThreadContextElement
+                    scope.future(caller, CoroutineStart.UNDISPATCHED) {
+                        observer.observe(name, operation, keyCount) {
+                            scope.future(caller, CoroutineStart.UNDISPATCHED) { block().also { produced.value = it } }
+                                .joinOriginal()
+                        }
+                    }.joinOriginal()
                 },
                 OBSERVATION
             ).awaitUncancellable()

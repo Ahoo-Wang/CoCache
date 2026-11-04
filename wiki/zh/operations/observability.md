@@ -111,11 +111,11 @@ classpath 上有 `micrometer-observation`、容器中有 `ObservationRegistry` b
 
 - 只包住 loader 调用本身，以及确实发生的 lease 等待。L2 命中、L1 读取与填充都不产生 Observation；没有配置观测器时引擎连对象都不分配。被 `load-max-concurrent` 拒绝的加载不观测。
 - 从不记录 key：高基数，且可能是个人信息。
-- loader 在调用方线程上、在 Observation 的作用域内执行，因此 loader 产生的 span（JDBC、HTTP）是 `cocache.load` 的子 span，而 `cocache.load` 又是请求 span 的子 span。提前刷新在刷新执行器上执行，只有该执行器传播上下文时它的 span 才有父 span。
-- 异步加载的观测从调用 `loadAsync` 开始，到其 future 完成为止。`loadAsync` 的同步部分在 Observation 的作用域内执行，在那里捕获上下文的响应式客户端（经 Micrometer context propagation）会产生子 span。
+- 阻塞 API 上，loader 在调用方线程上、在 Observation 的作用域内执行，因此 loader 产生的 span（JDBC、HTTP）是 `cocache.load` 的子 span，而 `cocache.load` 又是请求 span 的子 span。提前刷新在刷新执行器上执行，只有该执行器传播上下文时它的 span 才有父 span。
+- 异步与挂起的加载在自己的虚拟线程上观测，每次被观测的加载一个（`cocache-observe-N`），从不在调用方线程上，也不在运行时的执行器上。这个线程在整个加载期间等待，观测因此持续到 loader 的 future 完成。调用 `observe` 时已装上挂起调用方协程上下文中的元素（`ThreadContextElement`，如 MDC、追踪上下文），加载的观测因此接在调用方的观测之下；异步视图（`CompletableFuture`）的调用方没有这类元素。加载从这个线程上、在 Observation 的作用域内开始，所以 `loadAsync` 的同步部分看得到当前观测，在那里捕获上下文的响应式客户端（经 Micrometer context propagation）会产生子 span。
 - 启用 Spring Boot 指标时，每个 Observation 还会产生 `cocache.load` 计时器与 `cocache.load.active` 长任务计时器，标签为 `cache`、`operation`、`outcome`（计时器上另有 Micrometer 自带的 `error` 标签）。它们与 [`cocache.loads`](#metrics-loads) 函数计时器重叠，后者仍是开销最低、始终开启的那一个。
 
-用 `cocache.observation.enabled: false` 或 Spring Boot 的 `management.observations.enable.cocache: false` 关闭。自己声明的 `LoadObserver` bean 会取代 Micrometer 观测器；不用 Spring 时传给 `CacheRuntime.builder().loadObserver(…)`。实现必须在调用方线程上执行 block 恰好一次，并原样抛出其异常。要观测异步加载，还需覆盖 `observeAsync`：默认实现直接执行 block，不观测。
+用 `cocache.observation.enabled: false` 或 Spring Boot 的 `management.observations.enable.cocache: false` 关闭。自己声明的 `LoadObserver` bean 会取代 Micrometer 观测器；不用 Spring 时传给 `CacheRuntime.builder().loadObserver(…)`。`LoadObserver` 只有一个方法 `observe`：实现必须在调用 `observe` 的线程上同步执行 block 恰好一次，原样返回结果、原样抛出异常。异步与挂起的加载经同一个方法观测，CoCache 在上面说的观测线程上调用它。
 
 ## 健康检查 {#health}
 

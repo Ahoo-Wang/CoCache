@@ -85,7 +85,7 @@ val users: Cache<String, User> = runtime.create(
 
 - spec 是不可变数据：名称、命名空间、key 前缀、key 编码器、编解码器、数据源（只有 `Cache` 与 `VersionedCache` 有）、`ttlOf`、key 过滤器与策略。每种[类型](../guide/caches.md#spec-bean)有自己的 spec，`runtime.create(spec)` 返回对应的类型。用户只提供数据与无状态函数。
 - `runtime.create` 构建缓存的每个有状态部分：L2、失效戳、SingleFlight 表、存储与订阅，两个缓存不可能意外共享其中任何一个。名称重复，或前缀与命名空间的组合重复时失败；后端缺少该类型需要的 L1 能力时同样失败（`Store` 需要条件写入，带版本的类型需要按版本写入，`SetStore` 需要集合）。启动日志写出类型：`Cache[user] - created as Cache on namespace[user], …`。
-- `NodeId` 是每个运行时 16 个随机字节。它让令牌全局唯一，也让实例能忽略自己发出的消息。
+- `NodeId` 是每个运行时 16 个随机字节。它让令牌全局唯一，也让实例能忽略自己发出的消息（结果未知的写入涉及的 key 在 `local-max-age` 之内除外，见[一致性](./consistency.md#writer-order)）。
 - `close()` 按创建的逆序关闭订阅、引擎与存储，再关闭运行时自己创建的时钟与执行器。尚未执行的失效重试计入丢弃。后端由调用方关闭。
 
 **时间**。`CacheClock` 返回纪元毫秒。默认的 `TickingClock` 每 100 ms 刷新一次 volatile 字段，在部分平台上比 `System.currentTimeMillis()` 更适合命中路径。它是单调的：启动时读一次墙钟，之后按 `System.nanoTime()` 推进，墙钟跳变（NTP 校正、人工调整）既不会让 L2 副本多活，也不会让它提前到期。到期时间只以相对时长跨网络传输（`PEXPIRE`、`PTTL`），所以实例之间的时钟偏差没有影响。测试注入 `ManualClock`。
@@ -175,7 +175,7 @@ sequenceDiagram
 | 按条目决定寿命 | 是 | `TtlFunction`（`ttlOf`） |
 | 时钟 | 是 | `CacheClock`（测试） |
 | 刷新执行器、重试策略 | 是 | `CacheRuntime.Builder.refreshExecutor`（starter：`cocache.refresh-executor`）、`retryPolicy` |
-| 异步执行器与阻塞执行器 | 是 | `CacheRuntime.Builder.asyncExecutor` / `blockingExecutor`（starter：`cocache.async-executor` / `cocache.blocking-executor`）。见[异步 API](../guide/async.md#threads) |
+| 异步与挂起视图的执行器 | 是 | `CacheRuntime.Builder.executor`（starter：`cocache.executor`），必须容得下阻塞的任务。见[异步 API](../guide/async.md#threads) |
 | **L2** | **否** | 始终是有界的 Caffeine 缓存，让命中路径保持单态、成本可知。用 `local-maximum-size` 调整容量 |
 | **栅栏、写入顺序、读路径** | **否** | 它们就是协议本身。见[一致性](./consistency.md) |
 | 线格式 | 大版本内不可变 | 只能两阶段升级 |

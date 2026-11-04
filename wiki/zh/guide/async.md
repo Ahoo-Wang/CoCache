@@ -38,9 +38,9 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 ```
 
 - `loadAsync(key)` 返回 `CompletionStage`；以 `null` 完成时写入负缓存。批量读取请覆盖 `loadAllAsync(keys)`，默认对每个 key 调用 `loadAsync`。
-- spec 设置 `loader` 或 `asyncLoader` 之一，不能都设置。CoCache 在两个方向上适配：同步 `get` 等待异步 loader（受 `load-timeout` 约束），异步 `get` 在阻塞执行器上运行同步 loader。
+- spec 设置 `loader` 或 `asyncLoader` 之一，不能都设置。CoCache 在两个方向上适配：同步 `get` 等待异步 loader（受 `load-timeout` 约束），异步 `get` 在运行时的执行器上运行同步 loader。
 - `@CoCache` 接口的 `loader = "beanName"` 可以指向任意一种。不指定时，CoCache 先找唯一的 `CacheLoader<K, V>`，再找唯一的 `AsyncCacheLoader<K, V>`；两种各有一个时存在歧义，启动失败。同时实现两者的 bean 按同步 loader 使用。
-- `loadAsync` 必须很快返回，不能阻塞。它在调用方线程或异步执行器上被调用，看不到调用方的 ThreadLocal（MDC、安全上下文）。请经响应式库或 Micrometer context propagation 传递上下文。
+- `loadAsync` 必须很快返回，不能阻塞。它在调用方线程或 CoCache 的线程（运行时的执行器；配置了 `LoadObserver` 时为观测线程）上被调用，不能依赖调用方的 ThreadLocal（MDC、安全上下文）。请经响应式库或 Micrometer context propagation 传递上下文。
 
 ## 线程与执行器 {#threads}
 
@@ -48,13 +48,14 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 |------|------------|
 | L2 命中 | 在调用方线程上返回已完成的 future |
 | 结果已经可得（内存后端、同步完成的 loader） | 在调用方线程上继续 |
-| 之后才完成的 Redis 结果或 loader future | 在**异步执行器**上继续，从不在 Lettuce 的 I/O 线程上 |
-| 经异步视图调用的同步 loader | 只在**阻塞执行器**上执行 |
+| 之后才完成的 Redis 结果或 loader future | 在**运行时的执行器**上继续，从不在 Lettuce 的 I/O 线程或 loader 自己的线程上；每次这样的恢复都是执行器上的一个新任务 |
+| 经异步视图调用的同步 loader | 同样在**运行时的执行器**上执行 |
+| 被 `LoadObserver` 观测的加载（链路追踪） | `observe` 在自己的虚拟线程上执行，每次被观测的加载一个（`cocache-observe-N`），这个线程等待加载结束；不占用运行时的执行器 |
 | 等待其它实例的 lease，或等待回源许可 | 不占线程：读取挂起，短暂退避后重读 Redis；许可释放时按到达顺序交给下一个等待者（同步与异步调用方排在同一个队列里） |
 
 你自己挂上的依赖阶段（`thenApply`、`whenComplete`）遵循 JDK 的规则：在完成 future 的线程上执行，或在随后对它调用 `get()` / `join()` 的线程上执行。
 
-异步执行器与阻塞执行器都可以配置，见[配置参考](./configuration.md#executors)。
+异步与挂起视图只用运行时的一个执行器：由 `cocache.executor` 指定（不用 Spring 时为 `CacheRuntime.builder().executor(…)`），默认每个任务一个虚拟线程，线程名 `cocache-worker-N`。阻塞的 loader 与续接都在它上面执行，所以它必须容得下阻塞的任务：不要给它队列，也不要只给少量线程。见[配置参考](./configuration.md#executors)。
 
 ## 超时 {#timeouts}
 
@@ -73,7 +74,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 ## Spring Cache {#spring-cache}
 
-`retrieve(key)` 与 `retrieve(key, loader)` 经异步视图，所以异步与响应式的 `@Cacheable(sync = true)` 方法经受 lease 保护的路径回源，等待时不占用线程，也不需要单独的执行器；方法体在阻塞执行器上执行。见 [Spring Cache](./spring-cache.md#executor)。
+`retrieve(key)` 与 `retrieve(key, loader)` 经异步视图，所以异步与响应式的 `@Cacheable(sync = true)` 方法经受 lease 保护的路径回源，等待时不占用线程，也不需要单独的执行器；方法体在运行时的执行器上执行。见 [Spring Cache](./spring-cache.md#executor)。
 
 ## Kotlin 协程 {#coroutines}
 
@@ -82,9 +83,9 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 ## 运维 {#operations}
 
 - **Redis**：没有新的命令、脚本、key 或频道。异步视图执行的 Lua 脚本与同步 API 相同，ACL 规则与线格式都不变。
-- **指标**：与同步 API 相同的计数，另加 `cocache.load.timeouts`。开启追踪时，异步加载产生同样的 `cocache.load` 观测，引擎超时标记为 `outcome=timeout`。自定义的 `LoadObserver` 需要覆盖 `observeAsync` 才能看到异步加载，默认实现不观测。
-- **大值**：Redis 后端在 Lettuce 的 I/O 线程上拷贝载荷，之后才交给异步执行器解码。很大的值会推迟同一连接上其它回复（队头阻塞），同步 API 同样如此。请保持值较小，或拆分。
-- **性能**：一次异步 L2 命中多一次很小的分配，约为同步命中的 90%。每次都等待结果的闭环调用在负载下比同步 API 略慢，因为每个结果都要切换到异步执行器。收益出现在一个线程同时保持多个请求时：32 个在途请求下，一个线程完成的 Redis 读写约为一个阻塞线程的 12 倍。
+- **指标**：与同步 API 相同的计数，另加 `cocache.load.timeouts`。开启追踪时，异步加载产生同样的 `cocache.load` 观测，引擎超时标记为 `outcome=timeout`。自定义的 `LoadObserver` 经同一个 `observe` 看到异步加载：CoCache 在自己的观测线程上调用它，从不在你的线程上，观测覆盖整个加载。
+- **大值**：Redis 后端在 Lettuce 的 I/O 线程上拷贝载荷，之后才交给运行时的执行器解码。很大的值会推迟同一连接上其它回复（队头阻塞），同步 API 同样如此。请保持值较小，或拆分。
+- **性能**：一次异步 L2 命中多一次很小的分配，约为同步命中的 90%。每次都等待结果的闭环调用在负载下比同步 API 略慢，因为每个结果都要切换到运行时的执行器。收益出现在一个线程同时保持多个请求时：32 个在途请求下，一个线程完成的 Redis 读写约为一个阻塞线程的 12 倍。
 
 ## 自定义后端 {#backends}
 

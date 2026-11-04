@@ -109,6 +109,8 @@ description: CoCache 版本发布历史和重要变更。
 - `LoadPolicy.asyncTimeout` 改为 `LoadPolicy.timeout`，配置项 `load-async-timeout` 改为 `load-timeout`（默认 `30s`）。它不再只约束异步加载：等待别的调用方加载的读取，在这次加载进行了这么久之后以 `SourceLoadTimeoutException` 失败，之后的读取开始新的加载，不再排在卡住的同步 loader 后面。6.x 中同步读取会一直等下去。`cocache.load.timeouts` 两种超时都计数。
 - `cocache-core` 在运行时依赖 `kotlinx-coroutines-core`。协议正在改写为一份协程实现，同时服务阻塞、异步与挂起三种 API；两种缓存的读取、提前刷新与写入都已用上它。开启断言（`-ea`，测试时的默认值）时，读取运行期间 kotlinx 会给线程名加上协程后缀（如 ` @coroutine#3`），阻塞的 loader 里也看得到。
 - 运行时不再启动 `cocache-timer` 线程：等待 lease 与等待回源许可都是协程挂起。
+- 异步与挂起视图只用一个执行器：`cocache.executor` 取代 `cocache.async-executor` 与 `cocache.blocking-executor`，`CacheRuntime.Builder.executor(…)` 取代 `asyncExecutor(…)` 与 `blockingExecutor(…)`，`CacheRuntime.executor` 取代 `CacheRuntime.blockingExecutor`。每次续接都派发给它，所以它必须容得下阻塞的任务。见[只用一个执行器](#one-executor)。
+- `LoadObserver.observeAsync` 已删除：`observe` 同样看到异步与挂起的加载，由 CoCache 在自己的观测线程上调用。见[只用一个执行器](#one-executor)。
 - `cocache-redis` 不再包含 CoCache 5.x 迁移工具：删除了 `CoCache5Migrator`、`CoCache5Migration`、`CoCache5Format`、`CoCache5KeyMapper`、`CoCache5MigrationOptions`、`CoCache5MigrationReport`、`CoCache5CacheReport` 与 `CoCache5MigrationException`（包 `me.ahoo.cocache.redis.migration`）。8.x 不需要读 5.x 的数据，因此不再附带这个转换工具。以 Redis 为唯一副本的 5.x 数据，先用 CoCache 6.x（6.5 起）迁移，见[用 `CoCache5Migrator` 迁移](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/zh/guide/migration-6.md)。
 - 回源许可（`load.max-concurrent`）对同步与异步调用方一律按到达顺序交接。6.x 的阻塞调用方直接争用释放出来的许可，可能抢在已在等待的异步调用方之前。
 - `CacheRuntime` 关闭时仍在进行的异步读取以 `IllegalStateException("CacheRuntime closed.")` 失败。仍在进行的异步写入先做完 Redis 修改、广播与本地淘汰：成功时再以这个异常完成，失败时以自己的异常完成。
@@ -132,7 +134,7 @@ description: CoCache 版本发布历史和重要变更。
 - 条件读写（`getIfChanged`、`putIfMatch`、`deleteIfMatch`）只作用于 `Store` 写入的值。没有摘要的值（`Cache` 写入的）、带版本的值、墓碑与被淘汰的带版本 key 都是读不懂的内容：`getIfChanged` 抛出 `CacheReadException`，`putIfMatch` 抛出 `CacheWriteException`，`cause` 都是 `ForeignFormatException`。对没有值的 key，`putIfMatch(key, null, value)` 照常写入。脚本只读头部（`GETRANGE` 与 `STRLEN`）、比较保存的摘要，摘要未变的 `getIfChanged` 在 Redis 中的成本与值的大小无关；Lua 不再读取整个值或计算 SHA-1。`getIfChanged` 返回值时，CoCache 重算摘要，不一致就抛出。
 - **带版本的缓存提前刷新**：带版本的值取得刷新令牌，`cocache.defaults.cache.refresh-window` 作用于带版本的缓存；同时带 `versioned` 与 `refreshWindow` 的 `CacheSpec` 是合法的。刷新只写回不比 Redis 中更旧的版本：loader 返回更旧的版本时，实例保留自己的副本，退避之后再试。写入方推送每一个版本的带版本缓存可以设置 `refreshWindow = off()`（或 `cocache.caches.[name].refresh-window: off`）。
 - 带版本的缓存的本地副本从不退回更旧的版本：刷新的令牌被别的读取抢走、或写回失败，而 loader 返回比副本更旧的版本时，实例保留副本，退避之后再试；被丢弃的填充计入 `cocache.stale.discards`。
-- 结果未知的带版本写回（填充）按写入处理：实例递增戳、丢掉本地副本（非原子广播时发布失效），因为超时或被排空的 `FILL` 仍可能稍后让版本前进，而它的失效消息在这个实例上被过滤。
+- 结果未知的带版本写回（填充）按写入处理：实例递增戳、丢掉本地副本（非原子广播时发布失效），因为超时或被排空的 `FILL` 仍可能稍后让版本前进，而这个实例上的读取者可能已经读到了旧版本。原子广播的后端上，它迟到的广播同样淘汰这个实例上的副本（[结果未知之后自己的消息](#own-frames)）。
 - 填充遵循 Redis 中的版本：带版本的内容上，凭刷新令牌或 lease 的填充在版本更旧（或没有版本）时被拒绝，令牌在同一个脚本中清零；版本相等时续期，不发失效消息；版本更新时写入并广播，加载所在的实例按写入处理：丢掉本地副本，不把结果填进 L2。
 - 端点的按 key `DELETE`（`CacheAdmin.invalidateEncoded`）在带版本的缓存上保留版本：key 变为仍然拒绝旧版本的淘汰标记（状态 `E`，44 字节，寿命同墓碑）。下一次读取在其上取得 lease；loader 落后时，它的结果照常返回并在 L2 中保留 `degraded-local-max-age`，但不写入 Redis（`cocache.fill.rejections`）。失败时抛出，不在后台重试。见[按版本写入](./freshness.md#versioned-writes)。
 - 端点的按 key `DELETE` 默认拒绝删除唯一副本：`Store` 与 `SetStore` 需要 `management.endpoint.cocache.allow-store-delete=true`，`VersionedStore` 需要 `management.endpoint.cocache.allow-purge=true`。没有开启时请求返回 `403`，不做任何修改。见[删除唯一副本需要开关](#endpoint-switches)。
@@ -147,7 +149,7 @@ description: CoCache 版本发布历史和重要变更。
 - `SourceLoadCancelledException` 从 `me.ahoo.cocache.coroutines` 移到 `me.ahoo.cocache.core`，并覆盖全部数据源：`CacheLoader` 自己抛出 `CancellationException`，或 `AsyncCacheLoader` 的 future 以它完成（其中的 `withTimeout`、HTTP 客户端取消了请求）时，共享这次加载的每个调用方都以 `SourceLoadCancelledException` 失败，原始异常是它的 `cause`。6.x 中这些调用方收到的就是那个 `CancellationException`，异步调用方的 future 因此看起来像是被取消了。
 
 - starter 不再检查 6.0 删除的配置项（`cocache.redis.strict-failure`、`cocache.redis.eviction-channel`、`cocache.redis.missing-guard-sentinel`、`cocache.metrics.client-side-hits`、`cocache.load.*`、`cocache.next.*`）。它们不再以 `CoCache 6.0 removed these properties` 让启动失败，与其它未知的配置项一样被 Spring Boot 忽略。配置元数据中的相应条目也已删除。
-- 运行时的默认阻塞执行器总是每个任务一个虚拟线程（`Executors.newVirtualThreadPerTaskExecutor()`）。为没有虚拟线程的 JDK 准备的后备（最多 512 个 `cocache-blocking-*` 守护线程的线程池）已删除，starter 也不再为 `Executors` 登记原生镜像的反射提示。
+- 运行时的默认执行器总是每个任务一个虚拟线程。为没有虚拟线程的 JDK 准备的后备（最多 512 个 `cocache-blocking-*` 守护线程的线程池）已删除，starter 也不再为 `Executors` 登记原生镜像的反射提示。
 - wiki 不再收录 5.x 升级指南（`guide/migration-6`），[6.x 分支](https://github.com/Ahoo-Wang/CoCache/blob/6.x/wiki/zh/guide/migration-6.md)保留它。删除 `cocache-migrate` agent skill，8.x 不提供升级 skill。
 
 - SPI：`InvalidationListener.onInvalidated` 收到的是**编码后的 key**，即存储 key 中 `{keyPrefix}{namespace}:` 之后的部分（`KeyEncoder` 的输出、`ExternalInvalidator` 的参数），不是存储 key。通道用新增的 `Keyspace.encodedKeys(…)` 转换帧中的 key（同时去掉不属于这个 keyspace 的 key），并按订阅的先后依次回调同一 keyspace 的订阅者，因此缓存创建之后加入的订阅者被回调时，缓存已经丢弃了本地副本。自己订阅通道、从 key 中剥掉 `"$namespace:"` 的代码必须改为直接使用收到的 key，否则每一条通知都被静默忽略。`BackendProtocolSpec` 的用例 `listenersReceiveEncodedKeysInSubscriptionOrder` 检查这两条规则。
@@ -182,6 +184,16 @@ description: CoCache 版本发布历史和重要变更。
 - 调用方的上下文元素（追踪上下文、`MDCContext` 等 `ThreadContextElement`，协程名）随共享加载传递，不带调用方的 `Job` 与 dispatcher；声明的 `AsyncCacheLoader` 现在也看得到它们。
 - 调用级 loader 在这次加载之中执行：在调用方线程上开始，之后在 CoCache 的执行器上继续（之前：在调用方的 dispatcher 上执行，没有 dispatcher 或在 `runBlocking` 的事件循环上时在 `Dispatchers.Default` 上）。`load-timeout` 到期与运行时关闭都会取消它。阻塞调用请包在 `withContext(Dispatchers.IO)` 中。
 - 挂起方法抛出原始的异常实例，协程的调试模式下也是。
+
+### 行为变化：异步与挂起视图只用一个执行器 {#one-executor}
+
+异步执行器与阻塞执行器合并为一个（[RFC 0005 §4.4、§5](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。
+
+- `cocache.executor` 取代 `cocache.async-executor` 与 `cocache.blocking-executor`。它指定一个 `Executor` bean 的名称，规则与 `cocache.refresh-executor` 相同：只按名称解析，bean 不存在或不是 `Executor` 时启动失败，由容器管理（`CacheRuntime.close()` 不会关闭它），并在运行时之后才销毁。Spring Boot 的 `applicationTaskExecutor` 仍可显式指定：`cocache.executor=applicationTaskExecutor`。不用 Spring 时，`CacheRuntime.Builder.executor(…)`（Kotlin DSL：`executor = …`）取代 `asyncExecutor(…)` 与 `blockingExecutor(…)`，`CacheRuntime.executor` 取代 `CacheRuntime.blockingExecutor`。
+- 不设置时，运行时为每个任务启动一个虚拟线程，线程名 `cocache-worker-N`。之前的默认值是执行续接的 `ForkJoinPool`（`cocache-async-*`）加上执行阻塞 loader 的未命名虚拟线程。
+- 异步与挂起视图的每一步都在它上面执行：Redis 命令或 loader 的 future 完成之后的每次恢复都是它上面的一个新任务，从不在完成上一步的线程（Lettuce 的 I/O 线程、loader 自己的线程）上就地继续。“上一步在执行器上完成时就地执行续接”的捷径已删除。共享加载、经异步与挂起视图调用的同步 loader、Spring Cache `retrieve(key, loader)` 的方法体（异步或响应式方法上的 `@Cacheable(sync = true)`）也在它上面执行。阻塞 API 从不使用它。
+- 因此它必须容得下阻塞的任务：不要给它队列，也不要只给少量线程。JDK 21–23 上，在 `synchronized` 块内阻塞的 loader 会钉住虚拟线程的载体线程（JEP 491 在 JDK 24 修复），因此建议 JDK 24 及以上，或使用平台线程池。见[执行器](./configuration.md#executors)。
+- `LoadObserver.observeAsync` 已删除，`LoadObserver` 只有 `observe`。对异步与挂起的加载，CoCache 在自己的虚拟线程上调用 `observe`，每次被观测的加载一个（`cocache-observe-N`），从不在调用方线程上，也不在 `cocache.executor` 上。这个线程在整个加载期间等待，观测因此覆盖整个加载，直到 loader 的 future 完成；引擎超时记为结果 `timeout`。加载从这个线程上开始，`loadAsync` 的同步部分因此看得到观测器设置的线程局部状态（如 Micrometer 的当前 `Observation`），追踪上下文可以传下去。只实现了 `observe` 的观测器现在也能看到异步加载，之前什么也看不到。`MicrometerLoadObserver` 不再有异步的覆盖方法，标签不变：`cocache.load`，带 `cache`、`operation`、`outcome`（`success`、`error`、`timeout`）与 `key.count`。
 
 ### 行为变化：关闭运行时会等待在途的 Redis 步骤
 
@@ -219,6 +231,11 @@ description: CoCache 版本发布历史和重要变更。
 ### 修复：写入返回之后不再出现旧的本地副本
 
 - 在并发写入之前刚读过 Redis 的加载，仍可能在写入返回之后把旧值写进本地（L2）副本，直到它自己的复核撤销为止；这段时间里本实例紧接着写入的读取可能读到旧值。现在本地副本在 key 的锁内一步完成校验与写入，写入返回之后，本实例的本地副本不会再出现更旧的值。
+
+### 修复：迟到执行的写入的广播淘汰写入方自己的旧副本 {#own-frames}
+
+- 结果未知的写入（超时或连接断开的 `put`、`putAll`、`invalidate`、集合写入或按版本写入；发出之前就被拒绝的不算）可能稍后才执行，并广播它的失效。写入方实例因为这条消息来自自己而跳过它，于是它在失败与迟到执行之间加载的旧副本留在 L2 中，直到 `local-max-age`。现在从失败起 `local-max-age` 之内，该实例对这些 key 上自己的消息按其它实例的消息处理：丢掉自己的副本。这些消息不计入 `cocache.invalidations.received`。结果未知的带版本写回（填充）同样如此（[RFC 0005 §4.6](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。
+- 只对原子广播的后端（Redis 的默认模式）。`channel-mode: sharded`，或原子广播探测失败时，迟到执行的命令不带广播，上界仍是 `local-max-age`。
 
 ### 修复：批量读取中一个 key 重新加载失败，不再拖累整批
 
@@ -266,6 +283,7 @@ description: CoCache 版本发布历史和重要变更。
 - **破坏性变更：** TCK 随上面的 SPI 变化：`L1Fill`、`ContentFingerprint`、`timeout` 参数与 `L1*` 结果类型。`HookedBackend.afterFill` 收到 `L1Fill` 结果，不再是 `Boolean`。
 - **破坏性变更：** TCK 随摘要段与状态 `E` 变化。`BackendProtocolSpec.writerIdAndVersionRoundTripThroughEveryScalarWrite` 改名为 `segmentsRoundTripThroughEveryScalarWrite`，同时检查摘要；新用例检查带摘要的值不取得刷新令牌、从不被回收，条件读写比较保存的摘要并拒绝没有摘要的值，`E` 上的 lease 在超过 lease 寿命之后被抢占。`VersionedSpec.versionedContentIsNeverRefreshedOrReclaimed` 改名为 `versionedContentIsRefreshedButNeverReclaimed`，新用例覆盖填充的版本规则、`E` 上的每个脚本、`evictKeepingVersion`、带版本的缓存的提前刷新与按 key 淘汰。`EngineSpec` 检查只有 `Store` 写入摘要、它的读取遇到被篡改或缺失的摘要时失败、`Cache` 计入类型不符、条件读取校验它返回的值；`writeRemoteSilently` 新增可选的 `digest` 参数，`writeAuthoritativeSilently` 写入带摘要的值。
 - `BackendProtocolSpec` 增加 `pause()` 钩子，新用例 `readTimeoutBoundsTheCallAndReleasesItsLease` 检查：L1 卡顿时，带短 `timeout` 的读取在大约这么长的时间内以 L1 故障失败，它请求的 lease 在之后被释放。`pause()` 返回 `null`（默认）时跳过。`InMemoryBackend` 为此增加 `stall()` 与构造参数 `commandTimeout`：卡顿期间的操作最多等它的时限，超时的操作永远不执行。
+- `FaultSpec.lateOutcomeUnknownPutEvictsTheWritersOwnStaleCopy` 在原子广播的后端上覆盖[自己的消息的修复](#own-frames)，其它后端上跳过。`HookedBackend.deferPuts` 让单 key put 以结果未知的故障失败并暂不执行；`applyDeferredPuts()` 随后执行它们，照常广播。
 - `Concurrency.currentThreadName()` 返回去掉 kotlinx 协程后缀的线程名。`HookedBackend.issuer()` 与各规范都用它，按线程名编排竞态的钩子不论是否开启断言都能工作。
 - `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` 覆盖上面的批量修复，`EngineSpec.getAllAfterOwnInvalidateNeverSharesALoadStartedBefore` 覆盖批量读取的读己之写。
 - `Concurrency.Forked.parked` 在线程等待时（`WAITING` 或 `TIMED_WAITING`）为真。阻塞调用的跟随者现在在 `runBlocking` 中等待，以限时停顿挂起，所以各规范不再只认 `WAITING`。

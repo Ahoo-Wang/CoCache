@@ -232,7 +232,7 @@ testImplementation("me.ahoo.cocache:cocache-test")
 | `VersionedSpec` | 需要 `VERSIONED`，覆盖 `VersionedCache` 与 `VersionedStore`。协议（整体写入保存版本、按有符号 64 位整数比较、按版本写入销毁被持有的 lease、带版本的内容不授予刷新令牌也不被回收、墓碑），以及两个运行时共用你的后端：有序、相等版本幂等、拒绝旧版本且不广播不改寿命（没有原子广播时相等的版本会再次广播，重放因此能补上丢失的发布）、墓碑挡住迟到的旧版本、按版本写入胜过持有 lease 的回源、回源保存 loader 给出的版本、并发乱序的写入方收敛到最高版本、结果未知后重放安全、`evict` 保留版本而 `purge` 丢掉版本、在 `Store` 的值上被拒绝的淘汰、落在带版本内容上被拒绝的不带版本的 `null`，以及 `VersionedStore` 读取不申请 lease、写入写入标识、墓碑到期 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
 | `SetEngineSpec` | 需要 `SETS`。两个运行时上的 `SetStore`：原子的并发加入、空集合删除、`put` 与 `putAll` 替换集合、元素写入拒绝读不懂的内容、写入失败，以及读取失败时回答 `Unknown` | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
 | `MultiNodeSpec` | 三个运行时共用你的后端：失效先于 lease、晚于 lease 且另一实例正在等待、晚于 fill 而早于写 L2；其它实例的写入落在读取与 L2 填充之间；不同实例的并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全部实例中每个 key 只回源一次、只刷新一次 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
-| `FaultSpec` | L1 故障下的后端：存储失败期间副本以 `degraded-local-max-age` 限龄、fill 失败及其 lease、`Store.delete` 失败时抛出而不重试、放弃或溢出队列的失效重试、已生效却报错且可安全重试的 `put` 与 `invalidate`；（可选）断线期间被拒绝的写入在重连后不被重放；（可选）客户端取消的命令是 L1 故障，不是取消 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)`；可选 `disconnect()` 与 `commandCancellation()` |
+| `FaultSpec` | L1 故障下的后端：存储失败期间副本以 `degraded-local-max-age` 限龄、fill 失败及其 lease、`Store.delete` 失败时抛出而不重试、放弃或溢出队列的失效重试、已生效却报错且可安全重试的 `put` 与 `invalidate`；原子广播的后端上，结果未知、迟到执行的 `put` 经自己的广播淘汰写入方节点的旧副本；（可选）断线期间被拒绝的写入在重连后不被重放；（可选）客户端取消的命令是 L1 故障，不是取消 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)`；可选 `disconnect()` 与 `commandCancellation()` |
 
 套件只有一套，适用于所有 API。每个套件都有 `protected open val access: CacheAccess`，后端只需要默认的 `CacheAccess.SYNC`。阻塞、[异步](../guide/async.md)与挂起三种 API 的行为（取消、future 在哪个线程上完成、等待不占线程等）属于核心，由 CoCache 自己的测试覆盖。CoCache 覆盖 `access`，经异步视图（`CacheAccess.ASYNC`）重跑这些套件；你也想在自己的后端上得到这部分覆盖时，可以同样覆盖它。
 
@@ -259,7 +259,7 @@ protected Set<L1Capability> getExpectedCapabilities() {
 
 ### 接入套件 {#tck-hooks}
 
-套件会用 `HookedBackend` 包装你的后端。它可以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`，以及在写入到达你的存储之前抛出 `L1RejectedException` 的 `rejectWrites`）、改写读取结果、在读取与 fill 之后以及写入前后执行钩子（从而用 latch 而不是 sleep 编排竞态；`afterPut` 或 `afterInvalidate` 抛出即模拟已生效却报错的写入）、为调用计数（`reads`、`readAlls`、`fills`、`puts`、`putAlls`），还能覆盖 `atomicBroadcast` 来验证非原子路径。你自己的测试也可以用它。
+套件会用 `HookedBackend` 包装你的后端。它可以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`，以及在写入到达你的存储之前抛出 `L1RejectedException` 的 `rejectWrites`；`deferPuts` 让单 key put 以结果未知的故障失败并暂不执行，直到 `applyDeferredPuts()` 执行它们）、改写读取结果、在读取与 fill 之后以及写入前后执行钩子（从而用 latch 而不是 sleep 编排竞态；`afterPut` 或 `afterInvalidate` 抛出即模拟已生效却报错的写入）、为调用计数（`reads`、`readAlls`、`fills`、`puts`、`putAlls`），还能覆盖 `atomicBroadcast` 来验证非原子路径。你自己的测试也可以用它。
 
 `elapse(duration)` 必须让你的存储与引擎的时间同时前进：
 
@@ -342,7 +342,7 @@ interface Codec<V> {
 |------|------|
 | `CacheLoader<K, V>` | `load(key)` 返回值，或用 `null` 表示“不存在”（以负缓存存储 `absent-ttl`）。`loadAll(keys)` 批量加载，结果中缺少的 key 视为不存在。默认逐个调用 `load`，请覆盖为一次查询。在调用方线程上执行。不能读取自己缓存中的同一个 key（会快速失败）。必须读主库，而不是滞后的从库 |
 | `KeyEncoder<K>` | 把 key 转换为 `{keyPrefix}{namespace}:` 之后的字符串。必须**单射**（不同的 key 得到不同的字符串）、确定，并且在每个实例与每个版本上都相同。默认是 `toString()`，它会拒绝没有重写 `toString()` 的类型 |
-| `AsyncCacheLoader<K, V>` | `CacheLoader` 的异步形式：`loadAsync(key)` 返回 `CompletionStage`，以 `null` 完成表示“不存在”。必须很快返回、不阻塞：它在调用方线程或异步执行器上执行，看不到调用方的 ThreadLocal。受 `load-timeout` 约束。见[异步 API](../guide/async.md#loader) |
+| `AsyncCacheLoader<K, V>` | `CacheLoader` 的异步形式：`loadAsync(key)` 返回 `CompletionStage`，以 `null` 完成表示“不存在”。必须很快返回、不阻塞：它在调用方线程或 CoCache 的线程上执行，看不到调用方的 ThreadLocal。受 `load-timeout` 约束。见[异步 API](../guide/async.md#loader) |
 | `KeyFilter` | `notExist(storageKey)` 收到的是完整的存储 key。只有确定不存在的 key 才能返回 `true`：布隆过滤器必须包含所有存在的 key。返回 `true` 时跳过 Redis 与 loader，不缓存任何内容。必须是本地、不阻塞的判断：异步调用方在自己的线程上调用它，那可能是事件循环 |
 | `TtlFunction<K, V>`（`ttlOf`） | 按条目决定的寿命。非 null 的结果替代 `ttl` 且不加抖动。收敛到 1 ms 与 100 年之间。不作用于负缓存 |
 
