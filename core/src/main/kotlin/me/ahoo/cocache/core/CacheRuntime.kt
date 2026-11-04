@@ -80,6 +80,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         get() = context.async.blocking
     private val registrations = CopyOnWriteArrayList<Registration>()
     private val names = ConcurrentHashMap<String, Registration>()
+    private val creationListeners = CopyOnWriteArrayList<CacheCreationListener>()
 
     /**
      * 已登记的 keyspace（前缀与命名空间）：命名空间相同、前缀不同的两个缓存 key 与频道都不重叠，可以共存。
@@ -134,17 +135,25 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     /**
      * 按声明创建派生副本 `Cache`（RFC 0005 §4.1）。同一运行时内缓存名与 keyspace（[Spec.keyspace]，前缀加命名空间）都不得重复。
      * 不要求可选的 L1 能力。
+     *
+     * 直接经本方法（及其它 `create` 重载）创建的缓存是“未分层”的（[CacheAdmin.layered] 为 `false`，S20）：声明原样生效，
+     * 配置的各层（starter 的 `cocache.defaults`、`cocache.caches.[name]` 与定制器）对它都不生效，启动日志与端点标注出来。
+     * 库与应用应经 [CoCacheFactory] 创建缓存。
      */
-    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> =
-        register(spec.name, spec.keyspace, NONE) { store -> CacheEngine(spec.engineSpec(), store, context) }
+    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> = create(spec, layered = false)
+
+    internal fun <K : Any, V : Any> create(spec: CacheSpec<K, V>, layered: Boolean): Cache<K, V> =
+        register(spec.name, spec.keyspace, NONE, layered) { store -> CacheEngine(spec.engineSpec(), store, context) }
 
     /**
      * 按声明创建派生的带版本副本 `VersionedCache`。存储必须支持按版本有序的写入（[L1Store.versioned]）。
      *
      * 创建时检查缓存需要的 L1 能力（RFC 0005 §4.3）：存储缺少任何一个时抛出 [UnsupportedOperationException]，不注册任何东西。
      */
-    fun <K : Any, V : Any> create(spec: VersionedCacheSpec<K, V>): VersionedCache<K, V> =
-        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED)) { store ->
+    fun <K : Any, V : Any> create(spec: VersionedCacheSpec<K, V>): VersionedCache<K, V> = create(spec, layered = false)
+
+    internal fun <K : Any, V : Any> create(spec: VersionedCacheSpec<K, V>, layered: Boolean): VersionedCache<K, V> =
+        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED), layered) { store ->
             VersionedCacheEngine(spec.engineSpec(), store, context)
         }
 
@@ -152,24 +161,32 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      * 按声明创建权威副本 `Store`。存储必须支持条件读写（[L1Store.conditional]）：`getIfChanged`、`putIfMatch` 与 `deleteIfMatch`
      * 是 `Store` 的操作。
      */
-    fun <K : Any, V : Any> create(spec: StoreSpec<K, V>): Store<K, V> =
-        register(spec.name, spec.keyspace, listOf(Capability.CONDITIONAL)) { store ->
+    fun <K : Any, V : Any> create(spec: StoreSpec<K, V>): Store<K, V> = create(spec, layered = false)
+
+    internal fun <K : Any, V : Any> create(spec: StoreSpec<K, V>, layered: Boolean): Store<K, V> =
+        register(spec.name, spec.keyspace, listOf(Capability.CONDITIONAL), layered) { store ->
             StoreEngine(spec.engineSpec(), store, context)
         }
 
     /**
      * 按声明创建权威的带版本副本 `VersionedStore`。存储必须支持按版本有序的写入（[L1Store.versioned]）。
      */
-    fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>): VersionedStore<K, V> =
-        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED)) { store ->
+    fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>): VersionedStore<K, V> = create(spec, layered = false)
+
+    internal fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>, layered: Boolean): VersionedStore<K, V> =
+        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED), layered) { store ->
             VersionedStoreEngine(spec.engineSpec(), store, context)
         }
 
     /**
      * 按声明创建权威集合 `SetStore`。存储必须支持集合成员的增删（[L1Store.sets]）。
      */
-    fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>): SetStore<K, E> =
-        register(spec.name, spec.keyspace, listOf(Capability.SETS)) { store -> SetEngine(spec, store, context) }
+    fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>): SetStore<K, E> = create(spec, layered = false)
+
+    internal fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>, layered: Boolean): SetStore<K, E> =
+        register(spec.name, spec.keyspace, listOf(Capability.SETS), layered) { store ->
+            SetEngine(spec, store, context)
+        }
 
     /**
      * 按声明创建与 spec 类型对应的缓存（[Spec] 的五种实现，见各自的重载）。
@@ -184,13 +201,14 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
 
     /**
      * @param required 缓存需要的 L1 能力：存储缺少其中任何一个时抛出，不注册任何东西
-     * @param expose 用户拿到的缓存（[cache] 按名称返回的也是它）
+     * @param layered 是否经 [CoCacheFactory] 创建（[CacheAdmin.layered]）
      */
     @Suppress("TooGenericExceptionCaught")
     private fun <C> register(
         name: String,
         keyspace: Keyspace,
         required: List<Capability>,
+        layered: Boolean,
         factory: (L1Store) -> C
     ): C where C : AbstractEngine<*, *>, C : ReadableCache<*, *> {
         check(!closed.get()) { "CacheRuntime is closed." }
@@ -199,6 +217,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             "Namespace[${keyspace.namespace}] with keyPrefix[${keyspace.keyPrefix}] is already used by another cache."
         }
         val (provided, engine) = createEngine(name, keyspace, required, factory)
+        engine.layered = layered
         val registration = Registration(engine, engine)
         if (names.putIfAbsent(name, registration) != null) {
             keyspaces.remove(keyspace)
@@ -217,16 +236,30 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             throw e
         }
         log.info {
-            "Cache[$name] - created as ${typeOf(engine)} on namespace[${keyspace.namespace}], keyPrefix[${keyspace.keyPrefix}], " +
-                "node[$nodeId], L1 capabilities${provided.joinToString(
-                    prefix = "[",
-                    postfix = "]"
-                )}."
+            val capabilities = provided.joinToString(prefix = "[", postfix = "]")
+            "Cache[$name] - created as ${engine.apiType.simpleName} on namespace[${keyspace.namespace}], " +
+                "keyPrefix[${keyspace.keyPrefix}], node[$nodeId], L1 capabilities$capabilities" +
+                if (layered) "." else ", $UNLAYERED_NOTE"
         }
         if (keyspace.keyPrefix.isEmpty()) {
             log.warn { emptyKeyPrefixWarning(name, keyspace) }
         }
+        creationListeners.forEach { listener ->
+            try {
+                listener.created(engine)
+            } catch (e: Exception) {
+                log.warn(e) { "Cache[$name] - creation listener $listener failed." }
+            }
+        }
         return engine
+    }
+
+    /**
+     * 之后创建的每个缓存（无论是否经 [CoCacheFactory]）注册之后回调 [listener]，在创建它的线程上。已经创建的缓存不回放：
+     * 需要时遍历 [cacheNames]。监听者抛出的异常只记录告警，不影响缓存的创建。
+     */
+    fun addCreationListener(listener: CacheCreationListener) {
+        creationListeners.add(listener)
     }
 
     /**
@@ -402,16 +435,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         private val NONE: List<Capability> = emptyList()
 
         /**
-         * 缓存的用户 API 类型（启动日志与端点输出，供人工核对同一 namespace 的声明，RFC 0005 §4.1）。
+         * 未分层的缓存在启动日志中的说明（S20）。
          */
-        internal fun typeOf(cache: ReadableCache<*, *>): String = when (cache) {
-            is Cache<*, *> -> "Cache"
-            is VersionedCache<*, *> -> "VersionedCache"
-            is Store<*, *> -> "Store"
-            is VersionedStore<*, *> -> "VersionedStore"
-            is SetStore<*, *> -> "SetStore"
-            else -> cache.javaClass.simpleName
-        }
+        internal const val UNLAYERED_NOTE =
+            "unlayered: created directly through CacheRuntime.create, not CoCacheFactory, so configuration layers " +
+                "(cocache.defaults, cocache.caches.[name], customizers) don't apply."
 
         @JvmStatic
         fun builder(): Builder = Builder()

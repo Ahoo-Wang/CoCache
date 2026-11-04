@@ -13,14 +13,10 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.ReadableCache
-import me.ahoo.cocache.api.SetStore
-import me.ahoo.cocache.api.Store
-import me.ahoo.cocache.api.VersionedCache
-import me.ahoo.cocache.api.VersionedStore
+import me.ahoo.cocache.core.CacheLayers
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.Spec
 import me.ahoo.cocache.core.StoreSpec
@@ -29,12 +25,14 @@ import me.ahoo.cocache.core.VersionedStoreSpec
 import org.springframework.beans.factory.SmartInitializingSingleton
 
 /**
- * 按声明创建缓存：依次叠加定制器与配置文件中的策略与 key 前缀（`key-prefix`），再交给 [CacheRuntime]。
+ * starter 的装配层（[CacheLayers]，RFC 0005 §4.8）：依次叠加定制器与配置文件中的策略与 key 前缀（`key-prefix`）。
+ * starter 的 [CoCacheFactory] bean 以它创建缓存，接口式声明、spec bean 与经 `CoCacheFactory` 创建缓存的库都经过它。
  * 五种 spec 各有一个入口（RFC 0005 §3.1）；派生副本按 [CoCacheProperties.policyFor] 叠加配置，权威副本按
  * [CoCacheProperties.authoritativePolicyFor]（全局的寿命与提前刷新不作用于它们）。
  *
- * 所有单例创建完成后校验：配置文件中出现未声明的缓存名时启动失败（多半是拼写错误）。缓存名不区分大小写
- * （环境变量绑定的 key 是小写）；“已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供。
+ * 所有单例创建完成后校验配置文件中的缓存名：未声明的名称启动失败（多半是拼写错误）。缓存名不区分大小写（环境变量绑定的 key 是小写）；
+ * “已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供。指向未分层的缓存（直接经
+ * `CacheRuntime.create` 创建，S20）的条目只告警（[UnlayeredConfigurationCheck]）。
  *
  * 内部实现（starter 接线使用），不在兼容性承诺之内。
  */
@@ -43,32 +41,22 @@ class CacheAssembler(
     private val customizers: List<CacheSpecCustomizer>,
     private val properties: CoCacheProperties,
     private val declaredCacheNames: () -> Set<String> = { emptySet() },
-) : SmartInitializingSingleton {
+) : CacheLayers, SmartInitializingSingleton {
 
-    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> = withCacheName(spec.name) {
-        runtime.create(resolve(spec))
-    }
+    override fun <K : Any, V : Any> apply(spec: CacheSpec<K, V>): CacheSpec<K, V> =
+        withCacheName(spec.name) { resolve(spec) }
 
-    fun <K : Any, V : Any> create(spec: VersionedCacheSpec<K, V>): VersionedCache<K, V> = withCacheName(spec.name) {
-        runtime.create(resolve(spec))
-    }
+    override fun <K : Any, V : Any> apply(spec: VersionedCacheSpec<K, V>): VersionedCacheSpec<K, V> =
+        withCacheName(spec.name) { resolve(spec) }
 
-    fun <K : Any, V : Any> create(spec: StoreSpec<K, V>): Store<K, V> = withCacheName(spec.name) {
-        runtime.create(resolve(spec))
-    }
+    override fun <K : Any, V : Any> apply(spec: StoreSpec<K, V>): StoreSpec<K, V> =
+        withCacheName(spec.name) { resolve(spec) }
 
-    fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>): VersionedStore<K, V> = withCacheName(spec.name) {
-        runtime.create(resolve(spec))
-    }
+    override fun <K : Any, V : Any> apply(spec: VersionedStoreSpec<K, V>): VersionedStoreSpec<K, V> =
+        withCacheName(spec.name) { resolve(spec) }
 
-    fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>): SetStore<K, E> = withCacheName(spec.name) {
-        runtime.create(resolve(spec))
-    }
-
-    /**
-     * 按 spec 的类型创建对应的缓存（见各重载）。
-     */
-    fun create(spec: Spec<*, *>): ReadableCache<*, *> = withCacheName(spec.name) { runtime.create(resolve(spec)) }
+    override fun <K : Any, E : Any> apply(spec: SetStoreSpec<K, E>): SetStoreSpec<K, E> =
+        withCacheName(spec.name) { resolve(spec) }
 
     /**
      * 生效声明：叠加定制器与配置文件之后、交给运行时之前的 spec。驱逐检查也用它得到尚未创建的权威缓存的 `ttl`。

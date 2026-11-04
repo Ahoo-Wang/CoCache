@@ -32,7 +32,8 @@ import org.springframework.boot.actuate.endpoint.annotation.Selector
 @Endpoint(id = CoCacheEndpoint.ID)
 class CoCacheEndpoint @JvmOverloads constructor(
     private val runtime: CacheRuntime,
-    private val properties: CoCacheEndpointProperties = CoCacheEndpointProperties.DEFAULT,
+    private val properties: CoCacheProperties? = null,
+    private val switches: CoCacheEndpointProperties = CoCacheEndpointProperties.DEFAULT,
 ) {
     companion object {
         const val ID = "cocache"
@@ -96,15 +97,15 @@ class CoCacheEndpoint @JvmOverloads constructor(
                 val reason = "Cache[$name] is not versioned: purge applies only to VersionedCache and VersionedStore."
                 throw InvalidEndpointRequestException(reason, reason)
             }
-            requireAllowed(properties.allowPurge, name, CacheAdmin.KeyDeletion.PURGE, "allow-purge")
+            requireAllowed(switches.allowPurge, name, CacheAdmin.KeyDeletion.PURGE, "allow-purge")
             admin.purgeEncoded(encodedKey)
             return InvalidationReport(name, encodedKey, CacheAdmin.KeyDeletion.PURGE)
         }
         when (admin.keyDeletion) {
             CacheAdmin.KeyDeletion.DELETE, CacheAdmin.KeyDeletion.CLEAR ->
-                requireAllowed(properties.allowStoreDelete, name, admin.keyDeletion, "allow-store-delete")
+                requireAllowed(switches.allowStoreDelete, name, admin.keyDeletion, "allow-store-delete")
             CacheAdmin.KeyDeletion.PURGE -> requireAllowed(
-                properties.allowPurge,
+                switches.allowPurge,
                 name,
                 admin.keyDeletion,
                 "allow-purge"
@@ -148,8 +149,16 @@ class CoCacheEndpoint @JvmOverloads constructor(
         return key
     }
 
+    /**
+     * @param type 用户 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`）
+     * @param layered `false` 即“未分层”：直接经 `CacheRuntime.create` 创建，配置文件与定制器对它都不生效（RFC 0005 §4.8，S20）
+     * @param ignoredConfiguration 未分层的缓存上不生效的按缓存配置条目（`cocache.caches.<name>`）
+     */
     data class CacheReport(
         val name: String,
+        val type: String,
+        val layered: Boolean,
+        val ignoredConfiguration: List<String>,
         val localSize: Long,
         val loads: Long,
         val loadNanos: Long,
@@ -160,6 +169,9 @@ class CoCacheEndpoint @JvmOverloads constructor(
         val snapshot = metrics
         return CacheReport(
             name = name,
+            type = apiType.simpleName,
+            layered = layered,
+            ignoredConfiguration = properties?.let { UnlayeredConfigurationCheck.ignoredEntries(it, this) } ?: emptyList(),
             localSize = localSize,
             loads = snapshot.loads,
             loadNanos = snapshot.loadNanos,

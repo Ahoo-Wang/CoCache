@@ -51,8 +51,16 @@ description: CoCache 版本发布历史和重要变更。
 - Spring：`@CoCache` 接口按它继承的类型创建，五个类型都不继承时启动失败。没有匹配的 loader bean 的 `Cache` 接口启动失败，除非声明 `source = EXTERNAL`；6.x 中它静默地没有 loader。权威类型上设置 `loader` 或 `source = EXTERNAL` 时启动失败。Spring Cache 与 `TransactionalInvalidator` 只接受派生的 `Cache`。`cocache.redis.set-cache-eviction-check` 改名为 `cocache.redis.store-eviction-check`，同时覆盖 `Store` 与 `VersionedStore`。`CoCacheProperties.setPolicyFor` 改名为 `authoritativePolicyFor`。
 - TCK：`CacheAccess` 创建每个类型（`cache`、`versionedCache`、`store`、`versionedStore`、`setStore`）。`EngineSpec` 覆盖 `Cache` 与 `Store`，`VersionedSpec` 覆盖 `VersionedCache` 与 `VersionedStore`，`SetEngineSpec` 覆盖 `SetStore`。`HookedBackend.rejectWrites` 让写入在发出之前以 `L1RejectedException` 被拒绝。
 
+### 库经 `CoCacheFactory` 创建缓存 {#cocache-factory}
+
+- `CoCacheFactory`（`cocache-core`）是创建缓存的入口（[RFC 0005 §4.8](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）：每种 spec 一个 `create(spec)`；接口式声明用 `create(type, spec)`，`type` 必须是继承 spec 声明的那个类型的接口。starter 发布一个 `CoCacheFactory` bean，自己的接口式声明与 spec bean 也经它创建；注入它的库得到同样的定制器与 `cocache.*` 配置、端点与指标。见 [CoCacheFactory](./caches.md#factory)。
+- 直接用 `CacheRuntime.create` 创建的缓存是*未分层*的：定制器与 `cocache.*` 配置对它不生效。它的启动日志以 `unlayered: …` 结尾，端点报告 `layered: false`；指向它的 `cocache.caches.[name]` 告警，并列在端点的 `ignoredConfiguration` 中。
+- `CacheAdmin` 新增 `apiType`（缓存的 API 类型）与 `layered`；端点的缓存报告新增 `type`、`layered` 与 `ignoredConfiguration`。
+- `CacheRuntime.addCreationListener` 在之后创建的每个缓存之后回调 `CacheCreationListener`。starter 用它为每个缓存绑定指标，包括启动之后直接创建的缓存。
+
 ### 破坏性变更
 
+- 接口代理只经 `CoCacheFactory.create(type, spec)` 取得：`CacheProxies.create` 改为内部方法，`CacheAssembler` 不再创建缓存（它是 starter 的 `CacheLayers`）。见[库经 `CoCacheFactory` 创建缓存](#cocache-factory)。
 - 用户 API 拆分为 `Cache`、`VersionedCache`、`Store`、`VersionedStore` 与 `SetStore`，删除 `cocache-coroutines`：见[用户 API 按角色拆分](#api-types)。
 - 基线改为 JDK 21（原为 JDK 17）。
 - 存储 key 保持 6.x 的形状 `{keyPrefix}{namespace}:{encodedKey}`。失效频道改为 `{keyPrefix}inv:{namespace}`（6.x 为 `cocache:inv:{namespace}`，不含前缀），命名空间相同、前缀不同的应用不再收到彼此的失效。`pubsub` 模式的启动探测使用 `cocache:!probe:{a}` 与 `cocache:!probe:{b}`（6.x 为 `cocache:probe:{a}`，它也是命名空间 `probe` 的 key）。内部 key 放在 `{keyPrefix}!` 之下，任何命名空间都产生不了这个位置，`{keyPrefix}!meta:{namespace}` 预留。见[存储 key](./caches.md#storage-keys)。

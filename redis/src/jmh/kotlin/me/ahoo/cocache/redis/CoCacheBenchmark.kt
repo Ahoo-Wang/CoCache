@@ -24,6 +24,7 @@ import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.CachePolicy
@@ -84,7 +85,10 @@ open class CoCacheBenchmark {
             it["hot"]
         }
         cache.put("l1", "l1-value")
-        viaInterface = me.ahoo.cocache.core.proxy.CacheProxies.create(BenchCache::class.java, cache)
+        // 接口式声明经 CoCacheFactory 创建：配置与 cache 相同的另一个引擎，命中路径多出的只是代理的转发
+        viaInterface = CoCacheFactory(runtime).create(BenchCache::class.java, spec("bench-iface-$run", policy))
+        viaInterface.put("hot", "hot-value")
+        viaInterface["hot"]
         // 存储基准测的是 Redis 存储自身（原生挂起的 RedisL1Store，经 awaitBlocking 在调用方线程上等待）
         store = backend.store(Keyspace("cocache:", "bench-$run"))
         l1Key = "cocache:bench-$run:l1"

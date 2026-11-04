@@ -16,6 +16,7 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.join.JoinView
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.Spec
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.beans.factory.NoSuchBeanDefinitionException
@@ -137,8 +138,7 @@ internal object CacheBeanDefinitions {
     @JvmStatic
     fun specCache(specName: String, beanFactory: ConfigurableListableBeanFactory): Any {
         val spec = beanFactory.getBean(specName) as Spec<*, *>
-        val assembler = requireComponent(beanFactory, CacheAssembler::class.java, spec.name)
-        return assembler.create(spec)
+        return requireComponent(beanFactory, CoCacheFactory::class.java, spec.name).create(spec)
     }
 
     private const val ANNOTATED_CACHE_METHOD = "annotatedCache"
