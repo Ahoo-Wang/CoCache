@@ -36,7 +36,7 @@
 - 但整套构建会把负载推到 9–12（M3c 的筛查因此 60 次作废 40 次、拖过一小时）：锁目录存在时，其它会话不开 `./gradlew check`、lincheck 与整套测试。逐格补跑之间锁会释放几秒，所以门槛是锁**连续 2 分钟**不存在：`while :; do while [ -d /tmp/cocache-jmh.lock ]; do sleep 30; done; sleep 120; [ -d /tmp/cocache-jmh.lock ] || break; done; ./gradlew check`。有效配对少于 3 的格子单独补跑。
 - 基准要精简（维护者，2026-11-03）：按 diff 改动的开销，每种开销只选它占比最大的基准；开销相同、外围工作更多的基准，以及共用同一路径的基准不重复跑。`l2HitMixed` 照常包含。PR 里写明没跑的基准及理由。
 - 一次对比控制在 15 分钟内（维护者，2026-11-03）：先跑筛查，`-r 3 --warmup-iterations 2 --warmup-time 2s --iterations 3 --time 3s`（每次运行约 16 s）；同步基准的中位数退化落在 2%–4% 的格子，只把这一格按默认设置（5 轮、3 s 预热、5 s 测量）补跑，以补跑结果判定。M3a 的筛查：`l1HitViaEngine`、`set`、`l2HitMixed`，1、8 线程，36 次，约 13 分钟（原先 6 个基准、默认设置是 120 次，约 2 小时）。不要在 `./gradlew check` 刚结束、负载还在 7 以上时开跑，否则开头的运行会因 CV 超限反复作废。
-- 维护者通知本机暂停时（本机借给别的项目测量），不跑 Gradle、lincheck、JMH，不起 Docker 容器，只提交、推送、改 PR 正文，由 GitHub CI 验证。被打断的 JMH 作废，恢复后整套重跑；不改到 CI 上跑（共享 runner 达不到 architecture.md §13 的方法）。
+- 维护者通知本机暂停时（本机借给别的项目测量），不跑 Gradle、lincheck、JMH，不起 Docker 容器，只提交、推送、改 PR 正文，由 GitHub CI 验证。被打断的 JMH 作废，恢复后整套重跑；不改到 CI 上跑（共享 runner 达不到 architecture.md §14 的方法）。
 
 **CI**
 - `Lincheck` 作业（2026-11-03 起）运行 `./gradlew :cocache-core:lincheck`（CI 的预算，作业约 约 5 分钟；完整的预算 `-Plincheck.full` 只在本地运行，约 5 分钟），不列入必需检查、失败不阻塞合并，但要查明原因（见 [Lincheck 调查](investigations/lincheck-feasibility.md)）。

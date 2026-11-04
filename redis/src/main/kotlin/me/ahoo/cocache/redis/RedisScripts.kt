@@ -20,7 +20,7 @@ import java.nio.ByteBuffer
 import java.security.MessageDigest
 
 /**
- * L1 协议的 Lua 脚本（RFC 0003 §4.3–§4.4）与线格式 2（RFC 0005 §4.7，`docs/architecture.md` §3.3）。
+ * L1 协议的 Lua 脚本（RFC 0003 §4.3–§4.4）与线格式 2（RFC 0005 §4.7，`docs/architecture.md` §4.2）。
  *
  * 线格式：
  * - 标量、负缓存、lease 占位与保留版本的失效是 String：36 字节的核心头部 + 标志位声明的段 + 载荷。

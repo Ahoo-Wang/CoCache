@@ -73,7 +73,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 按版本有序的写入的 TCK（`docs/architecture.md` §6.5）：两个节点（运行时）共享同一个后端。
+ * 按版本有序的写入的 TCK（`docs/architecture.md` §6.6）：两个节点（运行时）共享同一个后端。
  * 只适用于存储提供按版本写入能力面（`L1Store.versioned()`）的后端；不支持版本的后端不必继承它（声明带版本的缓存会在创建时失败）。
  * 继承了而没有声明 [L1Capability.VERSIONED] 时，除能力声明的检查之外的用例都跳过。
  *
