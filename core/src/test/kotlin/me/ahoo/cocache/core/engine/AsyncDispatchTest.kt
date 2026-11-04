@@ -22,6 +22,8 @@ import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.test.Concurrency
+import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
@@ -30,6 +32,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -37,26 +40,53 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * 异步视图的续接经运行时的执行器派发（RFC 0005 §4.4、§5）：每个在执行器之外（I/O 线程、数据源的线程）完成的步骤都派发一次，
  * 调用方的回调从不在 L1 客户端的 I/O 线程或数据源的线程上执行；同步数据源在同一个执行器上执行。6.x 的就地续接已删除。
+ *
+ * 派发次数与完成的先后无关（[measure]）：外部的完成（L1 结果的送达、异步数据源的完成、同步 loader 的返回）都排进 [steps]，
+ * 由测试线程在执行器空闲时逐个放行。那时协程一定已经挂起在这一步上，所以每个外部完成恰好派发一次；否则先于挂起完成的步骤
+ * 就地返回、不派发，次数随时序变化。
  */
 class AsyncDispatchTest {
     private val io = Executors.newSingleThreadExecutor { Thread(it, "test-io").apply { isDaemon = true } }
     private val pool = Executors.newCachedThreadPool { Thread(it, "test-exec").apply { isDaemon = true } }
-    private val sourcePool = Executors.newSingleThreadExecutor { Thread(it, "test-source").apply { isDaemon = true } }
     private val dispatches = AtomicInteger()
     private val gate = AtomicReference(CountDownLatch(0))
+
+    /**
+     * 为 `true` 时外部的完成排进 [steps]（[measure] 期间）；否则 L1 的结果经闸门在“I/O 线程”上送达（重入用例）。
+     */
+    @Volatile
+    private var stepping = false
+    private val steps = LinkedBlockingQueue<Runnable>()
+
+    /**
+     * 已提交、尚未执行完的执行器任务数；其中 [blockedLoaders] 个是停在 [steps] 上的同步 loader。
+     */
+    private val running = AtomicInteger()
+    private val blockedLoaders = AtomicInteger()
     private val backend = HookedBackend(InMemoryBackend()).apply {
-        // L1 的结果在“I/O 线程”上、且只在闸门打开之后送达：调用返回时结果一定尚未完成
         ioExecutor = Executor { task ->
-            val opened = gate.get()
-            io.execute {
-                opened.await(10, TimeUnit.SECONDS)
-                task.run()
+            if (stepping) {
+                steps.add(task)
+            } else {
+                // L1 的结果在“I/O 线程”上、且只在闸门打开之后送达：调用返回时结果一定尚未完成
+                val opened = gate.get()
+                io.execute {
+                    opened.await(10, TimeUnit.SECONDS)
+                    task.run()
+                }
             }
         }
     }
     private val counting = Executor { task ->
         dispatches.incrementAndGet()
-        pool.execute(task)
+        running.incrementAndGet()
+        pool.execute {
+            try {
+                task.run()
+            } finally {
+                running.decrementAndGet()
+            }
+        }
     }
     private val runtime = CacheRuntime.builder().backend(backend).executor(counting).build()
     private val loadedOn = AtomicReference<String>()
@@ -65,17 +95,20 @@ class AsyncDispatchTest {
     fun close() {
         runtime.close()
         backend.close()
-        listOf(io, pool, sourcePool).forEach { it.shutdownNow() }
+        listOf(io, pool).forEach { it.shutdownNow() }
     }
 
     private fun cache(name: String, async: Boolean = false): Cache<String, String> = runtime.create(
         cacheSpec<String, String>(name) {
             codec = StringCodec
             if (async) {
-                asyncLoader = AsyncCacheLoader { key -> CompletableFuture.supplyAsync({ "v-$key" }, sourcePool) }
+                asyncLoader = AsyncCacheLoader { key ->
+                    CompletableFuture<String?>().also { loaded -> steps.add { loaded.complete("v-$key") } }
+                }
             } else {
                 loader = CacheLoader { key ->
                     loadedOn.set(Concurrency.currentThreadName())
+                    awaitStep()
                     "v-$key"
                 }
             }
@@ -83,21 +116,53 @@ class AsyncDispatchTest {
     )
 
     /**
-     * 发起 [call]，在 L1 送达之前登记一个用户回调，再放行；返回结果、回调所在线程，以及这次操作派发到执行器的次数。
+     * 同步 loader 停在这里，直到测试线程放行（[measure] 之外直接返回）。
+     */
+    private fun awaitStep() {
+        if (!stepping) {
+            return
+        }
+        val released = CountDownLatch(1)
+        blockedLoaders.incrementAndGet()
+        steps.add {
+            blockedLoaders.decrementAndGet()
+            released.countDown()
+        }
+        released.awaitOrFail("loader released")
+    }
+
+    /**
+     * 执行器空闲：除了停在 [steps] 上的同步 loader，没有在途的任务。
+     */
+    private fun quiescent(): Boolean = running.get() == blockedLoaders.get()
+
+    /**
+     * 发起 [call]，登记一个用户回调，然后逐个放行外部的完成，每次都等执行器空闲（协程已挂起）之后；
+     * 返回结果、回调所在线程，以及这次操作派发到执行器的次数。外部的完成在测试线程上执行。
      */
     private fun <T> measure(call: () -> CompletableFuture<T>): Triple<T, String, Int> {
-        val opened = CountDownLatch(1)
-        gate.set(opened)
         dispatches.set(0)
-        val future = call()
-        val completedOn = CompletableFuture<String>()
-        future.whenComplete { _, _ -> completedOn.complete(Concurrency.currentThreadName()) }
-        opened.countDown()
-        // 先等回调执行完再等结果：在 future 上等待的线程按 JDK 规则可能代为执行它尚未执行的依赖阶段
-        val thread = completedOn.get(10, TimeUnit.SECONDS)
-        val value = future.get(10, TimeUnit.SECONDS)
-        gate.set(CountDownLatch(0))
-        return Triple(value, thread, dispatches.get())
+        stepping = true
+        try {
+            val future = call()
+            val completedOn = CompletableFuture<String>()
+            future.whenComplete { _, _ -> completedOn.complete(Concurrency.currentThreadName()) }
+            while (true) {
+                awaitCondition("the call waits on an outside step") {
+                    quiescent() && (future.isDone || steps.isNotEmpty())
+                }
+                if (future.isDone && steps.isEmpty()) {
+                    break
+                }
+                requireNotNull(steps.poll()).run()
+            }
+            // 先等回调执行完再等结果：在 future 上等待的线程按 JDK 规则可能代为执行它尚未执行的依赖阶段
+            val thread = completedOn.get(10, TimeUnit.SECONDS)
+            val value = future.get(10, TimeUnit.SECONDS)
+            return Triple(value, thread, dispatches.get())
+        } finally {
+            stepping = false
+        }
     }
 
     @Test
@@ -120,9 +185,8 @@ class AsyncDispatchTest {
         value.assert().isEqualTo("v-k")
         completedOn.assert().isEqualTo("test-exec")
         loadedOn.get().assert().isEqualTo("test-exec")
-        // L1 读之后、loader（在执行器上执行）、loader 完成之后、fill 之后各一次；loader 在协程等待它之前就完成时，
-        // 等待不挂起，少一次
-        counts.assert().isBetween(3, 4)
+        // L1 读之后、loader（在执行器上执行）、loader 完成之后、fill 之后各一次
+        counts.assert().isEqualTo(4)
     }
 
     @Test
@@ -131,8 +195,8 @@ class AsyncDispatchTest {
         val (value, completedOn, counts) = measure { cache.async().get("k") }
         value.assert().isEqualTo("v-k")
         completedOn.assert().isEqualTo("test-exec")
-        // L1 读之后、数据源自己的线程完成之后、fill 之后各一次；数据源的 future 在协程等待它之前就完成时，等待不挂起，少一次
-        counts.assert().isBetween(2, 3)
+        // L1 读之后、数据源的 future 完成之后、fill 之后各一次
+        counts.assert().isEqualTo(3)
     }
 
     @Test
