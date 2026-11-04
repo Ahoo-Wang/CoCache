@@ -17,7 +17,7 @@
 | G2 | 失效不被吞没 | **L1**：读取开始于某次失效之前的填充，永远不会在该失效之后出现在 L1。**L2**：某节点处理完一次失效（本地调用返回、处理了远端事件或执行了重置）之后，该节点 L2 不会再出现读取开始于这次失效之前的填充 |
 | G3 | 命中路径便宜 | L2 命中只是一次 Caffeine 查找加一次过期比较（开启 L2 命中计数时再加一次 `LongAdder` 自增），随线程扩展；L1 命中一次往返；单 key 的 `put` / `invalidate` 默认（原子广播）各一次往返，`sharded` 或非原子模式下各两次往返；loader 耗时小于 `lease.wait` 时，全集群同一 key 并发未命中只回源一次 |
 
-非目标：线性一致读。异步与挂起 API 是同一个引擎上的视图（§5.6、§5.7，[RFC 0004](rfc/0004-async-api.md)），不是另一套协议；阻塞栈上同步 API 配合虚拟线程仍是首选。权威副本（`Store`、`VersionedStore`、`SetStore`）把 L1 当作唯一副本（§2.1、§6.4），是有意的例外：它们的陈旧上界只剩 L2 的限龄。
+非目标：线性一致读。异步与挂起 API 是同一个引擎上的视图（§5.6、§5.7，[RFC 0004](rfc/0004-async-api.md)），不是另一套协议；阻塞栈上同步 API 配合虚拟线程仍是首选。权威副本（`Store`、`VersionedStore`、`SetStore`）把 L1 当作唯一副本（§2），是有意的例外：它们的陈旧上界只剩 L2 的限龄。
 
 TTL 是安全网，不是机制：它兜底协议之外的问题。协议之内的竞态由栅栏（§8）消除，不靠 TTL 收敛，所以 `ttl = FOREVER` 在协议内是安全的。
 
@@ -36,7 +36,7 @@ TTL 是安全网，不是机制：它兜底协议之外的问题。协议之内�
 | `SetStore<K, E>` | 权威集合（`ReadableCache<K, Set<E>>`） | `add`、`remove`、`clear`、`put` / `putAll`（整体覆盖，可带 `ttl`） | `SetStoreSpec` |
 
 - **全部是抽象方法**，没有默认抛出的方法：类型没有的操作在编译期不可调用（RFC 0005 V3）。带版本的类型不继承无版本的写入。`runtime.create(spec)` 返回与 spec 对应的类型，并检查类型需要的 L1 能力（§10.1）。
-- **不供用户实现，委托除外**（U13，S21）：8.x 新增的操作只会是新的能力类型上的方法，或用已有抽象方法实现的默认方法。继承这些接口、由代理实现的声明接口（`@CoCache` 接口）不受影响。
+- **不供用户实现，委托除外**（U13，S21）：API 只以新的能力类型、或用已有抽象方法实现的默认方法演进，从不给已有类型加抽象方法。继承这些接口、由代理实现的声明接口（`@CoCache` 接口）不受影响。
 - **三种视图同构**：`async()` 返回 `AsyncReadableCache` 一族（`AsyncCache`、`AsyncVersionedCache`、`AsyncStore`、`AsyncVersionedStore`、`AsyncSetStore`），`suspending()` 返回 `SuspendingReadableCache` 一族；方法名与同步 API 相同，每次返回同一个对象，`async().sync()` 是引擎本身，`suspending().async()` 是异步视图（§5.6、§5.7）。
 - `Lookup<V>` = `Present(value, expiresAt)` | `Absent(expiresAt)` | `Unknown(error)`：`expiresAt` 是返回的这份副本的到期时间（命中 L2 时是 L2 副本的时间）；`Unknown` 只表示这一次读取没有答案（L1 故障，§5.1、§7），`error` 是 `get` 会抛出的 `CacheReadException`。`valueOrThrow()` 供不便穷尽匹配的调用方使用（JDK 21 的 Java 调用方对密封类型穷尽 `switch`）。
 - 没有三态 `CacheValue?`，没有绝对时间 `ttlAt` 入参，不能显式写入负缓存：负缓存只在 loader 返回 `null`（或 `loadAll` 结果缺少该 key）时由引擎写入。
@@ -61,7 +61,7 @@ TTL 是安全网，不是机制：它兜底协议之外的问题。协议之内�
 | 写入的段 | 不带写入标识与摘要段 | 写入标识；`Store` 另带摘要段，读取方校验 |
 | 默认寿命 | `ttl` 1 h，`localMaxAge` 5 m，`absentTtl` 1 m | `ttl` 永不过期，`localMaxAge` 30 s，`absentTtl` 10 s（D7：失效丢失时没有回源可以纠正，陈旧的上界只剩 L2）；`VersionedStore` 的墓碑寿命 `tombstoneTtl` 1 天 |
 | 提前刷新、Spring Cache、`TransactionalInvalidator` | 可用（`VersionedCache` 不接入 Spring） | 不适用 |
-| 启动检查 | — | 驱逐策略（见下） |
+| 启动检查 | — | 驱逐策略（§6.4） |
 
 **误分类**：唯一副本声明成 `Cache` + `externallySourced()`，默认 `ttl` 1 h 会让唯一副本一小时后过期，`invalidate` 的延迟重试还会越过之后的写入；可重建的副本声明成 `Store`，L1 丢失之后读成不存在。接口式声明在权威类型上有匹配的 `CacheLoader` bean 时启动告警（§11.2）。
 
@@ -85,7 +85,7 @@ cocache-api                    用户 API + 全部 SPI，零运行时依赖（�
 cocache-core                   引擎与运行时；依赖 Caffeine、kotlin-logging、kotlinx-coroutines-core（协程核心，§5.6，api 依赖）
   CacheRuntime；Spec 与五种 spec：CacheSpec、VersionedCacheSpec、StoreSpec、VersionedStoreSpec、SetStoreSpec（KeyEncoder、TtlFunction、KeyFilter）；
   SuspendingCacheLoader、suspendingLoader()、suspendingVersionedLoader()、asAsyncCacheLoader()；CacheAdmin、CacheMetrics、RetryPolicy、
-  ExternalInvalidator、LoadObserver、FillObserver / FillScope / FillKey（写事务内的回源，§5.8）、SourceLoadRejectedException、SourceLoadTimeoutException、ForeignFormatException
+  ExternalInvalidator、LoadObserver、FillObserver / FillScope / FillKey（写事务内的回源，§5.8）、SourceLoadRejectedException、SourceLoadTimeoutException、SourceLoadCancelledException、ForeignFormatException
   engine：AbstractEngine、CoherentEngine（标量协议）与 CacheEngine / StoreEngine / VersionedCacheEngine / VersionedStoreEngine、SetEngine、
           EngineSpec / Role、挂起视图的实现（SuspendingViews）、ValueFormat、InvalidationRetrier、AsyncContext、EngineDispatcher
   internal：SingleFlight、InvalidationStamps、Futures、ExecutionMode、LoadingKeys、uncancellable（L1 调用不可取消）
@@ -95,12 +95,12 @@ cocache-core                   引擎与运行时；依赖 Caffeine、kotlin-log
   proxy：CacheProxies、CacheMethods、JoinCacheProxies；join：SimpleJoinView、SimpleJoinCache；memory：InMemoryBackend；clock：TickingClock、ManualClock；
   codec：StringCodec
 cocache-redis                  Lettuce 原生后端，不依赖 Spring
-  RedisBackend、RedisBackendOptions、RedisChannelMode、RedisScripts、RedisL1Store（原生挂起的 L1Store，M3d）、RedisConnections、
+  RedisBackend、RedisBackendOptions、RedisChannelMode、RedisScripts、RedisL1Store（原生挂起的 L1Store）、RedisConnections、
   PubSubInvalidationChannel、ShardedInvalidationChannel
 cocache-codec-jackson          Jackson 3（tools.jackson）Codec：JacksonCodec、jacksonCodec<V>()
 cocache-spring                 Spring 适配（不依赖 Boot）：CoCacheSpringCacheManager、CoCacheSpringCache、TransactionalInvalidator、TransactionalFillObserver
 cocache-spring-boot-starter    自动配置、@EnableCoCache（caches、joinCaches）、注解翻译、spec bean 注册、配置分层、actuator 端点与健康检查、Micrometer、Spring Cache sync 检查
-cocache-test                   已发布的 TCK：BackendProtocolSpec、EngineSpec、SetEngineSpec、MultiNodeSpec、FaultSpec、VersionedSpec、L1Capability、CommandCancellation、CacheAccess、HookedBackend、Suspending
+cocache-test                   已发布的 TCK：BackendProtocolSpec、EngineSpec、SetEngineSpec、MultiNodeSpec、FaultSpec、VersionedSpec、L1Capability、CommandCancellation、CacheAccess、HookedBackend、Suspending、Concurrency
 cocache-bom / cocache-dependencies / cocache-example
 ```
 
@@ -119,9 +119,9 @@ cocache-bom / cocache-dependencies / cocache-example
 
 ### 3.3 L1 SPI 与能力
 
-- **L1 SPI 的形状**（RFC 0005 §4.3，M3c）：`CoherenceBackend.store` 返回挂起的 `L1Store`，`InvalidationChannel.publish` 挂起（`subscribe` 仍阻塞，只在 `runtime.create` 时调用）。Java 实现者实现 `FutureL1Store` / `FutureInvalidationChannel`，经 `adapt` 适配：已完成的 future 不挂起；被取消的 future 与同步抛出的 `CancellationException` 换成 `IllegalStateException`，按 L1 故障处理，不当作调用方的取消；返回 `null` 时以指明操作的异常失败。只有阻塞客户端的后端在自己的执行器上完成这些 future。内存后端是原生的 `L1Store`（就地执行、从不挂起；TCK 用的 `stall` 期间除外），Redis 是原生挂起的 `RedisL1Store`（M3d，§9）。
-  - 结果类型（RFC 0005 round 3 K12，M3d 定下，M4 不再改 SPI）：`fill` 返回 `L1Fill`：`Filled(advanced)` 或 `Rejected(currentVersion)`，`fillAll` 逐项返回它。令牌不匹配为 `Rejected(currentVersion = null)`；版本规则拒绝为 `Rejected(当前版本)`，让版本前进的写入为 `Filled(advanced = true)`（§4.2 `FILL` 的版本规则，§5）。`reclaim` 比较 SPI 自己的 `ContentFingerprint`（载荷的 SHA-1，算法与脚本中的现算相同），不再收 `Digest`：之后 `Digest` 改为 SHA-256，回收的指纹不变。
-  - 读取的时限（RFC 0005 round 3 D6）：`read`、`readAll` 与 `ConditionalL1Store.readIfChanged` 带可选的 `timeout`：`null` 为存储自己的命令超时，给出时必须为正、以命令超时为上限，存储以两者中较短的一个限定这次调用，超时之后照常释放令牌。它与引擎传入的其它时长一样是相对的。引擎传入缓存的 `CachePolicy.readTimeout`（配置键 `read-timeout`，§7、§10.2），未设置时为 `null`。
+- **形状**（RFC 0005 §4.3）：`CoherenceBackend.store` 返回挂起的 `L1Store`，`InvalidationChannel.publish` 挂起（`subscribe` 仍阻塞，只在 `runtime.create` 时调用）。Java 实现者实现 `FutureL1Store` / `FutureInvalidationChannel`，经 `adapt` 适配：已完成的 future 不挂起；被取消的 future 与同步抛出的 `CancellationException` 换成 `IllegalStateException`，按 L1 故障处理，不当作调用方的取消；返回 `null` 时以指明操作的异常失败。只有阻塞客户端的后端在自己的执行器上完成这些 future。内存后端是原生的 `L1Store`（就地执行、从不挂起；TCK 用的 `stall` 期间除外），Redis 是原生挂起的 `RedisL1Store`（§9）。
+  - 结果类型（K12）：`fill` 返回 `L1Fill`：`Filled(advanced)` 或 `Rejected(currentVersion)`，`fillAll` 逐项返回它。令牌不匹配为 `Rejected(currentVersion = null)`；版本规则拒绝为 `Rejected(当前版本)`，让版本前进的写入为 `Filled(advanced = true)`（§4.2 `FILL` 的版本规则，§5）。`reclaim` 比较 SPI 自己的 `ContentFingerprint`（SHA-1，算法与脚本中的现算相同，§4.2），与 `Digest`（SHA-256）无关：回收的指纹只判断读不懂的内容是否仍是读到的那一份，不涉及安全。
+  - 读取的时限（D6）：`read`、`readAll` 与 `ConditionalL1Store.readIfChanged` 带可选的 `timeout`：`null` 为存储自己的命令超时，给出时必须为正、以命令超时为上限，存储以两者中较短的一个限定这次调用，超时之后照常释放令牌。它与引擎传入的其它时长一样是相对的。引擎传入缓存的 `CachePolicy.readTimeout`（配置键 `read-timeout`，§7、§10.2），未设置时为 `null`。
   - 取消（RFC 0005 §4.3 的契约，写进 `L1Store` 的 KDoc）：故障不得以 `CancellationException` 报告；底层客户端取消的命令（如连接重置、关闭）是结果未知的故障。
   - 存储没有 `close`：连接等资源属于后端。
 - **能力**：条件读写、按版本有序的写入与集合成员的增删由存储的访问器表达（`conditional()`、`versioned()`、`sets()`，不支持时为 `null`），引擎在创建时各取一次。`runtime.create` 检查类型需要的能力：`Store` 要求 `conditional()`，`VersionedCache` 与 `VersionedStore` 要求 `versioned()`，`SetStore` 要求 `sets()`，`Cache` 不要求；缺失时抛出 `UnsupportedOperationException`，不注册任何东西。每个命名空间创建时在启动日志中输出类型与存储提供的能力（`created as Store … L1 capabilities[conditional, versioned, sets]`）。引擎绕过运行时创建时（测试），缺失的能力在调用时、修改任何一层之前以 `UnsupportedOperationException` 失败，从不退回“先读后写”。
@@ -130,7 +130,7 @@ cocache-bom / cocache-dependencies / cocache-example
 
 ### 4.1 存储 key 与频道
 
-8.x 的布局（RFC 0005 §4.7，随 M4 冻结）。一个缓存在 L1 中占用一个 keyspace：前缀加 namespace（SPI 的 `Keyspace`，`CacheSpec.keyspace`）。
+布局（RFC 0005 §4.7）在一个大版本内冻结（I-9）。一个缓存在 L1 中占用一个 keyspace：前缀加 namespace（SPI 的 `Keyspace`，`CacheSpec.keyspace`）。
 
 | 用途 | 格式 |
 |------|------|
@@ -148,8 +148,8 @@ cocache-bom / cocache-dependencies / cocache-example
 - **订阅者收到编码 key**（RFC 0005 §4.9，S4）：帧中是存储 key，通道以 `Keyspace.encodedKeys` 去掉 `{keyPrefix}{namespace}:` 再交给 `InvalidationListener`，不以该前缀开头的 key（外部写入方给错了前缀）不属于这个 keyspace，去掉。引擎收到的就是 L2 的 key，按它淘汰 L2、按 `{keyPrefix}{namespace}:` + key 递增戳；外部监听者（如 CoSec）收到的与 `KeyEncoder` 的输出、`ExternalInvalidator` 的参数相同，不必反解存储 key。
 - **订阅者按订阅的先后依次回调**（帧与重置都是，前一个返回之后才回调下一个）：缓存在 `runtime.create` 时订阅，之后订阅同一 keyspace 的外部监听者收到通知时，引擎已经递增戳并淘汰了 L2（“引擎先淘汰本地副本，再通知外部监听者”，`InvalidationChannel` 的契约）。
 - 失效帧（客户端构造，Lua 只负责发布）：`[版本:1B=0x01][nodeId:16B][count:varint]([len:varint][key UTF-8])*`，见 `InvalidationFrame`。解码不信任长度前缀。
-  - **读不懂的帧按重置处理**（RFC 0005 §4.7，K1、D3）：未知版本、未知类型、解码失败（截断、尾随字节、长度越界），通道一律按该频道的 `onReset` 处理：清空 L2、递增全部戳，只会多淘汰，不会丢失效（I-22）。丢弃它丢的就是一次失效（G2），之后新增的帧也就只能两阶段发布。
-  - 首字节是帧的版本，也是帧的类型。帧版本 2 预留为“namespace 重置”（`InvalidationFrame.NAMESPACE_RESET_VERSION`，Q12），帧本身以后在 8.x 内加入：不认识它的节点把它当作读不懂的帧重置，恰好做了正确的事，不需要两阶段发布。
+  - **读不懂的帧按重置处理**（RFC 0005 §4.7，K1、D3）：未知版本、未知类型、解码失败（截断、尾随字节、长度越界），通道一律按该频道的 `onReset` 处理：清空 L2、递增全部戳，只会多淘汰，不会丢失效（I-L）。丢弃它丢的就是一次失效（G2），之后新增的帧也就只能两阶段发布。
+  - 首字节是帧的版本，也是帧的类型。帧版本 2 预留为“namespace 重置”（`InvalidationFrame.NAMESPACE_RESET_VERSION`，Q12），目前不发送：不认识它的节点把它当作读不懂的帧重置，恰好做了正确的事，所以加入它不需要两阶段发布。
   - **零 key 的帧**是存储创建时的频道探测（§9，K8），合法帧，通道照常投递，引擎什么也不做（不计入收到的失效）。
 
 ### 4.2 L1 线格式（Redis，格式 2）
@@ -174,7 +174,7 @@ cocache-bom / cocache-dependencies / cocache-example
 - **标志位**：bit 0–6 是必须理解的，bit 7 的扩展区只放旧读者可以忽略、整体覆盖时丢失也无害的信息。本版本认识 bit 0、1、7；bit 2–6 是未知的必须理解的位，带有它们的内容等同于更高格式。
 - **载荷偏移只有一个定义**：核心头部之后按标志位的顺序依次跳过版本段、摘要段与扩展区。Lua 的 `payload_start`（`RedisScripts` 的 `FORMAT_RULES`）与客户端的 `RedisScripts.payloadOffset` 逐行对应，需要载荷的脚本（回收、条件读写）与客户端的解码都用它。只有版本段时载荷从字节 44 开始，Lua 中是 `string.sub(v, 45)`（P18）。段超出值的长度时头部损坏，按不是本协议写入的内容（格式 0）处理。
 - **扩展区的 TLV**（D2）：`[类型:1B][长度:1–2B][值]`。长度 0–127 用 1 字节；128–32767 用 2 字节，首字节为 `0x80 | (长度 >> 8)`、次字节为长度的低 8 位。写入方用最短的形式，读者两种都接受。读者逐个读 TLV、跳过未知的类型，取每个类型的第一个；TLV 超出扩展区时读者忽略其余部分，不把值当作损坏（扩展区整体可以忽略）。整体覆盖时扩展区丢失，原地修改（字节 4–35）保留它。
-  - 类型 1 是**写入标识**：24 字节，与令牌同形（`NodeId` + 序号），每次写入新取一个，扩展区共 28 字节（总长 26、类型 1、长度 24）。长度不是 24 时读者按没有处理。8.x 加入按标识比较的条件写入时用它解决现值的 ABA（RFC 0005 §4.2）；本版本只写入、读出，引擎不使用它。
+  - 类型 1 是**写入标识**：24 字节，与令牌同形（`NodeId` + 序号），每次写入新取一个，扩展区共 28 字节（总长 26、类型 1、长度 24）。长度不是 24 时读者按没有处理。它预留给按标识比较的条件写入，以解决摘要比较的现值 ABA（RFC 0005 §4.2、§4.6）；引擎目前只写入、读出它，不使用它。
 - **写入哪些段**（RFC 0005 §4.7，按类型）：
   - 派生副本（`Cache`，有数据源或外部来源）的值、`L`、没有版本的 `M` 不带段，头部是 36 字节；
   - `Store` 的每次标量写入（`put`、`putAll`、`putIfMatch`）带写入标识（`Envelope.Scalar.writer`，扩展区 28 字节）与摘要段（`Envelope.Scalar.digest`，32 字节）：载荷的 SHA-256，由引擎计算（`Digest.ofPayload`），存储原样写成段、读取原样返回，从不重算。头部因此是 36 + 32 + 28 = 96 字节；
@@ -190,7 +190,7 @@ cocache-bom / cocache-dependencies / cocache-example
   - 不带版本段的 `E` 是未知的状态，报告为更高格式。
 - **`FILL` 的版本规则**（C3、P2、P11）：key 中带版本（持有刷新令牌的带版本值、持有 lease 的 `E`）且令牌匹配时，填充的版本更小或为 `NO_VERSION`：不写入，脚本内清零令牌（只触及字节 4–35），返回当前版本（`L1Fill.Rejected(v)`，省一次 `RELEASE` 往返）；相等：写入（续期），不广播（`Filled(false)`）；更大，或 key 处于 `E`：写入并在同一个脚本中广播（`Filled(true)`，`advanced`）。广播的帧由存储构造：来源是填充令牌的 `NodeId`（令牌由引擎签发，就是引擎的节点），只含这个 key。key 中没有版本（lease 占位、没有版本的值）时令牌匹配即写入，不广播。
 
-**集合（`SetStore`）：Hash**（K10）。字段 `!f` 为格式版本（`"2"`），`!m` 为必须理解的位图（十进制，缺省为 0；本版本没有已知的位，也不写它），成员字段为 `+` + 成员字节，值为空串；其余以 `!` 开头的字段预留给元数据，读者忽略。8.x 内给集合加信息因此不必改格式号。`!f` 不是 `2` 的集合读不懂（缺失或不是数字为格式 0，其它数字原样报告），`!m` 存在且不是 `0` 的集合等同于更高格式。Hash 只表示“有成员的集合”；lease 与负缓存总是 String 形状。任何整体写入都先 `DEL` 再按新形状写入。
+**集合（`SetStore`）：Hash**（K10）。字段 `!f` 为格式版本（`"2"`），`!m` 为必须理解的位图（十进制，缺省为 0；本版本没有已知的位，也不写它），成员字段为 `+` + 成员字节，值为空串；其余以 `!` 开头的字段预留给元数据，读者忽略。给集合加信息因此不必改格式号。`!f` 不是 `2` 的集合读不懂（缺失或不是数字为格式 0，其它数字原样报告），`!m` 存在且不是 `0` 的集合等同于更高格式。Hash 只表示“有成员的集合”；lease 与负缓存总是 String 形状。任何整体写入都先 `DEL` 再按新形状写入。
 
 - **到期时间**：一律 `PEXPIRE` / `PTTL`，毫秒，以相对时长传输，不受节点间时钟偏差影响。参数钳到至少 1 ms；`0` 表示永不过期。**每次状态转换都显式重设到期时间**，lease 的寿命和负缓存的寿命不得泄漏到新值上。只触及字节 4–35 的原地修改（授予刷新令牌、`E` 上授予 lease、`RELEASE` 清零令牌、被版本规则拒绝的 `FILL` 清零令牌）保留原到期时间（K15）。
 - **读取成本**：标量 `PTTL` + `GET`（一次 EVALSHA）；集合 `PTTL` + `HKEYS` + `HMGET !f !m`（只返回字段名，不返回成员的空值；与 `HGETALL` 的字段顺序相同，摘要不受影响）；条件读写 `TYPE` + `GETRANGE key 0 77` + `STRLEN`，只在摘要变了时 `GET`。读脚本与解析其回复的客户端随同一版本发布，混合版本部署按 SHA 各自加载脚本，可以逐台升级。最小 ACL 因此要加 `+getrange +strlen +hmget`（运维文档）。
@@ -201,7 +201,7 @@ cocache-bom / cocache-dependencies / cocache-example
 - **读取方校验**（K3）：客户端拿到载荷时重算 SHA-256 并与摘要段比较，不一致按损坏处理：权威副本（`Store`、`VersionedStore`）的 L1 读取（单 key、批量），以及条件读取返回的值。权威副本读到不带版本、也不带摘要段的值同样按损坏处理。校验在引擎中（`CoherentEngine.verifyDigest`），对所有后端相同；成本只在 L1 读取上，不在 L2 命中上。摘要未变的回答（`Unchanged`）只比较头部，不重算。
 - **内容指纹**（`ContentFingerprint`，条件回收用，SPI 自己的类型）：本格式的标量取载荷（从载荷偏移起），读不懂的 String 取整个值，String 与 Hash 以外的类型取空串，负缓存取空串，集合按 L1 返回顺序拼接 `int32 长度 + 成员`，SHA-1，由 `RECLAIM` 在 Lua 中现算（`redis.sha1hex`）。它只判断读不懂的内容是否仍是读到的那一份，与安全无关。普通读取只在解码失败时计算。
 
-线格式（key 布局、频道命名、标量头与段、状态 `E`、扩展区的 TLV、集合字段、帧、摘要算法 SHA-256）在一个大版本内冻结，8.x 的格式至此定稿（RFC 0005 §4.7）。之后新增必须理解的段、状态或集合的位，一律在 8.x 内两阶段发布：先发布能读懂它的版本，一个 namespace 的全部节点都升级之后才写入（RFC 0005 I-L）；扩展区的新 TLV 与新的 `!` 字段旧读者可以忽略，不需要两阶段。
+线格式（key 布局、频道命名、标量头与段、状态 `E`、扩展区的 TLV、集合字段、帧、摘要算法 SHA-256）在一个大版本内冻结（I-9）。新增必须理解的段、状态或集合的位，一律两阶段发布：先发布能读懂它的版本，一个 namespace 的全部节点都升级之后才写入（I-L）；扩展区的新 TLV 与新的 `!` 字段旧读者可以忽略，不需要两阶段。
 
 ### 4.3 L1 状态机
 
@@ -217,7 +217,8 @@ cocache-bom / cocache-dependencies / cocache-example
     └──────────────────────────────────┴────────────────────────────┘
   put：任意状态 → VALUE / SET（整体覆盖，销毁令牌，重设 TTL）+ PUBLISH
   addMembers / removeMembers（SetL1Store，Redis 脚本为 *_IF_READABLE）：见 §6.4
-  putIfMatch：当前内容符合期望时同 put（只写标量），否则不修改；readIfChanged：不修改任何状态（§6.5）
+  putIfMatch：当前内容符合期望时同 put（只写标量），否则不修改；deleteIfMatch：符合期望时同 invalidate，否则不修改；
+  readIfChanged：不修改任何状态（§6.5）
   putIfNewer(v)：v 大于当前版本（VALUE / MISSING / EVICTED 的版本）时同 put（带版本 v，整体覆盖、销毁令牌、重设 TTL）+ PUBLISH，否则不修改（§6.6）
   evictKeepingVersion：带版本的 VALUE / MISSING / EVICTED → EVICTED(v)（令牌为零，重设 TTL）+ PUBLISH；没有版本的内容 → DEL + PUBLISH
 
@@ -228,7 +229,7 @@ cocache-bom / cocache-dependencies / cocache-example
              ── release(t)：清零令牌，仍是 EVICTED(v)；read（不申请 lease）：Miss(false)
 ```
 
-每个转换都由一个 Lua 脚本原子完成（`RedisScripts`：`READ`、`FILL`、`RELEASE`、`PUT`、`PUT_ALL`、`INVALIDATE`、`RECLAIM`、`ADD_MEMBERS_IF_READABLE`、`REMOVE_MEMBERS_IF_READABLE`、`READ_IF_CHANGED`、`PUT_IF_MATCH`、`PUT_IF_NEWER`、`EVICT_KEEPING_VERSION`）。脚本**不带 shebang 标志**：带标志的脚本在 OOM 时被拒绝，而失效恰恰释放内存。写脚本含 `PUBLISH`，不能用 `EVAL_RO`。
+每个转换都由一个 Lua 脚本原子完成（`RedisScripts`：`READ`、`FILL`、`RELEASE`、`PUT`、`PUT_ALL`、`INVALIDATE`、`RECLAIM`、`ADD_MEMBERS_IF_READABLE`、`REMOVE_MEMBERS_IF_READABLE`、`READ_IF_CHANGED`、`PUT_IF_MATCH`、`DELETE_IF_MATCH`、`PUT_IF_NEWER`、`EVICT_KEEPING_VERSION`；另有启动时的探测脚本 `PROBE`，§9）。脚本**不带 shebang 标志**：带标志的脚本在 OOM 时被拒绝，而失效恰恰释放内存。写脚本含 `PUBLISH`，不能用 `EVAL_RO`。
 
 - **lease**：读到不存在的 key 且请求了 lease 时，写入 `L` 占位，`PX = lease.ttl`，返回 `Miss(leaseGranted = true)`。读到格式 2 的 `L` 返回 `Leased(remaining)`。节点崩溃留下的 lease 由 `lease.ttl` 回收。
 - **刷新令牌**：读到格式 2、没有摘要段与未知的必须理解的位（K15、D4）的 `V`（带版本段的照常授予），且剩余寿命 `0 < pttl ≤ refreshWindow`，且头部令牌为零或签发超过 `lease.ttl` 时，用 `SETRANGE` 写入调用方令牌与服务端时间（保留原 TTL），返回 `refreshGranted = true`。签发过期的令牌可被抢占，被抢占者的 `fill` 因令牌不匹配失败。
@@ -280,7 +281,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 - **线程模型**：同步 API 上 loader 总是在调用方（SingleFlight leader）线程上同步执行，事务、SecurityContext、MDC 等 ThreadLocal 可用。Lettuce 的 Future 只包装 L1 I/O，引擎在调用方线程上等待，不在事件循环线程上执行任何续接。异步视图的线程模型见 §5.6。
 - **L1 未命中就是未命中**：key 不存在、处于 `L` 或 `E` 状态都不是负缓存；负缓存只有状态 `M`。
 - **版本前进的填充是一次写入**（RFC 0005 §4.7）：`FILL` 返回 `Filled(advanced = true)`（版本更大，或填充了 `E`）时存储已广播，而这一帧的来源是本节点、在本节点被过滤。引擎因此自己递增戳、淘汰本地副本（`AbstractEngine.afterAdvancedFill`，同写入方修改 L1 之后的那一步），不填充 L2，返回回源值；下一次读取多一次 L1 往返。没有这一步，绕过 SingleFlight 的同节点读取者可以把旧版本写回 L2。批量回源同样如此（整批一次）。
-- **结果未知的带版本填充按写入处理**（TLA+ F2）：带版本的 `FILL` 失败时，引擎按结果未知处理（区分“确定未执行”的异常类型随 M5 提供，在此之前每个失败都算）：超时或连接替换时被排空的 `FILL` 可能稍后才执行、让版本前进并广播，而那一帧在本节点被过滤。所以引擎现在就做上面那一步——递增戳、淘汰本地副本、不填 L2（非原子广播时发布）——返回回源值，计入 `fillRejected`。这一步挡住已经读过 L1 的同节点读取者（`load.timeout` 注销卡住的加载之后领头的读取）；这之后、迟到的 `FILL` 执行之前开始的读取仍可能填入旧版本，直到写入方的 `putIfNewer`（版本相等时广播，F1）或 `localMaxAge`，与结果未知的写入相同（RFC 0005 §4.6 P12）。多做的一次淘汰只多一次 L1 往返。不带版本的填充从不广播，失败时照常降级填充。
+- **结果未知的带版本填充按写入处理**（TLA+ F2）：带版本的 `FILL` 失败、且不是存储在写出之前的拒绝（`L1RejectedException`，确定未执行）时，结果未知（`FillOutcome.UNKNOWN`）：超时或连接替换时被排空的 `FILL` 可能稍后才执行、让版本前进并广播，而那一帧在本节点被过滤。所以引擎同样做上面那一步——递增戳、淘汰本地副本、不填 L2（非原子广播时发布）——返回回源值，计入 `fillRejected`。这一步挡住已经读过 L1 的同节点读取者（`load.timeout` 注销卡住的加载之后领头的读取）；这之后、迟到的 `FILL` 执行之前开始的读取仍可能填入旧版本，直到写入方的 `putIfNewer`（版本相等时广播，F1）或 `localMaxAge`，与结果未知的写入相同：本节点自己的帧总是被过滤（§6.1），RFC 0005 §4.6 P12 的“结果未知时暂停过滤”没有实现。多做的一次淘汰只多一次 L1 往返。不带版本的填充从不广播，失败时照常降级填充。
 - **版本拒绝**：lease 取在 `E` 上、回源得到的版本更旧（数据源落后）时 `FILL` 拒绝并清零令牌（`Rejected(v)`）：回源值是唯一的答案，照常返回，以降级限龄写入 L2，计入 `fillRejected`；`E` 保留，迟到的旧版本仍被拒绝。在 loader 追上之前，`evictKeepingVersion` 之后读到的是 loader 的版本（RFC 0005 §4.7）。刷新路径的版本拒绝见 §5.5。
 - **不设刷新点的副本**（P14）：刷新只会再读到同样内容的副本，`refreshAt = FOREVER`：读到更高格式（未知的必须理解的位）而绕过 L1 的副本、lease 在 `E` 上而版本被拒绝的副本、读到带摘要段的值（`Store` 写入的，`READ` 从不为它授予刷新令牌）的副本。
 - **K16**（RFC 0005 §4.1）：带版本的数据源以 `Versioned(null, w)` 表达删除（写成带版本的墓碑）；返回不带版本的 `null`（“从来没有这个 key”）而 L1 中是带版本的内容（`E` 或刷新令牌所在的带版本的值）时，`FILL` 以版本拒绝（`NO_VERSION` 低于任何版本）。回源值（不存在）照常返回，以降级限龄进入 L2，计入 `unversionedAbsentRefusals`（`cocache.fill.unversioned.absent`）与 `fillRejected`，每个缓存第一次告警：已删除的实体在 `E` 到期之前每次未命中都回源，刷新路径保留旧副本到 L1 的 `ttl`。
@@ -324,7 +325,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
   权威副本绕过 L1 只能得到“不存在”，于是抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，`newer = true`），不写 L2，批量读取与下面的格式 0 相同。理由同下：L1 是唯一副本时，混合版本滚动升级期间读成不存在就是悄悄丢数据。
 - **摘要校验失败**（K3，§4.2）：权威副本读到摘要段与载荷不一致的值、或不带版本也不带摘要段的值，按同格式的损坏处理（下一条）：抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，格式为本节点的格式），`lookup` 同样抛出，L1 中的唯一副本保留。
 - **类型不符**（D4）：派生副本读到带摘要段的值，说明同一个 namespace 上还有 `Store`。照常读取，计入 `typeMismatches`（`cocache.type.mismatch`），每个缓存第一次告警；解码失败时也不回收它（`RECLAIM` 拒绝带摘要段的内容），绕过 L1 回源。
-- **格式号低于本格式（含格式 0）或同格式解码失败**（读不懂的内容）按**这次读取有没有数据源**决定，不可配置（RFC 0005 §4.7）：有数据源（spec 的 loader，或 `get(key, loader)` 的 loader）时条件回收，没有时失败。没有数据源时回收就是删除唯一副本（RFC 0005 §12“M3 之前”决定 6）。这只决定读取：元素写入（§6.4）、条件写入（§6.5）与按版本写入（§6.6）落在读不懂的内容上时总是拒绝。
+- **格式号低于本格式（含格式 0）或同格式解码失败**（读不懂的内容）按**这次读取有没有数据源**决定，不可配置（RFC 0005 §4.7）：有数据源（spec 的 loader，或 `get(key, loader)` 的 loader）时条件回收，没有时失败。没有数据源时回收就是删除唯一副本（RFC 0005 §12）。这只决定读取：元素写入（§6.4）、条件写入（§6.5）与按版本写入（§6.6）落在读不懂的内容上时总是拒绝。
   - 回收：计入 `reclaims`，计算本次读到内容的指纹（SPI 自己的 `ContentFingerprint`，K12），调用 `reclaim`；成功则凭新 lease 正常回源与 `fill`，失败（内容已变、脚本拒绝或 L1 异常）则不写 L1 回源；回收失败时（确定未执行除外）后端尽力释放这次请求的 lease（§9，K14）。每次读取至多回收一次。
   - 失败：计入 `unknownFormats`，抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，带存储 key、格式版本与本节点的格式版本），不回收、不写 L2，与 `readFailure` 无关（降级模式下同样抛出）。批量读取先完成其余 key（释放 lease 或凭 lease 写回），再以第一个这样的 key 失败。理由：没有数据源时回收就是删除唯一副本，调用方会把“不存在”当作真实结果。
   - 元素写入（§6.4）：`SetStore` 的 `add` / `remove` 落在读不懂的内容上总是以 `CacheWriteException`（`cause` 为 `ForeignFormatException`）失败，原子地不修改 key、不广播，计入 `unknownFormats` 与 `writeFailures`。否则一次 `add` 就会用一个成员替换掉读不懂的集合的全部成员。SPI 因此只有“检查并写入”（`SetL1Store.addMembers` / `removeMembers`），没有整体覆盖的元素写入。
@@ -341,72 +342,60 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
   - 每个节点每个 key 在一个刷新周期内的 L1 读取次数与命中频率无关：约为“持有者回源耗时 / b”，加上临近到期时按剩余寿命减半的几次（至多约 log2(2b / 1 ms) 次；默认时钟每 100 ms 才前进一次，实际只有两三次）。
 - **寿命不长于窗口的值不参与提前刷新**：除上面的重新填充之外（回源写回、读到 L1、降级填充），L1 剩余寿命不长于窗口时不设刷新点（`refreshAt = FOREVER`）。否则副本一出生就在窗口内：持有令牌的节点每次 `fill` 之后令牌被清零，下一次命中又取得新令牌、再回源一次，被放大的是数据源。策略 `ttl` 给出的寿命由 §10.2 的校验保证长于窗口；`ttlOf` 或 `put(k, v, ttl)` 给出的更短寿命不报错，这样的值不刷新，照常到期、下一次未命中时重新加载。代价：在一个值的最后一个窗口内才读到 L1 的节点（第一次读或 L2 刚被淘汰）也不发起刷新。其它节点的副本照常触发，全集群仍然只刷新一次；只有所有节点的副本都是这种副本时，key 才按普通未命中重新加载。
 - **带版本的值照常提前刷新**（RFC 0005 §4.7）：版本在版本段中，令牌位置是空的，`READ` 照常授予刷新令牌，填充按版本规则写入。回源得到更大的版本时写回是一次写入（§5“版本前进的填充”）：广播，其它节点的副本被淘汰，本节点不填 L2。版本相等时是续期，不广播。回源得到的版本更旧（数据源落后于按版本写入）时 `FILL` 拒绝并清零令牌：刷新不写 L2，保留副本——以取得令牌时读到的那个更新的值重新填充 L2，刷新点按上面的退避——否则回源得到的旧值会替换掉 L2 中的新值（`CoherentEngine.keepRefreshedCopy`，计入 `fillRejected`，不计 `degradedFills`）。
-- **带版本的缓存的 L2 不按版本后退**（RFC 0005 I-K 的 L2 条款，TLA+ F3）：版本拒绝只覆盖 `FILL` 回复了版本的情形；令牌被抢占（回复不带版本）时刷新照常降级填充，落后的 loader 读到的旧版本会替换 L2 中的新副本。所以填充 L2 时（`fillLocal` 的锁内，`CoherentEngine.keptCopy`），已有的未过期副本的版本大于要填充的值的版本就保留它，计入 `staleFillsDiscarded`；保留的副本已过刷新点时刷新点按上面的退避，否则每次命中都再读一次落后的数据源。能走到这一步的填充，其戳在读取之后没有失效：本节点没有处理过这个 key 的写入或失效，已有的副本不是被失效的内容。没有版本的值（`NO_VERSION`，负缓存与从 L1 读到的墓碑解码为 `null`）排在任何版本之前，所以协议之外抹掉版本的变化（L1 到期、`purge`）不经刷新替换版本更新的副本，由它自己的限龄兜底。结果未知的刷新填充按写入处理（§5“结果未知的带版本填充”），不填 L2。
+- **带版本的缓存的 L2 不按版本后退**（I-K 的 L2 条款，F3）：版本拒绝只覆盖 `FILL` 回复了版本的情形；令牌被抢占（回复不带版本）时刷新照常降级填充，落后的 loader 读到的旧版本会替换 L2 中的新副本。所以填充 L2 时（`fillLocal` 的锁内，`CoherentEngine.keptCopy`），已有的未过期副本的版本大于要填充的值的版本就保留它，计入 `staleFillsDiscarded`；保留的副本已过刷新点时刷新点按上面的退避，否则每次命中都再读一次落后的数据源。能走到这一步的填充，其戳在读取之后没有失效：本节点没有处理过这个 key 的写入或失效，已有的副本不是被失效的内容。没有版本的值（`NO_VERSION`，负缓存与从 L1 读到的墓碑解码为 `null`）排在任何版本之前，所以协议之外抹掉版本的变化（L1 到期、`purge`）不经刷新替换版本更新的副本，由它自己的限龄兜底。结果未知的刷新填充按写入处理（§5“结果未知的带版本填充”），不填 L2。
 - 结果：全集群每个 key 一次刷新。`invalidate`、`put`、`putIfNewer`、`evictKeepingVersion`、元素写入都会销毁刷新令牌。
 - 执行器拒绝时计入 `refreshRejected` 并跳过；刷新失败只告警，值照常到期，G1 不变。默认执行器是有界守护线程池（≤ 4 线程，队列 1024，满时拒绝）。
 
 ### 5.6 三种变体与协程核心
 
-异步视图与同步 API 是同一个引擎：共享 L2、失效戳、SingleFlight、lease、回源许可与指标；每个协议分支在两条路径上一一对应，协议决策（读到什么就做什么：`hitOutcome`、`completeLoad`、`batchStep`、`refreshStep`、`putsOf` 等）由两条路径共用的函数给出，两条路径只在“如何等待”上不同。同步命中路径的代码不变。
+协议只有一份 `suspend` 实现（协程核心，RFC 0005 V5，I-I）：单 key 与批量读取（含等待 lease、条件回收、回源与写回）、提前刷新、全部写入（`put`、`putAll`、`invalidate`、条件写入、按版本写入、集合的元素增删与 `clear`）、条件读取（`getIfChanged`）与数据源适配都只写一次。同步 API、异步视图（`async()`，[RFC 0004](rfc/0004-async-api.md)）与挂起视图（`suspending()`，§5.7）是它的三种运行方式，共享 L2、失效戳、SingleFlight、lease、回源许可与指标；引擎中没有成对的同步与异步实现。
 
-- **命中**：与同步路径相同的 L2 查找与过期比较，返回已完成的 future（在调用方线程上）。
-- **调度**：未命中与写入运行在协程核心上（见下）。协程在调用方线程上开始，执行到第一次挂起；之后由运行时作用域的调度器（`EngineDispatcher`）把恢复交给**异步执行器**，从不在 L1 客户端的 I/O 线程上执行。派发规则（[调查报告](investigations/async-8t-gap.md)）：
-  - 执行器派发的任务执行期间，线程带有该执行器的标记（不带初始值的 `ThreadLocal`，结束时移除，只读取的线程上不留下对象）。
+- **命中**：L2 命中不启动协程。同步 API 内联返回；异步视图做同样的 L2 查找与过期比较，返回已完成的 future（在调用方线程上）；挂起视图见 §5.7。
+- **同步变体**（`runSync`）：未命中与写入时以 `runBlocking` 在调用方线程上运行核心。L1 命令与异步变体一样直接调用挂起的 `L1Store`，在 `NonCancellable` 中执行（`uncancellable`，RFC 0005 §4.3）：调用方线程停在 `runBlocking` 的事件循环上，续接仍在它上面执行，从不在 L1 客户端的 I/O 线程上执行；阻塞的 loader 在调用方线程上调用（I-6）。写入修改 L1 之后的步骤在 `NonCancellable` 中执行，调度器不变。
+- **同步变体被中断**（RFC 0005 §4.3）：中断不到达存储。`runBlocking`（kotlinx ≥ 1.10，`RunSyncTest` 固定这一行为）清除中断标志、取消协程，并在调用方线程上把协程运行到结束才返回：
+  - 在途的 L1 命令先完成或超时，取消在之后的第一个挂起点生效（跟随者的等待、回源许可、lease 的退避、等待异步数据源），持有令牌的步骤按正常路径释放令牌。调用阻塞的 loader 与回源观测之前另外检查（`ensureNotInterrupted`）：取消之后不再调用它们；中断落在两个挂起点之间、`runBlocking` 尚未处理时（中断标志仍置位）同样不再调用。写入修改 L1 之后的步骤照常执行。
+  - 取消生效时恢复中断标志并抛出 `InterruptedException`。取消之后协程没有再经过检查取消的挂起点、自己结束了的（如 L1 命中、在途的 `put`），照常交出结果（值或它自己的异常），同样恢复中断标志：被取消的协程总是以取消结束，结果由 `runSync` 另行带出。
+  - 协程没有被取消、核心自己抛出的 `InterruptedException`（loader 被中断，或跟随者收到 leader 的这类失败）原样抛出，不置中断标志。
+  - 代价：被中断的调用方至多多等一个命令超时（默认 2 s）。让 `runBlocking` 立即返回、协程在别的线程上收尾的做法被否决：命令可能在调用方看到失败之后才写出。
+- **异步变体**（`AsyncContext.runAsync`）：在运行时作用域中以 `future(start = UNDISPATCHED)` 运行，第一次挂起之前在调用方线程上，之后在异步执行器上继续（作用域的调度器），从不在 L1 客户端的 I/O 线程上执行。用户拿到结果的副本：取消它只影响自己，协程照常运行（它可能是别的调用方等待的 leader）。执行器拒绝派发时 future 以那个 `RejectedExecutionException` 失败；运行时关闭取消作用域，进行中的调用在下一个挂起点以 `IllegalStateException("CacheRuntime closed.")` 失败；正在等待的 L1 命令先完成，不被放弃（见下面的“令牌”），`close` 有界地等这些收尾结束才返回（§10.1）。
+- **调度**（`EngineDispatcher`）：协程在调用方线程上开始，执行到第一次挂起；之后由运行时作用域的调度器把恢复交给**异步执行器**，从不在 L1 客户端的 I/O 线程上执行。派发规则（[调查报告](investigations/async-8t-gap.md)）：
+  - 执行器派发的任务执行期间，线程带有该执行器的标记（`Futures` 中一个不带初始值的 `ThreadLocal`，记下线程正在为哪个执行器运行，结束时移除，只读取的线程上不留下对象）。
   - 上一步在带标记的线程上完成时就地恢复（kotlinx 以线程局部的事件循环展开，栈深有界）；在 I/O 线程、阻塞执行器或数据源自己的线程上完成时才派发。所以每次 L1 命中只派发 1 次，未命中至多 3 次（L1 读、数据源、fill 之后各一次），写入 1 次。
-  - 本线程对某些 key 有重入守卫的作用域内清除标记（`Futures.withoutInline`）：调用数据源期间（`SingleFlight.loading`）与同步 leader 执行期间。其间被唤醒的其它 key 的协程（数据源同步完成的 future、同步 leader 归还回源许可时唤醒的等待者）改为派发，否则它们再读本 key 会被误判为同一线程的重入。
+  - 本线程对某些 key 有重入守卫的作用域内清除标记：调用数据源期间（`SingleFlight.loading`，`Futures.withoutInline`）与同步 leader 执行期间（`Futures.withoutInlineSuspending`）。其间被唤醒的其它 key 的协程（数据源同步完成的 future、同步 leader 归还回源许可时唤醒的等待者）改为派发，否则它们再读本 key 会被误判为同一线程的重入。
   - 返回的 future 在调用方线程或异步执行器上完成（调用方注册的依赖阶段按 JDK 规则也可能在随后调用 `get()` / `join()` 的线程上执行，TCK 断言完成线程时先等依赖阶段执行完再等待结果）。
-- **数据源适配**（同步与异步变体共用，`CoherentEngine.invoke`）：
+  - 执行器拒绝时以携带拒绝的取消结束协程，再交给 `Dispatchers.IO` 跑完收尾。正在执行的 L1 调用（上下文带有 `L1Call` 标记）被拒绝时不取消，只交给 `Dispatchers.IO`：取消会让 `withContext` 的作用域丢掉调用的结果（可能带着令牌），存储中可取消的等待也会被取消；调用方的协程在之后的派发被拒绝时才被取消（运行时关闭时它已随作用域取消）。
+- **数据源适配**（三种变体共用，`CoherentEngine.invoke`）：
   - `asyncLoader` 在当前线程上调用（同步变体即调用方线程），等待其结果的副本并加 `LoadPolicy.timeout`（默认 30 s，由 JDK 的延迟线程以 `completeOnTimeout` 的私有哨兵值计时；数据源自己以 `TimeoutException` 失败时原样传递）。超时以 `SourceLoadTimeoutException` 失败、计入 `loadTimeouts` 并释放 lease 与回源许可，数据源的 future 不被取消、迟到的结果被丢弃。
-  - 同步 `loader`：同步变体在调用方线程上调用；异步变体**只在阻塞执行器上执行**，从不在异步执行器上执行。不加超时（阻塞的 loader 无法被打断）。
-  - 数据源自己以取消结束（抛出或以 `CancellationException` 完成，如数据源内部的 `withTimeout`、被 HTTP 客户端取消的 future）时，当前协程仍处于活动状态，就转为 `SourceLoadCancelledException`（`cocache-core`，`RuntimeException`，`cause` 为原始异常），与其它回源失败一样交给合并到这次加载的全部调用方（同步、异步与挂起）。原样传出的话，引擎各处（`rethrowIfFatal`、批量读的逐 key 收尾）会把它当作本协程被取消，挂起的调用方会把它当作自己被取消。当前协程已被取消时，它就是这次取消，原样传出（RFC 0005 第三轮 K5）。
+  - 同步 `loader`：同步变体在调用方线程上调用；异步与挂起变体**只在阻塞执行器上执行**，从不在异步执行器上执行。不加超时（阻塞的 loader 无法被打断）。
+  - 数据源自己以取消结束（抛出或以 `CancellationException` 完成，如数据源内部的 `withTimeout`、被 HTTP 客户端取消的 future）时，当前协程仍处于活动状态，就转为 `SourceLoadCancelledException`（`cocache-core`，`RuntimeException`，`cause` 为原始异常），与其它回源失败一样交给合并到这次加载的全部调用方（同步、异步与挂起）。原样传出的话，引擎各处（`rethrowIfFatal`、批量读的逐 key 收尾）会把它当作本协程被取消，挂起的调用方会把它当作自己被取消。当前协程已被取消时，它就是这次取消，原样传出（K5）。
+  - 回源观测：同步变体经 `LoadObserver.observe`，异步与挂起变体经 `observeAsync`（§13）。
 - **等待不占线程**：
-  - 等待其它节点的 lease：退避、截止时间、令牌与戳在两种变体中相同。两种变体都以 `delay` 挂起退避：同步变体停在调用方线程的事件循环上，线程被中断时立即结束（8.0 之前以 `parkNanos` 停顿）；异步变体由 kotlinx 的延迟线程计时，不占执行器线程。
-  - 回源许可：同步与异步变体共用一个 kotlinx 信号量，按到达顺序交接；`acquireTimeout` 内拿不到时以 `SourceLoadRejectedException` 拒绝。等待挂起协程（同步变体停在调用方线程上，异步变体不占线程），等待被取消（运行时关闭、线程中断）时不取得、也不泄漏许可。
-- **SingleFlight**：同步与异步调用共用一张表。leader 在注册之后开始（第一件事是取戳），先注销、再发布；读己之写至多重试一次。同步调用合并到异步调用时只阻塞自己的线程；跟随者挂起等待，不占线程。每个调用方拿到自己的 future：取消只影响自己，不取消共享加载、不取消数据源的 future。
+  - 等待其它节点的 lease：退避、截止时间、令牌与戳在各变体中相同，都以 `delay` 挂起退避：同步变体停在调用方线程的事件循环上，线程被中断时立即结束；异步变体由 kotlinx 的延迟线程计时，不占执行器线程。
+  - 回源许可：各变体共用一个 kotlinx 信号量，按到达顺序交接；`acquireTimeout` 内拿不到时以 `SourceLoadRejectedException` 拒绝。等待挂起协程（同步变体停在调用方线程上，异步变体不占线程），等待被取消（运行时关闭、线程中断）时不取得、也不泄漏许可。
+- **SingleFlight**：各变体共用一张表（单 key `executeSuspending`，批量 `executeAllSuspending`）。leader 在调用方的协程中执行：同步变体即调用方线程（期间同样清除续接标记），异步变体省去一次派发；上下文中没有执行变体的调用方（直接从用户的协程调用）可能被单独取消，共享加载改在运行时作用域中执行。leader 在注册之后开始（第一件事是取戳），先注销、再发布；读己之写至多重试一次。同步调用合并到异步调用时只阻塞自己的线程；跟随者挂起等待，不占线程。每个调用方拿到自己的结果：取消只结束它自己的等待，不取消共享加载、不取消数据源的 future。
   - 合并规则（RFC 0005 §4.4）：leader 被中断或取消时，leader 自己收到原始异常，跟随者不接受这个失败，自行运行。按 leader 自己的状态判断，不按异常类型：
     - leader 的协程已被取消（运行时关闭、执行器拒绝派发、同步变体的 `runBlocking` 处理了中断）；
     - 同步 leader 的调用方线程被中断：loader 在调用方线程上抛出 `InterruptedException`，或带着中断标志失败（loader 包装了中断并恢复中断标志）。
 
     跟随者先重新注册一次（leader 已注销，通常由它自己领头）；仍合并到被中断的 leader 时，绕过 SingleFlight 直接加载，所以重试有上界。批量合并到的这类 key 改走单 key 路径。
 
-    其余失败都是普通的回源失败，与其它失败一样交给跟随者：数据源自己的取消（已在数据源边界转为 `SourceLoadCancelledException`，见上面的“数据源适配”）、block 中其它代码抛出的 `CancellationException`、阻塞执行器线程上的 `InterruptedException`。8.0 M3 之前按异常类型判断（RFC 0005 第三轮 K5）：数据源内部的 `withTimeout` 或被取消的 future 让每个跟随者各自回源，源头慢的时候回源次数随并发放大（实验 E4：8 个调用方回源 8 次）。
+    其余失败都是普通的回源失败，与其它失败一样交给跟随者：数据源自己的取消（已在数据源边界转为 `SourceLoadCancelledException`，见上面的“数据源适配”）、block 中其它代码抛出的 `CancellationException`、阻塞执行器线程上的 `InterruptedException`。按异常类型判断的话（K5），数据源内部的 `withTimeout` 或被取消的 future 会让每个跟随者各自回源，源头慢的时候回源次数随并发放大（实验 E4：8 个调用方回源 8 次）。
   - 有上界（`load.timeout`，默认 30 s）：每次加载的截止时刻是它登记时加上 `load.timeout`。
-    - 跟随者（同步与异步，含批量合并到的 key）等到截止时刻仍没有结果时，以 `SourceLoadTimeoutException` 失败，计入 `loadTimeouts`。
-    - 截止时刻之后到来的调用方把这次加载注销（不完成它），自己开始新的加载，不再合并到卡住的同步 loader 后面（RFC 0005 P16）。注销是惰性的，不需要定时器。
+    - 跟随者（各变体，含批量合并到的 key）等到截止时刻仍没有结果时，以 `SourceLoadTimeoutException` 失败，计入 `loadTimeouts`。
+    - 截止时刻之后到来的调用方把这次加载注销（不完成它），自己开始新的加载，不再合并到卡住的同步 loader 后面（P16）。注销是惰性的，不需要定时器。
     - 原 leader 迟到的结果只交给它自己，写回仍受令牌与戳保护。注销早于发布，不破坏“先注销再发布”。
-- **重入**：除同步调用的拥有线程外，引擎在调用数据源期间（同步数据源的整个执行、异步数据源 `loadAsync` 的同步部分）为这些 key 设置线程守卫，期间本线程对同一 key 的同步或异步调用快速失败。异步数据源在一次 I/O 之后再读同一 key 形成的环无法检测，由 `load.timeout` 打破。
-- **写入**（`AbstractEngine.write`，协程核心，见下）：顺序同 §6.1；编码在第一次递增之前、在调用方线程上完成。修改 L1 之后的步骤（非原子广播的后端经挂起的 `InvalidationChannel.publish` 发布、失败时的 `onFailure`、第二次递增与淘汰）不可取消、不经执行器，在 L1 命令的完成线程上就地执行（`NonCancellable + Dispatchers.Unconfined`，这些步骤都不阻塞、不调用用户代码），在返回的 future 完成之前执行；取消返回的 future、运行时关闭、执行器拒绝都不会跳过它们。之后只派发一次：回到调用方。
-- **提前刷新**：同步数据源照旧在刷新执行器上执行；异步数据源的刷新在刷新执行器上发起、以异步路径推进，不在刷新执行器的线程上等待。
-- **执行器拒绝任务**：续接被拒绝时该步不执行，返回的 future 以 `RejectedExecutionException` 失败；必须执行的收尾不依赖执行器：写入方的广播、第二次递增与淘汰在 L1 命令的完成线程上就地执行（见上），写入的结果不被替换：成功的写入不计为失败、`invalidate` 不登记重试。回到调用方的那次派发被拒绝时，成功的写入以 `RejectedExecutionException` 完成，失败的写入仍以原始异常完成（kotlinx 在协程同时被取消与失败时保留失败的异常）；回源许可在加载链结束时恰好归还一次，取得的 lease / 刷新令牌在链因拒绝失败时由持有它的步骤释放（§5.6 协程核心的“令牌”）。
+- **重入**：除同步调用的拥有线程外，引擎在调用数据源期间（同步数据源的整个执行、异步数据源 `loadAsync` 的同步部分）为这些 key 设置线程守卫，期间本线程对同一 key 的同步或异步调用快速失败。异步数据源在一次 I/O 之后再读同一 key 形成的环无法检测，由 `load.timeout` 打破。挂起变体另有协程上下文中的守卫（§5.7）。
+- **写入**（`AbstractEngine.write`）：顺序同 §6.1；编码在第一次递增之前、在调用方线程上完成。修改 L1 之后的步骤（非原子广播的后端经挂起的 `InvalidationChannel.publish` 发布、失败时的 `onFailure`、第二次递增与淘汰）不可取消、不经执行器，在 L1 命令的完成线程上就地执行（`NonCancellable + Dispatchers.Unconfined`，这些步骤都不阻塞、不调用用户代码），在返回的 future 完成之前执行；取消返回的 future、运行时关闭、执行器拒绝都不会跳过它们。之后只派发一次：回到调用方。被取消的写入见 §7。
+- **提前刷新**：同步数据源在刷新执行器上执行（`runSync`）；异步数据源的刷新在刷新执行器上发起、以异步路径推进，不在刷新执行器的线程上等待。
+- **执行器拒绝任务**：续接被拒绝时该步不执行，返回的 future 以 `RejectedExecutionException` 失败；必须执行的收尾不依赖执行器：写入方的广播、第二次递增与淘汰在 L1 命令的完成线程上就地执行（见上），写入的结果不被替换：成功的写入不计为失败、`invalidate` 不登记重试。回到调用方的那次派发被拒绝时，成功的写入以 `RejectedExecutionException` 完成，失败的写入仍以原始异常完成（kotlinx 在协程同时被取消与失败时保留失败的异常）；回源许可在加载链结束时恰好归还一次，取得的 lease / 刷新令牌在链因拒绝失败时由持有它的步骤释放（见下面的“令牌”）。
 - **`KeyFilter`** 在调用方线程上调用，必须是本地、不阻塞的判断。
 - **异常**：返回的 future 以原始异常完成（不包装为 `CompletionException`）；异步方法从不同步抛出（包括 `KeyEncoder`、`Codec` 抛出与重入）。
-- **协程核心**（8.0 进行中，RFC 0005 V5、§4.4）：协议正在逐条路径改写为一份 `suspend` 实现。目前覆盖：
-  - `SetStore` 的读路径（`get`、`lookup`、`getAll`、`lookupAll`）；
-  - `Cache` 的单 key 读（`get`、`lookup`、`get(key, loader)`）及其等待 lease、条件回收、回源与写回；
-  - 提前刷新；
-  - `Cache` 的批量读（`getAll`，§5.3）；
-  - 两种缓存的写入（`put`、`putAll`、`invalidate`、`putIfMatch`、按版本写入、集合的元素增删与 `clear`）与条件读取（`getIfChanged`）；
-  - 数据源适配（回源许可、`load.timeout`、耗时统计与观测）。
-
-  引擎中已没有成对的同步与异步实现。
-  - L2 命中不变：同步 API 内联返回，异步视图返回已完成的 future，都不启动协程。
-  - 同步变体（`runSync`）：未命中与写入时以 `runBlocking` 在调用方线程上运行核心。L1 命令与异步变体一样直接调用挂起的 `L1Store`，在 `NonCancellable` 中执行（`uncancellable`，RFC 0005 §4.3）：调用方线程停在 `runBlocking` 的事件循环上，续接仍在它上面执行，从不在 L1 客户端的 I/O 线程上执行；阻塞的 loader 照旧在调用方线程上调用（不变量 6）。写入修改 L1 之后的步骤在 `NonCancellable` 中执行，调度器不变。8.0 之前同步变体就地调用阻塞的 SPI（§9 的同步等待）。
-  - 同步变体被中断（RFC 0005 §4.3）：中断不到达存储。`runBlocking`（kotlinx ≥ 1.10，`RunSyncTest` 固定这一行为）清除中断标志、取消协程，并在调用方线程上把协程运行到结束才返回：
-    - 在途的 L1 命令先完成或超时，取消在之后的第一个挂起点生效（跟随者的等待、回源许可、lease 的退避、等待异步数据源），持有令牌的步骤按正常路径释放令牌。调用阻塞的 loader 与回源观测之前另外检查（`ensureNotInterrupted`）：取消之后不再调用它们；中断落在两个挂起点之间、`runBlocking` 尚未处理时（中断标志仍置位）同样不再调用。写入修改 L1 之后的步骤照常执行。
-    - 取消生效时恢复中断标志并抛出 `InterruptedException`。取消之后协程没有再经过检查取消的挂起点、自己结束了的（如 L1 命中、在途的 `put`），照常交出结果（值或它自己的异常），同样恢复中断标志：被取消的协程总是以取消结束，结果由 `runSync` 另行带出。
-    - 协程没有被取消、核心自己抛出的 `InterruptedException`（loader 被中断，或跟随者收到 leader 的这类失败）原样抛出，不置中断标志。
-    - 代价：被中断的调用方至多多等一个命令超时（默认 2 s）。让 `runBlocking` 立即返回、协程在别的线程上收尾的做法被否决：命令可能在调用方看到失败之后才写出。
-  - 异步变体（`AsyncContext.runAsync`）：在运行时作用域中以 `future(start = UNDISPATCHED)` 运行，第一次挂起之前在调用方线程上，之后在异步执行器上继续（作用域的调度器），从不在 L1 客户端的 I/O 线程上执行。L1 命中派发一次，与上面的续接规则相同。用户拿到结果的副本：取消它只影响自己，协程照常运行（它可能是别的调用方等待的 leader）。执行器拒绝派发时 future 以那个 `RejectedExecutionException` 失败；运行时关闭取消作用域，进行中的调用在下一个挂起点以 `IllegalStateException("CacheRuntime closed.")` 失败；正在等待的 L1 命令先完成，不被放弃（见下面的“令牌”），`close` 有界地等这些收尾结束才返回（§9）。
-  - 调度（`EngineDispatcher`）：规则见上面的“调度”。执行器拒绝时以携带拒绝的取消结束协程，再交给 `Dispatchers.IO` 跑完收尾。正在执行的 L1 调用（上下文带有 `L1Call` 标记）被拒绝时不取消，只交给 `Dispatchers.IO`：取消会让 `withContext` 的作用域丢掉调用的结果（可能带着令牌），存储中可取消的等待也会被取消；调用方的协程在之后的派发被拒绝时才被取消（运行时关闭时它已随作用域取消）。
-  - 等待与回源见上面的“数据源适配”与“等待不占线程”。回源观测在两种变体中分别经 `LoadObserver.observe` 与 `observeAsync`。
-  - 令牌（RFC 0005 §4.4、I-H：L1 命令与令牌步骤不可取消）：
-    - 回源失败（含 `ttlOf` 与 `Codec` 抛出）时先释放 lease 再抛出原始异常。
-    - 引擎从不取消 L1 调用：每个调用在 `NonCancellable` 中执行（`uncancellable`；写入方顺序整段已在 `NonCancellable` 中，其中的调用直接执行），存储用可取消的 `await()` 也安全（`NonCancellableL1Test`）。协程被取消（同步变体的线程被中断；异步变体的运行时关闭、执行器拒绝派发）时仍等到调用结束：取得令牌的读取不丢结果，释放也不会抢在仍在途的读取之前到达 L1（SPI 不保证命令按发出的顺序生效）。调用何时结束由存储决定（命令超时）。
-    - 取消在之后的第一个挂起点生效（等待数据源、回源许可、lease 的退避）。持有令牌的步骤据此释放它，并等释放完成。
-    - 有观测器时，回源与等待 lease 在运行时作用域的另一个协程中执行。它的结果经局部变量交回，不经协程的返回值：被取消的协程即使 block 已经返回，也以取消结束、丢掉返回值，而等待 lease 的重读可能已为本调用取得令牌。
-    - M2c 及之前：协程被取消时立即放弃等待，单 key 读、批量读与刷新即发即弃地释放令牌。释放先于在途的读取生效时，读取随后取得的令牌要到 `lease.ttl` 才回收（`TokenConservationPropertyTest` 复现）。
-  - SingleFlight 与上面两条路径共用一张表（单 key `executeSuspending`，批量 `executeAllSuspending`）。leader 在调用方的协程中执行：同步变体即调用方线程（期间同样清除续接标记），异步变体省去一次派发。上下文中没有执行变体的调用方（直接从用户的协程调用）可能被单独取消，共享加载改在运行时作用域中执行。跟随者挂起等待，不占线程，取消只结束它自己的等待。
-  - 等待 future 经 `awaitOriginal`：kotlinx 的 `await()` 在调试模式（`-ea` 或 `kotlinx.coroutines.debug`）下恢复挂起时复制异常，原始异常成了副本的 cause；这里等待一个总是正常完成的派生 future，在自己的栈帧里抛出原始异常。L1 调用同理：`uncancellable` 把结果包成 `Result` 带出 `withContext`，`FutureL1Store.adapt` 与 `FutureInvalidationChannel.adapt` 总是以成功的结果恢复续接，都在自己的栈帧里抛出原始异常（`FutureAdapterTest`）。调试模式下线程名在协程运行期间带有 `@coroutine#n` 后缀（同步读的 loader 也看得到它），TCK 按线程名编排竞态时用 `Concurrency.currentThreadName()` 去掉它。
+- **令牌**（I-F、I-H：L1 命令与令牌步骤不可取消）：
+  - 回源失败（含 `ttlOf` 与 `Codec` 抛出）时先释放 lease 再抛出原始异常。
+  - 引擎从不取消 L1 调用：每个调用在 `NonCancellable` 中执行（`uncancellable`；写入方顺序整段已在 `NonCancellable` 中，其中的调用直接执行），存储用可取消的 `await()` 也安全（`NonCancellableL1Test`）。协程被取消（同步变体的线程被中断；异步变体的运行时关闭、执行器拒绝派发）时仍等到调用结束：取得令牌的读取不丢结果，释放也不会抢在仍在途的读取之前到达 L1（SPI 不保证命令按发出的顺序生效）。调用何时结束由存储决定（命令超时）。被取消时立即放弃等待、即发即弃地释放令牌的做法不可行：释放先于在途的读取生效时，读取随后取得的令牌要到 `lease.ttl` 才回收（`TokenConservationPropertyTest` 复现）。
+  - 取消在之后的第一个挂起点生效（等待数据源、回源许可、lease 的退避）。持有令牌的步骤据此释放它，并等释放完成。
+  - 有观测器时，回源与等待 lease 在运行时作用域的另一个协程中执行。它的结果经局部变量交回，不经协程的返回值：被取消的协程即使 block 已经返回，也以取消结束、丢掉返回值，而等待 lease 的重读可能已为本调用取得令牌。
+- **等待 future 经 `awaitOriginal`**：kotlinx 的 `await()` 在调试模式（`-ea` 或 `kotlinx.coroutines.debug`）下恢复挂起时复制异常，原始异常成了副本的 cause；这里等待一个总是正常完成的派生 future，在自己的栈帧里抛出原始异常。L1 调用同理：`uncancellable` 把结果包成 `Result` 带出 `withContext`，`FutureL1Store.adapt` 与 `FutureInvalidationChannel.adapt` 总是以成功的结果恢复续接，都在自己的栈帧里抛出原始异常（`FutureAdapterTest`）。调试模式下线程名在协程运行期间带有 `@coroutine#n` 后缀（同步读的 loader 也看得到它），TCK 按线程名编排竞态时用 `Concurrency.currentThreadName()` 去掉它。
 
 ### 5.7 挂起视图（`suspending()`）
 
@@ -434,6 +423,8 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 - 命中路径不变：`enter()` 只在未命中路径上调用，`NONE` 时没有上下文元素、没有分配。
 
 ## 6. 写路径
+
+每个写入都按写入方顺序执行（§6.1），从不写 L2（I-1）。Redis 上各写入的 L1 命令与往返次数：
 
 | 操作 | L1 | 往返 |
 |------|----|------|
@@ -523,7 +514,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 
 `deleteIfMatch(key, expected)`：一个脚本 `DELETE_IF_MATCH`（`ConditionalL1Store.deleteIfMatch`），只读头部，摘要段等于 `expected` 时 `DEL` 并 `PUBLISH`，返回 `Deleted`；不符合时不修改、不广播，返回 `Conflict(current)`（没有值时 `current = null`）；读不懂的内容与 `putIfMatch` 同样分类，总是拒绝。写入方顺序同 `invalidate`，同步完成，失败时抛出 `CacheWriteException`，从不重试。结果未知的 `deleteIfMatch` 迟到执行时，可能删除之后重新写入的相同内容（ABA，RFC 0005 §4.6）：需要顺序的写入方用 `VersionedStore`。
 
-- **分类为什么这样定**：读与写必须对同一份内容给出同一个答案，否则“读—改—条件写”循环会出错：读取说“没有值”而写入说“冲突”时循环永远不结束，调用方拿冲突里的摘要重试则会从空值出发覆盖它。读不懂的内容从不视为没有值：`expected = null` 的写入会整体覆盖它（在 L1 是唯一副本的缓存上就是删除数据），更高格式版本的值在滚动升级期间被旧节点当作没有值覆盖就是降级。SPI 因此没有“把格式 0 视为没有值”的开关（RFC 0005 §12“M3 之前”决定 6）。
+- **分类为什么这样定**：读与写必须对同一份内容给出同一个答案，否则“读—改—条件写”循环会出错：读取说“没有值”而写入说“冲突”时循环永远不结束，调用方拿冲突里的摘要重试则会从空值出发覆盖它。读不懂的内容从不视为没有值：`expected = null` 的写入会整体覆盖它（在 L1 是唯一副本的缓存上就是删除数据），更高格式版本的值在滚动升级期间被旧节点当作没有值覆盖就是降级。SPI 因此没有“把格式 0 视为没有值”的开关（RFC 0005 §12）。
 - **只认带摘要段的值**：摘要段是 `Store` 的标记（D4）。派生缓存写入的值没有摘要段，它可能因为回源随时被替换，不是条件读写确认的对象；带版本的内容由版本排序（§6.6），不接受条件写入。所以同一 namespace 上派生缓存的值与带版本的值，条件读写总是拒绝（`putIfMatch(key, null, …)` 写入不存在的 key 除外）。
 - **只读头部**（RFC 0005 §4.7、§7“条件读取”）：摘要由写入方写在头部，脚本只比较这 32 个字节，Lua 不计算摘要、也不把载荷读进 Lua。`GETRANGE key 0 77` 是最长的头部（核心头部、版本段、摘要段、扩展区的总长字段），加上 `STRLEN`，载荷偏移的检查与读整个值的脚本完全相同（段超出值的长度时是格式 0）。摘要未变的条件读取在 Redis 端的成本因此与载荷大小无关（`AuthoritativeBenchmark.conditionalUnchanged`）；摘要变了时才 `GET` 整个值回复。原地修改（授予刷新令牌、`release`）只触及字节 4–35，整体写入重写头部，所以头部中的摘要始终与写入时的载荷一致；绕过协议的写入留下的不一致由读取方校验发现。
 - **非原子广播**（`sharded` 通道模式，或原子广播探测失败，§9.1）：脚本不广播，由引擎在脚本之后经通道广播。写入成功时广播；`putIfMatch` 冲突且当前摘要等于这次写入的载荷摘要时、`deleteIfMatch` 冲突且当前没有值时**也广播**。后者可能是重放：上一次同样的写入已在 L1 生效，单独的广播却失败了（调用方得到 `CacheWriteException`，按上表先重读或直接重放）。不广播的话其它节点的 L2 陈旧至 `localMaxAge`；多余的广播只淘汰副本，无害。其余冲突与拒绝不广播。
@@ -580,7 +571,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 - **被中断的同步调用方**（RFC 0005 §4.3，§5.6）：在途的 L1 命令先完成或超时，取得的令牌按正常路径释放，取消之后不再调用 loader，然后抛出 `InterruptedException`；取消生效之前已经完成的调用照常返回结果。两种情形都保留中断标志。被中断的调用方因此至多多等一个命令超时（默认 2 s）。正在运行的阻塞 loader 自己看到中断（协作式取消）。
 - **跟随者的等待有上界**（`load.timeout`，§5.6 SingleFlight）：合并到别人加载的调用方（同步与异步，单 key 与批量）等到这次加载的截止时刻（登记时加上 `load.timeout`）仍没有结果时，以 `SourceLoadTimeoutException` 失败，计入 `loadTimeouts`；leader 照常加载。截止时刻之后到来的读取开始新的加载。
 - **读取的时限**（`CachePolicy.readTimeout`，RFC 0005 §4.3，D6）：引擎把它传给每次 L1 读取（`read`、`readAll`、`readIfChanged`，不含运维的 `inspect`），存储以它与命令超时中较短的一个为限；默认 `null`，即命令超时。超时与其它 L1 读失败相同：按 `readFailure` 降级或抛出，条件读取总是抛出，取得的令牌由存储释放（K14）。供不能降级回源、又要限制 L1 卡顿时每次读取多等多久的缓存使用（如 CoSec 的撤销检查）。配置键 `read-timeout`（§10.2），代码中经 `CachePolicy.Builder.readTimeout` 设置。
-- **被取消的写入**（RFC 0005 §4.6，K18，M5 评估结论：保持现状）：写入从修改 L1 到第二次递增（含广播、失效重试的登记）在 `NonCancellable` 中执行，协程被取消（运行时关闭）时这些步骤照常完成；挂起变体的调用方被取消只结束它自己的等待，写入在运行时作用域中照常完成（§5.7）。异步与挂起变体在 `ASYNC_WRITE`（`NonCancellable` + `Unconfined`）中执行它，`withContext` 结束时按 kotlinx 的即时取消保证把结果换成 `CancellationException`：写入已经生效，调用方看到的是取消，结果未知（I-E），与超时相同，按版本写入可以重放、`putIfMatch` 先 `getIfChanged` 再决定。不把整个写入放进同调度器的 `NonCancellable` 的理由：
+- **被取消的写入**（RFC 0005 §4.6，K18）：写入从修改 L1 到第二次递增（含广播、失效重试的登记）在 `NonCancellable` 中执行，协程被取消（运行时关闭）时这些步骤照常完成；挂起变体的调用方被取消只结束它自己的等待，写入在运行时作用域中照常完成（§5.7）。异步与挂起变体在 `ASYNC_WRITE`（`NonCancellable` + `Unconfined`）中执行它，`withContext` 结束时按 kotlinx 的即时取消保证把结果换成 `CancellationException`：写入已经生效，调用方看到的是取消，结果未知（I-E），与超时相同，按版本写入可以重放、`putIfMatch` 先 `getIfChanged` 再决定。不把整个写入放进同调度器的 `NonCancellable` 的理由：
   - 写入的效果不受影响：丢失的只是返回给已被取消的调用方的结果，而 L1、广播与第二次递增都已完成。
   - 被取消的协程从挂起调用正常返回，会让调用方在已取消的协程中继续执行后续代码，违反 kotlinx 的取消约定；调用方本来就要按“结果未知”处理取消。
   - 异步变体中只有运行时关闭会取消写入的协程（调用方取消 future 只结束它自己的等待），关闭之后结果也无从使用。
@@ -620,12 +611,12 @@ L2 填充（`fillGuarded`，RFC 0005 §4.5）：
 - **只访问主节点**：读脚本会写 lease 与刷新令牌，不能在副本上执行。CoCache 自己的连接不继承应用的从库读取配置。
 - **命令连接**：每个后端一条共享连接（Cluster 由 Lettuce 按节点管理），并发的异步命令在其上多路复用。大载荷会造成队头阻塞。
 - **脚本缓存**：每条命令 `EVALSHA`，遇到 `NOSCRIPT`（故障切换、重启、resharding 后）改用 `EVAL` 重试。
-- **原生挂起**（RFC 0005 §4.3，M3d）：`RedisBackend.store` 返回 `RedisL1Store`，它直接实现 `L1Store` 与三个能力面：以 Lettuce 的异步命令发出脚本（`RedisConnections.evalAsync`），以标准库的 `suspendCoroutine` 挂起等待（`awaitCommand`），等待期间不占线程（`cocache-redis` 不直接依赖 kotlinx）。续接经调用方的调度器恢复：同步变体回到调用方线程自己的事件循环，异步变体回到运行时的调度器，脚本返回值的转换（解析头部、拷贝载荷与集合成员）因此不在 Lettuce 的 I/O 线程上执行。以总是成功的 `Result` 恢复、在自己的栈帧里抛出，不受 kotlinx 调试模式复制异常的影响。失效通道的 `publish` 同样挂起（`RedisConnections.publish` / `spublish`）。只有本身阻塞的路径阻塞等待（`RedisConnections.join`）：启动时的原子广播探测与 `INFO`、订阅与退订、心跳；它不响应中断（保留中断标志），由命令超时限定。
-  - **限时**：每条命令受 `commandTimeout` 限制（`RedisConnections.bounded`）；读取另可带这次调用的 `timeout`，以两者中较短的一个为限（D6，`readTimeout`）。超过时不再等待应答，以 `RedisException("Command timed out after …")` 失败；执行异常解包为原始的运行时异常（不是运行时异常的包装为 `RedisException`）。超时不经 JDK 的延迟调度器，也不经 `cocache-timer`（RFC 0004 §14）：自建客户端的 `TimeoutOptions` 固定为 `commandTimeout`（替换 Lettuce 默认的 60 s 连接超时，并关闭维护期间的放宽），Lettuce 以 Netty 时间轮为每条命令计时，超时以 `RedisCommandTimeoutException` 完成命令，`bounded` 把它映射为上述异常。单机只有这一个计时器；短于 `commandTimeout` 的读取时限另由客户端资源的时间轮计时（Lettuce 只按 `commandTimeout` 计时）。集群中 Lettuce 在命令写入节点连接时才计时：**等待建立节点连接（首次访问某节点、拓扑变化后）的命令不计时**，只受连接建立的超时限制（`connectTimeout` 默认 10 s，握手受 `RedisURI` 超时限制，默认 60 s）。因此 `bounded` 另以客户端资源的时间轮兜底，命令完成时撤销，调用的上界仍是 `commandTimeout` 加至多一个刻度，与连接建立的耗时无关；`of` 传入的客户端选项未知，同样由时间轮计时，客户端自己的异常原样传递（`CommandTimeouts`）。时间轮的精度是一个刻度（默认 100 ms）。这项改动的收益是每条命令不再依赖 JDK 的单线程延迟调度器，不是吞吐（RFC 0004 §14）。`NOSCRIPT` 之后的 `EVAL` 是新命令，在单机上由 Lettuce 单独计时。
+- **原生挂起**（RFC 0005 §4.3）：`RedisBackend.store` 返回 `RedisL1Store`，它直接实现 `L1Store` 与三个能力面：以 Lettuce 的异步命令发出脚本（`RedisConnections.evalAsync`），以标准库的 `suspendCoroutine` 挂起等待（`awaitCommand`），等待期间不占线程（`cocache-redis` 不直接依赖 kotlinx）。续接经调用方的调度器恢复：同步变体回到调用方线程自己的事件循环，异步变体回到运行时的调度器，脚本返回值的转换（解析头部、拷贝载荷与集合成员）因此不在 Lettuce 的 I/O 线程上执行。以总是成功的 `Result` 恢复、在自己的栈帧里抛出，不受 kotlinx 调试模式复制异常的影响。失效通道的 `publish` 同样挂起（`RedisConnections.publish` / `spublish`）。只有本身阻塞的路径阻塞等待（`RedisConnections.join`）：启动时的原子广播探测与 `INFO`、订阅与退订、心跳；它不响应中断（保留中断标志），由命令超时限定。
+  - **限时**：每条命令受 `commandTimeout` 限制（`RedisConnections.bounded`）；读取另可带这次调用的 `timeout`，以两者中较短的一个为限（D6，`readTimeout`）。超过时不再等待应答，以 `RedisException("Command timed out after …")` 失败；执行异常解包为原始的运行时异常（不是运行时异常的包装为 `RedisException`）。超时不经 JDK 的延迟调度器（RFC 0004 §14）：自建客户端的 `TimeoutOptions` 固定为 `commandTimeout`（替换 Lettuce 默认的 60 s 连接超时，并关闭维护期间的放宽），Lettuce 以 Netty 时间轮为每条命令计时，超时以 `RedisCommandTimeoutException` 完成命令，`bounded` 把它映射为上述异常。单机只有这一个计时器；短于 `commandTimeout` 的读取时限另由客户端资源的时间轮计时（Lettuce 只按 `commandTimeout` 计时）。集群中 Lettuce 在命令写入节点连接时才计时：**等待建立节点连接（首次访问某节点、拓扑变化后）的命令不计时**，只受连接建立的超时限制（`connectTimeout` 默认 10 s，握手受 `RedisURI` 超时限制，默认 60 s）。因此 `bounded` 另以客户端资源的时间轮兜底，命令完成时撤销，调用的上界仍是 `commandTimeout` 加至多一个刻度，与连接建立的耗时无关；`of` 传入的客户端选项未知，同样由时间轮计时，客户端自己的异常原样传递（`CommandTimeouts`）。时间轮的精度是一个刻度（默认 100 ms）。这样做是为了让每条命令不依赖 JDK 的单线程延迟调度器，与吞吐无关（RFC 0004 §14）。`NOSCRIPT` 之后的 `EVAL` 是新命令，在单机上由 Lettuce 单独计时。
   - **批量**：`readAll`、`fillAll` 先发出全部命令再一起等待（`awaitCommands`，只挂起一次，共享连接上多路复用，约一次往返）；`putAll`、`invalidate` 按 slot 分组（Cluster）再按 `invalidateBatchSize` 切分，各组并发执行，等全部组结束才返回或抛出按发出顺序的第一个异常，其余附为 suppressed。Lettuce 断线时以同一个异常实例排空应答栈中的全部命令，这个实例不附给自己（对自己 `addSuppressed` 会抛出 `IllegalArgumentException`，`readAll` 就释放不了其余读取取得的 lease）。某条命令发出时同步失败（确定未执行）就不再发出其后的命令，但仍等已发出的命令结束、照常处理它们。
   - **取消**：Lettuce 取消的命令（连接重置时取消应答栈中的命令、关闭时取消缓冲的命令）以 `RedisException`（cause 为原来的取消）报告，是结果未知的 L1 故障，从不以 `CancellationException` 抛出：在 JVM 上它就是协程的取消，引擎会把它当作调用方被取消（RFC 0005 §4.3）。
 - **超时后不再写出**：后端放弃等待（`bounded` 的时间轮）时，以异常完成脚本当前的 Lettuce 命令（`EVALSHA`，NOSCRIPT 之后的 `EVAL`；`RedisConnections` 的 `CommandCall`）。Lettuce 写出前跳过已完成的命令（`CommandHandler` 的 `isWriteable`；断线期间缓冲的命令重连后同样跳过），所以尚未写出的命令——集群中等待建立节点连接的命令、`of` 传入的客户端断线期间缓冲的命令——不会在调用方看到失败之后才执行，覆盖更新的值（权威副本永不过期时，这样的错误会永久保留）。完成的必须是 `StatefulConnection.dispatch` 返回的最外层命令：集群中它是 `ClusterCommand`，`isDone` 只看它自己的完成标记，取消或完成内层的 `AsyncCommand` 不影响它，节点连接建立后照常写出（对照 Lettuce 6.8.2 与 7.5.2 源码核实，`RedisCommandTimeoutTest` 在集群上复现）。因此脚本以 `dispatch` 发出，参数与输出与 Lettuce 的 `evalsha` / `eval` 相同，不经 `RedisScriptingAsyncCommands`。已写出的命令无从撤回：Redis 照常执行，应答被丢弃（§6.1）。`PUBLISH` / `SPUBLISH` 不在此列：迟到的广播只多淘汰副本。中断不到达存储（§5.6、§7）：被中断的同步调用方等它的命令完成或超时，存储侧没有“等待被中断”这一类。
-- **失败时释放令牌**（RFC 0005 round 3 K14）：取得或交回令牌的命令失败时，令牌可能已经没人会再释放，`lease.ttl` 内全集群对该 key 的未命中都要先等 `lease.wait`。`RedisL1Store` 因此除确定未执行外都尽力释放这些令牌。确定未执行（`RedisConnections.isNotExecuted`）只有 Lettuce 在写出之前的拒绝（`Currently not connected`、`Connection is closed`、请求队列或命令缓冲已满）与连接建立不起来（`RedisConnectionException`）：这时命令没有取得令牌，释放同样会被拒绝。超时、断线时被排空（`Connection disconnected` / `Connection closed`）、被 Lettuce 取消、脚本的错误回复、解码失败都按结果未知。释放异步发出、不等待；释放失败时（如断线期间以 `REJECT_COMMANDS` 被拒绝）在客户端资源的时间轮上按退避重发（100 ms 起倍增，至多 2 s），每次受 `commandTimeout` 限制，直到执行、超过令牌的寿命（lease 为 `lease.ttl`，刷新令牌为它的寿命，请求中没有寿命的填充与释放为 1 分钟）或连接关闭：断线时在途的读取取得的 lease 因此通常在重连之后就被收回（`RedisL1StoreTest` 以丢弃应答的代理复现）。只在放弃时告警。令牌不匹配时 `RELEASE` 什么也不做：fill 已经执行、令牌已被释放或抢占，都不影响已写入的值；迟到、重复或重连之后才到达的释放都无害。释放与原命令按 key 路由，同一条连接上排在它之后执行；原命令未写出就被完成时，释放同样无害。连接被替换之后不再有这个顺序：新连接上的 `RELEASE` 可能先于旧连接上被排空的原命令执行，令牌不匹配、什么也不做，被排空的 `READ` 随后取得的 lease 无人释放，留到 `lease.ttl`（TLA+ F4）。所以收回的上界是：通常在重连之后，释放与被排空的命令竞争时至多 `lease.ttl`。逐类命令：
+- **失败时释放令牌**（K14）：取得或交回令牌的命令失败时，令牌可能已经没人会再释放，`lease.ttl` 内全集群对该 key 的未命中都要先等 `lease.wait`。`RedisL1Store` 因此除确定未执行外都尽力释放这些令牌。确定未执行（`RedisConnections.isNotExecuted`）只有 Lettuce 在写出之前的拒绝（`Currently not connected`、`Connection is closed`、请求队列或命令缓冲已满）与连接建立不起来（`RedisConnectionException`）：这时命令没有取得令牌，释放同样会被拒绝。超时、断线时被排空（`Connection disconnected` / `Connection closed`）、被 Lettuce 取消、脚本的错误回复、解码失败都按结果未知。释放异步发出、不等待；释放失败时（如断线期间以 `REJECT_COMMANDS` 被拒绝）在客户端资源的时间轮上按退避重发（100 ms 起倍增，至多 2 s），每次受 `commandTimeout` 限制，直到执行、超过令牌的寿命（lease 为 `lease.ttl`，刷新令牌为它的寿命，请求中没有寿命的填充与释放为 1 分钟）或连接关闭：断线时在途的读取取得的 lease 因此通常在重连之后就被收回（`RedisL1StoreTest` 以丢弃应答的代理复现）。只在放弃时告警。令牌不匹配时 `RELEASE` 什么也不做：fill 已经执行、令牌已被释放或抢占，都不影响已写入的值；迟到、重复或重连之后才到达的释放都无害。释放与原命令按 key 路由，同一条连接上排在它之后执行；原命令未写出就被完成时，释放同样无害。连接被替换之后不再有这个顺序：新连接上的 `RELEASE` 可能先于旧连接上被排空的原命令执行，令牌不匹配、什么也不做，被排空的 `READ` 随后取得的 lease 无人释放，留到 `lease.ttl`（TLA+ F4）。所以收回的上界是：通常在重连之后，释放与被排空的命令竞争时至多 `lease.ttl`。逐类命令：
   - 读取与回收（`read`、`readAll`、`reclaim`）：脚本可能在 Redis 端授予了令牌（未命中的 lease、刷新窗口内的刷新令牌、回收得到的 lease），引擎随后却绕过 L1（§5、§7）。`readAll` 任一读取失败时，其余读取取得的 lease 也释放。
   - 填充（`fill`、`fillAll`）：被完成、没有写出的 fill 永远不会执行，lease 仍在。`fillAll` 等全部 fill 结束再判定，结果未知的各自释放（引擎按整批失败处理）。
   - 释放（`release`）：被完成、没有写出的释放永远不会执行，因此再发一次（同样按退避重发）；已执行时重复的释放什么也不做。
@@ -672,7 +663,7 @@ val users: Cache<String, User> = runtime.create(
 ```
 
 - 五种 spec（`CacheSpec`、`VersionedCacheSpec`、`StoreSpec`、`VersionedStoreSpec`、`SetStoreSpec`，公共部分为 `Spec`）都是不可变数据。`runtime.create(spec)` 有五个重载，各自返回与 spec 对应的类型（另有按 `Spec` 分派的 `create(spec: Spec)`），并检查类型需要的 L1 能力（§3.3“能力”）；`runtime.cache(name)` 返回 `ReadableCache`。所有有状态组件（L2、栅栏、SingleFlight、存储、订阅）都由 `runtime.create` 按 spec 新建，用户只提供 spec 与无状态函数（`Codec`、`CacheLoader`、`KeyEncoder`、`TtlFunction`、`KeyFilter`），所以两个缓存不可能共享一个 L2。
-- **装配入口**（RFC 0005 §4.8，M5d、M6）：`CoCacheFactory(runtime, layers)` 有与 `runtime.create` 相同的五个重载与 `create(spec: Spec)`，另有接口式声明的 `create(type, spec)`；每个都有带锁定的重载（`create(spec, locks)`、Kotlin 的 `create(spec) { … }`）。声明与库的锁定（`Locks`）先经 `CacheLayers.apply(spec, locks)`（每种 spec 一个）变成 `Layered`：生效声明与它的 `PolicyReport`；再执行 `Locks.verify`，交给运行时。默认的 `CacheLayers.NONE` 只有声明一层：执行约束，报告声明写出的字段（`DECLARATION`）、类型默认值（`TYPE_DEFAULT`）、被锁定的字段（`LOCKED`，“locked by <by>”）与被约束改变的字段（`LOCKED`，“constrained by <by>”）。装配层不得改名（否则 `IllegalArgumentException`）。
+- **装配入口**（RFC 0005 §4.8）：`CoCacheFactory(runtime, layers)` 有与 `runtime.create` 相同的五个重载与 `create(spec: Spec)`，另有接口式声明的 `create(type, spec)`；每个都有带锁定的重载（`create(spec, locks)`、Kotlin 的 `create(spec) { … }`）。声明与库的锁定（`Locks`）先经 `CacheLayers.apply(spec, locks)`（每种 spec 一个）变成 `Layered`：生效声明与它的 `PolicyReport`；再执行 `Locks.verify`，交给运行时。默认的 `CacheLayers.NONE` 只有声明一层：执行约束，报告声明写出的字段（`DECLARATION`）、类型默认值（`TYPE_DEFAULT`）、被锁定的字段（`LOCKED`，“locked by <by>”）与被约束改变的字段（`LOCKED`，“constrained by <by>”）。装配层不得改名（否则 `IllegalArgumentException`）。
   - **锁定**（U2、S12）：`lock(vararg PolicyField)` 锁定策略字段，`lockLayout(vararg LayoutField)` 锁定存储布局（`NAMESPACE`、`KEY_PREFIX`、`KEY_ENCODER`、`CODEC`、`KEY_FILTER`、`TTL_OF`、`SOURCE`），`constrain(field) { … }` 在合并之后、校验之前约束生效值（值域含哨兵：`constrain(PolicyField.TTL) { it.finiteOr(…) }`，不能写成判空），`verify { spec -> … }` 检查生效声明。锁定者 `by` 默认是调用 `create` 的类（栈上 `CoCacheFactory` 之外的第一个类），Java 经 `Locks.builder(by)`。锁定在分层中的规则见 §10.2。
   - `create(type, spec)` 在创建缓存之前校验（S21）：`type` 是接口（手写实现的类被拒绝，错误信息指向 `create(spec)` 加委托），恰好继承一个用户 API 类型且与 spec 的类型一致（`IllegalArgumentException`），接口中重新声明的抽象方法都能转发（`CacheMethods`，`IllegalStateException`）。校验失败时不创建任何东西。代理（`CacheProxies.create`，模块内部）只经这里取得。
   - **已分层与未分层**（S20）：经工厂创建的缓存 `CacheAdmin.layered` 为 `true`，`CacheAdmin.policyReport` 给出每个字段的生效值与来源；直接经 `runtime.create` 创建的为 `false`（`policyReport` 为 `null`，也无法锁定），启动日志在能力之后标注 `unlayered: …`，端点的报告输出 `layered: false`。starter 中 `cocache.caches.[name]` 指向未分层的缓存时只告警一次、指向 `CoCacheFactory`（`UnlayeredConfigurationCheck`，经 `CacheRuntime.addCreationListener` 看到启动之后创建的缓存），端点的 `ignoredConfiguration` 列出被忽略的条目：不让启动失败，因为运维常在事故中写下按缓存的配置，库也可能在启动之后才创建缓存。`CacheAdmin.apiType` 是缓存的用户 API 类型（启动日志与端点的 `type`）。
@@ -683,7 +674,7 @@ val users: Cache<String, User> = runtime.create(
 - **时钟**：默认的 `TickingClock` 由守护线程每 100 ms 刷新一个 volatile 字段，命中路径只做一次 volatile 读。它是单调的：启动时取一次墙钟，之后按 `System.nanoTime()` 的增量推进，墙钟回拨或向前跳都不会让 L2 副本多活或提前到期（每次刷新都读墙钟的话，回拨 Δ 时 L2 副本多活 Δ，RFC 0005 附录 A.C1）。L2 只用时钟计算相对寿命，到期时间跨网络只以相对时长传输，因此与墙钟的累计偏差没有影响。
 - `CacheRuntime.close()` 按创建的逆序关闭订阅与引擎，再关闭运行时自己创建的时钟、执行器与重试调度器（未执行的重试计入丢弃）。后端由调用方关闭，**必须晚于运行时**：
   - 取消运行时作用域之后、关闭执行器之前，`close` 至多等待 5 s（`AsyncContext.DRAIN_TIMEOUT`，模块内部常量），让作用域中的协程结束：在途的 L1 命令、令牌的释放、写入之后非原子广播的补发与第二次递增，以及取消之后的收尾。这些步骤由存储的命令超时限定，上限只防止卡住的命令让关闭无限期等待；超过上限时告警，照常关闭。不等待的话（RFC 0005 第三轮 K17），随后关闭的后端让这些步骤失败，其它节点读旧的 L2 直到 `localMaxAge`，lease 留到 `lease.ttl`：与节点崩溃同一上界，但本可以避免。
-  - 在异步执行器的线程上调用时不等待：调用方可能正是作用域中仍在收尾的协程（如在异步结果的回调里关闭），等待它自己只会等满上限。
+  - 在异步执行器派发的任务中调用时不等待：调用方可能正是作用域中仍在收尾的协程（如在异步结果的回调里关闭），等待它自己只会等满上限。
   - 不等待的：同步调用（在调用方线程上运行，不在作用域中，应先停止发起调用）；刷新执行器上的同步刷新与重试线程上的失效重试（运行时自建的执行器在关闭时中断它们，收尾可能在 `close` 返回之后）。
 - **异步视图的执行资源**（`CacheRuntime.Builder`）：`asyncExecutor`（默认运行时自建的 `ForkJoinPool`：并行度为 CPU 数、守护线程 `cocache-async-*`；它的线程在 `join()` 上阻塞时会补偿线程，替换为固定大小的普通线程池时没有这个保证）；`blockingExecutor`（默认每个任务一个虚拟线程，`Executors.newVirtualThreadPerTaskExecutor()`）；调用方给出的执行器不随运行时关闭。关闭时先取消运行时作用域（进行中的异步调用以 `IllegalStateException("CacheRuntime closed.")` 失败，含等待 lease 与等待回源许可），有界地等待其中在途的步骤结束（见上一条），再关闭自建的执行器。没有专门的定时器线程：等待 lease 的退避与等待回源许可都是协程挂起。
 - `CacheRuntime.cache(name)` / `metrics(name)` / `admin(name)` 按名称查找。
@@ -737,7 +728,7 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
 - **校验连锁**（U10）：在 `defaults` 之后（定制器之前要构建一次策略）与全部层和约束之后各检查一次。若提前刷新窗口不小于 `local-max-age` 或 `ttl − 实际抖动`，且相关字段（`refresh-window`、`local-max-age`、`ttl`、`ttl-jitter`）中有来自全局层（`DEFAULTS`、`OVERRIDES`）的、没有来自 `caches.[name]` 的（`CACHES`、`UNLOCKED`），关闭窗口（来源 `CLAMPED`，detail 给出原因，告警）。其余冲突（只由声明引起，或牵涉 `caches.[name]` 写出的字段，如 `defaults.cache.ttl: 10m` 加 `caches.[name].refresh-window: 20m`）由 `CachePolicy` 的构造校验让启动失败。
 - **缓存名校验**：所有单例创建完成后，`CacheAssembler` 校验 `cocache.caches` 的名称（不区分大小写；“已声明”含尚未创建的缓存 bean，由 `declaredCacheNames` 提供）：未知名称按 `caches-validation` 启动失败或告警。指向未分层的缓存（直接经 `runtime.create` 创建）的条目总是只告警（`UnlayeredConfigurationCheck`，S20），并列在端点的 `ignoredConfiguration` 中：它可能在启动之后才创建，事故中写下的覆盖不应让应用起不来。名称校验之后才创建的缓存不为它所知。
 - **生效值与来源**：`PolicyReport.entries` 是适用字段的 `{field, value, source, detail}`（按 `PolicyField.POLICY_FIELDS` 的顺序，`unknown-read` 在最后；哨兵写作 `forever` / `off` / `unlimited`，模式小写，时长为 ISO-8601，未设置的 `read-timeout` 写作 `command-timeout`），`skipped` 是 `{key, layer, reason}`。启动日志与端点都输出它（§10.1、§13）。
-- 策略约束（`CachePolicy` 构造时校验）：所有时长为正且 ≤ 100 年（`ttlJitter`、`lease.wait`、`load.acquireTimeout` 可以为 0）；`load.maxConcurrent` 为 `null`（不限）或正数；抖动实际幅度不超过 `ttl / 2`；`refreshWindow < ttl − 实际抖动` 且 `refreshWindow < localMaxAge`，否则新副本一出生就在窗口内。校验只覆盖策略 `ttl`：`ttlOf` 或 `put(k, v, ttl)` 给出的不长于窗口的寿命不报错，这样的值不参与提前刷新（§5.5）。
+- 策略约束（`CachePolicy` 构造时校验）：所有时长为正且 ≤ 100 年（`ttlJitter`、`lease.wait`、`load.acquireTimeout` 可以为 0）；`load.maxConcurrent` 为 `null`（不限）或正数；抖动的实际幅度钳到 `ttl / 2`（`ttlJitter` 更大时不报错，§5“寿命”）；`refreshWindow < ttl − 实际抖动` 且 `refreshWindow < localMaxAge`，否则新副本一出生就在窗口内。校验只覆盖策略 `ttl`：`ttlOf` 或 `put(k, v, ttl)` 给出的不长于窗口的寿命不报错，这样的值不参与提前刷新（§5.5）。
 
 ### 10.3 默认值
 
@@ -757,8 +748,8 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
 | `load.timeout` | 30 s | 一次加载的上限（RFC 0005 §4.4）：异步数据源的一次加载；跟随者等待共享加载（截止时刻是加载登记时加上它）；加载在 SingleFlight 中的登记。丢失回调或卡住的同步 loader 让这个 key 在半分钟内恢复，而不是永久合并到一个不会结束的调用 |
 | 异步执行器 / 阻塞执行器 | 自建 `ForkJoinPool`（CPU 数）/ 每个任务一个虚拟线程 | §10.1 |
 | `local.maximumSize` | 10 000 | L2 总是有界；不使用条目级 `Expiry`（每次读取都写节点元数据，热点 key 无法随线程扩展），过期在读取时判断 |
-| `invalidateFailure` | `RETRY`（派生副本） | 删除副本总是安全的，失效通常在提交之后调用，抛出既不能也不该回滚；权威副本的删除总是同步抛出（§7） |
-| `readFailure` | `DEGRADE`（带数据源的读取） | 带数据源的读取可以降级回源 |
+| `invalidateFailure` | 未设置，等同 `RETRY`（派生副本） | 删除副本总是安全的，失效通常在提交之后调用，抛出既不能也不该回滚；权威副本的删除总是同步抛出（§7） |
+| `readFailure` | 未设置，等同 `DEGRADE`（带数据源的读取） | 带数据源的读取可以降级回源 |
 | `unknownRead` | `THROW`（没有数据源的读取） | 没有可降级的答案，fail closed；显式 `ABSENT` 时读到不存在且不缓存（§5.1） |
 | `readTimeout` | 未设置（存储的命令超时） | 只给不能降级回源、又要限制 L1 卡顿的缓存（D6，§7） |
 | `ttlCeiling` | 未设置 | 只由 `overrides.cache.ttl` 设定（§10.2） |
@@ -777,6 +768,8 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
 | `cocacheBackend`（`CoherenceBackend`，`InMemoryBackend`） | `cocache.backend=memory`，没有其它 `CoherenceBackend` bean。不需要 Spring Data Redis；启动时告警：只适用于单进程，没有跨实例一致性 |
 | `cocacheRuntime`（`CacheRuntime`） | 存在 `CoherenceBackend` bean。有唯一的 `CacheClock` bean 时运行时使用它（内存后端同样使用它，测试推进 `ManualClock` 即可让两层一起到期）。`cocache.refresh-executor` 指定提前刷新执行器的 bean 名，未设置时运行时自建并管理内置执行器；`cocache.async-executor` / `cocache.blocking-executor` 指定异步视图的异步执行器与阻塞执行器（§5.6、§10.1），未设置时运行时自建 |
 | `cocacheAssembler`（`CacheAssembler`，starter 的装配层）、`cocacheFactory`（`CoCacheFactory`，以它为装配层；没有其它 `CoCacheFactory` bean 时）、`cocacheAnnotatedCacheFactory` | 运行时存在 |
+| `cocacheUnlayeredConfigurationCheck`（`UnlayeredConfigurationCheck`） | 运行时存在。`cocache.caches.[name]` 指向未分层的缓存时告警（§10.1） |
+| `cocacheStoreEvictionCheck`（`StoreEvictionCheck`，`SmartInitializingSingleton`） | 运行时存在。有权威副本（含尚未创建的声明）、且后端是 `RedisBackend` 时检查驱逐策略（§6.4） |
 | `cocacheSpecRegistrar`（`CacheSpecRegistrar`） | `cocache.enabled` 未关闭（静态 `@Bean`，`BeanFactoryPostProcessor` 需在其它 bean 之前注册） |
 | `cocacheCacheManager`（`CoCacheSpringCacheManager`） | 没有其它 `CacheManager`；有 spring-tx 时包装为 CoCache 的事务装饰器 `TransactionAwareSpringCacheManager`（§11.3），事务结束之后的失败交给缓存通知（`CacheAspectSupport`）的 `CacheErrorHandler`。`retrieve` 经缓存的异步视图（§11.3） |
 | `cocacheTransactionalInvalidator` | 有 spring-tx |
@@ -784,9 +777,11 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
 | `cocacheSpringCacheSyncCheck`（`SpringCacheSyncCheck`） | 运行时存在（§11.3）。同时检查缓存通知与事务通知的 order、指向不是 `Cache` 的缓存的操作 |
 | `cocacheDegradingCacheErrorHandler`（`SmartInitializingSingleton`） | 运行时存在，且 `cocache.spring-cache.degrade-on-error=true`。全部单例创建之后把每个缓存通知的处理器换成 `DegradingCacheErrorHandler`（§11.3） |
 | `cocacheEndpoint`（`CoCacheEndpoint`） | 有 actuator，运行时存在，且端点可用（`management.endpoints.web.exposure.include` 等暴露配置包含 `cocache`、访问未被关闭） |
+| `cocacheEndpointWebExtension`（`CoCacheEndpointWebExtension`） | 端点存在且经 HTTP 暴露。把被拒绝的按 key 删除映射为 403、未知缓存的 `DELETE` 映射为 404（§13） |
 | `cocacheHealthIndicator`（`CoCacheHealthIndicator`） | 有 `spring-boot-health`（actuator 自带），`management.health.cocache.enabled` 未关闭 |
 | `cocacheMeterBinder`（`CoCacheMeterBinder`） | 有 Micrometer，运行时存在 |
 | `cocacheMeterBindingPostProcessor`（`BeanPostProcessor`） | 有 Micrometer（静态 `@Bean`）。延迟创建的缓存 bean 初始化后补绑指标 |
+| `cocacheLoadObserver`（`LoadObserver`，`MicrometerLoadObserver`） | 有 `ObservationRegistry` bean，没有其它 `LoadObserver` bean，`cocache.observation.enabled` 未关闭（§13） |
 
 执行器配置项（`cocache.refresh-executor`、`cocache.async-executor`、`cocache.blocking-executor`）只按 bean 名解析，不按类型：与 L2、L1、`KeyConverter` 等有状态组件同一规则，避免按类型匹配时意外共用或选错 bean。名称没有对应的 bean 或 bean 不是 `Executor` 时启动失败，错误信息指明配置项。这些执行器由容器管理，`CacheRuntime.close()` 不会关闭它们（只关闭自己创建的）。Spring Boot 的 `applicationTaskExecutor` 可以直接使用；不会因为开启虚拟线程而自动使用它，需要显式指定。
 
@@ -798,7 +793,7 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
   - bean 名 = 缓存名（`@CoCache.name`，默认接口简单类名），类型为接口本身；与已有 bean 重名时启动失败。
   - 泛型取自接口继承的那个类型（`Cache<K, V>`、`SetStore<K, E>` 等），必须是具体类型。
   - 数据来源（RFC 0005 §4.1）：
-    - `Cache`：`@CoCache(loader = "beanName")`（`CacheLoader` 或 `AsyncCacheLoader` 均可，其它类型启动失败），否则按 `CacheLoader<K, V>`、`AsyncCacheLoader<K, V>` 唯一匹配（同一种有多个候选、或两种各有一个候选时启动失败，需用 `loader` 指明；同时实现两者的 bean 按同步数据源使用）。`@CoCache(source = EXTERNAL)` 即 `externallySourced()`，不能与 `loader` 同时设置。**既没有匹配到数据源、也没有声明外部来源时启动失败**（6.x 中泛型不匹配会静默成为“没有数据源”，RFC 0005 M1）。
+    - `Cache`：`@CoCache(loader = "beanName")`（`CacheLoader` 或 `AsyncCacheLoader` 均可，其它类型启动失败），否则按 `CacheLoader<K, V>`、`AsyncCacheLoader<K, V>` 唯一匹配（同一种有多个候选、或两种各有一个候选时启动失败，需用 `loader` 指明；同时实现两者的 bean 按同步数据源使用）。`@CoCache(source = EXTERNAL)` 即 `externallySourced()`，不能与 `loader` 同时设置。**既没有匹配到数据源、也没有声明外部来源时启动失败**（RFC 0005 M1）：泛型不匹配因此不会静默成为“没有数据源”。
     - `VersionedCache`：带版本的数据源，按 `CacheLoader<K, Versioned<V>>` / `AsyncCacheLoader<K, Versioned<V>>` 匹配，规则同上；必须有。
     - 权威类型：设置 `loader` 或 `source = EXTERNAL` 时启动失败；存在匹配 `CacheLoader<K, V>` / `AsyncCacheLoader<K, V>` 的 bean 时告警（可重建的副本误声明成权威类型）。
   - 策略以类型的默认策略为起点（`DefaultPolicies`，§10.3）。注解中设置了的属性（不是 `UNSET`）记为声明写出的字段（§10.2），设置了 `maximumSize` 的 `@CaffeineCache` 记为写出 `local-maximum-size`；其余字段交给 `cocache.defaults`。
@@ -827,15 +822,15 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
 - `TransactionalInvalidator`：事务内调用时登记到当前事务，没有事务时立即失效。登记按事务的同步列表划分作用域，`REQUIRES_NEW` 的内层事务在自己结束之后失效。**每个事务一份登记**（`TransactionalOperations`，一个 `TransactionSynchronization`），不按实例：经任何 `TransactionalInvalidator` 实例、`CoCacheSpringCache.evictIfPresent` 与事务装饰器登记的失效，以及事务装饰器推迟的写入，在同一个同步中处理，写入与失效的先后因此可以比较。同一事务内对同一缓存的失效合并为一次 `invalidateAll`（去重，保持登记顺序）。
   - **提交**：在 `afterCommit` 中失效，异常（`invalidate-failure: throw`，§7）抛给调用方。事务装饰器登记的失效例外：失败交给 `CacheErrorHandler`（见下）。
   - **回滚或提交结果未知**：在 `afterCompletion` 中同样失效。同步 API 的 loader 在调用方线程上参与事务，事务内的读穿透可能已经凭 lease 把未提交的数据写入 L1；不失效的话，全集群在 `ttl` 内读到从未提交的数据。多余的失效无害。
-  - **回滚到 savepoint**（`NESTED`）：Spring 只调用同步的 `savepointRollback`（6.2 起），不调用 `afterCompletion`，外层之后提交时报告 `STATUS_COMMITTED`。嵌套段内读穿透凭 lease 写入 L1 的未提交数据因此在外层结束之前对全集群（包括外层事务自己）可见。`savepointRollback` 立即失效到目前为止登记的全部 key（不按 savepoint 分段：外层登记的 key 多失效一次，无害），不标记为已执行，登记保留，事务结束时照常再失效。Spring 在把数据库回滚到 savepoint **之前**调用它，抛出会跳过数据库的回滚，所以这里的失效失败只记录日志、不影响其余缓存，由事务结束时的失效兜底并照常报告。
+  - **回滚到 savepoint**（`NESTED`）：Spring 只调用同步的 `savepointRollback`（Spring 6.2 起），不调用 `afterCompletion`，外层之后提交时报告 `STATUS_COMMITTED`。嵌套段内读穿透凭 lease 写入 L1 的未提交数据因此在外层结束之前对全集群（包括外层事务自己）可见。`savepointRollback` 立即失效到目前为止登记的全部 key（不按 savepoint 分段：外层登记的 key 多失效一次，无害），不标记为已执行，登记保留，事务结束时照常再失效。Spring 在把数据库回滚到 savepoint **之前**调用它，抛出会跳过数据库的回滚，所以这里的失效失败只记录日志、不影响其余缓存，由事务结束时的失效兜底并照常报告。
   - **迟到的登记不丢失**。Spring 对同步列表的快照调用 `afterCommit`：在其它同步的 `afterCommit` 中登记时，本事务的失效已经执行过则立即失效（`flushed` 标记），本事务第一次登记（新注册的同步收不到 `afterCommit`）则在 `afterCompletion` 中失效。排在前面的同步的 `afterCommit` 抛出、后面的 `afterCommit` 都不再调用时，同样在 `afterCompletion` 中失效。`afterCompletion` 中（`@TransactionalEventListener(AFTER_COMMIT)` 在这里执行）同步已经清除，立即失效。每个事务只执行一次，`afterCompletion` 是兜底。
   - **一个缓存失败不影响其余缓存**：逐个缓存执行，全部执行之后抛出第一个异常，其余作为它的 suppressed。`afterCompletion` 中的异常由 Spring 记录日志，不抛给调用方，也不掩盖回滚的原因。
   - **只支持线程绑定的同步**（`PlatformTransactionManager`）。响应式事务（`ReactiveTransactionManager`，如 R2DBC，包括 `@Transactional` 挂起函数）的同步在 Reactor 上下文中，`TransactionalInvalidator` 看不到，会立即失效，即在提交之前；这类事务由调用方在事务结束之后失效。不告警：同步调用无法识别响应式事务（它们不设置线程绑定的标记），而“`isActualTransactionActive()` 为真但同步未激活”正是 `afterCompletion` 中的状态，会误报。
   - 测试：`cocache-spring` 的 `TransactionalInvalidatorTest`、`TransactionAwareSpringCacheTest` 与 `CoCacheSpringCacheTest`，事务管理器是 `AbstractPlatformTransactionManager` 的内存实现（`InMemoryTransactionManager`：写入在提交之前只对本事务可见，支持挂起、`NESTED` 与编程式 savepoint）；starter 的 `TransactionalCacheTest` 经 Spring Cache 注解与装配的 `cocacheCacheManager`、`cocacheTransactionalInvalidator` 验证提交、回滚、回滚到 savepoint、`afterCommit` 失败的去向、`degrade-on-error`、通知 order 的告警与 `allEntries` 的告警。
 - **写事务内的回源**（`TransactionalFillObserver`，`cocache-spring`，RFC 0005 §4.9 C2、S7、S15、S24；core 的钩子见 §5.8）：`enter()` 只认线程绑定的、非只读的实际事务（同步已激活、`isActualTransactionActive()`、不是只读），返回持有这个事务的登记（`TransactionalOperations`，与 `TransactionalInvalidator` 同一份）的视图。只读事务的快照陈旧、非 Spring 管理的事务与响应式事务都看不到。两个相互独立的机制：
   - **机制 1：回滚时失效事务内的填充**（`cocache.invalidate-fills-on-rollback`，默认开启）：数据源在事务内产生、写入 L1 或 L2 的 key（含 L1 读失败、等待 lease 超时、失效重试中之后只写本节点 L2 的降级填充）记入登记；回滚与提交结果未知时在 `afterCompletion` 中、于登记的失效之后失效（已登记失效的 key 跳过），回滚到 savepoint 时在 `savepointRollback` 中与登记的 key 一起立即失效（失败只记录日志），提交时什么也不做（读到的就是本事务提交的数据）；本事务完成之后的回源不再记录。代价只在回滚时出现：未提交数据的残留从 `ttl` 收紧到事务时长，覆盖“应用什么也没登记”的情形。
-  - **机制 2：私有回源**（`cocache.fill-in-transaction`：`registered-keys` 默认、`private`、`allow`）：`registered-keys` 下本事务已登记失效的 key（经 `TransactionalInvalidator`、`@CacheEvict`、`evictIfPresent`、`put(k, null)`）的回源是私有的；`private` 下写事务内的全部回源都是私有的（写事务内 L2 未命中的读取每次回源）；`allow` 不门控（仍受机制 1 保护）。登记失效时立即在本节点递增戳、淘汰本地副本（`FillKey.evictLocal`，三种取值都一样：登记即“本事务改了它”，提前淘汰无害），本事务接着读到自己的写入；`registered-keys` 仍不提供事务内的读己之写：登记之后本节点其它线程照常从 L1 把已提交的旧值填回 L2，本事务之后的读取可能命中它。“已登记”按 (keyspace, 编码 key) 匹配（S24）。取值目前作用于所有缓存，`TransactionalFillObserver` 按缓存名取值（`Function<String, FillInTransaction>`），按缓存分层（RFC 0005 §4.8）随 M6 接入。
-  - 两个机制都关闭时 starter 装配 `FillObserver.NONE`：不门控、不记录，事务中的 leader 也照常共享结果（6.x 的行为）。
+  - **机制 2：私有回源**（`cocache.fill-in-transaction`：`registered-keys` 默认、`private`、`allow`）：`registered-keys` 下本事务已登记失效的 key（经 `TransactionalInvalidator`、`@CacheEvict`、`evictIfPresent`、`put(k, null)`）的回源是私有的；`private` 下写事务内的全部回源都是私有的（写事务内 L2 未命中的读取每次回源）；`allow` 不门控（仍受机制 1 保护）。登记失效时立即在本节点递增戳、淘汰本地副本（`FillKey.evictLocal`，三种取值都一样：登记即“本事务改了它”，提前淘汰无害），本事务接着读到自己的写入；`registered-keys` 仍不提供事务内的读己之写：登记之后本节点其它线程照常从 L1 把已提交的旧值填回 L2，本事务之后的读取可能命中它。“已登记”按 (keyspace, 编码 key) 匹配（S24）。`cocache.fill-in-transaction` 是全局配置，不参与按缓存的分层（§10.2）：`TransactionalFillObserver` 的主构造函数按缓存名取值（`Function<String, FillInTransaction>`），starter 为每个缓存给出同一个值。
+  - 两个机制都关闭时 starter 装配 `FillObserver.NONE`：不门控、不记录，事务中的 leader 也照常共享结果。
   - 测试：`cocache-core` 的 `FillObserverTest`（入口捕获、私有回源、记录、leader 不共享、重入、`FillKey`），`cocache-spring` 的 `TransactionalFillObserverTest`（回滚、结果未知、savepoint、降级填充、三种取值、只读事务），starter 的 `TransactionalFillTest`（经 `@Cacheable(sync = true)` 与 `@CacheEvict`，及两种通知嵌套）。
 - **事务装饰器**（`TransactionAwareSpringCacheManager` / `TransactionAwareSpringCache`，`cocache-spring`，RFC 0005 §4.9 U3）：有 spring-tx 时 starter 用它包装 `CoCacheSpringCacheManager`，取代 Spring 的 `TransactionAwareCacheManagerProxy`。装饰器按缓存名缓存，缓存通知每次取缓存不再分配。事务同步激活时（与 Spring 的装饰器相同，按 `isSynchronizationActive()` 判断）：
   - **`evict`**（`@CacheEvict`）登记到当前事务的登记：提交、回滚、回滚到 savepoint 时都失效。Spring 的装饰器只在提交之后失效：同一事务内先 `@CacheEvict` 再 `@Cacheable(sync = true)` 读穿透，回滚之后未提交的数据留在 L1 直到 `ttl`。
@@ -879,13 +874,13 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 
 `MultiNodeSpec` 的节点是同一进程内共享一个后端的运行时，不覆盖真实的多进程与网络分区。
 
-- 能力声明（RFC 0005 §4.3，M3e）：每个规范都有抽象的 `expectedCapabilities: Set<L1Capability>`（`CONDITIONAL`、`VERSIONED`、`SETS`），没有默认值，忘记声明的后端编译失败。每个规范的 `storeProvidesExactlyTheDeclaredCapabilities` 在两个新的命名空间上断言存储提供的能力（访问器非 `null`）与声明完全相同（多出来的也算失败），且每个访问器稳定（同一个对象或总是 `null`）。需要某个能力的用例只在它没有声明时跳过：`EngineSpec` 的 `Store` 用例要求 `CONDITIONAL`（读不懂的内容那个另要求 `SETS`），`BackendProtocolSpec` 的集合用例与 `SetEngineSpec` 全部要求 `SETS`，`VersionedSpec` 全部要求 `VERSIONED`。`L1Capability` 只是 TCK 的声明，不进入 SPI；`CacheRuntime` 另有一个私有的 `Capability` 枚举（只用于创建时的检查与启动日志），两者不共用：核心不能依赖 TCK，公开核心的枚举又会让能力在核心的公开 API 里多一处表达。`cocache-core` 的 `StrippedTckTest` 在没有任何可选能力的存储上跑整套 TCK（声明为空，需要能力的用例跳过、其余通过），`CapabilityDeclarationTest` 检验声明检查本身（多声明、少声明、访问器每次新建、时有时无都失败）。
+- 能力声明（RFC 0005 §4.3）：每个规范都有抽象的 `expectedCapabilities: Set<L1Capability>`（`CONDITIONAL`、`VERSIONED`、`SETS`），没有默认值，忘记声明的后端编译失败。每个规范的 `storeProvidesExactlyTheDeclaredCapabilities` 在两个新的命名空间上断言存储提供的能力（访问器非 `null`）与声明完全相同（多出来的也算失败），且每个访问器稳定（同一个对象或总是 `null`）。需要某个能力的用例只在它没有声明时跳过：`EngineSpec` 的 `Store` 用例要求 `CONDITIONAL`（读不懂的内容那个另要求 `SETS`），`BackendProtocolSpec` 的集合用例与 `SetEngineSpec` 全部要求 `SETS`，`VersionedSpec` 全部要求 `VERSIONED`。`L1Capability` 只是 TCK 的声明，不进入 SPI；`CacheRuntime` 另有一个私有的 `Capability` 枚举（只用于创建时的检查与启动日志），两者不共用：核心不能依赖 TCK，公开核心的枚举又会让能力在核心的公开 API 里多一处表达。`cocache-core` 的 `StrippedTckTest` 在没有任何可选能力的存储上跑整套 TCK（声明为空，需要能力的用例跳过、其余通过），`CapabilityDeclarationTest` 检验声明检查本身（多声明、少声明、访问器每次新建、时有时无都失败）。
 - 变体（§5.6、§5.7，RFC 0005 §4.10）：TCK 只有一套，没有 `Async*` 平行版本（L1 SPI 只有挂起一种形状，Java 实现者的 `FutureL1Store` 经 `adapt` 接受同样的规范；`cocache-core` 的 `InMemoryFutureTckTest` 以经 `FutureBackend` 的内存后端跑整套 TCK，另有经异步视图的 `FaultSpec`）。每个规范都有 `protected open val access: CacheAccess`，默认 `CacheAccess.SYNC`，后端实现者只需要它；同步、异步、挂起三种变体的语义属于核心，由核心自己的测试覆盖。仓库内覆盖 `access`，在变体下重跑同一组用例：`CacheAccess.ASYNC` 经 `async()` 视图读写（同步数据源换成在调用线程上执行的异步数据源），`CacheAccess.ASYNC_WITH_SYNC_SOURCE` 保留同步数据源（在阻塞执行器上执行），`cocache-core` 的 `SuspendingAccess` 经挂起视图读写。`CacheAccess` 为五种类型各有一个入口（`cache`、`versionedCache`、`store`、`versionedStore`、`setStore`）与两个数据源调整（`CacheSpec.Builder`、`VersionedCacheSpec.Builder`）。
 - 异步变体专有的引擎用例在 `cocache-core` 的 `AsyncVariantEngineCases`（继承 `EngineSpec`，不在 TCK 中）：取消一个或全部等待者、future 在哪个线程上完成、执行器拒绝收尾时照常第二次递增戳并归还回源许可与 lease、lease 等待与回源许可等待只用常数个线程（各 1000 个等待者）、原始异常、不同步抛出、`load.timeout` 释放 lease、数据源自己的 `TimeoutException` 不是引擎超时、同步与异步互相合并、重入、同步数据源只在阻塞执行器上执行、运行时关闭时的等待。它以内存后端在四种配置下运行（原生的 `L1Store`、保留同步数据源、每个 L1 结果换线程送达、经 `FutureL1Store.adapt` 与 `FutureInvalidationChannel.adapt` 的 `FutureBackend`）；`SetStore` 的异步专有用例在 `InMemoryAsyncSetEngineTest`。断言真实 L1 客户端线程的三个用例（future 不在后端 I/O 线程上完成、lease 等待与回源许可等待只用常数个线程）在 `cocache-redis` 的 `RedisAsyncThreadCases` 中另有一份。
-- 异步变体在 `cocache-redis` 上只是冒烟（M3e）：`RedisAsyncTckTest` 在 `pubsub` 后端上经 `CacheAccess.ASYNC` 把每个引擎规范族各跑一份（`EngineSpec` 经 `RedisAsyncThreadCases`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`、`VersionedSpec`），设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时同样连接 Cluster。`RedisL1Store` 只有一种挂起形状，两种变体调用同一组存储方法，差别只在续接在哪个调度器上恢复：非原子与 `sharded` 后端的差别在存储与通道的代码里，由同步矩阵覆盖；保留同步数据源（`ASYNC_WITH_SYNC_SOURCE`）只是引擎的执行器选择，由 `cocache-core` 覆盖。
+- 异步变体在 `cocache-redis` 上只是冒烟：`RedisAsyncTckTest` 在 `pubsub` 后端上经 `CacheAccess.ASYNC` 把每个引擎规范族各跑一份（`EngineSpec` 经 `RedisAsyncThreadCases`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`、`VersionedSpec`），设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时同样连接 Cluster。`RedisL1Store` 只有一种挂起形状，两种变体调用同一组存储方法，差别只在续接在哪个调度器上恢复：非原子与 `sharded` 后端的差别在存储与通道的代码里，由同步矩阵覆盖；保留同步数据源（`ASYNC_WITH_SYNC_SOURCE`）只是引擎的执行器选择，由 `cocache-core` 覆盖。
 - `HookedBackend` 包装任意后端以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`；`rejectWrites` 让写入在发出之前以 `L1RejectedException` 被拒绝）、改写读取结果、在读取之后、`fill` 之后与写入前后编排竞态（`afterPut`、`afterInvalidate` 抛出即模拟“已生效但报错”），并能覆盖 `atomicBroadcast` 以验证非原子路径。存储继承 `ForwardingL1Store`，能力面继承对应的 `Forwarding*` 基类（被包装的存储没有某个能力面时这里也没有）；钩子在存储调用所在的协程里、被包装的存储返回之后就地执行（同步变体即调用方线程，异步变体即运行时的执行器线程，从不在 L1 客户端的 I/O 线程上）；`ioExecutor` 让每个调用的结果改在指定线程上送达（模拟 I/O 线程）。`issuer()` 返回发起这次存储调用的线程名，按线程编排的钩子用它代替 `Thread.currentThread().name`。`close()` 只在 `closesDelegate = true` 时关闭被包装的后端（默认 `false`：被包装的后端可能是共享的）。
 - 时间：内存后端用 `ManualClock` 推进；Redis 测试用 `RedisTestSupport.shiftTtl` 缩短 key 的剩余寿命来模拟时间流逝。到期时间是毫秒精度，不需要 ±1 s 偏差。
-- `cocache-redis` 的 `RedisLayoutTest` 覆盖 8.x 的频道布局与按存储探测实际频道（§9）：频道名、三种广播方式下 `store` 发布的零 key 帧、ACL 不放行实际频道时 `runtime.create` 失败（每个用例建立唯一命名的 ACL 用户、结束时删除）、直接向文档给出的频道名发布的帧送达缓存（前缀为空时同样）、前缀为空时按运维文档的 ACL 运行。
+- `cocache-redis` 的 `RedisLayoutTest` 覆盖频道布局与按存储探测实际频道（§9）：频道名、三种广播方式下 `store` 发布的零 key 帧、ACL 不放行实际频道时 `runtime.create` 失败（每个用例建立唯一命名的 ACL 用户、结束时删除）、直接向文档给出的频道名发布的帧送达缓存（前缀为空时同样）、前缀为空时按运维文档的 ACL 运行。
 - `cocache-redis` 中读不懂的内容的用例：`ForeignFormatFailTest`（权威副本的读取 `FAIL`）、`ForeignFormatWriteTest`（`SetStore` 的元素写入拒绝、更高格式的值在 `Store` 上失败、存储脚本的判定）、`ForeignFormatReclaimTest`（有数据源时回收后回源）；线格式 2 的字节级用例在 `WireFormat2Test`（§4.2）。它们在单机、Cluster 与 Valkey 上运行。
 - `cocache-redis` 中 `BackendProtocolSpec`、`EngineSpec`、`MultiNodeSpec` 与 `FaultSpec` 在 `pubsub`、非原子（ACL 禁止探测频道）与 `sharded` 三种后端上各跑一遍，`SetEngineSpec` 只在 `pubsub` 后端上运行；设置 `SPRING_DATA_REDIS_HOST` / `SPRING_DATA_REDIS_PORT` 时连接其他单机实例（CI 的 Valkey 任务），设置 `SPRING_DATA_REDIS_CLUSTER_NODES` 时连接 Redis Cluster。`FaultSpec` 的断线用例与底层命令被取消的用例只在单机 `pubsub` 上运行（经 `TcpProxy` 断开并拒绝重连；取消：代理丢弃应答，经 Netty 管道向 Lettuce 的 `CommandHandler` 发出 `ConnectionEvents.Reset`，它以 `cancel()` 结束在途的命令，再断开重连）；`NOSCRIPT` 回退（每个操作之前 `SCRIPT FLUSH`）是 `RedisFaultTest` 自己的用例。
 
@@ -918,16 +913,16 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 
 ## 13. 可观测与运维
 
-- **`CacheMetrics`**（每个缓存一份，`LongAdder` 累计值）除 `localHits` 外全部记录在未命中、写入、失效路径上。读取按层互斥计数：每次读取（批量读取按 key）计入 `localHits`（L2 命中）、`misses`（L2 未命中）或 `filtered`（key 过滤器）之一，未命中再由 L1 命中计入 `remoteHits`、由回源计入 `loads`。同步与异步路径计入同一组计数；`loadTimeouts` 只来自异步数据源。
+- **`CacheMetrics`**（每个缓存一份，`LongAdder` 累计值）除 `localHits` 外全部记录在未命中、写入、失效路径上。读取按层互斥计数：每次读取（批量读取按 key）计入 `localHits`（L2 命中）、`misses`（L2 未命中）或 `filtered`（key 过滤器）之一，未命中再由 L1 命中计入 `remoteHits`、由回源计入 `loads`。三种变体计入同一组计数；`loadTimeouts` 来自三处：异步数据源或调用级挂起 loader 超过 `load.timeout`，以及跟随者等到共享加载的截止时刻。
   - **L2 命中计数默认关闭**（G3）：`CacheRuntime.Builder.recordLocalHits(true)`（starter：`cocache.metrics.local-hits=true`）对该运行时的全部缓存开启，`CacheMetrics.localHitsRecorded` 反映开关。开启时命中路径上唯一的记录是一次 `LongAdder.increment()`（不加锁、不分配、按线程分散单元）；关闭时命中路径只多一次对引擎 final 字段的判断，不触碰计数器。7 个命中点（`get`、`get(key, loader)`、`lookup`、`getAll` 逐 key，及异步视图的对应方法；`SetEngine` 的同步与异步 `entryOf`）都经 `AbstractEngine.countLocalHit()`；`get(key, loader)` 遇到“未填充”（`unfilled`）的副本不算命中。开关存在的原因：命中路径吞吐对一次原子自增敏感（JMH：开启后 `l2HitViaInterface` 1/8 线程 −7.7%/−8.9%、`l2Hit` −5.0%/−4.4%；关闭时与未加计数的版本持平，见 #655），因此不能默认开启。
-- **Micrometer**（`CoCacheMeterBinder`，指标目录在 `CacheCounters`，tag `cache`）：`cocache.hits{level=l2}`（只在开启 L2 命中计数时注册，端点同样只在开启时输出 `localHits`，避免把“未记录”读成 0）、`cocache.hits{level=l1}`、`cocache.misses`、`cocache.filtered`、`cocache.load.failures`、`cocache.load.rejections`、`cocache.load.timeouts`（异步数据源的一次加载或等待共享加载的读取超过 `load.timeout`）、`cocache.lease.waits`、`cocache.lease.wait.timeouts`、`cocache.fill.rejections`、`cocache.degraded.fills`、`cocache.stale.discards`、`cocache.reclaims`、`cocache.unknown.formats`、`cocache.refreshes`、`cocache.refresh.rejections`、`cocache.remote.failures`、`cocache.invalidations.received`、`cocache.write.failures`、`cocache.invalidation.retries`、`cocache.invalidations.dropped`、`cocache.resets`、`cocache.conditional.unchanged`（`getIfChanged` 确认未变）、`cocache.conditional.conflicts`（`putIfMatch` 冲突）、`cocache.versioned.stale`（`putIfNewer` / `invalidateIfNewer` / `deleteIfNewer` 遇到不更旧的版本）、`cocache.type.mismatch`（读到别的类型的缓存写入的内容：派生缓存读到带摘要段的值，或 `evict` 遇到它，D4）、`cocache.reads.unknown`（读取的结果为 `Unknown`，按调用方计，含按 `unknownRead = ABSENT` 换算的，§5.1）、`cocache.fill.unversioned.absent`（带版本的数据源返回不带版本的 `null`、落在带版本的内容上被拒绝，K16）、`cocache.fills.gated`（写事务内的私有回源，按 key 计，§5.8）、`cocache.ttl.clamped`（按调用给出的寿命超过 `overrides.cache.ttl` 的上限、被钳制，S8，§10.2；端点字段 `ttlClamped`）；FunctionTimer `cocache.loads`；Gauge `cocache.local.size`。延迟创建的缓存在 bean 初始化后补绑。
-- **回源观测 `LoadObserver`**（`cocache-core` 的 SPI，经 `CacheRuntime.Builder.loadObserver` 设置，存于 `EngineContext`，默认 `LoadObserver.NOOP`）：只包住 `guarded` 内的回源调用（`load` / `loadAll` / `refresh`，提前刷新经委托给 loader 的 `RefreshLoader` 识别）与确实发生的 lease 等待（`lease.wait`）。**L2 命中、L1 读取与填充都不经过它**（G3）；默认 NOOP 时引擎按引用识别并直接执行，不分配 lambda。被并发上限拒绝的回源不观测。实现必须在调用方线程上同步执行一次并原样抛出异常（异常透明），不得记录 key。异步路径调用 `observeAsync`（从调用 block 到其 future 完成）：默认实现不观测（直接返回 block 的 future），只覆盖了 `observe` 的观测器在异步路径上没有数据。starter 的 `CoCacheObservationAutoConfiguration`（`@ConditionalOnClass(ObservationRegistry)`、`@ConditionalOnBean(ObservationRegistry)`、`cocache.observation.enabled`）注册 `MicrometerLoadObserver`：Observation `cocache.load`，低基数标签 `cache`、`operation`、`outcome`（`success` / `error`；异步路径上引擎超时为 `timeout`），高基数标签只有 `key.count`；`observeAsync` 在 `openScope()` 内调用 block（`loadAsync` 的同步部分能看到当前观测），future 完成时记录结果并停止；`cocacheRuntime` 经 `ObjectProvider` 取唯一的 `LoadObserver`，因此 `cocache-core` 不依赖 Micrometer，没有 Micrometer 时该自动配置整体跳过。
+- **Micrometer**（`CoCacheMeterBinder`，指标目录在 `CacheCounters`，tag `cache`）：`cocache.hits{level=l2}`（只在开启 L2 命中计数时注册，端点同样只在开启时输出 `localHits`，避免把“未记录”读成 0）、`cocache.hits{level=l1}`、`cocache.misses`、`cocache.filtered`、`cocache.load.failures`、`cocache.load.rejections`、`cocache.load.timeouts`（异步数据源或调用级挂起 loader 的一次加载、或等待共享加载的读取超过 `load.timeout`）、`cocache.lease.waits`、`cocache.lease.wait.timeouts`、`cocache.fill.rejections`、`cocache.degraded.fills`、`cocache.stale.discards`、`cocache.reclaims`、`cocache.unknown.formats`、`cocache.refreshes`、`cocache.refresh.rejections`、`cocache.remote.failures`、`cocache.invalidations.received`、`cocache.write.failures`、`cocache.invalidation.retries`、`cocache.invalidations.dropped`、`cocache.resets`、`cocache.conditional.unchanged`（`getIfChanged` 确认未变）、`cocache.conditional.conflicts`（`putIfMatch` 冲突）、`cocache.versioned.stale`（`putIfNewer` / `invalidateIfNewer` / `deleteIfNewer` 遇到不更旧的版本）、`cocache.type.mismatch`（读到别的类型的缓存写入的内容：派生缓存读到带摘要段的值，或 `evict` 遇到它，D4）、`cocache.reads.unknown`（读取的结果为 `Unknown`，按调用方计，含按 `unknownRead = ABSENT` 换算的，§5.1）、`cocache.fill.unversioned.absent`（带版本的数据源返回不带版本的 `null`、落在带版本的内容上被拒绝，K16）、`cocache.fills.gated`（写事务内的私有回源，按 key 计，§5.8）、`cocache.ttl.clamped`（按调用给出的寿命超过 `overrides.cache.ttl` 的上限、被钳制，S8，§10.2；端点字段 `ttlClamped`）；FunctionTimer `cocache.loads`；Gauge `cocache.local.size`。延迟创建的缓存在 bean 初始化后补绑。
+- **回源观测 `LoadObserver`**（`cocache-core` 的 SPI，经 `CacheRuntime.Builder.loadObserver` 设置，存于 `EngineContext`，默认 `LoadObserver.NOOP`）：只包住 `guarded` 内的回源调用（`load` / `loadAll` / `refresh`，提前刷新经委托给 loader 的 `RefreshLoader` 识别）与确实发生的 lease 等待（`lease.wait`）。**L2 命中、L1 读取与填充都不经过它**（G3）；默认 NOOP 时引擎按引用识别并直接执行，不分配 lambda。被并发上限拒绝的回源不观测。实现必须在调用方线程上同步执行一次并原样抛出异常（异常透明），不得记录 key。异步路径调用 `observeAsync`（从调用 block 到其 future 完成）：默认实现不观测（直接返回 block 的 future），只覆盖了 `observe` 的观测器在异步路径上没有数据。starter 的 `CoCacheObservationAutoConfiguration`（`@ConditionalOnClass(ObservationRegistry)`、`@ConditionalOnBean(ObservationRegistry)`、`cocache.observation.enabled`）注册 `MicrometerLoadObserver`：Observation `cocache.load`，低基数标签 `cache`、`operation`、`outcome`（`success` / `error` / `timeout`，后者是引擎的 `SourceLoadTimeoutException`），高基数标签只有 `key.count`；`observeAsync` 在 `openScope()` 内调用 block（`loadAsync` 的同步部分能看到当前观测），future 完成时记录结果并停止；`cocacheRuntime` 经 `ObjectProvider` 取唯一的 `LoadObserver`，因此 `cocache-core` 不依赖 Micrometer，没有 Micrometer 时该自动配置整体跳过。
 - **actuator 端点 `cocache`**（基于 `CacheAdmin`）：`GET /actuator/cocache` 列出缓存与计数，`GET /actuator/cocache/{name}` 查看单个缓存，`DELETE /actuator/cocache/{name}` 清空本节点 L2，`GET /actuator/cocache/{name}/{key}` 查看一个 key，`DELETE /actuator/cocache/{name}/{key}` 按 key 删除（按类型映射，见下面的 `invalidateEncoded`；响应带 `deletion`，即 `CacheAdmin.KeyDeletion`），`DELETE /actuator/cocache/{name}/{key}?purge=true` 清除并丢掉版本（只用于带版本的类型，其它类型 400）。删除唯一副本的按 key 删除要显式开关（`CoCacheEndpointProperties`，RFC 0005 §4.9 运维入口，默认都关闭）：`Store` 与 `SetStore` 要 `management.endpoint.cocache.allow-store-delete=true`，`VersionedStore` 的删除与 `?purge=true` 要 `management.endpoint.cocache.allow-purge=true`；没有开启时不修改任何东西，HTTP 上返回 403，响应体指出要开启的开关（经 JMX 时抛出 `DeletionNotAllowedException`）。`Cache` 的失效与 `VersionedCache` 保留版本的 `evict` 不需要开关。`{key}` 是**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分，可含 `/`，按剩余路径段匹配），适用于任意 key 类型；未知缓存的 GET 与 DELETE 都返回 404（不做任何事；DELETE 的状态码由 web 扩展 `CoCacheEndpointWebExtension` 映射，拼错的缓存名因此不会静默成功）；空 key 返回 400。
 - **`CacheAdmin`**（运维接口，不属于用户 API）：`name`、`apiType`、`layered`、`policyReport`（未分层时为 `null`）、`metrics`、`localSize`、`pendingInvalidationCount`、`clearLocal()`、`inspect(encodedKey)`、`invalidateEncoded(encodedKey)`、`keyDeletion`（`invalidateEncoded` 对这个类型做什么：`INVALIDATE`、`EVICT`、`DELETE`、`PURGE`、`CLEAR`）、`purgeEncoded(encodedKey)`（只有带版本的类型支持）。
   - `inspect` 是纯读取，**不触碰命中路径**：L2 用 `getIfPresentQuietly`（不影响淘汰统计），L1 用不带 lease 与刷新令牌的 `read(key, null, null)`（读脚本在参数为空时不写任何状态）；不经 SingleFlight、不取戳、不写任何一层、不计入指标、不回收损坏内容。值用缓存的 `Codec` 解码后以 `toString()` 展示，截断到 256 字符；解码失败、未知或更高格式返回 `UNREADABLE`，L1 读失败返回 `ERROR`。
   - `invalidateEncoded` 按类型：`Cache` 走正常的失效路径（§6.1，失败按 `invalidateFailure` 处理），幂等；`VersionedCache` 是保留版本的失效（`evict`，§6.6），带版本的内容转为 `E`；`Store` 等价于 `delete`、`VersionedStore` 等价于 `purge`、`SetStore` 等价于 `clear(key)`；后四者失败时抛出，不进入失效重试。端点据 `keyDeletion` 决定要不要开关（见上）。
   - `inspect` 在权威副本上同样校验摘要段（不计数），不一致时展示为 `UNREADABLE`；外部来源的缓存未填充的 L2 副本展示为 `UNFILLED`。
-- **健康检查 `cocache`**（`CoCacheHealthIndicator`）：只读内存状态，不访问 Redis。Redis 失效通道最近一次心跳失败（`RedisBackend.heartbeatHealthy`，只读状态）时 `DOWN`，其余为 `UP`；失效重试中不影响状态（重试队列自行收敛，放弃计入 `invalidations.dropped`）。详情：后端类型、格式版本、`atomicBroadcast`、Redis 的通道模式与心跳、每个缓存的失效重试数与本地副本数。
+- **健康检查 `cocache`**（`CoCacheHealthIndicator`）：只读内存状态，不访问 Redis。Redis 失效通道最近一次心跳失败（`RedisBackend.heartbeatHealthy`，只读状态）时 `DOWN`，其余为 `UP`；失效重试中不影响状态（重试队列自行收敛，放弃计入 `invalidations.dropped`）。详情：后端类型、格式版本、`atomicBroadcast`、Redis 的通道模式与心跳、失效重试的总数，以及每个缓存的失效重试数与本地副本数。
 - L1 中的值带二进制头，不能再用 `redis-cli GET` 直接读出 JSON。
 
 ## 14. 性能验证
@@ -947,33 +942,85 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
   - **负载门槛与作废**：每次开跑前等待 1 分钟负载降到门槛以下（默认 max(2, 核数 × 0.4)）；迭代 CV 超过 3%，或运行期间负载升高超过 min(线程数, 核数) + 1.5（自身贡献之外还有别的负载），该次运行作废并自动重试。
   - **本机互斥**：全机共享的锁 `/tmp/cocache-jmh.lock`（macOS 的 `TMPDIR` 按用户隔离，不用它）保证同一时间只有一个基准任务（含构建），不经脚本启动的 JMH 进程也会等它结束；多个会话同时跑基准会互相污染。
   - 基线 ref 不会自动 fetch，需要最新基线时先 `git fetch origin`。
-- 异步视图的基准：`l2HitAsync`、`l2HitAsyncMixed`、`l1ReadAsync`、`l1HitViaEngine` / `l1HitViaEngineAsync`、`missLoadAsync`、`setAsync`、`invalidateAsync`（闭环，每次操作后等待），以及在途请求基准 `l1HitInFlightAsync` / `setInFlightAsync` 与同步对照 `l1HitSequential` / `setSequential`（每次调用 32 个请求）。
+- 异步视图与经引擎的基准：`l2HitAsync`、`l2HitAsyncMixed`、`l1HitViaEngine` / `l1HitViaEngineAsync`、`l1BatchViaEngine` / `l1BatchViaEngineAsync`、`missLoadAsync`、`setAsync`、`invalidateAsync`（闭环，每次操作后等待），以及在途请求基准 `l1HitInFlightAsync` / `setInFlightAsync` 与同步对照 `l1HitSequential` / `setSequential`（每次调用 32 个请求）。
 - 1 线程与 8 线程，与上一版本**至少交替运行 5 轮**（脚本默认），比较配对比值的中位数与区间，包含 `l2HitMixed`。同一台机器上 8 线程的结果在多次运行之间波动约 ±4%，差异小于噪声时不作结论。
 
 ## 15. 不变量
 
-1. **栅栏规则**：任何填充都必须持有读取之前取得的令牌（L1 lease 或刷新令牌；L2 失效戳）。L1 的失效通过销毁令牌完成；L2 的失效方（含 `put`、元素写入）在修改 L1 **之前和之后**各递增一次戳并淘汰 L2。**L2 只由读 L1 的路径填充**，写入方从不直接写 L2。
-2. **L1 未命中就是未命中**：key 不存在或处于 `L`、`E` 状态都不代表负缓存；负缓存只有状态 `M` 一种形态。外部来源的“未填充”不是负缓存（带 loader 的读取不接受它）；权威副本的 L1 未命中是 `Absent`（L1 是唯一副本）。
-3. **读路径从不无条件删除**：读不懂的内容（同格式的损坏与摘要校验失败，以及格式号低于本格式的内容，含格式 0）只能通过 `reclaim`（比较指纹）转为 lease；更高的格式（含未知的必须理解的位或状态，§4.2）既不回收也不写回，`RECLAIM` 也拒绝带版本段或摘要段的内容与 `E`；没有数据源的读取不回收读不懂的内容，权威副本也不把更高的格式当作不存在，而是抛出；L1 读失败的结果是 `Unknown`，从不写入任何一层，`unknownRead = ABSENT` 只在调用方返回之前把它换算为不存在。
-4. **能原子广播就原子广播**：后端以 `atomicBroadcast` 声明能力；为 `false` 时由引擎在写入成功后发布（条件写入的重放也发布，§6.5、§6.6），TCK 按能力分别验证。
-5. **SingleFlight 先注销调用、再发布结果**（读己之写依赖这个顺序）；同步与异步调用共用一张表，异步调用在注册之后取戳；每个异步调用方拿到自己的 future；同步调用合并到异步调用时只阻塞自己的线程，异步调用合并到同步调用时经异步执行器拿到结果。同线程对同一 key 的重入（同步调用的拥有线程，或正在为该 key 调用数据源的线程）快速失败；批量合并先注册全部 key、先完成自己负责的 key 再等待别人；leader 因中断或取消失败时，跟随者自行运行，而不是收到它的失败。跟随者的等待以加载的截止时刻（登记时加上 `load.timeout`）为上限；登记超过它的加载由之后的调用方按身份注销（不完成它），原 leader 的注销不会移走新的加载。
-6. **同步 API 上 loader 在调用方线程上执行**；异步视图上异步数据源在调用方线程或异步执行器上调用，同步数据源只在阻塞执行器上执行，从不在异步执行器上执行。Future 只包装 I/O，L1 与数据源的 future 完成后先切换到异步执行器（同步变体切换回调用方线程，或在已完成时就地）再执行续接，**事件循环线程上不执行续接**。Redis 后端在恢复之后、调用方的调度器上转换脚本返回值（`RedisL1Store`，§9），不在 Lettuce 的 I/O 线程上解析读取结果。
-7. **令牌必须释放或过期**：loader、`ttlOf`、`Codec` 失败，回源被拒绝或超时，以及刷新令牌用不上时都要 `release`；取得或交回令牌的 L1 命令（读取、回收、`fill`、`release`）失败时，除确定未执行外，后端都尽力释放这些令牌，释放失败时按退避重发（§9，K14）。引擎从不取消 L1 调用：两种变体都在 `NonCancellable` 中调用 `L1Store`（`uncancellable`），中断不到达存储，执行器拒绝派发也不取消正在执行的调用；协程被取消（运行时关闭、同步变体的线程被中断）时，持有令牌的步骤在之后的挂起点释放它，同步变体取消之后不再调用 loader；带着令牌的结果不经可能被取消的协程的返回值传递（§5.6）。
-8. **每次 L1 状态转换都显式重设到期时间。**
-9. **线格式在一个大版本内冻结**：key 布局（内部 key 的位置 `!`、namespace 字符集）、标量头与段（标志位、版本段、摘要段、扩展区的 TLV 与写入标识）、状态（`V`、`M`、`L`、`E`）、集合字段（`!f`、`!m`）、消息帧、频道命名、摘要算法（SHA-256）。格式 2 是 8.x 唯一的格式；8.x 内新增必须理解的段、状态或集合的位要两阶段发布：先发布能读懂它的版本，一个 namespace 的全部节点都升级之后才写入（RFC 0005 I-L）；扩展区的新 TLV 与新的 `!` 字段旧读者可以忽略，失效帧例外见 #22。
-10. **集合元素增删只用于 L1 是唯一副本的 `SetStore`**，在 L1 中原子完成，且 `SetStore` 没有数据源。从不覆盖读不懂的内容：检查与写入在同一个原子操作中完成，SPI 没有不检查的元素写入。数据源中的集合只能用 `invalidate` 维护。
-11. **有状态组件只能由运行时创建**：用户只提供 spec 和无状态函数。
-12. **CoCache 的 L1 连接只访问主节点**，断线时拒绝命令而不是缓冲重放；超时而放弃的脚本命令若尚未写出，就不再写出（完成 `dispatch` 返回的最外层命令，集群中是 `ClusterCommand`，§9）。
-13. **存储脚本只执行协议，不持有策略**：TTL、刷新窗口、令牌都由引擎作为参数传入。
-14. **代理不包装异常**：接口式声明的代理按方法名直接调用引擎，异常原样抛出（接口方法没有声明的受检异常由 JDK 包装为 `UndeclaredThrowableException`，这是 JDK 代理的规则，§11.2）；spec bean 注入的就是引擎本身。
-15. **命中路径的改动必须附带数据**：1 线程与 8 线程，至少 5 轮交替运行，报告中位数与置信区间，并包含配置不同的多个缓存（`l2HitMixed`）。
-16. **starter 注册的缓存 bean 必须能由 AOT 生成代码重建**：只用静态工厂方法与可序列化的构造参数，不用实例提供者，不依赖 bean 定义属性（§11.4）。
-17. **取消不传播**：取消调用方的 future 不取消共享加载、不取消数据源的 future、不跳过写入方的第二次递增（§5.6）。
-18. **异步视图不挂起线程、不同步抛出**：等待 lease 与回源许可都不占线程；失败以原始异常（不包装为 `CompletionException`）完成返回的 future（§5.6）。
-19. **条件读写只确认 L1**：`getIfChanged` 不读写 L2、不回源、不申请令牌、不修改 L1；`putIfMatch` 的比较与写入在一个原子操作中完成，冲突与拒绝不修改 L1、不广播（非原子广播时，摘要等于这次写入的冲突除外），写入方顺序同 `put`；后端不能原子地完成时不支持它（不提供“先读后写”）。“没有值”是不存在、lease 占位与不带版本的负缓存；读与写对读不懂的内容分类相同，从不把它视为没有值；只认带摘要段、不带版本段的值，脚本只读头部比较写入方计算的摘要段，Lua 不计算摘要（§6.5）。
-20. **按版本有序的写入**：比较与写入在一个原子操作中完成，版本不更新时不修改 L1、不改变到期时间，版本相等时仍然广播（不广播的填充可能写入了这个版本，F1），更旧时不广播；没有版本的内容排在任何版本之前；写入销毁令牌，被销毁的令牌的填充永远写不回（版本更高也不行）；令牌仍在时填充按版本规则写入：版本更小或没有版本时拒绝并在脚本内清零令牌，相等时续期不广播，更大或 key 处于 `E` 时写入并广播；带版本的内容取得刷新令牌、从不被回收；版本存放在格式 2 的版本段，不得是 `NO_VERSION`（§4.2、§6.6）。后端不能原子地完成时不支持它，声明为带版本的缓存在创建时失败。
-21. **副本出生时不在刷新窗口内**：L2 副本的刷新点要么晚于创建时刻，要么不设。没取得刷新令牌的重新填充把刷新点退避到 L1 到期之前，其余情形下 L1 剩余寿命不长于窗口时不设刷新点（§5.5）。否则每次命中都会触发刷新：没有令牌的节点按命中频率读 L1，持有令牌的节点按命中频率回源。
-22. **读不懂的失效帧按重置处理**：未知版本、未知类型、解码失败，通道一律按该频道的 `onReset` 处理（清空 L2、递增全部戳），从不丢弃；零 key 的帧是合法帧，引擎什么也不做。因此 8.x 新增帧（预留的帧版本 2 是“namespace 重置”）不需要两阶段发布（§4.1，RFC 0005 §4.7 D3）。
-23. **版本前进的填充是一次写入**：`Filled(advanced = true)` 之后，以及带版本的填充结果未知时（F2；存储在写出之前拒绝的填充确定未执行，不在此列），本节点递增戳、淘汰本地副本、不填 L2（非原子广播时由引擎发布），与写入方修改 L1 之后的那一步相同（§5）。保留版本的失效（`E`）读作未命中，不是负缓存，也不是 lease；其上取得 lease、释放与被拒绝的填充只触及令牌，保留版本与到期时间（§4.2）。
-24. **读取方校验摘要**：权威副本从 L1 拿到不带版本的值、以及条件读取拿到值时，重算 SHA-256 并与摘要段比较，不一致或缺摘要段按损坏处理；校验在引擎中，对所有后端相同，成本只在 L1 读取上（§4.2，K3）。带摘要段的值从不取得刷新令牌、从不被回收，派生缓存读到它计入 `typeMismatches`（D4）。
-25. **带版本的缓存的 L2 不按版本后退**：戳仍有效的填充遇到版本更大的未过期副本时保留副本、不写入（计入 `staleFillsDiscarded`），过了刷新点的副本按退避推迟刷新；没有版本的值排在任何版本之前（§5.5，I-K，F3）。
+每条不变量都保护 §1 的一个目标；削弱其中一条的改动就是错的，无论看起来多整洁。
+
+编号是稳定的：代码注释、测试与文档都按 `I-n` 引用。数字编号与字母编号（I-A–I-M，与 RFC 0005 §6 相同）同样稳定，按主题分组列出；编号从不复用、从不重排，新增的不变量从 I-26 起编号。并入其它条目的编号见本节末尾。
+
+### 15.1 类型与读取结果
+
+- **I-A 类型与声明决定默认值**：`Cache` / `VersionedCache` 是派生副本，`Store` / `VersionedStore` / `SetStore` 是权威副本（§2）；派生缓存必须声明数据来源（spec 的数据源，或 `externallySourced()`）。默认值与可用的操作由类型与声明决定；同一类型内，这次读取有没有数据源（含调用级 loader）只影响未命中与故障时能否回源。
+- **I-B `Unknown` 只表示故障**：它只来自 L1 读取失败（含 `readTimeout` 超时），不写入任何一层、不广播，也不作为带数据源的调用方的结果（合并规则，I-5）；`get` / `getAll` 遇到它抛出 `CacheReadException`，`unknownRead = ABSENT` 只在调用方返回之前把它换算为不存在（§5.1）。
+- **I-2 L1 未命中就是未命中**：key 不存在或处于 `L`、`E` 状态都不代表负缓存；负缓存只有状态 `M` 一种形态。外部来源的“未填充”不是负缓存（带 loader 的读取不接受它）；权威副本的 L1 未命中是 `Absent`（L1 是唯一副本）。
+- **I-3 读路径从不无条件删除**：读不懂的内容（同格式的损坏与摘要校验失败，以及格式号低于本格式的内容，含格式 0）只能通过 `reclaim`（比较指纹）转为 lease，而且只在这次读取有数据源时（I-A）：没有数据源的读取不回收，抛出 `CacheReadException`。`RECLAIM` 拒绝带版本段或摘要段的内容与 `E`（I-K、I-M）；更高的格式既不回收也不写回（I-L），权威副本也不把它当作不存在（§5.4）。
+
+### 15.2 栅栏与 L2
+
+- **I-1 栅栏规则**：任何填充都必须持有读取之前取得的令牌（L1 lease 或刷新令牌；L2 失效戳）。L1 的失效通过销毁令牌完成；L2 的失效方（含 `put`、元素写入）在修改 L1 **之前和之后**各递增一次戳并淘汰 L2（§6.1、§8）。**L2 只由读 L1 的路径填充**，写入方从不直接写 L2。版本前进的填充（`Filled(advanced = true)`）与结果未知的带版本填充（存储在写出之前拒绝的除外）在本节点按写入处理：递增戳、淘汰本地副本、不填 L2，非原子广播时由引擎发布（§5）。
+- **I-C L2 填充**：校验失效戳与写入 L2 在同一个 key 锁内完成（Caffeine `compute`），写后按身份复核（`remove(key, entry)`，`LocalEntry` 按身份比较）；写入方与远端事件处理完成之后，读取开始于它们之前的副本不可见；重置与 `clearLocal` 之后，这样的副本至多存在到填充方自己的复核（§8）。
+- **I-G 刷新有界**：每个节点、每个 key 的刷新触发率有一个与命中率无关的上界：同一时刻至多一次刷新，没取得刷新令牌的重新填充把刷新点退避到 `now + min(max(lease.wait, 100 ms), 剩余寿命 / 2)`。副本出生时不在刷新窗口内：L2 副本的刷新点要么晚于创建时刻，要么不设；除上面的重新填充之外，L1 剩余寿命不长于窗口时不设刷新点，读到更高格式、在 `E` 上被版本拒绝、带摘要段的副本也不设（§5、§5.5）。否则每次命中都会触发刷新：没有令牌的节点按命中频率读 L1，持有令牌的节点按命中频率回源。
+
+### 15.3 写入、广播与失败
+
+- **I-4 能原子广播就原子广播**：后端以 `atomicBroadcast` 声明能力。原子广播时写入与广播在同一个脚本中完成，版本前进的 `FILL` 与版本相等的 `Stale`（F1）也在脚本中广播。为 `false` 时由引擎在写入之后发布，写入失败时也尽力发布同一帧（§6.1）；可能是重放的结果同样发布：`Stale` 且当前版本等于给出的版本、`putIfMatch` 冲突且当前摘要等于这次写入的摘要、`deleteIfMatch` 冲突且当前没有值（§6.5、§6.6）。每个存储按实际频道探测，ACL 拒绝时创建失败，不降级为非原子广播（§9）。TCK 按能力分别验证。
+- **I-D 延迟的无条件写入只用于派生副本**：失效重试与补偿失效只用于有数据源的缓存，以及外部来源且失效失败模式为 `RETRY` 的缓存。权威副本的删除与写入，以及保留或丢掉版本的删除（`evict`、`purge`），同步完成或抛出，从不排队重试（§7）。
+- **I-E 结果未知**：写入的结果按客户端能观察到的事实判定。存储在写出之前的拒绝（`L1RejectedException`）与后端拒绝了写入是确定未执行；其余（超时、断线时被排空、脚本的错误回复、被取消的写入，K18）都是结果未知（`CacheWriteException.outcomeUnknown`，§7）。引擎不取消 L1 调用，中断不到达 L1 命令。确定未执行的写入不会再执行；结果未知的写入在任何时刻都可能生效，它的安全只来自顺序（令牌、版本），摘要条件有 ABA（§6.5）。
+- **I-F 令牌守恒**：取得令牌的每一步（`read`、`readAll`、`reclaim`、刷新的 `read`、`fill`、`fillAll`），在每个失败转移上、在超时、取消与中断时，都有释放：loader、`ttlOf`、`Codec` 失败，回源被拒绝或超时，以及刷新令牌用不上时都要 `release`。取得或交回令牌的 L1 命令失败时，除确定未执行外，存储都异步释放这些令牌、不等待，释放失败时按退避重发（K14，§9）。引擎从不取消 L1 调用：各变体都在 `NonCancellable` 中调用 `L1Store`（`uncancellable`），中断不到达存储，执行器拒绝派发也不取消正在执行的调用；协程被取消时，持有令牌的步骤在之后的挂起点释放它，同步变体取消之后不再调用 loader；带着令牌的结果不经可能被取消的协程的返回值传递（§5.6）。每个 flight 在有限时间内完成，或在 `load.timeout` 之后被注销。
+- **I-H 等待有界**：跟随者（`load.timeout`）、lease 等待（`lease.wait`）、回源许可（`acquireTimeout`）都有上界。调用方的等待响应取消与中断，且只影响它自己；唯一的例外是同步 leader 被中断时取消这一次加载，跟随者至多多回源一次（K13）。L1 命令与令牌步骤不可取消，被中断的调用方至多多等一个命令超时；loader 照常可以被取消（§5.6）。
+- **I-17 取消不传播**：调用方的取消（协程取消、future 的 `cancel`、线程中断）只结束它自己的等待：不取消共享加载（异步与挂起变体的共享加载在运行时作用域中执行）、不取消数据源的 future、不跳过写入方修改 L1 之后的步骤（广播、第二次递增与淘汰，§5.6）。同步 leader 内联执行，被中断时取消这一次加载（I-H）。
+- **I-8 每次 L1 状态转换都显式重设到期时间**：lease 与负缓存的寿命不得泄漏到新值上，`E` 的到期时间由引擎传入。只触及字节 4–35 的原地修改（授予刷新令牌、`READ` 在 `E` 上授予 lease、`RELEASE`、被版本规则拒绝的 `FILL` 清零令牌）保留原到期时间，是写明的例外（K15，§4.2）。
+- **I-12 CoCache 的 L1 连接只访问主节点**，断线时拒绝命令而不是缓冲重放；超时而放弃的脚本命令若尚未写出，就不再写出（完成 `dispatch` 返回的最外层命令，集群中是 `ClusterCommand`，§9）。
+
+### 15.4 并发与执行
+
+- **I-5 SingleFlight 先注销调用、再发布结果**（读己之写依赖这个顺序）：各变体共用一张表（I-I），leader 在注册之后取戳；每个调用方拿到自己的结果，同步调用合并到异步调用时只阻塞自己的线程。合并规则逐 key 应用（§5.1）：带数据源的调用方不接受“未填充”或 `Unknown`（`readFailure = THROW` 时的 `Unknown` 除外，I-B）、不接受写事务内 leader 的结果（I-J）、不接受被中断或取消的 leader 的失败，而是自行运行。同线程对同一 key 的重入（同步调用的拥有线程，或正在为该 key 调用数据源的线程；挂起变体另按协程上下文）快速失败；批量合并先注册全部 key、先完成自己负责的 key 再等待别人。跟随者的等待以加载的截止时刻（登记时加上 `load.timeout`）为上限；登记超过它的加载由之后的调用方按身份注销（不完成它），原 leader 的注销不会移走新的加载。
+- **I-6 loader 的线程**：同步变体在调用方线程上执行阻塞的 loader（事务、SecurityContext、MDC 等 ThreadLocal 可用）；异步与挂起变体在阻塞执行器（默认虚拟线程）上执行它，从不在异步执行器上执行。异步数据源（`loadAsync`）在当前线程上调用，调用级挂起 loader 在这次加载的协程中执行，都不切换调度器；spec 级挂起 loader 在它自己的 `context` 中执行。Future 只包装 I/O：续接从不在 L1 客户端的事件循环线程上执行（同步变体回到调用方线程，异步与挂起变体回到运行时的调度器），挂起变体的调用方从不在 L1 客户端的完成线程上恢复；Redis 后端在恢复之后、调用方的调度器上转换脚本返回值（§9）。
+- **I-18 异步视图不挂起线程、不同步抛出**：未命中挂起协程，等待 lease 与回源许可都不占线程（阻塞的 loader 在阻塞执行器上执行）；失败以原始异常（不包装为 `CompletionException`）完成返回的 future，异步方法从不同步抛出（§5.6）。
+- **I-I 一份协议**：每个协议分支只有一份（`suspend`）实现；同步、异步、挂起三种变体在其上提供，不复制分支（§5.6）。
+- **I-J 事务内的回源**（启用 Spring 集成时）：写事务内 loader 产生、进入任何共享层的 key，在回滚、回滚到 savepoint 或结果未知时失效；事务内 leader 的结果不与事务外的跟随者共享；已登记失效的 key（按 keyspace 与编码后的 key 匹配）的回源结果只返回给本次调用。事务上下文在调用入口捕获，异步与挂起变体不在此列（§5.8、§11.3）。
+
+### 15.5 按类型的写入
+
+- **I-10 集合元素增删只用于 L1 是唯一副本的 `SetStore`**，在 L1 中原子完成，且 `SetStore` 没有数据源。从不覆盖读不懂的内容：检查与写入在同一个原子操作中完成，SPI 没有不检查的元素写入。数据源中的集合只能用 `invalidate` 维护（§6.4）。
+- **I-19 条件读写只确认 L1**（只在 `Store` 上）：`getIfChanged` 不读写 L2、不回源、不申请令牌、不修改 L1；`putIfMatch` 与 `deleteIfMatch` 的比较与写入在一个原子操作中完成，冲突与拒绝不修改 L1、不广播（非原子广播时的重放除外，I-4），写入方顺序同 `put` / `invalidate`；后端不能原子地完成时不支持它（不提供“先读后写”）。“没有值”是不存在、lease 占位与不带版本的负缓存；读与写对读不懂的内容分类相同，从不把它视为没有值；只认带摘要段、不带版本段的值，脚本只读头部比较写入方计算的摘要段，Lua 不计算摘要。结果未知之后，当前摘要等于自己写入的摘要说明已经写入，不等不能说明没有写入（I-E，§6.5）。
+- **I-K 版本单调（按类型）**：经 `VersionedCache` / `VersionedStore` 的写入与回源，不让 L1 的版本后退、不抹掉版本（§4.2、§6.6）：
+  - 按版本写入的比较与写入在一个原子操作中完成，版本不更新时不修改 L1、不改变到期时间，版本相等时仍然广播（F1），更旧时不广播；没有版本的内容排在任何版本之前。
+  - 写入销毁令牌，被销毁的令牌的填充永远写不回（版本更高也不行）；令牌仍在时填充按版本规则写入：版本更小或没有版本时拒绝并在脚本内清零令牌，相等时续期不广播，更大或 key 处于 `E` 时写入并广播。
+  - 带版本的内容取得刷新令牌、从不被回收；版本存放在版本段，不得是 `NO_VERSION`；条件脚本拒绝带版本的内容。
+  - L2 同样不后退：版本拒绝的回源不写 L2；戳仍有效的填充遇到版本更大的未过期副本时保留副本、不写入（计入 `staleFillsDiscarded`），过了刷新点的副本按退避推迟刷新（§5.5，F3）。
+  - 抹掉版本的入口只有 `purge`、到期、同一 namespace 上的其它类型（声明错误）与外部工具。后端不能原子地完成按版本写入时不支持它，带版本的类型在创建时失败。
+- **I-M 派生路径不改写权威标量**：带摘要段的内容（`Store` 写入的）不被授予 lease 或刷新令牌，`RECLAIM` 与 `EVICT_KEEPING_VERSION` 拒绝它，派生缓存读到它计入 `typeMismatches`（D4）。读取方校验摘要：权威副本从 L1 拿到不带版本的值、以及条件读取拿到值时，重算 SHA-256 并与摘要段比较，不一致或缺摘要段按损坏处理；校验在引擎中，对所有后端相同，成本只在 L1 读取上（K3，§4.2）。
+
+### 15.6 线格式
+
+- **I-9 线格式在一个大版本内冻结**：key 布局（内部 key 的位置 `!`、namespace 字符集）、标量头与段（标志位、版本段、摘要段、扩展区的 TLV 与写入标识）、状态（`V`、`M`、`L`、`E`）、集合字段（`!f`、`!m`）、失效帧及其演进规则、频道命名、摘要算法（带算法标识的 SHA-256）。格式 2 是唯一的格式（§4）。
+- **I-L 格式演进**：
+  - 未知的格式版本、未知的必须理解的标志位、格式 2 中的未知状态，既不回收也不写回（更高的格式）；格式号更低的内容（格式 0、1）是读不懂的内容，按 I-3 处理。
+  - 新的必须理解的位、段或状态只能两阶段发布：先发布能读懂它的版本，一个 namespace 的全部节点都认识之后才写入。扩展区的新 TLV 与新的 `!` 字段旧读者可以忽略，不需要两阶段。
+  - 读不懂的失效帧（未知版本、未知类型、解码失败）按该频道的 `onReset` 处理（清空 L2、递增全部戳），从不丢弃；零 key 的帧是合法帧，引擎什么也不做。新增帧（预留的帧版本 2 是“namespace 重置”）因此不需要两阶段发布（D3，§4.1）。
+
+### 15.7 组件、代理与装配
+
+- **I-11 有状态组件只能由运行时创建**：用户只提供 spec 和无状态函数；缓存经 `runtime.create` 或 `CoCacheFactory` 创建（§10.1），两个缓存不可能共享一个 L2。
+- **I-13 存储只执行协议，不持有策略**：TTL、刷新窗口、令牌都由引擎作为参数传入，存储只看到相对时长（§3.2）。
+- **I-14 代理不包装异常**：接口式声明的代理按方法名直接调用引擎，异常原样抛出（接口方法没有声明的受检异常由 JDK 包装为 `UndeclaredThrowableException`，这是 JDK 代理的规则，§11.2）；spec bean 注入的就是引擎本身。
+- **I-16 starter 注册的缓存 bean 必须能由 AOT 生成代码重建**：只用静态工厂方法与可序列化的构造参数，不用实例提供者，不依赖 bean 定义属性；新的接口与目标类型登记运行时提示（§11.4）。
+- **I-15 命中路径的改动必须附带数据**：1 线程与 8 线程，按 §14 的方法（每次一个基准，同轮交替至少 5 轮，看同轮配对比值的中位数与区间），并包含配置不同的多个缓存（`l2HitMixed`）。
+
+### 15.8 并入其它条目的编号
+
+这些编号不再单独列出，也不复用：
+
+| 编号 | 内容 | 见 |
+|------|------|----|
+| I-7 | 令牌必须释放或过期 | I-F |
+| I-20 | 按版本有序的写入 | I-K |
+| I-21 | 副本出生时不在刷新窗口内 | I-G |
+| I-22 | 读不懂的失效帧按重置处理 | I-L |
+| I-23 | 版本前进的填充是一次写入；`E` 读作未命中 | I-1；I-2、I-8 |
+| I-24 | 读取方校验摘要 | I-M |
+| I-25 | 带版本的缓存的 L2 不按版本后退 | I-K |

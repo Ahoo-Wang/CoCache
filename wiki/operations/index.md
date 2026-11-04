@@ -97,7 +97,7 @@ In `sharded` mode, or after the probe fell back, the publish is a separate comma
 - A crash between the write and the publish loses that message.
 - A publish that fails after the write succeeded reaches the caller as a failed write. `put` throws `CacheWriteException` although Redis already holds the new value. `Cache.invalidate` follows `invalidate-failure`, and a retried invalidation publishes again; the authoritative types' deletes throw. Retrying the `put` is safe and publishes again.
 
-In both cases L1 is already correct, and instances that missed the message keep their L2 copy for up to `local-max-age`. The order of a write is in [architecture.md §4.2](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md).
+In both cases L1 is already correct, and instances that missed the message keep their L2 copy for up to `local-max-age`. The order of a write is in [architecture.md §6.1](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md).
 :::
 
 ## Sizing {#sizing}

@@ -97,7 +97,7 @@ TLS 用 Spring Boot 的标准配置项开启。CoCache 对它连接的每个节�
 - 进程在写入与发布之间崩溃，会丢失这条消息。
 - 写入成功、随后的发布失败时，调用方看到的是写入失败：`put` 抛出 `CacheWriteException`，尽管 Redis 中已经是新值；`Cache.invalidate` 按 `invalidate-failure` 处理，重试的失效会再次发布；权威类型的删除抛出。重试 `put` 是安全的，并会再次发布。
 
-两种情况下 L1 都已经正确，错过这条消息的实例的 L2 副本最多保留到 `local-max-age`。写入的顺序见 [architecture.md §4.2](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md)。
+两种情况下 L1 都已经正确，错过这条消息的实例的 L2 副本最多保留到 `local-max-age`。写入的顺序见 [architecture.md §6.1](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md)。
 :::
 
 ## 容量规划 {#sizing}
