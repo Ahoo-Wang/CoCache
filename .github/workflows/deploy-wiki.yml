@@ -11,15 +11,11 @@
 # limitations under the License.
 #
 
-# PR 中只构建（尽早发现文档构建错误），主干上构建并部署到 GitHub Pages
+# PR 中只构建（尽早发现文档构建错误）。GitHub Pages 的主站点发布 main 分支（8.x）的文档（维护者，2026-11-04），
+# 6.x 维护分支不再部署，否则 6.x 的文档改动会覆盖主站点；6.x 的文档在仓库的 6.x 分支中阅读。
 name: Wiki
 
 on:
-  push:
-    branches: [ 6.x ]
-    paths:
-      - 'wiki/**'
-      - '.github/workflows/deploy-wiki.yml'
   pull_request:
     paths:
       - 'wiki/**'
@@ -68,14 +64,14 @@ jobs:
         working-directory: wiki
 
       - name: Upload Pages artifact
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ github.event_name != 'pull_request' && github.ref_name == 'main' }}
         uses: actions/upload-pages-artifact@v5
         with:
           path: wiki/.vitepress/dist
 
   deploy:
     name: Deploy Wiki
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && github.ref_name == 'main' }}
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
