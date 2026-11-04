@@ -120,8 +120,9 @@ class AsyncDispatchTest {
         value.assert().isEqualTo("v-k")
         completedOn.assert().isEqualTo("test-exec")
         loadedOn.get().assert().isEqualTo("test-exec")
-        // L1 读之后、loader（在执行器上执行）、loader 完成之后、fill 之后各一次
-        counts.assert().isEqualTo(4)
+        // L1 读之后、loader（在执行器上执行）、loader 完成之后、fill 之后各一次；loader 在协程等待它之前就完成时，
+        // 等待不挂起，少一次
+        counts.assert().isBetween(3, 4)
     }
 
     @Test
@@ -130,8 +131,8 @@ class AsyncDispatchTest {
         val (value, completedOn, counts) = measure { cache.async().get("k") }
         value.assert().isEqualTo("v-k")
         completedOn.assert().isEqualTo("test-exec")
-        // L1 读之后、数据源自己的线程完成之后、fill 之后各一次
-        counts.assert().isEqualTo(3)
+        // L1 读之后、数据源自己的线程完成之后、fill 之后各一次；数据源的 future 在协程等待它之前就完成时，等待不挂起，少一次
+        counts.assert().isBetween(2, 3)
     }
 
     @Test
