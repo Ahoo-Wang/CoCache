@@ -14,6 +14,9 @@
 package me.ahoo.cocache.core.engine
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import me.ahoo.cocache.api.AsyncSetStore
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.Lookup
@@ -26,11 +29,13 @@ import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.internal.Futures
+import me.ahoo.cocache.core.internal.LoadingKeys
 import me.ahoo.cocache.core.internal.awaitOriginal
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import kotlin.coroutines.coroutineContext
 
 /**
  * 权威集合 `SetStore` 的引擎（RFC 0003 §4.8，RFC 0005 §4.1）。
@@ -48,7 +53,7 @@ internal class SetEngine<K : Any, E : Any>(
 
     private val elementCodec = spec.elementCodec
     private val view = AsyncView()
-    private val suspendingView = SuspendingSetStoreView(view)
+    private val suspendingView = SuspendingView()
 
     override fun async(): AsyncSetStore<K, E> = view
 
@@ -134,6 +139,49 @@ internal class SetEngine<K : Any, E : Any>(
         val localKey = localKey(key)
         val entry = localHit(localKey) ?: return@attempt context.async.runAsync { map(loadEntry(storageKeyOfLocal(localKey))) }
         CompletableFuture.completedFuture(map(entry))
+    }
+
+    /**
+     * 挂起变体（RFC 0005 §4.4，K2、K6）：L2 命中内联返回；未命中在运行时的调度器上运行同一份协程核心（[loadEntry]），元素取自调用方。
+     */
+    private suspend fun <R> entryOfSuspending(key: K, map: (LocalEntry<Set<E>>) -> R): R {
+        val localKey = localKey(key)
+        val entry = localHit(localKey) ?: return missOfSuspending(storageKeyOfLocal(localKey), map)
+        return map(entry)
+    }
+
+    private suspend fun <R> missOfSuspending(storageKey: String, map: (LocalEntry<Set<E>>) -> R): R =
+        context.async.runSuspending { map(loadEntry(storageKey)) }
+
+    /**
+     * 挂起变体的批量读取：命中的 key 内联取得，未命中的 key 各自运行协程核心、并发读 L1，结果按 [keys] 的顺序组装（同异步视图）。
+     */
+    private suspend fun <R> resolveAllSuspending(keys: Collection<K>, map: (Map<K, LocalEntry<Set<E>>>) -> R): R {
+        val found = HashMap<K, LocalEntry<Set<E>>>()
+        val misses = LinkedHashMap<K, String>()
+        for (key in keys) {
+            if (key in found || key in misses) {
+                continue
+            }
+            val localKey = localKey(key)
+            val hit = localHit(localKey)
+            if (hit != null) found[key] = hit else misses[key] = storageKeyOfLocal(localKey)
+        }
+        if (misses.isEmpty()) {
+            return map(inOrder(keys, found))
+        }
+        return context.async.runSuspending {
+            coroutineScope {
+                misses.map { (key, storageKey) -> async { key to loadEntry(storageKey) } }.awaitAll()
+            }.forEach { (key, entry) -> found[key] = entry }
+            map(inOrder(keys, found))
+        }
+    }
+
+    private fun inOrder(keys: Collection<K>, found: Map<K, LocalEntry<Set<E>>>): Map<K, LocalEntry<Set<E>>> {
+        val resolved = LinkedHashMap<K, LocalEntry<Set<E>>>()
+        keys.forEach { key -> found[key]?.let { resolved.putIfAbsent(key, it) } }
+        return resolved
     }
 
     private fun localHit(localKey: String): LocalEntry<Set<E>>? {
@@ -455,5 +503,57 @@ internal class SetEngine<K : Any, E : Any>(
         override fun sync(): SetStore<K, E> = this@SetEngine
 
         override fun toString(): String = "AsyncView(${this@SetEngine})"
+    }
+
+    /**
+     * 挂起视图：直接调用协程核心（RFC 0005 §4.4），读取先检查同 key 重入（[LoadingKeys]）。
+     */
+    private inner class SuspendingView : SuspendingSetStore<K, E> {
+        override val name: String
+            get() = this@SetEngine.name
+
+        override suspend fun get(key: K): Set<E> {
+            LoadingKeys.check(coroutineContext, this@SetEngine, name, key)
+            return entryOfSuspending(key) { membersOf(it) }
+        }
+
+        override suspend fun getAll(keys: Collection<K>): Map<K, Set<E>> {
+            LoadingKeys.checkAll(coroutineContext, this@SetEngine, name, keys)
+            return resolveAllSuspending(keys) { membersOf(it) }
+        }
+
+        override suspend fun lookup(key: K): Lookup<Set<E>> {
+            LoadingKeys.check(coroutineContext, this@SetEngine, name, key)
+            return entryOfSuspending(key) { lookupAnswerOf(it) }
+        }
+
+        override suspend fun lookupAll(keys: Collection<K>): Map<K, Lookup<Set<E>>> {
+            LoadingKeys.checkAll(coroutineContext, this@SetEngine, name, keys)
+            return resolveAllSuspending(keys) { lookupsOf(it) }
+        }
+
+        override suspend fun put(key: K, value: Set<E>) =
+            context.async.runSuspending { putWithTtl(key, value, policy.valueTtl()) }
+
+        override suspend fun put(key: K, value: Set<E>, ttl: Duration) =
+            context.async.runSuspending { putWithTtl(key, value, ttl) }
+
+        override suspend fun putAll(entries: Map<K, Set<E>>) =
+            context.async.runSuspending { putAllWithTtl(entries, policy.valueTtl()) }
+
+        override suspend fun putAll(entries: Map<K, Set<E>>, ttl: Duration) =
+            context.async.runSuspending { putAllWithTtl(entries, ttl) }
+
+        override suspend fun add(key: K, elements: Collection<E>) =
+            context.async.runSuspending { addMembers(key, elements) }
+
+        override suspend fun remove(key: K, elements: Collection<E>) =
+            context.async.runSuspending { removeMembers(key, elements) }
+
+        override suspend fun clear(key: K) = context.async.runSuspending { clearStorageKey(storageKey(key)) }
+
+        override fun async(): AsyncSetStore<K, E> = view
+
+        override fun toString(): String = "Suspending(${this@SetEngine})"
     }
 }
