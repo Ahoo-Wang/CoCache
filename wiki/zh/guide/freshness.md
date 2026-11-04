@@ -114,7 +114,7 @@ views.getVersioned(id)                            // Versioned(view, version)，
 - **版本顺序只在条目存活期间成立。** 值或墓碑到期之后，key 中没有版本，任何版本（包括更旧的）都能再次写入。按重投的时间窗口设置 `ttl`（以及墓碑的 `ttl`）。重放到最新位置的写入方最终总会写入最新的版本，所以到期之后的陈旧度以那次重放为界。
 - **普通写入会丢掉版本。** `put`、`putAll`、`putIfMatch` 与 `invalidate` 写入没有版本的内容，到期也一样，之后任何版本都能写入。需要顺序保证的写入方全部使用 `putIfNewer` / `invalidateIfNewer`。
 - **淘汰一个 key 保留它的版本。** 端点的按 key `DELETE`（`CacheAdmin.invalidateEncoded`）把带版本的值或墓碑换成保留版本的淘汰标记：每个实例丢弃副本，下一次读取从数据源加载，迟到的旧版本仍被拒绝。数据源落后于 Redis 中的版本时，那次加载的结果照常返回（在 L2 中保留 `degraded-local-max-age`），但不写入 Redis，计入 `cocache.fill.rejections`，直到数据源追上。没有版本的值照常删除。失败时抛出，不在后台重试。
-- **支持提前刷新。** 带版本的值与其它值一样取得刷新令牌，`cocache.defaults.refresh-window` 同样作用于带版本的缓存。刷新只写回不比 Redis 中更旧的版本。数据源返回的版本比 Redis 中的旧（写入方推送得比数据源快）时，Redis 拒绝写回，实例保留自己更新的副本，退避之后再试。写入方的推送已经足够时，在声明中设置 `refreshWindow = null`（或 `cocache.caches.[name].refresh-window: 0`）。
+- **支持提前刷新。** 带版本的值与其它值一样取得刷新令牌，`cocache.defaults.refresh-window` 同样作用于带版本的缓存。刷新只写回不比 Redis 中更旧的版本。数据源返回的版本比 Redis 中的旧（写入方推送得比数据源快）时，Redis 拒绝写回，实例保留自己更新的副本，退避之后再试。更一般地，本地副本从不退回更旧的版本：刷新的令牌被别的读取抢走、或写回 Redis 失败，而数据源仍返回更旧的版本时，实例保留已有的副本（计入 `cocache.stale.discards`）。结果未知的写回按写入处理：实例丢掉自己的副本，下一次读取读 Redis。写入方的推送已经足够时，在声明中设置 `refreshWindow = null`（或 `cocache.caches.[name].refresh-window: 0`）。
 - **失败：** Redis 故障时 `putIfNewer` 抛出 `CacheWriteException`。重试同一个版本是安全的：第一次已经写入时，重试返回 `Stale(version)` 并再次发布失效，以防第一次已经写入、而单独的发布失败了。读不懂的内容的分类与[条件写入](#conditional-writes)相同。
 - 异步视图与挂起视图有同名方法。指标 `cocache.versioned.stale` 统计被拒绝的版本。
 

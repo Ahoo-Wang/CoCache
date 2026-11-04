@@ -53,11 +53,6 @@ class Digest(val algorithm: String, bytes: ByteArray) {
     val bytes: ByteArray
         get() = value.copyOf()
 
-    /**
-     * 与 [bytes] 的内容相等：存储比较 L1 头部中的摘要段时不必复制。
-     */
-    fun contentEquals(other: ByteArray): Boolean = value.contentEquals(other)
-
     override fun equals(other: Any?): Boolean {
         return this === other || (other is Digest && algorithm == other.algorithm && value.contentEquals(other.value))
     }

@@ -195,6 +195,36 @@ class GuardedFillTest {
         map["k"].assert().isSameAs(newer)
     }
 
+    /**
+     * `kept` 保留已有的副本（RFC 0005 I-K 的 L2 条款）：原样保留时不写入；留下一份改过的副本时写入它，并同样按身份复核，
+     * 复核失败时撤销它（重置期间写入的副本不能留下）。三种情形都不算写入了 [entry]。
+     */
+    @Test
+    fun keptCopiesAreNotFillsAndAreRechecked() {
+        val map = l2()
+        val current = Copy("newer")
+        map["k"] = current
+        map.fillGuarded("k", Copy("older"), { it }) { true }.assert().isFalse()
+        map["k"].assert().isSameAs(current)
+
+        val deferred = Copy("newer")
+        map.fillGuarded("k", Copy("older"), { deferred }) { true }.assert().isFalse()
+        map["k"].assert().isSameAs(deferred)
+
+        var calls = 0
+        map.fillGuarded("k", Copy("older"), { Copy("newer") }) { ++calls < 3 }.assert().isFalse()
+        map["k"].assert().isNull()
+
+        val fill = Copy("fresh")
+        map.fillGuarded("k", fill, { null }) { true }.assert().isTrue()
+        map["k"].assert().isSameAs(fill)
+
+        // 缺省的 kept 从不保留已有的副本
+        val replacing = Copy("replacing")
+        map.fillGuarded("k", replacing) { true }.assert().isTrue()
+        map["k"].assert().isSameAs(replacing)
+    }
+
     @Test
     fun aFailedPreCheckDoesNotTouchTheMap() {
         val map = Recording(l2(), Copy("unused"))

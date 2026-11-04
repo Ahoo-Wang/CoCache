@@ -34,24 +34,22 @@ import java.time.Duration
 class CapabilityDeclarationTest {
     private val all = setOf(L1Capability.CONDITIONAL, L1Capability.VERSIONED, L1Capability.SETS)
 
-    private class Protocol(
-        private val tested: CoherenceBackend,
-        override val expectedCapabilities: Set<L1Capability>
-    ) : BackendProtocolSpec() {
-        override fun createBackend(): CoherenceBackend = tested
-
-        override fun elapse(duration: Duration) = Unit
-    }
-
     /**
-     * 在规范的生命周期内运行 [case]（`setup` 与 `destroy` 之间），返回它抛出的异常。
+     * 在规范的生命周期内运行 [case]（`setup` 与 `destroy` 之间），返回它抛出的异常。规范是匿名子类：JUnit 不把它当作测试类发现
+     * （它只由这里驱动，命名的私有子类会被报告为发现阶段的问题）。
      */
     private fun failureOf(
         backend: CoherenceBackend,
         declared: Set<L1Capability>,
-        case: Protocol.() -> Unit
+        case: BackendProtocolSpec.() -> Unit
     ): Throwable? {
-        val spec = Protocol(backend, declared)
+        val spec = object : BackendProtocolSpec() {
+            override val expectedCapabilities: Set<L1Capability> = declared
+
+            override fun createBackend(): CoherenceBackend = backend
+
+            override fun elapse(duration: Duration) = Unit
+        }
         spec.setup()
         try {
             return runCatching { spec.case() }.exceptionOrNull()

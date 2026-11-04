@@ -51,7 +51,8 @@ import java.util.concurrent.CompletableFuture
  *   （Cluster）再按 `invalidateBatchSize` 切分，各组并发执行，全部结束之后才返回或抛出。
  * - **令牌**（RFC 0005 round 3 K14）：取得或交回令牌的命令（读取、回收、填充、释放）失败时，除非确定未执行
  *   （[RedisConnections.isNotExecuted]），都尽力释放该令牌：异步发出，不等待；释放失败（含断线期间被拒绝）时按退避重发，
- *   直到执行或令牌过期（[releaseQuietly]）。令牌不匹配时释放什么也不做，迟到或重连之后才到达都无害。
+ *   直到执行或令牌过期（[releaseQuietly]）。令牌不匹配时释放什么也不做，迟到或重连之后才到达都无害；连接被替换之后释放可能
+ *   先于被排空的原命令执行，那条命令取得的令牌留到它的寿命（`lease.ttl`，TLA+ F4）。
  * - **取消**：Lettuce 取消的命令（连接重置、关闭）以结果未知的 [io.lettuce.core.RedisException] 失败，从不以 `CancellationException` 报告。
  *
  * 提供全部三个能力面：条件读写（只读头部比较摘要段）、按版本有序的写入（[RedisScripts.PUT_IF_NEWER]、
@@ -375,8 +376,9 @@ internal class RedisL1Store(
     /**
      * 尽力释放令牌：异步发出，不等待（RFC 0005 round 3 K14）。释放失败时（含断线期间被拒绝）在时间轮上按退避重发
      * （[MIN_RELEASE_BACKOFF] 起倍增，至多 [MAX_RELEASE_BACKOFF]），直到执行、过了令牌的寿命 [lifetime]（`null` 为 [UNKNOWN_TOKEN_LIFETIME]，
-     * 之后令牌已失效）或连接已关闭：断线期间被拒绝的释放因此在重连之后到达，lease 不必等到 `lease.ttl`。令牌不匹配时释放什么也不做，
-     * 迟到、重复或重连之后才到达都无害。放弃时记录告警，lease 最终由 `lease.ttl` 回收。
+     * 之后令牌已失效）或连接已关闭：断线期间被拒绝的释放因此在重连之后到达，lease 通常不必等到 `lease.ttl`。令牌不匹配时释放什么也不做，
+     * 迟到、重复或重连之后才到达都无害。连接被替换之后，释放可能先于旧连接上被排空的原命令执行：令牌不匹配、释放就此结束，
+     * 原命令随后取得的令牌留到 `lease.ttl`（TLA+ F4）。放弃时记录告警，lease 最终由 `lease.ttl` 回收。
      */
     private fun releaseQuietly(key: String, token: Token, lifetime: Duration?) {
         val deadline = System.nanoTime() + (lifetime ?: UNKNOWN_TOKEN_LIFETIME).toNanos()

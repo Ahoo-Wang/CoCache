@@ -461,6 +461,29 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
+     * 带版本的缓存的 L2 不按版本后退（RFC 0005 I-K 的 L2 条款，TLA+ F3）：L2 中未过期的副本的版本大于要填充的值的版本时保留它。
+     * 能走到这里的填充，其戳在读取之后没有失效：本节点没有处理过这个 key 的写入或失效，已有的副本不是被失效的内容。
+     * 更旧的值来自落后的 loader（读从库）与没有写入 L1 的回源：刷新的填充超时、令牌被抢占，或版本拒绝（[keepRefreshedCopy]
+     * 只覆盖刷新路径上读得到 L1 副本的情形）。没有版本的值（[Versioned.NO_VERSION]、负缓存与墓碑读出的 `null`）排在任何版本之前，
+     * 所以协议之外抹掉版本的变化（L1 到期、`purge`）不经刷新替换版本更新的副本，由它自己的限龄兜底。
+     *
+     * 保留的副本已过刷新点时（这次填充就是它触发的刷新），刷新点按 [refreshBackoff] 退避，同 [keepRefreshedCopy]：
+     * 否则此后每次命中都再触发一次刷新、再读一次落后的数据源。
+     */
+    override fun keptCopy(current: LocalEntry<V>, entry: LocalEntry<V>): LocalEntry<V>? {
+        val now = clock.nowMillis()
+        if (!versionedValues || current.expiresAt <= now || versionOf(current.value) <= versionOf(entry.value)) {
+            return null
+        }
+        if (current.refreshAt > now) {
+            return current
+        }
+        return LocalEntry(current.value, current.expiresAt, minOf(now + refreshBackoff, current.expiresAt))
+    }
+
+    private fun versionOf(value: V?): Long = value?.let { format.versionOf(it) } ?: Versioned.NO_VERSION
+
+    /**
      * 带摘要段的值（权威标量）不设刷新点：`READ` 从不为它授予刷新令牌（D4），刷新只会一次次重读 L1。
      */
     private fun refreshable(envelope: Envelope): Boolean = (envelope as? Envelope.Scalar)?.digest == null
@@ -486,6 +509,10 @@ internal class CoherentEngine<K : Any, V : Any>(
         error: Exception
     ): LocalEntry<V> {
         logCorrupt(storageKey, error)
+        if ((read.envelope as? Envelope.Scalar)?.digest != null) {
+            // 带摘要段的内容（权威标量，D4）从不回收：不发出注定被拒绝的 RECLAIM，绕过 L1 回源，副本不设刷新点（P14：刷新只会再读到它）
+            return loadBypassingRemote(key, storageKey, stamp, source, refreshable = false)
+        }
         val reclaimed = try {
             reclaimRemote(storageKey, ContentFingerprint.of(read.envelope), lease)
         } catch (e: Exception) {
@@ -547,6 +574,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 结果照常返回，L2 以降级限龄填充（否则慢 key 会一直未命中）。失败时等释放完成之后再抛出原始异常。
      *
      * 版本规则（RFC 0005 §4.7）：写回让版本前进（或填充了 `E`）是一次写入（[FillOutcome.ADVANCED]），本节点按写入处理、不填 L2；
+     * 带版本的写回结果未知（[FillOutcome.UNKNOWN]）时同样处理：它可能已经或稍后让版本前进，而那一帧在本节点被过滤（TLA+ F2）；
      * 版本拒绝时，未命中路径（lease 在 `E` 上）照常返回回源值、以降级限龄写入 L2 且不设刷新点，刷新路径（[refreshed] 是取得刷新令牌的
      * 那次读取）不写回源得到的旧版本，保留 L1 中的副本并退避（[keepRefreshedCopy]）。
      */
@@ -580,7 +608,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             keepRefreshedCopy(storageKey, refreshed, stamp)?.let { return it }
         }
         val entry = completeLoad(storageKey, stamp, token, value, prepared.ttl, outcome)
-        if (outcome == FillOutcome.ADVANCED) {
+        if (outcome.possiblyAdvanced) {
             afterAdvancedFill(listOf(storageKey))
         }
         return entry
@@ -610,6 +638,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 同步与异步共用：回源结果写回 L1 之后（或没有令牌时）的计数与 L2 填充。
      * - [FillOutcome.FILLED]：L2 限龄 `localMaxAge`；
      * - [FillOutcome.ADVANCED]：这次填充是一次写入，不填 L2（调用方随后 [afterAdvancedFill]），返回回源值；
+     * - [FillOutcome.UNKNOWN]：同上，不填 L2、返回回源值，计入 `fillRejected`（填充没有确认写入）；
      * - 其余：L2 以降级限龄填充；版本拒绝（lease 在 `E` 上）的副本不设刷新点（P14：刷新只会再读到 `E`）。
      */
     @Suppress("LongParameterList")
@@ -624,6 +653,10 @@ internal class CoherentEngine<K : Any, V : Any>(
     ): LocalEntry<V> {
         if (outcome == FillOutcome.ADVANCED) {
             return localEntry(value, ttl, policy.localMaxAge)
+        }
+        if (outcome == FillOutcome.UNKNOWN) {
+            metrics.fillRejected()
+            return localEntry(value, ttl, policy.degradedLocalMaxAge)
         }
         val filled = outcome == FillOutcome.FILLED
         if (token != null && !filled) {
@@ -737,7 +770,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 令牌保护的填充（[fillOutcomeOf]）；L1 失败时只计数告警，为 [FillOutcome.NONE]。
+     * 令牌保护的填充（[fillOutcomeOf]）；L1 失败时只计数告警，结果见 [failedFillOutcome]。
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun fillRemote(fill: Fill): FillOutcome {
@@ -747,9 +780,18 @@ internal class CoherentEngine<K : Any, V : Any>(
             throw e
         } catch (e: Exception) {
             onRemoteFailure("fill", fill.key, e)
-            FillOutcome.NONE
+            failedFillOutcome(fill)
         }
     }
+
+    /**
+     * 失败的填充（TLA+ F2）：带版本的填充按结果未知处理（[FillOutcome.UNKNOWN]）。超时或连接替换时被排空的 `FILL` 可能稍后才执行，
+     * 让版本前进并广播，而那一帧在本节点被过滤；所以本节点现在就按写入递增戳、淘汰本地副本（[afterAdvancedFill]），读到旧版本的同节点
+     * 读取者不能再把它写进 L2。区分“确定未执行”的异常类型随 M5 提供（`L1Store` 的“失败”），在此之前每个失败都算结果未知；
+     * 多做的一次淘汰只多一次 L1 往返。没有版本的填充从不广播，迟到执行也只是 lease 上的写入，照常为 [FillOutcome.NONE]。
+     */
+    private fun failedFillOutcome(fill: Fill): FillOutcome =
+        if (fill.version != Versioned.NO_VERSION) FillOutcome.UNKNOWN else FillOutcome.NONE
 
     /**
      * 协程核心释放令牌（失败只计数告警），完成之后才继续。释放不可取消（[uncancellable]）：被取消的加载也要交还令牌。
@@ -1174,7 +1216,7 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     /**
      * 一次批量回源并凭各自的 lease 一次批量写回；回源失败（含 `ttlOf` 与 `Codec` 抛出）时等全部 lease 释放之后再抛出原始异常。
-     * 版本前进的写回按写入处理（[afterAdvancedFill]，整批一次）。
+     * 版本前进与结果未知的带版本写回按写入处理（[afterAdvancedFill]，整批一次）。
      *
      * @param unrefreshable 读到更高格式的 key：它们的副本不设刷新点（P14）
      */
@@ -1203,7 +1245,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
         val filled = fillAllRemote(prepared.fills)
         completeBatch(led, toLoad, values, prepared.ttls, filled, loadStamps, unrefreshable, result)
-        val advanced = filled.filterValues { it == FillOutcome.ADVANCED }.keys
+        val advanced = filled.filterValues { it.possiblyAdvanced }.keys
         if (advanced.isNotEmpty()) {
             afterAdvancedFill(advanced)
         }
@@ -1306,7 +1348,7 @@ internal class CoherentEngine<K : Any, V : Any>(
             throw e
         } catch (e: Exception) {
             onRemoteFailure("fillAll", fills.first().key, e)
-            return emptyMap()
+            return fills.associate { it.key to failedFillOutcome(it) }
         }
         return filledByKey(fills, outcomes)
     }
@@ -1614,7 +1656,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         envelope: Envelope.Scalar,
         result: L1ConditionalWrite?
     ): Boolean = when (result) {
-        is L1ConditionalWrite.Conflict -> result.current == Digest.of(envelope)
+        is L1ConditionalWrite.Conflict -> result.current == digestOf(envelope)
         // 拒绝（Unreadable）已在 mutate 中抛出，这里只剩 Written
         else -> result == L1ConditionalWrite.Written
     }
@@ -1647,8 +1689,13 @@ internal class CoherentEngine<K : Any, V : Any>(
         return failure
     }
 
+    /**
+     * 这次条件写入的摘要：权威标量的 [encode] 已算出（摘要段），不再对载荷重算；有数据源的缓存写入的值不带摘要段时才计算。
+     */
+    private fun digestOf(envelope: Envelope.Scalar): Digest = envelope.digest ?: Digest.of(envelope)
+
     private fun conditionalPutOf(envelope: Envelope.Scalar, result: L1ConditionalWrite): ConditionalPut = when (result) {
-        L1ConditionalWrite.Written -> ConditionalPut.Written(Digest.of(envelope))
+        L1ConditionalWrite.Written -> ConditionalPut.Written(digestOf(envelope))
         is L1ConditionalWrite.Conflict -> {
             metrics.conditionalConflict()
             ConditionalPut.Conflict(result.current)
@@ -2131,9 +2178,14 @@ private sealed interface RefreshStep<out V> {
 /**
  * 一次令牌保护的填充对 L2 的含义（同步与异步共用，RFC 0005 §4.7）。
  */
-private enum class FillOutcome {
+private enum class FillOutcome(
     /**
-     * 没有令牌，或填充时 L1 失败：L2 以降级限龄填充。
+     * 本节点是否按写入处理（[AbstractEngine.afterAdvancedFill]）：这次填充已经或可能让 L1 的版本前进。
+     */
+    val possiblyAdvanced: Boolean = false
+) {
+    /**
+     * 没有令牌，或不带版本的填充时 L1 失败：L2 以降级限龄填充。
      */
     NONE,
 
@@ -2145,7 +2197,7 @@ private enum class FillOutcome {
     /**
      * 已写入且是一次写入（版本前进，或填充了 `E`，[L1Fill.Filled.advanced]）：本节点按写入处理，不填 L2。
      */
-    ADVANCED,
+    ADVANCED(possiblyAdvanced = true),
 
     /**
      * 令牌不匹配：L2 以降级限龄填充。
@@ -2156,6 +2208,11 @@ private enum class FillOutcome {
      * 版本拒绝（[L1Fill.Rejected.currentVersion] 非 `null`）：未命中路径降级且不设刷新点，刷新路径保留副本并退避。
      */
     VERSION_REJECTED,
+
+    /**
+     * 带版本的填充失败，结果未知（TLA+ F2）：可能已经或稍后让版本前进。本节点按写入处理，不填 L2。
+     */
+    UNKNOWN(possiblyAdvanced = true),
 }
 
 private fun fillOutcomeOf(fill: L1Fill): FillOutcome = when (fill) {

@@ -51,7 +51,7 @@ class FutureAdapterTest {
     }
 
     @Test
-    fun aLaterFailureOfAStoreReachesTheCallerAsTheOriginalInstance() = runBlocking {
+    fun aLaterFailureOfAStoreReachesTheCallerAsTheOriginalInstance(): Unit = runBlocking {
         val future = CompletableFuture<L1Read>()
         val store = FutureL1Store.adapt(storeReading(future))
         val reading = async(start = CoroutineStart.UNDISPATCHED) { runCatching { store.read("k", null, null, null) } }
@@ -61,7 +61,7 @@ class FutureAdapterTest {
     }
 
     @Test
-    fun aLaterFailureOfAChannelReachesTheCallerAsTheOriginalInstance() = runBlocking {
+    fun aLaterFailureOfAChannelReachesTheCallerAsTheOriginalInstance(): Unit = runBlocking {
         val future = CompletableFuture<Void?>()
         val channel = FutureInvalidationChannel.adapt(mockk { every { publish(any(), any()) } returns future })
         val publishing =

@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
@@ -309,6 +310,55 @@ open class CoherentEngineTest {
         cache["k"].assert().isEqualTo("v")
         cache.metrics.reclaims.assert().isEqualTo(1)
         cache.metrics.degradedFills.assert().isEqualTo(1)
+    }
+
+    /**
+     * 有数据源的缓存读到带摘要段、却解码失败的值（同一 namespace 上另有权威缓存，D4）：计为读不懂的值，但 `RECLAIM` 从不回收它，
+     * 不发出注定被拒绝的回收；绕过 L1 回源，副本不设刷新点，L1 原样未动。单个与批量读取相同。
+     */
+    @Test
+    fun undecodableDigestContentBypassesWithoutReclaim() {
+        val reclaims = AtomicInteger()
+        val counting = object : me.ahoo.cocache.api.spi.CoherenceBackend by memory {
+            override fun store(keyspace: Keyspace): me.ahoo.cocache.api.spi.L1Store =
+                object : me.ahoo.cocache.api.spi.ForwardingL1Store(memory.store(keyspace)) {
+                    override suspend fun reclaim(
+                        key: String,
+                        observed: me.ahoo.cocache.api.spi.ContentFingerprint,
+                        lease: LeaseRequest
+                    ): Boolean {
+                        reclaims.incrementAndGet()
+                        return super.reclaim(key, observed, lease)
+                    }
+                }
+        }
+        // 设了刷新窗口：副本不设刷新点是 P14 的规则，而不是因为策略没有窗口
+        val policy = CachePolicy(
+            ttl = Duration.ofMinutes(10),
+            ttlJitter = Duration.ZERO,
+            localMaxAge = Duration.ofMinutes(8),
+            refreshWindow = Duration.ofMinutes(5)
+        )
+        val cache = runtime(backend = counting).engine(spec(policy))
+        database["k"] = "v"
+        database["b"] = "b"
+        val digested = Envelope.Scalar(TestCodec.CORRUPT, digest = Digest.ofPayload(TestCodec.CORRUPT))
+        silentPut("k", digested)
+        silentPut("b", digested)
+        cache["k"].assert().isEqualTo("v")
+        cache.getAll(listOf("b")).assert().isEqualTo(mapOf("b" to "b"))
+        reclaims.get().assert().isEqualTo(0)
+        cache.metrics.reclaims.assert().isEqualTo(2)
+        cache.metrics.typeMismatches.assert().isEqualTo(2)
+        cache.metrics.degradedFills.assert().isEqualTo(2)
+        listOf("k", "b").forEach {
+            cache.engine.inspect(it).local?.refreshAt.assert().isNull()
+            (
+                Suspending.await {
+                    memory.store(Keyspace("cocache:", name)).read(key(it), null, null, null)
+                } as L1Read.Hit
+                ).envelope.assert().isEqualTo(digested)
+        }
     }
 
     @Test
