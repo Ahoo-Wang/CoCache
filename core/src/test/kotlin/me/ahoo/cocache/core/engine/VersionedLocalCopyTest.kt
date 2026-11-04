@@ -30,6 +30,7 @@ import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.internal.Ticker
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
@@ -54,9 +55,12 @@ class VersionedLocalCopyTest {
 
     /**
      * 刷新策略：寿命 10 s，窗口 5 s，L2 限龄 8 s，降级限龄 1 s；lease 寿命长于测试的时间推进，刷新令牌不会被别的读取抢走。
+     *
+     * @param leaseWait 等待别人的 lease 的时长；`null` 为默认
      */
     private fun versioned(
         runtime: CacheRuntime,
+        leaseWait: Duration? = null,
         loader: CacheLoader<String, Versioned<String?>> = CacheLoader { database[it] }
     ): Cache<String, String> = runtime.create(
         cacheSpec<String, String>(NAME) {
@@ -69,6 +73,7 @@ class VersionedLocalCopyTest {
                 degradedLocalMaxAge = Duration.ofSeconds(1)
                 refreshWindow = Duration.ofSeconds(5)
                 load = LoadPolicy(timeout = Duration.ofSeconds(1))
+                leaseWait?.let { lease = LeasePolicy(wait = it) }
             }
         }
     )
@@ -221,6 +226,43 @@ class VersionedLocalCopyTest {
             val metrics = requireNotNull(runtime.metrics(NAME))
             metrics.fillRejected.assert().isEqualTo(2)
             metrics.staleFillsDiscarded.assert().isEqualTo(2)
+        }
+    }
+
+    /**
+     * F3 的规则也挡住未命中路径：卡住的 leader 的 loader 读到落后的版本 1，超过 `load.timeout` 被注销之后，下一次读取领头、
+     * 遇到它的 lease 直接绕过 L1 回源，以降级限龄缓存版本 2（还没到刷新点）。leader 随后凭 lease 写回版本 1（`L` 上的填充照常写入），
+     * 它对 L2 的填充遇到版本更新的副本，保留副本、计入 `staleFillsDiscarded`。
+     */
+    @Test
+    fun aLaggingLeaderDoesNotReplaceANewerLocalCopy() {
+        val ticks = AtomicLong()
+        val loaderEntered = CountDownLatch(1)
+        val loaderRelease = CountDownLatch(1)
+        val blockLoader = AtomicBoolean(true)
+        val builder = CacheRuntime.builder().backend(InMemoryBackend(clock)).clock(clock)
+        builder.ticker = Ticker { ticks.get() }
+        builder.build().use { runtime ->
+            val cache = versioned(runtime, leaseWait = Duration.ZERO) { key ->
+                val answer = database[key]
+                if (blockLoader.compareAndSet(true, false)) {
+                    loaderEntered.countDown()
+                    loaderRelease.awaitOrFail()
+                }
+                answer
+            }
+            database["k"] = Versioned("v1", 1)
+            val leader = Concurrency.fork("leader") { cache["k"] }
+            loaderEntered.awaitOrFail()
+
+            ticks.addAndGet(Duration.ofSeconds(2).toNanos())
+            database["k"] = Versioned("v2", 2)
+            cache["k"].assert().isEqualTo("v2")
+
+            loaderRelease.countDown()
+            leader.join().assert().isEqualTo("v1")
+            cache["k"].assert().isEqualTo("v2")
+            requireNotNull(runtime.metrics(NAME)).staleFillsDiscarded.assert().isEqualTo(1)
         }
     }
 

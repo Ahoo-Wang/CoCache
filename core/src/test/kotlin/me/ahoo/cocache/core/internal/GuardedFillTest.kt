@@ -218,6 +218,11 @@ class GuardedFillTest {
         val fill = Copy("fresh")
         map.fillGuarded("k", fill, { null }) { true }.assert().isTrue()
         map["k"].assert().isSameAs(fill)
+
+        // 缺省的 kept 从不保留已有的副本
+        val replacing = Copy("replacing")
+        map.fillGuarded("k", replacing) { true }.assert().isTrue()
+        map["k"].assert().isSameAs(replacing)
     }
 
     @Test
