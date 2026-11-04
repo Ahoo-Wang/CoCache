@@ -315,8 +315,8 @@ class VersionedCacheTest {
     }
 
     /**
-     * 刷新路径的版本拒绝，而取得令牌时读到的更新的值解码失败：不能以它重新填充 L2，按未命中路径降级（回源值以降级限龄写入 L2），
-     * L1 中更新的版本不变。
+     * 刷新路径的版本拒绝，而取得令牌时读到的更新的值解码失败：不能以它重新填充 L2，按未命中路径降级；L2 不按版本后退（TLA+ F3），
+     * 回源得到的更旧的值不替换已有的版本 5 的副本（计入 `staleFillsDiscarded`），L1 中更新的版本不变。
      */
     @Test
     fun versionRejectedRefreshWithAnUndecodableCopyDegrades() {
@@ -350,6 +350,8 @@ class VersionedCacheTest {
             val metrics = requireNotNull(other.metrics("refresh"))
             Concurrency.awaitCondition("the refresh was rejected") { metrics.fillRejected == 1L }
             metrics.degradedFills.assert().isEqualTo(1)
+            metrics.staleFillsDiscarded.assert().isEqualTo(1)
+            cache.getVersioned("k").assert().isEqualTo(Versioned("v5", 5))
             val hit = Suspending.await {
                 backend.store(Keyspace("cocache:", "refresh")).read("cocache:refresh:k", null, null, null)
             } as L1Read.Hit

@@ -45,7 +45,7 @@ class UncancellableTest {
      * 之后的挂起点以取消结束，调用方据此释放令牌。
      */
     @Test
-    fun aCancelledCallerStillWaitsForTheCallAndGetsItsResult() = runBlocking {
+    fun aCancelledCallerStillWaitsForTheCallAndGetsItsResult(): Unit = runBlocking {
         val command = CompletableFuture<String>()
         val started = CompletableFuture<Unit>()
         val returned = AtomicBoolean()
@@ -108,7 +108,7 @@ class UncancellableTest {
      * （测试以 `-ea` 运行，kotlinx 的调试模式开启）。
      */
     @Test
-    fun failuresAreTheOriginalException() = runBlocking {
+    fun failuresAreTheOriginalException(): Unit = runBlocking {
         val original = IllegalStateException("L1 down")
         val command = CompletableFuture<String>()
         val caller = async(start = CoroutineStart.UNDISPATCHED) {
