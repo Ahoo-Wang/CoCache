@@ -247,8 +247,8 @@ These bounds are the precise form of goal G1. "Stale" means serving a value olde
 | Other instances' L2, message lost silently | `local-max-age` | Default 5 minutes. Also the bound in `sharded` mode when a writer crashes between script and publish. A `putIfMatch` or `putIfNewer` whose publish failed is published again when the caller replays it. |
 | L2 copy that bypassed L1 (degraded fill) | `degraded-local-max-age` | Redis failure, lease wait timeout, rejected fill, unknown format, pending invalidation |
 | Invalidation still being retried | Until the retry succeeds | The writing instance skips L1. Others may refill L2 from the old L1 value. |
-| Invalidation dropped | L1's remaining TTL, on every instance | Each L2 copy expires and refills from the old L1 value. Unbounded with `ttl-forever`. Counted and logged. |
-| Writes outside the protocol, lost writes in a failover, a loader reading a lagging replica | The value's remaining TTL in L1 (`ttl`, plus or minus jitter) | Unbounded with `ttl-forever`. Negative entries: `absent-ttl`. |
+| Invalidation dropped | L1's remaining TTL, on every instance | Each L2 copy expires and refills from the old L1 value. Unbounded with `ttl: forever`. Counted and logged. |
+| Writes outside the protocol, lost writes in a failover, a loader reading a lagging replica | The value's remaining TTL in L1 (`ttl`, plus or minus jitter) | Unbounded with `ttl: forever`. Negative entries: `absent-ttl`. |
 | `@Cacheable` without `sync = true` | `ttl` | Spring's unconditional `put` bypasses the lease |
 
 ## What is not guaranteed {#not-guaranteed}

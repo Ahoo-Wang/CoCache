@@ -75,6 +75,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | `cocache.invalidations.dropped` | counter | Invalidations given up after all retries, on a full retry queue, or at shutdown. L1 still holds the old value. |
 | `cocache.invalidations.received` | counter | Invalidation messages from other instances or external writers (one per message, which may carry many keys) |
 | `cocache.resets` | counter | Times this cache cleared its whole L2 because messages may have been lost: each confirmed (re)subscription, including the first one at startup, and each failed heartbeat |
+| `cocache.ttl.clamped` | counter | Per-call lifetimes (`ttlOf` results, the `ttl` of `put(key, value, ttl)` and `putAll(entries, ttl)`) longer than `cocache.overrides.cache.ttl`, written with that override instead. The first one per cache logs a warning. See [what each layer may set](../guide/configuration.md#field-layers). |
 | `cocache.local.size` | gauge | Entries in this instance's L2 (estimated) |
 
 ### Alerts {#alerts}
@@ -188,14 +189,36 @@ A cache report:
   "type": "Cache",
   "layered": true,
   "ignoredConfiguration": [],
+  "policy": [
+    { "field": "ttl", "value": "PT10M", "source": "CACHES" },
+    { "field": "ttl-jitter", "value": "PT1M", "source": "TYPE_DEFAULT" },
+    { "field": "absent-ttl", "value": "PT1M", "source": "TYPE_DEFAULT" },
+    { "field": "local-max-age", "value": "PT2M", "source": "OVERRIDES", "detail": "tightened from PT5M" },
+    { "field": "degraded-local-max-age", "value": "PT10S", "source": "TYPE_DEFAULT" },
+    { "field": "refresh-window", "value": "off", "source": "TYPE_DEFAULT" },
+    { "field": "lease-ttl", "value": "PT10S", "source": "TYPE_DEFAULT" },
+    { "field": "lease-wait", "value": "PT0.2S", "source": "TYPE_DEFAULT" },
+    { "field": "load-max-concurrent", "value": "32", "source": "CACHES" },
+    { "field": "load-acquire-timeout", "value": "PT1S", "source": "TYPE_DEFAULT" },
+    { "field": "load-timeout", "value": "PT30S", "source": "TYPE_DEFAULT" },
+    { "field": "read-timeout", "value": "command-timeout", "source": "TYPE_DEFAULT" },
+    { "field": "local-maximum-size", "value": "100000", "source": "DECLARATION" },
+    { "field": "invalidate-failure", "value": "retry", "source": "TYPE_DEFAULT" },
+    { "field": "read-failure", "value": "degrade", "source": "TYPE_DEFAULT" }
+  ],
+  "skippedConfiguration": [
+    { "key": "cocache.overrides.cache.lease-wait", "layer": "cocache.overrides.cache", "reason": "not allowed in cocache.overrides: only staleness bounds and read-failure tighten" }
+  ],
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
-  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0, "typeMismatches": 0, "readsUnknown": 0, "unversionedAbsentRefusals": 0 }
+  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0, "typeMismatches": 0, "readsUnknown": 0, "unversionedAbsentRefusals": 0, "ttlClamped": 0 }
 }
 ```
 
-`type` is the cache's API type (`Cache`, `VersionedCache`, `Store`, `VersionedStore` or `SetStore`). `layered: false` marks a cache created directly with `CacheRuntime.create`: configuration doesn't apply to it, and `ignoredConfiguration` lists the `cocache.caches.[name]` entries that name it ([CoCacheFactory](../guide/caches.md#factory)). The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{level=l2}` (present only when the L2 hit counter is on), `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, `loadTimeouts` is `cocache.load.timeouts`, `staleVersions` is `cocache.versioned.stale`, `typeMismatches` is `cocache.type.mismatch`, `readsUnknown` is `cocache.reads.unknown`, `unversionedAbsentRefusals` is `cocache.fill.unversioned.absent`, `fillsGated` is `cocache.fills.gated`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
+`type` is the cache's API type (`Cache`, `VersionedCache`, `Store`, `VersionedStore` or `SetStore`). `layered: false` marks a cache created directly with `CacheRuntime.create`: configuration doesn't apply to it, and `ignoredConfiguration` lists the `cocache.caches.[name]` entries that name it ([CoCacheFactory](../guide/caches.md#factory)).
+
+`policy` lists every field that applies to the cache, in the order of the [policy properties](../guide/configuration.md#policy-properties), with its effective value and the layer it came from (`source`; [sources](../guide/configuration.md#policy-report)). `detail`, when present, says more: the value before `cocache.overrides` tightened it, the customizer's class, the library whose constraint changed it, or why the validation chain turned the refresh window off. `skippedConfiguration` lists the global-layer entries skipped for this cache, with the `layer` and the `reason`: not applicable to its type, not allowed in that layer, or locked by a library. An unlayered cache has both lists empty. The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{level=l2}` (present only when the L2 hit counter is on), `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, `loadTimeouts` is `cocache.load.timeouts`, `staleVersions` is `cocache.versioned.stale`, `typeMismatches` is `cocache.type.mismatch`, `readsUnknown` is `cocache.reads.unknown`, `unversionedAbsentRefusals` is `cocache.fill.unversioned.absent`, `fillsGated` is `cocache.fills.gated`, `ttlClamped` is `cocache.ttl.clamped`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
 
 ### Encoded keys {#encoded-key}
 
@@ -291,4 +314,10 @@ Loggers live under `me.ahoo.cocache`. Lines worth an alert or a dashboard:
 | `WARN` | `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` | Startup probe fell back, see [channel mode](./index.md#channel-mode) |
 | `WARN` | `@Cacheable on … uses CoCache cache … without sync = true …` | A Spring Cache method isn't lease-protected, see [Spring Cache](../guide/spring-cache.md#use-sync-true) |
 | `WARN` | `CoCache uses the in-memory backend …` | `cocache.backend=memory` in a deployed environment is a misconfiguration |
+| `INFO` | `Cache[…] - policy: ttl=PT10M (caches), local-max-age=PT2M (overrides, tightened from PT5M), ….` | One line per layered cache at creation: the fields whose value doesn't come from the type default, with their source ([effective values](../guide/configuration.md#policy-report)) |
+| `WARN` | `Cache[…] - cocache.defaults.store cocache.defaults.store.ttl skipped: not allowed in cocache.defaults.` | A global-layer entry skipped for this cache: not applicable to its type, not allowed in that layer, or locked by a library. Listed under the endpoint's `skippedConfiguration` too. |
+| `WARN` | `Cache[…] - refresh-window=off (clamped, turned off: …).` / `Cache[…] - … (unlocked, unlocked, was locked by …).` | The validation chain turned a refresh window off after a global layer caused a conflict, or `cocache.caches.[name].unlock` overrode a library's lock |
+| `WARN` | `Cache[…] - per-call ttl[…] exceeds the ceiling[…] from cocache.overrides and was clamped …` | The first per-call lifetime clamped by `cocache.overrides.cache.ttl`; later ones count in `cocache.ttl.clamped` |
+| `WARN` | `Cache[…] - [cocache.caches.…] don't apply: the cache was created directly through CacheRuntime.create, not CoCacheFactory, …` | A per-cache entry names an unlayered cache, so nothing in it takes effect ([CoCacheFactory](../guide/caches.md#factory)) |
+| `WARN` | `cocache.caches configures undeclared caches […]; declared caches: […].` | A per-cache entry names no cache, with `cocache.caches-validation: warn` (the default `fail` stops startup) |
 | `INFO` | `Invalidation channel[…] subscribed - reset subscribers.` and `Cache[…] - reset: clear local copies.` | A (re)subscription cleared L2. Expected at startup and after reconnects. |

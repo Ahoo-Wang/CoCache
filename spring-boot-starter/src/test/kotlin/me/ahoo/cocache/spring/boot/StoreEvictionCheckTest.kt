@@ -79,26 +79,30 @@ class StoreEvictionCheckTest {
         return appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage }
     }
 
-    @Test
-    fun warnsWhenAPrimaryEvictsAnyKey() {
-        val backend = redisWith(mapOf("10.0.0.1:6379" to "allkeys-lru", "10.0.0.2:6379" to "noeviction"))
-        val logs = warnings {
-            check(backend, CoCacheProperties.EvictionCheck.WARN).afterSingletonsInstantiated()
-        }
-        logs.single().assert().contains(
-            "[index]"
-        ).contains("allkeys-lru").contains("10.0.0.1:6379").doesNotContain("10.0.0.2")
-    }
+    private fun failure(block: () -> Unit): Throwable? = runCatching(block).exceptionOrNull()
 
+    /**
+     * `allkeys-*` 可能驱逐任何 key，权威缓存的唯一副本无法恢复：无论 `store-eviction-check` 是什么都启动失败（S22）。
+     */
     @Test
-    fun failModeStopsStartup() {
-        val backend = redisWith(mapOf("redis" to "allkeys-lfu"))
-        runCatching {
-            check(backend, CoCacheProperties.EvictionCheck.FAIL).afterSingletonsInstantiated()
+    fun allKeysPolicyFailsInEveryMode() {
+        val backend = redisWith(mapOf("10.0.0.1:6379" to "allkeys-lru", "10.0.0.2:6379" to "noeviction"))
+        CoCacheProperties.EvictionCheck.entries.forEach { mode ->
+            failure { check(backend, mode).afterSingletonsInstantiated() }.assert()
+                .isInstanceOf(IllegalStateException::class.java)
+                .hasMessageContaining("[index]")
+                .hasMessageContaining("allkeys-lru")
+                .hasMessageContaining("10.0.0.1:6379")
+                .hasMessageNotContaining("10.0.0.2")
         }
-            .exceptionOrNull().assert().isInstanceOf(
-                IllegalStateException::class.java
-            ).hasMessageContaining("allkeys-lfu")
+        // ttl 有限的权威缓存同样
+        failure {
+            check(
+                redisWith(mapOf("redis" to "allkeys-lfu")),
+                CoCacheProperties.EvictionCheck.OFF,
+                setCaches = mapOf("recent" to Duration.ofHours(1))
+            ).afterSingletonsInstantiated()
+        }.assert().isInstanceOf(IllegalStateException::class.java).hasMessageContaining("allkeys-lfu")
     }
 
     @Test
@@ -123,44 +127,56 @@ class StoreEvictionCheckTest {
     }
 
     /**
-     * volatile-* 驱逐设置了过期时间的 key：只列出 ttl 有限的权威缓存，`fail` 下也只告警（这些数据本来就会过期）。
+     * `store-eviction-check` 只管 `volatile-*` 且有 ttl 有限的权威缓存（它们可能在到期前被驱逐）：只列出 ttl 有限的缓存，
+     * `warn`（默认）告警，`fail` 启动失败，`off` 不检查。
      */
     @Test
-    fun volatilePolicyWarnsAboutStoresWithAFiniteTtl() {
+    fun volatilePolicyWithAFiniteTtlFollowsTheMode() {
         val backend = redisWith(mapOf("10.0.0.1:6379" to "volatile-ttl"))
         val setCaches = mapOf("index" to null, "recent" to Duration.ofHours(1))
-        val logs = warnings {
+        warnings {
+            check(backend, CoCacheProperties.EvictionCheck.WARN, setCaches = setCaches).afterSingletonsInstantiated()
+        }.single().assert().contains("[recent]").contains("volatile-ttl").doesNotContain("index")
+        failure {
             check(backend, CoCacheProperties.EvictionCheck.FAIL, setCaches = setCaches).afterSingletonsInstantiated()
-        }
-        logs.single().assert().contains("[recent]").contains("volatile-ttl").doesNotContain("index")
+        }.assert().isInstanceOf(IllegalStateException::class.java)
+            .hasMessageContaining("[recent]")
+            .hasMessageContaining("store-eviction-check=off")
+        warnings {
+            check(backend, CoCacheProperties.EvictionCheck.OFF, setCaches = setCaches).afterSingletonsInstantiated()
+        }.assert().isEmpty()
     }
 
     /**
-     * 读不到策略（Redis 用户没有 INFO 权限）：不再静默跳过。没有配置假定值时按 mode 告警或启动失败；配置了则按它判断。
+     * 读不到策略（Redis 用户没有 INFO 权限）又没有配置假定值：无论 `store-eviction-check` 是什么都启动失败（S22）；
+     * 配置了假定值则按它判断，读得到时以实际的值为准。
      */
     @Test
-    fun unreadablePolicyIsReportedUnlessAssumed() {
+    fun unreadablePolicyFailsUnlessAssumed() {
         val unreadable = redisWith(null)
-        warnings {
-            check(unreadable, CoCacheProperties.EvictionCheck.WARN).afterSingletonsInstantiated()
-        }.single().assert().contains("[index]").contains("+info").contains("assume-maxmemory-policy")
-        runCatching { check(unreadable, CoCacheProperties.EvictionCheck.FAIL).afterSingletonsInstantiated() }
-            .exceptionOrNull().assert().isInstanceOf(
-                IllegalStateException::class.java
-            ).hasMessageContaining("INFO memory")
+        CoCacheProperties.EvictionCheck.entries.forEach { mode ->
+            failure { check(unreadable, mode).afterSingletonsInstantiated() }.assert()
+                .isInstanceOf(IllegalStateException::class.java)
+                .hasMessageContaining("[index]")
+                .hasMessageContaining("INFO memory")
+                .hasMessageContaining("+info")
+                .hasMessageContaining("assume-maxmemory-policy")
+        }
         warnings {
             check(unreadable, CoCacheProperties.EvictionCheck.FAIL, "noeviction").afterSingletonsInstantiated()
         }.assert().isEmpty()
-        runCatching {
+        failure {
+            check(unreadable, CoCacheProperties.EvictionCheck.OFF, "allkeys-lru").afterSingletonsInstantiated()
+        }.assert().isInstanceOf(IllegalStateException::class.java).hasMessageContaining("assumed=allkeys-lru")
+        // 假定的 volatile-* 照常按 mode 判断
+        warnings {
             check(
                 unreadable,
-                CoCacheProperties.EvictionCheck.FAIL,
-                "allkeys-lru"
+                CoCacheProperties.EvictionCheck.WARN,
+                "volatile-lru",
+                setCaches = mapOf("recent" to Duration.ofHours(1))
             ).afterSingletonsInstantiated()
-        }
-            .exceptionOrNull().assert().isInstanceOf(
-                IllegalStateException::class.java
-            ).hasMessageContaining("assumed=allkeys-lru")
+        }.single().assert().contains("[recent]").contains("assumed=volatile-lru")
         // 读得到时以实际的值为准
         warnings {
             check(redisWith(mapOf("redis" to "noeviction")), CoCacheProperties.EvictionCheck.FAIL, "allkeys-lru")
@@ -180,12 +196,12 @@ class StoreEvictionCheckTest {
     }
 
     @Test
-    fun skipsWithoutStoresOffModeOrNonRedisBackend() {
+    fun skipsWithoutStoresOrNonRedisBackend() {
         val backend = redisWith(mapOf("redis" to "allkeys-lru"))
         // 没有权威缓存：不读取策略
-        check(backend, CoCacheProperties.EvictionCheck.FAIL, setCaches = emptyMap()).afterSingletonsInstantiated()
-        verify(exactly = 0) { backend.maxmemoryPolicies() }
-        check(backend, CoCacheProperties.EvictionCheck.OFF).afterSingletonsInstantiated()
+        CoCacheProperties.EvictionCheck.entries.forEach { mode ->
+            check(backend, mode, setCaches = emptyMap()).afterSingletonsInstantiated()
+        }
         verify(exactly = 0) { backend.maxmemoryPolicies() }
         val memory: CoherenceBackend = InMemoryBackend()
         check(memory, CoCacheProperties.EvictionCheck.FAIL).afterSingletonsInstantiated()
@@ -271,7 +287,7 @@ class StoreEvictionCheckTest {
                     }
                 }
             })
-            .withPropertyValues("cocache.caches.LazyIndex.ttl=120")
+            .withPropertyValues("cocache.caches.LazyIndex.ttl=120s")
             .withInitializer { context ->
                 context.addBeanFactoryPostProcessor { factory ->
                     factory.getBeanDefinition("LazyIndex").isLazyInit = true

@@ -111,8 +111,8 @@ class AnnotatedCacheFactory(
                         { encoder -> it.keyEncoder = encoder }
                     )
                     it.codec = codecOf(annotation?.codec, valueType)
-                    it.unknownRead = unknownReadOf(annotation)
-                    it.policy = policyOf(type, cacheName, annotation, StoreSpec.DEFAULT_POLICY)
+                    unknownReadOf(annotation)?.let { mode -> it.unknownRead = mode }
+                    it.policy(policyOf(type, cacheName, annotation))
                 }.build()
             }
             VersionedStore::class.java -> {
@@ -125,8 +125,8 @@ class AnnotatedCacheFactory(
                         { encoder -> it.keyEncoder = encoder }
                     )
                     it.codec = codecOf(annotation?.codec, valueType)
-                    it.unknownRead = unknownReadOf(annotation)
-                    it.policy = policyOf(type, cacheName, annotation, VersionedStoreSpec.DEFAULT_POLICY)
+                    unknownReadOf(annotation)?.let { mode -> it.unknownRead = mode }
+                    it.policy(policyOf(type, cacheName, annotation))
                 }.build()
             }
             else -> {
@@ -139,7 +139,7 @@ class AnnotatedCacheFactory(
                         { encoder -> it.keyEncoder = encoder }
                     )
                     it.elementCodec = codecOf(annotation?.codec, valueType)
-                    it.policy = policyOf(type, cacheName, annotation, SetStoreSpec.DEFAULT_POLICY)
+                    it.policy(policyOf(type, cacheName, annotation))
                 }.build()
             }
         }
@@ -161,7 +161,7 @@ class AnnotatedCacheFactory(
                 "@CoCache(source = EXTERNAL) cannot name a loader on Cache interface[${type.name}]: an externally sourced cache has no data source."
             }
             builder.externallySourced()
-            builder.unknownRead = unknownReadOf(annotation)
+            unknownReadOf(annotation)?.let { builder.unknownRead = it }
         } else {
             when (val source = sourceOf(annotation?.loader, keyType, valueType)) {
                 is CacheLoader<*, *> -> builder.loader = source as CacheLoader<Any, Any>
@@ -174,7 +174,7 @@ class AnnotatedCacheFactory(
                 )
             }
         }
-        builder.policy = policyOf(type, cacheName, annotation, CachePolicy.DEFAULT)
+        builder.policy(policyOf(type, cacheName, annotation))
         return builder.build()
     }
 
@@ -199,7 +199,7 @@ class AnnotatedCacheFactory(
                     "or extend VersionedStore when the data cannot be rebuilt from a source."
             )
         }
-        builder.policy = policyOf(type, cacheName, annotation, CachePolicy.DEFAULT)
+        builder.policy(policyOf(type, cacheName, annotation))
         return builder.build()
     }
 
@@ -222,10 +222,11 @@ class AnnotatedCacheFactory(
         }
     }
 
-    private fun unknownReadOf(annotation: CoCache?): UnknownReadMode = when (annotation?.unknownRead) {
-        CoCache.UnknownRead.ABSENT -> UnknownReadMode.ABSENT
-        CoCache.UnknownRead.THROW, null -> UnknownReadMode.THROW
-    }
+    /**
+     * 注解写出的 `unknownRead`：注解的默认值 `THROW` 与 spec 的默认值相同，不算声明写出（字段三态），返回 `null`。
+     */
+    private fun unknownReadOf(annotation: CoCache?): UnknownReadMode? =
+        UnknownReadMode.ABSENT.takeIf { annotation?.unknownRead == CoCache.UnknownRead.ABSENT }
 
     /**
      * 权威类型没有数据源（RFC 0005 §4.1）：静默忽略 `loader` 会让使用者误以为未命中会回源，因此启动失败。
@@ -335,8 +336,11 @@ class AnnotatedCacheFactory(
         return candidates.toList()
     }
 
-    private fun policyOf(type: Class<*>, cacheName: String, annotation: CoCache?, base: CachePolicy): CachePolicy {
-        val builder = base.toBuilder()
+    /**
+     * 注解写出的策略字段（字段三态）：只有设置了的属性记为声明写出，其余留给 `cocache.defaults` 与类型默认值。
+     */
+    private fun policyOf(type: Class<*>, cacheName: String, annotation: CoCache?): CachePolicy.Builder.() -> Unit = {
+        val builder = this
         annotation?.let {
             when (it.ttl) {
                 CoCache.UNSET -> Unit
@@ -351,8 +355,7 @@ class AnnotatedCacheFactory(
                 builder.refreshWindow = window.takeUnless { window.isZero }
             }
         }
-        type.getAnnotation(CaffeineCache::class.java)?.let { builder.local = localPolicyOf(it, base.local) }
-        return builder.build()
+        type.getAnnotation(CaffeineCache::class.java)?.let { builder.local = localPolicyOf(it, builder.local) }
     }
 
     private fun localPolicyOf(caffeine: CaffeineCache, base: LocalPolicy): LocalPolicy {

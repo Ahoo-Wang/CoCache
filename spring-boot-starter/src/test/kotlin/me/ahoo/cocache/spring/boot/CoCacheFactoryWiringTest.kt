@@ -24,6 +24,7 @@ import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.StoreSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.storeSpec
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
@@ -107,7 +108,7 @@ class CoCacheFactoryWiringTest {
             assertThat(context).hasNotFailed()
             context.getBean(CoCacheFactory::class.java).assert().isSameAs(context.getBean("customFactory"))
             context.getBean(CacheRuntime::class.java).policy("revoked")?.localMaxAge
-                .assert().isEqualTo(StoreSpec.DEFAULT_POLICY.localMaxAge)
+                .assert().isEqualTo(DefaultPolicies.STORE.localMaxAge)
         }
     }
 
@@ -144,7 +145,7 @@ class CoCacheFactoryWiringTest {
                 .run { context ->
                     assertThat(context).hasNotFailed()
                     val runtime = context.getBean(CacheRuntime::class.java)
-                    runtime.policy("direct")?.localMaxAge.assert().isEqualTo(StoreSpec.DEFAULT_POLICY.localMaxAge)
+                    runtime.policy("direct")?.localMaxAge.assert().isEqualTo(DefaultPolicies.STORE.localMaxAge)
                     val endpoint = context.getBean(CoCacheEndpoint::class.java)
                     requireNotNull(endpoint.cache("direct")).ignoredConfiguration
                         .assert().containsExactly("cocache.caches.direct")

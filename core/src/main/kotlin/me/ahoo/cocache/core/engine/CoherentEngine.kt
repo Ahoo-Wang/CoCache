@@ -110,7 +110,9 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * 回源并发许可（bulkhead）：同步与异步变体共用一个按到达顺序交接的信号量，只计 SingleFlight leader。
      */
-    private val permits: Semaphore? = policy.load.maxConcurrent.takeIf { it > 0 }?.let { Semaphore(it) }
+    private val ttlCeiling: Duration? = policy.ttlCeiling
+    private val ttlClampWarned = AtomicBoolean(false)
+    private val permits: Semaphore? = policy.load.maxConcurrent?.let { Semaphore(it) }
     private val loadObserver: LoadObserver = context.loadObserver
     private val fillObserver: FillObserver = context.fillObserver
     private val loadTimeout: Duration = policy.load.timeout
@@ -739,7 +741,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (format.isTombstone(value)) {
             return policy.tombstoneTtl()?.boundedTtl()
         }
-        return (spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl())?.boundedTtl()
+        return (spec.ttlOf?.ttlOf(key, value)?.let(::perCallTtl) ?: policy.valueTtl())?.boundedTtl()
     }
 
     /**
@@ -1721,7 +1723,29 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * `put` 的默认寿命：`ttlOf` 优先，否则策略寿命加抖动。
      */
-    internal fun putTtl(key: K, value: V): Duration? = spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl()
+    internal fun putTtl(
+        key: K,
+        value: V
+    ): Duration? = spec.ttlOf?.ttlOf(key, value)?.let(::perCallTtl) ?: policy.valueTtl()
+
+    /**
+     * 按调用给出的寿命（`ttlOf` 的结果、`put(k, v, ttl)` 的参数）不超过 [CachePolicy.ttlCeiling]（`cocache.overrides` 的 `ttl`，S8）：
+     * 超过时钳制到它，计入 `cocache.ttl.clamped`，每个缓存第一次告警。没有上限时原样返回。策略自身的寿命（含抖动）不经过它。
+     */
+    internal fun perCallTtl(ttl: Duration): Duration {
+        val ceiling = ttlCeiling ?: return ttl
+        if (ttl <= ceiling) {
+            return ttl
+        }
+        metrics.ttlClamped()
+        if (ttlClampWarned.compareAndSet(false, true)) {
+            log.warn {
+                "Cache[$name] - per-call ttl[$ttl] exceeds the ceiling[$ceiling] from cocache.overrides and was clamped " +
+                    "(further clamps are counted in cocache.ttl.clamped)."
+            }
+        }
+        return ceiling
+    }
 
     /**
      * 编码在第一次递增之前（异步变体在调用方线程上）完成。

@@ -112,7 +112,7 @@ views.getVersioned(id)                            // Versioned(view, version)，
 - **顺序只在条目存活期间成立。** 值或墓碑过期之后，key 中没有版本，任何版本（包括更旧的）都能再次写入。按重复投递的时间范围设置 `ttl`（以及 `tombstoneTtl`）。把流重放到最新位置的写入方最终总会写到最新版本，所以过期之后的陈旧以那次重放为界。
 - **没有丢掉版本的写入。** 带版本的类型没有 `put`、`putIfMatch` 与普通的 `invalidate`。去掉版本的途径只有 `purge(key)`（删除 key，之后任何版本都能写入；从不重试，失败时抛出）、过期，以及 CoCache 之外的工具。
 - **`evict(key)` 保留版本。** `VersionedCache` 在每个实例上丢弃副本，并把 Redis 中带版本的值或墓碑换成一个保留版本的淘汰标记：下一次读取从数据源加载，迟到的旧版本仍被拒绝。数据源落后于 Redis 中的版本时，这次加载的结果照常返回（在 L2 中保留 `degraded-local-max-age`），但不写入 Redis，计入 `cocache.fill.rejections`，直到数据源追上。没有版本的值照常删除。标记存活 `tombstoneTtl`。失败时抛出，不在后台重试。端点的按 key `DELETE`（`CacheAdmin.invalidateEncoded`）在 `VersionedCache` 上是 `evict`，在 `VersionedStore` 上是 `purge`。
-- **提前刷新照常工作**（`VersionedCache`）。带版本的值像其它值一样取得刷新令牌，`cocache.defaults.refresh-window` 同样作用于它。刷新只写回不低于 Redis 中版本的值。数据源返回的版本比 Redis 中的更旧时（写入方推得比数据源快），Redis 拒绝它，实例保留更新的副本，退避后再试。更一般地，本地副本从不退回更旧的版本：刷新的令牌被别的读取抢走、或写回 Redis 失败，而数据源仍返回更旧的版本时，实例保留已有的副本（计入 `cocache.stale.discards`）。结果未知的写回按写入处理：实例丢掉自己的副本，下一次读取读 Redis。写入方的推送已经足够时，在声明中设置 `refreshWindow = null`（或 `cocache.caches.[name].refresh-window: 0`）。
+- **提前刷新照常工作**（`VersionedCache`）。带版本的值像其它值一样取得刷新令牌，声明没有写出 `refreshWindow` 时，`cocache.defaults.cache.refresh-window` 同样作用于它。刷新只写回不低于 Redis 中版本的值。数据源返回的版本比 Redis 中的更旧时（写入方推得比数据源快），Redis 拒绝它，实例保留更新的副本，退避后再试。更一般地，本地副本从不退回更旧的版本：刷新的令牌被别的读取抢走、或写回 Redis 失败，而数据源仍返回更旧的版本时，实例保留已有的副本（计入 `cocache.stale.discards`）。结果未知的写回按写入处理：实例丢掉自己的副本，下一次读取读 Redis。写入方的推送已经足够时，在声明中设置 `refreshWindow = off()`（或 `cocache.caches.[name].refresh-window: off`）。
 - **失败：** Redis 故障时 `putIfNewer` 抛出 `CacheWriteException`。重试同一个版本是安全的：第一次已经生效时，重试返回 `Stale(version)` 并再次发布失效，以防第一次写入生效而单独的发布失败了。读不懂的内容的分类同[条件写入](#conditional-writes)。
 - 异步视图与挂起视图有同样的方法。指标 `cocache.versioned.stale` 统计被拒绝的版本。
 
@@ -198,7 +198,7 @@ new ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7");
 
 | 配置 | 默认值 | 约束 | 更短意味着 | 建议 |
 |------|--------|------|------------|------|
-| `ttl` | 1 小时 | CoCache 听不到的变更 | 更多重新加载 | 所有写入方都失效时可以很长，此时 `ttl-forever` 也安全。有写入方无法失效时调短。 |
+| `ttl` | 1 小时 | CoCache 听不到的变更 | 更多重新加载 | 所有写入方都失效时可以很长，此时 `ttl: forever` 也安全。有写入方无法失效时调短。 |
 | `ttl-jitter` | 1 分钟 | — | — | 打散过期时间，一起加载的 key 不会一起过期。实际幅度不超过 `ttl / 2`。 |
 | `absent-ttl` | 1 分钟 | 查询缓存了“不存在”之后，新建的行多久不可见 | 不存在的 key 被加载得更频繁 | 保持较短，或者在新建行时失效该 key。 |
 | `local-max-age` | 5 分钟 | 失效消息丢失时 L2 的陈旧 | 每个 key 每个周期多一次 Redis 读取 | 对命中路径没有任何开销。几分钟的偏差都不能接受的数据可以调低。 |
@@ -209,16 +209,17 @@ new ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7");
 ```yaml
 cocache:
   defaults:
-    local-max-age: 2m
+    cache:
+      local-max-age: 2m      # 没有自己声明的派生缓存都用它
   caches:
     "[UserCache]":
-      ttl-forever: true      # 所有写入方都会失效
+      ttl: forever           # 所有写入方都会失效
     "[PriceCache]":
       ttl: 30s               # 由无法失效的系统写入
       absent-ttl: 5s
 ```
 
-不写单位的数字按秒解析。更短的时长请写单位：`lease-wait: 500ms`，而不是 `lease-wait: 0.5`。
+每个时长都必须带单位：`lease-wait: 500ms`、`ttl: 30s`。不带单位的数字让启动失败（见[时长](./configuration.md#durations)）。事故中，`cocache.overrides.cache.local-max-age` 或 `cocache.overrides.cache.ttl` 一次缩短所有派生缓存的界限，且不削弱任何声明（见[各层能设置什么](./configuration.md#field-layers)）。
 
 表中是派生类型的默认值。`Store`、`VersionedStore` 与 `SetStore` 以自己的[默认策略](./caches.md#store-defaults)为起点：`ttl` 永不过期、`local-max-age` 30 秒、`absent-ttl` 10 秒。
 
@@ -242,7 +243,7 @@ cocache:
 - 刷新失败或被跳过只记日志。值照常过期，所以陈旧度上界从不依赖刷新。
 - 刷新在一个有界线程池中执行（最多 4 个线程，队列 1024）。池满时跳过刷新，计入 `cocache.refresh.rejections`。[`cocache.refresh-executor`](./configuration.md#executors) 可以指定改用另一个 `Executor` bean。
 
-要关闭声明中开启的窗口，可以任选其一：在[配置项](./configuration.md#policy-properties)中写 `refresh-window: 0`、`@CoCache(refreshWindow = 0)`，或在[定制器](./caches.md#customizer)中把 `refreshWindow` 设为 `null`。
+要关闭声明中开启的窗口，可以任选其一：在 `cocache.caches.[name]` 下写 `refresh-window: off`（见[配置项](./configuration.md#policy-properties)）、`@CoCache(refreshWindow = 0)`，或在[定制器](./caches.md#customizer)中设置 `refreshWindow = off()`。全局层让窗口对 `ttl` 或 `local-max-age` 而言过长时，这个缓存的窗口被关闭并告警（见[校验](./configuration.md#validation)）。
 
 ## 写入时 Redis 故障 {#redis-down}
 
@@ -255,7 +256,7 @@ cocache:
 
 - 默认（`invalidate-failure: retry`）调用**不抛出**：删除派生副本在任何时刻都安全，而失效通常在提交之后执行，抛出异常什么也回滚不了。删除交给有界的重试队列：最多 8 次，退避从 100 毫秒起翻倍到 10 秒，最多同时排队 10 000 个。外部来源的缓存也是如此。
 - 重试期间，本实例上该 key 的未命中跳过 Redis（其中仍是旧值），直接从数据源加载。外部来源的缓存这期间读到 `null`，那是未填充的答案而不是负缓存，因此 `get(key, loader)` 仍会调用它的 loader。
-- 重试耗尽或队列溢出时，CoCache 记录错误日志并计入 `cocache.invalidations.dropped`。其它实例此后可能从 Redis 重新加载旧值，直到它过期，所以上界是该值的剩余寿命。`ttl-forever` 时没有上界：Redis 恢复后请再失效一次。
+- 重试耗尽或队列溢出时，CoCache 记录错误日志并计入 `cocache.invalidations.dropped`。其它实例此后可能从 Redis 重新加载旧值，直到它过期，所以上界是该值的剩余寿命。`ttl: forever` 时没有上界：Redis 恢复后请再失效一次。
 - 设置 `invalidate-failure: throw` 时，调用改为抛出 `CacheWriteException`，由你决定如何处理。
 
 派生缓存上的 **`Cache.put`** 与 **`putAll`** 同样按 `invalidate-failure` 处理：

@@ -103,7 +103,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 **原因**。某次 `Cache.invalidate` 没能写到 Redis。默认（`invalidate-failure: retry`）下，本地效果立即生效，调用正常返回，失效在后台重试：最多 8 次，退避从 100 ms 起翻倍到 10 s，最多排队 10,000 个。重试期间，本实例上该 key 的未命中会跳过 L1 直接回源。其它实例的 L1 中仍是旧值。
 
-重试耗尽、队列已满或应用在仍有重试时关闭，失效就会被放弃。此时 L1 保留旧值直到其剩余 `ttl` 结束（`ttl-forever` 时永远保留），每个实例都可能把它重新加载进 L2。
+重试耗尽、队列已满或应用在仍有重试时关闭，失效就会被放弃。此时 L1 保留旧值直到其剩余 `ttl` 结束（`ttl: forever` 时永远保留），每个实例都可能把它重新加载进 L2。
 
 **检查**。Redis 的可用性与延迟、`cocache.remote.failures`，以及 `ERROR` 日志中被放弃的 key。
 
@@ -165,8 +165,16 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 
 | 错误信息（节选） | 原因 | 处理 |
 |------------------|------|------|
-| `cocache.caches configures undeclared caches [x]; declared caches: […]` | `cocache.caches.[name]` 中出现了不存在的缓存，通常是拼写错误。缓存名不区分大小写匹配 | 修正名称或删除该项 |
-| `Cache[x] - … must be positive …`、`refreshWindow[…] must be less than ttl[…] - ttlJitter[…]`、`refreshWindow[…] must be less than localMaxAge[…]` | 所有配置层叠加之后策略不合法 | 修正取值。不写单位的时长按秒解析 |
+| `cocache.caches configures undeclared caches [x]; declared caches: […]` | `cocache.caches.[name]` 中出现了不存在的缓存，通常是拼写错误。缓存名不区分大小写匹配 | 修正名称或删除该项。`cocache.caches-validation: warn` 把它改为告警（见[校验](../guide/configuration.md#validation)） |
+| `cocache.defaults.cache.ttl: "60" needs a unit, e.g. 60s, 5m, PT2M.` / `… is not a duration; write it with a unit …` / `… must be positive; write unlimited for no limit.` | 时长没有单位（包括 `cocache.redis.*`）、哨兵值写错，或 `load-max-concurrent: 0` | 写上单位或哨兵值：`forever`、`off`、`unlimited`（见[时长](../guide/configuration.md#durations)） |
+| `Cache[x] - cocache.caches.x.… doesn't apply to …` | 按缓存的配置项是该缓存类型没有的字段，例如 `Store` 上的 `refresh-window`（见[哪些配置项适用](../guide/configuration.md#applicability)） | 删除该配置项。`cocache.caches-validation: warn` 时只告警 |
+| `Cache[x] - cocache.caches.x.… is locked by …; list … in cocache.caches.x.unlock to override it.` | 创建这个缓存的库锁定了该字段 | 删除该条目；有意覆盖库时在 `unlock` 中列出该字段（见[锁定](../guide/configuration.md#locks)） |
+| `Cache[x] - customizer … changed …, which is locked by ….` / `customizer … changed the data source …` | `CacheSpecCustomizer` 修改了被锁定的字段、布局或 loader | 在 `supports(cacheName)` 中排除这个缓存，或只修改未锁定的策略字段 |
+| `Cache[x] - … must be positive …`、`refreshWindow[…] must be less than ttl[…] - ttlJitter[…]`、`refreshWindow[…] must be less than localMaxAge[…]` | 所有配置层叠加之后策略不合法，由声明引起，或牵涉 `cocache.caches.[name]` 所设的字段。只由全局层引起的冲突改为关闭窗口（见[校验](../guide/configuration.md#validation)） | 修正取值 |
+| `VersionedStore[x] - tombstones need a finite lifetime: set policy.tombstoneTtl.` | `VersionedStore` 上的 `tombstone-ttl: forever` | 使用覆盖重复投递窗口的有限寿命 |
+| `Authoritative caches […] keep their only copy in Redis, but maxmemory-policy {…} can evict them when memory is full. …` | 有 `Store`、`VersionedStore` 或 `SetStore` 时使用了 `allkeys-*` | 改用 `noeviction`；它们都没有有限 `ttl` 时也可以用 `volatile-*`（见[驱逐检查](../guide/configuration.md#eviction-check)） |
+| `Cannot read maxmemory-policy (INFO memory) to check that the authoritative caches […] keep their only copy in Redis. …` | Redis 用户不能执行 `INFO` | 授予 `+info`，或把 `cocache.redis.assume-maxmemory-policy` 设为部署实际的策略 |
+| `Authoritative caches […] have a finite ttl, so maxmemory-policy {…} can evict them before they expire …` | `volatile-*` 且 `cocache.redis.store-eviction-check: fail` | 改用 `noeviction`、去掉 `ttl`，或以 `store-eviction-check: warn` 或 `off` 接受它 |
 | `Cache[x] - @CoCache.<attribute> = FOREVER is not supported; FOREVER is only allowed for @CoCache.ttl and @CaffeineCache.expireAfterAccess.` | 在 `ttl` 与 `@CaffeineCache.expireAfterAccess` 以外的属性上使用了 `FOREVER` | 改用具体时长 |
 | `Cache[x] already exists.` / `Namespace[x] with keyPrefix[p] is already used by another cache.` | 两个声明使用了相同的缓存名，或相同的前缀与命名空间，例如一个接口与一个 spec bean | 改名其中一个，或设置不同的 `namespace` 或 `keyPrefix` |
 | `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | 命名空间含 `:` 或字符集之外的字符，常见于把 key 前缀写进了命名空间 | 按信息的建议：把最后一个 `:` 及之前的部分放进 `keyPrefix` |

@@ -18,6 +18,8 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
+import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.policy.UnknownReadMode
 import java.time.Duration
 import java.util.function.Consumer
@@ -106,6 +108,12 @@ sealed interface Spec<K : Any, V : Any> {
     val policy: CachePolicy
 
     /**
+     * 声明写出的策略字段（字段三态，RFC 0005 §4.8，U11）：`policy { … }` 中赋值的字段与 `unknownRead`；整体赋值的 `policy`
+     * 视为写出全部策略字段。没有写出的字段由 `cocache.defaults` 或类型默认值（[DefaultPolicies]）决定。
+     */
+    val declaredFields: Set<PolicyField<*>>
+
+    /**
      * 缓存占用的 keyspace（前缀与命名空间）：存储 key 的前缀与失效频道都由它决定。构建时校验命名空间的字符集。
      */
     val keyspace: Keyspace
@@ -118,7 +126,7 @@ sealed interface Spec<K : Any, V : Any> {
  * - [externallySourced]：由调用方经 `put`、Spring Cache 或调用级 loader 提供。L1 中没有时是“未填充”；
  *   不带 loader 的读取遇到 L1 读失败为 `Lookup.Unknown`，按 [unknownRead] 返回。
  *
- * 写入 L1 的值不带任何段（头部 36 字节）。默认策略 [CachePolicy.DEFAULT]（`ttl` 1 h、`localMaxAge` 5 m、`absentTtl` 1 m）。
+ * 写入 L1 的值不带任何段（头部 36 字节）。默认策略 [DefaultPolicies.CACHE]（`ttl` 1 h、`localMaxAge` 5 m、`absentTtl` 1 m）。
  */
 class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : Spec<K, V> {
     override val name: String = builder.name
@@ -140,6 +148,11 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : 
     val ttlOf: TtlFunction<K, V>? = builder.ttlOf
     val keyFilter: KeyFilter? = builder.keyFilter
     override val policy: CachePolicy = builder.policy
+
+    /**
+     * 声明写出的策略字段（字段三态，RFC 0005 §4.8）：没有写出的字段由 `cocache.defaults` 或类型默认值决定。
+     */
+    override val declaredFields: Set<PolicyField<*>> = builder.declaration.fields()
 
     /**
      * 不带 loader 的读取遇到 L1 读失败时返回什么（[UnknownReadMode]），只能用于 [externallySourced] 的缓存。
@@ -176,8 +189,8 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : 
         it.externallySourced = externallySourced
         it.ttlOf = ttlOf
         it.keyFilter = keyFilter
-        it.policy = policy
         it.unknownRead = unknownRead
+        it.declaration.restore(policy, declaredFields)
     }
 
     class Builder<K : Any, V : Any> internal constructor(val name: String) {
@@ -190,8 +203,21 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : 
         var externallySourced: Boolean = false
         var ttlOf: TtlFunction<K, V>? = null
         var keyFilter: KeyFilter? = null
-        var policy: CachePolicy = CachePolicy.DEFAULT
+        internal val declaration = PolicyDeclaration(DefaultPolicies.CACHE)
+
+        /**
+         * 整体赋值视为写出全部策略字段（`cocache.defaults` 对此缓存不再生效）；只修改部分字段用 `policy { … }` 或 [updatePolicy]。
+         */
+        var policy: CachePolicy
+            get() = declaration.policy
+            set(value) {
+                declaration.replace(value)
+            }
         var unknownRead: UnknownReadMode = UnknownReadMode.THROW
+            set(value) {
+                field = value
+                declaration.declare(PolicyField.UNKNOWN_READ)
+            }
 
         fun namespace(namespace: String) = apply { this.namespace = namespace }
         fun keyPrefix(keyPrefix: String) = apply { this.keyPrefix = keyPrefix }
@@ -214,13 +240,13 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : 
          */
         fun policy(
             block: CachePolicy.Builder.() -> Unit
-        ) = apply { this.policy = policy.toBuilder().apply(block).build() }
+        ) = apply { declaration.update(block) }
 
         /**
          * 在当前策略基础上修改（Java 友好）。
          */
         fun updatePolicy(customizer: Consumer<CachePolicy.Builder>) = apply {
-            this.policy = policy.toBuilder().also { customizer.accept(it) }.build()
+            declaration.update { customizer.accept(this) }
         }
 
         fun build(): CacheSpec<K, V> = CacheSpec(this)
@@ -256,13 +282,3 @@ internal fun keyspaceOf(kind: String, name: String, keyPrefix: String, namespace
         throw IllegalArgumentException("$kind[$name] - ${e.message}", e)
     }
 }
-
-/**
- * 权威类型（`Store`、`VersionedStore`、`SetStore`）的默认策略（RFC 0005 §4.1，D7）：`ttl` 永不过期；L2 的寿命更短
- * （`localMaxAge` 30 s、`absentTtl` 10 s）：失效丢失时没有回源可以纠正，陈旧的上界只剩 L2。
- */
-internal val AUTHORITATIVE_POLICY: CachePolicy = CachePolicy(
-    ttl = null,
-    localMaxAge = Duration.ofSeconds(30),
-    absentTtl = Duration.ofSeconds(10),
-)

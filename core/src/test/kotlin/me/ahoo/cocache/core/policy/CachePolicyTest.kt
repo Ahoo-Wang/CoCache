@@ -20,7 +20,7 @@ import java.time.Duration
 class CachePolicyTest {
     @Test
     fun defaultsAreFinite() {
-        val policy = CachePolicy.DEFAULT
+        val policy = DefaultPolicies.CACHE
         policy.ttl.assert().isEqualTo(Duration.ofHours(1))
         policy.localMaxAge.assert().isEqualTo(Duration.ofMinutes(5))
         // 未配置：引擎按有没有数据源决定（有 RETRY，没有 THROW）
@@ -69,7 +69,7 @@ class CachePolicyTest {
             .readTimeout(Duration.ofMillis(300))
             .build()
         val copy = policy.toBuilder().build()
-        copy.toString().assert().contains("readFailure=THROW, readTimeout=PT0.3S, tombstoneTtl=null)")
+        copy.toString().assert().contains("readFailure=THROW, readTimeout=PT0.3S, tombstoneTtl=null, ttlCeiling=null)")
         copy.ttl.assert().isEqualTo(Duration.ofMinutes(2))
         copy.ttlJitter.assert().isEqualTo(Duration.ofSeconds(3))
         copy.absentTtl.assert().isEqualTo(Duration.ofSeconds(4))
@@ -83,8 +83,8 @@ class CachePolicyTest {
         copy.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
         copy.readTimeout.assert().isEqualTo(Duration.ofMillis(300))
         // 未配置：引擎按这次读取有没有数据源决定（有 DEGRADE，没有 THROW）；读取的时限为后端的命令超时
-        CachePolicy.DEFAULT.readFailure.assert().isNull()
-        CachePolicy.DEFAULT.readTimeout.assert().isNull()
+        DefaultPolicies.CACHE.readFailure.assert().isNull()
+        DefaultPolicies.CACHE.readTimeout.assert().isNull()
     }
 
     /**

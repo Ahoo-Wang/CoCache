@@ -26,9 +26,9 @@ import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
-import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
@@ -99,7 +99,7 @@ abstract class SetEngineSpec {
     /**
      * 在运行时上创建本用例的集合缓存。没有声明 [L1Capability.SETS] 时跳过这个用例（每个用例都先经它创建缓存）。
      */
-    protected fun CacheRuntime.setStore(policy: CachePolicy = SetStoreSpec.DEFAULT_POLICY): SetStore<String, String> {
+    protected fun CacheRuntime.setStore(policy: CachePolicy = DefaultPolicies.SET_STORE): SetStore<String, String> {
         assumeDeclared(L1Capability.SETS)
         return access.setStore(
             create(

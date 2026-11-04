@@ -138,5 +138,10 @@ internal object CacheCounters {
             "cocache.fills.gated",
             "Loads inside a write transaction kept private (fill-in-transaction): no lease, no L1 or L2 write, not shared"
         ) { it.fillsGated },
+        CacheCounter(
+            "ttlClamped",
+            "cocache.ttl.clamped",
+            "Per-call lifetimes (ttlOf, put with a ttl) clamped to the ttl ceiling set by cocache.overrides"
+        ) { it.ttlClamped },
     )
 }

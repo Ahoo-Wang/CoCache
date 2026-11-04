@@ -29,10 +29,12 @@ import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.PolicyReport
 import me.ahoo.cocache.core.StoreSpec
 import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.proxy.CacheProxies
 import me.ahoo.cocache.test.Suspending
@@ -419,6 +421,34 @@ class AnnotatedCacheTest {
             }
     }
 
+    /**
+     * 注解写出的属性是声明：`cocache.defaults.cache.*` 低于它，只填注解没有写出的字段（RFC 0005 §4.8）。
+     */
+    @Test
+    fun defaultsStayBelowAnnotations() {
+        runner.withUserConfiguration(AppConfig::class.java)
+            .withPropertyValues(
+                "cocache.defaults.cache.ttl=10s",
+                "cocache.defaults.cache.local-maximum-size=5",
+                "cocache.defaults.cache.degraded-local-max-age=3s",
+                "cocache.defaults.cache.lease-wait=20ms",
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                context.getBean(UserCache::class.java)
+                val runtime = context.getBean(CacheRuntime::class.java)
+                val policy = requireNotNull(runtime.policy("UserCache"))
+                policy.ttl.assert().isEqualTo(Duration.ofSeconds(120))
+                policy.local.maximumSize.assert().isEqualTo(100)
+                policy.degradedLocalMaxAge.assert().isEqualTo(Duration.ofSeconds(3))
+                policy.lease.wait.assert().isEqualTo(Duration.ofMillis(20))
+                val report = requireNotNull(requireNotNull(runtime.admin("UserCache")).policyReport)
+                requireNotNull(report.entry(PolicyField.TTL)).source.assert().isEqualTo(PolicyReport.Source.DECLARATION)
+                requireNotNull(report.entry(PolicyField.DEGRADED_LOCAL_MAX_AGE)).source
+                    .assert().isEqualTo(PolicyReport.Source.DEFAULTS)
+            }
+    }
+
     @Test
     fun asyncLoadersAreResolvedByTypeAndName() {
         runner.withUserConfiguration(AsyncLoaderConfig::class.java).run { context ->
@@ -558,12 +588,12 @@ class AnnotatedCacheTest {
     fun policyErrorsNameTheCache() {
         createFailure(InvalidPolicyCache::class.java).assert().isInstanceOf(IllegalArgumentException::class.java)
             .hasMessageStartingWith("Cache[InvalidPolicyCache] - refreshWindow")
-        // 配置文件导致的策略错误同样带缓存名
+        // 按缓存的配置导致的策略错误同样带缓存名（只由 caches.[name] 引起的冲突不夹紧，启动失败）
         runner.withUserConfiguration(TranslationConfig::class.java)
-            .withPropertyValues("cocache.caches.NoRefreshCache.absent-ttl=0")
+            .withPropertyValues("cocache.caches.NoRefreshCache.refresh-window=5m")
             .run { context ->
                 assertThat(context).hasFailed()
-                context.startupFailure.assert().hasStackTraceContaining("Cache[NoRefreshCache] - absentTtl")
+                context.startupFailure.assert().hasStackTraceContaining("Cache[NoRefreshCache] - refreshWindow[PT5M]")
             }
     }
 

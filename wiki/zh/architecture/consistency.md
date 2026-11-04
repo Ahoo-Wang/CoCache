@@ -247,8 +247,8 @@ flowchart TD
 | 其它实例的 L2，消息悄然丢失 | `local-max-age` | 默认 5 分钟。`sharded` 模式下写入方在脚本与发布之间崩溃时也是这个上界。发布失败的 `putIfMatch` 或 `putIfNewer` 在调用方重放时会再发布一次 |
 | 绕过 L1 的 L2 副本（降级填充） | `degraded-local-max-age` | Redis 失败、等待 lease 超时、填充被拒绝、未知格式、失效仍在重试 |
 | 失效仍在重试 | 直到重试成功 | 写入方实例跳过 L1。其它实例可能从旧的 L1 值重新填充 L2 |
-| 失效被放弃 | L1 的剩余寿命，所有实例 | 每个 L2 副本到期后从旧的 L1 值重新填充。`ttl-forever` 时没有上界。会计数并记录日志 |
-| 协议之外的写入、故障切换丢失的写入、读取滞后从库的 loader | 该值在 L1 中的剩余寿命（`ttl`，加减抖动） | `ttl-forever` 时没有上界。负缓存：`absent-ttl` |
+| 失效被放弃 | L1 的剩余寿命，所有实例 | 每个 L2 副本到期后从旧的 L1 值重新填充。`ttl: forever` 时没有上界。会计数并记录日志 |
+| 协议之外的写入、故障切换丢失的写入、读取滞后从库的 loader | 该值在 L1 中的剩余寿命（`ttl`，加减抖动） | `ttl: forever` 时没有上界。负缓存：`absent-ttl` |
 | 没有 `sync = true` 的 `@Cacheable` | `ttl` | Spring 的无条件 `put` 绕过了 lease |
 
 ## 不保证的内容 {#not-guaranteed}

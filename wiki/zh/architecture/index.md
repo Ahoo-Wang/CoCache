@@ -19,7 +19,7 @@ description: CoCache 的构成：三个目标、模块图、运行时以及声�
 
 **非目标**。线性一致读：在写入与其消息到达之间，其它实例可能返回之前的值。
 
-**TTL 是安全网，不是机制**。协议内的竞态由栅栏消除，而不是靠等待过期。所以只要所有写入都走协议，`ttl-forever` 就是安全的。
+**TTL 是安全网，不是机制**。协议内的竞态由栅栏消除，而不是靠等待过期。所以只要所有写入都走协议，`ttl: forever` 就是安全的。
 
 ## 模块 {#modules}
 
@@ -107,8 +107,8 @@ sequenceDiagram
     Fac->>Fac: @CoCache / @CaffeineCache 翻译为所继承类型的 spec<br>解析 loader、codec、keyExpression
     Fac->>F: create(type, spec)
     F->>F: 校验接口
-    F->>Asm: apply(spec)
-    Asm-->>F: 依次叠加 CacheSpecCustomizer、<br>cocache.defaults、cocache.caches.[name]
+    F->>Asm: apply(spec, locks)
+    Asm-->>F: 依次叠加 defaults、声明、定制器、<br>overrides、caches.[name] 与约束之后的生效 spec 及其报告
     F->>RT: 创建已分层的缓存
     RT-->>F: 引擎，已订阅 {keyPrefix}inv:{namespace}
     F-->>Fac: 实现该接口的 JDK 代理
@@ -121,7 +121,7 @@ sequenceDiagram
 | spec bean：`@Bean fun userSpec(): CacheSpec<String, User>`，或其它任何 spec 类型 | spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` | 引擎本身。`CacheSpecRegistrar` 从工厂方法声明的返回类型读取 `K` 与 `V`，不实例化 spec |
 | 组合缓存：`@JoinCacheable interface …`，列在 `@EnableCoCache(joinCaches = …)` 中 | 组合缓存名 | 两个缓存之上的只读视图，按名称解析；`JoinCache` 还能失效。见 [JoinCache](../guide/join-cache.md) |
 
-策略分层，后者覆盖前者：内置默认值（按类型）→ 声明 → `CacheSpecCustomizer` bean（按顺序）→ `cocache.defaults.*` → `cocache.caches.[name].*`。`key-prefix` 按同样的规则分层。所有单例创建完成后，如果 `cocache.caches` 中出现未声明的缓存，`CacheAssembler` 会让启动失败；指向直接经 `CacheRuntime.create` 创建、任何配置层都到不了的缓存的条目只告警（[CoCacheFactory](../guide/caches.md#factory)）。spec bean 与库经同一个 `CoCacheFactory` bean 创建缓存。所有有状态组件都由 `CacheRuntime` 按 spec 新建（见[运行时](#runtime)），两个缓存不可能共享其中任何一个。在 Spring 中，组合缓存按缓存名（经由对应的 bean 名）找到它的两个缓存，从不按类型。
+策略按字段分层合并，高层覆盖低层：类型默认值（`DefaultPolicies`）→ `cocache.defaults.cache.*` / `.store.*`（只作用于声明没有写出的字段）→ 声明 → `CacheSpecCustomizer` bean（按顺序）→ `cocache.overrides.cache.*` / `.store.*`（只收紧）→ `cocache.caches.[name].*`。之后执行库传给 `CoCacheFactory.create` 的锁定与约束，结果附带每个字段来源的报告（见[配置](../guide/configuration.md#precedence)）。`cocache.key-prefix` 不参与分层，除非 key 前缀被锁定，它优先于声明。所有单例创建完成后，如果 `cocache.caches` 中出现未声明的缓存，`CacheAssembler` 会让启动失败（`cocache.caches-validation: warn` 时只告警）；指向直接经 `CacheRuntime.create` 创建、任何配置层都到不了的缓存的条目总是只告警（[CoCacheFactory](../guide/caches.md#factory)）。spec bean 与库经同一个 `CoCacheFactory` bean 创建缓存。所有有状态组件都由 `CacheRuntime` 按 spec 新建（见[运行时](#runtime)），两个缓存不可能共享其中任何一个。在 Spring 中，组合缓存按缓存名（经由对应的 bean 名）找到它的两个缓存，从不按类型。
 
 ## 线格式 {#wire-format}
 

@@ -61,7 +61,7 @@ Resolve the CoCache version from the build (`./gradlew :module:dependencies --co
 | `@Cacheable`/`@CachePut`/`@CacheEvict`, `sync = true`, the sync check, several cache managers | `references/spring-cache.md` |
 | A view over two caches (`JoinView`, `JoinCache`, `@JoinCacheable`) | `references/join-cache.md` |
 | A Redis-only set (`SetStore`) or a set that lives in the database | `references/set-store.md` |
-| `cocache.*` properties, backend selection, Redis topology, channel mode, key prefixes, actuator and health, plain `CacheRuntime` without Spring | `references/configuration.md` |
+| `cocache.*` properties and their layering (`defaults`, `overrides`, `caches.[name]`), units and sentinels, library locks, backend selection, Redis topology, channel mode, key prefixes, the eviction check, actuator and health, plain `CacheRuntime` without Spring | `references/configuration.md` |
 | Production readiness: `maxmemory-policy`, ACL, sizing, rolling-safe configuration changes, alerts | `references/production.md` |
 | Tests without Redis, moving time, several instances, Redis failures | `references/testing.md` |
 

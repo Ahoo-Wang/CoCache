@@ -50,6 +50,7 @@ import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.VersionedCacheSpec
 import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.versionedCacheSpec
 import me.ahoo.cocache.core.versionedStoreSpec
@@ -754,8 +755,8 @@ abstract class VersionedSpec {
      */
     @Test
     fun versionedStoreReadsWithoutALeaseAndTombstonesExpire() {
-        val store = nodeA.versionedStore(storeSpec(VersionedStoreSpec.DEFAULT_POLICY))
-        val other = nodeB.versionedStore(storeSpec(VersionedStoreSpec.DEFAULT_POLICY))
+        val store = nodeA.versionedStore(storeSpec(DefaultPolicies.VERSIONED_STORE))
+        val other = nodeB.versionedStore(storeSpec(DefaultPolicies.VERSIONED_STORE))
         store["k"].assert().isNull()
         store.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
         remote("k").assert().isEqualTo(L1Read.Miss(false))
@@ -765,7 +766,10 @@ abstract class VersionedSpec {
 
         store.deleteIfNewer("k", 2).assert().isEqualTo(VersionedPut.Written)
         val tombstoneTtl = requireNotNull(remoteTtl("k"))
-        tombstoneTtl.assert().isBetween(Duration.ofHours(23), VersionedStoreSpec.DEFAULT_TOMBSTONE_TTL)
+        tombstoneTtl.assert().isBetween(
+            Duration.ofHours(23),
+            requireNotNull(DefaultPolicies.VERSIONED_STORE.tombstoneTtl)
+        )
         awaitCondition("B sees the deletion") { other["k"] == null }
         other.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Stale(2))
 

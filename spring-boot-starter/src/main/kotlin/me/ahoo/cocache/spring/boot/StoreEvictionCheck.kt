@@ -33,11 +33,10 @@ import java.time.Duration
  * 内存满后被驱逐的 key 无法从数据源恢复。
  *
  * - 检查的权威缓存由 [stores] 给出：启动时已创建的，加上已声明但尚未创建的（延迟初始化的 bean），见 [declaredStores]。
- * - 各主节点的 `maxmemory-policy` 读自 `INFO memory`；读不到时按 [assumedPolicy]（`cocache.redis.assume-maxmemory-policy`）判断，
- *   没有配置则按 [mode] 告警或启动失败，不再静默跳过。
- * - `allkeys-*`：任何 key 都可能被驱逐，按 [mode] 告警或启动失败（一律启动失败的规则见 RFC 0005 §4.1 S22，随 M6 实施）。
- * - `volatile-*`：只驱逐设置了过期时间的 key，`ttl` 有限的权威缓存可能在到期前被驱逐。只告警（`fail` 也一样）：这些数据本来就会过期。
- *   `VersionedStore` 的墓碑总有有限的寿命，被驱逐只让迟到的旧版本提前可写，不计入这一条。
+ * - 各主节点的 `maxmemory-policy` 读自 `INFO memory`；读不到时按 [assumedPolicy]（`cocache.redis.assume-maxmemory-policy`）判断。
+ * - 一律启动失败，与 [mode] 无关（S22）：`allkeys-*`（任何 key 都可能被驱逐，唯一副本无法恢复），以及读不到策略又没有配置 [assumedPolicy]。
+ * - [mode] 只管剩下的一种：`volatile-*` 且有 `ttl` 有限的权威缓存（它们可能在到期前被驱逐）：`warn`（默认）告警，`fail` 启动失败，
+ *   `off` 不检查。`VersionedStore` 的墓碑总有有限的寿命，被驱逐只让迟到的旧版本提前可写，不计入这一条。
  *
  * @param stores 权威缓存名 → 生效的 `ttl`（`null` 为永不过期）
  */
@@ -56,7 +55,7 @@ internal class StoreEvictionCheck(
     }
 
     override fun afterSingletonsInstantiated() {
-        if (mode == CoCacheProperties.EvictionCheck.OFF || backend !is RedisBackend) {
+        if (backend !is RedisBackend) {
             return
         }
         val caches = stores()
@@ -64,34 +63,23 @@ internal class StoreEvictionCheck(
             return
         }
         val policies = backend.maxmemoryPolicies() ?: assumedPolicy?.let { mapOf(ASSUMED to it) }
-        if (policies == null) {
-            report(
-                "Cannot read maxmemory-policy (INFO memory) to check that the authoritative caches ${caches.keys} keep their only copy " +
-                    "in Redis. " +
-                    "Grant the Redis user +info, set ${CoCacheProperties.PREFIX}.redis.assume-maxmemory-policy to the policy of " +
-                    "your deployment, or set $CHECK_PROPERTY=off to skip the check."
-            )
-            return
+        checkNotNull(policies) {
+            "Cannot read maxmemory-policy (INFO memory) to check that the authoritative caches ${caches.keys} keep their only copy " +
+                "in Redis. Grant the Redis user +info, or set ${CoCacheProperties.PREFIX}.redis.assume-maxmemory-policy to the " +
+                "policy of your deployment."
+        }
+        val evicting = policies.filterValues { it.startsWith(ALL_KEYS_PREFIX) }
+        check(evicting.isEmpty()) {
+            "Authoritative caches ${caches.keys} keep their only copy in Redis, but maxmemory-policy $evicting can evict them when " +
+                "memory is full. Use noeviction, or a volatile-* policy when they have no ttl."
         }
         val volatile = policies.filterValues { it.startsWith(VOLATILE_PREFIX) }
         val expiring = caches.filterValues { it != null }.keys
-        if (volatile.isNotEmpty() && expiring.isNotEmpty()) {
-            log.warn(
-                "Authoritative caches $expiring have a finite ttl, so maxmemory-policy $volatile can evict them before they expire when " +
-                    "memory is full. Use noeviction, or remove the ttl."
-            )
+        if (mode == CoCacheProperties.EvictionCheck.OFF || volatile.isEmpty() || expiring.isEmpty()) {
+            return
         }
-        val evicting = policies.filterValues { it.startsWith(ALL_KEYS_PREFIX) }
-        if (evicting.isNotEmpty()) {
-            report(
-                "Authoritative caches ${caches.keys} keep their only copy in Redis, but maxmemory-policy $evicting can evict them when " +
-                    "memory is full. Use noeviction, or a volatile-* policy when they have no ttl, or set " +
-                    "$CHECK_PROPERTY=off to accept the risk."
-            )
-        }
-    }
-
-    private fun report(message: String) {
+        val message = "Authoritative caches $expiring have a finite ttl, so maxmemory-policy $volatile can evict them before " +
+            "they expire when memory is full. Use noeviction, remove the ttl, or set $CHECK_PROPERTY=off to accept it."
         check(mode != CoCacheProperties.EvictionCheck.FAIL) { message }
         log.warn(message)
     }

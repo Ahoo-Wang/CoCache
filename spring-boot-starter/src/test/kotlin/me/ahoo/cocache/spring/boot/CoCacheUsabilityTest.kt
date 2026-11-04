@@ -202,11 +202,11 @@ class CoCacheUsabilityTest {
         requireNotNull(runtime.admin(cacheName)).inspect("k").storageKey
 
     @Test
-    fun keyPrefixDefaultsAndPerCacheOverride() {
+    fun globalKeyPrefixAndPerCacheOverride() {
         runner.withUserConfiguration(SpecConfig::class.java, CustomBackendConfig::class.java)
             .withPropertyValues(
                 "spring.application.name=orders",
-                "cocache.defaults.key-prefix=\${spring.application.name}:",
+                "cocache.key-prefix=\${spring.application.name}:",
                 "cocache.caches.index.key-prefix=idx:",
             )
             .run { context ->

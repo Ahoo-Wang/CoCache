@@ -20,13 +20,18 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.Locks
 import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
+import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.core.policy.PolicyField
+import me.ahoo.cocache.core.policy.ReadFailureMode
 import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.versionedCacheSpec
 import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.test.Suspending
@@ -34,6 +39,8 @@ import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.boot.autoconfigure.AutoConfigurations
+import org.springframework.boot.context.properties.bind.Binder
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource
 import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.cache.CacheManager
@@ -169,76 +176,108 @@ class CoCacheAutoConfigurationTest {
         }
     }
 
+    /**
+     * 配置文件逐字段叠加在声明之上：`cocache.defaults.cache.*` 只填声明没有写出的字段，`cocache.caches.[name].*` 设定字段。
+     */
     @Test
-    fun propertiesOverrideDeclarationsInOrder() {
+    fun propertiesLayerOverDeclarationsByField() {
         runner.withUserConfiguration(InMemoryConfig::class.java)
             .withPropertyValues(
-                "cocache.defaults.ttl=PT2M",
-                "cocache.defaults.local-maximum-size=50",
+                "cocache.defaults.cache.ttl=2m",
+                "cocache.defaults.cache.local-maximum-size=50",
                 "cocache.caches.user.ttl=PT30S",
-                "cocache.caches.user.ttl-jitter=PT0S",
-                "cocache.caches.user.lease-wait=PT1S",
+                "cocache.caches.user.ttl-jitter=0s",
+                "cocache.caches.user.lease-wait=1s",
                 "cocache.caches.user.load-max-concurrent=3",
-                "cocache.caches.user.load-timeout=7",
+                "cocache.caches.user.load-timeout=7s",
                 "cocache.caches.user.invalidate-failure=throw",
                 "cocache.caches.user.read-failure=throw",
-                "cocache.caches.index.ttl-forever=true",
+                "cocache.caches.index.ttl=forever",
             )
             .run { context ->
                 assertThat(context).hasNotFailed()
                 context.getBean("user")
                 context.getBean("profileCache")
                 context.getBean("index")
-                val properties = context.getBean(CoCacheProperties::class.java)
-                val user = properties.policyFor("user", CachePolicy.DEFAULT)
+                val runtime = context.getBean(CacheRuntime::class.java)
+                val user = requireNotNull(runtime.policy("user"))
                 user.ttl.assert().isEqualTo(Duration.ofSeconds(30))
                 user.ttlJitter.assert().isEqualTo(Duration.ZERO)
                 user.lease.wait.assert().isEqualTo(Duration.ofSeconds(1))
-                user.lease.ttl.assert().isEqualTo(CachePolicy.DEFAULT.lease.ttl)
+                user.lease.ttl.assert().isEqualTo(DefaultPolicies.CACHE.lease.ttl)
                 user.load.maxConcurrent.assert().isEqualTo(3)
                 user.load.timeout.assert().isEqualTo(Duration.ofSeconds(7))
                 user.local.maximumSize.assert().isEqualTo(50)
                 user.invalidateFailure.assert().isEqualTo(InvalidateFailureMode.THROW)
-                user.readFailure.assert().isEqualTo(me.ahoo.cocache.core.policy.ReadFailureMode.THROW)
-                properties.policyFor("profile", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofMinutes(2))
-                properties.policyFor("index", CachePolicy.DEFAULT).ttl.assert().isNull()
+                user.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
+                requireNotNull(runtime.policy("profile")).ttl.assert().isEqualTo(Duration.ofMinutes(2))
+                // cache 一节不作用于权威副本
+                requireNotNull(runtime.policy("index")).ttl.assert().isNull()
+                requireNotNull(runtime.policy("index")).local.maximumSize
+                    .assert().isEqualTo(DefaultPolicies.SET_STORE.local.maximumSize)
             }
     }
 
+    /**
+     * 每个配置键都解析为对应字段的取值并写进生效策略（`VersionedCache` 适用全部策略字段）。
+     */
     @Test
     fun everyPolicyPropertyIsApplied() {
-        val properties = policyProperties(
-            ttl = Duration.ofMinutes(3),
-            ttlJitter = Duration.ofSeconds(1),
-            absentTtl = Duration.ofSeconds(2),
-            localMaxAge = Duration.ofMinutes(1),
-            degradedLocalMaxAge = Duration.ofSeconds(3),
-            refreshWindow = Duration.ofSeconds(30),
-            leaseTtl = Duration.ofSeconds(4),
-            loadAcquireTimeout = Duration.ofMillis(5),
+        val path = "cocache.caches.view"
+        val properties = bind(
+            "$path.ttl" to "3m",
+            "$path.ttl-jitter" to "1s",
+            "$path.absent-ttl" to "2s",
+            "$path.local-max-age" to "1m",
+            "$path.degraded-local-max-age" to "3s",
+            "$path.tombstone-ttl" to "1h",
+            "$path.refresh-window" to "30s",
+            "$path.lease-ttl" to "4s",
+            "$path.lease-wait" to "250ms",
+            "$path.load-max-concurrent" to "6",
+            "$path.load-acquire-timeout" to "5ms",
+            "$path.load-timeout" to "9s",
+            "$path.read-timeout" to "800ms",
+            "$path.local-maximum-size" to "77",
+            "$path.invalidate-failure" to "throw",
+            "$path.read-failure" to "throw",
         )
-        val policy = properties.applyTo(CachePolicy.DEFAULT)
-        policy.ttl.assert().isEqualTo(Duration.ofMinutes(3))
-        policy.ttlJitter.assert().isEqualTo(Duration.ofSeconds(1))
-        policy.absentTtl.assert().isEqualTo(Duration.ofSeconds(2))
-        policy.localMaxAge.assert().isEqualTo(Duration.ofMinutes(1))
-        policy.degradedLocalMaxAge.assert().isEqualTo(Duration.ofSeconds(3))
-        policy.refreshWindow.assert().isEqualTo(Duration.ofSeconds(30))
-        policy.lease.ttl.assert().isEqualTo(Duration.ofSeconds(4))
-        policy.lease.wait.assert().isEqualTo(CachePolicy.DEFAULT.lease.wait)
-        policy.load.acquireTimeout.assert().isEqualTo(Duration.ofMillis(5))
-        policy.load.maxConcurrent.assert().isEqualTo(0)
-        policyProperties(
-            ttlForever = false
-        ).applyTo(CachePolicy.DEFAULT).ttl.assert().isEqualTo(CachePolicy.DEFAULT.ttl)
-        val options = CoCacheProperties.Redis(
-            Duration.ofSeconds(1),
-            Duration.ofSeconds(2),
-            8,
-            "x",
-            me.ahoo.cocache.redis.RedisChannelMode.SHARDED,
-            CoCacheProperties.EvictionCheck.WARN
-        ).toOptions()
+        val entries = requireNotNull(properties.cacheProperties("view")).second.entries(path)
+        entries.map { it.field }.assert().containsExactlyElementsOf(PolicyField.POLICY_FIELDS)
+        entries.first().key.assert().isEqualTo("$path.ttl")
+        CacheRuntime.builder().backend(InMemoryBackend()).build().use { runtime ->
+            val spec = versionedCacheSpec<String, String>("view") {
+                codec = StringCodec
+                versionedLoader = CacheLoader { null }
+            }
+            val policy = CacheAssembler(runtime, emptyList(), properties).apply(spec, Locks.NONE).spec.policy
+            policy.ttl.assert().isEqualTo(Duration.ofMinutes(3))
+            policy.ttlJitter.assert().isEqualTo(Duration.ofSeconds(1))
+            policy.absentTtl.assert().isEqualTo(Duration.ofSeconds(2))
+            policy.localMaxAge.assert().isEqualTo(Duration.ofMinutes(1))
+            policy.degradedLocalMaxAge.assert().isEqualTo(Duration.ofSeconds(3))
+            policy.tombstoneTtl.assert().isEqualTo(Duration.ofHours(1))
+            policy.refreshWindow.assert().isEqualTo(Duration.ofSeconds(30))
+            policy.lease.ttl.assert().isEqualTo(Duration.ofSeconds(4))
+            policy.lease.wait.assert().isEqualTo(Duration.ofMillis(250))
+            policy.load.maxConcurrent.assert().isEqualTo(6)
+            policy.load.acquireTimeout.assert().isEqualTo(Duration.ofMillis(5))
+            policy.load.timeout.assert().isEqualTo(Duration.ofSeconds(9))
+            policy.readTimeout.assert().isEqualTo(Duration.ofMillis(800))
+            policy.local.maximumSize.assert().isEqualTo(77)
+            policy.invalidateFailure.assert().isEqualTo(InvalidateFailureMode.THROW)
+            policy.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
+        }
+        val options = bind(
+            "cocache.redis.command-timeout" to "1s",
+            "cocache.redis.heartbeat" to "2s",
+            "cocache.redis.invalidate-batch-size" to "8",
+            "cocache.redis.client-name" to "x",
+            "cocache.redis.channel-mode" to "sharded",
+        ).redis.toOptions()
+        options.commandTimeout.assert().isEqualTo(Duration.ofSeconds(1))
+        options.heartbeat.assert().isEqualTo(Duration.ofSeconds(2))
+        options.invalidateBatchSize.assert().isEqualTo(8)
         options.clientName.assert().isEqualTo("x")
         options.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.SHARDED)
     }
@@ -417,15 +456,19 @@ class CoCacheAutoConfigurationTest {
         }
 
     @Test
-    fun configurationPropertiesBindWithUnitsAndDefaults() {
+    fun configurationPropertiesBindWithUnits() {
         runner.withUserConfiguration(InMemoryConfig::class.java)
             .withPropertyValues(
-                "cocache.defaults.ttl=120",
-                "cocache.defaults.lease-wait=500ms",
-                "cocache.defaults.local-max-age=PT2M",
-                "cocache.caches.user.refresh-window=30",
-                "cocache.caches.user.ttl-jitter=0",
-                "cocache.redis.command-timeout=1500",
+                "cocache.key-prefix=app:",
+                "cocache.defaults.cache.ttl=120s",
+                "cocache.defaults.cache.lease-wait=500ms",
+                "cocache.defaults.cache.local-max-age=PT2M",
+                "cocache.defaults.store.local-max-age=20s",
+                "cocache.overrides.cache.absent-ttl=30s",
+                "cocache.caches.user.refresh-window=30s",
+                "cocache.caches.user.ttl-jitter=0s",
+                "cocache.caches-validation=warn",
+                "cocache.redis.command-timeout=1500ms",
                 "cocache.redis.channel-mode=sharded",
                 "cocache.redis.store-eviction-check=fail",
                 "cocache.redis.assume-maxmemory-policy=volatile-lru",
@@ -434,27 +477,47 @@ class CoCacheAutoConfigurationTest {
                 assertThat(context).hasNotFailed()
                 val properties = context.getBean(CoCacheProperties::class.java)
                 properties.enabled.assert().isTrue()
-                properties.defaults.ttl.assert().isEqualTo(Duration.ofSeconds(120))
-                properties.defaults.leaseWait.assert().isEqualTo(Duration.ofMillis(500))
-                properties.defaults.localMaxAge.assert().isEqualTo(Duration.ofMinutes(2))
-                requireNotNull(
-                    properties.cacheProperties("user")
-                ).refreshWindow.assert().isEqualTo(Duration.ofSeconds(30))
-                properties.redis.commandTimeout.assert().isEqualTo(Duration.ofMillis(1500))
+                properties.keyPrefix.assert().isEqualTo("app:")
+                properties.defaults.cache.ttl.assert().isEqualTo("120s")
+                properties.defaults.cache.leaseWait.assert().isEqualTo("500ms")
+                properties.defaults.cache.localMaxAge.assert().isEqualTo("PT2M")
+                properties.defaults.store.localMaxAge.assert().isEqualTo("20s")
+                properties.overrides.cache.absentTtl.assert().isEqualTo("30s")
+                properties.cachesValidation.assert().isEqualTo(CoCacheProperties.Validation.WARN)
+                requireNotNull(properties.cacheProperties("user")).second.refreshWindow.assert().isEqualTo("30s")
+                properties.redis.commandTimeout.assert().isEqualTo("1500ms")
+                properties.redis.toOptions().commandTimeout.assert().isEqualTo(Duration.ofMillis(1500))
                 properties.redis.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.SHARDED)
                 properties.redis.storeEvictionCheck.assert().isEqualTo(CoCacheProperties.EvictionCheck.FAIL)
                 properties.redis.assumeMaxmemoryPolicy.assert().isEqualTo("volatile-lru")
                 properties.redis.toOptions().channelMode.assert().isEqualTo(
                     me.ahoo.cocache.redis.RedisChannelMode.SHARDED
                 )
+                val user = requireNotNull(context.getBean(CacheRuntime::class.java).policy("user"))
+                user.ttl.assert().isEqualTo(Duration.ofSeconds(120))
+                user.lease.wait.assert().isEqualTo(Duration.ofMillis(500))
+                user.localMaxAge.assert().isEqualTo(Duration.ofMinutes(2))
+                user.absentTtl.assert().isEqualTo(Duration.ofSeconds(30))
+                user.refreshWindow.assert().isEqualTo(Duration.ofSeconds(30))
+                user.ttlJitter.assert().isEqualTo(Duration.ZERO)
+                requireNotNull(context.getBean(CacheRuntime::class.java).policy("index")).localMaxAge
+                    .assert().isEqualTo(Duration.ofSeconds(20))
             }
+    }
+
+    @Test
+    fun configurationPropertiesDefaults() {
         runner.withUserConfiguration(InMemoryConfig::class.java).run { context ->
             val properties = context.getBean(CoCacheProperties::class.java)
-            properties.redis.commandTimeout.assert().isEqualTo(Duration.ofSeconds(2))
-            properties.redis.heartbeat.assert().isEqualTo(Duration.ofSeconds(5))
+            properties.keyPrefix.assert().isNull()
+            properties.redis.toOptions().commandTimeout.assert().isEqualTo(Duration.ofSeconds(2))
+            properties.redis.toOptions().heartbeat.assert().isEqualTo(Duration.ofSeconds(5))
             properties.redis.invalidateBatchSize.assert().isEqualTo(512)
             properties.redis.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.PUBSUB)
-            properties.defaults.assert().isEqualTo(policyProperties())
+            properties.cachesValidation.assert().isEqualTo(CoCacheProperties.Validation.FAIL)
+            properties.defaults.entries("cocache.defaults").assert().isEmpty()
+            properties.overrides.entries("cocache.overrides").assert().isEmpty()
+            properties.defaults.cache.unlock.assert().isEmpty()
             properties.caches.assert().isEmpty()
         }
     }
@@ -462,43 +525,33 @@ class CoCacheAutoConfigurationTest {
     @Test
     fun cacheNamesInPropertiesAreCaseInsensitive() {
         runner.withUserConfiguration(InMemoryConfig::class.java)
-            .withPropertyValues("cocache.caches.USER.ttl=45", "cocache.caches.Profile.ttl=46")
+            .withPropertyValues("cocache.caches.USER.ttl=45s", "cocache.caches.Profile.ttl=46s")
             .run { context ->
                 assertThat(context).hasNotFailed()
-                val properties = context.getBean(CoCacheProperties::class.java)
-                properties.policyFor("user", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(45))
-                properties.policyFor("profile", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(46))
+                context.getBean("user")
+                context.getBean("profileCache")
+                val runtime = context.getBean(CacheRuntime::class.java)
+                requireNotNull(runtime.policy("user")).ttl.assert().isEqualTo(Duration.ofSeconds(45))
+                requireNotNull(runtime.policy("profile")).ttl.assert().isEqualTo(Duration.ofSeconds(46))
             }
-        // 精确匹配优先
-        CoCacheProperties(
-            true,
-            policyProperties(),
-            mapOf(
-                "user" to policyProperties(ttl = Duration.ofSeconds(1)),
-                "USER" to policyProperties(ttl = Duration.ofSeconds(2))
-            ),
-            CoCacheProperties.Redis(
-                Duration.ofSeconds(2),
-                Duration.ofSeconds(5),
-                512,
-                null,
-                me.ahoo.cocache.redis.RedisChannelMode.PUBSUB,
-                CoCacheProperties.EvictionCheck.WARN
-            ),
-            CoCacheProperties.Backend.REDIS,
-            CoCacheProperties.SpringCache(false, false),
-            null
-        ).policyFor("USER", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(2))
+        // 精确匹配优先，返回配置中的名称
+        val properties = bind("cocache.caches[user].ttl" to "1s", "cocache.caches[USER].ttl" to "2s")
+        requireNotNull(properties.cacheProperties("USER")).let { (name, entry) ->
+            name.assert().isEqualTo("USER")
+            entry.ttl.assert().isEqualTo("2s")
+        }
+        requireNotNull(properties.cacheProperties("User")).first.assert().isIn("user", "USER")
+        properties.cacheProperties("other").assert().isNull()
     }
 
     @Test
     fun lazyCachesCountAsDeclared() {
-        lazyCaches.withPropertyValues("cocache.caches.lazyuser.ttl=30").run { context ->
+        lazyCaches.withPropertyValues("cocache.caches.lazyuser.ttl=30s").run { context ->
             assertThat(context).hasNotFailed()
             context.getBean(CacheRuntime::class.java).cacheNames.assert().containsExactly("eager")
             context.getBean(LazyUserCache::class.java).name.assert().isEqualTo("LazyUser")
         }
-        lazyCaches.withPropertyValues("cocache.caches.lazy-usr.ttl=30").run { context ->
+        lazyCaches.withPropertyValues("cocache.caches.lazy-usr.ttl=30s").run { context ->
             assertThat(context).hasFailed()
             context.startupFailure.assert().hasMessageContaining("undeclared caches [lazy-usr]")
                 .hasMessageContaining("LazyUser")
@@ -521,12 +574,15 @@ class CoCacheAutoConfigurationTest {
             .joinToString("\n") { it.readText() }
         listOf(
             "\"cocache.enabled\"",
-            "\"cocache.defaults.ttl\"",
-            "\"cocache.defaults.read-failure\"",
+            "\"cocache.key-prefix\"",
+            "\"cocache.defaults.cache.ttl\"",
+            "\"cocache.defaults.store.local-max-age\"",
+            "\"cocache.overrides.cache.read-failure\"",
+            "\"cocache.overrides.store.absent-ttl\"",
+            "\"cocache.caches-validation\"",
             "\"cocache.redis.channel-mode\"",
             "\"cocache.redis.command-timeout\"",
             "\"cocache.backend\"",
-            "\"cocache.defaults.key-prefix\"",
             "\"cocache.spring-cache.require-sync\"",
             "\"cocache.refresh-executor\"",
             "\"spring-bean-reference\"",
@@ -553,53 +609,32 @@ class CoCacheAutoConfigurationTest {
         }
     }
 
-    @Suppress("LongParameterList")
-    private fun policyProperties(
-        ttl: Duration? = null,
-        ttlForever: Boolean? = null,
-        ttlJitter: Duration? = null,
-        absentTtl: Duration? = null,
-        localMaxAge: Duration? = null,
-        degradedLocalMaxAge: Duration? = null,
-        refreshWindow: Duration? = null,
-        leaseTtl: Duration? = null,
-        loadAcquireTimeout: Duration? = null,
-        loadTimeout: Duration? = null,
-    ) = CoCacheProperties.PolicyProperties(
-        ttl,
-        ttlForever,
-        ttlJitter,
-        absentTtl,
-        localMaxAge,
-        degradedLocalMaxAge,
-        refreshWindow,
-        leaseTtl,
-        null,
-        null,
-        loadAcquireTimeout,
-        null,
-        null,
-        null,
-        null,
-        loadTimeout
-    )
+    private fun bind(vararg entries: Pair<String, String>): CoCacheProperties =
+        Binder(MapConfigurationPropertySource(mapOf(*entries)))
+            .bindOrCreate(CoCacheProperties.PREFIX, CoCacheProperties::class.java)
 
     /**
-     * 只覆盖设置了的 load 字段：其余沿用下层的值（此前重建 `LoadPolicy` 时 `timeout` 被重置为默认值）。
+     * 只覆盖设置了的 load 字段：其余沿用下层的值（字段级合并，`load-*` 三个键各是一个字段）。
      */
     @Test
     fun loadPropertiesKeepUnsetFieldsOfTheLowerLayer() {
-        val base = CachePolicy.DEFAULT.toBuilder()
-            .load(me.ahoo.cocache.core.policy.LoadPolicy(maxConcurrent = 2, timeout = Duration.ofSeconds(3)))
-            .build()
-        val acquire = policyProperties(loadAcquireTimeout = Duration.ofMillis(5)).applyTo(base).load
-        acquire.acquireTimeout.assert().isEqualTo(Duration.ofMillis(5))
-        acquire.maxConcurrent.assert().isEqualTo(2)
-        acquire.timeout.assert().isEqualTo(Duration.ofSeconds(3))
-        val async = policyProperties(loadTimeout = Duration.ofSeconds(9)).applyTo(base).load
-        async.timeout.assert().isEqualTo(Duration.ofSeconds(9))
-        async.maxConcurrent.assert().isEqualTo(2)
-        async.acquireTimeout.assert().isEqualTo(base.load.acquireTimeout)
+        val spec = cacheSpec<String, String>("user") {
+            codec = StringCodec
+            loader = CacheLoader { it }
+            policy { load = LoadPolicy(maxConcurrent = 2, timeout = Duration.ofSeconds(3)) }
+        }
+        CacheRuntime.builder().backend(InMemoryBackend()).build().use { runtime ->
+            fun loadWith(key: String, value: String): LoadPolicy =
+                CacheAssembler(runtime, emptyList(), bind(key to value)).apply(spec, Locks.NONE).spec.policy.load
+            val acquire = loadWith("cocache.caches.user.load-acquire-timeout", "5ms")
+            acquire.acquireTimeout.assert().isEqualTo(Duration.ofMillis(5))
+            acquire.maxConcurrent.assert().isEqualTo(2)
+            acquire.timeout.assert().isEqualTo(Duration.ofSeconds(3))
+            val timeout = loadWith("cocache.caches.user.load-timeout", "9s")
+            timeout.timeout.assert().isEqualTo(Duration.ofSeconds(9))
+            timeout.maxConcurrent.assert().isEqualTo(2)
+            timeout.acquireTimeout.assert().isEqualTo(spec.policy.load.acquireTimeout)
+        }
     }
 
     @Test

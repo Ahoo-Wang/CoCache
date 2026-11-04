@@ -16,6 +16,7 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.KeyInspection
+import me.ahoo.cocache.core.PolicyReport
 import org.springframework.boot.actuate.endpoint.InvalidEndpointRequestException
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
@@ -153,12 +154,16 @@ class CoCacheEndpoint @JvmOverloads constructor(
      * @param type 用户 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`）
      * @param layered `false` 即“未分层”：直接经 `CacheRuntime.create` 创建，配置文件与定制器对它都不生效（RFC 0005 §4.8，S20）
      * @param ignoredConfiguration 未分层的缓存上不生效的按缓存配置条目（`cocache.caches.<name>`）
+     * @param policy 每个策略字段的生效值与来源层（`TYPE_DEFAULT` 即类型默认值，RFC 0005 §4.8）；未分层的缓存为空
+     * @param skippedConfiguration 全局层中被跳过的条目：键、层与原因（不适用、该层不允许、被锁定）
      */
     data class CacheReport(
         val name: String,
         val type: String,
         val layered: Boolean,
         val ignoredConfiguration: List<String>,
+        val policy: List<PolicyReport.Entry>,
+        val skippedConfiguration: List<PolicyReport.Skipped>,
         val localSize: Long,
         val loads: Long,
         val loadNanos: Long,
@@ -172,6 +177,8 @@ class CoCacheEndpoint @JvmOverloads constructor(
             type = apiType.simpleName,
             layered = layered,
             ignoredConfiguration = properties?.let { UnlayeredConfigurationCheck.ignoredEntries(it, this) } ?: emptyList(),
+            policy = policyReport?.entries ?: emptyList(),
+            skippedConfiguration = policyReport?.skipped ?: emptyList(),
             localSize = localSize,
             loads = snapshot.loads,
             loadNanos = snapshot.loadNanos,

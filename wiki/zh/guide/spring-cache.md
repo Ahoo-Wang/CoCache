@@ -85,7 +85,7 @@ cocache:
 经 Spring Cache 使用的缓存通常是[外部来源](./caches.md#externally-sourced)的：被注解的方法就是数据源。带着方法的读取可以退回到方法，不带的读取没有答案：
 
 - `@Cacheable(sync = true)` 把方法作为 loader 传入，Redis 读取失败时照常执行方法，结果以 `degraded-local-max-age` 留在 L2 中。
-- 不带 sync 的 `@Cacheable` 经 `get(key)` 读取，没有 loader；返回 `CompletableFuture`、`Mono` 或 `Flux` 的方法上，Spring 改经 `retrieve(key)` 读取。Redis 读取失败是 [`Lookup.Unknown`](./caches.md#unknown)：`get(key)` 抛出它的 `CacheReadException`，`retrieve(key)` 的 future 以它失败，三种方法上 Spring 都把它交给 `CacheErrorHandler`：默认的处理器重新抛出，`LoggingCacheErrorHandler` 记录日志后改为执行方法。也可以在缓存的 spec 上声明 `unknownRead = UnknownReadMode.ABSENT`（写在 `cacheSpec` 中；接口缓存写在[定制器](./caches.md#customizer)中）：读取返回未命中且不缓存，Spring 随后执行方法。
+- 不带 sync 的 `@Cacheable` 经 `get(key)` 读取，没有 loader；返回 `CompletableFuture`、`Mono` 或 `Flux` 的方法上，Spring 改经 `retrieve(key)` 读取。Redis 读取失败是 [`Lookup.Unknown`](./caches.md#unknown)：`get(key)` 抛出它的 `CacheReadException`，`retrieve(key)` 的 future 以它失败，三种方法上 Spring 都把它交给 `CacheErrorHandler`：默认的处理器重新抛出，`LoggingCacheErrorHandler` 记录日志后改为执行方法。也可以在缓存的 spec 上声明 `unknownRead = UnknownReadMode.ABSENT`（写在 `cacheSpec` 中；接口缓存用 `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)`、写在[定制器](./caches.md#customizer)中，或配置 `cocache.caches.[name].unknown-read: absent`）：读取返回未命中且不缓存，Spring 随后执行方法。
 - `@CacheEvict` 调用 `invalidate`。Redis 删除失败时，key 进入后台重试队列，因为每个 `Cache` 的 `invalidate-failure` 默认都是 `retry`：方法就是数据源，删除副本总是安全的。设置 `invalidate-failure: throw` 则改为抛出 `CacheWriteException`。见[配置](./configuration.md#policy-properties)。
 
 于是同一个缓存上的两种 `@Cacheable` 表现不同。Redis 故障期间，不带 sync 的 `@Cacheable` 调用全部失败，因为 Spring 默认的 `CacheErrorHandler` 重新抛出读取失败；`@Cacheable(sync = true)` 则改为执行方法。`unknownRead = ABSENT` 也不能让不带 sync 的方法可用：随后的 `put` 同样失败。

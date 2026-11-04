@@ -16,12 +16,14 @@ package me.ahoo.cocache.core
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
+import me.ahoo.cocache.core.policy.PolicyField
 import java.util.function.Consumer
 
 /**
  * 权威集合 `SetStore` 的声明（RFC 0005 §4.1）：没有数据源（按构造禁止），不允许 `unknownRead`：L1 读失败总是抛出。
  *
- * 默认策略 [DEFAULT_POLICY]：永不过期，L2 寿命更短（同 [StoreSpec.DEFAULT_POLICY]）。存储 key 与命名空间的规则同 [Spec]。
+ * 默认策略 [DefaultPolicies.SET_STORE]：永不过期，L2 寿命更短（同 `Store`）。存储 key 与命名空间的规则同 [Spec]。
  */
 class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>) : Spec<K, Set<E>> {
     override val name: String = builder.name
@@ -32,6 +34,11 @@ class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
         builder.elementCodec
     ) { "SetStore[${builder.name}] - elementCodec is required." }
     override val policy: CachePolicy = builder.policy
+
+    /**
+     * 声明写出的策略字段（字段三态，RFC 0005 §4.8）：没有写出的字段由 `cocache.defaults` 或类型默认值决定。
+     */
+    override val declaredFields: Set<PolicyField<*>> = builder.declaration.fields()
 
     init {
         requireValidName(name, namespace)
@@ -49,7 +56,7 @@ class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
         it.keyPrefix = keyPrefix
         it.keyEncoder = keyEncoder
         it.elementCodec = elementCodec
-        it.policy = policy
+        it.declaration.restore(policy, declaredFields)
     }
 
     class Builder<K : Any, E : Any> internal constructor(val name: String) {
@@ -57,7 +64,16 @@ class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
         var keyPrefix: String = CacheSpec.DEFAULT_KEY_PREFIX
         var keyEncoder: KeyEncoder<K> = KeyEncoder.ofToString()
         var elementCodec: Codec<E>? = null
-        var policy: CachePolicy = DEFAULT_POLICY
+        internal val declaration = PolicyDeclaration(DefaultPolicies.SET_STORE)
+
+        /**
+         * 整体赋值视为写出全部策略字段（`cocache.defaults` 对此缓存不再生效）；只修改部分字段用 `policy { … }` 或 [updatePolicy]。
+         */
+        var policy: CachePolicy
+            get() = declaration.policy
+            set(value) {
+                declaration.replace(value)
+            }
 
         fun namespace(namespace: String) = apply { this.namespace = namespace }
         fun keyPrefix(keyPrefix: String) = apply { this.keyPrefix = keyPrefix }
@@ -65,33 +81,28 @@ class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
         fun elementCodec(elementCodec: Codec<E>) = apply { this.elementCodec = elementCodec }
 
         /**
-         * 整体替换策略：应以 [DEFAULT_POLICY]`.toBuilder()` 为起点，或用 [updatePolicy] 在当前策略上修改。
+         * 整体替换策略：应以 [DefaultPolicies.SET_STORE]`.toBuilder()` 为起点，或用 [updatePolicy] 在当前策略上修改。
          */
         fun policy(policy: CachePolicy) = apply { this.policy = policy }
 
         /**
-         * 在当前策略（默认 [DEFAULT_POLICY]）基础上修改。
+         * 在当前策略（默认 [DefaultPolicies.SET_STORE]）基础上修改。
          */
         fun policy(
             block: CachePolicy.Builder.() -> Unit
-        ) = apply { this.policy = policy.toBuilder().apply(block).build() }
+        ) = apply { declaration.update(block) }
 
         /**
-         * 在当前策略（默认 [DEFAULT_POLICY]）基础上修改（Java 友好）。
+         * 在当前策略（默认 [DefaultPolicies.SET_STORE]）基础上修改（Java 友好）。
          */
         fun updatePolicy(customizer: Consumer<CachePolicy.Builder>) = apply {
-            this.policy = policy.toBuilder().also { customizer.accept(it) }.build()
+            declaration.update { customizer.accept(this) }
         }
 
         fun build(): SetStoreSpec<K, E> = SetStoreSpec(this)
     }
 
     companion object {
-        /**
-         * 同 [StoreSpec.DEFAULT_POLICY]。
-         */
-        @JvmField
-        val DEFAULT_POLICY: CachePolicy = AUTHORITATIVE_POLICY
 
         @JvmStatic
         fun <K : Any, E : Any> builder(name: String): Builder<K, E> = Builder(name)

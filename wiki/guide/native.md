@@ -45,7 +45,7 @@ Fixed when you build:
 
 Still read at startup:
 
-- Policy properties: `cocache.defaults.*`, `cocache.caches.[name].*`, `cocache.redis.*`, and the executor bean names.
+- Policy properties: `cocache.defaults.*`, `cocache.overrides.*`, `cocache.caches.[name].*`, `cocache.key-prefix`, `cocache.caches-validation`, `cocache.redis.*`, and the executor bean names.
 - `CacheSpecCustomizer` beans, loaders, codecs, and the Redis connection settings.
 
 ## What CoCache registers {#registered-hints}

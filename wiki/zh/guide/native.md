@@ -45,7 +45,7 @@ AOT 在构建期执行应用的 bean 注册，并把结果写成生成代码。�
 
 启动时仍会读取：
 
-- 策略配置项：`cocache.defaults.*`、`cocache.caches.[name].*`、`cocache.redis.*`，以及执行器的 bean 名。
+- 策略配置项：`cocache.defaults.*`、`cocache.overrides.*`、`cocache.caches.[name].*`、`cocache.key-prefix`、`cocache.caches-validation`、`cocache.redis.*`，以及执行器的 bean 名。
 - `CacheSpecCustomizer` bean、loader、编解码与 Redis 连接配置。
 
 ## CoCache 登记的提示 {#registered-hints}
