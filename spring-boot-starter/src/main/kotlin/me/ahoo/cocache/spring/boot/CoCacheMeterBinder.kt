@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit
  *
  * 指标读取累计值，不在缓存的读写路径上额外记录。缓存在首次注入时才创建，因此绑定按 [CacheRuntime.cacheNames]
  * 增量进行：[bindTo] 绑定当时已有的缓存并记住 registry，之后创建的缓存由 [bindNewCaches] 补绑
- * （所有单例创建完成时、以及每个缓存 bean 初始化后自动调用）。
+ * （所有单例创建完成时、每个缓存 bean 初始化后，以及运行时创建每个缓存之后自动调用，`CacheRuntime.addCreationListener`）。
  */
 class CoCacheMeterBinder(private val runtime: CacheRuntime) : MeterBinder, SmartInitializingSingleton {
     companion object {
@@ -43,6 +43,10 @@ class CoCacheMeterBinder(private val runtime: CacheRuntime) : MeterBinder, Smart
      * registry → 已绑定的缓存名。
      */
     private val bound = ConcurrentHashMap<MeterRegistry, MutableSet<String>>()
+
+    init {
+        runtime.addCreationListener { bindNewCaches() }
+    }
 
     override fun bindTo(registry: MeterRegistry) {
         bound.computeIfAbsent(registry) { ConcurrentHashMap.newKeySet() }

@@ -92,7 +92,8 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 - Cache bean name: the spec bean name minus `Spec` (`productSpec` gives `product`), otherwise the name plus `Cache`. The cache name is the spec's name argument.
 - A `CacheSpec` sets exactly one of `loader`, `asyncLoader`, `externallySourced()`. A `VersionedCacheSpec` sets `versionedLoader` or `versionedAsyncLoader`. Authoritative specs have no source. A `SetStoreSpec` sets `elementCodec`.
 - `ObjectMapper` is Jackson 3 (`tools.jackson.databind`). Kotlin `policy { }` edits the policy; Java uses `updatePolicy(...)`; `policy(CachePolicy)` replaces it. Authoritative specs start from their own `DEFAULT_POLICY`; replacing it with `CachePolicy.DEFAULT` gives a `Store` a 1 h `ttl`.
-- Without Spring, `runtime.create(spec)` returns the matching type. Creating a type whose L1 capability the backend lacks fails with `UnsupportedOperationException`: `Store` needs conditional writes, the versioned types versioned writes, `SetStore` sets. Redis and the in-memory backend provide all three.
+- A library, or any code that creates caches outside the starter's own declarations, uses the `CoCacheFactory` bean: `create(spec)`, or `create(type, spec)` for an interface. Its caches get the customizers and `cocache.*` properties. A cache created directly with `runtime.create` is *unlayered*: configuration doesn't apply to it, the start log and the endpoint say so, and a `cocache.caches.[name]` entry for it only logs a warning.
+- Without Spring, `runtime.create(spec)` (or `CoCacheFactory(runtime)` for interfaces) returns the matching type. Creating a type whose L1 capability the backend lacks fails with `UnsupportedOperationException`: `Store` needs conditional writes, the versioned types versioned writes, `SetStore` sets. Redis and the in-memory backend provide all three.
 
 ## Names and storage keys
 

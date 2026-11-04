@@ -26,6 +26,7 @@ import me.ahoo.cocache.api.annotation.CaffeineCache
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.codec.jackson.JacksonCodec
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.Spec
@@ -46,7 +47,7 @@ import tools.jackson.databind.ObjectMapper
 import java.time.Duration
 
 /**
- * 把接口式声明（[CoCache]、[CaffeineCache]）翻译为对应类型的 spec，经 [CacheAssembler] 创建引擎，再包上代理。
+ * 把接口式声明（[CoCache]、[CaffeineCache]）翻译为对应类型的 spec，经 [CoCacheFactory] 创建缓存与代理（叠加定制器与配置文件）。
  *
  * - 接口继承的用户 API 类型（恰好一个，`CacheProxies.apiTypeOf`）决定 spec 的类型：`Cache` → [CacheSpec]、`VersionedCache` →
  *   [VersionedCacheSpec]、`Store` → [StoreSpec]、`VersionedStore` → [VersionedStoreSpec]、`SetStore` → [SetStoreSpec]（RFC 0005 §3.1）。
@@ -67,16 +68,14 @@ import java.time.Duration
  */
 class AnnotatedCacheFactory(
     private val beanFactory: ListableBeanFactory,
-    private val assembler: CacheAssembler,
+    private val factory: CoCacheFactory,
     private val mapper: ObjectMapper,
 ) {
     fun <C : ReadableCache<*, *>> create(type: Class<C>): C {
         val cacheName = cacheNameOf(type)
         return withCacheName(cacheName) {
             val apiType = CacheProxies.apiTypeOf(type)
-            CacheMethods.validate(type, apiType)
-            val engine = assembler.create(specOf(type, apiType, cacheName, type.getAnnotation(CoCache::class.java)))
-            CacheProxies.create(type, engine)
+            factory.create(type, specOf(type, apiType, cacheName, type.getAnnotation(CoCache::class.java)))
         }
     }
 

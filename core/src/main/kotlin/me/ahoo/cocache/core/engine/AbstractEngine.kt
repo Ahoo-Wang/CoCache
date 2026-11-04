@@ -51,6 +51,7 @@ import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.runsInline
 import me.ahoo.cocache.core.internal.uncancellable
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.proxy.CacheProxies
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CompletableFuture
@@ -103,6 +104,16 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected val context: EngineContext,
 ) : InvalidationListener, CacheAdmin, AutoCloseable {
     override val metrics = CacheMetrics(context.recordLocalHits)
+
+    final override val apiType: Class<*> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        CacheProxies.API_TYPES.first { it.isInstance(this) }
+    }
+
+    /**
+     * 运行时在注册之前设置（经 [me.ahoo.cocache.core.CoCacheFactory] 创建时为 `true`），之后不变。
+     */
+    final override var layered: Boolean = false
+        internal set
 
     /**
      * 与 [metrics] 分开保存：命中路径只读引擎自身的一个 final 字段，关闭时不触碰计数器。
