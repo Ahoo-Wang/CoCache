@@ -73,6 +73,8 @@ class SetEngineReadTest {
     fun readFailureIsUnknownCarryingTheOriginalException() {
         val failure = IllegalStateException("L1 down")
         backend.afterRead = { _, _ -> throw failure }
+        // 批量读取经 readAll（RFC 0005 §9 A.L2）
+        backend.afterReadAll = { throw failure }
         val sync = runCatching { target["k"] }.exceptionOrNull()
         sync.assert().isInstanceOf(CacheReadException::class.java)
         sync?.cause.assert().isSameAs(failure)
