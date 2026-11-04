@@ -150,7 +150,7 @@ class RedisUnitTest {
     }
 
     /**
-     * 按版本写入的结果码（6.8）。头部中的版本段见 [WireFormatTest]。
+     * 按版本写入的结果码。头部中的版本段见 [WireFormatTest]。
      */
     @Test
     fun decodesVersionedWrites() {

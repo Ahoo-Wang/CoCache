@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test
 class ForeignFormatExceptionTest {
     @Test
     fun messageTellsForeignContentNewerFormatsAndDecodingFailures() {
-        // 低于本节点的格式都是不是本格式写入的内容：格式 0（其它程序、5.x）与格式 1（6.x）
+        // 格式号低于本节点格式的内容（含不是本协议写入的格式 0）都是不是本格式写入的内容
         listOf(0, 1).forEach { format ->
             val foreign = ForeignFormatException("policy", "cocache:policy:p1", format, 2, null)
             foreign.message.assert().contains(

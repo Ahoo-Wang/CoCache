@@ -30,8 +30,8 @@ import java.util.concurrent.ThreadLocalRandom
  * @param readFailure 读取 L1 失败时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ReadFailureMode.DEGRADE]，
  *   没有数据源时（L1 是唯一副本）[ReadFailureMode.THROW]
  *
- * 读不懂的 L1 内容（不是本协议写入的、同格式解码失败）不由策略决定（8.0 删除了 6.x 的 `foreignFormat`，RFC 0005 §4.7）：
- * 有数据源的读取条件回收后回源，没有数据源的读取失败；其它格式的内容既不回收也不写回。
+ * 读不懂的 L1 内容（格式号低于本节点格式的、不是本协议写入的、同格式解码失败的）不由策略决定（RFC 0005 §4.7）：
+ * 有数据源的读取条件回收后回源，没有数据源的读取失败；更高格式的内容既不回收也不写回。
  */
 class CachePolicy(
     val ttl: Duration? = DEFAULT_TTL,

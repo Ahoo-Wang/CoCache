@@ -136,7 +136,7 @@ internal class SetEngine<K : Any, E : Any>(
      * L1 是唯一副本，没有数据源可以回源，因此格式检查与 [CoherentEngine] 不同：
      * - 更高的格式（[isNewerFormat]：更高的格式版本、`!m` 中有未知的位）读不懂，也不能当作别的值返回：
      *   抛出 [ForeignFormatException]（一个 [IllegalStateException]），且不写 L2；
-     * - 不是本格式写入的内容（如 5.x 留下的原生 Set、6.x 的集合）：抛出 [CacheReadException]，不写 L2、不删除它——L1 是唯一副本，
+     * - 不是本格式写入的内容（格式号低于本节点格式的集合、原生 Set 等其它 Redis 类型）：抛出 [CacheReadException]，不写 L2、不删除它——L1 是唯一副本，
      *   读成空集合会让调用方把“不存在”当作真实结果。集合缓存从不回收。
      */
     private fun onHit(storageKey: String, read: L1Read.Hit): LocalEntry<Set<E>> {

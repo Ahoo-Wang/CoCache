@@ -19,8 +19,7 @@ package me.ahoo.cocache.core
  * `SetCache` 的元素增删落在它上面时，作为 [me.ahoo.cocache.api.CacheWriteException] 的 `cause` 抛出（key 不被修改）。
  *
  * 三类内容（RFC 0005 §4.7）：
- * - [format] 低于本节点：不是本格式写入的内容。格式 `0` 是不是本协议写入的内容（其它程序、外部工具，或 5.x 遗留），
- *   格式 1 是 CoCache 6.x 写入的；
+ * - [format] 低于本节点：不是本格式写入的内容（格式号低于本节点格式的内容与不是本协议写入的内容，后者为格式 `0`）；
  * - [newer]：更高的格式，滚动升级期间出现，或带本节点不认识的必须理解的位，既不回收也不写回；
  * - 与本节点相同：同格式的内容解码失败（或集合 key 上的标量值）。
  *
@@ -46,7 +45,7 @@ class ForeignFormatException(
             val (reason, advice) = when {
                 format > nodeFormat -> "written by a newer CoCache version" to "upgrade this node"
                 format < nodeFormat ->
-                    "not written in this node's format, e.g. by another program or CoCache 5.x or 6.x" to
+                    "not written in this node's format" to
                         "delete it if it can be dropped"
                 else -> "decoding failed" to "delete it if it can be dropped"
             }

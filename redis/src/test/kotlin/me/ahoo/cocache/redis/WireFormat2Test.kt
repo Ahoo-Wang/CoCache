@@ -58,7 +58,7 @@ import java.util.concurrent.atomic.AtomicLong
  *   都按同一个载荷偏移；
  * - 扩展区中未知的 TLV 被跳过；
  * - 未知的必须理解的位（bit 2–6）对每个脚本都等同于更高格式；
- * - 格式 1（6.x）是读不懂的内容：有数据源的缓存回收后回源，没有数据源的缓存失败；
+ * - 格式号低于本格式的内容（格式 1）是读不懂的内容：有数据源的缓存回收后回源，没有数据源的缓存失败；
  * - 集合的 `!f` 与 `!m`（K10）；
  * - `FILL` / `RELEASE` 只读核心头部（K19）；
  * - 版本段中的 `NO_VERSION` 被脚本拒绝（K15）。
@@ -316,7 +316,7 @@ class WireFormat2Test {
     }
 
     /**
-     * 6.x 写入的格式 1：值、lease 与带版本的值（6.8 的 `VERSION_MARK`）。
+     * 格式 1 的值、lease 与令牌位置带版本标记的值。
      */
     private fun format1Shapes(sixToken: Token): Map<String, ByteArray> {
         val versionMark = byteArrayOf(0xC0.toByte()) + "cocache:version".toByteArray()
@@ -330,9 +330,9 @@ class WireFormat2Test {
     }
 
     /**
-     * 格式 1（6.x）是读不懂的内容，与格式 0 相同（RFC 0005 §4.7，8.x 不考虑与 6.x 共存）：读取原样报告格式 1、不授予令牌，
+     * 格式号低于本格式的内容（格式 1）是读不懂的内容，与格式 0 相同（RFC 0005 §4.7）：读取原样报告格式 1、不授予令牌，
      * 其中的 lease 不当作 lease、令牌不匹配；条件读写、按版本写入与集合元素写入拒绝；回收比较整个值的指纹。
-     * 有数据源的缓存回收它并回源，写回本格式的值；`SetCache` 读到 6.x 的集合时失败。
+     * 有数据源的缓存回收它并回源，写回本格式的值；`SetCache` 读到 `!f = '1'` 的集合时失败。
      */
     @Test
     fun derivedCacheReclaimsFormat1ContentAndReloads() {

@@ -464,7 +464,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 
     /**
      * 更高的格式（RFC 0005 §4.7）：格式版本高于本节点，以及后端报告为更高格式的内容（本节点不认识的必须理解的位或状态）。
-     * 既不回收也不写回：有数据源时绕过 L1 回源，没有时读取失败。低于本节点的格式（格式 0 与 6.x 的格式 1）不在此列：
+     * 既不回收也不写回：有数据源时绕过 L1 回源，没有时读取失败。格式号低于本节点格式的内容（含格式 0，即不是本协议写入的内容）不在此列：
      * 它们是读不懂的内容，有数据源时回收后回源。
      */
     protected fun isNewerFormat(format: Int): Boolean = format > backendFormat

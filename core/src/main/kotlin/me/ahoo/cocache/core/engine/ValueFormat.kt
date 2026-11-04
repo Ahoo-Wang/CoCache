@@ -19,7 +19,7 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Token
 
 /**
- * 引擎的值与 L1 标量之间的转换：载荷由 [Codec] 产生，版本（6.8）与写入标识（RFC 0005 §4.7，D2）在载荷之外随 [Envelope.Scalar] 传递。
+ * 引擎的值与 L1 标量之间的转换：载荷由 [Codec] 产生，版本与写入标识（RFC 0005 §4.7，D2）在载荷之外随 [Envelope.Scalar] 传递。
  */
 internal interface ValueFormat<V : Any> {
     /**

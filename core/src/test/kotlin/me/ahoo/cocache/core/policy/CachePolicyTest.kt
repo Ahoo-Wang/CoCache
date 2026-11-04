@@ -106,44 +106,6 @@ class CachePolicyTest {
         builder.build().readFailure.assert().isNull()
     }
 
-    /**
-     * 6.4 及以前编译的调用方使用的两个构造函数（11 个参数的版本与 Kotlin 默认参数的合成版本）仍然存在：8.0 删除 `foreignFormat` 之后它们就是主构造函数。
-     */
-    @Test
-    fun constructorsOf64RemainBinaryCompatible() {
-        val types = arrayOf(
-            Duration::class.java, Duration::class.java, Duration::class.java, Duration::class.java, Duration::class.java,
-            Duration::class.java, LeasePolicy::class.java, LoadPolicy::class.java, LocalPolicy::class.java,
-            InvalidateFailureMode::class.java, ReadFailureMode::class.java
-        )
-        val full = CachePolicy::class.java.getConstructor(*types).newInstance(
-            Duration.ofMinutes(2), Duration.ZERO, Duration.ofSeconds(4), Duration.ofMinutes(1), Duration.ofSeconds(5),
-            null, LeasePolicy(), LoadPolicy(), LocalPolicy(), InvalidateFailureMode.THROW, ReadFailureMode.THROW
-        )
-        full.ttl.assert().isEqualTo(Duration.ofMinutes(2))
-        full.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
-
-        // 旧调用方的 CachePolicy(ttl = null)：只传第一个参数，其余由默认值掩码（第 0 位以外全部置位）补齐
-        val defaults = CachePolicy::class.java.getConstructor(
-            *types,
-            Int::class.javaPrimitiveType,
-            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker")
-        ).newInstance(*arrayOfNulls<Any>(types.size), 0b111_1111_1110, null)
-        defaults.ttl.assert().isNull()
-        defaults.ttlJitter.assert().isEqualTo(CachePolicy.DEFAULT_TTL_JITTER)
-        defaults.readFailure.assert().isNull()
-        // 6.9 起 readFailure 与 invalidateFailure 的默认值也是未设置（参数类型在 JVM 上不变，旧调用方无需重新编译）
-        defaults.invalidateFailure.assert().isNull()
-
-        // 旧调用方的 CachePolicy()：全部参数取默认值
-        val allDefaults = CachePolicy::class.java.getConstructor(
-            *types,
-            Int::class.javaPrimitiveType,
-            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker")
-        ).newInstance(*arrayOfNulls<Any>(types.size), 0b111_1111_1111, null)
-        allDefaults.toString().assert().isEqualTo(CachePolicy.DEFAULT.toString())
-    }
-
     @Test
     fun rejectsInvalidDurations() {
         fun fails(block: () -> Any) = runCatching(

@@ -351,7 +351,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 同步与异步共用：读到读不懂的内容（低于本节点的格式，含格式 0 与 6.x 的格式 1，或同格式解码失败）时按这次读取有没有数据源决定
+     * 同步与异步共用：读到读不懂的内容（格式号低于本节点格式的内容，含不是本协议写入的格式 0，或同格式解码失败）时按这次读取有没有数据源决定
      * （RFC 0005 §4.7）。
      * 有数据源时返回 `null`，调用方照常条件回收（回收后回源）；没有数据源时 L1 是唯一副本，回收就是删除：
      * 返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）。与 `readFailure` 无关。
@@ -387,8 +387,8 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 同步与异步共用的命中判定：更高的格式（[isNewerFormat]）既不回收也不写回；低于本节点的格式（不是本格式写入的内容，
-     * 含 6.x 的格式 1）或解码失败按损坏处理。
+     * 同步与异步共用的命中判定：更高的格式（[isNewerFormat]）既不回收也不写回；格式号低于本节点格式的内容（不是本格式写入的）
+     * 或解码失败按损坏处理。
      */
     @Suppress("TooGenericExceptionCaught")
     private fun hitOutcome(read: L1Read.Hit): HitOutcome<V> {

@@ -26,8 +26,7 @@ import tools.jackson.module.kotlin.kotlinModule
 import java.util.UUID
 
 /**
- * 有数据源的缓存回收读不懂的内容（不是本协议写入的，这里是 5.x 留下的），没有数据源的缓存失败（见 [ForeignFormatFailTest]）。
- * 8.0 删除了 `foreign-format`（RFC 0005 §4.7）：6.x 允许没有数据源的缓存配置 `reclaim`，代价是删除唯一副本。
+ * 有数据源的缓存回收读不懂的内容（不是本协议写入的 JSON、字符串、Hash 与原生 Set），没有数据源的缓存失败（见 [ForeignFormatFailTest]）。
  */
 class ForeignFormatReclaimTest {
     data class Policy(val id: String, val effect: String)

@@ -140,7 +140,7 @@ Every value 8.x writes is format 2, leases and negative entries included. The St
 | 0 | 1 | Magic `0xC0` |
 | 1 | 1 | Format version (`2`) |
 | 2 | 1 | State: `V` value, `M` negative entry, `L` lease |
-| 3 | 1 | Flags (the reserved byte of 6.x) |
+| 3 | 1 | Flags |
 | 4 | 24 | Token: the lease token in state `L`, the refresh token in state `V`, zeros for none |
 | 28 | 8 | Token issue time: server `TIME` in epoch milliseconds, big-endian IEEE 754 double |
 | 36 | 8 | Version segment (flag bit 0): big-endian signed 64-bit |
@@ -150,11 +150,11 @@ Every value 8.x writes is format 2, leases and negative entries included. The St
 
 - **Flags.** Bits 0–6 must be understood. Bit 7 marks the extension area, which holds only what an older reader may ignore. A reader treats content with a must-understand bit it doesn't know (bits 2–6 in this version) as a higher format. The payload offset follows from the flags alone, and the Lua scripts and the client compute it with the same function.
 - **TLVs in the extension area.** Each TLV is `[type: 1 byte][length: 1–2 bytes][value]`. A length below 128 takes 1 byte; up to 32767 takes 2 bytes, the first being `0x80 | (length >> 8)`. Readers skip unknown types. Type 1 is the **writer id**: 24 bytes shaped like a token, new on every write.
-- **Which segments are written.** A value of a cache with a loader, a lease and a negative entry carry none, so their header is 36 bytes as in 6.x. Until 8.0 adds its authoritative store types, a cache without a loader plays that role: each value it writes carries a writer id (28 more bytes). A [versioned](../guide/freshness.md#versioned-writes) value or tombstone carries the version segment. The version segment never holds `Versioned.NO_VERSION`.
+- **Which segments are written.** A value of a cache with a loader, a lease and a negative entry carry none, so their header is 36 bytes. Until 8.0 adds its authoritative store types, a cache without a loader plays that role: each value it writes carries a writer id (28 more bytes). A [versioned](../guide/freshness.md#versioned-writes) value or tombstone carries the version segment. The version segment never holds `Versioned.NO_VERSION`.
 
 A token is the issuing runtime's `NodeId` (16 bytes) plus a per-process sequence number (8 bytes). Tokens are built by the client, never reused, so a destroyed token can't match again. A read grants a lease or refresh token only on format-2 content without an unknown must-understand bit, and a refresh token only on a value without a version or digest segment. A fill or release reads only the 36-byte core header.
 
-Content in a lower format is content the cache can't read: a cache with a loader reclaims it if unchanged and reloads, and a cache without one fails. That covers content the protocol didn't write (no magic byte, format byte `0`, segments longer than the value, a Hash without a valid `!f`, another Redis type), which reads as format `0`. It also covers format 1, written by CoCache 6.x: 8.x doesn't read 6.x data, so after an upgrade a cache with a loader reloads it. A higher format is never reclaimed or written back: a cache with a loader loads around it, and a cache without one fails. That covers a format above 2, content with an unknown must-understand bit or state, and a set whose `!m` has a bit set.
+Content in a lower format is content the cache can't read: a cache with a loader reclaims it if unchanged and reloads, and a cache without one fails. That covers content the protocol didn't write (no magic byte, format byte `0`, segments longer than the value, a Hash without a valid `!f`, another Redis type), which reads as format `0`. It also covers any format number below 2. A higher format is never reclaimed or written back: a cache with a loader loads around it, and a cache without one fails. That covers a format above 2, content with an unknown must-understand bit or state, and a set whose `!m` has a bit set.
 
 New must-understand segments ship in two phases within 8.x: first a release that reads them, then, once every instance in the namespace runs it, a release that writes them. New TLVs and new `!` fields need no such rollout, because older readers skip them.
 

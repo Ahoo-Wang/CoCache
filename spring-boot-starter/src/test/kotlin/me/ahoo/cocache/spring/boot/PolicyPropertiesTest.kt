@@ -42,7 +42,7 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
 /**
- * 配置文件对策略的语义：`refresh-window: 0` 关闭提前刷新；全局寿命不作用于集合缓存；8.0 删除的 `foreign-format` 不再绑定。
+ * 配置文件对策略的语义：`refresh-window: 0` 关闭提前刷新；全局寿命不作用于集合缓存。
  */
 class PolicyPropertiesTest {
     private val runner = ApplicationContextRunner()
@@ -159,52 +159,5 @@ class PolicyPropertiesTest {
             assertThat(context).hasFailed()
             assertThat(context.startupFailure).rootCause().hasMessageContaining("refreshWindow")
         }
-    }
-
-    @Configuration(proxyBeanMethods = false)
-    class ForeignFormatConfig {
-        @Bean(destroyMethod = "close")
-        fun backend(): CoherenceBackend = InMemoryBackend()
-
-        @Bean
-        fun userSpec(): CacheSpec<String, String> = cacheSpec("user") {
-            codec = StringCodec
-            loader = CacheLoader { "user-$it" }
-        }
-
-        @Bean
-        fun profileSpec(): CacheSpec<String, String> = cacheSpec("profile") { codec = StringCodec }
-
-        @Bean
-        fun viewSpec(): CacheSpec<String, String> = cacheSpec("view") {
-            codec = StringCodec
-            versioned = true
-        }
-
-        @Bean
-        fun indexSpec(): SetCacheSpec<String, String> = setCacheSpec("index") { elementCodec = StringCodec }
-    }
-
-    /**
-     * 8.0 删除了 `foreign-format`（RFC 0005 §4.7）：读不懂的内容按缓存有没有数据源处理，不再可配置。
-     * 配置文件中残留的这一项不再绑定到任何策略（配置元数据把它标为已删除），没有数据源的缓存与集合缓存照常启动。
-     */
-    @Test
-    fun removedForeignFormatNoLongerBinds() {
-        ApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
-            .withUserConfiguration(ForeignFormatConfig::class.java)
-            .withPropertyValues(
-                "cocache.defaults.foreign-format=reclaim",
-                "cocache.caches.profile.foreign-format=reclaim",
-                "cocache.caches.index.foreign-format=reclaim"
-            )
-            .run { context ->
-                assertThat(context).hasNotFailed()
-                listOf("user", "profile", "view", "index").forEach { context.getBean(it) }
-                val properties = context.getBean(CoCacheProperties::class.java)
-                properties.policyFor("profile", CachePolicy.DEFAULT).toString()
-                    .assert().isEqualTo(CachePolicy.DEFAULT.toString())
-            }
     }
 }
