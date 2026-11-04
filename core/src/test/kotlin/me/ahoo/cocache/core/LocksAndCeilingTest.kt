@@ -14,14 +14,18 @@
 package me.ahoo.cocache.core
 
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.policy.Ttl
+import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.function.UnaryOperator
 
 /**
  * 库的锁定与约束（[Locks]，RFC 0005 §4.8，U2、S12）在只有声明一层时的效果，以及 `overrides` 的 `ttl` 对按调用给出的寿命的钳制
@@ -103,6 +107,47 @@ class LocksAndCeilingTest {
             .assert().isInstanceOf(IllegalArgumentException::class.java)
             .hasMessageContaining("must be a Store")
         runtime.cache("loaded").assert().isNull()
+    }
+
+    interface Tokens : Store<String, String>
+
+    /**
+     * 只有声明一层时，五种 spec 的约束都会重建声明（含 `unknownRead`），DSL 与接口式声明的入口同样如此。
+     */
+    @Test
+    fun constraintsRebuildEverySpecType() {
+        val factory = CoCacheFactory(runtime)
+        val oneSecond = UnaryOperator<Duration> { Duration.ofSeconds(1) }
+        val external = cacheSpec<String, String>("external") {
+            codec = StringCodec
+            externallySourced()
+            unknownRead = UnknownReadMode.ABSENT
+        }
+        val versionedCache = versionedCacheSpec<String, String>("doc") {
+            codec = StringCodec
+            versionedLoader = CacheLoader { Versioned(it, 1) }
+        }
+        factory.create(external) { constrain(PolicyField.LOCAL_MAX_AGE, oneSecond) }
+        factory.create(versionedCache) { constrain(PolicyField.LOCAL_MAX_AGE, oneSecond) }
+        factory.create(versionedStoreSpec<String, String>("aggregate") { codec = StringCodec }) {
+            constrain(PolicyField.LOCAL_MAX_AGE, oneSecond)
+        }
+        factory.create(setStoreSpec<String, String>("tags") { elementCodec = StringCodec }) {
+            constrain(PolicyField.LOCAL_MAX_AGE, oneSecond)
+        }
+        val tokens = factory.create(Tokens::class.java, storeSpec("tokens")) {
+            constrain(PolicyField.LOCAL_MAX_AGE, oneSecond)
+        }
+        tokens.put("t", "v")
+        tokens["t"].assert().isEqualTo("v")
+        listOf("external", "doc", "aggregate", "tags", "tokens").forEach { name ->
+            runtime.policy(name)?.localMaxAge.assert()
+                .withFailMessage { "$name is constrained" }.isEqualTo(Duration.ofSeconds(1))
+            val report = requireNotNull(runtime.admin(name)?.policyReport)
+            report.entry(PolicyField.LOCAL_MAX_AGE)?.source.assert().isEqualTo(PolicyReport.Source.LOCKED)
+        }
+        val externalReport = requireNotNull(runtime.admin("external")?.policyReport)
+        externalReport.entry(PolicyField.UNKNOWN_READ)?.value.assert().isEqualTo("absent")
     }
 
     /**
