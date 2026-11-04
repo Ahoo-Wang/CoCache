@@ -166,7 +166,8 @@ open class CoherentEngineTest {
 
     @Test
     fun getWithCallerLoaderServesLocalHitsAndUsesLease() {
-        val cache = runtime().engine(spec { loader = null })
+        val runtime = runtime()
+        val cache = runtime.engine(spec { loader = null })
         val calls = AtomicInteger()
         cache.get("k") {
             calls.incrementAndGet()
@@ -177,7 +178,7 @@ open class CoherentEngineTest {
             "again"
         }.assert().isEqualTo("loaded-k")
         calls.get().assert().isEqualTo(1)
-        (
+        val filled = (
             Suspending.await {
                 memory.store(
                     Keyspace("cocache:", name)
@@ -188,7 +189,10 @@ open class CoherentEngineTest {
                     null
                 )
             } as L1Read.Hit
-            ).envelope.assert().isEqualTo(Envelope.Scalar("loaded-k".toByteArray()))
+            ).envelope as Envelope.Scalar
+        filled.bytes.assert().isEqualTo("loaded-k".toByteArray())
+        // 没有数据源的缓存充当权威标量：调用方给出 loader 时的填充同样带写入标识（RFC 0005 §4.7，D2）
+        requireNotNull(filled.writer).node.assert().isEqualTo(runtime.nodeId)
     }
 
     @Test

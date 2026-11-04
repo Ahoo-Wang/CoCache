@@ -25,23 +25,36 @@ sealed interface Envelope {
      * @param version 与值一起保存的版本（6.8，按版本有序的写入）；[Versioned.NO_VERSION] 表示没有版本。
      *   支持版本的存储（[L1Store.versioned] 非 `null`）在 [L1Store.fill]、[L1Store.put]、[L1Store.putAll] 时保存它，
      *   读取时原样返回（[ConditionalL1Store.putIfMatch] 写入没有版本的值）；版本不属于载荷，不影响 [Digest]
+     * @param writer 写入标识（RFC 0005 §4.3“keyspace 与段”、§4.7，D2）：与 [Token] 同形（[NodeId] + 序号），每次写入新取一个，
+     *   全局唯一、永不重复。由引擎给出：没有数据源的缓存（M5 之前充当权威标量）的每次标量写入都带它，有数据源的缓存不带（`null`）。
+     *   存储在每个写入标量的操作（[L1Store.fill]、[L1Store.fillAll]、[L1Store.put]、[L1Store.putAll]、
+     *   [ConditionalL1Store.putIfMatch]、[VersionedL1Store.putIfNewer]）中原样保存它，[L1Store.read] 与 [L1Store.readAll] 原样返回。
+     *   它为之后按标识比较的条件写入（现值 ABA）而写；本版本的引擎不读它。不属于载荷，不影响 [Digest]
      */
-    class Scalar @JvmOverloads constructor(bytes: ByteArray, val version: Long = Versioned.NO_VERSION) : Envelope {
+    class Scalar @JvmOverloads constructor(
+        bytes: ByteArray,
+        val version: Long = Versioned.NO_VERSION,
+        val writer: Token? = null,
+    ) : Envelope {
         private val value = bytes.copyOf()
 
         val bytes: ByteArray
             get() = value.copyOf()
 
         override fun equals(other: Any?): Boolean {
-            return this === other || (other is Scalar && version == other.version && value.contentEquals(other.value))
+            return this === other ||
+                (other is Scalar && version == other.version && writer == other.writer && value.contentEquals(other.value))
         }
 
-        override fun hashCode(): Int = 31 * value.contentHashCode() + version.hashCode()
+        override fun hashCode(): Int = 31 * (31 * value.contentHashCode() + version.hashCode()) + writer.hashCode()
 
-        override fun toString(): String = if (version == Versioned.NO_VERSION) {
-            "Scalar(${value.size} bytes)"
-        } else {
-            "Scalar(${value.size} bytes, version=$version)"
+        override fun toString(): String = buildString {
+            append("Scalar(").append(value.size).append(" bytes")
+            if (version != Versioned.NO_VERSION) {
+                append(", version=").append(version)
+            }
+            writer?.let { append(", writer=").append(it) }
+            append(')')
         }
     }
 

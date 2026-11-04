@@ -130,6 +130,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     private val atomicBroadcast = context.backend.atomicBroadcast
 
     /**
+     * 本节点的格式版本（`CoherenceBackend.format`）。
+     */
+    protected val backendFormat: Int = context.backend.format
+
+    /**
      * 存储 key 的前缀 `{keyPrefix}{namespace}:`（[Keyspace.storagePrefix]，创建时已算好）。
      */
     private val storagePrefix = keyspace.storagePrefix
@@ -457,6 +462,13 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         )
     }
 
+    /**
+     * 更高的格式（RFC 0005 §4.7）：格式版本高于本节点，以及后端报告为更高格式的内容（本节点不认识的必须理解的位或状态）。
+     * 既不回收也不写回：有数据源时绕过 L1 回源，没有时读取失败。格式号低于本节点格式的内容（含格式 0，即不是本协议写入的内容）不在此列：
+     * 它们是读不懂的内容，有数据源时回收后回源。
+     */
+    protected fun isNewerFormat(format: Int): Boolean = format > backendFormat
+
     @Suppress("TooGenericExceptionCaught")
     private fun remoteCopyOf(storageKey: String): KeyInspection.RemoteCopy {
         val read = try {
@@ -481,11 +493,13 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
                 error = reason
             )
         }
-        if (read.format < MIN_FORMAT) {
-            return unreadable("Unrecognized remote content (not written by this protocol).")
+        if (isNewerFormat(read.format)) {
+            return unreadable("Written by a newer format[${read.format}] than this node[$backendFormat].")
         }
-        if (read.format > context.backend.format) {
-            return unreadable("Written by a newer format[${read.format}] than this node[${context.backend.format}].")
+        if (read.format != backendFormat) {
+            return unreadable(
+                "Unrecognized remote content (format[${read.format}], not written in this node's format)."
+            )
         }
         val value = try {
             describe(read.envelope)
@@ -518,9 +532,9 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         val log = KotlinLogging.logger {}
 
         /**
-         * 格式版本 `0` 表示无法识别的内容（如旧版本写入的值），按损坏处理。
+         * 格式版本 `0` 表示不是本协议写入的内容（如其它程序写入的值）。它与其它低于本节点的格式一样按读不懂处理。
          */
-        const val MIN_FORMAT = 1
+        const val UNRECOGNIZED_FORMAT = 0
 
         /**
          * 无条件写入：总是修改 L1。

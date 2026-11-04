@@ -33,7 +33,6 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.redis.migration.Redis5x
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
@@ -51,7 +50,7 @@ import java.util.concurrent.TimeUnit
 /**
  * 按摘要的条件读写在真实 Redis 上的线上行为（standalone、Cluster、Valkey）：
  * - 摘要未变的条件读取只回复一个结果码，不传输正文；
- * - 读不懂的内容（5.x 的 String / 原生 Set / Hash、更高格式版本、本协议的集合）默认失败，key 与到期时间原样保留、不广播；
+ * - 读不懂的内容（不是本协议写入的 String / 原生 Set / Hash、格式号低于或高于本格式的内容、本格式的集合）总是失败，key 与到期时间原样保留、不广播；
  * - 写入按 `put` 的规则设置到期时间，冲突不改变到期时间、不广播；
  * - 多个运行时上的并发“读—改—条件写”不丢失更新。
  */
@@ -128,11 +127,11 @@ class ConditionalWriteTest {
         cause.format.assert().isEqualTo(format)
     }
 
-    private fun writeNewerValue(key: String, ttlMillis: Long) {
-        // 36 字节头：magic、格式版本 2、状态 V、保留、24 字节令牌、8 字节签发时间；载荷 "v"
+    private fun writeNewerValue(key: String, ttlMillis: Long, format: Int = 3) {
+        // 36 字节头：magic、格式版本、状态 V、标志位、24 字节令牌、8 字节签发时间；载荷 "v"
         RedisTestSupport.withCommands {
             it.eval<String>(
-                "return redis.call('SET', KEYS[1], '\\192\\2V\\0' .. string.rep('\\0', 32) .. 'v', 'PX', ARGV[1])",
+                "return redis.call('SET', KEYS[1], '\\192\\${format}V\\0' .. string.rep('\\0', 32) .. 'v', 'PX', ARGV[1])",
                 ScriptOutputType.STATUS,
                 arrayOf(key),
                 ttlMillis.toString()
@@ -141,7 +140,7 @@ class ConditionalWriteTest {
     }
 
     /**
-     * 5.x 遗留与更高版本写入的内容：默认（`FAIL`）条件读写都失败（同步与异步），内容、类型与到期时间原样保留，不广播。
+     * 不是本协议写入的内容、格式号低于或高于本格式的内容：条件读写都失败（同步与异步），内容、类型与到期时间原样保留，不广播。
      */
     @Test
     fun foreignAndNewerContentFailsAndIsKept() {
@@ -152,7 +151,8 @@ class ConditionalWriteTest {
         Redis5x.hash(key("hash"), mapOf("+a" to ""), ttlSeconds = 3600)
         Redis5x.hash(key("protocol-set"), mapOf("!f" to "1", "+a" to ""), ttlSeconds = 3600)
         writeNewerValue(key("newer"), 3_600_000)
-        val expected = mapOf("string" to 0, "set" to 0, "hash" to 0, "protocol-set" to 1, "newer" to 2)
+        writeNewerValue(key("format-1"), 3_600_000, format = 1)
+        val expected = mapOf("string" to 0, "set" to 0, "hash" to 0, "protocol-set" to 1, "newer" to 3, "format-1" to 1)
         val cache = cache(name)
         val frames = CopyOnWriteArrayList<ByteArray>()
         RedisTestSupport.subscribeFrames(
@@ -185,6 +185,7 @@ class ConditionalWriteTest {
         Redis5x.fields(key("hash")).assert().isEqualTo(mapOf("+a" to ""))
         Redis5x.fields(key("protocol-set")).assert().isEqualTo(mapOf("!f" to "1", "+a" to ""))
         Redis5x.type(key("newer")).assert().isEqualTo("string")
+        Redis5x.type(key("format-1")).assert().isEqualTo("string")
         expected.keys.forEach { Redis5x.pttl(key(it)).assert().isBetween(3_000_000L, 3_600_000L) }
         val metrics = requireNotNull(runtime.metrics(name))
         metrics.unknownFormats.assert().isEqualTo(4L * expected.size)
@@ -192,7 +193,7 @@ class ConditionalWriteTest {
     }
 
     /**
-     * `foreignFormat` 只决定读取。有数据源、显式 `RECLAIM` 的缓存上，条件读写遇到不是本协议写入的内容（格式 0，这里是 5.x 的原生 Set）
+     * 回收只属于读取。有数据源的缓存上，条件读写遇到不是本协议写入的内容（格式 0，这里是原生 Set）
      * 同样失败，内容、类型与到期时间原样保留：从不视为没有值，`expected = null` 的写入不会整体覆盖它。普通读取照常条件回收后回源。
      */
     @Test
@@ -204,7 +205,6 @@ class ConditionalWriteTest {
             cacheSpec<String, String>(name) {
                 codec = StringCodec
                 loader = CacheLoader { "loaded" }
-                policy { foreignFormat = ForeignFormatMode.RECLAIM }
             }
         )
         assertForeignRead(runCatching { cache.getIfChanged("k", null) }.exceptionOrNull(), key, 0)
@@ -253,16 +253,17 @@ class ConditionalWriteTest {
     }
 
     /**
-     * 写入读不懂的内容：不是本协议写入的 String、`!f` 为 `0` 的 Hash、更高格式版本的值、状态字节不认识的本协议 String。
+     * 写入读不懂的内容：不是本协议写入的 String、`!f` 为 `0` 的 Hash、更高格式版本的值、状态字节不认识的格式 2 String
+     * （报告为更高格式，RFC 0005 §4.7）。
      */
     private fun writeUnreadableShapes(key: (String) -> String) {
         Redis5x.string(key("foreign"), "plain")
         Redis5x.hash(key("zero"), mapOf("!f" to "0"))
         writeNewerValue(key("newer"), 60_000)
-        // 本协议的 String 头，但状态字节不认识
+        // 格式 2 的 String 头，但状态字节不认识
         RedisTestSupport.withCommands {
             it.eval<String>(
-                "return redis.call('SET', KEYS[1], '\\192\\1X\\0' .. string.rep('\\0', 32))",
+                "return redis.call('SET', KEYS[1], '\\192\\2X\\0' .. string.rep('\\0', 32))",
                 ScriptOutputType.STATUS,
                 key("unknown-state")
             )
@@ -293,7 +294,7 @@ class ConditionalWriteTest {
         changed.format.assert().isEqualTo(RedisScripts.FORMAT)
         conditional.readIfChanged(key("value"), digestOf("v"), null)
             .assert().isEqualTo(L1ConditionalRead.Unchanged(RedisScripts.FORMAT))
-        mapOf("set" to 1, "foreign" to 0, "zero" to 0, "newer" to 2, "unknown-state" to 0).forEach { (id, format) ->
+        mapOf("set" to 2, "foreign" to 0, "zero" to 0, "newer" to 3, "unknown-state" to 3).forEach { (id, format) ->
             conditional.readIfChanged(key(id), null, null).assert().isEqualTo(L1ConditionalRead.Unreadable(format))
             conditional.putIfMatch(
                 key(id),

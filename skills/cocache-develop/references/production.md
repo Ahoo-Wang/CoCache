@@ -31,7 +31,7 @@ Under `noeviction` at `maxmemory`, invalidations still work, reads stop taking l
 
 ## ACL
 
-CoCache needs read/write on its key prefixes (`~cocache:*` by default, plus `~cocache:probe:*` in `pubsub` mode), channels `&cocache:inv:*` (plus `&cocache:probe:*` in `pubsub` mode), direct commands `EVALSHA`, `EVAL`, `PING`, `INFO` (eviction check, with a `SetCache`), the publish/subscribe family for the chosen mode and the connection commands, and the in-script commands `GET SET DEL PTTL TYPE HGETALL HKEYS HGET HSET HDEL HEXISTS HLEN PEXPIRE PERSIST SETRANGE TIME`. Copy the exact `ACL SETUSER` line from the deployment guide of the resolved version. Upgrading to 6.3: add `+hkeys +hget` before the upgrade, and keep `+hgetall`. Denying `PING` makes every heartbeat fail, clears every L2 each period, and keeps health `DOWN`.
+CoCache needs read/write on its key prefixes (`~cocache:*` by default, plus `~cocache:probe:*` in `pubsub` mode), channels `&cocache:inv:*` (plus `&cocache:probe:*` in `pubsub` mode), direct commands `EVALSHA`, `EVAL`, `PING`, `INFO` (eviction check, with a `SetCache`), the publish/subscribe family for the chosen mode and the connection commands, and the in-script commands `GET SET DEL PTTL TYPE HGETALL HKEYS HGET HSET HDEL HEXISTS HLEN PEXPIRE PERSIST SETRANGE TIME` (8.0, wire format 2: add `GETRANGE HMGET`; `HGET HEXISTS` are no longer used). Copy the exact `ACL SETUSER` line from the deployment guide of the resolved version. Upgrading to 6.3: add `+hkeys +hget` before the upgrade, and keep `+hgetall`. Denying `PING` makes every heartbeat fail, clears every L2 each period, and keeps health `DOWN`.
 
 ## Rolling-safe changes
 

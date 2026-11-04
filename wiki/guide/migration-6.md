@@ -32,14 +32,14 @@ A read that has no loader and finds content 6.x can't read throws `CacheReadExce
 
 Up to 6.4, the same read reclaimed the key and returned `null`. Without a loader, reclaiming deletes the only copy. A `SetCache` read an empty set, and the first `add` replaced the old members.
 
-The `foreign-format` policy (`cocache.caches.[name].foreign-format`, or `CachePolicy.foreignFormat`) selects the behavior:
+In 6.x the `foreign-format` policy (`cocache.caches.[name].foreign-format`, or `CachePolicy.foreignFormat`) selects the behavior. 8.0 removed it and always applies the defaults below: a read with a loader reclaims, a read without one fails.
 
 | Value | Behavior | Default for |
 |-------|----------|-------------|
 | `fail` | Throw `CacheReadException`. Redis and L2 are left unchanged. | Reads without a loader: `SetCache`, and `Cache` without a loader |
-| `reclaim` | Reclaim the key if it is unchanged, then reload. Needs a loader: since 8.0, a `Cache` without one and every `SetCache` fail at creation when they set it. In 6.x they accepted it, and a `SetCache` read an empty set until a write replaced the content. | Reads with a loader, including `get(key, loader)` on a cache without one |
+| `reclaim` | Reclaim the key if it is unchanged, then reload. 6.x accepted it on a `Cache` without a loader and on a `SetCache` too, and a `SetCache` then read an empty set until a write replaced the content. | Reads with a loader, including `get(key, loader)` on a cache without one |
 
-`cocache.defaults.foreign-format` doesn't apply to `SetCache`, and since 8.0 its `reclaim` doesn't apply to caches without a loader either.
+In 6.x, `cocache.defaults.foreign-format` doesn't apply to `SetCache`.
 
 `SetCache.add` and `remove` refuse such content too (since 6.6.0 by default, since 8.0 always). Adding or removing members on a key that holds content the cache can't read throws `CacheWriteException`, whose `cause` is `ForeignFormatException`. Such content is an unmigrated native set, string or hash, a hash without the 6.x format field, or a set written by a newer CoCache version. The check and the write are one atomic script: the key keeps its members and TTL, nothing is broadcast, and the write counts in `cocache.unknown.formats` and `cocache.write.failures`. The key can still be migrated afterwards. In 6.5.0 and earlier, and with `reclaim` in later 6.x releases, a single `add` replaced the whole native set with the new members, and the key then looked migrated, so `CoCache5Migrator` skipped it and the old members were lost for good.
 

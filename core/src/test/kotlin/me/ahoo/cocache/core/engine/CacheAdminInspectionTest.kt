@@ -198,6 +198,9 @@ class CacheAdminInspectionTest {
         admin.inspect("id-3").remote.error.assert().contains("Unrecognized")
         backend.afterRead = { _, read -> (read as? L1Read.Hit)?.copy(format = InMemoryBackend.FORMAT + 1) ?: read }
         admin.inspect("id-3").remote.error.assert().contains("newer format")
+        // 格式号低于本节点格式的内容与格式 0 一样是读不懂的内容
+        backend.afterRead = { _, read -> (read as? L1Read.Hit)?.copy(format = 1) ?: read }
+        admin.inspect("id-3").remote.error.assert().contains("Unrecognized remote content (format[1]")
         backend.afterRead = null
 
         backend.failAll = true

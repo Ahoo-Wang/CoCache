@@ -112,8 +112,8 @@ The L2 hit counter `cocache.hits{level=l2}` is off by default because it slows d
 
 | Entry | Stored as | Size |
 |-------|-----------|------|
-| Value | String | key + **36-byte header** + codec bytes |
-| Negative entry | String | key + 36-byte header, for `absent-ttl` |
+| Value | String | key + **36-byte header** + codec bytes. A cache without a loader adds a 28-byte writer id, and a versioned value an 8-byte version ([wire format](../architecture/index.md#wire-format)). |
+| Negative entry | String | key + 36-byte header, for `absent-ttl`. A versioned tombstone adds the 8-byte version. |
 | Lease | String | key + 36-byte header, while a load runs (at most `lease-ttl`) |
 | Set (`SetCache`) | Hash | key + a `!f` field + one `+{member}` field per member |
 
@@ -128,7 +128,7 @@ Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY U
 
 ## Rolling deploys {#rolling-deploys}
 
-The wire format (key layout, value header, set fields, message frame, channel names) is frozen within a major version, so instances of one major version can run side by side. A major upgrade is not rolling: stop 6.x before you start 8.x ([Upgrading from 6.x](../guide/changelog.md#upgrading-from-6x)). A future format change ships in two phases: first a release that reads the new format but still writes the old one, then, once every instance runs it, a release that writes the new one. While instances disagree, a value in a format an instance doesn't know is loaded from the source without overwriting it (`cocache.unknown.formats`).
+The wire format (key layout, value header and its segments, set fields, message frame, channel names) is frozen within a major version, so instances of one major version can run side by side. A major upgrade is not rolling: stop 6.x before you start 8.x ([Upgrading from 6.x](../guide/changelog.md#upgrading-from-6x)). 8.x can't read 6.x values: after the upgrade, caches with a loader reload them, and caches without one fail on them. A later must-understand change ships in two phases: first a release that reads it but doesn't write it, then, once every instance runs it, a release that writes it. While instances disagree, a value an instance can't read in full is loaded from the source without overwriting it (`cocache.unknown.formats`).
 
 Each new instance starts with an empty L2 and fills it from L1, so a deploy shows a burst of `cocache.misses` and `cocache.hits{level=l1}`, not of loads.
 
@@ -168,15 +168,15 @@ CoCache needs these permissions on its Redis user:
 | Keys | Read and write on your key prefixes (`~cocache:*` by default). In `pubsub` mode also the probe key `cocache:!probe:{a}`, which `~cocache:*` already covers. |
 | Channels | `&{keyPrefix}inv:*` for each prefix (`&cocache:inv:*` by default). In `pubsub` mode also `&cocache:!probe:*`, or the backend falls back to non-atomic broadcast. |
 | Commands, direct | `EVALSHA`, `EVAL` (fallback after `NOSCRIPT`), `PING` (heartbeat), `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, or in `sharded` mode `SPUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, plus the connection commands (`HELLO`, `AUTH`, `CLIENT`, `SELECT`). `INFO` for the [startup eviction check](#maxmemory-policy) when you use a `SetCache`. |
-| Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HKEYS`, `HGET`, `HSET`, `HDEL`, `HEXISTS`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
+| Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `GETRANGE`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HKEYS`, `HMGET`, `HSET`, `HDEL`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
 
 A starting point, checked against Redis 7.4 by running every CoCache script as this user:
 
 ```
-ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
+ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +getrange +set +del +pttl +type +hgetall +hkeys +hmget +hset +hdel +hlen +pexpire +persist +setrange +time
 ```
 
-Since 6.3.0, CoCache reads `SetCache` members with `HKEYS` and `HGET` instead of `HGETALL`. Add both to an existing user before you upgrade. Otherwise set reads fail with an ACL error, worded differently across Redis versions, and stored data isn't touched. Keep `HGETALL`: conditional reclaim and older instances still use it.
+8.0 writes wire format 2. Its scripts read a set's format fields with `HMGET` and read only the 36-byte header with `GETRANGE` when they write back or release a token. Add `+hmget +getrange` to an existing user before you upgrade, or reads and fills fail with an ACL error, worded differently across Redis versions. `HGET` and `HEXISTS` are no longer used. Keep `HGETALL`: conditional reclaim still uses it.
 
 Creating a cache publishes one empty frame to the cache's channel, the way its writes will. If the ACL denies that channel, creation fails with an `IllegalStateException` that names the pattern to allow, for example `[&cocache:inv:*]`. Otherwise every later write would change Redis and then fail at its broadcast, and other instances would stay stale until `local-max-age`.
 

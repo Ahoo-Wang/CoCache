@@ -306,13 +306,13 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * 填充的版本（墓碑的版本只能经 [Fill.version] 传递）：标量的信封与槽位带同一个版本。
+         * 填充的版本（墓碑的版本只能经 [Fill.version] 传递）：标量的信封与槽位带同一个版本，写入标识原样保存。
          */
         private fun withVersion(envelope: Envelope, version: Long): Envelope {
             if (envelope !is Envelope.Scalar) {
                 return envelope
             }
-            return Envelope.Scalar(envelope.bytes, version)
+            return Envelope.Scalar(envelope.bytes, version, envelope.writer)
         }
 
         override suspend fun fillAll(fills: List<Fill>): List<L1Fill> {
@@ -490,8 +490,12 @@ class InMemoryBackend @JvmOverloads constructor(
                     outcome = L1ConditionalWrite.Conflict(digest)
                     return@compute slot
                 }
-                // 与 Redis 的 PUT_IF_MATCH 相同：条件写入写入没有版本的值
-                Slot(State.VALUE, Envelope.Scalar(envelope.bytes), expireAt = expireAt(ttl))
+                // 与 Redis 的 PUT_IF_MATCH 相同：条件写入写入没有版本的值，写入标识原样保存
+                Slot(
+                    State.VALUE,
+                    Envelope.Scalar(envelope.bytes, Versioned.NO_VERSION, envelope.writer),
+                    expireAt = expireAt(ttl)
+                )
             }
             if (outcome == L1ConditionalWrite.Written) {
                 publish(keyspace, frame)
@@ -510,6 +514,10 @@ class InMemoryBackend @JvmOverloads constructor(
             ttl: Duration?,
             frame: ByteArray
         ): L1VersionedWrite {
+            // 与 Redis 后端相同：版本段中不得是 NO_VERSION（RFC 0005 §4.7，K15）
+            require(
+                version != Versioned.NO_VERSION
+            ) { "putIfNewer takes a version, not Versioned.NO_VERSION (Long.MIN_VALUE)." }
             require(envelope !is Envelope.Members) { "putIfNewer takes a scalar value or Envelope.Absent, not a set." }
             awaitRunnable(null)
             var outcome: L1VersionedWrite = L1VersionedWrite.Written
@@ -523,7 +531,15 @@ class InMemoryBackend @JvmOverloads constructor(
                     outcome = L1VersionedWrite.Stale(slot.version)
                     return@compute slot
                 }
-                val stored = if (envelope is Envelope.Scalar) Envelope.Scalar(envelope.bytes, version) else envelope
+                val stored = if (envelope is Envelope.Scalar) {
+                    Envelope.Scalar(
+                        envelope.bytes,
+                        version,
+                        envelope.writer
+                    )
+                } else {
+                    envelope
+                }
                 Slot(stateOf(envelope), stored, expireAt = expireAt(ttl), version = version)
             }
             if (outcome == L1VersionedWrite.Written) {
@@ -544,7 +560,7 @@ class InMemoryBackend @JvmOverloads constructor(
     }
 
     companion object {
-        const val FORMAT = 1
+        const val FORMAT = 2
         private const val FOREVER = Long.MAX_VALUE
 
         /**

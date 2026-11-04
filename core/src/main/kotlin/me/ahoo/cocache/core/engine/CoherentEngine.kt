@@ -62,7 +62,6 @@ import me.ahoo.cocache.core.internal.ensureNotInterrupted
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.runsInline
 import me.ahoo.cocache.core.internal.uncancellable
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.ReadFailureMode
 import me.ahoo.cocache.core.policy.boundedTtl
@@ -96,7 +95,6 @@ internal class CoherentEngine<K : Any, V : Any>(
     Cache<K, V> {
 
     private val keyFilter = spec.keyFilter
-    private val backendFormat = context.backend.format
 
     /**
      * 回源并发许可（bulkhead）：同步与异步变体共用一个按到达顺序交接的信号量，只计 SingleFlight leader。
@@ -117,6 +115,13 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private val loadSource: CoreSource<K, V>? = source?.let { CoreSource(it, LoadOperation.LOAD) }
     private val refreshSource: CoreSource<K, V>? = source?.let { CoreSource(it, LoadOperation.REFRESH) }
+
+    /**
+     * 是否给标量写入带上写入标识（RFC 0005 §4.7，D2）：M5 引入 `Store` / `VersionedStore` 之前，没有数据源的缓存充当权威标量
+     * （`docs/todo.md` §2 的 M4 约定），它的每次标量写入（`put`、`putAll`、填充、`putIfMatch`、`putIfNewer`）都带一个新的写入标识；
+     * 有数据源的缓存不带，L1 头部保持 36 字节。
+     */
+    private val authoritative: Boolean = source == null
 
     /**
      * 失效写入 L1 失败时的处理方式：未配置时按有没有数据源决定。有数据源时删除总是安全的（之后回源），重试；
@@ -346,10 +351,10 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 同步与异步共用：读到读不懂的内容（格式 0 或同版本解码失败）时按 [ForeignFormatMode] 决定。
-     * `FAIL` 返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）；`RECLAIM` 返回 `null`，调用方照常条件回收。
-     * 未配置时按这次读取有没有数据源决定：没有数据源时 L1 是唯一副本，回收就是删除。显式的 `RECLAIM` 只出现在有数据源的缓存上
-     * （[me.ahoo.cocache.core.CacheSpec] 创建时校验）。与 `readFailure` 无关。
+     * 同步与异步共用：读到读不懂的内容（格式号低于本节点格式的内容，含不是本协议写入的格式 0，或同格式解码失败）时按这次读取有没有数据源决定
+     * （RFC 0005 §4.7）。
+     * 有数据源时返回 `null`，调用方照常条件回收（回收后回源）；没有数据源时 L1 是唯一副本，回收就是删除：
+     * 返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）。与 `readFailure` 无关。
      */
     private fun foreignFormatFailure(
         storageKey: String,
@@ -357,22 +362,22 @@ internal class CoherentEngine<K : Any, V : Any>(
         error: Exception,
         hasSource: Boolean
     ): CacheReadException? {
-        val mode = policy.foreignFormat ?: if (hasSource) ForeignFormatMode.RECLAIM else ForeignFormatMode.FAIL
-        if (mode == ForeignFormatMode.RECLAIM) {
+        if (hasSource) {
             return null
         }
-        return readFailure(ForeignFormatException(name, storageKey, read.format, error))
+        return readFailure(ForeignFormatException(name, storageKey, read.format, backendFormat, error))
     }
 
     /**
-     * 同步与异步共用：读到更高版本写入的值（滚动升级期间）。有数据源时返回 `null`，调用方绕过 L1 回源（既不回收也不写回）。
-     * 没有数据源时 L1 是唯一副本，绕过 L1 只能得到“不存在”：返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）。
+     * 同步与异步共用：读到更高的格式（[isNewerFormat]：滚动升级期间，或未知的必须理解的位），既不回收也不写回。
+     * 有数据源时返回 `null`，调用方绕过 L1 回源。没有数据源时 L1 是唯一副本，绕过 L1 只能得到“不存在”：
+     * 返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）。
      */
     private fun newerFormatFailure(storageKey: String, read: L1Read.Hit, hasSource: Boolean): CacheReadException? {
         if (hasSource) {
             return null
         }
-        return readFailure(ForeignFormatException(name, storageKey, read.format, null, newer = true))
+        return readFailure(ForeignFormatException(name, storageKey, read.format, backendFormat, null))
     }
 
     private fun readFailure(failure: ForeignFormatException): CacheReadException {
@@ -382,15 +387,18 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 同步与异步共用的命中判定：更高版本写入的值（滚动升级期间）既不回收也不写回；不是本协议写入的内容或解码失败按损坏处理。
+     * 同步与异步共用的命中判定：更高的格式（[isNewerFormat]）既不回收也不写回；格式号低于本节点格式的内容（不是本格式写入的）
+     * 或解码失败按损坏处理。
      */
     @Suppress("TooGenericExceptionCaught")
     private fun hitOutcome(read: L1Read.Hit): HitOutcome<V> {
-        if (read.format > backendFormat) {
+        if (isNewerFormat(read.format)) {
             return HitOutcome.Newer
         }
         return try {
-            check(read.format >= MIN_FORMAT) { "Unrecognized remote content (not written by this protocol)." }
+            check(
+                read.format == backendFormat
+            ) { "Unrecognized remote content (format[${read.format}], not written in this node's format)." }
             HitOutcome.Decoded(decode(read.envelope))
         } catch (e: Exception) {
             HitOutcome.Corrupt(e)
@@ -445,7 +453,17 @@ internal class CoherentEngine<K : Any, V : Any>(
         is Envelope.Members -> throw IllegalStateException("Cache[$name] - expected a scalar but found a set.")
     }
 
-    private fun envelopeOf(value: V?): Envelope = value?.let { format.envelopeOf(it) } ?: Envelope.Absent
+    /**
+     * 写入 L1 的内容：权威标量（[authoritative]）的值带一个新的写入标识。
+     */
+    private fun envelopeOf(value: V?): Envelope = value?.let { format.envelopeOf(it, writerId()) } ?: Envelope.Absent
+
+    private fun encode(value: V): Envelope.Scalar = format.encode(value, writerId())
+
+    /**
+     * 一次标量写入的写入标识（与令牌同形，全局唯一）；有数据源的缓存为 `null`。
+     */
+    private fun writerId(): Token? = if (authoritative) context.nextToken() else null
 
     /**
      * 回源写回 L1 的填充：与内容一起带上值的版本（带版本的缓存；墓碑的版本只能经 [Fill.version] 传递）。
@@ -1014,7 +1032,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         }
         return when (val outcome = hitOutcome(read)) {
             HitOutcome.Newer -> {
-                // 更高版本写入的值：既不回收也不写回；没有数据源时失败（命中没有取得 lease，无需释放）
+                // 更高格式的内容：既不回收也不写回；没有数据源时失败（命中没有取得 lease，无需释放）
                 newerFormatFailure(storageKey, read, hasSource)?.let { return BatchStep.Failed(it) }
                 metrics.unknownFormat()
                 BatchStep.Load(null)
@@ -1241,7 +1259,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         if (read !is L1Read.Hit) {
             return RefreshStep.Reload(false)
         }
-        if (read.format > backendFormat || read.format < MIN_FORMAT) {
+        if (read.format != backendFormat) {
             return RefreshStep.Reload(read.refreshGranted)
         }
         if (!read.refreshGranted) {
@@ -1279,7 +1297,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private suspend fun putWithTtl(key: K, value: V, ttl: Duration?) {
         val storageKey = storageKey(key)
-        val envelope = format.encode(value)
+        val envelope = encode(value)
         val bounded = ttl?.boundedTtl()
         write(
             listOf(storageKey),
@@ -1322,12 +1340,12 @@ internal class CoherentEngine<K : Any, V : Any>(
         val latest = LinkedHashMap<String, Map.Entry<K, V>>(entries.size)
         entries.entries.forEach { latest[storageKey(it.key)] = it }
         return latest.map { (storageKey, entry) ->
-            Put(storageKey, format.encode(entry.value), ttlOf(entry.key, entry.value)?.boundedTtl())
+            Put(storageKey, encode(entry.value), ttlOf(entry.key, entry.value)?.boundedTtl())
         }
     }
 
     // ---------------------------------------------------------------------------------------------
-    // 条件读写（按摘要比较）：只针对 L1，不读写 L2、不回源、不申请 lease。读不懂的内容从不视为没有值，与 foreignFormat 无关：
+    // 条件读写（按摘要比较）：只针对 L1，不读写 L2、不回源、不申请 lease。读不懂的内容从不视为没有值：
     // 不是本协议写入的内容（格式 0）、本协议的集合、更高格式版本、解码失败的值，读取抛出；写入抛出，或因摘要不符而冲突。
     // 同步与异步共用 [conditionalGetOf]、[refuseUnreadable]、[conditionalPutOf]。
     // ---------------------------------------------------------------------------------------------
@@ -1360,12 +1378,12 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 同步与异步共用：把后端的条件读取结果换算为用户结果。格式不在 [MIN_FORMAT, 本节点版本] 内、集合、解码失败都是读不懂的内容。
+     * 同步与异步共用：把后端的条件读取结果换算为用户结果。格式不是本节点的格式、集合、解码失败都是读不懂的内容。
      */
     @Suppress("TooGenericExceptionCaught")
     private fun conditionalGetOf(storageKey: String, read: L1ConditionalRead): ConditionalGet<V> = when (read) {
         // 摘要只覆盖载荷：再确认这个值仍是本节点读得懂的格式
-        is L1ConditionalRead.Unchanged -> if (read.format < MIN_FORMAT || read.format > backendFormat) {
+        is L1ConditionalRead.Unchanged -> if (read.format != backendFormat) {
             unreadableGet(storageKey, read.format, null)
         } else {
             metrics.conditionalUnchanged()
@@ -1374,7 +1392,7 @@ internal class CoherentEngine<K : Any, V : Any>(
 
         L1ConditionalRead.Absent -> ConditionalGet.Absent
         is L1ConditionalRead.Unreadable -> unreadableGet(storageKey, read.format, null)
-        is L1ConditionalRead.Changed -> if (read.format < MIN_FORMAT || read.format > backendFormat) {
+        is L1ConditionalRead.Changed -> if (read.format != backendFormat) {
             unreadableGet(storageKey, read.format, null)
         } else {
             try {
@@ -1390,7 +1408,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      */
     private fun unreadableGet(storageKey: String, format: Int, error: Exception?): ConditionalGet<V> {
         metrics.unknownFormat()
-        val failure = ForeignFormatException(name, storageKey, format, error, newer = format > backendFormat)
+        val failure = ForeignFormatException(name, storageKey, format, backendFormat, error)
         log.warn { failure.message }
         throw CacheReadException(name, "getIfChanged", failure)
     }
@@ -1408,7 +1426,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     private suspend fun putIfMatchWithTtl(key: K, expected: Digest?, value: V, ttl: Duration?): ConditionalPut {
         val conditional = requireConditional("putIfMatch")
         val storageKey = storageKey(key)
-        val envelope = format.encode(value)
+        val envelope = encode(value)
         val bounded = ttl?.boundedTtl()
         var outcome: L1ConditionalWrite? = null
         write(
@@ -1461,7 +1479,7 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     private fun refusedFormat(storageKey: String, format: Int): ForeignFormatException {
         metrics.unknownFormat()
-        val failure = ForeignFormatException(name, storageKey, format, null, newer = format > backendFormat)
+        val failure = ForeignFormatException(name, storageKey, format, backendFormat, null)
         log.warn { failure.message }
         return failure
     }

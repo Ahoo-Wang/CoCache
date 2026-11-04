@@ -31,7 +31,7 @@ L1 存储与失效通道是同一个对象的两个面：串行化写入的一�
 
 - **`Keyspace`**。`store`、`subscribe` 与 `publish` 接收 `Keyspace(keyPrefix, namespace)`。它的 `storagePrefix` 是 `{keyPrefix}{namespace}:`，构造时拒绝 `[A-Za-z0-9._-]+` 之外的命名空间。每个 keyspace 一个频道，名字由前缀与命名空间共同构成（Redis 后端是 `{keyPrefix}inv:{namespace}`）：命名空间相同、前缀不同的两个 keyspace 不能共用频道。有访问控制的后端在 `store` 中检查自己能否在该 keyspace 的频道上发布，不能时抛出，而不是让每次写入在修改 L1 之后才在广播处失败。Redis 后端向那里发布一个不带 key 的帧。
 - **`atomicBroadcast`**。为 `true` 时，存储的每个写方法都必须在修改的同一个原子步骤中发布它的 `frame`。为 `false` 时，引擎在每次写入成功之后调用 `channel.publish(keyspace, frame)`。原子更好：写入与发布之间的崩溃会丢失消息。只声明你能保证的能力，TCK 会分别检查两种情况。
-- **`format`**。引擎把它与 `L1Read.Hit.format` 比较：存储的格式更高时绕开且从不覆盖；`0` 表示不是你的协议写入的内容，引擎按损坏处理。从 `1` 开始，只能通过两阶段升级递增。
+- **`format`**。引擎把它与 `L1Read.Hit.format` 比较：`0` 表示不是你的协议写入的内容，引擎按损坏处理。引擎只读与你的 `format` 完全相同的内容：更低的格式与 `0` 一样是读不懂的内容；更高的格式一律绕开，既不回收也不写回。读到带你不认识的特性（未知的标志位或状态）的内容时报告为更高格式，不能报成更低的格式，否则有 loader 的缓存会回收它。内置后端写入 `2`。你的格式只能通过两阶段升级递增。
 
 ### `L1Store` {#l1-store}
 
@@ -69,7 +69,7 @@ interface SetL1Store {
 
 | 类型 | 形状 |
 |------|------|
-| `Envelope` | `Scalar(bytes, version)`、`Members(字节列表)` 或 `Absent`（负缓存）。`version` 默认为 `Versioned.NO_VERSION`，参与相等比较，不影响摘要 |
+| `Envelope` | `Scalar(bytes, version, writer)`、`Members(字节列表)` 或 `Absent`（负缓存）。`version` 默认为 `Versioned.NO_VERSION`，`writer` 默认为 `null`，两者都参与相等比较、不影响摘要。`writer` 是与 `Token` 同形的写入标识，引擎在没有 loader 的缓存的每次标量写入中给出它 |
 | `L1Read` | `Hit(envelope, format, ttl, refreshGranted)`、`Miss(leaseGranted)` 或 `Leased(remaining)`。`ttl == null` 表示没有到期时间 |
 | `Token` | 24 字节：`NodeId`（16）+ 序号（8）。唯一、永不重复。按字节比较 |
 | `LeaseRequest(token, ttl)` | 未命中时放置的 lease，`ttl` 后到期 |
@@ -99,10 +99,11 @@ interface SetL1Store {
 | `removeMembers` | 检查同 `addMembers`。key 是本协议的集合：移除成员，集合变空时删除 key，否则重设到期时间。key 不存在、负缓存或 lease：不修改。这两种情况都广播并返回 `null`。读不懂的内容：什么都不改、不广播，返回其格式版本 |
 | `readIfChanged` | 纯读取，同不带请求的 `read`。本协议的标量值且载荷摘要等于 `known`：返回 `Unchanged(format)`，不回传载荷（摘要只覆盖载荷，引擎据格式版本再确认）。其它标量值：`Changed(envelope, format)`。key 不存在、lease 或负缓存：`Absent`。其余内容（不是你写入的内容、集合、更高的格式）：`Unreadable(format)`。在存储中比较，未变的值就不必传输 |
 | `putIfMatch` | 一次原子的比较加写入。`expected == null` 且 key 中没有值（不存在、lease、负缓存），或 key 中是载荷摘要等于 `expected` 的标量值时匹配。`readIfChanged` 视为 `Unreadable` 的内容（不是你写入的内容、集合、更高的格式）：返回 `Unreadable(format)`。它从不视为没有值，否则 `expected == null` 会覆盖它，滚动升级期间旧实例还会把更新的值降级覆盖。匹配时按 `put` 写入（销毁令牌、设置到期时间、广播 `frame`），返回 `Written`；否则什么都不改、不广播，返回 `Conflict(当前值的摘要，或 null)`。先读后写会让两个并发的写入方都成功：存储不能原子地比较并写入时，让 `conditional()` 返回 `null` |
-| `putIfNewer` | 一次原子的按版本比较加写入。key 的版本是与标量值或负缓存一起保存的版本；没有版本的值或负缓存、lease、不存在的 key 都视为 `NO_VERSION`，总是写入。`version` 更大时：按 `put` 写入 `envelope`（标量值，或表示墓碑的 `Absent`），与它一起保存 `version`，返回 `Written`。否则什么都不改、不广播，返回 `Stale(current)`。读不懂的内容按 `putIfMatch` 的规则分类。带版本的内容不持有令牌：`fill` 与 `release` 不得匹配它，`read` 不得在它上面授予刷新令牌，`reclaim` 必须拒绝它，因为 lease 放不下版本。`fill`、`put` 与 `putAll` 保存 `Envelope.Scalar.version`，`read` 原样返回；`putIfMatch` 写入没有版本的值 |
+| `putIfNewer` | 一次原子的按版本比较加写入。key 的版本是与标量值或负缓存一起保存的版本；没有版本的值或负缓存、lease、不存在的 key 都视为 `NO_VERSION`，总是写入。`version` 更大时：按 `put` 写入 `envelope`（标量值，或表示墓碑的 `Absent`），与它一起保存 `version`，返回 `Written`。否则什么都不改、不广播，返回 `Stale(current)`。读不懂的内容按 `putIfMatch` 的规则分类。带版本的内容不持有令牌：`fill` 与 `release` 不得匹配它，`read` 不得在它上面授予刷新令牌，`reclaim` 必须拒绝它，因为 lease 放不下版本。`fill`、`put` 与 `putAll` 保存 `Envelope.Scalar.version`，`read` 原样返回；`putIfMatch` 写入没有版本的值。`version` 从不是 `Versioned.NO_VERSION`：在修改任何东西之前以 `IllegalArgumentException` 拒绝它 |
 
 对所有方法：
 
+- **保存写入标识**。每个写入标量的操作（`fill`、`fillAll`、`put`、`putAll`、`putIfMatch`、`putIfNewer`）把 `Envelope.Scalar.writer` 与值一起保存，`read` 与 `readAll` 原样返回。没有写入标识的整体写入不保存任何标识。
 - **对每个 key 原子**。批量方法对每个 key 原子，不要求跨 key 原子。
 - **每次状态转换都重设到期时间**，精度为毫秒。lease 或负缓存的寿命绝不能泄漏到新值上。
 - **读取时从不删除。**

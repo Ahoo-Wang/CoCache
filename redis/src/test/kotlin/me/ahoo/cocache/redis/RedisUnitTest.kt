@@ -82,22 +82,24 @@ class RedisUnitTest {
         foreign.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
         foreign.ttl.assert().isEqualTo(Duration.ofSeconds(1))
 
+        // 格式 2 中不认识的状态报告为更高格式（RFC 0005 §4.7，P1），不报成格式 0（否则派生缓存会回收它）
         val header = ByteArray(RedisScripts.HEADER_SIZE).also {
             it[0] = RedisScripts.MAGIC
-            it[1] = 1
+            it[1] = RedisScripts.FORMAT.toByte()
             it[2] = 'X'.code.toByte()
         }
         (
             RedisL1Store.decodeRead(
                 listOf(2L, -1L, header + "p".toByteArray(), 0L)
             ) as L1Read.Hit
-            ).format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
+            ).format.assert().isEqualTo(RedisScripts.NEWER_FORMAT)
 
         val set = RedisL1Store.decodeRead(
             listOf(
                 3L,
                 -1L,
                 listOf("+a".toByteArray(), "!f".toByteArray(), "other".toByteArray(), ByteArray(0)),
+                ByteArray(0),
                 ByteArray(0)
             )
         ) as L1Read.Hit
@@ -106,15 +108,21 @@ class RedisUnitTest {
         set.ttl.assert().isNull()
 
         val badFormat = RedisL1Store.decodeRead(
-            listOf(3L, 5L, listOf("!f".toByteArray()), "x".toByteArray())
+            listOf(3L, 5L, listOf("!f".toByteArray()), "x".toByteArray(), ByteArray(0))
         ) as L1Read.Hit
         badFormat.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
 
-        val versioned = RedisL1Store.decodeRead(
-            listOf(3L, 5L, listOf("+b".toByteArray(), "!f".toByteArray()), "1".toByteArray())
+        val ours = RedisL1Store.decodeRead(
+            listOf(
+                3L,
+                5L,
+                listOf("+b".toByteArray(), "!f".toByteArray(), "!x".toByteArray()),
+                "2".toByteArray(),
+                ByteArray(0)
+            )
         ) as L1Read.Hit
-        versioned.format.assert().isEqualTo(RedisScripts.FORMAT)
-        (versioned.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
+        ours.format.assert().isEqualTo(RedisScripts.FORMAT)
+        (ours.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
 
         RedisL1Store.decodeRead(listOf(1L, -5L)).assert().isEqualTo(L1Read.Leased(Duration.ZERO))
         runCatching {
@@ -142,10 +150,10 @@ class RedisUnitTest {
     }
 
     /**
-     * 按版本写入的结果码与头部中的版本（6.8）：版本只在令牌位置以 `VERSION_MARK` 开头时存在。
+     * 按版本写入的结果码。头部中的版本段见 [WireFormatTest]。
      */
     @Test
-    fun decodesVersionedWritesAndHeaderVersions() {
+    fun decodesVersionedWrites() {
         RedisL1Store.decodeVersionedWrite(listOf(1L)).assert().isEqualTo(L1VersionedWrite.Written)
         RedisL1Store.decodeVersionedWrite(
             listOf(0L, java.nio.ByteBuffer.allocate(8).putLong(-3L).array())
@@ -153,22 +161,13 @@ class RedisUnitTest {
         RedisL1Store.decodeVersionedWrite(listOf(3L, 2L)).assert().isEqualTo(L1VersionedWrite.Unreadable(2))
         runCatching { RedisL1Store.decodeVersionedWrite(listOf(9L)) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalStateException::class.java)
-
-        val header = ByteArray(RedisScripts.HEADER_SIZE).also {
-            it[0] = RedisScripts.MAGIC
-            it[1] = 1
-            it[2] = 'V'.code.toByte()
-        }
-        RedisL1Store.versionOf(header).assert().isEqualTo(Versioned.NO_VERSION)
-        RedisScripts.VERSION_MARK.copyInto(header, RedisScripts.VERSION_OFFSET)
-        RedisL1Store.versionOf(header).assert().isEqualTo(0L)
-        // 令牌恰好以 0xC0 开头、但不是完整的标记：仍然没有版本
-        header[RedisScripts.VERSION_OFFSET + 1] = 0
-        RedisL1Store.versionOf(header).assert().isEqualTo(Versioned.NO_VERSION)
     }
 
+    /**
+     * 发出之前同步拒绝（确定未执行，连接是模拟的、从未被调用）：集合，以及版本段中的 `NO_VERSION`（RFC 0005 §4.7，K15）。
+     */
     @Test
-    fun putIfNewerRejectsSetsWithoutTouchingRedis() {
+    fun putIfNewerRejectsSetsAndNoVersionWithoutTouchingRedis() {
         val store = RedisL1Store(mockk(), ByteArray(0), 512)
         val members = Envelope.Members(listOf("a".toByteArray()))
         runCatching {
@@ -183,6 +182,19 @@ class RedisUnitTest {
             }
         }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
+        listOf(Envelope.Scalar("v".toByteArray()), Envelope.Absent).forEach { envelope ->
+            runCatching {
+                Suspending.await {
+                    store.versioned().putIfNewer(
+                        "k",
+                        envelope,
+                        Versioned.NO_VERSION,
+                        null,
+                        ByteArray(0)
+                    )
+                }
+            }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        }
     }
 
     @Test

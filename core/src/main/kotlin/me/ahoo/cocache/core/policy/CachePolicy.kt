@@ -29,11 +29,9 @@ import java.util.concurrent.ThreadLocalRandom
  *   [InvalidateFailureMode.RETRY]，没有数据源时（L1 是唯一副本）[InvalidateFailureMode.THROW]
  * @param readFailure 读取 L1 失败时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ReadFailureMode.DEGRADE]，
  *   没有数据源时（L1 是唯一副本）[ReadFailureMode.THROW]
- * @param foreignFormat 读到本缓存读不懂的 L1 内容（格式 0：5.x 或其它程序写入的值、原生 Set / Hash 等其它 Redis 类型；
- *   以及同版本内容解码失败）时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ForeignFormatMode.RECLAIM]，
- *   没有数据源时（`SetCache`、没有 loader 的 `Cache`）[ForeignFormatMode.FAIL]。[ForeignFormatMode.RECLAIM] 只能用于有数据源的缓存：
- *   没有数据源的 `CacheSpec` 与所有 `SetCacheSpec` 设置它时创建即失败。只作用于读取：条件写入、按版本写入与集合元素的增删
- *   落在读不懂的内容上时总是拒绝
+ *
+ * 读不懂的 L1 内容（格式号低于本节点格式的、不是本协议写入的、同格式解码失败的）不由策略决定（RFC 0005 §4.7）：
+ * 有数据源的读取条件回收后回源，没有数据源的读取失败；更高格式的内容既不回收也不写回。
  */
 class CachePolicy(
     val ttl: Duration? = DEFAULT_TTL,
@@ -47,29 +45,7 @@ class CachePolicy(
     val local: LocalPolicy = LocalPolicy(),
     val invalidateFailure: InvalidateFailureMode? = null,
     val readFailure: ReadFailureMode? = null,
-    val foreignFormat: ForeignFormatMode? = null,
 ) {
-    /**
-     * 6.4 及以前的构造函数（没有 [foreignFormat]），只为已编译的调用方保留二进制兼容。
-     */
-    @Deprecated("Binary compatibility with 6.4 and earlier.", level = DeprecationLevel.HIDDEN)
-    @Suppress("LongParameterList")
-    constructor(
-        ttl: Duration? = DEFAULT_TTL,
-        ttlJitter: Duration = DEFAULT_TTL_JITTER,
-        absentTtl: Duration = DEFAULT_ABSENT_TTL,
-        localMaxAge: Duration = DEFAULT_LOCAL_MAX_AGE,
-        degradedLocalMaxAge: Duration = DEFAULT_DEGRADED_LOCAL_MAX_AGE,
-        refreshWindow: Duration? = null,
-        lease: LeasePolicy = LeasePolicy(),
-        load: LoadPolicy = LoadPolicy(),
-        local: LocalPolicy = LocalPolicy(),
-        invalidateFailure: InvalidateFailureMode? = null,
-        readFailure: ReadFailureMode? = null,
-    ) : this(
-        ttl, ttlJitter, absentTtl, localMaxAge, degradedLocalMaxAge, refreshWindow, lease, load, local, invalidateFailure, readFailure, null
-    )
-
     init {
         ttl?.let { requirePositive("ttl", it) }
         require(
@@ -113,7 +89,7 @@ class CachePolicy(
     override fun toString(): String {
         return "CachePolicy(ttl=$ttl, ttlJitter=$ttlJitter, absentTtl=$absentTtl, localMaxAge=$localMaxAge, " +
             "degradedLocalMaxAge=$degradedLocalMaxAge, refreshWindow=$refreshWindow, lease=$lease, load=$load, " +
-            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure, foreignFormat=$foreignFormat)"
+            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure)"
     }
 
     /**
@@ -131,7 +107,6 @@ class CachePolicy(
         var local: LocalPolicy = policy.local
         var invalidateFailure: InvalidateFailureMode? = policy.invalidateFailure
         var readFailure: ReadFailureMode? = policy.readFailure
-        var foreignFormat: ForeignFormatMode? = policy.foreignFormat
 
         fun ttl(ttl: Duration?) = apply { this.ttl = ttl }
         fun ttlJitter(ttlJitter: Duration) = apply { this.ttlJitter = ttlJitter }
@@ -149,7 +124,6 @@ class CachePolicy(
         ) = apply { this.invalidateFailure = invalidateFailure }
 
         fun readFailure(readFailure: ReadFailureMode?) = apply { this.readFailure = readFailure }
-        fun foreignFormat(foreignFormat: ForeignFormatMode?) = apply { this.foreignFormat = foreignFormat }
 
         fun build(): CachePolicy = CachePolicy(
             ttl = ttl,
@@ -163,7 +137,6 @@ class CachePolicy(
             local = local,
             invalidateFailure = invalidateFailure,
             readFailure = readFailure,
-            foreignFormat = foreignFormat,
         )
     }
 
@@ -296,32 +269,6 @@ enum class ReadFailureMode {
      * 没有数据源的读取的默认值：L1 是唯一副本，读不到时没有可降级的答案（fail closed）。
      */
     THROW,
-}
-
-/**
- * 读到本缓存读不懂的 L1 内容时的处理方式。读不懂的内容包括：
- * - 格式 0：不是本协议写入的内容，例如 CoCache 5.x 写入的 JSON / 字符串 / 原生 Set / Hash，或其它程序写入的值；
- * - 同版本内容解码失败（`Codec` 抛出，例如值类型不兼容地改变）。
- *
- * 更高格式版本（滚动升级期间）不受影响：既不回收也不写回（[me.ahoo.cocache.api.Cache] 回源，`SetCache` 抛出）。
- * 只决定读取：条件读写、按版本写入与 `SetCache` 的元素增删遇到读不懂的内容时总是拒绝，从不把它当作没有值。
- */
-enum class ForeignFormatMode {
-    /**
-     * 抛出 [me.ahoo.cocache.api.CacheReadException]（`cause` 为 [me.ahoo.cocache.core.ForeignFormatException]），
-     * 计入 `unknownFormats`，不修改 L1、不写 L2。与 [ReadFailureMode] 无关：降级模式下同样抛出。
-     *
-     * 没有数据源的读取的默认值：L1 是唯一副本，回收就是删除，调用方会把“不存在”当作真实结果（例如授权数据消失后放行）。
-     */
-    FAIL,
-
-    /**
-     * 条件回收（比较摘要后转为 lease）并回源。
-     *
-     * 有数据源的读取的默认值：数据源是权威，回收后重新加载即可。只能用于有数据源的缓存：没有数据源的 `CacheSpec` 与所有
-     * `SetCacheSpec` 设置它时创建即失败（L1 是唯一副本，回收就是删除它）。
-     */
-    RECLAIM,
 }
 
 /**

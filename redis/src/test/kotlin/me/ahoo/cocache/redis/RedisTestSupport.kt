@@ -148,6 +148,30 @@ object RedisTestSupport {
     }
 
     /**
+     * 同 [withCommands]，key 与值都是字节（用于构造与读取原始的线格式内容）。
+     */
+    fun <T> withBinaryCommands(
+        block: (io.lettuce.core.cluster.api.sync.RedisClusterCommands<ByteArray, ByteArray>) -> T
+    ): T {
+        val codec = io.lettuce.core.codec.ByteArrayCodec.INSTANCE
+        val nodes = clusterNodes
+        if (nodes != null) {
+            val client = RedisClusterClient.create(nodes)
+            try {
+                client.connect(codec).use { return block(it.sync()) }
+            } finally {
+                client.shutdown()
+            }
+        }
+        val client = RedisClient.create(standaloneUri)
+        try {
+            client.connect(codec).use { return block(it.sync()) }
+        } finally {
+            client.shutdown()
+        }
+    }
+
+    /**
      * 同 [subscribeRaw]，但跳过创建存储时的零 key 探测帧（RFC 0005 §4.7，K8）：Cluster 中经典 Pub/Sub 的帧经集群总线异步转发，
      * 订阅之前创建的存储发出的探测帧可能在订阅之后才到达。
      */

@@ -29,7 +29,6 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
@@ -43,7 +42,7 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
 /**
- * 配置文件对策略的语义：`refresh-window: 0` 关闭提前刷新；全局寿命不作用于集合缓存；`foreign-format: reclaim` 只用于有数据源的缓存。
+ * 配置文件对策略的语义：`refresh-window: 0` 关闭提前刷新；全局寿命不作用于集合缓存。
  */
 class PolicyPropertiesTest {
     private val runner = ApplicationContextRunner()
@@ -159,85 +158,6 @@ class PolicyPropertiesTest {
         versioned.withPropertyValues("cocache.caches.view.refresh-window=10").run { context ->
             assertThat(context).hasFailed()
             assertThat(context.startupFailure).rootCause().hasMessageContaining("refreshWindow")
-        }
-    }
-
-    @Configuration(proxyBeanMethods = false)
-    class ForeignFormatConfig {
-        @Bean(destroyMethod = "close")
-        fun backend(): CoherenceBackend = InMemoryBackend()
-
-        @Bean
-        fun userSpec(): CacheSpec<String, String> = cacheSpec("user") {
-            codec = StringCodec
-            loader = CacheLoader { "user-$it" }
-        }
-
-        @Bean
-        fun profileSpec(): CacheSpec<String, String> = cacheSpec("profile") { codec = StringCodec }
-
-        @Bean
-        fun viewSpec(): CacheSpec<String, String> = cacheSpec("view") {
-            codec = StringCodec
-            versioned = true
-        }
-
-        @Bean
-        fun indexSpec(): SetCacheSpec<String, String> = setCacheSpec("index") { elementCodec = StringCodec }
-    }
-
-    /**
-     * `foreign-format: reclaim` 只能用于有数据源的缓存（没有数据源时 L1 是唯一副本，回收就是删除它）：
-     * - `cocache.defaults.foreign-format: reclaim` 只作用于有数据源的缓存，没有数据源的缓存（含带版本的）与集合缓存跳过它，启动不失败；
-     *   `fail` 照常作用于没有数据源的缓存。
-     * - `cocache.caches.[name].foreign-format: reclaim` 落在没有数据源的缓存或集合缓存上时启动失败，消息带缓存名。
-     */
-    @Test
-    fun reclaimOnlyAppliesToCachesWithASource() {
-        val foreign = ApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
-            .withUserConfiguration(ForeignFormatConfig::class.java)
-        foreign.withPropertyValues("cocache.defaults.foreign-format=reclaim").run { context ->
-            assertThat(context).hasNotFailed()
-            listOf("user", "profile", "view", "index").forEach { context.getBean(it) }
-            val properties = context.getBean(CoCacheProperties::class.java)
-            properties.policyFor(
-                "user",
-                CachePolicy.DEFAULT
-            ).foreignFormat.assert().isEqualTo(ForeignFormatMode.RECLAIM)
-            properties.policyFor("profile", CachePolicy.DEFAULT, sourced = false).foreignFormat.assert().isNull()
-            properties.policyFor(
-                "view",
-                CachePolicy.DEFAULT,
-                versioned = true,
-                sourced = false
-            ).foreignFormat.assert().isNull()
-            properties.setPolicyFor("index", SetCacheSpec.DEFAULT_POLICY).foreignFormat.assert().isNull()
-        }
-        foreign.withPropertyValues("cocache.defaults.foreign-format=fail", "cocache.caches.user.foreign-format=reclaim")
-            .run { context ->
-                assertThat(context).hasNotFailed()
-                val properties = context.getBean(CoCacheProperties::class.java)
-                properties.policyFor(
-                    "user",
-                    CachePolicy.DEFAULT
-                ).foreignFormat.assert().isEqualTo(ForeignFormatMode.RECLAIM)
-                properties.policyFor(
-                    "profile",
-                    CachePolicy.DEFAULT,
-                    sourced = false
-                ).foreignFormat.assert().isEqualTo(ForeignFormatMode.FAIL)
-            }
-        mapOf(
-            "profile" to "Cache[profile]",
-            "view" to "Cache[view]",
-            "index" to "SetCache[index]"
-        ).forEach { (name, prefix) ->
-            foreign.withPropertyValues("cocache.caches.$name.foreign-format=reclaim").run { context ->
-                assertThat(context).hasFailed()
-                assertThat(context.startupFailure).rootCause()
-                    .hasMessageStartingWith("$prefix - foreignFormat = RECLAIM")
-            }
         }
     }
 }

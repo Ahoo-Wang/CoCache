@@ -469,6 +469,35 @@ abstract class VersionedSpec {
     }
 
     /**
+     * 写入标识（RFC 0005 §4.7，D2）：没有数据源的带版本缓存（M5 之前充当权威标量）的 `putIfNewer` 与回源填充带写入标识，版本照常保存；
+     * 有带版本的数据源的缓存不带。墓碑（`invalidateIfNewer`）没有载荷，也不带。
+     */
+    @Test
+    fun onlyVersionedCachesWithoutASourceWriteAWriterId() {
+        fun remoteScalar(key: String) = (remote(key) as L1Read.Hit).envelope as Envelope.Scalar
+        val derived = nodeA.cache()
+        database["filled"] = Versioned("v1", 1)
+        derived.getVersioned("filled").assert().isEqualTo(Versioned("v1", 1))
+        derived.putIfNewer("k", "v2", 2).assert().isEqualTo(VersionedPut.Written)
+        remoteScalar("filled").writer.assert().isNull()
+        remoteScalar("k").writer.assert().isNull()
+
+        val authoritative = nodeB.cache(
+            spec {
+                versionedLoader = null
+                versioned = true
+            }
+        )
+        authoritative.putIfNewer("k", "v3", 3).assert().isEqualTo(VersionedPut.Written)
+        remoteScalar("k").version.assert().isEqualTo(3L)
+        requireNotNull(remoteScalar("k").writer).node.assert().isEqualTo(nodeB.nodeId)
+        authoritative.invalidateIfNewer("k", 4).assert().isEqualTo(VersionedPut.Written)
+        authoritative.getVersioned("k").assert().isNull()
+        authoritative.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Written)
+        authoritative.getVersioned("k").assert().isEqualTo(Versioned("v5", 5))
+    }
+
+    /**
      * 相等的版本是幂等的空操作，旧版本被拒绝：都不修改 L1、不广播、不改变到期时间，计入 `staleVersions`。
      */
     @Test

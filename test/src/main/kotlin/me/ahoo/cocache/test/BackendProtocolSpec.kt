@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.test
 
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Envelope
@@ -20,9 +21,11 @@ import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
@@ -317,6 +320,81 @@ abstract class BackendProtocolSpec {
             Fill(key, lease.token, Envelope.Absent, Duration.ofMinutes(1))
         ).assert().isInstanceOf(L1Fill.Filled::class.java)
         store.read(key, lease(), null, null).hit().envelope.assert().isEqualTo(Envelope.Absent)
+    }
+
+    /**
+     * 写入标识（RFC 0005 §4.3“keyspace 与段”、§4.7，D2）随每个写入标量的操作保存、读取原样返回：put、putAll、fill、fillAll，
+     * 声明了条件读写时的 putIfMatch（写入没有版本的值，标识照样保存），声明了按版本写入时的 putIfNewer 与带版本的整体写入
+     * （版本与标识同时保存）；readAll 同样返回它。没有标识的写入读出 `null`。
+     */
+    @Test
+    fun writerIdAndVersionRoundTripThroughEveryScalarWrite() = l1 {
+        val versioned = L1Capability.VERSIONED in expectedCapabilities
+        val version = if (versioned) 7L else Versioned.NO_VERSION
+        fun written(text: String, version: Long = Versioned.NO_VERSION) =
+            Envelope.Scalar(text.toByteArray(), version, token())
+
+        val expected = LinkedHashMap<String, Envelope.Scalar>()
+        val put = written("put", version)
+        store.put(key().also { expected[it] = put }, put, null, frame())
+        val all = listOf(written("all-1"), written("all-2", version))
+        store.putAll(all.map { Put(key().also { key -> expected[key] = it }, it, null) }, frame())
+        val fill = written("fill", version)
+        val fillKey = key()
+        val fillLease = lease()
+        store.read(fillKey, fillLease, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.fill(Fill(fillKey, fillLease.token, fill, null)).assert().isInstanceOf(L1Fill.Filled::class.java)
+        expected[fillKey] = fill
+        val batch = written("fill-all")
+        val batchKey = key()
+        val batchLease = lease()
+        store.read(batchKey, batchLease, null, null).assert().isEqualTo(L1Read.Miss(true))
+        store.fillAll(listOf(Fill(batchKey, batchLease.token, batch, null))).single()
+            .assert().isInstanceOf(L1Fill.Filled::class.java)
+        expected[batchKey] = batch
+        store.conditional()?.let { conditional ->
+            // 条件写入写入没有版本的值：信封自带的版本被忽略，写入标识照样保存
+            val cas = written("cas", version)
+            val casKey = key()
+            conditional.putIfMatch(casKey, null, cas, null, frame()).assert()
+                .isEqualTo(L1ConditionalWrite.Written)
+            expected[casKey] = Envelope.Scalar(cas.bytes, Versioned.NO_VERSION, cas.writer)
+        }
+        store.versioned()?.let { versionedStore ->
+            val newer = written("newer")
+            val newerKey = key()
+            versionedStore.putIfNewer(newerKey, newer, 9, null, frame()).assert()
+                .isEqualTo(L1VersionedWrite.Written)
+            expected[newerKey] = Envelope.Scalar(newer.bytes, 9, newer.writer)
+        }
+        val plain = key()
+        store.put(plain, scalar("plain"), null, frame())
+
+        expected.forEach { (key, envelope) ->
+            store.read(key, null, null, null).hit().envelope.assert().isEqualTo(envelope)
+        }
+        val batched = store.readAll(expected.keys + plain, emptyMap(), null)
+        expected.forEach { (key, envelope) -> batched.getValue(key).hit().envelope.assert().isEqualTo(envelope) }
+        (store.read(plain, null, null, null).hit().envelope as Envelope.Scalar).writer.assert().isNull()
+        (batched.getValue(plain).hit().envelope as Envelope.Scalar).writer.assert().isNull()
+    }
+
+    /**
+     * 版本段中不得是 `Versioned.NO_VERSION`（RFC 0005 §4.7，K15）：按版本写入以 [IllegalArgumentException] 拒绝它，不修改 key、
+     * 不广播（值与墓碑都是如此）。
+     */
+    @Test
+    fun putIfNewerRejectsNoVersion() = l1 {
+        assumeDeclared(L1Capability.VERSIONED)
+        val versionedStore = requireNotNull(store.versioned())
+        val key = key()
+        store.put(key, scalar("kept"), null, frame())
+        listOf(scalar("v"), Envelope.Absent).forEach { envelope ->
+            runCatching {
+                versionedStore.putIfNewer(key, envelope, Versioned.NO_VERSION, null, frame())
+            }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        }
+        store.read(key, null, null, null).hit().envelope.assert().isEqualTo(scalar("kept"))
     }
 
     @Test

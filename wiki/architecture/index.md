@@ -127,29 +127,36 @@ The wire format is frozen within a major version. The normative definition is `R
 | Part | Format |
 |------|--------|
 | Storage key | `{keyPrefix}{namespace}:{encodedKey}`, default `cocache:{cacheName}:{key.toString()}`. The namespace matches `[A-Za-z0-9._-]+`. Internal keys live under `{keyPrefix}!`. |
-| Value, negative entry, lease | Redis String: a 36-byte header, then the codec's bytes |
-| Set (`SetCache`) | Redis Hash: field `!f` holds the format version (`"1"`), each member is a field `+{member bytes}` with an empty value |
+| Value, negative entry, lease | Redis String: a 36-byte core header, the segments its flags declare, then the codec's bytes |
+| Set (`SetCache`) | Redis Hash: field `!f` holds the format version (`"2"`), each member is a field `+{member bytes}` with an empty value. Field `!m` is a must-understand bitmap (absent means 0); other `!` fields are reserved and readers ignore them. |
 | Expiry | `PEXPIRE` / `PTTL` in milliseconds, reset explicitly on every state change |
 | Channel | `{keyPrefix}inv:{namespace}` |
 | Message | `[0x01][publisher NodeId: 16 bytes][count: varint]([length: varint][storage key: UTF-8])*`. A frame a channel can't read resets its caches instead of being dropped, and version `2` is reserved for a namespace reset ([details](./consistency.md#invalidation-channel)). |
 
-The String header:
+Every value 8.x writes is format 2, leases and negative entries included. The String layout:
 
 | Offset | Length | Field |
 |--------|--------|-------|
 | 0 | 1 | Magic `0xC0` |
-| 1 | 1 | Format version (`1`) |
+| 1 | 1 | Format version (`2`) |
 | 2 | 1 | State: `V` value, `M` negative entry, `L` lease |
-| 3 | 1 | Reserved (`0`) |
+| 3 | 1 | Flags |
 | 4 | 24 | Token: the lease token in state `L`, the refresh token in state `V`, zeros for none |
 | 28 | 8 | Token issue time: server `TIME` in epoch milliseconds, big-endian IEEE 754 double |
-| 36 | n | Payload from `Codec<V>` (none for `M` and `L`) |
+| 36 | 8 | Version segment (flag bit 0): big-endian signed 64-bit |
+| next | 32 | Digest segment (flag bit 1): reserved for a later 8.0 milestone; this version only skips it |
+| next | 2 + n | Extension area (flag bit 7): a 2-byte length n of the TLVs that follow, then the TLVs |
+| rest | n | Payload from `Codec<V>` (none for `M` and `L`) |
 
-A token is the issuing runtime's `NodeId` (16 bytes) plus a per-process sequence number (8 bytes). Tokens are built by the client, never reused, so a destroyed token can't match again.
+- **Flags.** Bits 0–6 must be understood. Bit 7 marks the extension area, which holds only what an older reader may ignore. A reader treats content with a must-understand bit it doesn't know (bits 2–6 in this version) as a higher format. The payload offset follows from the flags alone, and the Lua scripts and the client compute it with the same function.
+- **TLVs in the extension area.** Each TLV is `[type: 1 byte][length: 1–2 bytes][value]`. A length below 128 takes 1 byte; up to 32767 takes 2 bytes, the first being `0x80 | (length >> 8)`. Readers skip unknown types. Type 1 is the **writer id**: 24 bytes shaped like a token, new on every write.
+- **Which segments are written.** A value of a cache with a loader, a lease and a negative entry carry none, so their header is 36 bytes. Until 8.0 adds its authoritative store types, a cache without a loader plays that role: each value it writes carries a writer id (28 more bytes). A [versioned](../guide/freshness.md#versioned-writes) value or tombstone carries the version segment. The version segment never holds `Versioned.NO_VERSION`.
 
-A [versioned](../guide/freshness.md#versioned-writes) value or tombstone (since 6.8) keeps this header, the format version `1`, its state and its payload. Only the token slot changes: bytes 4–19 hold a fixed mark (`0xC0` followed by `cocache:version`), bytes 20–27 the version (big-endian signed 64-bit), and the issue time is `+inf`. No real token starts with the mark, so no fill or release matches it, and with an issue time of `+inf` no instance's read script ever grants a refresh token on it. Instances on 6.0 to 6.7 therefore read versioned values unchanged.
+A token is the issuing runtime's `NodeId` (16 bytes) plus a per-process sequence number (8 bytes). Tokens are built by the client, never reused, so a destroyed token can't match again. A read grants a lease or refresh token only on format-2 content without an unknown must-understand bit, and a refresh token only on a value without a version or digest segment. A fill or release reads only the 36-byte core header.
 
-Content the protocol didn't write (no magic byte, an unknown state, a Hash without `!f`, another Redis type) reads as format `0` and is treated as corrupt: reclaimed only if unchanged, then reloaded. A format higher than the instance knows is loaded around, never overwritten. Together these allow a two-phase format upgrade: first ship a version that reads N+1 and writes N, then one that writes N+1.
+Content in a lower format is content the cache can't read: a cache with a loader reclaims it if unchanged and reloads, and a cache without one fails. That covers content the protocol didn't write (no magic byte, format byte `0`, segments longer than the value, a Hash without a valid `!f`, another Redis type), which reads as format `0`. It also covers any format number below 2. A higher format is never reclaimed or written back: a cache with a loader loads around it, and a cache without one fails. That covers a format above 2, content with an unknown must-understand bit or state, and a set whose `!m` has a bit set.
+
+New must-understand segments ship in two phases within 8.x: first a release that reads them, then, once every instance in the namespace runs it, a release that writes them. New TLVs and new `!` fields need no such rollout, because older readers skip them.
 
 ## Fixed and pluggable {#pluggable}
 
