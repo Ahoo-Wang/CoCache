@@ -195,7 +195,7 @@ class TokenConservationPropertyTest {
                 .executor(executor)
                 .apply {
                     // 任务与命令由关闭运行时的测试线程推进：关闭不等待，之后由 drain 排空
-                    drainTimeout = Duration.ZERO
+                    closeTimeout = Duration.ZERO
                 }
                 .build()
         }

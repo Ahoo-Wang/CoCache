@@ -271,7 +271,7 @@ class CoherentEngineCoreTest {
     @Test
     fun closeStopsWaitingAtTheDrainTimeout() {
         val held = HeldRelease()
-        val closing = CacheRuntime.builder().backend(held.backend).apply { drainTimeout = Duration.ofMillis(1) }.build()
+        val closing = CacheRuntime.builder().backend(held.backend).apply { closeTimeout = Duration.ofMillis(1) }.build()
         runtimes += closing
         held.loadOn(closing)
 
@@ -289,7 +289,7 @@ class CoherentEngineCoreTest {
     @Test
     fun anInterruptedCloseStopsWaitingAndKeepsTheFlag() {
         val held = HeldRelease()
-        val closing = CacheRuntime.builder().backend(held.backend).apply { drainTimeout = Duration.ofHours(1) }.build()
+        val closing = CacheRuntime.builder().backend(held.backend).apply { closeTimeout = Duration.ofHours(1) }.build()
         runtimes += closing
         held.loadOn(closing)
 
@@ -382,7 +382,7 @@ class CoherentEngineCoreTest {
     @Test
     fun closeOnTheAsyncExecutorDoesNotWaitForItself() {
         val load = CompletableFuture<String>()
-        val closing = CacheRuntime.builder().backend(memory).apply { drainTimeout = Duration.ofHours(1) }.build()
+        val closing = CacheRuntime.builder().backend(memory).apply { closeTimeout = Duration.ofHours(1) }.build()
         runtimes += closing
         val cache = closing.create(spec { asyncLoader = AsyncCacheLoader { load } })
         val closed = cache.async().get("k").thenApply { value ->

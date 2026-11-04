@@ -24,6 +24,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.future.future
 import kotlinx.coroutines.job
+import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.internal.ExecutionMode
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.awaitOriginal
@@ -44,7 +45,7 @@ import kotlin.coroutines.EmptyCoroutineContext
  * @param executor 运行时的执行器（阻塞调度器，默认每个任务一个虚拟线程）：运行作用域中协程的每一步（L1 命令完成之后的续接、
  *   共享加载），以及异步路径上的阻塞 loader。6.x 的异步执行器与阻塞执行器合并为它
  * @param dispatcher 运行时作用域的调度器；`null` 时为 [EngineDispatcher]（生产）。确定性仿真传入测试调度器（RFC 0005 §4.10）
- * @param drainTimeout 关闭时等待作用域中在途步骤结束的上限（[close]）；`0` 表示不等待（手动推进执行器的测试）
+ * @param drainTimeout 关闭时等待作用域中在途步骤结束的上限（[close]，`CacheRuntime.Builder.closeTimeout`）；`0` 表示不等待
  *
  * 协程核心（RFC 0005 §4.4）的异步变体运行在 [scope] 中：调度器把任务交给 [executor]（[EngineDispatcher]），`SupervisorJob` 让一次加载的失败不影响其它加载；
  * 共享加载在这里执行，调用方被取消只结束它自己的等待。运行时关闭时取消它。
@@ -52,7 +53,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 internal class AsyncContext(
     val executor: Executor,
     dispatcher: CoroutineDispatcher? = null,
-    private val drainTimeout: Duration = DRAIN_TIMEOUT,
+    private val drainTimeout: Duration = CacheRuntime.DEFAULT_CLOSE_TIMEOUT,
 ) : AutoCloseable {
     private val engineDispatcher: EngineDispatcher? = if (dispatcher == null) EngineDispatcher(executor) else null
 
@@ -153,10 +154,5 @@ internal class AsyncContext(
 
     companion object {
         private val log = KotlinLogging.logger {}
-
-        /**
-         * [close] 等待在途步骤的默认上限：容得下几条 L1 命令（Redis 后端的 `commandTimeout` 默认 2 s）。
-         */
-        val DRAIN_TIMEOUT: Duration = Duration.ofSeconds(5)
     }
 }

@@ -77,6 +77,23 @@ class AsyncRuntimeTest {
             .assert().isInstanceOf(RejectedExecutionException::class.java)
     }
 
+    /**
+     * 关闭时等待在途 L1 步骤的上限（K17）：默认 5 s，可以设置（不小于后端的命令超时），不得为负。
+     */
+    @Test
+    fun closeTimeoutIsConfigurableAndNotNegative() {
+        CacheRuntime.builder().backend(InMemoryBackend()).build().use {
+            it.closeTimeout.assert().isEqualTo(CacheRuntime.DEFAULT_CLOSE_TIMEOUT)
+        }
+        CacheRuntime.builder().backend(InMemoryBackend()).closeTimeout(Duration.ofSeconds(20)).build().use {
+            it.closeTimeout.assert().isEqualTo(Duration.ofSeconds(20))
+        }
+        val error = runCatching {
+            CacheRuntime.builder().backend(InMemoryBackend()).closeTimeout(Duration.ofSeconds(-1)).build()
+        }.exceptionOrNull()
+        error.assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
+
     @Test
     fun providedExecutorIsUsedAndNotClosed() {
         val executor = Executors.newCachedThreadPool { Thread(it, "mine") }
