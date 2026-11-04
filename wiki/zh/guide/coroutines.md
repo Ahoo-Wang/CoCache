@@ -25,7 +25,8 @@ suspend fun rename(id: String, user: User) {
 
 - `suspending()` 是每种[缓存类型](./caches.md#types)的成员，视图与同步的层次同构：`Cache.suspending()` 返回 `SuspendingCache`，`VersionedCache` 返回 `SuspendingVersionedCache`，`Store` 返回 `SuspendingStore`，`VersionedStore` 返回 `SuspendingVersionedStore`，`SetStore` 返回 `SuspendingSetStore`，后者的 `get` 与 `SetStore.get` 一样不存在时返回空集合，从不返回 `null`。它们都继承 `SuspendingReadableCache`（`get`、`getAll`、`lookup`、`lookupAll`），挂起视图上的 `async()` 返回对应的异步视图。
 - `suspending()` 每次返回同一个对象，可以在用到的地方直接调用。经 `@CoCache` 接口调用也可以。
-- 每个方法调用异步视图并等待结果。L2 命中立即返回、不挂起，因为异步视图返回的是已完成的 future。
+- 每个方法直接调用缓存的核心。L2 命中立即返回：不挂起、不切换 dispatcher、不分配。
+- 未命中、写入与条件读取在 CoCache 自己的 dispatcher 上执行：在你的线程上开始，第一次挂起之后在 CoCache 的执行器上继续，所以你的协程从 CoCache 的线程上恢复，从不从 Redis 客户端的线程上恢复。用 `Dispatchers.Unconfined`（Spring WebFlux 处理器的默认值）时，调用之后你的代码因此在 CoCache 的执行器线程上执行，不在 Lettuce 的事件循环上。你的协程的上下文元素（如追踪上下文或 `MDCContext`）随之传递，`Job` 与 dispatcher 不传递。
 - Redis 故障、而这次读取没有数据源时，`lookup` 返回 `Lookup.Unknown`，`get` 抛出 `CacheReadException`，与[同步 API](./caches.md#unknown) 相同。
 - CoCache 等待 Redis、其它实例的 lease 或你的数据源时，不阻塞任何线程。
 
@@ -55,14 +56,14 @@ cacheSpec<String, User>("user") {
 val user = users.get(id) { key -> userClient.fetch(key) }
 ```
 
-调用级 loader 在**调用方的协程上下文去掉 `Job`** 之后的上下文中执行：
-- 在调用方的 dispatcher 上执行；没有 dispatcher，或调用方跑在 `runBlocking` 的事件循环上时，改在 `Dispatchers.Default` 上执行。
+调用级 loader **在这次加载之中**执行，带调用方协程上下文的元素，不带它的 `Job` 与 dispatcher：
+- 直接调用，不另起协程：在调用方线程上开始，第一次挂起之后在 CoCache 的执行器上继续。阻塞调用请包在 `withContext(Dispatchers.IO)` 中。
 - `ThreadContextElement` 随之传递，如追踪上下文，或经 `kotlinx-coroutines-slf4j` 的 `MDCContext` 传递的 MDC（普通 MDC 是 ThreadLocal，不会跟着协程换线程）。
-- 它脱离结构化并发：加载可能被其它调用方共享，所以调用方被取消、调用方的作用域结束，甚至运行时关闭，都不会取消它。加载协程可能比它们都活得更久，直到数据源返回。
+- 加载可能被其它调用方共享，所以调用方被取消、调用方的作用域结束都不会取消它；运行时关闭会。
 
 loader 的协程仍处于活动状态时，如果 loader 自己抛出 `CancellationException`（例如其中的 `withTimeout`），CoCache 会把它转成 `SourceLoadCancelledException`（`me.ahoo.cocache.core`）重新抛出，原始异常是它的 `cause`。因为加载可能被共享，否则每个调用方都会把它当作自己被取消（`launch` 会悄悄吞掉）。阻塞与异步数据源同样如此，见[异步 API](./async.md#exceptions)。
 
-引擎的 `load-timeout` 对两种 loader 都生效。到期时调用方以 `SourceLoadTimeoutException` 失败，lease 被释放。loader 的协程不会被取消，迟到的结果被丢弃，与 [`AsyncCacheLoader`](./async.md#timeouts) 相同。
+引擎的 `load-timeout` 对两种 loader 都生效。到期时调用方以 `SourceLoadTimeoutException` 失败，lease 被释放。spec 级 loader 的协程不会被取消，迟到的结果被丢弃，与 [`AsyncCacheLoader`](./async.md#timeouts) 相同；调用级 loader 在这次加载之中执行，会被取消。
 
 ## 取消 {#cancellation}
 
@@ -70,7 +71,7 @@ loader 的协程仍处于活动状态时，如果 loader 自己抛出 `Cancellat
 
 ## 异常 {#exceptions}
 
-挂起方法抛出异步视图以之完成的那个异常：你的 loader 的异常（或 `SourceLoadCancelledException`，见[数据源](#loader)）、`CacheReadException`、`CacheWriteException`、`SourceLoadRejectedException`、`SourceLoadTimeoutException` 等，从不包装为 `CompletionException`。
+挂起方法抛出原始异常，即使在协程的调试模式下也是同一个实例：你的 loader 的异常（或 `SourceLoadCancelledException`，见[数据源](#loader)）、`CacheReadException`、`CacheWriteException`、`SourceLoadRejectedException`、`SourceLoadTimeoutException` 等，从不包装为 `CompletionException`。
 
 协程的调试模式在 JVM 带 `-ea` 时自动开启，这时 kotlinx-coroutines 会做两件事：
 - 可能抛出补全了堆栈的异常副本（原始异常是它的 `cause`）；
@@ -86,6 +87,7 @@ loader 读取同一缓存中自己正在加载的 key，会一直等待自己直
 - **spec 级 loader**（`suspendingLoader`）按缓存名匹配，因为声明时还不知道它属于哪个运行时。
 - spec 级加载没有调用方，不继承调用方的检查：跨缓存的循环（A 的 loader 读 B，B 的 loader 又读 A 的同一个 key）要到 `load-timeout` 才失败。
 - 单独用 `asAsyncCacheLoader` 设置的 loader 没有这项检查。
+- 这项检查是在同步 API 自己的检查之上增加的：阻塞的 loader 在自己的线程上读取同一个 key，照样立即失败。离开协程的读取（经 `runBlocking`，或在别的线程上继续的 future）检查不到，要到 `load-timeout` 才失败。
 
 ## Spring {#spring}
 

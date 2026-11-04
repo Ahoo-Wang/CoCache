@@ -15,11 +15,14 @@ package me.ahoo.cocache.core.internal
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration.Companion.nanoseconds
 
@@ -139,7 +142,8 @@ internal class SingleFlight<K : Any, R : Any>(
      * - 异步变体（`AsyncContext.runAsync`）：leader 同样在调用方的协程中执行，省去一次派发；用户取消的只是结果的副本，
      *   协程只在运行时关闭时被取消。
      * - 上下文中没有 [ExecutionMode] 的调用方可能被单独取消：leader 在 [scope] 中执行 [block]，调用方只等待结果，
-     *   取消调用方不取消共享的加载。
+     *   取消调用方不取消共享的加载。协程上下文的元素取自调用方（[callerElements]，RFC 0005 §4.4 K6）：loader 看得到调用方的
+     *   `ThreadContextElement`（MDC、追踪）。
      * - 跟随者挂起等待结果，不占线程；等待被取消（同步变体中即线程被中断）只结束它自己的等待，不影响 leader 与其它跟随者。
      * - 合并规则：leader 被中断或取消时（[sharedFailure]，按 leader 自己的状态判断，不按异常类型），leader 自己收到原始异常，
      *   跟随者不接受这个失败，自行运行：重新注册一次（leader 已注销，通常由它自己领头）；仍合并到被中断的 leader 时绕过 SingleFlight
@@ -182,7 +186,7 @@ internal class SingleFlight<K : Any, R : Any>(
         block: suspend () -> R
     ): R {
         if (mode == null) {
-            scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            scope.launch(callerElements(), CoroutineStart.UNDISPATCHED) {
                 // 结果经 call.future 交给全部等待者（含发起的调用方）；这里不重新抛出，否则失败会作为未捕获的异常上报给作用域
                 val outcome = runCatching { block() }
                 calls.remove(key, call)
@@ -257,7 +261,7 @@ internal class SingleFlight<K : Any, R : Any>(
                 // 整批的结果经 own 交给发起的调用方（与内联执行相同：缺少的 key 不在结果中），各 key 的结果经 call.future 交给其它等待者；
                 // 这里不重新抛出，否则失败会作为未捕获的异常上报给作用域
                 val own = CompletableFuture<Map<K, R>>()
-                scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                scope.launch(callerElements(), CoroutineStart.UNDISPATCHED) {
                     runCatching { block(ledKeys) }.fold(
                         { loaded -> own.complete(LinkedHashMap<K, R>().also { publish(led, loaded, it) }) },
                         { error ->
@@ -291,6 +295,14 @@ internal class SingleFlight<K : Any, R : Any>(
      * 挂起等待一次调用的结果，失败时抛出原始异常（[awaitOriginal]）。取消这次等待不会取消共享的结果，其它等待者照常拿到它。
      */
     private suspend fun awaitSuspending(call: Call<R>): R = call.future.awaitOriginal()
+
+    /**
+     * 没有 [ExecutionMode] 的调用方的共享加载在 [scope] 中执行时取自调用方的元素（RFC 0005 §4.4，K2、K6）：去掉 `Job`
+     * （调用方被取消不取消共享加载）与调度器（调度器取自运行时，从不在 L1 客户端的完成线程上继续），其余（`ThreadContextElement`、
+     * `CoroutineName`、重入记录）原样带入。
+     */
+    private suspend fun callerElements(): CoroutineContext =
+        coroutineContext.minusKey(Job).minusKey(ContinuationInterceptor)
 
     /**
      * 跟随者等待另一个调用者执行的加载，到这次加载的截止时刻为止；超时以 [onTimeout] 的异常失败。

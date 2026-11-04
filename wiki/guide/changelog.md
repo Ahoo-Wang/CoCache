@@ -54,6 +54,7 @@ Defaults and wire format:
 ### Breaking changes
 
 - The user API is split into `Cache`, `VersionedCache`, `Store`, `VersionedStore` and `SetStore`, and `cocache-coroutines` is removed: see [the user API is split by role](#api-types).
+- A per-call loader on a suspending view (`suspending().get(key) { … }`) no longer runs on the caller's dispatcher or `Dispatchers.Default`: it runs inside the load, on CoCache's executor from its first suspension, and `load-timeout` cancels it. See [suspending views run on the cache core](#suspending-native).
 - The baseline is JDK 21 (was JDK 17).
 - Storage keys keep the 6.x shape `{keyPrefix}{namespace}:{encodedKey}`. The invalidation channel is `{keyPrefix}inv:{namespace}` (6.x: `cocache:inv:{namespace}`, without the prefix), so applications with the same namespace and different prefixes no longer receive each other's invalidations. In `pubsub` mode the startup probe uses `cocache:!probe:{a}` and `cocache:!probe:{b}` (6.x: `cocache:probe:{a}`, which is also a key of namespace `probe`). Internal keys live under `{keyPrefix}!`, which no namespace can produce, and `{keyPrefix}!meta:{namespace}` is reserved. See [storage keys](./caches.md#storage-keys).
 - A namespace must match `[A-Za-z0-9._-]+`. One with `:` (or any other character outside the set) fails at creation with `IllegalArgumentException`, and the message shows how to move the prefix into `keyPrefix`: `namespace = "app:user"` becomes `keyPrefix = "cocache:app:"` and `namespace = "user"`. This makes the 6.x overlap between namespaces `a` and `a:b` impossible.
@@ -111,6 +112,16 @@ Defaults and wire format:
 - `CachePolicy.readTimeout` (`CachePolicy.Builder.readTimeout(…)`, unset by default) bounds every Redis read of the cache (`get`, `getAll`, `getIfChanged`). The store caps it at its command timeout. A read that runs out is a failed Redis read: a read with a loader follows `read-failure`, a read without one is `Unknown` (`unknownRead` decides), `getIfChanged` throws, and any lease the read was granted is released. Use it on a cache that can't fall back to a loader but must not wait a full `command-timeout` for a stalled Redis, such as a revocation list. The configuration key comes later. `EngineSpec` has an optional `pause()` hook whose case `readTimeoutBoundsEveryL1Read` checks it.
 - `ExternalInvalidator.broadcast(namespace, encodedKeys)` publishes the invalidation message without touching Redis: every instance drops its local copy and reloads from Redis. Use it when Redis already holds the right value. `invalidate` deletes the key, which on the namespace of a cache without a loader deletes the only copy.
 - Creating a cache with an empty `keyPrefix` logs a warning: its keys and channel share no prefix, so ACLs and prefix-based operations must name each namespace.
+
+### Behavior change: suspending views run on the cache core {#suspending-native}
+
+The suspending views no longer wrap the async views; they call the cache core directly ([RFC 0005 §4.4](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)).
+
+- An L2 hit returns without suspending, switching dispatchers or allocating a future.
+- A miss, a write or a conditional read runs on CoCache's executor from its first suspension, and the caller resumes from a CoCache thread, never from a Redis client thread. A caller on `Dispatchers.Unconfined` (Spring WebFlux handlers) therefore no longer risks continuing on Lettuce's event loop.
+- The caller's context elements (`ThreadContextElement`s such as a tracing context or `MDCContext`, the coroutine name) reach the shared load, without the caller's `Job` and dispatcher. A spec-level `AsyncCacheLoader` now sees them too.
+- A per-call loader runs inside the load: it starts on the caller's thread and continues on CoCache's executor (before: on the caller's dispatcher, or `Dispatchers.Default` without one or on a `runBlocking` event loop). `load-timeout` cancels it, and so does closing the runtime. Wrap blocking calls in `withContext(Dispatchers.IO)`.
+- The suspending methods throw the original exception instance, also in coroutine debug mode.
 
 ### Behavior change: closing the runtime waits for in-flight Redis steps
 

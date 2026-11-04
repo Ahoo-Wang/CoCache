@@ -22,6 +22,7 @@ import kotlinx.coroutines.future.future
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
@@ -54,6 +55,7 @@ import me.ahoo.cocache.core.SourceLoadCancelledException
 import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.Futures
+import me.ahoo.cocache.core.internal.LoadingKeys
 import me.ahoo.cocache.core.internal.awaitOriginal
 import me.ahoo.cocache.core.internal.awaitUncancellable
 import me.ahoo.cocache.core.internal.ensureNotInterrupted
@@ -924,8 +926,28 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private suspend fun loadValue(key: K, storageKey: String, source: CoreSource<K, V>?): V? {
         val sourceLoader = source ?: return null
         return guardedLoad(sourceLoader.operation, 1) {
-            invoke(sourceLoader.source, listOf(storageKey), { it.loadAsync(key) }, { it.load(key) })
+            invoke(sourceLoader.source, listOf(storageKey), { it.loadAsync(key) }, { it.load(key) }) {
+                loadSuspending(it, key)
+            }
         }
+    }
+
+    /**
+     * 调用级的挂起 loader（挂起视图的 `get(key) { … }`，RFC 0005 §4.4）：直接调用、不切换调度器，在这次加载的协程中执行，
+     * 元素取自调用方（K6）。调用期间加上重入记录（[LoadingKeys]，K7）：loader 中经挂起视图读取本缓存的同一个 key 立即失败，
+     * 而不是等待自己的加载。loader 经 `runBlocking` 或 future 读取同一个 key 时检测不到，以 `load.timeout` 为界。
+     * 超过 [loadTimeout] 时取消 loader（协作式），以 [SourceLoadTimeoutException] 失败。
+     */
+    private suspend fun loadSuspending(loader: suspend (K) -> V?, key: K): V? {
+        val loading = LoadingKeys.adding(currentCoroutineContext()[LoadingKeys], this, listOf(key))
+        val loaded = withTimeoutOrNull(loadTimeout.toNanos().nanoseconds) {
+            withContext(loading) { Result.success(loader(key)) }
+        }
+        if (loaded == null) {
+            metrics.loadTimeout()
+            throw SourceLoadTimeoutException(name, loadTimeout)
+        }
+        return loaded.getOrThrow()
     }
 
     /**
@@ -944,9 +966,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         source: AsyncSource<K, V>,
         storageKeys: Collection<String>,
         native: (AsyncCacheLoader<K, V>) -> CompletionStage<out R>,
-        blocking: (CacheLoader<K, V>) -> R
+        blocking: (CacheLoader<K, V>) -> R,
+        suspending: suspend (suspend (K) -> V?) -> R
     ): R = try {
-        invokeSource(source, storageKeys, native, blocking)
+        invokeSource(source, storageKeys, native, blocking, suspending)
     } catch (e: CancellationException) {
         throw sourceCancellation(e)
     }
@@ -964,10 +987,13 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         source: AsyncSource<K, V>,
         storageKeys: Collection<String>,
         native: (AsyncCacheLoader<K, V>) -> CompletionStage<out R>,
-        blocking: (CacheLoader<K, V>) -> R
+        blocking: (CacheLoader<K, V>) -> R,
+        suspending: suspend (suspend (K) -> V?) -> R
     ): R {
         val inline = runsInline()
         return when (source) {
+            is AsyncSource.Suspending -> suspending(source.loader)
+
             is AsyncSource.Blocking -> if (inline) {
                 blocking(source.loader)
             } else {
@@ -1367,7 +1393,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         source: CoreSource<K, V>
     ): Map<K, V> =
         guardedLoad(LoadOperation.LOAD_ALL, keys.size) {
-            invoke(source.source, storageKeys, { it.loadAllAsync(keys) }, { it.loadAll(keys) })
+            invoke(source.source, storageKeys, { it.loadAllAsync(keys) }, { it.loadAll(keys) }) {
+                // 调用级 loader 只加载一个 key，批量回源只用声明的数据源
+                error("Cache[$name] - a call-level suspending loader loads one key.")
+            }
         }
 
     /**
@@ -2087,6 +2116,78 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     internal fun <R> runAsync(block: suspend () -> R): CompletableFuture<R> = context.async.runAsync { block() }
 
+    // ---------------------------------------------------------------------------------------------
+    // 挂起变体的入口（RFC 0005 §4.4，K2、K6）：命中判断与同步、异步路径相同（同一个 L2），L2 命中内联返回、不切换调度器、
+    // 不分配状态机（未命中的部分都在尾调用中）。未命中、写入与条件读写经 AsyncContext.runSuspending 在运行时的调度器上
+    // 运行同一份协程核心，元素取自调用方。
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * 不带 loader 的挂起读取：L2 命中内联返回；否则经 [missSuspending]。
+     */
+    internal suspend fun <R> entrySuspending(key: K, map: (LocalEntry<V>) -> R): R {
+        val localKey = localKey(key)
+        val entry = local.getIfPresent(localKey)
+        if (entry != null) {
+            val now = clock.nowMillis()
+            if (entry.expiresAt > now) {
+                if (entry.refreshAt <= now) {
+                    refreshAsync(key, localKey, entry)
+                }
+                countLocalHit()
+                return map(entry)
+            }
+        }
+        return missSuspending(key, storageKeyOfLocal(localKey), loadSource, map)
+    }
+
+    /**
+     * 带调用级挂起 loader 的读取（`SuspendingCache.get(key, loader)`），规则同 [entryWith]：loader 在这次加载的协程中直接调用
+     * （[loadSuspending]）。
+     */
+    internal suspend fun <R> entryWithSuspending(key: K, loader: suspend (K) -> V?, map: (LocalEntry<V>) -> R): R {
+        val localKey = localKey(key)
+        val entry = local.getIfPresent(localKey)
+        if (entry != null && !entry.unfilled && entry.expiresAt > clock.nowMillis()) {
+            countLocalHit()
+            return map(entry)
+        }
+        val source = CoreSource(AsyncSource.Suspending(loader), LoadOperation.LOAD)
+        return missSuspending(key, storageKeyOfLocal(localKey), source, map)
+    }
+
+    private suspend fun <R> missSuspending(
+        key: K,
+        storageKey: String,
+        source: CoreSource<K, V>?,
+        map: (LocalEntry<V>) -> R
+    ): R {
+        filteredEntry(storageKey)?.let { return map(it) }
+        return context.async.runSuspending { map(loadMiss(key, storageKey, source)) }
+    }
+
+    /**
+     * 批量读取（挂起变体）：语义同 [resolveAll]，全部命中 L2 时内联返回。
+     */
+    internal suspend fun <R> resolveAllSuspending(keys: Collection<K>, map: (Map<K, LocalEntry<V>?>) -> R): R {
+        val resolved = LinkedHashMap<K, LocalEntry<V>?>()
+        val pending = collectPending(keys, resolved)
+        if (pending.isEmpty()) {
+            return map(resolved)
+        }
+        return context.async.runSuspending {
+            for ((storageKey, entry) in loadPending(pending, loadSource)) {
+                pending.getValue(storageKey).forEach { resolved[it] = entry }
+            }
+            map(resolved)
+        }
+    }
+
+    /**
+     * 挂起变体的写入与条件读写入口：在运行时的调度器上运行 [block]（[AsyncContext.runSuspending]）。
+     */
+    internal suspend fun <R> runSuspending(block: suspend () -> R): R = context.async.runSuspending { block() }
+
     private companion object {
         /**
          * 保留版本的失效的操作名（[CacheWriteException.operation]）。
@@ -2120,6 +2221,11 @@ internal sealed interface AsyncSource<K : Any, V : Any> {
     class Native<K : Any, V : Any>(val loader: AsyncCacheLoader<K, V>) : AsyncSource<K, V>
 
     class Blocking<K : Any, V : Any>(val loader: CacheLoader<K, V>) : AsyncSource<K, V>
+
+    /**
+     * 调用级的挂起 loader（挂起视图的 `get(key) { … }`）：在这次加载的协程中直接调用（[CoherentEngine.loadSuspending]）。
+     */
+    class Suspending<K : Any, V : Any>(val loader: suspend (K) -> V?) : AsyncSource<K, V>
 }
 
 /**

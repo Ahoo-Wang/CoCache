@@ -36,7 +36,7 @@ internal class StoreEngine<K : Any, V : Any>(
     context: EngineContext,
 ) : CoherentEngine<K, V>(spec, store, context), Store<K, V> {
     private val asyncView = AsyncView()
-    private val suspendingView = SuspendingStoreView(asyncView)
+    private val suspendingView = SuspendingView()
 
     override fun get(key: K): V? = answerOf(entryOf(key))
 
@@ -147,6 +147,44 @@ internal class StoreEngine<K : Any, V : Any>(
         override fun sync(): Store<K, V> = this@StoreEngine
 
         override fun toString(): String = "AsyncView(${this@StoreEngine})"
+    }
+
+    /**
+     * 挂起视图：直接调用协程核心（[SuspendingReads]，RFC 0005 §4.4）。
+     */
+    private inner class SuspendingView :
+        SuspendingReads<K, V, V>(
+            this@StoreEngine,
+            { answerOf(it) },
+            { lookupAnswerOf(it) },
+            { valuesOf(it, IDENTITY()) },
+            { lookupsOf(it) }
+        ),
+        SuspendingStore<K, V> {
+        override suspend fun put(key: K, value: V) = runSuspending { putWithTtl(key, value, putTtl(key, value)) }
+
+        override suspend fun put(key: K, value: V, ttl: Duration) = runSuspending { putWithTtl(key, value, ttl) }
+
+        override suspend fun putAll(entries: Map<K, V>) = runSuspending { putAllWithTtl(entries, ::putTtl) }
+
+        override suspend fun putAll(entries: Map<K, V>, ttl: Duration) =
+            runSuspending { putAllWithTtl(entries) { _, _ -> ttl } }
+
+        override suspend fun delete(key: K) = runSuspending { deleteStorageKeys(listOf(storageKey(key)), DELETE) }
+
+        override suspend fun deleteIfMatch(key: K, expected: Digest): ConditionalDelete =
+            runSuspending { conditionalDelete(key, expected) }
+
+        override suspend fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> =
+            runSuspending { conditionalGet(key, known) }
+
+        override suspend fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut =
+            runSuspending { putIfMatchWithTtl(key, expected, value, putTtl(key, value)) }
+
+        override suspend fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
+            runSuspending { putIfMatchWithTtl(key, expected, value, ttl) }
+
+        override fun async(): AsyncStore<K, V> = asyncView
     }
 
     private companion object {

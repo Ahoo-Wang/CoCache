@@ -418,16 +418,19 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
   - 存储没有 `close`：连接等资源属于后端。
 - **能力**：条件读写、按版本有序的写入与集合成员的增删由存储的访问器表达（`conditional()`、`versioned()`、`sets()`，不支持时为 `null`），引擎在创建时各取一次。`runtime.create` 检查类型需要的能力：`Store` 要求 `conditional()`，`VersionedCache` 与 `VersionedStore` 要求 `versioned()`，`SetStore` 要求 `sets()`，`Cache` 不要求；缺失时抛出 `UnsupportedOperationException`，不注册任何东西。每个命名空间创建时在启动日志中输出类型与存储提供的能力（`created as Store … L1 capabilities[conditional, versioned, sets]`）。引擎绕过运行时创建时（测试），缺失的能力在调用时、修改任何一层之前以 `UnsupportedOperationException` 失败，从不退回“先读后写”。
 
-### 5.7 挂起视图（`suspending()`，RFC 0004 §7）
+### 5.7 挂起视图（`suspending()`，RFC 0005 §4.4）
 
-挂起视图的接口在 `cocache-api`（只用标准库的 `suspend`），每种类型有同构的一个（`SuspendingCache`、`SuspendingStore` …），由各类型的抽象方法 `suspending()` 返回，实现在 `cocache-core`（`engine/SuspendingViews.kt`）。它目前是异步视图的薄封装：每个方法调用异步视图的同名方法并等待其 future，不复制任何引擎逻辑，§5.6 的语义全部沿用；改为直接调用协程核心（RFC 0005 §4.4 K2、K6、K7）是 M5c。已成功完成的 future（L2 命中）直接取结果，不挂起；等待经 `kotlinx.coroutines.future.await`，失败时抛出 future 中的原始异常。读方法（`get`、`getAll`、`lookup`、`lookupAll`）唯一的挂起点在尾部，编译器不为它们生成状态机；重入检查先查上下文中有没有 `LoadingKeys`，没有就返回。因此 L2 命中除异步视图本身外不再分配（调用级 loader 的上下文与作用域在 `loadAsync` 内才构造）。
+挂起视图的接口在 `cocache-api`（只用标准库的 `suspend`），每种类型有同构的一个（`SuspendingCache`、`SuspendingStore` …），由各类型的抽象方法 `suspending()` 返回，实现在 `cocache-core`：读取共用 `SuspendingReads`（`engine/SuspendingViews.kt`），写入在各引擎的 `SuspendingView` 中。挂起视图直接调用协程核心（RFC 0005 §4.4 K2、K6、K7），不经异步视图。
 
-- **取消**：取消等待的协程会取消这次调用返回的那个 future；异步视图为每次调用新建 future，共享的加载不受影响（与 §5.6 相同）。
-- **调用级 loader**（`get(key) { … }`）：以调用方的协程上下文去掉 `Job` 启动（`future {}`）。它在调用方的 dispatcher 上执行；没有 dispatcher 或 dispatcher 是 `runBlocking` 的事件循环时改用 `Dispatchers.Default`（加载可能比事件循环活得更久）。`ThreadContextElement` 随之传递。它脱离结构化并发：调用方被取消、其作用域结束或运行时关闭都不取消加载。
-- **spec 级 loader**（`suspendingLoader(context) { … }` / `asAsyncCacheLoader(context)`）：在给定的 `context` 中启动（默认 `Dispatchers.Default`），作为 spec 的 `asyncLoader`，受 `LoadPolicy.timeout` 约束。超时不取消协程（与 `AsyncCacheLoader` 相同）。每个 loader 一个 `SupervisorJob`（父 Job 为 `context` 中的 Job）：一次失败不取消其它加载，取消父 Job 取消之后的加载。
-- **以取消结束的加载**转为 `SourceLoadCancelledException`（`cocache-core`，`RuntimeException`，与 `SourceLoadTimeoutException` 一致）：在加载协程内，数据源自己抛出的 `CancellationException`（如数据源内部的 `withTimeout`）；在 loader future 的边界上，加载协程被取消或在已取消的作用域中启动（spec 的 `context` 中的 Job 已被取消）。引擎对全部数据源同样转换（§5.6“数据源适配”），这里转换的是引擎看不到的那部分：加载协程本身被取消时，future 以取消完成，引擎的协程却仍处于活动状态。加载可能被共享，原样传出会让挂起的调用方当作自己被取消而吞掉；转换后同步、异步与挂起的调用方都收到它。`SupervisorJob` 永不完成，因此 `context` 中的 Job 应是长生命周期的，loader 应创建一次、反复使用。
-- **同 key 重入**：引擎基于线程的检查（§5.6“重入”）只覆盖数据源的同步部分；loader 挂起后在别的线程上继续时，由随协程上下文传递的元素 `LoadingKeys` 覆盖：经挂起视图读取正在加载的 key（`get`、`getAll`、`lookup`）立即以 `IllegalStateException` 失败，而不是等待自己直到 `load.timeout`。按 key（`K`）的相等性匹配，不按编码后的存储 key。调用级 loader 按视图背后的缓存实例匹配；spec 级 loader 按缓存名匹配（声明时不知道运行时），不继承调用方的记录（跨缓存循环要到 `load.timeout` 才失败）；单独使用的 `asAsyncCacheLoader` 没有这项检查。
-- 不阻塞任何线程；loader 不在 Lettuce I/O 线程上执行（引擎在调用 `loadAsync` 之前已切换线程，§5.6）。
+- **命中路径**：L2 命中内联返回，不挂起、不切换调度器、不分配：读方法与命中判断只在尾部调用下一步，编译器不为它们生成状态机；重入检查先查上下文中有没有 `LoadingKeys`，没有就返回。
+- **进入核心**（`AsyncContext.runSuspending`，K2、K6）：未命中、写入与条件读写在运行时作用域中运行同一份协程核心，按异步变体执行（`ExecutionMode.ASYNC`，阻塞的 loader 在阻塞执行器上执行），再等待结果（`awaitOriginal`，抛出原始异常）。协程上下文的元素取自调用方（`ThreadContextElement`、`CoroutineName`、`LoadingKeys`），去掉 `Job` 与调度器。核心第一次挂起之前在调用方线程上执行（与异步变体相同，同线程的重入守卫因此照常生效），之后经运行时的调度器继续，结果在运行时的执行器线程上交出：调用方从不在 L1 客户端的完成线程上恢复。拦截器是 `Unconfined` 的调用方（Spring WebFlux 的挂起处理器默认如此）在运行时的执行器线程上恢复，不会在 Lettuce 的事件循环上继续它自己的代码；否则它在那里再调用同步 API，会卡住事件循环直到命令超时。
+- **没有 `ExecutionMode` 的调用方**：直接从协程调用核心时，SingleFlight 的 leader 在运行时作用域中执行，元素同样取自调用方、去掉 `Job` 与调度器（`SingleFlight.callerElements`）。进入核心的规则只有这一条。
+- **取消**：调用方被取消只结束它自己的等待；共享的加载与写入在运行时作用域中照常完成，只在运行时关闭时被取消（与 §5.6 相同）。运行时关闭之后的调用以 `IllegalStateException` 失败，执行器拒绝派发时抛出那个 `RejectedExecutionException`。
+- **调用级 loader**（`get(key) { … }`）：在这次加载的协程中直接调用，不切换调度器，不另起协程：第一次挂起之前在调用方线程上执行，之后在运行时的调度器上继续。`ThreadContextElement` 随之传递。它是共享加载的一部分，不随调用方取消；超过 `load.timeout` 时被取消（协作式），合并到这次加载的调用方以 `SourceLoadTimeoutException` 失败。
+- **spec 级 loader**（`suspendingLoader(context) { … }` / `asAsyncCacheLoader(context)`）：在给定的 `context` 中启动（默认 `Dispatchers.Default`），作为 spec 的 `asyncLoader`，受 `LoadPolicy.timeout` 约束。超时不取消协程（与 `AsyncCacheLoader` 相同）。每个 loader 一个 `SupervisorJob`（父 Job 为 `context` 中的 Job）：一次失败不取消其它加载，取消父 Job 取消之后的加载。声明的 `AsyncCacheLoader` 的 `loadAsync` 在共享加载的协程中调用，看得到调用方的 `ThreadContextElement`；阻塞的 `CacheLoader` 在阻塞执行器的线程上调用，看不到。
+- **以取消结束的加载**转为 `SourceLoadCancelledException`（`cocache-core`，`RuntimeException`，与 `SourceLoadTimeoutException` 一致）：数据源自己抛出的 `CancellationException`（如数据源内部的 `withTimeout`）；在 spec 级 loader future 的边界上，加载协程被取消或在已取消的作用域中启动（spec 的 `context` 中的 Job 已被取消）。引擎对全部数据源同样转换（§5.6“数据源适配”）。加载可能被共享，原样传出会让挂起的调用方当作自己被取消而吞掉；转换后同步、异步与挂起的调用方都收到它。`SupervisorJob` 永不完成，因此 `context` 中的 Job 应是长生命周期的，loader 应创建一次、反复使用。
+- **同 key 重入**（K7）：在 §5.6 的守卫之上增加，不替换它们。同步变体的拥有线程检测与异步变体在 `loading` 的同步调用段的 `ThreadLocal` 都保留：协程上下文元素穿不过 `runBlocking` 与 `future {}`，只换成元素会让同步变体的同线程重入退化为等待 `load.timeout`。调用级 loader 的协程上下文带 `LoadingKeys`（引擎实例与 key），loader 挂起之后在别的线程上继续时，经挂起视图读取正在加载的 key（`get`、`getAll`、`lookup`、`getVersioned`）立即以 `IllegalStateException` 失败，而不是等待自己直到 `load.timeout`。按 key（`K`）的相等性匹配，不按编码后的存储 key。spec 级挂起 loader 按缓存名匹配（声明时不知道运行时），不继承调用方的记录（跨缓存循环要到 `load.timeout` 才失败）；单独使用的 `asAsyncCacheLoader` 没有这项检查。loader 经 future 或 `runBlocking` 换线程之后的重入检测不到，以 `load.timeout` 为界。
+- 不阻塞任何线程；loader 与调用方的代码都不在 Lettuce I/O 线程上执行。
 
 ## 6. 写路径
 
@@ -573,7 +576,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 - **被中断的同步调用方**（RFC 0005 §4.3，§5.6）：在途的 L1 命令先完成或超时，取得的令牌按正常路径释放，取消之后不再调用 loader，然后抛出 `InterruptedException`；取消生效之前已经完成的调用照常返回结果。两种情形都保留中断标志。被中断的调用方因此至多多等一个命令超时（默认 2 s）。正在运行的阻塞 loader 自己看到中断（协作式取消）。
 - **跟随者的等待有上界**（`load.timeout`，§5.6 SingleFlight）：合并到别人加载的调用方（同步与异步，单 key 与批量）等到这次加载的截止时刻（登记时加上 `load.timeout`）仍没有结果时，以 `SourceLoadTimeoutException` 失败，计入 `loadTimeouts`；leader 照常加载。截止时刻之后到来的读取开始新的加载。
 - **读取的时限**（`CachePolicy.readTimeout`，RFC 0005 §4.3，D6）：引擎把它传给每次 L1 读取（`read`、`readAll`、`readIfChanged`，不含运维的 `inspect`），存储以它与命令超时中较短的一个为限；默认 `null`，即命令超时。超时与其它 L1 读失败相同：按 `readFailure` 降级或抛出，条件读取总是抛出，取得的令牌由存储释放（K14）。供不能降级回源、又要限制 L1 卡顿时每次读取多等多久的缓存使用（如 CoSec 的撤销检查）。配置键随 M6 加入，现在经 `CachePolicy.Builder.readTimeout` 设置。
-- **被取消的写入**（RFC 0005 §4.6，K18，M5 评估结论：保持现状）：写入从修改 L1 到第二次递增（含广播、失效重试的登记）在 `NonCancellable` 中执行，协程被取消（运行时关闭；M5 之后还有挂起变体中调用方的取消）时这些步骤照常完成。异步与挂起变体在 `ASYNC_WRITE`（`NonCancellable` + `Unconfined`）中执行它，`withContext` 结束时按 kotlinx 的即时取消保证把结果换成 `CancellationException`：写入已经生效，调用方看到的是取消，结果未知（I-E），与超时相同，按版本写入可以重放、`putIfMatch` 先 `getIfChanged` 再决定。不把整个写入放进同调度器的 `NonCancellable` 的理由：
+- **被取消的写入**（RFC 0005 §4.6，K18，M5 评估结论：保持现状）：写入从修改 L1 到第二次递增（含广播、失效重试的登记）在 `NonCancellable` 中执行，协程被取消（运行时关闭）时这些步骤照常完成；挂起变体的调用方被取消只结束它自己的等待，写入在运行时作用域中照常完成（§5.7）。异步与挂起变体在 `ASYNC_WRITE`（`NonCancellable` + `Unconfined`）中执行它，`withContext` 结束时按 kotlinx 的即时取消保证把结果换成 `CancellationException`：写入已经生效，调用方看到的是取消，结果未知（I-E），与超时相同，按版本写入可以重放、`putIfMatch` 先 `getIfChanged` 再决定。不把整个写入放进同调度器的 `NonCancellable` 的理由：
   - 写入的效果不受影响：丢失的只是返回给已被取消的调用方的结果，而 L1、广播与第二次递增都已完成。
   - 被取消的协程从挂起调用正常返回，会让调用方在已取消的协程中继续执行后续代码，违反 kotlinx 的取消约定；调用方本来就要按“结果未知”处理取消。
   - 异步变体中只有运行时关闭会取消写入的协程（调用方取消 future 只结束它自己的等待），关闭之后结果也无从使用。
