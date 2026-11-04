@@ -34,6 +34,8 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `cocache.redis.*` | — | — | [Redis 后端](#redis)配置 |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
 | `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`：Spring 的缓存拦截器改用 `DegradingCacheErrorHandler`，CoCache 缓存的读写失败只记录日志、不重新抛出，Redis 故障期间不带 sync 的 `@Cacheable` 因此执行方法。失败的失效、其它缓存的失败仍交给原来的处理器。见 [Spring Cache](./spring-cache.md#failures)。 |
+| `cocache.invalidate-fills-on-rollback` | boolean | `true` | 需要 `spring-tx`。读写事务内同步读取回源、写入 Redis 或 L2 的 key，在事务回滚、提交结果未知或回滚到 savepoint 时失效。见 [Spring Cache](./spring-cache.md#transactional-loads)。 |
+| `cocache.fill-in-transaction` | `registered-keys` \| `private` \| `allow` | `registered-keys` | 需要 `spring-tx`。读写事务内哪些回源是私有的（不申请 lease、不写 Redis 与 L2、不共享）：本事务已登记失效的 key、全部回源，或都不是。作用于所有缓存。见 [Spring Cache](./spring-cache.md#transactional-loads)。 |
 | `cocache.refresh-executor` | bean 名 | 内置 | 执行[提前刷新](./freshness.md#refresh-ahead)回源的 `Executor` bean。见[执行器](#executors)。 |
 | `cocache.async-executor` | bean 名 | 内置 | 执行[异步视图](./async.md)续接的 `Executor` bean。见[执行器](#executors)。 |
 | `cocache.blocking-executor` | bean 名 | 内置 | 执行经异步视图调用的同步 loader 的 `Executor` bean。见[执行器](#executors)。 |

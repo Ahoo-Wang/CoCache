@@ -31,6 +31,8 @@ Lowest to highest, field by field: built-in defaults (`CachePolicy.DEFAULT` for 
 | `cocache.redis.*` | | Redis backend settings |
 | `cocache.spring-cache.require-sync` | `false` | `true` fails startup on a non-sync `@Cacheable` on a CoCache cache |
 | `cocache.spring-cache.degrade-on-error` | `false` | `true`: `DegradingCacheErrorHandler` logs read and write failures on CoCache caches instead of rethrowing them; invalidation failures and other caches go to the previous handler |
+| `cocache.invalidate-fills-on-rollback` | `true` | Needs `spring-tx`: keys a synchronous read loaded inside a read-write transaction are invalidated on rollback, unknown commit outcome and rollback to a savepoint |
+| `cocache.fill-in-transaction` | `registered-keys` | Needs `spring-tx`: which loads in a read-write transaction are private (no lease, no Redis or L2 write, not shared): `registered-keys` (keys registered for invalidation in it), `private` (all), `allow` (none); every cache |
 | `cocache.refresh-executor` | built-in | Bean name of the `Executor` for refresh-ahead loads; CoCache never shuts it down |
 | `cocache.async-executor` | runtime-owned `ForkJoinPool` (`cocache-async-*`) | Bean name of the `Executor` for async-view continuations; short non-blocking work only, never block on it |
 | `cocache.blocking-executor` | one virtual thread per task | Bean name of the `Executor` for synchronous loaders called through the async view; must not queue |

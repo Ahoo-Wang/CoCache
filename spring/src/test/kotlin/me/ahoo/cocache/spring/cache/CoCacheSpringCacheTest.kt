@@ -19,16 +19,19 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.spring.tx.InMemoryTransactionManager
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
+import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -264,6 +267,40 @@ class CoCacheSpringCacheTest {
         release.countDown()
         loading.join().assert().isEqualTo("old")
         cache.get("stale") { "new" }.assert().isEqualTo("new")
+    }
+
+    /**
+     * U5：`get` 与 `retrieve` 一致处理 `Lookup.Unknown`，以 [CacheReadException] 失败（由 Spring 交给 `CacheErrorHandler`），
+     * 不当作未命中；声明 `unknownRead = ABSENT` 时视为未命中。
+     */
+    @Test
+    fun unknownFailsGetAndRetrieveAlikeUnlessDeclaredAbsent() {
+        val backend = HookedBackend(InMemoryBackend())
+        CacheRuntime.builder().backend(backend).build().use { faulty ->
+            faulty.create(
+                cacheSpec<String, String>("profile") {
+                    codec = StringCodec
+                    externallySourced()
+                }
+            )
+            faulty.create(
+                cacheSpec<String, String>("lenient") {
+                    codec = StringCodec
+                    externallySourced()
+                    unknownRead = UnknownReadMode.ABSENT
+                }
+            )
+            val manager = CoCacheSpringCacheManager(faulty)
+            val profile = requireNotNull(manager.getCache("profile"))
+            val lenient = requireNotNull(manager.getCache("lenient"))
+            backend.failAll = true
+            runCatching { profile.get("k") }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+            requireNotNull(profile.retrieve("k")).handle { _, e -> e }.join()
+                .assert().isInstanceOf(CacheReadException::class.java)
+            lenient.get("k").assert().isNull()
+            requireNotNull(lenient.retrieve("k")).join().assert().isNull()
+            backend.failAll = false
+        }
     }
 
     @Test

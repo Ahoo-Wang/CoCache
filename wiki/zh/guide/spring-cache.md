@@ -58,6 +58,8 @@ cocache:
 
 缓存通知与事务通知的 order 相同时，同一个检查也记录一条 `WARN`。见[事务通知在外层](#advice-order)。
 
+此外，任何缓存操作（`@Cacheable`、`@CachePut` 或 `@CacheEvict`，不论 `sync`）指向不是 `Cache` 的 CoCache 缓存（`Store`、`VersionedStore`、`SetStore` 或 `VersionedCache`）时，不论 `require-sync` 如何，启动都失败。Spring Cache 只接入派生副本，CoCache 的管理器不暴露其它类型；没有这项检查，调用要到运行时才以“找不到缓存”失败。
+
 只有存在名为 `cocacheCacheManager` 的 bean 时检查才会运行：可以是 starter 自己的管理器，也可以是你以这个名字声明的管理器（见[与其它缓存管理器并存](#other-managers)）。你声明任何其它 `CacheManager` 时 starter 的管理器会退让，因此如果你以别的 bean 名自己装配 `CoCacheSpringCacheManager`，检查不适用，`sync = true` 需要你自己保证。
 
 ## Spring 操作如何映射 {#semantics}
@@ -69,7 +71,7 @@ cocache:
 | `put(key, value)`（`@CachePut`） | `cache.put(key, value)`。值为 `null` 时改为 `invalidate(key)`。 |
 | `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)`。事务内见[事务](#transactions)。 |
 | `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 与其它实例的副本保持不变：CoCache 不能在全集群清空一个缓存。每个缓存第一次调用时记录一条 `WARN` 说明这一点。请改为按 key 驱逐。 |
-| `retrieve(key)`（异步与响应式） | 缓存[异步视图](./async.md)上的异步 `lookup`。L2 命中返回已完成的 future，不切换线程；负缓存以 `null` 完成（视为未命中）。 |
+| `retrieve(key)`（异步与响应式） | 缓存[异步视图](./async.md)上的异步 `lookup`。L2 命中返回已完成的 future，不切换线程；负缓存以 `null` 完成（视为未命中）。 Redis 读取失败时 future 失败，与 `get(key)` 一样（见 [Redis 故障时](#failures)）。 |
 | `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | [异步视图](./async.md)上的异步 `get(key, loader)`：与 `get(key, loader)` 一样经受 lease 保护的路径回源，**没有线程等待**异步 loader。方法体在运行时的阻塞执行器（`cocache.blocking-executor`）上执行，所以先阻塞再返回 future 的方法体（如 `completedFuture(repository.find(id))`）不会卡住 CoCache 的异步执行器。方法体看不到调用方的 ThreadLocal。失败时 future 以原始异常完成。 |
 
 ### null 结果 {#null}
@@ -83,7 +85,7 @@ cocache:
 经 Spring Cache 使用的缓存通常是[外部来源](./caches.md#externally-sourced)的：被注解的方法就是数据源。带着方法的读取可以退回到方法，不带的读取没有答案：
 
 - `@Cacheable(sync = true)` 把方法作为 loader 传入，Redis 读取失败时照常执行方法，结果以 `degraded-local-max-age` 留在 L2 中。
-- 不带 sync 的 `@Cacheable` 经 `get(key)` 读取，没有 loader。Redis 读取失败是 [`Lookup.Unknown`](./caches.md#unknown)：`get(key)` 抛出它的 `CacheReadException`，由 Spring 交给 `CacheErrorHandler`：默认的处理器重新抛出，`LoggingCacheErrorHandler` 记录日志后改为执行方法。也可以在缓存的 spec 上声明 `unknownRead = UnknownReadMode.ABSENT`（写在 `cacheSpec` 中；接口缓存写在[定制器](./caches.md#customizer)中）：读取返回未命中且不缓存，Spring 随后执行方法。
+- 不带 sync 的 `@Cacheable` 经 `get(key)` 读取，没有 loader；返回 `CompletableFuture`、`Mono` 或 `Flux` 的方法上，Spring 改经 `retrieve(key)` 读取。Redis 读取失败是 [`Lookup.Unknown`](./caches.md#unknown)：`get(key)` 抛出它的 `CacheReadException`，`retrieve(key)` 的 future 以它失败，三种方法上 Spring 都把它交给 `CacheErrorHandler`：默认的处理器重新抛出，`LoggingCacheErrorHandler` 记录日志后改为执行方法。也可以在缓存的 spec 上声明 `unknownRead = UnknownReadMode.ABSENT`（写在 `cacheSpec` 中；接口缓存写在[定制器](./caches.md#customizer)中）：读取返回未命中且不缓存，Spring 随后执行方法。
 - `@CacheEvict` 调用 `invalidate`。Redis 删除失败时，key 进入后台重试队列，因为每个 `Cache` 的 `invalidate-failure` 默认都是 `retry`：方法就是数据源，删除副本总是安全的。设置 `invalidate-failure: throw` 则改为抛出 `CacheWriteException`。见[配置](./configuration.md#policy-properties)。
 
 于是同一个缓存上的两种 `@Cacheable` 表现不同。Redis 故障期间，不带 sync 的 `@Cacheable` 调用全部失败，因为 Spring 默认的 `CacheErrorHandler` 重新抛出读取失败；`@Cacheable(sync = true)` 则改为执行方法。`unknownRead = ABSENT` 也不能让不带 sync 的方法可用：随后的 `put` 同样失败。
@@ -137,6 +139,16 @@ classpath 中有 `spring-tx` 时，starter 用 CoCache 的事务装饰器 `Trans
 - **后面的驱逐优先**。提交时 CoCache 先执行失效，再执行写入。对同一个 key 先 `@CachePut` 再 `@CacheEvict`，结果是 key 被驱逐；先 `@CacheEvict` 再 `@CachePut`，结果是新值。
 - **savepoint**。`NESTED` 事务（或编程式 savepoint）回滚时，丢弃 savepoint 之后登记的写入，并立即失效已登记的 key。
 
+### 事务内的回源 {#transactional-loads}
+
+同步读取还会关注它所在的事务。这包括 `@Cacheable(sync = true)`，以及在任何带数据源的 CoCache 缓存上直接调用的 `get`、`lookup`、`getAll` 与 `get(key, loader)`。只作用于 `PlatformTransactionManager` 的读写事务；只读事务、异步与挂起调用、响应式事务都不受影响。
+
+- **回滚时失效事务加载的内容**（`cocache.invalidate-fills-on-rollback`，默认开启）。事务内的加载可能读到你写入但尚未提交的行，并把它缓存到 Redis；Redis 故障时只缓存到本实例的 L2。CoCache 记录事务加载进缓存的每个 key，在事务回滚、提交结果未知，或 `NESTED` 事务回滚到 savepoint 时失效它们。提交时不动它们：那是已提交的数据。不需要登记任何东西，从不调用 `@CacheEvict` 的事务也在覆盖范围内。回滚之前，其它调用方仍可能从 Redis 读到未提交的值：回滚把这个窗口从 `ttl` 缩短到事务的时长。
+- **已登记的 key 私有加载**（`cocache.fill-in-transaction`，默认 `registered-keys`）。一个 key 在事务中登记失效之后（`@CacheEvict`、`TransactionalInvalidator`），同一事务内再次加载它不碰 Redis、L2 与其它调用方：值只交给这次调用，计入 `cocache.fills.gated`。登记时还会立即丢弃本实例的副本，所以事务内的下一次读取未命中，加载到你自己的写入。这不是保证：其它线程可能先把已提交的值放回 L2。`private` 让读写事务内的全部加载都是私有的，L2 未命中的读取因此每次都调用数据源；`allow` 关闭这一机制。
+- **其它调用方不共享事务内的加载**。事务内的调用方领头加载时，同一实例上并发的调用方各自加载，而不是拿它可能永远不会提交的结果。
+
+key 按 namespace 与编码后的 key 匹配，所以经接口缓存的代理驱逐，同样覆盖经 `cacheSpec` bean 或 Spring Cache 的读取。两项配置作用于所有缓存。两项都关闭（`invalidate-fills-on-rollback: false` 与 `fill-in-transaction: allow`）时，加载不再关注事务。
+
 ### 提交之后的失败 {#after-commit-failures}
 
 推迟的写入或失效在提交之后失败时，交给缓存拦截器的 `CacheErrorHandler`，与事务之外的失败一样。调用方不会因为一个数据已经提交的操作收到异常，也就不会去重试它。处理器重新抛出时（Spring 默认的 `SimpleCacheErrorHandler` 就是如此），CoCache 以 `ERROR` 记录这个异常，不再抛出。处理器收到的 `cache` 参数是装饰后的缓存。开启 [`degrade-on-error`](#failures) 时，失败的写入记录为一条 `WARN`。
@@ -149,7 +161,7 @@ classpath 中有 `spring-tx` 时，starter 用 CoCache 的事务装饰器 `Trans
 
 - `@CacheEvict` 在提交之后执行，不登记，回滚时也不执行。
 - `@CacheEvict(beforeInvocation = true)` 在事务开始之前失效一次。提交之后不再失效，其间加载的旧数据留到 `ttl`。
-- `@Cacheable(sync = true)` 的方法在加载中开启自己的事务，结果在那个事务提交之后才缓存。
+- `@Cacheable(sync = true)` 的方法在加载中开启自己的事务，结果在那个事务结束之后才缓存。加载开始时不在任何事务中，因此[不被关注](#transactional-loads)：事务回滚而方法仍返回了值时，这个值留在缓存中直到 `ttl`。
 
 响应式方法上的 `@CacheEvict` 在 `doOnSuccess` 中执行；事务在外层时，这早于提交。装饰器看不到响应式事务（见[保持数据新鲜](./freshness.md#transactions)）。
 
@@ -162,7 +174,7 @@ classpath 中有 `spring-tx` 时，starter 用 CoCache 的事务装饰器 `Trans
 class App
 ```
 
-直接调用时使用 `TransactionalInvalidator`（见[保持数据新鲜](./freshness.md#transactions)）。它与装饰器共用事务的登记，所以只要传入的是 Spring Cache 所用的那个缓存对象，它的失效同样取代之前同一 key 的 `@CachePut`。`cacheSpec` 声明的 bean 就是那个对象；接口式缓存的 bean 是代理，不是。
+直接调用时使用 `TransactionalInvalidator`（见[保持数据新鲜](./freshness.md#transactions)）。它与装饰器共用事务的登记，所以它的失效同样取代之前同一 key 的 `@CachePut`。key 按 namespace 与编码后的 key 匹配，传入这个缓存的任何对象都可以：`cacheSpec` 声明的 bean、接口式缓存的代理，或 Spring Cache 背后的缓存。
 
 ## 与其它缓存管理器并存 {#other-managers}
 
@@ -203,3 +215,5 @@ class CacheConfig {
 ```
 
 管理器提供的是该 `CacheRuntime` 中已经创建的缓存。lambda 把提交之后的失败交给拦截器的错误处理器，每次失败时才取得，此时容器已经启动。不传时装饰器使用 `SimpleCacheErrorHandler`，这些失败只记录日志。不使用事务时去掉装饰器即可。
+
+要[关注事务内的回源](#transactional-loads)，构建运行时时传入 `TransactionalFillObserver`：`CacheRuntime.builder().backend(backend).fillObserver(TransactionalFillObserver()).build()`。它的构造函数接受上述两项配置。

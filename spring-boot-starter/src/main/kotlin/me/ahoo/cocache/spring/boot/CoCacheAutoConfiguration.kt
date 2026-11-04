@@ -17,11 +17,14 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CoCacheFactory
+import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.spring.cache.DegradingCacheErrorHandler
+import me.ahoo.cocache.spring.tx.FillInTransaction
 import me.ahoo.cocache.spring.tx.TransactionAwareSpringCacheManager
+import me.ahoo.cocache.spring.tx.TransactionalFillObserver
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.ListableBeanFactory
@@ -117,6 +120,7 @@ class CoCacheAutoConfiguration {
      * 有唯一的 [CacheClock] bean 时运行时使用它（否则运行时自建 `TickingClock`）。
      * 设置了 `cocache.refresh-executor` 时按 bean 名取得提前刷新执行器（否则运行时自建并管理内置执行器）。
      * 有唯一的 [LoadObserver] bean（如 [CoCacheObservationAutoConfiguration] 注册的 Micrometer 观测器）时用它观测回源。
+     * 有唯一的 [FillObserver] bean（有 spring-tx 时的 [TransactionalFillObserver]）时用它门控与记录写事务内的回源。
      * `cocache.metrics.local-hits=true` 时记录 L2 命中数（默认关闭，见 `CacheRuntime.Builder.recordLocalHits`）。
      */
     @Bean(destroyMethod = "close")
@@ -126,6 +130,7 @@ class CoCacheAutoConfiguration {
         backend: CoherenceBackend,
         clock: ObjectProvider<CacheClock>,
         loadObserver: ObjectProvider<LoadObserver>,
+        fillObserver: ObjectProvider<FillObserver>,
         properties: CoCacheProperties,
         beanFactory: ListableBeanFactory,
         environment: Environment,
@@ -134,6 +139,7 @@ class CoCacheAutoConfiguration {
             .recordLocalHits(environment.getProperty(LOCAL_HITS_PROPERTY, Boolean::class.java, false))
         clock.ifUnique?.let { builder.clock(it) }
         loadObserver.ifUnique?.let { builder.loadObserver(it) }
+        fillObserver.ifUnique?.let { builder.fillObserver(it) }
         properties.refreshExecutor?.let {
             builder.refreshExecutor(executorBean(beanFactory, REFRESH_EXECUTOR_PROPERTY, it))
         }
@@ -229,8 +235,8 @@ class CoCacheAutoConfiguration {
     }
 
     /**
-     * 启动时检查指向 CoCache 缓存的 `@Cacheable` 是否声明了 `sync = true`（`cocache.spring-cache.require-sync`）。
-     * 没有 `@EnableCaching`（没有 `CacheOperationSource`）时什么也不做。
+     * 启动时检查指向 CoCache 缓存的 `@Cacheable` 是否声明了 `sync = true`（`cocache.spring-cache.require-sync`），
+     * 指向不是派生副本 `Cache` 的缓存的操作一律启动失败。没有 `@EnableCaching`（没有 `CacheOperationSource`）时什么也不做。
      */
     @Bean
     @ConditionalOnBean(CacheRuntime::class)
@@ -238,9 +244,12 @@ class CoCacheAutoConfiguration {
         runtime: CacheRuntime,
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
-    ): SmartInitializingSingleton = SpringCacheSyncCheck(beanFactory, properties.springCache.requireSync) {
-        runtime.cacheNames + CacheBeanDefinitions.declaredCacheNames(beanFactory)
-    }
+    ): SmartInitializingSingleton = SpringCacheSyncCheck(
+        beanFactory,
+        properties.springCache.requireSync,
+        { runtime.cacheNames + CacheBeanDefinitions.declaredCacheNames(beanFactory) },
+        { SpringCacheSyncCheck.underivedCacheNames(runtime, beanFactory) },
+    )
 
     /**
      * 有权威副本（`Store`、`VersionedStore`、`SetStore`，含尚未创建的声明）时检查 Redis 的 `maxmemory-policy` 会不会驱逐唯一副本
@@ -268,6 +277,19 @@ class CoCacheAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean
         fun cocacheTransactionalInvalidator(): TransactionalInvalidator = TransactionalInvalidator()
+
+        /**
+         * 写事务内回源的门控与记录（RFC 0005 §4.9，`cocache.invalidate-fills-on-rollback`、`cocache.fill-in-transaction`），
+         * 由 `cocacheRuntime` 取用。两个机制都关闭时为 [FillObserver.NONE]（不门控、不记录，事务中的 leader 也照常共享结果）。
+         */
+        @Bean
+        @ConditionalOnMissingBean(FillObserver::class)
+        fun cocacheFillObserver(properties: CoCacheProperties): FillObserver {
+            if (!properties.invalidateFillsOnRollback && properties.fillInTransaction == FillInTransaction.ALLOW) {
+                return FillObserver.NONE
+            }
+            return TransactionalFillObserver(properties.invalidateFillsOnRollback, properties.fillInTransaction)
+        }
     }
 
     companion object {

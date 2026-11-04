@@ -141,7 +141,7 @@ public void rename(String id, String name) {
 :::
 
 - Invalidations of one cache within one transaction are merged into a single `invalidateAll`, deduplicated, in order.
-- On rollback, the registered keys are invalidated too. The loader runs on your thread and joins the transaction, so a read after your write may already have put the uncommitted row in Redis, where every instance would read it until `ttl`. An extra invalidation is harmless.
+- On rollback, the registered keys are invalidated too. The loader runs on your thread and joins the transaction, so a read after your write may already have put the uncommitted row in Redis, where every instance would read it until `ttl`. An extra invalidation is harmless. Loads inside the transaction are also invalidated on rollback even when nothing registered them, and a registered key loads privately for the rest of the transaction. See [Spring Cache](./spring-cache.md#transactional-loads).
 - On a rollback to a savepoint (a `NESTED` transaction), every key registered so far is invalidated at once and again when the transaction ends. Spring doesn't report that rollback to `afterCompletion`, so an uncommitted row loaded inside the nested part would otherwise stay visible to every instance, including the outer transaction, until the outer transaction ends.
 - A `REQUIRES_NEW` inner transaction invalidates when it ends.
 - Late registrations are not lost. One made in another synchronization's `afterCommit` runs right away, or in `afterCompletion` if it is the transaction's first. In `afterCompletion` itself, for example in an `@TransactionalEventListener(AFTER_COMMIT)`, it invalidates immediately.

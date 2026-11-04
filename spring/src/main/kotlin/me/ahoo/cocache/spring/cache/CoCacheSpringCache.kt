@@ -44,6 +44,9 @@ import org.springframework.cache.Cache as SpringCache
  * - 本类不推迟任何操作：事务内的 `put` / `evict` 由 [me.ahoo.cocache.spring.tx.TransactionAwareSpringCache] 推迟与登记。
  * - [retrieve] 经缓存的异步视图（RFC 0004 §6）：L2 命中返回已完成的 future，未命中不占用任何线程等待；
  *   `sync = true` 的方法体在 [executor] 上执行。
+ * - `Lookup.Unknown`（L1 故障，RFC 0005 §4.1 U5）：[get] 与 [retrieve] 一致，以它的 [me.ahoo.cocache.api.CacheReadException]
+ *   失败，由 Spring 交给 `CacheErrorHandler`（`retrieve` 的 future 与响应式路径同样如此）；缓存声明 `unknownRead = ABSENT` 时
+ *   引擎已把它换算为不存在，视为未命中。
  */
 class CoCacheSpringCache(
     private val cache: Cache<Any, Any>,
@@ -65,13 +68,7 @@ class CoCacheSpringCache(
     /**
      * `Lookup.Unknown`（L1 故障，RFC 0005 §4.1）以它的 [me.ahoo.cocache.api.CacheReadException] 抛出，交给 Spring 的 `CacheErrorHandler`。
      */
-    override fun get(key: Any): SpringCache.ValueWrapper? {
-        return when (val lookup = cache.lookup(key)) {
-            is Lookup.Present -> SimpleValueWrapper(lookup.value)
-            is Lookup.Absent -> null
-            is Lookup.Unknown -> throw lookup.error
-        }
-    }
+    override fun get(key: Any): SpringCache.ValueWrapper? = wrapperOf(cache.lookup(key))
 
     override fun <T : Any> get(key: Any, type: Class<T>?): T? {
         val value = get(key)?.get() ?: return null
@@ -143,15 +140,21 @@ class CoCacheSpringCache(
 
     /**
      * 经异步视图读取：命中（含负缓存视为未命中，以 `null` 完成）不切换线程；未命中经引擎回源，不阻塞任何线程。
+     * `Lookup.Unknown` 与 [get] 一样以 [me.ahoo.cocache.api.CacheReadException] 失败，不当作未命中。
      */
+    @Suppress("TooGenericExceptionCaught")
     override fun retrieve(key: Any): CompletableFuture<*>? {
         // 不用 thenApply：它会把失败包成 CompletionException，调用方应看到原始异常
         val result = CompletableFuture<SpringCache.ValueWrapper?>()
         attempt { cache.async().lookup(key) }.whenComplete { lookup, error ->
             if (error != null) {
                 result.completeExceptionally(unwrap(error))
-            } else {
-                result.complete((lookup as? Lookup.Present)?.let { SimpleValueWrapper(it.value) })
+                return@whenComplete
+            }
+            try {
+                result.complete(wrapperOf(lookup))
+            } catch (e: Exception) {
+                result.completeExceptionally(e)
             }
         }
         return result
@@ -199,6 +202,15 @@ class CoCacheSpringCache(
             }
         }
         return result
+    }
+
+    /**
+     * [get] 与 [retrieve] 共用的换算（U5）：不存在（含负缓存）为 `null`；`Unknown` 抛出它的 [me.ahoo.cocache.api.CacheReadException]。
+     */
+    private fun wrapperOf(lookup: Lookup<Any>): SpringCache.ValueWrapper? = when (lookup) {
+        is Lookup.Present -> SimpleValueWrapper(lookup.value)
+        is Lookup.Absent -> null
+        is Lookup.Unknown -> throw lookup.error
     }
 
     private fun unwrap(error: Throwable): Throwable {

@@ -91,6 +91,29 @@ internal class SingleFlight<K : Any, R : Any>(
         }
     }
 
+    /**
+     * 不经合并的加载（私有回源，RFC 0005 §4.9 机制 2）：不注册调用，其间本线程对这些 key 的调用快速失败（同 [loading]）。
+     * 本线程已在为其中的 key 加载（领头的同步调用，或外层的私有加载）时立即失败，而不是无限递归。
+     * 只供同步变体使用：[block] 的每一步都在当前线程上执行（`runBlocking` 的事件循环），线程局部的标记因此成立。
+     */
+    suspend fun <T> loadingPrivately(keys: Collection<K>, block: suspend () -> T): T {
+        val current = loadingKeys.get() ?: HashSet<K>(keys.size).also { loadingKeys.set(it) }
+        val added = ArrayList<K>(keys.size)
+        try {
+            for (key in keys) {
+                calls[key]?.let { checkNotReentrant(key, it) }
+                check(current.add(key)) { "Recursive call on the same key[$key] is not supported." }
+                added += key
+            }
+            return block()
+        } finally {
+            current.removeAll(added.toSet())
+            if (current.isEmpty()) {
+                loadingKeys.remove()
+            }
+        }
+    }
+
     private fun register(keys: Collection<K>, owner: Thread?, led: MutableMap<K, Call<R>>, joined: MutableMap<K, Call<R>>) {
         for (key in keys) {
             if (led.containsKey(key) || joined.containsKey(key)) {

@@ -58,6 +58,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     private val typeMismatchAdder = LongAdder()
     private val unknownReadAdder = LongAdder()
     private val unversionedAbsentRefusedAdder = LongAdder()
+    private val fillGatedAdder = LongAdder()
 
     /**
      * 由 L2（本地副本）直接返回的读取数：未过期的本地副本，含负缓存与进入刷新窗口的副本。
@@ -128,6 +129,12 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
      */
     val unversionedAbsentRefusals: Long get() = unversionedAbsentRefusedAdder.sum()
 
+    /**
+     * 写事务内的私有回源（RFC 0005 §4.9 机制 2，`fill-in-transaction`）按 key 计的次数：不申请 lease、不写 L1 与 L2、
+     * 不经 SingleFlight 共享。每次另计入 [misses] 与 [loads]。
+     */
+    val fillsGated: Long get() = fillGatedAdder.sum()
+
     internal fun localHit() = localHitAdder.increment()
     internal fun remoteHit() = remoteHitAdder.increment()
     internal fun miss() = missAdder.increment()
@@ -162,4 +169,5 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     internal fun typeMismatch() = typeMismatchAdder.increment()
     internal fun unknownRead() = unknownReadAdder.increment()
     internal fun unversionedAbsentRefused() = unversionedAbsentRefusedAdder.increment()
+    internal fun fillGated(keys: Int) = fillGatedAdder.add(keys.toLong())
 }
