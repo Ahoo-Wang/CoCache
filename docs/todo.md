@@ -81,6 +81,15 @@ M4 拆成（架构会话，2026-11-03；设计见 RFC 0005 §4.3、§4.7、§8�
 
 M7 的先行切片（与 M4 并行，不依赖 M5 的类型，也不碰 core 的未命中路径）：M7a `feat(spring)!: replace TransactionAwareCacheManagerProxy with a CoCache transaction decorator`：starter 的事务装饰器（U3）、`afterCommit` 的异常交给 `CacheErrorHandler` 与可选的放行处理器（S18）、两种通知 order 相同时告警（S19）、`@CacheEvict(allEntries = true)` 保持 `clearLocal` 并告警（U19）。进行中。
 
+M5 拆成（架构会话，2026-11-03；维护者对 S21、`Lookup.fold` 与挂起视图的决定见 RFC 0005 §12“M5 之前”）。M5a 是关键路径；它合并之后，M5c、M5d、M6、M7b 并行：
+
+| 切片 | PR 标题 | 内容 | 依赖 |
+|------|---------|------|------|
+| M5a | `feat!: split the user API into Cache, VersionedCache, Store, VersionedStore and SetStore` | 类型（V1–V3）与同构的异步、挂起视图（接口在 `cocache-api`，`suspending()`；挂起视图暂经异步视图适配；删除 `cocache-coroutines`）；每种类型一个 spec 与 `externallySourced()`；`Lookup.Unknown`、`valueOrThrow`、`unknownRead`、`getAll` 的部分 `Unknown`、`lookupAll`；`Store` 的删除不重试、`CacheWriteException.outcomeUnknown`；类型默认值（D7）；带版本数据源的删除（K16）；结束“M5 之前的临时规则”；`JoinView` / `JoinCache` | M4 |
+| M5b | `feat!: deliver encoded keys to invalidation listeners and bound reads per cache` | `InvalidationListener` 收到编码 key、`keyPrefix` 为空时告警（S4）；按缓存的读超时接入引擎（D6，配置键随 M6）；被取消的写入是否整体 `NonCancellable`（K18）；`ExternalInvalidator` 只广播的方法 | 与 M5a 并行 |
+| M5c | `feat(core)!: run suspending views natively on the coroutine core` | 挂起视图直接调用核心：元素取自调用方、调度器取自运行时、从不在后端的完成线程上恢复（K2、K6）；重入守卫的上下文元素（K7） | M5a |
+| M5d | `feat!: add CoCacheFactory` | `CoCacheFactory.create(type, spec)` 校验 `type` 是接口；starter 与库经它创建缓存；“未分层”标注的前提（S20，M6） | M5a |
+
 | 里程碑 | 要做什么 | 验收 |
 |--------|----------|------|
 | M1 协程核心 | 在现有用户 API 与 SPI 之下把协议改写为一份 `suspend` 实现（同步经 `runBlocking`、异步经 `future(UNDISPATCHED)`）；然后删除引擎中的异步分支、`Futures` 的续接、定时器与许可等待队列；`kotlinx-coroutines-core` 进入 core，AGENTS.md 的依赖规则同步修改 | 同步 TCK 与 `Async*` TCK 的语义用例全绿，线程模型用例按新模型重写；L2 命中不退化；同步变体的 L1 命中、未命中退化 ≤ 3%；异步 8 线程闭环不低于 6.10 的 90% |
