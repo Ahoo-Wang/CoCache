@@ -133,7 +133,7 @@ TCK 以 latch 编排的交错是本项目的优势。但 A.D4、A.R1，以及第
 ### 3.1 用户 API 的类型
 
 ```
-ReadableCache<K, V>             name、get、getAll、lookup、lookupAll、async()
+ReadableCache<K, V>             name、get、getAll、lookup、lookupAll、async()、suspending()
 ├── Cache<K, V>                 派生副本：get(k, loader)、put、putAll、invalidate、invalidateAll
 ├── VersionedCache<K, V>        派生的带版本副本：getVersioned、putIfNewer、invalidateIfNewer、evict、purge
 ├── Store<K, V>                 权威副本：put、putAll、delete、deleteIfMatch、getIfChanged、putIfMatch
@@ -141,8 +141,8 @@ ReadableCache<K, V>             name、get、getAll、lookup、lookupAll、async
 └── SetStore<K, E>              权威集合（ReadableCache<K, Set<E>>）：add、remove、clear、put、putAll
 ```
 
-- 每个接口只声明它支持的操作，全部是抽象方法。异步视图与挂起视图有同构的层次，与同步 API 一起由同一份协程实现提供（§4.4）；挂起视图是 core 的原生 API（`cocache-coroutines` 并入 core）。带版本的类型不继承无版本的写入。
-- `Lookup` = `Present` | `Absent` | `Unknown`（V2，§4.1），另有 `valueOrThrow(): V?`（`Unknown` 时抛出 `CacheReadException`）与 `fold(onPresent, onAbsent, onUnknown)`，供不便穷尽匹配的调用方使用（JDK 17 没有对 sealed 类型的穷尽 `switch`）。
+- 每个接口只声明它支持的操作，全部是抽象方法。异步视图与挂起视图有同构的层次，与同步 API 一起由同一份协程实现提供（§4.4）。挂起视图的接口（`SuspendingCache`、`SuspendingStore` 等）在 `cocache-api` 中，经抽象的 `suspending()` 取得，与 `async()` 对称：`suspend` 只依赖标准库，`cocache-api` 仍没有运行时依赖；实现在 core，`cocache-coroutines` 模块删除（维护者，2026-11-03）。带版本的类型不继承无版本的写入。
+- `Lookup` = `Present` | `Absent` | `Unknown`（V2，§4.1），另有 `valueOrThrow(): V?`（`Unknown` 时抛出 `CacheReadException`）。基线 JDK 21 的 Java 可以对 sealed 类型穷尽 `switch`，所以没有 `fold`（维护者，2026-11-03）。
 - spec 与返回类型一一对应：
   - `cacheSpec` → `Cache`，必须声明 `loader`、`asyncLoader` 或 `externallySourced()` 之一；
   - `versionedCacheSpec` → `VersionedCache`，必须有带版本的数据源；没有数据源的带版本缓存就是 `VersionedStore`；
@@ -272,7 +272,7 @@ ReadableCache<K, V>             name、get、getAll、lookup、lookupAll、async
 
   需要后端支持的新能力，走 SPI 的能力访问器。用户 API 的接口区分两种用法（S21）：
   - **声明接口**：继承用户 API 接口、由代理实现的接口（`@CoCache` 接口、CoSec 的 `RevokedTokenCache : Cache`），允许继承，新增的方法由代理实现。`CoCacheFactory.create(type, spec)` 校验 `type` 是接口。
-  - **手写实现**：实现这些接口的类，需要 opt-in，文档注明“不供用户实现，委托除外”。否则按 8.0 编译的委托类（如 CoSec 的 `PolicySnapshotCache : Cache by delegate`）会在调用新方法时抛出 `AbstractMethodError`。Kotlin 的 `@SubclassOptInRequired` 对继承的接口同样要求 opt-in，Java 也看不到它，所以只对类要求 opt-in 的机制在 M5 定。
+  - **手写实现**：实现这些接口的类，需要 opt-in，文档注明“不供用户实现，委托除外”。否则按 8.0 编译的委托类（如 CoSec 的 `PolicySnapshotCache : Cache by delegate`）会在调用新方法时抛出 `AbstractMethodError`。Kotlin 的 `@SubclassOptInRequired` 对继承的接口同样要求 opt-in，Java 也看不到它。决定（维护者，2026-11-03）：不加 opt-in 机制，靠 U13 保证委托类不会遇到 `AbstractMethodError`，KDoc 与文档注明“不供用户实现，委托除外”。
 
 ### 4.3 SPI（V4）
 
@@ -1212,6 +1212,14 @@ M4 冻结格式之前，v5 由两路独立的只读会话验证：
 | 下游 | CoSec 尚未发布正式版，没有兼容负担：§8 的下游只写适配，不写升级与数据迁移 | S2 的摘要迁移；§8 中 CoSec 的切换与撤销窗口 |
 
 D5 的其余部分（namespace 字符集、内部 key 的位置、`keyPrefix` 为空时告警）、K8 与 D3 不变。
+
+### M5 之前：维护者决定（2026-11-03）
+
+| 问题 | 决定 |
+|------|------|
+| 手写实现的 opt-in（S21） | 不加机制；U13 保证委托类不会遇到 `AbstractMethodError`，文档注明“不供用户实现，委托除外” |
+| `Lookup.fold` | 删除：基线 JDK 21 的 Java 能对 sealed 类型穷尽 `switch`，保留理由（JDK 17）不再成立；只留 `valueOrThrow()` |
+| 挂起视图 | 接口在 `cocache-api`，经抽象的 `suspending()` 取得，与 `async()` 对称；实现在 core；删除 `cocache-coroutines` 模块 |
 
 ## 附录 A：6.8.0 架构审查发现（2026-10-28）
 
