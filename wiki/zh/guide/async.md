@@ -58,7 +58,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 ## 超时 {#timeouts}
 
-- 等待别的调用方加载的读取（同步与异步）最多等到这次加载进行了 `load-timeout`，然后以 `SourceLoadTimeoutException` 失败；在那之后到来的读取开始新的加载，不再合并到卡住的那次。6.x 中同步读取会一直等下去。
+- 等待别的调用方加载的读取（同步与异步）最多等到这次加载进行了 `load-timeout`，然后以 `SourceLoadTimeoutException` 失败；在那之后到来的读取开始新的加载，不再合并到卡住的那次。
 - 一次 `AsyncCacheLoader` 加载最多 `load-timeout`（默认 30 秒）。超时后调用以 `SourceLoadTimeoutException` 失败，释放 lease，并计入 `cocache.load.timeouts`。CoCache 不取消你的 loader 的 future，迟到的结果被丢弃。你的 loader 自己抛出的 `TimeoutException`（例如来自 Reactor 的 `timeout`）原样传递。
 - 每条 Redis 命令受 `cocache.redis.command-timeout`（默认 2 秒）约束，失败时与同步路径一样是 `RedisException`。计时器是 Lettuce 的时间轮，异步超时最多晚一个刻度（默认 100 毫秒）触发。
 - 同步 loader 没有异步超时：阻塞的线程无法被打断。
@@ -73,11 +73,11 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 ## Spring Cache {#spring-cache}
 
-`retrieve(key)` 与 `retrieve(key, loader)` 经异步视图，所以异步与响应式的 `@Cacheable(sync = true)` 方法经受 lease 保护的路径回源，等待时不占用线程；方法体在阻塞执行器上执行。原来的 `cocache.spring-cache.retrieve-executor` 已弃用并被忽略，见 [Spring Cache](./spring-cache.md#executor)。
+`retrieve(key)` 与 `retrieve(key, loader)` 经异步视图，所以异步与响应式的 `@Cacheable(sync = true)` 方法经受 lease 保护的路径回源，等待时不占用线程，也不需要单独的执行器；方法体在阻塞执行器上执行。见 [Spring Cache](./spring-cache.md#executor)。
 
 ## Kotlin 协程 {#coroutines}
 
-可选模块 `cocache-coroutines`（6.4+）提供挂起视图 `cache.suspending()` 与 `SuspendingCacheLoader`，见 [Kotlin 协程](./coroutines.md)。不用它时，`kotlinx.coroutines.future.await()` 适用于异步视图返回的每个 future，并抛出原始异常。
+可选模块 `cocache-coroutines` 提供挂起视图 `cache.suspending()` 与 `SuspendingCacheLoader`，见 [Kotlin 协程](./coroutines.md)。不用它时，`kotlinx.coroutines.future.await()` 适用于异步视图返回的每个 future，并抛出原始异常。
 
 ## 运维 {#operations}
 
@@ -88,4 +88,4 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 ## 自定义后端 {#backends}
 
-8.0 的 L1 SPI 是挂起的：后端的存储是 `L1Store`，失效通道以 `suspend` 函数发布。两种视图调用同一个存储，等待 Redis 应答时都不占线程。Java 后端实现 `FutureL1Store` 与 `FutureInvalidationChannel`，经 `FutureL1Store.adapt` 与 `FutureInvalidationChannel.adapt` 适配。只实现阻塞的 `RemoteStore` 的存储不再可用。用 `BackendProtocolSpec` 与各引擎套件检验后端；还想经异步视图运行某个套件时，覆盖 `access = CacheAccess.ASYNC`。约定见[扩展](../architecture/extending.md#l1-store)，完整的 SPI 变化见[更新日志](./changelog.md)。
+L1 SPI 是挂起的：后端的存储是 `L1Store`，失效通道以 `suspend` 函数发布。两种视图调用同一个存储，等待 Redis 应答时都不占线程。Java 后端实现 `FutureL1Store` 与 `FutureInvalidationChannel`，经 `FutureL1Store.adapt` 与 `FutureInvalidationChannel.adapt` 适配。用 `BackendProtocolSpec` 与各引擎套件检验后端；还想经异步视图运行某个套件时，覆盖 `access = CacheAccess.ASYNC`。约定见[扩展](../architecture/extending.md#l1-store)，完整的 SPI 变化见[更新日志](./changelog.md)。

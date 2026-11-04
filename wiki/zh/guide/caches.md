@@ -261,7 +261,7 @@ val members: Set<String> = online[roomId] // 不存在时为空集合
 - **`put(key, emptySet())` 等同于 `clear(key)`**：空集合不保留 key。`putAll` 对每一项遵循同样的规则（[批量写入](./freshness.md#batch-writes)）。
 - **TTL 默认永不过期。** 设置了 TTL 时，每次 `add` 或 `remove` 都会重设到期时间。
 - **故障会显式暴露。** 写入抛出 `CacheWriteException`（它们是幂等的，可以重试）。读取直接抛出 Redis 错误，因为没有数据源可以降级。
-- **读不懂的内容会抛出。** 元素无法解码时读取抛出异常，更高格式写入的集合抛出 `IllegalStateException`。不是 CoCache 8.x 写入的内容（比如 5.x 在同一个 key 上留下的 Redis 原生 Set，或 CoCache 6.x 写入的集合）使读取抛出 `CacheReadException`；在它或更高格式写入的集合上调用 `add` / `remove` 抛出 `CacheWriteException`，key 不变，只有 `put` 会整体覆盖它。集合缓存从不回收这样的内容，因为回收唯一副本就是删除它（见[从 5.x 升级](./migration-6.md#foreign-format)）。
+- **读不懂的内容会抛出。** 元素无法解码时读取抛出异常，更高格式写入的集合抛出 `IllegalStateException`。本版本读不懂的格式的内容（比如同一个 key 上的 Redis 原生 Set，或更低格式的集合）使读取抛出 `CacheReadException`；在它或更高格式写入的集合上调用 `add` / `remove` 抛出 `CacheWriteException`，key 不变，只有 `put` 会整体覆盖它。集合缓存从不回收这样的内容，因为回收唯一副本就是删除它（见[无法读取的载荷](../operations/troubleshooting.md#corrupt-payloads)）。
 - **持久性等于 Redis 的持久性。** `maxmemory-policy` 不能淘汰没有 TTL 的 key（不要用 `allkeys-*`）。异步复制下的故障切换可能丢失最近的写入。
 
 如果集合的权威数据在数据库中，不要用 `SetCache`。声明为 `Cache<K, Set<E>>`，更新数据库后 `invalidate`。
@@ -302,6 +302,6 @@ CoCache 宁可启动失败，也不运行一个无法按声明工作的缓存。
 | `refreshWindow` 不小于 `ttl − ttlJitter`（按实际抖动计算），或不小于 `localMaxAge` | 新副本一出生就在窗口内，每次命中都会触发刷新 |
 | 缓存名、前缀与 namespace 的组合或 bean 名重复 | 两个缓存会共享 key 或失效消息 |
 | namespace 不符合 `[A-Za-z0-9._-]+`，例如含 `:` | 它的 key 可能落进另一个 namespace 的范围；把前缀移到 `keyPrefix` |
-| `cocache.caches.[name]` 指向不存在的缓存，或使用了旧大版本中不再支持的配置名（见[从 5.x 升级](./migration-6.md#properties)） | 几乎总是拼写错误；见[配置参考](./configuration.md#validation) |
+| `cocache.caches.[name]` 指向不存在的缓存 | 几乎总是拼写错误；见[配置参考](./configuration.md#validation) |
 
 key 类型的 `toString()` 检查发生在每种 key 类型第一次读取时，而不是启动时。

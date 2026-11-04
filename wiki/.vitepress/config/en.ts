@@ -26,7 +26,6 @@ const guide: DefaultTheme.SidebarItem[] = [
   {
     text: 'Releases',
     items: [
-      { text: 'Upgrading from 5.x', link: '/guide/migration-6' },
       { text: 'Changelog', link: '/guide/changelog' },
     ],
   },

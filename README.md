@@ -60,7 +60,7 @@ fun userSpec(repo: UserRepository): CacheSpec<String, User> = cacheSpec("user") 
 }
 ```
 
-The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each step. Coming from 5.x? Read [Upgrading from 5.x](https://cocache.ahoo.me/guide/migration-6).
+The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each step.
 
 ## Features
 
@@ -72,7 +72,7 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 - **Batch reads.** `getAll` reads L1 in about one round trip and calls `CacheLoader.loadAll` once.
 - **`SetCache`.** Atomic element add and remove for sets whose only copy is Redis.
 - **`JoinCache`.** A read-only view that joins two caches (for example an order and its user) with two batch reads, declared with `@JoinCacheable`.
-- **Async API and coroutines.** `cache.async()` returns `CompletableFuture`s on the same cache without parking a thread (6.3), and the optional `cocache-coroutines` module adds `cache.suspending()` and `SuspendingCacheLoader` (6.4).
+- **Async API and coroutines.** `cache.async()` returns `CompletableFuture`s on the same cache without parking a thread, and the optional `cocache-coroutines` module adds `cache.suspending()` and `SuspendingCacheLoader`.
 - **Spring Cache and transactions.** `@Cacheable` through `CoCacheSpringCacheManager`, and `TransactionalInvalidator` to invalidate after commit.
 - **Observability.** Micrometer metrics, a `cocache` health indicator, and the `cocache` actuator endpoint, which can inspect or invalidate a single key.
 - **Local development without Redis.** `cocache.backend: memory` runs caches in process for tests and local runs.
@@ -91,11 +91,11 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 | You want to… | Read |
 |--------------|------|
 | Use CoCache | [Guide](https://cocache.ahoo.me/guide/): why CoCache, quick start, how it works, declaring caches, keeping data fresh, JoinCache, Spring Cache, testing, configuration reference |
-| Upgrade from 5.x | [Upgrading from 5.x](https://cocache.ahoo.me/guide/migration-6) and the [changelog](https://cocache.ahoo.me/guide/changelog) |
+| Upgrade | [Upgrading from 6.x](https://cocache.ahoo.me/guide/changelog#upgrading-from-6x) in the [changelog](https://cocache.ahoo.me/guide/changelog) |
 | Run it in production | [Operations](https://cocache.ahoo.me/operations/): deployment, observability, troubleshooting |
 | Understand or extend it | [Architecture](https://cocache.ahoo.me/architecture/): design, consistency, SPI and TCK |
 | Change CoCache itself | [`CONTRIBUTING.md`](CONTRIBUTING.md), then [`docs/architecture.md`](docs/architecture.md) |
-| Work on it as an AI agent | [`AGENTS.md`](AGENTS.md) to change CoCache itself; the [agent skills](skills/README.md) (`cocache-develop`, `cocache-migrate`, `cocache-extend`) for applications that use it |
+| Work on it as an AI agent | [`AGENTS.md`](AGENTS.md) to change CoCache itself; the [agent skills](skills/README.md) (`cocache-develop`, `cocache-extend`) for applications that use it |
 
 ## Contributing
 

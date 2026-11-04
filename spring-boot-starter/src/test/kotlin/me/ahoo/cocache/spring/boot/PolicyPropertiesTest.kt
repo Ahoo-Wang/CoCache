@@ -127,7 +127,7 @@ class PolicyPropertiesTest {
     }
 
     /**
-     * 带版本的缓存不支持提前刷新（6.8）：`cocache.defaults.refresh-window` 不作用于它们，其它默认项照常生效；
+     * 带版本的缓存不支持提前刷新：`cocache.defaults.refresh-window` 不作用于它们，其它默认项照常生效；
      * 只有显式的 `cocache.caches.[name].refresh-window` 作用于它，并因此启动失败。
      */
     @Test

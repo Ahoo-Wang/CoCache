@@ -57,7 +57,7 @@ A `SetCache` is different: Redis holds its only copy, so its durability is Redis
 | Only `Cache` | Any. `allkeys-lru` or `allkeys-lfu` turn Redis into a bounded cache. | An evicted value or negative entry is a miss. An evicted lease means the loader's fill is rejected, and the value stays in that instance's L2 for `degraded-local-max-age`. Nothing goes stale. |
 | Any `SetCache` | `noeviction`, or a `volatile-*` policy | Redis holds the set's only copy, so `allkeys-*` would silently lose members. `SetCache` keys have no expiry by default, so `volatile-*` never evicts them. A `SetCache` given a finite `ttl` can still be evicted under `volatile-*`. |
 
-At startup, if any `SetCache` is declared (created or still lazy), CoCache reads every primary's policy from `INFO memory`. It doesn't need `CONFIG`, which managed services often block. It warns on `allkeys-*`, or stops startup with `cocache.redis.set-cache-eviction-check: fail` (`off` skips the check). Under `volatile-*` it warns about each `SetCache` with a finite `ttl`. If the Redis user can't run `INFO`, the check uses `cocache.redis.assume-maxmemory-policy`. Without that setting it warns, or stops startup in `fail` mode, rather than skipping the check silently. Up to 6.9.1 the check read `CONFIG GET` and skipped silently when that failed, and it skipped `SetCache` beans that weren't created yet.
+At startup, if any `SetCache` is declared (created or still lazy), CoCache reads every primary's policy from `INFO memory`. It doesn't need `CONFIG`, which managed services often block. It warns on `allkeys-*`, or stops startup with `cocache.redis.set-cache-eviction-check: fail` (`off` skips the check). Under `volatile-*` it warns about each `SetCache` with a finite `ttl`. If the Redis user can't run `INFO`, the check uses `cocache.redis.assume-maxmemory-policy`. Without that setting it warns, or stops startup in `fail` mode, rather than skipping the check silently.
 
 When Redis reaches `maxmemory` under `noeviction`:
 
@@ -128,7 +128,7 @@ Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY U
 
 ## Rolling deploys {#rolling-deploys}
 
-The wire format (key layout, value header and its segments, set fields, message frame, channel names) is frozen within a major version, so instances of one major version can run side by side. A major upgrade is not rolling: stop 6.x before you start 8.x ([Upgrading from 6.x](../guide/changelog.md#upgrading-from-6x)). 8.x can't read 6.x values: after the upgrade, caches with a loader reload them, and caches without one fail on them. A later must-understand change ships in two phases: first a release that reads it but doesn't write it, then, once every instance runs it, a release that writes it. While instances disagree, a value an instance can't read in full is loaded from the source without overwriting it (`cocache.unknown.formats`).
+The wire format (key layout, value header and its segments, set fields, message frame, channel names) is frozen within a major version, so instances of one major version can run side by side. A major upgrade is not rolling: stop every instance of the old major version before you start the new one ([upgrade steps](../guide/changelog.md#upgrading-from-6x)). Values in a format this version can't read are reloaded by caches with a loader and fail the read in caches without one. A later must-understand change ships in two phases: first a release that reads it but doesn't write it, then, once every instance runs it, a release that writes it. While instances disagree, a value an instance can't read in full is loaded from the source without overwriting it (`cocache.unknown.formats`).
 
 Each new instance starts with an empty L2 and fills it from L1, so a deploy shows a burst of `cocache.misses` and `cocache.hits{level=l1}`, not of loads.
 
@@ -150,7 +150,7 @@ Keys under an old prefix or namespace expire with their `ttl`. Delete them earli
 | Storage key | `{keyPrefix}{namespace}:{encodedKey}` | `cocache:UserCache:42` |
 | Channel | `{keyPrefix}inv:{namespace}` | `cocache:inv:UserCache` |
 
-`keyPrefix` defaults to `cocache:` and may be empty, `namespace` defaults to the cache name, and `encodedKey` is the key's `toString()` or its `keyExpression` result. CoCache's internal keys live under `{keyPrefix}!`, which no namespace can produce. See [storage keys](../guide/caches.md#storage-keys). 8.x doesn't share a Redis with 6.x instances: stop 6.x before you start 8.x, as [Upgrading from 6.x](../guide/changelog.md#upgrading-from-6x) describes.
+`keyPrefix` defaults to `cocache:` and may be empty, `namespace` defaults to the cache name, and `encodedKey` is the key's `toString()` or its `keyExpression` result. CoCache's internal keys live under `{keyPrefix}!`, which no namespace can produce. See [storage keys](../guide/caches.md#storage-keys). Instances of different major versions don't share keys: see [rolling deploys](#rolling-deploys).
 
 Several applications can share one Redis:
 
@@ -176,7 +176,7 @@ A starting point, checked against Redis 7.4 by running every CoCache script as t
 ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +getrange +set +del +pttl +type +hgetall +hkeys +hmget +hset +hdel +hlen +pexpire +persist +setrange +time
 ```
 
-8.0 writes wire format 2. Its scripts read a set's format fields with `HMGET` and read only the 36-byte header with `GETRANGE` when they write back or release a token. Add `+hmget +getrange` to an existing user before you upgrade, or reads and fills fail with an ACL error, worded differently across Redis versions. `HGET` and `HEXISTS` are no longer used. Keep `HGETALL`: conditional reclaim still uses it.
+The scripts read a set's format fields with `HMGET`, read only the 36-byte header with `GETRANGE` when they write back or release a token, and use `HGETALL` for conditional reclaim. A user that lacks a command the scripts call fails reads and fills with an ACL error, worded differently across Redis versions.
 
 Creating a cache publishes one empty frame to the cache's channel, the way its writes will. If the ACL denies that channel, creation fails with an `IllegalStateException` that names the pattern to allow, for example `[&cocache:inv:*]`. Otherwise every later write would change Redis and then fail at its broadcast, and other instances would stay stale until `local-max-age`.
 

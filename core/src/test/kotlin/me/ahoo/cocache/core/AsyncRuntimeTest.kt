@@ -23,10 +23,8 @@ import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 /**
@@ -58,11 +56,11 @@ class AsyncRuntimeTest {
     @Test
     fun defaultExecutorsAreOwnedAndNamed() {
         val runtime = CacheRuntime.builder().backend(InMemoryBackend()).build()
-        val loadedOn = CompletableFuture<String>()
+        val loadedOn = CompletableFuture<Thread>()
         val cache = runtime.create(
             spec {
                 loader = CacheLoader { key ->
-                    loadedOn.complete(Concurrency.currentThreadName())
+                    loadedOn.complete(Thread.currentThread())
                     key
                 }
             }
@@ -70,8 +68,8 @@ class AsyncRuntimeTest {
         val completedOn = CompletableFuture<String>()
         cache.async().get("k").whenComplete { _, _ -> completedOn.complete(Concurrency.currentThreadName()) }
             .get(10, TimeUnit.SECONDS).assert().isEqualTo("k")
-        // 同步数据源只在阻塞执行器上执行
-        loadedOn.join().assert().doesNotStartWith("cocache-async")
+        // 同步数据源只在阻塞执行器上执行：默认每个任务一个虚拟线程
+        loadedOn.join().isVirtual.assert().isTrue()
         runtime.close()
         // 关闭后自建的执行器停止：异步加载以拒绝失败
         cache.async().get("other").handle { _, e -> e }.get(10, TimeUnit.SECONDS)
@@ -104,23 +102,6 @@ class AsyncRuntimeTest {
             async.shutdownNow()
             blocking.shutdownNow()
         }
-    }
-
-    @Test
-    fun platformBlockingExecutorRejectsInsteadOfRunningOnTheCaller() {
-        val executor = CacheRuntime.defaultBlockingExecutor { null } as ThreadPoolExecutor
-        try {
-            executor.maximumPoolSize.assert().isEqualTo(CacheRuntime.MAX_BLOCKING_THREADS)
-            executor.rejectedExecutionHandler.assert().isInstanceOf(ThreadPoolExecutor.AbortPolicy::class.java)
-            executor.submit<String> {
-                Concurrency.currentThreadName()
-            }.get(10, TimeUnit.SECONDS).assert().startsWith("cocache-blocking")
-        } finally {
-            executor.shutdownNow()
-        }
-        val virtual: ExecutorService = Executors.newSingleThreadExecutor()
-        CacheRuntime.defaultBlockingExecutor { virtual }.assert().isSameAs(virtual)
-        virtual.shutdownNow()
     }
 
     @Test

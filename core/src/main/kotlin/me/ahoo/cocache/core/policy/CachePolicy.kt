@@ -188,11 +188,11 @@ data class LeasePolicy @JvmOverloads constructor(
  * @param timeout 一次加载的上限（RFC 0005 §4.4），超过它以 [me.ahoo.cocache.core.SourceLoadTimeoutException] 失败：
  *   - 异步数据源（`AsyncCacheLoader`）的一次加载：失败并释放 lease 与回源许可；数据源返回的 future 不会被取消，
  *     它可能仍在执行（此时不再计入并发上限），迟到的结果被丢弃。由 JDK 的延迟线程计时（`completeOnTimeout`）；
- *   - 跟随者等待共享的加载（截止时刻是这次加载登记时加上它，全部跟随者共用）：6.x 的同步跟随者无限等待；
+ *   - 跟随者等待共享的加载（截止时刻是这次加载登记时加上它，全部跟随者共用，同步与异步的跟随者都是）；
  *   - 加载在 SingleFlight 中登记超过它时被注销（不被完成）：新的调用方开始新的加载，不再合并到卡住的同步 loader 后面，
  *     迟到的结果只交给原 leader，写回仍受令牌与戳保护。
  *
- *   同步数据源本身无法被外部结束，应自带超时。6.x 的 `asyncTimeout` 并入它
+ *   同步数据源本身无法被外部结束，应自带超时。
  */
 data class LoadPolicy @JvmOverloads constructor(
     val maxConcurrent: Int = 0,

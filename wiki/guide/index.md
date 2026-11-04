@@ -67,11 +67,10 @@ The full list of bounds, including what happens when Redis fails, is in [How It 
 - **One instance, no Redis.** A plain Caffeine cache is simpler.
 - **Values that change on most reads.** The cache will mostly be invalidating, and you pay a write round trip for little benefit.
 - **Very large values** (megabytes). Redis and the network become the bottleneck, and one large value delays other commands on the shared connection.
-- **Reactive or coroutine code that must not block.** CoCache's API is synchronous. It runs well on virtual threads.
 
 ## Requirements {#requirements}
 
-- JDK 17 or newer
+- JDK 21 or newer
 - Redis 7.0 or newer: standalone, Sentinel, or Cluster (static master-replica is not supported)
 - For the starter: Spring Boot 4
 

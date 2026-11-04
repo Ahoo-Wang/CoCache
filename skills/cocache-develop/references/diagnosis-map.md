@@ -19,7 +19,7 @@ Use this map to locate the first incorrect stage before changing anything. Prefe
 | `GET /actuator/health/cocache` | `heartbeat.error`, `channelMode`, `atomicBroadcast`, `pendingInvalidations` |
 | Micrometer `cocache.*` meters (tag `cache`) | Rates over time; L2 hits only with `cocache.metrics.local-hits=true` |
 | Logs | `Invalidation channel heartbeat failed`, `... dropped: L1 keeps the stale value ...`, `corrupted payload, reclaim and reload` |
-| Read-only `redis-cli` | `TYPE`, `PTTL`, `GETRANGE key 2 2` (state byte `V`/`M`/`L`), `PUBSUB NUMSUB cocache:inv:{namespace}`, `CLIENT LIST` with `cocache.redis.client-name` |
+| Read-only `redis-cli` | `TYPE`, `PTTL`, `GETRANGE key 2 2` (state byte `V`/`M`/`L`), `PUBSUB NUMSUB {keyPrefix}inv:{namespace}` (`PUBSUB SHARDNUMSUB` in `sharded` mode), `CLIENT LIST` with `cocache.redis.client-name` |
 
 ## Reading a key inspection
 
@@ -46,6 +46,7 @@ Use this map to locate the first incorrect stage before changing anything. Prefe
 | Several loads per key across instances | `lease.wait.timeouts` vs `lease.waits` | Loader slower than `lease-wait` | Raise `lease-wait`, keep `lease-ttl` above the worst case, or speed up the loader |
 | `pendingInvalidations` above zero, `invalidations.dropped` rising | Redis availability, `ERROR` dropped log | Invalidations cannot reach Redis | Restore Redis; re-invalidate dropped keys; consider `invalidate-failure: throw` |
 | `cocache.reclaims` rising | Inspection `UNREADABLE` | Incompatible value class change, two apps sharing keys with different codecs, foreign writer | New namespace for incompatible changes or dual-format codec; distinct key prefixes |
+| `CacheReadException` (cause `ForeignFormatException`) on a cache without a loader, or on a `SetCache` | Inspection `UNREADABLE` | The key holds content CoCache can't read (wire format 0 or 1, or a native Redis type another program wrote); a cache with a loader reclaims and reloads it, one without leaves the key alone | Find the writer; once authorized, `put` or `invalidate` the key (`put` on a `SetCache`) |
 | `cocache.unknown.formats` rising | Versions of all instances | Some instance writes a newer wire format | Expected during a format rollout; otherwise find the newer instance |
 | `IllegalArgumentException` about `toString()` at first read | The key type | Key type without a meaningful `toString()` | Data class or record, override, `keyExpression` or `KeyEncoder` |
 | `IllegalStateException` on reentrant load | The loader | Loader reads its own cache for the same key | Remove the reentrant read |
@@ -54,7 +55,6 @@ Use this map to locate the first incorrect stage before changing anything. Prefe
 
 | Message (abridged) | Cause |
 |---|---|
-| `CoCache 6.0 removed these properties: ...` | A 5.x property; route to `cocache-migrate` |
 | `cocache.caches configures undeclared caches [x]` | Typo in a cache name under `cocache.caches` |
 | `... must be positive`, `refreshWindow ... must be less than ...` | Invalid policy after all layers; bare numbers are seconds |
 | `@CoCache.<attribute> = FOREVER is not supported` | `FOREVER` outside `ttl`/`expireAfterAccess` |

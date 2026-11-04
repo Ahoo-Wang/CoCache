@@ -141,10 +141,10 @@ Commands are rejected while disconnected, not buffered, and each command waits a
 
 **Cause.** An L1 value couldn't be decoded:
 
-- **Foreign content** (format `0`, or `1` for CoCache 6.x): something other than CoCache 8.x wrote the key, such as CoCache 6.x before the upgrade, an old client, a script, or another application with the same prefix and namespace.
+- **Foreign content** (format `0` or `1`): content CoCache didn't write, or a format this version can't read, for example from a script or another application with the same prefix and namespace.
 - **Codec failure** (format `2`): the value class changed incompatibly (renamed field, changed type), or two applications share a cache with different codecs or value types.
 
-**What CoCache does.** A read without a loader (a `SetCache`, or a `Cache` without a loader) has nothing to reload, so it throws `CacheReadException` with a `ForeignFormatException` cause (reclaiming would delete the only copy), leaves the key as it is, and counts in `cocache.unknown.formats` instead of `cocache.reclaims`. A `SetCache.add` or `remove` on such content fails the same way, with `CacheWriteException`, and leaves the key unchanged (`put` replaces it). Content left by CoCache 5.x needs a [migration](../guide/migration-6.md#redis-as-store). A read with a loader never deletes blindly either. It asks Redis to convert the key into a lease only if the key still holds exactly the bytes it read (compared by SHA-1 inside the script). If that succeeds, it reloads from the source and fills normally. If the key changed in the meantime, it loads without writing L1. Each read reclaims at most once.
+**What CoCache does.** A read without a loader (a `SetCache`, or a `Cache` without a loader) has nothing to reload, so it throws `CacheReadException` with a `ForeignFormatException` cause (reclaiming would delete the only copy), leaves the key as it is, and counts in `cocache.unknown.formats` instead of `cocache.reclaims`. A `SetCache.add` or `remove` on such content fails the same way, with `CacheWriteException`, and leaves the key unchanged (`put` replaces it). A read with a loader never deletes blindly either. It asks Redis to convert the key into a lease only if the key still holds exactly the bytes it read (compared by SHA-1 inside the script). If that succeeds, it reloads from the source and fills normally. If the key changed in the meantime, it loads without writing L1. Each read reclaims at most once.
 
 **Fix.**
 
@@ -165,12 +165,11 @@ CoCache fails fast on configuration it can't run safely. The message names the p
 
 | Message (abridged) | Cause | Fix |
 |--------------------|-------|-----|
-| `CoCache 6.0 removed these properties: [cocache.…] - …` | A property that no longer exists | Rename as the message says. See [Upgrading from 5.x](../guide/migration-6.md#properties). |
 | `cocache.caches configures undeclared caches [x]; declared caches: […]` | A `cocache.caches.[name]` entry for a cache that doesn't exist, usually a typo. Names match case-insensitively. | Fix the name, or remove the entry |
 | `Cache[x] - … must be positive …`, `refreshWindow[…] must be less than ttl[…] - ttlJitter[…]`, `refreshWindow[…] must be less than localMaxAge[…]` | An invalid policy after all layers were applied | Fix the value. Durations without a unit are seconds. |
 | `Cache[x] - @CoCache.<attribute> = FOREVER is not supported; FOREVER is only allowed for @CoCache.ttl and @CaffeineCache.expireAfterAccess.` | `FOREVER` on an attribute other than `ttl` or `@CaffeineCache.expireAfterAccess` | Use a duration |
 | `Cache[x] already exists.` / `Namespace[x] with keyPrefix[p] is already used by another cache.` | Two declarations with the same cache name, or with the same prefix and namespace, for example an interface and a spec bean | Rename one, or set a distinct `namespace` or `keyPrefix` |
-| `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | A namespace with `:` or another character outside the set, often a 6.x prefix written into the namespace | Do what the message suggests: put the part up to the last `:` into `keyPrefix` |
+| `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | A namespace with `:` or another character outside the set, often a key prefix written into the namespace | Do what the message suggests: put the part up to the last `:` into `keyPrefix` |
 | `Redis denied publishing to the invalidation channel[…] of Keyspace(…): allow the channel pattern [&…inv:*] …` | The Redis ACL doesn't allow the cache's channel. Creating a cache publishes one empty frame to it, so a missing permission fails at startup instead of at every write. | Allow the pattern in the message, see [Redis ACL](./index.md#acl) |
 | `Cannot register cache interface[…]: the bean name[x] is already in use.` / `Cannot register cache bean[x] for spec bean[…]` | The cache's bean name collides with another bean | Rename the cache (`@CoCache(name)`) or the spec bean |
 | `Cache interface[…] must extend Cache with concrete type arguments.` / `Cache spec bean[…] must declare its generic types` | Generics can't be resolved | Use concrete types, and declare the spec factory method's return type as `CacheSpec<K, V>` |

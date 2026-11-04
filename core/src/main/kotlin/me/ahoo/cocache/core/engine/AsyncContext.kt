@@ -71,7 +71,7 @@ internal class AsyncContext(
     }
 
     /**
-     * 交给用户的异常。kotlinx 用取消表达的两种情形还原为 6.x 的约定：[executor] 拒绝派发时协程以 `CancellationException`
+     * 交给用户的异常。kotlinx 用取消表达的两种情形还原为异步视图的约定：[executor] 拒绝派发时协程以 `CancellationException`
      * （cause 为 [RejectedExecutionException]）结束，交出那个拒绝；运行时关闭取消 [scope]，交出 [IllegalStateException]。
      */
     private fun userError(error: Throwable): Throwable {

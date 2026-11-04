@@ -1,24 +1,24 @@
 ---
 name: "cocache-extend"
-description: "Implement or fix a CoCache CoherenceBackend (L1Store or FutureL1Store, 6.x RemoteStore, plus InvalidationChannel) outside the CoCache repository: a new L1 store, a different invalidation transport, or a decorating backend, verified with the cocache-test TCK (BackendProtocolSpec, EngineSpec, SetEngineSpec, HookedBackend). Not the CoCache repository, application caches, codecs or Redis tuning (cocache-develop), or 5.x store ports before the migration plan (cocache-migrate)."
+description: "Implement or fix a CoCache CoherenceBackend (L1Store or FutureL1Store, plus InvalidationChannel) outside the CoCache repository: a new L1 store, a different invalidation transport, or a decorating backend, verified with the cocache-test TCK (BackendProtocolSpec, EngineSpec, SetEngineSpec, HookedBackend). Not the CoCache repository, application caches, codecs or Redis tuning (cocache-develop)."
 ---
 
 # Implement a CoCache Backend
 
 ## Scope gate
 
-Use only outside the CoCache repository, for code that implements `me.ahoo.cocache.api.spi.CoherenceBackend`, `L1Store`, `FutureL1Store` (6.x: `RemoteStore`) or `InvalidationChannel`: a backend on another store, a different invalidation transport, a wrapper or decorator around an existing backend, or a failing TCK run of such code. Changing CoCache's own `cocache-redis` or in-memory backend is CoCache repository work and never qualifies.
+Use only outside the CoCache repository, for code that implements `me.ahoo.cocache.api.spi.CoherenceBackend`, `L1Store`, `FutureL1Store` or `InvalidationChannel`: a backend on another store, a different invalidation transport, a wrapper or decorator around an existing backend, or a failing TCK run of such code. Changing CoCache's own `cocache-redis` or in-memory backend is CoCache repository work and never qualifies.
 
-Route away and stop: declaring caches, writing a `Codec`, `KeyEncoder`, `KeyFilter` or `TtlFunction` for an application, configuring or wiring the shipped `RedisBackend` (including `RedisBackend.of(client, options)`), and testing application code with `HookedBackend` belong to `cocache-develop`. Porting a 5.x custom store or event bus belongs to `cocache-migrate` until the migration plan hands this backend over. A Spring `CacheManager` or cache provider unrelated to CoCache does not qualify. Otherwise state that this Skill does not apply and stop using it.
+Route away and stop: declaring caches, writing a `Codec`, `KeyEncoder`, `KeyFilter` or `TtlFunction` for an application, configuring or wiring the shipped `RedisBackend` (including `RedisBackend.of(client, options)`), and testing application code with `HookedBackend` belong to `cocache-develop`. A Spring `CacheManager` or cache provider unrelated to CoCache does not qualify. Otherwise state that this Skill does not apply and stop using it.
 
 ## Contract
 
 - The SPI in `me.ahoo.cocache.api.spi` of the pinned CoCache version and the published `cocache-test` suites are the contract. Read the SPI sources, KDoc and the in-memory backend of that exact version before writing code; `references/backend-contract.md` is a map of what to verify, not the definition.
-- Completion means every suite the pinned `cocache-test` ships (8.0: `BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`) passes for every mode the backend offers (for example atomic and non-atomic broadcast). Never weaken, skip or override a TCK test to make it pass; override only the documented timing hooks and the optional hooks (`pause()`, `disconnect()`, `commandCancellation()`).
-- 8.0: `expectedCapabilities` declares exactly the capability surfaces the store returns; the TCK fails closed on any difference. Never leave a capability out to skip its failing cases: return `null` from that accessor instead, and say the capability is unsupported.
+- Completion means every suite the pinned `cocache-test` ships (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`) passes for every mode the backend offers (for example atomic and non-atomic broadcast). Never weaken, skip or override a TCK test to make it pass; override only the documented timing hooks and the optional hooks (`pause()`, `disconnect()`, `commandCancellation()`).
+- `expectedCapabilities` declares exactly the capability surfaces the store returns; the TCK fails closed on any difference. Never leave a capability out to skip its failing cases: return `null` from that accessor instead, and say the capability is unsupported.
 - The backend holds no policy. Every TTL, window, time limit and token arrives as an argument; jitter, negative lifetimes and refresh decisions belong to the engine.
 - Declare only what you guarantee: `atomicBroadcast = true` only if every write publishes its frame in the same atomic step, and a capability surface only if its compare-and-write is atomic.
-- 8.0 failure rules: bound every call, release tokens after a failure with an unknown outcome, and never report a failure as `CancellationException` (a command the client cancelled is a failure).
+- Failure rules: bound every call, release tokens after a failure with an unknown outcome, and never report a failure as `CancellationException` (a command the client cancelled is a failure).
 - Keep read-only requests (review, diagnosis) read-only; report exact TCK commands and results, and what the TCK cannot prove (failover, durability, real network partitions).
 
 ## Workflow
@@ -33,7 +33,7 @@ Route away and stop: declaring caches, writing a `Codec`, `KeyEncoder`, `KeyFilt
 - [ ] 7 Run the suites per mode; review against the invariants; document limits
 ```
 
-1. **Pin and read.** Resolve the CoCache version from the build. Read `CoherenceBackend`, the store interfaces (8.0: `L1Store` and its capability surfaces, `FutureL1Store` for Java, `ForwardingL1Store` for decorators; 6.x: `RemoteStore`), `InvalidationChannel`, `InvalidationFrame` and the envelope, token and result types, then the in-memory backend as the reference implementation.
+1. **Pin and read.** Resolve the CoCache version from the build. Read `CoherenceBackend`, the store interfaces (`L1Store` and its capability surfaces, `FutureL1Store` for Java, `ForwardingL1Store` for decorators), `InvalidationChannel`, `InvalidationFrame` and the envelope, token and result types, then the in-memory backend as the reference implementation.
 2. **Map the state machine.** Each key is absent, a value, a negative entry, a lease, a value carrying a refresh token, or a set. Every transition must be atomic per key and reset the expiry. If the store cannot do a per-key compare-and-set, it cannot implement the lease fence; stop and say so.
 3. **Capabilities and channel.** Offer a capability surface (conditional, versioned, sets) only if the store can do its compare-and-write atomically; otherwise its accessor returns `null`. Choose a transport that can tell when messages may have been lost; that moment must call `onReset()`. Without resets, a lost message leaves L2 stale until `local-max-age`.
 4. **TCK first.** Extend the suites as in `references/tck.md`, declaring `expectedCapabilities`. Implement `elapse` so the store and the engine clock move together.
@@ -45,7 +45,7 @@ Route away and stop: declaring caches, writing a `Codec`, `KeyEncoder`, `KeyFilt
 
 | Scope | Load |
 |---|---|
-| SPI shapes, capabilities, per-method obligations, failures and cancellation, Java and decorator shapes, invariants, channel semantics, 6.x differences | `references/backend-contract.md` |
+| SPI shapes, capabilities, per-method obligations, failures and cancellation, Java and decorator shapes, invariants, channel semantics | `references/backend-contract.md` |
 | Wiring and running the suites, `expectedCapabilities`, `elapse`, `simulateReconnect`, `pause`, `disconnect`, `commandCancellation`, `HookedBackend`, diagnosing a failing TCK case | `references/tck.md` |
 
 ## Diagnosing a failing TCK case

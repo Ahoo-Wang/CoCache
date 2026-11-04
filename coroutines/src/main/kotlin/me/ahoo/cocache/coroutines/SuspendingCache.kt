@@ -78,49 +78,49 @@ interface SuspendingCache<K : Any, V : Any> {
     suspend fun invalidateAll(keys: Collection<K>)
 
     /**
-     * 条件读取，语义同 [Cache.getIfChanged]。6.7 新增：默认抛出 [UnsupportedOperationException]，已有的实现无需改动。
+     * 条件读取，语义同 [Cache.getIfChanged]。默认抛出 [UnsupportedOperationException]。
      */
     suspend fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> =
         throw UnsupportedOperationException("${javaClass.name} does not support getIfChanged().")
 
     /**
-     * 条件写入，语义同 [Cache.putIfMatch]。6.7 新增：默认抛出 [UnsupportedOperationException]。
+     * 条件写入，语义同 [Cache.putIfMatch]。默认抛出 [UnsupportedOperationException]。
      */
     suspend fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut =
         throw UnsupportedOperationException("${javaClass.name} does not support putIfMatch().")
 
     /**
-     * 以指定时长条件写入，语义同 [Cache.putIfMatch] (key, expected, value, ttl)。6.7 新增：默认抛出 [UnsupportedOperationException]。
+     * 以指定时长条件写入，语义同 [Cache.putIfMatch] (key, expected, value, ttl)。默认抛出 [UnsupportedOperationException]。
      */
     suspend fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
         throw UnsupportedOperationException("${javaClass.name} does not support putIfMatch().")
 
     /**
-     * 按版本有序的写入，语义同 [Cache.putIfNewer]。6.8 新增：默认抛出 [UnsupportedOperationException]。
+     * 按版本有序的写入，语义同 [Cache.putIfNewer]。默认抛出 [UnsupportedOperationException]。
      */
     suspend fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
         throw UnsupportedOperationException("${javaClass.name} does not support putIfNewer().")
 
     /**
-     * 以指定时长按版本写入，语义同 [Cache.putIfNewer] (key, value, version, ttl)。6.8 新增：默认抛出 [UnsupportedOperationException]。
+     * 以指定时长按版本写入，语义同 [Cache.putIfNewer] (key, value, version, ttl)。默认抛出 [UnsupportedOperationException]。
      */
     suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
         throw UnsupportedOperationException("${javaClass.name} does not support putIfNewer().")
 
     /**
-     * 按版本有序的删除（墓碑），语义同 [Cache.invalidateIfNewer]。6.8 新增：默认抛出 [UnsupportedOperationException]。
+     * 按版本有序的删除（墓碑），语义同 [Cache.invalidateIfNewer]。默认抛出 [UnsupportedOperationException]。
      */
     suspend fun invalidateIfNewer(key: K, version: Long): VersionedPut =
         throw UnsupportedOperationException("${javaClass.name} does not support invalidateIfNewer().")
 
     /**
-     * 以指定时长写入墓碑，语义同 [Cache.invalidateIfNewer] (key, version, ttl)。6.8 新增：默认抛出 [UnsupportedOperationException]。
+     * 以指定时长写入墓碑，语义同 [Cache.invalidateIfNewer] (key, version, ttl)。默认抛出 [UnsupportedOperationException]。
      */
     suspend fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
         throw UnsupportedOperationException("${javaClass.name} does not support invalidateIfNewer().")
 
     /**
-     * 读取并返回版本，语义同 [Cache.getVersioned]。6.8 新增：默认抛出 [UnsupportedOperationException]。
+     * 读取并返回版本，语义同 [Cache.getVersioned]。默认抛出 [UnsupportedOperationException]。
      */
     suspend fun getVersioned(key: K): Versioned<V>? =
         throw UnsupportedOperationException("${javaClass.name} does not support getVersioned().")

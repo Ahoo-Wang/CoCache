@@ -118,8 +118,8 @@ interface Cache<K : Any, V : Any> {
      *
      * 不读也不写本地 L2，不回源，不申请 lease，不修改 L1：确认的是 L1 本身，L2 可能更旧（陈旧度仍受 `localMaxAge` 约束）。
      * L1 读取失败时总是抛出 [CacheReadException]（与 `readFailure` 无关：没有可降级的答案）。
-     * 读不懂的内容（不是本协议写入的内容如 5.x 遗留、更高版本写入的、集合、解码失败）总是抛出 [CacheReadException]
-     * （`cause` 为 `ForeignFormatException`），不修改 L1，从不视为没有值，与 [putIfMatch] 的分类一致（与 `foreignFormat` 无关）。
+     * 读不懂的内容（不是本格式写入的内容、更高格式写入的内容、集合、解码失败）总是抛出 [CacheReadException]
+     * （`cause` 为 `ForeignFormatException`），不修改 L1，从不视为没有值，与 [putIfMatch] 的分类一致。
      *
      * 内置引擎支持（`SetCache` 除外）；其它实现默认抛出 [UnsupportedOperationException]。
      *
@@ -170,7 +170,7 @@ interface Cache<K : Any, V : Any> {
     )
 
     /**
-     * 按版本有序的写入（6.8）：仅当 [version] 大于 L1 中的版本时写入 [value]，按策略决定到期时间（同 [put]）。
+     * 按版本有序的写入：仅当 [version] 大于 L1 中的版本时写入 [value]，按策略决定到期时间（同 [put]）。
      * 比较与写入在 L1 中原子完成（Redis 后端是一个 Lua 脚本，一次往返），失效只在写入时广播。
      *
      * - 等于 L1 中的版本：幂等的空操作（重复投递）；小于：迟到的旧版本被拒绝。两者都返回 [VersionedPut.Stale]（附 L1 中的版本），
@@ -199,7 +199,7 @@ interface Cache<K : Any, V : Any> {
     )
 
     /**
-     * 按版本有序的删除（6.8）：仅当 [version] 大于 L1 中的版本时写入一个带版本的墓碑（负缓存 + 版本），比较规则与结果同 [putIfNewer]。
+     * 按版本有序的删除：仅当 [version] 大于 L1 中的版本时写入一个带版本的墓碑（负缓存 + 版本），比较规则与结果同 [putIfNewer]。
      *
      * 墓碑对读取就是不存在（与负缓存相同，不回源），并挡住迟到的旧版本：之后低于或等于 [version] 的 [putIfNewer] 返回
      * [VersionedPut.Stale]。寿命是值的寿命（策略 `ttl` 加抖动，`ttlOf` 不适用）；到期之后迟到的旧版本可以再次写入，

@@ -171,17 +171,9 @@ class CoCacheAutoConfiguration {
     @ConditionalOnBean(CacheRuntime::class)
     fun cocacheCacheManager(
         runtime: CacheRuntime,
-        properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
         cacheAspects: ObjectProvider<CacheAspectSupport>,
     ): CacheManager {
-        // 6.3 起 retrieve 经异步视图，不再使用执行器：旧配置项只告警
-        properties.springCache.retrieveExecutor?.let {
-            log.warn(
-                "$RETRIEVE_EXECUTOR_PROPERTY=$it is deprecated since 6.3 and ignored: Spring Cache retrieve uses the async view " +
-                    "and no executor. Remove it; see ${CoCacheProperties.PREFIX}.async-executor and ${CoCacheProperties.PREFIX}.blocking-executor."
-            )
-        }
         val manager = CoCacheSpringCacheManager(runtime)
         // 有 spring-tx 时经 CoCache 的事务装饰器：evict 提交与回滚都失效，put / clear 推迟到提交之后（RFC 0005 §4.9）
         if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, beanFactory.beanClassLoader)) {
@@ -263,7 +255,6 @@ class CoCacheAutoConfiguration {
         private val SIMPLE_ERROR_HANDLER = SimpleCacheErrorHandler()
         internal const val REFRESH_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.refresh-executor"
         internal const val LOCAL_HITS_PROPERTY = "${CoCacheProperties.PREFIX}.metrics.local-hits"
-        internal const val RETRIEVE_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.spring-cache.retrieve-executor"
         internal const val ASYNC_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.async-executor"
         internal const val BLOCKING_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.blocking-executor"
         internal const val RUNTIME_BEAN = "cocacheRuntime"
@@ -297,16 +288,5 @@ class CoCacheAutoConfiguration {
         @Bean
         @JvmStatic
         fun cocacheSpecRegistrar(): BeanFactoryPostProcessor = CacheSpecRegistrar()
-
-        /**
-         * 尽早（容器后处理阶段，任何缓存创建之前）拒绝 5.x 已删除的配置项。
-         */
-        @Bean
-        @JvmStatic
-        fun cocacheRemovedPropertiesCheck(
-            environment: Environment
-        ): BeanFactoryPostProcessor = BeanFactoryPostProcessor {
-            RemovedProperties.check(environment)
-        }
     }
 }

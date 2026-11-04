@@ -76,7 +76,7 @@ class SuspendingMultiNodeTest : MultiNodeSpec() {
 }
 
 /**
- * 按版本有序的写入（6.8）经挂起视图重跑；数据源换成 `suspendingVersionedLoader`。
+ * 按版本有序的写入经挂起视图重跑；数据源换成 `suspendingVersionedLoader`。
  */
 class SuspendingVersionedTest : VersionedSpec() {
     override val expectedCapabilities: Set<L1Capability> = CAPABILITIES

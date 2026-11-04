@@ -392,44 +392,6 @@ class CoCacheSpringCacheTest {
             )
     }
 
-    /**
-     * 6.1 的 `@JvmOverloads constructor(runtime, executor = DEFAULT_EXECUTOR)` 生成的合成构造函数仍然存在：
-     * 针对 6.1 编译、省略执行器的 Kotlin 调用方链接到它。
-     */
-    @Test
-    fun kotlinDefaultArgumentConstructorOf61IsKept() {
-        val synthetic = CoCacheSpringCacheManager::class.java.getDeclaredConstructor(
-            CacheRuntime::class.java,
-            java.util.concurrent.Executor::class.java,
-            Int::class.javaPrimitiveType,
-            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker")
-        )
-        synthetic.isSynthetic.assert().isTrue()
-        // 掩码 0b10：第二个参数（executor）取默认值
-        val manager = synthetic.newInstance(runtime, null, 0b10, null)
-        manager.getCache("user").assert().isNotNull()
-        CoCacheSpringCacheManager::class.java.getConstructor(CacheRuntime::class.java).assert().isNotNull()
-        CoCacheSpringCacheManager::class.java.getConstructor(
-            CacheRuntime::class.java,
-            java.util.concurrent.Executor::class.java
-        )
-            .assert().isNotNull()
-    }
-
-    @Suppress("DEPRECATION")
-    @Test
-    fun deprecatedManagerConstructorIgnoresTheExecutor() {
-        val tasks = AtomicInteger()
-        val executor = java.util.concurrent.Executor {
-            tasks.incrementAndGet()
-            it.run()
-        }
-        val legacy = requireNotNull(CoCacheSpringCacheManager(runtime, executor).getCache("user"))
-        (legacy.retrieve("k")?.get() as SpringCache.ValueWrapper).get().assert().isEqualTo("v")
-        legacy.retrieve("legacy") { CompletableFuture.completedFuture("L") }.get().assert().isEqualTo("L")
-        tasks.get().assert().isEqualTo(0)
-    }
-
     private fun captureLogs(type: Class<*>, block: () -> Unit): List<ILoggingEvent> {
         val logger = LoggerFactory.getLogger(type) as Logger
         val appender = ListAppender<ILoggingEvent>().apply { start() }

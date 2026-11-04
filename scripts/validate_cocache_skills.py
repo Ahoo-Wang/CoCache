@@ -26,7 +26,6 @@ from typing import Any
 EXPECTED_SKILLS = {
     "cocache-develop",
     "cocache-extend",
-    "cocache-migrate",
 }
 NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 RESOURCE_PATTERN = re.compile(

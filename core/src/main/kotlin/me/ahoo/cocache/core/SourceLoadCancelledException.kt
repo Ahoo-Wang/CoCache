@@ -25,8 +25,6 @@ import kotlin.coroutines.cancellation.CancellationException
  * （同步、异步与挂起的调用方都收到它）。原始异常是 [cause]。与 [SourceLoadTimeoutException]、[SourceLoadRejectedException]
  * 一样是 [RuntimeException]。
  *
- * 8.0 起在 `cocache-core` 中，覆盖全部数据源（之前是 `me.ahoo.cocache.coroutines.SourceLoadCancelledException`，只覆盖挂起数据源）。
- *
  * @param cacheName 缓存名；数据源不知道自己属于哪个缓存时为 `null`（`asAsyncCacheLoader()` 创建的数据源）
  */
 class SourceLoadCancelledException(val cacheName: String?, cause: CancellationException) :

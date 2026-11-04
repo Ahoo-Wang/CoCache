@@ -18,19 +18,15 @@ import me.ahoo.cocache.api.AsyncSetCache
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.SetCache
 import me.ahoo.cocache.api.join.JoinCache
-import org.springframework.aot.hint.ExecutableMode
 import org.springframework.aot.hint.MemberCategory
 import org.springframework.aot.hint.RuntimeHints
 import org.springframework.aot.hint.RuntimeHintsRegistrar
-import java.util.concurrent.Executors
 
 /**
  * 与具体声明无关的固定运行时提示：
  * - 代理与校验在运行时反射读取 [Cache] / [SetCache] / [JoinCache] 的公共方法；异步视图 [AsyncCache] / [AsyncSetCache] 的公共方法同样登记
  *   （视图不是代理，由引擎直接实现；登记让经反射调用它们的框架代码可用）；类路径上有 `cocache-coroutines` 时，挂起视图
  *   [COROUTINES_CLASSES] 同样登记（starter 不依赖该模块，按类名登记）；
- * - 运行时的默认阻塞执行器（以及已弃用的 Spring Cache 默认 retrieve 执行器）在 JDK 21+ 上经反射取得
- *   `Executors.newVirtualThreadPerTaskExecutor()`（原生镜像要求 GraalVM 25+）；
  * - L2（Caffeine）按构建器特性拼出类名、经 `MethodHandles.Lookup` 加载生成的实现类与节点类。CoCache 只用
  *   `maximumSize` 与可选的 `expireAfterAccess`，对应的类是固定的四个（见 [CAFFEINE_CLASSES]），不依赖外部元数据仓库。
  *
@@ -47,9 +43,6 @@ internal class CoCacheRuntimeHints : RuntimeHintsRegistrar {
         ).forEach {
             hints.reflection().registerType(it, MemberCategory.INVOKE_PUBLIC_METHODS)
         }
-        hints.reflection().registerType(Executors::class.java) {
-            it.withMethod(VIRTUAL_THREAD_EXECUTOR, emptyList(), ExecutableMode.INVOKE)
-        }
         COROUTINES_CLASSES.forEach {
             hints.reflection().registerTypeIfPresent(classLoader, it, MemberCategory.INVOKE_PUBLIC_METHODS)
         }
@@ -64,8 +57,6 @@ internal class CoCacheRuntimeHints : RuntimeHintsRegistrar {
     }
 
     companion object {
-        const val VIRTUAL_THREAD_EXECUTOR = "newVirtualThreadPerTaskExecutor"
-
         /**
          * 可选模块 `cocache-coroutines` 的挂起视图（RFC 0004 §7）。
          */

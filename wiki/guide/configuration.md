@@ -34,7 +34,6 @@ Properties come last so operators can retune a cache without a rebuild. This mea
 | `cocache.redis.*` | — | — | [Redis backend](#redis) settings |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`: startup fails if a `@Cacheable` on a CoCache cache lacks `sync = true`. `false`: a warning is logged. See [Spring Cache](./spring-cache.md#sync-check). |
 | `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`: Spring's cache interceptor uses `DegradingCacheErrorHandler`, which logs read and write failures on CoCache caches instead of rethrowing them, so a non-sync `@Cacheable` runs its method while Redis is down. Failed invalidations, and failures on other caches, still go to the previous handler. See [Spring Cache](./spring-cache.md#failures). |
-| `cocache.spring-cache.retrieve-executor` | bean name | — | **Deprecated since 6.3** and ignored with a startup warning: `retrieve` uses the [async view](./async.md) and needs no executor. Removed in 7.0. |
 | `cocache.refresh-executor` | bean name | built-in | The `Executor` bean that runs [refresh-ahead](./freshness.md#refresh-ahead) loads. See [Executors](#executors). |
 | `cocache.async-executor` | bean name | built-in | The `Executor` bean that runs the [async view](./async.md)'s continuations. See [Executors](#executors). |
 | `cocache.blocking-executor` | bean name | built-in | The `Executor` bean that runs synchronous loaders called through the async view. See [Executors](#executors). |
@@ -59,13 +58,13 @@ These keys work under both `cocache.defaults.` and `cocache.caches.[name].`.
 | `lease-wait` | duration | `200ms` | — | How long a miss waits for another instance's load before loading itself |
 | `load-max-concurrent` | integer | `0` (unlimited) | — | Maximum concurrent source loads per cache per instance |
 | `load-acquire-timeout` | duration | `1s` | — | How long a load waits for a permit before throwing `SourceLoadRejectedException` |
-| `load-timeout` | duration | `30s` | — | Upper bound for a load. An `AsyncCacheLoader` load that takes longer fails with `SourceLoadTimeoutException` and releases the lease. Readers waiting for another caller's load fail the same way once the load has been in flight that long, and later readers start a new load instead of waiting behind it. A synchronous loader can't be stopped from outside, so give it its own timeout. Was `load-async-timeout` in 6.x. See [Async API](./async.md#timeouts). |
+| `load-timeout` | duration | `30s` | — | Upper bound for a load. An `AsyncCacheLoader` load that takes longer fails with `SourceLoadTimeoutException` and releases the lease. Readers waiting for another caller's load fail the same way once the load has been in flight that long, and later readers start a new load instead of waiting behind it. A synchronous loader can't be stopped from outside, so give it its own timeout. See [Async API](./async.md#timeouts). |
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | Maximum L2 entries per instance |
 | `invalidate-failure` | `retry` \| `throw` | `retry` with a loader, `throw` without one | — | A failed Redis invalidation: queue for background retry, or throw `CacheWriteException`. Without a loader Redis holds the only copy, and a delayed retry would delete a value written after the failure, so the default is `throw`. See [When Redis is down during a write](./freshness.md#redis-down). |
 | `read-failure` | `degrade` \| `throw` | `degrade` with a loader, `throw` without one | — | A failed Redis read: load from the source, or throw `CacheReadException`. A read without a loader has nothing to load from: by default it throws. Set `degrade` explicitly when "unreadable" is a safe answer, such as a revocation list where a Redis failure means "not revoked": the read then returns `null` and caches nothing, so every read during the failure goes to Redis again. |
 | `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | First part of every storage key ([below](#key-prefix)) |
 
-8.0 removed `foreign-format`. A cache with a loader reclaims content it can't read and reloads it, and a cache without one, or a `SetCache`, fails the read ([upgrading from 5.x](./migration-6.md#foreign-format)).
+How a cache treats content it can't read isn't configurable: a cache with a loader reclaims it and reloads it, and a cache without one, or a `SetCache`, fails the read ([unreadable payloads](../operations/troubleshooting.md#corrupt-payloads)).
 
 [Keeping Data Fresh](./freshness.md#lifetimes) explains how to choose these values.
 
@@ -115,7 +114,7 @@ CoCache runs background and async work on executors:
 |------|----------|-------------------|
 | Refresh-ahead loads | `cocache.refresh-executor` | A bounded daemon pool (1–4 threads, 1024 queued tasks). A full queue skips the refresh and counts it in `cocache.refresh.rejections`. |
 | Continuations of the [async view](./async.md): decoding, L2 fills, issuing the next Redis command, calling `loadAsync`, completing your future | `cocache.async-executor` | A `ForkJoinPool` owned by the runtime, sized to the CPU count, with daemon threads named `cocache-async-*` |
-| Synchronous loaders called through the async view | `cocache.blocking-executor` | A virtual thread per task on JDK 21+. On JDK 17–20, a daemon pool that never queues (up to 512 threads, named `cocache-blocking-*`). When it's full, the load is rejected rather than run on the async executor. |
+| Synchronous loaders called through the async view | `cocache.blocking-executor` | One virtual thread per task, owned by the runtime |
 
 Each property takes the **name** of an `Executor` bean. CoCache looks the bean up by name only, never by type. A name that matches no bean, or a bean that isn't an `Executor`, fails startup with a message naming the property. The container owns that executor: closing the `CacheRuntime` doesn't shut it down.
 
@@ -135,7 +134,7 @@ cocache:
 The async executor runs only short, non-blocking work. Never block on it, for example by calling the synchronous API from a continuation. The built-in `ForkJoinPool` compensates for a thread that blocks in `join()`, but a fixed-size pool you supply doesn't. The blocking executor runs synchronous loaders, so it must not queue: a loader can wait on another load.
 :::
 
-`cocache.spring-cache.retrieve-executor` is deprecated since 6.3. Spring Cache `retrieve` now uses the async view and waits on no thread. See [Spring Cache](./spring-cache.md#executor).
+Spring Cache `retrieve` uses the async view, waits on no thread, and needs no executor of its own. See [Spring Cache](./spring-cache.md#executor).
 
 ## Redis {#redis}
 
@@ -178,8 +177,7 @@ See [Observability](/operations/observability) for the endpoint paths and meter 
 
 CoCache fails startup instead of running with a configuration it can't honor:
 
-- **Unknown cache names** under `cocache.caches` (almost always a typo). The message lists the declared caches.
-- **Unsupported property names** from earlier major versions, such as `cocache.redis.strict-failure` or anything under `cocache.load.*`, fail startup with a message that names the replacement, if there is one. The full list is in [Upgrading from 5.x](./migration-6.md#properties).
+- **Unknown cache names** under `cocache.caches` (almost always a typo). Names match case-insensitively, and the message lists the declared caches.
 - **Invalid policies.** Every duration must be positive and at most 100 years; only `ttl-jitter`, `lease-wait`, `load-acquire-timeout`, and `refresh-window` (0 = off) may be zero; none may be negative. `refresh-window` must be less than `ttl − ttl-jitter` (the effective jitter) and less than `local-max-age`.
 
 `refresh-window: 0` turns refresh-ahead off, so a property can also remove a window that the declaration enables.

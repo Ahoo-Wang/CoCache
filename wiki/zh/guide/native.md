@@ -63,7 +63,6 @@ AOT 在构建期执行应用的 bean 注册，并把结果写成生成代码。�
 | `Cache`、`SetCache`、`JoinCache` | 公共方法 | 代理分派与校验 |
 | `AsyncCache`、`AsyncSetCache` | 公共方法 | `cache.async()` 返回的[异步视图](./async.md) |
 | L2 背后的 Caffeine 类 | 构造器与字段 | Caffeine 按类名加载其生成的类 |
-| `Executors.newVirtualThreadPerTaskExecutor` | 调用 | JDK 支持虚拟线程时，运行时的默认阻塞执行器使用虚拟线程 |
 
 接口式缓存“没有指定编解码”指既没有 `@CoCache(codec)`，也没有与其值类型匹配的 `Codec<V>` bean，与 starter 选择编解码的规则一致（[编解码](./caches.md#codecs)）。
 

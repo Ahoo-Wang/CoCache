@@ -34,7 +34,6 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `cocache.redis.*` | — | — | [Redis 后端](#redis)配置 |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
 | `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`：Spring 的缓存拦截器改用 `DegradingCacheErrorHandler`，CoCache 缓存的读写失败只记录日志、不重新抛出，Redis 故障期间不带 sync 的 `@Cacheable` 因此执行方法。失败的失效、其它缓存的失败仍交给原来的处理器。见 [Spring Cache](./spring-cache.md#failures)。 |
-| `cocache.spring-cache.retrieve-executor` | bean 名 | — | **6.3 起弃用**，设置时启动告警并被忽略：`retrieve` 经[异步视图](./async.md)，不需要执行器。7.0 删除。 |
 | `cocache.refresh-executor` | bean 名 | 内置 | 执行[提前刷新](./freshness.md#refresh-ahead)回源的 `Executor` bean。见[执行器](#executors)。 |
 | `cocache.async-executor` | bean 名 | 内置 | 执行[异步视图](./async.md)续接的 `Executor` bean。见[执行器](#executors)。 |
 | `cocache.blocking-executor` | bean 名 | 内置 | 执行经异步视图调用的同步 loader 的 `Executor` bean。见[执行器](#executors)。 |
@@ -59,13 +58,13 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `lease-wait` | 时长 | `200ms` | — | 未命中时等待其它实例加载的最长时间，超时后自行加载 |
 | `load-max-concurrent` | integer | `0`（不限制） | — | 每个实例上每个缓存同时进行的数据源加载数上限 |
 | `load-acquire-timeout` | 时长 | `1s` | — | 加载等待许可的最长时间，超时抛出 `SourceLoadRejectedException` |
-| `load-timeout` | 时长 | `30s` | — | 一次加载的上限。`AsyncCacheLoader` 的一次加载超过它时以 `SourceLoadTimeoutException` 失败并释放 lease；等待别的调用方加载的读取，在这次加载进行了这么久之后同样失败，之后的读取开始新的加载，不再排在它后面。同步 loader 无法被外部结束，请给它自己的超时。6.x 中叫 `load-async-timeout`。见[异步 API](./async.md#timeouts)。 |
+| `load-timeout` | 时长 | `30s` | — | 一次加载的上限。`AsyncCacheLoader` 的一次加载超过它时以 `SourceLoadTimeoutException` 失败并释放 lease；等待别的调用方加载的读取，在这次加载进行了这么久之后同样失败，之后的读取开始新的加载，不再排在它后面。同步 loader 无法被外部结束，请给它自己的超时。见[异步 API](./async.md#timeouts)。 |
 | `local-maximum-size` | long | `10000` | `@CaffeineCache.maximumSize` | 每个实例 L2 的最大条目数 |
 | `invalidate-failure` | `retry` \| `throw` | 有 loader 时 `retry`，没有时 `throw` | — | Redis 失效失败时：进入后台重试队列，或抛出 `CacheWriteException`。没有 loader 时 Redis 是唯一副本，延迟的重试会删掉失败之后写入的值，因此默认 `throw`。见[写入时 Redis 故障](./freshness.md#redis-down)。 |
 | `read-failure` | `degrade` \| `throw` | 有 loader 时 `degrade`，没有时 `throw` | — | Redis 读取失败时：从数据源加载，或抛出 `CacheReadException`。没有 loader 的读取无处加载，默认抛出。“读不到”是安全答案时（如撤销表：Redis 故障即视为未撤销）显式设置 `degrade`：读取返回 `null` 且不缓存任何东西，故障期间的每次读取都会再次访问 Redis。 |
 | `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | 每个存储 key 的开头（见[下文](#key-prefix)） |
 
-8.0 删除了 `foreign-format`：有数据源的缓存回收读不懂的内容并重新加载，没有数据源的缓存与 `SetCache` 读取失败（见[从 5.x 升级](./migration-6.md#foreign-format)）。
+缓存如何对待读不懂的内容不可配置：有数据源的缓存回收它并重新加载，没有数据源的缓存与 `SetCache` 读取失败（见[无法读取的载荷](../operations/troubleshooting.md#corrupt-payloads)）。
 
 如何选择这些值，见[保持数据新鲜](./freshness.md#lifetimes)。
 
@@ -115,7 +114,7 @@ CoCache 在执行器上运行后台工作与异步工作：
 |------|--------|------------|
 | 提前刷新回源 | `cocache.refresh-executor` | 有界守护线程池（1–4 个线程，队列 1024）。队列满时跳过这次刷新，计入 `cocache.refresh.rejections`。 |
 | [异步视图](./async.md)的续接：解码、填充 L2、发出下一条 Redis 命令、调用 `loadAsync`、完成你拿到的 future | `cocache.async-executor` | 运行时自建的 `ForkJoinPool`，并行度为 CPU 数，守护线程名为 `cocache-async-*` |
-| 经异步视图调用的同步 loader | `cocache.blocking-executor` | JDK 21+ 上每个任务一个虚拟线程。JDK 17–20 上是不排队的守护线程池（最多 512 个线程，名为 `cocache-blocking-*`）；满时拒绝这次加载，而不是在异步执行器上执行。 |
+| 经异步视图调用的同步 loader | `cocache.blocking-executor` | 运行时自建，每个任务一个虚拟线程 |
 
 每个配置项的值都是 `Executor` bean 的**名称**。CoCache 只按名称查找，从不按类型查找。名称没有对应的 bean，或该 bean 不是 `Executor` 时，启动失败，错误信息指明配置项。该执行器归容器管理：关闭 `CacheRuntime` 不会关闭它。
 
@@ -135,7 +134,7 @@ cocache:
 异步执行器只运行短小的非阻塞工作，不要在上面阻塞，例如在续接里调用同步 API。内置的 `ForkJoinPool` 会为在 `join()` 上阻塞的线程补偿线程，你提供的固定大小线程池不会。阻塞执行器运行同步 loader，因此不能排队：一个 loader 可能等待另一次加载。
 :::
 
-`cocache.spring-cache.retrieve-executor` 自 6.3 起弃用：Spring Cache `retrieve` 现在经异步视图，不在任何线程上等待。见 [Spring Cache](./spring-cache.md#executor)。
+Spring Cache `retrieve` 经异步视图，不在任何线程上等待，也不需要单独的执行器。见 [Spring Cache](./spring-cache.md#executor)。
 
 ## Redis {#redis}
 
@@ -178,8 +177,7 @@ classpath 中有 `spring-boot-starter-actuator` 时：
 
 CoCache 不会带着无法兑现的配置运行，而是让启动失败：
 
-- **未知的缓存名**出现在 `cocache.caches` 下（几乎总是拼写错误）。错误信息会列出已声明的缓存。
-- **不再支持的旧大版本配置名**，如 `cocache.redis.strict-failure` 或 `cocache.load.*` 下的任何项，会让启动失败，错误信息给出替代项（如果有的话）。完整列表见[从 5.x 升级](./migration-6.md#properties)。
+- **未知的缓存名**出现在 `cocache.caches` 下（几乎总是拼写错误）。缓存名不区分大小写匹配，错误信息会列出已声明的缓存。
 - **不合法的策略。** 所有时长必须为正，且不超过 100 年；只有 `ttl-jitter`、`lease-wait`、`load-acquire-timeout` 与 `refresh-window`（0 表示关闭）可以为 0；任何时长都不能为负。`refresh-window` 必须小于 `ttl − ttl-jitter`（按实际抖动计算），也必须小于 `local-max-age`。
 
 `refresh-window: 0` 表示关闭提前刷新，因此配置项也可以关掉声明中开启的窗口。

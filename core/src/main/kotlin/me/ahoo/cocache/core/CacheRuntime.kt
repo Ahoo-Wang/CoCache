@@ -45,7 +45,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ForkJoinPool
 import java.util.concurrent.ForkJoinWorkerThread
 import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -121,7 +120,9 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      */
     private fun asyncContext(builder: Builder): AsyncContext {
         val executor = builder.asyncExecutor ?: defaultAsyncExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
-        val blocking = builder.blockingExecutor ?: defaultBlockingExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
+        val blocking = builder.blockingExecutor ?: Executors.newVirtualThreadPerTaskExecutor().also {
+            owned.add(AutoCloseable { it.shutdown() })
+        }
         return AsyncContext(executor, blocking, builder.dispatcher, builder.drainTimeout).also { owned.add(it) }
     }
 
@@ -354,7 +355,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
 
         /**
          * 阻塞执行器（RFC 0004 §5.1）：异步路径上的同步数据源只在这里执行。由调用方管理，不应排队。
-         * 不指定时：JDK 21+ 每个任务一个虚拟线程；否则是运行时自建的不排队守护线程池（最多 512 线程，满时拒绝）。
+         * 不指定时每个任务一个虚拟线程。
          */
         fun blockingExecutor(blockingExecutor: Executor) = apply { this.blockingExecutor = blockingExecutor }
 
@@ -399,9 +400,6 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             ).apply { allowCoreThreadTimeOut(true) }
         }
 
-        internal const val MAX_BLOCKING_THREADS = 512
-        private const val BLOCKING_KEEP_ALIVE_SECONDS = 60L
-
         private fun defaultAsyncExecutor(): ForkJoinPool {
             val counter = AtomicInteger()
             val factory = ForkJoinPool.ForkJoinWorkerThreadFactory { pool ->
@@ -412,26 +410,6 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             }
             return ForkJoinPool(Runtime.getRuntime().availableProcessors(), factory, null, true)
         }
-
-        /**
-         * JDK 21+ 经反射取得 `Executors.newVirtualThreadPerTaskExecutor()`（基线为 JDK 17）；否则为不排队的守护线程池。
-         * 满时拒绝而不是由调用方执行：调用方是异步执行器的线程，同步数据源不得在那里执行。
-         */
-        internal fun defaultBlockingExecutor(
-            virtual: () -> ExecutorService? = ::virtualThreadExecutor
-        ): ExecutorService = virtual() ?: ThreadPoolExecutor(
-            0,
-            MAX_BLOCKING_THREADS,
-            BLOCKING_KEEP_ALIVE_SECONDS,
-            TimeUnit.SECONDS,
-            SynchronousQueue(),
-            daemonThreads("cocache-blocking"),
-            ThreadPoolExecutor.AbortPolicy(),
-        )
-
-        private fun virtualThreadExecutor(): ExecutorService? = runCatching {
-            Executors::class.java.getMethod("newVirtualThreadPerTaskExecutor").invoke(null) as ExecutorService
-        }.getOrNull()
 
         private fun defaultScheduler(): ScheduledExecutorService {
             return Executors.newSingleThreadScheduledExecutor(daemonThreads("cocache-retry"))

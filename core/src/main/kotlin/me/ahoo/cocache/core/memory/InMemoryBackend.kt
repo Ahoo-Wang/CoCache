@@ -168,7 +168,7 @@ class InMemoryBackend @JvmOverloads constructor(
     /**
      * 不可变槽位：每次转换都生成新槽位并重设到期时间。
      *
-     * @param version 值或负缓存的版本（6.8）；[Versioned.NO_VERSION] 表示没有版本。与 Redis 后端相同：带版本的槽位从不授予刷新令牌、
+     * @param version 值或负缓存的版本；[Versioned.NO_VERSION] 表示没有版本。与 Redis 后端相同：带版本的槽位从不授予刷新令牌、
      *   从不被回收（版本只保存在值上，转为 lease 就丢了），只有整体写入能替换它
      */
     private class Slot(

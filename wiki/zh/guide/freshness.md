@@ -53,7 +53,7 @@ userCache.putAll(users.associateBy { it.id }, Duration.ofMinutes(5))   // 统一
 
 ## 条件写入 {#conditional-writes}
 
-Redis 是唯一副本、多个写入方以“读取—修改—写回”更新同一个值时（例如一份包含许多条记录的文档），普通的 `put` 会丢失更新：两个写入方读到同一个版本，后一次 `put` 覆盖前一次。6.7 起，`putIfMatch` 只在 Redis 中仍是写入方读到的那个值时写入，`getIfChanged` 从 Redis 读取这个值及其摘要：
+Redis 是唯一副本、多个写入方以“读取—修改—写回”更新同一个值时（例如一份包含许多条记录的文档），普通的 `put` 会丢失更新：两个写入方读到同一个版本，后一次 `put` 覆盖前一次。`putIfMatch` 只在 Redis 中仍是写入方读到的那个值时写入，`getIfChanged` 从 Redis 读取这个值及其摘要：
 
 ```kotlin
 fun update(key: String, change: (Document?) -> Document) {
@@ -77,14 +77,14 @@ fun update(key: String, change: (Document?) -> Document) {
 - **两者都绕过 L2。** 只读写 Redis，从不经 loader 加载，也不填充 L2。缓存的 L2 可能比 `getIfChanged` 返回的旧，差距在 `localMaxAge` 之内。
 - **失败：** Redis 故障时 `getIfChanged` 抛出 `CacheReadException`，与 `read-failure` 无关，因为没有可以降级的答案。`putIfMatch` 抛出 `CacheWriteException`。它不是幂等的：超时之后先调用 `getIfChanged`，当前摘要正是 `Written` 本应返回的那个时，说明已经写入。
 - **没有原子广播时**（`sharded` [频道模式](../operations/index.md#channel-mode)，或启动探测回退时），失效消息在脚本之后单独发布。写入已落到 Redis 而这次发布失败时，调用抛出 `CacheWriteException`。随后重放同一次写入会返回 `Conflict(current)`，其摘要就是你自己的值的摘要，CoCache 这时会再发布一次失效，让其它实例丢弃陈旧的副本。其它冲突不发布任何消息。
-- **读不懂的内容**不会被一个方法当作空值、被另一个方法当作值。更高版本的 CoCache 写入的值或集合：两个方法都抛出，`cause` 为 `ForeignFormatException`，key 不被修改。编解码器无法解码的值：`getIfChanged` 抛出；`putIfMatch` 看不到编解码器，遇到它只会返回 `Conflict`，从不覆盖。不是 CoCache 8.x 写入的内容（5.x 或 6.x 的数据，或其它程序写入的值）同样使两个方法都抛出：它从不被视为没有值，`putIfMatch(key, null, value)` 不会替换它。
+- **读不懂的内容**不会被一个方法当作空值、被另一个方法当作值。更高版本的 CoCache 写入的值或集合：两个方法都抛出，`cause` 为 `ForeignFormatException`，key 不被修改。编解码器无法解码的值：`getIfChanged` 抛出；`putIfMatch` 看不到编解码器，遇到它只会返回 `Conflict`，从不覆盖。本版本读不懂的格式的内容（例如其它程序写入的值）同样使两个方法都抛出：它从不被视为没有值，`putIfMatch(key, null, value)` 不会替换它。
 - **自定义后端**必须原子地实现条件写入，否则就不实现：SPI 的 `putIfMatch` 默认抛出 `UnsupportedOperationException`，调用方会看到它。
 - **所有写入方都必须用 `putIfMatch`。** 普通的 `put` 不检查，仍会压过并发的“读取—修改—写回”。
 - `SetCache` 不支持它们，因为它的 `add` 与 `remove` 本身就是原子的。异步视图与[挂起视图](./coroutines.md)有同名方法。
 
 ## 按版本写入 {#versioned-writes}
 
-有些写入方知道自己写入的每个值的版本：事件溯源的聚合只有一个写入方、版本严格递增，CDC 流带着提交序号。写入方可以在提交之后立即把新状态推入 Redis，但重投与重放会再次送来旧版本，普通的 `put` 写入旧版本就会替换新版本。6.8 起，声明为**带版本**的缓存把版本与值保存在一起，并按版本对写入排序：
+有些写入方知道自己写入的每个值的版本：事件溯源的聚合只有一个写入方、版本严格递增，CDC 流带着提交序号。写入方可以在提交之后立即把新状态推入 Redis，但重投与重放会再次送来旧版本，普通的 `put` 写入旧版本就会替换新版本。声明为**带版本**的缓存把版本与值保存在一起，并按版本对写入排序：
 
 ```kotlin
 val views = runtime.create(cacheSpec<String, OrderView>("order-view") {
@@ -114,7 +114,6 @@ views.getVersioned(id)                            // Versioned(view, version)，
 - **普通写入会丢掉版本。** `put`、`putAll`、`putIfMatch` 与 `invalidate` 写入没有版本的内容，到期也一样，之后任何版本都能写入。需要顺序保证的写入方全部使用 `putIfNewer` / `invalidateIfNewer`，`invalidate` 留给运维清除。
 - **不支持提前刷新。** 带版本的缓存拒绝 `refresh-window`；`cocache.defaults.refresh-window` 不作用于带版本的缓存。写入方会推送新版本，值不需要刷新。
 - **失败：** Redis 故障时 `putIfNewer` 抛出 `CacheWriteException`。重试同一个版本是安全的：第一次已经写入时，重试返回 `Stale(version)`。没有原子广播时，版本等于你给出的版本的 `Stale` 也会发布失效，以防第一次已经写入、而单独的发布失败了。更旧的版本不发布任何消息。读不懂的内容的分类与[条件写入](#conditional-writes)相同。
-- **混合版本：** 6.0 到 6.7 的实例可以与 6.8 共用 Redis 并读取带版本的值，但它们的写入不保留版本。带版本的缓存的写入方全部升级到 6.8。
 - 异步视图与挂起视图有同名方法。指标 `cocache.versioned.stale` 统计被拒绝的版本。
 
 ## 在事务中 {#transactions}
