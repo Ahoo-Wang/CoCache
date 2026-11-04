@@ -291,7 +291,7 @@ internal class CoherentEngine<K : Any, V : Any>(
 
     /**
      * 协程核心中不能按 L1 故障降级的异常：取消（运行时关闭、执行器拒绝派发、同步变体的线程被中断）；中断（同步变体中有观测器时，
-     * 等待 lease 在嵌套的 `runSync` 中被中断）；异步变体在运行时关闭之后的失败（同 6.x 的异步路径）。中断不是 L1 故障，
+     * 等待 lease 在嵌套的 `runSync` 中被中断）；异步变体在运行时关闭之后的失败。中断不是 L1 故障，
      * 不能降级为绕过 L1 回源。
      */
     private suspend fun rethrowIfFatal(error: Exception) {
@@ -752,7 +752,7 @@ internal class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 协程核心释放令牌（失败只计数告警），完成之后才继续，与 6.x 的顺序一致。释放不可取消（[uncancellable]）：被取消的加载也要交还令牌。
+     * 协程核心释放令牌（失败只计数告警），完成之后才继续。释放不可取消（[uncancellable]）：被取消的加载也要交还令牌。
      */
     private suspend fun releaseToken(storageKey: String, token: Token) {
         uncancellable { releaseQuietly(storageKey, token) }

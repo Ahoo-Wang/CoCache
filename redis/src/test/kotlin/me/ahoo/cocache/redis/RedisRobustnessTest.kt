@@ -63,7 +63,7 @@ class RedisRobustnessTest {
     private fun key(name: String) = "cocache:$namespace:$name"
 
     /**
-     * 5.x 遗留的原生 Set / List / ZSet 落在缓存 key 上：读取按无法识别的内容返回（不报 WRONGTYPE），
+     * 其它程序写入的原生 Set / List / ZSet 落在缓存 key 上：读取按无法识别的内容返回（不报 WRONGTYPE），
      * 以引擎同样的摘要（[Digest.of]）条件回收为 lease，然后正常填充。
      */
     @Test
