@@ -21,7 +21,7 @@ async.put("42", user).thenCompose { async.get("42") }   // reads its own write
 async.invalidate("42")
 ```
 
-- `Cache.async()` returns an `AsyncCache<K, V>`, and `SetCache.async()` returns an `AsyncSetCache<K, E>`. The methods have the same names and the same semantics as the synchronous ones: `get`, `get(key, loader)`, `getAll`, `lookup`, `put`, `putAll`, `invalidate`, `invalidateAll`, and for sets `add`, `remove`, `clear`.
+- `async()` is a member of every [cache type](./caches.md#types), and the views mirror the synchronous hierarchy: `Cache.async()` returns an `AsyncCache<K, V>`, `VersionedCache` an `AsyncVersionedCache`, `Store` an `AsyncStore`, `VersionedStore` an `AsyncVersionedStore`, and `SetStore` an `AsyncSetStore<K, E>`. All of them extend `AsyncReadableCache` (`get`, `getAll`, `lookup`, `lookupAll`). The methods have the same names and the same semantics as the synchronous ones, including `Lookup.Unknown` and `CacheReadException` for reads without a source when Redis fails.
 - `async()` returns the same object every time, and `async().sync()` is the engine. Calling it through a `@CoCache` interface works too.
 - Synchronous and asynchronous calls share one cache. A concurrent synchronous `get` and asynchronous `get` of the same key load it once.
 
@@ -67,7 +67,7 @@ The async executor and the blocking executor are configurable. See [Configuratio
 
 - A failed call completes its future with the **original** exception: `CacheReadException`, `CacheWriteException`, `SourceLoadRejectedException`, `SourceLoadTimeoutException`, or whatever your loader threw. It is never wrapped in `CompletionException`. `join()` and `get()` still wrap it, as the JDK always does. `handle`, `exceptionally`, Reactor's `Mono.fromFuture` and Kotlin's `await()` all see the original.
 - The one exception is a loader's own `CancellationException`: a `CacheLoader` that throws it, or an `AsyncCacheLoader` whose future completes with it (a cancelled HTTP request, a `withTimeout` inside it). It becomes `SourceLoadCancelledException`, with the original as its `cause`, for every caller that shares the load. Passed through as is, it would make each caller's future look cancelled.
-- Async methods never throw synchronously. A failing key encoder or codec, a reentrant call, or an unsupported `SetCache` operation all come back as a failed future.
+- Async methods never throw synchronously. A failing key encoder or codec, a reentrant call, or an invalid version all come back as a failed future.
 - Each call returns its own future. Cancelling it cancels only your wait: the shared load continues for the other callers and still writes Redis. Write ordering is unaffected, because the second invalidation step of a write runs whether or not you cancel.
 - A loader that reads its own key fails fast with `IllegalStateException` when it does so before returning its future. If it does so after an I/O step, the call waits until `load-timeout`.
 
@@ -77,7 +77,7 @@ The async executor and the blocking executor are configurable. See [Configuratio
 
 ## Kotlin coroutines {#coroutines}
 
-The optional `cocache-coroutines` module adds a suspending view, `cache.suspending()`, and `SuspendingCacheLoader`. See [Kotlin Coroutines](./coroutines.md). Without it, `kotlinx.coroutines.future.await()` works on every future the async view returns, and it rethrows the original exception.
+Every cache also has a suspending view, `cache.suspending()`, and a spec can take a `SuspendingCacheLoader`. See [Kotlin Coroutines](./coroutines.md). `kotlinx.coroutines.future.await()` also works on every future the async view returns, and it rethrows the original exception.
 
 ## Operating it {#operations}
 

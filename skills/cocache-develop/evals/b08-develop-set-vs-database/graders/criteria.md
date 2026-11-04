@@ -7,6 +7,6 @@ Judge only the agent's final answer. It worked in an empty, read-only directory 
 
 PASS only if the answer does all of these:
 
-1. Rejects SetCache because the set's truth lives in the database and SetCache is only for sets whose only copy is Redis
+1. Rejects SetStore because the set's truth lives in the database and SetStore is only for sets whose only copy is Redis
 2. Declares Cache<Long, Set<String>> with a loader reading article_tag
 3. Maintains it by writing the database and then invalidating the key after commit

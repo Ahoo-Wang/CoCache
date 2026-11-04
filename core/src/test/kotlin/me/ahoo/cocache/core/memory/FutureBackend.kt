@@ -183,6 +183,12 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
                 frame
             )
         }
+        override fun deleteIfMatch(
+            key: String,
+            expected: Digest,
+            frame: ByteArray
+        ): CompletableFuture<L1ConditionalWrite> =
+            supplying { surface.deleteIfMatch(key, expected, frame) }
     }
 
     private inner class FutureVersioned(private val surface: VersionedL1Store) : FutureVersionedL1Store {

@@ -20,17 +20,17 @@ import ch.qos.logback.core.read.ListAppender
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
@@ -76,10 +76,11 @@ class CoCacheUsabilityTest {
         fun profileSpec(): CacheSpec<String, String> = cacheSpec("profile") {
             codec = StringCodec
             keyPrefix = "declared:"
+            externallySourced()
         }
 
         @Bean
-        fun indexSpec(): SetCacheSpec<String, String> = setCacheSpec("index") { elementCodec = StringCodec }
+        fun indexSpec(): SetStoreSpec<String, String> = setStoreSpec("index") { elementCodec = StringCodec }
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -219,7 +220,7 @@ class CoCacheUsabilityTest {
                 storageKeyOf(runtime, "profile").assert().isEqualTo("orders:profile:k")
                 storageKeyOf(runtime, "index").assert().isEqualTo("idx:index:k")
                 @Suppress("UNCHECKED_CAST")
-                val index = context.getBean("index") as SetCache<String, String>
+                val index = context.getBean("index") as SetStore<String, String>
                 index.add("k", listOf("a"))
                 requireNotNull(runtime.admin("index")).inspect("k").remote.value.assert().isEqualTo("[a]")
             }

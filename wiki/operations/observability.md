@@ -26,12 +26,13 @@ Prometheus names follow Micrometer's conventions: `cocache.misses` becomes `coca
 
 | Meter | Type | Counts |
 |-------|------|--------|
-| `cocache.misses` | counter | Reads that missed L2, counted per call before concurrent misses for a key are coalesced. Reads answered by the `KeyFilter` are not included. For a `SetCache`: reads that found no set in L1. |
+| `cocache.misses` | counter | Reads that missed L2, counted per call before concurrent misses for a key are coalesced. Reads answered by the `KeyFilter` are not included. For a `SetStore`: reads that found no set in L1. |
 | `cocache.hits{level=l2}` | counter | Reads answered by L2, including negative entries. Registered only with `cocache.metrics.local-hits=true`. |
 | `cocache.hits{level=l1}` | counter | L2 misses answered by L1, including negative entries |
 | `cocache.filtered` | counter | Reads the `KeyFilter` answered as "doesn't exist", without touching Redis |
 | `cocache.lease.waits` | counter | Misses that found another instance loading the key and waited for it |
 | `cocache.lease.wait.timeouts` | counter | Misses that stopped waiting (after `lease-wait`, or after the other lease's remaining time if that is shorter) and loaded themselves without writing L1 |
+| `cocache.reads.unknown` | counter | Reads that had no answer because Redis failed ([`Lookup.Unknown`](../guide/caches.md#unknown)), counted per caller: those that threw `CacheReadException`, `lookup` calls that returned `Unknown`, and those that `unknownRead = ABSENT` turned into `null`. The Redis failure itself also counts in `cocache.remote.failures`. |
 
 Every read (every key of a `getAll`) counts exactly once in `hits{level=l2}`, `misses`, or `filtered`. An L2 miss then counts in `hits{level=l1}` if Redis had the key, or in `loads` if the loader ran.
 
@@ -53,21 +54,22 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | Meter | Type | Counts |
 |-------|------|--------|
 | `cocache.fill.rejections` | counter | Loads that held a lease or refresh token, but Redis refused the fill: an invalidation destroyed the token, the loader outlived `lease-ttl`, the fill failed, or (versioned caches) the loader returned an older version than Redis holds |
-| `cocache.degraded.fills` | counter | Loads written to L2 only, for `degraded-local-max-age`: Redis read failed, lease wait timed out, fill rejected, value in an unknown format, or an invalidation of the key still pending. A read without a loader isn't counted when Redis fails: it throws, or with an explicit `read-failure: degrade` returns `null` without caching anything (counted in `cocache.remote.failures`). |
+| `cocache.degraded.fills` | counter | Loads written to L2 only, for `degraded-local-max-age`: Redis read failed, lease wait timed out, fill rejected, value in an unknown format, or an invalidation of the key still pending. A read without a source isn't counted when Redis fails: it has no answer and caches nothing (counted in `cocache.reads.unknown` and `cocache.remote.failures`). |
+| `cocache.fill.unversioned.absent` | counter | Loads of a `VersionedCache` whose versioned loader returned a plain `null` while Redis held versioned content for the key. Redis refused the negative entry, the read returned "absent", and the next miss loads again. Express deletions as `Versioned(null, version)` ([versioned loaders](../guide/caches.md#versioned-loaders)). The first one per cache logs a warning. |
 | `cocache.stale.discards` | counter | L2 fills dropped because an invalidation of the key arrived while the read was in flight, or (versioned caches) because L2 already held a newer version than the fill, for example from a loader that reads a lagging replica. This is the L2 fence working. |
 | `cocache.reclaims` | counter | L1 values this instance couldn't decode (foreign content or codec failure). A separate reclaim script then converts the value into a lease, if it is still unchanged, and the instance reloads. |
-| `cocache.unknown.formats` | counter | L1 values in a newer wire format than this instance knows, or with a must-understand flag it doesn't know (loaded from the source, nothing overwritten; without a loader the read throws), unreadable content read without a loader (the read throws `CacheReadException`), and `SetCache.add` / `remove`, `putIfMatch` and `putIfNewer` / `invalidateIfNewer` calls refused on unreadable content (they throw `CacheWriteException` and also count in `cocache.write.failures`), and `getIfChanged` calls that hit unreadable content. |
+| `cocache.unknown.formats` | counter | L1 values in a newer wire format than this instance knows, or with a must-understand flag it doesn't know: a read with a source loads around it and overwrites nothing, an externally sourced `Cache` read without a loader treats the key as unfilled, and an authoritative read fails (`CacheReadException`; a `SetStore` throws `ForeignFormatException`). Also unreadable content read without a source (the read throws `CacheReadException`); `SetStore.add` / `remove`, `putIfMatch` / `deleteIfMatch`, `putIfNewer` / `invalidateIfNewer` / `deleteIfNewer` and `evict` calls refused on unreadable content (they throw `CacheWriteException` and also count in `cocache.write.failures`); and `getIfChanged` calls that hit unreadable content. |
 
 ### Writes, invalidations, channel {#metrics-writes}
 
 | Meter | Type | Counts |
 |-------|------|--------|
 | `cocache.remote.failures` | counter | Redis operations on the read side that failed: read, fill, release, reclaim, refresh |
-| `cocache.write.failures` | counter | `put`, `putIfMatch`, `invalidate`, `invalidateAll`, and `SetCache` writes that failed on Redis (first attempt). A `putIfMatch` conflict isn't a failure. |
-| `cocache.conditional.conflicts` | counter | `putIfMatch` calls that didn't write because Redis held a different value ([conditional writes](../guide/freshness.md#conditional-writes)). A steady rate means writers often race on the same key. |
+| `cocache.write.failures` | counter | Writes and deletes of every type that failed on Redis (first attempt): `put`, `putAll`, `invalidate`, `delete`, the conditional and versioned writes, `evict`, `purge`, and `SetStore` writes. A conflict or a stale version isn't a failure. |
+| `cocache.conditional.conflicts` | counter | `putIfMatch` and `deleteIfMatch` calls that didn't write because Redis held a different value ([conditional writes](../guide/freshness.md#conditional-writes)). A steady rate means writers often race on the same key. |
 | `cocache.conditional.unchanged` | counter | `getIfChanged` calls that confirmed the value without transferring it |
-| `cocache.versioned.stale` | counter | `putIfNewer` / `invalidateIfNewer` calls that didn't write because Redis held that version or a newer one ([versioned writes](../guide/freshness.md#versioned-writes)): duplicate deliveries and late, older versions |
-| `cocache.type.mismatch` | counter | Reads of a value that a cache without a loader wrote (it carries a digest) by a cache with a loader, and per-key evictions of a versioned cache that met one. Another cache without a loader shares the namespace: the value is read but never reclaimed or refreshed. Logged once per cache. |
+| `cocache.versioned.stale` | counter | `putIfNewer` / `invalidateIfNewer` / `deleteIfNewer` calls that didn't write because Redis held that version or a newer one ([versioned writes](../guide/freshness.md#versioned-writes)): duplicate deliveries and late, older versions |
+| `cocache.type.mismatch` | counter | Reads by a `Cache` or `VersionedCache` of a value a `Store` wrote (it carries a digest segment), and `VersionedCache.evict` calls refused on one. A `Store` shares the namespace: the value is read but never reclaimed or refreshed, and the eviction throws. Logged once per cache. See [the five types](../guide/caches.md#types). |
 | `cocache.invalidation.retries` | counter | Retry attempts of failed invalidations |
 | `cocache.invalidations.dropped` | counter | Invalidations given up after all retries, on a full retry queue, or at shutdown. L1 still holds the old value. |
 | `cocache.invalidations.received` | counter | Invalidation messages from other instances or external writers (one per message, which may carry many keys) |
@@ -80,7 +82,9 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 |-----------|----------|---------|---------|
 | `increase(cocache_invalidations_dropped_total[5m]) > 0` | page | An invalidation never reached Redis. Every instance may serve the old value until its `ttl`. | [Invalidations dropped](./troubleshooting.md#invalidations-dropped) |
 | health `cocache` is `DOWN` for more than a minute | page | This instance can't receive invalidations, and its L2 is cleared at every heartbeat | [Hit rate collapsed](./troubleshooting.md#resets) |
-| `rate(cocache_remote_failures_total[5m]) > 0` sustained | warn | Redis is failing. Reads go to the source. | [Redis down](./troubleshooting.md#redis-down) |
+| `rate(cocache_remote_failures_total[5m]) > 0` sustained | warn | Redis is failing. Reads with a source go to the source. | [Redis down](./troubleshooting.md#redis-down) |
+| `rate(cocache_reads_unknown_total[5m]) > 0` | warn | Reads without a source have no answer: callers get `CacheReadException` | [Redis down](./troubleshooting.md#redis-down) |
+| `increase(cocache_fill_unversioned_absent_total[10m]) > 0` | warn | A versioned loader returns a plain `null` for deleted rows, so every miss on those keys reloads | [Versioned loaders](../guide/caches.md#versioned-loaders) |
 | `rate(cocache_load_rejections_total[5m]) > 0` | warn | Callers are getting `SourceLoadRejectedException` | [Load rejections](./troubleshooting.md#load-rejections) |
 | `rate(cocache_resets_total[5m])` above zero outside deploys | warn | The subscription connection is unstable | [Hit rate collapsed](./troubleshooting.md#resets) |
 | `cocache_lease_wait_timeouts_total` / `cocache_lease_waits_total` above 10% | warn | Loaders are slower than `lease-wait`, so concurrent misses across instances each load | [Lease wait timeouts](./troubleshooting.md#lease-wait-timeouts) |
@@ -127,7 +131,7 @@ The starter registers the health contributor `cocache` (bean `cocacheHealthIndic
   "status": "UP",
   "details": {
     "backend": "RedisBackend",
-    "format": 1,
+    "format": 2,
     "atomicBroadcast": true,
     "channelMode": "pubsub",
     "heartbeat": { "healthy": true },
@@ -183,11 +187,11 @@ A cache report:
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
-  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0, "typeMismatches": 0 }
+  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0, "typeMismatches": 0, "readsUnknown": 0, "unversionedAbsentRefusals": 0 }
 }
 ```
 
-The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{level=l2}` (present only when the L2 hit counter is on), `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, `loadTimeouts` is `cocache.load.timeouts`, `staleVersions` is `cocache.versioned.stale`, `typeMismatches` is `cocache.type.mismatch`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
+The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{level=l2}` (present only when the L2 hit counter is on), `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, `loadTimeouts` is `cocache.load.timeouts`, `staleVersions` is `cocache.versioned.stale`, `typeMismatches` is `cocache.type.mismatch`, `readsUnknown` is `cocache.reads.unknown`, `unversionedAbsentRefusals` is `cocache.fill.unversioned.absent`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
 
 ### Encoded keys {#encoded-key}
 
@@ -214,7 +218,7 @@ curl -s localhost:8080/actuator/cocache/UserCache/42
   "cache": "UserCache",
   "storageKey": "cocache:UserCache:42",
   "local": { "state": "VALUE", "value": "User(id=42, name=Ada)", "expiresAt": "2026-10-19T08:05:00Z", "refreshAt": null, "expired": false },
-  "remote": { "state": "VALUE", "value": "User(id=42, name=Ada)", "ttl": "PT58M", "format": 1, "error": null },
+  "remote": { "state": "VALUE", "value": "User(id=42, name=Ada)", "ttl": "PT58M", "format": 2, "error": null },
   "invalidationPending": false
 }
 ```
@@ -222,8 +226,8 @@ curl -s localhost:8080/actuator/cocache/UserCache/42
 | Field | Values |
 |-------|--------|
 | `storageKey` | The full Redis key, for `redis-cli` |
-| `local` | This instance's L2 copy, or `null`. `state`: `VALUE`, `ABSENT` (negative entry), or `UNRESOLVED` (a miss on a cache without a loader). `expired: true` is a copy past its `expiresAt` that Caffeine hasn't removed yet. It is never served. |
-| `remote.state` | `VALUE`, `ABSENT` (negative entry), `SET` (`SetCache`), `LEASED` (an instance is loading it, `ttl` is the lease's remaining time), `MISS`, `UNREADABLE` (foreign content, a newer format, wrong shape, or a codec failure, with the reason in `error`), or `ERROR` (the Redis read failed) |
+| `local` | This instance's L2 copy, or `null`. `state`: `VALUE`, `ABSENT` (a negative entry, or a key an authoritative cache confirmed absent), or `UNFILLED` (a key an externally sourced `Cache` found absent: a read without a loader sees `null`, a read with one loads). `expired: true` is a copy past its `expiresAt` that Caffeine hasn't removed yet. It is never served. |
+| `remote.state` | `VALUE`, `ABSENT` (negative entry), `SET` (`SetStore`), `LEASED` (an instance is loading it, `ttl` is the lease's remaining time), `MISS`, `UNREADABLE` (foreign content, a newer format, wrong shape, or a codec failure, with the reason in `error`), or `ERROR` (the Redis read failed) |
 | `remote.ttl` | Remaining lifetime in L1, `null` if it never expires |
 | `value` | The value decoded with the cache's codec, as `toString()`, cut at 256 characters |
 | `invalidationPending` | An invalidation of this key failed on Redis and is still being retried. Until it succeeds, misses skip L1. |
@@ -247,7 +251,15 @@ curl -s -X DELETE localhost:8080/actuator/cocache/UserCache/42
 # {"cache":"UserCache","key":"42"}
 ```
 
-This runs the normal invalidation path, as `cache.invalidate(key)` does: L1 is deleted, every instance drops its L2 copy, and the next read loads from the source. It is idempotent. If Redis fails, it follows the cache's `invalidate-failure` setting (by default, with a loader, queued for retry and `200` returned; with `throw`, the default without a loader, an error). On a `SetCache` it is `clear(key)`, which **deletes the set's only copy**. On a [versioned cache](../guide/freshness.md#versioned-writes) it keeps the version: the key becomes an eviction marker that still refuses older versions, and a Redis failure returns an error instead of being retried.
+This deletes the key cluster-wide: L1 is changed, and every instance drops its L2 copy. It is idempotent. What it runs depends on the cache's [type](../guide/caches.md#types):
+
+| Type | Runs | If Redis fails |
+|------|------|----------------|
+| `Cache` | `invalidate(key)`: the next read loads from the source | Follows `invalidate-failure`: by default queued for retry and `200` returned; with `throw`, an error |
+| `VersionedCache` | `evict(key)`: the key becomes an eviction marker that still refuses older versions ([versioned writes](../guide/freshness.md#versioned-writes)) | An error, never retried |
+| `Store` | `delete(key)`: **deletes the only copy** | An error, never retried |
+| `VersionedStore` | `purge(key)`: **deletes the only copy and its version** | An error, never retried |
+| `SetStore` | `clear(key)`: **deletes the set's only copy** | An error, never retried |
 
 ## Logs {#logs}
 

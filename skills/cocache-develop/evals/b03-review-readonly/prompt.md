@@ -18,7 +18,7 @@ Review this diff of a downstream service that uses CoCache 8.0.0 and report only
 +class ProductKey(val tenant: String, val id: Long)
 +
 +@CoCache
-+interface ProductTagsCache : SetCache<Long, String>   // tags are stored in the product_tag table
++interface ProductTagsCache : SetStore<Long, String>   // tags are stored in the product_tag table
 +
 --- a/src/main/kotlin/shop/ProductService.kt
 +++ b/src/main/kotlin/shop/ProductService.kt

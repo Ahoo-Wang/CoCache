@@ -45,9 +45,12 @@ class KeyEncoderTest {
 
     @Test
     fun specBuildersUseTheCheckedEncoder() {
-        val spec = cacheSpec<Any, String>("checked") { codec = me.ahoo.cocache.core.codec.StringCodec }
+        val spec = cacheSpec<Any, String>("checked") {
+            codec = me.ahoo.cocache.core.codec.StringCodec
+            externallySourced()
+        }
         runCatching { spec.keyEncoder.encode(Opaque()) }.isFailure.assert().isTrue()
-        val setSpec = setCacheSpec<Any, String>("checked-set") { elementCodec = me.ahoo.cocache.core.codec.StringCodec }
+        val setSpec = setStoreSpec<Any, String>("checked-set") { elementCodec = me.ahoo.cocache.core.codec.StringCodec }
         runCatching { setSpec.keyEncoder.encode(Opaque()) }.isFailure.assert().isTrue()
     }
 }

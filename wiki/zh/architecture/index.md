@@ -44,8 +44,8 @@ flowchart BT
 
 | 模块 | 内容 |
 |------|------|
-| `cocache-api` | `Cache`、`SetCache`、`Lookup`、`CacheLoader`、`Codec`、`CacheClock`、异常、注解（`@CoCache`、`@CaffeineCache`、`@JoinCacheable`）、`JoinCache`，以及 `me.ahoo.cocache.api.spi` 中的后端 SPI。没有运行时依赖 |
-| `cocache-core` | `CacheSpec` / `SetCacheSpec`、`CachePolicy`、`CacheRuntime`、引擎、`SingleFlight`、`InvalidationStamps`、`CacheAdmin` / `CacheMetrics`、`RetryPolicy`、`ExternalInvalidator`、`CacheProxies`、`InMemoryBackend`、`TickingClock`、`ManualClock`。依赖 Caffeine |
+| `cocache-api` | `ReadableCache` 之上的五种[缓存类型](../guide/caches.md#types)（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`）及其异步视图与挂起视图、`Lookup`、`CacheLoader`、`Codec`、`CacheClock`、异常、注解（`@CoCache`、`@CaffeineCache`、`@JoinCacheable`）、`JoinView` / `JoinCache`，以及 `me.ahoo.cocache.api.spi` 中的后端 SPI。没有运行时依赖 |
+| `cocache-core` | 每种类型一个 spec（`CacheSpec`、`VersionedCacheSpec`、`StoreSpec`、`VersionedStoreSpec`、`SetStoreSpec`）、`CachePolicy`、`CacheRuntime`、引擎、`SingleFlight`、`InvalidationStamps`、`CacheAdmin` / `CacheMetrics`、`RetryPolicy`、`ExternalInvalidator`、`CacheProxies`、`SimpleJoinView` / `SimpleJoinCache`、`SuspendingCacheLoader`、`InMemoryBackend`、`TickingClock`、`ManualClock`。依赖 Caffeine 与 `kotlinx-coroutines-core`（`api` 依赖：引擎运行在协程上，挂起视图对外暴露它们） |
 | `cocache-redis` | `RedisBackend`：Lua 脚本、线格式、Pub/Sub 与 Sharded Pub/Sub 通道。依赖 Lettuce，不依赖 Spring |
 | `cocache-codec-jackson` | `JacksonCodec`（Jackson 3，`tools.jackson`） |
 | `cocache-spring` | `CoCacheSpringCacheManager`、`TransactionalInvalidator`。供不使用 Boot 的 Spring 应用 |
@@ -59,9 +59,9 @@ flowchart BT
 
 | 部分 | 负责 | 从不 |
 |------|------|------|
-| **数据源**（`CacheLoader`） | 返回值，或用 `null` 表示“不存在” | 决定寿命 |
+| **数据源**（`CacheLoader`，只用于 `Cache` 与 `VersionedCache`） | 返回值，或用 `null` 表示“不存在” | 决定寿命 |
 | **策略**（`CachePolicy`） | 寿命、抖动、负缓存寿命、本地与降级限龄、刷新窗口、lease、回源并发、L2 容量、失败模式 | 执行任何动作 |
-| **引擎**（`CoherentEngine`、`SetEngine`） | 逐层读穿透、合并回源、持有两层栅栏、安排写入顺序、处理失败、提前刷新 | 自己做远程存储 |
+| **引擎**（`Cache`、`VersionedCache`、`Store`、`VersionedStore` 用 `CoherentEngine`；`SetStore` 用 `SetEngine`） | 逐层读穿透、合并回源、持有两层栅栏、安排写入顺序、处理失败、提前刷新 | 自己做远程存储 |
 | **存储**（`L1Store`） | 在字节与令牌上执行 L1 协议。TTL、窗口与令牌都作为参数传入 | 了解值的类型或持有策略 |
 | **通道**（`InvalidationChannel`） | 投递失效帧，并在消息可能丢失时通知订阅者 | 过滤或解释 key |
 | **运行时**（`CacheRuntime`） | 每个进程一个：持有 `NodeId`、时钟、后端、刷新执行器与重试队列，并创建每个缓存 | 让两个缓存共享状态 |
@@ -83,8 +83,8 @@ val users: Cache<String, User> = runtime.create(
 )
 ```
 
-- spec 是不可变数据：名称、命名空间、key 前缀、key 编码器、编解码器、loader、`ttlOf`、key 过滤器与策略。用户只提供数据与无状态函数。
-- `runtime.create` 构建缓存的每个有状态部分：L2、失效戳、SingleFlight 表、存储与订阅，两个缓存不可能意外共享其中任何一个。名称重复，或前缀与命名空间的组合重复时失败。
+- spec 是不可变数据：名称、命名空间、key 前缀、key 编码器、编解码器、数据源（只有 `Cache` 与 `VersionedCache` 有）、`ttlOf`、key 过滤器与策略。每种[类型](../guide/caches.md#spec-bean)有自己的 spec，`runtime.create(spec)` 返回对应的类型。用户只提供数据与无状态函数。
+- `runtime.create` 构建缓存的每个有状态部分：L2、失效戳、SingleFlight 表、存储与订阅，两个缓存不可能意外共享其中任何一个。名称重复，或前缀与命名空间的组合重复时失败；后端缺少该类型需要的 L1 能力时同样失败（`Store` 需要条件写入，带版本的类型需要按版本写入，`SetStore` 需要集合）。启动日志写出类型：`Cache[user] - created as Cache on namespace[user], …`。
 - `NodeId` 是每个运行时 16 个随机字节。它让令牌全局唯一，也让实例能忽略自己发出的消息。
 - `close()` 按创建的逆序关闭订阅、引擎与存储，再关闭运行时自己创建的时钟与执行器。尚未执行的失效重试计入丢弃。后端由调用方关闭。
 
@@ -101,9 +101,9 @@ sequenceDiagram
     participant Fac as AnnotatedCacheFactory
     participant Asm as CacheAssembler
     participant RT as CacheRuntime
-    Reg->>Reg: 每个 @EnableCoCache 接口一个 bean<br>每个 CacheSpec bean 一个 Cache bean
+    Reg->>Reg: 每个 @EnableCoCache 接口一个 bean<br>每个 spec bean 一个缓存 bean
     Note over Fac: 首次注入时
-    Fac->>Fac: @CoCache / @CaffeineCache 翻译为 CacheSpec<br>解析 loader、codec、keyExpression
+    Fac->>Fac: @CoCache / @CaffeineCache 翻译为所继承类型的 spec<br>解析 loader、codec、keyExpression
     Fac->>Asm: create(spec)
     Asm->>Asm: 依次叠加 CacheSpecCustomizer、<br>cocache.defaults、cocache.caches.[name]
     Asm->>RT: create(spec)
@@ -114,11 +114,11 @@ sequenceDiagram
 
 | 方式 | bean 名 | bean |
 |------|---------|------|
-| 接口：`@CoCache interface UserCache : Cache<String, User>`，列在 `@EnableCoCache(caches = …)` 中 | 缓存名（`@CoCache(name)`，默认接口简单类名） | JDK 代理。`Cache` / `SetCache` 的方法按方法名分派给引擎，不经反射，异常原样到达调用方。例外是 JDK 代理自身的规则：接口方法没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`、被中断的等待者的 `InterruptedException`）由 JDK 包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`。接口中的 `default` 方法经 `InvocationHandler.invokeDefault` 执行 |
-| spec bean：`@Bean fun userSpec(): CacheSpec<String, User>` | spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` | 引擎本身。`CacheSpecRegistrar` 从工厂方法声明的返回类型读取 `K` 与 `V`，不实例化 spec |
-| 组合缓存：`@JoinCacheable interface …`，列在 `@EnableCoCache(joinCaches = …)` 中 | 组合缓存名 | 两个缓存之上的只读视图，按名称解析。见 [JoinCache](../guide/join-cache.md) |
+| 接口：`@CoCache interface UserCache : Cache<String, User>`，列在 `@EnableCoCache(caches = …)` 中 | 缓存名（`@CoCache(name)`，默认接口简单类名） | JDK 代理。所继承类型的方法按方法名分派给引擎，不经反射，异常原样到达调用方。例外是 JDK 代理自身的规则：接口方法没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`、被中断的等待者的 `InterruptedException`）由 JDK 包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`。接口中的 `default` 方法经 `InvocationHandler.invokeDefault` 执行 |
+| spec bean：`@Bean fun userSpec(): CacheSpec<String, User>`，或其它任何 spec 类型 | spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` | 引擎本身。`CacheSpecRegistrar` 从工厂方法声明的返回类型读取 `K` 与 `V`，不实例化 spec |
+| 组合缓存：`@JoinCacheable interface …`，列在 `@EnableCoCache(joinCaches = …)` 中 | 组合缓存名 | 两个缓存之上的只读视图，按名称解析；`JoinCache` 还能失效。见 [JoinCache](../guide/join-cache.md) |
 
-策略分层，后者覆盖前者：内置默认值 → 声明 → `CacheSpecCustomizer` bean（按顺序）→ `cocache.defaults.*` → `cocache.caches.[name].*`。`key-prefix` 按同样的规则分层。所有单例创建完成后，如果 `cocache.caches` 中出现未声明的缓存，`CacheAssembler` 会让启动失败。所有有状态组件都由 `CacheRuntime` 按 spec 新建（见[运行时](#runtime)），两个缓存不可能共享其中任何一个。在 Spring 中，组合缓存按缓存名（经由对应的 bean 名）找到它的两个缓存，从不按类型。
+策略分层，后者覆盖前者：内置默认值（按类型）→ 声明 → `CacheSpecCustomizer` bean（按顺序）→ `cocache.defaults.*` → `cocache.caches.[name].*`。`key-prefix` 按同样的规则分层。所有单例创建完成后，如果 `cocache.caches` 中出现未声明的缓存，`CacheAssembler` 会让启动失败。所有有状态组件都由 `CacheRuntime` 按 spec 新建（见[运行时](#runtime)），两个缓存不可能共享其中任何一个。在 Spring 中，组合缓存按缓存名（经由对应的 bean 名）找到它的两个缓存，从不按类型。
 
 ## 线格式 {#wire-format}
 
@@ -128,7 +128,7 @@ sequenceDiagram
 |------|------|
 | 存储 key | `{keyPrefix}{namespace}:{encodedKey}`，默认 `cocache:{cacheName}:{key.toString()}`。命名空间符合 `[A-Za-z0-9._-]+`，内部 key 放在 `{keyPrefix}!` 之下 |
 | 值、负缓存、lease、保留版本的失效 | Redis String：36 字节的核心头部、标志位声明的段，后接编解码器的字节 |
-| 集合（`SetCache`） | Redis Hash：字段 `!f` 存格式版本（`"2"`），每个成员是一个值为空串的字段 `+{成员字节}`。字段 `!m` 是必须理解的位图（缺失即为 0），其余以 `!` 开头的字段预留，读者忽略 |
+| 集合（`SetStore`） | Redis Hash：字段 `!f` 存格式版本（`"2"`），每个成员是一个值为空串的字段 `+{成员字节}`。字段 `!m` 是必须理解的位图（缺失即为 0），其余以 `!` 开头的字段预留，读者忽略 |
 | 到期时间 | `PEXPIRE` / `PTTL`，毫秒，每次状态转换都显式重设 |
 | 频道 | `{keyPrefix}inv:{namespace}` |
 | 消息 | `[0x01][发布者 NodeId：16 字节][数量：varint]([长度：varint][存储 key：UTF-8])*`。频道读不懂的帧重置它的缓存而不是被丢弃，版本 `2` 预留给 namespace 重置（[详见](./consistency.md#invalidation-channel)） |
@@ -150,13 +150,13 @@ sequenceDiagram
 
 - **标志位**：bit 0–6 是必须理解的，bit 7 标记扩展区，扩展区只放旧读者可以忽略的信息。读者遇到不认识的必须理解的位（本版本为 bit 2–6），按更高格式处理。载荷偏移只由标志位决定，Lua 脚本与客户端用同一个函数计算。
 - **扩展区中的 TLV**：每个 TLV 为 `[类型：1 字节][长度：1–2 字节][值]`。长度小于 128 时用 1 字节；至多 32767 时用 2 字节，首字节为 `0x80 | (长度 >> 8)`。读者跳过不认识的类型。类型 1 是**写入标识**：24 字节，与令牌同形，每次写入新取一个。
-- **写入哪些段**：有 loader 的缓存的值、lease 与负缓存都不带段，头部是 36 字节。在 8.0 加入权威存储类型之前，没有 loader 的缓存充当这个角色：它写入的每个值都带写入标识（多 28 字节），其中不带版本的值另带摘要段（再多 32 字节，共 96 字节）。[带版本的](../guide/freshness.md#versioned-writes)值与墓碑带版本段，不带摘要段。版本段中从不是 `Versioned.NO_VERSION`。
-- **摘要**：摘要段保存载荷的 SHA-256（`Digest`，带算法标识），由写入方在客户端计算。[条件读写](../guide/freshness.md#conditional-writes)只比较头部中的这些字节，Redis 只读 78 字节的头部（`GETRANGE`），不读整个值，也不计算摘要。拿到载荷的读取方（没有 loader 的缓存从 Redis 读取，或 `getIfChanged` 返回值）重算 SHA-256，不一致、或不带版本也不带摘要段的值都按损坏处理。带摘要段的值从不被回收、从不取得刷新令牌：它可能是另一个缓存的唯一副本。
+- **写入哪些段**：`Cache` 的值、lease 与负缓存都不带段，头部是 36 字节。权威类型的每个值都带写入标识（多 28 字节）。`Store` 的值另带摘要段（再多 32 字节，共 96 字节）。[带版本的](../guide/freshness.md#versioned-writes)值与墓碑带版本段，不带摘要段：`VersionedCache` 的值与所有墓碑只带版本，`VersionedStore` 的值带写入标识与版本。版本段中从不是 `Versioned.NO_VERSION`。
+- **摘要**：摘要段保存载荷的 SHA-256（`Digest`，带算法标识），由写入方在客户端计算。[条件读写](../guide/freshness.md#conditional-writes)只比较头部中的这些字节，Redis 只读 78 字节的头部（`GETRANGE`），不读整个值，也不计算摘要。拿到载荷的权威读取方（`Store` 或 `VersionedStore` 从 Redis 读取，或 `getIfChanged` 返回值）重算 SHA-256，不一致、或不带版本也不带摘要段的值都按损坏处理。`Cache` 或 `VersionedCache` 读到带摘要段的值时计入 `cocache.type.mismatch`，照常读取。带摘要段的值从不被回收、从不取得刷新令牌：它是某个 `Store` 的唯一副本。
 - **状态 `E`**：淘汰带版本的缓存的一个 key（端点的按 key `DELETE`）时保留它的版本：key 变为只有版本、没有载荷的 `E`（44 字节）。读取看到的是未命中，原地在其上取得 lease（保留版本与到期时间）；填充的版本不小于 `E` 的版本才写入，迟到的旧版本仍被拒绝。
 
 令牌 = 签发运行时的 `NodeId`（16 字节）+ 进程内序号（8 字节）。令牌由客户端构造、永不复用，被销毁的令牌不可能再次匹配。读取只对格式 2、没有不认识的必须理解的位的内容授予 lease 或刷新令牌，刷新令牌只授予没有摘要段的值（带版本的值照常授予）。填充只读核心头部与版本段（44 字节），释放只读 36 字节的核心头部。key 中带版本时，版本更旧（或没有版本）的填充被拒绝，脚本内清零它的令牌；版本相等时续期，不发失效消息；版本更新，或填充 `E` 时，写入并广播。
 
-更低格式的内容是缓存读不懂的内容：有 loader 的缓存在内容未变时回收并回源，没有 loader 的缓存失败。其中包括不是本协议写入的内容（没有 magic 字节、格式字节为 `0`、段超出值的长度、没有有效 `!f` 的 Hash、其它 Redis 类型），读作格式 `0`；也包括格式号低于 2 的内容。更高的格式一律既不回收也不写回：有 loader 的缓存绕过它回源，没有 loader 的缓存失败。更高的格式包括格式号大于 2、带不认识的必须理解的位或状态的内容，以及 `!m` 中有位的集合。
+更低格式的内容是缓存读不懂的内容：有数据源的读取在内容未变时回收并回源，没有数据源的读取失败。其中包括不是本协议写入的内容（没有 magic 字节、格式字节为 `0`、段超出值的长度、没有有效 `!f` 的 Hash、其它 Redis 类型），读作格式 `0`；也包括格式号低于 2 的内容。更高的格式一律既不回收也不写回：有数据源的读取绕过它回源，外部来源的 `Cache` 上不带 loader 的读取把该 key 当作未填充，权威类型失败。更高的格式包括格式号大于 2、带不认识的必须理解的位或状态的内容，以及 `!m` 中有位的集合。
 
 8.x 内新增必须理解的段要分两阶段发布：先发布能读懂它的版本，namespace 中的全部实例都升级之后，再发布写入它的版本。新的 TLV 与新的 `!` 字段不需要这样发布，旧读者会跳过它们。
 
@@ -166,7 +166,7 @@ sequenceDiagram
 |------|----------|------|
 | L1 存储 + 失效通道 | 是 | 实现 `CoherenceBackend` 并通过 TCK。见[扩展](./extending.md#backend) |
 | 值的字节 | 是 | `Codec<V>`，每个缓存一个。见[编解码器](./extending.md#codecs) |
-| 数据源 | 是 | `CacheLoader<K, V>` |
+| 数据源 | 是 | `CacheLoader<K, V>`、`AsyncCacheLoader`、`SuspendingCacheLoader` 或带版本的 loader |
 | key 编码 | 是 | `KeyEncoder<K>` 或 `keyExpression` |
 | 不可能存在的 key | 是 | `KeyFilter` |
 | 按条目决定寿命 | 是 | `TtlFunction`（`ttlOf`） |

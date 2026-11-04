@@ -13,22 +13,17 @@
 
 package me.ahoo.cocache.core.memory
 
-import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.clock.ManualClock
-import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.setCacheSpec
 import me.ahoo.cocache.test.CacheAccess
 import me.ahoo.cocache.test.FaultSpec
 import me.ahoo.cocache.test.L1Capability
 import me.ahoo.cocache.test.MultiNodeSpec
 import me.ahoo.cocache.test.SetEngineSpec
 import me.ahoo.cocache.test.VersionedSpec
-import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.Executors
 
@@ -144,23 +139,6 @@ class InMemoryAsyncSetEngineTest : SetEngineSpec() {
     override fun createBackend(): CoherenceBackend = InMemoryBackend(manualClock)
 
     override fun elapse(duration: Duration) = manualClock.advance(duration)
-
-    @Test
-    fun unsupportedOperationsFailTheFutureInsteadOfThrowing() {
-        val engine = nodeA.create(setCacheSpec<String, String>(cacheName) { elementCodec = StringCodec })
-        val async = engine.async()
-        async.invalidate(
-            "k"
-        ).handle { _, e -> e }.join().assert().isInstanceOf(UnsupportedOperationException::class.java)
-        async.invalidateAll(
-            listOf("k")
-        ).handle { _, e -> e }.join().assert().isInstanceOf(UnsupportedOperationException::class.java)
-        async.get("k", AsyncCacheLoader { error("unused") }).handle { _, e -> e }.join()
-            .assert().isInstanceOf(UnsupportedOperationException::class.java)
-        async.get("k").join().assert().isEmpty()
-        async.sync().assert().isSameAs(engine)
-        engine.async().assert().isSameAs(async)
-    }
 }
 
 class InMemoryAsyncMultiNodeTest : MultiNodeSpec() {

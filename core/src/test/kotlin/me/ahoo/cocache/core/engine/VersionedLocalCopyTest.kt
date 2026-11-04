@@ -13,9 +13,9 @@
 
 package me.ahoo.cocache.core.engine
 
-import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Fill
@@ -25,13 +25,13 @@ import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.core.CacheRuntime
-import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.internal.Ticker
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.core.versionedCacheSpec
 import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
@@ -62,8 +62,8 @@ class VersionedLocalCopyTest {
         runtime: CacheRuntime,
         leaseWait: Duration? = null,
         loader: CacheLoader<String, Versioned<String?>> = CacheLoader { database[it] }
-    ): Cache<String, String> = runtime.create(
-        cacheSpec<String, String>(NAME) {
+    ): VersionedCache<String, String> = runtime.create(
+        versionedCacheSpec<String, String>(NAME) {
             codec = StringCodec
             versionedLoader = loader
             policy {

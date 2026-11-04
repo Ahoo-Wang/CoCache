@@ -19,7 +19,7 @@ import java.security.MessageDigest
 /**
  * 载荷的摘要（RFC 0005 §4.3、§4.7，D1）：SHA-256（32 字节），带算法标识 [algorithm]。比较“内容是否仍是读到的那一份”：
  * 条件读取与条件写入（[ConditionalL1Store.readIfChanged]、[ConditionalL1Store.putIfMatch]，用户 API 为
- * [me.ahoo.cocache.api.Cache.getIfChanged]、[me.ahoo.cocache.api.Cache.putIfMatch]）。
+ * [me.ahoo.cocache.api.Store.getIfChanged]、[me.ahoo.cocache.api.Store.putIfMatch]、[me.ahoo.cocache.api.Store.deleteIfMatch]）。
  *
  * 摘要由写入方在客户端计算（[of]、[ofPayload]），随 [Envelope.Scalar.digest] 写成 L1 头部的摘要段；条件读写的脚本只比较头部中的字节，
  * 读取方拿到载荷时重算并与头部比较（K3）。条件回收比较的是 SPI 自己的 [ContentFingerprint]（round 3 K12），与本类型无关。

@@ -133,7 +133,7 @@ open class CoherentEngineTest {
     /**
      * 用例拿到的缓存：经 [access] 访问，另暴露引擎的白盒状态。
      */
-    private class TestCache(val engine: CoherentEngine<String, String>, access: CacheAccess) :
+    private class TestCache(val engine: CacheEngine<String, String>, access: CacheAccess) :
         Cache<String, String> by access.cache(engine) {
         val metrics get() = engine.metrics
         val pendingInvalidationCount get() = engine.pendingInvalidationCount
@@ -143,7 +143,7 @@ open class CoherentEngineTest {
     }
 
     private fun CacheRuntime.engine(spec: CacheSpec<String, String> = spec()): TestCache =
-        TestCache(create(spec) as CoherentEngine<String, String>, access)
+        TestCache(create(spec) as CacheEngine<String, String>, access)
 
     private fun key(key: String) = "cocache:$name:$key"
 
@@ -168,7 +168,7 @@ open class CoherentEngineTest {
     @Test
     fun getWithCallerLoaderServesLocalHitsAndUsesLease() {
         val runtime = runtime()
-        val cache = runtime.engine(spec { loader = null })
+        val cache = runtime.engine(spec { external() })
         val calls = AtomicInteger()
         cache.get("k") {
             calls.incrementAndGet()
@@ -192,8 +192,9 @@ open class CoherentEngineTest {
             } as L1Read.Hit
             ).envelope as Envelope.Scalar
         filled.bytes.assert().isEqualTo("loaded-k".toByteArray())
-        // 没有数据源的缓存充当权威标量：调用方给出 loader 时的填充同样带写入标识（RFC 0005 §4.7，D2）
-        requireNotNull(filled.writer).node.assert().isEqualTo(runtime.nodeId)
+        // 外部来源的缓存是派生副本：调用方给出 loader 时的填充不带写入标识与摘要段（RFC 0005 §4.7）
+        filled.writer.assert().isNull()
+        filled.digest.assert().isNull()
     }
 
     @Test
@@ -205,7 +206,7 @@ open class CoherentEngineTest {
                 localMaxAge = Duration.ofSeconds(8),
                 refreshWindow = Duration.ofSeconds(5)
             )
-        val cache = runtime().engine(spec(policy) { loader = null })
+        val cache = runtime().engine(spec(policy) { external() })
         cache.put("k", "v")
         cache["k"].assert().isEqualTo("v")
         clock.advance(Duration.ofSeconds(6))
@@ -1035,6 +1036,14 @@ open class CoherentEngineTest {
         cache["k"].assert().isEqualTo("filled")
         cache.metrics.leaseWaits.assert().isEqualTo(1)
         loads.get().assert().isEqualTo(0)
+    }
+
+    /**
+     * 外部来源（`externallySourced()`）：去掉用例默认的数据源。
+     */
+    private fun CacheSpec.Builder<String, String>.external() {
+        loader = null
+        externallySourced()
     }
 }
 

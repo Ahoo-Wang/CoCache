@@ -16,10 +16,10 @@ package me.ahoo.cocache.api
 import me.ahoo.cocache.api.spi.Digest
 
 /**
- * [Cache.getIfChanged] 的结果：L1（共享存储，本缓存的权威副本）中这个 key 的当前状态。
+ * [Store.getIfChanged] 的结果：L1（唯一副本）中这个 key 的当前状态。
  *
- * “没有值”（[Absent]）包括：key 不存在、处于 lease 占位（其它节点正在回源）、负缓存。
- * 与 [Cache.putIfMatch] 的 `expected = null` 匹配的正是这些状态。
+ * “没有值”（[Absent]）包括：key 不存在、处于 lease 占位、负缓存。
+ * 与 [Store.putIfMatch] 的 `expected = null` 匹配的正是这些状态。
  */
 sealed interface ConditionalGet<out V> {
     /**
@@ -42,13 +42,13 @@ sealed interface ConditionalGet<out V> {
 }
 
 /**
- * [Cache.putIfMatch] 的结果。
+ * [Store.putIfMatch] 的结果。
  */
 sealed interface ConditionalPut {
     /**
      * 已写入 L1 并广播失效。
      *
-     * @param digest 写入的值的摘要（与随后 [Cache.getIfChanged] 读到的相同）
+     * @param digest 写入的值的摘要（与随后 [Store.getIfChanged] 读到的相同）
      */
     data class Written(val digest: Digest) : ConditionalPut
 
@@ -58,4 +58,21 @@ sealed interface ConditionalPut {
      * @param current L1 中当前值的摘要；`null` 表示 L1 中没有值（见 [ConditionalGet.Absent]）
      */
     data class Conflict(val current: Digest?) : ConditionalPut
+}
+
+/**
+ * [Store.deleteIfMatch] 的结果。
+ */
+sealed interface ConditionalDelete {
+    /**
+     * 已删除并广播失效。
+     */
+    data object Deleted : ConditionalDelete
+
+    /**
+     * L1 中的当前内容与 `expected` 不符：没有删除，也没有广播。
+     *
+     * @param current L1 中当前值的摘要；`null` 表示 L1 中没有值（见 [ConditionalGet.Absent]）
+     */
+    data class Conflict(val current: Digest?) : ConditionalDelete
 }

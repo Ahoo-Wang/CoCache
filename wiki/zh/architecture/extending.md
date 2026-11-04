@@ -48,13 +48,14 @@ interface L1Store {
     suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray)
     suspend fun putAll(puts: List<Put>, frame: ByteArray)
     suspend fun invalidate(keys: Collection<String>, frame: ByteArray)
-    fun conditional(): ConditionalL1Store?  // getIfChanged / putIfMatch，或 null
-    fun versioned(): VersionedL1Store?      // 带版本的缓存，或 null
-    fun sets(): SetL1Store?                 // SetCache，或 null
+    fun conditional(): ConditionalL1Store?  // Store，或 null
+    fun versioned(): VersionedL1Store?      // VersionedCache 与 VersionedStore，或 null
+    fun sets(): SetL1Store?                 // SetStore，或 null
 }
 interface ConditionalL1Store {
     suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead
     suspend fun putIfMatch(key: String, expected: Digest?, envelope: Envelope.Scalar, ttl: Duration?, frame: ByteArray): L1ConditionalWrite
+    suspend fun deleteIfMatch(key: String, expected: Digest, frame: ByteArray): L1ConditionalWrite
 }
 interface VersionedL1Store {
     suspend fun putIfNewer(key: String, envelope: Envelope, version: Long, ttl: Duration?, frame: ByteArray): L1VersionedWrite
@@ -70,7 +71,7 @@ interface SetL1Store {
 
 | 类型 | 形状 |
 |------|------|
-| `Envelope` | `Scalar(bytes, version, writer, digest)`、`Members(字节列表)` 或 `Absent`（负缓存）。`version` 默认为 `Versioned.NO_VERSION`，`writer` 与 `digest` 默认为 `null`，三者都参与相等比较。`writer` 是与 `Token` 同形的写入标识，引擎在没有 loader 的缓存的每次标量写入中给出它；`digest` 是载荷的 SHA-256，引擎在这些写入不带版本时给出它 |
+| `Envelope` | `Scalar(bytes, version, writer, digest)`、`Members(字节列表)` 或 `Absent`（负缓存）。`version` 默认为 `Versioned.NO_VERSION`，`writer` 与 `digest` 默认为 `null`，三者都参与相等比较。`writer` 是与 `Token` 同形的写入标识，引擎在权威类型（`Store`、`VersionedStore`）的每次标量写入中给出它；`digest` 是载荷的 SHA-256，引擎在 `Store` 的每次写入中给出它，按版本的写入从不带它 |
 | `L1Read` | `Hit(envelope, format, ttl, refreshGranted)`、`Miss(leaseGranted)` 或 `Leased(remaining)`。`ttl == null` 表示没有到期时间 |
 | `Token` | 24 字节：`NodeId`（16）+ 序号（8）。唯一、永不重复。按字节比较 |
 | `LeaseRequest(token, ttl)` | 未命中时放置的 lease，`ttl` 后到期 |
@@ -81,7 +82,7 @@ interface SetL1Store {
 | `ContentFingerprint` | `reclaim` 比较的内容 SHA-1：标量 → 载荷字节；集合 → 按返回顺序把每个成员写成 `int32 长度 + 字节`；负缓存 → 空。由 `ContentFingerprint.of(envelope)` 计算 |
 | `Digest` | 载荷的 SHA-256（`Digest(algorithm, bytes)`、`Digest.of(envelope)`、`Digest.ofPayload(bytes)`），条件读写比较它。由引擎计算；存储保存并返回它，从不重算 |
 | `L1ConditionalRead` | `Unchanged(format)`、`Changed(envelope, format)`（标量值）、`Absent`（不存在、lease 或负缓存）或 `Unreadable(format)` |
-| `L1ConditionalWrite` | `Written`、`Conflict(current)`（`current == null`：没有值）或 `Unreadable(format)` |
+| `L1ConditionalWrite` | `putIfMatch` 与 `deleteIfMatch` 的结果：`Written`（已写入或已删除）、`Conflict(current)`（`current == null`：没有值）或 `Unreadable(format)` |
 | `L1VersionedWrite` | `Written`、`Stale(current)` 或 `Unreadable(format)` |
 | `L1Eviction` | `Evicted`、`Authoritative`（key 中是带摘要的值）或 `Unreadable(format)` |
 
@@ -97,11 +98,12 @@ interface SetL1Store {
 | `put` | 覆盖任何状态，销毁任何令牌，设置到期时间，广播 `frame`。`Members` 会替换整个集合 |
 | `putAll` | 对每一项执行 `put`，对每个 key 原子，不要求跨 key 原子。`frame` 携带全部 key：每个 key 恰好随其写入广播一次（可以拆分帧，例如按 slot 分组）。没有逐项调用 `put` 的默认实现：那样每次调用都会广播全部 key |
 | `invalidate` | 删除每个 key，销毁任何令牌，广播 `frame`。对每个 key 原子。批次可以拆分 |
-| `addMembers` | 一次原子的检查加写入。key 是本协议的集合：加入成员。key 不存在、负缓存或 lease：替换为只含这些成员的集合。两种情况都销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播，返回 `null`。不是本协议集合的内容（不是你写入的内容、标量值、比你的格式更高的集合）：什么都不改、不广播，返回该内容的格式版本（不是你写入的内容为 `0`）。`SetCache` 没有数据源，覆盖这类内容就是删除唯一副本，因此没有不检查的元素写入 |
+| `addMembers` | 一次原子的检查加写入。key 是本协议的集合：加入成员。key 不存在、负缓存或 lease：替换为只含这些成员的集合。两种情况都销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播，返回 `null`。不是本协议集合的内容（不是你写入的内容、标量值、比你的格式更高的集合）：什么都不改、不广播，返回该内容的格式版本（不是你写入的内容为 `0`）。`SetStore` 没有数据源，覆盖这类内容就是删除唯一副本，因此没有不检查的元素写入 |
 | `removeMembers` | 检查同 `addMembers`。key 是本协议的集合：移除成员，集合变空时删除 key，否则重设到期时间。key 不存在、负缓存或 lease：不修改。这两种情况都广播并返回 `null`。读不懂的内容：什么都不改、不广播，返回其格式版本 |
 | `readIfChanged` | 纯读取，同不带请求的 `read`。本协议的标量值且保存的摘要等于 `known`：返回 `Unchanged(format)`，不回传载荷。其它带摘要的值：`Changed(envelope, format)`，信封带保存的摘要与写入标识。key 不存在、lease 或不带版本的负缓存：`Absent`。其余内容（不是你写入的内容、集合、更高的格式、没有摘要的值、带版本的内容、淘汰标记）：`Unreadable(format)`。比较保存的摘要，不重算，只读比较所需的部分，未变的值无论多大成本都相同 |
 | `putIfMatch` | 一次原子的比较加写入。`expected == null` 且 key 中没有值（不存在、lease、不带版本的负缓存），或 key 中是保存的摘要等于 `expected` 的值时匹配。`readIfChanged` 视为 `Unreadable` 的内容：返回 `Unreadable(format)`。`envelope.digest` 原样保存。它从不视为没有值，否则 `expected == null` 会覆盖它，滚动升级期间旧实例还会把更新的值降级覆盖。匹配时按 `put` 写入（销毁令牌、设置到期时间、广播 `frame`），返回 `Written`；否则什么都不改、不广播，返回 `Conflict(当前值的摘要，或 null)`。先读后写会让两个并发的写入方都成功：存储不能原子地比较并写入时，让 `conditional()` 返回 `null` |
-| `putIfNewer` | 一次原子的按版本比较加写入。key 的版本是与标量值或负缓存一起保存的版本；没有版本的值或负缓存、lease、不存在的 key 都视为 `NO_VERSION`，总是写入。`version` 更大时：按 `put` 写入 `envelope`（标量值，或表示墓碑的 `Absent`），与它一起保存 `version`，返回 `Written`。否则什么都不改、不广播，返回 `Stale(current)`。淘汰标记按它的版本比较。读不懂的内容按 `evictKeepingVersion` 的规则分类。`reclaim` 必须拒绝带版本的内容，因为 lease 放不下版本。`fill`、`put` 与 `putAll` 保存 `Envelope.Scalar.version`，`read` 原样返回；`putIfMatch` 写入没有版本的值。`version` 从不是 `Versioned.NO_VERSION`：在修改任何东西之前以 `IllegalArgumentException` 拒绝它 |
+| `deleteIfMatch` | 一次原子的比较加删除。只匹配保存的摘要等于 `expected`（从不为 `null`）的值。匹配时删除 key、销毁任何令牌、广播 `frame`，返回 `Written`。否则什么都不改、不广播，返回 `Conflict(当前值的摘要)`；key 中没有值（不存在、lease、不带版本的负缓存）时返回 `Conflict(null)`。`readIfChanged` 视为 `Unreadable` 的内容：返回 `Unreadable(format)` |
+| `putIfNewer` | 一次原子的按版本比较加写入。key 的版本是与标量值或负缓存一起保存的版本；没有版本的值或负缓存、lease、不存在的 key 都视为 `NO_VERSION`，总是写入。`version` 更大时：按 `put` 写入 `envelope`（标量值，或 `invalidateIfNewer`、`deleteIfNewer` 给出的表示墓碑的 `Absent`），与它一起保存 `version`，返回 `Written`。否则什么都不改、不广播，返回 `Stale(current)`。淘汰标记按它的版本比较。读不懂的内容按 `evictKeepingVersion` 的规则分类。`reclaim` 必须拒绝带版本的内容，因为 lease 放不下版本。`fill`、`put` 与 `putAll` 保存 `Envelope.Scalar.version`，`read` 原样返回；`putIfMatch` 写入没有版本的值。`version` 从不是 `Versioned.NO_VERSION`：在修改任何东西之前以 `IllegalArgumentException` 拒绝它 |
 | `evictKeepingVersion` | 一个原子步骤。带版本的内容（值、墓碑、淘汰标记）：替换为带这个版本、没有令牌的淘汰标记，到期时间设为 `ttl`，广播 `frame`，返回 `Evicted`。既没有版本也没有摘要的内容（普通的值或负缓存、lease、不存在）：删除并广播，返回 `Evicted`。带摘要的值：什么都不改，返回 `Authoritative`。读不懂的内容（不是你写入的、集合、更高的格式）：什么都不改，返回 `Unreadable(format)` |
 
 对所有方法：
@@ -122,13 +124,13 @@ interface SetL1Store {
 - **访问器从不抛出**，并且在存储的整个生命周期内返回同样的结果：每次都是同一个对象，或总是 `null`。引擎可以只取一次。
 - **访问器是抽象的**，没有默认的 `null`：否则只包装基本操作的装饰器会静默地剥掉能力。
 - **能力面是独立的接口**，不继承 `L1Store`，所以想拦截它们的[装饰器](#decorators)覆盖访问器即可，不会被绕过。
-- `CacheRuntime.create` 检查缓存需要的能力：带版本的缓存需要 `versioned()`，`SetCache` 需要 `sets()`。缺少时创建以 `UnsupportedOperationException` 失败，不注册任何东西。普通缓存没有 `conditional()` 也能启动，此时它的 `getIfChanged` 与 `putIfMatch` 抛出 `UnsupportedOperationException`。每个缓存创建时的日志列出它的存储提供的能力，例如 `L1 capabilities[conditional, versioned, sets]`。
+- `CacheRuntime.create` 检查[缓存类型](../guide/caches.md#types)需要的能力：`Store` 需要 `conditional()`，`VersionedCache` 与 `VersionedStore` 需要 `versioned()`，`SetStore` 需要 `sets()`。缺少时创建以 `UnsupportedOperationException` 失败，不注册任何东西。`Cache` 不需要其中任何一个。每个缓存创建时的日志列出它的存储提供的能力，例如 `L1 capabilities[conditional, versioned, sets]`。
 
 TCK 检查存储提供的能力与你[声明](#expected-capabilities)的完全相同。
 
 ### 失败、时限与取消 {#failures}
 
-- **两类失败**。命令在写出之前被拒绝（例如连接已断开），或在发出之前同步失败，是*确定未执行*。其余失败都是*结果未知*：超时、断线时被排空的命令、脚本的错误回复、被客户端取消的命令、解码失败的应答。
+- **两类失败**。命令在写出之前被拒绝（例如连接已断开），或在发出之前同步失败，是*确定未执行*，只有这类失败以 `L1RejectedException`（`me.ahoo.cocache.api.spi`）报告，客户端的异常作为它的 cause。其余失败都是*结果未知*：超时、断线时被排空的命令、脚本的错误回复、被客户端取消的命令、解码失败的应答，以其它异常报告。只有一批命令全部确定未执行时，这一批才算确定未执行；其中有命令已经发出时，整个调用结果未知。引擎据此给出 `CacheWriteException.outcomeUnknown`（`L1RejectedException` 为 `false`），不为被拒绝的命令释放令牌，没有原子广播的后端上也不在它之后补发广播。`RedisBackend` 把 Lettuce 没有写出的命令与建立失败的节点连接映射为 `L1RejectedException`。
 - **失败之后释放令牌**。取得或交回令牌的命令（`read`、`readAll`、`fill`、`fillAll`、`release`、`reclaim`）以结果未知失败时，异步地释放这个令牌，不等待；释放失败时按退避重发，直到执行或令牌过期。令牌已不匹配的释放什么也不做，所以迟到、重复或重连之后才到达的释放都无害。释放通常在它清理的命令之后、同一条连接上执行，令牌因此在重连之后就被收回；连接被替换之后，新连接上的释放可能先于旧连接上被排空的命令执行，那条命令的令牌留到它的寿命（lease 为 `lease.ttl`）。否则应答丢失的命令取得的 lease 会让每个实例在这个 key 上等到 `lease.ttl`。
 - **从不以 `CancellationException` 报告失败**。在 JVM 上它就是协程的取消：引擎会把它当作调用方自己被取消，不回退到数据源，等在这次加载上的读取方各自重新运行。客户端取消的命令（连接重置或关闭时）是结果未知的失败：抛出别的异常，可以把取消异常作为 cause。
 - **每个调用都要有上限**。调用必须自己结束（例如由命令超时限定），不能永远挂起。读取带有这次调用的 `timeout`：`null` 为你的命令超时；给出时必须为正，以命令超时为上限，你以两者中较短的一个限定这次调用。超时要取消到底层命令：尚未写出的命令不再写出。
@@ -226,11 +228,11 @@ testImplementation("me.ahoo.cocache:cocache-test")
 | 套件 | 覆盖 | 你提供 |
 |------|------|--------|
 | `BackendProtocolSpec` | 经 `Suspending.await` 直接调用的 `L1Store` 约定：授予 lease、令牌校验、`L1Fill` 结果、到期时间重设、释放、刷新令牌、回收、批量读写、集合更新、广播帧、订阅时重置，以及（可选）L1 卡顿时读取的 `timeout` 限定这次调用并释放它的 lease | `createBackend()`、`expectedCapabilities`、`elapse(duration)`。可选覆盖 `shortTtl`（默认 300 ms）与 `pause()` |
-| `EngineSpec` | 两个运行时共用你的后端：跨实例单次加载、等待 lease 超时、加载期间的失效、同实例失效与读取的竞态、并发 `put`、读己之写、loader 失败、Redis 失败、失效重试、重连重置、`local-max-age`、批量读、提前刷新、回收、更新的格式、回源并发上限、（可选）L1 卡顿时缓存的 `readTimeout` 限定单 key、批量与条件读取，以及声明了 `CONDITIONAL` 时的条件读写（含并发“读—改—写”：让所有写入方在同一个摘要上竞争，并断言恰好一个胜出） | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)`、`simulateReconnect()`。可选 `pause()`。 |
-| `VersionedSpec` | 需要 `VERSIONED`。协议（整体写入保存版本、按有符号 64 位整数比较、按版本写入销毁被持有的 lease、带版本的内容不授予刷新令牌也不被回收、墓碑），以及两个运行时共用你的后端：有序、相等版本幂等、拒绝旧版本且不广播不改寿命（没有原子广播时相等的版本会再次广播，重放因此能补上丢失的发布）、墓碑挡住迟到的旧版本、按版本写入胜过持有 lease 的回源、回源保存 loader 给出的版本、并发乱序的写入方收敛到最高版本、结果未知后重放安全 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
-| `SetEngineSpec` | 需要 `SETS`。两个运行时上的 `SetCache`：原子的并发加入、空集合删除、拒绝 `invalidate`、元素写入拒绝读不懂的内容、写入与读取失败 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
+| `EngineSpec` | `Cache` 与 `Store`，两个运行时共用你的后端：跨实例单次加载、等待 lease 超时、加载期间的失效、同实例失效与读取的竞态、并发 `put`、读己之写、loader 失败、Redis 失败、失效重试、重连重置、`local-max-age`、批量读、提前刷新、回收、更新的格式、回源并发上限、（可选）L1 卡顿时缓存的 `readTimeout` 限定单 key、批量与条件读取、没有数据源的读取得到 `Lookup.Unknown`（含部分 key 未知的 `getAll`）、外部来源的缓存的未填充未命中与失效重试，以及声明了 `CONDITIONAL` 时的 `Store`：读取不申请 lease、写入标识与摘要（摘要被篡改时读取失败，派生副本计入类型不符）、同步删除，以及条件读、写与删除（含并发“读—改—写”：让所有写入方在同一个摘要上竞争，并断言恰好一个胜出） | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)`、`simulateReconnect()`。可选 `pause()`。 |
+| `VersionedSpec` | 需要 `VERSIONED`，覆盖 `VersionedCache` 与 `VersionedStore`。协议（整体写入保存版本、按有符号 64 位整数比较、按版本写入销毁被持有的 lease、带版本的内容不授予刷新令牌也不被回收、墓碑），以及两个运行时共用你的后端：有序、相等版本幂等、拒绝旧版本且不广播不改寿命（没有原子广播时相等的版本会再次广播，重放因此能补上丢失的发布）、墓碑挡住迟到的旧版本、按版本写入胜过持有 lease 的回源、回源保存 loader 给出的版本、并发乱序的写入方收敛到最高版本、结果未知后重放安全、`evict` 保留版本而 `purge` 丢掉版本、在 `Store` 的值上被拒绝的淘汰、落在带版本内容上被拒绝的不带版本的 `null`，以及 `VersionedStore` 读取不申请 lease、写入写入标识、墓碑到期 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
+| `SetEngineSpec` | 需要 `SETS`。两个运行时上的 `SetStore`：原子的并发加入、空集合删除、`put` 与 `putAll` 替换集合、元素写入拒绝读不懂的内容、写入失败，以及读取失败时回答 `Unknown` | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
 | `MultiNodeSpec` | 三个运行时共用你的后端：失效先于 lease、晚于 lease 且另一实例正在等待、晚于 fill 而早于写 L2；其它实例的写入落在读取与 L2 填充之间；不同实例的并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全部实例中每个 key 只回源一次、只刷新一次 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
-| `FaultSpec` | L1 故障下的后端：存储失败期间副本以 `degraded-local-max-age` 限龄、fill 失败及其 lease、没有 loader 的缓存失效失败时抛出而不重试、放弃或溢出队列的失效重试、已生效却报错且可安全重试的 `put` 与 `invalidate`；（可选）断线期间被拒绝的写入在重连后不被重放；（可选）客户端取消的命令是 L1 故障，不是取消 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)`；可选 `disconnect()` 与 `commandCancellation()` |
+| `FaultSpec` | L1 故障下的后端：存储失败期间副本以 `degraded-local-max-age` 限龄、fill 失败及其 lease、`Store.delete` 失败时抛出而不重试、放弃或溢出队列的失效重试、已生效却报错且可安全重试的 `put` 与 `invalidate`；（可选）断线期间被拒绝的写入在重连后不被重放；（可选）客户端取消的命令是 L1 故障，不是取消 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)`；可选 `disconnect()` 与 `commandCancellation()` |
 
 套件只有一套，适用于所有 API。每个套件都有 `protected open val access: CacheAccess`，后端只需要默认的 `CacheAccess.SYNC`。阻塞、[异步](../guide/async.md)与挂起三种 API 的行为（取消、future 在哪个线程上完成、等待不占线程等）属于核心，由 CoCache 自己的测试覆盖。CoCache 覆盖 `access`，经异步视图（`CacheAccess.ASYNC`）重跑这些套件；你也想在自己的后端上得到这部分覆盖时，可以同样覆盖它。
 
@@ -252,12 +254,12 @@ protected Set<L1Capability> getExpectedCapabilities() {
 ```
 
 - **TCK fail closed**。每个套件的 `storeProvidesExactlyTheDeclaredCapabilities` 在以下情形失败：存储提供了你没有声明的能力、缺少你声明的能力、访问器再次调用时返回另一个对象，或在 `null` 与能力面之间切换。它检查两个新的命名空间。
-- **只有没有声明的能力才跳过用例**。`EngineSpec` 的条件读写用例需要 `CONDITIONAL`；`BackendProtocolSpec` 的集合用例与 `SetEngineSpec` 的全部用例需要 `SETS`；`VersionedSpec` 的全部用例需要 `VERSIONED`。声明了的能力必须通过它的用例，包括只有原子实现才能通过的并发用例。
+- **只有没有声明的能力才跳过用例**。`EngineSpec` 的 `Store` 用例需要 `CONDITIONAL`；`BackendProtocolSpec` 的集合用例与 `SetEngineSpec` 的全部用例需要 `SETS`；`VersionedSpec` 的全部用例需要 `VERSIONED`。声明了的能力必须通过它的用例，包括只有原子实现才能通过的并发用例。
 - `L1Capability` 只存在于 TCK 中。在 SPI 里，访问器是存储表达能力的唯一方式。
 
 ### 接入套件 {#tck-hooks}
 
-套件会用 `HookedBackend` 包装你的后端。它可以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`）、改写读取结果、在读取与 fill 之后以及写入前后执行钩子（从而用 latch 而不是 sleep 编排竞态；`afterPut` 或 `afterInvalidate` 抛出即模拟已生效却报错的写入）、为调用计数（`reads`、`readAlls`、`fills`、`puts`、`putAlls`），还能覆盖 `atomicBroadcast` 来验证非原子路径。你自己的测试也可以用它。
+套件会用 `HookedBackend` 包装你的后端。它可以注入故障（`failAll`、`failWrites`、`failFill`、`failRelease`，以及在写入到达你的存储之前抛出 `L1RejectedException` 的 `rejectWrites`）、改写读取结果、在读取与 fill 之后以及写入前后执行钩子（从而用 latch 而不是 sleep 编排竞态；`afterPut` 或 `afterInvalidate` 抛出即模拟已生效却报错的写入）、为调用计数（`reads`、`readAlls`、`fills`、`puts`、`putAlls`），还能覆盖 `atomicBroadcast` 来验证非原子路径。你自己的测试也可以用它。
 
 `elapse(duration)` 必须让你的存储与引擎的时间同时前进：
 
@@ -328,7 +330,7 @@ interface Codec<V> {
 - **`decode` 遇到读不了的字节时抛出异常**。引擎随后按损坏处理：未命中、条件回收、重新加载。不要返回默认对象。
 - **线程安全、无状态**。一个实例服务所有线程。
 - **从不处理 `null`**。负缓存由引擎处理。
-- **集合元素的编解码器必须是规范的**。`SetCache` 的成员按编码后的字节比较，所以相等的元素必须总是编码成相同的字节。字段顺序不稳定的 JSON 会破坏这一点。
+- **集合元素的编解码器必须是规范的**。`SetStore` 的成员按编码后的字节比较，所以相等的元素必须总是编码成相同的字节。字段顺序不稳定的 JSON 会破坏这一点。
 - **字节格式是该缓存线格式的一部分**。在运行中的集群里改变它，会让新旧实例互相回收对方的值。不兼容的变更请使用新的命名空间或 key 前缀，或者在滚动期间让 `decode` 同时接受两种形式。
 - **保持载荷小**。所有命令共用一条连接，一个大值会拖慢排在它后面的命令。
 

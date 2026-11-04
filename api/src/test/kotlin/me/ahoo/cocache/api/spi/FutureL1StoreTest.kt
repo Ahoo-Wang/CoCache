@@ -105,6 +105,9 @@ class FutureL1StoreTest {
             every {
                 putIfMatch("k", null, envelope, ttl, frame)
             } returns CompletableFuture.completedFuture(L1ConditionalWrite.Written)
+            every {
+                deleteIfMatch("k", digest, frame)
+            } returns CompletableFuture.completedFuture(L1ConditionalWrite.Conflict(null))
         }
         val versionedSurface = mockk<FutureVersionedL1Store> {
             every {
@@ -127,6 +130,8 @@ class FutureL1StoreTest {
         unchanged.assert().isEqualTo(L1ConditionalRead.Unchanged(1))
         val written = Suspending.await { conditional.putIfMatch("k", null, envelope, ttl, frame) }
         written.assert().isSameAs(L1ConditionalWrite.Written)
+        val conflict = Suspending.await { conditional.deleteIfMatch("k", digest, frame) }
+        conflict.assert().isEqualTo(L1ConditionalWrite.Conflict(null))
         val versioned = requireNotNull(l1.versioned())
         val stale = Suspending.await { versioned.putIfNewer("k", envelope, 7, ttl, frame) }
         stale.assert().isEqualTo(L1VersionedWrite.Stale(9))

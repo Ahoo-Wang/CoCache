@@ -74,7 +74,7 @@ sequenceDiagram
 
 Either way, **no load that started before an invalidation appears in L1 after it.** This holds on every instance, for any loader duration, and needs no clock.
 
-Leases also coalesce loads across the cluster. A miss that finds another instance's lease re-reads with a backoff from 2 to 50 ms, for up to `lease-wait` (or the lease's remaining time, if shorter). If the value appears, it is used. If not, the instance loads itself without writing L1. Leases are always released when unused: when the loader, `ttlOf`, or the codec throws, when the load is rejected by `load-max-concurrent`, and when a cache has no loader. A crashed instance's lease expires after `lease-ttl`.
+Leases also coalesce loads across the cluster. A miss that finds another instance's lease re-reads with a backoff from 2 to 50 ms, for up to `lease-wait` (or the lease's remaining time, if shorter). If the value appears, it is used. If not, the instance loads itself without writing L1. Leases are always released when unused: when the loader, `ttlOf`, or the codec throws, when the load is rejected by `load-max-concurrent`, and when a read has no source. The authoritative types never take one. A crashed instance's lease expires after `lease-ttl`.
 
 A rejected fill still returns its result to the caller and keeps it in L2 for `degraded-local-max-age` (10 s by default). Otherwise a key whose loader is slower than `lease-ttl` would miss forever.
 
@@ -152,9 +152,10 @@ Single-flight also guarantees:
 
 | Operation | Steps | Round trips |
 |-----------|-------|-------------|
-| `invalidate`, `invalidateAll` | bump, evict L2 → script: `DEL` + `PUBLISH` → bump, evict L2 | 1 (per batch of 512 keys, and per slot in Cluster) |
-| `put` | bump, evict L2 → script: overwrite + expiry + `PUBLISH` → bump, evict L2. L2 is not written. | 1 |
-| `SetCache.add` / `remove` / `clear` / `put` | bump, evict L2 → script: member update + expiry + `PUBLISH` → bump, evict L2 | 1 |
+| `invalidate`, `invalidateAll`, `Store.delete`, `purge` | bump, evict L2 → script: `DEL` + `PUBLISH` → bump, evict L2 | 1 (per batch of 512 keys, and per slot in Cluster) |
+| `put`, `putAll` | bump, evict L2 → script: overwrite + expiry + `PUBLISH` → bump, evict L2. L2 is not written. | 1 |
+| `putIfMatch`, `deleteIfMatch`, `putIfNewer`, `invalidateIfNewer`, `deleteIfNewer`, `evict` | bump, evict L2 → script: compare the digest or version, then write + expiry + `PUBLISH`, or leave the key as it is → bump, evict L2. See [conditional](../guide/freshness.md#conditional-writes) and [versioned writes](../guide/freshness.md#versioned-writes). | 1 |
+| `SetStore.add` / `remove` / `clear` / `put` | bump, evict L2 → script: member update + expiry + `PUBLISH` → bump, evict L2 | 1 |
 | Message from another instance | bump, evict L2. Messages from this instance's own `NodeId` are skipped. | — |
 | Reset (subscription confirmed, heartbeat failed), `clearLocal` | bump every stripe, clear L2 | — |
 
@@ -203,8 +204,9 @@ flowchart TD
 ```
 
 - **L2 expiry** is `min(L1 remaining TTL, local-max-age)` for a copy filled from or into L1, and `min(TTL, degraded-local-max-age)` for a copy that bypassed L1. A hit is one map lookup and one comparison against the ticking clock.
-- **An L1 miss is a miss.** An absent key, a lease, or unreadable content never means "doesn't exist". Only a stored negative entry (state `M`) does, written when the loader returns `null` (or omits a key from `loadAll`), for `absent-ttl`.
-- **A cache without a loader** releases its lease on a miss, writes nothing to L1 (a negative entry would hide another instance's later `put`), and remembers "no answer" in L2 for `absent-ttl`. `get(key, loader)` ignores that and loads with the caller's loader.
+- **An L1 miss is a miss.** For a `Cache` or `VersionedCache`, an absent key, a lease, or unreadable content never means "doesn't exist". Only a stored negative entry (state `M`) does, written when the loader returns `null` (or omits a key from `loadAll`), for `absent-ttl`. For an authoritative type Redis holds the only copy, so an absent key is the answer: "absent".
+- **An externally sourced `Cache`** releases its lease on a miss, writes nothing to L1 (a negative entry would hide another instance's later `put`), and remembers the key as *unfilled* in L2 for `absent-ttl`. A read without a loader returns `null`; `get(key, loader)` ignores the unfilled entry and loads with the caller's loader.
+- **A read without a source has no answer when Redis fails** ([`Lookup.Unknown`](../guide/caches.md#unknown)). Nothing is cached in either level, and a caller that brings its own loader never accepts a shared `Unknown`: it loads.
 - **The read path never deletes unconditionally.** Unreadable content (foreign bytes, or a value the codec can't decode) is converted to a lease only if Redis still holds exactly the bytes that were read (compared by SHA-1 in the script). Then it reloads normally. If the content changed, the read loads without writing L1. Content in a newer format is never reclaimed or overwritten.
 - **Batch reads** (`getAll`) check L2 per key, then the leader takes stamps, reads every missed key from L1 in one pipelined round trip (requesting leases), calls `loadAll` once, and fills once. They join in-flight single-key loads. They don't wait for other instances' leases: those keys load without writing L1. A shared result that started before an invalidation this reader has seen goes through the single-key path.
 - **The loader runs on the caller's thread**, so transactions, security context, and MDC are available. Redis futures are awaited on the caller's thread. Nothing runs on the event loop.
@@ -221,10 +223,10 @@ Any other copy created with no more than the window left (a fill, an L1 hit, a d
 
 | Failure | What happens | Why it stays safe |
 |---------|--------------|-------------------|
-| Redis read fails | Default: load from the source, L2 only, `degraded-local-max-age`. Or throw (`read-failure: throw`). A read without a loader throws by default, or returns `null` with an explicit `read-failure: degrade`. | No L1 write without a lease. The L2 copy is stamp-fenced and short-lived. Without a loader there is no answer to degrade to, and caching "absent" would hide the value in L1, so nothing is cached either way. |
+| Redis read fails | A read with a source: load from it, L2 only, `degraded-local-max-age`; or `Lookup.Unknown` with `read-failure: throw`. A read without a source: `Lookup.Unknown` (`get` throws `CacheReadException`), or `null` with `unknownRead = ABSENT`. | No L1 write without a lease. The L2 copy is stamp-fenced and short-lived. Without a source there is no answer to degrade to, and caching "absent" would hide the value in L1, so nothing is cached either way. |
 | Fill or release fails, or times out | Logged and counted. The result is returned. | A fill is token-guarded: if it was applied, it was applied before any invalidation, because an invalidation would have destroyed the token. An unreleased lease expires after `lease-ttl`. |
-| `invalidate` fails | Local effect first (both bumps and evictions). Default with a loader: retried in the background (8 attempts, 100 ms to 10 s backoff, 10,000 queued), not thrown. Meanwhile, misses for the key on this instance skip L1. After success, the instance bumps and evicts once more. Default without a loader: `CacheWriteException`. | This instance never serves or refills the old value. Other instances are bounded by L1's remaining TTL. A give-up is counted in `invalidations.dropped` and logged as an error. Without a loader a delayed delete could remove a newer value, so the caller decides. |
-| `put` or set write fails | Local effect first, then `CacheWriteException`. On a timeout, Redis may have applied it. | L2 was evicted on both sides of the attempt, so no stale local copy. The calls are idempotent. |
+| `Cache.invalidate` fails | Local effect first (both bumps and evictions). Default: retried in the background (8 attempts, 100 ms to 10 s backoff, 10,000 queued), not thrown. Meanwhile, misses for the key on this instance skip L1. After success, the instance bumps and evicts once more. With `invalidate-failure: throw`: `CacheWriteException`. | This instance never serves or refills the old value. Other instances are bounded by L1's remaining TTL. A give-up is counted in `invalidations.dropped` and logged as an error. Deleting a derived copy late is harmless: the next read reloads. |
+| Any other write fails: `put`, a conditional or versioned write, `evict`, an authoritative delete, a set write | Local effect first, then `CacheWriteException`, never retried. `outcomeUnknown` is `false` when the command was rejected before it was sent, `true` on a timeout, when Redis may have applied it. | L2 was evicted on both sides of the attempt, so no stale local copy. A delayed delete of an only copy could remove a value written after the failure, and a retried `DEL` would drop a version, so the caller decides. |
 | Redis disconnected | Commands are rejected, not buffered. | A buffered `put` that already failed for the caller could otherwise replay later and overwrite a newer value. |
 | Loader throws | The lease is released at once. The exception goes to the caller and every coalesced waiter. | Other instances don't wait for `lease-ttl`. |
 | Instance crashes holding a lease | Others wait up to `lease-wait`, then load without writing L1. The lease expires after `lease-ttl`. | No fill without a live token. |
@@ -254,15 +256,16 @@ These bounds are the precise form of goal G1. "Stale" means serving a value olde
 - **Linearizable reads.** Two instances can briefly disagree, between a write and the arrival of its message.
 - **Changes CoCache never sees.** A write that bypasses CoCache without the [invalidation protocol](../operations/troubleshooting.md#external-invalidation) leaves the old value until `ttl`.
 - **Durability of Redis.** A failover can lose recent writes, both values and invalidations.
-- **Atomic snapshots across caches.** A [JoinCache](../guide/join-cache.md) reads two caches, each with its own guarantees, not one consistent snapshot.
+- **Atomic snapshots across caches.** A [join view](../guide/join-cache.md) reads two caches, each with its own guarantees, not one consistent snapshot.
 
-## Set caches {#set-cache}
+## Authoritative types {#authoritative}
 
-`SetCache` is the deliberate exception to "Redis is a copy": Redis holds the **only** copy of the set.
+`Store`, `VersionedStore` and `SetStore` are the deliberate exception to "Redis is a copy": Redis holds the **only** copy ([the five types](../guide/caches.md#types)).
 
-- Element `add` and `remove` are atomic in Redis, so concurrent updates from any instances are all kept, in Redis's order.
-- There is no loader. `invalidate` throws, because it would destroy the only copy. Use `clear(key)` to delete a set.
-- Reads take no lease. A miss caches the empty answer in L2, stamp-fenced, for `local-max-age`. A failed Redis read throws, because there is no source to fall back to.
+- There is no loader, and reads take no lease. A miss caches "absent" in L2, stamp-fenced, for at most `absent-ttl` and `local-max-age`. A failed Redis read has no answer ([`Lookup.Unknown`](../guide/caches.md#unknown)), because there is no source to fall back to.
+- Every scalar write carries a new writer id, and a `Store` value its SHA-256 digest, which readers verify. `putIfMatch` and `deleteIfMatch` compare that digest inside Redis, and `putIfNewer` and `deleteIfNewer` on a `VersionedStore` compare versions, so concurrent writers don't overwrite each other blindly.
+- `SetStore` element `add` and `remove` are atomic in Redis, so concurrent updates from any instances are all kept, in Redis's order.
+- Deletes (`delete`, `deleteIfMatch`, `purge`, `SetStore.clear`) are synchronous and never retried: a delayed delete could remove a value written after the failure.
 - The default `ttl` is forever, and durability is Redis's durability, so the Redis `maxmemory-policy` must not be `allkeys-*`. See [Deployment](../operations/index.md#maxmemory-policy).
 
-If the set's data lives in your database, declare `Cache<K, Set<E>>` instead and invalidate after each change. Incremental updates can't be ordered correctly against database commits.
+If the data lives in your database, declare a `Cache` (for a set, `Cache<K, Set<E>>`) instead and invalidate after each change. Incremental updates can't be ordered correctly against database commits.

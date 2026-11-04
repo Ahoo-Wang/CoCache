@@ -15,7 +15,7 @@ package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
@@ -25,7 +25,7 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
@@ -40,7 +40,7 @@ class SetEngineFormatTest {
     private val memory = InMemoryBackend()
     private val backend = HookedBackend(memory)
     private val runtime = CacheRuntime.builder().backend(backend).build()
-    private val index: SetCache<String, String> = runtime.create(setCacheSpec("index") { elementCodec = StringCodec })
+    private val index: SetStore<String, String> = runtime.create(setStoreSpec("index") { elementCodec = StringCodec })
 
     @AfterEach
     fun destroy() {
@@ -95,8 +95,8 @@ class SetEngineFormatTest {
         val writer = CacheRuntime.builder().backend(nonAtomic).build()
         val observer = CacheRuntime.builder().backend(memory).build()
         try {
-            val cache: SetCache<String, String> = writer.create(setCacheSpec("plain") { elementCodec = StringCodec })
-            observer.create(setCacheSpec<String, String>("plain") { elementCodec = StringCodec })
+            val cache: SetStore<String, String> = writer.create(setStoreSpec("plain") { elementCodec = StringCodec })
+            observer.create(setStoreSpec<String, String>("plain") { elementCodec = StringCodec })
             Suspending.await {
                 memory.store(Keyspace("cocache:", "plain")).put(
                     "cocache:plain:k",

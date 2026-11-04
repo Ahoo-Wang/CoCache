@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Keyspace
@@ -30,6 +31,7 @@ import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.cocache.test.EngineSpec.TestCodec
@@ -166,7 +168,20 @@ abstract class FaultSpec {
     /**
      * 没有数据源的缓存（L1 是唯一副本，只由写入方写入）。
      */
-    private fun CacheRuntime.loaderlessCache(): Cache<String, String> = access.cache(create(spec { loader = null }))
+    /**
+     * 同名、同 keyspace 的 `Store`（要求 [L1Capability.CONDITIONAL]，没有声明时跳过这个用例）。
+     */
+    private fun CacheRuntime.store(): Store<String, String> {
+        CapabilityDeclaration.assume(expectedCapabilities, arrayOf(L1Capability.CONDITIONAL))
+        return access.store(
+            create(
+                storeSpec<String, String>(cacheName) {
+                    codec = EngineSpec.TestCodec
+                    policy = policy()
+                }
+            )
+        )
+    }
 
     private fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 
@@ -271,19 +286,20 @@ abstract class FaultSpec {
     }
 
     /**
-     * 没有数据源的缓存（L1 是唯一副本）：失效写入 L1 失败默认抛出 [CacheWriteException]，不登记重试。
-     * 否则延迟的重试会删掉其间其它节点写入的值（丢更新）。有数据源时删除总是安全的，默认仍是重试。
+     * `Store`（L1 是唯一副本）：删除写入 L1 失败时抛出 [CacheWriteException]，从不登记重试（RFC 0005 §4.1，A.D2）。
+     * 否则延迟的重试会删掉其间其它节点写入的值（丢更新）。派生缓存的删除总是安全的，默认重试。
      */
     @Test
-    fun failedInvalidateWithoutLoaderThrowsInsteadOfDeletingALaterWrite() {
-        val cacheA = nodeA.loaderlessCache()
-        val cacheB = nodeB.loaderlessCache()
+    fun failedStoreDeleteThrowsInsteadOfDeletingALaterWrite() {
+        val cacheA = nodeA.store()
+        val cacheB = nodeB.store()
         cacheB.put("k", "v1")
         backend.failWrites = true
-        val error = runCatching { cacheA.invalidate("k") }.exceptionOrNull()
+        val error = runCatching { cacheA.delete("k") }.exceptionOrNull()
         backend.failWrites = false
         error.assert().isInstanceOf(CacheWriteException::class.java)
-        (error as CacheWriteException).operation.assert().isEqualTo("invalidate")
+        (error as CacheWriteException).operation.assert().isEqualTo("delete")
+        error.outcomeUnknown.assert().isTrue()
         nodeA.admin().pendingInvalidationCount.assert().isEqualTo(0)
         cacheB.put("k", "v2")
         nodeA.metrics().invalidationRetries.assert().isEqualTo(0)
@@ -340,7 +356,10 @@ abstract class FaultSpec {
                 throw RemoteUnavailableException("put (applied)")
             }
         }
-        fork("writer") { cacheA.put("k", "v1") }.joinFailure().assert().isInstanceOf(CacheWriteException::class.java)
+        val failure = fork("writer") { cacheA.put("k", "v1") }.joinFailure()
+        failure.assert().isInstanceOf(CacheWriteException::class.java)
+        (failure as CacheWriteException).outcomeUnknown.assert()
+            .withFailMessage { "an applied write is outcome-unknown" }.isTrue()
         backend.afterPut = null
         remoteValue("k").assert().isEqualTo("v1")
         cacheA["k"].assert().isEqualTo("v1")
@@ -378,7 +397,8 @@ abstract class FaultSpec {
     }
 
     /**
-     * 断线期间的写入向调用方报错，重连后不得被重放（否则一个已报错的 `put` 会在稍后覆盖更新的值）。
+     * 断线期间的写入向调用方报错，重连后不得被重放（否则一个已报错的 `put` 会在稍后覆盖更新的值）。断线时被拒绝的命令确定未执行：
+     * 存储以 `L1RejectedException` 报告它，调用方得到 `CacheWriteException(outcomeUnknown = false)`（RFC 0005 §4.3）。
      */
     @Test
     fun writesRejectedWhileDisconnectedAreNotReplayed() {
@@ -390,12 +410,11 @@ abstract class FaultSpec {
         assumeTrue(disconnection != null, "backend cannot simulate a disconnect")
         requireNotNull(disconnection).use {
             awaitCondition("commands rejected") { runCatching { remote("probe") }.isFailure }
-            runCatching {
-                cacheA.put(
-                    "k",
-                    "v2"
-                )
-            }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
+            val error = runCatching { cacheA.put("k", "v2") }.exceptionOrNull()
+            error.assert().isInstanceOf(CacheWriteException::class.java)
+            (error as CacheWriteException).outcomeUnknown.assert()
+                .withFailMessage { "a write rejected while disconnected was definitely not executed: report L1RejectedException" }
+                .isFalse()
         }
         awaitCondition("reconnected") { runCatching { remote("probe") }.isSuccess }
         remoteValue("k").assert().isEqualTo("v1")

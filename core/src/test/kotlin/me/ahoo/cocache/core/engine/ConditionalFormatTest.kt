@@ -26,9 +26,9 @@ import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
-import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -72,7 +72,7 @@ class ConditionalFormatTest {
     fun conditionalReadsAcceptOnlyThisNodesFormat() {
         val backend = ReformattingBackend(InMemoryBackend())
         CacheRuntime.builder().backend(backend).build().use { runtime ->
-            val cache = runtime.create(cacheSpec<String, String>("conditional-format") { codec = StringCodec })
+            val cache = runtime.create(storeSpec<String, String>("conditional-format") { codec = StringCodec })
             cache.put("k", "v")
             val digest = requireNotNull(cache.getIfChanged("k", null) as? ConditionalGet.Present).digest
             cache.getIfChanged("k", digest).assert().isEqualTo(ConditionalGet.Unchanged)

@@ -15,9 +15,11 @@ package me.ahoo.cocache.example
 
 import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.example.cache.FeatureFlagStore
 import me.ahoo.cocache.example.cache.UserCache
 import me.ahoo.cocache.example.cache.UserExtendInfoJoinCache
 import me.ahoo.cocache.example.controller.CoroutineController
+import me.ahoo.cocache.example.controller.FlagController
 import me.ahoo.cocache.example.controller.TestController
 import me.ahoo.cocache.example.model.User
 import org.assertj.core.api.Assertions.assertThat
@@ -51,6 +53,12 @@ class AppServerTest {
     @Autowired
     lateinit var coroutineController: CoroutineController
 
+    @Autowired
+    lateinit var flagController: FlagController
+
+    @Autowired
+    lateinit var flags: FeatureFlagStore
+
     @Test
     fun cachesWork() {
         val id = java.util.UUID.randomUUID().toString()
@@ -66,6 +74,25 @@ class AppServerTest {
         assertThat(controller.getBySpring(id, "from-method")).isEqualTo(User(id, "from-method"))
         assertThat(controller.getBySpring(id, "cached")).isEqualTo(User(id, "from-method"))
         assertThat(userCache[id]).isEqualTo(User(id, "from-method"))
+    }
+
+    /**
+     * 权威副本：值只在 Redis 中，条件写入按摘要比较，删除同步完成。
+     */
+    @Test
+    fun storeWorks() {
+        val name = "flag-" + java.util.UUID.randomUUID()
+        assertThat(flagController.get(name)).isNull()
+        val first = flagController.setIfMatch(name, "on", null)
+        assertThat(first).isNotNull()
+        assertThat(flagController.setIfMatch(name, "stale", null)).isNull()
+        assertThat(flagController.setIfMatch(name, "off", first)).isNotNull()
+        assertThat(flags[name]).isEqualTo("off")
+        flagController.delete(name)
+        assertThat(flagController.get(name)).isNull()
+        flagController.set(name, "on")
+        assertThat(flags[name]).isEqualTo("on")
+        flags.delete(name)
     }
 
     @Test

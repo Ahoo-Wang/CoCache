@@ -42,7 +42,8 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.redis.migration.Redis5x
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
@@ -122,7 +123,7 @@ class WireFormat2Test {
             Envelope.Scalar(payload, Versioned.NO_VERSION, writer) to header(flags = 0x80) + ext + payload,
             Envelope.Scalar(payload, 7, writer) to header(flags = 0x81) + version(7) + ext + payload,
             Envelope.Scalar(payload, Versioned.NO_VERSION, null, digest) to header(flags = 0x02) + digest.bytes + payload,
-            // 权威标量（M5 之前没有数据源的缓存）：摘要段与写入标识，60 字节的段
+            // 权威标量（Store）：摘要段与写入标识，60 字节的段
             Envelope.Scalar(payload, Versioned.NO_VERSION, writer, digest) to header(flags = 0x82) + digest.bytes + ext + payload,
             Envelope.Scalar(payload, 7, writer, digest) to header(flags = 0x83) + version(7) + digest.bytes + ext + payload,
         )
@@ -366,7 +367,7 @@ class WireFormat2Test {
         requireNotNull(runtime.metrics(namespace)).reclaims.assert().isEqualTo(0L)
 
         val other = "$namespace-authoritative"
-        val authoritative = runtime.create(cacheSpec<String, String>(other) { codec = StringCodec })
+        val authoritative = runtime.create(storeSpec<String, String>(other) { codec = StringCodec })
         write("cocache:$other:k", bytes)
         val error = runCatching { authoritative["k"] }.exceptionOrNull()
         error.assert().isInstanceOf(CacheReadException::class.java)
@@ -438,7 +439,7 @@ class WireFormat2Test {
         requireNotNull(runtime.metrics(namespace)).reclaims.assert().isEqualTo(shapes.size.toLong())
 
         val sets = "$namespace-set"
-        val index = runtime.create(setCacheSpec<String, String>(sets) { elementCodec = StringCodec })
+        val index = runtime.create(setStoreSpec<String, String>(sets) { elementCodec = StringCodec })
         Redis5x.hash("cocache:$sets:k", mapOf("!f" to "1", "+a" to ""))
         runCatching { index["k"] }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
         runCatching {
@@ -451,14 +452,14 @@ class WireFormat2Test {
     }
 
     /**
-     * 没有数据源的缓存读到格式 1 时失败（回收就是删除唯一副本）：抛出 [CacheReadException]，`cause` 为 [ForeignFormatException]
+     * `Store` 读到格式 1 时失败（回收就是删除唯一副本）：抛出 [CacheReadException]，`cause` 为 [ForeignFormatException]
      * （格式 1，不是更高的格式），值原样保留。批量读取同样如此。
      */
     @Test
-    fun cacheWithoutASourceFailsOnFormat1Content() {
+    fun storeFailsOnFormat1Content() {
         val shapes = format1Shapes(token())
         val runtime = runtime()
-        val authoritative = runtime.create(cacheSpec<String, String>(namespace) { codec = StringCodec })
+        val authoritative = runtime.create(storeSpec<String, String>(namespace) { codec = StringCodec })
         shapes.forEach { (id, bytes) -> write(key(id), bytes, Duration.ofMinutes(10)) }
         for ((id, bytes) in shapes) {
             val error = runCatching { authoritative[id] }.exceptionOrNull()
@@ -621,8 +622,8 @@ class WireFormat2Test {
 
     /**
      * 篡改的摘要段（RFC 0005 §4.7，K3）：存储原样返回段中的字节，摘要未变的条件读取只比较头部；拿到载荷的读取方重算并比较。
-     * 没有数据源的缓存的读取与条件读取都以 [CacheReadException] 失败（cause 为 [ForeignFormatException]，本格式），不修改 key；
-     * 有数据源的缓存照常读取（类型不符，D4），解码失败时也不回收（`RECLAIM` 拒绝带摘要段的内容）。
+     * `Store` 的读取与条件读取都以 [CacheReadException] 失败（cause 为 [ForeignFormatException]，本格式），不修改 key；
+     * 派生缓存照常读取（类型不符，D4），解码失败时也不回收（`RECLAIM` 拒绝带摘要段的内容）。
      */
     @Test
     fun tamperedDigestSegmentsAreCaughtByTheReader() {
@@ -631,7 +632,7 @@ class WireFormat2Test {
         val tampered = header(flags = 0x02) + claimed.bytes + payload
         write(key("k"), tampered)
         val runtime = runtime()
-        val authoritative = runtime.create(cacheSpec<String, String>(namespace) { codec = StringCodec })
+        val authoritative = runtime.create(storeSpec<String, String>(namespace) { codec = StringCodec })
         val readError = runCatching { authoritative["k"] }.exceptionOrNull()
         readError.assert().isInstanceOf(CacheReadException::class.java)
         requireNotNull(readError?.cause as? ForeignFormatException).format.assert().isEqualTo(RedisScripts.FORMAT)

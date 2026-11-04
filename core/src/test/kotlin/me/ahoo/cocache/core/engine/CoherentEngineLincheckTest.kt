@@ -55,12 +55,12 @@ import java.util.concurrent.atomic.AtomicIntegerArray
 class CoherentEngineLincheckTest {
     private val versions = AtomicIntegerArray(KEYS)
     private val store = InMemoryBackend(CLOCK).store(Keyspace("cocache:", NAME))
-    private val engine = CoherentEngine(
+    private val engine = CacheEngine(
         cacheSpec<String, String>(NAME) {
             codec = StringCodec
             loader = CacheLoader { key -> "$key@${versions.get(key.toInt())}" }
             policy = CachePolicy(invalidateFailure = InvalidateFailureMode.THROW)
-        },
+        }.engineSpec(),
         store,
         CONTEXT
     )
@@ -198,7 +198,7 @@ class CoherentEngineLincheckTest {
         private val versions = AtomicIntegerArray(KEYS)
         private val cancelling = AtomicIntegerArray(IntArray(KEYS) { 1 })
         private val store = InMemoryBackend(CLOCK).store(Keyspace("cocache:", NAME))
-        private val engine = CoherentEngine(
+        private val engine = CacheEngine(
             cacheSpec<String, String>(NAME) {
                 codec = StringCodec
                 loader = CacheLoader { key ->
@@ -208,7 +208,7 @@ class CoherentEngineLincheckTest {
                     "$key@${versions.get(key.toInt())}"
                 }
                 policy = CachePolicy(invalidateFailure = InvalidateFailureMode.THROW)
-            },
+            }.engineSpec(),
             store,
             CONTEXT
         )

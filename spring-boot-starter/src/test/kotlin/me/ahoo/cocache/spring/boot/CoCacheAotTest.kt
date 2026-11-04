@@ -17,18 +17,18 @@ import com.github.benmanes.caffeine.cache.Caffeine
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.annotation.JoinCacheable
 import me.ahoo.cocache.api.join.JoinCache
 import me.ahoo.cocache.api.join.JoinKeyExtractor
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.springframework.aot.hint.MemberCategory
@@ -70,10 +70,10 @@ class CoCacheAotTest {
      */
     interface ExtCache : Cache<String, Ext>
 
-    @CoCache(codec = "tokenCodec")
+    @CoCache(codec = "tokenCodec", source = CoCache.Source.EXTERNAL)
     interface TokenCache : Cache<String, Token>
 
-    interface TagCache : SetCache<String, Tag>
+    interface TagCache : SetStore<String, Tag>
 
     @JoinCacheable(firstCacheName = "ExtCache", joinCacheName = "UserCache", joinKeyExpression = "#{#root.userId}")
     interface ExtJoinCache : JoinCache<String, Ext, String, User> {
@@ -126,10 +126,13 @@ class CoCacheAotTest {
         }
 
         @Bean
-        fun labelSpec(): SetCacheSpec<String, String> = setCacheSpec("labels") { elementCodec = StringCodec }
+        fun labelSpec(): SetStoreSpec<String, String> = setStoreSpec("labels") { elementCodec = StringCodec }
 
         @Bean
-        fun orderSpec(): CacheSpec<OrderKey, String> = cacheSpec("orders") { codec = StringCodec }
+        fun orderSpec(): CacheSpec<OrderKey, String> = cacheSpec("orders") {
+            codec = StringCodec
+            externallySourced()
+        }
 
         @Bean
         fun productUserId(): JoinKeyExtractor<String, String> = JoinKeyExtractor { it }
@@ -145,14 +148,8 @@ class CoCacheAotTest {
                 hints.assert().matches(RuntimeHintsPredicates.proxies().forInterfaces(type))
                 hints.assert().matches(reflection.onType(type).withMemberCategory(MemberCategory.INVOKE_PUBLIC_METHODS))
             }
-        // 异步视图的公共方法（与声明无关的固定提示）
-        listOf(
-            me.ahoo.cocache.api.AsyncCache::class.java,
-            me.ahoo.cocache.api.AsyncSetCache::class.java,
-            // cocache-coroutines 在类路径上（测试依赖）：挂起视图按类名登记
-            me.ahoo.cocache.coroutines.SuspendingCache::class.java,
-            me.ahoo.cocache.coroutines.SuspendingSetCache::class.java
-        ).forEach { type ->
+        // 五种用户 API 类型与它们的异步、挂起视图，以及组合视图的公共方法（与声明无关的固定提示）
+        CoCacheRuntimeHints.API_TYPES.forEach { type ->
             hints.assert().matches(reflection.onType(type).withMemberCategory(MemberCategory.INVOKE_PUBLIC_METHODS))
         }
         // default 方法经 InvocationHandler.invokeDefault 调用
@@ -168,7 +165,7 @@ class CoCacheAotTest {
         // 默认 key 编码器反射检查 key 类型的 toString()：接口式与 spec 声明都登记
         hints.assert().matches(reflection.onMethodInvocation(OrderKey::class.java, "toString"))
         // 固定提示（aot.factories 中的 RuntimeHintsRegistrar）
-        listOf(Cache::class.java, SetCache::class.java, JoinCache::class.java).forEach {
+        listOf(Cache::class.java, SetStore::class.java, JoinCache::class.java).forEach {
             hints.assert().matches(reflection.onType(it).withMemberCategory(MemberCategory.INVOKE_PUBLIC_METHODS))
         }
     }

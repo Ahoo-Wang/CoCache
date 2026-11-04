@@ -34,13 +34,14 @@ class CacheRuntimeTest {
     private fun spec(name: String, namespace: String = name) = cacheSpec<String, String>(name) {
         codec = StringCodec
         this.namespace = namespace
+        externallySourced()
     }
 
     @Test
     fun createsCachesAndExposesThemByName() {
         cacheRuntime { backend = InMemoryBackend() }.use { runtime ->
             val cache = runtime.create(spec("user"))
-            val set = runtime.create(setCacheSpec<String, String>("index") { elementCodec = StringCodec })
+            val set = runtime.create(setStoreSpec<String, String>("index") { elementCodec = StringCodec })
             runtime.cache("user").assert().isSameAs(cache)
             runtime.cache("index").assert().isSameAs(set)
             runtime.cache("absent").assert().isNull()
@@ -56,7 +57,7 @@ class CacheRuntimeTest {
             runtime.admin("absent").assert().isNull()
             // 生效的策略即创建时 spec 中的策略
             runtime.policy("user").assert().isSameAs(CachePolicy.DEFAULT)
-            runtime.policy("index").assert().isSameAs(SetCacheSpec.DEFAULT_POLICY)
+            runtime.policy("index").assert().isSameAs(SetStoreSpec.DEFAULT_POLICY)
             runtime.policy("absent").assert().isNull()
             runtime.cacheNames.assert().containsExactlyInAnyOrder("user", "index")
             cache.name.assert().isEqualTo("user")
@@ -95,6 +96,7 @@ class CacheRuntimeTest {
                     codec = StringCodec
                     namespace = "shared"
                     keyPrefix = "other:"
+                    externallySourced()
                 }
             )
             ours.put("k", "ours")
@@ -256,8 +258,9 @@ class CacheRuntimeTest {
     }
 
     /**
-     * 创建时检查缓存需要的 L1 能力（RFC 0005 §4.3）：带版本的缓存要求 `versioned()`，集合缓存要求 `sets()`。缺失时以
-     * [UnsupportedOperationException] 失败并指明缺少的能力，不注册任何东西：同名、同命名空间之后可以创建不需要它的缓存。
+     * 创建时检查缓存需要的 L1 能力（RFC 0005 §4.3）：`VersionedCache` 与 `VersionedStore` 要求 `versioned()`，`SetStore` 要求 `sets()`，
+     * `Store` 要求 `conditional()`。缺失时以 [UnsupportedOperationException] 失败并指明缺少的能力，不注册任何东西：
+     * 同名、同命名空间之后可以创建不需要它的缓存。
      */
     @Test
     fun missingCapabilitiesFailCreationAndRegisterNothing() {
@@ -265,17 +268,22 @@ class CacheRuntimeTest {
         CacheRuntime.builder().backend(backend).build().use { runtime ->
             val versioned = runCatching {
                 runtime.create(
-                    cacheSpec<String, String>("doc") {
+                    versionedCacheSpec<String, String>("doc") {
                         codec = StringCodec
-                        versioned = true
+                        versionedLoader = me.ahoo.cocache.api.CacheLoader { null }
                     }
                 )
             }.exceptionOrNull()
             versioned.assert().isInstanceOf(UnsupportedOperationException::class.java)
                 .hasMessageContaining("Cache[doc] needs the L1 capabilities[versioned]")
                 .hasMessageContaining("provides only [conditional]")
+            val versionedStore = runCatching {
+                runtime.create(versionedStoreSpec<String, String>("aggregate") { codec = StringCodec })
+            }.exceptionOrNull()
+            versionedStore.assert().isInstanceOf(UnsupportedOperationException::class.java)
+                .hasMessageContaining("Cache[aggregate] needs the L1 capabilities[versioned]")
             val set = runCatching {
-                runtime.create(setCacheSpec<String, String>("index") { elementCodec = StringCodec })
+                runtime.create(setStoreSpec<String, String>("index") { elementCodec = StringCodec })
             }.exceptionOrNull()
             set.assert().isInstanceOf(UnsupportedOperationException::class.java)
                 .hasMessageContaining("Cache[index] needs the L1 capabilities[sets]")
@@ -284,6 +292,54 @@ class CacheRuntimeTest {
             runtime.create(spec("doc")).assert().isNotNull()
             runtime.create(spec("index")).assert().isNotNull()
             runtime.cacheNames.assert().containsExactlyInAnyOrder("doc", "index")
+        }
+        val withoutConditional = StrippedBackend(InMemoryBackend(), conditional = false)
+        CacheRuntime.builder().backend(withoutConditional).build().use { runtime ->
+            val store = runCatching { runtime.create(storeSpec<String, String>("policy") { codec = StringCodec }) }
+                .exceptionOrNull()
+            store.assert().isInstanceOf(UnsupportedOperationException::class.java)
+                .hasMessageContaining("Cache[policy] needs the L1 capabilities[conditional]")
+            runtime.cacheNames.assert().isEmpty()
+        }
+    }
+
+    /**
+     * spec 与返回类型一一对应（RFC 0005 §3.1）：五种 spec 各自创建对应的用户 API 类型，`create(Spec)` 按 spec 的类型分派。
+     */
+    @Test
+    fun createReturnsTheTypeOfTheSpec() {
+        cacheRuntime { backend = InMemoryBackend() }.use { runtime ->
+            val specs: List<Spec<*, *>> = listOf(
+                spec("cache"),
+                versionedCacheSpec<String, String>("versioned-cache") {
+                    codec = StringCodec
+                    versionedLoader = me.ahoo.cocache.api.CacheLoader { null }
+                },
+                storeSpec<String, String>("store") { codec = StringCodec },
+                versionedStoreSpec<String, String>("versioned-store") { codec = StringCodec },
+                setStoreSpec<String, String>("set-store") { elementCodec = StringCodec },
+            )
+            val created = specs.map { runtime.create(it) }
+            created[0].assert().isInstanceOf(me.ahoo.cocache.api.Cache::class.java)
+            created[1].assert().isInstanceOf(me.ahoo.cocache.api.VersionedCache::class.java)
+            created[2].assert().isInstanceOf(me.ahoo.cocache.api.Store::class.java)
+            created[3].assert().isInstanceOf(me.ahoo.cocache.api.VersionedStore::class.java)
+            created[4].assert().isInstanceOf(me.ahoo.cocache.api.SetStore::class.java)
+            created.map { it.name }.assert().containsExactly(
+                "cache",
+                "versioned-cache",
+                "store",
+                "versioned-store",
+                "set-store"
+            )
+            created.forEach { runtime.cache(it.name).assert().isSameAs(it) }
+            // 每种类型各有自己的异步视图与挂起视图，每次返回同一个对象
+            created.forEach { cache ->
+                cache.async().assert().isSameAs(cache.async())
+                cache.suspending().assert().isSameAs(cache.suspending())
+                cache.async().sync().assert().isSameAs(cache)
+                cache.suspending().async().assert().isSameAs(cache.async())
+            }
         }
     }
 
@@ -296,17 +352,23 @@ class CacheRuntimeTest {
         val appender = ListAppender<ILoggingEvent>().apply { start() }
         logger.addAppender(appender)
         try {
-            CacheRuntime.builder().backend(InMemoryBackend()).build().use { it.create(spec("full")) }
+            CacheRuntime.builder().backend(InMemoryBackend()).build().use {
+                it.create(spec("full"))
+                it.create(storeSpec<String, String>("store") { codec = StringCodec })
+            }
             val stripped = StrippedBackend(InMemoryBackend(), conditional = false, versioned = false, sets = false)
             CacheRuntime.builder().backend(stripped).build().use { it.create(spec("bare", "bare-ns")) }
         } finally {
             logger.detachAppender(appender)
         }
         val created = appender.list.filter { it.level == Level.INFO }.map { it.formattedMessage }
-            .filter { it.contains("created on namespace") }
-        created.assert().hasSize(2)
-        created[0].assert().startsWith("Cache[full] - created on namespace[full]")
+            .filter { it.contains(" - created as ") }
+        created.assert().hasSize(3)
+        created[0].assert().startsWith("Cache[full] - created as Cache on namespace[full]")
             .endsWith("L1 capabilities[conditional, versioned, sets].")
-        created[1].assert().startsWith("Cache[bare] - created on namespace[bare-ns]").endsWith("L1 capabilities[].")
+        created[1].assert().startsWith("Cache[store] - created as Store on namespace[store]")
+        created[2].assert().startsWith(
+            "Cache[bare] - created as Cache on namespace[bare-ns]"
+        ).endsWith("L1 capabilities[].")
     }
 }

@@ -32,6 +32,7 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
 import java.time.Duration
@@ -123,6 +124,9 @@ class RedisBackend private constructor(
         return try {
             connections.maxmemoryPolicies()
         } catch (e: RedisException) {
+            log.info { "Cannot read maxmemory-policy from INFO memory (${e.message})." }
+            null
+        } catch (e: L1RejectedException) {
             log.info { "Cannot read maxmemory-policy from INFO memory (${e.message})." }
             null
         }

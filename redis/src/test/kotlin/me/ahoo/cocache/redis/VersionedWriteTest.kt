@@ -14,15 +14,17 @@
 package me.ahoo.cocache.redis
 
 import io.lettuce.core.ScriptOutputType
-import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedPut
+import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
-import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.versionedCacheSpec
+import me.ahoo.cocache.core.versionedStoreSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -49,15 +51,25 @@ class VersionedWriteTest {
     }
 
     /**
-     * @param sourced 有数据源（派生缓存，写入不带写入标识）；没有数据源时充当权威标量，每次标量写入带写入标识
+     * `VersionedCache`（带版本的数据源，写入不带写入标识）。
      */
-    private fun cache(name: String, sourced: Boolean = false): Cache<String, String> = runtime.create(
-        cacheSpec(name) {
+    private fun cache(name: String): VersionedCache<String, String> = runtime.create(
+        versionedCacheSpec(name) {
             codec = StringCodec
-            versioned = true
-            if (sourced) {
-                loader = CacheLoader { "loaded" }
+            versionedLoader = CacheLoader { Versioned("loaded", 0) }
+            policy {
+                ttl = Duration.ofMinutes(10)
+                ttlJitter = Duration.ZERO
             }
+        }
+    )
+
+    /**
+     * `VersionedStore`（没有数据源，每次标量写入带写入标识）。
+     */
+    private fun store(name: String): VersionedStore<String, String> = runtime.create(
+        versionedStoreSpec(name) {
+            codec = StringCodec
             policy {
                 ttl = Duration.ofMinutes(10)
                 ttlJitter = Duration.ZERO
@@ -88,20 +100,16 @@ class VersionedWriteTest {
     fun versionedContentUsesTheVersionSegment() {
         val emptyToken = "00".repeat(24) + "0000000000000000"
         val derived = "derived-$run"
-        val sourced = cache(derived, sourced = true)
+        val sourced = cache(derived)
         sourced.putIfNewer("v", "payload", 0x0102030405060708L).assert().isEqualTo(VersionedPut.Written)
         hexOf("cocache:$derived:v").assert().isEqualTo(
             "c0" + "02" + "56" + "01" + emptyToken + "0102030405060708" + hex("payload".toByteArray())
         )
         sourced.invalidateIfNewer("v", 0x0102030405060709L).assert().isEqualTo(VersionedPut.Written)
         hexOf("cocache:$derived:v").assert().isEqualTo("c0" + "02" + "4d" + "01" + emptyToken + "0102030405060709")
-        sourced.put("v", "plain")
-        hexOf(
-            "cocache:$derived:v"
-        ).assert().isEqualTo("c0" + "02" + "56" + "00" + emptyToken + hex("plain".toByteArray()))
 
         val authoritative = "authoritative-$run"
-        val cache = cache(authoritative)
+        val cache = store(authoritative)
         cache.putIfNewer("v", "payload", 7).assert().isEqualTo(VersionedPut.Written)
         val raw = hexOf("cocache:$authoritative:v")
         raw.substring(0, 88).assert().isEqualTo("c0" + "02" + "56" + "81" + emptyToken + "0000000000000007")
@@ -109,7 +117,7 @@ class VersionedWriteTest {
         raw.substring(88, 96).assert().isEqualTo("001a" + "01" + "18")
         raw.substring(96, 128).assert().isEqualTo(runtime.nodeId.toString())
         raw.substring(144).assert().isEqualTo(hex("payload".toByteArray()))
-        cache.invalidateIfNewer("v", 8).assert().isEqualTo(VersionedPut.Written)
+        cache.deleteIfNewer("v", 8).assert().isEqualTo(VersionedPut.Written)
         hexOf(
             "cocache:$authoritative:v"
         ).assert().isEqualTo("c0" + "02" + "4d" + "01" + emptyToken + "0000000000000008")
@@ -127,25 +135,25 @@ class VersionedWriteTest {
         val failName = "fail-$run"
         val failKey = "cocache:$failName:k"
         RedisTestSupport.withCommands { it.set(failKey, "legacy") }
-        val failing = cache(failName)
+        val failing = store(failName)
         val error = runCatching { failing.putIfNewer("k", "v1", 1) }.exceptionOrNull()
         error.assert().isInstanceOf(CacheWriteException::class.java)
         (error as CacheWriteException).operation.assert().isEqualTo("putIfNewer")
         requireNotNull(error.cause as? ForeignFormatException).format.assert().isEqualTo(0)
         RedisTestSupport.withCommands { it.get(failKey) }.assert().isEqualTo("legacy")
-        val asyncError = runCatching { failing.async().invalidateIfNewer("k", 1).get() }.exceptionOrNull()
+        val asyncError = runCatching { failing.async().deleteIfNewer("k", 1).get() }.exceptionOrNull()
         asyncError.assert().isInstanceOf(ExecutionException::class.java)
-        (asyncError?.cause as CacheWriteException).operation.assert().isEqualTo("invalidateIfNewer")
+        (asyncError?.cause as CacheWriteException).operation.assert().isEqualTo("deleteIfNewer")
 
         val reclaimName = "reclaim-$run"
         val reclaimKey = "cocache:$reclaimName:k"
         RedisTestSupport.withCommands { it.set(reclaimKey, "legacy") }
-        val reclaiming = cache(reclaimName, sourced = true)
+        val reclaiming = cache(reclaimName)
         val refused = runCatching { reclaiming.putIfNewer("k", "v1", 1) }.exceptionOrNull()
         refused.assert().isInstanceOf(CacheWriteException::class.java)
         requireNotNull(refused?.cause as? ForeignFormatException).format.assert().isEqualTo(0)
         RedisTestSupport.withCommands { it.get(reclaimKey) }.assert().isEqualTo("legacy")
-        // 读取照常条件回收后回源（没有版本的回源）；之后按版本写入照常进行
+        // 读取照常条件回收后回源（版本 0）；之后按版本写入照常进行
         reclaiming["k"].assert().isEqualTo("loaded")
         reclaiming.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Written)
         reclaiming.getVersioned("k").assert().isEqualTo(Versioned("v1", 1))

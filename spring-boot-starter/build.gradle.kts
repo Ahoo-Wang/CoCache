@@ -43,7 +43,6 @@ dependencies {
     testImplementation("com.github.ben-manes.caffeine:caffeine")
     testImplementation(project(":cocache-test"))
     // 验证可选模块的挂起视图在类路径上时登记 AOT 提示
-    testImplementation(project(":cocache-coroutines"))
 }
 
 kapt {

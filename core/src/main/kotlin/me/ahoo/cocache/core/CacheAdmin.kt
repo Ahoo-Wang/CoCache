@@ -95,14 +95,14 @@ data class KeyInspection(
         VALUE,
 
         /**
-         * 负缓存（数据源确认不存在）。
+         * 确认不存在：负缓存，或权威副本在 L1 中没有值。
          */
         ABSENT,
 
         /**
-         * 没有数据源的缓存未命中时的“不存在”：只是没有答案。
+         * 外部来源的缓存在 L1 中没有值（“未填充”，RFC 0005 §4.1）：不带 loader 的读取看到不存在，带 loader 的读取不接受它。
          */
-        UNRESOLVED,
+        UNFILLED,
     }
 
     /**

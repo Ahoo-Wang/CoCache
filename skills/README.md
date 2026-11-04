@@ -16,7 +16,7 @@ Skills 只描述 8.x 的行为。`cocache-develop` 遇到其他主版本的应�
 
 | Skill | Primary outcome | Boundary |
 |---|---|---|
-| `cocache-develop` | 引入 CoCache、声明缓存（接口或 `CacheSpec`）、loader 与 codec、提交后失效与外部写入方、Spring Cache、`JoinCache`、`SetCache`、配置与生产就绪、测试；审查 findings；陈旧数据、命中率、回源打满、Redis 故障或启动失败的根因，授权后修复 | 不实现 `CoherenceBackend`（`cocache-extend`） |
+| `cocache-develop` | 引入 CoCache、声明缓存（接口或 `CacheSpec`）、loader 与 codec、提交后失效与外部写入方、Spring Cache、`JoinCache`、按角色选择类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`）、配置与生产就绪、测试；审查 findings；陈旧数据、命中率、回源打满、Redis 故障或启动失败的根因，授权后修复 | 不实现 `CoherenceBackend`（`cocache-extend`） |
 | `cocache-extend` | 在 CoCache 仓库之外实现或修复 `CoherenceBackend`（`L1Store`，Java 实现 `FutureL1Store`；另加 `InvalidationChannel`），包括新存储、新失效通道与装饰器，以 `BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`、`VersionedSpec`（每个套件都要求声明 `expectedCapabilities`）在每种模式下通过为完成证据 | 不用于应用里的 `Codec`/`KeyEncoder`/配置 shipped `RedisBackend`（`cocache-develop`），不改 CoCache 自己的后端 |
 
 ## Selection

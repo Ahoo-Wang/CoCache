@@ -57,8 +57,8 @@ flowchart LR
 
 - **不是线性一致的。** 失效到达之前的几毫秒里，其它实例可能还返回旧值。如果某次读取必须看到另一个实例同一时刻的写入，请直接读数据源。
 - **看不到没人告诉它的写入。** 有东西改了数据库却不失效（批处理、其它服务、手写 SQL）时，缓存会陈旧到 `ttl`。这些写入方可以使用 [`ExternalInvalidator`](./freshness.md#external-writers)。
-- **[JoinCache](./join-cache.md) 不是快照。** 它的两次读取相互独立，可能来自不同时刻。
-- **[`SetCache`](./caches.md#set-cache) 的唯一副本在 Redis 中。** 它的持久性就是 Redis 的持久性。
+- **[组合视图](./join-cache.md)不是快照。** 它的两次读取相互独立，可能来自不同时刻。
+- **[`Store`、`VersionedStore` 与 `SetStore`](./caches.md#store) 的唯一副本在 Redis 中。** 它们的持久性就是 Redis 的持久性。
 - **内存后端只适用于单进程。** 它为开发与测试而存在。
 
 ## 什么时候不该用 {#when-not}

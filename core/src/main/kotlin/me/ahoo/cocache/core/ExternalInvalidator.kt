@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 写入方必须先提交数据源，再调用本方法。调用是幂等的：抛出异常时（例如删除成功而广播失败，或 Cluster
  * 中部分 slot 失败）请重试，否则其它节点的 L2 最长陈旧到 `localMaxAge`。
  *
- * [invalidate] 删除 L1 中的 key：用在没有数据源的缓存（L1 是唯一副本，RFC 0005 §4.1）的命名空间上，删除的就是唯一的一份数据，
+ * [invalidate] 删除 L1 中的 key：用在权威类型（`Store`、`VersionedStore`、`SetStore`：L1 是唯一副本，RFC 0005 §4.1）的命名空间上，删除的就是唯一的一份数据，
  * 不能恢复。只想让各节点丢弃 L2 副本、保留 L1 时用 [broadcast]：它只广播失效帧，对任何类型的缓存都安全（RFC 0005 §4.9）。
  *
  * @param backend 与缓存共用的后端（同一个 Redis 与通道模式）
@@ -97,7 +97,7 @@ class ExternalInvalidator @JvmOverloads constructor(
     }
 
     /**
-     * 只广播失效帧，不修改 L1：各节点递增这些 key 的失效戳并淘汰 L2 副本，之后从 L1 重新填充。对没有数据源的缓存同样安全
+     * 只广播失效帧，不修改 L1：各节点递增这些 key 的失效戳并淘汰 L2 副本，之后从 L1 重新填充。对权威类型同样安全
      * （不删除唯一副本）。用于 L1 已经是正确内容、只有其它节点的 L2 可能陈旧的场合，例如外部工具已经直接改写了 L1。
      *
      * 投递至多一次，与缓存自己的广播相同：帧丢失时各节点的 L2 陈旧到 `localMaxAge` 或下一次订阅重置。

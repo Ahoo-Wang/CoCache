@@ -13,24 +13,22 @@
 
 package me.ahoo.cocache.core.engine
 
-import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Codec
+import me.ahoo.cocache.api.ConditionalDelete
 import me.ahoo.cocache.api.ConditionalPut
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.spi.Digest
-import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
-import me.ahoo.cocache.core.StrippedBackend
-import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.storeSpec
+import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
@@ -39,7 +37,7 @@ import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletionException
 
 /**
- * 条件读写在引擎中的边界：非原子广播的后端上冲突与拒绝不广播，`SetCache` 不支持条件读写。
+ * `Store` 的条件读写在引擎中的边界：非原子广播的后端上冲突与拒绝不广播，可能是重放的冲突广播。
  */
 class ConditionalEngineTest {
     private val memory = InMemoryBackend()
@@ -60,8 +58,8 @@ class ConditionalEngineTest {
         observer.close()
     }
 
-    private fun create(runtime: CacheRuntime): Cache<String, String> = runtime.create(
-        cacheSpec("doc") { codec = StringCodec }
+    private fun create(runtime: CacheRuntime): Store<String, String> = runtime.create(
+        storeSpec("doc") { codec = StringCodec }
     )
 
     private fun received(): Long = requireNotNull(observer.metrics("doc")).invalidationsReceived
@@ -78,6 +76,10 @@ class ConditionalEngineTest {
 
         cache.putIfMatch("k", null, "x").assert().isEqualTo(ConditionalPut.Conflict(first.digest))
         cache.async().putIfMatch("k", null, "x").join().assert().isEqualTo(ConditionalPut.Conflict(first.digest))
+        cache.deleteIfMatch(
+            "k",
+            Digest.ofPayload("other".toByteArray())
+        ).assert().isEqualTo(ConditionalDelete.Conflict(first.digest))
         received().assert().isEqualTo(afterFirst)
 
         val silent = InvalidationFrame.encode(NodeId.random(), emptyList())
@@ -93,6 +95,9 @@ class ConditionalEngineTest {
         val asyncError = unwrap(cache.async().putIfMatch("set", null, "v").handle { _, e -> e }.join())
         asyncError.assert().isInstanceOf(CacheWriteException::class.java)
         asyncError?.cause.assert().isInstanceOf(ForeignFormatException::class.java)
+        val deleteError = runCatching { cache.deleteIfMatch("set", first.digest) }.exceptionOrNull()
+        deleteError.assert().isInstanceOf(CacheWriteException::class.java)
+        (deleteError as CacheWriteException).outcomeUnknown.assert().isFalse()
         received().assert().isEqualTo(baseline)
 
         // 对照：成功的条件写入经通道广播（同步与异步）
@@ -103,19 +108,24 @@ class ConditionalEngineTest {
         received().assert().isGreaterThan(afterSync)
     }
 
+    /**
+     * 非原子广播的后端上，`deleteIfMatch` 删除时广播；冲突且当前没有值时也广播（RFC 0005 §4.6）：这可能是重放，上一次同样的删除
+     * 已在 L1 生效，单独的广播却失败了。当前有别的值的冲突不广播。
+     */
     @Test
-    fun setCachesDoNotSupportConditionalOperations() {
-        val set: SetCache<String, String> = writer.create(setCacheSpec("set") { elementCodec = StringCodec })
-        runCatching {
-            set.getIfChanged("k", null)
-        }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
-        runCatching {
-            set.putIfMatch("k", null, setOf("a"))
-        }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)
-        unwrap(set.async().getIfChanged("k", null).handle { _, e -> e }.join())
-            .assert().isInstanceOf(UnsupportedOperationException::class.java)
-        unwrap(set.async().putIfMatch("k", null, setOf("a")).handle { _, e -> e }.join())
-            .assert().isInstanceOf(UnsupportedOperationException::class.java)
+    fun deleteIfMatchBroadcastsWhenDeletedOrPossiblyReplayed() {
+        val cache = create(writer)
+        val other = create(observer)
+        val written = cache.putIfMatch("k", null, "v1") as ConditionalPut.Written
+        other["k"].assert().isEqualTo("v1")
+        val baseline = received()
+        cache.deleteIfMatch("k", written.digest).assert().isEqualTo(ConditionalDelete.Deleted)
+        awaitCondition("the deletion reached the observer") { received() > baseline }
+        other["k"].assert().isNull()
+        val afterDelete = received()
+        cache.async().deleteIfMatch("k", written.digest).join().assert().isEqualTo(ConditionalDelete.Conflict(null))
+        awaitCondition("the possible replay was broadcast") { received() > afterDelete }
+        requireNotNull(writer.metrics("doc")).conditionalConflicts.assert().isEqualTo(1)
     }
 
     /**
@@ -124,8 +134,8 @@ class ConditionalEngineTest {
     @Test
     fun asyncEncodingFailureCompletesExceptionally() {
         val failure = IllegalStateException("encode")
-        val cache: Cache<String, String> = writer.create(
-            cacheSpec("failing") {
+        val cache: Store<String, String> = writer.create(
+            storeSpec("failing") {
                 codec = object : Codec<String> {
                     override fun encode(value: String): ByteArray = throw failure
                     override fun decode(bytes: ByteArray): String = String(bytes)
@@ -136,41 +146,5 @@ class ConditionalEngineTest {
         Suspending.await {
             memory.store(Keyspace("cocache:", "failing")).read("cocache:failing:k", null, null, null)
         }.assert().isEqualTo(L1Read.Miss(false))
-    }
-
-    /**
-     * 存储没有条件读写的能力面（[me.ahoo.cocache.api.spi.L1Store.conditional] 为 `null`，RFC 0005 §4.3）：M5 之前普通缓存照常创建，
-     * 条件读写在调用时原样抛出 [UnsupportedOperationException]（同步抛出，异步以失败的 future 交出）：不包装、不广播、不修改 L1 与 L2，
-     * 也不计为写入失败。从不退回“先读后写”，否则两个并发的写入方都会成功。
-     */
-    @Test
-    fun storesWithoutTheConditionalCapabilityFailLoudly() {
-        val runtime = CacheRuntime.builder().backend(
-            HookedBackend(StrippedBackend(memory, conditional = false)).apply { atomicBroadcastOverride = false }
-        ).build()
-        try {
-            val cache = create(runtime)
-            create(observer)
-            cache.put("k", "v")
-            cache["k"].assert().isEqualTo("v")
-            val baseline = received()
-            val digest = Digest.of(Envelope.Scalar("v".toByteArray()))
-            listOf(
-                runCatching { cache.putIfMatch("k", null, "x") }.exceptionOrNull(),
-                runCatching { cache.putIfMatch("k", digest, "x", java.time.Duration.ofSeconds(1)) }.exceptionOrNull(),
-                runCatching { cache.getIfChanged("k", digest) }.exceptionOrNull(),
-                unwrap(cache.async().putIfMatch("k", null, "x").handle { _, e -> e }.join()),
-                unwrap(cache.async().getIfChanged("k", null).handle { _, e -> e }.join()),
-            ).forEach { error ->
-                error.assert().isInstanceOf(UnsupportedOperationException::class.java)
-                error?.message.assert().contains("needs the conditional capability")
-            }
-            received().assert().isEqualTo(baseline)
-            requireNotNull(runtime.admin("doc")).localSize.assert().isEqualTo(1)
-            requireNotNull(runtime.metrics("doc")).writeFailures.assert().isEqualTo(0)
-            cache["k"].assert().isEqualTo("v")
-        } finally {
-            runtime.close()
-        }
     }
 }

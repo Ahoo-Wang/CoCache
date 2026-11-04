@@ -51,11 +51,11 @@ sealed interface L1ConditionalRead {
 }
 
 /**
- * [ConditionalL1Store.putIfMatch] 的结果。
+ * [ConditionalL1Store.putIfMatch] 与 [ConditionalL1Store.deleteIfMatch] 的结果。
  */
 sealed interface L1ConditionalWrite {
     /**
-     * 已写入并广播。
+     * 已写入（`deleteIfMatch`：已删除）并广播。
      */
     data object Written : L1ConditionalWrite
 
@@ -77,7 +77,7 @@ sealed interface L1ConditionalWrite {
  */
 sealed interface L1VersionedWrite {
     /**
-     * 已写入并广播。
+     * 已写入（`deleteIfMatch`：已删除）并广播。
      */
     data object Written : L1VersionedWrite
 

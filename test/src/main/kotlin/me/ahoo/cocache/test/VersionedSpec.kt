@@ -13,13 +13,15 @@
 
 package me.ahoo.cocache.test
 
-import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedPut
+import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
@@ -43,12 +45,14 @@ import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.api.spi.VersionedL1Store
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
-import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.RetryPolicy
-import me.ahoo.cocache.core.cacheSpec
+import me.ahoo.cocache.core.VersionedCacheSpec
+import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
+import me.ahoo.cocache.core.versionedCacheSpec
+import me.ahoo.cocache.core.versionedStoreSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -75,9 +79,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * - 协议（直接调用 [L1Store] 与它的能力面）：版本随 fill / put / putAll 保存、读取原样返回（声明了条件读写时，putIfMatch 写入没有版本的值，
  *   条件读写拒绝带版本的内容）；按版本写入销毁 lease、填充因此被拒绝；带版本的内容授予刷新令牌、不被回收；填充的版本规则；
  *   保留版本的失效（状态 `E`）的每个脚本；墓碑读作负缓存；版本按有符号 64 位整数比较（RFC 0005 §4.7）。
- * - 引擎（经 [access]，同步或异步视图）：有序、相等版本幂等、旧版本拒绝且不广播不改寿命、墓碑挡住迟到的旧版本、
- *   lease 持有者回源期间落地的按版本写入胜出、回源保存版本且与随后的写入比较、并发写入收敛到最高版本、结果未知时重放安全；
- *   提前刷新、版本前进的填充按写入处理、版本拒绝的刷新保留副本、运维的按 key 删除保留版本。
+ * - 引擎（经 [access]，同步或异步视图）：`VersionedCache`（带版本的数据源）有序、相等版本幂等、旧版本拒绝且不广播不改寿命、
+ *   墓碑挡住迟到的旧版本、lease 持有者回源期间落地的按版本写入胜出、回源保存版本且与随后的写入比较、并发写入收敛到最高版本、
+ *   结果未知时重放安全；提前刷新、版本前进的填充按写入处理、版本拒绝的刷新保留副本、`evict` 与运维的按 key 删除保留版本、
+ *   不带版本的 `null` 落在带版本的内容上被拒绝（K16）。`VersionedStore`（没有数据源）：写入标识、读取不申请 lease、墓碑寿命、`purge`。
  *
  * 竞态用 latch 编排；跨节点效果用带超时的轮询断言。
  */
@@ -184,14 +189,14 @@ abstract class VersionedSpec {
         CapabilityDeclaration.assume(expectedCapabilities, capabilities)
 
     /**
-     * 本用例的带版本缓存的声明。没有声明 [L1Capability.VERSIONED] 时跳过这个用例（引擎用例都先经它创建缓存）。
+     * 本用例的 `VersionedCache` 的声明。没有声明 [L1Capability.VERSIONED] 时跳过这个用例（引擎用例都先经它创建缓存）。
      */
     protected fun spec(
         policy: CachePolicy = policy(),
-        block: CacheSpec.Builder<String, String>.() -> Unit = {}
-    ): CacheSpec<String, String> {
+        block: VersionedCacheSpec.Builder<String, String>.() -> Unit = {}
+    ): VersionedCacheSpec<String, String> {
         assumeDeclared(L1Capability.VERSIONED)
-        return cacheSpec(cacheName) {
+        return versionedCacheSpec(cacheName) {
             codec = TestCodec
             versionedLoader = this@VersionedSpec.loader
             this.policy = policy
@@ -200,9 +205,28 @@ abstract class VersionedSpec {
         }
     }
 
-    protected fun CacheRuntime.cache(spec: CacheSpec<String, String> = spec()): Cache<String, String> = access.cache(
-        create(spec)
-    )
+    protected fun CacheRuntime.cache(
+        spec: VersionedCacheSpec<String, String> = spec()
+    ): VersionedCache<String, String> = access.versionedCache(create(spec))
+
+    /**
+     * 与 [spec] 同名、同 keyspace 的 `VersionedStore`（没有数据源）。没有声明 [L1Capability.VERSIONED] 时跳过这个用例。
+     */
+    protected fun storeSpec(
+        policy: CachePolicy = policy(),
+        block: VersionedStoreSpec.Builder<String, String>.() -> Unit = {}
+    ): VersionedStoreSpec<String, String> {
+        assumeDeclared(L1Capability.VERSIONED)
+        return versionedStoreSpec(cacheName) {
+            codec = TestCodec
+            this.policy = policy
+            block()
+        }
+    }
+
+    protected fun CacheRuntime.versionedStore(
+        spec: VersionedStoreSpec<String, String> = storeSpec()
+    ): VersionedStore<String, String> = access.versionedStore(create(spec))
 
     protected fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 
@@ -700,11 +724,11 @@ abstract class VersionedSpec {
     }
 
     /**
-     * 写入标识（RFC 0005 §4.7，D2）：没有数据源的带版本缓存（M5 之前充当权威标量）的 `putIfNewer` 与回源填充带写入标识，版本照常保存；
-     * 有带版本的数据源的缓存不带。墓碑（`invalidateIfNewer`）没有载荷，也不带。
+     * 写入标识（RFC 0005 §4.7，D2）：`VersionedStore` 的 `putIfNewer` 带写入标识，版本照常保存，不带摘要段；`VersionedCache` 的写入与回源填充
+     * 都不带。墓碑（`deleteIfNewer`）没有载荷，也不带。
      */
     @Test
-    fun onlyVersionedCachesWithoutASourceWriteAWriterId() {
+    fun onlyVersionedStoresWriteAWriterId() {
         fun remoteScalar(key: String) = (remote(key) as L1Read.Hit).envelope as Envelope.Scalar
         val derived = nodeA.cache()
         database["filled"] = Versioned("v1", 1)
@@ -713,19 +737,48 @@ abstract class VersionedSpec {
         remoteScalar("filled").writer.assert().isNull()
         remoteScalar("k").writer.assert().isNull()
 
-        val authoritative = nodeB.cache(
-            spec {
-                versionedLoader = null
-                versioned = true
-            }
-        )
+        val authoritative = nodeB.versionedStore()
         authoritative.putIfNewer("k", "v3", 3).assert().isEqualTo(VersionedPut.Written)
         remoteScalar("k").version.assert().isEqualTo(3L)
+        remoteScalar("k").digest.assert().isNull()
         requireNotNull(remoteScalar("k").writer).node.assert().isEqualTo(nodeB.nodeId)
-        authoritative.invalidateIfNewer("k", 4).assert().isEqualTo(VersionedPut.Written)
+        authoritative.deleteIfNewer("k", 4).assert().isEqualTo(VersionedPut.Written)
         authoritative.getVersioned("k").assert().isNull()
         authoritative.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Written)
         authoritative.getVersioned("k").assert().isEqualTo(Versioned("v5", 5))
+    }
+
+    /**
+     * `VersionedStore` 的读取同 `Store`（RFC 0005 §4.1）：不申请 lease，L1 中没有就是 `Absent`；L1 读失败为 `Unknown`。
+     * 墓碑的寿命是 `tombstoneTtl`（默认策略 1 天，与值永不过期无关）；`purge` 删除 key、丢掉版本栅栏，之后任何版本都能写入。
+     */
+    @Test
+    fun versionedStoreReadsWithoutALeaseAndTombstonesExpire() {
+        val store = nodeA.versionedStore(storeSpec(VersionedStoreSpec.DEFAULT_POLICY))
+        val other = nodeB.versionedStore(storeSpec(VersionedStoreSpec.DEFAULT_POLICY))
+        store["k"].assert().isNull()
+        store.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
+        store.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Written)
+        remoteTtl("k").assert().isNull()
+        awaitCondition("B sees the value") { other.getVersioned("k") == Versioned("v1", 1) }
+
+        store.deleteIfNewer("k", 2).assert().isEqualTo(VersionedPut.Written)
+        val tombstoneTtl = requireNotNull(remoteTtl("k"))
+        tombstoneTtl.assert().isBetween(Duration.ofHours(23), VersionedStoreSpec.DEFAULT_TOMBSTONE_TTL)
+        awaitCondition("B sees the deletion") { other["k"] == null }
+        other.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Stale(2))
+
+        store.purge("k")
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
+        other.putIfNewer("k", "v0", 0).assert().isEqualTo(VersionedPut.Written)
+        awaitCondition("A reads the version written after the purge") { store.getVersioned("k") == Versioned("v0", 0) }
+
+        backend.failAll = true
+        runCatching { store["k2"] }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        store.lookup("k2").assert().isInstanceOf(Lookup.Unknown::class.java)
+        backend.failAll = false
+        nodeA.metrics().leaseWaits.assert().isEqualTo(0)
     }
 
     /**
@@ -1136,29 +1189,31 @@ abstract class VersionedSpec {
     }
 
     /**
-     * 按 key 删除遇到没有数据源的缓存写入的值（带摘要段，D4）：没有数据源的带版本缓存删除它（它就是这个缓存 `put` 的值，没有版本可保留）；
-     * 有数据源的带版本缓存拒绝，以 [CacheWriteException] 失败，key 保留，计入 `typeMismatches`。
+     * `evict` 与运维的按 key 删除遇到 `Store` 写入的值（带摘要段，D4）：拒绝，以 [CacheWriteException] 失败（结果确定未执行），key 保留，
+     * 计入 `typeMismatches`。`purge` 删除它。
      */
     @Test
-    fun adminEvictionOfAnAuthoritativeValue() {
+    fun evictionOfAnAuthoritativeValueIsRefused() {
         val derived = nodeA.cache()
-        val authoritative = nodeB.cache(
-            spec {
-                versionedLoader = null
-                versioned = true
-            }
-        )
-        authoritative.put("plain", "p")
+        val bytes = TestCodec.encode("p")
+        Suspending.await {
+            store().put(
+                storageKey("plain"),
+                Envelope.Scalar(bytes, Versioned.NO_VERSION, null, Digest.ofPayload(bytes)),
+                null,
+                InvalidationFrame.encode(NodeId.random(), emptyList())
+            )
+        }
         val error = runCatching { requireNotNull(nodeA.admin(cacheName)).invalidateEncoded("plain") }.exceptionOrNull()
         error.assert().isInstanceOf(CacheWriteException::class.java)
         error?.cause.assert().isInstanceOf(IllegalStateException::class.java)
+        (error as CacheWriteException).outcomeUnknown.assert().isFalse()
+        runCatching { derived.evict("plain") }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
         remoteVersioned("plain").assert().isEqualTo(Versioned("p", Versioned.NO_VERSION))
-        nodeA.metrics().typeMismatches.assert().isEqualTo(1)
+        nodeA.metrics().typeMismatches.assert().isEqualTo(2)
 
-        requireNotNull(nodeB.admin(cacheName)).invalidateEncoded("plain")
+        derived.purge("plain")
         remote("plain").assert().isEqualTo(L1Read.Miss(false))
-        authoritative["plain"].assert().isNull()
-        derived["plain"].assert().isNull()
     }
 
     /**
@@ -1197,22 +1252,53 @@ abstract class VersionedSpec {
     private fun l1(block: suspend () -> Unit) = Suspending.await(block)
 
     /**
-     * 普通写入（put、invalidate）写入没有版本的内容：之后任何版本都能写入。数据源返回 `null` 时是没有版本的负缓存。
+     * `purge` 丢掉版本栅栏：之后任何版本都能写入。数据源返回 `null`（从来没有这个 key）时是没有版本的负缓存，之后任何版本都能写入。
+     * `evict` 保留版本栅栏：迟到的旧版本仍被拒绝，更新的版本写入。
      */
     @Test
-    fun plainWritesAndAbsentLoadsCarryNoVersion() {
+    fun purgeDropsTheVersionFenceAndEvictKeepsIt() {
         val cache = nodeA.cache()
         cache.putIfNewer("k", "v5", 5)
-        cache.put("k", "plain")
-        cache.getVersioned("k").assert().isEqualTo(Versioned("plain", Versioned.NO_VERSION))
-        cache.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Written)
-        cache.invalidate("k")
+        cache.evict("k")
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
+        cache.putIfNewer("k", "v4", 4).assert().isEqualTo(VersionedPut.Stale(5))
+        cache.purge("k")
         cache.putIfNewer("k", "v0", 0).assert().isEqualTo(VersionedPut.Written)
+        cache.getVersioned("k").assert().isEqualTo(Versioned("v0", 0))
 
         cache["missing"].assert().isNull()
         (remote("missing") as L1Read.Hit).envelope.assert().isEqualTo(Envelope.Absent)
         cache.putIfNewer("missing", "m1", 1).assert().isEqualTo(VersionedPut.Written)
         cache.getVersioned("missing").assert().isEqualTo(Versioned("m1", 1))
+    }
+
+    /**
+     * K16（RFC 0005 §4.1）：带版本的数据源必须以 `Versioned(null, w)` 表达删除。不带版本的 `null` 落在带版本的内容上（这里是 `evict`
+     * 留下的 `E(5)`）被 L1 拒绝：回源值（不存在）照常返回，不写成负缓存，`E` 保留，计入 `unversionedAbsentRefusals` 与 `fillRejected`；
+     * 已删除的实体因此在 `E` 到期之前每次未命中都回源。以 `Versioned(null, 6)` 表达删除时写入墓碑，不再回源。
+     */
+    @Test
+    fun unversionedAbsenceOverVersionedContentIsRefused() {
+        val cache = nodeA.cache()
+        cache.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Written)
+        cache.evict("k")
+        database.remove("k")
+        cache["k"].assert().isNull()
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
+        nodeA.metrics().unversionedAbsentRefusals.assert().isEqualTo(1)
+        nodeA.metrics().fillRejected.assert().isEqualTo(1)
+        elapse(policy().degradedLocalMaxAge.plusSeconds(1))
+        cache["k"].assert().isNull()
+        loads.get().assert().isEqualTo(2)
+        nodeA.metrics().unversionedAbsentRefusals.assert().isEqualTo(2)
+
+        database["k"] = Versioned(null, 6)
+        elapse(policy().degradedLocalMaxAge.plusSeconds(1))
+        cache["k"].assert().isNull()
+        (remote("k") as L1Read.Hit).envelope.assert().isEqualTo(Envelope.Absent)
+        cache["k"].assert().isNull()
+        loads.get().assert().isEqualTo(3)
+        nodeA.metrics().unversionedAbsentRefusals.assert().isEqualTo(2)
     }
 
     /**
@@ -1235,27 +1321,21 @@ abstract class VersionedSpec {
     }
 
     /**
-     * [Versioned.NO_VERSION] 不能作为版本；没有声明为带版本的缓存不支持按版本的操作。
+     * [Versioned.NO_VERSION] 不能作为版本（`VersionedCache` 与 `VersionedStore` 都是）。
      */
     @Test
-    fun invalidVersionsAndUnversionedCachesAreRejected() {
+    fun noVersionIsRejected() {
         val cache = nodeA.cache()
         runCatching { cache.putIfNewer("k", "v", Versioned.NO_VERSION) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
         runCatching { cache.invalidateIfNewer("k", Versioned.NO_VERSION) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
+        val store = nodeB.versionedStore()
+        runCatching { store.putIfNewer("k", "v", Versioned.NO_VERSION) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+        runCatching { store.deleteIfNewer("k", Versioned.NO_VERSION) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
         remote("k").assert().isEqualTo(L1Read.Miss(false))
-
-        val plain = nodeB.create(
-            cacheSpec<String, String>("plain-$cacheName") {
-                codec = TestCodec
-                policy = policy()
-            }
-        ).let { access.cache(it) }
-        runCatching { plain.putIfNewer("k", "v", 1) }.exceptionOrNull()
-            .assert().isInstanceOf(UnsupportedOperationException::class.java)
-        runCatching { plain.getVersioned("k") }.exceptionOrNull()
-            .assert().isInstanceOf(UnsupportedOperationException::class.java)
     }
 
     /**

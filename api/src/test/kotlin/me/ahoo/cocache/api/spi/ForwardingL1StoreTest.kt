@@ -95,6 +95,7 @@ class ForwardingL1StoreTest {
             mockk {
                 coEvery { readIfChanged("k", digest, timeout) } returns L1ConditionalRead.Unchanged(1)
                 coEvery { putIfMatch("k", digest, envelope, ttl, frame) } returns L1ConditionalWrite.Conflict(null)
+                coEvery { deleteIfMatch("k", digest, frame) } returns L1ConditionalWrite.Written
             }
         ) {}
         val versioned = object : ForwardingVersionedL1Store(
@@ -113,6 +114,8 @@ class ForwardingL1StoreTest {
         unchanged.assert().isEqualTo(L1ConditionalRead.Unchanged(1))
         val conflict = Suspending.await { conditional.putIfMatch("k", digest, envelope, ttl, frame) }
         conflict.assert().isEqualTo(L1ConditionalWrite.Conflict(null))
+        val deleted = Suspending.await { conditional.deleteIfMatch("k", digest, frame) }
+        deleted.assert().isSameAs(L1ConditionalWrite.Written)
         val written = Suspending.await { versioned.putIfNewer("k", Envelope.Absent, 3, ttl, frame) }
         written.assert().isSameAs(L1VersionedWrite.Written)
         Suspending.await { sets.addMembers("k", members, ttl, frame) }.assert().isEqualTo(0)

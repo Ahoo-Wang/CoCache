@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.ConditionalL1Store
@@ -30,6 +31,7 @@ import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
@@ -61,29 +63,30 @@ import kotlin.coroutines.CoroutineContext
  * 按身份比较：不得改为 data class，也不得重写 `equals`。L2 填充的写后复核按身份撤销自己写入的那一份（[fillGuarded]），
  * 按值比较会删掉其间别的填充写入的、内容相同的副本。
  *
- * @param unresolved 没有数据源的缓存未命中时的“不存在”：只是没有答案，带 loader 的读取不接受它
+ * @param unfilled 外部来源的缓存在 L1 中未命中（或绕过 L1）时的“未填充”（RFC 0005 §4.1）：对不带 loader 的读取是不存在，
+ *   带 loader 的读取不接受它
  */
-internal class LocalEntry<V>(
+internal open class LocalEntry<V>(
     val value: V?,
     val expiresAt: Long,
     val refreshAt: Long = FOREVER,
-    val unresolved: Boolean = false
+    val unfilled: Boolean = false
 )
 
 /**
- * 一次加载的结果及其开始时的失效戳。
- *
- * @param failure 这次加载没有答案时要抛出的异常（没有数据源的读取遇到 L1 失败）。此时 [entry] 是没有写入 L2 的 `unresolved` 占位：
- *   合并到这次加载的带 loader 的读取不接受它，改用自己的数据源
+ * 这一次读取没有答案（`Lookup.Unknown`，RFC 0005 §4.1）：只来自 L1 故障。它从不写入 L2，只作为这次加载的结果经 SingleFlight 共享：
+ * 它是“未填充”的，带数据源的调用方不接受它（合并规则）。调用方返回之前换算为 `Unknown`、`Absent`（`unknownRead = ABSENT`）或抛出 [error]。
  */
-internal class Loaded<V>(val entry: LocalEntry<V>, val stamp: Long, val failure: Exception? = null) {
+internal class Unanswered<V>(val error: CacheReadException) : LocalEntry<V>(null, 0, unfilled = true)
+
+/**
+ * 一次加载的结果及其开始时的失效戳。
+ */
+internal class Loaded<V>(val entry: LocalEntry<V>, val stamp: Long) {
     /**
-     * 这次加载的答案；没有答案时抛出 [failure]。
+     * 这次加载的答案（可能是 [Unanswered]）。
      */
-    fun answer(): LocalEntry<V> {
-        failure?.let { throw it }
-        return entry
-    }
+    fun answer(): LocalEntry<V> = entry
 }
 
 internal const val FOREVER = Long.MAX_VALUE
@@ -147,8 +150,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 
     /**
      * 存储的能力面（RFC 0005 §4.3）：访问器在存储的生命周期内返回同样的结果，创建时各取一次。
-     * `runtime.create` 已检查缓存需要的能力；没有检查的（M5 之前普通缓存上的条件读写）在调用时以 [UnsupportedOperationException] 失败
-     * （[requireConditional]、[requireVersioned]、[requireSets]）。
+     * `runtime.create` 已按类型检查需要的能力（`Store` 要求 `conditional()`，带版本的类型要求 `versioned()`，`SetStore` 要求 `sets()`）；
+     * [requireConditional]、[requireVersioned]、[requireSets] 只是防御性检查，缺少时在调用时以 [UnsupportedOperationException] 失败。
      */
     private val conditional: ConditionalL1Store? = store.conditional()
     private val versioned: VersionedL1Store? = store.versioned()
@@ -359,7 +362,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             try {
                 mutate(frame)
             } catch (e: Exception) {
-                if (!atomicBroadcast && !isRefusal(e)) {
+                if (!atomicBroadcast && !notExecuted(e)) {
                     publishAfterFailure(frame, e)
                 }
                 throw e
@@ -430,12 +433,15 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         null
     }
 
-    protected fun throwWriteFailure(operation: String): (Exception) -> Unit = {
-        throw CacheWriteException(
-            name,
-            operation,
-            it
-        )
+    /**
+     * 写入失败：以 [CacheWriteException] 抛出，[CacheWriteException.outcomeUnknown] 按客户端能观察到的事实区分（RFC 0005 §4.3、§4.6，
+     * [notExecuted]）。后端以 [UnsupportedOperationException] 拒绝时原样抛出，与不支持的操作一致。
+     */
+    protected fun throwWriteFailure(operation: String): (Exception) -> Unit = { error ->
+        if (error is UnsupportedOperationException) {
+            throw error
+        }
+        throw CacheWriteException(name, operation, error, outcomeUnknown = !notExecuted(error))
     }
 
     /**
@@ -497,7 +503,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     private fun localCopyOf(entry: LocalEntry<V>): KeyInspection.LocalCopy {
         val state = when {
             entry.value != null -> KeyInspection.LocalState.VALUE
-            entry.unresolved -> KeyInspection.LocalState.UNRESOLVED
+            entry.unfilled -> KeyInspection.LocalState.UNFILLED
             else -> KeyInspection.LocalState.ABSENT
         }
         return KeyInspection.LocalCopy(
@@ -599,10 +605,13 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         val ASYNC_WRITE: CoroutineContext = NonCancellable + Dispatchers.Unconfined
 
         /**
-         * 后端没有修改 L1 就拒绝了写入：读不懂的内容、保留版本的失效遇到权威标量，或后端以 [UnsupportedOperationException] 拒绝了这个操作。
+         * 写入确定没有执行（RFC 0005 §4.3）：存储在写出之前就拒绝了命令（[L1RejectedException]），或后端没有修改 L1 就拒绝了写入
+         * （读不懂的内容、保留版本的失效遇到权威标量，或后端以 [UnsupportedOperationException] 拒绝了这个操作）。
+         * 其余失败都是结果未知：命令可能已经生效，也可能在之后的任何时刻生效。
          */
-        fun isRefusal(error: Throwable): Boolean =
-            error is ForeignFormatException || error is AuthoritativeContentException || error is UnsupportedOperationException
+        fun notExecuted(error: Throwable): Boolean =
+            error is L1RejectedException || error is ForeignFormatException || error is AuthoritativeContentException ||
+                error is UnsupportedOperationException
 
         fun <V> buildLocal(policy: CachePolicy): Cache<String, LocalEntry<V>> {
             val local = policy.local
@@ -616,9 +625,9 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 
 /**
  * 保留版本的失效（`VersionedL1Store.evictKeepingVersion`）遇到带摘要段的值（权威标量，RFC 0005 §4.7，D4）：后端拒绝，L1 原样未动、不广播
- * （[AbstractEngine.isRefusal]）。作为 [CacheWriteException] 的 `cause` 抛出。
+ * （[AbstractEngine.notExecuted]）。作为 [CacheWriteException] 的 `cause` 抛出。
  */
 internal class AuthoritativeContentException(cacheName: String, storageKey: String) : IllegalStateException(
-    "Cache[$cacheName] - key[$storageKey] holds a value written by a cache without a loader (digest segment): " +
+    "Cache[$cacheName] - key[$storageKey] holds a value written by a Store (digest segment): " +
         "a versioned eviction does not touch it, and it is kept as is. The namespace is shared with an authoritative cache."
 )

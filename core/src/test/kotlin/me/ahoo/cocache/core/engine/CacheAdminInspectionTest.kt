@@ -16,7 +16,7 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
@@ -36,7 +36,8 @@ import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.test.EngineSpec.TestCodec
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.cocache.test.Suspending
@@ -140,7 +141,7 @@ class CacheAdminInspectionTest {
     }
 
     @Test
-    fun inspectsNegativeAndUnresolvedEntries() {
+    fun inspectsNegativeAndUnfilledEntries() {
         val runtime = runtime()
         val users = runtime.users(CachePolicy.DEFAULT)
         users[-1].assert().isNull()
@@ -151,11 +152,23 @@ class CacheAdminInspectionTest {
         negative.remote.state.assert().isEqualTo(RemoteState.ABSENT)
         negative.remote.value.assert().isNull()
 
-        val orphans = runtime.create(cacheSpec<String, String>("orphan") { codec = StringCodec })
+        val orphans = runtime.create(
+            cacheSpec<String, String>("orphan") {
+                codec = StringCodec
+                externallySourced()
+            }
+        )
         orphans["x"].assert().isNull()
-        val unresolved = requireNotNull(runtime.admin("orphan")).inspect("x")
-        requireNotNull(unresolved.local).state.assert().isEqualTo(LocalState.UNRESOLVED)
-        unresolved.remote.state.assert().isEqualTo(RemoteState.MISS)
+        val unfilled = requireNotNull(runtime.admin("orphan")).inspect("x")
+        requireNotNull(unfilled.local).state.assert().isEqualTo(LocalState.UNFILLED)
+        unfilled.remote.state.assert().isEqualTo(RemoteState.MISS)
+
+        // 权威副本在 L1 中没有值就是不存在（RFC 0005 §4.1），不是“未填充”
+        val store = runtime.create(storeSpec<String, String>("store") { codec = StringCodec })
+        store["x"].assert().isNull()
+        requireNotNull(
+            requireNotNull(runtime.admin("store")).inspect("x").local
+        ).state.assert().isEqualTo(LocalState.ABSENT)
     }
 
     @Test
@@ -275,9 +288,9 @@ class CacheAdminInspectionTest {
     }
 
     @Test
-    fun setCacheInspectionAndClear() {
+    fun setStoreInspectionAndClear() {
         val runtime = runtime()
-        val index: SetCache<String, String> = runtime.create(setCacheSpec("index") { elementCodec = StringCodec })
+        val index: SetStore<String, String> = runtime.create(setStoreSpec("index") { elementCodec = StringCodec })
         val admin = requireNotNull(runtime.admin("index"))
         admin.pendingInvalidationCount.assert().isZero()
         index.add("k", listOf("a", "b"))
@@ -296,7 +309,7 @@ class CacheAdminInspectionTest {
         }
         admin.inspect("scalar").remote.state.assert().isEqualTo(RemoteState.UNREADABLE)
 
-        // SetCache 的强制失效等价于 clear(key)
+        // SetStore 的强制失效等价于 clear(key)
         admin.invalidateEncoded("k")
         index["k"].assert().isEmpty()
         admin.inspect("k").remote.state.assert().isEqualTo(RemoteState.MISS)

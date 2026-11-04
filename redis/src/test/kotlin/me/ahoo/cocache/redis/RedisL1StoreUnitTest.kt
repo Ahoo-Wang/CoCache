@@ -35,6 +35,7 @@ import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
@@ -230,8 +231,16 @@ class RedisL1StoreUnitTest {
             val key = "k$index"
             val call = started(1) { store.fill(Fill(key, token(), Envelope.Absent, null)) }
             dispatched.single().completeExceptionally(error)
-            call.failure().assert().isSameAs(error)
-            if (error in notExecuted) released().assert().isEmpty() else released().assert().containsExactly(key)
+            val failure = call.failure()
+            if (error in notExecuted) {
+                // 确定未执行以 L1RejectedException 报告（CacheWriteException.outcomeUnknown = false），原始异常是它的 cause
+                failure.assert().isInstanceOf(L1RejectedException::class.java)
+                failure?.cause.assert().isSameAs(error)
+                released().assert().isEmpty()
+            } else {
+                failure.assert().isSameAs(error)
+                released().assert().containsExactly(key)
+            }
         }
     }
 

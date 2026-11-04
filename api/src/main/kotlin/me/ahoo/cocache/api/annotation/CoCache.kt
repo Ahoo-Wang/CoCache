@@ -17,7 +17,8 @@ package me.ahoo.cocache.api.annotation
  * 接口式声明缓存（RFC 0003 §4.12）：`@CoCache interface UserCache : Cache<String, User>`，
  * 由 `@EnableCoCache(caches = [UserCache::class])` 注册为 bean。
  *
- * 注解只是声明的另一种写法：启动时翻译为 `CacheSpec`，与 spec bean 走同一个引擎；
+ * 接口继承的用户 API 类型决定缓存的类型（RFC 0005 §3.1）：`Cache`、`VersionedCache`、`Store`、`VersionedStore` 或 `SetStore`，
+ * 恰好一个。注解只是声明的另一种写法：启动时翻译为对应的 spec，与 spec bean 走同一个引擎；
  * `CacheSpecCustomizer` 与配置文件 `cocache.caches.[name].*` 照常生效（优先级高于注解）。
  *
  * 时长单位均为秒；[UNSET] 表示未设置（使用默认值或配置文件），[FOREVER] 表示永不过期，只能用于 [ttl]（以及 `@CaffeineCache.expireAfterAccess`，表示关闭），用于其它属性时启动失败；[refreshWindow] 为 `0` 表示关闭提前刷新。
@@ -54,9 +55,15 @@ annotation class CoCache(
      */
     val refreshWindow: Long = UNSET,
     /**
-     * 数据源 bean 名；为空时按泛型 `CacheLoader<K, V>` 唯一匹配，找不到则没有数据源。
+     * 数据源 bean 名（`Cache` 与 `VersionedCache`）；为空时按泛型唯一匹配（`VersionedCache` 匹配 `CacheLoader<K, Versioned<V>>`）。
+     * 权威类型（`Store`、`VersionedStore`、`SetStore`）没有数据源，设置时启动失败。
      */
     val loader: String = "",
+    /**
+     * `Cache` 的数据来源：[Source.LOADER]（默认）要求有数据源 bean，找不到时启动失败；[Source.EXTERNAL] 即 `externallySourced()`，
+     * 由调用方经 `put`、Spring Cache 或调用级 loader 提供，不能与 [loader] 同时设置。其它类型只能是默认值。
+     */
+    val source: Source = Source.LOADER,
     /**
      * 编解码 bean 名；为空时按泛型 `Codec<V>` 唯一匹配，找不到则按值类型使用 Jackson。
      */
@@ -65,6 +72,21 @@ annotation class CoCache(
     companion object {
         const val UNSET: Long = -1
         const val FOREVER: Long = Long.MAX_VALUE
+    }
+
+    /**
+     * 派生缓存（`Cache`）的数据来源（RFC 0005 §4.1）。
+     */
+    enum class Source {
+        /**
+         * 数据源 bean：[CoCache.loader] 指定的，或按泛型唯一匹配的 `CacheLoader` / `AsyncCacheLoader`。
+         */
+        LOADER,
+
+        /**
+         * 外部来源（`externallySourced()`）：L1 中没有时是“未填充”，带 loader 的调用方用自己的 loader 回源。
+         */
+        EXTERNAL,
     }
 }
 

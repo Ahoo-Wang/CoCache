@@ -14,6 +14,7 @@
 package me.ahoo.cocache.redis
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.lettuce.core.RedisException
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.ConditionalL1Store
 import me.ahoo.cocache.api.spi.ContentFingerprint
@@ -26,6 +27,7 @@ import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -289,7 +291,19 @@ internal class RedisL1Store(
             outcome.exceptionOrNull()?.let { failure = failure.suppressing(it) }
         }
         sent.refused?.let { failure = failure.suppressing(it) }
-        failure?.let { throw it }
+        val first = failure ?: return
+        // 确定未执行只对整个调用成立：有的组已发出且没有被拒绝时（已执行或结果未知），整个调用结果未知（RFC 0005 §4.3）
+        val notExecuted = sent.outcomes.all { outcome ->
+            outcome.exceptionOrNull()?.let { RedisConnections.isNotExecuted(it) } ?: false
+        }
+        throw when {
+            notExecuted -> first as? L1RejectedException ?: L1RejectedException(first.message ?: "", first)
+            first !is L1RejectedException -> first
+            else -> RedisException(
+                "Some commands were rejected before they were written, others may have run: the outcome is unknown.",
+                first
+            )
+        }
     }
 
     /**
@@ -439,6 +453,13 @@ internal class RedisL1Store(
             )
             return decodeConditionalWrite(
                 connections.awaitCommand(connections.evalAsync(RedisScripts.PUT_IF_MATCH, listOf(key.bytes()), args))
+            )
+        }
+
+        override suspend fun deleteIfMatch(key: String, expected: Digest, frame: ByteArray): L1ConditionalWrite {
+            val args = listOf(expected.bytes, channel, frame)
+            return decodeConditionalWrite(
+                connections.awaitCommand(connections.evalAsync(RedisScripts.DELETE_IF_MATCH, listOf(key.bytes()), args))
             )
         }
     }

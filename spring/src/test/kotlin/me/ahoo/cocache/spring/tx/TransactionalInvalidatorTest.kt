@@ -13,9 +13,11 @@
 
 package me.ahoo.cocache.spring.tx
 
+import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.SuspendingCache
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
@@ -383,10 +385,16 @@ class TransactionalInvalidatorTest {
         override fun lookup(key: String): Lookup<String> = throw UnsupportedOperationException()
         override fun put(key: String, value: String) = throw UnsupportedOperationException()
         override fun put(key: String, value: String, ttl: Duration) = throw UnsupportedOperationException()
+        override fun lookupAll(keys: Collection<String>): Map<String, Lookup<String>> =
+            throw UnsupportedOperationException()
+        override fun putAll(entries: Map<String, String>) = throw UnsupportedOperationException()
+        override fun putAll(entries: Map<String, String>, ttl: Duration) = throw UnsupportedOperationException()
         override fun invalidate(key: String) = invalidateAll(listOf(key))
         override fun invalidateAll(keys: Collection<String>) {
             invalidations.add(keys.toList())
             failure?.let { throw it }
         }
+        override fun async(): AsyncCache<String, String> = throw UnsupportedOperationException()
+        override fun suspending(): SuspendingCache<String, String> = throw UnsupportedOperationException()
     }
 }

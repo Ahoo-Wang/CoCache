@@ -40,8 +40,8 @@ import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
-import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.cocache.test.Suspending
@@ -274,7 +274,7 @@ class RedisCommandTimeoutTest {
         val storageKey = connection.keys.single()
         RedisTestSupport.loadScripts(RedisScripts.PUT, RedisScripts.READ)
         val runtime = CacheRuntime.builder().backend(connection.backend).build().closing()
-        val cache = runtime.create(cacheSpec<String, String>(namespace) { codec = StringCodec })
+        val cache = runtime.create(storeSpec<String, String>(namespace) { codec = StringCodec })
         val key = storageKey.removePrefix("cocache:$namespace:")
         connection.stall().use {
             val caller = fork("interrupted-put") {

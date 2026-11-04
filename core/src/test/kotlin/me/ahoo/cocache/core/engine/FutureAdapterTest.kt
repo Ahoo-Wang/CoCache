@@ -84,7 +84,12 @@ class FutureAdapterTest {
             override fun store(keyspace: Keyspace): L1Store = FutureL1Store.adapt(failing)
         }
         CacheRuntime.builder().backend(backend).build().use { runtime ->
-            val cache = runtime.create(cacheSpec<String, String>("adapted") { codec = StringCodec })
+            val cache = runtime.create(
+                cacheSpec<String, String>("adapted") {
+                    codec = StringCodec
+                    externallySourced()
+                }
+            )
             val reader = fork("reader") { runCatching { cache["k"] }.exceptionOrNull() }
             awaitCondition("read suspended") { reader.parked }
             future.completeExceptionally(original)

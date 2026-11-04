@@ -24,6 +24,7 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -161,5 +162,22 @@ class SimpleJoinCacheTest {
         // 只有关联缓存失败
         val joinOnly = SimpleJoinCache("joinOnly", first, failingJoin, extractor)
         runCatching { joinOnly.invalidate("k", "u1") }.exceptionOrNull().assert().isSameAs(joinFailure)
+    }
+
+    /**
+     * 只读的 [SimpleJoinView]：两侧可以是任何 `ReadableCache`，这里关联侧是 `Store`。
+     */
+    @Test
+    fun joinViewReadsAnyReadableCache() {
+        val profiles = runtime.create(storeSpec<String, String>("profiles") { codec = StringCodec })
+        profiles.put("u1", "profile-u1")
+        val view = SimpleJoinView("view", first, profiles, extractor)
+        view["u1"].assert().isEqualTo(JoinValue("u1", "u1", "profile-u1"))
+        view["u2"].assert().isEqualTo(JoinValue("u2", "u2", null))
+        view.getAll(listOf("u1", "none-1")).assert().isEqualTo(mapOf("u1" to JoinValue("u1", "u1", "profile-u1")))
+        view.firstCache.assert().isSameAs(first)
+        view.joinCache.assert().isSameAs(profiles)
+        view.toString().assert().isEqualTo("SimpleJoinView(name='view', firstCache=first, joinCache=profiles)")
+        join.toString().assert().startsWith("SimpleJoinCache(")
     }
 }

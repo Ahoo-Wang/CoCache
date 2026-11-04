@@ -21,7 +21,7 @@ interface CoherenceBackend : AutoCloseable {
     val atomicBroadcast: Boolean            // can a write publish its frame in the same atomic step?
     val format: Int                         // wire format version this implementation writes
     val channel: InvalidationChannel        // Java: FutureInvalidationChannel.adapt(…)
-    fun store(namespace: String): L1Store   // called once per cache; Java: FutureL1Store.adapt(…)
+    fun store(keyspace: Keyspace): L1Store  // called once per cache, may block; Java: FutureL1Store.adapt(…)
 }
 
 interface L1Store {                         // every operation suspends; no close: connections belong to the backend
@@ -34,18 +34,20 @@ interface L1Store {                         // every operation suspends; no clos
     suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray)
     suspend fun putAll(puts: List<Put>, frame: ByteArray)
     suspend fun invalidate(keys: Collection<String>, frame: ByteArray)
-    fun conditional(): ConditionalL1Store?  // readIfChanged, putIfMatch
-    fun versioned(): VersionedL1Store?      // putIfNewer, evictKeepingVersion
-    fun sets(): SetL1Store?                 // addMembers, removeMembers
+    fun conditional(): ConditionalL1Store?  // readIfChanged, putIfMatch, deleteIfMatch (Store)
+    fun versioned(): VersionedL1Store?      // putIfNewer, evictKeepingVersion (VersionedCache, VersionedStore)
+    fun sets(): SetL1Store?                 // addMembers, removeMembers (SetStore)
 }
 ```
 
-- `atomicBroadcast = true`: every write method publishes its `frame` atomically with the change. `false`: the engine calls `channel.publish(namespace, frame)` after each successful write; a crash in between loses that message (bounded by `local-max-age`).
+- `Keyspace(keyPrefix, namespace)`: `store`, `subscribe` and `publish` take it; `storagePrefix` is `{keyPrefix}{namespace}:`. Name one channel per keyspace from both parts, so two keyspaces with the same namespace and different prefixes never share one.
+
+- `atomicBroadcast = true`: every write method publishes its `frame` atomically with the change. `false`: the engine calls `channel.publish(keyspace, frame)` after each successful write; a crash in between loses that message (bounded by `local-max-age`).
 - `format`: the format version your implementation writes (the shipped backends write `2`). In `L1Read.Hit`, report `0` for content your protocol did not write, and the stored format otherwise. The engine reads only content in exactly your `format`. Any lower format, like `0`, is content it can't read: a cache with a source reclaims it and reloads, one without fails. A higher format is loaded around and never overwritten. Report content with features you don't understand (an unknown flag or state) as a higher format, never as a lower one, or caches with a source reclaim it. Bump only through a two-phase rollout.
 
 | Type | Shape |
 |---|---|
-| `Envelope` | `Scalar(bytes, version, writer, digest)`, `Members(list of bytes)`, `Absent` (negative entry); `version` defaults to `Versioned.NO_VERSION`, `writer` and `digest` to `null`. `writer` is a write id shaped like a `Token`, and `digest` the payload's SHA-256, both set by the engine on scalar writes of a cache without a source (`digest` only when unversioned): store them on every operation that writes a scalar (`put`, `putAll`, `fill`, `fillAll`, `putIfMatch`, `putIfNewer`) and return them unchanged from `read`, `readAll` and `readIfChanged`; never verify or recompute the digest |
+| `Envelope` | `Scalar(bytes, version, writer, digest)`, `Members(list of bytes)`, `Absent` (negative entry); `version` defaults to `Versioned.NO_VERSION`, `writer` and `digest` to `null`. `writer` is a write id shaped like a `Token`, set by the engine on every scalar write of an authoritative type (`Store`, `VersionedStore`), and `digest` the payload's SHA-256, set on every `Store` write (never on a versioned one): store them on every operation that writes a scalar (`put`, `putAll`, `fill`, `fillAll`, `putIfMatch`, `putIfNewer`) and return them unchanged from `read`, `readAll` and `readIfChanged`; never verify or recompute the digest |
 | `L1Read` | `Hit(envelope, format, ttl, refreshGranted)`, `Miss(leaseGranted)`, `Leased(remaining)`; `ttl == null` means no expiry |
 | `Token` | 24 bytes (node id + sequence); compare by bytes |
 | `LeaseRequest(token, ttl)` | Lease to place on a miss |
@@ -54,14 +56,15 @@ interface L1Store {                         // every operation suspends; no clos
 | `L1Fill` | `Filled(advanced)` or `Rejected(currentVersion)`; `advanced` = the fill raised a version or replaced an eviction marker and you broadcast it; `currentVersion` = the key's version when the version rule refused it, `null` on a token mismatch |
 | `ContentFingerprint` | SHA-1 of the content compared by `reclaim` (`ContentFingerprint.of`) |
 | `Digest` | SHA-256 of the payload (`Digest(algorithm, bytes)`, `Digest.of`, `Digest.ofPayload`), compared by conditional reads and writes; computed by the engine |
-| `L1ConditionalRead` / `L1ConditionalWrite` / `L1VersionedWrite` / `L1Eviction` | Results of `readIfChanged`, `putIfMatch`, `putIfNewer`, `evictKeepingVersion` |
+| `L1ConditionalRead` / `L1ConditionalWrite` / `L1VersionedWrite` / `L1Eviction` | Results of `readIfChanged`, `putIfMatch` and `deleteIfMatch`, `putIfNewer`, `evictKeepingVersion` |
+| `L1RejectedException` | Thrown by a store only for a command that definitely did not execute (see [Failures](#failures-time-limits-and-cancellation)) |
 
 Keys arrive complete, with prefix and namespace. The SPI has no default implementations: every operation is abstract.
 
 ## Capabilities
 
 - Each accessor returns its surface, or `null` when unsupported. It never throws and returns the same result for the store's whole life (the same object every call, or always `null`).
-- Offer a surface only if its compare-and-write is atomic; a read-then-write lets two writers both win. Without `conditional()`, `getIfChanged` / `putIfMatch` throw `UnsupportedOperationException`; without `versioned()` or `sets()`, creating a versioned cache or a `SetCache` fails.
+- Offer a surface only if its compare-and-write is atomic; a read-then-write lets two writers both win. Creating a cache type whose surface is missing fails with `UnsupportedOperationException`: a `Store` needs `conditional()`, a `VersionedCache` or `VersionedStore` needs `versioned()`, a `SetStore` needs `sets()`. A `Cache` needs none.
 - The surfaces are separate interfaces, not sub-interfaces of `L1Store`. A store that supports versions stores `Fill.version` and `Envelope.Scalar.version` in `fill`, `put` and `putAll`, and `read` returns it.
 - The TCK's `expectedCapabilities` must equal what the accessors return.
 
@@ -77,11 +80,12 @@ Keys arrive complete, with prefix and namespace. The SPI has no default implemen
 | `putAll` | `put` per entry, atomic per key; broadcast each key exactly once with its write (the frame may be split). No per-entry default. |
 | `invalidate` | Delete every key, destroy any token, broadcast. Atomic per key; batches may split. |
 | `reclaim` | Only if current content has fingerprint `observed` and is not a lease, versioned content, an eviction marker or a value with a digest: replace it with the lease; return whether done. Never delete changed content. |
-| `SetL1Store.addMembers` | One atomic check-and-write. A set of your protocol: add the members. Absent, negative or leased key: replace with a set of these members. Then destroy tokens, set expiry (`null` removes it), broadcast, return `null`. Anything that is not a set of your protocol (content you didn't write, a scalar, a set in a newer format): change nothing, broadcast nothing, return that content's format (`0` = not yours). There is no unchecked member write: a `SetCache` has no source, so overwriting is deleting its only copy. |
+| `SetL1Store.addMembers` | One atomic check-and-write. A set of your protocol: add the members. Absent, negative or leased key: replace with a set of these members. Then destroy tokens, set expiry (`null` removes it), broadcast, return `null`. Anything that is not a set of your protocol (content you didn't write, a scalar, a set in a newer format): change nothing, broadcast nothing, return that content's format (`0` = not yours). There is no unchecked member write: a `SetStore` has no source, so overwriting is deleting its only copy. |
 | `SetL1Store.removeMembers` | Same check. A set of your protocol: remove, delete the key when empty, otherwise reset expiry. Absent, negative or leased key: change nothing. Broadcast and return `null` in both cases. Unreadable content: change nothing, broadcast nothing, return its format. |
 | `ConditionalL1Store.readIfChanged` | Pure; compare the stored digest in the store, never recompute it. A value of your protocol with a stored digest equal to `known`: `Unchanged(format)`, payload not sent back. Other value with a digest: `Changed(envelope, format)` carrying the stored digest and writer. Absent, lease, unversioned negative entry: `Absent`. Anything else (not yours, a set, a newer format, a value without a digest, versioned content, an eviction marker): `Unreadable(format)`. |
 | `ConditionalL1Store.putIfMatch` | One atomic compare-and-write: matches when `expected == null` and the key holds no value (absent, lease, unversioned negative entry), or a value whose stored digest equals `expected`; store `envelope.digest` as given. Unreadable content returns `Unreadable(format)` and never matches as no value. Match: write like `put`, return `Written`. Otherwise change nothing, broadcast nothing, return `Conflict(current digest or null)`. |
-| `VersionedL1Store.putIfNewer` | One atomic compare-by-version: write `envelope` (scalar, or `Absent` for a tombstone) with `version` like `put` only if `version` is greater than the stored version; content without a version, leases and absent keys count as `NO_VERSION`. An equal stored version: change nothing but broadcast `frame` (a fill may have written that version without broadcasting), return `Stale(current)`. An older given version: change nothing, broadcast nothing, return `Stale(current)`. Unreadable content as in `evictKeepingVersion`. `version` is never `Versioned.NO_VERSION`: throw `IllegalArgumentException` before changing anything. An eviction marker counts with its version. `reclaim` refuses versioned content. `putIfMatch` writes without a version. |
+| `ConditionalL1Store.deleteIfMatch` | One atomic compare-and-delete: matches only a value whose stored digest equals `expected` (never `null`). Match: delete the key, destroy any token, broadcast, return `Written`. Otherwise change nothing, broadcast nothing, return `Conflict(current digest)`, or `Conflict(null)` when the key holds no value (absent, lease, unversioned negative entry). Unreadable content (as for `readIfChanged`): `Unreadable(format)`. |
+| `VersionedL1Store.putIfNewer` | One atomic compare-by-version: write `envelope` (scalar, or `Absent` for a tombstone from `invalidateIfNewer` / `deleteIfNewer`) with `version` like `put` only if `version` is greater than the stored version; content without a version, leases and absent keys count as `NO_VERSION`. An equal stored version: change nothing but broadcast `frame` (a fill may have written that version without broadcasting), return `Stale(current)`. An older given version: change nothing, broadcast nothing, return `Stale(current)`. Unreadable content as in `evictKeepingVersion`. `version` is never `Versioned.NO_VERSION`: throw `IllegalArgumentException` before changing anything. An eviction marker counts with its version. `reclaim` refuses versioned content. `putIfMatch` writes without a version. |
 | `VersionedL1Store.evictKeepingVersion` | One atomic step. Versioned content (value, tombstone, eviction marker): replace with an eviction marker (`E`) holding that version and no token, expiry `ttl`, broadcast, `Evicted`. No version and no digest (plain value or negative entry, lease, absent): delete, broadcast, `Evicted`. A value with a digest: change nothing, `Authoritative`. Unreadable (not yours, a set, a newer format): change nothing, `Unreadable(format)`. `read` on `E` is `Miss(false)`, or with a lease request places the lease in place (keeping version and expiry) when the token is zero or older than `lease.ttl` and returns `Miss(true)`, otherwise `Leased`. |
 
 ## Rules across all methods
@@ -95,7 +99,7 @@ Keys arrive complete, with prefix and namespace. The SPI has no default implemen
 
 ## Failures, time limits and cancellation
 
-- **Two kinds of failure.** Definitely not executed: rejected before it was written (connection down) or failed synchronously before it was sent. Everything else has an unknown outcome: a timeout, a command drained on disconnect, a script error reply, a command the client cancelled, a reply that fails to decode.
+- **Two kinds of failure.** Definitely not executed: rejected before it was written (connection down) or failed synchronously before it was sent; report exactly these as `L1RejectedException` (`me.ahoo.cocache.api.spi`) with the client's exception as cause. Everything else has an unknown outcome (a timeout, a command drained on disconnect, a script error reply, a command the client cancelled, a reply that fails to decode); report it with any other exception. A batch is definitely not executed only when every command in it was; if some were sent, the whole call has an unknown outcome. The engine maps `L1RejectedException` to `CacheWriteException.outcomeUnknown = false`, releases no token for it, and publishes nothing after it. `RedisBackend` maps Lettuce's not-written commands and failed node connections this way; `HookedBackend.rejectWrites` simulates it.
 - **Release tokens (K14).** When `read`, `readAll`, `fill`, `fillAll`, `release` or `reclaim` fails with an unknown outcome, release that token asynchronously without waiting, and resend a failed release with backoff until it runs or the token expires. A stale-token release is a no-op. After a connection is replaced, the release can run before the drained original, whose token then lives until its lifetime (`lease.ttl`); that bound is accepted.
 - **Never report a failure as `CancellationException`.** On the JVM it is coroutine cancellation: the engine would skip the fallback to the source and let waiting readers run their own loads. Wrap a client's cancellation (connection reset or close) in another exception.
 - **Bound every call.** Reads take a `timeout`: `null` means the backend's command timeout; a value is positive and capped by it; bound the call by the shorter. A timeout cancels the underlying command, so an unwritten command is never written.
@@ -111,8 +115,8 @@ Keys arrive complete, with prefix and namespace. The SPI has no default implemen
 
 ```kotlin
 interface InvalidationChannel {
-    fun subscribe(namespace: String, listener: InvalidationListener): Subscription  // blocking, once per cache
-    suspend fun publish(namespace: String, frame: ByteArray)  // only when atomicBroadcast == false
+    fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription  // blocking, once per cache
+    suspend fun publish(keyspace: Keyspace, frame: ByteArray)  // only when atomicBroadcast == false
 }
 interface InvalidationListener {
     fun onInvalidated(keys: List<String>, origin: NodeId)
@@ -121,10 +125,10 @@ interface InvalidationListener {
 ```
 
 - `publish` follows the store's failure, time-limit and cancellation rules.
-- Frames are built by the engine with `InvalidationFrame.encode`; deliver them to every listener of the namespace, decoded with `InvalidationFrame.decode`. Drop malformed frames. Do not filter by origin.
+- Frames are built by the engine with `InvalidationFrame.encode`; deliver them to every listener of the keyspace, decoded with `InvalidationFrame.decode`. Drop malformed frames. Do not filter by origin.
 - Call `onReset()` on every listener each time a subscription is established or re-established and confirmed, and whenever messages may have been lost (failed heartbeat, rebalance, sequence gap).
 - The first listener's reset must have run before `subscribe` returns; later listeners on an existing subscription get one `onReset()` immediately.
-- Subscribing a new namespace must not reset other namespaces; a throwing listener must not block others.
+- Subscribing a new keyspace must not reset other keyspaces; a throwing listener must not block others.
 - If `subscribe` fails, throw and leave no partial registration. Closing a `Subscription` unsubscribes that listener.
 
 ## Invariants to review against

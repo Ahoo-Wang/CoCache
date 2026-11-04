@@ -23,6 +23,8 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.spring.tx.InMemoryTransactionManager
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
@@ -67,6 +69,16 @@ class CoCacheSpringCacheTest {
         manager.getCache("absent").assert().isNull()
         cache.name.assert().isEqualTo("user")
         cache.nativeCache.assert().isSameAs(runtime.cache("user"))
+    }
+
+    @Test
+    fun managerSkipsAuthoritativeTypes() {
+        runtime.create(storeSpec<String, String>("flag") { codec = StringCodec })
+        runtime.create(setStoreSpec<String, String>("tags") { elementCodec = StringCodec })
+
+        manager.cacheNames.assert().containsExactly("user")
+        manager.getCache("flag").assert().isNull()
+        manager.getCache("tags").assert().isNull()
     }
 
     @Test

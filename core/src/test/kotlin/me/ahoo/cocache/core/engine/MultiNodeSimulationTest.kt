@@ -21,7 +21,9 @@ import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
@@ -31,6 +33,7 @@ import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
+import me.ahoo.cocache.core.versionedCacheSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -135,39 +138,49 @@ class MultiNodeSimulationTest {
                 }
                 .build()
         }
-        private val caches: List<Cache<String, String>> = runtimes.map { runtime ->
-            runtime.create(
-                cacheSpec<String, String>(NAME) {
-                    codec = StringCodec
-                    when {
-                        // 带版本的数据源：值的版本就是数据源的版本（快照的版本）。`versioned` 也是声明的属性，显式取仿真的
-                        this@Simulation.versioned && asyncSource -> versionedAsyncLoader = AsyncCacheLoader { key ->
-                            val snapshot = if (random.nextBoolean()) valueOf(key) else null
-                            CompletableFuture<String?>().also { loads += Load(key, snapshot, it) }.thenApply { value ->
-                                value?.let { Versioned<String?>(it, it.substringAfter('@').toLong()) }
-                            }
-                        }
+        private val policy = CachePolicy(
+            ttl = TTL,
+            ttlJitter = Duration.ZERO,
+            localMaxAge = LOCAL_MAX_AGE,
+            degradedLocalMaxAge = DEGRADED_LOCAL_MAX_AGE,
+            lease = LeasePolicy(ttl = LEASE_TTL, wait = LEASE_WAIT),
+            // 失效失败时抛出：后台重试在别的线程上按真实时间执行，种子无法复现
+            invalidateFailure = InvalidateFailureMode.THROW
+        )
+        private val caches: List<ReadableCache<String, String>> = runtimes.map { runtime ->
+            if (versioned) runtime.create(versionedSpec()) else runtime.create(plainSpec())
+        }
 
-                        this@Simulation.versioned -> versionedLoader = CacheLoader { key -> Versioned(valueOf(key), versions.getValue(key)) }
-                        asyncSource -> asyncLoader = AsyncCacheLoader { key ->
-                            // 快照取于调用时或完成时：两种都是数据源合法的行为
-                            val snapshot = if (random.nextBoolean()) valueOf(key) else null
-                            CompletableFuture<String?>().also { loads += Load(key, snapshot, it) }
-                        }
-
-                        else -> loader = CacheLoader { key -> valueOf(key) }
+        /**
+         * 带版本的数据源：值的版本就是数据源的版本（快照的版本）。
+         */
+        private fun versionedSpec() = versionedCacheSpec<String, String>(NAME) {
+            codec = StringCodec
+            if (asyncSource) {
+                versionedAsyncLoader = AsyncCacheLoader { key ->
+                    val snapshot = if (random.nextBoolean()) valueOf(key) else null
+                    CompletableFuture<String?>().also { loads += Load(key, snapshot, it) }.thenApply { value ->
+                        value?.let { Versioned<String?>(it, it.substringAfter('@').toLong()) }
                     }
-                    policy = CachePolicy(
-                        ttl = TTL,
-                        ttlJitter = Duration.ZERO,
-                        localMaxAge = LOCAL_MAX_AGE,
-                        degradedLocalMaxAge = DEGRADED_LOCAL_MAX_AGE,
-                        lease = LeasePolicy(ttl = LEASE_TTL, wait = LEASE_WAIT),
-                        // 失效失败时抛出：后台重试在别的线程上按真实时间执行，种子无法复现
-                        invalidateFailure = InvalidateFailureMode.THROW
-                    )
                 }
-            )
+            } else {
+                versionedLoader = CacheLoader { key -> Versioned(valueOf(key), versions.getValue(key)) }
+            }
+            policy = this@Simulation.policy
+        }
+
+        private fun plainSpec() = cacheSpec<String, String>(NAME) {
+            codec = StringCodec
+            if (asyncSource) {
+                asyncLoader = AsyncCacheLoader { key ->
+                    // 快照取于调用时或完成时：两种都是数据源合法的行为
+                    val snapshot = if (random.nextBoolean()) valueOf(key) else null
+                    CompletableFuture<String?>().also { loads += Load(key, snapshot, it) }
+                }
+            } else {
+                loader = CacheLoader { key -> valueOf(key) }
+            }
+            policy = this@Simulation.policy
         }
         private val alive = BooleanArray(NODES) { true }
         private val floors = Array(NODES) { KEYS.associateWith { 0L }.toMutableMap() }
@@ -263,9 +276,11 @@ class MultiNodeSimulationTest {
             versions[key] = version
             val how = if (versioned) random.nextInt(3) else 0
             log("write node[$node] $key -> $version ${listOf("invalidate", "putIfNewer", "evict")[how]}")
+            val cache = caches[node]
             val future: CompletableFuture<*> = when (how) {
-                0 -> caches[node].async().invalidate(key)
-                1 -> caches[node].async().putIfNewer(key, valueOf(key), version)
+                // 带版本的缓存上没有普通的失效：运维清除（DEL + 广播，不重试）与它等价
+                0 -> if (cache is VersionedCache) cache.async().purge(key) else (cache as Cache).async().invalidate(key)
+                1 -> (cache as VersionedCache).async().putIfNewer(key, valueOf(key), version)
                 // 保留版本的失效：能力面上的操作就地完成，这次调用不挂起
                 else -> runCatching { requireNotNull(runtimes[node].admin(NAME)).invalidateEncoded(key) }
                     .fold({ CompletableFuture.completedFuture(it) }, { CompletableFuture.failedFuture<Unit>(it) })

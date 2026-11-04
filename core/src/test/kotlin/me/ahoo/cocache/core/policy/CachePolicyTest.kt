@@ -69,7 +69,7 @@ class CachePolicyTest {
             .readTimeout(Duration.ofMillis(300))
             .build()
         val copy = policy.toBuilder().build()
-        copy.toString().assert().contains("readFailure=THROW, readTimeout=PT0.3S)")
+        copy.toString().assert().contains("readFailure=THROW, readTimeout=PT0.3S, tombstoneTtl=null)")
         copy.ttl.assert().isEqualTo(Duration.ofMinutes(2))
         copy.ttlJitter.assert().isEqualTo(Duration.ofSeconds(3))
         copy.absentTtl.assert().isEqualTo(Duration.ofSeconds(4))

@@ -46,18 +46,18 @@ starter 按以下顺序从 Spring Boot 的 Redis 连接信息中选择拓扑：
 
 ### 持久化与故障切换 {#failover}
 
-对 `Cache` 来说，Redis 只是缓存：丢数据意味着未命中。异步复制在故障切换时可能丢失刚执行的失效，旧值可能回到 L1，最多持续到该值的 `ttl` 到期。如果某个缓存在意这一点，就把 `ttl` 设短，或者在故障切换之后失效相关缓存。
+对 `Cache` 与 `VersionedCache` 来说，Redis 只是缓存：丢数据意味着未命中。异步复制在故障切换时可能丢失刚执行的失效，旧值可能回到 L1，最多持续到该值的 `ttl` 到期。如果某个缓存在意这一点，就把 `ttl` 设短，或者在故障切换之后失效相关缓存。
 
-`SetCache` 不同：Redis 保存的是它的唯一副本，所以它的持久性就是 Redis 的持久性。存放 `SetCache` 数据的 Redis 必须开启持久化（AOF 或 RDB）。
+[`Store`、`VersionedStore` 与 `SetStore`](../guide/caches.md#store) 不同：Redis 保存的是它们的唯一副本，所以它们的持久性就是 Redis 的持久性。存放它们的数据的 Redis 必须开启持久化（AOF 或 RDB）。
 
 ## `maxmemory-policy` {#maxmemory-policy}
 
 | 你的缓存 | 可用的策略 | 原因 |
 |----------|------------|------|
-| 只有 `Cache` | 任意。`allkeys-lru` 或 `allkeys-lfu` 让 Redis 成为有界缓存 | 值或负缓存被淘汰就是未命中。lease 被淘汰时，加载方的填充被拒绝，值只以 `degraded-local-max-age` 留在该实例的 L2 中。不会产生陈旧数据 |
-| 有任何 `SetCache` | `noeviction` 或 `volatile-*` | Redis 保存的是集合的唯一副本，`allkeys-*` 会悄悄丢失成员。`SetCache` 的 key 默认没有到期时间，`volatile-*` 不会淘汰它们。设置了有限 `ttl` 的 `SetCache` 在 `volatile-*` 下仍可能被淘汰 |
+| 只有 `Cache` 与 `VersionedCache` | 任意。`allkeys-lru` 或 `allkeys-lfu` 让 Redis 成为有界缓存 | 值或负缓存被淘汰就是未命中。lease 被淘汰时，加载方的填充被拒绝，值只以 `degraded-local-max-age` 留在该实例的 L2 中。不会产生陈旧数据 |
+| 有任何 `Store`、`VersionedStore` 或 `SetStore` | `noeviction` 或 `volatile-*` | Redis 保存的是它们的唯一副本，`allkeys-*` 会悄悄丢失数据。它们的值默认没有到期时间，`volatile-*` 不会淘汰它们。设置了有限 `ttl` 的在 `volatile-*` 下仍可能被淘汰；`VersionedStore` 的墓碑总在 `tombstoneTtl` 之后到期，同样可能被淘汰：墓碑消失之后，旧版本又会被接受 |
 
-只要声明了 `SetCache`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。遇到 `allkeys-*` 时告警，`cocache.redis.set-cache-eviction-check: fail` 时启动失败（`off` 不检查）。`volatile-*` 下为每个 `ttl` 有限的 `SetCache` 告警。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时告警，`fail` 模式下启动失败，而不是静默跳过检查。
+只要声明了 `Store`、`VersionedStore` 或 `SetStore`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。遇到 `allkeys-*` 时告警，`cocache.redis.store-eviction-check: fail` 时启动失败（`off` 不检查）。`volatile-*` 下为其中每个 `ttl` 有限的告警。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时告警，`fail` 模式下启动失败，而不是静默跳过检查。
 
 `noeviction` 下 Redis 达到 `maxmemory` 时：
 
@@ -95,7 +95,7 @@ TLS 用 Spring Boot 的标准配置项开启。CoCache 对它连接的每个节�
 `sharded` 模式下，或探测降级之后，发布是写脚本之后单独执行的一条命令。因此：
 
 - 进程在写入与发布之间崩溃，会丢失这条消息。
-- 写入成功、随后的发布失败时，调用方看到的是写入失败：`put` 抛出 `CacheWriteException`，尽管 Redis 中已经是新值；`invalidate` 按 `invalidate-failure` 处理，重试的失效会再次发布。重试 `put` 是安全的，并会再次发布。
+- 写入成功、随后的发布失败时，调用方看到的是写入失败：`put` 抛出 `CacheWriteException`，尽管 Redis 中已经是新值；`Cache.invalidate` 按 `invalidate-failure` 处理，重试的失效会再次发布；权威类型的删除抛出。重试 `put` 是安全的，并会再次发布。
 
 两种情况下 L1 都已经正确，错过这条消息的实例的 L2 副本最多保留到 `local-max-age`。写入的顺序见 [architecture.md §4.2](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md)。
 :::
@@ -112,13 +112,13 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 
 | 条目 | 存储形式 | 大小 |
 |------|----------|------|
-| 值 | String | key + **36 字节头** + 编解码器输出。没有 loader 的缓存另加 28 字节的写入标识与 32 字节的摘要（60 字节），带版本的值则是写入标识与 8 字节的版本（36 字节）；有 loader 的带版本缓存另加 8 字节的版本（见[线格式](../architecture/index.md#wire-format)） |
+| 值 | String | key + **36 字节头** + 编解码器输出。`Store` 的值另加 28 字节的写入标识与 32 字节的摘要（60 字节），`VersionedStore` 的值另加写入标识与 8 字节的版本（36 字节），`VersionedCache` 的值另加 8 字节的版本（见[线格式](../architecture/index.md#wire-format)） |
 | 负缓存 | String | key + 36 字节头，存活 `absent-ttl`。带版本的墓碑另加 8 字节的版本 |
 | 被淘汰的带版本 key | String | key + 44 字节（头部与版本），存活墓碑的寿命 |
 | lease | String | key + 36 字节头，存活到加载结束（最多 `lease-ttl`） |
-| 集合（`SetCache`） | Hash | key + 一个 `!f` 字段 + 每个成员一个 `+{member}` 字段 |
+| 集合（`SetStore`） | Hash | key + 一个 `!f` 字段 + 每个成员一个 `+{member}` 字段 |
 
-另加 Redis 自身的每 key 开销。用 `redis-cli MEMORY USAGE cocache:UserCache:42` 实测一个典型 key。除非缓存使用 `ttl-forever` 或是 `SetCache`，每个值都有到期时间（`ttl`，加减 `ttl-jitter`）。
+另加 Redis 自身的每 key 开销。用 `redis-cli MEMORY USAGE cocache:UserCache:42` 实测一个典型 key。除非缓存使用 `ttl-forever`，或是没有设置 `ttl` 的 `Store`、`VersionedStore` 与 `SetStore`，每个值都有到期时间（`ttl`，加减 `ttl-jitter`）。
 
 ### Redis 流量 {#sizing-traffic}
 
@@ -129,7 +129,7 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 
 ## 滚动发布 {#rolling-deploys}
 
-线格式（key 布局、值头与其中的段、集合字段、消息帧、频道命名）在一个大版本内冻结，所以同一大版本的实例可以混跑。跨大版本的升级不能滚动：先停掉旧大版本的全部实例，再启动新版本（见[升级步骤](../guide/changelog.md#upgrading-from-6x)）。遇到本版本读不懂的格式的值，有 loader 的缓存重新加载，没有 loader 的缓存读取失败。之后必须理解的变更分两阶段发布：先发布能读懂、但不写入它的版本，全部实例升级之后，再发布写入它的版本。实例版本不一致期间，遇到读不全的值时直接回源且不覆盖（`cocache.unknown.formats`）。
+线格式（key 布局、值头与其中的段、集合字段、消息帧、频道命名）在一个大版本内冻结，所以同一大版本的实例可以混跑。跨大版本的升级不能滚动：先停掉旧大版本的全部实例，再启动新版本（见[升级步骤](../guide/changelog.md#upgrading-from-6x)）。遇到本版本读不懂的格式的值，有数据源的读取重新加载，没有数据源的读取失败。之后必须理解的变更分两阶段发布：先发布能读懂、但不写入它的版本，全部实例升级之后，再发布写入它的版本。实例版本不一致期间，遇到读不全的值时直接回源且不覆盖（`cocache.unknown.formats`）。
 
 每个新实例启动时 L2 为空，从 L1 填充，所以发布期间会看到 `cocache.misses` 与 `cocache.hits{level=l1}` 的突增，而不是回源的突增。
 
@@ -168,7 +168,7 @@ CoCache 的 Redis 用户需要以下权限：
 |------|------|
 | key | 对你的 key 前缀可读写（默认 `~cocache:*`）。`pubsub` 模式下还需要探测 key `cocache:!probe:{a}`，`~cocache:*` 已经包含它 |
 | 频道 | 每个前缀的 `&{keyPrefix}inv:*`（默认 `&cocache:inv:*`）。`pubsub` 模式下还需要 `&cocache:!probe:*`，否则后端退回非原子广播 |
-| 直接调用的命令 | `EVALSHA`、`EVAL`（`NOSCRIPT` 后的回退）、`PING`（心跳）、`PUBLISH`、`SUBSCRIBE`、`UNSUBSCRIBE`，`sharded` 模式下为 `SPUBLISH`、`SSUBSCRIBE`、`SUNSUBSCRIBE`，以及连接命令（`HELLO`、`AUTH`、`CLIENT`、`SELECT`）。使用 `SetCache` 时还需要 `INFO`，供[启动时的驱逐检查](#maxmemory-policy)使用 |
+| 直接调用的命令 | `EVALSHA`、`EVAL`（`NOSCRIPT` 后的回退）、`PING`（心跳）、`PUBLISH`、`SUBSCRIBE`、`UNSUBSCRIBE`，`sharded` 模式下为 `SPUBLISH`、`SSUBSCRIBE`、`SUNSUBSCRIBE`，以及连接命令（`HELLO`、`AUTH`、`CLIENT`、`SELECT`）。使用 `Store`、`VersionedStore` 或 `SetStore` 时还需要 `INFO`，供[启动时的驱逐检查](#maxmemory-policy)使用 |
 | 脚本内的命令 | Redis 7 同样按调用方的 ACL 检查：`GET`、`GETRANGE`、`STRLEN`、`SET`、`DEL`、`PTTL`、`TYPE`、`HGETALL`、`HKEYS`、`HMGET`、`HSET`、`HDEL`、`HLEN`、`PEXPIRE`、`PERSIST`、`SETRANGE`、`TIME` |
 
 一个起点（已在 Redis 7.4 上以该用户执行全部 CoCache 脚本验证）：

@@ -17,7 +17,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.coroutines.suspendingLoader
+import me.ahoo.cocache.core.suspendingLoader
 import me.ahoo.cocache.example.model.User
 import me.ahoo.cocache.example.model.UserExtendInfo
 import me.ahoo.cocache.example.repository.ProfileRepository

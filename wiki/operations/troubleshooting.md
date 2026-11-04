@@ -101,7 +101,7 @@ A read before the record existed cached a negative entry, and it lasts up to `ab
 
 **Symptom.** `cocache.write.failures` and `cocache.invalidation.retries` rise. The health details show `pendingInvalidations` above 0. Worst case, `cocache.invalidations.dropped` rises with the `ERROR` log `Cache[…] - invalidate […] dropped: L1 keeps the stale value until its remote TTL[…] expires.`
 
-**Cause.** An `invalidate` couldn't reach Redis. On a cache with a loader, by default (`invalidate-failure: retry`), the local effect happens at once, the call returns normally, and the invalidation is retried in the background: up to 8 attempts, backing off from 100 ms to 10 s, with up to 10,000 queued. While a retry is pending, misses for that key on this instance skip L1 and load from the source. Other instances still have the old value in L1.
+**Cause.** A `Cache.invalidate` couldn't reach Redis. By default (`invalidate-failure: retry`), the local effect happens at once, the call returns normally, and the invalidation is retried in the background: up to 8 attempts, backing off from 100 ms to 10 s, with up to 10,000 queued. While a retry is pending, misses for that key on this instance skip L1 and load from the source. Other instances still have the old value in L1.
 
 An invalidation is dropped when its retries run out, the queue is full, or the application shuts down with retries pending. L1 then keeps the old value until its remaining `ttl` ends (forever with `ttl-forever`), and every instance can reload it into L2.
 
@@ -110,30 +110,30 @@ An invalidation is dropped when its retries run out, the queue is full, or the a
 **Fix.**
 
 - Invalidate the dropped keys again once Redis is back: `DELETE /actuator/cocache/{name}/{key}`, or `cache.invalidateAll(keys)`.
-- To fail the caller instead of retrying, set `invalidate-failure: throw`. The call then throws `CacheWriteException`. This is the default for a cache without a loader: Redis holds its only copy, and a delayed retry would delete a value another instance wrote after the failure.
+- To fail the caller instead of retrying, set `invalidate-failure: throw`. The call then throws `CacheWriteException`. The authoritative types' deletes (`Store.delete` and `deleteIfMatch`, `purge`, `SetStore.clear`) and `VersionedCache.evict` always throw and are never queued: a delayed delete of an only copy could remove a value written after the failure, and a retried `DEL` would drop a version. See [When Redis is down during a write](../guide/freshness.md#redis-down).
 - To change the retry policy, declare your own `CacheRuntime` bean built with `RetryPolicy(maxAttempts, initialBackoff, maxBackoff, capacity)`. The starter's runtime backs off when one exists.
 - Shut instances down gracefully, so the retry queue is short at exit.
 
 ## Redis down {#redis-down}
 
-**Symptom.** `cocache.remote.failures`, `cocache.degraded.fills`, and `cocache.write.failures` rise, the source load rises, and the health indicator turns `DOWN`.
+**Symptom.** `cocache.remote.failures`, `cocache.degraded.fills`, and `cocache.write.failures` rise, the source load rises, and the health indicator turns `DOWN`. Reads without a source (see the table below) raise `cocache.reads.unknown` instead of `cocache.degraded.fills`, and their callers get `CacheReadException`.
 
 **What CoCache does.**
 
 | Operation | Behavior while Redis fails |
 |-----------|----------------------------|
-| `get`, `getAll`, `lookup` | Default (`read-failure: degrade`): load from the source, keep the result in L2 for `degraded-local-max-age` (10 s), write nothing to L1. With `read-failure: throw`: `CacheReadException`. Without a loader (no loader on the cache, and not `get(key, loader)`): `CacheReadException` by default, nothing cached; with an explicit `read-failure: degrade`, `null` (absent from `getAll`), still nothing cached. |
+| Reads with a source (`get`, `getAll`, `lookup` on a `Cache` or `VersionedCache` with a loader, or `get(key, loader)`) | Default (`read-failure: degrade`): load from the source, keep the result in L2 for `degraded-local-max-age` (10 s), write nothing to L1. With `read-failure: throw`: [`Lookup.Unknown`](../guide/caches.md#unknown), so `get` throws `CacheReadException`. |
+| Reads without a source (a `Store`, `VersionedStore` or `SetStore`, or an externally sourced `Cache` read without a loader) | `Lookup.Unknown`: `get` throws `CacheReadException`, `lookup` returns `Unknown`, nothing is cached. `getAll` finishes the other keys first, then throws with `unknownKeys` and `partialResult`. With `unknownRead = ABSENT` on the spec (not a `SetStore`): `null` (absent from `getAll`), still nothing cached. Counted in `cocache.reads.unknown`. |
 | Fill, lease release, refresh | Best effort: logged and counted, never thrown |
-| `invalidate`, `invalidateAll` | Local effect at once, then retried in the background ([above](#invalidations-dropped)). With `invalidate-failure: throw`, the default without a loader: `CacheWriteException`. |
-| `put`, `SetCache` writes | Local effect at once, then `CacheWriteException`. After a timeout, the write may have reached Redis anyway, unless it was still waiting to be sent: then it is dropped and never applied later. These calls are idempotent, so retrying is safe. An interrupted caller waits for its command to finish or time out, and keeps its interrupt flag. |
-| `SetCache` reads | Throw the Redis exception: there is no source to fall back to |
+| `Cache.invalidate`, `invalidateAll` | Local effect at once, then retried in the background ([above](#invalidations-dropped)). With `invalidate-failure: throw`: `CacheWriteException`. |
+| Every other write: `put`, `putAll`, conditional and versioned writes, deletes, `evict`, `purge`, `SetStore` writes | Local effect at once, then `CacheWriteException`. Its `outcomeUnknown` is `false` when the command was rejected before it was sent: it didn't happen. After a timeout it is `true`: the write may have reached Redis anyway, unless it was still waiting to be sent, in which case it is dropped and never applied later. An interrupted caller waits for its command to finish or time out, and keeps its interrupt flag. See [When Redis is down during a write](../guide/freshness.md#redis-down) for which retries are safe. |
 | Channel | Heartbeat fails, every L2 is cleared, and it is cleared again when the subscription is restored |
 
 Commands are rejected while disconnected, not buffered, and each command waits at most `command-timeout` (2 s). With Redis down, each miss therefore costs one fast failure plus a load. A read that times out may still run in Redis later and take a lease for the key, and a fill that times out may be dropped before it is sent and leave its lease behind. CoCache releases such leases right away (best effort), so other instances don't wait `lease-wait` on the key.
 
 **Fix.** Restore Redis. Meanwhile, `load-max-concurrent` protects the source. Nothing needs to be done afterwards: retries finish on their own, and every L2 is reset when its subscription comes back. Check `cocache.invalidations.dropped` and re-invalidate any dropped keys.
 
-**After a failover.** Asynchronous replication can lose recent writes, including invalidations, so a value invalidated just before the failover can reappear in L1. It lasts until its `ttl`. If that matters, invalidate the affected keys or caches after a failover.
+**After a failover.** Asynchronous replication can lose recent writes, including invalidations, so a value invalidated just before the failover can reappear in L1. It lasts until its `ttl`. If that matters, invalidate the affected keys or caches after a failover. For a `Store`, `VersionedStore` or `SetStore` the lost writes are simply gone: Redis held the only copy ([persistence](./index.md#failover)).
 
 ## Corrupt or unreadable payloads {#corrupt-payloads}
 
@@ -144,7 +144,7 @@ Commands are rejected while disconnected, not buffered, and each command waits a
 - **Foreign content** (format `0` or `1`): content CoCache didn't write, or a format this version can't read, for example from a script or another application with the same prefix and namespace.
 - **Codec failure** (format `2`): the value class changed incompatibly (renamed field, changed type), or two applications share a cache with different codecs or value types.
 
-**What CoCache does.** A read without a loader (a `SetCache`, or a `Cache` without a loader) has nothing to reload, so it throws `CacheReadException` with a `ForeignFormatException` cause (reclaiming would delete the only copy), leaves the key as it is, and counts in `cocache.unknown.formats` instead of `cocache.reclaims`. A `SetCache.add` or `remove` on such content fails the same way, with `CacheWriteException`, and leaves the key unchanged (`put` replaces it). A read with a loader never deletes blindly either. It asks Redis to convert the key into a lease only if the key still holds exactly the bytes it read (compared by SHA-1 inside the script). If that succeeds, it reloads from the source and fills normally. If the key changed in the meantime, it loads without writing L1. Each read reclaims at most once.
+**What CoCache does.** A read without a source (a `Store`, `VersionedStore` or `SetStore`, or an externally sourced `Cache` read without a loader) has nothing to reload, so it throws `CacheReadException` with a `ForeignFormatException` cause (reclaiming could delete an only copy), leaves the key as it is, and counts in `cocache.unknown.formats` instead of `cocache.reclaims`. A `SetStore.add` or `remove`, a conditional or versioned write, or an `evict` on such content fails the same way, with `CacheWriteException`, and leaves the key unchanged (`put` replaces it). A read with a loader never deletes blindly either. It asks Redis to convert the key into a lease only if the key still holds exactly the bytes it read (compared by SHA-1 inside the script). If that succeeds, it reloads from the source and fills normally. If the key changed in the meantime, it loads without writing L1. Each read reclaims at most once.
 
 **Fix.**
 
@@ -155,7 +155,7 @@ Commands are rejected while disconnected, not buffered, and each command waits a
 
 **Symptom.** `cocache.unknown.formats` rises. Inspection shows `UNREADABLE` with `Written by a newer format[…] than this node[…]`.
 
-**Cause.** Some instance writes a newer wire format than this one knows, or a must-understand flag this one doesn't know. This instance loads from the source, doesn't write L1, and keeps the result in L2 for `degraded-local-max-age`, so old and new instances don't overwrite each other. A `Cache` without a loader has no source to load from: the read throws `CacheReadException` with a `ForeignFormatException` cause instead of answering "not found". A `SetCache` has no source to load from: reading a set in a newer format throws `ForeignFormatException` (an `IllegalStateException`) on this instance, and content CoCache didn't write (such as a leftover native Redis set) throws `CacheReadException` (see [Corrupt or unreadable payloads](#corrupt-payloads)). A `SetCache.add` or `remove` on a set in a newer format throws `CacheWriteException` and leaves it unchanged.
+**Cause.** Some instance writes a newer wire format than this one knows, or a must-understand flag this one doesn't know. A read with a source loads from it, doesn't write L1, and keeps the result in L2 for `degraded-local-max-age`, so old and new instances don't overwrite each other. An externally sourced `Cache` read without a loader treats the key as unfilled and returns `null`; a read with a per-call loader loads. A `Store` or `VersionedStore` has no source: the read throws `CacheReadException` with a `ForeignFormatException` cause instead of answering "not found". Reading a `SetStore` set in a newer format throws `ForeignFormatException` (an `IllegalStateException`) on this instance, and content CoCache didn't write (such as a leftover native Redis set) throws `CacheReadException` (see [Corrupt or unreadable payloads](#corrupt-payloads)). A `SetStore.add` or `remove` on a set in a newer format throws `CacheWriteException` and leaves it unchanged.
 
 **Fix.** Expected while a format upgrade rolls out. It stops when every instance runs the new version. Outside a deploy, find the instance on the newer version. See [rolling deploys](./index.md#rolling-deploys).
 
@@ -172,10 +172,12 @@ CoCache fails fast on configuration it can't run safely. The message names the p
 | `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | A namespace with `:` or another character outside the set, often a key prefix written into the namespace | Do what the message suggests: put the part up to the last `:` into `keyPrefix` |
 | `Redis denied publishing to the invalidation channel[…] of Keyspace(…): allow the channel pattern [&…inv:*] …` | The Redis ACL doesn't allow the cache's channel. Creating a cache publishes one empty frame to it, so a missing permission fails at startup instead of at every write. | Allow the pattern in the message, see [Redis ACL](./index.md#acl) |
 | `Cannot register cache interface[…]: the bean name[x] is already in use.` / `Cannot register cache bean[x] for spec bean[…]` | The cache's bean name collides with another bean | Rename the cache (`@CoCache(name)`) or the spec bean |
-| `Cache interface[…] must extend Cache with concrete type arguments.` / `Cache spec bean[…] must declare its generic types` | Generics can't be resolved | Use concrete types, and declare the spec factory method's return type as `CacheSpec<K, V>` |
-| `Cache interface[…] declares abstract methods that do not match any Cache method: […]` | An extra abstract method on the interface | Make it a `default` method |
+| `Cache interface[…] must extend Store with concrete type arguments.` (any of the five types) / `Cache spec bean[…] must declare its generic types` | Generics can't be resolved | Use concrete types, and declare the spec factory method's return type with them, such as `CacheSpec<K, V>` or `StoreSpec<K, V>` |
+| `Cache interface[…] declares abstract methods that do not match any Store method: […]` (any of the five types) | An extra abstract method on the interface | Make it a `default` method |
 | `Multiple CacheLoader beans match …` / `Multiple Codec beans match …` | Several candidates for one cache | `@CoCache(loader = "beanName")` / `@CoCache(codec = "beanName")` |
-| `@CoCache(loader = …) is not supported on SetCache interface[…]` | A `SetCache` has no source | Remove the loader, or use `Cache<K, Set<E>>` |
+| `… must extend exactly one of […]` | The interface extends none of the five [cache types](../guide/caches.md#types), or several | Extend exactly one |
+| `Cache interface[…] has no data source: no CacheLoader or AsyncCacheLoader bean matches …` / `VersionedCache interface[…] has no versioned data source …` | No loader bean of the cache's key and value types | Declare the loader bean, name one with `@CoCache(loader)`, declare `@CoCache(source = EXTERNAL)` when callers supply the values, or extend `Store` / `VersionedStore` when the data can't be rebuilt |
+| `@CoCache(loader = …) is not supported on Store interface[…]` (also `VersionedStore`, `SetStore`) / `@CoCache(source = EXTERNAL) is only supported on Cache interfaces …` | An authoritative type has no source | Remove the attribute, or extend `Cache` / `VersionedCache` if the data can be rebuilt |
 | `Cannot create cache[x] - no CoherenceBackend is available: …` | No Spring Data Redis connection details and no backend bean | Configure `spring.data.redis.*`, set `cocache.backend: memory` for local runs, or declare a `CoherenceBackend` bean |
 | `Cannot create cache[x] - CoCache is disabled (cocache.enabled=false)` | Caches declared while CoCache is off | Enable it, or remove the declarations |
 | `CoCache does not support Redis master-replica (spring.data.redis.masterreplica.*)` | Static master-replica | Use standalone, Sentinel, or Cluster |
@@ -212,7 +214,7 @@ The first argument is the **namespace** (the cache name unless the cache sets `n
 
 An empty encoded key throws `IllegalArgumentException`, and an empty collection does nothing. After `close()`, every call throws `IllegalStateException`; `close()` releases the invalidator's own store handles and doesn't close the backend.
 
-`invalidate` deletes the key from Redis. On the namespace of a cache without a loader, Redis holds the only copy, so that deletes the data for good. When Redis already holds the right value and only other instances' L2 copies may be stale, call `broadcast` instead: it publishes the invalidation message without touching Redis, so every instance drops its copy and reloads it from Redis. It is safe on any cache.
+`invalidate` deletes the key from Redis. On the namespace of a `Store`, `VersionedStore` or `SetStore`, Redis holds the only copy, so that deletes the data for good. When Redis already holds the right value and only other instances' L2 copies may be stale, call `broadcast` instead: it publishes the invalidation message without touching Redis, so every instance drops its copy and reloads it from Redis. It is safe on any cache.
 
 ```kotlin
 externalInvalidator.broadcast("PolicySnapshot", "tenant-1")  // namespace, encoded key; Redis is left alone
@@ -290,8 +292,8 @@ On the JVM without `cocache-core`, `InvalidationFrame.encode(NodeId.random(), st
 
 Delivery is at most once, as for CoCache's own messages: a lost message leaves L2 copies stale until `local-max-age`.
 
-::: warning SetCache
-On a `SetCache`, `DEL` deletes the set's only copy. Don't invalidate set caches from outside: write them through `SetCache`.
+::: warning Authoritative types
+On a `Store`, `VersionedStore` or `SetStore`, `DEL` deletes the only copy, and on a `VersionedCache` or `VersionedStore` it also drops the version. Don't invalidate these from outside: write them through their API.
 :::
 
 ## Inspecting Redis by hand {#inspecting-redis}

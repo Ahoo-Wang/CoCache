@@ -277,7 +277,10 @@ class ExecutorPropertiesTest {
         override fun execute(command: Runnable) = command.run()
 
         override fun destroy() {
-            val probe = cacheSpec<String, String>("probe-$name") { codec = StringCodec }
+            val probe = cacheSpec<String, String>("probe-$name") {
+                codec = StringCodec
+                externallySourced()
+            }
             runtimeClosedAtDestroy[name] = runCatching { runtime.create(probe) }.exceptionOrNull() is IllegalStateException
         }
     }

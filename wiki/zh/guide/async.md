@@ -21,7 +21,7 @@ async.put("42", user).thenCompose { async.get("42") }   // 读到自己的写入
 async.invalidate("42")
 ```
 
-- `Cache.async()` 返回 `AsyncCache<K, V>`，`SetCache.async()` 返回 `AsyncSetCache<K, E>`。方法与同步 API 同名、语义相同：`get`、`get(key, loader)`、`getAll`、`lookup`、`put`、`putAll`、`invalidate`、`invalidateAll`，集合还有 `add`、`remove`、`clear`。
+- `async()` 是每种[缓存类型](./caches.md#types)的成员，视图与同步的层次同构：`Cache.async()` 返回 `AsyncCache<K, V>`，`VersionedCache` 返回 `AsyncVersionedCache`，`Store` 返回 `AsyncStore`，`VersionedStore` 返回 `AsyncVersionedStore`，`SetStore` 返回 `AsyncSetStore<K, E>`。它们都继承 `AsyncReadableCache`（`get`、`getAll`、`lookup`、`lookupAll`）。方法与同步 API 同名、语义相同，包括 Redis 故障时没有数据源的读取得到的 `Lookup.Unknown` 与 `CacheReadException`。
 - `async()` 每次返回同一个对象，`async().sync()` 就是引擎本身。经 `@CoCache` 接口调用同样可以。
 - 同步调用与异步调用共用一个缓存：同一个 key 并发的同步 `get` 与异步 `get` 只加载一次。
 
@@ -67,7 +67,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 - 失败的调用以**原始**异常完成 future：`CacheReadException`、`CacheWriteException`、`SourceLoadRejectedException`、`SourceLoadTimeoutException`，或你的 loader 抛出的异常，从不包装为 `CompletionException`。`join()` 与 `get()` 仍会按 JDK 的规则包装；`handle`、`exceptionally`、Reactor 的 `Mono.fromFuture` 与 Kotlin 的 `await()` 都拿到原始异常。
 - 唯一的例外是 loader 自己的 `CancellationException`：`CacheLoader` 抛出它，或 `AsyncCacheLoader` 的 future 以它完成（HTTP 请求被取消、其中的 `withTimeout`）。共享这次加载的每个调用方都收到 `SourceLoadCancelledException`，原始异常是它的 `cause`。原样传出的话，每个调用方的 future 都会看起来像是被取消了。
-- 异步方法从不同步抛出。key 编码器或编解码器出错、重入调用、`SetCache` 不支持的操作，都以失败的 future 返回。
+- 异步方法从不同步抛出。key 编码器或编解码器出错、重入调用、非法的版本，都以失败的 future 返回。
 - 每次调用返回自己的 future。取消它只取消你的等待：共享的加载为其它调用方继续进行，照样写入 Redis。写入的顺序不受影响：写入的第二步失效无论是否取消都会执行。
 - 读取自己 key 的 loader：如果在返回 future 之前这样做，快速失败（`IllegalStateException`）；如果在一次 I/O 之后这样做，调用会一直等到 `load-timeout`。
 
@@ -77,7 +77,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 ## Kotlin 协程 {#coroutines}
 
-可选模块 `cocache-coroutines` 提供挂起视图 `cache.suspending()` 与 `SuspendingCacheLoader`，见 [Kotlin 协程](./coroutines.md)。不用它时，`kotlinx.coroutines.future.await()` 适用于异步视图返回的每个 future，并抛出原始异常。
+每个缓存还有挂起视图 `cache.suspending()`，spec 可以接受 `SuspendingCacheLoader`，见 [Kotlin 协程](./coroutines.md)。`kotlinx.coroutines.future.await()` 同样适用于异步视图返回的每个 future，并抛出原始异常。
 
 ## 运维 {#operations}
 

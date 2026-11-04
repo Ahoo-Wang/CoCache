@@ -79,14 +79,14 @@ class ExternalInvalidatorTest {
     }
 
     /**
-     * 只广播不删除（RFC 0005 §4.9）：L1 原样保留，各节点淘汰 L2 副本之后从 L1 重新填充；没有数据源的缓存的唯一副本因此不丢。
+     * 只广播不删除（RFC 0005 §4.9）：L1 原样保留，各节点淘汰 L2 副本之后从 L1 重新填充；`Store` 的唯一副本因此不丢。
      * 订阅者收到编码 key（S4）。
      */
     @Test
     fun broadcastEvictsEveryNodeLocalCopyAndKeepsL1() {
         val memory = InMemoryBackend()
         CacheRuntime.builder().backend(memory).build().use { node ->
-            val cache = node.create(cacheSpec<String, String>("user") { codec = StringCodec })
+            val cache = node.create(storeSpec<String, String>("user") { codec = StringCodec })
             cache.put("1", "v0")
             cache["1"].assert().isEqualTo("v0")
             val received = CopyOnWriteArrayList<List<String>>()
