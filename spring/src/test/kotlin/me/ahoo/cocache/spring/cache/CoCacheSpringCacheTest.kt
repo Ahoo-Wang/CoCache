@@ -13,6 +13,10 @@
 
 package me.ahoo.cocache.spring.cache
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.CacheRuntime
@@ -26,6 +30,7 @@ import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
 import org.springframework.boot.test.context.FilteredClassLoader
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionTemplate
@@ -91,6 +96,25 @@ class CoCacheSpringCacheTest {
     }
 
     /**
+     * `clear`（`@CacheEvict(allEntries = true)`）只清空本节点的 L2，L1 保持不变；每个缓存只告警一次（U19）。
+     * `invalidate`（`allEntries` 且 `beforeInvocation = true`）经 Spring 的默认实现调用 `clear`。
+     */
+    @Test
+    fun clearClearsTheLocalCopyOnlyAndWarnsOncePerCache() {
+        cache.put("k", "cached")
+        val logs = captureLogs(CoCacheSpringCache::class.java) {
+            cache.clear()
+            cache.invalidate().assert().isFalse()
+            cache.clear()
+        }
+        runtime.admin("user")?.localSize.assert().isEqualTo(0)
+        cache.get("k")?.get().assert().isEqualTo("cached")
+        val warnings = logs.filter { it.level == Level.WARN && it.formattedMessage.contains("allEntries = true") }
+        warnings.assert().hasSize(1)
+        warnings.single().formattedMessage.assert().contains("Cache[user]", "local copy (L2) only")
+    }
+
+    /**
      * 没有事务时 `evictIfPresent` 立即失效一次；不确定之前是否存在，返回 `false`。
      */
     @Test
@@ -112,15 +136,15 @@ class CoCacheSpringCacheTest {
         @Suppress("UNCHECKED_CAST")
         val native = requireNotNull(runtime.cache("user")) as Cache<Any, Any>
         TransactionTemplate(InMemoryTransactionManager()).executeWithoutResult {
-            noTransactions(native, "k")
+            noTransactions(native, "k", null)
             native.put("k", "kept")
         }
         native["k"].assert().isEqualTo("kept")
     }
 
     /**
-     * 缺陷复现：事务内的 `@CacheEvict(beforeInvocation = true)`。Spring 调用 `evictIfPresent`，事务感知的装饰器
-     * （`TransactionAwareCacheDecorator`）直接委托它，失效在提交之前执行。提交之前，另一个节点在事务之外读穿透，
+     * 缺陷复现：事务内的 `@CacheEvict(beforeInvocation = true)`。Spring 调用 `evictIfPresent`，事务装饰器
+     * （`TransactionAwareSpringCache`）委托它，失效在提交之前执行。提交之前，另一个节点在事务之外读穿透，
      * 把已提交的旧值 v1 经 lease 写回 L1；提交之后必须再失效一次，否则全集群读到 v1 直到 `ttl`。
      */
     @Test
@@ -404,5 +428,17 @@ class CoCacheSpringCacheTest {
         (legacy.retrieve("k")?.get() as SpringCache.ValueWrapper).get().assert().isEqualTo("v")
         legacy.retrieve("legacy") { CompletableFuture.completedFuture("L") }.get().assert().isEqualTo("L")
         tasks.get().assert().isEqualTo(0)
+    }
+
+    private fun captureLogs(type: Class<*>, block: () -> Unit): List<ILoggingEvent> {
+        val logger = LoggerFactory.getLogger(type) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            block()
+        } finally {
+            logger.detachAppender(appender)
+        }
+        return appender.list
     }
 }

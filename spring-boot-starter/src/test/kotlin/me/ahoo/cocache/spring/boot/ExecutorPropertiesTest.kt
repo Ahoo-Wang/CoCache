@@ -193,7 +193,7 @@ class ExecutorPropertiesTest {
                 assertThat(context).hasNotFailed()
                 val manager = context.getBean(CacheManager::class.java)
                 // 事务感知包装保持不变
-                (manager is org.springframework.cache.transaction.TransactionAwareCacheManagerProxy).assert().isTrue()
+                (manager is me.ahoo.cocache.spring.tx.TransactionAwareSpringCacheManager).assert().isTrue()
                 val cache = requireNotNull(manager.getCache("user"))
                 retrieveValue(cache, "1").assert().isEqualTo("user-1")
                 cache.retrieve("2") { java.util.concurrent.CompletableFuture.completedFuture("ignored") }

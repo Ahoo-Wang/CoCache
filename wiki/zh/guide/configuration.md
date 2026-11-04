@@ -33,6 +33,7 @@ description: 所有 cocache.* 配置项的类型、默认值与单位，配置�
 | `cocache.caches.[name].*` | 策略 | — | 作用于单个缓存的[策略配置项](#policy-properties) |
 | `cocache.redis.*` | — | — | [Redis 后端](#redis)配置 |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
+| `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`：Spring 的缓存拦截器改用 `DegradingCacheErrorHandler`，CoCache 缓存的读写失败只记录日志、不重新抛出，Redis 故障期间不带 sync 的 `@Cacheable` 因此执行方法。失败的失效、其它缓存的失败仍交给原来的处理器。见 [Spring Cache](./spring-cache.md#failures)。 |
 | `cocache.spring-cache.retrieve-executor` | bean 名 | — | **6.3 起弃用**，设置时启动告警并被忽略：`retrieve` 经[异步视图](./async.md)，不需要执行器。7.0 删除。 |
 | `cocache.refresh-executor` | bean 名 | 内置 | 执行[提前刷新](./freshness.md#refresh-ahead)回源的 `Executor` bean。见[执行器](#executors)。 |
 | `cocache.async-executor` | bean 名 | 内置 | 执行[异步视图](./async.md)续接的 `Executor` bean。见[执行器](#executors)。 |

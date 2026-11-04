@@ -17,18 +17,21 @@ import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.core.CacheAdmin
+import me.ahoo.cocache.spring.tx.InvalidationFailureHandler
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
+import org.apache.commons.logging.LogFactory
 import org.springframework.cache.support.SimpleValueWrapper
 import org.springframework.util.ClassUtils
 import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.Supplier
 import org.springframework.cache.Cache as SpringCache
 
 /**
- * 把 [Cache] 适配为 Spring [SpringCache]（RFC 0003 §4.12）。
+ * 把 [Cache] 适配为 Spring [SpringCache]（RFC 0005 §4.9）。
  *
  * - 负缓存视为未命中：否则 `@Cacheable` 遇到负缓存将永远不调用方法。
  * - `put(key, null)`（如 `@CachePut` 返回 null）映射为失效。
@@ -36,7 +39,8 @@ import org.springframework.cache.Cache as SpringCache
  *   不带 `sync` 的 `@Cacheable` 由 Spring 执行“读未命中 → 调用方法 → put”，put 是无条件写入，
  *   回源期间发生的失效可能被覆盖；需要上述一致性保证时请使用 `sync = true`。
  * - [evictIfPresent]（`@CacheEvict(beforeInvocation = true)`）立即失效；事务内还登记到 [TransactionalInvalidator]，事务结束之后再失效。
- * - [clear] 只清空本节点的本地副本：L1 是共享存储，不支持整体清空。
+ * - [clear]（`@CacheEvict(allEntries = true)`）只清空本节点的本地副本，每个缓存第一次调用时告警：L1 是共享存储，不支持整体清空。
+ * - 本类不推迟任何操作：事务内的 `put` / `evict` 由 [me.ahoo.cocache.spring.tx.TransactionAwareSpringCache] 推迟与登记。
  * - [retrieve] 经缓存的异步视图（RFC 0004 §6）：L2 命中返回已完成的 future，未命中不占用任何线程等待；
  *   `sync = true` 的方法体在 [executor] 上执行。
  */
@@ -50,6 +54,8 @@ class CoCacheSpringCache(
      */
     private val executor: Executor,
 ) : SpringCache {
+
+    private val clearWarned = AtomicBoolean()
 
     override fun getName(): String = cache.name
 
@@ -97,19 +103,36 @@ class CoCacheSpringCache(
     }
 
     /**
-     * `@CacheEvict(beforeInvocation = true)` 调用它，Spring 的事务装饰器（`TransactionAwareCacheDecorator`）也直接委托它：
+     * `@CacheEvict(beforeInvocation = true)` 调用它，事务装饰器（[me.ahoo.cocache.spring.tx.TransactionAwareSpringCache]）也委托它：
      * 按 Spring 的契约立即失效。事务内只在提交之前失效会丢失失效：提交之前并发的读穿透把已提交的旧值写回 L1，
      * 提交之后再没有失效（G2）。因此事务内同时登记到 [TransactionalInvalidator]，提交、回滚与回滚到 savepoint 时再失效；
      * 多余的失效无害。先登记再失效：立即失效抛出、被 `CacheErrorHandler` 吞掉时，事务结束之后的失效照常执行。
      * 不确定之前是否存在，返回 `false`。
      */
-    override fun evictIfPresent(key: Any): Boolean {
-        AFTER_TRANSACTION(cache, key)
+    override fun evictIfPresent(key: Any): Boolean = evictIfPresent(key, null)
+
+    /**
+     * 同 [evictIfPresent]；事务结束之后再失效的失败交给 [onFailure]（为 `null` 时按 [TransactionalInvalidator] 的规则抛出）。
+     */
+    internal fun evictIfPresent(key: Any, onFailure: InvalidationFailureHandler?): Boolean {
+        AFTER_TRANSACTION(cache, key, onFailure)
         cache.invalidate(key)
         return false
     }
 
+    /**
+     * 只清空本节点的本地副本（L2）：L1 是共享存储，8.0 不支持整体清空，Redis 与其它节点的副本保持不变。
+     * `@CacheEvict(allEntries = true)` 很容易被当作全集群清空，所以每个缓存第一次调用时记录一次告警（U19）。
+     * namespace 重置加入之后（RFC 0005 §4.9、Q12）改为全集群清空。
+     */
     override fun clear() {
+        if (clearWarned.compareAndSet(false, true)) {
+            log.warn(
+                "Cache[${cache.name}]: clear() (@CacheEvict(allEntries = true)) clears this instance's local copy (L2) only; " +
+                    "Redis and the local copies on other instances keep their entries. Evict keys instead. " +
+                    "This warning is logged once per cache."
+            )
+        }
         admin?.clearLocal()
     }
 
@@ -178,6 +201,8 @@ class CoCacheSpringCache(
     }
 
     internal companion object {
+        private val log = LogFactory.getLog(CoCacheSpringCache::class.java)
+
         private const val TRANSACTION_SYNCHRONIZATION =
             "org.springframework.transaction.support.TransactionSynchronizationManager"
 
@@ -187,12 +212,14 @@ class CoCacheSpringCache(
          * 事务内登记到事务结束之后再失效（没有事务时什么也不做）。spring-tx 是可选依赖（`compileOnly`）：
          * 不在 [classLoader] 中时返回空操作，不创建 [TransactionalInvalidator]。
          */
-        internal fun afterTransaction(classLoader: ClassLoader?): (Cache<Any, Any>, Any) -> Unit {
+        internal fun afterTransaction(
+            classLoader: ClassLoader?
+        ): (Cache<Any, Any>, Any, InvalidationFailureHandler?) -> Unit {
             if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, classLoader)) {
-                return { _, _ -> }
+                return { _, _, _ -> }
             }
             val invalidator = TransactionalInvalidator()
-            return { cache, key -> invalidator.invalidateAfterTransaction(cache, key) }
+            return { cache, key, onFailure -> invalidator.invalidateAfterTransaction(cache, key, onFailure) }
         }
     }
 }

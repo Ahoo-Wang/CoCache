@@ -49,6 +49,9 @@ description: CoCache 版本发布历史和重要变更。
 - SPI：`L1Store.read`、`readAll` 与 `ConditionalL1Store.readIfChanged` 增加这次调用的 `timeout: Duration?`。`null` 为存储自己的命令超时；给出时必须为正，以命令超时为上限，存储以两者中较短的一个限定这次调用。`FutureL1Store`、它的能力面、`adapt` 与各 `Forwarding*` 类同样增加这个参数。引擎暂时一律传 `null`，用户这里还看不到变化；按缓存的读超时之后加入。
 - SPI 约定：取得或交回令牌的命令（`read`、`readAll`、`fill`、`fillAll`、`release`、`reclaim`）失败之后，除非命令在发出之前就被拒绝，存储都异步释放该令牌。令牌已不匹配的 `RELEASE` 什么也不做，所以迟到或重复的释放都无害。存储从不以 `CancellationException` 报告失败：在 JVM 上它就是协程的取消，引擎会把它当作调用方被取消。
 
+- Spring：classpath 中有 `spring-tx` 时，starter 的 `cocacheCacheManager` 是 CoCache 的 `TransactionAwareSpringCacheManager`，它的缓存是 `TransactionAwareSpringCache`。它们取代 Spring 的 `TransactionAwareCacheManagerProxy` 与 `TransactionAwareCacheDecorator`，检查或解包这两个类型的代码不再找到它们。事务内的 `@CacheEvict` 现在回滚时同样失效，之后对同一 key 的驱逐取代之前的 `@CachePut`，提交之后的失败交给 `CacheErrorHandler`，不再抛出。不用 Spring Boot 时，用 `TransactionAwareSpringCacheManager` 代替 `TransactionAwareCacheManagerProxy` 包装 `CoCacheSpringCacheManager`。见 [Spring：CoCache 自己的事务装饰器](#spring-transaction-decorator)。
+- Spring：`TransactionalInvalidator` 每个事务一份登记，不再每个实例一份。经多个实例与 `evictIfPresent` 对同一缓存登记的失效在提交之后合并为一次 `invalidateAll`，失败一起抛出（第一个异常，其余作为 suppressed）。
+
 - `SourceLoadCancelledException` 从 `me.ahoo.cocache.coroutines` 移到 `me.ahoo.cocache.core`，并覆盖全部数据源：`CacheLoader` 自己抛出 `CancellationException`，或 `AsyncCacheLoader` 的 future 以它完成（其中的 `withTimeout`、HTTP 客户端取消了请求）时，共享这次加载的每个调用方都以 `SourceLoadCancelledException` 失败，原始异常是它的 `cause`。6.x 中这些调用方收到的就是那个 `CancellationException`，异步调用方的 future 因此看起来像是被取消了。
 
 ### 行为变化：关闭运行时会等待在途的 Redis 步骤
@@ -82,7 +85,22 @@ description: CoCache 版本发布历史和重要变更。
 
 - **事务内的 `@CacheEvict(beforeInvocation = true)`**：Spring 对它调用 `evictIfPresent`，Spring 的 `TransactionAwareCacheDecorator` 直接委托这个调用，所以 key 只在提交之前失效。驱逐与提交之间，另一个实例上的读取可能把已提交的旧行重新加载进 Redis，之后再没有失效，所有实例在 `ttl` 内都读到旧值。`evictIfPresent` 仍按 Spring 的要求立即失效，事务内现在还把 key 登记到 `TransactionalInvalidator`，提交、回滚或回滚到 savepoint 时再失效一次。没有事务或没有 `spring-tx` 时行为不变。
 - **回滚到 savepoint（`NESTED`）**：嵌套事务回滚到 savepoint 时，Spring 不对外层事务的同步调用 `afterCompletion`，外层之后提交时报告的是提交。嵌套段内的读取放进 Redis 的未提交行，在外层事务结束之前对所有实例（包括外层事务自己）可见。`TransactionalInvalidator` 现在处理 `savepointRollback`（Spring 6.2 起）：失效本事务到目前为止登记的全部 key，登记保留，事务结束时再失效一次。这里的失败只记录日志、不抛出：Spring 在把数据库回滚到 savepoint 之前调用 `savepointRollback`，抛出会跳过这次回滚。
-- **仍不覆盖的情形**：嵌套事务内的 `@CachePut`，在嵌套事务回滚到 savepoint 之后，仍会在外层事务提交时写入它的值：Spring 的装饰器把 put 推迟到 `afterCommit`，看不到回滚到 savepoint。嵌套事务内请用 `@CacheEvict`。
+- `6.x` 分支上，嵌套事务内的 `@CachePut` 在嵌套事务回滚到 savepoint 之后，仍会在外层事务提交时写入它的值。8.0 丢弃它，见下一节。
+
+### Spring：CoCache 自己的事务装饰器 {#spring-transaction-decorator}
+
+见 [Spring Cache 的事务](./spring-cache.md#transactions)。
+
+- **`@CacheEvict` 回滚时同样失效**。Spring 的装饰器只在提交之后执行它。同一事务内的 `@Cacheable(sync = true)` 读取可能把未提交的行加载进 Redis，回滚之后这一行留到 `ttl`；6.9.0 changelog 把它列为不覆盖的情形。现在 key 登记到事务，提交之后与回滚之后都失效。
+- **后面的驱逐优先**。提交时先执行登记的失效，再执行推迟的、之后没有同一 key 失效的 `@CachePut` 写入。对同一个 key 先 `@CachePut` 再 `@CacheEvict`，结果是 key 被驱逐。
+- **savepoint**：`NESTED` 事务或编程式 savepoint 回滚时，丢弃 savepoint 之后登记的写入。此前回滚了的嵌套事务里的 `@CachePut` 仍在外层提交时写入。
+- **提交之后的失败交给 `CacheErrorHandler`**（缓存拦截器的，与事务之外一样），不再抛给数据已经提交、会去重试的调用方。处理器重新抛出时（Spring 默认的处理器就是如此），以 `ERROR` 记录日志，不再抛出。Spring 也因此照常调用其余同步的 `afterCommit`，抛出时它们会被跳过。
+- `@CacheEvict(allEntries = true)` 仍只清空本实例的 L2，现在每个缓存第一次调用时记录一条 `WARN`。全集群清空随之后 8.x 的 namespace 重置加入。
+- 缓存通知与事务通知的 order 相同时，starter 在启动时记录一条 `WARN`。两者默认都是 `LOWEST_PRECEDENCE`，谁在外层取决于注册顺序。声明 `@EnableTransactionManagement(order = Ordered.LOWEST_PRECEDENCE - 1)` 让事务在外层。见[事务通知在外层](./spring-cache.md#advice-order)。
+
+### Spring：可选的降级 `CacheErrorHandler`
+
+- `cocache.spring-cache.degrade-on-error: true` 为 Spring 的缓存拦截器换上 `DegradingCacheErrorHandler`。它只对 CoCache 缓存生效：读写失败只记录日志、不重新抛出，Redis 故障期间不带 sync 的 `@Cacheable` 因此执行方法，与 `sync = true` 一样。失败的失效与清空、其它缓存的失败仍交给原来配置的处理器，它成为委托。见 [Redis 故障时](./spring-cache.md#failures)。
 
 ### Redis：存储原生挂起
 

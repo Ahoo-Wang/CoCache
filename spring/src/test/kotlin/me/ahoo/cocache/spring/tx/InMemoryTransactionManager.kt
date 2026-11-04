@@ -45,14 +45,18 @@ internal class InMemoryTransactionManager : AbstractPlatformTransactionManager()
     fun read(key: String): String? = current.get()?.get(key) ?: committed[key]
 
     /**
-     * savepoint 是当时未提交写入的快照，回滚到它时恢复快照。
+     * savepoint 是当时未提交写入的快照，回滚到它时恢复快照。写入在使用时取当前线程的事务：
+     * 最外层事务的事务对象在 `doBegin` 之前创建，编程式 savepoint（`status.createSavepoint()`）同样可用。
      */
-    private class Transaction(val writes: MutableMap<String, String>?) : SavepointManager {
-        override fun createSavepoint(): Any = LinkedHashMap(requireNotNull(writes))
+    private inner class Transaction(val existing: Boolean) : SavepointManager {
+        private val writes: MutableMap<String, String>
+            get() = requireNotNull(current.get()) { "No transaction." }
+
+        override fun createSavepoint(): Any = LinkedHashMap(writes)
 
         @Suppress("UNCHECKED_CAST")
         override fun rollbackToSavepoint(savepoint: Any) {
-            requireNotNull(writes).apply {
+            writes.apply {
                 clear()
                 putAll(savepoint as Map<String, String>)
             }
@@ -61,9 +65,9 @@ internal class InMemoryTransactionManager : AbstractPlatformTransactionManager()
         override fun releaseSavepoint(savepoint: Any) = Unit
     }
 
-    override fun doGetTransaction(): Any = Transaction(current.get())
+    override fun doGetTransaction(): Any = Transaction(current.get() != null)
 
-    override fun isExistingTransaction(transaction: Any): Boolean = (transaction as Transaction).writes != null
+    override fun isExistingTransaction(transaction: Any): Boolean = (transaction as Transaction).existing
 
     override fun doBegin(transaction: Any, definition: TransactionDefinition) = current.set(LinkedHashMap())
 
