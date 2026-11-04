@@ -404,10 +404,14 @@ Compute(n, i) ==
     /\ UNCHANGED <<net, l2, nextTok>>
     /\ UnchangedForReaders
 
+(* A versioned cache keeps a copy whose version is greater than the fill's (keptCopy, TLA+ F3): its L2
+   never moves back in version. Values without a version order before every version. *)
+Kept(n, s) == Versioned /\ HasCopy(n) /\ VerOf(l2[n].snap) > VerOf(s)
+
 Write(n, i) ==
     LET r == <<n, i>> IN
     /\ alive[n] /\ rd[r].pc = "c2"
-    /\ l2' = [l2 EXCEPT ![n] = [snap |-> rd[r].snap, own |-> i]]
+    /\ l2' = IF Kept(n, rd[r].snap) THEN l2 ELSE [l2 EXCEPT ![n] = [snap |-> rd[r].snap, own |-> i]]
     /\ rd' = [rd EXCEPT ![r].pc = "c3"]
     /\ UNCHANGED <<net, nextTok>>
     /\ UnchangedForReaders
@@ -434,20 +438,26 @@ ReaderTimeout(n, i) ==
     /\ \/ /\ x.pc = "rd" /\ x.mode # "refresh"           \* L1 read failed: degrade to the source (§5)
           /\ rd' = [rd EXCEPT ![r].pc = "by", ![r].tok = 0, ![r].rr = FALSE, ![r].rep = NoRep]
           /\ net' = [net EXCEPT ![n] = base]
-          /\ UNCHANGED nextTok
+          /\ UNCHANGED <<nextTok, l2>>
        \/ /\ x.pc = "rd" /\ x.mode = "refresh"           \* refresh read failed: loadThrough
           /\ rd' = [rd EXCEPT ![r] = ReloadState(i, n)]
           /\ net' = [net EXCEPT ![n] = base \o ReloadCmds(i, n)]
           /\ nextTok' = ReloadTok(n)
-       \/ /\ x.pc = "fl"                                 \* fill failed: completeLoad(filled = false)
+          /\ UNCHANGED l2
+       \/ /\ x.pc = "fl" /\ ~Versioned                   \* fill failed: completeLoad(filled = false)
           /\ rd' = [rd EXCEPT ![r] = Fixed(x, x.snap)]
+          /\ net' = [net EXCEPT ![n] = base]
+          /\ UNCHANGED <<nextTok, l2>>
+       \/ /\ x.pc = "fl" /\ Versioned /\ NoCompute(n)     \* outcome unknown: it may still advance the version
+          /\ rd' = Bumped([rd EXCEPT ![r] = Returned(x, x.snap)], n)    \* (TLA+ F2): a write on this node, no L2 fill
+          /\ l2' = [l2 EXCEPT ![n] = NoCopy]
           /\ net' = [net EXCEPT ![n] = base]
           /\ UNCHANGED nextTok
        \/ /\ x.pc = "rl"
           /\ rd' = [rd EXCEPT ![r] = RIdle]
           /\ net' = [net EXCEPT ![n] = base]
-          /\ UNCHANGED nextTok
-    /\ UNCHANGED <<db, l1, conn, alive, l2, wr, pending, unfilter, chan, evicts, noise,
+          /\ UNCHANGED <<nextTok, l2>>
+    /\ UNCHANGED <<db, l1, conn, alive, wr, pending, unfilter, chan, evicts, noise,
                    l1db, l1ver, floorS, floorR, floorF, owed, lost>>
 
 -----------------------------------------------------------------------------
@@ -729,17 +739,11 @@ NoLostInvalidation == ~LaggingLoader =>
 VersionMonotonic ==
     [][ExpireL1 \/ (l1.ver # NoVer => (l1'.ver # NoVer /\ l1'.ver >= l1.ver))]_vars
 
-(* An invalidation that will evict node n's L2 is on its way: a frame n will process, the second
-   stamp bump of n's own write, or the reset after a lost frame. *)
-EvictionPending(n) ==
-    \/ lost[n]
-    \/ wr[n].pc = "w"
-    \/ \E fr \in chan[n] : ~fr.own \/ unfilter[n]
-
-(* P2: a refresh never puts a version older than L1's into L2, unless an eviction is pending. *)
-RefreshKeepsNewer ==
-    \A r \in Readers : rd[r].pc = "c2" /\ rd[r].mode = "refresh" /\ VerOf(rd[r].snap) < l1.ver =>
-        EvictionPending(r[1])
+(* I-K, L2 clause (TLA+ F3): a versioned cache never replaces an L2 copy with an older version. Eviction
+   and expiry may empty L2; a later fill starts from scratch. *)
+L2VersionMonotonic ==
+    [][\A n \in Nodes : Versioned /\ HasCopy(n) /\ l2'[n].snap >= 0 /\ l2'[n] # l2[n] =>
+          VerOf(l2'[n].snap) >= VerOf(l2[n].snap)]_vars
 
 (* Stronger than G2L2: a version-advancing fill that ran after its reader gave up counts as a
    write on that node, like a write whose outcome is unknown (P11 with P12). *)
