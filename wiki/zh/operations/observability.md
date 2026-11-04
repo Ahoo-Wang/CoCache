@@ -184,6 +184,9 @@ management:
 ```json
 {
   "name": "UserCache",
+  "type": "Cache",
+  "layered": true,
+  "ignoredConfiguration": [],
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
@@ -191,7 +194,7 @@ management:
 }
 ```
 
-`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，`staleVersions` 是 `cocache.versioned.stale`，`typeMismatches` 是 `cocache.type.mismatch`，`readsUnknown` 是 `cocache.reads.unknown`，`unversionedAbsentRefusals` 是 `cocache.fill.unversioned.absent`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
+`type` 是缓存的 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore` 或 `SetStore`）。`layered: false` 表示缓存直接经 `CacheRuntime.create` 创建，配置对它不生效，`ignoredConfiguration` 列出指向它的 `cocache.caches.[name]` 条目（[CoCacheFactory](../guide/caches.md#factory)）。`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，`staleVersions` 是 `cocache.versioned.stale`，`typeMismatches` 是 `cocache.type.mismatch`，`readsUnknown` 是 `cocache.reads.unknown`，`unversionedAbsentRefusals` 是 `cocache.fill.unversioned.absent`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
 
 ### 编码后的 key {#encoded-key}
 

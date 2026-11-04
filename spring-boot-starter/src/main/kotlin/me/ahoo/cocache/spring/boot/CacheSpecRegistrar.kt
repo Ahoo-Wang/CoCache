@@ -34,7 +34,7 @@ import org.springframework.core.ResolvableType
  *
  * - 泛型取自工厂方法**声明的**返回类型，不实例化声明；无法解析时启动失败（如返回原始类型）。
  * - bean 名：声明 bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` 后缀。
- * - 缓存在首次注入时由 [CacheAssembler] 创建。
+ * - 缓存在首次注入时由 [CoCacheFactory] 创建（叠加定制器与配置文件，[CacheAssembler]）。
  */
 internal class CacheSpecRegistrar : BeanFactoryPostProcessor {
     override fun postProcessBeanFactory(beanFactory: ConfigurableListableBeanFactory) {

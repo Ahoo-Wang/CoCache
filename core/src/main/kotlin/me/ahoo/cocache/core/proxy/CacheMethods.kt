@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-package me.ahoo.cocache.spring.boot
+package me.ahoo.cocache.core.proxy
 
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier

@@ -99,17 +99,20 @@ sequenceDiagram
     autonumber
     participant Reg as Registrars<br>(bean definitions)
     participant Fac as AnnotatedCacheFactory
-    participant Asm as CacheAssembler
+    participant F as CoCacheFactory
+    participant Asm as CacheAssembler<br>(CacheLayers)
     participant RT as CacheRuntime
     Reg->>Reg: one bean per @EnableCoCache interface<br>one cache bean per spec bean
     Note over Fac: on first injection
     Fac->>Fac: @CoCache / @CaffeineCache to the spec of<br>the extended type: resolve loader, codec, keyExpression
-    Fac->>Asm: create(spec)
-    Asm->>Asm: apply CacheSpecCustomizers,<br>then cocache.defaults, then cocache.caches.[name]
-    Asm->>RT: create(spec)
-    RT-->>Asm: engine, subscribed to {keyPrefix}inv:{namespace}
-    Asm-->>Fac: engine
-    Fac-->>Reg: JDK proxy implementing the interface
+    Fac->>F: create(type, spec)
+    F->>F: check the interface
+    F->>Asm: apply(spec)
+    Asm-->>F: CacheSpecCustomizers, then cocache.defaults,<br>then cocache.caches.[name] applied
+    F->>RT: create the layered cache
+    RT-->>F: engine, subscribed to {keyPrefix}inv:{namespace}
+    F-->>Fac: JDK proxy implementing the interface
+    Fac-->>Reg: the proxy
 ```
 
 | Style | Bean name | Bean |
@@ -118,7 +121,7 @@ sequenceDiagram
 | Spec bean: `@Bean fun userSpec(): CacheSpec<String, User>`, or any other spec type | the spec bean name minus `Spec` (`userSpec` → `user`), or plus `Cache` | The engine itself. `CacheSpecRegistrar` reads `K` and `V` from the factory method's declared return type without instantiating the spec. |
 | Join cache: `@JoinCacheable interface …`, listed in `@EnableCoCache(joinCaches = …)` | the join cache name | A read-only view over two caches, resolved by name; a `JoinCache` can also invalidate. See [JoinCache](../guide/join-cache.md). |
 
-Policy layers, later wins: built-in defaults (per type) → the declaration → `CacheSpecCustomizer` beans (in order) → `cocache.defaults.*` → `cocache.caches.[name].*`. `key-prefix` follows the same layering. After all singletons exist, `CacheAssembler` fails startup if `cocache.caches` names an undeclared cache. Every stateful component is created per spec by `CacheRuntime` ([Runtime](#runtime)), so two caches never share one. In Spring, a join cache finds its two caches by cache name (through their bean names), never by type.
+Policy layers, later wins: built-in defaults (per type) → the declaration → `CacheSpecCustomizer` beans (in order) → `cocache.defaults.*` → `cocache.caches.[name].*`. `key-prefix` follows the same layering. After all singletons exist, `CacheAssembler` fails startup if `cocache.caches` names an undeclared cache. An entry for a cache created directly with `CacheRuntime.create`, which no configuration layer reaches, logs a warning instead ([CoCacheFactory](../guide/caches.md#factory)). Spec beans and libraries create caches through the same `CoCacheFactory` bean. Every stateful component is created per spec by `CacheRuntime` ([Runtime](#runtime)), so two caches never share one. In Spring, a join cache finds its two caches by cache name (through their bean names), never by type.
 
 ## Wire format {#wire-format}
 

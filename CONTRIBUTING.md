@@ -80,7 +80,8 @@ See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in
   minor that CI tests). Raising any of them is a MAJOR change.
 - What the compatibility promise covers:
   - Covered: `cocache-api` (user API and SPI), the public types of `cocache-core` (including
-    `JoinCacheProxies`, which the docs recommend for non-Spring join caches), `cocache-redis`,
+    `CoCacheFactory` and `CacheLayers`, and `JoinCacheProxies`, which the docs recommend for non-Spring join
+    caches), `cocache-redis`,
     `cocache-codec-jackson` and `cocache-spring`, the published TCK in `cocache-test`
     (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`,
     `L1Capability`, `CommandCancellation`, `CacheAccess`, `HookedBackend`, `Concurrency`, `Suspending`), the

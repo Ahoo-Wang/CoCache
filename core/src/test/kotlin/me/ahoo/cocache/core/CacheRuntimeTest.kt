@@ -344,7 +344,25 @@ class CacheRuntimeTest {
     }
 
     /**
-     * 启动日志输出每个命名空间的 L1 能力（RFC 0005 §4.3）。
+     * 创建监听（[CacheRuntime.addCreationListener]）：之后创建的每个缓存回调一次，不论是否经 [CoCacheFactory]；
+     * 已经创建的不回放；监听者抛出的异常不影响缓存的创建与其它监听者。
+     */
+    @Test
+    fun creationListenersSeeEveryLaterCache() {
+        CacheRuntime.builder().backend(InMemoryBackend()).build().use { runtime ->
+            runtime.create(spec("before"))
+            val seen = mutableListOf<Pair<String, Boolean>>()
+            runtime.addCreationListener { throw IllegalStateException("listener down") }
+            runtime.addCreationListener { seen.add(it.name to it.layered) }
+            runtime.create(spec("direct"))
+            CoCacheFactory(runtime).create(spec("layered"))
+            seen.assert().containsExactly("direct" to false, "layered" to true)
+            runtime.cacheNames.assert().containsExactlyInAnyOrder("before", "direct", "layered")
+        }
+    }
+
+    /**
+     * 启动日志输出每个命名空间的 L1 能力（RFC 0005 §4.3）；直接经 `runtime.create` 创建的缓存标注“未分层”（§4.8，S20）。
      */
     @Test
     fun creationLogsTheCapabilitiesOfTheNamespace() {
@@ -353,7 +371,7 @@ class CacheRuntimeTest {
         logger.addAppender(appender)
         try {
             CacheRuntime.builder().backend(InMemoryBackend()).build().use {
-                it.create(spec("full"))
+                CoCacheFactory(it).create(spec("full"))
                 it.create(storeSpec<String, String>("store") { codec = StringCodec })
             }
             val stripped = StrippedBackend(InMemoryBackend(), conditional = false, versioned = false, sets = false)
@@ -369,6 +387,6 @@ class CacheRuntimeTest {
         created[1].assert().startsWith("Cache[store] - created as Store on namespace[store]")
         created[2].assert().startsWith(
             "Cache[bare] - created as Cache on namespace[bare-ns]"
-        ).endsWith("L1 capabilities[].")
+        ).endsWith("L1 capabilities[], ${CacheRuntime.UNLAYERED_NOTE}")
     }
 }

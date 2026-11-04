@@ -86,7 +86,7 @@ starter 看不到你自己写的代码内部。下列情况需要自己登记提
 - **多态的值。** 绑定提示覆盖声明的值类型及其属性可达的类型。如果值类型是抽象类或密封类、由 Jackson 在运行时选择子类型，把子类型也列在 `@RegisterReflectionForBinding` 中。
 - **自定义编解码。** 使用反射的 `Codec`（例如另一个序列化库）需要该库为你的值类型准备的提示。
 - **离开根对象的 SpEL。** 提示只覆盖根对象的公共成员。`#{owner.address.city}` 这样的模板还会读取 `Address`，`T(…)` 会调用其它类的静态方法：用 `@RegisterReflection(classes = [Address::class], memberCategories = [MemberCategory.INVOKE_PUBLIC_METHODS])` 或 `RuntimeHintsRegistrar` 登记这些类型。热点路径上，使用 `toString()` 合适的 key 类型可以完全避开 SpEL（[key](./caches.md#keys)）。
-- **不经 starter 创建的缓存。** 在自己的代码中调用 `CacheRuntime.create` 与 `CacheProxies.create` 不会得到生成的提示：自己登记代理接口与 key 类型的 `toString()`。
+- **不经 starter 创建的缓存。** 在自己的代码中调用 `CacheRuntime.create` 与 `CoCacheFactory.create` 不会得到生成的提示：自己登记代理接口与 key 类型的 `toString()`。
 
 loader、`TtlFunction`、`KeyEncoder` 与 `JoinKeyExtractor` bean 都是普通的函数调用，不需要提示。
 

@@ -20,11 +20,13 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -216,11 +218,11 @@ class CoCacheObservabilityTest {
                     externallySourced()
                 }
             )
-            registry.find("cocache.misses").tag(CoCacheMeterBinder.TAG_CACHE, "late").meter().assert().isNull()
-
-            // 延迟创建的缓存 bean 初始化后由后处理器补绑
-            context.autowireCapableBeanFactory.initializeBean(late, "late")
+            // 运行时创建每个缓存之后回调绑定（直接经 runtime.create 创建的也是）
             registry.count("cocache.misses", "late").assert().isZero()
+
+            // 缓存 bean 初始化后的后处理器补绑是幂等的
+            context.autowireCapableBeanFactory.initializeBean(late, "late")
 
             // 重复绑定是安全的
             binder.bindNewCaches()
@@ -231,6 +233,28 @@ class CoCacheObservabilityTest {
             context.autowireCapableBeanFactory.initializeBean(lateIndex, "lateIndex")
             registry.count("cocache.misses", "late-index").assert().isZero()
             context.autowireCapableBeanFactory.initializeBean(Any(), "other").assert().isNotNull()
+        }
+    }
+
+    /**
+     * 库经 `CoCacheFactory` 在启动之后创建的缓存（不是 bean）立即注册指标；直接经 `runtime.create` 创建的缓存在端点上标注“未分层”。
+     */
+    @Test
+    fun bindsCachesCreatedThroughTheFactoryAfterStartup() {
+        runner.run { context ->
+            val registry = SimpleMeterRegistry()
+            context.getBean(CoCacheMeterBinder::class.java).bindTo(registry)
+            val factory = context.getBean(CoCacheFactory::class.java)
+            factory.create(storeSpec<String, String>("revoked") { codec = StringCodec })
+            registry.count("cocache.misses", "revoked").assert().isZero()
+
+            val runtime = context.getBean(CacheRuntime::class.java)
+            runtime.create(storeSpec<String, String>("direct") { codec = StringCodec })
+            val endpoint = context.getBean(CoCacheEndpoint::class.java)
+            requireNotNull(endpoint.cache("revoked")).layered.assert().isTrue()
+            val direct = requireNotNull(endpoint.cache("direct"))
+            direct.layered.assert().isFalse()
+            direct.type.assert().isEqualTo("Store")
         }
     }
 
@@ -260,6 +284,9 @@ class CoCacheObservabilityTest {
 
             endpoint.caches().map { it.name }.assert().containsExactly("index", "user")
             val report = requireNotNull(endpoint.cache("user"))
+            report.type.assert().isEqualTo("Cache")
+            report.layered.assert().isTrue()
+            requireNotNull(endpoint.cache("index")).type.assert().isEqualTo("SetStore")
             report.localSize.assert().isEqualTo(1L)
             report.loads.assert().isEqualTo(1L)
             report.loadNanos.assert().isGreaterThan(0L)
