@@ -486,7 +486,6 @@ if (!stamps.isValid(storageKey, stamp)) {
 - **读取方校验**（K3）：客户端在拿到载荷时（`getIfChanged` 的 `Value`、`Store` 的 L1 读取）重算 SHA-256 并与头部比较，不一致按损坏 `FAIL`；`Store` 读到不带摘要段的值同样 `FAIL`。否则写入方或外部工具的缺陷留下的不一致，在永不过期的 `Store` 上会让 `getIfChanged` 对已知摘要一直回答 `Unchanged`。成本只在 L1 读取上，不在 L2 命中上。校验是客户端行为，不改格式，但在 M4 写进规范与 TCK。
 - 保留 SHA-256、不退回 SHA-1 的理由（D1）：M4 冻结之后，摘要算法会在 8.x 的线格式中固定多年。
 - 只有条件回收仍在脚本中计算指纹：它比较派生缓存的“读不懂的内容是否仍是读到的那一份”，与安全无关，继续用 SHA-1，类型是 SPI 自己的内容指纹（§4.3）。
-- CoSec 持久化在应用数据中的 SHA-1 摘要由 CoSec 自己处理（§8 的下游）。
 
 **状态 `E`（保留版本栅栏的失效）**（P1）：
 
@@ -807,14 +806,13 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 **下游**（第二轮、第三轮读了两个下游的源码）：
 
-- **CoSec**：
+- **CoSec**（尚未发布正式版，没有兼容负担，直接按 8.x 适配；维护者，2026-11-03）：
   - **分型**：策略快照、控制面 8 个缓存、两个撤销表（`unknownRead = ABSENT`）、三个影子缓存（带显式 `ttl`）→ `Store`；`MembershipCache` → `Cache` + `externallySourced()`（带调用级 loader，`readFailure = THROW` 照常作用，S11）；迁移工具中的 `GlobalPolicyIndexCache` → `SetStore`，或随 7.x 转换工具一起删除。
   - **装配**：`CoSecCacheAssembler` → `CoCacheFactory`；`pinnedPolicy` → `lock` + `constrain`，锁定 namespace、keyPrefix、keyEncoder、codec 与“拒绝 loader”；`expiringFailClosed` 写作 `constrain(ttl) { it.finiteOr(1.minutes) }`（S12）。控制面缓存与影子缓存现在经 `runtime.create` 直接创建，改经 `CoCacheFactory`，否则不受分层配置影响（S20）。
   - **布局**（D5、S4）：CoSec 的全部 spec 用 `keyPrefix("")`，把前缀放进 namespace，namespace 因此含 `:`，在 8.x 中启动失败。前缀（连同其中的 `:`）移到 `keyPrefix`、namespace 只留不含 `:` 的部分之后，存储 key 的字符串不变，按 `~cosec:*` 写的 ACL 照常覆盖；频道变为 `{keyPrefix}inv:{namespace}`。`PolicySnapshotCache.snapshotKeyOf` 按 `"$namespace:"` 反解存储 key，v8 中 `InvalidationListener` 收到编码 key，须改写，否则每一条策略变更通知都被静默丢弃，只剩 `revalidate-interval` 兜底。
   - **读取**：`RedisSnapshotDocumentStore` 的 `when (lookup)` 因 `Unknown` 编译失败，可以发现；频道订阅改为新 SPI；“先淘汰本地副本，再通知外部监听者”成为契约。撤销表声明 `unknownRead = ABSENT`，运维可经 `caches.[name]` 收紧为 `THROW`（S16）；按缓存的读超时把 Redis 卡顿时每个请求多等的时间压到它自己选的界限（D6）。
-  - **摘要**（D1、S2）：CoSec 在本地用 `Digest.of(…).sha1` 计算摘要，并写进修订记录的 key、修订索引、文档体中的 `parent`，以及待审批变更的 `base.digest` / `checkedWith`。8.x 的 `putIfMatch` 比较头部的 SHA-256，升级前持久化了 SHA-1 `base.digest` 的待审批变更会以 Conflict 失败。CoSec 在升级前处理完待审批变更，升级后重新发布时按 SHA-256 重算修订 key、`parent` 与 base。`Digest` 带算法标识之后，不再以 `.sha1` 的名义持有 SHA-256。CoSec `roadmap.md` 中“摘要算法仍是 SHA-1”的说法需要更正。`getIfChanged` 的用法不变。
-  - **升级**：控制面的唯一副本缓存与策略快照升级后从空开始，由控制面重新发布。撤销表与影子缓存也从空开始：**升级前撤销的 token 在 8.x 上不再被拒绝**，直到它们自然过期（撤销表没有数据源）。CoSec 在升级前决定：接受这段窗口、升级后重放撤销记录，或给撤销表配上数据源。
-  - **部署**：托管或代理型 Redis 上，确认 `INFO memory` 可读，或配置 `assume-maxmemory-policy`；`allkeys-*` 在存在权威缓存时一律启动失败，CoSec 自己的 `eviction-check=warn` 只作用于它自己的检查（S22）；ACL 的频道模式；升级步骤中的全部写入方（§8）。
+  - **摘要**（D1）：CoSec 计算并持久化摘要的地方（修订记录的 key、修订索引、文档体中的 `parent`、待审批变更的 `base.digest` / `checkedWith`）改用带算法标识的 SHA-256 `Digest`，不再以 `.sha1` 的名义持有它；`getIfChanged` 的用法不变。CoSec `roadmap.md` 中“摘要算法仍是 SHA-1”的说法需要更正。
+  - **部署**：托管或代理型 Redis 上，确认 `INFO memory` 可读，或配置 `assume-maxmemory-policy`；`allkeys-*` 在存在权威缓存时一律启动失败，CoSec 自己的 `eviction-check=warn` 只作用于它自己的检查（S22）；ACL 的频道模式。
 - **Wow**：
   - `cacheSpec { suspendingVersionedLoader(…) }` → `versionedCacheSpec`；`StarterCaches` → `CoCacheFactory`。
   - `StateViewCaches.CacheFactory` 改签名，Wow 需要大版本。
@@ -1189,6 +1187,7 @@ M4 冻结格式之前，v5 由两路独立的只读会话验证：
 | 配置 | 不检测 6.x 的键（§4.8） | v4 与 S17 的检测 |
 | 代码 | 删除只为旧版本保留的代码：二进制兼容的成员、`RemovedProperties`、描述 6.x 历史的注释（§5） | — |
 | 文档 | 不提供升级 skill 与静态审计脚本；破坏性变更表与升级说明照常 | §8 的升级 skill |
+| 下游 | CoSec 尚未发布正式版，没有兼容负担：§8 的下游只写适配，不写升级与数据迁移 | S2 的摘要迁移；§8 中 CoSec 的切换与撤销窗口 |
 
 D5 的其余部分（namespace 字符集、内部 key 的位置、`keyPrefix` 为空时告警）、K8 与 D3 不变。
 
