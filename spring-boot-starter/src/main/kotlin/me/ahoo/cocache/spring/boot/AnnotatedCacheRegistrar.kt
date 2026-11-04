@@ -13,7 +13,6 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.ReadableCache
 import org.springframework.beans.factory.support.BeanDefinitionRegistry
 import org.springframework.context.annotation.ImportBeanDefinitionRegistrar
 import org.springframework.core.type.AnnotationMetadata
@@ -26,7 +25,7 @@ internal class AnnotatedCacheRegistrar : ImportBeanDefinitionRegistrar {
         val attributes = importingClassMetadata.getAnnotationAttributes(EnableCoCache::class.java.name) ?: return
 
         @Suppress("UNCHECKED_CAST")
-        val types = attributes["caches"] as Array<Class<out ReadableCache<*, *>>>
+        val types = attributes["caches"] as Array<Class<*>>
         for (type in types) {
             val cacheName = AnnotatedCacheFactory.cacheNameOf(type)
             check(!registry.containsBeanDefinition(cacheName)) {

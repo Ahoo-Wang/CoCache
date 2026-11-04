@@ -68,7 +68,7 @@ Use this map to locate the first incorrect stage before changing anything. Prefe
 | `Authoritative caches [...] ... can evict them` / `Cannot read maxmemory-policy` | Eviction check: `allkeys-*`, and an unreadable policy without `cocache.redis.assume-maxmemory-policy`, always fail; `volatile-*` with a finite `ttl` fails only with `store-eviction-check: fail` |
 | `@CoCache.<attribute> = FOREVER is not supported` | `FOREVER` outside `ttl`/`expireAfterAccess` |
 | `Cache[x] already exists.` / `Namespace[x] is already used` / bean name in use | Duplicate declarations or names |
-| `must extend exactly one of [...]` | The interface extends none or several of the five types |
+| `must extend exactly one of [...]` | The interface extends none or several of the five types and their `Async*` / `Suspending*` views |
 | `must extend <type> with concrete type arguments` / `must declare its generic types` | Raw or unresolved generics |
 | `declares abstract methods that do not match any <type> method` | Extra abstract method; make it default |
 | `Cache interface[...] has no data source` / `VersionedCache interface[...] has no versioned data source` | No matching loader bean; name one, declare `source = EXTERNAL`, or extend `Store` / `VersionedStore` |

@@ -14,10 +14,12 @@
 package me.ahoo.cocache.spring.boot
 
 import com.github.benmanes.caffeine.cache.Caffeine
+import me.ahoo.cocache.api.AsyncStore
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.SuspendingSetStore
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.annotation.JoinCacheable
 import me.ahoo.cocache.api.join.JoinCache
@@ -75,6 +77,14 @@ class CoCacheAotTest {
 
     interface TagCache : SetStore<String, Tag>
 
+    /**
+     * 视图接口：代理转发给缓存的挂起与异步视图。
+     */
+    interface SuspendingTagStore : SuspendingSetStore<String, Tag>
+
+    @CoCache(codec = "tokenCodec")
+    interface AsyncTokenStore : AsyncStore<String, Token>
+
     @JoinCacheable(firstCacheName = "ExtCache", joinCacheName = "UserCache", joinKeyExpression = "#{#root.userId}")
     interface ExtJoinCache : JoinCache<String, Ext, String, User> {
         fun userOf(id: String): User? = get(id)?.secondValue
@@ -92,7 +102,14 @@ class CoCacheAotTest {
 
     @Configuration(proxyBeanMethods = false)
     @EnableCoCache(
-        caches = [UserCache::class, ExtCache::class, TokenCache::class, TagCache::class],
+        caches = [
+            UserCache::class,
+            ExtCache::class,
+            TokenCache::class,
+            TagCache::class,
+            SuspendingTagStore::class,
+            AsyncTokenStore::class,
+        ],
         joinCaches = [ExtJoinCache::class, ProductJoinCache::class]
     )
     class AppConfig {
@@ -143,6 +160,7 @@ class CoCacheAotTest {
         val hints = processAheadOfTime().first.runtimeHints
         val reflection = RuntimeHintsPredicates.reflection()
         listOf(UserCache::class.java, ExtCache::class.java, TokenCache::class.java, TagCache::class.java)
+            .plus(listOf(SuspendingTagStore::class.java, AsyncTokenStore::class.java))
             .plus(listOf(ExtJoinCache::class.java, ProductJoinCache::class.java))
             .forEach { type ->
                 hints.assert().matches(RuntimeHintsPredicates.proxies().forInterfaces(type))

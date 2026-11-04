@@ -28,8 +28,8 @@ import me.ahoo.cocache.core.proxy.CacheProxies
  * [CacheAdmin.policyReport] 给出每个字段的生效值与来源。直接经 [CacheRuntime.create] 创建的缓存不经过任何一层，
  * 端点与启动日志标注“未分层”（S20）：运维在配置文件中写下的值对它静默不生效，所以库应经本类创建缓存、用 [Locks] 固定策略。
  *
- * 接口式声明经 `create(type, spec)`：`type` 必须是继承与 spec 对应的用户 API 类型的接口（RFC 0005 §4.2，S21），代理把调用
- * 转发给缓存，异常原样抛出。用户 API 接口不供手写实现（委托除外）：需要自己的类时，经 `create(spec)` 创建缓存再委托给它。
+ * 接口式声明经 `create(type, spec)`：`type` 必须是继承与 spec 对应的用户 API 类型、或它的异步与挂起视图的接口（RFC 0005 §4.2，S21），
+ * 代理把调用转发给缓存或它的视图，异常原样抛出。用户 API 接口不供手写实现（委托除外）：需要自己的类时，经 `create(spec)` 创建缓存再委托给它。
  *
  * 锁定（U2、S12）：`create(spec) { lock(PolicyField.TTL); constrain(PolicyField.TTL) { it.finiteOr(…) } }`，锁定者默认是调用方的类名；
  * Java 经 `create(spec, Locks.builder("my-lib")….build())`。
@@ -108,31 +108,34 @@ class CoCacheFactory @JvmOverloads constructor(
     }
 
     /**
-     * 按 spec 创建缓存，返回实现接口 [type] 的代理（接口式声明，如 `interface RevokedTokens : Store<String, Instant>`）。
-     * 创建缓存之前校验：[type] 是接口，恰好继承一个用户 API 类型，它与 spec 的类型一致，接口中重新声明的抽象方法都能转发给缓存
-     * （否则改为 default 方法）。类型不符时抛出 [IllegalArgumentException]，抽象方法不能转发时抛出 [IllegalStateException]，
-     * 都不创建任何东西。
+     * 按 spec 创建缓存，返回实现接口 [type] 的代理（接口式声明，如 `interface RevokedTokens : Store<String, Instant>`，
+     * 或挂起视图 `interface UserCache : SuspendingCache<String, User>`）。
+     * 创建缓存之前校验：[type] 是接口，恰好继承一个可声明的类型（`CacheProxies.DECLARABLE_TYPES`：用户 API 类型或它的 `Async*`、
+     * `Suspending*` 视图），它对应的用户 API 类型与 spec 的类型一致，接口中重新声明的抽象方法都能转发（否则改为 default 方法）。
+     * 类型不符时抛出 [IllegalArgumentException]，抽象方法不能转发时抛出 [IllegalStateException]，都不创建任何东西。
      *
-     * 泛型参数不在运行时检查：`K`、`V` 由 spec 与接口的声明保证一致。
+     * 视图接口的代理转发给缓存的 `async()` / `suspending()` 视图；挂起视图走协程核心的原生路径。泛型参数不在运行时检查：
+     * `K`、`V` 由 spec 与接口的声明保证一致。
      */
     @JvmOverloads
-    fun <C : ReadableCache<*, *>> create(type: Class<C>, spec: Spec<*, *>, locks: Locks = Locks.NONE): C {
+    fun <C : Any> create(type: Class<C>, spec: Spec<*, *>, locks: Locks = Locks.NONE): C {
         require(type.isInterface) {
             "Cache[${spec.name}] - CoCacheFactory.create(type, spec) needs an interface, but ${type.name} is a class. " +
                 "The user API types are not for hand-written implementations: create the cache with create(spec) " +
                 "and delegate to it."
         }
-        val apiType = CacheProxies.apiTypeOf(type)
+        val declaredType = CacheProxies.declaredTypeOf(type)
+        val apiType = CacheProxies.DECLARABLE_TYPES.getValue(declaredType)
         val declared = apiTypeOf(spec)
         require(apiType == declared) {
-            "Cache[${spec.name}] - interface[${type.name}] extends ${apiType.simpleName}, " +
+            "Cache[${spec.name}] - interface[${type.name}] extends ${declaredType.simpleName}, " +
                 "but its spec declares a ${declared.simpleName}."
         }
-        CacheMethods.validate(type, apiType)
+        CacheMethods.validate(type, declaredType)
         return CacheProxies.create(type, create(spec, locks))
     }
 
-    fun <C : ReadableCache<*, *>> create(type: Class<C>, spec: Spec<*, *>, block: Locks.Builder.() -> Unit): C =
+    fun <C : Any> create(type: Class<C>, spec: Spec<*, *>, block: Locks.Builder.() -> Unit): C =
         create(type, spec, locksOf(block))
 
     override fun toString(): String = "CoCacheFactory(layers=$layers)"

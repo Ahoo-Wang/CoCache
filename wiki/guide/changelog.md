@@ -5,6 +5,19 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+### New: declare a cache as its async or suspending view {#declared-views}
+
+- A `@CoCache` interface, or the type passed to `CoCacheFactory.create(type, spec)`, can extend an async or suspending view instead of a synchronous type: `interface UserCache : SuspendingCache<String, User>`. All ten views can be declared (`AsyncCache` … `AsyncSetStore`, `SuspendingCache` … `SuspendingSetStore`). Each declares the same kind of cache as its synchronous type, so a `SuspendingStore` interface takes a `storeSpec` ([interface caches](./caches.md#interface), [coroutines](./coroutines.md#declare), [async](./async.md#declare)).
+- The proxy hands each call to the cache's `async()` or `suspending()` view, passing a suspending call's continuation through: an L2 hit returns without suspending, re-entry fails fast, and exceptions arrive unwrapped, including a checked exception thrown before a suspending call suspends.
+- The starter registers these interfaces as beans of the interface type, with native-image hints. Spring Cache keeps using the cache by name, so `@Cacheable` on a cache declared as a `SuspendingCache` uses the `Cache` behind it.
+
+| Before | Now | What to know |
+|--------|-----|--------------|
+| `CoCacheFactory.create(type: Class<C>, spec)` with `C : ReadableCache<*, *>` | `C : Any` | Source-compatible. Code compiled against 8.0.0-alpha.1 must be recompiled: the erased return type changed. |
+| `@EnableCoCache(caches: Array<KClass<out ReadableCache<*, *>>>)` | `Array<KClass<*>>` | Source-compatible. A type that is not one of the fifteen declarable types still fails when its cache is created. |
+
 ## v8.0.0-alpha.1 (Pre-release) {#v8-0-0-alpha-1}
 
 **Module Group:** `me.ahoo.cocache` · First pre-release of 8.0.0, a major release with breaking changes ([RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). 8.x doesn't run next to 6.x on one Redis: stop 6.x, then start 8.x ([Upgrading from 6.x](./upgrade.md)). Fixes for 6.x continue on the `6.x` branch.

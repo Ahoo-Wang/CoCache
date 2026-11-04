@@ -22,6 +22,7 @@ import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.Spec
 import me.ahoo.cocache.core.StoreSpec
 import me.ahoo.cocache.core.VersionedStoreSpec
+import me.ahoo.cocache.core.proxy.CacheProxies
 import me.ahoo.cocache.redis.RedisBackend
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.SmartInitializingSingleton
@@ -135,8 +136,9 @@ internal class StoreEvictionCheck(
             val type = CacheBeanDefinitions.cacheInterfaceOf(definition)
             if (type != null) {
                 val cacheName = AnnotatedCacheFactory.cacheNameOf(type)
-                val authoritativeType = listOf(Store::class.java, VersionedStore::class.java, SetStore::class.java)
-                    .any { it.isAssignableFrom(type) }
+                // 视图接口（如 `SuspendingStore`）按它所属的用户 API 类型判断
+                val apiType = runCatching { CacheProxies.apiTypeOf(type) }.getOrNull()
+                val authoritativeType = apiType in listOf(Store::class.java, VersionedStore::class.java, SetStore::class.java)
                 if (!authoritativeType || cacheName in created) {
                     return null
                 }

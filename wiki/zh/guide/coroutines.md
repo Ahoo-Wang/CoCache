@@ -24,11 +24,32 @@ suspend fun rename(id: String, user: User) {
 ```
 
 - `suspending()` 是每种[缓存类型](./caches.md#types)的成员，视图与同步的层次同构：`Cache.suspending()` 返回 `SuspendingCache`，`VersionedCache` 返回 `SuspendingVersionedCache`，`Store` 返回 `SuspendingStore`，`VersionedStore` 返回 `SuspendingVersionedStore`，`SetStore` 返回 `SuspendingSetStore`，后者的 `get` 与 `SetStore.get` 一样不存在时返回空集合，从不返回 `null`。它们都继承 `SuspendingReadableCache`（`get`、`getAll`、`lookup`、`lookupAll`），挂起视图上的 `async()` 返回对应的异步视图。
-- `suspending()` 每次返回同一个对象，可以在用到的地方直接调用。经 `@CoCache` 接口调用也可以。
+- `suspending()` 每次返回同一个对象，可以在用到的地方直接调用。经 `@CoCache` 接口调用也可以；接口也可以直接[继承挂起视图](#declare)。
 - 每个方法直接调用缓存的核心。L2 命中立即返回：不挂起、不切换 dispatcher、不分配。
 - 未命中、写入与条件读取在 CoCache 自己的 dispatcher 上执行：在你的线程上开始，第一次挂起之后在 CoCache 的执行器上继续，所以你的协程从 CoCache 的线程上恢复，从不从 Redis 客户端的线程上恢复。用 `Dispatchers.Unconfined`（Spring WebFlux 处理器的默认值）时，调用之后你的代码因此在 CoCache 的执行器线程上执行，不在 Lettuce 的事件循环上。你的协程的上下文元素（如追踪上下文或 `MDCContext`）随之传递，`Job` 与 dispatcher 不传递。
 - Redis 故障、而这次读取没有数据源时，`lookup` 返回 `Lookup.Unknown`，`get` 抛出 `CacheReadException`，与[同步 API](./caches.md#unknown) 相同。
 - CoCache 等待 Redis、其它实例的 lease 或你的数据源时，不阻塞任何线程。
+
+## 声明挂起接口 {#declare}
+
+把缓存声明为挂起接口并直接注入，不必调用 `suspending()`：
+
+```kotlin
+@CoCache
+interface UserCache : SuspendingCache<String, User> {
+    suspend fun nameOf(id: String): String? = get(id)?.name
+}
+
+@EnableCoCache(caches = [UserCache::class])
+@SpringBootApplication
+class App
+
+suspend fun find(id: String) = userCache.get(id)
+```
+
+- 每种挂起视图都可以声明：`SuspendingCache`、`SuspendingVersionedCache`、`SuspendingStore`、`SuspendingVersionedStore` 与 `SuspendingSetStore`。它们声明的缓存与各自的同步类型相同，`@CoCache`、数据源 bean 与配置的各层都与 `Cache` 接口一样（见[接口式声明](./caches.md#interface)）。不用 starter 时，`CoCacheFactory.create(UserCache::class.java, spec)` 返回同样的代理，spec 是同步类型的（`SuspendingCache` 对应 `cacheSpec`）。
+- 代理把每次调用原样交给缓存的挂起视图，走的就是 `suspending()` 的路径：L2 命中不挂起、直接返回，异常原样到达（在挂起之前抛出的受检异常也一样），[重入](#reentry)快速失败。
+- `async()` 返回缓存的异步视图。Spring Cache 按名称使用缓存，所以这样声明的缓存上的 `@Cacheable` 用的是它背后的 `Cache`。
 
 ## 数据源 {#loader}
 

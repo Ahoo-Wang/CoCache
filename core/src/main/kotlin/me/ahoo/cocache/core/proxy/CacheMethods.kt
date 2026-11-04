@@ -19,12 +19,13 @@ import java.lang.reflect.Modifier
 /**
  * 启动时校验接口式声明中的抽象方法。
  *
- * 代理（`CacheProxies`）按接口继承的用户 API 类型（[apiType]）、按方法名与参数个数把调用转发给引擎。用户接口重新声明（或重载）的
- * 抽象方法如果参数类型不兼容，运行时会以 `ClassCastException` 失败；这里在创建缓存时就失败，并指出改为 default 方法。
+ * 代理（`CacheProxies`）按接口继承的可声明类型（[apiType]）把调用转发给引擎或它的视图：同步类型按方法名与参数个数分派，视图类型
+ * 调用匹配的视图方法（[counterpartOf]）。用户接口重新声明（或重载）的抽象方法如果参数类型不兼容，运行时会以 `ClassCastException`
+ * 失败或无法转发；这里在创建缓存时就失败，并指出改为 default 方法。
  */
 internal object CacheMethods {
     /**
-     * @param apiType 接口继承的用户 API 类型（`CacheProxies.apiTypeOf`）
+     * @param apiType 接口继承的可声明类型（`CacheProxies.declaredTypeOf`）
      */
     fun validate(type: Class<*>, apiType: Class<*>) {
         val supported = apiType.methods.toList()
@@ -38,6 +39,11 @@ internal object CacheMethods {
                 "${apiType.simpleName} method: ${unsupported.map { signature(it) }}; declare them as default methods."
         }
     }
+
+    /**
+     * 用户接口重新声明的抽象方法 [method] 对应的 [apiType] 方法；没有时为 `null`。
+     */
+    fun counterpartOf(method: Method, apiType: Class<*>): Method? = apiType.methods.firstOrNull { matches(method, it) }
 
     /**
      * 同名、同参数个数，且每个参数都能传给对应的缓存方法（擦除后的类型），返回类型兼容。

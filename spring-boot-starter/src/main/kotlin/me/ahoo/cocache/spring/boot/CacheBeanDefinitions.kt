@@ -13,11 +13,11 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.join.JoinView
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.Spec
+import me.ahoo.cocache.core.proxy.CacheProxies
 import org.springframework.beans.factory.BeanFactory
 import org.springframework.beans.factory.NoSuchBeanDefinitionException
 import org.springframework.beans.factory.config.AutowireCapableBeanFactory
@@ -52,7 +52,9 @@ internal object CacheBeanDefinitions {
      * 接口式声明的缓存接口；不是接口式声明的缓存 bean 定义时返回 `null`。
      */
     fun cacheInterfaceOf(definition: BeanDefinition): Class<*>? {
-        return (argumentOf(definition) as? Class<*>)?.takeIf { ReadableCache::class.java.isAssignableFrom(it) }
+        return (argumentOf(definition) as? Class<*>)?.takeIf { type ->
+            CacheProxies.DECLARABLE_TYPES.keys.any { it.isAssignableFrom(type) }
+        }
     }
 
     /**
@@ -117,10 +119,8 @@ internal object CacheBeanDefinitions {
      */
     @JvmStatic
     fun annotatedCache(type: Class<*>, beanFactory: ConfigurableListableBeanFactory): Any {
-        @Suppress("UNCHECKED_CAST")
-        val cacheType = type as Class<out ReadableCache<*, *>>
         val cacheName = AnnotatedCacheFactory.cacheNameOf(type)
-        return requireComponent(beanFactory, AnnotatedCacheFactory::class.java, cacheName).create(cacheType)
+        return requireComponent(beanFactory, AnnotatedCacheFactory::class.java, cacheName).create(type)
     }
 
     /**
