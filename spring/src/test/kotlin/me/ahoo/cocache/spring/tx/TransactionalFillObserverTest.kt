@@ -42,6 +42,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.transaction.support.TransactionSynchronizationUtils
 import org.springframework.transaction.support.TransactionTemplate
 import java.util.function.Function
+import java.util.function.Predicate
 
 /**
  * 写事务内的回源（RFC 0005 §4.9）：机制 1 在回滚、提交结果未知与回滚到 savepoint 时失效事务内的填充；机制 2 按
@@ -216,7 +217,7 @@ class TransactionalFillObserverTest {
     @Test
     fun privateAndAllowModesPerCache() {
         val modes = mutableMapOf("user" to FillInTransaction.PRIVATE)
-        val users = users(TransactionalFillObserver(true, Function { modes.getValue(it) }))
+        val users = users(TransactionalFillObserver(Predicate { true }, Function { modes.getValue(it) }))
         tx.executeWithoutResult {
             manager.write("8", "draft")
             users["8"].assert().isEqualTo("draft")
@@ -234,6 +235,42 @@ class TransactionalFillObserverTest {
         }
         users.inspect("9").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
         users.gated().assert().isEqualTo(1)
+    }
+
+    /**
+     * 两个机制按缓存名取值：两者都关闭的缓存不进入事务（与 [FillObserver.NONE] 相同），回滚之后事务内写进 L1 的值留下；
+     * 同一运行时中的其它缓存照常记录与失效。
+     */
+    @Test
+    fun bothMechanismsOffForACacheBehaveLikeNone() {
+        val observer = TransactionalFillObserver(
+            Predicate { it == "user" },
+            Function { if (it == "user") FillInTransaction.REGISTERED_KEYS else FillInTransaction.ALLOW }
+        )
+        tx.executeWithoutResult {
+            observer.enter("user").assert().isNotNull()
+            observer.enter("other").assert().isNull()
+            // 不带缓存名的入口不区分缓存
+            observer.enter().assert().isNotNull()
+        }
+        observer.enter("user").assert().isNull()
+        observer.enter().assert().isNull()
+        val runtime = runtime(observer)
+        val users = runtime.create(userSpec())
+        val others = runtime.create(
+            cacheSpec<String, String>("other") {
+                codec = StringCodec
+                loader = CacheLoader { manager.read(it) }
+            }
+        )
+        tx.executeWithoutResult { status ->
+            manager.write("14", "draft")
+            users["14"].assert().isEqualTo("draft")
+            others["14"].assert().isEqualTo("draft")
+            status.setRollbackOnly()
+        }
+        users.inspect("14").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+        others.inspect("14").remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE)
     }
 
     /**
@@ -271,7 +308,7 @@ class TransactionalFillObserverTest {
         manager.write0("12", "committed")
         users["12"].assert().isEqualTo("committed")
         users.gated().assert().isEqualTo(0)
-        TransactionalFillObserver().toString().assert().contains("invalidateFillsOnRollback=true")
+        TransactionalFillObserver().toString().assert().isEqualTo("TransactionalFillObserver")
     }
 
     /**

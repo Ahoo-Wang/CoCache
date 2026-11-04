@@ -127,7 +127,7 @@ fun update(key: String, change: (Document?) -> Document) {
 ## 运维 {#operations}
 
 - 端点的按 key `DELETE` 会删除唯一副本，因此需要 `management.endpoint.cocache.allow-store-delete=true`；没有开启时请求返回 `403`，不做任何修改（见[失效一个 key](../operations/observability.md#invalidate-key)）。
-- 在 store 的 namespace 上调用 `ExternalInvalidator.invalidate` 同样会删除唯一副本。Redis 中已是正确的值、只需要让其它实例丢弃陈旧的 L2 副本时，用 `ExternalInvalidator.broadcast`，它不修改 Redis（见[应用之外的写入方](./freshness.md#external-writers)）。
+- 在 store 的 namespace 上调用 `ExternalInvalidator.invalidate` 同样会删除唯一副本。Redis 中已是正确的值、只需要让其它实例丢弃陈旧的 L2 副本时，用 `ExternalInvalidator.broadcast`，它不修改 Redis（见[应用之外的写入方](./freshness.md#external-writers)）。在端点上，`POST /actuator/cocache/{name}/{key}` 为一个 key 做同样的事，不需要开关（见[只广播失效](../operations/observability.md#broadcast-key)）。
 - 同一个 namespace 的所有声明必须是同一类型。`Cache` 或 `VersionedCache` 读到 `Store` 写入的值时计入 `cocache.type.mismatch`，并记录一次日志。
 
 ## 视图 {#views}

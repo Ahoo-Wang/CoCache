@@ -12,7 +12,7 @@ classpath 上有 `spring-boot-starter-actuator` 时，starter 通过四个渠道
 | [指标](#metrics)（`cocache.*`） | 趋势与告警 |
 | [链路追踪](#tracing)（`cocache.load`） | 一次慢的未命中把时间花在了哪里 |
 | [健康检查](#health)（`cocache`） | 本实例能否收到失效消息 |
-| [Actuator 端点](#actuator-endpoint)（`/actuator/cocache`） | 本实例的计数器、查看一个 key、强制失效 |
+| [Actuator 端点](#actuator-endpoint)（`/actuator/cocache`） | 本实例的计数器、查看一个 key、强制失效或只广播失效 |
 
 另外还有[日志](#logs)。除默认关闭的 [L2 命中计数](#metrics-reads)外，它们都不触碰 L2 命中路径。
 
@@ -55,7 +55,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 |------|------|----------|
 | `cocache.fill.rejections` | counter | 持有 lease 或刷新令牌、但 Redis 拒绝填充的加载：失效销毁了令牌、loader 慢于 `lease-ttl`、填充失败，或者（带版本的缓存）loader 返回的版本比 Redis 中的旧 |
 | `cocache.degraded.fills` | counter | 只写入 L2、以 `degraded-local-max-age` 限龄的加载：Redis 读取失败、等待 lease 超时、填充被拒绝、值的格式未知，或者该 key 的失效仍在重试。没有数据源的读取在 Redis 失败时不计入：它没有答案，也不缓存任何东西（计入 `cocache.reads.unknown` 与 `cocache.remote.failures`） |
-| `cocache.fills.gated` | counter | Spring 读写事务内保持私有的加载（`cocache.fill-in-transaction`），按 key 计：不申请 lease、不写 Redis 与 L2、不与其它调用方共享。每次同时计入未命中与加载。见[事务内的回源](../guide/spring-cache.md#transactional-loads)。 |
+| `cocache.fills.gated` | counter | Spring 读写事务内保持私有的加载（`fill-in-transaction`），按 key 计：不申请 lease、不写 Redis 与 L2、不与其它调用方共享。每次同时计入未命中与加载。见[事务内的回源](../guide/spring-cache.md#transactional-loads)。 |
 | `cocache.fill.unversioned.absent` | counter | `VersionedCache` 的带版本数据源返回普通 `null`、而 Redis 中该 key 是带版本的内容的加载。Redis 拒绝这个负缓存，读取返回“不存在”，下一次未命中再次加载。删除应表达为 `Versioned(null, version)`（[带版本的数据源](../guide/versioned-cache.md#versioned-loaders)）。每个缓存的第一次记录告警 |
 | `cocache.stale.discards` | counter | 读取期间该 key 发生了失效，或（带版本的缓存）L2 中已是比这次填充更新的版本（如 loader 读到落后的从库），因而被丢弃的 L2 填充。这是 L2 栅栏在起作用 |
 | `cocache.reclaims` | counter | 本实例无法解码的 L1 值（外来内容或编解码失败）。随后由单独的 reclaim 脚本在值未变的前提下把它转为 lease，本实例再回源 |
@@ -178,8 +178,9 @@ management:
 | `DELETE /actuator/cocache/{name}` | 清空该缓存的 L2。L1 不受影响，正在进行的加载不会把结果写入 L2 | 本实例 |
 | `GET /actuator/cocache/{name}/{key}` | [查看一个 key](#inspect-key) 在 L2 与 L1 中的状态 | 本实例，外加一次 Redis 读取 |
 | `DELETE /actuator/cocache/{name}/{key}` | 按类型[删除一个 key](#invalidate-key)；`?purge=true` 清除带版本的 key | **所有实例** |
+| `POST /actuator/cocache/{name}/{key}` | 为一个 key [只广播失效](#broadcast-key)：各实例丢掉 L2 副本，Redis 不变 | **所有实例** |
 
-`{name}` 是缓存名。缓存不存在时，`GET` 与 `DELETE` 都返回 `404`，不做任何修改。`DELETE /actuator/cocache/{name}` 成功时返回 `204`，按 key 的 `DELETE` 成功时返回 `200` 及结果。空的 `{key}` 以 `400` 拒绝。Spring 会去掉空的路径段与首尾空白，因此含 `//`、首尾 `/` 或首尾空格的 key 无法经端点精确寻址。
+`{name}` 是缓存名。缓存不存在时，`GET`、`DELETE` 与 `POST` 都返回 `404`，不做任何修改。`DELETE /actuator/cocache/{name}` 成功时返回 `204`，按 key 的 `DELETE` 与 `POST` 成功时返回 `200` 及结果。`DELETE` 与 `POST` 是写操作：`management.endpoint.cocache.access: read-only` 时只剩 `GET` 请求。空的 `{key}` 以 `400` 拒绝。Spring 会去掉空的路径段与首尾空白，因此含 `//`、首尾 `/` 或首尾空格的 key 无法经端点精确寻址。
 
 缓存报告：
 
@@ -207,7 +208,7 @@ management:
     { "field": "read-failure", "value": "degrade", "source": "TYPE_DEFAULT" }
   ],
   "skippedConfiguration": [
-    { "key": "cocache.overrides.cache.lease-wait", "layer": "cocache.overrides.cache", "reason": "not allowed in cocache.overrides: only staleness bounds and read-failure tighten" }
+    { "key": "cocache.overrides.cache.lease-wait", "layer": "cocache.overrides.cache", "reason": "not allowed in cocache.overrides: only staleness bounds, read-failure, fill-in-transaction and invalidate-fills-on-rollback tighten" }
   ],
   "localSize": 8123,
   "loads": 5120,
@@ -291,6 +292,17 @@ curl -fsS -X DELETE localhost:8080/actuator/cocache/UserCache/42
 删除唯一副本无法从数据源恢复，所以这几种删除需要开关，默认都关闭：`Store` 与 `SetStore` 需要 `management.endpoint.cocache.allow-store-delete=true`，`VersionedStore` 需要 `management.endpoint.cocache.allow-purge=true`。没有开启时请求返回 `403`，说明要开启的开关，不做任何修改。这些开关在 `management.endpoint.cocache.access` 之上：后者决定端点的写操作是否开放。
 
 `VersionedCache` 或 `VersionedStore` 上的 `DELETE /actuator/cocache/{name}/{key}?purge=true` 执行 `purge(key)`：版本也一并丢掉，之后任何版本（包括迟到的旧版本）都能写入。它需要 `allow-purge`；其它类型返回 `400`。
+
+### 只广播失效 {#broadcast-key}
+
+```bash
+curl -fsS -X POST localhost:8080/actuator/cocache/UserCache/42
+# {"cache":"UserCache","key":"42"}
+```
+
+它只为这个 key 发布失效消息：所有实例（包括本实例）丢掉 L2 副本，下次访问时重新读 Redis。Redis 不变：不删除任何东西，也不移动版本，因此对任何类型都安全，除 `management.endpoint.cocache.access` 之外不需要开关。适用于 Redis 中已经是正确的值、而各实例可能仍在返回旧副本的场合，例如工具直接改写了 Redis 中的 key。它是 `ExternalInvalidator.broadcast` 的端点对应物（见[应用之外的写入方](../guide/freshness.md#external-writers)）。
+
+与所有失效消息一样，投递至多一次。发布失败时请求失败，可以重试；消息在途中丢失时，其它实例的副本保留到 `local-max-age`。
 
 ## 日志 {#logs}
 

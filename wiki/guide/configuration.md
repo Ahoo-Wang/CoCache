@@ -15,7 +15,7 @@ Each cache's policy is merged field by field from six layers. A higher layer win
 | 2. Global defaults | `cocache.defaults.cache.*`, `cocache.defaults.store.*` | **Below the declaration**: fills only the fields the declaration [didn't write](#declared-fields) |
 | 3. Declaration | `@CoCache` / `@CaffeineCache`, or the spec you build | The library's or application's intent |
 | 4. Customizers | `CacheSpecCustomizer` beans, in Spring order | May change policy fields and fields that don't decide the type, never the data source ([customizers](./caches.md#customizer)) |
-| 5. Global overrides | `cocache.overrides.cache.*`, `cocache.overrides.store.*` | **Above the declaration, tighten only**: staleness bounds take the minimum, `read-failure` takes the stricter mode; nothing else is allowed ([what each layer may set](#field-layers)) |
+| 5. Global overrides | `cocache.overrides.cache.*`, `cocache.overrides.store.*` | **Above the declaration, tighten only**: staleness bounds take the minimum, the ordered modes (`read-failure`, `fill-in-transaction`, `invalidate-fills-on-rollback`) take the stricter value; nothing else is allowed ([what each layer may set](#field-layers)) |
 | 6. One cache | `cocache.caches.[name].*` | Sets any field that [applies](#applicability) to the cache, plus `unknown-read`, `key-prefix` and `unlock` |
 
 After the merge, a library's [constraints](#locks) run, then the [validation chain](#validation). The `cache` sections apply to the derived types (`Cache`, `VersionedCache`), the `store` sections to the authoritative types (`Store`, `VersionedStore`, `SetStore`):
@@ -58,6 +58,8 @@ Edit the type default with `policy { … }` unless you mean to fix every field.
 | `ttl` on a `Cache` | staleness bound | sets | minimum; also caps per-call lifetimes (below) | sets |
 | `local-max-age`, `degraded-local-max-age`, `absent-ttl` | staleness bound | sets | minimum | sets |
 | `read-failure` | mode, `throw` stricter than `degrade` | sets | stricter of the two | sets |
+| `fill-in-transaction` | mode, `private` stricter than `registered-keys` stricter than `allow` | sets | stricter of the two | sets |
+| `invalidate-fills-on-rollback` | mode, `true` stricter than `false` | sets | stricter of the two | sets |
 | `invalidate-failure` | mode without an order | sets | not allowed | sets |
 | `lease-wait`, `load-timeout`, `load-acquire-timeout`, `read-timeout` | wait bound | sets | not allowed | sets |
 | `ttl` on a `VersionedCache`, `tombstone-ttl` | lifetime of the version fence | sets | not allowed | sets |
@@ -66,7 +68,7 @@ Edit the type default with `policy { … }` unless you mean to fix every field.
 | `unknown-read` | mode | not allowed | not allowed | sets |
 | `key-prefix`, `unlock` | not policy | not allowed (use [`cocache.key-prefix`](#key-prefix)) | not allowed | sets |
 
-Why overrides are this narrow: a smaller minimum tightens only a staleness bound. A shorter wait bound sends more instances around the lease to load for themselves, which multiplies load on a source that is already slow. A versioned type's `ttl` and `tombstone-ttl` also bound how long a redelivered older event stays refused, so shortening them lets old events back in. Setting a mode outright could weaken a stricter declaration, so only `read-failure`, which has an order, takes part.
+Why overrides are this narrow: a smaller minimum tightens only a staleness bound. A shorter wait bound sends more instances around the lease to load for themselves, which multiplies load on a source that is already slow. A versioned type's `ttl` and `tombstone-ttl` also bound how long a redelivered older event stays refused, so shortening them lets old events back in. Setting a mode outright could weaken a stricter one below it, so only the modes with an order take part: `read-failure` and the two [transaction modes](./spring-cache.md#transactional-loads).
 
 **`overrides.cache.ttl` also caps per-call lifetimes**: the results of `ttlOf`, and the `ttl` passed to `put(key, value, ttl)` and `putAll(entries, ttl)`. A longer one is clamped to the override. Each clamp counts in `cocache.ttl.clamped`, and the first one on each cache logs a `WARN`. The cap applies even when the cache's own `ttl` is already shorter than the override. A `cocache.caches.[name].ttl` raises the cap for that cache to its own value when that is longer, and `ttl: forever` there removes the cap, so a per-cache `ttl` is never cut by its own per-call cap.
 
@@ -84,8 +86,6 @@ Why overrides are this narrow: a smaller minimum tightens only a staleness bound
 | `cocache.redis.*` | — | — | [Redis backend](#redis) settings |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`: startup fails if a `@Cacheable` on a CoCache cache lacks `sync = true`. `false`: a warning is logged. See [Spring Cache](./spring-cache.md#sync-check). |
 | `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`: Spring's cache interceptor uses `DegradingCacheErrorHandler`, which logs read and write failures on CoCache caches instead of rethrowing them, so a non-sync `@Cacheable` runs its method while Redis is down. Failed invalidations, and failures on other caches, still go to the previous handler. See [Spring Cache](./spring-cache.md#failures). |
-| `cocache.invalidate-fills-on-rollback` | boolean | `true` | Needs `spring-tx`. Keys that a synchronous read loaded inside a read-write transaction and wrote to Redis or L2 are invalidated when the transaction rolls back, its commit outcome is unknown, or it rolls back to a savepoint. See [Spring Cache](./spring-cache.md#transactional-loads). |
-| `cocache.fill-in-transaction` | `registered-keys` \| `private` \| `allow` | `registered-keys` | Needs `spring-tx`. Which loads inside a read-write transaction stay private (no lease, no write to Redis or L2, not shared): keys already registered for invalidation in the transaction, every load, or none. Applies to every cache. See [Spring Cache](./spring-cache.md#transactional-loads). |
 | `cocache.refresh-executor` | bean name | built-in | The `Executor` bean that runs [refresh-ahead](./freshness.md#refresh-ahead) loads. See [Executors](#executors). |
 | `cocache.executor` | bean name | built-in | The `Executor` bean that runs the [async](./async.md) and [suspending](./coroutines.md) views: their continuations, shared loads, and synchronous loaders called through them. See [Executors](#executors). |
 | `management.health.cocache.enabled` | boolean | `true` | Registers the `cocache` health indicator ([below](#actuator)) |
@@ -114,6 +114,8 @@ These keys work under `cocache.defaults.cache.`, `cocache.defaults.store.`, `coc
 | `local-maximum-size` | integer | `10000` | `@CaffeineCache.maximumSize` | Maximum L2 entries per instance |
 | `invalidate-failure` | `retry` \| `throw` | `retry` | — | A failed `Cache.invalidate`: queue for background retry, or throw `CacheWriteException`. Deleting a derived copy is always safe, so the default retries, externally sourced caches included. The authoritative types' deletes always throw and are never retried. See [When Redis is down during a write](./freshness.md#redis-down). |
 | `read-failure` | `degrade` \| `throw` | `degrade` | — | A failed Redis read that has a source (the declared loader or a per-call one): load from the source, or answer [`Lookup.Unknown`](./caches.md#unknown), so `get` throws `CacheReadException` |
+| `fill-in-transaction` | `registered-keys` \| `private` \| `allow` | `registered-keys` | — | Needs `spring-tx`. Which loads inside a read-write transaction stay private (no lease, no write to Redis or L2, not shared): keys already registered for invalidation in the transaction, every load, or none. See [Spring Cache](./spring-cache.md#transactional-loads). |
+| `invalidate-fills-on-rollback` | boolean | `true` | — | Needs `spring-tx`. Keys that a synchronous read loaded inside a read-write transaction and wrote to Redis or L2 are invalidated when the transaction rolls back, its commit outcome is unknown, or it rolls back to a savepoint. With this `false` and `fill-in-transaction: allow`, the cache's loads ignore transactions. |
 | `unknown-read` | `throw` \| `absent` | `throw` | — | `cocache.caches.[name]` only. A failed Redis read without a source: `throw` makes `get` throw `CacheReadException`; `absent` reads as not found and caches nothing. See [unknown reads](./caches.md#unknown). |
 | `key-prefix` | string | `cocache.key-prefix` | `@CoCache.keyPrefix` | `cocache.caches.[name]` only. This cache's storage-key prefix ([below](#key-prefix)). |
 | `unlock` | list of keys | — | — | `cocache.caches.[name]` only. Fields a library [locked](#locks) that this entry overrides on purpose. |
@@ -127,12 +129,12 @@ How a cache treats content it can't read isn't configurable: a read with a sourc
 | Key | `Cache` with a loader | `Cache`, externally sourced | `VersionedCache` | `Store` | `VersionedStore` | `SetStore` |
 |-----|:-:|:-:|:-:|:-:|:-:|:-:|
 | `ttl`, `ttl-jitter`, `absent-ttl`, `local-max-age`, `read-timeout`, `local-maximum-size` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `degraded-local-max-age`, `lease-ttl`, `lease-wait`, `load-max-concurrent`, `load-acquire-timeout`, `load-timeout`, `invalidate-failure`, `read-failure` | ✓ | ✓ | ✓ | — | — | — |
+| `degraded-local-max-age`, `lease-ttl`, `lease-wait`, `load-max-concurrent`, `load-acquire-timeout`, `load-timeout`, `invalidate-failure`, `read-failure`, `fill-in-transaction`, `invalidate-fills-on-rollback` | ✓ | ✓ | ✓ | — | — | — |
 | `refresh-window` | ✓ | — | ✓ | — | — | — |
 | `tombstone-ttl` | — | — | ✓ | — | ✓ | — |
 | `unknown-read` | — | ✓ | — | ✓ | ✓ | — |
 
-An externally sourced `Cache` has no source to refresh from, but its reads with a per-call loader (`get(key, loader)`, Spring Cache `sync = true`) load, so the lease, load and `read-failure` keys apply to them. The authoritative types have no source at all. A `SetStore` always throws on a failed read, so it has no `unknown-read`.
+An externally sourced `Cache` has no source to refresh from, but its reads with a per-call loader (`get(key, loader)`, Spring Cache `sync = true`) load, so the lease, load, `read-failure` and transaction keys apply to them. The authoritative types have no source at all. A `SetStore` always throws on a failed read, so it has no `unknown-read`.
 
 ### Durations and sentinels {#durations}
 
@@ -312,7 +314,7 @@ With `spring-boot-starter-actuator` on the classpath:
 
 | Feature | Switch | Notes |
 |---------|--------|-------|
-| `cocache` endpoint | `management.endpoints.web.exposure.include=cocache`; access via `management.endpoint.cocache.access` | Lists caches with their effective policy and counters, inspects and invalidates single keys |
+| `cocache` endpoint | `management.endpoints.web.exposure.include=cocache`; access via `management.endpoint.cocache.access` | Lists caches with their effective policy and counters, inspects and invalidates single keys, and broadcasts an invalidation for one key without touching Redis |
 | Per-key deletes of the only copy | `management.endpoint.cocache.allow-store-delete` (default `false`): `Store`, `SetStore`; `management.endpoint.cocache.allow-purge` (default `false`): `VersionedStore`, and `?purge=true` on a `VersionedCache` | Without the switch these return `403` and change nothing ([Observability](/operations/observability#invalidate-key)) |
 | `cocache` health indicator | `management.health.cocache.enabled` (default `true`) | `DOWN` only while the Redis invalidation heartbeat fails |
 | Micrometer meters `cocache.*` | Micrometer on the classpath | Tagged by `cache` |
@@ -338,7 +340,7 @@ Every layered cache reports where each of its fields came from:
 | `LOCKED` | Locked by a library (`locked by …`), or changed by its constraint (`constrained by …`) |
 | `UNLOCKED` | Set by `cocache.caches.[name]` over a lock, listed in `unlock` |
 
-Sentinels read `forever`, `off` and `unlimited`, modes are lowercase, and durations use ISO-8601 (`PT10M`). An unlayered cache has an empty `policy`.
+Sentinels read `forever`, `off` and `unlimited`, modes are lowercase, and durations use ISO-8601 (`PT10M`). With `spring-tx` on the classpath, a `Cache` or `VersionedCache` also lists `invalidate-fills-on-rollback` and `fill-in-transaction` after its policy fields. They aren't policy fields and have no declaration layer, but the global and per-cache layers merge them the same way. An unlayered cache has an empty `policy` and uses the type defaults of both transaction modes.
 
 ## Startup validation {#validation}
 

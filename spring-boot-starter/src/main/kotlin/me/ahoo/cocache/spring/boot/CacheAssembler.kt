@@ -34,6 +34,7 @@ import org.springframework.beans.factory.SmartInitializingSingleton
  * 所有单例创建完成后校验配置文件中的缓存名：未声明的名称按 `cocache.caches-validation` 启动失败（默认）或告警（多半是拼写错误）。
  * 缓存名不区分大小写（环境变量绑定的 key 是小写）；“已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供。
  * 指向未分层的缓存（直接经 `CacheRuntime.create` 创建，S20）的条目总是只告警（[UnlayeredConfigurationCheck]）。
+ * 写事务内回源的两个机制按缓存的生效值登记到 `fillModes`（有 spring-tx、使用 starter 的回源钩子时）。
  *
  * 内部实现（starter 接线使用），不在兼容性承诺之内。
  */
@@ -42,8 +43,9 @@ class CacheAssembler(
     customizers: List<CacheSpecCustomizer>,
     private val properties: CoCacheProperties,
     private val declaredCacheNames: () -> Set<String> = { emptySet() },
+    fillModes: TransactionalFillModes? = null,
 ) : CacheLayers, SmartInitializingSingleton {
-    private val layering = PolicyLayering(properties, customizers)
+    private val layering = PolicyLayering(properties, customizers, fillModes)
 
     override fun <K : Any, V : Any> apply(spec: CacheSpec<K, V>, locks: Locks): Layered<CacheSpec<K, V>> =
         withCacheName(spec.name) { layering.layer(spec, locks, CacheSpecAdapter()) }

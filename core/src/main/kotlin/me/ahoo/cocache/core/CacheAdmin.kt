@@ -77,6 +77,18 @@ interface CacheAdmin {
     fun invalidateEncoded(encodedKey: String)
 
     /**
+     * 按编码后的 key 只广播失效帧，不修改 L1（RFC 0005 §4.9 运维入口）：本节点递增这个 key 的失效戳并淘汰 L2，其它节点收到帧后同样处理，
+     * 之后各自从 L1 重新填充。不删除唯一副本，也不动版本栅栏，因此对任何类型都安全，不需要开关。它是 [ExternalInvalidator.broadcast]
+     * 的运维对应物：用于 L1 已经是正确内容、只有各节点的 L2 可能陈旧的场合，例如外部工具直接改写了 L1。
+     *
+     * 投递至多一次，与缓存自己的广播相同：发布失败时抛出（调用是幂等的，可以重试）；帧丢失时其它节点的 L2 陈旧到 `localMaxAge`
+     * 或下一次订阅重置。
+     *
+     * @param encodedKey 编码后的 key（不含 `{keyPrefix}{namespace}:`）
+     */
+    fun broadcastEncoded(encodedKey: String)
+
+    /**
      * [invalidateEncoded] 对这个缓存做什么。运维入口据此决定按 key 删除是否需要显式开关（RFC 0005 §4.9 运维入口）。
      */
     val keyDeletion: KeyDeletion

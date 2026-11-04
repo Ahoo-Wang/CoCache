@@ -95,7 +95,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 - **带版本的缓存提前刷新。** 全局的 `refresh-window` 现在作用于 `VersionedCache`；写入方推送每一个版本时，在声明中写 `refreshWindow = off()`。
 - **权威类型在 L2 中保留副本的时间更短**：默认 `local-max-age` 30 秒、`absent-ttl` 10 秒。
 - **挂起的调用级 loader 在这次加载之中执行**：它在调用方线程上开始，在 CoCache 的执行器上继续，`load-timeout` 会取消它（见[协程](./coroutines.md#loader)）。
-- **Spring 事务关注加载。** 回滚让事务加载的内容失效，事务中驱逐过的 key 在该事务内私有加载。`cocache.invalidate-fills-on-rollback: false` 与 `cocache.fill-in-transaction: allow` 分别关闭这两项（见[事务内的回源](./spring-cache.md#transactional-loads)）。
+- **Spring 事务关注加载。** 回滚让事务加载的内容失效，事务中驱逐过的 key 在该事务内私有加载。`cocache.defaults.cache`（或 `cocache.caches.[name]`，只作用于这个缓存）下的 `invalidate-fills-on-rollback: false` 与 `fill-in-transaction: allow` 分别关闭这两项（见[事务内的回源](./spring-cache.md#transactional-loads)）。
 - **Spring Cache 的读取在 `Unknown` 时失败。** Redis 故障时，非 sync 的 `@Cacheable` 与外部来源缓存上的 `retrieve(key)` 把 `CacheReadException` 交给 `CacheErrorHandler`；`cocache.spring-cache.degrade-on-error: true` 让它们改为执行方法（见 [Redis 故障时](./spring-cache.md#failures)）。指向 `Cache` 之外的缓存的缓存操作让启动失败。
 - **端点默认不删除唯一副本。** `Store`、`SetStore` 或 `VersionedStore` 上的按 key `DELETE` 返回 `403`，直到设置了 `management.endpoint.cocache.allow-store-delete` 或 `allow-purge`。在 `VersionedCache` 上它是一次 `evict`。
 - **被中断的阻塞调用等待它的 Redis 命令**（至多一个 `command-timeout`），不再立即失败，并保留中断标志。
@@ -120,7 +120,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | — | `cocache.redis.assume-maxmemory-policy` | 新增：读不到 `INFO memory` 时假定的策略 |
 | `cocache.spring-cache.retrieve-executor` | 删除 | `retrieve` 使用异步视图 |
 | `cocache.async-executor`、`cocache.blocking-executor` | `cocache.executor` | 异步与挂起视图的每一步及其阻塞 loader 共用一个执行器，它必须容得下阻塞的任务。不设置时每个任务一个虚拟线程 |
-| — | `cocache.invalidate-fills-on-rollback`、`cocache.fill-in-transaction`、`cocache.spring-cache.degrade-on-error` | 新增的 Spring 设置 |
+| — | `invalidate-fills-on-rollback`、`fill-in-transaction`（在 `cocache.defaults.cache`、`cocache.overrides.cache` 与 `cocache.caches.[name]` 下）、`cocache.spring-cache.degrade-on-error` | 新增的 Spring 设置 |
 | — | `management.endpoint.cocache.allow-store-delete`、`management.endpoint.cocache.allow-purge` | 新增的端点开关，默认关闭 |
 
 [配置参考](./configuration.md)描述 8.x 的每个配置项，[生效值与来源](./configuration.md#policy-report)按缓存给出每个值来自哪里：升级之后检查一遍。
