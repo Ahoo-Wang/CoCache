@@ -297,13 +297,6 @@ class SyncInterruptTest {
     private object PassThroughObserver : LoadObserver {
         override fun <T> observe(cacheName: String, operation: LoadOperation, keyCount: Int, block: Supplier<T>): T =
             block.get()
-
-        override fun <T> observeAsync(
-            cacheName: String,
-            operation: LoadOperation,
-            keyCount: Int,
-            block: Supplier<CompletableFuture<T>>
-        ): CompletableFuture<T> = block.get()
     }
 
     private companion object {

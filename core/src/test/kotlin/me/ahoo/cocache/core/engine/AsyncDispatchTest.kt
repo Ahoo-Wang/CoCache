@@ -35,16 +35,14 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * 异步视图每次操作派发到执行器的次数（docs/investigations/async-8t-gap.md）：只在上一步于执行器之外（I/O 线程、阻塞执行器、
- * 用户的线程）完成时派发；上一步已在执行器派发的续接中完成时就地执行。
+ * 异步视图的续接经运行时的执行器派发（RFC 0005 §4.4、§5）：每个在执行器之外（I/O 线程、数据源的线程）完成的步骤都派发一次，
+ * 调用方的回调从不在 L1 客户端的 I/O 线程或数据源的线程上执行；同步数据源在同一个执行器上执行。6.x 的就地续接已删除。
  */
 class AsyncDispatchTest {
     private val io = Executors.newSingleThreadExecutor { Thread(it, "test-io").apply { isDaemon = true } }
-    private val asyncPool = Executors.newFixedThreadPool(2) { Thread(it, "test-async").apply { isDaemon = true } }
-    private val blockingPool = Executors.newCachedThreadPool { Thread(it, "test-blocking").apply { isDaemon = true } }
+    private val pool = Executors.newCachedThreadPool { Thread(it, "test-exec").apply { isDaemon = true } }
     private val sourcePool = Executors.newSingleThreadExecutor { Thread(it, "test-source").apply { isDaemon = true } }
     private val dispatches = AtomicInteger()
-    private val blockingDispatches = AtomicInteger()
     private val gate = AtomicReference(CountDownLatch(0))
     private val backend = HookedBackend(InMemoryBackend()).apply {
         // L1 的结果在“I/O 线程”上、且只在闸门打开之后送达：调用返回时结果一定尚未完成
@@ -56,24 +54,18 @@ class AsyncDispatchTest {
             }
         }
     }
-    private val countingAsync = Executor { task ->
+    private val counting = Executor { task ->
         dispatches.incrementAndGet()
-        asyncPool.execute(task)
+        pool.execute(task)
     }
-    private val countingBlocking = Executor { task ->
-        blockingDispatches.incrementAndGet()
-        blockingPool.execute(task)
-    }
-    private val runtime = CacheRuntime.builder().backend(backend)
-        .asyncExecutor(countingAsync)
-        .blockingExecutor(countingBlocking)
-        .build()
+    private val runtime = CacheRuntime.builder().backend(backend).executor(counting).build()
+    private val loadedOn = AtomicReference<String>()
 
     @AfterEach
     fun close() {
         runtime.close()
         backend.close()
-        listOf(io, asyncPool, blockingPool, sourcePool).forEach { it.shutdownNow() }
+        listOf(io, pool, sourcePool).forEach { it.shutdownNow() }
     }
 
     private fun cache(name: String, async: Boolean = false): Cache<String, String> = runtime.create(
@@ -82,20 +74,21 @@ class AsyncDispatchTest {
             if (async) {
                 asyncLoader = AsyncCacheLoader { key -> CompletableFuture.supplyAsync({ "v-$key" }, sourcePool) }
             } else {
-                loader = CacheLoader { key -> "v-$key" }
+                loader = CacheLoader { key ->
+                    loadedOn.set(Concurrency.currentThreadName())
+                    "v-$key"
+                }
             }
         }
     )
 
     /**
-     * 发起 [call]，在 L1 送达之前登记一个用户回调，再放行；返回结果、回调所在线程，以及这次操作的派发次数（异步执行器, 阻塞执行器）。
-     * 只有第一个 L1 结果被闸门挡住，之后的结果（fill）可能在续接登记之前就已送达。
+     * 发起 [call]，在 L1 送达之前登记一个用户回调，再放行；返回结果、回调所在线程，以及这次操作派发到执行器的次数。
      */
-    private fun <T> measure(call: () -> CompletableFuture<T>): Triple<T, String, Pair<Int, Int>> {
+    private fun <T> measure(call: () -> CompletableFuture<T>): Triple<T, String, Int> {
         val opened = CountDownLatch(1)
         gate.set(opened)
         dispatches.set(0)
-        blockingDispatches.set(0)
         val future = call()
         val completedOn = CompletableFuture<String>()
         future.whenComplete { _, _ -> completedOn.complete(Concurrency.currentThreadName()) }
@@ -104,7 +97,7 @@ class AsyncDispatchTest {
         val thread = completedOn.get(10, TimeUnit.SECONDS)
         val value = future.get(10, TimeUnit.SECONDS)
         gate.set(CountDownLatch(0))
-        return Triple(value, thread, dispatches.get() to blockingDispatches.get())
+        return Triple(value, thread, dispatches.get())
     }
 
     @Test
@@ -114,49 +107,47 @@ class AsyncDispatchTest {
         cache.put("k", "v")
         val (value, completedOn, counts) = measure { cache.async().get("k") }
         value.assert().isEqualTo("v")
-        completedOn.assert().isEqualTo("test-async")
-        counts.assert().isEqualTo(1 to 0)
+        completedOn.assert().isEqualTo("test-exec")
+        counts.assert().isEqualTo(1)
         // 已填充 L2：命中不派发
-        measure { cache.async().get("k") }.third.assert().isEqualTo(0 to 0)
+        measure { cache.async().get("k") }.third.assert().isEqualTo(0)
     }
 
     @Test
-    fun missWithBlockingLoaderDispatchesAfterEachForeignCompletion() {
+    fun missWithBlockingLoaderRunsTheLoaderOnTheExecutor() {
         val cache = cache("miss-blocking")
         val (value, completedOn, counts) = measure { cache.async().get("k") }
         value.assert().isEqualTo("v-k")
-        completedOn.assert().isEqualTo("test-async")
-        // 至多在 L1 读、阻塞执行器上的 loader、fill 之后各一次（loader 或 fill 的结果在续接登记之前送达时就地执行，不派发）；
-        // 读结果被闸门挡住，所以至少一次。改动之前每一级都派发，至少 4 次
-        counts.first.assert().isBetween(1, 3)
-        counts.second.assert().isEqualTo(1)
+        completedOn.assert().isEqualTo("test-exec")
+        loadedOn.get().assert().isEqualTo("test-exec")
+        // L1 读之后、loader（在执行器上执行）、loader 完成之后、fill 之后各一次
+        counts.assert().isEqualTo(4)
     }
 
     @Test
-    fun missWithAsyncLoaderDispatchesAfterEachForeignCompletion() {
+    fun missWithAsyncLoaderNeverContinuesOnTheSourceThread() {
         val cache = cache("miss-async", async = true)
         val (value, completedOn, counts) = measure { cache.async().get("k") }
         value.assert().isEqualTo("v-k")
-        completedOn.assert().isEqualTo("test-async")
-        // 至多在 L1 读、数据源自己的线程、fill 之后各一次
-        counts.first.assert().isBetween(1, 3)
-        counts.second.assert().isEqualTo(0)
+        completedOn.assert().isEqualTo("test-exec")
+        // L1 读之后、数据源自己的线程完成之后、fill 之后各一次
+        counts.assert().isEqualTo(3)
     }
 
     @Test
     fun writesDispatchOnce() {
         val cache = cache("write")
         val (_, putOn, putCounts) = measure { cache.async().put("k", "v") }
-        putOn.assert().isEqualTo("test-async")
-        putCounts.assert().isEqualTo(1 to 0)
+        putOn.assert().isEqualTo("test-exec")
+        putCounts.assert().isEqualTo(1)
         val (_, invalidateOn, invalidateCounts) = measure { cache.async().invalidate("k") }
-        invalidateOn.assert().isEqualTo("test-async")
-        invalidateCounts.assert().isEqualTo(1 to 0)
+        invalidateOn.assert().isEqualTo("test-exec")
+        invalidateCounts.assert().isEqualTo(1)
     }
 
     /**
-     * 数据源在执行器的续接里被调用（带内联标记），并在 `loading(A)` 作用域内同步完成另一个 key（B）的数据源 future：
-     * B 的续接不能在 A 的作用域内就地执行，否则 B 的回调再读 A 会被误判为同一线程的重入（6.4.0 派发出去，正常合并到 A）。
+     * 数据源在执行器的续接里被调用，并在 `loading(A)` 作用域内同步完成另一个 key（B）的数据源 future：
+     * B 的续接不能在 A 的作用域内就地执行，否则 B 的回调再读 A 会被误判为同一线程的重入（续接总是派发，正常合并到 A）。
      */
     @Test
     fun continuationsCompletedInsideALoaderAreNotInlinedIntoItsLoadingScope() {
@@ -193,8 +184,8 @@ class AsyncDispatchTest {
     }
 
     /**
-     * 用户代码在异步执行器的续接里（带内联标记）调用同步 API：同步未命中 K 时，K 的 leader 在归还回源许可时唤醒 B 的异步等待者。
-     * B 的续接不能在 K 的 owner 作用域内就地执行，否则 B 的回调再读 K 会被误判为同一线程的重入（6.4.0 派发出去，正常合并到 K）。
+     * 用户代码在执行器的续接里调用同步 API：同步未命中 K 时，K 的 leader 在归还回源许可时唤醒 B 的异步等待者。
+     * B 的续接不能在 K 的 owner 作用域内就地执行，否则 B 的回调再读 K 会被误判为同一线程的重入（续接总是派发，正常合并到 K）。
      */
     @Test
     fun continuationsWokenBySyncLeaderAreNotInlinedIntoItsOwnerScope() {

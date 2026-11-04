@@ -61,6 +61,7 @@ import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.LoadingKeys
 import me.ahoo.cocache.core.internal.awaitOriginal
 import me.ahoo.cocache.core.internal.awaitUncancellable
+import me.ahoo.cocache.core.internal.joinOriginal
 import me.ahoo.cocache.core.internal.ensureNotInterrupted
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.runsInline
@@ -1084,7 +1085,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             } else {
                 CompletableFuture.supplyAsync(
                     { flights.loading(storageKeys) { blocking(source.loader) } },
-                    context.async.blocking
+                    context.async.executor
                 )
                     .awaitOriginal()
             }
@@ -1148,11 +1149,12 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 协程核心的回源观测：默认的 [LoadObserver.NOOP] 直接执行。同步变体经 [LoadObserver.observe]（在调用方线程上），
-     * 异步变体经 [LoadObserver.observeAsync]（从调用 block 到它完成）。
-     *
-     * 同步变体中调用方线程已被中断时不再调用观测器与 block 中的数据源（[ensureNotInterrupted]，RFC 0005 §4.3）：
-     * 观测在嵌套的 `runSync` 中执行，外层协程的取消不会传到那里。
+     * 协程核心的回源观测：默认的 [LoadObserver.NOOP] 直接执行。观测器只有同步的 [LoadObserver.observe]（RFC 0005 §5）：
+     * - 同步变体在调用方线程上调用它。调用方线程已被中断时不再调用观测器与 block 中的数据源（[ensureNotInterrupted]，RFC 0005 §4.3）：
+     *   观测在嵌套的 `runSync` 中执行，外层协程的取消不会传到那里。
+     * - 异步与挂起变体在运行时的执行器上调用它（默认一个虚拟线程，从不占用调用方线程），这个线程在观测期间等待 block 结束。
+     *   block 在运行时作用域中、从这个线程上开始执行：第一次挂起之前的部分（如调用数据源）看得到观测器设置的线程局部状态
+     *   （Micrometer 的当前观测），运行时关闭时随作用域取消。
      */
     private suspend fun <R> observedLoad(operation: LoadOperation, keyCount: Int, block: suspend () -> R): R {
         ensureNotInterrupted()
@@ -1170,9 +1172,15 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         //   交回之后，调用方在之后的挂起点被取消，持有令牌的步骤据此释放它
         val produced = Produced<R>()
         return try {
-            observer.observeAsync(name, operation, keyCount) {
-                scope.future(caller, CoroutineStart.UNDISPATCHED) { block().also { produced.value = it } }
-            }.awaitUncancellable()
+            CompletableFuture.supplyAsync(
+                {
+                    observer.observe(name, operation, keyCount) {
+                        scope.future(caller, CoroutineStart.UNDISPATCHED) { block().also { produced.value = it } }
+                            .joinOriginal()
+                    }
+                },
+                context.async.executor
+            ).awaitUncancellable()
         } catch (e: CancellationException) {
             if (produced.isSet) produced.get() else throw e
         }

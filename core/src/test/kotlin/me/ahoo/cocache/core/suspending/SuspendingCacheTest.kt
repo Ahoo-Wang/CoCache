@@ -297,7 +297,7 @@ class SuspendingCacheTest {
             thread.set(Concurrency.currentThreadName())
             "e"
         }
-        thread.get().assert().startsWith("cocache-async-")
+        thread.get().assert().startsWith("cocache-worker-")
         // loader 的 Job 不是调用方 Job 的子 Job
         requireNotNull(loaderJob.get()).assert().isNotSameAs(callerJob)
         callerJob?.children?.toList().orEmpty().assert().doesNotContain(loaderJob.get())
@@ -533,7 +533,7 @@ class SuspendingCacheTest {
             kotlin.coroutines.Continuation(kotlin.coroutines.EmptyCoroutineContext) { result.complete(it.getOrThrow()) }
         )
         result.get(10, java.util.concurrent.TimeUnit.SECONDS).assert().isEqualTo("v")
-        thread.get().assert().startsWith("cocache-async-")
+        thread.get().assert().startsWith("cocache-worker-")
     }
 
     @Test

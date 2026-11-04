@@ -45,18 +45,7 @@
       ]
     },
     {
-      "name": "cocache.async-executor",
-      "providers": [
-        {
-          "name": "spring-bean-reference",
-          "parameters": {
-            "target": "java.util.concurrent.Executor"
-          }
-        }
-      ]
-    },
-    {
-      "name": "cocache.blocking-executor",
+      "name": "cocache.executor",
       "providers": [
         {
           "name": "spring-bean-reference",

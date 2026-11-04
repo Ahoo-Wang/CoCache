@@ -143,10 +143,7 @@ class CoCacheAutoConfiguration {
         properties.refreshExecutor?.let {
             builder.refreshExecutor(executorBean(beanFactory, REFRESH_EXECUTOR_PROPERTY, it))
         }
-        properties.asyncExecutor?.let { builder.asyncExecutor(executorBean(beanFactory, ASYNC_EXECUTOR_PROPERTY, it)) }
-        properties.blockingExecutor?.let {
-            builder.blockingExecutor(executorBean(beanFactory, BLOCKING_EXECUTOR_PROPERTY, it))
-        }
+        properties.executor?.let { builder.executor(executorBean(beanFactory, EXECUTOR_PROPERTY, it)) }
         return builder.build()
     }
 
@@ -299,8 +296,7 @@ class CoCacheAutoConfiguration {
         private val SIMPLE_ERROR_HANDLER = SimpleCacheErrorHandler()
         internal const val REFRESH_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.refresh-executor"
         internal const val LOCAL_HITS_PROPERTY = "${CoCacheProperties.PREFIX}.metrics.local-hits"
-        internal const val ASYNC_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.async-executor"
-        internal const val BLOCKING_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.blocking-executor"
+        internal const val EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.executor"
         internal const val RUNTIME_BEAN = "cocacheRuntime"
 
         /**

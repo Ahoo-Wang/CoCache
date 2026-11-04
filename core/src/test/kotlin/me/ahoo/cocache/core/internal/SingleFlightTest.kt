@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class SingleFlightTest {
     private val flights = SingleFlight<String, String>()
-    private val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
+    private val context = AsyncContext(ForkJoinPool.commonPool())
     private val scope = context.scope
 
     @AfterEach
@@ -355,7 +355,7 @@ class SingleFlightTest {
     @Test
     fun aFollowerRunsUnregisteredAfterJoiningTwoInterruptedLeaders() {
         val held = LinkedBlockingQueue<Runnable>()
-        val gated = AsyncContext({ held.add(it) }, ForkJoinPool.commonPool())
+        val gated = AsyncContext({ held.add(it) })
         try {
             fun interruptibleLeader(value: String): Concurrency.Forked<String> {
                 val started = CountDownLatch(1)

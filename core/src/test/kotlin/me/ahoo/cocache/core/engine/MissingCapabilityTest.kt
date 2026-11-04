@@ -45,7 +45,7 @@ class MissingCapabilityTest {
     private val memory = InMemoryBackend()
     private val backend = StrippedBackend(memory, conditional = false, versioned = false, sets = false)
     private val scheduler = Executors.newSingleThreadScheduledExecutor { Thread(it).apply { isDaemon = true } }
-    private val async = AsyncContext(DIRECT, DIRECT)
+    private val async = AsyncContext(DIRECT)
     private val context = EngineContext(
         NodeId.random(),
         CacheClock { System.currentTimeMillis() },

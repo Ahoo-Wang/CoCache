@@ -32,7 +32,7 @@ import kotlin.coroutines.ContinuationInterceptor
  */
 class SingleFlightCallerContextTest {
     private val flights = SingleFlight<String, String>()
-    private val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
+    private val context = AsyncContext(ForkJoinPool.commonPool())
     private val scope = context.scope
 
     @AfterEach

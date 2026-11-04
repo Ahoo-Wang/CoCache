@@ -68,8 +68,9 @@ class AsyncRuntimeTest {
         val completedOn = CompletableFuture<String>()
         cache.async().get("k").whenComplete { _, _ -> completedOn.complete(Concurrency.currentThreadName()) }
             .get(10, TimeUnit.SECONDS).assert().isEqualTo("k")
-        // 同步数据源只在阻塞执行器上执行：默认每个任务一个虚拟线程
+        // 同步数据源在运行时的执行器上执行：默认每个任务一个虚拟线程
         loadedOn.join().isVirtual.assert().isTrue()
+        loadedOn.join().name.assert().startsWith(CacheRuntime.WORKER_THREAD_PREFIX)
         runtime.close()
         // 关闭后自建的执行器停止：异步加载以拒绝失败
         cache.async().get("other").handle { _, e -> e }.get(10, TimeUnit.SECONDS)
@@ -77,13 +78,11 @@ class AsyncRuntimeTest {
     }
 
     @Test
-    fun providedExecutorsAreUsedAndNotClosed() {
-        val async = Executors.newSingleThreadExecutor { Thread(it, "mine-async") }
-        val blocking = Executors.newSingleThreadExecutor { Thread(it, "mine-blocking") }
+    fun providedExecutorIsUsedAndNotClosed() {
+        val executor = Executors.newCachedThreadPool { Thread(it, "mine") }
         try {
-            val runtime = CacheRuntime.builder().backend(
-                InMemoryBackend()
-            ).asyncExecutor(async).blockingExecutor(blocking).build()
+            val runtime = CacheRuntime.builder().backend(InMemoryBackend()).executor(executor).build()
+            runtime.executor.assert().isSameAs(executor)
             val loadedOn = CompletableFuture<String>()
             val cache = runtime.create(
                 spec {
@@ -94,13 +93,11 @@ class AsyncRuntimeTest {
                 }
             )
             cache.async().get("k").get(10, TimeUnit.SECONDS).assert().isEqualTo("k")
-            loadedOn.join().assert().isEqualTo("mine-blocking")
+            loadedOn.join().assert().isEqualTo("mine")
             runtime.close()
-            async.isShutdown.assert().isFalse()
-            blocking.isShutdown.assert().isFalse()
+            executor.isShutdown.assert().isFalse()
         } finally {
-            async.shutdownNow()
-            blocking.shutdownNow()
+            executor.shutdownNow()
         }
     }
 

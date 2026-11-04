@@ -312,7 +312,7 @@ class CoherentEngineLincheckTest {
                 RetryPolicy()
             ),
             LoadObserver.NOOP,
-            AsyncContext(DIRECT, DIRECT),
+            AsyncContext(DIRECT),
             ticker = Ticker { 0L },
         )
     }

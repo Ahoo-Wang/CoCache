@@ -99,17 +99,11 @@ data class CoCacheProperties @ConstructorBinding constructor(
      */
     val refreshExecutor: String?,
     /**
-     * 异步视图（`cache.async()`，RFC 0004）续接所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析）；
-     * 只承载短小的非阻塞工作。未设置时运行时自建 `ForkJoinPool`（并行度为 CPU 数，`cocache-async-*`）。
-     * bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
+     * 运行时执行器（阻塞调度器，RFC 0005 §4.4、§5）所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析）：
+     * 异步与挂起视图的续接、共享加载、异步路径上的同步数据源与回源观测都在这里执行，因此它必须容得下阻塞的任务，不应排队。
+     * 未设置时每个任务一个虚拟线程（`cocache-worker-*`）。bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
      */
-    val asyncExecutor: String? = null,
-    /**
-     * 异步视图上同步数据源所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析），不应排队。
-     * 未设置时每个任务一个虚拟线程。
-     * bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
-     */
-    val blockingExecutor: String? = null,
+    val executor: String? = null,
     /**
      * 回滚时失效写事务内的填充（RFC 0005 §4.9 机制 1，默认开启；需要 spring-tx）：非只读的实际事务内，同步读取的数据源产生、
      * 写入 L1 或 L2 的 key，在事务回滚、提交结果未知或回滚到 savepoint 时失效。代价只在回滚时出现。

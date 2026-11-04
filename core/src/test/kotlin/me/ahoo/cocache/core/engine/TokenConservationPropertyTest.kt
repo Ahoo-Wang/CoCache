@@ -22,8 +22,6 @@ import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
-import me.ahoo.cocache.core.LoadObserver
-import me.ahoo.cocache.core.LoadOperation
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
@@ -41,7 +39,6 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
-import java.util.function.Supplier
 import kotlin.random.Random
 
 /**
@@ -112,8 +109,8 @@ class TokenConservationPropertyTest {
     }
 
     /**
-     * 等待其它节点 lease 的重读为本调用取得了 lease，随即关闭运行时：有观测器时等待 lease 在运行时作用域的另一个协程中进行，
-     * 调用方也不可取消地等待它，lease 被释放。
+     * 等待其它节点 lease 的重读为本调用取得了 lease，随即关闭运行时：重读不可取消地完成，lease 被释放。
+     * 有观测器时的同一情形见 `AsyncLoadObserverTest`：观测在运行时的执行器上阻塞等待回源，单线程手动推进的执行器无法驱动它。
      */
     @Test
     fun aLeaseWaitRereadThatGrantsTheLeaseIsReleasedAfterClose() {
@@ -122,7 +119,6 @@ class TokenConservationPropertyTest {
                 seed = 0,
                 nodes = 2,
                 asyncSource = true,
-                observed = true,
                 leaseWait = Duration.ofSeconds(10),
                 versioned = false
             )
@@ -168,30 +164,10 @@ class TokenConservationPropertyTest {
         }
     }
 
-    /**
-     * 不做任何事的观测器（不是 [LoadObserver.NOOP]）：让引擎经观测路径（在运行时作用域中另起协程）回源与等待 lease。
-     */
-    private object PassThroughObserver : LoadObserver {
-        override fun <T> observe(
-            cacheName: String,
-            operation: LoadOperation,
-            keyCount: Int,
-            block: Supplier<T>
-        ): T = block.get()
-
-        override fun <T> observeAsync(
-            cacheName: String,
-            operation: LoadOperation,
-            keyCount: Int,
-            block: Supplier<CompletableFuture<T>>
-        ): CompletableFuture<T> = block.get()
-    }
-
     private class Scenario(
         private val seed: Long,
         nodes: Int = NODES,
         asyncSource: Boolean? = null,
-        observed: Boolean? = null,
         leaseWait: Duration = Duration.ZERO,
         versioned: Boolean? = null,
     ) {
@@ -204,7 +180,6 @@ class TokenConservationPropertyTest {
         val loads = ArrayList<Pair<String, CompletableFuture<String?>>>()
         private val calls = ArrayList<Pair<String, CompletableFuture<*>>>()
         private val asyncSource = asyncSource ?: random.nextBoolean()
-        private val observed = observed ?: random.nextBoolean()
         private val versioned = versioned ?: random.nextBoolean()
         private var loaded = 0
 
@@ -217,10 +192,8 @@ class TokenConservationPropertyTest {
             CacheRuntime.builder()
                 .backend(backend.view(node))
                 .clock(clock)
-                .asyncExecutor(executor)
-                .blockingExecutor(executor)
+                .executor(executor)
                 .apply {
-                    if (this@Scenario.observed) loadObserver(PassThroughObserver)
                     // 任务与命令由关闭运行时的测试线程推进：关闭不等待，之后由 drain 排空
                     drainTimeout = Duration.ZERO
                 }
