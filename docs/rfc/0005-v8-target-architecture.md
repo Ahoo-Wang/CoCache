@@ -21,6 +21,7 @@
     4. **协程核心**：挂起变体的元素取自调用方、调度器取自运行时；重入守卫在 `ThreadLocal` 之上增加上下文元素；同步 leader 内联执行（§4.4）。
     5. **拷贝工具**：以 8.x 的 spec 为输入，转换表写全，增加 follow 模式与双向失效中继；写入方切到 8.x 之后不能回退（§8）。
     6. **配置与 Spring**：overrides 只收紧陈旧界限；事务上下文在调用入口捕获，记录进入任何共享层的 key（§4.8、§4.9）。
+  - 2026-11-03，M4 期间：维护者决定**不考虑兼容、不背历史债务**（§12）：不提供迁移工具，6.x 与 8.x 不共存，升级之后有数据源的缓存回源重建；布局去掉版本标记 `v8:`；格式 1 与格式 0 一样按读不懂处理；不检测 6.x 的配置键；删除只为旧版本保留的代码与注释（§4.7、§4.8、§5、§8）。
   - 目标版本由维护者指定为 **v8**。
 - 前提：v8 是大版本，API、SPI、配置项、线格式与 key、频道布局都重新设计；但三个目标（[architecture.md](../architecture.md) §1 的 G1–G3）与 6.0 的核心协议（lease 栅栏、两次递增的失效戳、原子广播）**不变**。本 RFC 不推翻 [RFC 0003](0003-target-architecture.md)，而是修正它在 6.4–6.8 增量演进中暴露的结构性问题。
 - 关系：
@@ -44,12 +45,12 @@
 | V5 | **一份协程实现，三种变体**。协议只写一次，写成 `suspend` 函数。L2 命中在三种 API 中都是普通函数、内联返回；未命中与写入：同步变体在调用方线程上以 `runBlocking` 运行核心，loader 在调用方线程上执行；异步变体以 `future(start = UNDISPATCHED)` 运行，不占线程；挂起变体直接调用核心，元素取自调用方、调度器取自运行时。异步与挂起变体的共享加载在运行时的作用域中执行，调用方取消只结束它自己的等待，同步 leader 内联执行；取得令牌之后的步骤不可取消。flight 层逐 key 应用合并规则；注册超过 `load.timeout` 的 flight 被注销 | `CoherentEngine` 2405 行，同步与异步逐分支复制（C1、C7、C9）。协程让一份直线代码同时服务三种调用方：跟随者挂起在加载的 `Deferred` 上、不占线程；虚拟时间与测试调度器让多节点仿真可以确定性重放（§4.4、§4.10） |
 | V6 | **L2 填充在 key 锁内校验并写入，写后按身份复核**（Caffeine `compute` + `remove(k, entry)`） | 关闭 A.D4 对写入方与远端事件的窗口；Caffeine 的 `clear()` 看不到进行中的 `compute`，对重置要靠复核（C4） |
 | V7 | **失败路径与成功路径一样确定**。按客户端能观察到的事实，区分“确定未执行”与“结果未知”：超时、断线时被排空、等待被中断、被取消的写入都属于结果未知。结果未知的写入，安全只能来自顺序。补偿失效只用于失效失败模式为 `RETRY` 的派生缓存。令牌守恒覆盖 `fill` 与 `reclaim`，除确定未执行外的失败都释放令牌。等待有界，只有跟随者的等待可中断。刷新的触发率与命中率无关 | 已写出的命令照常执行（C5）；中断路径绕过了 #701（P5）；超时与写出无法在客户端区分（P8）；`fill` 失败不释放令牌（P13）；断线排空时 lease 留到 `lease.ttl`（K14） |
-| V8 | **线格式 2：唯一的格式，按需扩展的头部**。v8 不读写格式 1，读到它按更高格式处理。核心 36 字节布局沿用，标志位声明版本段（8 B）与摘要段（32 B 的 SHA-256，客户端计算、读取方校验）；bit 7 是可以整体跳过的 TLV 扩展区，权威写入带写入标识；新增状态 `E`。未知的必须理解的标志位等同于更高格式，读不懂的失效帧按 `onReset` 处理，供 8.x 内部演进。带摘要段的内容不授予令牌、不被回收。段、状态、扩展区、帧的演进规则、集合格式与 namespace 字符集在 M4 冻结。`fill` 不让版本后退，版本拒绝不污染 L2 | 6.8 把版本塞进令牌位置；`getIfChanged` 每次在 Lua 中计算 SHA-1（8 MB 约 20 ms）；格式不预留就会冻结整个 8.x（P6），丢弃读不懂的帧就是丢失效（K1）；SHA-1 已有可行的选择前缀碰撞，M4 之后会在 8.x 中固定多年（D1） |
+| V8 | **线格式 2：唯一的格式，按需扩展的头部**。v8 不读写格式 1，读到它与其它不是本协议写入的内容一样按读不懂处理。核心 36 字节布局沿用，标志位声明版本段（8 B）与摘要段（32 B 的 SHA-256，客户端计算、读取方校验）；bit 7 是可以整体跳过的 TLV 扩展区，权威写入带写入标识；新增状态 `E`。未知的必须理解的标志位等同于更高格式，读不懂的失效帧按 `onReset` 处理，供 8.x 内部演进。带摘要段的内容不授予令牌、不被回收。段、状态、扩展区、帧的演进规则、集合格式与 namespace 字符集在 M4 冻结。`fill` 不让版本后退，版本拒绝不污染 L2 | 6.8 把版本塞进令牌位置；`getIfChanged` 每次在 Lua 中计算 SHA-1（8 MB 约 20 ms）；格式不预留就会冻结整个 8.x（P6），丢弃读不懂的帧就是丢失效（K1）；SHA-1 已有可行的选择前缀碰撞，M4 之后会在 8.x 中固定多年（D1） |
 | V9 | **栅栏可被机器检验**：Lincheck（flight 层 + L2 + 失效戳，含 `suspend` 操作）、TLA+ 模型、以测试调度器与虚拟时间驱动的确定性多节点仿真 | TCK 的竞态用例只覆盖人想到的交错；两轮验证的大部分发现都需要搜索交错才能稳定复现 |
 | V10 | **配置分三层，字段级合并**：`defaults`（低于声明）→ 声明 → 定制器 → `overrides`（高于声明，只收紧：陈旧界限取上限，有严格序的模式字段取更严的值，其余字段不进 overrides）→ `caches.[name]`。全局层跳过不适用的字段与被锁定的字段，并记录下来；只有按缓存的层出现这类配置时才启动失败。字段有三态，哨兵值显式。时长必须带单位，注解仍按秒。库用 `CoCacheFactory` 装配；`lock` 可以锁定策略与存储布局、附加约束，`caches.[name].unlock` 是破窗开关。6.x 的配置键不保留别名，按规则检测，出现即启动失败 | 6.x 的 `defaults` 覆盖显式声明（M5），“设定”语义又会放宽更严的声明（U10、S10）；调小等待界限会放大事故中的回源（S9）；`lock` 撑不起 CoSec 的约束与存储布局（U2） |
 | V11 | **Spring**：<ul><li>写事务内进入任何共享层的 key，在事务回滚（含回滚到 savepoint）或结果未知时默认失效；事务上下文在调用入口捕获，异步与挂起变体不门控、不记录。</li><li>starter 以自己的事务装饰器取代 `TransactionAwareCacheManagerProxy`，`@CacheEvict` 经 `TransactionalInvalidator`，`evictIfPresent` 立即失效并登记。</li><li>写事务内、已登记失效的 key，其回源结果私有。</li><li>`Unknown` 在适配器中以 `CacheReadException` 交给 `CacheErrorHandler`，`afterCommit` 中的失败同样交给它。</li></ul> | loader 在调用方的事务内执行（A.T1）；只挡 L1 不够（C2）；一律拦截会让 L1 填不满（M7）；`registered-keys` 对 `@CacheEvict` 用户不起作用（U3）；只进 L2 的降级填充与回滚到 savepoint 不在记录里（S15、S6） |
 | V12 | **规范只写现行行为**：architecture.md 去掉版本叙述，不变量编号稳定（`I-n`）；§6 以对照表逐条标注 architecture.md §14 的“取代 / 修改 / 保留” | v1 只写了“其余不变量保留”，其中 6 条与本 RFC 冲突（C13）；v2 漏了第 21 条（P18） |
-| V13 | **与 6.x 物理隔离，权威数据由工具拷贝**。存储 key 在用户前缀之后带布局标记 `v8:`，频道为 `{keyPrefix}v8:inv:{namespace}`，namespace 不含 `:`；6.x 与 8.x 可以同时部署，互不读写。派生缓存在 8.x 上回源重建，共存期由失效中继转发两侧的失效；`Store` / `SetStore` 的唯一副本由 8.0 附带的离线工具拷贝：写入冻结后一次拷贝，或以 follow 模式跟随 6.x 的写入。写入方切到 8.x 之后不能回退 | 维护者决定不做运行时兼容。共用 key 时两个版本互相把对方的内容读作更高格式或读不懂的内容；只改默认前缀隔离不了沿用自定义前缀的部署。唯一副本没有源头可以重建，两个版本又不能装进同一个 JVM 双写（同一包名），不拷贝就会丢数据（CoSec 的撤销表）；撤销表由任何应用的登出写入，冻结不了（S1） |
+| V13 | **不兼容 6.x，不提供迁移工具**（维护者决定，2026-11-03）。存储 key 为 `{keyPrefix}{namespace}:{encodedKey}`，频道为 `{keyPrefix}inv:{namespace}`，namespace 不含 `:`，布局中没有版本标记；升级时停掉 6.x、删除没有数据源的缓存的旧 key，再启动 8.x，有数据源的缓存回源重建（§8） | 不背历史债务：8.x 读到 6.x 的内容按读不懂处理（派生缓存条件回收后回源，没有数据源的缓存 `FAIL`），不需要任何兼容代码。布局标记、拷贝工具与共存期的失效中继都只为一次升级存在，却要随 8.x 一直维护 |
 
 ---
 
@@ -63,7 +64,7 @@
 - **A10 失败路径也是协议**。超时、取消、拒绝、中断、崩溃之后，系统处于什么状态，要和成功、失败一样确定。
 - **A11 不变量要能被机器检验**。
 - **A12 “结果未知”不是失败**。已经写出的命令在任何时刻都可能生效，可能排在其它连接上更晚发出的写入之后。让迟到的执行无害的，只有顺序：令牌、版本、条件。而条件本身也有 ABA。
-- ~~A13 迁移的单位是共享 namespace 的应用群~~：v4 删除。8.x 与 6.x 物理隔离（V13），不共享 namespace；8.x 内部的格式演进仍遵守“新写入等到所有读者都能读懂之后才出现”（I-L）。
+- ~~A13 迁移的单位是共享 namespace 的应用群~~：v4 删除。8.x 不兼容 6.x，两者不共存（V13）；8.x 内部的格式演进仍遵守“新写入等到所有读者都能读懂之后才出现”（I-L）。
 - **A14 全局手段只能收紧，不能放宽**。运维在事故中改的一行全局配置，不应让声明了更严值的缓存变得更松，也不应让任何实例启动失败。
 
 ## 2. 现状审查（6.8.0，及 6.9.0 之后）
@@ -312,7 +313,7 @@ InvalidationChannel      publish(keyspace)（suspend）、subscribe(keyspace)（
 - **读取的截止时间**（D6，M3d）：`read` / `readAll` 增加可选的截止时间参数，存储以它与命令超时中较早的一个为限，超时之后照常释放令牌。引擎按缓存的读超时传入（上限为 `command-timeout`，M5 / M6），供不能降级回源、又要限制故障延迟的缓存使用：Redis 卡顿时，CoSec 的撤销检查每个请求最多多等它自己选的界限，而不是 2 s。参数随 M3d 的改名一起加，避免再改 SPI。后端级的快速失败（连续超时之后在冷却期内直接按“确定未执行”失败）涉及所有缓存的故障语义，8.x 另立 RFC。
 - **摘要**（D1）：`Digest` 改为载荷的 SHA-256（32 字节），带算法标识（如 `algorithm`），下游不再以 `.sha1` 一类的名字持有它；由客户端计算（`Digest.of(Envelope)`、`Digest.ofPayload(bytes)`），用于条件读写，读取方拿到载荷时重算校验（§4.7）。条件回收（`reclaim`）比较 SPI 自己的内容指纹类型（K12）：它属于公开的 SPI，但与用户的 `Digest` 是两个类型，算法（脚本中的 SHA-1）与用途（判断读不懂的内容是否仍是读到的那一份）都不同。
 - **keyspace 与段**（M4，架构会话 2026-11-03，由 §4.7 推出）：
-  - 频道带上前缀（§4.7）之后，后端要分别知道前缀与 namespace：`store`、`subscribe`、`publish` 收 SPI 的 `Keyspace(keyPrefix, namespace)`。它校验 namespace 的字符集，给出存储 key 的前缀 `{keyPrefix}v8:{namespace}:`；频道名由后端按 §4.7 的布局构造。namespace 按 keyspace 登记。
+  - 频道带上前缀（§4.7）之后，后端要分别知道前缀与 namespace：`store`、`subscribe`、`publish` 收 SPI 的 `Keyspace(keyPrefix, namespace)`。它校验 namespace 的字符集，给出存储 key 的前缀 `{keyPrefix}{namespace}:`；频道名由后端按 §4.7 的布局构造。namespace 按 keyspace 登记。
   - `Envelope.Scalar` 带写入标识与摘要：由引擎给出，存储按 §4.7 写成段，读取时原样返回；摘要的校验（K3）因此在引擎中，对所有后端相同。
   - 具体形状由 M4a–M4c 在 PR 中定稿（[todo.md](../todo.md) §2）。
 - **命名**（Q2，2026-11-02 确认）：
@@ -417,38 +418,36 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ### 4.7 线格式 2（V8）
 
-**key 与频道的布局**（V13）：
+**key 与频道的布局**（V13、D5、K9，M4 冻结）：
 
-| 用途 | 6.x | 8.x |
-|------|-----|-----|
-| 存储 key | `{keyPrefix}{namespace}:{encodedKey}` | `{keyPrefix}v8:{namespace}:{encodedKey}` |
-| 失效频道 | `cocache:inv:{namespace}` | `{keyPrefix}v8:inv:{namespace}` |
-| 探测 key / 频道（`pubsub` 模式） | `cocache:probe:{a}` / `cocache:probe:{b}` | `cocache:v8!probe:{a}` / `cocache:v8:probe:{b}` |
-| 元数据 key | 无 | `{keyPrefix}v8!meta:{namespace}`，只预留，8.0 不写（D4） |
+| 用途 | 8.x |
+|------|-----|
+| 存储 key | `{keyPrefix}{namespace}:{encodedKey}` |
+| 失效频道 | `{keyPrefix}inv:{namespace}` |
+| 探测 key / 频道（`pubsub` 模式） | `cocache:!probe:{a}` / `cocache:!probe:{b}` |
+| 元数据 key | `{keyPrefix}!meta:{namespace}`，只预留，8.0 不写（D4） |
 
-- 布局标记与用户前缀无关：沿用自定义 `key-prefix` 的部署同样与 6.x 隔离。
-- **频道名带上 key 前缀**（v5）：6.x 的频道只按 namespace 命名，前缀不同的两个应用只要 namespace 相同，就会收到彼此的失效帧。8.x 的频道带上前缀，各应用只收到自己的帧。
-- **布局标记与 namespace**（D5、K9，M4 冻结）：
-  - 标记沿用 `v8:`。标记中不得含 `{` `}`（会改变集群的 slot）与 glob 元字符（`*?[]\`）。
-  - 8.x 的 namespace 字符集为 `[A-Za-z0-9._-]+`，禁止 `:`。A.L4 中 `a` 与 `a:b` 的重叠因此不再可能，跨应用时也一样（`runtime.create` 的校验看不到别的应用）。
-  - 内部 key 放在 `{keyPrefix}v8!…`，namespace 产生不了这个位置：默认前缀下，namespace `probe` 或 `meta` 的存储 key 不会与它们相撞。
-  - 格式 1 的内容按更高格式处理（见“读不懂的内容”）：6.x 中名为 `v8` 或以 `v8:` 开头的 namespace 与 8.x 的布局相撞时，8.x 不会回收或覆盖 6.x 的值。
-  - 下游：namespace 含 `:` 的应用须把前缀移到 `keyPrefix`（CoSec 的全部 spec 用 `keyPrefix("")`、把前缀放在 namespace 中），拷贝工具支持源、目标布局不同（§8）。`keyPrefix` 为空时启动告警：标记出现在 key 的开头，ACL 与按前缀的运维都要相应修改（S4）。
-- 默认前缀仍是 `cocache:`，key 的 ACL 模式 `~cocache:*` 不变；频道的 ACL 改为 `&{keyPrefix}v8:inv:*`（默认即 `&cocache:v8:inv:*`），`pubsub` 模式另加 `&cocache:v8:probe:*`。`keyPrefix` 为空时，key 以 `v8:` 与 `v8!` 开头，频道为 `v8:inv:{namespace}`，ACL 写作 `~v8:*`、`~v8!*` 与 `&v8:inv:*`（S4）；探测 key 与探测频道是固定的、不随前缀变化，`pubsub` 模式下另加 `~cocache:v8!probe:*` 与 `&cocache:v8:probe:*`，否则原子广播的探测被拒绝、后端退回非原子广播并告警（M4a，#752）。
-- **按存储探测实际频道**（K8，M4）：原子广播的探测发布到固定的探测频道，它不代表带前缀的实际频道，ACL 是否放行实际频道因前缀而异。漏配时每个写脚本都在 `PUBLISH` 处报错，而 Redis 脚本出错不回滚，之前的 `SET` / `DEL` 已经生效，其它节点陈旧到 `localMaxAge`。所以 `store(namespace)` 创建时再向实际频道探测一次：以该前缀下的 key 为 `KEYS[1]`，发布一个零 key 的合法帧（监听者什么也不做）。ACL 拒绝时启动失败，不降级为非原子广播：这是配置错误，不是环境属性。运维文档的 ACL 段落同步修改。
-- `ExternalInvalidator` 与运维文档按新布局构造 key 与频道。
+- **频道名带上 key 前缀**（v5）：前缀不同、namespace 相同的两个应用各自只收到自己的帧。
+- **namespace 与内部 key**：
+  - namespace 的字符集为 `[A-Za-z0-9._-]+`，禁止 `:`。同一前缀下 `a` 与 `a:b` 的重叠（A.L4）因此不再可能，跨应用时也一样（`runtime.create` 的校验看不到别的应用）。
+  - 内部 key 放在 `{keyPrefix}!…`：`!` 不在 namespace 的字符集中，namespace 产生不了这个位置，默认前缀下 namespace `probe` 或 `meta` 的存储 key 不会与它们相撞。
+  - 布局中没有版本标记（维护者决定，2026-11-03）：内容的版本只由头部的格式号表达。
+  - namespace 含 `:` 的应用把前缀移到 `keyPrefix`（如 CoSec 的 spec 用 `keyPrefix("")`、把前缀放在 namespace 中）：存储 key 的字符串不变，频道变为 `{keyPrefix}inv:{namespace}`。`keyPrefix` 为空时启动告警：ACL 与按前缀的运维无法按前缀限定（S4）。
+- **ACL**：默认前缀下 key 为 `~cocache:*`，频道为 `&cocache:inv:*`，`pubsub` 模式另加 `&cocache:!probe:*`。一般地，频道为 `&{keyPrefix}inv:*`；探测 key 与探测频道固定，不随前缀变化。`keyPrefix` 为空时按 namespace 写出（`~{namespace}:*`、`&inv:{namespace}`），`pubsub` 模式另加 `~cocache:!probe:*` 与 `&cocache:!probe:*`；漏配探测时原子广播的探测被拒绝，后端退回非原子广播并告警（S4）。
+- **按存储探测实际频道**（K8，M4）：原子广播的探测发布到固定的探测频道，它不代表带前缀的实际频道，ACL 是否放行实际频道因前缀而异。漏配时每个写脚本都在 `PUBLISH` 处报错，而 Redis 脚本出错不回滚，之前的 `SET` / `DEL` 已经生效，其它节点陈旧到 `localMaxAge`。所以 `store(keyspace)` 创建时再向实际频道探测一次：以该前缀下的 key 为 `KEYS[1]`，发布一个零 key 的合法帧（监听者什么也不做）。ACL 拒绝时启动失败，不降级为非原子广播：这是配置错误，不是环境属性。运维文档的 ACL 段落同步修改。
+- `ExternalInvalidator` 与运维文档按这个布局构造 key 与频道。
 
 **头部**：
 
 | 偏移 | 长度 | 字段 |
 |------|------|------|
-| 0–35 | 36 | 核心头部：magic、格式版本（`2`）、状态、**标志位**（6.x 的保留字节）、令牌、令牌签发时间 |
+| 0–35 | 36 | 核心头部：magic、格式版本（`2`）、状态、**标志位**、令牌、令牌签发时间 |
 | 36 | 8 | 版本（bit 0），大端有符号 64 位 |
 | 之后 | 32 | 载荷摘要（bit 1）：载荷的 SHA-256，与 `Digest` / `Digest.of` 相同，由写入方在客户端计算，读取方校验 |
 | 之后 | 2 + n | 扩展区（bit 7）：2 字节总长 + 若干 TLV，读者可以整体跳过（见下） |
 | 之后 | n | 载荷 |
 
-- **全部内容都是格式 2**：lease 占位 `L`、负缓存 `M` 与派生缓存的普通值不带任何段，头部仍是 36 字节，与 6.x 同样大小。格式号是 2，误读到它的 6.x 节点按“更高格式”处理，既不回收也不写回。
+- **全部内容都是格式 2**：lease 占位 `L`、负缓存 `M` 与派生缓存的普通值不带任何段，头部仍是 36 字节。
 - **载荷偏移由标志位计算**：所有脚本与客户端共用一个函数，TCK 覆盖“只有版本段 / 只有摘要段 / 两者都有 / 带扩展区”。只有版本段时，载荷从字节 44 开始，Lua 中是 `string.sub(v, 45)`（P18）。
 - **标志位分两类**：
   - bit 0–6 是必须理解的。未知的必须理解的位等同于更高格式：既不回收也不写回，有数据源的读取绕过 L1，权威缓存的读取 `FAIL`，条件写入与按版本写入拒绝，`READ` 不授予令牌。
@@ -476,18 +475,18 @@ if (!stamps.isValid(storageKey, stamp)) {
 - 状态 `E`：带版本段，没有载荷。
 - 版本段中不得写 `NO_VERSION`（`Long.MIN_VALUE`）：客户端不发出，脚本拒绝（K15）。
 
-**读不懂的内容**：v8 不读写格式 1。
-- 读到格式 1 时按更高格式处理：既不回收也不写回，有数据源的读取绕过 L1，权威缓存的读取 `FAIL`（D5）。在物理隔离之下，回收格式 1 的内容本来就没有用处，而它可能是 6.x 中同名 namespace 的唯一副本。
-- 读到格式 0（5.x 遗留）或其它不是本协议写入的内容时，按读不懂处理：派生缓存条件回收（`RECLAIM`），权威缓存 `FAIL`。在物理隔离之下（V13），这只在配置错误或外部工具写入时发生。
+**读不懂的内容**：
+- 格式号 2 是唯一的格式。格式号为 0、1，或不是本协议写入的内容，都按读不懂处理：派生缓存条件回收（`RECLAIM`）后回源，没有数据源的缓存 `FAIL`。升级之后读到的 6.x 内容走的就是这条路，不需要兼容代码（V13）。
+- 格式号大于 2，或带未知的必须理解的位的内容，按更高格式处理（见“标志位”）：既不回收也不写回。
 - 删除 `foreign-format` 配置与 `VERSION_MARK` 的识别。
 
 **摘要算法**（v5；v6 改写威胁模型，D1）：权威数据的摘要为 **SHA-256**（32 字节），`Digest` 带算法标识。
 - 摘要由写入方在客户端计算并写入头部，条件读写的脚本只比较头部的字节，Lua 不需要计算它。所以算法不受 Redis 的 Lua 只有 `redis.sha1hex` 的限制。
 - **威胁模型**（K3）：SHA-256 防的是“攻击者控制经合法写入方写入的内容”：借 SHA-1 的选择前缀碰撞，让 `getIfChanged` 对已变化的内容回答 `Unchanged`；权威数据的使用者（CoSec 的策略快照）是安全产品。它不防“攻击者能写 Redis”：能写的人直接把旧头部的摘要拷进新值就行，不需要碰撞，这要靠 ACL。v5 的说法（“能写入内容的攻击者”）混淆了两者。
-- **读取方校验**（K3）：客户端在拿到载荷时（`getIfChanged` 的 `Value`、`Store` 的 L1 读取）重算 SHA-256 并与头部比较，不一致按损坏 `FAIL`；`Store` 读到不带摘要段的值同样 `FAIL`。否则写入方、外部工具或拷贝工具的缺陷留下的不一致，在永不过期的 `Store` 上会让 `getIfChanged` 对已知摘要一直回答 `Unchanged`。成本只在 L1 读取上，不在 L2 命中上。校验是客户端行为，不改格式，但在 M4 写进规范与 TCK。
+- **读取方校验**（K3）：客户端在拿到载荷时（`getIfChanged` 的 `Value`、`Store` 的 L1 读取）重算 SHA-256 并与头部比较，不一致按损坏 `FAIL`；`Store` 读到不带摘要段的值同样 `FAIL`。否则写入方或外部工具的缺陷留下的不一致，在永不过期的 `Store` 上会让 `getIfChanged` 对已知摘要一直回答 `Unchanged`。成本只在 L1 读取上，不在 L2 命中上。校验是客户端行为，不改格式，但在 M4 写进规范与 TCK。
 - 保留 SHA-256、不退回 SHA-1 的理由（D1）：M4 冻结之后，摘要算法会在 8.x 的线格式中固定多年。
 - 只有条件回收仍在脚本中计算指纹：它比较派生缓存的“读不懂的内容是否仍是读到的那一份”，与安全无关，继续用 SHA-1，类型是 SPI 自己的内容指纹（§4.3）。
-- CoSec 持久化在 key 与载荷中的 SHA-1 摘要需要迁移（§8）。
+- CoSec 持久化在应用数据中的 SHA-1 摘要由 CoSec 自己处理（§8 的下游）。
 
 **状态 `E`（保留版本栅栏的失效）**（P1）：
 
@@ -593,13 +592,9 @@ if (!stamps.isValid(storageKey, stamp)) {
 - 破窗开关：`cocache.caches.[name].unlock: [fields]`。启动时告警，并在端点中标注，供事故中有意识地覆盖。
 - **未分层的缓存**（S20）：不经 `CoCacheFactory` 创建的缓存（如直接 `runtime.create`）不受 `defaults` / `overrides` / `caches.[name]` 影响，端点与启动日志标注“未分层”，否则运维在事故中写下的 overrides 对它静默不生效。库应经 `CoCacheFactory` 创建缓存、用 `lock` 固定策略，而不是绕开装配入口。
 
-**6.x 的键**（v4、S17）：
+**6.x 的键**（维护者决定，2026-11-03，取代 v4 与 S17 的检测）：不提供别名、语义映射或检测，8.x 不认识的键按 Spring Boot 的默认规则忽略。6.x 与 8.x 的键与语义差异只写进 changelog 的破坏性变更表与升级说明（其中 `cocache.defaults.<field>` 的语义从高于声明变为低于声明，要特别写明）。
 
-- 不提供别名，也不做语义映射。6.x 的键在 v8 中出现时启动失败，错误信息给出 v8 的键与语义差异。检测按规则，不再逐个列出（`@ConfigurationProperties` 默认忽略未知字段，漏列一个就被静默忽略）：`cocache.defaults.` 与 `cocache.overrides.` 下只允许 `cache.` 与 `store.` 两个子前缀，其它一律启动失败，错误信息按 6.x 的字段给出对应的新键。
-  - `cocache.defaults.<field>`：6.x 中它高于声明，语义对应 v8 的 `cocache.overrides.cache.<field>`；v8 的 `cocache.defaults.cache.<field>` 低于声明。错误信息说明两者的区别，由用户选择。
-  - `cocache.defaults.key-prefix` → `cocache.key-prefix`。
-  - 不带单位的时长；`load-async-timeout` → `load-timeout`；`load-max-concurrent: 0` → `unlimited`；`cocache.redis.set-cache-eviction-check` → `cocache.redis.store-eviction-check`（取值见 §4.1）；`foreign-format`（删除）；`read-failure` 出现在权威缓存上 → `unknown-read`。外部来源缓存上的 `read-failure` 合法，只作用于带 loader 的读取（S11）。
-- 新增的键：`cocache.key-prefix`、`cocache.redis.assume-maxmemory-policy`（6.10.0 已有）、`management.endpoint.cocache.allow-store-delete`、`management.endpoint.cocache.allow-purge`、`fill-in-transaction`、`invalidate-fills-on-rollback`（§4.9）、按缓存的读超时（D6，键名随 M6 定）。
+- 新增的键：`cocache.key-prefix`、`cocache.redis.assume-maxmemory-policy`、`management.endpoint.cocache.allow-store-delete`、`management.endpoint.cocache.allow-purge`、`fill-in-transaction`、`invalidate-fills-on-rollback`（§4.9）、按缓存的读超时（D6，键名随 M6 定）。
 
 ### 4.9 Spring（V11）
 
@@ -652,7 +647,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 - 未知缓存名的 `DELETE` 返回 404（6.10.0 已实现，#707）。
 - `ExternalInvalidator` 增加只广播的方法；文档写明它的 `invalidate` 作用于权威缓存的 namespace 时会删除唯一副本。
 - “引擎先淘汰本地副本，再通知外部监听者”成为 `InvalidationChannel` 的契约（CoSec 依赖它）。
-- `InvalidationListener` 收到的是去掉 `{keyPrefix}v8:{namespace}:` 之后的编码 key（与引擎内部剥前缀的规则一致），不是存储 key（S4，M5）。否则下游按 `"$namespace:"` 前缀反解存储 key 的代码（CoSec 的 `snapshotKeyOf`）在 v8 中会静默丢掉每一条通知，编译发现不了。
+- `InvalidationListener` 收到的是去掉 `{keyPrefix}{namespace}:` 之后的编码 key（与引擎内部剥前缀的规则一致），不是存储 key（S4，M5）。否则下游按 `"$namespace:"` 前缀反解存储 key 的代码（CoSec 的 `snapshotKeyOf`）在 v8 中会静默丢掉每一条通知，编译发现不了。
 
 ### 4.10 检验（V9）
 
@@ -691,7 +686,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 - 权威缓存上的 `InvalidateFailureMode.RETRY`；`LoadPolicy.asyncTimeout`（并入 `load.timeout`）。
 - `cocache.defaults.*` 的旧语义与旧键（`key-prefix` 移到 `cocache.key-prefix`）；配置中不带单位的时长与 `0` 一类的隐式哨兵；`setPolicyFor` / `versionedPolicyFor`；starter 对 `TransactionAwareCacheManagerProxy` 的使用。
 - 格式 1 的读写与 `VERSION_MARK`；`foreign-format`（`ForeignFormatMode`）；`CoCache5Migrator`。
-- 6.x 的 key、频道与探测布局（V13）。
+- 6.x 的频道与探测布局；只为旧版本保留的代码：二进制兼容的成员、已删除配置项的检测（`RemovedProperties`）、描述 6.x 历史的注释与文档（V13，不背历史债务）。
 
 ## 6. 不变量（v8 实施时与 architecture.md §14 的对照）
 
@@ -723,7 +718,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 | 6 loader 的线程 | 修改 | 同步变体在调用方线程上执行阻塞 loader；异步与挂起变体在阻塞调度器（默认虚拟线程）上执行它；异步与挂起的 loader 不切换调度器；挂起变体从不在 L1 客户端的完成线程上恢复（§4.4） |
 | 7 令牌必须释放或过期 | 取代 | 由 I-F 取代 |
 | 8 每次 L1 状态转换显式重设到期时间 | 修改 | `E` 的到期时间由引擎传入；只触及字节 4–35 的原地修改（授予刷新令牌、`READ` 在 `E` 上授予 lease、`RELEASE`、被拒绝的 `FILL` 清零令牌）保留原到期时间，是写明的例外（K15） |
-| 9 线格式冻结 | 修改 | 格式 2 是唯一格式；8.x 内两阶段演进；与 6.x 以布局标记隔离（V13）；冻结的范围加上扩展区的 TLV、失效帧的演进规则、集合的 `!f` / `!m`、namespace 字符集与内部 key（§4.7）；摘要改为带算法标识的 SHA-256（D1）；I-L、I-M |
+| 9 线格式冻结 | 修改 | 格式 2 是唯一格式；8.x 内两阶段演进；冻结的范围加上扩展区的 TLV、失效帧的演进规则、集合的 `!f` / `!m`、namespace 字符集与内部 key（§4.7）；摘要改为带算法标识的 SHA-256（D1）；I-L、I-M |
 | 10 集合元素增删 | 修改 | `SetCache` 改为 `SetStore` |
 | 11 有状态组件只由运行时创建 | 保留 | 补上 `CoCacheFactory` |
 | 12 L1 连接只访问主节点、断线拒绝 | 保留 | |
@@ -753,51 +748,16 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ## 8. 切换与破坏性变更
 
-**切换**（V13）：
+**升级**（V13；维护者决定，2026-11-03：不考虑兼容、不背历史债务）：
 
-- 8.x 与 6.x 的 key、频道与探测都不重叠，可以同时部署在同一个 Redis 上；共存期间 Redis 的内存约为两份（见运维检查表）。
-- **派生缓存**（`Cache` / `VersionedCache`）：不拷贝。8.x 启动时 L1 为空，回源填充；6.x 的 key 由 TTL 回收，`ttl` 永不过期的用 `--purge-6x` 删除（下）。跨服务共享的 namespace（Wow 的状态视图），所有者与读者在同一个发布窗口切换。
-  - **共存期的残余**（S3）：同一个发布窗口里的滚动发布仍是混合部署。6.x 写入方的 `invalidate` / `putIfNewer` 只写 6.x 的 key、只发 6.x 的频道，8.x 读者在 L1 中的副本收不到；反过来也一样。陈旧以对方读者的 `ttl` 为界，L2 再加 `localMaxAge`：Wow 的读者在 8.x 上经 HTTP 回源写进 v8 L1 的状态视图，属主还在 6.x 时陈旧到读者的 `ttl`（默认 1 h，Wow 指南的示例为 30 m）。
-  - 拷贝工具附带**双向失效中继**：订阅两侧的频道，对帧中的每个 key 删除另一种布局下的副本，并在另一侧的频道发帧。删除派生副本总是安全的；8.x 一侧的 `VersionedCache` 用 `evict`，保留版本栅栏（与端点的按 key 删除相同，§4.2），6.x 一侧只能删除。中继同样是至多一次投递，上界不变，只是绝大多数失效不再丢失。
-  - 升级指南建议窗口期内用 overrides 临时收紧 `Cache` 的 `ttl` 与各类型的 `local-max-age`；带版本类型的 `ttl` 不进 overrides（§4.8），需要时按缓存收紧。
-- **权威缓存**（`Store` / `VersionedStore` / `SetStore`）：唯一副本没有源头可以重建，必须拷贝（下）。
-- **为什么不能双写**：6.x 与 8.x 的包名都是 `me.ahoo.cocache`，一个 JVM 里不能同时装两个版本；滚动发布期间，6.x 实例与 8.x 实例各写各的 key，彼此看不到对方的写入。
-- **回退**（D8）：派生缓存回退就是切回 6.x 的 key，回源重建。权威缓存**在写入方切到 8.x 之后不能回退**：工具不提供 8.x → 6.x 的反向模式，8.x 上的写入不会回到 6.x，回退会丢掉这段时间的全部写入（撤销表上的撤销丢失，已撤销的 token 重新可用）。这是 CoSec 切换的安全前提。
-
-**拷贝工具**（v5，v6 补全规格；8.0 附带，离线运行，`cocache-redis` 中，M4）：
-
-- **输入**（K11、S13）：8.x 的 spec（或 `CoCacheFactory` 能解析的声明），显式给出源布局（6.x 的 key 前缀与 namespace）与目标布局；两者可以不同（如 CoSec 把前缀从 namespace 移到 `keyPrefix`，§4.7）。目标类型由 spec 决定，不由内容推断；内容与目标类型不符时报告并跳过。派生缓存不在拷贝范围内。
-- **转换表**：
-
-  | 6.x 的内容 | 目标 `Store` | 目标 `VersionedStore` | 目标 `SetStore` |
-  |-----------|-------------|----------------------|----------------|
-  | 无版本的值 `V` | `V` + 摘要段（工具计算 SHA-256）+ 写入标识 | 报告并跳过 | — |
-  | 带版本的值（6.8 的 `VERSION_MARK`） | 报告并跳过 | `V(v)`：版本移入版本段，加写入标识 | — |
-  | 带版本的墓碑 `M(VERSION_MARK, v)` | 报告并跳过 | 带版本段的 `M(v)`：否则迟到的旧版本写入能复活已删除的实体；永不过期的墓碑（A.L3）在报告中列出 | — |
-  | 无版本的 `M`、lease 占位 `L` | 不拷贝：`L` 是进行中的加载，`M` 对权威缓存不适用 | 同左 | — |
-  | Hash（集合） | — | — | 成员原样拷贝，`!f = '2'` |
-  | 读不懂的内容 | 报告并跳过，不删除源 key | 同左 | 同左 |
-
-  所有内容的令牌（字节 4–35）一律清零：6.x 值中的刷新令牌在 8.x 中没有持有者。剩余的 TTL 一律保留（误差使目标略长于源，对撤销表是 fail-safe 的方向）。
-- **原子与幂等**：每个 key 以一个 Lua 脚本原子写入：目标不存在才写，`PX` 与内容一起设定，集合整体写入。中途崩溃不会留下部分集合或没有 TTL 的 key。
-- **冲突**（K11、S1、S13）：目标已存在且内容相同时跳过。内容不同时（8.x 写入方提前启动、上一次运行写了一半、冻结之后误重跑），默认报告、不覆盖：否则 6.x 的旧值会覆盖 8.x 的新写入，策略头部回退，CAS 链断裂。冲突策略按 namespace 设定：`skip-if-exists`（默认）、`overwrite`（撤销表一类幂等追加的数据）、`max-version`（带版本的内容取版本大者）；全局的 `--overwrite` 须显式给出。
-- **写目标时广播**（S13）：工具写 v8 的 key 时在 v8 的频道广播，否则正在运行的 8.x 节点 L2 中的 `Absent`（撤销表的 `absentTtl`）不会被淘汰。
-- **`dryRun` 与 `--verify-decode`**（K20、S13）：`dryRun` 输出上述每一类的计数。`--verify-decode` 用目标声明的 codec 解码每个值（或抽样），报告失败数；正式运行之前要求解码失败为 0，或显式放行。codec 不兼容时（默认配置变化、类型信息），拷过去的权威数据在 8.x 上全部 `FAIL`，而且要等写入方启动之后才会发现。
-- **按 namespace 的转换钩子**（D1、S2）：可以改写载荷与 key，供下游迁移持久化在应用数据中的摘要（CoSec，见下）。钩子在初始拷贝与 follow 的每次重拷中都执行。
-- **两种运行方式**：
-  - **冻结**：停掉该 namespace 的全部 6.x 写入方 → 拷贝 → 启动 8.x 的写入方 → 切换读者 → 核对 → `--purge-6x`。读者在冻结期间照常读 6.x 的 key。适用于写入方能停下来的 namespace。
-  - **follow**（D8、S1）：初始拷贝之后订阅 6.x 的频道 `cocache:inv:{namespace}`，对帧中的每个 key 重新拷贝（同样经冲突策略与转换钩子）；pub/sub 至多投递一次，所以再定期全量重扫。写 v8 时照常广播。步骤：follow → 切换全部读者 → 切换写入方 → 最后一个 6.x 写入方下线后停止 follow → 核对 → `--purge-6x`。适用于写入方停不下来的 namespace：CoSec 的撤销表由任何嵌入 `TokenRevoker` 的应用在登出时写入，影子上报每 10 s 一次。
-  - follow 的残余：读写方是同一个服务时，写入方的滚动发布期间，8.x 实例的写入对仍在 6.x 上的实例不可见（在 8.x 实例上撤销的 token，6.x 实例仍然放行），上界是这个服务的滚动发布时长。没有反向模式，所以写入方开始切换之后就不能回退。
-- **`--purge-6x`**（S14）：按 namespace 精确匹配 6.x 的 key 并删除，显式排除 `{keyPrefix}v8:` 与 `{keyPrefix}v8!`。手写的 `SCAN MATCH cocache:*` 会匹配 8.x 的 key；6.x 的 namespace 为 `v8` 或以 `v8:` 开头时，`cocache:{ns}:*` 会匹配全部 8.x 的 key。
-- 它是离线工具，不是兼容层：8.x 运行时不读 6.x 的内容（§4.7）。
-
-**运维检查表**（S14，写进升级指南）：
-
-- **内存与驱逐策略**：共存期内存约为两份。权威数据要求 `noeviction`，内存超过 `maxmemory` 时**所有写入**都以 OOM 失败，包括 6.x 的撤销写入；`volatile-*` 策略下，翻倍的派生数据会挤掉 `ttl` 有限的 `Store`。切换之前确认余量。
-- **6.x key 的清理**：用 `--purge-6x`，不手写 `SCAN MATCH`（见上）。
-- **所有写入方**：写入方不只是服务。CLI（CoSec 的 `cosec-migrate`）、控制面的定时维护、影子上报都是写入方：冻结时都要停，follow 时都要算进“最后一个 6.x 写入方”。
-- **两套 ACL**：共存期两套频道模式都要放行（`&cocache:inv:*` 与 `&{keyPrefix}v8:inv:*`）；拷贝与中继的账号要能读 6.x 的 key、写 v8 的 key、订阅两侧的频道并发布。
-- **冷启动回源**：8.x 的派生缓存全空，读者会一起回源（Wow 的读者经 HTTP 回源到属主）；按数据源的承受能力分批切换。
+- 8.x 不读写 6.x 的内容，不提供迁移工具，6.x 与 8.x 不共存于同一组 namespace。步骤：
+  1. 停掉使用这些 namespace 的全部 6.x 写入方与读者，包括 CLI、控制面的定时维护、影子上报一类不是服务的写入方。
+  2. 删除没有数据源的缓存的旧 key（`{keyPrefix}{namespace}:*`），否则 8.x 读到它们按读不懂 `FAIL`。有数据源的缓存可以不删：旧内容被条件回收后回源。
+  3. 启动 8.x。有数据源的缓存从数据源回源重建；没有数据源的缓存从空开始，由应用重新写入（控制面重新发布、上报方重新上报）。
+- **没有数据源的数据不随升级保留**：它们在 Redis 中是唯一副本。需要保留的，由应用在升级前导出、升级后重新写入，或给缓存配上数据源。
+- **回退**：停掉 8.x、删除 8.x 写入的 key、启动 6.x，6.x 的缓存同样回源重建。
+- **冷启动回源**：升级后派生缓存全空，读者会一起回源；按数据源的承受能力分批启动（Wow 的读者经 HTTP 回源到属主）。
+- **为什么不做兼容**：6.x 与 8.x 的包名都是 `me.ahoo.cocache`，一个 JVM 里装不了两个版本，兼容只能是运行时之外的工具或共存期的中继。它们只为一次升级存在，却要随 8.x 一直维护。
 
 **没有数据源的 `Cache` 在各版本上的行为**：
 
@@ -830,28 +790,19 @@ if (!stamps.isValid(storageKey, stamp)) {
 - **指标**：新增 `cocache.reads.unknown`、`cocache.fills.gated`、`cocache.refresh.skipped`、`cocache.type.mismatch`（派生读者读到摘要段，D4）；`cocache.load.timeouts` 包含同步跟随者的超时。端点的报告带上类型与能力，未经 `CoCacheFactory` 创建的缓存标注“未分层”。
 - **`Digest`**：SHA-256，带算法标识；读取方重算校验，与头部不一致按损坏 `FAIL`（D1）。
 - **namespace 与前缀**：namespace 只能是 `[A-Za-z0-9._-]+`，含 `:` 的启动失败；`key-prefix` 移到 `cocache.key-prefix`，为空时启动告警（D5、S4、S17）。
-- **`InvalidationListener`**：收到去掉 `{keyPrefix}v8:{namespace}:` 之后的编码 key，不是存储 key（S4）。
+- **`InvalidationListener`**：收到去掉 `{keyPrefix}{namespace}:` 之后的编码 key，不是存储 key（S4）。
 - **`Store` 的 L2 默认寿命**：`localMaxAge` 30 s、`absentTtl` 10 s，比 `Cache` 短（D7）；需要更长的在声明中写出。
 - **`unknownRead`**：取值 `THROW` / `ABSENT`，默认 `THROW`（S16）。
 - **overrides**：只收紧陈旧界限与有严格序的模式字段；等待界限、`invalidate-failure`、带版本类型的 `ttl` 不进 overrides；`overrides.cache.ttl` 钳制按调用给出的寿命（§4.8）。
 - **`lookup`**：`readFailure = THROW`（含 6.9 没有数据源时的默认值）时，`lookup` 从抛出 `CacheReadException` 变为返回 `Unknown`。依赖它抛出来 fail closed、又用 `as?` / `else` 处理结果的调用方，会从拒绝变成放行（U5）。升级 skill 的审计脚本检查这类写法；JDK 21 的模式匹配 `switch` 能发现 `Unknown`。
 - **`SetStore` 的读失败**：从 6.x 的原始异常变为 `CacheReadException(cause)`，`catch (e: RedisException)` 不再命中。
-- **ACL**：频道模式改为 `&{keyPrefix}v8:inv:*`（默认即 `&cocache:v8:inv:*`；`pubsub` 模式另加 `&cocache:v8:probe:*`）。`keyPrefix` 为空时 key 以 `v8:` 与 `v8!` 开头，频道为 `v8:inv:{namespace}`（S4）。`store(namespace)` 创建时探测实际频道，ACL 拒绝时启动失败（K8）。
+- **ACL**：频道模式为 `&{keyPrefix}inv:*`（默认前缀即 `&cocache:inv:*`）；`pubsub` 模式的探测为 `~cocache:!probe:*` 与 `&cocache:!probe:*`；`keyPrefix` 为空时按 namespace 写出（§4.7，S4）。`store(keyspace)` 创建时探测实际频道，ACL 拒绝时启动失败（K8）。
 - **AOT**：`CoCacheRuntimeHints` 登记新的接口（`Store`、`VersionedCache`、`VersionedStore`、`SetStore`、`JoinView` 与各自的异步视图）；`CacheBeanDefinitions` 的目标类型随之改变；`CoCacheAotTest` 与 `CoCacheAotRuntimeTest` 同步更新。
 - **`cocache-coroutines` 并入 core**：挂起视图是 core 的原生 API，有同构的层次；`suspendingVersionedLoader` 保留；依赖 `cocache-coroutines` 的下游改为依赖 core；下游公开的工厂签名（如 Wow 的 `StateViewCaches.CacheFactory`）随之改变。
 - **`CacheSpecCustomizer`**：为 5 种 spec 各提供一个重载，改为 overlay 语义（只设置写出的字段），不能修改类型与存储布局（§4.8）。
 - **`load.timeout`**：同步跟随者从无限等待变为 30 s 后失败；注册超过它的 flight 被注销。
 - **提前刷新**：`VersionedCache` 支持提前刷新，全局的 `refresh-window` 开始作用于它；不需要时在声明中写 `refreshWindow = off()`。
-- **`skills/`**：新增升级 skill 与静态审计脚本，检查以下各项：
-  - 没有数据源的 `Cache`；
-  - 条件与版本方法的调用；
-  - 配置中不带单位的时长；
-  - `cocache.defaults.*`；
-  - `Lookup` 的 `as?` / `else` 匹配；
-  - `CacheAssembler` / `policyFor` / `CacheProxies`；
-  - 运维脚本中的 `DELETE` 与 ACL 中的频道模式；
-  - 含 `:` 的 namespace，以及按 `"$namespace:"` 前缀反解存储 key 的失效监听器（S4）；
-  - 持久化 `Digest` 的代码（`.sha1` 一类的用法，D1）。
+- **`skills/`**：按 8.x 改写，不提供升级 skill 与静态审计脚本。语义变化（如 `Lookup` 从抛出变为返回 `Unknown`，U5）写进破坏性变更表与升级说明。
 - 破坏性变更表写入 `wiki/guide/changelog.md`（en + zh）。
 
 **下游**（第二轮、第三轮读了两个下游的源码）：
@@ -859,17 +810,17 @@ if (!stamps.isValid(storageKey, stamp)) {
 - **CoSec**：
   - **分型**：策略快照、控制面 8 个缓存、两个撤销表（`unknownRead = ABSENT`）、三个影子缓存（带显式 `ttl`）→ `Store`；`MembershipCache` → `Cache` + `externallySourced()`（带调用级 loader，`readFailure = THROW` 照常作用，S11）；迁移工具中的 `GlobalPolicyIndexCache` → `SetStore`，或随 7.x 转换工具一起删除。
   - **装配**：`CoSecCacheAssembler` → `CoCacheFactory`；`pinnedPolicy` → `lock` + `constrain`，锁定 namespace、keyPrefix、keyEncoder、codec 与“拒绝 loader”；`expiringFailClosed` 写作 `constrain(ttl) { it.finiteOr(1.minutes) }`（S12）。控制面缓存与影子缓存现在经 `runtime.create` 直接创建，改经 `CoCacheFactory`，否则不受分层配置影响（S20）。
-  - **布局**（D5、S4）：CoSec 的全部 spec 用 `keyPrefix("")`，把前缀放进 namespace，namespace 因此含 `:`，在 8.x 中启动失败。前缀（连同其中的 `:`）移到 `keyPrefix`、namespace 只留不含 `:` 的部分之后，key 仍以 `cosec:` 开头，按 `~cosec:*` 写的 ACL 照常覆盖；拷贝工具按源、目标布局不同拷贝。`PolicySnapshotCache.snapshotKeyOf` 按 `"$namespace:"` 反解存储 key，v8 中 `InvalidationListener` 收到编码 key，须改写，否则每一条策略变更通知都被静默丢弃，只剩 `revalidate-interval` 兜底。
+  - **布局**（D5、S4）：CoSec 的全部 spec 用 `keyPrefix("")`，把前缀放进 namespace，namespace 因此含 `:`，在 8.x 中启动失败。前缀（连同其中的 `:`）移到 `keyPrefix`、namespace 只留不含 `:` 的部分之后，存储 key 的字符串不变，按 `~cosec:*` 写的 ACL 照常覆盖；频道变为 `{keyPrefix}inv:{namespace}`。`PolicySnapshotCache.snapshotKeyOf` 按 `"$namespace:"` 反解存储 key，v8 中 `InvalidationListener` 收到编码 key，须改写，否则每一条策略变更通知都被静默丢弃，只剩 `revalidate-interval` 兜底。
   - **读取**：`RedisSnapshotDocumentStore` 的 `when (lookup)` 因 `Unknown` 编译失败，可以发现；频道订阅改为新 SPI；“先淘汰本地副本，再通知外部监听者”成为契约。撤销表声明 `unknownRead = ABSENT`，运维可经 `caches.[name]` 收紧为 `THROW`（S16）；按缓存的读超时把 Redis 卡顿时每个请求多等的时间压到它自己选的界限（D6）。
-  - **摘要**（D1、S2）：CoSec 在本地用 `Digest.of(…).sha1` 计算摘要，并写进修订记录的 key、修订索引、文档体中的 `parent`，以及待审批变更的 `base.digest` / `checkedWith`。8.x 的 `putIfMatch` 比较头部的 SHA-256：不迁移时，切换前持久化了 SHA-1 `base.digest` 的待审批变更全部以 Conflict 失败，按摘要寻址的修订记录同时存在两种哈希。拷贝工具只重写 CoCache 的头部，改不了这些应用数据。CoSec 用拷贝工具的按 namespace 转换钩子重算修订 key、`parent` 与待审批变更的 base，与拷贝在同一个窗口内完成（冻结拷贝时是同一个冻结窗口；follow 时每次重拷都经钩子）。`Digest` 带算法标识之后，不再以 `.sha1` 的名义持有 SHA-256。CoSec `roadmap.md` 中“摘要算法仍是 SHA-1”的说法需要更正。`getIfChanged` 的用法不变。
-  - **切换**：控制面的唯一副本缓存与策略快照可以冻结拷贝（策略快照也可以由控制面重新发布）；撤销表与影子缓存的写入方停不下来，用 follow 模式：先切换全部读者，再切换写入方。**写入方切到 8.x 之后不能回退**，这是 CoSec 的安全前提（D8）；写入方滚动发布期间，在 8.x 实例上撤销的 token 在 6.x 实例上仍然有效，上界是滚动发布时长。
-  - **部署**：托管或代理型 Redis 上，确认 `INFO memory` 可读，或配置 `assume-maxmemory-policy`；`allkeys-*` 在存在权威缓存时一律启动失败，CoSec 自己的 `eviction-check=warn` 只作用于它自己的检查（S22）；ACL 的频道模式；运维检查表（内存、`noeviction`、全部写入方、两套 ACL）。
+  - **摘要**（D1、S2）：CoSec 在本地用 `Digest.of(…).sha1` 计算摘要，并写进修订记录的 key、修订索引、文档体中的 `parent`，以及待审批变更的 `base.digest` / `checkedWith`。8.x 的 `putIfMatch` 比较头部的 SHA-256，升级前持久化了 SHA-1 `base.digest` 的待审批变更会以 Conflict 失败。CoSec 在升级前处理完待审批变更，升级后重新发布时按 SHA-256 重算修订 key、`parent` 与 base。`Digest` 带算法标识之后，不再以 `.sha1` 的名义持有 SHA-256。CoSec `roadmap.md` 中“摘要算法仍是 SHA-1”的说法需要更正。`getIfChanged` 的用法不变。
+  - **升级**：控制面的唯一副本缓存与策略快照升级后从空开始，由控制面重新发布。撤销表与影子缓存也从空开始：**升级前撤销的 token 在 8.x 上不再被拒绝**，直到它们自然过期（撤销表没有数据源）。CoSec 在升级前决定：接受这段窗口、升级后重放撤销记录，或给撤销表配上数据源。
+  - **部署**：托管或代理型 Redis 上，确认 `INFO memory` 可读，或配置 `assume-maxmemory-policy`；`allkeys-*` 在存在权威缓存时一律启动失败，CoSec 自己的 `eviction-check=warn` 只作用于它自己的检查（S22）；ACL 的频道模式；升级步骤中的全部写入方（§8）。
 - **Wow**：
   - `cacheSpec { suspendingVersionedLoader(…) }` → `versionedCacheSpec`；`StarterCaches` → `CoCacheFactory`。
   - `StateViewCaches.CacheFactory` 改签名，Wow 需要大版本。
   - 全局的 `refresh-window` 开始作用于状态视图，要么在声明中写 `refreshWindow = off()`，要么接受经 HTTP 回源到所有者。
   - 运维手册中的删除改用 `evict`。
-  - **切换**：状态视图是派生缓存，在 8.x 上从事件存储回源重建，不需要拷贝；所有者与全部读者服务在同一个发布窗口切换。窗口内属主的 `putIfNewer` 到不了另一侧读者的副本（S3）：运行失效中继，需要时按缓存收紧状态视图的 `ttl`（带版本类型的 `ttl` 不进 overrides）；8.x 读者冷启动时一起回源到属主。
+  - **升级**：状态视图是派生缓存，在 8.x 上从事件存储回源重建；所有者与全部读者服务在同一个发布窗口切换；8.x 读者冷启动时一起回源到属主。
 
 ## 9. 6.x 的收尾
 
@@ -912,15 +863,15 @@ if (!stamps.isValid(storageKey, stamp)) {
 2. **M2 flight 层与协议**：合并规则逐 key、`load.timeout`、取消与中断的规则（§4.4）、L2 填充改为 `compute` + 按身份复核（I-C）、令牌在 `NonCancellable` 中守恒；接入随机注入取消的性质测试与确定性多节点仿真。
 3. **M3 SPI**：`suspend` 的 `L1Store`、`FutureL1Store` 适配、能力访问器、`ForwardingL1Store`、TCK fail closed；删除异步 SPI 与 `Async*` 规范。先删不依赖替代品的遗留，再建新形状；切片见 [todo.md](../todo.md) §2。M3d 同时实施第三轮转给它的 SPI 变更：`fill` 返回 `L1Fill`、`reclaim` 收 SPI 自己的内容指纹（K12），除确定未执行外的失败都异步释放令牌（K14），`read` / `readAll` 的可选截止时间（D6）（§4.3）。
 4. **M4 线格式 2 与布局**：
-   - 布局标记、带前缀的频道、namespace 字符集与内部 key（D5）；按存储探测实际频道（K8）。
+   - 布局（没有版本标记，V13）、带前缀的频道、namespace 字符集与内部 key（D5）；按存储探测实际频道（K8）。
    - 头部的段（SHA-256 摘要段，读取方校验，`Digest` 带算法标识，D1）、扩展区的 TLV 与写入标识（D2）、状态 `E`、失效帧的演进规则与预留的帧版本 2（D3）、集合的 `!f` / `!m`（K10）。
    - 逐脚本规则，含带摘要段的内容（D4）、`RECLAIM` 与格式号（K15）、`FILL` / `RELEASE` 只读核心头部（K19）。
-   - 拷贝工具（§8）：以 8.x 的 spec 为输入、转换表、逐 key 原子写入、冲突策略、写目标时广播、`--verify-decode`、转换钩子、冻结与 follow 两种运行方式、双向失效中继、`--purge-6x`。
+   - 不提供拷贝工具（维护者决定，2026-11-03，§8）。
    - 第三轮对抗验证已在这一步之前完成（v6）；合并即冻结 8.x 的格式（§4.7 的定稿项）。
 5. **M5 用户 API**：类型（V1–V3，按 v4 全部实现）、`Lookup.Unknown` 与 `unknownRead` 的取值（S16）、`CoCacheFactory`（校验 `type` 是接口，声明接口与手写实现的区分，S21）；`cocache-coroutines` 并入 core，挂起变体的上下文规则（K2、K6）与重入守卫（K7）；带版本数据源的删除（K16）；`Store` 的类型默认值（D7）；按缓存的读超时接入引擎（D6）；`InvalidationListener` 收到编码 key、`keyPrefix` 为空时启动告警（S4）；评估被取消的写入是否整体放进 `NonCancellable`（K18）。
-6. **M6 配置**（V10）：含“字段 × 层”的语义表、显式哨兵、overrides 只收紧并钳制按调用的寿命（S8、S9、S10）；`constrain` 的值域与 customizer 写锁定字段（S12）；6.x 键按规则检测、`cocache.key-prefix`（S17）；按缓存的读超时的配置键（D6）；每种 spec 的默认策略（S23）；`read-failure` 与 `unknown-read` 的适用性（S11、S16）；“未分层”的标注（S20）；驱逐检查的取值（S22）。
+6. **M6 配置**（V10）：含“字段 × 层”的语义表、显式哨兵、overrides 只收紧并钳制按调用的寿命（S8、S9、S10）；`constrain` 的值域与 customizer 写锁定字段（S12）；`cocache.key-prefix`（S17；不检测 6.x 的键，§4.8）；按缓存的读超时的配置键（D6）；每种 spec 的默认策略（S23）；`read-failure` 与 `unknown-read` 的适用性（S11、S16）；“未分层”的标注（S20）；驱逐检查的取值（S22）。
    **M7 Spring**（V11）：含事务上下文在调用入口捕获、记录进入任何共享层的 key、事务内 leader 的结果不共享、按 (namespace, 编码 key) 匹配（S7、S15、S24）；`Unknown` 的不对称与可选的 `CacheErrorHandler`、`afterCommit` 的异常、通知嵌套的告警（S18、S19）。S5、S6 已在 main 与 6.x 修复，M7 的装饰器沿用。
-7. **M8 检验与文档**：Lincheck（已批准，CI 已运行）、TLA+、architecture.md 重排（V12）、wiki 与升级指南（含拷贝工具的两种运行方式、失效中继与运维检查表，§8）、skills。
+7. **M8 检验与文档**：Lincheck（已批准，CI 已运行）、TLA+、architecture.md 重排（V12）、wiki 与升级说明（§8）、skills。
 8. **8.0.0** 发布；8.x 按 §4.2 的演进规则新增能力，新的必须理解的段两阶段发布。
 
 每个里程碑由若干 PR 组成，每个 PR 的 `./gradlew check` 全绿；触及命中路径、同步未命中路径或异步路径的 PR 附 `scripts/jmh-compare.sh` 的对比。
@@ -940,12 +891,12 @@ if (!stamps.isValid(storageKey, stamp)) {
 - **Q11 重置的严格线性化**：用读写锁把填充与“递增 + `clear`”分开，代价是未命中路径多一次 CAS。
 - ~~Q12 全集群清空~~：已关闭（D3）。M4 冻结“读不懂的帧按该频道的 `onReset` 处理”，预留帧版本 2 为 namespace 重置；重置帧（删除 L1 并广播）与 `@CacheEvict(allEntries = true)` 的全集群语义在 8.x 加入，不需要两阶段发布（§4.7、§4.9）。
 - **Q13**（v2）：已关闭，由状态 `E` 取代（§4.7）。
-- ~~Q14 类型元数据~~：已关闭（D4）。8.0 以摘要段作为权威标量的标记：`READ` 不授予令牌，`RECLAIM` 与 `EVICT_KEEPING_VERSION` 拒绝，派生读者读到时计数告警（§4.7）；元数据 key 不进 8.0，只预留 `{keyPrefix}v8!meta:{namespace}` 的位置。
+- ~~Q14 类型元数据~~：已关闭（D4）。8.0 以摘要段作为权威标量的标记：`READ` 不授予令牌，`RECLAIM` 与 `EVICT_KEEPING_VERSION` 拒绝，派生读者读到时计数告警（§4.7）；元数据 key 不进 8.0，只预留 `{keyPrefix}!meta:{namespace}` 的位置。
 - ~~Q15 `unknownRead = ABSENT` 的短暂缓存~~：已关闭（D6）。不缓存降级结果：按 key 缓存对高基数的撤销表几乎无效，还给权威数据引入一种新的 L2 状态。8.0 做按缓存的读超时（上限为 `command-timeout`，SPI 的读取带截止时间，§4.3）；后端级快速失败涉及所有缓存的故障语义，8.x 另立 RFC。
 - ~~Q16 7.B 的前向兼容声明~~：v4 删除（没有 7.B）。
 - ~~Q17 是否保留 sans-IO 状态机~~：v5 以协程核心解决，测试调度器与虚拟时间让多节点仿真可以确定性重放（§4.10）。
 - **Q18 Lincheck 作为测试依赖**：已决定，批准（维护者，2026-11-02；可行性实验 #726，CI 作业 #738）。
-- ~~Q19 布局标记的拼写~~：已关闭（D5）。沿用 `v8:`，不得含 `{}` 与 glob 元字符；namespace 字符集 `[A-Za-z0-9._-]+`；内部 key 在 `{keyPrefix}v8!…`；格式 1 的内容按更高格式处理，与 6.x 中同名 namespace 相撞也不再有破坏性（§4.7）。
+- ~~Q19 布局标记的拼写~~：已关闭。2026-11-03 维护者决定去掉布局标记（§12）；namespace 字符集 `[A-Za-z0-9._-]+`，内部 key 在 `{keyPrefix}!…`（§4.7）。
 - **Q20 `kotlinx-coroutines-core` 进入 core**：v5 决定批准（§4.4）；AGENTS.md 中“kotlinx 只出现在 `cocache-coroutines`”的规则在 M1 中同步修改。
 
 ## 12. 对抗验证记录
@@ -1225,6 +1176,21 @@ M4 冻结格式之前，v5 由两路独立的只读会话验证：
 - **格式 2**：载荷偏移；6.x 节点读到格式 2 时授予的刷新令牌无害；`E` 的逐脚本表（K15 之外）；8 字节有符号版本的比较与帧解码的边界。
 - **Spring 7**：错误处理路径与 `TransactionAwareCacheDecorator` 的契约描述准确；`TransactionalInvalidator` 在 NESTED 与 `REQUIRES_NEW` 下的行为；M7 的论证。
 - **M3 的适用性规则**已按 RFC 实现；`lock` 能覆盖 CoSec 锁定的全部布局项（补上 S12 的规则之后）；CoSec 与 Wow 的分型；V13 的物理隔离。
+
+### M4 期间：维护者决定（2026-11-03）
+
+维护者：“不考虑兼容性”“不提供迁移工具，保持架构、代码清洁”“不要背负历史债务”；布局标记经确认去掉。
+
+| 项 | 决定 | 取代 |
+|----|------|------|
+| 迁移 | 不提供拷贝工具；6.x 与 8.x 不共存；有数据源的缓存升级后回源重建，没有数据源的数据不随升级保留（§8） | v5 决定 3；K11、K20、S1、S3、S13、S14；D8；D1 与 S2 的转换钩子 |
+| 布局 | 去掉版本标记 `v8:`：key `{keyPrefix}{namespace}:{encodedKey}`、频道 `{keyPrefix}inv:{namespace}`、内部 key `{keyPrefix}!…`（§4.7） | v4 的“以布局标记与 6.x 物理隔离”；D5 的标记部分；#752 的标记 |
+| 格式 1 | 与格式 0 一样按读不懂处理：派生缓存回收后回源，没有数据源的缓存 `FAIL`（§4.7） | D5 的“格式 1 按更高格式处理” |
+| 配置 | 不检测 6.x 的键（§4.8） | v4 与 S17 的检测 |
+| 代码 | 删除只为旧版本保留的代码：二进制兼容的成员、`RemovedProperties`、描述 6.x 历史的注释（§5） | — |
+| 文档 | 不提供升级 skill 与静态审计脚本；破坏性变更表与升级说明照常 | §8 的升级 skill |
+
+D5 的其余部分（namespace 字符集、内部 key 的位置、`keyPrefix` 为空时告警）、K8 与 D3 不变。
 
 ## 附录 A：6.8.0 架构审查发现（2026-10-28）
 
