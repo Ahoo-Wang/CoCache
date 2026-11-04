@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-package me.ahoo.cocache.redis.migration
+package me.ahoo.cocache.redis.foreign
 
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
@@ -32,7 +32,8 @@ import java.util.UUID
 import java.util.concurrent.ExecutionException
 
 /**
- * 漏跑迁移：没有数据源的缓存读到 5.x 的数据时默认 `FAIL`——读取失败（fail closed），5.x 数据原样保留，之后仍可迁移。
+ * 没有数据源的读取读到不是本协议写入的内容时失败（fail closed，`CacheReadException` 的原因是 [ForeignFormatException]）：
+ * 内容原样保留，不回收、不留下 lease，计入 `unknownFormats`。
  */
 class ForeignFormatFailTest {
     data class Policy(val id: String, val effect: String)
@@ -57,11 +58,11 @@ class ForeignFormatFailTest {
     }
 
     @Test
-    fun unmigratedJsonFailsAndIsKept() {
+    fun foreignJsonFailsAndIsKept() {
         val name = "policy-$run"
         val key = "cocache:$name:p1"
         val json = mapper.writeValueAsString(Policy("p1", "deny"))
-        Redis5x.string(key, json)
+        ForeignContent.string(key, json)
         val cache = runtime.create(
             storeSpec<String, Policy>(name) {
                 codec = jacksonCodec<Policy>(mapper)
@@ -73,17 +74,17 @@ class ForeignFormatFailTest {
         val asyncError = runCatching { cache.async().get("p1").get() }.exceptionOrNull()
         asyncError.assert().isInstanceOf(ExecutionException::class.java)
         assertForeign(asyncError?.cause, key)
-        Redis5x.get(key).assert().isEqualTo(json)
+        ForeignContent.get(key).assert().isEqualTo(json)
         requireNotNull(runtime.metrics(name)).unknownFormats.assert().isEqualTo(3L)
         requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(0L)
-        Redis5x.exists("cocache:$name:p2").assert().withFailMessage { "no lease left behind" }.isFalse()
+        ForeignContent.exists("cocache:$name:p2").assert().withFailMessage { "no lease left behind" }.isFalse()
     }
 
     @Test
-    fun unmigratedValueFailsForAnExternallySourcedRead() {
+    fun foreignValueFailsForAnExternallySourcedRead() {
         val name = "strict-$run"
         val key = "cocache:$name:k"
-        Redis5x.hash(key, mapOf("a" to "1"))
+        ForeignContent.hash(key, mapOf("a" to "1"))
         // 外部来源的缓存上不带 loader 的读取没有数据源：读不懂的内容不回收，读取失败
         val cache = runtime.create(
             cacheSpec<String, Map<String, String>>(name) {
@@ -93,28 +94,28 @@ class ForeignFormatFailTest {
         )
 
         assertForeign(runCatching { cache["k"] }.exceptionOrNull(), key)
-        Redis5x.fields(key).assert().isEqualTo(mapOf("a" to "1"))
+        ForeignContent.fields(key).assert().isEqualTo(mapOf("a" to "1"))
     }
 
     @Test
-    fun unmigratedNativeSetFailsAndIsKept() {
+    fun foreignNativeSetFailsAndIsKept() {
         val name = "index-$run"
         val key = "cocache:$name:"
-        Redis5x.set(key, listOf("p1", "p2"))
+        ForeignContent.set(key, listOf("p1", "p2"))
         val cache = runtime.create(setStoreSpec<String, String>(name) { elementCodec = StringCodec })
 
         assertForeign(runCatching { cache[""] }.exceptionOrNull(), key)
-        Redis5x.members(key).assert().containsExactlyInAnyOrder("p1", "p2")
+        ForeignContent.members(key).assert().containsExactlyInAnyOrder("p1", "p2")
     }
 
     /**
-     * 有数据源的缓存不受影响：条件回收后回源（6.4 及以前的行为）。
+     * 有数据源的缓存不受影响：按摘要条件回收后回源。
      */
     @Test
     fun cacheWithLoaderStillReclaimsAndReloads() {
         val name = "loaded-$run"
         val key = "cocache:$name:k"
-        Redis5x.string(key, "old")
+        ForeignContent.string(key, "old")
         val cache = runtime.create(
             cacheSpec<String, String>(name) {
                 codec = StringCodec

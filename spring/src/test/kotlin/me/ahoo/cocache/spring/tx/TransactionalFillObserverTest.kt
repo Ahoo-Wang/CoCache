@@ -90,7 +90,7 @@ class TransactionalFillObserverTest {
     private fun Cache<String, String>.gated(): Long = requireNotNull(runtimes.last().admin(name)).metrics.fillsGated
 
     /**
-     * 缺陷复现（C2）：事务内的读穿透把未提交的行写进 L1，回滚之后它留到 `ttl`。机制 1 在回滚时失效它；关闭时（6.x 的行为）留下。
+     * 缺陷复现（C2）：事务内的读穿透把未提交的行写进 L1，回滚之后它留到 `ttl`。机制 1 在回滚时失效它；关闭时留下。
      */
     @Test
     fun rollbackInvalidatesTheFillsOfTheTransaction() {

@@ -24,7 +24,7 @@ import kotlin.coroutines.suspendCoroutine
  * future 工具（协程核心，RFC 0005 V5）：交给用户的异常总是解包后的原始异常（[unwrap]、[awaitOriginal]）；返回给用户的 future
  * 一律新建并显式完成（[relay]），不直接返回依赖阶段（依赖阶段会包装为 `CompletionException`）。
  *
- * 6.x 的续接标记与就地执行（在执行器派发的任务中就地继续 future 链）随异步分支删除（RFC 0005 §5）：协程核心的续接一律经运行时的调度器派发。
+ * 协程核心的续接一律经运行时的调度器派发，从不在执行器派发的任务中就地继续 future 链。
  */
 internal object Futures {
     /**

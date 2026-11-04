@@ -35,7 +35,7 @@ import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.storeSpec
-import me.ahoo.cocache.redis.migration.Redis5x
+import me.ahoo.cocache.redis.foreign.ForeignContent
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.cocache.test.Suspending
@@ -160,10 +160,10 @@ class ConditionalWriteTest {
     fun foreignAndNewerContentFailsAndIsKept() {
         val name = "foreign-$run"
         fun key(id: String) = "cocache:$name:$id"
-        Redis5x.string(key("string"), "{\"id\":1}", ttlSeconds = 3600)
-        Redis5x.set(key("set"), listOf("a", "b"), ttlSeconds = 3600)
-        Redis5x.hash(key("hash"), mapOf("+a" to ""), ttlSeconds = 3600)
-        Redis5x.hash(key("protocol-set"), mapOf("!f" to "1", "+a" to ""), ttlSeconds = 3600)
+        ForeignContent.string(key("string"), "{\"id\":1}", ttlSeconds = 3600)
+        ForeignContent.set(key("set"), listOf("a", "b"), ttlSeconds = 3600)
+        ForeignContent.hash(key("hash"), mapOf("+a" to ""), ttlSeconds = 3600)
+        ForeignContent.hash(key("protocol-set"), mapOf("!f" to "1", "+a" to ""), ttlSeconds = 3600)
         writeNewerValue(key("newer"), 3_600_000)
         writeNewerValue(key("format-1"), 3_600_000, format = 1)
         val expected = mapOf("string" to 0, "set" to 0, "hash" to 0, "protocol-set" to 1, "newer" to 3, "format-1" to 1)
@@ -194,13 +194,13 @@ class ConditionalWriteTest {
             awaitCondition("marker broadcast") { frames.isNotEmpty() }
             frames.map { InvalidationFrame.decode(it).keys }.assert().containsExactly(listOf(key("marker")))
         }
-        Redis5x.get(key("string")).assert().isEqualTo("{\"id\":1}")
-        Redis5x.members(key("set")).assert().containsExactlyInAnyOrder("a", "b")
-        Redis5x.fields(key("hash")).assert().isEqualTo(mapOf("+a" to ""))
-        Redis5x.fields(key("protocol-set")).assert().isEqualTo(mapOf("!f" to "1", "+a" to ""))
-        Redis5x.type(key("newer")).assert().isEqualTo("string")
-        Redis5x.type(key("format-1")).assert().isEqualTo("string")
-        expected.keys.forEach { Redis5x.pttl(key(it)).assert().isBetween(3_000_000L, 3_600_000L) }
+        ForeignContent.get(key("string")).assert().isEqualTo("{\"id\":1}")
+        ForeignContent.members(key("set")).assert().containsExactlyInAnyOrder("a", "b")
+        ForeignContent.fields(key("hash")).assert().isEqualTo(mapOf("+a" to ""))
+        ForeignContent.fields(key("protocol-set")).assert().isEqualTo(mapOf("!f" to "1", "+a" to ""))
+        ForeignContent.type(key("newer")).assert().isEqualTo("string")
+        ForeignContent.type(key("format-1")).assert().isEqualTo("string")
+        expected.keys.forEach { ForeignContent.pttl(key(it)).assert().isBetween(3_000_000L, 3_600_000L) }
         val metrics = requireNotNull(runtime.metrics(name))
         metrics.unknownFormats.assert().isEqualTo(4L * expected.size)
         metrics.writeFailures.assert().isEqualTo(2L * expected.size)
@@ -214,14 +214,14 @@ class ConditionalWriteTest {
     fun reclaimDoesNotTreatForeignContentAsAbsent() {
         val name = "reclaim-$run"
         val key = "cocache:$name:k"
-        Redis5x.set(key, listOf("a"), ttlSeconds = 3600)
+        ForeignContent.set(key, listOf("a"), ttlSeconds = 3600)
         val store = cache(name)
         assertForeignRead(runCatching { store.getIfChanged("k", null) }.exceptionOrNull(), key, 0)
         assertForeignWrite(runCatching { store.putIfMatch("k", null, "v") }.exceptionOrNull(), key, 0)
         assertForeignWrite(runCatching { store.putIfMatch("k", digestOf("a"), "v") }.exceptionOrNull(), key, 0)
-        Redis5x.type(key).assert().isEqualTo("set")
-        Redis5x.members(key).assert().containsExactly("a")
-        Redis5x.pttl(key).assert().isBetween(3_000_000L, 3_600_000L)
+        ForeignContent.type(key).assert().isEqualTo("set")
+        ForeignContent.members(key).assert().containsExactly("a")
+        ForeignContent.pttl(key).assert().isBetween(3_000_000L, 3_600_000L)
         requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(0L)
 
         CacheRuntime.builder().backend(backend).build().use { other ->
@@ -247,9 +247,9 @@ class ConditionalWriteTest {
         val key = "cocache:$name:k"
         val cache = cache(name)
         cache.putIfMatch("k", null, "v1", Duration.ofSeconds(30))
-        Redis5x.pttl(key).assert().isBetween(25_000L, 30_000L)
+        ForeignContent.pttl(key).assert().isBetween(25_000L, 30_000L)
         RedisTestSupport.shiftTtl(key, Duration.ofSeconds(10))
-        val shifted = Redis5x.pttl(key)
+        val shifted = ForeignContent.pttl(key)
         shifted.assert().isBetween(15_000L, 20_000L)
         cache.putIfMatch(
             "k",
@@ -259,15 +259,15 @@ class ConditionalWriteTest {
         ).assert().isEqualTo(ConditionalPut.Conflict(digestOf("v1")))
         cache.getIfChanged("k", digestOf("v1")).assert().isEqualTo(ConditionalGet.Unchanged)
         cache.getIfChanged("k", null).assert().isInstanceOf(ConditionalGet.Present::class.java)
-        Redis5x.pttl(key).assert().isBetween(1L, shifted)
+        ForeignContent.pttl(key).assert().isBetween(1L, shifted)
 
         // 策略 ttl = null：写入清除到期时间（与 put 相同）
         cache.putIfMatch("k", digestOf("v1"), "v2").assert().isInstanceOf(ConditionalPut.Written::class.java)
-        Redis5x.pttl(key).assert().isEqualTo(-1L)
+        ForeignContent.pttl(key).assert().isEqualTo(-1L)
 
         val expiring = cache("expiring-$run", ttl = Duration.ofMinutes(5))
         expiring.putIfMatch("k", null, "v").assert().isInstanceOf(ConditionalPut.Written::class.java)
-        Redis5x.pttl("cocache:expiring-$run:k").assert().isBetween(290_000L, 300_000L)
+        ForeignContent.pttl("cocache:expiring-$run:k").assert().isBetween(290_000L, 300_000L)
     }
 
     /**
@@ -275,8 +275,8 @@ class ConditionalWriteTest {
      * （报告为更高格式，RFC 0005 §4.7）。
      */
     private fun writeUnreadableShapes(key: (String) -> String) {
-        Redis5x.string(key("foreign"), "plain")
-        Redis5x.hash(key("zero"), mapOf("!f" to "0"))
+        ForeignContent.string(key("foreign"), "plain")
+        ForeignContent.hash(key("zero"), mapOf("!f" to "0"))
         writeNewerValue(key("newer"), 60_000)
         // 格式 2 的 String 头，但状态字节不认识
         RedisTestSupport.withCommands {
@@ -344,8 +344,8 @@ class ConditionalWriteTest {
             conditional.putIfMatch(key(id), digestOf("plain"), w, null, frame)
                 .assert().isEqualTo(L1ConditionalWrite.Unreadable(format))
         }
-        Redis5x.get(key("foreign")).assert().isEqualTo("plain")
-        Redis5x.fields(key("zero")).assert().isEqualTo(mapOf("!f" to "0"))
+        ForeignContent.get(key("foreign")).assert().isEqualTo("plain")
+        ForeignContent.fields(key("zero")).assert().isEqualTo(mapOf("!f" to "0"))
 
         conditional.putIfMatch(
             key("value"),
@@ -365,7 +365,7 @@ class ConditionalWriteTest {
         conditional.putIfMatch(key("negative"), null, w, null, frame).assert().isEqualTo(L1ConditionalWrite.Written)
         conditional.readIfChanged(key("negative"), digestOf("w"), null)
             .assert().isEqualTo(L1ConditionalRead.Unchanged(RedisScripts.FORMAT))
-        Redis5x.type(key("newer")).assert().isEqualTo("string")
+        ForeignContent.type(key("newer")).assert().isEqualTo("string")
     }
 
     /**

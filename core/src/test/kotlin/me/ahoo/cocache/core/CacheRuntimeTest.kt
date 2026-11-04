@@ -389,4 +389,34 @@ class CacheRuntimeTest {
             "Cache[bare] - created as Cache on namespace[bare-ns]"
         ).endsWith("L1 capabilities[], ${CacheRuntime.UNLAYERED_NOTE}")
     }
+
+    /**
+     * 空的 `keyPrefix`（RFC 0005 §4.7，S4）：创建时告警一次，说明存储 key 与频道没有公共前缀；有前缀的缓存不告警。
+     */
+    @Test
+    fun emptyKeyPrefixWarnsAtCreation() {
+        val logger = LoggerFactory.getLogger(CacheRuntime::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            CacheRuntime.builder().backend(InMemoryBackend()).build().use {
+                it.create(
+                    cacheSpec<String, String>("bare") {
+                        codec = StringCodec
+                        keyPrefix = ""
+                        externallySourced()
+                    }
+                )
+                it.create(spec("prefixed"))
+            }
+        } finally {
+            logger.detachAppender(appender)
+        }
+        val warnings = appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage }
+            .filter { it.contains("keyPrefix is empty") }
+        warnings.assert().containsExactly(
+            "Cache[bare] - keyPrefix is empty: the keys and the channel of namespace[bare] share no prefix, " +
+                "so ACLs and prefix-based operations cannot be scoped by prefix and must name each namespace."
+        )
+    }
 }

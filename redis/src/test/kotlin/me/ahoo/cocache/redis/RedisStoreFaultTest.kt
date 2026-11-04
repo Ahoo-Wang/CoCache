@@ -198,13 +198,13 @@ class RedisStoreFaultTest {
     }
 
     /**
-     * 当前类路径上的 Lettuce 是否有维护期间的超时放宽（7.x 有，6.x 没有）：本类的用例在两个版本上都要通过。
+     * 当前类路径上的 Lettuce 是否有维护期间的超时放宽（Lettuce 7 有，Lettuce 6 没有）：本类的用例在两个版本上都要通过。
      */
     private fun lettuceHasMaintenanceRelaxation(): Boolean =
         TimeoutOptions::class.java.methods.any { it.name == "getRelaxedTimeout" }
 
     /**
-     * Lettuce 6.x（Spring Boot 4.0 管理的版本）没有维护期间的放宽：缺少的符号在执行到时才抛出，跳过这一项，其余选项照常生效。
+     * Lettuce 6（Spring Boot 4.0 管理的版本）没有维护期间的放宽：缺少的符号在执行到时才抛出，跳过这一项，其余选项照常生效。
      */
     @Test
     fun maintenanceRelaxationIsSkippedWhenLettuceLacksIt() {

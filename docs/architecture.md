@@ -250,7 +250,7 @@ get(key):                                         // CoherentEngine.entryOf
 
 miss:
   if keyFilter?.notExist(k): return 负缓存（absentTtl，不写任何层）
-  tx = 有数据源时 fillObserver.enter()            // 调用入口捕获写事务一次（§5.8），作为协程上下文元素
+  tx = 有数据源时 fillObserver.enter(name)        // 调用入口捕获写事务一次（§5.8），作为协程上下文元素
   if tx?.isPrivate(k): return 私有回源               // 不读写 L1、不写 L2、不经 SingleFlight（§5.8）
   observed = stamps.current(k)
   r = flights.execute(k) { loadThrough }          // SingleFlight；leader 在写事务中时结果只给自己
@@ -420,12 +420,12 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 
 `cocache-core` 只提供钩子，事务语义由集成方给出（Spring 的实现见 §11.3）。`FillObserver` 经 `CacheRuntime.Builder.fillObserver` 设置，存于 `EngineContext`，默认 `FillObserver.NONE`。
 
-- **调用入口捕获一次**（S7）：同步变体（`get`、`lookup`、`getAll`、`lookupAll`、`get(key, loader)`）在 L2 未命中、且这次读取带数据源时，在调用方线程上调用 `enter()` 一次，返回的 `FillScope` 作为协程上下文元素（`FillContext`，与 `ExecutionMode` 分开）随 `runSync` 交给未命中路径；之后的门控与记录只用它，不在填充时读线程绑定的状态。L2 命中、没有数据源的读取、异步与挂起变体、提前刷新都不调用它，一律不门控、不记录：它们的 loader 不在调用方线程上，不在调用方的事务内。
+- **调用入口捕获一次**（S7）：同步变体（`get`、`lookup`、`getAll`、`lookupAll`、`get(key, loader)`）在 L2 未命中、且这次读取带数据源时，在调用方线程上调用 `enter(cacheName)` 一次（默认同 `enter()`；按缓存配置的实现对两个机制都关闭的缓存返回 `null`），返回的 `FillScope` 作为协程上下文元素（`FillContext`，与 `ExecutionMode` 分开）随 `runSync` 交给未命中路径；之后的门控与记录只用它，不在填充时读线程绑定的状态。L2 命中、没有数据源的读取、异步与挂起变体、提前刷新都不调用它，一律不门控、不记录：它们的 loader 不在调用方线程上，不在调用方的事务内。
 - **私有回源**（机制 2）：`isPrivate(key)` 为真的 key 不申请 lease、不读也不写 L1、不写 L2、不注册 SingleFlight，回源结果只交给这次调用（`Lookup.Present` 的到期时间为现在），计入 `fillsGated`（`cocache.fills.gated`）。回源照常受许可与观测约束；本线程对这些 key 的重入快速失败（`SingleFlight.loadingPrivately`，与领头的同步调用共用重入标记）。批量读取逐 key 判断，私有的 key 一次批量回源。
 - **记录填充**（机制 1）：数据源产生的值写入 L1 或 L2 之前（凭 lease 的 `FILL`、只写 L2 的降级填充、批量写回），经 `filled(key)` 记入事务；读到 L1 已有的值不记录。写入失败时多一次失效，无害。
 - **leader 不共享**（S15）：带 `FillScope` 的调用作为 leader 时，`Loaded` 带上它（`owner`），跟随者（不在它的事务内）按合并规则不接受、自行回源：否则其它调用方经 flight 拿到未提交的值，回滚之后撤不回。
 - **`FillKey`** 是 (keyspace, 编码 key)（S24），与经哪个对象访问无关（引擎、接口代理、`JoinCache` 的一侧、另一个运行时中同一 keyspace 的缓存相等）。`FillKey.of(cache, key)` 解开接口代理，不是 CoCache 的单值引擎时为 `null`；`evictLocal()` 只在本节点递增戳、淘汰 L2；`FillKey.invalidateAll(keys)` 按缓存分组，每个缓存一次走正常的失效路径（同 `CacheAdmin.invalidateEncoded`：派生副本失效、带版本的派生副本保留版本），一个缓存失败不影响其余缓存，最后抛出第一个异常。
-- 命中路径不变：`enter()` 只在未命中路径上调用，`NONE` 时没有上下文元素、没有分配。
+- 命中路径不变：`enter(cacheName)` 只在未命中路径上调用，`NONE` 时没有上下文元素、没有分配。
 
 ## 6. 写路径
 
@@ -604,7 +604,7 @@ L2 填充（`fillGuarded`，RFC 0005 §4.5）：
 
 - 写入方的单个 key 淘汰与填充的 `compute` 在同一个桶的锁上串行化。写入方的递增若早于填充在锁内的校验，填充不写；若晚于它，写入方随后的淘汰删掉这一份。所以写入方返回之后，旧值不会再出现在本节点的 L2 中。
 - 校验不能与写入分开（先校验、再写入、复核失败才撤销）：校验刚通过时整个写入方完成，旧值随后写入，撤销之前对读取可见，写入方返回之后本节点仍可能读到写入之前的值（RFC 0005 附录 A.D4）。
-- 重置与 `clearLocal` 按快照清空，看不到进行中的 `compute`，由写后复核撤销。这是程序顺序上的界，不是时间上的界（RFC 0005 Q11）。
+- 重置与 `clearLocal` 按快照清空，看不到进行中的 `compute`，由写后复核撤销。这是程序顺序上的界，不是时间上的界；严格的线性化（读写锁）不采用，它会在 L2 命中路径上加锁（RFC 0005 Q11）。
 - 复核按身份撤销（`remove(key, entry)`），不删掉其间别的填充写入的副本。因此 `LocalEntry` 按身份比较：不得改为 data class，也不得重写 `equals`。
 - 进入 `compute` 之前先校验一次，失败就不进。
 
@@ -706,7 +706,7 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
 | `cocache.defaults.cache.*` / `cocache.defaults.store.*` | `DEFAULTS` | **低于声明**：只作用于声明没有写出的字段（`Spec.declaredFields`）。整体赋值 `policy` 的声明写出全部字段，每个条目以 “the declaration sets the whole policy” 跳过 |
 | 声明（注解或 spec DSL） | `DECLARATION` | 写出的字段：设置了的注解属性（不是 `UNSET`；设置了 `maximumSize` 的 `@CaffeineCache` 写出 `local-maximum-size`）；`policy { … }` / `updatePolicy` 中赋值的字段，含 `forever()`、`off()`、`unlimited()` 等哨兵，`lease` / `load` / `local` 的整体赋值只写出值有变化的字段；赋值的 `unknownRead` |
 | `CacheSpecCustomizer`（按 Spring 顺序） | `CUSTOMIZER`（detail 为类名） | 看到的是叠加了 `defaults` 的声明。只能修改策略字段与不决定类型的字段（U16）：修改数据来源、被锁定的字段或布局时抛出 `IllegalStateException` |
-| `cocache.overrides.cache.*` / `cocache.overrides.store.*` | `OVERRIDES`（detail 为收紧之前的值） | **只收紧**：陈旧界限取 `min(下层的值, override)`，`read-failure` 取更严的值；其余字段跳过 |
+| `cocache.overrides.cache.*` / `cocache.overrides.store.*` | `OVERRIDES`（detail 为收紧之前的值） | **只收紧**：陈旧界限取 `min(下层的值, override)`，`read-failure`、`fill-in-transaction` 与 `invalidate-fills-on-rollback` 取更严的值；其余字段跳过 |
 | `cocache.caches.[name].*` | `CACHES`；越过锁定时 `UNLOCKED` | 设定任何适用的字段，另有 `unknown-read`、`key-prefix`、`unlock` |
 
 被锁定的字段从一开始就标注为 `LOCKED`（detail “locked by <by>”）。之后依次执行库的约束（`Locks.constrain`，被改变的字段为 `LOCKED`，detail “constrained by <by>”）、校验连锁（`CLAMPED`）、构建生效声明（`CachePolicy` 与 spec 的构造校验），最后在工厂中执行 `Locks.verify`。`cache` 一节作用于派生副本（`Cache`、`VersionedCache`），`store` 一节作用于权威副本（`Store`、`VersionedStore`、`SetStore`）。
@@ -718,6 +718,7 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
   | `ttl`（`Cache`） | 陈旧界限 | 设定 | 取 min，并设定按调用寿命的上限（见下） | 设定 |
   | `local-max-age`、`degraded-local-max-age`、`absent-ttl` | 陈旧界限 | 设定 | 取 min | 设定 |
   | `read-failure` | 有严格序的模式，`throw` 严于 `degrade` | 设定 | 取更严的值 | 设定 |
+  | `fill-in-transaction`、`invalidate-fills-on-rollback`（不是策略字段，§11.3） | 有严格序的模式，`private` 严于 `registered-keys` 严于 `allow`；`true` 严于 `false` | 设定 | 取更严的值 | 设定 |
   | `invalidate-failure` | 没有严格序的模式 | 设定 | 不允许 | 设定 |
   | `lease-wait`、`load-timeout`、`load-acquire-timeout`、`read-timeout` | 等待界限 | 设定 | 不允许 | 设定 |
   | `ttl`（`VersionedCache`）、`tombstone-ttl` | 版本栅栏的寿命 | 设定 | 不允许 | 设定 |
@@ -790,7 +791,7 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
 | `cocacheSpecRegistrar`（`CacheSpecRegistrar`） | `cocache.enabled` 未关闭（静态 `@Bean`，`BeanFactoryPostProcessor` 需在其它 bean 之前注册） |
 | `cocacheCacheManager`（`CoCacheSpringCacheManager`） | 没有其它 `CacheManager`；有 spring-tx 时包装为 CoCache 的事务装饰器 `TransactionAwareSpringCacheManager`（§11.3），事务结束之后的失败交给缓存通知（`CacheAspectSupport`）的 `CacheErrorHandler`。`retrieve` 经缓存的异步视图（§11.3） |
 | `cocacheTransactionalInvalidator` | 有 spring-tx |
-| `cocacheFillObserver`（`FillObserver`，`TransactionalFillObserver`） | 有 spring-tx，没有其它 `FillObserver` bean。`cocacheRuntime` 经 `ObjectProvider` 取唯一的 `FillObserver`（§5.8、§11.3）。`cocache.invalidate-fills-on-rollback=false` 且 `cocache.fill-in-transaction=allow` 时为 `FillObserver.NONE` |
+| `cocacheFillObserver`（`FillObserver`，`TransactionalFillObserver`） | 有 spring-tx，没有其它 `FillObserver` bean。`cocacheRuntime` 经 `ObjectProvider` 取唯一的 `FillObserver`（§5.8、§11.3）。两个机制按缓存名读 `cocacheTransactionalFillModes`（`TransactionalFillModes`，条件相同，`CacheAssembler` 在分层时登记）；对一个缓存都关闭时 `enter(cacheName)` 返回 `null` |
 | `cocacheSpringCacheSyncCheck`（`SpringCacheSyncCheck`） | 运行时存在（§11.3）。同时检查缓存通知与事务通知的 order、指向不是 `Cache` 的缓存的操作 |
 | `cocacheDegradingCacheErrorHandler`（`SmartInitializingSingleton`） | 运行时存在，且 `cocache.spring-cache.degrade-on-error=true`。全部单例创建之后把每个缓存通知的处理器换成 `DegradingCacheErrorHandler`（§11.3） |
 | `cocacheEndpoint`（`CoCacheEndpoint`） | 有 actuator，运行时存在，且端点可用（`management.endpoints.web.exposure.include` 等暴露配置包含 `cocache`、访问未被关闭） |
@@ -844,10 +845,11 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
   - **一个缓存失败不影响其余缓存**：逐个缓存执行，全部执行之后抛出第一个异常，其余作为它的 suppressed。`afterCompletion` 中的异常由 Spring 记录日志，不抛给调用方，也不掩盖回滚的原因。
   - **只支持线程绑定的同步**（`PlatformTransactionManager`）。响应式事务（`ReactiveTransactionManager`，如 R2DBC，包括 `@Transactional` 挂起函数）的同步在 Reactor 上下文中，`TransactionalInvalidator` 看不到，会立即失效，即在提交之前；这类事务由调用方在事务结束之后失效。不告警：同步调用无法识别响应式事务（它们不设置线程绑定的标记），而“`isActualTransactionActive()` 为真但同步未激活”正是 `afterCompletion` 中的状态，会误报。
   - 测试：`cocache-spring` 的 `TransactionalInvalidatorTest`、`TransactionAwareSpringCacheTest` 与 `CoCacheSpringCacheTest`，事务管理器是 `AbstractPlatformTransactionManager` 的内存实现（`InMemoryTransactionManager`：写入在提交之前只对本事务可见，支持挂起、`NESTED` 与编程式 savepoint）；starter 的 `TransactionalCacheTest` 经 Spring Cache 注解与装配的 `cocacheCacheManager`、`cocacheTransactionalInvalidator` 验证提交、回滚、回滚到 savepoint、`afterCommit` 失败的去向、`degrade-on-error`、通知 order 的告警与 `allEntries` 的告警。
-- **写事务内的回源**（`TransactionalFillObserver`，`cocache-spring`，RFC 0005 §4.9 C2、S7、S15、S24；core 的钩子见 §5.8）：`enter()` 只认线程绑定的、非只读的实际事务（同步已激活、`isActualTransactionActive()`、不是只读），返回持有这个事务的登记（`TransactionalOperations`，与 `TransactionalInvalidator` 同一份）的视图。只读事务的快照陈旧、非 Spring 管理的事务与响应式事务都看不到。两个相互独立的机制：
-  - **机制 1：回滚时失效事务内的填充**（`cocache.invalidate-fills-on-rollback`，默认开启）：数据源在事务内产生、写入 L1 或 L2 的 key（含 L1 读失败、等待 lease 超时、失效重试中之后只写本节点 L2 的降级填充）记入登记；回滚与提交结果未知时在 `afterCompletion` 中、于登记的失效之后失效（已登记失效的 key 跳过），回滚到 savepoint 时在 `savepointRollback` 中与登记的 key 一起立即失效（失败只记录日志），提交时什么也不做（读到的就是本事务提交的数据）；本事务完成之后的回源不再记录。代价只在回滚时出现：未提交数据的残留从 `ttl` 收紧到事务时长，覆盖“应用什么也没登记”的情形。
-  - **机制 2：私有回源**（`cocache.fill-in-transaction`：`registered-keys` 默认、`private`、`allow`）：`registered-keys` 下本事务已登记失效的 key（经 `TransactionalInvalidator`、`@CacheEvict`、`evictIfPresent`、`put(k, null)`）的回源是私有的；`private` 下写事务内的全部回源都是私有的（写事务内 L2 未命中的读取每次回源）；`allow` 不门控（仍受机制 1 保护）。登记失效时立即在本节点递增戳、淘汰本地副本（`FillKey.evictLocal`，三种取值都一样：登记即“本事务改了它”，提前淘汰无害），本事务接着读到自己的写入；`registered-keys` 仍不提供事务内的读己之写：登记之后本节点其它线程照常从 L1 把已提交的旧值填回 L2，本事务之后的读取可能命中它。“已登记”按 (keyspace, 编码 key) 匹配（S24）。`cocache.fill-in-transaction` 是全局配置，不参与按缓存的分层（§10.2）：`TransactionalFillObserver` 的主构造函数按缓存名取值（`Function<String, FillInTransaction>`），starter 为每个缓存给出同一个值。
-  - 两个机制都关闭时 starter 装配 `FillObserver.NONE`：不门控、不记录，事务中的 leader 也照常共享结果。
+- **写事务内的回源**（`TransactionalFillObserver`，`cocache-spring`，RFC 0005 §4.9 C2、S7、S15、S24；core 的钩子见 §5.8）：`enter(cacheName)` 先判断是否处于线程绑定的、非只读的实际事务，再按缓存名取两个机制的值，都关闭时返回 `null`。只认线程绑定的、非只读的实际事务（同步已激活、`isActualTransactionActive()`、不是只读），返回持有这个事务的登记（`TransactionalOperations`，与 `TransactionalInvalidator` 同一份）的视图。只读事务的快照陈旧、非 Spring 管理的事务与响应式事务都看不到。两个相互独立的机制：
+  - **机制 1：回滚时失效事务内的填充**（`invalidate-fills-on-rollback`，默认开启）：数据源在事务内产生、写入 L1 或 L2 的 key（含 L1 读失败、等待 lease 超时、失效重试中之后只写本节点 L2 的降级填充）记入登记；回滚与提交结果未知时在 `afterCompletion` 中、于登记的失效之后失效（已登记失效的 key 跳过），回滚到 savepoint 时在 `savepointRollback` 中与登记的 key 一起立即失效（失败只记录日志），提交时什么也不做（读到的就是本事务提交的数据）；本事务完成之后的回源不再记录。代价只在回滚时出现：未提交数据的残留从 `ttl` 收紧到事务时长，覆盖“应用什么也没登记”的情形。
+  - **机制 2：私有回源**（`fill-in-transaction`：`registered-keys` 默认、`private`、`allow`）：`registered-keys` 下本事务已登记失效的 key（经 `TransactionalInvalidator`、`@CacheEvict`、`evictIfPresent`、`put(k, null)`）的回源是私有的；`private` 下写事务内的全部回源都是私有的（写事务内 L2 未命中的读取每次回源）；`allow` 不门控（仍受机制 1 保护）。登记失效时立即在本节点递增戳、淘汰本地副本（`FillKey.evictLocal`，三种取值都一样：登记即“本事务改了它”，提前淘汰无害），本事务接着读到自己的写入；`registered-keys` 仍不提供事务内的读己之写：登记之后本节点其它线程照常从 L1 把已提交的旧值填回 L2，本事务之后的读取可能命中它。“已登记”按 (keyspace, 编码 key) 匹配（S24）。
+  - 两个机制都按缓存分层（§10.2）：`cocache.defaults.cache.*` → `cocache.overrides.cache.*`（取更严的值：`private` 严于 `registered-keys` 严于 `allow`，`true` 严于 `false`）→ `cocache.caches.[name].*`，没有声明层；只作用于 `Cache` 与 `VersionedCache`（含 `get(key, loader)`），权威副本上全局层跳过、`caches.[name]` 按 `caches-validation` 处理；未分层的缓存取类型默认值（`true`、`registered-keys`）。有 spring-tx 时报告列出两者及来源。`TransactionalFillObserver` 的主构造函数按缓存名取两个值（`Predicate<String>`、`Function<String, FillInTransaction>`）。
+  - 两个机制对一个缓存都关闭时，`enter(cacheName)` 对它返回 `null`：与 `FillObserver.NONE` 相同，不门控、不记录，事务中的 leader 也照常共享结果。
   - 测试：`cocache-core` 的 `FillObserverTest`（入口捕获、私有回源、记录、leader 不共享、重入、`FillKey`），`cocache-spring` 的 `TransactionalFillObserverTest`（回滚、结果未知、savepoint、降级填充、三种取值、只读事务），starter 的 `TransactionalFillTest`（经 `@Cacheable(sync = true)` 与 `@CacheEvict`，及两种通知嵌套）。
 - **事务装饰器**（`TransactionAwareSpringCacheManager` / `TransactionAwareSpringCache`，`cocache-spring`，RFC 0005 §4.9 U3）：有 spring-tx 时 starter 用它包装 `CoCacheSpringCacheManager`，取代 Spring 的 `TransactionAwareCacheManagerProxy`。装饰器按缓存名缓存，缓存通知每次取缓存不再分配。事务同步激活时（与 Spring 的装饰器相同，按 `isSynchronizationActive()` 判断）：
   - **`evict`**（`@CacheEvict`）登记到当前事务的登记：提交、回滚、回滚到 savepoint 时都失效。Spring 的装饰器只在提交之后失效：同一事务内先 `@CacheEvict` 再 `@Cacheable(sync = true)` 读穿透，回滚之后未提交的数据留在 L1 直到 `ttl`。
@@ -944,8 +946,8 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
   - 异步与挂起变体在观测专用的线程上调用它（每次被观测的回源一个虚拟线程，`cocache-observe-N`，与 `cocache.executor` 无关，从不是调用方线程，§5.6）：这个线程等待整个回源结束，观测因此覆盖整个回源，直到数据源的 future 完成。调用观测器时已装上调用方协程上下文中的 `ThreadContextElement`（挂起调用方的 MDC、追踪上下文），被观测的回源因此接在调用方的观测之下；异步视图（`CompletableFuture`）的调用方没有这类元素。block 从这个线程上开始，`loadAsync` 的同步部分看得到观测器设置的线程局部状态（如 Micrometer 的当前观测，追踪上下文可以传下去）。引擎超时记为结果 `timeout`。
 
   starter 的 `CoCacheObservationAutoConfiguration`（`@ConditionalOnClass(ObservationRegistry)`、`@ConditionalOnBean(ObservationRegistry)`、`cocache.observation.enabled`）注册 `MicrometerLoadObserver`：Observation `cocache.load`，低基数标签 `cache`、`operation`、`outcome`（`success` / `error` / `timeout`：引擎的超时 `SourceLoadTimeoutException`），高基数标签只有 `key.count`；block 在 `openScope()` 内执行，`loadAsync` 的同步部分能看到当前观测；`cocacheRuntime` 经 `ObjectProvider` 取唯一的 `LoadObserver`，因此 `cocache-core` 不依赖 Micrometer，没有 Micrometer 时该自动配置整体跳过。
-- **actuator 端点 `cocache`**（基于 `CacheAdmin`）：`GET /actuator/cocache` 列出缓存与计数，`GET /actuator/cocache/{name}` 查看单个缓存，`DELETE /actuator/cocache/{name}` 清空本节点 L2，`GET /actuator/cocache/{name}/{key}` 查看一个 key，`DELETE /actuator/cocache/{name}/{key}` 按 key 删除（按类型映射，见下面的 `invalidateEncoded`；响应带 `deletion`，即 `CacheAdmin.KeyDeletion`），`DELETE /actuator/cocache/{name}/{key}?purge=true` 清除并丢掉版本（只用于带版本的类型，其它类型 400）。删除唯一副本的按 key 删除要显式开关（`CoCacheEndpointProperties`，RFC 0005 §4.9 运维入口，默认都关闭）：`Store` 与 `SetStore` 要 `management.endpoint.cocache.allow-store-delete=true`，`VersionedStore` 的删除与 `?purge=true` 要 `management.endpoint.cocache.allow-purge=true`；没有开启时不修改任何东西，HTTP 上返回 403，响应体指出要开启的开关（经 JMX 时抛出 `DeletionNotAllowedException`）。`Cache` 的失效与 `VersionedCache` 保留版本的 `evict` 不需要开关。`{key}` 是**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分，可含 `/`，按剩余路径段匹配），适用于任意 key 类型；未知缓存的 GET 与 DELETE 都返回 404（不做任何事；DELETE 的状态码由 web 扩展 `CoCacheEndpointWebExtension` 映射，拼错的缓存名因此不会静默成功）；空 key 返回 400。
-- **`CacheAdmin`**（运维接口，不属于用户 API）：`name`、`apiType`、`layered`、`policyReport`（未分层时为 `null`）、`metrics`、`localSize`、`pendingInvalidationCount`、`clearLocal()`、`inspect(encodedKey)`、`invalidateEncoded(encodedKey)`、`keyDeletion`（`invalidateEncoded` 对这个类型做什么：`INVALIDATE`、`EVICT`、`DELETE`、`PURGE`、`CLEAR`）、`purgeEncoded(encodedKey)`（只有带版本的类型支持）。
+- **actuator 端点 `cocache`**（基于 `CacheAdmin`）：`GET /actuator/cocache` 列出缓存与计数，`GET /actuator/cocache/{name}` 查看单个缓存，`DELETE /actuator/cocache/{name}` 清空本节点 L2，`GET /actuator/cocache/{name}/{key}` 查看一个 key，`DELETE /actuator/cocache/{name}/{key}` 按 key 删除（按类型映射，见下面的 `invalidateEncoded`；响应带 `deletion`，即 `CacheAdmin.KeyDeletion`），`DELETE /actuator/cocache/{name}/{key}?purge=true` 清除并丢掉版本（只用于带版本的类型，其它类型 400），`POST /actuator/cocache/{name}/{key}` 只广播这个 key 的失效帧、不修改 L1（`broadcastEncoded`，对任何类型都安全，不需要开关）。写操作（DELETE 与 POST）受 `management.endpoint.cocache.access` 约束。删除唯一副本的按 key 删除要显式开关（`CoCacheEndpointProperties`，RFC 0005 §4.9 运维入口，默认都关闭）：`Store` 与 `SetStore` 要 `management.endpoint.cocache.allow-store-delete=true`，`VersionedStore` 的删除与 `?purge=true` 要 `management.endpoint.cocache.allow-purge=true`；没有开启时不修改任何东西，HTTP 上返回 403，响应体指出要开启的开关（经 JMX 时抛出 `DeletionNotAllowedException`）。`Cache` 的失效与 `VersionedCache` 保留版本的 `evict` 不需要开关。`{key}` 是**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分，可含 `/`，按剩余路径段匹配），适用于任意 key 类型；未知缓存的 GET、DELETE 与 POST 都返回 404（不做任何事；DELETE 与 POST 的状态码由 web 扩展 `CoCacheEndpointWebExtension` 映射，拼错的缓存名因此不会静默成功）；空 key 返回 400。
+- **`CacheAdmin`**（运维接口，不属于用户 API）：`name`、`apiType`、`layered`、`policyReport`（未分层时为 `null`）、`metrics`、`localSize`、`pendingInvalidationCount`、`clearLocal()`、`inspect(encodedKey)`、`invalidateEncoded(encodedKey)`、`broadcastEncoded(encodedKey)`（只广播失效帧：本节点先递增戳、淘汰 L2，因为自己的帧被过滤；发布失败时抛出）、`keyDeletion`（`invalidateEncoded` 对这个类型做什么：`INVALIDATE`、`EVICT`、`DELETE`、`PURGE`、`CLEAR`）、`purgeEncoded(encodedKey)`（只有带版本的类型支持）。
   - `inspect` 是纯读取，**不触碰命中路径**：L2 用 `getIfPresentQuietly`（不影响淘汰统计），L1 用不带 lease 与刷新令牌的 `read(key, null, null)`（读脚本在参数为空时不写任何状态）；不经 SingleFlight、不取戳、不写任何一层、不计入指标、不回收损坏内容。值用缓存的 `Codec` 解码后以 `toString()` 展示，截断到 256 字符；解码失败、未知或更高格式返回 `UNREADABLE`，L1 读失败返回 `ERROR`。
   - `invalidateEncoded` 按类型：`Cache` 走正常的失效路径（§6.1，失败按 `invalidateFailure` 处理），幂等；`VersionedCache` 是保留版本的失效（`evict`，§6.6），带版本的内容转为 `E`；`Store` 等价于 `delete`、`VersionedStore` 等价于 `purge`、`SetStore` 等价于 `clear(key)`；后四者失败时抛出，不进入失效重试。端点据 `keyDeletion` 决定要不要开关（见上）。
   - `inspect` 在权威副本上同样校验摘要段（不计数），不一致时展示为 `UNREADABLE`；外部来源的缓存未填充的 L2 副本展示为 `UNFILLED`。
@@ -961,7 +963,7 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
 ./gradlew :cocache-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit   # 单次试跑；check 只编译不运行
 ```
 
-- 基准：`redis/src/jmh` 的 `CoCacheBenchmark`，方法 `l2Hit`、`l2HitViaInterface`、`l2HitMixed`（轮流访问三个配置不同的缓存）、`l1Read`、`l1SequentialRead`、`l1BatchRead`、`missLoad`、`set`、`invalidate`。`-PjmhIncludes` 是正则，`l2Hit` 同时匹配三个 L2 基准。
+- 基准：`redis/src/jmh` 的 `CoCacheBenchmark`，方法 `l2Hit`、`l2HitViaInterface`、`l2HitMixed`（轮流访问三个配置不同的缓存）、`l2HitAbsent`（权威缓存的 `Absent`）、`l2HitUnfilled`（外部来源的“未填充”）、`l1Read`、`l1SequentialRead`、`l1BatchRead`、`missLoad`、`set`、`invalidate`。`-PjmhIncludes` 是正则，`l2Hit` 同时匹配全部 L2 基准。接口式声明经 starter 装配、带 `keyExpression` 的命中在 starter 的 `AnnotatedCacheBenchmark`（`l2HitAnnotated`、`l2HitKeyExpression`，`-m :cocache-spring-boot-starter`）。
 - 必须加 `--rerun`：参数不变时 Gradle 判定 `jmh` 任务为最新，静默沿用上次的结果。
 - 前后对比用 `scripts/jmh-compare.sh`，它固化了下面的方法，输出可直接贴进 PR 的 Markdown 表格（原始 JSON 保留在输出目录）：
   - **每次只跑一个基准**（精确正则 `^.*\.<name>$`）：同一个 `jmh` 任务里排在后段的基准在 8 线程下会因长时间满载而明显变慢（实测低 20%–30%），单独运行时回到基线（RFC 0004 §14）。
@@ -1008,7 +1010,7 @@ scripts/jmh-compare.sh -b l2Hit,l2HitViaInterface,l2HitMixed -t 1,8   # 与 orig
 - **I-6 loader 的线程**：同步变体在调用方线程上执行阻塞的 loader（事务、SecurityContext、MDC 等 ThreadLocal 可用）；异步与挂起变体在运行时的执行器（默认虚拟线程）上执行它。异步数据源（`loadAsync`）在调用方线程或 CoCache 的线程（运行时的执行器；有观测器时为观测线程）上调用，调用级挂起 loader 在这次加载的协程中执行；spec 级挂起 loader 在它自己的 `context` 中执行。Future 只包装 I/O：L1 与数据源的 future 完成之后，续接回到调用方线程（同步变体）或派发到运行时的执行器（异步与挂起变体），从不在完成它的线程上就地继续，**事件循环线程上不执行续接**；挂起变体的调用方从不在 L1 客户端的完成线程上恢复；Redis 后端在恢复之后、调用方的调度器上转换脚本返回值（§9）。
 - **I-18 异步视图不挂起线程、不同步抛出**：未命中挂起协程，等待 lease 与回源许可都不占线程（阻塞的 loader 在运行时的执行器上执行）；失败以原始异常（不包装为 `CompletionException`）完成返回的 future，异步方法从不同步抛出（§5.6）。
 - **I-I 一份协议**：每个协议分支只有一份（`suspend`）实现；同步、异步、挂起三种变体在其上提供，不复制分支（§5.6）。
-- **I-J 事务内的回源**（启用 Spring 集成、按默认配置时；`cocache.invalidate-fills-on-rollback=false` 关闭第一条，`cocache.fill-in-transaction=allow` 关闭第三条，两者都关闭时也不再有第二条，§11.3）：写事务内 loader 产生、进入任何共享层的 key，在回滚、回滚到 savepoint 或结果未知时失效；事务内 leader 的结果不与事务外的跟随者共享；已登记失效的 key（按 keyspace 与编码后的 key 匹配）的回源结果只返回给本次调用。事务上下文在调用入口捕获，异步与挂起变体不在此列（§5.8、§11.3）。
+- **I-J 事务内的回源**（启用 Spring 集成、按默认配置时；按缓存的 `invalidate-fills-on-rollback: false` 关闭第一条，`fill-in-transaction: allow` 关闭第三条，两者都关闭时也不再有第二条，§11.3）：写事务内 loader 产生、进入任何共享层的 key，在回滚、回滚到 savepoint 或结果未知时失效；事务内 leader 的结果不与事务外的跟随者共享；已登记失效的 key（按 keyspace 与编码后的 key 匹配）的回源结果只返回给本次调用。事务上下文在调用入口捕获，异步与挂起变体不在此列（§5.8、§11.3）。
 
 ### 15.5 按类型的写入
 

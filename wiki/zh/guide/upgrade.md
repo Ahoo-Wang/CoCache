@@ -159,3 +159,25 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | — | 新增：`ConditionalL1Store.deleteIfMatch`、`VersionedL1Store.evictKeepingVersion`、读取的 `timeout`、`Envelope.Scalar.writer` 与 `digest`、表示命令从未发出的 `L1RejectedException` |
 | `InvalidationListener.onInvalidated` 收到存储 key | 收到编码后的 key，即 `{keyPrefix}{namespace}:` 之后的部分 |
 | TCK：`Async*Spec` 套件、`EngineSpec.supportsConditionalWrites` | 删除：每个套件都声明 `expectedCapabilities`，能力不符时失败（fail closed）；`access = CacheAccess.ASYNC` 经异步视图重跑套件（见 [TCK](../architecture/extending.md#tck)） |
+
+## 下游项目 {#downstream}
+
+两个已知的下游项目适配 8.0 要改的地方。两者都不带数据过来：[CoSec](https://github.com/Ahoo-Wang/CoSec) 没有已发布的版本需要兼容，[Wow](https://github.com/Ahoo-Wang/Wow) 的状态视图从事件存储重建。
+
+**CoSec**
+
+- **类型。** 策略快照、控制面缓存、两个撤销表（带 `unknownRead = ABSENT`）与影子缓存（带显式 `ttl`）改为 [`Store`](./store.md)。`MembershipCache` 改为 `externallySourced()` 的 `Cache`，它的调用级 loader 让 `read-failure: throw` 照常生效。
+- **装配。** 所有缓存都经 [`CoCacheFactory`](./caches.md#factory) 创建，取代 `CoSecCacheAssembler`；经 `runtime.create` 创建的缓存不受配置各层影响。`pinnedPolicy` 改为 [`lock` 与 `constrain`](./configuration.md#locks)，`expiringFailClosed` 改为让 `ttl` 保持有限的约束。
+- **布局。** 把前缀从 namespace 移到 `keyPrefix`：含 `:` 的 namespace 在创建时失败。存储 key 的字符串不变，`~cosec:*` 的 ACL 照常覆盖，但频道变为 `{keyPrefix}inv:{namespace}`。
+- **失效监听。** `InvalidationListener` 收到的是编码后的 key。`PolicySnapshotCache.snapshotKeyOf` 按 `"$namespace:"` 从存储 key 中剥前缀，须改为原样使用编码 key；否则每一条策略变更通知都被丢掉，也不报错。
+- **读取。** `when (lookup)` 须处理 `Lookup.Unknown`（编译错误会指出）。订阅改经 `InvalidationChannel` SPI。
+- **摘要。** 修订记录的 key、修订索引、`parent` 与 `base.digest` / `checkedWith` 持有带算法标识的 SHA-256 `Digest`（`SHA-256:…`）；`getIfChanged` 的用法不变。
+- **部署。** 让 `INFO memory` 可读，或配置 `cocache.redis.assume-maxmemory-policy`：有权威缓存时，`allkeys-*` 与读不到的策略都会启动失败（见[驱逐检查](./configuration.md#eviction-check)）。在 [ACL](#acl) 中放开频道模式。
+
+**Wow**
+
+- `cacheSpec { suspendingVersionedLoader(…) }` 改为 `versionedCacheSpec { suspendingVersionedLoader(…) }`，`StarterCaches` 经 `CoCacheFactory` 创建缓存。
+- 依赖 `cocache-core`，不再依赖 `cocache-coroutines`。`StateViewCaches.CacheFactory` 的签名改变，Wow 因此需要大版本。
+- `cocache.defaults.cache.refresh-window` 现在也作用于状态视图。不需要时在声明中写 `refreshWindow = off()`，或者接受经所有者的刷新回源。
+- 运维手册中的删除改用 `evict`，它保留版本。
+- 所有者与全部读者服务在同一个发布窗口切换：8.x 的读者冷启动，从所有者回源。

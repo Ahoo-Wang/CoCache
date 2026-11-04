@@ -33,10 +33,9 @@ import java.util.UUID
 import java.util.concurrent.ExecutionException
 
 /**
- * 按版本有序的写入在真实 Redis 上的线格式与兼容性（standalone、Cluster、Valkey）：
- * - 带版本的内容仍是格式 1 的 36 字节头：令牌位置是 `VERSION_MARK` + 版本，签发时间是 `+inf`，载荷不变；
- * - 6.x 的读脚本与本版本相同（SHA 不变），6.7.0 的 fill / release 不会匹配带版本的内容；
- * - 读不懂的内容总是拒绝，与条件写入相同（与 `foreignFormat` 无关）。
+ * 按版本有序的写入在真实 Redis 上的线格式（standalone、Cluster、Valkey）：
+ * - 带版本的值与墓碑：版本在版本段，令牌位置是空的；权威标量另带写入标识（格式 2，RFC 0005 §4.7）；
+ * - 读不懂的内容（格式 0、更高的格式）总是拒绝，与条件写入相同。
  */
 class VersionedWriteTest {
     private val run = UUID.randomUUID().toString()

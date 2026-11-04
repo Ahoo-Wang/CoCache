@@ -134,17 +134,20 @@ open class LocalHitsTest {
         metrics.remoteHits.assert().isEqualTo(1)
     }
 
+    /**
+     * 外部来源缓存的“未填充”（RFC 0005 §4.1）：不带 loader 的读取由 L2 回答“不存在”；带调用级 loader 的读取不接受它，不计为 L2 命中。
+     */
     @Test
-    fun unresolvedLocalEntryIsNotALocalHitForCallerLoader() {
+    fun unfilledLocalEntryIsNotALocalHitForCallerLoader() {
         val accessed = cache(recordLocalHits = true) { external() }
         val cache = accessed.cache
         val metrics = accessed.metrics
         cache["k"].assert().isNull()
-        // 无数据源缓存的“不存在”由 L2 回答
+        // 不带 loader 的读取：L2 中的“未填充”回答不存在
         cache["k"].assert().isNull()
         metrics.localHits.assert().isEqualTo(1)
 
-        // 调用方给出 loader 时，没有答案的 L2 副本不算命中
+        // 调用方给出 loader 时，L2 中的“未填充”不算命中
         cache.get("k") { "loaded" }.assert().isEqualTo("loaded")
         metrics.localHits.assert().isEqualTo(1)
         metrics.misses.assert().isEqualTo(2)

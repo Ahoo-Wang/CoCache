@@ -17,8 +17,8 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * 一次加载以取消结束，而运行它的协程并没有被取消：数据源自己抛出了 `CancellationException`，或返回的 future 以它完成
- * （如数据源内部的 `withTimeout` 超时、被 HTTP 客户端取消的 future）；或挂起数据源的加载协程被取消（`cocache-coroutines`：
- * spec 的 `context` 中的 Job 已被取消，包括加载开始之前就已取消）。
+ * （如数据源内部的 `withTimeout` 超时、被 HTTP 客户端取消的 future）；或挂起数据源的加载协程被取消
+ * （spec 的 `context` 中的 Job 已被取消，包括加载开始之前就已取消）。
  *
  * 加载可能被多个调用方共享。原样传出的话，引擎会把它当作自己的协程被取消，合并到这次加载的调用方会各自回源，
  * 挂起的调用方会把它当作自己被取消（`launch` 会悄悄吞掉）。因此转为普通异常，与其它回源失败一样交给合并到这次加载的全部调用方
