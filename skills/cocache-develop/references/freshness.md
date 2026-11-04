@@ -83,7 +83,7 @@ store.deleteIfNewer(id, version)             // VersionedStore: ordered delete (
 - The versioned types have no write that drops the version except `purge` (a plain `DEL`) and expiry. Ordering holds only while the entry lives: tombstones live `tombstoneTtl` (the value `ttl` on a `VersionedCache` by default, 1 day on a `VersionedStore`), which must cover the redelivery window.
 - `evict` (`VersionedCache`) leaves an eviction marker (state `E`) for `tombstoneTtl`; it throws and is never retried, because a retried `DEL` would drop the version. `purge` drops the fence and throws on failure too.
 - A versioned loader that returns a plain `null` over versioned content is refused (`cocache.fill.unversioned.absent`, one warning per cache): return `Versioned(null, version)` for deletions.
-- Refresh-ahead: a `VersionedCache` refreshes ahead and `cocache.defaults.refresh-window` applies to it (a `VersionedStore` has no source and never refreshes); a refresh writes back only a version at least as new as Redis holds, and keeps its copy otherwise; the local copy never moves back to an older version (a dropped older fill counts in `cocache.stale.discards`). Turn it off with `refreshWindow = null` / `cocache.caches.[name].refresh-window: 0` when the writer pushes every version.
+- Refresh-ahead: a `VersionedCache` refreshes ahead and `cocache.defaults.cache.refresh-window` applies to it when the declaration does not write `refreshWindow` (a `VersionedStore` has no source and never refreshes); a refresh writes back only a version at least as new as Redis holds, and keeps its copy otherwise; the local copy never moves back to an older version (a dropped older fill counts in `cocache.stale.discards`). Turn it off with `refreshWindow = off()` / `cocache.caches.[name].refresh-window: off` when the writer pushes every version.
 - Operator delete: the endpoint's per-key `DELETE` on a `VersionedCache` is `evict` (keeps the version), on a `VersionedStore` `purge` (drops it; needs `management.endpoint.cocache.allow-purge=true`, as does `?purge=true` on a `VersionedCache`). After `evict` the next read loads from the source, and a loader behind Redis is returned but not written (`cocache.fill.rejections`).
 - Creating a versioned type fails when the backend's store has no `versioned()` capability; Redis and in-memory support it. Coroutines: `suspendingVersionedLoader` on `versionedCacheSpec`.
 - `putIfNewer` throws `CacheWriteException` on Redis failure; replaying the same version is safe (returns `Stale`, and an equal version republishes the invalidation).
@@ -126,11 +126,11 @@ Outside the JVM, a process does `DEL {keyPrefix}{namespace}:{encodedKey}` and th
 
 ## Choosing lifetimes
 
-Each lifetime bounds one kind of staleness. Bare numbers under `cocache.defaults` and `cocache.caches` are seconds; write a unit for anything shorter (`lease-wait: 500ms`).
+Each lifetime bounds one kind of staleness. Every duration property needs a unit (`lease-wait: 500ms`, `ttl: 10m`); a bare number fails startup. Annotation attributes are seconds. To bound staleness everywhere during an incident without weakening any declaration, use `cocache.overrides.cache.local-max-age` / `ttl` (they only lower values); `cocache.defaults.*` fills only fields the declaration leaves unwritten.
 
 | Setting | Default | Bounds | Guidance |
 |---|---|---|---|
-| `ttl` | 1 h | Changes CoCache never hears about | Long, even `ttl-forever`, when every writer invalidates; shorter when some cannot |
+| `ttl` | 1 h | Changes CoCache never hears about | Long, even `ttl: forever`, when every writer invalidates; shorter when some cannot |
 | `ttl-jitter` | 1 min | Synchronized expiry | Keep meaningful; effective spread is capped at `ttl / 2` |
 | `absent-ttl` | 1 min | A new row hidden by a cached absence | Keep short, or invalidate the key when creating the row |
 | `local-max-age` | 5 min | L2 staleness after a lost message | Costs nothing on the hit path; lower it where minutes of drift matter |
@@ -138,7 +138,7 @@ Each lifetime bounds one kind of staleness. Bare numbers under `cocache.defaults
 | `lease-wait` | 200 ms | Cluster-wide coalescing | Raise above the loader's typical latency to keep one load per cluster |
 | `lease-ttl` | 10 s | A crashed loader blocking a key | Keep above the loader's p99 |
 
-The defaults above are the derived types'. `Store`, `VersionedStore` and `SetStore` default to `ttl` forever, `local-max-age` 30 s and `absent-ttl` 10 s, because a lost invalidation can't be corrected by a reload; `cocache.defaults.ttl`, `ttl-forever` and `refresh-window` don't apply to them.
+The defaults above are the derived types'. `Store`, `VersionedStore` and `SetStore` default to `ttl` forever, `local-max-age` 30 s and `absent-ttl` 10 s, because a lost invalidation can't be corrected by a reload. Their `ttl` is set only by the declaration and `cocache.caches.[name].ttl`, and they have no `refresh-window`.
 
 ## Refresh-ahead
 
@@ -147,11 +147,11 @@ The defaults above are the derived types'. `Store`, `VersionedStore` and `SetSto
 - The window must be below `ttl - ttl-jitter` and below `local-max-age` (with defaults, under 5 minutes), or startup fails.
 - Only caches with a source refresh (`Cache` with a loader, `VersionedCache`); authoritative types and negative entries do not. A failed or skipped refresh only logs; values still expire normally.
 - Refreshes run on a bounded pool (at most 4 threads, queue 1024); overflow counts in `cocache.refresh.rejections`.
-- Turn a declared window off with `refresh-window: 0`, `@CoCache(refreshWindow = 0)`, or `refreshWindow = null` in a customizer.
+- Turn a declared window off with `cocache.caches.[name].refresh-window: off`, `@CoCache(refreshWindow = 0)`, or `refreshWindow = off()` in a customizer. A window that a global layer makes too long is turned off for that cache with a warning; one that the declaration or `caches.[name]` makes too long fails startup.
 
 ## Redis down during a write
 
-- `Cache.invalidate`: the local L2 copy is dropped first. By default (`invalidate-failure: retry`, every `Cache`, externally sourced included) the call does not throw; the delete is queued (8 attempts, 100 ms to 10 s backoff, 10 000 pending) and misses for that key on this instance skip Redis meanwhile. Exhausted or overflowing retries log an error and count `cocache.invalidations.dropped`; other instances may then serve the old value until its remaining `ttl` (forever with `ttl-forever`), so invalidate again once Redis is back. `invalidate-failure: throw` raises `CacheWriteException` instead.
+- `Cache.invalidate`: the local L2 copy is dropped first. By default (`invalidate-failure: retry`, every `Cache`, externally sourced included) the call does not throw; the delete is queued (8 attempts, 100 ms to 10 s backoff, 10 000 pending) and misses for that key on this instance skip Redis meanwhile. Exhausted or overflowing retries log an error and count `cocache.invalidations.dropped`; other instances may then serve the old value until its remaining `ttl` (forever with `ttl: forever`), so invalidate again once Redis is back. `invalidate-failure: throw` raises `CacheWriteException` instead.
 - Every other write throws `CacheWriteException` and is never retried: `put`, `putAll`, conditional and versioned writes, `evict`, `purge`, `Store.delete` / `deleteIfMatch`, `SetStore` writes. A delayed delete of an only copy could remove a value written after the failure, and a retried `DEL` would drop a version.
 - `CacheWriteException.outcomeUnknown`: `false` means the write did not happen (rejected before it was sent, or refused on unreadable content); `true` means it may have run (timeout, dropped connection) and may still run. Retrying `put` on a `Cache` is safe; on a `Store` it is a new last-writer-wins write; replaying `putIfNewer` with the same version is safe; re-read before retrying `putIfMatch` / `deleteIfMatch`.
 - The retry limits come from `RetryPolicy` on the `CacheRuntime`; in Spring Boot declare your own `CacheRuntime` bean to change them.
@@ -163,7 +163,7 @@ The defaults above are the derived types'. `Store`, `VersionedStore` and `SetSto
 | A load racing an invalidation | None: the stale result is discarded |
 | Another instance, message delivered | Pub/Sub delay |
 | Another instance, message lost | `local-max-age`, or sooner after a heartbeat reset |
-| A write that bypasses CoCache | `ttl` (never with `ttl-forever`) |
+| A write that bypasses CoCache | `ttl` (never with `ttl: forever`) |
 | A new row after a cached absence | `absent-ttl` |
 | A load not written to Redis | `degraded-local-max-age` |
 | An invalidation that exhausted its retries | The Redis value's remaining TTL |

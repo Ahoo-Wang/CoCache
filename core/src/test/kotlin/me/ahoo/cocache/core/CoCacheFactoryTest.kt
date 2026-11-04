@@ -23,6 +23,7 @@ import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.proxy.CacheProxies
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
@@ -58,20 +59,22 @@ class CoCacheFactoryTest {
      * 每种 spec 都先经装配层、再交给运行时。
      */
     private class RecordingLayers : CacheLayers {
-        override fun <K : Any, V : Any> apply(spec: CacheSpec<K, V>): CacheSpec<K, V> =
-            spec.toBuilder().apply { policy = policy.toBuilder().localMaxAge(LAYERED_AGE).build() }.build()
+        private fun <S : Spec<*, *>> layered(spec: S): Layered<S> = Layered(spec, PolicyReport(emptyList()))
 
-        override fun <K : Any, V : Any> apply(spec: VersionedCacheSpec<K, V>): VersionedCacheSpec<K, V> =
-            spec.toBuilder().apply { policy = policy.toBuilder().localMaxAge(LAYERED_AGE).build() }.build()
+        override fun <K : Any, V : Any> apply(spec: CacheSpec<K, V>, locks: Locks): Layered<CacheSpec<K, V>> =
+            layered(spec.toBuilder().apply { policy = policy.toBuilder().localMaxAge(LAYERED_AGE).build() }.build())
 
-        override fun <K : Any, V : Any> apply(spec: StoreSpec<K, V>): StoreSpec<K, V> =
-            spec.toBuilder().apply { policy = policy.toBuilder().localMaxAge(LAYERED_AGE).build() }.build()
+        override fun <K : Any, V : Any> apply(spec: VersionedCacheSpec<K, V>, locks: Locks): Layered<VersionedCacheSpec<K, V>> =
+            layered(spec.toBuilder().apply { policy = policy.toBuilder().localMaxAge(LAYERED_AGE).build() }.build())
 
-        override fun <K : Any, V : Any> apply(spec: VersionedStoreSpec<K, V>): VersionedStoreSpec<K, V> =
-            spec.toBuilder().apply { policy = policy.toBuilder().localMaxAge(LAYERED_AGE).build() }.build()
+        override fun <K : Any, V : Any> apply(spec: StoreSpec<K, V>, locks: Locks): Layered<StoreSpec<K, V>> =
+            layered(spec.toBuilder().apply { policy = policy.toBuilder().localMaxAge(LAYERED_AGE).build() }.build())
 
-        override fun <K : Any, E : Any> apply(spec: SetStoreSpec<K, E>): SetStoreSpec<K, E> =
-            spec.toBuilder().apply { policy = policy.toBuilder().localMaxAge(LAYERED_AGE).build() }.build()
+        override fun <K : Any, V : Any> apply(spec: VersionedStoreSpec<K, V>, locks: Locks): Layered<VersionedStoreSpec<K, V>> =
+            layered(spec.toBuilder().apply { policy = policy.toBuilder().localMaxAge(LAYERED_AGE).build() }.build())
+
+        override fun <K : Any, E : Any> apply(spec: SetStoreSpec<K, E>, locks: Locks): Layered<SetStoreSpec<K, E>> =
+            layered(spec.toBuilder().apply { policy = policy.toBuilder().localMaxAge(LAYERED_AGE).build() }.build())
     }
 
     private fun cacheSpec(name: String = "user") = cacheSpec<String, String>(name) {
@@ -179,8 +182,8 @@ class CoCacheFactoryTest {
     @Test
     fun layersMustNotRenameACache() {
         val renaming = object : CacheLayers {
-            override fun <K : Any, V : Any> apply(spec: StoreSpec<K, V>): StoreSpec<K, V> =
-                storeSpec("renamed") { codec = spec.codec }
+            override fun <K : Any, V : Any> apply(spec: StoreSpec<K, V>, locks: Locks): Layered<StoreSpec<K, V>> =
+                Layered(storeSpec("renamed") { codec = spec.codec }, PolicyReport(emptyList()))
         }
         runCatching { CoCacheFactory(runtime, renaming).create(storeSpec()) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
@@ -191,7 +194,9 @@ class CoCacheFactoryTest {
     @Test
     fun noLayersKeepTheDeclaration() {
         val spec = storeSpec()
-        CacheLayers.NONE.apply(spec).assert().isSameAs(spec)
+        val layered = CacheLayers.NONE.apply(spec, Locks.NONE)
+        layered.spec.assert().isSameAs(spec)
+        layered.report.entry(PolicyField.TTL)?.source.assert().isEqualTo(PolicyReport.Source.TYPE_DEFAULT)
         CacheLayers.NONE.toString().assert().isEqualTo("CacheLayers.NONE")
         CoCacheFactory(runtime).create(spec)
         runtime.policy("token").assert().isEqualTo(spec.policy)

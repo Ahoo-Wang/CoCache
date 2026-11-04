@@ -67,7 +67,7 @@ The user API types are not meant to be implemented by your own classes, except t
 
 ### `@CoCache` {#cocache-annotation}
 
-Durations are in **seconds**. Every policy attribute defaults to `CoCache.UNSET` (`-1`): "not set here, use the next layer". Defaults depend on the type: derived caches (`Cache`, `VersionedCache`) start from `CachePolicy.DEFAULT`, authoritative ones (`Store`, `VersionedStore`, `SetStore`) from their own [default policy](#store-defaults).
+Durations are in **seconds**. Every policy attribute defaults to `CoCache.UNSET` (`-1`): "not written here", so `cocache.defaults` or the type default decides ([precedence](./configuration.md#precedence)). An attribute you set is written by the declaration, and global defaults don't change it. Each type starts from its own default: `DefaultPolicies.CACHE` and `DefaultPolicies.VERSIONED_CACHE` for the derived types, and the [authoritative defaults](#store-defaults) for `Store`, `VersionedStore` and `SetStore`.
 
 | Attribute | Default | Meaning |
 |-----------|---------|---------|
@@ -174,7 +174,7 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 - **Bean name**: the spec bean name minus its `Spec` suffix (`productSpec` → `product`). Without the suffix, `Cache` is appended (`products` → `productsCache`). The *cache* name is the one you pass to `cacheSpec(…)`.
 - **A spec must set its codec.** There is no Jackson fallback in code; `ObjectMapper` here is Jackson 3 (`tools.jackson.databind`). A `SetStoreSpec` sets `elementCodec`.
 - **A `CacheSpec` must declare exactly one source**: `loader`, `asyncLoader`, or `externallySourced()`. A `VersionedCacheSpec` must set `versionedLoader` or `versionedAsyncLoader`. Authoritative specs have no loader at all.
-- In Kotlin, `policy { … }` edits the current policy; in Java, use `updatePolicy(…)`. `policy(CachePolicy)` replaces it outright. Authoritative specs start from their own default policy, so prefer editing it over replacing it with `CachePolicy.DEFAULT` (which would give a `Store` a 1 h `ttl`).
+- In Kotlin, `policy { … }` edits the type's default policy; in Java, use `updatePolicy(…)`. Only the fields you assign count as written by the declaration; the rest stay open to `cocache.defaults` ([which fields a declaration writes](./configuration.md#declared-fields)). `policy(CachePolicy)` (Kotlin: `policy = …`) replaces the whole policy and counts as writing every field, so global defaults no longer apply. Build such a policy from the type's own default, for example `DefaultPolicies.STORE.toBuilder()`, never from a derived cache's (that would give a `Store` a 1 h `ttl`). `ttl = forever()`, `refreshWindow = off()` and `LoadPolicy(maxConcurrent = unlimited())` write the sentinels explicitly.
 
 Without Spring, `CacheRuntime.create(spec)` returns the matching type: `create(storeSpec)` returns a `Store`, and so on. `create(spec: Spec<*, *>)` dispatches on the spec's type. Creating a cache checks that the backend's store supports what the type needs and fails before registering anything if it doesn't:
 
@@ -207,7 +207,7 @@ Every key in Redis is:
 - Cache names must be unique within an application, and so must prefix-and-namespace pairs. Two caches with the same namespace and different prefixes are fine. A duplicate fails startup.
 - Invalidations travel on the channel `{keyPrefix}inv:{namespace}`, so applications with different prefixes don't receive each other's messages.
 - The **encoded key** is what the actuator endpoint and `ExternalInvalidator` take, so other tools can address a key without knowing its Kotlin type.
-- To share one Redis between applications, give each a different prefix with the [`cocache.defaults.key-prefix` property](./configuration.md#key-prefix) (for example `${spring.application.name}:`). `@CoCache(keyPrefix)` is literal text: placeholders in it are not resolved (and in Kotlin, `$` starts a string template). Changing the prefix or namespace of a running derived cache is a cold start: old keys are ignored and expire on their own. For an authoritative type it loses the data, because the old keys hold the only copy.
+- To share one Redis between applications, give each a different prefix with the [`cocache.key-prefix` property](./configuration.md#key-prefix) (for example `${spring.application.name}:`). `@CoCache(keyPrefix)` is literal text: placeholders in it are not resolved (and in Kotlin, `$` starts a string template). Changing the prefix or namespace of a running derived cache is a cold start: old keys are ignored and expire on their own. For an authoritative type it loses the data, because the old keys hold the only copy.
 
 ## Keys {#keys}
 
@@ -321,7 +321,7 @@ Every type reads through L2 and Redis. `lookup(key)` tells three answers apart:
 `Unknown` is a fact about one read, not about the data: it is never cached, never broadcast, and never handed to a caller that has its own source. `lookup(key).valueOrThrow()` returns the value or `null` and throws on `Unknown`. In Java 21, switch exhaustively over the sealed type; `as? Lookup.Present` silently treats `Unknown` as absent.
 
 - **Who gets `Unknown`:** reads without a source (a `Store`, a `VersionedStore`, a `SetStore`, an externally sourced `Cache` read without a loader), and reads with a source when you set `readFailure = THROW`. By default a read with a source loads from it instead.
-- **`unknownRead`** on a `CacheSpec` (externally sourced only), `StoreSpec` or `VersionedStoreSpec` maps `Unknown` for reads without a loader: `THROW` (default) or `ABSENT`, which returns `null` (`Lookup.Absent`) and caches nothing, so the next read asks Redis again. It doesn't apply to `getIfChanged`, `getVersioned` or reads with a loader, and a `SetStore` doesn't have it. Set it in the spec, with `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)` on an interface, or in a [customizer](#customizer); it has no property yet.
+- **`unknownRead`** on a `CacheSpec` (externally sourced only), `StoreSpec` or `VersionedStoreSpec` maps `Unknown` for reads without a loader: `THROW` (default) or `ABSENT`, which returns `null` (`Lookup.Absent`) and caches nothing, so the next read asks Redis again. It doesn't apply to `getIfChanged`, `getVersioned` or reads with a loader, and a `SetStore` doesn't have it. Set it in the spec, with `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)` on an interface, in a [customizer](#customizer), or with `cocache.caches.[name].unknown-read` ([configuration](./configuration.md#policy-properties)); no global layer sets it.
 - **`getAll`** finishes every other key first (releasing leases, writing back loads), then throws a `CacheReadException` whose `unknownKeys` are the keys without an answer and whose `partialResult` holds the values it did get. `lookupAll(keys)` returns a `Lookup` for every key instead of throwing.
 - Load timeouts (`load-timeout`) and rejected loads (`load-max-concurrent`) are not Redis failures: they throw their own exceptions, from `lookup` too.
 - Each `Unknown` counts in `cocache.reads.unknown`, including those mapped to absent, and the Redis failure itself in `cocache.remote.failures`.
@@ -372,16 +372,16 @@ snapshots.delete(id)                         // synchronous; throws if Redis fai
 
 ### Default policy {#store-defaults}
 
-Authoritative types start from their own default policy, `StoreSpec.DEFAULT_POLICY` (and the same values in `VersionedStoreSpec.DEFAULT_POLICY` and `SetStoreSpec.DEFAULT_POLICY`):
+Each type starts from its own default policy in `DefaultPolicies`: `STORE`, `VERSIONED_STORE` and `SET_STORE` for the authoritative types, `CACHE` and `VERSIONED_CACHE` for the derived ones. The endpoint reports values that come from here as `TYPE_DEFAULT`.
 
-| Field | `Store`, `VersionedStore`, `SetStore` | Derived types (`CachePolicy.DEFAULT`) |
+| Field | `Store`, `VersionedStore`, `SetStore` | `Cache`, `VersionedCache` |
 |-------|---------------------------------------|---------------------------------------|
 | `ttl` | forever | 1 h |
 | `localMaxAge` | 30 s | 5 min |
 | `absentTtl` | 10 s | 1 min |
 | `tombstoneTtl` | 1 day (`VersionedStore` only) | the value `ttl` |
 
-The L2 lifetimes are shorter because a lost invalidation can't be corrected by a reload: the only bound left is L2's. Write them out on the declaration when you need longer ones. Data whose lifetime is its meaning (a session, a one-time code, an idempotency key) needs an explicit `ttl`.
+The L2 lifetimes are shorter because a lost invalidation can't be corrected by a reload: the only bound left is L2's. Write them out on the declaration, or set them for every authoritative cache with `cocache.defaults.store.*`, when you need longer ones. Data whose lifetime is its meaning (a session, a one-time code, an idempotency key) needs an explicit `ttl`: on these types only the declaration and `cocache.caches.[name].ttl` set it, never a global layer ([what each layer may set](./configuration.md#field-layers)).
 
 ## Versioned types {#versioned}
 
@@ -431,12 +431,13 @@ If the set's truth lives in your database, don't use `SetStore`. Declare `Cache<
 interface RevokedTokens : Store<String, Instant>
 
 @Bean
-fun revokedTokens(factory: CoCacheFactory): RevokedTokens =
-    factory.create(RevokedTokens::class.java, storeSpec("revoked-tokens") { codec = jacksonCodec<Instant>() })
+fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): RevokedTokens =
+    factory.create(RevokedTokens::class.java, storeSpec("revoked-tokens") { codec = jacksonCodec<Instant>(mapper) })
 ```
 
 - `create(spec)` returns the type matching the spec (`storeSpec` gives a `Store`, and so on). `create(type, spec)` returns a proxy for your interface. The interface must extend the type the spec declares, and every abstract method it redeclares must match one of that type's methods. A class is rejected: the user API types are not for hand-written implementations. Create the cache with `create(spec)` and delegate to it instead. These checks run before the cache is created.
-- **Unlayered caches.** A cache created directly with `CacheRuntime.create` skips every configuration layer: customizers, `cocache.defaults` and `cocache.caches.[name]` don't apply to it. The start log ends its line with `unlayered: …`, the endpoint reports `layered: false`. A `cocache.caches.[name]` entry for it logs a warning when the cache is created and is listed under the endpoint's `ignoredConfiguration`. It doesn't fail startup, because overrides are often written during an incident. Libraries should create their caches through `CoCacheFactory`.
+- **Locks.** A library that depends on a field or on its storage layout locks it on creation: `factory.create(spec) { lock(PolicyField.READ_TIMEOUT); lockLayout(LayoutField.KEY_PREFIX) }`. Global layers then skip it, and a `cocache.caches.[name]` entry must `unlock` it explicitly. See [Locking fields](./configuration.md#locks).
+- **Unlayered caches.** A cache created directly with `CacheRuntime.create` skips every configuration layer: customizers, `cocache.defaults`, `cocache.overrides` and `cocache.caches.[name]` don't apply to it, and it can't be locked. The start log ends its line with `unlayered: …`, the endpoint reports `layered: false`. A `cocache.caches.[name]` entry for it logs a warning when the cache is created and is listed under the endpoint's `ignoredConfiguration`. It doesn't fail startup, because overrides are often written during an incident. Libraries should create their caches through `CoCacheFactory`.
 - Without Spring, `CoCacheFactory(runtime)` gives you the interface proxies with no layers. Plain `runtime.create(spec)` remains fine for an application that has no configuration layers.
 
 ## Customizing declarations {#customizer}
@@ -463,7 +464,7 @@ fun userCacheCustomizer(): CacheSpecCustomizer = object : CacheSpecCustomizer {
 
 In Java, implement the same interface and call `spec.updatePolicy(p -> p.absentTtl(Duration.ofSeconds(30)))`.
 
-There is one overload per spec type (`CacheSpec.Builder`, `VersionedCacheSpec.Builder`, `StoreSpec.Builder`, `VersionedStoreSpec.Builder`, `SetStoreSpec.Builder`); each does nothing by default. Customizers run in Spring order, after the declaration and before the `cocache.*` properties ([precedence](./configuration.md#precedence)).
+There is one overload per spec type (`CacheSpec.Builder`, `VersionedCacheSpec.Builder`, `StoreSpec.Builder`, `VersionedStoreSpec.Builder`, `SetStoreSpec.Builder`); each does nothing by default. Customizers run in Spring order, after `cocache.defaults` and the declaration, and before `cocache.overrides` and `cocache.caches.[name]` ([precedence](./configuration.md#precedence)). A customizer may change policy fields and fields that don't decide the type. Changing the data source, or a field or layout that a library [locked](./configuration.md#locks), throws.
 
 ## Startup validation {#validation}
 
@@ -482,6 +483,8 @@ CoCache refuses to start rather than run a cache that can't behave as declared. 
 | `refreshWindow` not less than `ttl − ttlJitter` (the effective jitter), or not less than `localMaxAge` | A fresh copy would start inside the window and refresh on every hit |
 | Duplicate cache name, prefix-and-namespace pair, or bean name | Two caches would share keys or invalidations |
 | A namespace outside `[A-Za-z0-9._-]+`, such as one with `:` | Its keys could fall inside another namespace's range; move the prefix into `keyPrefix` |
-| `cocache.caches.[name]` for a cache that doesn't exist | Almost always a typo; see [Configuration Reference](./configuration.md#validation) |
+| `cocache.caches.[name]` for a cache that doesn't exist, or with a key that doesn't apply to the cache's type (unless `cocache.caches-validation: warn`) | Almost always a typo; see [Configuration Reference](./configuration.md#validation) |
+| `cocache.caches.[name]` that sets a field a library locked, without listing it in `unlock`; a customizer that changes a locked field or the data source | The library depends on that value ([locks](./configuration.md#locks)) |
+| A duration property without a unit, such as `ttl: 60` | Write `60s`, `5m` or `PT2M` ([durations](./configuration.md#durations)) |
 
 An authoritative interface for which a matching `CacheLoader` bean exists starts, but logs a warning: the data may belong in a `Cache`. The `toString()` check on key types runs on the first read of each key type, not at startup.

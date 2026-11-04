@@ -61,7 +61,10 @@ Use this map to locate the first incorrect stage before changing anything. Prefe
 | Message (abridged) | Cause |
 |---|---|
 | `cocache.caches configures undeclared caches [x]` | Typo in a cache name under `cocache.caches` |
-| `... must be positive`, `refreshWindow ... must be less than ...` | Invalid policy after all layers; bare numbers are seconds |
+| `... must be positive`, `refreshWindow ... must be less than ...` | Invalid policy after all layers, from the declaration or a `cocache.caches.[name]` field (a conflict caused only by a global layer turns the window off instead) |
+| `<key>: "60" needs a unit ...` | A duration without a unit; write `60s`, `5m` or `PT2M` (`ms` under `cocache.redis`) |
+| `... doesn't apply to ...`, `... is locked by ...; list ... in ....unlock` | A per-cache key the type does not have (fails unless `cocache.caches-validation: warn`), or a field a library locked |
+| `Authoritative caches [...] ... can evict them` / `Cannot read maxmemory-policy` | Eviction check: `allkeys-*`, and an unreadable policy without `cocache.redis.assume-maxmemory-policy`, always fail; `volatile-*` with a finite `ttl` fails only with `store-eviction-check: fail` |
 | `@CoCache.<attribute> = FOREVER is not supported` | `FOREVER` outside `ttl`/`expireAfterAccess` |
 | `Cache[x] already exists.` / `Namespace[x] is already used` / bean name in use | Duplicate declarations or names |
 | `must extend exactly one of [...]` | The interface extends none or several of the five types |

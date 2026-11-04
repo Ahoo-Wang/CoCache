@@ -19,6 +19,7 @@ import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
@@ -42,7 +43,7 @@ class CacheSpecTest {
         spec.unknownRead.assert().isEqualTo(UnknownReadMode.THROW)
         spec.ttlOf.assert().isNull()
         spec.keyFilter.assert().isNull()
-        spec.policy.assert().isSameAs(CachePolicy.DEFAULT)
+        spec.policy.assert().isSameAs(DefaultPolicies.CACHE)
         spec.toString().assert().contains("name='user'").contains("externallySourced=true")
     }
 
@@ -170,28 +171,30 @@ class CacheSpecTest {
 
     /**
      * 权威类型的默认策略（RFC 0005 §4.1，D7）：`ttl` 永不过期，`localMaxAge` 30 s，`absentTtl` 10 s；`VersionedStore` 的墓碑另有
-     * 有限的寿命（1 天）。派生类型的默认策略是 [CachePolicy.DEFAULT]。
+     * 有限的寿命（1 天）。派生类型的默认策略是 [DefaultPolicies.CACHE]。
      */
     @Test
     fun typesHaveTheirOwnDefaultPolicies() {
-        listOf(StoreSpec.DEFAULT_POLICY, VersionedStoreSpec.DEFAULT_POLICY, SetStoreSpec.DEFAULT_POLICY).forEach {
+        listOf(DefaultPolicies.STORE, DefaultPolicies.VERSIONED_STORE, DefaultPolicies.SET_STORE).forEach {
             it.ttl.assert().isNull()
             it.localMaxAge.assert().isEqualTo(Duration.ofSeconds(30))
             it.absentTtl.assert().isEqualTo(Duration.ofSeconds(10))
         }
-        StoreSpec.DEFAULT_POLICY.tombstoneTtl.assert().isNull()
-        VersionedStoreSpec.DEFAULT_POLICY.tombstoneTtl.assert().isEqualTo(Duration.ofDays(1))
-        VersionedStoreSpec.DEFAULT_POLICY.tombstoneTtl().assert().isEqualTo(VersionedStoreSpec.DEFAULT_TOMBSTONE_TTL)
-        storeSpec<String, String>("s") { codec = StringCodec }.policy.assert().isSameAs(StoreSpec.DEFAULT_POLICY)
+        DefaultPolicies.STORE.tombstoneTtl.assert().isNull()
+        DefaultPolicies.VERSIONED_STORE.tombstoneTtl.assert().isEqualTo(Duration.ofDays(1))
+        DefaultPolicies.VERSIONED_STORE.tombstoneTtl().assert().isEqualTo(
+            requireNotNull(DefaultPolicies.VERSIONED_STORE.tombstoneTtl)
+        )
+        storeSpec<String, String>("s") { codec = StringCodec }.policy.assert().isSameAs(DefaultPolicies.STORE)
         versionedStoreSpec<String, String>("v") { codec = StringCodec }.policy
-            .assert().isSameAs(VersionedStoreSpec.DEFAULT_POLICY)
+            .assert().isSameAs(DefaultPolicies.VERSIONED_STORE)
         setStoreSpec<String, String>(
             "x"
-        ) { elementCodec = StringCodec }.policy.assert().isSameAs(SetStoreSpec.DEFAULT_POLICY)
+        ) { elementCodec = StringCodec }.policy.assert().isSameAs(DefaultPolicies.SET_STORE)
         cacheSpec<String, String>("c") {
             codec = StringCodec
             externallySourced()
-        }.policy.assert().isSameAs(CachePolicy.DEFAULT)
+        }.policy.assert().isSameAs(DefaultPolicies.CACHE)
         // 墓碑寿命未设置时同值的寿命
         CachePolicy(
             ttl = Duration.ofMinutes(3),
@@ -233,8 +236,8 @@ class CacheSpecTest {
         copy.keyEncoder.assert().isSameAs(spec.keyEncoder)
         StoreSpec.builder<String, String>("s").codec(StringCodec).policy { ttl = Duration.ofMinutes(1) }.build()
             .policy.ttl.assert().isEqualTo(Duration.ofMinutes(1))
-        StoreSpec.builder<String, String>("s").codec(StringCodec).policy(CachePolicy.DEFAULT).build()
-            .policy.assert().isSameAs(CachePolicy.DEFAULT)
+        StoreSpec.builder<String, String>("s").codec(StringCodec).policy(DefaultPolicies.CACHE).build()
+            .policy.assert().isSameAs(DefaultPolicies.CACHE)
         runCatching { StoreSpec.builder<String, String>("s").build() }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
     }
@@ -315,7 +318,9 @@ class CacheSpecTest {
         spec.policy.ttl.assert().isEqualTo(Duration.ofMinutes(1))
         SetStoreSpec.builder<String, String>(
             "i"
-        ).elementCodec(StringCodec).policy(CachePolicy.DEFAULT).build().policy.assert().isSameAs(CachePolicy.DEFAULT)
+        ).elementCodec(
+            StringCodec
+        ).policy(DefaultPolicies.CACHE).build().policy.assert().isSameAs(DefaultPolicies.CACHE)
     }
 
     @Test

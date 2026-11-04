@@ -123,6 +123,9 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     final override var layered: Boolean = false
         internal set
 
+    final override var policyReport: me.ahoo.cocache.core.PolicyReport? = null
+        internal set
+
     /**
      * 与 [metrics] 分开保存：命中路径只读引擎自身的一个 final 字段，关闭时不触碰计数器。
      */

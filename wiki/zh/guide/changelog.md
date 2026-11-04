@@ -45,21 +45,56 @@ description: CoCache 版本发布历史和重要变更。
 
 默认值与线格式：
 
-- 权威类型（`Store`、`VersionedStore`、`SetStore`）从自己的策略开始：`ttl` 永不过期、`localMaxAge` 30 秒、`absentTtl` 10 秒（[默认策略](./caches.md#store-defaults)）。`cocache.defaults.ttl`、`ttl-forever` 与 `refresh-window` 不作用于它们。
+- 权威类型（`Store`、`VersionedStore`、`SetStore`）从自己的策略开始：`ttl` 永不过期、`localMaxAge` 30 秒、`absentTtl` 10 秒（[默认策略](./caches.md#store-defaults)）。它们的 `ttl` 只由声明与 `cocache.caches.[name].ttl` 设置（见[三层配置](#three-layer-config)）。
 - `Store` 与 `VersionedStore` 写入写入标识，`Store` 另写入摘要，也只有这两个类型校验它。`Cache`（无论是否外部来源）两者都不写。派生缓存读到带摘要的值计入类型不符，`evict` 拒绝它。
 - SPI：`ConditionalL1Store.deleteIfMatch(key, expected, frame)`（抽象方法；`FutureConditionalL1Store` 与 `ForwardingConditionalL1Store` 同样）在保存的摘要等于 `expected` 时删除值并发布帧。API 中它的结果是 `ConditionalDelete`。
-- Spring：`@CoCache` 接口按它继承的类型创建，五个类型都不继承时启动失败。没有匹配的 loader bean 的 `Cache` 接口启动失败，除非声明 `source = EXTERNAL`；6.x 中它静默地没有 loader。权威类型上设置 `loader` 或 `source = EXTERNAL` 时启动失败。Spring Cache 与 `TransactionalInvalidator` 只接受派生的 `Cache`。`cocache.redis.set-cache-eviction-check` 改名为 `cocache.redis.store-eviction-check`，同时覆盖 `Store` 与 `VersionedStore`。`CoCacheProperties.setPolicyFor` 改名为 `authoritativePolicyFor`。
+- Spring：`@CoCache` 接口按它继承的类型创建，五个类型都不继承时启动失败。没有匹配的 loader bean 的 `Cache` 接口启动失败，除非声明 `source = EXTERNAL`；6.x 中它静默地没有 loader。权威类型上设置 `loader` 或 `source = EXTERNAL` 时启动失败。Spring Cache 与 `TransactionalInvalidator` 只接受派生的 `Cache`。`cocache.redis.set-cache-eviction-check` 改名为 `cocache.redis.store-eviction-check`，同时覆盖 `Store` 与 `VersionedStore`。删除 `CoCacheProperties.setPolicyFor`（见[三层配置](#three-layer-config)）。
 - TCK：`CacheAccess` 创建每个类型（`cache`、`versionedCache`、`store`、`versionedStore`、`setStore`）。`EngineSpec` 覆盖 `Cache` 与 `Store`，`VersionedSpec` 覆盖 `VersionedCache` 与 `VersionedStore`，`SetEngineSpec` 覆盖 `SetStore`。`HookedBackend.rejectWrites` 让写入在发出之前以 `L1RejectedException` 被拒绝。
 
 ### 库经 `CoCacheFactory` 创建缓存 {#cocache-factory}
 
 - `CoCacheFactory`（`cocache-core`）是创建缓存的入口（[RFC 0005 §4.8](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）：每种 spec 一个 `create(spec)`；接口式声明用 `create(type, spec)`，`type` 必须是继承 spec 声明的那个类型的接口。starter 发布一个 `CoCacheFactory` bean，自己的接口式声明与 spec bean 也经它创建；注入它的库得到同样的定制器与 `cocache.*` 配置、端点与指标。见 [CoCacheFactory](./caches.md#factory)。
 - 直接用 `CacheRuntime.create` 创建的缓存是*未分层*的：定制器与 `cocache.*` 配置对它不生效。它的启动日志以 `unlayered: …` 结尾，端点报告 `layered: false`；指向它的 `cocache.caches.[name]` 告警，并列在端点的 `ignoredConfiguration` 中。
-- `CacheAdmin` 新增 `apiType`（缓存的 API 类型）与 `layered`；端点的缓存报告新增 `type`、`layered` 与 `ignoredConfiguration`。
+- `CacheAdmin` 新增 `apiType`（缓存的 API 类型）、`layered` 与 `policyReport`；端点的缓存报告新增 `type`、`layered`、`ignoredConfiguration`、`policy` 与 `skippedConfiguration`（见[三层配置](#three-layer-config)）。
 - `CacheRuntime.addCreationListener` 在之后创建的每个缓存之后回调 `CacheCreationListener`。starter 用它为每个缓存绑定指标，包括启动之后直接创建的缓存。
+
+### 三层配置 {#three-layer-config}
+
+缓存的策略现在由声明前后的三个配置层逐字段合并而成（[RFC 0005 §4.8](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。见[配置如何叠加](./configuration.md#precedence)。
+
+- **层**，由低到高：类型默认值（`DefaultPolicies`）、`cocache.defaults.cache.*` / `cocache.defaults.store.*`、声明、`CacheSpecCustomizer` bean、`cocache.overrides.cache.*` / `cocache.overrides.store.*`、`cocache.caches.[name].*`。`cache` 一节作用于 `Cache` 与 `VersionedCache`，`store` 一节作用于 `Store`、`VersionedStore` 与 `SetStore`。
+- **默认值低于声明**：只填充声明没有写出的字段。设置了注解属性、`policy { … }` 中赋值（包括 `ttl = forever()`；嵌套的 `lease`、`load` 或 `local` 只写出值有变化的字段），或 spec 整体赋值 `policy`（写出全部字段），都算写出。`Spec.declaredFields` 列出这些字段。
+- **覆盖只收紧**：`local-max-age`、`degraded-local-max-age`、`absent-ttl` 与 `Cache` 的 `ttl` 取最小值，`read-failure` 取更严的模式。`overrides.cache.ttl` 还限制按调用给出的寿命（`ttlOf`、`put(key, value, ttl)`、`putAll(entries, ttl)`），计入新指标 `cocache.ttl.clamped`（`CacheMetrics.ttlClamped`，端点字段 `ttlClamped`）；更长的 `cocache.caches.[name].ttl` 把该缓存的上限抬到它，`forever` 取消上限。`overrides` 中的其它配置项一律跳过。
+- **适用性**。全局层按缓存跳过不适用于其类型、该层不允许或被库锁定的配置项：创建时记录一行 `WARN`，并列在端点新增的 `skippedConfiguration` 中。`cocache.caches.[name]` 中不适用的配置项与未知的缓存名一样让启动失败；`cocache.caches-validation: warn`（默认 `fail`）对两者都只告警。指向未分层缓存的条目仍然只告警。见[哪些配置项适用](./configuration.md#applicability)与[校验](./configuration.md#validation)。
+- **取值**。每个时长都必须带单位，包括 `cocache.redis.*`：`500ms`、`5s`、`2m`、`PT2M`。哨兵值显式：`forever`（`ttl`、`tombstone-ttl`）、`off` 或 `0s`（`refresh-window`）、`unlimited`（`load-max-concurrent`）。值在绑定时解析，写错的值让启动失败并指明配置键，例如 `cocache.defaults.cache.ttl: "60" needs a unit, e.g. 60s, 5m, PT2M.`。注解仍按秒。
+- **新增的配置项**：`read-timeout`（`CachePolicy.readTimeout`）、`tombstone-ttl`，以及只能写在 `cocache.caches.[name]` 中的 `unknown-read` 与 `unlock`。`cocache.key-prefix` 在分层之外为所有缓存设置前缀；`cocache.caches.[name].key-prefix` 仍优先于它。
+- **库的锁定**。`CoCacheFactory.create(spec) { lock(…); lockLayout(…); constrain(field) { … }; verify { … } }`（Java：`create(spec, Locks.builder("my-lib")….build())`）固定策略字段与存储布局。被锁定的字段报告为 `LOCKED`（`locked by …`），全局层跳过它们，`cocache.caches.[name]` 写出它们时启动失败，除非 `unlock` 列出了它们（该字段随之报告为 `UNLOCKED` 并告警），修改它们的定制器抛出异常。锁定的 `KEY_PREFIX` 不受 `cocache.key-prefix` 影响。见[锁定字段](./configuration.md#locks)。
+- **校验连锁**。全局层让 `refresh-window` 不再小于 `local-max-age` 或 `ttl` 减去抖动、且 `cocache.caches.[name]` 没有设置这些字段时，这个缓存的窗口被关闭（`CLAMPED`，并告警）。只由声明引起的冲突，或牵涉 `cocache.caches.[name]` 所设字段的冲突，让启动失败。
+- **报告**。每个已分层的缓存记录一行 `INFO`，列出不是来自类型默认值的字段及其来源。`GET /actuator/cocache/{name}` 新增 `policy`（每个字段的生效值与来源：`TYPE_DEFAULT`、`DEFAULTS`、`DECLARATION`、`CUSTOMIZER`、`OVERRIDES`、`CACHES`、`CLAMPED`、`LOCKED`、`UNLOCKED`）与 `skippedConfiguration`。`CacheAdmin.policyReport` 返回同一个 `PolicyReport`，未分层的缓存为 `null`。见[生效值与来源](./configuration.md#policy-report)。
+- **驱逐检查**。存在权威缓存时，`allkeys-*` 总是让启动失败；读不到 `maxmemory-policy` 又没有配置 `cocache.redis.assume-maxmemory-policy` 时同样如此。`cocache.redis.store-eviction-check`（`warn`、`fail`、`off`）现在只决定 `volatile-*` 且有 `ttl` 有限的权威缓存这一种情形，`fail` 在这里让启动失败。见[驱逐检查](./configuration.md#eviction-check)。
+- API（`cocache-core`）：`DefaultPolicies`；每个可配置字段一个对象的 `PolicyField`；哨兵类型 `Ttl`（`Forever`、`Finite`、`finiteOr`、`min`）、`RefreshWindow`（`Off`、`Of`）与 `Concurrency`（`Unlimited`、`Max`）；`Locks`、`LayoutField`、`PolicyReport` 与 `Layered`；`CachePolicy.ttlCeiling`；构建器辅助方法 `forever()`、`off()` 与 `unlimited()`。
+
+升级时需要修改的地方：
+
+| 之前 | 8.x | 须知 |
+|------|-----|------|
+| `cocache.defaults.<field>`，如 `cocache.defaults.ttl` | `cocache.defaults.cache.<field>`（`Cache`、`VersionedCache`）或 `cocache.defaults.store.<field>`（`Store`、`VersionedStore`、`SetStore`） | **语义变了。** `cocache.defaults.<field>` 覆盖声明（包括注解）；新的配置项低于声明，只填充声明没有写出的字段。要继续让某个值压过所有声明，用 `cocache.overrides.cache.<field>`（只限陈旧界限与 `read-failure`）或 `cocache.caches.[name].<field>`。Spring Boot 静默忽略旧的配置项。 |
+| `ttl-forever: true` | `ttl: forever` | Spring Boot 静默忽略 `ttl-forever`，依赖它的缓存于是取类型默认值：派生缓存为 1 小时。 |
+| `cocache.defaults.key-prefix` | `cocache.key-prefix` | 配置仍优先于声明，库锁定了 `KEY_PREFIX` 时除外。Spring Boot 静默忽略旧的配置项，缓存于是退回声明的前缀（默认 `cocache:`）：派生缓存相当于冷启动，权威缓存则读到空的数据。 |
+| 不带单位的数字：`cocache.defaults` 与 `cocache.caches` 下按秒（`ttl: 600`），`cocache.redis` 下按毫秒（`command-timeout: 2000`） | `ttl: 10m`、`command-timeout: 2s` | 不带单位的数字现在让启动失败，并指明配置键。 |
+| `refresh-window: 0`、`ttl-jitter: 0` | `refresh-window: off`（或 `0s`）、`ttl-jitter: 0s` | |
+| `load-max-concurrent: 0`（不限制） | `load-max-concurrent: unlimited` | `0` 让启动失败。 |
+| `LoadPolicy(maxConcurrent = 0)` | `LoadPolicy(maxConcurrent = null)`，或在 `policy { … }` 中用 `unlimited()` | `maxConcurrent` 是 `Int?`，`0` 抛出 `IllegalArgumentException`。 |
+| `CachePolicy.DEFAULT`、`StoreSpec.DEFAULT_POLICY`、`VersionedStoreSpec.DEFAULT_POLICY`、`SetStoreSpec.DEFAULT_POLICY` | `DefaultPolicies.CACHE`、`VERSIONED_CACHE`、`STORE`、`VERSIONED_STORE`、`SET_STORE` | `CachePolicy.builder()` 以 `DefaultPolicies.CACHE` 为起点。 |
+| 在 spec 上用 `policy = …` 修改几个字段 | `policy { … }` / `updatePolicy(…)` | 整体策略视为写出全部字段，`cocache.defaults` 于是不再作用于这个缓存。 |
+| `CacheLayers.apply(spec)`，返回 spec | `CacheLayers.apply(spec, locks)`，返回 `Layered`（`spec`、`report`） | `CacheLayers.NONE` 只保留声明，并执行约束。 |
+| `CoCacheProperties.policyFor`、`authoritativePolicyFor`、`keyPrefixFor`、`PolicyProperties.applyTo` | 删除 | 由 starter 的 `CacheAssembler` 合并各层。`CoCacheProperties.defaults` 与 `overrides` 是 `Layer(cache, store)`，策略与 `cocache.redis` 的时长按字符串绑定。 |
+| `cocache.caches` 中未声明的名称总是让启动失败 | 默认启动失败；`cocache.caches-validation: warn` 时只告警 | 不适用于缓存类型的按缓存配置项同样处理。 |
+| 驱逐检查：`allkeys-*` 与读不到策略只在 `store-eviction-check: fail` 时启动失败；`volatile-*` 且 `ttl` 有限时即使 `fail` 也只告警 | `allkeys-*`，以及读不到策略又没有 `assume-maxmemory-policy`，总是启动失败；`store-eviction-check` 只决定 `volatile-*` 且 `ttl` 有限的情形，`fail` 在这里启动失败 | `off` 不再跳过 `allkeys-*` 的检查。 |
 
 ### 破坏性变更
 
+- 配置由声明前后的三层合并而成：`cocache.defaults.<field>` 改为 `cocache.defaults.cache.<field>` 或 `cocache.defaults.store.<field>`，并且**低于**声明；`cocache.overrides.*` 只收紧；每个时长都必须带单位；若干配置项与常量改名。见[三层配置](#three-layer-config)。
 - 接口代理只经 `CoCacheFactory.create(type, spec)` 取得：`CacheProxies.create` 改为内部方法，`CacheAssembler` 不再创建缓存（它是 starter 的 `CacheLayers`）。见[库经 `CoCacheFactory` 创建缓存](#cocache-factory)。
 - 用户 API 拆分为 `Cache`、`VersionedCache`、`Store`、`VersionedStore` 与 `SetStore`，删除 `cocache-coroutines`：见[用户 API 按角色拆分](#api-types)。
 - 挂起视图上的调用级 loader（`suspending().get(key) { … }`）不再在调用方的 dispatcher 或 `Dispatchers.Default` 上执行：它在这次加载之中执行，第一次挂起之后在 CoCache 的执行器上继续，`load-timeout` 会取消它。见[挂起视图直接调用缓存的核心](#suspending-native)。
@@ -81,7 +116,7 @@ description: CoCache 版本发布历史和重要变更。
 - **线格式 2**：8.x 写入的全部内容都是格式 2，lease、负缓存与集合也是（见[线格式](../architecture/index.md#wire-format)、[RFC 0005 §4.7](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。36 字节头部的第 3 字节（6.x 的保留字节）改为标志位，头部之后是段：版本（8 字节，标志位 bit 0）与 TLV 组成的扩展区（标志位 bit 7）。带版本的值把版本放在版本段而不是令牌位置，6.8 的 `VERSION_MARK` 已删除。集合的 `!f` 字段为 `"2"`；`!m` 字段存在且不是 `"0"` 时集合读不懂。`Cache` 与 `VersionedCache` 的值、lease 与负缓存的头部仍是 36 字节；`Store` 与 `VersionedStore` 写入的每个值另带 28 字节的写入标识。
 - 8.x 不读 6.x 的数据。格式 1（6.x 的格式）与不是 CoCache 写入的内容一样，是缓存读不懂的内容：有 loader 的缓存回收它并从数据源重新加载，没有 loader 的缓存读取失败。8.x 与 6.x 的实例不能共用一个缓存。格式 2 中带本版本不认识的必须理解的标志位（bit 2–6）或状态的内容是更高的格式，存储把它报告为格式 3：有 loader 的缓存绕过它回源，任何读取都不回收、不覆盖它。读取只对没有这类标志位的格式 2 内容授予 lease 或刷新令牌，填充与释放只读 36 字节的头部（`GETRANGE`），版本段中从不是 `Versioned.NO_VERSION`。
 - Redis ACL：脚本现在调用 `GETRANGE`、`STRLEN` 与 `HMGET`，不再调用 `HGET` 与 `HEXISTS`。升级前给已有用户加上 `+getrange +strlen +hmget`，见 [Redis ACL](../operations/index.md#acl)。
-- 删除 `foreign-format`：`CachePolicy.foreignFormat`、`CachePolicy.Builder.foreignFormat`、`ForeignFormatMode`、配置项 `cocache.defaults.foreign-format` 与 `cocache.caches.[name].foreign-format`，以及 `CoCacheProperties.policyFor` 的 `sourced` 参数。有 loader 的读取回收读不懂的内容并重新加载，没有 loader 的读取以 `CacheReadException` 失败。6.x 中没有 loader 的缓存上的 `reclaim` 会删除唯一副本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md) §4.7、§12 决定 6）。Spring Boot 不再绑定这个配置项，配置元数据把它标为已删除。
+- 删除 `foreign-format`：`CachePolicy.foreignFormat`、`CachePolicy.Builder.foreignFormat`、`ForeignFormatMode`，以及配置项 `cocache.defaults.foreign-format` 与 `cocache.caches.[name].foreign-format`。有 loader 的读取回收读不懂的内容并重新加载，没有 loader 的读取以 `CacheReadException` 失败。6.x 中没有 loader 的缓存上的 `reclaim` 会删除唯一副本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md) §4.7、§12 决定 6）。Spring Boot 不再绑定这个配置项，配置元数据把它标为已删除。
 - 条件写入（`putIfMatch`、`deleteIfMatch`）、按版本写入（`putIfNewer`、`invalidateIfNewer`、`deleteIfNewer`）与 `SetStore.add` / `remove` 遇到缓存读不懂的内容时一律拒绝：抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`），不修改 key；`getIfChanged` 同样抛出 `CacheReadException`。6.x 中 `foreign-format: reclaim` 让它们把不是 CoCache 写入的内容（格式 0）当作没有值：`putIfMatch(key, null, …)` 与 `putIfNewer` 覆盖它，`getIfChanged` 返回 `Absent`，`add` 用新成员替换整个 key。
 - SPI：`RemoteStore.putIfMatch` / `putIfNewer` 及其 `AsyncRemoteStore` 对应方法删除 `foreignAsAbsent` 参数，存储读不懂的内容总是返回 `Unreadable`。删除会覆盖这类内容的 `RemoteStore.addMembers` / `removeMembers` 与 `AsyncRemoteStore.addMembersAsync` / `removeMembersAsync`；由 `addMembersIfReadable` / `removeMembersIfReadable` 及其异步方法接替，它们改为抽象方法，因为“先读后写”的默认实现不原子。Redis 脚本 `ADD_MEMBERS` 与 `REMOVE_MEMBERS` 已删除。
 - SPI：L1 SPI 改为挂起形状（[RFC 0005 §4.3](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。`CoherenceBackend.store` 返回 `L1Store`，它的操作都是 `suspend` 函数。条件读写、按版本写入与集合成员的增删移到能力面上，由 `conditional()`、`versioned()` 与 `sets()` 返回，存储不支持时返回 `null`。删除 `CoherenceBackend.versionedWrites`，由 `versioned()` 取代。`InvalidationChannel.publish` 改为 `suspend`，`subscribe` 仍是阻塞的。Java 后端实现 `FutureL1Store` 与 `FutureInvalidationChannel`（方法返回 `CompletableFuture`），返回 `FutureL1Store.adapt(…)` 与 `FutureInvalidationChannel.adapt(…)`；装饰器继承 `ForwardingL1Store`。实现自己取消的 future 按 L1 故障处理，不当作调用方被取消。`L1Store` 没有 `close`：连接属于后端，运行时不再关闭存储。引擎从不取消 L1 调用，实现可以用可取消的 `await()` 等待。只实现阻塞的 `RemoteStore` 的后端不再可用：引擎不再把这样的存储放到阻塞执行器上执行。删除 `RemoteStore`、`AsyncRemoteStore` 与 `AsyncInvalidationChannel`。
@@ -95,7 +130,7 @@ description: CoCache 版本发布历史和重要变更。
 - **摘要段**：`Store` 写入的值在头部带载荷的 SHA-256（标志位 bit 1，32 字节），与写入标识并列：这样的值比 `Cache` 的值多 60 字节（[线格式](../architecture/index.md#wire-format)，[RFC 0005 §4.7](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。CoCache 在客户端计算它，拿到载荷时校验：`Store` 读到载荷与摘要不一致的值，或不带摘要的值，读取以 `CacheReadException`（`cause` 为 `ForeignFormatException`）失败，key 不被修改。带摘要的值从不取得刷新令牌、从不被回收。`Cache` 或 `VersionedCache` 读到它时计入新指标 `cocache.type.mismatch`（`CacheMetrics.typeMismatches`）并记录一次日志：同一个 namespace 上还有 `Store`。
 - `Digest` 是载荷的 SHA-256，带算法标识：`Digest(algorithm, bytes)`（`Digest.SHA_256`）、`Digest(bytes)`、`Digest.ofPayload(bytes)`、`bytes`，`toString()` 输出 `SHA-256:<hex>`。删除 `Digest.sha1`；6.x 保存的摘要（SHA-1）不会再匹配。
 - 条件读写（`getIfChanged`、`putIfMatch`、`deleteIfMatch`）只作用于 `Store` 写入的值。没有摘要的值（`Cache` 写入的）、带版本的值、墓碑与被淘汰的带版本 key 都是读不懂的内容：`getIfChanged` 抛出 `CacheReadException`，`putIfMatch` 抛出 `CacheWriteException`，`cause` 都是 `ForeignFormatException`。对没有值的 key，`putIfMatch(key, null, value)` 照常写入。脚本只读头部（`GETRANGE` 与 `STRLEN`）、比较保存的摘要，摘要未变的 `getIfChanged` 在 Redis 中的成本与值的大小无关；Lua 不再读取整个值或计算 SHA-1。`getIfChanged` 返回值时，CoCache 重算摘要，不一致就抛出。
-- **带版本的缓存提前刷新**：带版本的值取得刷新令牌，`cocache.defaults.refresh-window` 现在作用于带版本的缓存；同时带 `versioned` 与 `refreshWindow` 的 `CacheSpec` 是合法的。`CoCacheProperties.policyFor(cacheName, declared)` 去掉 `versioned` 参数。刷新只写回不比 Redis 中更旧的版本：loader 返回更旧的版本时，实例保留自己的副本，退避之后再试。写入方推送每一个版本的带版本缓存可以设置 `refreshWindow = null`（或 `cocache.caches.[name].refresh-window: 0`）。
+- **带版本的缓存提前刷新**：带版本的值取得刷新令牌，`cocache.defaults.cache.refresh-window` 作用于带版本的缓存；同时带 `versioned` 与 `refreshWindow` 的 `CacheSpec` 是合法的。刷新只写回不比 Redis 中更旧的版本：loader 返回更旧的版本时，实例保留自己的副本，退避之后再试。写入方推送每一个版本的带版本缓存可以设置 `refreshWindow = off()`（或 `cocache.caches.[name].refresh-window: off`）。
 - 带版本的缓存的本地副本从不退回更旧的版本：刷新的令牌被别的读取抢走、或写回失败，而 loader 返回比副本更旧的版本时，实例保留副本，退避之后再试；被丢弃的填充计入 `cocache.stale.discards`。
 - 结果未知的带版本写回（填充）按写入处理：实例递增戳、丢掉本地副本（非原子广播时发布失效），因为超时或被排空的 `FILL` 仍可能稍后让版本前进，而它的失效消息在这个实例上被过滤。
 - 填充遵循 Redis 中的版本：带版本的内容上，凭刷新令牌或 lease 的填充在版本更旧（或没有版本）时被拒绝，令牌在同一个脚本中清零；版本相等时续期，不发失效消息；版本更新时写入并广播，加载所在的实例按写入处理：丢掉本地副本，不把结果填进 L2。
@@ -134,7 +169,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ### 新增：按缓存的读取时限与只广播的失效
 
-- `CachePolicy.readTimeout`（`CachePolicy.Builder.readTimeout(…)`，默认不设置）限定缓存的每次 Redis 读取（`get`、`getAll`、`getIfChanged`），存储以它的命令超时为上限。超时按 Redis 读取失败处理：带 loader 的读取由 `read-failure` 决定，不带 loader 的读取为 `Unknown`（由 `unknownRead` 决定），`getIfChanged` 抛出，读取取得的 lease 被释放。用于不能回退到 loader、又不能在 Redis 卡顿时等满 `command-timeout` 的缓存，例如撤销表。配置项之后加入。`EngineSpec` 增加可选的 `pause()` 钩子，用例 `readTimeoutBoundsEveryL1Read` 检查它。
+- `CachePolicy.readTimeout`（`CachePolicy.Builder.readTimeout(…)`，默认不设置）限定缓存的每次 Redis 读取（`get`、`getAll`、`getIfChanged`），存储以它的命令超时为上限。超时按 Redis 读取失败处理：带 loader 的读取由 `read-failure` 决定，不带 loader 的读取为 `Unknown`（由 `unknownRead` 决定），`getIfChanged` 抛出，读取取得的 lease 被释放。用于不能回退到 loader、又不能在 Redis 卡顿时等满 `command-timeout` 的缓存，例如撤销表。它的配置项是 `read-timeout`（见[三层配置](#three-layer-config)）。`EngineSpec` 增加可选的 `pause()` 钩子，用例 `readTimeoutBoundsEveryL1Read` 检查它。
 - `ExternalInvalidator.broadcast(namespace, encodedKeys)` 只发布失效消息、不修改 Redis：各实例丢弃本地副本并从 Redis 重新读取。Redis 中已是正确的值时使用它。`invalidate` 会删除 key，用在没有 loader 的缓存的命名空间上就是删除唯一的一份数据。
 - 以空的 `keyPrefix` 创建缓存时记录告警：它的 key 与频道没有公共前缀，ACL 与按前缀的运维只能逐个写出命名空间。
 

@@ -24,7 +24,7 @@ import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
@@ -56,8 +56,8 @@ class CacheRuntimeTest {
             admin.localSize.assert().isEqualTo(0)
             runtime.admin("absent").assert().isNull()
             // 生效的策略即创建时 spec 中的策略
-            runtime.policy("user").assert().isSameAs(CachePolicy.DEFAULT)
-            runtime.policy("index").assert().isSameAs(SetStoreSpec.DEFAULT_POLICY)
+            runtime.policy("user").assert().isSameAs(DefaultPolicies.CACHE)
+            runtime.policy("index").assert().isSameAs(DefaultPolicies.SET_STORE)
             runtime.policy("absent").assert().isNull()
             runtime.cacheNames.assert().containsExactlyInAnyOrder("user", "index")
             cache.name.assert().isEqualTo("user")

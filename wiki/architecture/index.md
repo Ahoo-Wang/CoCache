@@ -19,7 +19,7 @@ A two-level cache trades staleness for latency. It does three things: it **copie
 
 **Non-goals.** Linearizable reads: between a write and the arrival of its message, other instances may serve the previous value.
 
-**TTL is a safety net, not the mechanism.** Races inside the protocol are closed by fences, not by waiting for expiry. That is why `ttl-forever` is safe as long as every write goes through the protocol.
+**TTL is a safety net, not the mechanism.** Races inside the protocol are closed by fences, not by waiting for expiry. That is why `ttl: forever` is safe as long as every write goes through the protocol.
 
 ## Modules {#modules}
 
@@ -107,8 +107,8 @@ sequenceDiagram
     Fac->>Fac: @CoCache / @CaffeineCache to the spec of<br>the extended type: resolve loader, codec, keyExpression
     Fac->>F: create(type, spec)
     F->>F: check the interface
-    F->>Asm: apply(spec)
-    Asm-->>F: CacheSpecCustomizers, then cocache.defaults,<br>then cocache.caches.[name] applied
+    F->>Asm: apply(spec, locks)
+    Asm-->>F: effective spec and report after defaults, declaration,<br>customizers, overrides, caches.[name], constraints
     F->>RT: create the layered cache
     RT-->>F: engine, subscribed to {keyPrefix}inv:{namespace}
     F-->>Fac: JDK proxy implementing the interface
@@ -121,7 +121,7 @@ sequenceDiagram
 | Spec bean: `@Bean fun userSpec(): CacheSpec<String, User>`, or any other spec type | the spec bean name minus `Spec` (`userSpec` → `user`), or plus `Cache` | The engine itself. `CacheSpecRegistrar` reads `K` and `V` from the factory method's declared return type without instantiating the spec. |
 | Join cache: `@JoinCacheable interface …`, listed in `@EnableCoCache(joinCaches = …)` | the join cache name | A read-only view over two caches, resolved by name; a `JoinCache` can also invalidate. See [JoinCache](../guide/join-cache.md). |
 
-Policy layers, later wins: built-in defaults (per type) → the declaration → `CacheSpecCustomizer` beans (in order) → `cocache.defaults.*` → `cocache.caches.[name].*`. `key-prefix` follows the same layering. After all singletons exist, `CacheAssembler` fails startup if `cocache.caches` names an undeclared cache. An entry for a cache created directly with `CacheRuntime.create`, which no configuration layer reaches, logs a warning instead ([CoCacheFactory](../guide/caches.md#factory)). Spec beans and libraries create caches through the same `CoCacheFactory` bean. Every stateful component is created per spec by `CacheRuntime` ([Runtime](#runtime)), so two caches never share one. In Spring, a join cache finds its two caches by cache name (through their bean names), never by type.
+Policy layers, merged field by field, higher wins: the type default (`DefaultPolicies`) → `cocache.defaults.cache.*` / `.store.*` (only fields the declaration didn't write) → the declaration → `CacheSpecCustomizer` beans (in order) → `cocache.overrides.cache.*` / `.store.*` (tighten only) → `cocache.caches.[name].*`. A library's locks and constraints, passed to `CoCacheFactory.create`, then apply, and the result carries a report of each field's source ([Configuration](../guide/configuration.md#precedence)). `cocache.key-prefix` sits outside the layering and wins over the declaration unless the key prefix is locked. After all singletons exist, `CacheAssembler` fails startup if `cocache.caches` names an undeclared cache (`cocache.caches-validation: warn` only warns). An entry for a cache created directly with `CacheRuntime.create`, which no configuration layer reaches, always only logs a warning ([CoCacheFactory](../guide/caches.md#factory)). Spec beans and libraries create caches through the same `CoCacheFactory` bean. Every stateful component is created per spec by `CacheRuntime` ([Runtime](#runtime)), so two caches never share one. In Spring, a join cache finds its two caches by cache name (through their bean names), never by type.
 
 ## Wire format {#wire-format}
 

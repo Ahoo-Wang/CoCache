@@ -57,7 +57,7 @@ A [`Store`, `VersionedStore` or `SetStore`](../guide/caches.md#store) is differe
 | Only `Cache` and `VersionedCache` | Any. `allkeys-lru` or `allkeys-lfu` turn Redis into a bounded cache. | An evicted value or negative entry is a miss. An evicted lease means the loader's fill is rejected, and the value stays in that instance's L2 for `degraded-local-max-age`. Nothing goes stale. |
 | Any `Store`, `VersionedStore` or `SetStore` | `noeviction`, or a `volatile-*` policy | Redis holds their only copy, so `allkeys-*` would silently lose data. Their values have no expiry by default, so `volatile-*` never evicts them. One given a finite `ttl` can still be evicted under `volatile-*`, and so can a `VersionedStore` tombstone, which always expires after `tombstoneTtl`: once it is gone, an older version is accepted again. |
 
-At startup, if any `Store`, `VersionedStore` or `SetStore` is declared (created or still lazy), CoCache reads every primary's policy from `INFO memory`. It doesn't need `CONFIG`, which managed services often block. It warns on `allkeys-*`, or stops startup with `cocache.redis.store-eviction-check: fail` (`off` skips the check). Under `volatile-*` it warns about each one with a finite `ttl`. If the Redis user can't run `INFO`, the check uses `cocache.redis.assume-maxmemory-policy`. Without that setting it warns, or stops startup in `fail` mode, rather than skipping the check silently.
+At startup, if any `Store`, `VersionedStore` or `SetStore` is declared (created or still lazy), CoCache reads every primary's policy from `INFO memory`. It doesn't need `CONFIG`, which managed services often block. `allkeys-*` on any primary stops startup, whatever `cocache.redis.store-eviction-check` says. If the Redis user can't run `INFO`, the check uses `cocache.redis.assume-maxmemory-policy`; without that setting, startup stops too, rather than skipping the check silently. Under `volatile-*`, an authoritative cache with a finite `ttl` is the only case `store-eviction-check` decides: `warn` (default) logs it, `fail` stops startup, `off` accepts it. See [the eviction check](../guide/configuration.md#eviction-check).
 
 When Redis reaches `maxmemory` under `noeviction`:
 
@@ -118,7 +118,7 @@ The L2 hit counter `cocache.hits{level=l2}` is off by default because it slows d
 | Lease | String | key + 36-byte header, while a load runs (at most `lease-ttl`) |
 | Set (`SetStore`) | Hash | key + a `!f` field + one `+{member}` field per member |
 
-Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY USAGE cocache:UserCache:42`. Every value has an expiry (`ttl`, plus or minus `ttl-jitter`) unless the cache uses `ttl-forever` or is a `Store`, `VersionedStore` or `SetStore` without a `ttl`.
+Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY USAGE cocache:UserCache:42`. Every value has an expiry (`ttl`, plus or minus `ttl-jitter`) unless the cache uses `ttl: forever`, as a `Store`, `VersionedStore` or `SetStore` does by default.
 
 ### Redis traffic {#sizing-traffic}
 
@@ -155,7 +155,7 @@ Keys under an old prefix or namespace expire with their `ttl`. Delete them earli
 
 Several applications can share one Redis:
 
-- **Give each application its own key prefix**, for example `cocache.defaults.key-prefix: ${spring.application.name}:`. Without that, two applications with a cache of the same name read and overwrite each other's values. A cache that you deliberately share between applications needs the same prefix, namespace, codec, and channel mode everywhere.
+- **Give each application its own key prefix**, for example `cocache.key-prefix: ${spring.application.name}:`. Without that, two applications with a cache of the same name read and overwrite each other's values. A cache that you deliberately share between applications needs the same prefix, namespace, codec, and channel mode everywhere.
 - **The channel carries the prefix.** Applications with different prefixes never receive each other's messages, even when their namespaces coincide. Redis Pub/Sub ignores the database number, though: applications on different databases with identical prefixes and namespaces share a channel, and messages from the other application evict L2 copies needlessly. Use distinct prefixes.
 
 ## Security {#security}

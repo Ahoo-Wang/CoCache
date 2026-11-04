@@ -54,7 +54,7 @@ internal class CacheEngine<K : Any, V : Any>(
     }
 
     override fun put(key: K, value: V, ttl: Duration) {
-        runSync { putWithTtl(key, value, ttl) }
+        runSync { putWithTtl(key, value, perCallTtl(ttl)) }
     }
 
     override fun putAll(entries: Map<K, V>) {
@@ -65,7 +65,8 @@ internal class CacheEngine<K : Any, V : Any>(
 
     override fun putAll(entries: Map<K, V>, ttl: Duration) {
         if (entries.isNotEmpty()) {
-            runSync { putAllWithTtl(entries) { _, _ -> ttl } }
+            val clamped = perCallTtl(ttl)
+            runSync { putAllWithTtl(entries) { _, _ -> clamped } }
         }
     }
 
@@ -131,7 +132,7 @@ internal class CacheEngine<K : Any, V : Any>(
         }
 
         override fun put(key: K, value: V, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
-            putWithTtl(key, value, ttl)
+            putWithTtl(key, value, perCallTtl(ttl))
         }
 
         override fun putAll(entries: Map<K, V>): CompletableFuture<Void?> = runAsyncCommand {
@@ -139,7 +140,8 @@ internal class CacheEngine<K : Any, V : Any>(
         }
 
         override fun putAll(entries: Map<K, V>, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
-            putAllWithTtl(entries) { _, _ -> ttl }
+            val clamped = perCallTtl(ttl)
+            putAllWithTtl(entries) { _, _ -> clamped }
         }
 
         override fun invalidate(key: K): CompletableFuture<Void?> = runAsyncCommand {

@@ -42,6 +42,7 @@ import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.versionedCacheSpec
 import me.ahoo.cocache.core.versionedStoreSpec
 import me.ahoo.cocache.test.Concurrency
@@ -396,7 +397,7 @@ class VersionedCacheTest {
         remoteTtl("k", "aggregate-ttl").assert().isNull()
         aggregate.deleteIfNewer("k", 2)
         requireNotNull(remoteTtl("k", "aggregate-ttl")).assert()
-            .isBetween(Duration.ofHours(23), VersionedStoreSpec.DEFAULT_TOMBSTONE_TTL)
+            .isBetween(Duration.ofHours(23), requireNotNull(DefaultPolicies.VERSIONED_STORE.tombstoneTtl))
     }
 
     /**

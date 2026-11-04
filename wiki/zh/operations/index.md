@@ -57,7 +57,7 @@ starter 按以下顺序从 Spring Boot 的 Redis 连接信息中选择拓扑：
 | 只有 `Cache` 与 `VersionedCache` | 任意。`allkeys-lru` 或 `allkeys-lfu` 让 Redis 成为有界缓存 | 值或负缓存被淘汰就是未命中。lease 被淘汰时，加载方的填充被拒绝，值只以 `degraded-local-max-age` 留在该实例的 L2 中。不会产生陈旧数据 |
 | 有任何 `Store`、`VersionedStore` 或 `SetStore` | `noeviction` 或 `volatile-*` | Redis 保存的是它们的唯一副本，`allkeys-*` 会悄悄丢失数据。它们的值默认没有到期时间，`volatile-*` 不会淘汰它们。设置了有限 `ttl` 的在 `volatile-*` 下仍可能被淘汰；`VersionedStore` 的墓碑总在 `tombstoneTtl` 之后到期，同样可能被淘汰：墓碑消失之后，旧版本又会被接受 |
 
-只要声明了 `Store`、`VersionedStore` 或 `SetStore`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。遇到 `allkeys-*` 时告警，`cocache.redis.store-eviction-check: fail` 时启动失败（`off` 不检查）。`volatile-*` 下为其中每个 `ttl` 有限的告警。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时告警，`fail` 模式下启动失败，而不是静默跳过检查。
+只要声明了 `Store`、`VersionedStore` 或 `SetStore`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。任一主节点为 `allkeys-*` 时启动失败，无论 `cocache.redis.store-eviction-check` 是什么。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时同样启动失败，而不是静默跳过检查。`volatile-*` 下有 `ttl` 有限的权威缓存，是 `store-eviction-check` 唯一决定的情形：`warn`（默认）记录告警，`fail` 启动失败，`off` 接受。见[驱逐检查](../guide/configuration.md#eviction-check)。
 
 `noeviction` 下 Redis 达到 `maxmemory` 时：
 
@@ -118,7 +118,7 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 | lease | String | key + 36 字节头，存活到加载结束（最多 `lease-ttl`） |
 | 集合（`SetStore`） | Hash | key + 一个 `!f` 字段 + 每个成员一个 `+{member}` 字段 |
 
-另加 Redis 自身的每 key 开销。用 `redis-cli MEMORY USAGE cocache:UserCache:42` 实测一个典型 key。除非缓存使用 `ttl-forever`，或是没有设置 `ttl` 的 `Store`、`VersionedStore` 与 `SetStore`，每个值都有到期时间（`ttl`，加减 `ttl-jitter`）。
+另加 Redis 自身的每 key 开销。用 `redis-cli MEMORY USAGE cocache:UserCache:42` 实测一个典型 key。除非缓存使用 `ttl: forever`（`Store`、`VersionedStore` 与 `SetStore` 默认如此），每个值都有到期时间（`ttl`，加减 `ttl-jitter`）。
 
 ### Redis 流量 {#sizing-traffic}
 
@@ -155,7 +155,7 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 
 多个应用可以共用一个 Redis：
 
-- **给每个应用设置自己的 key 前缀**，例如 `cocache.defaults.key-prefix: ${spring.application.name}:`。否则两个应用中同名的缓存会读取并覆盖彼此的值。有意在应用之间共享的缓存，各处必须使用相同的前缀、命名空间、编解码器与通道模式。
+- **给每个应用设置自己的 key 前缀**，例如 `cocache.key-prefix: ${spring.application.name}:`。否则两个应用中同名的缓存会读取并覆盖彼此的值。有意在应用之间共享的缓存，各处必须使用相同的前缀、命名空间、编解码器与通道模式。
 - **频道带有前缀**。前缀不同的应用即使命名空间相同，也收不到彼此的消息。但 Redis Pub/Sub 不区分数据库编号：使用不同数据库、前缀与命名空间都相同的应用共用一个频道，对方的消息会无谓地淘汰本方的 L2 副本。请使用不同的前缀。
 
 ## 安全 {#security}

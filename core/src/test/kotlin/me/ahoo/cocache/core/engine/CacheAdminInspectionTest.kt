@@ -36,6 +36,7 @@ import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.test.EngineSpec.TestCodec
@@ -127,7 +128,7 @@ class CacheAdminInspectionTest {
         local.state.assert().isEqualTo(LocalState.VALUE)
         local.value.assert().isEqualTo("user-1")
         local.expired.assert().isFalse()
-        local.expiresAt.assert().isEqualTo(Instant.ofEpochMilli(start + CachePolicy.DEFAULT.localMaxAge.toMillis()))
+        local.expiresAt.assert().isEqualTo(Instant.ofEpochMilli(start + DefaultPolicies.CACHE.localMaxAge.toMillis()))
         local.refreshAt.assert().isNotNull()
         inspection.remote.state.assert().isEqualTo(RemoteState.VALUE)
         inspection.remote.value.assert().isEqualTo("user-1")
@@ -136,14 +137,14 @@ class CacheAdminInspectionTest {
         loads.get().assert().isEqualTo(1)
 
         // 查看不填充 L2、不影响命中路径；过期的 L2 副本照常展示
-        clock.advance(CachePolicy.DEFAULT.localMaxAge)
+        clock.advance(DefaultPolicies.CACHE.localMaxAge)
         requireNotNull(admin.inspect("id-1").local).expired.assert().isTrue()
     }
 
     @Test
     fun inspectsNegativeAndUnfilledEntries() {
         val runtime = runtime()
-        val users = runtime.users(CachePolicy.DEFAULT)
+        val users = runtime.users(DefaultPolicies.CACHE)
         users[-1].assert().isNull()
         val negative = runtime.userAdmin().inspect("id--1")
         requireNotNull(negative.local).state.assert().isEqualTo(LocalState.ABSENT)

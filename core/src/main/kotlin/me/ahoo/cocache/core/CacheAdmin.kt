@@ -37,6 +37,11 @@ interface CacheAdmin {
      */
     val layered: Boolean
 
+    /**
+     * 每个策略字段的生效值与来源层（RFC 0005 §4.8），以及全局层中被跳过的条目；未分层的缓存为 `null`。
+     */
+    val policyReport: PolicyReport?
+
     val metrics: CacheMetrics
 
     /**

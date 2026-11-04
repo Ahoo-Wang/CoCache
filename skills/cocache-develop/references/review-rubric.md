@@ -17,7 +17,7 @@ Use this rubric after resolving the actual diff and reading each changed cache d
 - Several writers that read, change and write one `Store` value use `getIfChanged` / `putIfMatch` / `deleteIfMatch`, not `put`; ordered writers use a versioned type with `putIfNewer`.
 - Callers of authoritative writes and deletes (`Store.delete`, `deleteIfMatch`, `purge`, `SetStore` writes, `VersionedCache.evict`) handle `CacheWriteException`: these never retry. A retry after `outcomeUnknown = true` is safe for the operation used.
 - The invalidated key encodes exactly as the reader's key: same type, `keyExpression`/`KeyEncoder`, namespace and prefix.
-- `ttl` was not shortened, or `ttl-forever` removed, to hide a missing invalidation.
+- `ttl` was not shortened, or `ttl: forever` removed, to hide a missing invalidation.
 
 ## Reads and loaders
 
@@ -36,7 +36,7 @@ Use this rubric after resolving the actual diff and reading each changed cache d
 
 ## Configuration and compatibility
 
-- Properties exist in the resolved version; bare numbers are seconds under `defaults`/`caches` and milliseconds under `redis`. Names under `cocache.caches` match declared caches.
+- Properties exist in the resolved version and sit in the right layer: `cocache.defaults.cache.*` / `.store.*` fill only fields the declaration leaves unwritten, `cocache.overrides.*` only tightens staleness bounds and `read-failure`, and only `cocache.caches.[name]` sets `unknown-read`, `key-prefix`, `unlock` or an authoritative `ttl`. Every duration has a unit; sentinels are `forever`, `off`, `unlimited`. Names under `cocache.caches` match declared caches.
 - `refresh-window` stays below `ttl - ttl-jitter` and `local-max-age`.
 - A change of `key-prefix`, `namespace`, cache name (when the namespace defaults to it), codec byte format or `channel-mode` is called out as not rolling-safe, with a switch plan.
 - Applications sharing a Redis use distinct key prefixes; authoritative types run on a Redis with a non-`allkeys-*` eviction policy and persistence.

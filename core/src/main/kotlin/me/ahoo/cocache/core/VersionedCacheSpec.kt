@@ -19,6 +19,8 @@ import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
+import me.ahoo.cocache.core.policy.PolicyField
 import java.util.function.Consumer
 
 /**
@@ -30,7 +32,7 @@ import java.util.function.Consumer
  * 被拒绝（K16）。
  *
  * 照常提前刷新（`refreshWindow`）：回源得到的版本更旧时 L1 拒绝写回，刷新路径保留现有副本并退避（RFC 0005 §4.7）。
- * 默认策略 [CachePolicy.DEFAULT]；墓碑与 `E` 的寿命为 `tombstoneTtl`（未设置时同值的寿命）。
+ * 默认策略 [DefaultPolicies.VERSIONED_CACHE]；墓碑与 `E` 的寿命为 `tombstoneTtl`（未设置时同值的寿命）。
  */
 class VersionedCacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : Spec<K, V> {
     override val name: String = builder.name
@@ -43,6 +45,11 @@ class VersionedCacheSpec<K : Any, V : Any> private constructor(builder: Builder<
     val ttlOf: TtlFunction<K, V>? = builder.ttlOf
     val keyFilter: KeyFilter? = builder.keyFilter
     override val policy: CachePolicy = builder.policy
+
+    /**
+     * 声明写出的策略字段（字段三态，RFC 0005 §4.8）：没有写出的字段由 `cocache.defaults` 或类型默认值决定。
+     */
+    override val declaredFields: Set<PolicyField<*>> = builder.declaration.fields()
 
     init {
         requireValidName(name, namespace)
@@ -69,7 +76,7 @@ class VersionedCacheSpec<K : Any, V : Any> private constructor(builder: Builder<
         it.versionedAsyncLoader = versionedAsyncLoader
         it.ttlOf = ttlOf
         it.keyFilter = keyFilter
-        it.policy = policy
+        it.declaration.restore(policy, declaredFields)
     }
 
     class Builder<K : Any, V : Any> internal constructor(val name: String) {
@@ -81,7 +88,16 @@ class VersionedCacheSpec<K : Any, V : Any> private constructor(builder: Builder<
         var versionedAsyncLoader: AsyncCacheLoader<K, out Versioned<V?>>? = null
         var ttlOf: TtlFunction<K, V>? = null
         var keyFilter: KeyFilter? = null
-        var policy: CachePolicy = CachePolicy.DEFAULT
+        internal val declaration = PolicyDeclaration(DefaultPolicies.VERSIONED_CACHE)
+
+        /**
+         * 整体赋值视为写出全部策略字段（`cocache.defaults` 对此缓存不再生效）；只修改部分字段用 `policy { … }` 或 [updatePolicy]。
+         */
+        var policy: CachePolicy
+            get() = declaration.policy
+            set(value) {
+                declaration.replace(value)
+            }
 
         fun namespace(namespace: String) = apply { this.namespace = namespace }
         fun keyPrefix(keyPrefix: String) = apply { this.keyPrefix = keyPrefix }
@@ -102,13 +118,13 @@ class VersionedCacheSpec<K : Any, V : Any> private constructor(builder: Builder<
          */
         fun policy(
             block: CachePolicy.Builder.() -> Unit
-        ) = apply { this.policy = policy.toBuilder().apply(block).build() }
+        ) = apply { declaration.update(block) }
 
         /**
          * 在当前策略基础上修改（Java 友好）。
          */
         fun updatePolicy(customizer: Consumer<CachePolicy.Builder>) = apply {
-            this.policy = policy.toBuilder().also { customizer.accept(it) }.build()
+            declaration.update { customizer.accept(this) }
         }
 
         fun build(): VersionedCacheSpec<K, V> = VersionedCacheSpec(this)

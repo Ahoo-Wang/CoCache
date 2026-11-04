@@ -141,20 +141,20 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      * 配置的各层（starter 的 `cocache.defaults`、`cocache.caches.[name]` 与定制器）对它都不生效，启动日志与端点标注出来。
      * 库与应用应经 [CoCacheFactory] 创建缓存。
      */
-    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> = create(spec, layered = false)
+    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> = create(spec, report = null)
 
-    internal fun <K : Any, V : Any> create(spec: CacheSpec<K, V>, layered: Boolean): Cache<K, V> =
-        register(spec.name, spec.keyspace, NONE, layered) { store -> CacheEngine(spec.engineSpec(), store, context) }
+    internal fun <K : Any, V : Any> create(spec: CacheSpec<K, V>, report: PolicyReport?): Cache<K, V> =
+        register(spec.name, spec.keyspace, NONE, report) { store -> CacheEngine(spec.engineSpec(), store, context) }
 
     /**
      * 按声明创建派生的带版本副本 `VersionedCache`。存储必须支持按版本有序的写入（[L1Store.versioned]）。
      *
      * 创建时检查缓存需要的 L1 能力（RFC 0005 §4.3）：存储缺少任何一个时抛出 [UnsupportedOperationException]，不注册任何东西。
      */
-    fun <K : Any, V : Any> create(spec: VersionedCacheSpec<K, V>): VersionedCache<K, V> = create(spec, layered = false)
+    fun <K : Any, V : Any> create(spec: VersionedCacheSpec<K, V>): VersionedCache<K, V> = create(spec, report = null)
 
-    internal fun <K : Any, V : Any> create(spec: VersionedCacheSpec<K, V>, layered: Boolean): VersionedCache<K, V> =
-        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED), layered) { store ->
+    internal fun <K : Any, V : Any> create(spec: VersionedCacheSpec<K, V>, report: PolicyReport?): VersionedCache<K, V> =
+        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED), report) { store ->
             VersionedCacheEngine(spec.engineSpec(), store, context)
         }
 
@@ -162,30 +162,30 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      * 按声明创建权威副本 `Store`。存储必须支持条件读写（[L1Store.conditional]）：`getIfChanged`、`putIfMatch` 与 `deleteIfMatch`
      * 是 `Store` 的操作。
      */
-    fun <K : Any, V : Any> create(spec: StoreSpec<K, V>): Store<K, V> = create(spec, layered = false)
+    fun <K : Any, V : Any> create(spec: StoreSpec<K, V>): Store<K, V> = create(spec, report = null)
 
-    internal fun <K : Any, V : Any> create(spec: StoreSpec<K, V>, layered: Boolean): Store<K, V> =
-        register(spec.name, spec.keyspace, listOf(Capability.CONDITIONAL), layered) { store ->
+    internal fun <K : Any, V : Any> create(spec: StoreSpec<K, V>, report: PolicyReport?): Store<K, V> =
+        register(spec.name, spec.keyspace, listOf(Capability.CONDITIONAL), report) { store ->
             StoreEngine(spec.engineSpec(), store, context)
         }
 
     /**
      * 按声明创建权威的带版本副本 `VersionedStore`。存储必须支持按版本有序的写入（[L1Store.versioned]）。
      */
-    fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>): VersionedStore<K, V> = create(spec, layered = false)
+    fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>): VersionedStore<K, V> = create(spec, report = null)
 
-    internal fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>, layered: Boolean): VersionedStore<K, V> =
-        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED), layered) { store ->
+    internal fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>, report: PolicyReport?): VersionedStore<K, V> =
+        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED), report) { store ->
             VersionedStoreEngine(spec.engineSpec(), store, context)
         }
 
     /**
      * 按声明创建权威集合 `SetStore`。存储必须支持集合成员的增删（[L1Store.sets]）。
      */
-    fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>): SetStore<K, E> = create(spec, layered = false)
+    fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>): SetStore<K, E> = create(spec, report = null)
 
-    internal fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>, layered: Boolean): SetStore<K, E> =
-        register(spec.name, spec.keyspace, listOf(Capability.SETS), layered) { store ->
+    internal fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>, report: PolicyReport?): SetStore<K, E> =
+        register(spec.name, spec.keyspace, listOf(Capability.SETS), report) { store ->
             SetEngine(spec, store, context)
         }
 
@@ -202,14 +202,14 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
 
     /**
      * @param required 缓存需要的 L1 能力：存储缺少其中任何一个时抛出，不注册任何东西
-     * @param layered 是否经 [CoCacheFactory] 创建（[CacheAdmin.layered]）
+     * @param report 经 [CoCacheFactory] 创建时的生效值报告（[CacheAdmin.policyReport]）；`null` 即未分层
      */
     @Suppress("TooGenericExceptionCaught")
     private fun <C> register(
         name: String,
         keyspace: Keyspace,
         required: List<Capability>,
-        layered: Boolean,
+        report: PolicyReport?,
         factory: (L1Store) -> C
     ): C where C : AbstractEngine<*, *>, C : ReadableCache<*, *> {
         check(!closed.get()) { "CacheRuntime is closed." }
@@ -218,7 +218,8 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             "Namespace[${keyspace.namespace}] with keyPrefix[${keyspace.keyPrefix}] is already used by another cache."
         }
         val (provided, engine) = createEngine(name, keyspace, required, factory)
-        engine.layered = layered
+        engine.layered = report != null
+        engine.policyReport = report
         val registration = Registration(engine, engine)
         if (names.putIfAbsent(name, registration) != null) {
             keyspaces.remove(keyspace)
@@ -240,8 +241,9 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             val capabilities = provided.joinToString(prefix = "[", postfix = "]")
             "Cache[$name] - created as ${engine.apiType.simpleName} on namespace[${keyspace.namespace}], " +
                 "keyPrefix[${keyspace.keyPrefix}], node[$nodeId], L1 capabilities$capabilities" +
-                if (layered) "." else ", $UNLAYERED_NOTE"
+                if (report != null) "." else ", $UNLAYERED_NOTE"
         }
+        report?.let { logPolicy(name, it) }
         if (keyspace.keyPrefix.isEmpty()) {
             log.warn { emptyKeyPrefixWarning(name, keyspace) }
         }
@@ -253,6 +255,21 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             }
         }
         return engine
+    }
+
+    /**
+     * 来源不是类型默认值的字段及其生效值（一行 INFO），被跳过的配置条目、被夹紧与有意解锁的字段（各一行 WARN）。
+     */
+    private fun logPolicy(name: String, report: PolicyReport) {
+        val changed = report.entries.filter { it.source != PolicyReport.Source.TYPE_DEFAULT }
+        if (changed.isNotEmpty()) {
+            log.info { "Cache[$name] - policy: ${changed.joinToString { describe(it) }}." }
+        }
+        report.skipped.forEach { skipped ->
+            log.warn { "Cache[$name] - ${skipped.key} skipped: ${skipped.reason}." }
+        }
+        report.entries.filter { it.source == PolicyReport.Source.CLAMPED || it.source == PolicyReport.Source.UNLOCKED }
+            .forEach { entry -> log.warn { "Cache[$name] - ${describe(entry)}." } }
     }
 
     /**
@@ -445,6 +462,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         /**
          * 未分层的缓存在启动日志中的说明（S20）。
          */
+        private fun describe(entry: PolicyReport.Entry): String {
+            val source = entry.source.name.lowercase().replace('_', ' ')
+            return "${entry.field}=${entry.value} ($source${entry.detail?.let { ", $it" } ?: ""})"
+        }
+
         internal const val UNLAYERED_NOTE =
             "unlayered: created directly through CacheRuntime.create, not CoCacheFactory, so configuration layers " +
                 "(cocache.defaults, cocache.caches.[name], customizers) don't apply."

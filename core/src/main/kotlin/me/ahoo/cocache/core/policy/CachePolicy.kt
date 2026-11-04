@@ -32,6 +32,9 @@ import java.util.concurrent.ThreadLocalRandom
  * @param readTimeout 每次 L1 读取（`read`、`readAll`、`readIfChanged`）的时限（RFC 0005 §4.3，D6）；`null`（默认）为后端的命令超时，
  *   给出时以命令超时为上限（由存储钳制）。超时按 L1 读失败处理（带数据源的读取按 [readFailure]，没有数据源的读取为 `Unknown`），
  *   取得的令牌照常释放。供不能降级回源、又要限制 L1 卡顿时每次读取多等多久的缓存使用；写入与运维读取不受它限制
+ * @param ttlCeiling 按调用给出的寿命（`ttlOf`、`put(k, v, ttl)`、`putAll(…, ttl)`）的上限，只由 `cocache.overrides` 的 `ttl`
+ *   设定（RFC 0005 §4.8，S8）：超过它的寿命被钳制，每个缓存第一次钳制时告警，计入 `cocache.ttl.clamped`；`null`（默认）不钳制。
+ *   只作用于 `Cache`
  * @param tombstoneTtl 带版本的墓碑（`invalidateIfNewer`、`deleteIfNewer`、带版本的数据源返回的 `Versioned(null, w)`）与
  *   保留版本的失效 `E` 的寿命（不抖动）；`null` 表示与值相同（[valueTtl]）。它要覆盖重复投递的时间窗口：到期之后迟到的旧版本可以再次写入
  *
@@ -52,9 +55,11 @@ class CachePolicy(
     val readFailure: ReadFailureMode? = null,
     val readTimeout: Duration? = null,
     val tombstoneTtl: Duration? = null,
+    val ttlCeiling: Duration? = null,
 ) {
     init {
         tombstoneTtl?.let { requirePositive("tombstoneTtl", it) }
+        ttlCeiling?.let { requirePositive("ttlCeiling", it) }
         ttl?.let { requirePositive("ttl", it) }
         require(
             !ttlJitter.isNegative && ttlJitter <= MAX_DURATION
@@ -103,26 +108,114 @@ class CachePolicy(
     override fun toString(): String {
         return "CachePolicy(ttl=$ttl, ttlJitter=$ttlJitter, absentTtl=$absentTtl, localMaxAge=$localMaxAge, " +
             "degradedLocalMaxAge=$degradedLocalMaxAge, refreshWindow=$refreshWindow, lease=$lease, load=$load, " +
-            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure, readTimeout=$readTimeout, tombstoneTtl=$tombstoneTtl)"
+            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure, readTimeout=$readTimeout, " +
+            "tombstoneTtl=$tombstoneTtl, ttlCeiling=$ttlCeiling)"
     }
 
     /**
-     * Java 友好的构建器。
+     * Java 友好的构建器。记录写出了哪些字段（字段三态，RFC 0005 §4.8，U11）：spec 的 `policy { … }` 只把这些字段当作声明写出的，
+     * 其余字段留给 `cocache.defaults`。[ttlCeiling] 由 `overrides` 设定，不算声明的字段。
      */
     class Builder internal constructor(policy: CachePolicy) {
+        private val writes = linkedSetOf<PolicyField<*>>()
+
+        /**
+         * 经本构建器写出的字段，按写出的顺序。
+         */
+        val written: Set<PolicyField<*>>
+            get() = writes
+
         var ttl: Duration? = policy.ttl
+            set(value) {
+                field = value
+                writes += PolicyField.TTL
+            }
         var ttlJitter: Duration = policy.ttlJitter
+            set(value) {
+                field = value
+                writes += PolicyField.TTL_JITTER
+            }
         var absentTtl: Duration = policy.absentTtl
+            set(value) {
+                field = value
+                writes += PolicyField.ABSENT_TTL
+            }
         var localMaxAge: Duration = policy.localMaxAge
+            set(value) {
+                field = value
+                writes += PolicyField.LOCAL_MAX_AGE
+            }
         var degradedLocalMaxAge: Duration = policy.degradedLocalMaxAge
+            set(value) {
+                field = value
+                writes += PolicyField.DEGRADED_LOCAL_MAX_AGE
+            }
         var refreshWindow: Duration? = policy.refreshWindow
+            set(value) {
+                field = value
+                writes += PolicyField.REFRESH_WINDOW
+            }
+
+        /**
+         * 子对象（[lease]、[load]、[local]）只把取值改变了的字段记为写出：整体赋值时没有改变的字段仍留给下层。
+         */
         var lease: LeasePolicy = policy.lease
+            set(value) {
+                if (value.ttl != field.ttl) writes += PolicyField.LEASE_TTL
+                if (value.wait != field.wait) writes += PolicyField.LEASE_WAIT
+                field = value
+            }
         var load: LoadPolicy = policy.load
+            set(value) {
+                if (value.maxConcurrent != field.maxConcurrent) writes += PolicyField.LOAD_MAX_CONCURRENT
+                if (value.acquireTimeout != field.acquireTimeout) writes += PolicyField.LOAD_ACQUIRE_TIMEOUT
+                if (value.timeout != field.timeout) writes += PolicyField.LOAD_TIMEOUT
+                field = value
+            }
         var local: LocalPolicy = policy.local
+            set(value) {
+                if (value.maximumSize != field.maximumSize) writes += PolicyField.LOCAL_MAXIMUM_SIZE
+                field = value
+            }
         var invalidateFailure: InvalidateFailureMode? = policy.invalidateFailure
+            set(value) {
+                field = value
+                writes += PolicyField.INVALIDATE_FAILURE
+            }
         var readFailure: ReadFailureMode? = policy.readFailure
+            set(value) {
+                field = value
+                writes += PolicyField.READ_FAILURE
+            }
         var readTimeout: Duration? = policy.readTimeout
+            set(value) {
+                field = value
+                writes += PolicyField.READ_TIMEOUT
+            }
         var tombstoneTtl: Duration? = policy.tombstoneTtl
+            set(value) {
+                field = value
+                writes += PolicyField.TOMBSTONE_TTL
+            }
+        var ttlCeiling: Duration? = policy.ttlCeiling
+
+        /**
+         * 显式的“永不过期”：`ttl = forever()`（与 `null` 相同，写出时更清楚）。
+         */
+        @Suppress("FunctionOnlyReturningConstant") // DSL 中写出意图的哨兵：`ttl = forever()`
+        fun forever(): Duration? = null
+
+        /**
+         * 显式的“关闭”：`refreshWindow = off()`。
+         */
+        @Suppress("FunctionOnlyReturningConstant") // DSL 中写出意图的哨兵：`ttl = forever()`
+        fun off(): Duration? = null
+
+        /**
+         * 显式的“不限”：`load = LoadPolicy(maxConcurrent = unlimited())`。
+         */
+        @Suppress("FunctionOnlyReturningConstant") // DSL 中写出意图的哨兵：`ttl = forever()`
+        fun unlimited(): Int? = null
 
         fun ttl(ttl: Duration?) = apply { this.ttl = ttl }
         fun ttlJitter(ttlJitter: Duration) = apply { this.ttlJitter = ttlJitter }
@@ -142,6 +235,7 @@ class CachePolicy(
         fun readFailure(readFailure: ReadFailureMode?) = apply { this.readFailure = readFailure }
         fun readTimeout(readTimeout: Duration?) = apply { this.readTimeout = readTimeout }
         fun tombstoneTtl(tombstoneTtl: Duration?) = apply { this.tombstoneTtl = tombstoneTtl }
+        fun ttlCeiling(ttlCeiling: Duration?) = apply { this.ttlCeiling = ttlCeiling }
 
         fun build(): CachePolicy = CachePolicy(
             ttl = ttl,
@@ -157,6 +251,7 @@ class CachePolicy(
             readFailure = readFailure,
             readTimeout = readTimeout,
             tombstoneTtl = tombstoneTtl,
+            ttlCeiling = ttlCeiling,
         )
     }
 
@@ -176,11 +271,11 @@ class CachePolicy(
         @JvmField
         val DEFAULT_DEGRADED_LOCAL_MAX_AGE: Duration = Duration.ofSeconds(10)
 
-        @JvmField
-        val DEFAULT: CachePolicy = CachePolicy()
-
+        /**
+         * 以派生副本的默认值（[DefaultPolicies.CACHE]）为起点的构建器。其它类型的默认值见 [DefaultPolicies]。
+         */
         @JvmStatic
-        fun builder(): Builder = Builder(DEFAULT)
+        fun builder(): Builder = Builder(DefaultPolicies.CACHE)
     }
 }
 
@@ -203,7 +298,7 @@ data class LeasePolicy @JvmOverloads constructor(
 /**
  * 回源并发上限（bulkhead）：只计 SingleFlight leader，批量回源占一个许可。
  *
- * @param maxConcurrent 每个缓存同时进行的回源数上限；`0` 表示不限制
+ * @param maxConcurrent 每个缓存同时进行的回源数上限；`null`（默认）表示不限制，没有隐式的 `0` 哨兵（RFC 0005 §4.8）
  * @param acquireTimeout 等待许可的最长时间，超时抛出 [me.ahoo.cocache.core.SourceLoadRejectedException]
  * @param timeout 一次加载的上限（RFC 0005 §4.4），超过它以 [me.ahoo.cocache.core.SourceLoadTimeoutException] 失败：
  *   - 异步数据源（`AsyncCacheLoader`）的一次加载：失败并释放 lease 与回源许可；数据源返回的 future 不会被取消，
@@ -215,12 +310,12 @@ data class LeasePolicy @JvmOverloads constructor(
  *   同步数据源本身无法被外部结束，应自带超时。
  */
 data class LoadPolicy @JvmOverloads constructor(
-    val maxConcurrent: Int = 0,
+    val maxConcurrent: Int? = null,
     val acquireTimeout: Duration = Duration.ofSeconds(1),
     val timeout: Duration = DEFAULT_TIMEOUT,
 ) {
     init {
-        require(maxConcurrent >= 0) { "load.maxConcurrent[$maxConcurrent] must not be negative." }
+        maxConcurrent?.let { require(it > 0) { "load.maxConcurrent[$it] must be positive; null means unlimited." } }
         require(
             !acquireTimeout.isNegative && acquireTimeout <= MAX_DURATION
         ) { "load.acquireTimeout[$acquireTimeout] must be within [0, $MAX_DURATION]." }

@@ -67,7 +67,7 @@ class App
 
 ### `@CoCache` {#cocache-annotation}
 
-时长单位为**秒**。所有策略属性默认都是 `CoCache.UNSET`（`-1`），意思是“这里不设置，交给下一层”。默认值取决于类型：派生类型（`Cache`、`VersionedCache`）以 `CachePolicy.DEFAULT` 为起点，权威类型（`Store`、`VersionedStore`、`SetStore`）以各自的[默认策略](#store-defaults)为起点。
+时长单位为**秒**。所有策略属性默认都是 `CoCache.UNSET`（`-1`），意思是“这里没有写出”，由 `cocache.defaults` 或类型默认值决定（见[优先级](./configuration.md#precedence)）。设置了的属性就是声明写出的，全局默认值不会改变它。每种类型以自己的默认值为起点：派生类型为 `DefaultPolicies.CACHE` 与 `DefaultPolicies.VERSIONED_CACHE`，`Store`、`VersionedStore` 与 `SetStore` 为[权威类型的默认值](#store-defaults)。
 
 | 属性 | 默认值 | 含义 |
 |------|--------|------|
@@ -174,7 +174,7 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 - **bean 名**：spec bean 名去掉 `Spec` 后缀（`productSpec` → `product`）；没有该后缀时追加 `Cache`（`products` → `productsCache`）。*缓存名*则是传给 `cacheSpec(…)` 的那个名字。
 - **spec 必须设置编解码。** 代码中没有 Jackson 兜底；这里的 `ObjectMapper` 是 Jackson 3（`tools.jackson.databind`）。`SetStoreSpec` 设置的是 `elementCodec`。
 - **`CacheSpec` 必须恰好声明一个数据来源**：`loader`、`asyncLoader` 或 `externallySourced()`。`VersionedCacheSpec` 必须设置 `versionedLoader` 或 `versionedAsyncLoader`。权威类型的 spec 根本没有 loader。
-- Kotlin 中 `policy { … }` 在当前策略上修改；Java 中用 `updatePolicy(…)`。`policy(CachePolicy)` 则整体替换。权威类型的 spec 以自己的默认策略为起点，请在它上面修改，不要换成 `CachePolicy.DEFAULT`（那会给 `Store` 一个 1 小时的 `ttl`）。
+- Kotlin 中 `policy { … }` 在类型的默认策略上修改；Java 中用 `updatePolicy(…)`。只有赋值的字段算作声明写出的，其余字段仍交给 `cocache.defaults`（见[声明写出了哪些字段](./configuration.md#declared-fields)）。`policy(CachePolicy)`（Kotlin：`policy = …`）整体替换策略，视为写出全部字段，全局默认值于是不再生效。这样的策略应从类型自己的默认值构建，例如 `DefaultPolicies.STORE.toBuilder()`，不要从派生缓存的默认值构建（那会给 `Store` 一个 1 小时的 `ttl`）。`ttl = forever()`、`refreshWindow = off()` 与 `LoadPolicy(maxConcurrent = unlimited())` 显式写出哨兵值。
 
 不用 Spring 时，`CacheRuntime.create(spec)` 返回对应的类型：`create(storeSpec)` 返回 `Store`，依此类推；`create(spec: Spec<*, *>)` 按 spec 的类型分派。创建缓存时检查后端的存储是否支持这种类型需要的能力，不支持时在注册任何东西之前失败：
 
@@ -207,7 +207,7 @@ Redis 中的每个 key 都是：
 - 在一个应用内，缓存名必须唯一，前缀与 namespace 的组合也必须唯一。namespace 相同、前缀不同的两个缓存可以共存。重复时启动失败。
 - 失效消息走频道 `{keyPrefix}inv:{namespace}`，前缀不同的应用收不到彼此的消息。
 - actuator 端点与 `ExternalInvalidator` 接受的都是**编码后的 key**，所以其它工具不必知道 key 的 Kotlin 类型也能定位它。
-- 多个应用共用一个 Redis 时，用 [`cocache.defaults.key-prefix` 配置项](./configuration.md#key-prefix)给每个应用一个不同的前缀（比如 `${spring.application.name}:`）。`@CoCache(keyPrefix)` 是字面文本：其中的占位符不会被解析（在 Kotlin 中 `$` 还会开启字符串模板）。修改运行中派生缓存的前缀或 namespace 相当于冷启动：旧 key 不再被读取，随各自的寿命过期。权威类型则会丢失数据，因为旧 key 中是唯一副本。
+- 多个应用共用一个 Redis 时，用 [`cocache.key-prefix` 配置项](./configuration.md#key-prefix)给每个应用一个不同的前缀（比如 `${spring.application.name}:`）。`@CoCache(keyPrefix)` 是字面文本：其中的占位符不会被解析（在 Kotlin 中 `$` 还会开启字符串模板）。修改运行中派生缓存的前缀或 namespace 相当于冷启动：旧 key 不再被读取，随各自的寿命过期。权威类型则会丢失数据，因为旧 key 中是唯一副本。
 
 ## key {#keys}
 
@@ -321,7 +321,7 @@ keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
 `Unknown` 是关于这一次读取的事实，不是关于数据的：它从不被缓存、从不广播，也不交给自己有数据源的调用方。`lookup(key).valueOrThrow()` 返回值或 `null`，遇到 `Unknown` 时抛出。在 Java 21 中对这个密封类型做穷尽的 `switch`；`as? Lookup.Present` 会静默地把 `Unknown` 当作不存在。
 
 - **谁会得到 `Unknown`**：没有数据源的读取（`Store`、`VersionedStore`、`SetStore`，以及外部来源的 `Cache` 上不带 loader 的读取），以及设置了 `readFailure = THROW` 时带数据源的读取。默认情况下带数据源的读取改为从数据源加载。
-- **`unknownRead`** 设在 `CacheSpec`（只限外部来源）、`StoreSpec` 或 `VersionedStoreSpec` 上，决定不带 loader 的读取遇到 `Unknown` 时返回什么：`THROW`（默认），或 `ABSENT`：返回 `null`（`Lookup.Absent`）且什么也不缓存，下一次读取重新访问 Redis。它不作用于 `getIfChanged`、`getVersioned` 与带 loader 的读取，`SetStore` 没有它。在 spec 中、接口上的 `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)` 或[定制器](#customizer)中设置；它暂时没有配置项。
+- **`unknownRead`** 设在 `CacheSpec`（只限外部来源）、`StoreSpec` 或 `VersionedStoreSpec` 上，决定不带 loader 的读取遇到 `Unknown` 时返回什么：`THROW`（默认），或 `ABSENT`：返回 `null`（`Lookup.Absent`）且什么也不缓存，下一次读取重新访问 Redis。它不作用于 `getIfChanged`、`getVersioned` 与带 loader 的读取，`SetStore` 没有它。在 spec 中、接口上的 `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)`、[定制器](#customizer)或 `cocache.caches.[name].unknown-read` 中设置（见[配置](./configuration.md#policy-properties)），全局层都不设置它。
 - **`getAll`** 先完成其余每个 key（释放 lease、写回加载结果），再抛出 `CacheReadException`：`unknownKeys` 是没有答案的 key，`partialResult` 是已经得到的值。`lookupAll(keys)` 改为对每个 key 返回一个 `Lookup`，不抛出。
 - 加载超时（`load-timeout`）与被拒绝的加载（`load-max-concurrent`）不是 Redis 故障：它们抛出各自的异常，`lookup` 也一样。
 - 每个 `Unknown` 计入 `cocache.reads.unknown`（含按 `ABSENT` 换算的），那次 Redis 故障本身计入 `cocache.remote.failures`。
@@ -372,16 +372,16 @@ snapshots.delete(id)                         // 同步完成；Redis 失败时�
 
 ### 默认策略 {#store-defaults}
 
-权威类型以自己的默认策略为起点：`StoreSpec.DEFAULT_POLICY`（`VersionedStoreSpec.DEFAULT_POLICY` 与 `SetStoreSpec.DEFAULT_POLICY` 取同样的值）：
+每种类型以 `DefaultPolicies` 中自己的默认策略为起点：权威类型为 `STORE`、`VERSIONED_STORE` 与 `SET_STORE`，派生类型为 `CACHE` 与 `VERSIONED_CACHE`。端点把来自这里的值报告为 `TYPE_DEFAULT`。
 
-| 字段 | `Store`、`VersionedStore`、`SetStore` | 派生类型（`CachePolicy.DEFAULT`） |
+| 字段 | `Store`、`VersionedStore`、`SetStore` | `Cache`、`VersionedCache` |
 |------|---------------------------------------|-----------------------------------|
 | `ttl` | 永不过期 | 1 小时 |
 | `localMaxAge` | 30 秒 | 5 分钟 |
 | `absentTtl` | 10 秒 | 1 分钟 |
 | `tombstoneTtl` | 1 天（只用于 `VersionedStore`） | 值的 `ttl` |
 
-L2 的寿命更短，是因为丢失的失效无法靠重新加载纠正：剩下的上界只有 L2 的寿命。需要更长时在声明中写出。寿命即语义的数据（会话、一次性验证码、幂等键）需要显式的 `ttl`。
+L2 的寿命更短，是因为丢失的失效无法靠重新加载纠正：剩下的上界只有 L2 的寿命。需要更长时在声明中写出，或用 `cocache.defaults.store.*` 为所有权威缓存设置。寿命即语义的数据（会话、一次性验证码、幂等键）需要显式的 `ttl`：这些类型的 `ttl` 只能由声明与 `cocache.caches.[name].ttl` 设置，全局层都不能（见[各层能设置什么](./configuration.md#field-layers)）。
 
 ## 带版本的类型 {#versioned}
 
@@ -431,12 +431,13 @@ val members: Set<String> = online[roomId] // 不存在时为空集合
 interface RevokedTokens : Store<String, Instant>
 
 @Bean
-fun revokedTokens(factory: CoCacheFactory): RevokedTokens =
-    factory.create(RevokedTokens::class.java, storeSpec("revoked-tokens") { codec = jacksonCodec<Instant>() })
+fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): RevokedTokens =
+    factory.create(RevokedTokens::class.java, storeSpec("revoked-tokens") { codec = jacksonCodec<Instant>(mapper) })
 ```
 
 - `create(spec)` 返回与 spec 对应的类型（`storeSpec` 得到 `Store`，以此类推）；`create(type, spec)` 返回实现你的接口的代理。接口必须继承 spec 声明的那个类型，接口中重新声明的抽象方法都要对应这个类型的某个方法。类会被拒绝：用户 API 类型不供手写实现，应当用 `create(spec)` 创建缓存再委托给它。这些校验在创建缓存之前完成。
-- **未分层的缓存。** 直接用 `CacheRuntime.create` 创建的缓存跳过所有配置层：定制器、`cocache.defaults` 与 `cocache.caches.[name]` 对它都不生效。启动日志在这一行末尾标注 `unlayered: …`，端点报告 `layered: false`。指向它的 `cocache.caches.[name]` 在缓存创建时告警，并列在端点的 `ignoredConfiguration` 中；它不让启动失败，因为覆盖值常在事故中写下。库应经 `CoCacheFactory` 创建缓存。
+- **锁定。** 依赖某个字段或存储布局的库在创建时锁定它：`factory.create(spec) { lock(PolicyField.READ_TIMEOUT); lockLayout(LayoutField.KEY_PREFIX) }`。全局层于是跳过它，`cocache.caches.[name]` 的条目必须显式 `unlock` 它。见[锁定字段](./configuration.md#locks)。
+- **未分层的缓存。** 直接用 `CacheRuntime.create` 创建的缓存跳过所有配置层：定制器、`cocache.defaults`、`cocache.overrides` 与 `cocache.caches.[name]` 对它都不生效，也无法锁定。启动日志在这一行末尾标注 `unlayered: …`，端点报告 `layered: false`。指向它的 `cocache.caches.[name]` 在缓存创建时告警，并列在端点的 `ignoredConfiguration` 中；它不让启动失败，因为覆盖值常在事故中写下。库应经 `CoCacheFactory` 创建缓存。
 - 不用 Spring 时，`CoCacheFactory(runtime)` 提供接口代理，不叠加任何层。没有配置层的应用直接用 `runtime.create(spec)` 也没有问题。
 
 ## 定制声明 {#customizer}
@@ -463,7 +464,7 @@ fun userCacheCustomizer(): CacheSpecCustomizer = object : CacheSpecCustomizer {
 
 Java 中实现同一个接口，调用 `spec.updatePolicy(p -> p.absentTtl(Duration.ofSeconds(30)))`。
 
-每种 spec 有一个重载（`CacheSpec.Builder`、`VersionedCacheSpec.Builder`、`StoreSpec.Builder`、`VersionedStoreSpec.Builder`、`SetStoreSpec.Builder`），默认什么也不做。定制器按 Spring 的顺序执行，位于声明之后、`cocache.*` 配置项之前（见[优先级](./configuration.md#precedence)）。
+每种 spec 有一个重载（`CacheSpec.Builder`、`VersionedCacheSpec.Builder`、`StoreSpec.Builder`、`VersionedStoreSpec.Builder`、`SetStoreSpec.Builder`），默认什么也不做。定制器按 Spring 的顺序执行，位于 `cocache.defaults` 与声明之后、`cocache.overrides` 与 `cocache.caches.[name]` 之前（见[优先级](./configuration.md#precedence)）。定制器可以修改策略字段与不决定类型的字段；修改数据来源，或修改被库[锁定](./configuration.md#locks)的字段或布局时抛出异常。
 
 ## 启动校验 {#validation}
 
@@ -482,6 +483,8 @@ CoCache 宁可启动失败，也不运行一个无法按声明工作的缓存。
 | `refreshWindow` 不小于 `ttl − ttlJitter`（按实际抖动计算），或不小于 `localMaxAge` | 新副本一出生就在窗口内，每次命中都会触发刷新 |
 | 缓存名、前缀与 namespace 的组合或 bean 名重复 | 两个缓存会共享 key 或失效消息 |
 | namespace 不符合 `[A-Za-z0-9._-]+`，例如含 `:` | 它的 key 可能落进另一个 namespace 的范围；把前缀移到 `keyPrefix` |
-| `cocache.caches.[name]` 指向不存在的缓存 | 几乎总是拼写错误；见[配置参考](./configuration.md#validation) |
+| `cocache.caches.[name]` 指向不存在的缓存，或含有不适用于该缓存类型的配置项（除非 `cocache.caches-validation: warn`） | 几乎总是拼写错误；见[配置参考](./configuration.md#validation) |
+| `cocache.caches.[name]` 设置了被库锁定的字段却没有在 `unlock` 中列出；定制器修改了被锁定的字段或数据来源 | 库依赖这个值（见[锁定](./configuration.md#locks)） |
+| 不带单位的时长配置项，如 `ttl: 60` | 写成 `60s`、`5m` 或 `PT2M`（见[时长](./configuration.md#durations)） |
 
 存在匹配的 `CacheLoader` bean 的权威类型接口可以启动，但会告警：这份数据也许应该是 `Cache`。key 类型的 `toString()` 检查发生在每种 key 类型第一次读取时，而不是启动时。

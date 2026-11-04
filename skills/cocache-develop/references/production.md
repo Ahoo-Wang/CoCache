@@ -26,7 +26,7 @@ Use this reference before CoCache reaches production, when reviewing deployment 
 | Only `Cache` and `VersionedCache` | Any; `allkeys-lru`/`allkeys-lfu` make Redis a bounded cache | Evicted values are misses; nothing goes stale |
 | Any `Store`, `VersionedStore` or `SetStore` | `noeviction`, or `volatile-*` for those without a `ttl` | Redis holds the only copy; `allkeys-*` silently drops data. `VersionedStore` tombstones always expire (`tombstoneTtl`), so `volatile-*` can evict one early and let an older version back in |
 
-With any authoritative type (created or lazy), the starter reads every primary's policy from `INFO memory` at startup: `allkeys-*` warns (`cocache.redis.store-eviction-check: fail` stops startup), `volatile-*` with a finite-`ttl` authoritative cache warns. Without `+info`, set `cocache.redis.assume-maxmemory-policy`; otherwise the check warns, or fails in `fail` mode.
+With any authoritative type (created or lazy), the starter reads every primary's policy from `INFO memory` at startup. `allkeys-*` always fails startup. Without `+info`, set `cocache.redis.assume-maxmemory-policy`; otherwise startup fails too. `cocache.redis.store-eviction-check` decides only `volatile-*` with a finite-`ttl` authoritative cache: `warn` (default), `fail` or `off`.
 
 Under `noeviction` at `maxmemory`, invalidations still work, reads stop taking leases (every miss loads; `cocache.degraded.fills` rises), and allocating writes fail with `CacheWriteException`.
 

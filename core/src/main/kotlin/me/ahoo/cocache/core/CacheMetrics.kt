@@ -59,6 +59,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     private val unknownReadAdder = LongAdder()
     private val unversionedAbsentRefusedAdder = LongAdder()
     private val fillGatedAdder = LongAdder()
+    private val ttlClampedAdder = LongAdder()
 
     /**
      * 由 L2（本地副本）直接返回的读取数：未过期的本地副本，含负缓存与进入刷新窗口的副本。
@@ -135,6 +136,11 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
      */
     val fillsGated: Long get() = fillGatedAdder.sum()
 
+    /**
+     * 按调用给出的寿命（`ttlOf`、`put(k, v, ttl)`）超过 `cocache.overrides` 的 `ttl`、被钳制的次数（`CachePolicy.ttlCeiling`）。
+     */
+    val ttlClamped: Long get() = ttlClampedAdder.sum()
+
     internal fun localHit() = localHitAdder.increment()
     internal fun remoteHit() = remoteHitAdder.increment()
     internal fun miss() = missAdder.increment()
@@ -170,4 +176,5 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     internal fun unknownRead() = unknownReadAdder.increment()
     internal fun unversionedAbsentRefused() = unversionedAbsentRefusedAdder.increment()
     internal fun fillGated(keys: Int) = fillGatedAdder.add(keys.toLong())
+    internal fun ttlClamped() = ttlClampedAdder.increment()
 }

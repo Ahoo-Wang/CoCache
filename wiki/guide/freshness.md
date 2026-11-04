@@ -112,7 +112,7 @@ views.getVersioned(id)                            // Versioned(view, version), o
 - **Ordering holds while the entry lives.** Once a value or tombstone expires, the key holds no version, and any version can be written again, including an older one. Size `ttl` (and `tombstoneTtl`) to your redelivery horizon. A writer that replays its stream to the head ends on the newest version anyway, so after an expiry the staleness is bounded by that replay.
 - **No write drops the version.** The versioned types have no `put`, `putIfMatch` or plain `invalidate`. The only ways to remove a version are `purge(key)` (deletes the key; any version can be written afterwards; never retried, throws on failure), expiry, and tools outside CoCache.
 - **`evict(key)` keeps the version.** A `VersionedCache` drops the copy on every instance and replaces a versioned value or tombstone in Redis with an eviction marker that keeps the version: the next read loads from the source, and a late older version is still refused. If the source is behind the version Redis held, that load's result is returned (and kept in L2 for `degraded-local-max-age`) but not written to Redis, counted in `cocache.fill.rejections`, until the source catches up. A value without a version is deleted. The marker lives for `tombstoneTtl`. A failure throws instead of being retried in the background. The endpoint's per-key `DELETE` (`CacheAdmin.invalidateEncoded`) is an `evict` on a `VersionedCache` and a `purge` on a `VersionedStore`.
-- **Refresh-ahead works** on a `VersionedCache`. A versioned value gets a refresh token like any other, and `cocache.defaults.refresh-window` applies. The refresh writes back only a version at least as new as the one in Redis. When the source returns an older version than Redis holds (the writer pushed ahead of the source), Redis refuses it and the instance keeps its newer copy, trying again after a back-off. The local copy never moves back to an older version in general: when a refresh loses its token to another reader, or its write-back to Redis fails, and the source still returns an older version, the instance keeps the copy it has (counted in `cocache.stale.discards`). A write-back that fails with an unknown outcome counts as a write: the instance drops its copy and reads Redis next time. Set `refreshWindow = null` on the declaration (or `cocache.caches.[name].refresh-window: 0`) when the writer's pushes are enough.
+- **Refresh-ahead works** on a `VersionedCache`. A versioned value gets a refresh token like any other, and `cocache.defaults.cache.refresh-window` applies when the declaration doesn't write `refreshWindow`. The refresh writes back only a version at least as new as the one in Redis. When the source returns an older version than Redis holds (the writer pushed ahead of the source), Redis refuses it and the instance keeps its newer copy, trying again after a back-off. The local copy never moves back to an older version in general: when a refresh loses its token to another reader, or its write-back to Redis fails, and the source still returns an older version, the instance keeps the copy it has (counted in `cocache.stale.discards`). A write-back that fails with an unknown outcome counts as a write: the instance drops its copy and reads Redis next time. Set `refreshWindow = off()` on the declaration (or `cocache.caches.[name].refresh-window: off`) when the writer's pushes are enough.
 - **Failures:** `putIfNewer` throws `CacheWriteException` when Redis fails. Retrying the same version is safe: if the first attempt went through, the retry returns `Stale(version)` and publishes the invalidation again, in case the first attempt was written but its separate publish failed. Unreadable content is classified as for [conditional writes](#conditional-writes).
 - The async view and the suspending view have the same methods. A meter, `cocache.versioned.stale`, counts refused versions.
 
@@ -198,7 +198,7 @@ Each lifetime bounds one kind of staleness. Pick each for the failure it covers:
 
 | Setting | Default | Bounds | Shorter means | Guidance |
 |---------|---------|--------|---------------|----------|
-| `ttl` | 1 h | Changes CoCache never hears about | More reloads | Long if every writer invalidates. `ttl-forever` is safe then. Shorter if some writers can't invalidate. |
+| `ttl` | 1 h | Changes CoCache never hears about | More reloads | Long if every writer invalidates. `ttl: forever` is safe then. Shorter if some writers can't invalidate. |
 | `ttl-jitter` | 1 min | — | — | Spreads expiries so keys loaded together don't expire together. Effective spread is capped at `ttl / 2`. |
 | `absent-ttl` | 1 min | How long a newly created row stays invisible after a lookup cached its absence | More loads for missing keys | Keep it short, or invalidate the key when you create the row. |
 | `local-max-age` | 5 min | L2 staleness when an invalidation message is lost | One more Redis read per key per period | Costs nothing on the hit path. Lower it for data where minutes of drift matter. |
@@ -209,16 +209,17 @@ Each lifetime bounds one kind of staleness. Pick each for the failure it covers:
 ```yaml
 cocache:
   defaults:
-    local-max-age: 2m
+    cache:
+      local-max-age: 2m      # every derived cache that doesn't declare its own
   caches:
     "[UserCache]":
-      ttl-forever: true      # every writer invalidates
+      ttl: forever           # every writer invalidates
     "[PriceCache]":
       ttl: 30s               # fed by a system that can't invalidate
       absent-ttl: 5s
 ```
 
-Bare numbers are seconds. Write a unit for anything shorter: `lease-wait: 500ms`, not `lease-wait: 0.5`.
+Every duration needs a unit: `lease-wait: 500ms`, `ttl: 30s`. A bare number fails startup ([durations](./configuration.md#durations)). During an incident, `cocache.overrides.cache.local-max-age` or `cocache.overrides.cache.ttl` shortens a bound for every derived cache at once without weakening any declaration ([what each layer may set](./configuration.md#field-layers)).
 
 The defaults in the table are those of the derived types. `Store`, `VersionedStore` and `SetStore` start from their own [default policy](./caches.md#store-defaults): `ttl` forever, `local-max-age` 30 s, `absent-ttl` 10 s.
 
@@ -242,7 +243,7 @@ cocache:
 - A failed or skipped refresh only logs. The value expires normally, so staleness bounds never depend on refresh.
 - Refreshes run on a bounded pool (at most 4 threads, queue of 1024). When it is full, refreshes are skipped and counted in `cocache.refresh.rejections`. [`cocache.refresh-executor`](./configuration.md#executors) names another `Executor` bean to use instead.
 
-To turn off a window that a declaration enables, use any of: `refresh-window: 0` in the [properties](./configuration.md#policy-properties), `@CoCache(refreshWindow = 0)`, or `refreshWindow = null` in a [customizer](./caches.md#customizer).
+To turn off a window that a declaration enables, use any of: `refresh-window: off` under `cocache.caches.[name]` ([properties](./configuration.md#policy-properties)), `@CoCache(refreshWindow = 0)`, or `refreshWindow = off()` in a [customizer](./caches.md#customizer). A window that a global layer makes too long for `ttl` or `local-max-age` is turned off for that cache, with a warning ([validation](./configuration.md#validation)).
 
 ## When Redis is down during a write {#redis-down}
 
@@ -255,7 +256,7 @@ Every failed write throws `CacheWriteException`, except a `Cache.invalidate` tha
 
 - The default (`invalidate-failure: retry`) **doesn't throw**: deleting a derived copy is always safe, and invalidations usually run after a commit, where an exception can't roll anything back. The delete goes to a bounded retry queue: up to 8 attempts, backing off from 100 ms to 10 s, at most 10 000 pending. This holds for externally sourced caches too.
 - While the retry is pending, misses for that key on this instance skip Redis (which still holds the old value) and load from the source. An externally sourced cache reads `null` meanwhile, as an unfilled answer rather than a negative entry, so `get(key, loader)` still calls its loader.
-- If the retries are exhausted or the queue overflows, CoCache logs an error and counts `cocache.invalidations.dropped`. Other instances can then reload the old value from Redis until it expires, so the bound is the value's remaining TTL. With `ttl-forever` there is no bound: invalidate again once Redis is back.
+- If the retries are exhausted or the queue overflows, CoCache logs an error and counts `cocache.invalidations.dropped`. Other instances can then reload the old value from Redis until it expires, so the bound is the value's remaining TTL. With `ttl: forever` there is no bound: invalidate again once Redis is back.
 - With `invalidate-failure: throw`, the call throws `CacheWriteException` instead, and you decide.
 
 **`Cache.put`** and **`putAll`** on a derived cache follow `invalidate-failure` too:
