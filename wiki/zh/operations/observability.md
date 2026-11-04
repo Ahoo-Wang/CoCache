@@ -55,6 +55,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 |------|------|----------|
 | `cocache.fill.rejections` | counter | 持有 lease 或刷新令牌、但 Redis 拒绝填充的加载：失效销毁了令牌、loader 慢于 `lease-ttl`、填充失败，或者（带版本的缓存）loader 返回的版本比 Redis 中的旧 |
 | `cocache.degraded.fills` | counter | 只写入 L2、以 `degraded-local-max-age` 限龄的加载：Redis 读取失败、等待 lease 超时、填充被拒绝、值的格式未知，或者该 key 的失效仍在重试。没有数据源的读取在 Redis 失败时不计入：它没有答案，也不缓存任何东西（计入 `cocache.reads.unknown` 与 `cocache.remote.failures`） |
+| `cocache.fills.gated` | counter | Spring 读写事务内保持私有的加载（`cocache.fill-in-transaction`），按 key 计：不申请 lease、不写 Redis 与 L2、不与其它调用方共享。每次同时计入未命中与加载。见[事务内的回源](../guide/spring-cache.md#transactional-loads)。 |
 | `cocache.fill.unversioned.absent` | counter | `VersionedCache` 的带版本数据源返回普通 `null`、而 Redis 中该 key 是带版本的内容的加载。Redis 拒绝这个负缓存，读取返回“不存在”，下一次未命中再次加载。删除应表达为 `Versioned(null, version)`（[带版本的数据源](../guide/caches.md#versioned-loaders)）。每个缓存的第一次记录告警 |
 | `cocache.stale.discards` | counter | 读取期间该 key 发生了失效，或（带版本的缓存）L2 中已是比这次填充更新的版本（如 loader 读到落后的从库），因而被丢弃的 L2 填充。这是 L2 栅栏在起作用 |
 | `cocache.reclaims` | counter | 本实例无法解码的 L1 值（外来内容或编解码失败）。随后由单独的 reclaim 脚本在值未变的前提下把它转为 lease，本实例再回源 |
@@ -191,7 +192,7 @@ management:
 }
 ```
 
-`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，`staleVersions` 是 `cocache.versioned.stale`，`typeMismatches` 是 `cocache.type.mismatch`，`readsUnknown` 是 `cocache.reads.unknown`，`unversionedAbsentRefusals` 是 `cocache.fill.unversioned.absent`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
+`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，`staleVersions` 是 `cocache.versioned.stale`，`typeMismatches` 是 `cocache.type.mismatch`，`readsUnknown` 是 `cocache.reads.unknown`，`unversionedAbsentRefusals` 是 `cocache.fill.unversioned.absent`，`fillsGated` 是 `cocache.fills.gated`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
 
 ### 编码后的 key {#encoded-key}
 

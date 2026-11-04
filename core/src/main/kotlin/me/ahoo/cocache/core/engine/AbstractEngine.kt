@@ -40,6 +40,7 @@ import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.VersionedL1Store
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheMetrics
+import me.ahoo.cocache.core.FillScope
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyInspection
@@ -81,12 +82,19 @@ internal class Unanswered<V>(val error: CacheReadException) : LocalEntry<V>(null
 
 /**
  * 一次加载的结果及其开始时的失效戳。
+ *
+ * @param owner leader 所在的写事务（RFC 0005 §4.9 S15）：非 `null` 时结果不交给跟随者，见 `CoherentEngine.usable`
  */
-internal class Loaded<V>(val entry: LocalEntry<V>, val stamp: Long) {
+internal class Loaded<V>(val entry: LocalEntry<V>, val stamp: Long, val owner: FillScope? = null) {
     /**
      * 这次加载的答案（可能是 [Unanswered]）。
      */
     fun answer(): LocalEntry<V> = entry
+
+    /**
+     * 由 [owner] 领头的这次加载；[owner] 为 `null` 时就是本身。
+     */
+    fun ownedBy(owner: FillScope?): Loaded<V> = if (owner == null) this else Loaded(entry, stamp, owner)
 }
 
 internal const val FOREVER = Long.MAX_VALUE
@@ -96,7 +104,7 @@ internal const val FOREVER = Long.MAX_VALUE
  */
 internal abstract class AbstractEngine<K : Any, V : Any>(
     override val name: String,
-    protected val keyspace: Keyspace,
+    internal val keyspace: Keyspace,
     private val keyEncoder: KeyEncoder<K>,
     internal val policy: CachePolicy,
     protected val store: L1Store,
@@ -457,6 +465,14 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             stamps.invalidate(storageKeyOfLocal(it))
             local.invalidate(it)
         }
+    }
+
+    /**
+     * 只在本节点递增失效戳并淘汰 L2 副本，不碰 L1、不广播（[me.ahoo.cocache.core.FillKey.evictLocal]）。
+     */
+    internal fun evictLocal(encodedKey: String) {
+        stamps.invalidate(storageKeyOfLocal(encodedKey))
+        local.invalidate(encodedKey)
     }
 
     override fun onReset() {

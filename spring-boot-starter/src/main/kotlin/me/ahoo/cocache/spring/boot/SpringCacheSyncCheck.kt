@@ -13,10 +13,14 @@
 
 package me.ahoo.cocache.spring.boot
 
+import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.CacheSpec
 import org.apache.commons.logging.LogFactory
 import org.springframework.aop.framework.AopProxyUtils
 import org.springframework.beans.factory.SmartInitializingSingleton
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
+import org.springframework.cache.interceptor.CacheOperation
 import org.springframework.cache.interceptor.CacheOperationSource
 import org.springframework.cache.interceptor.CacheableOperation
 import org.springframework.core.Ordered
@@ -42,13 +46,19 @@ import java.lang.reflect.Proxy
  * 因此两者 order 相同时告警，建议让事务通知的 order 更小。只看代理模式注册的 advisor；AspectJ 模式没有 advisor，不检查。
  * 与 `sync` 检查的前提相同：有 `@EnableCaching`、CoCache 的 CacheManager 生效、存在 CoCache 缓存。
  *
- * @param requireSync 为 `true` 时发现违规即启动失败，否则只记录告警
+ * **只接入派生副本**（RFC 0005 §4.9）：Spring Cache 背后的缓存是派生副本 `Cache`，被注解的方法就是数据源。
+ * 指向 `Store`、`VersionedStore`、`SetStore` 或 `VersionedCache` 的缓存操作（任何注解，不论 `sync`）启动失败：
+ * CoCache 的 CacheManager 不暴露它们，否则要到第一次调用时才以“找不到缓存”失败。
+ *
+ * @param requireSync 为 `true` 时发现不带 `sync` 的 `@Cacheable` 即启动失败，否则只记录告警
  * @param cacheNames CoCache 的缓存名（已创建的与已声明但尚未创建的）
+ * @param underivedNames 其中不是派生副本 `Cache` 的缓存名（[underivedCacheNames]）
  */
 internal class SpringCacheSyncCheck(
     private val beanFactory: ConfigurableListableBeanFactory,
     private val requireSync: Boolean,
     private val cacheNames: () -> Set<String>,
+    private val underivedNames: () -> Set<String>,
 ) : SmartInitializingSingleton {
 
     /**
@@ -61,6 +71,13 @@ internal class SpringCacheSyncCheck(
      */
     @Volatile
     var violations: List<Violation> = emptyList()
+        private set
+
+    /**
+     * 最近一次检查发现的、指向不是派生副本的 CoCache 缓存的操作（供测试与诊断查看）。
+     */
+    @Volatile
+    var underivedTargets: List<Violation> = emptyList()
         private set
 
     /**
@@ -81,8 +98,16 @@ internal class SpringCacheSyncCheck(
             return
         }
         checkAdviceOrder()
-        val found = scan(sources, names)
+        val underived = underivedNames().intersect(names)
+        val (found, misdirected) = scan(sources, names, underived)
         violations = found
+        underivedTargets = misdirected
+        check(misdirected.isEmpty()) {
+            "Spring Cache operations on CoCache caches that are not a Cache: " +
+                misdirected.joinToString("; ") { "${it.method} -> ${it.cacheNames}" } + ". " +
+                "Spring Cache only serves derived caches (Cache): a Store, VersionedStore, SetStore or VersionedCache is not " +
+                "exposed by the CoCache CacheManager. Use the cache's own API, or declare the cache as a Cache."
+        }
         if (found.isEmpty()) {
             return
         }
@@ -128,11 +153,19 @@ internal class SpringCacheSyncCheck(
     /**
      * 显式指定了其它 CacheManager 或自定义 CacheResolver 的操作不一定经过 CoCache，不检查。
      */
-    private fun targetsCoCache(operation: CacheableOperation): Boolean =
+    private fun targetsCoCache(operation: CacheOperation): Boolean =
         operation.cacheResolver.isEmpty() && (operation.cacheManager.isEmpty() || operation.cacheManager == COCACHE_CACHE_MANAGER)
 
-    private fun scan(sources: List<CacheOperationSource>, names: Set<String>): List<Violation> {
+    /**
+     * 一次扫描得到两类结果：不带 `sync` 的 `@Cacheable`（指向派生副本），与指向 [underived] 的任何缓存操作。
+     */
+    private fun scan(
+        sources: List<CacheOperationSource>,
+        names: Set<String>,
+        underived: Set<String>
+    ): Pair<List<Violation>, List<Violation>> {
         val found = LinkedHashMap<String, Violation>()
+        val misdirected = LinkedHashMap<String, Violation>()
         for (beanName in beanFactory.beanDefinitionNames) {
             val type = userClassOf(beanName) ?: continue
             for (source in sources) {
@@ -140,21 +173,32 @@ internal class SpringCacheSyncCheck(
                     continue
                 }
                 ReflectionUtils.doWithMethods(type) { method ->
-                    val operations = source.getCacheOperations(method, type).orEmpty()
+                    val operations = source.getCacheOperations(method, type).orEmpty().filter { targetsCoCache(it) }
+                    val id = "${type.name}#${method.name}"
                     val unsynced = operations.filterIsInstance<CacheableOperation>()
-                        .filter { !it.isSync && targetsCoCache(it) }
-                        .flatMap { op -> op.cacheNames.filter { it in names } }
+                        .filter { !it.isSync }
+                        .flatMap { op -> op.cacheNames.filter { it in names && it !in underived } }
                         .distinct()
-                    if (unsynced.isNotEmpty()) {
-                        val id = "${type.name}#${method.name}"
-                        found.merge(id, Violation(id, unsynced)) { old, new ->
-                            Violation(id, (old.cacheNames + new.cacheNames).distinct())
-                        }
-                    }
+                    merge(found, id, unsynced)
+                    merge(
+                        misdirected,
+                        id,
+                        operations.flatMap { op -> op.cacheNames.filter { it in underived } }.distinct()
+                    )
                 }
             }
         }
-        return found.values.toList()
+        return found.values.toList() to misdirected.values.toList()
+    }
+
+    private fun merge(violations: MutableMap<String, Violation>, id: String, cacheNames: List<String>) {
+        if (cacheNames.isEmpty()) {
+            return
+        }
+        violations.merge(
+            id,
+            Violation(id, cacheNames)
+        ) { old, new -> Violation(id, (old.cacheNames + new.cacheNames).distinct()) }
     }
 
     /**
@@ -174,18 +218,42 @@ internal class SpringCacheSyncCheck(
         return AopProxyUtils.ultimateTargetClass(beanFactory.getBean(beanName))
     }
 
-    private companion object {
-        const val COCACHE_CACHE_MANAGER = "cocacheCacheManager"
+    companion object {
+        private const val COCACHE_CACHE_MANAGER = "cocacheCacheManager"
 
         /**
          * `CacheManagementConfigUtils.CACHE_ADVISOR_BEAN_NAME`。
          */
-        const val CACHE_ADVISOR = "org.springframework.cache.config.internalCacheAdvisor"
+        private const val CACHE_ADVISOR = "org.springframework.cache.config.internalCacheAdvisor"
 
         /**
          * `TransactionManagementConfigUtils.TRANSACTION_ADVISOR_BEAN_NAME`（spring-tx 是可选依赖，不引用它的类）。
          */
-        const val TRANSACTION_ADVISOR = "org.springframework.transaction.config.internalTransactionAdvisor"
+        private const val TRANSACTION_ADVISOR = "org.springframework.transaction.config.internalTransactionAdvisor"
+
+        /**
+         * 不是派生副本 `Cache` 的 CoCache 缓存名：已创建的按运行时中的缓存判断；已声明但尚未创建的（延迟初始化的 bean）
+         * 按声明的接口类型或 spec 的类型判断，不创建缓存。
+         */
+        fun underivedCacheNames(runtime: CacheRuntime, beanFactory: ConfigurableListableBeanFactory): Set<String> {
+            val names = sortedSetOf<String>()
+            runtime.cacheNames.filterTo(names) { runtime.cache(it) !is Cache<*, *> }
+            for (beanName in beanFactory.beanDefinitionNames) {
+                val definition = beanFactory.getBeanDefinition(beanName)
+                CacheBeanDefinitions.cacheInterfaceOf(definition)?.let { type ->
+                    if (!Cache::class.java.isAssignableFrom(type)) {
+                        names += AnnotatedCacheFactory.cacheNameOf(type)
+                    }
+                }
+                CacheBeanDefinitions.specBeanOf(definition)?.let { specBean ->
+                    val spec = beanFactory.getBean(specBean)
+                    if (spec !is CacheSpec<*, *>) {
+                        names += CacheBeanDefinitions.specNameOf(spec)
+                    }
+                }
+            }
+            return names
+        }
     }
 }
 

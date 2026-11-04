@@ -114,7 +114,8 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             builder.loadObserver,
             asyncContext(builder),
             builder.recordLocalHits,
-            builder.ticker
+            builder.ticker,
+            builder.fillObserver
         )
     }
 
@@ -330,6 +331,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         var refreshExecutor: Executor? = null
         var retryPolicy: RetryPolicy = RetryPolicy()
         var loadObserver: LoadObserver = LoadObserver.NOOP
+        var fillObserver: FillObserver = FillObserver.NONE
         var asyncExecutor: Executor? = null
         var blockingExecutor: Executor? = null
         var recordLocalHits: Boolean = false
@@ -369,6 +371,12 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
          * 回源观测（如链路追踪），作用于本运行时创建的所有缓存。不指定时为 [LoadObserver.NOOP]。
          */
         fun loadObserver(loadObserver: LoadObserver) = apply { this.loadObserver = loadObserver }
+
+        /**
+         * 写事务内回源的钩子（RFC 0005 §4.9），作用于本运行时创建的所有缓存。不指定时为 [FillObserver.NONE]（不门控、不记录）；
+         * Spring 的事务门控由 `cocache-spring` 提供，starter 自动装配。
+         */
+        fun fillObserver(fillObserver: FillObserver) = apply { this.fillObserver = fillObserver }
 
         /**
          * 异步执行器（RFC 0004 §5.1）：运行异步视图的全部续接，只承载短小的非阻塞工作。由调用方管理。

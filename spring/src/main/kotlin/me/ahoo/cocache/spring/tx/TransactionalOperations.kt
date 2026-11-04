@@ -14,6 +14,7 @@
 package me.ahoo.cocache.spring.tx
 
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.core.FillKey
 import org.apache.commons.logging.LogFactory
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -51,7 +52,14 @@ internal fun interface InvalidationFailureHandler {
  * - 一个缓存失败不影响其余缓存与写入。有去向（[InvalidationFailureHandler]）的失败交给去向；其余在全部执行之后抛出第一个，
  *   其它作为它的 suppressed：`afterCommit` 中抛给调用方，`afterCompletion` 中由 Spring 记录日志。
  *
- * 只在事务所在的线程上使用。缓存按对象身份匹配：同一个 namespace 经不同的 [Cache] 对象（接口代理与引擎）登记时不相互取代。
+ * 写事务内的回源（RFC 0005 §4.9，经 [TransactionalFillObserver]）：
+ * - **机制 1**：数据源在本事务内产生、进入共享层的 key（[filled]）在回滚、提交结果未知时于登记的失效之后失效，回滚到 savepoint 时
+ *   与登记的 key 一起立即失效；提交时什么也不做（读到的就是本事务提交的数据）。
+ * - **机制 2**：登记失效的 key 记入 [isRegistered]，并立即在本节点递增戳、淘汰本地副本（[FillKey.evictLocal]），
+ *   `registered-keys` 下本事务之后对它们的回源是私有的。
+ *
+ * 只在事务所在的线程上使用。CoCache 的缓存按 (keyspace, 编码 key) 匹配（S24，[FillKey]）：同一个 key 经不同的 [Cache] 对象
+ * （接口代理与引擎）登记时同样相互取代、同样进入门控；其它 [Cache] 实现按对象身份匹配。
  */
 internal class TransactionalOperations private constructor() : TransactionSynchronization {
 
@@ -59,7 +67,10 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
 
     private data class Entry(val cache: Cache<*, *>, val key: Any)
 
-    private class Write(val entry: Entry?, val sequence: Int, val action: Runnable)
+    /**
+     * @param entry [entryOf] 的结果；`clear` 为 `null`
+     */
+    private class Write(val entry: Any?, val sequence: Int, val action: Runnable)
 
     private val keysByTarget = LinkedHashMap<Target, LinkedHashSet<Any>>()
     private val writes = ArrayList<Write>()
@@ -67,7 +78,17 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
     /**
      * 每个 (缓存, key) 最近一次登记失效时的序号：序号更小的写入被它取代。
      */
-    private val invalidatedAt = HashMap<Entry, Int>()
+    private val invalidatedAt = HashMap<Any, Int>()
+
+    /**
+     * 本事务登记失效的 key（机制 2 的门控）。
+     */
+    private val registered = HashSet<FillKey>()
+
+    /**
+     * 数据源在本事务内产生、进入共享层的 key（机制 1）。
+     */
+    private val filled = LinkedHashSet<FillKey>()
 
     /**
      * savepoint → 创建它时 [writes] 的长度。
@@ -91,9 +112,27 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
         }
         val current = ++sequence
         for (key in keys) {
-            invalidatedAt[Entry(cache, key)] = current
+            val fillKey = FillKey.of(cache, key)
+            invalidatedAt[fillKey ?: Entry(cache, key)] = current
+            if (fillKey != null && registered.add(fillKey)) {
+                fillKey.evictLocal()
+            }
         }
         keysByTarget.getOrPut(Target(cache, onFailure)) { LinkedHashSet() }.addAll(keys)
+    }
+
+    /**
+     * [key] 是否已在本事务中登记失效（`registered-keys` 的门控）。
+     */
+    fun isRegistered(key: FillKey): Boolean = key in registered
+
+    /**
+     * 机制 1：数据源在本事务内为 [key] 产生的值即将进入共享层。本事务已经完成时什么也不做：之后读到的是已提交的数据。
+     */
+    fun filled(key: FillKey) {
+        if (!completed) {
+            filled += key
+        }
     }
 
     /**
@@ -105,7 +144,7 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
             action.run()
             return
         }
-        writes += Write(key?.let { Entry(cache, it) }, ++sequence, action)
+        writes += Write(key?.let { FillKey.of(cache, it) ?: Entry(cache, it) }, ++sequence, action)
     }
 
     override fun afterCommit() {
@@ -126,8 +165,18 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
     /**
      * 不认识的 savepoint 创建于本同步注册之前：已登记的写入都在回滚的那一段内。
      */
+    @Suppress("TooGenericExceptionCaught")
     override fun savepointRollback(savepoint: Any) {
         invalidateRegistered()
+        try {
+            FillKey.invalidateAll(unregisteredFills())
+        } catch (e: Exception) {
+            log.warn(
+                "Failed to invalidate the keys loaded in this transaction on savepoint rollback; " +
+                    "they are invalidated again if the transaction rolls back.",
+                e
+            )
+        }
         val mark = savepoints[savepoint] ?: 0
         if (mark < writes.size) {
             writes.subList(mark, writes.size).clear()
@@ -135,14 +184,38 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
     }
 
     /**
-     * 只执行一次：先失效，提交时再执行没有被取代的写入，最后抛出没有去向的失效失败。
+     * 只执行一次：先失效登记的 key；提交时再执行没有被取代的写入，回滚或提交结果未知时再失效本事务内的填充（机制 1）；
+     * 最后抛出没有去向的失效失败。
      */
-    @Suppress("TooGenericExceptionCaught", "UNCHECKED_CAST")
+    @Suppress("TooGenericExceptionCaught")
     private fun complete(committed: Boolean) {
         if (completed) {
             return
         }
         completed = true
+        var failure = invalidateTargets()
+        if (committed) {
+            for (write in writes) {
+                val entry = write.entry
+                if (entry == null || (invalidatedAt[entry] ?: 0) < write.sequence) {
+                    write.action.run()
+                }
+            }
+        } else {
+            try {
+                FillKey.invalidateAll(unregisteredFills())
+            } catch (e: Exception) {
+                failure = failure?.apply { addSuppressed(e) } ?: e
+            }
+        }
+        failure?.let { throw it }
+    }
+
+    /**
+     * 逐个缓存失效登记的 key：有去向的失败交给去向，其余返回第一个，其它作为它的 suppressed。
+     */
+    @Suppress("TooGenericExceptionCaught", "UNCHECKED_CAST")
+    private fun invalidateTargets(): Exception? {
         var failure: Exception? = null
         for ((target, keys) in keysByTarget) {
             try {
@@ -157,16 +230,13 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
                 }
             }
         }
-        if (committed) {
-            for (write in writes) {
-                val entry = write.entry
-                if (entry == null || (invalidatedAt[entry] ?: 0) < write.sequence) {
-                    write.action.run()
-                }
-            }
-        }
-        failure?.let { throw it }
+        return failure
     }
+
+    /**
+     * 机制 1 要失效的 key：已登记失效的 key 刚刚随登记失效过，跳过。
+     */
+    private fun unregisteredFills(): List<FillKey> = filled.filterNot { it in registered }
 
     /**
      * 失效到目前为止登记的全部 key，不标记为已完成。不抛出：一个缓存失败只记录日志，事务结束时的失效兜底并照常报告失败。
