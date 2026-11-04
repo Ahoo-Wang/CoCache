@@ -19,15 +19,25 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 
 /**
- * [Keyspace]：8.x 的存储 key 布局与命名空间字符集（RFC 0005 §4.7，D5）。
+ * [Keyspace]：8.x 的存储 key 布局与命名空间字符集（RFC 0005 §4.7）。
  */
 class KeyspaceTest {
     @Test
-    fun storageKeysCarryTheLayoutMarkAfterThePrefix() {
+    fun storageKeysAreThePrefixAndTheNamespace() {
         val keyspace = Keyspace("cocache:", "user")
-        keyspace.storagePrefix.assert().isEqualTo("cocache:v8:user:")
-        keyspace.storageKey("1").assert().isEqualTo("cocache:v8:user:1")
-        Keyspace("", "user").storageKey("a:b").assert().isEqualTo("v8:user:a:b")
+        keyspace.storagePrefix.assert().isEqualTo("cocache:user:")
+        keyspace.storageKey("1").assert().isEqualTo("cocache:user:1")
+        Keyspace("", "user").storageKey("a:b").assert().isEqualTo("user:a:b")
+    }
+
+    /**
+     * 内部 key 的标记 `!` 不在命名空间的字符集中：`{keyPrefix}!…` 不会是任何命名空间的存储 key。
+     */
+    @Test
+    fun internalMarkIsOutsideTheNamespaceCharset() {
+        Keyspace.INTERNAL_MARK.assert().isEqualTo("!")
+        Keyspace.isValidNamespace(Keyspace.INTERNAL_MARK).assert().isFalse()
+        Keyspace.isValidNamespace("${Keyspace.INTERNAL_MARK}meta").assert().isFalse()
     }
 
     @Test
@@ -41,7 +51,7 @@ class KeyspaceTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["user", "User_1", "a.b-c", "0", "v8", "probe", "meta", "inv"])
+    @ValueSource(strings = ["user", "User_1", "a.b-c", "0", "probe", "meta", "inv"])
     fun acceptsTheCharset(namespace: String) {
         Keyspace.isValidNamespace(namespace).assert().isTrue()
         Keyspace("cocache:", namespace).namespace.assert().isEqualTo(namespace)
@@ -57,7 +67,7 @@ class KeyspaceTest {
     }
 
     /**
-     * 6.x 中把前缀写进命名空间（如 `app:user`）的声明：创建失败，提示把前缀移到 keyPrefix（RFC 0005 附录 A.L4 因此不再可能）。
+     * 把前缀写进命名空间（如 `app:user`）的声明：创建失败，提示把前缀移到 keyPrefix（RFC 0005 附录 A.L4 因此不再可能）。
      */
     @Test
     fun namespaceWithColonSuggestsMovingThePrefixIntoKeyPrefix() {

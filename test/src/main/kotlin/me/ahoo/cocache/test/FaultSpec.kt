@@ -174,7 +174,7 @@ abstract class FaultSpec {
 
     private fun remote(key: String): L1Read {
         val store = backend.delegate.store(Keyspace("cocache:", cacheName))
-        return Suspending.await { store.read("cocache:v8:$cacheName:$key", null, null, null) }
+        return Suspending.await { store.read("cocache:$cacheName:$key", null, null, null) }
     }
 
     private fun remoteValue(key: String): String? {

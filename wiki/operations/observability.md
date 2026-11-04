@@ -190,7 +190,7 @@ The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{leve
 
 ### Encoded keys {#encoded-key}
 
-`{key}` is the **encoded key**: the part of the Redis key after `{keyPrefix}v8:{namespace}:`. That is the key's `toString()`, or the result of the cache's `keyExpression`, so the endpoint works for any key type.
+`{key}` is the **encoded key**: the part of the Redis key after `{keyPrefix}{namespace}:`. That is the key's `toString()`, or the result of the cache's `keyExpression`, so the endpoint works for any key type.
 
 | Cache key | Encoded key | Request |
 |-----------|-------------|---------|
@@ -211,7 +211,7 @@ curl -s localhost:8080/actuator/cocache/UserCache/42
 ```json
 {
   "cache": "UserCache",
-  "storageKey": "cocache:v8:UserCache:42",
+  "storageKey": "cocache:UserCache:42",
   "local": { "state": "VALUE", "value": "User(id=42, name=Ada)", "expiresAt": "2026-10-19T08:05:00Z", "refreshAt": null, "expired": false },
   "remote": { "state": "VALUE", "value": "User(id=42, name=Ada)", "ttl": "PT58M", "format": 1, "error": null },
   "invalidationPending": false

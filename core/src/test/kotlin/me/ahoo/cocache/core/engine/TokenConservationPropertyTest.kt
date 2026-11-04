@@ -320,7 +320,7 @@ class TokenConservationPropertyTest {
             Suspending.await {
                 memory.store(
                     Keyspace("cocache:", NAME)
-                ).read("cocache:v8:$NAME:$key", null, null, null)
+                ).read("cocache:$NAME:$key", null, null, null)
             } is L1Read.Leased
     }
 

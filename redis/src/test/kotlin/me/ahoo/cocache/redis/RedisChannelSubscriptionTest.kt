@@ -63,7 +63,7 @@ class RedisChannelSubscriptionTest {
         ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
             channel.subscribe(Keyspace("cocache:", "ns"), listener)
             val handler = requireNotNull(adapter)
-            val ns = "cocache:v8:inv:ns".toByteArray()
+            val ns = "cocache:inv:ns".toByteArray()
             stale.set(true)
             handler.sunsubscribed(ns, 0)
             listener.resets.get().assert().isEqualTo(1)
@@ -123,7 +123,7 @@ class RedisChannelSubscriptionTest {
             subscribes.get().assert().isEqualTo(2)
             requireNotNull(
                 adapter
-            ).message("cocache:v8:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            ).message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
             joining.received.assert().containsExactly(listOf("k"))
         }
     }
@@ -189,7 +189,7 @@ class RedisChannelSubscriptionTest {
             channel.subscribe(Keyspace("cocache:", "ns"), failing)
             channel.subscribe(Keyspace("cocache:", "ns"), healthy)
             val handler = requireNotNull(adapter)
-            val ns = "cocache:v8:inv:ns".toByteArray()
+            val ns = "cocache:inv:ns".toByteArray()
 
             handler.message(ns, InvalidationFrame.encode(NodeId.random(), listOf("k")))
             healthy.received.assert().containsExactly(listOf("k"))

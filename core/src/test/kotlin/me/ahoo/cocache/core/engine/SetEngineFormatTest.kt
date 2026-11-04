@@ -50,7 +50,7 @@ class SetEngineFormatTest {
     private fun seedForeign(key: String, namespace: String = "index") {
         Suspending.await {
             memory.store(Keyspace("cocache:", namespace)).put(
-                "cocache:v8:$namespace:$key",
+                "cocache:$namespace:$key",
                 Envelope.Scalar(ByteArray(0)),
                 null,
                 InvalidationFrame.encode(NodeId.random(), emptyList())
@@ -70,7 +70,7 @@ class SetEngineFormatTest {
             Suspending.await {
                 memory.store(
                     Keyspace("cocache:", "index")
-                ).read("cocache:v8:index:k", null, null, null)
+                ).read("cocache:index:k", null, null, null)
             } is L1Read.Hit
             ).assert().isTrue()
     }
@@ -99,7 +99,7 @@ class SetEngineFormatTest {
             observer.create(setCacheSpec<String, String>("plain") { elementCodec = StringCodec })
             Suspending.await {
                 memory.store(Keyspace("cocache:", "plain")).put(
-                    "cocache:v8:plain:k",
+                    "cocache:plain:k",
                     Envelope.Scalar("x".toByteArray()),
                     null,
                     InvalidationFrame.encode(NodeId.random(), emptyList())

@@ -144,7 +144,7 @@ open class CoherentEngineTest {
     private fun CacheRuntime.engine(spec: CacheSpec<String, String> = spec()): TestCache =
         TestCache(create(spec) as CoherentEngine<String, String>, access)
 
-    private fun key(key: String) = "cocache:v8:$name:$key"
+    private fun key(key: String) = "cocache:$name:$key"
 
     private fun silentPut(key: String, envelope: Envelope) {
         Suspending.await {

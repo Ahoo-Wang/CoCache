@@ -19,7 +19,7 @@ import java.time.Instant
 /**
  * 运维接口（RFC 0003 §4.14），不属于用户 API：查看统计、清空本节点的本地副本、按 key 查看与强制失效。
  *
- * 按 key 的操作都以**编码后的 key**（存储 key 中 `{keyPrefix}v8:{namespace}:` 之后的部分，即 `KeyEncoder` 的输出）为参数，
+ * 按 key 的操作都以**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分，即 `KeyEncoder` 的输出）为参数，
  * 因此适用于任意 key 类型。
  */
 interface CacheAdmin {
@@ -46,7 +46,7 @@ interface CacheAdmin {
      * 查看一个 key 在本节点 L2 与 L1 中的状态，**不加载**：不回源、不申请 lease 或刷新令牌、不填充任何一层、不计入指标，
      * 也不影响 L2 的淘汰统计。值用缓存的 `Codec` 解码后以 `toString()` 展示（截断到 [KeyInspection.MAX_VALUE_LENGTH]）。
      *
-     * @param encodedKey 编码后的 key（不含 `{keyPrefix}v8:{namespace}:`）
+     * @param encodedKey 编码后的 key（不含 `{keyPrefix}{namespace}:`）
      */
     fun inspect(encodedKey: String): KeyInspection
 
@@ -54,7 +54,7 @@ interface CacheAdmin {
      * 按编码后的 key 走正常的失效路径（两次递增戳、淘汰 L2、删除 L1 并广播，全集群生效），幂等。
      * 失败处理与 `invalidate` 相同（有数据源的缓存默认进入重试队列，没有数据源的默认抛出）。`SetCache` 上等价于 `clear(key)`：L1 是唯一副本，会删除该集合。
      *
-     * @param encodedKey 编码后的 key（不含 `{keyPrefix}v8:{namespace}:`）
+     * @param encodedKey 编码后的 key（不含 `{keyPrefix}{namespace}:`）
      */
     fun invalidateEncoded(encodedKey: String)
 }
@@ -62,7 +62,7 @@ interface CacheAdmin {
 /**
  * 一个 key 的只读快照（[CacheAdmin.inspect]）。
  *
- * @param storageKey 完整的存储 key：`{keyPrefix}v8:{namespace}:{encodedKey}`
+ * @param storageKey 完整的存储 key：`{keyPrefix}{namespace}:{encodedKey}`
  * @param local 本节点 L2 中的副本；`null` 表示没有（已过期但尚未被淘汰的副本照常返回，[LocalCopy.expired] 为 `true`）
  * @param remote L1 中的状态
  * @param invalidationPending 该 key 的失效写入 L1 失败、仍在重试中（此时未命中会跳过 L1 直接回源）

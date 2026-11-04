@@ -641,7 +641,7 @@ class RedisL1StoreUnitTest {
     }
 
     private companion object {
-        val CHANNEL = "cocache:v8:inv:unit".toByteArray(Charsets.UTF_8)
+        val CHANNEL = "cocache:inv:unit".toByteArray(Charsets.UTF_8)
 
         /**
          * 脚本的 SHA-1 → 名字（命令的第一个字符串参数是 `EVALSHA` 的 SHA-1）。

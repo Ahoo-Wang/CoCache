@@ -107,7 +107,7 @@ sequenceDiagram
     Fac->>Asm: create(spec)
     Asm->>Asm: 依次叠加 CacheSpecCustomizer、<br>cocache.defaults、cocache.caches.[name]
     Asm->>RT: create(spec)
-    RT-->>Asm: 引擎，已订阅 {keyPrefix}v8:inv:{namespace}
+    RT-->>Asm: 引擎，已订阅 {keyPrefix}inv:{namespace}
     Asm-->>Fac: 引擎
     Fac-->>Reg: 实现该接口的 JDK 代理
 ```
@@ -126,11 +126,11 @@ sequenceDiagram
 
 | 部分 | 格式 |
 |------|------|
-| 存储 key | `{keyPrefix}v8:{namespace}:{encodedKey}`，默认 `cocache:v8:{cacheName}:{key.toString()}`。命名空间符合 `[A-Za-z0-9._-]+`，内部 key 放在 `{keyPrefix}v8!` 之下 |
+| 存储 key | `{keyPrefix}{namespace}:{encodedKey}`，默认 `cocache:{cacheName}:{key.toString()}`。命名空间符合 `[A-Za-z0-9._-]+`，内部 key 放在 `{keyPrefix}!` 之下 |
 | 值、负缓存、lease | Redis String：36 字节头，后接编解码器的字节 |
 | 集合（`SetCache`） | Redis Hash：字段 `!f` 存格式版本（`"1"`），每个成员是一个值为空串的字段 `+{成员字节}` |
 | 到期时间 | `PEXPIRE` / `PTTL`，毫秒，每次状态转换都显式重设 |
-| 频道 | `{keyPrefix}v8:inv:{namespace}` |
+| 频道 | `{keyPrefix}inv:{namespace}` |
 | 消息 | `[0x01][发布者 NodeId：16 字节][数量：varint]([长度：varint][存储 key：UTF-8])*`。频道读不懂的帧重置它的缓存而不是被丢弃，版本 `2` 预留给 namespace 重置（[详见](./consistency.md#invalidation-channel)） |
 
 String 头：

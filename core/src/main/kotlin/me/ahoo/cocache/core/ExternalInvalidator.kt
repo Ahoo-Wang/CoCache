@@ -27,8 +27,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 缓存之外的写入方（CDC 消费者、批处理、运维工具）使用的失效入口：不需要创建缓存，
  * 按与缓存相同的协议删除 L1 中的 key 并广播失效帧，各节点随后淘汰 L2。
  *
- * key 与频道按 8.x 的布局构造（RFC 0005 §4.7）：存储 key 为 `{keyPrefix}v8:{namespace}:{encodedKey}`，帧发往该 keyspace 的频道
- * （Redis 为 `{keyPrefix}v8:inv:{namespace}`）。[keyPrefix] 必须与目标缓存相同：前缀不同的缓存不订阅这个频道，也没有这些 key。
+ * key 与频道按 8.x 的布局构造（RFC 0005 §4.7）：存储 key 为 `{keyPrefix}{namespace}:{encodedKey}`，帧发往该 keyspace 的频道
+ * （Redis 为 `{keyPrefix}inv:{namespace}`）。[keyPrefix] 必须与目标缓存相同：前缀不同的缓存不订阅这个频道，也没有这些 key。
  *
  * 与缓存自己的 `invalidate` 一样，原子广播的后端在同一个脚本内完成删除与广播；否则先删除再经通道广播。
  * 调用在调用方线程上等待，规则同缓存的同步 API：L1 调用不可取消，线程被中断时等在途的命令结束之后抛出 [InterruptedException]。
@@ -51,7 +51,7 @@ class ExternalInvalidator @JvmOverloads constructor(
      * 失效一个命名空间中的若干 key。
      *
      * @param namespace 缓存的命名空间（默认等于缓存名），字符集为 `[A-Za-z0-9._-]+`
-     * @param encodedKeys 经 `KeyEncoder` 编码后的 key（存储 key 中 `{keyPrefix}v8:{namespace}:` 之后的部分），不得为空串
+     * @param encodedKeys 经 `KeyEncoder` 编码后的 key（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分），不得为空串
      * @throws IllegalArgumentException 命名空间不符合字符集（[Keyspace]），或有空串的 key
      */
     fun invalidate(namespace: String, encodedKeys: Collection<String>) {

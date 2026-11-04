@@ -117,7 +117,7 @@ The L2 hit counter `cocache.hits{level=l2}` is off by default because it slows d
 | Lease | String | key + 36-byte header, while a load runs (at most `lease-ttl`) |
 | Set (`SetCache`) | Hash | key + a `!f` field + one `+{member}` field per member |
 
-Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY USAGE cocache:v8:UserCache:42`. Every value has an expiry (`ttl`, plus or minus `ttl-jitter`) unless the cache uses `ttl-forever` or is a `SetCache`.
+Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY USAGE cocache:UserCache:42`. Every value has an expiry (`ttl`, plus or minus `ttl-jitter`) unless the cache uses `ttl-forever` or is a `SetCache`.
 
 ### Redis traffic {#sizing-traffic}
 
@@ -128,7 +128,7 @@ Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY U
 
 ## Rolling deploys {#rolling-deploys}
 
-The wire format (key layout, value header, set fields, message frame, channel names) is frozen within a major version, so any 6.x instances can run side by side. A future format change ships in two phases: first a release that reads the new format but still writes the old one, then, once every instance runs it, a release that writes the new one. While instances disagree, a value in a format an instance doesn't know is loaded from the source without overwriting it (`cocache.unknown.formats`).
+The wire format (key layout, value header, set fields, message frame, channel names) is frozen within a major version, so instances of one major version can run side by side. A major upgrade is not rolling: stop 6.x before you start 8.x ([Upgrading from 6.x](../guide/changelog.md#upgrading-from-6x)). A future format change ships in two phases: first a release that reads the new format but still writes the old one, then, once every instance runs it, a release that writes the new one. While instances disagree, a value in a format an instance doesn't know is loaded from the source without overwriting it (`cocache.unknown.formats`).
 
 Each new instance starts with an empty L2 and fills it from L1, so a deploy shows a burst of `cocache.misses` and `cocache.hits{level=l1}`, not of loads.
 
@@ -147,10 +147,10 @@ Keys under an old prefix or namespace expire with their `ttl`. Delete them earli
 
 | What | Format | Example |
 |------|--------|---------|
-| Storage key | `{keyPrefix}v8:{namespace}:{encodedKey}` | `cocache:v8:UserCache:42` |
-| Channel | `{keyPrefix}v8:inv:{namespace}` | `cocache:v8:inv:UserCache` |
+| Storage key | `{keyPrefix}{namespace}:{encodedKey}` | `cocache:UserCache:42` |
+| Channel | `{keyPrefix}inv:{namespace}` | `cocache:inv:UserCache` |
 
-`keyPrefix` defaults to `cocache:` and may be empty, `namespace` defaults to the cache name, and `encodedKey` is the key's `toString()` or its `keyExpression` result. The `v8:` marker keeps 8.x keys and channels apart from 6.x ones (`{keyPrefix}{namespace}:{encodedKey}` and `cocache:inv:{namespace}`), so both versions can share one Redis during a cutover. CoCache's internal keys live under `{keyPrefix}v8!`, which no namespace can produce. See [storage keys](../guide/caches.md#storage-keys).
+`keyPrefix` defaults to `cocache:` and may be empty, `namespace` defaults to the cache name, and `encodedKey` is the key's `toString()` or its `keyExpression` result. CoCache's internal keys live under `{keyPrefix}!`, which no namespace can produce. See [storage keys](../guide/caches.md#storage-keys). 8.x doesn't share a Redis with 6.x instances: stop 6.x before you start 8.x, as [Upgrading from 6.x](../guide/changelog.md#upgrading-from-6x) describes.
 
 Several applications can share one Redis:
 
@@ -165,22 +165,22 @@ CoCache needs these permissions on its Redis user:
 
 | Area | Needed |
 |------|--------|
-| Keys | Read and write on your key prefixes (`~cocache:*` by default). In `pubsub` mode also the probe key `cocache:v8!probe:{a}`, which `~cocache:*` already covers. |
-| Channels | `&{keyPrefix}v8:inv:*` for each prefix (`&cocache:v8:inv:*` by default). In `pubsub` mode also `&cocache:v8:probe:*`, or the backend falls back to non-atomic broadcast. |
+| Keys | Read and write on your key prefixes (`~cocache:*` by default). In `pubsub` mode also the probe key `cocache:!probe:{a}`, which `~cocache:*` already covers. |
+| Channels | `&{keyPrefix}inv:*` for each prefix (`&cocache:inv:*` by default). In `pubsub` mode also `&cocache:!probe:*`, or the backend falls back to non-atomic broadcast. |
 | Commands, direct | `EVALSHA`, `EVAL` (fallback after `NOSCRIPT`), `PING` (heartbeat), `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, or in `sharded` mode `SPUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, plus the connection commands (`HELLO`, `AUTH`, `CLIENT`, `SELECT`). `INFO` for the [startup eviction check](#maxmemory-policy) when you use a `SetCache`. |
 | Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HKEYS`, `HGET`, `HSET`, `HDEL`, `HEXISTS`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
 
 A starting point, checked against Redis 7.4 by running every CoCache script as this user:
 
 ```
-ACL SETUSER cocache on >change-me ~cocache:* &cocache:v8:inv:* &cocache:v8:probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
+ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel +hexists +hlen +pexpire +persist +setrange +time
 ```
 
 Since 6.3.0, CoCache reads `SetCache` members with `HKEYS` and `HGET` instead of `HGETALL`. Add both to an existing user before you upgrade. Otherwise set reads fail with an ACL error, worded differently across Redis versions, and stored data isn't touched. Keep `HGETALL`: conditional reclaim and older instances still use it.
 
-Creating a cache publishes one empty frame to the cache's channel, the way its writes will. If the ACL denies that channel, creation fails with an `IllegalStateException` that names the pattern to allow, for example `[&cocache:v8:inv:*]`. Otherwise every later write would change Redis and then fail at its broadcast, and other instances would stay stale until `local-max-age`.
+Creating a cache publishes one empty frame to the cache's channel, the way its writes will. If the ACL denies that channel, creation fails with an `IllegalStateException` that names the pattern to allow, for example `[&cocache:inv:*]`. Otherwise every later write would change Redis and then fail at its broadcast, and other instances would stay stale until `local-max-age`.
 
-With a custom `key-prefix`, replace `~cocache:*` with your prefixes and `&cocache:v8:inv:*` with `&{keyPrefix}v8:inv:*`. In `pubsub` mode, keep `~cocache:v8!probe:*` and `&cocache:v8:probe:*` for the atomic-broadcast probe, which doesn't use the prefix. An empty prefix puts keys under `v8:` and `v8!` and channels under `v8:inv:`: allow `~v8:*`, `~v8!*` and `&v8:inv:*`. On Redis Cluster, also allow the commands Lettuce uses for topology discovery (`+cluster|nodes`, `+info`). Set the user on every node: ACLs aren't replicated.
+With a custom `key-prefix`, replace `~cocache:*` with your prefixes and `&cocache:inv:*` with `&{keyPrefix}inv:*`. In `pubsub` mode, keep `~cocache:!probe:*` and `&cocache:!probe:*` for the atomic-broadcast probe, which doesn't use the prefix. An empty prefix leaves keys and channels without a common prefix: list each namespace instead (`~{namespace}:*` and `&inv:{namespace}`), plus `~!*` for internal keys. A creation the ACL denies then names its own channel, for example `[&inv:user]`. On Redis Cluster, also allow the commands Lettuce uses for topology discovery (`+cluster|nodes`, `+info`). Set the user on every node: ACLs aren't replicated.
 
 Denying `PING` is a common mistake. The heartbeat then fails every period, each failure clears every L2, and the health indicator stays `DOWN`.
 

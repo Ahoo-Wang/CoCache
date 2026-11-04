@@ -44,7 +44,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * 6.0 命中路径基准（RFC 0003 §7），方法名与 5.x 的 `RedisCacheBenchmark` 对应，便于逐项对比。
+ * 命中路径基准（RFC 0003 §7）。
  *
  * 需要 localhost:6379 的 Redis：`./gradlew :cocache-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit`。
  */
@@ -87,9 +87,9 @@ open class CoCacheBenchmark {
         viaInterface = me.ahoo.cocache.core.proxy.CacheProxies.create(BenchCache::class.java, cache)
         // 存储基准测的是 Redis 存储自身（原生挂起的 RedisL1Store，经 awaitBlocking 在调用方线程上等待）
         store = backend.store(Keyspace("cocache:", "bench-$run"))
-        l1Key = "cocache:v8:bench-$run:l1"
+        l1Key = "cocache:bench-$run:l1"
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
-        batchKeys = (1..BATCH_SIZE).map { "cocache:v8:bench-$run:batch-$it" }
+        batchKeys = (1..BATCH_SIZE).map { "cocache:bench-$run:batch-$it" }
         batchKeys.forEach {
             awaitBlocking { store.put(it, Envelope.Scalar("batch-value".toByteArray()), Duration.ofMinutes(10), frame) }
         }

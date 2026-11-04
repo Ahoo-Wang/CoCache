@@ -130,7 +130,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     private val atomicBroadcast = context.backend.atomicBroadcast
 
     /**
-     * 存储 key 的前缀 `{keyPrefix}v8:{namespace}:`（[Keyspace.storagePrefix]，创建时已算好）。
+     * 存储 key 的前缀 `{keyPrefix}{namespace}:`（[Keyspace.storagePrefix]，创建时已算好）。
      */
     private val storagePrefix = keyspace.storagePrefix
 
@@ -182,7 +182,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected fun requireSets(operation: String): SetL1Store = sets ?: throw unsupported(operation, "sets")
 
     /**
-     * 存储没有 [operation] 需要的能力面（RFC 0005 §4.3）：与 6.x 不支持的操作一样以 [UnsupportedOperationException] 失败，
+     * 存储没有 [operation] 需要的能力面（RFC 0005 §4.3）：以 [UnsupportedOperationException] 失败，
      * 在调用时、修改任何一层之前抛出。
      */
     private fun unsupported(operation: String, capability: String): UnsupportedOperationException =
@@ -283,7 +283,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 协程被取消（同步变体中线程被中断，异步变体中运行时关闭）也要等 L1 命令结束再第二次递增，否则在两次递增之间开始的填充
      * 会把旧值写进 L2（G2），非原子广播的后端上其它节点也收不到广播。
      * - 同步变体（[SYNC_WRITE]）：续接仍在调用方线程（`runBlocking` 的事件循环）上执行，不在 L1 客户端的 I/O 线程上执行。
-     * - 异步变体（[ASYNC_WRITE]）：不经执行器，在 L1 命令的完成线程上就地继续（与 6.x 的异步路径相同，这些步骤都不阻塞、不调用用户代码）。
+     * - 异步变体（[ASYNC_WRITE]）：不经执行器，在 L1 命令的完成线程上就地继续（这些步骤都不阻塞、不调用用户代码）。
      *   执行器拒绝派发不会跳过这些步骤，也不会把写入的结果换成取消（成功的写入因此计为失败、`invalidate` 因此登记多余的重试）。
      *   只有回到调用方的那一次派发可能被拒绝，调用方看到 `RejectedExecutionException`。
      *

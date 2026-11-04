@@ -589,7 +589,6 @@ abstract class BackendProtocolSpec {
 
     /**
      * 频道按 keyspace 划分（RFC 0005 §4.7）：命名空间相同、前缀不同的两个 keyspace 收不到彼此的帧。
-     * 6.x 的频道只按命名空间命名，前缀不同的两个应用会收到彼此的帧。
      */
     @Test
     fun channelsAreSeparatedByKeyspace() = l1 {

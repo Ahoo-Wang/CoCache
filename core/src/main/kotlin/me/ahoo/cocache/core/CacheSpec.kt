@@ -92,8 +92,8 @@ fun interface KeyFilter {
 /**
  * 缓存声明（不可变数据）。所有有状态组件都由 [CacheRuntime] 按声明新建，不可能被多个缓存共享。
  *
- * 存储 key 为 `{keyPrefix}v8:{namespace}:{keyEncoder(key)}`（[keyspace]）。命名空间的字符集为 `[A-Za-z0-9._-]+`，
- * 不含 `:`：6.x 中写在命名空间里的前缀须移到 [keyPrefix]，否则构建失败（RFC 0005 §4.7）。
+ * 存储 key 为 `{keyPrefix}{namespace}:{keyEncoder(key)}`（[keyspace]）。命名空间的字符集为 `[A-Za-z0-9._-]+`，
+ * 不含 `:`：前缀写在 [keyPrefix] 中，写进命名空间时构建失败（RFC 0005 §4.7）。
  */
 class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
     val name: String = builder.name
@@ -109,19 +109,19 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
     val asyncLoader: AsyncCacheLoader<K, V>? = builder.asyncLoader
 
     /**
-     * 带版本的数据源（6.8）：返回值与它的版本，回源写入 L1 时一起保存。返回 `Versioned(null, n)` 表示“在版本 n 时不存在”
+     * 带版本的数据源：返回值与它的版本，回源写入 L1 时一起保存。返回 `Versioned(null, n)` 表示“在版本 n 时不存在”
      * （如已删除的聚合），写入与 `invalidateIfNewer(key, n)` 相同的墓碑；返回 `null` 表示数据源中从来没有这个 key，写入没有版本的负缓存。
      * 与 [loader]、[asyncLoader]、[versionedAsyncLoader] 至多设置一个；设置时缓存即为带版本的（[versioned]）。
      */
     val versionedLoader: CacheLoader<K, out Versioned<V?>>? = builder.versionedLoader
 
     /**
-     * 带版本的异步数据源（6.8），见 [versionedLoader]。
+     * 带版本的异步数据源，见 [versionedLoader]。
      */
     val versionedAsyncLoader: AsyncCacheLoader<K, out Versioned<V?>>? = builder.versionedAsyncLoader
 
     /**
-     * 是否为带版本的缓存（6.8，按版本有序的写入）：显式声明，或设置了带版本的数据源。
+     * 是否为带版本的缓存（按版本有序的写入）：显式声明，或设置了带版本的数据源。
      * 只有带版本的缓存支持 `putIfNewer`、`invalidateIfNewer`、`getVersioned`；后端的存储不支持版本（`L1Store.versioned()` 为 `null`）时创建即失败。
      * 带版本的缓存不支持提前刷新（`refreshWindow`）：L1 头部放不下刷新令牌与版本。
      */

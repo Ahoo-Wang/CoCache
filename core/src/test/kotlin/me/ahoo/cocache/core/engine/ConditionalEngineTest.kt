@@ -84,7 +84,7 @@ class ConditionalEngineTest {
         Suspending.await {
             requireNotNull(
                 memory.store(Keyspace("cocache:", "doc")).sets()
-            ).addMembers("cocache:v8:doc:set", listOf("a".toByteArray()), null, silent)
+            ).addMembers("cocache:doc:set", listOf("a".toByteArray()), null, silent)
         }
         val baseline = received()
         val error = runCatching { cache.putIfMatch("set", null, "v") }.exceptionOrNull()
@@ -134,7 +134,7 @@ class ConditionalEngineTest {
         )
         unwrap(cache.async().putIfMatch("k", null, "v").handle { _, e -> e }.join()).assert().isSameAs(failure)
         Suspending.await {
-            memory.store(Keyspace("cocache:", "failing")).read("cocache:v8:failing:k", null, null, null)
+            memory.store(Keyspace("cocache:", "failing")).read("cocache:failing:k", null, null, null)
         }.assert().isEqualTo(L1Read.Miss(false))
     }
 

@@ -90,7 +90,7 @@ class ConditionalWriteTest {
     @Test
     fun unchangedReadRepliesWithoutTheBody() {
         val name = "body-$run"
-        val key = "cocache:v8:$name:doc"
+        val key = "cocache:$name:doc"
         val document = "x".repeat(1 shl 20)
         val cache = cache(name)
         cache.put("doc", document)
@@ -146,7 +146,7 @@ class ConditionalWriteTest {
     @Test
     fun foreignAndNewerContentFailsAndIsKept() {
         val name = "foreign-$run"
-        fun key(id: String) = "cocache:v8:$name:$id"
+        fun key(id: String) = "cocache:$name:$id"
         Redis5x.string(key("string"), "{\"id\":1}", ttlSeconds = 3600)
         Redis5x.set(key("set"), listOf("a", "b"), ttlSeconds = 3600)
         Redis5x.hash(key("hash"), mapOf("+a" to ""), ttlSeconds = 3600)
@@ -198,7 +198,7 @@ class ConditionalWriteTest {
     @Test
     fun reclaimDoesNotTreatForeignContentAsAbsent() {
         val name = "reclaim-$run"
-        val key = "cocache:v8:$name:k"
+        val key = "cocache:$name:k"
         Redis5x.set(key, listOf("a"), ttlSeconds = 3600)
         val cache = runtime.create(
             cacheSpec<String, String>(name) {
@@ -226,7 +226,7 @@ class ConditionalWriteTest {
     @Test
     fun ttlFollowsPutAndIsKeptOnConflict() {
         val name = "ttl-$run"
-        val key = "cocache:v8:$name:k"
+        val key = "cocache:$name:k"
         val cache = cache(name)
         cache.putIfMatch("k", null, "v1", Duration.ofSeconds(30))
         Redis5x.pttl(key).assert().isBetween(25_000L, 30_000L)
@@ -249,7 +249,7 @@ class ConditionalWriteTest {
 
         val expiring = cache("expiring-$run", ttl = Duration.ofMinutes(5))
         expiring.putIfMatch("k", null, "v").assert().isInstanceOf(ConditionalPut.Written::class.java)
-        Redis5x.pttl("cocache:v8:expiring-$run:k").assert().isBetween(290_000L, 300_000L)
+        Redis5x.pttl("cocache:expiring-$run:k").assert().isBetween(290_000L, 300_000L)
     }
 
     /**
@@ -276,7 +276,7 @@ class ConditionalWriteTest {
     fun storeClassifiesEveryShape() = Suspending.await<Unit> {
         val namespace = "store-$run"
         val store = backend.store(Keyspace("cocache:", namespace))
-        fun key(id: String) = "cocache:v8:$namespace:$id"
+        fun key(id: String) = "cocache:$namespace:$id"
         store.put(key("negative"), Envelope.Absent, null, frame)
         store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
         store.put(key("value"), Envelope.Scalar("v".toByteArray()), null, frame)

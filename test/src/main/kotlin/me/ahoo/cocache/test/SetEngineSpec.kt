@@ -293,7 +293,7 @@ abstract class SetEngineSpec {
     }
 
     /**
-     * 不是本协议写入的内容（如 5.x 留下的原生 Set）：没有数据源，总是 `FAIL`（集合缓存不接受 `RECLAIM`），抛出且不写 L2、不修改 L1。
+     * 不是本协议写入的内容（如其它程序写入的原生 Set）：没有数据源，总是 `FAIL`（集合缓存不接受 `RECLAIM`），抛出且不写 L2、不修改 L1。
      */
     @Test
     fun unrecognizedContentFails() {
@@ -313,7 +313,7 @@ abstract class SetEngineSpec {
      */
     private fun writeRemoteSilently(key: String, envelope: Envelope) = Suspending.await {
         backend.delegate.store(Keyspace("cocache:", cacheName)).put(
-            "cocache:v8:$cacheName:$key",
+            "cocache:$cacheName:$key",
             envelope,
             null,
             InvalidationFrame.encode(NodeId.random(), emptyList())
@@ -324,11 +324,11 @@ abstract class SetEngineSpec {
         error.assert().isInstanceOf(CacheWriteException::class.java)
         (error as CacheWriteException).operation.assert().isEqualTo(operation)
         val cause = requireNotNull(error.cause as? ForeignFormatException)
-        cause.storageKey.assert().isEqualTo("cocache:v8:$cacheName:k")
+        cause.storageKey.assert().isEqualTo("cocache:$cacheName:k")
     }
 
     /**
-     * 元素增删落在本缓存读不懂的内容上（这里是同一个 key 上的标量值；Redis 上还有 5.x 的原生 Set、没有格式字段的 Hash、
+     * 元素增删落在本缓存读不懂的内容上（这里是同一个 key 上的标量值；Redis 上还有原生 Set、没有格式字段的 Hash、
      * 更高格式版本）：总是拒绝。写入以 [CacheWriteException]（cause 为 [ForeignFormatException]）失败，
      * 不修改 L1；否则一次 `add` 就会用一个成员替换掉唯一副本中的全部内容。
      */
@@ -344,7 +344,7 @@ abstract class SetEngineSpec {
         val kept = Suspending.await {
             backend.delegate.store(
                 Keyspace("cocache:", cacheName)
-            ).read("cocache:v8:$cacheName:k", null, null, null)
+            ).read("cocache:$cacheName:k", null, null, null)
         } as L1Read.Hit
         (kept.envelope as Envelope.Scalar).bytes.assert().isEqualTo("x".toByteArray())
         // 整体覆盖（put）不受影响：调用方给出的是全部内容

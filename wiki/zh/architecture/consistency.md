@@ -164,7 +164,7 @@ SingleFlight 还保证：
 
 ## 失效通道 {#invalidation-channel}
 
-每个实例有一条订阅连接，按频道把消息分发给各缓存，每个前缀与命名空间一个频道：`{keyPrefix}v8:inv:{namespace}`。投递是**至多一次**：实例断开期间发布的消息、被输出缓冲区限制丢弃的消息都会丢失。三种机制限制了损害：
+每个实例有一条订阅连接，按频道把消息分发给各缓存，每个前缀与命名空间一个频道：`{keyPrefix}inv:{namespace}`。投递是**至多一次**：实例断开期间发布的消息、被输出缓冲区限制丢弃的消息都会丢失。三种机制限制了损害：
 
 1. **（重新）订阅时重置**。Redis 确认订阅时，该频道上的每个缓存递增所有戳并清空 L2。第一次订阅会等待这个确认（最多 `command-timeout`），所以重置不会晚于缓存开始填充。Lettuce 在重连后重新订阅，确认时再次重置。新增缓存不会重置其它缓存。
 2. **心跳**。订阅连接每隔 `heartbeat`（5 s）PING 一次。PING 失败或超时会重置所有缓存并强制重连，半开连接在秒级内被发现。Redis Cluster 的 `sharded` 模式下，心跳还会检查每个频道是否仍订阅在其 slot 所属的主节点上，故障切换或 slot 迁移后重新订阅。Redis 确认新的订阅之前，每次心跳都会再重置该频道上的缓存，与 PING 失败时相同。
@@ -177,7 +177,7 @@ SingleFlight 还保证：
 | `pubsub`（默认） | 在写脚本内 `PUBLISH` | L1 修改与广播是同一个原子步骤，没有客户端窗口 |
 | `sharded` | 脚本之后立即 `SPUBLISH` | 两者之间的崩溃会丢失消息。其它实例最多在 `local-max-age` 内返回 L2 副本，L1 已经正确 |
 
-`pubsub` 模式下，后端启动时探测脚本能否向另一个 slot 的频道发布（`cocache:v8!probe:{a}` 到 `cocache:v8:probe:{b}`）。不能时（部分托管服务或 ACL），它像 `sharded` 一样在写入之后发布。写入失败时也会发布，因为失败的写入可能已部分生效（跨多个 slot 组的 `putAll`，或 Redis 已执行但应答丢失的写入）；多余的失效只淘汰副本。见[部署](../operations/index.md#channel-mode)。
+`pubsub` 模式下，后端启动时探测脚本能否向另一个 slot 的频道发布（`cocache:!probe:{a}` 到 `cocache:!probe:{b}`）。不能时（部分托管服务或 ACL），它像 `sharded` 一样在写入之后发布。写入失败时也会发布，因为失败的写入可能已部分生效（跨多个 slot 组的 `putAll`，或 Redis 已执行但应答丢失的写入）；多余的失效只淘汰副本。见[部署](../operations/index.md#channel-mode)。
 
 ## 读路径 {#read-path}
 

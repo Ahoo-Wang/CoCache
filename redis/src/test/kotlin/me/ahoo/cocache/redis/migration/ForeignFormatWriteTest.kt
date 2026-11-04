@@ -77,7 +77,7 @@ class ForeignFormatWriteTest {
     @Test
     fun memberWritesOnUnmigratedNativeSetFailAndKeepIt() {
         val name = "deny-$run"
-        val key = "cocache:v8:$name:"
+        val key = "cocache:$name:"
         Redis5x.set(key, listOf("p1", "p2"), ttlSeconds = 3600)
         val cache = index(name)
 
@@ -99,9 +99,9 @@ class ForeignFormatWriteTest {
     fun memberWritesOnOtherForeignContentFail() {
         val name = "other-$run"
         val cache = index(name)
-        val hash = "cocache:v8:$name:hash"
-        val string = "cocache:v8:$name:string"
-        val list = "cocache:v8:$name:list"
+        val hash = "cocache:$name:hash"
+        val string = "cocache:$name:string"
+        val list = "cocache:$name:list"
         Redis5x.hash(hash, mapOf("+a" to ""))
         Redis5x.string(string, "[\"a\"]")
         RedisTestSupport.withCommands { it.rpush(list, "a") }
@@ -122,7 +122,7 @@ class ForeignFormatWriteTest {
     @Test
     fun memberWritesOnNewerFormatSetFail() {
         val name = "newer-$run"
-        val key = "cocache:v8:$name:k"
+        val key = "cocache:$name:k"
         Redis5x.hash(key, mapOf("!f" to "2", "+a" to ""))
         val cache = index(name)
 
@@ -137,7 +137,7 @@ class ForeignFormatWriteTest {
     @Test
     fun refusedWriteDoesNotBroadcast() {
         val name = "silent-$run"
-        val key = "cocache:v8:$name:k"
+        val key = "cocache:$name:k"
         Redis5x.set(key, listOf("p1"))
         val cache = index(name)
         val frames = CopyOnWriteArrayList<ByteArray>()
@@ -158,7 +158,7 @@ class ForeignFormatWriteTest {
             }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
             cache.add("marker", listOf("m"))
             awaitCondition("marker broadcast") { frames.isNotEmpty() }
-            frames.map { InvalidationFrame.decode(it).keys }.assert().containsExactly(listOf("cocache:v8:$name:marker"))
+            frames.map { InvalidationFrame.decode(it).keys }.assert().containsExactly(listOf("cocache:$name:marker"))
         }
     }
 
@@ -168,7 +168,7 @@ class ForeignFormatWriteTest {
     @Test
     fun putReplacesForeignContent() {
         val name = "put-$run"
-        val key = "cocache:v8:$name:k"
+        val key = "cocache:$name:k"
         Redis5x.set(key, listOf("p1"))
         val cache = index(name)
         cache.put("k", setOf("p2"))
@@ -181,7 +181,7 @@ class ForeignFormatWriteTest {
     @Test
     fun newerFormatValueWithoutLoaderFailsAndIsKept() {
         val name = "newer-value-$run"
-        val key = "cocache:v8:$name:k"
+        val key = "cocache:$name:k"
         // 36 字节头：magic、格式版本 2、状态 V、保留、24 字节令牌、8 字节签发时间；载荷 "v"
         RedisTestSupport.withCommands {
             it.eval<String>(
@@ -209,7 +209,7 @@ class ForeignFormatWriteTest {
         assertNewer(runCatching { cache.async().getAll(listOf("k", "absent")).get() }.exceptionOrNull()?.cause)
         requireNotNull(runtime.metrics(name)).unknownFormats.assert().isEqualTo(4L)
         Redis5x.exists(key).assert().isTrue()
-        Redis5x.exists("cocache:v8:$name:absent").assert().withFailMessage { "no lease left behind" }.isFalse()
+        Redis5x.exists("cocache:$name:absent").assert().withFailMessage { "no lease left behind" }.isFalse()
     }
 
     /**
@@ -219,7 +219,7 @@ class ForeignFormatWriteTest {
     fun storeChecksEveryShapeAtomically() = Suspending.await<Unit> {
         val namespace = "store-$run"
         val store = backend.store(Keyspace("cocache:", namespace))
-        fun key(name: String) = "cocache:v8:$namespace:$name"
+        fun key(name: String) = "cocache:$namespace:$name"
         val members = listOf("m".toByteArray())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
 

@@ -75,7 +75,7 @@ class RedisCommandTimeoutTest {
 
     private fun <T> l1(block: suspend () -> T): T = Suspending.await(block)
 
-    private fun key(name: String) = "cocache:v8:$namespace:$name"
+    private fun key(name: String) = "cocache:$namespace:$name"
 
     private fun token() = Token(node, ++sequence)
 
@@ -180,7 +180,7 @@ class RedisCommandTimeoutTest {
         ).closing()
         val keyspace = Keyspace("cocache:", namespace)
         val store = backend.store(keyspace)
-        // 启动时的原子广播探测（cocache:v8!probe:{a}）与创建存储时的频道探测（以存储前缀为 KEYS[1]）都没有访问过的主节点：
+        // 启动时的原子广播探测（cocache:!probe:{a}）与创建存储时的频道探测（以存储前缀为 KEYS[1]）都没有访问过的主节点：
         // 后端还没有到它的节点连接（三个主节点中至少剩下一个）
         val visited = listOf(SlotHash.getSlot(RedisBackend.PROBE_KEY_NAME), SlotHash.getSlot(keyspace.storagePrefix))
         val target = masters.first { master -> visited.none { master.hasSlot(it) } }
@@ -275,7 +275,7 @@ class RedisCommandTimeoutTest {
         RedisTestSupport.loadScripts(RedisScripts.PUT, RedisScripts.READ)
         val runtime = CacheRuntime.builder().backend(connection.backend).build().closing()
         val cache = runtime.create(cacheSpec<String, String>(namespace) { codec = StringCodec })
-        val key = storageKey.removePrefix("cocache:v8:$namespace:")
+        val key = storageKey.removePrefix("cocache:$namespace:")
         connection.stall().use {
             val caller = fork("interrupted-put") {
                 val failure = runCatching { cache.put(key, "stale") }.exceptionOrNull()

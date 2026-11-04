@@ -113,7 +113,7 @@ public class App {}
 
 :::
 
-The cache is named after the interface (`UserCache`), and so is the bean. Values go to Redis under `cocache:v8:UserCache:{id}`, encoded as JSON with your application's Jackson `ObjectMapper`.
+The cache is named after the interface (`UserCache`), and so is the bean. Values go to Redis under `cocache:UserCache:{id}`, encoded as JSON with your application's Jackson `ObjectMapper`.
 
 ## 4. Give it a loader {#loader}
 

@@ -80,7 +80,7 @@ class CoherentEngineLincheckTest {
     @Operation
     fun remoteWrite(@Param(name = "key") key: Int) {
         versions.incrementAndGet(key)
-        val storageKey = "cocache:v8:$NAME:$key"
+        val storageKey = "cocache:$NAME:$key"
         Suspending.await { store.invalidate(listOf(storageKey), InvalidationFrame.encode(OTHER, listOf(storageKey))) }
         engine.onInvalidated(listOf(storageKey), OTHER)
     }
@@ -242,7 +242,7 @@ class CoherentEngineLincheckTest {
         @Validate
         fun nothingLeft() {
             repeat(KEYS) { key ->
-                val read = Suspending.await { store.read("cocache:v8:$NAME:$key", null, null, null) }
+                val read = Suspending.await { store.read("cocache:$NAME:$key", null, null, null) }
                 check(read !is L1Read.Leased) { "a lease was left on key[$key]: $read" }
             }
         }

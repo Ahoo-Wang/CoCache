@@ -132,7 +132,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     var afterFill: ((String, L1Fill) -> Unit)? = null
 
     /**
-     * 按版本写入（`putIfNewer`，6.8）在 L1 执行之后、返回之前调用，参数为 key 与结果；抛出即模拟“已生效但向调用方报错”的写入。
+     * 按版本写入（`putIfNewer`）在 L1 执行之后、返回之前调用，参数为 key 与结果；抛出即模拟“已生效但向调用方报错”的写入。
      */
     @Volatile
     var afterVersionedWrite: ((String, L1VersionedWrite) -> Unit)? = null

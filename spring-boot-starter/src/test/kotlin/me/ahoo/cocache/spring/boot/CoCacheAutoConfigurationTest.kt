@@ -260,7 +260,7 @@ class CoCacheAutoConfigurationTest {
                     Suspending.await {
                         backend.store(
                             Keyspace("custom:", "user")
-                        ).read("custom:v8:user:k", null, null, null)
+                        ).read("custom:user:k", null, null, null)
                     } is me.ahoo.cocache.api.spi.L1Read.Hit
                     )
                     .assert().isTrue()
@@ -271,7 +271,7 @@ class CoCacheAutoConfigurationTest {
                     Suspending.await {
                         backend.store(
                             Keyspace("custom-set:", "index")
-                        ).read("custom-set:v8:index:k", null, null, null)
+                        ).read("custom-set:index:k", null, null, null)
                     } is me.ahoo.cocache.api.spi.L1Read.Hit
                     )
                     .assert().isTrue()
@@ -282,7 +282,7 @@ class CoCacheAutoConfigurationTest {
                     Suspending.await {
                         backend.store(
                             Keyspace("cocache:", "profile")
-                        ).read("cocache:v8:profile:k", null, null, null)
+                        ).read("cocache:profile:k", null, null, null)
                     } is me.ahoo.cocache.api.spi.L1Read.Hit
                     )
                     .assert().isTrue()

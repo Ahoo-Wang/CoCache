@@ -117,7 +117,7 @@ class CoherentEngineRegressionTest {
         spec
     ) as CoherentEngine<String, String>
 
-    private fun key(key: String) = "cocache:v8:$name:$key"
+    private fun key(key: String) = "cocache:$name:$key"
 
     private fun silentPut(key: String, envelope: Envelope) {
         Suspending.await {

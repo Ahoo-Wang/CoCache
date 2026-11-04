@@ -85,7 +85,7 @@ class SyncInterruptTest {
         }
     )
 
-    private fun storageKey(key: String) = "cocache:v8:$NAME:$key"
+    private fun storageKey(key: String) = "cocache:$NAME:$key"
 
     private fun leased(key: String): Boolean = Suspending.await {
         memory.store(Keyspace("cocache:", NAME)).read(storageKey(key), null, null, null)

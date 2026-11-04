@@ -107,7 +107,7 @@ sequenceDiagram
     Fac->>Asm: create(spec)
     Asm->>Asm: apply CacheSpecCustomizers,<br>then cocache.defaults, then cocache.caches.[name]
     Asm->>RT: create(spec)
-    RT-->>Asm: engine, subscribed to {keyPrefix}v8:inv:{namespace}
+    RT-->>Asm: engine, subscribed to {keyPrefix}inv:{namespace}
     Asm-->>Fac: engine
     Fac-->>Reg: JDK proxy implementing the interface
 ```
@@ -126,11 +126,11 @@ The wire format is frozen within a major version. The normative definition is `R
 
 | Part | Format |
 |------|--------|
-| Storage key | `{keyPrefix}v8:{namespace}:{encodedKey}`, default `cocache:v8:{cacheName}:{key.toString()}`. The namespace matches `[A-Za-z0-9._-]+`. Internal keys live under `{keyPrefix}v8!`. |
+| Storage key | `{keyPrefix}{namespace}:{encodedKey}`, default `cocache:{cacheName}:{key.toString()}`. The namespace matches `[A-Za-z0-9._-]+`. Internal keys live under `{keyPrefix}!`. |
 | Value, negative entry, lease | Redis String: a 36-byte header, then the codec's bytes |
 | Set (`SetCache`) | Redis Hash: field `!f` holds the format version (`"1"`), each member is a field `+{member bytes}` with an empty value |
 | Expiry | `PEXPIRE` / `PTTL` in milliseconds, reset explicitly on every state change |
-| Channel | `{keyPrefix}v8:inv:{namespace}` |
+| Channel | `{keyPrefix}inv:{namespace}` |
 | Message | `[0x01][publisher NodeId: 16 bytes][count: varint]([length: varint][storage key: UTF-8])*`. A frame a channel can't read resets its caches instead of being dropped, and version `2` is reserved for a namespace reset ([details](./consistency.md#invalidation-channel)). |
 
 The String header:

@@ -60,7 +60,7 @@ class RedisRobustnessTest {
 
     private fun lease() = LeaseRequest(token(), Duration.ofSeconds(60))
 
-    private fun key(name: String) = "cocache:v8:$namespace:$name"
+    private fun key(name: String) = "cocache:$namespace:$name"
 
     /**
      * 5.x 遗留的原生 Set / List / ZSet 落在缓存 key 上：读取按无法识别的内容返回（不报 WRONGTYPE），
@@ -204,7 +204,7 @@ class RedisRobustnessTest {
     fun documentedAclAllowsEveryOperation() {
         Assumptions.assumeTrue(System.getenv("SPRING_DATA_REDIS_CLUSTER_NODES") == null)
         val rules = (
-            "~cocache:* resetchannels &cocache:v8:inv:* &cocache:v8:probe:* +@connection +evalsha +eval +publish +subscribe " +
+            "~cocache:* resetchannels &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe " +
                 "+unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel " +
                 "+hexists +hlen +pexpire +persist +setrange +time"
             ).split(" ")
@@ -244,13 +244,13 @@ class RedisRobustnessTest {
             // 测试环境的各主节点配置一致：与 CONFIG GET 读到的相同
             policies.values.forEach { it.assert().isEqualTo(expected) }
         }
-        val noConfig = "~cocache:* resetchannels &cocache:v8:inv:* &cocache:v8:probe:* +@all -config".split(" ")
+        val noConfig = "~cocache:* resetchannels &cocache:inv:* &cocache:!probe:* +@all -config".split(" ")
         RedisTestSupport.aclBackend("cocache-noconfig", noConfig).use { backend ->
             requireNotNull(backend.maxmemoryPolicies()).values.forEach { it.assert().isEqualTo(expected) }
         }
         // 集群中 Lettuce 发现拓扑也需要 INFO，只在单机上验证 INFO 被禁用的情形
         Assumptions.assumeFalse(RedisTestSupport.isCluster)
-        val noInfo = "~cocache:* resetchannels &cocache:v8:inv:* &cocache:v8:probe:* +@all -info".split(" ")
+        val noInfo = "~cocache:* resetchannels &cocache:inv:* &cocache:!probe:* +@all -info".split(" ")
         RedisTestSupport.aclBackend("cocache-noinfo", noInfo).use { backend ->
             backend.maxmemoryPolicies().assert().isNull()
         }
@@ -272,11 +272,11 @@ class RedisRobustnessTest {
      */
     @Test
     fun readAllReleasesGrantedLeasesWhenAnyReadFails() {
-        val allowed = "cocache:v8:allowed-$namespace:k"
-        val denied = "cocache:v8:denied-$namespace:k"
+        val allowed = "cocache:allowed-$namespace:k"
+        val denied = "cocache:denied-$namespace:k"
         RedisTestSupport.aclBackend(
             "cocache-readall",
-            listOf("resetkeys", "~cocache:v8:allowed-*", "&*", "+@all")
+            listOf("resetkeys", "~cocache:allowed-*", "&*", "+@all")
         ).use { backend ->
             val store = backend.store(Keyspace("cocache:", namespace))
             val leases = mapOf(allowed to lease(), denied to lease())
@@ -303,7 +303,7 @@ class RedisRobustnessTest {
     fun failedSubscribeDoesNotLeaveNamespaceDeaf() {
         RedisTestSupport.aclBackend(
             "cocache-subscribe",
-            listOf("~*", "resetchannels", "&cocache:v8:inv:allowed*", "+@all")
+            listOf("~*", "resetchannels", "&cocache:inv:allowed*", "+@all")
         ).use { backend ->
             val listener = RecordingListener()
             repeat(2) {

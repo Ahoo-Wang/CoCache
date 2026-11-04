@@ -35,7 +35,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 8.x 的频道布局（RFC 0005 §4.7，D5）与按存储探测实际频道（K8）。三种广播方式：经典 Pub/Sub 的原子广播、经典 Pub/Sub 的
+ * 8.x 的频道布局（RFC 0005 §4.7）与按存储探测实际频道（K8）。三种广播方式：经典 Pub/Sub 的原子广播、经典 Pub/Sub 的
  * 非原子广播（ACL 不放行探测频道）、Sharded Pub/Sub；单机与 Cluster 都运行（Cluster 见 AGENTS.md 的命令）。
  *
  * 用到 ACL 的用例各自建立唯一命名的用户，结束时删除；不发送服务端范围的 `CLIENT PAUSE` 或 `CONFIG`。
@@ -46,14 +46,15 @@ class RedisLayoutTest {
     enum class Mode { ATOMIC, NON_ATOMIC, SHARDED }
 
     @Test
-    fun channelNamesCarryTheKeyPrefixAndTheLayoutMark() {
-        RedisInvalidationChannel.channelOf(Keyspace("cocache:", "user")).assert().isEqualTo("cocache:v8:inv:user")
-        RedisInvalidationChannel.channelOf(Keyspace("app:", "user")).assert().isEqualTo("app:v8:inv:user")
-        RedisInvalidationChannel.channelOf(Keyspace("", "user")).assert().isEqualTo("v8:inv:user")
-        RedisInvalidationChannel.channelPatternOf("cocache:").assert().isEqualTo("&cocache:v8:inv:*")
-        RedisInvalidationChannel.channelPatternOf("").assert().isEqualTo("&v8:inv:*")
-        RedisBackend.PROBE_KEY_NAME.assert().isEqualTo("cocache:v8!probe:{a}")
-        RedisBackend.PROBE_CHANNEL_NAME.assert().isEqualTo("cocache:v8:probe:{b}")
+    fun channelNamesCarryTheKeyPrefix() {
+        RedisInvalidationChannel.channelOf(Keyspace("cocache:", "user")).assert().isEqualTo("cocache:inv:user")
+        RedisInvalidationChannel.channelOf(Keyspace("app:", "user")).assert().isEqualTo("app:inv:user")
+        RedisInvalidationChannel.channelOf(Keyspace("", "user")).assert().isEqualTo("inv:user")
+        RedisInvalidationChannel.channelPatternOf(Keyspace("cocache:", "user")).assert().isEqualTo("&cocache:inv:*")
+        // 前缀为空时没有公共前缀：放行这一个频道
+        RedisInvalidationChannel.channelPatternOf(Keyspace("", "user")).assert().isEqualTo("&inv:user")
+        RedisBackend.PROBE_KEY_NAME.assert().isEqualTo("cocache:!probe:{a}")
+        RedisBackend.PROBE_CHANNEL_NAME.assert().isEqualTo("cocache:!probe:{b}")
         // 两个 hash tag 落在不同的 slot：把 PUBLISH 当作 SPUBLISH 执行的环境因此报跨 slot 错误
         SlotHash.getSlot(
             RedisBackend.PROBE_KEY_NAME
@@ -68,7 +69,7 @@ class RedisLayoutTest {
         RedisBackend.isPermissionDenied(
             RedisException(
                 "wrapper",
-                RedisException("NOPERM User u has no permissions to access the 'app:v8:inv:x' channel")
+                RedisException("NOPERM User u has no permissions to access the 'app:inv:x' channel")
             )
         ).assert().isTrue()
         RedisBackend.isPermissionDenied(
@@ -91,8 +92,8 @@ class RedisLayoutTest {
     @EnumSource(Mode::class)
     fun storeProbesTheRealChannelWithAZeroKeyFrame(mode: Mode) {
         val keyspace = Keyspace("app:", namespace)
-        withBackend(mode, listOf("&app:v8:inv:*")) { prober ->
-            withBackend(mode, listOf("&app:v8:inv:*")) { subscriber ->
+        withBackend(mode, listOf("&app:inv:*")) { prober ->
+            withBackend(mode, listOf("&app:inv:*")) { subscriber ->
                 prober.atomicBroadcast.assert().isEqualTo(mode == Mode.ATOMIC)
                 val received = CopyOnWriteArrayList<Pair<List<String>, NodeId>>()
                 val resets = AtomicInteger()
@@ -124,14 +125,14 @@ class RedisLayoutTest {
     @ParameterizedTest
     @EnumSource(Mode::class)
     fun aclDenyingTheRealChannelFailsCreate(mode: Mode) {
-        withBackend(mode, listOf("&cocache:v8:inv:*")) { backend ->
+        withBackend(mode, listOf("&cocache:inv:*")) { backend ->
             backend.atomicBroadcast.assert().isEqualTo(mode == Mode.ATOMIC)
             CacheRuntime.builder().backend(backend).build().use { runtime ->
                 val denied = "denied-$namespace"
                 val error = runCatching { runtime.create(spec(denied, "app:")) }.exceptionOrNull()
                 error.assert().isInstanceOf(IllegalStateException::class.java)
-                    .hasMessageContaining("invalidation channel[app:v8:inv:$namespace]")
-                    .hasMessageContaining("channel pattern [&app:v8:inv:*]")
+                    .hasMessageContaining("invalidation channel[app:inv:$namespace]")
+                    .hasMessageContaining("channel pattern [&app:inv:*]")
                 error?.cause.assert().isInstanceOf(RedisException::class.java)
                 runtime.cache(denied).assert().isNull()
                 // 同一命名空间在放行的前缀下照常创建
@@ -144,13 +145,13 @@ class RedisLayoutTest {
     }
 
     /**
-     * 频道名按文档构造（`{keyPrefix}v8:inv:{namespace}`）：不经后端、直接向这个名字发布的帧送达缓存，前缀为空时同样。
+     * 频道名按文档构造（`{keyPrefix}inv:{namespace}`）：不经后端、直接向这个名字发布的帧送达缓存，前缀为空时同样。
      * 经典与 Sharded 模式都按这个名字，Sharded 模式下 `SPUBLISH` 按它的 slot 路由到 Cluster 中的所属节点。
      */
     @ParameterizedTest
     @CsvSource("ATOMIC, app:", "ATOMIC, ''", "SHARDED, app:", "SHARDED, ''")
     fun framesPublishedToTheDocumentedChannelReachTheCache(mode: Mode, keyPrefix: String) {
-        val storageKey = "${keyPrefix}v8:$namespace:k"
+        val storageKey = "${keyPrefix}$namespace:k"
         try {
             withBackend(mode, emptyList()) { backend ->
                 CacheRuntime.builder().backend(backend).build().use { runtime ->
@@ -164,7 +165,7 @@ class RedisLayoutTest {
                     val frame = String(
                         InvalidationFrame.encode(NodeId("0123456789abcdef".toByteArray()), listOf(storageKey))
                     )
-                    val channel = "${keyPrefix}v8:inv:$namespace"
+                    val channel = "${keyPrefix}inv:$namespace"
                     RedisTestSupport.withCommands {
                         if (mode == Mode.SHARDED) {
                             it.spublish(
@@ -187,20 +188,21 @@ class RedisLayoutTest {
     }
 
     /**
-     * 前缀为空时 key 以 `v8:` 与 `v8!` 开头，ACL 为 `~v8:*`、`~v8!*` 与 `&v8:inv:*`（运维文档）；经典 Pub/Sub 的原子广播探测
-     * 另需 `~cocache:v8!probe:*` 与 `&cocache:v8:probe:*`。在这样的用户下探测通过，原子广播开启，读写与跨节点失效照常。
+     * 前缀为空时 key 没有公共前缀，ACL 按命名空间列出：`~{namespace}:*` 与 `&inv:{namespace}`，内部 key 为 `~!*`（运维文档）；
+     * 经典 Pub/Sub 的原子广播探测另需 `~cocache:!probe:*` 与 `&cocache:!probe:*`。在这样的用户下探测通过，原子广播开启，
+     * 读写与跨节点失效照常；没有列出的命名空间创建失败，信息给出它自己的频道。
      */
     @Test
     fun emptyKeyPrefixRunsUnderTheDocumentedAcl() {
         val user = "cocache-layout-" + UUID.randomUUID()
         val rules = listOf(
             "resetkeys",
-            "~v8:*",
-            "~v8!*",
-            "~cocache:v8!probe:*",
+            "~$namespace:*",
+            "~!*",
+            "~cocache:!probe:*",
             "resetchannels",
-            "&v8:inv:*",
-            "&cocache:v8:probe:*",
+            "&inv:$namespace",
+            "&cocache:!probe:*",
             "+@all"
         )
         val name = "empty-$namespace"
@@ -214,12 +216,20 @@ class RedisLayoutTest {
                         b["k"].assert().isEqualTo("v-k")
                         a.put("k", "v")
                         awaitCondition("node B sees the write") { b["k"] == "v" }
+                        val unlisted = cacheSpec<String, String>("unlisted-$namespace") {
+                            namespace = "other-${this@RedisLayoutTest.namespace}"
+                            keyPrefix = ""
+                            codec = StringCodec
+                        }
+                        runCatching { nodeA.create(unlisted) }.exceptionOrNull()
+                            .assert().isInstanceOf(IllegalStateException::class.java)
+                            .hasMessageContaining("channel pattern [&inv:other-$namespace]")
                     }
                 }
             }
         } finally {
             RedisTestSupport.deleteAclUser(user)
-            RedisTestSupport.withCommands { it.del("v8:$namespace:k") }
+            RedisTestSupport.withCommands { it.del("$namespace:k") }
         }
     }
 
@@ -244,7 +254,7 @@ class RedisLayoutTest {
             return
         }
         val user = "cocache-layout-" + UUID.randomUUID()
-        val probe = if (mode == Mode.ATOMIC) listOf("&cocache:v8:probe:*") else emptyList()
+        val probe = if (mode == Mode.ATOMIC) listOf("&cocache:!probe:*") else emptyList()
         try {
             RedisTestSupport.aclBackend(
                 user,
