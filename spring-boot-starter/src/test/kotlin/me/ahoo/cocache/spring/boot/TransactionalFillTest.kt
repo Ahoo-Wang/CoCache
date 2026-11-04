@@ -269,6 +269,39 @@ class TransactionalFillTest {
     }
 
     /**
+     * `overrides` 只收紧：`private` 胜过类型默认值；比下层宽松的 `invalidate-fills-on-rollback: false` 不生效。
+     * `overrides.store` 中的这两个键不适用于权威副本，跳过并列入报告。
+     */
+    @Test
+    fun overridesNeverLoosen() {
+        runner.withUserConfiguration(LayeredConfig::class.java)
+            .withPropertyValues(
+                "cocache.overrides.cache.fill-in-transaction=private",
+                "cocache.overrides.cache.invalidate-fills-on-rollback=false",
+                "cocache.overrides.store.invalidate-fills-on-rollback=true",
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                fillEntries(context, "ledger").assert().containsExactly(
+                    PolicyReport.Entry("invalidate-fills-on-rollback", "true", PolicyReport.Source.TYPE_DEFAULT),
+                    PolicyReport.Entry(
+                        "fill-in-transaction",
+                        "private",
+                        PolicyReport.Source.OVERRIDES,
+                        "stricter than registered-keys"
+                    ),
+                )
+                requireNotNull(requireNotNull(runtime(context).admin("doc")).policyReport).skipped.assert().contains(
+                    PolicyReport.Skipped(
+                        "cocache.overrides.store.invalidate-fills-on-rollback",
+                        "cocache.overrides.store",
+                        "not applicable to a Store"
+                    )
+                )
+            }
+    }
+
+    /**
      * `overrides` 只收紧：`invalidate-fills-on-rollback` 中 `true` 严于 `false`；比下层宽松的 `fill-in-transaction` 不生效。
      */
     @Test

@@ -35,6 +35,6 @@ internal object SpelTemplates {
     fun parse(expression: String, classLoader: ClassLoader?): Expression =
         SpelExpressionParser(SpelParserConfiguration(compilerMode(), classLoader)).parseExpression(expression, CONTEXT)
 
-    internal fun compilerMode(): SpelCompilerMode =
-        if (NativeDetector.inNativeImage()) SpelCompilerMode.OFF else SpelCompilerMode.MIXED
+    internal fun compilerMode(nativeImage: Boolean = NativeDetector.inNativeImage()): SpelCompilerMode =
+        if (nativeImage) SpelCompilerMode.OFF else SpelCompilerMode.MIXED
 }
