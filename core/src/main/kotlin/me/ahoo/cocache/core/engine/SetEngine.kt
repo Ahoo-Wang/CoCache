@@ -252,23 +252,17 @@ internal class SetEngine<K : Any, E : Any>(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun loadAllThrough(storageKeys: List<String>): Map<String, Loaded<Set<E>>> {
         val loadStamps = storageKeys.associateWith { stamps.current(it) }
-        val reads = try {
-            uncancellable { store.readAll(storageKeys, emptyMap(), policy.readTimeout) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: InterruptedException) {
-            throw e
-        } catch (e: Exception) {
+        val reads = readAllRemote(storageKeys).getOrElse { error ->
             metrics.remoteFailure()
-            log.warn(e) { "SetStore[$name] - keys$storageKeys - remote read failed: the reads have no answer (Unknown)." }
-            val unknown = Unanswered<Set<E>>(CacheReadException(name, "readAll", e))
+            log.warn(error) { "SetStore[$name] - keys$storageKeys - remote read failed: no answer (Unknown)." }
+            val unknown = Unanswered<Set<E>>(CacheReadException(name, "readAll", error))
             return storageKeys.associateWith { Loaded(unknown, loadStamps.getValue(it)) }
         }
         val result = LinkedHashMap<String, Loaded<Set<E>>>()
         var failure: Exception? = null
         for (storageKey in storageKeys) {
             try {
-                val read = checkNotNull(reads[storageKey]) { "SetStore[$name] - readAll returned no result for $storageKey." }
+                val read = checkNotNull(reads[storageKey]) { "SetStore[$name] - readAll returned no $storageKey." }
                 result[storageKey] = loaded(storageKey, read, loadStamps.getValue(storageKey))
             } catch (e: Exception) {
                 failure = failure ?: e
@@ -276,6 +270,20 @@ internal class SetEngine<K : Any, E : Any>(
         }
         failure?.let { throw it }
         return result
+    }
+
+    /**
+     * 一次 L1 批量读取（不申请 lease）。取消与中断原样抛出，其余失败作为结果交回。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun readAllRemote(storageKeys: List<String>): Result<Map<String, L1Read>> = try {
+        Result.success(uncancellable { store.readAll(storageKeys, emptyMap(), policy.readTimeout) })
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: InterruptedException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
     }
 
     /**
@@ -535,7 +543,6 @@ internal class SetEngine<K : Any, E : Any>(
 
         override fun lookupAll(keys: Collection<K>): CompletableFuture<Map<K, Lookup<Set<E>>>> =
             resolveAllAsync(keys) { lookupsOf(it) }
-
 
         override fun put(key: K, value: Set<E>): CompletableFuture<Void?> = runAsyncCommand {
             putWithTtl(key, value, policy.valueTtl())

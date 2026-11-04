@@ -48,6 +48,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | `cocache.load.timeouts` | counter | Loads that exceeded `load-timeout`: `AsyncCacheLoader` loads (the lease was released), and readers that waited that long for another caller's load. Each got `SourceLoadTimeoutException`. See [Async API](../guide/async.md#timeouts). |
 | `cocache.refreshes` | counter | Refresh-ahead tasks that ran |
 | `cocache.refresh.rejections` | counter | Refreshes the refresh executor rejected. The value is served until it expires normally. |
+| `cocache.refresh.skipped` | counter | Refreshes that were due but didn't run: another instance held the refresh token, so this one only re-read Redis and backed off; or a copy got no refresh point although the cache refreshes ahead (its remaining lifetime was no longer than `refresh-window`, or refreshing it would only read the same content: a newer format, an evicted version, a value written by a `Store`). Such a copy is served until it expires. |
 
 ### Fills and fences {#metrics-fills}
 

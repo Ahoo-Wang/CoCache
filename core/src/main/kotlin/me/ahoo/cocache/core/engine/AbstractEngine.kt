@@ -309,11 +309,17 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         val remoteExpiresAt = ttl?.let { now + it.toMillis() } ?: FOREVER
         val expiresAt = minOf(remoteExpiresAt, now + maxAge.toMillis())
         val refreshAt = if (value != null && refreshable) refreshAtOf(now, remoteExpiresAt, backoff) else FOREVER
-        if (refreshAt == FOREVER && backoff == 0L && value != null && remoteExpiresAt != FOREVER && policy.refreshWindow != null) {
+        if (refreshAt == FOREVER && backoff == 0L && refreshesAhead(value, remoteExpiresAt)) {
             metrics.refreshSkipped()
         }
         return LocalEntry(value, expiresAt, refreshAt)
     }
+
+    /**
+     * 提前刷新本该覆盖这个副本：有值、有限寿命、缓存设了刷新窗口。
+     */
+    private fun refreshesAhead(value: V?, remoteExpiresAt: Long): Boolean =
+        value != null && remoteExpiresAt != FOREVER && policy.refreshWindow != null
 
     private fun refreshAtOf(now: Long, remoteExpiresAt: Long, backoff: Long): Long {
         val window = policy.refreshWindow
