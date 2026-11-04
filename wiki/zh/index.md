@@ -31,7 +31,7 @@ features:
     details: 并发未命中在实例内合并为一次加载，借助 lease 在集群内也只加载一次。不存在的 key 写入负缓存，TTL 抖动打散过期时间。
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
     title: 声明即可用
-    details: 缓存就是一个带注解的接口或一个 CacheSpec bean。Spring Boot 负责创建，cocache.* 配置项无需重新编译即可调整任意缓存。
+    details: 缓存就是五种类型之一的带注解接口或 spec bean，类型由一个问题选出：Redis 丢了一个 key，本进程能否重建它。Spring Boot 负责创建，cocache.* 配置项分层调整它，无需重新编译。
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
     title: 不依赖 Redis 也能测试
     details: 一个配置项切换到内存后端，用 ManualClock 推进时间。Spring Cache、事务与 actuator 开箱即用。

@@ -8,5 +8,5 @@ Judge only the agent's final answer. It worked in an empty, read-only directory 
 PASS only if the answer does all of these:
 
 1. Explains that fill writes without checking that the key still holds fill.token, so a load that started before an invalidation writes its stale value back
-2. Rewrites fill as an atomic compare-and-set on the token (lease or refresh token) that resets the expiry and returns whether it wrote
+2. Rewrites fill as an atomic compare-and-set on the token (lease or refresh token) that resets the expiry and returns L1Fill.Filled when it wrote and L1Fill.Rejected on a token mismatch
 3. Checks that invalidate destroys tokens and does not edit or skip the TCK case; reruns the case and the suites

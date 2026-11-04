@@ -120,7 +120,7 @@ class UserCacheTest {
 | Switch | Fails |
 |--------|-------|
 | `failAll` | Every Redis operation |
-| `failWrites` | Redis writes: `put`, `putAll`, `invalidate`, set member writes, conditional and versioned writes. The outcome is unknown, as after a timeout |
+| `failWrites` | Redis writes: `put`, `putAll`, `invalidate`, set member writes, conditional and versioned writes. The outcome is unknown, as after a timeout, so a `Cache.put` is compensated instead of throwing |
 | `rejectWrites` | The same writes, rejected with `L1RejectedException` before they reach the wrapped backend: the write is known not to have happened, so `CacheWriteException.outcomeUnknown` is `false` |
 | `failFill` | Writing loaded values to Redis |
 | `failRelease` | Releasing a lease |
@@ -135,11 +135,14 @@ val users = runtime.create(cacheSpec<String, String>("UserCache") {
 
 hooked.failAll = true
 assertEquals("Ada", users["42"])                         // degrades: loaded from the source
-assertThrows<CacheWriteException> { users.put("42", "x") }
 users.invalidate("42")                                   // doesn't throw: queued for retry
-assertEquals(1, runtime.admin("UserCache")!!.pendingInvalidationCount)
+users.put("43", "x")                                     // outcome unknown: compensated, doesn't throw
+assertEquals(2, runtime.admin("UserCache")!!.pendingInvalidationCount)
 
 hooked.failAll = false
+hooked.rejectWrites = true
+assertThrows<CacheWriteException> { users.put("42", "x") } // definitely not executed: throws
+hooked.rejectWrites = false
 // the first retry runs after about 100 ms of real time: poll until the count drops to 0
 ```
 
@@ -154,4 +157,4 @@ fun backend(clock: ManualClock): CoherenceBackend = HookedBackend(InMemoryBacken
 
 ## Testing a backend of your own {#tck}
 
-If you implement `CoherenceBackend` for a store other than Redis, `cocache-test` is also the compatibility kit: extend `BackendProtocolSpec`, `EngineSpec` (`Cache` and `Store`), `VersionedSpec` (`VersionedCache` and `VersionedStore`), `SetEngineSpec` (`SetStore`), `MultiNodeSpec`, and `FaultSpec`. In every spec except `BackendProtocolSpec`, override `access` with `CacheAccess.ASYNC` to rerun the same cases through the [async view](./async.md). See [Extending CoCache](/architecture/extending).
+If you implement `CoherenceBackend` for a store other than Redis, `cocache-test` is also the compatibility kit: extend `BackendProtocolSpec`, `EngineSpec` (`Cache` and `Store`), `VersionedSpec` (`VersionedCache` and `VersionedStore`), `SetEngineSpec` (`SetStore`), `MultiNodeSpec`, and `FaultSpec`. Each declares `expectedCapabilities`, the optional surfaces your store provides (`CONDITIONAL`, `VERSIONED`, `SETS`), and fails when the store provides a different set. In every spec except `BackendProtocolSpec`, override `access` with `CacheAccess.ASYNC` to rerun the same cases through the [async view](./async.md). See [Extending CoCache](/architecture/extending#tck).

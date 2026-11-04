@@ -313,7 +313,7 @@ CoCache values aren't readable JSON: each starts with a 36-byte binary header. U
 | Which keys does a cache have? | `redis-cli --scan --pattern 'cocache:UserCache:*' \| head` (per master in a cluster) |
 | What state is a key in? | `redis-cli TYPE cocache:UserCache:42`: `string` (value, negative entry, or lease) or `hash` (set). For a string, `redis-cli GETRANGE cocache:UserCache:42 2 2` returns the state: `V` value, `M` negative entry, `L` lease, `E` evicted versioned key. |
 | How long does it live? | `redis-cli PTTL cocache:UserCache:42` (milliseconds, `-1` never expires) |
-| What's in it? | `GET /actuator/cocache/{name}/{key}` decodes both levels. Raw: `redis-cli GETRANGE key 36 -1` returns the codec's bytes. |
+| What's in it? | `GET /actuator/cocache/{name}/{key}` decodes both levels. Raw, for a `Cache` value: `redis-cli GETRANGE key 36 -1` returns the codec's bytes. Values of the other types carry segments after the header ([wire format](../architecture/index.md#wire-format)). |
 | How much memory? | `redis-cli MEMORY USAGE cocache:UserCache:42` |
 | Who listens on a cache's channel? | `redis-cli PUBSUB NUMSUB cocache:inv:UserCache`, or `PUBSUB SHARDNUMSUB` in `sharded` mode. In a cluster, counts are per node. |
 | Which connections are CoCache's? | Set `cocache.redis.client-name`, then `redis-cli CLIENT LIST` and look for that `name`. Subscription connections show `sub=` or `ssub=` above 0. |

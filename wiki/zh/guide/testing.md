@@ -120,7 +120,7 @@ class UserCacheTest {
 | 开关 | 失败的操作 |
 |------|------------|
 | `failAll` | 所有 Redis 操作 |
-| `failWrites` | Redis 写入：`put`、`putAll`、`invalidate`、集合成员写入、条件写入与按版本的写入。结果未知，与超时之后一样 |
+| `failWrites` | Redis 写入：`put`、`putAll`、`invalidate`、集合成员写入、条件写入与按版本的写入。结果未知，与超时之后一样，所以 `Cache.put` 被补偿而不抛出 |
 | `rejectWrites` | 同样的写入，在到达被包装的后端之前以 `L1RejectedException` 拒绝：确定没有执行，所以 `CacheWriteException.outcomeUnknown` 为 `false` |
 | `failFill` | 把加载结果写入 Redis |
 | `failRelease` | 释放 lease |
@@ -135,11 +135,14 @@ val users = runtime.create(cacheSpec<String, String>("UserCache") {
 
 hooked.failAll = true
 assertEquals("Ada", users["42"])                         // 降级：从数据源加载
-assertThrows<CacheWriteException> { users.put("42", "x") }
 users.invalidate("42")                                   // 不抛出：进入重试队列
-assertEquals(1, runtime.admin("UserCache")!!.pendingInvalidationCount)
+users.put("43", "x")                                     // 结果未知：被补偿，不抛出
+assertEquals(2, runtime.admin("UserCache")!!.pendingInvalidationCount)
 
 hooked.failAll = false
+hooked.rejectWrites = true
+assertThrows<CacheWriteException> { users.put("42", "x") } // 确定没有执行：抛出
+hooked.rejectWrites = false
 // 第一次重试大约在 100 毫秒真实时间之后：轮询直到计数降为 0
 ```
 
@@ -154,4 +157,4 @@ fun backend(clock: ManualClock): CoherenceBackend = HookedBackend(InMemoryBacken
 
 ## 测试自己的后端 {#tck}
 
-如果你为 Redis 之外的存储实现了 `CoherenceBackend`，`cocache-test` 同时也是兼容性测试套件：继承 `BackendProtocolSpec`、`EngineSpec`（`Cache` 与 `Store`）、`VersionedSpec`（`VersionedCache` 与 `VersionedStore`）、`SetEngineSpec`（`SetStore`）、`MultiNodeSpec` 与 `FaultSpec`。除 `BackendProtocolSpec` 之外的每个规范都可以把 `access` 覆盖为 `CacheAccess.ASYNC`，经[异步视图](./async.md)重跑同一组用例。见[扩展 CoCache](../architecture/extending.md)。
+如果你为 Redis 之外的存储实现了 `CoherenceBackend`，`cocache-test` 同时也是兼容性测试套件：继承 `BackendProtocolSpec`、`EngineSpec`（`Cache` 与 `Store`）、`VersionedSpec`（`VersionedCache` 与 `VersionedStore`）、`SetEngineSpec`（`SetStore`）、`MultiNodeSpec` 与 `FaultSpec`。每个规范都声明 `expectedCapabilities`，即你的存储提供的可选能力面（`CONDITIONAL`、`VERSIONED`、`SETS`），存储提供的能力与之不同时失败。除 `BackendProtocolSpec` 之外的每个规范都可以把 `access` 覆盖为 `CacheAccess.ASYNC`，经[异步视图](./async.md)重跑同一组用例。见[扩展 CoCache](../architecture/extending.md#tck)。

@@ -83,9 +83,9 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 - **Redis**：没有新的命令、脚本、key 或频道。异步视图执行的 Lua 脚本与同步 API 相同，ACL 规则与线格式都不变。
 - **指标**：与同步 API 相同的计数，另加 `cocache.load.timeouts`。开启追踪时，异步加载产生同样的 `cocache.load` 观测，引擎超时标记为 `outcome=timeout`。自定义的 `LoadObserver` 需要覆盖 `observeAsync` 才能看到异步加载，默认实现不观测。
-- **大值**：Redis 后端在 Lettuce 的 I/O 线程上拷贝载荷，之后才交给异步执行器解码。很大的值会推迟同一连接上其它回复（队头阻塞），同步 API 同样如此。请保持值较小，或拆分。
+- **大值**：Redis 后端在异步执行器上读取并解码回复，从不在 Lettuce 的 I/O 线程上，但一个实例的所有命令共用一个连接。很大的值会推迟这个连接上其它回复（队头阻塞），同步 API 同样如此。请保持值较小，或拆分。
 - **性能**：一次异步 L2 命中多一次很小的分配，约为同步命中的 90%。每次都等待结果的闭环调用在负载下比同步 API 略慢，因为每个结果都要切换到异步执行器。收益出现在一个线程同时保持多个请求时：32 个在途请求下，一个线程完成的 Redis 读写约为一个阻塞线程的 12 倍。
 
 ## 自定义后端 {#backends}
 
-L1 SPI 是挂起的：后端的存储是 `L1Store`，失效通道以 `suspend` 函数发布。两种视图调用同一个存储，等待 Redis 应答时都不占线程。Java 后端实现 `FutureL1Store` 与 `FutureInvalidationChannel`，经 `FutureL1Store.adapt` 与 `FutureInvalidationChannel.adapt` 适配。用 `BackendProtocolSpec` 与各引擎套件检验后端；还想经异步视图运行某个套件时，覆盖 `access = CacheAccess.ASYNC`。约定见[扩展](../architecture/extending.md#l1-store)，完整的 SPI 变化见[更新日志](./changelog.md)。
+L1 SPI 是挂起的：后端的存储是 `L1Store`，失效通道以 `suspend` 函数发布。两种视图调用同一个存储，等待 Redis 应答时都不占线程。Java 后端实现 `FutureL1Store` 与 `FutureInvalidationChannel`，经 `FutureL1Store.adapt` 与 `FutureInvalidationChannel.adapt` 适配。用 `BackendProtocolSpec` 与各引擎套件检验后端；还想经异步视图运行某个套件时，覆盖 `access = CacheAccess.ASYNC`。约定见[扩展](../architecture/extending.md#l1-store)，完整的 SPI 变化见[更新日志](./changelog.md#unreleased)。
