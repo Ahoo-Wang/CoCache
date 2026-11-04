@@ -118,5 +118,10 @@ internal object CacheCounters {
             "cocache.versioned.stale",
             "putIfNewer / invalidateIfNewer calls refused because L1 already held a version at least as new"
         ) { it.staleVersions },
+        CacheCounter(
+            "typeMismatches",
+            "cocache.type.mismatch",
+            "L1 reads of content written by another kind of cache: an authoritative value (digest segment) in a cache that does not write one"
+        ) { it.typeMismatches },
     )
 }

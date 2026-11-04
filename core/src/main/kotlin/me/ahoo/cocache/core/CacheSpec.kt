@@ -122,7 +122,8 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
     /**
      * 是否为带版本的缓存（按版本有序的写入）：显式声明，或设置了带版本的数据源。
      * 只有带版本的缓存支持 `putIfNewer`、`invalidateIfNewer`、`getVersioned`；后端的存储不支持版本（`L1Store.versioned()` 为 `null`）时创建即失败。
-     * 带版本的缓存不支持提前刷新（`refreshWindow`）：L1 头部放不下刷新令牌与版本。
+     * 带版本的缓存照常提前刷新（`refreshWindow`）：版本在版本段中，令牌位置是空的；回源得到的版本更旧时 L1 拒绝写回，
+     * 刷新路径保留现有副本并退避（RFC 0005 §4.7）。
      */
     val versioned: Boolean = builder.versioned || versionedLoader != null || versionedAsyncLoader != null
     val ttlOf: TtlFunction<K, V>? = builder.ttlOf
@@ -134,9 +135,6 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         require(loader == null || asyncLoader == null) { "Cache[$name] - set either loader or asyncLoader, not both." }
         require(listOfNotNull(loader, asyncLoader, versionedLoader, versionedAsyncLoader).size <= 1) {
             "Cache[$name] - set at most one of loader, asyncLoader, versionedLoader and versionedAsyncLoader."
-        }
-        require(!versioned || policy.refreshWindow == null) {
-            "Cache[$name] - a versioned cache does not support refreshWindow: the L1 header has no room for a refresh token next to the version."
         }
     }
 

@@ -22,6 +22,7 @@ import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
@@ -224,16 +225,23 @@ abstract class EngineSpec {
     }
 
     /**
-     * 不广播地直接写 L1（模拟绕过协议的写入或丢失的事件）。
+     * 不广播地直接写 L1（模拟绕过协议的写入或丢失的事件）。[digest] 为载荷的摘要（像没有数据源的缓存那样写入摘要段，
+     * RFC 0005 §4.7）；默认不带，像有数据源的缓存。
      */
-    protected fun writeRemoteSilently(key: String, bytes: ByteArray) = Suspending.await {
+    protected fun writeRemoteSilently(key: String, bytes: ByteArray, digest: Digest? = null) = Suspending.await {
         backend.delegate.store(Keyspace("cocache:", cacheName)).put(
             storageKey(key),
-            Envelope.Scalar(bytes),
+            Envelope.Scalar(bytes, Versioned.NO_VERSION, null, digest),
             null,
             InvalidationFrame.encode(NodeId.random(), emptyList())
         )
     }
+
+    /**
+     * 像没有数据源的缓存那样不广播地写 L1：带载荷的摘要段。
+     */
+    protected fun writeAuthoritativeSilently(key: String, bytes: ByteArray) =
+        writeRemoteSilently(key, bytes, Digest.ofPayload(bytes))
 
     /**
      * 存储提供的能力与 [expectedCapabilities] 完全相同（多出来的也算失败），每个访问器每次返回同一个对象或总是 `null`。
@@ -393,6 +401,107 @@ abstract class EngineSpec {
         writers.forEach { it.node.assert().isEqualTo(nodeB.nodeId) }
         writers.toSet().assert().hasSize(writers.size)
         authoritative["put"].assert().isEqualTo("p2")
+    }
+
+    /**
+     * 摘要段（RFC 0005 §4.7，D1）：M5 之前没有数据源的缓存的每次标量写入（put、putAll、调用方给出 loader 时的填充，声明了条件读写时的
+     * putIfMatch）都带载荷的 SHA-256，由引擎在客户端计算，存储原样保存、读取原样返回；有数据源的缓存写入的值与回源填充都不带。
+     */
+    @Test
+    fun onlyCachesWithoutASourceWriteADigest() {
+        fun scalarOf(key: String) = (remote(key) as L1Read.Hit).envelope as Envelope.Scalar
+        val conditional = L1Capability.CONDITIONAL in expectedCapabilities
+
+        val derived = nodeA.cache()
+        database["filled"] = "v"
+        derived["filled"].assert().isEqualTo("v")
+        derived.put("put", "p")
+        derived.putAll(mapOf("all" to "a"))
+        if (conditional) {
+            derived.putIfMatch("cas", null, "c").assert().isInstanceOf(ConditionalPut.Written::class.java)
+        }
+        listOfNotNull("filled", "put", "all", "cas".takeIf { conditional }).forEach {
+            scalarOf(it).digest.assert().withFailMessage { "A derived write of [$it] carries no digest." }.isNull()
+        }
+
+        val authoritative = nodeB.cache(spec { loader = null })
+        authoritative.put("put", "p2")
+        authoritative.putAll(mapOf("all" to "a2", "all-2" to "b2"))
+        authoritative.get("filled-2") { "f2" }.assert().isEqualTo("f2")
+        if (conditional) {
+            authoritative.putIfMatch("cas-2", null, "c2").assert().isInstanceOf(ConditionalPut.Written::class.java)
+        }
+        listOfNotNull("put", "all", "all-2", "filled-2", "cas-2".takeIf { conditional }).forEach {
+            val scalar = scalarOf(it)
+            scalar.digest.assert().withFailMessage { "An authoritative write of [$it] carries the payload digest." }
+                .isEqualTo(Digest.ofPayload(scalar.bytes))
+        }
+        authoritative.getAll(listOf("all", "all-2")).assert().isEqualTo(mapOf("all" to "a2", "all-2" to "b2"))
+    }
+
+    /**
+     * 读取方校验（RFC 0005 §4.7，K3）：没有数据源的缓存从 L1 读到的值，摘要段与载荷不一致或缺摘要段时按损坏 `FAIL`，抛出
+     * [CacheReadException]（cause 为 [ForeignFormatException]，本节点的格式），不回收、不写 L2，单 key 与批量都是如此。
+     * 校验在引擎中，对所有后端相同。调用方给出 loader 时这次读取有数据源：带摘要段的内容从不回收（D4），绕过 L1 回源；
+     * 缺摘要段的内容照常回收并回源。
+     */
+    @Test
+    fun cacheWithoutASourceFailsOnATamperedOrMissingDigest() {
+        val cache = nodeA.cache(spec { loader = null })
+        writeRemoteSilently("tampered", TestCodec.encode("v2"), digestOf("v1"))
+        writeRemoteSilently("bare", TestCodec.encode("v"))
+        listOf("tampered", "bare").forEach { key ->
+            repeat(2) {
+                val error = runCatching { cache[key] }.exceptionOrNull()
+                error.assert().withFailMessage { "[$key] must fail" }.isInstanceOf(CacheReadException::class.java)
+                val cause = requireNotNull(error?.cause as? ForeignFormatException)
+                cause.storageKey.assert().isEqualTo(storageKey(key))
+                cause.format.assert().isEqualTo(backend.format)
+            }
+        }
+        runCatching { cache.getAll(listOf("tampered", "absent")) }.exceptionOrNull()
+            .assert().isInstanceOf(CacheReadException::class.java)
+        remote("absent").assert().isEqualTo(L1Read.Miss(false))
+        nodeA.metrics().unknownFormats.assert().isEqualTo(5)
+        nodeA.metrics().reclaims.assert().isEqualTo(0)
+        (
+            (
+                remote(
+                    "tampered"
+                ) as L1Read.Hit
+                ).envelope as Envelope.Scalar
+            ).bytes.assert().isEqualTo(TestCodec.encode("v2"))
+
+        cache.get("tampered") { "loaded" }.assert().isEqualTo("loaded")
+        (
+            (
+                remote(
+                    "tampered"
+                ) as L1Read.Hit
+                ).envelope as Envelope.Scalar
+            ).bytes.assert().isEqualTo(TestCodec.encode("v2"))
+        cache.get("bare") { "loaded" }.assert().isEqualTo("loaded")
+        remoteValue("bare").assert().isEqualTo("loaded")
+        cache["bare"].assert().isEqualTo("loaded")
+    }
+
+    /**
+     * 有数据源的缓存读到带摘要段的值（同一个 namespace 上还有没有数据源的缓存，RFC 0005 §4.7，D4）：照常读取，计入 `typeMismatches`；
+     * 解码失败时也不回收（`RECLAIM` 拒绝带摘要段的内容），绕过 L1 回源，L1 中的唯一副本保留。
+     */
+    @Test
+    fun derivedCacheCountsATypeMismatchAndNeverReclaimsDigestContent() {
+        nodeB.cache(spec { loader = null }).put("k", "authoritative")
+        val derived = nodeA.cache()
+        derived["k"].assert().isEqualTo("authoritative")
+        nodeA.metrics().typeMismatches.assert().isEqualTo(1)
+
+        database["corrupt"] = "loaded"
+        writeAuthoritativeSilently("corrupt", TestCodec.CORRUPT)
+        derived["corrupt"].assert().isEqualTo("loaded")
+        ((remote("corrupt") as L1Read.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
+        nodeA.metrics().typeMismatches.assert().isEqualTo(2)
+        nodeB.metrics().typeMismatches.assert().isEqualTo(0)
     }
 
     @Test
@@ -1052,7 +1161,7 @@ abstract class EngineSpec {
     @Test
     fun foreignContentWithoutLoaderFailsAndIsKept() {
         val cache = nodeA.cache(spec { loader = null })
-        writeRemoteSilently("k", TestCodec.CORRUPT)
+        writeAuthoritativeSilently("k", TestCodec.CORRUPT)
         repeat(2) {
             val error = runCatching { cache["k"] }.exceptionOrNull()
             error.assert().isInstanceOf(CacheReadException::class.java)
@@ -1378,12 +1487,52 @@ abstract class EngineSpec {
 
         // L2 中是 v1，L1 被绕过协议改成了 v2（没有广播）：普通读取仍读到 L2 的旧副本，条件读取读到 L1
         cache["k"].assert().isEqualTo("v1")
-        writeRemoteSilently("k", TestCodec.encode("v2"))
+        writeAuthoritativeSilently("k", TestCodec.encode("v2"))
         cache.getIfChanged("k", digestOf("v1")).assert().isEqualTo(ConditionalGet.Present("v2", digestOf("v2")))
         cache["k"].assert().isEqualTo("v1")
 
         cache.invalidate("k")
         cache.getIfChanged("k", digestOf("v2")).assert().isEqualTo(ConditionalGet.Absent)
+    }
+
+    /**
+     * 条件读取拿到载荷时同样校验（RFC 0005 §4.7，K3）：摘要段与载荷不一致时抛出 [CacheReadException]（cause 为 [ForeignFormatException]，
+     * 本节点的格式），不返回 `Present`。摘要未变的回答只比较头部中的摘要段（成本与载荷大小无关），不重算载荷。
+     */
+    @Test
+    fun conditionalReadVerifiesThePayloadItReturns() {
+        assumeDeclared(L1Capability.CONDITIONAL)
+        val cache = storeOfRecord()
+        writeRemoteSilently("k", TestCodec.encode("v2"), digestOf("v1"))
+        listOf(null, digestOf("v2")).forEach { known ->
+            val error = runCatching { cache.getIfChanged("k", known) }.exceptionOrNull()
+            error.assert().withFailMessage { "known[$known] must fail" }.isInstanceOf(CacheReadException::class.java)
+            requireNotNull(error?.cause as? ForeignFormatException).format.assert().isEqualTo(backend.format)
+        }
+        cache.getIfChanged("k", digestOf("v1")).assert().isEqualTo(ConditionalGet.Unchanged)
+        nodeA.metrics().unknownFormats.assert().isEqualTo(2)
+    }
+
+    /**
+     * 条件读写只认带摘要段的值（RFC 0005 §4.7）：有数据源的缓存写入的值（没有摘要段）是读不懂的内容，条件读取抛出 [CacheReadException]、
+     * 条件写入以 [CacheWriteException] 拒绝（cause 都是 [ForeignFormatException]，本节点的格式），不修改 L1、不广播。
+     */
+    @Test
+    fun conditionalOperationsRefuseValuesWithoutADigest() {
+        assumeDeclared(L1Capability.CONDITIONAL)
+        val cache = storeOfRecord()
+        nodeB.cache().put("k", "derived")
+        val readError = runCatching { cache.getIfChanged("k", null) }.exceptionOrNull()
+        readError.assert().isInstanceOf(CacheReadException::class.java)
+        requireNotNull(readError?.cause as? ForeignFormatException).format.assert().isEqualTo(backend.format)
+        listOf(null, digestOf("derived")).forEach { expected ->
+            val writeError = runCatching { cache.putIfMatch("k", expected, "v") }.exceptionOrNull()
+            writeError.assert().isInstanceOf(CacheWriteException::class.java)
+            writeError?.cause.assert().isInstanceOf(ForeignFormatException::class.java)
+        }
+        remoteValue("k").assert().isEqualTo("derived")
+        ((remote("k") as L1Read.Hit).envelope as Envelope.Scalar).digest.assert().isNull()
+        nodeA.metrics().unknownFormats.assert().isEqualTo(3)
     }
 
     /**
@@ -1481,10 +1630,10 @@ abstract class EngineSpec {
         backend.atomicBroadcastOverride = false
         val cache = storeOfRecord()
         val other = nodeB.cache(spec { loader = null })
-        writeRemoteSilently("k", TestCodec.encode("v1"))
+        writeAuthoritativeSilently("k", TestCodec.encode("v1"))
         other["k"].assert().isEqualTo("v1")
         // putIfMatch(k, v1 → v2) 已在 L1 生效、广播没有发出
-        writeRemoteSilently("k", TestCodec.encode("v2"))
+        writeAuthoritativeSilently("k", TestCodec.encode("v2"))
         other["k"].assert().isEqualTo("v1")
 
         cache.putIfMatch("k", digestOf("v1"), "v2").assert().isEqualTo(ConditionalPut.Conflict(digestOf("v2")))
@@ -1580,7 +1729,7 @@ abstract class EngineSpec {
         val cache = nodeA.cache(spec())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         addMembersSilently("set", frame)
-        writeRemoteSilently("corrupt", TestCodec.CORRUPT)
+        writeAuthoritativeSilently("corrupt", TestCodec.CORRUPT)
 
         val readError = runCatching { cache.getIfChanged("set", null) }.exceptionOrNull()
         readError.assert().isInstanceOf(CacheReadException::class.java)
@@ -1615,7 +1764,7 @@ abstract class EngineSpec {
         val cache = nodeA.cache(spec())
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         addMembersSilently("set", frame)
-        writeRemoteSilently("corrupt", TestCodec.CORRUPT)
+        writeAuthoritativeSilently("corrupt", TestCodec.CORRUPT)
 
         runCatching {
             cache.getIfChanged(

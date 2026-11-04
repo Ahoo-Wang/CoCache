@@ -58,6 +58,7 @@ interface ConditionalL1Store {
 }
 interface VersionedL1Store {
     suspend fun putIfNewer(key: String, envelope: Envelope, version: Long, ttl: Duration?, frame: ByteArray): L1VersionedWrite
+    suspend fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): L1Eviction
 }
 interface SetL1Store {
     suspend fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
@@ -69,41 +70,43 @@ interface SetL1Store {
 
 | 类型 | 形状 |
 |------|------|
-| `Envelope` | `Scalar(bytes, version, writer)`、`Members(字节列表)` 或 `Absent`（负缓存）。`version` 默认为 `Versioned.NO_VERSION`，`writer` 默认为 `null`，两者都参与相等比较、不影响摘要。`writer` 是与 `Token` 同形的写入标识，引擎在没有 loader 的缓存的每次标量写入中给出它 |
+| `Envelope` | `Scalar(bytes, version, writer, digest)`、`Members(字节列表)` 或 `Absent`（负缓存）。`version` 默认为 `Versioned.NO_VERSION`，`writer` 与 `digest` 默认为 `null`，三者都参与相等比较。`writer` 是与 `Token` 同形的写入标识，引擎在没有 loader 的缓存的每次标量写入中给出它；`digest` 是载荷的 SHA-256，引擎在这些写入不带版本时给出它 |
 | `L1Read` | `Hit(envelope, format, ttl, refreshGranted)`、`Miss(leaseGranted)` 或 `Leased(remaining)`。`ttl == null` 表示没有到期时间 |
 | `Token` | 24 字节：`NodeId`（16）+ 序号（8）。唯一、永不重复。按字节比较 |
 | `LeaseRequest(token, ttl)` | 未命中时放置的 lease，`ttl` 后到期 |
 | `RefreshRequest(window, token, tokenTtl)` | 值在 `window` 内时放置的刷新令牌。签发早于 `tokenTtl` 的令牌可以被接管 |
 | `Fill(key, token, envelope, ttl[, version])` | 仅当 `key` 持有 `token` 时，以 `ttl` 写入 `envelope`。`version`（不属于 `copy`）默认取标量的版本；带版本的 `Absent` 即墓碑 |
-| `L1Fill` | 写入时为 `Filled(advanced)`，没有写入时为 `Rejected(currentVersion)`。当前格式的填充从不让版本前进，也不会被版本拒绝：返回 `Filled(advanced = false)` 或 `Rejected(currentVersion = null)`。其它取值留给下一个线格式 |
+| `L1Fill` | 写入时为 `Filled(advanced)`，没有写入时为 `Rejected(currentVersion)`。填充让版本前进或替换了淘汰标记、并且你广播了时，`advanced` 为 `true`；版本规则拒绝填充时 `currentVersion` 为 key 中的版本，令牌不匹配时为 `null` |
 | `Put(key, envelope, ttl)` | `putAll` 中的一项：按 `put` 覆盖 `key` |
 | `ContentFingerprint` | `reclaim` 比较的内容 SHA-1：标量 → 载荷字节；集合 → 按返回顺序把每个成员写成 `int32 长度 + 字节`；负缓存 → 空。由 `ContentFingerprint.of(envelope)` 计算 |
-| `Digest` | 条件读写比较的内容摘要（`Digest.of(envelope)`，目前算法相同） |
+| `Digest` | 载荷的 SHA-256（`Digest(algorithm, bytes)`、`Digest.of(envelope)`、`Digest.ofPayload(bytes)`），条件读写比较它。由引擎计算；存储保存并返回它，从不重算 |
 | `L1ConditionalRead` | `Unchanged(format)`、`Changed(envelope, format)`（标量值）、`Absent`（不存在、lease 或负缓存）或 `Unreadable(format)` |
 | `L1ConditionalWrite` | `Written`、`Conflict(current)`（`current == null`：没有值）或 `Unreadable(format)` |
 | `L1VersionedWrite` | `Written`、`Stale(current)` 或 `Unreadable(format)` |
+| `L1Eviction` | `Evicted`、`Authoritative`（key 中是带摘要的值）或 `Unreadable(format)` |
 
 逐个方法的约定。状态机见[一致性](./consistency.md#l1-fence)。
 
 | 方法 | 必须 |
 |------|------|
-| `read` | key 不存在且 `lease != null`：放置 lease（`lease.ttl` 后到期），返回 `Miss(true)`。不存在且没有 lease：返回 `Miss(false)`，不写入任何内容。处于 lease 状态：返回 `Leased(remaining)`。有值：返回带剩余 TTL 的 `Hit`。标量值的剩余 TTL `> 0` 且 `≤ refresh.window`，并且没有令牌或令牌签发早于 `refresh.tokenTtl`：写入刷新令牌（保留 TTL），返回 `refreshGranted = true`。永不过期的值不授予令牌。不是你写入的内容：返回 `Hit(…, format = 0)`。两个请求都为 `null` 时，`read` 是纯读取，不写入任何内容 |
+| `read` | key 不存在且 `lease != null`：放置 lease（`lease.ttl` 后到期），返回 `Miss(true)`。不存在且没有 lease：返回 `Miss(false)`，不写入任何内容。处于 lease 状态：返回 `Leased(remaining)`。有值：返回带剩余 TTL 的 `Hit`。标量值的剩余 TTL `> 0` 且 `≤ refresh.window`，并且没有令牌或令牌签发早于 `refresh.tokenTtl`：写入刷新令牌（保留 TTL），返回 `refreshGranted = true`。永不过期的值、带摘要的值不授予令牌；带版本的值照常授予。淘汰标记（`evictKeepingVersion`）在没有 lease 请求时读作 `Miss(false)`；有 lease 请求、且没有令牌或令牌签发早于 `lease.ttl` 时，原地在其上放置 lease（保留版本与 TTL），返回 `Miss(true)`，否则返回 `Leased(lease.ttl 减去令牌已签发的时长)`。不是你写入的内容：返回 `Hit(…, format = 0)`。两个请求都为 `null` 时，`read` 是纯读取，不写入任何内容 |
 | `readAll` | 对每个 key 执行 `read`，只为 `leases` 中的 key 申请 lease。返回全部 key。失败时释放这次调用可能取得的 lease（见[下文](#failures)） |
-| `fill` / `fillAll` | 仅当 key 当前持有的正是 `fill.token`（作为 lease 或刷新令牌）时写入，并把到期时间重设为 `fill.ttl`。写入时返回 `Filled(advanced = false)`，令牌不匹配时返回 `Rejected(currentVersion = null)`；`fillAll` 按顺序为每一项返回一个结果。`versioned()` 非 `null` 的存储把 `fill.version` 与内容一起保存：带版本的 loader 返回的 `Versioned(null, n)` 以带版本 `n` 的 `Absent` 到达，必须写成与 `putIfNewer` 相同的墓碑 |
-| `release` | 令牌与 lease 匹配：删除 key。令牌与值上的刷新令牌匹配：清除令牌，保留值及其 TTL。否则什么也不做 |
-| `reclaim` | 仅当 key 当前内容的指纹等于 `observed` 且不是 lease 时，把它替换为 lease。返回是否替换。绝不删除已经变化的内容 |
+| `fill` / `fillAll` | 仅当 key 当前持有的正是 `fill.token`（作为 lease 或刷新令牌）时写入，并把到期时间重设为 `fill.ttl`。写入时返回 `Filled(advanced = false)`，令牌不匹配时返回 `Rejected(currentVersion = null)`；`fillAll` 按顺序为每一项返回一个结果。`versioned()` 非 `null` 的存储把 `fill.version` 与内容一起保存：带版本的 loader 返回的 `Versioned(null, n)` 以带版本 `n` 的 `Absent` 到达，必须写成与 `putIfNewer` 相同的墓碑。key 中带版本时（持有刷新令牌的带版本值、持有 lease 的淘汰标记），在同一个原子步骤中按版本规则：`fill.version` 更旧或为 `NO_VERSION` → 清零令牌，保留内容与到期时间，返回 `Rejected(当前版本)`；值上版本相等 → 写入，不广播，`Filled(false)`；更新，或淘汰标记上被接受的填充 → 写入，并广播一帧（只含 `fill.key`，来源为 `fill.token.node`），`Filled(true)` |
+| `release` | 令牌与 lease 匹配：删除 key。令牌与值上的刷新令牌、或淘汰标记上的 lease 匹配：清除令牌，保留内容及其 TTL。否则什么也不做 |
+| `reclaim` | 仅当 key 当前内容的指纹等于 `observed`，且不是 lease、带版本的内容、淘汰标记或带摘要的值时，把它替换为 lease。返回是否替换。绝不删除已经变化的内容 |
 | `put` | 覆盖任何状态，销毁任何令牌，设置到期时间，广播 `frame`。`Members` 会替换整个集合 |
 | `putAll` | 对每一项执行 `put`，对每个 key 原子，不要求跨 key 原子。`frame` 携带全部 key：每个 key 恰好随其写入广播一次（可以拆分帧，例如按 slot 分组）。没有逐项调用 `put` 的默认实现：那样每次调用都会广播全部 key |
 | `invalidate` | 删除每个 key，销毁任何令牌，广播 `frame`。对每个 key 原子。批次可以拆分 |
 | `addMembers` | 一次原子的检查加写入。key 是本协议的集合：加入成员。key 不存在、负缓存或 lease：替换为只含这些成员的集合。两种情况都销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播，返回 `null`。不是本协议集合的内容（不是你写入的内容、标量值、比你的格式更高的集合）：什么都不改、不广播，返回该内容的格式版本（不是你写入的内容为 `0`）。`SetCache` 没有数据源，覆盖这类内容就是删除唯一副本，因此没有不检查的元素写入 |
 | `removeMembers` | 检查同 `addMembers`。key 是本协议的集合：移除成员，集合变空时删除 key，否则重设到期时间。key 不存在、负缓存或 lease：不修改。这两种情况都广播并返回 `null`。读不懂的内容：什么都不改、不广播，返回其格式版本 |
-| `readIfChanged` | 纯读取，同不带请求的 `read`。本协议的标量值且载荷摘要等于 `known`：返回 `Unchanged(format)`，不回传载荷（摘要只覆盖载荷，引擎据格式版本再确认）。其它标量值：`Changed(envelope, format)`。key 不存在、lease 或负缓存：`Absent`。其余内容（不是你写入的内容、集合、更高的格式）：`Unreadable(format)`。在存储中比较，未变的值就不必传输 |
-| `putIfMatch` | 一次原子的比较加写入。`expected == null` 且 key 中没有值（不存在、lease、负缓存），或 key 中是载荷摘要等于 `expected` 的标量值时匹配。`readIfChanged` 视为 `Unreadable` 的内容（不是你写入的内容、集合、更高的格式）：返回 `Unreadable(format)`。它从不视为没有值，否则 `expected == null` 会覆盖它，滚动升级期间旧实例还会把更新的值降级覆盖。匹配时按 `put` 写入（销毁令牌、设置到期时间、广播 `frame`），返回 `Written`；否则什么都不改、不广播，返回 `Conflict(当前值的摘要，或 null)`。先读后写会让两个并发的写入方都成功：存储不能原子地比较并写入时，让 `conditional()` 返回 `null` |
-| `putIfNewer` | 一次原子的按版本比较加写入。key 的版本是与标量值或负缓存一起保存的版本；没有版本的值或负缓存、lease、不存在的 key 都视为 `NO_VERSION`，总是写入。`version` 更大时：按 `put` 写入 `envelope`（标量值，或表示墓碑的 `Absent`），与它一起保存 `version`，返回 `Written`。否则什么都不改、不广播，返回 `Stale(current)`。读不懂的内容按 `putIfMatch` 的规则分类。带版本的内容不持有令牌：`fill` 与 `release` 不得匹配它，`read` 不得在它上面授予刷新令牌，`reclaim` 必须拒绝它，因为 lease 放不下版本。`fill`、`put` 与 `putAll` 保存 `Envelope.Scalar.version`，`read` 原样返回；`putIfMatch` 写入没有版本的值。`version` 从不是 `Versioned.NO_VERSION`：在修改任何东西之前以 `IllegalArgumentException` 拒绝它 |
+| `readIfChanged` | 纯读取，同不带请求的 `read`。本协议的标量值且保存的摘要等于 `known`：返回 `Unchanged(format)`，不回传载荷。其它带摘要的值：`Changed(envelope, format)`，信封带保存的摘要与写入标识。key 不存在、lease 或不带版本的负缓存：`Absent`。其余内容（不是你写入的内容、集合、更高的格式、没有摘要的值、带版本的内容、淘汰标记）：`Unreadable(format)`。比较保存的摘要，不重算，只读比较所需的部分，未变的值无论多大成本都相同 |
+| `putIfMatch` | 一次原子的比较加写入。`expected == null` 且 key 中没有值（不存在、lease、不带版本的负缓存），或 key 中是保存的摘要等于 `expected` 的值时匹配。`readIfChanged` 视为 `Unreadable` 的内容：返回 `Unreadable(format)`。`envelope.digest` 原样保存。它从不视为没有值，否则 `expected == null` 会覆盖它，滚动升级期间旧实例还会把更新的值降级覆盖。匹配时按 `put` 写入（销毁令牌、设置到期时间、广播 `frame`），返回 `Written`；否则什么都不改、不广播，返回 `Conflict(当前值的摘要，或 null)`。先读后写会让两个并发的写入方都成功：存储不能原子地比较并写入时，让 `conditional()` 返回 `null` |
+| `putIfNewer` | 一次原子的按版本比较加写入。key 的版本是与标量值或负缓存一起保存的版本；没有版本的值或负缓存、lease、不存在的 key 都视为 `NO_VERSION`，总是写入。`version` 更大时：按 `put` 写入 `envelope`（标量值，或表示墓碑的 `Absent`），与它一起保存 `version`，返回 `Written`。否则什么都不改、不广播，返回 `Stale(current)`。淘汰标记按它的版本比较。读不懂的内容按 `evictKeepingVersion` 的规则分类。`reclaim` 必须拒绝带版本的内容，因为 lease 放不下版本。`fill`、`put` 与 `putAll` 保存 `Envelope.Scalar.version`，`read` 原样返回；`putIfMatch` 写入没有版本的值。`version` 从不是 `Versioned.NO_VERSION`：在修改任何东西之前以 `IllegalArgumentException` 拒绝它 |
+| `evictKeepingVersion` | 一个原子步骤。带版本的内容（值、墓碑、淘汰标记）：替换为带这个版本、没有令牌的淘汰标记，到期时间设为 `ttl`，广播 `frame`，返回 `Evicted`。既没有版本也没有摘要的内容（普通的值或负缓存、lease、不存在）：删除并广播，返回 `Evicted`。带摘要的值：什么都不改，返回 `Authoritative`。读不懂的内容（不是你写入的、集合、更高的格式）：什么都不改，返回 `Unreadable(format)` |
 
 对所有方法：
 
-- **保存写入标识**。每个写入标量的操作（`fill`、`fillAll`、`put`、`putAll`、`putIfMatch`、`putIfNewer`）把 `Envelope.Scalar.writer` 与值一起保存，`read` 与 `readAll` 原样返回。没有写入标识的整体写入不保存任何标识。
+- **保存写入标识与摘要**。每个写入标量的操作（`fill`、`fillAll`、`put`、`putAll`、`putIfMatch`、`putIfNewer`）把 `Envelope.Scalar.writer` 与 `Envelope.Scalar.digest` 与值一起保存，`read`、`readAll` 与 `readIfChanged` 原样返回。不带它们的整体写入不保存。不要校验摘要：引擎校验，对每个后端相同。
 - **对每个 key 原子**。批量方法对每个 key 原子，不要求跨 key 原子。
 - **每次状态转换都重设到期时间**，精度为毫秒。lease 或负缓存的寿命绝不能泄漏到新值上。
 - **读取时从不删除。**

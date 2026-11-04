@@ -23,6 +23,7 @@ import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
@@ -41,7 +42,8 @@ import java.util.concurrent.CompletableFuture
 /**
  * 一个命名空间的 L1 存储，原生挂起（RFC 0005 §4.3）：每个操作一次 Lua 往返（[RedisScripts]），以 Lettuce 的异步命令发出、
  * 挂起等待结果（[RedisConnections.awaitCommand]）。等待期间不占线程，续接经调用方的调度器恢复，不在 Lettuce 的 I/O 线程上继续。
- * 线格式 2（RFC 0005 §4.7）：版本与写入标识（[Envelope.Scalar.version]、[Envelope.Scalar.writer]）写成头部之后的段，读取时原样返回。
+ * 线格式 2（RFC 0005 §4.7）：版本、摘要与写入标识（[Envelope.Scalar.version]、[Envelope.Scalar.digest]、[Envelope.Scalar.writer]）
+ * 写成头部之后的段，读取时原样返回（摘要段不重算，由引擎校验）。
  *
  * - **限时**：每条命令受 `commandTimeout` 限制；读取另可带这次调用的 `timeout`，以两者中较短的一个为限（RFC 0005 round 3 D6，
  *   [RedisConnections.readTimeout]）。超时时尚未写出的脚本命令不再写出（`CommandCall`）。
@@ -52,7 +54,8 @@ import java.util.concurrent.CompletableFuture
  *   直到执行或令牌过期（[releaseQuietly]）。令牌不匹配时释放什么也不做，迟到或重连之后才到达都无害。
  * - **取消**：Lettuce 取消的命令（连接重置、关闭）以结果未知的 [io.lettuce.core.RedisException] 失败，从不以 `CancellationException` 报告。
  *
- * 提供全部三个能力面：条件读写、按版本有序的写入（[RedisScripts.PUT_IF_NEWER]，一次往返）与集合成员的增删。
+ * 提供全部三个能力面：条件读写（只读头部比较摘要段）、按版本有序的写入（[RedisScripts.PUT_IF_NEWER]、
+ * [RedisScripts.EVICT_KEEPING_VERSION]，各一次往返）与集合成员的增删。
  *
  * @param channel 原子广播的频道；为空时不在脚本中广播（后端不支持原子广播，由引擎经通道发布）
  */
@@ -167,16 +170,31 @@ internal class RedisL1Store(
     }
 
     /**
-     * [RedisScripts.FILL] 的结果：`1` 写入，`0` 令牌不匹配。当前格式的 lease 不带版本：填充从不让版本前进，也没有版本拒绝。
+     * [RedisScripts.FILL] 的结果：`{1, advanced}` 写入、`{0}` 令牌不匹配、`{2, 当前版本}` 版本拒绝（RFC 0005 §4.7）。
      */
-    private fun fillOf(result: List<Any?>): L1Fill = if (result.firstFlag()) FILLED else TOKEN_MISMATCH
+    private fun fillOf(result: List<Any?>): L1Fill = when (result[0] as Long) {
+        FILL_WRITTEN -> if (result[1] == 1L) ADVANCED else FILLED
+        FILL_VERSION_REJECTED -> L1Fill.Rejected(ByteBuffer.wrap(result[1] as ByteArray).long)
+        else -> TOKEN_MISMATCH
+    }
 
+    /**
+     * 只有带版本的填充可能广播（版本规则，见 [RedisScripts.FILL]）：帧的来源是令牌的节点（令牌由引擎签发），只含这个 key；
+     * 其余填充的频道与帧为空串。
+     */
     private fun fillCommand(fill: Fill): CompletableFuture<List<Any?>> {
         val args = ArrayList<ByteArray>()
         args.add(fill.token.toBytes())
         // 填充的版本（墓碑的版本只能经 Fill.version 传递）
         args.add(shapeOf(fill.envelope, fill.version))
         args.add(millis(fill.ttl))
+        if (fill.version != Versioned.NO_VERSION && channel.isNotEmpty()) {
+            args.add(channel)
+            args.add(InvalidationFrame.encode(fill.token.node, listOf(fill.key)))
+        } else {
+            args.add(EMPTY)
+            args.add(EMPTY)
+        }
         addPayload(args, fill.envelope)
         return connections.evalAsync(RedisScripts.FILL, listOf(fill.key.bytes()), args)
     }
@@ -395,7 +413,7 @@ internal class RedisL1Store(
     private inner class ConditionalFacet : ConditionalL1Store {
         override suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead {
             val bound = connections.readTimeout(timeout)
-            val args = listOf(known?.toString()?.bytes() ?: EMPTY)
+            val args = listOf(known?.bytes ?: EMPTY)
             val command = connections.evalAsync<List<Any?>>(RedisScripts.READ_IF_CHANGED, listOf(key.bytes()), args)
             return decodeConditionalRead(connections.awaitCommand(command, bound))
         }
@@ -407,10 +425,10 @@ internal class RedisL1Store(
             ttl: Duration?,
             frame: ByteArray
         ): L1ConditionalWrite {
-            // 条件写入写入没有版本的值，只带写入标识
-            val shape = RedisScripts.scalarShape(STATE_VALUE, Versioned.NO_VERSION, envelope.writer)
+            // 条件写入写入没有版本的值，带写入标识与摘要段（引擎计算）
+            val shape = RedisScripts.scalarShape(STATE_VALUE, Versioned.NO_VERSION, envelope.writer, envelope.digest)
             val args = listOf(
-                expected?.toString()?.bytes() ?: EMPTY,
+                expected?.bytes ?: EMPTY,
                 shape,
                 millis(ttl),
                 channel,
@@ -446,6 +464,15 @@ internal class RedisL1Store(
             }
             return decodeVersionedWrite(
                 connections.awaitCommand(connections.evalAsync(RedisScripts.PUT_IF_NEWER, listOf(key.bytes()), args))
+            )
+        }
+
+        override suspend fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): L1Eviction {
+            val args = listOf(millis(ttl), channel, frame)
+            return decodeEviction(
+                connections.awaitCommand(
+                    connections.evalAsync(RedisScripts.EVICT_KEEPING_VERSION, listOf(key.bytes()), args)
+                )
             )
         }
     }
@@ -490,12 +517,19 @@ internal class RedisL1Store(
         private val SHAPE_SET = byteArrayOf('S'.code.toByte())
         private const val MEMBER_PREFIX = '+'.code.toByte()
 
+        private val FILLED: L1Fill = L1Fill.Filled(advanced = false)
+        private val ADVANCED: L1Fill = L1Fill.Filled(advanced = true)
+        private val TOKEN_MISMATCH: L1Fill = L1Fill.Rejected(currentVersion = null)
+
+        /**
+         * [RedisScripts.FILL] 的结果码：写入、版本拒绝（`0` 为令牌不匹配）。
+         */
+        private const val FILL_WRITTEN = 1L
+        private const val FILL_VERSION_REJECTED = 2L
+
         /**
          * 重发释放的退避：首次重发的间隔与上限。
          */
-        private val FILLED: L1Fill = L1Fill.Filled(advanced = false)
-        private val TOKEN_MISMATCH: L1Fill = L1Fill.Rejected(currentVersion = null)
-
         private val MIN_RELEASE_BACKOFF = Duration.ofMillis(100)
         private val MAX_RELEASE_BACKOFF = Duration.ofSeconds(2)
 
@@ -540,12 +574,22 @@ internal class RedisL1Store(
             shapeOf(envelope, (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION)
 
         /**
-         * 带 [version] 的形状：值与负缓存带版本时写版本段（负缓存带版本即墓碑）；值带写入标识时写扩展区；集合没有段。
+         * 带 [version] 的形状：值与负缓存带版本时写版本段（负缓存带版本即墓碑）；值带摘要时写摘要段、带写入标识时写扩展区；集合没有段。
          */
         private fun shapeOf(envelope: Envelope, version: Long): ByteArray = when (envelope) {
             is Envelope.Members -> SHAPE_SET
-            is Envelope.Scalar -> RedisScripts.scalarShape(STATE_VALUE, version, envelope.writer)
-            Envelope.Absent -> RedisScripts.scalarShape(STATE_MISSING, version, null)
+            is Envelope.Scalar -> RedisScripts.scalarShape(STATE_VALUE, version, envelope.writer, envelope.digest)
+            Envelope.Absent -> RedisScripts.scalarShape(STATE_MISSING, version, null, null)
+        }
+
+        /**
+         * 解码保留版本的失效的结果（见 [RedisScripts.EVICT_KEEPING_VERSION]）。
+         */
+        internal fun decodeEviction(result: List<Any?>): L1Eviction = when (result[0] as Long) {
+            RedisScripts.EVICT_DONE -> L1Eviction.Evicted
+            RedisScripts.EVICT_AUTHORITATIVE -> L1Eviction.Authoritative
+            RedisScripts.EVICT_UNREADABLE -> L1Eviction.Unreadable((result[1] as Long).toInt())
+            else -> throw IllegalStateException("Unknown eviction result code[${result[0]}].")
         }
 
         /**
@@ -559,37 +603,38 @@ internal class RedisL1Store(
         }
 
         /**
-         * 解码条件读取脚本的结果（结果码见 [RedisScripts.READ_IF_CHANGED]）。
+         * 解码条件读取脚本的结果（结果码见 [RedisScripts.READ_IF_CHANGED]）：值是整个 String，按 [decodeScalar] 解析出载荷、
+         * 摘要段与写入标识（脚本已确认它是带摘要段、不带版本的本格式值）。
          */
         internal fun decodeConditionalRead(result: List<Any?>): L1ConditionalRead = when (result[0] as Long) {
             RedisScripts.COND_ABSENT -> L1ConditionalRead.Absent
             RedisScripts.COND_UNCHANGED -> L1ConditionalRead.Unchanged((result[1] as Long).toInt())
-            RedisScripts.COND_VALUE -> L1ConditionalRead.Changed(
-                Envelope.Scalar(result[2] as ByteArray),
-                (result[1] as Long).toInt()
-            )
+            RedisScripts.COND_VALUE -> conditionalValueOf(result[2] as ByteArray, (result[1] as Long).toInt())
             RedisScripts.COND_UNREADABLE -> L1ConditionalRead.Unreadable((result[1] as Long).toInt())
             else -> throw IllegalStateException("Unknown conditional read result code[${result[0]}].")
         }
 
+        private fun conditionalValueOf(raw: ByteArray, format: Int): L1ConditionalRead {
+            val hit = decodeScalar(raw, null, false)
+            val envelope = hit.envelope as? Envelope.Scalar
+            if (envelope == null || hit.format != format) {
+                throw IllegalStateException("Malformed conditional read value (format[${hit.format}]).")
+            }
+            return L1ConditionalRead.Changed(envelope, format)
+        }
+
         /**
-         * 解码条件写入脚本的结果（见 [RedisScripts.PUT_IF_MATCH]）：冲突时第二项为当前摘要（十六进制），没有值时缺省。
+         * 解码条件写入脚本的结果（见 [RedisScripts.PUT_IF_MATCH]）：冲突时第二项为当前摘要段（32 字节），没有值时缺省。
          */
         internal fun decodeConditionalWrite(result: List<Any?>): L1ConditionalWrite = when (result[0] as Long) {
             RedisScripts.PUT_WRITTEN -> L1ConditionalWrite.Written
             RedisScripts.PUT_CONFLICT -> L1ConditionalWrite.Conflict(
-                (result.getOrNull(1) as ByteArray?)?.let { Digest(hexToBytes(String(it, Charsets.US_ASCII))) }
+                (result.getOrNull(1) as ByteArray?)?.let { Digest(it) }
             )
             RedisScripts.PUT_UNREADABLE -> L1ConditionalWrite.Unreadable((result[1] as Long).toInt())
             else -> throw IllegalStateException("Unknown conditional write result code[${result[0]}].")
         }
 
-        private fun hexToBytes(hex: String): ByteArray {
-            require(hex.length % 2 == 0) { "Malformed digest[$hex]." }
-            return ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(HEX_RADIX).toByte() }
-        }
-
-        private const val HEX_RADIX = 16
         private const val BYTE_MASK = 0xFF
 
         private fun ttlOf(pttl: Long): Duration? = if (pttl < 0) null else Duration.ofMillis(pttl.coerceAtLeast(1))
@@ -622,7 +667,8 @@ internal class RedisL1Store(
          * - 不是本协议写入的内容（不以 magic 开头、太短、格式字节为 0、段超出值的长度）：格式 [UNRECOGNIZED]；其它格式字节
          *   原样报告。信封都是整个值：低于本格式的按读不懂处理，回收比较的指纹与脚本相同。
          * - 格式 2 中未知的必须理解的位或未知的状态：[RedisScripts.NEWER_FORMAT]。更高的格式由引擎绕过，信封不被解码。
-         * - 本格式：载荷从 [RedisScripts.payloadOffset] 起，版本段与扩展区中的写入标识随信封返回。
+         * - 本格式：载荷从 [RedisScripts.payloadOffset] 起，版本段、摘要段与扩展区中的写入标识随信封返回。`E` 与 `L` 由读脚本
+         *   换成未命中与 lease，不会到这里。
          */
         private fun decodeScalar(raw: ByteArray, ttl: Duration?, refreshGranted: Boolean): L1Read.Hit {
             if (raw.size < RedisScripts.HEADER_SIZE || raw[0] != RedisScripts.MAGIC) {
@@ -655,8 +701,14 @@ internal class RedisL1Store(
             } else {
                 null
             }
+            val digest = if (flags and RedisScripts.FLAG_DIGEST != 0) {
+                val start = RedisScripts.digestOffset(flags)
+                Digest(raw.copyOfRange(start, start + RedisScripts.DIGEST_SIZE))
+            } else {
+                null
+            }
             return L1Read.Hit(
-                Envelope.Scalar(raw.copyOfRange(offset, raw.size), version, writer),
+                Envelope.Scalar(raw.copyOfRange(offset, raw.size), version, writer, digest),
                 format,
                 ttl,
                 refreshGranted

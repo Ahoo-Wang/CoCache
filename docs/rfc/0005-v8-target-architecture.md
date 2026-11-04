@@ -315,7 +315,11 @@ InvalidationChannel      publish(keyspace)（suspend）、subscribe(keyspace)（
 - **keyspace 与段**（M4，架构会话 2026-11-03，由 §4.7 推出）：
   - 频道带上前缀（§4.7）之后，后端要分别知道前缀与 namespace：`store`、`subscribe`、`publish` 收 SPI 的 `Keyspace(keyPrefix, namespace)`。它校验 namespace 的字符集，给出存储 key 的前缀 `{keyPrefix}{namespace}:`；频道名由后端按 §4.7 的布局构造。namespace 按 keyspace 登记。
   - `Envelope.Scalar` 带写入标识与摘要：由引擎给出，存储按 §4.7 写成段，读取时原样返回；摘要的校验（K3）因此在引擎中，对所有后端相同。
-  - 具体形状由 M4a–M4c 在 PR 中定稿（[todo.md](../todo.md) §2）。
+  - 具体形状由 M4a–M4c 在 PR 中定稿（[todo.md](../todo.md) §2）。M4c / M4d 定下的形状：
+    - `Digest(algorithm, bytes)`：`algorithm` 目前只有 `Digest.SHA_256`，`bytes` 为 32 字节，构造时校验两者；`Digest(bytes)` 即 SHA-256。`Digest.of(envelope)`、`Digest.ofPayload(bytes)` 由客户端计算，`toString()` 为 `SHA-256:<hex>`。
+    - `Envelope.Scalar(bytes, version, writer, digest)`：`digest` 与 `writer` 一样由引擎给出（`@JvmOverloads`，默认 `null`），参与相等比较。存储在写入标量的操作中把它原样写成摘要段，读取（`read`、`readAll`、`readIfChanged`）原样返回段中的字节，从不校验或重算；校验（K3）在引擎中。
+    - `VersionedL1Store.evictKeepingVersion(key, ttl, frame): L1Eviction`，结果为 `Evicted` / `Authoritative`（带摘要段的内容）/ `Unreadable(format)`；`FutureVersionedL1Store`、`ForwardingVersionedL1Store` 有同名方法。
+    - `L1Fill` 不变；`advanced` 的含义见 §4.7“带版本的内容与 `fill`”。
 - **命名**（Q2，2026-11-02 确认）：
 
   | 6.x | v8 |
@@ -499,7 +503,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 | `FILL` | 令牌匹配且 `fill.version ≥ v`：写入，并广播（淘汰其它节点降级填充的旧副本）。否则拒绝：脚本内清零令牌，返回 v |
 | `RELEASE` | 令牌匹配：清零令牌，保留 `E` 与到期时间；**从不 `DEL`** |
 | `RECLAIM` | 拒绝 |
-| `PUT_IF_NEWER` / 墓碑 | 给出的版本 w > v 时写入，否则 `Stale(v)` |
+| `PUT_IF_NEWER` / 墓碑 | 给出的版本 w > v 时写入；w = v 时不写入但广播（F1，见逐脚本表下的说明），返回 `Stale(v)`；w < v 时 `Stale(v)`，不广播 |
 | `PUT` / `PUT_ALL` / `INVALIDATE` / `purge` | 整体覆盖或删除（丢掉版本，见 I-K 的入口清单） |
 | 条件脚本、集合脚本 | 读不懂，拒绝；不是“没有值” |
 
@@ -517,6 +521,17 @@ if (!stamps.isValid(storageKey, stamp)) {
 - 版本前进的 `fill` 是一次写入：`FILL` 返回“已前进”（`L1Fill.Filled(advanced = true)`，§4.3）之后，本节点递增戳并淘汰本地副本，不填充 L2，下一次命中多一次 L1 读取。它的帧在本节点被过滤，没有这一步时，绕过 SingleFlight 的同节点读取者可以把旧版本写回 L2。
 - 6.8 的结构性保证（“带版本的内容不持有令牌”）由 I-K 取代；带版本的内容也能持有刷新令牌，`VersionedCache` 支持提前刷新。
 - 读到未知标志位或 `E` 的副本不设刷新点（P14）。
+- **M4c / M4d 定稿的细节**（脚本与客户端行为，不改格式）：
+  - **哪些写入带摘要段**：M5 之前没有数据源的缓存的不带版本的标量写入（`put`、`putAll`、调用方给出 loader 时的填充、`putIfMatch`），没有数据源的 `VersionedCache` 的不带版本的写入也是；带版本的写入（`putIfNewer`、带版本的回源）不带。读取方校验因此只要求不带版本的值带摘要段。
+  - **条件脚本读 78 字节**：`READ_IF_CHANGED` / `PUT_IF_MATCH` 以 `GETRANGE key 0 77`（最长的头部：核心头部、版本段、摘要段与扩展区的总长字段）加 `STRLEN` 读头部，而不是 `GETRANGE 0 67`：载荷偏移的检查（段超出值的长度时是格式 0）与读整个值的脚本完全相同，仍是 O(1)。摘要变了时 `READ_IF_CHANGED` 回复整个值，客户端按载荷偏移解析出摘要段与写入标识。
+  - **`FILL` 读 44 字节**：`GETRANGE key 0 43`（核心头部与版本段）；`RELEASE` 仍是 `GETRANGE key 0 35`。最小 ACL 因此要加 `+strlen`。
+  - **`advanced` 覆盖 `E`**：版本更大的填充，以及 `E` 上版本不小于 `E` 的填充（两者都广播）都返回 `Filled(advanced = true)`，引擎都按写入处理：非原子广播的后端上由引擎发布，它看不到“填充了 `E`”，所以由 `advanced` 表达。版本相等的续期为 `false`。
+  - **版本规则的帧**：`fill` 没有帧参数，存储自己构造：来源为 `Fill.token` 的 `NodeId`（令牌由引擎签发，就是引擎的节点，本节点因此过滤它），只含 `Fill.key`。只有带版本的填充可能广播，Redis 只为它们发送频道与帧。
+  - **`E` 上 lease 的抢占**按申请者的 lease 寿命判断（与刷新令牌相同；同一个缓存的节点用同样的 lease 策略），`Leased` 的剩余时间为申请者的 lease 寿命减去已签发时长。
+  - **`E` 的寿命**：M6 加入 `tombstone-ttl` 之前，引擎传入与 `invalidateIfNewer` 的墓碑相同的寿命（策略 `ttl` 加抖动）。
+  - **运维的按 key 删除**：带版本的缓存用 `evictKeepingVersion`，不进入失效重试（重试的 `DEL` 会丢掉版本），失败时抛出。遇到带摘要段的值时，有数据源的缓存拒绝（计入 `cocache.type.mismatch`），没有数据源的缓存改走正常的失效路径：那是它自己 `put` 的值，没有版本可保留。
+  - **不设刷新点的副本**（P14）还包括：lease 在 `E` 上、版本被拒绝的降级副本，以及有数据源的缓存读到的带摘要段的值（`READ` 从不为它授予刷新令牌）。刷新路径的版本拒绝以取得令牌时读到的值重新填充 L2，刷新点按没取得令牌时的退避。
+  - **类型不符**（D4）：有数据源的缓存读到带摘要段的值时照常读取，计入 `cocache.type.mismatch`，每个缓存第一次告警，之后只记录调试日志。
 
 **逐个脚本的规则**（C8、P7、P18）：
 
@@ -527,10 +542,11 @@ if (!stamps.isValid(storageKey, stamp)) {
 | `RELEASE` | 照旧（只触及字节 4–35） | 照旧；`E` 不 `DEL` | — | 不匹配 |
 | `RECLAIM` | 现算载荷的 SHA-1 指纹后条件回收 | 拒绝（转为 `E(v)` 留给 8.x，K15） | **拒绝**（D4） | 拒绝 |
 | `PUT` / `PUT_ALL` / `INVALIDATE` | 整体写入或删除；权威缓存写摘要段与写入标识 | 同左 | 同左 | 同左（整体覆盖不依赖旧内容） |
-| `PUT_IF_NEWER` / `EVICT_KEEPING_VERSION` | 当前版本为 `NO_VERSION` | 从版本段读版本 | `PUT_IF_NEWER`：当前版本为 `NO_VERSION`；`EVICT_KEEPING_VERSION`：**拒绝**（D4） | 拒绝 |
+| `PUT_IF_NEWER` / `EVICT_KEEPING_VERSION` | 当前版本为 `NO_VERSION` | 从版本段读版本；`PUT_IF_NEWER` 遇到相等的版本不写入但广播（F1） | `PUT_IF_NEWER`：当前版本为 `NO_VERSION`；`EVICT_KEEPING_VERSION`：**拒绝**（D4） | 拒绝 |
 | `READ_IF_CHANGED` / `PUT_IF_MATCH` / `DELETE_IF_MATCH` | `L` / `M` / 不存在按“没有值”；有载荷却没有摘要段（不是权威缓存写入的值）拒绝 | **拒绝**（带版本的内容不接受条件写入） | 先判断 `TYPE`，再以 `GETRANGE key 0 67` 只读头部比较 | 拒绝 |
 | 集合脚本 | `!f = '2'`；`!f` 为其它值、`!m` 中有未知位：读不懂，拒绝（K10） | — | — | — |
 
+- **相等的版本广播**（TLA+ 模型 F1，架构会话 2026-11-03 决定 a）：`PUT_IF_NEWER`（含墓碑）遇到与给出的版本相等的当前版本时不写入、返回 `Stale(v)`，但在同一个脚本中广播帧。反例：节点 2 的 L2 中是 v0（L1 中的 key 到期或被驱逐，或者是等待 lease 超时后的降级副本）；节点 1 在不存在的 key 上取得 lease，回源得到 v1 并填充——在 `L` 上的填充不广播；写入方随后的 `putIfNewer(1)` 返回 `Stale(1)`。原子广播时 `Stale` 若不广播，节点 2 陈旧到 `localMaxAge`；非原子广播的引擎路径本来就在 `Stale.current == version` 时发布，两种模式因此不一致。当前版本严格更大时照常静默：持有那个版本的写入方自己的 `putIfNewer` 会遇到相等的情形。没有选择让 `L` 上带版本的填充广播（方案 b）：它会让每一次带版本的未命中都多一次 Pub/Sub 扇出。
 - **客户端先看格式号、再看状态**（P1、P18）。格式号 ≥ 2 的内容中出现未知状态时，报告为更高格式，不能报成格式 0。否则派生缓存会把它当作读不懂的内容而回收。
 - **授予令牌之前先检查格式号**（K15）：`READ` 只对格式 2、没有未知的必须理解的位、没有摘要段的内容授予 lease 或刷新令牌。6.x 的 `READ` 授予刷新令牌时不看格式字节。
 - **带摘要段的内容**（D4、K4）：摘要段本身就是权威标量的标记。同一 namespace 上误声明成带 loader 的 `Cache` 的应用，只要解码失败就会回收它（删除唯一副本），或凭刷新令牌以不带摘要段的派生值覆盖它；上表的三处“拒绝”与“不授予”堵住这两条路。派生读者读到摘要段时计数（`cocache.type.mismatch`）并告警。`Store` 从不回收、不申请令牌，这些规则对它没有代价。这是 Q14 的零成本部分；元数据 key 不进 8.0，只预留位置（见布局表）。`VersionedCache` 与 `VersionedStore` 都只有版本段，这条规则分不出它们。

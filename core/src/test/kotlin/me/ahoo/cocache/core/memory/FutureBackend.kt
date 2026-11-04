@@ -29,6 +29,7 @@ import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
@@ -200,6 +201,9 @@ class FutureBackend(private val backend: CoherenceBackend) : CoherenceBackend by
                 frame
             )
         }
+
+        override fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): CompletableFuture<L1Eviction> =
+            supplying { surface.evictKeepingVersion(key, ttl, frame) }
     }
 
     private inner class FutureSets(private val surface: SetL1Store) : FutureSetL1Store {

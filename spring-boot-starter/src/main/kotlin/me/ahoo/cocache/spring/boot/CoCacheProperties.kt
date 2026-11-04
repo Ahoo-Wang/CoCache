@@ -89,17 +89,11 @@ data class CoCacheProperties @ConstructorBinding constructor(
     val blockingExecutor: String? = null,
 ) {
     /**
-     * 按缓存名合并配置文件中的策略（`CacheSpec`；集合缓存见 [setPolicyFor]）。`cocache.defaults.*` 中不适用于这个缓存的项被跳过，
-     * 只有 `cocache.caches.[name].*` 中的同一项会作用（并因此启动失败）：
-     * - 带版本的缓存（[versioned]）：`cocache.defaults.refresh-window`。带版本的缓存不支持提前刷新，全局的刷新窗口会让它们
-     *   因无关配置启动失败。
-     *
-     * @param versioned 是否为带版本的缓存
+     * 按缓存名合并配置文件中的策略（`CacheSpec`；集合缓存见 [setPolicyFor]）：先 `cocache.defaults.*`，再 `cocache.caches.[name].*`。
+     * 带版本的缓存照常提前刷新（RFC 0005 §4.7），`cocache.defaults.refresh-window` 同样作用于它们。
      */
-    @JvmOverloads
-    fun policyFor(cacheName: String, declared: CachePolicy, versioned: Boolean = false): CachePolicy {
-        val applicable = if (versioned) defaults.copy(refreshWindow = null) else defaults
-        val withDefaults = applicable.applyTo(declared)
+    fun policyFor(cacheName: String, declared: CachePolicy): CachePolicy {
+        val withDefaults = defaults.applyTo(declared)
         return cacheProperties(cacheName)?.applyTo(withDefaults) ?: withDefaults
     }
 

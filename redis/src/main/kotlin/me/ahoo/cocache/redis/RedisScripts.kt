@@ -14,6 +14,7 @@
 package me.ahoo.cocache.redis
 
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Token
 import java.nio.ByteBuffer
 import java.security.MessageDigest
@@ -22,11 +23,12 @@ import java.security.MessageDigest
  * L1 协议的 Lua 脚本（RFC 0003 §4.3–§4.4）与线格式 2（RFC 0005 §4.7，`docs/architecture.md` §3.3）。
  *
  * 线格式：
- * - 标量、负缓存、lease 占位是 String：36 字节的核心头部 + 标志位声明的段 + 载荷。
- *   核心头部：`[0]` magic `0xC0`、`[1]` 格式版本（`2`）、`[2]` 状态（`V` 值 / `M` 负缓存 / `L` lease）、`[3]` 标志位、
- *   `[4..27]` 令牌（lease 或刷新令牌，全零表示无）、`[28..35]` 令牌签发时间（服务端 `TIME`，毫秒，大端 double）。
- *   段按标志位的顺序紧随其后：bit 0 版本（8 字节，大端有符号）、bit 1 摘要（32 字节，M4c 起写入）、bit 7 扩展区
- *   （2 字节总长 + TLV），之后是载荷。bit 2–6 是未知的必须理解的位：带有它们的内容等同于更高格式。
+ * - 标量、负缓存、lease 占位与保留版本的失效是 String：36 字节的核心头部 + 标志位声明的段 + 载荷。
+ *   核心头部：`[0]` magic `0xC0`、`[1]` 格式版本（`2`）、`[2]` 状态（`V` 值 / `M` 负缓存 / `L` lease / `E` 保留版本的失效）、
+ *   `[3]` 标志位、`[4..27]` 令牌（lease 或刷新令牌，全零表示无）、`[28..35]` 令牌签发时间（服务端 `TIME`，毫秒，大端 double）。
+ *   段按标志位的顺序紧随其后：bit 0 版本（8 字节，大端有符号）、bit 1 摘要（32 字节，载荷的 SHA-256，由写入方计算）、bit 7 扩展区
+ *   （2 字节总长 + TLV），之后是载荷。bit 2–6 是未知的必须理解的位：带有它们的内容等同于更高格式。`E` 只有版本段、没有载荷，
+ *   不带版本段的 `E` 是未知的状态。
  * - 集合是 Hash：字段 `!f` 为格式版本（`2`），`!m` 为必须理解的位图（缺省为 0），成员字段为 `+` + 成员字节，值为空串；
  *   其余以 `!` 开头的字段预留，读者忽略。
  *
@@ -61,9 +63,9 @@ internal object RedisScripts {
     const val UNKNOWN_FLAGS = 0x7C
 
     /**
-     * 全部必须理解的位（bit 0–6）：只有这些位都为 0（至多带扩展区）的值能取得刷新令牌。
+     * 挡住刷新令牌的位：摘要段（权威标量，D4）与未知的必须理解的位（K15）。带版本段的值照常取得刷新令牌。
      */
-    private const val MUST_UNDERSTAND_FLAGS = 0x7F
+    private const val NO_REFRESH_FLAGS = FLAG_DIGEST or UNKNOWN_FLAGS
 
     /**
      * 声明了版本段或摘要段的位：带这两种段的内容从不回收。
@@ -71,7 +73,13 @@ internal object RedisScripts {
     private const val SEGMENT_FLAGS = FLAG_VERSION or FLAG_DIGEST
 
     const val VERSION_SIZE = 8
-    const val DIGEST_SIZE = 32
+    const val DIGEST_SIZE = Digest.SIZE
+
+    /**
+     * 最长的头部：核心头部、版本段、摘要段与扩展区的总长字段（78 字节）。条件读写只读这么多（`GETRANGE key 0 77`），
+     * 载荷偏移的检查与读整个值的脚本相同，成本与载荷大小无关。
+     */
+    const val LONGEST_HEADER = HEADER_SIZE + VERSION_SIZE + DIGEST_SIZE + 2
 
     /**
      * 扩展区开头的总长字段（大端无符号 16 位）：其后 TLV 的字节数，不含它自己。
@@ -101,7 +109,7 @@ internal object RedisScripts {
     const val UNRECOGNIZED = 0
 
     /**
-     * 读取结果码：未命中（附 lease 是否取得）、他人持有 lease（附剩余毫秒）、标量命中、集合命中。
+     * 读取结果码：未命中（附 lease 是否取得；含 `E`）、他人持有 lease（附剩余毫秒；含 `E` 上的 lease）、标量命中、集合命中。
      */
     const val RESULT_MISS = 0L
     const val RESULT_LEASED = 1L
@@ -122,6 +130,10 @@ local function header(state, flags, token, issued)
 end
 local function is_ours(v)
   return string.len(v) >= 36 and string.byte(v, 1) == 192
+end
+local function known_state(state, flags)
+  if state == 'E' then return bit.band(flags, $FLAG_VERSION) ~= 0 end
+  return state == 'V' or state == 'M' or state == 'L'
 end
 """
 
@@ -162,46 +174,64 @@ end
 """
 
     /**
-     * 交回令牌的脚本（[FILL]、[RELEASE]）的检查：`h` 是核心头部（`GETRANGE key 0 35`，K19：不为比较 24 字节的令牌读入整个值），
-     * 只有格式 2、没有未知的必须理解的位的内容中的令牌能匹配。
+     * 交回令牌的脚本（[FILL]、[RELEASE]）的检查：`h` 是头部的开头（`GETRANGE`，K19：不为比较 24 字节的令牌读入整个值），
+     * 只有格式 2、没有未知的必须理解的位、状态已知的内容中的令牌能匹配。
      */
     private const val HOLDS = """
 local function holds(h, token)
-  return string.len(h) == 36 and string.byte(h, 1) == 192 and string.byte(h, 2) == $FORMAT and
-    bit.band(string.byte(h, 4), $UNKNOWN_FLAGS) == 0 and string.sub(h, 5, 28) == token
+  return string.len(h) >= 36 and string.byte(h, 1) == 192 and string.byte(h, 2) == $FORMAT and
+    bit.band(string.byte(h, 4), $UNKNOWN_FLAGS) == 0 and known_state(string.sub(h, 3, 3), string.byte(h, 4)) and
+    string.sub(h, 5, 28) == token
 end
 """
 
     /**
-     * 格式的判定（回收、条件读写、按版本写入与集合元素写入的脚本引入），与客户端的 [payloadOffset]、
+     * 版本的比较（[FILL]、[PUT_IF_NEWER] 引入）。`a > b`：8 字节大端有符号整数。Lua 的数是 double，按高 32 位（有符号）
+     * 与低 32 位（无符号）分别比较才精确。`shape_version(kind)`：写入形状中版本段的 8 字节，没有版本段时为 `nil`。
+     */
+    private const val VERSION_RULES = """
+local function newer(a, b)
+  local ah, bh = struct.unpack('>i4', a), struct.unpack('>i4', b)
+  if ah ~= bh then return ah > bh end
+  return struct.unpack('>I4', a, 5) > struct.unpack('>I4', b, 5)
+end
+local function shape_version(kind)
+  if string.sub(kind, 1, 1) == 'S' or bit.band(string.byte(kind, 2), $FLAG_VERSION) == 0 then return nil end
+  return string.sub(kind, 3, 10)
+end
+"""
+
+    /**
+     * 格式的判定（回收、条件读写、按版本写入、保留版本的失效与集合元素写入的脚本引入），与客户端的 [payloadOffset]、
      * `RedisL1Store.decodeRead` 一致：
-     * - `payload_start(v, flags)`：载荷的起点（1 起），按标志位依次跳过版本段（8 字节）、摘要段（32 字节）与扩展区（2 + 总长）；
-     *   段超出值的长度时为 `nil`。
-     * - `scalar_format(v)`：报告的格式版本，本格式时另返回状态、标志位与载荷起点。`2` 是本格式；低于 2 的是读不懂的内容：
+     * - `payload_start(v, flags, len)`：载荷的起点（1 起），按标志位依次跳过版本段（8 字节）、摘要段（32 字节）与扩展区（2 + 总长）；
+     *   段超出值的长度 `len`（缺省为 `v` 的长度；`v` 只是头部的开头时由调用方给出 `STRLEN`）时为 `nil`。
+     * - `scalar_format(v, len)`：报告的格式版本，本格式时另返回状态、标志位与载荷起点。`2` 是本格式；低于 2 的是读不懂的内容：
      *   `0` 是不是本协议写入的（不以 magic 开头、格式字节为 0、段超出长度），其它低于 2 的格式号原样报告；高于 2 的是更高的格式，
-     *   原样报告，格式 2 中未知的必须理解的位或未知的状态报告为 [NEWER_FORMAT]。
+     *   原样报告，格式 2 中未知的必须理解的位或未知的状态（含不带版本段的 `E`）报告为 [NEWER_FORMAT]。
      * - `set_format(key)`：集合的格式版本（K10）。`!f` 为十进制的格式版本，缺失或不是数字时为 0；`!f` 为 2 而 `!m` 存在且不是 `'0'`
      *   时报告为 [NEWER_FORMAT]（本版本没有已知的位）。
      */
     private const val FORMAT_RULES = """
-local function payload_start(v, flags)
+local function payload_start(v, flags, len)
+  len = len or string.len(v)
   local i = 37
   if bit.band(flags, $FLAG_VERSION) ~= 0 then i = i + $VERSION_SIZE end
   if bit.band(flags, $FLAG_DIGEST) ~= 0 then i = i + $DIGEST_SIZE end
   if bit.band(flags, $FLAG_EXTENSION) ~= 0 then
-    if string.len(v) < i + 1 then return nil end
+    if len < i + 1 then return nil end
     i = i + 2 + struct.unpack('>I2', v, i)
   end
-  if i > string.len(v) + 1 then return nil end
+  if i > len + 1 then return nil end
   return i
 end
-local function scalar_format(v)
+local function scalar_format(v, len)
   if not is_ours(v) then return 0 end
   local f = string.byte(v, 2)
   if f ~= $FORMAT then return f end
   local flags, state = string.byte(v, 4), string.sub(v, 3, 3)
-  if bit.band(flags, $UNKNOWN_FLAGS) ~= 0 or (state ~= 'V' and state ~= 'M' and state ~= 'L') then return $NEWER_FORMAT end
-  local start = payload_start(v, flags)
+  if bit.band(flags, $UNKNOWN_FLAGS) ~= 0 or not known_state(state, flags) then return $NEWER_FORMAT end
+  local start = payload_start(v, flags, len)
   if start == nil then return 0 end
   return f, state, flags, start
 end
@@ -218,9 +248,11 @@ end
     /**
      * 读取。ARGV：lease 令牌（空串为不申请）、lease 寿命、刷新窗口（空串为不申请）、刷新令牌、刷新令牌寿命。
      *
-     * 授予令牌之前先看格式与标志位（K15）：格式不是 2 或有未知的必须理解的位时原样返回、不授予令牌（客户端按读不懂或更高的格式处理），
-     * 其中的 `L` 也不当作 lease。刷新令牌只授予没有段的值（标志位至多是 bit 7）：带版本段的暂不授予（M4d 放开），
-     * 带摘要段的不授予（D4）。
+     * 授予令牌之前先看格式与标志位（K15）：格式不是 2、有未知的必须理解的位或状态未知时原样返回、不授予令牌（客户端按读不懂或
+     * 更高的格式处理），其中的 `L` 也不当作 lease。刷新令牌授予没有摘要段的值（带版本段的照常授予），带摘要段的不授予（D4）。
+     *
+     * `E`（保留版本的失效，P1）读作未命中：不申请 lease 时为 `{0, 0}`；申请时，令牌为零或签发超过 lease 寿命则以 `SETRANGE 4`
+     * 写入令牌与 `TIME`（保留状态、版本段与到期时间）并返回 `{0, 1}`，否则返回 `{1, lease 寿命 - 已签发时长}`。
      */
     val READ = Script(
         CORE + """
@@ -254,11 +286,24 @@ if type(v) == 'table' then
   return {3, pttl, fields, meta[1] or '', meta[2] or ''}
 end
 if not is_ours(v) then return {2, pttl, v, 0} end
-local flags = string.byte(v, 4)
-if string.byte(v, 2) ~= $FORMAT or bit.band(flags, $UNKNOWN_FLAGS) ~= 0 then return {2, pttl, v, 0} end
-local state = string.sub(v, 3, 3)
+local flags, state = string.byte(v, 4), string.sub(v, 3, 3)
+if string.byte(v, 2) ~= $FORMAT or bit.band(flags, $UNKNOWN_FLAGS) ~= 0 or not known_state(state, flags) then
+  return {2, pttl, v, 0}
+end
 if state == 'L' then return {1, pttl} end
-if state == 'V' and bit.band(flags, $MUST_UNDERSTAND_FLAGS) == 0 and ARGV[3] ~= '' and pttl > 0 and pttl <= tonumber(ARGV[3]) then
+if state == 'E' then
+  if ARGV[1] == '' then return {0, 0} end
+  local now = now_ms()
+  local held = now - struct.unpack('>d', string.sub(v, 29, 36))
+  if string.sub(v, 5, 28) == ZERO_TOKEN or held > tonumber(ARGV[2]) then
+    -- 写入失败（内存不足等）时降级为不带 lease 的未命中
+    local placed = redis.pcall('SETRANGE', key, 4, ARGV[1] .. struct.pack('>d', now))
+    if type(placed) == 'table' then return {0, 0} end
+    return {0, 1}
+  end
+  return {1, tonumber(ARGV[2]) - held}
+end
+if state == 'V' and bit.band(flags, $NO_REFRESH_FLAGS) == 0 and ARGV[3] ~= '' and pttl > 0 and pttl <= tonumber(ARGV[3]) then
   local token = string.sub(v, 5, 28)
   local now = now_ms()
   local issued = struct.unpack('>d', string.sub(v, 29, 36))
@@ -274,20 +319,42 @@ return {2, pttl, v, 0}
     )
 
     /**
-     * 令牌保护的填充。ARGV：令牌、形状、TTL、载荷或成员…
+     * 令牌保护的填充。ARGV：令牌、形状、TTL、频道、帧、载荷或成员…（帧只有带版本的填充才可能广播，其余为空串）。
+     * 只读头部的开头（`GETRANGE key 0 43`：核心头部与版本段，K19）。
+     *
+     * key 中带版本（持有刷新令牌的带版本值、持有 lease 的 `E`）时按版本规则（RFC 0005 §4.7）：填充没有版本或版本更小时不写入，
+     * 在脚本内清零令牌（只触及字节 4–35），返回 `{2, 当前版本}`；相等时写入、不广播（续期）；更大，或 key 处于 `E` 时写入并广播。
+     * 返回 `{1, advanced}` 写入（`advanced` 为 1 表示广播了，引擎按写入处理）、`{0}` 令牌不匹配、`{2, 当前版本}` 版本拒绝。
      */
     val FILL = Script(
-        PRELUDE + HOLDS + """
+        PRELUDE + HOLDS + VERSION_RULES + """
 local key = KEYS[1]
-if redis.call('TYPE', key)['ok'] ~= 'string' then return 0 end
-if not holds(redis.call('GETRANGE', key, 0, 35), ARGV[1]) then return 0 end
-write(key, ARGV[2], ARGV[3], 4)
-return 1
+if redis.call('TYPE', key)['ok'] ~= 'string' then return {0} end
+local h = redis.call('GETRANGE', key, 0, 43)
+if not holds(h, ARGV[1]) then return {0} end
+if bit.band(string.byte(h, 4), $FLAG_VERSION) ~= 0 then
+  if string.len(h) < 44 then return {0} end
+  local current, given = string.sub(h, 37, 44), shape_version(ARGV[2])
+  if given == nil or newer(current, given) then
+    redis.call('SETRANGE', key, 4, ZERO_TOKEN .. struct.pack('>d', 0))
+    return {2, current}
+  end
+  local advanced = string.sub(h, 3, 3) == 'E' or newer(given, current)
+  write(key, ARGV[2], ARGV[3], 6)
+  if advanced then
+    publish(ARGV[4], ARGV[5])
+    return {1, 1}
+  end
+  return {1, 0}
+end
+write(key, ARGV[2], ARGV[3], 6)
+return {1, 0}
 """
     )
 
     /**
-     * 释放令牌：`L` 删除，其它状态只清零令牌（只触及字节 4–35，保留到期时间）。ARGV：令牌。
+     * 释放令牌：`L` 删除，其它状态（值上的刷新令牌、`E` 上的 lease）只清零令牌（只触及字节 4–35，保留内容与到期时间，
+     * 从不删除 `E`）。ARGV：令牌。
      */
     val RELEASE = Script(
         CORE + HOLDS + """
@@ -352,7 +419,7 @@ return 1
      * 条件回收。ARGV：期望摘要（十六进制）、lease 令牌、lease 寿命。
      * 摘要：本格式的标量为载荷（从 `payload_start` 起），读不懂的 String（格式号低于本格式）为整个值，
      * 负缓存与其它类型（原生 Set / List 等）为空串，集合为按返回顺序拼接的 `int32 长度 + 成员`。
-     * 从不回收：lease；更高的格式与带未知的必须理解的位的内容（K15）；带版本段的内容（lease 占位放不下版本，
+     * 从不回收：lease；更高的格式与带未知的必须理解的位的内容（K15）；带版本段的内容与 `E`（lease 占位放不下版本，
      * 回收会让迟到的旧版本写入；读不懂它的节点绕过 L1 回源，等新版本覆盖它）；带摘要段的内容（权威标量，D4）。
      */
     val RECLAIM = Script(
@@ -365,7 +432,7 @@ if kind == 'string' then
   local f, state, flags, start = scalar_format(v)
   if f < $FORMAT then
     content = v
-  elseif f > $FORMAT or state == 'L' or bit.band(flags, $SEGMENT_FLAGS) ~= 0 then
+  elseif f > $FORMAT or state == 'L' or state == 'E' or bit.band(flags, $SEGMENT_FLAGS) ~= 0 then
     return 0
   else
     content = string.sub(v, start)
@@ -397,7 +464,7 @@ return 1
     /**
      * 元素增删前的检查（只有 `*_IF_READABLE` 脚本引入）：返回 key 中不能当作本格式集合的内容的格式版本，可以写入时返回 `nil`。
      * 不能当作集合：其它 Redis 类型（原生 Set、List 等）与读不懂的 String、`!f` 缺失或无效的 Hash（`0`），
-     * 本格式的标量值（`2`），其它格式（低于或高于本格式）的标量或集合与带未知的必须理解的位的内容（见 `scalar_format`、`set_format`）。
+     * 本格式的标量值与 `E`（`2`），其它格式（低于或高于本格式）的标量或集合与带未知的必须理解的位的内容（见 `scalar_format`、`set_format`）。
      * 不存在、本格式的负缓存与 lease 占位可以写入。
      */
     private const val UNREADABLE_SET = """
@@ -406,7 +473,7 @@ local function unreadable_set(key)
   if kind == 'none' then return nil end
   if kind == 'string' then
     local f, state = scalar_format(redis.call('GET', key))
-    if f == $FORMAT and state ~= 'V' then return nil end
+    if f == $FORMAT and (state == 'M' or state == 'L') then return nil end
     return f
   end
   if kind ~= 'hash' then return 0 end
@@ -462,7 +529,8 @@ return {1}
     )
 
     /**
-     * 条件读取的结果码：没有值（不存在、lease、负缓存）、摘要未变（附格式版本）、值（附格式版本与载荷）、读不懂的内容（附格式版本）。
+     * 条件读取的结果码：没有值（不存在、lease、不带版本的负缓存）、摘要未变（附格式版本）、值（附格式版本与整个值）、
+     * 读不懂的内容（附格式版本）。
      */
     const val COND_ABSENT = 0L
     const val COND_UNCHANGED = 1L
@@ -470,7 +538,7 @@ return {1}
     const val COND_UNREADABLE = 3L
 
     /**
-     * 条件写入的结果码：冲突（附当前摘要，没有值时缺省）、已写入、读不懂的内容（附格式版本）。
+     * 条件写入的结果码：冲突（附当前摘要段，没有值时缺省）、已写入、读不懂的内容（附格式版本）。
      */
     const val PUT_CONFLICT = 0L
     const val PUT_WRITTEN = 1L
@@ -478,21 +546,25 @@ return {1}
 
     /**
      * 条件读写的检查（只有 [READ_IF_CHANGED] 与 [PUT_IF_MATCH] 引入）：返回 key 的状态与附加值，不修改 key。
-     * - `'none'`：不存在、lease 占位、负缓存；
-     * - `'value', 格式版本, 载荷`：本格式的标量值（载荷从 `payload_start` 起）；
-     * - `'unreadable', 格式版本`：读不懂的 String、其它 Redis 类型、`!f` 缺失或无效的 Hash（`0`），本格式的集合（`2`），
-     *   其它格式与带未知的必须理解的位的内容（见 `scalar_format`、`set_format`）。只看集合的元数据，不取成员。
+     * 先判断 `TYPE`，再只读最长的头部（`GETRANGE key 0 77`）与 `STRLEN`：成本与载荷大小无关，Lua 不计算摘要（RFC 0005 §4.7）。
+     * - `'none'`：不存在、lease 占位、不带版本的负缓存；
+     * - `'value', 格式版本, 摘要段`：带摘要段、不带版本段的值（权威标量）；
+     * - `'unreadable', 格式版本`：读不懂的 String、其它 Redis 类型、`!f` 缺失或无效的 Hash（`0`），本格式的集合、没有摘要段的值
+     *   与带版本的内容（值、墓碑、`E`，都是 `2`），其它格式与带未知的必须理解的位的内容（见 `scalar_format`、`set_format`）。
+     *   只看集合的元数据，不取成员。
      */
     private const val CONDITIONAL_STATE = """
 local function conditional_state(key)
   local kind = redis.call('TYPE', key)['ok']
   if kind == 'none' then return 'none' end
   if kind == 'string' then
-    local v = redis.call('GET', key)
-    local f, state, flags, start = scalar_format(v)
+    local h = redis.call('GETRANGE', key, 0, $LONGEST_HEADER - 1)
+    local f, state, flags = scalar_format(h, redis.call('STRLEN', key))
     if f ~= $FORMAT then return 'unreadable', f end
+    if bit.band(flags, $FLAG_VERSION) ~= 0 then return 'unreadable', f end
     if state ~= 'V' then return 'none' end
-    return 'value', f, string.sub(v, start)
+    if bit.band(flags, $FLAG_DIGEST) == 0 then return 'unreadable', f end
+    return 'value', f, string.sub(h, 37, 36 + $DIGEST_SIZE)
   end
   if kind ~= 'hash' then return 'unreadable', 0 end
   return 'unreadable', set_format(key)
@@ -500,36 +572,35 @@ end
 """
 
     /**
-     * 条件读取。ARGV：已知摘要（十六进制，空串为没有）。
-     * 返回 `{0}` 没有值、`{1, 格式版本}` 摘要未变（不返回正文）、`{2, 格式版本, 载荷}`、`{3, 格式版本}` 读不懂的内容。
-     * 摘要同 [RECLAIM]：标量为载荷的 SHA-1。
+     * 条件读取。ARGV：已知摘要（32 字节，空串为没有）。比较头部中的摘要段（写入方计算的载荷 SHA-256）。
+     * 返回 `{0}` 没有值、`{1, 格式版本}` 摘要未变（不返回正文）、`{2, 格式版本, 整个值}`（客户端按 [payloadOffset] 解析，
+     * 带摘要段与写入标识）、`{3, 格式版本}` 读不懂的内容。
      */
     val READ_IF_CHANGED = Script(
         CORE + FORMAT_RULES + CONDITIONAL_STATE + """
-local state, format, payload = conditional_state(KEYS[1])
+local state, format, digest = conditional_state(KEYS[1])
 if state == 'none' then return {0} end
 if state == 'unreadable' then return {3, format} end
-if ARGV[1] ~= '' and redis.sha1hex(payload) == ARGV[1] then return {1, format} end
-return {2, format, payload}
+if digest == ARGV[1] then return {1, format} end
+return {2, format, redis.call('GET', KEYS[1])}
 """
     )
 
     /**
      * 条件写入：当前内容符合期望时整体覆盖写入标量值（同 [PUT]）并广播，否则不修改、不广播。
-     * ARGV：期望摘要（十六进制，空串为“没有值”）、形状（`V` + 标志位 + 段，没有版本段）、TTL、频道、帧、载荷。
-     * 读不懂的内容（不是本协议写入的内容、本格式的集合、其它格式与带未知的必须理解的位的内容）总是拒绝，从不视为没有值。
-     * 返回 `{1}` 已写入、`{0}` 冲突且当前没有值、`{0, 当前摘要}` 冲突、`{3, 格式版本}` 读不懂的内容。
+     * ARGV：期望摘要（32 字节，空串为“没有值”）、形状（`V` + 标志位 + 段，没有版本段；摘要段由客户端计算）、TTL、频道、帧、载荷。
+     * 读不懂的内容（见 [CONDITIONAL_STATE]）总是拒绝，从不视为没有值。
+     * 返回 `{1}` 已写入、`{0}` 冲突且当前没有值、`{0, 当前摘要段}` 冲突、`{3, 格式版本}` 读不懂的内容。
      */
     val PUT_IF_MATCH = Script(
         PRELUDE + FORMAT_RULES + CONDITIONAL_STATE + """
 local key = KEYS[1]
-local state, format, payload = conditional_state(key)
+local state, format, current = conditional_state(key)
 if state == 'unreadable' then return {3, format} end
 if state == 'none' then
   if ARGV[1] ~= '' then return {0} end
-else
-  local current = redis.sha1hex(payload)
-  if current ~= ARGV[1] then return {0, current} end
+elseif current ~= ARGV[1] then
+  return {0, current}
 end
 write(key, ARGV[2], ARGV[3], 6)
 publish(ARGV[4], ARGV[5])
@@ -545,10 +616,11 @@ return {1}
     const val VERSION_UNREADABLE = 3L
 
     /**
-     * 按版本写入的检查（只有 [PUT_IF_NEWER] 引入）：返回 key 的状态与附加值，不修改 key。分类与 [CONDITIONAL_STATE] 相同：
-     * - `'none'`：不存在、lease 占位、没有版本段的值或负缓存（视为没有版本，总是写入）；
-     * - `'versioned', 格式版本, 版本`：带版本段的值或负缓存（版本为 8 字节，从字节 36 起）；
-     * - `'unreadable', 格式版本`：同 [CONDITIONAL_STATE]。
+     * 按版本写入的检查（只有 [PUT_IF_NEWER] 引入）：返回 key 的状态与附加值，不修改 key。
+     * - `'none'`：不存在、lease 占位、没有版本段的值或负缓存（含带摘要段的值，视为没有版本，总是写入）；
+     * - `'versioned', 格式版本, 版本`：带版本段的值、负缓存或 `E`（版本为 8 字节，从字节 36 起）；
+     * - `'unreadable', 格式版本`：读不懂的 String、其它 Redis 类型、`!f` 缺失或无效的 Hash（`0`），本格式的集合（`2`），
+     *   其它格式与带未知的必须理解的位的内容。
      */
     private const val VERSIONED_STATE = """
 local function versioned_state(key)
@@ -564,30 +636,70 @@ local function versioned_state(key)
   if kind ~= 'hash' then return 'unreadable', 0 end
   return 'unreadable', set_format(key)
 end
--- a > b：8 字节大端有符号整数。Lua 的数是 double，按高 32 位（有符号）与低 32 位（无符号）分别比较才精确
-local function newer(a, b)
-  local ah, bh = struct.unpack('>i4', a), struct.unpack('>i4', b)
-  if ah ~= bh then return ah > bh end
-  return struct.unpack('>I4', a, 5) > struct.unpack('>I4', b, 5)
-end
 """
 
     /**
-     * 按版本写入：给出的版本大于 key 中的版本时整体覆盖写入（同 [PUT]，销毁令牌、重设到期时间）并广播，否则不修改、不广播。
+     * 按版本写入：给出的版本大于 key 中的版本时整体覆盖写入（同 [PUT]，销毁令牌、重设到期时间）并广播。
+     * 相等时不写入，但广播（RFC 0005 §4.7，TLA+ F1）：这个版本可能是填充在 lease 上写入的，那次填充不广播，别的节点的 L2 中
+     * 还可能是更旧的副本；写入方随后的 `putIfNewer` 就是补上这次广播的时机。更小时不修改、不广播：持有那个更大版本的写入方
+     * 自己的 `putIfNewer` 会遇到相等的情形。
      * ARGV：形状（`V` / `M` + 标志位 + 段，必须带版本段且不是 `NO_VERSION`，K15）、TTL、频道、帧、载荷（`M` 没有）。
      * 读不懂的内容（不是本协议写入的内容、本格式的集合、其它格式与带未知的必须理解的位的内容）总是拒绝，从不视为没有版本。
      * 返回 `{1}` 已写入、`{0, 当前版本}` 版本不更新、`{3, 格式版本}` 读不懂的内容；形状不合规时为错误回复。
      */
     val PUT_IF_NEWER = Script(
-        PRELUDE + FORMAT_RULES + VERSIONED_STATE + """
+        PRELUDE + FORMAT_RULES + VERSION_RULES + VERSIONED_STATE + """
 local key, kind = KEYS[1], ARGV[1]
 check_shape(kind)
-if bit.band(string.byte(kind, 2), $FLAG_VERSION) == 0 then error('CoCache: putIfNewer needs a version segment') end
+local given = shape_version(kind)
+if given == nil then error('CoCache: putIfNewer needs a version segment') end
 local state, format, current = versioned_state(key)
 if state == 'unreadable' then return {3, format} end
-if state == 'versioned' and not newer(string.sub(kind, 3, 10), current) then return {0, current} end
+if state == 'versioned' and not newer(given, current) then
+  if given == current then publish(ARGV[3], ARGV[4]) end
+  return {0, current}
+end
 write(key, kind, ARGV[2], 5)
 publish(ARGV[3], ARGV[4])
+return {1}
+"""
+    )
+
+    /**
+     * 保留版本的失效的结果码：已淘汰（转为 `E` 或删除，已广播）、带摘要段的内容（拒绝）、读不懂的内容（附格式版本）。
+     */
+    const val EVICT_DONE = 1L
+    const val EVICT_AUTHORITATIVE = 2L
+    const val EVICT_UNREADABLE = 3L
+
+    /**
+     * 保留版本的失效（RFC 0005 §4.7 的 `E` 表，P1）。ARGV：TTL、频道、帧。
+     * - 带版本段的值、负缓存或 `E`：整体写为 `E(当前版本)`（44 字节，令牌为零，销毁任何令牌），重设到期时间，广播；
+     * - 既没有版本也没有摘要段的内容（没有版本的值与负缓存、`L`、不存在）：删除并广播；
+     * - 带摘要段的内容（权威标量，D4）：拒绝，返回 `{2}`；读不懂的内容（同 [VERSIONED_STATE]）：拒绝，返回 `{3, 格式版本}`。
+     * 运维操作，不在热路径上：读整个值以与其它脚本相同地判定格式。
+     */
+    val EVICT_KEEPING_VERSION = Script(
+        PRELUDE + FORMAT_RULES + """
+local key = KEYS[1]
+local kind = redis.call('TYPE', key)['ok']
+if kind == 'hash' then return {3, set_format(key)} end
+if kind == 'string' then
+  local v = redis.call('GET', key)
+  local f, state, flags = scalar_format(v)
+  if f ~= $FORMAT then return {3, f} end
+  if bit.band(flags, $FLAG_DIGEST) ~= 0 then return {2} end
+  if state ~= 'L' and bit.band(flags, $FLAG_VERSION) ~= 0 then
+    redis.call('SET', key, header('E', '\1', ZERO_TOKEN, 0) .. string.sub(v, 37, 44))
+    expire(key, ARGV[1])
+    publish(ARGV[2], ARGV[3])
+    return {1}
+  end
+elseif kind ~= 'none' then
+  return {3, 0}
+end
+redis.call('DEL', key)
+publish(ARGV[2], ARGV[3])
 return {1}
 """
     )
@@ -613,13 +725,13 @@ return 1
     private const val WRITER_AREA_SIZE = EXTENSION_LENGTH_SIZE + 2 + Token.SIZE
 
     /**
-     * 标量的写入形状（[PRELUDE]）：状态、标志位，然后按标志位的顺序是版本段（[version] 不是 [Versioned.NO_VERSION] 时）
-     * 与扩展区（[writer] 非 `null` 时，只有写入标识一个 TLV）。没有段时返回共享的常量，派生缓存的写入不分配。
-     * 摘要段（bit 1）在 M4c 之前从不写入。
+     * 标量的写入形状（[PRELUDE]）：状态、标志位，然后按标志位的顺序是版本段（[version] 不是 [Versioned.NO_VERSION] 时）、
+     * 摘要段（[digest] 非 `null` 时，写入方计算的载荷 SHA-256，原样写入）与扩展区（[writer] 非 `null` 时，只有写入标识一个 TLV）。
+     * 没有段时返回共享的常量，派生缓存的写入不分配。
      */
-    fun scalarShape(state: Byte, version: Long, writer: Token?): ByteArray {
+    fun scalarShape(state: Byte, version: Long, writer: Token?, digest: Digest?): ByteArray {
         val versioned = version != Versioned.NO_VERSION
-        if (!versioned && writer == null) {
+        if (!versioned && writer == null && digest == null) {
             return if (state == SHAPE_VALUE[0]) SHAPE_VALUE else SHAPE_MISSING
         }
         var flags = 0
@@ -628,6 +740,10 @@ return 1
             flags = flags or FLAG_VERSION
             size += VERSION_SIZE
         }
+        if (digest != null) {
+            flags = flags or FLAG_DIGEST
+            size += DIGEST_SIZE
+        }
         if (writer != null) {
             flags = flags or FLAG_EXTENSION
             size += WRITER_AREA_SIZE
@@ -635,6 +751,9 @@ return 1
         val shape = ByteBuffer.allocate(size).put(state).put(flags.toByte())
         if (versioned) {
             shape.putLong(version)
+        }
+        if (digest != null) {
+            shape.put(digest.bytes)
         }
         if (writer != null) {
             shape.putShort((WRITER_AREA_SIZE - EXTENSION_LENGTH_SIZE).toShort())
@@ -695,6 +814,11 @@ return 1
         }
         return null
     }
+
+    /**
+     * 摘要段的起点：核心头部之后跳过版本段。
+     */
+    fun digestOffset(flags: Int): Int = if (flags and FLAG_VERSION != 0) HEADER_SIZE + VERSION_SIZE else HEADER_SIZE
 
     /**
      * 扩展区的起点：核心头部之后跳过版本段与摘要段。

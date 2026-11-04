@@ -35,7 +35,7 @@ interface L1Store {                         // every operation suspends; no clos
     suspend fun putAll(puts: List<Put>, frame: ByteArray)
     suspend fun invalidate(keys: Collection<String>, frame: ByteArray)
     fun conditional(): ConditionalL1Store?  // readIfChanged, putIfMatch
-    fun versioned(): VersionedL1Store?      // putIfNewer
+    fun versioned(): VersionedL1Store?      // putIfNewer, evictKeepingVersion
     fun sets(): SetL1Store?                 // addMembers, removeMembers
 }
 ```
@@ -45,16 +45,16 @@ interface L1Store {                         // every operation suspends; no clos
 
 | Type | Shape |
 |---|---|
-| `Envelope` | `Scalar(bytes, version, writer)`, `Members(list of bytes)`, `Absent` (negative entry); `version` defaults to `Versioned.NO_VERSION`, `writer` to `null`. `writer` is a write id shaped like a `Token`, set by the engine on every scalar write of a cache without a source: store it on every operation that writes a scalar (`put`, `putAll`, `fill`, `fillAll`, `putIfMatch`, `putIfNewer`) and return it unchanged from `read` and `readAll` |
+| `Envelope` | `Scalar(bytes, version, writer, digest)`, `Members(list of bytes)`, `Absent` (negative entry); `version` defaults to `Versioned.NO_VERSION`, `writer` and `digest` to `null`. `writer` is a write id shaped like a `Token`, and `digest` the payload's SHA-256, both set by the engine on scalar writes of a cache without a source (`digest` only when unversioned): store them on every operation that writes a scalar (`put`, `putAll`, `fill`, `fillAll`, `putIfMatch`, `putIfNewer`) and return them unchanged from `read`, `readAll` and `readIfChanged`; never verify or recompute the digest |
 | `L1Read` | `Hit(envelope, format, ttl, refreshGranted)`, `Miss(leaseGranted)`, `Leased(remaining)`; `ttl == null` means no expiry |
 | `Token` | 24 bytes (node id + sequence); compare by bytes |
 | `LeaseRequest(token, ttl)` | Lease to place on a miss |
 | `RefreshRequest(window, token, tokenTtl)` | Refresh token to place on a value inside `window`; older than `tokenTtl` may be taken over |
 | `Fill(key, token, envelope, ttl[, version])` | Write only if the key holds `token`; `version` is stored with the content, and `Absent` with a version is a tombstone |
-| `L1Fill` | `Filled(advanced)` or `Rejected(currentVersion)`; with today's format always `Filled(advanced = false)` or `Rejected(currentVersion = null)` |
+| `L1Fill` | `Filled(advanced)` or `Rejected(currentVersion)`; `advanced` = the fill raised a version or replaced an eviction marker and you broadcast it; `currentVersion` = the key's version when the version rule refused it, `null` on a token mismatch |
 | `ContentFingerprint` | SHA-1 of the content compared by `reclaim` (`ContentFingerprint.of`) |
-| `Digest` | Content digest compared by conditional reads and writes (`Digest.of`) |
-| `L1ConditionalRead` / `L1ConditionalWrite` / `L1VersionedWrite` | Results of `readIfChanged`, `putIfMatch`, `putIfNewer` |
+| `Digest` | SHA-256 of the payload (`Digest(algorithm, bytes)`, `Digest.of`, `Digest.ofPayload`), compared by conditional reads and writes; computed by the engine |
+| `L1ConditionalRead` / `L1ConditionalWrite` / `L1VersionedWrite` / `L1Eviction` | Results of `readIfChanged`, `putIfMatch`, `putIfNewer`, `evictKeepingVersion` |
 
 Keys arrive complete, with prefix and namespace. The SPI has no default implementations: every operation is abstract.
 
@@ -71,17 +71,18 @@ Keys arrive complete, with prefix and namespace. The SPI has no default implemen
 |---|---|
 | `read` | Absent with a lease request: place the lease and return `Miss(true)`. Absent without one: `Miss(false)`, write nothing. Leased: `Leased(remaining)`. Value: `Hit` with remaining TTL; grant a refresh token (keeping the TTL) only for a scalar with `0 < ttl <= window` and no live token. Never on a value without expiry. With both requests `null`, write nothing. |
 | `readAll` | `read` per key, leasing only keys in `leases`; return every key. A failure releases the leases this call may have taken. |
-| `fill` / `fillAll` | Write only if the key holds exactly `fill.token` (as a lease or refresh token); reset expiry to `fill.ttl`; return `Filled(advanced = false)` when written, `Rejected(currentVersion = null)` on a token mismatch, one result per fill. |
-| `release` | Matching lease: delete the key. Matching refresh token on a value: clear the token, keep value and TTL. Otherwise nothing. |
+| `fill` / `fillAll` | Write only if the key holds exactly `fill.token` (as a lease or refresh token); reset expiry to `fill.ttl`; return `Filled(advanced = false)` when written, `Rejected(currentVersion = null)` on a token mismatch, one result per fill. 8.0 version rule, in the same atomic step, when the key holds a version (a versioned value with a refresh token, an eviction marker with a lease): older or `NO_VERSION` fill → clear the token, keep content and expiry, `Rejected(current)`; equal on a value → write, no broadcast, `Filled(false)`; newer, or accepted on an eviction marker → write and broadcast a frame for `fill.key` with origin `fill.token.node`, `Filled(true)`. |
+| `release` | Matching lease: delete the key. Matching refresh token on a value, or lease on an eviction marker: clear the token, keep content and TTL. Otherwise nothing. |
 | `put` | Overwrite any state, destroy any token, set expiry, broadcast. `Members` replaces the whole set. |
 | `putAll` | `put` per entry, atomic per key; broadcast each key exactly once with its write (the frame may be split). No per-entry default. |
 | `invalidate` | Delete every key, destroy any token, broadcast. Atomic per key; batches may split. |
-| `reclaim` | Only if current content has fingerprint `observed` and is not a lease: replace it with the lease; return whether done. Never delete changed content. |
+| `reclaim` | Only if current content has fingerprint `observed` and is not a lease, versioned content, an eviction marker or a value with a digest: replace it with the lease; return whether done. Never delete changed content. |
 | `SetL1Store.addMembers` | One atomic check-and-write. A set of your protocol: add the members. Absent, negative or leased key: replace with a set of these members. Then destroy tokens, set expiry (`null` removes it), broadcast, return `null`. Anything that is not a set of your protocol (content you didn't write, a scalar, a set in a newer format): change nothing, broadcast nothing, return that content's format (`0` = not yours). There is no unchecked member write: a `SetCache` has no source, so overwriting is deleting its only copy. |
 | `SetL1Store.removeMembers` | Same check. A set of your protocol: remove, delete the key when empty, otherwise reset expiry. Absent, negative or leased key: change nothing. Broadcast and return `null` in both cases. Unreadable content: change nothing, broadcast nothing, return its format. |
-| `ConditionalL1Store.readIfChanged` | Pure; compare in the store. A scalar of your protocol whose payload digest equals `known`: `Unchanged(format)`, payload not sent back. Other scalar: `Changed(envelope, format)`. Absent, lease, negative entry: `Absent`. Anything else (not yours, a set, a newer format): `Unreadable(format)`. |
-| `ConditionalL1Store.putIfMatch` | One atomic compare-and-write: matches when `expected == null` and the key holds no value (absent, lease, negative entry), or a scalar whose payload digest equals `expected`. Unreadable content returns `Unreadable(format)` and never matches as no value. Match: write like `put`, return `Written`. Otherwise change nothing, broadcast nothing, return `Conflict(current digest or null)`. |
-| `VersionedL1Store.putIfNewer` | One atomic compare-by-version: write `envelope` (scalar, or `Absent` for a tombstone) with `version` like `put` only if `version` is greater than the stored version; content without a version, leases and absent keys count as `NO_VERSION`. Otherwise change nothing, broadcast nothing, return `Stale(current)`. Unreadable content as in `putIfMatch`. `version` is never `Versioned.NO_VERSION`: throw `IllegalArgumentException` before changing anything. Versioned content holds no token: fill/release never match it, `read` never grants a refresh token on it, `reclaim` refuses it. `putIfMatch` writes without a version. |
+| `ConditionalL1Store.readIfChanged` | Pure; compare the stored digest in the store, never recompute it. A value of your protocol with a stored digest equal to `known`: `Unchanged(format)`, payload not sent back. Other value with a digest: `Changed(envelope, format)` carrying the stored digest and writer. Absent, lease, unversioned negative entry: `Absent`. Anything else (not yours, a set, a newer format, a value without a digest, versioned content, an eviction marker): `Unreadable(format)`. |
+| `ConditionalL1Store.putIfMatch` | One atomic compare-and-write: matches when `expected == null` and the key holds no value (absent, lease, unversioned negative entry), or a value whose stored digest equals `expected`; store `envelope.digest` as given. Unreadable content returns `Unreadable(format)` and never matches as no value. Match: write like `put`, return `Written`. Otherwise change nothing, broadcast nothing, return `Conflict(current digest or null)`. |
+| `VersionedL1Store.putIfNewer` | One atomic compare-by-version: write `envelope` (scalar, or `Absent` for a tombstone) with `version` like `put` only if `version` is greater than the stored version; content without a version, leases and absent keys count as `NO_VERSION`. An equal stored version: change nothing but broadcast `frame` (a fill may have written that version without broadcasting), return `Stale(current)`. An older given version: change nothing, broadcast nothing, return `Stale(current)`. Unreadable content as in `evictKeepingVersion`. `version` is never `Versioned.NO_VERSION`: throw `IllegalArgumentException` before changing anything. An eviction marker counts with its version. `reclaim` refuses versioned content. `putIfMatch` writes without a version. |
+| `VersionedL1Store.evictKeepingVersion` | One atomic step. Versioned content (value, tombstone, eviction marker): replace with an eviction marker (`E`) holding that version and no token, expiry `ttl`, broadcast, `Evicted`. No version and no digest (plain value or negative entry, lease, absent): delete, broadcast, `Evicted`. A value with a digest: change nothing, `Authoritative`. Unreadable (not yours, a set, a newer format): change nothing, `Unreadable(format)`. `read` on `E` is `Miss(false)`, or with a lease request places the lease in place (keeping version and expiry) when the token is zero or older than `lease.ttl` and returns `Miss(true)`, otherwise `Leased`. |
 
 ## Rules across all methods
 

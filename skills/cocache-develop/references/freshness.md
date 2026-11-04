@@ -55,10 +55,11 @@ while (true) {
 ```
 
 - `putIfMatch(key, expected, value)`: one atomic compare-and-write; `expected = null` means "only if Redis holds no value" (absent, lease or negative entry). A conflict changes nothing and broadcasts nothing. A write behaves like `put` (TTL, fencing, no L2 fill).
-- `getIfChanged(key, known)`: `Unchanged` without transferring the value when its digest still equals `known`, otherwise `Present(value, digest)` or `Absent`. Use it to revalidate a value held in memory. Redis still hashes the value in the script.
+- `getIfChanged(key, known)`: `Unchanged` without transferring the value when its digest still equals `known`, otherwise `Present(value, digest)` or `Absent`. Use it to revalidate a value held in memory.
+- The digest is the SHA-256 of the payload (`Digest.algorithm`, `toString()` = `SHA-256:<hex>`; no `.sha1`), written by the cache without a loader into the value's header. Both methods work only on values such a cache wrote: a value written by a cache with a loader (no digest) or a versioned value makes them throw (`ForeignFormatException` cause). Reads of a cache without a loader, and `getIfChanged` returning a value, recompute the digest and fail on a mismatch.
 - Neither touches L2 or the loader. `getIfChanged` throws `CacheReadException` on a Redis failure regardless of `read-failure`; `putIfMatch` throws `CacheWriteException` and is not idempotent: after a timeout, re-read before retrying. Without atomic broadcast, a conflict whose digest is the caller's own value republishes the invalidation, so a replay repairs a lost publish.
 - Unreadable content: newer-format values and sets always throw, key untouched. A value the codec can't decode makes the read throw, and the write only conflicts on it. Content in another wire format (format 0 or 1, e.g. written by another program) throws too and is never treated as no value. Not available on `SetCache`, nor on backends that don't implement `putIfMatch` (`UnsupportedOperationException`).
-- Cost: an unchanged `getIfChanged` saves wire bytes, not Redis CPU. Redis reads and SHA-1s the value on every call, about 20 ms for 8 MB on Redis 7.4.
+- Cost: an unchanged `getIfChanged` reads only the header in Redis (`GETRANGE` + `STRLEN`), so it costs the same whatever the value's size.
 
 ## Versioned writers
 
@@ -71,11 +72,13 @@ cache.invalidateIfNewer(id, version)         // tombstone: reads as absent, bloc
 cache.getVersioned(id)                       // Versioned(value, version)?
 ```
 
-- One Lua round trip, atomic. Equal version: idempotent no-op; older: refused; neither writes, broadcasts nor changes the TTL. A write behaves like `put` and wins over a load holding the lease, even one that read a higher version. Content without a version (plain `put`, plain loader, negative entry, absent) is older than any version.
+- One Lua round trip, atomic. Equal version: idempotent no-op; older: refused; neither writes nor changes the TTL. An equal version still publishes the invalidation (a load may have filled that version without one); an older one publishes nothing. A write behaves like `put` and wins over a load holding the lease, even one that read a higher version. Content without a version (plain `put`, plain loader, negative entry, absent) is older than any version.
 - A versioned loader returns `Versioned(null, n)` for a key deleted at version `n` (the fill writes a tombstone, so older replays can't resurrect it) and `null` for a key that never existed (plain negative entry). `getVersioned` returns `null` for both; a living tombstone still refuses older versions.
 - Every ordering writer must use `putIfNewer` / `invalidateIfNewer`: `put`, `putIfMatch`, `invalidate` and expiry drop the version. Ordering holds only while the entry lives: give values and tombstones (value lifetime by default) a TTL covering the redelivery window.
-- Versioned caches reject `refresh-window` (`cocache.defaults.refresh-window` skips them). Creating one fails when the backend's store has no `versioned()` capability; Redis and in-memory support it. Coroutines: `suspendingVersionedLoader`.
-- `putIfNewer` throws `CacheWriteException` on Redis failure; replaying the same version is safe (returns `Stale`). Without atomic broadcast, `Stale` with the same version republishes the invalidation.
+- Refresh-ahead: versioned caches refresh ahead and `cocache.defaults.refresh-window` applies to them; a refresh writes back only a version at least as new as Redis holds, and keeps its copy otherwise. Turn it off with `refreshWindow = null` / `cocache.caches.[name].refresh-window: 0` when the writer pushes every version.
+- Operator purge: the endpoint's per-key `DELETE` keeps the version (state `E`), so older versions are still refused; the next read loads from the source, and a loader behind Redis is returned but not written (`cocache.fill.rejections`).
+- Creating a versioned cache fails when the backend's store has no `versioned()` capability; Redis and in-memory support it. Coroutines: `suspendingVersionedLoader`.
+- `putIfNewer` throws `CacheWriteException` on Redis failure; replaying the same version is safe (returns `Stale`, and an equal version republishes the invalidation).
 
 ## Inside a transaction
 

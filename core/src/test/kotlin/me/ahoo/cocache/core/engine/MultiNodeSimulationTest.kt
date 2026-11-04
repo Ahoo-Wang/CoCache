@@ -18,8 +18,10 @@ import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import me.ahoo.cocache.api.AsyncCacheLoader
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
@@ -42,8 +44,9 @@ import kotlin.random.Random
  * `kotlinx-coroutines-test` 的单线程测试调度器上；等待 lease、`withTimeout`、截止时刻（[Ticker]）与缓存时钟都走虚拟时间。
  * 同一个种子总是同一条执行。
  *
- * 每个种子随机执行：
- * - 读取（`get`、`getAll`）与写入（数据源提交新版本，再在某个节点上 `invalidate`）；
+ * 每个种子随机执行（一半的种子用带版本的缓存，RFC 0005 §4.7）：
+ * - 读取（`get`、`getAll`）与写入（数据源提交新版本，再在某个节点上 `invalidate`；带版本的缓存另有按这个版本的 `putIfNewer`，
+ *   与保留版本的失效 `evictKeepingVersion`：之后的读取在 `E` 上取得 lease，回源的填充按版本规则写入并广播，按写入处理）；
  * - 推进调度器、推进虚拟时间；
  * - 以任意顺序、随机结局完成 L1 命令（成功、未生效的失败、生效但超时）；
  * - 以任意顺序投递、重复或丢失失效事件（丢失之后补一个订阅重建）；
@@ -68,7 +71,9 @@ class MultiNodeSimulationTest {
             Simulation(only, trace = true).run()
             return
         }
-        repeat(SEEDS) { Simulation(it.toLong()).run() }
+        val simulations = List(SEEDS) { Simulation(it.toLong()).also { simulation -> simulation.run() } }
+        // 带版本的种子确实走到了 E 上的 lease 与按版本前进的填充（保留版本的失效之后的回源）
+        simulations.sumOf { it.advancedFills }.assert().isGreaterThan(0)
     }
 
     /**
@@ -100,6 +105,9 @@ class MultiNodeSimulationTest {
          * 每个 key 至今在 L1 上生效的失效所覆盖的最新版本（生效时数据源的版本）。
          */
         private val applied = KEYS.associateWith { 0L }.toMutableMap()
+        val advancedFills: Int
+            get() = backend.advancedFills.get()
+
         private val backend = ScriptedBackend(memory, ledger, scriptEvents = true) { keys ->
             keys.associate { storageKey ->
                 val key = storageKey.removePrefix(PREFIX)
@@ -110,6 +118,7 @@ class MultiNodeSimulationTest {
         }
         private val nodeIds = List(NODES) { node -> NodeId(ByteArray(NodeId.SIZE) { (node + 1).toByte() }) }
         private val asyncSource = random.nextBoolean()
+        private val versioned = random.nextBoolean()
         private val loads = ArrayList<Load>()
         private val runtimes = List(NODES) { node ->
             CacheRuntime.builder()
@@ -126,18 +135,27 @@ class MultiNodeSimulationTest {
                 }
                 .build()
         }
-        private val caches = runtimes.map { runtime ->
+        private val caches: List<Cache<String, String>> = runtimes.map { runtime ->
             runtime.create(
                 cacheSpec<String, String>(NAME) {
                     codec = StringCodec
-                    if (asyncSource) {
-                        asyncLoader = AsyncCacheLoader { key ->
+                    when {
+                        // 带版本的数据源：值的版本就是数据源的版本（快照的版本）。`versioned` 也是声明的属性，显式取仿真的
+                        this@Simulation.versioned && asyncSource -> versionedAsyncLoader = AsyncCacheLoader { key ->
+                            val snapshot = if (random.nextBoolean()) valueOf(key) else null
+                            CompletableFuture<String?>().also { loads += Load(key, snapshot, it) }.thenApply { value ->
+                                value?.let { Versioned<String?>(it, it.substringAfter('@').toLong()) }
+                            }
+                        }
+
+                        this@Simulation.versioned -> versionedLoader = CacheLoader { key -> Versioned(valueOf(key), versions.getValue(key)) }
+                        asyncSource -> asyncLoader = AsyncCacheLoader { key ->
                             // 快照取于调用时或完成时：两种都是数据源合法的行为
                             val snapshot = if (random.nextBoolean()) valueOf(key) else null
                             CompletableFuture<String?>().also { loads += Load(key, snapshot, it) }
                         }
-                    } else {
-                        loader = CacheLoader { key -> valueOf(key) }
+
+                        else -> loader = CacheLoader { key -> valueOf(key) }
                     }
                     policy = CachePolicy(
                         ttl = TTL,
@@ -237,13 +255,22 @@ class MultiNodeSimulationTest {
             reads += Read(node, keys, keys.associateWith { floors[node].getValue(it) }, caches[node].async().getAll(keys))
         }
 
+        @Suppress("MagicNumber")
         private fun startWrite() {
             val node = liveNode() ?: return
             val key = KEYS.random(random)
             val version = versions.getValue(key) + 1
             versions[key] = version
-            log("write node[$node] $key -> $version")
-            writes += Write(node, key, version, caches[node].async().invalidate(key))
+            val how = if (versioned) random.nextInt(3) else 0
+            log("write node[$node] $key -> $version ${listOf("invalidate", "putIfNewer", "evict")[how]}")
+            val future: CompletableFuture<*> = when (how) {
+                0 -> caches[node].async().invalidate(key)
+                1 -> caches[node].async().putIfNewer(key, valueOf(key), version)
+                // 保留版本的失效：能力面上的操作就地完成，这次调用不挂起
+                else -> runCatching { requireNotNull(runtimes[node].admin(NAME)).invalidateEncoded(key) }
+                    .fold({ CompletableFuture.completedFuture(it) }, { CompletableFuture.failedFuture<Unit>(it) })
+            }
+            writes += Write(node, key, version, future)
         }
 
         @Suppress("MagicNumber")

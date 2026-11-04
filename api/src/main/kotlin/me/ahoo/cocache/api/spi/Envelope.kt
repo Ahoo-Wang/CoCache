@@ -22,7 +22,7 @@ sealed interface Envelope {
     /**
      * 标量值。
      *
-     * @param version 与值一起保存的版本（6.8，按版本有序的写入）；[Versioned.NO_VERSION] 表示没有版本。
+     * @param version 与值一起保存的版本（按版本有序的写入）；[Versioned.NO_VERSION] 表示没有版本。
      *   支持版本的存储（[L1Store.versioned] 非 `null`）在 [L1Store.fill]、[L1Store.put]、[L1Store.putAll] 时保存它，
      *   读取时原样返回（[ConditionalL1Store.putIfMatch] 写入没有版本的值）；版本不属于载荷，不影响 [Digest]
      * @param writer 写入标识（RFC 0005 §4.3“keyspace 与段”、§4.7，D2）：与 [Token] 同形（[NodeId] + 序号），每次写入新取一个，
@@ -30,23 +30,42 @@ sealed interface Envelope {
      *   存储在每个写入标量的操作（[L1Store.fill]、[L1Store.fillAll]、[L1Store.put]、[L1Store.putAll]、
      *   [ConditionalL1Store.putIfMatch]、[VersionedL1Store.putIfNewer]）中原样保存它，[L1Store.read] 与 [L1Store.readAll] 原样返回。
      *   它为之后按标识比较的条件写入（现值 ABA）而写；本版本的引擎不读它。不属于载荷，不影响 [Digest]
+     * @param digest 载荷的摘要（RFC 0005 §4.3“keyspace 与段”、§4.7，D1）：由引擎在客户端计算（[Digest.ofPayload]）并给出，
+     *   没有数据源、也不带版本的缓存（M5 之前的权威标量）的每次标量写入都带它，其余写入不带（`null`）。存储在与 [writer] 相同的操作中
+     *   把它原样保存为摘要段（不校验、不重算），[L1Store.read]、[L1Store.readAll] 与 [ConditionalL1Store.readIfChanged] 原样返回段中的字节；
+     *   与载荷是否一致由读取方校验（K3），对所有存储相同。带摘要段的内容是权威标量：存储从不为它授予 lease 或刷新令牌、从不回收它
+     *   （D4），条件读写只认带摘要段、不带版本的值
      */
     class Scalar @JvmOverloads constructor(
         bytes: ByteArray,
         val version: Long = Versioned.NO_VERSION,
         val writer: Token? = null,
+        val digest: Digest? = null,
     ) : Envelope {
         private val value = bytes.copyOf()
 
         val bytes: ByteArray
             get() = value.copyOf()
 
+        /**
+         * 载荷本身（不复制），只供本模块计算摘要与指纹。
+         */
+        internal val payload: ByteArray
+            get() = value
+
         override fun equals(other: Any?): Boolean {
             return this === other ||
-                (other is Scalar && version == other.version && writer == other.writer && value.contentEquals(other.value))
+                (
+                    other is Scalar && version == other.version && writer == other.writer && digest == other.digest &&
+                        value.contentEquals(other.value)
+                    )
         }
 
-        override fun hashCode(): Int = 31 * (31 * value.contentHashCode() + version.hashCode()) + writer.hashCode()
+        override fun hashCode(): Int {
+            var result = 31 * value.contentHashCode() + version.hashCode()
+            result = 31 * result + writer.hashCode()
+            return 31 * result + digest.hashCode()
+        }
 
         override fun toString(): String = buildString {
             append("Scalar(").append(value.size).append(" bytes")
@@ -54,6 +73,7 @@ sealed interface Envelope {
                 append(", version=").append(version)
             }
             writer?.let { append(", writer=").append(it) }
+            digest?.let { append(", digest=").append(it) }
             append(')')
         }
     }

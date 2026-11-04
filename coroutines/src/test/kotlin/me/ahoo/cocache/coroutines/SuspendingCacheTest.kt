@@ -639,7 +639,7 @@ class SuspendingCacheTest {
             override suspend fun invalidateAll(keys: Collection<String>) = Unit
             override fun async(): AsyncCache<String, String> = throw UnsupportedOperationException()
         }
-        val known = Digest(ByteArray(20))
+        val known = Digest(ByteArray(Digest.SIZE))
         runCatching {
             plain.getIfChanged("k", known)
         }.exceptionOrNull().assert().isInstanceOf(UnsupportedOperationException::class.java)

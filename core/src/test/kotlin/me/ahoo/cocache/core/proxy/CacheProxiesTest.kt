@@ -88,9 +88,17 @@ class CacheProxiesTest {
         ).assert().isNull()
     }
 
+    /**
+     * 条件读写只认没有数据源的缓存写入的值（带摘要段，RFC 0005 §4.7）：代理转发到这样的引擎。
+     */
     @Test
     fun forwardsConditionalMethodsToTheEngine() {
-        val cache = CacheProxies.create(UserCache::class.java, engine)
+        val authoritative = runtime.create(
+            cacheSpec<String, String>("record") {
+                codec = StringCodec
+            }
+        )
+        val cache = CacheProxies.create(UserCache::class.java, authoritative)
         val written = cache.putIfMatch("c", null, "v1") as ConditionalPut.Written
         cache.getIfChanged("c", written.digest).assert().isEqualTo(ConditionalGet.Unchanged)
         val second = cache.putIfMatch("c", written.digest, "v2", Duration.ofMinutes(1)) as ConditionalPut.Written

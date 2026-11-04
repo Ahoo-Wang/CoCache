@@ -30,6 +30,7 @@ import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
@@ -163,13 +164,16 @@ class InMemoryBackend @JvmOverloads constructor(
         }
     }
 
-    private enum class State { VALUE, MISSING, SET, LEASED }
+    /**
+     * 槽位的状态：值、负缓存、集合、lease 占位，以及保留版本的失效（`E`，RFC 0005 §4.7）。
+     */
+    private enum class State { VALUE, MISSING, SET, LEASED, EVICTED }
 
     /**
-     * 不可变槽位：每次转换都生成新槽位并重设到期时间。
+     * 不可变槽位：每次转换都生成新槽位并重设到期时间（只改令牌的转换保留到期时间）。
      *
-     * @param version 值或负缓存的版本；[Versioned.NO_VERSION] 表示没有版本。与 Redis 后端相同：带版本的槽位从不授予刷新令牌、
-     *   从不被回收（版本只保存在值上，转为 lease 就丢了），只有整体写入能替换它
+     * @param version 值、负缓存或 `E` 的版本；[Versioned.NO_VERSION] 表示没有版本。与 Redis 后端相同：带版本的槽位从不被回收
+     *   （版本只保存在值上，转为 lease 就丢了），填充按版本规则写入；`E` 只有版本，可以持有 lease 令牌
      */
     private class Slot(
         val state: State,
@@ -181,6 +185,11 @@ class InMemoryBackend @JvmOverloads constructor(
     )
 
     private fun versionOf(envelope: Envelope): Long = (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION
+
+    /**
+     * 带摘要段的值（权威标量，D4）：从不授予刷新令牌、从不回收，保留版本的失效拒绝它。
+     */
+    private fun Slot.digested(): Boolean = (envelope as? Envelope.Scalar)?.digest != null
 
     /**
      * 原生的 [L1Store]（RFC 0005 §4.3）：内存操作不阻塞，挂起方法就地执行、不挂起（[stall] 期间除外）。三个能力面都由存储自己实现，
@@ -237,6 +246,12 @@ class InMemoryBackend @JvmOverloads constructor(
                         slot
                     }
 
+                    slot.state == State.EVICTED -> {
+                        val outcome = readEvicted(slot, lease)
+                        result = outcome.first
+                        outcome.second
+                    }
+
                     refresh != null && grantsRefresh(slot, refresh) -> {
                         result = L1Read.Hit(slot.envelope, FORMAT, remaining(slot), refreshGranted = true)
                         Slot(slot.state, slot.envelope, refresh.token, now(), slot.expireAt, slot.version)
@@ -251,6 +266,30 @@ class InMemoryBackend @JvmOverloads constructor(
             return result
         }
 
+        /**
+         * `E` 读作未命中（RFC 0005 §4.7）：申请 lease、且没有令牌或令牌签发超过 lease 寿命时原地写入 lease 令牌（保留版本与到期时间）；
+         * 令牌未过期时为 [L1Read.Leased]（剩余时间为 lease 寿命减去已签发时长）。返回结果与新的槽位。
+         */
+        private fun readEvicted(slot: Slot, lease: LeaseRequest?): Pair<L1Read, Slot> {
+            if (lease == null) {
+                return L1Read.Miss(false) to slot
+            }
+            val held = now() - slot.tokenIssuedAt
+            if (slot.token != null && held <= lease.ttl.toMillis()) {
+                return L1Read.Leased(Duration.ofMillis((lease.ttl.toMillis() - held).coerceAtLeast(0))) to slot
+            }
+            return L1Read.Miss(true) to slot.withToken(lease.token, now())
+        }
+
+        private fun Slot.withToken(token: Token?, issuedAt: Long) = Slot(
+            state,
+            envelope,
+            token,
+            issuedAt,
+            expireAt,
+            version
+        )
+
         private fun leaseSlot(lease: LeaseRequest) = Slot(
             State.LEASED,
             Envelope.Absent,
@@ -260,7 +299,7 @@ class InMemoryBackend @JvmOverloads constructor(
         )
 
         private fun grantsRefresh(slot: Slot, refresh: RefreshRequest): Boolean {
-            if (slot.state != State.VALUE || slot.expireAt == FOREVER || slot.version != Versioned.NO_VERSION) {
+            if (slot.state != State.VALUE || slot.expireAt == FOREVER || slot.digested()) {
                 return false
             }
             if (slot.expireAt - now() > refresh.window.toMillis()) {
@@ -288,31 +327,42 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * 令牌匹配即写入：本后端的 lease 不带版本，填充从不让版本前进（[L1Fill.Filled.advanced] 为 `false`），也没有版本拒绝。
+         * 令牌匹配才写入。槽位带版本（持有刷新令牌的带版本值、持有 lease 的 `E`）时按版本规则（RFC 0005 §4.7，与 Redis 的 `FILL` 相同）：
+         * 填充没有版本或版本更小时清零令牌、返回当前版本；相等时写入、不广播；更大或槽位是 `E` 时写入并广播（帧的来源是令牌的节点）。
          */
         private fun fillNow(fill: Fill): L1Fill {
-            var filled = false
+            var outcome: L1Fill = TOKEN_MISMATCH
             slots.compute(fill.key) { _, current ->
                 val slot = current.live()
-                if (slot?.token == fill.token) {
-                    filled = true
-                    val envelope = withVersion(fill.envelope, fill.version)
-                    Slot(stateOf(envelope), envelope, expireAt = expireAt(fill.ttl), version = fill.version)
-                } else {
-                    slot
+                if (slot == null || slot.token != fill.token) {
+                    return@compute slot
                 }
+                if (slot.version != Versioned.NO_VERSION) {
+                    if (fill.version == Versioned.NO_VERSION || fill.version < slot.version) {
+                        outcome = L1Fill.Rejected(slot.version)
+                        return@compute slot.withToken(null, 0)
+                    }
+                    outcome = if (slot.state == State.EVICTED || fill.version > slot.version) ADVANCED else FILLED
+                } else {
+                    outcome = FILLED
+                }
+                val envelope = withVersion(fill.envelope, fill.version)
+                Slot(stateOf(envelope), envelope, expireAt = expireAt(fill.ttl), version = fill.version)
             }
-            return if (filled) FILLED else TOKEN_MISMATCH
+            if (outcome == ADVANCED) {
+                publish(keyspace, InvalidationFrame.encode(fill.token.node, listOf(fill.key)))
+            }
+            return outcome
         }
 
         /**
-         * 填充的版本（墓碑的版本只能经 [Fill.version] 传递）：标量的信封与槽位带同一个版本，写入标识原样保存。
+         * 填充的版本（墓碑的版本只能经 [Fill.version] 传递）：标量的信封与槽位带同一个版本，写入标识与摘要原样保存。
          */
         private fun withVersion(envelope: Envelope, version: Long): Envelope {
             if (envelope !is Envelope.Scalar) {
                 return envelope
             }
-            return Envelope.Scalar(envelope.bytes, version, envelope.writer)
+            return Envelope.Scalar(envelope.bytes, version, envelope.writer, envelope.digest)
         }
 
         override suspend fun fillAll(fills: List<Fill>): List<L1Fill> {
@@ -327,7 +377,8 @@ class InMemoryBackend @JvmOverloads constructor(
                 when {
                     slot == null || slot.token != token -> slot
                     slot.state == State.LEASED -> null
-                    else -> Slot(slot.state, slot.envelope, expireAt = slot.expireAt, version = slot.version)
+                    // 值上的刷新令牌、E 上的 lease：只清零令牌，从不删除 E
+                    else -> slot.withToken(null, 0)
                 }
             }
         }
@@ -371,14 +422,14 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * lease 占位没有可回收的内容；带版本的槽位不回收（转为 lease 会丢掉版本，与 Redis 后端相同）。
+         * lease 占位没有可回收的内容；带版本的槽位与 `E` 不回收（转为 lease 会丢掉版本），带摘要段的值不回收（权威标量，D4），
+         * 与 Redis 后端相同。
          */
-        private fun reclaimable(
-            slot: Slot
-        ): Boolean = slot.state != State.LEASED && slot.version == Versioned.NO_VERSION
+        private fun reclaimable(slot: Slot): Boolean =
+            slot.state != State.LEASED && slot.state != State.EVICTED && slot.version == Versioned.NO_VERSION && !slot.digested()
 
         /**
-         * 本后端只存本协议的内容：不能当作集合的只有标量值（拒绝，返回本后端的格式版本）。
+         * 本后端只存本协议的内容：不能当作集合的只有标量值与 `E`（拒绝，返回本后端的格式版本）。
          */
         override suspend fun addMembers(
             key: String,
@@ -390,7 +441,7 @@ class InMemoryBackend @JvmOverloads constructor(
             var refused: Int? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (slot?.state == State.VALUE) {
+                if (slot?.state == State.VALUE || slot?.state == State.EVICTED) {
                     refused = FORMAT
                     return@compute slot
                 }
@@ -404,7 +455,7 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * 同 [addMembers]：标量值拒绝；不存在、负缓存、lease 占位不修改。
+         * 同 [addMembers]：标量值与 `E` 拒绝；不存在、负缓存、lease 占位不修改。
          */
         override suspend fun removeMembers(
             key: String,
@@ -416,7 +467,7 @@ class InMemoryBackend @JvmOverloads constructor(
             var refused: Int? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (slot?.state == State.VALUE) {
+                if (slot?.state == State.VALUE || slot?.state == State.EVICTED) {
                     refused = FORMAT
                     slot
                 } else if (slot?.state != State.SET) {
@@ -445,27 +496,42 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * 本后端只存本协议的内容：读不懂的只有集合（返回本后端的格式版本）。
+         * 条件读写对一个槽位的判定（与 Redis 的 `conditional_state` 相同）：不存在、lease 占位、不带版本的负缓存没有值
+         * （[ConditionalState.None]）；带摘要段、不带版本的值可以比较（[ConditionalState.Value]，比较保存的摘要段，不重算）；
+         * 集合、没有摘要段的值与带版本的内容（值、墓碑、`E`）读不懂（[ConditionalState.Unreadable]，本后端只存本协议的内容）。
          */
+        private fun conditionalState(slot: Slot?): ConditionalState {
+            if (slot == null || slot.state == State.LEASED) {
+                return ConditionalState.None
+            }
+            if (slot.version != Versioned.NO_VERSION) {
+                return ConditionalState.Unreadable
+            }
+            return when (slot.state) {
+                State.MISSING -> ConditionalState.None
+                State.VALUE -> (slot.envelope as Envelope.Scalar).digest?.let {
+                    ConditionalState.Value(it)
+                } ?: ConditionalState.Unreadable
+                else -> ConditionalState.Unreadable
+            }
+        }
+
         override suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead {
             awaitRunnable(timeout)
             val slot = slots[key].live()
-            return when (slot?.state) {
-                null, State.LEASED, State.MISSING -> L1ConditionalRead.Absent
-                State.SET -> L1ConditionalRead.Unreadable(FORMAT)
-                State.VALUE -> {
-                    val envelope = slot.envelope as Envelope.Scalar
-                    if (known != null && Digest.of(envelope) == known) {
-                        L1ConditionalRead.Unchanged(FORMAT)
-                    } else {
-                        L1ConditionalRead.Changed(envelope, FORMAT)
-                    }
+            return when (val state = conditionalState(slot)) {
+                ConditionalState.None -> L1ConditionalRead.Absent
+                ConditionalState.Unreadable -> L1ConditionalRead.Unreadable(FORMAT)
+                is ConditionalState.Value -> if (state.digest == known) {
+                    L1ConditionalRead.Unchanged(FORMAT)
+                } else {
+                    L1ConditionalRead.Changed(requireNotNull(slot).envelope as Envelope.Scalar, FORMAT)
                 }
             }
         }
 
         /**
-         * 比较与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。本后端只存本协议的内容：读不懂的只有集合，总是拒绝。
+         * 比较与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。读不懂的内容（见 [conditionalState]）总是拒绝。
          */
         override suspend fun putIfMatch(
             key: String,
@@ -478,10 +544,10 @@ class InMemoryBackend @JvmOverloads constructor(
             var outcome: L1ConditionalWrite = L1ConditionalWrite.Written
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                val digest = when (slot?.state) {
-                    null, State.LEASED, State.MISSING -> null
-                    State.VALUE -> Digest.of(slot.envelope)
-                    State.SET -> {
+                val digest = when (val state = conditionalState(slot)) {
+                    ConditionalState.None -> null
+                    is ConditionalState.Value -> state.digest
+                    ConditionalState.Unreadable -> {
                         outcome = L1ConditionalWrite.Unreadable(FORMAT)
                         return@compute slot
                     }
@@ -490,10 +556,10 @@ class InMemoryBackend @JvmOverloads constructor(
                     outcome = L1ConditionalWrite.Conflict(digest)
                     return@compute slot
                 }
-                // 与 Redis 的 PUT_IF_MATCH 相同：条件写入写入没有版本的值，写入标识原样保存
+                // 与 Redis 的 PUT_IF_MATCH 相同：条件写入写入没有版本的值，写入标识与摘要原样保存
                 Slot(
                     State.VALUE,
-                    Envelope.Scalar(envelope.bytes, Versioned.NO_VERSION, envelope.writer),
+                    Envelope.Scalar(envelope.bytes, Versioned.NO_VERSION, envelope.writer, envelope.digest),
                     expireAt = expireAt(ttl)
                 )
             }
@@ -504,8 +570,8 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * 比较版本与写入在同一次 `compute` 中完成（对单个 key 原子）；只在写入时广播。没有版本的值与负缓存、lease、不存在都总是写入；
-         * 集合总是拒绝（本后端只存本协议的内容，读不懂的只有集合）。
+         * 比较版本与写入在同一次 `compute` 中完成（对单个 key 原子）；写入时广播，版本相等时不写入但广播，更小时不广播。没有版本的值
+         * 与负缓存（含带摘要段的值）、lease、不存在都总是写入，`E` 按它的版本比较；集合总是拒绝（本后端只存本协议的内容，读不懂的只有集合）。
          */
         override suspend fun putIfNewer(
             key: String,
@@ -532,17 +598,44 @@ class InMemoryBackend @JvmOverloads constructor(
                     return@compute slot
                 }
                 val stored = if (envelope is Envelope.Scalar) {
-                    Envelope.Scalar(
-                        envelope.bytes,
-                        version,
-                        envelope.writer
-                    )
+                    Envelope.Scalar(envelope.bytes, version, envelope.writer, envelope.digest)
                 } else {
                     envelope
                 }
                 Slot(stateOf(envelope), stored, expireAt = expireAt(ttl), version = version)
             }
-            if (outcome == L1VersionedWrite.Written) {
+            // 与 Redis 的 PUT_IF_NEWER 相同：写入时广播；版本相等时不写入，但广播（填充在 lease 上写入这个版本时不广播，F1）
+            if (outcome == L1VersionedWrite.Written || (outcome as? L1VersionedWrite.Stale)?.current == version) {
+                publish(keyspace, frame)
+            }
+            return outcome
+        }
+
+        /**
+         * 与 Redis 的 `EVICT_KEEPING_VERSION` 相同（RFC 0005 §4.7）：带版本的槽位转为 `E`（令牌为零，按 [ttl] 重设到期时间），
+         * 没有版本也没有摘要段的槽位删除，两者都广播；带摘要段的值与集合拒绝，不广播。
+         */
+        override suspend fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): L1Eviction {
+            awaitRunnable(null)
+            var outcome: L1Eviction = L1Eviction.Evicted
+            slots.compute(key) { _, current ->
+                val slot = current.live()
+                when {
+                    slot == null -> null
+                    slot.state == State.SET -> {
+                        outcome = L1Eviction.Unreadable(FORMAT)
+                        slot
+                    }
+                    slot.digested() -> {
+                        outcome = L1Eviction.Authoritative
+                        slot
+                    }
+                    slot.version != Versioned.NO_VERSION ->
+                        Slot(State.EVICTED, Envelope.Absent, expireAt = expireAt(ttl), version = slot.version)
+                    else -> null
+                }
+            }
+            if (outcome == L1Eviction.Evicted) {
                 publish(keyspace, frame)
             }
             return outcome
@@ -569,7 +662,19 @@ class InMemoryBackend @JvmOverloads constructor(
         @JvmField
         val DEFAULT_COMMAND_TIMEOUT: Duration = Duration.ofSeconds(2)
         private val FILLED: L1Fill = L1Fill.Filled(advanced = false)
+        private val ADVANCED: L1Fill = L1Fill.Filled(advanced = true)
         private val TOKEN_MISMATCH: L1Fill = L1Fill.Rejected(currentVersion = null)
         private val log = KotlinLogging.logger {}
     }
+}
+
+/**
+ * 条件读写对一个槽位的判定（[InMemoryBackend] 内部）。
+ */
+private sealed interface ConditionalState {
+    data object None : ConditionalState
+
+    data object Unreadable : ConditionalState
+
+    class Value(val digest: Digest) : ConditionalState
 }

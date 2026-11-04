@@ -14,7 +14,9 @@
 package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.AsyncCacheLoader
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
@@ -49,14 +51,43 @@ import kotlin.random.Random
  * - 生效但调用方看到超时：存储按 SPI 约定自己释放命令取得或交还的令牌（不变量“释放每个令牌”）。
  *
  * 命令完成的顺序是任意的（SPI 不保证同一连接上的顺序），所以“先发出释放、读取仍在途”会让读取随后取得的令牌泄漏。
- * 其间随机取消调用方的 future、随机关闭运行时（取消其中全部协程）。最后排空，断言：
+ * 其间随机取消调用方的 future、随机关闭运行时（取消其中全部协程）。一半的种子用带版本的缓存（RFC 0005 §4.7）：数据源给出随机的版本，
+ * 另有按版本写入与保留版本的失效（运维的按 key 删除，留下 `E`），因此读取会在 `E` 上取得 lease，填充会被版本规则拒绝（脚本清零令牌）
+ * 或让版本前进。最后排空，断言：
  * - 每个调用都已完成（不挂起）；
  * - L1 授予引擎的每个令牌（lease、刷新令牌、回收取得的 lease），之后都以填充或释放交还过（交还命令失败也算：引擎已经交还，存储失败）。
  */
 class TokenConservationPropertyTest {
     @Test
     fun tokensAreFilledOrReleasedUnderRandomFaultsAndCancellation() {
-        repeat(SEEDS) { Scenario(it.toLong()).run() }
+        val scenarios = List(SEEDS) { Scenario(it.toLong()).also { scenario -> scenario.run() } }
+        // 带版本的种子确实走到了按版本前进与被版本规则拒绝的填充
+        scenarios.sumOf { it.backend.advancedFills.get() }.assert().isGreaterThan(0)
+        scenarios.sumOf { it.backend.versionRejectedFills.get() }.assert().isGreaterThan(0)
+    }
+
+    /**
+     * 版本拒绝的填充交还令牌（脚本清零它）：lease 取在 `E` 上，数据源的版本更旧，lease 不留到 `lease.ttl`。
+     */
+    @Test
+    fun aVersionRejectedFillOnEvictedContentReturnsItsLease() {
+        val scenario = Scenario(seed = 0, nodes = 1, asyncSource = true, versioned = true)
+        val cache = scenario.caches[0]
+        val write = cache.async().putIfNewer("a", "a-written", 5)
+        scenario.runAll()
+        write.isDone.assert().isTrue()
+        requireNotNull(scenario.runtimes[0].admin(NAME)).invalidateEncoded("a")
+        val call = cache.async().get("a")
+        scenario.backend.resolveOldest(Outcome.OK)
+        scenario.runAll()
+        scenario.versionedLoads.size.assert().isEqualTo(1)
+        scenario.completeVersionedLoad(version = 3)
+        scenario.drain(newestFirst = false)
+
+        scenario.assertConserved()
+        call.join().assert().isEqualTo("a-loaded")
+        scenario.leased("a").assert().isFalse()
+        scenario.runtimes[0].metrics(NAME)?.fillRejected.assert().isEqualTo(1L)
     }
 
     /**
@@ -65,7 +96,7 @@ class TokenConservationPropertyTest {
      */
     @Test
     fun aReadInFlightWhenTheRuntimeClosesStillReleasesItsLease() {
-        val scenario = Scenario(seed = 0, nodes = 1, asyncSource = true)
+        val scenario = Scenario(seed = 0, nodes = 1, asyncSource = true, versioned = false)
         val call = scenario.caches[0].async().get("a")
         scenario.backend.pendingCount.assert().isEqualTo(1)
         scenario.runtimes[0].close()
@@ -84,7 +115,14 @@ class TokenConservationPropertyTest {
     @Test
     fun aLeaseWaitRereadThatGrantsTheLeaseIsReleasedAfterClose() {
         val scenario =
-            Scenario(seed = 0, nodes = 2, asyncSource = true, observed = true, leaseWait = Duration.ofSeconds(10))
+            Scenario(
+                seed = 0,
+                nodes = 2,
+                asyncSource = true,
+                observed = true,
+                leaseWait = Duration.ofSeconds(10),
+                versioned = false
+            )
         // 节点 0 取得 lease，加载挂起
         val holder = scenario.caches[0].async().get("a")
         scenario.backend.resolveOldest(Outcome.OK)
@@ -152,6 +190,7 @@ class TokenConservationPropertyTest {
         asyncSource: Boolean? = null,
         observed: Boolean? = null,
         leaseWait: Duration = Duration.ZERO,
+        versioned: Boolean? = null,
     ) {
         private val random = Random(seed)
         private val clock = ManualClock()
@@ -163,7 +202,13 @@ class TokenConservationPropertyTest {
         private val calls = ArrayList<Pair<String, CompletableFuture<*>>>()
         private val asyncSource = asyncSource ?: random.nextBoolean()
         private val observed = observed ?: random.nextBoolean()
+        private val versioned = versioned ?: random.nextBoolean()
         private var loaded = 0
+
+        /**
+         * 带版本的数据源的版本：随机，可能比 L1 中的旧（填充被拒绝）、相等或更新。
+         */
+        val versionedLoads = ArrayList<Pair<String, CompletableFuture<Versioned<String?>?>>>()
 
         val runtimes: List<CacheRuntime> = List(nodes) { node ->
             CacheRuntime.builder()
@@ -180,14 +225,21 @@ class TokenConservationPropertyTest {
         }
         private val open = BooleanArray(nodes) { true }
 
-        val caches = runtimes.map { runtime ->
+        val caches: List<Cache<String, String>> = runtimes.map { runtime ->
             runtime.create(
                 cacheSpec<String, String>(NAME) {
                     codec = StringCodec
-                    if (this@Scenario.asyncSource) {
-                        asyncLoader = AsyncCacheLoader { key -> CompletableFuture<String?>().also { loads += key to it } }
-                    } else {
-                        loader = CacheLoader { key -> "$key-${loaded++}" }
+                    when {
+                        this@Scenario.versioned && this@Scenario.asyncSource -> versionedAsyncLoader = AsyncCacheLoader { key ->
+                            CompletableFuture<Versioned<String?>?>().also { versionedLoads += key to it }
+                        }
+
+                        this@Scenario.versioned -> versionedLoader = CacheLoader { key -> Versioned("$key-${loaded++}", randomVersion()) }
+                        this@Scenario.asyncSource -> asyncLoader = AsyncCacheLoader { key ->
+                            CompletableFuture<String?>().also { loads += key to it }
+                        }
+
+                        else -> loader = CacheLoader { key -> "$key-${loaded++}" }
                     }
                     policy = CachePolicy(
                         ttlJitter = Duration.ZERO,
@@ -235,6 +287,10 @@ class TokenConservationPropertyTest {
             }
             val cache = caches[node].async()
             val key = KEYS.random(random)
+            if (versioned && random.nextInt(3) == 0) {
+                startVersionedWrite(node, key)
+                return
+            }
             calls += when (random.nextInt(10)) {
                 in 0..4 -> "get $key" to cache.get(key)
                 5, 6 -> {
@@ -246,7 +302,40 @@ class TokenConservationPropertyTest {
             }
         }
 
+        /**
+         * 带版本的缓存上的写入：按版本写入、墓碑，或保留版本的失效（留下 `E`；能力面上的操作就地完成，调用不挂起）。
+         */
+        private fun startVersionedWrite(node: Int, key: String) {
+            val cache = caches[node].async()
+            calls += when (random.nextInt(3)) {
+                0 -> "putIfNewer $key" to cache.putIfNewer(key, "$key-v", randomVersion())
+                1 -> "invalidateIfNewer $key" to cache.invalidateIfNewer(key, randomVersion())
+                else -> "evict $key" to CompletableFuture.completedFuture(
+                    runCatching { requireNotNull(runtimes[node].admin(NAME)).invalidateEncoded(key) }.getOrNull()
+                )
+            }
+        }
+
+        private fun randomVersion(): Long = 1L + random.nextInt(MAX_VERSION)
+
+        /**
+         * 以 [version] 完成最早的带版本加载。
+         */
+        fun completeVersionedLoad(version: Long) {
+            val (key, future) = versionedLoads.removeAt(0)
+            future.complete(Versioned("$key-loaded", version))
+        }
+
         private fun resolveLoad() {
+            if (versionedLoads.isNotEmpty() && (loads.isEmpty() || random.nextBoolean())) {
+                val (key, future) = versionedLoads.removeAt(random.nextInt(versionedLoads.size))
+                if (random.nextInt(5) == 0) {
+                    future.completeExceptionally(IllegalStateException("source failed"))
+                } else {
+                    future.complete(Versioned("$key-${loaded++}", randomVersion()))
+                }
+                return
+            }
             if (loads.isEmpty()) {
                 return
             }
@@ -296,6 +385,11 @@ class TokenConservationPropertyTest {
                     future.complete("$key-drained")
                     continue
                 }
+                if (versionedLoads.isNotEmpty()) {
+                    val (key, future) = versionedLoads.removeAt(0)
+                    future.complete(Versioned("$key-drained", randomVersion()))
+                    continue
+                }
                 return
             }
         }
@@ -330,6 +424,7 @@ class TokenConservationPropertyTest {
         private const val SEEDS = 400
         private const val STEPS = 120
         private const val MAX_DRAIN_ROUNDS = 100_000
+        private const val MAX_VERSION = 5
         private val KEYS = listOf("a", "b", "c")
     }
 }

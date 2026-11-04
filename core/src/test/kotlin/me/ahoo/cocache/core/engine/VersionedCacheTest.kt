@@ -100,16 +100,13 @@ class VersionedCacheTest {
     }
 
     @Test
-    fun specRejectsRefreshAheadAndSeveralLoaders() {
-        val refresh = runCatching {
-            cacheSpec<String, String>("v") {
-                codec = StringCodec
-                versioned = true
-                policy { refreshWindow = Duration.ofSeconds(10) }
-            }
-        }.exceptionOrNull()
-        refresh.assert().isInstanceOf(IllegalArgumentException::class.java)
-        refresh?.message.assert().contains("refreshWindow")
+    fun specAcceptsRefreshAheadButNotSeveralLoaders() {
+        // 带版本的内容取得刷新令牌（RFC 0005 §4.7）：带版本的缓存照常提前刷新
+        cacheSpec<String, String>("v") {
+            codec = StringCodec
+            versioned = true
+            policy { refreshWindow = Duration.ofSeconds(10) }
+        }.policy.refreshWindow.assert().isEqualTo(Duration.ofSeconds(10))
         runCatching {
             cacheSpec<String, String>("v") {
                 codec = StringCodec
@@ -408,7 +405,7 @@ class VersionedCacheTest {
 
     @Test
     fun formatsRefuseToEncodeAVersionedAbsence() {
-        runCatching { VersionedFormat(StringCodec).encode(Versioned(null, 1), null) }.exceptionOrNull()
+        runCatching { VersionedFormat(StringCodec).encode(Versioned(null, 1), null, false) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
         runCatching { PayloadCodec(StringCodec).encode(Versioned(null, 1)) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)

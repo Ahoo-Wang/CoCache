@@ -35,7 +35,8 @@ sealed interface L1Read {
     ) : L1Read
 
     /**
-     * 未命中。[leaseGranted] 表示是否原子地取得了请求中的 lease。
+     * 未命中：key 不存在，或处于 `E`（保留版本的失效，[VersionedL1Store.evictKeepingVersion]）。[leaseGranted] 表示是否原子地取得了
+     * 请求中的 lease；lease 取得在 `E` 上时，填充按版本规则写入（[L1Store.fill]）。
      */
     data class Miss(val leaseGranted: Boolean) : L1Read
 

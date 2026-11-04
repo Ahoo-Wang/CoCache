@@ -20,7 +20,7 @@ Properties come last so operators can retune a cache without a rebuild. This mea
 ::: tip Set caches keep their lifetime
 `cocache.defaults.ttl` and `ttl-forever` don't apply to a [`SetCache`](./caches.md#set-cache): its only copy is Redis, so a global lifetime would make sets expire and disappear. `cocache.defaults.absent-ttl` and `refresh-window` are skipped too, since a set cache has no source. Only `cocache.caches.[name].ttl` / `ttl-forever` change a set cache's lifetime. Every other `defaults` key applies as usual.
 
-`cocache.defaults.refresh-window` doesn't apply to [versioned caches](./freshness.md#versioned-writes) either, since they don't support refresh-ahead. Setting `cocache.caches.[name].refresh-window` on one fails at startup.
+`cocache.defaults.refresh-window` applies to [versioned caches](./freshness.md#versioned-writes) like any other: they refresh ahead too. Turn it off for one with `cocache.caches.[name].refresh-window: 0`.
 :::
 
 ## Top-level properties {#properties}

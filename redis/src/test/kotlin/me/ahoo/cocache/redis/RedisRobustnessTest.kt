@@ -63,7 +63,7 @@ class RedisRobustnessTest {
     private fun key(name: String) = "cocache:$namespace:$name"
 
     /**
-     * 5.x 遗留的原生 Set / List / ZSet 落在缓存 key 上：读取按无法识别的内容返回（不报 WRONGTYPE），
+     * 其它程序写入的原生 Set / List / ZSet 落在缓存 key 上：读取按无法识别的内容返回（不报 WRONGTYPE），
      * 以引擎同样的摘要（[Digest.of]）条件回收为 lease，然后正常填充。
      */
     @Test
@@ -205,7 +205,7 @@ class RedisRobustnessTest {
         Assumptions.assumeTrue(System.getenv("SPRING_DATA_REDIS_CLUSTER_NODES") == null)
         val rules = (
             "~cocache:* resetchannels &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe " +
-                "+unsubscribe +spublish +ssubscribe +sunsubscribe +get +getrange +set +del +pttl +type +hgetall +hkeys +hmget +hset " +
+                "+unsubscribe +spublish +ssubscribe +sunsubscribe +get +getrange +strlen +set +del +pttl +type +hgetall +hkeys +hmget +hset " +
                 "+hdel +hlen +pexpire +persist +setrange +time"
             ).split(" ")
         RedisTestSupport.aclBackend("cocache-documented", rules).use { backend ->

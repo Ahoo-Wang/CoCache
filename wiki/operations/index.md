@@ -112,8 +112,9 @@ The L2 hit counter `cocache.hits{level=l2}` is off by default because it slows d
 
 | Entry | Stored as | Size |
 |-------|-----------|------|
-| Value | String | key + **36-byte header** + codec bytes. A cache without a loader adds a 28-byte writer id, and a versioned value an 8-byte version ([wire format](../architecture/index.md#wire-format)). |
+| Value | String | key + **36-byte header** + codec bytes. A cache without a loader adds a 28-byte writer id and a 32-byte digest (60 bytes), or for a versioned value the writer id and an 8-byte version (36 bytes); a versioned cache with a loader adds the 8-byte version ([wire format](../architecture/index.md#wire-format)). |
 | Negative entry | String | key + 36-byte header, for `absent-ttl`. A versioned tombstone adds the 8-byte version. |
+| Evicted versioned key | String | key + 44 bytes (header and version), for the tombstone lifetime |
 | Lease | String | key + 36-byte header, while a load runs (at most `lease-ttl`) |
 | Set (`SetCache`) | Hash | key + a `!f` field + one `+{member}` field per member |
 
@@ -168,15 +169,15 @@ CoCache needs these permissions on its Redis user:
 | Keys | Read and write on your key prefixes (`~cocache:*` by default). In `pubsub` mode also the probe key `cocache:!probe:{a}`, which `~cocache:*` already covers. |
 | Channels | `&{keyPrefix}inv:*` for each prefix (`&cocache:inv:*` by default). In `pubsub` mode also `&cocache:!probe:*`, or the backend falls back to non-atomic broadcast. |
 | Commands, direct | `EVALSHA`, `EVAL` (fallback after `NOSCRIPT`), `PING` (heartbeat), `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, or in `sharded` mode `SPUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, plus the connection commands (`HELLO`, `AUTH`, `CLIENT`, `SELECT`). `INFO` for the [startup eviction check](#maxmemory-policy) when you use a `SetCache`. |
-| Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `GETRANGE`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HKEYS`, `HMGET`, `HSET`, `HDEL`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
+| Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `GETRANGE`, `STRLEN`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HKEYS`, `HMGET`, `HSET`, `HDEL`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
 
 A starting point, checked against Redis 7.4 by running every CoCache script as this user:
 
 ```
-ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +getrange +set +del +pttl +type +hgetall +hkeys +hmget +hset +hdel +hlen +pexpire +persist +setrange +time
+ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe +unsubscribe +spublish +ssubscribe +sunsubscribe +info +get +getrange +strlen +set +del +pttl +type +hgetall +hkeys +hmget +hset +hdel +hlen +pexpire +persist +setrange +time
 ```
 
-The scripts read a set's format fields with `HMGET`, read only the 36-byte header with `GETRANGE` when they write back or release a token, and use `HGETALL` for conditional reclaim. A user that lacks a command the scripts call fails reads and fills with an ACL error, worded differently across Redis versions.
+The scripts read a set's format fields with `HMGET`, read only the start of the header with `GETRANGE` when they write back or release a token, read only the header with `GETRANGE` and `STRLEN` for conditional reads and writes, and use `HGETALL` for conditional reclaim. A user that lacks a command the scripts call fails reads, fills and conditional calls with an ACL error, worded differently across Redis versions.
 
 Creating a cache publishes one empty frame to the cache's channel, the way its writes will. If the ACL denies that channel, creation fails with an `IllegalStateException` that names the pattern to allow, for example `[&cocache:inv:*]`. Otherwise every later write would change Redis and then fail at its broadcast, and other instances would stay stale until `local-max-age`.
 

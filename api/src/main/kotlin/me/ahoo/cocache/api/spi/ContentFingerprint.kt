@@ -19,8 +19,8 @@ import java.security.MessageDigest
 /**
  * 条件回收（[L1Store.reclaim]）比较的内容指纹（RFC 0005 §4.3，round 3 K12）：判断读不懂的内容是否仍是读到的那一份。
  *
- * 它是 SPI 自己的类型，与条件读写的 [Digest] 是两个类型：算法固定为 SHA-1（存储在 L1 中按同样的方式现算），用途只是回收，与安全无关；
- * [Digest] 之后改为 SHA-256（RFC 0005 §4.7），本类型不变。计算方式属于线格式：
+ * 它是 SPI 自己的类型，与条件读写的 [Digest]（SHA-256，写入方计算、写在头部的摘要段中）是两个类型：算法固定为 SHA-1
+ * （存储在 L1 中按同样的方式现算），用途只是回收，与安全无关（RFC 0005 §4.7）。计算方式属于线格式：
  * - 标量：载荷字节（读不懂的内容为读到的全部字节）。
  * - 集合：按 L1 返回顺序拼接 `int32 长度 + 成员字节`。
  * - 负缓存：空字节串。
@@ -64,7 +64,7 @@ class ContentFingerprint(sha1: ByteArray) {
         fun of(envelope: Envelope): ContentFingerprint {
             val digest = MessageDigest.getInstance("SHA-1")
             when (envelope) {
-                is Envelope.Scalar -> digest.update(envelope.bytes)
+                is Envelope.Scalar -> digest.update(envelope.payload)
                 is Envelope.Members -> envelope.members.forEach {
                     digest.update(ByteBuffer.allocate(Int.SIZE_BYTES).putInt(it.size).array())
                     digest.update(it)

@@ -20,6 +20,7 @@ import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
@@ -84,7 +85,14 @@ class ConditionalWriteTest {
     private fun digestOf(value: String) = Digest.of(Envelope.Scalar(value.toByteArray()))
 
     /**
-     * 直接执行条件读取脚本，看 Redis 的回复本身：摘要未变时回复只有结果码与格式版本（两个整数），正文不上线。
+     * 像没有数据源的缓存那样写入的值：带载荷的摘要段（RFC 0005 §4.7）。
+     */
+    private fun digested(value: String) =
+        Envelope.Scalar(value.toByteArray(), Versioned.NO_VERSION, null, Digest.ofPayload(value.toByteArray()))
+
+    /**
+     * 直接执行条件读取脚本，看 Redis 的回复本身：摘要未变时回复只有结果码与格式版本（两个整数），正文不上线；已知摘要是摘要段的
+     * 32 个字节。摘要变了时回复整个值（头部、段与载荷，客户端按载荷偏移解析）。
      */
     @Test
     fun unchangedReadRepliesWithoutTheBody() {
@@ -93,17 +101,22 @@ class ConditionalWriteTest {
         val document = "x".repeat(1 shl 20)
         val cache = cache(name)
         cache.put("doc", document)
-        val source = String(RedisScripts.READ_IF_CHANGED.source, Charsets.UTF_8)
-        fun reply(known: String): List<Any?> = RedisTestSupport.withCommands {
-            it.eval<List<Any?>>(source, ScriptOutputType.MULTI, arrayOf(key), known)
+        fun reply(known: ByteArray): List<Any?> = RedisTestSupport.withBinaryCommands {
+            it.eval<List<Any?>>(
+                RedisScripts.READ_IF_CHANGED.source,
+                ScriptOutputType.MULTI,
+                arrayOf(key.toByteArray()),
+                known
+            )
         }
 
         reply(
-            digestOf(document).toString()
+            digestOf(document).bytes
         ).assert().containsExactly(RedisScripts.COND_UNCHANGED, RedisScripts.FORMAT.toLong())
-        val changed = reply(digestOf("older").toString())
+        val changed = reply(digestOf("older").bytes)
         changed.size.assert().isEqualTo(3)
-        (changed[2] as String).length.assert().isEqualTo(document.length)
+        // 核心头部 36、摘要段 32、写入标识的扩展区 28
+        (changed[2] as ByteArray).size.assert().isEqualTo(document.length + 96)
 
         cache.getIfChanged("doc", digestOf(document)).assert().isEqualTo(ConditionalGet.Unchanged)
         cache.async().getIfChanged("doc", digestOf(document)).join().assert().isEqualTo(ConditionalGet.Unchanged)
@@ -217,7 +230,8 @@ class ConditionalWriteTest {
 
         cache["k"].assert().isEqualTo("loaded")
         requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(1L)
-        cache.getIfChanged("k", null).assert().isEqualTo(ConditionalGet.Present("loaded", digestOf("loaded")))
+        // 有数据源的缓存回源写入的值没有摘要段：条件读写只认带摘要段的值（RFC 0005 §4.7）
+        assertForeignRead(runCatching { cache.getIfChanged("k", null) }.exceptionOrNull(), key, RedisScripts.FORMAT)
     }
 
     /**
@@ -271,6 +285,28 @@ class ConditionalWriteTest {
     }
 
     /**
+     * 写入 [storeClassifiesEveryShape] 用到的每种内容：没有值的三种状态、带摘要段的值、没有摘要段的值、带版本的内容（值、墓碑、`E`）、
+     * 集合与读不懂的内容。
+     */
+    private suspend fun writeEveryShape(store: me.ahoo.cocache.api.spi.L1Store, key: (String) -> String) {
+        store.put(key("negative"), Envelope.Absent, null, frame)
+        store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
+        store.put(key("value"), digested("v"), null, frame)
+        store.put(key("bare"), Envelope.Scalar("v".toByteArray()), null, frame)
+        store.put(
+            key("versioned"),
+            Envelope.Scalar("v".toByteArray(), 3, null, Digest.ofPayload("v".toByteArray())),
+            null,
+            frame
+        )
+        store.versionedSurface.putIfNewer(key("tombstone"), Envelope.Absent, 4, null, frame)
+        store.versionedSurface.putIfNewer(key("evicted"), Envelope.Scalar("e".toByteArray()), 5, null, frame)
+        store.versionedSurface.evictKeepingVersion(key("evicted"), null, frame)
+        store.setSurface.addMembers(key("set"), listOf("m".toByteArray()), null, frame)
+        writeUnreadableShapes(key)
+    }
+
+    /**
      * 存储层的判定（一次脚本内原子完成）：没有值的三种状态、本协议的值、读不懂的内容，读与写各自的结果。
      */
     @Test
@@ -278,23 +314,21 @@ class ConditionalWriteTest {
         val namespace = "store-$run"
         val store = backend.store(Keyspace("cocache:", namespace))
         fun key(id: String) = "cocache:$namespace:$id"
-        store.put(key("negative"), Envelope.Absent, null, frame)
-        store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
-        store.put(key("value"), Envelope.Scalar("v".toByteArray()), null, frame)
-        store.setSurface.addMembers(key("set"), listOf("m".toByteArray()), null, frame)
-        writeUnreadableShapes(::key)
+        writeEveryShape(store, ::key)
 
         val conditional = store.conditionalSurface
-        val w = Envelope.Scalar("w".toByteArray())
+        val w = digested("w")
         listOf("absent", "negative", "leased").forEach {
             conditional.readIfChanged(key(it), null, null).assert().isEqualTo(L1ConditionalRead.Absent)
         }
         val changed = conditional.readIfChanged(key("value"), digestOf("other"), null) as L1ConditionalRead.Changed
-        changed.envelope.assert().isEqualTo(Envelope.Scalar("v".toByteArray()))
+        changed.envelope.assert().isEqualTo(digested("v"))
         changed.format.assert().isEqualTo(RedisScripts.FORMAT)
         conditional.readIfChanged(key("value"), digestOf("v"), null)
             .assert().isEqualTo(L1ConditionalRead.Unchanged(RedisScripts.FORMAT))
-        mapOf("set" to 2, "foreign" to 0, "zero" to 0, "newer" to 3, "unknown-state" to 3).forEach { (id, format) ->
+        // 没有摘要段的值、带版本的内容（值、墓碑、E）：本格式，但条件读写读不懂
+        val refused = listOf("bare", "versioned", "tombstone", "evicted").associateWith { RedisScripts.FORMAT }
+        (refused + mapOf("set" to 2, "foreign" to 0, "zero" to 0, "newer" to 3, "unknown-state" to 3)).forEach { (id, format) ->
             conditional.readIfChanged(key(id), null, null).assert().isEqualTo(L1ConditionalRead.Unreadable(format))
             conditional.putIfMatch(
                 key(id),

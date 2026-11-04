@@ -351,7 +351,7 @@ class RedisL1StoreUnitTest {
         refuse = { command -> refused.takeIf { command.script == "FILL" && command.key == "b" } }
         val call = started(1) { store.fillAll(listOf("a", "b").map { Fill(it, token(), Envelope.Absent, null) }) }
         call.isDone.assert().isFalse()
-        dispatched.single().reply(listOf(1L))
+        dispatched.single().reply(listOf(1L, 0L))
         call.failure().assert().isSameAs(refused)
         released().assert().isEmpty()
     }
@@ -484,7 +484,7 @@ class RedisL1StoreUnitTest {
         val call = started(3) { store.fillAll(fills) }
         val timedOut = RedisException("Command timed out after PT1S.", RedisCommandTimeoutException("late"))
         dispatched[1].completeExceptionally(timedOut)
-        dispatched[0].reply(listOf(1L))
+        dispatched[0].reply(listOf(1L, 0L))
         call.isDone.assert().isFalse()
         dispatched[2].reply(listOf(0L))
         call.failure().assert().isSameAs(timedOut)

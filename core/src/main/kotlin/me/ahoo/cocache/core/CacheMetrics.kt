@@ -55,6 +55,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     private val conditionalUnchangedAdder = LongAdder()
     private val conditionalConflictAdder = LongAdder()
     private val staleVersionAdder = LongAdder()
+    private val typeMismatchAdder = LongAdder()
 
     /**
      * 由 L2（本地副本）直接返回的读取数：未过期的本地副本，含负缓存与进入刷新窗口的副本。
@@ -108,6 +109,12 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
      */
     val staleVersions: Long get() = staleVersionAdder.sum()
 
+    /**
+     * 本缓存从 L1 读到不属于它这一类的内容的次数（RFC 0005 §4.7，D4）：不写摘要段的缓存（有数据源或带版本的缓存）读到带摘要段的值，
+     * 即同一个 namespace 上还有没有数据源的缓存（权威标量）。这样的值照常读取，但不回收、不取得刷新令牌。
+     */
+    val typeMismatches: Long get() = typeMismatchAdder.sum()
+
     internal fun localHit() = localHitAdder.increment()
     internal fun remoteHit() = remoteHitAdder.increment()
     internal fun miss() = missAdder.increment()
@@ -139,4 +146,5 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     internal fun conditionalUnchanged() = conditionalUnchangedAdder.increment()
     internal fun conditionalConflict() = conditionalConflictAdder.increment()
     internal fun staleVersion() = staleVersionAdder.increment()
+    internal fun typeMismatch() = typeMismatchAdder.increment()
 }
