@@ -128,7 +128,7 @@ WIdle == [pc |-> "idle", op |-> "INV", v |-> 0, rep |-> NoRep]
 LoaderSnaps == IF LaggingLoader THEN 0..db ELSE {db}
 Floor(n) == Max(floorS[n], floorR[n])
 Refreshing(n) == \E j \in Rids : rd[<<n, j>>].pc # "idle" /\ rd[<<n, j>>].mode \in {"refresh", "refill", "reload"}
-\* Caffeine serializes a single-key eviction with a compute on the same key (§4); a reset does not wait.
+\* Caffeine serializes a single-key eviction with a compute on the same key (§8); a reset does not wait.
 NoCompute(n) == \A i \in Rids : rd[<<n, i>>].pc # "c2"
 \* a stamp bump on node n: every stamp taken before it is invalid
 Bumped(r, n) == [x \in Readers |-> IF x[1] = n THEN [r[x] EXCEPT !.ok = FALSE] ELSE r[x]]
@@ -159,7 +159,7 @@ Granted == [Rep("miss") EXCEPT !.g = TRUE]
 Grant(c) == [l1 EXCEPT !.tok = c.tok, !.aged = FALSE, !.late = (c.from = Orphan)]
 ClearToken == [l1 EXCEPT !.tok = 0, !.aged = FALSE, !.late = FALSE]
 
-ExecRead(c) ==                                  \* READ with a lease request (§4.1, §4.7 table E)
+ExecRead(c) ==                                  \* READ with a lease request (§4.3, RFC §4.7 table E)
     CASE l1.st = "A" -> Res([Absent EXCEPT !.st = "L", !.tok = c.tok, !.late = (c.from = Orphan)], Granted, FALSE, 0, FALSE)
       [] l1.st = "E" /\ TokenFree -> Res(Grant(c), Granted, FALSE, 0, FALSE)
       [] l1.st \in {"L", "E"} -> Quiet(Rep("leased"))
@@ -462,7 +462,7 @@ ReaderTimeout(n, i) ==
                    l1db, l1ver, floorS, floorR, floorF, owed, lost>>
 
 -----------------------------------------------------------------------------
-(* Writers (§4.2): commit to the source first, then write the cache.
+(* Writers (§6.1): commit to the source first, then write the cache.
    Cache: invalidate (failure mode RETRY). VersionedCache: putIfNewer / invalidateIfNewer, evict. *)
 
 Commit(n) ==
@@ -479,7 +479,7 @@ Evict(n) ==
     /\ UNCHANGED <<db, l1, net, conn, alive, l2, rd, pending, unfilter, chan, nextTok, faults, noise,
                    l1db, l1ver, floorS, floorR, floorF, owed, lost>>
 
-\* stamp and evict L2; a reader may take its stamp and read L1 before the script is sent (§4.3)
+\* stamp and evict L2; a reader may take its stamp and read L1 before the script is sent (§8.1)
 WriteStamp(n) ==
     /\ alive[n] /\ wr[n].pc = "b1" /\ NoCompute(n)
     /\ rd' = Bumped(rd, n)
@@ -568,7 +568,7 @@ ResumeFiltering(n) ==
                    l1db, l1ver, floorS, floorR, floorF, owed, lost>>
 
 -----------------------------------------------------------------------------
-(* The invalidation channel (§8.1) *)
+(* The invalidation channel (§9.1) *)
 
 \* stamp and evict L2; a node drops its own frames unless a write's outcome is unknown
 Deliver(m, fr, keep) ==
@@ -705,7 +705,7 @@ Fairness ==
 FairSpec == Spec /\ Fairness
 
 -----------------------------------------------------------------------------
-(* Properties. docs/spec/README.md maps each to docs/architecture.md §1 and §14. *)
+(* Properties. docs/spec/README.md maps each to docs/architecture.md §1 and §15. *)
 
 TypeOK ==
     /\ db \in 0..MaxVersion
