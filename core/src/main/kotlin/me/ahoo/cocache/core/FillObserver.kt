@@ -35,6 +35,12 @@ fun interface FillObserver {
      */
     fun enter(): FillScope?
 
+    /**
+     * 缓存 [cacheName] 的一次同步未命中：引擎调用的是它，默认同 [enter]。按缓存配置的实现覆盖它，对两个机制都关闭的缓存返回 `null`：
+     * 这个缓存的调用因此与 [NONE] 相同，不门控、不记录，事务中的 leader 也照常与跟随者共享结果。
+     */
+    fun enter(cacheName: String): FillScope? = enter()
+
     companion object {
         /**
          * 不观察：任何调用都不在事务中。

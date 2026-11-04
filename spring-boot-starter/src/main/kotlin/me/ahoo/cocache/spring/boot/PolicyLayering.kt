@@ -37,6 +37,7 @@ import me.ahoo.cocache.core.policy.RefreshWindow
 import me.ahoo.cocache.core.policy.Ttl
 import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.spring.boot.CoCacheProperties.PolicyProperties
+import me.ahoo.cocache.spring.tx.FillInTransaction
 import org.apache.commons.logging.LogFactory
 import java.time.Duration
 
@@ -48,10 +49,13 @@ import java.time.Duration
  * - `caches.[name]` 设定不适用的字段时按 `cocache.caches-validation` 失败或告警；写出被锁定的字段时启动失败，除非它在 `unlock` 中。
  * - 定制器改变被锁定的字段、被锁定的布局或数据来源（U16）时抛出。
  * - 校验连锁（U10）：全局层让提前刷新窗口不再小于 `local-max-age` 或 `ttl` 时关闭窗口并告警；只由声明或 `caches.[name]` 引起的冲突照常失败。
+ * - 写事务内回源的两个机制（`fill-in-transaction`、`invalidate-fills-on-rollback`，RFC 0005 §4.9）不是策略字段，没有声明层：
+ *   按 `defaults` → `overrides`（取更严的值）→ `caches.[name]` 分层，登记到 [fillModes]（有 spring-tx 时）并列入报告。
  */
 internal class PolicyLayering(
     private val properties: CoCacheProperties,
     private val customizers: List<CacheSpecCustomizer>,
+    private val fillModes: TransactionalFillModes? = null,
 ) {
     fun <S : Spec<*, *>, B : Any> layer(spec: S, locks: Locks, adapter: SpecAdapter<S, B>): Layered<S> =
         Merge(spec, locks, adapter).run()
@@ -90,6 +94,7 @@ internal class PolicyLayering(
             applyOverrides(overrides, "${CoCacheProperties.PREFIX}.overrides.$layer")
             val unlocked = applyCacheLayer()
             applyKeyPrefix(unlocked)
+            val fills = applyFillModes()
             locks.constrain(draft).forEach { sources[it] = Source.LOCKED to "constrained by ${locks.by}" }
             clampRefreshWindow()
             adapter.applyDraft(builder, draft)
@@ -98,7 +103,7 @@ internal class PolicyLayering(
                 applicable.map { field ->
                     val (source, detail) = sources.getValue(field)
                     PolicyReport.Entry(field.key, field.describe(draft), source, detail)
-                },
+                } + fills,
                 skipped
             )
             return Layered(effective, report)
@@ -305,6 +310,64 @@ internal class PolicyLayering(
             }
         }
 
+        /**
+         * 写事务内回源的两个机制：生效值登记到 [fillModes]，返回报告的条目（没有 spring-tx 时没有）。它们作用于派生副本的回源，
+         * 包括外部来源的 `Cache` 上按调用给出 loader 的 `get(key, loader)`（Spring Cache 的 `sync = true`）；权威副本没有回源，
+         * 全局层跳过这两个键，`caches.[name]` 中的按 `caches-validation` 处理。
+         */
+        private fun applyFillModes(): List<PolicyReport.Entry> {
+            val layer = if (store) "store" else "cache"
+            val defaults = if (store) properties.defaults.store else properties.defaults.cache
+            val overrides = if (store) properties.overrides.store else properties.overrides.cache
+            val defaultsPath = "${CoCacheProperties.PREFIX}.defaults.$layer"
+            val overridesPath = "${CoCacheProperties.PREFIX}.overrides.$layer"
+            val perCache = properties.cacheProperties(name)
+            if (store) {
+                FILL_FIELDS.forEach { field ->
+                    field.read(defaults)?.let { skip("$defaultsPath.${field.key}", defaultsPath, notApplicable()) }
+                    field.read(overrides)?.let { skip("$overridesPath.${field.key}", overridesPath, notApplicable()) }
+                    perCache?.let { (configName, layer) ->
+                        field.read(layer)?.let {
+                            val key = "${CoCacheProperties.PREFIX}.caches.$configName.${field.key}"
+                            invalid("$key doesn't apply to ${describeType()}")
+                        }
+                    }
+                }
+                return emptyList()
+            }
+            val rollback = layerFill(INVALIDATE_FILLS_ON_ROLLBACK, defaults, overrides, perCache?.second)
+            val mode = layerFill(FILL_IN_TRANSACTION, defaults, overrides, perCache?.second)
+            val modes = fillModes ?: return emptyList()
+            modes.register(name, TransactionalFillModes.Mode(rollback.first, mode.first))
+            return listOf(rollback.second, mode.second)
+        }
+
+        private fun <T : Any> layerFill(
+            field: FillField<T>,
+            defaults: PolicyProperties,
+            overrides: PolicyProperties,
+            perCache: PolicyProperties?,
+        ): Pair<T, PolicyReport.Entry> {
+            var value = field.typeDefault
+            var source: Pair<Source, String?> = Source.TYPE_DEFAULT to null
+            field.read(defaults)?.let {
+                value = it
+                source = Source.DEFAULTS to null
+            }
+            field.read(overrides)?.let {
+                val stricter = field.stricter(value, it)
+                if (stricter != value) {
+                    source = Source.OVERRIDES to "stricter than ${field.describe(value)}"
+                    value = stricter
+                }
+            }
+            perCache?.let(field.read)?.let {
+                value = it
+                source = Source.CACHES to null
+            }
+            return value to PolicyReport.Entry(field.key, field.describe(value), source.first, source.second)
+        }
+
         private fun invalid(message: String) {
             val full = "Cache[$name] - $message."
             if (properties.cachesValidation == CoCacheProperties.Validation.FAIL) {
@@ -326,11 +389,52 @@ internal class PolicyLayering(
         private fun same(left: Any?, right: Any?): Boolean = left === right || left == right
     }
 
+    /**
+     * 写事务内回源的一个字段：在 spring-tx 的回源钩子中按缓存名生效（[TransactionalFillModes]），有严格序，`overrides` 取更严的值。
+     */
+    private class FillField<T : Any>(
+        val key: String,
+        val typeDefault: T,
+        val read: (PolicyProperties) -> T?,
+        val stricter: (T, T) -> T,
+        val describe: (T) -> String,
+    )
+
     private companion object {
         private val log = LogFactory.getLog(PolicyLayering::class.java)
         private const val GLOBAL_KEY_PREFIX = "${CoCacheProperties.PREFIX}.key-prefix"
         private const val NOT_ALLOWED_IN_OVERRIDES =
-            "not allowed in ${CoCacheProperties.PREFIX}.overrides: only staleness bounds and read-failure tighten"
+            "not allowed in ${CoCacheProperties.PREFIX}.overrides: only staleness bounds, read-failure, fill-in-transaction and invalidate-fills-on-rollback tighten"
+
+        /**
+         * `true` 严于 `false`。
+         */
+        private val INVALIDATE_FILLS_ON_ROLLBACK = FillField(
+            "invalidate-fills-on-rollback",
+            TransactionalFillModes.Mode.DEFAULT.invalidateFillsOnRollback,
+            { it.invalidateFillsOnRollback },
+            { current, override -> current || override },
+            Boolean::toString,
+        )
+
+        /**
+         * `private` 严于 `registered-keys` 严于 `allow`。
+         */
+        private val FILL_IN_TRANSACTION = FillField(
+            "fill-in-transaction",
+            TransactionalFillModes.Mode.DEFAULT.fillInTransaction,
+            { it.fillInTransaction },
+            { current, override -> maxOf(current, override, compareBy(::strictness)) },
+            { it.name.lowercase().replace('_', '-') },
+        )
+
+        private val FILL_FIELDS = listOf(INVALIDATE_FILLS_ON_ROLLBACK, FILL_IN_TRANSACTION)
+
+        private fun strictness(mode: FillInTransaction): Int = when (mode) {
+            FillInTransaction.ALLOW -> 0
+            FillInTransaction.REGISTERED_KEYS -> 1
+            FillInTransaction.PRIVATE -> 2
+        }
     }
 }
 

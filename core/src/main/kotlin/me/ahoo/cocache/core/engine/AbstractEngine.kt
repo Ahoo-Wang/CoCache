@@ -507,6 +507,17 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         local.invalidateAll()
     }
 
+    /**
+     * 只广播失效帧（[CacheAdmin.broadcastEncoded]）：本节点自己的帧被过滤，所以先在本地递增戳并淘汰 L2（同写入方的第一步），再发布。
+     * L1 不变，因此不需要写入方的第二次递增：在这之后取戳的填充读到的就是 L1 的当前内容。发布不可取消，失败时原样抛出。
+     */
+    final override fun broadcastEncoded(encodedKey: String) {
+        val storageKey = storageKeyOf(encodedKey)
+        stamps.invalidate(storageKey)
+        local.invalidate(encodedKey)
+        runSync { uncancellable { publish(frameOf(listOf(storageKey))) } }
+    }
+
     override val pendingInvalidationCount: Int
         get() = 0
 

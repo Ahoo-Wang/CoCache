@@ -143,11 +143,22 @@ Why the decorator does this:
 
 Synchronous reads also watch the transaction they run in. This covers `@Cacheable(sync = true)` and direct `get`, `lookup`, `getAll` and `get(key, loader)` calls on any CoCache cache that has a source. It applies only to a read-write transaction of a `PlatformTransactionManager`. Read-only transactions, async and suspending calls, and reactive transactions aren't watched.
 
-- **A rollback invalidates what the transaction loaded** (`cocache.invalidate-fills-on-rollback`, on by default). A load inside the transaction can read a row you wrote but haven't committed, and cache it in Redis, or only in this instance's L2 when Redis failed. CoCache records every key the transaction loaded into a cache, and invalidates them when the transaction rolls back, when its commit outcome is unknown, or when a `NESTED` transaction rolls back to its savepoint. A commit leaves them alone: they hold committed data. You don't have to register anything, so this also covers a transaction that never calls `@CacheEvict`. Until the rollback, other callers can still read the uncommitted value from Redis: the rollback shortens that window from `ttl` to the length of the transaction.
-- **Registered keys load privately** (`cocache.fill-in-transaction`, default `registered-keys`). Once a key is registered for invalidation in the transaction (`@CacheEvict`, `TransactionalInvalidator`), loading it again in the same transaction doesn't touch Redis, L2 or other callers. The value goes to that caller only, and the load is counted in `cocache.fills.gated`. Registering also drops this instance's copy at once, so the next read in the transaction misses and loads your own write. That isn't guaranteed: another thread can put the committed value back into L2 first. `private` makes every load inside a read-write transaction private, so a read that misses L2 always calls the source. `allow` turns this off.
+- **A rollback invalidates what the transaction loaded** (`invalidate-fills-on-rollback`, on by default). A load inside the transaction can read a row you wrote but haven't committed, and cache it in Redis, or only in this instance's L2 when Redis failed. CoCache records every key the transaction loaded into a cache, and invalidates them when the transaction rolls back, when its commit outcome is unknown, or when a `NESTED` transaction rolls back to its savepoint. A commit leaves them alone: they hold committed data. You don't have to register anything, so this also covers a transaction that never calls `@CacheEvict`. Until the rollback, other callers can still read the uncommitted value from Redis: the rollback shortens that window from `ttl` to the length of the transaction.
+- **Registered keys load privately** (`fill-in-transaction`, default `registered-keys`). Once a key is registered for invalidation in the transaction (`@CacheEvict`, `TransactionalInvalidator`), loading it again in the same transaction doesn't touch Redis, L2 or other callers. The value goes to that caller only, and the load is counted in `cocache.fills.gated`. Registering also drops this instance's copy at once, so the next read in the transaction misses and loads your own write. That isn't guaranteed: another thread can put the committed value back into L2 first. `private` makes every load inside a read-write transaction private, so a read that misses L2 always calls the source. `allow` turns this off.
 - **Other callers don't share a transaction's load.** When a caller inside a transaction leads a load, concurrent callers on the same instance load for themselves instead of taking its result, which might never be committed.
 
-Keys match by namespace and encoded key, so an eviction through an interface cache's proxy also covers reads through the `cacheSpec` bean or Spring Cache. Both settings apply to every cache. Turning both off (`invalidate-fills-on-rollback: false` and `fill-in-transaction: allow`) makes loads ignore transactions.
+Keys match by namespace and encoded key, so an eviction through an interface cache's proxy also covers reads through the `cacheSpec` bean or Spring Cache. Both settings are per cache, under `cocache.defaults.cache`, `cocache.overrides.cache` (which takes the stricter value) and `cocache.caches.[name]` ([what each layer may set](./configuration.md#field-layers)). Turning both off for a cache (`invalidate-fills-on-rollback: false` and `fill-in-transaction: allow`) makes its loads ignore transactions:
+
+```yaml
+cocache:
+  defaults:
+    cache:
+      fill-in-transaction: private      # every cache: loads in a write transaction stay private
+  caches:
+    ReportCache:
+      fill-in-transaction: allow        # this one: ignore transactions
+      invalidate-fills-on-rollback: false
+```
 
 ### Failures after the commit {#after-commit-failures}
 

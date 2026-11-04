@@ -15,7 +15,7 @@ description: 所有 cocache.* 配置项的类型、默认值与单位；全局�
 | 2. 全局默认值 | `cocache.defaults.cache.*`、`cocache.defaults.store.*` | **低于声明**：只填充声明中[没有写出](#declared-fields)的字段 |
 | 3. 声明 | `@CoCache` / `@CaffeineCache`，或你构建的 spec | 库或应用的意图 |
 | 4. 定制器 | `CacheSpecCustomizer` bean，按 Spring 的顺序 | 可以修改策略字段与不决定类型的字段，不能修改数据来源（见[定制器](./caches.md#customizer)） |
-| 5. 全局覆盖 | `cocache.overrides.cache.*`、`cocache.overrides.store.*` | **高于声明，只收紧**：陈旧界限取最小值，`read-failure` 取更严的模式；其余都不允许（见[各层能设置什么](#field-layers)） |
+| 5. 全局覆盖 | `cocache.overrides.cache.*`、`cocache.overrides.store.*` | **高于声明，只收紧**：陈旧界限取最小值，有严格序的模式（`read-failure`、`fill-in-transaction`、`invalidate-fills-on-rollback`）取更严的值；其余都不允许（见[各层能设置什么](#field-layers)） |
 | 6. 单个缓存 | `cocache.caches.[name].*` | 设置任何[适用于](#applicability)该缓存的字段，另有 `unknown-read`、`key-prefix` 与 `unlock` |
 
 合并之后执行库的[约束](#locks)，再执行[校验连锁](#validation)。`cache` 一节作用于派生类型（`Cache`、`VersionedCache`），`store` 一节作用于权威类型（`Store`、`VersionedStore`、`SetStore`）：
@@ -58,6 +58,8 @@ cocache:
 | `Cache` 的 `ttl` | 陈旧界限 | 设置 | 取最小值，并限制按调用给出的寿命（见下） | 设置 |
 | `local-max-age`、`degraded-local-max-age`、`absent-ttl` | 陈旧界限 | 设置 | 取最小值 | 设置 |
 | `read-failure` | 模式，`throw` 严于 `degrade` | 设置 | 取两者中更严的 | 设置 |
+| `fill-in-transaction` | 模式，`private` 严于 `registered-keys` 严于 `allow` | 设置 | 取两者中更严的 | 设置 |
+| `invalidate-fills-on-rollback` | 模式，`true` 严于 `false` | 设置 | 取两者中更严的 | 设置 |
 | `invalidate-failure` | 没有严格序的模式 | 设置 | 不允许 | 设置 |
 | `lease-wait`、`load-timeout`、`load-acquire-timeout`、`read-timeout` | 等待界限 | 设置 | 不允许 | 设置 |
 | `VersionedCache` 的 `ttl`、`tombstone-ttl` | 版本栅栏的寿命 | 设置 | 不允许 | 设置 |
@@ -66,7 +68,7 @@ cocache:
 | `unknown-read` | 模式 | 不允许 | 不允许 | 设置 |
 | `key-prefix`、`unlock` | 不是策略 | 不允许（用 [`cocache.key-prefix`](#key-prefix)） | 不允许 | 设置 |
 
-覆盖之所以这么窄：取更小的值只对陈旧界限是收紧。调短等待界限会让更多实例绕过 lease 自行加载，让本已变慢的数据源承受成倍的负载。带版本类型的 `ttl` 与 `tombstone-ttl` 还限定重复投递的旧事件被拒绝多久，调短它们会让旧事件重新写入。直接设置模式可能放宽更严的声明，所以只有有严格序的 `read-failure` 参与。
+覆盖之所以这么窄：取更小的值只对陈旧界限是收紧。调短等待界限会让更多实例绕过 lease 自行加载，让本已变慢的数据源承受成倍的负载。带版本类型的 `ttl` 与 `tombstone-ttl` 还限定重复投递的旧事件被拒绝多久，调短它们会让旧事件重新写入。直接设置模式可能放宽下层更严的值，所以只有有严格序的模式参与：`read-failure` 与两个[事务模式](./spring-cache.md#transactional-loads)。
 
 **`overrides.cache.ttl` 还限制按调用给出的寿命**：`ttlOf` 的结果，以及传给 `put(key, value, ttl)` 与 `putAll(entries, ttl)` 的 `ttl`。更长的寿命被钳制到覆盖值，每次钳制计入 `cocache.ttl.clamped`，每个缓存第一次钳制时记录一行 `WARN`。即使缓存自己的 `ttl` 已经短于覆盖值，这个上限照样生效。`cocache.caches.[name].ttl` 更长时把这个缓存的上限抬到它，写 `ttl: forever` 时取消上限，因此按缓存的 `ttl` 不会被它自己的按调用上限截短。
 
@@ -84,8 +86,6 @@ cocache:
 | `cocache.redis.*` | — | — | [Redis 后端](#redis)配置 |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
 | `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`：Spring 的缓存拦截器改用 `DegradingCacheErrorHandler`，CoCache 缓存的读写失败只记录日志、不重新抛出，Redis 故障期间不带 sync 的 `@Cacheable` 因此执行方法。失败的失效、其它缓存的失败仍交给原来的处理器。见 [Spring Cache](./spring-cache.md#failures)。 |
-| `cocache.invalidate-fills-on-rollback` | boolean | `true` | 需要 `spring-tx`。读写事务内同步读取回源、写入 Redis 或 L2 的 key，在事务回滚、提交结果未知或回滚到 savepoint 时失效。见 [Spring Cache](./spring-cache.md#transactional-loads)。 |
-| `cocache.fill-in-transaction` | `registered-keys` \| `private` \| `allow` | `registered-keys` | 需要 `spring-tx`。读写事务内哪些回源是私有的（不申请 lease、不写 Redis 与 L2、不共享）：本事务已登记失效的 key、全部回源，或都不是。作用于所有缓存。见 [Spring Cache](./spring-cache.md#transactional-loads)。 |
 | `cocache.refresh-executor` | bean 名 | 内置 | 执行[提前刷新](./freshness.md#refresh-ahead)回源的 `Executor` bean。见[执行器](#executors)。 |
 | `cocache.async-executor` | bean 名 | 内置 | 执行[异步视图](./async.md)续接的 `Executor` bean。见[执行器](#executors)。 |
 | `cocache.blocking-executor` | bean 名 | 内置 | 执行经异步视图调用的同步 loader 的 `Executor` bean。见[执行器](#executors)。 |
@@ -115,6 +115,8 @@ cocache:
 | `local-maximum-size` | 整数 | `10000` | `@CaffeineCache.maximumSize` | 每个实例 L2 的最大条目数 |
 | `invalidate-failure` | `retry` \| `throw` | `retry` | — | `Cache.invalidate` 失败时：进入后台重试队列，或抛出 `CacheWriteException`。删除派生副本总是安全的，所以默认重试，外部来源的缓存也一样。权威类型的删除总是抛出、从不重试。见[写入时 Redis 故障](./freshness.md#redis-down)。 |
 | `read-failure` | `degrade` \| `throw` | `degrade` | — | 有数据源（声明的 loader 或调用级 loader）的读取在 Redis 失败时：从数据源加载，或回答 [`Lookup.Unknown`](./caches.md#unknown)，于是 `get` 抛出 `CacheReadException` |
+| `fill-in-transaction` | `registered-keys` \| `private` \| `allow` | `registered-keys` | — | 需要 `spring-tx`。读写事务内哪些回源是私有的（不申请 lease、不写 Redis 与 L2、不共享）：本事务已登记失效的 key、全部回源，或都不是。见 [Spring Cache](./spring-cache.md#transactional-loads)。 |
+| `invalidate-fills-on-rollback` | boolean | `true` | — | 需要 `spring-tx`。读写事务内同步读取回源、写入 Redis 或 L2 的 key，在事务回滚、提交结果未知或回滚到 savepoint 时失效。它为 `false` 且 `fill-in-transaction: allow` 时，这个缓存的回源不感知事务。 |
 | `unknown-read` | `throw` \| `absent` | `throw` | — | 只能写在 `cocache.caches.[name]` 中。没有数据源的读取在 Redis 失败时：`throw` 让 `get` 抛出 `CacheReadException`；`absent` 读作不存在，且什么也不缓存。见[未知的读取](./caches.md#unknown)。 |
 | `key-prefix` | string | `cocache.key-prefix` | `@CoCache.keyPrefix` | 只能写在 `cocache.caches.[name]` 中。这个缓存的存储 key 前缀（见[下文](#key-prefix)）。 |
 | `unlock` | 配置键的列表 | — | — | 只能写在 `cocache.caches.[name]` 中。这个条目有意覆盖的、被库[锁定](#locks)的字段。 |
@@ -128,12 +130,12 @@ cocache:
 | 配置项 | 有 loader 的 `Cache` | 外部来源的 `Cache` | `VersionedCache` | `Store` | `VersionedStore` | `SetStore` |
 |--------|:-:|:-:|:-:|:-:|:-:|:-:|
 | `ttl`、`ttl-jitter`、`absent-ttl`、`local-max-age`、`read-timeout`、`local-maximum-size` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `degraded-local-max-age`、`lease-ttl`、`lease-wait`、`load-max-concurrent`、`load-acquire-timeout`、`load-timeout`、`invalidate-failure`、`read-failure` | ✓ | ✓ | ✓ | — | — | — |
+| `degraded-local-max-age`、`lease-ttl`、`lease-wait`、`load-max-concurrent`、`load-acquire-timeout`、`load-timeout`、`invalidate-failure`、`read-failure`、`fill-in-transaction`、`invalidate-fills-on-rollback` | ✓ | ✓ | ✓ | — | — | — |
 | `refresh-window` | ✓ | — | ✓ | — | — | — |
 | `tombstone-ttl` | — | — | ✓ | — | ✓ | — |
 | `unknown-read` | — | ✓ | — | ✓ | ✓ | — |
 
-外部来源的 `Cache` 没有可以提前刷新的数据源，但它带调用级 loader 的读取（`get(key, loader)`、Spring Cache 的 `sync = true`）会加载，所以 lease、加载与 `read-failure` 的配置项适用于它。权威类型完全没有数据源。`SetStore` 的读取失败总是抛出，所以它没有 `unknown-read`。
+外部来源的 `Cache` 没有可以提前刷新的数据源，但它带调用级 loader 的读取（`get(key, loader)`、Spring Cache 的 `sync = true`）会加载，所以 lease、加载、`read-failure` 与事务的配置项适用于它。权威类型完全没有数据源。`SetStore` 的读取失败总是抛出，所以它没有 `unknown-read`。
 
 ### 时长与哨兵值 {#durations}
 
@@ -314,7 +316,7 @@ classpath 中有 `spring-boot-starter-actuator` 时：
 
 | 功能 | 开关 | 说明 |
 |------|------|------|
-| `cocache` 端点 | `management.endpoints.web.exposure.include=cocache`；访问控制用 `management.endpoint.cocache.access` | 列出缓存及其生效策略与计数，查看与失效单个 key |
+| `cocache` 端点 | `management.endpoints.web.exposure.include=cocache`；访问控制用 `management.endpoint.cocache.access` | 列出缓存及其生效策略与计数，查看与失效单个 key，以及只为一个 key 广播失效、不动 Redis 中的数据 |
 | 按 key 删除唯一副本 | `management.endpoint.cocache.allow-store-delete`（默认 `false`）：`Store`、`SetStore`；`management.endpoint.cocache.allow-purge`（默认 `false`）：`VersionedStore`，以及 `VersionedCache` 上的 `?purge=true` | 没有开启时返回 `403`，不做任何修改（[可观测性](../operations/observability.md#invalidate-key)） |
 | `cocache` 健康检查 | `management.health.cocache.enabled`（默认 `true`） | 只有 Redis 失效通道心跳失败期间为 `DOWN` |
 | Micrometer 指标 `cocache.*` | classpath 中有 Micrometer | 以 `cache` 标签区分 |
@@ -340,7 +342,7 @@ classpath 中有 `spring-boot-starter-actuator` 时：
 | `LOCKED` | 被库锁定（`locked by …`），或被它的约束改变（`constrained by …`） |
 | `UNLOCKED` | 由 `cocache.caches.[name]` 越过锁定设置，已列在 `unlock` 中 |
 
-哨兵值写作 `forever`、`off` 与 `unlimited`，模式为小写，时长用 ISO-8601（`PT10M`）。未分层的缓存的 `policy` 为空。
+哨兵值写作 `forever`、`off` 与 `unlimited`，模式为小写，时长用 ISO-8601（`PT10M`）。类路径上有 `spring-tx` 时，`Cache` 与 `VersionedCache` 在策略字段之后另列 `invalidate-fills-on-rollback` 与 `fill-in-transaction`：它们不是策略字段，没有声明层，但全局层与按缓存的层照同样的规则合并。未分层的缓存的 `policy` 为空，两个事务模式取类型默认值。
 
 ## 启动校验 {#validation}
 
