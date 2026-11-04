@@ -24,9 +24,11 @@ import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.core.CacheAdmin
+import me.ahoo.cocache.core.internal.LoadingKeys
 import me.ahoo.cocache.core.internal.runSync
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import kotlin.coroutines.coroutineContext
 
 /**
  * 带版本的类型共用的部分：引擎的值是 `Versioned<V?>`，读写路径（栅栏、合并回源、批量、异步）全部沿用 [CoherentEngine]，
@@ -99,7 +101,7 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
     context: EngineContext,
 ) : VersionedEngine<K, V>(spec, store, context), VersionedCache<K, V> {
     private val asyncView = AsyncView()
-    private val suspendingView = SuspendingVersionedCacheView(asyncView)
+    private val suspendingView = SuspendingView()
 
     override fun get(key: K): V? = valueOf(key)
 
@@ -190,6 +192,36 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
         override fun toString(): String = "AsyncView(${this@VersionedCacheEngine})"
     }
 
+    /**
+     * 挂起视图：直接调用协程核心（[SuspendingReads]，RFC 0005 §4.4）。
+     */
+    private inner class SuspendingView :
+        SuspendingReads<K, V, Versioned<V?>>(this@VersionedCacheEngine, answer, lookupAnswer, values, lookups),
+        SuspendingVersionedCache<K, V> {
+        override suspend fun getVersioned(key: K): Versioned<V>? {
+            LoadingKeys.check(coroutineContext, this@VersionedCacheEngine, name, key)
+            return entrySuspending(key, versionedAnswer)
+        }
+
+        override suspend fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
+            runSuspending { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }
+
+        override suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+            runSuspending { writeIfNewer(key, value, version, ttl, PUT_IF_NEWER) }
+
+        override suspend fun invalidateIfNewer(key: K, version: Long): VersionedPut =
+            runSuspending { deleteIfNewer(key, version, null, INVALIDATE_IF_NEWER) }
+
+        override suspend fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+            runSuspending { deleteIfNewer(key, version, ttl, INVALIDATE_IF_NEWER) }
+
+        override suspend fun evict(key: K) = runSuspending { evictKeepingVersion(storageKey(key)) }
+
+        override suspend fun purge(key: K) = runSuspending { purgeKey(key) }
+
+        override fun async(): AsyncVersionedCache<K, V> = asyncView
+    }
+
     private companion object {
         const val PUT_IF_NEWER = "putIfNewer"
         const val INVALIDATE_IF_NEWER = "invalidateIfNewer"
@@ -205,7 +237,7 @@ internal class VersionedStoreEngine<K : Any, V : Any>(
     context: EngineContext,
 ) : VersionedEngine<K, V>(spec, store, context), VersionedStore<K, V> {
     private val asyncView = AsyncView()
-    private val suspendingView = SuspendingVersionedStoreView(asyncView)
+    private val suspendingView = SuspendingView()
 
     override fun get(key: K): V? = valueOf(key)
 
@@ -284,6 +316,34 @@ internal class VersionedStoreEngine<K : Any, V : Any>(
         override fun sync(): VersionedStore<K, V> = this@VersionedStoreEngine
 
         override fun toString(): String = "AsyncView(${this@VersionedStoreEngine})"
+    }
+
+    /**
+     * 挂起视图：直接调用协程核心（[SuspendingReads]，RFC 0005 §4.4）。
+     */
+    private inner class SuspendingView :
+        SuspendingReads<K, V, Versioned<V?>>(this@VersionedStoreEngine, answer, lookupAnswer, values, lookups),
+        SuspendingVersionedStore<K, V> {
+        override suspend fun getVersioned(key: K): Versioned<V>? {
+            LoadingKeys.check(coroutineContext, this@VersionedStoreEngine, name, key)
+            return entrySuspending(key, versionedAnswer)
+        }
+
+        override suspend fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
+            runSuspending { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }
+
+        override suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+            runSuspending { writeIfNewer(key, value, version, ttl, PUT_IF_NEWER) }
+
+        override suspend fun deleteIfNewer(key: K, version: Long): VersionedPut =
+            runSuspending { deleteIfNewer(key, version, null, DELETE_IF_NEWER) }
+
+        override suspend fun deleteIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+            runSuspending { deleteIfNewer(key, version, ttl, DELETE_IF_NEWER) }
+
+        override suspend fun purge(key: K) = runSuspending { purgeKey(key) }
+
+        override fun async(): AsyncVersionedStore<K, V> = asyncView
     }
 
     private companion object {

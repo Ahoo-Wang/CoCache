@@ -62,6 +62,7 @@ description: CoCache 版本发布历史和重要变更。
 
 - 接口代理只经 `CoCacheFactory.create(type, spec)` 取得：`CacheProxies.create` 改为内部方法，`CacheAssembler` 不再创建缓存（它是 starter 的 `CacheLayers`）。见[库经 `CoCacheFactory` 创建缓存](#cocache-factory)。
 - 用户 API 拆分为 `Cache`、`VersionedCache`、`Store`、`VersionedStore` 与 `SetStore`，删除 `cocache-coroutines`：见[用户 API 按角色拆分](#api-types)。
+- 挂起视图上的调用级 loader（`suspending().get(key) { … }`）不再在调用方的 dispatcher 或 `Dispatchers.Default` 上执行：它在这次加载之中执行，第一次挂起之后在 CoCache 的执行器上继续，`load-timeout` 会取消它。见[挂起视图直接调用缓存的核心](#suspending-native)。
 - 基线改为 JDK 21（原为 JDK 17）。
 - 存储 key 保持 6.x 的形状 `{keyPrefix}{namespace}:{encodedKey}`。失效频道改为 `{keyPrefix}inv:{namespace}`（6.x 为 `cocache:inv:{namespace}`，不含前缀），命名空间相同、前缀不同的应用不再收到彼此的失效。`pubsub` 模式的启动探测使用 `cocache:!probe:{a}` 与 `cocache:!probe:{b}`（6.x 为 `cocache:probe:{a}`，它也是命名空间 `probe` 的 key）。内部 key 放在 `{keyPrefix}!` 之下，任何命名空间都产生不了这个位置，`{keyPrefix}!meta:{namespace}` 预留。见[存储 key](./caches.md#storage-keys)。
 - 命名空间必须符合 `[A-Za-z0-9._-]+`。含 `:`（或字符集之外任何字符）的命名空间在创建时以 `IllegalArgumentException` 失败，信息给出把前缀移到 `keyPrefix` 的写法：`namespace = "app:user"` 改为 `keyPrefix = "cocache:app:"` 与 `namespace = "user"`。6.x 中命名空间 `a` 与 `a:b` 的重叠因此不再可能。
@@ -121,6 +122,16 @@ description: CoCache 版本发布历史和重要变更。
 - `CachePolicy.readTimeout`（`CachePolicy.Builder.readTimeout(…)`，默认不设置）限定缓存的每次 Redis 读取（`get`、`getAll`、`getIfChanged`），存储以它的命令超时为上限。超时按 Redis 读取失败处理：带 loader 的读取由 `read-failure` 决定，不带 loader 的读取为 `Unknown`（由 `unknownRead` 决定），`getIfChanged` 抛出，读取取得的 lease 被释放。用于不能回退到 loader、又不能在 Redis 卡顿时等满 `command-timeout` 的缓存，例如撤销表。配置项之后加入。`EngineSpec` 增加可选的 `pause()` 钩子，用例 `readTimeoutBoundsEveryL1Read` 检查它。
 - `ExternalInvalidator.broadcast(namespace, encodedKeys)` 只发布失效消息、不修改 Redis：各实例丢弃本地副本并从 Redis 重新读取。Redis 中已是正确的值时使用它。`invalidate` 会删除 key，用在没有 loader 的缓存的命名空间上就是删除唯一的一份数据。
 - 以空的 `keyPrefix` 创建缓存时记录告警：它的 key 与频道没有公共前缀，ACL 与按前缀的运维只能逐个写出命名空间。
+
+### 行为变化：挂起视图直接调用缓存的核心 {#suspending-native}
+
+挂起视图不再包装异步视图，而是直接调用缓存的核心（[RFC 0005 §4.4](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。
+
+- L2 命中返回时不挂起、不切换 dispatcher、不分配 future。
+- 未命中、写入与条件读取从第一次挂起起在 CoCache 的执行器上执行，调用方从 CoCache 的线程上恢复，从不从 Redis 客户端的线程上恢复。用 `Dispatchers.Unconfined` 的调用方（Spring WebFlux 处理器）因此不会再在 Lettuce 的事件循环上继续执行。
+- 调用方的上下文元素（追踪上下文、`MDCContext` 等 `ThreadContextElement`，协程名）随共享加载传递，不带调用方的 `Job` 与 dispatcher；声明的 `AsyncCacheLoader` 现在也看得到它们。
+- 调用级 loader 在这次加载之中执行：在调用方线程上开始，之后在 CoCache 的执行器上继续（之前：在调用方的 dispatcher 上执行，没有 dispatcher 或在 `runBlocking` 的事件循环上时在 `Dispatchers.Default` 上）。`load-timeout` 到期与运行时关闭都会取消它。阻塞调用请包在 `withContext(Dispatchers.IO)` 中。
+- 挂起方法抛出原始的异常实例，协程的调试模式下也是。
 
 ### 行为变化：关闭运行时会等待在途的 Redis 步骤
 

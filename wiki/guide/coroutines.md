@@ -25,7 +25,8 @@ suspend fun rename(id: String, user: User) {
 
 - `suspending()` is a member of every [cache type](./caches.md#types), and the views mirror the synchronous hierarchy: `Cache.suspending()` returns a `SuspendingCache`, `VersionedCache` a `SuspendingVersionedCache`, `Store` a `SuspendingStore`, `VersionedStore` a `SuspendingVersionedStore`, and `SetStore` a `SuspendingSetStore`, whose `get` returns an empty set, never `null`, like `SetStore.get`. All of them extend `SuspendingReadableCache` (`get`, `getAll`, `lookup`, `lookupAll`), and `async()` on a suspending view returns the matching async view.
 - `suspending()` returns the same object every time, so you can call it where you use it. Calling it through a `@CoCache` interface works too.
-- Each method calls the async view and awaits the result. An L2 hit returns at once without suspending, because the async view returns an already-completed future.
+- Each method calls the cache core directly. An L2 hit returns at once: it doesn't suspend, switch dispatchers or allocate.
+- A miss, a write or a conditional read runs on CoCache's own dispatcher. It starts on your thread and, from its first suspension, continues on CoCache's executor, so your coroutine resumes from a CoCache thread, never from a Redis client thread. With `Dispatchers.Unconfined`, the default for Spring WebFlux handlers, your code after the call therefore runs on a CoCache executor thread, not on Lettuce's event loop. Context elements of your coroutine, such as a tracing context or `MDCContext`, go along; its `Job` and dispatcher don't.
 - `lookup` returns `Lookup.Unknown` when Redis fails and the read has no source, and `get` throws `CacheReadException`, as on the [synchronous API](./caches.md#unknown).
 - No thread is blocked while CoCache waits for Redis, for another instance's lease, or for your data source.
 
@@ -55,14 +56,14 @@ A per-call loader works like `get(key, loader)` on a synchronous `Cache`, and it
 val user = users.get(id) { key -> userClient.fetch(key) }
 ```
 
-The per-call loader runs in the **caller's coroutine context without its `Job`**:
-- It runs on the caller's dispatcher. It runs on `Dispatchers.Default` instead if there is no dispatcher, or if the caller runs on a `runBlocking` event loop.
+The per-call loader runs **inside the load**, with the caller's context elements but without its `Job` or dispatcher:
+- It is called directly, without a coroutine of its own. It starts on the caller's thread and, from its first suspension, continues on CoCache's executor. Wrap blocking calls in `withContext(Dispatchers.IO)`.
 - `ThreadContextElement`s go with it, such as a tracing context, or MDC through `MDCContext` from `kotlinx-coroutines-slf4j` (plain MDC is a thread-local and doesn't follow a coroutine to another thread).
-- It is outside structured concurrency. Other callers may share the load, so cancelling the caller, ending the caller's scope, or even closing the runtime doesn't cancel it. The load's coroutine can outlive them all, until the data source returns.
+- Other callers may share the load, so cancelling the caller or ending the caller's scope doesn't cancel it. Closing the runtime does.
 
 If a loader itself throws `CancellationException` while its coroutine is still active (for example from a `withTimeout` inside it), CoCache rethrows it as `SourceLoadCancelledException` (`me.ahoo.cocache.core`), whose `cause` is the original. A load may be shared, and every caller would otherwise take the exception as its own cancellation (`launch` swallows it silently). Blocking and async loaders get the same treatment, see [Async API](./async.md#exceptions).
 
-The engine's `load-timeout` applies to both kinds of loader. When it fires, the caller fails with `SourceLoadTimeoutException` and the lease is released. The loader's coroutine is not cancelled; its late result is discarded. This works the same as for an [`AsyncCacheLoader`](./async.md#timeouts).
+The engine's `load-timeout` applies to both kinds of loader. When it fires, the callers fail with `SourceLoadTimeoutException` and the lease is released. A spec-level loader's coroutine is not cancelled and its late result is discarded, the same as for an [`AsyncCacheLoader`](./async.md#timeouts). A per-call loader runs inside the load, so it is cancelled.
 
 ## Cancellation {#cancellation}
 
@@ -70,7 +71,7 @@ Cancelling a coroutine that is waiting on the cache ends only that wait. A load 
 
 ## Exceptions {#exceptions}
 
-The suspending methods throw the exception the async view completed with: your loader's exception (or `SourceLoadCancelledException`, see [Data sources](#loader)), `CacheReadException`, `CacheWriteException`, `SourceLoadRejectedException`, `SourceLoadTimeoutException` and so on. They are never wrapped in `CompletionException`.
+The suspending methods throw the original exception, the same instance even in coroutine debug mode: your loader's exception (or `SourceLoadCancelledException`, see [Data sources](#loader)), `CacheReadException`, `CacheWriteException`, `SourceLoadRejectedException`, `SourceLoadTimeoutException` and so on. They are never wrapped in `CompletionException`.
 
 In coroutine debug mode, which is on whenever the JVM runs with `-ea`, kotlinx-coroutines does two things:
 - it may rethrow a copy of the exception with a recovered stack trace (the original is its `cause`);
@@ -86,6 +87,7 @@ A loader that reads the key it is loading, from the same cache, would wait for i
 - **Spec-level loaders** (`suspendingLoader`) are matched by cache name, because the spec doesn't know its runtime yet.
 - A spec-level load has no caller, so it doesn't inherit the caller's check. A cycle across caches, such as A's loader reading B and B's loader reading the same key of A, fails only at `load-timeout`.
 - A loader set with `asAsyncCacheLoader` on its own has no check.
+- The check adds to the synchronous API's own: a blocking loader that reads the same key, on its own thread, still fails at once. A read that leaves the coroutine, through `runBlocking` or a future that continues on another thread, isn't caught and fails at `load-timeout`.
 
 ## Spring {#spring}
 

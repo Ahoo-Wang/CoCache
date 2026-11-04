@@ -21,9 +21,11 @@ import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SuspendingCache
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.core.CacheAdmin
+import me.ahoo.cocache.core.internal.LoadingKeys
 import me.ahoo.cocache.core.internal.runSync
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import kotlin.coroutines.coroutineContext
 
 /**
  * 派生副本 `Cache`（RFC 0005 §4.1）：有数据源，或外部来源。协议全部在 [CoherentEngine] 中，本类只把用户 API 换算过去：
@@ -35,7 +37,7 @@ internal class CacheEngine<K : Any, V : Any>(
     context: EngineContext,
 ) : CoherentEngine<K, V>(spec, store, context), Cache<K, V> {
     private val asyncView = AsyncView()
-    private val suspendingView = SuspendingCacheView(asyncView)
+    private val suspendingView = SuspendingView()
 
     override fun get(key: K): V? = answerOf(entryOf(key))
 
@@ -143,6 +145,42 @@ internal class CacheEngine<K : Any, V : Any>(
         override fun sync(): Cache<K, V> = this@CacheEngine
 
         override fun toString(): String = "AsyncView(${this@CacheEngine})"
+    }
+
+    /**
+     * 挂起视图：直接调用协程核心（[SuspendingReads]，RFC 0005 §4.4）。
+     */
+    private inner class SuspendingView :
+        SuspendingReads<K, V, V>(
+            this@CacheEngine,
+            { answerOf(it) },
+            { lookupAnswerOf(it) },
+            { valuesOf(it, IDENTITY()) },
+            { lookupsOf(it) }
+        ),
+        SuspendingCache<K, V> {
+        private val loaderAnswer: (LocalEntry<V>) -> V? = { answerWithLoader(it) }
+
+        override suspend fun get(key: K, loader: suspend (K) -> V?): V? {
+            LoadingKeys.check(coroutineContext, this@CacheEngine, name, key)
+            return entryWithSuspending(key, loader, loaderAnswer)
+        }
+
+        override suspend fun put(key: K, value: V) = runSuspending { putWithTtl(key, value, putTtl(key, value)) }
+
+        override suspend fun put(key: K, value: V, ttl: Duration) = runSuspending { putWithTtl(key, value, ttl) }
+
+        override suspend fun putAll(entries: Map<K, V>) = runSuspending { putAllWithTtl(entries, ::putTtl) }
+
+        override suspend fun putAll(entries: Map<K, V>, ttl: Duration) =
+            runSuspending { putAllWithTtl(entries) { _, _ -> ttl } }
+
+        override suspend fun invalidate(key: K) = runSuspending { invalidateStorageKeys(listOf(storageKey(key))) }
+
+        override suspend fun invalidateAll(keys: Collection<K>) =
+            runSuspending { invalidateStorageKeys(storageKeysOf(keys)) }
+
+        override fun async(): AsyncCache<K, V> = asyncView
     }
 }
 

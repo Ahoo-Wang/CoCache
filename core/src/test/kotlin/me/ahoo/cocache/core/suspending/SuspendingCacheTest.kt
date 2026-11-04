@@ -39,7 +39,6 @@ import me.ahoo.cocache.core.SuspendingCacheLoader
 import me.ahoo.cocache.core.asAsyncCacheLoader
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.engine.SuspendingSetStoreView
 import me.ahoo.cocache.core.internal.LoadingKeys
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.setStoreSpec
@@ -98,7 +97,7 @@ class SuspendingCacheTest {
     }
 
     @Test
-    fun readsAndWritesGoThroughTheAsyncView(): Unit = runBlocking<Unit> {
+    fun readsAndWrites(): Unit = runBlocking<Unit> {
         val cache = plain().suspending()
         cache.put("a", "1")
         cache.put("b", "2", Duration.ofMinutes(1))
@@ -291,13 +290,14 @@ class SuspendingCacheTest {
             }
         }.assert().isEqualTo("v")
         seen.get().assert().isEqualTo("caller")
-        // 调用方在 runBlocking 的事件循环上：loader 改在 Dispatchers.Default 上执行
+        // 调度器取自运行时（K2）：调用方在 runBlocking 的事件循环上，loader 挂起之后在运行时的异步执行器上继续
         val thread = AtomicReference<String>()
         cache.get("event-loop") {
+            yield()
             thread.set(Concurrency.currentThreadName())
             "e"
         }
-        thread.get().assert().startsWith("DefaultDispatcher-worker")
+        thread.get().assert().startsWith("cocache-async-")
         // loader 的 Job 不是调用方 Job 的子 Job
         requireNotNull(loaderJob.get()).assert().isNotSameAs(callerJob)
         callerJob?.children?.toList().orEmpty().assert().doesNotContain(loaderJob.get())
@@ -512,37 +512,18 @@ class SuspendingCacheTest {
             .assert().isInstanceOf(SourceLoadCancelledException::class.java)
     }
 
+    /**
+     * 调度器取自运行时（RFC 0005 §4.4，K2）：没有 dispatcher 的调用方（不经任何协程构建器）的调用级 loader 在第一次挂起之前
+     * 在调用方线程上执行，之后在运行时的异步执行器上继续。
+     */
     @Test
-    fun setViewNeverReturnsNull(): Unit = runBlocking<Unit> {
-        val pending = java.util.concurrent.CompletableFuture<Set<String>?>()
-        val async = io.mockk.mockk<me.ahoo.cocache.api.AsyncSetStore<String, String>>()
-        io.mockk.every { async.name } returns "mocked"
-        io.mockk.every { async.get("null") } returns java.util.concurrent.CompletableFuture.completedFuture(null)
-        io.mockk.every { async.get("pending") } returns pending
-        val failure = IllegalStateException("down")
-        io.mockk.every { async.get("failed") } returns java.util.concurrent.CompletableFuture.failedFuture(failure)
-        val view = SuspendingSetStoreView(async)
-        view.get("null").assert().isEmpty()
-        // 先挂起等待、再完成：走等待路径
-        val waiting = async(start = CoroutineStart.UNDISPATCHED) { view.get("pending") }
-        waiting.isCompleted.assert().isFalse()
-        pending.complete(null)
-        withTimeout(10_000) { waiting.await() }.assert().isEmpty()
-        runCatching { view.get("failed") }.exceptionOrNull().assert().isSameAs(failure)
-        val members = java.util.concurrent.CompletableFuture<Set<String>?>()
-        io.mockk.every { async.get("members") } returns members
-        val waitingMembers = async(start = CoroutineStart.UNDISPATCHED) { view.get("members") }
-        members.complete(setOf("a"))
-        withTimeout(10_000) { waitingMembers.await() }.assert().isEqualTo(setOf("a"))
-    }
-
-    @Test
-    fun aCallerWithoutADispatcherLoadsOnDefault() {
+    fun aCallerWithoutADispatcherLoadsOnTheRuntimeDispatcher() {
         val cache = plain().suspending()
         val thread = AtomicReference<String>()
         val result = java.util.concurrent.CompletableFuture<String?>()
         val call: suspend () -> String? = {
             cache.get("k") {
+                yield()
                 thread.set(Concurrency.currentThreadName())
                 "v"
             }
@@ -552,7 +533,7 @@ class SuspendingCacheTest {
             kotlin.coroutines.Continuation(kotlin.coroutines.EmptyCoroutineContext) { result.complete(it.getOrThrow()) }
         )
         result.get(10, java.util.concurrent.TimeUnit.SECONDS).assert().isEqualTo("v")
-        thread.get().assert().startsWith("DefaultDispatcher-worker")
+        thread.get().assert().startsWith("cocache-async-")
     }
 
     @Test
