@@ -89,6 +89,7 @@ M5 拆成（架构会话，2026-11-03；维护者对 S21、`Lookup.fold` 与挂�
 | M5b | `feat!: deliver encoded keys to invalidation listeners and bound reads per cache` | `InvalidationListener` 收到编码 key、`keyPrefix` 为空时告警（S4）；按缓存的读超时接入引擎（D6，配置键随 M6）；被取消的写入是否整体 `NonCancellable`（K18）；`ExternalInvalidator` 只广播的方法 | 与 M5a 并行 |
 | M5c | `feat(core)!: run suspending views natively on the coroutine core` | 挂起视图直接调用核心：元素取自调用方、调度器取自运行时、从不在后端的完成线程上恢复（K2、K6）；重入守卫的上下文元素（K7） | M5a |
 | M5d | `feat!: add CoCacheFactory` | `CoCacheFactory.create(type, spec)` 校验 `type` 是接口；starter 与库经它创建缓存；“未分层”标注的前提（S20，M6） | M5a |
+| M5e | `feat(core): compensate outcome-unknown derived puts and finish the M5 seams` | M5a 留下的接缝：结果未知的派生 `put` 登记补偿失效（V7、U8，只用于 `RETRY`）；注解的 `unknownRead`；端点的 `allow-purge`（U19）与 `allow-store-delete` | M5a |
 
 | 里程碑 | 要做什么 | 验收 |
 |--------|----------|------|
