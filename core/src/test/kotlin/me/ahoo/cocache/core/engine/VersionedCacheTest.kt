@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.ConditionalGet
 import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
@@ -25,6 +26,7 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.ForwardingVersionedL1Store
+import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
@@ -37,8 +39,10 @@ import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.StrippedBackend
 import me.ahoo.cocache.core.TtlFunction
 import me.ahoo.cocache.core.cacheSpec
+import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
@@ -47,6 +51,7 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 带版本的缓存在 TCK 之外的边界：声明校验、创建时的后端检查、门面上的普通读写（不带版本）、异步视图的异常、
@@ -278,6 +283,77 @@ class VersionedCacheTest {
             cache.async().invalidateIfNewer("k", 0).join().assert().isEqualTo(VersionedPut.Stale(1))
             requireNotNull(runtime.metrics("shared")).invalidationsReceived.assert().isEqualTo(received)
             observer["k"].assert().isEqualTo("v1")
+        }
+    }
+
+    /**
+     * 非原子广播的后端上，版本前进的填充（`E` 上取得的 lease）由引擎广播：广播失败只计数告警，回源值照常返回，版本已写入 L1。
+     */
+    @Test
+    fun failedBroadcastOfAnAdvancingFillIsCounted() {
+        val failing = object : CoherenceBackend by memory {
+            override val atomicBroadcast: Boolean = false
+            override val channel: InvalidationChannel = object : InvalidationChannel by memory.channel {
+                override suspend fun publish(keyspace: Keyspace, frame: ByteArray) = throw IllegalStateException(
+                    "publish down"
+                )
+            }
+        }
+        versioned("evicted").putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Written)
+        requireNotNull(runtime.admin("evicted")).invalidateEncoded("k")
+        CacheRuntime.builder().backend(failing).build().use { other ->
+            val cache = other.create(
+                cacheSpec<String, String>("evicted") {
+                    codec = StringCodec
+                    versionedLoader = CacheLoader { Versioned("v2", 2) }
+                }
+            )
+            cache["k"].assert().isEqualTo("v2")
+            requireNotNull(other.metrics("evicted")).remoteFailures.assert().isEqualTo(1)
+        }
+        remoteVersion("k", "evicted").assert().isEqualTo(2)
+    }
+
+    /**
+     * 刷新路径的版本拒绝，而取得令牌时读到的更新的值解码失败：不能以它重新填充 L2，按未命中路径降级（回源值以降级限龄写入 L2），
+     * L1 中更新的版本不变。
+     */
+    @Test
+    fun versionRejectedRefreshWithAnUndecodableCopyDegrades() {
+        val clock = ManualClock()
+        val backend = InMemoryBackend(clock)
+        val failDecode = AtomicBoolean(false)
+        val codec = object : Codec<String> {
+            override fun encode(value: String): ByteArray = StringCodec.encode(value)
+
+            override fun decode(bytes: ByteArray): String =
+                if (failDecode.get()) throw IllegalStateException("codec down") else StringCodec.decode(bytes)
+        }
+        CacheRuntime.builder().backend(backend).clock(clock).refreshExecutor { it.run() }.build().use { other ->
+            val cache = other.create(
+                cacheSpec<String, String>("refresh") {
+                    this.codec = codec
+                    versionedLoader = CacheLoader { Versioned("v4", 4) }
+                    policy {
+                        ttl = Duration.ofSeconds(10)
+                        ttlJitter = Duration.ZERO
+                        localMaxAge = Duration.ofSeconds(8)
+                        refreshWindow = Duration.ofSeconds(5)
+                    }
+                }
+            )
+            cache.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Written)
+            cache["k"].assert().isEqualTo("v5")
+            clock.advance(Duration.ofSeconds(6))
+            failDecode.set(true)
+            cache["k"].assert().isEqualTo("v5")
+            val metrics = requireNotNull(other.metrics("refresh"))
+            Concurrency.awaitCondition("the refresh was rejected") { metrics.fillRejected == 1L }
+            metrics.degradedFills.assert().isEqualTo(1)
+            val hit = Suspending.await {
+                backend.store(Keyspace("cocache:", "refresh")).read("cocache:refresh:k", null, null, null)
+            } as L1Read.Hit
+            (hit.envelope as Envelope.Scalar).version.assert().isEqualTo(5L)
         }
     }
 

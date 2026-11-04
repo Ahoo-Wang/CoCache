@@ -486,6 +486,10 @@ internal class CoherentEngine<K : Any, V : Any>(
         error: Exception
     ): LocalEntry<V> {
         logCorrupt(storageKey, error)
+        if ((read.envelope as? Envelope.Scalar)?.digest != null) {
+            // 带摘要段的内容（权威标量，D4）从不回收：不发出注定被拒绝的 RECLAIM，绕过 L1 回源，副本不设刷新点（P14：刷新只会再读到它）
+            return loadBypassingRemote(key, storageKey, stamp, source, refreshable = false)
+        }
         val reclaimed = try {
             reclaimRemote(storageKey, ContentFingerprint.of(read.envelope), lease)
         } catch (e: Exception) {
@@ -1614,7 +1618,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         envelope: Envelope.Scalar,
         result: L1ConditionalWrite?
     ): Boolean = when (result) {
-        is L1ConditionalWrite.Conflict -> result.current == Digest.of(envelope)
+        is L1ConditionalWrite.Conflict -> result.current == digestOf(envelope)
         // 拒绝（Unreadable）已在 mutate 中抛出，这里只剩 Written
         else -> result == L1ConditionalWrite.Written
     }
@@ -1647,8 +1651,13 @@ internal class CoherentEngine<K : Any, V : Any>(
         return failure
     }
 
+    /**
+     * 这次条件写入的摘要：权威标量的 [encode] 已算出（摘要段），不再对载荷重算；有数据源的缓存写入的值不带摘要段时才计算。
+     */
+    private fun digestOf(envelope: Envelope.Scalar): Digest = envelope.digest ?: Digest.of(envelope)
+
     private fun conditionalPutOf(envelope: Envelope.Scalar, result: L1ConditionalWrite): ConditionalPut = when (result) {
-        L1ConditionalWrite.Written -> ConditionalPut.Written(Digest.of(envelope))
+        L1ConditionalWrite.Written -> ConditionalPut.Written(digestOf(envelope))
         is L1ConditionalWrite.Conflict -> {
             metrics.conditionalConflict()
             ConditionalPut.Conflict(result.current)
