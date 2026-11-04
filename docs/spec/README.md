@@ -4,7 +4,7 @@
 
 | 工具 | 检验对象 | 覆盖方式 |
 |------|----------|----------|
-| Lincheck（`CoherentEngineLincheckTest`） | 单节点上真实的 SingleFlight、Caffeine L2 与失效戳 | 模型检验真实代码的交错 |
+| Lincheck（`cocache-core` 的 `*LincheckTest`） | 单节点上真实的 SingleFlight、Caffeine L2 与失效戳 | 模型检验真实代码的交错 |
 | 确定性多节点仿真（`MultiNodeSimulationTest`） | 多个真实运行时共享一个注入故障的后端 | 按种子随机搜索交错 |
 | TLA+（本目录） | 多节点协议本身：L1 脚本、令牌、版本、L2 栅栏、失效通道 | 穷举小规模下的全部交错，含超时之后仍执行的命令、连接替换、持有令牌崩溃 |
 

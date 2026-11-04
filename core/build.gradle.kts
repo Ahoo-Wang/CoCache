@@ -36,7 +36,7 @@ tasks.withType<Test> {
     providers.gradleProperty("simSeed").orNull?.let { systemProperty("cocache.sim.seed", it) }
 }
 
-// Lincheck 模型检验（RFC 0005 §4.10）单独运行，不在 check 中（约 2 分钟）：./gradlew :cocache-core:lincheck
+// Lincheck 模型检验（RFC 0005 §4.10）单独运行，不在 check 中（约 5 分钟）：./gradlew :cocache-core:lincheck
 // JaCoCo 的探针与 kotlinx 调试模式的协程编号都会被模型检验当作共享状态，执行因此无法重放，所以这里两者都关掉
 val lincheckTests = "*LincheckTest"
 tasks.test {
@@ -50,4 +50,8 @@ tasks.register<Test>("lincheck") {
     filter { includeTestsMatching(lincheckTests) }
     systemProperty("kotlinx.coroutines.debug", "off")
     extensions.configure<JacocoTaskExtension> { isEnabled = false }
+    // 模型检验在一个核上依次运行各个线程：每个测试类一个 JVM，至多 4 个并行，空闲的 JVM 接着取下一个类，
+    // 墙钟时间取决于最慢的类（CoherentEngineLincheckTest）
+    maxParallelForks = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+    forkEvery = 1
 }
