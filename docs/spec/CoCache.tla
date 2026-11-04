@@ -66,7 +66,7 @@ VARIABLES
     rd,         \* rd[<<n, i>>]: reader i of node n
     wr,         \* wr[n]: node n's writer
     pending,    \* pending[n]: the invalidation is being retried (RETRY); reads bypass L1
-    unfilter,   \* unfilter[n]: a write's outcome is unknown, own frames are processed (§4.6, P12)
+    unfilter,   \* unfilter[n]: a write's or a versioned FILL's outcome is unknown, own frames are processed (§4.6, P12)
     chan,       \* chan[n]: invalidation frames in flight to n (a set: reordering, duplication)
     nextTok,    \* tokens are never issued twice
     faults,
@@ -438,26 +438,27 @@ ReaderTimeout(n, i) ==
     /\ \/ /\ x.pc = "rd" /\ x.mode # "refresh"           \* L1 read failed: degrade to the source (§5)
           /\ rd' = [rd EXCEPT ![r].pc = "by", ![r].tok = 0, ![r].rr = FALSE, ![r].rep = NoRep]
           /\ net' = [net EXCEPT ![n] = base]
-          /\ UNCHANGED <<nextTok, l2>>
+          /\ UNCHANGED <<nextTok, l2, unfilter>>
        \/ /\ x.pc = "rd" /\ x.mode = "refresh"           \* refresh read failed: loadThrough
           /\ rd' = [rd EXCEPT ![r] = ReloadState(i, n)]
           /\ net' = [net EXCEPT ![n] = base \o ReloadCmds(i, n)]
           /\ nextTok' = ReloadTok(n)
-          /\ UNCHANGED l2
+          /\ UNCHANGED <<l2, unfilter>>
        \/ /\ x.pc = "fl" /\ ~Versioned                   \* fill failed: completeLoad(filled = false)
           /\ rd' = [rd EXCEPT ![r] = Fixed(x, x.snap)]
           /\ net' = [net EXCEPT ![n] = base]
-          /\ UNCHANGED <<nextTok, l2>>
+          /\ UNCHANGED <<nextTok, l2, unfilter>>
        \/ /\ x.pc = "fl" /\ Versioned /\ NoCompute(n)     \* outcome unknown: it may still advance the version
           /\ rd' = Bumped([rd EXCEPT ![r] = Returned(x, x.snap)], n)    \* (TLA+ F2): a write on this node, no L2 fill
           /\ l2' = [l2 EXCEPT ![n] = NoCopy]
           /\ net' = [net EXCEPT ![n] = base]
+          /\ unfilter' = [unfilter EXCEPT ![n] = TRUE]    \* and its own frame is processed (P12)
           /\ UNCHANGED nextTok
        \/ /\ x.pc = "rl"
           /\ rd' = [rd EXCEPT ![r] = RIdle]
           /\ net' = [net EXCEPT ![n] = base]
-          /\ UNCHANGED <<nextTok, l2>>
-    /\ UNCHANGED <<db, l1, conn, alive, wr, pending, unfilter, chan, evicts, noise,
+          /\ UNCHANGED <<nextTok, l2, unfilter>>
+    /\ UNCHANGED <<db, l1, conn, alive, wr, pending, chan, evicts, noise,
                    l1db, l1ver, floorS, floorR, floorF, owed, lost>>
 
 -----------------------------------------------------------------------------
@@ -551,13 +552,17 @@ RetryTimeout(n) ==
     /\ UNCHANGED <<db, l1, conn, alive, l2, rd, pending, chan, nextTok, evicts, noise,
                    l1db, l1ver, floorS, floorR, floorF, owed, lost>>
 
-(* P12: filtering resumes once a later command on the same connection has completed, plus a
-   delivery margin. The model clears the flag whenever that confirmation would be possible: no
-   abandoned write of n can still run and its frame has reached n. *)
-ConfirmWrites(n) ==
+(* P12: on an atomic-broadcast backend the engine processes its own frames for localMaxAge after
+   the failure, with no early end (the store SPI cannot confirm that the abandoned command is gone).
+   The model does not track time: it lets filtering resume at any point after no abandoned write or
+   FILL of n can still run and its frame has reached n. That is the earliest moment the engine's
+   window could end without missing the frame; the engine keeps it longer, so the abstraction is
+   sound for safety. It assumes an abandoned command runs within localMaxAge of the failure (a
+   command already sent runs within the command timeout, or never). *)
+ResumeFiltering(n) ==
     /\ unfilter[n]
-    /\ \A k \in 1..Len(net[n]) : ~(net[n][k].from = Orphan /\ net[n][k].op \in WriteOps)
-    /\ \A fr \in chan[n] : ~(fr.own /\ fr.late = "write")
+    /\ \A k \in 1..Len(net[n]) : ~(net[n][k].from = Orphan /\ net[n][k].op \in WriteOps \cup {"FILL"})
+    /\ \A fr \in chan[n] : ~(fr.own /\ fr.late # "no")
     /\ unfilter' = [unfilter EXCEPT ![n] = FALSE]
     /\ UNCHANGED <<db, l1, net, conn, alive, l2, rd, wr, pending, chan, nextTok, faults, evicts, noise,
                    l1db, l1ver, floorS, floorR, floorF, owed, lost>>
@@ -678,7 +683,7 @@ Next ==
          \/ LoadFails(n, i) \/ ReaderTimeout(n, i)
     \/ \E n \in Nodes :
          \/ Commit(n) \/ Evict(n) \/ WriterStep(n) \/ WriteTimeout(n) \/ RetryTimeout(n)
-         \/ ConfirmWrites(n) \/ Resubscribe(n) \/ Reset(n) \/ Crash(n) \/ Reconnect(n) \/ ExpireL2(n)
+         \/ ResumeFiltering(n) \/ Resubscribe(n) \/ Reset(n) \/ Crash(n) \/ Reconnect(n) \/ ExpireL2(n)
          \/ \E fr \in chan[n] : Deliver(n, fr, FALSE) \/ Deliver(n, fr, TRUE) \/ LoseFrame(n, fr)
     \/ ExpireL1
     \/ AgeToken
@@ -691,7 +696,7 @@ Fairness ==
     /\ \A n \in Nodes, i \in Rids : WF_vars(ReaderStep(n, i))
     /\ \A n \in Nodes : WF_vars(WriterStep(n))
     /\ \A n \in Nodes : WF_vars(\E fr \in chan[n] : Deliver(n, fr, FALSE))
-    /\ \A n \in Nodes : WF_vars(ConfirmWrites(n))
+    /\ \A n \in Nodes : WF_vars(ResumeFiltering(n))
     /\ \A n \in Nodes : WF_vars(Resubscribe(n))
     \* a command that can no longer be answered fails (disconnect, command timeout): not a fault
     /\ \A n \in Nodes, i \in Rids : WF_vars(Unanswerable(n, i, rd[<<n, i>>].rep) /\ ReaderTimeout(n, i))
