@@ -163,7 +163,7 @@ class CoherentEngineCoreTest {
     /**
      * 异步变体：数据源自己以取消结束（数据源的 future 被取消，如 HTTP 客户端取消了请求）是普通的回源失败（RFC 0005 第三轮 K5）。
      * 合并到这次加载的调用方共享这一次回源，leader 与跟随者都收到同一个 [SourceLoadCancelledException]，而不是各自再回源
-     * （实验 E4：8 个调用方回源 8 次）。lease 被释放，失败不被缓存：下一次读取重新回源。挂起变体的用例在 `cocache-coroutines`。
+     * （实验 E4：8 个调用方回源 8 次）。lease 被释放，失败不被缓存：下一次读取重新回源。挂起变体的用例在 `SuspendingCacheTest`。
      */
     @Test
     fun anAsyncSourcesOwnCancellationIsSharedByTheWholeLoad() {

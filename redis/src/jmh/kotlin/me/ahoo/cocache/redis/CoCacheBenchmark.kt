@@ -17,6 +17,7 @@ import io.lettuce.core.RedisURI
 import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
@@ -25,8 +26,10 @@ import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CoCacheFactory
+import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LocalPolicy
 import org.openjdk.jmh.annotations.Benchmark
@@ -67,6 +70,8 @@ open class CoCacheBenchmark {
     private lateinit var asyncMixed: List<AsyncCache<String, String>>
     private lateinit var l1Hits: Cache<String, String>
     private lateinit var l1HitKeys: List<String>
+    private lateinit var absentStore: Store<String, String>
+    private lateinit var unfilled: Cache<String, String>
 
     @Setup
     fun setup() {
@@ -103,7 +108,28 @@ open class CoCacheBenchmark {
         l1Hits = runtime.create(spec("bench-l1-$run", policy.toBuilder().local(LocalPolicy(maximumSize = 16)).build()))
         l1HitKeys = (1..L1_HIT_KEYS).map { "l1-$it" }
         l1HitKeys.chunked(1_000).forEach { chunk -> l1Hits.putAll(chunk.associateWith { "l1-value" }) }
+        // 权威缓存的 Absent 与外部来源的“未填充”进入 L2（RFC 0005 §7）：寿命长于一次测量，命中路径与普通 L2 命中相同
+        val absentPolicy = CachePolicy(ttl = null, absentTtl = Duration.ofHours(1), localMaxAge = Duration.ofHours(1))
+        absentStore = runtime.create(
+            storeSpec<String, String>("bench-absent-$run") {
+                codec = StringCodec
+                this.policy = absentPolicy
+            }
+        )
+        unfilled = runtime.create(
+            cacheSpec<String, String>("bench-unfilled-$run") {
+                codec = StringCodec
+                externallySourced()
+                this.policy = absentPolicy
+            }
+        )
+        check(absentStore["missing"] == null && unfilled["missing"] == null)
+        check(localState("bench-absent-$run") == KeyInspection.LocalState.ABSENT)
+        check(localState("bench-unfilled-$run") == KeyInspection.LocalState.UNFILLED)
     }
+
+    private fun localState(cacheName: String): KeyInspection.LocalState? =
+        requireNotNull(runtime.admin(cacheName)).inspect("missing").local?.state
 
     private fun spec(name: String, policy: CachePolicy) = cacheSpec<String, String>(name) {
         codec = StringCodec
@@ -124,6 +150,14 @@ open class CoCacheBenchmark {
     /** L2 命中，经过接口式声明的代理（`@CoCache interface`）。 */
     @Benchmark
     fun l2HitViaInterface(): String? = viaInterface["hot"]
+
+    /** L2 命中权威缓存的 `Absent`（`Store` 中没有这个 key）。 */
+    @Benchmark
+    fun l2HitAbsent(): String? = absentStore["missing"]
+
+    /** L2 命中外部来源缓存的“未填充”（不带 loader 的读取看到不存在）。 */
+    @Benchmark
+    fun l2HitUnfilled(): String? = unfilled["missing"]
 
     /** L2 命中，轮流访问三个配置不同的缓存。 */
     @Benchmark

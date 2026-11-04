@@ -11,20 +11,17 @@
  * limitations under the License.
  */
 
-package me.ahoo.cocache.redis.migration
+package me.ahoo.cocache.redis.foreign
 
 import me.ahoo.cocache.redis.RedisTestSupport
 
 /**
- * 按 CoCache 5.x（5.0–5.4，`cocache-spring-redis` 的 `*CodecExecutor`，`StringRedisTemplate` 以 UTF-8 写入）的线格式写入测试数据：
- * - `StringToStringCodecExecutor` / `ObjectToJsonCodecExecutor`：String，`SET key value [EX ttl]`；
- * - `SetToSetCodecExecutor`：原生 Set，`SADD` + 可选 `EXPIRE`；
- * - `MapToHashCodecExecutor` / `ObjectToHashCodecExecutor`：Hash，`HSET` + 可选 `EXPIRE`；
- * - 负缓存：String 为哨兵本身，Set 为只含哨兵的单元素集合，Hash 为 `{哨兵: 写入时间}`。
+ * 在缓存的 key 上写入不是本协议写入的内容（读不懂的内容，RFC 0005 §4.7），以及直接读取 Redis 中的原样内容：
+ * - String：`SET key value [EX ttl]`，如其它程序写入的 JSON 或字符串；
+ * - 原生 Set：`SADD` + 可选 `EXPIRE`；
+ * - Hash：`HSET` + 可选 `EXPIRE`，也用来写出 `!f` 等字段取任意值的集合。
  */
-object Redis5x {
-    const val SENTINEL = "_nil_"
-
+object ForeignContent {
     fun string(key: String, value: String, ttlSeconds: Long? = null) = RedisTestSupport.withCommands { commands ->
         if (ttlSeconds == null) commands.set(key, value) else commands.setex(key, ttlSeconds, value)
     }
@@ -40,12 +37,6 @@ object Redis5x {
         commands.hset(key, fields)
         ttlSeconds?.let { commands.expire(key, it) }
     }
-
-    fun missingString(key: String, ttlSeconds: Long = 60) = string(key, SENTINEL, ttlSeconds)
-
-    fun missingSet(key: String, ttlSeconds: Long = 60) = set(key, listOf(SENTINEL), ttlSeconds)
-
-    fun missingHash(key: String, ttlSeconds: Long = 60) = hash(key, mapOf(SENTINEL to "1700000000"), ttlSeconds)
 
     fun exists(key: String): Boolean = RedisTestSupport.withCommands { it.exists(key) == 1L }
 

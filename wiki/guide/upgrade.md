@@ -159,3 +159,25 @@ For authors of a `CoherenceBackend` other than the shipped Redis and in-memory o
 | — | New: `ConditionalL1Store.deleteIfMatch`, `VersionedL1Store.evictKeepingVersion`, a read `timeout`, `Envelope.Scalar.writer` and `digest`, `L1RejectedException` for commands never sent |
 | `InvalidationListener.onInvalidated` receives storage keys | Receives encoded keys, the part after `{keyPrefix}{namespace}:` |
 | TCK: `Async*Spec` suites, `EngineSpec.supportsConditionalWrites` | Removed: every suite declares `expectedCapabilities` and fails closed; `access = CacheAccess.ASYNC` reruns a suite through the async view ([TCK](../architecture/extending.md#tck)) |
+
+## Downstream projects {#downstream}
+
+What the two known downstream projects change to adopt 8.0. Neither carries data across: [CoSec](https://github.com/Ahoo-Wang/CoSec) has no released version to stay compatible with, and [Wow](https://github.com/Ahoo-Wang/Wow)'s state views rebuild from the event store.
+
+**CoSec**
+
+- **Types.** The policy snapshot, the control-plane caches, the two revocation tables (with `unknownRead = ABSENT`) and the shadow caches (with an explicit `ttl`) become [`Store`](./store.md)s. `MembershipCache` becomes a `Cache` with `externallySourced()`; its per-call loader keeps `read-failure: throw` in force.
+- **Assembly.** Create every cache through [`CoCacheFactory`](./caches.md#factory), replacing `CoSecCacheAssembler`; caches made with `runtime.create` ignore the configuration layers. `pinnedPolicy` becomes [`lock` and `constrain`](./configuration.md#locks), and `expiringFailClosed` becomes a constraint that keeps `ttl` finite.
+- **Layout.** Move the prefix out of the namespace into `keyPrefix`: a namespace with `:` fails at creation. The storage keys stay the same strings and `~cosec:*` ACLs still match, but the channel becomes `{keyPrefix}inv:{namespace}`.
+- **Invalidation listeners.** `InvalidationListener` receives encoded keys. `PolicySnapshotCache.snapshotKeyOf`, which strips `"$namespace:"` from storage keys, must take the encoded key as is; otherwise every policy-change notification is dropped without an error.
+- **Reads.** `when (lookup)` must handle `Lookup.Unknown` (a compile error points at it). Subscribe through the `InvalidationChannel` SPI.
+- **Digests.** Revision keys, the revision index, `parent` and `base.digest` / `checkedWith` hold a SHA-256 `Digest` with its algorithm (`SHA-256:…`); `getIfChanged` is used as before.
+- **Deployment.** Make `INFO memory` readable or set `cocache.redis.assume-maxmemory-policy`: with authoritative caches, `allkeys-*` and an unreadable policy fail startup ([eviction check](./configuration.md#eviction-check)). Allow the channel pattern in the [ACL](#acl).
+
+**Wow**
+
+- `cacheSpec { suspendingVersionedLoader(…) }` becomes `versionedCacheSpec { suspendingVersionedLoader(…) }`, and `StarterCaches` creates caches through `CoCacheFactory`.
+- Depend on `cocache-core` instead of `cocache-coroutines`. `StateViewCaches.CacheFactory` changes signature, so Wow needs a major version.
+- A `cocache.defaults.cache.refresh-window` now applies to the state views too. Declare `refreshWindow = off()` to keep them out, or accept refresh loads through the owner.
+- Runbook deletes become `evict`, which keeps the version.
+- Switch the owner and every reader service in one release window: the 8.x readers start cold and load from the owner.

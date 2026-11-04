@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-package me.ahoo.cocache.redis.migration
+package me.ahoo.cocache.redis.foreign
 
 import io.lettuce.core.ScriptOutputType
 import me.ahoo.cocache.api.CacheReadException
@@ -43,9 +43,9 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutionException
 
 /**
- * 没有数据源的缓存（Redis 是唯一副本）在迁移之前的写入与混合版本读取：
- * - `SetCache` 的 `add` / `remove` 落在读不懂的内容上（5.x 原生 Set、没有 `!f` 的 Hash、5.x String、更高 `!f`）时总是失败，
- *   key 原样保留、不广播——否则一次 `add` 会用一个成员替换掉全部旧成员，且之后 key 看起来已经迁移，迁移工具会跳过它；
+ * 权威副本（Redis 是唯一副本）上读不懂的内容的写入与混合版本读取：
+ * - `SetStore` 的 `add` / `remove` 落在读不懂的内容上（原生 Set、没有 `!f` 的 Hash、String、更高的 `!f`）时总是失败，
+ *   key 原样保留、不广播：否则一次 `add` 会用一个成员替换掉全部原有成员；
  * - 更高格式版本的标量值在没有数据源时失败，而不是读成不存在。
  */
 class ForeignFormatWriteTest {
@@ -73,13 +73,13 @@ class ForeignFormatWriteTest {
     }
 
     /**
-     * CoSec 的全局 DENY 策略索引：5.x 原生 Set，没有迁移就升级。`add` / `remove`（同步与异步）都失败，成员一个不少。
+     * 权限策略索引这样的集合是原生 Set（不是本协议写入的）：`add` / `remove`（同步与异步）都失败，成员一个不少。
      */
     @Test
-    fun memberWritesOnUnmigratedNativeSetFailAndKeepIt() {
+    fun memberWritesOnForeignNativeSetFailAndKeepIt() {
         val name = "deny-$run"
         val key = "cocache:$name:"
-        Redis5x.set(key, listOf("p1", "p2"), ttlSeconds = 3600)
+        ForeignContent.set(key, listOf("p1", "p2"), ttlSeconds = 3600)
         val cache = index(name)
 
         assertForeignWrite(runCatching { cache.add("", listOf("p3")) }.exceptionOrNull(), key, "add")
@@ -90,9 +90,9 @@ class ForeignFormatWriteTest {
         val asyncRemove = runCatching { cache.async().remove("", listOf("p1")).get() }.exceptionOrNull()
         assertForeignWrite(asyncRemove?.cause, key, "remove")
 
-        Redis5x.type(key).assert().isEqualTo("set")
-        Redis5x.members(key).assert().containsExactlyInAnyOrder("p1", "p2")
-        Redis5x.pttl(key).assert().isBetween(1L, 3_600_000L)
+        ForeignContent.type(key).assert().isEqualTo("set")
+        ForeignContent.members(key).assert().containsExactlyInAnyOrder("p1", "p2")
+        ForeignContent.pttl(key).assert().isBetween(1L, 3_600_000L)
         requireNotNull(runtime.metrics(name)).unknownFormats.assert().isEqualTo(4L)
     }
 
@@ -103,8 +103,8 @@ class ForeignFormatWriteTest {
         val hash = "cocache:$name:hash"
         val string = "cocache:$name:string"
         val list = "cocache:$name:list"
-        Redis5x.hash(hash, mapOf("+a" to ""))
-        Redis5x.string(string, "[\"a\"]")
+        ForeignContent.hash(hash, mapOf("+a" to ""))
+        ForeignContent.string(string, "[\"a\"]")
         RedisTestSupport.withCommands { it.rpush(list, "a") }
 
         assertForeignWrite(runCatching { cache.add("hash", listOf("b")) }.exceptionOrNull(), hash, "add")
@@ -112,8 +112,8 @@ class ForeignFormatWriteTest {
         assertForeignWrite(runCatching { cache.add("string", listOf("b")) }.exceptionOrNull(), string, "add")
         assertForeignWrite(runCatching { cache.add("list", listOf("b")) }.exceptionOrNull(), list, "add")
 
-        Redis5x.fields(hash).assert().isEqualTo(mapOf("+a" to ""))
-        Redis5x.get(string).assert().isEqualTo("[\"a\"]")
+        ForeignContent.fields(hash).assert().isEqualTo(mapOf("+a" to ""))
+        ForeignContent.get(string).assert().isEqualTo("[\"a\"]")
         RedisTestSupport.withCommands { it.lrange(list, 0, -1) }.assert().containsExactly("a")
     }
 
@@ -124,12 +124,12 @@ class ForeignFormatWriteTest {
     fun memberWritesOnNewerFormatSetFail() {
         val name = "newer-$run"
         val key = "cocache:$name:k"
-        Redis5x.hash(key, mapOf("!f" to "3", "+a" to ""))
+        ForeignContent.hash(key, mapOf("!f" to "3", "+a" to ""))
         val cache = index(name)
 
         assertForeignWrite(runCatching { cache.add("k", listOf("b")) }.exceptionOrNull(), key, "add", format = 3)
         assertForeignWrite(runCatching { cache.remove("k", listOf("a")) }.exceptionOrNull(), key, "remove", format = 3)
-        Redis5x.fields(key).assert().isEqualTo(mapOf("!f" to "3", "+a" to ""))
+        ForeignContent.fields(key).assert().isEqualTo(mapOf("!f" to "3", "+a" to ""))
     }
 
     /**
@@ -139,7 +139,7 @@ class ForeignFormatWriteTest {
     fun refusedWriteDoesNotBroadcast() {
         val name = "silent-$run"
         val key = "cocache:$name:k"
-        Redis5x.set(key, listOf("p1"))
+        ForeignContent.set(key, listOf("p1"))
         val cache = index(name)
         val frames = CopyOnWriteArrayList<ByteArray>()
         RedisTestSupport.subscribeFrames(
@@ -164,13 +164,13 @@ class ForeignFormatWriteTest {
     }
 
     /**
-     * 整体覆盖（`put`）不检查旧内容：调用方给出的是全部内容。代价是迁移工具不会再为这个 key 留备份。
+     * 整体覆盖（`put`）不检查原有内容：调用方给出的是全部内容，读不懂的内容被替换。
      */
     @Test
     fun putReplacesForeignContent() {
         val name = "put-$run"
         val key = "cocache:$name:k"
-        Redis5x.set(key, listOf("p1"))
+        ForeignContent.set(key, listOf("p1"))
         val cache = index(name)
         cache.put("k", setOf("p2"))
         cache["k"].assert().containsExactly("p2")
@@ -208,8 +208,8 @@ class ForeignFormatWriteTest {
         assertNewer(runCatching { cache.async().get("k").get() }.exceptionOrNull()?.cause)
         assertNewer(runCatching { cache.async().getAll(listOf("k", "absent")).get() }.exceptionOrNull()?.cause)
         requireNotNull(runtime.metrics(name)).unknownFormats.assert().isEqualTo(4L)
-        Redis5x.exists(key).assert().isTrue()
-        Redis5x.exists("cocache:$name:absent").assert().withFailMessage { "no lease left behind" }.isFalse()
+        ForeignContent.exists(key).assert().isTrue()
+        ForeignContent.exists("cocache:$name:absent").assert().withFailMessage { "no lease left behind" }.isFalse()
     }
 
     /**
@@ -227,8 +227,8 @@ class ForeignFormatWriteTest {
         store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
         store.setSurface.addMembers(key("set"), members, null, frame).assert().isNull()
         store.put(key("scalar"), Envelope.Scalar("v".toByteArray()), null, frame)
-        Redis5x.hash(key("invalid"), mapOf("!f" to "x", "+a" to ""))
-        Redis5x.hash(key("zero"), mapOf("!f" to "0", "+a" to ""))
+        ForeignContent.hash(key("invalid"), mapOf("!f" to "x", "+a" to ""))
+        ForeignContent.hash(key("zero"), mapOf("!f" to "0", "+a" to ""))
         // 格式 2 的 String 头，但状态字节不认识：报告为更高格式（RFC 0005 §4.7，P1）
         RedisTestSupport.withCommands {
             it.eval<String>(
@@ -247,14 +247,14 @@ class ForeignFormatWriteTest {
             Duration.ofMinutes(1),
             frame
         ).assert().isNull()
-        Redis5x.type(key("negative")).assert().isEqualTo("hash")
-        Redis5x.type(key("leased")).assert().isEqualTo("hash")
+        ForeignContent.type(key("negative")).assert().isEqualTo("hash")
+        ForeignContent.type(key("leased")).assert().isEqualTo("hash")
         store.put(key("negative"), Envelope.Absent, null, frame)
         store.setSurface.removeMembers(key("negative"), members, null, frame).assert().isNull()
-        Redis5x.type(key("negative")).assert().isEqualTo("string")
-        Redis5x.pttl(key("set")).assert().isBetween(1L, 60_000L)
+        ForeignContent.type(key("negative")).assert().isEqualTo("string")
+        ForeignContent.pttl(key("set")).assert().isBetween(1L, 60_000L)
         store.setSurface.removeMembers(key("set"), members, null, frame).assert().isNull()
-        Redis5x.exists(key("set")).assert().isFalse()
+        ForeignContent.exists(key("set")).assert().isFalse()
 
         store.setSurface.addMembers(key("scalar"), members, null, frame).assert().isEqualTo(RedisScripts.FORMAT)
         store.setSurface.removeMembers(key("scalar"), members, null, frame).assert().isEqualTo(RedisScripts.FORMAT)
@@ -266,7 +266,7 @@ class ForeignFormatWriteTest {
             null,
             frame
         ).assert().isEqualTo(RedisScripts.NEWER_FORMAT)
-        Redis5x.fields(key("invalid")).assert().isEqualTo(mapOf("!f" to "x", "+a" to ""))
-        Redis5x.fields(key("zero")).assert().isEqualTo(mapOf("!f" to "0", "+a" to ""))
+        ForeignContent.fields(key("invalid")).assert().isEqualTo(mapOf("!f" to "x", "+a" to ""))
+        ForeignContent.fields(key("zero")).assert().isEqualTo(mapOf("!f" to "0", "+a" to ""))
     }
 }

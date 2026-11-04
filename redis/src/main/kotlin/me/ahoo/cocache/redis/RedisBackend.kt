@@ -310,7 +310,7 @@ class RedisBackend private constructor(
          * 集群中它替换 Lettuce 默认的 60 s 连接超时，不增加开销。
          * 关闭维护期间的放宽（Lettuce 7 默认在收到维护通知时把超时放宽 10 s），上界始终是 [commandTimeout]，与同步等待一致。
          * 这一项只有 Lettuce 7 才有（`relaxedTimeoutsDuringMaintenance`、`DISABLED_TIMEOUT`）：Spring Boot 4.0 管理的 Lettuce 6.8
-         * 没有维护通知，也没有这两个符号，此时跳过，维护期间的超时行为保持 Lettuce 的默认（6.x 上即不放宽）。
+         * 没有维护通知，也没有这两个符号，此时跳过，维护期间的超时行为保持 Lettuce 的默认（Lettuce 6 上即不放宽）。
          */
         internal fun timeoutOptions(commandTimeout: Duration): TimeoutOptions {
             val builder = TimeoutOptions.builder()
@@ -321,7 +321,7 @@ class RedisBackend private constructor(
         }
 
         /**
-         * 关闭维护期间的超时放宽；当前 Lettuce 没有这一项（6.x）时什么也不做并返回 `false`。
+         * 关闭维护期间的超时放宽；当前 Lettuce 没有这一项（Lettuce 6）时什么也不做并返回 `false`。
          * [relax] 只供测试替换：符号在执行到时才解析，缺失时抛出 `NoSuchMethodError` / `NoSuchFieldError`。
          */
         internal fun disableMaintenanceRelaxation(

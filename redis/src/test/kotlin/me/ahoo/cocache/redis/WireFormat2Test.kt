@@ -44,7 +44,7 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
-import me.ahoo.cocache.redis.migration.Redis5x
+import me.ahoo.cocache.redis.foreign.ForeignContent
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
@@ -394,7 +394,7 @@ class WireFormat2Test {
     /**
      * 格式号低于本格式的内容（格式 1）是读不懂的内容，与格式 0 相同（RFC 0005 §4.7）：读取原样报告格式 1、不授予令牌，
      * 其中的 lease 不当作 lease、令牌不匹配；条件读写、按版本写入与集合元素写入拒绝；回收比较整个值的指纹。
-     * 有数据源的缓存回收它并回源，写回本格式的值；`SetCache` 读到 `!f = '1'` 的集合时失败。
+     * 有数据源的缓存回收它并回源，写回本格式的值；`SetStore` 读到 `!f = '1'` 的集合时失败。
      */
     @Test
     fun derivedCacheReclaimsFormat1ContentAndReloads() {
@@ -440,7 +440,7 @@ class WireFormat2Test {
 
         val sets = "$namespace-set"
         val index = runtime.create(setStoreSpec<String, String>(sets) { elementCodec = StringCodec })
-        Redis5x.hash("cocache:$sets:k", mapOf("!f" to "1", "+a" to ""))
+        ForeignContent.hash("cocache:$sets:k", mapOf("!f" to "1", "+a" to ""))
         runCatching { index["k"] }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
         runCatching {
             index.add(
@@ -448,7 +448,7 @@ class WireFormat2Test {
                 listOf("b")
             )
         }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
-        Redis5x.fields("cocache:$sets:k").assert().isEqualTo(mapOf("!f" to "1", "+a" to ""))
+        ForeignContent.fields("cocache:$sets:k").assert().isEqualTo(mapOf("!f" to "1", "+a" to ""))
     }
 
     /**
@@ -486,15 +486,15 @@ class WireFormat2Test {
     fun setsCarryTheFormatAndAMustUnderstandBitmap(): Unit = l1 {
         val sets = store.setSurface
         sets.addMembers(key("written"), listOf("a".toByteArray()), null, frame()).assert().isNull()
-        Redis5x.fields(key("written")).assert().isEqualTo(mapOf("!f" to "2", "+a" to ""))
+        ForeignContent.fields(key("written")).assert().isEqualTo(mapOf("!f" to "2", "+a" to ""))
 
-        Redis5x.hash(key("zero"), mapOf("!f" to "2", "!m" to "0", "!x" to "ignored", "+a" to ""))
+        ForeignContent.hash(key("zero"), mapOf("!f" to "2", "!m" to "0", "!x" to "ignored", "+a" to ""))
         val readable = hit(store.read(key("zero"), null, null, null))
         readable.format.assert().isEqualTo(RedisScripts.FORMAT)
         (readable.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("a")
         sets.addMembers(key("zero"), listOf("b".toByteArray()), null, frame()).assert().isNull()
 
-        Redis5x.hash(key("bitmap"), mapOf("!f" to "2", "!m" to "1", "+a" to ""))
+        ForeignContent.hash(key("bitmap"), mapOf("!f" to "2", "!m" to "1", "+a" to ""))
         hit(store.read(key("bitmap"), null, null, null)).format.assert().isEqualTo(RedisScripts.NEWER_FORMAT)
         sets.addMembers(
             key("bitmap"),
@@ -517,20 +517,20 @@ class WireFormat2Test {
             ContentFingerprint.of(Envelope.Members(listOf("a".toByteArray()))),
             lease()
         ).assert().isFalse()
-        Redis5x.fields(key("bitmap")).assert().isEqualTo(mapOf("!f" to "2", "!m" to "1", "+a" to ""))
+        ForeignContent.fields(key("bitmap")).assert().isEqualTo(mapOf("!f" to "2", "!m" to "1", "+a" to ""))
 
         mapOf("3" to 3, "x" to 0, "" to 0).forEach { (format, reported) ->
             val key = key("format-$format")
-            Redis5x.hash(key, mapOf("!f" to format, "+a" to ""))
+            ForeignContent.hash(key, mapOf("!f" to format, "+a" to ""))
             hit(store.read(key, null, null, null)).format.assert().isEqualTo(reported)
             sets.addMembers(key, listOf("b".toByteArray()), null, frame()).assert().isEqualTo(reported)
         }
-        Redis5x.hash(key("no-format"), mapOf("+a" to ""))
+        ForeignContent.hash(key("no-format"), mapOf("+a" to ""))
         hit(store.read(key("no-format"), null, null, null)).format.assert().isEqualTo(RedisScripts.UNRECOGNIZED)
 
         // 移空即删除
         sets.removeMembers(key("written"), listOf("a".toByteArray()), null, frame()).assert().isNull()
-        Redis5x.exists(key("written")).assert().isFalse()
+        ForeignContent.exists(key("written")).assert().isFalse()
     }
 
     /**

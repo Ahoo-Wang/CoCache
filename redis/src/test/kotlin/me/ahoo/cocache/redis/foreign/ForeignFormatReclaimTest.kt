@@ -11,7 +11,7 @@
  * limitations under the License.
  */
 
-package me.ahoo.cocache.redis.migration
+package me.ahoo.cocache.redis.foreign
 
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.CacheRuntime
@@ -44,16 +44,16 @@ class ForeignFormatReclaimTest {
     }
 
     /**
-     * 有数据源：5.x 写入的 JSON / 字符串、Hash 与原生 Set 都在第一次读取时按摘要条件回收、回源并写回 Redis。
+     * 有数据源：其它程序写入的 JSON / 字符串、Hash 与原生 Set 都在第一次读取时按摘要条件回收、回源并写回 Redis。
      */
     @Test
     fun cacheWithSourceReclaimsAndReloads() {
         val name = "reload-$run"
         fun key(id: String) = "cocache:$name:$id"
-        Redis5x.string(key("json"), mapper.writeValueAsString(Policy("p1", "deny")))
-        Redis5x.string(key("string"), "v1")
-        Redis5x.hash(key("hash"), mapOf("a" to "1", "b" to "2"))
-        Redis5x.set(key("set"), listOf("a", "b"))
+        ForeignContent.string(key("json"), mapper.writeValueAsString(Policy("p1", "deny")))
+        ForeignContent.string(key("string"), "v1")
+        ForeignContent.hash(key("hash"), mapOf("a" to "1", "b" to "2"))
+        ForeignContent.set(key("set"), listOf("a", "b"))
         val cache = runtime.create(
             cacheSpec<String, String>(name) {
                 codec = StringCodec
@@ -65,6 +65,6 @@ class ForeignFormatReclaimTest {
         val ids = listOf("json", "string", "hash", "set")
         ids.forEach { cache[it].assert().isEqualTo("loaded-$it") }
         requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(ids.size.toLong())
-        ids.forEach { Redis5x.type(key(it)).assert().isEqualTo("string") }
+        ids.forEach { ForeignContent.type(key(it)).assert().isEqualTo("string") }
     }
 }

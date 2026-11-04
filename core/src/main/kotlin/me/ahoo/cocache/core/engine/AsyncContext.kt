@@ -42,7 +42,7 @@ import kotlin.coroutines.EmptyCoroutineContext
  * 异步与挂起变体的执行资源（RFC 0005 §4.4、§5）。
  *
  * @param executor 运行时的执行器（阻塞调度器，默认每个任务一个虚拟线程）：运行作用域中协程的每一步（L1 命令完成之后的续接、
- *   共享加载），以及异步路径上的阻塞 loader。6.x 的异步执行器与阻塞执行器合并为它
+ *   共享加载），以及异步路径上的阻塞 loader
  * @param dispatcher 运行时作用域的调度器；`null` 时为 [EngineDispatcher]（生产）。确定性仿真传入测试调度器（RFC 0005 §4.10）
  * @param drainTimeout 关闭时等待作用域中在途步骤结束的上限（[close]）；`0` 表示不等待（手动推进执行器的测试）
  *

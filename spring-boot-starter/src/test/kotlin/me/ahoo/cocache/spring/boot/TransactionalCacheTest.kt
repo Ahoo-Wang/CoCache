@@ -221,8 +221,8 @@ class TransactionalCacheTest {
     }
 
     /**
-     * `@CachePut` 推迟到提交之后，回滚时丢弃；回滚到 savepoint 时丢弃嵌套段内的写入（6.x 的已知限制：Spring 的装饰器看不到
-     * 回滚到 savepoint，嵌套段内的值仍在外层提交时写入）。之后的 `@CacheEvict` 取代之前的 `@CachePut`。
+     * `@CachePut` 推迟到提交之后，回滚时丢弃；回滚到 savepoint 时丢弃嵌套段内的写入（Spring 的
+     * `TransactionAwareCacheDecorator` 看不到回滚到 savepoint，会在外层提交时照样写入嵌套段内的值）。之后的 `@CacheEvict` 取代之前的 `@CachePut`。
      */
     @Test
     fun cachePutIsDeferredUntilCommitAndDroppedOnRollback() {
