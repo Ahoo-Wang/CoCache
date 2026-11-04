@@ -47,8 +47,6 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.ForkJoinPool
-import java.util.concurrent.ForkJoinWorkerThread
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
@@ -73,11 +71,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     private val context: EngineContext
 
     /**
-     * 阻塞执行器（RFC 0004 §5.1）：[Builder.blockingExecutor] 给出的，或运行时自建的那个。
-     * 适配层可以把可能阻塞的用户代码（如 Spring `retrieve` 的方法体）派发到这里，不占用异步执行器。随运行时关闭（自建时）。
+     * 运行时的执行器（阻塞调度器，RFC 0005 §4.4、§5）：[Builder.executor] 给出的，或运行时自建的那个（每个任务一个虚拟线程）。
+     * 适配层可以把可能阻塞的用户代码（如 Spring `retrieve` 的方法体）派发到这里。随运行时关闭（自建时）。
      */
-    val blockingExecutor: Executor
-        get() = context.async.blocking
+    val executor: Executor
+        get() = context.async.executor
     private val registrations = CopyOnWriteArrayList<Registration>()
     private val names = ConcurrentHashMap<String, Registration>()
     private val creationListeners = CopyOnWriteArrayList<CacheCreationListener>()
@@ -121,16 +119,13 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     }
 
     /**
-     * 异步路径的执行资源（RFC 0004 §5.1）。运行时自建的执行器随运行时关闭；调用方给出的执行器不关闭。
+     * 异步与挂起变体的执行资源（RFC 0005 §4.4）。运行时自建的执行器随运行时关闭；调用方给出的执行器不关闭。
      * 关闭顺序（[owned] 逆序）：先取消运行时作用域（进行中的异步调用以关闭失败）、有界地等待其中在途的步骤结束，再关闭自建的执行器。
-     * 等待 lease 的退避与等待回源许可都是挂起（`delay`、信号量），不再需要专门的定时器线程。
+     * 等待 lease 的退避与等待回源许可都是挂起（`delay`、信号量），不需要专门的定时器线程。
      */
     private fun asyncContext(builder: Builder): AsyncContext {
-        val executor = builder.asyncExecutor ?: defaultAsyncExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
-        val blocking = builder.blockingExecutor ?: Executors.newVirtualThreadPerTaskExecutor().also {
-            owned.add(AutoCloseable { it.shutdown() })
-        }
-        return AsyncContext(executor, blocking, builder.dispatcher, builder.drainTimeout).also { owned.add(it) }
+        val executor = builder.executor ?: defaultExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
+        return AsyncContext(executor, builder.dispatcher, builder.drainTimeout).also { owned.add(it) }
     }
 
     /**
@@ -382,8 +377,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         var retryPolicy: RetryPolicy = RetryPolicy()
         var loadObserver: LoadObserver = LoadObserver.NOOP
         var fillObserver: FillObserver = FillObserver.NONE
-        var asyncExecutor: Executor? = null
-        var blockingExecutor: Executor? = null
+        var executor: Executor? = null
         var recordLocalHits: Boolean = false
 
         /**
@@ -429,17 +423,14 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         fun fillObserver(fillObserver: FillObserver) = apply { this.fillObserver = fillObserver }
 
         /**
-         * 异步执行器（RFC 0004 §5.1）：运行异步视图的全部续接，只承载短小的非阻塞工作。由调用方管理。
-         * 不指定时使用运行时自建并管理的 `ForkJoinPool`（并行度为 CPU 数，`cocache-async-*`）：
-         * 它的线程在 `join()` 上阻塞时会补偿线程，替换为固定大小的普通线程池时没有这个保证。
+         * 运行时的执行器（阻塞调度器，RFC 0005 §4.4、§5）：异步与挂起变体在运行时作用域中的每一步（L1 命令完成之后的续接、共享加载），
+         * 以及异步路径上的阻塞数据源都在这里执行，因此它必须容得下阻塞的任务。
+         * 由调用方管理，运行时关闭时不关闭它。它不应排队，也不应只有少量线程：阻塞的数据源会占住线程，续接就排不上。
+         *
+         * 不指定时使用运行时自建并管理的执行器：每个任务一个虚拟线程（`cocache-worker-*`）。JDK 21–23 上数据源在 `synchronized` 块内阻塞
+         * 会钉住载体线程（JEP 491 在 JDK 24 消除），生产环境建议 JDK 24 及以上，或换成平台线程池。同步变体不经过它。
          */
-        fun asyncExecutor(asyncExecutor: Executor) = apply { this.asyncExecutor = asyncExecutor }
-
-        /**
-         * 阻塞执行器（RFC 0004 §5.1）：异步路径上的同步数据源只在这里执行。由调用方管理，不应排队。
-         * 不指定时每个任务一个虚拟线程。
-         */
-        fun blockingExecutor(blockingExecutor: Executor) = apply { this.blockingExecutor = blockingExecutor }
+        fun executor(executor: Executor) = apply { this.executor = executor }
 
         /**
          * 是否把 L2 命中计入 `CacheMetrics.localHits`，作用于本运行时创建的所有缓存。默认不记录：
@@ -453,6 +444,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     companion object {
         private val log = KotlinLogging.logger {}
         private const val REFRESH_QUEUE_CAPACITY = 1024
+
+        /**
+         * 默认执行器的线程名前缀（[defaultExecutor]）。
+         */
+        internal const val WORKER_THREAD_PREFIX = "cocache-worker-"
 
         /**
          * 不要求任何可选能力（`Cache`，见 [create]）。
@@ -501,16 +497,11 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             ).apply { allowCoreThreadTimeOut(true) }
         }
 
-        private fun defaultAsyncExecutor(): ForkJoinPool {
-            val counter = AtomicInteger()
-            val factory = ForkJoinPool.ForkJoinWorkerThreadFactory { pool ->
-                object : ForkJoinWorkerThread(pool) {}.apply {
-                    name = "cocache-async-${counter.incrementAndGet()}"
-                    isDaemon = true
-                }
-            }
-            return ForkJoinPool(Runtime.getRuntime().availableProcessors(), factory, null, true)
-        }
+        /**
+         * 默认的执行器：每个任务一个虚拟线程，线程名 `cocache-worker-N`。
+         */
+        private fun defaultExecutor(): ExecutorService =
+            Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name(WORKER_THREAD_PREFIX, 0).factory())
 
         private fun defaultScheduler(): ScheduledExecutorService {
             return Executors.newSingleThreadScheduledExecutor(daemonThreads("cocache-retry"))

@@ -371,6 +371,34 @@ abstract class FaultSpec {
     }
 
     /**
+     * 结果未知的 `put` 在报错之后才在 L1 执行（RFC 0005 §4.6，P12）：原子广播的后端随这次执行广播，帧的来源是写入方节点自己。
+     * 报错之后、迟到执行之前，写入方节点的读取把旧值重新填进了 L2；写入方节点在 `localMaxAge` 之内不再过滤这个 key 上自己的帧，
+     * 迟到的帧淘汰这份旧副本，两个节点都读到新值。非原子广播的后端上迟到的执行不带广播，这个用例跳过。
+     */
+    @Test
+    fun lateOutcomeUnknownPutEvictsTheWritersOwnStaleCopy() {
+        assumeTrue(backend.atomicBroadcast, "a late write broadcasts only on an atomic-broadcast backend")
+        val cacheA = nodeA.cache(policy().toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build(), cacheName)
+        val cacheB = nodeB.cache()
+        database["k"] = "v0"
+        cacheA["k"].assert().isEqualTo("v0")
+        cacheB["k"].assert().isEqualTo("v0")
+        database["k"] = "v1"
+        backend.deferPuts = true
+        val failure = fork("writer") { cacheA.put("k", "v1") }.joinFailure()
+        backend.deferPuts = false
+        (failure as CacheWriteException).outcomeUnknown.assert()
+            .withFailMessage { "a write that may still run is outcome-unknown" }.isTrue()
+        cacheA["k"].assert().isEqualTo("v0")
+
+        backend.applyDeferredPuts().assert().isEqualTo(1)
+        remoteValue("k").assert().isEqualTo("v1")
+        awaitCondition("B converges") { cacheB["k"] == "v1" }
+        awaitCondition("the writer's own frame evicted its stale copy") { cacheA["k"] == "v1" }
+        loads.get().assert().isEqualTo(1)
+    }
+
+    /**
      * `invalidate` 已在 L1 生效却报错：引擎按失败处理并重试，重放的 `DEL` 是幂等的（期间其它节点重新填充的值也只是被多删一次）。
      * 重试成功后两个节点收敛到新值，没有失效被丢弃。
      */

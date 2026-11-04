@@ -39,10 +39,10 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 
 /**
- * 异步路径的执行资源（RFC 0004 §5.1）。
+ * 异步与挂起变体的执行资源（RFC 0005 §4.4、§5）。
  *
- * @param executor 异步执行器：只运行短小的非阻塞续接（解码、L2 填充、发出下一条 L1 命令、调用 `loadAsync`）
- * @param blocking 阻塞执行器：异步路径上的同步 loader 只在这里执行
+ * @param executor 运行时的执行器（阻塞调度器，默认每个任务一个虚拟线程）：运行作用域中协程的每一步（L1 命令完成之后的续接、
+ *   共享加载），以及异步路径上的阻塞 loader。6.x 的异步执行器与阻塞执行器合并为它
  * @param dispatcher 运行时作用域的调度器；`null` 时为 [EngineDispatcher]（生产）。确定性仿真传入测试调度器（RFC 0005 §4.10）
  * @param drainTimeout 关闭时等待作用域中在途步骤结束的上限（[close]）；`0` 表示不等待（手动推进执行器的测试）
  *
@@ -51,15 +51,16 @@ import kotlin.coroutines.EmptyCoroutineContext
  */
 internal class AsyncContext(
     val executor: Executor,
-    val blocking: Executor,
     dispatcher: CoroutineDispatcher? = null,
     private val drainTimeout: Duration = DRAIN_TIMEOUT,
 ) : AutoCloseable {
+    private val engineDispatcher: EngineDispatcher? = if (dispatcher == null) EngineDispatcher(executor) else null
+
     /**
      * 运行时作用域：协程核心的异步变体与共享加载在这里运行。
      */
     val scope: CoroutineScope = CoroutineScope(
-        SupervisorJob() + (dispatcher ?: EngineDispatcher(executor)) + CoroutineName("cocache")
+        SupervisorJob() + (dispatcher ?: requireNotNull(engineDispatcher)) + CoroutineName("cocache")
     )
 
     /**
@@ -121,13 +122,14 @@ internal class AsyncContext(
      * - 在途的不可取消步骤照常完成：L1 命令、令牌的释放、写入之后的补发广播与第二次递增、取消之后的收尾。
      *   等待它们结束再返回（RFC 0005 第三轮 K17）：否则之后关闭的执行器与后端会让它们失败，其它节点陈旧到 `localMaxAge`，
      *   lease 留到 `lease.ttl`。这些步骤的等待由存储的命令超时限定，上限只防止卡住的命令让关闭无限期等待。
-     * - 在异步执行器的线程上调用时不等待：调用方可能正是作用域中的协程（如异步结果的回调），等待只会等满上限。
+     * - 在调度器派发的任务中调用时不等待（[EngineDispatcher.onDispatchedThread]）：调用方可能正是作用域中的协程
+     *   （如异步结果的回调），等待只会等满上限。
      * - 同步变体的调用在调用方线程上运行，不在作用域中，不等待。
      */
     override fun close() {
         closed = true
         scope.cancel("CacheRuntime closed.")
-        if (drainTimeout > Duration.ZERO && !Futures.onExecutor(executor)) {
+        if (drainTimeout > Duration.ZERO && engineDispatcher?.onDispatchedThread != true) {
             awaitDrained(scope.coroutineContext.job)
         }
     }

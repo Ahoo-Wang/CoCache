@@ -53,8 +53,8 @@ class CoCacheSpringCache(
     private val admin: CacheAdmin?,
     /**
      * 执行 [retrieve] (key, valueLoader) 的方法体（`valueLoader.get()`）。方法体可能先阻塞再返回 future
-     * （如 `completedFuture(repository.find(id))`），因此不能在 CoCache 的异步执行器上执行；
-     * [CoCacheSpringCacheManager] 传入运行时的阻塞执行器（[me.ahoo.cocache.core.CacheRuntime.blockingExecutor]）。不应排队。
+     * （如 `completedFuture(repository.find(id))`），因此不在调用方线程上执行；
+     * [CoCacheSpringCacheManager] 传入运行时的执行器（[me.ahoo.cocache.core.CacheRuntime.executor]，默认每个任务一个虚拟线程）。不应排队。
      */
     private val executor: Executor,
 ) : SpringCache {

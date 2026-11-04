@@ -50,8 +50,7 @@ Validation chain: when a global layer makes `refresh-window` not less than `loca
 | `cocache.spring-cache.require-sync` | `false` | `true` fails startup on a non-sync `@Cacheable` on a CoCache cache |
 | `cocache.spring-cache.degrade-on-error` | `false` | `true`: `DegradingCacheErrorHandler` logs read and write failures on CoCache caches instead of rethrowing them; invalidation failures and other caches go to the previous handler |
 | `cocache.refresh-executor` | built-in | Bean name of the `Executor` for refresh-ahead loads; CoCache never shuts it down |
-| `cocache.async-executor` | runtime-owned `ForkJoinPool` (`cocache-async-*`) | Bean name of the `Executor` for async-view continuations; short non-blocking work only, never block on it |
-| `cocache.blocking-executor` | one virtual thread per task | Bean name of the `Executor` for synchronous loaders called through the async view; must not queue |
+| `cocache.executor` | one virtual thread per task (`cocache-worker-N`) | Bean name of the one `Executor` of the async and suspending views: every continuation, shared loads, synchronous loaders called through those views, and Spring `retrieve(key, loader)` method bodies. It must tolerate blocking tasks: no queue, not just a few threads. On JDK 21–23 a loader blocking inside `synchronized` pins a virtual thread's carrier (fixed in JDK 24), so prefer JDK 24+ or a platform pool. Resolved by name only; CoCache never shuts it down. The blocking API never uses it |
 | `management.health.cocache.enabled` | `true` | Registers the `cocache` health indicator |
 | `cocache.observation.enabled` | `true` | Wraps source loads in a Micrometer `Observation` (`cocache.load`) when an `ObservationRegistry` exists |
 | `cocache.metrics.local-hits` | `false` | Counts L2 hits (`cocache.hits{level=l2}`), at a measurable cost to L2 hit throughput |

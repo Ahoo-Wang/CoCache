@@ -94,7 +94,7 @@ class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
 
 - **`null` means "doesn't exist"** and is cached as a negative entry for `absent-ttl`. Throw if the lookup *failed*: the exception reaches the caller (and every caller sharing the load), and nothing is cached.
 - **The default `loadAll`** calls `load` once per key. Override it with a batch query if you use `getAll`.
-- **The loader runs on the calling thread**, so transactions, `SecurityContext` and MDC are available. Through the [async view](./async.md) it runs on the blocking executor instead.
+- **The loader runs on the calling thread**, so transactions, `SecurityContext` and MDC are available. Through the [async view](./async.md) it runs on the runtime's executor (`cocache.executor`) instead.
 - **Don't read the same key from inside its own loader** on the same thread. That fails fast with `IllegalStateException`.
 - **Interfaces** find the loader by type `CacheLoader<K, V>`, then `AsyncCacheLoader<K, V>`. If several beans match, or one of each, startup fails; name one with `@CoCache(loader = "…")`.
 - **Non-blocking sources** implement `AsyncCacheLoader<K, V>` (`loadAsync` returns a `CompletionStage`) and set it as `asyncLoader`. In Kotlin, `suspendingLoader { … }` sets a suspend function as the async loader. A cache has one source, sync or async, and every view works with either: see [Async API](./async.md#loader) and [Kotlin Coroutines](./coroutines.md#loader).

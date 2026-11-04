@@ -81,6 +81,8 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | `me.ahoo.cocache.coroutines` 中的 `SourceLoadCancelledException` | 移到 `me.ahoo.cocache.core`，适用于各种 loader |
 | 针对 `CacheSpec.Builder` 与 `SetCacheSpec.Builder` 的 `CacheSpecCustomizer.customize` | 每种 spec 一个重载（`CacheSpec`、`VersionedCacheSpec`、`StoreSpec`、`VersionedStoreSpec`、`SetStoreSpec`）；定制器不能修改数据源或被锁定的字段 |
 | `CoCacheSpringCacheManager(runtime, executor)` | `CoCacheSpringCacheManager(runtime)` |
+| `CacheRuntime.Builder.asyncExecutor(…)`、`blockingExecutor(…)`；`CacheRuntime.blockingExecutor` | `CacheRuntime.Builder.executor(…)`；`CacheRuntime.executor`（一个执行器，见[异步](./async.md)） |
+| `LoadObserver.observeAsync` | 删除：`observe` 同样看到异步与挂起的加载（见[可观测性](../operations/observability.md)） |
 | 包住 CoCache 的 manager 的 Spring `TransactionAwareCacheManagerProxy` | `TransactionAwareSpringCacheManager`（见[事务](./spring-cache.md#transactions)） |
 
 ## 编译不报错的行为变化 {#behavior}
@@ -98,6 +100,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 - **端点默认不删除唯一副本。** `Store`、`SetStore` 或 `VersionedStore` 上的按 key `DELETE` 返回 `403`，直到设置了 `management.endpoint.cocache.allow-store-delete` 或 `allow-purge`。在 `VersionedCache` 上它是一次 `evict`。
 - **被中断的阻塞调用等待它的 Redis 命令**（至多一个 `command-timeout`），不再立即失败，并保留中断标志。
 - **读不懂的失效帧会重置**该频道上的缓存，不再被丢弃。
+- **异步与挂起视图总是在 `cocache.executor` 上恢复**，从不在完成上一步的线程上就地继续；默认执行器下每次恢复都是一个新的虚拟线程。
 
 ## 配置项 {#configuration}
 
@@ -116,6 +119,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | `cocache.redis.set-cache-eviction-check` | `cocache.redis.store-eviction-check` | 覆盖所有权威类型。存在权威缓存时，`allkeys-*` 与读不到的策略现在总是让启动失败；这个设置只决定 `volatile-*` 且 `ttl` 有限的情形 |
 | — | `cocache.redis.assume-maxmemory-policy` | 新增：读不到 `INFO memory` 时假定的策略 |
 | `cocache.spring-cache.retrieve-executor` | 删除 | `retrieve` 使用异步视图 |
+| `cocache.async-executor`、`cocache.blocking-executor` | `cocache.executor` | 异步与挂起视图的每一步及其阻塞 loader 共用一个执行器，它必须容得下阻塞的任务。不设置时每个任务一个虚拟线程 |
 | — | `invalidate-fills-on-rollback`、`fill-in-transaction`（在 `cocache.defaults.cache`、`cocache.overrides.cache` 与 `cocache.caches.[name]` 下）、`cocache.spring-cache.degrade-on-error` | 新增的 Spring 设置 |
 | — | `management.endpoint.cocache.allow-store-delete`、`management.endpoint.cocache.allow-purge` | 新增的端点开关，默认关闭 |
 

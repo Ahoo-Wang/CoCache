@@ -78,8 +78,8 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
     }
 
     /**
-     * 只在 [gate] 打开后才在 [pool] 上执行的执行器：既作 [HookedBackend.ioExecutor]（L1 结果的送达），也作阻塞执行器
-     * （异步路径上的同步数据源）。
+     * 只在 [gate] 打开后才在 [pool] 上执行的执行器：既作 [HookedBackend.ioExecutor]（L1 结果的送达），也作运行时的执行器
+     * （续接与异步路径上的同步数据源）。
      */
     private fun gated(pool: Executor, gate: () -> CountDownLatch, what: String): Executor = Executor { task ->
         val opened = gate()
@@ -89,13 +89,12 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
         }
     }
 
-    private fun node(asyncExecutor: Executor? = null, blockingExecutor: Executor? = null): CacheRuntime {
+    private fun node(executor: Executor? = null): CacheRuntime {
         val builder = CacheRuntime.builder()
             .backend(backend)
             .clock(clock)
             .retryPolicy(RetryPolicy(initialBackoff = Duration.ofMillis(10), maxBackoff = Duration.ofMillis(50)))
-        asyncExecutor?.let { builder.asyncExecutor(it) }
-        blockingExecutor?.let { builder.blockingExecutor(it) }
+        executor?.let { builder.executor(it) }
         return builder.build()
     }
 
@@ -127,16 +126,12 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
     @Test
     fun futuresNeverCompleteOnTheBackendIoThread() {
         val (io, _) = named("tck-io", 1)
-        val (blockingPool, _) = named("tck-blocking")
-        val (asyncPool, _) = named("tck-async")
+        val (pool, _) = named("tck-exec")
         // L1 的结果在回调注册之前不送达：回调一定是在完成时执行的，而不是注册时就地执行。
-        // L1 的结果经 ioExecutor 送达，同步数据源在阻塞执行器上调用，两者都要拦住
+        // L1 的结果经 ioExecutor 送达，续接与同步数据源在运行时的执行器上执行，两者都要拦住
         val gate = AtomicReference(CountDownLatch(1))
         backend.ioExecutor = gated(io, gate::get, "callback registered")
-        val runtime = node(
-            asyncExecutor = asyncPool,
-            blockingExecutor = gated(blockingPool, gate::get, "callback registered")
-        )
+        val runtime = node(gated(pool, gate::get, "callback registered"))
         try {
             database["k"] = "v"
             val async = runtime.create(spec()).async()
@@ -148,7 +143,7 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
             // 先等回调执行再 get：JDK 的 get / join 会在等待线程上执行尚未执行的依赖阶段
             awaitCondition("completion recorded") { completedOn.get() != null }
             future.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("v")
-            completedOn.get().assert().withFailMessage { "completed on ${completedOn.get()}" }.startsWith("tck-async")
+            completedOn.get().assert().withFailMessage { "completed on ${completedOn.get()}" }.startsWith("tck-exec")
             gate.set(CountDownLatch(1))
             val write = async.put("k", "v2")
             write.isDone.assert().isFalse()
@@ -157,7 +152,7 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
             gate.get().countDown()
             awaitCondition("write completion recorded") { writtenOn.get() != null }
             write.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
-            writtenOn.get().assert().startsWith("tck-async")
+            writtenOn.get().assert().startsWith("tck-exec")
         } finally {
             gate.get().countDown()
             backend.ioExecutor = null
@@ -176,11 +171,9 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
         val asyncA = nodeA.rawCache(holder).async()
         val held = keys.map { asyncA.get(it) }
         awaitCondition("A holds every lease") { holder.calls.get() == WAITERS }
-        val asyncFactory = CountingFactory("tck-async")
-        val asyncPool = Executors.newSingleThreadExecutor(asyncFactory).also { executors.add(it) }
-        val blockingFactory = CountingFactory("tck-blocking")
-        val blockingPool = Executors.newCachedThreadPool(blockingFactory).also { executors.add(it) }
-        val waiter = node(asyncExecutor = asyncPool, blockingExecutor = blockingPool)
+        val factory = CountingFactory("tck-exec")
+        val pool = Executors.newSingleThreadExecutor(factory).also { executors.add(it) }
+        val waiter = node(pool)
         try {
             val waiterSource = PendingLoader()
             val asyncB = waiter.rawCache(waiterSource).async()
@@ -191,8 +184,7 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
                 requireNotNull(waiter.metrics(cacheName)).leaseWaits == WAITERS.toLong()
             }
             (threads.threadCount - before).assert().isLessThanOrEqualTo(CONSTANT_THREADS)
-            asyncFactory.created.get().assert().isLessThanOrEqualTo(1)
-            blockingFactory.created.get().assert().isEqualTo(0)
+            factory.created.get().assert().isLessThanOrEqualTo(1)
             keys.forEach { holder.complete(it, "v-$it") }
             held.forEach { it.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS) }
             waiting.forEachIndexed { index, future ->
@@ -200,14 +192,14 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
             }
             waiterSource.calls.get().assert().isEqualTo(0)
             holder.calls.get().assert().isEqualTo(WAITERS)
-            blockingFactory.created.get().assert().isEqualTo(0)
+            factory.created.get().assert().isLessThanOrEqualTo(1)
         } finally {
             waiter.close()
         }
     }
 
     /**
-     * 不挂起线程：回源许可用尽时，等待许可的异步加载经定时器重试，线程数与等待者数无关。
+     * 不挂起线程：回源许可用尽时，等待许可的异步加载挂起在协程的信号量上，线程数与等待者数无关。
      */
     @Test
     fun permitWaitsUseConstantThreads() {
@@ -215,9 +207,9 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
             LoadPolicy(maxConcurrent = 1, acquireTimeout = Duration.ofSeconds(10))
         ).build()
         val source = PendingLoader()
-        val asyncFactory = CountingFactory("tck-async")
-        val asyncPool = Executors.newSingleThreadExecutor(asyncFactory).also { executors.add(it) }
-        val runtime = node(asyncExecutor = asyncPool)
+        val factory = CountingFactory("tck-exec")
+        val pool = Executors.newSingleThreadExecutor(factory).also { executors.add(it) }
+        val runtime = node(pool)
         try {
             val async = runtime.rawCache(source, limited).async()
             val first = async.get("k0")
@@ -234,7 +226,7 @@ abstract class RedisAsyncThreadCases : EngineSpec() {
             waiting.forEachIndexed { index, future ->
                 future.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("v-${keys[index]}")
             }
-            asyncFactory.created.get().assert().isLessThanOrEqualTo(1)
+            factory.created.get().assert().isLessThanOrEqualTo(1)
             requireNotNull(runtime.metrics(cacheName)).loadRejected.assert().isEqualTo(0)
         } finally {
             runtime.close()

@@ -90,8 +90,8 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
     }
 
     /**
-     * 只在 [gate] 打开后才在 [pool] 上执行的执行器：既作 [HookedBackend.ioExecutor]（L1 结果的送达），也作阻塞执行器
-     * （异步路径上的同步数据源）。
+     * 只在 [gate] 打开后才在 [pool] 上执行的执行器：既作 [HookedBackend.ioExecutor]（L1 结果的送达），也作运行时的执行器
+     * （续接与异步路径上的同步数据源）。
      */
     private fun gated(pool: Executor, gate: () -> CountDownLatch, what: String): Executor = Executor { task ->
         val opened = gate()
@@ -101,13 +101,12 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
         }
     }
 
-    private fun node(asyncExecutor: Executor? = null, blockingExecutor: Executor? = null): CacheRuntime {
+    private fun node(executor: Executor? = null): CacheRuntime {
         val builder = CacheRuntime.builder()
             .backend(backend)
             .clock(clock)
             .retryPolicy(RetryPolicy(initialBackoff = Duration.ofMillis(10), maxBackoff = Duration.ofMillis(50)))
-        asyncExecutor?.let { builder.asyncExecutor(it) }
-        blockingExecutor?.let { builder.blockingExecutor(it) }
+        executor?.let { builder.executor(it) }
         return builder.build()
     }
 
@@ -178,16 +177,12 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
     @Test
     fun futuresNeverCompleteOnTheBackendIoThread() {
         val (io, _) = named("tck-io", 1)
-        val (blockingPool, _) = named("tck-blocking")
-        val (asyncPool, _) = named("tck-async")
+        val (pool, _) = named("tck-exec")
         // L1 的结果在回调注册之前不送达：回调一定是在完成时执行的，而不是注册时就地执行。
-        // L1 的结果经 ioExecutor 送达，同步数据源在阻塞执行器上调用，两者都要拦住
+        // L1 的结果经 ioExecutor 送达，续接与同步数据源在运行时的执行器上执行，两者都要拦住
         val gate = AtomicReference(CountDownLatch(1))
         backend.ioExecutor = gated(io, gate::get, "callback registered")
-        val runtime = node(
-            asyncExecutor = asyncPool,
-            blockingExecutor = gated(blockingPool, gate::get, "callback registered")
-        )
+        val runtime = node(gated(pool, gate::get, "callback registered"))
         try {
             database["k"] = "v"
             val async = runtime.create(spec()).async()
@@ -199,7 +194,7 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
             // 先等回调执行再 get：JDK 的 get / join 会在等待线程上执行尚未执行的依赖阶段
             awaitCondition("completion recorded") { completedOn.get() != null }
             future.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("v")
-            completedOn.get().assert().withFailMessage { "completed on ${completedOn.get()}" }.startsWith("tck-async")
+            completedOn.get().assert().withFailMessage { "completed on ${completedOn.get()}" }.startsWith("tck-exec")
             gate.set(CountDownLatch(1))
             val write = async.put("k", "v2")
             write.isDone.assert().isFalse()
@@ -208,7 +203,7 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
             gate.get().countDown()
             awaitCondition("write completion recorded") { writtenOn.get() != null }
             write.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
-            writtenOn.get().assert().startsWith("tck-async")
+            writtenOn.get().assert().startsWith("tck-exec")
         } finally {
             gate.get().countDown()
             backend.ioExecutor = null
@@ -217,7 +212,7 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
     }
 
     /**
-     * 可以切换为拒绝一切任务的异步执行器（模拟饱和或关闭）。
+     * 可以切换为拒绝一切任务的执行器（模拟饱和或关闭）。
      */
     private class SwitchExecutor(private val delegate: Executor) : Executor {
         @Volatile
@@ -237,16 +232,11 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
     @Test
     fun rejectedWriteCompletionStillBumpsTheStampAgain() {
         val (io, _) = named("tck-io", 1)
-        val (blockingPool, _) = named("tck-blocking")
-        val (asyncPool, _) = named("tck-async")
-        val switch = SwitchExecutor(asyncPool)
-        // L1 的结果在 invalidate 返回之后才送达：收尾一定经执行器（否则结果已完成时就地收尾，执行器不参与）。
-        // L1 的结果经 ioExecutor 送达，同步数据源在阻塞执行器上调用，两者都要拦住
+        val (pool, _) = named("tck-exec")
+        val switch = SwitchExecutor(pool)
+        // L1 的结果在 invalidate 返回之后才送达：收尾一定经执行器（否则结果已完成时就地收尾，执行器不参与）
         val delivered = AtomicReference(CountDownLatch(0))
-        val runtime = node(
-            asyncExecutor = switch,
-            blockingExecutor = gated(blockingPool, delivered::get, "write issued")
-        )
+        val runtime = node(switch)
         try {
             val engine = runtime.create(spec())
             engine.put("k", "v0")
@@ -302,9 +292,9 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
         val limited = policy().toBuilder().load(
             LoadPolicy(maxConcurrent = 1, acquireTimeout = Duration.ofMillis(200))
         ).build()
-        val (asyncPool, _) = named("tck-async")
-        val switch = SwitchExecutor(asyncPool)
-        val runtime = node(asyncExecutor = switch)
+        val (pool, _) = named("tck-exec")
+        val switch = SwitchExecutor(pool)
+        val runtime = node(switch)
         try {
             val source = PendingLoader()
             val engine = runtime.rawCache(source, limited)
@@ -355,11 +345,9 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
         val asyncA = nodeA.rawCache(holder).async()
         val held = keys.map { asyncA.get(it) }
         awaitCondition("A holds every lease") { holder.calls.get() == WAITERS }
-        val asyncFactory = CountingFactory("tck-async")
-        val asyncPool = Executors.newSingleThreadExecutor(asyncFactory).also { executors.add(it) }
-        val blockingFactory = CountingFactory("tck-blocking")
-        val blockingPool = Executors.newCachedThreadPool(blockingFactory).also { executors.add(it) }
-        val waiter = node(asyncExecutor = asyncPool, blockingExecutor = blockingPool)
+        val factory = CountingFactory("tck-exec")
+        val pool = Executors.newSingleThreadExecutor(factory).also { executors.add(it) }
+        val waiter = node(pool)
         try {
             val waiterSource = PendingLoader()
             val asyncB = waiter.rawCache(waiterSource).async()
@@ -370,8 +358,7 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
                 requireNotNull(waiter.metrics(cacheName)).leaseWaits == WAITERS.toLong()
             }
             (threads.threadCount - before).assert().isLessThanOrEqualTo(CONSTANT_THREADS)
-            asyncFactory.created.get().assert().isLessThanOrEqualTo(1)
-            blockingFactory.created.get().assert().isEqualTo(0)
+            factory.created.get().assert().isLessThanOrEqualTo(1)
             keys.forEach { holder.complete(it, "v-$it") }
             held.forEach { it.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS) }
             waiting.forEachIndexed { index, future ->
@@ -379,14 +366,14 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
             }
             waiterSource.calls.get().assert().isEqualTo(0)
             holder.calls.get().assert().isEqualTo(WAITERS)
-            blockingFactory.created.get().assert().isEqualTo(0)
+            factory.created.get().assert().isLessThanOrEqualTo(1)
         } finally {
             waiter.close()
         }
     }
 
     /**
-     * 不挂起线程：回源许可用尽时，等待许可的异步加载经定时器重试，线程数与等待者数无关。
+     * 不挂起线程：回源许可用尽时，等待许可的异步加载挂起在协程的信号量上，线程数与等待者数无关。
      */
     @Test
     fun permitWaitsUseConstantThreads() {
@@ -394,9 +381,9 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
             LoadPolicy(maxConcurrent = 1, acquireTimeout = Duration.ofSeconds(10))
         ).build()
         val source = PendingLoader()
-        val asyncFactory = CountingFactory("tck-async")
-        val asyncPool = Executors.newSingleThreadExecutor(asyncFactory).also { executors.add(it) }
-        val runtime = node(asyncExecutor = asyncPool)
+        val factory = CountingFactory("tck-exec")
+        val pool = Executors.newSingleThreadExecutor(factory).also { executors.add(it) }
+        val runtime = node(pool)
         try {
             val async = runtime.rawCache(source, limited).async()
             val first = async.get("k0")
@@ -413,7 +400,7 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
             waiting.forEachIndexed { index, future ->
                 future.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("v-${keys[index]}")
             }
-            asyncFactory.created.get().assert().isLessThanOrEqualTo(1)
+            factory.created.get().assert().isLessThanOrEqualTo(1)
             requireNotNull(runtime.metrics(cacheName)).loadRejected.assert().isEqualTo(0)
         } finally {
             runtime.close()
@@ -478,9 +465,9 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
     }
 
     @Test
-    fun asyncCallerJoiningASyncLoadCompletesOnTheAsyncExecutor() {
-        val (asyncPool, _) = named("tck-async")
-        val runtime = node(asyncExecutor = asyncPool)
+    fun asyncCallerJoiningASyncLoadCompletesOnTheExecutor() {
+        val (pool, _) = named("tck-exec")
+        val runtime = node(pool)
         try {
             val loading = CountDownLatch(1)
             val release = CountDownLatch(1)
@@ -503,7 +490,7 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
             awaitCondition("completion recorded") { completedOn.get() != null }
             syncLeader.join().assert().isEqualTo("v-k")
             joined.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("v-k")
-            completedOn.get().assert().startsWith("tck-async")
+            completedOn.get().assert().startsWith("tck-exec")
             calls.get().assert().isEqualTo(1)
         } finally {
             runtime.close()
@@ -511,10 +498,9 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
     }
 
     @Test
-    fun syncSourceUnderAsyncCallsRunsOnlyOnTheBlockingExecutor() {
-        val (asyncPool, _) = named("tck-async")
-        val (blockingPool, _) = named("tck-blocking")
-        val runtime = node(asyncExecutor = asyncPool, blockingExecutor = blockingPool)
+    fun syncSourceUnderAsyncCallsRunsOnTheExecutor() {
+        val (pool, _) = named("tck-exec")
+        val runtime = node(pool)
         try {
             val loadedOn = ConcurrentHashMap.newKeySet<String>()
             val engine = runtime.create(
@@ -535,7 +521,7 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
             async.getAll(listOf("b", "c")).get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)
                 .assert().isEqualTo(mapOf("b" to "v-b", "c" to "v-c"))
             loadedOn.assert().isNotEmpty()
-            loadedOn.all { it.startsWith("tck-blocking") }.assert().withFailMessage { "loaded on $loadedOn" }.isTrue()
+            loadedOn.all { it.startsWith("tck-exec") }.assert().withFailMessage { "loaded on $loadedOn" }.isTrue()
         } finally {
             runtime.close()
         }

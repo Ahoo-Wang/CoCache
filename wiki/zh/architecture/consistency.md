@@ -156,7 +156,7 @@ SingleFlight 还保证：
 | `put`、`putAll` | 递增、淘汰 L2 → 脚本：覆盖 + 到期时间 + `PUBLISH` → 递增、淘汰 L2。不写 L2 | 1 |
 | `putIfMatch`、`deleteIfMatch`、`putIfNewer`、`invalidateIfNewer`、`deleteIfNewer`、`evict` | 递增、淘汰 L2 → 脚本：先比较摘要或版本，再写入 + 到期时间 + `PUBLISH`，或保持 key 不变 → 递增、淘汰 L2。见[条件写入](../guide/store.md#conditional-writes)与[按版本写入](../guide/freshness.md#versioned-writes) | 1 |
 | `SetStore.add` / `remove` / `clear` / `put` | 递增、淘汰 L2 → 脚本：成员更新 + 到期时间 + `PUBLISH` → 递增、淘汰 L2 | 1 |
-| 来自其它实例的消息 | 递增、淘汰 L2。跳过本实例 `NodeId` 发出的消息 | — |
+| 来自其它实例的消息 | 递增、淘汰 L2。跳过本实例 `NodeId` 发出的消息；结果未知的写入之后例外：从失败起 `local-max-age` 之内，本实例对这些 key 上自己的消息按远端消息处理（递增、淘汰 L2），迟到执行的写入的广播因此也淘汰本实例其间加载的副本。只对原子广播的后端 | — |
 | 重置（订阅得到确认、心跳失败）、`clearLocal` | 递增所有分段，清空 L2 | — |
 
 无论脚本成功与否，第二次递增都会执行。后端不能原子广播时，引擎在脚本成功之后立即发布，发布失败按写入失败处理。

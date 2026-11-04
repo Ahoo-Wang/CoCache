@@ -105,14 +105,14 @@ open class CoherentEngineTest {
         ),
         backend: me.ahoo.cocache.api.spi.CoherenceBackend = this.backend,
         clock: me.ahoo.cocache.api.CacheClock = this.clock,
-        asyncExecutor: Executor? = null
+        executor: Executor? = null
     ): CacheRuntime {
         val builder = CacheRuntime.builder()
             .backend(backend)
             .clock(clock)
             .refreshExecutor { refreshExecutor.execute(it) }
             .retryPolicy(retryPolicy)
-        asyncExecutor?.let { builder.asyncExecutor(it) }
+        executor?.let { builder.executor(it) }
         return builder.build().also { runtimes.add(it) }
     }
 
@@ -610,7 +610,7 @@ open class CoherentEngineTest {
     fun rejectedCompletionStillPublishesAndKeepsTheWriteOutcome() {
         HoppingNonAtomic().use { hopping ->
             val executor = RejectingExecutor(1)
-            val cacheA = runtime(backend = hopping.backend, asyncExecutor = executor).engine(spec(throwing))
+            val cacheA = runtime(backend = hopping.backend, executor = executor).engine(spec(throwing))
             val cacheB = runtime(backend = hopping.backend).engine()
             val sync = access == CacheAccess.SYNC
             database["k"] = "v0"
@@ -655,7 +655,7 @@ open class CoherentEngineTest {
     @Test
     fun saturatedExecutorStillPublishesTheWrite() {
         HoppingNonAtomic().use { hopping ->
-            val cacheA = runtime(backend = hopping.backend, asyncExecutor = RejectingExecutor(Int.MAX_VALUE)).engine()
+            val cacheA = runtime(backend = hopping.backend, executor = RejectingExecutor(Int.MAX_VALUE)).engine()
             val cacheB = runtime(backend = hopping.backend).engine()
             database["k"] = "v0"
             cacheB["k"].assert().isEqualTo("v0")
