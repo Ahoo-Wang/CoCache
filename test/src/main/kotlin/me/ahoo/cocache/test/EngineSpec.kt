@@ -201,7 +201,7 @@ abstract class EngineSpec {
 
     protected fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 
-    protected fun storageKey(key: String) = "cocache:v8:$cacheName:$key"
+    protected fun storageKey(key: String) = "cocache:$cacheName:$key"
 
     /**
      * 不经过引擎直接读 L1。
@@ -288,8 +288,7 @@ abstract class EngineSpec {
     }
 
     /**
-     * 8.x 的命名空间不含 `:`（RFC 0005 §4.7，D5）：6.x 中写进命名空间的前缀在创建时失败，提示把它移到 keyPrefix，
-     * 不注册任何东西。
+     * 命名空间不含 `:`（RFC 0005 §4.7）：写进命名空间的前缀在创建时失败，提示把它移到 keyPrefix，不注册任何东西。
      */
     @Test
     fun namespaceWithColonFailsAtCreation() {
@@ -1011,7 +1010,7 @@ abstract class EngineSpec {
     }
 
     /**
-     * 没有数据源时 L1 是唯一副本：读不懂的内容（格式 0，如 5.x 遗留；同版本解码失败）默认 `FAIL`，
+     * 没有数据源时 L1 是唯一副本：读不懂的内容（格式 0，如其它程序写入的值；同版本解码失败）默认 `FAIL`，
      * 抛出 [CacheReadException]（cause 为 [ForeignFormatException]），不回收、不写 L2，降级读失败模式下同样抛出。
      */
     @Test
@@ -1073,8 +1072,8 @@ abstract class EngineSpec {
     }
 
     /**
-     * 批量读取中损坏的 key 回收之后重新加载失败：整批以这个失败结束，但其余 key 照常回源并凭 lease 写回 L1，不留下 lease。
-     * 6.x 的同步路径先逐个回收损坏的 key，失败即中断，其余 key 的 lease 留到过期；8.0 先完成整批，再回收。
+     * 批量读取中损坏的 key 回收之后重新加载失败：整批以这个失败结束，但其余 key 照常回源并凭 lease 写回 L1，不留下 lease：
+     * 先完成整批，再回收。
      */
     @Test
     fun corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch() {

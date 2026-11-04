@@ -139,7 +139,7 @@ class CacheSpecTest {
             .hasMessageStartingWith("SetCache[idx] - Namespace[a:b] must match")
         val spec = CacheSpec.builder<String, String>("user").keyPrefix("app:").codec(StringCodec).build()
         spec.keyspace.assert().isEqualTo(Keyspace("app:", "user"))
-        spec.keyspace.storagePrefix.assert().isEqualTo("app:v8:user:")
+        spec.keyspace.storagePrefix.assert().isEqualTo("app:user:")
     }
 
     /**

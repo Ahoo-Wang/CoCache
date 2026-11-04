@@ -72,7 +72,7 @@ class VersionedCacheTest {
     }
 
     private fun remote(key: String, name: String = "doc"): L1Read =
-        Suspending.await { memory.store(Keyspace("cocache:", name)).read("cocache:v8:$name:$key", null, null, null) }
+        Suspending.await { memory.store(Keyspace("cocache:", name)).read("cocache:$name:$key", null, null, null) }
 
     private fun remoteVersion(key: String, name: String): Long {
         val hit = remote(key, name) as L1Read.Hit

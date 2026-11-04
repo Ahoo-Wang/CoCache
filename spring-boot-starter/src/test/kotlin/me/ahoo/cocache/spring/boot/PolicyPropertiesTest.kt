@@ -90,7 +90,7 @@ class PolicyPropertiesTest {
             val index = context.getBean("index") as SetCache<String, String>
             index.add("k", listOf("a"))
             val store = context.getBean(CoherenceBackend::class.java).store(Keyspace("cocache:", "index"))
-            val read = Suspending.await { store.read("cocache:v8:index:k", null, null, null) }
+            val read = Suspending.await { store.read("cocache:index:k", null, null, null) }
             (read as L1Read.Hit).ttl.assert().isNull()
         }
     }

@@ -97,7 +97,7 @@ class CacheAdminInspectionTest {
 
         val inspection = admin.inspect("id-1")
         inspection.cache.assert().isEqualTo("user")
-        inspection.storageKey.assert().isEqualTo("cocache:v8:user:id-1")
+        inspection.storageKey.assert().isEqualTo("cocache:user:id-1")
         inspection.local.assert().isNull()
         inspection.remote.assert().isEqualTo(KeyInspection.RemoteCopy(RemoteState.MISS))
         inspection.invalidationPending.assert().isFalse()
@@ -107,7 +107,7 @@ class CacheAdminInspectionTest {
         Suspending.await {
             memory.store(
                 Keyspace("cocache:", "user")
-            ).read("cocache:v8:user:id-1", null, null, null)
+            ).read("cocache:user:id-1", null, null, null)
         }.assert().isEqualTo(L1Read.Miss(false))
         users[1].assert().isEqualTo("user-1")
         loads.get().assert().isEqualTo(1)
@@ -166,7 +166,7 @@ class CacheAdminInspectionTest {
         val store = memory.store(Keyspace("cocache:", "user"))
         Suspending.await {
             store.read(
-                "cocache:v8:user:id-1",
+                "cocache:user:id-1",
                 LeaseRequest(Token(NodeId.random(), 1), Duration.ofSeconds(10)),
                 null,
                 null
@@ -176,7 +176,7 @@ class CacheAdminInspectionTest {
         leased.state.assert().isEqualTo(RemoteState.LEASED)
         requireNotNull(leased.ttl).assert().isPositive()
 
-        Suspending.await { store.put("cocache:v8:user:id-2", Envelope.Scalar(TestCodec.CORRUPT), null, frame()) }
+        Suspending.await { store.put("cocache:user:id-2", Envelope.Scalar(TestCodec.CORRUPT), null, frame()) }
         val corrupt = admin.inspect("id-2").remote
         corrupt.state.assert().isEqualTo(RemoteState.UNREADABLE)
         corrupt.ttl.assert().isNull()
@@ -184,14 +184,14 @@ class CacheAdminInspectionTest {
         // 查看从不回收：损坏的内容仍在
         Suspending.await {
             store.read(
-                "cocache:v8:user:id-2",
+                "cocache:user:id-2",
                 null,
                 null,
                 null
             )
         }.assert().isInstanceOf(L1Read.Hit::class.java)
 
-        Suspending.await { store.put("cocache:v8:user:id-3", Envelope.Members(listOf(byteArrayOf(1))), null, frame()) }
+        Suspending.await { store.put("cocache:user:id-3", Envelope.Members(listOf(byteArrayOf(1))), null, frame()) }
         admin.inspect("id-3").remote.state.assert().isEqualTo(RemoteState.UNREADABLE)
 
         backend.afterRead = { _, read -> (read as? L1Read.Hit)?.copy(format = 0) ?: read }
@@ -289,7 +289,7 @@ class CacheAdminInspectionTest {
         Suspending.await {
             memory.store(
                 Keyspace("cocache:", "index")
-            ).put("cocache:v8:index:scalar", Envelope.Scalar(byteArrayOf(1)), null, frame())
+            ).put("cocache:index:scalar", Envelope.Scalar(byteArrayOf(1)), null, frame())
         }
         admin.inspect("scalar").remote.state.assert().isEqualTo(RemoteState.UNREADABLE)
 

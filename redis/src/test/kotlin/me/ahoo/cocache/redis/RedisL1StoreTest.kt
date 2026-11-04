@@ -80,7 +80,7 @@ class RedisL1StoreTest {
 
     private fun <T : AutoCloseable> T.closing(): T = also { closeables.add(it) }
 
-    private fun key(name: String) = "cocache:v8:$namespace:$name"
+    private fun key(name: String) = "cocache:$namespace:$name"
 
     private fun token() = Token(node, sequence.incrementAndGet())
 

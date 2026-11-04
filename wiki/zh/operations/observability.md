@@ -190,7 +190,7 @@ management:
 
 ### 编码后的 key {#encoded-key}
 
-`{key}` 是**编码后的 key**：Redis key 中 `{keyPrefix}v8:{namespace}:` 之后的部分，即 key 的 `toString()` 或缓存 `keyExpression` 的结果，所以端点适用于任意 key 类型。
+`{key}` 是**编码后的 key**：Redis key 中 `{keyPrefix}{namespace}:` 之后的部分，即 key 的 `toString()` 或缓存 `keyExpression` 的结果，所以端点适用于任意 key 类型。
 
 | 缓存 key | 编码后的 key | 请求 |
 |----------|--------------|------|
@@ -211,7 +211,7 @@ curl -s localhost:8080/actuator/cocache/UserCache/42
 ```json
 {
   "cache": "UserCache",
-  "storageKey": "cocache:v8:UserCache:42",
+  "storageKey": "cocache:UserCache:42",
   "local": { "state": "VALUE", "value": "User(id=42, name=Ada)", "expiresAt": "2026-10-19T08:05:00Z", "refreshAt": null, "expired": false },
   "remote": { "state": "VALUE", "value": "User(id=42, name=Ada)", "ttl": "PT58M", "format": 1, "error": null },
   "invalidationPending": false

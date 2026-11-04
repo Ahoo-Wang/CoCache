@@ -142,13 +142,13 @@ class AsyncLoadObserverTest {
         Suspending.await {
             memory.store(
                 Keyspace("cocache:", name)
-            ).read("cocache:v8:$name:held", LeaseRequest(token, Duration.ofMinutes(1)), null, null)
+            ).read("cocache:$name:held", LeaseRequest(token, Duration.ofMinutes(1)), null, null)
         }
         val waiting = cache.get("held")
         awaitCondition(
             "waiting"
         ) { observer.records.none { it.operation == LoadOperation.LEASE_WAIT } && !waiting.isDone }
-        Suspending.await { memory.store(Keyspace("cocache:", name)).release("cocache:v8:$name:held", token) }
+        Suspending.await { memory.store(Keyspace("cocache:", name)).release("cocache:$name:held", token) }
         database["held"] = "h"
         waiting.get(10, TimeUnit.SECONDS).assert().isEqualTo("h")
         observer.records.map { it.operation }.assert().contains(LoadOperation.LEASE_WAIT)

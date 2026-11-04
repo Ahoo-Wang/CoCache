@@ -47,7 +47,7 @@ class ExternalInvalidatorTest {
             Suspending.await {
                 memory.store(
                     Keyspace("cocache:", "user")
-                ).read("cocache:v8:user:1", null, null, null)
+                ).read("cocache:user:1", null, null, null)
             }.assert().isEqualTo(L1Read.Miss(false))
             awaitCondition { cache["1"] == "v1" }
         }
@@ -136,7 +136,7 @@ class ExternalInvalidatorTest {
             other["1"].assert().isEqualTo("v0")
             requireNotNull(node.metrics("other-user")).invalidationsReceived.assert().isZero()
             Suspending.await {
-                memory.store(Keyspace("other:", "user")).read("other:v8:user:1", null, null, null)
+                memory.store(Keyspace("other:", "user")).read("other:user:1", null, null, null)
             }.assert().isInstanceOf(L1Read.Hit::class.java)
         }
     }

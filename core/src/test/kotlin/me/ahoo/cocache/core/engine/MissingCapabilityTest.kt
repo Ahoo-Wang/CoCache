@@ -95,7 +95,7 @@ class MissingCapabilityTest {
         Suspending.await {
             memory.store(
                 Keyspace("cocache:", "doc")
-            ).read("cocache:v8:doc:k", null, null, null)
+            ).read("cocache:doc:k", null, null, null)
         }.assert().isEqualTo(L1Read.Miss(false))
     }
 

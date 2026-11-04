@@ -206,7 +206,7 @@ class LoadObserverTest {
         Suspending.await {
             memory.store(
                 Keyspace("cocache:", name)
-            ).invalidate(listOf("cocache:v8:$name:k"), InvalidationFrame.encode(NodeId.random(), emptyList()))
+            ).invalidate(listOf("cocache:$name:k"), InvalidationFrame.encode(NodeId.random(), emptyList()))
         }
         clock.advance(Duration.ofSeconds(6))
         cache["k"]
@@ -289,7 +289,7 @@ class LoadObserverTest {
         Suspending.await {
             memory.store(
                 Keyspace("cocache:", name)
-            ).read("cocache:v8:$name:k", LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
+            ).read("cocache:$name:k", LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
         }
         cache["k"].assert().isEqualTo("v")
         observer.operations().assert().containsExactly(LoadOperation.LEASE_WAIT to 1, LoadOperation.LOAD to 1)

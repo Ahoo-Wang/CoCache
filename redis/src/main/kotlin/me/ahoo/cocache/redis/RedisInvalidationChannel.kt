@@ -36,7 +36,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
- * Redis 失效通道的公共部分：每个后端一条订阅连接，按频道分发给订阅者。每个 [Keyspace] 一个频道 `{keyPrefix}v8:inv:{namespace}`
+ * Redis 失效通道的公共部分：每个后端一条订阅连接，按频道分发给订阅者。每个 [Keyspace] 一个频道 `{keyPrefix}inv:{namespace}`
  * （[channelOf]，RFC 0005 §4.7）：前缀不同、命名空间相同的两个应用各自只收到自己的帧。
  *
  * - 订阅（含断线重连后 Lettuce 自动重新订阅）得到服务端确认时，重置该频道的所有订阅者。
@@ -164,8 +164,8 @@ internal abstract class RedisInvalidationChannel(
         private set
 
     /**
-     * 心跳任务：任何异常都不能逃出去。`scheduleWithFixedDelay` 的任务抛出异常（包括 `Error`）后不再执行，节点从此失去自愈能力（G1）；
-     * 例如 6.0–6.4.0 在 Lettuce 6 上强制重连时抛出 `NoClassDefFoundError`，心跳就此停止。`VirtualMachineError` 也不重新抛出：
+     * 心跳任务：任何异常都不能逃出去。`scheduleWithFixedDelay` 的任务抛出异常（包括 `Error`）后不再执行，节点从此失去自愈能力（G1），
+     * 例如强制重连时抛出的 `NoClassDefFoundError`。`VirtualMachineError` 也不重新抛出：
      * 停掉心跳无助于 JVM 恢复，`OutOfMemoryError` 也可能只是暂时的。
      */
     @Suppress("TooGenericExceptionCaught")
@@ -239,10 +239,9 @@ internal abstract class RedisInvalidationChannel(
 
     /**
      * 收到消息：解码并分发给该频道的订阅者。读不懂的帧（[InvalidationFrame.decode] 拒绝的未知版本、预留的帧版本 2、截断或尾随字节）
-     * 按该频道的重置处理（RFC 0005 §4.7，D3）：清空 L2、递增全部戳，只会多淘汰，不会丢失效；6.x 告警后丢弃，丢的就是一次失效。
+     * 按该频道的重置处理（RFC 0005 §4.7，D3）：清空 L2、递增全部戳，只会多淘汰，不会丢失效；丢弃它丢的就是一次失效。
      *
-     * 某个订阅者抛出异常（包括 `Error`，以及 Kotlin 代码抛出的受检异常）记录后继续分发，不能让其余订阅者错过本次失效；
-     * 6.9.1 及之前只兜住 `RuntimeException`，一个抛出 `Error` 的订阅者会让排在它之后的订阅者收不到这条消息。
+     * 某个订阅者抛出异常（包括 `Error`，以及 Kotlin 代码抛出的受检异常）记录后继续分发，不能让其余订阅者错过本次失效。
      * `VirtualMachineError` 照常抛出，交给 Lettuce 与 Netty：消息本来就是至多一次投递，因此错过的订阅者由 `localMaxAge` 兜底。
      */
     @Suppress("TooGenericExceptionCaught")
@@ -285,19 +284,25 @@ internal abstract class RedisInvalidationChannel(
         private val log = KotlinLogging.logger {}
 
         /**
-         * 频道名中布局标记之后的部分：频道为 `{keyPrefix}v8:inv:{namespace}`（RFC 0005 §4.7，随 M4 冻结）。
+         * 频道名中前缀之后、命名空间之前的部分：频道为 `{keyPrefix}inv:{namespace}`（RFC 0005 §4.7，随 M4 冻结）。
          */
-        private const val CHANNEL_MARK = Keyspace.LAYOUT_MARK + "inv:"
+        private const val CHANNEL_MARK = "inv:"
 
         /**
-         * [keyspace] 的频道：`{keyPrefix}v8:inv:{namespace}`。
+         * [keyspace] 的频道：`{keyPrefix}inv:{namespace}`。
          */
         fun channelOf(keyspace: Keyspace): String = keyspace.keyPrefix + CHANNEL_MARK + keyspace.namespace
 
         /**
-         * 前缀为 [keyPrefix] 的全部频道的 ACL 模式：`&{keyPrefix}v8:inv:*`。
+         * 放行 [keyspace] 频道的 ACL 模式：前缀非空时为该前缀下全部频道的 `&{keyPrefix}inv:*`；前缀为空时没有公共前缀，
+         * 为这一个频道 `&inv:{namespace}`（`&inv:*` 会放行同一 Redis 上所有空前缀应用的频道）。
          */
-        fun channelPatternOf(keyPrefix: String): String = "&$keyPrefix$CHANNEL_MARK*"
+        fun channelPatternOf(keyspace: Keyspace): String {
+            if (keyspace.keyPrefix.isEmpty()) {
+                return "&" + channelOf(keyspace)
+            }
+            return "&${keyspace.keyPrefix}$CHANNEL_MARK*"
+        }
 
         /**
          * 断开连接的底层通道（Lettuce 公开的 [DefaultEndpoint.disconnect]），触发自动重连；

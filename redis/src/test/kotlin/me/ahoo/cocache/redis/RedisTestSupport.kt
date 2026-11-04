@@ -80,11 +80,11 @@ object RedisTestSupport {
     )
 
     /**
-     * 非原子广播的后端：用 ACL 禁止向探测频道发布（只允许任意前缀的失效频道 `*v8:inv:*`），探测失败后后端退回“写入后由引擎发布”。
+     * 非原子广播的后端：用 ACL 禁止向探测频道发布（只允许任意前缀的失效频道 `*inv:*`），探测失败后后端退回“写入后由引擎发布”。
      */
     fun nonAtomicBackend(): RedisBackend = aclBackend(
         "cocache-nonatomic",
-        listOf("~*", "resetchannels", "&*v8:inv:*", "+@all")
+        listOf("~*", "resetchannels", "&*inv:*", "+@all")
     )
 
     /**

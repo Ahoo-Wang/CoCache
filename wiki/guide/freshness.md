@@ -191,7 +191,7 @@ new ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7");
 - It doesn't retry. If Redis fails, it throws; retry the call yourself.
 - An empty encoded key throws `IllegalArgumentException`; an empty collection does nothing. After `close()`, every call throws `IllegalStateException`. `close()` releases the invalidator's own store handles and doesn't close the backend.
 
-Outside the JVM, any Redis client can do the same in two commands: `DEL {keyPrefix}v8:{namespace}:{encodedKey}`, then `PUBLISH {keyPrefix}v8:inv:{namespace}` with a small binary frame (`SPUBLISH` in sharded mode). [Troubleshooting](/operations/troubleshooting#external-invalidation) documents the frame format. Skipping the `PUBLISH` leaves other instances' L2 stale for up to `localMaxAge`.
+Outside the JVM, any Redis client can do the same in two commands: `DEL {keyPrefix}{namespace}:{encodedKey}`, then `PUBLISH {keyPrefix}inv:{namespace}` with a small binary frame (`SPUBLISH` in sharded mode). [Troubleshooting](/operations/troubleshooting#external-invalidation) documents the frame format. Skipping the `PUBLISH` leaves other instances' L2 stale for up to `localMaxAge`.
 
 ## Choosing lifetimes {#lifetimes}
 

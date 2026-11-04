@@ -53,7 +53,7 @@ class RedisAsyncEngineTest : RedisAsyncThreadCases() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
     }
 
     override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(clientName)
@@ -74,7 +74,7 @@ class RedisAsyncSetEngineTest : SetEngineSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
     }
 }
 
@@ -93,7 +93,7 @@ class RedisAsyncMultiNodeTest : MultiNodeSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
     }
 }
 
@@ -119,6 +119,6 @@ class RedisAsyncVersionedTest : VersionedSpec() {
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:v8:$cacheName:*", duration)
+        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
     }
 }

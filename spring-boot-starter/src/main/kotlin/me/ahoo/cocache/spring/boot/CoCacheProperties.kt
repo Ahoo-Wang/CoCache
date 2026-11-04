@@ -92,7 +92,7 @@ data class CoCacheProperties @ConstructorBinding constructor(
     /**
      * 按缓存名合并配置文件中的策略（`CacheSpec`；集合缓存见 [setPolicyFor]）。`cocache.defaults.*` 中不适用于这个缓存的项被跳过，
      * 只有 `cocache.caches.[name].*` 中的同一项会作用（并因此启动失败）：
-     * - 带版本的缓存（[versioned]，6.8）：`cocache.defaults.refresh-window`。带版本的缓存不支持提前刷新，全局的刷新窗口会让它们
+     * - 带版本的缓存（[versioned]）：`cocache.defaults.refresh-window`。带版本的缓存不支持提前刷新，全局的刷新窗口会让它们
      *   因无关配置启动失败。
      * - 没有数据源的缓存（[sourced] 为 `false`）：`cocache.defaults.foreign-format: reclaim`。`reclaim` 只能用于有数据源的缓存
      *   （L1 是唯一副本时回收就是删除它），`fail` 照常生效。
@@ -234,8 +234,8 @@ data class CoCacheProperties @ConstructorBinding constructor(
         @DefaultValue("false")
         val requireSync: Boolean,
         /**
-         * 已弃用（6.3）：`retrieve`（异步 `@Cacheable`）经缓存的异步视图，不再使用执行器，也不再有线程等待回源。
-         * 设置时启动告警并忽略；7.0 删除。异步视图的执行器见 `cocache.async-executor` / `cocache.blocking-executor`。
+         * 已弃用：`retrieve`（异步 `@Cacheable`）经缓存的异步视图，不使用执行器，也没有线程等待回源。
+         * 设置时启动告警并忽略。异步视图的执行器见 `cocache.async-executor` / `cocache.blocking-executor`。
          */
         val retrieveExecutor: String?,
     )
@@ -307,26 +307,25 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         val invalidateFailure: InvalidateFailureMode?,
         /**
-         * 读取 L1 失败时的处理方式：`degrade`（降级回源）或 `throw`（对应 5.x 的 `cocache.redis.strict-failure=true`）。
+         * 读取 L1 失败时的处理方式：`degrade`（降级回源）或 `throw`。
          * 未设置时按这次读取有没有数据源决定：有数据源 `degrade`，没有数据源 `throw`（没有可降级的答案）。没有数据源时显式设置
          * `degrade`：读到不存在，不缓存（如撤销表：Redis 故障即视为未撤销）。
          */
         val readFailure: ReadFailureMode?,
         /**
          * L1 key 前缀（内置默认 `cocache:`），覆盖声明与定制器中的值；可以使用占位符，如 `${spring.application.name}:`。
-         * 存储 key 为 `{keyPrefix}v8:{namespace}:{key}`，失效频道为 `{keyPrefix}v8:inv:{namespace}`：前缀不同、namespace 相同的应用
+         * 存储 key 为 `{keyPrefix}{namespace}:{key}`，失效频道为 `{keyPrefix}inv:{namespace}`：前缀不同、namespace 相同的应用
          * 既不共用 key，也收不到彼此的失效帧。
          */
         val keyPrefix: String?,
         /**
          * 一次加载的上限（未写单位按秒；内置默认 30s），超过它以 `SourceLoadTimeoutException` 失败：异步数据源（`AsyncCacheLoader`）的一次加载
          * （释放 lease），以及等待共享加载的读取；在途登记超过它的加载被注销，之后的读取开始新的加载。同步数据源本身无法被外部结束，应自带超时。
-         * 6.x 的 `load-async-timeout`。
          */
         @DurationUnit(ChronoUnit.SECONDS)
         val loadTimeout: Duration? = null,
         /**
-         * 读到本缓存读不懂的 L1 内容（5.x 或其它程序写入的值、同版本解码失败）时的处理方式：`fail`（抛出 `CacheReadException`，
+         * 读到本缓存读不懂的 L1 内容（其它程序写入的值、同版本解码失败）时的处理方式：`fail`（抛出 `CacheReadException`，
          * 不修改 L1）或 `reclaim`（条件回收后回源）。未设置时按读取有没有数据源决定：有数据源 `reclaim`，没有数据源 `fail`。
          * `reclaim` 只能用于有数据源的缓存：`cocache.caches.[name].foreign-format: reclaim` 落在没有数据源的缓存或集合缓存上时启动失败
          * （L1 是唯一副本，回收就是删除它）；`cocache.defaults.foreign-format` 不作用于集合缓存，其值 `reclaim` 也不作用于没有数据源的缓存。

@@ -197,7 +197,7 @@ class CoCacheOperationsTest {
 
             // 编码后的 key 含 '/'：剩余路径段按 '/' 拼回
             val inspection = requireNotNull(endpoint.inspect("user", arrayOf("u", "1")))
-            inspection.storageKey.assert().isEqualTo("cocache:v8:user:u/1")
+            inspection.storageKey.assert().isEqualTo("cocache:user:u/1")
             requireNotNull(inspection.local).state.assert().isEqualTo(KeyInspection.LocalState.VALUE)
             inspection.remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE)
             inspection.remote.value.assert().isEqualTo("user-1")

@@ -86,7 +86,7 @@ class NonCancellableL1Test {
     }
 
     private fun leased(): Boolean = Suspending.await {
-        memory.store(Keyspace("cocache:", NAME)).read("cocache:v8:$NAME:k", null, null, null)
+        memory.store(Keyspace("cocache:", NAME)).read("cocache:$NAME:k", null, null, null)
     } is L1Read.Leased
 
     @Test

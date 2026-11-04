@@ -57,7 +57,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 频道单元测试共用的 keyspace，频道为 `cocache:v8:inv:ns`。
+ * 频道单元测试共用的 keyspace，频道为 `cocache:inv:ns`。
  */
 private val NS = Keyspace("cocache:", "ns")
 
@@ -239,8 +239,8 @@ class RedisUnitTest {
                 val result = connections.join(
                     connections.evalAsync<List<Any?>>(
                         RedisScripts.PROBE,
-                        listOf("cocache:v8!probe".toByteArray()),
-                        listOf("cocache:v8:probe:channel".toByteArray(), ByteArray(0))
+                        listOf("cocache:!probe".toByteArray()),
+                        listOf("cocache:!probe:channel".toByteArray(), ByteArray(0))
                     )
                 )
                 result.assert().containsExactly(1L)
@@ -345,13 +345,13 @@ class RedisUnitTest {
             awaitCondition("heartbeat reset") { resets.get() >= 3 }
 
             val handler = requireNotNull(adapter)
-            handler.message("cocache:v8:inv:ns".toByteArray(), byteArrayOf(9))
+            handler.message("cocache:inv:ns".toByteArray(), byteArrayOf(9))
             handler.message(
-                "cocache:v8:inv:other".toByteArray(),
+                "cocache:inv:other".toByteArray(),
                 InvalidationFrame.encode(NodeId.random(), listOf("k"))
             )
-            handler.subscribed("cocache:v8:inv:other".toByteArray(), 1)
-            handler.message("cocache:v8:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            handler.subscribed("cocache:inv:other".toByteArray(), 1)
+            handler.message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
             // 同一订阅者订阅了两次，收到两次
             received.assert().containsExactly(listOf("k"), listOf("k"))
             second.close()
@@ -391,10 +391,10 @@ class RedisUnitTest {
         val other = channel.subscribe(Keyspace("cocache:", "ns2"), listener)
         subscribes.get().assert().isEqualTo(2)
         val handler = requireNotNull(adapter)
-        val ns = "cocache:v8:inv:ns".toByteArray()
+        val ns = "cocache:inv:ns".toByteArray()
 
         // 没有订阅者的频道被退订（主动退订的回执）：忽略
-        handler.sunsubscribed("cocache:v8:inv:absent".toByteArray(), 0)
+        handler.sunsubscribed("cocache:inv:absent".toByteArray(), 0)
         listener.resets.get().assert().isZero()
 
         // 服务端退订（slot 迁移）：立即重置并重新订阅；重新订阅失败时由心跳重置并重试，确认后不再重试
@@ -424,7 +424,7 @@ class RedisUnitTest {
 
         // 通道关闭后的服务端退订：不再调度重新订阅
         channel.close()
-        handler.sunsubscribed("cocache:v8:inv:ns2".toByteArray(), 0)
+        handler.sunsubscribed("cocache:inv:ns2".toByteArray(), 0)
         subscribes.get().assert().isEqualTo(5)
         other.close()
     }
@@ -497,7 +497,7 @@ class RedisUnitTest {
             channel.subscribe(NS, healthy)
             requireNotNull(
                 adapter
-            ).message("cocache:v8:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            ).message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
             healthy.received.assert().containsExactly(listOf("k"))
         }
     }
@@ -537,7 +537,7 @@ class RedisUnitTest {
         ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
             channel.subscribe(NS, listener)
             val handler = requireNotNull(cluster.listener)
-            val ns = "cocache:v8:inv:ns".toByteArray()
+            val ns = "cocache:inv:ns".toByteArray()
             handler.ssubscribed(owner, ns, 1)
             channel.subscribedNode(NS).assert().isEqualTo(ShardedInvalidationChannel.HostAndPort("localhost", 7000))
             listener.resets.get().assert().isEqualTo(1)
@@ -800,7 +800,7 @@ class RedisUnitTest {
             }
         }
         val healthy = RecordingListener()
-        val subscribers = mapOf("cocache:v8:inv:a" to listOf(failing, healthy), "cocache:v8:inv:b" to listOf(healthy))
+        val subscribers = mapOf("cocache:inv:a" to listOf(failing, healthy), "cocache:inv:b" to listOf(healthy))
         FailingHeartbeat(mapOf(1 to StackOverflowError("ping")), null, subscribers).use { channel ->
             awaitCondition("heartbeat reconnected") { channel.reconnects.get() >= 1 }
             failingResets.get().assert().isEqualTo(1)

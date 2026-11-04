@@ -113,7 +113,7 @@ public class App {}
 
 :::
 
-缓存名取接口名（`UserCache`），bean 名也是它。值以 `cocache:v8:UserCache:{id}` 为 key 存入 Redis，用应用的 Jackson `ObjectMapper` 编码为 JSON。
+缓存名取接口名（`UserCache`），bean 名也是它。值以 `cocache:UserCache:{id}` 为 key 存入 Redis，用应用的 Jackson `ObjectMapper` 编码为 JSON。
 
 ## 4. 提供 loader {#loader}
 

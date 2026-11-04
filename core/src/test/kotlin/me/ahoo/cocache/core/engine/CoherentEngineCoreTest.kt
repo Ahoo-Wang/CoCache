@@ -254,7 +254,7 @@ class CoherentEngineCoreTest {
         val left = Suspending.await {
             memory.store(
                 Keyspace("cocache:", "core")
-            ).read("cocache:v8:core:k", null, null, null)
+            ).read("cocache:core:k", null, null, null)
         }
         left.assert().isEqualTo(L1Read.Miss(false))
     }
@@ -442,7 +442,7 @@ class CoherentEngineCoreTest {
         cache["k"].assert().isEqualTo("v-k")
         metrics.remoteHits.assert().withFailMessage { "a foreign key evicted the local copy" }.isZero()
 
-        listener.onInvalidated(listOf("cocache:v8:core:k"), other)
+        listener.onInvalidated(listOf("cocache:core:k"), other)
         cache["k"].assert().isEqualTo("v-k")
         metrics.remoteHits.assert().withFailMessage { "the frame did not evict the local copy" }.isEqualTo(1)
     }
@@ -551,7 +551,7 @@ class CoherentEngineCoreTest {
         val read = Suspending.await {
             memory.store(
                 Keyspace("cocache:", "core")
-            ).read("cocache:v8:core:k", null, other, null)
+            ).read("cocache:core:k", null, other, null)
         }
         (read is L1Read.Hit && read.refreshGranted).assert().withFailMessage { "refresh token held: $read" }.isTrue()
     }

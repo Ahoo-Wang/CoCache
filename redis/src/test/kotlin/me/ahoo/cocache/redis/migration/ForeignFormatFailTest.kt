@@ -59,7 +59,7 @@ class ForeignFormatFailTest {
     @Test
     fun unmigratedJsonFailsAndIsKept() {
         val name = "policy-$run"
-        val key = "cocache:v8:$name:p1"
+        val key = "cocache:$name:p1"
         val json = mapper.writeValueAsString(Policy("p1", "deny"))
         Redis5x.string(key, json)
         val cache = runtime.create(
@@ -77,13 +77,13 @@ class ForeignFormatFailTest {
         Redis5x.get(key).assert().isEqualTo(json)
         requireNotNull(runtime.metrics(name)).unknownFormats.assert().isEqualTo(3L)
         requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(0L)
-        Redis5x.exists("cocache:v8:$name:p2").assert().withFailMessage { "no lease left behind" }.isFalse()
+        Redis5x.exists("cocache:$name:p2").assert().withFailMessage { "no lease left behind" }.isFalse()
     }
 
     @Test
     fun unmigratedValueFailsInStrictReadMode() {
         val name = "strict-$run"
-        val key = "cocache:v8:$name:k"
+        val key = "cocache:$name:k"
         Redis5x.hash(key, mapOf("a" to "1"))
         val cache = runtime.create(
             cacheSpec<String, Map<String, String>>(name) {
@@ -102,7 +102,7 @@ class ForeignFormatFailTest {
     @Test
     fun unmigratedNativeSetFailsAndIsKept() {
         val name = "index-$run"
-        val key = "cocache:v8:$name:"
+        val key = "cocache:$name:"
         Redis5x.set(key, listOf("p1", "p2"))
         val cache = runtime.create(setCacheSpec<String, String>(name) { elementCodec = StringCodec })
 
@@ -116,7 +116,7 @@ class ForeignFormatFailTest {
     @Test
     fun cacheWithLoaderStillReclaimsAndReloads() {
         val name = "loaded-$run"
-        val key = "cocache:v8:$name:k"
+        val key = "cocache:$name:k"
         Redis5x.string(key, "old")
         val cache = runtime.create(
             cacheSpec<String, String>(name) {

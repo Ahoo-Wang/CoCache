@@ -124,8 +124,8 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 Redis 中的每个 key 都是：
 
 ```
-{keyPrefix}v8:{namespace}:{encodedKey}
- cocache:  v8:UserCache :42
+{keyPrefix}{namespace}:{encodedKey}
+ cocache:   UserCache :42
 ```
 
 | 部分 | 默认值 | 设置方式 |
@@ -134,10 +134,10 @@ Redis 中的每个 key 都是：
 | `namespace` | 缓存名 | `@CoCache(namespace)`、`CacheSpec.namespace` |
 | `encodedKey` | `key.toString()` | `@CoCache(keyExpression)`、`CacheSpec.keyEncoder` |
 
-- `v8:` 标记 8.x 的布局。6.x 的 key（`{keyPrefix}{namespace}:{encodedKey}`）与频道和 8.x 的从不重叠，切换期间两个版本可以共用一个 Redis。
+- CoCache 的内部 key 放在 `{keyPrefix}!` 之下，任何 namespace 都产生不了这个位置：`!` 不在 namespace 的字符集中。
 - namespace 只能含字母、数字、`.`、`_` 与 `-`（`[A-Za-z0-9._-]+`）。含 `:` 的 namespace 在创建时失败，信息给出把 `:` 之前的部分移到 `keyPrefix` 的写法：`namespace = "app:user"` 改为 `keyPrefix = "cocache:app:"` 与 `namespace = "user"`。没有 `:`，一个 namespace 的 key 就不会落进另一个 namespace 的范围。
 - 在一个应用内，缓存名必须唯一，前缀与 namespace 的组合也必须唯一。namespace 相同、前缀不同的两个缓存可以共存。重复时启动失败。
-- 失效消息走频道 `{keyPrefix}v8:inv:{namespace}`，前缀不同的应用收不到彼此的消息。
+- 失效消息走频道 `{keyPrefix}inv:{namespace}`，前缀不同的应用收不到彼此的消息。
 - actuator 端点与 `ExternalInvalidator` 接受的都是**编码后的 key**，所以其它工具不必知道 key 的 Kotlin 类型也能定位它。
 - 多个应用共用一个 Redis 时，用 [`cocache.defaults.key-prefix` 配置项](./configuration.md#key-prefix)给每个应用一个不同的前缀（比如 `${spring.application.name}:`）。`@CoCache(keyPrefix)` 是字面文本：其中的占位符不会被解析（在 Kotlin 中 `$` 还会开启字符串模板）。修改运行中缓存的前缀或 namespace 相当于冷启动：旧 key 不再被读取，随各自的寿命过期。
 

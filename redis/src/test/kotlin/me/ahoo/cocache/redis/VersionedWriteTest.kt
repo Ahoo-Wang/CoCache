@@ -95,15 +95,15 @@ class VersionedWriteTest {
         val cache = cache(name)
         cache.putIfNewer("v", "payload", 0x0102030405060708L).assert().isEqualTo(VersionedPut.Written)
         val mark = hex(RedisScripts.VERSION_MARK)
-        hexOf("cocache:v8:$name:v").assert().isEqualTo(
+        hexOf("cocache:$name:v").assert().isEqualTo(
             "c0" + "01" + "56" + "00" + mark + "0102030405060708" + "7ff0000000000000" + hex("payload".toByteArray())
         )
         cache.invalidateIfNewer("v", 0x0102030405060709L).assert().isEqualTo(VersionedPut.Written)
-        hexOf("cocache:v8:$name:v").assert().isEqualTo(
+        hexOf("cocache:$name:v").assert().isEqualTo(
             "c0" + "01" + "4d" + "00" + mark + "0102030405060709" + "7ff0000000000000"
         )
         cache.put("v", "plain")
-        hexOf("cocache:v8:$name:v").assert().isEqualTo(
+        hexOf("cocache:$name:v").assert().isEqualTo(
             "c0" + "01" + "56" + "00" + "00".repeat(24) + "0000000000000000" + hex("plain".toByteArray())
         )
     }
@@ -114,7 +114,7 @@ class VersionedWriteTest {
     @Test
     fun legacyFillAndReleaseLeaveVersionedContentAlone() {
         val name = "legacy-$run"
-        val key = "cocache:v8:$name:k"
+        val key = "cocache:$name:k"
         val cache = cache(name)
         cache.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Written)
         val before = hexOf(key)
@@ -137,7 +137,7 @@ class VersionedWriteTest {
     @Test
     fun foreignContentIsAlwaysRefused() {
         val failName = "fail-$run"
-        val failKey = "cocache:v8:$failName:k"
+        val failKey = "cocache:$failName:k"
         RedisTestSupport.withCommands { it.set(failKey, "legacy") }
         val failing = cache(failName)
         val error = runCatching { failing.putIfNewer("k", "v1", 1) }.exceptionOrNull()
@@ -150,7 +150,7 @@ class VersionedWriteTest {
         (asyncError?.cause as CacheWriteException).operation.assert().isEqualTo("invalidateIfNewer")
 
         val reclaimName = "reclaim-$run"
-        val reclaimKey = "cocache:v8:$reclaimName:k"
+        val reclaimKey = "cocache:$reclaimName:k"
         RedisTestSupport.withCommands { it.set(reclaimKey, "legacy") }
         val reclaiming = cache(reclaimName, ForeignFormatMode.RECLAIM)
         val refused = runCatching { reclaiming.putIfNewer("k", "v1", 1) }.exceptionOrNull()
@@ -162,7 +162,7 @@ class VersionedWriteTest {
         reclaiming.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Written)
         reclaiming.getVersioned("k").assert().isEqualTo(Versioned("v1", 1))
 
-        val newerKey = "cocache:v8:$reclaimName:newer"
+        val newerKey = "cocache:$reclaimName:newer"
         RedisTestSupport.withCommands {
             it.eval<String>(
                 "return redis.call('SET', KEYS[1], '\\192\\2V\\0' .. string.rep('\\0', 32) .. 'v')",

@@ -171,7 +171,7 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 | `Cache[x] - @CoCache.<attribute> = FOREVER is not supported; FOREVER is only allowed for @CoCache.ttl and @CaffeineCache.expireAfterAccess.` | 在 `ttl` 与 `@CaffeineCache.expireAfterAccess` 以外的属性上使用了 `FOREVER` | 改用具体时长 |
 | `Cache[x] already exists.` / `Namespace[x] with keyPrefix[p] is already used by another cache.` | 两个声明使用了相同的缓存名，或相同的前缀与命名空间，例如一个接口与一个 spec bean | 改名其中一个，或设置不同的 `namespace` 或 `keyPrefix` |
 | `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | 命名空间含 `:` 或字符集之外的字符，常见于把 6.x 的前缀写进了命名空间 | 按信息的建议：把最后一个 `:` 及之前的部分放进 `keyPrefix` |
-| `Redis denied publishing to the invalidation channel[…] of Keyspace(…): allow the channel pattern [&…v8:inv:*] …` | Redis ACL 不放行该缓存的频道。创建缓存时会向它发布一个空帧，所以缺少的权限在启动时暴露，而不是在每次写入时 | 放行信息中的模式，见 [Redis ACL](./index.md#acl) |
+| `Redis denied publishing to the invalidation channel[…] of Keyspace(…): allow the channel pattern [&…inv:*] …` | Redis ACL 不放行该缓存的频道。创建缓存时会向它发布一个空帧，所以缺少的权限在启动时暴露，而不是在每次写入时 | 放行信息中的模式，见 [Redis ACL](./index.md#acl) |
 | `Cannot register cache interface[…]: the bean name[x] is already in use.` / `Cannot register cache bean[x] for spec bean[…]` | 缓存的 bean 名与其它 bean 冲突 | 修改缓存名（`@CoCache(name)`）或 spec bean 名 |
 | `Cache interface[…] must extend Cache with concrete type arguments.` / `Cache spec bean[…] must declare its generic types` | 无法解析泛型 | 使用具体类型，并把 spec 工厂方法的返回类型声明为 `CacheSpec<K, V>` |
 | `Cache interface[…] declares abstract methods that do not match any Cache method: […]` | 接口上有多余的抽象方法 | 改为 `default` 方法 |
@@ -218,8 +218,8 @@ orderInvalidator.invalidate("OrderCache", "7/9")
 
 | 部分 | 取值 |
 |------|------|
-| 存储 key | `{keyPrefix}v8:{namespace}:{encodedKey}`，例如 `cocache:v8:UserCache:42` |
-| 频道 | `{keyPrefix}v8:inv:{namespace}`，例如 `cocache:v8:inv:UserCache` |
+| 存储 key | `{keyPrefix}{namespace}:{encodedKey}`，例如 `cocache:UserCache:42` |
+| 频道 | `{keyPrefix}inv:{namespace}`，例如 `cocache:inv:UserCache` |
 | 消息 | 二进制帧，见下文 |
 | 发布命令 | `PUBLISH`；缓存使用 `channel-mode: sharded` 时为 `SPUBLISH` |
 
@@ -268,18 +268,18 @@ def frame(storage_keys: list[str]) -> bytes:
     return bytes(body)
 
 r = redis.Redis()
-keys = ["cocache:v8:UserCache:42"]
+keys = ["cocache:UserCache:42"]
 r.delete(*keys)                                  # Redis Cluster 中每次调用一个 key
-r.publish("cocache:v8:inv:UserCache", frame(keys))  # sharded 模式下用 r.spublish(...)
+r.publish("cocache:inv:UserCache", frame(keys))  # sharded 模式下用 r.spublish(...)
 ```
 
 在 shell 中，对一个短于 128 字节的 ASCII key（`bash`）：
 
 ```bash
-key='cocache:v8:UserCache:42'
+key='cocache:UserCache:42'
 redis-cli DEL "$key"
 { printf '\x01'; head -c 16 /dev/urandom; printf '\x01'; printf "\\x$(printf %02x ${#key})"; printf '%s' "$key"; } \
-  | redis-cli -x PUBLISH cocache:v8:inv:UserCache
+  | redis-cli -x PUBLISH cocache:inv:UserCache
 ```
 
 在没有 `cocache-core` 的 JVM 上，`cocache-api`（没有运行时依赖）中的 `InvalidationFrame.encode(NodeId.random(), storageKeys)` 可以构造帧。
@@ -296,13 +296,13 @@ CoCache 的值不是可读的 JSON：每个值都以 36 字节的二进制头开
 
 | 问题 | 命令 |
 |------|------|
-| 一个缓存有哪些 key？ | `redis-cli --scan --pattern 'cocache:v8:UserCache:*' \| head`（集群中逐个主节点执行） |
-| key 处于什么状态？ | `redis-cli TYPE cocache:v8:UserCache:42`：`string`（值、负缓存或 lease）或 `hash`（集合）。对 string，`redis-cli GETRANGE cocache:v8:UserCache:42 2 2` 返回状态：`V` 值、`M` 负缓存、`L` lease |
-| 还能存活多久？ | `redis-cli PTTL cocache:v8:UserCache:42`（毫秒，`-1` 表示永不过期） |
+| 一个缓存有哪些 key？ | `redis-cli --scan --pattern 'cocache:UserCache:*' \| head`（集群中逐个主节点执行） |
+| key 处于什么状态？ | `redis-cli TYPE cocache:UserCache:42`：`string`（值、负缓存或 lease）或 `hash`（集合）。对 string，`redis-cli GETRANGE cocache:UserCache:42 2 2` 返回状态：`V` 值、`M` 负缓存、`L` lease |
+| 还能存活多久？ | `redis-cli PTTL cocache:UserCache:42`（毫秒，`-1` 表示永不过期） |
 | 里面是什么？ | `GET /actuator/cocache/{name}/{key}` 会解码两层。原始字节：`redis-cli GETRANGE key 36 -1` 返回编解码器的输出 |
-| 占多少内存？ | `redis-cli MEMORY USAGE cocache:v8:UserCache:42` |
-| 谁在监听一个缓存的频道？ | `redis-cli PUBSUB NUMSUB cocache:v8:inv:UserCache`，`sharded` 模式下用 `PUBSUB SHARDNUMSUB`。集群中按节点计数 |
+| 占多少内存？ | `redis-cli MEMORY USAGE cocache:UserCache:42` |
+| 谁在监听一个缓存的频道？ | `redis-cli PUBSUB NUMSUB cocache:inv:UserCache`，`sharded` 模式下用 `PUBSUB SHARDNUMSUB`。集群中按节点计数 |
 | 哪些连接属于 CoCache？ | 设置 `cocache.redis.client-name`，然后在 `redis-cli CLIENT LIST` 中找该 `name`。订阅连接的 `sub=` 或 `ssub=` 大于 0 |
-| 失效消息在流动吗？ | `redis-cli SUBSCRIBE cocache:v8:inv:UserCache`（或 `SSUBSCRIBE`）会打印每一帧，二进制输出中的存储 key 是可读的 |
+| 失效消息在流动吗？ | `redis-cli SUBSCRIBE cocache:inv:UserCache`（或 `SSUBSCRIBE`）会打印每一帧，二进制输出中的存储 key 是可读的 |
 
 除了通过[失效协议](#external-invalidation)，不要手动修改 CoCache 的 key。

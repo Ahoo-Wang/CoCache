@@ -15,20 +15,19 @@ package me.ahoo.cocache.api.spi
 
 /**
  * 一个缓存在 L1 中占用的 keyspace：key 前缀与命名空间（RFC 0005 §4.3、§4.7）。后端按它创建存储（[CoherenceBackend.store]），
- * 失效通道按它订阅与发布（[InvalidationChannel]）；频道名由后端按两者构造（Redis 为 `{keyPrefix}v8:inv:{namespace}`），
+ * 失效通道按它订阅与发布（[InvalidationChannel]）；频道名由后端按两者构造（Redis 为 `{keyPrefix}inv:{namespace}`），
  * 前缀不同、命名空间相同的两个缓存因此既不共用 key，也收不到彼此的失效帧。
  *
- * 8.x 的布局（V13，随 M4 冻结）：
- * - 存储 key 为 `{keyPrefix}v8:{namespace}:{encodedKey}`，即 [storagePrefix] 加上编码后的 key。布局标记 [LAYOUT_MARK] 与前缀无关：
- *   沿用自定义前缀的部署同样与 6.x 的 `{keyPrefix}{namespace}:{encodedKey}` 隔离，两个大版本可以共用一个 Redis 过渡。
- * - 内部 key 放在 `{keyPrefix}v8!…`（[INTERNAL_MARK]），任何命名空间都产生不了这个位置。`{keyPrefix}v8!meta:{namespace}`
- *   预留为元数据 key，8.0 不写。
+ * 8.x 的布局（随 M4 冻结）：
+ * - 存储 key 为 `{keyPrefix}{namespace}:{encodedKey}`，即 [storagePrefix] 加上编码后的 key。
+ * - 内部 key 放在 `{keyPrefix}!…`（[INTERNAL_MARK]）：`!` 不在命名空间的字符集中，任何命名空间都产生不了这个位置。
+ *   `{keyPrefix}!meta:{namespace}` 预留为元数据 key，8.0 不写。
  * - [namespace] 的字符集为 [NAMESPACE_CHARSET]，不含 `:`：同一前缀下，一个命名空间的存储 key 不会落进另一个命名空间的范围
- *   （6.x 中 `a` 与 `a:b` 的重叠，RFC 0005 附录 A.L4），跨应用时也一样。[keyPrefix] 不受限制，可以为空。
+ *   （如 `a` 与 `a:b`，RFC 0005 附录 A.L4），跨应用时也一样。[keyPrefix] 不受限制，可以为空。
  *
  * 前缀与命名空间都相同的两个 keyspace 相等。
  *
- * @throws IllegalArgumentException [namespace] 不符合字符集：6.x 中放在命名空间里的前缀须移到 [keyPrefix]
+ * @throws IllegalArgumentException [namespace] 不符合字符集：前缀写在 [keyPrefix] 中，不写进命名空间
  */
 class Keyspace(val keyPrefix: String, val namespace: String) {
     init {
@@ -36,12 +35,12 @@ class Keyspace(val keyPrefix: String, val namespace: String) {
     }
 
     /**
-     * 存储 key 的前缀 `{keyPrefix}v8:{namespace}:`，创建时计算一次。
+     * 存储 key 的前缀 `{keyPrefix}{namespace}:`，创建时计算一次。
      */
-    val storagePrefix: String = keyPrefix + LAYOUT_MARK + namespace + ':'
+    val storagePrefix: String = "$keyPrefix$namespace:"
 
     /**
-     * 编码后的 key 对应的存储 key：`{keyPrefix}v8:{namespace}:{encodedKey}`。
+     * 编码后的 key 对应的存储 key：`{keyPrefix}{namespace}:{encodedKey}`。
      */
     fun storageKey(encodedKey: String): String = storagePrefix + encodedKey
 
@@ -55,14 +54,10 @@ class Keyspace(val keyPrefix: String, val namespace: String) {
 
     companion object {
         /**
-         * 布局标记：存储 key 与失效频道都在前缀之后以它开头。不含 `{` `}`（会改变 Cluster 的 slot）与 glob 元字符。
+         * 内部 key 的标记：内部 key 在前缀之后以它开头（如预留的 `{keyPrefix}!meta:{namespace}`）。它不在 [NAMESPACE_CHARSET] 中，
+         * 也不是 `{` `}`（会改变 Cluster 的 slot）或 glob 元字符。
          */
-        const val LAYOUT_MARK = "v8:"
-
-        /**
-         * 内部 key 的标记：内部 key 在前缀之后以它开头（如预留的 `{keyPrefix}v8!meta:{namespace}`）。
-         */
-        const val INTERNAL_MARK = "v8!"
+        const val INTERNAL_MARK = "!"
 
         /**
          * 命名空间的字符集（正则）。
@@ -78,7 +73,7 @@ class Keyspace(val keyPrefix: String, val namespace: String) {
         fun isValidNamespace(namespace: String): Boolean = NAMESPACE.matches(namespace)
 
         /**
-         * 含 `:` 的命名空间多半是 6.x 中把前缀写进了命名空间：给出移到前缀之后的写法。
+         * 含 `:` 的命名空间多半是把前缀写进了命名空间：给出移到前缀之后的写法。
          */
         private fun invalidNamespace(keyPrefix: String, namespace: String): String {
             val message = "Namespace[$namespace] must match $NAMESPACE_CHARSET."

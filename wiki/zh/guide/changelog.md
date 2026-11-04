@@ -7,15 +7,23 @@ description: CoCache 版本发布历史和重要变更。
 
 ## 未发布
 
-**模块组：** `me.ahoo.cocache` · 计划作为 8.0.0 发布，是包含破坏性变更的大版本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。8.x 与 6.x 不共用任何 key 与频道，两个版本可以同时部署在同一个 Redis 上。6.x 的修复继续在 `6.x` 分支上进行。
+**模块组：** `me.ahoo.cocache` · 计划作为 8.0.0 发布，是包含破坏性变更的大版本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。8.x 不与 6.x 同时运行在一个 Redis 上：先停 6.x，再启动 8.x（见[从 6.x 升级](#upgrading-from-6x)）。6.x 的修复继续在 `6.x` 分支上进行。
+
+### 从 6.x 升级 {#upgrading-from-6x}
+
+8.x 不与 6.x 同时运行在一个 Redis 上，也没有拷贝工具：升级之后各缓存从数据源重新加载。
+
+1. 停止所有 6.x 实例。
+2. 删除没有数据源的缓存的 key：没有 loader 的 `Cache` 与所有 `SetCache`。6.x 的值是格式 1，8.x 按读不懂的内容处理，这些缓存读到它们会失败。Redis 原本就是它们唯一的副本，所以它们从空开始：按当初写入它们的方式重新写入。删除一个命名空间：`redis-cli --scan --pattern 'cocache:{namespace}:*' | xargs redis-cli unlink`（集群中逐个主节点执行）。
+3. 启动 8.x。有数据源的缓存在第一次读取时回收旧 key 并重新加载。
 
 ### 破坏性变更
 
 - 基线改为 JDK 21（原为 JDK 17）。
-- 存储 key 改为 `{keyPrefix}v8:{namespace}:{encodedKey}`（6.x 为 `{keyPrefix}{namespace}:{encodedKey}`），失效频道改为 `{keyPrefix}v8:inv:{namespace}`（6.x 为 `cocache:inv:{namespace}`）。无论使用默认前缀还是自定义前缀，8.x 都不读写 6.x 的 key，所以切换从冷缓存开始。频道带上了前缀，命名空间相同、前缀不同的应用不再收到彼此的失效。`pubsub` 模式的启动探测使用 `cocache:v8!probe:{a}` 与 `cocache:v8:probe:{b}`。内部 key 放在 `{keyPrefix}v8!` 之下，`{keyPrefix}v8!meta:{namespace}` 预留。见[存储 key](./caches.md#storage-keys)。
+- 存储 key 保持 6.x 的形状 `{keyPrefix}{namespace}:{encodedKey}`。失效频道改为 `{keyPrefix}inv:{namespace}`（6.x 为 `cocache:inv:{namespace}`，不含前缀），命名空间相同、前缀不同的应用不再收到彼此的失效。`pubsub` 模式的启动探测使用 `cocache:!probe:{a}` 与 `cocache:!probe:{b}`（6.x 为 `cocache:probe:{a}`，它也是命名空间 `probe` 的 key）。内部 key 放在 `{keyPrefix}!` 之下，任何命名空间都产生不了这个位置，`{keyPrefix}!meta:{namespace}` 预留。见[存储 key](./caches.md#storage-keys)。
 - 命名空间必须符合 `[A-Za-z0-9._-]+`。含 `:`（或字符集之外任何字符）的命名空间在创建时以 `IllegalArgumentException` 失败，信息给出把前缀移到 `keyPrefix` 的写法：`namespace = "app:user"` 改为 `keyPrefix = "cocache:app:"` 与 `namespace = "user"`。6.x 中命名空间 `a` 与 `a:b` 的重叠因此不再可能。
 - 缓存按前缀与命名空间登记。命名空间相同、前缀不同的两个缓存现在可以在同一个运行时中创建。重复时的错误为 `Namespace[x] with keyPrefix[p] is already used by another cache.`
-- Redis ACL：频道模式改为 `&{keyPrefix}v8:inv:*`（默认 `&cocache:v8:inv:*`），`pubsub` 模式另加 `&cocache:v8:probe:*`。`keyPrefix` 为空时，key 以 `v8:` 与 `v8!` 开头，频道以 `v8:inv:` 开头（`~v8:*`、`~v8!*`、`&v8:inv:*`）。见 [Redis ACL](../operations/index.md#acl)。
+- Redis ACL：频道模式为 `&{keyPrefix}inv:*`（默认 `&cocache:inv:*`），`pubsub` 模式另加 `&cocache:!probe:*`（6.x 为 `&cocache:probe:*`）。`keyPrefix` 为空时，key 与频道没有公共前缀：逐个列出命名空间（`~{namespace}:*`、`&inv:{namespace}`），另加 `~!*`。见 [Redis ACL](../operations/index.md#acl)。
 - 在 Redis 上创建缓存时，向该缓存的频道发布一个不带 key 的帧，原子广播时在写脚本中发布。ACL 不放行这个频道时，创建以 `IllegalStateException` 失败并给出要放行的模式，而不是每次写入都在修改 Redis 之后才在广播处失败。暂时性错误照旧失败，ACL 拒绝也从不把后端降级为非原子广播。`ExternalInvalidator` 第一次用到一个命名空间时同样探测。
 - 频道读不懂的失效帧（未知版本、截断、尾随字节）现在会重置该频道上的每个缓存，清空它的 L2。6.x 告警后丢弃，丢的就是一次失效。帧版本 `2` 预留给之后的 namespace 重置（`InvalidationFrame.NAMESPACE_RESET_VERSION`）。不带 key 的帧什么也不做，也不计入 `cocache.invalidations.received`。
 - SPI：新增值类型 `Keyspace(keyPrefix, namespace)`，标识一个缓存的 key 与频道。`CoherenceBackend.store`、`InvalidationChannel.subscribe` / `publish` 与 `FutureInvalidationChannel.subscribe` / `publish` 改收 `Keyspace`，不再收命名空间字符串。后端按两者构造频道名，解码失败的帧重置订阅者，不带 key 的帧照常投递。`CacheSpec.keyspace` 与 `SetCacheSpec.keyspace` 给出缓存的 keyspace。

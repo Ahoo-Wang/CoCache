@@ -29,7 +29,7 @@ interface CoherenceBackend : AutoCloseable {
 
 L1 存储与失效通道是同一个对象的两个面：串行化写入的一方也应该发出失效。连接与线程属于后端，随它关闭：存储没有 `close`。
 
-- **`Keyspace`**。`store`、`subscribe` 与 `publish` 接收 `Keyspace(keyPrefix, namespace)`。它的 `storagePrefix` 是 `{keyPrefix}v8:{namespace}:`，构造时拒绝 `[A-Za-z0-9._-]+` 之外的命名空间。每个 keyspace 一个频道，名字由前缀与命名空间共同构成（Redis 后端是 `{keyPrefix}v8:inv:{namespace}`）：命名空间相同、前缀不同的两个 keyspace 不能共用频道。有访问控制的后端在 `store` 中检查自己能否在该 keyspace 的频道上发布，不能时抛出，而不是让每次写入在修改 L1 之后才在广播处失败。Redis 后端向那里发布一个不带 key 的帧。
+- **`Keyspace`**。`store`、`subscribe` 与 `publish` 接收 `Keyspace(keyPrefix, namespace)`。它的 `storagePrefix` 是 `{keyPrefix}{namespace}:`，构造时拒绝 `[A-Za-z0-9._-]+` 之外的命名空间。每个 keyspace 一个频道，名字由前缀与命名空间共同构成（Redis 后端是 `{keyPrefix}inv:{namespace}`）：命名空间相同、前缀不同的两个 keyspace 不能共用频道。有访问控制的后端在 `store` 中检查自己能否在该 keyspace 的频道上发布，不能时抛出，而不是让每次写入在修改 L1 之后才在广播处失败。Redis 后端向那里发布一个不带 key 的帧。
 - **`atomicBroadcast`**。为 `true` 时，存储的每个写方法都必须在修改的同一个原子步骤中发布它的 `frame`。为 `false` 时，引擎在每次写入成功之后调用 `channel.publish(keyspace, frame)`。原子更好：写入与发布之间的崩溃会丢失消息。只声明你能保证的能力，TCK 会分别检查两种情况。
 - **`format`**。引擎把它与 `L1Read.Hit.format` 比较：存储的格式更高时绕开且从不覆盖；`0` 表示不是你的协议写入的内容，引擎按损坏处理。从 `1` 开始，只能通过两阶段升级递增。
 
@@ -335,7 +335,7 @@ interface Codec<V> {
 | 函数 | 约定 |
 |------|------|
 | `CacheLoader<K, V>` | `load(key)` 返回值，或用 `null` 表示“不存在”（以负缓存存储 `absent-ttl`）。`loadAll(keys)` 批量加载，结果中缺少的 key 视为不存在。默认逐个调用 `load`，请覆盖为一次查询。在调用方线程上执行。不能读取自己缓存中的同一个 key（会快速失败）。必须读主库，而不是滞后的从库 |
-| `KeyEncoder<K>` | 把 key 转换为 `{keyPrefix}v8:{namespace}:` 之后的字符串。必须**单射**（不同的 key 得到不同的字符串）、确定，并且在每个实例与每个版本上都相同。默认是 `toString()`，它会拒绝没有重写 `toString()` 的类型 |
+| `KeyEncoder<K>` | 把 key 转换为 `{keyPrefix}{namespace}:` 之后的字符串。必须**单射**（不同的 key 得到不同的字符串）、确定，并且在每个实例与每个版本上都相同。默认是 `toString()`，它会拒绝没有重写 `toString()` 的类型 |
 | `AsyncCacheLoader<K, V>` | `CacheLoader` 的异步形式：`loadAsync(key)` 返回 `CompletionStage`，以 `null` 完成表示“不存在”。必须很快返回、不阻塞：它在调用方线程或异步执行器上执行，看不到调用方的 ThreadLocal。受 `load-timeout` 约束。见[异步 API](../guide/async.md#loader) |
 | `KeyFilter` | `notExist(storageKey)` 收到的是完整的存储 key。只有确定不存在的 key 才能返回 `true`：布隆过滤器必须包含所有存在的 key。返回 `true` 时跳过 Redis 与 loader，不缓存任何内容。必须是本地、不阻塞的判断：异步调用方在自己的线程上调用它，那可能是事件循环 |
 | `TtlFunction<K, V>`（`ttlOf`） | 按条目决定的寿命。非 null 的结果替代 `ttl` 且不加抖动。收敛到 1 ms 与 100 年之间。不作用于负缓存 |

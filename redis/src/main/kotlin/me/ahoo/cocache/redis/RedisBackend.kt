@@ -132,7 +132,7 @@ class RedisBackend private constructor(
      * [keyspace] 的存储：原生挂起的 [RedisL1Store]（RFC 0005 §4.3），与后端共用连接。提供全部能力：条件读写、按版本有序的写入
      * （[RedisScripts.PUT_IF_NEWER]，一次往返）与集合成员的增删。
      *
-     * 创建时探测实际频道 `{keyPrefix}v8:inv:{namespace}`（[probeChannel]），阻塞一次往返；无权发布时抛出 [IllegalStateException]。
+     * 创建时探测实际频道 `{keyPrefix}inv:{namespace}`（[probeChannel]），阻塞一次往返；无权发布时抛出 [IllegalStateException]。
      */
     override fun store(keyspace: Keyspace): L1Store {
         val channel = RedisInvalidationChannel.channelOf(keyspace).toByteArray(Charsets.UTF_8)
@@ -165,8 +165,8 @@ class RedisBackend private constructor(
             }
             throw IllegalStateException(
                 "Redis denied publishing to the invalidation channel[${String(channel, Charsets.UTF_8)}] of $keyspace: allow the channel " +
-                    "pattern [${RedisInvalidationChannel.channelPatternOf(keyspace.keyPrefix)}] in the ACL of this connection's user " +
-                    "(atomic broadcast also needs the key pattern [~${keyspace.keyPrefix}${Keyspace.LAYOUT_MARK}*]). Without it every write " +
+                    "pattern [${RedisInvalidationChannel.channelPatternOf(keyspace)}] in the ACL of this connection's user " +
+                    "(atomic broadcast also needs the key pattern [~${keyspace.storagePrefix}*]). Without it every write " +
                     "would fail at its broadcast after changing L1. Redis replied: ${e.message}",
                 e
             )
@@ -221,11 +221,11 @@ class RedisBackend private constructor(
         private val log = KotlinLogging.logger {}
 
         /**
-         * 原子广播探测的 key 与频道（RFC 0005 §4.7）：内部 key 在 `cocache:v8!…`，与 6.x 的 `cocache:probe:…` 隔离；
-         * 两个 hash tag 落在不同的 slot。
+         * 原子广播探测的 key 与频道（RFC 0005 §4.7）：放在默认前缀的内部位置 `cocache:!…`，任何命名空间都产生不了它
+         * （命名空间为 `probe` 的缓存也不会与它相撞）；两个 hash tag 落在不同的 slot。
          */
-        internal const val PROBE_KEY_NAME = "cocache:v8!probe:{a}"
-        internal const val PROBE_CHANNEL_NAME = "cocache:v8:probe:{b}"
+        internal const val PROBE_KEY_NAME = "cocache:!probe:{a}"
+        internal const val PROBE_CHANNEL_NAME = "cocache:!probe:{b}"
         private val PROBE_KEY = PROBE_KEY_NAME.toByteArray(Charsets.UTF_8)
         private val PROBE_CHANNEL = PROBE_CHANNEL_NAME.toByteArray(Charsets.UTF_8)
 
