@@ -16,6 +16,7 @@ description = "CoCache Spring Boot auto-configuration, actuator endpoint and met
 plugins {
     alias(libs.plugins.kotlin.spring)
     kotlin("kapt")
+    alias(libs.plugins.jmh)
 }
 dependencies {
     kapt(platform(project(":cocache-dependencies")))
@@ -42,6 +43,8 @@ dependencies {
     // 校验原生镜像提示中的 Caffeine 生成类名（cocache-core 的 implementation 依赖，测试编译期需要可见）
     testImplementation("com.github.ben-manes.caffeine:caffeine")
     testImplementation(project(":cocache-test"))
+    // 接口式声明的命中路径基准（src/jmh）
+    jmh(platform(project(":cocache-dependencies")))
     // 验证可选模块的挂起视图在类路径上时登记 AOT 提示
 }
 
@@ -55,4 +58,22 @@ kapt {
 tasks.matching { it.name == "kaptKotlin" }.configureEach {
     inputs.file("src/main/resources/META-INF/additional-spring-configuration-metadata.json")
         .withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
+jmh {
+    jmhVersion = libs.versions.openjdk.jmh
+    fork = 1
+    warmupIterations = 3
+    warmup = "3s"
+    iterations = 5
+    timeOnIteration = "5s"
+    threads = providers.gradleProperty("jmhThreads").map(String::toInt).orElse(1)
+    includes = providers.gradleProperty("jmhIncludes").map { it.split(',') }.orElse(emptyList())
+    resultFormat = "JSON"
+    jvmArgs = listOf("-Dlogback.configurationFile=${rootProject.rootDir}/config/logback-jmh.xml")
+}
+
+// 基准源码随 check 编译，防止腐化；运行基准需显式执行 jmh 任务。
+tasks.named("check") {
+    dependsOn("jmhClasses")
 }

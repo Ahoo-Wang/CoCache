@@ -17,7 +17,9 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
@@ -286,6 +288,75 @@ class CacheAdminInspectionTest {
         runtime.userAdmin().pendingInvalidationCount.assert().isEqualTo(1)
         runtime.userAdmin().inspect("id-1").invalidationPending.assert().isTrue()
         runtime.userAdmin().inspect("id-2").invalidationPending.assert().isFalse()
+    }
+
+    /**
+     * 只广播失效帧：各节点（包括发起的节点）淘汰 L2，L1 不变，之后从 L1 重新填充而不回源。
+     */
+    @Test
+    fun broadcastEncodedEvictsEveryLocalCopyAndKeepsL1() {
+        val node1 = runtime()
+        val node2 = runtime()
+        val users1 = node1.users()
+        val users2 = node2.users()
+        users1[1].assert().isEqualTo("user-1")
+        users2[1].assert().isEqualTo("user-1")
+
+        node1.userAdmin().broadcastEncoded("id-1")
+        node1.userAdmin().inspect("id-1").local.assert().isNull()
+        node1.userAdmin().inspect("id-1").remote.state.assert().isEqualTo(RemoteState.VALUE)
+        node2.userAdmin().inspect("id-1").local.assert().isNull()
+        node2.userAdmin().metrics.invalidationsReceived.assert().isEqualTo(1)
+        users1[1].assert().isEqualTo("user-1")
+        users2[1].assert().isEqualTo("user-1")
+        loads.get().assert().isEqualTo(1)
+        runCatching { node1.userAdmin().broadcastEncoded("") }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    /**
+     * 权威类型上同样安全：唯一副本保留，其它节点的 L2 被淘汰。
+     */
+    @Test
+    fun broadcastEncodedKeepsTheOnlyCopy() {
+        val node1 = runtime()
+        val node2 = runtime()
+        val store1 = node1.create(storeSpec<String, String>("store") { codec = StringCodec })
+        val store2 = node2.create(storeSpec<String, String>("store") { codec = StringCodec })
+        val index1: SetStore<String, String> = node1.create(setStoreSpec("index") { elementCodec = StringCodec })
+        val index2: SetStore<String, String> = node2.create(setStoreSpec("index") { elementCodec = StringCodec })
+        store1.put("k", "v")
+        index1.add("k", listOf("a"))
+        store2["k"].assert().isEqualTo("v")
+        index2["k"].assert().containsExactly("a")
+
+        listOf("store", "index").forEach { requireNotNull(node1.admin(it)).broadcastEncoded("k") }
+        listOf("store", "index").forEach { name ->
+            val inspection = requireNotNull(node2.admin(name)).inspect("k")
+            inspection.local.assert().isNull()
+            inspection.remote.state.assert().isNotEqualTo(RemoteState.MISS)
+        }
+        store2["k"].assert().isEqualTo("v")
+        index2["k"].assert().containsExactly("a")
+    }
+
+    /**
+     * 发布失败时抛出（可以重试）；本节点的 L2 在发布之前已淘汰。
+     */
+    @Test
+    fun broadcastEncodedFailureThrows() {
+        val failure = IllegalStateException("publish down")
+        val failing = object : CoherenceBackend by memory {
+            override val channel: InvalidationChannel = object : InvalidationChannel by memory.channel {
+                override suspend fun publish(keyspace: Keyspace, frame: ByteArray) = throw failure
+            }
+        }
+        val runtime = CacheRuntime.builder().backend(failing).clock(clock).build().also { runtimes.add(it) }
+        val users = runtime.users()
+        users[1].assert().isEqualTo("user-1")
+        runCatching { runtime.userAdmin().broadcastEncoded("id-1") }.exceptionOrNull().assert().isSameAs(failure)
+        runtime.userAdmin().inspect("id-1").local.assert().isNull()
+        runtime.userAdmin().inspect("id-1").remote.state.assert().isEqualTo(RemoteState.VALUE)
     }
 
     @Test

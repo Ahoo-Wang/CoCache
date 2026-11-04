@@ -312,7 +312,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (source == null) {
             return EmptyCoroutineContext
         }
-        return fillObserver.enter()?.let { FillContext(it) } ?: EmptyCoroutineContext
+        return fillObserver.enter(name)?.let { FillContext(it) } ?: EmptyCoroutineContext
     }
 
     /**

@@ -45,13 +45,16 @@ import me.ahoo.cocache.redis.RedisChannelMode
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.springframework.boot.actuate.autoconfigure.endpoint.PropertiesEndpointAccessResolver
 import org.springframework.boot.actuate.endpoint.InvocationContext
+import org.springframework.boot.actuate.endpoint.OperationFilter
 import org.springframework.boot.actuate.endpoint.SecurityContext
 import org.springframework.boot.actuate.endpoint.invoke.convert.ConversionServiceParameterValueMapper
 import org.springframework.boot.actuate.endpoint.web.EndpointMediaTypes
 import org.springframework.boot.actuate.endpoint.web.ExposableWebEndpoint
 import org.springframework.boot.actuate.endpoint.web.WebEndpointHttpMethod
 import org.springframework.boot.actuate.endpoint.web.WebEndpointResponse
+import org.springframework.boot.actuate.endpoint.web.WebOperation
 import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpointDiscoverer
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
@@ -353,7 +356,85 @@ class CoCacheOperationsTest {
             }
     }
 
-    private fun webEndpoint(context: ApplicationContext): ExposableWebEndpoint {
+    /**
+     * 只广播失效帧：对任何类型都不需要开关，L1 原样保留（唯一副本与版本栅栏都在），本节点的 L2 被淘汰。
+     */
+    @Test
+    fun broadcastNeedsNoSwitchAndKeepsL1() {
+        runner.withUserConfiguration(AuthoritativeConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val endpoint = context.getBean(CoCacheEndpoint::class.java)
+
+            @Suppress("UNCHECKED_CAST")
+            val user = context.getBean("user") as Cache<Long, String>
+
+            @Suppress("UNCHECKED_CAST")
+            val doc = context.getBean("doc") as Store<String, String>
+
+            @Suppress("UNCHECKED_CAST")
+            val versionedDoc = context.getBean("vdoc") as VersionedStore<String, String>
+            user[1L].assert().isEqualTo("user-1")
+            doc.put("k", "v")
+            doc["k"].assert().isEqualTo("v")
+            versionedDoc.putIfNewer("k", "v", 5)
+
+            requireNotNull(endpoint.broadcast("user", arrayOf("u", "1")))
+                .assert().isEqualTo(CoCacheEndpoint.BroadcastReport("user", "u/1"))
+            val inspection = requireNotNull(endpoint.inspect("user", arrayOf("u", "1")))
+            inspection.local.assert().isNull()
+            inspection.remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE)
+            listOf("doc", "vdoc", "vcache", "index").forEach { name ->
+                endpoint.broadcast(name, arrayOf("k"))?.cache.assert().isEqualTo(name)
+            }
+            doc["k"].assert().isEqualTo("v")
+            versionedDoc.putIfNewer("k", "old", 4).assert().isEqualTo(VersionedPut.Stale(5))
+            endpoint.broadcast("missing", arrayOf("k")).assert().isNull()
+            runCatching { endpoint.broadcast("user", emptyArray()) }.exceptionOrNull()
+                .assert().isInstanceOf(
+                    org.springframework.boot.actuate.endpoint.InvalidEndpointRequestException::class.java
+                )
+
+            val broadcast = webEndpoint(context).operations.single {
+                it.requestPredicate.httpMethod == WebEndpointHttpMethod.POST
+            }
+            // 只有路径参数、没有请求体：`curl -X POST` 不需要 Content-Type
+            broadcast.requestPredicate.consumes.assert().isEmpty()
+
+            fun post(name: String, key: Array<String>): WebEndpointResponse<*> {
+                val arguments = mapOf("name" to name, "key" to key)
+                return broadcast.invoke(InvocationContext(SecurityContext.NONE, arguments)) as WebEndpointResponse<*>
+            }
+            post("missing", arrayOf("k")).status.assert().isEqualTo(404)
+            val response = post("doc", arrayOf("k"))
+            response.status.assert().isEqualTo(200)
+            response.body.assert().isEqualTo(CoCacheEndpoint.BroadcastReport("doc", "k"))
+        }
+    }
+
+    /**
+     * 广播与其它写操作一样受 `management.endpoint.cocache.access` 约束：`read-only` 时只剩查看。
+     */
+    @Test
+    fun readOnlyAccessDropsBroadcastWithTheOtherWrites() {
+        // 测试容器的环境没有 Spring Boot 应用的宽松枚举转换，这里写枚举常量名（应用中写 read-only）
+        runner.withPropertyValues("management.endpoint.cocache.access=READ_ONLY").run { context ->
+            assertThat(context).hasNotFailed()
+            val filter = OperationFilter.byAccess<WebOperation>(PropertiesEndpointAccessResolver(context.environment))
+            val paths = webEndpoint(context, listOf(filter)).operations.map {
+                "${it.requestPredicate.httpMethod} ${it.requestPredicate.path}"
+            }
+            paths.assert().containsExactlyInAnyOrder(
+                "GET cocache",
+                "GET cocache/{name}",
+                "GET cocache/{name}/{*key}",
+            )
+        }
+    }
+
+    private fun webEndpoint(
+        context: ApplicationContext,
+        operationFilters: List<OperationFilter<WebOperation>> = emptyList(),
+    ): ExposableWebEndpoint {
         val discoverer = WebEndpointDiscoverer(
             context,
             ConversionServiceParameterValueMapper(),
@@ -362,7 +443,7 @@ class CoCacheOperationsTest {
             emptyList(),
             emptyList(),
             emptyList(),
-            emptyList(),
+            operationFilters,
         )
         return discoverer.endpoints.first { it.endpointId.toString() == CoCacheEndpoint.ID }
     }
@@ -372,7 +453,7 @@ class CoCacheOperationsTest {
         runner.run { context ->
             assertThat(context).hasNotFailed()
             val endpoint = webEndpoint(context)
-            // web 扩展的 DELETE 替换端点上的同名操作，而不是并列注册
+            // web 扩展的 DELETE 与 POST 替换端点上的同名操作，而不是并列注册
             val paths = endpoint.operations.map { "${it.requestPredicate.httpMethod} ${it.requestPredicate.path}" }
             paths.assert().containsExactlyInAnyOrder(
                 "GET cocache",
@@ -380,6 +461,7 @@ class CoCacheOperationsTest {
                 "DELETE cocache/{name}",
                 "GET cocache/{name}/{*key}",
                 "DELETE cocache/{name}/{*key}",
+                "POST cocache/{name}/{*key}",
             )
         }
     }

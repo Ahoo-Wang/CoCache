@@ -12,7 +12,7 @@ CoCache reports through four channels, all provided by the starter when `spring-
 | [Metrics](#metrics) (`cocache.*`) | Trends and alerts |
 | [Tracing](#tracing) (`cocache.load`) | Where a slow miss spent its time |
 | [Health indicator](#health) (`cocache`) | Is this instance receiving invalidations? |
-| [Actuator endpoint](#actuator-endpoint) (`/actuator/cocache`) | Per-instance counters, inspecting one key, forcing an invalidation |
+| [Actuator endpoint](#actuator-endpoint) (`/actuator/cocache`) | Per-instance counters, inspecting one key, forcing or broadcasting an invalidation |
 
 Plus the [logs](#logs). None of them touch the L2 hit path, except the [L2 hit counter](#metrics-reads), which is off by default.
 
@@ -55,7 +55,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 |-------|------|--------|
 | `cocache.fill.rejections` | counter | Loads that held a lease or refresh token, but Redis refused the fill: an invalidation destroyed the token, the loader outlived `lease-ttl`, the fill failed, or (versioned caches) the loader returned an older version than Redis holds |
 | `cocache.degraded.fills` | counter | Loads written to L2 only, for `degraded-local-max-age`: Redis read failed, lease wait timed out, fill rejected, value in an unknown format, or an invalidation of the key still pending. A read without a source isn't counted when Redis fails: it has no answer and caches nothing (counted in `cocache.reads.unknown` and `cocache.remote.failures`). |
-| `cocache.fills.gated` | counter | Loads inside a read-write Spring transaction that stayed private (`cocache.fill-in-transaction`), per key: no lease, no write to Redis or L2, not shared with other callers. Each also counts as a miss and a load. See [loads inside a transaction](../guide/spring-cache.md#transactional-loads). |
+| `cocache.fills.gated` | counter | Loads inside a read-write Spring transaction that stayed private (`fill-in-transaction`), per key: no lease, no write to Redis or L2, not shared with other callers. Each also counts as a miss and a load. See [loads inside a transaction](../guide/spring-cache.md#transactional-loads). |
 | `cocache.fill.unversioned.absent` | counter | Loads of a `VersionedCache` whose versioned loader returned a plain `null` while Redis held versioned content for the key. Redis refused the negative entry, the read returned "absent", and the next miss loads again. Express deletions as `Versioned(null, version)` ([versioned loaders](../guide/versioned-cache.md#versioned-loaders)). The first one per cache logs a warning. |
 | `cocache.stale.discards` | counter | L2 fills dropped because an invalidation of the key arrived while the read was in flight, or (versioned caches) because L2 already held a newer version than the fill, for example from a loader that reads a lagging replica. This is the L2 fence working. |
 | `cocache.reclaims` | counter | L1 values this instance couldn't decode (foreign content or codec failure). A separate reclaim script then converts the value into a lease, if it is still unchanged, and the instance reloads. |
@@ -178,8 +178,9 @@ management:
 | `DELETE /actuator/cocache/{name}` | Clears L2 for this cache. L1 is untouched. Loads in flight don't write their result into L2. | this instance |
 | `GET /actuator/cocache/{name}/{key}` | [Inspects one key](#inspect-key) in L2 and L1 | this instance, plus one Redis read |
 | `DELETE /actuator/cocache/{name}/{key}` | [Deletes one key](#invalidate-key), by type; `?purge=true` purges a versioned key | **every instance** |
+| `POST /actuator/cocache/{name}/{key}` | [Broadcasts an invalidation](#broadcast-key) for one key: every instance drops its L2 copy, Redis is untouched | **every instance** |
 
-`{name}` is the cache name. For an unknown name, `GET` and `DELETE` return `404` and change nothing. A successful `DELETE /actuator/cocache/{name}` returns `204`, and a successful per-key `DELETE` returns `200` with a report. An empty `{key}` is rejected with `400`. Spring drops empty path segments and surrounding whitespace, so a key containing `//`, a leading or trailing `/`, or surrounding spaces can't be addressed exactly through the endpoint.
+`{name}` is the cache name. For an unknown name, `GET`, `DELETE` and `POST` return `404` and change nothing. A successful `DELETE /actuator/cocache/{name}` returns `204`, and a successful per-key `DELETE` or `POST` returns `200` with a report. `DELETE` and `POST` are write operations: `management.endpoint.cocache.access: read-only` leaves only the `GET` requests. An empty `{key}` is rejected with `400`. Spring drops empty path segments and surrounding whitespace, so a key containing `//`, a leading or trailing `/`, or surrounding spaces can't be addressed exactly through the endpoint.
 
 A cache report:
 
@@ -207,7 +208,7 @@ A cache report:
     { "field": "read-failure", "value": "degrade", "source": "TYPE_DEFAULT" }
   ],
   "skippedConfiguration": [
-    { "key": "cocache.overrides.cache.lease-wait", "layer": "cocache.overrides.cache", "reason": "not allowed in cocache.overrides: only staleness bounds and read-failure tighten" }
+    { "key": "cocache.overrides.cache.lease-wait", "layer": "cocache.overrides.cache", "reason": "not allowed in cocache.overrides: only staleness bounds, read-failure, fill-in-transaction and invalidate-fills-on-rollback tighten" }
   ],
   "localSize": 8123,
   "loads": 5120,
@@ -291,6 +292,17 @@ This deletes the key cluster-wide: L1 is changed, and every instance drops its L
 Deleting the only copy can't be undone from a source, so those deletions need a switch, off by default: `management.endpoint.cocache.allow-store-delete=true` for `Store` and `SetStore`, `management.endpoint.cocache.allow-purge=true` for `VersionedStore`. Without it, the request returns `403`, says which switch to set, and changes nothing. These switches are on top of `management.endpoint.cocache.access`, which opens the endpoint's write operations at all.
 
 `DELETE /actuator/cocache/{name}/{key}?purge=true` on a `VersionedCache` or `VersionedStore` runs `purge(key)`: it drops the version too, so any version, even an older one arriving late, can be written afterwards. It needs `allow-purge`. On other types it returns `400`.
+
+### Broadcasting an invalidation {#broadcast-key}
+
+```bash
+curl -fsS -X POST localhost:8080/actuator/cocache/UserCache/42
+# {"cache":"UserCache","key":"42"}
+```
+
+This only publishes the invalidation message for the key. Every instance, this one included, drops its L2 copy and reads Redis again on the next access. Redis is unchanged: nothing is deleted and no version moves, so the request is safe on every type and needs no switch beyond `management.endpoint.cocache.access`. Use it when Redis already holds the right value but instances may still serve an old copy, for example after a tool rewrote the key in Redis directly. It is the endpoint counterpart of `ExternalInvalidator.broadcast` ([writers outside your application](../guide/freshness.md#external-writers)).
+
+Delivery is at most once, like every invalidation message. If the publish fails, the request fails and can be repeated. If the message is lost on the way, the other instances keep their copies until `local-max-age`.
 
 ## Logs {#logs}
 

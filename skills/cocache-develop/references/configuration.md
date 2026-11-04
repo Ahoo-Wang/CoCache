@@ -26,12 +26,12 @@ Field by field, lowest to highest (configuration reference: https://cocache.ahoo
 2. `cocache.defaults.cache.*` (`Cache`, `VersionedCache`) / `cocache.defaults.store.*` (`Store`, `VersionedStore`, `SetStore`): **below** the declaration; fills only fields the declaration did not write.
 3. The declaration. Written fields: annotation attributes that are not `UNSET`; fields assigned in `policy { … }` / `updatePolicy` (`ttl = forever()` counts; a nested `lease` / `load` / `local` writes only the fields whose value it changes); an assigned `unknownRead`. Assigning a whole `policy = …` writes every field, so `cocache.defaults` no longer applies. `Spec.declaredFields` lists them.
 4. `CacheSpecCustomizer` beans, in order. They may not change the data source or a locked field.
-5. `cocache.overrides.cache.*` / `cocache.overrides.store.*`: **tighten only**. `local-max-age`, `degraded-local-max-age`, `absent-ttl` and a `Cache`'s `ttl` take the minimum; `read-failure` takes the stricter (`throw`). `overrides.cache.ttl` also caps `ttlOf` and `put(k, v, ttl)` lifetimes (`cocache.ttl.clamped`); a longer `cocache.caches.[name].ttl` raises the cap for that cache. Every other key is skipped.
+5. `cocache.overrides.cache.*` / `cocache.overrides.store.*`: **tighten only**. `local-max-age`, `degraded-local-max-age`, `absent-ttl` and a `Cache`'s `ttl` take the minimum; `read-failure`, `fill-in-transaction` and `invalidate-fills-on-rollback` take the stricter (`throw`; `private` > `registered-keys` > `allow`; `true`). `overrides.cache.ttl` also caps `ttlOf` and `put(k, v, ttl)` lifetimes (`cocache.ttl.clamped`); a longer `cocache.caches.[name].ttl` raises the cap for that cache. Every other key is skipped.
 6. `cocache.caches.[name].*`: sets any field that applies, plus `unknown-read`, `key-prefix` and `unlock`.
 
 Then library constraints, then the validation chain. Global layers never fail startup: a key that does not apply to the type, is not allowed in that layer (`defaults.store.ttl`, `unknown-read`, anything but staleness bounds and `read-failure` in `overrides`), or is locked is skipped for that cache, logged as `WARN` and listed in the endpoint's `skippedConfiguration`. To force a value over every declaration, use `overrides` (if the field may tighten) or `caches.[name]`; `defaults` never overrides a declaration. Only caches created through `CoCacheFactory` are layered; `runtime.create` gives an unlayered cache that no layer reaches.
 
-Applicability: lease, load, `degraded-local-max-age`, `invalidate-failure` and `read-failure` apply only to `Cache` (loader or externally sourced) and `VersionedCache`; `refresh-window` only to a `Cache` with a loader and `VersionedCache`; `tombstone-ttl` only to the versioned types; `unknown-read` only to an externally sourced `Cache`, `Store` and `VersionedStore`. `ttl`, `ttl-jitter`, `absent-ttl`, `local-max-age`, `read-timeout` and `local-maximum-size` apply to every type.
+Applicability: lease, load, `degraded-local-max-age`, `invalidate-failure`, `read-failure`, `fill-in-transaction` and `invalidate-fills-on-rollback` apply only to `Cache` (loader or externally sourced) and `VersionedCache`; `refresh-window` only to a `Cache` with a loader and `VersionedCache`; `tombstone-ttl` only to the versioned types; `unknown-read` only to an externally sourced `Cache`, `Store` and `VersionedStore`. `ttl`, `ttl-jitter`, `absent-ttl`, `local-max-age`, `read-timeout` and `local-maximum-size` apply to every type.
 
 Validation chain: when a global layer makes `refresh-window` not less than `local-max-age` or `ttl − ttl-jitter`, and `caches.[name]` set none of those fields, the window is turned off (`CLAMPED`, `WARN`). A conflict from the declaration alone, or one involving a `caches.[name]` field, fails startup.
 
@@ -49,8 +49,6 @@ Validation chain: when a global layer makes `refresh-window` not less than `loca
 | `cocache.redis.*` | | Redis backend settings |
 | `cocache.spring-cache.require-sync` | `false` | `true` fails startup on a non-sync `@Cacheable` on a CoCache cache |
 | `cocache.spring-cache.degrade-on-error` | `false` | `true`: `DegradingCacheErrorHandler` logs read and write failures on CoCache caches instead of rethrowing them; invalidation failures and other caches go to the previous handler |
-| `cocache.invalidate-fills-on-rollback` | `true` | Needs `spring-tx`: keys a synchronous read loaded inside a read-write transaction are invalidated on rollback, unknown commit outcome and rollback to a savepoint |
-| `cocache.fill-in-transaction` | `registered-keys` | Needs `spring-tx`: which loads in a read-write transaction are private (no lease, no Redis or L2 write, not shared): `registered-keys` (keys registered for invalidation in it), `private` (all), `allow` (none); every cache |
 | `cocache.refresh-executor` | built-in | Bean name of the `Executor` for refresh-ahead loads; CoCache never shuts it down |
 | `cocache.async-executor` | runtime-owned `ForkJoinPool` (`cocache-async-*`) | Bean name of the `Executor` for async-view continuations; short non-blocking work only, never block on it |
 | `cocache.blocking-executor` | one virtual thread per task | Bean name of the `Executor` for synchronous loaders called through the async view; must not queue |
@@ -78,6 +76,8 @@ Valid under `cocache.defaults.cache.`, `.defaults.store.`, `.overrides.cache.`, 
 | `local-maximum-size` | `10000` | L2 entries per instance |
 | `invalidate-failure` | `retry` | Derived types only. A failed `Cache.invalidate` (externally sourced included), and a `Cache.put` / `putAll` whose outcome is unknown: `retry` queues the invalidation (for the put, a compensating one) and returns; `throw` surfaces `CacheWriteException`. A put that definitely did not run throws either way. Authoritative writes and deletes always throw and never retry |
 | `read-failure` | `degrade` | Reads with a source only (declared or per-call loader). `throw`: answer `Lookup.Unknown`, so `get` throws `CacheReadException` |
+| `fill-in-transaction` | `registered-keys` | Needs `spring-tx`: which loads in a read-write transaction are private (no lease, no Redis or L2 write, not shared): `registered-keys` (keys registered for invalidation in it), `private` (all), `allow` (none) |
+| `invalidate-fills-on-rollback` | `true` | Needs `spring-tx`: keys a synchronous read loaded inside a read-write transaction are invalidated on rollback, unknown commit outcome and rollback to a savepoint. With `false` and `fill-in-transaction: allow`, the cache's loads ignore transactions |
 | `unknown-read` | `throw` | `caches.[name]` only. Reads without a source on Redis failure: `throw` (`CacheReadException`) or `absent` (read as not found, cache nothing) |
 | `key-prefix` | `cocache.key-prefix` | `caches.[name]` only. This cache's storage-key prefix |
 | `unlock` | | `caches.[name]` only. Locked fields this entry overrides on purpose (logged, reported `UNLOCKED`) |
@@ -110,7 +110,7 @@ To share one Redis between applications, set `cocache.key-prefix: ${spring.appli
 
 ## Actuator and health
 
-Expose with `management.endpoints.web.exposure.include: health, cocache`; restrict deletes with `management.endpoint.cocache.access: read-only`.
+Expose with `management.endpoints.web.exposure.include: health, cocache`; restrict the writes (`DELETE`, `POST`) with `management.endpoint.cocache.access: read-only`.
 
 | Request | Effect | Scope |
 |---|---|---|
@@ -118,6 +118,7 @@ Expose with `management.endpoints.web.exposure.include: health, cocache`; restri
 | `GET /actuator/cocache/{name}/{key}` | Inspects L2 and L1 for one encoded key without loading | this instance plus one Redis read |
 | `DELETE /actuator/cocache/{name}` | Clears this cache's L2 | this instance |
 | `DELETE /actuator/cocache/{name}/{key}` | Per type: `Cache.invalidate`, `VersionedCache.evict`, `Store.delete`, `VersionedStore.purge`, `SetStore.clear`. Only the `Cache` case retries a Redis failure; the authoritative cases delete the only copy and return `403` unless `management.endpoint.cocache.allow-store-delete` (`Store`, `SetStore`) or `allow-purge` (`VersionedStore`, and `?purge=true` on a `VersionedCache`) is `true` | every instance |
+| `POST /actuator/cocache/{name}/{key}` | Broadcasts the invalidation for one key without touching Redis: every instance drops its L2 copy. Safe on every type, no `allow-*` switch | every instance |
 
 The `cocache` health indicator is `DOWN` only while the subscription heartbeat fails; details show `backend`, `format`, `atomicBroadcast`, `channelMode`, `heartbeat` and `pendingInvalidations`. Keep it out of liveness. Micrometer meters are `cocache.*` tagged `cache`; the L2 hit counter `cocache.hits{level=l2}` is off by default (`cocache.metrics.local-hits`).
 

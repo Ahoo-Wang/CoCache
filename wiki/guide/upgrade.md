@@ -93,7 +93,7 @@ Most of these fail to compile, which shows you where to change the code.
 - **Versioned caches refresh ahead.** A global `refresh-window` now applies to a `VersionedCache`; write `refreshWindow = off()` on the declaration when the writer pushes every version.
 - **Authoritative types keep their L2 copies for less time**: `local-max-age` 30 s and `absent-ttl` 10 s by default.
 - **A per-call suspending loader runs inside the load**: it starts on the caller's thread, continues on CoCache's executor, and `load-timeout` cancels it ([coroutines](./coroutines.md#loader)).
-- **Spring transactions watch loads.** A rollback invalidates what the transaction loaded, and a key evicted in the transaction loads privately there. `cocache.invalidate-fills-on-rollback: false` and `cocache.fill-in-transaction: allow` turn both off ([loads inside a transaction](./spring-cache.md#transactional-loads)).
+- **Spring transactions watch loads.** A rollback invalidates what the transaction loaded, and a key evicted in the transaction loads privately there. `invalidate-fills-on-rollback: false` and `fill-in-transaction: allow` under `cocache.defaults.cache` (or per cache under `cocache.caches.[name]`) turn both off ([loads inside a transaction](./spring-cache.md#transactional-loads)).
 - **Spring Cache reads fail on `Unknown`.** A non-sync `@Cacheable` and `retrieve(key)` on an externally sourced cache throw `CacheReadException` to the `CacheErrorHandler` when Redis fails; `cocache.spring-cache.degrade-on-error: true` lets them run the method instead ([when Redis fails](./spring-cache.md#failures)). A cache operation that names a cache other than a `Cache` fails startup.
 - **The endpoint won't delete an only copy by default.** A per-key `DELETE` on a `Store`, `SetStore` or `VersionedStore` returns `403` until `management.endpoint.cocache.allow-store-delete` or `allow-purge` is set. On a `VersionedCache` it is an `evict`.
 - **An interrupted blocking call waits for its Redis command** (at most one `command-timeout`) instead of failing at once, and keeps its interrupt flag.
@@ -116,7 +116,7 @@ Most of these fail to compile, which shows you where to change the code.
 | `cocache.redis.set-cache-eviction-check` | `cocache.redis.store-eviction-check` | Covers every authoritative type. `allkeys-*`, and a policy that can't be read, now always fail startup with an authoritative cache; the setting decides only `volatile-*` with a finite `ttl` |
 | — | `cocache.redis.assume-maxmemory-policy` | New: the policy to assume when `INFO memory` can't be read |
 | `cocache.spring-cache.retrieve-executor` | Removed | `retrieve` uses the async view |
-| — | `cocache.invalidate-fills-on-rollback`, `cocache.fill-in-transaction`, `cocache.spring-cache.degrade-on-error` | New Spring settings |
+| — | `invalidate-fills-on-rollback`, `fill-in-transaction` (under `cocache.defaults.cache`, `cocache.overrides.cache` and `cocache.caches.[name]`), `cocache.spring-cache.degrade-on-error` | New Spring settings |
 | — | `management.endpoint.cocache.allow-store-delete`, `management.endpoint.cocache.allow-purge` | New endpoint switches, off by default |
 
 The [Configuration Reference](./configuration.md) describes every 8.x key, and [effective values and sources](./configuration.md#policy-report) shows, per cache, where each value came from: check it after the upgrade.

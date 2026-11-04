@@ -127,7 +127,7 @@ Data whose lifetime is its meaning (a session, a one-time code, an idempotency k
 ## Operating it {#operations}
 
 - The actuator endpoint's per-key `DELETE` deletes the only copy, so it needs `management.endpoint.cocache.allow-store-delete=true`; without it the request returns `403` and changes nothing ([invalidating a key](../operations/observability.md#invalidate-key)).
-- `ExternalInvalidator.invalidate` on a store's namespace deletes the only copy too. To make other instances drop a stale L2 copy while Redis already holds the right value, use `ExternalInvalidator.broadcast`, which leaves Redis alone ([writers outside your application](./freshness.md#external-writers)).
+- `ExternalInvalidator.invalidate` on a store's namespace deletes the only copy too. To make other instances drop a stale L2 copy while Redis already holds the right value, use `ExternalInvalidator.broadcast`, which leaves Redis alone ([writers outside your application](./freshness.md#external-writers)). From the endpoint, `POST /actuator/cocache/{name}/{key}` does the same for one key and needs no switch ([broadcasting an invalidation](../operations/observability.md#broadcast-key)).
 - All declarations of one namespace must be the same type. A `Cache` or `VersionedCache` that reads a value a `Store` wrote counts it in `cocache.type.mismatch` and logs once.
 
 ## Views {#views}

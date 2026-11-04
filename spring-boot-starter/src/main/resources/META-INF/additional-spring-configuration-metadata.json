@@ -67,11 +67,28 @@
       ]
     },
     {
-      "name": "cocache.fill-in-transaction",
+      "name": "cocache.defaults.cache.fill-in-transaction",
       "values": [
         {
           "value": "registered-keys",
-          "description": "Default: inside a non-read-only transaction, loads of keys already registered for invalidation in it are private (no lease, no L1 or L2 write, not shared)."
+          "description": "Type default: inside a non-read-only transaction, loads of keys already registered for invalidation in it are private (no lease, no L1 or L2 write, not shared)."
+        },
+        {
+          "value": "private",
+          "description": "Every load inside a non-read-only transaction is private: the strictest, at the cost of reads in write transactions that miss L2 always calling the source."
+        },
+        {
+          "value": "allow",
+          "description": "No gating: loads inside write transactions fill L1 and L2 as usual (still invalidated on rollback when invalidate-fills-on-rollback is on)."
+        }
+      ]
+    },
+    {
+      "name": "cocache.overrides.cache.fill-in-transaction",
+      "values": [
+        {
+          "value": "registered-keys",
+          "description": "Type default: inside a non-read-only transaction, loads of keys already registered for invalidation in it are private (no lease, no L1 or L2 write, not shared)."
         },
         {
           "value": "private",

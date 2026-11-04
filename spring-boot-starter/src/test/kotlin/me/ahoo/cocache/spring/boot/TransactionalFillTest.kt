@@ -13,15 +13,20 @@
 
 package me.ahoo.cocache.spring.boot
 
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.FillScope
 import me.ahoo.cocache.core.KeyInspection
+import me.ahoo.cocache.core.PolicyReport
+import me.ahoo.cocache.core.StoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.storeSpec
+import me.ahoo.cocache.spring.tx.FillInTransaction
 import me.ahoo.cocache.spring.tx.TransactionalFillObserver
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
@@ -177,22 +182,162 @@ class TransactionalFillTest {
         }
     }
 
+    @Configuration(proxyBeanMethods = false)
+    class LayeredConfig {
+        @Bean
+        fun ledgerSpec(): CacheSpec<String, String> = cacheSpec("ledger") {
+            codec = StringCodec
+            loader = CacheLoader { "ledger-$it" }
+        }
+
+        @Bean
+        fun docSpec(): StoreSpec<String, String> = storeSpec("doc") { codec = StringCodec }
+    }
+
     @Test
     fun fillObserverIsWired() {
         runner.run { context ->
             assertThat(context).hasNotFailed()
             context.getBean("cocacheFillObserver").assert().isInstanceOf(TransactionalFillObserver::class.java)
+            fillEntries(context, "account").assert().containsExactly(
+                PolicyReport.Entry("invalidate-fills-on-rollback", "true", PolicyReport.Source.TYPE_DEFAULT),
+                PolicyReport.Entry("fill-in-transaction", "registered-keys", PolicyReport.Source.TYPE_DEFAULT),
+            )
         }
-        runner.withPropertyValues("cocache.invalidate-fills-on-rollback=false", "cocache.fill-in-transaction=allow")
-            .run { context ->
-                context.getBean("cocacheFillObserver").assert().isSameAs(FillObserver.NONE)
-            }
-        runner.withPropertyValues("cocache.invalidate-fills-on-rollback=false").run { context ->
-            context.getBean("cocacheFillObserver").assert().isInstanceOf(TransactionalFillObserver::class.java)
-        }
+        // 应用自己的回源钩子：两个字段不登记、不列入报告
         runner.withUserConfiguration(OwnObserverConfig::class.java).run { context ->
             assertThat(context).hasNotFailed()
             assertThat(context).doesNotHaveBean("cocacheFillObserver")
+            assertThat(context).doesNotHaveBean(TransactionalFillModes::class.java)
+            fillEntries(context, "account").assert().isEmpty()
+        }
+    }
+
+    /**
+     * 两个机制按字段分层（RFC 0005 §4.8）：`defaults.cache` 设定，`overrides.cache` 取更严的值，`caches.[name]` 设定；报告列出来源。
+     * 两者对一个缓存都关闭时，它的回源不感知事务：回滚之后事务内的填充留下。没有登记的缓存（未分层）取类型默认值。
+     */
+    @Test
+    fun modesLayerPerCache() {
+        runner.withUserConfiguration(LayeredConfig::class.java)
+            .withPropertyValues(
+                "cocache.defaults.cache.fill-in-transaction=allow",
+                "cocache.defaults.cache.invalidate-fills-on-rollback=false",
+                "cocache.overrides.cache.fill-in-transaction=registered-keys",
+                "cocache.caches.account.fill-in-transaction=allow",
+                "cocache.defaults.store.fill-in-transaction=private",
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                val modes = context.getBean(TransactionalFillModes::class.java)
+                modes.modeOf("account").assert().isEqualTo(TransactionalFillModes.Mode(false, FillInTransaction.ALLOW))
+                modes.modeOf("ledger").assert().isEqualTo(
+                    TransactionalFillModes.Mode(false, FillInTransaction.REGISTERED_KEYS)
+                )
+                modes.modeOf("unlayered").assert().isEqualTo(TransactionalFillModes.Mode.DEFAULT)
+                fillEntries(context, "account").assert().containsExactly(
+                    PolicyReport.Entry("invalidate-fills-on-rollback", "false", PolicyReport.Source.DEFAULTS),
+                    PolicyReport.Entry("fill-in-transaction", "allow", PolicyReport.Source.CACHES),
+                )
+                fillEntries(context, "ledger").assert().containsExactly(
+                    PolicyReport.Entry("invalidate-fills-on-rollback", "false", PolicyReport.Source.DEFAULTS),
+                    PolicyReport.Entry(
+                        "fill-in-transaction",
+                        "registered-keys",
+                        PolicyReport.Source.OVERRIDES,
+                        "stricter than allow"
+                    ),
+                )
+                // 权威副本没有回源：全局层跳过，报告列出
+                val doc = requireNotNull(requireNotNull(runtime(context).admin("doc")).policyReport)
+                fillEntries(context, "doc").assert().isEmpty()
+                doc.skipped.assert().contains(
+                    PolicyReport.Skipped(
+                        "cocache.defaults.store.fill-in-transaction",
+                        "cocache.defaults.store",
+                        "not applicable to a Store"
+                    )
+                )
+                val (rows, service) = beans(context)
+                TransactionTemplate(rows).executeWithoutResult { status ->
+                    rows.write("7", "draft")
+                    service.find("7").assert().isEqualTo("draft")
+                    status.setRollbackOnly()
+                }
+                inspect(context, "7").remote.value.assert().isEqualTo("draft")
+            }
+    }
+
+    /**
+     * `overrides` 只收紧：`private` 胜过类型默认值；比下层宽松的 `invalidate-fills-on-rollback: false` 不生效。
+     * `overrides.store` 中的这两个键不适用于权威副本，跳过并列入报告。
+     */
+    @Test
+    fun overridesNeverLoosen() {
+        runner.withUserConfiguration(LayeredConfig::class.java)
+            .withPropertyValues(
+                "cocache.overrides.cache.fill-in-transaction=private",
+                "cocache.overrides.cache.invalidate-fills-on-rollback=false",
+                "cocache.overrides.store.invalidate-fills-on-rollback=true",
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                fillEntries(context, "ledger").assert().containsExactly(
+                    PolicyReport.Entry("invalidate-fills-on-rollback", "true", PolicyReport.Source.TYPE_DEFAULT),
+                    PolicyReport.Entry(
+                        "fill-in-transaction",
+                        "private",
+                        PolicyReport.Source.OVERRIDES,
+                        "stricter than registered-keys"
+                    ),
+                )
+                requireNotNull(requireNotNull(runtime(context).admin("doc")).policyReport).skipped.assert().contains(
+                    PolicyReport.Skipped(
+                        "cocache.overrides.store.invalidate-fills-on-rollback",
+                        "cocache.overrides.store",
+                        "not applicable to a Store"
+                    )
+                )
+            }
+    }
+
+    /**
+     * `overrides` 只收紧：`invalidate-fills-on-rollback` 中 `true` 严于 `false`；比下层宽松的 `fill-in-transaction` 不生效。
+     */
+    @Test
+    fun overridesTakeTheStricterMode() {
+        runner.withPropertyValues(
+            "cocache.defaults.cache.invalidate-fills-on-rollback=false",
+            "cocache.overrides.cache.invalidate-fills-on-rollback=true",
+            "cocache.overrides.cache.fill-in-transaction=allow",
+        ).run { context ->
+            fillEntries(context, "account").assert().containsExactly(
+                PolicyReport.Entry(
+                    "invalidate-fills-on-rollback",
+                    "true",
+                    PolicyReport.Source.OVERRIDES,
+                    "stricter than false"
+                ),
+                PolicyReport.Entry("fill-in-transaction", "registered-keys", PolicyReport.Source.TYPE_DEFAULT),
+            )
+        }
+    }
+
+    /**
+     * `caches.[name]` 中的这两个键不适用于权威副本：默认启动失败，`caches-validation: warn` 时只告警。
+     */
+    @Test
+    fun perCacheModesOnAStoreFollowCachesValidation() {
+        val store = runner.withUserConfiguration(LayeredConfig::class.java)
+            .withPropertyValues("cocache.caches.doc.invalidate-fills-on-rollback=true")
+        store.run { context ->
+            assertThat(context).hasFailed()
+            assertThat(context).failure.rootCause.hasMessageContaining(
+                "Cache[doc] - cocache.caches.doc.invalidate-fills-on-rollback doesn't apply to a Store."
+            )
+        }
+        store.withPropertyValues("cocache.caches-validation=warn").run { context ->
+            assertThat(context).hasNotFailed()
         }
     }
 
@@ -303,6 +448,11 @@ class TransactionalFillTest {
         context.getBean(Rows::class.java) to context.getBean(AccountService::class.java)
 
     private fun runtime(context: ApplicationContext): CacheRuntime = context.getBean(CacheRuntime::class.java)
+
+    private fun fillEntries(context: ApplicationContext, cacheName: String): List<PolicyReport.Entry> =
+        requireNotNull(requireNotNull(runtime(context).admin(cacheName)).policyReport).entries.filter {
+            it.field == "invalidate-fills-on-rollback" || it.field == "fill-in-transaction"
+        }
 
     private fun inspect(context: ApplicationContext, key: String): KeyInspection =
         requireNotNull(runtime(context).admin("account")).inspect(key)

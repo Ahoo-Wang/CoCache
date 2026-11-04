@@ -217,7 +217,7 @@ class ThreeLayerConfigTest {
             PolicyReport.Skipped(
                 "cocache.overrides.store.ttl",
                 "cocache.overrides.store",
-                "not allowed in cocache.overrides: only staleness bounds and read-failure tighten"
+                "not allowed in cocache.overrides: only staleness bounds, read-failure, fill-in-transaction and invalidate-fills-on-rollback tighten"
             ),
         )
         factory.create(
@@ -803,8 +803,11 @@ class ThreeLayerConfigTest {
                 context.getBean("user")
                 val report = requireNotNull(context.getBean(CoCacheEndpoint::class.java).cache("user"))
                 report.layered.assert().isTrue()
-                report.policy.map { it.field }.assert()
-                    .containsExactlyElementsOf((PolicyField.POLICY_FIELDS - PolicyField.TOMBSTONE_TTL).map { it.key })
+                // 策略字段之后是写事务内回源的两个字段（有 spring-tx 时）
+                report.policy.map { it.field }.assert().containsExactlyElementsOf(
+                    (PolicyField.POLICY_FIELDS - PolicyField.TOMBSTONE_TTL).map { it.key } +
+                        listOf("invalidate-fills-on-rollback", "fill-in-transaction")
+                )
                 val entries = report.policy.associateBy { it.field }
                 entries["ttl"].assert().isEqualTo(PolicyReport.Entry("ttl", "PT10M", Source.DECLARATION))
                 entries["local-max-age"].assert().isEqualTo(
