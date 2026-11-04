@@ -20,14 +20,20 @@ import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.VersionedCache
+import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.annotation.CaffeineCache
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.StoreSpec
+import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.proxy.CacheProxies
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
@@ -60,6 +66,30 @@ class AnnotatedCacheTest {
      */
     @CoCache(name = "plain", ttl = CoCache.FOREVER, source = CoCache.Source.EXTERNAL)
     interface PlainCache : Cache<String, String>
+
+    /**
+     * `unknownRead = ABSENT`（RFC 0005 §4.1）：没有数据源的读取在 L1 故障时放行。
+     */
+    @CoCache(name = "permissive-store", unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveStore : Store<String, String>
+
+    @CoCache(name = "permissive-versioned-store", unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveVersionedStore : VersionedStore<String, String>
+
+    @CoCache(name = "permissive-external", source = CoCache.Source.EXTERNAL, unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveExternalCache : Cache<String, String>
+
+    /**
+     * 有数据源的读取、`SetStore` 与 `VersionedCache` 不允许 `unknownRead = ABSENT`。
+     */
+    @CoCache(name = "permissive-sourced", unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveSourcedCache : Cache<String, String>
+
+    @CoCache(name = "permissive-set", unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveSetStore : SetStore<String, String>
+
+    @CoCache(name = "permissive-versioned", unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveVersionedCache : VersionedCache<String, String>
 
     /**
      * 按泛型 `CacheLoader<String, String>` 匹配数据源（数据源的匹配规则用例）。
@@ -431,6 +461,43 @@ class AnnotatedCacheTest {
         runner.withUserConfiguration(AmbiguousLoaderConfig::class.java).run { context ->
             assertThat(context).hasFailed()
             context.startupFailure.assert().hasStackTraceContaining("Multiple CacheLoader beans")
+        }
+    }
+
+    /**
+     * 注解的 `unknownRead` 写入 spec；只用于没有数据源的读取，其它接口声明 `ABSENT` 时启动失败，而不是静默忽略。
+     */
+    @Test
+    fun unknownReadIsDeclaredOnTheAnnotation() {
+        runner.withUserConfiguration(AppConfig::class.java).run { context ->
+            val factory = context.getBean(AnnotatedCacheFactory::class.java)
+            (
+                factory.specOf(
+                    PermissiveStore::class.java
+                ) as StoreSpec<*, *>
+                ).unknownRead.assert().isEqualTo(UnknownReadMode.ABSENT)
+            (factory.specOf(PermissiveVersionedStore::class.java) as VersionedStoreSpec<*, *>).unknownRead
+                .assert().isEqualTo(UnknownReadMode.ABSENT)
+            (factory.specOf(PermissiveExternalCache::class.java) as CacheSpec<*, *>).unknownRead
+                .assert().isEqualTo(UnknownReadMode.ABSENT)
+            (
+                factory.specOf(
+                    PlainCache::class.java
+                ) as CacheSpec<*, *>
+                ).unknownRead.assert().isEqualTo(UnknownReadMode.THROW)
+            listOf(
+                PermissiveSourcedCache::class.java,
+                PermissiveSetStore::class.java,
+                PermissiveVersionedCache::class.java
+            )
+                .forEach { type ->
+                    runCatching {
+                        factory.specOf(
+                            type
+                        )
+                    }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+                        .hasMessageContaining("unknownRead = ABSENT").hasMessageContaining(type.name)
+                }
         }
     }
 

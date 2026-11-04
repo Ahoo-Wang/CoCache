@@ -23,6 +23,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
 
 /**
@@ -36,6 +37,7 @@ import org.springframework.context.annotation.Bean
     havingValue = "true",
     matchIfMissing = true
 )
+@EnableConfigurationProperties(CoCacheEndpointProperties::class)
 class CoCacheEndpointAutoConfiguration {
 
     /**
@@ -45,8 +47,11 @@ class CoCacheEndpointAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnBean(CacheRuntime::class)
     @ConditionalOnAvailableEndpoint(CoCacheEndpoint::class)
-    fun cocacheEndpoint(runtime: CacheRuntime, properties: ObjectProvider<CoCacheProperties>): CoCacheEndpoint =
-        CoCacheEndpoint(runtime, properties.ifAvailable)
+    fun cocacheEndpoint(
+        runtime: CacheRuntime,
+        properties: ObjectProvider<CoCacheProperties>,
+        switches: CoCacheEndpointProperties,
+    ): CoCacheEndpoint = CoCacheEndpoint(runtime, properties.ifAvailable, switches)
 
     /**
      * 端点经 HTTP 暴露时，未知缓存的 `DELETE` 返回 404（[CoCacheEndpointWebExtension]）。

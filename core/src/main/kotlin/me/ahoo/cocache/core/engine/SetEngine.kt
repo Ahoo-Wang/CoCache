@@ -26,6 +26,7 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.Put
+import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.internal.Futures
@@ -439,6 +440,9 @@ internal class SetEngine<K : Any, E : Any>(
         val storageKey = storageKeyOf(encodedKey)
         runSync { clearStorageKey(storageKey) }
     }
+
+    override val keyDeletion: CacheAdmin.KeyDeletion
+        get() = CacheAdmin.KeyDeletion.CLEAR
 
     /**
      * 异步视图（RFC 0004）：与同步方法语义相同，L1 读失败以 [CacheReadException] 失败。

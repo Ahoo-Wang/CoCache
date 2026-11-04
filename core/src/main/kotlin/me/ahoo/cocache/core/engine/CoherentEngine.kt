@@ -1730,10 +1730,11 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val storageKey = storageKey(key)
         val envelope = encode(value)
         val bounded = ttl?.boundedTtl()
+        val storageKeys = listOf(storageKey)
         write(
-            listOf(storageKey),
+            storageKeys,
             { frame -> store.put(storageKey, envelope, bounded, frame) },
-            onFailure = throwWriteFailure("put")
+            onFailure = putFailure("put", storageKeys)
         )
     }
 
@@ -1745,11 +1746,27 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             return
         }
         val puts = putsOf(entries, ttlOf)
+        val storageKeys = puts.map { it.key }
         write(
-            puts.map { it.key },
+            storageKeys,
             { frame -> store.putAll(puts, frame) },
-            onFailure = throwWriteFailure("putAll")
+            onFailure = putFailure("putAll", storageKeys)
         )
+    }
+
+    /**
+     * `put` / `putAll` 失败的处理（同步与异步共用，RFC 0005 §4.6，V7、U8）：
+     * - 派生副本（`Cache`）结果未知、失效失败模式为 RETRY 时登记补偿失效（[scheduleRetry]，复用失效的重试），不抛出，与重试的
+     *   `invalidate` 相同：L1 中可能已经、也可能稍后出现这次写入的值，补偿的删除让这个 key 收敛到“从数据源重新加载”，重试期间
+     *   本节点的未命中绕过 L1。迟到的写入晚于补偿的删除执行时，陈旧以这次写入的 `ttl` 为界。
+     * - 其余情形照常抛出 [CacheWriteException]：确定未执行的写入（[notExecuted]）不会迟到生效，不需要补偿，`outcomeUnknown = false`；
+     *   失效失败模式为 THROW 时由调用方决定；权威副本的唯一副本上延迟的删除会删掉之后写入的值，从不补偿。
+     */
+    private fun putFailure(operation: String, storageKeys: List<String>): (Exception) -> Unit = { error ->
+        if (authoritative || invalidateFailure == InvalidateFailureMode.THROW || notExecuted(error)) {
+            throwWriteFailure(operation)(error)
+        }
+        scheduleRetry(storageKeys, error, operation)
     }
 
     /**
@@ -2061,14 +2078,15 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (invalidateFailure == InvalidateFailureMode.THROW) {
             throwWriteFailure("invalidate")(error)
         }
-        scheduleRetry(storageKeys, error)
+        scheduleRetry(storageKeys, error, "invalidate")
     }
 
     /**
-     * 失效写入 L1 失败：登记为“重试中”（未命中时跳过 L1），交给重试队列；成功后本地再递增戳并淘汰 L2。
+     * 失效写入 L1 失败，或派生副本的写入结果未知（[putFailure]）：登记为“重试中”（未命中时跳过 L1），交给重试队列重试失效；
+     * 成功后本地再递增戳并淘汰 L2。
      */
-    private fun scheduleRetry(storageKeys: List<String>, error: Exception) {
-        log.warn(error) { "Cache[$name] - invalidate $storageKeys failed, retrying." }
+    private fun scheduleRetry(storageKeys: List<String>, error: Exception, operation: String) {
+        log.warn(error) { "Cache[$name] - $operation $storageKeys failed, retrying the invalidation." }
         // 计数：同一 key 的多次失败失效各自登记，任何一次放弃都不能提前解除其它仍在重试的
         storageKeys.forEach { pendingInvalidations.merge(it, 1, Int::plus) }
         val accepted = context.retrier.submit(

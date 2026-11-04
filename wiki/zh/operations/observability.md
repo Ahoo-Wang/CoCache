@@ -176,7 +176,7 @@ management:
 | `GET /actuator/cocache/{name}` | 一个缓存的报告 | 本实例 |
 | `DELETE /actuator/cocache/{name}` | 清空该缓存的 L2。L1 不受影响，正在进行的加载不会把结果写入 L2 | 本实例 |
 | `GET /actuator/cocache/{name}/{key}` | [查看一个 key](#inspect-key) 在 L2 与 L1 中的状态 | 本实例，外加一次 Redis 读取 |
-| `DELETE /actuator/cocache/{name}/{key}` | [失效一个 key](#invalidate-key) | **所有实例** |
+| `DELETE /actuator/cocache/{name}/{key}` | 按类型[删除一个 key](#invalidate-key)；`?purge=true` 清除带版本的 key | **所有实例** |
 
 `{name}` 是缓存名。缓存不存在时，`GET` 与 `DELETE` 都返回 `404`，不做任何修改。`DELETE /actuator/cocache/{name}` 成功时返回 `204`，按 key 的 `DELETE` 成功时返回 `200` 及结果。空的 `{key}` 以 `400` 拒绝。Spring 会去掉空的路径段与首尾空白，因此含 `//`、首尾 `/` 或首尾空格的 key 无法经端点精确寻址。
 
@@ -251,19 +251,23 @@ curl -s localhost:8080/actuator/cocache/UserCache/42
 ### 失效一个 key {#invalidate-key}
 
 ```bash
-curl -s -X DELETE localhost:8080/actuator/cocache/UserCache/42
-# {"cache":"UserCache","key":"42"}
+curl -fsS -X DELETE localhost:8080/actuator/cocache/UserCache/42
+# {"cache":"UserCache","key":"42","deletion":"INVALIDATE"}
 ```
 
-它在全集群删除这个 key：修改 L1，每个实例丢弃自己的 L2 副本。操作幂等。具体执行什么取决于缓存的[类型](../guide/caches.md#types)：
+它在全集群删除这个 key：修改 L1，每个实例丢弃自己的 L2 副本。操作幂等。具体执行什么取决于缓存的[类型](../guide/caches.md#types)，报告的 `deletion` 写明了它：
 
-| 类型 | 执行 | Redis 失败时 |
-|------|------|--------------|
-| `Cache` | `invalidate(key)`：下一次读取从数据源加载 | 按 `invalidate-failure` 处理：默认进入重试队列并返回 `200`；为 `throw` 时返回错误 |
-| `VersionedCache` | `evict(key)`：key 变为仍然拒绝旧版本的淘汰标记（[按版本写入](../guide/freshness.md#versioned-writes)） | 返回错误，不重试 |
-| `Store` | `delete(key)`：**删除唯一副本** | 返回错误，不重试 |
-| `VersionedStore` | `purge(key)`：**删除唯一副本及其版本** | 返回错误，不重试 |
-| `SetStore` | `clear(key)`：**删除集合的唯一副本** | 返回错误，不重试 |
+| 类型 | 执行（`deletion`） | 需要 | Redis 失败时 |
+|------|-------------------|------|--------------|
+| `Cache` | `invalidate(key)`（`INVALIDATE`）：下一次读取从数据源加载 | — | 按 `invalidate-failure` 处理：默认进入重试队列并返回 `200`；为 `throw` 时返回错误 |
+| `VersionedCache` | `evict(key)`（`EVICT`）：key 变为仍然拒绝旧版本的淘汰标记（[按版本写入](../guide/freshness.md#versioned-writes)） | — | 返回错误，不重试 |
+| `Store` | `delete(key)`（`DELETE`）：**删除唯一副本** | `allow-store-delete` | 返回错误，不重试 |
+| `VersionedStore` | `purge(key)`（`PURGE`）：**删除唯一副本及其版本** | `allow-purge` | 返回错误，不重试 |
+| `SetStore` | `clear(key)`（`CLEAR`）：**删除集合的唯一副本** | `allow-store-delete` | 返回错误，不重试 |
+
+删除唯一副本无法从数据源恢复，所以这几种删除需要开关，默认都关闭：`Store` 与 `SetStore` 需要 `management.endpoint.cocache.allow-store-delete=true`，`VersionedStore` 需要 `management.endpoint.cocache.allow-purge=true`。没有开启时请求返回 `403`，说明要开启的开关，不做任何修改。这些开关在 `management.endpoint.cocache.access` 之上：后者决定端点的写操作是否开放。
+
+`VersionedCache` 或 `VersionedStore` 上的 `DELETE /actuator/cocache/{name}/{key}?purge=true` 执行 `purge(key)`：版本也一并丢掉，之后任何版本（包括迟到的旧版本）都能写入。它需要 `allow-purge`；其它类型返回 `400`。
 
 ## 日志 {#logs}
 
@@ -272,7 +276,8 @@ logger 都在 `me.ahoo.cocache` 下。值得告警或放进看板的日志：
 | 级别 | 消息（开头） | 含义 |
 |------|--------------|------|
 | `ERROR` | `Cache[…] - invalidate […] dropped: L1 keeps the stale value until its remote TTL[…] expires.` | 一次失效被放弃，对应 `cocache.invalidations.dropped` |
-| `WARN` | `Cache[…] - invalidate […] failed, retrying.` | 失效写入 Redis 失败，已进入重试队列 |
+| `WARN` | `Cache[…] - invalidate […] failed, retrying the invalidation.` | 失效写入 Redis 失败，已进入重试队列 |
+| `WARN` | `Cache[…] - put […] failed, retrying the invalidation.`（或 `putAll`） | 结果未知的 `Cache.put` 以排队的失效[补偿](../guide/freshness.md#redis-down) |
 | `WARN` | `Invalidation channel heartbeat failed - reset all subscribers and force reconnect.` | 订阅连接的 PING 失败，所有 L2 已清空 |
 | `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | Redis Cluster 的 `pubsub` 模式：CoCache 无法自行断开该连接，依赖 TCP keepalive |
 | `WARN` | `Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` | `sharded` 模式下 slot 发生迁移。resharding 期间属正常 |

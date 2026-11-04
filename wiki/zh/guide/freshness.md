@@ -246,7 +246,7 @@ cocache:
 
 ## 写入时 Redis 故障 {#redis-down}
 
-失败的写入一律抛出 `CacheWriteException`，在后台重试的 `Cache.invalidate` 除外。它的 `outcomeUnknown` 说明你知道什么：
+失败的写入一律抛出 `CacheWriteException`，在后台重试的 `Cache.invalidate` 与被补偿的 `Cache.put` 除外（见下）。它的 `outcomeUnknown` 说明你知道什么：
 
 - `false`：确定未执行。客户端在发出之前拒绝了命令（比如断线期间），或 Redis 因为 key 中是本版本读不懂的内容而拒绝写入。什么也没改。
 - `true`：结果未知。命令可能已经执行（超时、应答途中断线），也可能稍后才执行。迟到执行仍然无害的只有有序的写入：重放的 `putIfNewer`、条件写入（有上面说的 ABA）。
@@ -258,7 +258,13 @@ cocache:
 - 重试耗尽或队列溢出时，CoCache 记录错误日志并计入 `cocache.invalidations.dropped`。其它实例此后可能从 Redis 重新加载旧值，直到它过期，所以上界是该值的剩余寿命。`ttl-forever` 时没有上界：Redis 恢复后请再失效一次。
 - 设置 `invalidate-failure: throw` 时，调用改为抛出 `CacheWriteException`，由你决定如何处理。
 
-**`Store.delete`** 与 **`deleteIfMatch`**，以及带版本的类型上的 `purge`，失败时抛出，从不重试：对唯一副本延迟执行的删除可能删掉失败之后写入的值。
+派生缓存上的 **`Cache.put`** 与 **`putAll`** 同样按 `invalidate-failure` 处理：
+
+- 默认的 `retry` 下，结果未知的写入**不抛出**。它的值现在或之后可能在 Redis 中，也可能不在，所以 CoCache 用与失败的 `invalidate` 相同的重试队列登记这些 key 的失效。这些 key 收敛到“从数据源重新加载”（数据源中是你写入的值）；重试期间，本实例上的未命中跳过 Redis。迟到的写入晚于补偿的删除执行时，它写入的值保留到自己的 TTL。
+- 确定未执行的写入（`outcomeUnknown = false`，比如断线期间被拒绝）不会迟到执行，不登记补偿，照常抛出。
+- 设置 `invalidate-failure: throw` 时，失败的写入一律抛出，由你决定如何处理。
+
+**`Store.delete`** 与 **`deleteIfMatch`**，以及带版本的类型上的 `purge`，失败时抛出，从不重试：对唯一副本延迟执行的删除可能删掉失败之后写入的值。同样的理由，`Store` 与 `SetStore` 的写入从不补偿。
 
 **`put`** 与 **`putAll`**，以及 `SetStore` 的写入 `add`、`remove`、`clear`，会抛出 `CacheWriteException`。结果未知时，`Cache` 上重试 `put` 是安全的（下一次读取反正会重新加载）；`Store` 上的重试是一次新的后写者胜的写入。
 

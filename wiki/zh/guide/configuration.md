@@ -172,6 +172,7 @@ classpath 中有 `spring-boot-starter-actuator` 时：
 | 功能 | 开关 | 说明 |
 |------|------|------|
 | `cocache` 端点 | `management.endpoints.web.exposure.include=cocache`；访问控制用 `management.endpoint.cocache.access` | 列出缓存与计数，查看与失效单个 key |
+| 按 key 删除唯一副本 | `management.endpoint.cocache.allow-store-delete`（默认 `false`）：`Store`、`SetStore`；`management.endpoint.cocache.allow-purge`（默认 `false`）：`VersionedStore`，以及 `VersionedCache` 上的 `?purge=true` | 没有开启时返回 `403`，不做任何修改（[可观测性](../operations/observability.md#invalidate-key)） |
 | `cocache` 健康检查 | `management.health.cocache.enabled`（默认 `true`） | 只有 Redis 失效通道心跳失败期间为 `DOWN` |
 | Micrometer 指标 `cocache.*` | classpath 中有 Micrometer | 以 `cache` 标签区分 |
 

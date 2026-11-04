@@ -972,9 +972,13 @@ abstract class EngineSpec {
         awaitCondition("retry succeeded") { admin.pendingInvalidationCount == 0 }
     }
 
+    /**
+     * 失效失败模式为 THROW 时，`put` 失败照常抛出 [CacheWriteException]（不论结果是否未知），本地副本已被淘汰。
+     */
     @Test
     fun putFailureThrowsAndEvictsLocal() {
-        val cache = nodeA.cache()
+        val strict = policy().toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build()
+        val cache = nodeA.cache(spec(strict))
         database["k"] = "v0"
         cache["k"]
         backend.failWrites = true
@@ -1447,6 +1451,7 @@ abstract class EngineSpec {
      */
     @Test
     fun writeFailuresReportWhetherTheOutcomeIsKnown() {
+        // 默认的 RETRY：确定未执行的写入不补偿，照常抛出
         val cache = nodeA.cache()
         backend.rejectWrites = true
         listOf<Pair<String, () -> Unit>>(
@@ -1459,11 +1464,40 @@ abstract class EngineSpec {
             error.outcomeUnknown.assert().isFalse()
         }
         backend.rejectWrites = false
+        requireNotNull(nodeA.admin(cacheName)).pendingInvalidationCount.assert().isEqualTo(0)
+        // 失效失败模式为 THROW：结果未知的写入照常抛出（另一个节点上的同名缓存，同一个 namespace）
+        val strict = nodeB.cache(spec(policy().toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build()))
         backend.failWrites = true
-        val unknown = runCatching { cache.put("k", "v") }.exceptionOrNull()
+        val unknown = runCatching { strict.put("k", "v") }.exceptionOrNull()
         backend.failWrites = false
         (unknown as CacheWriteException).outcomeUnknown.assert().isTrue()
         remote("k").assert().isEqualTo(L1Read.Miss(false))
+    }
+
+    /**
+     * 派生副本的 `put` / `putAll` 结果未知、失效失败模式为默认的 RETRY 时（RFC 0005 §4.6，V7、U8）：登记补偿失效，不抛出，
+     * 与重试的 `invalidate` 相同。重试期间本节点的未命中绕过 L1、从数据源加载；恢复之后补偿删除 L1 中的 key，读取从数据源重新加载。
+     */
+    @Test
+    fun outcomeUnknownPutsAreCompensatedUnderRetry() {
+        val cache = nodeA.cache()
+        val admin = requireNotNull(nodeA.admin(cacheName))
+        database["k"] = "v0"
+        cache["k"].assert().isEqualTo("v0")
+        database["k"] = "v1"
+        database["a"] = "a1"
+        backend.failWrites = true
+        cache.put("k", "v1")
+        cache.putAll(mapOf("a" to "a1"))
+        nodeA.metrics().writeFailures.assert().isEqualTo(2)
+        admin.pendingInvalidationCount.assert().isEqualTo(2)
+        // 重试期间读取绕过 L1（其中仍是旧值）
+        cache["k"].assert().isEqualTo("v1")
+        backend.failWrites = false
+        awaitCondition("the compensation retried") { admin.pendingInvalidationCount == 0 }
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
+        remote("a").assert().isEqualTo(L1Read.Miss(false))
+        cache["a"].assert().isEqualTo("a1")
     }
 
     /**
@@ -1551,7 +1585,8 @@ abstract class EngineSpec {
 
     @Test
     fun putAllFailureThrowsAndEvictsLocal() {
-        val cache = nodeA.cache()
+        val strict = policy().toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build()
+        val cache = nodeA.cache(spec(strict))
         database["k"] = "v0"
         cache["k"]
         backend.failWrites = true

@@ -176,7 +176,7 @@ management:
 | `GET /actuator/cocache/{name}` | Report for one cache | this instance |
 | `DELETE /actuator/cocache/{name}` | Clears L2 for this cache. L1 is untouched. Loads in flight don't write their result into L2. | this instance |
 | `GET /actuator/cocache/{name}/{key}` | [Inspects one key](#inspect-key) in L2 and L1 | this instance, plus one Redis read |
-| `DELETE /actuator/cocache/{name}/{key}` | [Invalidates one key](#invalidate-key) | **every instance** |
+| `DELETE /actuator/cocache/{name}/{key}` | [Deletes one key](#invalidate-key), by type; `?purge=true` purges a versioned key | **every instance** |
 
 `{name}` is the cache name. For an unknown name, `GET` and `DELETE` return `404` and change nothing. A successful `DELETE /actuator/cocache/{name}` returns `204`, and a successful per-key `DELETE` returns `200` with a report. An empty `{key}` is rejected with `400`. Spring drops empty path segments and surrounding whitespace, so a key containing `//`, a leading or trailing `/`, or surrounding spaces can't be addressed exactly through the endpoint.
 
@@ -251,19 +251,23 @@ How to read the result:
 ### Invalidating a key {#invalidate-key}
 
 ```bash
-curl -s -X DELETE localhost:8080/actuator/cocache/UserCache/42
-# {"cache":"UserCache","key":"42"}
+curl -fsS -X DELETE localhost:8080/actuator/cocache/UserCache/42
+# {"cache":"UserCache","key":"42","deletion":"INVALIDATE"}
 ```
 
-This deletes the key cluster-wide: L1 is changed, and every instance drops its L2 copy. It is idempotent. What it runs depends on the cache's [type](../guide/caches.md#types):
+This deletes the key cluster-wide: L1 is changed, and every instance drops its L2 copy. It is idempotent. What it runs depends on the cache's [type](../guide/caches.md#types), and the report's `deletion` names it:
 
-| Type | Runs | If Redis fails |
-|------|------|----------------|
-| `Cache` | `invalidate(key)`: the next read loads from the source | Follows `invalidate-failure`: by default queued for retry and `200` returned; with `throw`, an error |
-| `VersionedCache` | `evict(key)`: the key becomes an eviction marker that still refuses older versions ([versioned writes](../guide/freshness.md#versioned-writes)) | An error, never retried |
-| `Store` | `delete(key)`: **deletes the only copy** | An error, never retried |
-| `VersionedStore` | `purge(key)`: **deletes the only copy and its version** | An error, never retried |
-| `SetStore` | `clear(key)`: **deletes the set's only copy** | An error, never retried |
+| Type | Runs (`deletion`) | Needs | If Redis fails |
+|------|-------------------|-------|----------------|
+| `Cache` | `invalidate(key)` (`INVALIDATE`): the next read loads from the source | — | Follows `invalidate-failure`: by default queued for retry and `200` returned; with `throw`, an error |
+| `VersionedCache` | `evict(key)` (`EVICT`): the key becomes an eviction marker that still refuses older versions ([versioned writes](../guide/freshness.md#versioned-writes)) | — | An error, never retried |
+| `Store` | `delete(key)` (`DELETE`): **deletes the only copy** | `allow-store-delete` | An error, never retried |
+| `VersionedStore` | `purge(key)` (`PURGE`): **deletes the only copy and its version** | `allow-purge` | An error, never retried |
+| `SetStore` | `clear(key)` (`CLEAR`): **deletes the set's only copy** | `allow-store-delete` | An error, never retried |
+
+Deleting the only copy can't be undone from a source, so those deletions need a switch, off by default: `management.endpoint.cocache.allow-store-delete=true` for `Store` and `SetStore`, `management.endpoint.cocache.allow-purge=true` for `VersionedStore`. Without it, the request returns `403`, says which switch to set, and changes nothing. These switches are on top of `management.endpoint.cocache.access`, which opens the endpoint's write operations at all.
+
+`DELETE /actuator/cocache/{name}/{key}?purge=true` on a `VersionedCache` or `VersionedStore` runs `purge(key)`: it drops the version too, so any version, even an older one arriving late, can be written afterwards. It needs `allow-purge`. On other types it returns `400`.
 
 ## Logs {#logs}
 
@@ -272,7 +276,8 @@ Loggers live under `me.ahoo.cocache`. Lines worth an alert or a dashboard:
 | Level | Message (prefix) | Meaning |
 |-------|------------------|---------|
 | `ERROR` | `Cache[…] - invalidate […] dropped: L1 keeps the stale value until its remote TTL[…] expires.` | An invalidation was given up. Same as `cocache.invalidations.dropped`. |
-| `WARN` | `Cache[…] - invalidate […] failed, retrying.` | An invalidation failed on Redis and was queued |
+| `WARN` | `Cache[…] - invalidate […] failed, retrying the invalidation.` | An invalidation failed on Redis and was queued |
+| `WARN` | `Cache[…] - put […] failed, retrying the invalidation.` (or `putAll`) | A `Cache.put` with an unknown outcome was [compensated](../guide/freshness.md#redis-down) with a queued invalidation |
 | `WARN` | `Invalidation channel heartbeat failed - reset all subscribers and force reconnect.` | The subscription connection failed its ping. Every L2 is cleared. |
 | `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | Redis Cluster in `pubsub` mode: CoCache can't drop the connection itself, so it relies on TCP keepalive |
 | `WARN` | `Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` | `sharded` mode, slot moved. Normal during resharding. |

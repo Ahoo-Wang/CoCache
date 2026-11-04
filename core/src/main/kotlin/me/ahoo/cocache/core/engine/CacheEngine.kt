@@ -20,6 +20,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SuspendingCache
 import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.internal.LoadingKeys
 import me.ahoo.cocache.core.internal.runSync
 import java.time.Duration
@@ -87,6 +88,9 @@ internal class CacheEngine<K : Any, V : Any>(
         val storageKey = storageKeyOf(encodedKey)
         runSync { invalidateStorageKeys(listOf(storageKey)) }
     }
+
+    override val keyDeletion: CacheAdmin.KeyDeletion
+        get() = CacheAdmin.KeyDeletion.INVALIDATE
 
     /**
      * 事务内记录的填充（[me.ahoo.cocache.core.FillKey.invalidateAll]，每组至少一个 key）：一次失效写入。

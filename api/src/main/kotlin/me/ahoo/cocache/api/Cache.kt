@@ -45,7 +45,10 @@ interface Cache<K : Any, V : Any> : ReadableCache<K, V> {
      *
      * 写入不填充本地 L2：下一次读取从 L1 填充，保证 L2 与 L1 的写入顺序一致。
      *
-     * @throws CacheWriteException L1 写入失败（[CacheWriteException.outcomeUnknown] 区分“确定未执行”与“结果未知”）
+     * 结果未知的失败（超时、应答途中断线），在失效失败模式为 RETRY（默认）时不抛出：引擎登记这个 key 的补偿失效（与失败的
+     * [invalidate] 共用重试），key 收敛到“从数据源重新加载”（RFC 0005 §4.6）。
+     *
+     * @throws CacheWriteException L1 写入确定未执行（[CacheWriteException.outcomeUnknown] 为 `false`），或失效失败模式为 THROW 时的任何失败
      */
     fun put(key: K, value: V)
 
@@ -61,7 +64,7 @@ interface Cache<K : Any, V : Any> : ReadableCache<K, V> {
      * 因此任何在途填充都不会把旧值写回。L1 只保证每个 key 原子，不保证跨 key 原子（Cluster 按 slot 分组执行）。
      * [entries] 为空时不做任何事。
      *
-     * @throws CacheWriteException L1 写入失败（部分 key 可能已生效）
+     * @throws CacheWriteException 同 [put]：确定未执行，或失效失败模式为 THROW 时的任何失败（部分 key 可能已生效）
      */
     fun putAll(entries: Map<K, V>)
 

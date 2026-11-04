@@ -30,6 +30,7 @@ import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
@@ -342,12 +343,12 @@ abstract class FaultSpec {
     }
 
     /**
-     * `put` 已在 L1 生效却向调用方报错（如应答超时）：调用方得到 [CacheWriteException]，重试同一个 `put` 是幂等的，
+     * `put` 已在 L1 生效却向调用方报错（如应答超时），失效失败模式为 THROW：调用方得到 [CacheWriteException]，重试同一个 `put` 是幂等的，
      * 且重试的广播让所有节点收敛（非原子广播的后端上，报错的那次没有发出事件）。
      */
     @Test
     fun putThatFailsAfterApplyingIsSafeToRetry() {
-        val cacheA = nodeA.cache()
+        val cacheA = nodeA.cache(policy().toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build(), cacheName)
         val cacheB = nodeB.cache()
         database["k"] = "v0"
         cacheB["k"].assert().isEqualTo("v0")
@@ -423,9 +424,32 @@ abstract class FaultSpec {
     }
 
     /**
+     * `put` 已在 L1 生效却向调用方报错，失效失败模式为默认的 RETRY（RFC 0005 §4.6，U8）：调用方不收到异常，引擎登记补偿失效，
+     * 重试删除 L1 中的 key 并广播；所有节点之后从数据源重新加载（这里数据源已是写入的值）。
+     */
+    @Test
+    fun putThatFailsAfterApplyingIsCompensatedUnderRetry() {
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        database["k"] = "v0"
+        cacheB["k"].assert().isEqualTo("v0")
+        database["k"] = "v1"
+        backend.afterPut = {
+            if (backend.issuer() == "writer") {
+                throw RemoteUnavailableException("put (applied)")
+            }
+        }
+        fork("writer") { cacheA.put("k", "v1") }.join()
+        backend.afterPut = null
+        awaitCondition("the compensation deleted the key") { nodeA.admin().pendingInvalidationCount == 0 }
+        awaitCondition("B converges") { cacheB["k"] == "v1" }
+        cacheA["k"].assert().isEqualTo("v1")
+    }
+
+    /**
      * 底层客户端取消了在途的命令（RFC 0005 §4.3）：这是结果未知的 L1 故障，不是调用方的取消。引擎按策略降级：
      * - 读取回源，结果以降级限龄写入 L2；合并在它上面的跟随者照常得到这个结果，不自行回源；
-     * - `put` 以 [CacheWriteException] 失败；
+     * - `put` 以 [CacheWriteException] 失败（失效失败模式为 THROW；RETRY 时登记补偿、不抛出）；
      * - 调用方从不看到 `CancellationException`（否则引擎把它当作调用方被取消：不降级，跟随者各自重新运行）。
      *
      * 恢复之后，被取消的读取请求的 lease 已被释放（K14：可能已在 L1 生效的命令也释放令牌），不必等到 `lease.ttl`，引擎照常写回 L1。
@@ -435,7 +459,10 @@ abstract class FaultSpec {
     fun cancelledCommandsAreL1FaultsNotCancellations() {
         val policy = policy()
         val cache = nodeA.cache()
-        val writes = nodeA.cache(policy, "$cacheName-w")
+        val writes = nodeA.cache(
+            policy.toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build(),
+            "$cacheName-w"
+        )
         database["k"] = "v"
         val cancellation = commandCancellation()
         assumeTrue(cancellation != null, "backend cannot cancel its underlying commands")

@@ -33,6 +33,7 @@ import org.springframework.boot.actuate.endpoint.annotation.Selector
 class CoCacheEndpoint @JvmOverloads constructor(
     private val runtime: CacheRuntime,
     private val properties: CoCacheProperties? = null,
+    private val switches: CoCacheEndpointProperties = CoCacheEndpointProperties.DEFAULT,
 ) {
     companion object {
         const val ID = "cocache"
@@ -73,25 +74,68 @@ class CoCacheEndpoint @JvmOverloads constructor(
     }
 
     /**
-     * 按 key 删除，全集群生效，幂等（[me.ahoo.cocache.core.CacheAdmin.invalidateEncoded]）。按类型映射（RFC 0005 §4.2）：
+     * 按 key 删除，全集群生效，幂等（[CacheAdmin.invalidateEncoded]）。按类型映射（RFC 0005 §4.2）：
      * `Cache` 照常失效；`VersionedCache` 保留版本（`evict`）；`Store` 同 `delete`、`VersionedStore` 同 `purge`、`SetStore` 同 `clear`，
      * 三者失败时抛出、不重试。
+     *
+     * 删除唯一副本的操作要显式开关（[CoCacheEndpointProperties]，RFC 0005 §4.9）：`Store` 与 `SetStore` 要 `allow-store-delete`，
+     * `VersionedStore` 要 `allow-purge`；没有开启时抛出 [DeletionNotAllowedException]（HTTP 403），不修改任何东西。
+     *
+     * @param purge `true` 时清除并丢掉版本（[CacheAdmin.purgeEncoded]，要 `allow-purge`）：只用于带版本的类型，
+     *   `VersionedCache` 上不带它时是 `evict`；其它类型带它时为非法请求（400）
      */
     @DeleteOperation
     fun invalidate(
         @Selector name: String,
-        @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>
+        @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>,
+        purge: Boolean? = null,
     ): InvalidationReport? {
         val admin = runtime.admin(name) ?: return null
         val encodedKey = encodedKeyOf(key)
+        if (purge == true) {
+            if (admin.keyDeletion != CacheAdmin.KeyDeletion.EVICT && admin.keyDeletion != CacheAdmin.KeyDeletion.PURGE) {
+                val reason = "Cache[$name] is not versioned: purge applies only to VersionedCache and VersionedStore."
+                throw InvalidEndpointRequestException(reason, reason)
+            }
+            requireAllowed(switches.allowPurge, name, CacheAdmin.KeyDeletion.PURGE, "allow-purge")
+            admin.purgeEncoded(encodedKey)
+            return InvalidationReport(name, encodedKey, CacheAdmin.KeyDeletion.PURGE)
+        }
+        when (admin.keyDeletion) {
+            CacheAdmin.KeyDeletion.DELETE, CacheAdmin.KeyDeletion.CLEAR ->
+                requireAllowed(switches.allowStoreDelete, name, admin.keyDeletion, "allow-store-delete")
+            CacheAdmin.KeyDeletion.PURGE -> requireAllowed(
+                switches.allowPurge,
+                name,
+                admin.keyDeletion,
+                "allow-purge"
+            )
+            CacheAdmin.KeyDeletion.INVALIDATE, CacheAdmin.KeyDeletion.EVICT -> Unit
+        }
         admin.invalidateEncoded(encodedKey)
-        return InvalidationReport(name, encodedKey)
+        return InvalidationReport(name, encodedKey, admin.keyDeletion)
+    }
+
+    private fun requireAllowed(allowed: Boolean, name: String, deletion: CacheAdmin.KeyDeletion, switch: String) {
+        if (!allowed) {
+            throw DeletionNotAllowedException(
+                "Cache[$name] - ${deletion.name.lowercase()} by key deletes the only copy: " +
+                    "set ${CoCacheEndpointProperties.PREFIX}.$switch=true to allow it."
+            )
+        }
     }
 
     /**
-     * 强制失效的结果。
+     * 按 key 删除的结果。
+     *
+     * @param deletion 这次删除做了什么（按缓存的类型，[CacheAdmin.KeyDeletion]）
      */
-    data class InvalidationReport(val cache: String, val key: String)
+    data class InvalidationReport(val cache: String, val key: String, val deletion: CacheAdmin.KeyDeletion)
+
+    /**
+     * 按 key 删除会删除唯一副本，而 [CoCacheEndpointProperties] 没有开启对应的开关：没有修改任何东西。
+     */
+    class DeletionNotAllowedException(message: String) : IllegalStateException(message)
 
     /**
      * 剩余路径段以 `/` 连接为编码后的 key。Spring 会去掉空段与首尾空白，因此含 `//`、首尾 `/` 或空白的 key 无法经端点精确寻址；
