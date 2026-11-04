@@ -10,4 +10,4 @@ PASS only if the answer does all of these:
 1. Sets atomicBroadcast = false because publishing cannot be atomic with the write, so the engine publishes after each write
 2. Calls onReset() on every listener on each confirmed (re)subscription and whenever messages may have been lost, with the first reset done before subscribe returns
 3. Implements fill as a token compare-and-set, resets expiry on every state change, never deletes on read, throws on failure and rejects commands while disconnected
-4. Proves it with BackendProtocolSpec, EngineSpec and SetEngineSpec, without weakening tests, in every supported mode
+4. Proves it with every cocache-test suite (BackendProtocolSpec, EngineSpec, MultiNodeSpec and FaultSpec, plus SetEngineSpec and VersionedSpec), declaring expectedCapabilities exactly as the store's accessors return them, without weakening tests, in every supported mode

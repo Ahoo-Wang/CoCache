@@ -5,7 +5,7 @@ description: 先写数据源再失效、在提交之后失效、处理应用之�
 
 # 保持数据新鲜
 
-缓存的新鲜程度取决于它听到了哪些写入。本页讲如何把变更告诉 CoCache，以及如何选择寿命，为它听不到的一切设定上界。缓存有哪些写入取决于它的[类型](./caches.md#types)：`Cache` 在数据源变更之后失效，`Store` 直接写入，带版本的类型按版本对每次写入排序。
+缓存的新鲜程度取决于它听到了哪些写入。本页讲如何把变更告诉 CoCache，以及如何选择寿命，为它听不到的一切设定上界。缓存有哪些写入取决于它的[类型](./caches.md#types)：[`Cache`](./cache.md) 在数据源变更之后失效，[`Store`](./store.md) 直接写入（“读取—修改—写回”用[条件写入](./store.md#conditional-writes)），带版本的类型按版本对每次写入排序。
 
 ## 规则：先写，再失效 {#rule}
 
@@ -28,7 +28,7 @@ userCache.invalidate(id)     // 所有实例丢弃该 key
 | 其它实例 | 丢弃 L2 副本 | 丢弃 L2 副本 |
 | 本实例 | 丢弃 L2 副本 | 丢弃 L2 副本（不填充） |
 | 下一次读取 | 从数据源加载 | 从 Redis 读到新值 |
-| Redis 故障时 | 默认在后台重试 | 抛出 `CacheWriteException` |
+| Redis 故障时 | 默认在后台重试 | 结果未知时以重试的失效补偿（默认）；确定未执行时抛出 |
 
 **优先用 `invalidate`。** 它不可能缓存一个与数据源不一致的值，下一次读取加载的正是已提交的数据。只有写入方手里已有最终值、重新加载代价又很高时才用 `put`。`put(key, value, ttl)` 指定寿命；普通的 `put` 使用缓存的 `ttlOf` 或策略。
 
@@ -46,44 +46,12 @@ userCache.putAll(users.associateBy { it.id }, Duration.ofMinutes(5))   // 统一
 - **不会写回旧值。** 整批是一次写入：本实例在写 Redis 之前和之后各丢弃一次所有 key 的 L2 副本，覆盖写入同时销毁加载用的 lease。开始于 `putAll` 之前的加载无法把旧值缓存下来，L2 和 Redis 都不会。与 `put` 一样，`putAll` 不填充本实例的 L2。
 - **一次往返，一条消息。** Redis 收到一个脚本，写入全部 key，并为它们发布一条失效消息。在 Redis Cluster 中，key 按 slot 分组并按 `cocache.redis.invalidate-batch-size` 切分，每组一个脚本并发执行。每个 key 原子写入，整批不保证原子。
 - **编码后的 key 冲突：** 两个 key 编码成同一个存储 key 时，后出现的为准。空 map 不做任何事。
-- **失败：** 与 `put` 一样，Redis 故障时 `putAll` 抛出 `CacheWriteException`，部分 key 可能已经写入。可以安全重试。
+- **失败：** 与 `put` 一样，结果未知的 `Cache.putAll` 不抛出，而是登记这些 key 的失效（见[下文](#redis-down)）；确定未执行时抛出 `CacheWriteException`。`Store.putAll` 总是抛出，部分 key 可能已经写入。可以安全重试。
 - **`Store.putAll`** 与 `Store.put` 一样，每个值都带写入标识与摘要。**`SetStore.putAll`** 整体替换每个集合，空集合清除对应的 key，与 `put` 完全一致。
-
-## 条件写入 {#conditional-writes}
-
-Redis 是唯一副本、多个写入方以“读出、修改、写回”的方式更新同一个值时（比如一个包含许多记录的文档），普通的 `put` 会丢失更新：两个写入方读到同一个版本，后一个 `put` 覆盖了前一个。[`Store`](./caches.md#store) 为此提供条件操作：`putIfMatch` 只在 Redis 中仍是写入方读到的那个值时写入，`getIfChanged` 从 Redis 读出这个值及其摘要：
-
-```kotlin
-fun update(key: String, change: (Document?) -> Document) {
-    while (true) {
-        val current = store.getIfChanged(key, null)              // 读 Redis，从不读 L2
-        val (document, digest) = when (current) {
-            is ConditionalGet.Present -> current.value to current.digest
-            else -> null to null                                  // Absent：还没有值
-        }
-        when (store.putIfMatch(key, digest, change(document))) {
-            is ConditionalPut.Written -> return
-            is ConditionalPut.Conflict -> continue               // 别人先写了：重新读取
-        }
-    }
-}
-```
-
-- **摘要**是编解码输出的字节的 SHA-256（`Digest.algorithm` 为 `SHA-256`，`toString()` 输出 `SHA-256:<hex>`）。`Store` 在每次写入时计算它，保存在值的头部。`ConditionalGet.Present` 与 `ConditionalPut.Written` 都会返回它。把相等的值编码成不同字节的编解码（比如无序的 map）会得到不同的摘要。
-- **`putIfMatch(key, expected, value)`** 在一个 Redis 脚本中比较并写入。`expected = null` 时只在 Redis 中没有值时写入：key 不存在、处于加载 lease 占位，或是负缓存。否则只在值的摘要等于 `expected` 时写入。冲突返回 `Conflict(current)`（Redis 中没有值时为 `null`），什么也不改：不写入、不改 TTL、不发失效消息。写入成功就是一次 `put`：同样的 TTL 规则（`ttlOf` 或策略，或 `ttl` 参数），同样使每个实例的 L2 失效，本实例的下一次读取能看到它。
-- **`deleteIfMatch(key, expected)`** 只在值的摘要等于 `expected` 时删除，返回 `Deleted` 或 `Conflict(current)`（Redis 中没有值时为 `null`）。与 `delete` 一样，它在返回之前完成，从不重试。
-- **`getIfChanged(key, known)`** 询问 Redis 这个值的摘要是否仍是 `known`。是则返回 `Unchanged`，不传输值。脚本只读值的头部、比较保存的摘要，所以确认一个值在 Redis 端的成本与它的大小无关，Redis 只回复两个整数。否则返回 `Present(value, digest)` 或 `Absent`。返回值时，CoCache 重算 SHA-256，与保存的摘要不一致时抛出。用它重新确认你在内存中持有的值：保存摘要，定期或收到失效时调用 `getIfChanged`。
-- **三者都绕过 L2。** 它们只读写 Redis，从不填充 L2。这个 store 的 L2 可能比 `getIfChanged` 返回的更旧，旧不过 `localMaxAge`。
-- **失败：** Redis 故障时 `getIfChanged` 抛出 `CacheReadException`，与 `unknownRead` 无关，因为没有可以降级的答案。`putIfMatch` 与 `deleteIfMatch` 抛出 `CacheWriteException`。它们不是幂等的：异常的 `outcomeUnknown` 为 `true`（比如超时）时，先调用 `getIfChanged`；当前摘要等于 `Written` 本该返回的摘要，就说明写入已经生效。`outcomeUnknown = false` 表示写入没有发生。
-- **ABA：** 摘要相等只证明值是你读到的那一份，不证明其间什么都没发生。结果未知的写入可能迟到执行，匹配上之后又以相同内容写入的值；迟到的 `deleteIfMatch` 会删掉它。需要严格顺序的写入方使用 [`VersionedStore`](#versioned-writes)。
-- **没有原子广播时**（`sharded` [频道模式](../operations/index.md#channel-mode)，或启动探测退回时），失效消息在脚本之后发布。写入在 Redis 中生效而发布失败时，调用抛出 `CacheWriteException`。重放同一个写入会返回 `Conflict(current)`，其中的摘要就是你自己的值的摘要（`deleteIfMatch` 则是当前没有值的冲突），CoCache 会再发一次失效消息，让其它实例丢弃旧副本。其它冲突不发布任何东西。
-- **读不懂的内容**不会被一个方法当作空值、被另一个方法当作值。更高版本的 CoCache 写入的值、集合、没有摘要的值（派生缓存写入的）、带版本的值、墓碑或被淘汰的带版本 key，都会让三者抛出异常（`cause` 为 `ForeignFormatException`），key 原样保留。编解码无法解码的值，或载荷与摘要不符的值，让 `getIfChanged` 抛出；`putIfMatch` 与 `deleteIfMatch` 看不到编解码，所以在无法解码的值上只会返回 `Conflict`，从不改动它。本版本读不懂的格式的内容（比如其它程序写入的值）同样让它们抛出：它永远不算“没有值”，`putIfMatch(key, null, value)` 不会覆盖它。
-- **所有写入方都必须用 `putIfMatch`。** 普通的 `put` 不做检查，仍会压过并发的“读—改—写”。
-- `SetStore` 不需要它们，它的 `add` 与 `remove` 本身就是原子的。异步视图与[挂起视图](./coroutines.md)有同样的方法。后端的存储不支持条件写入时，创建 `Store` 失败。
 
 ## 按版本写入 {#versioned-writes}
 
-有些写入方知道它写入的每个值的版本：事件溯源的聚合只有一个写入方、版本严格递增，CDC 流带有提交序号。写入方可以在每次提交后立即把新状态推进 Redis，但重复投递与重放会再次送来旧版本，用普通的 `put` 写入旧版本就会替换掉新版本。[带版本的类型](./caches.md#versioned)在每个值旁边保存版本，并按版本对写入排序。`VersionedCache` 有可以重新加载的带版本数据源，`VersionedStore` 没有：
+有些写入方知道它写入的每个值的版本：事件溯源的聚合只有一个写入方、版本严格递增，CDC 流带有提交序号。写入方可以在每次提交后立即把新状态推进 Redis，但重复投递与重放会再次送来旧版本，用普通的 `put` 写入旧版本就会替换掉新版本。带版本的类型在每个值旁边保存版本，并按版本对写入排序。[`VersionedCache`](./versioned-cache.md) 有可以重新加载的带版本数据源，[`VersionedStore`](./versioned-store.md) 没有。以下规则对两者都适用：
 
 ```kotlin
 val views = runtime.create(versionedCacheSpec<String, OrderView>("order-view") {
@@ -104,7 +72,7 @@ views.invalidateIfNewer(id, deletedAtVersion)     // 删除：挡住旧版本的
 views.getVersioned(id)                            // Versioned(view, version)，或 null
 ```
 
-- **数据源。** `VersionedCache` 需要返回 `Versioned(value, version)` 的 `versionedLoader` / `versionedAsyncLoader`（[挂起](./coroutines.md)构建器有 `suspendingVersionedLoader`）。返回 `Versioned(null, n)` 表示这个 key 在版本 `n` 时已删除：这次加载写入与 `invalidateIfNewer(key, n)` 相同的墓碑，重放的旧状态因此无法让它复活。返回 `null` 表示这个 key 从来没有，写入普通的负缓存（存活 `absent-ttl`），任何按版本的写入都能替换它；落在带版本的内容上时（`evict` 之后）会被[拒绝](./caches.md#versioned-loaders)。后端不支持版本时，创建带版本的类型立即失败。Redis 与内存后端都支持。
+- **数据源。** `VersionedCache` 需要返回 `Versioned(value, version)` 的 `versionedLoader` / `versionedAsyncLoader`（[挂起](./coroutines.md)构建器有 `suspendingVersionedLoader`）。返回 `Versioned(null, n)` 表示这个 key 在版本 `n` 时已删除：这次加载写入与 `invalidateIfNewer(key, n)` 相同的墓碑，重放的旧状态因此无法让它复活。返回 `null` 表示这个 key 从来没有，写入普通的负缓存（存活 `absent-ttl`），任何按版本的写入都能替换它；落在带版本的内容上时（`evict` 之后）会被[拒绝](./versioned-cache.md#versioned-loaders)。后端不支持版本时，创建带版本的类型立即失败。Redis 与内存后端都支持。
 - **`putIfNewer(key, value, version[, ttl])`** 在一个 Redis 脚本中比较并写入，只需一次往返。只有 `version` 大于 Redis 中的版本时才写入，返回 `Written`。相等的版本是重复投递，更旧的版本是迟到；两者都返回 `Stale(current)`，Redis 中什么也不改：不写入、不改 TTL。相等的版本仍然发布失效消息：可能有一次加载写入了这个版本而没有发消息，同时另一个实例持有更旧的副本。更旧的版本不发布任何东西。版本按有符号 64 位整数比较。没有版本的内容排在任何版本之前：负缓存、加载 lease，或者 key 不存在。写入成功会把所有进行中的加载挡在栅栏外，并淘汰每个实例的 L2。
 - **进行中的加载永远赢不了。** 读取方持有加载 lease 时 `putIfNewer` 先落地，它的写回会被拒绝，即使它从数据源读到的版本更高。写入方的下一个版本反正会经 `putIfNewer` 到来。先完成的加载保存 loader 给出的版本，之后的写入与它比较。写回成功且让版本前进时，这次写回就是一次写入：它广播失效，执行加载的实例丢弃自己的副本，而不是把它填进 L2，它的下一次读取从 Redis 读。
 - **`invalidateIfNewer(key, version[, ttl])`**（`VersionedStore` 上是 `deleteIfNewer`）写入墓碑：读取把这个 key 看作不存在（不调用 loader），版本相同或更旧的 `putIfNewer` 返回 `Stale`。更新的版本可以让 key 重新出现。墓碑的寿命是策略的 `tombstoneTtl`（`VersionedCache` 默认取值的 `ttl` 加抖动，`VersionedStore` 默认 1 天），或 `ttl` 参数，不是 `absent-ttl`。墓碑过期之后，迟到的旧版本又能写入，所以墓碑的寿命要覆盖重复投递的时间窗口。
@@ -113,7 +81,7 @@ views.getVersioned(id)                            // Versioned(view, version)，
 - **没有丢掉版本的写入。** 带版本的类型没有 `put`、`putIfMatch` 与普通的 `invalidate`。去掉版本的途径只有 `purge(key)`（删除 key，之后任何版本都能写入；从不重试，失败时抛出）、过期，以及 CoCache 之外的工具。
 - **`evict(key)` 保留版本。** `VersionedCache` 在每个实例上丢弃副本，并把 Redis 中带版本的值或墓碑换成一个保留版本的淘汰标记：下一次读取从数据源加载，迟到的旧版本仍被拒绝。数据源落后于 Redis 中的版本时，这次加载的结果照常返回（在 L2 中保留 `degraded-local-max-age`），但不写入 Redis，计入 `cocache.fill.rejections`，直到数据源追上。没有版本的值照常删除。标记存活 `tombstoneTtl`。失败时抛出，不在后台重试。端点的按 key `DELETE`（`CacheAdmin.invalidateEncoded`）在 `VersionedCache` 上是 `evict`，在 `VersionedStore` 上是 `purge`。
 - **提前刷新照常工作**（`VersionedCache`）。带版本的值像其它值一样取得刷新令牌，声明没有写出 `refreshWindow` 时，`cocache.defaults.cache.refresh-window` 同样作用于它。刷新只写回不低于 Redis 中版本的值。数据源返回的版本比 Redis 中的更旧时（写入方推得比数据源快），Redis 拒绝它，实例保留更新的副本，退避后再试。更一般地，本地副本从不退回更旧的版本：刷新的令牌被别的读取抢走、或写回 Redis 失败，而数据源仍返回更旧的版本时，实例保留已有的副本（计入 `cocache.stale.discards`）。结果未知的写回按写入处理：实例丢掉自己的副本，下一次读取读 Redis。写入方的推送已经足够时，在声明中设置 `refreshWindow = off()`（或 `cocache.caches.[name].refresh-window: off`）。
-- **失败：** Redis 故障时 `putIfNewer` 抛出 `CacheWriteException`。重试同一个版本是安全的：第一次已经生效时，重试返回 `Stale(version)` 并再次发布失效，以防第一次写入生效而单独的发布失败了。读不懂的内容的分类同[条件写入](#conditional-writes)。
+- **失败：** Redis 故障时 `putIfNewer` 抛出 `CacheWriteException`。重试同一个版本是安全的：第一次已经生效时，重试返回 `Stale(version)` 并再次发布失效，以防第一次写入生效而单独的发布失败了。读不懂的内容的分类同[条件写入](./store.md#conditional-writes)。
 - 异步视图与挂起视图有同样的方法。指标 `cocache.versioned.stale` 统计被拒绝的版本。
 
 ## 在事务中 {#transactions}
@@ -189,6 +157,7 @@ new ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7");
 - 它从 Redis 删除 key 并广播失效（默认通道模式下在同一个脚本中完成）。所有实例，包括同一进程中的缓存，都会丢弃 L2 副本。
 - 它不重试。Redis 故障时直接抛出，请自行重试。
 - 编码后的 key 为空串时抛出 `IllegalArgumentException`；传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`。`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
+- **`invalidate` 删除 key。** 在 `Store`、`VersionedStore` 或 `SetStore` 的 namespace 上，Redis 保存的是唯一副本，删除就是永久删掉这份数据。Redis 中已是正确的值、只有其它实例的 L2 副本可能陈旧时，改用 `broadcast(namespace, encodedKeys)`：它只发布失效、不触碰 Redis，每个实例丢弃副本并重新读 Redis，对任何类型都安全。
 
 在 JVM 之外，任何 Redis 客户端都能用两条命令做到同样的事：`DEL {keyPrefix}{namespace}:{encodedKey}`，然后向 `{keyPrefix}inv:{namespace}` `PUBLISH` 一个小的二进制帧（sharded 模式用 `SPUBLISH`）。帧格式见[故障排查](../operations/troubleshooting.md#external-invalidation)。省略 `PUBLISH` 会让其它实例的 L2 陈旧最多 `localMaxAge`。
 
@@ -250,7 +219,7 @@ cocache:
 失败的写入一律抛出 `CacheWriteException`，在后台重试的 `Cache.invalidate` 与被补偿的 `Cache.put` 除外（见下）。它的 `outcomeUnknown` 说明你知道什么：
 
 - `false`：确定未执行。客户端在发出之前拒绝了命令（比如断线期间），或 Redis 因为 key 中是本版本读不懂的内容而拒绝写入。什么也没改。
-- `true`：结果未知。命令可能已经执行（超时、应答途中断线），也可能稍后才执行。迟到执行仍然无害的只有有序的写入：重放的 `putIfNewer`、条件写入（有上面说的 ABA）。
+- `true`：结果未知。命令可能已经执行（超时、应答途中断线），也可能稍后才执行。迟到执行仍然无害的只有有序的写入：重放的 `putIfNewer`、[条件写入](./store.md#conditional-writes)（注意它的 ABA 问题）。
 
 结果未知的写入可能稍后才执行，并照常广播它的失效。实例平常跳过自己发出的消息，所以它在失败与迟到执行之间加载的旧副本会留下来。因此从失败起 `local-max-age` 之内，写入方实例对这些 key 上自己的消息与其它实例的消息一样处理，迟到的广播同样淘汰这份副本。`channel-mode: sharded`（或原子广播探测失败）时，迟到执行的写入不带广播，这份副本以 `local-max-age` 为界。
 
@@ -269,6 +238,6 @@ cocache:
 
 **`Store.delete`** 与 **`deleteIfMatch`**，以及带版本的类型上的 `purge`，失败时抛出，从不重试：对唯一副本延迟执行的删除可能删掉失败之后写入的值。同样的理由，`Store` 与 `SetStore` 的写入从不补偿。
 
-**`put`** 与 **`putAll`**，以及 `SetStore` 的写入 `add`、`remove`、`clear`，会抛出 `CacheWriteException`。结果未知时，`Cache` 上重试 `put` 是安全的（下一次读取反正会重新加载）；`Store` 上的重试是一次新的后写者胜的写入。
+**`Store.put`** 与 **`putAll`**，以及 `SetStore` 的写入 `add`、`remove`、`put`、`clear`，总是抛出 `CacheWriteException`。结果未知时，重试 `Store.put` 是一次新的后写者胜的写入；重试 `add` 或 `remove` 是安全的。
 
 重试队列的上限来自 `CacheRuntime` 上的 `RetryPolicy`。在 Spring Boot 中修改它，需要声明自己的 `CacheRuntime` bean（见[配置参考](./configuration.md#beyond-properties)）。在健康检查详情（`pendingInvalidations`）和[可观测性](../operations/observability.md)中观察这个队列。

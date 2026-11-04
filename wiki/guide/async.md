@@ -84,7 +84,7 @@ Every cache also has a suspending view, `cache.suspending()`, and a spec can tak
 
 - **Redis**: no new commands, scripts, keys or channels. The async view runs the same Lua scripts as the synchronous API, so ACL rules and the wire format don't change.
 - **Metrics**: the same counters as the synchronous API, plus `cocache.load.timeouts`. With tracing on, async loads produce the same `cocache.load` observation, and an engine timeout is tagged `outcome=timeout`. A custom `LoadObserver` sees async loads through the same `observe` method: CoCache calls it on an observation thread of its own, never on your thread, and the observation covers the whole load.
-- **Large values**: the Redis backend copies each payload on the Lettuce I/O thread before the runtime's executor decodes it. A very large value delays the other replies on that connection (head-of-line blocking), for the synchronous API too. Keep values small, or split them.
+- **Large values**: the Redis backend reads and decodes a reply on the runtime's executor, never on Lettuce's I/O thread, but all of an instance's commands share one connection. A very large value delays the other replies on it (head-of-line blocking), for the synchronous API too. Keep values small, or split them.
 - **Performance**: an async L2 hit costs one extra small allocation and runs at roughly 90% of a synchronous hit. A closed loop that waits for every call is somewhat slower than the synchronous API under load, because each result switches to the runtime's executor. The gain shows when one thread keeps many requests in flight: with 32 in flight, a thread completes about 12 times as many Redis reads or writes as one blocking thread.
 
 ## Custom backends {#backends}

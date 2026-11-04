@@ -54,6 +54,8 @@ Validation chain: when a global layer makes `refresh-window` not less than `loca
 | `cocache.refresh-executor` | built-in | Bean name of the `Executor` for refresh-ahead loads; CoCache never shuts it down |
 | `cocache.executor` | one virtual thread per task (`cocache-worker-N`) | Bean name of the one `Executor` of the async and suspending views: every continuation, shared loads, synchronous loaders called through those views, and Spring `retrieve(key, loader)` method bodies. It must tolerate blocking tasks: no queue, not just a few threads. On JDK 21–23 a loader blocking inside `synchronized` pins a virtual thread's carrier (fixed in JDK 24), so prefer JDK 24+ or a platform pool. Resolved by name only; CoCache never shuts it down. The blocking API never uses it |
 | `management.health.cocache.enabled` | `true` | Registers the `cocache` health indicator |
+| `cocache.observation.enabled` | `true` | Wraps source loads in a Micrometer `Observation` (`cocache.load`) when an `ObservationRegistry` exists |
+| `cocache.metrics.local-hits` | `false` | Counts L2 hits (`cocache.hits{level=l2}`), at a measurable cost to L2 hit throughput |
 
 ## Policy properties
 
@@ -73,7 +75,7 @@ Valid under `cocache.defaults.cache.`, `.defaults.store.`, `.overrides.cache.`, 
 | `load-timeout` | `30s` | Upper bound for a load: an `AsyncCacheLoader` load past it fails with `SourceLoadTimeoutException` (lease released); readers waiting for another caller's load fail the same way at that deadline, and later readers start a new load. Give synchronous loaders their own timeout |
 | `read-timeout` | `cocache.redis.command-timeout` | Per-read Redis limit, capped at `command-timeout`; a timeout is a failed read (`read-failure`, or `Unknown` without a source) |
 | `local-maximum-size` | `10000` | L2 entries per instance |
-| `invalidate-failure` | `retry` | `Cache.invalidate` only (externally sourced included). `throw`: surface `CacheWriteException`. Authoritative deletes always throw and never retry |
+| `invalidate-failure` | `retry` | Derived types only. A failed `Cache.invalidate` (externally sourced included), and a `Cache.put` / `putAll` whose outcome is unknown: `retry` queues the invalidation (for the put, a compensating one) and returns; `throw` surfaces `CacheWriteException`. A put that definitely did not run throws either way. Authoritative writes and deletes always throw and never retry |
 | `read-failure` | `degrade` | Reads with a source only (declared or per-call loader). `throw`: answer `Lookup.Unknown`, so `get` throws `CacheReadException` |
 | `unknown-read` | `throw` | `caches.[name]` only. Reads without a source on Redis failure: `throw` (`CacheReadException`) or `absent` (read as not found, cache nothing) |
 | `key-prefix` | `cocache.key-prefix` | `caches.[name]` only. This cache's storage-key prefix |
@@ -81,7 +83,7 @@ Valid under `cocache.defaults.cache.`, `.defaults.store.`, `.overrides.cache.`, 
 
 - Quote and bracket cache names in YAML (`"[UserCache]"`). Names match case-insensitively, so `COCACHE_CACHES_USERCACHE_TTL=10m` works.
 - Only `ttl-jitter`, `lease-wait` and `load-acquire-timeout` may be `0s` (besides `refresh-window: 0s`); none may be negative or above 100 years.
-- Spring Boot silently ignores keys CoCache does not define, such as `cocache.defaults.<field>` without `.cache` / `.store`, `ttl-forever` or `cocache.defaults.key-prefix`; migrate them with the changelog's three-layer table (https://cocache.ahoo.me/guide/changelog#three-layer-config). When a cache's policy looks unchanged, check the endpoint's `policy` (source of each field) and `skippedConfiguration`.
+- Spring Boot silently ignores keys CoCache does not define, such as `cocache.defaults.ttl` (missing `.cache` / `.store`) or `cocache.defaults.key-prefix`. When a cache's policy looks unchanged, check the endpoint's `policy` (source of each field) and `skippedConfiguration`.
 
 ## Locks (libraries)
 
@@ -116,7 +118,7 @@ Expose with `management.endpoints.web.exposure.include: health, cocache`; restri
 | `DELETE /actuator/cocache/{name}` | Clears this cache's L2 | this instance |
 | `DELETE /actuator/cocache/{name}/{key}` | Per type: `Cache.invalidate`, `VersionedCache.evict`, `Store.delete`, `VersionedStore.purge`, `SetStore.clear`. Only the `Cache` case retries a Redis failure; the authoritative cases delete the only copy and return `403` unless `management.endpoint.cocache.allow-store-delete` (`Store`, `SetStore`) or `allow-purge` (`VersionedStore`, and `?purge=true` on a `VersionedCache`) is `true` | every instance |
 
-The `cocache` health indicator is `DOWN` only while the subscription heartbeat fails; details show `backend`, `format`, `atomicBroadcast`, `channelMode`, `heartbeat` and `pendingInvalidations`. Keep it out of liveness. Micrometer meters are `cocache.*` tagged `cache`; the L2 hit counter `cocache.hits{level=l2}` is off by default (`cocache.metrics.local-hits=true` turns it on, at a measurable cost to L2 hit throughput).
+The `cocache` health indicator is `DOWN` only while the subscription heartbeat fails; details show `backend`, `format`, `atomicBroadcast`, `channelMode`, `heartbeat` and `pendingInvalidations`. Keep it out of liveness. Micrometer meters are `cocache.*` tagged `cache`; the L2 hit counter `cocache.hits{level=l2}` is off by default (`cocache.metrics.local-hits`).
 
 ## Beyond properties
 

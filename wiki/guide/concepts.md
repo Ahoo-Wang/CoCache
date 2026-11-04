@@ -11,8 +11,8 @@ This page explains what CoCache does with your reads and writes, at the level yo
 
 | Level | Where | Holds | Lifetime |
 |-------|-------|-------|----------|
-| **L2** | Caffeine, inside each instance | A bounded copy of recently read keys (10 000 by default) | The Redis value's remaining TTL, capped at `localMaxAge` (5 min) |
-| **L1** | Redis, shared by all instances | The cached value, a negative entry, or a short lease while someone loads | `ttl` ± jitter (1 h ± 1 min) for values, `absentTtl` (1 min) for negative entries |
+| **L2** | Caffeine, inside each instance | A bounded copy of recently read keys (10 000 by default) | The Redis value's remaining TTL, capped at `localMaxAge` (5 min; 30 s for the authoritative types) |
+| **L1** | Redis, shared by all instances | The cached value, a negative entry, or a short lease while someone loads | `ttl` ± jitter (1 h ± 1 min) for values, `absentTtl` (1 min) for negative entries; the authoritative types never expire by default |
 | **Source** | Your `CacheLoader` | The truth | — |
 
 L2 is what makes reads fast. L1 is what makes instances agree, and what keeps the database from seeing one load per instance.
@@ -100,7 +100,8 @@ By default the delete and the publish run in one Lua script, so there is no wind
 | Reading Redis | A read with a source loads from it and keeps the result in L2 for `degradedLocalMaxAge`, without writing Redis. Your callers keep working; the database takes the load. A read without a source (a `Store`, a `SetStore`, an externally sourced `Cache` read without a loader) has no answer: the result is `Lookup.Unknown`, `get` throws `CacheReadException`, and nothing is cached. | `read-failure: throw` makes reads with a source `Unknown` too. `unknownRead = ABSENT` on the spec makes reads without a source return `null` instead. |
 | `Cache.invalidate` | Local effects happen first. The Redis delete goes to a bounded background retry queue and the call **doesn't throw** (it usually runs after a commit, where throwing can't help, and deleting a derived copy is always safe). Until it succeeds, misses for that key on this instance skip Redis. | `invalidate-failure: throw` throws `CacheWriteException` instead |
 | `Store.delete` | Throws `CacheWriteException` and is never retried: Redis holds the only copy, and a delayed delete would remove a newer value. | — |
-| `put` and other writes | Throw `CacheWriteException`. Its `outcomeUnknown` says whether the write may have happened (a timeout) or certainly didn't (rejected before it was sent). | — |
+| `Cache.put`, `putAll` | When the outcome is unknown (a timeout), CoCache queues an invalidation of those keys, as for a failed `invalidate`, and the call doesn't throw. When the write certainly didn't happen (rejected before it was sent), it throws `CacheWriteException`. | `invalidate-failure: throw` throws on every failure |
+| Writes to the other types | Throw `CacheWriteException`. Its `outcomeUnknown` says whether the write may have happened (a timeout) or certainly didn't (rejected before it was sent). Nothing is retried in the background. | — |
 | The Pub/Sub connection | The heartbeat detects it within seconds. On reconnect every instance clears its L2, and local copies are capped at `localMaxAge` regardless. The health indicator reports `DOWN` meanwhile. | — |
 | Your loader | The exception reaches the caller and every caller waiting on the same load. Nothing is cached. | — |
 

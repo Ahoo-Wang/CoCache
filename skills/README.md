@@ -10,13 +10,13 @@
 
 下游任务必须满足其一：目标模块源码存在 `me.ahoo.cocache` import，构建中存在 `me.ahoo.cocache:*` 依赖，存在明确失败的 CoCache 行为，或任务明确要求引入、使用、配置、审查或解释 CoCache。仅在否定、比较或排除语境中提到 CoCache 不能触发；cache、Redis、Caffeine、Spring Cache、`@Cacheable`、TTL、失效等通用词也不能；相邻工具（Spring Data Redis 的 `RedisCacheManager`、裸 Caffeine、Redisson、JetCache、Ehcache、Hazelcast）的任务同样不激活。
 
-Skills 只描述 8.x 的行为。`cocache-develop` 遇到其他主版本的应用时，只按目标自身解析到的源码工作，不套用 references 里的符号。没有升级用的 Skill：升级到 8.x 的步骤只在更新日志里（https://cocache.ahoo.me/guide/changelog#upgrading-from-6x）。
+Skills 只描述 8.x 的行为。`cocache-develop` 遇到其他主版本的应用时，只按目标自身解析到的源码工作，不套用 references 里的符号。没有升级用的 Skill：升级到 8.x 的步骤只在升级页（https://cocache.ahoo.me/guide/upgrade）。
 
 ## Skills
 
 | Skill | Primary outcome | Boundary |
 |---|---|---|
-| `cocache-develop` | 引入 CoCache、声明缓存（接口或 `CacheSpec`）、loader 与 codec、提交后失效与外部写入方、Spring Cache、`JoinCache`、按角色选择类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`）、配置与生产就绪、测试；审查 findings；陈旧数据、命中率、回源打满、Redis 故障或启动失败的根因，授权后修复 | 不实现 `CoherenceBackend`（`cocache-extend`） |
+| `cocache-develop` | 引入 CoCache、按角色选择类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`）、声明缓存（接口、spec bean 或 `CoCacheFactory`）、loader 与 codec、提交后失效与外部写入方、Spring Cache、`JoinCache`、三层配置与库的锁定、生产就绪、测试；审查 findings；陈旧数据、命中率、回源打满、Redis 故障或启动失败的根因，授权后修复 | 不实现 `CoherenceBackend`（`cocache-extend`） |
 | `cocache-extend` | 在 CoCache 仓库之外实现或修复 `CoherenceBackend`（`L1Store`，Java 实现 `FutureL1Store`；另加 `InvalidationChannel`），包括新存储、新失效通道与装饰器，以 `BackendProtocolSpec`、`EngineSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`、`VersionedSpec`（每个套件都要求声明 `expectedCapabilities`）在每种模式下通过为完成证据 | 不用于应用里的 `Codec`/`KeyEncoder`/配置 shipped `RedisBackend`（`cocache-develop`），不改 CoCache 自己的后端 |
 
 ## Selection

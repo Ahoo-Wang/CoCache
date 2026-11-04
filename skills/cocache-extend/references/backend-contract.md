@@ -22,6 +22,7 @@ interface CoherenceBackend : AutoCloseable {
     val format: Int                         // wire format version this implementation writes
     val channel: InvalidationChannel        // Java: FutureInvalidationChannel.adapt(…)
     fun store(keyspace: Keyspace): L1Store  // called once per cache, may block; Java: FutureL1Store.adapt(…)
+    override fun close() = Unit             // releases the connections the backend owns
 }
 
 interface L1Store {                         // every operation suspends; no close: connections belong to the backend
@@ -40,7 +41,8 @@ interface L1Store {                         // every operation suspends; no clos
 }
 ```
 
-- `Keyspace(keyPrefix, namespace)`: `store`, `subscribe` and `publish` take it; `storagePrefix` is `{keyPrefix}{namespace}:`. Name one channel per keyspace from both parts, so two keyspaces with the same namespace and different prefixes never share one.
+- `Keyspace(keyPrefix, namespace)`: `store`, `subscribe` and `publish` take it; `storagePrefix` is `{keyPrefix}{namespace}:`, and `encodedKeys(storageKeys)` strips it (dropping keys outside the keyspace). Name one channel per keyspace from both parts, so two keyspaces with the same namespace and different prefixes never share one.
+- A backend with access control probes the keyspace's real channel in `store(keyspace)` by publishing a zero-key frame (listeners ignore it), as an atomic write script would; when publishing is denied, creation fails instead of falling back to non-atomic broadcast.
 
 - `atomicBroadcast = true`: every write method publishes its `frame` atomically with the change. `false`: the engine calls `channel.publish(keyspace, frame)` after each successful write; a crash in between loses that message (bounded by `local-max-age`).
 - `format`: the format version your implementation writes (the shipped backends write `2`). In `L1Read.Hit`, report `0` for content your protocol did not write, and the stored format otherwise. The engine reads only content in exactly your `format`. Any lower format, like `0`, is content it can't read: a cache with a source reclaims it and reloads, one without fails. A higher format is loaded around and never overwritten. Report content with features you don't understand (an unknown flag or state) as a higher format, never as a lower one, or caches with a source reclaim it. Bump only through a two-phase rollout.
@@ -59,7 +61,7 @@ interface L1Store {                         // every operation suspends; no clos
 | `L1ConditionalRead` / `L1ConditionalWrite` / `L1VersionedWrite` / `L1Eviction` | Results of `readIfChanged`, `putIfMatch` and `deleteIfMatch`, `putIfNewer`, `evictKeepingVersion` |
 | `L1RejectedException` | Thrown by a store only for a command that definitely did not execute (see [Failures](#failures-time-limits-and-cancellation)) |
 
-Keys arrive complete, with prefix and namespace. The SPI has no default implementations: every operation is abstract.
+Keys arrive complete, with prefix and namespace. Every `L1Store` operation and capability accessor is abstract, with no default (a decorator that forgot an accessor would silently drop a capability); only `CoherenceBackend.close()` defaults to a no-op.
 
 ## Capabilities
 
@@ -72,7 +74,7 @@ Keys arrive complete, with prefix and namespace. The SPI has no default implemen
 
 | Method | Must |
 |---|---|
-| `read` | Absent with a lease request: place the lease and return `Miss(true)`. Absent without one: `Miss(false)`, write nothing. Leased: `Leased(remaining)`. Value: `Hit` with remaining TTL; grant a refresh token (keeping the TTL) only for a scalar with `0 < ttl <= window` and no live token. Never on a value without expiry. With both requests `null`, write nothing. |
+| `read` | Absent with a lease request: place the lease and return `Miss(true)`. Absent without one: `Miss(false)`, write nothing. Leased: `Leased(remaining)`. Value: `Hit` with remaining TTL; grant a refresh token (keeping the TTL) only for a scalar with `0 < ttl <= window` and no live token. Never on a value without expiry or a value with a digest (a `Store` value); versioned values are refreshed. With both requests `null`, write nothing. |
 | `readAll` | `read` per key, leasing only keys in `leases`; return every key. A failure releases the leases this call may have taken. |
 | `fill` / `fillAll` | Write only if the key holds exactly `fill.token` (as a lease or refresh token); reset expiry to `fill.ttl`; return `Filled(advanced = false)` when written, `Rejected(currentVersion = null)` on a token mismatch, one result per fill. 8.0 version rule, in the same atomic step, when the key holds a version (a versioned value with a refresh token, an eviction marker with a lease): older or `NO_VERSION` fill → clear the token, keep content and expiry, `Rejected(current)`; equal on a value → write, no broadcast, `Filled(false)`; newer, or accepted on an eviction marker → write and broadcast a frame for `fill.key` with origin `fill.token.node`, `Filled(true)`. |
 | `release` | Matching lease: delete the key. Matching refresh token on a value, or lease on an eviction marker: clear the token, keep content and TTL. Otherwise nothing. |
@@ -125,7 +127,9 @@ interface InvalidationListener {
 ```
 
 - `publish` follows the store's failure, time-limit and cancellation rules.
-- Frames are built by the engine with `InvalidationFrame.encode`; deliver them to every listener of the keyspace, decoded with `InvalidationFrame.decode`. Drop malformed frames. Do not filter by origin.
+- Frames are built by the engine with `InvalidationFrame.encode`; deliver them to every listener of the keyspace, decoded with `InvalidationFrame.decode`, and pass **encoded keys** (`keyspace.encodedKeys(…)`: the part after `{keyPrefix}{namespace}:`), not storage keys. Do not filter by origin.
+- A frame you can't read (`InvalidationFrame.decode` throws `IllegalArgumentException`: unknown version, unknown type, truncated, trailing bytes) resets that channel's listeners (`onReset()`); never drop it, because a dropped frame is a lost invalidation.
+- Call the listeners of one keyspace one after another, in subscription order, for frames and resets alike: the cache subscribes first, so a later listener runs after the cache has dropped its local copies. A zero-key frame (the creation probe) is a no-op for listeners.
 - Call `onReset()` on every listener each time a subscription is established or re-established and confirmed, and whenever messages may have been lost (failed heartbeat, rebalance, sequence gap).
 - The first listener's reset must have run before `subscribe` returns; later listeners on an existing subscription get one `onReset()` immediately.
 - Subscribing a new keyspace must not reset other keyspaces; a throwing listener must not block others.

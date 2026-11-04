@@ -1,11 +1,11 @@
 ---
-title: 声明缓存
-description: 在五种缓存类型（Cache、VersionedCache、Store、VersionedStore、SetStore）之间选择，用带注解的接口或 spec bean 声明它们，并控制缓存名、存储 key、key 编码、loader、编解码、定制器与启动校验。
+title: 选择与声明缓存
+description: 用一个问题在五种缓存类型（Cache、VersionedCache、Store、VersionedStore、SetStore）之间选择，用带注解的接口或 spec bean 声明它们，并控制缓存名、存储 key、key 编码、编解码、默认策略、CoCacheFactory、定制器与启动校验。
 ---
 
-# 声明缓存
+# 选择与声明缓存
 
-一个缓存由这些要素组成：名字、key 类型、值类型、说明 Redis 为它保存了什么的类型、为 Redis 编码值的方式，以及一套策略。本页先讲类型，再讲两种声明方式。
+一个缓存由这些要素组成：名字、key 类型、值类型、说明 Redis 为它保存了什么的类型、为 Redis 编码值的方式，以及一套策略。本页先讲类型，再讲所有类型共有的部分：两种声明方式、key、编解码、读取与启动校验。每个类型的操作见它自己的指南。
 
 ## 选择类型 {#types}
 
@@ -14,13 +14,13 @@ description: 在五种缓存类型（Cache、VersionedCache、Store、VersionedS
 - **能**：Redis 保存的是*派生副本*。声明 `Cache`；写入方按版本有序写入时声明 `VersionedCache`。
 - **不能**：Redis 保存的是*唯一副本*。声明 `Store`、`VersionedStore`，元素集合则声明 `SetStore`。
 
-| 类型 | Redis 中是 | 数据来自 | 写入 | 删除 |
-|------|-----------|----------|------|------|
-| `Cache<K, V>` | 派生副本 | `loader` / `asyncLoader`，或调用方（`externallySourced()`） | `put`、`putAll`（后写者胜） | `invalidate`，Redis 失败时在后台重试 |
-| `VersionedCache<K, V>` | 派生的带版本副本 | 带版本的 loader | `putIfNewer`、`invalidateIfNewer` | `evict` 保留版本栅栏；`purge` 丢掉它 |
-| `Store<K, V>` | 唯一副本 | 你的写入 | `put`、`putAll`、`putIfMatch` | `delete`、`deleteIfMatch`：同步完成，从不重试 |
-| `VersionedStore<K, V>` | 唯一的带版本副本 | 你的按版本写入 | `putIfNewer` | `deleteIfNewer`（墓碑）；`purge` |
-| `SetStore<K, E>` | 集合的唯一副本 | 你的元素写入 | `add`、`remove`、`put`、`putAll` | `clear` |
+| 类型 | Redis 中是 | 数据来自 | 写入 | 删除 | 指南 |
+|------|-----------|----------|------|------|------|
+| `Cache<K, V>` | 派生副本 | `loader` / `asyncLoader`，或调用方（`externallySourced()`） | `put`、`putAll`（后写者胜） | `invalidate`，Redis 失败时在后台重试 | [Cache](./cache.md) |
+| `VersionedCache<K, V>` | 派生的带版本副本 | 带版本的 loader | `putIfNewer`、`invalidateIfNewer` | `evict` 保留版本栅栏；`purge` 丢掉它 | [VersionedCache](./versioned-cache.md) |
+| `Store<K, V>` | 唯一副本 | 你的写入 | `put`、`putAll`、`putIfMatch` | `delete`、`deleteIfMatch`：同步完成，从不重试 | [Store](./store.md) |
+| `VersionedStore<K, V>` | 唯一的带版本副本 | 你的按版本写入 | `putIfNewer` | `deleteIfNewer`（墓碑）；`purge` | [VersionedStore](./versioned-store.md) |
+| `SetStore<K, E>` | 集合的唯一副本 | 你的元素写入 | `add`、`remove`、`put`、`putAll` | `clear` | [SetStore](./set-store.md) |
 
 所有类型的读取方式相同（`get`、`getAll`、`lookup`、`lookupAll`），都有方法相同的[异步视图](./async.md)与[挂起视图](./coroutines.md)。每个类型只声明它支持的操作：`Store` 没有 `invalidate`，`VersionedCache` 没有 `put`，调用错了是编译错误，而不是运行时的意外。
 
@@ -80,7 +80,7 @@ class App
 | `absentTtl` | `60`；权威类型为 `10` | 负缓存的寿命（派生类型），或 L2 中“不存在”的寿命（权威类型），不加抖动 |
 | `localMaxAge` | `300`；权威类型为 `30` | L2 副本的最长寿命：失效消息丢失时的陈旧度上界 |
 | `refreshWindow` | 关闭 | 值剩余寿命不足该时长时在后台刷新。`0`：关闭。只作用于有数据源的派生缓存。 |
-| `loader` | `""` | 数据源的 bean 名（只用于 `Cache` 与 `VersionedCache`）。为空时取唯一匹配的 bean（见 [loader](#loaders)）。 |
+| `loader` | `""` | 数据源的 bean 名（只用于 `Cache` 与 `VersionedCache`）。为空时取唯一匹配的 bean（见 [loader](./cache.md#loaders)、[带版本的 loader](./versioned-cache.md#versioned-loaders)）。 |
 | `source` | `LOADER` | 只用于 `Cache`。`CoCache.Source.EXTERNAL` 即 `externallySourced()`：值由调用方提供。不能与 `loader` 同时设置。 |
 | `codec` | `""` | `Codec` 的 bean 名。为空时取唯一的 `Codec<V>` 类型 bean，没有则用 Jackson。 |
 | `unknownRead` | `THROW` | 不带 loader 的读取遇到 Redis 故障（[`Unknown`](#unknown)）时返回什么：`CoCache.UnknownRead.ABSENT` 返回 `null`。只用于 `Store`、`VersionedStore` 与 `source = EXTERNAL` 的 `Cache`。 |
@@ -237,54 +237,7 @@ cacheSpec<TenantKey, User>("TenantUserCache") {
 
 编码结果相同的两个 key 就是同一个缓存条目，编码必须是单射的。
 
-## loader {#loaders}
-
-`Cache` 要声明数据从哪里来。`CacheLoader<K, V>` 负责加载缓存中没有的数据。它只管加载，值活多久由缓存决定。
-
-```kotlin
-class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
-    override fun load(key: String): User? = repo.findById(key)      // null 表示不存在
-
-    // 可选：getAll 对两级都未命中的 key 只调用一次。
-    // 结果中缺少的 key 视为“不存在”。
-    override fun loadAll(keys: Collection<String>): Map<String, User> =
-        repo.findAllById(keys).associateBy { it.id }
-}
-```
-
-- **`null` 表示“不存在”**，写入负缓存，存活 `absentTtl`。查询*失败*时请抛出异常：异常到达调用方（以及共享这次加载的所有调用方），不缓存任何东西。
-- **默认的 `loadAll`** 逐个调用 `load`。如果用到 `getAll`，请用一次批量查询覆盖它。
-- **loader 在调用方线程上执行**，事务、`SecurityContext` 与 MDC 都可用。经[异步视图](./async.md)调用时改在运行时的执行器（`cocache.executor`）上执行。
-- **不要在 loader 内同线程读取同一个 key**，那会以 `IllegalStateException` 快速失败。
-- **接口式声明**先按 `CacheLoader<K, V>`、再按 `AsyncCacheLoader<K, V>` 类型查找 loader。匹配到多个 bean，或两种各一个时启动失败，用 `@CoCache(loader = "…")` 指定一个。一个都没有时同样启动失败：值由调用方提供时声明 `@CoCache(source = CoCache.Source.EXTERNAL)`，什么都无法重建它们时改为继承 `Store`。
-- **按调用提供 loader**：`cache.get(key) { k -> … }` 用给定的 loader 加载未命中的值，保护方式不变。Spring 的 `@Cacheable(sync = true)` 用的就是它。
-- **非阻塞的数据源**：实现 `AsyncCacheLoader<K, V>`（`loadAsync` 返回 `CompletionStage`），在 spec 中设为 `asyncLoader`。一个缓存只有一个数据源，同步或异步；两种 API 都能配合任意一种。见[异步 API](./async.md#loader)。
-
-### 外部来源的缓存 {#externally-sourced}
-
-`externallySourced()`（接口上写 `@CoCache(source = EXTERNAL)`）声明一个值来自调用方的 `Cache`：`put`、Spring Cache 或调用级 loader。它仍是派生副本，因此得到派生副本的默认值：1 小时的 `ttl`，`invalidate` 失败时在后台重试。
-
-- **未命中是“未填充”。** Redis 中没有这个 key 时，不带 loader 的读取返回 `null`（`Lookup.Absent`）。这个答案进入 L2，与任何填充一样受栅栏保护，限龄 `absentTtl` 与 `localMaxAge`；但自带 loader 的调用不接受它：`get(key) { … }` 照常加载。Redis 中什么也不写。
-- **Redis 读失败没有答案。** 不带 loader 的读取得到 [`Lookup.Unknown`](#unknown)：`get` 抛出 `CacheReadException`。“不存在”是安全答案时，在 spec 上声明 `unknownRead = UnknownReadMode.ABSENT`。带调用级 loader 的读取由 `readFailure` 决定，默认从那个 loader 加载。
-- **读不懂的内容**（本版本无法解码的内容）使不带 loader 的读取抛出 `CacheReadException`；带 loader 的读取回收它并重新加载。更高版本的 CoCache 写入的内容读作未填充。
-
-### 带版本的 loader {#versioned-loaders}
-
-`VersionedCache` 连同版本一起加载值。它的数据源返回 `Versioned(value, version)`：
-
-```kotlin
-versionedCacheSpec<String, OrderView>("order-view") {
-    codec = jacksonCodec<OrderView>(mapper)
-    versionedLoader = CacheLoader { id ->
-        val state = repository.find(id) ?: return@CacheLoader null        // 从来没有
-        Versioned(if (state.deleted) null else state.view, state.version) // 已删除：Versioned(null, version)
-    }
-}
-```
-
-**删除要写成 `Versioned(null, version)`。** 它写入一个挡住更旧版本的墓碑。单纯的 `null` 表示“从来没有”，写入不带版本的负缓存。如果 Redis 中这个 key 已经是带版本的内容（比如 [`evict`](./freshness.md#versioned-writes) 之后），这个不带版本的 `null` 会被拒绝：读取返回“不存在”，但 Redis 中什么也不写，于是在版本栅栏到期之前每次未命中都重新加载。每次拒绝计入 `cocache.fill.unversioned.absent`，每个缓存第一次时告警。接口式声明按 `CacheLoader<K, Versioned<V>>` 或 `AsyncCacheLoader<K, Versioned<V>>` 类型查找数据源。没有数据源的 `VersionedCache` 启动失败；没有带版本数据源的数据属于 `VersionedStore`。
-
-### 按条目决定寿命 {#ttl-of}
+## 按条目决定寿命 {#ttl-of}
 
 寿命取决于值时，设置 `ttlOf`（在 spec 或定制器中）：
 
@@ -298,7 +251,7 @@ cacheSpec<String, Session>("SessionCache") {
 
 返回非 `null` 时覆盖策略 `ttl`，且不加抖动；返回 `null` 时沿用策略。负缓存总是使用 `absentTtl`，墓碑使用 `tombstoneTtl`。`ttl` 配置项不影响 `ttlOf`。`StoreSpec`、`VersionedCacheSpec` 与 `VersionedStoreSpec` 同样接受 `ttlOf`。
 
-### 拒绝不可能存在的 key {#key-filter}
+## 拒绝不可能存在的 key {#key-filter}
 
 `KeyFilter`（在 spec 或定制器中）在 L2 未命中之后检查。被它拒绝的 key 直接返回“不存在”，不访问 Redis 也不调用 loader，适合放在布隆过滤器前面：
 
@@ -352,25 +305,7 @@ fun moneyCodec(): Codec<Money> = object : Codec<Money> {
 
 Redis 中的值在编解码输出之前带有一个简短的二进制头。`redis-cli GET` 看到的是二进制内容；其它程序不得直接读写 CoCache 的 key。
 
-## Store {#store}
-
-`Store<K, V>` 用于**唯一副本就在 Redis 中**的数据：控制面发布的策略快照、撤销表、会话、一次性验证码。没有 loader，读取从不申请加载 lease。
-
-```kotlin
-snapshots.put(id, snapshot)                  // 后写者胜
-snapshots[id]                                // Redis 中没有时为 null
-snapshots.delete(id)                         // 同步完成；Redis 失败时抛出
-```
-
-- **不存在就是不存在。** Redis 中没有的 key，包括其中是别的缓存的加载 lease 的 key，读作 `Lookup.Absent`，这个答案像值一样进入 L2。
-- **Redis 故障是 [`Unknown`](#unknown)**：除非 spec 写了 `unknownRead = ABSENT`，`get` 抛出 `CacheReadException`。
-- **删除从不重试。** `delete` 与 `deleteIfMatch` 在返回之前完成，否则抛出 `CacheWriteException`。延迟的重试可能删掉失败之后写入的值。删除必须扛住重试与乱序时，使用 `VersionedStore` 与 `deleteIfNewer`。
-- **每次写入都在值的头部带写入标识与载荷的 SHA-256。** 读取时重算摘要；载荷与摘要不符、或没有摘要（由其它类型写入）的值抛出 `CacheReadException`，并原样保留。
-- **条件写入**（`getIfChanged`、`putIfMatch`、`deleteIfMatch`）让多个写入方对同一个值“读—改—写”而不丢失更新。见[条件写入](./freshness.md#conditional-writes)。
-- **持久性等于 Redis 的持久性。** `maxmemory-policy` 不能驱逐这些 key（不要用 `allkeys-*`）；starter [在启动时检查它](./configuration.md#redis)。异步复制下的故障切换可能丢失最近的写入。
-- **读不懂的内容**（本版本读不懂的格式的内容、其它程序写入的值、更高版本的 CoCache 写入的值）抛出 `CacheReadException`，从不删除，因为删除它就是删除唯一副本。
-
-### 默认策略 {#store-defaults}
+## 各类型的默认策略 {#store-defaults}
 
 每种类型以 `DefaultPolicies` 中自己的默认策略为起点：权威类型为 `STORE`、`VERSIONED_STORE` 与 `SET_STORE`，派生类型为 `CACHE` 与 `VERSIONED_CACHE`。端点把来自这里的值报告为 `TYPE_DEFAULT`。
 
@@ -383,46 +318,6 @@ snapshots.delete(id)                         // 同步完成；Redis 失败时�
 
 L2 的寿命更短，是因为丢失的失效无法靠重新加载纠正：剩下的上界只有 L2 的寿命。需要更长时在声明中写出，或用 `cocache.defaults.store.*` 为所有权威缓存设置。寿命即语义的数据（会话、一次性验证码、幂等键）需要显式的 `ttl`：这些类型的 `ttl` 只能由声明与 `cocache.caches.[name].ttl` 设置，全局层都不能（见[各层能设置什么](./configuration.md#field-layers)）。
 
-## 带版本的类型 {#versioned}
-
-`VersionedCache<K, V>` 与 `VersionedStore<K, V>` 在每个值旁边保存版本，并按版本对写入排序，重复投递或重放的旧版本因此替换不了新版本。两者都没有丢掉版本的写入：
-
-| | `VersionedCache` | `VersionedStore` |
-|-|------------------|------------------|
-| 数据源 | [带版本的 loader](#versioned-loaders) | 没有 |
-| 写入 | `putIfNewer(key, value, version)` | `putIfNewer(key, value, version)` |
-| 有序的删除 | `invalidateIfNewer(key, version)`（墓碑） | `deleteIfNewer(key, version)`（墓碑） |
-| 保留栅栏的删除 | `evict(key)`：下一次读取重新加载，旧版本仍被拒绝 | — |
-| 丢掉栅栏的删除 | `purge(key)` | `purge(key)` |
-| 连同版本读取 | `getVersioned(key)` | `getVersioned(key)` |
-| 头部带写入标识 | 否 | 是 |
-| 提前刷新 | 是 | 否 |
-
-规则见[按版本写入](./freshness.md#versioned-writes)。`VersionedStore` 的读取同 `Store`：不申请加载 lease，不存在就是不存在，Redis 故障是 `Unknown`。它的墓碑存活 `tombstoneTtl`（默认 1 天），必须覆盖重复投递的时间窗口；墓碑永不过期的 `VersionedStore` 构建失败。
-
-## SetStore {#set-store}
-
-`SetStore<K, E>` 用于**唯一副本就在 Redis 中**的集合：索引、成员列表、在线会话集合。元素的增删在 Redis 中原子完成，不同实例的并发更新不会丢失。
-
-```kotlin
-@CoCache
-interface OnlineUsers : SetStore<String, String>
-
-online.add(roomId, listOf(userId))       // 需要时创建集合
-online.remove(roomId, listOf(userId))    // 移空时删除 key
-online.clear(roomId)
-val members: Set<String> = online[roomId] // 不存在时为空集合
-```
-
-- **没有 loader**，也没有 `invalidate`：`clear` 删除集合。在它上面写 `@CoCache(loader = …)` 启动失败。
-- **`put(key, emptySet())` 等同于 `clear(key)`**：空集合不保留 key。`putAll` 对每一项遵循同样的规则（[批量写入](./freshness.md#batch-writes)）。
-- **TTL 默认永不过期。** 设置了 TTL 时，每次 `add` 或 `remove` 都会重设到期时间。不存在的集合在 L2 中至多保留 `absentTtl`（10 秒）。
-- **故障会显式暴露。** 写入抛出 `CacheWriteException`。Redis 读失败是 [`Unknown`](#unknown)：`get` 抛出 `CacheReadException`，`lookup` 返回 `Unknown`。`SetStore` 没有 `unknownRead`。
-- **读不懂的内容会抛出。** 元素无法解码时读取抛出异常，更高格式写入的集合抛出 `IllegalStateException`。本版本读不懂的格式的内容（比如同一个 key 上的 Redis 原生 Set）使读取抛出 `CacheReadException`；在它或更高格式写入的集合上调用 `add` / `remove` 抛出 `CacheWriteException`，key 不变，只有 `put` 会整体覆盖它。`SetStore` 从不回收这样的内容（见[无法读取的载荷](../operations/troubleshooting.md#corrupt-payloads)）。
-- **持久性等于 Redis 的持久性**，同 [Store](#store)。
-
-如果集合的权威数据在数据库中，不要用 `SetStore`。声明为 `Cache<K, Set<E>>`，更新数据库后 `invalidate`。
-
 ## 库与不用 starter 的运行时：`CoCacheFactory` {#factory}
 
 在 starter 自己的声明之外创建缓存，入口是 `CoCacheFactory`。使用 starter 时注入 `CoCacheFactory` bean：它创建的缓存与 `@CoCache` 接口、spec bean 一样叠加定制器与 `cocache.*` 配置，出现在端点上，也会注册指标。
@@ -432,7 +327,7 @@ interface RevokedTokens : Store<String, Instant>
 
 @Bean
 fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): RevokedTokens =
-    factory.create(RevokedTokens::class.java, storeSpec("revoked-tokens") { codec = jacksonCodec<Instant>(mapper) })
+    factory.create(RevokedTokens::class.java, storeSpec<String, Instant>("revoked-tokens") { codec = jacksonCodec<Instant>(mapper) })
 ```
 
 - `create(spec)` 返回与 spec 对应的类型（`storeSpec` 得到 `Store`，以此类推）；`create(type, spec)` 返回实现你的接口的代理。接口必须继承 spec 声明的那个类型，接口中重新声明的抽象方法都要对应这个类型的某个方法。类会被拒绝：用户 API 类型不供手写实现，应当用 `create(spec)` 创建缓存再委托给它。这些校验在创建缓存之前完成。

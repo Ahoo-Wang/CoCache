@@ -10,9 +10,19 @@ const guide: DefaultTheme.SidebarItem[] = [
     ],
   },
   {
+    text: 'Cache Types',
+    items: [
+      { text: 'Choosing and Declaring', link: '/guide/caches' },
+      { text: 'Cache', link: '/guide/cache' },
+      { text: 'VersionedCache', link: '/guide/versioned-cache' },
+      { text: 'Store', link: '/guide/store' },
+      { text: 'VersionedStore', link: '/guide/versioned-store' },
+      { text: 'SetStore', link: '/guide/set-store' },
+    ],
+  },
+  {
     text: 'Using CoCache',
     items: [
-      { text: 'Declaring Caches', link: '/guide/caches' },
       { text: 'Keeping Data Fresh', link: '/guide/freshness' },
       { text: 'JoinCache', link: '/guide/join-cache' },
       { text: 'Spring Cache', link: '/guide/spring-cache' },
@@ -26,6 +36,7 @@ const guide: DefaultTheme.SidebarItem[] = [
   {
     text: 'Releases',
     items: [
+      { text: 'Upgrading from 6.x', link: '/guide/upgrade' },
       { text: 'Changelog', link: '/guide/changelog' },
     ],
   },

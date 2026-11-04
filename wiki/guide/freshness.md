@@ -5,7 +5,7 @@ description: Write the source then invalidate, invalidate after commit, handle w
 
 # Keeping Data Fresh
 
-A cache is only as fresh as the writes it hears about. This page covers how to tell CoCache about changes, and how to choose the lifetimes that bound everything it can't hear about. Which writes a cache has depends on its [type](./caches.md#types): a `Cache` is invalidated after the source changes, a `Store` is written directly, and the versioned types order every write by version.
+A cache is only as fresh as the writes it hears about. This page covers how to tell CoCache about changes, and how to choose the lifetimes that bound everything it can't hear about. Which writes a cache has depends on its [type](./caches.md#types): a [`Cache`](./cache.md) is invalidated after the source changes, a [`Store`](./store.md) is written directly (with [conditional writes](./store.md#conditional-writes) for read-modify-write), and the versioned types order every write by version.
 
 ## The rule: write, then invalidate {#rule}
 
@@ -28,7 +28,7 @@ For several keys, `invalidateAll(keys)` sends them in as few Redis scripts as po
 | Other instances | Drop their L2 copy | Drop their L2 copy |
 | This instance | Drops its L2 copy | Drops its L2 copy (doesn't fill it) |
 | Next read | Loads from the source | Reads the new value from Redis |
-| On Redis failure | Retried in the background (default) | Throws `CacheWriteException` |
+| On Redis failure | Retried in the background (default) | Compensated with a retried invalidation when the outcome is unknown (default); throws when it definitely didn't run |
 
 **Prefer `invalidate`.** It can't cache a value that differs from the source, and the next read loads exactly what was committed. Use `put` only when the writer holds the final value and loading it again would be expensive. `put(key, value, ttl)` sets an explicit lifetime; plain `put` uses the cache's `ttlOf` or policy.
 
@@ -46,44 +46,12 @@ userCache.putAll(users.associateBy { it.id }, Duration.ofMinutes(5))   // one ex
 - **No stale write-back.** The batch is one write: this instance drops its L2 copies of every key before and after Redis is written, and the overwrite destroys any load lease. A load that started before `putAll` can't cache its old value, neither in L2 nor in Redis. Like `put`, `putAll` doesn't fill this instance's L2.
 - **One round trip, one message.** Redis receives one script that writes every key and publishes one invalidation message for all of them. In Redis Cluster, keys are grouped by slot and split at `cocache.redis.invalidate-batch-size`, and each group runs its own script concurrently. Each key is written atomically, but the batch as a whole is not.
 - **Encoded-key collisions:** if two keys encode to the same storage key, the later entry wins. An empty map does nothing.
-- **Failures:** like `put`, `putAll` throws `CacheWriteException` if Redis fails, and some keys may already be written. Retrying is safe.
+- **Failures:** like `put`, a `Cache.putAll` whose outcome is unknown queues an invalidation of its keys instead of throwing ([below](#redis-down)); one that definitely didn't run throws `CacheWriteException`. A `Store.putAll` always throws, and some keys may already be written. Retrying is safe.
 - **`Store.putAll`** writes each value with a writer id and digest, like `Store.put`. **`SetStore.putAll`** replaces each set, and an empty set clears its key, exactly like `put`.
-
-## Conditional writes {#conditional-writes}
-
-When Redis is the only copy and several writers update one value by reading it, changing it, and writing it back (for example a document that holds many records), a plain `put` loses updates: two writers read the same version and the second `put` overwrites the first. A [`Store`](./caches.md#store) has conditional operations for this: `putIfMatch` writes only if Redis still holds the value the writer read, and `getIfChanged` reads that value from Redis together with its digest:
-
-```kotlin
-fun update(key: String, change: (Document?) -> Document) {
-    while (true) {
-        val current = store.getIfChanged(key, null)              // reads Redis, never L2
-        val (document, digest) = when (current) {
-            is ConditionalGet.Present -> current.value to current.digest
-            else -> null to null                                  // Absent: no value yet
-        }
-        when (store.putIfMatch(key, digest, change(document))) {
-            is ConditionalPut.Written -> return
-            is ConditionalPut.Conflict -> continue               // someone else wrote first: read again
-        }
-    }
-}
-```
-
-- **The digest** is the SHA-256 of the value's bytes as the codec encoded them (`Digest.algorithm` is `SHA-256`, `toString()` prints `SHA-256:<hex>`). A `Store` computes it on every write and stores it in the value's header. `ConditionalGet.Present` and `ConditionalPut.Written` both return it. A codec that encodes equal values to different bytes (an unordered map, say) produces different digests.
-- **`putIfMatch(key, expected, value)`** compares and writes in one Redis script. With `expected = null` it writes only if Redis holds no value: the key is absent, a load lease is in place, or the key holds a negative entry. Otherwise it writes only if the value's digest equals `expected`. A conflict returns `Conflict(current)` (`null` when Redis holds no value) and changes nothing: no write, no TTL change, no invalidation message. A successful write is a `put`: same TTL rules (`ttlOf` or policy, or the `ttl` argument), same invalidation of every instance's L2, and this instance's next read sees it.
-- **`deleteIfMatch(key, expected)`** deletes only if the value's digest equals `expected`, and returns `Deleted` or `Conflict(current)` (`null` when Redis holds no value). Like `delete`, it completes before it returns and is never retried.
-- **`getIfChanged(key, known)`** asks Redis whether the value still has digest `known`. If it does, the answer is `Unchanged` and the value isn't transferred. The script reads only the value's header and compares the stored digest, so confirming a value costs the same in Redis whatever its size, and Redis sends back two integers. Otherwise it returns `Present(value, digest)` or `Absent`. When it returns the value, CoCache recomputes the SHA-256 and throws if it doesn't match the stored digest. Use it to revalidate a value you hold in memory: keep the digest, and call `getIfChanged` on a schedule or when an invalidation arrives.
-- **All three bypass L2.** They read and write Redis only and never fill L2. The store's L2 may be older than what `getIfChanged` returns, within `localMaxAge`.
-- **Failures:** `getIfChanged` throws `CacheReadException` when Redis fails, whatever `unknownRead` says, because there is nothing to degrade to. `putIfMatch` and `deleteIfMatch` throw `CacheWriteException`. They aren't idempotent: when the exception's `outcomeUnknown` is `true` (a timeout, say), call `getIfChanged` first. If the current digest is the one `Written` would have returned, the write went through. `outcomeUnknown = false` means the write didn't happen.
-- **ABA:** a digest match proves the value is the one you read, not that nothing happened in between. A write whose outcome is unknown may run late and match a value that was written again with the same content, and a late `deleteIfMatch` can delete it. Writers that need strict ordering use a [`VersionedStore`](#versioned-writes).
-- **Without atomic broadcast** (the `sharded` [channel mode](../operations/index.md#channel-mode), or when the startup probe falls back), the invalidation is published after the script. If the write lands in Redis but that publish fails, the call throws `CacheWriteException`. Replaying the same write then returns `Conflict(current)` whose digest is that of your own value (for `deleteIfMatch`: a conflict with no current value), and CoCache publishes the invalidation again so other instances drop their stale copies. Other conflicts publish nothing.
-- **Unreadable content** is never treated as an empty value by one method and as a value by another. A value written by a newer CoCache, a set, a value without a digest (written by a derived cache), a versioned value, a tombstone or an evicted versioned key makes all three throw with a `ForeignFormatException` cause and leaves the key alone. A value the codec can't decode, or whose payload doesn't match its digest, makes `getIfChanged` throw. `putIfMatch` and `deleteIfMatch` can't see the codec, so on a value it can't decode they only ever return `Conflict` and never change it. Content in a format this version can't read (such as a value another program wrote) makes them throw too: it never counts as no value, so `putIfMatch(key, null, value)` never replaces it.
-- **Every writer must use `putIfMatch`.** A plain `put` doesn't check and still wins over a concurrent read-modify-write.
-- A `SetStore` doesn't need them, since its `add` and `remove` are already atomic. The async view and the [suspending view](./coroutines.md) have the same methods. Creating a `Store` fails on a backend whose store has no conditional writes.
 
 ## Versioned writes {#versioned-writes}
 
-Some writers know the version of every value they write: an event-sourced aggregate has one writer and strictly increasing versions, a CDC stream carries commit sequence numbers. The writer can push each new state into Redis right after the commit, but redelivery and replay send older versions again, and a plain `put` of an older version would replace the newer one. The [versioned types](./caches.md#versioned) store the version next to each value and order writes by it. A `VersionedCache` has a versioned source to reload from; a `VersionedStore` has none:
+Some writers know the version of every value they write: an event-sourced aggregate has one writer and strictly increasing versions, a CDC stream carries commit sequence numbers. The writer can push each new state into Redis right after the commit, but redelivery and replay send older versions again, and a plain `put` of an older version would replace the newer one. The versioned types store the version next to each value and order writes by it. A [`VersionedCache`](./versioned-cache.md) has a versioned source to reload from; a [`VersionedStore`](./versioned-store.md) has none. These rules apply to both:
 
 ```kotlin
 val views = runtime.create(versionedCacheSpec<String, OrderView>("order-view") {
@@ -104,7 +72,7 @@ views.invalidateIfNewer(id, deletedAtVersion)     // deletion: a tombstone that 
 views.getVersioned(id)                            // Versioned(view, version), or null
 ```
 
-- **Sources.** A `VersionedCache` needs a `versionedLoader` / `versionedAsyncLoader` that returns `Versioned(value, version)` (the [suspending](./coroutines.md) builder has `suspendingVersionedLoader`). A loader that returns `Versioned(null, n)` reports a key deleted at version `n`: the load writes the same tombstone as `invalidateIfNewer(key, n)`, so a replayed older state can't bring it back. Returning `null` means the key never existed and caches a plain negative entry for `absent-ttl`, which any versioned write replaces; over versioned content (after `evict`) it is [refused](./caches.md#versioned-loaders). Creating a versioned type fails at once on a backend that doesn't support versions. The Redis and in-memory backends do.
+- **Sources.** A `VersionedCache` needs a `versionedLoader` / `versionedAsyncLoader` that returns `Versioned(value, version)` (the [suspending](./coroutines.md) builder has `suspendingVersionedLoader`). A loader that returns `Versioned(null, n)` reports a key deleted at version `n`: the load writes the same tombstone as `invalidateIfNewer(key, n)`, so a replayed older state can't bring it back. Returning `null` means the key never existed and caches a plain negative entry for `absent-ttl`, which any versioned write replaces; over versioned content (after `evict`) it is [refused](./versioned-cache.md#versioned-loaders). Creating a versioned type fails at once on a backend that doesn't support versions. The Redis and in-memory backends do.
 - **`putIfNewer(key, value, version[, ttl])`** compares and writes in one Redis script, so it's one round trip. It writes only when `version` is greater than the version in Redis, and returns `Written`. An equal version is a duplicate delivery and an older one is late; both return `Stale(current)` and change nothing in Redis: no write, no TTL change. An equal version still publishes the invalidation: a load may have written that version without one, while another instance holds an older copy. An older version publishes nothing. Versions compare as signed 64-bit numbers. Content without a version counts as older than any version: a negative entry, a load lease, or no key at all. A successful write fences out every load in flight and evicts every instance's L2.
 - **A load in flight never wins.** If a reader holds the load lease while `putIfNewer` lands, its write-back is refused, even when it read a higher version from the source. The writer's next version arrives through `putIfNewer` anyway. A load that completes first stores the loader's version, and later writes compare against it. A write-back that does go through and raises the version is a write: it broadcasts an invalidation, and the loading instance drops its own copy instead of filling L2 with it, so its next read comes from Redis.
 - **`invalidateIfNewer(key, version[, ttl])`** (`deleteIfNewer` on a `VersionedStore`) writes a tombstone: readers see the key as absent (without calling the loader), and `putIfNewer` with that version or an older one returns `Stale`. A newer version can bring the key back. The tombstone lives for the policy's `tombstoneTtl` (a `VersionedCache` defaults to the value `ttl` with jitter; a `VersionedStore` to 1 day), or the `ttl` argument, not `absent-ttl`. Once it expires, a late older version can be written again, so give tombstones a lifetime that covers your redelivery window.
@@ -113,7 +81,7 @@ views.getVersioned(id)                            // Versioned(view, version), o
 - **No write drops the version.** The versioned types have no `put`, `putIfMatch` or plain `invalidate`. The only ways to remove a version are `purge(key)` (deletes the key; any version can be written afterwards; never retried, throws on failure), expiry, and tools outside CoCache.
 - **`evict(key)` keeps the version.** A `VersionedCache` drops the copy on every instance and replaces a versioned value or tombstone in Redis with an eviction marker that keeps the version: the next read loads from the source, and a late older version is still refused. If the source is behind the version Redis held, that load's result is returned (and kept in L2 for `degraded-local-max-age`) but not written to Redis, counted in `cocache.fill.rejections`, until the source catches up. A value without a version is deleted. The marker lives for `tombstoneTtl`. A failure throws instead of being retried in the background. The endpoint's per-key `DELETE` (`CacheAdmin.invalidateEncoded`) is an `evict` on a `VersionedCache` and a `purge` on a `VersionedStore`.
 - **Refresh-ahead works** on a `VersionedCache`. A versioned value gets a refresh token like any other, and `cocache.defaults.cache.refresh-window` applies when the declaration doesn't write `refreshWindow`. The refresh writes back only a version at least as new as the one in Redis. When the source returns an older version than Redis holds (the writer pushed ahead of the source), Redis refuses it and the instance keeps its newer copy, trying again after a back-off. The local copy never moves back to an older version in general: when a refresh loses its token to another reader, or its write-back to Redis fails, and the source still returns an older version, the instance keeps the copy it has (counted in `cocache.stale.discards`). A write-back that fails with an unknown outcome counts as a write: the instance drops its copy and reads Redis next time. Set `refreshWindow = off()` on the declaration (or `cocache.caches.[name].refresh-window: off`) when the writer's pushes are enough.
-- **Failures:** `putIfNewer` throws `CacheWriteException` when Redis fails. Retrying the same version is safe: if the first attempt went through, the retry returns `Stale(version)` and publishes the invalidation again, in case the first attempt was written but its separate publish failed. Unreadable content is classified as for [conditional writes](#conditional-writes).
+- **Failures:** `putIfNewer` throws `CacheWriteException` when Redis fails. Retrying the same version is safe: if the first attempt went through, the retry returns `Stale(version)` and publishes the invalidation again, in case the first attempt was written but its separate publish failed. Unreadable content is classified as for [conditional writes](./store.md#conditional-writes).
 - The async view and the suspending view have the same methods. A meter, `cocache.versioned.stale`, counts refused versions.
 
 ## Inside a transaction {#transactions}
@@ -189,6 +157,7 @@ new ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7");
 - It deletes the keys from Redis and broadcasts the invalidation (in one script with the default channel mode). Every instance, including caches in the same process, drops its L2 copy.
 - It doesn't retry. If Redis fails, it throws; retry the call yourself.
 - An empty encoded key throws `IllegalArgumentException`; an empty collection does nothing. After `close()`, every call throws `IllegalStateException`. `close()` releases the invalidator's own store handles and doesn't close the backend.
+- **`invalidate` deletes the key.** On the namespace of a `Store`, `VersionedStore` or `SetStore`, Redis holds the only copy, so that deletes the data for good. When Redis already holds the right value and only other instances' L2 copies may be stale, call `broadcast(namespace, encodedKeys)` instead: it publishes the invalidation without touching Redis, every instance drops its copy and reads Redis again, and it is safe on every type.
 
 Outside the JVM, any Redis client can do the same in two commands: `DEL {keyPrefix}{namespace}:{encodedKey}`, then `PUBLISH {keyPrefix}inv:{namespace}` with a small binary frame (`SPUBLISH` in sharded mode). [Troubleshooting](/operations/troubleshooting#external-invalidation) documents the frame format. Skipping the `PUBLISH` leaves other instances' L2 stale for up to `localMaxAge`.
 
@@ -250,7 +219,7 @@ To turn off a window that a declaration enables, use any of: `refresh-window: of
 Every failed write throws `CacheWriteException`, except a `Cache.invalidate` that is retried and a `Cache.put` that is compensated (both below). Its `outcomeUnknown` says what you know:
 
 - `false`: definitely not executed. The client rejected the command before sending it (for example while disconnected), or Redis refused the write because the key holds content this version can't read. Nothing changed.
-- `true`: outcome unknown. The command may have run (a timeout, a connection dropped mid-reply), and it may still run later. Only ordered writes stay harmless when they land late: a replayed `putIfNewer`, a conditional write (with the ABA caveat above).
+- `true`: outcome unknown. The command may have run (a timeout, a connection dropped mid-reply), and it may still run later. Only ordered writes stay harmless when they land late: a replayed `putIfNewer`, a [conditional write](./store.md#conditional-writes) (with its ABA caveat).
 
 A write whose outcome is unknown can land later and then broadcasts its invalidation as usual. An instance normally skips its own messages, so a stale copy it loaded between the failure and the late write would survive. For `local-max-age` after the failure, the writing instance therefore handles its own messages for those keys like any other instance's, and the late broadcast drops that copy too. With `channel-mode: sharded` (or when the atomic-broadcast probe failed), a late write carries no broadcast, and `local-max-age` bounds the copy.
 
@@ -269,6 +238,6 @@ A write whose outcome is unknown can land later and then broadcasts its invalida
 
 **`Store.delete`** and **`deleteIfMatch`**, and `purge` on the versioned types, throw and are never retried: a delayed delete of the only copy could remove a value written after the failure. For the same reason, writes to a `Store` or `SetStore` are never compensated.
 
-**`put`** and **`putAll`**, and the `SetStore` writes `add`, `remove`, and `clear`, throw `CacheWriteException`. When the outcome is unknown, retrying a `put` is safe for a `Cache` (the next read reloads anyway); on a `Store` the retry is a new last-writer-wins write.
+**`Store.put`** and **`putAll`**, and the `SetStore` writes `add`, `remove`, `put` and `clear`, always throw `CacheWriteException`. When the outcome is unknown, retrying a `Store.put` is a new last-writer-wins write; retrying `add` or `remove` is safe.
 
 The retry queue's limits come from `RetryPolicy` on the `CacheRuntime`. To change them in Spring Boot, declare your own `CacheRuntime` bean ([Configuration Reference](./configuration.md#beyond-properties)). Watch the queue in the health details (`pendingInvalidations`) and in [Observability](/operations/observability).
