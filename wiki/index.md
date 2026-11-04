@@ -31,7 +31,7 @@ features:
     details: Concurrent misses share one load per instance and, through the lease, across the cluster. Missing keys are cached as negative entries, and TTL jitter spreads expiries.
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
     title: Declare, don't wire
-    details: A cache is an annotated interface or a CacheSpec bean. Spring Boot creates it, and cocache.* properties tune any cache without recompiling.
+    details: A cache is an annotated interface or a spec bean of one of five types, picked by one question, whether this process can rebuild a key Redis loses. Spring Boot creates it, and cocache.* properties tune it in layers without recompiling.
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
     title: Testable without Redis
     details: Switch to the in-memory backend with one property and drive time with ManualClock. Spring Cache, transactions, and actuator work out of the box.

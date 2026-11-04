@@ -48,7 +48,7 @@ Without the starter, build the backend yourself with `RedisBackend.standalone(ur
 
 For a `Cache` or a `VersionedCache`, Redis is a cache: losing data means misses. Asynchronous replication can lose a recent invalidation in a failover, and the old value can come back into L1. It lasts at most until that value's `ttl` expires. If that matters for a cache, keep `ttl` short, or invalidate the affected caches after a failover.
 
-A [`Store`, `VersionedStore` or `SetStore`](../guide/caches.md#store) is different: Redis holds its only copy, so its durability is Redis's durability. Enable persistence (AOF or RDB) on any Redis that holds their data.
+A [`Store`, `VersionedStore` or `SetStore`](../guide/store.md) is different: Redis holds its only copy, so its durability is Redis's durability. Enable persistence (AOF or RDB) on any Redis that holds their data.
 
 ## `maxmemory-policy` {#maxmemory-policy}
 
@@ -97,7 +97,7 @@ In `sharded` mode, or after the probe fell back, the publish is a separate comma
 - A crash between the write and the publish loses that message.
 - A publish that fails after the write succeeded reaches the caller as a failed write. `put` throws `CacheWriteException` although Redis already holds the new value. `Cache.invalidate` follows `invalidate-failure`, and a retried invalidation publishes again; the authoritative types' deletes throw. Retrying the `put` is safe and publishes again.
 
-In both cases L1 is already correct, and instances that missed the message keep their L2 copy for up to `local-max-age`. The order of a write is in [architecture.md §6.1](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md).
+In both cases L1 is already correct, and instances that missed the message keep their L2 copy for up to `local-max-age`. The order of a write is in [Consistency](../architecture/consistency.md#writer-order).
 :::
 
 ## Sizing {#sizing}
@@ -129,7 +129,7 @@ Add Redis's own per-key overhead. Measure a typical key with `redis-cli MEMORY U
 
 ## Rolling deploys {#rolling-deploys}
 
-The wire format (key layout, value header and its segments, set fields, message frame, channel names) is frozen within a major version, so instances of one major version can run side by side. A major upgrade is not rolling: stop every instance of the old major version before you start the new one ([upgrade steps](../guide/changelog.md#upgrading-from-6x)). Values in a format this version can't read are reloaded by reads with a source and fail reads without one. A later must-understand change ships in two phases: first a release that reads it but doesn't write it, then, once every instance runs it, a release that writes it. While instances disagree, a value an instance can't read in full is loaded from the source without overwriting it (`cocache.unknown.formats`).
+The wire format (key layout, value header and its segments, set fields, message frame, channel names) is frozen within a major version, so instances of one major version can run side by side. A major upgrade is not rolling: stop every instance of the old major version before you start the new one ([upgrading from 6.x](../guide/upgrade.md)). Values in a format this version can't read are reloaded by reads with a source and fail reads without one. A later must-understand change ships in two phases: first a release that reads it but doesn't write it, then, once every instance runs it, a release that writes it. While instances disagree, a value an instance can't read in full is loaded from the source without overwriting it (`cocache.unknown.formats`).
 
 Each new instance starts with an empty L2 and fills it from L1, so a deploy shows a burst of `cocache.misses` and `cocache.hits{level=l1}`, not of loads.
 
@@ -187,4 +187,4 @@ Denying `PING` is a common mistake. The heartbeat then fails every period, each 
 
 ### The actuator endpoint {#endpoint-security}
 
-`GET /actuator/cocache/{name}/{key}` shows cached values, and `DELETE` invalidates them cluster-wide. Expose the endpoint only on the management port or behind authentication, like other actuator endpoints that read your data. To allow inspection but no deletes, set `management.endpoint.cocache.access: read-only`. See [the endpoint](./observability.md#actuator-endpoint).
+`GET /actuator/cocache/{name}/{key}` shows cached values, and `DELETE` invalidates them cluster-wide. Expose the endpoint only on the management port or behind authentication, like other actuator endpoints that read your data. To allow inspection but no deletes, set `management.endpoint.cocache.access: read-only`. Deletes that remove an only copy need a second switch, off by default: `management.endpoint.cocache.allow-store-delete` for a `Store` or `SetStore` key, and `management.endpoint.cocache.allow-purge` for a purge, which drops a versioned key's version. See [the endpoint](./observability.md#invalidate-key).

@@ -1,6 +1,6 @@
 # Testing Code That Uses CoCache
 
-Use this reference to write or fix tests of application code that uses CoCache. Tests need neither Redis nor sleeps. Confirm class names and packages in the resolved version; use the assertion and mocking style the target module already uses.
+Use this reference to write or fix tests of application code that uses CoCache. Tests need neither Redis nor sleeps. Confirm class names and packages in the resolved version; use the assertion and mocking style the target module already uses. Docs: https://cocache.ahoo.me/guide/testing.
 
 ## Choose the harness
 
@@ -66,9 +66,9 @@ Close every runtime after the test. `runtime.metrics(name)` exposes counters (lo
 
 `HookedBackend(delegate)` (test dependency `me.ahoo.cocache:cocache-test`) switches: `failAll`, `failWrites` (writes fail with an unknown outcome), `rejectWrites` (writes throw `L1RejectedException` before reaching the store: `CacheWriteException.outcomeUnknown` is `false`), `failFill`, `failRelease`. Expected behavior:
 
-- A `Cache` with a loader: reads degrade to the source, `put` throws `CacheWriteException`, `invalidate` does not throw and queues a retry (`runtime.admin(name)?.pendingInvalidationCount`). The retry runs on real time, so poll with a timeout instead of sleeping a fixed amount.
-- Reads without a source (`Store`, `VersionedStore`, `SetStore`, an externally sourced `Cache` read without a loader): `lookup` returns `Lookup.Unknown`, `get` throws `CacheReadException`, nothing is cached; with `unknownRead = ABSENT` they return `null`. Assert `cocache.reads.unknown` through `runtime.metrics(name).readsUnknown`.
-- Authoritative writes and deletes (`Store.delete`, `deleteIfMatch`, `purge`, `SetStore.clear`) and `VersionedCache.evict` throw `CacheWriteException` and queue nothing.
+- A `Cache` with a loader: reads degrade to the source; `invalidate` does not throw and queues a retry (`runtime.admin(name)?.pendingInvalidationCount`). Under `failAll` or `failWrites`, `put` / `putAll` do not throw either: the outcome is unknown, so they queue a compensating invalidation. Only `rejectWrites` (or `invalidate-failure: throw`) makes a `Cache.put` throw `CacheWriteException`, with `outcomeUnknown = false`. The retry runs on real time, so poll with a timeout instead of sleeping a fixed amount.
+- Reads without a source (`Store`, `VersionedStore`, `SetStore`, an externally sourced `Cache` read without a loader): `lookup` returns `Lookup.Unknown`, `get` throws `CacheReadException`, nothing is cached; with `unknownRead = ABSENT` they return `null`. Assert `cocache.reads.unknown` through `runtime.metrics(name)?.readsUnknown`.
+- Authoritative writes and deletes (`Store` and `SetStore` writes, `Store.delete`, `deleteIfMatch`, `purge`, `SetStore.clear`) and `VersionedCache` writes and `evict` throw `CacheWriteException` under every switch and queue nothing.
 
 Test each type you declare: a `Store` read after a write on another runtime, a conditional write that conflicts, a `VersionedCache` replay of an older version returning `Stale`.
 

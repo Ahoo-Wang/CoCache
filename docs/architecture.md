@@ -905,7 +905,13 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
 
 ### 12.5 Lincheck
 
-- Lincheck 模型检验（`cocache-core` 的 `CoherentEngineLincheckTest`，RFC 0005 §4.10，[可行性调查](investigations/lincheck-feasibility.md)）：对真实的“SingleFlight + Caffeine L2 + 失效戳 + 内存存储”经同步 API 检验可线性化，顺序规格是带版本的数据源（写入 = 提交新版本再 `invalidate`，读取 = 当前版本）。Caffeine 的调用当作原子步骤，计数与日志忽略。有随机场景，也有对已知竞态穷举交错的定向场景（读取合并到写入之前开始的加载；写入方修改 L1 期间的并发填充）。JaCoCo 的探针与 kotlinx 调试模式的协程编号会让执行无法重放，所以它在单独的 `./gradlew :cocache-core:lincheck` 任务中运行（关闭两者），不在 `test` 与 `check` 中（约 2 分钟）。
+- Lincheck 模型检验（`cocache-core` 的 `*LincheckTest`，RFC 0005 §4.10，[调查](investigations/lincheck-feasibility.md)）：对真实的“SingleFlight + Caffeine L2 + 失效戳 + 内存存储”经同步与挂起 API 检验，每个类一种缓存与一个顺序规格：
+  - `CoherentEngineLincheckTest` 与 `EngineOperationsLincheckTest`：有数据源的 `Cache`，规格“带版本的数据源 + 读己之写”（写入 = 提交新版本再 `invalidate` 或 `put`，读取 = 当前版本）。后者是 RFC 的完整操作集：`get`、`get(key, loader)`、`getAll`（与单 key 的 flight 合并）、`invalidate`、`put`、`onInvalidated`、`onReset`、`clearLocal`、写事务中的读取与私有回源（§5.8），以及调用方取消（同步变体被中断、挂起变体的跟随者被取消，事后 L1 上不留 lease）。
+  - `ExternalSourceLincheckTest`：外部来源的 `Cache` 上 `get` 与 `get(key, loader)` 交替（P3）。检验不变式：读到的版本不低于读取开始之前完成的写入，带 loader 的读取总有值；“没有”何时出现取决于交错，写不成确定的顺序规格。
+  - `StoreLincheckTest`：`Store` 是按 key 的寄存器，读取从不申请 lease（存储记录每次读取的 lease 请求）。
+  - `VersionedCacheLincheckTest`：规格“带版本的写入方 + 读快照的 loader”：`putIfNewer`、`invalidateIfNewer`（墓碑）、`evict`（状态 `E`）与 `clearLocal`，写入方之间不加锁。
+
+  Caffeine 的调用与 `InvalidationStamps.invalidateAll` 当作原子步骤，计数与日志忽略。有随机场景，也有对已知竞态穷举交错的定向场景。JaCoCo 的探针与 kotlinx 调试模式的协程编号会让执行无法重放，所以它在单独的 `./gradlew :cocache-core:lincheck` 任务中运行（关闭两者，每个类一个 JVM，至多 4 个并行），不在 `test` 与 `check` 中。默认是 CI 的预算（场景相同，执行次数少，本地约 1 分钟）；改动 flight 层、L2 或失效戳时以 `-Plincheck.full` 运行完整的预算（本地约 5 分钟）。
 
 ### 12.6 TLA+ 模型
 
