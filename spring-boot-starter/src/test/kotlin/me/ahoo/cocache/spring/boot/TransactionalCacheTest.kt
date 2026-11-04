@@ -21,6 +21,7 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
@@ -171,6 +172,7 @@ class TransactionalCacheTest {
 
     /**
      * 缺陷复现（S5）：事务内的 `@CacheEvict(beforeInvocation = true)` 只在提交之前失效，提交之前写回 L1 的旧值留到 `ttl`。
+     * 登记之后本事务内的读取私有回源（`registered-keys`），不读 L1，L1 中的旧值只能经运维接口看到。
      */
     @Test
     fun evictBeforeInvocationInsideTransactionInvalidatesAgainAfterCommit() {
@@ -178,7 +180,8 @@ class TransactionalCacheTest {
             val writer = context.getBean(UserWriter::class.java)
             tx.executeWithoutResult {
                 writer.update("1")
-                user(context)["1"].assert().isEqualTo("stale")
+                remoteValue(context, "1").assert().isEqualTo("stale")
+                user(context)["1"].assert().isEqualTo("user-1")
             }
             user(context)["1"].assert().isEqualTo("user-1")
         }
@@ -206,7 +209,7 @@ class TransactionalCacheTest {
             val writer = context.getBean(UserWriter::class.java)
             tx.executeWithoutResult {
                 writer.delete("3")
-                user(context)["3"].assert().isEqualTo("uncommitted")
+                remoteValue(context, "3").assert().isEqualTo("uncommitted")
             }
             user(context)["3"].assert().isEqualTo("user-3")
             tx.executeWithoutResult { status ->
@@ -450,6 +453,12 @@ class TransactionalCacheTest {
         @Suppress("UNCHECKED_CAST")
         private fun user(context: ApplicationContext): Cache<String, String> =
             context.getBean("user") as Cache<String, String>
+
+        /**
+         * L1 中 `user` 缓存的 [key] 的值（运维接口，不加载、不经事务门控）。
+         */
+        private fun remoteValue(context: ApplicationContext, key: String): String? =
+            requireNotNull(context.getBean(CacheRuntime::class.java).admin("user")).inspect(key).remote.value
 
         private fun captureLogs(type: Class<*>, block: (List<ILoggingEvent>) -> Unit) {
             val logger = LoggerFactory.getLogger(type) as Logger

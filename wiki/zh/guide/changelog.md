@@ -115,6 +115,21 @@ description: CoCache 版本发布历史和重要变更。
 
 - SPI：`InvalidationListener.onInvalidated` 收到的是**编码后的 key**，即存储 key 中 `{keyPrefix}{namespace}:` 之后的部分（`KeyEncoder` 的输出、`ExternalInvalidator` 的参数），不是存储 key。通道用新增的 `Keyspace.encodedKeys(…)` 转换帧中的 key（同时去掉不属于这个 keyspace 的 key），并按订阅的先后依次回调同一 keyspace 的订阅者，因此缓存创建之后加入的订阅者被回调时，缓存已经丢弃了本地副本。自己订阅通道、从 key 中剥掉 `"$namespace:"` 的代码必须改为直接使用收到的 key，否则每一条通知都被静默忽略。`BackendProtocolSpec` 的用例 `listenersReceiveEncodedKeysInSubscriptionOrder` 检查这两条规则。
 
+- Spring：`CoCacheSpringCache.retrieve(key)`（Spring 在返回 `CompletableFuture`、`Mono` 或 `Flux` 的 `@Cacheable` 方法上调用它）在 Redis 没有答案（`Lookup.Unknown`）时与 `get(key)` 一样以 `CacheReadException` 失败，不再当作未命中。三种方法上 Spring 都把失败交给 `CacheErrorHandler`；`unknownRead = ABSENT` 仍然读作未命中。见 [Redis 故障时](./spring-cache.md#failures)。
+- Spring：缓存操作（`@Cacheable`、`@CachePut` 或 `@CacheEvict`，不论 `sync`）指向不是 `Cache` 的 CoCache 缓存（`Store`、`VersionedStore`、`SetStore`、`VersionedCache`）时启动失败。之前要到第一次调用才以“找不到缓存”失败。见[启动检查](./spring-cache.md#sync-check)。
+- Spring：默认关注 Spring 读写事务内的加载（见下一节）。回滚的事务现在失效它加载的内容，事务内驱逐过的 key 在该事务内私有加载：设置 `cocache.invalidate-fills-on-rollback: false` 与 `cocache.fill-in-transaction: allow` 可保持 6.x 的行为。
+
+### 新增：Spring 事务内的加载 {#transactional-loads}
+
+见 [Spring Cache：事务内的回源](./spring-cache.md#transactional-loads)。
+
+- 读写事务内带数据源的同步读取（`@Cacheable(sync = true)`、`get`、`lookup`、`getAll`、`get(key, loader)`）可能加载到事务写入、却永远不会提交的行。CoCache 现在记录这类加载写入 Redis 或 L2 的每个 key（包括因 Redis 故障只写入本实例 L2 的填充），在事务回滚、提交结果未知或 `NESTED` 事务回滚到 savepoint 时失效它们（`cocache.invalidate-fills-on-rollback`，默认开启）。6.x 中除非事务内驱逐过这个 key，这一行会留在 Redis 中直到 `ttl`。
+- `cocache.fill-in-transaction`（默认 `registered-keys`）：一个 key 在事务中登记失效之后，事务内再次加载它是私有的：不申请 lease、不写 Redis 与 L2、不与其它调用方共享。登记时还会立即丢弃本实例的副本。`private` 让写事务内的全部加载都私有，`allow` 关闭这一机制。私有加载计入新增的指标 `cocache.fills.gated`（`CacheMetrics.fillsGated`）。
+- 这类事务内的调用方领头加载时，同一实例上并发的调用方不再拿它的结果，而是各自加载。
+- 只读事务、异步与挂起调用、提前刷新与响应式事务都不受关注。读取未命中 L2 时，在调用方线程上读一次事务状态。
+- 登记到事务的 key 按 namespace 与编码后的 key 匹配，所以经接口缓存的代理调用 `TransactionalInvalidator`，同样取代经 Spring Cache 对同一 key 的 `@CachePut`。
+- `cocache-core` 新增钩子 `FillObserver`、`FillScope` 与 `FillKey`，经 `CacheRuntime.Builder.fillObserver(…)` 设置（默认 `FillObserver.NONE`）。`cocache-spring` 的实现是 `TransactionalFillObserver`，classpath 中有 `spring-tx` 时 starter 把它注册为 `cocacheFillObserver`。
+
 ### 新增：按缓存的读取时限与只广播的失效
 
 - `CachePolicy.readTimeout`（`CachePolicy.Builder.readTimeout(…)`，默认不设置）限定缓存的每次 Redis 读取（`get`、`getAll`、`getIfChanged`），存储以它的命令超时为上限。超时按 Redis 读取失败处理：带 loader 的读取由 `read-failure` 决定，不带 loader 的读取为 `Unknown`（由 `unknownRead` 决定），`getIfChanged` 抛出，读取取得的 lease 被释放。用于不能回退到 loader、又不能在 Redis 卡顿时等满 `command-timeout` 的缓存，例如撤销表。配置项之后加入。`EngineSpec` 增加可选的 `pause()` 钩子，用例 `readTimeoutBoundsEveryL1Read` 检查它。

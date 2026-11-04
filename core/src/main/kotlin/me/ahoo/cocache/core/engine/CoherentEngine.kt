@@ -48,6 +48,9 @@ import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.core.FillKey
+import me.ahoo.cocache.core.FillObserver
+import me.ahoo.cocache.core.FillScope
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.LoadOperation
@@ -75,6 +78,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.time.Duration.Companion.nanoseconds
 
 /**
@@ -106,6 +112,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     private val permits: Semaphore? = policy.load.maxConcurrent.takeIf { it > 0 }?.let { Semaphore(it) }
     private val loadObserver: LoadObserver = context.loadObserver
+    private val fillObserver: FillObserver = context.fillObserver
     private val loadTimeout: Duration = policy.load.timeout
     private val ticker = context.ticker
 
@@ -292,7 +299,45 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     private fun miss(key: K, storageKey: String, source: CoreSource<K, V>? = loadSource): LocalEntry<V> {
         filteredEntry(storageKey)?.let { return it }
-        return runSync { loadMiss(key, storageKey, source) }
+        return runSync(enterFill(source)) { loadMiss(key, storageKey, source) }
+    }
+
+    /**
+     * 同步变体在调用入口（调用方线程）捕获写事务一次（RFC 0005 §4.9 S7），作为协程上下文元素（[FillContext]）交给未命中路径：
+     * 门控与记录都只用它，不在填充时读线程绑定的状态。没有数据源的读取不回源，不需要它。
+     */
+    private fun enterFill(source: CoreSource<K, V>?): CoroutineContext {
+        if (source == null) {
+            return EmptyCoroutineContext
+        }
+        return fillObserver.enter()?.let { FillContext(it) } ?: EmptyCoroutineContext
+    }
+
+    /**
+     * 这次调用在入口捕获的写事务；异步与挂起变体、提前刷新没有（不门控、不记录）。
+     */
+    private suspend fun fillScope(): FillScope? = currentCoroutineContext()[FillContext]?.scope
+
+    internal fun fillKeyOf(key: Any): FillKey {
+        @Suppress("UNCHECKED_CAST")
+        return FillKey(this, localKey(key as K))
+    }
+
+    private fun fillKeyOfStorage(storageKey: String): FillKey = FillKey(this, localKeyOf(storageKey))
+
+    /**
+     * 机制 1（RFC 0005 §4.9）：数据源为这些 key 产生的值即将写入 L1 或 L2，先记入调用入口捕获的写事务。提前刷新、异步与挂起变体没有。
+     */
+    private suspend fun recordFills(storageKeys: Collection<String>) {
+        val fill = fillScope() ?: return
+        storageKeys.forEach { fill.filled(fillKeyOfStorage(it)) }
+    }
+
+    /**
+     * 按编码后的 key 失效事务内记录的填充（[FillKey.invalidateAll]）：默认逐个 key 走 [invalidateEncoded]。
+     */
+    internal open fun invalidateEncodedKeys(encodedKeys: List<String>) {
+        encodedKeys.forEach { invalidateEncoded(it) }
     }
 
     /**
@@ -311,27 +356,61 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 未命中的加载（已计数、已过 key 过滤器）。同步与异步共用的协程核心（RFC 0005 V5）。
      */
     private suspend fun loadMiss(key: K, storageKey: String, source: CoreSource<K, V>?): LocalEntry<V> {
+        val fill = fillScope()
+        if (fill != null && source != null && fill.isPrivate(fillKeyOfStorage(storageKey))) {
+            return loadPrivately(mapOf(storageKey to key), source).getValue(storageKey)
+        }
         // 先于本次读取发生的失效此时必已递增戳：不接受开始于这些失效之前的共享加载（读己之写）
         val observed = stamps.current(storageKey)
         val hasSource = source != null
-        val loaded = flights.executeSuspending(storageKey, scope) { loadThrough(key, storageKey, source) }
-        if (loaded.stamp >= observed && usable(loaded.entry, hasSource)) {
+        val loaded = flights.executeSuspending(storageKey, scope) { loadThrough(key, storageKey, source).ownedBy(fill) }
+        if (loaded.stamp >= observed && usable(loaded, hasSource, fill)) {
             return loaded.answer()
         }
         // 新一轮加载必然开始于上一轮结束之后（SingleFlight 先注销、再发布），因此至多重试一次
-        val retried = flights.executeSuspending(storageKey, scope) { loadThrough(key, storageKey, source) }
-        if (usable(retried.entry, hasSource)) {
+        val retried = flights.executeSuspending(
+            storageKey,
+            scope
+        ) { loadThrough(key, storageKey, source).ownedBy(fill) }
+        if (usable(retried, hasSource, fill)) {
             return retried.answer()
         }
-        // 两次都合并到了不带数据源的加载（get(key) 与 get(key, loader) 并发）：自己回源，写回仍受戳保护
+        // 两次都合并到了不能接受的加载（不带数据源的加载，或写事务中的 leader）：自己回源，写回仍受戳保护
         return loadThrough(key, storageKey, source).answer()
     }
 
     /**
-     * 合并规则（RFC 0005 §4.1）：带数据源的调用方不接受“未填充”（[LocalEntry.unfilled]）与 `Unknown`（[Unanswered]）：
-     * 它们来自不带数据源的读取，这次调用本可以自己回源。例外是 `readFailure = THROW`：带数据源的读取遇到同样的故障也只能得到 `Unknown`。
+     * 私有回源（RFC 0005 §4.9 机制 2）：写事务内已登记失效的 key，或 `fill-in-transaction = private` 时的全部 key。
+     * 不申请 lease、不读也不写 L1、不写 L2、不经 SingleFlight 共享：数据源的结果只交给这次调用（到期时间为现在，不保存任何副本），
+     * 计入 `fillsGated`。回源照常受许可与观测约束；本线程对这些 key 的重入快速失败（[SingleFlight.loadingPrivately]）。
+     *
+     * @param keys 存储 key → 业务 key
      */
-    private fun usable(entry: LocalEntry<V>, hasSource: Boolean): Boolean {
+    private suspend fun loadPrivately(keys: Map<String, K>, source: CoreSource<K, V>): Map<String, LocalEntry<V>> {
+        metrics.fillGated(keys.size)
+        return flights.loadingPrivately(keys.keys) {
+            val now = clock.nowMillis()
+            if (keys.size == 1) {
+                val (storageKey, key) = keys.entries.single()
+                mapOf(storageKey to LocalEntry(loadValue(key, storageKey, source), now))
+            } else {
+                val values = loadAllValues(keys.values.toList(), keys.keys, source)
+                keys.mapValues { (_, key) -> LocalEntry(values[key], now) }
+            }
+        }
+    }
+
+    /**
+     * 合并规则（RFC 0005 §4.1、§4.9）：
+     * - 写事务中的 leader（[Loaded.owner]）的结果只交给它自己：跟随者不在它的事务内，经 flight 拿到未提交的值，回滚之后撤不回（S15）。
+     * - 带数据源的调用方不接受“未填充”（[LocalEntry.unfilled]）与 `Unknown`（[Unanswered]）：它们来自不带数据源的读取，
+     *   这次调用本可以自己回源。例外是 `readFailure = THROW`：带数据源的读取遇到同样的故障也只能得到 `Unknown`。
+     */
+    private fun usable(loaded: Loaded<V>, hasSource: Boolean, fill: FillScope?): Boolean {
+        if (loaded.owner != null && loaded.owner !== fill) {
+            return false
+        }
+        val entry = loaded.entry
         if (!hasSource || !entry.unfilled) {
             return true
         }
@@ -695,6 +774,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             token?.let { releaseToken(storageKey, it) }
             throw e
         }
+        recordFills(listOf(storageKey))
         val outcome = token?.let {
             fillRemote(fillOf(storageKey, it, value, prepared.envelope, prepared.ttl))
         } ?: FillOutcome.NONE
@@ -817,14 +897,13 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         stamp: Long,
         source: CoreSource<K, V>?,
         refreshable: Boolean = true
-    ): LocalEntry<V> = completeBypass(
-        key,
-        storageKey,
-        stamp,
-        loadValue(key, storageKey, source),
-        source != null,
-        refreshable
-    )
+    ): LocalEntry<V> {
+        val value = loadValue(key, storageKey, source)
+        if (source != null) {
+            recordFills(listOf(storageKey))
+        }
+        return completeBypass(key, storageKey, stamp, value, source != null, refreshable)
+    }
 
     /**
      * 同步与异步共用。没有数据源时绕过 L1 只能得到“不存在”：它只是没有答案（“未填充”，带 loader 的读取不接受它），
@@ -1117,7 +1196,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val resolved = LinkedHashMap<K, LocalEntry<V>?>()
         val pending = collectPending(keys, resolved)
         if (pending.isNotEmpty()) {
-            for ((storageKey, entry) in runSync { loadPending(pending, loadSource) }) {
+            for ((storageKey, entry) in runSync(enterFill(loadSource)) { loadPending(pending, loadSource) }) {
                 pending.getValue(storageKey).forEach { resolved[it] = entry }
             }
         }
@@ -1197,13 +1276,35 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         pending: Map<String, List<K>>,
         source: CoreSource<K, V>?
     ): Map<String, LocalEntry<V>> {
+        val fill = fillScope()
+        if (fill == null || source == null) {
+            return loadShared(pending, source, null)
+        }
+        val private = pending.keys.filter { fill.isPrivate(fillKeyOfStorage(it)) }
+        if (private.isEmpty()) {
+            return loadShared(pending, source, fill)
+        }
+        val privately = loadPrivately(private.associateWith { pending.getValue(it).first() }, source)
+        val shared = pending.filterKeys { it !in privately }
+        return if (shared.isEmpty()) privately else privately + loadShared(shared, source, fill)
+    }
+
+    /**
+     * [loadPending] 中经 SingleFlight 合并的 key：[fill] 是这次调用在入口捕获的写事务。
+     */
+    private suspend fun loadShared(
+        pending: Map<String, List<K>>,
+        source: CoreSource<K, V>?,
+        fill: FillScope?
+    ): Map<String, LocalEntry<V>> {
         val observed = pending.keys.associateWith { stamps.current(it) }
         val loaded = flights.executeAllSuspending(pending.keys, scope) { led ->
-            loadAllThrough(led.associateWith { pending.getValue(it).first() }, source)
+            val results = loadAllThrough(led.associateWith { pending.getValue(it).first() }, source)
+            if (fill == null) results else results.mapValues { it.value.ownedBy(fill) }
         }
         return pending.mapValues { (storageKey, sourceKeys) ->
             val result = loaded[storageKey]
-            if (result != null && result.stamp >= observed.getValue(storageKey) && usable(result.entry, source != null)) {
+            if (result != null && result.stamp >= observed.getValue(storageKey) && usable(result, source != null, fill)) {
                 result.answer()
             } else {
                 loadMiss(sourceKeys.first(), storageKey, source)
@@ -1376,6 +1477,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             releaseAll(toLoad)
             throw e
         }
+        recordFills(toLoad.keys)
         val filled = fillAllRemote(prepared.fills)
         completeBatch(led, toLoad, values, prepared.ttls, filled, loadStamps, unrefreshable, result)
         val advanced = filled.filterValues { it.possiblyAdvanced }.keys
@@ -2320,4 +2422,12 @@ private enum class FillOutcome(
 private fun fillOutcomeOf(fill: L1Fill): FillOutcome = when (fill) {
     is L1Fill.Filled -> if (fill.advanced) FillOutcome.ADVANCED else FillOutcome.FILLED
     is L1Fill.Rejected -> if (fill.currentVersion != null) FillOutcome.VERSION_REJECTED else FillOutcome.REJECTED
+}
+
+/**
+ * 同步变体在调用入口捕获的写事务（RFC 0005 §4.9 S7，[FillObserver.enter] 的结果），作为协程上下文元素交给门控与记录。
+ * 与执行变体（[me.ahoo.cocache.core.internal.ExecutionMode]）分开，只在调用方处于写事务中时出现。
+ */
+private class FillContext(val scope: FillScope) : AbstractCoroutineContextElement(Key) {
+    companion object Key : CoroutineContext.Key<FillContext>
 }

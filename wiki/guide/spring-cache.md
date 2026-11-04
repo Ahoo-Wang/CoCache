@@ -58,6 +58,8 @@ The check matches by cache name. It skips operations that name another `cacheMan
 
 The same check also logs a `WARN` when the cache advice and the transaction advice have the same order. See [Transaction advice outermost](#advice-order).
 
+It also fails startup, whatever `require-sync` says, when any cache operation (`@Cacheable`, `@CachePut` or `@CacheEvict`, with or without `sync`) names a CoCache cache that isn't a `Cache`: a `Store`, `VersionedStore`, `SetStore` or `VersionedCache`. Spring Cache only serves derived caches, so the CoCache manager doesn't expose the others. Without the check, the call would fail later with "Cannot find cache".
+
 The check runs only when a bean named `cocacheCacheManager` exists: the starter's own manager, or one you declare under that name (see [Alongside other cache managers](#other-managers)). The starter's manager steps aside when you declare any other `CacheManager`, so if you wire `CoCacheSpringCacheManager` yourself under a different bean name, the check doesn't apply and `sync = true` is up to you.
 
 ## How Spring operations map {#semantics}
@@ -69,7 +71,7 @@ The check runs only when a bean named `cocacheCacheManager` exists: the starter'
 | `put(key, value)` (`@CachePut`) | `cache.put(key, value)`. A `null` value becomes `invalidate(key)`. |
 | `evict(key)` (`@CacheEvict`) | `cache.invalidate(key)` on every instance. Inside a transaction, see [Transactions](#transactions). |
 | `clear()` (`allEntries = true`) | Clears **this instance's L2 only**. Redis and the other instances keep their entries, because CoCache can't clear a cache cluster-wide. The first call on each cache logs a `WARN` saying so. Evict keys instead. |
-| `retrieve(key)` (async and reactive) | An async `lookup` on the cache's [async view](./async.md). An L2 hit returns an already-completed future without switching threads, and a negative entry completes with `null` (a miss). |
+| `retrieve(key)` (async and reactive) | An async `lookup` on the cache's [async view](./async.md). An L2 hit returns an already-completed future without switching threads, and a negative entry completes with `null` (a miss). A Redis read failure fails the future, as it fails `get(key)` (see [When Redis fails](#failures)). |
 | `retrieve(key, loader)` (async and reactive with `sync = true`) | An async `get(key, loader)` on the [async view](./async.md): it loads through the same lease-protected path as `get(key, loader)`, and **no thread waits** for the async loader. The method body runs on the runtime's blocking executor (`cocache.blocking-executor`), so a body that blocks before it returns a future, such as `completedFuture(repository.find(id))`, doesn't stall CoCache's async executor. It can't see the caller's thread-locals. A failure completes the future with the original exception. |
 
 ### Null results {#null}
@@ -83,7 +85,7 @@ Negative entries read as a miss through `get(key)` on purpose: CoCache stores th
 A cache used through Spring Cache is usually [externally sourced](./caches.md#externally-sourced): the annotated method is the source. A read that carries the method can fall back to it; a read that doesn't has no answer:
 
 - `@Cacheable(sync = true)` passes the method as the loader, so a Redis read failure still runs the method and keeps the result in L2 for `degraded-local-max-age`.
-- A non-sync `@Cacheable` reads through `get(key)`, which has no loader. A Redis read failure is [`Lookup.Unknown`](./caches.md#unknown): `get(key)` throws its `CacheReadException`, and Spring hands it to the `CacheErrorHandler`. The default handler rethrows it. A `LoggingCacheErrorHandler` logs it and runs the method instead. Alternatively, declare `unknownRead = UnknownReadMode.ABSENT` on the cache's spec (in the `cacheSpec`, or in a [customizer](./caches.md#customizer) for an interface cache): the read then returns a miss without caching it, so Spring runs the method.
+- A non-sync `@Cacheable` reads through `get(key)`, which has no loader. On a method that returns `CompletableFuture`, `Mono` or `Flux`, Spring reads through `retrieve(key)` instead. A Redis read failure is [`Lookup.Unknown`](./caches.md#unknown): `get(key)` throws its `CacheReadException`, `retrieve(key)` fails its future with it, and on all three kinds of method Spring hands it to the `CacheErrorHandler`. The default handler rethrows it. A `LoggingCacheErrorHandler` logs it and runs the method instead. Alternatively, declare `unknownRead = UnknownReadMode.ABSENT` on the cache's spec (in the `cacheSpec`, or in a [customizer](./caches.md#customizer) for an interface cache): the read then returns a miss without caching it, so Spring runs the method.
 - `@CacheEvict` calls `invalidate`. When the Redis delete fails, the key is queued for background retry, because `invalidate-failure` defaults to `retry` for every `Cache`: the method is the source, so deleting the copy is always safe. Set `invalidate-failure: throw` to get `CacheWriteException` instead. See [Configuration](./configuration.md#policy-properties).
 
 This makes the two kinds of `@Cacheable` behave differently on the same cache. While Redis is down, every non-sync `@Cacheable` call fails, because Spring's default `CacheErrorHandler` rethrows the read failure. A `@Cacheable(sync = true)` call runs the method instead. `unknownRead = ABSENT` doesn't make a non-sync method available either: the `put` that follows fails the same way.
@@ -137,6 +139,16 @@ Why the decorator does this:
 - **Later evictions win.** At the commit, CoCache runs the invalidations first, then the writes. A `@CachePut` followed by a `@CacheEvict` of the same key ends with the key evicted, and a `@CacheEvict` followed by a `@CachePut` ends with the new value.
 - **Savepoints.** When a `NESTED` transaction (or a programmatic savepoint) rolls back, writes registered after the savepoint are dropped, and registered keys are invalidated at once.
 
+### Loads inside a transaction {#transactional-loads}
+
+Synchronous reads also watch the transaction they run in. This covers `@Cacheable(sync = true)` and direct `get`, `lookup`, `getAll` and `get(key, loader)` calls on any CoCache cache that has a source. It applies only to a read-write transaction of a `PlatformTransactionManager`. Read-only transactions, async and suspending calls, and reactive transactions aren't watched.
+
+- **A rollback invalidates what the transaction loaded** (`cocache.invalidate-fills-on-rollback`, on by default). A load inside the transaction can read a row you wrote but haven't committed, and cache it in Redis, or only in this instance's L2 when Redis failed. CoCache records every key the transaction loaded into a cache, and invalidates them when the transaction rolls back, when its commit outcome is unknown, or when a `NESTED` transaction rolls back to its savepoint. A commit leaves them alone: they hold committed data. You don't have to register anything, so this also covers a transaction that never calls `@CacheEvict`. Until the rollback, other callers can still read the uncommitted value from Redis: the rollback shortens that window from `ttl` to the length of the transaction.
+- **Registered keys load privately** (`cocache.fill-in-transaction`, default `registered-keys`). Once a key is registered for invalidation in the transaction (`@CacheEvict`, `TransactionalInvalidator`), loading it again in the same transaction doesn't touch Redis, L2 or other callers. The value goes to that caller only, and the load is counted in `cocache.fills.gated`. Registering also drops this instance's copy at once, so the next read in the transaction misses and loads your own write. That isn't guaranteed: another thread can put the committed value back into L2 first. `private` makes every load inside a read-write transaction private, so a read that misses L2 always calls the source. `allow` turns this off.
+- **Other callers don't share a transaction's load.** When a caller inside a transaction leads a load, concurrent callers on the same instance load for themselves instead of taking its result, which might never be committed.
+
+Keys match by namespace and encoded key, so an eviction through an interface cache's proxy also covers reads through the `cacheSpec` bean or Spring Cache. Both settings apply to every cache. Turning both off (`invalidate-fills-on-rollback: false` and `fill-in-transaction: allow`) makes loads ignore transactions.
+
 ### Failures after the commit {#after-commit-failures}
 
 A deferred write or invalidation that fails after the commit goes to the cache interceptor's `CacheErrorHandler`, just like a failure outside a transaction. The caller doesn't get an exception for an operation whose data is already committed, and so won't retry it. If the handler rethrows, as Spring's default `SimpleCacheErrorHandler` does, CoCache logs the exception at `ERROR` and doesn't throw it. The handler gets the decorated cache as its `cache` argument. With [`degrade-on-error`](#failures), a failed write is logged as a `WARN`.
@@ -149,7 +161,7 @@ When the cache advice is outermost, the cache operations run before the transact
 
 - `@CacheEvict` runs after the commit. It isn't registered, and it doesn't run on rollback.
 - `@CacheEvict(beforeInvocation = true)` invalidates once, before the transaction begins. Nothing invalidates after the commit, so an old row loaded in between stays until `ttl`.
-- A `@Cacheable(sync = true)` method opens its own transaction inside the load, and the result is cached after that transaction commits.
+- A `@Cacheable(sync = true)` method opens its own transaction inside the load, and the result is cached after that transaction ends. The load starts outside any transaction, so it isn't [watched](#transactional-loads): if the transaction rolls back and the method still returns a value, that value stays cached until `ttl`.
 
 On a reactive method, `@CacheEvict` runs in `doOnSuccess`. With the transaction outermost, that is before the commit. Reactive transactions aren't visible to the decorator (see [Keeping Data Fresh](./freshness.md#transactions)).
 
@@ -162,7 +174,7 @@ When the two orders are equal, the starter logs a `WARN` at startup. Give the tr
 class App
 ```
 
-For direct calls, use `TransactionalInvalidator` (see [Keeping Data Fresh](./freshness.md#transactions)). It shares the transaction's registration with the decorator, so its invalidation also replaces an earlier `@CachePut` of the same key, as long as you pass the cache object Spring Cache uses. The bean of a `cacheSpec` declaration is that object; an interface cache's bean is a proxy, so it isn't.
+For direct calls, use `TransactionalInvalidator` (see [Keeping Data Fresh](./freshness.md#transactions)). It shares the transaction's registration with the decorator, so its invalidation also replaces an earlier `@CachePut` of the same key. Keys match by namespace and encoded key, so any object for the cache works: the `cacheSpec` bean, an interface cache's proxy, or the cache behind Spring Cache.
 
 ## Alongside other cache managers {#other-managers}
 
@@ -203,3 +215,5 @@ class CacheConfig {
 ```
 
 The manager serves the caches already created in that `CacheRuntime`. The lambda hands failures after a commit to the interceptor's error handler. It's resolved on each failure, after the context has started. Without it, the decorator uses `SimpleCacheErrorHandler`, so those failures are only logged. Drop the decorator if you don't use transactions.
+
+To [watch loads inside transactions](#transactional-loads), give the runtime a `TransactionalFillObserver` when you build it: `CacheRuntime.builder().backend(backend).fillObserver(TransactionalFillObserver()).build()`. Its constructor takes the two settings.

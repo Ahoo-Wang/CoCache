@@ -133,5 +133,10 @@ internal object CacheCounters {
             "cocache.fill.unversioned.absent",
             "Versioned loads that returned an unversioned null over versioned L1 content, refused by L1: express deletions as Versioned(null, version)"
         ) { it.unversionedAbsentRefusals },
+        CacheCounter(
+            "fillsGated",
+            "cocache.fills.gated",
+            "Loads inside a write transaction kept private (fill-in-transaction): no lease, no L1 or L2 write, not shared"
+        ) { it.fillsGated },
     )
 }
