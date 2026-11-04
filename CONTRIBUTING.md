@@ -76,6 +76,7 @@ See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in
   MAJOR. Backward-compatible features bump MINOR. Fixes bump PATCH. The Redis wire format changes only
   in a MAJOR version.
 - `version` in `gradle.properties` is the latest released version. The release PR changes it (see below).
+- Pre-releases (`X.Y.Z-alpha.N`, `-beta.N`, `-rc.N`) carry no compatibility promise. Anything the promise below covers, the wire format included, may change between pre-releases and up to `X.Y.Z`. Publish them as GitHub pre-releases.
 - The baseline is JDK 21 (8.x; the `6.x` branch stays on JDK 17), Kotlin metadata and API version 2.2, and Spring Boot 4.x (4.0 is the oldest
   minor that CI tests). Raising any of them is a MAJOR change.
 - What the compatibility promise covers:

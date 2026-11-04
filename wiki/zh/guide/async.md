@@ -89,4 +89,4 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 ## 自定义后端 {#backends}
 
-L1 SPI 是挂起的：后端的存储是 `L1Store`，失效通道以 `suspend` 函数发布。两种视图调用同一个存储，等待 Redis 应答时都不占线程。Java 后端实现 `FutureL1Store` 与 `FutureInvalidationChannel`，经 `FutureL1Store.adapt` 与 `FutureInvalidationChannel.adapt` 适配。用 `BackendProtocolSpec` 与各引擎套件检验后端；还想经异步视图运行某个套件时，覆盖 `access = CacheAccess.ASYNC`。约定见[扩展](../architecture/extending.md#l1-store)，完整的 SPI 变化见[更新日志](./changelog.md#unreleased)。
+L1 SPI 是挂起的：后端的存储是 `L1Store`，失效通道以 `suspend` 函数发布。两种视图调用同一个存储，等待 Redis 应答时都不占线程。Java 后端实现 `FutureL1Store` 与 `FutureInvalidationChannel`，经 `FutureL1Store.adapt` 与 `FutureInvalidationChannel.adapt` 适配。用 `BackendProtocolSpec` 与各引擎套件检验后端；还想经异步视图运行某个套件时，覆盖 `access = CacheAccess.ASYNC`。约定见[扩展](../architecture/extending.md#l1-store)，完整的 SPI 变化见[更新日志](./changelog.md#v8-0-0-alpha-1)。

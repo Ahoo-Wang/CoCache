@@ -11,7 +11,7 @@ CoCache 8.0 is a clean cutover from 6.x, not a compatible upgrade:
 - **No migration tool.** Nothing copies 6.x data into 8.x. Caches with a source rebuild from it; data whose only copy is Redis doesn't survive the upgrade unless your application writes it again.
 - **No rollback tooling.** Going back to 6.x is the same cutover in reverse, done by hand ([below](#rollback)).
 
-8.0 needs JDK 21 or newer, Spring Boot 4, and Redis 7.0 or newer. The [changelog](./changelog.md#unreleased) lists every breaking change in detail. This page is the map and the procedure.
+8.0 needs JDK 21 or newer, Spring Boot 4, and Redis 7.0 or newer. The [changelog](./changelog.md#v8-0-0-alpha-1) lists every breaking change in detail. This page is the map and the procedure.
 
 ## Before the cutover {#prepare}
 

@@ -5,9 +5,11 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## Unreleased {#unreleased}
+## v8.0.0-alpha.1 (Pre-release) {#v8-0-0-alpha-1}
 
-**Module Group:** `me.ahoo.cocache` · Planned as 8.0.0, a major release with breaking changes ([RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). 8.x doesn't run next to 6.x on one Redis: stop 6.x, then start 8.x ([Upgrading from 6.x](./upgrade.md)). Fixes for 6.x continue on the `6.x` branch.
+**Module Group:** `me.ahoo.cocache` · First pre-release of 8.0.0, a major release with breaking changes ([RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). 8.x doesn't run next to 6.x on one Redis: stop 6.x, then start 8.x ([Upgrading from 6.x](./upgrade.md)). Fixes for 6.x continue on the `6.x` branch.
+
+**Pre-release: no compatibility promise.** Until 8.0.0, any pre-release may change the API, the SPI and TCK, configuration keys, metric names, endpoint paths and the Redis wire format. When you upgrade from one pre-release to the next, delete every CoCache key: caches with a source reload them, and caches without a source start empty. Don't use pre-releases for data you can't rebuild.
 
 ### Upgrading from 6.x {#upgrading-from-6x}
 
