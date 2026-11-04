@@ -30,7 +30,10 @@ import org.springframework.boot.actuate.endpoint.annotation.Selector
  * （DELETE 由 [CoCacheEndpointWebExtension] 映射，否则 web 层把 `null` 映射为 204，拼错的缓存名会静默成功）；空 key 为 HTTP 400。
  */
 @Endpoint(id = CoCacheEndpoint.ID)
-class CoCacheEndpoint(private val runtime: CacheRuntime) {
+class CoCacheEndpoint @JvmOverloads constructor(
+    private val runtime: CacheRuntime,
+    private val properties: CoCacheProperties? = null,
+) {
     companion object {
         const val ID = "cocache"
     }
@@ -102,8 +105,16 @@ class CoCacheEndpoint(private val runtime: CacheRuntime) {
         return key
     }
 
+    /**
+     * @param type 用户 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`）
+     * @param layered `false` 即“未分层”：直接经 `CacheRuntime.create` 创建，配置文件与定制器对它都不生效（RFC 0005 §4.8，S20）
+     * @param ignoredConfiguration 未分层的缓存上不生效的按缓存配置条目（`cocache.caches.<name>`）
+     */
     data class CacheReport(
         val name: String,
+        val type: String,
+        val layered: Boolean,
+        val ignoredConfiguration: List<String>,
         val localSize: Long,
         val loads: Long,
         val loadNanos: Long,
@@ -114,6 +125,9 @@ class CoCacheEndpoint(private val runtime: CacheRuntime) {
         val snapshot = metrics
         return CacheReport(
             name = name,
+            type = apiType.simpleName,
+            layered = layered,
+            ignoredConfiguration = properties?.let { UnlayeredConfigurationCheck.ignoredEntries(it, this) } ?: emptyList(),
             localSize = localSize,
             loads = snapshot.loads,
             loadNanos = snapshot.loadNanos,

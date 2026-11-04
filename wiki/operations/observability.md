@@ -185,6 +185,9 @@ A cache report:
 ```json
 {
   "name": "UserCache",
+  "type": "Cache",
+  "layered": true,
+  "ignoredConfiguration": [],
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
@@ -192,7 +195,7 @@ A cache report:
 }
 ```
 
-The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{level=l2}` (present only when the L2 hit counter is on), `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, `loadTimeouts` is `cocache.load.timeouts`, `staleVersions` is `cocache.versioned.stale`, `typeMismatches` is `cocache.type.mismatch`, `readsUnknown` is `cocache.reads.unknown`, `unversionedAbsentRefusals` is `cocache.fill.unversioned.absent`, `fillsGated` is `cocache.fills.gated`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
+`type` is the cache's API type (`Cache`, `VersionedCache`, `Store`, `VersionedStore` or `SetStore`). `layered: false` marks a cache created directly with `CacheRuntime.create`: configuration doesn't apply to it, and `ignoredConfiguration` lists the `cocache.caches.[name]` entries that name it ([CoCacheFactory](../guide/caches.md#factory)). The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{level=l2}` (present only when the L2 hit counter is on), `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, `loadTimeouts` is `cocache.load.timeouts`, `staleVersions` is `cocache.versioned.stale`, `typeMismatches` is `cocache.type.mismatch`, `readsUnknown` is `cocache.reads.unknown`, `unversionedAbsentRefusals` is `cocache.fill.unversioned.absent`, `fillsGated` is `cocache.fills.gated`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
 
 ### Encoded keys {#encoded-key}
 

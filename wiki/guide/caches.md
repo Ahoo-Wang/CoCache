@@ -422,6 +422,22 @@ val members: Set<String> = online[roomId] // empty set when absent
 
 If the set's truth lives in your database, don't use `SetStore`. Declare `Cache<K, Set<E>>`, update the database, and `invalidate`.
 
+## Libraries and plain runtimes: `CoCacheFactory` {#factory}
+
+`CoCacheFactory` is the entry point for creating caches outside the starter's own declarations. With the starter, inject the `CoCacheFactory` bean: a cache it creates gets the same customizers and `cocache.*` properties as an `@CoCache` interface or a spec bean, shows up on the endpoint and gets meters.
+
+```kotlin
+interface RevokedTokens : Store<String, Instant>
+
+@Bean
+fun revokedTokens(factory: CoCacheFactory): RevokedTokens =
+    factory.create(RevokedTokens::class.java, storeSpec("revoked-tokens") { codec = jacksonCodec<Instant>() })
+```
+
+- `create(spec)` returns the type matching the spec (`storeSpec` gives a `Store`, and so on). `create(type, spec)` returns a proxy for your interface. The interface must extend the type the spec declares, and every abstract method it redeclares must match one of that type's methods. A class is rejected: the user API types are not for hand-written implementations. Create the cache with `create(spec)` and delegate to it instead. These checks run before the cache is created.
+- **Unlayered caches.** A cache created directly with `CacheRuntime.create` skips every configuration layer: customizers, `cocache.defaults` and `cocache.caches.[name]` don't apply to it. The start log ends its line with `unlayered: …`, the endpoint reports `layered: false`. A `cocache.caches.[name]` entry for it logs a warning when the cache is created and is listed under the endpoint's `ignoredConfiguration`. It doesn't fail startup, because overrides are often written during an incident. Libraries should create their caches through `CoCacheFactory`.
+- Without Spring, `CoCacheFactory(runtime)` gives you the interface proxies with no layers. Plain `runtime.create(spec)` remains fine for an application that has no configuration layers.
+
 ## Customizing declarations {#customizer}
 
 A `CacheSpecCustomizer` bean edits a declaration before the cache is created. Use it for what the annotation can't express, or to change many caches at once:

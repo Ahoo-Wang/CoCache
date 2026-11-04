@@ -41,7 +41,8 @@ cocache-core                   引擎与运行时；依赖 Caffeine、kotlin-log
           EngineSpec / Role、挂起视图的实现（SuspendingViews）、ValueFormat、InvalidationRetrier、AsyncContext、EngineDispatcher
   internal：SingleFlight、InvalidationStamps、Futures、ExecutionMode、LoadingKeys、uncancellable（L1 调用不可取消）
   policy：CachePolicy、LeasePolicy、LoadPolicy、LocalPolicy、InvalidateFailureMode、ReadFailureMode、UnknownReadMode
-  proxy：CacheProxies、JoinCacheProxies；join：SimpleJoinView、SimpleJoinCache；memory：InMemoryBackend；clock：TickingClock、ManualClock；
+  CoCacheFactory（装配入口）与 CacheLayers（装配层）；
+  proxy：CacheProxies、CacheMethods、JoinCacheProxies；join：SimpleJoinView、SimpleJoinCache；memory：InMemoryBackend；clock：TickingClock、ManualClock；
   codec：StringCodec
 cocache-redis                  Lettuce 原生后端，不依赖 Spring
   RedisBackend、RedisBackendOptions、RedisChannelMode、RedisScripts、RedisL1Store（原生挂起的 L1Store，M3d）、RedisConnections、
@@ -652,6 +653,11 @@ val users: Cache<String, User> = runtime.create(
 ```
 
 - 五种 spec（`CacheSpec`、`VersionedCacheSpec`、`StoreSpec`、`VersionedStoreSpec`、`SetStoreSpec`，公共部分为 `Spec`）都是不可变数据。`runtime.create(spec)` 有五个重载，各自返回与 spec 对应的类型（另有按 `Spec` 分派的 `create(spec: Spec)`），并检查类型需要的 L1 能力（§5.6“能力”）；`runtime.cache(name)` 返回 `ReadableCache`。所有有状态组件（L2、栅栏、SingleFlight、存储、订阅）都由 `runtime.create` 按 spec 新建，用户只提供 spec 与无状态函数（`Codec`、`CacheLoader`、`KeyEncoder`、`TtlFunction`、`KeyFilter`），所以两个缓存不可能共享一个 L2。
+- **装配入口**（RFC 0005 §4.8，M5d）：`CoCacheFactory(runtime, layers)` 有与 `runtime.create` 相同的五个重载与 `create(spec: Spec)`，另有接口式声明的 `create(type, spec)`。声明先经 `CacheLayers`（每种 spec 一个 `apply`，默认原样返回）变成生效声明，再交给运行时；创建之后回调 `CacheLayers.created`。装配层不得改名（否则 `IllegalArgumentException`）。
+  - `create(type, spec)` 在创建缓存之前校验（S21）：`type` 是接口（手写实现的类被拒绝，错误信息指向 `create(spec)` 加委托），恰好继承一个用户 API 类型且与 spec 的类型一致（`IllegalArgumentException`），接口中重新声明的抽象方法都能转发（`CacheMethods`，`IllegalStateException`）。校验失败时不创建任何东西。代理（`CacheProxies.create`，模块内部）只经这里取得。
+  - **已分层与未分层**（S20）：经工厂创建的缓存 `CacheAdmin.layered` 为 `true`；直接经 `runtime.create` 创建的为 `false`，启动日志在能力之后标注 `unlayered: …`，端点的报告输出 `layered: false`。starter 中 `cocache.caches.[name]` 指向未分层的缓存时只告警一次、指向 `CoCacheFactory`（`UnlayeredConfigurationCheck`，经 `CacheRuntime.addCreationListener` 看到启动之后创建的缓存），端点的 `ignoredConfiguration` 列出被忽略的条目：不让启动失败，因为运维常在事故中写下按缓存的配置，库也可能在启动之后才创建缓存。`CacheAdmin.apiType` 是缓存的用户 API 类型（启动日志与端点的 `type`）。
+  - `CacheRuntime.addCreationListener(CacheCreationListener)`：之后创建的每个缓存（无论是否经工厂）注册之后回调，监听者的异常只告警；starter 用它为每个缓存绑定指标、核对未分层的缓存。
+  - starter 的 `CoCacheFactory` bean 以 `CacheAssembler`（定制器与配置文件，§9.3）为装配层；`lock` / `constrain` 与三层合并随 M6 加入，经工厂交给装配层。
 - 缓存名或 keyspace（前缀加 namespace，§3.2）重复时 `create` 失败；创建存储（含 Redis 的频道探测，§8）、构造引擎或订阅失败时回滚注册：释放 keyspace，关闭已创建的引擎与存储，同名、同 keyspace 可以重试（RFC 0005 附录 A.L9）。
 - **时钟**：默认的 `TickingClock` 由守护线程每 100 ms 刷新一个 volatile 字段，命中路径只做一次 volatile 读。它是单调的：启动时取一次墙钟，之后按 `System.nanoTime()` 的增量推进，墙钟回拨或向前跳都不会让 L2 副本多活或提前到期（每次刷新都读墙钟的话，回拨 Δ 时 L2 副本多活 Δ，RFC 0005 附录 A.C1）。L2 只用时钟计算相对寿命，到期时间跨网络只以相对时长传输，因此与墙钟的累计偏差没有影响。
 - `CacheRuntime.close()` 按创建的逆序关闭订阅与引擎，再关闭运行时自己创建的时钟、执行器与重试调度器（未执行的重试计入丢弃）。后端由调用方关闭，**必须晚于运行时**：
@@ -668,7 +674,7 @@ val users: Cache<String, User> = runtime.create(
 | `cocacheBackend`（`CoherenceBackend`，`RedisBackend`） | `cocache.backend=redis`（默认），classpath 中有 Spring Data Redis，没有其它 `CoherenceBackend` bean，且存在 `DataRedisConnectionDetails`。由连接信息构造（单机 / Sentinel / Cluster，用户名与密码，SSL bundle → Lettuce `SslOptions`），后端自建客户端，不复用应用的连接工厂 |
 | `cocacheBackend`（`CoherenceBackend`，`InMemoryBackend`） | `cocache.backend=memory`，没有其它 `CoherenceBackend` bean。不需要 Spring Data Redis；启动时告警：只适用于单进程，没有跨实例一致性 |
 | `cocacheRuntime`（`CacheRuntime`） | 存在 `CoherenceBackend` bean。有唯一的 `CacheClock` bean 时运行时使用它（内存后端同样使用它，测试推进 `ManualClock` 即可让两层一起到期）。`cocache.refresh-executor` 指定提前刷新执行器的 bean 名，未设置时运行时自建并管理内置执行器；`cocache.async-executor` / `cocache.blocking-executor` 指定异步视图的异步执行器与阻塞执行器（§5.6、§9.1），未设置时运行时自建 |
-| `cocacheAssembler`（`CacheAssembler`）、`cocacheAnnotatedCacheFactory` | 运行时存在 |
+| `cocacheAssembler`（`CacheAssembler`，starter 的装配层）、`cocacheFactory`（`CoCacheFactory`，以它为装配层；没有其它 `CoCacheFactory` bean 时）、`cocacheAnnotatedCacheFactory` | 运行时存在 |
 | `cocacheSpecRegistrar`（`CacheSpecRegistrar`） | `cocache.enabled` 未关闭（静态 `@Bean`，`BeanFactoryPostProcessor` 需在其它 bean 之前注册） |
 | `cocacheCacheManager`（`CoCacheSpringCacheManager`） | 没有其它 `CacheManager`；有 spring-tx 时包装为 CoCache 的事务装饰器 `TransactionAwareSpringCacheManager`（§9.5），事务结束之后的失败交给缓存通知（`CacheAspectSupport`）的 `CacheErrorHandler`。`retrieve` 经缓存的异步视图（§9.5） |
 | `cocacheTransactionalInvalidator` | 有 spring-tx |
@@ -686,7 +692,7 @@ val users: Cache<String, User> = runtime.create(
 
 ### 9.3 两种声明方式，同一个引擎
 
-- **接口式**：`@CoCache interface UserCache : Cache<String, User>`，由 `@EnableCoCache(caches = [UserCache::class])` 注册。接口继承的用户 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore` 恰好一个，`CacheProxies.apiTypeOf`）决定翻译成哪种 spec；经 `CacheAssembler` 创建引擎，再由 `CacheProxies` 包上 JDK 代理。
+- **接口式**：`@CoCache interface UserCache : Cache<String, User>`，由 `@EnableCoCache(caches = [UserCache::class])` 注册。接口继承的用户 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore` 恰好一个，`CacheProxies.apiTypeOf`）决定翻译成哪种 spec；经 `CoCacheFactory.create(type, spec)` 创建缓存与 JDK 代理（叠加定制器与配置文件）。
   - bean 名 = 缓存名（`@CoCache.name`，默认接口简单类名），类型为接口本身；与已有 bean 重名时启动失败。
   - 泛型取自接口继承的那个类型（`Cache<K, V>`、`SetStore<K, E>` 等），必须是具体类型。
   - 数据来源（RFC 0005 §4.1）：
@@ -700,7 +706,7 @@ val users: Cache<String, User> = runtime.create(
   - 代理：按接口继承的用户 API 类型分发（RFC 0005 §4.2），每个类型一张转发表，按方法名与参数个数直接调用引擎，不经 `Method.invoke`，**异常原样抛出**；`CacheProxiesTest` 逐个调用五个接口的全部方法，确认没有漏转发。例外是 JDK 代理自身的规则：接口方法没有声明的受检异常（Kotlin loader 抛出的 `IOException`、跟随者被中断时的 `InterruptedException` 等）由 JDK 包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`（RFC 0005 附录 A.P1）；spec 声明注入的是引擎本身，不受影响。用户接口的 default 方法经 `InvocationHandler.invokeDefault` 执行；其它抽象方法（名称、参数个数与类型、返回类型不与接口继承的用户 API 类型的方法匹配）在创建缓存时即启动失败，并提示改为 default 方法；`equals` / `hashCode` 按代理身份。
 - **spec bean**：`@Bean fun userSpec(): CacheSpec<String, User> = cacheSpec("user") { … }`。
   - `CacheSpecRegistrar`（`BeanFactoryPostProcessor`）从工厂方法**声明的**泛型返回类型解析 `K`、`V`，不实例化 spec；无法解析（原始类型、通配符）时启动失败。
-  - 为每个 spec 注册一个对应类型的 bean（`CacheSpec` → `Cache<K, V>`、`VersionedCacheSpec` → `VersionedCache<K, V>`、`StoreSpec` → `Store<K, V>`、`VersionedStoreSpec` → `VersionedStore<K, V>`、`SetStoreSpec` → `SetStore<K, E>`）：bean 名为 spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache`；与已有 bean 重名时启动失败。注入的就是引擎本身，没有代理层。
+  - 为每个 spec 注册一个对应类型的 bean（`CacheSpec` → `Cache<K, V>`、`VersionedCacheSpec` → `VersionedCache<K, V>`、`StoreSpec` → `Store<K, V>`、`VersionedStoreSpec` → `VersionedStore<K, V>`、`SetStoreSpec` → `SetStore<K, E>`）：bean 名为 spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache`；与已有 bean 重名时启动失败。注入的就是引擎本身，没有代理层。缓存在首次注入时经 `CoCacheFactory.create(spec)` 创建。
 - 同一个缓存名既有接口声明又有 spec bean 时，第二个创建时因缓存名重复而启动失败。缓存在首次注入时创建。
 
 ### 9.4 策略分层与校验
@@ -710,7 +716,7 @@ val users: Cache<String, User> = runtime.create(
 - **`key-prefix`**（`cocache.defaults.key-prefix`、`cocache.caches.[name].key-prefix`）不是策略字段，但按同一规则分层：配置文件覆盖声明（包括注解或 spec 中显式写出的 `keyPrefix`）与定制器，`caches.[name]` 覆盖 `defaults`；都未设置时沿用声明（默认 `cocache:`）。配置项中的占位符（如 `${spring.application.name}:`）由 Spring 的配置解析处理；`@CoCache.keyPrefix` 是字面文本，不解析占位符。失效频道不含前缀（§3.2）。
 - 策略字段：`ttl`、`ttl-forever`、`ttl-jitter`、`absent-ttl`、`local-max-age`、`degraded-local-max-age`、`refresh-window`、`lease-ttl`、`lease-wait`、`load-max-concurrent`、`load-acquire-timeout`、`load-timeout`、`local-maximum-size`、`invalidate-failure`、`read-failure`。策略时长不写单位时按**秒**解析，也可以写 `500ms`、`2m`、`PT2M`；`refresh-window: 0` 表示关闭（可以关掉声明中的提前刷新）。`cocache.defaults.ttl` / `ttl-forever` / `refresh-window` 不作用于权威副本（`Store`、`VersionedStore`、`SetStore`：L1 是唯一副本，全局寿命会让数据过期丢失；没有数据源，提前刷新不适用），只有 `cocache.caches.[name].ttl` / `ttl-forever` 能改变它们的寿命。`unknownRead` 没有配置键（随 M6 加入），定制器可以设置它。分层的语义（`defaults` 低于声明、`overrides` 只收紧）随 RFC 0005 M6 重写。`cocache.redis.*`（`command-timeout`、`heartbeat`、`invalidate-batch-size`、`client-name`、`channel-mode`）的时长不写单位时按毫秒解析。
 - 配置文件中的 `ttl` 不影响 `ttlOf`。
-- 启动失败的情形：`cocache.caches` 中出现未声明的缓存名（所有单例创建后由 `CacheAssembler` 校验；缓存名不区分大小写匹配）；策略不合法。
+- 启动失败的情形：`cocache.caches` 中出现未声明的缓存名（所有单例创建后由 `CacheAssembler` 校验；缓存名不区分大小写匹配；指向未分层的缓存只告警，S20）；策略不合法。
 - 策略约束（`CachePolicy` 构造时校验）：所有时长为正且 ≤ 100 年（`ttlJitter`、`lease.wait`、`load.acquireTimeout` 可以为 0）；抖动实际幅度不超过 `ttl / 2`；`refreshWindow < ttl − 实际抖动` 且 `refreshWindow < localMaxAge`，否则新副本一出生就在窗口内。校验只覆盖策略 `ttl`：`ttlOf` 或 `put(k, v, ttl)` 给出的不长于窗口的寿命不报错，这样的值不参与提前刷新（§5.5）。
 
 ### 9.5 Spring Cache 与事务

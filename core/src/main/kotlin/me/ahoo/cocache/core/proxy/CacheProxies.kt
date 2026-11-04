@@ -67,10 +67,11 @@ object CacheProxies {
     }
 
     /**
-     * 为 [type] 创建代理。[target] 必须实现 [type] 继承的用户 API 类型（[apiTypeOf]）。
+     * 为 [type] 创建代理。[target] 必须实现 [type] 继承的用户 API 类型（[apiTypeOf]）。公开的入口是
+     * [me.ahoo.cocache.core.CoCacheFactory.create]（`type, spec`）：它在创建缓存之前校验接口。
      */
     @JvmStatic
-    fun <C : ReadableCache<*, *>> create(type: Class<C>, target: ReadableCache<*, *>): C {
+    internal fun <C : ReadableCache<*, *>> create(type: Class<C>, target: ReadableCache<*, *>): C {
         val apiType = apiTypeOf(type)
         require(apiType.isInstance(target)) {
             "${type.name} extends ${apiType.simpleName}, but the target $target is not a ${apiType.simpleName}."

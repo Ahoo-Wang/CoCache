@@ -16,6 +16,7 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.memory.InMemoryBackend
@@ -160,15 +161,36 @@ class CoCacheAutoConfiguration {
         CacheBeanDefinitions.declaredCacheNames(beanFactory)
     }
 
+    /**
+     * 缓存的装配入口（RFC 0005 §4.8）：接口式声明、spec bean 与库都经它创建缓存，叠加定制器与配置文件（[CacheAssembler]）。
+     */
     @Bean
+    @ConditionalOnMissingBean
     @ConditionalOnBean(CacheAssembler::class)
+    fun cocacheFactory(
+        runtime: CacheRuntime,
+        assembler: CacheAssembler
+    ): CoCacheFactory = CoCacheFactory(runtime, assembler)
+
+    /**
+     * 未分层的缓存上不生效的 `cocache.caches.[name]` 告警（S20）。
+     */
+    @Bean
+    @ConditionalOnBean(CacheRuntime::class)
+    fun cocacheUnlayeredConfigurationCheck(
+        runtime: CacheRuntime,
+        properties: CoCacheProperties,
+    ): UnlayeredConfigurationCheck = UnlayeredConfigurationCheck(runtime, properties)
+
+    @Bean
+    @ConditionalOnBean(CoCacheFactory::class)
     fun cocacheAnnotatedCacheFactory(
         beanFactory: ListableBeanFactory,
-        assembler: CacheAssembler,
+        factory: CoCacheFactory,
         mappers: ObjectProvider<ObjectMapper>,
     ): AnnotatedCacheFactory = AnnotatedCacheFactory(
         beanFactory,
-        assembler,
+        factory,
         mappers.getIfAvailable { JsonMapper.builder().findAndAddModules().build() }
     )
 

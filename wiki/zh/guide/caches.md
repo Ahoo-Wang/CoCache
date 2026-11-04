@@ -422,6 +422,22 @@ val members: Set<String> = online[roomId] // 不存在时为空集合
 
 如果集合的权威数据在数据库中，不要用 `SetStore`。声明为 `Cache<K, Set<E>>`，更新数据库后 `invalidate`。
 
+## 库与不用 starter 的运行时：`CoCacheFactory` {#factory}
+
+在 starter 自己的声明之外创建缓存，入口是 `CoCacheFactory`。使用 starter 时注入 `CoCacheFactory` bean：它创建的缓存与 `@CoCache` 接口、spec bean 一样叠加定制器与 `cocache.*` 配置，出现在端点上，也会注册指标。
+
+```kotlin
+interface RevokedTokens : Store<String, Instant>
+
+@Bean
+fun revokedTokens(factory: CoCacheFactory): RevokedTokens =
+    factory.create(RevokedTokens::class.java, storeSpec("revoked-tokens") { codec = jacksonCodec<Instant>() })
+```
+
+- `create(spec)` 返回与 spec 对应的类型（`storeSpec` 得到 `Store`，以此类推）；`create(type, spec)` 返回实现你的接口的代理。接口必须继承 spec 声明的那个类型，接口中重新声明的抽象方法都要对应这个类型的某个方法。类会被拒绝：用户 API 类型不供手写实现，应当用 `create(spec)` 创建缓存再委托给它。这些校验在创建缓存之前完成。
+- **未分层的缓存。** 直接用 `CacheRuntime.create` 创建的缓存跳过所有配置层：定制器、`cocache.defaults` 与 `cocache.caches.[name]` 对它都不生效。启动日志在这一行末尾标注 `unlayered: …`，端点报告 `layered: false`。指向它的 `cocache.caches.[name]` 在缓存创建时告警，并列在端点的 `ignoredConfiguration` 中；它不让启动失败，因为覆盖值常在事故中写下。库应经 `CoCacheFactory` 创建缓存。
+- 不用 Spring 时，`CoCacheFactory(runtime)` 提供接口代理，不叠加任何层。没有配置层的应用直接用 `runtime.create(spec)` 也没有问题。
+
 ## 定制声明 {#customizer}
 
 `CacheSpecCustomizer` bean 在缓存创建之前修改声明。用它表达注解做不到的配置，或一次修改多个缓存：

@@ -86,7 +86,7 @@ The starter can't see inside code you write. Register hints yourself for:
 - **Polymorphic values.** The binding hint covers the declared value type and the types reachable from its properties. If the value type is abstract or sealed and Jackson picks the subtype at runtime, list the subtypes in `@RegisterReflectionForBinding` too.
 - **Custom codecs.** A `Codec` that uses reflection (another serializer, for example) needs that library's hints for your value types.
 - **SpEL that leaves the root object.** The hints cover the public members of the root object only. A template such as `#{owner.address.city}` also reads `Address`, and `T(…)` calls static methods on another class: register those types with `@RegisterReflection(classes = [Address::class], memberCategories = [MemberCategory.INVOKE_PUBLIC_METHODS])` or a `RuntimeHintsRegistrar`. On a hot path, a key type with a suitable `toString()` avoids SpEL entirely ([Keys](./caches.md#keys)).
-- **Caches created without the starter.** `CacheRuntime.create` and `CacheProxies.create` called from your own code get no generated hints: register the proxy interface and the key type's `toString()` yourself.
+- **Caches created without the starter.** `CacheRuntime.create` and `CoCacheFactory.create` called from your own code get no generated hints: register the proxy interface and the key type's `toString()` yourself.
 
 Loaders, `TtlFunction`s, `KeyEncoder`s, and `JoinKeyExtractor` beans are plain function calls and need nothing.
 

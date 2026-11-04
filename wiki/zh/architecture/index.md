@@ -99,17 +99,20 @@ sequenceDiagram
     autonumber
     participant Reg as Registrar<br>（bean 定义）
     participant Fac as AnnotatedCacheFactory
-    participant Asm as CacheAssembler
+    participant F as CoCacheFactory
+    participant Asm as CacheAssembler<br>（CacheLayers）
     participant RT as CacheRuntime
     Reg->>Reg: 每个 @EnableCoCache 接口一个 bean<br>每个 spec bean 一个缓存 bean
     Note over Fac: 首次注入时
     Fac->>Fac: @CoCache / @CaffeineCache 翻译为所继承类型的 spec<br>解析 loader、codec、keyExpression
-    Fac->>Asm: create(spec)
-    Asm->>Asm: 依次叠加 CacheSpecCustomizer、<br>cocache.defaults、cocache.caches.[name]
-    Asm->>RT: create(spec)
-    RT-->>Asm: 引擎，已订阅 {keyPrefix}inv:{namespace}
-    Asm-->>Fac: 引擎
-    Fac-->>Reg: 实现该接口的 JDK 代理
+    Fac->>F: create(type, spec)
+    F->>F: 校验接口
+    F->>Asm: apply(spec)
+    Asm-->>F: 依次叠加 CacheSpecCustomizer、<br>cocache.defaults、cocache.caches.[name]
+    F->>RT: 创建已分层的缓存
+    RT-->>F: 引擎，已订阅 {keyPrefix}inv:{namespace}
+    F-->>Fac: 实现该接口的 JDK 代理
+    Fac-->>Reg: 代理
 ```
 
 | 方式 | bean 名 | bean |
@@ -118,7 +121,7 @@ sequenceDiagram
 | spec bean：`@Bean fun userSpec(): CacheSpec<String, User>`，或其它任何 spec 类型 | spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` | 引擎本身。`CacheSpecRegistrar` 从工厂方法声明的返回类型读取 `K` 与 `V`，不实例化 spec |
 | 组合缓存：`@JoinCacheable interface …`，列在 `@EnableCoCache(joinCaches = …)` 中 | 组合缓存名 | 两个缓存之上的只读视图，按名称解析；`JoinCache` 还能失效。见 [JoinCache](../guide/join-cache.md) |
 
-策略分层，后者覆盖前者：内置默认值（按类型）→ 声明 → `CacheSpecCustomizer` bean（按顺序）→ `cocache.defaults.*` → `cocache.caches.[name].*`。`key-prefix` 按同样的规则分层。所有单例创建完成后，如果 `cocache.caches` 中出现未声明的缓存，`CacheAssembler` 会让启动失败。所有有状态组件都由 `CacheRuntime` 按 spec 新建（见[运行时](#runtime)），两个缓存不可能共享其中任何一个。在 Spring 中，组合缓存按缓存名（经由对应的 bean 名）找到它的两个缓存，从不按类型。
+策略分层，后者覆盖前者：内置默认值（按类型）→ 声明 → `CacheSpecCustomizer` bean（按顺序）→ `cocache.defaults.*` → `cocache.caches.[name].*`。`key-prefix` 按同样的规则分层。所有单例创建完成后，如果 `cocache.caches` 中出现未声明的缓存，`CacheAssembler` 会让启动失败；指向直接经 `CacheRuntime.create` 创建、任何配置层都到不了的缓存的条目只告警（[CoCacheFactory](../guide/caches.md#factory)）。spec bean 与库经同一个 `CoCacheFactory` bean 创建缓存。所有有状态组件都由 `CacheRuntime` 按 spec 新建（见[运行时](#runtime)），两个缓存不可能共享其中任何一个。在 Spring 中，组合缓存按缓存名（经由对应的 bean 名）找到它的两个缓存，从不按类型。
 
 ## 线格式 {#wire-format}
 

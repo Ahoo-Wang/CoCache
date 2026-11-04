@@ -25,6 +25,18 @@ import java.time.Instant
 interface CacheAdmin {
     val name: String
 
+    /**
+     * 缓存的用户 API 类型：`Cache`、`VersionedCache`、`Store`、`VersionedStore` 或 `SetStore`（RFC 0005 §3.1）。
+     * 启动日志与端点输出它，供人工核对同一 namespace 的声明（§4.1）。
+     */
+    val apiType: Class<*>
+
+    /**
+     * 是否经 [CoCacheFactory] 创建（RFC 0005 §4.8，S20）。`false` 即“未分层”：直接经 [CacheRuntime.create] 创建，
+     * 配置的各层（starter 的 `cocache.defaults`、`cocache.caches.[name]` 与定制器）对它都不生效。
+     */
+    val layered: Boolean
+
     val metrics: CacheMetrics
 
     /**
@@ -51,8 +63,9 @@ interface CacheAdmin {
     fun inspect(encodedKey: String): KeyInspection
 
     /**
-     * 按编码后的 key 走正常的失效路径（两次递增戳、淘汰 L2、删除 L1 并广播，全集群生效），幂等。
-     * 失败处理与 `invalidate` 相同（有数据源的缓存默认进入重试队列，没有数据源的默认抛出）。`SetCache` 上等价于 `clear(key)`：L1 是唯一副本，会删除该集合。
+     * 按编码后的 key 删除，全集群生效，幂等。按类型（RFC 0005 §4.2）：`Cache` 走正常的失效路径（两次递增戳、淘汰 L2、删除 L1 并广播，
+     * 失败按 `invalidateFailure` 处理，默认进入重试队列）；`VersionedCache` 是保留版本的 `evict`；`Store` 是 `delete`、`VersionedStore`
+     * 是 `purge`、`SetStore` 是 `clear(key)`，后四者删除的是唯一副本或版本栅栏，失败时抛出、不重试。
      *
      * @param encodedKey 编码后的 key（不含 `{keyPrefix}{namespace}:`）
      */
