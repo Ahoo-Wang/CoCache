@@ -56,6 +56,7 @@ import me.ahoo.cocache.core.proxy.CacheProxies
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.CoroutineContext
 
@@ -153,6 +154,16 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected val local: Cache<String, LocalEntry<V>> = buildLocal(policy)
     protected val closed = AtomicBoolean(false)
     private val nodeId: NodeId = context.nodeId
+
+    /**
+     * 结果未知的写入涉及的 key（编码 key → 截止时刻，纪元毫秒；RFC 0005 §4.6，P12）：截止之前，本节点自己的帧对这些 key 不再被过滤。
+     *
+     * 结果未知的写入（超时、连接替换时被排空）可能在任何时刻才执行并广播，那一帧的来源是本节点，平常在本节点被过滤；
+     * 而写入失败之后、迟到执行之前，本节点的读取可能已把旧值填进 L2。不过滤这一帧，本节点就照常递增戳、淘汰 L2（[onInvalidated]）。
+     * 截止时刻是 `localMaxAge`（[unfilterOwnFrames]）：RFC 原文在“同一条连接上之后发出的一条命令完成，再加一个投递余量”时提前结束，
+     * 但存储的 SPI 不暴露连接与重连，无法确认，所以直接取残余上界，与丢失的帧相同。多付的只是这些 key 上本节点帧的一次淘汰。
+     */
+    private val ownFrames = ConcurrentHashMap<String, Long>()
     private val atomicBroadcast = context.backend.atomicBroadcast
 
     /**
@@ -384,8 +395,12 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             try {
                 mutate(frame)
             } catch (e: Exception) {
-                if (!atomicBroadcast && !notExecuted(e)) {
-                    publishAfterFailure(frame, e)
+                if (!notExecuted(e)) {
+                    // 结果未知：原子广播的写入可能迟到执行并广播，那一帧在本节点不再被过滤（P12）
+                    unfilterOwnFrames(keys)
+                    if (!atomicBroadcast) {
+                        publishAfterFailure(frame, e)
+                    }
                 }
                 throw e
             }
@@ -412,8 +427,9 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 非原子广播的后端上由这里发布（不可取消，同 [write]）；发布失败只计数告警，其它节点的旧副本由 `localMaxAge` 兜底。
      *
      * 结果未知的带版本填充同样走这里（TLA+ F2）：它可能稍后才执行。现在递增戳只挡住已经读过 L1 的同节点读取者；这之后、
-     * 迟到的 `FILL` 执行之前开始的读取仍可能填入旧版本（本节点的帧被过滤），直到写入方的 `putIfNewer`（版本相等时广播）或 `localMaxAge`。
-     * 非原子广播时这里的发布同样可能早于迟到的执行，其它节点的界相同。
+     * 迟到的 `FILL` 执行之前开始的读取仍可能填入旧版本。原子广播时迟到的 `FILL` 带着广播，调用方随后登记 [unfilterOwnFrames]（P12），
+     * 本节点在 `localMaxAge` 之内照常处理这一帧；非原子广播时这里的发布可能早于迟到的执行，各节点（含本节点）的界都是写入方的
+     * `putIfNewer`（版本相等时广播）或 `localMaxAge`。
      */
     @Suppress("TooGenericExceptionCaught")
     protected suspend fun afterAdvancedFill(keys: Collection<String>) {
@@ -471,13 +487,52 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 零 key 的帧是存储创建时的频道探测（RFC 0005 §4.7，K8）：什么也不做，不计入收到的失效。
      */
     override fun onInvalidated(keys: List<String>, origin: NodeId) {
-        if (origin == nodeId || keys.isEmpty()) {
+        if (keys.isEmpty()) {
+            return
+        }
+        if (origin == nodeId) {
+            if (ownFrames.isNotEmpty()) {
+                applyOwnFrame(keys)
+            }
             return
         }
         metrics.invalidationReceived()
         keys.forEach {
             stamps.invalidate(storageKeyOfLocal(it))
             local.invalidate(it)
+        }
+    }
+
+    /**
+     * 本节点自己的帧（P12）：只处理结果未知的写入仍在窗口内的 key（[ownFrames]），过期的登记顺手删除。不计入收到的失效。
+     */
+    private fun applyOwnFrame(keys: List<String>) {
+        val now = clock.nowMillis()
+        keys.forEach { key ->
+            val until = ownFrames[key] ?: return@forEach
+            if (until > now) {
+                stamps.invalidate(storageKeyOfLocal(key))
+                local.invalidate(key)
+            } else {
+                ownFrames.remove(key, until)
+            }
+        }
+    }
+
+    /**
+     * 写入结果未知（P12）：[storageKeys] 上本节点自己的帧在 `localMaxAge` 之内不再被过滤（[ownFrames]）。
+     * 只对原子广播的后端：非原子广播时迟到执行的写入不带广播，没有帧可等，本节点的旧副本由 `localMaxAge` 兜底。
+     * 登记很少（只在失败时），超过 [MAX_OWN_FRAMES] 时删掉过期的登记。
+     */
+    protected fun unfilterOwnFrames(storageKeys: Collection<String>) {
+        if (!atomicBroadcast) {
+            return
+        }
+        val now = clock.nowMillis()
+        val until = now + policy.localMaxAge.toMillis()
+        storageKeys.forEach { ownFrames[localKeyOf(it)] = until }
+        if (ownFrames.size > MAX_OWN_FRAMES) {
+            ownFrames.entries.removeIf { it.value <= now }
         }
     }
 
@@ -618,6 +673,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
          * 格式版本 `0` 表示不是本协议写入的内容（如其它程序写入的值）。它与其它低于本节点的格式一样按读不懂处理。
          */
         const val UNRECOGNIZED_FORMAT = 0
+
+        /**
+         * [ownFrames] 的登记超过这个数时，登记新 key 的调用顺手删除过期的登记。
+         */
+        const val MAX_OWN_FRAMES = 1024
 
         /**
          * 无条件写入：总是修改 L1。

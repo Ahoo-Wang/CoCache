@@ -39,6 +39,7 @@ import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.api.spi.VersionedL1Store
 import java.time.Duration
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -89,6 +90,27 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
      */
     @Volatile
     var rejectWrites: Boolean = false
+
+    /**
+     * 单 key put 不调用被包装的存储：记下这次调用（连同写入方的帧）并抛出 [RemoteUnavailableException]（结果未知的故障），
+     * 直到 [applyDeferredPuts] 才执行。模拟报错之后才在 L1 执行、并照常广播的写入（RFC 0005 §4.6，P12）。
+     */
+    @Volatile
+    var deferPuts: Boolean = false
+
+    private val deferredPuts = ConcurrentLinkedQueue<suspend () -> Unit>()
+
+    /**
+     * 在调用方线程上依次执行 [deferPuts] 记下的 put，返回执行的个数。
+     */
+    fun applyDeferredPuts(): Int {
+        var applied = 0
+        while (true) {
+            val put = deferredPuts.poll() ?: return applied
+            Suspending.await(put)
+            applied++
+        }
+    }
 
     /**
      * 释放令牌时抛出 [RemoteUnavailableException]。
@@ -307,6 +329,10 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             val hook = afterPut?.let { { _: Unit -> it(key) } }
             hooked(hook) {
                 guard("put", fail = failWrites)
+                if (deferPuts) {
+                    deferredPuts.add { delegate.put(key, envelope, ttl, frame) }
+                    throw RemoteUnavailableException("put (deferred)")
+                }
                 puts.incrementAndGet()
                 delegate.put(key, envelope, ttl, frame)
             }

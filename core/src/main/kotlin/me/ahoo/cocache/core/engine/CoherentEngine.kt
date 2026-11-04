@@ -787,6 +787,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             }
         }
         val entry = completeLoad(storageKey, stamp, token, value, prepared.ttl, outcome)
+        if (outcome == FillOutcome.UNKNOWN) {
+            // 先于递增戳登记：迟到的 FILL 在登记之前执行的话，它的帧被过滤，但随后的递增戳挡住已经读过 L1 的读取者（P12）
+            unfilterOwnFrames(listOf(storageKey))
+        }
         if (outcome.possiblyAdvanced) {
             afterAdvancedFill(listOf(storageKey))
         }
@@ -1482,6 +1486,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         recordFills(toLoad.keys)
         val filled = fillAllRemote(prepared.fills)
         completeBatch(led, toLoad, values, prepared.ttls, filled, loadStamps, unrefreshable, result)
+        val unknown = filled.filterValues { it == FillOutcome.UNKNOWN }.keys
+        if (unknown.isNotEmpty()) {
+            unfilterOwnFrames(unknown)
+        }
         val advanced = filled.filterValues { it.possiblyAdvanced }.keys
         if (advanced.isNotEmpty()) {
             afterAdvancedFill(advanced)
