@@ -51,6 +51,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.ClassUtils
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.json.JsonMapper
+import java.time.Duration
 import java.util.concurrent.Executor
 
 /**
@@ -121,6 +122,7 @@ class CoCacheAutoConfiguration {
      * 有唯一的 [LoadObserver] bean（如 [CoCacheObservationAutoConfiguration] 注册的 Micrometer 观测器）时用它观测回源。
      * 有唯一的 [FillObserver] bean（有 spring-tx 时的 [TransactionalFillObserver]）时用它门控与记录写事务内的回源。
      * `cocache.metrics.local-hits=true` 时记录 L2 命中数（默认关闭，见 `CacheRuntime.Builder.recordLocalHits`）。
+     * 关闭时等待在途 L1 步骤的上限取自 `cocache.redis.command-timeout`（[closeTimeoutOf]，K17）。
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
@@ -143,6 +145,7 @@ class CoCacheAutoConfiguration {
             builder.refreshExecutor(executorBean(beanFactory, REFRESH_EXECUTOR_PROPERTY, it))
         }
         properties.executor?.let { builder.executor(executorBean(beanFactory, EXECUTOR_PROPERTY, it)) }
+        builder.closeTimeout(closeTimeoutOf(properties.redis))
         return builder.build()
     }
 
@@ -307,6 +310,16 @@ class CoCacheAutoConfiguration {
         internal const val LOCAL_HITS_PROPERTY = "${CoCacheProperties.PREFIX}.metrics.local-hits"
         internal const val EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.executor"
         internal const val RUNTIME_BEAN = "cocacheRuntime"
+
+        /**
+         * 关闭时等待在途 L1 步骤的上限（RFC 0005 §4.4、K17）：`cocache.redis.command-timeout` 的两倍（在途的那条命令，
+         * 加上随后不可取消的一步：释放令牌或补发广播），不小于运行时的默认值。命令超时高于默认值时，关闭因此不会在在途的命令结束之前返回。
+         */
+        internal fun closeTimeoutOf(redis: CoCacheProperties.Redis): Duration = maxOf(
+            CacheRuntime.DEFAULT_CLOSE_TIMEOUT,
+            ConfigValues.positiveDuration("${CoCacheProperties.PREFIX}.redis.command-timeout", redis.commandTimeout)
+                .multipliedBy(2)
+        )
 
         /**
          * 按 bean 名（不按类型：避免多个组件意外共用同一个有状态 bean）取得执行器；

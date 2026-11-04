@@ -67,6 +67,13 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     val clock: CacheClock
     val backend: CoherenceBackend = requireNotNull(builder.backend) { "backend is required." }
 
+    /**
+     * 关闭时等待在途 L1 步骤的上限（[Builder.closeTimeout]，RFC 0005 §4.4、K17）。
+     */
+    val closeTimeout: Duration = builder.closeTimeout.also {
+        require(!it.isNegative) { "closeTimeout[$it] must not be negative." }
+    }
+
     private val owned = ArrayList<AutoCloseable>()
     private val context: EngineContext
 
@@ -125,7 +132,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      */
     private fun asyncContext(builder: Builder): AsyncContext {
         val executor = builder.executor ?: defaultExecutor().also { owned.add(AutoCloseable { it.shutdown() }) }
-        return AsyncContext(executor, builder.dispatcher, builder.drainTimeout).also { owned.add(it) }
+        return AsyncContext(executor, builder.dispatcher, closeTimeout).also { owned.add(it) }
     }
 
     /**
@@ -390,11 +397,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
          */
         internal var dispatcher: CoroutineDispatcher? = null
 
-        /**
-         * 关闭时等待运行时作用域中在途步骤的上限（模块内部）：在测试线程上手动推进执行器与 L1 命令的测试设为 `0`，
-         * 否则关闭会等满上限（推进它们的正是关闭的线程）。
-         */
-        internal var drainTimeout: Duration = AsyncContext.DRAIN_TIMEOUT
+        var closeTimeout: Duration = DEFAULT_CLOSE_TIMEOUT
 
         fun backend(backend: CoherenceBackend) = apply { this.backend = backend }
 
@@ -438,6 +441,17 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
          */
         fun recordLocalHits(recordLocalHits: Boolean) = apply { this.recordLocalHits = recordLocalHits }
 
+        /**
+         * 关闭时等待在途 L1 步骤的上限（RFC 0005 §4.4、K17）：[CacheRuntime.close] 取消运行时作用域之后至多等这么久，
+         * 让在途的不可取消步骤（L1 命令、令牌的释放、写入之后的补发广播）完成，再关闭自建的执行器与后端；等不到时告警、照常关闭，
+         * 那些步骤随后可能失败（其它节点陈旧到 `localMaxAge`，lease 留到 `lease.ttl`）。
+         *
+         * 不应小于后端的命令超时：在途的那条命令要等满它，之后还可能有一条释放或补发广播。starter 取
+         * `cocache.redis.command-timeout` 的两倍与默认值中较大的一个。默认 [DEFAULT_CLOSE_TIMEOUT]；为 0 时不等待
+         * （在测试线程上手动推进执行器与 L1 命令的测试：推进它们的正是关闭的线程）。不得为负。
+         */
+        fun closeTimeout(closeTimeout: Duration) = apply { this.closeTimeout = closeTimeout }
+
         fun build(): CacheRuntime = CacheRuntime(this)
     }
 
@@ -469,6 +483,12 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
 
         @JvmStatic
         fun builder(): Builder = Builder()
+
+        /**
+         * [Builder.closeTimeout] 的默认值：容得下几条 L1 命令（Redis 后端的 `commandTimeout` 默认 2 s）。
+         */
+        @JvmField
+        val DEFAULT_CLOSE_TIMEOUT: Duration = Duration.ofSeconds(5)
 
         /**
          * `keyPrefix` 为空时的启动告警（RFC 0005 §4.7，S4）：存储 key 与频道都没有公共前缀，ACL 与按前缀的运维只能按 namespace 逐个写出。

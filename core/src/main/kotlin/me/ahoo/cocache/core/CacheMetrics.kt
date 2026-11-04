@@ -46,6 +46,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     private val unknownFormatAdder = LongAdder()
     private val refreshAdder = LongAdder()
     private val refreshRejectedAdder = LongAdder()
+    private val refreshSkippedAdder = LongAdder()
     private val remoteFailureAdder = LongAdder()
     private val invalidationReceivedAdder = LongAdder()
     private val writeFailureAdder = LongAdder()
@@ -91,6 +92,14 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     val unknownFormats: Long get() = unknownFormatAdder.sum()
     val refreshes: Long get() = refreshAdder.sum()
     val refreshRejected: Long get() = refreshRejectedAdder.sum()
+
+    /**
+     * 到期却没有运行的提前刷新（RFC 0005 §8）：
+     * - 刷新读没有取得刷新令牌（令牌在别的节点手里）：只从 L1 重新填充 L2，刷新点退避，不回源；
+     * - 提前刷新本该覆盖的副本没有刷新点：刷新只会再读到同样内容的副本（未知标志位、`E`、摘要段、版本被拒绝，P14），
+     *   或 L1 剩余寿命不长于刷新窗口（副本一出生就在窗口内）。这样的副本到期之前不刷新。
+     */
+    val refreshSkipped: Long get() = refreshSkippedAdder.sum()
     val remoteFailures: Long get() = remoteFailureAdder.sum()
     val invalidationsReceived: Long get() = invalidationReceivedAdder.sum()
     val writeFailures: Long get() = writeFailureAdder.sum()
@@ -163,6 +172,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     internal fun unknownFormat() = unknownFormatAdder.increment()
     internal fun refresh() = refreshAdder.increment()
     internal fun refreshRejected() = refreshRejectedAdder.increment()
+    internal fun refreshSkipped() = refreshSkippedAdder.increment()
     internal fun remoteFailure() = remoteFailureAdder.increment()
     internal fun invalidationReceived() = invalidationReceivedAdder.increment()
     internal fun writeFailure() = writeFailureAdder.increment()

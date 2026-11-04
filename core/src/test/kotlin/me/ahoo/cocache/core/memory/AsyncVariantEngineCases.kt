@@ -335,6 +335,41 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
     }
 
     /**
+     * 跟随者不占线程（RFC 0005 §4.4、§7）：[FOLLOWERS] 个异步调用合并到同一个 key 的一次加载上（数据源未完成，不占线程），
+     * 挂起在这次加载的结果上；等待期间线程数与调用数无关。加载完成后全部得到同一个值，只回源一次。
+     */
+    @Test
+    fun followersOfOneLoadUseConstantThreads() {
+        val source = PendingLoader()
+        val factory = CountingFactory("tck-exec")
+        val pool = Executors.newSingleThreadExecutor(factory).also { executors.add(it) }
+        val runtime = node(pool)
+        try {
+            val async = runtime.rawCache(source).async()
+            val threads = ManagementFactory.getThreadMXBean()
+            val before = threads.threadCount
+            val leader = async.get("k")
+            awaitCondition("the leader is loading") { source.calls.get() == 1 }
+            val reads = backend.reads.get()
+            val followers = List(FOLLOWERS) { async.get("k") }
+            // 跟随者合并到 SingleFlight 的这次加载：不读 L1，也不等待 lease
+            (backend.reads.get() - reads).assert().isZero()
+            requireNotNull(runtime.metrics(cacheName)).leaseWaits.assert().isZero()
+            (threads.threadCount - before).assert().isLessThanOrEqualTo(CONSTANT_THREADS)
+            factory.created.get().assert().isLessThanOrEqualTo(1)
+            followers.none { it.isDone }.assert().withFailMessage { "a follower completed before the load" }.isTrue()
+            source.complete("k", "v")
+            (listOf(leader) + followers).forEach {
+                it.get(Concurrency.TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).assert().isEqualTo("v")
+            }
+            source.calls.get().assert().isEqualTo(1)
+            factory.created.get().assert().isLessThanOrEqualTo(1)
+        } finally {
+            runtime.close()
+        }
+    }
+
+    /**
      * 不挂起线程：N 个 key 被另一节点的 lease 占住（数据源未完成，不占线程），本节点 N 个异步读取全部在等待 lease，
      * 等待期间线程数与 N 无关；lease 释放后全部完成，每个 key 只回源一次。
      */
@@ -573,6 +608,11 @@ abstract class AsyncVariantEngineCases : EngineSpec() {
          * 同时等待的异步读取数。
          */
         const val WAITERS = 1000
+
+        /**
+         * 合并到同一次加载的异步调用数（RFC 0005 §7）。
+         */
+        const val FOLLOWERS = 10_000
 
         /**
          * 等待期间允许新增的线程数，与 [WAITERS] 无关。原为 4，在 Redis 上实测为 5：定时器线程、命令超时的计时线程

@@ -235,6 +235,29 @@ abstract class SetEngineSpec {
         cache.getAll(listOf("a", "b", "c")).assert().isEqualTo(mapOf("a" to setOf("1"), "b" to setOf("2")))
     }
 
+    /**
+     * 批量读取的未命中经一次 L1 批量读取（RFC 0005 §9 A.L2）：不逐个读 L1，已在 L2 中的 key 不再读；不存在的 key 同样在这一次里，
+     * 以不存在填入 L2。之后的批量读取全部命中 L2，不访问 L1。
+     */
+    @Test
+    fun getAllReadsTheMissesInOneBatch() {
+        val writer = nodeA.setStore()
+        writer.add("a", listOf("1"))
+        writer.add("b", listOf("2"))
+        writer.add("c", listOf("3"))
+        val cache = nodeB.setStore()
+        cache["a"].assert().containsExactly("1")
+        val reads = backend.reads.get()
+        val readAlls = backend.readAlls.get()
+        cache.getAll(listOf("a", "b", "c", "missing"))
+            .assert().isEqualTo(mapOf("a" to setOf("1"), "b" to setOf("2"), "c" to setOf("3")))
+        (backend.reads.get() - reads).assert().withFailMessage { "misses were read one key at a time" }.isEqualTo(0)
+        (backend.readAlls.get() - readAlls).assert().isEqualTo(1)
+        cache.lookupAll(listOf("b", "missing")).getValue("missing").assert().isInstanceOf(Lookup.Absent::class.java)
+        (backend.reads.get() - reads).assert().isEqualTo(0)
+        (backend.readAlls.get() - readAlls).assert().isEqualTo(1)
+    }
+
     @Test
     fun writeFailuresThrow() {
         val cache = nodeA.setStore()

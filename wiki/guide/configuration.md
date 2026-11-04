@@ -283,7 +283,7 @@ TLS follows the Spring Boot SSL bundle (`spring.data.redis.ssl.bundle`). A `redi
 | Property | Type | Default | Meaning |
 |----------|------|---------|---------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`: `PUBLISH` / `SUBSCRIBE`, atomic with the Redis change. `sharded`: `SPUBLISH` / `SSUBSCRIBE` (Redis 7+), sent right after the change. **All instances must use the same mode**; the two don't hear each other. |
-| `cocache.redis.command-timeout` | duration | `2s` | Maximum wait for one command or script. `read-timeout` can only shorten it. |
+| `cocache.redis.command-timeout` | duration | `2s` | Maximum wait for one command or script. `read-timeout` can only shorten it. Closing the runtime waits up to twice this (at least 5 s) for commands in flight. |
 | `cocache.redis.heartbeat` | duration | `5s` | `PING` interval on the subscription connection. A failed ping clears L2 and reconnects. |
 | `cocache.redis.invalidate-batch-size` | integer | `512` | Maximum keys per invalidation script |
 | `cocache.redis.client-name` | string | unset | `CLIENT SETNAME` for CoCache's connections |

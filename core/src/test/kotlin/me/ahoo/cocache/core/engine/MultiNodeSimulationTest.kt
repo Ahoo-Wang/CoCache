@@ -133,7 +133,7 @@ class MultiNodeSimulationTest {
                     ticker = this@Simulation.ticker
                     dispatcher = this@Simulation.dispatcher
                     // 虚拟时间由关闭运行时的测试线程推进：关闭不等待
-                    drainTimeout = Duration.ZERO
+                    closeTimeout = Duration.ZERO
                 }
                 .build()
         }

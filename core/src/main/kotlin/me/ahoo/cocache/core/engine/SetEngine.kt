@@ -14,9 +14,6 @@
 package me.ahoo.cocache.core.engine
 
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import me.ahoo.cocache.api.AsyncSetStore
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.Lookup
@@ -31,8 +28,8 @@ import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.LoadingKeys
-import me.ahoo.cocache.core.internal.awaitOriginal
 import me.ahoo.cocache.core.internal.runSync
+import me.ahoo.cocache.core.internal.uncancellable
 import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -69,16 +66,32 @@ internal class SetEngine<K : Any, E : Any>(
     override fun lookupAll(keys: Collection<K>): Map<K, Lookup<Set<E>>> = lookupsOf(resolveAll(keys))
 
     /**
-     * 每个 key 各自经单 key 路径读取（同步变体逐个读取）。
+     * 批量读取（同步变体）：命中的 key 内联取得，未命中的 key 在调用方线程上经一次批量读取取得（[loadEntries]）。
      */
     private fun resolveAll(keys: Collection<K>): Map<K, LocalEntry<Set<E>>> {
-        val result = LinkedHashMap<K, LocalEntry<Set<E>>>()
-        for (key in keys) {
-            if (!result.containsKey(key)) {
-                result[key] = entryOf(key)
-            }
+        val found = HashMap<K, LocalEntry<Set<E>>>()
+        val misses = collectMisses(keys, found)
+        if (misses.isNotEmpty()) {
+            val loaded = runSync { loadEntries(misses.values) }
+            misses.forEach { (key, storageKey) -> found[key] = loaded.getValue(storageKey) }
         }
-        return result
+        return inOrder(keys, found)
+    }
+
+    /**
+     * 批量读取的 L2 阶段（三种变体共用）：命中的 key 填入 [found]；返回未命中的 key → 存储 key。
+     */
+    private fun collectMisses(keys: Collection<K>, found: MutableMap<K, LocalEntry<Set<E>>>): LinkedHashMap<K, String> {
+        val misses = LinkedHashMap<K, String>()
+        for (key in keys) {
+            if (key in found || key in misses) {
+                continue
+            }
+            val localKey = localKey(key)
+            val hit = localHit(localKey)
+            if (hit != null) found[key] = hit else misses[key] = storageKeyOfLocal(localKey)
+        }
+        return misses
     }
 
     /**
@@ -155,28 +168,38 @@ internal class SetEngine<K : Any, E : Any>(
         context.async.runSuspending { map(loadEntry(storageKey)) }
 
     /**
-     * 挂起变体的批量读取：命中的 key 内联取得，未命中的 key 各自运行协程核心、并发读 L1，结果按 [keys] 的顺序组装（同异步视图）。
+     * 异步变体的批量读取：全部命中 L2 时返回已完成的 future；否则在运行时作用域中经一次批量读取取得未命中的 key（[loadEntries]）。
+     */
+    private fun <R> resolveAllAsync(keys: Collection<K>, map: (Map<K, LocalEntry<Set<E>>>) -> R): CompletableFuture<R> =
+        Futures.attempt {
+            val found = HashMap<K, LocalEntry<Set<E>>>()
+            val misses = collectMisses(keys, found)
+            if (misses.isEmpty()) {
+                return@attempt CompletableFuture.completedFuture(map(inOrder(keys, found)))
+            }
+            context.async.runAsync { map(loadedInOrder(keys, found, misses)) }
+        }
+
+    /**
+     * 挂起变体的批量读取：命中的 key 内联取得，未命中的 key 经一次批量读取取得（[loadEntries]），结果按 [keys] 的顺序组装。
      */
     private suspend fun <R> resolveAllSuspending(keys: Collection<K>, map: (Map<K, LocalEntry<Set<E>>>) -> R): R {
         val found = HashMap<K, LocalEntry<Set<E>>>()
-        val misses = LinkedHashMap<K, String>()
-        for (key in keys) {
-            if (key in found || key in misses) {
-                continue
-            }
-            val localKey = localKey(key)
-            val hit = localHit(localKey)
-            if (hit != null) found[key] = hit else misses[key] = storageKeyOfLocal(localKey)
-        }
+        val misses = collectMisses(keys, found)
         if (misses.isEmpty()) {
             return map(inOrder(keys, found))
         }
-        return context.async.runSuspending {
-            coroutineScope {
-                misses.map { (key, storageKey) -> async { key to loadEntry(storageKey) } }.awaitAll()
-            }.forEach { (key, entry) -> found[key] = entry }
-            map(inOrder(keys, found))
-        }
+        return context.async.runSuspending { map(loadedInOrder(keys, found, misses)) }
+    }
+
+    private suspend fun loadedInOrder(
+        keys: Collection<K>,
+        found: MutableMap<K, LocalEntry<Set<E>>>,
+        misses: Map<K, String>
+    ): Map<K, LocalEntry<Set<E>>> {
+        val loaded = loadEntries(misses.values)
+        misses.forEach { (key, storageKey) -> found[key] = loaded.getValue(storageKey) }
+        return inOrder(keys, found)
     }
 
     private fun inOrder(keys: Collection<K>, found: Map<K, LocalEntry<Set<E>>>): Map<K, LocalEntry<Set<E>>> {
@@ -205,6 +228,62 @@ internal class SetEngine<K : Any, E : Any>(
             return loaded.entry
         }
         return flights.executeSuspending(storageKey, scope) { loadThrough(storageKey) }.entry
+    }
+
+    /**
+     * 批量未命中（三种变体共用的协程核心，RFC 0005 §9 A.L2）：经 SingleFlight 合并（[SingleFlight.executeAllSuspending]），
+     * 本调用负责的 key 由一次 L1 批量读取取得（[loadAllThrough]），不逐个读取。合并规则逐 key 同单 key 路径（[loadEntry]）：
+     * 合并到的结果取戳早于本次读取观察到的戳（读取开始于本节点之前的一次写入），或合并到的批量没有这个 key 的结果，改走单 key 路径。
+     */
+    private suspend fun loadEntries(storageKeys: Collection<String>): Map<String, LocalEntry<Set<E>>> {
+        val distinct = storageKeys.distinct()
+        val observed = distinct.associateWith { stamps.current(it) }
+        val loaded = flights.executeAllSuspending(distinct, scope) { led -> loadAllThrough(led) }
+        return observed.mapValues { (storageKey, stamp) ->
+            val result = loaded[storageKey]
+            if (result != null && result.stamp >= stamp) result.entry else loadEntry(storageKey)
+        }
+    }
+
+    /**
+     * 一次 L1 批量读取（不申请 lease）。整批读失败时每个 key 都没有答案（[Unanswered]），不写任何一层，计入一次 `remoteFailures`。
+     * 某个 key 的内容读不懂（[onHit] 抛出）时，先完成其余 key（填充 L2），再抛出第一个失败，同单 key 路径的读取抛出它。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun loadAllThrough(storageKeys: List<String>): Map<String, Loaded<Set<E>>> {
+        val loadStamps = storageKeys.associateWith { stamps.current(it) }
+        val reads = readAllRemote(storageKeys).getOrElse { error ->
+            metrics.remoteFailure()
+            log.warn(error) { "SetStore[$name] - keys$storageKeys - remote read failed: no answer (Unknown)." }
+            val unknown = Unanswered<Set<E>>(CacheReadException(name, "readAll", error))
+            return storageKeys.associateWith { Loaded(unknown, loadStamps.getValue(it)) }
+        }
+        val result = LinkedHashMap<String, Loaded<Set<E>>>()
+        var failure: Exception? = null
+        for (storageKey in storageKeys) {
+            try {
+                val read = checkNotNull(reads[storageKey]) { "SetStore[$name] - readAll returned no $storageKey." }
+                result[storageKey] = loaded(storageKey, read, loadStamps.getValue(storageKey))
+            } catch (e: Exception) {
+                failure = failure ?: e
+            }
+        }
+        failure?.let { throw it }
+        return result
+    }
+
+    /**
+     * 一次 L1 批量读取（不申请 lease）。取消与中断原样抛出，其余失败作为结果交回。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun readAllRemote(storageKeys: List<String>): Result<Map<String, L1Read>> = try {
+        Result.success(uncancellable { store.readAll(storageKeys, emptyMap(), policy.readTimeout) })
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: InterruptedException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
     }
 
     /**
@@ -454,7 +533,7 @@ internal class SetEngine<K : Any, E : Any>(
         override fun get(key: K): CompletableFuture<Set<E>?> = entryOfAsync(key) { membersOf(it) }
 
         /**
-         * 每个未命中的 key 各自运行协程核心，并发读 L1（同步变体逐个读取），全部发出之后再按顺序组装。
+         * 未命中的 key 经一次 L1 批量读取取得（[loadEntries]），结果按顺序组装。
          */
         override fun getAll(
             keys: Collection<K>
@@ -464,19 +543,6 @@ internal class SetEngine<K : Any, E : Any>(
 
         override fun lookupAll(keys: Collection<K>): CompletableFuture<Map<K, Lookup<Set<E>>>> =
             resolveAllAsync(keys) { lookupsOf(it) }
-
-        private fun <R> resolveAllAsync(
-            keys: Collection<K>,
-            map: (Map<K, LocalEntry<Set<E>>>) -> R
-        ): CompletableFuture<R> = Futures.attempt {
-            val entries = LinkedHashMap<K, CompletableFuture<LocalEntry<Set<E>>>>()
-            keys.forEach { key -> entries.getOrPut(key) { entryOfAsync(key) { it } } }
-            context.async.runAsync {
-                val resolved = LinkedHashMap<K, LocalEntry<Set<E>>>()
-                entries.forEach { (key, entry) -> resolved[key] = entry.awaitOriginal() }
-                map(resolved)
-            }
-        }
 
         override fun put(key: K, value: Set<E>): CompletableFuture<Void?> = runAsyncCommand {
             putWithTtl(key, value, policy.valueTtl())

@@ -292,6 +292,9 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * - [backoff] 为正（没取得刷新令牌的重新填充：令牌在别的节点手里）：刷新点退避到 `now + min(backoff, 剩余寿命 / 2)`，
      *   到时再读一次 L1，取持有者写回的值（`fill` 不广播）。刷新点总是早于 L1 到期；不足 1 毫秒时不设刷新点。
      *
+     * 提前刷新本该覆盖、却不设刷新点的副本（有值、有限寿命、缓存设了刷新窗口）计入 `refreshSkipped`；没取得令牌的重新填充
+     * （[backoff] 为正）由调用方计入。
+     *
      * @param backoff 毫秒
      * @param refreshable 为 `false` 时不设刷新点：刷新取不到令牌、或只会再读到同样内容的副本（读到 `E`、未知标志位或摘要段，P14、D4）
      */
@@ -306,8 +309,17 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         val remoteExpiresAt = ttl?.let { now + it.toMillis() } ?: FOREVER
         val expiresAt = minOf(remoteExpiresAt, now + maxAge.toMillis())
         val refreshAt = if (value != null && refreshable) refreshAtOf(now, remoteExpiresAt, backoff) else FOREVER
+        if (refreshAt == FOREVER && backoff == 0L && refreshesAhead(value, remoteExpiresAt)) {
+            metrics.refreshSkipped()
+        }
         return LocalEntry(value, expiresAt, refreshAt)
     }
+
+    /**
+     * 提前刷新本该覆盖这个副本：有值、有限寿命、缓存设了刷新窗口。
+     */
+    private fun refreshesAhead(value: V?, remoteExpiresAt: Long): Boolean =
+        value != null && remoteExpiresAt != FOREVER && policy.refreshWindow != null
 
     private fun refreshAtOf(now: Long, remoteExpiresAt: Long, backoff: Long): Long {
         val window = policy.refreshWindow

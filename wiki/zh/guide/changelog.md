@@ -194,7 +194,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ### 行为变化：关闭运行时会等待在途的 Redis 步骤
 
-- `CacheRuntime.close()` 在关闭执行器之前至多等待 5 秒，让在途的异步调用做完不能跳过的 Redis 步骤：释放 lease、后端不支持原子广播时写入之后的广播，以及已经发出的命令。后端要晚于运行时关闭；Spring Boot starter 已经如此，因为运行时 bean 依赖后端。之前 `close()` 立即返回，紧接着关闭的后端可能让这些步骤失败：其它节点的本地旧副本留到 `local-max-age`，lease 留到 `lease-ttl`。同步调用在调用方自己的线程上运行，不在等待之列。
+- `CacheRuntime.close()` 在关闭执行器之前至多等待 `closeTimeout`（默认 5 秒，`CacheRuntime.Builder.closeTimeout`；Spring Boot starter 取 `cocache.redis.command-timeout` 的两倍、至少 5 秒，命令超时高于 5 秒时 `close()` 因此不会在命令仍在途时返回），让在途的异步调用做完不能跳过的 Redis 步骤：释放 lease、后端不支持原子广播时写入之后的广播，以及已经发出的命令。后端要晚于运行时关闭；Spring Boot starter 已经如此，因为运行时 bean 依赖后端。之前 `close()` 立即返回，紧接着关闭的后端可能让这些步骤失败：其它节点的本地旧副本留到 `local-max-age`，lease 留到 `lease-ttl`。同步调用在调用方自己的线程上运行，不在等待之列。
 
 ### 行为变化：补偿结果未知的写入 {#compensated-puts}
 
@@ -237,6 +237,14 @@ description: CoCache 版本发布历史和重要变更。
 
 - 结果未知的写入（超时或连接断开的 `put`、`putAll`、`invalidate`、集合写入或按版本写入；发出之前就被拒绝的不算）可能稍后才执行，并广播它的失效。写入方实例因为这条消息来自自己而跳过它，于是它在失败与迟到执行之间加载的旧副本留在 L2 中，直到 `local-max-age`。现在从失败起 `local-max-age` 之内，该实例对这些 key 上自己的消息按其它实例的消息处理：丢掉自己的副本。这些消息不计入 `cocache.invalidations.received`。结果未知的带版本写回（填充）同样如此（[RFC 0005 §4.6](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。
 - 只对原子广播的后端（Redis 的默认模式）。`channel-mode: sharded`，或原子广播探测失败时，迟到执行的命令不带广播，上界仍是 `local-max-age`。
+
+### 修复：`SetStore` 的批量读取一次批量读 Redis
+
+- `SetStore` 的 `getAll` 与 `lookupAll`（同步、异步与挂起视图）对 L2 未命中的 key 发出一次 `readAll`（与同一 key 在途的读取合并），不再逐个 key 读 Redis（[RFC 0005 §9](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。内容读不懂的 key 仍让这次调用失败，其余 key 先填充完。
+
+### 新增：`cocache.refresh.skipped`
+
+- 到期却没有运行的提前刷新的计数：刷新令牌在别的实例手里，本实例只重新读了 Redis 并退避；或缓存提前刷新、副本却没有刷新点，因为它的剩余寿命不长于 `refresh-window`，或刷新只会读到同样的内容。`CacheMetrics.refreshSkipped`，见[刷新的指标](../operations/observability.md)。
 
 ### 修复：批量读取中一个 key 重新加载失败，不再拖累整批
 
@@ -285,6 +293,7 @@ description: CoCache 版本发布历史和重要变更。
 - **破坏性变更：** TCK 随摘要段与状态 `E` 变化。`BackendProtocolSpec.writerIdAndVersionRoundTripThroughEveryScalarWrite` 改名为 `segmentsRoundTripThroughEveryScalarWrite`，同时检查摘要；新用例检查带摘要的值不取得刷新令牌、从不被回收，条件读写比较保存的摘要并拒绝没有摘要的值，`E` 上的 lease 在超过 lease 寿命之后被抢占。`VersionedSpec.versionedContentIsNeverRefreshedOrReclaimed` 改名为 `versionedContentIsRefreshedButNeverReclaimed`，新用例覆盖填充的版本规则、`E` 上的每个脚本、`evictKeepingVersion`、带版本的缓存的提前刷新与按 key 淘汰。`EngineSpec` 检查只有 `Store` 写入摘要、它的读取遇到被篡改或缺失的摘要时失败、`Cache` 计入类型不符、条件读取校验它返回的值；`writeRemoteSilently` 新增可选的 `digest` 参数，`writeAuthoritativeSilently` 写入带摘要的值。
 - `BackendProtocolSpec` 增加 `pause()` 钩子，新用例 `readTimeoutBoundsTheCallAndReleasesItsLease` 检查：L1 卡顿时，带短 `timeout` 的读取在大约这么长的时间内以 L1 故障失败，它请求的 lease 在之后被释放。`pause()` 返回 `null`（默认）时跳过。`InMemoryBackend` 为此增加 `stall()` 与构造参数 `commandTimeout`：卡顿期间的操作最多等它的时限，超时的操作永远不执行。
 - `FaultSpec.lateOutcomeUnknownPutEvictsTheWritersOwnStaleCopy` 在原子广播的后端上覆盖[自己的消息的修复](#own-frames)，其它后端上跳过。`HookedBackend.deferPuts` 让单 key put 以结果未知的故障失败并暂不执行；`applyDeferredPuts()` 随后执行它们，照常广播。
+- `SetEngineSpec.getAllReadsTheMissesInOneBatch` 检查 `SetStore` 的批量读取对 L2 未命中的 key 只发出一次 `readAll`、没有单 key 读取，因此后端的 `readAll` 必须像 `read` 一样读取集合 key。
 - `Concurrency.currentThreadName()` 返回去掉 kotlinx 协程后缀的线程名。`HookedBackend.issuer()` 与各规范都用它，按线程名编排竞态的钩子不论是否开启断言都能工作。
 - `EngineSpec.corruptKeyFailingItsReloadStillCompletesTheRestOfTheBatch` 覆盖上面的批量修复，`EngineSpec.getAllAfterOwnInvalidateNeverSharesALoadStartedBefore` 覆盖批量读取的读己之写。
 - `Concurrency.Forked.parked` 在线程等待时（`WAITING` 或 `TIMED_WAITING`）为真。阻塞调用的跟随者现在在 `runBlocking` 中等待，以限时停顿挂起，所以各规范不再只认 `WAITING`。

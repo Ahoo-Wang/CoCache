@@ -48,6 +48,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.load.timeouts` | counter | 超过 `load-timeout` 的加载：`AsyncCacheLoader` 的加载（lease 已释放），以及等待别的调用方加载这么久的读取。它们都收到 `SourceLoadTimeoutException`。见[异步 API](../guide/async.md#timeouts) |
 | `cocache.refreshes` | counter | 执行了的提前刷新任务 |
 | `cocache.refresh.rejections` | counter | 被刷新执行器拒绝的刷新。值照常提供，到期后正常过期 |
+| `cocache.refresh.skipped` | counter | 到期却没有运行的提前刷新：刷新令牌在别的实例手里，本实例只重新读了 Redis 并退避；或缓存提前刷新、副本却没有刷新点（剩余寿命不长于 `refresh-window`，或刷新只会读到同样的内容：更高的格式、被 evict 的版本、`Store` 写入的值）。这样的副本照常提供，到期后正常过期 |
 
 ### 填充与栅栏 {#metrics-fills}
 
