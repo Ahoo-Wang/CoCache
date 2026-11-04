@@ -81,6 +81,8 @@ Most of these fail to compile, which shows you where to change the code.
 | `SourceLoadCancelledException` in `me.ahoo.cocache.coroutines` | In `me.ahoo.cocache.core`, for every kind of loader |
 | `CacheSpecCustomizer.customize` for `CacheSpec.Builder` and `SetCacheSpec.Builder` | One overload per spec type (`CacheSpec`, `VersionedCacheSpec`, `StoreSpec`, `VersionedStoreSpec`, `SetStoreSpec`); a customizer can't change the data source or a locked field |
 | `CoCacheSpringCacheManager(runtime, executor)` | `CoCacheSpringCacheManager(runtime)` |
+| `CacheRuntime.Builder.asyncExecutor(…)`, `blockingExecutor(…)`; `CacheRuntime.blockingExecutor` | `CacheRuntime.Builder.executor(…)`; `CacheRuntime.executor` (one executor, [async](./async.md)) |
+| `LoadObserver.observeAsync` | Removed: `observe` also sees async and suspending loads ([observability](../operations/observability.md)) |
 | Spring's `TransactionAwareCacheManagerProxy` around CoCache's manager | `TransactionAwareSpringCacheManager` ([transactions](./spring-cache.md#transactions)) |
 
 ## Behavior that changes without a compile error {#behavior}
@@ -98,6 +100,7 @@ Most of these fail to compile, which shows you where to change the code.
 - **The endpoint won't delete an only copy by default.** A per-key `DELETE` on a `Store`, `SetStore` or `VersionedStore` returns `403` until `management.endpoint.cocache.allow-store-delete` or `allow-purge` is set. On a `VersionedCache` it is an `evict`.
 - **An interrupted blocking call waits for its Redis command** (at most one `command-timeout`) instead of failing at once, and keeps its interrupt flag.
 - **An unreadable invalidation frame resets** the caches on that channel instead of being dropped.
+- **Async and suspending views always resume on `cocache.executor`**, never in place on the thread that completed the previous step; with the default executor, each resume is a new virtual thread.
 
 ## Configuration keys {#configuration}
 
@@ -116,6 +119,7 @@ Most of these fail to compile, which shows you where to change the code.
 | `cocache.redis.set-cache-eviction-check` | `cocache.redis.store-eviction-check` | Covers every authoritative type. `allkeys-*`, and a policy that can't be read, now always fail startup with an authoritative cache; the setting decides only `volatile-*` with a finite `ttl` |
 | — | `cocache.redis.assume-maxmemory-policy` | New: the policy to assume when `INFO memory` can't be read |
 | `cocache.spring-cache.retrieve-executor` | Removed | `retrieve` uses the async view |
+| `cocache.async-executor`, `cocache.blocking-executor` | `cocache.executor` | One executor for every step of the async and suspending views and their blocking loaders; it must tolerate blocking. Unset: one virtual thread per task |
 | — | `invalidate-fills-on-rollback`, `fill-in-transaction` (under `cocache.defaults.cache`, `cocache.overrides.cache` and `cocache.caches.[name]`), `cocache.spring-cache.degrade-on-error` | New Spring settings |
 | — | `management.endpoint.cocache.allow-store-delete`, `management.endpoint.cocache.allow-purge` | New endpoint switches, off by default |
 

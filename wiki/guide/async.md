@@ -38,9 +38,9 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 ```
 
 - `loadAsync(key)` returns a `CompletionStage`; completing it with `null` caches a negative entry. Override `loadAllAsync(keys)` for batch reads; the default calls `loadAsync` per key.
-- A spec sets `loader` or `asyncLoader`, not both. CoCache adapts either way: a synchronous `get` waits for an async loader (bounded by `load-timeout`), and an asynchronous `get` runs a synchronous loader on the blocking executor.
+- A spec sets `loader` or `asyncLoader`, not both. CoCache adapts either way: a synchronous `get` waits for an async loader (bounded by `load-timeout`), and an asynchronous `get` runs a synchronous loader on the runtime's executor.
 - With `@CoCache` interfaces, `loader = "beanName"` can name either kind. Without it, CoCache looks for a unique `CacheLoader<K, V>`, then a unique `AsyncCacheLoader<K, V>`. One of each is ambiguous and fails startup. A bean that implements both is used as a synchronous loader.
-- `loadAsync` must return quickly and must not block. It is called on the calling thread or on the async executor, so it can't see the caller's thread-locals (MDC, security context). Propagate context through your reactive library, or through Micrometer context propagation.
+- `loadAsync` must return quickly and must not block. It is called on the calling thread or on a CoCache thread (the runtime's executor, or the observation thread when a `LoadObserver` is set), so it can't rely on the caller's thread-locals (MDC, security context). Propagate context through your reactive library, or through Micrometer context propagation.
 
 ## Threads and executors {#threads}
 
@@ -48,13 +48,14 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 |-----------|---------------|
 | L2 hit | Returns an already-completed future on the calling thread |
 | A result that is already available (an in-memory backend, a loader that completed synchronously) | Continues on the calling thread |
-| A Redis result or a loader future that completes later | Continues on the **async executor**, never on the Lettuce I/O thread |
-| A synchronous loader called through the async view | Runs on the **blocking executor** only |
+| A Redis result or a loader future that completes later | Continues on the **runtime's executor**, never on the Lettuce I/O thread or the loader's own thread. Every such resume is a new task on the executor. |
+| A synchronous loader called through the async view | Runs on the **runtime's executor** too |
+| A load observed by a `LoadObserver` (tracing) | `observe` runs on a virtual thread of its own, one per observed load (`cocache-observe-N`), which waits until the load finishes. It doesn't use the runtime's executor. |
 | Waiting for another instance's lease, or for a load permit | Holds no thread: the read is suspended and re-reads Redis after a short backoff, and a released permit goes to the next waiter in arrival order (sync and async callers share one queue) |
 
 Your own dependent stages (`thenApply`, `whenComplete`) follow the JDK's rules: they run on the thread that completes the future, or on a thread that later calls `get()` or `join()` on it.
 
-The async executor and the blocking executor are configurable. See [Configuration](./configuration.md#executors).
+The runtime has one executor for the async and suspending views: `cocache.executor` names it (without Spring, `CacheRuntime.builder().executor(…)`). By default it starts one virtual thread per task, named `cocache-worker-N`. It runs blocking loaders as well as continuations, so it must tolerate blocking tasks: don't give it a queue or only a few threads. See [Configuration](./configuration.md#executors).
 
 ## Timeouts {#timeouts}
 
@@ -73,7 +74,7 @@ The async executor and the blocking executor are configurable. See [Configuratio
 
 ## Spring Cache {#spring-cache}
 
-`retrieve(key)` and `retrieve(key, loader)` use the async view, so async and reactive `@Cacheable(sync = true)` methods load through the lease-protected path without holding a thread while they wait, and they need no executor of their own. The method body runs on the blocking executor. See [Spring Cache](./spring-cache.md#executor).
+`retrieve(key)` and `retrieve(key, loader)` use the async view, so async and reactive `@Cacheable(sync = true)` methods load through the lease-protected path without holding a thread while they wait, and they need no executor of their own. The method body runs on the runtime's executor. See [Spring Cache](./spring-cache.md#executor).
 
 ## Kotlin coroutines {#coroutines}
 
@@ -82,9 +83,9 @@ Every cache also has a suspending view, `cache.suspending()`, and a spec can tak
 ## Operating it {#operations}
 
 - **Redis**: no new commands, scripts, keys or channels. The async view runs the same Lua scripts as the synchronous API, so ACL rules and the wire format don't change.
-- **Metrics**: the same counters as the synchronous API, plus `cocache.load.timeouts`. With tracing on, async loads produce the same `cocache.load` observation, and an engine timeout is tagged `outcome=timeout`. A custom `LoadObserver` must override `observeAsync` to see async loads; the default doesn't observe them.
-- **Large values**: the Redis backend reads and decodes a reply on the async executor, never on Lettuce's I/O thread, but all of an instance's commands share one connection. A very large value delays the other replies on it (head-of-line blocking), for the synchronous API too. Keep values small, or split them.
-- **Performance**: an async L2 hit costs one extra small allocation and runs at roughly 90% of a synchronous hit. A closed loop that waits for every call is somewhat slower than the synchronous API under load, because each result switches to the async executor. The gain shows when one thread keeps many requests in flight: with 32 in flight, a thread completes about 12 times as many Redis reads or writes as one blocking thread.
+- **Metrics**: the same counters as the synchronous API, plus `cocache.load.timeouts`. With tracing on, async loads produce the same `cocache.load` observation, and an engine timeout is tagged `outcome=timeout`. A custom `LoadObserver` sees async loads through the same `observe` method: CoCache calls it on an observation thread of its own, never on your thread, and the observation covers the whole load.
+- **Large values**: the Redis backend reads and decodes a reply on the runtime's executor, never on Lettuce's I/O thread, but all of an instance's commands share one connection. A very large value delays the other replies on it (head-of-line blocking), for the synchronous API too. Keep values small, or split them.
+- **Performance**: an async L2 hit costs one extra small allocation and runs at roughly 90% of a synchronous hit. A closed loop that waits for every call is somewhat slower than the synchronous API under load, because each result switches to the runtime's executor. The gain shows when one thread keeps many requests in flight: with 32 in flight, a thread completes about 12 times as many Redis reads or writes as one blocking thread.
 
 ## Custom backends {#backends}
 

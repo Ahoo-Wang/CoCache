@@ -81,8 +81,7 @@ internal class SingleFlight<K : Any, R : Any>(
         }
         val added = keys.filter { current.add(it) }
         try {
-            // 数据源可能同步完成别的 key 的 future：那些续接派发出去，不在这些 key 的重入检查作用域内执行（Futures.withoutInline）
-            return Futures.withoutInline(block)
+            return block()
         } finally {
             current.removeAll(added.toSet())
             if (current.isEmpty()) {
@@ -227,9 +226,7 @@ internal class SingleFlight<K : Any, R : Any>(
         }
         val inline = mode.inline
         val result = try {
-            // 其间完成的别的 future 的续接派发出去，不在本 key 的重入守卫作用域内就地执行。
-            // 续接标记是线程局部的，只有始终留在调用方线程上的同步变体可以这样做
-            if (inline) Futures.withoutInlineSuspending(block) else block()
+            block()
         } catch (error: Throwable) {
             calls.remove(key, call)
             call.future.completeExceptionally(sharedFailure(error, coroutineContext.isActive, inline))
@@ -296,7 +293,7 @@ internal class SingleFlight<K : Any, R : Any>(
                 results.putAll(own.awaitOriginal())
             } else {
                 val loaded = try {
-                    if (inline) Futures.withoutInlineSuspending { block(ledKeys) } else block(ledKeys)
+                    block(ledKeys)
                 } catch (error: Throwable) {
                     abandon(led, sharedFailure(error, coroutineContext.isActive, inline))
                     throw error

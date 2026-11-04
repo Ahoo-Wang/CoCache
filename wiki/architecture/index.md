@@ -85,7 +85,7 @@ val users: Cache<String, User> = runtime.create(
 
 - A spec is immutable data: name, namespace, key prefix, key encoder, codec, the source (`Cache` and `VersionedCache` only), `ttlOf`, key filter, and policy. Each [type](../guide/caches.md#spec-bean) has its own spec, and `runtime.create(spec)` returns that type. Users supply only data and stateless functions.
 - `runtime.create` builds every stateful part of a cache: its L2, invalidation stamps, single-flight table, store, and subscription. Two caches can't share one by accident. A duplicate name, or a duplicate prefix-and-namespace pair, fails. So does a type whose L1 capability the backend lacks (`Store` needs conditional writes, the versioned types versioned writes, `SetStore` sets). The start log names the type: `Cache[user] - created as Cache on namespace[user], …`.
-- `NodeId` is 16 random bytes per runtime. It makes tokens globally unique and lets an instance ignore its own messages.
+- `NodeId` is 16 random bytes per runtime. It makes tokens globally unique and lets an instance ignore its own messages (except, for `local-max-age`, on keys whose write had an unknown outcome; see [Consistency](./consistency.md#writer-order)).
 - `close()` closes subscriptions, engines, and stores in reverse creation order, then the clock and executors the runtime created. Pending invalidation retries are counted as dropped. The caller closes the backend.
 
 **Time.** `CacheClock` returns epoch milliseconds. The default `TickingClock` refreshes a volatile field every 100 ms, which is cheaper on the hit path than `System.currentTimeMillis()` on some platforms. It is monotonic: it reads the wall clock once at startup and then advances by `System.nanoTime()`, so a wall-clock step (an NTP correction, a manual change) neither extends nor cuts short an L2 copy. Expiry crosses the wire only as relative durations (`PEXPIRE`, `PTTL`), so clock skew between instances doesn't matter. Tests inject `ManualClock`.
@@ -175,7 +175,7 @@ New must-understand segments ship in two phases within 8.x: first a release that
 | Per-entry lifetime | Yes | `TtlFunction` (`ttlOf`) |
 | Clock | Yes | `CacheClock` (tests) |
 | Refresh executor, retry policy | Yes | `CacheRuntime.Builder.refreshExecutor` (starter: `cocache.refresh-executor`), `retryPolicy` |
-| Async and blocking executors | Yes | `CacheRuntime.Builder.asyncExecutor` / `blockingExecutor` (starter: `cocache.async-executor` / `cocache.blocking-executor`). See [Async API](../guide/async.md#threads). |
+| Executor of the async and suspending views | Yes | `CacheRuntime.Builder.executor` (starter: `cocache.executor`). It must tolerate blocking tasks. See [Async API](../guide/async.md#threads). |
 | **L2** | **No** | Always a bounded Caffeine cache, so the hit path stays monomorphic and its cost is known. Size it with `local-maximum-size`. |
 | **Fences, write order, read path** | **No** | They are the protocol. See [Consistency](./consistency.md). |
 | Wire format | Not within a major version | Two-phase upgrade only |

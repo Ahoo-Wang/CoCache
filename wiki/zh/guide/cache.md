@@ -94,7 +94,7 @@ class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
 
 - **`null` 表示“不存在”**，写入负缓存，存活 `absent-ttl`。查询*失败*时请抛出异常：异常到达调用方（以及共享这次加载的所有调用方），不缓存任何东西。
 - **默认的 `loadAll`** 逐个调用 `load`。如果用到 `getAll`，请用一次批量查询覆盖它。
-- **loader 在调用方线程上执行**，事务、`SecurityContext` 与 MDC 都可用。经[异步视图](./async.md)调用时改在阻塞执行器上执行。
+- **loader 在调用方线程上执行**，事务、`SecurityContext` 与 MDC 都可用。经[异步视图](./async.md)调用时改在运行时的执行器（`cocache.executor`）上执行。
 - **不要在 loader 内同线程读取同一个 key**，那会以 `IllegalStateException` 快速失败。
 - **接口式声明**先按 `CacheLoader<K, V>`、再按 `AsyncCacheLoader<K, V>` 类型查找 loader。匹配到多个 bean，或两种各一个时启动失败，用 `@CoCache(loader = "…")` 指定一个。
 - **非阻塞的数据源**实现 `AsyncCacheLoader<K, V>`（`loadAsync` 返回 `CompletionStage`），设为 `asyncLoader`。在 Kotlin 中，`suspendingLoader { … }` 把一个挂起函数设为异步 loader。一个缓存只有一个数据源，同步或异步，每种视图都能配合任意一种：见[异步 API](./async.md#loader) 与 [Kotlin 协程](./coroutines.md#loader)。

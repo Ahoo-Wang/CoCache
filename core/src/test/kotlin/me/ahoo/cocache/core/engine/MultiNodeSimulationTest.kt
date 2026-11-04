@@ -128,8 +128,7 @@ class MultiNodeSimulationTest {
                 .backend(backend.view(node))
                 .clock(clock)
                 .nodeId(nodeIds[node])
-                .asyncExecutor(dispatcher.asExecutor())
-                .blockingExecutor(dispatcher.asExecutor())
+                .executor(dispatcher.asExecutor())
                 .apply {
                     ticker = this@Simulation.ticker
                     dispatcher = this@Simulation.dispatcher

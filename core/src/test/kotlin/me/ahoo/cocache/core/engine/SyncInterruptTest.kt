@@ -42,7 +42,6 @@ import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.function.Supplier
@@ -297,13 +296,6 @@ class SyncInterruptTest {
     private object PassThroughObserver : LoadObserver {
         override fun <T> observe(cacheName: String, operation: LoadOperation, keyCount: Int, block: Supplier<T>): T =
             block.get()
-
-        override fun <T> observeAsync(
-            cacheName: String,
-            operation: LoadOperation,
-            keyCount: Int,
-            block: Supplier<CompletableFuture<T>>
-        ): CompletableFuture<T> = block.get()
     }
 
     private companion object {

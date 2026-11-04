@@ -72,7 +72,7 @@ cocache:
 | `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)`。事务内见[事务](#transactions)。 |
 | `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 与其它实例的副本保持不变：CoCache 不能在全集群清空一个缓存。每个缓存第一次调用时记录一条 `WARN` 说明这一点。请改为按 key 驱逐。 |
 | `retrieve(key)`（异步与响应式） | 缓存[异步视图](./async.md)上的异步 `lookup`。L2 命中返回已完成的 future，不切换线程；负缓存以 `null` 完成（视为未命中）。 Redis 读取失败时 future 失败，与 `get(key)` 一样（见 [Redis 故障时](#failures)）。 |
-| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | [异步视图](./async.md)上的异步 `get(key, loader)`：与 `get(key, loader)` 一样经受 lease 保护的路径回源，**没有线程等待**异步 loader。方法体在运行时的阻塞执行器（`cocache.blocking-executor`）上执行，所以先阻塞再返回 future 的方法体（如 `completedFuture(repository.find(id))`）不会卡住 CoCache 的异步执行器。方法体看不到调用方的 ThreadLocal。失败时 future 以原始异常完成。 |
+| `retrieve(key, loader)`（`sync = true` 的异步与响应式方法） | [异步视图](./async.md)上的异步 `get(key, loader)`：与 `get(key, loader)` 一样经受 lease 保护的路径回源，**没有线程等待**异步 loader。方法体在运行时的执行器（`cocache.executor`）上执行，不在调用方线程上，所以先阻塞再返回 future 的方法体（如 `completedFuture(repository.find(id))`）占用的是该执行器的一个线程，从不是调用方的线程。方法体看不到调用方的 ThreadLocal。失败时 future 以原始异常完成。 |
 
 ### null 结果 {#null}
 
@@ -109,8 +109,8 @@ starter 随后为 Spring 的缓存拦截器换上 `DegradingCacheErrorHandler`�
 
 `retrieve` 经缓存的[异步视图](./async.md)，不需要单独的执行器：等待加载的调用不占用线程。
 
-- `CoCacheSpringCacheManager(runtime)` 不接收执行器。它以运行时的阻塞执行器（`CacheRuntime.blockingExecutor`）创建每个 `CoCacheSpringCache(cache, admin, executor)`，由该执行器执行 `retrieve(key, loader)` 的方法体。
-- 异步视图在 `cocache.async-executor` 与 `cocache.blocking-executor` 上运行；经 `retrieve` 调用的同步 loader 与异步 `@Cacheable(sync = true)` 方法的方法体都在阻塞执行器上执行。见[配置参考](./configuration.md#executors)。
+- `CoCacheSpringCacheManager(runtime)` 不接收执行器。它以运行时的执行器（`CacheRuntime.executor`）创建每个 `CoCacheSpringCache(cache, admin, executor)`，由该执行器执行 `retrieve(key, loader)` 的方法体。
+- 异步视图在 `cocache.executor` 上运行；经 `retrieve` 调用的同步 loader 与异步 `@Cacheable(sync = true)` 方法的方法体也在那里执行，所以该执行器必须容得下阻塞的任务（默认每个任务一个虚拟线程）。见[配置参考](./configuration.md#executors)。
 
 Spring Cache 的 `put` 与 `evict` 只有阻塞签名。响应式方法上的 `@CachePut`、`@CacheEvict` 与不带 sync 的 `@Cacheable` 会在完成回调中调用它们，占用该线程一次 Redis 往返。请继续使用 `sync = true`；写路径不能阻塞时调用 `cache.async().invalidate(key)`。
 

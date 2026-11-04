@@ -153,7 +153,7 @@ class SuspendingContextTest {
 
     private companion object {
         const val IO_THREAD = "l1-io"
-        const val RUNTIME_THREAD = "cocache-async-"
+        const val RUNTIME_THREAD = "cocache-worker-"
         val TRACE = ThreadLocal<String?>()
     }
 }

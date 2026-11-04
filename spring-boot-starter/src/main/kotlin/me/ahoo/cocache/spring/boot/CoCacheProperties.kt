@@ -99,17 +99,11 @@ data class CoCacheProperties @ConstructorBinding constructor(
      */
     val refreshExecutor: String?,
     /**
-     * 异步视图（`cache.async()`，RFC 0004）续接所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析）；
-     * 只承载短小的非阻塞工作。未设置时运行时自建 `ForkJoinPool`（并行度为 CPU 数，`cocache-async-*`）。
-     * bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
+     * 运行时执行器（阻塞调度器，RFC 0005 §4.4、§5）所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析）：
+     * 异步与挂起视图的续接、共享加载、异步路径上的同步数据源都在这里执行，因此它必须容得下阻塞的任务，不应排队。
+     * 未设置时每个任务一个虚拟线程（`cocache-worker-*`）。bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
      */
-    val asyncExecutor: String? = null,
-    /**
-     * 异步视图上同步数据源所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析），不应排队。
-     * 未设置时每个任务一个虚拟线程。
-     * bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
-     */
-    val blockingExecutor: String? = null,
+    val executor: String? = null,
 ) {
     init {
         // 绑定时就解析每个值：不带单位的时长、写错的哨兵在启动时失败，而不是在第一个用到它的缓存创建时

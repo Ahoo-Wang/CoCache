@@ -62,6 +62,7 @@ import me.ahoo.cocache.core.internal.LoadingKeys
 import me.ahoo.cocache.core.internal.awaitOriginal
 import me.ahoo.cocache.core.internal.awaitUncancellable
 import me.ahoo.cocache.core.internal.ensureNotInterrupted
+import me.ahoo.cocache.core.internal.joinOriginal
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.runsInline
 import me.ahoo.cocache.core.internal.uncancellable
@@ -75,6 +76,7 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -787,6 +789,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             }
         }
         val entry = completeLoad(storageKey, stamp, token, value, prepared.ttl, outcome)
+        if (outcome == FillOutcome.UNKNOWN) {
+            // 先于递增戳登记：迟到的 FILL 在登记之前执行的话，它的帧被过滤，但随后的递增戳挡住已经读过 L1 的读取者（P12）
+            unfilterOwnFrames(listOf(storageKey))
+        }
         if (outcome.possiblyAdvanced) {
             afterAdvancedFill(listOf(storageKey))
         }
@@ -1080,7 +1086,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             } else {
                 CompletableFuture.supplyAsync(
                     { flights.loading(storageKeys) { blocking(source.loader) } },
-                    context.async.blocking
+                    context.async.executor
                 )
                     .awaitOriginal()
             }
@@ -1144,11 +1150,14 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 协程核心的回源观测：默认的 [LoadObserver.NOOP] 直接执行。同步变体经 [LoadObserver.observe]（在调用方线程上），
-     * 异步变体经 [LoadObserver.observeAsync]（从调用 block 到它完成）。
-     *
-     * 同步变体中调用方线程已被中断时不再调用观测器与 block 中的数据源（[ensureNotInterrupted]，RFC 0005 §4.3）：
-     * 观测在嵌套的 `runSync` 中执行，外层协程的取消不会传到那里。
+     * 协程核心的回源观测：默认的 [LoadObserver.NOOP] 直接执行。观测器只有同步的 [LoadObserver.observe]（RFC 0005 §5）：
+     * - 同步变体在调用方线程上调用它。调用方线程已被中断时不再调用观测器与 block 中的数据源（[ensureNotInterrupted]，RFC 0005 §4.3）：
+     *   观测在嵌套的 `runSync` 中执行，外层协程的取消不会传到那里。
+     * - 异步与挂起变体在专用的虚拟线程上调用它（[OBSERVATION]，每次观测一个，从不占用调用方线程），这个线程在观测期间等待 block 结束。
+     *   不用运行时的执行器：等待的线程占住执行器，而 block 的续接要经同一个执行器派发，有界的执行器会因此死锁。
+     *   观测器在调用方的上下文元素（`ThreadContextElement`：MDC、追踪上下文）之下调用，挂起调用方的观测因此接在它自己的观测之下。
+     *   block 在运行时作用域中、从这个线程上开始执行：第一次挂起之前的部分（如调用数据源）看得到观测器设置的线程局部状态
+     *   （Micrometer 的当前观测），运行时关闭时随作用域取消。
      */
     private suspend fun <R> observedLoad(operation: LoadOperation, keyCount: Int, block: suspend () -> R): R {
         ensureNotInterrupted()
@@ -1166,9 +1175,18 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         //   交回之后，调用方在之后的挂起点被取消，持有令牌的步骤据此释放它
         val produced = Produced<R>()
         return try {
-            observer.observeAsync(name, operation, keyCount) {
-                scope.future(caller, CoroutineStart.UNDISPATCHED) { block().also { produced.value = it } }
-            }.awaitUncancellable()
+            CompletableFuture.supplyAsync(
+                {
+                    // 外层协程不挂起，只为在调用观测器期间装上调用方的 ThreadContextElement
+                    scope.future(caller, CoroutineStart.UNDISPATCHED) {
+                        observer.observe(name, operation, keyCount) {
+                            scope.future(caller, CoroutineStart.UNDISPATCHED) { block().also { produced.value = it } }
+                                .joinOriginal()
+                        }
+                    }.joinOriginal()
+                },
+                OBSERVATION
+            ).awaitUncancellable()
         } catch (e: CancellationException) {
             if (produced.isSet) produced.get() else throw e
         }
@@ -1482,6 +1500,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         recordFills(toLoad.keys)
         val filled = fillAllRemote(prepared.fills)
         completeBatch(led, toLoad, values, prepared.ttls, filled, loadStamps, unrefreshable, result)
+        val unknown = filled.filterValues { it == FillOutcome.UNKNOWN }.keys
+        if (unknown.isNotEmpty()) {
+            unfilterOwnFrames(unknown)
+        }
         val advanced = filled.filterValues { it.possiblyAdvanced }.keys
         if (advanced.isNotEmpty()) {
             afterAdvancedFill(advanced)
@@ -2353,10 +2375,22 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
          */
         val TIMED_OUT = Any()
 
+        /**
+         * 异步与挂起变体调用回源观测的线程（[observedLoad]）：每次观测一个虚拟线程，`cocache-observe-N`。
+         */
+        val OBSERVATION: Executor = Thread.ofVirtual().name(OBSERVATION_THREAD_PREFIX, 0).factory().let { threads ->
+            Executor { task -> threads.newThread(task).start() }
+        }
+
         @Suppress("UNCHECKED_CAST")
         fun <R> uncheckedCast(value: Any?): R = value as R
     }
 }
+
+/**
+ * 异步与挂起变体中回源观测线程的名字前缀（`CoherentEngine.observedLoad`）。
+ */
+internal const val OBSERVATION_THREAD_PREFIX = "cocache-observe-"
 
 /**
  * 数据源（RFC 0004 §3.2）：同步数据源或异步数据源。

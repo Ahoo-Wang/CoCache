@@ -87,8 +87,7 @@ cocache:
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
 | `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`：Spring 的缓存拦截器改用 `DegradingCacheErrorHandler`，CoCache 缓存的读写失败只记录日志、不重新抛出，Redis 故障期间不带 sync 的 `@Cacheable` 因此执行方法。失败的失效、其它缓存的失败仍交给原来的处理器。见 [Spring Cache](./spring-cache.md#failures)。 |
 | `cocache.refresh-executor` | bean 名 | 内置 | 执行[提前刷新](./freshness.md#refresh-ahead)回源的 `Executor` bean。见[执行器](#executors)。 |
-| `cocache.async-executor` | bean 名 | 内置 | 执行[异步视图](./async.md)续接的 `Executor` bean。见[执行器](#executors)。 |
-| `cocache.blocking-executor` | bean 名 | 内置 | 执行经异步视图调用的同步 loader 的 `Executor` bean。见[执行器](#executors)。 |
+| `cocache.executor` | bean 名 | 内置 | 执行[异步](./async.md)与[挂起](./coroutines.md)视图的 `Executor` bean：它们的续接、共享加载，以及经它们调用的同步 loader。见[执行器](#executors)。 |
 | `management.health.cocache.enabled` | boolean | `true` | 注册 `cocache` 健康检查（见[下文](#actuator)） |
 | `cocache.observation.enabled` | boolean | `true` | 有 `ObservationRegistry` bean 时把回源包在 Micrometer `Observation` 中。见[链路追踪](../operations/observability.md#tracing)。 |
 | `cocache.metrics.local-hits` | boolean | `false` | 为全部缓存记录 L2 命中数（`cocache.hits{level=l2}`，端点字段 `localHits`）。默认关闭：它给每次 L2 命中加一次原子自增。见[指标](../operations/observability.md#metrics-reads)。 |
@@ -241,17 +240,16 @@ cocache:
 
 ## 执行器 {#executors}
 
-CoCache 在执行器上运行后台工作与异步工作：
+CoCache 在两个执行器上运行后台工作、异步与挂起的工作：
 
 | 工作 | 配置项 | 内置执行器 |
 |------|--------|------------|
 | 提前刷新回源 | `cocache.refresh-executor` | 有界守护线程池（1–4 个线程，队列 1024）。队列满时跳过这次刷新，计入 `cocache.refresh.rejections`。 |
-| [异步视图](./async.md)的续接：解码、填充 L2、发出下一条 Redis 命令、调用 `loadAsync`、完成你拿到的 future | `cocache.async-executor` | 运行时自建的 `ForkJoinPool`，并行度为 CPU 数，守护线程名为 `cocache-async-*` |
-| 经异步视图调用的同步 loader | `cocache.blocking-executor` | 运行时自建，每个任务一个虚拟线程 |
+| [异步](./async.md)与[挂起](./coroutines.md)视图在 Redis 应答或 loader 的 future 完成之后的每一步（解码、填充 L2、发出下一条 Redis 命令、调用 `loadAsync`、完成你拿到的 future）；共享加载；经这两种视图调用的同步 loader；Spring Cache `retrieve(key, loader)` 的方法体 | `cocache.executor` | 运行时自建，每个任务一个虚拟线程，线程名 `cocache-worker-N` |
 
-每个配置项的值都是 `Executor` bean 的**名称**。CoCache 只按名称查找，从不按类型查找。名称没有对应的 bean，或该 bean 不是 `Executor` 时，启动失败，错误信息指明配置项。该执行器归容器管理：关闭 `CacheRuntime` 不会关闭它。
+每个配置项的值都是 `Executor` bean 的**名称**。CoCache 只按名称查找，从不按类型查找。名称没有对应的 bean，或该 bean 不是 `Executor` 时，启动失败，错误信息指明配置项。该执行器归容器管理：关闭 `CacheRuntime` 不会关闭它，容器在运行时之后才销毁它。
 
-Spring Boot 自带的 `applicationTaskExecutor` 可以用于提前刷新，也可以作为阻塞执行器：
+Spring Boot 自带的 `applicationTaskExecutor` 使用虚拟线程时，两者都可以用它：
 
 ```yaml
 spring:
@@ -260,11 +258,11 @@ spring:
       enabled: true          # applicationTaskExecutor 使用虚拟线程
 cocache:
   refresh-executor: applicationTaskExecutor
-  blocking-executor: applicationTaskExecutor
+  executor: applicationTaskExecutor
 ```
 
-::: warning 各执行器能运行什么
-异步执行器只运行短小的非阻塞工作，不要在上面阻塞，例如在续接里调用同步 API。内置的 `ForkJoinPool` 会为在 `join()` 上阻塞的线程补偿线程，你提供的固定大小线程池不会。阻塞执行器运行同步 loader，因此不能排队：一个 loader 可能等待另一次加载。
+::: warning `cocache.executor` 必须容得下阻塞的任务
+它在每个异步与挂起调用的续接旁边运行阻塞的工作（同步 loader、Spring 的方法体）。不要给它队列，也不要只给少量线程：阻塞的 loader 会占住全部线程，而它们等待的续接排在后面；一个 loader 也可能等待另一次加载。请使用虚拟线程，或不排队的平台线程池。JDK 21–23 上，在 `synchronized` 块内阻塞的 loader 会钉住虚拟线程的载体线程（JEP 491 在 JDK 24 修复），因此建议 JDK 24 及以上，或使用平台线程池。阻塞 API 从不使用这个执行器：它的 loader 在调用方线程上执行。链路追踪也不用它：被观测的异步加载在自己的虚拟线程上观测。
 :::
 
 Spring Cache `retrieve` 经异步视图，不在任何线程上等待，也不需要单独的执行器。见 [Spring Cache](./spring-cache.md#executor)。

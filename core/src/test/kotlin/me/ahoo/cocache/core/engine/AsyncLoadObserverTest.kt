@@ -13,8 +13,12 @@
 
 package me.ahoo.cocache.core.engine
 
+import kotlinx.coroutines.ThreadContextElement
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Token
@@ -26,6 +30,7 @@ import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.EngineSpec.TestCodec
 import me.ahoo.cocache.test.Suspending
@@ -33,15 +38,17 @@ import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.function.Supplier
+import kotlin.coroutines.CoroutineContext
 
 /**
- * 异步路径的回源观测（RFC 0004 §8.1）：只有覆盖了 [LoadObserver.observeAsync] 的观测器才会看到异步加载，
- * 观测从调用 block 到其 future 完成；命中路径从不观测。
+ * 异步路径的回源观测（RFC 0005 §5：只有同步的 [LoadObserver.observe]）：观测在专用的虚拟线程上进行（不占用运行时的执行器与调用方线程），
+ * 覆盖整个回源（直到数据源的 future 完成）；数据源的同步部分看得到观测器的线程局部状态；命中路径从不观测。
  */
 class AsyncLoadObserverTest {
     private val clock = ManualClock()
@@ -49,34 +56,47 @@ class AsyncLoadObserverTest {
     private val database = ConcurrentHashMap<String, String>()
     private val runtimes = mutableListOf<CacheRuntime>()
     private val name = "observed-async"
+    private val pending = ConcurrentHashMap<String, CompletableFuture<String?>>()
+    private val seenInScope = CopyOnWriteArrayList<LoadOperation?>()
 
     @Volatile
     private var loadFailure: Throwable? = null
 
     private val source = object : AsyncCacheLoader<String, String> {
-        override fun loadAsync(key: String): CompletableFuture<String?> =
-            loadFailure?.let { CompletableFuture.failedFuture(it) } ?: CompletableFuture.completedFuture(database[key])
+        override fun loadAsync(key: String): CompletableFuture<String?> {
+            seenInScope.add(AsyncRecordingObserver.CURRENT.get())
+            pending[key]?.let { return it }
+            return loadFailure?.let { CompletableFuture.failedFuture(it) } ?: CompletableFuture.completedFuture(database[key])
+        }
 
         override fun loadAllAsync(keys: Collection<String>): CompletableFuture<Map<String, String>> =
             CompletableFuture.completedFuture(keys.mapNotNull { k -> database[k]?.let { k to it } }.toMap())
     }
 
     class AsyncRecordingObserver : LoadObserver {
-        data class Record(val operation: LoadOperation, val keyCount: Int, val error: Throwable?)
+        data class Record(val operation: LoadOperation, val keyCount: Int, val error: Throwable?, val thread: String)
 
         val records = CopyOnWriteArrayList<Record>()
 
-        override fun <T> observe(cacheName: String, operation: LoadOperation, keyCount: Int, block: Supplier<T>): T = block.get()
+        @Suppress("TooGenericExceptionCaught")
+        override fun <T> observe(cacheName: String, operation: LoadOperation, keyCount: Int, block: Supplier<T>): T {
+            val thread = Concurrency.currentThreadName()
+            CURRENT.set(operation)
+            try {
+                return block.get().also { records.add(Record(operation, keyCount, null, thread)) }
+            } catch (e: Throwable) {
+                records.add(Record(operation, keyCount, e, thread))
+                throw e
+            } finally {
+                CURRENT.remove()
+            }
+        }
 
-        override fun <T> observeAsync(
-            cacheName: String,
-            operation: LoadOperation,
-            keyCount: Int,
-            block: Supplier<CompletableFuture<T>>
-        ): CompletableFuture<T> = block.get().whenComplete { _, error ->
-            records.add(
-                Record(operation, keyCount, error)
-            )
+        companion object {
+            /**
+             * 观测期间当前线程上的操作（模拟 Micrometer 的当前观测）。
+             */
+            val CURRENT = ThreadLocal<LoadOperation?>()
         }
     }
 
@@ -117,6 +137,9 @@ class AsyncLoadObserverTest {
         observer.records.map { it.operation to it.keyCount }
             .assert().containsExactly(LoadOperation.LOAD to 1, LoadOperation.LOAD_ALL to 2, LoadOperation.LOAD to 1)
         observer.records.last().error.assert().isSameAs(failure)
+        observer.records.all { it.thread.startsWith(OBSERVATION_THREAD_PREFIX) }
+            .assert().withFailMessage { "observed on ${observer.records.map { it.thread }}" }.isTrue()
+        seenInScope.assert().containsOnly(LoadOperation.LOAD)
     }
 
     @Test
@@ -154,14 +177,86 @@ class AsyncLoadObserverTest {
         observer.records.map { it.operation }.assert().contains(LoadOperation.LEASE_WAIT)
     }
 
+    /**
+     * 观测覆盖整个回源：数据源的 future 完成之前观测不结束，调用方线程不被占用（异步调用立即返回）。
+     */
     @Test
-    fun observersWithoutAsyncSupportSeeNothingOnTheAsyncPath() {
-        val syncOnly = LoadObserverTest.RecordingObserver()
-        val cache = runtime(syncOnly).cache()
+    fun observationCoversTheWholeLoadWithoutBlockingTheCaller() {
+        val observer = AsyncRecordingObserver()
+        val cache = runtime(observer).cache()
+        val loading = CompletableFuture<String?>()
+        pending["k"] = loading
+        val call = cache.get("k")
+        awaitCondition("source called") { seenInScope.isNotEmpty() }
+        call.isDone.assert().isFalse()
+        observer.records.assert().isEmpty()
+        loading.complete("v")
+        call.get(10, TimeUnit.SECONDS).assert().isEqualTo("v")
+        awaitCondition("observation stopped") { observer.records.isNotEmpty() }
+        observer.records.single().error.assert().isNull()
+    }
+
+    /**
+     * 挂起调用方的上下文元素（`ThreadContextElement`：MDC、追踪上下文）在调用观测器时已装上：观测接在调用方的观测之下，
+     * 虽然观测在专用的虚拟线程上进行。
+     */
+    @Test
+    fun observerSeesTheSuspendingCallersThreadContextElements(): Unit = runBlocking<Unit> {
+        val traces = CopyOnWriteArrayList<String?>()
+        val observer = object : LoadObserver {
+            override fun <T> observe(
+                cacheName: String,
+                operation: LoadOperation,
+                keyCount: Int,
+                block: Supplier<T>
+            ): T {
+                traces.add(TraceContext.current.get())
+                return block.get()
+            }
+        }
+        val cache = runtime(observer).create(
+            cacheSpec<String, String>(name) {
+                codec = TestCodec
+                asyncLoader = source
+            }
+        ).suspending()
         database["k"] = "v"
-        cache.get("k").join().assert().isEqualTo("v")
-        syncOnly.records.assert().isEmpty()
-        LoadObserver.NOOP.observeAsync("c", LoadOperation.LOAD, 1) { CompletableFuture.completedFuture("v") }.join()
-            .assert().isEqualTo("v")
+        withContext(TraceContext("trace-1")) {
+            cache.get("k").assert().isEqualTo("v")
+        }
+        traces.assert().containsExactly("trace-1")
+        TraceContext.current.get().assert().isNull()
+    }
+
+    /** 把一个 ThreadLocal 带进协程（与 kotlinx-coroutines-slf4j 的 MDCContext 同一机制）。 */
+    private class TraceContext(private val value: String) : ThreadContextElement<String?> {
+        companion object Key : CoroutineContext.Key<TraceContext> {
+            val current = ThreadLocal<String?>()
+        }
+
+        override val key: CoroutineContext.Key<*> get() = Key
+
+        override fun updateThreadContext(context: CoroutineContext): String? = current.get().also { current.set(value) }
+
+        override fun restoreThreadContext(context: CoroutineContext, oldState: String?) = current.set(oldState)
+    }
+
+    /**
+     * 观测中的回源在运行时关闭时结束：调用以关闭失败，观测记录到取消，lease 照常释放（不留到 `lease.ttl`）。
+     */
+    @Test
+    fun closingTheRuntimeEndsAnObservedLoadAndReleasesTheLease() {
+        val observer = AsyncRecordingObserver()
+        val runtime = runtime(observer)
+        val cache = runtime.cache()
+        pending["k"] = CompletableFuture()
+        val call = cache.get("k")
+        awaitCondition("source called") { seenInScope.isNotEmpty() }
+        runtime.close()
+        call.handle { _, e -> e }.get(10, TimeUnit.SECONDS).assert().isInstanceOf(IllegalStateException::class.java)
+        observer.records.single().error.assert().isInstanceOf(CancellationException::class.java)
+        val store = memory.store(Keyspace("cocache:", name))
+        val read = Suspending.await { store.read("cocache:$name:k", null, null, null) }
+        read.assert().isEqualTo(L1Read.Miss(false))
     }
 }

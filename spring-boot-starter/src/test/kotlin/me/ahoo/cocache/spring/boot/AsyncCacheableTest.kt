@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 返回 `CompletableFuture` 的 `@Cacheable(sync = true)`（Spring `retrieve(key, valueLoader)`，RFC 0004 §8 / §13）：
- * 方法体在阻塞执行器上执行；异步执行器只有一个线程时，嵌套的缓存方法不死锁，先阻塞再返回的方法体也不会饿死其它缓存。
+ * 方法体在运行时的执行器（`cocache.executor`）上执行；嵌套的缓存方法不死锁，先阻塞再返回的方法体也不会饿死其它缓存。
  */
 class AsyncCacheableTest {
     private val runner = ApplicationContextRunner()
@@ -47,8 +47,7 @@ class AsyncCacheableTest {
         .withUserConfiguration(CachingConfig::class.java)
         .withPropertyValues(
             "cocache.backend=memory",
-            "cocache.async-executor=singleAsync",
-            "cocache.blocking-executor=testBlocking",
+            "cocache.executor=testExecutor",
         )
 
     open class InnerService(private val threads: ConcurrentLinkedQueue<String>, private val gate: CountDownLatch) {
@@ -82,15 +81,10 @@ class AsyncCacheableTest {
     @Configuration(proxyBeanMethods = false)
     class CachingConfig {
         @Bean(destroyMethod = "shutdownNow")
-        fun singleAsync(): ExecutorService = Executors.newSingleThreadExecutor {
-            Thread(it, "single-async").apply { isDaemon = true }
-        }
-
-        @Bean(destroyMethod = "shutdownNow")
-        fun testBlocking(): ExecutorService {
+        fun testExecutor(): ExecutorService {
             val counter = AtomicInteger()
             return Executors.newCachedThreadPool {
-                Thread(it, "test-blocking-${counter.incrementAndGet()}").apply { isDaemon = true }
+                Thread(it, "test-exec-${counter.incrementAndGet()}").apply { isDaemon = true }
             }
         }
 
@@ -133,11 +127,11 @@ class AsyncCacheableTest {
         context.getBean("bodyThreads") as ConcurrentLinkedQueue<String>
 
     @Test
-    fun methodBodyRunsOnTheBlockingExecutor() {
+    fun methodBodyRunsOnTheExecutor() {
         runner.run { context ->
             assertThat(context).hasNotFailed()
             context.getBean(InnerService::class.java).find("1").get(5, TimeUnit.SECONDS).assert().isEqualTo("i-1")
-            bodyThreads(context).single().assert().startsWith("test-blocking-")
+            bodyThreads(context).single().assert().startsWith("test-exec-")
             // 命中：不再调用方法体
             context.getBean(InnerService::class.java).find("1").get(5, TimeUnit.SECONDS).assert().isEqualTo("i-1")
             bodyThreads(context).size.assert().isEqualTo(1)
@@ -145,14 +139,14 @@ class AsyncCacheableTest {
     }
 
     @Test
-    fun nestedCacheableDoesNotDeadlockOnASingleThreadAsyncExecutor() {
+    fun nestedCacheableDoesNotDeadlock() {
         runner.run { context ->
             assertThat(context).hasNotFailed()
             val outer = context.getBean(OuterService::class.java)
             // 超时即视为死锁
             outer.composed("1").get(10, TimeUnit.SECONDS).assert().isEqualTo("o-i-1")
             outer.joined(2).get(10, TimeUnit.SECONDS).assert().isEqualTo("j-i-j2")
-            bodyThreads(context).forEach { it.assert().startsWith("test-blocking-") }
+            bodyThreads(context).forEach { it.assert().startsWith("test-exec-") }
             bodyThreads(context).size.assert().isEqualTo(2)
         }
     }
@@ -164,7 +158,7 @@ class AsyncCacheableTest {
             val gate = context.getBean(CountDownLatch::class.java)
             try {
                 val blocked = context.getBean(InnerService::class.java).blocking(1)
-                // 方法体占住一个阻塞线程；唯一的异步线程仍然空闲，其它缓存的异步未命中照常完成
+                // 方法体占住执行器的一个线程；其它缓存的异步未命中照常完成
 
                 @Suppress("UNCHECKED_CAST")
                 val user = context.getBean("user") as Cache<String, String>
