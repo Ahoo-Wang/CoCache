@@ -182,10 +182,13 @@ ExecRelease(c) ==                               \* RELEASE: L is deleted, V and 
       [] l1.st = "L" -> Res(Absent, Rep("ok"), FALSE, 0, FALSE)
       [] OTHER -> Res([l1 EXCEPT !.tok = 0, !.aged = FALSE], Rep("ok"), FALSE, 0, FALSE)
 
+(* PUT_IF_NEWER (also the tombstone of invalidateIfNewer). Stale with the same version still
+   publishes: the equal version may have entered L1 through a fill that did not broadcast, and other
+   nodes would keep older copies (TLA+ finding F1, maintainer's decision 2026-11-03). *)
 ExecPutIfNewer(c) ==
-    IF c.snap > l1.ver
-    THEN Res(Content(c.snap, "write"), Rep("written"), TRUE, c.snap, TRUE)
-    ELSE Quiet([Rep("stale") EXCEPT !.cur = l1.ver])
+    CASE c.snap > l1.ver -> Res(Content(c.snap, "write"), Rep("written"), TRUE, c.snap, TRUE)
+      [] c.snap = l1.ver -> Res(l1, [Rep("stale") EXCEPT !.cur = l1.ver], TRUE, c.snap, FALSE)
+      [] OTHER -> Quiet([Rep("stale") EXCEPT !.cur = l1.ver])
 
 ExecEvict ==                                    \* EVICT_KEEPING_VERSION
     IF l1.ver # NoVer
