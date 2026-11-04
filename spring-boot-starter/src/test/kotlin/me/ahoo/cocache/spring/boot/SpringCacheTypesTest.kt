@@ -130,6 +130,12 @@ class SpringCacheTypesTest {
         @CacheEvict(cacheNames = ["view"], key = "#id")
         open fun evictView(id: String) = Unit
 
+        /**
+         * 不带 `sync`：只报告指向不是 `Cache` 的缓存，不另算 `sync` 的违规。
+         */
+        @Cacheable(cacheNames = ["ledger"], key = "#id")
+        open fun ledger(id: String): String = "l-$id"
+
         @CachePut(cacheNames = ["members", "derived"], key = "#id")
         open fun putMembers(id: String): String = "m-$id"
 
@@ -162,7 +168,12 @@ class SpringCacheTypesTest {
                 assertThat(context).hasFailed()
                 val message = generateSequence(context.startupFailure) { it.cause }.mapNotNull { it.message }
                     .first { it.contains("not a Cache") }
-                message.assert().contains("#record -> [record]", "#evictView -> [view]", "#putMembers -> [members]")
+                message.assert().contains(
+                    "#record -> [record]",
+                    "#evictView -> [view]",
+                    "#putMembers -> [members]",
+                    "#ledger -> [ledger]"
+                )
                 message.assert().doesNotContain("#derived")
             }
         }

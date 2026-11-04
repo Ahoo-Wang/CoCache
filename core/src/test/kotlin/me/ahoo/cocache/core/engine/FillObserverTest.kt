@@ -320,6 +320,39 @@ class FillObserverTest {
             FillKey.of(same, "k").assert().isEqualTo(key)
         }
         FillKey.of(mockk<Cache<String, String>>(), "k").assert().isNull()
+        key.assert().isEqualTo(key)
+        key.assert().isNotEqualTo("k")
+        val elsewhere = runtime.create(
+            cacheSpec<String, String>("elsewhere") {
+                codec = StringCodec
+                loader = CacheLoader { it }
+            }
+        )
+        FillKey.of(elsewhere, "k").assert().isNotEqualTo(key)
+        FillObserver.NONE.enter().assert().isNull()
+        FillObserver.NONE.toString().assert().isEqualTo("FillObserver.NONE")
+    }
+
+    /**
+     * 私有回源不合并、也不等待别的线程领头的同一 key 的加载。
+     */
+    @Test
+    fun privateLoadDoesNotWaitForAnotherCallersFlight() {
+        val loading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val other = fork("other") {
+            cache.get("k") {
+                loading.countDown()
+                release.awaitOrFail("release")
+                "shared"
+            }
+        }
+        loading.awaitOrFail("loading")
+        scope.allPrivate = true
+        observer.current.set(scope)
+        cache.get("k") { "private" }.assert().isEqualTo("private")
+        release.countDown()
+        other.join().assert().isEqualTo("shared")
     }
 
     /**

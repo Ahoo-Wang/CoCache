@@ -13,6 +13,10 @@
 
 package me.ahoo.cocache.spring.tx
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.core.CacheRuntime
@@ -23,15 +27,19 @@ import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.proxy.CacheProxies
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.TransactionSystemException
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
+import org.springframework.transaction.support.TransactionSynchronizationUtils
 import org.springframework.transaction.support.TransactionTemplate
 import java.util.function.Function
 
@@ -186,6 +194,7 @@ class TransactionalFillObserverTest {
         tx.executeWithoutResult {
             manager.write("6", "new")
             invalidator.invalidate(proxy, "6")
+            invalidator.invalidate(users, "6")
             users.inspect("6").local.assert().isNull()
             users["6"].assert().isEqualTo("new")
             users.inspect("6").remote.value.assert().isEqualTo("old")
@@ -253,9 +262,69 @@ class TransactionalFillObserverTest {
             TransactionSynchronizationManager.getSynchronizations().assert().isEmpty()
         }
         users.inspect("11").remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE)
+        // 同步已激活、没有实际事务（SUPPORTS）
+        TransactionTemplate(manager).apply { propagationBehavior = TransactionDefinition.PROPAGATION_SUPPORTS }
+            .executeWithoutResult {
+                users["13"].assert().isNull()
+                TransactionSynchronizationManager.getSynchronizations().assert().isEmpty()
+            }
         manager.write0("12", "committed")
         users["12"].assert().isEqualTo("committed")
         users.gated().assert().isEqualTo(0)
+        TransactionalFillObserver().toString().assert().contains("invalidateFillsOnRollback=true")
+    }
+
+    /**
+     * 事务结束时一个缓存失效失败不影响其余：抛出第一个异常、其余作为 suppressed，Spring 记录 `afterCompletion` 抛出的它；
+     * 回滚到 savepoint 时失效填充失败只记录告警。
+     */
+    @Test
+    fun invalidationFailuresAreAggregatedOrLogged() {
+        val strict = runtime(TransactionalFillObserver()).create(
+            cacheSpec<String, String>("strict") {
+                codec = StringCodec
+                loader = CacheLoader { manager.read(it) }
+                policy = CachePolicy(invalidateFailure = InvalidateFailureMode.THROW)
+            }
+        )
+        val savepointLogs = captureLogs(TransactionalOperations::class.java) {
+            tx.executeWithoutResult {
+                nestedTx.executeWithoutResult { nested ->
+                    manager.write("a", "nested")
+                    strict["a"].assert().isEqualTo("nested")
+                    backend.failAll = true
+                    nested.setRollbackOnly()
+                }
+                backend.failAll = false
+            }
+        }
+        savepointLogs.any { it.level == Level.WARN && it.formattedMessage.contains("savepoint rollback") }
+            .assert().withFailMessage { "savepoint failure not logged: $savepointLogs" }.isTrue()
+
+        val completionLogs = captureLogs(TransactionSynchronizationUtils::class.java) {
+            tx.executeWithoutResult { status ->
+                manager.write("b", "draft")
+                strict["b"].assert().isEqualTo("draft")
+                invalidator.invalidate(strict, "c")
+                backend.failAll = true
+                status.setRollbackOnly()
+            }
+            backend.failAll = false
+        }
+        val failure = requireNotNull(completionLogs.single { it.level == Level.ERROR }.throwableProxy)
+        failure.suppressed.size.assert().isEqualTo(1)
+    }
+
+    private fun captureLogs(type: Class<*>, block: () -> Unit): List<ILoggingEvent> {
+        val logger = LoggerFactory.getLogger(type) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            block()
+        } finally {
+            logger.detachAppender(appender)
+        }
+        return appender.list
     }
 
     /**

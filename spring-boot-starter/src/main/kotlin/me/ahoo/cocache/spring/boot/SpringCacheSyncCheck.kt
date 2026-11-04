@@ -74,13 +74,6 @@ internal class SpringCacheSyncCheck(
         private set
 
     /**
-     * 最近一次检查发现的、指向不是派生副本的 CoCache 缓存的操作（供测试与诊断查看）。
-     */
-    @Volatile
-    var underivedTargets: List<Violation> = emptyList()
-        private set
-
-    /**
      * 最近一次检查发现缓存通知与事务通知的 order 相同时，那个 order；否则为 `null`（供测试与诊断查看）。
      */
     @Volatile
@@ -101,7 +94,6 @@ internal class SpringCacheSyncCheck(
         val underived = underivedNames().intersect(names)
         val (found, misdirected) = scan(sources, names, underived)
         violations = found
-        underivedTargets = misdirected
         check(misdirected.isEmpty()) {
             "Spring Cache operations on CoCache caches that are not a Cache: " +
                 misdirected.joinToString("; ") { "${it.method} -> ${it.cacheNames}" } + ". " +

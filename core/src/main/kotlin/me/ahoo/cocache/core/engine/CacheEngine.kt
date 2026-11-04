@@ -87,13 +87,11 @@ internal class CacheEngine<K : Any, V : Any>(
     }
 
     /**
-     * 事务内记录的填充（[me.ahoo.cocache.core.FillKey.invalidateAll]）：一次失效写入。
+     * 事务内记录的填充（[me.ahoo.cocache.core.FillKey.invalidateAll]，每组至少一个 key）：一次失效写入。
      */
     override fun invalidateEncodedKeys(encodedKeys: List<String>) {
         val storageKeys = encodedKeys.map { storageKeyOf(it) }
-        if (storageKeys.isNotEmpty()) {
-            runSync { invalidateStorageKeys(storageKeys) }
-        }
+        runSync { invalidateStorageKeys(storageKeys) }
     }
 
     override fun async(): AsyncCache<K, V> = asyncView

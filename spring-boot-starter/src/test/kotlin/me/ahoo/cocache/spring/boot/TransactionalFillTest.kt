@@ -187,6 +187,9 @@ class TransactionalFillTest {
             .run { context ->
                 context.getBean("cocacheFillObserver").assert().isSameAs(FillObserver.NONE)
             }
+        runner.withPropertyValues("cocache.invalidate-fills-on-rollback=false").run { context ->
+            context.getBean("cocacheFillObserver").assert().isInstanceOf(TransactionalFillObserver::class.java)
+        }
         runner.withUserConfiguration(OwnObserverConfig::class.java).run { context ->
             assertThat(context).hasNotFailed()
             assertThat(context).doesNotHaveBean("cocacheFillObserver")
