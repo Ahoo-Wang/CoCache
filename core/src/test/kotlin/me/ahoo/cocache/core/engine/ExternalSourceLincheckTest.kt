@@ -157,8 +157,8 @@ class ExternalSourceLincheckTest {
          * 陈旧的读取：`STALE - 读到的版本`。
          */
         const val STALE = -100
-        const val ITERATIONS = 5
-        const val INVOCATIONS = 150
-        const val TARGETED_INVOCATIONS = 500
+        val ITERATIONS = LincheckSupport.budget(full = 5, ci = 1)
+        val INVOCATIONS = LincheckSupport.budget(full = 150, ci = 60)
+        val TARGETED_INVOCATIONS = LincheckSupport.budget(full = 500, ci = 100)
     }
 }

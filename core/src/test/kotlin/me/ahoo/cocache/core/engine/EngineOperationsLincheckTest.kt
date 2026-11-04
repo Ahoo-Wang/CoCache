@@ -48,7 +48,8 @@ import java.util.concurrent.atomic.AtomicIntegerArray
  * 不可线性化为“带版本的数据源”。真实的私有回源只读本事务正在写的 key，所以 [getPrivate] 只检验它对其它读取的影响
  * （不写任何共享层、不留下 lease），不检验它自己的结果。
  *
- * 操作多，每次执行比 [CoherentEngineLincheckTest] 慢得多：随机场景的预算小，主要靠定向场景。
+ * 操作多，每次执行比 [CoherentEngineLincheckTest] 慢得多：随机场景的预算小，主要靠定向场景。写入与调用方取消的定向场景在
+ * [EngineWritesLincheckTest]（单独一个类，`lincheck` 任务按类并行）。
  */
 @Param(name = "key", gen = IntGen::class, conf = "0:1")
 class EngineOperationsLincheckTest {
@@ -206,88 +207,6 @@ class EngineOperationsLincheckTest {
         .check(this::class)
 
     /**
-     * 定向场景：
-     * - `put` 修改 L1 期间并发的读取（写入方的第二次淘汰，`put` 的版本）；
-     * - 写事务中的 leader 与批量读取、私有回源与写入并发（§4.9）；
-     * - `onReset` 与 `clearLocal` 与写入、读取并发。
-     */
-    @Test
-    fun writeInterleavings() = targeted(OPERATION_INVOCATIONS)
-        .addCustomScenario {
-            initial { actor(EngineOperationsLincheckTest::get, 0) }
-            parallel {
-                thread {
-                    actor(EngineOperationsLincheckTest::put, 0)
-                    actor(EngineOperationsLincheckTest::get, 0)
-                }
-                thread { actor(EngineOperationsLincheckTest::get, 0) }
-            }
-        }
-        .addCustomScenario {
-            parallel {
-                thread { actor(EngineOperationsLincheckTest::getInTransaction, 0) }
-                thread {
-                    actor(EngineOperationsLincheckTest::write, 0)
-                    actor(EngineOperationsLincheckTest::getAll, 0)
-                }
-            }
-        }
-        .addCustomScenario {
-            parallel {
-                thread { actor(EngineOperationsLincheckTest::getPrivate, 0) }
-                thread {
-                    actor(EngineOperationsLincheckTest::write, 0)
-                    actor(EngineOperationsLincheckTest::get, 0)
-                }
-            }
-        }
-        .addCustomScenario {
-            initial { actor(EngineOperationsLincheckTest::get, 0) }
-            parallel {
-                thread {
-                    actor(EngineOperationsLincheckTest::reset)
-                    actor(EngineOperationsLincheckTest::get, 0)
-                }
-                thread {
-                    actor(EngineOperationsLincheckTest::write, 0)
-                    actor(EngineOperationsLincheckTest::clearLocal)
-                }
-            }
-        }
-        .check(this::class)
-
-    /**
-     * 定向场景：调用方取消。
-     * - 被中断的同步调用方作为 leader：交还 lease，合并到它的读取自行回源；
-     * - 被取消的挂起调用方作为跟随者：只结束它自己的等待，之后的写入与读取照常（读己之写）。
-     * 之后读到最新的版本，L1 上没有留下 lease（[nothingLeft]）。
-     */
-    @Test
-    fun callerCancellation() = targeted(CANCELLATION_INVOCATIONS)
-        .addCustomScenario {
-            parallel {
-                thread { actor(EngineOperationsLincheckTest::interruptedGet, 0) }
-                thread { actor(EngineOperationsLincheckTest::get, 0) }
-            }
-            post { actor(EngineOperationsLincheckTest::get, 0) }
-        }
-        .addCustomScenario {
-            parallel {
-                thread { actor(EngineOperationsLincheckTest::get, 0) }
-                thread {
-                    actor(EngineOperationsLincheckTest::cancelledGet, 0)
-                    actor(EngineOperationsLincheckTest::write, 0)
-                    actor(EngineOperationsLincheckTest::get, 0)
-                }
-            }
-        }
-        .check(this::class)
-
-    private fun targeted(invocations: Int): ModelCheckingOptions = options(Operations::class.java)
-        .iterations(0)
-        .invocationsPerIteration(invocations)
-
-    /**
      * 顺序规格：带版本的数据源 + 读己之写。读取（任何形式）是当前版本；提交是版本加一；只动本节点副本的操作、私有回源
      * 与被取消的调用没有可检验的效果。
      */
@@ -326,21 +245,28 @@ class EngineOperationsLincheckTest {
         fun cancelledGet(key: Int) = Unit
     }
 
-    private companion object {
-        const val KEYS = 2
+    companion object {
+        /**
+         * 定向场景的选项：只运行给出的场景，每个场景 [invocations] 次执行（[EngineWritesLincheckTest] 共用）。
+         */
+        internal fun targeted(invocations: Int): ModelCheckingOptions = options(Operations::class.java)
+            .iterations(0)
+            .invocationsPerIteration(invocations)
+
+        private const val KEYS = 2
 
         /**
          * [getAll] 一起读的 key：从不写入，版本总是 0。
          */
-        const val STATIC = KEYS
+        private const val STATIC = KEYS
 
         /**
          * [getAll] 读到的 [STATIC] 不是 0：顺序规格从不返回它。
          */
-        const val MIXED = -2
-        const val ITERATIONS = 3
-        const val INVOCATIONS = 100
-        const val OPERATION_INVOCATIONS = 300
-        const val CANCELLATION_INVOCATIONS = 500
+        private const val MIXED = -2
+        private val ITERATIONS = LincheckSupport.budget(full = 3, ci = 1)
+        private val INVOCATIONS = LincheckSupport.budget(full = 100, ci = 50)
+        internal val OPERATION_INVOCATIONS = LincheckSupport.budget(full = 300, ci = 60)
+        internal val CANCELLATION_INVOCATIONS = LincheckSupport.budget(full = 500, ci = 60)
     }
 }

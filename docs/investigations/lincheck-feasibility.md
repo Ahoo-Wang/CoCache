@@ -90,4 +90,10 @@
 | `VersionedCacheLincheckTest` | 86 s |
 | `./gradlew :cocache-core:lincheck` 墙钟（含 Gradle） | 263 s |
 
-墙钟时间取决于最慢的类（M2f 的 `CoherentEngineLincheckTest`）。CI 的 runner 慢得多：M2f 一个类时 CI 作业就要约 10 分钟，补全之后按 4 个 JVM 并行，预计相近。
+以上是完整的预算（`-Plincheck.full`）。CI 的 runner 慢约 4 倍：完整的预算在 CI 上要 19.5 分钟（M2f 一个类时就要约 10 分钟）。
+
+**两种预算**（`LincheckSupport.budget`）：场景（随机与定向）都相同，只是执行次数与随机场景的轮数不同。
+
+- 默认是 CI 的预算：本地 约 1 分钟（4 个 JVM，最慢的一个约 45 s），CI 作业 约 5 分钟（含约 2 分钟的 Gradle 启动与编译）。写入与调用方取消的定向场景另成一类（`EngineWritesLincheckTest`），让 4 个 JVM 的负载更均匀（Gradle 按轮转把类分给 JVM，不按空闲）。
+- `./gradlew :cocache-core:lincheck -Plincheck.full`：上面的完整预算，本地约 5 分钟。改动 flight 层、L2 或失效戳时在本地运行它。
+- CI 的预算下，上面四个注入的缺陷与 M2f 的两个定向场景能发现的缺陷（去掉读己之写的复核、写入方不做第二次淘汰）都仍被发现：本地各在 23–50 s 内发现。M2f 随机场景能发现的两个缺陷（忽略别的节点的失效、去掉 L2 填充的戳校验）在 CI 的随机预算（1 × 100 次调用）下不再保证发现，由确定性多节点仿真与 TLA+ 模型覆盖，完整的预算仍覆盖。

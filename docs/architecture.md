@@ -848,7 +848,7 @@ AOT 处理时，`AnnotatedCacheRegistrar`、`JoinCacheRegistrar`（`ImportBeanDe
   - `StoreLincheckTest`：`Store` 是按 key 的寄存器，读取从不申请 lease（存储记录每次读取的 lease 请求）。
   - `VersionedCacheLincheckTest`：规格“带版本的写入方 + 读快照的 loader”：`putIfNewer`、`invalidateIfNewer`（墓碑）、`evict`（状态 `E`）与 `clearLocal`，写入方之间不加锁。
 
-  Caffeine 的调用与 `InvalidationStamps.invalidateAll` 当作原子步骤，计数与日志忽略。有随机场景，也有对已知竞态穷举交错的定向场景。JaCoCo 的探针与 kotlinx 调试模式的协程编号会让执行无法重放，所以它在单独的 `./gradlew :cocache-core:lincheck` 任务中运行（关闭两者，每个类一个 JVM，至多 4 个并行），不在 `test` 与 `check` 中（本地约 5 分钟）。
+  Caffeine 的调用与 `InvalidationStamps.invalidateAll` 当作原子步骤，计数与日志忽略。有随机场景，也有对已知竞态穷举交错的定向场景。JaCoCo 的探针与 kotlinx 调试模式的协程编号会让执行无法重放，所以它在单独的 `./gradlew :cocache-core:lincheck` 任务中运行（关闭两者，每个类一个 JVM，至多 4 个并行），不在 `test` 与 `check` 中。默认是 CI 的预算（场景相同，执行次数少，本地约 1 分钟）；改动 flight 层、L2 或失效戳时以 `-Plincheck.full` 运行完整的预算（本地约 5 分钟）。
 - TLA+ 模型（`docs/spec/CoCache.tla`，RFC 0005 §4.10，[说明](spec/README.md)）：一个 key 的多节点协议，L1 状态机（`A` / `L` / `V` / `M` / `E`、令牌与版本）、每个节点的 L2 与失效戳（含 `fillGuarded` 的三步与重置的竞态）、不经 SingleFlight 的读取者、可丢失、乱序、重复的失效通道，以数据源的提交历史为裁判。故障：超时之后仍执行的命令、连接替换之后旧连接上的命令晚于新命令执行、令牌的异步释放（K14）、结果未知的写入（P12）、回源失败、L1 与 L2 到期、持有令牌崩溃。TLC 在小规模下穷举全部交错，检验 G2 的 L1 与 L2 条款、读取方看到的 G2、失效不丢失、I-K 的版本单调、P2，以及令牌最终释放与收敛（活性）。CI 的非阻塞作业 `TLC` 运行 `scripts/tlc.sh`（下载固定版本的 `tla2tools.jar` 并校验 SHA-256）；尚未改正的反例在 `Findings*.cfg` 中（`scripts/tlc.sh Findings`），不在 CI 中运行。
 
 `MultiNodeSpec` 的节点是同一进程内共享一个后端的运行时，不覆盖真实的多进程与网络分区。

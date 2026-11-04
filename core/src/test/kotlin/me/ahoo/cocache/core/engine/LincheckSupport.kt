@@ -40,6 +40,17 @@ import java.util.concurrent.Executors
 internal object LincheckSupport {
     const val NAME = "lincheck"
 
+    /**
+     * 完整的预算（`./gradlew :cocache-core:lincheck -Plincheck.full`，本地约 5 分钟）；默认是 CI 的预算（本地约 1 分钟）：
+     * 场景都相同，只是每个场景的执行次数与随机场景的轮数少。
+     */
+    private val FULL: Boolean = System.getProperty("cocache.lincheck.full").toBoolean()
+
+    /**
+     * 按 [FULL] 取预算：完整时 [full]，否则 [ci]。
+     */
+    fun budget(full: Int, ci: Int): Int = if (FULL) full else ci
+
     val CLOCK = CacheClock { 1_700_000_000_000L }
     val OTHER = NodeId(ByteArray(NodeId.SIZE) { 7 })
     private val DIRECT = Executor { it.run() }

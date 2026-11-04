@@ -157,9 +157,9 @@ class VersionedCacheLincheckTest {
     private companion object {
         const val KEYS = 2
         const val ABSENT = -1
-        const val ITERATIONS = 5
-        const val INVOCATIONS = 300
-        const val TARGETED_INVOCATIONS = 500
+        val ITERATIONS = LincheckSupport.budget(full = 5, ci = 1)
+        val INVOCATIONS = LincheckSupport.budget(full = 300, ci = 100)
+        val TARGETED_INVOCATIONS = LincheckSupport.budget(full = 500, ci = 120)
 
         fun versionOf(state: Int): Int = state / 2
 
