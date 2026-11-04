@@ -22,13 +22,15 @@ import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
+import org.springframework.boot.actuate.endpoint.annotation.WriteOperation
 
 /**
- * 缓存运维端点（RFC 0003 §4.14）：列出缓存及其指标、查看单个缓存、清空本节点的 L2、按 key 查看与强制失效。
+ * 缓存运维端点（RFC 0003 §4.14）：列出缓存及其指标、查看单个缓存、清空本节点的 L2、按 key 查看、强制失效与只广播失效帧。
  *
  * 按 key 的操作以**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分）为路径参数，适用于任意 key 类型；
  * key 中可以含 `/`（匹配剩余的全部路径段）。缓存不存在时什么也不做，返回 `null`（[clearLocal] 返回 `false`）：HTTP 上都是 404
- * （DELETE 由 [CoCacheEndpointWebExtension] 映射，否则 web 层把 `null` 映射为 204，拼错的缓存名会静默成功）；空 key 为 HTTP 400。
+ * （DELETE 与 POST 由 [CoCacheEndpointWebExtension] 映射，否则 web 层把 `null` 映射为 204，拼错的缓存名会静默成功）；空 key 为 HTTP 400。
+ * 写操作（DELETE 与 POST）都受 `management.endpoint.cocache.access` 约束：`read-only` 时只保留查看。
  */
 @Endpoint(id = CoCacheEndpoint.ID)
 class CoCacheEndpoint @JvmOverloads constructor(
@@ -117,6 +119,23 @@ class CoCacheEndpoint @JvmOverloads constructor(
         return InvalidationReport(name, encodedKey, admin.keyDeletion)
     }
 
+    /**
+     * 按 key 只广播失效帧，不修改 L1（[CacheAdmin.broadcastEncoded]，RFC 0005 §4.9 运维入口）：各节点（包括本节点）淘汰这个 key 的 L2，
+     * 之后从 L1 重新填充。不删除唯一副本，也不动版本栅栏，因此对任何类型都安全，不需要开关。用于 L1 已经是正确内容、
+     * 只有各节点的 L2 可能陈旧的场合；是 [me.ahoo.cocache.core.ExternalInvalidator.broadcast] 的端点对应物。
+     * 投递至多一次，发布失败时抛出（HTTP 500），可以重试。
+     */
+    @WriteOperation
+    fun broadcast(
+        @Selector name: String,
+        @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>,
+    ): BroadcastReport? {
+        val admin = runtime.admin(name) ?: return null
+        val encodedKey = encodedKeyOf(key)
+        admin.broadcastEncoded(encodedKey)
+        return BroadcastReport(name, encodedKey)
+    }
+
     private fun requireAllowed(allowed: Boolean, name: String, deletion: CacheAdmin.KeyDeletion, switch: String) {
         if (!allowed) {
             throw DeletionNotAllowedException(
@@ -132,6 +151,11 @@ class CoCacheEndpoint @JvmOverloads constructor(
      * @param deletion 这次删除做了什么（按缓存的类型，[CacheAdmin.KeyDeletion]）
      */
     data class InvalidationReport(val cache: String, val key: String, val deletion: CacheAdmin.KeyDeletion)
+
+    /**
+     * 只广播失效帧的结果（[broadcast]）。
+     */
+    data class BroadcastReport(val cache: String, val key: String)
 
     /**
      * 按 key 删除会删除唯一副本，而 [CoCacheEndpointProperties] 没有开启对应的开关：没有修改任何东西。

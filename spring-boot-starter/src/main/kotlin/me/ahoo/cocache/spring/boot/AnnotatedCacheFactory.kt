@@ -39,11 +39,10 @@ import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.proxy.CacheProxies
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.ListableBeanFactory
+import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.core.ResolvableType
 import org.springframework.expression.Expression
 import org.springframework.expression.common.LiteralExpression
-import org.springframework.expression.common.TemplateParserContext
-import org.springframework.expression.spel.standard.SpelExpressionParser
 import tools.jackson.databind.ObjectMapper
 import java.time.Duration
 
@@ -279,7 +278,8 @@ class AnnotatedCacheFactory(
 
     private fun keyEncoderOf(annotation: CoCache?): KeyEncoder<Any> {
         val expression = annotation?.keyExpression?.takeIf { it.isNotBlank() } ?: return KeyEncoder.ofToString()
-        val parsed: Expression = PARSER.parseExpression(expression, TemplateParserContext())
+        val classLoader = (beanFactory as? ConfigurableBeanFactory)?.beanClassLoader
+        val parsed: Expression = SpelTemplates.parse(expression, classLoader)
         // 没有 #{...} 的模板是常量：所有 key 都映射到同一个存储 key
         require(parsed !is LiteralExpression) {
             "@CoCache.keyExpression[$expression] is a constant; use a template such as \"#{#root.id}\"."
@@ -385,8 +385,6 @@ class AnnotatedCacheFactory(
     }
 
     companion object {
-        private val PARSER = SpelExpressionParser()
-
         private val log = LogFactory.getLog(AnnotatedCacheFactory::class.java)
 
         /**

@@ -22,7 +22,6 @@ import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.spring.cache.DegradingCacheErrorHandler
-import me.ahoo.cocache.spring.tx.FillInTransaction
 import me.ahoo.cocache.spring.tx.TransactionAwareSpringCacheManager
 import me.ahoo.cocache.spring.tx.TransactionalFillObserver
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
@@ -157,9 +156,14 @@ class CoCacheAutoConfiguration {
         customizers: ObjectProvider<CacheSpecCustomizer>,
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
-    ): CacheAssembler = CacheAssembler(runtime, customizers.orderedStream().toList(), properties) {
-        CacheBeanDefinitions.declaredCacheNames(beanFactory)
-    }
+        fillModes: ObjectProvider<TransactionalFillModes>,
+    ): CacheAssembler = CacheAssembler(
+        runtime,
+        customizers.orderedStream().toList(),
+        properties,
+        { CacheBeanDefinitions.declaredCacheNames(beanFactory) },
+        fillModes.ifAvailable,
+    )
 
     /**
      * 缓存的装配入口（RFC 0005 §4.8）：接口式声明、spec bean 与库都经它创建缓存，叠加定制器与配置文件（[CacheAssembler]）。
@@ -279,17 +283,22 @@ class CoCacheAutoConfiguration {
         fun cocacheTransactionalInvalidator(): TransactionalInvalidator = TransactionalInvalidator()
 
         /**
-         * 写事务内回源的门控与记录（RFC 0005 §4.9，`cocache.invalidate-fills-on-rollback`、`cocache.fill-in-transaction`），
-         * 由 `cocacheRuntime` 取用。两个机制都关闭时为 [FillObserver.NONE]（不门控、不记录，事务中的 leader 也照常共享结果）。
+         * 写事务内回源的两个机制每个缓存的生效值（`invalidate-fills-on-rollback`、`fill-in-transaction`，按字段分层，RFC 0005 §4.8）：
+         * [CacheAssembler] 在分层时登记，[cocacheFillObserver] 按缓存名读取。声明在 [cocacheFillObserver] 之前：
+         * 两者的条件都是没有其它 `FillObserver`，应用自己声明了回源钩子时两者都不创建，报告也不列出这两个字段。
          */
         @Bean
         @ConditionalOnMissingBean(FillObserver::class)
-        fun cocacheFillObserver(properties: CoCacheProperties): FillObserver {
-            if (!properties.invalidateFillsOnRollback && properties.fillInTransaction == FillInTransaction.ALLOW) {
-                return FillObserver.NONE
-            }
-            return TransactionalFillObserver(properties.invalidateFillsOnRollback, properties.fillInTransaction)
-        }
+        fun cocacheTransactionalFillModes(): TransactionalFillModes = TransactionalFillModes()
+
+        /**
+         * 写事务内回源的门控与记录（RFC 0005 §4.9），由 `cocacheRuntime` 取用。两个机制对一个缓存都关闭时，这个缓存的回源不感知事务
+         * （与 [FillObserver.NONE] 相同：不门控、不记录，事务中的 leader 也照常共享结果）。
+         */
+        @Bean
+        @ConditionalOnMissingBean(FillObserver::class)
+        fun cocacheFillObserver(modes: TransactionalFillModes): FillObserver =
+            TransactionalFillObserver({ modes.invalidateFillsOnRollback(it) }, { modes.fillInTransaction(it) })
     }
 
     companion object {

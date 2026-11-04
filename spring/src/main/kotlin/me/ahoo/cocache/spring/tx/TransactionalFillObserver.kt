@@ -18,6 +18,7 @@ import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.FillScope
 import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.util.function.Function
+import java.util.function.Predicate
 
 /**
  * 写事务内的私有回源（RFC 0005 §4.9 机制 2，`fill-in-transaction`）。只作用于非只读的实际事务内同步变体的回源。
@@ -49,35 +50,46 @@ enum class FillInTransaction {
  * - **机制 1**（[invalidateFillsOnRollback]）：数据源在事务内产生、进入共享层的 key，在回滚、提交结果未知与回滚到 savepoint 时失效。
  * - **机制 2**（[fillInTransaction]）：见 [FillInTransaction]；“已登记”按 (keyspace, 编码 key) 匹配（S24）。私有回源计入 `cocache.fills.gated`。
  *
- * 处于写事务中的调用作为 leader 时，结果不交给事务外的跟随者（S15，由引擎保证）。
+ * 两个机制都按缓存名取值：按缓存分层的配置（RFC 0005 §4.8）在此接入。两者对一个缓存都关闭时，这个缓存的调用不进入事务
+ * （[enter] 返回 `null`），与 [FillObserver.NONE] 相同。处于写事务中的调用作为 leader 时，结果不交给事务外的跟随者（S15，由引擎保证）。
+ * 两个函数在写事务内的每次同步未命中上调用，应当便宜。
  *
- * @param invalidateFillsOnRollback 回滚时失效事务内的填充（`invalidate-fills-on-rollback`，默认开启）
- * @param fillInTransaction 每个缓存的 `fill-in-transaction`（参数是缓存名）：按缓存分层的配置（RFC 0005 §4.8）在此接入
+ * @param invalidateFillsOnRollback 每个缓存的 `invalidate-fills-on-rollback`（参数是缓存名）
+ * @param fillInTransaction 每个缓存的 `fill-in-transaction`（参数是缓存名）
  */
 class TransactionalFillObserver(
-    private val invalidateFillsOnRollback: Boolean,
+    private val invalidateFillsOnRollback: Predicate<String>,
     private val fillInTransaction: Function<String, FillInTransaction>,
 ) : FillObserver {
 
     /**
-     * 所有缓存取同一个 [fillInTransaction]。
+     * 所有缓存取同样的两个值。
      */
     constructor(
         invalidateFillsOnRollback: Boolean = true,
         fillInTransaction: FillInTransaction = FillInTransaction.REGISTERED_KEYS,
-    ) : this(invalidateFillsOnRollback, Function { fillInTransaction })
+    ) : this(Predicate { invalidateFillsOnRollback }, Function { fillInTransaction })
 
-    override fun enter(): FillScope? {
-        if (!TransactionSynchronizationManager.isSynchronizationActive() ||
-            !TransactionSynchronizationManager.isActualTransactionActive() ||
-            TransactionSynchronizationManager.isCurrentTransactionReadOnly()
-        ) {
+    /**
+     * 先看是否处于写事务（线程绑定的状态，便宜），再按缓存名取两个值：事务之外的未命中不查找。两者都关闭时不取事务的登记。
+     */
+    override fun enter(cacheName: String): FillScope? {
+        if (!inWriteTransaction()) {
+            return null
+        }
+        if (!invalidateFillsOnRollback.test(cacheName) && fillInTransaction.apply(cacheName) == FillInTransaction.ALLOW) {
             return null
         }
         return Scope(TransactionalOperations.current())
     }
 
-    override fun toString(): String = "TransactionalFillObserver(invalidateFillsOnRollback=$invalidateFillsOnRollback)"
+    override fun enter(): FillScope? = if (inWriteTransaction()) Scope(TransactionalOperations.current()) else null
+
+    private fun inWriteTransaction(): Boolean = TransactionSynchronizationManager.isSynchronizationActive() &&
+        TransactionSynchronizationManager.isActualTransactionActive() &&
+        !TransactionSynchronizationManager.isCurrentTransactionReadOnly()
+
+    override fun toString(): String = "TransactionalFillObserver"
 
     /**
      * 一次调用捕获的事务：持有这个事务的登记，之后不再读线程绑定的状态。
@@ -90,7 +102,7 @@ class TransactionalFillObserver(
         }
 
         override fun filled(key: FillKey) {
-            if (invalidateFillsOnRollback) {
+            if (invalidateFillsOnRollback.test(key.cacheName)) {
                 operations.filled(key)
             }
         }

@@ -32,7 +32,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue
  * 3. 声明（注解或 spec）；
  * 4. [CacheSpecCustomizer]；
  * 5. `cocache.overrides.cache.*` / `cocache.overrides.store.*`：全局覆盖，**只收紧**：陈旧界限取 min（`ttl` 另钳制按调用给出的寿命），
- *    `read-failure` 取更严的值，其余字段不允许；
+ *    `read-failure`、`fill-in-transaction` 与 `invalidate-fills-on-rollback` 取更严的值，其余字段不允许；
  * 6. `cocache.caches.[name].*`：按缓存设定。
  *
  * `cache` 一节作用于派生副本（`Cache`、`VersionedCache`），`store` 一节作用于权威副本（`Store`、`VersionedStore`、`SetStore`）。
@@ -110,18 +110,6 @@ data class CoCacheProperties @ConstructorBinding constructor(
      * bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
      */
     val blockingExecutor: String? = null,
-    /**
-     * 回滚时失效写事务内的填充（RFC 0005 §4.9 机制 1，默认开启；需要 spring-tx）：非只读的实际事务内，同步读取的数据源产生、
-     * 写入 L1 或 L2 的 key，在事务回滚、提交结果未知或回滚到 savepoint 时失效。代价只在回滚时出现。
-     */
-    @DefaultValue("true")
-    val invalidateFillsOnRollback: Boolean = true,
-    /**
-     * 写事务内的私有回源（RFC 0005 §4.9 机制 2；需要 spring-tx）：`registered-keys`（默认，本事务已登记失效的 key 的回源不写 L1 与 L2、
-     * 不与其它调用方共享）、`private`（写事务内的全部回源）或 `allow`（不门控）。目前作用于所有缓存。
-     */
-    @DefaultValue("registered-keys")
-    val fillInTransaction: FillInTransaction = FillInTransaction.REGISTERED_KEYS,
 ) {
     init {
         // 绑定时就解析每个值：不带单位的时长、写错的哨兵在启动时失败，而不是在第一个用到它的缓存创建时
@@ -229,6 +217,19 @@ data class CoCacheProperties @ConstructorBinding constructor(
          * 不带 loader 的读取在 L1 读失败时：`throw`（默认）或 `absent`。只能写在 `cocache.caches.[name]` 中。
          */
         val unknownRead: UnknownReadMode?,
+        /**
+         * 写事务内的私有回源（RFC 0005 §4.9 机制 2；需要 spring-tx）：`registered-keys`（类型默认值，本事务已登记失效的 key 的回源
+         * 不写 L1 与 L2、不与其它调用方共享）、`private`（写事务内的全部回源）或 `allow`（不门控）。只作用于 `Cache` 与 `VersionedCache`
+         * （含 `get(key, loader)`）；`overrides` 取更严的值（`private` 严于 `registered-keys` 严于 `allow`）。
+         */
+        val fillInTransaction: FillInTransaction?,
+        /**
+         * 回滚时失效写事务内的填充（RFC 0005 §4.9 机制 1；需要 spring-tx；类型默认值 `true`）：非只读的实际事务内，同步读取的数据源产生、
+         * 写入 L1 或 L2 的 key，在事务回滚、提交结果未知或回滚到 savepoint 时失效，代价只在回滚时出现。只作用于 `Cache` 与
+         * `VersionedCache`（含 `get(key, loader)`）；`overrides` 取更严的值（`true` 严于 `false`）。两个机制对一个缓存都关闭时，
+         * 它的回源不感知事务。
+         */
+        val invalidateFillsOnRollback: Boolean?,
         /**
          * 这个缓存的 key 前缀，优先于 `cocache.key-prefix`。只能写在 `cocache.caches.[name]` 中。
          */

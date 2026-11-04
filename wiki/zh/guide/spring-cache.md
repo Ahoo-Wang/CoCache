@@ -143,11 +143,22 @@ classpath 中有 `spring-tx` 时，starter 用 CoCache 的事务装饰器 `Trans
 
 同步读取还会关注它所在的事务。这包括 `@Cacheable(sync = true)`，以及在任何带数据源的 CoCache 缓存上直接调用的 `get`、`lookup`、`getAll` 与 `get(key, loader)`。只作用于 `PlatformTransactionManager` 的读写事务；只读事务、异步与挂起调用、响应式事务都不受影响。
 
-- **回滚时失效事务加载的内容**（`cocache.invalidate-fills-on-rollback`，默认开启）。事务内的加载可能读到你写入但尚未提交的行，并把它缓存到 Redis；Redis 故障时只缓存到本实例的 L2。CoCache 记录事务加载进缓存的每个 key，在事务回滚、提交结果未知，或 `NESTED` 事务回滚到 savepoint 时失效它们。提交时不动它们：那是已提交的数据。不需要登记任何东西，从不调用 `@CacheEvict` 的事务也在覆盖范围内。回滚之前，其它调用方仍可能从 Redis 读到未提交的值：回滚把这个窗口从 `ttl` 缩短到事务的时长。
-- **已登记的 key 私有加载**（`cocache.fill-in-transaction`，默认 `registered-keys`）。一个 key 在事务中登记失效之后（`@CacheEvict`、`TransactionalInvalidator`），同一事务内再次加载它不碰 Redis、L2 与其它调用方：值只交给这次调用，计入 `cocache.fills.gated`。登记时还会立即丢弃本实例的副本，所以事务内的下一次读取未命中，加载到你自己的写入。这不是保证：其它线程可能先把已提交的值放回 L2。`private` 让读写事务内的全部加载都是私有的，L2 未命中的读取因此每次都调用数据源；`allow` 关闭这一机制。
+- **回滚时失效事务加载的内容**（`invalidate-fills-on-rollback`，默认开启）。事务内的加载可能读到你写入但尚未提交的行，并把它缓存到 Redis；Redis 故障时只缓存到本实例的 L2。CoCache 记录事务加载进缓存的每个 key，在事务回滚、提交结果未知，或 `NESTED` 事务回滚到 savepoint 时失效它们。提交时不动它们：那是已提交的数据。不需要登记任何东西，从不调用 `@CacheEvict` 的事务也在覆盖范围内。回滚之前，其它调用方仍可能从 Redis 读到未提交的值：回滚把这个窗口从 `ttl` 缩短到事务的时长。
+- **已登记的 key 私有加载**（`fill-in-transaction`，默认 `registered-keys`）。一个 key 在事务中登记失效之后（`@CacheEvict`、`TransactionalInvalidator`），同一事务内再次加载它不碰 Redis、L2 与其它调用方：值只交给这次调用，计入 `cocache.fills.gated`。登记时还会立即丢弃本实例的副本，所以事务内的下一次读取未命中，加载到你自己的写入。这不是保证：其它线程可能先把已提交的值放回 L2。`private` 让读写事务内的全部加载都是私有的，L2 未命中的读取因此每次都调用数据源；`allow` 关闭这一机制。
 - **其它调用方不共享事务内的加载**。事务内的调用方领头加载时，同一实例上并发的调用方各自加载，而不是拿它可能永远不会提交的结果。
 
-key 按 namespace 与编码后的 key 匹配，所以经接口缓存的代理驱逐，同样覆盖经 `cacheSpec` bean 或 Spring Cache 的读取。两项配置作用于所有缓存。两项都关闭（`invalidate-fills-on-rollback: false` 与 `fill-in-transaction: allow`）时，加载不再关注事务。
+key 按 namespace 与编码后的 key 匹配，所以经接口缓存的代理驱逐，同样覆盖经 `cacheSpec` bean 或 Spring Cache 的读取。两项配置按缓存生效，写在 `cocache.defaults.cache`、`cocache.overrides.cache`（取更严的值）与 `cocache.caches.[name]` 中（见[各层能设置什么](./configuration.md#field-layers)）。对一个缓存两项都关闭（`invalidate-fills-on-rollback: false` 与 `fill-in-transaction: allow`）时，它的加载不再关注事务：
+
+```yaml
+cocache:
+  defaults:
+    cache:
+      fill-in-transaction: private      # 所有缓存：写事务内的加载都是私有的
+  caches:
+    ReportCache:
+      fill-in-transaction: allow        # 这个缓存：不关注事务
+      invalidate-fills-on-rollback: false
+```
 
 ### 提交之后的失败 {#after-commit-failures}
 

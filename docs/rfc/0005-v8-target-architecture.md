@@ -579,10 +579,11 @@ if (!stamps.isValid(storageKey, stamp)) {
 | `local-max-age`、`degraded-local-max-age`、`absent-ttl` | 陈旧界限 | 设定 | 取 min | 设定 |
 | `read-failure` | 模式，`throw` 严于 `degrade` | 设定 | 取更严的值 | 设定 |
 | `fill-in-transaction` | 模式，`private` 严于 `registered-keys` 严于 `allow` | 设定 | 取更严的值 | 设定 |
+| `invalidate-fills-on-rollback` | 模式，`true` 严于 `false` | 设定 | 取更严的值 | 设定 |
 | `invalidate-failure` | 模式，没有严格序 | 设定 | 不允许 | 设定 |
 | `lease-wait`、`load-timeout`、`load-acquire-timeout`、读超时（D6） | 等待界限 | 设定 | 不允许 | 设定 |
-| `ttl`、`tombstone-ttl`（`VersionedCache`、`VersionedStore`） | 版本栅栏的寿命 | 设定 | 不允许 | 设定 |
-| `ttl`（`Store`、`SetStore`） | 寿命即语义 | 不允许 | 不允许 | 设定 |
+| `ttl`（`VersionedCache`）、`tombstone-ttl`（`VersionedCache`、`VersionedStore`） | 版本栅栏的寿命 | 设定 | 不允许 | 设定 |
+| `ttl`（`Store`、`VersionedStore`、`SetStore`） | 寿命即语义（`VersionedStore` 的 `ttl` 同时是版本栅栏的寿命） | 不允许 | 不允许 | 设定 |
 | `ttl-jitter`、`refresh-window`、`lease-ttl`、`load-max-concurrent`、`local-maximum-size` | 其余 | 设定 | 不允许 | 设定 |
 | `unknown-read` | 模式（§4.1） | 不允许 | 不允许 | 设定 |
 
