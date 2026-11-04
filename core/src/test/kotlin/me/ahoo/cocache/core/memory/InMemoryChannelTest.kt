@@ -37,8 +37,11 @@ class InMemoryChannelTest {
         backend.channel.subscribe(Keyspace("cocache:", "ns"), healthy)
         failing.error = AssertionError("listener bug")
 
-        Suspending.await { backend.store(Keyspace("cocache:", "ns")).invalidate(listOf("k"), frameOf("k")) }
-        Suspending.await { backend.channel.publish(Keyspace("cocache:", "ns"), frameOf("k2")) }
+        Suspending.await {
+            backend.store(Keyspace("cocache:", "ns")).invalidate(listOf("cocache:ns:k"), frameOf("cocache:ns:k"))
+        }
+        Suspending.await { backend.channel.publish(Keyspace("cocache:", "ns"), frameOf("cocache:ns:k2")) }
+        // 订阅者收到编码 key（S4）
         healthy.received.assert().containsExactly(listOf("k"), listOf("k2"))
         backend.reconnect()
         healthy.resets.get().assert().isEqualTo(2)
@@ -49,7 +52,7 @@ class InMemoryChannelTest {
             Suspending.await {
                 backend.channel.publish(
                     Keyspace("cocache:", "ns"),
-                    frameOf("k3")
+                    frameOf("cocache:ns:k3")
                 )
             }
         }.exceptionOrNull().assert().isSameAs(fatal)

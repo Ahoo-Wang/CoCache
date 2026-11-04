@@ -82,7 +82,7 @@ class CoherentEngineLincheckTest {
         versions.incrementAndGet(key)
         val storageKey = "cocache:$NAME:$key"
         Suspending.await { store.invalidate(listOf(storageKey), InvalidationFrame.encode(OTHER, listOf(storageKey))) }
-        engine.onInvalidated(listOf(storageKey), OTHER)
+        engine.onInvalidated(listOf("$key"), OTHER)
     }
 
     /**

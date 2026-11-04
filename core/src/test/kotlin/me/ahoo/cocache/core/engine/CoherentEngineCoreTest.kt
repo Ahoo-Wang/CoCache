@@ -23,7 +23,7 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.FutureL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
-import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
@@ -425,24 +425,29 @@ class CoherentEngineCoreTest {
     }
 
     /**
-     * L2 的 key 不含存储前缀（RFC 0005 §4.5）：别的节点的失效帧按存储 key 淘汰本节点的副本。同一 namespace 上其它前缀的 key
-     * （以及比前缀还短的 key）不属于本缓存：既不淘汰编码后同名的副本，也不出错。
+     * L2 的 key 不含存储前缀（RFC 0005 §4.5），订阅者收到的是编码 key（S4）：别的节点按存储 key 发出的帧淘汰本节点编码后同名的副本。
+     * 同一 namespace 上其它前缀的 key（以及比前缀还短的 key）不属于本缓存：通道去掉它们，既不淘汰编码后同名的副本，也不出错。
      */
     @Test
     fun invalidationFramesMapStorageKeysToLocalKeys() {
         val runtime = runtime()
         val cache = runtime.create(spec { loader = CacheLoader { "v-$it" } })
         val metrics = requireNotNull(runtime.metrics("core"))
-        val listener = cache as InvalidationListener
+        val keyspace = Keyspace(CacheSpec.DEFAULT_KEY_PREFIX, "core")
         val other = NodeId.random()
         cache["k"].assert().isEqualTo("v-k")
 
         // 与 `cocache:` 等长的前缀：只按长度剥掉前缀会得到同一个 L2 key
-        listener.onInvalidated(listOf("abcdefg:core:k", "x"), other)
+        Suspending.await {
+            memory.channel.publish(
+                keyspace,
+                InvalidationFrame.encode(other, listOf("abcdefg:core:k", "x"))
+            )
+        }
         cache["k"].assert().isEqualTo("v-k")
         metrics.remoteHits.assert().withFailMessage { "a foreign key evicted the local copy" }.isZero()
 
-        listener.onInvalidated(listOf("cocache:core:k"), other)
+        Suspending.await { memory.channel.publish(keyspace, InvalidationFrame.encode(other, listOf("cocache:core:k"))) }
         cache["k"].assert().isEqualTo("v-k")
         metrics.remoteHits.assert().withFailMessage { "the frame did not evict the local copy" }.isEqualTo(1)
     }

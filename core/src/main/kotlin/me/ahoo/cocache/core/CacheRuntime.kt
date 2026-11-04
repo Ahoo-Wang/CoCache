@@ -202,6 +202,9 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
                     postfix = "]"
                 )}."
         }
+        if (keyspace.keyPrefix.isEmpty()) {
+            log.warn { emptyKeyPrefixWarning(name, keyspace) }
+        }
         return exposed
     }
 
@@ -379,6 +382,13 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
 
         @JvmStatic
         fun builder(): Builder = Builder()
+
+        /**
+         * `keyPrefix` 为空时的启动告警（RFC 0005 §4.7，S4）：存储 key 与频道都没有公共前缀，ACL 与按前缀的运维只能按 namespace 逐个写出。
+         */
+        internal fun emptyKeyPrefixWarning(name: String, keyspace: Keyspace): String =
+            "Cache[$name] - keyPrefix is empty: the keys and the channel of namespace[${keyspace.namespace}] share no prefix, " +
+                "so ACLs and prefix-based operations cannot be scoped by prefix and must name each namespace."
 
         private fun daemonThreads(prefix: String): ThreadFactory {
             val counter = AtomicInteger()

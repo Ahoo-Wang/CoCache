@@ -42,6 +42,7 @@ import java.util.concurrent.TimeUnit
  * - 订阅（含断线重连后 Lettuce 自动重新订阅）得到服务端确认时，重置该频道的所有订阅者。
  * - 读不懂的帧（未知版本、未知类型、解码失败）重置该频道的所有订阅者，不丢弃（D3）：丢弃的就是一次失效。
  * - 心跳：周期性 PING 订阅连接，失败或超时即重置所有订阅者（半开连接期间的事件可能已丢失），并强制断开订阅连接，由 Lettuce 自动重连并重新订阅。
+ * - 订阅者收到编码 key（[Keyspace.encodedKeys]，S4），按订阅的先后依次回调。
  * - 订阅失败时撤销本次创建的频道条目；单个订阅者抛出异常不影响其余订阅者。
  * - 订阅与退订串行执行（[subscriptionLock]），同一连接上的 SUBSCRIBE / UNSUBSCRIBE 因此与频道条目的增删同序。
  *   经典模式不处理服务端的 `unsubscribed`：Redis 不会主动退订经典频道，唯一的退订来自这里，且不会晚于之后的订阅生效；
@@ -55,6 +56,11 @@ internal abstract class RedisInvalidationChannel(
     private val ackTimeout: Duration,
 ) : InvalidationChannel, AutoCloseable {
     protected val listeners = ConcurrentHashMap<String, CopyOnWriteArrayList<InvalidationListener>>()
+
+    /**
+     * 频道 → 它的 keyspace（[channelOf] 是单射），分发时以它把帧中的存储 key 换成编码 key。订阅时登记，不随退订移除。
+     */
+    private val keyspaces = ConcurrentHashMap<String, Keyspace>()
 
     /**
      * 等待中的订阅确认：Lettuce 在命令完成之后才回调确认，订阅方需要等重置真正执行完再返回，
@@ -95,6 +101,7 @@ internal abstract class RedisInvalidationChannel(
 
     override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription {
         val channel = channelOf(keyspace)
+        keyspaces.putIfAbsent(channel, keyspace)
         var joined = false
         val channelListeners = synchronized(subscriptionLock) {
             val existing = listeners[channel]
@@ -247,6 +254,8 @@ internal abstract class RedisInvalidationChannel(
     @Suppress("TooGenericExceptionCaught")
     protected fun dispatch(channel: ByteArray, message: ByteArray) {
         val name = String(channel, Charsets.UTF_8)
+        // 订阅时先登记 keyspace、再登记订阅者：没有 keyspace 的频道也没有订阅者
+        val keyspace = keyspaces[name] ?: return
         val channelListeners = listeners[name] ?: return
         val decoded = try {
             InvalidationFrame.decode(message)
@@ -255,9 +264,10 @@ internal abstract class RedisInvalidationChannel(
             channelListeners.forEach { resetQuietly(name, it) }
             return
         }
+        val keys = keyspace.encodedKeys(decoded.keys)
         channelListeners.forEach { listener ->
             try {
-                listener.onInvalidated(decoded.keys, decoded.origin)
+                listener.onInvalidated(keys, decoded.origin)
             } catch (e: VirtualMachineError) {
                 throw e
             } catch (e: Throwable) {

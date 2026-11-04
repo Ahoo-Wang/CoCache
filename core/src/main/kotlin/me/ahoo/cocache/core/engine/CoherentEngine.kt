@@ -1108,7 +1108,7 @@ internal class CoherentEngine<K : Any, V : Any>(
      * 批量读取 L1，规则同 [readRemote]。
      */
     private suspend fun readAllRemote(keys: List<String>, leases: Map<String, LeaseRequest>): Map<String, L1Read> =
-        uncancellable { store.readAll(keys, leases, null) }
+        uncancellable { store.readAll(keys, leases, policy.readTimeout) }
 
     /**
      * [loadAllThrough] 读到 L1 之后：逐 key 判定，先批量回源并写回，再逐个条件回收损坏的 key。
@@ -1554,7 +1554,7 @@ internal class CoherentEngine<K : Any, V : Any>(
         val conditional = requireConditional("getIfChanged")
         val storageKey = storageKey(key)
         val read = try {
-            uncancellable { conditional.readIfChanged(storageKey, known, null) }
+            uncancellable { conditional.readIfChanged(storageKey, known, policy.readTimeout) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

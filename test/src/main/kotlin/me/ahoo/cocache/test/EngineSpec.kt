@@ -52,6 +52,7 @@ import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -106,6 +107,13 @@ abstract class EngineSpec {
      * 每个用例新建后端的实现应覆盖为 `true`。
      */
     protected open val closesBackend: Boolean = false
+
+    /**
+     * 暂停 [createBackend] 所建后端的 L1 命令，语义同 [BackendProtocolSpec.pause]：暂停期间开始的命令不完成，暂停至少持续
+     * [READ_TIMEOUT] 的 10 倍，关闭返回值即恢复。缓存读取时限（`CachePolicy.readTimeout`，RFC 0005 §4.3，D6）的用例需要它，
+     * 不支持时返回 `null`（默认），该用例跳过。
+     */
+    protected open fun pause(): AutoCloseable? = null
 
     /**
      * 用例需要的能力：[expectedCapabilities] 缺少其中任何一个时跳过这个用例。
@@ -1496,6 +1504,40 @@ abstract class EngineSpec {
     }
 
     /**
+     * 缓存的读取时限（`CachePolicy.readTimeout`，RFC 0005 §4.3，D6）：L1 卡顿时，每次 L1 读取（单 key、批量与条件读取）
+     * 在大约这么长的时间内按 L1 读失败处理，不等后端的命令超时：有数据源的读取降级回源，条件读取抛出 [CacheReadException]。
+     * 需要 [pause]，不支持时跳过。
+     */
+    @Test
+    fun readTimeoutBoundsEveryL1Read() {
+        database["k"] = "v"
+        database["b"] = "w"
+        val cache = nodeA.cache(spec(policy().toBuilder().readTimeout(READ_TIMEOUT).build()))
+        val paused = pause()
+        assumeTrue(paused != null, "${backend.delegate.javaClass.name} cannot be paused.")
+        requireNotNull(paused).use {
+            withinReadTimeout("get") { cache["k"].assert().isEqualTo("v") }
+            withinReadTimeout("getAll") { cache.getAll(listOf("b")).assert().isEqualTo(mapOf("b" to "w")) }
+            if (L1Capability.CONDITIONAL in expectedCapabilities) {
+                withinReadTimeout("getIfChanged") {
+                    runCatching { cache.getIfChanged("c", null) }.exceptionOrNull()
+                        .assert().isInstanceOf(CacheReadException::class.java)
+                }
+            }
+        }
+        nodeA.metrics().remoteFailures.assert().isGreaterThanOrEqualTo(2)
+    }
+
+    private fun withinReadTimeout(operation: String, block: () -> Unit) {
+        val started = System.nanoTime()
+        block()
+        val elapsed = Duration.ofNanos(System.nanoTime() - started)
+        elapsed.assert().withFailMessage { "$operation took $elapsed while L1 was paused." }
+            .isGreaterThanOrEqualTo(READ_TIMEOUT.dividedBy(2))
+            .isLessThan(READ_TIMEOUT_LIMIT)
+    }
+
+    /**
      * 条件读取拿到载荷时同样校验（RFC 0005 §4.7，K3）：摘要段与载荷不一致时抛出 [CacheReadException]（cause 为 [ForeignFormatException]，
      * 本节点的格式），不返回 `Present`。摘要未变的回答只比较头部中的摘要段（成本与载荷大小无关），不重算载荷。
      */
@@ -1820,6 +1862,16 @@ abstract class EngineSpec {
 
     private companion object {
         const val BARRIER_TIMEOUT_SECONDS = 30L
+
+        /**
+         * 读取时限用例的 `readTimeout`。
+         */
+        val READ_TIMEOUT: Duration = Duration.ofMillis(200)
+
+        /**
+         * 读取所用时间的上限：远小于默认的命令超时（2 s），证明时限是缓存的 `readTimeout`，不是命令超时。
+         */
+        val READ_TIMEOUT_LIMIT: Duration = Duration.ofMillis(1500)
 
         /**
          * 计数类用例的命中次数。

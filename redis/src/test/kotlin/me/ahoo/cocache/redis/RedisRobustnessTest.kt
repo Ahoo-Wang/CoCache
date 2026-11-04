@@ -539,7 +539,7 @@ class RedisRobustnessTest {
             awaitCondition("reset and resubscribed to owner") {
                 listener.resets.get() > resetsBefore && channel.subscribedNode(Keyspace("cocache:", namespace)) == ownerAddress
             }
-            val frame = InvalidationFrame.encode(NodeId.random(), listOf("after"))
+            val frame = InvalidationFrame.encode(NodeId.random(), listOf("cocache:$namespace:after"))
             awaitCondition("event after resubscribe") {
                 Suspending.await { channel.publish(Keyspace("cocache:", namespace), frame) }
                 listener.received.contains(listOf("after"))

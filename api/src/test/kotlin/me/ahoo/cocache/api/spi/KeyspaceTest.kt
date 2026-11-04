@@ -31,6 +31,19 @@ class KeyspaceTest {
     }
 
     /**
+     * 订阅者收到的编码 key（S4）：去掉存储前缀，不属于这个 keyspace 的 key（别的前缀、比前缀还短）被去掉，其余顺序不变。
+     */
+    @Test
+    fun encodedKeysStripThePrefixAndDropForeignKeys() {
+        val keyspace = Keyspace("cocache:", "user")
+        keyspace.encodedKeys(listOf("cocache:user:2", "cocache:user:1")).assert().containsExactly("2", "1")
+        keyspace.encodedKeys(listOf("cocache:user:a:b", "app:user:1", "x", "cocache:user:3"))
+            .assert().containsExactly("a:b", "3")
+        keyspace.encodedKeys(emptyList()).assert().isEmpty()
+        Keyspace("", "user").encodedKeys(listOf("user:1", "cocache:user:1")).assert().containsExactly("1")
+    }
+
+    /**
      * 内部 key 的标记 `!` 不在命名空间的字符集中：`{keyPrefix}!…` 不会是任何命名空间的存储 key。
      */
     @Test

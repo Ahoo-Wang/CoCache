@@ -64,6 +64,8 @@ These keys work under both `cocache.defaults.` and `cocache.caches.[name].`.
 | `read-failure` | `degrade` \| `throw` | `degrade` with a loader, `throw` without one | — | A failed Redis read: load from the source, or throw `CacheReadException`. A read without a loader has nothing to load from: by default it throws. Set `degrade` explicitly when "unreadable" is a safe answer, such as a revocation list where a Redis failure means "not revoked": the read then returns `null` and caches nothing, so every read during the failure goes to Redis again. |
 | `key-prefix` | string | `cocache:` | `@CoCache.keyPrefix` | First part of every storage key ([below](#key-prefix)) |
 
+A per-cache read timeout has no property yet: set `CachePolicy.Builder.readTimeout(…)` on the policy. It bounds every Redis read of the cache (`get`, `getAll`, `getIfChanged`) by that duration instead of `command-timeout`, and a read that runs out is a failed Redis read handled by `read-failure`. Without it, reads wait up to `command-timeout`.
+
 How a cache treats content it can't read isn't configurable: a cache with a loader reclaims it and reloads it, and a cache without one, or a `SetCache`, fails the read ([unreadable payloads](../operations/troubleshooting.md#corrupt-payloads)).
 
 [Keeping Data Fresh](./freshness.md#lifetimes) explains how to choose these values.

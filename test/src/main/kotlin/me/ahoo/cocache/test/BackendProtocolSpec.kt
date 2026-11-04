@@ -124,6 +124,11 @@ abstract class BackendProtocolSpec {
 
     protected fun key(): String = keyspace.storageKey(UUID.randomUUID().toString())
 
+    /**
+     * 订阅者收到的编码 key（S4）：存储 key 去掉 keyspace 的前缀。
+     */
+    protected fun encoded(storageKey: String): String = storageKey.removePrefix(keyspace.storagePrefix)
+
     protected fun token(): Token = Token(node, sequence.incrementAndGet())
 
     protected fun lease(token: Token = token(), ttl: Duration = Duration.ofSeconds(30)) = LeaseRequest(token, ttl)
@@ -745,7 +750,7 @@ abstract class BackendProtocolSpec {
             keys.forEach { backend.channel.publish(keyspace, frame(it)) }
         }
         awaitCondition("${keys.size} broadcasts") { received.size >= keys.size }
-        received.all { it.first == listOf(key) && it.second == node }.assert().isTrue()
+        received.all { it.first == listOf(encoded(key)) && it.second == node }.assert().isTrue()
 
         subscription.close()
         val countAfterClose = received.size
@@ -789,8 +794,50 @@ abstract class BackendProtocolSpec {
             backend.channel.publish(keyspace, frame())
             backend.channel.publish(keyspace, frame(key))
             awaitCondition("frames after the unreadable ones") { received.size >= 2 }
-            received.assert().containsExactly(emptyList(), listOf(key))
+            received.assert().containsExactly(emptyList(), listOf(encoded(key)))
             resets.get().assert().isEqualTo(1 + unreadable.size)
+        }
+    }
+
+    /**
+     * 订阅者收到编码 key（RFC 0005 §4.9，S4）：帧中的存储 key 去掉 `{keyPrefix}{namespace}:`，不属于这个 keyspace 的 key 被去掉，
+     * 其余顺序不变。同一 keyspace 的订阅者按订阅的先后依次回调，前一个返回之后才回调下一个：缓存在创建时订阅，
+     * 之后订阅的外部监听者收到通知时，引擎已经淘汰了本地副本。
+     */
+    @Test
+    fun listenersReceiveEncodedKeysInSubscriptionOrder() = l1 {
+        val calls = CopyOnWriteArrayList<String>()
+        val resets = AtomicInteger()
+        fun recording(name: String) = object : InvalidationListener {
+            override fun onInvalidated(keys: List<String>, origin: NodeId) {
+                if (origin == node) {
+                    calls.add("$name:$keys")
+                    calls.add("$name:returned")
+                }
+            }
+
+            override fun onReset() {
+                resets.incrementAndGet()
+            }
+        }
+        backend.channel.subscribe(keyspace, recording("first")).use {
+            backend.channel.subscribe(keyspace, recording("second")).use {
+                awaitCondition("reset on subscribe") { resets.get() >= 2 }
+                val first = UUID.randomUUID().toString()
+                val second = UUID.randomUUID().toString()
+                val foreign = Keyspace("tck-other:", namespace).storageKey(first)
+                backend.channel.publish(
+                    keyspace,
+                    frame(keyspace.storageKey(first), foreign, "x", keyspace.storageKey(second))
+                )
+                awaitCondition("both listeners") { calls.size >= 4 }
+                calls.assert().containsExactly(
+                    "first:[$first, $second]",
+                    "first:returned",
+                    "second:[$first, $second]",
+                    "second:returned"
+                )
+            }
         }
     }
 
@@ -821,8 +868,8 @@ abstract class BackendProtocolSpec {
                 backend.channel.publish(other, frame(theirKey))
                 awaitCondition("both frames") { ours.isNotEmpty() && theirs.isNotEmpty() }
                 // 同一频道上的帧有序：两者共用频道时，对方的订阅者先收到我们的帧，断言确定失败
-                ours.assert().containsExactly(listOf(ourKey))
-                theirs.assert().containsExactly(listOf(theirKey))
+                ours.assert().containsExactly(listOf(encoded(ourKey)))
+                theirs.assert().containsExactly(listOf(theirKey.removePrefix(other.storagePrefix)))
             }
         }
     }
@@ -904,9 +951,10 @@ abstract class BackendProtocolSpec {
             if (!backend.atomicBroadcast) {
                 backend.channel.publish(keyspace, frame)
             }
-            awaitCondition("every key broadcast") { received.flatMap { it.first }.toSet() == keys.toSet() }
+            val encodedKeys = keys.map { encoded(it) }
+            awaitCondition("every key broadcast") { received.flatMap { it.first }.toSet() == encodedKeys.toSet() }
             Thread.sleep(50)
-            received.flatMap { it.first }.sorted().assert().isEqualTo(keys.sorted())
+            received.flatMap { it.first }.sorted().assert().isEqualTo(encodedKeys.sorted())
             received.all { it.second == node }.assert().isTrue()
             keys.forEach { store.read(it, null, null, null).hit().envelope.assert().isEqualTo(scalar(it)) }
         }

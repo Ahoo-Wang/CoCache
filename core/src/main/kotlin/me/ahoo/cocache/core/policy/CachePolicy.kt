@@ -29,6 +29,9 @@ import java.util.concurrent.ThreadLocalRandom
  *   [InvalidateFailureMode.RETRY]，没有数据源时（L1 是唯一副本）[InvalidateFailureMode.THROW]
  * @param readFailure 读取 L1 失败时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ReadFailureMode.DEGRADE]，
  *   没有数据源时（L1 是唯一副本）[ReadFailureMode.THROW]
+ * @param readTimeout 每次 L1 读取（`read`、`readAll`、`readIfChanged`）的时限（RFC 0005 §4.3，D6）；`null`（默认）为后端的命令超时，
+ *   给出时以命令超时为上限（由存储钳制）。超时按 L1 读失败处理（[readFailure]），取得的令牌照常释放。供不能降级回源、
+ *   又要限制 L1 卡顿时每次读取多等多久的缓存使用；写入与运维读取不受它限制
  *
  * 读不懂的 L1 内容（格式号低于本节点格式的、不是本协议写入的、同格式解码失败的）不由策略决定（RFC 0005 §4.7）：
  * 有数据源的读取条件回收后回源，没有数据源的读取失败；更高格式的内容既不回收也不写回。
@@ -45,6 +48,7 @@ class CachePolicy(
     val local: LocalPolicy = LocalPolicy(),
     val invalidateFailure: InvalidateFailureMode? = null,
     val readFailure: ReadFailureMode? = null,
+    val readTimeout: Duration? = null,
 ) {
     init {
         ttl?.let { requirePositive("ttl", it) }
@@ -54,6 +58,7 @@ class CachePolicy(
         requirePositive("absentTtl", absentTtl)
         requirePositive("localMaxAge", localMaxAge)
         requirePositive("degradedLocalMaxAge", degradedLocalMaxAge)
+        readTimeout?.let { requirePositive("readTimeout", it) }
         refreshWindow?.let { window ->
             requirePositive("refreshWindow", window)
             // 窗口不小于（抖动后的最短）寿命时，新副本一出生就处于窗口内，命中会持续触发刷新
@@ -89,7 +94,7 @@ class CachePolicy(
     override fun toString(): String {
         return "CachePolicy(ttl=$ttl, ttlJitter=$ttlJitter, absentTtl=$absentTtl, localMaxAge=$localMaxAge, " +
             "degradedLocalMaxAge=$degradedLocalMaxAge, refreshWindow=$refreshWindow, lease=$lease, load=$load, " +
-            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure)"
+            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure, readTimeout=$readTimeout)"
     }
 
     /**
@@ -107,6 +112,7 @@ class CachePolicy(
         var local: LocalPolicy = policy.local
         var invalidateFailure: InvalidateFailureMode? = policy.invalidateFailure
         var readFailure: ReadFailureMode? = policy.readFailure
+        var readTimeout: Duration? = policy.readTimeout
 
         fun ttl(ttl: Duration?) = apply { this.ttl = ttl }
         fun ttlJitter(ttlJitter: Duration) = apply { this.ttlJitter = ttlJitter }
@@ -124,6 +130,7 @@ class CachePolicy(
         ) = apply { this.invalidateFailure = invalidateFailure }
 
         fun readFailure(readFailure: ReadFailureMode?) = apply { this.readFailure = readFailure }
+        fun readTimeout(readTimeout: Duration?) = apply { this.readTimeout = readTimeout }
 
         fun build(): CachePolicy = CachePolicy(
             ttl = ttl,
@@ -137,6 +144,7 @@ class CachePolicy(
             local = local,
             invalidateFailure = invalidateFailure,
             readFailure = readFailure,
+            readTimeout = readTimeout,
         )
     }
 

@@ -14,8 +14,10 @@
 package me.ahoo.cocache.core
 
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.test.Concurrency.awaitCondition
@@ -24,6 +26,7 @@ import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 class ExternalInvalidatorTest {
     private val database = ConcurrentHashMap<String, String>()
@@ -72,6 +75,48 @@ class ExternalInvalidatorTest {
                     "1"
                 )
             }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+        }
+    }
+
+    /**
+     * 只广播不删除（RFC 0005 §4.9）：L1 原样保留，各节点淘汰 L2 副本之后从 L1 重新填充；没有数据源的缓存的唯一副本因此不丢。
+     * 订阅者收到编码 key（S4）。
+     */
+    @Test
+    fun broadcastEvictsEveryNodeLocalCopyAndKeepsL1() {
+        val memory = InMemoryBackend()
+        CacheRuntime.builder().backend(memory).build().use { node ->
+            val cache = node.create(cacheSpec<String, String>("user") { codec = StringCodec })
+            cache.put("1", "v0")
+            cache["1"].assert().isEqualTo("v0")
+            val received = CopyOnWriteArrayList<List<String>>()
+            val external = object : InvalidationListener {
+                override fun onInvalidated(keys: List<String>, origin: NodeId) {
+                    received.add(keys)
+                }
+
+                override fun onReset() = Unit
+            }
+            val keyspace = Keyspace("cocache:", "user")
+            memory.channel.subscribe(keyspace, external).use {
+                ExternalInvalidator(memory).use { invalidator ->
+                    invalidator.broadcast("user", emptyList())
+                    runCatching { invalidator.broadcast("user", "") }.exceptionOrNull()
+                        .assert().isInstanceOf(IllegalArgumentException::class.java)
+                    invalidator.broadcast("user", "1")
+                    invalidator.close()
+                    runCatching { invalidator.broadcast("user", "1") }.exceptionOrNull()
+                        .assert().isInstanceOf(IllegalStateException::class.java)
+                }
+            }
+            received.assert().containsExactly(listOf("1"))
+            val metrics = requireNotNull(node.metrics("user"))
+            metrics.invalidationsReceived.assert().isEqualTo(1)
+            Suspending.await { memory.store(keyspace).read("cocache:user:1", null, null, null) }
+                .assert().isInstanceOf(L1Read.Hit::class.java)
+            // 本节点的副本已被淘汰：再读一次 L1
+            cache["1"].assert().isEqualTo("v0")
+            metrics.remoteHits.assert().isEqualTo(2)
         }
     }
 
