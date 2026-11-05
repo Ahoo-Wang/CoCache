@@ -6,7 +6,13 @@
 
 ## 1. 8.0 的预发布与 GA
 
-> 状态（2026-11-05）：因额度暂停。进行中的工作都已收尾，没有运行中的基准；两个下游试用 PR 停在草稿。恢复时从本节未勾选的条目继续。
+> 状态（2026-11-05）：因额度暂停，正在为 rc.1 收尾。下一步按顺序：
+> 1. 等 #809、#810 合并（已开自动合并）。
+> 2. PR C（M8c）：`unlimited()` 显式声明不生效（`CachePolicy.Builder.load`）；`Store` 解码不带摘要的版本化值（`digestProblem`）；`SetStore` 读错误未包成 `CacheReadException`（`SetEngine.onHit` / `decode`）；`HookedBackend` 不能对 `evictKeepingVersion` 注入故障；`evict` 被拒时的类型不匹配 WARN 限频。
+> 3. 用户文档会话的四个 PR：用户文档定稿（`docs: finalize the user docs for 8.0`）；12 处过期 KDoc（含 `InvalidationChannel.publish` 的 SPI 说明、`UnknownReadMode` 对 `getVersioned` 生效）；starter：`refresh-window` 接受 YAML 的 `false`、全局 `tombstone-ttl: forever` 跳过并报告；`caches-validation: fail` 时 `cocache.caches.[name]` 下的未知配置项启动失败（维护者决定，2026-11-05）。
+> 4. 全部合并后发 8.0.0-rc.1（changelog 的 `Unreleased` 改为 rc.1），通知 CoSec 与 Wow 复测。
+>
+> 已决定、不改代码：NOPERM 降级为非原子广播并告警（保持）；不检查 Redis 版本（文档改正 7.0 的理由）；自定义 `CacheRuntime` 时事务模式的报告（文档说明）；格式 2 的短 `E` 不自愈（已知限制）；`InMemoryBackend` 参数顺序（不改）。GA 之后：`sharded` 模式频道未确认时每次心跳清空 L2 而健康仍为 UP。
 
 - [x] **8.0.0-alpha.1 已发布**（2026-11-04，#786）：GitHub 预发布、Maven Central 与 GitHub Packages。预发布不作兼容性承诺（CONTRIBUTING）。站点 cocache.ahoo.me 自此从 `main` 部署（#787），`6.x` 不再部署（#788）。
 - [x] **8.0.0-alpha.2 已发布**（2026-11-05，#791）：声明的接口可以继承异步与挂起视图（#789）。Maven Central 可解析（8.x 没有 `cocache-coroutines`，已并入 `cocache-core`）。
@@ -23,7 +29,7 @@
        - [x] `CacheAdmin.keyspace`：运维接口（`cocache-core`）增加只读的 `keyspace`（key 前缀与命名空间），端点的缓存报告输出 `keyPrefix` 与 `namespace`。
   5. **发版**：按 CONTRIBUTING 发 `8.0.0`。changelog 中的预发布条目合并为 `v8.0.0`。线格式自此在 8.x 内冻结（architecture.md 的不变量），兼容性承诺开始生效。
 - [x] **声明的挂起视图接口的代理开销**（GA 前）：原因是 C2 的内联深度上限，不是反射；读取改经绑定到视图的方法句柄转发，代理每次命中多 2.0 ns（原来 10.3 ns），1 线程 218%、8 线程 210%，其余基准不变（[jmh-8.0-ga](investigations/jmh-8.0-ga.md)“后续”）。原来的记录：经 `CacheProxies.ViewHandler` 转发挂起方法，L2 命中从 5.33 ns 增加到 15.65 ns，每次多 10.3 ns（同步接口的代理多 2.5 ns），0 B/op，开销是转发时的 CPU，原因没有 profiling（#793）。异步接口走同一个 `forward` 只多 0.7 ns，所以要先查清挂起方法的转发慢在哪。目标：不超过同步接口代理的 2 倍（约 5 ns）。这是命中路径的改动，要附 `scripts/jmh-compare.sh -b l2HitViaSuspendingInterface,l2HitSuspending,l2HitViaInterface,l2HitViaAsyncInterface,l2HitMixed -t 1,8` 的表。
-- [ ] **8.0.0-alpha.3**：声明的挂起接口的代理开销（#799）、`CacheAdmin.keyspace`（#800）与下游试用发现的文档更正（#792、#798）。发布之后通知 CoSec 与 Wow 升级，复跑各自的测试套件；没有新问题时下一步是 rc。
+- [x] **8.0.0-alpha.3 已发布**（2026-11-05，#801）；CoSec（#1203）与 Wow（#5436）在 alpha.3 上复测通过、没有新问题。原条目：声明的挂起接口的代理开销（#799）、`CacheAdmin.keyspace`（#800）与下游试用发现的文档更正（#792、#798）。发布之后通知 CoSec 与 Wow 升级，复跑各自的测试套件；没有新问题时下一步是 rc。
 
 ## 1a. 6.x 跟进
 
