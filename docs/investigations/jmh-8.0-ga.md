@@ -1,6 +1,6 @@
 # 8.0 GA 性能对比：v6.10.0 → 8.0 代码冻结点
 
-> 状态：完成（2026-11-04）。结论：**RFC 0005 §7 的预算全部满足。** 来源：[RFC 0005](../rfc/0005-v8-target-architecture.md) §7 的预算表；[todo](../todo.md) §0“JMH 延后到 GA 前”（维护者，2026-11-03：开发期间各切片不跑，GA 之前对 v6.10.0 做一次对比）。
+> 状态：完成（2026-11-04）。结论：**RFC 0005 §7 的预算全部满足**，含 GA 前补测的一行（权威缓存的 `Absent` 与外部来源的“未填充”）。声明的挂起视图接口的代理每次命中多约 10 ns，另开优化切片；见文末“补测”。来源：[RFC 0005](../rfc/0005-v8-target-architecture.md) §7 的预算表；[todo](../todo.md) §0“JMH 延后到 GA 前”（维护者，2026-11-03：开发期间各切片不跑，GA 之前对 v6.10.0 做一次对比）。
 
 ## 结论
 
@@ -13,6 +13,7 @@
 | L2 填充（`compute` + 条件复核） | `missLoad` | 1、8 | 未命中路径退化 ≤ 2%（这一项改动单独的增量） | 99.9%、99.3%（#721 对 #720） | 满足（在 M2a 测得，见下） |
 | 条件读取（摘要未变） | `conditionalUnchanged` | 1、8 | Redis 端成本与载荷大小无关 | 1 KB → 8 MB 吞吐变化 ≤ 4.6%（在误差内） | 满足 |
 | `Store` 的 L1 读取 | `authoritativeL1Read` | 1、8 | 成本只在 L1 读取上，L2 命中不变 | 绝对值见下；L2 命中由上面的 L2 行覆盖 | 满足 |
+| 权威缓存的 `Absent` 与外部来源的“未填充”进入 L2 | `l2HitAbsent`、`l2HitUnfilled` 对 `l2Hit`（补测） | 1、8 | 命中成本与普通 L2 命中相同（在噪声之内） | 97.3%–98.7%（每次命中多约 0.1 ns） | 满足（在噪声之内，见“补测”） |
 
 **`missLoad` 对应两行，判定按第 2 行**：
 - 第 2 行（同步变体的 L1 命中与未命中回源，≤ 3%）是 8.0 相对 6.10 的累计预算，包含协程核心、`runBlocking`、L2 填充等全部改动。本次对比测的就是这个累计值：1 线程退化 2.2%，8 线程 1.1%，都在 3% 之内。
@@ -45,7 +46,7 @@
 ### 没有对应基准的行
 
 - **跟随者**（10 000 个异步调用等待同一次加载时不创建线程）：是用例，不是 JMH。
-- **权威缓存的 `Absent` 与外部来源的“未填充”进入 L2**：RFC 列出的新基准 `l2HitAbsent` 在两侧都不存在，没有测。这两种副本与普通副本走同一个 L2 命中路径。
+- **权威缓存的 `Absent` 与外部来源的“未填充”进入 L2**：对比时 `l2HitAbsent` 在两侧都不存在；#785 加入它与 `l2HitUnfilled` 之后在 GA 前补测，见“补测”。
 - **`l1Read`**：RFC 把它列在 L2 填充一行，但它直接读 `RedisL1Store`，不经 L2；L2 填充的成本由 `missLoad` 承担（第 5 行的增量已在 #721 测得）。
 - **`l1BatchViaEngine`**：只有 8.0 有，只记绝对值（见下）。
 - **内存**：是 `MEMORY USAGE` 的对照，不是 JMH，本次不在范围内。
@@ -123,3 +124,57 @@ L2 命中快了一倍以上，主要来自 L2 改按编码后的 key 存取、�
 | `l1BatchViaEngineAsync` | 5,485 ± 727 | 13,998 ± 485 |
 
 同步的批量读在 8 线程下逐次迭代变慢（预热 10,171，测量 9,269 → 8,982 → 7,599），异步的保持在 14,000 左右；1 线程下第一次迭代偏低（4,779，之后约 5,760）。这一项没有预算，也没有复测，作为待查的现象记在这里。
+
+## 补测：`Absent`、未填充与声明的视图接口（2026-11-04）
+
+上面的对比之后，#785 加入了 RFC 0005 §7 列出的 `l2HitAbsent`（权威缓存的 `Absent` 在 L2 中）与 `l2HitUnfilled`（外部来源的“未填充”在 L2 中），#789 让声明的缓存接口可以继承挂起与异步视图（经 `ViewHandler` 转发）。本 PR 在 `CoCacheBenchmark` 中加入三个基准，与被比较的基准同类、同后端、同一种发起方式：
+- `l2HitViaSuspendingInterface`、`l2HitViaAsyncInterface`：经声明的挂起与异步视图接口，放在 `l2HitViaInterface` 旁。
+- `l2HitSuspending`：不经代理的挂起视图，作为挂起接口的参照，引擎的配置与挂起接口相同。
+
+两个挂起基准都经 `startCoroutineUninterceptedOrReturn` 发起，命中时同步返回（命中挂起即失败），测到的是视图与代理，而不是协程的启动。`l2Hit`、`l2HitAbsent`、`l2HitUnfilled` 读同一个 key（`"hot"`，三者是不同的缓存）：L2 按编码后的 key 存取，key 的长度本身就影响命中的成本。
+
+**环境与方法**：
+- 新侧是 `main` 的 c34cc648（#789）加上这三个基准；机器与 JVM 同上；Redis 是新建的 `cocache-redis` 容器（`redis:7-alpine`，7.4.12）。第一次运行紧接在 `./gradlew check` 之后，脚本照常等负载降到 7.2 以下。
+- 只做筛查（3 轮，预热 2 × 2 s，测量 3 × 3 s），`scripts/jmh-compare.sh` 持有本机的锁，1 与 8 线程：
+  1. 两侧都有的基准对 `v8.0.0-alpha.1`：`l2Hit`、`l2HitMixed`、`l2HitViaInterface`（16:54–17:15）。
+  2. 只有新侧才有的基准以 `HEAD` 对 `HEAD`（两侧相同，只取绝对值）：`l2HitViaInterface`、`l2HitViaAsyncInterface`（17:15–17:26），以及不经代理的异步视图 `l2HitAsync`（17:28–17:35）。
+  3. `HEAD` 对 `HEAD`：`l2Hit`、`l2HitAbsent`、`l2HitUnfilled`、`l2HitSuspending`、`l2HitViaSuspendingInterface`（17:41–17:58）。
+  4. 每次分配：`-prof gc`，1 线程，`l2HitSuspending`、`l2HitViaSuspendingInterface`、`l2HitViaInterface` 各一次（同一把锁，17:58）。
+- 前三次共 189 次运行，作废 9 次（CV 超过 3%）；第 1 次运行中读另一个 key 的 `l2HitAbsent`、`l2HitUnfilled` 不再采用。
+- 基准之间的比值按轮配对：目标基准第 k 轮某一侧的值除以参照基准第 k 轮同一侧的值，每格 6 个比值（3 轮 × 2 侧），取中位数与 [min–max]。脚本逐个基准跑完各轮，所以这是同一次运行中不同时刻的两次测量之比。
+
+**`v8.0.0-alpha.1` → c34cc648**（#789 对同步路径没有影响）：
+
+| 基准 | 线程 | new/base 中位数 [min–max] | base 中位数 | new 中位数 | 有效配对 | 单位 |
+|------|-----:|---------------------------|------:|------:|---------:|------|
+| `l2Hit` | 1 | 100.3% [99.7%–101.5%] | 220,229,892 | 220,379,627 | 3/3 | ops/s |
+| `l2Hit` | 8 | 100.7% [98.8%–102.9%] | 1,486,994,248 | 1,497,930,274 | 3/3 | ops/s |
+| `l2HitMixed` | 1 | 97.6% [95.0%–100.9%] | 10,706,178 | 10,490,249 | 3/3 | ops/s |
+| `l2HitMixed` | 8 | 103.4% [101.9%–104.5%] | 22,053,720 | 22,602,577 | 3/3 | ops/s |
+| `l2HitViaInterface` | 1 | 99.9% [99.8%–100.9%] | 142,116,243 | 142,007,436 | 3/3 | ops/s |
+| `l2HitViaInterface` | 8 | 100.0% [99.6%–101.9%] | 972,897,033 | 972,468,770 | 3/3 | ops/s |
+
+**基准之间的比值**（第 3 次运行，每格 6 个按轮配对的比值）：
+
+| 目标 / 参照 | 1 线程 | 8 线程 |
+|------|------|------|
+| `l2HitAbsent` / `l2Hit` | 97.7% [97.2%–98.0%] | 98.7% [97.3%–99.5%] |
+| `l2HitUnfilled` / `l2Hit` | 97.3% [96.7%–98.1%] | 98.1% [95.9%–99.5%] |
+| `l2HitViaSuspendingInterface` / `l2HitSuspending` | 34.0% [33.5%–34.4%] | 33.6% [33.3%–34.6%] |
+
+**每次命中的耗时**（1 线程，1 / 吞吐的中位数）：
+
+| 路径 | 不经代理 | 经声明的接口 | 代理多出的 |
+|------|------:|------:|------:|
+| 同步（`l2Hit` → `l2HitViaInterface`） | 4.48 ns | 7.01 ns | 2.5 ns |
+| 异步视图（`l2HitAsync` → `l2HitViaAsyncInterface`） | 5.77 ns | 6.49 ns | 0.7 ns |
+| 挂起视图（`l2HitSuspending` → `l2HitViaSuspendingInterface`） | 5.33 ns | 15.65 ns | 10.3 ns |
+
+`l2HitAbsent` 4.58 ns，`l2HitUnfilled` 4.61 ns。8 线程的吞吐：`l2Hit` 1,496,053,127，`l2HitAbsent` 1,483,206,344，`l2HitUnfilled` 1,467,618,739，`l2HitSuspending` 1,298,573,203，`l2HitViaSuspendingInterface` 436,787,243，`l2HitViaInterface` 972,517,633，`l2HitViaAsyncInterface` 1,025,696,158，`l2HitAsync` 1,223,601,332 ops/s。
+
+**每次分配**（`-prof gc`，1 线程，`gc.alloc.rate.norm`）：`l2HitSuspending` 0 B/op，`l2HitViaSuspendingInterface` 0 B/op，`l2HitViaInterface` 24 B/op。
+
+**判定**：
+- **权威缓存的 `Absent` 与外部来源的“未填充”（RFC 0005 §7）：满足。** 两者是普通 L2 命中的 97.3%–98.7%，每次多 0.1 ns 左右，在噪声之内（8 线程的同机波动约 ±4%，architecture.md §14）。读不同长度的 key 时测得的 5%–6% 差距来自 key 的长度，不来自 `Absent` 或“未填充”。
+- **声明的异步视图接口：保留。** 比不经代理的异步视图每次多 0.7 ns，比同步接口的命中还快。
+- **声明的挂起视图接口：代理每次命中多 10.3 ns，是挂起视图本身的 2.9 倍，也是同步接口代理（2.5 ns）的 4 倍，超过约 2 倍的门槛。** 它不分配（0 B/op），所以成本在转发这一步的 CPU 上；走同一个 `ViewHandler` 的异步接口只多 0.7 ns。按维护者的安排，优化另开切片，本 PR 不改代码。
