@@ -37,7 +37,7 @@ class RunAsyncTest {
 
     @Test
     fun runAsyncCompletesWithTheResult() {
-        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
+        val context = AsyncContext(ForkJoinPool.commonPool())
         try {
             context.runAsync {
                 yield()
@@ -50,7 +50,7 @@ class RunAsyncTest {
 
     @Test
     fun runAsyncFailsWithTheOriginalException() {
-        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
+        val context = AsyncContext(ForkJoinPool.commonPool())
         val failure = IllegalStateException("boom")
         try {
             failureOf(
@@ -65,13 +65,13 @@ class RunAsyncTest {
     }
 
     /**
-     * 执行器拒绝派发：kotlinx 取消协程，用户拿到的仍是那个 [RejectedExecutionException]（与 6.x 的续接被拒绝一致）。
+     * 执行器拒绝派发：kotlinx 取消协程，用户拿到的仍是那个 [RejectedExecutionException]。
      */
     @Test
     fun rejectedDispatchFailsWithTheRejection() {
         val rejection = RejectedExecutionException("full")
         val rejecting = Executor { throw rejection }
-        val context = AsyncContext(rejecting, rejecting)
+        val context = AsyncContext(rejecting)
         try {
             failureOf(
                 context.runAsync {
@@ -89,7 +89,7 @@ class RunAsyncTest {
      */
     @Test
     fun runAsyncAfterCloseFailsAsClosed() {
-        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
+        val context = AsyncContext(ForkJoinPool.commonPool())
         context.close()
         val failure = failureOf(
             context.runAsync {
@@ -103,7 +103,7 @@ class RunAsyncTest {
 
     @Test
     fun cancellingTheResultDoesNotCancelTheCoroutine() {
-        val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
+        val context = AsyncContext(ForkJoinPool.commonPool())
         val gate = CompletableFuture<String>()
         val finished = CompletableFuture<String>()
         try {

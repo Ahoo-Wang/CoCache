@@ -16,9 +16,14 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.CoCacheFactory
+import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
+import me.ahoo.cocache.spring.cache.DegradingCacheErrorHandler
+import me.ahoo.cocache.spring.tx.TransactionAwareSpringCacheManager
+import me.ahoo.cocache.spring.tx.TransactionalFillObserver
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.ListableBeanFactory
@@ -36,7 +41,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails
 import org.springframework.boot.data.redis.autoconfigure.DataRedisProperties
 import org.springframework.cache.CacheManager
-import org.springframework.cache.transaction.TransactionAwareCacheManagerProxy
+import org.springframework.cache.interceptor.CacheAspectSupport
+import org.springframework.cache.interceptor.CacheErrorHandler
+import org.springframework.cache.interceptor.SimpleCacheErrorHandler
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.env.Environment
@@ -44,6 +51,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.ClassUtils
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.json.JsonMapper
+import java.time.Duration
 import java.util.concurrent.Executor
 
 /**
@@ -112,7 +120,9 @@ class CoCacheAutoConfiguration {
      * 有唯一的 [CacheClock] bean 时运行时使用它（否则运行时自建 `TickingClock`）。
      * 设置了 `cocache.refresh-executor` 时按 bean 名取得提前刷新执行器（否则运行时自建并管理内置执行器）。
      * 有唯一的 [LoadObserver] bean（如 [CoCacheObservationAutoConfiguration] 注册的 Micrometer 观测器）时用它观测回源。
+     * 有唯一的 [FillObserver] bean（有 spring-tx 时的 [TransactionalFillObserver]）时用它门控与记录写事务内的回源。
      * `cocache.metrics.local-hits=true` 时记录 L2 命中数（默认关闭，见 `CacheRuntime.Builder.recordLocalHits`）。
+     * 关闭时等待在途 L1 步骤的上限取自 `cocache.redis.command-timeout`（[closeTimeoutOf]，K17）。
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
@@ -121,6 +131,7 @@ class CoCacheAutoConfiguration {
         backend: CoherenceBackend,
         clock: ObjectProvider<CacheClock>,
         loadObserver: ObjectProvider<LoadObserver>,
+        fillObserver: ObjectProvider<FillObserver>,
         properties: CoCacheProperties,
         beanFactory: ListableBeanFactory,
         environment: Environment,
@@ -129,13 +140,12 @@ class CoCacheAutoConfiguration {
             .recordLocalHits(environment.getProperty(LOCAL_HITS_PROPERTY, Boolean::class.java, false))
         clock.ifUnique?.let { builder.clock(it) }
         loadObserver.ifUnique?.let { builder.loadObserver(it) }
+        fillObserver.ifUnique?.let { builder.fillObserver(it) }
         properties.refreshExecutor?.let {
             builder.refreshExecutor(executorBean(beanFactory, REFRESH_EXECUTOR_PROPERTY, it))
         }
-        properties.asyncExecutor?.let { builder.asyncExecutor(executorBean(beanFactory, ASYNC_EXECUTOR_PROPERTY, it)) }
-        properties.blockingExecutor?.let {
-            builder.blockingExecutor(executorBean(beanFactory, BLOCKING_EXECUTOR_PROPERTY, it))
-        }
+        properties.executor?.let { builder.executor(executorBean(beanFactory, EXECUTOR_PROPERTY, it)) }
+        builder.closeTimeout(closeTimeoutOf(properties.redis))
         return builder.build()
     }
 
@@ -146,19 +156,45 @@ class CoCacheAutoConfiguration {
         customizers: ObjectProvider<CacheSpecCustomizer>,
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
-    ): CacheAssembler = CacheAssembler(runtime, customizers.orderedStream().toList(), properties) {
-        CacheBeanDefinitions.declaredCacheNames(beanFactory)
-    }
+        fillModes: ObjectProvider<TransactionalFillModes>,
+    ): CacheAssembler = CacheAssembler(
+        runtime,
+        customizers.orderedStream().toList(),
+        properties,
+        { CacheBeanDefinitions.declaredCacheNames(beanFactory) },
+        fillModes.ifAvailable,
+    )
+
+    /**
+     * 缓存的装配入口（RFC 0005 §4.8）：接口式声明、spec bean 与库都经它创建缓存，叠加定制器与配置文件（[CacheAssembler]）。
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(CacheAssembler::class)
+    fun cocacheFactory(
+        runtime: CacheRuntime,
+        assembler: CacheAssembler
+    ): CoCacheFactory = CoCacheFactory(runtime, assembler)
+
+    /**
+     * 未分层的缓存上不生效的 `cocache.caches.[name]` 告警（S20）。
+     */
+    @Bean
+    @ConditionalOnBean(CacheRuntime::class)
+    fun cocacheUnlayeredConfigurationCheck(
+        runtime: CacheRuntime,
+        properties: CoCacheProperties,
+    ): UnlayeredConfigurationCheck = UnlayeredConfigurationCheck(runtime, properties)
 
     @Bean
-    @ConditionalOnBean(CacheAssembler::class)
+    @ConditionalOnBean(CoCacheFactory::class)
     fun cocacheAnnotatedCacheFactory(
         beanFactory: ListableBeanFactory,
-        assembler: CacheAssembler,
+        factory: CoCacheFactory,
         mappers: ObjectProvider<ObjectMapper>,
     ): AnnotatedCacheFactory = AnnotatedCacheFactory(
         beanFactory,
-        assembler,
+        factory,
         mappers.getIfAvailable { JsonMapper.builder().findAndAddModules().build() }
     )
 
@@ -167,27 +203,44 @@ class CoCacheAutoConfiguration {
     @ConditionalOnBean(CacheRuntime::class)
     fun cocacheCacheManager(
         runtime: CacheRuntime,
-        properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
+        cacheAspects: ObjectProvider<CacheAspectSupport>,
     ): CacheManager {
-        // 6.3 起 retrieve 经异步视图，不再使用执行器：旧配置项只告警
-        properties.springCache.retrieveExecutor?.let {
-            log.warn(
-                "$RETRIEVE_EXECUTOR_PROPERTY=$it is deprecated since 6.3 and ignored: Spring Cache retrieve uses the async view " +
-                    "and no executor. Remove it; see ${CoCacheProperties.PREFIX}.async-executor and ${CoCacheProperties.PREFIX}.blocking-executor."
-            )
-        }
         val manager = CoCacheSpringCacheManager(runtime)
-        // 有 spring-tx 时把 put / evict / clear 推迟到事务提交之后：提交前失效会让并发回源读到旧数据（G2）
+        // 有 spring-tx 时经 CoCache 的事务装饰器：evict 提交与回滚都失效，put / clear 推迟到提交之后（RFC 0005 §4.9）
         if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, beanFactory.beanClassLoader)) {
             return manager
         }
-        return TransactionAwareCacheManagerProxy(manager)
+        // 事务结束之后的失败交给缓存通知的 CacheErrorHandler（S18）。失败时才取得：此时缓存通知已经配置完成，
+        // 也看得到 degrade-on-error 换上的处理器
+        return TransactionAwareSpringCacheManager(manager) { cacheErrorHandler(cacheAspects) }
     }
 
     /**
-     * 启动时检查指向 CoCache 缓存的 `@Cacheable` 是否声明了 `sync = true`（`cocache.spring-cache.require-sync`）。
-     * 没有 `@EnableCaching`（没有 `CacheOperationSource`）时什么也不做。
+     * `cocache.spring-cache.degrade-on-error=true`：缓存通知（[CacheAspectSupport]）改用 [DegradingCacheErrorHandler]，
+     * 原来的处理器（`CachingConfigurer.errorHandler()` 给出的，或 Spring 默认的 [SimpleCacheErrorHandler]）处理其它缓存，
+     * 以及 CoCache 缓存的失效与清空失败。
+     *
+     * 在全部单例创建之后替换：缓存通知的处理器由 `CachingConfigurer` 延迟解析，提前取得会提前创建它。
+     * 已经是 [DegradingCacheErrorHandler] 的（应用自己配置了）不再包装。
+     */
+    @Bean
+    @ConditionalOnBean(CacheRuntime::class)
+    @ConditionalOnProperty(prefix = SPRING_CACHE_PREFIX, name = ["degrade-on-error"], havingValue = "true")
+    fun cocacheDegradingCacheErrorHandler(
+        cacheAspects: ObjectProvider<CacheAspectSupport>,
+    ): SmartInitializingSingleton = SmartInitializingSingleton {
+        cacheAspects.orderedStream().forEach { aspect ->
+            val current = aspect.errorHandler
+            if (current !is DegradingCacheErrorHandler) {
+                aspect.errorHandler = DegradingCacheErrorHandler(current)
+            }
+        }
+    }
+
+    /**
+     * 启动时检查指向 CoCache 缓存的 `@Cacheable` 是否声明了 `sync = true`（`cocache.spring-cache.require-sync`），
+     * 指向不是派生副本 `Cache` 的缓存的操作一律启动失败。没有 `@EnableCaching`（没有 `CacheOperationSource`）时什么也不做。
      */
     @Bean
     @ConditionalOnBean(CacheRuntime::class)
@@ -195,26 +248,29 @@ class CoCacheAutoConfiguration {
         runtime: CacheRuntime,
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
-    ): SmartInitializingSingleton = SpringCacheSyncCheck(beanFactory, properties.springCache.requireSync) {
-        runtime.cacheNames + CacheBeanDefinitions.declaredCacheNames(beanFactory)
-    }
+    ): SmartInitializingSingleton = SpringCacheSyncCheck(
+        beanFactory,
+        properties.springCache.requireSync,
+        { runtime.cacheNames + CacheBeanDefinitions.declaredCacheNames(beanFactory) },
+        { SpringCacheSyncCheck.underivedCacheNames(runtime, beanFactory) },
+    )
 
     /**
-     * 有 `SetCache`（含尚未创建的声明）时检查 Redis 的 `maxmemory-policy` 会不会驱逐集合的唯一副本
-     * （`cocache.redis.set-cache-eviction-check`、`cocache.redis.assume-maxmemory-policy`）。
+     * 有权威副本（`Store`、`VersionedStore`、`SetStore`，含尚未创建的声明）时检查 Redis 的 `maxmemory-policy` 会不会驱逐唯一副本
+     * （`cocache.redis.store-eviction-check`、`cocache.redis.assume-maxmemory-policy`）。
      */
     @Bean
     @ConditionalOnBean(CacheRuntime::class)
-    fun cocacheSetCacheEvictionCheck(
+    fun cocacheStoreEvictionCheck(
         runtime: CacheRuntime,
         backend: CoherenceBackend,
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
-    ): SmartInitializingSingleton = SetCacheEvictionCheck(
+    ): SmartInitializingSingleton = StoreEvictionCheck(
         backend,
-        properties.redis.setCacheEvictionCheck,
+        properties.redis.storeEvictionCheck,
         properties.redis.assumeMaxmemoryPolicy,
-    ) { SetCacheEvictionCheck.declaredSetCaches(runtime, beanFactory) }
+    ) { StoreEvictionCheck.declaredStores(runtime, beanFactory) }
 
     /**
      * 事务内失效登记到提交之后执行（有 spring-tx 时启用）。
@@ -225,17 +281,45 @@ class CoCacheAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean
         fun cocacheTransactionalInvalidator(): TransactionalInvalidator = TransactionalInvalidator()
+
+        /**
+         * 写事务内回源的两个机制每个缓存的生效值（`invalidate-fills-on-rollback`、`fill-in-transaction`，按字段分层，RFC 0005 §4.8）：
+         * [CacheAssembler] 在分层时登记，[cocacheFillObserver] 按缓存名读取。声明在 [cocacheFillObserver] 之前：
+         * 两者的条件都是没有其它 `FillObserver`，应用自己声明了回源钩子时两者都不创建，报告也不列出这两个字段。
+         */
+        @Bean
+        @ConditionalOnMissingBean(FillObserver::class)
+        fun cocacheTransactionalFillModes(): TransactionalFillModes = TransactionalFillModes()
+
+        /**
+         * 写事务内回源的门控与记录（RFC 0005 §4.9），由 `cocacheRuntime` 取用。两个机制对一个缓存都关闭时，这个缓存的回源不感知事务
+         * （与 [FillObserver.NONE] 相同：不门控、不记录，事务中的 leader 也照常共享结果）。
+         */
+        @Bean
+        @ConditionalOnMissingBean(FillObserver::class)
+        fun cocacheFillObserver(modes: TransactionalFillModes): FillObserver =
+            TransactionalFillObserver({ modes.invalidateFillsOnRollback(it) }, { modes.fillInTransaction(it) })
     }
 
     companion object {
         private val log = LogFactory.getLog(CoCacheAutoConfiguration::class.java)
         private const val TRANSACTION_SYNCHRONIZATION = "org.springframework.transaction.support.TransactionSynchronizationManager"
+        private const val SPRING_CACHE_PREFIX = "${CoCacheProperties.PREFIX}.spring-cache"
+        private val SIMPLE_ERROR_HANDLER = SimpleCacheErrorHandler()
         internal const val REFRESH_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.refresh-executor"
         internal const val LOCAL_HITS_PROPERTY = "${CoCacheProperties.PREFIX}.metrics.local-hits"
-        internal const val RETRIEVE_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.spring-cache.retrieve-executor"
-        internal const val ASYNC_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.async-executor"
-        internal const val BLOCKING_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.blocking-executor"
+        internal const val EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.executor"
         internal const val RUNTIME_BEAN = "cocacheRuntime"
+
+        /**
+         * 关闭时等待在途 L1 步骤的上限（RFC 0005 §4.4、K17）：`cocache.redis.command-timeout` 的两倍（在途的那条命令，
+         * 加上随后不可取消的一步：释放令牌或补发广播），不小于运行时的默认值。命令超时高于默认值时，关闭因此不会在在途的命令结束之前返回。
+         */
+        internal fun closeTimeoutOf(redis: CoCacheProperties.Redis): Duration = maxOf(
+            CacheRuntime.DEFAULT_CLOSE_TIMEOUT,
+            ConfigValues.positiveDuration("${CoCacheProperties.PREFIX}.redis.command-timeout", redis.commandTimeout)
+                .multipliedBy(2)
+        )
 
         /**
          * 按 bean 名（不按类型：避免多个组件意外共用同一个有状态 bean）取得执行器；
@@ -257,19 +341,14 @@ class CoCacheAutoConfiguration {
             return executor
         }
 
+        /**
+         * 缓存通知的 [CacheErrorHandler]；没有唯一的缓存通知（没有 `@EnableCaching`）时是 Spring 默认的 [SimpleCacheErrorHandler]。
+         */
+        internal fun cacheErrorHandler(cacheAspects: ObjectProvider<CacheAspectSupport>): CacheErrorHandler =
+            cacheAspects.getIfUnique()?.errorHandler ?: SIMPLE_ERROR_HANDLER
+
         @Bean
         @JvmStatic
         fun cocacheSpecRegistrar(): BeanFactoryPostProcessor = CacheSpecRegistrar()
-
-        /**
-         * 尽早（容器后处理阶段，任何缓存创建之前）拒绝 5.x 已删除的配置项。
-         */
-        @Bean
-        @JvmStatic
-        fun cocacheRemovedPropertiesCheck(
-            environment: Environment
-        ): BeanFactoryPostProcessor = BeanFactoryPostProcessor {
-            RemovedProperties.check(environment)
-        }
     }
 }

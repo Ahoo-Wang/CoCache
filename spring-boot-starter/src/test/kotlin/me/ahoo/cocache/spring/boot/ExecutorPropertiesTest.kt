@@ -38,8 +38,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * `cocache.refresh-executor`、`cocache.async-executor`、`cocache.blocking-executor`：按 bean 名解析、实际被使用、名称错误时启动失败；
- * 已弃用的 `cocache.spring-cache.retrieve-executor` 被忽略（6.3 起 `retrieve` 经异步视图，不使用执行器）。
+ * `cocache.refresh-executor`、`cocache.executor`：按 bean 名解析、实际被使用、名称错误时启动失败。
  */
 class ExecutorPropertiesTest {
     private val runner = ApplicationContextRunner()
@@ -90,13 +89,7 @@ class ExecutorPropertiesTest {
         fun refreshRecorder(): RecordingExecutor = RecordingExecutor()
 
         @Bean
-        fun retrieveRecorder(): RecordingExecutor = RecordingExecutor()
-
-        @Bean
-        fun asyncRecorder(): RecordingExecutor = RecordingExecutor()
-
-        @Bean
-        fun blockingRecorder(): RecordingExecutor = RecordingExecutor()
+        fun executorRecorder(): RecordingExecutor = RecordingExecutor()
 
         @Bean
         fun notAnExecutor(): StringBuilder = StringBuilder("plain")
@@ -142,17 +135,14 @@ class ExecutorPropertiesTest {
     fun propertiesBindAndDefaultToNull() {
         runner.withPropertyValues(
             "cocache.refresh-executor=refreshRecorder",
-            "cocache.spring-cache.retrieve-executor=retrieveRecorder",
         ).withUserConfiguration(ExecutorConfig::class.java).run { context ->
             assertThat(context).hasNotFailed()
             val properties = context.getBean(CoCacheProperties::class.java)
             properties.refreshExecutor.assert().isEqualTo("refreshRecorder")
-            properties.springCache.retrieveExecutor.assert().isEqualTo("retrieveRecorder")
         }
         runner.run { context ->
             val properties = context.getBean(CoCacheProperties::class.java)
             properties.refreshExecutor.assert().isNull()
-            properties.springCache.retrieveExecutor.assert().isNull()
             properties.springCache.requireSync.assert().isFalse()
         }
     }
@@ -166,7 +156,6 @@ class ExecutorPropertiesTest {
                 triggerRefresh(context)
                 // 记录执行器在调用方线程上执行刷新：回源同步完成
                 context.getBean("refreshRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(1)
-                context.getBean("retrieveRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(0)
                 loaderThreads(context).toList().assert().containsExactly(
                     Concurrency.currentThreadName(),
                     Concurrency.currentThreadName()
@@ -186,56 +175,32 @@ class ExecutorPropertiesTest {
     }
 
     @Test
-    fun deprecatedRetrieveExecutorIsIgnored() {
-        runner.withPropertyValues("cocache.spring-cache.retrieve-executor=retrieveRecorder")
-            .withUserConfiguration(ExecutorConfig::class.java)
-            .run { context ->
-                assertThat(context).hasNotFailed()
-                val manager = context.getBean(CacheManager::class.java)
-                // 事务感知包装保持不变
-                (manager is org.springframework.cache.transaction.TransactionAwareCacheManagerProxy).assert().isTrue()
-                val cache = requireNotNull(manager.getCache("user"))
-                retrieveValue(cache, "1").assert().isEqualTo("user-1")
-                cache.retrieve("2") { java.util.concurrent.CompletableFuture.completedFuture("ignored") }
-                    .get(5, TimeUnit.SECONDS).assert().isEqualTo("ignored")
-                context.getBean("retrieveRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(0)
-            }
-        // 弃用的配置项只告警：名称不存在也不再导致启动失败
-        runner.withPropertyValues("cocache.spring-cache.retrieve-executor=missingRetrieve").run { context ->
-            assertThat(context).hasNotFailed()
-        }
-    }
-
-    @Test
     fun retrieveUsesTheAsyncView() {
         runner.run { context ->
             assertThat(context).hasNotFailed()
             val cache = requireNotNull(context.getBean(CacheManager::class.java).getCache("user"))
             retrieveValue(cache, "1").assert().isEqualTo("user-1")
-            // 同步数据源只在阻塞执行器上执行：JDK 21+ 为虚拟线程（无名），否则为运行时自建的守护线程池
+            // 同步数据源在运行时的执行器上执行：默认每个任务一个虚拟线程（`cocache-worker-*`）
             val thread = loaderThreads(context).single()
-            (thread.isEmpty() || thread.startsWith("cocache-blocking-")).assert()
-                .withFailMessage { "the loader ran on $thread" }.isTrue()
+            thread.assert().withFailMessage { "the loader ran on $thread" }.startsWith("cocache-worker-")
             // L2 命中：返回已完成的 future，不切换线程
             requireNotNull(cache.retrieve("1")).isDone.assert().isTrue()
         }
     }
 
     @Test
-    fun asyncAndBlockingExecutorBeansAreUsed() {
-        runner.withPropertyValues(
-            "cocache.async-executor=asyncRecorder",
-            "cocache.blocking-executor=blockingRecorder",
-        ).withUserConfiguration(ExecutorConfig::class.java).run { context ->
-            assertThat(context).hasNotFailed()
-            val properties = context.getBean(CoCacheProperties::class.java)
-            properties.asyncExecutor.assert().isEqualTo("asyncRecorder")
-            properties.blockingExecutor.assert().isEqualTo("blockingRecorder")
-            userCache(context).async().get("1").get(5, TimeUnit.SECONDS).assert().isEqualTo("user-1")
-            // 记录执行器就地执行：同步数据源经阻塞执行器在调用方线程上执行
-            context.getBean("blockingRecorder", RecordingExecutor::class.java).tasks.get().assert().isEqualTo(1)
-            loaderThreads(context).single().assert().isEqualTo(Concurrency.currentThreadName())
-        }
+    fun executorBeanIsUsed() {
+        runner.withPropertyValues("cocache.executor=executorRecorder")
+            .withUserConfiguration(ExecutorConfig::class.java).run { context ->
+                assertThat(context).hasNotFailed()
+                context.getBean(CoCacheProperties::class.java).executor.assert().isEqualTo("executorRecorder")
+                val recorder = context.getBean("executorRecorder", RecordingExecutor::class.java)
+                context.getBean(me.ahoo.cocache.core.CacheRuntime::class.java).executor.assert().isSameAs(recorder)
+                userCache(context).async().get("1").get(5, TimeUnit.SECONDS).assert().isEqualTo("user-1")
+                // 记录执行器就地执行：同步数据源经运行时的执行器在调用方线程上执行
+                recorder.tasks.get().assert().isGreaterThanOrEqualTo(1)
+                loaderThreads(context).single().assert().isEqualTo(Concurrency.currentThreadName())
+            }
     }
 
     @Test
@@ -250,7 +215,7 @@ class ExecutorPropertiesTest {
             .withUserConfiguration(SpecConfig::class.java)
             .withPropertyValues(
                 "cocache.backend=memory",
-                "cocache.blocking-executor=applicationTaskExecutor",
+                "cocache.executor=applicationTaskExecutor",
                 "cocache.refresh-executor=applicationTaskExecutor",
             )
             .run { context ->
@@ -271,8 +236,7 @@ class ExecutorPropertiesTest {
     fun unknownExecutorBeanFailsStartup() {
         mapOf(
             "cocache.refresh-executor" to "missingRefresh",
-            "cocache.async-executor" to "missingAsync",
-            "cocache.blocking-executor" to "missingBlocking",
+            "cocache.executor" to "missingExecutor",
         ).forEach { (property, name) ->
             runner.withPropertyValues("$property=$name").run { context ->
                 assertThat(context).hasFailed()
@@ -284,7 +248,7 @@ class ExecutorPropertiesTest {
 
     @Test
     fun nonExecutorBeanFailsStartup() {
-        listOf("cocache.async-executor", "cocache.blocking-executor").forEach { property ->
+        listOf("cocache.refresh-executor", "cocache.executor").forEach { property ->
             runner.withPropertyValues("$property=notAnExecutor")
                 .withUserConfiguration(ExecutorConfig::class.java)
                 .run { context ->
@@ -307,7 +271,10 @@ class ExecutorPropertiesTest {
         override fun execute(command: Runnable) = command.run()
 
         override fun destroy() {
-            val probe = cacheSpec<String, String>("probe-$name") { codec = StringCodec }
+            val probe = cacheSpec<String, String>("probe-$name") {
+                codec = StringCodec
+                externallySourced()
+            }
             runtimeClosedAtDestroy[name] = runCatching { runtime.create(probe) }.exceptionOrNull() is IllegalStateException
         }
     }
@@ -324,14 +291,8 @@ class ExecutorPropertiesTest {
         )
 
         @Bean
-        fun orderedAsync(runtimeClosedAtDestroy: MutableMap<String, Boolean>) = OrderedExecutor(
-            "async",
-            runtimeClosedAtDestroy
-        )
-
-        @Bean
-        fun orderedBlocking(runtimeClosedAtDestroy: MutableMap<String, Boolean>) = OrderedExecutor(
-            "blocking",
+        fun orderedExecutor(runtimeClosedAtDestroy: MutableMap<String, Boolean>) = OrderedExecutor(
+            "executor",
             runtimeClosedAtDestroy
         )
     }
@@ -341,12 +302,11 @@ class ExecutorPropertiesTest {
         lateinit var closedAtDestroy: Map<String, Boolean>
         runner.withPropertyValues(
             "cocache.refresh-executor=orderedRefresh",
-            "cocache.async-executor=orderedAsync",
-            "cocache.blocking-executor=orderedBlocking",
+            "cocache.executor=orderedExecutor",
         ).withUserConfiguration(OrderedExecutorConfig::class.java).run { context ->
             assertThat(context).hasNotFailed()
             val runtime = context.getBean(me.ahoo.cocache.core.CacheRuntime::class.java)
-            listOf("orderedRefresh", "orderedAsync", "orderedBlocking").forEach { name ->
+            listOf("orderedRefresh", "orderedExecutor").forEach { name ->
                 context.beanFactory.getDependentBeans(
                     name
                 ).toList().assert().contains(CoCacheAutoConfiguration.RUNTIME_BEAN)
@@ -356,7 +316,7 @@ class ExecutorPropertiesTest {
             closedAtDestroy = context.getBean("runtimeClosedAtDestroy") as Map<String, Boolean>
         }
         // 容器关闭时先关闭运行时，再销毁它使用的执行器
-        closedAtDestroy.assert().isEqualTo(mapOf("refresh" to true, "async" to true, "blocking" to true))
+        closedAtDestroy.assert().isEqualTo(mapOf("refresh" to true, "executor" to true))
     }
 
     @Test

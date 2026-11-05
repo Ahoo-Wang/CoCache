@@ -32,13 +32,49 @@ class ApiTypesTest {
     }
 
     @Test
-    fun writeExceptionDescribesOperation() {
+    fun valueOrThrowAnswersPresentAndAbsentAndThrowsUnknown() {
+        Lookup.Present("v", null).valueOrThrow().assert().isEqualTo("v")
+        val absent: Lookup<String> = Lookup.Absent(null)
+        absent.valueOrThrow().assert().isNull()
+        val error = CacheReadException("user", "read", IllegalStateException("down"))
+        val unknown: Lookup<String> = Lookup.Unknown(error)
+        val thrown = runCatching { unknown.valueOrThrow() }.exceptionOrNull()
+        thrown.assert().isSameAs(error)
+        unknown.toString().assert().contains("down")
+    }
+
+    @Test
+    fun readExceptionCarriesUnknownKeysAndPartialResult() {
+        val cause = IllegalStateException("down")
+        val single = CacheReadException("user", "read", cause)
+        single.unknownKeys.assert().isEmpty()
+        single.partialResult.assert().isEmpty()
+        single.message.assert().isEqualTo("Cache[user] - read failed on the remote store.")
+        val partial = CacheReadException("user", "getAll", cause, setOf("a"), mapOf("b" to 1))
+        partial.unknownKeys.assert().containsExactly("a")
+        partial.partialResult.assert().containsEntry("b", 1)
+        partial.message.assert().contains("1 key(s)")
+        partial.cause.assert().isSameAs(cause)
+    }
+
+    @Test
+    fun writeExceptionDescribesOperationAndOutcome() {
         val cause = IllegalStateException("down")
         val error = CacheWriteException("user", "put", cause)
         error.cacheName.assert().isEqualTo("user")
         error.operation.assert().isEqualTo("put")
         error.cause.assert().isSameAs(cause)
-        error.message.assert().contains("put")
+        error.outcomeUnknown.assert().isTrue()
+        error.message.assert().contains("put").contains("outcome unknown")
+        val rejected = CacheWriteException("user", "put", cause, outcomeUnknown = false)
+        rejected.outcomeUnknown.assert().isFalse()
+        rejected.message.assert().contains("not executed")
+    }
+
+    @Test
+    fun conditionalDeleteIsAValueType() {
+        ConditionalDelete.Conflict(null).assert().isEqualTo(ConditionalDelete.Conflict(null))
+        ConditionalDelete.Deleted.toString().assert().isEqualTo("Deleted")
     }
 
     @Test

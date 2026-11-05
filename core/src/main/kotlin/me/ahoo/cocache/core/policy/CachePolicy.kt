@@ -24,16 +24,22 @@ import java.util.concurrent.ThreadLocalRandom
  * @param absentTtl 负缓存寿命（不抖动）
  * @param localMaxAge L2 副本的最长寿命：失效事件丢失时 L2 陈旧度的上界
  * @param degradedLocalMaxAge 未写入 L1 的填充（L1 故障、等待 lease 超时、fill 被拒绝）在 L2 中的最长寿命
- * @param refreshWindow 提前刷新窗口；`null` 表示关闭
- * @param invalidateFailure 失效写入 L1 失败时的处理方式；`null`（默认）按缓存有没有数据源决定：有数据源时
- *   [InvalidateFailureMode.RETRY]，没有数据源时（L1 是唯一副本）[InvalidateFailureMode.THROW]
- * @param readFailure 读取 L1 失败时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ReadFailureMode.DEGRADE]，
- *   没有数据源时（L1 是唯一副本）[ReadFailureMode.THROW]
- * @param foreignFormat 读到本缓存读不懂的 L1 内容（格式 0：5.x 或其它程序写入的值、原生 Set / Hash 等其它 Redis 类型；
- *   以及同版本内容解码失败）时的处理方式；`null`（默认）按这次读取有没有数据源决定：有数据源时 [ForeignFormatMode.RECLAIM]，
- *   没有数据源时（`SetCache`、没有 loader 的 `Cache`）[ForeignFormatMode.FAIL]。[ForeignFormatMode.RECLAIM] 只能用于有数据源的缓存：
- *   没有数据源的 `CacheSpec` 与所有 `SetCacheSpec` 设置它时创建即失败。只作用于读取：条件写入、按版本写入与集合元素的增删
- *   落在读不懂的内容上时总是拒绝
+ * @param refreshWindow 提前刷新窗口；`null` 表示关闭。只作用于有数据源的派生缓存
+ * @param invalidateFailure 派生缓存（`Cache`）的失效写入 L1 失败时的处理方式；`null`（默认）为 [InvalidateFailureMode.RETRY]：
+ *   删除副本在任何时刻都安全。权威副本的删除总是同步抛出，不适用本字段
+ * @param readFailure 带数据源的读取（声明的数据源或调用级 loader）在 L1 读失败时的处理方式；`null`（默认）为 [ReadFailureMode.DEGRADE]。
+ *   不带 loader 的读取与权威副本的读取不适用本字段：它们的 L1 读失败是 `Lookup.Unknown`，由声明的 `unknownRead` 决定（RFC 0005 §4.1）
+ * @param readTimeout 每次 L1 读取（`read`、`readAll`、`readIfChanged`）的时限（RFC 0005 §4.3，D6）；`null`（默认）为后端的命令超时，
+ *   给出时以命令超时为上限（由存储钳制）。超时按 L1 读失败处理（带数据源的读取按 [readFailure]，没有数据源的读取为 `Unknown`），
+ *   取得的令牌照常释放。供不能降级回源、又要限制 L1 卡顿时每次读取多等多久的缓存使用；写入与运维读取不受它限制
+ * @param ttlCeiling 按调用给出的寿命（`ttlOf`、`put(k, v, ttl)`、`putAll(…, ttl)`）的上限，只由 `cocache.overrides` 的 `ttl`
+ *   设定（RFC 0005 §4.8，S8）：超过它的寿命被钳制，每个缓存第一次钳制时告警，计入 `cocache.ttl.clamped`；`null`（默认）不钳制。
+ *   只作用于 `Cache`
+ * @param tombstoneTtl 带版本的墓碑（`invalidateIfNewer`、`deleteIfNewer`、带版本的数据源返回的 `Versioned(null, w)`）与
+ *   保留版本的失效 `E` 的寿命（不抖动）；`null` 表示与值相同（[valueTtl]）。它要覆盖重复投递的时间窗口：到期之后迟到的旧版本可以再次写入
+ *
+ * 读不懂的 L1 内容（格式号低于本节点格式的、不是本协议写入的、同格式解码失败的）不由策略决定（RFC 0005 §4.7）：
+ * 有数据源的读取条件回收后回源，没有数据源的读取失败；更高格式的内容既不回收也不写回。
  */
 class CachePolicy(
     val ttl: Duration? = DEFAULT_TTL,
@@ -47,30 +53,13 @@ class CachePolicy(
     val local: LocalPolicy = LocalPolicy(),
     val invalidateFailure: InvalidateFailureMode? = null,
     val readFailure: ReadFailureMode? = null,
-    val foreignFormat: ForeignFormatMode? = null,
+    val readTimeout: Duration? = null,
+    val tombstoneTtl: Duration? = null,
+    val ttlCeiling: Duration? = null,
 ) {
-    /**
-     * 6.4 及以前的构造函数（没有 [foreignFormat]），只为已编译的调用方保留二进制兼容。
-     */
-    @Deprecated("Binary compatibility with 6.4 and earlier.", level = DeprecationLevel.HIDDEN)
-    @Suppress("LongParameterList")
-    constructor(
-        ttl: Duration? = DEFAULT_TTL,
-        ttlJitter: Duration = DEFAULT_TTL_JITTER,
-        absentTtl: Duration = DEFAULT_ABSENT_TTL,
-        localMaxAge: Duration = DEFAULT_LOCAL_MAX_AGE,
-        degradedLocalMaxAge: Duration = DEFAULT_DEGRADED_LOCAL_MAX_AGE,
-        refreshWindow: Duration? = null,
-        lease: LeasePolicy = LeasePolicy(),
-        load: LoadPolicy = LoadPolicy(),
-        local: LocalPolicy = LocalPolicy(),
-        invalidateFailure: InvalidateFailureMode? = null,
-        readFailure: ReadFailureMode? = null,
-    ) : this(
-        ttl, ttlJitter, absentTtl, localMaxAge, degradedLocalMaxAge, refreshWindow, lease, load, local, invalidateFailure, readFailure, null
-    )
-
     init {
+        tombstoneTtl?.let { requirePositive("tombstoneTtl", it) }
+        ttlCeiling?.let { requirePositive("ttlCeiling", it) }
         ttl?.let { requirePositive("ttl", it) }
         require(
             !ttlJitter.isNegative && ttlJitter <= MAX_DURATION
@@ -78,6 +67,7 @@ class CachePolicy(
         requirePositive("absentTtl", absentTtl)
         requirePositive("localMaxAge", localMaxAge)
         requirePositive("degradedLocalMaxAge", degradedLocalMaxAge)
+        readTimeout?.let { requirePositive("readTimeout", it) }
         refreshWindow?.let { window ->
             requirePositive("refreshWindow", window)
             // 窗口不小于（抖动后的最短）寿命时，新副本一出生就处于窗口内，命中会持续触发刷新
@@ -104,6 +94,11 @@ class CachePolicy(
     }
 
     /**
+     * 墓碑与 `E` 的寿命：[tombstoneTtl]，未设置时同 [valueTtl]；`null` 表示永不过期。
+     */
+    fun tombstoneTtl(): Duration? = tombstoneTtl ?: valueTtl()
+
+    /**
      * 实际生效的抖动幅度：不超过寿命的一半，否则短寿命的值会大量以 1 毫秒寿命写入。
      */
     private fun effectiveJitter(ttl: Duration): Duration = minOf(ttlJitter, ttl.dividedBy(2))
@@ -113,25 +108,114 @@ class CachePolicy(
     override fun toString(): String {
         return "CachePolicy(ttl=$ttl, ttlJitter=$ttlJitter, absentTtl=$absentTtl, localMaxAge=$localMaxAge, " +
             "degradedLocalMaxAge=$degradedLocalMaxAge, refreshWindow=$refreshWindow, lease=$lease, load=$load, " +
-            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure, foreignFormat=$foreignFormat)"
+            "local=$local, invalidateFailure=$invalidateFailure, readFailure=$readFailure, readTimeout=$readTimeout, " +
+            "tombstoneTtl=$tombstoneTtl, ttlCeiling=$ttlCeiling)"
     }
 
     /**
-     * Java 友好的构建器。
+     * Java 友好的构建器。记录写出了哪些字段（字段三态，RFC 0005 §4.8，U11）：spec 的 `policy { … }` 只把这些字段当作声明写出的，
+     * 其余字段留给 `cocache.defaults`。[ttlCeiling] 由 `overrides` 设定，不算声明的字段。
      */
     class Builder internal constructor(policy: CachePolicy) {
+        private val writes = linkedSetOf<PolicyField<*>>()
+
+        /**
+         * 经本构建器写出的字段，按写出的顺序。
+         */
+        val written: Set<PolicyField<*>>
+            get() = writes
+
         var ttl: Duration? = policy.ttl
+            set(value) {
+                field = value
+                writes += PolicyField.TTL
+            }
         var ttlJitter: Duration = policy.ttlJitter
+            set(value) {
+                field = value
+                writes += PolicyField.TTL_JITTER
+            }
         var absentTtl: Duration = policy.absentTtl
+            set(value) {
+                field = value
+                writes += PolicyField.ABSENT_TTL
+            }
         var localMaxAge: Duration = policy.localMaxAge
+            set(value) {
+                field = value
+                writes += PolicyField.LOCAL_MAX_AGE
+            }
         var degradedLocalMaxAge: Duration = policy.degradedLocalMaxAge
+            set(value) {
+                field = value
+                writes += PolicyField.DEGRADED_LOCAL_MAX_AGE
+            }
         var refreshWindow: Duration? = policy.refreshWindow
+            set(value) {
+                field = value
+                writes += PolicyField.REFRESH_WINDOW
+            }
+
+        /**
+         * 子对象（[lease]、[load]、[local]）只把取值改变了的字段记为写出：整体赋值时没有改变的字段仍留给下层。
+         */
         var lease: LeasePolicy = policy.lease
+            set(value) {
+                if (value.ttl != field.ttl) writes += PolicyField.LEASE_TTL
+                if (value.wait != field.wait) writes += PolicyField.LEASE_WAIT
+                field = value
+            }
         var load: LoadPolicy = policy.load
+            set(value) {
+                if (value.maxConcurrent != field.maxConcurrent) writes += PolicyField.LOAD_MAX_CONCURRENT
+                if (value.acquireTimeout != field.acquireTimeout) writes += PolicyField.LOAD_ACQUIRE_TIMEOUT
+                if (value.timeout != field.timeout) writes += PolicyField.LOAD_TIMEOUT
+                field = value
+            }
         var local: LocalPolicy = policy.local
+            set(value) {
+                if (value.maximumSize != field.maximumSize) writes += PolicyField.LOCAL_MAXIMUM_SIZE
+                field = value
+            }
         var invalidateFailure: InvalidateFailureMode? = policy.invalidateFailure
+            set(value) {
+                field = value
+                writes += PolicyField.INVALIDATE_FAILURE
+            }
         var readFailure: ReadFailureMode? = policy.readFailure
-        var foreignFormat: ForeignFormatMode? = policy.foreignFormat
+            set(value) {
+                field = value
+                writes += PolicyField.READ_FAILURE
+            }
+        var readTimeout: Duration? = policy.readTimeout
+            set(value) {
+                field = value
+                writes += PolicyField.READ_TIMEOUT
+            }
+        var tombstoneTtl: Duration? = policy.tombstoneTtl
+            set(value) {
+                field = value
+                writes += PolicyField.TOMBSTONE_TTL
+            }
+        var ttlCeiling: Duration? = policy.ttlCeiling
+
+        /**
+         * 显式的“永不过期”：`ttl = forever()`（与 `null` 相同，写出时更清楚）。
+         */
+        @Suppress("FunctionOnlyReturningConstant") // DSL 中写出意图的哨兵：`ttl = forever()`
+        fun forever(): Duration? = null
+
+        /**
+         * 显式的“关闭”：`refreshWindow = off()`。
+         */
+        @Suppress("FunctionOnlyReturningConstant") // DSL 中写出意图的哨兵：`ttl = forever()`
+        fun off(): Duration? = null
+
+        /**
+         * 显式的“不限”：`load = LoadPolicy(maxConcurrent = unlimited())`。
+         */
+        @Suppress("FunctionOnlyReturningConstant") // DSL 中写出意图的哨兵：`ttl = forever()`
+        fun unlimited(): Int? = null
 
         fun ttl(ttl: Duration?) = apply { this.ttl = ttl }
         fun ttlJitter(ttlJitter: Duration) = apply { this.ttlJitter = ttlJitter }
@@ -149,7 +233,9 @@ class CachePolicy(
         ) = apply { this.invalidateFailure = invalidateFailure }
 
         fun readFailure(readFailure: ReadFailureMode?) = apply { this.readFailure = readFailure }
-        fun foreignFormat(foreignFormat: ForeignFormatMode?) = apply { this.foreignFormat = foreignFormat }
+        fun readTimeout(readTimeout: Duration?) = apply { this.readTimeout = readTimeout }
+        fun tombstoneTtl(tombstoneTtl: Duration?) = apply { this.tombstoneTtl = tombstoneTtl }
+        fun ttlCeiling(ttlCeiling: Duration?) = apply { this.ttlCeiling = ttlCeiling }
 
         fun build(): CachePolicy = CachePolicy(
             ttl = ttl,
@@ -163,7 +249,9 @@ class CachePolicy(
             local = local,
             invalidateFailure = invalidateFailure,
             readFailure = readFailure,
-            foreignFormat = foreignFormat,
+            readTimeout = readTimeout,
+            tombstoneTtl = tombstoneTtl,
+            ttlCeiling = ttlCeiling,
         )
     }
 
@@ -183,11 +271,11 @@ class CachePolicy(
         @JvmField
         val DEFAULT_DEGRADED_LOCAL_MAX_AGE: Duration = Duration.ofSeconds(10)
 
-        @JvmField
-        val DEFAULT: CachePolicy = CachePolicy()
-
+        /**
+         * 以派生副本的默认值（[DefaultPolicies.CACHE]）为起点的构建器。其它类型的默认值见 [DefaultPolicies]。
+         */
         @JvmStatic
-        fun builder(): Builder = Builder(DEFAULT)
+        fun builder(): Builder = Builder(DefaultPolicies.CACHE)
     }
 }
 
@@ -210,24 +298,24 @@ data class LeasePolicy @JvmOverloads constructor(
 /**
  * 回源并发上限（bulkhead）：只计 SingleFlight leader，批量回源占一个许可。
  *
- * @param maxConcurrent 每个缓存同时进行的回源数上限；`0` 表示不限制
+ * @param maxConcurrent 每个缓存同时进行的回源数上限；`null`（默认）表示不限制，没有隐式的 `0` 哨兵（RFC 0005 §4.8）
  * @param acquireTimeout 等待许可的最长时间，超时抛出 [me.ahoo.cocache.core.SourceLoadRejectedException]
  * @param timeout 一次加载的上限（RFC 0005 §4.4），超过它以 [me.ahoo.cocache.core.SourceLoadTimeoutException] 失败：
  *   - 异步数据源（`AsyncCacheLoader`）的一次加载：失败并释放 lease 与回源许可；数据源返回的 future 不会被取消，
  *     它可能仍在执行（此时不再计入并发上限），迟到的结果被丢弃。由 JDK 的延迟线程计时（`completeOnTimeout`）；
- *   - 跟随者等待共享的加载（截止时刻是这次加载登记时加上它，全部跟随者共用）：6.x 的同步跟随者无限等待；
+ *   - 跟随者等待共享的加载（截止时刻是这次加载登记时加上它，全部跟随者共用，同步与异步的跟随者都是）；
  *   - 加载在 SingleFlight 中登记超过它时被注销（不被完成）：新的调用方开始新的加载，不再合并到卡住的同步 loader 后面，
  *     迟到的结果只交给原 leader，写回仍受令牌与戳保护。
  *
- *   同步数据源本身无法被外部结束，应自带超时。6.x 的 `asyncTimeout` 并入它
+ *   同步数据源本身无法被外部结束，应自带超时。
  */
 data class LoadPolicy @JvmOverloads constructor(
-    val maxConcurrent: Int = 0,
+    val maxConcurrent: Int? = null,
     val acquireTimeout: Duration = Duration.ofSeconds(1),
     val timeout: Duration = DEFAULT_TIMEOUT,
 ) {
     init {
-        require(maxConcurrent >= 0) { "load.maxConcurrent[$maxConcurrent] must not be negative." }
+        maxConcurrent?.let { require(it > 0) { "load.maxConcurrent[$it] must be positive; null means unlimited." } }
         require(
             !acquireTimeout.isNegative && acquireTimeout <= MAX_DURATION
         ) { "load.acquireTimeout[$acquireTimeout] must be within [0, $MAX_DURATION]." }
@@ -258,70 +346,54 @@ data class LocalPolicy @JvmOverloads constructor(
 }
 
 /**
- * 失效写入 L1 失败时的处理方式。未配置时按缓存有没有数据源决定（见 [CachePolicy.invalidateFailure]）。
+ * 派生缓存（`Cache`）的失效写入 L1 失败时的处理方式（见 [CachePolicy.invalidateFailure]）。
  */
 enum class InvalidateFailureMode {
     /**
-     * 进入有界重试队列，不抛出。失效通常在事务提交之后调用，抛出既不能回滚也不该回滚。
-     *
-     * 有数据源的缓存的默认值：删除总是安全的，之后回源即可。没有数据源时（L1 是唯一副本）延迟的重试会删掉
-     * 失败之后其它写入方写入的值（丢更新），显式配置即接受这个代价。
+     * 进入有界重试队列，不抛出（默认）。失效通常在事务提交之后调用，抛出既不能回滚也不该回滚；删除副本在任何时刻都安全，之后回源即可。
      */
     RETRY,
 
     /**
      * 抛出 [me.ahoo.cocache.api.CacheWriteException]，不登记重试。
-     *
-     * 没有数据源的缓存的默认值：L1 是唯一副本，调用方得知失败后自行决定（如重试 `invalidate`，或改为写入新值）。
      */
     THROW,
 }
 
 /**
- * 读取 L1 失败时的处理方式（RFC 0003 §4.13）。未配置时按这次读取有没有数据源决定（见 [CachePolicy.readFailure]）。
+ * 带数据源的读取在 L1 读失败时的处理方式（RFC 0003 §4.13，见 [CachePolicy.readFailure]）。
  */
 enum class ReadFailureMode {
     /**
-     * 降级为直接回源，结果只以降级限龄进入 L2，不写 L1。L1 故障时由回源并发上限保护数据源。有数据源的读取的默认值。
-     *
-     * 没有数据源的读取只能显式选择它：读到“不存在”（返回 `null`，批量读取中缺席），不写入任何一层、不缓存，
-     * 每次故障都重新访问 L1，计入 `remoteFailures`。适用于把“读不到”当作安全答案的缓存（如撤销表：Redis 故障即视为未撤销）。
+     * 降级为直接回源，结果只以降级限龄进入 L2，不写 L1。L1 故障时由回源并发上限保护数据源（默认）。
      */
     DEGRADE,
 
     /**
-     * 抛出 [me.ahoo.cocache.api.CacheReadException]。
+     * 读取的结果为 `Lookup.Unknown`：`get` 抛出 [me.ahoo.cocache.api.CacheReadException]，`lookup` 返回它。
      * 只作用于读取；填充、释放令牌等尽力而为的操作仍然降级。
-     *
-     * 没有数据源的读取的默认值：L1 是唯一副本，读不到时没有可降级的答案（fail closed）。
      */
     THROW,
 }
 
 /**
- * 读到本缓存读不懂的 L1 内容时的处理方式。读不懂的内容包括：
- * - 格式 0：不是本协议写入的内容，例如 CoCache 5.x 写入的 JSON / 字符串 / 原生 Set / Hash，或其它程序写入的值；
- * - 同版本内容解码失败（`Codec` 抛出，例如值类型不兼容地改变）。
+ * 没有数据源的读取（权威副本的读取，外部来源的缓存上不带 loader 的读取）在 L1 读失败时（`Lookup.Unknown`）返回什么（RFC 0005 §4.1，S16）。
  *
- * 更高格式版本（滚动升级期间）不受影响：既不回收也不写回（[me.ahoo.cocache.api.Cache] 回源，`SetCache` 抛出）。
- * 只决定读取：条件读写、按版本写入与 `SetCache` 的元素增删遇到读不懂的内容时总是拒绝，从不把它当作没有值。
+ * 只作用于不带 loader 的 `get` / `getAll` / `lookup` / `lookupAll` 及其异步、挂起视图；不作用于 `getIfChanged`、`getVersioned`
+ * 与条件写入，也不作用于带 loader 的读取（它们由 [ReadFailureMode] 决定）。映射发生在调用方返回之前：共享的加载结果仍是
+ * `Unknown`，带 loader 的调用方不会接受它。两种取值都计入 `cocache.reads.unknown`。
  */
-enum class ForeignFormatMode {
+enum class UnknownReadMode {
     /**
-     * 抛出 [me.ahoo.cocache.api.CacheReadException]（`cause` 为 [me.ahoo.cocache.core.ForeignFormatException]），
-     * 计入 `unknownFormats`，不修改 L1、不写 L2。与 [ReadFailureMode] 无关：降级模式下同样抛出。
-     *
-     * 没有数据源的读取的默认值：L1 是唯一副本，回收就是删除，调用方会把“不存在”当作真实结果（例如授权数据消失后放行）。
+     * `get` / `getAll` 抛出 [me.ahoo.cocache.api.CacheReadException]，`lookup` 返回 `Lookup.Unknown`（默认，fail closed）。
      */
-    FAIL,
+    THROW,
 
     /**
-     * 条件回收（比较摘要后转为 lease）并回源。
-     *
-     * 有数据源的读取的默认值：数据源是权威，回收后重新加载即可。只能用于有数据源的缓存：没有数据源的 `CacheSpec` 与所有
-     * `SetCacheSpec` 设置它时创建即失败（L1 是唯一副本，回收就是删除它）。
+     * 当作不存在：`get` 返回 `null`，`getAll` 中缺席，`lookup` 返回 `Lookup.Absent`；不写入任何一层，下一次读取重新访问 L1。
+     * 适用于把“读不到”当作安全答案的数据（如撤销表：Redis 故障即视为未撤销）。不能用于 `SetStore`。
      */
-    RECLAIM,
+    ABSENT,
 }
 
 /**

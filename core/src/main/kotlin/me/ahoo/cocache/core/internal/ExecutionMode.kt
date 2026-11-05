@@ -19,13 +19,14 @@ import kotlinx.coroutines.runBlocking
 import java.util.concurrent.CancellationException
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.coroutineContext
 
 /**
  * 协议核心的执行变体（RFC 0005 V5、§4.4）：协议只写一份 `suspend` 实现，由三种 API 以不同的方式运行。
  *
  * - 同步变体（[runSync]）：`runBlocking` 在调用方线程自己的事件循环上运行核心；阻塞的 loader 就地执行，在调用方线程上，
- *   事务、`SecurityContext` 等 ThreadLocal 可用（不变量 6）。L1 命令经异步 SPI 发出、挂起等待（RFC 0005 §4.3），
+ *   事务、`SecurityContext` 等 ThreadLocal 可用（不变量 6）。L1 调用挂起、不可取消（`uncancellable`，RFC 0005 §4.3），
  *   调用方线程停在事件循环上，续接仍在它上面执行，从不在 L1 客户端的 I/O 线程上执行。
  * - 异步变体（`AsyncContext.runAsync`）：在运行时作用域中运行核心，执行到第一次挂起之前在调用方线程上；等待 L1 不占线程，
  *   阻塞调用交给阻塞执行器。用户拿到的是结果的副本，取消它不取消协程。
@@ -71,7 +72,8 @@ internal suspend fun ensureNotInterrupted() {
 }
 
 /**
- * 同步变体：在调用方线程上运行 [block] 并等待结果。
+ * 同步变体：在调用方线程上运行 [block] 并等待结果。[context] 是调用入口捕获的其它元素（如写事务，RFC 0005 §4.9），与 [ExecutionMode] 一起
+ * 放进协程上下文。
  *
  * 线程被中断时（RFC 0005 §4.3），`runBlocking`（kotlinx ≥ 1.10）清除中断标志、取消协程，并继续在调用方线程上运行它直到结束：
  * 在途的 L1 命令（不可取消地等待）先完成或超时，取消在之后的第一个挂起点生效，持有令牌的步骤按正常路径释放令牌，之后才返回。
@@ -84,10 +86,10 @@ internal suspend fun ensureNotInterrupted() {
  * 不碰中断标志：调用方线程并没有被中断。
  */
 @Suppress("ThrowsCount", "TooGenericExceptionCaught")
-internal fun <T> runSync(block: suspend CoroutineScope.() -> T): T {
+internal fun <T> runSync(context: CoroutineContext = EmptyCoroutineContext, block: suspend CoroutineScope.() -> T): T {
     val outcome = SyncOutcome<T>()
     try {
-        return runBlocking(ExecutionMode.SYNC) {
+        return runBlocking(ExecutionMode.SYNC + context) {
             try {
                 block().also { outcome.succeed(it) }
             } catch (e: CancellationException) {

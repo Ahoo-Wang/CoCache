@@ -14,22 +14,28 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.api.AsyncCacheLoader
-import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedPut
+import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
+import me.ahoo.cocache.core.VersionedCacheSpec
+import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.policy.ForeignFormatMode
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.policy.DefaultPolicies
+import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.versionedCacheSpec
+import me.ahoo.cocache.core.versionedStoreSpec
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -41,7 +47,8 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
 /**
- * 配置文件对策略的语义：`refresh-window: 0` 关闭提前刷新；全局寿命不作用于集合缓存；`foreign-format: reclaim` 只用于有数据源的缓存。
+ * 配置文件对策略的语义：`refresh-window: 0s` 与 `off` 关闭提前刷新；`cocache.defaults.cache.*` 不作用于权威副本
+ * （`Store`、`VersionedStore`、`SetStore`），`cocache.defaults.store.*` 作用于它们，但 `defaults.store.ttl` 不允许。
  */
 class PolicyPropertiesTest {
     private val runner = ApplicationContextRunner()
@@ -54,49 +61,83 @@ class PolicyPropertiesTest {
         fun backend(): CoherenceBackend = InMemoryBackend()
 
         @Bean
-        fun indexSpec(): SetCacheSpec<String, String> = setCacheSpec("index") { elementCodec = StringCodec }
-    }
+        fun indexSpec(): SetStoreSpec<String, String> = setStoreSpec("index") { elementCodec = StringCodec }
 
-    @Test
-    fun zeroRefreshWindowTurnsRefreshOff() {
-        runner.withPropertyValues("cocache.caches.index.refresh-window=0").run { context ->
-            val properties = context.getBean(CoCacheProperties::class.java)
-            val declared = CachePolicy(ttl = Duration.ofMinutes(10), refreshWindow = Duration.ofMinutes(1))
-            properties.policyFor("index", declared).refreshWindow.assert().isNull()
+        @Bean
+        fun userSpec(): CacheSpec<String, String> = cacheSpec("user") {
+            codec = StringCodec
+            loader = CacheLoader { "user-$it" }
+            policy {
+                ttl = Duration.ofMinutes(10)
+                refreshWindow = Duration.ofMinutes(1)
+            }
         }
     }
 
     @Test
-    fun defaultTtlDoesNotExpireSetCaches() {
+    fun zeroOrOffRefreshWindowTurnsRefreshOff() {
+        listOf("0s", "off", "OFF").forEach { value ->
+            runner.withPropertyValues("cocache.caches.user.refresh-window=$value").run { context ->
+                assertThat(context).hasNotFailed()
+                context.getBean("user")
+                requireNotNull(context.getBean(CacheRuntime::class.java).policy("user")).refreshWindow.assert().isNull()
+            }
+        }
+    }
+
+    @Test
+    fun cacheDefaultsDoNotReachStores() {
         runner.withPropertyValues(
-            "cocache.defaults.ttl=60",
-            "cocache.defaults.absent-ttl=5",
-            "cocache.defaults.refresh-window=10",
-            "cocache.defaults.local-max-age=90",
+            "cocache.defaults.cache.ttl=60s",
+            "cocache.defaults.cache.absent-ttl=1s",
+            "cocache.defaults.cache.local-max-age=2m",
+            "cocache.defaults.store.ttl=60s",
+            "cocache.defaults.store.absent-ttl=5s",
+            "cocache.defaults.store.refresh-window=10s",
+            "cocache.defaults.store.local-max-age=90s",
         ).run { context ->
             assertThat(context).hasNotFailed()
-            val properties = context.getBean(CoCacheProperties::class.java)
-            val setPolicy = properties.setPolicyFor("index", SetCacheSpec.DEFAULT_POLICY)
+            val runtime = context.getBean(CacheRuntime::class.java)
+            context.getBean("index")
+            val setPolicy = requireNotNull(runtime.policy("index"))
+            // 权威副本的寿命即语义：defaults.store.ttl 跳过，ttl 仍是类型默认值（永不过期）
             setPolicy.ttl.assert().isNull()
-            // 负缓存寿命与提前刷新对集合缓存没有意义，不继承；其它默认项照常生效
-            setPolicy.absentTtl.assert().isEqualTo(SetCacheSpec.DEFAULT_POLICY.absentTtl)
+            // absent-ttl 适用于权威副本（未命中进入 L2）；提前刷新不适用，跳过
+            setPolicy.absentTtl.assert().isEqualTo(Duration.ofSeconds(5))
             setPolicy.refreshWindow.assert().isNull()
             setPolicy.localMaxAge.assert().isEqualTo(Duration.ofSeconds(90))
-            properties.policyFor("user", CachePolicy.DEFAULT).ttl.assert().isEqualTo(Duration.ofSeconds(60))
+            val skipped = requireNotNull(requireNotNull(runtime.admin("index")).policyReport).skipped
+            skipped.map { it.key }.assert().containsExactlyInAnyOrder(
+                "cocache.defaults.store.ttl",
+                "cocache.defaults.store.refresh-window"
+            )
+            skipped.first { it.key == "cocache.defaults.store.ttl" }.reason.assert().contains("not allowed")
+            skipped.first { it.key == "cocache.defaults.store.refresh-window" }.reason.assert()
+                .isEqualTo("not applicable to a SetStore")
+            // 派生副本只看 cache 一节；声明写出的 ttl 不被 defaults 改变
+            context.getBean("user")
+            val user = requireNotNull(runtime.policy("user"))
+            user.ttl.assert().isEqualTo(Duration.ofMinutes(10))
+            user.absentTtl.assert().isEqualTo(Duration.ofSeconds(1))
+            user.localMaxAge.assert().isEqualTo(Duration.ofMinutes(2))
 
             @Suppress("UNCHECKED_CAST")
-            val index = context.getBean("index") as SetCache<String, String>
+            val index = context.getBean("index") as SetStore<String, String>
             index.add("k", listOf("a"))
-            val read = context.getBean(CoherenceBackend::class.java).store("index").read("cocache:index:k", null, null)
-            (read as RemoteRead.Hit).ttl.assert().isNull()
+            val store = context.getBean(CoherenceBackend::class.java).store(Keyspace("cocache:", "index"))
+            val read = Suspending.await { store.read("cocache:index:k", null, null, null) }
+            (read as L1Read.Hit).ttl.assert().isNull()
         }
     }
 
     @Test
-    fun perCacheTtlStillAppliesToSetCaches() {
-        runner.withPropertyValues("cocache.defaults.ttl=60", "cocache.caches.index.ttl=30").run { context ->
-            val properties = context.getBean(CoCacheProperties::class.java)
-            properties.setPolicyFor("index", SetCacheSpec.DEFAULT_POLICY).ttl.assert().isEqualTo(Duration.ofSeconds(30))
+    fun perCacheTtlStillAppliesToStores() {
+        runner.withPropertyValues("cocache.defaults.store.ttl=60s", "cocache.caches.index.ttl=30s").run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean("index")
+            requireNotNull(
+                context.getBean(CacheRuntime::class.java).policy("index")
+            ).ttl.assert().isEqualTo(Duration.ofSeconds(30))
         }
     }
 
@@ -106,135 +147,73 @@ class PolicyPropertiesTest {
         fun backend(): CoherenceBackend = InMemoryBackend()
 
         @Bean
-        fun viewSpec(): CacheSpec<String, String> = cacheSpec("view") {
+        fun viewSpec(): VersionedCacheSpec<String, String> = versionedCacheSpec("view") {
             codec = StringCodec
-            versioned = true
+            versionedLoader = CacheLoader { null }
         }
 
         @Bean
-        fun loadedViewSpec(): CacheSpec<String, String> = cacheSpec("loaded-view") {
+        fun loadedViewSpec(): VersionedCacheSpec<String, String> = versionedCacheSpec("loaded-view") {
             codec = StringCodec
             versionedLoader = CacheLoader { Versioned("v-$it", 1) }
         }
 
         @Bean
-        fun asyncViewSpec(): CacheSpec<String, String> = cacheSpec("async-view") {
+        fun asyncViewSpec(): VersionedCacheSpec<String, String> = versionedCacheSpec("async-view") {
             codec = StringCodec
             versionedAsyncLoader = AsyncCacheLoader { CompletableFuture.completedFuture(Versioned("a-$it", 1)) }
         }
+
+        @Bean
+        fun ledgerSpec(): VersionedStoreSpec<String, String> = versionedStoreSpec("ledger") { codec = StringCodec }
     }
 
     /**
-     * 带版本的缓存不支持提前刷新（6.8）：`cocache.defaults.refresh-window` 不作用于它们，其它默认项照常生效；
-     * 只有显式的 `cocache.caches.[name].refresh-window` 作用于它，并因此启动失败。
+     * `VersionedCache` 照常提前刷新（RFC 0005 §4.7）：`cocache.defaults.cache.refresh-window` 与其它默认项一样作用于它们，
+     * `cocache.caches.[name].refresh-window` 同样。`VersionedStore` 是权威副本：`cache` 一节不作用于它。
      */
     @Test
-    fun defaultRefreshWindowSkipsVersionedCaches() {
+    fun defaultRefreshWindowAppliesToVersionedCaches() {
         val versioned = ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
             .withUserConfiguration(VersionedConfig::class.java)
-        versioned.withPropertyValues("cocache.defaults.refresh-window=10", "cocache.defaults.ttl=60").run { context ->
+        versioned.withPropertyValues(
+            "cocache.defaults.cache.refresh-window=10s",
+            "cocache.defaults.cache.ttl=60s"
+        ).run { context ->
             assertThat(context).hasNotFailed()
-            val properties = context.getBean(CoCacheProperties::class.java)
-            val policy = properties.policyFor("view", CachePolicy.DEFAULT, versioned = true)
-            policy.refreshWindow.assert().isNull()
+            context.getBean("view")
+            val policy = requireNotNull(context.getBean(CacheRuntime::class.java).policy("view"))
+            policy.refreshWindow.assert().isEqualTo(Duration.ofSeconds(10))
             policy.ttl.assert().isEqualTo(Duration.ofSeconds(60))
 
             @Suppress("UNCHECKED_CAST")
-            val view = context.getBean("view") as Cache<String, String>
+            val view = context.getBean("view") as VersionedCache<String, String>
             view.putIfNewer("k", "v", 1).assert().isEqualTo(VersionedPut.Written)
             @Suppress("UNCHECKED_CAST")
-            val loaded = context.getBean("loadedView") as Cache<String, String>
+            val loaded = context.getBean("loadedView") as VersionedCache<String, String>
             loaded.getVersioned("k").assert().isEqualTo(Versioned("v-k", 1))
             @Suppress("UNCHECKED_CAST")
-            val async = context.getBean("asyncView") as Cache<String, String>
+            val async = context.getBean("asyncView") as VersionedCache<String, String>
             async.getVersioned("k").assert().isEqualTo(Versioned("a-k", 1))
+            val runtime = context.getBean(CacheRuntime::class.java)
+            requireNotNull(runtime.policy("ledger")).refreshWindow.assert().isNull()
+            requireNotNull(runtime.policy("ledger")).ttl.assert().isNull()
+            requireNotNull(runtime.policy("ledger")).tombstoneTtl.assert()
+                .isEqualTo(DefaultPolicies.VERSIONED_STORE.tombstoneTtl)
+            @Suppress("UNCHECKED_CAST")
+            val ledger = context.getBean("ledger") as VersionedStore<String, String>
+            ledger.putIfNewer("k", "v", 1).assert().isEqualTo(VersionedPut.Written)
             requireNotNull(
                 context.getBean(CacheRuntime::class.java).metrics("view")
             ).staleVersions.assert().isEqualTo(0L)
         }
-        versioned.withPropertyValues("cocache.caches.view.refresh-window=10").run { context ->
-            assertThat(context).hasFailed()
-            assertThat(context.startupFailure).rootCause().hasMessageContaining("refreshWindow")
-        }
-    }
-
-    @Configuration(proxyBeanMethods = false)
-    class ForeignFormatConfig {
-        @Bean(destroyMethod = "close")
-        fun backend(): CoherenceBackend = InMemoryBackend()
-
-        @Bean
-        fun userSpec(): CacheSpec<String, String> = cacheSpec("user") {
-            codec = StringCodec
-            loader = CacheLoader { "user-$it" }
-        }
-
-        @Bean
-        fun profileSpec(): CacheSpec<String, String> = cacheSpec("profile") { codec = StringCodec }
-
-        @Bean
-        fun viewSpec(): CacheSpec<String, String> = cacheSpec("view") {
-            codec = StringCodec
-            versioned = true
-        }
-
-        @Bean
-        fun indexSpec(): SetCacheSpec<String, String> = setCacheSpec("index") { elementCodec = StringCodec }
-    }
-
-    /**
-     * `foreign-format: reclaim` 只能用于有数据源的缓存（没有数据源时 L1 是唯一副本，回收就是删除它）：
-     * - `cocache.defaults.foreign-format: reclaim` 只作用于有数据源的缓存，没有数据源的缓存（含带版本的）与集合缓存跳过它，启动不失败；
-     *   `fail` 照常作用于没有数据源的缓存。
-     * - `cocache.caches.[name].foreign-format: reclaim` 落在没有数据源的缓存或集合缓存上时启动失败，消息带缓存名。
-     */
-    @Test
-    fun reclaimOnlyAppliesToCachesWithASource() {
-        val foreign = ApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
-            .withUserConfiguration(ForeignFormatConfig::class.java)
-        foreign.withPropertyValues("cocache.defaults.foreign-format=reclaim").run { context ->
+        versioned.withPropertyValues("cocache.caches.view.refresh-window=10s").run { context ->
             assertThat(context).hasNotFailed()
-            listOf("user", "profile", "view", "index").forEach { context.getBean(it) }
-            val properties = context.getBean(CoCacheProperties::class.java)
-            properties.policyFor(
-                "user",
-                CachePolicy.DEFAULT
-            ).foreignFormat.assert().isEqualTo(ForeignFormatMode.RECLAIM)
-            properties.policyFor("profile", CachePolicy.DEFAULT, sourced = false).foreignFormat.assert().isNull()
-            properties.policyFor(
-                "view",
-                CachePolicy.DEFAULT,
-                versioned = true,
-                sourced = false
-            ).foreignFormat.assert().isNull()
-            properties.setPolicyFor("index", SetCacheSpec.DEFAULT_POLICY).foreignFormat.assert().isNull()
-        }
-        foreign.withPropertyValues("cocache.defaults.foreign-format=fail", "cocache.caches.user.foreign-format=reclaim")
-            .run { context ->
-                assertThat(context).hasNotFailed()
-                val properties = context.getBean(CoCacheProperties::class.java)
-                properties.policyFor(
-                    "user",
-                    CachePolicy.DEFAULT
-                ).foreignFormat.assert().isEqualTo(ForeignFormatMode.RECLAIM)
-                properties.policyFor(
-                    "profile",
-                    CachePolicy.DEFAULT,
-                    sourced = false
-                ).foreignFormat.assert().isEqualTo(ForeignFormatMode.FAIL)
-            }
-        mapOf(
-            "profile" to "Cache[profile]",
-            "view" to "Cache[view]",
-            "index" to "SetCache[index]"
-        ).forEach { (name, prefix) ->
-            foreign.withPropertyValues("cocache.caches.$name.foreign-format=reclaim").run { context ->
-                assertThat(context).hasFailed()
-                assertThat(context.startupFailure).rootCause()
-                    .hasMessageStartingWith("$prefix - foreignFormat = RECLAIM")
-            }
+            context.getBean("view")
+            requireNotNull(
+                context.getBean(CacheRuntime::class.java).policy("view")
+            ).refreshWindow.assert().isEqualTo(Duration.ofSeconds(10))
         }
     }
 }

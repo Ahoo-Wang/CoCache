@@ -1,0 +1,272 @@
+/*
+ * Copyright [2021-present] [ahoo wang <ahoowang@qq.com> (https://github.com/Ahoo-Wang)].
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package me.ahoo.cocache.redis.foreign
+
+import io.lettuce.core.ScriptOutputType
+import me.ahoo.cocache.api.CacheReadException
+import me.ahoo.cocache.api.CacheWriteException
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.LeaseRequest
+import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.ForeignFormatException
+import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
+import me.ahoo.cocache.redis.RedisInvalidationChannel
+import me.ahoo.cocache.redis.RedisScripts
+import me.ahoo.cocache.redis.RedisTestSupport
+import me.ahoo.cocache.redis.setSurface
+import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Suspending
+import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Test
+import java.time.Duration
+import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutionException
+
+/**
+ * 权威副本（Redis 是唯一副本）上读不懂的内容的写入与混合版本读取：
+ * - `SetStore` 的 `add` / `remove` 落在读不懂的内容上（原生 Set、没有 `!f` 的 Hash、String、更高的 `!f`）时总是失败，
+ *   key 原样保留、不广播：否则一次 `add` 会用一个成员替换掉全部原有成员；
+ * - 更高格式版本的标量值在没有数据源时失败，而不是读成不存在。
+ */
+class ForeignFormatWriteTest {
+    private val run = UUID.randomUUID().toString()
+    private val backend = RedisTestSupport.backend()
+    private val runtime = CacheRuntime.builder().backend(backend).build()
+
+    @AfterEach
+    fun close() {
+        runtime.close()
+        backend.close()
+        RedisTestSupport.deleteKeys("*$run*")
+    }
+
+    private fun index(name: String): SetStore<String, String> = runtime.create(
+        setStoreSpec(name) { elementCodec = StringCodec }
+    )
+
+    private fun assertForeignWrite(error: Throwable?, storageKey: String, operation: String, format: Int = 0) {
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        (error as CacheWriteException).operation.assert().isEqualTo(operation)
+        val cause = requireNotNull(error.cause as? ForeignFormatException)
+        cause.storageKey.assert().isEqualTo(storageKey)
+        cause.format.assert().isEqualTo(format)
+    }
+
+    /**
+     * 权限策略索引这样的集合是原生 Set（不是本协议写入的）：`add` / `remove`（同步与异步）都失败，成员一个不少。
+     */
+    @Test
+    fun memberWritesOnForeignNativeSetFailAndKeepIt() {
+        val name = "deny-$run"
+        val key = "cocache:$name:"
+        ForeignContent.set(key, listOf("p1", "p2"), ttlSeconds = 3600)
+        val cache = index(name)
+
+        assertForeignWrite(runCatching { cache.add("", listOf("p3")) }.exceptionOrNull(), key, "add")
+        assertForeignWrite(runCatching { cache.remove("", listOf("p1")) }.exceptionOrNull(), key, "remove")
+        val asyncError = runCatching { cache.async().add("", listOf("p3")).get() }.exceptionOrNull()
+        asyncError.assert().isInstanceOf(ExecutionException::class.java)
+        assertForeignWrite(asyncError?.cause, key, "add")
+        val asyncRemove = runCatching { cache.async().remove("", listOf("p1")).get() }.exceptionOrNull()
+        assertForeignWrite(asyncRemove?.cause, key, "remove")
+
+        ForeignContent.type(key).assert().isEqualTo("set")
+        ForeignContent.members(key).assert().containsExactlyInAnyOrder("p1", "p2")
+        ForeignContent.pttl(key).assert().isBetween(1L, 3_600_000L)
+        requireNotNull(runtime.metrics(name)).unknownFormats.assert().isEqualTo(4L)
+    }
+
+    @Test
+    fun memberWritesOnOtherForeignContentFail() {
+        val name = "other-$run"
+        val cache = index(name)
+        val hash = "cocache:$name:hash"
+        val string = "cocache:$name:string"
+        val list = "cocache:$name:list"
+        ForeignContent.hash(hash, mapOf("+a" to ""))
+        ForeignContent.string(string, "[\"a\"]")
+        RedisTestSupport.withCommands { it.rpush(list, "a") }
+
+        assertForeignWrite(runCatching { cache.add("hash", listOf("b")) }.exceptionOrNull(), hash, "add")
+        assertForeignWrite(runCatching { cache.remove("hash", listOf("a")) }.exceptionOrNull(), hash, "remove")
+        assertForeignWrite(runCatching { cache.add("string", listOf("b")) }.exceptionOrNull(), string, "add")
+        assertForeignWrite(runCatching { cache.add("list", listOf("b")) }.exceptionOrNull(), list, "add")
+
+        ForeignContent.fields(hash).assert().isEqualTo(mapOf("+a" to ""))
+        ForeignContent.get(string).assert().isEqualTo("[\"a\"]")
+        RedisTestSupport.withCommands { it.lrange(list, 0, -1) }.assert().containsExactly("a")
+    }
+
+    /**
+     * 更高版本写入的集合（`!f` 大于本节点的格式）：本节点读不懂，也不按本版本写入成员。
+     */
+    @Test
+    fun memberWritesOnNewerFormatSetFail() {
+        val name = "newer-$run"
+        val key = "cocache:$name:k"
+        ForeignContent.hash(key, mapOf("!f" to "3", "+a" to ""))
+        val cache = index(name)
+
+        assertForeignWrite(runCatching { cache.add("k", listOf("b")) }.exceptionOrNull(), key, "add", format = 3)
+        assertForeignWrite(runCatching { cache.remove("k", listOf("a")) }.exceptionOrNull(), key, "remove", format = 3)
+        ForeignContent.fields(key).assert().isEqualTo(mapOf("!f" to "3", "+a" to ""))
+    }
+
+    /**
+     * 拒绝的写入不广播（脚本原子地检查，什么都不做就返回）：之后的写入的帧是唯一收到的帧。
+     */
+    @Test
+    fun refusedWriteDoesNotBroadcast() {
+        val name = "silent-$run"
+        val key = "cocache:$name:k"
+        ForeignContent.set(key, listOf("p1"))
+        val cache = index(name)
+        val frames = CopyOnWriteArrayList<ByteArray>()
+        RedisTestSupport.subscribeFrames(
+            RedisInvalidationChannel.channelOf(Keyspace("cocache:", name))
+        ) { frames.add(it) }.use {
+            runCatching {
+                cache.add(
+                    "k",
+                    listOf("p2")
+                )
+            }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
+            runCatching {
+                cache.remove(
+                    "k",
+                    listOf("p1")
+                )
+            }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
+            cache.add("marker", listOf("m"))
+            awaitCondition("marker broadcast") { frames.isNotEmpty() }
+            frames.map { InvalidationFrame.decode(it).keys }.assert().containsExactly(listOf("cocache:$name:marker"))
+        }
+    }
+
+    /**
+     * 整体覆盖（`put`）不检查原有内容：调用方给出的是全部内容，读不懂的内容被替换。
+     */
+    @Test
+    fun putReplacesForeignContent() {
+        val name = "put-$run"
+        val key = "cocache:$name:k"
+        ForeignContent.set(key, listOf("p1"))
+        val cache = index(name)
+        cache.put("k", setOf("p2"))
+        cache["k"].assert().containsExactly("p2")
+    }
+
+    /**
+     * 混合版本滚动升级：更高版本的节点写入的标量值。没有数据源时默认失败（同步、批量、异步），key 原样保留。
+     */
+    @Test
+    fun newerFormatValueWithoutLoaderFailsAndIsKept() {
+        val name = "newer-value-$run"
+        val key = "cocache:$name:k"
+        // 36 字节头：magic、格式版本 3、状态 V、标志位、24 字节令牌、8 字节签发时间；载荷 "v"
+        RedisTestSupport.withCommands {
+            it.eval<String>(
+                "return redis.call('SET', KEYS[1], '\\192\\3V\\0' .. string.rep('\\0', 32) .. 'v')",
+                ScriptOutputType.STATUS,
+                key
+            )
+        }
+        val cache = runtime.create(
+            storeSpec<String, String>(name) {
+                codec = StringCodec
+            }
+        )
+
+        fun assertNewer(error: Throwable?) {
+            error.assert().isInstanceOf(CacheReadException::class.java)
+            val cause = requireNotNull(error?.cause as? ForeignFormatException)
+            cause.storageKey.assert().isEqualTo(key)
+            cause.format.assert().isEqualTo(3)
+        }
+        assertNewer(runCatching { cache["k"] }.exceptionOrNull())
+        assertNewer(runCatching { cache.getAll(listOf("k", "absent")) }.exceptionOrNull())
+        assertNewer(runCatching { cache.async().get("k").get() }.exceptionOrNull()?.cause)
+        assertNewer(runCatching { cache.async().getAll(listOf("k", "absent")).get() }.exceptionOrNull()?.cause)
+        requireNotNull(runtime.metrics(name)).unknownFormats.assert().isEqualTo(4L)
+        ForeignContent.exists(key).assert().isTrue()
+        ForeignContent.exists("cocache:$name:absent").assert().withFailMessage { "no lease left behind" }.isFalse()
+    }
+
+    /**
+     * 存储层的判定（脚本内原子完成）：不存在、负缓存、lease 占位、本版本的集合可以写；其余拒绝并返回格式版本。
+     */
+    @Test
+    fun storeChecksEveryShapeAtomically() = Suspending.await<Unit> {
+        val namespace = "store-$run"
+        val store = backend.store(Keyspace("cocache:", namespace))
+        fun key(name: String) = "cocache:$namespace:$name"
+        val members = listOf("m".toByteArray())
+        val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
+
+        store.put(key("negative"), Envelope.Absent, null, frame)
+        store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
+        store.setSurface.addMembers(key("set"), members, null, frame).assert().isNull()
+        store.put(key("scalar"), Envelope.Scalar("v".toByteArray()), null, frame)
+        ForeignContent.hash(key("invalid"), mapOf("!f" to "x", "+a" to ""))
+        ForeignContent.hash(key("zero"), mapOf("!f" to "0", "+a" to ""))
+        // 格式 2 的 String 头，但状态字节不认识：报告为更高格式（RFC 0005 §4.7，P1）
+        RedisTestSupport.withCommands {
+            it.eval<String>(
+                "return redis.call('SET', KEYS[1], '\\192\\2X\\0' .. string.rep('\\0', 32))",
+                ScriptOutputType.STATUS,
+                key("unknown-state")
+            )
+        }
+
+        store.setSurface.addMembers(key("absent"), members, null, frame).assert().isNull()
+        store.setSurface.addMembers(key("negative"), members, null, frame).assert().isNull()
+        store.setSurface.addMembers(key("leased"), members, Duration.ofMinutes(1), frame).assert().isNull()
+        store.setSurface.removeMembers(
+            key("set"),
+            listOf("x".toByteArray()),
+            Duration.ofMinutes(1),
+            frame
+        ).assert().isNull()
+        ForeignContent.type(key("negative")).assert().isEqualTo("hash")
+        ForeignContent.type(key("leased")).assert().isEqualTo("hash")
+        store.put(key("negative"), Envelope.Absent, null, frame)
+        store.setSurface.removeMembers(key("negative"), members, null, frame).assert().isNull()
+        ForeignContent.type(key("negative")).assert().isEqualTo("string")
+        ForeignContent.pttl(key("set")).assert().isBetween(1L, 60_000L)
+        store.setSurface.removeMembers(key("set"), members, null, frame).assert().isNull()
+        ForeignContent.exists(key("set")).assert().isFalse()
+
+        store.setSurface.addMembers(key("scalar"), members, null, frame).assert().isEqualTo(RedisScripts.FORMAT)
+        store.setSurface.removeMembers(key("scalar"), members, null, frame).assert().isEqualTo(RedisScripts.FORMAT)
+        store.setSurface.addMembers(key("invalid"), members, null, frame).assert().isEqualTo(0)
+        store.setSurface.addMembers(key("zero"), members, null, frame).assert().isEqualTo(0)
+        store.setSurface.addMembers(
+            key("unknown-state"),
+            members,
+            null,
+            frame
+        ).assert().isEqualTo(RedisScripts.NEWER_FORMAT)
+        ForeignContent.fields(key("invalid")).assert().isEqualTo(mapOf("!f" to "x", "+a" to ""))
+        ForeignContent.fields(key("zero")).assert().isEqualTo(mapOf("!f" to "0", "+a" to ""))
+    }
+}

@@ -20,7 +20,7 @@ import java.time.Duration
 class CachePolicyTest {
     @Test
     fun defaultsAreFinite() {
-        val policy = CachePolicy.DEFAULT
+        val policy = DefaultPolicies.CACHE
         policy.ttl.assert().isEqualTo(Duration.ofHours(1))
         policy.localMaxAge.assert().isEqualTo(Duration.ofMinutes(5))
         // 未配置：引擎按有没有数据源决定（有 RETRY，没有 THROW）
@@ -66,12 +66,10 @@ class CachePolicyTest {
             .local(local)
             .invalidateFailure(InvalidateFailureMode.THROW)
             .readFailure(ReadFailureMode.THROW)
-            .foreignFormat(ForeignFormatMode.FAIL)
+            .readTimeout(Duration.ofMillis(300))
             .build()
         val copy = policy.toBuilder().build()
-        copy.foreignFormat.assert().isEqualTo(ForeignFormatMode.FAIL)
-        copy.toString().assert().contains("foreignFormat=FAIL")
-        CachePolicy.DEFAULT.foreignFormat.assert().isNull()
+        copy.toString().assert().contains("readFailure=THROW, readTimeout=PT0.3S, tombstoneTtl=null, ttlCeiling=null)")
         copy.ttl.assert().isEqualTo(Duration.ofMinutes(2))
         copy.ttlJitter.assert().isEqualTo(Duration.ofSeconds(3))
         copy.absentTtl.assert().isEqualTo(Duration.ofSeconds(4))
@@ -83,8 +81,10 @@ class CachePolicyTest {
         copy.local.assert().isEqualTo(local)
         copy.invalidateFailure.assert().isEqualTo(InvalidateFailureMode.THROW)
         copy.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
-        // 未配置：引擎按这次读取有没有数据源决定（有 DEGRADE，没有 THROW）
-        CachePolicy.DEFAULT.readFailure.assert().isNull()
+        copy.readTimeout.assert().isEqualTo(Duration.ofMillis(300))
+        // 未配置：引擎按这次读取有没有数据源决定（有 DEGRADE，没有 THROW）；读取的时限为后端的命令超时
+        DefaultPolicies.CACHE.readFailure.assert().isNull()
+        DefaultPolicies.CACHE.readTimeout.assert().isNull()
     }
 
     /**
@@ -92,7 +92,7 @@ class CachePolicyTest {
      */
     @Test
     fun builderStartsFromThePolicy() {
-        val policy = CachePolicy(ttl = null, foreignFormat = ForeignFormatMode.RECLAIM)
+        val policy = CachePolicy(ttl = null, readFailure = ReadFailureMode.THROW)
         val builder = policy.toBuilder()
         builder.ttl.assert().isNull()
         builder.ttlJitter.assert().isEqualTo(policy.ttlJitter)
@@ -104,50 +104,9 @@ class CachePolicyTest {
         builder.load.assert().isEqualTo(policy.load)
         builder.local.assert().isEqualTo(policy.local)
         builder.invalidateFailure.assert().isEqualTo(policy.invalidateFailure)
-        builder.readFailure.assert().isEqualTo(policy.readFailure)
-        builder.foreignFormat.assert().isEqualTo(ForeignFormatMode.RECLAIM)
-        builder.foreignFormat = null
-        builder.build().foreignFormat.assert().isNull()
-    }
-
-    /**
-     * 6.4 及以前编译的调用方使用的两个构造函数（11 个参数的版本与 Kotlin 默认参数的合成版本）仍然存在，`foreignFormat` 为未设置。
-     */
-    @Test
-    fun constructorsOf64RemainBinaryCompatible() {
-        val types = arrayOf(
-            Duration::class.java, Duration::class.java, Duration::class.java, Duration::class.java, Duration::class.java,
-            Duration::class.java, LeasePolicy::class.java, LoadPolicy::class.java, LocalPolicy::class.java,
-            InvalidateFailureMode::class.java, ReadFailureMode::class.java
-        )
-        val full = CachePolicy::class.java.getConstructor(*types).newInstance(
-            Duration.ofMinutes(2), Duration.ZERO, Duration.ofSeconds(4), Duration.ofMinutes(1), Duration.ofSeconds(5),
-            null, LeasePolicy(), LoadPolicy(), LocalPolicy(), InvalidateFailureMode.THROW, ReadFailureMode.THROW
-        )
-        full.ttl.assert().isEqualTo(Duration.ofMinutes(2))
-        full.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
-        full.foreignFormat.assert().isNull()
-
-        // 旧调用方的 CachePolicy(ttl = null)：只传第一个参数，其余由默认值掩码（第 0 位以外全部置位）补齐
-        val defaults = CachePolicy::class.java.getConstructor(
-            *types,
-            Int::class.javaPrimitiveType,
-            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker")
-        ).newInstance(*arrayOfNulls<Any>(types.size), 0b111_1111_1110, null)
-        defaults.ttl.assert().isNull()
-        defaults.ttlJitter.assert().isEqualTo(CachePolicy.DEFAULT_TTL_JITTER)
-        defaults.readFailure.assert().isNull()
-        defaults.foreignFormat.assert().isNull()
-        // 6.9 起 readFailure 与 invalidateFailure 的默认值也是未设置（参数类型在 JVM 上不变，旧调用方无需重新编译）
-        defaults.invalidateFailure.assert().isNull()
-
-        // 旧调用方的 CachePolicy()：全部参数取默认值
-        val allDefaults = CachePolicy::class.java.getConstructor(
-            *types,
-            Int::class.javaPrimitiveType,
-            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker")
-        ).newInstance(*arrayOfNulls<Any>(types.size), 0b111_1111_1111, null)
-        allDefaults.toString().assert().isEqualTo(CachePolicy.DEFAULT.toString())
+        builder.readFailure.assert().isEqualTo(ReadFailureMode.THROW)
+        builder.readFailure = null
+        builder.build().readFailure.assert().isNull()
     }
 
     @Test
@@ -161,6 +120,8 @@ class CachePolicyTest {
         fails { CachePolicy(localMaxAge = Duration.ofSeconds(-1)) }
         fails { CachePolicy(degradedLocalMaxAge = Duration.ZERO) }
         fails { CachePolicy(refreshWindow = Duration.ZERO) }
+        fails { CachePolicy(readTimeout = Duration.ZERO) }
+        fails { CachePolicy(readTimeout = Duration.ofMillis(-1)) }
         fails { CachePolicy(ttl = Duration.ofSeconds(10), refreshWindow = Duration.ofSeconds(10)) }
         fails { CachePolicy(localMaxAge = Duration.ofSeconds(10), refreshWindow = Duration.ofSeconds(10)) }
         fails { LeasePolicy(ttl = Duration.ZERO) }

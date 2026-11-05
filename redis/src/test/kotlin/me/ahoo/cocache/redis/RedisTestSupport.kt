@@ -27,6 +27,12 @@ import io.lettuce.core.internal.HostAndPort
 import io.lettuce.core.resource.ClientResources
 import io.lettuce.core.resource.DefaultClientResources
 import io.lettuce.core.resource.MappingSocketAddressResolver
+import me.ahoo.cocache.api.spi.ConditionalL1Store
+import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.SetL1Store
+import me.ahoo.cocache.api.spi.VersionedL1Store
+import me.ahoo.cocache.test.L1Capability
 import java.time.Duration
 
 /**
@@ -53,6 +59,11 @@ object RedisTestSupport {
 
     val isCluster: Boolean = clusterNodes != null
 
+    /**
+     * Redis 后端的存储提供全部可选能力（三种通道模式、单机与集群都一样），TCK 的 `expectedCapabilities` 声明它。
+     */
+    val CAPABILITIES: Set<L1Capability> = setOf(L1Capability.CONDITIONAL, L1Capability.VERSIONED, L1Capability.SETS)
+
     fun backend(
         options: RedisBackendOptions = RedisBackendOptions(
             clientName = "cocache-tck-" + java.util.UUID.randomUUID()
@@ -69,11 +80,11 @@ object RedisTestSupport {
     )
 
     /**
-     * 非原子广播的后端：用 ACL 禁止向探测频道发布（只允许 `cocache:inv:*`），探测失败后后端退回“写入后由引擎发布”。
+     * 非原子广播的后端：用 ACL 禁止向探测频道发布（只允许任意前缀的失效频道 `*inv:*`），探测失败后后端退回“写入后由引擎发布”。
      */
     fun nonAtomicBackend(): RedisBackend = aclBackend(
         "cocache-nonatomic",
-        listOf("~*", "resetchannels", "&cocache:inv:*", "+@all")
+        listOf("~*", "resetchannels", "&*inv:*", "+@all")
     )
 
     /**
@@ -109,6 +120,13 @@ object RedisTestSupport {
     }
 
     /**
+     * 删除 [aclBackend] 设置的 ACL 用户（各节点）。先关闭以该用户连接的后端：删除用户会断开它的连接。
+     */
+    fun deleteAclUser(user: String) {
+        forEachNode { commands -> commands.aclDeluser(user) }
+    }
+
+    /**
      * 以默认用户执行任意命令（单机或集群，命令按 key 路由）。
      */
     fun <T> withCommands(block: (io.lettuce.core.cluster.api.sync.RedisClusterCommands<String, String>) -> T): T {
@@ -128,6 +146,40 @@ object RedisTestSupport {
             client.shutdown()
         }
     }
+
+    /**
+     * 同 [withCommands]，key 与值都是字节（用于构造与读取原始的线格式内容）。
+     */
+    fun <T> withBinaryCommands(
+        block: (io.lettuce.core.cluster.api.sync.RedisClusterCommands<ByteArray, ByteArray>) -> T
+    ): T {
+        val codec = io.lettuce.core.codec.ByteArrayCodec.INSTANCE
+        val nodes = clusterNodes
+        if (nodes != null) {
+            val client = RedisClusterClient.create(nodes)
+            try {
+                client.connect(codec).use { return block(it.sync()) }
+            } finally {
+                client.shutdown()
+            }
+        }
+        val client = RedisClient.create(standaloneUri)
+        try {
+            client.connect(codec).use { return block(it.sync()) }
+        } finally {
+            client.shutdown()
+        }
+    }
+
+    /**
+     * 同 [subscribeRaw]，但跳过创建存储时的零 key 探测帧（RFC 0005 §4.7，K8）：Cluster 中经典 Pub/Sub 的帧经集群总线异步转发，
+     * 订阅之前创建的存储发出的探测帧可能在订阅之后才到达。
+     */
+    fun subscribeFrames(channel: String, onMessage: (ByteArray) -> Unit): AutoCloseable =
+        subscribeRaw(channel) { if (!isProbeFrame(it)) onMessage(it) }
+
+    private fun isProbeFrame(message: ByteArray): Boolean =
+        runCatching { InvalidationFrame.decode(message).keys.isEmpty() }.getOrDefault(false)
 
     /**
      * 订阅经典频道 [channel]（集群中 `PUBLISH` 经集群总线到达任意节点），收到的消息交给 [onMessage]；关闭返回值即退订。
@@ -156,13 +208,13 @@ object RedisTestSupport {
     }
 
     /**
-     * 经 [proxy] 连接单机 Redis 的后端（用于模拟命令连接断线）。仅限单机。
+     * 经 [proxy] 连接单机 Redis 的后端（用于模拟命令连接断线）。仅限单机。[resources] 非 `null` 时用它建客户端（调用方负责 `shutdown`）。
      */
-    fun proxiedBackend(proxy: TcpProxy): RedisBackend {
+    fun proxiedBackend(proxy: TcpProxy, resources: ClientResources? = null): RedisBackend {
         check(!isCluster) { "Standalone only" }
         return RedisBackend.standalone(
             RedisURI.create(proxy.address, proxy.port),
-            RedisBackendOptions(clientName = "cocache-tck-" + java.util.UUID.randomUUID())
+            RedisBackendOptions(clientName = "cocache-tck-" + java.util.UUID.randomUUID(), clientResources = resources)
         )
     }
 
@@ -465,3 +517,21 @@ object RedisTestSupport {
             .mapNotNull { it["id"]?.toLongOrNull() }
     }
 }
+
+/**
+ * 存储的条件读写能力面（Redis 后端总是提供）。
+ */
+internal val L1Store.conditionalSurface: ConditionalL1Store
+    get() = requireNotNull(conditional()) { "${javaClass.name} does not provide the conditional capability." }
+
+/**
+ * 存储的按版本写入能力面（Redis 后端总是提供）。
+ */
+internal val L1Store.versionedSurface: VersionedL1Store
+    get() = requireNotNull(versioned()) { "${javaClass.name} does not provide the versioned capability." }
+
+/**
+ * 存储的集合能力面（Redis 后端总是提供）。
+ */
+internal val L1Store.setSurface: SetL1Store
+    get() = requireNotNull(sets()) { "${javaClass.name} does not provide the sets capability." }

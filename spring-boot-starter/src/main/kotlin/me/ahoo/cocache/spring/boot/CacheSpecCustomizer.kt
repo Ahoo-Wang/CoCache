@@ -14,10 +14,14 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
+import me.ahoo.cocache.core.StoreSpec
+import me.ahoo.cocache.core.VersionedCacheSpec
+import me.ahoo.cocache.core.VersionedStoreSpec
 
 /**
  * 在创建缓存之前修改声明，用于注解或 spec 无法表达的设置，或批量修改多个缓存。多个定制器按 Spring 的顺序依次应用。
+ * 五种 spec 各有一个重载（RFC 0005 §3.1），默认什么也不做。
  */
 interface CacheSpecCustomizer {
     /**
@@ -27,5 +31,11 @@ interface CacheSpecCustomizer {
 
     fun customize(spec: CacheSpec.Builder<*, *>) = Unit
 
-    fun customize(spec: SetCacheSpec.Builder<*, *>) = Unit
+    fun customize(spec: VersionedCacheSpec.Builder<*, *>) = Unit
+
+    fun customize(spec: StoreSpec.Builder<*, *>) = Unit
+
+    fun customize(spec: VersionedStoreSpec.Builder<*, *>) = Unit
+
+    fun customize(spec: SetStoreSpec.Builder<*, *>) = Unit
 }

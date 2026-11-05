@@ -15,7 +15,9 @@ package me.ahoo.cocache.core.memory
 
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CopyOnWriteArrayList
@@ -31,19 +33,29 @@ class InMemoryChannelTest {
         val backend = InMemoryBackend()
         val failing = FailingListener()
         val healthy = RecordingListener()
-        backend.channel.subscribe("ns", failing)
-        backend.channel.subscribe("ns", healthy)
+        backend.channel.subscribe(Keyspace("cocache:", "ns"), failing)
+        backend.channel.subscribe(Keyspace("cocache:", "ns"), healthy)
         failing.error = AssertionError("listener bug")
 
-        backend.store("ns").invalidate(listOf("k"), frameOf("k"))
-        backend.channel.publish("ns", frameOf("k2"))
+        Suspending.await {
+            backend.store(Keyspace("cocache:", "ns")).invalidate(listOf("cocache:ns:k"), frameOf("cocache:ns:k"))
+        }
+        Suspending.await { backend.channel.publish(Keyspace("cocache:", "ns"), frameOf("cocache:ns:k2")) }
+        // 订阅者收到编码 key（S4）
         healthy.received.assert().containsExactly(listOf("k"), listOf("k2"))
         backend.reconnect()
         healthy.resets.get().assert().isEqualTo(2)
 
         val fatal = OutOfMemoryError("listener")
         failing.error = fatal
-        runCatching { backend.channel.publish("ns", frameOf("k3")) }.exceptionOrNull().assert().isSameAs(fatal)
+        runCatching {
+            Suspending.await {
+                backend.channel.publish(
+                    Keyspace("cocache:", "ns"),
+                    frameOf("cocache:ns:k3")
+                )
+            }
+        }.exceptionOrNull().assert().isSameAs(fatal)
     }
 
     private fun frameOf(key: String): ByteArray = InvalidationFrame.encode(NodeId.random(), listOf(key))

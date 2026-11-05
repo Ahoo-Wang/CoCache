@@ -47,10 +47,14 @@ class FutureL1StoreTest {
     private val refresh = RefreshRequest(Duration.ofSeconds(1), Token(node, 2), Duration.ofSeconds(1))
     private val envelope = Envelope.Scalar(byteArrayOf(1))
     private val digest = Digest.of(envelope)
+    private val fingerprint = ContentFingerprint.of(envelope)
+    private val timeout = Duration.ofMillis(500)
+    private val filled = L1Fill.Filled(false)
+    private val rejected = L1Fill.Rejected(null)
     private val ttl = Duration.ofMinutes(1)
     private val frame = InvalidationFrame.encode(node, listOf("k"))
     private val fill = Fill("k", token, envelope, ttl)
-    private val hit = RemoteRead.Hit(envelope, 1, ttl)
+    private val hit = L1Read.Hit(envelope, 1, ttl)
 
     private fun storeWithoutCapabilities(): FutureL1Store = mockk {
         every { conditional() } returns null
@@ -64,23 +68,23 @@ class FutureL1StoreTest {
         val leases = mapOf("k" to lease)
         val puts = listOf(Put("k", envelope, ttl))
         val store = storeWithoutCapabilities()
-        every { store.read("k", lease, refresh) } returns CompletableFuture.completedFuture(hit)
-        every { store.readAll(keys, leases) } returns CompletableFuture.completedFuture(mapOf("k" to hit))
-        every { store.fill(fill) } returns CompletableFuture.completedFuture(true)
-        every { store.fillAll(listOf(fill)) } returns CompletableFuture.completedFuture(listOf(false))
+        every { store.read("k", lease, refresh, timeout) } returns CompletableFuture.completedFuture(hit)
+        every { store.readAll(keys, leases, timeout) } returns CompletableFuture.completedFuture(mapOf("k" to hit))
+        every { store.fill(fill) } returns CompletableFuture.completedFuture(filled)
+        every { store.fillAll(listOf(fill)) } returns CompletableFuture.completedFuture(listOf(rejected))
         every { store.release("k", token) } returns CompletableFuture.completedFuture(null)
-        every { store.reclaim("k", digest, lease) } returns CompletableFuture.completedFuture(true)
+        every { store.reclaim("k", fingerprint, lease) } returns CompletableFuture.completedFuture(true)
         every { store.put("k", envelope, ttl, frame) } returns CompletableFuture.completedFuture(null)
         every { store.putAll(puts, frame) } returns CompletableFuture.completedFuture(null)
         every { store.invalidate(keys, frame) } returns CompletableFuture.completedFuture(null)
         val l1 = FutureL1Store.adapt(store)
 
-        Suspending.await { l1.read("k", lease, refresh) }.assert().isSameAs(hit)
-        Suspending.await { l1.readAll(keys, leases) }.assert().isEqualTo(mapOf("k" to hit))
-        Suspending.await { l1.fill(fill) }.assert().isTrue()
-        Suspending.await { l1.fillAll(listOf(fill)) }.assert().containsExactly(false)
+        Suspending.await { l1.read("k", lease, refresh, timeout) }.assert().isSameAs(hit)
+        Suspending.await { l1.readAll(keys, leases, timeout) }.assert().isEqualTo(mapOf("k" to hit))
+        Suspending.await { l1.fill(fill) }.assert().isEqualTo(filled)
+        Suspending.await { l1.fillAll(listOf(fill)) }.assert().containsExactly(rejected)
         Suspending.await { l1.release("k", token) }
-        Suspending.await { l1.reclaim("k", digest, lease) }.assert().isTrue()
+        Suspending.await { l1.reclaim("k", fingerprint, lease) }.assert().isTrue()
         Suspending.await { l1.put("k", envelope, ttl, frame) }
         Suspending.await { l1.putAll(puts, frame) }
         Suspending.await { l1.invalidate(keys, frame) }
@@ -97,15 +101,18 @@ class FutureL1StoreTest {
     fun `adapt forwards the operations of every capability surface`() {
         val members = listOf(byteArrayOf(2))
         val conditionalSurface = mockk<FutureConditionalL1Store> {
-            every { readIfChanged("k", digest) } returns CompletableFuture.completedFuture(RemoteConditionalRead.Unchanged(1))
+            every { readIfChanged("k", digest, timeout) } returns CompletableFuture.completedFuture(L1ConditionalRead.Unchanged(1))
             every {
                 putIfMatch("k", null, envelope, ttl, frame)
-            } returns CompletableFuture.completedFuture(RemoteConditionalWrite.Written)
+            } returns CompletableFuture.completedFuture(L1ConditionalWrite.Written)
+            every {
+                deleteIfMatch("k", digest, frame)
+            } returns CompletableFuture.completedFuture(L1ConditionalWrite.Conflict(null))
         }
         val versionedSurface = mockk<FutureVersionedL1Store> {
             every {
                 putIfNewer("k", envelope, 7, ttl, frame)
-            } returns CompletableFuture.completedFuture(RemoteVersionedWrite.Stale(9))
+            } returns CompletableFuture.completedFuture(L1VersionedWrite.Stale(9))
         }
         val setSurface = mockk<FutureSetL1Store> {
             every { addMembers("k", members, ttl, frame) } returns CompletableFuture.completedFuture(null)
@@ -119,13 +126,15 @@ class FutureL1StoreTest {
         val l1 = store.asL1Store()
 
         val conditional = requireNotNull(l1.conditional())
-        val unchanged = Suspending.await { conditional.readIfChanged("k", digest) }
-        unchanged.assert().isEqualTo(RemoteConditionalRead.Unchanged(1))
+        val unchanged = Suspending.await { conditional.readIfChanged("k", digest, timeout) }
+        unchanged.assert().isEqualTo(L1ConditionalRead.Unchanged(1))
         val written = Suspending.await { conditional.putIfMatch("k", null, envelope, ttl, frame) }
-        written.assert().isSameAs(RemoteConditionalWrite.Written)
+        written.assert().isSameAs(L1ConditionalWrite.Written)
+        val conflict = Suspending.await { conditional.deleteIfMatch("k", digest, frame) }
+        conflict.assert().isEqualTo(L1ConditionalWrite.Conflict(null))
         val versioned = requireNotNull(l1.versioned())
         val stale = Suspending.await { versioned.putIfNewer("k", envelope, 7, ttl, frame) }
-        stale.assert().isEqualTo(RemoteVersionedWrite.Stale(9))
+        stale.assert().isEqualTo(L1VersionedWrite.Stale(9))
         val sets = requireNotNull(l1.sets())
         Suspending.await { sets.addMembers("k", members, ttl, frame) }.assert().isNull()
         Suspending.await { sets.removeMembers("k", members, ttl, frame) }.assert().isEqualTo(0)
@@ -133,12 +142,12 @@ class FutureL1StoreTest {
 
     @Test
     fun `completed future is read without suspending or registering a callback`() {
-        val future = WatchedFuture<RemoteRead>().apply { complete(hit) }
+        val future = WatchedFuture<L1Read>().apply { complete(hit) }
         val store = storeWithoutCapabilities()
-        every { store.read("k", null, null) } returns future
+        every { store.read("k", null, null, null) } returns future
         val l1 = FutureL1Store.adapt(store)
 
-        val started = Started { l1.read("k", null, null) }
+        val started = Started { l1.read("k", null, null, null) }
 
         started.completedOnStart.assert().isTrue()
         started.outcome().getOrThrow().assert().isSameAs(hit)
@@ -148,18 +157,18 @@ class FutureL1StoreTest {
 
     @Test
     fun `pending future suspends, resumes on the completing thread and is never cancelled`() {
-        val future = WatchedFuture<Boolean>()
+        val future = WatchedFuture<L1Fill>()
         val store = storeWithoutCapabilities()
         every { store.fill(fill) } returns future
         val l1 = FutureL1Store.adapt(store)
 
         val started = Started { l1.fill(fill) to Thread.currentThread() }
         started.completedOnStart.assert().isFalse()
-        val completer = thread(name = "completer") { future.complete(true) }
+        val completer = thread(name = "completer") { future.complete(filled) }
         completer.join()
 
-        val (filled, resumedOn) = started.outcome().getOrThrow()
-        filled.assert().isTrue()
+        val (result, resumedOn) = started.outcome().getOrThrow()
+        result.assert().isEqualTo(filled)
         resumedOn.assert().isSameAs(completer)
         future.callbacks.get().assert().isEqualTo(1)
         future.cancels.get().assert().isZero()
@@ -176,7 +185,7 @@ class FutureL1StoreTest {
             { CompletionException(ExecutionException(it)) },
         )
         wrappings.forEach { wrap ->
-            val future = CompletableFuture<Boolean>()
+            val future = CompletableFuture<L1Fill>()
             if (completedBeforeTheCall) {
                 future.completeExceptionally(wrap(original))
             }
@@ -196,13 +205,13 @@ class FutureL1StoreTest {
     @Test
     fun `failed dependent stage throws the original exception`() {
         val original = IllegalStateException("decode failed")
-        val source = CompletableFuture<Boolean>()
+        val source = CompletableFuture<L1Fill>()
         val store = storeWithoutCapabilities()
-        every { store.fill(fill) } returns source.thenApply<Boolean> { throw original }
+        every { store.fill(fill) } returns source.thenApply<L1Fill> { throw original }
         val l1 = FutureL1Store.adapt(store)
 
         val started = Started { l1.fill(fill) }
-        source.complete(true)
+        source.complete(filled)
 
         started.outcome().exceptionOrNull().assert().isSameAs(original)
     }
@@ -234,8 +243,8 @@ class FutureL1StoreTest {
         cancelledBeforeTheCall: Boolean,
         throughDependentStage: Boolean
     ) {
-        val source = CompletableFuture<Boolean>()
-        val future = if (throughDependentStage) source.thenApply<Boolean> { it } else source
+        val source = CompletableFuture<L1Fill>()
+        val future = if (throughDependentStage) source.thenApply<L1Fill> { it } else source
         if (cancelledBeforeTheCall) {
             source.cancel(false)
         }
@@ -273,16 +282,16 @@ class FutureL1StoreTest {
 
     @Test
     fun `null where a value is required fails with an IllegalStateException naming the operation`() {
-        val pending = CompletableFuture<List<Boolean>>()
+        val pending = CompletableFuture<List<L1Fill>>()
         val store = storeWithoutCapabilities()
-        every { store.read("k", null, null) } returns CompletableFuture.completedFuture<RemoteRead>(null)
+        every { store.read("k", null, null, null) } returns CompletableFuture.completedFuture<L1Read>(null)
         every { store.fillAll(listOf(fill)) } returns pending
         every { store.fill(fill) } returns uncheckedNull()
         every { store.invalidate(listOf("k"), frame) } returns uncheckedNull()
         val l1 = FutureL1Store.adapt(store)
         val name = store.javaClass.name
 
-        assertThrows<IllegalStateException> { Suspending.await { l1.read("k", null, null) } }
+        assertThrows<IllegalStateException> { Suspending.await { l1.read("k", null, null, null) } }
             .assert().hasMessage("$name.read() completed with null.")
         val started = Started { l1.fillAll(listOf(fill)) }
         pending.complete(null)
@@ -299,7 +308,7 @@ class FutureL1StoreTest {
         val surface = mockk<FutureConditionalL1Store> {
             every {
                 putIfMatch("k", null, envelope, ttl, frame)
-            } returns CompletableFuture.completedFuture<RemoteConditionalWrite>(null)
+            } returns CompletableFuture.completedFuture<L1ConditionalWrite>(null)
         }
         val store = mockk<FutureL1Store> {
             every { conditional() } returns surface

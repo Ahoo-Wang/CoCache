@@ -17,6 +17,7 @@ import io.mockk.mockk
 import io.mockk.verify
 import me.ahoo.cocache.api.join.JoinCache
 import me.ahoo.cocache.api.join.JoinValue
+import me.ahoo.cocache.api.join.JoinView
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 
@@ -58,6 +59,12 @@ class JoinCacheProxiesTest {
     }
 
     abstract class NotAnInterface : JoinCache<String, String, String, String>
+
+    interface UserJoinView : JoinView<String, String, String, String>
+
+    interface InvalidatingJoinView : JoinView<String, String, String, String> {
+        fun invalidate(key: String)
+    }
 
     @Suppress("UNCHECKED_CAST")
     private val target = mockk<JoinCache<String, String, String, String>>(relaxed = true).also {
@@ -132,5 +139,28 @@ class JoinCacheProxiesTest {
                 .hasMessageContaining(type.name)
                 .hasMessageContaining(signature)
         }
+    }
+
+    /**
+     * 只读的组合视图（[JoinView]）：代理只转发读取；目标可以是任何 [JoinView]（不必是 [JoinCache]），声明了失效的接口创建时失败。
+     */
+    @Test
+    fun joinViewsForwardReadsOnly() {
+        val view = mockk<JoinView<String, String, String, String>>(relaxed = true).also {
+            io.mockk.every { it.name } returns "view"
+            io.mockk.every { it["a"] } returns JoinValue("a", "k", "v")
+            io.mockk.every { it.getAll(listOf("a")) } returns mapOf("a" to JoinValue("a", "k", "v"))
+        }
+        val proxy = JoinCacheProxies.create(UserJoinView::class.java, view)
+        proxy.name.assert().isEqualTo("view")
+        proxy["a"].assert().isEqualTo(JoinValue("a", "k", "v"))
+        proxy.getAll(listOf("a")).assert().isEqualTo(mapOf("a" to JoinValue("a", "k", "v")))
+        JoinCacheProxies.targetOf(proxy).assert().isSameAs(view)
+        // JoinCache 也是 JoinView
+        JoinCacheProxies.create(UserJoinView::class.java, target)["a"].assert().isEqualTo(JoinValue("a", "k", "v"))
+        runCatching { JoinCacheProxies.create(InvalidatingJoinView::class.java, view) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java).hasMessageContaining("JoinView method")
+        runCatching { JoinCacheProxies.create(UserJoinCache::class.java, view) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java).hasMessageContaining("is not a JoinCache")
     }
 }

@@ -1,17 +1,17 @@
 ---
 title: JoinCache
-description: Read two caches as one with @JoinCacheable — declaring the view, extracting the join key, batch reads, invalidation, and what the view does not guarantee.
+description: Read two caches as one with @JoinCacheable — JoinView or JoinCache, declaring the view, extracting the join key, batch reads, invalidation, and what the view does not guarantee.
 ---
 
 # JoinCache
 
-Many read models are "one thing plus the thing it points to": an order and its customer, a profile extension and its user. You already cache both. A `JoinCache` reads them together: it reads a value from the **first** cache, derives a key from it, and reads the **join** cache with that key.
+Many read models are "one thing plus the thing it points to": an order and its customer, a profile extension and its user. You already cache both. A join view reads them together: it reads a value from the **first** cache, derives a key from it, and reads the **join** cache with that key.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant C as Caller
-    participant J as JoinCache
+    participant J as Join view
     participant F as First cache
     participant S as Join cache
     C->>J: get(key)
@@ -23,11 +23,18 @@ sequenceDiagram
     J-->>C: JoinValue(firstValue, joinKey, secondValue)
 ```
 
-A JoinCache is a **read-only view**. It stores nothing, has no loader, and has no `put`. Each component cache keeps its own loader, TTL, and invalidation.
+A join view stores nothing, has no loader, and has no `put`. Each component cache keeps its own source, TTL, and deletion. There are two kinds:
+
+| You extend | Its two sides | Adds |
+|------------|---------------|------|
+| `JoinView<K1, V1, K2, V2>` | Any two [cache types](./caches.md#types) (each is a `ReadableCache`): a `Cache` in front of a `Store`, for example | Nothing: `name`, `get`, `getAll` |
+| `JoinCache<K1, V1, K2, V2>` | Two `Cache`s | `invalidate(key)` and `invalidate(firstKey, joinKey)` |
+
+`JoinCache` extends `JoinView`. Only derived copies can be invalidated through the view; an authoritative side keeps its own `delete`.
 
 ## Declare it {#declare}
 
-The two component caches are ordinary caches, declared as interfaces or spec beans. The view is an interface that extends `JoinCache<K1, V1, K2, V2>`, listed in `@EnableCoCache(joinCaches = …)`:
+The two component caches are ordinary caches, declared as interfaces or spec beans. The view is an interface that extends `JoinView<K1, V1, K2, V2>` or `JoinCache<K1, V1, K2, V2>`, listed in `@EnableCoCache(joinCaches = …)`. Both sides here are `Cache`s, so the view can be a `JoinCache`:
 
 ```kotlin
 data class UserExtendInfo(val id: String, val userId: String)
@@ -53,7 +60,7 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 class App
 ```
 
-Inject `UserExtendInfoJoinCache` like any bean. Its bean name is the view name.
+Inject `UserExtendInfoJoinCache` like any bean. Its bean name is the view name. Extend `JoinView` instead when a side isn't a `Cache`, or when callers of the view shouldn't invalidate.
 
 | `@JoinCacheable` attribute | Meaning |
 |----------------------------|---------|
@@ -82,16 +89,17 @@ A `null` join key means "nothing to join": the result has `joinKey = null` and `
 
 | Call | Behavior |
 |------|----------|
-| `get(key)` | Reads the first cache (loading on a miss). Absent, or a negative entry: returns `null`. Otherwise extracts the join key and reads the join cache; an absent second value gives `secondValue = null`. |
+| `get(key)` | Reads the first cache with its `get(key)` (a `Cache` loads on a miss). Absent, or a negative entry: returns `null`. Otherwise extracts the join key and reads the join cache; an absent second value gives `secondValue = null`. |
 | `getAll(keys)` | One `getAll` on the first cache, then one `getAll` on the join cache over the **distinct** non-null join keys (skipped if there are none). Contains only keys whose first value exists. |
-| `invalidate(key)` | Invalidates **only the first cache**. The second value is shared with other entries and belongs to its own writers. |
-| `invalidate(firstKey, joinKey)` | Invalidates both. If one throws, the other still runs and the errors are combined. A `SetCache` component doesn't support `invalidate` (use `clear` on the set directly). |
+| `invalidate(key)` (`JoinCache` only) | Invalidates **only the first cache**. The second value is shared with other entries and belongs to its own writers. |
+| `invalidate(firstKey, joinKey)` (`JoinCache` only) | Invalidates both. If one throws, the other still runs and the errors are combined. |
 
 Because `getAll` is two batch reads, listing 100 extensions that point to 20 users costs at most one batched Redis read and one `loadAll` per cache, regardless of how many entries share a user.
 
 ## Guarantees and limits {#guarantees}
 
 - Every read goes through the component caches, so their guarantees apply unchanged: fenced loads, invalidation, `localMaxAge`.
+- Exceptions from a component cache pass through unchanged. A read without an answer, such as a `Store` read while Redis is down, throws its `CacheReadException` (see [Reading: present, absent, or unknown](./caches.md#unknown)).
 - **No snapshot across the two caches.** The two reads are independent; the pair may combine values from different moments. If the first value changes its join key between reads, you see the old pairing until the first cache is invalidated.
 - When a `User` changes, invalidate it in `UserCache`. Every view that reads it sees the change on its next call.
 
@@ -105,21 +113,21 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 }
 ```
 
-An abstract method that doesn't match a `JoinCache` method fails startup.
+An abstract method that doesn't match a method of the type you extend (`JoinView` or `JoinCache`) fails startup.
 
 ## Startup checks {#validation}
 
 Startup fails, naming the view and the attribute, when:
 
 - `firstCacheName` or `joinCacheName` is blank or matches no cache,
-- a named cache isn't a `Cache<K1, V1>` (or `Cache<K2, V2>`),
+- a named cache isn't a `Cache<K1, V1>` (or `Cache<K2, V2>`) for a `JoinCache`, or a `ReadableCache<K1, V1>` (or `ReadableCache<K2, V2>`) for a `JoinView`,
 - the interface's type arguments aren't concrete or `@JoinCacheable` is missing,
 - `joinKeyExpression` has no `#{…}` (it would be a constant, so every value joins the same key), the `joinKeyExtractor` bean isn't a `JoinKeyExtractor<V1, K2>`,
 - both `joinKeyExpression` and `joinKeyExtractor` are set, `joinKeyExpression` is used with a non-`String` join key, or the extractor lookup by type finds zero or several beans.
 
 ## Without Spring {#without-spring}
 
-`SimpleJoinCache` in `cocache-core` is the implementation, and `JoinCacheProxies` wraps it in your interface:
+`SimpleJoinView` (any two `ReadableCache`s) and `SimpleJoinCache` (two `Cache`s) in `cocache-core` are the implementations, and `JoinCacheProxies` wraps one in your interface. An interface that extends `JoinCache` needs a `SimpleJoinCache`:
 
 ```kotlin
 val view = SimpleJoinCache("UserExtendInfoJoinCache", userExtendInfoCache, userCache) { info -> info.userId }

@@ -5,7 +5,7 @@ description: Add a two-level coherent cache to a Spring Boot application in five
 
 # Quick Start
 
-This page takes a Spring Boot application from no cache to a working two-level cache. The code is based on [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example).
+This page takes a Spring Boot application from no cache to a working two-level cache. The code is based on [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/example).
 
 **You need** JDK 21+, Spring Boot 4, and either Redis 7+ or nothing at all (the in-memory backend, step 2).
 
@@ -15,7 +15,7 @@ This page takes a Spring Boot application from no cache to a working two-level c
 
 ```kotlin [Gradle (Kotlin)]
 dependencies {
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.10.0")
+    implementation("me.ahoo.cocache:cocache-spring-boot-starter:8.0.0-alpha.1")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
     implementation("org.springframework.boot:spring-boot-starter-actuator") // optional: the cocache endpoint
 }
@@ -23,7 +23,7 @@ dependencies {
 
 ```groovy [Gradle (Groovy)]
 dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:6.10.0'
+    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:8.0.0-alpha.1'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
     implementation 'org.springframework.boot:spring-boot-starter-actuator' // optional: the cocache endpoint
 }
@@ -33,7 +33,7 @@ dependencies {
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>6.10.0</version>
+    <version>8.0.0-alpha.1</version>
 </dependency>
 <dependency>
     <groupId>org.springframework.boot</groupId>
@@ -48,7 +48,7 @@ dependencies {
 
 :::
 
-The BOM `me.ahoo.cocache:cocache-bom` manages the versions of all CoCache modules if you use more than the starter, for example the optional `me.ahoo.cocache:cocache-coroutines` for [Kotlin coroutines](./coroutines.md) (6.4+).
+The BOM `me.ahoo.cocache:cocache-bom` manages the versions of all CoCache modules if you use more than the starter. [Kotlin coroutines](./coroutines.md) need no extra module: the suspending views are part of the core.
 
 ## 2. Point it at Redis {#redis}
 
@@ -71,7 +71,7 @@ cocache:
 
 ## 3. Declare a cache {#declare}
 
-A cache is an interface that extends `Cache<K, V>`. List it in `@EnableCoCache`:
+A cache is an interface that extends `Cache<K, V>`, a derived copy of data that a loader can fetch again. Data whose only copy is Redis uses a [`Store`](./store.md) instead: the question that decides is whether this process can rebuild a key that Redis loses ([choosing a type](./caches.md#types)). List the interface in `@EnableCoCache`:
 
 ::: code-group
 
@@ -117,7 +117,7 @@ The cache is named after the interface (`UserCache`), and so is the bean. Values
 
 ## 4. Give it a loader {#loader}
 
-On a miss in both levels, CoCache calls the cache's `CacheLoader`. Declare one as a bean; it is matched by its generic type:
+On a miss in both levels, CoCache calls the cache's `CacheLoader`. Declare one as a bean; it is matched by its generic type. A `Cache` interface without a matching loader fails startup, unless it declares `@CoCache(source = CoCache.Source.EXTERNAL)` because its callers supply the values:
 
 ::: code-group
 
@@ -196,7 +196,7 @@ The first read missed and loaded once (`loads: 1`). The second was an L2 hit. Th
 
 ## Without Spring {#without-spring}
 
-Add `cocache-core`, `cocache-redis`, and `cocache-codec-jackson` (same version). Create one `CacheRuntime` per process and create caches from specs:
+Add `cocache-core`, `cocache-redis`, and `cocache-codec-jackson` (same version). Create one `CacheRuntime` per process and create caches from specs. `CacheRuntime.create` returns the type the spec declares: `cacheSpec` gives a `Cache`, `storeSpec` a `Store`, and so on. A library that should honor an application's configuration creates its caches through [`CoCacheFactory`](./caches.md#factory) instead.
 
 ::: code-group
 
@@ -223,7 +223,7 @@ val users: Cache<String, User> = runtime.create(
     }
 )
 
-// on shutdown: caches first, then the backend
+// on shutdown: the runtime first (it waits for in-flight Redis steps), then the backend
 runtime.close()
 backend.close()
 ```
@@ -260,5 +260,5 @@ backend.close();
 ## Next steps {#next}
 
 - [How It Works](./concepts.md): the mental model behind reads, writes, and staleness.
-- [Declaring Caches](./caches.md): keys, loaders, codecs, spec beans, and set caches.
+- [Choosing and Declaring Caches](./caches.md): the five cache types and the question that picks one, keys, codecs, and spec beans. Each type has its own guide: [Cache](./cache.md), [VersionedCache](./versioned-cache.md), [Store](./store.md), [VersionedStore](./versioned-store.md), [SetStore](./set-store.md).
 - [Configuration Reference](./configuration.md): every `cocache.*` property.

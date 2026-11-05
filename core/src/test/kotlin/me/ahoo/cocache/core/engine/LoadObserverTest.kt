@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Token
@@ -30,6 +31,7 @@ import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.test.EngineSpec.TestCodec
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -103,13 +105,13 @@ class LoadObserverTest {
     private fun CacheRuntime.cache(
         policy: CachePolicy = CachePolicy(ttl = Duration.ofMinutes(10), ttlJitter = Duration.ZERO),
         withLoader: Boolean = true,
-    ): CoherentEngine<String, String> = create(
+    ): CacheEngine<String, String> = create(
         cacheSpec<String, String>(name) {
             codec = TestCodec
-            loader = if (withLoader) this@LoadObserverTest.loader else null
+            if (withLoader) loader = this@LoadObserverTest.loader else externallySourced()
             this.policy = policy
         }
-    ) as CoherentEngine<String, String>
+    ) as CacheEngine<String, String>
 
     @Test
     fun noopRunsTheBlock() {
@@ -146,7 +148,7 @@ class LoadObserverTest {
             }
         )
         other["k"].assert().isEqualTo("v")
-        (other as CoherentEngine<*, *>).metrics.remoteHits.assert().isEqualTo(1)
+        (other as CacheEngine<*, *>).metrics.remoteHits.assert().isEqualTo(1)
         observer.operations().assert().containsExactly(LoadOperation.LOAD to 1)
     }
 
@@ -201,7 +203,11 @@ class LoadObserverTest {
         database["k"] = "v0"
         cache["k"]
         // L1 中的值被静默删除（不广播）：刷新退回普通加载路径，仍以 refresh 观测
-        memory.store(name).invalidate(listOf("cocache:$name:k"), InvalidationFrame.encode(NodeId.random(), emptyList()))
+        Suspending.await {
+            memory.store(
+                Keyspace("cocache:", name)
+            ).invalidate(listOf("cocache:$name:k"), InvalidationFrame.encode(NodeId.random(), emptyList()))
+        }
         clock.advance(Duration.ofSeconds(6))
         cache["k"]
         observer.operations().assert().containsExactly(LoadOperation.LOAD to 1, LoadOperation.REFRESH to 1)
@@ -280,7 +286,11 @@ class LoadObserverTest {
         val cache = runtime().cache(policy)
         database["k"] = "v"
         // 其它节点持有 lease：等待超时后直接回源
-        memory.store(name).read("cocache:$name:k", LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null)
+        Suspending.await {
+            memory.store(
+                Keyspace("cocache:", name)
+            ).read("cocache:$name:k", LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
+        }
         cache["k"].assert().isEqualTo("v")
         observer.operations().assert().containsExactly(LoadOperation.LEASE_WAIT to 1, LoadOperation.LOAD to 1)
         observer.records.first().error.assert().isNull()

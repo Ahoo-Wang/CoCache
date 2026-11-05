@@ -13,25 +13,31 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.policy.ForeignFormatMode
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
-import me.ahoo.cocache.core.policy.LeasePolicy
+import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.policy.ReadFailureMode
+import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.redis.RedisBackendOptions
 import me.ahoo.cocache.redis.RedisChannelMode
+import me.ahoo.cocache.spring.tx.FillInTransaction
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.boot.context.properties.bind.ConstructorBinding
 import org.springframework.boot.context.properties.bind.DefaultValue
-import org.springframework.boot.convert.DurationUnit
-import java.time.Duration
-import java.time.temporal.ChronoUnit
 
 /**
- * CoCache 配置（`cocache.*`）。
+ * CoCache 配置（`cocache.*`）。策略按字段分层（RFC 0005 §4.8），由低到高：
  *
- * 策略来源的优先级（后者覆盖前者）：内置默认值 → 声明（spec）→ [me.ahoo.cocache.spring.boot.CacheSpecCustomizer]
- * → `cocache.defaults.*` → `cocache.caches.[name].*`。
+ * 1. 类型默认值（`DefaultPolicies`）；
+ * 2. `cocache.defaults.cache.*` / `cocache.defaults.store.*`：全局默认值，**低于**声明，只作用于声明中没有写出的字段；
+ * 3. 声明（注解或 spec）；
+ * 4. [CacheSpecCustomizer]；
+ * 5. `cocache.overrides.cache.*` / `cocache.overrides.store.*`：全局覆盖，**只收紧**：陈旧界限取 min（`ttl` 另钳制按调用给出的寿命），
+ *    `read-failure`、`fill-in-transaction` 与 `invalidate-fills-on-rollback` 取更严的值，其余字段不允许；
+ * 6. `cocache.caches.[name].*`：按缓存设定。
+ *
+ * `cache` 一节作用于派生副本（`Cache`、`VersionedCache`），`store` 一节作用于权威副本（`Store`、`VersionedStore`、`SetStore`）。
+ * 全局层跳过不适用、该层不允许与被锁定的字段（启动日志与端点列出）；`cocache.caches.[name]` 出现不适用的字段或未知的缓存名时
+ * 按 [cachesValidation] 处理。时长必须带单位，哨兵为 `forever`、`off`、`unlimited`（[ConfigValues]）。
  *
  * 构造函数绑定：默认值用 [DefaultValue] 声明而不用 Kotlin 默认参数。参数全有默认值时 Kotlin 会额外生成无参构造函数，
  * 配置处理器与（没有 kotlin-reflect 时的）绑定器都会因此退回 JavaBean 方式，只读属性全部丢失；
@@ -45,15 +51,31 @@ data class CoCacheProperties @ConstructorBinding constructor(
     @DefaultValue("true")
     val enabled: Boolean,
     /**
-     * 作用于所有缓存的策略覆盖（优先级低于 `cocache.caches.[name].*`）。
+     * 所有缓存的 key 前缀，不参与分层：配置优先于声明（库以 `lock` 锁定了 `KEY_PREFIX` 的缓存除外）。
+     * `cocache.caches.[name].key-prefix` 优先于它。
+     */
+    val keyPrefix: String?,
+    /**
+     * 全局默认值，低于声明（`cache`、`store` 两节）。
      */
     @DefaultValue
-    val defaults: PolicyProperties,
+    val defaults: Layer,
     /**
-     * 按缓存名覆盖策略（缓存名不区分大小写）；出现未声明的缓存名时启动失败。
+     * 全局覆盖，高于声明，只收紧（`cache`、`store` 两节）。
+     */
+    @DefaultValue
+    val overrides: Layer,
+    /**
+     * 按缓存设定（缓存名不区分大小写）。
      */
     @DefaultValue
     val caches: Map<String, PolicyProperties>,
+    /**
+     * `cocache.caches` 中的未知缓存名，以及设定了不适用于该缓存的字段的条目：`fail`（默认）启动失败，`warn` 只告警。
+     * 指向未分层的缓存（直接经 `CacheRuntime.create` 创建）的条目总是告警，与此无关（它可能在启动之后才创建）。
+     */
+    @DefaultValue("fail")
+    val cachesValidation: Validation,
     /**
      * Redis 后端（L1 与失效通道）。
      */
@@ -77,91 +99,199 @@ data class CoCacheProperties @ConstructorBinding constructor(
      */
     val refreshExecutor: String?,
     /**
-     * 异步视图（`cache.async()`，RFC 0004）续接所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析）；
-     * 只承载短小的非阻塞工作。未设置时运行时自建 `ForkJoinPool`（并行度为 CPU 数，`cocache-async-*`）。
-     * bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
+     * 运行时执行器（阻塞调度器，RFC 0005 §4.4、§5）所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析）：
+     * 异步与挂起视图的续接、共享加载、异步路径上的同步数据源都在这里执行，因此它必须容得下阻塞的任务，不应排队。
+     * 未设置时每个任务一个虚拟线程（`cocache-worker-*`）。bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
      */
-    val asyncExecutor: String? = null,
-    /**
-     * 异步视图上同步数据源与只实现同步 SPI 的后端所用 `java.util.concurrent.Executor` 的 bean 名（只按名称解析），不应排队。
-     * 未设置时 JDK 21+ 每个任务一个虚拟线程，否则为运行时自建的不排队守护线程池（最多 512 线程，满时拒绝）。
-     * bean 不存在或不是 `Executor` 时启动失败；该执行器由容器管理，运行时关闭时不会关闭它。
-     */
-    val blockingExecutor: String? = null,
+    val executor: String? = null,
 ) {
-    /**
-     * 按缓存名合并配置文件中的策略（`CacheSpec`；集合缓存见 [setPolicyFor]）。`cocache.defaults.*` 中不适用于这个缓存的项被跳过，
-     * 只有 `cocache.caches.[name].*` 中的同一项会作用（并因此启动失败）：
-     * - 带版本的缓存（[versioned]，6.8）：`cocache.defaults.refresh-window`。带版本的缓存不支持提前刷新，全局的刷新窗口会让它们
-     *   因无关配置启动失败。
-     * - 没有数据源的缓存（[sourced] 为 `false`）：`cocache.defaults.foreign-format: reclaim`。`reclaim` 只能用于有数据源的缓存
-     *   （L1 是唯一副本时回收就是删除它），`fail` 照常生效。
-     *
-     * @param versioned 是否为带版本的缓存
-     * @param sourced 声明是否有数据源（任一 loader）
-     */
-    @JvmOverloads
-    fun policyFor(
-        cacheName: String,
-        declared: CachePolicy,
-        versioned: Boolean = false,
-        sourced: Boolean = true
-    ): CachePolicy {
-        var applicable = defaults
-        if (versioned) {
-            applicable = applicable.copy(refreshWindow = null)
-        }
-        if (!sourced && applicable.foreignFormat == ForeignFormatMode.RECLAIM) {
-            applicable = applicable.copy(foreignFormat = null)
-        }
-        val withDefaults = applicable.applyTo(declared)
-        return cacheProperties(cacheName)?.applyTo(withDefaults) ?: withDefaults
+    init {
+        // 绑定时就解析每个值：不带单位的时长、写错的哨兵在启动时失败，而不是在第一个用到它的缓存创建时
+        defaults.entries("$PREFIX.defaults")
+        overrides.entries("$PREFIX.overrides")
+        caches.forEach { (name, properties) -> properties.entries("$PREFIX.caches.$name") }
     }
-
-    /**
-     * 集合缓存的策略：`cocache.defaults.ttl` / `ttl-forever` / `absent-ttl` / `refresh-window` / `foreign-format` 不作用于集合缓存
-     * （其 L1 是唯一副本，全局寿命会让集合过期丢失，全局的 `reclaim` 会让集合缓存启动失败；没有数据源，负缓存与提前刷新都不适用），
-     * 只有 `cocache.caches.[name].*` 能改变它们（`foreign-format: reclaim` 因此启动失败）。其它默认项照常生效。
-     */
-    fun setPolicyFor(cacheName: String, declared: CachePolicy): CachePolicy {
-        // 集合缓存没有数据源：全局的寿命、负缓存寿命与提前刷新都不适用（提前刷新还会让校验因无关配置失败）
-        val withDefaults = defaults.copy(
-            ttl = null,
-            ttlForever = null,
-            absentTtl = null,
-            refreshWindow = null,
-            foreignFormat = null
-        ).applyTo(declared)
-        return cacheProperties(cacheName)?.applyTo(withDefaults) ?: withDefaults
-    }
-
-    /**
-     * 配置文件中的 key 前缀：`cocache.caches.[name].key-prefix` 优先，其次 `cocache.defaults.key-prefix`；都没有时为 `null`
-     * （沿用声明与定制器的值）。与策略字段同一规则：配置文件覆盖声明（含注解或 spec 中显式写出的 `keyPrefix`）。
-     */
-    fun keyPrefixFor(cacheName: String): String? = cacheProperties(cacheName)?.keyPrefix ?: defaults.keyPrefix
 
     /**
      * 按缓存名查找 `cocache.caches.[name]`：先精确匹配，再忽略大小写匹配（环境变量绑定的 key 是小写）。
+     * 返回配置中的名称与条目。
      */
-    fun cacheProperties(cacheName: String): PolicyProperties? {
-        return caches[cacheName] ?: caches.entries.firstOrNull { it.key.equals(cacheName, ignoreCase = true) }?.value
+    fun cacheProperties(cacheName: String): Pair<String, PolicyProperties>? {
+        caches[cacheName]?.let { return cacheName to it }
+        return caches.entries.firstOrNull { it.key.equals(cacheName, ignoreCase = true) }?.toPair()
     }
 
     /**
-     * Redis 后端选项。时长未写单位时按毫秒解析（与 `spring.data.redis.timeout` 一致）。
+     * 全局层的两节：`cache` 作用于派生副本，`store` 作用于权威副本。
+     */
+    data class Layer @ConstructorBinding constructor(
+        @DefaultValue
+        val cache: PolicyProperties,
+        @DefaultValue
+        val store: PolicyProperties,
+    ) {
+        fun entries(path: String): List<Entry> = cache.entries("$path.cache") + store.entries("$path.store")
+    }
+
+    /**
+     * 一个配置条目：完整的键、它的字段与解析后的值。
+     */
+    data class Entry(val key: String, val field: PolicyField<*>, val value: Any)
+
+    /**
+     * 一层中的策略字段，未设置（`null`）的字段不参与这一层。时长必须带单位（`500ms`、`5s`、`2m`、`PT2M`）。
+     * [unknownRead]、[keyPrefix] 与 [unlock] 只在 `cocache.caches.[name]` 中有意义，出现在全局层时跳过。
+     */
+    data class PolicyProperties @ConstructorBinding constructor(
+        /**
+         * 命中值寿命，或 `forever`。`defaults.store.ttl` 与 `overrides.store.ttl` 不允许（权威副本的寿命即语义）。
+         */
+        val ttl: String?,
+        /**
+         * 寿命的随机抖动幅度（实际幅度不超过 `ttl / 2`）。
+         */
+        val ttlJitter: String?,
+        /**
+         * 负缓存寿命。
+         */
+        val absentTtl: String?,
+        /**
+         * L2 副本的最长寿命：失效丢失时 L2 陈旧度的上界。
+         */
+        val localMaxAge: String?,
+        /**
+         * 未写入 L1 的填充在 L2 中的最长寿命。
+         */
+        val degradedLocalMaxAge: String?,
+        /**
+         * 带版本的墓碑与 `E` 的寿命，或 `forever`（只用于 `VersionedCache`、`VersionedStore`）。
+         */
+        val tombstoneTtl: String?,
+        /**
+         * 提前刷新窗口，`off`（或 `0s`）关闭。
+         */
+        val refreshWindow: String?,
+        /**
+         * lease 自动回收时长（节点崩溃的兜底）。
+         */
+        val leaseTtl: String?,
+        /**
+         * 其它节点持有 lease 时最多等待的时长。
+         */
+        val leaseWait: String?,
+        /**
+         * 每个缓存同时进行的回源数上限，或 `unlimited`。
+         */
+        val loadMaxConcurrent: String?,
+        /**
+         * 等待回源许可的最长时间。
+         */
+        val loadAcquireTimeout: String?,
+        /**
+         * 一次加载的上限，超过它以 `SourceLoadTimeoutException` 失败。
+         */
+        val loadTimeout: String?,
+        /**
+         * 每次 L1 读取的时限（以 `cocache.redis.command-timeout` 为上限）。
+         */
+        val readTimeout: String?,
+        /**
+         * L2 容量上限。
+         */
+        val localMaximumSize: Long?,
+        /**
+         * 派生副本的失效写入 L1 失败时：`retry`（默认）或 `throw`。
+         */
+        val invalidateFailure: InvalidateFailureMode?,
+        /**
+         * 带 loader 的读取在 L1 读失败时：`degrade`（默认）或 `throw`。
+         */
+        val readFailure: ReadFailureMode?,
+        /**
+         * 不带 loader 的读取在 L1 读失败时：`throw`（默认）或 `absent`。只能写在 `cocache.caches.[name]` 中。
+         */
+        val unknownRead: UnknownReadMode?,
+        /**
+         * 写事务内的私有回源（RFC 0005 §4.9 机制 2；需要 spring-tx）：`registered-keys`（类型默认值，本事务已登记失效的 key 的回源
+         * 不写 L1 与 L2、不与其它调用方共享）、`private`（写事务内的全部回源）或 `allow`（不门控）。只作用于 `Cache` 与 `VersionedCache`
+         * （含 `get(key, loader)`）；`overrides` 取更严的值（`private` 严于 `registered-keys` 严于 `allow`）。
+         */
+        val fillInTransaction: FillInTransaction?,
+        /**
+         * 回滚时失效写事务内的填充（RFC 0005 §4.9 机制 1；需要 spring-tx；类型默认值 `true`）：非只读的实际事务内，同步读取的数据源产生、
+         * 写入 L1 或 L2 的 key，在事务回滚、提交结果未知或回滚到 savepoint 时失效，代价只在回滚时出现。只作用于 `Cache` 与
+         * `VersionedCache`（含 `get(key, loader)`）；`overrides` 取更严的值（`true` 严于 `false`）。两个机制对一个缓存都关闭时，
+         * 它的回源不感知事务。
+         */
+        val invalidateFillsOnRollback: Boolean?,
+        /**
+         * 这个缓存的 key 前缀，优先于 `cocache.key-prefix`。只能写在 `cocache.caches.[name]` 中。
+         */
+        val keyPrefix: String?,
+        /**
+         * 破窗开关：有意覆盖库锁定的字段（配置键，如 `ttl`），启动时告警。只能写在 `cocache.caches.[name]` 中。
+         */
+        @DefaultValue
+        val unlock: List<String>,
+    ) {
+        /**
+         * 这一层写出的策略条目（按配置文档的字段顺序），解析失败时抛出带完整键的 [IllegalArgumentException]。
+         *
+         * @param path 这一层的前缀，如 `cocache.defaults.cache`
+         */
+        fun entries(path: String): List<Entry> = buildList {
+            fun <T : Any> parsed(field: PolicyField<T>, raw: String?, parse: (String, String) -> T) {
+                raw?.let { add(Entry("$path.${field.key}", field, parse("$path.${field.key}", it))) }
+            }
+
+            fun <T : Any> plain(field: PolicyField<T>, value: T?) {
+                value?.let { add(Entry("$path.${field.key}", field, it)) }
+            }
+            parsed(PolicyField.TTL, ttl, ConfigValues::ttl)
+            parsed(PolicyField.TTL_JITTER, ttlJitter, ConfigValues::duration)
+            parsed(PolicyField.ABSENT_TTL, absentTtl, ConfigValues::positiveDuration)
+            parsed(PolicyField.LOCAL_MAX_AGE, localMaxAge, ConfigValues::positiveDuration)
+            parsed(PolicyField.DEGRADED_LOCAL_MAX_AGE, degradedLocalMaxAge, ConfigValues::positiveDuration)
+            parsed(PolicyField.TOMBSTONE_TTL, tombstoneTtl, ConfigValues::ttl)
+            parsed(PolicyField.REFRESH_WINDOW, refreshWindow, ConfigValues::refreshWindow)
+            parsed(PolicyField.LEASE_TTL, leaseTtl, ConfigValues::positiveDuration)
+            parsed(PolicyField.LEASE_WAIT, leaseWait, ConfigValues::duration)
+            parsed(PolicyField.LOAD_MAX_CONCURRENT, loadMaxConcurrent, ConfigValues::concurrency)
+            parsed(PolicyField.LOAD_ACQUIRE_TIMEOUT, loadAcquireTimeout, ConfigValues::duration)
+            parsed(PolicyField.LOAD_TIMEOUT, loadTimeout, ConfigValues::positiveDuration)
+            parsed(PolicyField.READ_TIMEOUT, readTimeout, ConfigValues::positiveDuration)
+            localMaximumSize?.let {
+                require(it > 0) { "$path.${PolicyField.LOCAL_MAXIMUM_SIZE.key}: $it must be positive." }
+            }
+            plain(PolicyField.LOCAL_MAXIMUM_SIZE, localMaximumSize)
+            plain(PolicyField.INVALIDATE_FAILURE, invalidateFailure)
+            plain(PolicyField.READ_FAILURE, readFailure)
+            plain(PolicyField.UNKNOWN_READ, unknownRead)
+        }
+    }
+
+    /**
+     * `cocache.caches` 的校验方式。
+     */
+    enum class Validation {
+        FAIL,
+        WARN,
+    }
+
+    /**
+     * Redis 后端选项。时长必须带单位。
      */
     data class Redis @ConstructorBinding constructor(
         /**
-         * 单条命令（脚本）的等待上限（未写单位按毫秒）。
+         * 单条命令（脚本）的等待上限。
          */
         @DefaultValue("2s")
-        val commandTimeout: Duration,
+        val commandTimeout: String,
         /**
-         * 订阅连接的心跳周期：PING 失败或超时即重置所有订阅者（未写单位按毫秒）。
+         * 订阅连接的心跳周期：PING 失败或超时即重置所有订阅者。
          */
         @DefaultValue("5s")
-        val heartbeat: Duration,
+        val heartbeat: String,
         /**
          * 单个失效脚本处理的 key 数上限。
          */
@@ -178,21 +308,26 @@ data class CoCacheProperties @ConstructorBinding constructor(
         @DefaultValue("pubsub")
         val channelMode: RedisChannelMode,
         /**
-         * 有 `SetCache`（含尚未创建的声明）时启动检查各主节点的 `maxmemory-policy`（读取 `INFO memory`）：`allkeys-*` 会驱逐集合的唯一副本，
-         * `volatile-*` 会驱逐 `ttl` 有限的集合（只告警）。`warn`（默认）记录告警，`fail` 启动失败，`off` 不检查。
-         * 读不到策略且没有配置 `assume-maxmemory-policy` 时同样按此处理。
+         * 有权威副本（`Store`、`VersionedStore`、`SetStore`，含尚未创建的声明）时启动检查各主节点的 `maxmemory-policy`（读取 `INFO memory`）。
+         * 一律启动失败的情形与本项无关：存在权威缓存时的 `allkeys-*`，以及读不到策略又没有配置 [assumeMaxmemoryPolicy]（S22）。
+         * 本项只管剩下的一种：`volatile-*` 且存在 `ttl` 有限的权威缓存，`warn`（默认）记录告警，`fail` 启动失败，`off` 不检查。
          */
         @DefaultValue("warn")
-        val setCacheEvictionCheck: EvictionCheck,
+        val storeEvictionCheck: EvictionCheck,
         /**
          * 读不到 `maxmemory-policy`（Redis 用户没有 `INFO` 权限、托管服务禁用了它）时，驱逐检查按这个值判断，
          * 如 `noeviction`、`volatile-lru`；必须是 `noeviction`、`allkeys-*` 或 `volatile-*`。读得到时以实际的值为准。
          */
         val assumeMaxmemoryPolicy: String? = null,
     ) {
+        init {
+            ConfigValues.positiveDuration("$PREFIX.redis.command-timeout", commandTimeout)
+            ConfigValues.positiveDuration("$PREFIX.redis.heartbeat", heartbeat)
+        }
+
         fun toOptions(): RedisBackendOptions = RedisBackendOptions(
-            commandTimeout,
-            heartbeat,
+            ConfigValues.positiveDuration("$PREFIX.redis.command-timeout", commandTimeout),
+            ConfigValues.positiveDuration("$PREFIX.redis.heartbeat", heartbeat),
             invalidateBatchSize,
             clientName = clientName,
             channelMode = channelMode,
@@ -200,7 +335,7 @@ data class CoCacheProperties @ConstructorBinding constructor(
     }
 
     /**
-     * `SetCache` 驱逐检查的处理方式。
+     * 权威副本驱逐检查（`volatile-*` 且有 `ttl` 有限的权威缓存时）的处理方式。
      */
     enum class EvictionCheck {
         WARN,
@@ -234,147 +369,13 @@ data class CoCacheProperties @ConstructorBinding constructor(
         @DefaultValue("false")
         val requireSync: Boolean,
         /**
-         * 已弃用（6.3）：`retrieve`（异步 `@Cacheable`）经缓存的异步视图，不再使用执行器，也不再有线程等待回源。
-         * 设置时启动告警并忽略；7.0 删除。异步视图的执行器见 `cocache.async-executor` / `cocache.blocking-executor`。
+         * 缓存通知改用 `DegradingCacheErrorHandler`（默认 `false`）：CoCache 缓存的读写失败只记录告警，不抛给调用方。
+         * 不带 `sync` 的 `@Cacheable` 在 L1 故障时因此按未命中执行方法（带 `sync = true` 的本来就降级回源），
+         * `@CachePut` 的写入失败不再让调用失败；失效与清空失败、其它缓存的失败仍交给原来的处理器。
          */
-        val retrieveExecutor: String?,
+        @DefaultValue("false")
+        val degradeOnError: Boolean,
     )
-
-    /**
-     * 策略的可覆盖字段：未设置（`null`）的字段沿用下层的值。时长未写单位时按秒解析（与注解一致），也可以写 `500ms`、`2m`、`PT2M`。
-     */
-    data class PolicyProperties @ConstructorBinding constructor(
-        /**
-         * 命中值寿命（未写单位按秒；内置默认 1h）。`cocache.defaults.ttl` 不作用于集合缓存（其 L1 是唯一副本）。
-         */
-        @DurationUnit(ChronoUnit.SECONDS)
-        val ttl: Duration?,
-        /**
-         * 为 `true` 时命中值永不过期（覆盖 ttl）。`cocache.defaults.ttl-forever` 不作用于集合缓存。
-         */
-        val ttlForever: Boolean?,
-        /**
-         * 命中值寿命的随机抖动幅度，实际幅度不超过 ttl 的一半（未写单位按秒；内置默认 1m）。
-         */
-        @DurationUnit(ChronoUnit.SECONDS)
-        val ttlJitter: Duration?,
-        /**
-         * 负缓存（数据源返回 null）的寿命（未写单位按秒；内置默认 1m）。
-         */
-        @DurationUnit(ChronoUnit.SECONDS)
-        val absentTtl: Duration?,
-        /**
-         * L2 副本的最长寿命：失效事件丢失时 L2 陈旧度的上界（未写单位按秒；内置默认 5m）。
-         */
-        @DurationUnit(ChronoUnit.SECONDS)
-        val localMaxAge: Duration?,
-        /**
-         * 未写入 L1 的填充（L1 故障等）在 L2 中的最长寿命（未写单位按秒；内置默认 10s）。
-         */
-        @DurationUnit(ChronoUnit.SECONDS)
-        val degradedLocalMaxAge: Duration?,
-        /**
-         * 提前刷新窗口：剩余寿命小于该值时命中触发后台刷新；必须小于 ttl - ttl-jitter 与 local-max-age（未写单位按秒；内置默认关闭；0 表示关闭）。
-         */
-        @DurationUnit(ChronoUnit.SECONDS)
-        val refreshWindow: Duration?,
-        /**
-         * lease 自动回收时长（节点崩溃的兜底），应大于数据源的 p99 耗时（未写单位按秒；内置默认 10s）。
-         */
-        @DurationUnit(ChronoUnit.SECONDS)
-        val leaseTtl: Duration?,
-        /**
-         * 其它节点持有 lease 时最多等待的时长；超时后自行回源但不写 L1（未写单位按秒；内置默认 200ms）。
-         */
-        @DurationUnit(ChronoUnit.SECONDS)
-        val leaseWait: Duration?,
-        /**
-         * 每个缓存同时进行的回源数上限（bulkhead）；`0` 表示不限制（内置默认 0）。
-         */
-        val loadMaxConcurrent: Int?,
-        /**
-         * 等待回源许可的最长时间，超时抛出 `SourceLoadRejectedException`（未写单位按秒；内置默认 1s）。
-         */
-        @DurationUnit(ChronoUnit.SECONDS)
-        val loadAcquireTimeout: Duration?,
-        /**
-         * L2（Caffeine）的最大条目数（内置默认 10000）。
-         */
-        val localMaximumSize: Long?,
-        /**
-         * 失效写入 L1 失败时的处理方式：`retry`（有界重试队列）或 `throw`。未设置时按缓存有没有数据源决定：有数据源 `retry`，
-         * 没有数据源 `throw`（L1 是唯一副本，延迟的重试会删掉失败之后写入的值）。
-         */
-        val invalidateFailure: InvalidateFailureMode?,
-        /**
-         * 读取 L1 失败时的处理方式：`degrade`（降级回源）或 `throw`（对应 5.x 的 `cocache.redis.strict-failure=true`）。
-         * 未设置时按这次读取有没有数据源决定：有数据源 `degrade`，没有数据源 `throw`（没有可降级的答案）。没有数据源时显式设置
-         * `degrade`：读到不存在，不缓存（如撤销表：Redis 故障即视为未撤销）。
-         */
-        val readFailure: ReadFailureMode?,
-        /**
-         * L1 key 前缀（内置默认 `cocache:`），覆盖声明与定制器中的值；可以使用占位符，如 `${spring.application.name}:`。
-         * 失效频道 `cocache:inv:{namespace}` 不含前缀：共用一个 Redis 且 namespace 相同的应用会收到彼此的失效消息（key 不同，只是多余的处理）。
-         */
-        val keyPrefix: String?,
-        /**
-         * 一次加载的上限（未写单位按秒；内置默认 30s），超过它以 `SourceLoadTimeoutException` 失败：异步数据源（`AsyncCacheLoader`）的一次加载
-         * （释放 lease），以及等待共享加载的读取；在途登记超过它的加载被注销，之后的读取开始新的加载。同步数据源本身无法被外部结束，应自带超时。
-         * 6.x 的 `load-async-timeout`。
-         */
-        @DurationUnit(ChronoUnit.SECONDS)
-        val loadTimeout: Duration? = null,
-        /**
-         * 读到本缓存读不懂的 L1 内容（5.x 或其它程序写入的值、同版本解码失败）时的处理方式：`fail`（抛出 `CacheReadException`，
-         * 不修改 L1）或 `reclaim`（条件回收后回源）。未设置时按读取有没有数据源决定：有数据源 `reclaim`，没有数据源 `fail`。
-         * `reclaim` 只能用于有数据源的缓存：`cocache.caches.[name].foreign-format: reclaim` 落在没有数据源的缓存或集合缓存上时启动失败
-         * （L1 是唯一副本，回收就是删除它）；`cocache.defaults.foreign-format` 不作用于集合缓存，其值 `reclaim` 也不作用于没有数据源的缓存。
-         * 只决定读取：条件写入、按版本写入与集合元素的增删落在读不懂的内容上时总是拒绝。
-         */
-        val foreignFormat: ForeignFormatMode? = null,
-    ) {
-        fun applyTo(policy: CachePolicy): CachePolicy {
-            val builder = policy.toBuilder()
-            applyLifetimes(builder)
-            applyLease(builder, policy)
-            applyLoad(builder, policy)
-            localMaximumSize?.let { builder.local = policy.local.copy(maximumSize = it) }
-            invalidateFailure?.let { builder.invalidateFailure = it }
-            readFailure?.let { builder.readFailure = it }
-            foreignFormat?.let { builder.foreignFormat = it }
-            return builder.build()
-        }
-
-        private fun applyLifetimes(builder: CachePolicy.Builder) {
-            when {
-                ttlForever == true -> builder.ttl = null
-                ttl != null -> builder.ttl = ttl
-            }
-            ttlJitter?.let { builder.ttlJitter = it }
-            absentTtl?.let { builder.absentTtl = it }
-            localMaxAge?.let { builder.localMaxAge = it }
-            degradedLocalMaxAge?.let { builder.degradedLocalMaxAge = it }
-            // 0 表示关闭（与注解一致），用于在配置文件中关掉声明里的提前刷新
-            refreshWindow?.let { builder.refreshWindow = it.takeUnless(Duration::isZero) }
-        }
-
-        private fun applyLease(builder: CachePolicy.Builder, policy: CachePolicy) {
-            if (leaseTtl != null || leaseWait != null) {
-                builder.lease = LeasePolicy(leaseTtl ?: policy.lease.ttl, leaseWait ?: policy.lease.wait)
-            }
-        }
-
-        private fun applyLoad(builder: CachePolicy.Builder, policy: CachePolicy) {
-            // 只覆盖设置了的字段：其余沿用下层（含 timeout），不能用默认值重建
-            if (loadMaxConcurrent != null || loadAcquireTimeout != null || loadTimeout != null) {
-                builder.load = policy.load.copy(
-                    maxConcurrent = loadMaxConcurrent ?: policy.load.maxConcurrent,
-                    acquireTimeout = loadAcquireTimeout ?: policy.load.acquireTimeout,
-                    timeout = loadTimeout ?: policy.load.timeout,
-                )
-            }
-        }
-    }
 
     companion object {
         const val PREFIX = "cocache"

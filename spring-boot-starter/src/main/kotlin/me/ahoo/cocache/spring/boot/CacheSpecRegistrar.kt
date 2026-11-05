@@ -14,26 +14,32 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.VersionedCache
+import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
+import me.ahoo.cocache.core.StoreSpec
+import me.ahoo.cocache.core.VersionedCacheSpec
+import me.ahoo.cocache.core.VersionedStoreSpec
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.beans.factory.support.BeanDefinitionRegistry
 import org.springframework.core.ResolvableType
 
 /**
- * 把每个 [CacheSpec] / [SetCacheSpec] bean 注册为对应的 [Cache] / [SetCache] bean（RFC 0003 §4.12）。
+ * 把每个 spec bean 注册为对应类型的缓存 bean（RFC 0003 §4.12，RFC 0005 §3.1）：[CacheSpec] → [Cache]、[VersionedCacheSpec] →
+ * [VersionedCache]、[StoreSpec] → [Store]、[VersionedStoreSpec] → [VersionedStore]、[SetStoreSpec] → [SetStore]。
  *
  * - 泛型取自工厂方法**声明的**返回类型，不实例化声明；无法解析时启动失败（如返回原始类型）。
  * - bean 名：声明 bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` 后缀。
- * - 缓存在首次注入时由 [CacheAssembler] 创建。
+ * - 缓存在首次注入时由 [CoCacheFactory] 创建（叠加定制器与配置文件，[CacheAssembler]）。
  */
 internal class CacheSpecRegistrar : BeanFactoryPostProcessor {
     override fun postProcessBeanFactory(beanFactory: ConfigurableListableBeanFactory) {
         val registry = beanFactory as? BeanDefinitionRegistry ?: return
-        register(beanFactory, registry, CacheSpec::class.java, Cache::class.java)
-        register(beanFactory, registry, SetCacheSpec::class.java, SetCache::class.java)
+        SPEC_TYPES.forEach { (specType, cacheType) -> register(beanFactory, registry, specType, cacheType) }
     }
 
     private fun register(
@@ -66,6 +72,17 @@ internal class CacheSpecRegistrar : BeanFactoryPostProcessor {
     }
 
     companion object {
+        /**
+         * spec 类型与它创建的用户 API 类型。
+         */
+        private val SPEC_TYPES: List<Pair<Class<*>, Class<*>>> = listOf(
+            CacheSpec::class.java to Cache::class.java,
+            VersionedCacheSpec::class.java to VersionedCache::class.java,
+            StoreSpec::class.java to Store::class.java,
+            VersionedStoreSpec::class.java to VersionedStore::class.java,
+            SetStoreSpec::class.java to SetStore::class.java,
+        )
+
         private const val SPEC_SUFFIX = "Spec"
         private const val CACHE_SUFFIX = "Cache"
 

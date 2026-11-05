@@ -17,15 +17,19 @@ import io.lettuce.core.RedisURI
 import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.CoCacheFactory
+import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LocalPolicy
 import org.openjdk.jmh.annotations.Benchmark
@@ -44,7 +48,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * 6.0 命中路径基准（RFC 0003 §7），方法名与 5.x 的 `RedisCacheBenchmark` 对应，便于逐项对比。
+ * 命中路径基准（RFC 0003 §7）。
  *
  * 需要 localhost:6379 的 Redis：`./gradlew :cocache-redis:jmh --rerun -PjmhThreads=8 -PjmhIncludes=l2Hit`。
  */
@@ -59,14 +63,15 @@ open class CoCacheBenchmark {
     private lateinit var cache: Cache<String, String>
     private lateinit var viaInterface: BenchCache
     private lateinit var mixed: List<Cache<String, String>>
-    private lateinit var store: RemoteStore
+    private lateinit var store: L1Store
     private lateinit var l1Key: String
     private lateinit var batchKeys: List<String>
     private lateinit var asyncCache: AsyncCache<String, String>
     private lateinit var asyncMixed: List<AsyncCache<String, String>>
-    private lateinit var asyncStore: AsyncRemoteStore
     private lateinit var l1Hits: Cache<String, String>
     private lateinit var l1HitKeys: List<String>
+    private lateinit var absentStore: Store<String, String>
+    private lateinit var unfilled: Cache<String, String>
 
     @Setup
     fun setup() {
@@ -85,20 +90,46 @@ open class CoCacheBenchmark {
             it["hot"]
         }
         cache.put("l1", "l1-value")
-        viaInterface = me.ahoo.cocache.core.proxy.CacheProxies.create(BenchCache::class.java, cache)
-        store = backend.store("bench-$run")
+        // 接口式声明经 CoCacheFactory 创建：配置与 cache 相同的另一个引擎，命中路径多出的只是代理的转发
+        viaInterface = CoCacheFactory(runtime).create(BenchCache::class.java, spec("bench-iface-$run", policy))
+        viaInterface.put("hot", "hot-value")
+        viaInterface["hot"]
+        // 存储基准测的是 Redis 存储自身（原生挂起的 RedisL1Store，经 awaitBlocking 在调用方线程上等待）
+        store = backend.store(Keyspace("cocache:", "bench-$run"))
         l1Key = "cocache:bench-$run:l1"
         val frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         batchKeys = (1..BATCH_SIZE).map { "cocache:bench-$run:batch-$it" }
-        batchKeys.forEach { store.put(it, Envelope.Scalar("batch-value".toByteArray()), Duration.ofMinutes(10), frame) }
+        batchKeys.forEach {
+            awaitBlocking { store.put(it, Envelope.Scalar("batch-value".toByteArray()), Duration.ofMinutes(10), frame) }
+        }
         asyncCache = cache.async()
         asyncMixed = mixed.map { it.async() }
-        asyncStore = store as AsyncRemoteStore
         // L1 命中经引擎：工作集远大于 L2 容量，几乎每次读取都不命中 L2、命中 L1（并填充 L2）
         l1Hits = runtime.create(spec("bench-l1-$run", policy.toBuilder().local(LocalPolicy(maximumSize = 16)).build()))
         l1HitKeys = (1..L1_HIT_KEYS).map { "l1-$it" }
         l1HitKeys.chunked(1_000).forEach { chunk -> l1Hits.putAll(chunk.associateWith { "l1-value" }) }
+        // 权威缓存的 Absent 与外部来源的“未填充”进入 L2（RFC 0005 §7）：寿命长于一次测量，命中路径与普通 L2 命中相同
+        val absentPolicy = CachePolicy(ttl = null, absentTtl = Duration.ofHours(1), localMaxAge = Duration.ofHours(1))
+        absentStore = runtime.create(
+            storeSpec<String, String>("bench-absent-$run") {
+                codec = StringCodec
+                this.policy = absentPolicy
+            }
+        )
+        unfilled = runtime.create(
+            cacheSpec<String, String>("bench-unfilled-$run") {
+                codec = StringCodec
+                externallySourced()
+                this.policy = absentPolicy
+            }
+        )
+        check(absentStore["missing"] == null && unfilled["missing"] == null)
+        check(localState("bench-absent-$run") == KeyInspection.LocalState.ABSENT)
+        check(localState("bench-unfilled-$run") == KeyInspection.LocalState.UNFILLED)
     }
+
+    private fun localState(cacheName: String): KeyInspection.LocalState? =
+        requireNotNull(runtime.admin(cacheName)).inspect("missing").local?.state
 
     private fun spec(name: String, policy: CachePolicy) = cacheSpec<String, String>(name) {
         codec = StringCodec
@@ -119,6 +150,14 @@ open class CoCacheBenchmark {
     /** L2 命中，经过接口式声明的代理（`@CoCache interface`）。 */
     @Benchmark
     fun l2HitViaInterface(): String? = viaInterface["hot"]
+
+    /** L2 命中权威缓存的 `Absent`（`Store` 中没有这个 key）。 */
+    @Benchmark
+    fun l2HitAbsent(): String? = absentStore["missing"]
+
+    /** L2 命中外部来源缓存的“未填充”（不带 loader 的读取看到不存在）。 */
+    @Benchmark
+    fun l2HitUnfilled(): String? = unfilled["missing"]
 
     /** L2 命中，轮流访问三个配置不同的缓存。 */
     @Benchmark
@@ -206,19 +245,15 @@ open class CoCacheBenchmark {
 
     /** 直接读 L1：一次 EVALSHA（PTTL + GET + 头部解析）。 */
     @Benchmark
-    fun l1Read(): RemoteRead = store.read(l1Key, null, null)
-
-    /** 直接异步读 L1：与 [l1Read] 相同的命令，经 `readAsync` 等待。 */
-    @Benchmark
-    fun l1ReadAsync(): RemoteRead = asyncStore.readAsync(l1Key, null, null).join()
+    fun l1Read(): L1Read = awaitBlocking { store.read(l1Key, null, null, null) }
 
     /** 逐个读 L1 的 [BATCH_SIZE] 个 key：[BATCH_SIZE] 次往返，与 [l1BatchRead] 对比。 */
     @Benchmark
-    fun l1SequentialRead(): Int = batchKeys.count { store.read(it, null, null) is RemoteRead.Hit }
+    fun l1SequentialRead(): Int = batchKeys.count { awaitBlocking { store.read(it, null, null, null) } is L1Read.Hit }
 
     /** 批量读 L1 的 [BATCH_SIZE] 个 key：共享连接上并发发出，约一次往返。 */
     @Benchmark
-    fun l1BatchRead(): Int = store.readAll(batchKeys, emptyMap()).size
+    fun l1BatchRead(): Int = awaitBlocking { store.readAll(batchKeys, emptyMap(), null) }.size
 
     /** 完整未命中：读 L1 并取得 lease、回源、凭 lease 写回。 */
     @Benchmark

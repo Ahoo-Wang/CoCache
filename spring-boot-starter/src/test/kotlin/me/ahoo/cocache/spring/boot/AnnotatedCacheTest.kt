@@ -13,22 +13,41 @@
 
 package me.ahoo.cocache.spring.boot
 
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
+import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.AsyncCacheLoader
+import me.ahoo.cocache.api.AsyncStore
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.ReadableCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.SuspendingCache
+import me.ahoo.cocache.api.VersionedCache
+import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.annotation.CaffeineCache
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.PolicyReport
+import me.ahoo.cocache.core.StoreSpec
+import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.PolicyField
+import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.proxy.CacheProxies
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
@@ -51,15 +70,51 @@ class AnnotatedCacheTest {
         fun nameOf(id: String): String? = get(id)?.name
     }
 
-    @CoCache(name = "plain", ttl = CoCache.FOREVER)
+    /**
+     * 外部来源（RFC 0005 §4.1）：值由调用方经 `put` 写入。
+     */
+    @CoCache(name = "plain", ttl = CoCache.FOREVER, source = CoCache.Source.EXTERNAL)
     interface PlainCache : Cache<String, String>
 
-    interface UndeclaredCache : Cache<Int, String>
+    /**
+     * `unknownRead = ABSENT`（RFC 0005 §4.1）：没有数据源的读取在 L1 故障时放行。
+     */
+    @CoCache(name = "permissive-store", unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveStore : Store<String, String>
+
+    @CoCache(name = "permissive-versioned-store", unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveVersionedStore : VersionedStore<String, String>
+
+    @CoCache(name = "permissive-external", source = CoCache.Source.EXTERNAL, unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveExternalCache : Cache<String, String>
+
+    /**
+     * 有数据源的读取、`SetStore` 与 `VersionedCache` 不允许 `unknownRead = ABSENT`。
+     */
+    @CoCache(name = "permissive-sourced", unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveSourcedCache : Cache<String, String>
+
+    @CoCache(name = "permissive-set", unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveSetStore : SetStore<String, String>
+
+    @CoCache(name = "permissive-versioned", unknownRead = CoCache.UnknownRead.ABSENT)
+    interface PermissiveVersionedCache : VersionedCache<String, String>
+
+    /**
+     * 按泛型 `CacheLoader<String, String>` 匹配数据源（数据源的匹配规则用例）。
+     */
+    @CoCache(name = "sourced")
+    interface SourcedCache : Cache<String, String>
+
+    /**
+     * 没有 `@CoCache` 的权威副本：权威类型没有数据源，不需要注解。
+     */
+    interface UndeclaredCache : Store<Int, String>
 
     @CoCache(loader = "namedLoader", codec = "namedCodec")
     interface NamedCache : Cache<Long, String>
 
-    interface IndexCache : SetCache<String, String>
+    interface IndexCache : SetStore<String, String>
 
     @CoCache(
         name = "tags",
@@ -71,7 +126,7 @@ class AnnotatedCacheTest {
         codec = "namedCodec"
     )
     @CaffeineCache
-    interface TagCache : SetCache<String, String>
+    interface TagCache : SetStore<String, String>
 
     interface GenericCache<V : Any> : Cache<String, V>
 
@@ -94,7 +149,7 @@ class AnnotatedCacheTest {
     }
 
     @Configuration(proxyBeanMethods = false)
-    @EnableCoCache(caches = [PlainCache::class])
+    @EnableCoCache(caches = [SourcedCache::class])
     class AmbiguousLoaderConfig {
         @Bean(destroyMethod = "close")
         fun backend(): CoherenceBackend = InMemoryBackend()
@@ -149,7 +204,7 @@ class AnnotatedCacheTest {
      * 同步与异步数据源各有一个候选：歧义，启动失败。
      */
     @Configuration(proxyBeanMethods = false)
-    @EnableCoCache(caches = [PlainCache::class])
+    @EnableCoCache(caches = [SourcedCache::class])
     class SyncAndAsyncLoaderConfig {
         @Bean(destroyMethod = "close")
         fun backend(): CoherenceBackend = InMemoryBackend()
@@ -175,7 +230,7 @@ class AnnotatedCacheTest {
     }
 
     @Configuration(proxyBeanMethods = false)
-    @EnableCoCache(caches = [PlainCache::class])
+    @EnableCoCache(caches = [SourcedCache::class])
     class DualLoaderConfig {
         @Bean(destroyMethod = "close")
         fun backend(): CoherenceBackend = InMemoryBackend()
@@ -211,7 +266,7 @@ class AnnotatedCacheTest {
     interface InvalidPolicyCache : Cache<String, String>
 
     @CoCache(loader = "namedLoader")
-    interface LoaderSetCache : SetCache<String, String>
+    interface LoaderSetCache : SetStore<String, String>
 
     @CoCache(keyExpression = "id")
     interface ConstantKeyCache : Cache<String, String>
@@ -222,7 +277,7 @@ class AnnotatedCacheTest {
     }
 
     interface UnknownAbstractCache : Cache<String, String> {
-        fun lookupAll(keys: List<String>): Map<String, String>
+        fun peekAll(keys: List<String>): Map<String, String>
     }
 
     interface BadReturnCache : Cache<String, String> {
@@ -243,7 +298,7 @@ class AnnotatedCacheTest {
         override fun put(key: String, value: String, ttl: Duration)
     }
 
-    interface RedeclaredSetCache : SetCache<String, String> {
+    interface RedeclaredSetCache : SetStore<String, String> {
         override fun clear(key: String)
     }
 
@@ -301,9 +356,67 @@ class AnnotatedCacheTest {
         fun plain(): Any = Any()
     }
 
+    /**
+     * 视图接口（RFC 0005 §4.2）：继承 `SuspendingCache`、`AsyncStore` 的接口同样注册为 bean，代理转发给缓存的视图。
+     */
+    @CoCache(ttl = 120)
+    interface SuspendingUserCache : SuspendingCache<String, User> {
+        suspend fun nameOf(id: String): String? = get(id)?.name
+    }
+
+    interface AsyncTokenStore : AsyncStore<String, String>
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [SuspendingUserCache::class, AsyncTokenStore::class])
+    class ViewConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun userLoader(): CacheLoader<String, User> = CacheLoader { User(it, "name-$it") }
+
+        @Bean
+        fun tokenCodec(): Codec<String> = StringCodec
+    }
+
     private val runner = ApplicationContextRunner()
         .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
         .withPropertyValues("cocache.enabled=true")
+
+    @Test
+    fun registersViewInterfacesAsBeans() {
+        runner.withUserConfiguration(ViewConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val users = context.getBean(SuspendingUserCache::class.java)
+            context.getBean("SuspendingUserCache").assert().isSameAs(users)
+            runBlocking {
+                users.get("1").assert().isEqualTo(User("1", "name-1"))
+                users.nameOf("2").assert().isEqualTo("name-2")
+            }
+            val runtime = context.getBean(CacheRuntime::class.java)
+            val engine = requireNotNull(runtime.cache("SuspendingUserCache"))
+            engine.assert().isInstanceOf(Cache::class.java)
+            CacheProxies.targetOf(users).assert().isSameAs(engine)
+            requireNotNull(runtime.admin("SuspendingUserCache")).layered.assert().isTrue()
+
+            val tokens = context.getBean(AsyncTokenStore::class.java)
+            tokens.put("t", "v").join()
+            tokens.get("t").join().assert().isEqualTo("v")
+            tokens.sync().assert().isInstanceOf(Store::class.java)
+            // Spring Cache 只用派生的 Cache：视图接口背后是 Store 的缓存不能用于缓存注解
+            SpringCacheSyncCheck.underivedCacheNames(runtime, context.beanFactory).assert()
+                .containsExactly("AsyncTokenStore")
+            // 视图接口的代理不是 ReadableCache：指标的后处理器经 targetOf 识别它
+            val binder = mockk<CoCacheMeterBinder>(relaxed = true)
+            val provider = mockk<ObjectProvider<CoCacheMeterBinder>> { every { ifAvailable } returns binder }
+            val processor = CoCacheMetricsAutoConfiguration.MeterBindingPostProcessor(provider)
+            processor.postProcessAfterInitialization(users, "SuspendingUserCache")
+            processor.postProcessAfterInitialization(Any(), "other")
+            verify(exactly = 1) { binder.bindNewCaches() }
+            // 不是可声明类型的接口没有可推断的类型参数
+            AnnotatedCacheFactory.keyValueTypesOf(Runnable::class.java).assert().isNull()
+        }
+    }
 
     @Test
     fun registersInterfacesAsBeans() {
@@ -316,7 +429,11 @@ class AnnotatedCacheTest {
             users.name.assert().isEqualTo("UserCache")
 
             val backend = context.getBean(CoherenceBackend::class.java)
-            val stored = backend.store("UserCache").read("app:UserCache:u-1", null, null) as RemoteRead.Hit
+            val stored = Suspending.await {
+                backend.store(
+                    Keyspace("app:", "UserCache")
+                ).read("app:UserCache:u-1", null, null, null)
+            } as L1Read.Hit
             requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(120))
 
             val runtime = context.getBean(CacheRuntime::class.java)
@@ -325,7 +442,13 @@ class AnnotatedCacheTest {
             val plain = context.getBean(PlainCache::class.java)
             plain["missing"].assert().isNull()
             plain.put("k", "v")
-            (backend.store("plain").read("cocache:plain:k", null, null) as RemoteRead.Hit).ttl.assert().isNull()
+            (
+                Suspending.await {
+                    backend.store(
+                        Keyspace("cocache:", "plain")
+                    ).read("cocache:plain:k", null, null, null)
+                } as L1Read.Hit
+                ).ttl.assert().isNull()
 
             context.getBean(UndeclaredCache::class.java)[1].assert().isNull()
             context.getBean(NamedCache::class.java)[7L].assert().isEqualTo("n-7")
@@ -338,15 +461,14 @@ class AnnotatedCacheTest {
     }
 
     @Test
-    fun annotatedSetCacheUsesNamespacePrefixAndKeyExpression() {
+    fun annotatedSetStoreUsesNamespacePrefixAndKeyExpression() {
         runner.withUserConfiguration(AppConfig::class.java).run { context ->
             assertThat(context).hasNotFailed()
             val tags = context.getBean("tags") as TagCache
             tags.add("k", listOf("a"))
             tags["k"].assert().containsExactly("a")
-            val stored = context.getBean(
-                CoherenceBackend::class.java
-            ).store("tag-ns").read("t:tag-ns:K", null, null) as RemoteRead.Hit
+            val store = context.getBean(CoherenceBackend::class.java).store(Keyspace("t:", "tag-ns"))
+            val stored = Suspending.await { store.read("t:tag-ns:K", null, null, null) } as L1Read.Hit
             requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(600))
         }
     }
@@ -358,10 +480,37 @@ class AnnotatedCacheTest {
             .run { context ->
                 assertThat(context).hasNotFailed()
                 context.getBean(UserCache::class.java)["1"]
-                val stored = context.getBean(
-                    CoherenceBackend::class.java
-                ).store("UserCache").read("app:UserCache:u-1", null, null) as RemoteRead.Hit
+                val store = context.getBean(CoherenceBackend::class.java).store(Keyspace("app:", "UserCache"))
+                val stored = Suspending.await { store.read("app:UserCache:u-1", null, null, null) } as L1Read.Hit
                 requireNotNull(stored.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(10))
+            }
+    }
+
+    /**
+     * 注解写出的属性是声明：`cocache.defaults.cache.*` 低于它，只填注解没有写出的字段（RFC 0005 §4.8）。
+     */
+    @Test
+    fun defaultsStayBelowAnnotations() {
+        runner.withUserConfiguration(AppConfig::class.java)
+            .withPropertyValues(
+                "cocache.defaults.cache.ttl=10s",
+                "cocache.defaults.cache.local-maximum-size=5",
+                "cocache.defaults.cache.degraded-local-max-age=3s",
+                "cocache.defaults.cache.lease-wait=20ms",
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                context.getBean(UserCache::class.java)
+                val runtime = context.getBean(CacheRuntime::class.java)
+                val policy = requireNotNull(runtime.policy("UserCache"))
+                policy.ttl.assert().isEqualTo(Duration.ofSeconds(120))
+                policy.local.maximumSize.assert().isEqualTo(100)
+                policy.degradedLocalMaxAge.assert().isEqualTo(Duration.ofSeconds(3))
+                policy.lease.wait.assert().isEqualTo(Duration.ofMillis(20))
+                val report = requireNotNull(requireNotNull(runtime.admin("UserCache")).policyReport)
+                requireNotNull(report.entry(PolicyField.TTL)).source.assert().isEqualTo(PolicyReport.Source.DECLARATION)
+                requireNotNull(report.entry(PolicyField.DEGRADED_LOCAL_MAX_AGE)).source
+                    .assert().isEqualTo(PolicyReport.Source.DEFAULTS)
             }
     }
 
@@ -388,7 +537,7 @@ class AnnotatedCacheTest {
     fun loaderImplementingBothIsUsedAsSync() {
         runner.withUserConfiguration(DualLoaderConfig::class.java).run { context ->
             assertThat(context).hasNotFailed()
-            context.getBean(PlainCache::class.java)["k"].assert().isEqualTo("sync-k")
+            context.getBean(SourcedCache::class.java)["k"].assert().isEqualTo("sync-k")
         }
     }
 
@@ -407,6 +556,43 @@ class AnnotatedCacheTest {
         runner.withUserConfiguration(AmbiguousLoaderConfig::class.java).run { context ->
             assertThat(context).hasFailed()
             context.startupFailure.assert().hasStackTraceContaining("Multiple CacheLoader beans")
+        }
+    }
+
+    /**
+     * 注解的 `unknownRead` 写入 spec；只用于没有数据源的读取，其它接口声明 `ABSENT` 时启动失败，而不是静默忽略。
+     */
+    @Test
+    fun unknownReadIsDeclaredOnTheAnnotation() {
+        runner.withUserConfiguration(AppConfig::class.java).run { context ->
+            val factory = context.getBean(AnnotatedCacheFactory::class.java)
+            (
+                factory.specOf(
+                    PermissiveStore::class.java
+                ) as StoreSpec<*, *>
+                ).unknownRead.assert().isEqualTo(UnknownReadMode.ABSENT)
+            (factory.specOf(PermissiveVersionedStore::class.java) as VersionedStoreSpec<*, *>).unknownRead
+                .assert().isEqualTo(UnknownReadMode.ABSENT)
+            (factory.specOf(PermissiveExternalCache::class.java) as CacheSpec<*, *>).unknownRead
+                .assert().isEqualTo(UnknownReadMode.ABSENT)
+            (
+                factory.specOf(
+                    PlainCache::class.java
+                ) as CacheSpec<*, *>
+                ).unknownRead.assert().isEqualTo(UnknownReadMode.THROW)
+            listOf(
+                PermissiveSourcedCache::class.java,
+                PermissiveSetStore::class.java,
+                PermissiveVersionedCache::class.java
+            )
+                .forEach { type ->
+                    runCatching {
+                        factory.specOf(
+                            type
+                        )
+                    }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+                        .hasMessageContaining("unknownRead = ABSENT").hasMessageContaining(type.name)
+                }
         }
     }
 
@@ -439,7 +625,7 @@ class AnnotatedCacheTest {
         AnnotatedCacheFactory.cacheNameOf(PlainCache::class.java).assert().isEqualTo("plain")
     }
 
-    private fun <C : Cache<*, *>> createFailure(type: Class<C>, vararg properties: String): Throwable? {
+    private fun <C : ReadableCache<*, *>> createFailure(type: Class<C>, vararg properties: String): Throwable? {
         var failure: Throwable? = null
         runner.withUserConfiguration(TranslationConfig::class.java).withPropertyValues(*properties).run { context ->
             assertThat(context).hasNotFailed()
@@ -467,12 +653,12 @@ class AnnotatedCacheTest {
     fun policyErrorsNameTheCache() {
         createFailure(InvalidPolicyCache::class.java).assert().isInstanceOf(IllegalArgumentException::class.java)
             .hasMessageStartingWith("Cache[InvalidPolicyCache] - refreshWindow")
-        // 配置文件导致的策略错误同样带缓存名
+        // 按缓存的配置导致的策略错误同样带缓存名（只由 caches.[name] 引起的冲突不夹紧，启动失败）
         runner.withUserConfiguration(TranslationConfig::class.java)
-            .withPropertyValues("cocache.caches.NoRefreshCache.absent-ttl=0")
+            .withPropertyValues("cocache.caches.NoRefreshCache.refresh-window=5m")
             .run { context ->
                 assertThat(context).hasFailed()
-                context.startupFailure.assert().hasStackTraceContaining("Cache[NoRefreshCache] - absentTtl")
+                context.startupFailure.assert().hasStackTraceContaining("Cache[NoRefreshCache] - refreshWindow[PT5M]")
             }
     }
 
@@ -484,9 +670,9 @@ class AnnotatedCacheTest {
     }
 
     @Test
-    fun loaderOnSetCacheFails() {
+    fun loaderOnSetStoreFails() {
         createFailure(LoaderSetCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
-            .hasMessageContaining("not supported on SetCache")
+            .hasMessageContaining("not supported on SetStore")
     }
 
     @Test
@@ -502,7 +688,7 @@ class AnnotatedCacheTest {
         createFailure(OverloadCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining("String get(String, String)")
         createFailure(UnknownAbstractCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
-            .hasMessageContaining("lookupAll")
+            .hasMessageContaining("peekAll")
         createFailure(BadReturnCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining("int lookup(int)")
             .hasMessageContaining("boolean invalidate(long)")

@@ -1,17 +1,17 @@
 ---
 title: JoinCache
-description: 用 @JoinCacheable 把两个缓存当作一个来读：声明视图、提取关联 key、批量读取、失效，以及视图不保证什么。
+description: 用 @JoinCacheable 把两个缓存当作一个来读：JoinView 与 JoinCache、声明视图、提取关联 key、批量读取、失效，以及视图不保证什么。
 ---
 
 # JoinCache
 
-很多读模型都是“一样东西加上它指向的东西”：订单与它的客户、资料扩展与它的用户。这两样你本来就都缓存了。`JoinCache` 把它们一起读出来：先从**主缓存**读一个值，从中推导出一个 key，再用这个 key 读**关联缓存**。
+很多读模型都是“一样东西加上它指向的东西”：订单与它的客户、资料扩展与它的用户。这两样你本来就都缓存了。组合视图把它们一起读出来：先从**主缓存**读一个值，从中推导出一个 key，再用这个 key 读**关联缓存**。
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant C as 调用方
-    participant J as JoinCache
+    participant J as 组合视图
     participant F as 主缓存
     participant S as 关联缓存
     C->>J: get(key)
@@ -23,11 +23,18 @@ sequenceDiagram
     J-->>C: JoinValue(firstValue, joinKey, secondValue)
 ```
 
-JoinCache 是一个**只读视图**。它不存储任何东西，没有 loader，也没有 `put`。两个组件缓存各自保有自己的 loader、TTL 与失效。
+组合视图不存储任何东西，没有 loader，也没有 `put`。两个组件缓存各自保有自己的数据源、TTL 与删除。组合视图有两种：
+
+| 继承 | 两侧 | 增加 |
+|------|------|------|
+| `JoinView<K1, V1, K2, V2>` | 任意两种[缓存类型](./caches.md#types)（都是 `ReadableCache`），例如一个 `Cache` 配一个 `Store` | 无：`name`、`get`、`getAll` |
+| `JoinCache<K1, V1, K2, V2>` | 两个 `Cache` | `invalidate(key)` 与 `invalidate(firstKey, joinKey)` |
+
+`JoinCache` 继承 `JoinView`。只有派生副本可以经视图失效；权威的一侧保留它自己的 `delete`。
 
 ## 声明 {#declare}
 
-两个组件缓存都是普通缓存，可以是接口式声明，也可以是 spec bean。视图是一个继承 `JoinCache<K1, V1, K2, V2>` 的接口，列在 `@EnableCoCache(joinCaches = …)` 中：
+两个组件缓存都是普通缓存，可以是接口式声明，也可以是 spec bean。视图是一个继承 `JoinView<K1, V1, K2, V2>` 或 `JoinCache<K1, V1, K2, V2>` 的接口，列在 `@EnableCoCache(joinCaches = …)` 中。这里两侧都是 `Cache`，所以视图可以是 `JoinCache`：
 
 ```kotlin
 data class UserExtendInfo(val id: String, val userId: String)
@@ -53,7 +60,7 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 class App
 ```
 
-像注入其它 bean 一样注入 `UserExtendInfoJoinCache`。它的 bean 名就是视图名。
+像注入其它 bean 一样注入 `UserExtendInfoJoinCache`。它的 bean 名就是视图名。一侧不是 `Cache`，或者不希望视图的调用方做失效时，改为继承 `JoinView`。
 
 | `@JoinCacheable` 属性 | 含义 |
 |-----------------------|------|
@@ -82,16 +89,17 @@ fun userIdOf() = JoinKeyExtractor<UserExtendInfo, String> { it.userId }
 
 | 调用 | 行为 |
 |------|------|
-| `get(key)` | 读主缓存（未命中时加载）。不存在或是负缓存：返回 `null`。否则提取关联 key 并读关联缓存；关联值不存在时 `secondValue = null`。 |
+| `get(key)` | 用主缓存的 `get(key)` 读取（`Cache` 未命中时加载）。不存在或是负缓存：返回 `null`。否则提取关联 key 并读关联缓存；关联值不存在时 `secondValue = null`。 |
 | `getAll(keys)` | 对主缓存一次 `getAll`，再对**去重后**的非空关联 key 做一次关联缓存的 `getAll`（没有关联 key 时跳过）。结果只包含主值存在的 key。 |
-| `invalidate(key)` | **只失效主缓存。** 关联值被其它条目共享，由它自己的写入方负责。 |
-| `invalidate(firstKey, joinKey)` | 两者都失效。一方抛出时另一方照常执行，异常合并后抛出。作为组成部分的 `SetCache` 不支持 `invalidate`（直接对集合使用 `clear`）。 |
+| `invalidate(key)`（仅 `JoinCache`） | **只失效主缓存。** 关联值被其它条目共享，由它自己的写入方负责。 |
+| `invalidate(firstKey, joinKey)`（仅 `JoinCache`） | 两者都失效。一方抛出时另一方照常执行，异常合并后抛出。 |
 
 因为 `getAll` 就是两次批量读取，列出指向 20 个用户的 100 条扩展信息，每个缓存最多只需一次批量 Redis 读取和一次 `loadAll`，与有多少条目共享同一个用户无关。
 
 ## 保证与限制 {#guarantees}
 
 - 每次读取都经过组件缓存，它们的保证原样适用：受栅栏保护的加载、失效、`localMaxAge`。
+- 组件缓存抛出的异常原样传出。没有答案的读取（例如 Redis 故障时读 `Store`）抛出它的 `CacheReadException`（见[读取：存在、不存在与未知](./caches.md#unknown)）。
 - **两个缓存之间没有快照。** 两次读取相互独立，组合出的一对值可能来自不同时刻。如果主值在两次读取之间换了关联 key，在主缓存被失效之前你会看到旧的配对。
 - `User` 变化时，在 `UserCache` 上失效它。所有读取它的视图在下一次调用时都会看到变化。
 
@@ -105,21 +113,21 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 }
 ```
 
-对应不上任何 `JoinCache` 方法的抽象方法会让启动失败。
+对应不上所继承类型（`JoinView` 或 `JoinCache`）任何方法的抽象方法会让启动失败。
 
 ## 启动检查 {#validation}
 
 以下情形启动失败，错误信息指出视图与属性：
 
 - `firstCacheName` 或 `joinCacheName` 为空，或对应不上任何缓存，
-- 指定的缓存不是 `Cache<K1, V1>`（或 `Cache<K2, V2>`），
+- 指定的缓存对 `JoinCache` 不是 `Cache<K1, V1>`（或 `Cache<K2, V2>`），对 `JoinView` 不是 `ReadableCache<K1, V1>`（或 `ReadableCache<K2, V2>`），
 - 接口的类型参数不是具体类型，或缺少 `@JoinCacheable`，
 - `joinKeyExpression` 中没有 `#{…}`（会成为常量，所有值都关联到同一个 key），或 `joinKeyExtractor` 指定的 bean 不是 `JoinKeyExtractor<V1, K2>`，
 - 同时设置了 `joinKeyExpression` 与 `joinKeyExtractor`、对非 `String` 的关联 key 使用 `joinKeyExpression`，或按类型查找提取器时找到零个或多个 bean。
 
 ## 不用 Spring {#without-spring}
 
-`cocache-core` 中的 `SimpleJoinCache` 是实现，`JoinCacheProxies` 把它包装成你的接口：
+`cocache-core` 中的 `SimpleJoinView`（任意两个 `ReadableCache`）与 `SimpleJoinCache`（两个 `Cache`）是实现，`JoinCacheProxies` 把其中一个包装成你的接口。继承 `JoinCache` 的接口需要 `SimpleJoinCache`：
 
 ```kotlin
 val view = SimpleJoinCache("UserExtendInfoJoinCache", userExtendInfoCache, userCache) { info -> info.userId }

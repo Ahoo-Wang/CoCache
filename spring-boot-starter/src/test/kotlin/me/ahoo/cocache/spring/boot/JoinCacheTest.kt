@@ -16,20 +16,24 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.annotation.JoinCacheable
 import me.ahoo.cocache.api.join.JoinCache
 import me.ahoo.cocache.api.join.JoinKeyExtractor
 import me.ahoo.cocache.api.join.JoinValue
+import me.ahoo.cocache.api.join.JoinView
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.join.SimpleJoinCache
+import me.ahoo.cocache.core.join.SimpleJoinView
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.proxy.JoinCacheProxies
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -74,10 +78,28 @@ class JoinCacheTest {
     interface OrderByBeanNameJoinCache : JoinCache<String, String, String, User>
 
     /**
-     * 主缓存是 spec 声明的集合缓存（缓存名 `tags`）。
+     * 主缓存是 spec 声明的权威集合（缓存名 `tags`）：两侧不都是 `Cache`，只能是只读的 [JoinView]（RFC 0005 §3.1）。
      */
     @JoinCacheable(firstCacheName = "tags", joinCacheName = "UserCache")
-    interface TagJoinCache : JoinCache<String, Set<String>, String, User>
+    interface TagJoinCache : JoinView<String, Set<String>, String, User>
+
+    /**
+     * 两侧都是权威副本（`Store`）的只读组合视图。
+     */
+    @CoCache(name = "accounts")
+    interface AccountStore : Store<String, String>
+
+    @CoCache(name = "owners")
+    interface OwnerStore : Store<String, User>
+
+    @JoinCacheable(firstCacheName = "accounts", joinCacheName = "owners", joinKeyExpression = "#{#root}")
+    interface AccountOwnerView : JoinView<String, String, String, User>
+
+    /**
+     * 声明为 [JoinCache] 时两侧必须是 `Cache`：引用 `Store` 时启动失败。
+     */
+    @JoinCacheable(firstCacheName = "accounts", joinCacheName = "owners", joinKeyExpression = "#{#root}")
+    interface AccountOwnerJoinCache : JoinCache<String, String, String, User>
 
     @JoinCacheable(firstCacheName = "UserCache", joinCacheName = "UserCache")
     interface AmbiguousJoinCache : JoinCache<String, User, String, User>
@@ -160,7 +182,7 @@ class JoinCacheTest {
         }
 
         @Bean
-        fun tagSpec(): SetCacheSpec<String, String> = setCacheSpec("tags") { elementCodec = StringCodec }
+        fun tagSpec(): SetStoreSpec<String, String> = setStoreSpec("tags") { elementCodec = StringCodec }
 
         @Bean
         fun tagUserId(): JoinKeyExtractor<Set<String>, String> = JoinKeyExtractor { it.firstOrNull() }
@@ -183,6 +205,32 @@ class JoinCacheTest {
     class MissingCacheConfig {
         @Bean(destroyMethod = "close")
         fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun userLoader(): CacheLoader<String, User> = CacheLoader { User(it, "name-$it") }
+
+        @Bean
+        fun extLoader(): CacheLoader<String, Ext> = CacheLoader { Ext(it, null) }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [AccountStore::class, OwnerStore::class], joinCaches = [AccountOwnerView::class])
+    class StoreViewConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun stringCodec(): Codec<String> = StringCodec
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [AccountStore::class, OwnerStore::class], joinCaches = [AccountOwnerJoinCache::class])
+    class StoreJoinCacheConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun stringCodec(): Codec<String> = StringCodec
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -235,9 +283,39 @@ class JoinCacheTest {
             val tags = context.getBean(TagJoinCache::class.java)
             tags["t1"].assert().isEqualTo(JoinValue<Set<String>, String, User>(emptySet(), null, null))
             @Suppress("UNCHECKED_CAST")
-            val tagCache = context.getBean("tag") as SetCache<String, String>
+            val tagCache = context.getBean("tag") as SetStore<String, String>
             tagCache.add("t1", listOf("u3"))
             tags["t1"].assert().isEqualTo(JoinValue(setOf("u3"), "u3", User("u3", "name-u3")))
+        }
+    }
+
+    /**
+     * 两侧都是 `Store` 的 [JoinView]：读取组合两侧，代理背后是只读的 [SimpleJoinView]（没有失效）。
+     */
+    @Test
+    fun joinViewCombinesTwoStores() {
+        runner.withUserConfiguration(StoreViewConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean(AccountStore::class.java).put("a1", "o1")
+            context.getBean(OwnerStore::class.java).put("o1", User("o1", "owner"))
+            val view = context.getBean(AccountOwnerView::class.java)
+            view["a1"].assert().isEqualTo(JoinValue("o1", "o1", User("o1", "owner")))
+            view["missing"].assert().isNull()
+            view.getAll(listOf("a1", "missing")).keys.assert().containsExactly("a1")
+            val target = JoinCacheProxies.targetOf(view)
+            target.assert().isInstanceOf(SimpleJoinView::class.java)
+            (target is JoinCache<*, *, *, *>).assert().isFalse()
+        }
+    }
+
+    /**
+     * [JoinCache] 有失效，两侧必须是 `Cache`：引用 `Store` 时启动失败，指出期望的类型。
+     */
+    @Test
+    fun joinCacheOverStoresFailsStartup() {
+        runner.withUserConfiguration(StoreJoinCacheConfig::class.java).run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure.assert().hasStackTraceContaining("expected me.ahoo.cocache.api.Cache<")
         }
     }
 

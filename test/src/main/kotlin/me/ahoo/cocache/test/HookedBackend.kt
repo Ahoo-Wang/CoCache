@@ -13,27 +13,38 @@
 
 package me.ahoo.cocache.test
 
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.ConditionalL1Store
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
+import me.ahoo.cocache.api.spi.ForwardingConditionalL1Store
+import me.ahoo.cocache.api.spi.ForwardingL1Store
+import me.ahoo.cocache.api.spi.ForwardingSetL1Store
+import me.ahoo.cocache.api.spi.ForwardingVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1RejectedException
+import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteConditionalRead
-import me.ahoo.cocache.api.spi.RemoteConditionalWrite
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
+import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.api.spi.VersionedL1Store
 import java.time.Duration
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.CompletionException
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * 模拟的 L1 故障。
@@ -41,11 +52,16 @@ import java.util.concurrent.atomic.AtomicInteger
 class RemoteUnavailableException(operation: String) : RuntimeException("Remote store unavailable: $operation.")
 
 /**
- * 为任意后端注入钩子与故障的装饰器，供 TCK 编排竞态（用 latch，不用 sleep）。
+ * 为任意后端注入钩子与故障的装饰器，供 TCK 编排竞态（用 latch，不用 sleep）。存储继承 [ForwardingL1Store]，
+ * 能力面继承对应的 `Forwarding*` 基类：被包装的存储没有某个能力面时，这里也没有（RFC 0005 §4.3）。
+ *
+ * 钩子在被包装的存储返回之后执行：调用仍在发起它的线程上时就地执行（同步变体即调用方线程）；调用在别的线程上恢复时
+ * （L1 客户端的 I/O 线程、运行时的执行器线程）改在 [HookedBackend] 自己的线程上执行，钩子可能阻塞（latch），
+ * 不能停住共享连接上的全部命令。执行期间 [issuer] 返回发起调用的线程名。
  */
 class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     /**
-     * 覆盖后端的原子广播能力，用于验证引擎在非原子后端上的行为（为 `false` 时写入不再在存储内广播）。
+     * 覆盖后端的原子广播能力，用于验证引擎在非原子后端上的行为（为 `false` 时引擎在写入之后另经通道发布）。
      */
     @Volatile
     var atomicBroadcastOverride: Boolean? = null
@@ -54,8 +70,6 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         get() = atomicBroadcastOverride ?: delegate.atomicBroadcast
     override val format: Int
         get() = delegate.format
-    override val versionedWrites: Boolean
-        get() = delegate.versionedWrites
     override val channel: InvalidationChannel
         get() = delegate.channel
 
@@ -66,10 +80,37 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     var failAll: Boolean = false
 
     /**
-     * 写入类操作（put、putAll、invalidate、成员增删）抛出 [RemoteUnavailableException]。
+     * 写入类操作（put、putAll、invalidate、成员增删、条件与按版本的写入）抛出 [RemoteUnavailableException]（结果未知的故障）。
      */
     @Volatile
     var failWrites: Boolean = false
+
+    /**
+     * 写入类操作在发出之前被拒绝：抛出 [L1RejectedException]（确定未执行，RFC 0005 §4.3），不调用被包装的存储。
+     */
+    @Volatile
+    var rejectWrites: Boolean = false
+
+    /**
+     * 单 key put 不调用被包装的存储：记下这次调用（连同写入方的帧）并抛出 [RemoteUnavailableException]（结果未知的故障），
+     * 直到 [applyDeferredPuts] 才执行。模拟报错之后才在 L1 执行、并照常广播的写入（RFC 0005 §4.6，P12）。
+     */
+    @Volatile
+    var deferPuts: Boolean = false
+
+    private val deferredPuts = ConcurrentLinkedQueue<suspend () -> Unit>()
+
+    /**
+     * 在调用方线程上依次执行 [deferPuts] 记下的 put，返回执行的个数。
+     */
+    fun applyDeferredPuts(): Int {
+        var applied = 0
+        while (true) {
+            val put = deferredPuts.poll() ?: return applied
+            Suspending.await(put)
+            applied++
+        }
+    }
 
     /**
      * 释放令牌时抛出 [RemoteUnavailableException]。
@@ -87,13 +128,13 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
      * 单 key 读取返回之前调用，可以改写结果。
      */
     @Volatile
-    var afterRead: ((String, RemoteRead) -> RemoteRead)? = null
+    var afterRead: ((String, L1Read) -> L1Read)? = null
 
     /**
      * 批量读取返回之前调用，可以改写结果。
      */
     @Volatile
-    var afterReadAll: ((Map<String, RemoteRead>) -> Map<String, RemoteRead>)? = null
+    var afterReadAll: ((Map<String, L1Read>) -> Map<String, L1Read>)? = null
 
     /**
      * put 在 L1 生效之后、返回之前调用；putAll 在整批生效之后对每个 key 各调用一次。
@@ -114,49 +155,37 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     var afterInvalidate: ((Collection<String>) -> Unit)? = null
 
     /**
-     * 单 key fill 在 L1 执行之后、返回之前调用，参数为 key 与是否写入成功。
+     * 单 key fill 在 L1 执行之后、返回之前调用，参数为 key 与结果（[L1Fill.Filled] 即写入）。
      */
     @Volatile
-    var afterFill: ((String, Boolean) -> Unit)? = null
+    var afterFill: ((String, L1Fill) -> Unit)? = null
 
     /**
-     * 按版本写入（`putIfNewer`，6.8）在 L1 执行之后、返回之前调用，参数为 key 与结果；抛出即模拟“已生效但向调用方报错”的写入。
+     * 按版本写入（`putIfNewer`）在 L1 执行之后、返回之前调用，参数为 key 与结果；抛出即模拟“已生效但向调用方报错”的写入。
      */
     @Volatile
-    var afterVersionedWrite: ((String, RemoteVersionedWrite) -> Unit)? = null
+    var afterVersionedWrite: ((String, L1VersionedWrite) -> Unit)? = null
 
     /**
-     * 异步方法的结果改在这个执行器上送达（模拟 L1 客户端的 I/O 线程，RFC 0004 §10.1）；为 `null` 时原样返回。
+     * 每个存储调用（含钩子）结束之后，改在这个执行器上恢复调用方的协程（模拟 L1 客户端的 I/O 线程，RFC 0004 §10.1）；
+     * 为 `null` 时就地返回。成功与失败都经它送达。
      */
     @Volatile
     var ioExecutor: Executor? = null
 
     /**
      * 发起当前存储调用的线程名：钩子用它代替 `Concurrency.currentThreadName()` 编排竞态。
-     * 异步方法的钩子在结果的完成线程（如 Lettuce 的 I/O 线程）上执行，执行期间这里返回发起调用的线程名。
+     * 钩子在被包装的存储返回之后执行，可能已不在发起调用的线程上（异步变体在执行器线程上恢复），执行期间这里返回发起调用的线程名。
      */
     fun issuer(): String = issuerName.get() ?: Concurrency.currentThreadName()
 
     private val issuerName = ThreadLocal<String?>()
 
     /**
-     * 异步方法的钩子在这里执行（结果尚未完成时）：钩子可能阻塞（latch），不能在 L1 客户端的 I/O 线程上执行，否则共享连接上的全部命令都会停下。
+     * 在别的线程上恢复的调用的钩子在这里执行（见类注释）。
      */
     private val hookExecutor = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "tck-hook").apply { isDaemon = true }
-    }
-
-    /**
-     * [future] 完成后在发起者的身份下执行 [hook]：已完成时就地执行，否则在 [hookExecutor] 上执行。
-     */
-    private fun <T, R> CompletableFuture<T>.hooked(
-        issuer: String,
-        active: Boolean,
-        hook: (T) -> R
-    ): CompletableFuture<R> {
-        val apply = java.util.function.Function<T, R> { value -> asIssuer(issuer) { hook(value) } }
-        // 没有设置钩子时不切换线程：不为 TCK 的线程数断言引入额外线程
-        return if (isDone || !active) thenApply(apply) else thenApplyAsync(apply, hookExecutor)
     }
 
     /**
@@ -186,287 +215,224 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         }
     }
 
+    /**
+     * 各类存储调用的次数（单 key 读取、批量读取、填充、单 key 覆盖写入、批量覆盖写入）：在调用被包装的存储之前计数，
+     * 故障开关拒绝的调用不计。用例用它等到某个调用已经到达被包装的存储。
+     */
     val reads = AtomicInteger()
     val readAlls = AtomicInteger()
     val fills = AtomicInteger()
+    val puts = AtomicInteger()
     val putAlls = AtomicInteger()
 
-    /**
-     * 被包装的存储原生异步时，钩子同样作用于异步方法；否则只包装同步方法（引擎经阻塞执行器调用它们）。
-     */
-    override fun store(namespace: String): RemoteStore = when (val store = delegate.store(namespace)) {
-        is AsyncRemoteStore -> HookedAsyncStore(store)
-        else -> HookedStore(store)
+    override fun store(keyspace: Keyspace): L1Store = HookedStore(delegate.store(keyspace))
+
+    private fun guard(operation: String, fail: Boolean = false) {
+        if (failAll || fail) {
+            throw RemoteUnavailableException(operation)
+        }
+        if (rejectWrites && operation in WRITES) {
+            throw L1RejectedException("Rejected before it was written: $operation.")
+        }
     }
 
-    private open inner class HookedStore(private val store: RemoteStore) : RemoteStore {
-        protected fun guard(operation: String, fail: Boolean = false) {
-            if (failAll || fail) {
-                throw RemoteUnavailableException(operation)
+    /**
+     * 运行一次存储调用：[call] 在其中先检查故障开关（[guard]）再调用被包装的存储；之后在发起者的身份下执行钩子 [after]
+     * （没有设置钩子时为 `null`），最后经 [ioExecutor] 送达结果（成功或失败）。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun <T> hooked(after: ((T) -> T)?, call: suspend () -> T): T {
+        val thread = Thread.currentThread()
+        val issuer = Concurrency.currentThreadName()
+        val outcome = try {
+            val value = call()
+            Result.success(if (after == null) value else runHook(thread, issuer) { after(value) })
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+        return deliver(outcome)
+    }
+
+    /**
+     * 在发起者 [issuer] 的身份下执行钩子：仍在发起调用的线程 [thread] 上时就地执行，否则在 [hookExecutor] 上执行（见类注释）。
+     */
+    private suspend fun <T> runHook(thread: Thread, issuer: String, hook: () -> T): T {
+        if (Thread.currentThread() === thread) {
+            return asIssuer(issuer, hook)
+        }
+        val outcome = suspendCoroutine { continuation ->
+            hookExecutor.execute { continuation.resume(runCatching { asIssuer(issuer, hook) }) }
+        }
+        return outcome.getOrThrow()
+    }
+
+    /**
+     * 经 [ioExecutor] 恢复调用方的协程。总是以成功的 [Result] 恢复、在这里的栈帧中抛出：以异常恢复时 kotlinx 的调度器在调试模式下会复制异常。
+     */
+    private suspend fun <T> deliver(outcome: Result<T>): T {
+        val io = ioExecutor ?: return outcome.getOrThrow()
+        val delivered = suspendCoroutine { continuation -> io.execute { continuation.resume(outcome) } }
+        return delivered.getOrThrow()
+    }
+
+    private inner class HookedStore(delegate: L1Store) : ForwardingL1Store(delegate) {
+        private val conditional = delegate.conditional()?.let { HookedConditional(it) }
+        private val versioned = delegate.versioned()?.let { HookedVersioned(it) }
+        private val sets = delegate.sets()?.let { HookedSets(it) }
+
+        override fun conditional(): ConditionalL1Store? = conditional
+
+        override fun versioned(): VersionedL1Store? = versioned
+
+        override fun sets(): SetL1Store? = sets
+
+        override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, timeout: Duration?): L1Read {
+            val hook = afterRead?.let { { read: L1Read -> it(key, read) } }
+            return hooked(hook) {
+                guard("read")
+                reads.incrementAndGet()
+                delegate.read(key, lease, refresh, timeout)
             }
         }
 
-        override fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead {
-            guard("read")
-            reads.incrementAndGet()
-            val read = store.read(key, lease, refresh)
-            return afterRead?.invoke(key, read) ?: read
-        }
-
-        override fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> {
+        override suspend fun readAll(
+            keys: Collection<String>,
+            leases: Map<String, LeaseRequest>,
+            timeout: Duration?
+        ): Map<String, L1Read> = hooked(afterReadAll) {
             guard("readAll")
             readAlls.incrementAndGet()
-            val reads = store.readAll(keys, leases)
-            return afterReadAll?.invoke(reads) ?: reads
+            delegate.readAll(keys, leases, timeout)
         }
 
-        override fun fill(fill: Fill): Boolean {
-            guard("fill", fail = failFill)
-            fills.incrementAndGet()
-            val filled = store.fill(fill)
-            afterFill?.invoke(fill.key, filled)
-            return filled
+        override suspend fun fill(fill: Fill): L1Fill {
+            val hook = afterFill?.let { { filled: L1Fill -> it(fill.key, filled).let { filled } } }
+            return hooked(hook) {
+                guard("fill", fail = failFill)
+                fills.incrementAndGet()
+                delegate.fill(fill)
+            }
         }
 
-        override fun fillAll(fills: List<Fill>): List<Boolean> {
+        override suspend fun fillAll(fills: List<Fill>): List<L1Fill> = hooked(null) {
             guard("fillAll", fail = failFill)
             this@HookedBackend.fills.addAndGet(fills.size)
-            return store.fillAll(fills)
+            delegate.fillAll(fills)
         }
 
-        override fun release(key: String, token: Token) {
+        override suspend fun release(key: String, token: Token) = hooked(null) {
             guard("release", fail = failRelease)
-            store.release(key, token)
+            delegate.release(key, token)
         }
 
-        override fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
-            guard("put", fail = failWrites)
-            store.put(key, envelope, ttl, frame)
-            afterPut?.invoke(key)
+        override suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
+            val hook = afterPut?.let { { _: Unit -> it(key) } }
+            hooked(hook) {
+                guard("put", fail = failWrites)
+                if (deferPuts) {
+                    deferredPuts.add { delegate.put(key, envelope, ttl, frame) }
+                    throw RemoteUnavailableException("put (deferred)")
+                }
+                puts.incrementAndGet()
+                delegate.put(key, envelope, ttl, frame)
+            }
         }
 
-        override fun putAll(puts: List<Put>, frame: ByteArray) {
-            guard("putAll", fail = failWrites)
-            putAlls.incrementAndGet()
-            store.putAll(puts, frame)
-            afterPut?.let { hook -> puts.forEach { hook(it.key) } }
+        override suspend fun putAll(puts: List<Put>, frame: ByteArray) {
+            val hook = afterPut?.let { { _: Unit -> puts.forEach { put -> it(put.key) } } }
+            hooked(hook) {
+                guard("putAll", fail = failWrites)
+                putAlls.incrementAndGet()
+                delegate.putAll(puts, frame)
+            }
         }
 
-        override fun invalidate(keys: Collection<String>, frame: ByteArray) {
-            beforeInvalidate?.invoke(keys)
-            guard("invalidate", fail = failWrites)
-            store.invalidate(keys, frame)
-            afterInvalidate?.invoke(keys)
+        override suspend fun invalidate(keys: Collection<String>, frame: ByteArray) {
+            val before = beforeInvalidate
+            val hook = afterInvalidate?.let { { _: Unit -> it(keys) } }
+            hooked(hook) {
+                before?.invoke(keys)
+                guard("invalidate", fail = failWrites)
+                delegate.invalidate(keys, frame)
+            }
         }
 
-        override fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean {
+        override suspend fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean = hooked(
+            null
+        ) {
             guard("reclaim")
-            return store.reclaim(key, observed, lease)
+            delegate.reclaim(key, observed, lease)
         }
-
-        override fun addMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? {
-            guard("addMembers", fail = failWrites)
-            return store.addMembersIfReadable(key, members, ttl, frame)
-        }
-
-        override fun removeMembersIfReadable(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? {
-            guard("removeMembers", fail = failWrites)
-            return store.removeMembersIfReadable(key, members, ttl, frame)
-        }
-
-        override fun readIfChanged(key: String, known: Digest?): RemoteConditionalRead {
-            guard("read")
-            return store.readIfChanged(key, known)
-        }
-
-        override fun putIfMatch(
-            key: String,
-            expected: Digest?,
-            envelope: Envelope.Scalar,
-            ttl: Duration?,
-            frame: ByteArray
-        ): RemoteConditionalWrite {
-            guard("put", fail = failWrites)
-            return store.putIfMatch(key, expected, envelope, ttl, frame)
-        }
-
-        override fun putIfNewer(
-            key: String,
-            envelope: Envelope,
-            version: Long,
-            ttl: Duration?,
-            frame: ByteArray
-        ): RemoteVersionedWrite {
-            guard("put", fail = failWrites)
-            val result = store.putIfNewer(key, envelope, version, ttl, frame)
-            afterVersionedWrite?.invoke(key, result)
-            return result
-        }
-
-        override fun close() = store.close()
     }
 
-    private inner class HookedAsyncStore(private val store: AsyncRemoteStore) : HookedStore(store), AsyncRemoteStore {
-        /**
-         * 与同步方法相同的钩子与故障；故障以失败的 future 返回，从不同步抛出。
-         */
-        @Suppress("TooGenericExceptionCaught")
-        private fun <T> hooked(
-            operation: String,
-            fail: Boolean = false,
-            block: () -> CompletableFuture<T>
-        ): CompletableFuture<T> {
-            val future = try {
-                guard(operation, fail)
-                block()
-            } catch (e: Throwable) {
-                CompletableFuture.failedFuture(e)
-            }
-            return deliver(future)
-        }
-
-        /**
-         * 总是新建 future 并以原始异常完成（钩子在 `thenApply` 中抛出时 JDK 会包装为 CompletionException），遵守 SPI 的异常约定。
-         */
-        private fun <T> deliver(future: CompletableFuture<T>): CompletableFuture<T> {
-            val io = ioExecutor
-            val result = CompletableFuture<T>()
-            future.whenComplete { value, error ->
-                val complete = Runnable {
-                    if (error != null) result.completeExceptionally(unwrap(error)) else result.complete(value)
-                }
-                if (io == null) complete.run() else io.execute(complete)
-            }
-            return result
-        }
-
-        private fun unwrap(error: Throwable): Throwable = if (error is CompletionException) error.cause ?: error else error
-
-        override fun readAsync(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): CompletableFuture<RemoteRead> =
-            hooked("read") {
-                reads.incrementAndGet()
-                val issuer = Concurrency.currentThreadName()
-                store.readAsync(
-                    key,
-                    lease,
-                    refresh
-                ).hooked(issuer, afterRead != null) { read -> afterRead?.invoke(key, read) ?: read }
-            }
-
-        override fun readAllAsync(keys: Collection<String>, leases: Map<String, LeaseRequest>): CompletableFuture<Map<String, RemoteRead>> =
-            hooked("readAll") {
-                readAlls.incrementAndGet()
-                val issuer = Concurrency.currentThreadName()
-                store.readAllAsync(
-                    keys,
-                    leases
-                ).hooked(issuer, afterReadAll != null) { reads -> afterReadAll?.invoke(reads) ?: reads }
-            }
-
-        override fun fillAsync(fill: Fill): CompletableFuture<Boolean> = hooked("fill", fail = failFill) {
-            fills.incrementAndGet()
-            val issuer = Concurrency.currentThreadName()
-            store.fillAsync(fill).hooked(issuer, afterFill != null) { filled ->
-                afterFill?.invoke(fill.key, filled)
-                filled
-            }
-        }
-
-        override fun fillAllAsync(fills: List<Fill>): CompletableFuture<List<Boolean>> = hooked(
-            "fillAll",
-            fail = failFill
+    private inner class HookedConditional(delegate: ConditionalL1Store) : ForwardingConditionalL1Store(delegate) {
+        override suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead = hooked(
+            null
         ) {
-            this@HookedBackend.fills.addAndGet(fills.size)
-            store.fillAllAsync(fills)
+            guard("read")
+            delegate.readIfChanged(key, known, timeout)
         }
 
-        override fun releaseAsync(key: String, token: Token): CompletableFuture<Void?> =
-            hooked("release", fail = failRelease) { store.releaseAsync(key, token) }
-
-        override fun putAsync(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray): CompletableFuture<Void?> =
-            hooked("put", fail = failWrites) {
-                val issuer = Concurrency.currentThreadName()
-                store.putAsync(key, envelope, ttl, frame).hooked(issuer, afterPut != null) {
-                    afterPut?.invoke(key)
-                    null
-                }
-            }
-
-        override fun putAllAsync(puts: List<Put>, frame: ByteArray): CompletableFuture<Void?> = hooked(
-            "putAll",
-            fail = failWrites
-        ) {
-            putAlls.incrementAndGet()
-            val issuer = Concurrency.currentThreadName()
-            store.putAllAsync(puts, frame).hooked(issuer, afterPut != null) {
-                afterPut?.let { hook -> puts.forEach { hook(it.key) } }
-                null
-            }
-        }
-
-        @Suppress("TooGenericExceptionCaught")
-        override fun invalidateAsync(keys: Collection<String>, frame: ByteArray): CompletableFuture<Void?> {
-            try {
-                beforeInvalidate?.invoke(keys)
-            } catch (e: Throwable) {
-                return deliver(CompletableFuture.failedFuture(e))
-            }
-            return hooked("invalidate", fail = failWrites) {
-                val issuer = Concurrency.currentThreadName()
-                store.invalidateAsync(keys, frame).hooked(issuer, afterInvalidate != null) {
-                    afterInvalidate?.invoke(keys)
-                    null
-                }
-            }
-        }
-
-        override fun reclaimAsync(key: String, observed: Digest, lease: LeaseRequest): CompletableFuture<Boolean> =
-            hooked("reclaim") { store.reclaimAsync(key, observed, lease) }
-
-        override fun readIfChangedAsync(key: String, known: Digest?): CompletableFuture<RemoteConditionalRead> =
-            hooked("read") { store.readIfChangedAsync(key, known) }
-
-        override fun putIfMatchAsync(
+        override suspend fun putIfMatch(
             key: String,
             expected: Digest?,
             envelope: Envelope.Scalar,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<RemoteConditionalWrite> = hooked("put", fail = failWrites) {
-            store.putIfMatchAsync(key, expected, envelope, ttl, frame)
+        ): L1ConditionalWrite = hooked(null) {
+            guard("put", fail = failWrites)
+            delegate.putIfMatch(key, expected, envelope, ttl, frame)
         }
 
-        override fun putIfNewerAsync(
+        override suspend fun deleteIfMatch(
+            key: String,
+            expected: Digest,
+            frame: ByteArray
+        ): L1ConditionalWrite = hooked(null) {
+            guard("invalidate", fail = failWrites)
+            delegate.deleteIfMatch(key, expected, frame)
+        }
+    }
+
+    private inner class HookedVersioned(delegate: VersionedL1Store) : ForwardingVersionedL1Store(delegate) {
+        override suspend fun putIfNewer(
             key: String,
             envelope: Envelope,
             version: Long,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<RemoteVersionedWrite> = hooked("put", fail = failWrites) {
-            val issuer = Concurrency.currentThreadName()
-            store.putIfNewerAsync(key, envelope, version, ttl, frame)
-                .hooked(issuer, afterVersionedWrite != null) { result ->
-                    afterVersionedWrite?.invoke(key, result)
-                    result
-                }
+        ): L1VersionedWrite {
+            val hook = afterVersionedWrite?.let { { result: L1VersionedWrite -> it(key, result).let { result } } }
+            return hooked(hook) {
+                guard("put", fail = failWrites)
+                delegate.putIfNewer(key, envelope, version, ttl, frame)
+            }
         }
+    }
 
-        override fun addMembersIfReadableAsync(
+    private inner class HookedSets(delegate: SetL1Store) : ForwardingSetL1Store(delegate) {
+        override suspend fun addMembers(
             key: String,
             members: Collection<ByteArray>,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<Int?> = hooked("addMembers", fail = failWrites) {
-            store.addMembersIfReadableAsync(key, members, ttl, frame)
-        }
+        ): Int? =
+            hooked(null) {
+                guard("addMembers", fail = failWrites)
+                delegate.addMembers(key, members, ttl, frame)
+            }
 
-        override fun removeMembersIfReadableAsync(
-            key: String,
-            members: Collection<ByteArray>,
-            ttl: Duration?,
-            frame: ByteArray
-        ): CompletableFuture<Int?> = hooked("removeMembers", fail = failWrites) {
-            store.removeMembersIfReadableAsync(key, members, ttl, frame)
-        }
+        override suspend fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
+            hooked(null) {
+                guard("removeMembers", fail = failWrites)
+                delegate.removeMembers(key, members, ttl, frame)
+            }
+    }
+
+    private companion object {
+        /**
+         * [rejectWrites] 作用的操作（[guard] 的操作名）。
+         */
+        val WRITES = setOf("put", "putAll", "invalidate", "addMembers", "removeMembers")
     }
 }

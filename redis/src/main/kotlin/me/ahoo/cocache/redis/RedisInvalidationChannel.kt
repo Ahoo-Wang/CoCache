@@ -20,9 +20,10 @@ import io.lettuce.core.RedisChannelWriter
 import io.lettuce.core.api.StatefulConnection
 import io.lettuce.core.protocol.CommandExpiryWriter
 import io.lettuce.core.protocol.DefaultEndpoint
-import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
+import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.Subscription
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -35,10 +36,13 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
- * Redis 失效通道的公共部分：每个后端一条订阅连接，按频道（命名空间）分发给订阅者。
+ * Redis 失效通道的公共部分：每个后端一条订阅连接，按频道分发给订阅者。每个 [Keyspace] 一个频道 `{keyPrefix}inv:{namespace}`
+ * （[channelOf]，RFC 0005 §4.7）：前缀不同、命名空间相同的两个应用各自只收到自己的帧。
  *
  * - 订阅（含断线重连后 Lettuce 自动重新订阅）得到服务端确认时，重置该频道的所有订阅者。
+ * - 读不懂的帧（未知版本、未知类型、解码失败）重置该频道的所有订阅者，不丢弃（D3）：丢弃的就是一次失效。
  * - 心跳：周期性 PING 订阅连接，失败或超时即重置所有订阅者（半开连接期间的事件可能已丢失），并强制断开订阅连接，由 Lettuce 自动重连并重新订阅。
+ * - 订阅者收到编码 key（[Keyspace.encodedKeys]，S4），按订阅的先后依次回调。
  * - 订阅失败时撤销本次创建的频道条目；单个订阅者抛出异常不影响其余订阅者。
  * - 订阅与退订串行执行（[subscriptionLock]），同一连接上的 SUBSCRIBE / UNSUBSCRIBE 因此与频道条目的增删同序。
  *   经典模式不处理服务端的 `unsubscribed`：Redis 不会主动退订经典频道，唯一的退订来自这里，且不会晚于之后的订阅生效；
@@ -50,8 +54,13 @@ internal abstract class RedisInvalidationChannel(
     internal val connections: RedisConnections,
     private val heartbeat: Duration,
     private val ackTimeout: Duration,
-) : AsyncInvalidationChannel, AutoCloseable {
+) : InvalidationChannel, AutoCloseable {
     protected val listeners = ConcurrentHashMap<String, CopyOnWriteArrayList<InvalidationListener>>()
+
+    /**
+     * 频道 → 它的 keyspace（[channelOf] 是单射），分发时以它把帧中的存储 key 换成编码 key。订阅时登记，不随退订移除。
+     */
+    private val keyspaces = ConcurrentHashMap<String, Keyspace>()
 
     /**
      * 等待中的订阅确认：Lettuce 在命令完成之后才回调确认，订阅方需要等重置真正执行完再返回，
@@ -81,12 +90,18 @@ internal abstract class RedisInvalidationChannel(
     protected abstract fun unsubscribeAsync(channel: ByteArray): CompletableFuture<Void>
 
     /**
+     * 阻塞地发布（`PUBLISH` 或 `SPUBLISH`，同 [publish]）：只用于创建存储时的频道探测（[RedisBackend.store]）。
+     */
+    internal abstract fun publishBlocking(channel: ByteArray, frame: ByteArray)
+
+    /**
      * 心跳探测：失败或超时抛出异常。
      */
     internal abstract fun ping()
 
-    override fun subscribe(namespace: String, listener: InvalidationListener): Subscription {
-        val channel = channelOf(namespace)
+    override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription {
+        val channel = channelOf(keyspace)
+        keyspaces.putIfAbsent(channel, keyspace)
         var joined = false
         val channelListeners = synchronized(subscriptionLock) {
             val existing = listeners[channel]
@@ -106,7 +121,7 @@ internal abstract class RedisInvalidationChannel(
 
     /**
      * 频道的第一个订阅者：登记频道条目并 SUBSCRIBE；确认回调会重置该频道的全部订阅者，包括这一个，等它执行完再返回。
-     * 订阅失败时撤销条目，否则该命名空间永久收不到失效，之后的订阅者也会跳过 SUBSCRIBE。持有 [subscriptionLock] 时调用。
+     * 订阅失败时撤销条目，否则该 keyspace 永久收不到失效，之后的订阅者也会跳过 SUBSCRIBE。持有 [subscriptionLock] 时调用。
      */
     private fun subscribeFirst(
         channel: String,
@@ -118,7 +133,7 @@ internal abstract class RedisInvalidationChannel(
         pendingAcks[channel] = ack
         var subscribed = false
         try {
-            connections.await(subscribeAsync(channel.toByteArray(Charsets.UTF_8)))
+            connections.join(subscribeAsync(channel.toByteArray(Charsets.UTF_8)))
             subscribed = true
             if (!ack.await(ackTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
                 log.warn { "Invalidation channel[$channel] - subscribe acknowledgement not received in $ackTimeout." }
@@ -143,7 +158,7 @@ internal abstract class RedisInvalidationChannel(
         synchronized(subscriptionLock) {
             channelListeners.remove(listener)
             if (channelListeners.isEmpty() && listeners.remove(channel, channelListeners)) {
-                connections.await(unsubscribeAsync(channel.toByteArray(Charsets.UTF_8)))
+                connections.join(unsubscribeAsync(channel.toByteArray(Charsets.UTF_8)))
             }
         }
     }
@@ -156,8 +171,8 @@ internal abstract class RedisInvalidationChannel(
         private set
 
     /**
-     * 心跳任务：任何异常都不能逃出去。`scheduleWithFixedDelay` 的任务抛出异常（包括 `Error`）后不再执行，节点从此失去自愈能力（G1）；
-     * 例如 6.0–6.4.0 在 Lettuce 6 上强制重连时抛出 `NoClassDefFoundError`，心跳就此停止。`VirtualMachineError` 也不重新抛出：
+     * 心跳任务：任何异常都不能逃出去。`scheduleWithFixedDelay` 的任务抛出异常（包括 `Error`）后不再执行，节点从此失去自愈能力（G1），
+     * 例如强制重连时抛出的 `NoClassDefFoundError`。`VirtualMachineError` 也不重新抛出：
      * 停掉心跳无助于 JVM 恢复，`OutOfMemoryError` 也可能只是暂时的。
      */
     @Suppress("TooGenericExceptionCaught")
@@ -230,28 +245,33 @@ internal abstract class RedisInvalidationChannel(
     }
 
     /**
-     * 收到消息：解码并分发给该频道的订阅者，畸形帧告警后丢弃。
+     * 收到消息：解码并分发给该频道的订阅者。读不懂的帧（[InvalidationFrame.decode] 拒绝的未知版本、预留的帧版本 2、截断或尾随字节）
+     * 按该频道的重置处理（RFC 0005 §4.7，D3）：清空 L2、递增全部戳，只会多淘汰，不会丢失效；丢弃它丢的就是一次失效。
      *
-     * 某个订阅者抛出异常（包括 `Error`，以及 Kotlin 代码抛出的受检异常）记录后继续分发，不能让其余订阅者错过本次失效；
-     * 6.9.1 及之前只兜住 `RuntimeException`，一个抛出 `Error` 的订阅者会让排在它之后的订阅者收不到这条消息。
+     * 某个订阅者抛出异常（包括 `Error`，以及 Kotlin 代码抛出的受检异常）记录后继续分发，不能让其余订阅者错过本次失效。
      * `VirtualMachineError` 照常抛出，交给 Lettuce 与 Netty：消息本来就是至多一次投递，因此错过的订阅者由 `localMaxAge` 兜底。
      */
     @Suppress("TooGenericExceptionCaught")
     protected fun dispatch(channel: ByteArray, message: ByteArray) {
-        val channelListeners = listeners[String(channel, Charsets.UTF_8)] ?: return
+        val name = String(channel, Charsets.UTF_8)
+        // 订阅时先登记 keyspace、再登记订阅者：没有 keyspace 的频道也没有订阅者
+        val keyspace = keyspaces[name] ?: return
+        val channelListeners = listeners[name] ?: return
         val decoded = try {
             InvalidationFrame.decode(message)
         } catch (e: IllegalArgumentException) {
-            log.warn(e) { "Ignore malformed invalidation frame on channel[${String(channel, Charsets.UTF_8)}]." }
+            log.warn(e) { "Unreadable invalidation frame on channel[$name] - reset subscribers." }
+            channelListeners.forEach { resetQuietly(name, it) }
             return
         }
+        val keys = keyspace.encodedKeys(decoded.keys)
         channelListeners.forEach { listener ->
             try {
-                listener.onInvalidated(decoded.keys, decoded.origin)
+                listener.onInvalidated(keys, decoded.origin)
             } catch (e: VirtualMachineError) {
                 throw e
             } catch (e: Throwable) {
-                log.error(e) { "Invalidation listener failed on channel[${String(channel, Charsets.UTF_8)}]." }
+                log.error(e) { "Invalidation listener failed on channel[$name]." }
             }
         }
     }
@@ -272,9 +292,27 @@ internal abstract class RedisInvalidationChannel(
 
     companion object {
         private val log = KotlinLogging.logger {}
-        const val CHANNEL_PREFIX = "cocache:inv:"
 
-        fun channelOf(namespace: String): String = CHANNEL_PREFIX + namespace
+        /**
+         * 频道名中前缀之后、命名空间之前的部分：频道为 `{keyPrefix}inv:{namespace}`（RFC 0005 §4.7，随 M4 冻结）。
+         */
+        private const val CHANNEL_MARK = "inv:"
+
+        /**
+         * [keyspace] 的频道：`{keyPrefix}inv:{namespace}`。
+         */
+        fun channelOf(keyspace: Keyspace): String = keyspace.keyPrefix + CHANNEL_MARK + keyspace.namespace
+
+        /**
+         * 放行 [keyspace] 频道的 ACL 模式：前缀非空时为该前缀下全部频道的 `&{keyPrefix}inv:*`；前缀为空时没有公共前缀，
+         * 为这一个频道 `&inv:{namespace}`（`&inv:*` 会放行同一 Redis 上所有空前缀应用的频道）。
+         */
+        fun channelPatternOf(keyspace: Keyspace): String {
+            if (keyspace.keyPrefix.isEmpty()) {
+                return "&" + channelOf(keyspace)
+            }
+            return "&${keyspace.keyPrefix}$CHANNEL_MARK*"
+        }
 
         /**
          * 断开连接的底层通道（Lettuce 公开的 [DefaultEndpoint.disconnect]），触发自动重连；

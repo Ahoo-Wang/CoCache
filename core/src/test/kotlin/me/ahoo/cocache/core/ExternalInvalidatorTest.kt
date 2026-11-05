@@ -14,14 +14,19 @@
 package me.ahoo.cocache.core
 
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 class ExternalInvalidatorTest {
     private val database = ConcurrentHashMap<String, String>()
@@ -42,7 +47,11 @@ class ExternalInvalidatorTest {
             ExternalInvalidator(memory).use { invalidator ->
                 invalidator.invalidate("user", "1")
             }
-            memory.store("user").read("cocache:user:1", null, null).assert().isEqualTo(RemoteRead.Miss(false))
+            Suspending.await {
+                memory.store(
+                    Keyspace("cocache:", "user")
+                ).read("cocache:user:1", null, null, null)
+            }.assert().isEqualTo(L1Read.Miss(false))
             awaitCondition { cache["1"] == "v1" }
         }
     }
@@ -66,6 +75,48 @@ class ExternalInvalidatorTest {
                     "1"
                 )
             }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+        }
+    }
+
+    /**
+     * 只广播不删除（RFC 0005 §4.9）：L1 原样保留，各节点淘汰 L2 副本之后从 L1 重新填充；`Store` 的唯一副本因此不丢。
+     * 订阅者收到编码 key（S4）。
+     */
+    @Test
+    fun broadcastEvictsEveryNodeLocalCopyAndKeepsL1() {
+        val memory = InMemoryBackend()
+        CacheRuntime.builder().backend(memory).build().use { node ->
+            val cache = node.create(storeSpec<String, String>("user") { codec = StringCodec })
+            cache.put("1", "v0")
+            cache["1"].assert().isEqualTo("v0")
+            val received = CopyOnWriteArrayList<List<String>>()
+            val external = object : InvalidationListener {
+                override fun onInvalidated(keys: List<String>, origin: NodeId) {
+                    received.add(keys)
+                }
+
+                override fun onReset() = Unit
+            }
+            val keyspace = Keyspace("cocache:", "user")
+            memory.channel.subscribe(keyspace, external).use {
+                ExternalInvalidator(memory).use { invalidator ->
+                    invalidator.broadcast("user", emptyList())
+                    runCatching { invalidator.broadcast("user", "") }.exceptionOrNull()
+                        .assert().isInstanceOf(IllegalArgumentException::class.java)
+                    invalidator.broadcast("user", "1")
+                    invalidator.close()
+                    runCatching { invalidator.broadcast("user", "1") }.exceptionOrNull()
+                        .assert().isInstanceOf(IllegalStateException::class.java)
+                }
+            }
+            received.assert().containsExactly(listOf("1"))
+            val metrics = requireNotNull(node.metrics("user"))
+            metrics.invalidationsReceived.assert().isEqualTo(1)
+            Suspending.await { memory.store(keyspace).read("cocache:user:1", null, null, null) }
+                .assert().isInstanceOf(L1Read.Hit::class.java)
+            // 本节点的副本已被淘汰：再读一次 L1
+            cache["1"].assert().isEqualTo("v0")
+            metrics.remoteHits.assert().isEqualTo(2)
         }
     }
 
@@ -96,6 +147,42 @@ class ExternalInvalidatorTest {
                 invalidator.invalidate("user", "1")
             }
             awaitCondition { cache["1"] == "v1" }
+        }
+    }
+
+    /**
+     * 按 8.x 的布局构造 key 与频道（RFC 0005 §4.7）：前缀决定频道，同一命名空间在别的前缀下的缓存收不到这次失效；
+     * 命名空间不符合字符集时抛出，与缓存相同。
+     */
+    @Test
+    fun invalidatesOnlyTheKeyspaceOfItsPrefix() {
+        val memory = InMemoryBackend()
+        CacheRuntime.builder().backend(memory).build().use { node ->
+            fun cacheUnder(name: String, prefix: String) = node.create(
+                cacheSpec<String, String>(name) {
+                    codec = StringCodec
+                    namespace = "user"
+                    keyPrefix = prefix
+                    loader = CacheLoader { database[it] }
+                }
+            )
+            val app = cacheUnder("app-user", "app:")
+            val other = cacheUnder("other-user", "other:")
+            database["1"] = "v0"
+            app["1"]
+            other["1"]
+            database["1"] = "v1"
+            ExternalInvalidator(memory, "app:").use { invalidator ->
+                runCatching { invalidator.invalidate("app:user", "1") }.exceptionOrNull()
+                    .assert().isInstanceOf(IllegalArgumentException::class.java)
+                invalidator.invalidate("user", "1")
+            }
+            app["1"].assert().isEqualTo("v1")
+            other["1"].assert().isEqualTo("v0")
+            requireNotNull(node.metrics("other-user")).invalidationsReceived.assert().isZero()
+            Suspending.await {
+                memory.store(Keyspace("other:", "user")).read("other:user:1", null, null, null)
+            }.assert().isInstanceOf(L1Read.Hit::class.java)
         }
     }
 }

@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.example
 
+import me.ahoo.cocache.example.cache.FeatureFlagStore
 import me.ahoo.cocache.example.cache.UserCache
 import me.ahoo.cocache.example.cache.UserExtendInfoCache
 import me.ahoo.cocache.example.cache.UserExtendInfoJoinCache
@@ -22,11 +23,11 @@ import org.springframework.boot.runApplication
 import org.springframework.cache.annotation.EnableCaching
 
 /**
- * 示例应用：接口式声明（[UserCache]、[UserExtendInfoCache]）、组合视图（[UserExtendInfoJoinCache]）、spec bean（`productSpec`）、Spring Cache 注解，
- * 以及 WebFlux + 协程（[me.ahoo.cocache.example.controller.CoroutineController]）。
+ * 示例应用：派生副本的接口式声明（[UserCache]、[UserExtendInfoCache]）、权威副本（[FeatureFlagStore]）、组合视图（[UserExtendInfoJoinCache]）、
+ * spec bean（`productSpec`）、Spring Cache 注解，以及 WebFlux + 协程（[me.ahoo.cocache.example.controller.CoroutineController]）。
  */
 @EnableCoCache(
-    caches = [UserCache::class, UserExtendInfoCache::class],
+    caches = [UserCache::class, UserExtendInfoCache::class, FeatureFlagStore::class],
     joinCaches = [UserExtendInfoJoinCache::class],
 )
 @EnableCaching

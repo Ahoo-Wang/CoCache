@@ -6,7 +6,7 @@ max_turns: 10
 allowed_tools: [Read, Glob, Grep, Skill]
 ---
 
-This Spring Boot service uses CoCache 6.0.0 (cocache-spring-boot-starter). Fix the write path so caches never keep the old name, and say how you would test it.
+This Spring Boot service uses CoCache 8.0.0 (cocache-spring-boot-starter). Fix the write path so caches never keep the old name, and say how you would test it.
 
 Files from the user's project, shown inline:
 

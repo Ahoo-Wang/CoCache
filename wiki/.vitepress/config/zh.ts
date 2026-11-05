@@ -10,9 +10,19 @@ const guide: DefaultTheme.SidebarItem[] = [
     ],
   },
   {
+    text: '缓存类型',
+    items: [
+      { text: '选择与声明', link: '/zh/guide/caches' },
+      { text: 'Cache', link: '/zh/guide/cache' },
+      { text: 'VersionedCache', link: '/zh/guide/versioned-cache' },
+      { text: 'Store', link: '/zh/guide/store' },
+      { text: 'VersionedStore', link: '/zh/guide/versioned-store' },
+      { text: 'SetStore', link: '/zh/guide/set-store' },
+    ],
+  },
+  {
     text: '使用',
     items: [
-      { text: '声明缓存', link: '/zh/guide/caches' },
       { text: '保持数据新鲜', link: '/zh/guide/freshness' },
       { text: 'JoinCache', link: '/zh/guide/join-cache' },
       { text: 'Spring Cache', link: '/zh/guide/spring-cache' },
@@ -26,7 +36,7 @@ const guide: DefaultTheme.SidebarItem[] = [
   {
     text: '版本',
     items: [
-      { text: '从 5.x 升级', link: '/zh/guide/migration-6' },
+      { text: '从 6.x 升级', link: '/zh/guide/upgrade' },
       { text: '更新日志', link: '/zh/guide/changelog' },
     ],
   },
@@ -65,9 +75,10 @@ export const zh: DefaultTheme.Config = {
       { text: '运维', link: '/zh/operations/' },
       { text: '架构', link: '/zh/architecture/' },
       {
-        text: 'v6.10',
+        text: 'v8.0.0-alpha.1',
         items: [
           { text: '更新日志', link: '/zh/guide/changelog' },
+          { text: '6.x 文档', link: 'https://github.com/Ahoo-Wang/CoCache/tree/6.x/wiki/zh' },
           { text: '贡献指南', link: 'https://github.com/Ahoo-Wang/CoCache/blob/main/CONTRIBUTING.md' },
         ],
       },

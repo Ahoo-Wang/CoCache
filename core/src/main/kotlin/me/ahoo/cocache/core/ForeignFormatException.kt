@@ -14,49 +14,43 @@
 package me.ahoo.cocache.core
 
 /**
- * L1 中的内容本缓存读不懂，且策略为 [me.ahoo.cocache.core.policy.ForeignFormatMode.FAIL]（没有数据源时默认如此）。
- * 读取时作为 [me.ahoo.cocache.api.CacheReadException] 的 `cause` 抛出；`SetCache` 的元素增删落在这类内容上时，
- * 作为 [me.ahoo.cocache.api.CacheWriteException] 的 `cause` 抛出（key 不被修改）。
+ * L1 中的内容本缓存读不懂。读取时作为 [me.ahoo.cocache.api.CacheReadException] 的 `cause` 抛出：没有数据源的缓存读到它（有数据源的缓存
+ * 回收不是本格式写入的内容与解码失败的值，绕过更高格式的内容回源），以及条件读取与 `SetCache` 读到它；条件写入、按版本写入与
+ * `SetCache` 的元素增删落在它上面时，作为 [me.ahoo.cocache.api.CacheWriteException] 的 `cause` 抛出（key 不被修改）。
  *
- * 常见原因是 CoCache 5.x 的数据没有迁移就升级到了 6.x：用 6.x 的 `CoCache5Migrator`（`cocache-redis` 6.5 起，8.0 已删除）迁移，
- * 或在数据可以丢弃时把有数据源的缓存的策略设为 `RECLAIM`（没有数据源的缓存不接受 `RECLAIM`）。
- * 滚动升级期间也可能读到更高版本的节点写入的内容（[newer]）。
+ * 三类内容（RFC 0005 §4.7）：
+ * - [format] 低于本节点：不是本格式写入的内容（格式号低于本节点格式的内容与不是本协议写入的内容，后者为格式 `0`）；
+ * - [newer]：更高的格式，滚动升级期间出现，或带本节点不认识的必须理解的位，既不回收也不写回；
+ * - 与本节点相同：同格式的内容解码失败（或集合 key 上的标量值）。
  *
  * @param storageKey 存储 key
- * @param format L1 内容的格式版本：`0` 表示不是本协议写入的内容；与本节点相同表示同版本内容解码失败（或集合 key 上的标量值）
- * @param newer 内容由更高版本的节点写入（[format] 高于本节点的版本）
+ * @param format L1 内容的格式版本（后端报告的）
+ * @param nodeFormat 本节点的格式版本（`CoherenceBackend.format`）
  */
 class ForeignFormatException(
     val cacheName: String,
     val storageKey: String,
     val format: Int,
+    val nodeFormat: Int,
     cause: Throwable?,
-    val newer: Boolean,
-) : IllegalStateException(message(cacheName, storageKey, format, newer), cause) {
+) : IllegalStateException(message(cacheName, storageKey, format, nodeFormat), cause) {
     /**
-     * 6.5.0 的构造函数：不是更高版本写入的内容。
+     * 内容由更高版本的节点写入（[format] 高于本节点的版本）。
      */
-    constructor(
-        cacheName: String,
-        storageKey: String,
-        format: Int,
-        cause: Throwable?
-    ) : this(cacheName, storageKey, format, cause, false)
+    val newer: Boolean
+        get() = format > nodeFormat
 
     private companion object {
-        fun message(cacheName: String, storageKey: String, format: Int, newer: Boolean): String {
-            val reason = when {
-                newer -> "written by a newer CoCache version"
-                format == 0 -> "not written by CoCache 6, e.g. left by CoCache 5.x"
-                else -> "decoding failed"
+        fun message(cacheName: String, storageKey: String, format: Int, nodeFormat: Int): String {
+            val (reason, advice) = when {
+                format > nodeFormat -> "written by a newer CoCache version" to "upgrade this node"
+                format < nodeFormat ->
+                    "not written in this node's format" to
+                        "delete it if it can be dropped"
+                else -> "decoding failed" to "delete it if it can be dropped"
             }
-            val advice = if (newer) {
-                "upgrade this node"
-            } else {
-                "migrate it with CoCache 6.x (CoCache5Migrator)"
-            }
-            return "Cache[$cacheName] - key[$storageKey] holds content this cache cannot read (format[$format]: $reason). " +
-                "It is kept as is: $advice, or set foreignFormat = RECLAIM on a cache whose loader can reload it."
+            return "Cache[$cacheName] - key[$storageKey] holds content this cache cannot read " +
+                "(format[$format], this node writes format[$nodeFormat]: $reason). It is kept as is: $advice."
         }
     }
 }

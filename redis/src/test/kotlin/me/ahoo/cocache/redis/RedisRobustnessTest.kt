@@ -19,22 +19,26 @@ import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import io.lettuce.core.cluster.pubsub.StatefulRedisClusterPubSubConnection
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
@@ -59,13 +63,13 @@ class RedisRobustnessTest {
     private fun key(name: String) = "cocache:$namespace:$name"
 
     /**
-     * 5.x 遗留的原生 Set / List / ZSet 落在缓存 key 上：读取按无法识别的内容返回（不报 WRONGTYPE），
+     * 其它程序写入的原生 Set / List / ZSet 落在缓存 key 上：读取按无法识别的内容返回（不报 WRONGTYPE），
      * 以引擎同样的摘要（[Digest.of]）条件回收为 lease，然后正常填充。
      */
     @Test
     fun nativeCollectionUnderCacheKeyIsReclaimedAndFilled() {
         RedisTestSupport.backend().use { backend ->
-            val store = backend.store(namespace)
+            val store = backend.store(Keyspace("cocache:", namespace))
             val keys = listOf(key("set"), key("list"), key("zset"))
             RedisTestSupport.withCommands { commands ->
                 commands.sadd(keys[0], "a", "b")
@@ -74,25 +78,34 @@ class RedisRobustnessTest {
             }
             for (key in keys) {
                 // 不申请 lease 的读取同样不能失败
-                (store.read(key, null, null) as RemoteRead.Hit).format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
+                (
+                    Suspending.await {
+                        store.read(key, null, null, null)
+                    } as L1Read.Hit
+                    ).format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
                 val lease = lease()
-                val read = store.read(key, lease, null) as RemoteRead.Hit
-                read.format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
-                store.reclaim(key, Digest.of(read.envelope), lease).assert().isTrue()
-                store.read(key, null, null).assert().isInstanceOf(RemoteRead.Leased::class.java)
-                store.fill(
-                    Fill(key, lease.token, Envelope.Scalar("v".toByteArray()), Duration.ofSeconds(60))
-                ).assert().isTrue()
-                val filled = store.read(key, null, null) as RemoteRead.Hit
+                val read = Suspending.await { store.read(key, lease, null, null) } as L1Read.Hit
+                read.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
+                Suspending.await { store.reclaim(key, ContentFingerprint.of(read.envelope), lease) }.assert().isTrue()
+                Suspending.await { store.read(key, null, null, null) }.assert().isInstanceOf(L1Read.Leased::class.java)
+                val fill = Fill(key, lease.token, Envelope.Scalar("v".toByteArray()), Duration.ofSeconds(60))
+                Suspending.await { store.fill(fill) }.assert().isInstanceOf(L1Fill.Filled::class.java)
+                val filled = Suspending.await { store.read(key, null, null, null) } as L1Read.Hit
                 filled.format.assert().isEqualTo(RedisScripts.FORMAT)
                 String((filled.envelope as Envelope.Scalar).bytes).assert().isEqualTo("v")
             }
             // 内容在读取之后变了：摘要不匹配，不回收
             RedisTestSupport.withCommands { it.sadd(key("changed"), "a") }
             val lease = lease()
-            val read = store.read(key("changed"), lease, null) as RemoteRead.Hit
+            val read = Suspending.await { store.read(key("changed"), lease, null, null) } as L1Read.Hit
             RedisTestSupport.withCommands { it.set(key("changed"), "other") }
-            store.reclaim(key("changed"), Digest.of(read.envelope), lease).assert().isFalse()
+            Suspending.await {
+                store.reclaim(
+                    key("changed"),
+                    ContentFingerprint.of(read.envelope),
+                    lease
+                )
+            }.assert().isFalse()
         }
     }
 
@@ -104,8 +117,8 @@ class RedisRobustnessTest {
     fun setCacheFailsOnForeignContentAndKeepsIt() {
         RedisTestSupport.backend().use { backend ->
             CacheRuntime.builder().backend(backend).build().use { runtime ->
-                val index: SetCache<String, String> = runtime.create(
-                    setCacheSpec<String, String>(namespace) { elementCodec = StringCodec }
+                val index: SetStore<String, String> = runtime.create(
+                    setStoreSpec<String, String>(namespace) { elementCodec = StringCodec }
                 )
                 RedisTestSupport.withCommands { commands ->
                     commands.sadd(key("native"), "x")
@@ -136,15 +149,22 @@ class RedisRobustnessTest {
     @Test
     fun readFailsWithAclErrorWithoutTouchingContentWhenAclLacksReadCommands() {
         RedisTestSupport.backend().use { admin ->
-            val store = admin.store(namespace)
-            store.put(key("set"), Envelope.Members(listOf("a".toByteArray(), "b".toByteArray())), null, ByteArray(0))
-            store.put(key("value"), Envelope.Scalar("v".toByteArray()), null, ByteArray(0))
+            val store = admin.store(Keyspace("cocache:", namespace))
+            Suspending.await {
+                store.put(
+                    key("set"),
+                    Envelope.Members(listOf("a".toByteArray(), "b".toByteArray())),
+                    null,
+                    ByteArray(0)
+                )
+            }
+            Suspending.await { store.put(key("value"), Envelope.Scalar("v".toByteArray()), null, ByteArray(0)) }
         }
         // 只有 `!f` 的 Hash：其摘要与“无法识别的空内容”相同，误判为损坏时会被回收成 lease
         RedisTestSupport.withCommands { commands -> commands.hset(key("empty"), "!f", "1") }
-        fun denied(block: () -> Any?) {
+        fun denied(type: Class<out Throwable> = RedisException::class.java, block: () -> Any?) {
             val error = runCatching(block).exceptionOrNull()
-            error.assert().isInstanceOf(RedisException::class.java)
+            error.assert().isInstanceOf(type)
             // 措辞随版本不同：7.0 为 "The user executing the script can't run this command"，7.2+ 为 "ACL failure in script … no permissions"
             val messages = generateSequence(error) { it.cause }.mapNotNull { it.message?.lowercase() }.toList()
             val markers = listOf("acl", "noperm", "permission", "can't run this command")
@@ -156,16 +176,17 @@ class RedisRobustnessTest {
                 "cocache-no${missing.drop(1)}",
                 listOf("~*", "&*", "+@all", missing)
             ).use { backend ->
-                val store = backend.store(namespace)
-                denied { store.read(key("set"), lease(), null) }
-                denied { store.read(key("empty"), lease(), null) }
-                if (missing == "-get") denied { store.read(key("value"), lease(), null) }
+                val store = backend.store(Keyspace("cocache:", namespace))
+                denied { Suspending.await { store.read(key("set"), lease(), null, null) } }
+                denied { Suspending.await { store.read(key("empty"), lease(), null, null) } }
+                if (missing == "-get") denied { Suspending.await { store.read(key("value"), lease(), null, null) } }
                 CacheRuntime.builder().backend(backend).build().use { runtime ->
-                    val index: SetCache<String, String> = runtime.create(
-                        setCacheSpec<String, String>(namespace) { elementCodec = StringCodec }
+                    val index: SetStore<String, String> = runtime.create(
+                        setStoreSpec<String, String>(namespace) { elementCodec = StringCodec }
                     )
-                    denied { index["set"] }
-                    denied { index["empty"] }
+                    // SetStore 的 L1 读失败是 Unknown，以 CacheReadException 抛出，ACL 错误是它的 cause
+                    denied(CacheReadException::class.java) { index["set"] }
+                    denied(CacheReadException::class.java) { index["empty"] }
                 }
             }
         }
@@ -184,9 +205,9 @@ class RedisRobustnessTest {
     fun documentedAclAllowsEveryOperation() {
         Assumptions.assumeTrue(System.getenv("SPRING_DATA_REDIS_CLUSTER_NODES") == null)
         val rules = (
-            "~cocache:* resetchannels &cocache:inv:* &cocache:probe:* +@connection +evalsha +eval +publish +subscribe " +
-                "+unsubscribe +spublish +ssubscribe +sunsubscribe +get +set +del +pttl +type +hgetall +hkeys +hget +hset +hdel " +
-                "+hexists +hlen +pexpire +persist +setrange +time"
+            "~cocache:* resetchannels &cocache:inv:* &cocache:!probe:* +@connection +evalsha +eval +publish +subscribe " +
+                "+unsubscribe +spublish +ssubscribe +sunsubscribe +get +getrange +strlen +set +del +pttl +type +hgetall +hkeys +hmget +hset " +
+                "+hdel +hlen +pexpire +persist +setrange +time"
             ).split(" ")
         RedisTestSupport.aclBackend("cocache-documented", rules).use { backend ->
             backend.atomicBroadcast.assert().isTrue()
@@ -201,8 +222,8 @@ class RedisRobustnessTest {
                 users.put("1", "v1")
                 users.invalidate("1")
                 users.getAll(listOf("1", "2")).assert().hasSize(2)
-                val index: SetCache<String, String> = runtime.create(
-                    setCacheSpec<String, String>("acl-set-$namespace") { elementCodec = StringCodec }
+                val index: SetStore<String, String> = runtime.create(
+                    setStoreSpec<String, String>("acl-set-$namespace") { elementCodec = StringCodec }
                 )
                 index.add("k", listOf("a", "b"))
                 index.remove("k", listOf("a"))
@@ -224,13 +245,13 @@ class RedisRobustnessTest {
             // 测试环境的各主节点配置一致：与 CONFIG GET 读到的相同
             policies.values.forEach { it.assert().isEqualTo(expected) }
         }
-        val noConfig = "~cocache:* resetchannels &cocache:inv:* &cocache:probe:* +@all -config".split(" ")
+        val noConfig = "~cocache:* resetchannels &cocache:inv:* &cocache:!probe:* +@all -config".split(" ")
         RedisTestSupport.aclBackend("cocache-noconfig", noConfig).use { backend ->
             requireNotNull(backend.maxmemoryPolicies()).values.forEach { it.assert().isEqualTo(expected) }
         }
         // 集群中 Lettuce 发现拓扑也需要 INFO，只在单机上验证 INFO 被禁用的情形
         Assumptions.assumeFalse(RedisTestSupport.isCluster)
-        val noInfo = "~cocache:* resetchannels &cocache:inv:* &cocache:probe:* +@all -info".split(" ")
+        val noInfo = "~cocache:* resetchannels &cocache:inv:* &cocache:!probe:* +@all -info".split(" ")
         RedisTestSupport.aclBackend("cocache-noinfo", noInfo).use { backend ->
             backend.maxmemoryPolicies().assert().isNull()
         }
@@ -258,9 +279,17 @@ class RedisRobustnessTest {
             "cocache-readall",
             listOf("resetkeys", "~cocache:allowed-*", "&*", "+@all")
         ).use { backend ->
-            val store = backend.store(namespace)
+            val store = backend.store(Keyspace("cocache:", namespace))
             val leases = mapOf(allowed to lease(), denied to lease())
-            val error = runCatching { store.readAll(listOf(allowed, denied), leases) }.exceptionOrNull()
+            val error = runCatching {
+                Suspending.await {
+                    store.readAll(
+                        listOf(allowed, denied),
+                        leases,
+                        null
+                    )
+                }
+            }.exceptionOrNull()
             error.assert().isInstanceOf(RedisException::class.java)
             awaitCondition("granted lease released") {
                 RedisTestSupport.withCommands { it.exists(allowed) } == 0L
@@ -279,9 +308,11 @@ class RedisRobustnessTest {
         ).use { backend ->
             val listener = RecordingListener()
             repeat(2) {
-                runCatching { backend.channel.subscribe("denied", listener) }.exceptionOrNull().assert().isNotNull()
+                runCatching {
+                    backend.channel.subscribe(Keyspace("cocache:", "denied"), listener)
+                }.exceptionOrNull().assert().isNotNull()
             }
-            backend.channel.subscribe("allowed", listener).close()
+            backend.channel.subscribe(Keyspace("cocache:", "allowed"), listener).close()
         }
     }
 
@@ -295,7 +326,7 @@ class RedisRobustnessTest {
         ).use { backend ->
             backend.heartbeatHealthy.assert().isTrue()
             val listener = RecordingListener()
-            backend.channel.subscribe("healthy-$namespace", listener).use {
+            backend.channel.subscribe(Keyspace("cocache:", "healthy-$namespace"), listener).use {
                 listener.resets.get().assert().isGreaterThanOrEqualTo(1)
                 backend.heartbeatHealthy.assert().isTrue()
                 backend.heartbeatFailure.assert().isNull()
@@ -316,7 +347,7 @@ class RedisRobustnessTest {
             RedisBackendOptions(clientName = clientName, heartbeat = Duration.ofMillis(200))
         ).use { backend ->
             val listener = RecordingListener()
-            val subscription = backend.channel.subscribe("heartbeat", listener)
+            val subscription = backend.channel.subscribe(Keyspace("cocache:", "heartbeat"), listener)
             val before = RedisTestSupport.pubSubClientIds(clientName)
             before.assert().hasSize(1)
             awaitCondition("pub/sub connection replaced") {
@@ -337,18 +368,24 @@ class RedisRobustnessTest {
     @Test
     fun readDegradesWhenLeaseOrRefreshWriteFails() {
         RedisTestSupport.backend().use { admin ->
-            admin.store(
-                namespace
-            ).put(key("value"), Envelope.Scalar("v".toByteArray()), Duration.ofSeconds(10), ByteArray(0))
+            val store = admin.store(Keyspace("cocache:", namespace))
+            Suspending.await {
+                store.put(
+                    key("value"),
+                    Envelope.Scalar("v".toByteArray()),
+                    Duration.ofSeconds(10),
+                    ByteArray(0)
+                )
+            }
         }
         RedisTestSupport.aclBackend(
             "cocache-readonly-writes",
             listOf("~*", "&*", "+@all", "-set", "-setrange")
         ).use { backend ->
-            val store = backend.store(namespace)
-            store.read(key("absent"), lease(), null).assert().isEqualTo(RemoteRead.Miss(false))
+            val store = backend.store(Keyspace("cocache:", namespace))
+            Suspending.await { store.read(key("absent"), lease(), null, null) }.assert().isEqualTo(L1Read.Miss(false))
             val refresh = RefreshRequest(Duration.ofSeconds(60), token(), Duration.ofSeconds(10))
-            val hit = store.read(key("value"), null, refresh) as RemoteRead.Hit
+            val hit = Suspending.await { store.read(key("value"), null, refresh, null) } as L1Read.Hit
             hit.refreshGranted.assert().isFalse()
             String((hit.envelope as Envelope.Scalar).bytes).assert().isEqualTo("v")
         }
@@ -360,15 +397,18 @@ class RedisRobustnessTest {
     @Test
     fun invalidateBroadcastsOnlyEachGroupsKeys() {
         val frames = CopyOnWriteArrayList<ByteArray>()
-        RedisTestSupport.subscribeRaw(RedisInvalidationChannel.channelOf(namespace)) { frames.add(it) }.use {
+        RedisTestSupport.subscribeRaw(RedisInvalidationChannel.channelOf(Keyspace("cocache:", namespace))) {
+            frames.add(it)
+        }.use {
             RedisTestSupport.backend(
                 RedisBackendOptions(invalidateBatchSize = 2, clientName = "cocache-tck-" + UUID.randomUUID())
             ).use { backend ->
                 backend.atomicBroadcast.assert().isTrue()
-                val store = backend.store(namespace)
+                val store = backend.store(Keyspace("cocache:", namespace))
+                awaitProbeFrame(frames)
                 val keys = (1..5).map { key("k$it") }
                 val origin = NodeId.random()
-                store.invalidate(keys, InvalidationFrame.encode(origin, keys))
+                Suspending.await { store.invalidate(keys, InvalidationFrame.encode(origin, keys)) }
                 awaitCondition("all keys broadcast") {
                     frames.flatMap { InvalidationFrame.decode(it).keys }.toSet() == keys.toSet()
                 }
@@ -385,16 +425,25 @@ class RedisRobustnessTest {
                 // 帧与 key 不一致（无法安全拆分）或畸形：原样广播
                 frames.clear()
                 val foreign = InvalidationFrame.encode(origin, listOf("other"))
-                store.invalidate(keys, foreign)
+                Suspending.await { store.invalidate(keys, foreign) }
                 awaitCondition("unchanged frames") { frames.size == groups }
                 frames.forEach { it.assert().isEqualTo(foreign) }
                 frames.clear()
                 val malformed = byteArrayOf(9)
-                store.invalidate(keys, malformed)
+                Suspending.await { store.invalidate(keys, malformed) }
                 awaitCondition("malformed frames") { frames.size == groups }
                 frames.forEach { it.assert().isEqualTo(malformed) }
             }
         }
+    }
+
+    /**
+     * 创建存储时向频道发布的零 key 探测帧（K8）：等它到达再清空，之后收到的都是写入的帧（同一频道上的帧有序）。
+     */
+    private fun awaitProbeFrame(frames: MutableList<ByteArray>) {
+        awaitCondition("probe frame") { frames.isNotEmpty() }
+        frames.single().let { InvalidationFrame.decode(it).keys.assert().isEmpty() }
+        frames.clear()
     }
 
     /**
@@ -404,11 +453,14 @@ class RedisRobustnessTest {
     @Test
     fun putAllWritesEveryShapeAndBroadcastsOnlyEachGroupsKeys() {
         val frames = CopyOnWriteArrayList<ByteArray>()
-        RedisTestSupport.subscribeRaw(RedisInvalidationChannel.channelOf(namespace)) { frames.add(it) }.use {
+        RedisTestSupport.subscribeRaw(RedisInvalidationChannel.channelOf(Keyspace("cocache:", namespace))) {
+            frames.add(it)
+        }.use {
             RedisTestSupport.backend(
                 RedisBackendOptions(invalidateBatchSize = 2, clientName = "cocache-tck-" + UUID.randomUUID())
             ).use { backend ->
-                val store = backend.store(namespace)
+                val store = backend.store(Keyspace("cocache:", namespace))
+                awaitProbeFrame(frames)
                 val shapes = listOf(
                     Envelope.Members(listOf("a".toByteArray(), "b".toByteArray())),
                     Envelope.Scalar("v".toByteArray()),
@@ -422,10 +474,12 @@ class RedisRobustnessTest {
                 val keys = puts.map { it.key }
                 val origin = NodeId.random()
                 // 重复的 key 以后者为准
-                store.putAll(
-                    puts + Put(keys[1], Envelope.Scalar("last".toByteArray()), null),
-                    InvalidationFrame.encode(origin, keys)
-                )
+                Suspending.await {
+                    store.putAll(
+                        puts + Put(keys[1], Envelope.Scalar("last".toByteArray()), null),
+                        InvalidationFrame.encode(origin, keys)
+                    )
+                }
                 awaitCondition("all keys broadcast") {
                     frames.flatMap { InvalidationFrame.decode(it).keys }.toSet() == keys.toSet()
                 }
@@ -436,7 +490,7 @@ class RedisRobustnessTest {
                 }
                 decoded.sumOf { it.keys.size }.assert().isEqualTo(keys.size)
 
-                fun hit(key: String) = store.read(key, null, null) as RemoteRead.Hit
+                fun hit(key: String) = Suspending.await { store.read(key, null, null, null) } as L1Read.Hit
                 fun members(key: String) = (hit(key).envelope as Envelope.Members).members.map { String(it) }
                 members(keys[0]).assert().containsExactlyInAnyOrder("a", "b")
                 hit(keys[0]).ttl.assert().isNull()
@@ -463,16 +517,20 @@ class RedisRobustnessTest {
                 clientName = "cocache-tck-" + UUID.randomUUID()
             )
         ).use { backend ->
-            val channel = backend.channel as ShardedInvalidationChannel
+            val channel = backend.redisChannel as ShardedInvalidationChannel
             val listener = RecordingListener()
-            val subscription = channel.subscribe(namespace, listener)
+            val subscription = channel.subscribe(Keyspace("cocache:", namespace), listener)
 
             @Suppress("UNCHECKED_CAST")
             val cluster = channel.connections.pubSub as StatefulRedisClusterPubSubConnection<ByteArray, ByteArray>
-            val channelName = RedisInvalidationChannel.channelOf(namespace).toByteArray(Charsets.UTF_8)
+            val channelName = RedisInvalidationChannel.channelOf(
+                Keyspace("cocache:", namespace)
+            ).toByteArray(Charsets.UTF_8)
             val owner = requireNotNull(cluster.partitions.getMasterBySlot(SlotHash.getSlot(channelName)))
             val ownerAddress = ShardedInvalidationChannel.HostAndPort(owner.uri.host, owner.uri.port)
-            awaitCondition("acknowledged by owner") { channel.subscribedNode(namespace) == ownerAddress }
+            awaitCondition(
+                "acknowledged by owner"
+            ) { channel.subscribedNode(Keyspace("cocache:", namespace)) == ownerAddress }
             val replica = cluster.partitions.first {
                 it.`is`(RedisClusterNode.NodeFlag.REPLICA) && it.slaveOf == owner.nodeId
             }
@@ -480,11 +538,11 @@ class RedisRobustnessTest {
 
             cluster.getConnection(replica.uri.host, replica.uri.port).sync().ssubscribe(channelName)
             awaitCondition("reset and resubscribed to owner") {
-                listener.resets.get() > resetsBefore && channel.subscribedNode(namespace) == ownerAddress
+                listener.resets.get() > resetsBefore && channel.subscribedNode(Keyspace("cocache:", namespace)) == ownerAddress
             }
-            val frame = InvalidationFrame.encode(NodeId.random(), listOf("after"))
+            val frame = InvalidationFrame.encode(NodeId.random(), listOf("cocache:$namespace:after"))
             awaitCondition("event after resubscribe") {
-                channel.publish(namespace, frame)
+                Suspending.await { channel.publish(Keyspace("cocache:", namespace), frame) }
                 listener.received.contains(listOf("after"))
             }
             subscription.close()

@@ -45,7 +45,7 @@ Fixed when you build:
 
 Still read at startup:
 
-- Policy properties: `cocache.defaults.*`, `cocache.caches.[name].*`, `cocache.redis.*`, and the executor bean names.
+- Policy properties: `cocache.defaults.*`, `cocache.overrides.*`, `cocache.caches.[name].*`, `cocache.key-prefix`, `cocache.caches-validation`, `cocache.redis.*`, and the executor bean names.
 - `CacheSpecCustomizer` beans, loaders, codecs, and the Redis connection settings.
 
 ## What CoCache registers {#registered-hints}
@@ -59,11 +59,10 @@ At build time the starter reads the cache bean definitions and registers these h
 | The key type of every declared cache, spec beans included | `toString()` | The default key encoder checks once per key type that `toString()` is overridden |
 | The key type, when `@CoCache(keyExpression)` is set | Public methods and fields | SpEL evaluates the template with the key as root object |
 | The first cache's value type, when `@JoinCacheable(joinKeyExpression)` is set | Public methods and fields | SpEL evaluates the expression with the first value as root object |
-| The value type (element type for a `SetCache`) of an interface cache without a codec | Jackson binding | That cache uses the default `JacksonCodec` |
-| `Cache`, `SetCache`, `JoinCache` | Public methods | Proxy dispatch and validation |
-| `AsyncCache`, `AsyncSetCache` | Public methods | The [async view](./async.md) returned by `cache.async()` |
+| The value type (element type for a `SetStore`) of an interface cache without a codec | Jackson binding | That cache uses the default `JacksonCodec` |
+| The five [cache types](./caches.md#types) and `ReadableCache`, `JoinView`, `JoinCache` | Public methods | Proxy dispatch and validation |
+| Their async and suspending views (`AsyncReadableCache`, `AsyncCache`, … `SuspendingSetStore`) | Public methods | The [async view](./async.md) returned by `cache.async()` and the [suspending view](./coroutines.md) returned by `cache.suspending()` |
 | The Caffeine classes behind L2 | Constructors and fields | Caffeine loads its generated classes by name |
-| `Executors.newVirtualThreadPerTaskExecutor` | Invoke | The runtime's default blocking executor uses virtual threads when the JDK has them |
 
 An interface cache counts as "without a codec" when it has no `@CoCache(codec)` and no bean of type `Codec<V>` matches its value type, which are the same rules the starter uses to pick the codec ([Codecs](./caches.md#codecs)).
 
@@ -87,7 +86,7 @@ The starter can't see inside code you write. Register hints yourself for:
 - **Polymorphic values.** The binding hint covers the declared value type and the types reachable from its properties. If the value type is abstract or sealed and Jackson picks the subtype at runtime, list the subtypes in `@RegisterReflectionForBinding` too.
 - **Custom codecs.** A `Codec` that uses reflection (another serializer, for example) needs that library's hints for your value types.
 - **SpEL that leaves the root object.** The hints cover the public members of the root object only. A template such as `#{owner.address.city}` also reads `Address`, and `T(…)` calls static methods on another class: register those types with `@RegisterReflection(classes = [Address::class], memberCategories = [MemberCategory.INVOKE_PUBLIC_METHODS])` or a `RuntimeHintsRegistrar`. On a hot path, a key type with a suitable `toString()` avoids SpEL entirely ([Keys](./caches.md#keys)).
-- **Caches created without the starter.** `CacheRuntime.create` and `CacheProxies.create` called from your own code get no generated hints: register the proxy interface and the key type's `toString()` yourself.
+- **Caches created without the starter.** `CacheRuntime.create` and `CoCacheFactory.create` called from your own code get no generated hints: register the proxy interface and the key type's `toString()` yourself.
 
 Loaders, `TtlFunction`s, `KeyEncoder`s, and `JoinKeyExtractor` beans are plain function calls and need nothing.
 

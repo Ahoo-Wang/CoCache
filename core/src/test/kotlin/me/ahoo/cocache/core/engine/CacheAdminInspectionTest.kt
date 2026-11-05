@@ -16,12 +16,15 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
@@ -35,9 +38,12 @@ import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.policy.DefaultPolicies
+import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.test.EngineSpec.TestCodec
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -102,7 +108,11 @@ class CacheAdminInspectionTest {
         loads.get().assert().isZero()
         admin.metrics.misses.assert().isZero()
         // 没有留下 lease：下一次读取直接回源并写回 L1
-        memory.store("user").read("cocache:user:id-1", null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        Suspending.await {
+            memory.store(
+                Keyspace("cocache:", "user")
+            ).read("cocache:user:id-1", null, null, null)
+        }.assert().isEqualTo(L1Read.Miss(false))
         users[1].assert().isEqualTo("user-1")
         loads.get().assert().isEqualTo(1)
     }
@@ -120,7 +130,7 @@ class CacheAdminInspectionTest {
         local.state.assert().isEqualTo(LocalState.VALUE)
         local.value.assert().isEqualTo("user-1")
         local.expired.assert().isFalse()
-        local.expiresAt.assert().isEqualTo(Instant.ofEpochMilli(start + CachePolicy.DEFAULT.localMaxAge.toMillis()))
+        local.expiresAt.assert().isEqualTo(Instant.ofEpochMilli(start + DefaultPolicies.CACHE.localMaxAge.toMillis()))
         local.refreshAt.assert().isNotNull()
         inspection.remote.state.assert().isEqualTo(RemoteState.VALUE)
         inspection.remote.value.assert().isEqualTo("user-1")
@@ -129,14 +139,14 @@ class CacheAdminInspectionTest {
         loads.get().assert().isEqualTo(1)
 
         // 查看不填充 L2、不影响命中路径；过期的 L2 副本照常展示
-        clock.advance(CachePolicy.DEFAULT.localMaxAge)
+        clock.advance(DefaultPolicies.CACHE.localMaxAge)
         requireNotNull(admin.inspect("id-1").local).expired.assert().isTrue()
     }
 
     @Test
-    fun inspectsNegativeAndUnresolvedEntries() {
+    fun inspectsNegativeAndUnfilledEntries() {
         val runtime = runtime()
-        val users = runtime.users(CachePolicy.DEFAULT)
+        val users = runtime.users(DefaultPolicies.CACHE)
         users[-1].assert().isNull()
         val negative = runtime.userAdmin().inspect("id--1")
         requireNotNull(negative.local).state.assert().isEqualTo(LocalState.ABSENT)
@@ -145,11 +155,23 @@ class CacheAdminInspectionTest {
         negative.remote.state.assert().isEqualTo(RemoteState.ABSENT)
         negative.remote.value.assert().isNull()
 
-        val orphans = runtime.create(cacheSpec<String, String>("orphan") { codec = StringCodec })
+        val orphans = runtime.create(
+            cacheSpec<String, String>("orphan") {
+                codec = StringCodec
+                externallySourced()
+            }
+        )
         orphans["x"].assert().isNull()
-        val unresolved = requireNotNull(runtime.admin("orphan")).inspect("x")
-        requireNotNull(unresolved.local).state.assert().isEqualTo(LocalState.UNRESOLVED)
-        unresolved.remote.state.assert().isEqualTo(RemoteState.MISS)
+        val unfilled = requireNotNull(runtime.admin("orphan")).inspect("x")
+        requireNotNull(unfilled.local).state.assert().isEqualTo(LocalState.UNFILLED)
+        unfilled.remote.state.assert().isEqualTo(RemoteState.MISS)
+
+        // 权威副本在 L1 中没有值就是不存在（RFC 0005 §4.1），不是“未填充”
+        val store = runtime.create(storeSpec<String, String>("store") { codec = StringCodec })
+        store["x"].assert().isNull()
+        requireNotNull(
+            requireNotNull(runtime.admin("store")).inspect("x").local
+        ).state.assert().isEqualTo(LocalState.ABSENT)
     }
 
     @Test
@@ -157,27 +179,44 @@ class CacheAdminInspectionTest {
         val runtime = runtime()
         runtime.users()
         val admin = runtime.userAdmin()
-        val store = memory.store("user")
-        store.read("cocache:user:id-1", LeaseRequest(Token(NodeId.random(), 1), Duration.ofSeconds(10)), null)
+        val store = memory.store(Keyspace("cocache:", "user"))
+        Suspending.await {
+            store.read(
+                "cocache:user:id-1",
+                LeaseRequest(Token(NodeId.random(), 1), Duration.ofSeconds(10)),
+                null,
+                null
+            )
+        }
         val leased = admin.inspect("id-1").remote
         leased.state.assert().isEqualTo(RemoteState.LEASED)
         requireNotNull(leased.ttl).assert().isPositive()
 
-        store.put("cocache:user:id-2", Envelope.Scalar(TestCodec.CORRUPT), null, frame())
+        Suspending.await { store.put("cocache:user:id-2", Envelope.Scalar(TestCodec.CORRUPT), null, frame()) }
         val corrupt = admin.inspect("id-2").remote
         corrupt.state.assert().isEqualTo(RemoteState.UNREADABLE)
         corrupt.ttl.assert().isNull()
         corrupt.error.assert().contains("corrupted")
         // 查看从不回收：损坏的内容仍在
-        store.read("cocache:user:id-2", null, null).assert().isInstanceOf(RemoteRead.Hit::class.java)
+        Suspending.await {
+            store.read(
+                "cocache:user:id-2",
+                null,
+                null,
+                null
+            )
+        }.assert().isInstanceOf(L1Read.Hit::class.java)
 
-        store.put("cocache:user:id-3", Envelope.Members(listOf(byteArrayOf(1))), null, frame())
+        Suspending.await { store.put("cocache:user:id-3", Envelope.Members(listOf(byteArrayOf(1))), null, frame()) }
         admin.inspect("id-3").remote.state.assert().isEqualTo(RemoteState.UNREADABLE)
 
-        backend.afterRead = { _, read -> (read as? RemoteRead.Hit)?.copy(format = 0) ?: read }
+        backend.afterRead = { _, read -> (read as? L1Read.Hit)?.copy(format = 0) ?: read }
         admin.inspect("id-3").remote.error.assert().contains("Unrecognized")
-        backend.afterRead = { _, read -> (read as? RemoteRead.Hit)?.copy(format = InMemoryBackend.FORMAT + 1) ?: read }
+        backend.afterRead = { _, read -> (read as? L1Read.Hit)?.copy(format = InMemoryBackend.FORMAT + 1) ?: read }
         admin.inspect("id-3").remote.error.assert().contains("newer format")
+        // 格式号低于本节点格式的内容与格式 0 一样是读不懂的内容
+        backend.afterRead = { _, read -> (read as? L1Read.Hit)?.copy(format = 1) ?: read }
+        admin.inspect("id-3").remote.error.assert().contains("Unrecognized remote content (format[1]")
         backend.afterRead = null
 
         backend.failAll = true
@@ -251,10 +290,79 @@ class CacheAdminInspectionTest {
         runtime.userAdmin().inspect("id-2").invalidationPending.assert().isFalse()
     }
 
+    /**
+     * 只广播失效帧：各节点（包括发起的节点）淘汰 L2，L1 不变，之后从 L1 重新填充而不回源。
+     */
     @Test
-    fun setCacheInspectionAndClear() {
+    fun broadcastEncodedEvictsEveryLocalCopyAndKeepsL1() {
+        val node1 = runtime()
+        val node2 = runtime()
+        val users1 = node1.users()
+        val users2 = node2.users()
+        users1[1].assert().isEqualTo("user-1")
+        users2[1].assert().isEqualTo("user-1")
+
+        node1.userAdmin().broadcastEncoded("id-1")
+        node1.userAdmin().inspect("id-1").local.assert().isNull()
+        node1.userAdmin().inspect("id-1").remote.state.assert().isEqualTo(RemoteState.VALUE)
+        node2.userAdmin().inspect("id-1").local.assert().isNull()
+        node2.userAdmin().metrics.invalidationsReceived.assert().isEqualTo(1)
+        users1[1].assert().isEqualTo("user-1")
+        users2[1].assert().isEqualTo("user-1")
+        loads.get().assert().isEqualTo(1)
+        runCatching { node1.userAdmin().broadcastEncoded("") }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    /**
+     * 权威类型上同样安全：唯一副本保留，其它节点的 L2 被淘汰。
+     */
+    @Test
+    fun broadcastEncodedKeepsTheOnlyCopy() {
+        val node1 = runtime()
+        val node2 = runtime()
+        val store1 = node1.create(storeSpec<String, String>("store") { codec = StringCodec })
+        val store2 = node2.create(storeSpec<String, String>("store") { codec = StringCodec })
+        val index1: SetStore<String, String> = node1.create(setStoreSpec("index") { elementCodec = StringCodec })
+        val index2: SetStore<String, String> = node2.create(setStoreSpec("index") { elementCodec = StringCodec })
+        store1.put("k", "v")
+        index1.add("k", listOf("a"))
+        store2["k"].assert().isEqualTo("v")
+        index2["k"].assert().containsExactly("a")
+
+        listOf("store", "index").forEach { requireNotNull(node1.admin(it)).broadcastEncoded("k") }
+        listOf("store", "index").forEach { name ->
+            val inspection = requireNotNull(node2.admin(name)).inspect("k")
+            inspection.local.assert().isNull()
+            inspection.remote.state.assert().isNotEqualTo(RemoteState.MISS)
+        }
+        store2["k"].assert().isEqualTo("v")
+        index2["k"].assert().containsExactly("a")
+    }
+
+    /**
+     * 发布失败时抛出（可以重试）；本节点的 L2 在发布之前已淘汰。
+     */
+    @Test
+    fun broadcastEncodedFailureThrows() {
+        val failure = IllegalStateException("publish down")
+        val failing = object : CoherenceBackend by memory {
+            override val channel: InvalidationChannel = object : InvalidationChannel by memory.channel {
+                override suspend fun publish(keyspace: Keyspace, frame: ByteArray) = throw failure
+            }
+        }
+        val runtime = CacheRuntime.builder().backend(failing).clock(clock).build().also { runtimes.add(it) }
+        val users = runtime.users()
+        users[1].assert().isEqualTo("user-1")
+        runCatching { runtime.userAdmin().broadcastEncoded("id-1") }.exceptionOrNull().assert().isSameAs(failure)
+        runtime.userAdmin().inspect("id-1").local.assert().isNull()
+        runtime.userAdmin().inspect("id-1").remote.state.assert().isEqualTo(RemoteState.VALUE)
+    }
+
+    @Test
+    fun setStoreInspectionAndClear() {
         val runtime = runtime()
-        val index: SetCache<String, String> = runtime.create(setCacheSpec("index") { elementCodec = StringCodec })
+        val index: SetStore<String, String> = runtime.create(setStoreSpec("index") { elementCodec = StringCodec })
         val admin = requireNotNull(runtime.admin("index"))
         admin.pendingInvalidationCount.assert().isZero()
         index.add("k", listOf("a", "b"))
@@ -266,10 +374,14 @@ class CacheAdminInspectionTest {
         requireNotNull(inspection.local).value.assert().isEqualTo("[a, b]")
         inspection.invalidationPending.assert().isFalse()
 
-        memory.store("index").put("cocache:index:scalar", Envelope.Scalar(byteArrayOf(1)), null, frame())
+        Suspending.await {
+            memory.store(
+                Keyspace("cocache:", "index")
+            ).put("cocache:index:scalar", Envelope.Scalar(byteArrayOf(1)), null, frame())
+        }
         admin.inspect("scalar").remote.state.assert().isEqualTo(RemoteState.UNREADABLE)
 
-        // SetCache 的强制失效等价于 clear(key)
+        // SetStore 的强制失效等价于 clear(key)
         admin.invalidateEncoded("k")
         index["k"].assert().isEmpty()
         admin.inspect("k").remote.state.assert().isEqualTo(RemoteState.MISS)

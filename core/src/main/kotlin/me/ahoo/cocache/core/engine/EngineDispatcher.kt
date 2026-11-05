@@ -16,32 +16,59 @@ package me.ahoo.cocache.core.engine
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
-import me.ahoo.cocache.core.internal.Futures
+import me.ahoo.cocache.core.internal.L1Call
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
 import kotlin.coroutines.CoroutineContext
 
 /**
- * 协程核心的调度器（运行时作用域，RFC 0005 §4.4），与异步路径的 future 链遵守同一套派发规则（docs/investigations/async-8t-gap.md）：
+ * 协程核心的调度器（运行时作用域，RFC 0005 §4.4）：每次恢复都派发给运行时的执行器（默认每个任务一个虚拟线程），
+ * 从不在完成上一步的线程（L1 客户端的 I/O 线程、数据源的线程）上就地继续。
  *
- * - 任务经 [Futures.execute] 交给异步执行器，执行期间带续接标记：其中完成的 future 链的续接可以就地执行。
- * - 当前线程已在执行该执行器派发的任务时不再派发，就地恢复：上一步在执行器上完成时省去一次派发
- *   （kotlinx 以线程局部的事件循环展开就地恢复，栈深有界）。只在上一步于执行器之外（I/O 线程、阻塞执行器、数据源的线程）完成时派发。
  * - 执行器拒绝时与 kotlinx 的执行器调度器相同：以携带 [RejectedExecutionException] 的取消结束协程，
  *   再交给 [Dispatchers.IO] 运行到结束（释放令牌等收尾照常执行）。
+ * - 例外是正在执行的 L1 调用（上下文带有 [L1Call]）：不取消，只交给 [Dispatchers.IO]（核心从不取消 L1 调用，RFC 0005 §4.3）。
+ * - 派发的任务执行期间，线程带有本调度器的标记（[onDispatchedThread]）。它只供 [AsyncContext.close] 判断调用方是不是运行时作用域中的
+ *   协程（如在异步结果的回调里关闭运行时）：那样的调用方不等待作用域排空，否则只会等满上限。
  */
 internal class EngineDispatcher(private val executor: Executor) : CoroutineDispatcher() {
-    override fun isDispatchNeeded(context: CoroutineContext): Boolean = !Futures.onExecutor(executor)
+    private val dispatched = ThreadLocal<Boolean?>()
+
+    /**
+     * 当前线程是否正在执行本调度器派发的任务。
+     */
+    val onDispatchedThread: Boolean
+        get() = dispatched.get() == true
 
     override fun dispatch(context: CoroutineContext, block: Runnable) {
         try {
-            Futures.execute(executor, block)
+            executor.execute(Marked(block))
         } catch (e: RejectedExecutionException) {
-            context.cancel(CancellationException("The task was rejected.").apply { initCause(e) })
+            if (context[L1Call] == null) {
+                context.cancel(CancellationException("The task was rejected.").apply { initCause(e) })
+            }
             Dispatchers.IO.dispatch(context, block)
         }
     }
 
     override fun toString(): String = "EngineDispatcher($executor)"
+
+    /**
+     * 执行期间带本调度器的标记；执行器在已带标记的线程上就地执行任务时沿用外层的标记。
+     */
+    private inner class Marked(private val block: Runnable) : Runnable {
+        override fun run() {
+            if (dispatched.get() == true) {
+                block.run()
+                return
+            }
+            dispatched.set(true)
+            try {
+                block.run()
+            } finally {
+                dispatched.remove()
+            }
+        }
+    }
 }

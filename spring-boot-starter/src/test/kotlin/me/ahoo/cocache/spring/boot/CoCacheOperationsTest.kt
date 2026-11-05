@@ -17,30 +17,44 @@ import io.mockk.every
 import io.mockk.mockk
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedCache
+import me.ahoo.cocache.api.VersionedPut
+import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyInspection
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
+import me.ahoo.cocache.core.StoreSpec
+import me.ahoo.cocache.core.VersionedCacheSpec
+import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
+import me.ahoo.cocache.core.versionedCacheSpec
+import me.ahoo.cocache.core.versionedStoreSpec
 import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.cocache.redis.RedisChannelMode
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.springframework.boot.actuate.autoconfigure.endpoint.PropertiesEndpointAccessResolver
 import org.springframework.boot.actuate.endpoint.InvocationContext
+import org.springframework.boot.actuate.endpoint.OperationFilter
 import org.springframework.boot.actuate.endpoint.SecurityContext
 import org.springframework.boot.actuate.endpoint.invoke.convert.ConversionServiceParameterValueMapper
 import org.springframework.boot.actuate.endpoint.web.EndpointMediaTypes
 import org.springframework.boot.actuate.endpoint.web.ExposableWebEndpoint
 import org.springframework.boot.actuate.endpoint.web.WebEndpointHttpMethod
 import org.springframework.boot.actuate.endpoint.web.WebEndpointResponse
+import org.springframework.boot.actuate.endpoint.web.WebOperation
 import org.springframework.boot.actuate.endpoint.web.annotation.WebEndpointDiscoverer
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration
@@ -79,7 +93,7 @@ class CoCacheOperationsTest {
         }
 
         @Bean
-        fun indexSpec(): SetCacheSpec<String, String> = setCacheSpec("index") { elementCodec = StringCodec }
+        fun indexSpec(): SetStoreSpec<String, String> = setStoreSpec("index") { elementCodec = StringCodec }
     }
 
     @Test
@@ -226,17 +240,201 @@ class CoCacheOperationsTest {
                 )
 
             @Suppress("UNCHECKED_CAST")
-            val index = context.getBean("index") as SetCache<String, String>
+            val index = context.getBean("index") as SetStore<String, String>
             index.add("k", listOf("a"))
             requireNotNull(
                 endpoint.inspect("index", arrayOf("k"))
             ).remote.state.assert().isEqualTo(KeyInspection.RemoteState.SET)
-            endpoint.invalidate("index", arrayOf("k"))
-            index["k"].assert().isEmpty()
+            // SetStore 的按 key 删除删除唯一副本：默认不允许（allow-store-delete），见 deletingTheOnlyCopyByKeyNeedsItsSwitch
+            runCatching { endpoint.invalidate("index", arrayOf("k")) }.exceptionOrNull()
+                .assert().isInstanceOf(CoCacheEndpoint.DeletionNotAllowedException::class.java)
+            index["k"].assert().isEqualTo(setOf("a"))
         }
     }
 
-    private fun webEndpoint(context: ApplicationContext): ExposableWebEndpoint {
+    @Configuration(proxyBeanMethods = false)
+    class AuthoritativeConfig {
+        @Bean
+        fun docSpec(): StoreSpec<String, String> = storeSpec("doc") { codec = StringCodec }
+
+        @Bean
+        fun vdocSpec(): VersionedStoreSpec<String, String> = versionedStoreSpec("vdoc") { codec = StringCodec }
+
+        @Bean
+        fun vcacheSpec(): VersionedCacheSpec<String, String> = versionedCacheSpec("vcache") {
+            codec = StringCodec
+            versionedLoader = CacheLoader { Versioned(null, 1) }
+        }
+    }
+
+    /**
+     * 删除唯一副本的按 key 删除要显式开关（RFC 0005 §4.9 运维入口）：`Store` 与 `SetStore` 要 `allow-store-delete`，`VersionedStore`
+     * 与 `VersionedCache` 的 `purge` 要 `allow-purge`；没有开启时不修改任何东西，HTTP 上是 403。派生副本的失效与 `evict` 不受影响。
+     */
+    @Test
+    fun deletingTheOnlyCopyByKeyNeedsItsSwitch() {
+        runner.withUserConfiguration(AuthoritativeConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val endpoint = context.getBean(CoCacheEndpoint::class.java)
+
+            @Suppress("UNCHECKED_CAST")
+            val doc = context.getBean("doc") as Store<String, String>
+
+            @Suppress("UNCHECKED_CAST")
+            val versionedDoc = context.getBean("vdoc") as VersionedStore<String, String>
+
+            @Suppress("UNCHECKED_CAST")
+            val versioned = context.getBean("vcache") as VersionedCache<String, String>
+            doc.put("k", "v")
+            versionedDoc.putIfNewer("k", "v", 5)
+            versioned.putIfNewer("k", "v", 5)
+            listOf("doc" to null, "index" to null, "vdoc" to null, "vcache" to true).forEach { (name, purge) ->
+                val error = runCatching { endpoint.invalidate(name, arrayOf("k"), purge) }.exceptionOrNull()
+                error.assert().isInstanceOf(CoCacheEndpoint.DeletionNotAllowedException::class.java)
+            }
+            doc["k"].assert().isEqualTo("v")
+            versionedDoc.getVersioned("k").assert().isEqualTo(Versioned("v", 5))
+            runCatching { endpoint.invalidate("user", arrayOf("u", "1"), purge = true) }.exceptionOrNull()
+                .assert().isInstanceOf(
+                    org.springframework.boot.actuate.endpoint.InvalidEndpointRequestException::class.java
+                )
+            // evict 保留版本，不需要开关
+            endpoint.invalidate("vcache", arrayOf("k"))?.deletion.assert().isEqualTo(CacheAdmin.KeyDeletion.EVICT)
+            versioned.putIfNewer("k", "old", 4).assert().isEqualTo(VersionedPut.Stale(5))
+            val refused = webEndpoint(context).operations.single {
+                it.requestPredicate.httpMethod == WebEndpointHttpMethod.DELETE && it.requestPredicate.path == "cocache/{name}/{*key}"
+            }.invoke(
+                InvocationContext(SecurityContext.NONE, mapOf("name" to "doc", "key" to arrayOf("k")))
+            ) as WebEndpointResponse<*>
+            refused.status.assert().isEqualTo(403)
+            refused.body.toString().assert().contains("management.endpoint.cocache.allow-store-delete=true")
+        }
+    }
+
+    /**
+     * 开启 `allow-store-delete` 与 `allow-purge` 之后，按 key 删除照常删除唯一副本：`purge` 丢掉版本，之后更低的版本也能写入。
+     */
+    @Test
+    fun deletingTheOnlyCopyByKeyWorksOnceAllowed() {
+        runner.withUserConfiguration(AuthoritativeConfig::class.java)
+            .withPropertyValues(
+                "management.endpoint.cocache.allow-store-delete=true",
+                "management.endpoint.cocache.allow-purge=true"
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                val endpoint = context.getBean(CoCacheEndpoint::class.java)
+
+                @Suppress("UNCHECKED_CAST")
+                val doc = context.getBean("doc") as Store<String, String>
+
+                @Suppress("UNCHECKED_CAST")
+                val index = context.getBean("index") as SetStore<String, String>
+
+                @Suppress("UNCHECKED_CAST")
+                val versionedDoc = context.getBean("vdoc") as VersionedStore<String, String>
+
+                @Suppress("UNCHECKED_CAST")
+                val versioned = context.getBean("vcache") as VersionedCache<String, String>
+                doc.put("k", "v")
+                index.add("k", listOf("a"))
+                versionedDoc.putIfNewer("k", "v", 5)
+                versioned.putIfNewer("k", "v", 5)
+                endpoint.invalidate("doc", arrayOf("k"))?.deletion.assert().isEqualTo(CacheAdmin.KeyDeletion.DELETE)
+                endpoint.invalidate("index", arrayOf("k"))?.deletion.assert().isEqualTo(CacheAdmin.KeyDeletion.CLEAR)
+                endpoint.invalidate("vdoc", arrayOf("k"))?.deletion.assert().isEqualTo(CacheAdmin.KeyDeletion.PURGE)
+                endpoint.invalidate(
+                    "vcache",
+                    arrayOf("k"),
+                    purge = true
+                )?.deletion.assert().isEqualTo(CacheAdmin.KeyDeletion.PURGE)
+                doc["k"].assert().isNull()
+                index["k"].assert().isEmpty()
+                // purge 丢掉了版本：更低的版本照常写入
+                versionedDoc.putIfNewer("k", "old", 1).assert().isEqualTo(VersionedPut.Written)
+                versioned.putIfNewer("k", "old", 1).assert().isEqualTo(VersionedPut.Written)
+            }
+    }
+
+    /**
+     * 只广播失效帧：对任何类型都不需要开关，L1 原样保留（唯一副本与版本栅栏都在），本节点的 L2 被淘汰。
+     */
+    @Test
+    fun broadcastNeedsNoSwitchAndKeepsL1() {
+        runner.withUserConfiguration(AuthoritativeConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val endpoint = context.getBean(CoCacheEndpoint::class.java)
+
+            @Suppress("UNCHECKED_CAST")
+            val user = context.getBean("user") as Cache<Long, String>
+
+            @Suppress("UNCHECKED_CAST")
+            val doc = context.getBean("doc") as Store<String, String>
+
+            @Suppress("UNCHECKED_CAST")
+            val versionedDoc = context.getBean("vdoc") as VersionedStore<String, String>
+            user[1L].assert().isEqualTo("user-1")
+            doc.put("k", "v")
+            doc["k"].assert().isEqualTo("v")
+            versionedDoc.putIfNewer("k", "v", 5)
+
+            requireNotNull(endpoint.broadcast("user", arrayOf("u", "1")))
+                .assert().isEqualTo(CoCacheEndpoint.BroadcastReport("user", "u/1"))
+            val inspection = requireNotNull(endpoint.inspect("user", arrayOf("u", "1")))
+            inspection.local.assert().isNull()
+            inspection.remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE)
+            listOf("doc", "vdoc", "vcache", "index").forEach { name ->
+                endpoint.broadcast(name, arrayOf("k"))?.cache.assert().isEqualTo(name)
+            }
+            doc["k"].assert().isEqualTo("v")
+            versionedDoc.putIfNewer("k", "old", 4).assert().isEqualTo(VersionedPut.Stale(5))
+            endpoint.broadcast("missing", arrayOf("k")).assert().isNull()
+            runCatching { endpoint.broadcast("user", emptyArray()) }.exceptionOrNull()
+                .assert().isInstanceOf(
+                    org.springframework.boot.actuate.endpoint.InvalidEndpointRequestException::class.java
+                )
+
+            val broadcast = webEndpoint(context).operations.single {
+                it.requestPredicate.httpMethod == WebEndpointHttpMethod.POST
+            }
+            // 只有路径参数、没有请求体：`curl -X POST` 不需要 Content-Type
+            broadcast.requestPredicate.consumes.assert().isEmpty()
+
+            fun post(name: String, key: Array<String>): WebEndpointResponse<*> {
+                val arguments = mapOf("name" to name, "key" to key)
+                return broadcast.invoke(InvocationContext(SecurityContext.NONE, arguments)) as WebEndpointResponse<*>
+            }
+            post("missing", arrayOf("k")).status.assert().isEqualTo(404)
+            val response = post("doc", arrayOf("k"))
+            response.status.assert().isEqualTo(200)
+            response.body.assert().isEqualTo(CoCacheEndpoint.BroadcastReport("doc", "k"))
+        }
+    }
+
+    /**
+     * 广播与其它写操作一样受 `management.endpoint.cocache.access` 约束：`read-only` 时只剩查看。
+     */
+    @Test
+    fun readOnlyAccessDropsBroadcastWithTheOtherWrites() {
+        // 测试容器的环境没有 Spring Boot 应用的宽松枚举转换，这里写枚举常量名（应用中写 read-only）
+        runner.withPropertyValues("management.endpoint.cocache.access=READ_ONLY").run { context ->
+            assertThat(context).hasNotFailed()
+            val filter = OperationFilter.byAccess<WebOperation>(PropertiesEndpointAccessResolver(context.environment))
+            val paths = webEndpoint(context, listOf(filter)).operations.map {
+                "${it.requestPredicate.httpMethod} ${it.requestPredicate.path}"
+            }
+            paths.assert().containsExactlyInAnyOrder(
+                "GET cocache",
+                "GET cocache/{name}",
+                "GET cocache/{name}/{*key}",
+            )
+        }
+    }
+
+    private fun webEndpoint(
+        context: ApplicationContext,
+        operationFilters: List<OperationFilter<WebOperation>> = emptyList(),
+    ): ExposableWebEndpoint {
         val discoverer = WebEndpointDiscoverer(
             context,
             ConversionServiceParameterValueMapper(),
@@ -245,7 +443,7 @@ class CoCacheOperationsTest {
             emptyList(),
             emptyList(),
             emptyList(),
-            emptyList(),
+            operationFilters,
         )
         return discoverer.endpoints.first { it.endpointId.toString() == CoCacheEndpoint.ID }
     }
@@ -255,7 +453,7 @@ class CoCacheOperationsTest {
         runner.run { context ->
             assertThat(context).hasNotFailed()
             val endpoint = webEndpoint(context)
-            // web 扩展的 DELETE 替换端点上的同名操作，而不是并列注册
+            // web 扩展的 DELETE 与 POST 替换端点上的同名操作，而不是并列注册
             val paths = endpoint.operations.map { "${it.requestPredicate.httpMethod} ${it.requestPredicate.path}" }
             paths.assert().containsExactlyInAnyOrder(
                 "GET cocache",
@@ -263,12 +461,13 @@ class CoCacheOperationsTest {
                 "DELETE cocache/{name}",
                 "GET cocache/{name}/{*key}",
                 "DELETE cocache/{name}/{*key}",
+                "POST cocache/{name}/{*key}",
             )
         }
     }
 
     /**
-     * HTTP 上未知缓存的 DELETE 返回 404（6.9.1 及之前为 204，拼错的缓存名静默成功）；已知缓存照旧 204 / 200。
+     * HTTP 上未知缓存的 DELETE 返回 404（拼错的缓存名不会静默成功）；已知缓存照旧 204 / 200。
      */
     @Test
     fun unknownCacheDeletesReturnNotFoundOverTheWeb() {
@@ -291,7 +490,9 @@ class CoCacheOperationsTest {
             ).status.assert().isEqualTo(404)
             val invalidated = delete("cocache/{name}/{*key}", mapOf("name" to "user", "key" to arrayOf("u", "1")))
             invalidated.status.assert().isEqualTo(200)
-            invalidated.body.assert().isEqualTo(CoCacheEndpoint.InvalidationReport("user", "u/1"))
+            invalidated.body.assert().isEqualTo(
+                CoCacheEndpoint.InvalidationReport("user", "u/1", CacheAdmin.KeyDeletion.INVALIDATE)
+            )
 
             val endpoint = context.getBean(CoCacheEndpoint::class.java)
             endpoint.clearLocal("user").assert().isTrue()

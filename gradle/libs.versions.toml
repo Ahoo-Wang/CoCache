@@ -1,8 +1,10 @@
 [versions]
 # libraries
-spring-boot = "4.1.1"
+spring-boot = "4.1.2"
 kotlin-logging = "8.0.4"
-# cocache-core 的协程核心（RFC 0005 V5）与 cocache-coroutines 使用；与 Spring Boot 4.1 管理的版本一致，CI 测的就是多数用户实际拿到的组合
+# cocache-core 的协程核心（RFC 0005 V5）使用。必须等于 Spring Boot 管理的版本（4.0.x 与 4.1.x 都是 1.10.2）：
+# 用 Spring 依赖管理的用户运行时拿到的就是它，按更高版本编译的字节码会调用它没有的方法（1.11.0 的 `runBlocking` 编译为 `runBlockingK`，
+# 运行时 NoSuchMethodError）。Renovate 不自动升级它（renovate.json），随 Spring Boot 的 BOM 手动升级
 kotlinx-coroutines = "1.10.2"
 springdoc = "3.1.1"
 # testing
@@ -16,7 +18,7 @@ detekt = "1.23.8"
 dokka = "2.2.0"
 kotlin = "2.4.21"
 publish-plugin = "2.0.0"
-jmh-plugin = "0.7.3"
+jmh-plugin = "0.7.4"
 openjdk-jmh = "1.37"
 # GraalVM Native Build Tools 插件，只用于 cocache-example 的原生镜像构建；版本由 Renovate 维护
 graalvm-native = "1.1.17"

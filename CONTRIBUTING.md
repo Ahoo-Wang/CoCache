@@ -40,13 +40,14 @@ Spring wiring code. It is the normative design and lists the invariants that eve
 |------|---------|-------|
 | Coding conventions and static analysis | Detekt + detekt-formatting (`config/detekt/detekt.yml`). Findings are uploaded to GitHub code scanning | CI · Static Analysis |
 | License headers | `checkLicenseHeader` (Apache-2.0 header in every source file and build script) | CI · Static Analysis, `check` |
-| Unit tests | JUnit 6, MockK, fluent-assert, shared TCK specs in `cocache-test` (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`, and `AsyncBackendProtocolSpec` for the async SPI); the async and suspending variants rerun them through `CacheAccess` | CI · Test & Coverage |
+| Unit tests | JUnit 6, MockK, fluent-assert, shared TCK specs in `cocache-test` (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`), each declaring `expectedCapabilities`; the async and suspending variants rerun them through `CacheAccess` | CI · Test & Coverage |
 | Integration tests | Real Redis service container (`cocache-redis`, `cocache-spring-boot-starter`) | CI · Test & Coverage |
 | Runtime compatibility | Artifacts compile for JDK 21; the full suite also runs on JDK 25 (`-PtestJavaVersion=25`) | CI · Test (JDK 25) |
 | Spring Boot baseline | Artifacts compile against the Spring Boot version in `gradle/libs.versions.toml`; the `cocache-redis`, starter, and example tests also run with the test runtime classpath forced to the latest Spring Boot 4.0.x dependencies (Lettuce 6.8, Spring Data Redis 4.0; `-PtestSpringBootVersion=4.0.8`) | CI · Test (Spring Boot 4.0) |
 | Redis Cluster | The `cocache-redis` and starter tests also run on a 3-master Redis Cluster (`.github/scripts/start-redis-cluster.sh`) | CI · Test (Redis Cluster) |
 | Coverage | JaCoCo aggregate gate (lines ≥ 95%, branches ≥ 90%; TCK specs excluded) and Codecov status (project ≥ 95%, patch ≥ 85%) | CI · Test & Coverage |
-| Performance (on demand) | JMH `CoCacheBenchmark` compared against the base with `scripts/jmh-compare.sh -b <benchmarks> -t 1,8` (one benchmark at a time, at least five alternating rounds, same-round ratios, load gate; see `docs/architecture.md` §13); paste its table into the PR | Run locally when touching the hit path |
+| Protocol model (non-blocking) | TLA+ model of the coherence protocol, checked with TLC (`scripts/tlc.sh`; see [`docs/spec/README.md`](docs/spec/README.md)). Not a required check, but a failure must be explained | CI · TLC |
+| Performance (on demand) | JMH `CoCacheBenchmark` compared against the base with `scripts/jmh-compare.sh -b <benchmarks> -t 1,8` (one benchmark at a time, at least five alternating rounds, same-round ratios, load gate; see `docs/architecture.md` §14); paste its table into the PR | Run locally when touching the hit path |
 
 Integration tests need Redis at `localhost:6379`:
 
@@ -75,16 +76,18 @@ See [`wiki/AGENTS.md`](wiki/AGENTS.md) for the wiki conventions. `pnpm build` in
   MAJOR. Backward-compatible features bump MINOR. Fixes bump PATCH. The Redis wire format changes only
   in a MAJOR version.
 - `version` in `gradle.properties` is the latest released version. The release PR changes it (see below).
+- Pre-releases (`X.Y.Z-alpha.N`, `-beta.N`, `-rc.N`) carry no compatibility promise. Anything the promise below covers, the wire format included, may change between pre-releases and up to `X.Y.Z`. Publish them as GitHub pre-releases.
 - The baseline is JDK 21 (8.x; the `6.x` branch stays on JDK 17), Kotlin metadata and API version 2.2, and Spring Boot 4.x (4.0 is the oldest
   minor that CI tests). Raising any of them is a MAJOR change.
 - What the compatibility promise covers:
   - Covered: `cocache-api` (user API and SPI), the public types of `cocache-core` (including
-    `JoinCacheProxies`, which the docs recommend for non-Spring join caches), `cocache-redis`,
-    `cocache-codec-jackson`, `cocache-spring` and `cocache-coroutines`, the published TCK in `cocache-test`
+    `CoCacheFactory` and `CacheLayers`, and `JoinCacheProxies`, which the docs recommend for non-Spring join
+    caches), `cocache-redis`,
+    `cocache-codec-jackson` and `cocache-spring`, the published TCK in `cocache-test`
     (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`,
-    `AsyncBackendProtocolSpec`, `CacheAccess`, `HookedBackend`, `Concurrency`), the
+    `L1Capability`, `CommandCancellation`, `CacheAccess`, `HookedBackend`, `Concurrency`, `Suspending`), the
     annotations and `CoCacheProperties` keys of the starter, metric names, endpoint paths and the wire
-    format. Sealed types (`Lookup`, `RemoteRead`, `Envelope`) gain subtypes only in a MAJOR version.
+    format. Sealed types (`Lookup`, `L1Read`, `L1Fill`, `Envelope`) gain subtypes only in a MAJOR version.
   - Not covered: auto-configuration classes and other starter wiring (`CacheAssembler`,
     `AnnotatedCacheFactory`, bean methods), `CacheProxies` (used by the starter),
     and the generated `copy` / `componentN` functions of configuration data classes (policies,

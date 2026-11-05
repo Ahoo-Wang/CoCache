@@ -13,60 +13,79 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.core.CacheLayers
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.CoCacheFactory
+import me.ahoo.cocache.core.Layered
+import me.ahoo.cocache.core.Locks
+import me.ahoo.cocache.core.SetStoreSpec
+import me.ahoo.cocache.core.Spec
+import me.ahoo.cocache.core.StoreSpec
+import me.ahoo.cocache.core.VersionedCacheSpec
+import me.ahoo.cocache.core.VersionedStoreSpec
+import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.SmartInitializingSingleton
 
 /**
- * 按声明创建缓存：依次叠加定制器与配置文件中的策略与 key 前缀（`key-prefix`），再交给 [CacheRuntime]。
+ * starter 的装配层（[CacheLayers]，RFC 0005 §4.8）：三层配置与定制器逐字段合并（[PolicyLayering]），并叠加 `key-prefix`。
+ * starter 的 [CoCacheFactory] bean 以它创建缓存，接口式声明、spec bean 与经 `CoCacheFactory` 创建缓存的库都经过它。
  *
- * 所有单例创建完成后校验：配置文件中出现未声明的缓存名时启动失败（多半是拼写错误）。缓存名不区分大小写
- * （环境变量绑定的 key 是小写）；“已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供。
+ * 所有单例创建完成后校验配置文件中的缓存名：未声明的名称按 `cocache.caches-validation` 启动失败（默认）或告警（多半是拼写错误）。
+ * 缓存名不区分大小写（环境变量绑定的 key 是小写）；“已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供。
+ * 指向未分层的缓存（直接经 `CacheRuntime.create` 创建，S20）的条目总是只告警（[UnlayeredConfigurationCheck]）。
+ * 写事务内回源的两个机制按缓存的生效值登记到 `fillModes`（有 spring-tx、使用 starter 的回源钩子时）。
  *
  * 内部实现（starter 接线使用），不在兼容性承诺之内。
  */
 class CacheAssembler(
     private val runtime: CacheRuntime,
-    private val customizers: List<CacheSpecCustomizer>,
+    customizers: List<CacheSpecCustomizer>,
     private val properties: CoCacheProperties,
     private val declaredCacheNames: () -> Set<String> = { emptySet() },
-) : SmartInitializingSingleton {
+    fillModes: TransactionalFillModes? = null,
+) : CacheLayers, SmartInitializingSingleton {
+    private val layering = PolicyLayering(properties, customizers, fillModes)
 
-    fun <K : Any, V : Any> create(spec: CacheSpec<K, V>): Cache<K, V> = withCacheName(spec.name) {
-        val builder = spec.toBuilder()
-        customizers.filter { it.supports(spec.name) }.forEach { it.customize(builder) }
-        val versioned = builder.versioned || builder.versionedLoader != null || builder.versionedAsyncLoader != null
-        val sourced = builder.loader != null || builder.asyncLoader != null || builder.versionedLoader != null ||
-            builder.versionedAsyncLoader != null
-        builder.policy = properties.policyFor(spec.name, builder.policy, versioned, sourced)
-        properties.keyPrefixFor(spec.name)?.let { builder.keyPrefix = it }
-        runtime.create(builder.build())
-    }
+    override fun <K : Any, V : Any> apply(spec: CacheSpec<K, V>, locks: Locks): Layered<CacheSpec<K, V>> =
+        withCacheName(spec.name) { layering.layer(spec, locks, CacheSpecAdapter()) }
 
-    fun <K : Any, E : Any> create(spec: SetCacheSpec<K, E>): SetCache<K, E> = withCacheName(spec.name) {
-        runtime.create(resolve(spec))
-    }
+    override fun <K : Any, V : Any> apply(spec: VersionedCacheSpec<K, V>, locks: Locks): Layered<VersionedCacheSpec<K, V>> =
+        withCacheName(spec.name) { layering.layer(spec, locks, VersionedCacheSpecAdapter()) }
+
+    override fun <K : Any, V : Any> apply(spec: StoreSpec<K, V>, locks: Locks): Layered<StoreSpec<K, V>> =
+        withCacheName(spec.name) { layering.layer(spec, locks, StoreSpecAdapter()) }
+
+    override fun <K : Any, V : Any> apply(spec: VersionedStoreSpec<K, V>, locks: Locks): Layered<VersionedStoreSpec<K, V>> =
+        withCacheName(spec.name) { layering.layer(spec, locks, VersionedStoreSpecAdapter()) }
+
+    override fun <K : Any, E : Any> apply(spec: SetStoreSpec<K, E>, locks: Locks): Layered<SetStoreSpec<K, E>> =
+        withCacheName(spec.name) { layering.layer(spec, locks, SetStoreSpecAdapter()) }
 
     /**
-     * 集合缓存的生效声明：叠加定制器与配置文件之后、交给运行时之前的 spec。驱逐检查也用它得到尚未创建的集合缓存的 `ttl`。
+     * 生效声明：叠加定制器与配置文件之后、交给运行时之前的 spec（不带库的锁定）。驱逐检查也用它得到尚未创建的权威缓存的 `ttl`。
      */
-    internal fun <K : Any, E : Any> resolve(spec: SetCacheSpec<K, E>): SetCacheSpec<K, E> = withCacheName(spec.name) {
-        val builder = spec.toBuilder()
-        customizers.filter { it.supports(spec.name) }.forEach { it.customize(builder) }
-        builder.policy = properties.setPolicyFor(spec.name, builder.policy)
-        properties.keyPrefixFor(spec.name)?.let { builder.keyPrefix = it }
-        builder.build()
+    internal fun resolve(spec: Spec<*, *>): Spec<*, *> = when (spec) {
+        is CacheSpec<*, *> -> apply(spec, Locks.NONE).spec
+        is VersionedCacheSpec<*, *> -> apply(spec, Locks.NONE).spec
+        is StoreSpec<*, *> -> apply(spec, Locks.NONE).spec
+        is VersionedStoreSpec<*, *> -> apply(spec, Locks.NONE).spec
+        is SetStoreSpec<*, *> -> apply(spec, Locks.NONE).spec
     }
 
     override fun afterSingletonsInstantiated() {
         val declared = runtime.cacheNames + declaredCacheNames()
         val unknown = properties.caches.keys.filter { key -> declared.none { it.equals(key, ignoreCase = true) } }
-        check(unknown.isEmpty()) {
-            "${CoCacheProperties.PREFIX}.caches configures undeclared caches $unknown; declared caches: ${declared.sorted()}."
+        if (unknown.isEmpty()) {
+            return
         }
+        val message = "${CoCacheProperties.PREFIX}.caches configures undeclared caches $unknown; declared caches: ${declared.sorted()}."
+        check(properties.cachesValidation == CoCacheProperties.Validation.WARN) { message }
+        log.warn(message)
+    }
+
+    private companion object {
+        private val log = LogFactory.getLog(CacheAssembler::class.java)
     }
 }
 

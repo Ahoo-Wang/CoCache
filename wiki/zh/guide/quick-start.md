@@ -5,7 +5,7 @@ description: 五分钟为 Spring Boot 应用加上二级一致性缓存，确认
 
 # 快速上手
 
-本页带一个 Spring Boot 应用从没有缓存走到一个可用的二级缓存。代码基于 [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example)。
+本页带一个 Spring Boot 应用从没有缓存走到一个可用的二级缓存。代码基于 [`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/example)。
 
 **你需要** JDK 21+、Spring Boot 4，以及 Redis 7+；也可以什么都不装，用第 2 步的内存后端。
 
@@ -15,7 +15,7 @@ description: 五分钟为 Spring Boot 应用加上二级一致性缓存，确认
 
 ```kotlin [Gradle (Kotlin)]
 dependencies {
-    implementation("me.ahoo.cocache:cocache-spring-boot-starter:6.10.0")
+    implementation("me.ahoo.cocache:cocache-spring-boot-starter:8.0.0-alpha.1")
     implementation("org.springframework.boot:spring-boot-starter-data-redis")
     implementation("org.springframework.boot:spring-boot-starter-actuator") // 可选：cocache 端点
 }
@@ -23,7 +23,7 @@ dependencies {
 
 ```groovy [Gradle (Groovy)]
 dependencies {
-    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:6.10.0'
+    implementation 'me.ahoo.cocache:cocache-spring-boot-starter:8.0.0-alpha.1'
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
     implementation 'org.springframework.boot:spring-boot-starter-actuator' // 可选：cocache 端点
 }
@@ -33,7 +33,7 @@ dependencies {
 <dependency>
     <groupId>me.ahoo.cocache</groupId>
     <artifactId>cocache-spring-boot-starter</artifactId>
-    <version>6.10.0</version>
+    <version>8.0.0-alpha.1</version>
 </dependency>
 <dependency>
     <groupId>org.springframework.boot</groupId>
@@ -48,7 +48,7 @@ dependencies {
 
 :::
 
-如果用到 starter 之外的模块（例如用于 [Kotlin 协程](./coroutines.md) 的可选模块 `me.ahoo.cocache:cocache-coroutines`，6.4+），可以引入 BOM `me.ahoo.cocache:cocache-bom` 统一管理所有 CoCache 模块的版本。
+如果用到 starter 之外的模块，可以引入 BOM `me.ahoo.cocache:cocache-bom` 统一管理所有 CoCache 模块的版本。[Kotlin 协程](./coroutines.md)不需要额外的模块：挂起视图是 core 的一部分。
 
 ## 2. 连接 Redis {#redis}
 
@@ -71,7 +71,7 @@ cocache:
 
 ## 3. 声明缓存 {#declare}
 
-缓存是一个继承 `Cache<K, V>` 的接口。把它列在 `@EnableCoCache` 中：
+缓存是一个继承 `Cache<K, V>` 的接口，它是 loader 能重新取得的数据的派生副本。唯一副本在 Redis 中的数据改用 [`Store`](./store.md)：起决定作用的问题是，Redis 丢了一个 key，本进程能否重建它（见[选择类型](./caches.md#types)）。把这个接口列在 `@EnableCoCache` 中：
 
 ::: code-group
 
@@ -117,7 +117,7 @@ public class App {}
 
 ## 4. 提供 loader {#loader}
 
-两级都未命中时，CoCache 调用缓存的 `CacheLoader`。把它声明为 bean，按泛型类型匹配：
+两级都未命中时，CoCache 调用缓存的 `CacheLoader`。把它声明为 bean，按泛型类型匹配。没有匹配到 loader 的 `Cache` 接口启动失败，除非它声明了 `@CoCache(source = CoCache.Source.EXTERNAL)`，因为值由调用方提供：
 
 ::: code-group
 
@@ -196,7 +196,7 @@ curl localhost:8080/actuator/cocache/UserCache/42     # 这个 key 在 L2 与 Re
 
 ## 不用 Spring {#without-spring}
 
-引入 `cocache-core`、`cocache-redis` 与 `cocache-codec-jackson`（版本相同）。每个进程创建一个 `CacheRuntime`，再按声明创建缓存：
+引入 `cocache-core`、`cocache-redis` 与 `cocache-codec-jackson`（版本相同）。每个进程创建一个 `CacheRuntime`，再按声明创建缓存。`CacheRuntime.create` 返回 spec 声明的类型：`cacheSpec` 得到 `Cache`，`storeSpec` 得到 `Store`，依此类推。要遵从应用配置的库改为经 [`CoCacheFactory`](./caches.md#factory) 创建缓存：
 
 ::: code-group
 
@@ -223,7 +223,7 @@ val users: Cache<String, User> = runtime.create(
     }
 )
 
-// 关闭时：先关缓存，再关后端
+// 关闭时：先关运行时（它会等待在途的 Redis 步骤），再关后端
 runtime.close()
 backend.close()
 ```
@@ -260,5 +260,5 @@ backend.close();
 ## 下一步 {#next}
 
 - [工作原理](./concepts.md)：读取、写入与陈旧度背后的心智模型。
-- [声明缓存](./caches.md)：key、loader、编解码、spec bean 与集合缓存。
+- [选择与声明缓存](./caches.md)：五种缓存类型与选出类型的那个问题、key、编解码与 spec bean。每个类型有自己的指南：[Cache](./cache.md)、[VersionedCache](./versioned-cache.md)、[Store](./store.md)、[VersionedStore](./versioned-store.md)、[SetStore](./set-store.md)。
 - [配置参考](./configuration.md)：所有 `cocache.*` 配置项。

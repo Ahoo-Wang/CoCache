@@ -30,7 +30,11 @@ import io.lettuce.core.resource.EpollProvider
 import io.lettuce.core.resource.IOUringProvider
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.InvalidationChannel
-import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1RejectedException
+import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.NodeId
 import java.time.Duration
 
 /**
@@ -55,11 +59,6 @@ class RedisBackend private constructor(
     val clientName: String? = options.clientName
 
     override val format: Int = RedisScripts.FORMAT
-
-    /**
-     * 按版本有序的写入（6.8）：[RedisScripts.PUT_IF_NEWER]，一次往返。
-     */
-    override val versionedWrites: Boolean = true
 
     /**
      * 失效通道模式。
@@ -92,7 +91,16 @@ class RedisBackend private constructor(
         }) { channelMode == RedisChannelMode.PUBSUB && probeAtomicBroadcast() }
     }
 
+    /**
+     * 失效通道：发布挂起（Lettuce 的异步命令，不占线程），订阅阻塞（RFC 0005 §4.3）。
+     */
     override val channel: InvalidationChannel
+        get() = invalidationChannel
+
+    /**
+     * 具体类型的通道（模块内部，供测试查看订阅状态）。
+     */
+    internal val redisChannel: RedisInvalidationChannel
         get() = invalidationChannel
 
     /**
@@ -118,18 +126,55 @@ class RedisBackend private constructor(
         } catch (e: RedisException) {
             log.info { "Cannot read maxmemory-policy from INFO memory (${e.message})." }
             null
+        } catch (e: L1RejectedException) {
+            log.info { "Cannot read maxmemory-policy from INFO memory (${e.message})." }
+            null
         }
     }
 
-    override fun store(namespace: String): RemoteStore {
-        val channel = if (atomicBroadcast) {
-            RedisInvalidationChannel.channelOf(
-                namespace
-            ).toByteArray(Charsets.UTF_8)
-        } else {
-            ByteArray(0)
+    /**
+     * [keyspace] 的存储：原生挂起的 [RedisL1Store]（RFC 0005 §4.3），与后端共用连接。提供全部能力：条件读写、按版本有序的写入
+     * （[RedisScripts.PUT_IF_NEWER]，一次往返）与集合成员的增删。
+     *
+     * 创建时探测实际频道 `{keyPrefix}inv:{namespace}`（[probeChannel]），阻塞一次往返；无权发布时抛出 [IllegalStateException]。
+     */
+    override fun store(keyspace: Keyspace): L1Store {
+        val channel = RedisInvalidationChannel.channelOf(keyspace).toByteArray(Charsets.UTF_8)
+        probeChannel(keyspace, channel)
+        return RedisL1Store(connections, if (atomicBroadcast) channel else ByteArray(0), invalidateBatchSize)
+    }
+
+    /**
+     * 按存储探测实际频道（RFC 0005 §4.7，K8）：向 [keyspace] 的频道发布一个零 key 的帧（监听者什么也不做）。原子广播时经探测脚本，
+     * 以该前缀下的 key（[Keyspace.storagePrefix]）为 `KEYS[1]`，与写入脚本受同样的 key 与频道 ACL 约束；否则是普通的发布
+     * （`PUBLISH` 或 `SPUBLISH`，同引擎写入之后的发布）。
+     *
+     * 构造时的原子广播探测发往固定的探测频道，代表不了带前缀的实际频道。漏配时每个写脚本都在 `PUBLISH` 处报错，而 Redis 脚本出错
+     * 不回滚，之前的 `SET` / `DEL` 已经生效，其它节点陈旧到 `localMaxAge`。所以无权发布（ACL）时创建失败，不降级为非原子广播：
+     * 这是配置错误，不是环境属性。超时、断线等其它错误照常抛出。
+     */
+    private fun probeChannel(keyspace: Keyspace, channel: ByteArray) {
+        try {
+            if (atomicBroadcast) {
+                val key = keyspace.storagePrefix.toByteArray(Charsets.UTF_8)
+                connections.join(
+                    connections.evalAsync<Any?>(RedisScripts.PROBE, listOf(key), listOf(channel, PROBE_FRAME))
+                )
+            } else {
+                invalidationChannel.publishBlocking(channel, PROBE_FRAME)
+            }
+        } catch (e: RedisException) {
+            if (!isPermissionDenied(e)) {
+                throw e
+            }
+            throw IllegalStateException(
+                "Redis denied publishing to the invalidation channel[${String(channel, Charsets.UTF_8)}] of $keyspace: allow the channel " +
+                    "pattern [${RedisInvalidationChannel.channelPatternOf(keyspace)}] in the ACL of this connection's user " +
+                    "(atomic broadcast also needs the key pattern [~${keyspace.storagePrefix}*]). Without it every write " +
+                    "would fail at its broadcast after changing L1. Redis replied: ${e.message}",
+                e
+            )
         }
-        return RedisRemoteStore(connections, channel, invalidateBatchSize)
     }
 
     /**
@@ -138,7 +183,13 @@ class RedisBackend private constructor(
      */
     private fun probeAtomicBroadcast(): Boolean {
         return try {
-            connections.eval<List<Any?>>(RedisScripts.PROBE, listOf(PROBE_KEY), listOf(PROBE_CHANNEL))
+            connections.join(
+                connections.evalAsync<List<Any?>>(
+                    RedisScripts.PROBE,
+                    listOf(PROBE_KEY),
+                    listOf(PROBE_CHANNEL, PROBE_FRAME)
+                )
+            )
             true
         } catch (e: RedisException) {
             if (!isBroadcastUnsupported(e)) {
@@ -172,12 +223,24 @@ class RedisBackend private constructor(
 
     companion object {
         private val log = KotlinLogging.logger {}
-        private val PROBE_KEY = "cocache:probe:{a}".toByteArray(Charsets.UTF_8)
-        private val PROBE_CHANNEL = "cocache:probe:{b}".toByteArray(Charsets.UTF_8)
+
+        /**
+         * 原子广播探测的 key 与频道（RFC 0005 §4.7）：放在默认前缀的内部位置 `cocache:!…`，任何命名空间都产生不了它
+         * （命名空间为 `probe` 的缓存也不会与它相撞）；两个 hash tag 落在不同的 slot。
+         */
+        internal const val PROBE_KEY_NAME = "cocache:!probe:{a}"
+        internal const val PROBE_CHANNEL_NAME = "cocache:!probe:{b}"
+        private val PROBE_KEY = PROBE_KEY_NAME.toByteArray(Charsets.UTF_8)
+        private val PROBE_CHANNEL = PROBE_CHANNEL_NAME.toByteArray(Charsets.UTF_8)
+
+        /**
+         * 探测发布的帧：零 key 的合法帧，来源为全零的节点身份（监听者什么也不做）。
+         */
+        private val PROBE_FRAME = InvalidationFrame.encode(NodeId(ByteArray(NodeId.SIZE)), emptyList())
 
         // Redis 7.0 在脚本内被 ACL 拒绝 PUBLISH 时报 "can't publish to the channel"，7.2+ 报 NOPERM
-        private val UNSUPPORTED_BROADCAST_ERRORS =
-            listOf("CROSSSLOT", "different slot", "NOPERM", "No permissions", "can't publish to the channel")
+        private val PERMISSION_ERRORS = listOf("NOPERM", "No permissions", "can't publish to the channel")
+        private val UNSUPPORTED_BROADCAST_ERRORS = listOf("CROSSSLOT", "different slot") + PERMISSION_ERRORS
 
         /**
          * TCP keepalive：空闲 15 s 后每 5 s 探测一次，连续 3 次无响应即判定断开（需要传输层支持扩展选项，否则使用系统默认间隔）。
@@ -203,10 +266,17 @@ class RedisBackend private constructor(
             }
         }
 
-        internal fun isBroadcastUnsupported(error: Throwable): Boolean {
+        internal fun isBroadcastUnsupported(error: Throwable): Boolean = matches(error, UNSUPPORTED_BROADCAST_ERRORS)
+
+        /**
+         * ACL 拒绝（key、频道或命令）。
+         */
+        internal fun isPermissionDenied(error: Throwable): Boolean = matches(error, PERMISSION_ERRORS)
+
+        private fun matches(error: Throwable, patterns: List<String>): Boolean {
             return generateSequence(error) { it.cause.takeIf { cause -> cause !== it } }
                 .mapNotNull { it.message }
-                .any { message -> UNSUPPORTED_BROADCAST_ERRORS.any { message.contains(it, ignoreCase = true) } }
+                .any { message -> patterns.any { message.contains(it, ignoreCase = true) } }
         }
 
         /**
@@ -240,7 +310,7 @@ class RedisBackend private constructor(
          * 集群中它替换 Lettuce 默认的 60 s 连接超时，不增加开销。
          * 关闭维护期间的放宽（Lettuce 7 默认在收到维护通知时把超时放宽 10 s），上界始终是 [commandTimeout]，与同步等待一致。
          * 这一项只有 Lettuce 7 才有（`relaxedTimeoutsDuringMaintenance`、`DISABLED_TIMEOUT`）：Spring Boot 4.0 管理的 Lettuce 6.8
-         * 没有维护通知，也没有这两个符号，此时跳过，维护期间的超时行为保持 Lettuce 的默认（6.x 上即不放宽）。
+         * 没有维护通知，也没有这两个符号，此时跳过，维护期间的超时行为保持 Lettuce 的默认（Lettuce 6 上即不放宽）。
          */
         internal fun timeoutOptions(commandTimeout: Duration): TimeoutOptions {
             val builder = TimeoutOptions.builder()
@@ -251,7 +321,7 @@ class RedisBackend private constructor(
         }
 
         /**
-         * 关闭维护期间的超时放宽；当前 Lettuce 没有这一项（6.x）时什么也不做并返回 `false`。
+         * 关闭维护期间的超时放宽；当前 Lettuce 没有这一项（Lettuce 6）时什么也不做并返回 `false`。
          * [relax] 只供测试替换：符号在执行到时才解析，缺失时抛出 `NoSuchMethodError` / `NoSuchFieldError`。
          */
         internal fun disableMaintenanceRelaxation(

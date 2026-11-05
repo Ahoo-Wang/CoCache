@@ -15,7 +15,6 @@ package me.ahoo.cocache.example.controller
 
 import kotlinx.coroutines.delay
 import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.coroutines.suspending
 import me.ahoo.cocache.example.cache.UserCache
 import me.ahoo.cocache.example.model.User
 import me.ahoo.cocache.example.repository.ProfileRepository

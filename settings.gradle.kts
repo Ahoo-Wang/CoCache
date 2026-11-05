@@ -23,7 +23,6 @@ listOf(
     "api",
     "core",
     "spring",
-    "coroutines",
     "redis",
     "codec-jackson",
     "spring-boot-starter",

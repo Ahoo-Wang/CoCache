@@ -19,12 +19,12 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 1. 在出问题的实例上[查看该 key](./observability.md#inspect-key)。`local` 比 `remote` 旧即可确认漏掉了消息，`local.expiresAt` 是最晚的自愈时间。
 2. 查看该实例在写入时间前后的 `cocache.resets` 与日志，找 `Invalidation channel heartbeat failed` 或重连。
-3. 确认该实例与写入方使用相同的 `cocache.redis.channel-mode`、相同的命名空间、相同的 Redis。[健康检查](./observability.md#health)会显示 `channelMode`。模式不同的实例永远收不到对方的消息。
+3. 确认该实例与写入方使用相同的 `cocache.redis.channel-mode`、相同的 key 前缀与命名空间、相同的 Redis。前缀是频道名的一部分。[健康检查](./observability.md#health)会显示 `channelMode`。模式不同的实例永远收不到对方的消息。
 4. 检查 Redis 是否断开了订阅者：`redis-cli INFO stats`（较新版本有 `client_output_buffer_limit_disconnections`）与 `CONFIG GET client-output-buffer-limit`（`pubsub` 类）。
 
 **处理**。
 
-- 让所有实例的通道模式、命名空间与 Redis 保持一致。
+- 让所有实例的通道模式、key 前缀、命名空间与 Redis 保持一致。
 - 订阅者因输出缓冲区限制被断开时，调高 `pubsub` 的限制，或减少消息量（用 `invalidateAll` 批量失效，或在 Redis Cluster 中使用 `sharded` 模式）。
 - 如果这个窗口对你的数据来说太长，调低 `local-max-age`。它就是这类故障的上界。
 
@@ -101,39 +101,39 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 **现象**。`cocache.write.failures` 与 `cocache.invalidation.retries` 上升，健康详情中的 `pendingInvalidations` 大于 0。最坏情况下 `cocache.invalidations.dropped` 上升，并有 `ERROR` 日志 `Cache[…] - invalidate […] dropped: L1 keeps the stale value until its remote TTL[…] expires.`
 
-**原因**。某次 `invalidate` 没能写到 Redis。在有 loader 的缓存上，默认（`invalidate-failure: retry`）下，本地效果立即生效，调用正常返回，失效在后台重试：最多 8 次，退避从 100 ms 起翻倍到 10 s，最多排队 10,000 个。重试期间，本实例上该 key 的未命中会跳过 L1 直接回源。其它实例的 L1 中仍是旧值。
+**原因**。某次 `Cache.invalidate` 没能写到 Redis。默认（`invalidate-failure: retry`）下，本地效果立即生效，调用正常返回，失效在后台重试：最多 8 次，退避从 100 ms 起翻倍到 10 s，最多排队 10,000 个。重试期间，本实例上该 key 的未命中会跳过 L1 直接回源。其它实例的 L1 中仍是旧值。
 
-重试耗尽、队列已满或应用在仍有重试时关闭，失效就会被放弃。此时 L1 保留旧值直到其剩余 `ttl` 结束（`ttl-forever` 时永远保留），每个实例都可能把它重新加载进 L2。
+重试耗尽、队列已满或应用在仍有重试时关闭，失效就会被放弃。此时 L1 保留旧值直到其剩余 `ttl` 结束（`ttl: forever` 时永远保留），每个实例都可能把它重新加载进 L2。
 
 **检查**。Redis 的可用性与延迟、`cocache.remote.failures`，以及 `ERROR` 日志中被放弃的 key。
 
 **处理**。
 
 - Redis 恢复后再次失效被放弃的 key：`DELETE /actuator/cocache/{name}/{key}`，或者 `cache.invalidateAll(keys)`。
-- 想让调用方失败而不是重试，设置 `invalidate-failure: throw`，调用会抛出 `CacheWriteException`。没有 loader 的缓存默认就是这样：Redis 是它的唯一副本，延迟的重试会删掉失败之后其它实例写入的值。
+- 想让调用方失败而不是重试，设置 `invalidate-failure: throw`，调用会抛出 `CacheWriteException`。权威类型的删除（`Store.delete` 与 `deleteIfMatch`、`purge`、`SetStore.clear`）与 `VersionedCache.evict` 总是抛出、从不排队：延迟地删除唯一副本可能删掉失败之后写入的值，重试的 `DEL` 会丢掉版本。见[写入时 Redis 故障](../guide/freshness.md#redis-down)。
 - 要调整重试策略，自行声明 `CacheRuntime` bean，用 `RetryPolicy(maxAttempts, initialBackoff, maxBackoff, capacity)` 构建。存在这样的 bean 时，starter 的运行时会退让。
 - 优雅停机，让退出时的重试队列尽量短。
 
 ## Redis 不可用 {#redis-down}
 
-**现象**。`cocache.remote.failures`、`cocache.degraded.fills` 与 `cocache.write.failures` 上升，数据源负载上升，健康检查变为 `DOWN`。
+**现象**。`cocache.remote.failures`、`cocache.degraded.fills` 与 `cocache.write.failures` 上升，数据源负载上升，健康检查变为 `DOWN`。没有数据源的读取（见下表）上升的是 `cocache.reads.unknown` 而不是 `cocache.degraded.fills`，它们的调用方得到 `CacheReadException`。
 
 **CoCache 的行为**。
 
 | 操作 | Redis 故障期间 |
 |------|----------------|
-| `get`、`getAll`、`lookup` | 默认（`read-failure: degrade`）：从数据源加载，结果以 `degraded-local-max-age`（10 s）留在 L2 中，不写 L1。`read-failure: throw` 时抛出 `CacheReadException`。没有 loader（缓存没有 loader，也不是 `get(key, loader)`）时默认抛出 `CacheReadException`，什么也不缓存；显式设置 `read-failure: degrade` 时返回 `null`（`getAll` 中缺席），同样什么也不缓存 |
+| 有数据源的读取（有 loader 的 `Cache` 或 `VersionedCache` 上的 `get`、`getAll`、`lookup`，或 `get(key, loader)`） | 默认（`read-failure: degrade`）：从数据源加载，结果以 `degraded-local-max-age`（10 s）留在 L2 中，不写 L1。`read-failure: throw` 时是 [`Lookup.Unknown`](../guide/caches.md#unknown)，于是 `get` 抛出 `CacheReadException` |
+| 没有数据源的读取（`Store`、`VersionedStore` 或 `SetStore`，或外部来源的 `Cache` 上不带 loader 的读取） | `Lookup.Unknown`：`get` 抛出 `CacheReadException`，`lookup` 返回 `Unknown`，什么也不缓存。`getAll` 先完成其它 key，再抛出带 `unknownKeys` 与 `partialResult` 的异常。spec 上设置 `unknownRead = ABSENT`（`SetStore` 不支持）时返回 `null`（`getAll` 中缺席），同样什么也不缓存。计入 `cocache.reads.unknown` |
 | 填充、释放 lease、刷新 | 尽力而为：记录日志并计数，从不抛出 |
-| `invalidate`、`invalidateAll` | 本地效果立即生效，然后在后台重试（[见上文](#invalidations-dropped)）。`invalidate-failure: throw`（没有 loader 时的默认值）时抛出 `CacheWriteException` |
-| `put`、`SetCache` 写入 | 本地效果立即生效，然后抛出 `CacheWriteException`。超时之后，写入可能已经到达 Redis；此时仍在等待发出的写入则被丢弃，之后不会再生效。这些调用幂等，可以安全重试。被中断的调用方等它的命令完成或超时，并保留中断标志 |
-| `SetCache` 读取 | 抛出 Redis 异常：没有可以降级的数据源 |
+| `Cache.invalidate`、`invalidateAll` | 本地效果立即生效，然后在后台重试（[见上文](#invalidations-dropped)）。`invalidate-failure: throw` 时抛出 `CacheWriteException` |
+| 其它所有写入：`put`、`putAll`、条件写入与按版本的写入、删除、`evict`、`purge`、`SetStore` 写入 | 本地效果立即生效，然后抛出 `CacheWriteException`。命令在发出之前被拒绝时，它的 `outcomeUnknown` 为 `false`：写入没有发生。超时之后为 `true`：写入可能已经到达 Redis；此时仍在等待发出的写入则被丢弃，之后不会再生效。被中断的调用方等它的命令完成或超时，并保留中断标志。哪些重试是安全的，见[写入时 Redis 故障](../guide/freshness.md#redis-down) |
 | 通道 | 心跳失败，所有 L2 被清空，订阅恢复时再清空一次 |
 
 断线期间命令被拒绝而不是缓冲，每条命令最多等待 `command-timeout`（2 s）。所以 Redis 不可用时，每次未命中的代价是一次快速失败加一次加载。超时的读取之后仍可能在 Redis 中执行并取得该 key 的 lease；超时的填充可能在发出之前就被丢弃，留下它的 lease。CoCache 随即尽力释放这些 lease，其它实例不必为这个 key 等待 `lease-wait`。
 
 **处理**。恢复 Redis。在此期间 `load-max-concurrent` 保护数据源。恢复后不需要额外操作：重试会自行完成，每个实例的订阅恢复时都会重置 L2。检查 `cocache.invalidations.dropped`，对被放弃的 key 重新失效。
 
-**故障切换之后**。异步复制可能丢失最近的写入，包括失效，所以切换前刚被失效的值可能重新出现在 L1 中，持续到其 `ttl`。如果在意这一点，切换后失效相关的 key 或缓存。
+**故障切换之后**。异步复制可能丢失最近的写入，包括失效，所以切换前刚被失效的值可能重新出现在 L1 中，持续到其 `ttl`。如果在意这一点，切换后失效相关的 key 或缓存。对 `Store`、`VersionedStore` 与 `SetStore` 来说，丢失的写入就是没了：Redis 保存的是唯一副本（见[持久化](./index.md#failover)）。
 
 ## 损坏或无法读取的载荷 {#corrupt-payloads}
 
@@ -141,10 +141,10 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 **原因**。某个 L1 值无法解码：
 
-- **外来内容**（格式 `0`）：不是 CoCache 写入的，例如旧客户端、脚本，或者前缀与命名空间相同的另一个应用。
-- **编解码失败**（格式 `1`）：值的类发生了不兼容的变化（字段改名、类型变化），或者两个应用用不同的编解码器或值类型共享同一个缓存。
+- **外来内容**（格式 `0` 或 `1`）：不是 CoCache 写入的内容，或本版本读不懂的格式，例如来自脚本，或者前缀与命名空间相同的另一个应用。
+- **编解码失败**（格式 `2`）：值的类发生了不兼容的变化（字段改名、类型变化），或者两个应用用不同的编解码器或值类型共享同一个缓存。
 
-**CoCache 的行为**。没有数据源的读取（`SetCache`，或没有 loader 的 `Cache`）无从重新加载，因此抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`；这类缓存不接受会删除唯一副本的 `foreign-format: reclaim`），key 保持原样，计入 `cocache.unknown.formats` 而不是 `cocache.reclaims`。在这类内容上调用 `SetCache.add` 或 `remove` 同样失败，抛出 `CacheWriteException`，key 不变（`put` 会整体覆盖它）。CoCache 5.x 留下的内容需要[迁移](../guide/migration-6.md#redis-as-store)。有数据源的读取同样从不盲目删除。它请求 Redis：仅当 key 仍是它读到的那份字节时（在脚本内比较 SHA-1），才把 key 转为 lease。成功则回源并正常填充；key 在此期间变了，就不写 L1 直接回源。每次读取最多回收一次。
+**CoCache 的行为**。没有数据源的读取（`Store`、`VersionedStore` 或 `SetStore`，或外部来源的 `Cache` 上不带 loader 的读取）无从重新加载，因此抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`；回收可能删除唯一副本），key 保持原样，计入 `cocache.unknown.formats` 而不是 `cocache.reclaims`。在这类内容上调用 `SetStore.add` 或 `remove`、条件写入或按版本的写入、`evict` 同样失败，抛出 `CacheWriteException`，key 不变（`put` 会整体覆盖它）。有数据源的读取同样从不盲目删除。它请求 Redis：仅当 key 仍是它读到的那份字节时（在脚本内比较 SHA-1），才把 key 转为 lease。成功则回源并正常填充；key 在此期间变了，就不写 L1 直接回源。每次读取最多回收一次。
 
 **处理**。
 
@@ -155,7 +155,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 **现象**。`cocache.unknown.formats` 上升。查看结果显示 `UNREADABLE`，原因是 `Written by a newer format[…] than this node[…]`。
 
-**原因**。某个实例写入了本实例不认识的更新线格式。本实例回源、不写 L1，结果以 `degraded-local-max-age` 留在 L2 中，这样新旧实例不会互相覆盖。没有 loader 的 `Cache` 无从回源：读取抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），而不是回答“不存在”。`SetCache` 没有可回源的数据源：在本实例上读取更新格式的集合会抛出 `IllegalStateException`；不是 CoCache 写入的内容（例如遗留的原生 Redis Set）抛出 `CacheReadException`（见[损坏或无法读取的载荷](#corrupt-payloads)）。在更新格式的集合上调用 `SetCache.add` 或 `remove` 抛出 `CacheWriteException`，集合不变。
+**原因**。某个实例写入了本实例不认识的更新线格式，或本实例不认识的必须理解的标志位。有数据源的读取回源、不写 L1，结果以 `degraded-local-max-age` 留在 L2 中，这样新旧实例不会互相覆盖。外部来源的 `Cache` 上不带 loader 的读取把该 key 当作未填充，返回 `null`；带调用级 loader 的读取照常加载。`Store` 与 `VersionedStore` 没有数据源：读取抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），而不是回答“不存在”。在本实例上读取更新格式的 `SetStore` 集合会抛出 `ForeignFormatException`（一个 `IllegalStateException`）；不是 CoCache 写入的内容（例如遗留的原生 Redis Set）抛出 `CacheReadException`（见[损坏或无法读取的载荷](#corrupt-payloads)）。在更新格式的集合上调用 `SetStore.add` 或 `remove` 抛出 `CacheWriteException`，集合不变。
 
 **处理**。格式升级滚动发布期间属于正常，所有实例升级到新版本后就会停止。非发布期间出现时，找出运行新版本的实例。见[滚动发布](./index.md#rolling-deploys)。
 
@@ -165,17 +165,27 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 
 | 错误信息（节选） | 原因 | 处理 |
 |------------------|------|------|
-| `CoCache 6.0 removed these properties: [cocache.…] - …` | 使用了已不存在的配置项 | 按信息改名。见[从 5.x 升级](../guide/migration-6.md#properties) |
-| `cocache.caches configures undeclared caches [x]; declared caches: […]` | `cocache.caches.[name]` 中出现了不存在的缓存，通常是拼写错误。缓存名不区分大小写匹配 | 修正名称或删除该项 |
-| `Cache[x] - … must be positive …`、`refreshWindow[…] must be less than ttl[…] - ttlJitter[…]`、`refreshWindow[…] must be less than localMaxAge[…]` | 所有配置层叠加之后策略不合法 | 修正取值。不写单位的时长按秒解析 |
+| `cocache.caches configures undeclared caches [x]; declared caches: […]` | `cocache.caches.[name]` 中出现了不存在的缓存，通常是拼写错误。缓存名不区分大小写匹配 | 修正名称或删除该项。`cocache.caches-validation: warn` 把它改为告警（见[校验](../guide/configuration.md#validation)） |
+| `cocache.defaults.cache.ttl: "60" needs a unit, e.g. 60s, 5m, PT2M.` / `… is not a duration; write it with a unit …` / `… must be positive; write unlimited for no limit.` | 时长没有单位（包括 `cocache.redis.*`）、哨兵值写错，或 `load-max-concurrent: 0` | 写上单位或哨兵值：`forever`、`off`、`unlimited`（见[时长](../guide/configuration.md#durations)） |
+| `Cache[x] - cocache.caches.x.… doesn't apply to …` | 按缓存的配置项是该缓存类型没有的字段，例如 `Store` 上的 `refresh-window`（见[哪些配置项适用](../guide/configuration.md#applicability)） | 删除该配置项。`cocache.caches-validation: warn` 时只告警 |
+| `Cache[x] - cocache.caches.x.… is locked by …; list … in cocache.caches.x.unlock to override it.` | 创建这个缓存的库锁定了该字段 | 删除该条目；有意覆盖库时在 `unlock` 中列出该字段（见[锁定](../guide/configuration.md#locks)） |
+| `Cache[x] - customizer … changed …, which is locked by ….` / `customizer … changed the data source …` | `CacheSpecCustomizer` 修改了被锁定的字段、布局或 loader | 在 `supports(cacheName)` 中排除这个缓存，或只修改未锁定的策略字段 |
+| `Cache[x] - … must be positive …`、`refreshWindow[…] must be less than ttl[…] - ttlJitter[…]`、`refreshWindow[…] must be less than localMaxAge[…]` | 所有配置层叠加之后策略不合法，由声明引起，或牵涉 `cocache.caches.[name]` 所设的字段。只由全局层引起的冲突改为关闭窗口（见[校验](../guide/configuration.md#validation)） | 修正取值 |
+| `VersionedStore[x] - tombstones need a finite lifetime: set policy.tombstoneTtl.` | `VersionedStore` 上的 `tombstone-ttl: forever` | 使用覆盖重复投递窗口的有限寿命 |
+| `Authoritative caches […] keep their only copy in Redis, but maxmemory-policy {…} can evict them when memory is full. …` | 有 `Store`、`VersionedStore` 或 `SetStore` 时使用了 `allkeys-*` | 改用 `noeviction`；它们都没有有限 `ttl` 时也可以用 `volatile-*`（见[驱逐检查](../guide/configuration.md#eviction-check)） |
+| `Cannot read maxmemory-policy (INFO memory) to check that the authoritative caches […] keep their only copy in Redis. …` | Redis 用户不能执行 `INFO` | 授予 `+info`，或把 `cocache.redis.assume-maxmemory-policy` 设为部署实际的策略 |
+| `Authoritative caches […] have a finite ttl, so maxmemory-policy {…} can evict them before they expire …` | `volatile-*` 且 `cocache.redis.store-eviction-check: fail` | 改用 `noeviction`、去掉 `ttl`，或以 `store-eviction-check: warn` 或 `off` 接受它 |
 | `Cache[x] - @CoCache.<attribute> = FOREVER is not supported; FOREVER is only allowed for @CoCache.ttl and @CaffeineCache.expireAfterAccess.` | 在 `ttl` 与 `@CaffeineCache.expireAfterAccess` 以外的属性上使用了 `FOREVER` | 改用具体时长 |
-| `Cache[x] already exists.` / `Namespace[x] is already used by another cache.` | 两个声明使用了相同的缓存名或命名空间，例如一个接口与一个 spec bean | 改名其中一个，或设置不同的 `namespace` |
+| `Cache[x] already exists.` / `Namespace[x] with keyPrefix[p] is already used by another cache.` | 两个声明使用了相同的缓存名，或相同的前缀与命名空间，例如一个接口与一个 spec bean | 改名其中一个，或设置不同的 `namespace` 或 `keyPrefix` |
+| `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | 命名空间含 `:` 或字符集之外的字符，常见于把 key 前缀写进了命名空间 | 按信息的建议：把最后一个 `:` 及之前的部分放进 `keyPrefix` |
+| `Redis denied publishing to the invalidation channel[…] of Keyspace(…): allow the channel pattern [&…inv:*] …` | Redis ACL 不放行该缓存的频道。创建缓存时会向它发布一个空帧，所以缺少的权限在启动时暴露，而不是在每次写入时 | 放行信息中的模式，见 [Redis ACL](./index.md#acl) |
 | `Cannot register cache interface[…]: the bean name[x] is already in use.` / `Cannot register cache bean[x] for spec bean[…]` | 缓存的 bean 名与其它 bean 冲突 | 修改缓存名（`@CoCache(name)`）或 spec bean 名 |
-| `Cache interface[…] must extend Cache with concrete type arguments.` / `Cache spec bean[…] must declare its generic types` | 无法解析泛型 | 使用具体类型，并把 spec 工厂方法的返回类型声明为 `CacheSpec<K, V>` |
-| `Cache interface[…] declares abstract methods that do not match any Cache method: […]` | 接口上有多余的抽象方法 | 改为 `default` 方法 |
+| `Cache interface[…] must extend Store with concrete type arguments.`（五种类型都可能） / `Cache spec bean[…] must declare its generic types` | 无法解析泛型 | 使用具体类型，并在 spec 工厂方法的返回类型中写出，如 `CacheSpec<K, V>` 或 `StoreSpec<K, V>` |
+| `Cache interface[…] declares abstract methods that do not match any Store method: […]`（五种类型都可能） | 接口上有多余的抽象方法 | 改为 `default` 方法 |
 | `Multiple CacheLoader beans match …` / `Multiple Codec beans match …` | 一个缓存有多个候选 | `@CoCache(loader = "beanName")` / `@CoCache(codec = "beanName")` |
-| `@CoCache(loader = …) is not supported on SetCache interface[…]` | `SetCache` 没有数据源 | 去掉 loader，或改用 `Cache<K, Set<E>>` |
-| `Cache[x] - foreignFormat = RECLAIM needs a data source …` / `SetCache[x] - foreignFormat = RECLAIM is not supported …` | 没有 loader 的缓存或 `SetCache` 设置了 `foreign-format: reclaim`。Redis 中是唯一副本，回收读不懂的内容就是删除它 | 去掉这项设置，或用 `fail`（没有数据源时的默认值）。`cocache.defaults.foreign-format: reclaim` 跳过这些缓存，只有按缓存的设置会失败 |
+| `… must extend exactly one of […]` | 接口没有继承五种[缓存类型](../guide/caches.md#types)中的任何一种，或继承了多种 | 只继承其中一种 |
+| `Cache interface[…] has no data source: no CacheLoader or AsyncCacheLoader bean matches …` / `VersionedCache interface[…] has no versioned data source …` | 没有与缓存 key、值类型匹配的 loader bean | 声明 loader bean，用 `@CoCache(loader)` 指定一个；调用方提供值时声明 `@CoCache(source = EXTERNAL)`；数据无法重建时改为继承 `Store` / `VersionedStore` |
+| `@CoCache(loader = …) is not supported on Store interface[…]`（`VersionedStore`、`SetStore` 同理） / `@CoCache(source = EXTERNAL) is only supported on Cache interfaces …` | 权威类型没有数据源 | 去掉该属性；数据可以重建时改为继承 `Cache` / `VersionedCache` |
 | `Cannot create cache[x] - no CoherenceBackend is available: …` | 既没有 Spring Data Redis 连接信息，也没有后端 bean | 配置 `spring.data.redis.*`，本地运行时设置 `cocache.backend: memory`，或声明 `CoherenceBackend` bean |
 | `Cannot create cache[x] - CoCache is disabled (cocache.enabled=false)` | CoCache 关闭时仍声明了缓存 | 启用它，或删除这些声明 |
 | `CoCache does not support Redis master-replica (spring.data.redis.masterreplica.*)` | 静态主从 | 使用单机、Sentinel 或 Cluster |
@@ -212,12 +222,18 @@ orderInvalidator.invalidate("OrderCache", "7/9")
 
 编码后的 key 为空串时抛出 `IllegalArgumentException`，传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`；`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
 
+`invalidate` 会删除 Redis 中的 key。用在 `Store`、`VersionedStore` 或 `SetStore` 的命名空间上时，Redis 中是唯一的一份数据，删除就再也找不回来。如果 Redis 中已经是正确的值、只是其它实例的 L2 副本可能陈旧，改用 `broadcast`：它只发布失效消息、不修改 Redis，各实例丢弃本地副本后从 Redis 重新读取，对任何缓存都安全。
+
+```kotlin
+externalInvalidator.broadcast("PolicySnapshot", "tenant-1")  // 命名空间、编码后的 key；不修改 Redis
+```
+
 ### 任意语言：原始协议 {#raw-protocol}
 
 | 部分 | 取值 |
 |------|------|
 | 存储 key | `{keyPrefix}{namespace}:{encodedKey}`，例如 `cocache:UserCache:42` |
-| 频道 | `cocache:inv:{namespace}`，例如 `cocache:inv:UserCache`。不含 key 前缀 |
+| 频道 | `{keyPrefix}inv:{namespace}`，例如 `cocache:inv:UserCache` |
 | 消息 | 二进制帧，见下文 |
 | 发布命令 | `PUBLISH`；缓存使用 `channel-mode: sharded` 时为 `SPUBLISH` |
 
@@ -233,14 +249,14 @@ orderInvalidator.invalidate("OrderCache", "7/9")
 ```
 
 - varint 是无符号 LEB128：每字节 7 位，低位在前，除最后一个字节外最高位都置 1。小于 128 的值占 1 个字节。
-- key 是完整的**存储 key**，包含前缀与命名空间。一帧可以携带同一命名空间的多个 key。
+- key 是完整的**存储 key**，包含前缀与命名空间。一帧可以携带同一个缓存的多个 key。
 - 发布者 id 必须与每个 CoCache 实例的 id 都不同：使用 16 个随机字节。实例会忽略带有自己 id 的帧。
-- 畸形帧会被丢弃并记录 `WARN`，不产生任何效果。
+- CoCache 读不懂的帧（未知版本、截断、尾随字节）会清空该频道上各缓存的全部 L2 副本，并记录 `WARN`。代价是重新加载，从不漏掉失效。不带 key 的帧什么也不做。
 
 每次修改，在数据源提交之后：
 
 1. **`DEL` 存储 key**。这会删除 L1 副本，并销毁任何 lease 或刷新令牌，正在进行的加载就无法把旧值写回。
-2. **发布帧**到该命名空间的频道。每个实例丢弃自己的 L2 副本。
+2. **发布帧**到该缓存的频道。每个实例丢弃自己的 L2 副本。
 
 先删除再发布。如果先发布，某个实例可能在删除之前把 L1 中的旧值重新加载进 L2，并保留到 `local-max-age`。如果不发布，各实例的 L2 副本保留到 `local-max-age`。如果不删除，各实例会从 L1 重新加载旧值。
 
@@ -284,8 +300,8 @@ redis-cli DEL "$key"
 
 与 CoCache 自己的消息一样，投递至多一次：丢失的消息会让 L2 副本陈旧到 `local-max-age`。
 
-::: warning SetCache
-对 `SetCache` 来说，`DEL` 会删除集合的唯一副本。不要从外部失效集合缓存，请通过 `SetCache` 写入。
+::: warning 权威类型
+对 `Store`、`VersionedStore` 与 `SetStore` 来说，`DEL` 会删除唯一副本；对 `VersionedCache` 与 `VersionedStore` 来说，它还会丢掉版本。不要从外部失效它们，请通过它们的 API 写入。
 :::
 
 ## 手动查看 Redis {#inspecting-redis}
@@ -295,11 +311,11 @@ CoCache 的值不是可读的 JSON：每个值都以 36 字节的二进制头开
 | 问题 | 命令 |
 |------|------|
 | 一个缓存有哪些 key？ | `redis-cli --scan --pattern 'cocache:UserCache:*' \| head`（集群中逐个主节点执行） |
-| key 处于什么状态？ | `redis-cli TYPE cocache:UserCache:42`：`string`（值、负缓存或 lease）或 `hash`（集合）。对 string，`redis-cli GETRANGE cocache:UserCache:42 2 2` 返回状态：`V` 值、`M` 负缓存、`L` lease |
+| key 处于什么状态？ | `redis-cli TYPE cocache:UserCache:42`：`string`（值、负缓存或 lease）或 `hash`（集合）。对 string，`redis-cli GETRANGE cocache:UserCache:42 2 2` 返回状态：`V` 值、`M` 负缓存、`L` lease、`E` 被淘汰的带版本 key |
 | 还能存活多久？ | `redis-cli PTTL cocache:UserCache:42`（毫秒，`-1` 表示永不过期） |
-| 里面是什么？ | `GET /actuator/cocache/{name}/{key}` 会解码两层。原始字节：`redis-cli GETRANGE key 36 -1` 返回编解码器的输出 |
+| 里面是什么？ | `GET /actuator/cocache/{name}/{key}` 会解码两层。原始字节，对 `Cache` 的值：`redis-cli GETRANGE key 36 -1` 返回编解码器的输出。其它类型的值在头部之后还有段（见[线格式](../architecture/index.md#wire-format)）。 |
 | 占多少内存？ | `redis-cli MEMORY USAGE cocache:UserCache:42` |
-| 谁在监听一个命名空间？ | `redis-cli PUBSUB NUMSUB cocache:inv:UserCache`，`sharded` 模式下用 `PUBSUB SHARDNUMSUB`。集群中按节点计数 |
+| 谁在监听一个缓存的频道？ | `redis-cli PUBSUB NUMSUB cocache:inv:UserCache`，`sharded` 模式下用 `PUBSUB SHARDNUMSUB`。集群中按节点计数 |
 | 哪些连接属于 CoCache？ | 设置 `cocache.redis.client-name`，然后在 `redis-cli CLIENT LIST` 中找该 `name`。订阅连接的 `sub=` 或 `ssub=` 大于 0 |
 | 失效消息在流动吗？ | `redis-cli SUBSCRIBE cocache:inv:UserCache`（或 `SSUBSCRIBE`）会打印每一帧，二进制输出中的存储 key 是可读的 |
 

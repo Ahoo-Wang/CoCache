@@ -22,15 +22,17 @@ import io.lettuce.core.codec.ByteArrayCodec
 import io.lettuce.core.output.IntegerOutput
 import io.lettuce.core.protocol.CommandArgs
 import io.lettuce.core.protocol.CommandType
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteStore
+import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1Store
+import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.policy.LocalPolicy
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import org.openjdk.jmh.annotations.Benchmark
 import org.openjdk.jmh.annotations.BenchmarkMode
 import org.openjdk.jmh.annotations.Mode
@@ -48,7 +50,7 @@ import java.util.concurrent.TimeUnit
 /**
  * `SetCache` 基准 `setRead`（RFC 0003 §8 Q1）：比较集合的两种 L1 编码。
  *
- * - Hash（现行线格式）：经生产的 [RemoteStore] 读写，即 `READ`（`PTTL` + `GET` 类型不符 + `HKEYS` + `HGET !f`）与 `ADD_MEMBERS` / `REMOVE_MEMBERS`。
+ * - Hash（现行线格式）：经生产的 [L1Store] 读写，即 `READ`（`PTTL` + `GET` 类型不符 + `HKEYS` + `HGET !f`）与 `ADD_MEMBERS_IF_READABLE` / `REMOVE_MEMBERS_IF_READABLE`。
  * - 备选（`*Alt`）：原生 Set + 同 slot 的控制 Hash（`{…}:c` 存 `!f`，`{…}:s` 存成员），只在本基准内用等价的 Lua 原型实现，
  *   不是生产代码。读取同样先试 `GET`，与真实读脚本的分派路径一致。
  * - 经引擎（`setL1HitViaEngine*`）：L2 未命中、L1 命中的完整读路径（SingleFlight、读 L1、解码、填充 L2），比较同步与异步变体的开销。
@@ -68,10 +70,11 @@ open class SetCacheBenchmark {
     private val run = UUID.randomUUID().toString().substring(0, 8)
     private lateinit var backend: RedisBackend
     private lateinit var runtime: CacheRuntime
-    private lateinit var cache: SetCache<String, String>
-    private lateinit var l1Hits: SetCache<String, String>
+    private lateinit var cache: SetStore<String, String>
+    private lateinit var l1Hits: SetStore<String, String>
     private lateinit var l1HitKeys: List<String>
-    private lateinit var store: RemoteStore
+    private lateinit var store: L1Store
+    private lateinit var sets: SetL1Store
     private lateinit var client: RedisClient
     private lateinit var connection: StatefulRedisConnection<ByteArray, ByteArray>
     private lateinit var hashKey: String
@@ -85,8 +88,9 @@ open class SetCacheBenchmark {
         backend = RedisBackend.standalone(RedisURI.create("localhost", 6379))
         runtime = CacheRuntime.builder().backend(backend).build()
         val name = "setbench-$run"
-        cache = runtime.create(setCacheSpec<String, String>(name) { elementCodec = StringCodec })
-        store = backend.store(name)
+        cache = runtime.create(setStoreSpec<String, String>(name) { elementCodec = StringCodec })
+        store = backend.store(Keyspace("cocache:", name))
+        sets = requireNotNull(store.sets())
         frame = InvalidationFrame.encode(NodeId.random(), emptyList())
         channel = "cocache:inv:$name".toByteArray()
         client = RedisClient.create(RedisURI.create("localhost", 6379))
@@ -97,12 +101,12 @@ open class SetCacheBenchmark {
         cache.add("hot", members)
         cache["hot"]
         hashKey = "cocache:$name:l1"
-        store.addMembersIfReadable(hashKey, members.map { it.toByteArray() }, null, frame)
+        awaitBlocking { sets.addMembers(hashKey, members.map { it.toByteArray() }, null, frame) }
         altKeys = altKeysOf("$name:l1")
         altAdd(altKeys, members.map { it.toByteArray() })
         // L1 命中经引擎：工作集远大于 L2 容量，几乎每次读取都不命中 L2、命中 L1（并填充 L2）
         l1Hits = runtime.create(
-            setCacheSpec<String, String>("$name-l1-hits") {
+            setStoreSpec<String, String>("$name-l1-hits") {
                 elementCodec = StringCodec
                 policy = policy.toBuilder().local(LocalPolicy(maximumSize = 16)).build()
             }
@@ -137,7 +141,7 @@ open class SetCacheBenchmark {
 
     /** 读 L1（Hash）：一次 EVALSHA（`PTTL` + `GET` 类型不符 + `HKEYS` + `HGET !f`），客户端去掉成员前缀。 */
     @Benchmark
-    fun setL1Read(): RemoteRead = store.read(hashKey, null, null)
+    fun setL1Read(): L1Read = awaitBlocking { store.read(hashKey, null, null, null) }
 
     /** 读 L1（备选：原生 Set + 控制 Hash）：一次 EVALSHA（`PTTL` + `GET` 类型不符 + `HGET !f` + `SMEMBERS`）。 */
     @Benchmark
@@ -146,8 +150,8 @@ open class SetCacheBenchmark {
     /** 加入并移除一个成员（Hash）：两次 Lua（各含读不懂的内容的检查与 PUBLISH），集合大小保持不变。 */
     @Benchmark
     fun setAddRemove() {
-        store.addMembersIfReadable(hashKey, churn, null, frame)
-        store.removeMembersIfReadable(hashKey, churn, null, frame)
+        awaitBlocking { sets.addMembers(hashKey, churn, null, frame) }
+        awaitBlocking { sets.removeMembers(hashKey, churn, null, frame) }
     }
 
     /** 加入并移除一个成员（备选）：两次 Lua（各含 PUBLISH），每次涉及两个 key。 */
@@ -179,7 +183,7 @@ open class SetCacheBenchmark {
         val rows = listOf("string" to ::stringMember, "integer" to ::integerMember).map { (kind, member) ->
             val members = (1..size).map { member(it).toByteArray() }
             val hash = "cocache:$name:mem-$kind"
-            store.addMembersIfReadable(hash, members, null, frame)
+            awaitBlocking { sets.addMembers(hash, members, null, frame) }
             val alt = altKeysOf("$name:mem-$kind")
             altAdd(alt, members)
             val hashBytes = memoryUsage(hash.toByteArray())

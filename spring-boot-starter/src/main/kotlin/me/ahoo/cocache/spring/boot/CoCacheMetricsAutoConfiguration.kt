@@ -14,8 +14,9 @@
 package me.ahoo.cocache.spring.boot
 
 import io.micrometer.core.instrument.binder.MeterBinder
-import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.proxy.CacheProxies
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.config.BeanPostProcessor
 import org.springframework.boot.autoconfigure.AutoConfiguration
@@ -58,8 +59,8 @@ class CoCacheMetricsAutoConfiguration {
     internal class MeterBindingPostProcessor(private val binder: ObjectProvider<CoCacheMeterBinder>) :
         BeanPostProcessor {
         override fun postProcessAfterInitialization(bean: Any, beanName: String): Any {
-            // SetCache 也是 Cache；接口式声明的代理同样实现 Cache
-            if (bean is Cache<*, *>) {
+            // 五种用户 API 类型都是 ReadableCache；接口式声明的代理同样实现它，视图接口的代理由 targetOf 识别
+            if (bean is ReadableCache<*, *> || CacheProxies.targetOf(bean) != null) {
                 binder.ifAvailable?.bindNewCaches()
             }
             return bean

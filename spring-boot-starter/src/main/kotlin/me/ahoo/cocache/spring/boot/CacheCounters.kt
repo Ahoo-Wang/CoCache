@@ -83,6 +83,11 @@ internal object CacheCounters {
         CacheCounter("refreshRejected", "cocache.refresh.rejections", "Refreshes rejected by the executor") {
             it.refreshRejected
         },
+        CacheCounter(
+            "refreshSkipped",
+            "cocache.refresh.skipped",
+            "Refreshes that were due but did not run: no refresh token, or no refresh point"
+        ) { it.refreshSkipped },
         CacheCounter("remoteFailures", "cocache.remote.failures", "L1 operations that failed") {
             it.remoteFailures
         },
@@ -111,12 +116,37 @@ internal object CacheCounters {
         CacheCounter(
             "conditionalConflicts",
             "cocache.conditional.conflicts",
-            "putIfMatch calls rejected because the L1 content did not match"
+            "putIfMatch / deleteIfMatch calls rejected because the L1 content did not match"
         ) { it.conditionalConflicts },
         CacheCounter(
             "staleVersions",
             "cocache.versioned.stale",
-            "putIfNewer / invalidateIfNewer calls refused because L1 already held a version at least as new"
+            "putIfNewer / invalidateIfNewer / deleteIfNewer calls refused because L1 already held a version at least as new"
         ) { it.staleVersions },
+        CacheCounter(
+            "typeMismatches",
+            "cocache.type.mismatch",
+            "L1 reads of content written by another kind of cache: a Store value (digest segment) in a derived cache"
+        ) { it.typeMismatches },
+        CacheCounter(
+            "readsUnknown",
+            "cocache.reads.unknown",
+            "Reads that had no answer because L1 failed (Lookup.Unknown), including those mapped to absent by unknownRead"
+        ) { it.readsUnknown },
+        CacheCounter(
+            "unversionedAbsentRefusals",
+            "cocache.fill.unversioned.absent",
+            "Versioned loads that returned an unversioned null over versioned L1 content, refused by L1: express deletions as Versioned(null, version)"
+        ) { it.unversionedAbsentRefusals },
+        CacheCounter(
+            "fillsGated",
+            "cocache.fills.gated",
+            "Loads inside a write transaction kept private (fill-in-transaction): no lease, no L1 or L2 write, not shared"
+        ) { it.fillsGated },
+        CacheCounter(
+            "ttlClamped",
+            "cocache.ttl.clamped",
+            "Per-call lifetimes (ttlOf, put with a ttl) clamped to the ttl ceiling set by cocache.overrides"
+        ) { it.ttlClamped },
     )
 }

@@ -18,9 +18,11 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
@@ -28,7 +30,9 @@ import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.cocache.test.EngineSpec.TestCodec
@@ -47,13 +51,19 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * 故障 TCK：两个节点共享同一个后端，验证 L1 故障下的 G1（陈旧有界）与 G2（失效不丢失）。
  *
- * 故障由 [HookedBackend] 注入；断线用例需要后端实现 [disconnect]，否则跳过。
+ * 故障由 [HookedBackend] 注入；断线用例需要后端实现 [disconnect]，底层命令被取消的用例需要后端实现 [commandCancellation]，否则跳过。
  * 与 [EngineSpec] 中单节点的降级与重试用例互补（如 [EngineSpec.remoteReadFailureDegradesToTheSource]、
  * [EngineSpec.failedInvalidateIsRetriedAndBypassesTheStaleRemoteMeanwhile]），这里关注跨节点的陈旧上界、重试的放弃与溢出、
  * 以及“已生效但报错”的写入。
  */
 abstract class FaultSpec {
     protected abstract fun createBackend(): CoherenceBackend
+
+    /**
+     * 后端的存储提供的可选能力（RFC 0005 §4.3），没有默认值：规范断言存储提供的能力与它完全相同（多出来的也算失败）、
+     * 每个访问器稳定。本规范的用例不需要可选能力。
+     */
+    protected abstract val expectedCapabilities: Set<L1Capability>
 
     /**
      * 引擎与后端共用的时钟。
@@ -70,6 +80,12 @@ abstract class FaultSpec {
      * 后端没有连接的概念时返回 `null`（默认），断线用例跳过。
      */
     protected open fun disconnect(): AutoCloseable? = null
+
+    /**
+     * 让底层客户端取消 [createBackend] 所建后端的 L1 命令（见 [CommandCancellation]）：`FutureL1Store` 的实现取消它返回的 future，
+     * Redis 在连接重置时由 Lettuce 取消在途的命令。不支持时返回 `null`（默认），该用例跳过。
+     */
+    protected open fun commandCancellation(): CommandCancellation? = null
 
     /**
      * 访问缓存的方式：同步 API（默认），或某个变体（如 [CacheAccess.ASYNC]）。后端实现者只需要默认的 [CacheAccess.SYNC]：
@@ -109,6 +125,14 @@ abstract class FaultSpec {
         backend.close()
     }
 
+    /**
+     * 存储提供的能力与 [expectedCapabilities] 完全相同（多出来的也算失败），每个访问器每次返回同一个对象或总是 `null`。
+     */
+    @Test
+    fun storeProvidesExactlyTheDeclaredCapabilities() {
+        CapabilityDeclaration.verify(backend.delegate, expectedCapabilities)
+    }
+
     private fun newNode(retryPolicy: RetryPolicy): CacheRuntime = CacheRuntime.builder()
         .backend(backend)
         .clock(clock)
@@ -129,8 +153,9 @@ abstract class FaultSpec {
 
     private fun spec(
         policy: CachePolicy = policy(),
+        name: String = cacheName,
         block: CacheSpec.Builder<String, String>.() -> Unit = {}
-    ): CacheSpec<String, String> = cacheSpec(cacheName) {
+    ): CacheSpec<String, String> = cacheSpec(name) {
         codec = TestCodec
         loader = this@FaultSpec.loader
         this.policy = policy
@@ -138,26 +163,38 @@ abstract class FaultSpec {
         access.source(this)
     }
 
-    private fun CacheRuntime.cache(policy: CachePolicy = policy()): Cache<String, String> = access.cache(
-        create(spec(policy))
-    )
+    private fun CacheRuntime.cache(policy: CachePolicy = policy(), name: String = cacheName): Cache<String, String> =
+        access.cache(create(spec(policy, name)))
 
     /**
      * 没有数据源的缓存（L1 是唯一副本，只由写入方写入）。
      */
-    private fun CacheRuntime.loaderlessCache(): Cache<String, String> = access.cache(create(spec { loader = null }))
+    /**
+     * 同名、同 keyspace 的 `Store`（要求 [L1Capability.CONDITIONAL]，没有声明时跳过这个用例）。
+     */
+    private fun CacheRuntime.store(): Store<String, String> {
+        CapabilityDeclaration.assume(expectedCapabilities, arrayOf(L1Capability.CONDITIONAL))
+        return access.store(
+            create(
+                storeSpec<String, String>(cacheName) {
+                    codec = EngineSpec.TestCodec
+                    policy = policy()
+                }
+            )
+        )
+    }
 
     private fun CacheRuntime.metrics(): CacheMetrics = requireNotNull(metrics(cacheName))
 
     private fun CacheRuntime.admin(): CacheAdmin = requireNotNull(admin(cacheName))
 
-    private fun remote(key: String): RemoteRead {
-        val store = backend.delegate.store(cacheName)
-        return store.read("cocache:$cacheName:$key", null, null)
+    private fun remote(key: String): L1Read {
+        val store = backend.delegate.store(Keyspace("cocache:", cacheName))
+        return Suspending.await { store.read("cocache:$cacheName:$key", null, null, null) }
     }
 
     private fun remoteValue(key: String): String? {
-        val read = remote(key) as? RemoteRead.Hit ?: return null
+        val read = remote(key) as? L1Read.Hit ?: return null
         return (read.envelope as? Envelope.Scalar)?.let { TestCodec.decode(it.bytes) }
     }
 
@@ -194,7 +231,7 @@ abstract class FaultSpec {
         nodeA.metrics().degradedFills.assert().isEqualTo(if (backend.atomicBroadcast) 2 else 3)
         nodeA.metrics().remoteFailures.assert().isGreaterThanOrEqualTo(2)
         backend.failAll = false
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
@@ -250,19 +287,20 @@ abstract class FaultSpec {
     }
 
     /**
-     * 没有数据源的缓存（L1 是唯一副本）：失效写入 L1 失败默认抛出 [CacheWriteException]，不登记重试。
-     * 否则延迟的重试会删掉其间其它节点写入的值（丢更新）。有数据源时删除总是安全的，默认仍是重试。
+     * `Store`（L1 是唯一副本）：删除写入 L1 失败时抛出 [CacheWriteException]，从不登记重试（RFC 0005 §4.1，A.D2）。
+     * 否则延迟的重试会删掉其间其它节点写入的值（丢更新）。派生缓存的删除总是安全的，默认重试。
      */
     @Test
-    fun failedInvalidateWithoutLoaderThrowsInsteadOfDeletingALaterWrite() {
-        val cacheA = nodeA.loaderlessCache()
-        val cacheB = nodeB.loaderlessCache()
+    fun failedStoreDeleteThrowsInsteadOfDeletingALaterWrite() {
+        val cacheA = nodeA.store()
+        val cacheB = nodeB.store()
         cacheB.put("k", "v1")
         backend.failWrites = true
-        val error = runCatching { cacheA.invalidate("k") }.exceptionOrNull()
+        val error = runCatching { cacheA.delete("k") }.exceptionOrNull()
         backend.failWrites = false
         error.assert().isInstanceOf(CacheWriteException::class.java)
-        (error as CacheWriteException).operation.assert().isEqualTo("invalidate")
+        (error as CacheWriteException).operation.assert().isEqualTo("delete")
+        error.outcomeUnknown.assert().isTrue()
         nodeA.admin().pendingInvalidationCount.assert().isEqualTo(0)
         cacheB.put("k", "v2")
         nodeA.metrics().invalidationRetries.assert().isEqualTo(0)
@@ -305,12 +343,12 @@ abstract class FaultSpec {
     }
 
     /**
-     * `put` 已在 L1 生效却向调用方报错（如应答超时）：调用方得到 [CacheWriteException]，重试同一个 `put` 是幂等的，
+     * `put` 已在 L1 生效却向调用方报错（如应答超时），失效失败模式为 THROW：调用方得到 [CacheWriteException]，重试同一个 `put` 是幂等的，
      * 且重试的广播让所有节点收敛（非原子广播的后端上，报错的那次没有发出事件）。
      */
     @Test
     fun putThatFailsAfterApplyingIsSafeToRetry() {
-        val cacheA = nodeA.cache()
+        val cacheA = nodeA.cache(policy().toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build(), cacheName)
         val cacheB = nodeB.cache()
         database["k"] = "v0"
         cacheB["k"].assert().isEqualTo("v0")
@@ -319,13 +357,44 @@ abstract class FaultSpec {
                 throw RemoteUnavailableException("put (applied)")
             }
         }
-        fork("writer") { cacheA.put("k", "v1") }.joinFailure().assert().isInstanceOf(CacheWriteException::class.java)
+        val failure = fork("writer") { cacheA.put("k", "v1") }.joinFailure()
+        failure.assert().isInstanceOf(CacheWriteException::class.java)
+        (failure as CacheWriteException).outcomeUnknown.assert()
+            .withFailMessage { "an applied write is outcome-unknown" }.isTrue()
         backend.afterPut = null
         remoteValue("k").assert().isEqualTo("v1")
         cacheA["k"].assert().isEqualTo("v1")
         cacheA.put("k", "v1")
         remoteValue("k").assert().isEqualTo("v1")
         awaitCondition("B converges") { cacheB["k"] == "v1" }
+        loads.get().assert().isEqualTo(1)
+    }
+
+    /**
+     * 结果未知的 `put` 在报错之后才在 L1 执行（RFC 0005 §4.6，P12）：原子广播的后端随这次执行广播，帧的来源是写入方节点自己。
+     * 报错之后、迟到执行之前，写入方节点的读取把旧值重新填进了 L2；写入方节点在 `localMaxAge` 之内不再过滤这个 key 上自己的帧，
+     * 迟到的帧淘汰这份旧副本，两个节点都读到新值。非原子广播的后端上迟到的执行不带广播，这个用例跳过。
+     */
+    @Test
+    fun lateOutcomeUnknownPutEvictsTheWritersOwnStaleCopy() {
+        assumeTrue(backend.atomicBroadcast, "a late write broadcasts only on an atomic-broadcast backend")
+        val cacheA = nodeA.cache(policy().toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build(), cacheName)
+        val cacheB = nodeB.cache()
+        database["k"] = "v0"
+        cacheA["k"].assert().isEqualTo("v0")
+        cacheB["k"].assert().isEqualTo("v0")
+        database["k"] = "v1"
+        backend.deferPuts = true
+        val failure = fork("writer") { cacheA.put("k", "v1") }.joinFailure()
+        backend.deferPuts = false
+        (failure as CacheWriteException).outcomeUnknown.assert()
+            .withFailMessage { "a write that may still run is outcome-unknown" }.isTrue()
+        cacheA["k"].assert().isEqualTo("v0")
+
+        backend.applyDeferredPuts().assert().isEqualTo(1)
+        remoteValue("k").assert().isEqualTo("v1")
+        awaitCondition("B converges") { cacheB["k"] == "v1" }
+        awaitCondition("the writer's own frame evicted its stale copy") { cacheA["k"] == "v1" }
         loads.get().assert().isEqualTo(1)
     }
 
@@ -348,7 +417,7 @@ abstract class FaultSpec {
             }
         }
         cacheA.invalidate("k")
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
         awaitCondition("retry succeeded") { attempts.get() >= 2 && nodeA.admin().pendingInvalidationCount == 0 }
         backend.afterInvalidate = null
         nodeA.metrics().invalidationsDropped.assert().isEqualTo(0)
@@ -357,7 +426,8 @@ abstract class FaultSpec {
     }
 
     /**
-     * 断线期间的写入向调用方报错，重连后不得被重放（否则一个已报错的 `put` 会在稍后覆盖更新的值）。
+     * 断线期间的写入向调用方报错，重连后不得被重放（否则一个已报错的 `put` 会在稍后覆盖更新的值）。断线时被拒绝的命令确定未执行：
+     * 存储以 `L1RejectedException` 报告它，调用方得到 `CacheWriteException(outcomeUnknown = false)`（RFC 0005 §4.3）。
      */
     @Test
     fun writesRejectedWhileDisconnectedAreNotReplayed() {
@@ -369,17 +439,83 @@ abstract class FaultSpec {
         assumeTrue(disconnection != null, "backend cannot simulate a disconnect")
         requireNotNull(disconnection).use {
             awaitCondition("commands rejected") { runCatching { remote("probe") }.isFailure }
-            runCatching {
-                cacheA.put(
-                    "k",
-                    "v2"
-                )
-            }.exceptionOrNull().assert().isInstanceOf(CacheWriteException::class.java)
+            val error = runCatching { cacheA.put("k", "v2") }.exceptionOrNull()
+            error.assert().isInstanceOf(CacheWriteException::class.java)
+            (error as CacheWriteException).outcomeUnknown.assert()
+                .withFailMessage { "a write rejected while disconnected was definitely not executed: report L1RejectedException" }
+                .isFalse()
         }
         awaitCondition("reconnected") { runCatching { remote("probe") }.isSuccess }
         remoteValue("k").assert().isEqualTo("v1")
         awaitCondition("A reads the remote value") { cacheA["k"] == "v1" }
         cacheB["k"].assert().isEqualTo("v1")
+    }
+
+    /**
+     * `put` 已在 L1 生效却向调用方报错，失效失败模式为默认的 RETRY（RFC 0005 §4.6，U8）：调用方不收到异常，引擎登记补偿失效，
+     * 重试删除 L1 中的 key 并广播；所有节点之后从数据源重新加载（这里数据源已是写入的值）。
+     */
+    @Test
+    fun putThatFailsAfterApplyingIsCompensatedUnderRetry() {
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        database["k"] = "v0"
+        cacheB["k"].assert().isEqualTo("v0")
+        database["k"] = "v1"
+        backend.afterPut = {
+            if (backend.issuer() == "writer") {
+                throw RemoteUnavailableException("put (applied)")
+            }
+        }
+        fork("writer") { cacheA.put("k", "v1") }.join()
+        backend.afterPut = null
+        awaitCondition("the compensation deleted the key") { nodeA.admin().pendingInvalidationCount == 0 }
+        awaitCondition("B converges") { cacheB["k"] == "v1" }
+        cacheA["k"].assert().isEqualTo("v1")
+    }
+
+    /**
+     * 底层客户端取消了在途的命令（RFC 0005 §4.3）：这是结果未知的 L1 故障，不是调用方的取消。引擎按策略降级：
+     * - 读取回源，结果以降级限龄写入 L2；合并在它上面的跟随者照常得到这个结果，不自行回源；
+     * - `put` 以 [CacheWriteException] 失败（失效失败模式为 THROW；RETRY 时登记补偿、不抛出）；
+     * - 调用方从不看到 `CancellationException`（否则引擎把它当作调用方被取消：不降级，跟随者各自重新运行）。
+     *
+     * 恢复之后，被取消的读取请求的 lease 已被释放（K14：可能已在 L1 生效的命令也释放令牌），不必等到 `lease.ttl`，引擎照常写回 L1。
+     * 写入用另一个缓存（另一个命名空间）：同一个引擎上写入递增的分段失效戳可能与读取的 key 碰撞，使降级填充被放弃。
+     */
+    @Test
+    fun cancelledCommandsAreL1FaultsNotCancellations() {
+        val policy = policy()
+        val cache = nodeA.cache()
+        val writes = nodeA.cache(
+            policy.toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build(),
+            "$cacheName-w"
+        )
+        database["k"] = "v"
+        val cancellation = commandCancellation()
+        assumeTrue(cancellation != null, "backend cannot cancel its underlying commands")
+        requireNotNull(cancellation).use {
+            cancellation.hold()
+            val leader = fork("leader") { cache["k"] }
+            awaitCondition("the leader's read held") { backend.reads.get() >= 1 }
+            val followers = (1..3).map { fork("follower-$it") { cache["k"] } }
+            val writer = fork("writer") { writes.put("w", "w1") }
+            awaitCondition("followers and the writer waiting") {
+                backend.puts.get() >= 1 && (followers + writer).all { it.parked }
+            }
+            cancellation.cancel()
+            (listOf(leader) + followers).forEach { reader -> reader.join().assert().isEqualTo("v") }
+            writer.joinFailure().assert().isInstanceOf(CacheWriteException::class.java)
+            loads.get().assert().isEqualTo(1)
+            nodeA.metrics().remoteFailures.assert().isGreaterThanOrEqualTo(1)
+            nodeA.metrics().degradedFills.assert().isEqualTo(1)
+        }
+        awaitCondition("L1 available again") { runCatching { remote("probe") }.isSuccess }
+        awaitCondition("the lease of the cancelled read released") { remote("k") == L1Read.Miss(false) }
+        elapse(policy.degradedLocalMaxAge.plusSeconds(1))
+        cache["k"].assert().isEqualTo("v")
+        remoteValue("k").assert().isEqualTo("v")
+        loads.get().assert().isEqualTo(2)
     }
 
     private companion object {

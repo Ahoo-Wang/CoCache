@@ -16,22 +16,31 @@ package me.ahoo.cocache.spring.boot
 import io.micrometer.observation.Observation
 import io.micrometer.observation.ObservationHandler
 import io.micrometer.observation.ObservationRegistry
+import me.ahoo.cocache.api.AsyncCacheLoader
+import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.LoadOperation
 import me.ahoo.cocache.core.SourceLoadTimeoutException
+import me.ahoo.cocache.core.cacheSpec
+import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.CompletionException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 
 /**
- * 异步回源的 Observation（RFC 0004 §8.1）：从调用 block 到其 future 完成，结果记为 success / error / timeout。
+ * 异步回源的 Observation（RFC 0005 §5：异步视图同样经 [MicrometerLoadObserver.observe]，在运行时的执行器上调用）：
+ * 观测覆盖整个回源（直到数据源的 future 完成），`loadAsync` 的同步部分看得到当前观测，结果记为 success / error / timeout。
  */
 class MicrometerLoadObserverAsyncTest {
     private class Recording : ObservationHandler<Observation.Context> {
         val stopped = CopyOnWriteArrayList<Observation.Context>()
-        var scoped: Observation? = null
 
         override fun onStop(context: Observation.Context) {
             stopped.add(context)
@@ -43,61 +52,56 @@ class MicrometerLoadObserverAsyncTest {
     private val handler = Recording()
     private val registry = ObservationRegistry.create().apply { observationConfig().observationHandler(handler) }
     private val observer = MicrometerLoadObserver(registry)
+    private val runtime = CacheRuntime.builder().backend(InMemoryBackend()).loadObserver(observer).build()
+    private val pending = ConcurrentHashMap<String, CompletableFuture<String?>>()
+    private val scoped = CopyOnWriteArrayList<Boolean>()
+
+    @AfterEach
+    fun close() = runtime.close()
+
+    private fun cache(timeout: Duration = Duration.ofSeconds(10)) = runtime.create(
+        cacheSpec<String, String>("user") {
+            codec = StringCodec
+            asyncLoader = AsyncCacheLoader { key ->
+                scoped.add(registry.currentObservation != null)
+                pending.computeIfAbsent(key) { CompletableFuture() }
+            }
+            policy { load = LoadPolicy(timeout = timeout) }
+        }
+    ).async()
 
     private fun Observation.Context.outcome(): String? = getLowCardinalityKeyValue(
         MicrometerLoadObserver.OUTCOME
     )?.value
 
     @Test
-    fun recordsTheOutcomeWhenTheFutureCompletes() {
-        val pending = CompletableFuture<String>()
-        val result = observer.observeAsync("user", LoadOperation.LOAD, 1) {
-            // block 在观测的作用域内调用
-            handler.scoped = registry.currentObservation
-            pending
-        }
-        handler.scoped.assert().isNotNull()
+    fun observesTheWholeAsyncLoad() {
+        val cache = cache()
+        val call = cache.get("k")
+        awaitCondition("source called") { scoped.isNotEmpty() }
+        // loadAsync 在观测的作用域内调用；它的 future 完成之前观测不结束
+        scoped.single().assert().isTrue()
         handler.stopped.assert().isEmpty()
-        pending.complete("v")
-        result.join().assert().isEqualTo("v")
+        pending.getValue("k").complete("v")
+        call.get(10, TimeUnit.SECONDS).assert().isEqualTo("v")
+        awaitCondition("observation stopped") { handler.stopped.isNotEmpty() }
         handler.stopped.single().outcome().assert().isEqualTo(MicrometerLoadObserver.SUCCESS)
 
         val failure = IllegalStateException("down")
-        observer.observeAsync("user", LoadOperation.LOAD_ALL, 2) { CompletableFuture.failedFuture<String>(failure) }
-            .handle { _, e -> e }.join().assert().isSameAs(failure)
+        pending["f"] = CompletableFuture.failedFuture(failure)
+        cache.get("f").handle { _, e -> e }.get(10, TimeUnit.SECONDS).assert().isSameAs(failure)
+        awaitCondition("failure recorded") { handler.stopped.size == 2 }
         handler.stopped.last().outcome().assert().isEqualTo(MicrometerLoadObserver.ERROR)
         handler.stopped.last().error.assert().isSameAs(failure)
-
-        observer.observeAsync("user", LoadOperation.LOAD, 1) {
-            CompletableFuture.failedFuture<String>(SourceLoadTimeoutException("user", Duration.ofSeconds(1)))
-        }.handle { _, e -> e }.join()
-        handler.stopped.last().outcome().assert().isEqualTo(MicrometerLoadObserver.TIMEOUT)
     }
 
     @Test
-    fun completionExceptionIsUnwrapped() {
-        val timeout = SourceLoadTimeoutException("user", Duration.ofSeconds(1))
-        observer.observeAsync("user", LoadOperation.LOAD, 1) {
-            CompletableFuture.failedFuture<String>(CompletionException(timeout))
-        }.handle { _, e -> e }.join()
-        handler.stopped.last().outcome().assert().isEqualTo(MicrometerLoadObserver.TIMEOUT)
-        handler.stopped.last().error.assert().isSameAs(timeout)
-
-        // 没有 cause 的 CompletionException 原样记录
-        val bare = CompletionException("bare", null)
-        observer.observeAsync("user", LoadOperation.LOAD, 1) { CompletableFuture.failedFuture<String>(bare) }
-            .handle { _, e -> e }.join()
-        handler.stopped.last().outcome().assert().isEqualTo(MicrometerLoadObserver.ERROR)
-        handler.stopped.last().error.assert().isSameAs(bare)
-    }
-
-    @Test
-    fun synchronousThrowIsRecordedAndRethrown() {
-        val failure = IllegalArgumentException("sync")
-        runCatching {
-            observer.observeAsync<String>("user", LoadOperation.LOAD, 1) { throw failure }
-        }.exceptionOrNull().assert().isSameAs(failure)
-        handler.stopped.single().outcome().assert().isEqualTo(MicrometerLoadObserver.ERROR)
+    fun engineTimeoutIsRecordedAsTimeout() {
+        val cache = cache(Duration.ofMillis(50))
+        cache.get("never").handle { _, e -> e }.get(10, TimeUnit.SECONDS)
+            .assert().isInstanceOf(SourceLoadTimeoutException::class.java)
+        awaitCondition("timeout recorded") { handler.stopped.isNotEmpty() }
+        handler.stopped.single().outcome().assert().isEqualTo(MicrometerLoadObserver.TIMEOUT)
     }
 
     @Test
@@ -113,8 +117,7 @@ class MicrometerLoadObserverAsyncTest {
 
     @Test
     fun noopRegistryRunsTheBlockDirectly() {
-        val noop = MicrometerLoadObserver(ObservationRegistry.NOOP)
-        val future = CompletableFuture.completedFuture("v")
-        noop.observeAsync("user", LoadOperation.LOAD, 1) { future }.assert().isSameAs(future)
+        MicrometerLoadObserver(ObservationRegistry.NOOP).observe("user", LoadOperation.LOAD, 1) { "v" }
+            .assert().isEqualTo("v")
     }
 }

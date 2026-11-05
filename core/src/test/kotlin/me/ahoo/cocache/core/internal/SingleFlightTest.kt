@@ -14,8 +14,11 @@
 package me.ahoo.cocache.core.internal
 
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.future.future
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import me.ahoo.cocache.core.engine.AsyncContext
 import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
@@ -38,7 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class SingleFlightTest {
     private val flights = SingleFlight<String, String>()
-    private val context = AsyncContext(ForkJoinPool.commonPool(), ForkJoinPool.commonPool())
+    private val context = AsyncContext(ForkJoinPool.commonPool())
     private val scope = context.scope
 
     @AfterEach
@@ -187,6 +190,66 @@ class SingleFlightTest {
     }
 
     /**
+     * leader 自己的协程仍处于活动状态时，block 自己抛出的 `CancellationException`（其中的 `withTimeout`）是普通的失败，
+     * 与其它失败一样交给全部跟随者：跟随者不重新领头、不绕过 SingleFlight 自行运行（RFC 0005 第三轮 K5，实验 E4：8 个调用方运行 8 次）。
+     * 直接从协程调用与异步变体两种 leader。
+     */
+    @Test
+    fun aSuspendingLeadersOwnCancellationIsSharedWithItsFollowers() {
+        assertOwnCancellationIsShared(::suspending)
+    }
+
+    @Test
+    fun anAsyncLeadersOwnCancellationIsSharedWithItsFollowers() {
+        assertOwnCancellationIsShared(::async)
+    }
+
+    private fun assertOwnCancellationIsShared(start: (String, suspend () -> String) -> CompletableFuture<String>) {
+        val gate = CompletableFuture<String>()
+        val runs = AtomicInteger()
+        // 都在测试线程上注册（执行到第一次挂起）：第一个领头、停在 gate 上，其余合并到它
+        val callers = List(CALLERS) {
+            start("k") {
+                runs.incrementAndGet()
+                gate.awaitOriginal()
+                withTimeout(1) { awaitCancellation() }
+            }
+        }
+        flights.inFlight.assert().isEqualTo(1)
+        gate.complete("go")
+
+        // handle 拿到原始异常：JDK 23 起 get() 把以取消完成的 future 的异常包进新的 CancellationException("get")
+        callers.forEach { caller ->
+            caller.handle { _, error -> error }.get(5, TimeUnit.SECONDS).assert()
+                .isInstanceOf(TimeoutCancellationException::class.java)
+        }
+        runs.get().assert().isEqualTo(1)
+        flights.inFlight.assert().isEqualTo(0)
+    }
+
+    /**
+     * 异步变体的 leader 没有被中断时，[InterruptedException]（阻塞执行器线程上的 loader 被中断）也是普通的失败：
+     * 只有同步变体的 loader 在调用方线程上执行，那里的中断才是 leader 被中断（K5）。
+     */
+    @Test
+    fun anInterruptOffTheCallerThreadIsSharedWithTheFollowers() {
+        val gate = CompletableFuture<String>()
+        val runs = AtomicInteger()
+        val failure = InterruptedException("blocking thread interrupted")
+        val callers = List(CALLERS) {
+            async {
+                runs.incrementAndGet()
+                gate.awaitOriginal()
+                throw failure
+            }
+        }
+        gate.complete("go")
+
+        callers.forEach { causeOf(it).assert().isSameAs(failure) }
+        runs.get().assert().isEqualTo(1)
+    }
+
+    /**
      * 跟随者的等待被取消只结束它自己的等待，不取消共享的结果。
      */
     @Test
@@ -292,7 +355,7 @@ class SingleFlightTest {
     @Test
     fun aFollowerRunsUnregisteredAfterJoiningTwoInterruptedLeaders() {
         val held = LinkedBlockingQueue<Runnable>()
-        val gated = AsyncContext({ held.add(it) }, ForkJoinPool.commonPool())
+        val gated = AsyncContext({ held.add(it) })
         try {
             fun interruptibleLeader(value: String): Concurrency.Forked<String> {
                 val started = CountDownLatch(1)
@@ -693,5 +756,12 @@ class SingleFlightTest {
         } catch (e: Throwable) {
             throw FollowerFailure(e, Thread.currentThread().isInterrupted)
         }
+    }
+
+    private companion object {
+        /**
+         * 合并到同一次加载的调用方个数（实验 E4）。
+         */
+        const val CALLERS = 8
     }
 }

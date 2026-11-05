@@ -46,6 +46,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     private val unknownFormatAdder = LongAdder()
     private val refreshAdder = LongAdder()
     private val refreshRejectedAdder = LongAdder()
+    private val refreshSkippedAdder = LongAdder()
     private val remoteFailureAdder = LongAdder()
     private val invalidationReceivedAdder = LongAdder()
     private val writeFailureAdder = LongAdder()
@@ -55,6 +56,11 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     private val conditionalUnchangedAdder = LongAdder()
     private val conditionalConflictAdder = LongAdder()
     private val staleVersionAdder = LongAdder()
+    private val typeMismatchAdder = LongAdder()
+    private val unknownReadAdder = LongAdder()
+    private val unversionedAbsentRefusedAdder = LongAdder()
+    private val fillGatedAdder = LongAdder()
+    private val ttlClampedAdder = LongAdder()
 
     /**
      * 由 L2（本地副本）直接返回的读取数：未过期的本地副本，含负缓存与进入刷新窗口的副本。
@@ -86,6 +92,14 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     val unknownFormats: Long get() = unknownFormatAdder.sum()
     val refreshes: Long get() = refreshAdder.sum()
     val refreshRejected: Long get() = refreshRejectedAdder.sum()
+
+    /**
+     * 到期却没有运行的提前刷新（RFC 0005 §8）：
+     * - 刷新读没有取得刷新令牌（令牌在别的节点手里）：只从 L1 重新填充 L2，刷新点退避，不回源；
+     * - 提前刷新本该覆盖的副本没有刷新点：刷新只会再读到同样内容的副本（未知标志位、`E`、摘要段、版本被拒绝，P14），
+     *   或 L1 剩余寿命不长于刷新窗口（副本一出生就在窗口内）。这样的副本到期之前不刷新。
+     */
+    val refreshSkipped: Long get() = refreshSkippedAdder.sum()
     val remoteFailures: Long get() = remoteFailureAdder.sum()
     val invalidationsReceived: Long get() = invalidationReceivedAdder.sum()
     val writeFailures: Long get() = writeFailureAdder.sum()
@@ -99,7 +113,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     val conditionalUnchanged: Long get() = conditionalUnchangedAdder.sum()
 
     /**
-     * `putIfMatch` 因 L1 中的当前内容与期望不符而未写入的次数（不计入 [writeFailures]）。
+     * `putIfMatch` / `deleteIfMatch` 因 L1 中的当前内容与期望不符而未写入的次数（不计入 [writeFailures]）。
      */
     val conditionalConflicts: Long get() = conditionalConflictAdder.sum()
 
@@ -107,6 +121,34 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
      * `putIfNewer` / `invalidateIfNewer` 因 L1 中已有不更旧的版本而未写入的次数（重复投递与迟到的旧版本；不计入 [writeFailures]）。
      */
     val staleVersions: Long get() = staleVersionAdder.sum()
+
+    /**
+     * 本缓存从 L1 读到不属于它这一类的内容的次数（RFC 0005 §4.7，D4）：派生副本（`Cache`、`VersionedCache`）读到带摘要段的值，
+     * 即同一个 namespace 上还有 `Store`。这样的值照常读取，但不回收、不取得刷新令牌。
+     */
+    val typeMismatches: Long get() = typeMismatchAdder.sum()
+
+    /**
+     * 读取的结果为 `Lookup.Unknown`（L1 故障，RFC 0005 §4.1）的次数，按调用方计：含按 `unknownRead = ABSENT` 换算为不存在的、
+     * 抛出 `CacheReadException` 的与 `lookup` 返回 `Unknown` 的。同一次 L1 故障另计入 [remoteFailures]。
+     */
+    val readsUnknown: Long get() = unknownReadAdder.sum()
+
+    /**
+     * 带版本的数据源返回不带版本的 `null`、落在带版本的内容上被 L1 拒绝的次数（K16）：数据源应以 `Versioned(null, version)` 表达删除。
+     */
+    val unversionedAbsentRefusals: Long get() = unversionedAbsentRefusedAdder.sum()
+
+    /**
+     * 写事务内的私有回源（RFC 0005 §4.9 机制 2，`fill-in-transaction`）按 key 计的次数：不申请 lease、不写 L1 与 L2、
+     * 不经 SingleFlight 共享。每次另计入 [misses] 与 [loads]。
+     */
+    val fillsGated: Long get() = fillGatedAdder.sum()
+
+    /**
+     * 按调用给出的寿命（`ttlOf`、`put(k, v, ttl)`）超过 `cocache.overrides` 的 `ttl`、被钳制的次数（`CachePolicy.ttlCeiling`）。
+     */
+    val ttlClamped: Long get() = ttlClampedAdder.sum()
 
     internal fun localHit() = localHitAdder.increment()
     internal fun remoteHit() = remoteHitAdder.increment()
@@ -130,6 +172,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     internal fun unknownFormat() = unknownFormatAdder.increment()
     internal fun refresh() = refreshAdder.increment()
     internal fun refreshRejected() = refreshRejectedAdder.increment()
+    internal fun refreshSkipped() = refreshSkippedAdder.increment()
     internal fun remoteFailure() = remoteFailureAdder.increment()
     internal fun invalidationReceived() = invalidationReceivedAdder.increment()
     internal fun writeFailure() = writeFailureAdder.increment()
@@ -139,4 +182,9 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     internal fun conditionalUnchanged() = conditionalUnchangedAdder.increment()
     internal fun conditionalConflict() = conditionalConflictAdder.increment()
     internal fun staleVersion() = staleVersionAdder.increment()
+    internal fun typeMismatch() = typeMismatchAdder.increment()
+    internal fun unknownRead() = unknownReadAdder.increment()
+    internal fun unversionedAbsentRefused() = unversionedAbsentRefusedAdder.increment()
+    internal fun fillGated(keys: Int) = fillGatedAdder.add(keys.toLong())
+    internal fun ttlClamped() = ttlClampedAdder.increment()
 }

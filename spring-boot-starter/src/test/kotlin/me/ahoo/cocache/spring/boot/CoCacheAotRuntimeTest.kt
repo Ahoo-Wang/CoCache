@@ -13,12 +13,15 @@
 
 package me.ahoo.cocache.spring.boot
 
+import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.join.JoinValue
+import me.ahoo.cocache.spring.boot.CoCacheAotTest.AsyncTokenStore
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.Ext
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.ExtJoinCache
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.ProductJoinCache
+import me.ahoo.cocache.spring.boot.CoCacheAotTest.SuspendingTagStore
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.Tag
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.TagCache
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.Token
@@ -69,8 +72,16 @@ class CoCacheAotRuntimeTest {
                 it.getBean(TokenCache::class.java)["t"].assert().isEqualTo(Token("v"))
                 it.getBean(TagCache::class.java).add("k", listOf(Tag("a")))
                 it.getBean(TagCache::class.java)["k"].assert().isEqualTo(setOf(Tag("a")))
+                val suspendingTags = it.getBean(SuspendingTagStore::class.java)
+                runBlocking {
+                    suspendingTags.add("k", listOf(Tag("b")))
+                    suspendingTags.get("k").assert().isEqualTo(setOf(Tag("b")))
+                }
+                val asyncTokens = it.getBean(AsyncTokenStore::class.java)
+                asyncTokens.put("t", Token("w")).join()
+                asyncTokens.get("t").join().assert().isEqualTo(Token("w"))
                 @Suppress("UNCHECKED_CAST")
-                (it.getBean("label") as SetCache<String, String>).add("k", listOf("x"))
+                (it.getBean("label") as SetStore<String, String>).add("k", listOf("x"))
                 // spec 缓存只注册一次：CacheSpecRegistrar 在运行时跳过生成代码已注册的 bean
                 val stringCacheType = ResolvableType.forClassWithGenerics(
                     Cache::class.java,
@@ -84,6 +95,8 @@ class CoCacheAotRuntimeTest {
                         "ExtCache",
                         "TokenCache",
                         "TagCache",
+                        "SuspendingTagStore",
+                        "AsyncTokenStore",
                         "products",
                         "labels",
                         "orders"

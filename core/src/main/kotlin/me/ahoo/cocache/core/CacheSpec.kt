@@ -16,9 +16,11 @@ package me.ahoo.cocache.core
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
-import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.policy.ForeignFormatMode
+import me.ahoo.cocache.core.policy.DefaultPolicies
+import me.ahoo.cocache.core.policy.PolicyField
+import me.ahoo.cocache.core.policy.UnknownReadMode
 import java.time.Duration
 import java.util.function.Consumer
 
@@ -89,15 +91,48 @@ fun interface KeyFilter {
 }
 
 /**
- * 缓存声明（不可变数据）。所有有状态组件都由 [CacheRuntime] 按声明新建，不可能被多个缓存共享。
+ * 五种 spec 的公共部分（RFC 0005 §3.1）：缓存名、存储布局与策略。spec 与运行时创建的类型一一对应：
+ * [CacheSpec] → `Cache`、[VersionedCacheSpec] → `VersionedCache`、[StoreSpec] → `Store`、[VersionedStoreSpec] → `VersionedStore`、
+ * [SetStoreSpec] → `SetStore`。
  *
- * 存储 key 为 `{keyPrefix}{namespace}:{keyEncoder(key)}`。
+ * 存储 key 为 `{keyPrefix}{namespace}:{keyEncoder(key)}`（[keyspace]）。命名空间的字符集为 `[A-Za-z0-9._-]+`，
+ * 不含 `:`：前缀写在 [keyPrefix] 中，写进命名空间时构建失败（RFC 0005 §4.7）。同一个 namespace 的所有声明必须是同一类型。
+ *
+ * spec 是不可变数据：所有有状态组件都由 [CacheRuntime] 按 spec 新建，不可能被多个缓存共享。
  */
-class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
-    val name: String = builder.name
-    val namespace: String = builder.namespace ?: builder.name
-    val keyPrefix: String = builder.keyPrefix
-    val keyEncoder: KeyEncoder<K> = builder.keyEncoder
+sealed interface Spec<K : Any, V : Any> {
+    val name: String
+    val namespace: String
+    val keyPrefix: String
+    val keyEncoder: KeyEncoder<K>
+    val policy: CachePolicy
+
+    /**
+     * 声明写出的策略字段（字段三态，RFC 0005 §4.8，U11）：`policy { … }` 中赋值的字段与 `unknownRead`；整体赋值的 `policy`
+     * 视为写出全部策略字段。没有写出的字段由 `cocache.defaults` 或类型默认值（[DefaultPolicies]）决定。
+     */
+    val declaredFields: Set<PolicyField<*>>
+
+    /**
+     * 缓存占用的 keyspace（前缀与命名空间）：存储 key 的前缀与失效频道都由它决定。构建时校验命名空间的字符集。
+     */
+    val keyspace: Keyspace
+}
+
+/**
+ * 派生副本 `Cache` 的声明（RFC 0005 §4.1）：必须声明数据来源，[loader]、[asyncLoader] 或 [externallySourced] 恰好一个。
+ *
+ * - [loader] / [asyncLoader]：未命中回源；L1 读失败默认降级回源。
+ * - [externallySourced]：由调用方经 `put`、Spring Cache 或调用级 loader 提供。L1 中没有时是“未填充”；
+ *   不带 loader 的读取遇到 L1 读失败为 `Lookup.Unknown`，按 [unknownRead] 返回。
+ *
+ * 写入 L1 的值不带任何段（头部 36 字节）。默认策略 [DefaultPolicies.CACHE]（`ttl` 1 h、`localMaxAge` 5 m、`absentTtl` 1 m）。
+ */
+class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : Spec<K, V> {
+    override val name: String = builder.name
+    override val namespace: String = builder.namespace ?: builder.name
+    override val keyPrefix: String = builder.keyPrefix
+    override val keyEncoder: KeyEncoder<K> = builder.keyEncoder
     val codec: Codec<V> = requireNotNull(builder.codec) { "Cache[${builder.name}] - codec is required." }
     val loader: CacheLoader<K, V>? = builder.loader
 
@@ -107,50 +142,39 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
     val asyncLoader: AsyncCacheLoader<K, V>? = builder.asyncLoader
 
     /**
-     * 带版本的数据源（6.8）：返回值与它的版本，回源写入 L1 时一起保存。返回 `Versioned(null, n)` 表示“在版本 n 时不存在”
-     * （如已删除的聚合），写入与 `invalidateIfNewer(key, n)` 相同的墓碑；返回 `null` 表示数据源中从来没有这个 key，写入没有版本的负缓存。
-     * 与 [loader]、[asyncLoader]、[versionedAsyncLoader] 至多设置一个；设置时缓存即为带版本的（[versioned]）。
+     * 外部来源（RFC 0005 §4.1）：没有声明的数据源，由调用方提供值。与 [loader]、[asyncLoader] 互斥。
      */
-    val versionedLoader: CacheLoader<K, out Versioned<V?>>? = builder.versionedLoader
-
-    /**
-     * 带版本的异步数据源（6.8），见 [versionedLoader]。
-     */
-    val versionedAsyncLoader: AsyncCacheLoader<K, out Versioned<V?>>? = builder.versionedAsyncLoader
-
-    /**
-     * 是否为带版本的缓存（6.8，按版本有序的写入）：显式声明，或设置了带版本的数据源。
-     * 只有带版本的缓存支持 `putIfNewer`、`invalidateIfNewer`、`getVersioned`；后端不支持版本（`CoherenceBackend.versionedWrites`）时创建即失败。
-     * 带版本的缓存不支持提前刷新（`refreshWindow`）：L1 头部放不下刷新令牌与版本。
-     */
-    val versioned: Boolean = builder.versioned || versionedLoader != null || versionedAsyncLoader != null
+    val externallySourced: Boolean = builder.externallySourced
     val ttlOf: TtlFunction<K, V>? = builder.ttlOf
     val keyFilter: KeyFilter? = builder.keyFilter
-    val policy: CachePolicy = builder.policy
+    override val policy: CachePolicy = builder.policy
+
+    /**
+     * 声明写出的策略字段（字段三态，RFC 0005 §4.8）：没有写出的字段由 `cocache.defaults` 或类型默认值决定。
+     */
+    override val declaredFields: Set<PolicyField<*>> = builder.declaration.fields()
+
+    /**
+     * 不带 loader 的读取遇到 L1 读失败时返回什么（[UnknownReadMode]），只能用于 [externallySourced] 的缓存。
+     */
+    val unknownRead: UnknownReadMode = builder.unknownRead
 
     init {
         requireValidName(name, namespace)
-        require(loader == null || asyncLoader == null) { "Cache[$name] - set either loader or asyncLoader, not both." }
-        require(listOfNotNull(loader, asyncLoader, versionedLoader, versionedAsyncLoader).size <= 1) {
-            "Cache[$name] - set at most one of loader, asyncLoader, versionedLoader and versionedAsyncLoader."
+        val sources = listOf(loader != null, asyncLoader != null, externallySourced).count { it }
+        require(sources == 1) {
+            "Cache[$name] - declare exactly one data source: loader, asyncLoader or externallySourced(). " +
+                "Data with no source to rebuild it from belongs in a Store."
         }
-        require(!versioned || policy.refreshWindow == null) {
-            "Cache[$name] - a versioned cache does not support refreshWindow: the L1 header has no room for a refresh token next to the version."
-        }
-        // 没有数据源时 L1 是唯一副本：回收读不懂的内容就是删除它（RFC 0005 §12 “M3 之前”决定 6）
-        require(policy.foreignFormat != ForeignFormatMode.RECLAIM || hasSource) {
-            "Cache[$name] - foreignFormat = RECLAIM needs a data source (loader, asyncLoader, versionedLoader or versionedAsyncLoader): " +
-                "without one the L1 copy is the only copy, and reclaiming unreadable content deletes it. Remove the setting or use FAIL."
+        require(unknownRead == UnknownReadMode.THROW || externallySourced) {
+            "Cache[$name] - unknownRead applies only to reads without a source: declare it on an externallySourced() cache or a Store."
         }
     }
 
-    /**
-     * 是否设置了数据源（[loader]、[asyncLoader]、[versionedLoader]、[versionedAsyncLoader] 之一）。
-     */
-    private val hasSource: Boolean
-        get() = loader != null || asyncLoader != null || versionedLoader != null || versionedAsyncLoader != null
+    override val keyspace: Keyspace = keyspaceOf("Cache", name, keyPrefix, namespace)
 
-    override fun toString(): String = "CacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"
+    override fun toString(): String =
+        "CacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', externallySourced=$externallySourced, policy=$policy)"
 
     /**
      * 以本声明为基础的构建器（用于叠加定制与配置）。
@@ -162,12 +186,11 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         it.codec = codec
         it.loader = loader
         it.asyncLoader = asyncLoader
-        it.versionedLoader = versionedLoader
-        it.versionedAsyncLoader = versionedAsyncLoader
-        it.versioned = versioned
+        it.externallySourced = externallySourced
         it.ttlOf = ttlOf
         it.keyFilter = keyFilter
-        it.policy = policy
+        it.unknownRead = unknownRead
+        it.declaration.restore(policy, declaredFields)
     }
 
     class Builder<K : Any, V : Any> internal constructor(val name: String) {
@@ -177,16 +200,24 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         var codec: Codec<V>? = null
         var loader: CacheLoader<K, V>? = null
         var asyncLoader: AsyncCacheLoader<K, V>? = null
-        var versionedLoader: CacheLoader<K, out Versioned<V?>>? = null
-        var versionedAsyncLoader: AsyncCacheLoader<K, out Versioned<V?>>? = null
-
-        /**
-         * 声明为带版本的缓存（见 [CacheSpec.versioned]）；设置带版本的数据源时不必再设置。
-         */
-        var versioned: Boolean = false
+        var externallySourced: Boolean = false
         var ttlOf: TtlFunction<K, V>? = null
         var keyFilter: KeyFilter? = null
-        var policy: CachePolicy = CachePolicy.DEFAULT
+        internal val declaration = PolicyDeclaration(DefaultPolicies.CACHE)
+
+        /**
+         * 整体赋值视为写出全部策略字段（`cocache.defaults` 对此缓存不再生效）；只修改部分字段用 `policy { … }` 或 [updatePolicy]。
+         */
+        var policy: CachePolicy
+            get() = declaration.policy
+            set(value) {
+                declaration.replace(value)
+            }
+        var unknownRead: UnknownReadMode = UnknownReadMode.THROW
+            set(value) {
+                field = value
+                declaration.declare(PolicyField.UNKNOWN_READ)
+            }
 
         fun namespace(namespace: String) = apply { this.namespace = namespace }
         fun keyPrefix(keyPrefix: String) = apply { this.keyPrefix = keyPrefix }
@@ -194,29 +225,28 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
         fun codec(codec: Codec<V>) = apply { this.codec = codec }
         fun loader(loader: CacheLoader<K, V>) = apply { this.loader = loader }
         fun asyncLoader(asyncLoader: AsyncCacheLoader<K, V>) = apply { this.asyncLoader = asyncLoader }
-        fun versionedLoader(
-            versionedLoader: CacheLoader<K, out Versioned<V?>>
-        ) = apply { this.versionedLoader = versionedLoader }
-        fun versionedAsyncLoader(
-            versionedAsyncLoader: AsyncCacheLoader<K, out Versioned<V?>>
-        ) = apply { this.versionedAsyncLoader = versionedAsyncLoader }
-        fun versioned(versioned: Boolean) = apply { this.versioned = versioned }
+
+        /**
+         * 声明为外部来源（见 [CacheSpec.externallySourced]）。
+         */
+        fun externallySourced() = apply { this.externallySourced = true }
         fun ttlOf(ttlOf: TtlFunction<K, V>) = apply { this.ttlOf = ttlOf }
         fun keyFilter(keyFilter: KeyFilter) = apply { this.keyFilter = keyFilter }
         fun policy(policy: CachePolicy) = apply { this.policy = policy }
+        fun unknownRead(unknownRead: UnknownReadMode) = apply { this.unknownRead = unknownRead }
 
         /**
          * 在当前策略基础上修改。
          */
         fun policy(
             block: CachePolicy.Builder.() -> Unit
-        ) = apply { this.policy = policy.toBuilder().apply(block).build() }
+        ) = apply { declaration.update(block) }
 
         /**
          * 在当前策略基础上修改（Java 友好）。
          */
         fun updatePolicy(customizer: Consumer<CachePolicy.Builder>) = apply {
-            this.policy = policy.toBuilder().also { customizer.accept(it) }.build()
+            declaration.update { customizer.accept(this) }
         }
 
         fun build(): CacheSpec<K, V> = CacheSpec(this)
@@ -231,98 +261,24 @@ class CacheSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) {
 }
 
 /**
- * L1 是唯一副本的集合缓存声明：没有数据源（按构造禁止 loader）。默认永不过期。
- */
-class SetCacheSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>) {
-    val name: String = builder.name
-    val namespace: String = builder.namespace ?: builder.name
-    val keyPrefix: String = builder.keyPrefix
-    val keyEncoder: KeyEncoder<K> = builder.keyEncoder
-    val elementCodec: Codec<E> = requireNotNull(
-        builder.elementCodec
-    ) { "SetCache[${builder.name}] - elementCodec is required." }
-    val policy: CachePolicy = builder.policy
-
-    init {
-        requireValidName(name, namespace)
-        // 集合缓存没有数据源：回收读不懂的内容就是删除唯一副本（RFC 0005 §12 “M3 之前”决定 6）
-        require(policy.foreignFormat != ForeignFormatMode.RECLAIM) {
-            "SetCache[$name] - foreignFormat = RECLAIM is not supported: a SetCache has no data source, its L1 copy is the only copy, " +
-                "and reclaiming unreadable content deletes it. Remove the setting or use FAIL."
-        }
-    }
-
-    override fun toString(): String = "SetCacheSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"
-
-    /**
-     * 以本声明为基础的构建器（用于叠加定制与配置）。
-     */
-    fun toBuilder(): Builder<K, E> = Builder<K, E>(name).also {
-        it.namespace = namespace
-        it.keyPrefix = keyPrefix
-        it.keyEncoder = keyEncoder
-        it.elementCodec = elementCodec
-        it.policy = policy
-    }
-
-    class Builder<K : Any, E : Any> internal constructor(val name: String) {
-        var namespace: String? = null
-        var keyPrefix: String = CacheSpec.DEFAULT_KEY_PREFIX
-        var keyEncoder: KeyEncoder<K> = KeyEncoder.ofToString()
-        var elementCodec: Codec<E>? = null
-        var policy: CachePolicy = DEFAULT_POLICY
-
-        fun namespace(namespace: String) = apply { this.namespace = namespace }
-        fun keyPrefix(keyPrefix: String) = apply { this.keyPrefix = keyPrefix }
-        fun keyEncoder(keyEncoder: KeyEncoder<K>) = apply { this.keyEncoder = keyEncoder }
-        fun elementCodec(elementCodec: Codec<E>) = apply { this.elementCodec = elementCodec }
-
-        /**
-         * 整体替换策略。注意 [CachePolicy.DEFAULT] 的 `ttl` 是 1 小时：集合缓存的 L1 是唯一副本，
-         * 应以 [DEFAULT_POLICY]`.toBuilder()` 为起点，或用 [updatePolicy] 在当前策略上修改。
-         */
-        fun policy(policy: CachePolicy) = apply { this.policy = policy }
-        fun policy(
-            block: CachePolicy.Builder.() -> Unit
-        ) = apply { this.policy = policy.toBuilder().apply(block).build() }
-
-        /**
-         * 在当前策略（默认 [DEFAULT_POLICY]，永不过期）基础上修改（Java 友好）。
-         */
-        fun updatePolicy(customizer: Consumer<CachePolicy.Builder>) = apply {
-            this.policy = policy.toBuilder().also { customizer.accept(it) }.build()
-        }
-
-        fun build(): SetCacheSpec<K, E> = SetCacheSpec(this)
-    }
-
-    companion object {
-        /**
-         * L1 是唯一副本，默认永不过期。
-         */
-        @JvmField
-        val DEFAULT_POLICY: CachePolicy = CachePolicy(ttl = null)
-
-        @JvmStatic
-        fun <K : Any, E : Any> builder(name: String): Builder<K, E> = Builder(name)
-    }
-}
-
-/**
  * Kotlin DSL：`cacheSpec<String, User>("user") { codec = …; loader = CacheLoader { … } }`。
  */
 fun <K : Any, V : Any> cacheSpec(name: String, block: CacheSpec.Builder<K, V>.() -> Unit): CacheSpec<K, V> {
     return CacheSpec.builder<K, V>(name).apply(block).build()
 }
 
-/**
- * Kotlin DSL：`setCacheSpec<String, String>("index") { elementCodec = … }`。
- */
-fun <K : Any, E : Any> setCacheSpec(name: String, block: SetCacheSpec.Builder<K, E>.() -> Unit): SetCacheSpec<K, E> {
-    return SetCacheSpec.builder<K, E>(name).apply(block).build()
-}
-
-private fun requireValidName(name: String, namespace: String) {
+internal fun requireValidName(name: String, namespace: String) {
     require(name.isNotBlank()) { "name must not be blank." }
     require(namespace.isNotBlank()) { "namespace must not be blank." }
+}
+
+/**
+ * 校验命名空间的字符集（[Keyspace]），失败信息带上缓存名。
+ */
+internal fun keyspaceOf(kind: String, name: String, keyPrefix: String, namespace: String): Keyspace {
+    try {
+        return Keyspace(keyPrefix, namespace)
+    } catch (e: IllegalArgumentException) {
+        throw IllegalArgumentException("$kind[$name] - ${e.message}", e)
+    }
 }

@@ -14,63 +14,30 @@
 package me.ahoo.cocache.redis
 
 import me.ahoo.cocache.api.CacheClock
-import me.ahoo.cocache.api.spi.AsyncInvalidationChannel
-import me.ahoo.cocache.api.spi.AsyncRemoteStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.clock.ManualClock
-import me.ahoo.cocache.test.AsyncBackendProtocolSpec
 import me.ahoo.cocache.test.CacheAccess
-import me.ahoo.cocache.test.FaultSpec
+import me.ahoo.cocache.test.L1Capability
 import me.ahoo.cocache.test.MultiNodeSpec
 import me.ahoo.cocache.test.SetEngineSpec
 import me.ahoo.cocache.test.VersionedSpec
-import me.ahoo.test.asserts.assert
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.UUID
 
 /*
- * 异步变体在 Redis 上的 TCK 矩阵：与同步矩阵相同的三种后端（pubsub、非原子、sharded），基础规范经
- * `override val access = CacheAccess.ASYNC` 改由 `async()` 视图读写。Redis 后端原生异步（AsyncRemoteStore / AsyncInvalidationChannel），
- * 每个 L1 结果都在 Lettuce 的 I/O 线程上完成；引擎另跑断言这些线程的 [RedisAsyncThreadCases]（其余异步专有用例在 cocache-core）。
+ * 异步变体在 Redis 上的冒烟矩阵：每个规范族一份，只在 `pubsub` 后端上，基础规范经 `override val access = CacheAccess.ASYNC`
+ * 改由 `async()` 视图读写。
+ *
+ * `RedisL1Store` 只有一种挂起形状（M3d）：同步与异步变体调用同一组存储方法，差别只在引擎（续接在哪个调度器上恢复），
+ * 变体的语义由 cocache-core 以内存后端覆盖。这里保留的是真实客户端才有的部分：L1 结果在 Lettuce 的 I/O 线程上完成，
+ * 续接改在运行时的执行器上恢复（[RedisAsyncThreadCases] 断言这些线程）。非原子与 `sharded` 后端的差别在存储与通道的代码里，
+ * 由同步矩阵（`RedisTckTest`）覆盖；保留同步数据源（`CacheAccess.ASYNC_WITH_SYNC_SOURCE`）只是引擎的执行器选择，见 cocache-core。
+ * 协议 TCK（`BackendProtocolSpec`）不经引擎，没有变体，见 `RedisTckTest`。
  */
-
-private fun elapseProtocol(namespace: String, duration: Duration) {
-    if (duration <= Duration.ofSeconds(2)) {
-        Thread.sleep(duration.toMillis())
-    } else {
-        RedisTestSupport.shiftTtl("cocache:$namespace:*", duration)
-    }
-}
-
-class RedisAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.backend()
-
-    override fun elapse(duration: Duration) = elapseProtocol(namespace, duration)
-
-    @Test
-    fun redisBackendIsNativelyAsync() {
-        asyncStore.assert().isInstanceOf(AsyncRemoteStore::class.java)
-        backend.channel.assert().isInstanceOf(AsyncInvalidationChannel::class.java)
-    }
-}
-
-class RedisNonAtomicAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.nonAtomicBackend()
-
-    override fun elapse(duration: Duration) = elapseProtocol(namespace, duration)
-}
-
-class RedisShardedAsyncBackendProtocolTest : AsyncBackendProtocolSpec() {
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend().also {
-        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
-    }
-
-    override fun elapse(duration: Duration) = elapseProtocol(namespace, duration)
-}
 
 class RedisAsyncEngineTest : RedisAsyncThreadCases() {
+    override val expectedCapabilities: Set<L1Capability> = RedisTestSupport.CAPABILITIES
+
     override val access: CacheAccess = CacheAccess.ASYNC
 
     override val closesBackend: Boolean = true
@@ -83,74 +50,6 @@ class RedisAsyncEngineTest : RedisAsyncThreadCases() {
     override fun createBackend(): CoherenceBackend = RedisTestSupport.backend(
         RedisBackendOptions(clientName = clientName)
     )
-
-    override fun elapse(duration: Duration) {
-        manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
-    }
-
-    override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(clientName)
-}
-
-/**
- * 默认的用户路径：异步视图 + 同步数据源（在阻塞执行器上执行）。
- */
-class RedisAsyncWithSyncSourceEngineTest : RedisAsyncThreadCases() {
-    override val closesBackend: Boolean = true
-
-    private val manualClock = ManualClock()
-    private val clientName = "cocache-tck-" + UUID.randomUUID()
-
-    override val access: CacheAccess = CacheAccess.ASYNC_WITH_SYNC_SOURCE
-
-    override val clock: CacheClock = manualClock
-
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.backend(
-        RedisBackendOptions(clientName = clientName)
-    )
-
-    override fun elapse(duration: Duration) {
-        manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
-    }
-
-    override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(clientName)
-}
-
-class RedisNonAtomicAsyncEngineTest : RedisAsyncThreadCases() {
-    override val access: CacheAccess = CacheAccess.ASYNC
-
-    override val closesBackend: Boolean = true
-
-    private val manualClock = ManualClock()
-
-    override val clock: CacheClock = manualClock
-
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.nonAtomicBackend().also {
-        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
-    }
-
-    override fun elapse(duration: Duration) {
-        manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
-    }
-
-    override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(
-        requireNotNull((backend.delegate as RedisBackend).clientName)
-    )
-}
-
-class RedisShardedAsyncEngineTest : RedisAsyncThreadCases() {
-    override val access: CacheAccess = CacheAccess.ASYNC
-
-    override val closesBackend: Boolean = true
-
-    private val manualClock = ManualClock()
-    private val clientName = "cocache-tck-" + UUID.randomUUID()
-
-    override val clock: CacheClock = manualClock
-
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend(clientName)
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
@@ -161,6 +60,8 @@ class RedisShardedAsyncEngineTest : RedisAsyncThreadCases() {
 }
 
 class RedisAsyncSetEngineTest : SetEngineSpec() {
+    override val expectedCapabilities: Set<L1Capability> = RedisTestSupport.CAPABILITIES
+
     override val access: CacheAccess = CacheAccess.ASYNC
 
     override val closesBackend: Boolean = true
@@ -178,6 +79,8 @@ class RedisAsyncSetEngineTest : SetEngineSpec() {
 }
 
 class RedisAsyncMultiNodeTest : MultiNodeSpec() {
+    override val expectedCapabilities: Set<L1Capability> = RedisTestSupport.CAPABILITIES
+
     override val access: CacheAccess = CacheAccess.ASYNC
 
     override val closesBackend: Boolean = true
@@ -187,42 +90,6 @@ class RedisAsyncMultiNodeTest : MultiNodeSpec() {
     override val clock: CacheClock = manualClock
 
     override fun createBackend(): CoherenceBackend = RedisTestSupport.backend()
-
-    override fun elapse(duration: Duration) {
-        manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
-    }
-}
-
-class RedisNonAtomicAsyncMultiNodeTest : MultiNodeSpec() {
-    override val access: CacheAccess = CacheAccess.ASYNC
-
-    override val closesBackend: Boolean = true
-
-    private val manualClock = ManualClock()
-
-    override val clock: CacheClock = manualClock
-
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.nonAtomicBackend().also {
-        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
-    }
-
-    override fun elapse(duration: Duration) {
-        manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
-    }
-}
-
-class RedisShardedAsyncMultiNodeTest : MultiNodeSpec() {
-    override val access: CacheAccess = CacheAccess.ASYNC
-
-    override val closesBackend: Boolean = true
-
-    private val manualClock = ManualClock()
-
-    override val clock: CacheClock = manualClock
-
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend()
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)
@@ -231,77 +98,15 @@ class RedisShardedAsyncMultiNodeTest : MultiNodeSpec() {
 }
 
 /**
- * 故障 TCK（`pubsub`）：单机时经 [TcpProxy] 连接 Redis，以支持断线用例。
+ * 故障 TCK 经异步视图：单机时含断线与底层命令被 Lettuce 取消的用例（被取消的命令在 I/O 线程上结束，续接在执行器上恢复）。
  */
-class RedisAsyncFaultTest : FaultSpec() {
+class RedisAsyncFaultTest : RedisProxiedFaultSpec() {
     override val access: CacheAccess = CacheAccess.ASYNC
-
-    override val closesBackend: Boolean = true
-
-    private val manualClock = ManualClock()
-    private var proxy: TcpProxy? = null
-
-    override val clock: CacheClock = manualClock
-
-    override fun createBackend(): CoherenceBackend {
-        if (RedisTestSupport.isCluster) {
-            return RedisTestSupport.backend()
-        }
-        val proxy = RedisTestSupport.proxy().also { this.proxy = it }
-        return RedisTestSupport.proxiedBackend(proxy)
-    }
-
-    override fun elapse(duration: Duration) {
-        manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
-    }
-
-    override fun disconnect(): AutoCloseable? = proxy?.cut()
-
-    @AfterEach
-    override fun destroy() {
-        super.destroy()
-        proxy?.close()
-    }
-}
-
-class RedisNonAtomicAsyncFaultTest : FaultSpec() {
-    override val access: CacheAccess = CacheAccess.ASYNC
-
-    override val closesBackend: Boolean = true
-
-    private val manualClock = ManualClock()
-
-    override val clock: CacheClock = manualClock
-
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.nonAtomicBackend().also {
-        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
-    }
-
-    override fun elapse(duration: Duration) {
-        manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
-    }
-}
-
-class RedisShardedAsyncFaultTest : FaultSpec() {
-    override val access: CacheAccess = CacheAccess.ASYNC
-
-    override val closesBackend: Boolean = true
-
-    private val manualClock = ManualClock()
-
-    override val clock: CacheClock = manualClock
-
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.shardedBackend()
-
-    override fun elapse(duration: Duration) {
-        manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
-    }
 }
 
 class RedisAsyncVersionedTest : VersionedSpec() {
+    override val expectedCapabilities: Set<L1Capability> = RedisTestSupport.CAPABILITIES
+
     override val access: CacheAccess = CacheAccess.ASYNC
 
     override val closesBackend: Boolean = true
@@ -311,25 +116,6 @@ class RedisAsyncVersionedTest : VersionedSpec() {
     override val clock: CacheClock = manualClock
 
     override fun createBackend(): CoherenceBackend = RedisTestSupport.backend()
-
-    override fun elapse(duration: Duration) {
-        manualClock.advance(duration)
-        RedisTestSupport.shiftTtl("cocache:$cacheName:*", duration)
-    }
-}
-
-class RedisNonAtomicAsyncVersionedTest : VersionedSpec() {
-    override val access: CacheAccess = CacheAccess.ASYNC
-
-    override val closesBackend: Boolean = true
-
-    private val manualClock = ManualClock()
-
-    override val clock: CacheClock = manualClock
-
-    override fun createBackend(): CoherenceBackend = RedisTestSupport.nonAtomicBackend().also {
-        check(!it.atomicBroadcast) { "expected a non-atomic backend" }
-    }
 
     override fun elapse(duration: Duration) {
         manualClock.advance(duration)

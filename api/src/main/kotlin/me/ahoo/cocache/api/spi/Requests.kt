@@ -32,8 +32,8 @@ data class RefreshRequest(val window: Duration, val token: Token, val tokenTtl: 
  */
 data class Fill(val key: String, val token: Token, val envelope: Envelope, val ttl: Duration?) {
     /**
-     * 与内容一起保存的版本（6.8，按版本有序的写入）；[Versioned.NO_VERSION] 表示没有版本。支持版本的后端
-     * （[CoherenceBackend.versionedWrites]）保存它：标量值带版本，[Envelope.Absent] 带版本即墓碑（同 [RemoteStore.putIfNewer] 写入的墓碑）。
+     * 与内容一起保存的版本（6.8，按版本有序的写入）；[Versioned.NO_VERSION] 表示没有版本。支持版本的存储
+     * （[L1Store.versioned] 非 `null`）保存它：标量值带版本，[Envelope.Absent] 带版本即墓碑（同 [VersionedL1Store.putIfNewer] 写入的墓碑）。
      *
      * 四个参数的构造函数取 [Envelope.Scalar.version]（负缓存没有版本）；墓碑经带 `version` 的构造函数给出。
      * 它不是数据类的组成部分（6.7 的构造函数、`copy`、`componentN` 不变）：`copy` 按信封重新取值，不保留墓碑的版本。
@@ -64,6 +64,6 @@ data class Fill(val key: String, val token: Token, val envelope: Envelope, val t
 }
 
 /**
- * 批量覆盖写入中的一项：语义同 [RemoteStore.put]，按 [ttl] 重设到期时间（`null` 为永不过期）。
+ * 批量覆盖写入中的一项：语义同 [L1Store.put]，按 [ttl] 重设到期时间（`null` 为永不过期）。
  */
 data class Put(val key: String, val envelope: Envelope, val ttl: Duration?)

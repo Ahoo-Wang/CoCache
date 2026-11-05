@@ -81,7 +81,7 @@ open class LocalHitsTest {
             block()
             access.source(this)
         }
-        val engine = runtime.create(spec) as CoherentEngine<String, String>
+        val engine = runtime.create(spec) as CacheEngine<String, String>
         return Accessed(access.cache(engine), engine.metrics)
     }
 
@@ -134,22 +134,33 @@ open class LocalHitsTest {
         metrics.remoteHits.assert().isEqualTo(1)
     }
 
+    /**
+     * 外部来源缓存的“未填充”（RFC 0005 §4.1）：不带 loader 的读取由 L2 回答“不存在”；带调用级 loader 的读取不接受它，不计为 L2 命中。
+     */
     @Test
-    fun unresolvedLocalEntryIsNotALocalHitForCallerLoader() {
-        val accessed = cache(recordLocalHits = true) { loader = null }
+    fun unfilledLocalEntryIsNotALocalHitForCallerLoader() {
+        val accessed = cache(recordLocalHits = true) { external() }
         val cache = accessed.cache
         val metrics = accessed.metrics
         cache["k"].assert().isNull()
-        // 无数据源缓存的“不存在”由 L2 回答
+        // 不带 loader 的读取：L2 中的“未填充”回答不存在
         cache["k"].assert().isNull()
         metrics.localHits.assert().isEqualTo(1)
 
-        // 调用方给出 loader 时，没有答案的 L2 副本不算命中
+        // 调用方给出 loader 时，L2 中的“未填充”不算命中
         cache.get("k") { "loaded" }.assert().isEqualTo("loaded")
         metrics.localHits.assert().isEqualTo(1)
         metrics.misses.assert().isEqualTo(2)
         cache.get("k") { "unused" }.assert().isEqualTo("loaded")
         metrics.localHits.assert().isEqualTo(2)
+    }
+
+    /**
+     * 外部来源（`externallySourced()`）：去掉用例默认的数据源。
+     */
+    private fun CacheSpec.Builder<String, String>.external() {
+        loader = null
+        externallySourced()
     }
 }
 

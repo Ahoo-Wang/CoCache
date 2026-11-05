@@ -13,17 +13,32 @@
 
 package me.ahoo.cocache.spring.cache
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.UnknownReadMode
+import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
+import me.ahoo.cocache.spring.tx.InMemoryTransactionManager
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
+import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
+import org.springframework.boot.test.context.FilteredClassLoader
+import org.springframework.transaction.support.TransactionSynchronizationManager
+import org.springframework.transaction.support.TransactionTemplate
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
@@ -60,6 +75,16 @@ class CoCacheSpringCacheTest {
     }
 
     @Test
+    fun managerSkipsAuthoritativeTypes() {
+        runtime.create(storeSpec<String, String>("flag") { codec = StringCodec })
+        runtime.create(setStoreSpec<String, String>("tags") { elementCodec = StringCodec })
+
+        manager.cacheNames.assert().containsExactly("user")
+        manager.getCache("flag").assert().isNull()
+        manager.getCache("tags").assert().isNull()
+    }
+
+    @Test
     fun getTreatsNegativeEntriesAsMiss() {
         cache.get("k")?.get().assert().isEqualTo("v")
         cache.get("absent").assert().isNull()
@@ -83,6 +108,116 @@ class CoCacheSpringCacheTest {
         cache.get("k")?.get().assert().isEqualTo("v2")
         cache.clear()
         runtime.admin("user")?.localSize.assert().isEqualTo(0)
+    }
+
+    /**
+     * `clear`（`@CacheEvict(allEntries = true)`）只清空本节点的 L2，L1 保持不变；每个缓存只告警一次（U19）。
+     * `invalidate`（`allEntries` 且 `beforeInvocation = true`）经 Spring 的默认实现调用 `clear`。
+     */
+    @Test
+    fun clearClearsTheLocalCopyOnlyAndWarnsOncePerCache() {
+        cache.put("k", "cached")
+        val logs = captureLogs(CoCacheSpringCache::class.java) {
+            cache.clear()
+            cache.invalidate().assert().isFalse()
+            cache.clear()
+        }
+        runtime.admin("user")?.localSize.assert().isEqualTo(0)
+        cache.get("k")?.get().assert().isEqualTo("cached")
+        val warnings = logs.filter { it.level == Level.WARN && it.formattedMessage.contains("allEntries = true") }
+        warnings.assert().hasSize(1)
+        warnings.single().formattedMessage.assert().contains("Cache[user]", "local copy (L2) only")
+    }
+
+    /**
+     * 没有事务时 `evictIfPresent` 立即失效一次；不确定之前是否存在，返回 `false`。
+     */
+    @Test
+    fun evictIfPresentWithoutTransactionInvalidatesOnce() {
+        cache.get("k")?.get().assert().isEqualTo("v")
+        database["k"] = "v2"
+        cache.evictIfPresent("k").assert().isFalse()
+        cache.get("k")?.get().assert().isEqualTo("v2")
+    }
+
+    /**
+     * spring-tx 不在类路径上时不登记：事务结束之后不再失效。
+     */
+    @Test
+    fun afterTransactionIsNoOpWithoutSpringTx() {
+        val withoutSpringTx = FilteredClassLoader(TransactionSynchronizationManager::class.java)
+        val noTransactions = CoCacheSpringCache.afterTransaction(withoutSpringTx)
+
+        @Suppress("UNCHECKED_CAST")
+        val native = requireNotNull(runtime.cache("user")) as Cache<Any, Any>
+        TransactionTemplate(InMemoryTransactionManager()).executeWithoutResult {
+            noTransactions(native, "k", null)
+            native.put("k", "kept")
+        }
+        native["k"].assert().isEqualTo("kept")
+    }
+
+    /**
+     * 缺陷复现：事务内的 `@CacheEvict(beforeInvocation = true)`。Spring 调用 `evictIfPresent`，事务装饰器
+     * （`TransactionAwareSpringCache`）委托它，失效在提交之前执行。提交之前，另一个节点在事务之外读穿透，
+     * 把已提交的旧值 v1 经 lease 写回 L1；提交之后必须再失效一次，否则全集群读到 v1 直到 `ttl`。
+     */
+    @Test
+    fun evictIfPresentInsideTransactionInvalidatesAgainAfterCommit() {
+        val transactions = InMemoryTransactionManager()
+        val tx = TransactionTemplate(transactions)
+        val backend = InMemoryBackend()
+        val nodeA = CacheRuntime.builder().backend(backend).build()
+        val nodeB = CacheRuntime.builder().backend(backend).build()
+        try {
+            val spec = cacheSpec<String, String>("user") {
+                codec = StringCodec
+                loader = CacheLoader { transactions.read(it) }
+            }
+            nodeA.create(spec)
+            val cacheB = nodeB.create(spec)
+            val springCacheA = requireNotNull(CoCacheSpringCacheManager(nodeA).getCache("user"))
+            tx.executeWithoutResult { transactions.write("u1", "v1") }
+            cacheB["u1"].assert().isEqualTo("v1")
+            tx.executeWithoutResult {
+                transactions.write("u1", "v2")
+                springCacheA.evictIfPresent("u1").assert().isFalse()
+                fork { cacheB["u1"] }.join().assert().isEqualTo("v1")
+            }
+            cacheB["u1"].assert().isEqualTo("v2")
+        } finally {
+            nodeA.close()
+            nodeB.close()
+            backend.close()
+        }
+    }
+
+    /**
+     * 事务回滚时同样再失效一次：事务内的读穿透可能已经把未提交的值写入 L1。
+     */
+    @Test
+    fun evictIfPresentInsideTransactionInvalidatesAgainAfterRollback() {
+        val transactions = InMemoryTransactionManager()
+        val tx = TransactionTemplate(transactions)
+        val sharedRuntime = CacheRuntime.builder().backend(InMemoryBackend()).build()
+        try {
+            val native = sharedRuntime.create(
+                cacheSpec<String, String>("user") {
+                    codec = StringCodec
+                    loader = CacheLoader { transactions.read(it) }
+                }
+            )
+            val springCache = requireNotNull(CoCacheSpringCacheManager(sharedRuntime).getCache("user"))
+            tx.executeWithoutResult { status ->
+                transactions.write("u1", "draft")
+                springCache.evictIfPresent("u1")
+                native["u1"].assert().isEqualTo("draft")
+                status.setRollbackOnly()
+            }
+            native["u1"].assert().isNull()
+        } finally {
+            sharedRuntime.close()
+        }
     }
 
     @Test
@@ -132,6 +267,40 @@ class CoCacheSpringCacheTest {
         release.countDown()
         loading.join().assert().isEqualTo("old")
         cache.get("stale") { "new" }.assert().isEqualTo("new")
+    }
+
+    /**
+     * U5：`get` 与 `retrieve` 一致处理 `Lookup.Unknown`，以 [CacheReadException] 失败（由 Spring 交给 `CacheErrorHandler`），
+     * 不当作未命中；声明 `unknownRead = ABSENT` 时视为未命中。
+     */
+    @Test
+    fun unknownFailsGetAndRetrieveAlikeUnlessDeclaredAbsent() {
+        val backend = HookedBackend(InMemoryBackend())
+        CacheRuntime.builder().backend(backend).build().use { faulty ->
+            faulty.create(
+                cacheSpec<String, String>("profile") {
+                    codec = StringCodec
+                    externallySourced()
+                }
+            )
+            faulty.create(
+                cacheSpec<String, String>("lenient") {
+                    codec = StringCodec
+                    externallySourced()
+                    unknownRead = UnknownReadMode.ABSENT
+                }
+            )
+            val manager = CoCacheSpringCacheManager(faulty)
+            val profile = requireNotNull(manager.getCache("profile"))
+            val lenient = requireNotNull(manager.getCache("lenient"))
+            backend.failAll = true
+            runCatching { profile.get("k") }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+            requireNotNull(profile.retrieve("k")).handle { _, e -> e }.join()
+                .assert().isInstanceOf(CacheReadException::class.java)
+            lenient.get("k").assert().isNull()
+            requireNotNull(lenient.retrieve("k")).join().assert().isNull()
+            backend.failAll = false
+        }
     }
 
     @Test
@@ -272,41 +441,15 @@ class CoCacheSpringCacheTest {
             )
     }
 
-    /**
-     * 6.1 的 `@JvmOverloads constructor(runtime, executor = DEFAULT_EXECUTOR)` 生成的合成构造函数仍然存在：
-     * 针对 6.1 编译、省略执行器的 Kotlin 调用方链接到它。
-     */
-    @Test
-    fun kotlinDefaultArgumentConstructorOf61IsKept() {
-        val synthetic = CoCacheSpringCacheManager::class.java.getDeclaredConstructor(
-            CacheRuntime::class.java,
-            java.util.concurrent.Executor::class.java,
-            Int::class.javaPrimitiveType,
-            Class.forName("kotlin.jvm.internal.DefaultConstructorMarker")
-        )
-        synthetic.isSynthetic.assert().isTrue()
-        // 掩码 0b10：第二个参数（executor）取默认值
-        val manager = synthetic.newInstance(runtime, null, 0b10, null)
-        manager.getCache("user").assert().isNotNull()
-        CoCacheSpringCacheManager::class.java.getConstructor(CacheRuntime::class.java).assert().isNotNull()
-        CoCacheSpringCacheManager::class.java.getConstructor(
-            CacheRuntime::class.java,
-            java.util.concurrent.Executor::class.java
-        )
-            .assert().isNotNull()
-    }
-
-    @Suppress("DEPRECATION")
-    @Test
-    fun deprecatedManagerConstructorIgnoresTheExecutor() {
-        val tasks = AtomicInteger()
-        val executor = java.util.concurrent.Executor {
-            tasks.incrementAndGet()
-            it.run()
+    private fun captureLogs(type: Class<*>, block: () -> Unit): List<ILoggingEvent> {
+        val logger = LoggerFactory.getLogger(type) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            block()
+        } finally {
+            logger.detachAppender(appender)
         }
-        val legacy = requireNotNull(CoCacheSpringCacheManager(runtime, executor).getCache("user"))
-        (legacy.retrieve("k")?.get() as SpringCache.ValueWrapper).get().assert().isEqualTo("v")
-        legacy.retrieve("legacy") { CompletableFuture.completedFuture("L") }.get().assert().isEqualTo("L")
-        tasks.get().assert().isEqualTo(0)
+        return appender.list
     }
 }

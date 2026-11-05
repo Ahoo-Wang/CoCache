@@ -15,11 +15,14 @@ package me.ahoo.cocache.core.internal
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration.Companion.nanoseconds
 
@@ -78,8 +81,30 @@ internal class SingleFlight<K : Any, R : Any>(
         }
         val added = keys.filter { current.add(it) }
         try {
-            // 数据源可能同步完成别的 key 的 future：那些续接派发出去，不在这些 key 的重入检查作用域内执行（Futures.withoutInline）
-            return Futures.withoutInline(block)
+            return block()
+        } finally {
+            current.removeAll(added.toSet())
+            if (current.isEmpty()) {
+                loadingKeys.remove()
+            }
+        }
+    }
+
+    /**
+     * 不经合并的加载（私有回源，RFC 0005 §4.9 机制 2）：不注册调用，其间本线程对这些 key 的调用快速失败（同 [loading]）。
+     * 本线程已在为其中的 key 加载（领头的同步调用，或外层的私有加载）时立即失败，而不是无限递归。
+     * 只供同步变体使用：[block] 的每一步都在当前线程上执行（`runBlocking` 的事件循环），线程局部的标记因此成立。
+     */
+    suspend fun <T> loadingPrivately(keys: Collection<K>, block: suspend () -> T): T {
+        val current = loadingKeys.get() ?: HashSet<K>(keys.size).also { loadingKeys.set(it) }
+        val added = ArrayList<K>(keys.size)
+        try {
+            for (key in keys) {
+                calls[key]?.let { checkNotReentrant(key, it) }
+                check(current.add(key)) { "Recursive call on the same key[$key] is not supported." }
+                added += key
+            }
+            return block()
         } finally {
             current.removeAll(added.toSet())
             if (current.isEmpty()) {
@@ -139,10 +164,12 @@ internal class SingleFlight<K : Any, R : Any>(
      * - 异步变体（`AsyncContext.runAsync`）：leader 同样在调用方的协程中执行，省去一次派发；用户取消的只是结果的副本，
      *   协程只在运行时关闭时被取消。
      * - 上下文中没有 [ExecutionMode] 的调用方可能被单独取消：leader 在 [scope] 中执行 [block]，调用方只等待结果，
-     *   取消调用方不取消共享的加载。
+     *   取消调用方不取消共享的加载。协程上下文的元素取自调用方（[callerElements]，RFC 0005 §4.4 K6）：loader 看得到调用方的
+     *   `ThreadContextElement`（MDC、追踪）。
      * - 跟随者挂起等待结果，不占线程；等待被取消（同步变体中即线程被中断）只结束它自己的等待，不影响 leader 与其它跟随者。
-     * - 合并规则：leader 因中断或取消失败时（[sharedFailure]），leader 自己收到原始异常，跟随者不接受这个失败，自行运行：
-     *   重新注册一次（leader 已注销，通常由它自己领头）；仍合并到被中断的 leader 时绕过 SingleFlight 直接执行 [block]。
+     * - 合并规则：leader 被中断或取消时（[sharedFailure]，按 leader 自己的状态判断，不按异常类型），leader 自己收到原始异常，
+     *   跟随者不接受这个失败，自行运行：重新注册一次（leader 已注销，通常由它自己领头）；仍合并到被中断的 leader 时绕过 SingleFlight
+     *   直接执行 [block]。其余失败（含 [block] 自己抛出的 `CancellationException`）与结果一样交给全部等待者。
      * - 同线程对同一 key 的重入快速失败。
      */
     suspend fun executeSuspending(key: K, scope: CoroutineScope, block: suspend () -> R): R {
@@ -181,13 +208,13 @@ internal class SingleFlight<K : Any, R : Any>(
         block: suspend () -> R
     ): R {
         if (mode == null) {
-            scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            scope.launch(callerElements(), CoroutineStart.UNDISPATCHED) {
                 // 结果经 call.future 交给全部等待者（含发起的调用方）；这里不重新抛出，否则失败会作为未捕获的异常上报给作用域
                 val outcome = runCatching { block() }
                 calls.remove(key, call)
                 outcome.fold(
                     { call.future.complete(it) },
-                    { call.future.completeExceptionally(sharedFailure(it, false)) }
+                    { call.future.completeExceptionally(sharedFailure(it, isActive, false)) }
                 )
             }
             // 发起的调用方是这次加载的拥有者：被中断或取消时交出原始异常，而不是跟随者看到的那个
@@ -199,12 +226,10 @@ internal class SingleFlight<K : Any, R : Any>(
         }
         val inline = mode.inline
         val result = try {
-            // 其间完成的别的 future 的续接派发出去，不在本 key 的重入守卫作用域内就地执行。
-            // 续接标记是线程局部的，只有始终留在调用方线程上的同步变体可以这样做
-            if (inline) Futures.withoutInlineSuspending(block) else block()
+            block()
         } catch (error: Throwable) {
             calls.remove(key, call)
-            call.future.completeExceptionally(sharedFailure(error, inline))
+            call.future.completeExceptionally(sharedFailure(error, coroutineContext.isActive, inline))
             throw error
         }
         calls.remove(key, call)
@@ -213,13 +238,16 @@ internal class SingleFlight<K : Any, R : Any>(
     }
 
     /**
-     * 交给跟随者的失败：leader 因中断或取消失败时换成 [LeaderInterruptedException]（跟随者据此自行运行），其余原样。
-     * 同步变体的 leader 被中断时，失败不一定是 [InterruptedException]（loader 可能包装它并恢复中断标志），
-     * 因此同时以调用方线程的中断标志为准。
+     * 交给跟随者的失败：leader 被中断或取消时换成 [LeaderInterruptedException]（跟随者据此自行运行），其余原样。
+     *
+     * 按 leader 自己的状态判断，不按异常类型（RFC 0005 第三轮 K5）：只有 leader 的协程已被取消（[active] 为 `false`：
+     * 运行时关闭、执行器拒绝派发、同步变体的 `runBlocking` 处理了中断），或同步变体（[inline]）的调用方线程被中断时，才是被中断。
+     * 同步变体的 loader 在调用方线程上执行，它抛出的 [InterruptedException] 即调用方线程被中断；loader 也可能包装它并恢复中断标志，
+     * 因此同时以中断标志为准。其余失败是普通的回源失败，与其它失败一样共享：否则 loader 自己的 `CancellationException`
+     * （其中的 `withTimeout`、被取消的 future）或阻塞执行器线程上的中断会让每个跟随者各自回源，回源次数随并发放大。
      */
-    private fun sharedFailure(error: Throwable, inline: Boolean): Throwable {
-        val interrupted = error is InterruptedException || error is CancellationException ||
-            (inline && Thread.currentThread().isInterrupted)
+    private fun sharedFailure(error: Throwable, active: Boolean, inline: Boolean): Throwable {
+        val interrupted = !active || (inline && (error is InterruptedException || Thread.currentThread().isInterrupted))
         return if (interrupted) LeaderInterruptedException(error) else error
     }
 
@@ -253,11 +281,11 @@ internal class SingleFlight<K : Any, R : Any>(
                 // 整批的结果经 own 交给发起的调用方（与内联执行相同：缺少的 key 不在结果中），各 key 的结果经 call.future 交给其它等待者；
                 // 这里不重新抛出，否则失败会作为未捕获的异常上报给作用域
                 val own = CompletableFuture<Map<K, R>>()
-                scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                scope.launch(callerElements(), CoroutineStart.UNDISPATCHED) {
                     runCatching { block(ledKeys) }.fold(
                         { loaded -> own.complete(LinkedHashMap<K, R>().also { publish(led, loaded, it) }) },
                         { error ->
-                            abandon(led, sharedFailure(error, false))
+                            abandon(led, sharedFailure(error, isActive, false))
                             own.completeExceptionally(error)
                         }
                     )
@@ -265,9 +293,9 @@ internal class SingleFlight<K : Any, R : Any>(
                 results.putAll(own.awaitOriginal())
             } else {
                 val loaded = try {
-                    if (inline) Futures.withoutInlineSuspending { block(ledKeys) } else block(ledKeys)
+                    block(ledKeys)
                 } catch (error: Throwable) {
-                    abandon(led, sharedFailure(error, inline))
+                    abandon(led, sharedFailure(error, coroutineContext.isActive, inline))
                     throw error
                 }
                 publish(led, loaded, results)
@@ -287,6 +315,14 @@ internal class SingleFlight<K : Any, R : Any>(
      * 挂起等待一次调用的结果，失败时抛出原始异常（[awaitOriginal]）。取消这次等待不会取消共享的结果，其它等待者照常拿到它。
      */
     private suspend fun awaitSuspending(call: Call<R>): R = call.future.awaitOriginal()
+
+    /**
+     * 没有 [ExecutionMode] 的调用方的共享加载在 [scope] 中执行时取自调用方的元素（RFC 0005 §4.4，K2、K6）：去掉 `Job`
+     * （调用方被取消不取消共享加载）与调度器（调度器取自运行时，从不在 L1 客户端的完成线程上继续），其余（`ThreadContextElement`、
+     * `CoroutineName`、重入记录）原样带入。
+     */
+    private suspend fun callerElements(): CoroutineContext =
+        coroutineContext.minusKey(Job).minusKey(ContinuationInterceptor)
 
     /**
      * 跟随者等待另一个调用者执行的加载，到这次加载的截止时刻为止；超时以 [onTimeout] 的异常失败。
@@ -320,7 +356,7 @@ internal class SingleFlight<K : Any, R : Any>(
 }
 
 /**
- * flight 的 leader 因中断或取消失败（RFC 0005 §4.4 的 `SourceLoadInterruptedException`）：只在 [SingleFlight] 内部交给跟随者，
+ * flight 的 leader 被中断或取消（RFC 0005 §4.4 的 `SourceLoadInterruptedException`；按 leader 自己的状态判断，见 `sharedFailure`）：只在 [SingleFlight] 内部交给跟随者，
  * 跟随者据此按合并规则自行运行，从不交给调用方。[cause] 是 leader 收到的原始异常。
  */
 private class LeaderInterruptedException(cause: Throwable) :

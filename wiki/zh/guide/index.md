@@ -57,8 +57,8 @@ flowchart LR
 
 - **不是线性一致的。** 失效到达之前的几毫秒里，其它实例可能还返回旧值。如果某次读取必须看到另一个实例同一时刻的写入，请直接读数据源。
 - **看不到没人告诉它的写入。** 有东西改了数据库却不失效（批处理、其它服务、手写 SQL）时，缓存会陈旧到 `ttl`。这些写入方可以使用 [`ExternalInvalidator`](./freshness.md#external-writers)。
-- **[JoinCache](./join-cache.md) 不是快照。** 它的两次读取相互独立，可能来自不同时刻。
-- **[`SetCache`](./caches.md#set-cache) 的唯一副本在 Redis 中。** 它的持久性就是 Redis 的持久性。
+- **[组合视图](./join-cache.md)不是快照。** 它的两次读取相互独立，可能来自不同时刻。
+- **[`Store`、`VersionedStore` 与 `SetStore`](./store.md) 的唯一副本在 Redis 中。** 它们的持久性就是 Redis 的持久性。
 - **内存后端只适用于单进程。** 它为开发与测试而存在。
 
 ## 什么时候不该用 {#when-not}
@@ -67,11 +67,10 @@ flowchart LR
 - **单实例、没有 Redis。** 一个普通的 Caffeine 缓存更简单。
 - **大多数读取之间都会变化的值。** 缓存会忙于失效，每次写入付出一次往返，收益甚微。
 - **非常大的值**（MB 级）。Redis 与网络会成为瓶颈，而且一个大值会拖慢共享连接上的其它命令。
-- **不允许阻塞的响应式或协程代码。** CoCache 的 API 是同步的；它在虚拟线程上运行良好。
 
 ## 环境要求 {#requirements}
 
-- JDK 17 及以上
+- JDK 21 及以上
 - Redis 7.0 及以上：单机、Sentinel 或 Cluster（不支持静态主从）
 - 使用 starter 时：Spring Boot 4
 

@@ -39,23 +39,27 @@ import io.mockk.spyk
 import io.mockk.verify
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Envelope
-import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.NodeId
-import me.ahoo.cocache.api.spi.RemoteRead
-import me.ahoo.cocache.api.spi.RemoteVersionedWrite
-import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * 频道单元测试共用的 keyspace，频道为 `cocache:inv:ns`。
+ */
+private val NS = Keyspace("cocache:", "ns")
 
 class RedisUnitTest {
     @Test
@@ -72,49 +76,57 @@ class RedisUnitTest {
 
     @Test
     fun decodesUnrecognizedAndEdgeContent() {
-        val foreign = RedisRemoteStore.decodeRead(
+        val foreign = RedisL1Store.decodeRead(
             listOf(2L, 1000L, "{\"legacy\":true}".toByteArray(), 0L)
-        ) as RemoteRead.Hit
-        foreign.format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
+        ) as L1Read.Hit
+        foreign.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
         foreign.ttl.assert().isEqualTo(Duration.ofSeconds(1))
 
+        // 格式 2 中不认识的状态报告为更高格式（RFC 0005 §4.7，P1），不报成格式 0（否则派生缓存会回收它）
         val header = ByteArray(RedisScripts.HEADER_SIZE).also {
             it[0] = RedisScripts.MAGIC
-            it[1] = 1
+            it[1] = RedisScripts.FORMAT.toByte()
             it[2] = 'X'.code.toByte()
         }
         (
-            RedisRemoteStore.decodeRead(
+            RedisL1Store.decodeRead(
                 listOf(2L, -1L, header + "p".toByteArray(), 0L)
-            ) as RemoteRead.Hit
-            ).format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
+            ) as L1Read.Hit
+            ).format.assert().isEqualTo(RedisScripts.NEWER_FORMAT)
 
-        val set = RedisRemoteStore.decodeRead(
+        val set = RedisL1Store.decodeRead(
             listOf(
                 3L,
                 -1L,
                 listOf("+a".toByteArray(), "!f".toByteArray(), "other".toByteArray(), ByteArray(0)),
+                ByteArray(0),
                 ByteArray(0)
             )
-        ) as RemoteRead.Hit
-        set.format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
+        ) as L1Read.Hit
+        set.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
         (set.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("a")
         set.ttl.assert().isNull()
 
-        val badFormat = RedisRemoteStore.decodeRead(
-            listOf(3L, 5L, listOf("!f".toByteArray()), "x".toByteArray())
-        ) as RemoteRead.Hit
-        badFormat.format.assert().isEqualTo(RedisRemoteStore.UNRECOGNIZED)
+        val badFormat = RedisL1Store.decodeRead(
+            listOf(3L, 5L, listOf("!f".toByteArray()), "x".toByteArray(), ByteArray(0))
+        ) as L1Read.Hit
+        badFormat.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
 
-        val versioned = RedisRemoteStore.decodeRead(
-            listOf(3L, 5L, listOf("+b".toByteArray(), "!f".toByteArray()), "1".toByteArray())
-        ) as RemoteRead.Hit
-        versioned.format.assert().isEqualTo(RedisScripts.FORMAT)
-        (versioned.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
+        val ours = RedisL1Store.decodeRead(
+            listOf(
+                3L,
+                5L,
+                listOf("+b".toByteArray(), "!f".toByteArray(), "!x".toByteArray()),
+                "2".toByteArray(),
+                ByteArray(0)
+            )
+        ) as L1Read.Hit
+        ours.format.assert().isEqualTo(RedisScripts.FORMAT)
+        (ours.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
 
-        RedisRemoteStore.decodeRead(listOf(1L, -5L)).assert().isEqualTo(RemoteRead.Leased(Duration.ZERO))
+        RedisL1Store.decodeRead(listOf(1L, -5L)).assert().isEqualTo(L1Read.Leased(Duration.ZERO))
         runCatching {
-            RedisRemoteStore.decodeRead(
+            RedisL1Store.decodeRead(
                 listOf(9L)
             )
         }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
@@ -132,73 +144,57 @@ class RedisUnitTest {
                 it[1] = 0x80.toByte()
                 it[2] = state.code.toByte()
             }
-            val read = RedisRemoteStore.decodeRead(listOf(2L, -1L, header + "p".toByteArray(), 0L)) as RemoteRead.Hit
+            val read = RedisL1Store.decodeRead(listOf(2L, -1L, header + "p".toByteArray(), 0L)) as L1Read.Hit
             read.format.assert().isEqualTo(0x80)
         }
     }
 
     /**
-     * 按版本写入的结果码与头部中的版本（6.8）：版本只在令牌位置以 `VERSION_MARK` 开头时存在。
+     * 按版本写入的结果码。头部中的版本段见 [WireFormatTest]。
      */
     @Test
-    fun decodesVersionedWritesAndHeaderVersions() {
-        RedisRemoteStore.decodeVersionedWrite(listOf(1L)).assert().isEqualTo(RemoteVersionedWrite.Written)
-        RedisRemoteStore.decodeVersionedWrite(
+    fun decodesVersionedWrites() {
+        RedisL1Store.decodeVersionedWrite(listOf(1L)).assert().isEqualTo(L1VersionedWrite.Written)
+        RedisL1Store.decodeVersionedWrite(
             listOf(0L, java.nio.ByteBuffer.allocate(8).putLong(-3L).array())
-        ).assert().isEqualTo(RemoteVersionedWrite.Stale(-3L))
-        RedisRemoteStore.decodeVersionedWrite(listOf(3L, 2L)).assert().isEqualTo(RemoteVersionedWrite.Unreadable(2))
-        runCatching { RedisRemoteStore.decodeVersionedWrite(listOf(9L)) }.exceptionOrNull()
+        ).assert().isEqualTo(L1VersionedWrite.Stale(-3L))
+        RedisL1Store.decodeVersionedWrite(listOf(3L, 2L)).assert().isEqualTo(L1VersionedWrite.Unreadable(2))
+        runCatching { RedisL1Store.decodeVersionedWrite(listOf(9L)) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalStateException::class.java)
-
-        val header = ByteArray(RedisScripts.HEADER_SIZE).also {
-            it[0] = RedisScripts.MAGIC
-            it[1] = 1
-            it[2] = 'V'.code.toByte()
-        }
-        RedisRemoteStore.versionOf(header).assert().isEqualTo(Versioned.NO_VERSION)
-        RedisScripts.VERSION_MARK.copyInto(header, RedisScripts.VERSION_OFFSET)
-        RedisRemoteStore.versionOf(header).assert().isEqualTo(0L)
-        // 令牌恰好以 0xC0 开头、但不是完整的标记：仍然没有版本
-        header[RedisScripts.VERSION_OFFSET + 1] = 0
-        RedisRemoteStore.versionOf(header).assert().isEqualTo(Versioned.NO_VERSION)
-    }
-
-    @Test
-    fun putIfNewerRejectsSetsWithoutTouchingRedis() {
-        val store = RedisRemoteStore(mockk(), ByteArray(0), 512)
-        val members = Envelope.Members(listOf("a".toByteArray()))
-        runCatching { store.putIfNewer("k", members, 1, null, ByteArray(0)) }.exceptionOrNull()
-            .assert().isInstanceOf(IllegalArgumentException::class.java)
-        store.putIfNewerAsync("k", members, 1, null, ByteArray(0)).handle { _, error -> error }.join()
-            .assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 
     /**
-     * 批量 fill 第一个失败即抛出并放弃其余：尚未完成的取消并释放令牌，已完成而结果未知（客户端超时）的同样释放；
-     * 正常完成的、以其它异常失败（断线拒绝）的不释放。
+     * 发出之前同步拒绝（确定未执行，连接是模拟的、从未被调用）：集合，以及版本段中的 `NO_VERSION`（RFC 0005 §4.7，K15）。
      */
     @Test
-    fun fillAllAbandonsTheRestAfterTheFirstFailure() {
-        val node = NodeId.random()
-        val fills = List(5) { Fill("k$it", Token(node, it.toLong()), Envelope.Absent, null) }
-        val calls = List(fills.size) { CompletableFuture<List<Any?>>() }
-        val released = CopyOnWriteArrayList<String>()
-        val connections = mockk<RedisConnections>()
-        every { connections.evalAsync<List<Any?>>(RedisScripts.FILL, any(), any()) } returnsMany calls
-        every { connections.evalAsync<List<Any?>>(RedisScripts.RELEASE, any(), any()) } answers {
-            released.add(String(secondArg<List<ByteArray>>().single()))
-            CompletableFuture.completedFuture(listOf(1L))
+    fun putIfNewerRejectsSetsAndNoVersionWithoutTouchingRedis() {
+        val store = RedisL1Store(mockk(), ByteArray(0), 512)
+        val members = Envelope.Members(listOf("a".toByteArray()))
+        runCatching {
+            Suspending.await {
+                store.versioned().putIfNewer(
+                    "k",
+                    members,
+                    1,
+                    null,
+                    ByteArray(0)
+                )
+            }
+        }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+        listOf(Envelope.Scalar("v".toByteArray()), Envelope.Absent).forEach { envelope ->
+            runCatching {
+                Suspending.await {
+                    store.versioned().putIfNewer(
+                        "k",
+                        envelope,
+                        Versioned.NO_VERSION,
+                        null,
+                        ByteArray(0)
+                    )
+                }
+            }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
         }
-        val timedOut = RedisException("Command timed out after PT1S.", TimeoutException())
-        every { connections.await(calls[0]) } throws timedOut
-        calls[1].complete(listOf(1L))
-        calls[2].completeExceptionally(RedisCommandTimeoutException("Command timed out"))
-        calls[3].completeExceptionally(RedisException("Connection closed"))
-        val store = RedisRemoteStore(connections, ByteArray(0), 512)
-
-        runCatching { store.fillAll(fills) }.exceptionOrNull().assert().isSameAs(timedOut)
-        released.assert().containsExactly("k0", "k2", "k4")
-        calls[4].isCancelled.assert().isTrue()
     }
 
     @Test
@@ -207,35 +203,36 @@ class RedisUnitTest {
             .assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 
+    /**
+     * 阻塞等待（启动时的探测、订阅、心跳）：限时，失败按同一规则映射；不响应中断，等到超时，保留中断标志（中断不到达 L1 命令）。
+     */
     @Test
-    fun awaitTranslatesFailures() {
+    fun joinTranslatesFailuresAndIgnoresInterrupts() {
         assumeStandalone()
         val client = RedisClient.create(RedisURI.create("localhost", 6379))
         try {
             RedisConnections(client, Duration.ofMillis(20)).use { connections ->
-                runCatching {
-                    connections.await(
-                        CompletableFuture<Any>()
-                    )
-                }.exceptionOrNull().assert().isInstanceOf(RedisException::class.java)
+                runCatching { connections.join(CompletableFuture<Any>()) }.exceptionOrNull()
+                    .assert().isInstanceOf(RedisException::class.java)
                 val checked = CompletableFuture.failedFuture<Any>(Exception("checked"))
                 runCatching {
-                    connections.await(
+                    connections.join(
                         checked
                     )
                 }.exceptionOrNull().assert().isInstanceOf(RedisException::class.java)
                 val runtime = IllegalStateException("runtime")
-                runCatching {
-                    connections.await(
-                        CompletableFuture.failedFuture<Any>(runtime)
-                    )
-                }.exceptionOrNull().assert().isSameAs(runtime)
+                runCatching { connections.join(CompletableFuture.failedFuture<Any>(runtime)) }.exceptionOrNull()
+                    .assert().isSameAs(runtime)
+                val cancelled = CompletableFuture<Any>().apply { cancel(false) }
+                val lettuceCancel = runCatching { connections.join(cancelled) }.exceptionOrNull()
+                lettuceCancel.assert().isInstanceOf(RedisException::class.java)
+                lettuceCancel?.cause.assert().isInstanceOf(java.util.concurrent.CancellationException::class.java)
+                connections.join(CompletableFuture.completedFuture("v")).assert().isEqualTo("v")
                 Thread.currentThread().interrupt()
-                runCatching {
-                    connections.await(
-                        CompletableFuture<Any>()
-                    )
-                }.exceptionOrNull().assert().isInstanceOf(RedisException::class.java)
+                val pending = CompletableFuture<Any>()
+                val failure = runCatching { connections.join(pending) }.exceptionOrNull()
+                failure.assert().isInstanceOf(RedisException::class.java)
+                failure?.message.assert().isEqualTo("Command timed out after PT0.02S.")
                 Thread.interrupted().assert().isTrue()
                 connections.groupBySlot(listOf("a".toByteArray(), "b".toByteArray())).size.assert().isEqualTo(1)
             }
@@ -251,14 +248,16 @@ class RedisUnitTest {
         try {
             client.connect().use { it.sync().scriptFlush() }
             RedisConnections(client, Duration.ofSeconds(2)).use { connections ->
-                val result = connections.eval<List<Any?>>(
-                    RedisScripts.PROBE,
-                    listOf("cocache:probe".toByteArray()),
-                    listOf("cocache:probe:channel".toByteArray())
+                val result = connections.join(
+                    connections.evalAsync<List<Any?>>(
+                        RedisScripts.PROBE,
+                        listOf("cocache:!probe".toByteArray()),
+                        listOf("cocache:!probe:channel".toByteArray(), ByteArray(0))
+                    )
                 )
                 result.assert().containsExactly(1L)
                 val failure = runCatching {
-                    connections.eval<List<Any?>>(RedisScripts.FILL, emptyList(), emptyList())
+                    connections.join(connections.evalAsync<List<Any?>>(RedisScripts.FILL, emptyList(), emptyList()))
                 }.exceptionOrNull()
                 failure.assert().isInstanceOf(RedisException::class.java)
             }
@@ -311,8 +310,12 @@ class RedisUnitTest {
         }
     }
 
+    /**
+     * 心跳失败时重置订阅者；读不懂的帧不投递为失效（按重置处理，见 TCK 的 `unreadableFramesResetTheChannelSubscribers`），
+     * 只投递给订阅了该频道的订阅者。
+     */
     @Test
-    fun channelResetsOnHeartbeatFailureAndIgnoresMalformedFrames() {
+    fun channelResetsOnHeartbeatFailureAndNeverDeliversUnreadableFrames() {
         var adapter: RedisPubSubAdapter<ByteArray, ByteArray>? = null
         val async = proxy<RedisPubSubAsyncCommands<ByteArray, ByteArray>> { method, _ ->
             when (method.name) {
@@ -334,7 +337,7 @@ class RedisUnitTest {
         }
         val connections = mockk<RedisConnections>()
         every { connections.pubSub } returns pubSub
-        every { connections.await(any<CompletableFuture<Any?>>()) } answers { firstArg<CompletableFuture<Any?>>().get() }
+        every { connections.join(any<CompletableFuture<Any?>>()) } answers { firstArg<CompletableFuture<Any?>>().get() }
 
         val resets = AtomicInteger()
         val received = CopyOnWriteArrayList<List<String>>()
@@ -349,15 +352,21 @@ class RedisUnitTest {
         }
         PubSubInvalidationChannel(connections, Duration.ofMillis(10), Duration.ofMillis(10)).use { channel ->
             // 没有收到订阅确认：等待超时后照常返回
-            val subscription = channel.subscribe("ns", listener)
-            val second = channel.subscribe("ns", listener)
+            val subscription = channel.subscribe(NS, listener)
+            val second = channel.subscribe(NS, listener)
             awaitCondition("heartbeat reset") { resets.get() >= 3 }
 
             val handler = requireNotNull(adapter)
             handler.message("cocache:inv:ns".toByteArray(), byteArrayOf(9))
-            handler.message("cocache:inv:other".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            handler.message(
+                "cocache:inv:other".toByteArray(),
+                InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k"))
+            )
             handler.subscribed("cocache:inv:other".toByteArray(), 1)
-            handler.message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            handler.message(
+                "cocache:inv:ns".toByteArray(),
+                InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k"))
+            )
             // 同一订阅者订阅了两次，收到两次
             received.assert().containsExactly(listOf("k"), listOf("k"))
             second.close()
@@ -393,8 +402,8 @@ class RedisUnitTest {
         val listener = RecordingListener()
         // 心跳周期足够长，由用例直接调用 ping() 驱动
         val channel = ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10))
-        val subscription = channel.subscribe("ns", listener)
-        val other = channel.subscribe("ns2", listener)
+        val subscription = channel.subscribe(NS, listener)
+        val other = channel.subscribe(Keyspace("cocache:", "ns2"), listener)
         subscribes.get().assert().isEqualTo(2)
         val handler = requireNotNull(adapter)
         val ns = "cocache:inv:ns".toByteArray()
@@ -416,7 +425,7 @@ class RedisUnitTest {
         channel.ping()
         subscribes.get().assert().isEqualTo(4)
 
-        handler.smessage(ns, InvalidationFrame.encode(NodeId.random(), listOf("k")))
+        handler.smessage(ns, InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k")))
         listener.received.assert().containsExactly(listOf("k"))
 
         // 待确认期间订阅被关闭：心跳不再重新订阅
@@ -464,8 +473,8 @@ class RedisUnitTest {
         ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
             // 只用节点感知的监听器：关闭向普通监听器的转发
             propagation.get().assert().isFalse()
-            channel.subscribe("a", RecordingListener())
-            channel.subscribe("b", RecordingListener())
+            channel.subscribe(Keyspace("cocache:", "a"), RecordingListener())
+            channel.subscribe(Keyspace("cocache:", "b"), RecordingListener())
             // slot 未被覆盖（拓扑刷新中）：跳过
             channel.ping()
             nodePings.get().assert().isZero()
@@ -499,11 +508,11 @@ class RedisUnitTest {
         }
         val healthy = RecordingListener()
         PubSubInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
-            channel.subscribe("ns", failing)
-            channel.subscribe("ns", healthy)
+            channel.subscribe(NS, failing)
+            channel.subscribe(NS, healthy)
             requireNotNull(
                 adapter
-            ).message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            ).message("cocache:inv:ns".toByteArray(), InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k")))
             healthy.received.assert().containsExactly(listOf("k"))
         }
     }
@@ -521,9 +530,11 @@ class RedisUnitTest {
             "async" to { async }
         )
         PubSubInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
-            runCatching { channel.subscribe("ns", RecordingListener()) }.exceptionOrNull().assert().isNotNull()
+            runCatching {
+                channel.subscribe(NS, RecordingListener())
+            }.exceptionOrNull().assert().isNotNull()
             // 第二个订阅者重新发出 SUBSCRIBE，而不是以为已经订阅
-            channel.subscribe("ns", RecordingListener())
+            channel.subscribe(NS, RecordingListener())
             subscribes.get().assert().isEqualTo(2)
         }
     }
@@ -539,11 +550,11 @@ class RedisUnitTest {
         val pubSub = cluster.pubSub
         val listener = RecordingListener()
         ShardedInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
-            channel.subscribe("ns", listener)
+            channel.subscribe(NS, listener)
             val handler = requireNotNull(cluster.listener)
             val ns = "cocache:inv:ns".toByteArray()
             handler.ssubscribed(owner, ns, 1)
-            channel.subscribedNode("ns").assert().isEqualTo(ShardedInvalidationChannel.HostAndPort("localhost", 7000))
+            channel.subscribedNode(NS).assert().isEqualTo(ShardedInvalidationChannel.HostAndPort("localhost", 7000))
             listener.resets.get().assert().isEqualTo(1)
             channel.ping()
             pinged.assert().containsExactly(7000)
@@ -572,11 +583,11 @@ class RedisUnitTest {
             handler.sunsubscribed(owner, ns, 0)
             listener.resets.get().assert().isEqualTo(5)
             awaitCondition("resubscribe attempted") { subscribes.get() == 3 }
-            handler.smessage(owner, ns, InvalidationFrame.encode(NodeId.random(), listOf("k")))
+            handler.smessage(owner, ns, InvalidationFrame.encode(NodeId.random(), listOf("cocache:ns:k")))
             listener.received.assert().containsExactly(listOf("k"))
             // 未知节点的确认：不记录节点，心跳退回探测所属主节点
             handler.ssubscribed(null, ns, 1)
-            channel.subscribedNode("ns").assert().isNull()
+            channel.subscribedNode(NS).assert().isNull()
             pinged.clear()
             channel.ping()
             pinged.assert().containsExactly(7000)
@@ -669,11 +680,12 @@ class RedisUnitTest {
         assumeStandalone()
         mockkConstructor(RedisConnections::class) {
             every {
-                anyConstructed<RedisConnections>().eval<List<Any?>>(RedisScripts.PROBE, any(), any())
-            } throws RedisCommandTimeoutException("timeout")
+                anyConstructed<RedisConnections>().evalAsync<List<Any?>>(RedisScripts.PROBE, any(), any())
+            } returns CompletableFuture.failedFuture(RedisCommandTimeoutException("timeout"))
             // 暂时性错误不能永久降级为非原子广播：照常抛出，并关闭已建立的连接与心跳线程
             val error = runCatching { RedisBackend.standalone(RedisURI.create("localhost", 6379)) }.exceptionOrNull()
-            error.assert().isInstanceOf(RedisCommandTimeoutException::class.java)
+            error.assert().isInstanceOf(RedisException::class.java)
+            error?.cause.assert().isInstanceOf(RedisCommandTimeoutException::class.java)
             verify { anyConstructed<RedisConnections>().close() }
         }
     }
@@ -832,9 +844,9 @@ class RedisUnitTest {
 
         override fun unsubscribeAsync(channel: ByteArray): CompletableFuture<Void> = done()
 
-        override fun publish(namespace: String, frame: ByteArray) = Unit
+        override suspend fun publish(keyspace: Keyspace, frame: ByteArray) = Unit
 
-        override fun publishAsync(namespace: String, frame: ByteArray): CompletableFuture<Void?> = done()
+        override fun publishBlocking(channel: ByteArray, frame: ByteArray) = Unit
 
         override fun ping() {
             failures[pings.incrementAndGet()]?.let { throw it }

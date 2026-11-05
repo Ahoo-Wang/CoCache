@@ -25,6 +25,23 @@ import java.time.Instant
 interface CacheAdmin {
     val name: String
 
+    /**
+     * 缓存的用户 API 类型：`Cache`、`VersionedCache`、`Store`、`VersionedStore` 或 `SetStore`（RFC 0005 §3.1）。
+     * 启动日志与端点输出它，供人工核对同一 namespace 的声明（§4.1）。
+     */
+    val apiType: Class<*>
+
+    /**
+     * 是否经 [CoCacheFactory] 创建（RFC 0005 §4.8，S20）。`false` 即“未分层”：直接经 [CacheRuntime.create] 创建，
+     * 配置的各层（starter 的 `cocache.defaults`、`cocache.caches.[name]` 与定制器）对它都不生效。
+     */
+    val layered: Boolean
+
+    /**
+     * 每个策略字段的生效值与来源层（RFC 0005 §4.8），以及全局层中被跳过的条目；未分层的缓存为 `null`。
+     */
+    val policyReport: PolicyReport?
+
     val metrics: CacheMetrics
 
     /**
@@ -51,12 +68,72 @@ interface CacheAdmin {
     fun inspect(encodedKey: String): KeyInspection
 
     /**
-     * 按编码后的 key 走正常的失效路径（两次递增戳、淘汰 L2、删除 L1 并广播，全集群生效），幂等。
-     * 失败处理与 `invalidate` 相同（有数据源的缓存默认进入重试队列，没有数据源的默认抛出）。`SetCache` 上等价于 `clear(key)`：L1 是唯一副本，会删除该集合。
+     * 按编码后的 key 删除，全集群生效，幂等。按类型（[keyDeletion]，RFC 0005 §4.2）：`Cache` 走正常的失效路径（两次递增戳、淘汰 L2、
+     * 删除 L1 并广播，失败按 `invalidateFailure` 处理，默认进入重试队列）；`VersionedCache` 是保留版本的 `evict`；`Store` 是 `delete`、
+     * `VersionedStore` 是 `purge`、`SetStore` 是 `clear(key)`，后四者删除的是唯一副本或版本栅栏，失败时抛出、不重试。
      *
      * @param encodedKey 编码后的 key（不含 `{keyPrefix}{namespace}:`）
      */
     fun invalidateEncoded(encodedKey: String)
+
+    /**
+     * 按编码后的 key 只广播失效帧，不修改 L1（RFC 0005 §4.9 运维入口）：本节点递增这个 key 的失效戳并淘汰 L2，其它节点收到帧后同样处理，
+     * 之后各自从 L1 重新填充。不删除唯一副本，也不动版本栅栏，因此对任何类型都安全，不需要开关。它是 [ExternalInvalidator.broadcast]
+     * 的运维对应物：用于 L1 已经是正确内容、只有各节点的 L2 可能陈旧的场合，例如外部工具直接改写了 L1。
+     *
+     * 投递至多一次，与缓存自己的广播相同：发布失败时抛出（调用是幂等的，可以重试）；帧丢失时其它节点的 L2 陈旧到 `localMaxAge`
+     * 或下一次订阅重置。
+     *
+     * @param encodedKey 编码后的 key（不含 `{keyPrefix}{namespace}:`）
+     */
+    fun broadcastEncoded(encodedKey: String)
+
+    /**
+     * [invalidateEncoded] 对这个缓存做什么。运维入口据此决定按 key 删除是否需要显式开关（RFC 0005 §4.9 运维入口）。
+     */
+    val keyDeletion: KeyDeletion
+
+    /**
+     * 按编码后的 key 清除并丢掉版本（`purge`，RFC 0005 §4.2）：只有带版本的类型支持，其它类型抛出 [UnsupportedOperationException]。
+     * 之后任何版本都能写入；失败时抛出，不重试。
+     *
+     * @param encodedKey 编码后的 key（不含 `{keyPrefix}{namespace}:`）
+     */
+    fun purgeEncoded(encodedKey: String) {
+        throw UnsupportedOperationException(
+            "Cache[$name] - purge is only supported on VersionedCache and VersionedStore."
+        )
+    }
+
+    /**
+     * 按 key 删除（[invalidateEncoded]）的效果，按缓存的类型。
+     */
+    enum class KeyDeletion {
+        /**
+         * `Cache`：删除派生副本，之后从数据源重新加载。
+         */
+        INVALIDATE,
+
+        /**
+         * `VersionedCache`：保留版本的失效（`evict`），迟到的旧版本仍被拒绝。
+         */
+        EVICT,
+
+        /**
+         * `Store`：删除唯一副本（`delete`）。
+         */
+        DELETE,
+
+        /**
+         * `VersionedStore`：删除唯一副本并丢掉版本（`purge`）。
+         */
+        PURGE,
+
+        /**
+         * `SetStore`：删除整个集合（`clear`），它是唯一副本。
+         */
+        CLEAR,
+    }
 }
 
 /**
@@ -95,14 +172,14 @@ data class KeyInspection(
         VALUE,
 
         /**
-         * 负缓存（数据源确认不存在）。
+         * 确认不存在：负缓存，或权威副本在 L1 中没有值。
          */
         ABSENT,
 
         /**
-         * 没有数据源的缓存未命中时的“不存在”：只是没有答案。
+         * 外部来源的缓存在 L1 中没有值（“未填充”，RFC 0005 §4.1）：不带 loader 的读取看到不存在，带 loader 的读取不接受它。
          */
-        UNRESOLVED,
+        UNFILLED,
     }
 
     /**

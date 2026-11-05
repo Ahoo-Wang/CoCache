@@ -11,11 +11,13 @@ description: CoCache 背后的心智模型：两级缓存、读路径、负缓�
 
 | 层级 | 位置 | 存放 | 寿命 |
 |------|------|------|------|
-| **L2** | 每个实例内的 Caffeine | 最近读过的 key 的有界副本（默认 10 000 条） | Redis 中的剩余寿命，且不超过 `localMaxAge`（5 分钟） |
-| **L1** | 所有实例共享的 Redis | 缓存值、负缓存，或加载期间的短暂 lease | 值为 `ttl` ± 抖动（1 小时 ± 1 分钟），负缓存为 `absentTtl`（1 分钟） |
+| **L2** | 每个实例内的 Caffeine | 最近读过的 key 的有界副本（默认 10 000 条） | Redis 中的剩余寿命，且不超过 `localMaxAge`（5 分钟；权威类型为 30 秒） |
+| **L1** | 所有实例共享的 Redis | 缓存值、负缓存，或加载期间的短暂 lease | 值为 `ttl` ± 抖动（1 小时 ± 1 分钟），负缓存为 `absentTtl`（1 分钟）；权威类型默认永不过期 |
 | **数据源** | 你的 `CacheLoader` | 真实数据 | — |
 
 L2 让读取变快。L1 让实例之间保持一致，也让数据库不至于每个实例都被加载一遍。
+
+L1 中保存的是什么取决于缓存的[类型](./caches.md#types)。对 `Cache` 与 `VersionedCache`，它是派生副本：丢了只需从数据源重新加载。对 `Store`、`VersionedStore` 与 `SetStore`，它是唯一副本：没有 loader，读取从不申请 lease，Redis 中没有的 key 就是不存在。下面的读路径是派生类型的；权威类型跳过 lease 与 loader。
 
 ## 读路径 {#read-path}
 
@@ -44,9 +46,9 @@ flowchart TD
 
 ### 负缓存 {#negative-caching}
 
-loader 返回 `null`（或 `loadAll` 的结果中缺少某个 key）时，CoCache 在 Redis 中写入一条**负缓存**，存活 `absentTtl`。此后对该 key 的读取直接返回 `null`，不再调用 loader，数据库不会被不存在的 key 反复查询。需要区分“确认不存在”（`Lookup.Absent`）与“有值”（`Lookup.Present`）时，用 `lookup(key)`。它的 `expiresAt` 是给出结果的那份副本的到期时间：命中 L2 时是 L2 副本的到期时间，受 `localMaxAge` 限制（未写入 Redis 的副本受 `degradedLocalMaxAge` 限制），因此可能早于 Redis 中的 TTL。精度为缓存时钟的刻度（默认 100 ms）。要查看某个 key 在 Redis 中的 TTL，用 [actuator 端点](../operations/observability.md#inspect-key)或 `CacheAdmin.inspect`。
+loader 返回 `null`（或 `loadAll` 的结果中缺少某个 key）时，CoCache 在 Redis 中写入一条**负缓存**，存活 `absentTtl`。此后对该 key 的读取直接返回 `null`，不再调用 loader，数据库不会被不存在的 key 反复查询。需要区分“确认不存在”（`Lookup.Absent`）、“有值”（`Lookup.Present`）与“Redis 故障、这次读取没有答案”（`Lookup.Unknown`，见[读取](./caches.md#unknown)）时，用 `lookup(key)`。它的 `expiresAt` 是给出结果的那份副本的到期时间：命中 L2 时是 L2 副本的到期时间，受 `localMaxAge` 限制（未写入 Redis 的副本受 `degradedLocalMaxAge` 限制），因此可能早于 Redis 中的 TTL。精度为缓存时钟的刻度（默认 100 ms）。要查看某个 key 在 Redis 中的 TTL，用 [actuator 端点](../operations/observability.md#inspect-key)或 `CacheAdmin.inspect`。
 
-Redis 中单纯没有这个 key 只是未命中，永远不等于负缓存。因此没有 loader 的缓存（只靠 `put` 填充）从不向 Redis 写负缓存：未命中返回 `null`，这个答案只在本实例记住，最多 `absentTtl`。
+Redis 中单纯没有这个 key 只是未命中，永远不等于负缓存。因此没有数据源的缓存从不向 Redis 写负缓存。外部来源的 `Cache` 的未命中是*未填充*：不带 loader 的读取返回 `null`，这个答案只在本实例记住（最多 `absentTtl`），自带 loader 的调用照常加载。`Store` 的未命中就是答案：这个 key 不存在。
 
 ### 提前刷新 {#refresh-ahead}
 
@@ -95,9 +97,11 @@ sequenceDiagram
 
 | 故障点 | 默认行为 | 可选行为 |
 |--------|----------|----------|
-| 读取 Redis | 直接从数据源加载，结果只在 L2 中保留 `degradedLocalMaxAge`，不写 Redis。调用方照常工作，压力落到数据库上。没有 loader 的读取没有数据源，默认抛出 `CacheReadException`，什么也不缓存。 | `read-failure: throw` 抛出 `CacheReadException`。没有 loader 时，显式设置 `read-failure: degrade` 返回 `null`，什么也不缓存。 |
-| `invalidate` | 本地效果先生效。有 loader 时，Redis 删除交给有界的后台重试队列，调用**不抛出**（它通常在提交之后执行，抛出也于事无补）。重试成功之前，本实例上该 key 的未命中跳过 Redis。没有 loader 时调用抛出 `CacheWriteException`：Redis 是唯一副本，延迟的删除会删掉更新的值。 | `invalidate-failure: throw` 或 `retry` 显式指定其中一种 |
-| `put` | 抛出 `CacheWriteException`。结果可能未知（超时），但 `put` 是幂等的，可以安全重试。 | — |
+| 读取 Redis | 带数据源的读取直接从数据源加载，结果只在 L2 中保留 `degradedLocalMaxAge`，不写 Redis。调用方照常工作，压力落到数据库上。没有数据源的读取（`Store`、`SetStore`、外部来源的 `Cache` 上不带 loader 的读取）没有答案：结果是 `Lookup.Unknown`，`get` 抛出 `CacheReadException`，什么也不缓存。 | `read-failure: throw` 让带数据源的读取也得到 `Unknown`。spec 上的 `unknownRead = ABSENT` 让没有数据源的读取改为返回 `null`。 |
+| `Cache.invalidate` | 本地效果先生效。Redis 删除交给有界的后台重试队列，调用**不抛出**（它通常在提交之后执行，抛出也于事无补，而删除派生副本在任何时刻都安全）。重试成功之前，本实例上该 key 的未命中跳过 Redis。 | `invalidate-failure: throw` 改为抛出 `CacheWriteException` |
+| `Store.delete` | 抛出 `CacheWriteException`，从不重试：Redis 是唯一副本，延迟的删除会删掉更新的值。 | — |
+| `Cache.put`、`putAll` | 结果未知时（超时），CoCache 与失败的 `invalidate` 一样登记这些 key 的失效，调用不抛出。写入确定没有发生时（发出之前就被拒绝），抛出 `CacheWriteException`。 | `invalidate-failure: throw` 让每次失败都抛出 |
+| 其它类型的写入 | 抛出 `CacheWriteException`。它的 `outcomeUnknown` 说明写入可能已经发生（超时），还是确定没有发生（发出之前就被拒绝）。不在后台重试任何东西。 | — |
 | Pub/Sub 连接 | 心跳在数秒内发现。重连时每个实例清空 L2，而本地副本无论如何都受 `localMaxAge` 限制。期间健康检查报告 `DOWN`。 | — |
 | 你的 loader | 异常抛给调用方以及所有等待同一次加载的调用方，不缓存任何东西。 | — |
 

@@ -1,84 +1,6 @@
 {
   "properties": [
     {
-      "name": "cocache.spring-cache.retrieve-executor",
-      "type": "java.lang.String",
-      "description": "Deprecated since 6.3: Spring Cache retrieve uses the cache's async view and no executor; the value is ignored.",
-      "deprecation": {
-        "level": "warning",
-        "reason": "Since 6.3 retrieve uses the async view and no executor; removed in 7.0."
-      }
-    },
-    {
-      "name": "cocache.redis.strict-failure",
-      "type": "java.lang.Boolean",
-      "description": "Removed in 6.0.",
-      "deprecation": {
-        "level": "error",
-        "reason": "Removed in 6.0: L1 read failures are configured per cache.",
-        "replacement": "cocache.defaults.read-failure"
-      }
-    },
-    {
-      "name": "cocache.redis.eviction-channel",
-      "type": "java.lang.String",
-      "description": "Removed in 6.0.",
-      "deprecation": {
-        "level": "error",
-        "reason": "Removed in 6.0.",
-        "replacement": "cocache.redis.channel-mode"
-      }
-    },
-    {
-      "name": "cocache.redis.missing-guard-sentinel",
-      "type": "java.lang.String",
-      "description": "Removed in 6.0.",
-      "deprecation": {
-        "level": "error",
-        "reason": "Removed in 6.0 without replacement."
-      }
-    },
-    {
-      "name": "cocache.metrics.client-side-hits",
-      "type": "java.lang.Boolean",
-      "description": "Removed in 6.0.",
-      "deprecation": {
-        "level": "error",
-        "reason": "Removed in 6.0.",
-        "replacement": "cocache.metrics.local-hits"
-      }
-    },
-    {
-      "name": "cocache.load.max-concurrent",
-      "type": "java.lang.Integer",
-      "description": "Removed in 6.0.",
-      "deprecation": {
-        "level": "error",
-        "reason": "Removed in 6.0.",
-        "replacement": "cocache.defaults.load-max-concurrent"
-      }
-    },
-    {
-      "name": "cocache.load.acquire-timeout",
-      "type": "java.time.Duration",
-      "description": "Removed in 6.0.",
-      "deprecation": {
-        "level": "error",
-        "reason": "Removed in 6.0.",
-        "replacement": "cocache.defaults.load-acquire-timeout"
-      }
-    },
-    {
-      "name": "cocache.next.enabled",
-      "type": "java.lang.Boolean",
-      "description": "Removed in 6.0.",
-      "deprecation": {
-        "level": "error",
-        "reason": "Removed in 6.0: the transitional prefix cocache.next.* became cocache.*.",
-        "replacement": "cocache.enabled"
-      }
-    },
-    {
       "name": "management.health.cocache.enabled",
       "type": "java.lang.Boolean",
       "description": "Whether to enable the CoCache health indicator (DOWN only when the invalidation channel heartbeat fails).",
@@ -110,17 +32,6 @@
       ]
     },
     {
-      "name": "cocache.spring-cache.retrieve-executor",
-      "providers": [
-        {
-          "name": "spring-bean-reference",
-          "parameters": {
-            "target": "java.util.concurrent.Executor"
-          }
-        }
-      ]
-    },
-    {
       "name": "cocache.backend",
       "values": [
         {
@@ -134,7 +45,7 @@
       ]
     },
     {
-      "name": "cocache.async-executor",
+      "name": "cocache.executor",
       "providers": [
         {
           "name": "spring-bean-reference",
@@ -145,13 +56,36 @@
       ]
     },
     {
-      "name": "cocache.blocking-executor",
-      "providers": [
+      "name": "cocache.defaults.cache.fill-in-transaction",
+      "values": [
         {
-          "name": "spring-bean-reference",
-          "parameters": {
-            "target": "java.util.concurrent.Executor"
-          }
+          "value": "registered-keys",
+          "description": "Type default: inside a non-read-only transaction, loads of keys already registered for invalidation in it are private (no lease, no L1 or L2 write, not shared)."
+        },
+        {
+          "value": "private",
+          "description": "Every load inside a non-read-only transaction is private: the strictest, at the cost of reads in write transactions that miss L2 always calling the source."
+        },
+        {
+          "value": "allow",
+          "description": "No gating: loads inside write transactions fill L1 and L2 as usual (still invalidated on rollback when invalidate-fills-on-rollback is on)."
+        }
+      ]
+    },
+    {
+      "name": "cocache.overrides.cache.fill-in-transaction",
+      "values": [
+        {
+          "value": "registered-keys",
+          "description": "Type default: inside a non-read-only transaction, loads of keys already registered for invalidation in it are private (no lease, no L1 or L2 write, not shared)."
+        },
+        {
+          "value": "private",
+          "description": "Every load inside a non-read-only transaction is private: the strictest, at the cost of reads in write transactions that miss L2 always calling the source."
+        },
+        {
+          "value": "allow",
+          "description": "No gating: loads inside write transactions fill L1 and L2 as usual (still invalidated on rollback when invalidate-fills-on-rollback is on)."
         }
       ]
     }

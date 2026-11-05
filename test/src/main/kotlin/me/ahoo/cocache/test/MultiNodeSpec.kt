@@ -18,7 +18,8 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
-import me.ahoo.cocache.api.spi.RemoteRead
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -55,6 +56,12 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 abstract class MultiNodeSpec {
     protected abstract fun createBackend(): CoherenceBackend
+
+    /**
+     * 后端的存储提供的可选能力（RFC 0005 §4.3），没有默认值：规范断言存储提供的能力与它完全相同（多出来的也算失败）、
+     * 每个访问器稳定。本规范的用例不需要可选能力。
+     */
+    protected abstract val expectedCapabilities: Set<L1Capability>
 
     /**
      * 引擎与后端共用的时钟。
@@ -106,6 +113,14 @@ abstract class MultiNodeSpec {
         backend.close()
     }
 
+    /**
+     * 存储提供的能力与 [expectedCapabilities] 完全相同（多出来的也算失败），每个访问器每次返回同一个对象或总是 `null`。
+     */
+    @Test
+    fun storeProvidesExactlyTheDeclaredCapabilities() {
+        CapabilityDeclaration.verify(backend.delegate, expectedCapabilities)
+    }
+
     private fun newNode(): CacheRuntime = CacheRuntime.builder()
         .backend(backend)
         .clock(clock)
@@ -147,9 +162,9 @@ abstract class MultiNodeSpec {
 
     private fun sum(metric: (CacheMetrics) -> Long): Long = nodes.sumOf { metric(it.metrics()) }
 
-    private fun remote(key: String): RemoteRead {
-        val store = backend.delegate.store(cacheName)
-        return store.read("cocache:$cacheName:$key", null, null)
+    private fun remote(key: String): L1Read {
+        val store = backend.delegate.store(Keyspace("cocache:", cacheName))
+        return Suspending.await { store.read("cocache:$cacheName:$key", null, null, null) }
     }
 
     /**
@@ -159,7 +174,7 @@ abstract class MultiNodeSpec {
         requireNotNull(node.admin(cacheName)).inspect(key).local?.refreshAt?.toEpochMilli()
 
     private fun remoteValue(key: String): String? {
-        val read = remote(key) as? RemoteRead.Hit ?: return null
+        val read = remote(key) as? L1Read.Hit ?: return null
         return (read.envelope as? Envelope.Scalar)?.let { TestCodec.decode(it.bytes) }
     }
 
@@ -226,7 +241,7 @@ abstract class MultiNodeSpec {
         database["k"] = "v1"
         caches[0].invalidate("k")
         awaitEventsExcept(writer = 0)
-        remote("k").assert().isEqualTo(RemoteRead.Miss(false))
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
         assertConcurrentMissesLoadOncePerKey(caches, listOf("k"))
         loadsOf("k").assert().isEqualTo(2)
     }

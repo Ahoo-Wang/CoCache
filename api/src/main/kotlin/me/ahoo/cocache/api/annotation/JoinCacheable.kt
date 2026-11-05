@@ -14,9 +14,10 @@
 package me.ahoo.cocache.api.annotation
 
 /**
- * 声明组合视图（`me.ahoo.cocache.api.join.JoinCache`）：
+ * 声明组合视图（`me.ahoo.cocache.api.join.JoinView` 或 `me.ahoo.cocache.api.join.JoinCache`）：
  * `@JoinCacheable(firstCacheName = "UserExtendInfoCache", joinCacheName = "UserCache", joinKeyExpression = "#{#root.userId}")`
- * 标注在继承 `JoinCache<K1, V1, K2, V2>` 的接口上，由 `@EnableCoCache(joinCaches = [...])` 注册为 bean。
+ * 标注在继承 `JoinView<K1, V1, K2, V2>`（只读，两侧是任何缓存）或 `JoinCache<K1, V1, K2, V2>`（两侧都是 `Cache`）的接口上，
+ * 由 `@EnableCoCache(joinCaches = [...])` 注册为 bean。
  *
  * 关联 key 的提取方式三选一：[joinKeyExpression]、[joinKeyExtractor]，两者都为空时按泛型 `JoinKeyExtractor<V1, K2>` 唯一匹配。
  */

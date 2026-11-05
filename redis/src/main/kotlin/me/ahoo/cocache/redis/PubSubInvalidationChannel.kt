@@ -14,6 +14,7 @@
 package me.ahoo.cocache.redis
 
 import io.lettuce.core.pubsub.RedisPubSubAdapter
+import me.ahoo.cocache.api.spi.Keyspace
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
@@ -38,15 +39,16 @@ internal class PubSubInvalidationChannel(
         return connections.pubSub.async().unsubscribe(channel).toCompletableFuture()
     }
 
-    override fun publish(namespace: String, frame: ByteArray) {
-        connections.publish(channelOf(namespace).toByteArray(Charsets.UTF_8), frame)
+    override suspend fun publish(keyspace: Keyspace, frame: ByteArray) {
+        connections.publish(channelOf(keyspace).toByteArray(Charsets.UTF_8), frame)
     }
 
-    override fun publishAsync(namespace: String, frame: ByteArray): CompletableFuture<Void?> =
-        connections.publishAsync(channelOf(namespace).toByteArray(Charsets.UTF_8), frame)
+    override fun publishBlocking(channel: ByteArray, frame: ByteArray) {
+        connections.join(connections.publishAsync(channel, frame))
+    }
 
     override fun ping() {
-        connections.await(connections.pubSub.async().ping().toCompletableFuture())
+        connections.join(connections.pubSub.async().ping().toCompletableFuture())
     }
 
     private inner class Adapter : RedisPubSubAdapter<ByteArray, ByteArray>() {

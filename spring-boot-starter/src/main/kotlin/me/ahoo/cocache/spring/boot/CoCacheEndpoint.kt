@@ -16,21 +16,28 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.KeyInspection
+import me.ahoo.cocache.core.PolicyReport
 import org.springframework.boot.actuate.endpoint.InvalidEndpointRequestException
 import org.springframework.boot.actuate.endpoint.annotation.DeleteOperation
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation
 import org.springframework.boot.actuate.endpoint.annotation.Selector
+import org.springframework.boot.actuate.endpoint.annotation.WriteOperation
 
 /**
- * 6.0 缓存运维端点（RFC 0003 §4.14）：列出缓存及其指标、查看单个缓存、清空本节点的 L2、按 key 查看与强制失效。
+ * 缓存运维端点（RFC 0003 §4.14）：列出缓存及其指标、查看单个缓存、清空本节点的 L2、按 key 查看、强制失效与只广播失效帧。
  *
  * 按 key 的操作以**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分）为路径参数，适用于任意 key 类型；
  * key 中可以含 `/`（匹配剩余的全部路径段）。缓存不存在时什么也不做，返回 `null`（[clearLocal] 返回 `false`）：HTTP 上都是 404
- * （DELETE 由 [CoCacheEndpointWebExtension] 映射，否则 web 层把 `null` 映射为 204，拼错的缓存名会静默成功）；空 key 为 HTTP 400。
+ * （DELETE 与 POST 由 [CoCacheEndpointWebExtension] 映射，否则 web 层把 `null` 映射为 204，拼错的缓存名会静默成功）；空 key 为 HTTP 400。
+ * 写操作（DELETE 与 POST）都受 `management.endpoint.cocache.access` 约束：`read-only` 时只保留查看。
  */
 @Endpoint(id = CoCacheEndpoint.ID)
-class CoCacheEndpoint(private val runtime: CacheRuntime) {
+class CoCacheEndpoint @JvmOverloads constructor(
+    private val runtime: CacheRuntime,
+    private val properties: CoCacheProperties? = null,
+    private val switches: CoCacheEndpointProperties = CoCacheEndpointProperties.DEFAULT,
+) {
     companion object {
         const val ID = "cocache"
     }
@@ -70,24 +77,90 @@ class CoCacheEndpoint(private val runtime: CacheRuntime) {
     }
 
     /**
-     * 按 key 强制失效，走正常的失效路径（全集群生效），幂等（[me.ahoo.cocache.core.CacheAdmin.invalidateEncoded]）。
-     * `SetCache` 上等价于 `clear(key)`。
+     * 按 key 删除，全集群生效，幂等（[CacheAdmin.invalidateEncoded]）。按类型映射（RFC 0005 §4.2）：
+     * `Cache` 照常失效；`VersionedCache` 保留版本（`evict`）；`Store` 同 `delete`、`VersionedStore` 同 `purge`、`SetStore` 同 `clear`，
+     * 三者失败时抛出、不重试。
+     *
+     * 删除唯一副本的操作要显式开关（[CoCacheEndpointProperties]，RFC 0005 §4.9）：`Store` 与 `SetStore` 要 `allow-store-delete`，
+     * `VersionedStore` 要 `allow-purge`；没有开启时抛出 [DeletionNotAllowedException]（HTTP 403），不修改任何东西。
+     *
+     * @param purge `true` 时清除并丢掉版本（[CacheAdmin.purgeEncoded]，要 `allow-purge`）：只用于带版本的类型，
+     *   `VersionedCache` 上不带它时是 `evict`；其它类型带它时为非法请求（400）
      */
     @DeleteOperation
     fun invalidate(
         @Selector name: String,
-        @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>
+        @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>,
+        purge: Boolean? = null,
     ): InvalidationReport? {
         val admin = runtime.admin(name) ?: return null
         val encodedKey = encodedKeyOf(key)
+        if (purge == true) {
+            if (admin.keyDeletion != CacheAdmin.KeyDeletion.EVICT && admin.keyDeletion != CacheAdmin.KeyDeletion.PURGE) {
+                val reason = "Cache[$name] is not versioned: purge applies only to VersionedCache and VersionedStore."
+                throw InvalidEndpointRequestException(reason, reason)
+            }
+            requireAllowed(switches.allowPurge, name, CacheAdmin.KeyDeletion.PURGE, "allow-purge")
+            admin.purgeEncoded(encodedKey)
+            return InvalidationReport(name, encodedKey, CacheAdmin.KeyDeletion.PURGE)
+        }
+        when (admin.keyDeletion) {
+            CacheAdmin.KeyDeletion.DELETE, CacheAdmin.KeyDeletion.CLEAR ->
+                requireAllowed(switches.allowStoreDelete, name, admin.keyDeletion, "allow-store-delete")
+            CacheAdmin.KeyDeletion.PURGE -> requireAllowed(
+                switches.allowPurge,
+                name,
+                admin.keyDeletion,
+                "allow-purge"
+            )
+            CacheAdmin.KeyDeletion.INVALIDATE, CacheAdmin.KeyDeletion.EVICT -> Unit
+        }
         admin.invalidateEncoded(encodedKey)
-        return InvalidationReport(name, encodedKey)
+        return InvalidationReport(name, encodedKey, admin.keyDeletion)
     }
 
     /**
-     * 强制失效的结果。
+     * 按 key 只广播失效帧，不修改 L1（[CacheAdmin.broadcastEncoded]，RFC 0005 §4.9 运维入口）：各节点（包括本节点）淘汰这个 key 的 L2，
+     * 之后从 L1 重新填充。不删除唯一副本，也不动版本栅栏，因此对任何类型都安全，不需要开关。用于 L1 已经是正确内容、
+     * 只有各节点的 L2 可能陈旧的场合；是 [me.ahoo.cocache.core.ExternalInvalidator.broadcast] 的端点对应物。
+     * 投递至多一次，发布失败时抛出（HTTP 500），可以重试。
      */
-    data class InvalidationReport(val cache: String, val key: String)
+    @WriteOperation
+    fun broadcast(
+        @Selector name: String,
+        @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>,
+    ): BroadcastReport? {
+        val admin = runtime.admin(name) ?: return null
+        val encodedKey = encodedKeyOf(key)
+        admin.broadcastEncoded(encodedKey)
+        return BroadcastReport(name, encodedKey)
+    }
+
+    private fun requireAllowed(allowed: Boolean, name: String, deletion: CacheAdmin.KeyDeletion, switch: String) {
+        if (!allowed) {
+            throw DeletionNotAllowedException(
+                "Cache[$name] - ${deletion.name.lowercase()} by key deletes the only copy: " +
+                    "set ${CoCacheEndpointProperties.PREFIX}.$switch=true to allow it."
+            )
+        }
+    }
+
+    /**
+     * 按 key 删除的结果。
+     *
+     * @param deletion 这次删除做了什么（按缓存的类型，[CacheAdmin.KeyDeletion]）
+     */
+    data class InvalidationReport(val cache: String, val key: String, val deletion: CacheAdmin.KeyDeletion)
+
+    /**
+     * 只广播失效帧的结果（[broadcast]）。
+     */
+    data class BroadcastReport(val cache: String, val key: String)
+
+    /**
+     * 按 key 删除会删除唯一副本，而 [CoCacheEndpointProperties] 没有开启对应的开关：没有修改任何东西。
+     */
+    class DeletionNotAllowedException(message: String) : IllegalStateException(message)
 
     /**
      * 剩余路径段以 `/` 连接为编码后的 key。Spring 会去掉空段与首尾空白，因此含 `//`、首尾 `/` 或空白的 key 无法经端点精确寻址；
@@ -101,8 +174,20 @@ class CoCacheEndpoint(private val runtime: CacheRuntime) {
         return key
     }
 
+    /**
+     * @param type 用户 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`）
+     * @param layered `false` 即“未分层”：直接经 `CacheRuntime.create` 创建，配置文件与定制器对它都不生效（RFC 0005 §4.8，S20）
+     * @param ignoredConfiguration 未分层的缓存上不生效的按缓存配置条目（`cocache.caches.<name>`）
+     * @param policy 每个策略字段的生效值与来源层（`TYPE_DEFAULT` 即类型默认值，RFC 0005 §4.8）；未分层的缓存为空
+     * @param skippedConfiguration 全局层中被跳过的条目：键、层与原因（不适用、该层不允许、被锁定）
+     */
     data class CacheReport(
         val name: String,
+        val type: String,
+        val layered: Boolean,
+        val ignoredConfiguration: List<String>,
+        val policy: List<PolicyReport.Entry>,
+        val skippedConfiguration: List<PolicyReport.Skipped>,
         val localSize: Long,
         val loads: Long,
         val loadNanos: Long,
@@ -113,6 +198,11 @@ class CoCacheEndpoint(private val runtime: CacheRuntime) {
         val snapshot = metrics
         return CacheReport(
             name = name,
+            type = apiType.simpleName,
+            layered = layered,
+            ignoredConfiguration = properties?.let { UnlayeredConfigurationCheck.ignoredEntries(it, this) } ?: emptyList(),
+            policy = policyReport?.entries ?: emptyList(),
+            skippedConfiguration = policyReport?.skipped ?: emptyList(),
             localSize = localSize,
             loads = snapshot.loads,
             loadNanos = snapshot.loadNanos,

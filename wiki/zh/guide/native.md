@@ -45,7 +45,7 @@ AOT 在构建期执行应用的 bean 注册，并把结果写成生成代码。�
 
 启动时仍会读取：
 
-- 策略配置项：`cocache.defaults.*`、`cocache.caches.[name].*`、`cocache.redis.*`，以及执行器的 bean 名。
+- 策略配置项：`cocache.defaults.*`、`cocache.overrides.*`、`cocache.caches.[name].*`、`cocache.key-prefix`、`cocache.caches-validation`、`cocache.redis.*`，以及执行器的 bean 名。
 - `CacheSpecCustomizer` bean、loader、编解码与 Redis 连接配置。
 
 ## CoCache 登记的提示 {#registered-hints}
@@ -59,11 +59,10 @@ AOT 在构建期执行应用的 bean 注册，并把结果写成生成代码。�
 | 每个已声明缓存的 key 类型（含 spec bean） | `toString()` | 默认 key 编码器对每种 key 类型检查一次是否重写了 `toString()` |
 | 设置了 `@CoCache(keyExpression)` 时的 key 类型 | 公共方法与字段 | SpEL 以 key 为根对象求值模板 |
 | 设置了 `@JoinCacheable(joinKeyExpression)` 时主缓存的值类型 | 公共方法与字段 | SpEL 以主缓存的值为根对象求值表达式 |
-| 没有指定编解码的接口式缓存的值类型（`SetCache` 为元素类型） | Jackson 绑定 | 该缓存使用默认的 `JacksonCodec` |
-| `Cache`、`SetCache`、`JoinCache` | 公共方法 | 代理分派与校验 |
-| `AsyncCache`、`AsyncSetCache` | 公共方法 | `cache.async()` 返回的[异步视图](./async.md) |
+| 没有指定编解码的接口式缓存的值类型（`SetStore` 为元素类型） | Jackson 绑定 | 该缓存使用默认的 `JacksonCodec` |
+| 五种[缓存类型](./caches.md#types)以及 `ReadableCache`、`JoinView`、`JoinCache` | 公共方法 | 代理分派与校验 |
+| 它们的异步视图与挂起视图（`AsyncReadableCache`、`AsyncCache`……`SuspendingSetStore`） | 公共方法 | `cache.async()` 返回的[异步视图](./async.md)与 `cache.suspending()` 返回的[挂起视图](./coroutines.md) |
 | L2 背后的 Caffeine 类 | 构造器与字段 | Caffeine 按类名加载其生成的类 |
-| `Executors.newVirtualThreadPerTaskExecutor` | 调用 | JDK 支持虚拟线程时，运行时的默认阻塞执行器使用虚拟线程 |
 
 接口式缓存“没有指定编解码”指既没有 `@CoCache(codec)`，也没有与其值类型匹配的 `Codec<V>` bean，与 starter 选择编解码的规则一致（[编解码](./caches.md#codecs)）。
 
@@ -87,7 +86,7 @@ starter 看不到你自己写的代码内部。下列情况需要自己登记提
 - **多态的值。** 绑定提示覆盖声明的值类型及其属性可达的类型。如果值类型是抽象类或密封类、由 Jackson 在运行时选择子类型，把子类型也列在 `@RegisterReflectionForBinding` 中。
 - **自定义编解码。** 使用反射的 `Codec`（例如另一个序列化库）需要该库为你的值类型准备的提示。
 - **离开根对象的 SpEL。** 提示只覆盖根对象的公共成员。`#{owner.address.city}` 这样的模板还会读取 `Address`，`T(…)` 会调用其它类的静态方法：用 `@RegisterReflection(classes = [Address::class], memberCategories = [MemberCategory.INVOKE_PUBLIC_METHODS])` 或 `RuntimeHintsRegistrar` 登记这些类型。热点路径上，使用 `toString()` 合适的 key 类型可以完全避开 SpEL（[key](./caches.md#keys)）。
-- **不经 starter 创建的缓存。** 在自己的代码中调用 `CacheRuntime.create` 与 `CacheProxies.create` 不会得到生成的提示：自己登记代理接口与 key 类型的 `toString()`。
+- **不经 starter 创建的缓存。** 在自己的代码中调用 `CacheRuntime.create` 与 `CoCacheFactory.create` 不会得到生成的提示：自己登记代理接口与 key 类型的 `toString()`。
 
 loader、`TtlFunction`、`KeyEncoder` 与 `JoinKeyExtractor` bean 都是普通的函数调用，不需要提示。
 

@@ -18,10 +18,11 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
-import me.ahoo.cocache.api.spi.RemoteRead
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -31,13 +32,14 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
-import me.ahoo.cocache.core.policy.ReadFailureMode
+import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.cocache.test.EngineSpec.TestCodec
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.cocache.test.RemoteUnavailableException
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -111,25 +113,33 @@ class CoherentEngineRegressionTest {
             block()
         }
 
-    private fun CacheRuntime.engine(spec: CacheSpec<String, String> = spec()): CoherentEngine<String, String> = create(
+    private fun CacheRuntime.engine(spec: CacheSpec<String, String> = spec()): CacheEngine<String, String> = create(
         spec
-    ) as CoherentEngine<String, String>
+    ) as CacheEngine<String, String>
 
     private fun key(key: String) = "cocache:$name:$key"
 
     private fun silentPut(key: String, envelope: Envelope) {
-        memory.store(name).put(key(key), envelope, null, InvalidationFrame.encode(NodeId.random(), emptyList()))
+        Suspending.await {
+            memory.store(
+                Keyspace("cocache:", name)
+            ).put(key(key), envelope, null, InvalidationFrame.encode(NodeId.random(), emptyList()))
+        }
     }
 
     private fun foreignLease(key: String): Token {
         val token = Token(NodeId.random(), 1)
-        memory.store(name).read(key(key), LeaseRequest(token, Duration.ofMinutes(1)), null)
+        Suspending.await {
+            memory.store(
+                Keyspace("cocache:", name)
+            ).read(key(key), LeaseRequest(token, Duration.ofMinutes(1)), null, null)
+        }
         return token
     }
 
     @Test
     fun getWithCallerLoaderIgnoresLoaderlessAbsence() {
-        val cache = runtime().engine(spec { loader = null })
+        val cache = runtime().engine(spec { external() })
         // 无数据源缓存的未命中只在本地记为“不存在”
         cache["k"].assert().isNull()
         cache.get("k") { "loaded-$it" }.assert().isEqualTo("loaded-k")
@@ -142,23 +152,23 @@ class CoherentEngineRegressionTest {
      */
     @Test
     fun callSiteLoaderJoiningAFailedLoaderlessReadUsesItsOwnLoader() {
-        val (plain, withLoader) = joinAFailingLoaderlessRead(spec { loader = null })
+        val (plain, withLoader) = joinAFailingLoaderlessRead(spec { external() })
         plain.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
         withLoader.assert().isEqualTo("loaded")
     }
 
     /**
-     * 显式 `readFailure = DEGRADE`：不带 loader 的一方读到不存在（不缓存），合并到它的带 loader 的一方同样不接受这个结果，
-     * 用自己的 loader 降级。
+     * `unknownRead = ABSENT`：不带 loader 的一方读到不存在（不缓存），合并到它的带 loader 的一方同样不接受这个结果（共享的结果仍是
+     * `Unknown`），用自己的 loader 降级。
      */
     @Test
     fun callSiteLoaderJoiningADegradedLoaderlessReadUsesItsOwnLoader() {
-        val degrade = CachePolicy(
-            ttl = Duration.ofMinutes(10),
-            ttlJitter = Duration.ZERO,
-            readFailure = ReadFailureMode.DEGRADE
+        val (plain, withLoader) = joinAFailingLoaderlessRead(
+            spec {
+                external()
+                unknownRead = UnknownReadMode.ABSENT
+            }
         )
-        val (plain, withLoader) = joinAFailingLoaderlessRead(spec(degrade) { loader = null })
         plain.getOrThrow().assert().isNull()
         withLoader.assert().isEqualTo("loaded")
     }
@@ -193,7 +203,7 @@ class CoherentEngineRegressionTest {
      */
     @Test
     fun asyncAndBatchJoinersOfAFailedLoaderlessReadUseTheirOwnLoader() {
-        val cache = runtime().engine(spec { loader = null })
+        val cache = runtime().engine(spec { external() })
         val reading = CountDownLatch(1)
         val release = CountDownLatch(1)
         backend.afterReadAll = { _ ->
@@ -222,7 +232,7 @@ class CoherentEngineRegressionTest {
     @Test
     fun loaderlessAsyncReadFailureAfterCloseFailsWithTheRemoteError() {
         val runtime = runtime()
-        val cache = runtime.engine(spec { loader = null })
+        val cache = runtime.engine(spec { external() })
         runtime.close()
         backend.failAll = true
         cache.async().get("k").handle { _, error -> error }.join()
@@ -250,9 +260,17 @@ class CoherentEngineRegressionTest {
         database["k"] = "v"
         database["a"] = "a"
         runCatching { cache["k"] }.exceptionOrNull().assert().isSameAs(failure)
-        memory.store(name).read(key("k"), null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        Suspending.await {
+            memory.store(
+                Keyspace("cocache:", name)
+            ).read(key("k"), null, null, null)
+        }.assert().isEqualTo(L1Read.Miss(false))
         runCatching { cache.getAll(listOf("a")) }.exceptionOrNull().assert().isSameAs(failure)
-        memory.store(name).read(key("a"), null, null).assert().isEqualTo(RemoteRead.Miss(false))
+        Suspending.await {
+            memory.store(
+                Keyspace("cocache:", name)
+            ).read(key("a"), null, null, null)
+        }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     @Test
@@ -274,9 +292,8 @@ class CoherentEngineRegressionTest {
         cache["k"].assert().isEqualTo("v1")
         // 刷新令牌被其它节点持有：旧实现会从 L1 读回 v0 填充 L2
         clock.advance(Duration.ofSeconds(6))
-        memory.store(
-            name
-        ).read(key("k"), null, RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1)))
+        val foreignRefresh = RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1))
+        Suspending.await { memory.store(Keyspace("cocache:", name)).read(key("k"), null, foreignRefresh, null) }
         cache["k"].assert().isEqualTo("v1")
         cache["k"].assert().isEqualTo("v1")
     }
@@ -295,14 +312,17 @@ class CoherentEngineRegressionTest {
         clock.advance(Duration.ofSeconds(6))
         backend.afterRead = { _, read ->
             backend.afterRead = null
-            if (read is RemoteRead.Hit) read.copy(format = read.format + 1) else read
+            if (read is L1Read.Hit) read.copy(format = read.format + 1) else read
         }
         cache["k"]
         // 令牌已释放：其它节点可以立即取得刷新令牌
-        val other = memory.store(
-            name
-        ).read(key("k"), null, RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1)))
-        (other as RemoteRead.Hit).refreshGranted.assert().isTrue()
+        val foreignRefresh = RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1))
+        val other = Suspending.await {
+            memory.store(
+                Keyspace("cocache:", name)
+            ).read(key("k"), null, foreignRefresh, null)
+        }
+        (other as L1Read.Hit).refreshGranted.assert().isTrue()
     }
 
     @Test
@@ -341,5 +361,13 @@ class CoherentEngineRegressionTest {
         cache.invalidate("k")
         awaitCondition { cache.metrics.invalidationsDropped == 1L }
         cache.pendingInvalidationCount.assert().isZero()
+    }
+
+    /**
+     * 外部来源（`externallySourced()`）：去掉用例默认的数据源。
+     */
+    private fun CacheSpec.Builder<String, String>.external() {
+        loader = null
+        externallySourced()
     }
 }

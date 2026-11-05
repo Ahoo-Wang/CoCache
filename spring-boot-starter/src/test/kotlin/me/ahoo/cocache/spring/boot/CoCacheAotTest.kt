@@ -14,21 +14,23 @@
 package me.ahoo.cocache.spring.boot
 
 import com.github.benmanes.caffeine.cache.Caffeine
+import me.ahoo.cocache.api.AsyncStore
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.SuspendingSetStore
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.annotation.JoinCacheable
 import me.ahoo.cocache.api.join.JoinCache
 import me.ahoo.cocache.api.join.JoinKeyExtractor
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.SetCacheSpec
+import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.setCacheSpec
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.springframework.aot.hint.MemberCategory
@@ -45,7 +47,6 @@ import org.springframework.context.aot.ApplicationContextAotGenerator
 import org.springframework.core.ResolvableType
 import org.springframework.javapoet.ClassName
 import java.time.Duration
-import java.util.concurrent.Executors
 
 /**
  * Spring AOT 构建期：为原生镜像登记代理、反射、key 类型与 Jackson 绑定提示。生成代码的运行见 [CoCacheAotRuntimeTest]。
@@ -71,10 +72,18 @@ class CoCacheAotTest {
      */
     interface ExtCache : Cache<String, Ext>
 
-    @CoCache(codec = "tokenCodec")
+    @CoCache(codec = "tokenCodec", source = CoCache.Source.EXTERNAL)
     interface TokenCache : Cache<String, Token>
 
-    interface TagCache : SetCache<String, Tag>
+    interface TagCache : SetStore<String, Tag>
+
+    /**
+     * 视图接口：代理转发给缓存的挂起与异步视图。
+     */
+    interface SuspendingTagStore : SuspendingSetStore<String, Tag>
+
+    @CoCache(codec = "tokenCodec")
+    interface AsyncTokenStore : AsyncStore<String, Token>
 
     @JoinCacheable(firstCacheName = "ExtCache", joinCacheName = "UserCache", joinKeyExpression = "#{#root.userId}")
     interface ExtJoinCache : JoinCache<String, Ext, String, User> {
@@ -93,7 +102,14 @@ class CoCacheAotTest {
 
     @Configuration(proxyBeanMethods = false)
     @EnableCoCache(
-        caches = [UserCache::class, ExtCache::class, TokenCache::class, TagCache::class],
+        caches = [
+            UserCache::class,
+            ExtCache::class,
+            TokenCache::class,
+            TagCache::class,
+            SuspendingTagStore::class,
+            AsyncTokenStore::class,
+        ],
         joinCaches = [ExtJoinCache::class, ProductJoinCache::class]
     )
     class AppConfig {
@@ -127,10 +143,13 @@ class CoCacheAotTest {
         }
 
         @Bean
-        fun labelSpec(): SetCacheSpec<String, String> = setCacheSpec("labels") { elementCodec = StringCodec }
+        fun labelSpec(): SetStoreSpec<String, String> = setStoreSpec("labels") { elementCodec = StringCodec }
 
         @Bean
-        fun orderSpec(): CacheSpec<OrderKey, String> = cacheSpec("orders") { codec = StringCodec }
+        fun orderSpec(): CacheSpec<OrderKey, String> = cacheSpec("orders") {
+            codec = StringCodec
+            externallySourced()
+        }
 
         @Bean
         fun productUserId(): JoinKeyExtractor<String, String> = JoinKeyExtractor { it }
@@ -141,19 +160,14 @@ class CoCacheAotTest {
         val hints = processAheadOfTime().first.runtimeHints
         val reflection = RuntimeHintsPredicates.reflection()
         listOf(UserCache::class.java, ExtCache::class.java, TokenCache::class.java, TagCache::class.java)
+            .plus(listOf(SuspendingTagStore::class.java, AsyncTokenStore::class.java))
             .plus(listOf(ExtJoinCache::class.java, ProductJoinCache::class.java))
             .forEach { type ->
                 hints.assert().matches(RuntimeHintsPredicates.proxies().forInterfaces(type))
                 hints.assert().matches(reflection.onType(type).withMemberCategory(MemberCategory.INVOKE_PUBLIC_METHODS))
             }
-        // 异步视图的公共方法（与声明无关的固定提示）
-        listOf(
-            me.ahoo.cocache.api.AsyncCache::class.java,
-            me.ahoo.cocache.api.AsyncSetCache::class.java,
-            // cocache-coroutines 在类路径上（测试依赖）：挂起视图按类名登记
-            me.ahoo.cocache.coroutines.SuspendingCache::class.java,
-            me.ahoo.cocache.coroutines.SuspendingSetCache::class.java
-        ).forEach { type ->
+        // 五种用户 API 类型与它们的异步、挂起视图，以及组合视图的公共方法（与声明无关的固定提示）
+        CoCacheRuntimeHints.API_TYPES.forEach { type ->
             hints.assert().matches(reflection.onType(type).withMemberCategory(MemberCategory.INVOKE_PUBLIC_METHODS))
         }
         // default 方法经 InvocationHandler.invokeDefault 调用
@@ -168,11 +182,8 @@ class CoCacheAotTest {
         hints.assert().matches(reflection.onType(Token::class.java).negate())
         // 默认 key 编码器反射检查 key 类型的 toString()：接口式与 spec 声明都登记
         hints.assert().matches(reflection.onMethodInvocation(OrderKey::class.java, "toString"))
-        // Spring Cache 默认 retrieve 执行器经反射取得虚拟线程执行器（JDK 21+ 才有该方法，按名称检查提示）
-        requireNotNull(hints.reflection().getTypeHint(Executors::class.java)).methods()
-            .map { it.name }.toList().assert().contains(CoCacheRuntimeHints.VIRTUAL_THREAD_EXECUTOR)
         // 固定提示（aot.factories 中的 RuntimeHintsRegistrar）
-        listOf(Cache::class.java, SetCache::class.java, JoinCache::class.java).forEach {
+        listOf(Cache::class.java, SetStore::class.java, JoinCache::class.java).forEach {
             hints.assert().matches(reflection.onType(it).withMemberCategory(MemberCategory.INVOKE_PUBLIC_METHODS))
         }
     }

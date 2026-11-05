@@ -34,7 +34,7 @@ import java.time.Duration
  *                 envelope: Envelope.Scalar,
  *                 ttl: Duration?,
  *                 frame: ByteArray
- *             ): RemoteConditionalWrite {
+ *             ): L1ConditionalWrite {
  *                 conditionalWrites.incrementAndGet()
  *                 return super.putIfMatch(key, expected, envelope, ttl, frame)
  *             }
@@ -49,19 +49,22 @@ import java.time.Duration
  */
 @Suppress("TooManyFunctions")
 abstract class ForwardingL1Store(protected val delegate: L1Store) : L1Store {
-    override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?): RemoteRead =
-        delegate.read(key, lease, refresh)
+    override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, timeout: Duration?): L1Read =
+        delegate.read(key, lease, refresh, timeout)
 
-    override suspend fun readAll(keys: Collection<String>, leases: Map<String, LeaseRequest>): Map<String, RemoteRead> =
-        delegate.readAll(keys, leases)
+    override suspend fun readAll(
+        keys: Collection<String>,
+        leases: Map<String, LeaseRequest>,
+        timeout: Duration?
+    ): Map<String, L1Read> = delegate.readAll(keys, leases, timeout)
 
-    override suspend fun fill(fill: Fill): Boolean = delegate.fill(fill)
+    override suspend fun fill(fill: Fill): L1Fill = delegate.fill(fill)
 
-    override suspend fun fillAll(fills: List<Fill>): List<Boolean> = delegate.fillAll(fills)
+    override suspend fun fillAll(fills: List<Fill>): List<L1Fill> = delegate.fillAll(fills)
 
     override suspend fun release(key: String, token: Token) = delegate.release(key, token)
 
-    override suspend fun reclaim(key: String, observed: Digest, lease: LeaseRequest): Boolean =
+    override suspend fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean =
         delegate.reclaim(key, observed, lease)
 
     override suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) =
@@ -95,8 +98,9 @@ abstract class ForwardingL1Store(protected val delegate: L1Store) : L1Store {
 abstract class ForwardingConditionalL1Store(protected val delegate: ConditionalL1Store) : ConditionalL1Store {
     override suspend fun readIfChanged(
         key: String,
-        known: Digest?
-    ): RemoteConditionalRead = delegate.readIfChanged(key, known)
+        known: Digest?,
+        timeout: Duration?
+    ): L1ConditionalRead = delegate.readIfChanged(key, known, timeout)
 
     override suspend fun putIfMatch(
         key: String,
@@ -104,7 +108,13 @@ abstract class ForwardingConditionalL1Store(protected val delegate: ConditionalL
         envelope: Envelope.Scalar,
         ttl: Duration?,
         frame: ByteArray
-    ): RemoteConditionalWrite = delegate.putIfMatch(key, expected, envelope, ttl, frame)
+    ): L1ConditionalWrite = delegate.putIfMatch(key, expected, envelope, ttl, frame)
+
+    override suspend fun deleteIfMatch(
+        key: String,
+        expected: Digest,
+        frame: ByteArray
+    ): L1ConditionalWrite = delegate.deleteIfMatch(key, expected, frame)
 }
 
 /**
@@ -119,7 +129,13 @@ abstract class ForwardingVersionedL1Store(protected val delegate: VersionedL1Sto
         version: Long,
         ttl: Duration?,
         frame: ByteArray
-    ): RemoteVersionedWrite = delegate.putIfNewer(key, envelope, version, ttl, frame)
+    ): L1VersionedWrite = delegate.putIfNewer(key, envelope, version, ttl, frame)
+
+    override suspend fun evictKeepingVersion(
+        key: String,
+        ttl: Duration?,
+        frame: ByteArray
+    ): L1Eviction = delegate.evictKeepingVersion(key, ttl, frame)
 }
 
 /**

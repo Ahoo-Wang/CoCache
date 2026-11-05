@@ -10,9 +10,19 @@ const guide: DefaultTheme.SidebarItem[] = [
     ],
   },
   {
+    text: 'Cache Types',
+    items: [
+      { text: 'Choosing and Declaring', link: '/guide/caches' },
+      { text: 'Cache', link: '/guide/cache' },
+      { text: 'VersionedCache', link: '/guide/versioned-cache' },
+      { text: 'Store', link: '/guide/store' },
+      { text: 'VersionedStore', link: '/guide/versioned-store' },
+      { text: 'SetStore', link: '/guide/set-store' },
+    ],
+  },
+  {
     text: 'Using CoCache',
     items: [
-      { text: 'Declaring Caches', link: '/guide/caches' },
       { text: 'Keeping Data Fresh', link: '/guide/freshness' },
       { text: 'JoinCache', link: '/guide/join-cache' },
       { text: 'Spring Cache', link: '/guide/spring-cache' },
@@ -26,7 +36,7 @@ const guide: DefaultTheme.SidebarItem[] = [
   {
     text: 'Releases',
     items: [
-      { text: 'Upgrading from 5.x', link: '/guide/migration-6' },
+      { text: 'Upgrading from 6.x', link: '/guide/upgrade' },
       { text: 'Changelog', link: '/guide/changelog' },
     ],
   },
@@ -65,9 +75,10 @@ export const en: DefaultTheme.Config = {
       { text: 'Operations', link: '/operations/' },
       { text: 'Architecture', link: '/architecture/' },
       {
-        text: 'v6.10',
+        text: 'v8.0.0-alpha.1',
         items: [
           { text: 'Changelog', link: '/guide/changelog' },
+          { text: '6.x docs', link: 'https://github.com/Ahoo-Wang/CoCache/tree/6.x/wiki' },
           { text: 'Contributing', link: 'https://github.com/Ahoo-Wang/CoCache/blob/main/CONTRIBUTING.md' },
         ],
       },

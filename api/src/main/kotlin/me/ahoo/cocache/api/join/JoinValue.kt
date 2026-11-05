@@ -14,7 +14,7 @@
 package me.ahoo.cocache.api.join
 
 /**
- * [JoinCache] 的组合结果。
+ * [JoinView] 的组合结果。
  *
  * @property firstValue 主值
  * @property joinKey 从主值提取的关联 key；`null` 表示该主值没有关联

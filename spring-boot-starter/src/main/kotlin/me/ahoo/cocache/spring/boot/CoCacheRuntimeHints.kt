@@ -14,23 +14,33 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.api.AsyncCache
-import me.ahoo.cocache.api.AsyncSetCache
+import me.ahoo.cocache.api.AsyncReadableCache
+import me.ahoo.cocache.api.AsyncSetStore
+import me.ahoo.cocache.api.AsyncStore
+import me.ahoo.cocache.api.AsyncVersionedCache
+import me.ahoo.cocache.api.AsyncVersionedStore
 import me.ahoo.cocache.api.Cache
-import me.ahoo.cocache.api.SetCache
+import me.ahoo.cocache.api.ReadableCache
+import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.SuspendingCache
+import me.ahoo.cocache.api.SuspendingReadableCache
+import me.ahoo.cocache.api.SuspendingSetStore
+import me.ahoo.cocache.api.SuspendingStore
+import me.ahoo.cocache.api.SuspendingVersionedCache
+import me.ahoo.cocache.api.SuspendingVersionedStore
+import me.ahoo.cocache.api.VersionedCache
+import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.join.JoinCache
-import org.springframework.aot.hint.ExecutableMode
+import me.ahoo.cocache.api.join.JoinView
 import org.springframework.aot.hint.MemberCategory
 import org.springframework.aot.hint.RuntimeHints
 import org.springframework.aot.hint.RuntimeHintsRegistrar
-import java.util.concurrent.Executors
 
 /**
  * 与具体声明无关的固定运行时提示：
- * - 代理与校验在运行时反射读取 [Cache] / [SetCache] / [JoinCache] 的公共方法；异步视图 [AsyncCache] / [AsyncSetCache] 的公共方法同样登记
- *   （视图不是代理，由引擎直接实现；登记让经反射调用它们的框架代码可用）；类路径上有 `cocache-coroutines` 时，挂起视图
- *   [COROUTINES_CLASSES] 同样登记（starter 不依赖该模块，按类名登记）；
- * - 运行时的默认阻塞执行器（以及已弃用的 Spring Cache 默认 retrieve 执行器）在 JDK 21+ 上经反射取得
- *   `Executors.newVirtualThreadPerTaskExecutor()`（原生镜像要求 GraalVM 25+）；
+ * - 代理与校验在运行时反射读取五种用户 API 类型与组合视图的公共方法（[API_TYPES]）；它们的异步视图与挂起视图同样登记
+ *   （视图不是代理，由引擎直接实现；登记让经反射调用它们的框架代码可用）；
  * - L2（Caffeine）按构建器特性拼出类名、经 `MethodHandles.Lookup` 加载生成的实现类与节点类。CoCache 只用
  *   `maximumSize` 与可选的 `expireAfterAccess`，对应的类是固定的四个（见 [CAFFEINE_CLASSES]），不依赖外部元数据仓库。
  *
@@ -38,20 +48,8 @@ import java.util.concurrent.Executors
  */
 internal class CoCacheRuntimeHints : RuntimeHintsRegistrar {
     override fun registerHints(hints: RuntimeHints, classLoader: ClassLoader?) {
-        listOf(
-            Cache::class.java,
-            SetCache::class.java,
-            JoinCache::class.java,
-            AsyncCache::class.java,
-            AsyncSetCache::class.java
-        ).forEach {
+        API_TYPES.forEach {
             hints.reflection().registerType(it, MemberCategory.INVOKE_PUBLIC_METHODS)
-        }
-        hints.reflection().registerType(Executors::class.java) {
-            it.withMethod(VIRTUAL_THREAD_EXECUTOR, emptyList(), ExecutableMode.INVOKE)
-        }
-        COROUTINES_CLASSES.forEach {
-            hints.reflection().registerTypeIfPresent(classLoader, it, MemberCategory.INVOKE_PUBLIC_METHODS)
         }
         CAFFEINE_CLASSES.forEach {
             hints.reflection().registerTypeIfPresent(
@@ -64,15 +62,31 @@ internal class CoCacheRuntimeHints : RuntimeHintsRegistrar {
     }
 
     companion object {
-        const val VIRTUAL_THREAD_EXECUTOR = "newVirtualThreadPerTaskExecutor"
-
         /**
-         * 可选模块 `cocache-coroutines` 的挂起视图（RFC 0004 §7）。
+         * 用户 API 的类型（RFC 0005 §3.1）：同步、异步与挂起视图，以及组合视图。
          */
-        val COROUTINES_CLASSES = listOf(
-            "SuspendingCache",
-            "SuspendingSetCache"
-        ).map { "me.ahoo.cocache.coroutines.$it" }
+        val API_TYPES: List<Class<*>> = listOf(
+            ReadableCache::class.java,
+            Cache::class.java,
+            VersionedCache::class.java,
+            Store::class.java,
+            VersionedStore::class.java,
+            SetStore::class.java,
+            AsyncReadableCache::class.java,
+            AsyncCache::class.java,
+            AsyncVersionedCache::class.java,
+            AsyncStore::class.java,
+            AsyncVersionedStore::class.java,
+            AsyncSetStore::class.java,
+            SuspendingReadableCache::class.java,
+            SuspendingCache::class.java,
+            SuspendingVersionedCache::class.java,
+            SuspendingStore::class.java,
+            SuspendingVersionedStore::class.java,
+            SuspendingSetStore::class.java,
+            JoinView::class.java,
+            JoinCache::class.java,
+        )
 
         /**
          * L2 的 Caffeine 生成类：缓存类 `SSMS`（强引用 key / value、按条数淘汰）与 `SSMSA`（再加空闲淘汰），以及对应的节点类。

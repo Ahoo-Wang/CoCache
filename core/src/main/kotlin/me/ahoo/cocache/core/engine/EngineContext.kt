@@ -17,6 +17,7 @@ import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.internal.Ticker
 import java.util.concurrent.Executor
@@ -35,6 +36,7 @@ internal class EngineContext(
     val async: AsyncContext,
     val recordLocalHits: Boolean = false,
     val ticker: Ticker = Ticker.SYSTEM,
+    val fillObserver: FillObserver = FillObserver.NONE,
 ) {
     private val sequence = AtomicLong()
 

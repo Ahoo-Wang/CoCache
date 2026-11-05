@@ -46,16 +46,16 @@ class JavaFutureL1StoreTest {
         L1Store l1 = FutureL1Store.adapt(new MapStore());
 
         Suspending.await(c -> l1.put("k", VALUE, null, FRAME, c));
-        RemoteRead hit = new RemoteRead.Hit(VALUE, 1, null, false);
-        RemoteRead miss = new RemoteRead.Miss(false);
-        assertEquals(hit, Suspending.await(c -> l1.read("k", null, null, c)));
-        Map<String, RemoteRead> expected = new LinkedHashMap<>();
+        L1Read hit = new L1Read.Hit(VALUE, 1, null, false);
+        L1Read miss = new L1Read.Miss(false);
+        assertEquals(hit, Suspending.await(c -> l1.read("k", null, null, null, c)));
+        Map<String, L1Read> expected = new LinkedHashMap<>();
         expected.put("k", hit);
         expected.put("absent", miss);
-        assertEquals(expected, Suspending.await(c -> l1.readAll(List.of("k", "absent"), Map.of(), c)));
+        assertEquals(expected, Suspending.await(c -> l1.readAll(List.of("k", "absent"), Map.of(), Duration.ofMillis(500), c)));
 
         Suspending.await(c -> l1.invalidate(List.of("k"), FRAME, c));
-        assertEquals(miss, Suspending.await(c -> l1.read("k", null, null, c)));
+        assertEquals(miss, Suspending.await(c -> l1.read("k", null, null, null, c)));
     }
 
     @Test
@@ -68,8 +68,11 @@ class JavaFutureL1StoreTest {
         SetL1Store sets = l1.sets();
         assertSame(sets, l1.sets());
 
-        assertSame(RemoteConditionalWrite.Written.INSTANCE, Suspending.await(c -> conditional.putIfMatch("k", null, VALUE, null, FRAME, c)));
-        assertEquals(new RemoteConditionalRead.Unchanged(1), Suspending.await(c -> conditional.readIfChanged("k", Digest.of(VALUE), c)));
+        assertSame(L1ConditionalWrite.Written.INSTANCE, Suspending.await(c -> conditional.putIfMatch("k", null, VALUE, null, FRAME, c)));
+        assertEquals(new L1ConditionalRead.Unchanged(1), Suspending.await(c -> conditional.readIfChanged("k", Digest.of(VALUE), null, c)));
+        assertSame(L1ConditionalWrite.Written.INSTANCE, Suspending.await(c -> conditional.putIfMatch("d", null, VALUE, null, FRAME, c)));
+        assertSame(L1ConditionalWrite.Written.INSTANCE, Suspending.await(c -> conditional.deleteIfMatch("d", Digest.of(VALUE), FRAME, c)));
+        assertEquals(new L1ConditionalWrite.Conflict(null), Suspending.await(c -> conditional.deleteIfMatch("d", Digest.of(VALUE), FRAME, c)));
         List<byte[]> members = List.of(new byte[] {2});
         assertEquals(Integer.valueOf(1), Suspending.<Integer>await(c -> sets.addMembers("k", members, null, FRAME, c)));
         assertNull(Suspending.<Integer>await(c -> sets.addMembers("set", members, null, FRAME, c)));
@@ -80,7 +83,7 @@ class JavaFutureL1StoreTest {
         IllegalStateException failure = new IllegalStateException("L1 down");
         L1Store l1 = FutureL1Store.adapt(new MapStore() {
             @Override
-            public CompletableFuture<Boolean> fill(Fill fill) {
+            public CompletableFuture<L1Fill> fill(Fill fill) {
                 return CompletableFuture.supplyAsync(() -> {
                     throw failure;
                 });
@@ -118,31 +121,35 @@ class JavaFutureL1StoreTest {
     static class MapStore implements FutureL1Store, FutureConditionalL1Store, FutureSetL1Store {
         private final Map<String, Envelope> entries = new ConcurrentHashMap<>();
 
-        private RemoteRead readNow(String key) {
+        private L1Read readNow(String key) {
             Envelope envelope = entries.get(key);
-            return envelope == null ? new RemoteRead.Miss(false) : new RemoteRead.Hit(envelope, 1, null, false);
+            return envelope == null ? new L1Read.Miss(false) : new L1Read.Hit(envelope, 1, null, false);
         }
 
         @Override
-        public CompletableFuture<RemoteRead> read(String key, LeaseRequest lease, RefreshRequest refresh) {
+        public CompletableFuture<L1Read> read(String key, LeaseRequest lease, RefreshRequest refresh, Duration timeout) {
             return completedFuture(readNow(key));
         }
 
         @Override
-        public CompletableFuture<Map<String, RemoteRead>> readAll(Collection<String> keys, Map<String, LeaseRequest> leases) {
-            Map<String, RemoteRead> reads = new LinkedHashMap<>();
+        public CompletableFuture<Map<String, L1Read>> readAll(
+            Collection<String> keys,
+            Map<String, LeaseRequest> leases,
+            Duration timeout
+        ) {
+            Map<String, L1Read> reads = new LinkedHashMap<>();
             keys.forEach(key -> reads.put(key, readNow(key)));
             return completedFuture(reads);
         }
 
         @Override
-        public CompletableFuture<Boolean> fill(Fill fill) {
+        public CompletableFuture<L1Fill> fill(Fill fill) {
             entries.put(fill.getKey(), fill.getEnvelope());
-            return completedFuture(true);
+            return completedFuture(new L1Fill.Filled(false));
         }
 
         @Override
-        public CompletableFuture<List<Boolean>> fillAll(List<Fill> fills) {
+        public CompletableFuture<List<L1Fill>> fillAll(List<Fill> fills) {
             return completedFuture(fills.stream().map(item -> fill(item).join()).toList());
         }
 
@@ -152,7 +159,7 @@ class JavaFutureL1StoreTest {
         }
 
         @Override
-        public CompletableFuture<Boolean> reclaim(String key, Digest observed, LeaseRequest lease) {
+        public CompletableFuture<Boolean> reclaim(String key, ContentFingerprint observed, LeaseRequest lease) {
             return completedFuture(false);
         }
 
@@ -190,18 +197,18 @@ class JavaFutureL1StoreTest {
         }
 
         @Override
-        public CompletableFuture<RemoteConditionalRead> readIfChanged(String key, Digest known) {
+        public CompletableFuture<L1ConditionalRead> readIfChanged(String key, Digest known, Duration timeout) {
             if (!(entries.get(key) instanceof Envelope.Scalar scalar)) {
-                return completedFuture(RemoteConditionalRead.Absent.INSTANCE);
+                return completedFuture(L1ConditionalRead.Absent.INSTANCE);
             }
             if (Digest.of(scalar).equals(known)) {
-                return completedFuture(new RemoteConditionalRead.Unchanged(1));
+                return completedFuture(new L1ConditionalRead.Unchanged(1));
             }
-            return completedFuture(new RemoteConditionalRead.Changed(scalar, 1));
+            return completedFuture(new L1ConditionalRead.Changed(scalar, 1));
         }
 
         @Override
-        public synchronized CompletableFuture<RemoteConditionalWrite> putIfMatch(
+        public synchronized CompletableFuture<L1ConditionalWrite> putIfMatch(
             String key,
             Digest expected,
             Envelope.Scalar envelope,
@@ -210,10 +217,20 @@ class JavaFutureL1StoreTest {
         ) {
             Digest current = entries.get(key) instanceof Envelope.Scalar scalar ? Digest.of(scalar) : null;
             if (!Objects.equals(current, expected)) {
-                return completedFuture(new RemoteConditionalWrite.Conflict(current));
+                return completedFuture(new L1ConditionalWrite.Conflict(current));
             }
             entries.put(key, envelope);
-            return completedFuture(RemoteConditionalWrite.Written.INSTANCE);
+            return completedFuture(L1ConditionalWrite.Written.INSTANCE);
+        }
+
+        @Override
+        public synchronized CompletableFuture<L1ConditionalWrite> deleteIfMatch(String key, Digest expected, byte[] frame) {
+            Digest current = entries.get(key) instanceof Envelope.Scalar scalar ? Digest.of(scalar) : null;
+            if (!Objects.equals(current, expected)) {
+                return completedFuture(new L1ConditionalWrite.Conflict(current));
+            }
+            entries.remove(key);
+            return completedFuture(L1ConditionalWrite.Written.INSTANCE);
         }
 
         @Override
