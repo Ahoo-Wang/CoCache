@@ -13,10 +13,15 @@
 - [ ] **GA（8.0.0）的放行条件**，全部满足才发：
   1. **下游试用**：CoSec 与 Wow 在各自的分支上接入最新的 8.0.0 预发布版本，跑通各自的测试套件。发现的问题修复之后再发一个预发布版本，直到没有新问题。只做适配，不做数据迁移（升级说明的“下游”一节）。
      - **Wow**：草稿 PR Ahoo-Wang/Wow#5436（8.0.0-alpha.1，不合并），跑绿后停在草稿，等 rc 时升级再跑。发现 1：`VersionedCache` 的写入方落在 6.x 旧值上以 `CacheWriteException` 失败。RFC 0005 §4.1 规定按版本写入不把读不懂的内容当作没有值，所以改升级说明：切换时 `VersionedCache` 的旧 key 也要删（#792）。
-     - **CoSec**：试用分支以草稿 PR 收尾（Ahoo-Wang/CoSec，由 CoSec 维护者决定何时合并），rc 时继续。CoCache 的问题以标 `bug`、标题前缀 `[8.0 trial]` 的 issue 登记。`cosec-dependencies` 仍引用 cocache-bom 6.7.0，要一起升级。
+     - **CoSec**：草稿 PR Ahoo-Wang/CoSec#1203（8.0.0-alpha.2，含 BOM；本地 `check` 通过，2,976 个测试；由 CoSec 维护者决定何时合并），rc 时升级再跑。没有 CoCache 缺陷，发现的文档与 API 问题记在第 4 条。
   2. **RFC 0005 §7 的剩余测量**：`l2HitAbsent` / `l2HitUnfilled` 的命中成本与 `l2Hit` 相同；声明的异步、挂起视图接口（#789）的命中有数据。结果记入 [jmh-8.0-ga](investigations/jmh-8.0-ga.md)。**已完成**（#793）：`Absent` 与未填充为普通 L2 命中的 97.3%–98.7%，满足；声明的异步接口比异步视图每次多 0.7 ns，保留；声明的挂起接口见下一条。
   3. **没有未关闭的 8.x 缺陷**：GitHub 上标 `bug`、影响 `main` 的 issue 都已修复。
   4. **文档定稿**：wiki（en + zh）、升级说明、changelog 与代码一致；`docs/architecture.md` 的不变量与 TCK 一致。
+     - CoSec 试用发现的（2026-11-05）：
+       - ACL 一节写明：namespace 有多段前缀时，每个 `keyPrefix` 各一条频道模式 `&{keyPrefix}inv:*`。CoSec 有 5 个前缀，所以要 5 条。
+       - RFC 0005 §8 的 CoSec 一条：`GlobalPolicyIndexCache` → `SetStore` 不可行，因为 `SetStore` 拒绝 6.x 的内容。CoSec 的迁移工具自己读格式 1。
+       - 升级说明说内部 key 都在 `{keyPrefix}!` 下，但探测 key 是固定的 `cocache:!probe:{a}` / `{b}`，要改正。
+       - API 的小摩擦：`InMemoryBackend { clock }` 的尾随 lambda 绑定到 `commandTimeout`，编译错误让人困惑；`CacheAdmin` 不暴露 keyspace。GA 前决定是否调整（`cocache-test` 与 `cocache-api` 的 API 变更）。
   5. **发版**：按 CONTRIBUTING 发 `8.0.0`。changelog 中的预发布条目合并为 `v8.0.0`。线格式自此在 8.x 内冻结（architecture.md 的不变量），兼容性承诺开始生效。
 - [ ] **声明的挂起视图接口的代理开销**（GA 前）：经 `CacheProxies.ViewHandler` 转发挂起方法，L2 命中从 5.33 ns 增加到 15.65 ns，每次多 10.3 ns（同步接口的代理多 2.5 ns），0 B/op，开销是转发时的 CPU，原因没有 profiling（#793）。异步接口走同一个 `forward` 只多 0.7 ns，所以要先查清挂起方法的转发慢在哪。目标：不超过同步接口代理的 2 倍（约 5 ns）。这是命中路径的改动，要附 `scripts/jmh-compare.sh -b l2HitViaSuspendingInterface,l2HitSuspending,l2HitViaInterface,l2HitViaAsyncInterface,l2HitMixed -t 1,8` 的表。
 - [ ] **下一个预发布版本**：上一条与下游试用中修复的问题。发布之后通知 CoSec 与 Wow 升级，继续试用。
