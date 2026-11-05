@@ -4,7 +4,19 @@
 
 编号沿用 RFC 0005：附录 A 的审查发现写作 A.xx，第一轮、第二轮对抗验证的发现写作 C / M / P / U，第三轮写作 K / S、维护者对它的决定写作 D1–D8，未决问题写作 Q，v8 的里程碑写作 M1–M8（RFC 0005 §10）。
 
-## 1. 发布跟进
+## 1. 8.0 的预发布与 GA
+
+- [x] **8.0.0-alpha.1 已发布**（2026-11-04，#786）：GitHub 预发布、Maven Central 与 GitHub Packages。预发布不作兼容性承诺（CONTRIBUTING）。站点 cocache.ahoo.me 自此从 `main` 部署（#787），`6.x` 不再部署（#788）。
+- [ ] **GA（8.0.0）的放行条件**，全部满足才发：
+  1. **下游试用**：CoSec 与 Wow 在各自的分支上接入最新的 8.0.0 预发布版本，跑通各自的测试套件。发现的问题修复之后再发一个预发布版本，直到没有新问题。只做适配，不做数据迁移（升级说明的“下游”一节）。
+  2. **RFC 0005 §7 的剩余测量**：`l2HitAbsent` / `l2HitUnfilled` 的命中成本与 `l2Hit` 相同；声明的异步、挂起视图接口（#789）的命中有数据。结果记入 [jmh-8.0-ga](investigations/jmh-8.0-ga.md)。
+  3. **没有未关闭的 8.x 缺陷**：GitHub 上标 `bug`、影响 `main` 的 issue 都已修复。
+  4. **文档定稿**：wiki（en + zh）、升级说明、changelog 与代码一致；`docs/architecture.md` 的不变量与 TCK 一致。
+  5. **发版**：按 CONTRIBUTING 发 `8.0.0`。changelog 中的预发布条目合并为 `v8.0.0`。线格式自此在 8.x 内冻结（architecture.md 的不变量），兼容性承诺开始生效。
+- [ ] **下一个预发布版本**（alpha.2）：声明接口可以继承异步与挂起视图（#789），以及下游试用中修复的问题。
+
+## 1a. 6.x 跟进
+
 
 - [ ] **确认 6.9.1 已上 Maven Central**。
   - 发布 v6.9.1 触发的 [Packages Deploy](https://github.com/Ahoo-Wang/CoCache/actions/runs/40867726421) 要成功。
@@ -17,7 +29,7 @@
   - Wow（依赖 6.8.0）：不需要改代码。
   - Spring Cache 用户：没有 loader 的缓存上，`@CacheEvict` 失败改为抛出；要保持 6.8 的重试，配置 `invalidate-failure: retry`。
 - [ ] **6.x 缺陷 [#747](https://github.com/Ahoo-Wang/CoCache/issues/747)**（2026-11-03 登记，维护者：先登记、继续推进 v8）：断线时 Lettuce 以同一个异常实例使在途命令全部失败，`RedisRemoteStore` 把它 suppress 到自己身上，抛出 `IllegalArgumentException`；批量读因此漏释放其余 key 的 lease，各节点等到 `lease.ttl`。`main` 已在 #746 修复；6.x 的修复与发版由维护者安排。
-- [ ] **切换 `main` 到 v8**（RFC 0005 §10 第 0 步）：
+- [x] **切换 `main` 到 v8**（RFC 0005 §10 第 0 步）：
   - 从 `v6.10.0` 切出 `6.x`；`6.x` 上推送触发的 CI 与 wiki 发布改为 `6.x`。
   - 仓库设置（维护者操作）：GitHub Pages 的部署环境 `github-pages` 允许 `6.x`；`6.x` 的分支保护规则与 `main` 一致。
   - `main`：基线 JDK 21；停止发布 wiki；CONTRIBUTING 的分支与发版规则。
