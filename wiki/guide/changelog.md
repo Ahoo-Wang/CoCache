@@ -5,6 +5,10 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: with the Redis backend, removing the last member of a set left the key behind as an empty hash when the set carried metadata besides `!f` (an explicit `!m = "0"`, or any reserved `!` field). Without a TTL it never expired. The set is now deleted once no member remains.
+
 ## v8.0.0-alpha.3 (Pre-release) {#v8-0-0-alpha-3}
 
 **Module Group:** `me.ahoo.cocache` · Third pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
