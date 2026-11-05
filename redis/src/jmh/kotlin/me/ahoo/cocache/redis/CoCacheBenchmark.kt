@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.SuspendingCache
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
@@ -46,6 +47,11 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
+import kotlin.coroutines.intrinsics.startCoroutineUninterceptedOrReturn
 
 /**
  * 命中路径基准（RFC 0003 §7）。
@@ -62,6 +68,9 @@ open class CoCacheBenchmark {
     private lateinit var runtime: CacheRuntime
     private lateinit var cache: Cache<String, String>
     private lateinit var viaInterface: BenchCache
+    private lateinit var viaSuspendingInterface: BenchSuspendingCache
+    private lateinit var viaAsyncInterface: BenchAsyncCache
+    private val suspendingInterfaceHit: suspend () -> String? = ::suspendingInterfaceGet
     private lateinit var mixed: List<Cache<String, String>>
     private lateinit var store: L1Store
     private lateinit var l1Key: String
@@ -94,6 +103,13 @@ open class CoCacheBenchmark {
         viaInterface = CoCacheFactory(runtime).create(BenchCache::class.java, spec("bench-iface-$run", policy))
         viaInterface.put("hot", "hot-value")
         viaInterface["hot"]
+        // 声明的视图接口（同样配置的引擎）：挂起接口把 Continuation 原样转发给挂起视图，异步接口转发给 async()
+        viaSuspendingInterface = CoCacheFactory(runtime).create(BenchSuspendingCache::class.java, spec("bench-iface-suspending-$run", policy))
+        awaitBlocking { viaSuspendingInterface.get("hot") }
+        check(suspendingInterfaceHit.startCoroutineUninterceptedOrReturn(InlineCompletion) == "value-hot") { "an L2 hit must return inline" }
+        viaAsyncInterface = CoCacheFactory(runtime).create(BenchAsyncCache::class.java, spec("bench-iface-async-$run", policy))
+        viaAsyncInterface.get("hot").join()
+        check(viaAsyncInterface.get("hot").isDone) { "an L2 hit must complete inline" }
         // 存储基准测的是 Redis 存储自身（原生挂起的 RedisL1Store，经 awaitBlocking 在调用方线程上等待）
         store = backend.store(Keyspace("cocache:", "bench-$run"))
         l1Key = "cocache:bench-$run:l1"
@@ -150,6 +166,23 @@ open class CoCacheBenchmark {
     /** L2 命中，经过接口式声明的代理（`@CoCache interface`）。 */
     @Benchmark
     fun l2HitViaInterface(): String? = viaInterface["hot"]
+
+    /**
+     * L2 命中，经声明的挂起视图接口：调用经 `startCoroutineUninterceptedOrReturn` 发起、命中时同步返回，
+     * 测到的是代理的转发，而不是协程的启动。
+     */
+    @Benchmark
+    fun l2HitViaSuspendingInterface(): Any? {
+        val result = suspendingInterfaceHit.startCoroutineUninterceptedOrReturn(InlineCompletion)
+        check(result !== COROUTINE_SUSPENDED) { "an L2 hit must not suspend" }
+        return result
+    }
+
+    /** L2 命中，经声明的异步视图接口（代理转发给 `async()`，返回已完成的 future）。 */
+    @Benchmark
+    fun l2HitViaAsyncInterface(): CompletableFuture<String?> = viaAsyncInterface.get("hot")
+
+    private suspend fun suspendingInterfaceGet(): String? = viaSuspendingInterface.get("hot")
 
     /** L2 命中权威缓存的 `Absent`（`Store` 中没有这个 key）。 */
     @Benchmark
@@ -283,6 +316,13 @@ open class CoCacheBenchmark {
     @Benchmark
     fun invalidateAsync(): Void? = asyncCache.invalidate("inv-async").join()
 
+    /** 挂起调用的完成回调：L2 命中同步返回，从不经过它。 */
+    private object InlineCompletion : Continuation<String?> {
+        override val context: CoroutineContext = EmptyCoroutineContext
+
+        override fun resumeWith(result: Result<String?>) = Unit
+    }
+
     companion object {
         const val BATCH_SIZE = 100
         const val ENGINE_BATCH = 16
@@ -295,3 +335,13 @@ open class CoCacheBenchmark {
  * 代理基准使用的缓存接口。
  */
 interface BenchCache : Cache<String, String>
+
+/**
+ * 挂起视图接口的代理基准使用的缓存接口。
+ */
+interface BenchSuspendingCache : SuspendingCache<String, String>
+
+/**
+ * 异步视图接口的代理基准使用的缓存接口。
+ */
+interface BenchAsyncCache : AsyncCache<String, String>
