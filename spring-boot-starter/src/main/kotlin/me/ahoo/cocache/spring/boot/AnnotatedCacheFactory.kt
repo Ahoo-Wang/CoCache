@@ -17,7 +17,6 @@ import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
-import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedCache
@@ -71,7 +70,7 @@ class AnnotatedCacheFactory(
     private val factory: CoCacheFactory,
     private val mapper: ObjectMapper,
 ) {
-    fun <C : ReadableCache<*, *>> create(type: Class<C>): C {
+    fun <C : Any> create(type: Class<C>): C {
         val cacheName = cacheNameOf(type)
         return withCacheName(cacheName) {
             val apiType = CacheProxies.apiTypeOf(type)
@@ -90,7 +89,8 @@ class AnnotatedCacheFactory(
     }
 
     private fun specOf(type: Class<*>, apiType: Class<*>, cacheName: String, annotation: CoCache?): Spec<*, *> {
-        val (keyType, valueType) = generics(type, apiType)
+        // 类型参数按接口继承的那个可声明类型解析：视图接口（`SuspendingStore<K, V>`）与它所属的用户 API 类型的参数相同
+        val (keyType, valueType) = generics(type, CacheProxies.declaredTypeOf(type))
         if (apiType != Cache::class.java) {
             check(annotation?.source != CoCache.Source.EXTERNAL) {
                 "@CoCache(source = EXTERNAL) is only supported on Cache interfaces, not on ${apiType.simpleName} interface[${type.name}]."
@@ -392,8 +392,8 @@ class AnnotatedCacheFactory(
          * （运行时创建缓存时失败并给出原因）。
          */
         internal fun keyValueTypesOf(type: Class<*>): Pair<ResolvableType, ResolvableType>? {
-            val apiType = runCatching { CacheProxies.apiTypeOf(type) }.getOrNull() ?: return null
-            return genericsOf(type, apiType)
+            val declaredType = runCatching { CacheProxies.declaredTypeOf(type) }.getOrNull() ?: return null
+            return genericsOf(type, declaredType)
         }
 
         private fun genericsOf(type: Class<*>, cacheType: Class<*>): Pair<ResolvableType, ResolvableType>? {

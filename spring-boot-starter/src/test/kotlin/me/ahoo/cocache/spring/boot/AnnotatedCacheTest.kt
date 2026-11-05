@@ -13,13 +13,19 @@
 
 package me.ahoo.cocache.spring.boot
 
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.verify
+import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.AsyncCacheLoader
+import me.ahoo.cocache.api.AsyncStore
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.SuspendingCache
 import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.annotation.CaffeineCache
@@ -41,6 +47,7 @@ import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
@@ -349,9 +356,67 @@ class AnnotatedCacheTest {
         fun plain(): Any = Any()
     }
 
+    /**
+     * 视图接口（RFC 0005 §4.2）：继承 `SuspendingCache`、`AsyncStore` 的接口同样注册为 bean，代理转发给缓存的视图。
+     */
+    @CoCache(ttl = 120)
+    interface SuspendingUserCache : SuspendingCache<String, User> {
+        suspend fun nameOf(id: String): String? = get(id)?.name
+    }
+
+    interface AsyncTokenStore : AsyncStore<String, String>
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [SuspendingUserCache::class, AsyncTokenStore::class])
+    class ViewConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun userLoader(): CacheLoader<String, User> = CacheLoader { User(it, "name-$it") }
+
+        @Bean
+        fun tokenCodec(): Codec<String> = StringCodec
+    }
+
     private val runner = ApplicationContextRunner()
         .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
         .withPropertyValues("cocache.enabled=true")
+
+    @Test
+    fun registersViewInterfacesAsBeans() {
+        runner.withUserConfiguration(ViewConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val users = context.getBean(SuspendingUserCache::class.java)
+            context.getBean("SuspendingUserCache").assert().isSameAs(users)
+            runBlocking {
+                users.get("1").assert().isEqualTo(User("1", "name-1"))
+                users.nameOf("2").assert().isEqualTo("name-2")
+            }
+            val runtime = context.getBean(CacheRuntime::class.java)
+            val engine = requireNotNull(runtime.cache("SuspendingUserCache"))
+            engine.assert().isInstanceOf(Cache::class.java)
+            CacheProxies.targetOf(users).assert().isSameAs(engine)
+            requireNotNull(runtime.admin("SuspendingUserCache")).layered.assert().isTrue()
+
+            val tokens = context.getBean(AsyncTokenStore::class.java)
+            tokens.put("t", "v").join()
+            tokens.get("t").join().assert().isEqualTo("v")
+            tokens.sync().assert().isInstanceOf(Store::class.java)
+            // Spring Cache 只用派生的 Cache：视图接口背后是 Store 的缓存不能用于缓存注解
+            SpringCacheSyncCheck.underivedCacheNames(runtime, context.beanFactory).assert()
+                .containsExactly("AsyncTokenStore")
+            // 视图接口的代理不是 ReadableCache：指标的后处理器经 targetOf 识别它
+            val binder = mockk<CoCacheMeterBinder>(relaxed = true)
+            val provider = mockk<ObjectProvider<CoCacheMeterBinder>> { every { ifAvailable } returns binder }
+            val processor = CoCacheMetricsAutoConfiguration.MeterBindingPostProcessor(provider)
+            processor.postProcessAfterInitialization(users, "SuspendingUserCache")
+            processor.postProcessAfterInitialization(Any(), "other")
+            verify(exactly = 1) { binder.bindNewCaches() }
+            // 不是可声明类型的接口没有可推断的类型参数
+            AnnotatedCacheFactory.keyValueTypesOf(Runnable::class.java).assert().isNull()
+        }
+    }
 
     @Test
     fun registersInterfacesAsBeans() {

@@ -18,7 +18,7 @@ package me.ahoo.cocache.api.annotation
  * 由 `@EnableCoCache(caches = [UserCache::class])` 注册为 bean。
  *
  * 接口继承的用户 API 类型决定缓存的类型（RFC 0005 §3.1）：`Cache`、`VersionedCache`、`Store`、`VersionedStore` 或 `SetStore`，
- * 恰好一个。注解只是声明的另一种写法：启动时翻译为对应的 spec，与 spec bean 走同一个引擎；
+ * 或它们的异步、挂起视图（如 `SuspendingCache`，声明的缓存与同步类型相同，bean 是这个视图），恰好一个。注解只是声明的另一种写法：启动时翻译为对应的 spec，与 spec bean 走同一个引擎；
  * `CacheSpecCustomizer` 与配置文件 `cocache.caches.[name].*` 照常生效（优先级高于注解）。
  *
  * 时长单位均为秒；[UNSET] 表示未设置（使用默认值或配置文件），[FOREVER] 表示永不过期，只能用于 [ttl]（以及 `@CaffeineCache.expireAfterAccess`，表示关闭），用于其它属性时启动失败；[refreshWindow] 为 `0` 表示关闭提前刷新。

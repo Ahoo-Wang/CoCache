@@ -24,11 +24,32 @@ suspend fun rename(id: String, user: User) {
 ```
 
 - `suspending()` is a member of every [cache type](./caches.md#types), and the views mirror the synchronous hierarchy: `Cache.suspending()` returns a `SuspendingCache`, `VersionedCache` a `SuspendingVersionedCache`, `Store` a `SuspendingStore`, `VersionedStore` a `SuspendingVersionedStore`, and `SetStore` a `SuspendingSetStore`, whose `get` returns an empty set, never `null`, like `SetStore.get`. All of them extend `SuspendingReadableCache` (`get`, `getAll`, `lookup`, `lookupAll`), and `async()` on a suspending view returns the matching async view.
-- `suspending()` returns the same object every time, so you can call it where you use it. Calling it through a `@CoCache` interface works too.
+- `suspending()` returns the same object every time, so you can call it where you use it. Calling it through a `@CoCache` interface works too, and an interface can also [extend the suspending view](#declare) directly.
 - Each method calls the cache core directly. An L2 hit returns at once: it doesn't suspend, switch dispatchers or allocate.
 - A miss, a write or a conditional read runs on CoCache's own dispatcher. It starts on your thread and, from its first suspension, continues on CoCache's executor, so your coroutine resumes from a CoCache thread, never from a Redis client thread. With `Dispatchers.Unconfined`, the default for Spring WebFlux handlers, your code after the call therefore runs on a CoCache executor thread, not on Lettuce's event loop. Context elements of your coroutine, such as a tracing context or `MDCContext`, go along; its `Job` and dispatcher don't.
 - `lookup` returns `Lookup.Unknown` when Redis fails and the read has no source, and `get` throws `CacheReadException`, as on the [synchronous API](./caches.md#unknown).
 - No thread is blocked while CoCache waits for Redis, for another instance's lease, or for your data source.
+
+## Declaring a suspending interface {#declare}
+
+Declare the cache as a suspending interface and inject it, with no `suspending()` call:
+
+```kotlin
+@CoCache
+interface UserCache : SuspendingCache<String, User> {
+    suspend fun nameOf(id: String): String? = get(id)?.name
+}
+
+@EnableCoCache(caches = [UserCache::class])
+@SpringBootApplication
+class App
+
+suspend fun find(id: String) = userCache.get(id)
+```
+
+- Every suspending view can be declared: `SuspendingCache`, `SuspendingVersionedCache`, `SuspendingStore`, `SuspendingVersionedStore` and `SuspendingSetStore`. Each declares the same cache as its synchronous type, so `@CoCache`, the loader beans and the configuration layers work as for a `Cache` interface ([interface caches](./caches.md#interface)). Without the starter, `CoCacheFactory.create(UserCache::class.java, spec)` returns the same proxy; the spec is the synchronous type's (`cacheSpec` for a `SuspendingCache`).
+- The proxy hands each call to the cache's suspending view as it is, so it takes the same path as `suspending()`: an L2 hit returns without suspending, exceptions arrive unwrapped (a checked exception thrown before the call suspends too), and [re-entry](#reentry) fails fast.
+- `async()` returns the cache's async view. Spring Cache works with the cache by name, so `@Cacheable` on a cache declared this way uses the `Cache` behind it.
 
 ## Data sources {#loader}
 

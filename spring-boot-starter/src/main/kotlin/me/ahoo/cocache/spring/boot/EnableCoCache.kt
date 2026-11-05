@@ -13,7 +13,6 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.join.JoinView
 import org.springframework.context.annotation.Import
 import kotlin.reflect.KClass
@@ -21,8 +20,9 @@ import kotlin.reflect.KClass
 /**
  * 注册接口式声明的缓存：`@EnableCoCache(caches = [UserCache::class])`（RFC 0003 §4.12）。
  *
- * 每个接口继承五种用户 API 类型之一（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`），注册为一个 bean：
- * bean 名为缓存名（默认接口简单类名），类型为接口本身。运行时与后端由 CoCache 自动配置提供（`cocache.enabled`，默认启用）。
+ * 每个接口继承五种用户 API 类型之一（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`），或它们的异步、挂起视图之一
+ * （如 `AsyncStore`、`SuspendingCache`，代理转发给缓存的视图），注册为一个 bean：bean 名为缓存名（默认接口简单类名），类型为接口本身。
+ * 不是这十五种类型之一的接口在创建缓存时失败。运行时与后端由 CoCache 自动配置提供（`cocache.enabled`，默认启用）。
  *
  * [joinCaches] 列出组合视图接口（继承 `JoinView` 或 `JoinCache`，用 `@JoinCacheable` 声明），bean 名为组合视图名（默认接口简单类名），
  * 按名称引用 [caches] 中的接口式缓存或 spec 声明的缓存。
@@ -32,6 +32,6 @@ import kotlin.reflect.KClass
 @MustBeDocumented
 @Import(AnnotatedCacheRegistrar::class, JoinCacheRegistrar::class)
 annotation class EnableCoCache(
-    val caches: Array<KClass<out ReadableCache<*, *>>> = [],
+    val caches: Array<KClass<*>> = [],
     val joinCaches: Array<KClass<out JoinView<*, *, *, *>>> = [],
 )

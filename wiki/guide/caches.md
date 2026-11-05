@@ -61,7 +61,16 @@ interface PolicySnapshots : Store<String, PolicySnapshot>
 class App
 ```
 
-The interface must extend exactly one of `Cache<K, V>`, `VersionedCache<K, V>`, `Store<K, V>`, `VersionedStore<K, V>` or `SetStore<K, E>`, with concrete type arguments. That type decides what kind of cache is created. `@CoCache` itself is optional: an interface listed in `@EnableCoCache` without it gets every default. Annotations are read from the interface itself, not from meta-annotations or super-interfaces.
+The interface must extend exactly one of `Cache<K, V>`, `VersionedCache<K, V>`, `Store<K, V>`, `VersionedStore<K, V>` or `SetStore<K, E>`, or one of their async or suspending views (`AsyncCache`, `SuspendingCache`, `AsyncStore`, `SuspendingStore` and so on), with concrete type arguments. That type decides what kind of cache is created. A view declares the same kind of cache as its synchronous type (a `SuspendingStore` is a `Store`), and the bean is the view:
+
+```kotlin
+@CoCache
+interface UserCache : SuspendingCache<String, User>
+
+suspend fun profile(id: String): User? = userCache.get(id)
+```
+
+Calls through a suspending interface go straight to the cache's suspending view, and an `Async*` interface returns futures ([coroutines](./coroutines.md#declare), [async](./async.md#declare)). `@CoCache` itself is optional: an interface listed in `@EnableCoCache` without it gets every default. Annotations are read from the interface itself, not from meta-annotations or super-interfaces.
 
 The user API types are not meant to be implemented by your own classes, except to delegate to a cache CoCache created: new 8.x operations are added as new capability types or as default methods, which hand-written implementations may not anticipate. Interfaces that extend them, like the ones above, are fine: the proxy implements them.
 
@@ -109,7 +118,7 @@ interface UserCache : Cache<String, User> {
 }
 ```
 
-An abstract method must match a method of the type the interface extends, by name and parameters, otherwise startup fails. Exceptions from the cache reach you unwrapped.
+An abstract method must match a method of the type the interface extends, by name and parameters, otherwise startup fails. In a `Suspending*` interface a default method can be `suspend` and call the interface's suspending methods. Exceptions from the cache reach you unwrapped.
 
 ## Spec beans {#spec-bean}
 
@@ -330,7 +339,7 @@ fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): RevokedTokens 
     factory.create(RevokedTokens::class.java, storeSpec<String, Instant>("revoked-tokens") { codec = jacksonCodec<Instant>(mapper) })
 ```
 
-- `create(spec)` returns the type matching the spec (`storeSpec` gives a `Store`, and so on). `create(type, spec)` returns a proxy for your interface. The interface must extend the type the spec declares, and every abstract method it redeclares must match one of that type's methods. A class is rejected: the user API types are not for hand-written implementations. Create the cache with `create(spec)` and delegate to it instead. These checks run before the cache is created.
+- `create(spec)` returns the type matching the spec (`storeSpec` gives a `Store`, and so on). `create(type, spec)` returns a proxy for your interface. The interface must extend the type the spec declares, or that type's async or suspending view (`SuspendingStore` for a `storeSpec`), and every abstract method it redeclares must match one of that type's methods. A class is rejected: the user API types are not for hand-written implementations. Create the cache with `create(spec)` and delegate to it instead. These checks run before the cache is created.
 - **Locks.** A library that depends on a field or on its storage layout locks it on creation: `factory.create(spec) { lock(PolicyField.READ_TIMEOUT); lockLayout(LayoutField.KEY_PREFIX) }`. Global layers then skip it, and a `cocache.caches.[name]` entry must `unlock` it explicitly. See [Locking fields](./configuration.md#locks).
 - **Unlayered caches.** A cache created directly with `CacheRuntime.create` skips every configuration layer: customizers, `cocache.defaults`, `cocache.overrides` and `cocache.caches.[name]` don't apply to it, and it can't be locked. The start log ends its line with `unlayered: …`, the endpoint reports `layered: false`. A `cocache.caches.[name]` entry for it logs a warning when the cache is created and is listed under the endpoint's `ignoredConfiguration`. It doesn't fail startup, because overrides are often written during an incident. Libraries should create their caches through `CoCacheFactory`.
 - Without Spring, `CoCacheFactory(runtime)` gives you the interface proxies with no layers. Plain `runtime.create(spec)` remains fine for an application that has no configuration layers.

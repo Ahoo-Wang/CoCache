@@ -5,6 +5,19 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布 {#unreleased}
+
+### 新增：把缓存声明为它的异步或挂起视图 {#declared-views}
+
+- `@CoCache` 接口、以及传给 `CoCacheFactory.create(type, spec)` 的类型，可以继承异步或挂起视图，而不是同步类型：`interface UserCache : SuspendingCache<String, User>`。十种视图都可以声明（`AsyncCache` … `AsyncSetStore`、`SuspendingCache` … `SuspendingSetStore`）。它们声明的缓存与各自的同步类型相同，所以 `SuspendingStore` 接口对应 `storeSpec`（见[接口式声明](./caches.md#interface)、[协程](./coroutines.md#declare)、[异步](./async.md#declare)）。
+- 代理把每次调用交给缓存的 `async()` 或 `suspending()` 视图，挂起调用的 continuation 原样传过去：L2 命中不挂起、直接返回，重入快速失败，异常原样到达，包括挂起调用在挂起之前抛出的受检异常。
+- starter 把这些接口注册为接口类型的 bean，并登记原生镜像提示。Spring Cache 仍按名称使用缓存，所以声明为 `SuspendingCache` 的缓存上的 `@Cacheable` 用的是它背后的 `Cache`。
+
+| 之前 | 现在 | 说明 |
+|------|------|------|
+| `CoCacheFactory.create(type: Class<C>, spec)`，`C : ReadableCache<*, *>` | `C : Any` | 源码兼容。针对 8.0.0-alpha.1 编译的代码需要重新编译：擦除后的返回类型变了。 |
+| `@EnableCoCache(caches: Array<KClass<out ReadableCache<*, *>>>)` | `Array<KClass<*>>` | 源码兼容。不是十五种可声明类型之一的类型照旧在创建缓存时失败。 |
+
 ## v8.0.0-alpha.1（预发布） {#v8-0-0-alpha-1}
 
 **模块组：** `me.ahoo.cocache` · 8.0.0 的第一个预发布版本，8.0.0 是包含破坏性变更的大版本（[RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)）。8.x 不与 6.x 同时运行在一个 Redis 上：先停 6.x，再启动 8.x（见[从 6.x 升级](./upgrade.md)）。6.x 的修复继续在 `6.x` 分支上进行。

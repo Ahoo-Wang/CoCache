@@ -61,7 +61,16 @@ interface PolicySnapshots : Store<String, PolicySnapshot>
 class App
 ```
 
-接口必须恰好继承 `Cache<K, V>`、`VersionedCache<K, V>`、`Store<K, V>`、`VersionedStore<K, V>`、`SetStore<K, E>` 之一，并带具体的类型参数；继承哪一个决定创建哪种缓存。`@CoCache` 本身可以省略：列在 `@EnableCoCache` 中却没有标注它的接口使用全部默认值。注解只从接口本身读取，不读元注解，也不读父接口上的注解。
+接口必须恰好继承 `Cache<K, V>`、`VersionedCache<K, V>`、`Store<K, V>`、`VersionedStore<K, V>`、`SetStore<K, E>` 之一，或它们的异步、挂起视图之一（`AsyncCache`、`SuspendingCache`、`AsyncStore`、`SuspendingStore` 等），并带具体的类型参数；继承哪一个决定创建哪种缓存。视图声明的缓存与它的同步类型相同（`SuspendingStore` 就是 `Store`），bean 是这个视图：
+
+```kotlin
+@CoCache
+interface UserCache : SuspendingCache<String, User>
+
+suspend fun profile(id: String): User? = userCache.get(id)
+```
+
+经挂起接口的调用直接交给缓存的挂起视图，`Async*` 接口返回 future（见[协程](./coroutines.md#declare)、[异步](./async.md#declare)）。`@CoCache` 本身可以省略：列在 `@EnableCoCache` 中却没有标注它的接口使用全部默认值。注解只从接口本身读取，不读元注解，也不读父接口上的注解。
 
 用户 API 的类型不供你的类实现，委托给 CoCache 创建的缓存除外：8.x 以新的能力类型或默认方法新增操作，手写的实现可能没有预料到它们。像上面这样继承它们的接口没有问题，由代理实现。
 
@@ -109,7 +118,7 @@ interface UserCache : Cache<String, User> {
 }
 ```
 
-抽象方法必须在名称与参数上对应它所继承的类型的某个方法，否则启动失败。缓存抛出的异常原样到达调用方，不会被包装。
+抽象方法必须在名称与参数上对应它所继承的类型的某个方法，否则启动失败。`Suspending*` 接口中的 default 方法可以是 `suspend` 的，调用接口的挂起方法。缓存抛出的异常原样到达调用方，不会被包装。
 
 ## spec bean {#spec-bean}
 
@@ -330,7 +339,7 @@ fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): RevokedTokens 
     factory.create(RevokedTokens::class.java, storeSpec<String, Instant>("revoked-tokens") { codec = jacksonCodec<Instant>(mapper) })
 ```
 
-- `create(spec)` 返回与 spec 对应的类型（`storeSpec` 得到 `Store`，以此类推）；`create(type, spec)` 返回实现你的接口的代理。接口必须继承 spec 声明的那个类型，接口中重新声明的抽象方法都要对应这个类型的某个方法。类会被拒绝：用户 API 类型不供手写实现，应当用 `create(spec)` 创建缓存再委托给它。这些校验在创建缓存之前完成。
+- `create(spec)` 返回与 spec 对应的类型（`storeSpec` 得到 `Store`，以此类推）；`create(type, spec)` 返回实现你的接口的代理。接口必须继承 spec 声明的那个类型，或这个类型的异步、挂起视图（`storeSpec` 对应 `SuspendingStore`），接口中重新声明的抽象方法都要对应这个类型的某个方法。类会被拒绝：用户 API 类型不供手写实现，应当用 `create(spec)` 创建缓存再委托给它。这些校验在创建缓存之前完成。
 - **锁定。** 依赖某个字段或存储布局的库在创建时锁定它：`factory.create(spec) { lock(PolicyField.READ_TIMEOUT); lockLayout(LayoutField.KEY_PREFIX) }`。全局层于是跳过它，`cocache.caches.[name]` 的条目必须显式 `unlock` 它。见[锁定字段](./configuration.md#locks)。
 - **未分层的缓存。** 直接用 `CacheRuntime.create` 创建的缓存跳过所有配置层：定制器、`cocache.defaults`、`cocache.overrides` 与 `cocache.caches.[name]` 对它都不生效，也无法锁定。启动日志在这一行末尾标注 `unlayered: …`，端点报告 `layered: false`。指向它的 `cocache.caches.[name]` 在缓存创建时告警，并列在端点的 `ignoredConfiguration` 中；它不让启动失败，因为覆盖值常在事故中写下。库应经 `CoCacheFactory` 创建缓存。
 - 不用 Spring 时，`CoCacheFactory(runtime)` 提供接口代理，不叠加任何层。没有配置层的应用直接用 `runtime.create(spec)` 也没有问题。

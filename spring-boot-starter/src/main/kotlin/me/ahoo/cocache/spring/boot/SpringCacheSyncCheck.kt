@@ -16,6 +16,7 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.proxy.CacheProxies
 import org.apache.commons.logging.LogFactory
 import org.springframework.aop.framework.AopProxyUtils
 import org.springframework.beans.factory.SmartInitializingSingleton
@@ -233,7 +234,8 @@ internal class SpringCacheSyncCheck(
             for (beanName in beanFactory.beanDefinitionNames) {
                 val definition = beanFactory.getBeanDefinition(beanName)
                 CacheBeanDefinitions.cacheInterfaceOf(definition)?.let { type ->
-                    if (!Cache::class.java.isAssignableFrom(type)) {
+                    // 视图接口（如 `SuspendingCache`）背后的缓存仍是 `Cache`
+                    if (CacheProxies.apiTypeOf(type) != Cache::class.java) {
                         names += AnnotatedCacheFactory.cacheNameOf(type)
                     }
                 }

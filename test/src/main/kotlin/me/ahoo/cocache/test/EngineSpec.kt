@@ -13,6 +13,8 @@
 
 package me.ahoo.cocache.test
 
+import me.ahoo.cocache.api.AsyncCache
+import me.ahoo.cocache.api.AsyncStore
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
@@ -25,6 +27,8 @@ import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.SuspendingCache
+import me.ahoo.cocache.api.SuspendingStore
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Digest
@@ -39,6 +43,7 @@ import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.RetryPolicy
@@ -1444,6 +1449,53 @@ abstract class EngineSpec {
         nodeB.store().put("k", "v")
         awaitCondition("the put is visible") { store["k"] == "v" }
     }
+
+    /**
+     * 声明视图接口（RFC 0005 §4.2）：继承 `SuspendingCache` 与 `AsyncCache` 的接口经 `CoCacheFactory` 创建，代理转发给引擎的挂起与
+     * 异步视图；跨节点的回源、写入与失效同直接经视图访问。
+     */
+    @Test
+    fun declaredCacheViewsForwardToTheEngine() {
+        val suspendingA = CoCacheFactory(nodeA).create(SuspendingStringCache::class.java, spec())
+        val asyncB = CoCacheFactory(nodeB).create(AsyncStringCache::class.java, spec())
+        database["k"] = "v"
+        Suspending.await { suspendingA.get("k") }.assert().isEqualTo("v")
+        asyncB.get("k").join().assert().isEqualTo("v")
+        loads.get().assert().isEqualTo(1)
+        Suspending.await { suspendingA.put("k", "v2") }
+        awaitCondition("the put reaches nodeB") { asyncB.get("k").join() == "v2" }
+        database["k"] = "v3"
+        asyncB.invalidate("k").join()
+        awaitCondition("the invalidation reaches nodeA") { Suspending.await { suspendingA.get("k") } == "v3" }
+        asyncB.sync().assert().isSameAs(requireNotNull(nodeB.cache(cacheName)))
+        suspendingA.async().assert().isSameAs(requireNotNull(nodeA.cache(cacheName)).async())
+    }
+
+    /**
+     * 声明视图接口：继承 `SuspendingStore` 与 `AsyncStore` 的接口转发给权威副本的视图。
+     */
+    @Test
+    fun declaredStoreViewsForwardToTheEngine() {
+        assumeDeclared(L1Capability.CONDITIONAL)
+        val suspendingA = CoCacheFactory(nodeA).create(SuspendingStringStore::class.java, storeSpec())
+        val asyncB = CoCacheFactory(nodeB).create(AsyncStringStore::class.java, storeSpec())
+        Suspending.await { suspendingA.put("k", "v") }
+        asyncB.get("k").join().assert().isEqualTo("v")
+        asyncB.delete("k").join()
+        awaitCondition("the delete reaches nodeA") { Suspending.await { suspendingA.get("k") } == null }
+        Suspending.await { suspendingA.lookup("k") }.assert().isInstanceOf(Lookup.Absent::class.java)
+    }
+
+    /**
+     * 声明视图接口的用例所用的接口。
+     */
+    interface SuspendingStringCache : SuspendingCache<String, String>
+
+    interface AsyncStringCache : AsyncCache<String, String>
+
+    interface SuspendingStringStore : SuspendingStore<String, String>
+
+    interface AsyncStringStore : AsyncStore<String, String>
 
     /**
      * 写入失败按客户端能观察到的事实分类（RFC 0005 §4.3、§4.6）：存储在写出之前拒绝的命令（`L1RejectedException`）确定未执行，
