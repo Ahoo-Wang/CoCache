@@ -151,7 +151,7 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 | 存储 key | `{keyPrefix}{namespace}:{encodedKey}` | `cocache:UserCache:42` |
 | 频道 | `{keyPrefix}inv:{namespace}` | `cocache:inv:UserCache` |
 
-`keyPrefix` 默认 `cocache:`，可以为空；`namespace` 默认等于缓存名，`encodedKey` 是 key 的 `toString()` 或 `keyExpression` 的结果。CoCache 的内部 key 放在 `{keyPrefix}!` 之下，任何命名空间都产生不了这个位置。见[存储 key](../guide/caches.md#storage-keys)。不同大版本的实例不共用 key：见[滚动发布](#rolling-deploys)。
+`keyPrefix` 默认 `cocache:`，可以为空；`namespace` 默认等于缓存名，`encodedKey` 是 key 的 `toString()` 或 `keyExpression` 的结果。CoCache 的内部 key 放在 `{keyPrefix}!` 之下，任何命名空间都产生不了这个位置；只有原子广播探测不论前缀都用固定的 key `cocache:!probe:{a}`。见[存储 key](../guide/caches.md#storage-keys)。不同大版本的实例不共用 key：见[滚动发布](#rolling-deploys)。
 
 多个应用可以共用一个 Redis：
 

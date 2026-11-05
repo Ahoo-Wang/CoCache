@@ -129,7 +129,7 @@ The wire format is frozen within a major version. The normative definition is `R
 
 | Part | Format |
 |------|--------|
-| Storage key | `{keyPrefix}{namespace}:{encodedKey}`, default `cocache:{cacheName}:{key.toString()}`. The namespace matches `[A-Za-z0-9._-]+`. Internal keys live under `{keyPrefix}!`. |
+| Storage key | `{keyPrefix}{namespace}:{encodedKey}`, default `cocache:{cacheName}:{key.toString()}`. The namespace matches `[A-Za-z0-9._-]+`. Internal keys live under `{keyPrefix}!`, except the fixed probe key `cocache:!probe:{a}`. |
 | Value, negative entry, lease, eviction marker | Redis String: a 36-byte core header, the segments its flags declare, then the codec's bytes |
 | Set (`SetStore`) | Redis Hash: field `!f` holds the format version (`"2"`), each member is a field `+{member bytes}` with an empty value. Field `!m` is a must-understand bitmap (absent means 0); other `!` fields are reserved and readers ignore them. |
 | Expiry | `PEXPIRE` / `PTTL` in milliseconds, reset explicitly on every state change |

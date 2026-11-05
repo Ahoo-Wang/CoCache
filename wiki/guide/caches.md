@@ -211,7 +211,7 @@ Every key in Redis is:
 | `namespace` | the cache name | `@CoCache(namespace)`, the spec's `namespace` |
 | `encodedKey` | `key.toString()` | `@CoCache(keyExpression)`, the spec's `keyEncoder` |
 
-- CoCache's internal keys live under `{keyPrefix}!`, which no namespace can produce: `!` is outside the namespace charset.
+- CoCache's internal keys live under `{keyPrefix}!`, which no namespace can produce: `!` is outside the namespace charset. The one exception is the atomic-broadcast probe, which uses the fixed key `cocache:!probe:{a}` (and channel `cocache:!probe:{b}`) whatever the prefix.
 - A namespace may contain only letters, digits, `.`, `_` and `-` (`[A-Za-z0-9._-]+`). A namespace with `:` fails at creation with a message that shows how to move the part before the `:` into `keyPrefix`: `namespace = "app:user"` becomes `keyPrefix = "cocache:app:"` and `namespace = "user"`. Without `:`, one namespace's keys can never fall inside another namespace's range.
 - Cache names must be unique within an application, and so must prefix-and-namespace pairs. Two caches with the same namespace and different prefixes are fine. A duplicate fails startup.
 - Invalidations travel on the channel `{keyPrefix}inv:{namespace}`, so applications with different prefixes don't receive each other's messages.

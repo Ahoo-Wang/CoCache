@@ -151,7 +151,7 @@ Keys under an old prefix or namespace expire with their `ttl`. Delete them earli
 | Storage key | `{keyPrefix}{namespace}:{encodedKey}` | `cocache:UserCache:42` |
 | Channel | `{keyPrefix}inv:{namespace}` | `cocache:inv:UserCache` |
 
-`keyPrefix` defaults to `cocache:` and may be empty, `namespace` defaults to the cache name, and `encodedKey` is the key's `toString()` or its `keyExpression` result. CoCache's internal keys live under `{keyPrefix}!`, which no namespace can produce. See [storage keys](../guide/caches.md#storage-keys). Instances of different major versions don't share keys: see [rolling deploys](#rolling-deploys).
+`keyPrefix` defaults to `cocache:` and may be empty, `namespace` defaults to the cache name, and `encodedKey` is the key's `toString()` or its `keyExpression` result. CoCache's internal keys live under `{keyPrefix}!`, which no namespace can produce; only the atomic-broadcast probe uses a fixed key, `cocache:!probe:{a}`, whatever the prefix. See [storage keys](../guide/caches.md#storage-keys). Instances of different major versions don't share keys: see [rolling deploys](#rolling-deploys).
 
 Several applications can share one Redis:
 

@@ -831,7 +831,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 **下游**（第二轮、第三轮读了两个下游的源码）：
 
 - **CoSec**（尚未发布正式版，没有兼容负担，直接按 8.x 适配；维护者，2026-11-03）：
-  - **分型**：策略快照、控制面 8 个缓存、两个撤销表（`unknownRead = ABSENT`）、三个影子缓存（带显式 `ttl`）→ `Store`；`MembershipCache` → `Cache` + `externallySourced()`（带调用级 loader，`readFailure = THROW` 照常作用，S11）；迁移工具中的 `GlobalPolicyIndexCache` → `SetStore`，或随 7.x 转换工具一起删除。
+  - **分型**：策略快照、控制面 8 个缓存、两个撤销表（`unknownRead = ABSENT`）、三个影子缓存（带显式 `ttl`）→ `Store`；`MembershipCache` → `Cache` + `externallySourced()`（带调用级 loader，`readFailure = THROW` 照常作用，S11）；迁移工具中的 `GlobalPolicyIndexCache` 不能改为 `SetStore`：它要读的是 6.x 写入的内容，`SetStore` 把格式 1 当作读不懂而拒绝。迁移工具自己读格式 1，或随转换工具一起删除（CoSec 试用采用前者）。
   - **装配**：`CoSecCacheAssembler` → `CoCacheFactory`；`pinnedPolicy` → `lock` + `constrain`，锁定 namespace、keyPrefix、keyEncoder、codec 与“拒绝 loader”；`expiringFailClosed` 写作 `constrain(ttl) { it.finiteOr(1.minutes) }`（S12）。控制面缓存与影子缓存现在经 `runtime.create` 直接创建，改经 `CoCacheFactory`，否则不受分层配置影响（S20）。
   - **布局**（D5、S4）：CoSec 的全部 spec 用 `keyPrefix("")`，把前缀放进 namespace，namespace 因此含 `:`，在 8.x 中启动失败。前缀（连同其中的 `:`）移到 `keyPrefix`、namespace 只留不含 `:` 的部分之后，存储 key 的字符串不变，按 `~cosec:*` 写的 ACL 照常覆盖；频道变为 `{keyPrefix}inv:{namespace}`。`PolicySnapshotCache.snapshotKeyOf` 按 `"$namespace:"` 反解存储 key，v8 中 `InvalidationListener` 收到编码 key，须改写，否则每一条策略变更通知都被静默丢弃，只剩 `revalidate-interval` 兜底。
   - **读取**：`RedisSnapshotDocumentStore` 的 `when (lookup)` 因 `Unknown` 编译失败，可以发现；频道订阅改为新 SPI；“先淘汰本地副本，再通知外部监听者”成为契约。撤销表声明 `unknownRead = ABSENT`，运维可经 `caches.[name]` 收紧为 `THROW`（S16）；按缓存的读超时把 Redis 卡顿时每个请求多等的时间压到它自己选的界限（D6）。

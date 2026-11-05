@@ -138,9 +138,9 @@ Creating a cache now publishes one empty frame to its channel, so a missing chan
 
 ## Keys and values in Redis {#wire-format}
 
-- Storage keys keep the shape `{keyPrefix}{namespace}:{encodedKey}`. Internal keys move under `{keyPrefix}!`.
+- Storage keys keep the shape `{keyPrefix}{namespace}:{encodedKey}`. Internal keys move under `{keyPrefix}!`, except the atomic-broadcast probe, which uses the fixed key `cocache:!probe:{a}` whatever the prefix.
 - The invalidation channel is `{keyPrefix}inv:{namespace}` (6.x: `cocache:inv:{namespace}`), so applications with different prefixes no longer hear each other.
-- A namespace must match `[A-Za-z0-9._-]+`. One with `:` fails at creation, and the message shows how to move the part before the `:` into `keyPrefix`; the storage keys stay the same strings.
+- A namespace must match `[A-Za-z0-9._-]+`. One with `:` fails at creation, and the message shows how to move everything up to the last `:` into `keyPrefix`; the storage keys stay the same strings. Namespaces that had different prefixes end up with different key prefixes, and each key prefix needs its own channel pattern `&{keyPrefix}inv:*` ([ACL](#acl)).
 - Every value is wire format 2. A `Store` value carries a writer id and a SHA-256 digest (60 more bytes), a `VersionedStore` value a writer id and its version ([sizing](../operations/index.md#sizing-redis)).
 
 ## Backend SPI and TCK {#spi}
@@ -168,7 +168,7 @@ What the two known downstream projects change to adopt 8.0. Neither carries data
 
 - **Types.** The policy snapshot, the control-plane caches, the two revocation tables (with `unknownRead = ABSENT`) and the shadow caches (with an explicit `ttl`) become [`Store`](./store.md)s. `MembershipCache` becomes a `Cache` with `externallySourced()`; its per-call loader keeps `read-failure: throw` in force.
 - **Assembly.** Create every cache through [`CoCacheFactory`](./caches.md#factory), replacing `CoSecCacheAssembler`; caches made with `runtime.create` ignore the configuration layers. `pinnedPolicy` becomes [`lock` and `constrain`](./configuration.md#locks), and `expiringFailClosed` becomes a constraint that keeps `ttl` finite.
-- **Layout.** Move the prefix out of the namespace into `keyPrefix`: a namespace with `:` fails at creation. The storage keys stay the same strings and `~cosec:*` ACLs still match, but the channel becomes `{keyPrefix}inv:{namespace}`.
+- **Layout.** Move the prefix out of the namespace into `keyPrefix`: a namespace with `:` fails at creation. The storage keys stay the same strings and `~cosec:*` ACLs still match, but the channel becomes `{keyPrefix}inv:{namespace}`: allow `&{keyPrefix}inv:*` for every key prefix the split produces.
 - **Invalidation listeners.** `InvalidationListener` receives encoded keys. `PolicySnapshotCache.snapshotKeyOf`, which strips `"$namespace:"` from storage keys, must take the encoded key as is; otherwise every policy-change notification is dropped without an error.
 - **Reads.** `when (lookup)` must handle `Lookup.Unknown` (a compile error points at it). Subscribe through the `InvalidationChannel` SPI.
 - **Digests.** Revision keys, the revision index, `parent` and `base.digest` / `checkedWith` hold a SHA-256 `Digest` with its algorithm (`SHA-256:…`); `getIfChanged` is used as before.
