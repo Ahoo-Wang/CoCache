@@ -5,6 +5,24 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## v8.0.0-alpha.3（预发布） {#v8-0-0-alpha-3}
+
+**模块组：** `me.ahoo.cocache` · 8.0.0 的第三个预发布版本。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。
+
+### 性能：声明的挂起接口 {#suspending-proxy}
+
+- 经声明的挂起接口（`interface UserCache : SuspendingCache<String, User>`）的 L2 命中，比直接调用 `suspending()` 只多约 2 ns，此前多约 10 ns，吞吐约为 alpha.2 的两倍。代理改经方法句柄调用视图的读取（`get`、`getAll`、`lookup`、`lookupAll`、`getVersioned`），视图的命中路径不再占用调用方的 JIT 内联预算。行为不变：命中不挂起，异常原样到达。
+
+### 新增：`CacheAdmin` 与端点给出缓存的 keyspace {#admin-keyspace}
+
+- `CacheAdmin.keyspace` 给出缓存的 key 前缀与命名空间，运维与集成方不必重复配置就能拼出存储 key（`{keyPrefix}{namespace}:{encodedKey}`）与 ACL 模式。`GET /actuator/cocache/{name}` 以 `keyPrefix` 与 `namespace` 输出它们（[可观测性](../operations/observability.md)）。
+
+### 文档：升级说明的更正 {#upgrade-corrections}
+
+- 切换时，所有 `VersionedCache` 的旧 key 也要删：按版本的写入（`putIfNewer`、`invalidateIfNewer`、`evict`）遇到 6.x 的值以 `CacheWriteException` 拒绝，而不是覆盖它（[切换](./upgrade.md#steps)）。
+- 含多段 `:` 的命名空间把最后一个 `:` 及之前的部分移到 `keyPrefix`，由此得到的每个 key 前缀都要一条 `&{keyPrefix}inv:*` 频道模式（[Redis ACL](./upgrade.md#acl)）。
+- 内部 key 在 `{keyPrefix}!` 之下，原子广播探测固定的 key `cocache:!probe:{a}` 除外。
+
 ## v8.0.0-alpha.2（预发布） {#v8-0-0-alpha-2}
 
 **模块组：** `me.ahoo.cocache` · 8.0.0 的第二个预发布版本。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。

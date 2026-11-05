@@ -5,6 +5,24 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## v8.0.0-alpha.3 (Pre-release) {#v8-0-0-alpha-3}
+
+**Module Group:** `me.ahoo.cocache` · Third pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
+
+### Performance: declared suspending interfaces {#suspending-proxy}
+
+- An L2 hit through a declared suspending interface (`interface UserCache : SuspendingCache<String, User>`) costs about 2 ns more than a hit on `suspending()` directly, down from about 10 ns: roughly twice the throughput of alpha.2. The proxy calls the view's reads (`get`, `getAll`, `lookup`, `lookupAll`, `getVersioned`) through method handles, so the view's hit path no longer counts against the caller's JIT inlining budget. Behavior is unchanged: a hit returns without suspending, and exceptions arrive unwrapped.
+
+### New: a cache's keyspace in `CacheAdmin` and the endpoint {#admin-keyspace}
+
+- `CacheAdmin.keyspace` returns the cache's key prefix and namespace, so operators and integrations can build storage keys (`{keyPrefix}{namespace}:{encodedKey}`) and ACL patterns without repeating the configuration. `GET /actuator/cocache/{name}` reports them as `keyPrefix` and `namespace` ([Observability](../operations/observability.md)).
+
+### Docs: upgrade guide corrections {#upgrade-corrections}
+
+- At the cutover, delete the old keys of every `VersionedCache` too: a versioned write (`putIfNewer`, `invalidateIfNewer`, `evict`) refuses a 6.x value with `CacheWriteException` instead of overwriting it ([the cutover](./upgrade.md#steps)).
+- A namespace with several `:` segments moves everything up to the last `:` into `keyPrefix`, and each key prefix this produces needs its own `&{keyPrefix}inv:*` channel pattern ([Redis ACL](./upgrade.md#acl)).
+- Internal keys live under `{keyPrefix}!`, except the atomic-broadcast probe's fixed key `cocache:!probe:{a}`.
+
 ## v8.0.0-alpha.2 (Pre-release) {#v8-0-0-alpha-2}
 
 **Module Group:** `me.ahoo.cocache` · Second pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
