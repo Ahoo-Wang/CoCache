@@ -40,6 +40,7 @@ import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.Token
+import me.ahoo.cocache.redis.foreign.ForeignContent
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
@@ -248,6 +249,40 @@ class RedisL1StoreTest {
             store.read(s, null, null, null).assert().isEqualTo(L1Read.Miss(false))
             sets.addMembers(foreign, listOf("m".toByteArray()), null, frame(foreign)).assert().isEqualTo(0)
             sets.removeMembers(foreign, listOf("m".toByteArray()), null, frame(foreign)).assert().isEqualTo(0)
+        }
+    }
+
+    /**
+     * 移除最后一个成员即删除集合，不论它有几个元数据字段（§4.2）：带显式 `!m = '0'` 或其它预留的 `!` 字段的集合移空之后同样删除，
+     * 否则留下只有元数据的 Hash，永不过期时（`PERSIST`）再也不会消失。还有成员时照常保留并重设到期时间；字段数超过
+     * [RedisScripts.MAX_SET_METADATA_FIELDS] 的集合一定还有成员，移除一部分之后保留。
+     */
+    @Test
+    fun removingTheLastMemberDeletesTheSetWhateverItsMetadata() {
+        val sets = requireNotNull(RedisTestSupport.backend().closing().l1Store(namespace).sets())
+        run {
+            ForeignContent.hash(key("explicit-mask"), mapOf("!f" to "2", "!m" to "0", "+a" to ""))
+            sets.removeMembers(key("explicit-mask"), listOf("a".toByteArray()), null, frame()).assert().isNull()
+            ForeignContent.exists(key("explicit-mask")).assert()
+                .withFailMessage { "a set with an explicit !m and no members left must be deleted, not kept without an expiry" }
+                .isFalse()
+
+            val reserved = key("reserved")
+            val metadata = mapOf("!f" to "2", "!m" to "0", "!x" to "ignored")
+            ForeignContent.hash(reserved, metadata + mapOf("+a" to "", "+b" to ""))
+            sets.removeMembers(reserved, listOf("a".toByteArray()), Duration.ofMinutes(1), frame()).assert().isNull()
+            ForeignContent.fields(reserved).assert().isEqualTo(metadata + mapOf("+b" to ""))
+            ForeignContent.pttl(reserved).assert().isGreaterThan(0L)
+            sets.removeMembers(reserved, listOf("b".toByteArray()), null, frame()).assert().isNull()
+            ForeignContent.exists(reserved).assert().isFalse()
+
+            val large = key("large")
+            val members = (1..RedisScripts.MAX_SET_METADATA_FIELDS + 4).map { "m$it" }
+            ForeignContent.hash(large, mapOf("!f" to "2", "!m" to "0") + members.associate { "+$it" to "" })
+            sets.removeMembers(large, listOf("m1".toByteArray()), null, frame()).assert().isNull()
+            ForeignContent.fields(large).keys.count { it.startsWith("+") }.assert().isEqualTo(members.size - 1)
+            sets.removeMembers(large, members.drop(1).map { it.toByteArray() }, null, frame()).assert().isNull()
+            ForeignContent.exists(large).assert().isFalse()
         }
     }
 

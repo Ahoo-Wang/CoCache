@@ -11,6 +11,7 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：`Cache` 的挂起视图的 `put(key, value, ttl)` 与 `putAll(entries, ttl)` 不受按调用寿命的上限（`cocache.overrides.cache.ttl`）约束。现在与同步、异步视图一样钳制，并计入 `cocache.ttl.clamped`。
 - 修复：外部来源的 `Cache` 上不带 loader 的 `getAll`，对其它实例持有 lease、更高格式或失效重试中的 key，本地副本以 `localMaxAge` 限龄。现在与 `get` 一样以 `degradedLocalMaxAge` 限龄，并计入 `cocache.degraded.fills`。
 - 修复：派生缓存读到 `Store` 写入（带摘要段）、解码失败的值时计入 `cocache.reclaims`，但这类值从不回收。现在只计入 `cocache.type.mismatch`。
+- 修复：Redis 后端上，集合除 `!f` 之外还带元数据字段（显式的 `!m = "0"`，或预留的 `!` 字段）时，移除最后一个成员之后 key 作为空的 Hash 留下，没有 TTL 时永不过期。现在不剩成员即删除集合。
 
 ## v8.0.0-alpha.3（预发布） {#v8-0-0-alpha-3}
 
