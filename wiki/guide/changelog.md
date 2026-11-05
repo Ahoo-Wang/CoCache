@@ -7,6 +7,10 @@ description: Release history and notable changes for CoCache.
 
 ## Unreleased {#unreleased}
 
+- Fixed: on a backend without atomic broadcast (`sharded` channel mode, or when the atomic-broadcast probe fails), a write whose separate invalidation publish was rejected, for example while disconnected, was reported as not executed (`outcomeUnknown = false`). `Cache.put` then skipped its compensating invalidation, and other instances kept their old L2 copies until `localMaxAge`. Such a write is now outcome unknown: `put` schedules the compensating invalidation and `invalidate` retries.
+- Fixed: the suspending view of a `Cache` didn't apply the per-call TTL ceiling (`cocache.overrides.cache.ttl`) to `put(key, value, ttl)` and `putAll(entries, ttl)`. It now clamps them and counts them in `cocache.ttl.clamped`, like the sync and async views.
+- Fixed: on an externally sourced `Cache`, `getAll` without a loader capped the local copy of a key held under another instance's lease, in a newer format, or with a pending invalidation at `localMaxAge`. Like `get`, it now caps it at `degradedLocalMaxAge` and counts it in `cocache.degraded.fills`.
+- Fixed: `cocache.reclaims` counted undecodable values written by a `Store` (with a digest segment) that a derived cache read, although such values are never reclaimed. They are now counted only in `cocache.type.mismatch`.
 - Fixed: with the Redis backend, removing the last member of a set left the key behind as an empty hash when the set carried metadata besides `!f` (an explicit `!m = "0"`, or any reserved `!` field). Without a TTL it never expired. The set is now deleted once no member remains.
 
 ## v8.0.0-alpha.3 (Pre-release) {#v8-0-0-alpha-3}

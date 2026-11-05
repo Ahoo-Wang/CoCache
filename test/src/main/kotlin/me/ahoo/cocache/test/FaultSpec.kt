@@ -23,6 +23,7 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
@@ -470,6 +471,56 @@ abstract class FaultSpec {
         fork("writer") { cacheA.put("k", "v1") }.join()
         backend.afterPut = null
         awaitCondition("the compensation deleted the key") { nodeA.admin().pendingInvalidationCount == 0 }
+        awaitCondition("B converges") { cacheB["k"] == "v1" }
+        cacheA["k"].assert().isEqualTo("v1")
+    }
+
+    /**
+     * 非原子广播（G2）：写入已在 L1 生效，随后单独的发布在发出之前被拒绝（`L1RejectedException`，如断线）。其它节点没有收到失效，
+     * 这次写入不是“确定未执行”：失效失败模式为 THROW 时 `put` 与 `invalidate` 都报告 `outcomeUnknown = true`，L1 中是写入后的状态。
+     */
+    @Test
+    fun writeWhoseBroadcastIsRejectedIsOutcomeUnknown() {
+        backend.atomicBroadcastOverride = false
+        val cacheA = nodeA.cache(policy().toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build(), cacheName)
+        backend.beforePublish = { throw L1RejectedException("Rejected before it was sent: publish.") }
+        val putFailure = runCatching { cacheA.put("k", "v1") }.exceptionOrNull()
+        putFailure.assert().isInstanceOf(CacheWriteException::class.java)
+        (putFailure as CacheWriteException).outcomeUnknown.assert()
+            .withFailMessage { "the put changed L1 and only its broadcast was rejected: outcome unknown, not 'not executed'" }
+            .isTrue()
+        remoteValue("k").assert().isEqualTo("v1")
+        val invalidateFailure = runCatching { cacheA.invalidate("k") }.exceptionOrNull()
+        invalidateFailure.assert().isInstanceOf(CacheWriteException::class.java)
+        (invalidateFailure as CacheWriteException).outcomeUnknown.assert()
+            .withFailMessage { "the invalidate changed L1 and only its broadcast was rejected: outcome unknown" }
+            .isTrue()
+        remote("k").assert().isEqualTo(L1Read.Miss(false))
+        backend.beforePublish = null
+    }
+
+    /**
+     * 同上，失效失败模式为默认的 RETRY（G2，RFC 0005 §4.6）：`put` 不抛出，登记补偿失效；补偿的重试删除 key 并广播，
+     * 所有节点从数据源重新加载，没有失效被丢弃。
+     */
+    @Test
+    fun putWhoseBroadcastIsRejectedIsCompensatedUnderRetry() {
+        backend.atomicBroadcastOverride = false
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        database["k"] = "v0"
+        cacheB["k"].assert().isEqualTo("v0")
+        database["k"] = "v1"
+        val publishes = AtomicInteger()
+        backend.beforePublish = {
+            if (publishes.getAndIncrement() == 0) {
+                throw L1RejectedException("Rejected before it was sent: publish.")
+            }
+        }
+        cacheA.put("k", "v1")
+        awaitCondition("the compensation ran") { publishes.get() >= 2 && nodeA.admin().pendingInvalidationCount == 0 }
+        backend.beforePublish = null
+        nodeA.metrics().invalidationsDropped.assert().isZero()
         awaitCondition("B converges") { cacheB["k"] == "v1" }
         cacheA["k"].assert().isEqualTo("v1")
     }

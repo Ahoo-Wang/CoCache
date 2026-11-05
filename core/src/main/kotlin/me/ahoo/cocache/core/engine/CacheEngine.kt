@@ -178,12 +178,16 @@ internal class CacheEngine<K : Any, V : Any>(
 
         override suspend fun put(key: K, value: V) = runSuspending { putWithTtl(key, value, putTtl(key, value)) }
 
-        override suspend fun put(key: K, value: V, ttl: Duration) = runSuspending { putWithTtl(key, value, ttl) }
+        override suspend fun put(key: K, value: V, ttl: Duration) = runSuspending {
+            putWithTtl(key, value, perCallTtl(ttl))
+        }
 
         override suspend fun putAll(entries: Map<K, V>) = runSuspending { putAllWithTtl(entries, ::putTtl) }
 
-        override suspend fun putAll(entries: Map<K, V>, ttl: Duration) =
-            runSuspending { putAllWithTtl(entries) { _, _ -> ttl } }
+        override suspend fun putAll(entries: Map<K, V>, ttl: Duration) = runSuspending {
+            val clamped = perCallTtl(ttl)
+            putAllWithTtl(entries) { _, _ -> clamped }
+        }
 
         override suspend fun invalidate(key: K) = runSuspending { invalidateStorageKeys(listOf(storageKey(key))) }
 

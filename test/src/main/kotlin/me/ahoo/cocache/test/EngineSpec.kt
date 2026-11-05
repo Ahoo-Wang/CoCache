@@ -67,6 +67,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -497,7 +498,7 @@ abstract class EngineSpec {
 
     /**
      * 派生缓存读到带摘要段的值（同一个 namespace 上还有 `Store`，RFC 0005 §4.7，D4）：照常读取，计入 `typeMismatches`；
-     * 解码失败时也不回收（`RECLAIM` 拒绝带摘要段的内容），绕过 L1 回源，L1 中的唯一副本保留。
+     * 解码失败时也不回收（`RECLAIM` 拒绝带摘要段的内容），不计入 `reclaims`，绕过 L1 回源，L1 中的唯一副本保留。单个与批量读取相同。
      */
     @Test
     fun derivedCacheCountsATypeMismatchAndNeverReclaimsDigestContent() {
@@ -507,10 +508,16 @@ abstract class EngineSpec {
         nodeA.metrics().typeMismatches.assert().isEqualTo(1)
 
         database["corrupt"] = "loaded"
+        database["corrupt-batch"] = "batch"
         writeAuthoritativeSilently("corrupt", TestCodec.CORRUPT)
+        writeAuthoritativeSilently("corrupt-batch", TestCodec.CORRUPT)
         derived["corrupt"].assert().isEqualTo("loaded")
-        ((remote("corrupt") as L1Read.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
-        nodeA.metrics().typeMismatches.assert().isEqualTo(2)
+        derived.getAll(listOf("corrupt-batch")).assert().isEqualTo(mapOf("corrupt-batch" to "batch"))
+        listOf("corrupt", "corrupt-batch").forEach { key ->
+            ((remote(key) as L1Read.Hit).envelope as Envelope.Scalar).bytes.assert().isEqualTo(TestCodec.CORRUPT)
+        }
+        nodeA.metrics().typeMismatches.assert().isEqualTo(3)
+        nodeA.metrics().reclaims.assert().withFailMessage { "digest content is never reclaimed, so it is not counted" }.isZero()
     }
 
     @Test
@@ -1467,6 +1474,50 @@ abstract class EngineSpec {
         cache.put("k", "v")
         cache["k"].assert().isEqualTo("v")
         cache.getAll(listOf("k", "absent")).assert().isEqualTo(mapOf("k" to "v"))
+    }
+
+    /**
+     * 外部来源的缓存上不带 loader 的批量读取与单 key 读取规则相同（RFC 0005 §4.1）：L1 没有确认不存在的 key（其它节点持有 lease、
+     * 更高格式）绕过 L1，结果是以 `degradedLocalMaxAge` 限龄的“未填充”，计入 `degradedFills`；L1 确认不存在的 key 仍以 `localMaxAge`
+     * 与 `absentTtl` 限龄。
+     */
+    @Test
+    fun batchReadsWithoutALoaderBypassLikeSingleKeyReads() {
+        val noWait = policy().toBuilder().lease(LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ZERO)).build()
+        val cache = nodeA.cache(externalSpec(noWait))
+        listOf("leased-get", "leased-all").forEach { key ->
+            val held = Suspending.await {
+                backend.delegate.store(Keyspace("cocache:", cacheName))
+                    .read(storageKey(key), LeaseRequest(Token(NodeId.random(), 1), Duration.ofSeconds(30)), null, null)
+            }
+            held.assert().isEqualTo(L1Read.Miss(true))
+        }
+        cache.put("newer-get", "v")
+        cache.put("newer-all", "v")
+        val newer: (L1Read) -> L1Read = { read ->
+            if (read is L1Read.Hit) read.copy(format = read.format + 1) else read
+        }
+        backend.afterRead = { _, read -> newer(read) }
+        backend.afterReadAll = { reads -> reads.mapValues { newer(it.value) } }
+        cache["leased-get"].assert().isNull()
+        cache["newer-get"].assert().isNull()
+        cache.getAll(listOf("leased-all", "newer-all", "absent-all")).assert().isEmpty()
+        backend.afterRead = null
+        backend.afterReadAll = null
+
+        val degradedBound = Instant.ofEpochMilli(clock.nowMillis()).plus(noWait.degradedLocalMaxAge)
+        listOf("leased-get", "newer-get", "leased-all", "newer-all").forEach { key ->
+            val local = requireNotNull(localCopyOf(nodeA, key))
+            local.state.assert().isEqualTo(KeyInspection.LocalState.UNFILLED)
+            local.expiresAt.assert()
+                .withFailMessage { "$key bypassed L1 without a loader: its copy is capped at degradedLocalMaxAge" }
+                .isBeforeOrEqualTo(degradedBound)
+        }
+        requireNotNull(localCopyOf(nodeA, "absent-all")).expiresAt.assert()
+            .withFailMessage { "a confirmed absence keeps the localMaxAge and absentTtl cap" }
+            .isAfter(degradedBound)
+        nodeA.metrics().degradedFills.assert().isEqualTo(4)
+        nodeA.metrics().unknownFormats.assert().isEqualTo(2)
     }
 
     /**
