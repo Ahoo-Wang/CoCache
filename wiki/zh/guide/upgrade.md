@@ -25,13 +25,13 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 ## 切换 {#steps}
 
 1. **停止这些命名空间在 6.x 上的所有写入方与读取方。** 包括不是服务的进程：命令行工具、定时维护任务、控制面发布者、上报代理。
-2. **删除没有数据源的缓存的旧 key**：6.x 中所有没有 loader 的 `Cache`（8.x 中的 `Store`、`VersionedStore` 或外部来源的 `Cache`）与所有 `SetCache`（8.x 中的 `SetStore`）。8.x 把 6.x 的值当作读不懂的内容，没有数据源的缓存遇到这样的读取直接失败，而不是去猜。以默认前缀 `cocache:` 为例（其它前缀换成你自己的），删除一个命名空间，在集群中逐个主节点执行：
+2. **删除没有数据源的缓存与全部 `VersionedCache` 的旧 key**：6.x 中所有没有 loader 的 `Cache`（8.x 中的 `Store`、`VersionedStore` 或外部来源的 `Cache`）、所有 `SetCache`（8.x 中的 `SetStore`），以及在 8.x 中声明为 `VersionedCache` 的缓存。8.x 把 6.x 的值当作读不懂的内容。没有数据源的缓存遇到这样的读取直接失败，而不是去猜。按版本的写入（`putIfNewer`、`invalidateIfNewer`、`evict`）从不覆盖这样的内容，而是以 `CacheWriteException` 失败：在任何读取之前就写入的写入方会在每个旧 key 上失败。以默认前缀 `cocache:` 为例（其它前缀换成你自己的），删除一个命名空间，在集群中逐个主节点执行：
 
    ```bash
    redis-cli --scan --pattern 'cocache:{namespace}:*' | xargs redis-cli unlink
    ```
 
-   有数据源的缓存可以保留它们的 key：读取会回收旧值，并从数据源重新加载。仍然删掉它们，冷启动更可预期。
+   其它有数据源的缓存可以保留它们的 key：读取会回收旧值，并从数据源重新加载，`put` 直接覆盖旧值。仍然删掉它们，冷启动更可预期。
 3. **启动 8.x。** 有数据源的缓存按需重新加载。没有数据源的缓存从空开始：按当初填充它们的方式重新填充（控制面重新发布，上报代理重新上报）。
 
 ### 回滚 {#rollback}

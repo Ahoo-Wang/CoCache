@@ -25,13 +25,13 @@ CoCache 8.0 is a clean cutover from 6.x, not a compatible upgrade:
 ## The cutover {#steps}
 
 1. **Stop every 6.x writer and reader of the namespaces.** That includes the processes that aren't services: CLIs, scheduled maintenance jobs, control-plane publishers, reporting agents.
-2. **Delete the old keys of caches without a source**: every 6.x `Cache` without a loader (an 8.x `Store`, `VersionedStore` or externally sourced `Cache`) and every `SetCache` (an 8.x `SetStore`). 8.x reads a 6.x value as content it can't read, and a cache without a source fails such a read instead of guessing. For one namespace with the default `cocache:` prefix (use your own prefix otherwise), on each master in a cluster:
+2. **Delete the old keys of caches without a source and of every `VersionedCache`**: every 6.x `Cache` without a loader (an 8.x `Store`, `VersionedStore` or externally sourced `Cache`), every `SetCache` (an 8.x `SetStore`), and every cache you declare as a `VersionedCache` in 8.x. 8.x reads a 6.x value as content it can't read. A cache without a source fails such a read instead of guessing. A versioned write (`putIfNewer`, `invalidateIfNewer`, `evict`) never overwrites such content: it fails with `CacheWriteException`, so a writer that writes before anything reads the key fails on every old key. For one namespace with the default `cocache:` prefix (use your own prefix otherwise), on each master in a cluster:
 
    ```bash
    redis-cli --scan --pattern 'cocache:{namespace}:*' | xargs redis-cli unlink
    ```
 
-   Caches with a source may keep their keys: a read reclaims an old value and reloads it from the source. Deleting them anyway makes the cold start predictable.
+   Other caches with a source may keep their keys: a read reclaims an old value and reloads it from the source, and `put` overwrites it. Deleting them anyway makes the cold start predictable.
 3. **Start 8.x.** Caches with a source reload on demand. Caches without one start empty: fill them again the way they were filled in the first place (the control plane republishes, reporting agents report again).
 
 ### Rolling back {#rollback}
