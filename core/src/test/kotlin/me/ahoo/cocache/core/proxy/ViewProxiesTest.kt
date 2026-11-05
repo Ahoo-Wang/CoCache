@@ -211,11 +211,14 @@ class ViewProxiesTest {
     }
 
     /**
-     * 挂起视图在挂起之前同步抛出异常的引擎：`suspending()` 的 `get`（读取）与 `invalidate`（写入）直接抛出 [error]。
+     * 挂起视图在挂起之前同步抛出异常的引擎：`suspending()` 的 `get`（读取）、`invalidate`（写入）与 `name`（没有参数）直接抛出 [error]。
      */
     private class ThrowingEngine(private val engine: Cache<String, String>, private val error: Throwable) :
         Cache<String, String> by engine {
         override fun suspending(): SuspendingCache<String, String> = object : SuspendingCache<String, String> by engine.suspending() {
+            override val name: String
+                get() = throw error
+
             override suspend fun get(key: String): String? = throw error
 
             override suspend fun invalidate(key: String) = throw error
@@ -262,6 +265,7 @@ class ViewProxiesTest {
         )
         runCatching { runBlocking { failing.get("1") } }.exceptionOrNull().assert().isSameAs(error)
         runCatching { runBlocking { failing.invalidate("1") } }.exceptionOrNull().assert().isSameAs(error)
+        runCatching { failing.name }.exceptionOrNull().assert().isSameAs(error)
 
         val checked = IOException("disk")
         val engine = runtime.create(userSpec("sync-checked"))

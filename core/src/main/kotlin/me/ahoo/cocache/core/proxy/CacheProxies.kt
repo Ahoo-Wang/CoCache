@@ -230,6 +230,10 @@ object CacheProxies {
                 "${type.name}.${method.name} is abstract and not part of ${viewType.simpleName}; declare it as a default method."
             )
 
+        /**
+         * 异常路径只把最后一个参数（挂起方法的 `Continuation`）交给 [rethrow]，不传参数数组：C2 的逃逸分析不区分路径，数组一旦传给
+         * 不内联的调用（[rethrow] 太大，不内联），代理每次调用都要分配它。
+         */
         private fun forward(method: Method, arguments: Array<out Any?>): Any? {
             val read = reads?.handleOf(method.name, arguments.size)
             if (read != null) {
@@ -237,26 +241,28 @@ object CacheProxies {
                 try {
                     return ReadHandles.invoke(read, arguments)
                 } catch (e: Throwable) {
-                    return rethrow(e, method, arguments)
+                    return rethrow(e, method, arguments[arguments.size - 1])
                 }
             }
             try {
                 return method.invoke(view, *arguments)
             } catch (e: InvocationTargetException) {
-                return rethrow(e.targetException, method, arguments)
+                val last = if (arguments.isEmpty()) null else arguments[arguments.size - 1]
+                return rethrow(e.targetException, method, last)
             }
         }
 
         /**
          * 原样抛出视图的异常。挂起方法在挂起之前抛出的受检异常不能直接抛出（接口方法没有声明它，JDK 会把它包装为
-         * `UndeclaredThrowableException`）：改经调用方的 `Continuation` 交还并报告挂起，调用方收到的仍是原始异常。
+         * `UndeclaredThrowableException`）：改经调用方的 `Continuation`（挂起方法的最后一个参数 [last]）交还并报告挂起，
+         * 调用方收到的仍是原始异常。
          */
-        private fun rethrow(error: Throwable, method: Method, arguments: Array<out Any?>): Any? {
+        private fun rethrow(error: Throwable, method: Method, last: Any?): Any? {
             if (error is RuntimeException || error is Error || method.parameterTypes.lastOrNull() != Continuation::class.java) {
                 throw error
             }
             @Suppress("UNCHECKED_CAST")
-            val continuation = arguments.last() as Continuation<Any?>
+            val continuation = last as Continuation<Any?>
             continuation.resumeWith(Result.failure(error))
             return COROUTINE_SUSPENDED
         }
