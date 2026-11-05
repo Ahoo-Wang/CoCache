@@ -69,9 +69,11 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -1211,6 +1213,48 @@ abstract class EngineSpec {
         runCatching { cache["k"] }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
     }
 
+    /**
+     * I-6：同步 API 在调用方线程上执行阻塞的 loader（事务、MDC 等线程局部状态因此可用），单 key、批量与调用级 loader 都是如此，
+     * 即使存储在别的线程（模拟 L1 客户端的 I/O 线程）上交出结果。只在 [CacheAccess.SYNC] 下运行：异步与挂起变体在运行时的执行器上
+     * 执行阻塞的 loader，属于核心的语义，由核心自己的测试覆盖。
+     */
+    @Test
+    fun syncLoaderRunsOnTheCallingThread() {
+        assumeTrue(access == CacheAccess.SYNC, "only the sync API runs the loader on the caller's thread")
+        val io = Executors.newSingleThreadExecutor { Thread(it, "tck-io").apply { isDaemon = true } }
+        backend.ioExecutor = io
+        try {
+            val threads = ConcurrentLinkedQueue<String>()
+            val cache = nodeA.cache(
+                spec {
+                    loader = object : CacheLoader<String, String> {
+                        override fun load(key: String): String {
+                            threads.add(Concurrency.currentThreadName())
+                            return "v"
+                        }
+
+                        override fun loadAll(keys: Collection<String>): Map<String, String> {
+                            threads.add(Concurrency.currentThreadName())
+                            return keys.associateWith { "v" }
+                        }
+                    }
+                }
+            )
+            fork("tck-caller") {
+                cache["k"]
+                cache.getAll(listOf("a", "b"))
+                cache.get("c") {
+                    threads.add(Concurrency.currentThreadName())
+                    "v"
+                }
+            }.join()
+            threads.toList().assert().containsExactly("tck-caller", "tck-caller", "tck-caller")
+        } finally {
+            backend.ioExecutor = null
+            io.shutdownNow()
+        }
+    }
+
     @Test
     fun keyFilterShortCircuits() {
         val cache = nodeA.cache(spec { keyFilter = me.ahoo.cocache.core.KeyFilter { true } })
@@ -1575,6 +1619,31 @@ abstract class EngineSpec {
         requireNotNull(nodeA.admin(cacheName)).pendingInvalidationCount.assert().isEqualTo(0)
         remoteValue("k").assert().isEqualTo("v2")
         nodeA.metrics().invalidationRetries.assert().isEqualTo(0)
+    }
+
+    /**
+     * I-D：权威副本的写入从不补偿。结果未知的 `Store.put` / `putAll` 抛出 `outcomeUnknown = true` 的 [CacheWriteException]，
+     * 不登记失效重试：L1 是唯一副本，延迟的删除会删掉之后写入的值（§7）。派生副本的对照见 [outcomeUnknownPutsAreCompensatedUnderRetry]。
+     */
+    @Test
+    fun outcomeUnknownStorePutsThrowAndAreNeverCompensated() {
+        assumeDeclared(L1Capability.CONDITIONAL)
+        val store = nodeA.store()
+        backend.failWrites = true
+        listOf<Pair<String, () -> Unit>>(
+            "put" to { store.put("k", "v1") },
+            "putAll" to { store.putAll(mapOf("k" to "v1")) },
+        ).forEach { (operation, write) ->
+            val error = runCatching { write() }.exceptionOrNull()
+            error.assert().isInstanceOf(CacheWriteException::class.java)
+            (error as CacheWriteException).operation.assert().isEqualTo(operation)
+            error.outcomeUnknown.assert().isTrue()
+        }
+        backend.failWrites = false
+        nodeB.store().put("k", "v2")
+        requireNotNull(nodeA.admin(cacheName)).pendingInvalidationCount.assert().isEqualTo(0)
+        nodeA.metrics().invalidationRetries.assert().isEqualTo(0)
+        remoteValue("k").assert().isEqualTo("v2")
     }
 
     @Test
