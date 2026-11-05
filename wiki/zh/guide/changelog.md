@@ -8,6 +8,8 @@ description: CoCache 版本发布历史和重要变更。
 ## Unreleased {#unreleased}
 
 - 修复：Redis 后端上，集合除 `!f` 之外还带元数据字段（显式的 `!m = "0"`，或预留的 `!` 字段）时，移除最后一个成员之后 key 作为空的 Hash 留下，没有 TTL 时永不过期。现在不剩成员即删除集合。
+- 修复：YAML 中不带引号的 `refresh-window: off` 让启动因 `"false" is not a duration` 失败，因为 YAML 把不带引号的 `off` 读作 `false`。现在它关闭提前刷新。
+- 修复：`cocache.defaults.store.tombstone-ttl: forever` 让每个没有自己设置的 `VersionedStore` 创建失败，因为它的墓碑需要有限的寿命。现在它对 `VersionedStore` 跳过，与其它不能生效的全局层条目相同：记录一条 `WARN`，并以原因 `a VersionedStore needs a finite tombstone-ttl` 列在端点的 `skippedConfiguration` 中。`VersionedCache` 照常接受 `cocache.defaults.cache.tombstone-ttl: forever`；`cocache.caches.[name]` 中为 `VersionedStore` 写 `tombstone-ttl: forever` 仍让启动失败。
 
 ## v8.0.0-alpha.3（预发布） {#v8-0-0-alpha-3}
 
