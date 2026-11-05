@@ -6,14 +6,20 @@
 
 ## 1. 8.0 的预发布与 GA
 
+> 状态（2026-11-05）：因额度暂停。进行中的工作都已收尾，没有运行中的基准；两个下游试用 PR 停在草稿。恢复时从本节未勾选的条目继续。
+
 - [x] **8.0.0-alpha.1 已发布**（2026-11-04，#786）：GitHub 预发布、Maven Central 与 GitHub Packages。预发布不作兼容性承诺（CONTRIBUTING）。站点 cocache.ahoo.me 自此从 `main` 部署（#787），`6.x` 不再部署（#788）。
+- [x] **8.0.0-alpha.2 已发布**（2026-11-05，#791）：声明的接口可以继承异步与挂起视图（#789）。Maven Central 可解析（8.x 没有 `cocache-coroutines`，已并入 `cocache-core`）。
 - [ ] **GA（8.0.0）的放行条件**，全部满足才发：
   1. **下游试用**：CoSec 与 Wow 在各自的分支上接入最新的 8.0.0 预发布版本，跑通各自的测试套件。发现的问题修复之后再发一个预发布版本，直到没有新问题。只做适配，不做数据迁移（升级说明的“下游”一节）。
-  2. **RFC 0005 §7 的剩余测量**：`l2HitAbsent` / `l2HitUnfilled` 的命中成本与 `l2Hit` 相同；声明的异步、挂起视图接口（#789）的命中有数据。结果记入 [jmh-8.0-ga](investigations/jmh-8.0-ga.md)。
+     - **Wow**：草稿 PR Ahoo-Wang/Wow#5436（8.0.0-alpha.1，不合并），跑绿后停在草稿，等 rc 时升级再跑。发现 1：`VersionedCache` 的写入方落在 6.x 旧值上以 `CacheWriteException` 失败。RFC 0005 §4.1 规定按版本写入不把读不懂的内容当作没有值，所以改升级说明：切换时 `VersionedCache` 的旧 key 也要删（#792）。
+     - **CoSec**：试用分支以草稿 PR 收尾（Ahoo-Wang/CoSec，由 CoSec 维护者决定何时合并），rc 时继续。CoCache 的问题以标 `bug`、标题前缀 `[8.0 trial]` 的 issue 登记。`cosec-dependencies` 仍引用 cocache-bom 6.7.0，要一起升级。
+  2. **RFC 0005 §7 的剩余测量**：`l2HitAbsent` / `l2HitUnfilled` 的命中成本与 `l2Hit` 相同；声明的异步、挂起视图接口（#789）的命中有数据。结果记入 [jmh-8.0-ga](investigations/jmh-8.0-ga.md)。**已完成**（#793）：`Absent` 与未填充为普通 L2 命中的 97.3%–98.7%，满足；声明的异步接口比异步视图每次多 0.7 ns，保留；声明的挂起接口见下一条。
   3. **没有未关闭的 8.x 缺陷**：GitHub 上标 `bug`、影响 `main` 的 issue 都已修复。
   4. **文档定稿**：wiki（en + zh）、升级说明、changelog 与代码一致；`docs/architecture.md` 的不变量与 TCK 一致。
   5. **发版**：按 CONTRIBUTING 发 `8.0.0`。changelog 中的预发布条目合并为 `v8.0.0`。线格式自此在 8.x 内冻结（architecture.md 的不变量），兼容性承诺开始生效。
-- [ ] **下一个预发布版本**（alpha.2）：声明接口可以继承异步与挂起视图（#789），以及下游试用中修复的问题。
+- [ ] **声明的挂起视图接口的代理开销**（GA 前）：经 `CacheProxies.ViewHandler` 转发挂起方法，L2 命中从 5.33 ns 增加到 15.65 ns，每次多 10.3 ns（同步接口的代理多 2.5 ns），0 B/op，开销是转发时的 CPU，原因没有 profiling（#793）。异步接口走同一个 `forward` 只多 0.7 ns，所以要先查清挂起方法的转发慢在哪。目标：不超过同步接口代理的 2 倍（约 5 ns）。这是命中路径的改动，要附 `scripts/jmh-compare.sh -b l2HitViaSuspendingInterface,l2HitSuspending,l2HitViaInterface,l2HitViaAsyncInterface,l2HitMixed -t 1,8` 的表。
+- [ ] **下一个预发布版本**：上一条与下游试用中修复的问题。发布之后通知 CoSec 与 Wow 升级，继续试用。
 
 ## 1a. 6.x 跟进
 
