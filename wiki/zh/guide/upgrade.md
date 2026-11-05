@@ -138,9 +138,9 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 
 ## Redis 中的 key 与值 {#wire-format}
 
-- 存储 key 保持 `{keyPrefix}{namespace}:{encodedKey}` 的形状。内部 key 移到 `{keyPrefix}!` 之下。
+- 存储 key 保持 `{keyPrefix}{namespace}:{encodedKey}` 的形状。内部 key 移到 `{keyPrefix}!` 之下；原子广播探测例外，不论前缀都用固定的 key `cocache:!probe:{a}`。
 - 失效频道为 `{keyPrefix}inv:{namespace}`（6.x 为 `cocache:inv:{namespace}`），前缀不同的应用不再收到彼此的失效。
-- 命名空间必须符合 `[A-Za-z0-9._-]+`。含 `:` 的命名空间在创建时失败，错误信息给出如何把 `:` 之前的部分移到 `keyPrefix`；存储 key 仍是同样的字符串。
+- 命名空间必须符合 `[A-Za-z0-9._-]+`。含 `:` 的命名空间在创建时失败，错误信息给出如何把最后一个 `:` 及之前的部分移到 `keyPrefix`；存储 key 仍是同样的字符串。原来前缀不同的命名空间因此有不同的 key 前缀，每个 key 前缀都要一条频道模式 `&{keyPrefix}inv:*`（[ACL](#acl)）。
 - 每个值都是线格式 2。`Store` 的值带写入标识与 SHA-256 摘要（多 60 字节），`VersionedStore` 的值带写入标识与版本（见 [Redis 内存](../operations/index.md#sizing-redis)）。
 
 ## 后端 SPI 与 TCK {#spi}
@@ -168,7 +168,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 
 - **类型。** 策略快照、控制面缓存、两个撤销表（带 `unknownRead = ABSENT`）与影子缓存（带显式 `ttl`）改为 [`Store`](./store.md)。`MembershipCache` 改为 `externallySourced()` 的 `Cache`，它的调用级 loader 让 `read-failure: throw` 照常生效。
 - **装配。** 所有缓存都经 [`CoCacheFactory`](./caches.md#factory) 创建，取代 `CoSecCacheAssembler`；经 `runtime.create` 创建的缓存不受配置各层影响。`pinnedPolicy` 改为 [`lock` 与 `constrain`](./configuration.md#locks)，`expiringFailClosed` 改为让 `ttl` 保持有限的约束。
-- **布局。** 把前缀从 namespace 移到 `keyPrefix`：含 `:` 的 namespace 在创建时失败。存储 key 的字符串不变，`~cosec:*` 的 ACL 照常覆盖，但频道变为 `{keyPrefix}inv:{namespace}`。
+- **布局。** 把前缀从 namespace 移到 `keyPrefix`：含 `:` 的 namespace 在创建时失败。存储 key 的字符串不变，`~cosec:*` 的 ACL 照常覆盖，但频道变为 `{keyPrefix}inv:{namespace}`：拆分得到的每个 key 前缀都要放行 `&{keyPrefix}inv:*`。
 - **失效监听。** `InvalidationListener` 收到的是编码后的 key。`PolicySnapshotCache.snapshotKeyOf` 按 `"$namespace:"` 从存储 key 中剥前缀，须改为原样使用编码 key；否则每一条策略变更通知都被丢掉，也不报错。
 - **读取。** `when (lookup)` 须处理 `Lookup.Unknown`（编译错误会指出）。订阅改经 `InvalidationChannel` SPI。
 - **摘要。** 修订记录的 key、修订索引、`parent` 与 `base.digest` / `checkedWith` 持有带算法标识的 SHA-256 `Digest`（`SHA-256:…`）；`getIfChanged` 的用法不变。
