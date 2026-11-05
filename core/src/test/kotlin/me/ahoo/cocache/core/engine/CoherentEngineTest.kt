@@ -22,6 +22,7 @@ import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
@@ -324,8 +325,8 @@ open class CoherentEngineTest {
     }
 
     /**
-     * 有数据源的缓存读到带摘要段、却解码失败的值（同一 namespace 上另有权威缓存，D4）：计为读不懂的值，但 `RECLAIM` 从不回收它，
-     * 不发出注定被拒绝的回收；绕过 L1 回源，副本不设刷新点，L1 原样未动。单个与批量读取相同。
+     * 有数据源的缓存读到带摘要段、却解码失败的值（同一 namespace 上另有权威缓存，D4）：计为类型不符（`typeMismatches`），但 `RECLAIM`
+     * 从不回收它，不发出注定被拒绝的回收，也不计入 `reclaims`；绕过 L1 回源，副本不设刷新点，L1 原样未动。单个与批量读取相同。
      */
     @Test
     fun undecodableDigestContentBypassesWithoutReclaim() {
@@ -359,7 +360,7 @@ open class CoherentEngineTest {
         cache["k"].assert().isEqualTo("v")
         cache.getAll(listOf("b")).assert().isEqualTo(mapOf("b" to "b"))
         reclaims.get().assert().isEqualTo(0)
-        cache.metrics.reclaims.assert().isEqualTo(2)
+        cache.metrics.reclaims.assert().withFailMessage { "nothing was reclaimed" }.isEqualTo(0)
         cache.metrics.typeMismatches.assert().isEqualTo(2)
         cache.metrics.degradedFills.assert().isEqualTo(2)
         listOf("k", "b").forEach {
@@ -534,6 +535,39 @@ open class CoherentEngineTest {
         val error = runCatching { cache.put("k", "v1") }.exceptionOrNull()
         error.assert().isInstanceOf(me.ahoo.cocache.api.CacheWriteException::class.java)
         requireNotNull(error).cause.assert().isSameAs(writeFailure)
+    }
+
+    /**
+     * 非原子广播：`put` 已在 L1 生效，随后单独的发布在发出之前被拒绝（`L1RejectedException`，如断线）。其它节点没有收到失效，
+     * 这次写入不是“确定未执行”（G2）：默认的 RETRY 下登记补偿失效，补偿的重试删除 key 并广播，另一节点的 L2 才被淘汰；
+     * 失效失败模式为 THROW 时调用方得到 `outcomeUnknown = true`，原因是 [BroadcastFailedException]。
+     */
+    @Test
+    fun rejectedBroadcastAfterAnAppliedWriteIsCompensated() {
+        val nonAtomic = nonAtomic()
+        val cacheA = runtime(backend = nonAtomic).engine()
+        val cacheB = runtime(backend = nonAtomic).engine()
+        database["k"] = "v0"
+        cacheB["k"].assert().isEqualTo("v0")
+        database["k"] = "v1"
+        val publishes = AtomicInteger()
+        nonAtomic.beforePublish = {
+            if (publishes.getAndIncrement() == 0) {
+                throw L1RejectedException("Rejected before it was sent: publish.")
+            }
+        }
+        cacheA.put("k", "v1")
+        awaitCondition("the compensating invalidation reached B") { cacheB["k"] == "v1" }
+        publishes.get().assert().isEqualTo(2)
+        cacheA.metrics.invalidationsDropped.assert().isZero()
+
+        nonAtomic.beforePublish = { throw L1RejectedException("Rejected before it was sent: publish.") }
+        val throwingA = runtime(backend = nonAtomic).engine(spec(throwing))
+        val error = runCatching { throwingA.put("k", "v2") }.exceptionOrNull()
+        error.assert().isInstanceOf(me.ahoo.cocache.api.CacheWriteException::class.java)
+        (error as me.ahoo.cocache.api.CacheWriteException).outcomeUnknown.assert().isTrue()
+        error.cause.assert().isInstanceOf(BroadcastFailedException::class.java)
+        requireNotNull(error.cause).cause.assert().isInstanceOf(L1RejectedException::class.java)
     }
 
     /**

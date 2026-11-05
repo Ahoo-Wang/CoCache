@@ -351,6 +351,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 或写入已在 L1 生效却报错），不广播的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）。多余的广播只淘汰副本，无害。
      * 前提是 [mutate] 返回或抛出时它的全部 L1 命令都已结束（否则广播可能先于仍在执行的命令）。
      * 例外是 [ForeignFormatException] 与 [UnsupportedOperationException]：后端拒绝了写入（或不支持这个操作），L1 原样未动，不广播。
+     * 反过来，[mutate] 成功之后单独的发布失败时，交给 [onFailure] 的是 [BroadcastFailedException]：L1 已被修改、其它节点没有收到失效，
+     * 这次写入不是“确定未执行”（即使发布失败本身是 [L1RejectedException]），派生副本的补偿与失效的重试照常进行。
      *
      * 从修改 L1 到第二次递增（含广播与 [onFailure]）不可取消（RFC 0005 §4.3），[mutate] 因此直接调用存储：
      * 协程被取消（同步变体中线程被中断，异步变体中运行时关闭）也要等 L1 命令结束再第二次递增，否则在两次递增之间开始的填充
@@ -417,7 +419,12 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
                 throw e
             }
             if (!atomicBroadcast && changed()) {
-                publish(frame)
+                try {
+                    publish(frame)
+                } catch (e: Exception) {
+                    // L1 已被修改，只是失效帧没有发出：即使发布失败本身是“确定未执行”，这次写入也不是（G2）
+                    throw BroadcastFailedException(name, e)
+                }
             }
         } catch (e: Exception) {
             metrics.writeFailure()
@@ -735,6 +742,18 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
     }
 }
+
+/**
+ * 非原子广播的后端上，写入已修改 L1，随后单独发布的失效帧失败（[AbstractEngine.write]，G2）：写入已执行，其它节点没有收到失效。
+ * 它不是“确定未执行”（[AbstractEngine.notExecuted]），即使发布失败本身是 [L1RejectedException]（如断线时被拒绝）：调用方得到
+ * `CacheWriteException(outcomeUnknown = true)`，派生副本的 `put` 登记补偿失效、`invalidate` 登记重试，与写入结果未知时相同。
+ * 作为 [CacheWriteException] 的 `cause` 抛出（或记在重试的日志中），发布的原始异常是它的 `cause`。
+ */
+internal class BroadcastFailedException(cacheName: String, cause: Exception) : IllegalStateException(
+    "Cache[$cacheName] - the write was applied to the remote store, but publishing its invalidation failed: " +
+        "other instances may keep their local copies until it is invalidated again.",
+    cause
+)
 
 /**
  * 保留版本的失效（`VersionedL1Store.evictKeepingVersion`）遇到带摘要段的值（权威标量，RFC 0005 §4.7，D4）：后端拒绝，L1 原样未动、不广播

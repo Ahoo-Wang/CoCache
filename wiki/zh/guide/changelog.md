@@ -5,6 +5,13 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## Unreleased {#unreleased}
+
+- 修复：没有原子广播的后端（`sharded` 频道模式，或原子广播探测失败）上，写入之后单独发布的失效帧被拒绝（如断线时）的写入被报告为确定未执行（`outcomeUnknown = false`）。`Cache.put` 因此不登记补偿失效，其它实例的 L2 旧副本留到 `localMaxAge`。现在这样的写入是结果未知：`put` 登记补偿失效，`invalidate` 重试。
+- 修复：`Cache` 的挂起视图的 `put(key, value, ttl)` 与 `putAll(entries, ttl)` 不受按调用寿命的上限（`cocache.overrides.cache.ttl`）约束。现在与同步、异步视图一样钳制，并计入 `cocache.ttl.clamped`。
+- 修复：外部来源的 `Cache` 上不带 loader 的 `getAll`，对其它实例持有 lease、更高格式或失效重试中的 key，本地副本以 `localMaxAge` 限龄。现在与 `get` 一样以 `degradedLocalMaxAge` 限龄，并计入 `cocache.degraded.fills`。
+- 修复：派生缓存读到 `Store` 写入（带摘要段）、解码失败的值时计入 `cocache.reclaims`，但这类值从不回收。现在只计入 `cocache.type.mismatch`。
+
 ## v8.0.0-alpha.3（预发布） {#v8-0-0-alpha-3}
 
 **模块组：** `me.ahoo.cocache` · 8.0.0 的第三个预发布版本。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。

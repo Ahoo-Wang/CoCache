@@ -307,7 +307,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 - 带数据源的读取遇到 L1 读失败（含条件回收时 `reclaim` 的 L1 异常，§5.4）按 `readFailure` 处理：未设置或 `DEGRADE` 时绕过 L1 回源（以降级限龄进入 L2），显式 `THROW` 时同样是 `Unknown`，`get` / `get(key, loader)` 抛出、`lookup` 返回它；`unknownRead` 不作用于带 loader 的读取。
 - **合并规则**（RFC 0005 §4.1，逐 key 应用）：flight 的共享结果可以是“未填充”或 `Unknown`（`Unanswered`，从不写入 L2）。带数据源的调用方不接受它们（它们来自不带数据源的读取，这次调用本可以自己回源）：重试一次，仍不可用时绕过 SingleFlight 自己运行状态机。例外是 `readFailure = THROW` 时的 `Unknown`：带数据源的读取遇到同样的故障也只能得到它。leader 处于写事务中时（§5.8，`Loaded.owner`），它的结果任何跟随者都不接受，规则相同。
 - 跟随者等待超时（`load.timeout`）、回源被拒绝不是 L1 故障：抛出相应异常，`lookup` 同样抛出，不返回 `Unknown`。
-- 其余绕过 L1 的分支（等待 lease 超时、失效重试中、更高格式）：有数据源时回源；外部来源时以降级限龄写成未填充的不存在；权威副本读到更高格式时失败（§5.4）。
+- 其余绕过 L1 的分支（等待 lease 超时、失效重试中、更高格式）：有数据源时回源；外部来源时以降级限龄写成未填充的不存在；权威副本读到更高格式时失败（§5.4）。批量读取不等待 lease，规则相同：外部来源的缓存上不带 loader 的 `getAll` 读到其它节点的 lease、更高格式或失效重试中的 key 时，同样以降级限龄写成未填充，计入 `degradedFills`；只有 L1 确认的不存在（未命中，权威副本读到 lease 占位）以 `localMaxAge` 与 `absentTtl` 限龄。
 
 ### 5.2 `get(key, loader)`
 
@@ -331,9 +331,9 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 - **更高的格式**（§4.2：格式号高于本节点，滚动升级期间；格式 2 中未知的必须理解的位或状态，存储报告为更高格式）：计入 `unknownFormats`，**不回收、不写 L1**，否则新旧节点互相覆盖。派生副本绕过 L1：有数据源时回源，L2 降级限龄；外部来源时只得到未填充的不存在。
   权威副本绕过 L1 只能得到“不存在”，于是抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，`newer = true`），不写 L2，批量读取与下面的格式 0 相同。理由同下：L1 是唯一副本时，混合版本滚动升级期间读成不存在就是悄悄丢数据。
 - **摘要校验失败**（K3，§4.2）：权威副本读到摘要段与载荷不一致的值、或不带版本也不带摘要段的值，按同格式的损坏处理（见“格式号低于本格式或同格式解码失败”一条）：抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，格式为本节点的格式），`lookup` 同样抛出，L1 中的唯一副本保留。
-- **类型不符**（D4）：派生副本读到带摘要段的值，说明同一个 namespace 上还有 `Store`。照常读取，计入 `typeMismatches`（`cocache.type.mismatch`），每个缓存第一次告警；解码失败时也不回收它（引擎不发出 `RECLAIM`，脚本同样拒绝带摘要段的内容），绕过 L1 回源。
+- **类型不符**（D4）：派生副本读到带摘要段的值，说明同一个 namespace 上还有 `Store`。照常读取，计入 `typeMismatches`（`cocache.type.mismatch`），每个缓存第一次告警；解码失败时也不回收它（引擎不发出 `RECLAIM`，脚本同样拒绝带摘要段的内容），不计入 `reclaims`，绕过 L1 回源。
 - **格式号低于本格式（含格式 0）或同格式解码失败**（读不懂的内容）按**这次读取有没有数据源**决定，不可配置（RFC 0005 §4.7）：有数据源（spec 的 loader，或 `get(key, loader)` 的 loader）时条件回收，没有时失败。没有数据源时回收就是删除唯一副本（RFC 0005 §12）。这只决定读取：元素写入（§6.4）、条件写入（§6.5）与按版本写入（§6.6）落在读不懂的内容上时总是拒绝。
-  - 回收：计入 `reclaims`，计算本次读到内容的指纹（SPI 自己的 `ContentFingerprint`，K12），调用 `reclaim`；成功则凭新 lease 正常回源与 `fill`，失败（内容已变、脚本拒绝或 L1 异常）则不写 L1 回源（L1 异常且 `readFailure = THROW` 时结果为 `Unknown`，§5.1）；回收失败时（确定未执行除外）后端尽力释放这次请求的 lease（§9，K14）。每次读取至多回收一次。
+  - 回收：计入 `reclaims`（每次发出 `reclaim` 计一次，不论成败；带摘要段的内容从不回收，不计，见上面的“类型不符”），计算本次读到内容的指纹（SPI 自己的 `ContentFingerprint`，K12），调用 `reclaim`；成功则凭新 lease 正常回源与 `fill`，失败（内容已变、脚本拒绝或 L1 异常）则不写 L1 回源（L1 异常且 `readFailure = THROW` 时结果为 `Unknown`，§5.1）；回收失败时（确定未执行除外）后端尽力释放这次请求的 lease（§9，K14）。每次读取至多回收一次。
   - 失败：计入 `unknownFormats`，抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，带存储 key、格式版本与本节点的格式版本），不回收、不写 L2，与 `readFailure` 无关（降级模式下同样抛出）。批量读取先完成其余 key（释放 lease 或凭 lease 写回），再以第一个这样的 key 失败。理由：没有数据源时回收就是删除唯一副本，调用方会把“不存在”当作真实结果。
   - 元素写入（§6.4）：`SetStore` 的 `add` / `remove` 落在读不懂的内容上总是以 `CacheWriteException`（`cause` 为 `ForeignFormatException`）失败，原子地不修改 key、不广播，计入 `unknownFormats` 与 `writeFailures`。否则一次 `add` 就会用一个成员替换掉读不懂的集合的全部成员。SPI 因此只有“检查并写入”（`SetL1Store.addMembers` / `removeMembers`），没有整体覆盖的元素写入。
   - 整体覆盖写入（`put`、`putAll`，含 `SetStore.put`）**不检查**旧内容，有意如此：调用方给出的是 key 的全部内容，覆盖不依赖旧内容。
@@ -463,7 +463,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 | 收到远端事件 | 戳 → 淘汰 L2（`origin == 本节点 NodeId` 的事件被过滤；结果未知的写入之后的窗口内例外，见下面的 P12） |
 | `onReset` / `clearLocal` | 全部戳递增 → 清空 L2 |
 
-后端 `atomicBroadcast = false` 时，引擎在存储操作成功后调用 `channel.publish`；发布失败按写入失败处理（§7）。存储操作失败（确定未执行除外）时引擎**也尽力发布同一帧**再报错：失败的写入可能已部分生效（`putAll` 跨多个 slot 组时有的组已写入，或已在 L1 生效却报错），不发布的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）；这次发布的失败只告警（附为写入异常的 suppressed），调用方看到的仍是写入的原始异常，多余的广播只淘汰副本。因此存储的写入方法返回或抛出时，它发出的全部 L1 命令都必须已经结束（`RedisL1Store` 的 `putAll` / `invalidate` 等全部组结束后才抛出第一个异常；某组发出时同步失败也先等已发出的组），否则广播可能先于仍在执行的命令。例外是命令超时：客户端放弃等待时已发出的命令可能仍在 Redis 端执行，补发的广播可能先于它生效，这时其它节点的旧副本由 `localMaxAge` 兜底（G1 的上界不变）。各组并发发出、各自受 `commandTimeout` 限制，失败路径上的等待约为一个 `commandTimeout`。不在失败路径上继续等超时的命令真正结束：超时时后端以异常完成这条 Lettuce 命令，尚未写出的命令不再写出、不会在调用方看到失败之后才生效（§9“超时后不再写出”）；已写出的命令无从撤回，没有应答就无从得知它是否、何时执行（Redis 无法中止已开始的脚本），有上界的追加等待只能缩小、不能关闭这个窗口，却会让失败路径的耗时翻倍、在 Redis 变慢时占住更多调用线程；而窗口内的陈旧本来就受 `localMaxAge` 限制。
+后端 `atomicBroadcast = false` 时，引擎在存储操作成功后调用 `channel.publish`；发布失败按写入失败处理（§7），且总是结果未知：L1 已被修改、其它节点没有收到失效，即使发布失败本身是 `L1RejectedException`（如断线时被拒绝），这次写入也不是确定未执行（`BroadcastFailedException`，`AbstractEngine.kt`）。所以派生副本的 `put` 照常登记补偿失效，`invalidate` 照常重试，THROW 时调用方得到 `outcomeUnknown = true`。存储操作失败（确定未执行除外）时引擎**也尽力发布同一帧**再报错：失败的写入可能已部分生效（`putAll` 跨多个 slot 组时有的组已写入，或已在 L1 生效却报错），不发布的话其它节点会一直读旧的 L2 直到 `localMaxAge`（G2）；这次发布的失败只告警（附为写入异常的 suppressed），调用方看到的仍是写入的原始异常，多余的广播只淘汰副本。因此存储的写入方法返回或抛出时，它发出的全部 L1 命令都必须已经结束（`RedisL1Store` 的 `putAll` / `invalidate` 等全部组结束后才抛出第一个异常；某组发出时同步失败也先等已发出的组），否则广播可能先于仍在执行的命令。例外是命令超时：客户端放弃等待时已发出的命令可能仍在 Redis 端执行，补发的广播可能先于它生效，这时其它节点的旧副本由 `localMaxAge` 兜底（G1 的上界不变）。各组并发发出、各自受 `commandTimeout` 限制，失败路径上的等待约为一个 `commandTimeout`。不在失败路径上继续等超时的命令真正结束：超时时后端以异常完成这条 Lettuce 命令，尚未写出的命令不再写出、不会在调用方看到失败之后才生效（§9“超时后不再写出”）；已写出的命令无从撤回，没有应答就无从得知它是否、何时执行（Redis 无法中止已开始的脚本），有上界的追加等待只能缩小、不能关闭这个窗口，却会让失败路径的耗时翻倍、在 Redis 变慢时占住更多调用线程；而窗口内的陈旧本来就受 `localMaxAge` 限制。
 
 **结果未知的写入之后不再过滤本节点的帧**（RFC 0005 §4.6 P12，`AbstractEngine.unfilterOwnFrames`）：
 - 写入（`put`、`putAll`、`invalidate`、集合元素增删、按版本写入等）失败、且不是确定未执行（`L1RejectedException`、读不懂的内容的拒绝、权威内容的拒绝、`UnsupportedOperationException`，`AbstractEngine.notExecuted`）时，命令可能稍后才执行并在脚本内广播，那一帧的来源是本节点；失败之后、迟到执行之前，本节点的读取可能已把旧值填进 L2。
@@ -578,7 +578,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 | 按版本写入 | `putIfNewer`、`invalidateIfNewer`、`deleteIfNewer` | 同显式写入，抛出 `CacheWriteException`；按版本幂等：结果未知时重放同一个版本，已写入则返回 `Stale(version)`（§6.6） |
 | 条件读写 | `getIfChanged`、`putIfMatch`、`deleteIfMatch` | `getIfChanged` 总是抛出 `CacheReadException`（与 `unknownRead` 无关）；`putIfMatch` 同显式写入，但不是幂等的：结果未知时先 `getIfChanged`，再决定是否重试（§6.5） |
 
-- **确定未执行与结果未知**（RFC 0005 §4.3、§4.6，V7）：`CacheWriteException.outcomeUnknown` 按客户端能观察到的事实区分。`false`：存储在写出之前就拒绝了命令（以 SPI 的 `L1RejectedException` 报告：Redis 把 Lettuce 断线时的拒绝、连接建立不起来映射为它，§9），或后端拒绝了这次写入、没有修改 L1（读不懂的内容、`evict` 遇到 `Store` 的值）。`true`：其余情形，包括超时、断线时被排空、脚本的错误回复。确定未执行的写入在非原子广播的后端上也不补发广播。批量写入只有全部命令都被拒绝时才是确定未执行：有的组已发出时，整个调用结果未知。
+- **确定未执行与结果未知**（RFC 0005 §4.3、§4.6，V7）：`CacheWriteException.outcomeUnknown` 按客户端能观察到的事实区分。`false`：存储在写出之前就拒绝了命令（以 SPI 的 `L1RejectedException` 报告：Redis 把 Lettuce 断线时的拒绝、连接建立不起来映射为它，§9），或后端拒绝了这次写入、没有修改 L1（读不懂的内容、`evict` 遇到 `Store` 的值）。`true`：其余情形，包括超时、断线时被排空、脚本的错误回复。确定未执行的写入在非原子广播的后端上也不补发广播。批量写入只有全部命令都被拒绝时才是确定未执行：有的组已发出时，整个调用结果未知。非原子广播的后端上存储操作成功、随后单独的发布失败时同样是结果未知（§6），与发布失败的原因无关。
 - **派生副本的 `put` 结果未知时登记补偿失效**（RFC 0005 §4.6，V7、U8，`CoherentEngine.putFailure`）：`Cache` 的 `put` / `putAll` 结果未知、失效失败模式为 RETRY（默认）时，引擎把这些 key 登记为失效重试（与失败的 `invalidate` 共用重试队列与 pending），不抛出：L1 中可能已经、也可能稍后出现这次写入的值，补偿的删除让 key 收敛到“从数据源重新加载”；重试期间本节点的未命中绕过 L1。迟到的写入晚于补偿的删除执行时，陈旧以这次写入的 `ttl` 为界；同一条连接上没有发生重连时，补偿失效完成即结束。确定未执行的写入（`L1RejectedException`）不会迟到生效，不补偿，照常以 `outcomeUnknown = false` 抛出；失效失败模式为 THROW 时以 `outcomeUnknown = true` 抛出，由调用方决定。权威副本（`Store`、`SetStore`）从不补偿：唯一副本上延迟的删除会删掉之后写入的值。
 - **回源并发上限**（`LoadPolicy`，bulkhead）：只计回源方（SingleFlight leader，以及私有回源与绕过 SingleFlight 的回源），批量回源占一个许可（批量中回收之后逐 key 的重新加载各占一个）；在 `acquireTimeout` 内拿不到许可时抛出 `SourceLoadRejectedException`（被拒绝的回源会释放 lease）。L1 故障时由它保护数据源。
 - 同线程对同一 key 的重入（loader 内再读同一个 key）快速失败（`IllegalStateException`）。
@@ -736,7 +736,7 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
   - `Store`：`ttl`、`ttl-jitter`、`absent-ttl`、`local-max-age`、`read-timeout`、`local-maximum-size`、`unknown-read`；`VersionedStore` 另有 `tombstone-ttl`；`SetStore` 没有 `unknown-read`。
   - 全局层中不适用、该层不允许或被锁定的条目跳过，记入 `PolicyReport.skipped`（键、层、原因），启动日志各一行 WARN，端点的 `skippedConfiguration` 列出。全局层中的 `key-prefix`、`unlock` 同样跳过。
   - `cocache.caches.[name]` 中不适用的键、`unlock` 中既不是策略字段也不是布局字段的键：`cocache.caches-validation: fail`（默认）创建缓存失败，`warn` 告警并忽略。
-- **按调用寿命的上限**（S8）：`overrides.cache.ttl` 除了取 min，还设定 `CachePolicy.ttlCeiling`（即使声明的 `ttl` 已经更短；`forever` 不设上限）。`caches.[name].ttl` 更长时把这个缓存的上限抬到它，为 `forever` 时取消上限：否则策略寿命比按调用给出的寿命上限还长。只作用于 `Cache`：引擎把 `ttlOf` 的结果与 `put(k, v, ttl)`、`putAll(…, ttl)` 的寿命钳制到它（`CoherentEngine.perCallTtl`），计入 `cocache.ttl.clamped`，每个缓存第一次钳制时告警。策略自身的寿命（含抖动）不经过它。除此之外配置文件中的 `ttl` 不影响 `ttlOf`。
+- **按调用寿命的上限**（S8）：`overrides.cache.ttl` 除了取 min，还设定 `CachePolicy.ttlCeiling`（即使声明的 `ttl` 已经更短；`forever` 不设上限）。`caches.[name].ttl` 更长时把这个缓存的上限抬到它，为 `forever` 时取消上限：否则策略寿命比按调用给出的寿命上限还长。只作用于 `Cache`：引擎把 `ttlOf` 的结果与 `put(k, v, ttl)`、`putAll(…, ttl)` 的寿命钳制到它（`CoherentEngine.perCallTtl`，同步、异步与挂起视图相同），计入 `cocache.ttl.clamped`，每个缓存第一次钳制时告警。策略自身的寿命（含抖动）不经过它。除此之外配置文件中的 `ttl` 不影响 `ttlOf`。
 - **锁定**（U2、S12，§10.1）：全局层跳过被锁定的字段（原因 “locked by <by>”）；`cocache.caches.[name]` 写出被锁定的字段时创建失败（`IllegalArgumentException`，与 `caches-validation` 无关），除非它的 `unlock` 列出该字段（配置键，如 `ttl`、`key-prefix`），此时来源为 `UNLOCKED` 并告警（破窗开关）；定制器改变数据来源、被锁定的策略字段或布局字段时抛出。被锁定的字段报告为 `LOCKED`（“locked by <by>”），被约束改变的为 “constrained by <by>”。
 - **`key-prefix`**（S17）：不参与分层。`cocache.caches.[name].key-prefix` 优先于 `cocache.key-prefix`，二者都优先于声明（包括注解或 spec 中显式写出的 `keyPrefix`）与定制器；都未设置时沿用声明（默认 `cocache:`）。锁定了 `KEY_PREFIX` 时 `cocache.key-prefix` 跳过（记入 skipped），按缓存的 `key-prefix` 让创建失败，除非 `unlock: [key-prefix]`。配置项中的占位符（如 `${spring.application.name}:`）由 Spring 的配置解析处理；`@CoCache.keyPrefix` 是字面文本，不解析占位符。失效频道带前缀（§4.1）。
 - **取值**（`ConfigValues`，RFC 0005 §4.8“单位”）：策略时长与 `cocache.redis.command-timeout`、`heartbeat` 以字符串绑定，由 CoCache 解析（Spring 的时长转换会按默认单位接受不带单位的数字）。
