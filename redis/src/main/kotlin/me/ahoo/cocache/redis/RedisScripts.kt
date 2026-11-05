@@ -505,8 +505,16 @@ return {1}
     )
 
     /**
-     * 移除集合成员，移空则删除；key 中是读不懂的内容时不修改、不广播。ARGV 与返回值同 [ADD_MEMBERS_IF_READABLE]。
-     * 只剩 `!f` 时即为移空（O(1)）：本版本写入的元数据字段只有 `!f`。
+     * 一个集合的元数据字段（`!` 开头，§4.2：本版本写 `!f`，读者识别 `!m`，其余预留）至多这么多个。
+     * [REMOVE_MEMBERS_IF_READABLE] 据此判断移空：字段数不超过它时逐个看字段名，超过它时一定还有成员。
+     */
+    const val MAX_SET_METADATA_FIELDS = 16
+
+    /**
+     * 移除集合成员，移空（不剩 `+` 成员字段）则删除；key 中是读不懂的内容时不修改、不广播。ARGV 与返回值同 [ADD_MEMBERS_IF_READABLE]。
+     * 移空的判断不假定元数据只有 `!f`：带显式 `!m = '0'` 或其它预留的 `!` 字段的集合移空之后也要删除，否则留下只有元数据的 Hash，
+     * 永不过期时（`PERSIST`）再也不会消失。字段数不超过 [MAX_SET_METADATA_FIELDS] 时取全部字段名（`HKEYS`，至多这么多个）找 `+` 字段，
+     * 超过时一定还有成员，不必看：大集合上仍是 O(1)。
      */
     val REMOVE_MEMBERS_IF_READABLE = Script(
         PRELUDE + FORMAT_RULES + UNREADABLE_SET + """
@@ -515,7 +523,17 @@ local unreadable = unreadable_set(key)
 if unreadable then return {0, unreadable} end
 if redis.call('TYPE', key)['ok'] == 'hash' then
   for i = 4, #ARGV do redis.call('HDEL', key, '+' .. ARGV[i]) end
-  if redis.call('HLEN', key) <= 1 then
+  local empty = false
+  if redis.call('HLEN', key) <= $MAX_SET_METADATA_FIELDS then
+    empty = true
+    for _, field in ipairs(redis.call('HKEYS', key)) do
+      if string.sub(field, 1, 1) == '+' then
+        empty = false
+        break
+      end
+    end
+  end
+  if empty then
     redis.call('DEL', key)
   elseif tonumber(ARGV[1]) > 0 then
     redis.call('PEXPIRE', key, ARGV[1])

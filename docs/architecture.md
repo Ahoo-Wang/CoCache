@@ -192,7 +192,7 @@ cocache-bom / cocache-dependencies / cocache-example
   - 不带版本段的 `E` 是未知的状态，报告为更高格式。
 - **`FILL` 的版本规则**（C3、P2、P11）：key 中带版本（持有刷新令牌的带版本值、持有 lease 的 `E`）且令牌匹配时，填充的版本更小或为 `NO_VERSION`：不写入，脚本内清零令牌（只触及字节 4–35），返回当前版本（`L1Fill.Rejected(v)`，省一次 `RELEASE` 往返）；相等：写入（续期），不广播（`Filled(false)`）；更大，或 key 处于 `E`：写入并在同一个脚本中广播（`Filled(true)`，`advanced`）。广播的帧由存储构造：来源是填充令牌的 `NodeId`（令牌由引擎签发，就是引擎的节点），只含这个 key。key 中没有版本（lease 占位、没有版本的值）时令牌匹配即写入，不广播。
 
-**集合（`SetStore`）：Hash**（K10）。字段 `!f` 为格式版本（`"2"`），`!m` 为必须理解的位图（十进制，缺省为 0；本版本没有已知的位，也不写它），成员字段为 `+` + 成员字节，值为空串；其余以 `!` 开头的字段预留给元数据，读者忽略。给集合加信息因此不必改格式号。`!f` 不是 `2` 的集合读不懂（缺失或不是数字为格式 0，其它数字原样报告），`!m` 存在且不是 `0` 的集合等同于更高格式。Hash 只表示“有成员的集合”；lease 与负缓存总是 String 形状。任何整体写入都先 `DEL` 再按新形状写入。
+**集合（`SetStore`）：Hash**（K10）。字段 `!f` 为格式版本（`"2"`），`!m` 为必须理解的位图（十进制，缺省为 0；本版本没有已知的位，也不写它），成员字段为 `+` + 成员字节，值为空串；其余以 `!` 开头的字段预留给元数据，读者忽略。给集合加信息因此不必改格式号。一个集合的元数据字段至多 16 个（`RedisScripts.MAX_SET_METADATA_FIELDS`）：移除成员的脚本据此判断移空（§6.4）。`!f` 不是 `2` 的集合读不懂（缺失或不是数字为格式 0，其它数字原样报告），`!m` 存在且不是 `0` 的集合等同于更高格式。Hash 只表示“有成员的集合”；lease 与负缓存总是 String 形状。任何整体写入都先 `DEL` 再按新形状写入。
 
 - **到期时间**：一律以毫秒的相对时长传输（`PEXPIRE`，或写入时的 `SET … PX`；读取用 `PTTL`），不受节点间时钟偏差影响。客户端把参数钳到至少 1 ms；`0` 表示永不过期（不设到期时间，或 `PERSIST`）。**每次状态转换都显式重设到期时间**，lease 的寿命和负缓存的寿命不得泄漏到新值上。只触及字节 4–35 的原地修改（授予刷新令牌、`E` 上授予 lease、`RELEASE` 清零令牌、被版本规则拒绝的 `FILL` 清零令牌）保留原到期时间（K15）。
 - **读取成本**：标量 `PTTL` + `GET`（一次 EVALSHA）；集合 `PTTL` + `GET`（以 `WRONGTYPE` 失败）+ `HKEYS` + `HMGET !f !m`（只返回字段名，不返回成员的空值；与 `HGETALL` 的字段顺序相同，摘要不受影响）；条件读写 `TYPE` + `GETRANGE key 0 77` + `STRLEN`，只在摘要变了时 `GET`。读脚本与解析其回复的客户端随同一版本发布，混合版本部署按 SHA 各自加载脚本，可以逐台升级。最小 ACL 因此要加 `+getrange +strlen +hmget`（运维文档）。
@@ -494,7 +494,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 |----|------|
 | loader | 按构造禁止（`SetStoreSpec` 没有 loader 字段，`SetStore` 没有 `get(key, loader)`） |
 | `add` | key 不存在、为负缓存或 lease 时先 `DEL` 再创建只含这些成员的集合；是本协议的集合时原子加入。重设 TTL（永不过期时 `PERSIST`），`PUBLISH`。其它内容（其它 Redis 类型、不是本协议写入的 String、本格式的标量值、`!f` 不是 `2` 或 `!m` 中有位的集合、格式号低于或高于本格式的内容，§4.2）总是拒绝（`SetL1Store.addMembers` 返回其格式版本，Redis 为 `ADD_MEMBERS_IF_READABLE`），key 不变、不广播，引擎抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。SPI 没有整体覆盖读不懂的内容的元素写入：覆盖它就是删除唯一副本 |
-| `remove` | 只在 key 是本协议的集合时生效；移空则删除 key，否则重设 TTL；key 不存在、为负缓存或 lease 时不修改（lease 保留）。都 `PUBLISH`。其它内容的处理同 `add`：拒绝（`SetL1Store.removeMembers`，Redis 为 `REMOVE_MEMBERS_IF_READABLE`） |
+| `remove` | 只在 key 是本协议的集合时生效；移空（不剩 `+` 成员字段）则删除 key，不论还有几个元数据字段（显式的 `!m = 0`、预留的 `!` 字段），否则重设 TTL；key 不存在、为负缓存或 lease 时不修改（lease 保留）。字段数不超过元数据字段的上限（16）时取全部字段名（`HKEYS`）找成员，超过时一定还有成员，大集合上仍是 O(1)。都 `PUBLISH`。其它内容的处理同 `add`：拒绝（`SetL1Store.removeMembers`，Redis 为 `REMOVE_MEMBERS_IF_READABLE`） |
 | 并发顺序 | 以 L1 的串行化顺序为准 |
 | 读取 | 不取 lease；未命中返回空集合，L2 以戳保护缓存这个结果（`absentTtl`，受 `localMaxAge` 限龄）。批量读取（三种变体）的未命中经 SingleFlight 合并（`executeAllSuspending`），本调用负责的 key 一次 `readAll`（不申请 lease），不逐个读 L1（RFC 0005 §9 A.L2，`SetEngine.loadEntries`）；合并规则逐 key 同单 key 路径；某个 key 读不懂时先完成其余 key 再抛出。L1 读失败为 `Unknown`：`get` / `getAll` 抛出 `CacheReadException`（`cause` 为原始异常），`lookup` 返回 `Unknown`；不允许 `unknownRead` |
 | `put(key, set)` | 整体覆盖；空集合等价于 `clear` |
