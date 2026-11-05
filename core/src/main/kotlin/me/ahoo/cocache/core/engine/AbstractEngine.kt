@@ -106,7 +106,7 @@ internal const val FOREVER = Long.MAX_VALUE
  */
 internal abstract class AbstractEngine<K : Any, V : Any>(
     override val name: String,
-    internal val keyspace: Keyspace,
+    override val keyspace: Keyspace,
     private val keyEncoder: KeyEncoder<K>,
     internal val policy: CachePolicy,
     protected val store: L1Store,

@@ -176,6 +176,9 @@ class CoCacheEndpoint @JvmOverloads constructor(
 
     /**
      * @param type 用户 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore`、`SetStore`）
+     * @param keyPrefix 与 [namespace] 组成缓存的 keyspace（[CacheAdmin.keyspace]）：存储 key 是 `{keyPrefix}{namespace}:{key}`，
+     *   按 key 的操作路径中的 key 就是其中的 `{key}`
+     * @param namespace 命名空间，没有声明时是缓存名
      * @param layered `false` 即“未分层”：直接经 `CacheRuntime.create` 创建，配置文件与定制器对它都不生效（RFC 0005 §4.8，S20）
      * @param ignoredConfiguration 未分层的缓存上不生效的按缓存配置条目（`cocache.caches.<name>`）
      * @param policy 每个策略字段的生效值与来源层（`TYPE_DEFAULT` 即类型默认值，RFC 0005 §4.8）；未分层的缓存为空
@@ -184,6 +187,8 @@ class CoCacheEndpoint @JvmOverloads constructor(
     data class CacheReport(
         val name: String,
         val type: String,
+        val keyPrefix: String,
+        val namespace: String,
         val layered: Boolean,
         val ignoredConfiguration: List<String>,
         val policy: List<PolicyReport.Entry>,
@@ -199,6 +204,8 @@ class CoCacheEndpoint @JvmOverloads constructor(
         return CacheReport(
             name = name,
             type = apiType.simpleName,
+            keyPrefix = keyspace.keyPrefix,
+            namespace = keyspace.namespace,
             layered = layered,
             ignoredConfiguration = properties?.let { UnlayeredConfigurationCheck.ignoredEntries(it, this) } ?: emptyList(),
             policy = policyReport?.entries ?: emptyList(),

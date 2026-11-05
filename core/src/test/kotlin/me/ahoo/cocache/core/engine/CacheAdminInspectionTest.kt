@@ -17,6 +17,7 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationChannel
@@ -41,6 +42,8 @@ import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
+import me.ahoo.cocache.core.versionedCacheSpec
+import me.ahoo.cocache.core.versionedStoreSpec
 import me.ahoo.cocache.test.EngineSpec.TestCodec
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.cocache.test.Suspending
@@ -357,6 +360,48 @@ class CacheAdminInspectionTest {
         runCatching { runtime.userAdmin().broadcastEncoded("id-1") }.exceptionOrNull().assert().isSameAs(failure)
         runtime.userAdmin().inspect("id-1").local.assert().isNull()
         runtime.userAdmin().inspect("id-1").remote.state.assert().isEqualTo(RemoteState.VALUE)
+    }
+
+    /**
+     * 五种类型的运维接口都给出缓存的 keyspace（默认前缀 `cocache:` 与缓存名，或 spec 写出的前缀与命名空间），
+     * 由它拼出的存储 key 与 [CacheAdmin.inspect] 给出的相同。
+     */
+    @Test
+    fun exposesTheKeyspaceOfEveryType() {
+        val runtime = runtime()
+        runtime.users()
+        runtime.create(
+            versionedCacheSpec<String, String>("order") {
+                keyPrefix = "app:"
+                namespace = "orders"
+                codec = StringCodec
+                versionedLoader = CacheLoader { Versioned("v", 1) }
+            }
+        )
+        runtime.create(
+            storeSpec<String, String>("token") {
+                keyPrefix = "auth:"
+                codec = StringCodec
+            }
+        )
+        runtime.create(versionedStoreSpec<String, String>("ledger") { codec = StringCodec })
+        runtime.create(
+            setStoreSpec<String, String>("index") {
+                namespace = "idx"
+                elementCodec = StringCodec
+            }
+        )
+        mapOf(
+            "user" to Keyspace("cocache:", "user"),
+            "order" to Keyspace("app:", "orders"),
+            "token" to Keyspace("auth:", "token"),
+            "ledger" to Keyspace("cocache:", "ledger"),
+            "index" to Keyspace("cocache:", "idx"),
+        ).forEach { (name, keyspace) ->
+            val admin = requireNotNull(runtime.admin(name))
+            admin.keyspace.assert().withFailMessage { "$name: ${admin.keyspace}" }.isEqualTo(keyspace)
+            admin.inspect("k").storageKey.assert().isEqualTo(keyspace.storageKey("k"))
+        }
     }
 
     @Test

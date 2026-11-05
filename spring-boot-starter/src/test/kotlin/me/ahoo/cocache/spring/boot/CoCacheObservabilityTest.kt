@@ -249,12 +249,20 @@ class CoCacheObservabilityTest {
             registry.count("cocache.misses", "revoked").assert().isZero()
 
             val runtime = context.getBean(CacheRuntime::class.java)
-            runtime.create(storeSpec<String, String>("direct") { codec = StringCodec })
+            runtime.create(
+                storeSpec<String, String>("direct") {
+                    keyPrefix = "ops:"
+                    namespace = "tokens"
+                    codec = StringCodec
+                }
+            )
             val endpoint = context.getBean(CoCacheEndpoint::class.java)
             requireNotNull(endpoint.cache("revoked")).layered.assert().isTrue()
             val direct = requireNotNull(endpoint.cache("direct"))
             direct.layered.assert().isFalse()
             direct.type.assert().isEqualTo("Store")
+            direct.keyPrefix.assert().isEqualTo("ops:")
+            direct.namespace.assert().isEqualTo("tokens")
         }
     }
 
@@ -285,6 +293,8 @@ class CoCacheObservabilityTest {
             endpoint.caches().map { it.name }.assert().containsExactly("index", "user")
             val report = requireNotNull(endpoint.cache("user"))
             report.type.assert().isEqualTo("Cache")
+            report.keyPrefix.assert().isEqualTo("cocache:")
+            report.namespace.assert().isEqualTo("user")
             report.layered.assert().isTrue()
             requireNotNull(endpoint.cache("index")).type.assert().isEqualTo("SetStore")
             report.localSize.assert().isEqualTo(1L)
