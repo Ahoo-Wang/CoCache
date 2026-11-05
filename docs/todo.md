@@ -23,7 +23,7 @@
        - [x] `CacheAdmin.keyspace`：运维接口（`cocache-core`）增加只读的 `keyspace`（key 前缀与命名空间），端点的缓存报告输出 `keyPrefix` 与 `namespace`。
   5. **发版**：按 CONTRIBUTING 发 `8.0.0`。changelog 中的预发布条目合并为 `v8.0.0`。线格式自此在 8.x 内冻结（architecture.md 的不变量），兼容性承诺开始生效。
 - [x] **声明的挂起视图接口的代理开销**（GA 前）：原因是 C2 的内联深度上限，不是反射；读取改经绑定到视图的方法句柄转发，代理每次命中多 2.0 ns（原来 10.3 ns），1 线程 218%、8 线程 210%，其余基准不变（[jmh-8.0-ga](investigations/jmh-8.0-ga.md)“后续”）。原来的记录：经 `CacheProxies.ViewHandler` 转发挂起方法，L2 命中从 5.33 ns 增加到 15.65 ns，每次多 10.3 ns（同步接口的代理多 2.5 ns），0 B/op，开销是转发时的 CPU，原因没有 profiling（#793）。异步接口走同一个 `forward` 只多 0.7 ns，所以要先查清挂起方法的转发慢在哪。目标：不超过同步接口代理的 2 倍（约 5 ns）。这是命中路径的改动，要附 `scripts/jmh-compare.sh -b l2HitViaSuspendingInterface,l2HitSuspending,l2HitViaInterface,l2HitViaAsyncInterface,l2HitMixed -t 1,8` 的表。
-- [ ] **下一个预发布版本**：上一条与下游试用中修复的问题。发布之后通知 CoSec 与 Wow 升级，继续试用。
+- [ ] **8.0.0-alpha.3**：声明的挂起接口的代理开销（#799）、`CacheAdmin.keyspace`（#800）与下游试用发现的文档更正（#792、#798）。发布之后通知 CoSec 与 Wow 升级，复跑各自的测试套件；没有新问题时下一步是 rc。
 
 ## 1a. 6.x 跟进
 
