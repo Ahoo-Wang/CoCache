@@ -451,7 +451,7 @@ internal class RedisConnections(
  *
  * 超时时 [RedisConnections.bounded] 调用 [cancel]，它同时以异常
  * 完成当前的 Lettuce 命令。Lettuce 写出前跳过已完成的命令（`CommandHandler` 的 `isWriteable`；断线期间缓冲的命令重连后同样跳过），
- * 所以尚未写出的命令不会在调用方看到失败之后才执行（稍后生效的 `put` 覆盖更新的值，`SetCache` 永不过期时错误永久保留）：
+ * 所以尚未写出的命令不会在调用方看到失败之后才执行（稍后生效的 `put` 覆盖更新的值，`SetStore` 永不过期时错误永久保留）：
  * 集群中等待建立节点连接（首次访问某节点、拓扑变化后）的命令 Lettuce 不计时，调用方的客户端（`RedisBackend.of`）断线时可能缓冲命令。
  * 已写出的命令无从撤回：Redis 照常执行，应答被丢弃。
  *
