@@ -43,7 +43,7 @@ write-behind（先写缓存、再异步落库）不适合任何类型：落库�
 | 错误 | 后果 | 怎么发现 |
 |------|------|----------|
 | 唯一副本声明成 `externallySourced()` 的 `Cache` | 默认 `ttl`（1 小时）之后过期；失败的 `invalidate` 稍后重试，可能删掉其间写入的值；Redis 驱逐检查不覆盖它 | 启动日志写出每个缓存的类型 |
-| 可重建的副本声明成 `Store` | Redis 丢了 key 之后读成“不存在”，直到有人重新写入；`delete` 失败抛出、不重试 | 存在匹配的 `CacheLoader` bean 时启动告警 |
+| 可重建的副本声明成 `Store` | Redis 丢了 key 之后读成“不存在”，直到有人重新写入；`delete` 失败抛出、不重试 | 存在匹配的 `CacheLoader` 或 `AsyncCacheLoader` bean 时启动告警 |
 | `Cache` 的 loader 没有匹配到 | 启动失败：`Cache` 必须有 loader，或声明 `externallySourced()` | 异常信息写出接口名 |
 
 ## 接口式缓存 {#interface}
@@ -207,7 +207,7 @@ Redis 中的每个 key 都是：
 
 | 部分 | 默认值 | 设置方式 |
 |------|--------|----------|
-| `keyPrefix` | `cocache:` | `@CoCache(keyPrefix)`、spec 的 `keyPrefix`，或 [`key-prefix` 配置项](./configuration.md#key-prefix) |
+| `keyPrefix` | `cocache:` | `@CoCache(keyPrefix)`、spec 的 `keyPrefix`，或 [`key-prefix` 配置项](./configuration.md#key-prefix)。配置项优先于声明，除非库[锁定](./configuration.md#locks)了前缀。 |
 | `namespace` | 缓存名 | `@CoCache(namespace)`、spec 的 `namespace` |
 | `encodedKey` | `key.toString()` | `@CoCache(keyExpression)`、spec 的 `keyEncoder` |
 
@@ -258,7 +258,7 @@ cacheSpec<String, Session>("SessionCache") {
 }
 ```
 
-返回非 `null` 时覆盖策略 `ttl`，且不加抖动；返回 `null` 时沿用策略。负缓存总是使用 `absentTtl`，墓碑使用 `tombstoneTtl`。`ttl` 配置项不影响 `ttlOf`。`StoreSpec`、`VersionedCacheSpec` 与 `VersionedStoreSpec` 同样接受 `ttlOf`。
+返回非 `null` 时覆盖策略 `ttl`，且不加抖动；返回 `null` 时沿用策略。负缓存总是使用 `absentTtl`，墓碑使用 `tombstoneTtl`。`ttl` 配置项不影响 `ttlOf`，唯一的例外是 `Cache` 上的 `cocache.overrides.cache.ttl` 限制它的结果（见[覆盖](./configuration.md#field-layers)），计入 `cocache.ttl.clamped`。`StoreSpec`、`VersionedCacheSpec` 与 `VersionedStoreSpec` 同样接受 `ttlOf`。
 
 ## 拒绝不可能存在的 key {#key-filter}
 
@@ -283,7 +283,7 @@ keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
 `Unknown` 是关于这一次读取的事实，不是关于数据的：它从不被缓存、从不广播，也不交给自己有数据源的调用方。`lookup(key).valueOrThrow()` 返回值或 `null`，遇到 `Unknown` 时抛出。在 Java 21 中对这个密封类型做穷尽的 `switch`；`as? Lookup.Present` 会静默地把 `Unknown` 当作不存在。
 
 - **谁会得到 `Unknown`**：没有数据源的读取（`Store`、`VersionedStore`、`SetStore`，以及外部来源的 `Cache` 上不带 loader 的读取），以及设置了 `readFailure = THROW` 时带数据源的读取。默认情况下带数据源的读取改为从数据源加载。
-- **`unknownRead`** 设在 `CacheSpec`（只限外部来源）、`StoreSpec` 或 `VersionedStoreSpec` 上，决定不带 loader 的读取遇到 `Unknown` 时返回什么：`THROW`（默认），或 `ABSENT`：返回 `null`（`Lookup.Absent`）且什么也不缓存，下一次读取重新访问 Redis。它不作用于 `getIfChanged`、`getVersioned` 与带 loader 的读取，`SetStore` 没有它。在 spec 中、接口上的 `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)`、[定制器](#customizer)或 `cocache.caches.[name].unknown-read` 中设置（见[配置](./configuration.md#policy-properties)），全局层都不设置它。
+- **`unknownRead`** 设在 `CacheSpec`（只限外部来源）、`StoreSpec` 或 `VersionedStoreSpec` 上，决定不带 loader 的读取遇到 `Unknown` 时返回什么：`THROW`（默认），或 `ABSENT`：返回 `null`（`Lookup.Absent`）且什么也不缓存，下一次读取重新访问 Redis。它与 `get` 一样作用于 `getVersioned`，不作用于 `getIfChanged` 与带 loader 的读取，`SetStore` 没有它。在 spec 中、接口上的 `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)`、[定制器](#customizer)或 `cocache.caches.[name].unknown-read` 中设置（见[配置](./configuration.md#policy-properties)），全局层都不设置它。
 - **`getAll`** 先完成其余每个 key（释放 lease、写回加载结果），再抛出 `CacheReadException`：`unknownKeys` 是没有答案的 key，`partialResult` 是已经得到的值。`lookupAll(keys)` 改为对每个 key 返回一个 `Lookup`，不抛出。
 - 加载超时（`load-timeout`）与被拒绝的加载（`load-max-concurrent`）不是 Redis 故障：它们抛出各自的异常，`lookup` 也一样。
 - 每个 `Unknown` 计入 `cocache.reads.unknown`（含按 `ABSENT` 换算的），那次 Redis 故障本身计入 `cocache.remote.failures`。
@@ -310,7 +310,7 @@ fun moneyCodec(): Codec<Money> = object : Codec<Money> {
 }
 ```
 
-载荷无法解码时（比如值类型做了不兼容的修改），有 loader 的缓存按未命中处理并重新加载。没有数据源的类型无从重新加载，改为抛出 `CacheReadException`，key 原样保留。仍能解码但含义变了的修改无法被发现：这类修改请同时更换 namespace 或 key 前缀。
+载荷无法解码时（比如值类型做了不兼容的修改），有 loader 的缓存按未命中处理并重新加载。没有数据源的读取（`Store`、`VersionedStore`、`SetStore`、不带 loader 读取的外部来源 `Cache`）无从重新加载，改为抛出 `CacheReadException`，key 原样保留。仍能解码但含义变了的修改无法被发现：这类修改请同时更换 namespace 或 key 前缀。
 
 Redis 中的值在编解码输出之前带有一个简短的二进制头。`redis-cli GET` 看到的是二进制内容；其它程序不得直接读写 CoCache 的 key。
 
@@ -323,7 +323,7 @@ Redis 中的值在编解码输出之前带有一个简短的二进制头。`redi
 | `ttl` | 永不过期 | 1 小时 |
 | `localMaxAge` | 30 秒 | 5 分钟 |
 | `absentTtl` | 10 秒 | 1 分钟 |
-| `tombstoneTtl` | 1 天（只用于 `VersionedStore`） | 值的 `ttl` |
+| `tombstoneTtl` | 1 天（只用于 `VersionedStore`） | 值的 `ttl`（只用于 `VersionedCache`） |
 
 L2 的寿命更短，是因为丢失的失效无法靠重新加载纠正：剩下的上界只有 L2 的寿命。需要更长时在声明中写出，或用 `cocache.defaults.store.*` 为所有权威缓存设置。寿命即语义的数据（会话、一次性验证码、幂等键）需要显式的 `ttl`：这些类型的 `ttl` 只能由声明与 `cocache.caches.[name].ttl` 设置，全局层都不能（见[各层能设置什么](./configuration.md#field-layers)）。
 
@@ -391,4 +391,4 @@ CoCache 宁可启动失败，也不运行一个无法按声明工作的缓存。
 | `cocache.caches.[name]` 设置了被库锁定的字段却没有在 `unlock` 中列出；定制器修改了被锁定的字段或数据来源 | 库依赖这个值（见[锁定](./configuration.md#locks)） |
 | 不带单位的时长配置项，如 `ttl: 60` | 写成 `60s`、`5m` 或 `PT2M`（见[时长](./configuration.md#durations)） |
 
-存在匹配的 `CacheLoader` bean 的权威类型接口可以启动，但会告警：这份数据也许应该是 `Cache`。key 类型的 `toString()` 检查发生在每种 key 类型第一次读取时，而不是启动时。
+存在匹配的 `CacheLoader` 或 `AsyncCacheLoader` bean 的 `Store` 或 `VersionedStore` 接口可以启动，但会告警：这份数据也许应该是 `Cache`。key 类型的 `toString()` 检查发生在每种类型的 key 第一次编码时（无论是读取还是写入），而不是启动时。

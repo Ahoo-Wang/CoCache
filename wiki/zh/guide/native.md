@@ -32,11 +32,11 @@ plugins {
 
 然后运行 `./gradlew nativeCompile`（Maven：`mvn -Pnative native:compile`）。CoCache 不需要任何额外配置。
 
-[`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example) 在 CI 中就是这样构建的（[`native.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/native.yml)）。该任务在 Redis 下启动可执行文件，依次调用接口式缓存、spec 缓存、带 `joinKeyExpression` 的 JoinCache、`@Cacheable(sync = true)` 与 actuator 端点。
+[`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/example) 在 CI 中就是这样构建的（[`native.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/native.yml)）。该任务在 Redis 下启动可执行文件，依次调用接口式缓存、spec 缓存、带 `joinKeyExpression` 的 JoinCache、`@Cacheable(sync = true)` 与 actuator 端点。
 
 ## AOT 在构建期固定的内容 {#build-time}
 
-AOT 在构建期执行应用的 bean 注册，并把结果写成生成代码。因此 `@EnableCoCache` 背后的注册器与 spec bean 的注册器只在构建时运行一次。启动时由生成的代码注册同样的缓存 bean，注册器不再运行。
+AOT 在构建期执行应用的 bean 注册，并把结果写成生成代码。因此 `@EnableCoCache` 背后的注册器与 spec bean 的注册器只在构建时注册一次缓存。启动时由生成的代码注册同样的缓存 bean：`@EnableCoCache` 背后的注册器不再运行，spec bean 的注册器发现 spec 缓存已经注册，不再处理它们。
 
 构建时固定：
 
@@ -77,15 +77,17 @@ starter 看不到你自己写的代码内部。下列情况需要自己登记提
   @RegisterReflectionForBinding(Product::class)
   class ProductCacheConfiguration {
       @Bean
-      fun productSpec(mapper: ObjectMapper): CacheSpec<String, Product> = cacheSpec("product") {
-          codec = jacksonCodec<Product>(mapper)
-      }
+      fun productSpec(mapper: ObjectMapper, repo: ProductRepository): CacheSpec<String, Product> =
+          cacheSpec("product") {
+              codec = jacksonCodec<Product>(mapper)
+              loader = CacheLoader { id -> repo.findById(id) }
+          }
   }
   ```
 
 - **多态的值。** 绑定提示覆盖声明的值类型及其属性可达的类型。如果值类型是抽象类或密封类、由 Jackson 在运行时选择子类型，把子类型也列在 `@RegisterReflectionForBinding` 中。
 - **自定义编解码。** 使用反射的 `Codec`（例如另一个序列化库）需要该库为你的值类型准备的提示。
-- **离开根对象的 SpEL。** 提示只覆盖根对象的公共成员。`#{owner.address.city}` 这样的模板还会读取 `Address`，`T(…)` 会调用其它类的静态方法：用 `@RegisterReflection(classes = [Address::class], memberCategories = [MemberCategory.INVOKE_PUBLIC_METHODS])` 或 `RuntimeHintsRegistrar` 登记这些类型。热点路径上，使用 `toString()` 合适的 key 类型可以完全避开 SpEL（[key](./caches.md#keys)）。
+- **离开根对象的 SpEL。** 提示只覆盖根对象的公共成员。`#{owner.address.city}` 这样的模板还会读取 `Address`，`T(…)` 会调用其它类的静态方法：用 `@RegisterReflection(classes = [Address::class], memberCategories = [MemberCategory.INVOKE_PUBLIC_METHODS])` 或 `RuntimeHintsRegistrar` 登记这些类型。原生镜像中 SpEL 编译器是关闭的，`keyExpression` 与 `joinKeyExpression` 模板总是解释执行。热点路径上，使用 `toString()` 合适的 key 类型可以完全避开 SpEL（[key](./caches.md#keys)）。
 - **不经 starter 创建的缓存。** 在自己的代码中调用 `CacheRuntime.create` 与 `CoCacheFactory.create` 不会得到生成的提示：自己登记代理接口与 key 类型的 `toString()`。
 
 loader、`TtlFunction`、`KeyEncoder` 与 `JoinKeyExtractor` bean 都是普通的函数调用，不需要提示。

@@ -16,9 +16,11 @@ Every application instance holds its own bounded L2 (Caffeine) for each cache. A
 | 1 command connection | Every cache operation, as one Lua script per call (`EVALSHA`), multiplexed. In Redis Cluster, Lettuce adds a connection per master it routes to. |
 | 1 subscription connection | Invalidation messages for every cache namespace on this instance. Pinged every `heartbeat`. |
 | `cocache-redis-heartbeat` thread | Heartbeat and resubscription |
-| `cocache-clock` thread | Updates the cached clock every 100 ms |
-| `cocache-refresh-N` threads | Refresh-ahead, at most 4, only when a cache uses `refresh-window` |
+| `cocache-clock` thread | Updates the cached clock every 100 ms. Absent when a `CacheClock` bean is set. |
+| `cocache-refresh-N` threads | Refresh-ahead, at most 4, only when a cache uses `refresh-window`. Absent when `cocache.refresh-executor` is set. |
 | `cocache-retry-1` thread | Background retries of invalidations that failed on Redis |
+| `cocache-worker-N` virtual threads | The default executor of the async and suspending views, one per task. None when `cocache.executor` names an executor. |
+| `cocache-observe-N` virtual threads | One per observed async or suspending load, only when a `LoadObserver` is set ([tracing](./observability.md#tracing)) |
 
 CoCache builds its own Lettuce client from `spring.data.redis.*`. It doesn't share your application's Redis connection factory, so its client options never change yours. Its connections only talk to masters, even if your application reads from replicas.
 
@@ -26,7 +28,7 @@ CoCache builds its own Lettuce client from `spring.data.redis.*`. It doesn't sha
 
 | Item | Requirement |
 |------|-------------|
-| Version | **Redis 7.0 or later.** The scripts use `TIME` and `SETRANGE`, and `sharded` mode uses `SPUBLISH`. Valkey 7.2+ implements the same commands. CI runs the Redis backend and starter tests on standalone Valkey 8. |
+| Version | **Redis 7.0 or later.** `sharded` mode uses `SPUBLISH`, and the [ACL](#acl) below is written for Redis 7, which checks the commands and keys a script uses against the caller's permissions. Valkey 7.2+ implements the same commands. CI runs the Redis backend and starter tests on standalone Valkey 8. |
 | Client | Lettuce, which the starter brings. Jedis is not supported, and adding Lettuce doesn't affect a Jedis-based application client. |
 | Scripting | `EVAL` / `EVALSHA` must be allowed. The scripts carry no shebang flags. |
 | Pub/Sub | `SUBSCRIBE` / `PUBLISH`, or `SSUBSCRIBE` / `SPUBLISH` in `sharded` mode |
@@ -95,7 +97,7 @@ In `pubsub` mode, the backend checks at startup whether a script may publish to 
 In `sharded` mode, or after the probe fell back, the publish is a separate command that runs after the write script. So:
 
 - A crash between the write and the publish loses that message.
-- A publish that fails after the write succeeded reaches the caller as a failed write. `put` throws `CacheWriteException` although Redis already holds the new value. `Cache.invalidate` follows `invalidate-failure`, and a retried invalidation publishes again; the authoritative types' deletes throw. Retrying the `put` is safe and publishes again.
+- A publish that fails after the write succeeded reaches the caller as a failed write. A `put` on a `Store` or `VersionedStore`, or a `Cache.put` with `invalidate-failure: throw`, throws `CacheWriteException` although Redis already holds the new value. Under the default `retry`, a `Cache.put` whose publish failed is compensated instead: the key is invalidated in the background and reloads from the source. `Cache.invalidate` follows `invalidate-failure`, and a retried invalidation publishes again; the authoritative types' deletes throw. Retrying the `put` is safe and publishes again.
 
 In both cases L1 is already correct, and instances that missed the message keep their L2 copy for up to `local-max-age`. The order of a write is in [Consistency](../architecture/consistency.md#writer-order).
 :::
@@ -155,7 +157,7 @@ Keys under an old prefix or namespace expire with their `ttl`. Delete them earli
 
 Several applications can share one Redis:
 
-- **Give each application its own key prefix**, for example `cocache.key-prefix: ${spring.application.name}:`. Without that, two applications with a cache of the same name read and overwrite each other's values. A cache that you deliberately share between applications needs the same prefix, namespace, codec, and channel mode everywhere.
+- **Give each application its own key prefix**, for example `cocache.key-prefix: "${spring.application.name}:"` (quoted in YAML, because a plain value can't end with `:`). Without that, two applications with a cache of the same name read and overwrite each other's values. A cache that you deliberately share between applications needs the same prefix, namespace, codec, and channel mode everywhere.
 - **The channel carries the prefix.** Applications with different prefixes never receive each other's messages, even when their namespaces coincide. Redis Pub/Sub ignores the database number, though: applications on different databases with identical prefixes and namespaces share a channel, and messages from the other application evict L2 copies needlessly. Use distinct prefixes.
 
 ## Security {#security}
@@ -169,7 +171,7 @@ CoCache needs these permissions on its Redis user:
 | Keys | Read and write on your key prefixes (`~cocache:*` by default). In `pubsub` mode also the probe key `cocache:!probe:{a}`, which `~cocache:*` already covers. |
 | Channels | `&{keyPrefix}inv:*` for each prefix (`&cocache:inv:*` by default). In `pubsub` mode also `&cocache:!probe:*`, or the backend falls back to non-atomic broadcast. |
 | Commands, direct | `EVALSHA`, `EVAL` (fallback after `NOSCRIPT`), `PING` (heartbeat), `PUBLISH`, `SUBSCRIBE`, `UNSUBSCRIBE`, or in `sharded` mode `SPUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, plus the connection commands (`HELLO`, `AUTH`, `CLIENT`, `SELECT`). `INFO` for the [startup eviction check](#maxmemory-policy) when you use a `Store`, `VersionedStore` or `SetStore`. |
-| Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `GET`, `GETRANGE`, `STRLEN`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HKEYS`, `HMGET`, `HSET`, `HDEL`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
+| Commands, inside scripts | Redis 7 checks these against the caller's ACL too: `PUBLISH` (in `pubsub` mode), `GET`, `GETRANGE`, `STRLEN`, `SET`, `DEL`, `PTTL`, `TYPE`, `HGETALL`, `HKEYS`, `HMGET`, `HSET`, `HDEL`, `HLEN`, `PEXPIRE`, `PERSIST`, `SETRANGE`, `TIME` |
 
 A starting point, checked against Redis 7.4 by running every CoCache script as this user:
 

@@ -9,7 +9,7 @@ Every cache has a suspending view next to its [async view](./async.md). It is th
 
 ## Dependencies {#install}
 
-No extra module. The suspending view interfaces are in `cocache-api` (they need only the Kotlin standard library), and their implementation, `SuspendingCacheLoader` and the `suspendingLoader` builders are in `cocache-core`, which brings `kotlinx-coroutines-core` with it (its version comes from Spring Boot's dependency management).
+No extra module. The suspending view interfaces are in `cocache-api` (they need only the Kotlin standard library), and their implementation, `SuspendingCacheLoader` and the `suspendingLoader` builders are in `cocache-core`, which brings `kotlinx-coroutines-core` with it (its version comes from Spring Boot's dependency management; without Spring Boot, the version CoCache's POM declares applies).
 
 ## Getting the view {#view}
 
@@ -47,7 +47,7 @@ class App
 suspend fun find(id: String) = userCache.get(id)
 ```
 
-- Every suspending view can be declared: `SuspendingCache`, `SuspendingVersionedCache`, `SuspendingStore`, `SuspendingVersionedStore` and `SuspendingSetStore`. Each declares the same cache as its synchronous type, so `@CoCache`, the loader beans and the configuration layers work as for a `Cache` interface ([interface caches](./caches.md#interface)). Without the starter, `CoCacheFactory.create(UserCache::class.java, spec)` returns the same proxy; the spec is the synchronous type's (`cacheSpec` for a `SuspendingCache`).
+- Every suspending view can be declared: `SuspendingCache`, `SuspendingVersionedCache`, `SuspendingStore`, `SuspendingVersionedStore` and `SuspendingSetStore`. Each declares the same cache as its synchronous type, so `@CoCache`, the loader beans and the configuration layers work as for a `Cache` interface ([interface caches](./caches.md#interface)). Without the starter, `CoCacheFactory(runtime).create(UserCache::class.java, spec)` returns the same proxy; the spec is the synchronous type's (`cacheSpec` for a `SuspendingCache`).
 - The proxy hands each call to the cache's suspending view as it is, so it takes the same path as `suspending()`: an L2 hit returns without suspending, exceptions arrive unwrapped (a checked exception thrown before the call suspends too), and [re-entry](#reentry) fails fast.
 - `async()` returns the cache's async view. Spring Cache works with the cache by name, so `@Cacheable` on a cache declared this way uses the `Cache` behind it.
 
@@ -78,7 +78,7 @@ val user = users.get(id) { key -> userClient.fetch(key) }
 ```
 
 The per-call loader runs **inside the load**, with the caller's context elements but without its `Job` or dispatcher:
-- It is called directly, without a coroutine of its own. It starts on the caller's thread and, from its first suspension, continues on CoCache's executor. Wrap blocking calls in `withContext(Dispatchers.IO)`.
+- It is called directly inside the load's coroutine, without a dispatcher of its own. That coroutine runs on CoCache's executor once it has suspended (with Redis, the read before the load already has), and on an observation thread when a `LoadObserver` is set (with tracing on), so don't rely on running on the caller's thread. Wrap blocking calls in `withContext(Dispatchers.IO)`.
 - `ThreadContextElement`s go with it, such as a tracing context, or MDC through `MDCContext` from `kotlinx-coroutines-slf4j` (plain MDC is a thread-local and doesn't follow a coroutine to another thread).
 - Other callers may share the load, so cancelling the caller or ending the caller's scope doesn't cancel it. Closing the runtime does.
 
@@ -94,8 +94,8 @@ Cancelling a coroutine that is waiting on the cache ends only that wait. A load 
 
 The suspending methods throw the original exception, the same instance even in coroutine debug mode: your loader's exception (or `SourceLoadCancelledException`, see [Data sources](#loader)), `CacheReadException`, `CacheWriteException`, `SourceLoadRejectedException`, `SourceLoadTimeoutException` and so on. They are never wrapped in `CompletionException`.
 
-In coroutine debug mode, which is on whenever the JVM runs with `-ea`, kotlinx-coroutines does two things:
-- it may rethrow a copy of the exception with a recovered stack trace (the original is its `cause`);
+In coroutine debug mode, which is on whenever the JVM runs with `-ea`, kotlinx-coroutines does two things in your own code:
+- when an exception crosses one of its boundaries (`withContext`, `Deferred.await`), it may rethrow a copy with a recovered stack trace (the original is its `cause`); CoCache's own methods always throw the original;
 - it adds ` @coroutine#N` to thread names.
 
 Production JVMs normally don't run with `-ea`. If your tests compare exception instances or thread names, set `kotlinx.coroutines.debug=off`.

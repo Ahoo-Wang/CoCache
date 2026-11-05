@@ -119,7 +119,7 @@ class UserCacheTest {
 
 | 开关 | 失败的操作 |
 |------|------------|
-| `failAll` | 所有 Redis 操作 |
+| `failAll` | L1 存储上的所有操作（失效频道照常工作） |
 | `failWrites` | Redis 写入：`put`、`putAll`、`invalidate`、集合成员写入、条件写入与按版本的写入。结果未知，与超时之后一样，所以 `Cache.put` 被补偿而不抛出 |
 | `rejectWrites` | 同样的写入，在到达被包装的后端之前以 `L1RejectedException` 拒绝：确定没有执行，所以 `CacheWriteException.outcomeUnknown` 为 `false` |
 | `failFill` | 把加载结果写入 Redis |

@@ -9,7 +9,7 @@ description: 在 Kotlin 协程中挂起地使用 CoCache：每种缓存类型上
 
 ## 依赖 {#install}
 
-不需要额外的模块。挂起视图的接口在 `cocache-api` 中（只需要 Kotlin 标准库），它们的实现、`SuspendingCacheLoader` 与 `suspendingLoader` 构建方法在 `cocache-core` 中；`cocache-core` 会带上 `kotlinx-coroutines-core`（版本由 Spring Boot 的依赖管理决定）。
+不需要额外的模块。挂起视图的接口在 `cocache-api` 中（只需要 Kotlin 标准库），它们的实现、`SuspendingCacheLoader` 与 `suspendingLoader` 构建方法在 `cocache-core` 中；`cocache-core` 会带上 `kotlinx-coroutines-core`（版本由 Spring Boot 的依赖管理决定；不用 Spring Boot 时，使用 CoCache 的 POM 声明的版本）。
 
 ## 拿到视图 {#view}
 
@@ -47,7 +47,7 @@ class App
 suspend fun find(id: String) = userCache.get(id)
 ```
 
-- 每种挂起视图都可以声明：`SuspendingCache`、`SuspendingVersionedCache`、`SuspendingStore`、`SuspendingVersionedStore` 与 `SuspendingSetStore`。它们声明的缓存与各自的同步类型相同，`@CoCache`、数据源 bean 与配置的各层都与 `Cache` 接口一样（见[接口式声明](./caches.md#interface)）。不用 starter 时，`CoCacheFactory.create(UserCache::class.java, spec)` 返回同样的代理，spec 是同步类型的（`SuspendingCache` 对应 `cacheSpec`）。
+- 每种挂起视图都可以声明：`SuspendingCache`、`SuspendingVersionedCache`、`SuspendingStore`、`SuspendingVersionedStore` 与 `SuspendingSetStore`。它们声明的缓存与各自的同步类型相同，`@CoCache`、数据源 bean 与配置的各层都与 `Cache` 接口一样（见[接口式声明](./caches.md#interface)）。不用 starter 时，`CoCacheFactory(runtime).create(UserCache::class.java, spec)` 返回同样的代理，spec 是同步类型的（`SuspendingCache` 对应 `cacheSpec`）。
 - 代理把每次调用原样交给缓存的挂起视图，走的就是 `suspending()` 的路径：L2 命中不挂起、直接返回，异常原样到达（在挂起之前抛出的受检异常也一样），[重入](#reentry)快速失败。
 - `async()` 返回缓存的异步视图。Spring Cache 按名称使用缓存，所以这样声明的缓存上的 `@Cacheable` 用的是它背后的 `Cache`。
 
@@ -78,7 +78,7 @@ val user = users.get(id) { key -> userClient.fetch(key) }
 ```
 
 调用级 loader **在这次加载之中**执行，带调用方协程上下文的元素，不带它的 `Job` 与 dispatcher：
-- 直接调用，不另起协程：在调用方线程上开始，第一次挂起之后在 CoCache 的执行器上继续。阻塞调用请包在 `withContext(Dispatchers.IO)` 中。
+- 在这次加载的协程中直接调用，没有自己的 dispatcher。该协程挂起过之后在 CoCache 的执行器上运行（使用 Redis 时，加载之前的读取已经挂起过），设置了 `LoadObserver`（开启追踪）时在观测线程上运行，所以不要依赖它在调用方线程上执行。阻塞调用请包在 `withContext(Dispatchers.IO)` 中。
 - `ThreadContextElement` 随之传递，如追踪上下文，或经 `kotlinx-coroutines-slf4j` 的 `MDCContext` 传递的 MDC（普通 MDC 是 ThreadLocal，不会跟着协程换线程）。
 - 加载可能被其它调用方共享，所以调用方被取消、调用方的作用域结束都不会取消它；运行时关闭会。
 
@@ -94,8 +94,8 @@ loader 的协程仍处于活动状态时，如果 loader 自己抛出 `Cancellat
 
 挂起方法抛出原始异常，即使在协程的调试模式下也是同一个实例：你的 loader 的异常（或 `SourceLoadCancelledException`，见[数据源](#loader)）、`CacheReadException`、`CacheWriteException`、`SourceLoadRejectedException`、`SourceLoadTimeoutException` 等，从不包装为 `CompletionException`。
 
-协程的调试模式在 JVM 带 `-ea` 时自动开启，这时 kotlinx-coroutines 会做两件事：
-- 可能抛出补全了堆栈的异常副本（原始异常是它的 `cause`）；
+协程的调试模式在 JVM 带 `-ea` 时自动开启，这时 kotlinx-coroutines 会在你自己的代码中做两件事：
+- 异常穿过它的边界（`withContext`、`Deferred.await`）时，可能抛出补全了堆栈的异常副本（原始异常是它的 `cause`）；CoCache 自己的方法总是抛出原始异常；
 - 在线程名后加上 ` @coroutine#N`。
 
 生产环境的 JVM 通常不带 `-ea`。测试中如果比较异常实例或线程名，请设置 `kotlinx.coroutines.debug=off`。

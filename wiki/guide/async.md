@@ -36,7 +36,7 @@ interface TokenStore : AsyncStore<String, Token>
 tokenStore.get("t").thenAccept { token -> ... }
 ```
 
-Every async view can be declared: `AsyncCache`, `AsyncVersionedCache`, `AsyncStore`, `AsyncVersionedStore` and `AsyncSetStore`. Each declares the same cache as its synchronous type ([interface caches](./caches.md#interface)), the proxy hands each call to the cache's async view, and `sync()` returns the cache itself. Without the starter, `CoCacheFactory.create(TokenStore::class.java, spec)` with a `storeSpec` returns the same proxy.
+Every async view can be declared: `AsyncCache`, `AsyncVersionedCache`, `AsyncStore`, `AsyncVersionedStore` and `AsyncSetStore`. Each declares the same cache as its synchronous type ([interface caches](./caches.md#interface)), the proxy hands each call to the cache's async view, and `sync()` returns the cache itself. Without the starter, `CoCacheFactory(runtime).create(TokenStore::class.java, spec)` with a `storeSpec` returns the same proxy.
 
 ## Async data sources {#loader}
 
@@ -74,7 +74,7 @@ The runtime has one executor for the async and suspending views: `cocache.execut
 
 - Readers waiting for another caller's load (sync or async) wait at most until that load has been in flight for `load-timeout`, then fail with `SourceLoadTimeoutException`. A reader arriving after that starts a new load instead of joining the stuck one.
 - An `AsyncCacheLoader` load may take at most `load-timeout` (30 seconds by default). Past it, the call fails with `SourceLoadTimeoutException`, the lease is released, and `cocache.load.timeouts` counts it. CoCache doesn't cancel your loader's future, and a late result is dropped. A `TimeoutException` your loader raises itself (for example from Reactor's `timeout`) is passed through unchanged.
-- Each Redis command is bounded by `cocache.redis.command-timeout` (2 seconds by default) and fails with the same `RedisException` as the synchronous path. The timer is Lettuce's timer wheel, so an async timeout can fire up to one tick (100 ms by default) late.
+- Each Redis command is bounded by `cocache.redis.command-timeout` (2 seconds by default), exactly as on the synchronous path: a timed-out command is a failed Redis call. A read with a source [degrades](./concepts.md#failures), a read without one is [`Lookup.Unknown`](./caches.md#unknown) (`get` throws `CacheReadException`), and a write fails with `CacheWriteException` whose cause is the `RedisException` (a `Cache.put` or `invalidate` under the default `invalidate-failure: retry` is [retried or compensated](./freshness.md#redis-down) instead). Both paths are timed by Lettuce's timer wheel, so a timeout can fire up to one tick (100 ms by default) late.
 - Synchronous loaders have no async timeout: a blocked thread can't be interrupted.
 
 ## Exceptions and cancellation {#exceptions}
@@ -96,7 +96,7 @@ Every cache also has a suspending view, `cache.suspending()`, and a spec can tak
 ## Operating it {#operations}
 
 - **Redis**: no new commands, scripts, keys or channels. The async view runs the same Lua scripts as the synchronous API, so ACL rules and the wire format don't change.
-- **Metrics**: the same counters as the synchronous API, plus `cocache.load.timeouts`. With tracing on, async loads produce the same `cocache.load` observation, and an engine timeout is tagged `outcome=timeout`. A custom `LoadObserver` sees async loads through the same `observe` method: CoCache calls it on an observation thread of its own, never on your thread, and the observation covers the whole load.
+- **Metrics**: the same counters as the synchronous API; `cocache.load.timeouts` also counts async loads that exceed `load-timeout`. With tracing on, async loads produce the same `cocache.load` observation, and an engine timeout is tagged `outcome=timeout`. A custom `LoadObserver` sees async loads through the same `observe` method: CoCache calls it on an observation thread of its own, never on your thread, and the observation covers the whole load.
 - **Large values**: the Redis backend reads and decodes a reply on the runtime's executor, never on Lettuce's I/O thread, but all of an instance's commands share one connection. A very large value delays the other replies on it (head-of-line blocking), for the synchronous API too. Keep values small, or split them.
 - **Performance**: an async L2 hit costs one extra small allocation and runs at roughly 90% of a synchronous hit. A closed loop that waits for every call is somewhat slower than the synchronous API under load, because each result switches to the runtime's executor. The gain shows when one thread keeps many requests in flight: with 32 in flight, a thread completes about 12 times as many Redis reads or writes as one blocking thread.
 

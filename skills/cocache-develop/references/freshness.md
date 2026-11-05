@@ -59,7 +59,7 @@ while (true) {
 - `putIfMatch(key, expected, value)`: one atomic compare-and-write; `expected = null` means "only if Redis holds no value" (absent, lease or negative entry). A conflict changes nothing and broadcasts nothing. A write behaves like `put` (TTL, fencing, no L2 fill).
 - `deleteIfMatch(key, expected)`: one atomic compare-and-delete; returns `ConditionalDelete.Deleted` or `Conflict(current)`. Synchronous and never retried, like `delete`.
 - `getIfChanged(key, known)`: `Unchanged` without transferring the value when its digest still equals `known`, otherwise `Present(value, digest)` or `Absent`. Use it to revalidate a value held in memory.
-- The digest is the SHA-256 of the payload (`Digest.algorithm`, `toString()` = `SHA-256:<hex>`; no `.sha1`), written by every `Store` write into the value's header. A value without a digest (written by another type) or a versioned value makes these methods throw (`ForeignFormatException` cause). `Store` reads, and `getIfChanged` returning a value, recompute the digest and fail on a mismatch.
+- The digest is the SHA-256 of the payload (`Digest.algorithm`, `toString()` = `SHA-256:<hex>`), written by every `Store` write into the value's header. A value without a digest (written by another type) or a versioned value makes these methods throw (`ForeignFormatException` cause). `Store` reads, and `getIfChanged` returning a value, recompute the digest and fail on a mismatch.
 - ABA: a digest compares content, not history. A value changed and changed back matches again; use a `VersionedStore` when writers must be ordered.
 - Neither touches L2. `getIfChanged` throws `CacheReadException` on a Redis failure regardless of `unknownRead`; `putIfMatch` and `deleteIfMatch` throw `CacheWriteException` and are not idempotent: when `outcomeUnknown` is `true`, re-read before retrying. Without atomic broadcast, a conflict whose digest is the caller's own value republishes the invalidation, so a replay repairs a lost publish.
 - Unreadable content: newer-format values and sets always throw, key untouched. A value the codec can't decode makes the read throw, and the write only conflicts on it. Content in another wire format (format 0 or 1, e.g. written by another program) throws too and is never treated as no value. Only `Store` has these methods; creating a `Store` fails on a backend without conditional writes.
@@ -83,7 +83,7 @@ store.deleteIfNewer(id, version)             // VersionedStore: ordered delete (
 - The versioned types have no write that drops the version except `purge` (a plain `DEL`) and expiry. Ordering holds only while the entry lives: tombstones live `tombstoneTtl` (the value `ttl` on a `VersionedCache` by default, 1 day on a `VersionedStore`), which must cover the redelivery window.
 - `evict` (`VersionedCache`) leaves an eviction marker (state `E`) for `tombstoneTtl`; it throws and is never retried, because a retried `DEL` would drop the version. `purge` drops the fence and throws on failure too.
 - A versioned loader that returns a plain `null` over versioned content is refused (`cocache.fill.unversioned.absent`, one warning per cache): return `Versioned(null, version)` for deletions.
-- Refresh-ahead: a `VersionedCache` refreshes ahead and `cocache.defaults.cache.refresh-window` applies to it when the declaration does not write `refreshWindow` (a `VersionedStore` has no source and never refreshes); a refresh writes back only a version at least as new as Redis holds, and keeps its copy otherwise; the local copy never moves back to an older version (a dropped older fill counts in `cocache.stale.discards`). Turn it off with `refreshWindow = off()` / `cocache.caches.[name].refresh-window: off` when the writer pushes every version.
+- Refresh-ahead: a `VersionedCache` refreshes ahead and `cocache.defaults.cache.refresh-window` applies to it when the declaration does not write `refreshWindow` (a `VersionedStore` has no source and never refreshes); a refresh writes back only a version at least as new as Redis holds, and keeps its copy otherwise; the local copy never moves back to an older version (a dropped older fill counts in `cocache.stale.discards`). Turn it off with `refreshWindow = off()` / `cocache.caches.[name].refresh-window: "off"` when the writer pushes every version.
 - Operator delete: the endpoint's per-key `DELETE` on a `VersionedCache` is `evict` (keeps the version), on a `VersionedStore` `purge` (drops it; needs `management.endpoint.cocache.allow-purge=true`, as does `?purge=true` on a `VersionedCache`). After `evict` the next read loads from the source, and a loader behind Redis is returned but not written (`cocache.fill.rejections`).
 - Creating a versioned type fails when the backend's store has no `versioned()` capability; Redis and in-memory support it. Coroutines: `suspendingVersionedLoader` on `versionedCacheSpec`.
 - `putIfNewer` throws `CacheWriteException` on Redis failure; replaying the same version is safe (returns `Stale`, and an equal version republishes the invalidation).
@@ -105,7 +105,7 @@ fun rename(id: String, name: String) {
 - `REQUIRES_NEW` invalidates when it ends; without an active transaction it invalidates immediately. Registrations from another synchronization's `afterCommit` or `afterCompletion` are not lost.
 - Only thread-bound transactions are visible. In a reactive transaction (R2DBC, `@Transactional` suspend functions) it invalidates immediately, before the commit; invalidate after the transaction ends instead.
 - It takes a `Cache` (derived copies only); for a join view, pass the component cache. Authoritative writes are synchronous: make them part of the operation, not an after-commit step.
-- `@CacheEvict` and `@CachePut` through the transaction-aware cache manager are deferred to after the commit too, but skipped on rollback (see `spring-cache.md`).
+- Through the transaction-aware cache manager, `@CacheEvict` is registered like `TransactionalInvalidator` (invalidated after the commit and after a rollback), and `@CachePut` is written after the commit and dropped on rollback (see `spring-cache.md`).
 
 ## Writers outside the application
 
@@ -120,6 +120,7 @@ ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7")   // non-d
 ```
 
 - Arguments are the cache's namespace (the cache name unless set) and encoded keys exactly as they appear in the storage key.
+- The key prefix defaults to `cocache:`. Pass the cache's effective prefix and namespace, which `GET /actuator/cocache/{name}` reports as `keyPrefix` and `namespace` (in process: `runtime.admin(name)?.keyspace`); with `cocache.key-prefix` set, the default prefix misses every key and the channel.
 - It deletes and broadcasts (one script in the default channel mode), does not retry, and throws on failure; calls are idempotent, so the caller retries. `close()` does not close the backend.
 - `broadcast(namespace, encodedKeys)` only publishes the invalidation: every instance drops its L2 copy and rereads Redis. Use it when Redis already holds the right value; it is the only external call that is safe on an authoritative namespace.
 
@@ -148,7 +149,7 @@ The defaults above are the derived types'. `Store`, `VersionedStore` and `SetSto
 - The window must be below `ttl - ttl-jitter` and below `local-max-age` (with defaults, under 5 minutes), or startup fails.
 - Only caches with a source refresh (`Cache` with a loader, `VersionedCache`); authoritative types and negative entries do not. A failed or skipped refresh only logs; values still expire normally.
 - Refreshes run on a bounded pool (at most 4 threads, queue 1024); overflow counts in `cocache.refresh.rejections`.
-- Turn a declared window off with `cocache.caches.[name].refresh-window: off`, `@CoCache(refreshWindow = 0)`, or `refreshWindow = off()` in a customizer. A window that a global layer makes too long is turned off for that cache with a warning; one that the declaration or `caches.[name]` makes too long fails startup.
+- Turn a declared window off with `cocache.caches.[name].refresh-window: "off"` (quoted: YAML reads a bare `off` as `false`), `@CoCache(refreshWindow = 0)`, or `refreshWindow = off()` in a customizer. A window that a global layer makes too long is turned off for that cache with a warning; one that the declaration or `caches.[name]` makes too long fails startup.
 
 ## Redis down during a write
 

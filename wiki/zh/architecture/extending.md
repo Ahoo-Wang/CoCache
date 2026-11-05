@@ -30,7 +30,7 @@ interface CoherenceBackend : AutoCloseable {
 L1 存储与失效通道是同一个对象的两个面：串行化写入的一方也应该发出失效。连接与线程属于后端，随它关闭：存储没有 `close`。
 
 - **`Keyspace`**。`store`、`subscribe` 与 `publish` 接收 `Keyspace(keyPrefix, namespace)`。它的 `storagePrefix` 是 `{keyPrefix}{namespace}:`，构造时拒绝 `[A-Za-z0-9._-]+` 之外的命名空间。每个 keyspace 一个频道，名字由前缀与命名空间共同构成（Redis 后端是 `{keyPrefix}inv:{namespace}`）：命名空间相同、前缀不同的两个 keyspace 不能共用频道。有访问控制的后端在 `store` 中检查自己能否在该 keyspace 的频道上发布，不能时抛出，而不是让每次写入在修改 L1 之后才在广播处失败。Redis 后端向那里发布一个不带 key 的帧。
-- **`atomicBroadcast`**。为 `true` 时，存储的每个写方法都必须在修改的同一个原子步骤中发布它的 `frame`。为 `false` 时，引擎在每次写入成功之后调用 `channel.publish(keyspace, frame)`。原子更好：写入与发布之间的崩溃会丢失消息。只声明你能保证的能力，TCK 会分别检查两种情况。
+- **`atomicBroadcast`**。为 `true` 时，存储的每个写方法都必须在修改的同一个原子步骤中发布它的 `frame`。为 `false` 时，引擎在每次写入成功或结果未知之后调用 `channel.publish(keyspace, frame)`。原子更好：写入与发布之间的崩溃会丢失消息。只声明你能保证的能力，TCK 会分别检查两种情况。只广播的失效（`ExternalInvalidator.broadcast`、端点的 [`POST`](../operations/observability.md#broadcast-key)）在所有后端上都调用 `publish`，所以无论 `atomicBroadcast` 是什么，它都必须可用。
 - **`format`**。引擎把它与 `L1Read.Hit.format` 比较：`0` 表示不是你的协议写入的内容，引擎按损坏处理。引擎只读与你的 `format` 完全相同的内容：更低的格式与 `0` 一样是读不懂的内容；更高的格式一律绕开，既不回收也不写回。读到带你不认识的特性（未知的标志位或状态）的内容时报告为更高格式，不能报成更低的格式，否则有 loader 的缓存会回收它。内置后端写入 `2`。你的格式只能通过两阶段升级递增。
 
 ### `L1Store` {#l1-store}
@@ -92,7 +92,7 @@ interface SetL1Store {
 |------|------|
 | `read` | key 不存在且 `lease != null`：放置 lease（`lease.ttl` 后到期），返回 `Miss(true)`。不存在且没有 lease：返回 `Miss(false)`，不写入任何内容。处于 lease 状态：返回 `Leased(remaining)`。有值：返回带剩余 TTL 的 `Hit`。标量值的剩余 TTL `> 0` 且 `≤ refresh.window`，并且没有令牌或令牌签发早于 `refresh.tokenTtl`：写入刷新令牌（保留 TTL），返回 `refreshGranted = true`。永不过期的值、带摘要的值不授予令牌；带版本的值照常授予。淘汰标记（`evictKeepingVersion`）在没有 lease 请求时读作 `Miss(false)`；有 lease 请求、且没有令牌或令牌签发早于 `lease.ttl` 时，原地在其上放置 lease（保留版本与 TTL），返回 `Miss(true)`，否则返回 `Leased(lease.ttl 减去令牌已签发的时长)`。不是你写入的内容：返回 `Hit(…, format = 0)`。两个请求都为 `null` 时，`read` 是纯读取，不写入任何内容 |
 | `readAll` | 对每个 key 执行 `read`，只为 `leases` 中的 key 申请 lease。返回全部 key。失败时释放这次调用可能取得的 lease（见[下文](#failures)） |
-| `fill` / `fillAll` | 仅当 key 当前持有的正是 `fill.token`（作为 lease 或刷新令牌）时写入，并把到期时间重设为 `fill.ttl`。写入时返回 `Filled(advanced = false)`，令牌不匹配时返回 `Rejected(currentVersion = null)`；`fillAll` 按顺序为每一项返回一个结果。`versioned()` 非 `null` 的存储把 `fill.version` 与内容一起保存：带版本的 loader 返回的 `Versioned(null, n)` 以带版本 `n` 的 `Absent` 到达，必须写成与 `putIfNewer` 相同的墓碑。key 中带版本时（持有刷新令牌的带版本值、持有 lease 的淘汰标记），在同一个原子步骤中按版本规则：`fill.version` 更旧或为 `NO_VERSION` → 清零令牌，保留内容与到期时间，返回 `Rejected(当前版本)`；值上版本相等 → 写入，不广播，`Filled(false)`；更新，或淘汰标记上被接受的填充 → 写入，并广播一帧（只含 `fill.key`，来源为 `fill.token.node`），`Filled(true)` |
+| `fill` / `fillAll` | 仅当 key 当前持有的正是 `fill.token`（作为 lease 或刷新令牌）时写入，并把到期时间重设为 `fill.ttl`。写入时返回 `Filled(advanced = false)`，令牌不匹配时返回 `Rejected(currentVersion = null)`；`fillAll` 按顺序为每一项返回一个结果。`versioned()` 非 `null` 的存储把 `fill.version` 与内容一起保存：带版本的 loader 返回的 `Versioned(null, n)` 以带版本 `n` 的 `Absent` 到达，必须写成与 `putIfNewer` 相同的墓碑。key 中带版本时（持有刷新令牌的带版本值、持有 lease 的淘汰标记），在同一个原子步骤中按版本规则：`fill.version` 更旧或为 `NO_VERSION` → 清零令牌，保留内容与到期时间，返回 `Rejected(当前版本)`；值上版本相等 → 写入，不广播，`Filled(false)`；更新，或淘汰标记上被接受的填充 → 写入，广播一帧（只含 `fill.key`，来源为 `fill.token.node`；仅当 `atomicBroadcast` 为 `true` 时，否则由引擎发布），`Filled(true)` |
 | `release` | 令牌与 lease 匹配：删除 key。令牌与值上的刷新令牌、或淘汰标记上的 lease 匹配：清除令牌，保留内容及其 TTL。否则什么也不做 |
 | `reclaim` | 仅当 key 当前内容的指纹等于 `observed`，且不是 lease、带版本的内容、淘汰标记或带摘要的值时，把它替换为 lease。返回是否替换。绝不删除已经变化的内容 |
 | `put` | 覆盖任何状态，销毁任何令牌，设置到期时间，广播 `frame`。`Members` 会替换整个集合 |
@@ -101,9 +101,9 @@ interface SetL1Store {
 | `addMembers` | 一次原子的检查加写入。key 是本协议的集合：加入成员。key 不存在、负缓存或 lease：替换为只含这些成员的集合。两种情况都销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播，返回 `null`。不是本协议集合的内容（不是你写入的内容、标量值、比你的格式更高的集合）：什么都不改、不广播，返回该内容的格式版本（不是你写入的内容为 `0`）。`SetStore` 没有数据源，覆盖这类内容就是删除唯一副本，因此没有不检查的元素写入 |
 | `removeMembers` | 检查同 `addMembers`。key 是本协议的集合：移除成员，集合变空时删除 key，否则重设到期时间。key 不存在、负缓存或 lease：不修改。这两种情况都广播并返回 `null`。读不懂的内容：什么都不改、不广播，返回其格式版本 |
 | `readIfChanged` | 纯读取，同不带请求的 `read`。本协议的标量值且保存的摘要等于 `known`：返回 `Unchanged(format)`，不回传载荷。其它带摘要的值：`Changed(envelope, format)`，信封带保存的摘要与写入标识。key 不存在、lease 或不带版本的负缓存：`Absent`。其余内容（不是你写入的内容、集合、更高的格式、没有摘要的值、带版本的内容、淘汰标记）：`Unreadable(format)`。比较保存的摘要，不重算，只读比较所需的部分，未变的值无论多大成本都相同 |
-| `putIfMatch` | 一次原子的比较加写入。`expected == null` 且 key 中没有值（不存在、lease、不带版本的负缓存），或 key 中是保存的摘要等于 `expected` 的值时匹配。`readIfChanged` 视为 `Unreadable` 的内容：返回 `Unreadable(format)`。`envelope.digest` 原样保存。它从不视为没有值，否则 `expected == null` 会覆盖它，滚动升级期间旧实例还会把更新的值降级覆盖。匹配时按 `put` 写入（销毁令牌、设置到期时间、广播 `frame`），返回 `Written`；否则什么都不改、不广播，返回 `Conflict(当前值的摘要，或 null)`。先读后写会让两个并发的写入方都成功：存储不能原子地比较并写入时，让 `conditional()` 返回 `null` |
+| `putIfMatch` | 一次原子的比较加写入。`expected == null` 且 key 中没有值（不存在、lease、不带版本的负缓存），或 key 中是保存的摘要等于 `expected` 的值时匹配。`readIfChanged` 视为 `Unreadable` 的内容：返回 `Unreadable(format)`。它从不视为没有值，否则 `expected == null` 会覆盖它，滚动升级期间旧实例还会把更新的值降级覆盖。`envelope.digest` 原样保存。匹配时按 `put` 写入（销毁令牌、设置到期时间、广播 `frame`），返回 `Written`；否则什么都不改、不广播，返回 `Conflict(当前值的摘要，或 null)`。先读后写会让两个并发的写入方都成功：存储不能原子地比较并写入时，让 `conditional()` 返回 `null` |
 | `deleteIfMatch` | 一次原子的比较加删除。只匹配保存的摘要等于 `expected`（从不为 `null`）的值。匹配时删除 key、销毁任何令牌、广播 `frame`，返回 `Written`。否则什么都不改、不广播，返回 `Conflict(当前值的摘要)`；key 中没有值（不存在、lease、不带版本的负缓存）时返回 `Conflict(null)`。`readIfChanged` 视为 `Unreadable` 的内容：返回 `Unreadable(format)` |
-| `putIfNewer` | 一次原子的按版本比较加写入。key 的版本是与标量值或负缓存一起保存的版本；没有版本的值或负缓存、lease、不存在的 key 都视为 `NO_VERSION`，总是写入。`version` 更大时：按 `put` 写入 `envelope`（标量值，或 `invalidateIfNewer`、`deleteIfNewer` 给出的表示墓碑的 `Absent`），与它一起保存 `version`，返回 `Written`。否则什么都不改、不广播，返回 `Stale(current)`。淘汰标记按它的版本比较。读不懂的内容按 `evictKeepingVersion` 的规则分类。`reclaim` 必须拒绝带版本的内容，因为 lease 放不下版本。`fill`、`put` 与 `putAll` 保存 `Envelope.Scalar.version`，`read` 原样返回；`putIfMatch` 写入没有版本的值。`version` 从不是 `Versioned.NO_VERSION`：在修改任何东西之前以 `IllegalArgumentException` 拒绝它 |
+| `putIfNewer` | 一次原子的按版本比较加写入。key 的版本是与标量值或负缓存一起保存的版本；没有版本的值或负缓存、lease、不存在的 key 都视为 `NO_VERSION`，总是写入。`version` 更大时：按 `put` 写入 `envelope`（标量值，或 `invalidateIfNewer`、`deleteIfNewer` 给出的表示墓碑的 `Absent`），与它一起保存 `version`，返回 `Written`。相等时：什么都不改，但在同一个原子步骤中广播 `frame`（受令牌保护的填充可能写入了这个版本而没有广播），返回 `Stale(current)`。更旧时：什么都不改、不广播，返回 `Stale(current)`。淘汰标记按它的版本比较。读不懂的内容按 `evictKeepingVersion` 的规则分类。`reclaim` 必须拒绝带版本的内容，因为 lease 放不下版本。`fill`、`put` 与 `putAll` 保存 `Envelope.Scalar.version`，`read` 原样返回；`putIfMatch` 写入没有版本的值。`version` 从不是 `Versioned.NO_VERSION`：在修改任何东西之前以 `IllegalArgumentException` 拒绝它 |
 | `evictKeepingVersion` | 一个原子步骤。带版本的内容（值、墓碑、淘汰标记）：替换为带这个版本、没有令牌的淘汰标记，到期时间设为 `ttl`，广播 `frame`，返回 `Evicted`。既没有版本也没有摘要的内容（普通的值或负缓存、lease、不存在）：删除并广播，返回 `Evicted`。带摘要的值：什么都不改，返回 `Authoritative`。读不懂的内容（不是你写入的、集合、更高的格式）：什么都不改，返回 `Unreadable(format)` |
 
 对所有方法：
@@ -199,7 +199,7 @@ TCK 的 `HookedBackend` 就是这样实现的。
 ```kotlin
 interface InvalidationChannel {
     fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription  // 阻塞，每个缓存一次
-    suspend fun publish(keyspace: Keyspace, frame: ByteArray)  // 仅在 atomicBroadcast == false 时被调用
+    suspend fun publish(keyspace: Keyspace, frame: ByteArray)  // 写入之后仅在 atomicBroadcast == false 时调用；只广播的失效在所有后端上都调用
 }
 interface InvalidationListener {
     fun onInvalidated(keys: List<String>, origin: NodeId)
@@ -234,7 +234,7 @@ testImplementation("me.ahoo.cocache:cocache-test")
 | `MultiNodeSpec` | 三个运行时共用你的后端：失效先于 lease、晚于 lease 且另一实例正在等待、晚于 fill 而早于写 L2；其它实例的写入落在读取与 L2 填充之间；不同实例的并发 `put`（非原子后端上事件逆序到达）；失效重试期间的未命中；全部实例中每个 key 只回源一次、只刷新一次 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)` |
 | `FaultSpec` | L1 故障下的后端：存储失败期间副本以 `degraded-local-max-age` 限龄、fill 失败及其 lease、`Store.delete` 失败时抛出而不重试、放弃或溢出队列的失效重试、已生效却报错且可安全重试的 `put` 与 `invalidate`；原子广播的后端上，结果未知、迟到执行的 `put` 经自己的广播淘汰写入方节点的旧副本；（可选）断线期间被拒绝的写入在重连后不被重放；（可选）客户端取消的命令是 L1 故障，不是取消 | `createBackend()`、`expectedCapabilities`、`clock`、`elapse(duration)`；可选 `disconnect()` 与 `commandCancellation()` |
 
-套件只有一套，适用于所有 API。每个套件都有 `protected open val access: CacheAccess`，后端只需要默认的 `CacheAccess.SYNC`。阻塞、[异步](../guide/async.md)与挂起三种 API 的行为（取消、future 在哪个线程上完成、等待不占线程等）属于核心，由 CoCache 自己的测试覆盖。CoCache 覆盖 `access`，经异步视图（`CacheAccess.ASYNC`）重跑这些套件；你也想在自己的后端上得到这部分覆盖时，可以同样覆盖它。
+套件只有一套，适用于所有 API。每个引擎套件（`EngineSpec`、`VersionedSpec`、`SetEngineSpec`、`MultiNodeSpec`、`FaultSpec`）都有 `protected open val access: CacheAccess`，后端只需要默认的 `CacheAccess.SYNC`。`BackendProtocolSpec` 直接调用存储，没有 `access`。阻塞、[异步](../guide/async.md)与挂起三种 API 的行为（取消、future 在哪个线程上完成、等待不占线程等）属于核心，由 CoCache 自己的测试覆盖。CoCache 覆盖 `access`，经异步视图（`CacheAccess.ASYNC`）重跑这些套件；你也想在自己的后端上得到这部分覆盖时，可以同样覆盖它。
 
 Java 后端对 `FutureL1Store.adapt` 返回的存储运行同样的套件；CoCache 也这样在内存后端上运行整套 TCK。
 
@@ -314,7 +314,7 @@ class MyFaultTest : FaultSpec() {
 }
 ```
 
-每个用例经 `createBackend()` 新建后端。你的后端会打开连接或线程时，请把 `closesBackend` 覆盖为 `true`，套件会在每个用例结束后关闭它；默认为 `false`，因为后端可能是共享的。`BackendProtocolSpec` 总是关闭自己创建的后端，不受 `closesBackend` 控制。
+每个用例经 `createBackend()` 新建后端。你的后端会打开连接或线程时，请把 `closesBackend` 覆盖为 `true`，套件会在每个用例结束后关闭它；默认为 `false`，因为后端可能是共享的。`BackendProtocolSpec` 没有 `closesBackend`，总是关闭自己创建的后端。
 
 用构建工具的常规测试任务运行（JUnit 6）。`cocache-redis` 把 `BackendProtocolSpec`、`EngineSpec`、`MultiNodeSpec`、`FaultSpec` 与 `VersionedSpec` 在三种模式下各跑一遍：经典 Pub/Sub、非原子（用 ACL 禁止探测频道）与 sharded；`SetEngineSpec` 只在经典 Pub/Sub 下运行，异步视图在经典 Pub/Sub 上把每个引擎套件重跑一遍。`FaultSpec` 的断线与取消用例在单机经典 Pub/Sub 上运行，`cocache-redis` 另有清空脚本缓存之后 `NOSCRIPT` 回退的用例。你的后端支持几种模式，就对每种模式都跑这些套件。
 
@@ -327,7 +327,7 @@ interface Codec<V> {
 }
 ```
 
-- **`decode` 遇到读不了的字节时抛出异常**。引擎随后按损坏处理：未命中、条件回收、重新加载。不要返回默认对象。
+- **`decode` 遇到读不了的字节时抛出异常**。有数据源的读取随后按损坏处理：未命中、条件回收（从不回收带摘要的值）、重新加载。没有数据源的读取以 `CacheReadException` 失败。不要返回默认对象。
 - **线程安全、无状态**。一个实例服务所有线程。
 - **从不处理 `null`**。负缓存由引擎处理。
 - **集合元素的编解码器必须是规范的**。`SetStore` 的成员按编码后的字节比较，所以相等的元素必须总是编码成相同的字节。字段顺序不稳定的 JSON 会破坏这一点。

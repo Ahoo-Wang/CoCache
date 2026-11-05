@@ -44,7 +44,7 @@ userCache.putAll(users.associateBy { it.id }, Duration.ofMinutes(5))   // one ex
 ```
 
 - **No stale write-back.** The batch is one write: this instance drops its L2 copies of every key before and after Redis is written, and the overwrite destroys any load lease. A load that started before `putAll` can't cache its old value, neither in L2 nor in Redis. Like `put`, `putAll` doesn't fill this instance's L2.
-- **One round trip, one message.** Redis receives one script that writes every key and publishes one invalidation message for all of them. In Redis Cluster, keys are grouped by slot and split at `cocache.redis.invalidate-batch-size`, and each group runs its own script concurrently. Each key is written atomically, but the batch as a whole is not.
+- **One script per group, one message per script.** Keys are grouped by slot (in Redis Cluster only) and split at `cocache.redis.invalidate-batch-size` (default 512). Each group is one script that writes its keys and publishes one invalidation message for them (without atomic broadcast, the message is a separate publish), and the groups run concurrently. So a batch of up to 512 keys on standalone Redis is one round trip. Each key is written atomically, but the batch as a whole is not.
 - **Encoded-key collisions:** if two keys encode to the same storage key, the later entry wins. An empty map does nothing.
 - **Failures:** like `put`, a `Cache.putAll` whose outcome is unknown queues an invalidation of its keys instead of throwing ([below](#redis-down)); one that definitely didn't run throws `CacheWriteException`. A `Store.putAll` always throws, and some keys may already be written. Retrying is safe.
 - **`Store.putAll`** writes each value with a writer id and digest, like `Store.put`. **`SetStore.putAll`** replaces each set, and an empty set clears its key, exactly like `put`.
@@ -209,10 +209,10 @@ cocache:
 - The other instances keep serving their copy and read Redis again after a back-off: `lease-wait` (at least 100 ms), and never more than half the old value's remaining lifetime. So they pick up the reloaded value before the old one expires, and while the reload runs they read Redis a bounded number of times, however hot the key is.
 - A value that lives no longer than the window, from a short `ttlOf` or `put(key, value, ttl)`, is not refreshed: it would start inside the window, and every hit would reload it. It expires and reloads on the next miss. Likewise, an instance that first reads a value inside its window doesn't start a refresh for that copy; copies on other instances still do.
 - Only caches with a loader refresh. Negative entries are not refreshed.
-- A failed or skipped refresh only logs. The value expires normally, so staleness bounds never depend on refresh.
+- A failed refresh only logs. A due refresh that didn't load, because another instance held the refresh token or the copy got no refresh point, counts in `cocache.refresh.skipped`. The value expires normally, so staleness bounds never depend on refresh.
 - Refreshes run on a bounded pool (at most 4 threads, queue of 1024). When it is full, refreshes are skipped and counted in `cocache.refresh.rejections`. [`cocache.refresh-executor`](./configuration.md#executors) names another `Executor` bean to use instead.
 
-To turn off a window that a declaration enables, use any of: `refresh-window: off` under `cocache.caches.[name]` ([properties](./configuration.md#policy-properties)), `@CoCache(refreshWindow = 0)`, or `refreshWindow = off()` in a [customizer](./caches.md#customizer). A window that a global layer makes too long for `ttl` or `local-max-age` is turned off for that cache, with a warning ([validation](./configuration.md#validation)).
+To turn off a window that a declaration enables, use any of: `refresh-window: "off"` under `cocache.caches.[name]` ([properties](./configuration.md#policy-properties)), `@CoCache(refreshWindow = 0)`, or `refreshWindow = off()` in a [customizer](./caches.md#customizer). A window that a global layer makes too long for `ttl` or `local-max-age` is turned off for that cache, with a warning ([validation](./configuration.md#validation)).
 
 ## When Redis is down during a write {#redis-down}
 
@@ -227,7 +227,7 @@ A write whose outcome is unknown can land later and then broadcasts its invalida
 
 - The default (`invalidate-failure: retry`) **doesn't throw**: deleting a derived copy is always safe, and invalidations usually run after a commit, where an exception can't roll anything back. The delete goes to a bounded retry queue: up to 8 attempts, backing off from 100 ms to 10 s, at most 10 000 pending. This holds for externally sourced caches too.
 - While the retry is pending, misses for that key on this instance skip Redis (which still holds the old value) and load from the source. An externally sourced cache reads `null` meanwhile, as an unfilled answer rather than a negative entry, so `get(key, loader)` still calls its loader.
-- If the retries are exhausted or the queue overflows, CoCache logs an error and counts `cocache.invalidations.dropped`. Other instances can then reload the old value from Redis until it expires, so the bound is the value's remaining TTL. With `ttl: forever` there is no bound: invalidate again once Redis is back.
+- If the retries are exhausted or the queue overflows, CoCache logs an error and counts `cocache.invalidations.dropped`. Every instance, this one included, can then reload the old value from Redis until it expires, so the bound is the value's remaining TTL. With `ttl: forever` there is no bound: invalidate again once Redis is back.
 - With `invalidate-failure: throw`, the call throws `CacheWriteException` instead, and you decide.
 
 **`Cache.put`** and **`putAll`** on a derived cache follow `invalidate-failure` too:

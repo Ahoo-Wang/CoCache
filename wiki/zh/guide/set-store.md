@@ -69,7 +69,7 @@ val members: Set<String> = online[roomId] // 不存在时为空集合
 
 - 写入抛出 `CacheWriteException`，从不在后台重试。`outcomeUnknown` 说明写入是否可能已经到达 Redis。重试 `add` 或 `remove` 是安全的；重试 `put` 是一次新的替换。
 - Redis 读失败是 [`Unknown`](./caches.md#unknown)：`get` 抛出 `CacheReadException`，`lookup` 返回 `Unknown`，`getAll` 抛出带 `unknownKeys` 与 `partialResult` 的异常。集合没有可以退回的安全的“不存在”答案，所以没有 `unknownRead`。
-- **读不懂的内容会抛出。** 编解码无法解码的元素使读取抛出异常，更高格式写入的集合抛出 `ForeignFormatException`（一个 `IllegalStateException`）。本版本读不懂的格式的内容（比如同一个 key 上的 Redis 原生 Set）使读取抛出 `CacheReadException`；在它或更高格式写入的集合上调用 `add` 或 `remove` 抛出 `CacheWriteException`，key 不变。只有 `put` 会替换它。`SetStore` 从不回收这样的内容（见[无法读取的载荷](../operations/troubleshooting.md#corrupt-payloads)）。
+- **读不懂的内容抛出 `CacheReadException`。** 编解码无法解码的元素、更高格式写入的集合（cause 为 `ForeignFormatException`），以及本版本读不懂的格式的内容（比如同一个 key 上的 Redis 原生 Set），都使读取抛出它；在这样的内容上调用 `add` 或 `remove` 抛出 `CacheWriteException`，key 不变。只有 `put` 会替换它。`SetStore` 从不回收这样的内容（见[无法读取的载荷](../operations/troubleshooting.md#corrupt-payloads)）。
 
 ## 持久性 {#durability}
 
