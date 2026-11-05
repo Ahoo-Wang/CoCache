@@ -189,6 +189,8 @@ A cache report:
 {
   "name": "UserCache",
   "type": "Cache",
+  "keyPrefix": "cocache:",
+  "namespace": "UserCache",
   "layered": true,
   "ignoredConfiguration": [],
   "policy": [
@@ -218,7 +220,7 @@ A cache report:
 }
 ```
 
-`type` is the cache's API type (`Cache`, `VersionedCache`, `Store`, `VersionedStore` or `SetStore`). `layered: false` marks a cache created directly with `CacheRuntime.create`: configuration doesn't apply to it, and `ignoredConfiguration` lists the `cocache.caches.[name]` entries that name it ([CoCacheFactory](../guide/caches.md#factory)).
+`type` is the cache's API type (`Cache`, `VersionedCache`, `Store`, `VersionedStore` or `SetStore`). `keyPrefix` and `namespace` are the cache's keyspace (`CacheAdmin.keyspace`), with [`cocache.key-prefix`](../guide/configuration.md#key-prefix) and `cocache.caches.[name].key-prefix` already applied: its Redis keys are `{keyPrefix}{namespace}:{key}`, where `{key}` is the [encoded key](#encoded-key). Build storage keys and [ACL](./index.md#acl) key patterns from them instead of repeating each cache's prefix. `layered: false` marks a cache created directly with `CacheRuntime.create`: configuration doesn't apply to it, and `ignoredConfiguration` lists the `cocache.caches.[name]` entries that name it ([CoCacheFactory](../guide/caches.md#factory)).
 
 `policy` lists every field that applies to the cache, in the order of the [policy properties](../guide/configuration.md#policy-properties), with its effective value and the layer it came from (`source`; [sources](../guide/configuration.md#policy-report)). `detail`, when present, says more: the value before `cocache.overrides` tightened it, the customizer's class, the library whose constraint changed it, or why the validation chain turned the refresh window off. `skippedConfiguration` lists the global-layer entries skipped for this cache, with the `layer` and the `reason`: not applicable to its type, not allowed in that layer, or locked by a library. An unlayered cache has both lists empty. The `metrics` keys map to the meters in order: `localHits` is `cocache.hits{level=l2}` (present only when the L2 hit counter is on), `remoteHits` is `cocache.hits{level=l1}`, `loadRejected` is `cocache.load.rejections`, `fillRejected` is `cocache.fill.rejections`, `staleFillsDiscarded` is `cocache.stale.discards`, `refreshRejected` is `cocache.refresh.rejections`, `loadTimeouts` is `cocache.load.timeouts`, `staleVersions` is `cocache.versioned.stale`, `typeMismatches` is `cocache.type.mismatch`, `readsUnknown` is `cocache.reads.unknown`, `unversionedAbsentRefusals` is `cocache.fill.unversioned.absent`, `fillsGated` is `cocache.fills.gated`, `ttlClamped` is `cocache.ttl.clamped`, and the rest match their meter names. `loads` and `loadNanos` are the `cocache.loads` timer.
 

@@ -20,7 +20,7 @@
      - CoSec 试用发现的（2026-11-05）：
        - [x] 文档：多段前缀拆分后，每个 key 前缀各要一条频道模式；RFC §8 中 `GlobalPolicyIndexCache` 不能改为 `SetStore`；内部 key 在 `{keyPrefix}!` 之下，原子广播探测除外（固定的 `cocache:!probe:{a}`）。
        - [x] `InMemoryBackend { clock }` 的尾随 lambda 绑定到 `commandTimeout`：不改。文档与测试都用 `InMemoryBackend(clock)`，调整参数顺序会破坏这种按位置传参的写法。
-       - [ ] `CacheAdmin.keyspace`：运维接口（`cocache-core`）增加只读的 `keyspace`，M8c 的第二个 PR。
+       - [x] `CacheAdmin.keyspace`：运维接口（`cocache-core`）增加只读的 `keyspace`（key 前缀与命名空间），端点的缓存报告输出 `keyPrefix` 与 `namespace`。
   5. **发版**：按 CONTRIBUTING 发 `8.0.0`。changelog 中的预发布条目合并为 `v8.0.0`。线格式自此在 8.x 内冻结（architecture.md 的不变量），兼容性承诺开始生效。
 - [ ] **声明的挂起视图接口的代理开销**（GA 前）：经 `CacheProxies.ViewHandler` 转发挂起方法，L2 命中从 5.33 ns 增加到 15.65 ns，每次多 10.3 ns（同步接口的代理多 2.5 ns），0 B/op，开销是转发时的 CPU，原因没有 profiling（#793）。异步接口走同一个 `forward` 只多 0.7 ns，所以要先查清挂起方法的转发慢在哪。目标：不超过同步接口代理的 2 倍（约 5 ns）。这是命中路径的改动，要附 `scripts/jmh-compare.sh -b l2HitViaSuspendingInterface,l2HitSuspending,l2HitViaInterface,l2HitViaAsyncInterface,l2HitMixed -t 1,8` 的表。
 - [ ] **下一个预发布版本**：上一条与下游试用中修复的问题。发布之后通知 CoSec 与 Wow 升级，继续试用。

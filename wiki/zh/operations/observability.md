@@ -189,6 +189,8 @@ management:
 {
   "name": "UserCache",
   "type": "Cache",
+  "keyPrefix": "cocache:",
+  "namespace": "UserCache",
   "layered": true,
   "ignoredConfiguration": [],
   "policy": [
@@ -218,7 +220,7 @@ management:
 }
 ```
 
-`type` 是缓存的 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore` 或 `SetStore`）。`layered: false` 表示缓存直接经 `CacheRuntime.create` 创建，配置对它不生效，`ignoredConfiguration` 列出指向它的 `cocache.caches.[name]` 条目（[CoCacheFactory](../guide/caches.md#factory)）。
+`type` 是缓存的 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore` 或 `SetStore`）。`keyPrefix` 与 `namespace` 是缓存的 keyspace（`CacheAdmin.keyspace`），已应用 [`cocache.key-prefix`](../guide/configuration.md#key-prefix) 与 `cocache.caches.[name].key-prefix`：它的 Redis key 是 `{keyPrefix}{namespace}:{key}`，`{key}` 是[编码后的 key](#encoded-key)。拼存储 key 与 [ACL](./index.md#acl) 的 key 模式时用它们，不必为每个缓存另外记录前缀。`layered: false` 表示缓存直接经 `CacheRuntime.create` 创建，配置对它不生效，`ignoredConfiguration` 列出指向它的 `cocache.caches.[name]` 条目（[CoCacheFactory](../guide/caches.md#factory)）。
 
 `policy` 按[策略配置项](../guide/configuration.md#policy-properties)的顺序列出适用于该缓存的每个字段的生效值与来源层（`source`，见[来源](../guide/configuration.md#policy-report)）。`detail` 出现时给出补充：被 `cocache.overrides` 收紧之前的值、定制器的类、约束改变了它的库，或校验连锁关闭提前刷新窗口的原因。`skippedConfiguration` 列出对这个缓存跳过的全局层条目，含 `layer` 与 `reason`：不适用于它的类型、该层不允许，或被库锁定。未分层的缓存两个列表都为空。`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，`staleVersions` 是 `cocache.versioned.stale`，`typeMismatches` 是 `cocache.type.mismatch`，`readsUnknown` 是 `cocache.reads.unknown`，`unversionedAbsentRefusals` 是 `cocache.fill.unversioned.absent`，`fillsGated` 是 `cocache.fills.gated`，`ttlClamped` 是 `cocache.ttl.clamped`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
 

@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core
 
+import me.ahoo.cocache.api.spi.Keyspace
 import java.time.Duration
 import java.time.Instant
 
@@ -30,6 +31,13 @@ interface CacheAdmin {
      * 启动日志与端点输出它，供人工核对同一 namespace 的声明（§4.1）。
      */
     val apiType: Class<*>
+
+    /**
+     * 缓存在 L1 中占用的 keyspace：key 前缀与命名空间（RFC 0005 §4.3）。存储 key 是 `{keyPrefix}{namespace}:{encodedKey}`
+     * （[Keyspace.storageKey]），按 key 的操作所用的编码后的 key 就是其中 [Keyspace.storagePrefix] 之后的部分。运维与集成方据此在运行时
+     * 拼出存储 key 与 Redis ACL 的 key 模式，不必另外记录每个缓存的前缀与命名空间。
+     */
+    val keyspace: Keyspace
 
     /**
      * 是否经 [CoCacheFactory] 创建（RFC 0005 §4.8，S20）。`false` 即“未分层”：直接经 [CacheRuntime.create] 创建，
