@@ -25,6 +25,7 @@ import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.SuspendingCache
+import me.ahoo.cocache.api.SuspendingReadableCache
 import me.ahoo.cocache.api.SuspendingSetStore
 import me.ahoo.cocache.api.SuspendingStore
 import me.ahoo.cocache.api.SuspendingVersionedCache
@@ -32,6 +33,9 @@ import me.ahoo.cocache.api.SuspendingVersionedStore
 import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.spi.Digest
+import java.lang.invoke.MethodHandle
+import java.lang.invoke.MethodHandles
+import java.lang.invoke.MethodType
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
@@ -50,7 +54,8 @@ import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
  *   没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`）由 JDK 包装为 [java.lang.reflect.UndeclaredThrowableException]，
  *   原始异常是它的 `cause`。
  * - 视图类型（`Async*`、`Suspending*`）转发给引擎的 `async()` / `suspending()` 视图：同一个方法、同样的参数，挂起方法的
- *   `Continuation` 原样传过去，所以挂起视图走协程核心的原生路径，L2 命中不挂起、直接返回。异常原样抛出；挂起方法在挂起之前抛出的
+ *   `Continuation` 原样传过去，所以挂起视图走协程核心的原生路径，L2 命中不挂起、直接返回。挂起视图的读取经绑定到视图的方法句柄调用，
+ *   视图的命中路径不内联进调用方（[ReadHandles]），其余方法经 `Method.invoke`。异常原样抛出；挂起方法在挂起之前抛出的
  *   受检异常经调用方的 `Continuation` 交还（否则会被 JDK 包装），调用方看到的仍是原始异常。
  * - 用户接口的 default 方法经 [InvocationHandler.invokeDefault] 执行（API 类型没有 default 方法）。
  * - `equals` / `hashCode` 按代理对象身份；`toString` 显示接口与引擎。
@@ -194,6 +199,7 @@ object CacheProxies {
     /**
      * 视图接口（`Async*`、`Suspending*`）的代理：API 类型的方法以同样的参数调用 [view] 上的同一个方法（挂起方法的 `Continuation`
      * 原样传过去）；用户接口重新声明的抽象方法调用与它匹配的视图方法（[CacheMethods.counterpartOf]，创建时已校验）。
+     * 挂起视图的读取经 [ReadHandles] 的方法句柄调用，其余方法经 `Method.invoke`。
      */
     private class ViewHandler(
         private val type: Class<*>,
@@ -202,6 +208,7 @@ object CacheProxies {
         private val viewType: Class<*>,
     ) : CacheHandler {
         private val redeclared = ConcurrentHashMap<Method, Method>()
+        private val reads = ReadHandles.of(view, viewType)
 
         override fun invoke(proxy: Any, method: Method, args: Array<out Any?>?): Any? {
             val arguments = args ?: NO_ARGS
@@ -224,6 +231,15 @@ object CacheProxies {
             )
 
         private fun forward(method: Method, arguments: Array<out Any?>): Any? {
+            val read = reads?.handleOf(method.name, arguments.size)
+            if (read != null) {
+                @Suppress("TooGenericExceptionCaught")
+                try {
+                    return ReadHandles.invoke(read, arguments)
+                } catch (e: Throwable) {
+                    return rethrow(e, method, arguments)
+                }
+            }
             try {
                 return method.invoke(view, *arguments)
             } catch (e: InvocationTargetException) {
@@ -243,6 +259,69 @@ object CacheProxies {
             val continuation = arguments.last() as Continuation<Any?>
             continuation.resumeWith(Result.failure(error))
             return COROUTINE_SUSPENDED
+        }
+    }
+
+    /**
+     * 挂起视图中 L2 命中可以直接返回的读取（`get`、带 loader 的 `get`、`getAll`、`lookup`、`lookupAll`、`getVersioned`），每个绑定到
+     * 视图的方法句柄，创建代理时取得。
+     *
+     * 经方法句柄调用是有意的编译边界：句柄是实例字段，不是编译期常量，C2 不会把视图的方法内联进代理的调用方，视图的命中路径编译在
+     * 自己的方法中，内联预算与调用方的深度无关；处理器自己的编译结果保持很小，仍会内联进代理方法，参数数组被标量替换、不分配。
+     * `Method.invoke` 在 `Method` 是常量时会一路内联到视图：调用方本身较深时（挂起调用经协程的启动与状态机进入代理），代理多出的
+     * 帧把 Caffeine 查找推过 C2 的内联深度上限（`MaxInlineLevel`），查找中的十几个小方法变成真正的调用，命中多出约 10 ns
+     * （`docs/investigations/jmh-8.0-ga.md`）。写入总要访问 L1，经 `Method.invoke` 的成本可以忽略。
+     */
+    private class ReadHandles(view: Any, viewType: Class<*>) {
+        private val get = bind(view, viewType, "get", 2)
+        private val getLoading = bind(view, viewType, "get", 3)
+        private val getAll = bind(view, viewType, "getAll", 2)
+        private val lookup = bind(view, viewType, "lookup", 2)
+        private val lookupAll = bind(view, viewType, "lookupAll", 2)
+        private val getVersioned = bind(view, viewType, "getVersioned", 2)
+
+        /**
+         * 方法名与参数个数（含 `Continuation`）对应的读取；不是读取，或视图类型没有这个方法时为 `null`。
+         */
+        fun handleOf(name: String, parameterCount: Int): MethodHandle? = when (parameterCount) {
+            2 -> when (name) {
+                "get" -> get
+                "getAll" -> getAll
+                "lookup" -> lookup
+                "lookupAll" -> lookupAll
+                "getVersioned" -> getVersioned
+                else -> null
+            }
+            3 -> if (name == "get") getLoading else null
+            else -> null
+        }
+
+        companion object {
+            /**
+             * 以代理收到的参数调用 [handle]：只有两种参数个数（[handleOf]），各用一个精确类型的调用点，参数不经数组展开。
+             */
+            fun invoke(handle: MethodHandle, arguments: Array<out Any?>): Any? = if (arguments.size == 2) {
+                handle.invokeExact(arguments[0], arguments[1])
+            } else {
+                handle.invokeExact(arguments[0], arguments[1], arguments[2])
+            }
+
+            /**
+             * 挂起视图的读取；异步视图不用：它的调用方不经协程的启动与状态机，经 `Method.invoke` 转发实测只多 0.7 ns（`l2HitViaAsyncInterface`）。
+             */
+            fun of(view: Any, viewType: Class<*>): ReadHandles? {
+                val suspending = SuspendingReadableCache::class.java.isAssignableFrom(viewType)
+                return if (suspending) ReadHandles(view, viewType) else null
+            }
+
+            /**
+             * [viewType] 中名为 [name]、有 [parameterCount] 个参数的方法，绑定到 [view]，类型擦除为全部 `Object`；没有时为 `null`。
+             */
+            private fun bind(view: Any, viewType: Class<*>, name: String, parameterCount: Int): MethodHandle? {
+                val method = viewType.methods.firstOrNull { it.name == name && it.parameterCount == parameterCount } ?: return null
+                val handle = MethodHandles.publicLookup().unreflect(method).bindTo(view)
+                return handle.asType(MethodType.genericMethodType(parameterCount))
+            }
         }
     }
 

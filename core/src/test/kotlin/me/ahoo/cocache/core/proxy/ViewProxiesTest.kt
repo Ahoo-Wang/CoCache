@@ -21,6 +21,7 @@ import me.ahoo.cocache.api.AsyncSetStore
 import me.ahoo.cocache.api.AsyncStore
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.SuspendingCache
 import me.ahoo.cocache.api.SuspendingStore
@@ -115,15 +116,30 @@ class ViewProxiesTest {
     }
 
     /**
-     * L2 命中经代理不挂起：挂起方法的 `Continuation` 原样传给视图，命中直接返回值。
+     * L2 命中经代理不挂起：挂起方法的 `Continuation` 原样传给视图，命中直接返回值。每种读取（经方法句柄调用）都是如此，
+     * 用户接口重新声明的读取也一样。
      */
     @Test
     fun suspendingHitReturnsWithoutSuspending() {
         val users = factory.create(UserCache::class.java, userSpec())
-        runBlocking { users.get("1") }
-        val hit: suspend () -> String? = { users.get("1") }
-        hit.startCoroutineUninterceptedOrReturn(Continuation(EmptyCoroutineContext) {}).assert().isEqualTo("u-1")
-            .isNotSameAs(COROUTINE_SUSPENDED)
+        val present = runBlocking { users.lookup("1") }
+        present.assert().isInstanceOf(Lookup.Present::class.java)
+        val completion = Continuation<Any?>(EmptyCoroutineContext) {}
+        val reads: List<Pair<suspend () -> Any?, Any?>> = listOf(
+            suspend { users.get("1") } to "u-1",
+            suspend { users.get("1") { "unused-$it" } } to "u-1",
+            suspend { users.lookup("1") } to present,
+            suspend { users.getAll(listOf("1")) } to mapOf("1" to "u-1"),
+            suspend { users.lookupAll(listOf("1")) } to mapOf("1" to present),
+        )
+        reads.forEach { (read, expected) ->
+            val result = read.startCoroutineUninterceptedOrReturn(completion)
+            result.assert().isNotSameAs(COROUTINE_SUSPENDED).isEqualTo(expected)
+        }
+        val redeclared = factory.create(RedeclaredCache::class.java, userSpec("redeclared"))
+        runBlocking { redeclared.get("1") }
+        val hit: suspend () -> String? = { redeclared.get("1") }
+        hit.startCoroutineUninterceptedOrReturn(completion).assert().isEqualTo("u-1")
     }
 
     @Test
@@ -183,6 +199,8 @@ class ViewProxiesTest {
         )
         runCatching { inline.get("1") }.exceptionOrNull().assert().isSameAs(checked)
         runCatching { inline.shout("1") }.exceptionOrNull().assert().isSameAs(checked)
+        // 写入经 Method.invoke 转发（读取经方法句柄）：挂起之前抛出的受检异常同样经 Continuation 交还
+        runCatching { inline.invalidate("1") }.exceptionOrNull().assert().isSameAs(checked)
 
         val asyncUsers = factory.create(AsyncUsers::class.java, userSpec("async"))
         val error = runCatching {
@@ -193,12 +211,14 @@ class ViewProxiesTest {
     }
 
     /**
-     * 挂起视图在挂起之前同步抛出受检异常的引擎：`suspending()` 的 `get` 直接抛出 [error]。
+     * 挂起视图在挂起之前同步抛出异常的引擎：`suspending()` 的 `get`（读取）与 `invalidate`（写入）直接抛出 [error]。
      */
     private class ThrowingEngine(private val engine: Cache<String, String>, private val error: Throwable) :
         Cache<String, String> by engine {
         override fun suspending(): SuspendingCache<String, String> = object : SuspendingCache<String, String> by engine.suspending() {
             override suspend fun get(key: String): String? = throw error
+
+            override suspend fun invalidate(key: String) = throw error
         }
     }
 
@@ -241,6 +261,7 @@ class ViewProxiesTest {
             ThrowingEngine(runtime.create(userSpec("error")), error)
         )
         runCatching { runBlocking { failing.get("1") } }.exceptionOrNull().assert().isSameAs(error)
+        runCatching { runBlocking { failing.invalidate("1") } }.exceptionOrNull().assert().isSameAs(error)
 
         val checked = IOException("disk")
         val engine = runtime.create(userSpec("sync-checked"))
