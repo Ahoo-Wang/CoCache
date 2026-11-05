@@ -5,7 +5,9 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## Unreleased {#unreleased}
+## v8.0.0-alpha.2 (Pre-release) {#v8-0-0-alpha-2}
+
+**Module Group:** `me.ahoo.cocache` · Second pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
 
 ### New: declare a cache as its async or suspending view {#declared-views}
 
