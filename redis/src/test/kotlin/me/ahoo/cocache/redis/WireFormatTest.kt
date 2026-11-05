@@ -41,6 +41,30 @@ class WireFormatTest {
     private fun decode(raw: ByteArray): L1Read.Hit = RedisL1Store.decodeRead(listOf(2L, -1L, raw, 0L)) as L1Read.Hit
 
     /**
+     * I-9：核心头部与段的常量在一个大版本内冻结（architecture.md §4.2）。其余用例按这些常量构造期望的字节，常量本身改变时它们照常通过，
+     * 这里固定字面值。
+     */
+    @Test
+    fun coreHeaderConstantsAreFrozen() {
+        RedisScripts.MAGIC.assert().isEqualTo(0xC0.toByte())
+        RedisScripts.FORMAT.assert().isEqualTo(2)
+        RedisScripts.HEADER_SIZE.assert().isEqualTo(36)
+        RedisScripts.STATE_OFFSET.assert().isEqualTo(2)
+        RedisScripts.FLAGS_OFFSET.assert().isEqualTo(3)
+        RedisScripts.FLAG_VERSION.assert().isEqualTo(0x01)
+        RedisScripts.FLAG_DIGEST.assert().isEqualTo(0x02)
+        RedisScripts.FLAG_EXTENSION.assert().isEqualTo(0x80)
+        RedisScripts.UNKNOWN_FLAGS.assert().isEqualTo(0x7C)
+        RedisScripts.VERSION_SIZE.assert().isEqualTo(8)
+        RedisScripts.DIGEST_SIZE.assert().isEqualTo(32)
+        RedisScripts.EXTENSION_LENGTH_SIZE.assert().isEqualTo(2)
+        RedisScripts.TLV_SHORT_LENGTH_LIMIT.assert().isEqualTo(0x80)
+        RedisScripts.TLV_WRITER.assert().isEqualTo(1.toByte())
+        RedisScripts.LONGEST_HEADER.assert().isEqualTo(78)
+        Token.SIZE.assert().isEqualTo(24)
+    }
+
+    /**
      * 形状：没有段时是共享的 2 字节常量；版本段在扩展区之前；写入标识的扩展区是 28 字节（总长 26、类型 1、长度 24）。
      */
     @Test

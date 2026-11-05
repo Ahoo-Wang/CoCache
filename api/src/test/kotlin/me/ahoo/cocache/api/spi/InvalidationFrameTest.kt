@@ -28,6 +28,24 @@ class InvalidationFrameTest {
         decoded.keys.assert().isEqualTo(keys)
     }
 
+    /**
+     * I-9：帧的字节布局在一个大版本内冻结：`[版本 0x01][nodeId:16B][count:varint]([len:varint][key UTF-8])*`，varint 是
+     * 无符号 LEB128（低 7 位在前）。往返用例发现不了编码与解码一起改变，这里固定字节。
+     */
+    @Test
+    fun encodesTheFrozenLayout() {
+        val nodeBytes = ByteArray(NodeId.SIZE) { it.toByte() }
+        val node = NodeId(nodeBytes)
+        val longKey = "x".repeat(128)
+        InvalidationFrame.encode(node, listOf("a", "中", longKey)).assert().isEqualTo(
+            byteArrayOf(0x01) + nodeBytes + byteArrayOf(3) +
+                byteArrayOf(1, 'a'.code.toByte()) +
+                byteArrayOf(3, 0xE4.toByte(), 0xB8.toByte(), 0xAD.toByte()) +
+                byteArrayOf(0x80.toByte(), 0x01) + longKey.toByteArray()
+        )
+        InvalidationFrame.encode(node, emptyList()).assert().isEqualTo(byteArrayOf(0x01) + nodeBytes + byteArrayOf(0))
+    }
+
     @Test
     fun roundTripsEmptyKeyList() {
         InvalidationFrame.decode(InvalidationFrame.encode(origin, emptyList())).keys.assert().isEmpty()
