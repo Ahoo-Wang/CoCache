@@ -68,8 +68,10 @@ open class CoCacheBenchmark {
     private lateinit var runtime: CacheRuntime
     private lateinit var cache: Cache<String, String>
     private lateinit var viaInterface: BenchCache
+    private lateinit var suspending: SuspendingCache<String, String>
     private lateinit var viaSuspendingInterface: BenchSuspendingCache
     private lateinit var viaAsyncInterface: BenchAsyncCache
+    private val suspendingHit: suspend () -> String? = ::suspendingGet
     private val suspendingInterfaceHit: suspend () -> String? = ::suspendingInterfaceGet
     private lateinit var mixed: List<Cache<String, String>>
     private lateinit var store: L1Store
@@ -103,6 +105,10 @@ open class CoCacheBenchmark {
         viaInterface = CoCacheFactory(runtime).create(BenchCache::class.java, spec("bench-iface-$run", policy))
         viaInterface.put("hot", "hot-value")
         viaInterface["hot"]
+        // 不经代理的挂起视图（配置与下面的挂起接口相同的引擎）：与 l2HitViaSuspendingInterface 用同样的方式发起
+        suspending = runtime.create(spec("bench-suspending-$run", policy)).suspending()
+        awaitBlocking { suspending.get("hot") }
+        check(suspendingHit.startCoroutineUninterceptedOrReturn(InlineCompletion) == "value-hot") { "an L2 hit must return inline" }
         // 声明的视图接口（同样配置的引擎）：挂起接口把 Continuation 原样转发给挂起视图，异步接口转发给 async()
         viaSuspendingInterface = CoCacheFactory(runtime).create(BenchSuspendingCache::class.java, spec("bench-iface-suspending-$run", policy))
         awaitBlocking { viaSuspendingInterface.get("hot") }
@@ -139,13 +145,13 @@ open class CoCacheBenchmark {
                 this.policy = absentPolicy
             }
         )
-        check(absentStore["missing"] == null && unfilled["missing"] == null)
+        check(absentStore["hot"] == null && unfilled["hot"] == null)
         check(localState("bench-absent-$run") == KeyInspection.LocalState.ABSENT)
         check(localState("bench-unfilled-$run") == KeyInspection.LocalState.UNFILLED)
     }
 
     private fun localState(cacheName: String): KeyInspection.LocalState? =
-        requireNotNull(runtime.admin(cacheName)).inspect("missing").local?.state
+        requireNotNull(runtime.admin(cacheName)).inspect("hot").local?.state
 
     private fun spec(name: String, policy: CachePolicy) = cacheSpec<String, String>(name) {
         codec = StringCodec
@@ -167,6 +173,14 @@ open class CoCacheBenchmark {
     @Benchmark
     fun l2HitViaInterface(): String? = viaInterface["hot"]
 
+    /** L2 命中，经挂起视图（不经代理），发起方式与 [l2HitViaSuspendingInterface] 相同：两者之差就是代理的转发。 */
+    @Benchmark
+    fun l2HitSuspending(): Any? {
+        val result = suspendingHit.startCoroutineUninterceptedOrReturn(InlineCompletion)
+        check(result !== COROUTINE_SUSPENDED) { "an L2 hit must not suspend" }
+        return result
+    }
+
     /**
      * L2 命中，经声明的挂起视图接口：调用经 `startCoroutineUninterceptedOrReturn` 发起、命中时同步返回，
      * 测到的是代理的转发，而不是协程的启动。
@@ -182,15 +196,17 @@ open class CoCacheBenchmark {
     @Benchmark
     fun l2HitViaAsyncInterface(): CompletableFuture<String?> = viaAsyncInterface.get("hot")
 
+    private suspend fun suspendingGet(): String? = suspending.get("hot")
+
     private suspend fun suspendingInterfaceGet(): String? = viaSuspendingInterface.get("hot")
 
     /** L2 命中权威缓存的 `Absent`（`Store` 中没有这个 key）。 */
     @Benchmark
-    fun l2HitAbsent(): String? = absentStore["missing"]
+    fun l2HitAbsent(): String? = absentStore["hot"]
 
     /** L2 命中外部来源缓存的“未填充”（不带 loader 的读取看到不存在）。 */
     @Benchmark
-    fun l2HitUnfilled(): String? = unfilled["missing"]
+    fun l2HitUnfilled(): String? = unfilled["hot"]
 
     /** L2 命中，轮流访问三个配置不同的缓存。 */
     @Benchmark
