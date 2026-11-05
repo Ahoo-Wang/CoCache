@@ -5,7 +5,9 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布 {#unreleased}
+## v8.0.0-alpha.2（预发布） {#v8-0-0-alpha-2}
+
+**模块组：** `me.ahoo.cocache` · 8.0.0 的第二个预发布版本。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。
 
 ### 新增：把缓存声明为它的异步或挂起视图 {#declared-views}
 
