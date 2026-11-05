@@ -235,7 +235,7 @@ internal class SpringCacheSyncCheck(
                 val definition = beanFactory.getBeanDefinition(beanName)
                 CacheBeanDefinitions.cacheInterfaceOf(definition)?.let { type ->
                     // 视图接口（如 `SuspendingCache`）背后的缓存仍是 `Cache`
-                    if (runCatching { CacheProxies.apiTypeOf(type) }.getOrNull() != Cache::class.java) {
+                    if (CacheProxies.apiTypeOf(type) != Cache::class.java) {
                         names += AnnotatedCacheFactory.cacheNameOf(type)
                     }
                 }

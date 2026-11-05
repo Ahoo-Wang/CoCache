@@ -137,8 +137,8 @@ internal class StoreEvictionCheck(
             if (type != null) {
                 val cacheName = AnnotatedCacheFactory.cacheNameOf(type)
                 // 视图接口（如 `SuspendingStore`）按它所属的用户 API 类型判断
-                val apiType = runCatching { CacheProxies.apiTypeOf(type) }.getOrNull()
-                val authoritativeType = apiType in listOf(Store::class.java, VersionedStore::class.java, SetStore::class.java)
+                val authoritativeType = CacheProxies.apiTypeOf(type) in
+                    listOf(Store::class.java, VersionedStore::class.java, SetStore::class.java)
                 if (!authoritativeType || cacheName in created) {
                     return null
                 }

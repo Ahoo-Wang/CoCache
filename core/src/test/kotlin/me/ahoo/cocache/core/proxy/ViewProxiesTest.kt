@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Test
 import java.io.IOException
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
+import java.lang.reflect.UndeclaredThrowableException
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
@@ -65,6 +66,15 @@ class ViewProxiesTest {
     }
 
     interface AsyncUsers : AsyncCache<String, String>
+
+    /**
+     * 同时继承两个可声明的类型：两个视图的返回类型冲突，以 `Nothing` 收窄才能编译。
+     */
+    interface Both : Cache<String, String>, me.ahoo.cocache.api.VersionedCache<String, String> {
+        override fun async(): Nothing
+
+        override fun suspending(): Nothing
+    }
 
     interface Tokens : SuspendingStore<String, String>
 
@@ -185,7 +195,7 @@ class ViewProxiesTest {
     /**
      * 挂起视图在挂起之前同步抛出受检异常的引擎：`suspending()` 的 `get` 直接抛出 [error]。
      */
-    private class ThrowingEngine(private val engine: Cache<String, String>, private val error: Exception) :
+    private class ThrowingEngine(private val engine: Cache<String, String>, private val error: Throwable) :
         Cache<String, String> by engine {
         override fun suspending(): SuspendingCache<String, String> = object : SuspendingCache<String, String> by engine.suspending() {
             override suspend fun get(key: String): String? = throw error
@@ -210,6 +220,39 @@ class ViewProxiesTest {
         runCatching { CacheProxies.declaredTypeOf(AsyncReadableCache::class.java) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
             .hasMessageContaining("or one of their Async* or Suspending* views")
+        runCatching { CacheProxies.declaredTypeOf(Both::class.java) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageContaining("extends Cache, VersionedCache: it must extend exactly one of")
+        // 绕过工厂的校验：不能转发的抽象方法在调用时失败
+        val broken = CacheProxies.create(BrokenCache::class.java, runtime.create(userSpec("unchecked")))
+        runCatching { runBlocking { broken.undeclared() } }.exceptionOrNull()
+            .assert().isInstanceOf(UnsupportedOperationException::class.java)
+            .hasMessageContaining("not part of SuspendingCache")
+    }
+
+    /**
+     * 视图同步抛出的 `Error` 原样抛出；非挂起方法同步抛出的受检异常照 JDK 代理的规则包装，原始异常是 `cause`。
+     */
+    @Test
+    fun errorsAndSynchronousCheckedExceptionsFollowTheProxyRules() {
+        val error = AssertionError("broken")
+        val failing = CacheProxies.create(
+            UserCache::class.java,
+            ThrowingEngine(runtime.create(userSpec("error")), error)
+        )
+        runCatching { runBlocking { failing.get("1") } }.exceptionOrNull().assert().isSameAs(error)
+
+        val checked = IOException("disk")
+        val engine = runtime.create(userSpec("sync-checked"))
+        val throwingAsync = object : Cache<String, String> by engine {
+            override fun async(): AsyncCache<String, String> = object : AsyncCache<String, String> by engine.async() {
+                override fun get(key: String): CompletableFuture<String?> = throw checked
+            }
+        }
+        val asyncUsers = CacheProxies.create(AsyncUsers::class.java, throwingAsync)
+        runCatching { asyncUsers.get("1") }.exceptionOrNull()
+            .assert().isInstanceOf(UndeclaredThrowableException::class.java)
+            .cause().isSameAs(checked)
     }
 
     /**
