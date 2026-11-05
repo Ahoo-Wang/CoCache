@@ -1,6 +1,6 @@
 # RFC 0005：v8 目标架构（权威与派生分型、单一协议核心、可检验的栅栏）
 
-- 状态：**已实施**（M1–M8，2026-11-04），8.0.0 预发布。
+- 状态：**已实施**（M1–M8，2026-11-04）。预发布 8.0.0-alpha.1（2026-11-04）、alpha.2 与 alpha.3（2026-11-05）已发布；下一步是 8.0.0-rc.1，然后 GA（放行条件见 [todo.md](../todo.md) §1）。
   - v1（2026-10-28）经第一轮对抗验证修订为 v2：一致性、迁移与运维两路，共 28 条发现。
   - v2 经第二轮修订为 v3：协议与格式 18 条、语义与迁移 20 条，共 38 条。两轮的发现全部已处理，见 §12。
   - v3 → v4：维护者的四项决定（2026-10-31）：跳过 v7；不考虑兼容与数据迁移，8.x 以布局标记与 6.x 物理隔离；基线升到 JDK 21；配置按 v3 完整实现。
@@ -23,6 +23,7 @@
     6. **配置与 Spring**：overrides 只收紧陈旧界限；事务上下文在调用入口捕获，记录进入任何共享层的 key（§4.8、§4.9）。
   - 2026-11-03，M4 期间：维护者决定**不考虑兼容、不背历史债务**（§12）：不提供迁移工具，6.x 与 8.x 不共存，升级之后有数据源的缓存回源重建；布局去掉版本标记 `v8:`；格式 1 与格式 0 一样按读不懂处理；不检测 6.x 的配置键；删除只为旧版本保留的代码与注释（§4.7、§4.8、§5、§8）。
   - 2026-11-04：实施完成（M1–M8），8.0.0 预发布。
+  - 2026-11-04 至 11-05：发布 8.0.0-alpha.1（#786）、alpha.2（#791）、alpha.3（#801）；CoSec 与 Wow 的下游试用在预发布版本上跑通各自的测试套件。
   - 目标版本由维护者指定为 **v8**。
 - 前提：v8 是大版本，API、SPI、配置项、线格式与 key、频道布局都重新设计；但三个目标（[architecture.md](../architecture.md) §1 的 G1–G3）与 6.0 的核心协议（lease 栅栏、两次递增的失效戳、原子广播）**不变**。本 RFC 不推翻 [RFC 0003](0003-target-architecture.md)，而是修正它在 6.4–6.8 增量演进中暴露的结构性问题。
 - 关系：
@@ -615,7 +616,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 **6.x 的键**（维护者决定，2026-11-03，取代 v4 与 S17 的检测）：不提供别名、语义映射或检测，8.x 不认识的键按 Spring Boot 的默认规则忽略。6.x 与 8.x 的键与语义差异只写进 changelog 的破坏性变更表与升级说明（其中 `cocache.defaults.<field>` 的语义从高于声明变为低于声明，要特别写明）。
 
-- 新增的键：`cocache.key-prefix`、`cocache.redis.assume-maxmemory-policy`、`management.endpoint.cocache.allow-store-delete`、`management.endpoint.cocache.allow-purge`、`fill-in-transaction`、`invalidate-fills-on-rollback`（§4.9）、按缓存的读超时（D6，键名随 M6 定）。
+- 新增的键：`cocache.key-prefix`、`cocache.redis.assume-maxmemory-policy`、`management.endpoint.cocache.allow-store-delete`、`management.endpoint.cocache.allow-purge`、`fill-in-transaction`、`invalidate-fills-on-rollback`（§4.9）、按缓存的读超时 `read-timeout`（D6，M6）。
 
 ### 4.9 Spring（V11）
 
@@ -711,6 +712,8 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ## 6. 不变量（v8 实施时与 architecture.md §14 的对照）
 
+§14 是实施之前的编号；现行的不变量与编号在 [architecture.md](../architecture.md) §15，各条的检验见其附录 A。
+
 **新增**：
 
 - **I-A 类型与声明决定默认值**：`Cache` / `VersionedCache` 是派生副本，`Store` / `VersionedStore` / `SetStore` 是权威副本；派生缓存声明数据来源。默认值与可用的操作由类型与声明决定；同一类型内，这次读取有没有数据源（含调用级 loader）只影响未命中与故障时能否回源。
@@ -755,7 +758,7 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ## 7. 性能预算与验证
 
-验证时点：GA 之前一次完成（§10 M8）。开发期间各切片不跑 JMH（维护者，2026-11-03）：M3a–M4b 每个切片的最差中位数都在 −2.1% 以内。
+验证时点：GA 之前一次完成（§10 M8；已完成，#783，结果见 [jmh-8.0-ga](../investigations/jmh-8.0-ga.md)）。开发期间各切片不跑 JMH（维护者，2026-11-03）：M3a–M4b 每个切片的最差中位数都在 −2.1% 以内。
 
 | 路径 | 预算 | 验证 |
 |------|------|------|
@@ -874,27 +877,29 @@ if (!stamps.isValid(storageKey, stamp)) {
 
 ## 10. 实施顺序
 
-0. **6.10.0**（已发布）之后切换分支（维护者决定 `main` 直接开发 v8）：
+M1–M8 全部完成（2026-11-04），每个里程碑的交付与 PR 见 [todo.md](../todo.md) §2。下面是实施前的顺序，各步标注了完成情况。
+
+0. **6.10.0**（已发布）之后切换分支（维护者决定 `main` 直接开发 v8；已完成。8.0.0-alpha.1 起站点改从 `main` 部署、`6.x` 不再部署，#787、#788；`version` 由各预发布的发版 PR 修改）：
    - 从 `v6.10.0` 切出 `6.x` 维护分支：6.x 的缺陷修复与 6.10.x 的发版都在这个分支上进行。推送触发的 CI 与 wiki 的发布改由 `6.x` 进行，直到 8.0 发布；GitHub Pages 的部署环境与分支保护规则相应调整（仓库设置）。
    - `main` 开发 v8：基线 JDK 21；停止从 `main` 发布 wiki，否则公开文档会提前描述未发布的 v8；CONTRIBUTING 的分支与发版规则同步修改。
    - `gradle.properties` 的 `version` 按 CONTRIBUTING 仍是已发布的最新版本，由 8.0 的发版 PR 修改。
-1. **M1 协程核心**：在现有的用户 API 与 SPI 之下，把协议改写为一份 `suspend` 实现：同步 API 经 `runBlocking`，异步视图经 `future(UNDISPATCHED)`，现有的挂起视图直接调用。
+1. **M1 协程核心**（已完成，#716–#720）：在现有的用户 API 与 SPI 之下，把协议改写为一份 `suspend` 实现：同步 API 经 `runBlocking`，异步视图经 `future(UNDISPATCHED)`，现有的挂起视图直接调用。
    - 等价性裁判：现有的同步 TCK 与 `Async*` TCK 中的**语义用例**保持全绿。断言 6.x 线程模型的用例（结果在哪个线程上完成、等待只占常数个线程等）按新模型重写，不算等价性证据（v4 审查）。
    - JMH：L2 命中不退化；同步变体（含 `runBlocking`）的 L1 命中、未命中退化 ≤ 3%；异步变体的 8 线程闭环不低于 6.10 的 90%。
    - 然后删除引擎中的异步分支、`Futures` 的续接、定时器与许可等待队列；`kotlinx-coroutines-core` 进入 core，AGENTS.md 的依赖规则同步修改。
-2. **M2 flight 层与协议**：合并规则逐 key、`load.timeout`、取消与中断的规则（§4.4）、L2 填充改为 `compute` + 按身份复核（I-C）、令牌在 `NonCancellable` 中守恒；接入随机注入取消的性质测试与确定性多节点仿真。
-3. **M3 SPI**：`suspend` 的 `L1Store`、`FutureL1Store` 适配、能力访问器、`ForwardingL1Store`、TCK fail closed；删除异步 SPI 与 `Async*` 规范。先删不依赖替代品的遗留，再建新形状；切片见 [todo.md](../todo.md) §2。M3d 同时实施第三轮转给它的 SPI 变更：`fill` 返回 `L1Fill`、`reclaim` 收 SPI 自己的内容指纹（K12），除确定未执行外的失败都异步释放令牌（K14），`read` / `readAll` 的可选截止时间（D6）（§4.3）。
-4. **M4 线格式 2 与布局**：
+2. **M2 flight 层与协议**（已完成，#721–#727）：合并规则逐 key、`load.timeout`、取消与中断的规则（§4.4）、L2 填充改为 `compute` + 按身份复核（I-C）、令牌在 `NonCancellable` 中守恒；接入随机注入取消的性质测试与确定性多节点仿真。
+3. **M3 SPI**（已完成，#729–#751）：`suspend` 的 `L1Store`、`FutureL1Store` 适配、能力访问器、`ForwardingL1Store`、TCK fail closed；删除异步 SPI 与 `Async*` 规范。先删不依赖替代品的遗留，再建新形状；切片见 [todo.md](../todo.md) §2。M3d 同时实施第三轮转给它的 SPI 变更：`fill` 返回 `L1Fill`、`reclaim` 收 SPI 自己的内容指纹（K12），除确定未执行外的失败都异步释放令牌（K14），`read` / `readAll` 的可选截止时间（D6）（§4.3）。
+4. **M4 线格式 2 与布局**（已完成，#752–#762）：
    - 布局（没有版本标记，V13）、带前缀的频道、namespace 字符集与内部 key（D5）；按存储探测实际频道（K8）。
    - 头部的段（SHA-256 摘要段，读取方校验，`Digest` 带算法标识，D1）、扩展区的 TLV 与写入标识（D2）、状态 `E`、失效帧的演进规则与预留的帧版本 2（D3）、集合的 `!f` / `!m`（K10）。
    - 逐脚本规则，含带摘要段的内容（D4）、`RECLAIM` 与格式号（K15）、`FILL` / `RELEASE` 只读核心头部（K19）。
    - 不提供拷贝工具（维护者决定，2026-11-03，§8）。
    - 第三轮对抗验证已在这一步之前完成（v6）；合并即冻结 8.x 的格式（§4.7 的定稿项）。
-5. **M5 用户 API**：类型（V1–V3，按 v4 全部实现）、`Lookup.Unknown` 与 `unknownRead` 的取值（S16）、`CoCacheFactory`（校验 `type` 是接口，声明接口与手写实现的区分，S21）；`cocache-coroutines` 并入 core，挂起变体的上下文规则（K2、K6）与重入守卫（K7）；带版本数据源的删除（K16）；`Store` 的类型默认值（D7）；按缓存的读超时接入引擎（D6）；`InvalidationListener` 收到编码 key、`keyPrefix` 为空时启动告警（S4）；评估被取消的写入是否整体放进 `NonCancellable`（K18）。
-6. **M6 配置**（V10）：含“字段 × 层”的语义表、显式哨兵、overrides 只收紧并钳制按调用的寿命（S8、S9、S10）；`constrain` 的值域与 customizer 写锁定字段（S12）；`cocache.key-prefix`（S17；不检测 6.x 的键，§4.8）；按缓存的读超时的配置键（D6）；每种 spec 的默认策略（S23）；`read-failure` 与 `unknown-read` 的适用性（S11、S16）；“未分层”的标注（S20）；驱逐检查的取值（S22）。
-   **M7 Spring**（V11）：含事务上下文在调用入口捕获、记录进入任何共享层的 key、事务内 leader 的结果不共享、按 (namespace, 编码 key) 匹配（S7、S15、S24）；`Unknown` 的不对称与可选的 `CacheErrorHandler`、`afterCommit` 的异常、通知嵌套的告警（S18、S19）。S5、S6 已在 main 与 6.x 修复，M7 的装饰器沿用。
-7. **M8 检验与文档**：GA 前的 JMH 对比（§7 的全部预算，基线 v6.10.0；开发期间各切片不跑，维护者 2026-11-03）、Lincheck（已批准，CI 已运行）、TLA+、architecture.md 重排（V12）、wiki 与升级说明（§8）、skills。
-8. **8.0.0** 发布；8.x 按 §4.2 的演进规则新增能力，新的必须理解的段两阶段发布。
+5. **M5 用户 API**（已完成，#766、#768–#770、#772）：类型（V1–V3，按 v4 全部实现）、`Lookup.Unknown` 与 `unknownRead` 的取值（S16）、`CoCacheFactory`（校验 `type` 是接口，声明接口与手写实现的区分，S21）；`cocache-coroutines` 并入 core，挂起变体的上下文规则（K2、K6）与重入守卫（K7）；带版本数据源的删除（K16）；`Store` 的类型默认值（D7）；按缓存的读超时接入引擎（D6）；`InvalidationListener` 收到编码 key、`keyPrefix` 为空时启动告警（S4）；评估被取消的写入是否整体放进 `NonCancellable`（K18）。
+6. **M6 配置**（V10；已完成，#773、#779）：含“字段 × 层”的语义表、显式哨兵、overrides 只收紧并钳制按调用的寿命（S8、S9、S10）；`constrain` 的值域与 customizer 写锁定字段（S12）；`cocache.key-prefix`（S17；不检测 6.x 的键，§4.8）；按缓存的读超时的配置键（D6）；每种 spec 的默认策略（S23）；`read-failure` 与 `unknown-read` 的适用性（S11、S16）；“未分层”的标注（S20）；驱逐检查的取值（S22）。
+   **M7 Spring**（V11；已完成，#759、#771、#779）：含事务上下文在调用入口捕获、记录进入任何共享层的 key、事务内 leader 的结果不共享、按 (namespace, 编码 key) 匹配（S7、S15、S24）；`Unknown` 的不对称与可选的 `CacheErrorHandler`、`afterCommit` 的异常、通知嵌套的告警（S18、S19）。S5、S6 已在 main 与 6.x 修复，M7 的装饰器沿用。
+7. **M8 检验与文档**（已完成，#763–#783）：GA 前的 JMH 对比（§7 的全部预算，基线 v6.10.0；开发期间各切片不跑，维护者 2026-11-03）、Lincheck（已批准，CI 已运行）、TLA+、architecture.md 重排（V12）、wiki 与升级说明（§8）、skills。
+8. **8.0.0** 发布（未完成：预发布 alpha.1–alpha.3 已发布，#786、#791、#801；下一步 rc.1，GA 的放行条件见 [todo.md](../todo.md) §1）；8.x 按 §4.2 的演进规则新增能力，新的必须理解的段两阶段发布。
 
 每个里程碑由若干 PR 组成，每个 PR 的 `./gradlew check` 全绿；JMH 对比在 GA 之前一次完成（§7）。
 
