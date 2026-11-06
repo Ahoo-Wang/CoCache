@@ -14,12 +14,17 @@
 package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedCache
+import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
@@ -30,13 +35,18 @@ import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.versionedCacheSpec
+import me.ahoo.cocache.test.Concurrency.awaitOrFail
+import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.RemoteUnavailableException
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 结果未知的写入之后本节点自己的帧（RFC 0005 §4.6，P12）：在 `localMaxAge`（这里 8 s）之内不过滤，之后照常过滤。
@@ -193,6 +203,104 @@ class OwnFramesTest {
         cache["b"].assert().isEqualTo("b1")
         metrics().remoteHits.assert()
             .withFailMessage { "own frames did not evict the copies" }.isEqualTo(remoteHits + 2)
+    }
+
+    /**
+     * #829：同一 key 的两次结果未知的写入的登记交错。put A 先取时刻（t=0）、在登记之前停住（[PausingClock]）；
+     * t=4s 另一次写入 B 结果未知并登记（截止 12s）；A 之后才以较早的时刻登记（截止 8s）。登记按 key 取最大值，A 不缩短 B 的窗口：
+     * t=6s 从仍是旧值的 L1 填入 L2 的副本（到 14s），在 t=10s 被迟到执行的 put 的帧淘汰。B 是单 key 的 put（同样迟到执行）
+     * 或批量的 putAll（结果未知、没有执行）时都一样。
+     */
+    @Test
+    fun anEarlierTimeRegisteredLaterDoesNotShortenTheWindow() {
+        val laterWrites: List<Pair<String, (Cache<String, String>) -> Unit>> = listOf(
+            "v2" to { cache -> failedPut(cache, "k", "v2") },
+            "v1" to { cache ->
+                backend.failWrites = true
+                val failure = runCatching { cache.putAll(mapOf("k" to "v2")) }.exceptionOrNull()
+                backend.failWrites = false
+                (failure as CacheWriteException).outcomeUnknown.assert().isTrue()
+            },
+        )
+        for ((expected, laterWrite) in laterWrites) {
+            val start = clock.nowMillis()
+            val pausing = PausingClock(clock)
+            val pausingBackend = object : CoherenceBackend by backend {
+                override fun store(keyspace: Keyspace): L1Store = object : ForwardingL1Store(backend.store(keyspace)) {
+                    override suspend fun put(key: String, envelope: Envelope, ttl: Duration?, frame: ByteArray) {
+                        try {
+                            super.put(key, envelope, ttl, frame)
+                        } catch (e: RemoteUnavailableException) {
+                            // 存储报告结果未知：这个线程下一次读时钟（登记）时停住
+                            pausing.pauseNextRead()
+                            throw e
+                        }
+                    }
+                }
+            }
+            CacheRuntime.builder().backend(pausingBackend).clock(pausing).build().use { runtime ->
+                val cache = runtime.create(
+                    cacheSpec<String, String>("late$expected") {
+                        codec = StringCodec
+                        loader = CacheLoader { database[it] }
+                        policy {
+                            ttl = Duration.ofMinutes(10)
+                            ttlJitter = Duration.ZERO
+                            localMaxAge = LOCAL_MAX_AGE
+                            invalidateFailure = InvalidateFailureMode.THROW
+                        }
+                    }
+                )
+                database["k"] = "v0"
+                cache["k"].assert().isEqualTo("v0")
+                backend.deferPuts = true
+                val first = fork("put A") { failedPut(cache, "k", "v1") }
+                pausing.paused.awaitOrFail("put A read the time")
+                clock.advance(Duration.ofSeconds(4))
+                laterWrite(cache)
+                pausing.resume.countDown()
+                first.join()
+                backend.deferPuts = false
+
+                clock.advance(Duration.ofSeconds(2))
+                cache["k"].assert().isEqualTo("v0")
+                clock.advance(Duration.ofSeconds(4))
+                backend.applyDeferredPuts().assert().isEqualTo(if (expected == "v2") 2 else 1)
+                clock.nowMillis().assert().isEqualTo(start + Duration.ofSeconds(10).toMillis())
+                cache["k"].assert().withFailMessage { "the own frame inside the later window was filtered" }
+                    .isEqualTo(expected)
+            }
+            clock.advance(LOCAL_MAX_AGE)
+        }
+    }
+
+    /**
+     * 包装 [delegate]：[pauseNextRead] 之后，调用它的线程下一次读时钟时先取得时刻，再停在 [resume] 上（取得时刻之后被抢占）。
+     * 只停一次。
+     */
+    private class PausingClock(private val delegate: CacheClock) : CacheClock {
+        private val armed = AtomicBoolean()
+
+        @Volatile
+        private var target: Thread? = null
+        val paused = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+
+        fun pauseNextRead() {
+            if (armed.compareAndSet(false, true)) {
+                target = Thread.currentThread()
+            }
+        }
+
+        override fun nowMillis(): Long {
+            val now = delegate.nowMillis()
+            if (target === Thread.currentThread()) {
+                target = null
+                paused.countDown()
+                resume.awaitOrFail("resume the paused clock read")
+            }
+            return now
+        }
     }
 
     private companion object {

@@ -554,7 +554,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * 写入结果未知（P12）：[storageKeys] 上本节点自己的帧在 `localMaxAge` 之内不再被过滤（[ownFrames]）。
      * 只对原子广播的后端：非原子广播时迟到执行的写入不带广播，没有帧可等，本节点的旧副本由 `localMaxAge` 兜底。
-     * 登记很少（只在失败时），超过 [MAX_OWN_FRAMES] 时删掉过期的登记。
+     * 登记按 key 取最大的截止时刻（#829）：并发登记同一 key 时，先取时刻、后写入的调用不会缩短另一个调用刚登记的更晚的截止时刻。
+     * 登记很少（只在失败时），超过 [MAX_OWN_FRAMES] 时删掉过期的登记；删除都按值比较，不会删掉并发延长的登记。
      */
     protected fun unfilterOwnFrames(storageKeys: Collection<String>) {
         if (!atomicBroadcast) {
@@ -562,7 +563,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
         val now = clock.nowMillis()
         val until = now + policy.localMaxAge.toMillis()
-        storageKeys.forEach { ownFrames[localKeyOf(it)] = until }
+        storageKeys.forEach { ownFrames.merge(localKeyOf(it), until, ::maxOf) }
         if (ownFrames.size > MAX_OWN_FRAMES) {
             ownFrames.entries.removeIf { it.value <= now }
         }

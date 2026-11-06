@@ -143,10 +143,10 @@ sequenceDiagram
 SingleFlight 还保证：
 
 - 每个实例上每个 key 同一时刻只有一次加载。
-- 每个等待者得到 leader 的结果或其原始异常；leader 被中断或取消时例外：只有 leader 自己收到那个异常，每个等待者自行加载。
+- 每个等待者得到 leader 的结果或其原始异常；leader 被中断或取消时例外：只有 leader 自己收到那个异常，每个等待者自行加载。`AsyncCacheLoader` 的 future 交来的 `InterruptedException` 表示数据源在它自己的线程上被中断，不是 leader 被中断：它与其它失败一样共享。
 - 被中断的同步等待者只结束自己的等待：抛出 `InterruptedException` 并保留中断标志，leader 与其它等待者不受影响。
 - 等待有上界。加载进行了 `load-timeout`（默认 30 秒）时，等待者放弃，以 `SourceLoadTimeoutException` 失败。之后到来的读取开始新的加载，不再合并到可能卡住的那一次。卡住的加载的结果只交给它自己的调用方，写入仍受栅栏保护。
-- loader 在同一线程上读取自己的 key 会快速失败而不是死锁。
+- loader 在同一线程上读取自己的 key 会快速失败而不是死锁，即使它的加载已超过 `load-timeout`。
 - 批量 leader 先完成自己负责的 key，再等待别人负责的 key。
 
 ## 写入方顺序 {#writer-order}
