@@ -257,7 +257,8 @@ class CoherentEngineRegressionTest {
         // 每次探测换一个 key：关闭之前的探测把“不存在”填进 L2，同一个 key 之后命中 L2，不再进入 runAsync
         val probes = AtomicInteger()
         awaitCondition("the runtime is closed to new calls") {
-            cache.async().get("probe-${probes.incrementAndGet()}").handle { _, error -> error }.join() is IllegalStateException
+            val probe = "probe-${probes.incrementAndGet()}"
+            cache.async().get(probe).handle { _, error -> error }.join() is IllegalStateException
         }
         release.countDown()
         single.join().assert().isInstanceOf(RemoteUnavailableException::class.java)
