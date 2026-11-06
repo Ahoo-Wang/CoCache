@@ -29,6 +29,20 @@ class InvalidationFrameTest {
     }
 
     /**
+     * key 按 UTF-8 编码：补充平面字符（正确配对的 UTF-16 代理）无损往返；含未配对代理的 `String` 编不出来，被替换为 `?`，
+     * 解码出的是另一个 key。所以引擎与 `ExternalInvalidator` 在 key 到达 L1 之前拒绝后者，帧本身不检查。
+     */
+    @Test
+    fun roundTripsWellFormedUtf16AndReplacesUnpairedSurrogates() {
+        val wellFormed = listOf("😀", "key-𝄞", "􏿿")
+        InvalidationFrame.decode(InvalidationFrame.encode(origin, wellFormed)).keys.assert().isEqualTo(wellFormed)
+        InvalidationFrame.encode(origin, listOf("😀")).takeLast(4).assert()
+            .isEqualTo(listOf(0xF0, 0x9F, 0x98, 0x80).map { it.toByte() })
+        InvalidationFrame.decode(InvalidationFrame.encode(origin, listOf("bad-\uD800", "\uDC00x"))).keys.assert()
+            .containsExactly("bad-?", "?x")
+    }
+
+    /**
      * I-9：帧的字节布局在一个大版本内冻结：`[版本 0x01][nodeId:16B][count:varint]([len:varint][key UTF-8])*`，varint 是
      * 无符号 LEB128（低 7 位在前）。往返用例发现不了编码与解码一起改变，这里固定字节。
      */

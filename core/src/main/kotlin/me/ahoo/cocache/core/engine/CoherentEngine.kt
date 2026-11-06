@@ -1661,7 +1661,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun refreshAsync(key: K, localKey: String, observed: LocalEntry<V>) {
-        val storageKey = storageKeyOfLocal(localKey)
+        val storageKey = storageKeyOfChecked(localKey)
         // 没有数据源的缓存（如只经 Spring Cache 写入）无法回源刷新
         if (source == null || closed.get() || !refreshing.add(storageKey)) {
             return

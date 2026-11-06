@@ -62,6 +62,12 @@ internal abstract class VersionedEngine<K : Any, V : Any>(
     private fun lookupsOfValues(resolved: Map<K, LocalEntry<Versioned<V?>>?>): Map<K, Lookup<V>> =
         lookupsOf(resolved).mapValues { lookupOf(it.value) }
 
+    /**
+     * 墓碑展示为不存在：冷加载的 `Versioned(null, v)` 以非 `null` 的值留在 L2，查看时与读取的结果（`Absent`）一致。
+     * 墓碑的版本不展示（`KeyInspection.LocalCopy` 没有版本）。
+     */
+    override fun shownValueOf(value: Versioned<V?>): Any? = presentOf(value)
+
     internal suspend fun writeIfNewer(key: K, value: V, version: Long, ttl: Duration?, operation: String): VersionedPut {
         val versioned = Versioned<V?>(value, version)
         return writeVersioned(key, versioned, version, ttl ?: versionedTtl(key, versioned), operation)

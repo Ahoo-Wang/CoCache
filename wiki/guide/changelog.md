@@ -5,6 +5,11 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: a key whose encoded form contains an unpaired UTF-16 surrogate (for example `"bad-\uD800"`) was accepted, but Redis keys and invalidation frames are UTF-8, which turns it into `?`. The key then shared its Redis key with another key, and other instances evicted that other key instead, keeping their stale copy until `localMaxAge`. Such a key now fails with `IllegalArgumentException` before it reaches Redis, on reads, writes, `CacheAdmin` and `ExternalInvalidator`; emoji, CJK and other well-formed keys are unaffected ([keys](./caches.md#keys)).
+- Fixed: `CacheAdmin.inspect` and the `cocache` endpoint showed a versioned tombstone that this instance loaded itself (`Versioned(null, v)` from the loader) as a local `VALUE` holding the internal `Versioned` wrapper. It is now `ABSENT` with no value, like `get` and the remote copy.
+
 ## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
 **Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.

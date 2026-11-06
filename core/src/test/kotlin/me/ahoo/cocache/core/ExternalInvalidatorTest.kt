@@ -27,6 +27,7 @@ import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 class ExternalInvalidatorTest {
     private val database = ConcurrentHashMap<String, String>()
@@ -183,6 +184,54 @@ class ExternalInvalidatorTest {
             Suspending.await {
                 memory.store(Keyspace("other:", "user")).read("other:user:1", null, null, null)
             }.assert().isInstanceOf(L1Read.Hit::class.java)
+        }
+    }
+
+    /**
+     * 含未配对 UTF-16 代理的 key：按 UTF-8 编码时被替换为 `?`，删除与帧中的就成了另一个 key（缓存同样拒绝它）。
+     * 整批在删除与发布之前以 [IllegalArgumentException] 拒绝：合法的 key 也不失效，信息给出命名空间与下标、转义未配对的代理。
+     * 合法的补充平面字符照常失效。
+     */
+    @Test
+    fun rejectsKeysWithAnUnpairedSurrogateBeforeTouchingAnything() {
+        val memory = InMemoryBackend()
+        CacheRuntime.builder().backend(memory).build().use { node ->
+            val cache = node.create(spec())
+            database["ok"] = "v0"
+            database["😀"] = "v0"
+            cache["ok"].assert().isEqualTo("v0")
+            cache["😀"].assert().isEqualTo("v0")
+            database["ok"] = "v1"
+            database["😀"] = "v1"
+            val frames = AtomicInteger()
+            val counter = object : InvalidationListener {
+                override fun onInvalidated(keys: List<String>, origin: NodeId) {
+                    frames.incrementAndGet()
+                }
+
+                override fun onReset() = Unit
+            }
+            val keyspace = Keyspace("cocache:", "user")
+            memory.channel.subscribe(keyspace, counter).use {
+                ExternalInvalidator(memory).use { invalidator ->
+                    listOf<() -> Unit>(
+                        { invalidator.invalidate("user", listOf("ok", "bad-\uD800")) },
+                        { invalidator.broadcast("user", listOf("ok", "bad-\uD800")) },
+                    ).forEach { call ->
+                        val error = runCatching { call() }.exceptionOrNull()
+                        error.assert().isInstanceOf(IllegalArgumentException::class.java)
+                        requireNotNull(error).message.assert()
+                            .contains("Namespace[user]", "key[bad-\\uD800]", "index[4]")
+                    }
+                    frames.get().assert().isZero()
+                    Suspending.await { memory.store(keyspace).read("cocache:user:ok", null, null, null) }
+                        .assert().isInstanceOf(L1Read.Hit::class.java)
+                    cache["ok"].assert().isEqualTo("v0")
+                    invalidator.invalidate("user", "😀")
+                }
+            }
+            frames.get().assert().isEqualTo(1)
+            awaitCondition { cache["😀"] == "v1" }
         }
     }
 }

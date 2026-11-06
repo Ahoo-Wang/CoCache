@@ -5,6 +5,11 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## Unreleased {#unreleased}
+
+- 修复：编码后含未配对 UTF-16 代理的 key（如 `"bad-\uD800"`）被接受，而 Redis key 与失效帧按 UTF-8 编码，把它变成 `?`。这个 key 于是与另一个 key 共用同一个 Redis key，其它实例收到失效时淘汰的也是那个 key，自己的旧副本留到 `localMaxAge`。现在这样的 key 在到达 Redis 之前以 `IllegalArgumentException` 失败，读取、写入、`CacheAdmin` 与 `ExternalInvalidator` 都一样；emoji、中文等合法的 key 不受影响（见 [key](./caches.md#keys)）。
+- 修复：`CacheAdmin.inspect` 与 `cocache` 端点把本实例自己冷加载的带版本墓碑（数据源给出的 `Versioned(null, v)`）展示为本地 `VALUE`，值是内部的 `Versioned` 包装对象。现在展示为 `ABSENT`、没有值，与 `get` 及 L1 的展示一致。
+
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
 **模块组：** `me.ahoo.cocache` · 8.0.0 的第四个预发布版本。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。
