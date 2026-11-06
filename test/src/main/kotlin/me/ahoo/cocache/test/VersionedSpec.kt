@@ -1277,6 +1277,38 @@ abstract class VersionedSpec {
     }
 
     /**
+     * `evict` 失败时抛出 [CacheWriteException]，从不进入失效重试（重试的 `DEL` 会丢掉版本，RFC 0005 §4.7）：在发出之前被拒绝时结果确定
+     * 未执行（`outcomeUnknown = false`），L1 不变；结果未知的故障报告 `outcomeUnknown = true`。两种情况下本节点的 L2 副本都已淘汰
+     * （写入方顺序），下一次读取重新读 L1。
+     */
+    @Test
+    fun failedEvictionThrowsAndIsNeverRetried() {
+        val cache = nodeA.cache()
+        cache.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Written)
+        cache["k"].assert().isEqualTo("v5")
+
+        backend.rejectWrites = true
+        val rejected = runCatching { cache.evict("k") }.exceptionOrNull()
+        backend.rejectWrites = false
+        rejected.assert().isInstanceOf(CacheWriteException::class.java)
+        (rejected as CacheWriteException).outcomeUnknown.assert().isFalse()
+        remoteVersioned("k").assert().isEqualTo(Versioned("v5", 5))
+        val reads = backend.reads.get()
+        cache["k"].assert().isEqualTo("v5")
+        backend.reads.get().assert().withFailMessage { "the failed evict dropped the local copy" }.isEqualTo(reads + 1)
+
+        backend.failWrites = true
+        val failed = runCatching { cache.evict("k") }.exceptionOrNull()
+        backend.failWrites = false
+        failed.assert().isInstanceOf(CacheWriteException::class.java)
+        (failed as CacheWriteException).outcomeUnknown.assert().isTrue()
+        requireNotNull(nodeA.admin(cacheName)).pendingInvalidationCount.assert().isZero()
+        remoteVersioned("k").assert().isEqualTo(Versioned("v5", 5))
+        cache["k"].assert().isEqualTo("v5")
+        loads.get().assert().isZero()
+    }
+
+    /**
      * K16（RFC 0005 §4.1）：带版本的数据源必须以 `Versioned(null, w)` 表达删除。不带版本的 `null` 落在带版本的内容上（这里是 `evict`
      * 留下的 `E(5)`）被 L1 拒绝：回源值（不存在）照常返回，不写成负缓存，`E` 保留，计入 `unversionedAbsentRefusals` 与 `fillRejected`；
      * 已删除的实体因此在 `E` 到期之前每次未命中都回源。以 `Versioned(null, 6)` 表达删除时写入墓碑，不再回源。

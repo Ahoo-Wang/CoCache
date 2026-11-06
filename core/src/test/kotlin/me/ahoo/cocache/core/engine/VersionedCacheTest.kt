@@ -13,10 +13,15 @@
 
 package me.ahoo.cocache.core.engine
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
+import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.Versioned
@@ -24,6 +29,7 @@ import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.ForwardingVersionedL1Store
@@ -51,6 +57,7 @@ import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
@@ -500,6 +507,39 @@ class VersionedCacheTest {
             hooked.failAll = false
             requireNotNull(other.metrics("unknown")).readsUnknown.assert().isEqualTo(4)
         }
+    }
+
+    /**
+     * `evict` 遇到 `Store` 写入的值（带摘要段，D4）每次都拒绝、计入 `typeMismatches`，但每个缓存只告警一次，之后记为 DEBUG：
+     * 命名空间配置错误时每次 `evict` 都会遇到它，告警不能随调用量增长。读取遇到它共用同一个告警。
+     */
+    @Test
+    fun refusedEvictionsWarnOncePerCache() {
+        val bytes = StringCodec.encode("p")
+        Suspending.await {
+            memory.store(Keyspace("cocache:", "doc")).put(
+                "cocache:doc:plain",
+                Envelope.Scalar(bytes, Versioned.NO_VERSION, null, Digest.ofPayload(bytes)),
+                null,
+                InvalidationFrame.encode(NodeId.random(), emptyList())
+            )
+        }
+        val cache = versioned()
+        val logger = LoggerFactory.getLogger(AbstractEngine::class.java) as Logger
+        val appender = ListAppender<ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            repeat(3) {
+                val refused = runCatching { cache.evict("plain") }.exceptionOrNull()
+                refused.assert().isInstanceOf(CacheWriteException::class.java)
+            }
+            cache["plain"].assert().isEqualTo("p")
+        } finally {
+            logger.detachAppender(appender)
+        }
+        requireNotNull(runtime.metrics("doc")).typeMismatches.assert().isEqualTo(4)
+        val warnings = appender.list.filter { it.level == Level.WARN && it.formattedMessage.contains("written by a Store") }
+        warnings.assert().hasSize(1)
     }
 
     @Test

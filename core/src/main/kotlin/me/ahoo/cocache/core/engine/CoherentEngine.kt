@@ -594,7 +594,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     /**
      * 读取方的摘要校验（RFC 0005 §4.7，K3；同步与异步共用，对所有后端相同）：权威副本（[authoritative]）从 L1 读到的不带版本的值
-     * 必须带摘要段，且与载荷重算的 SHA-256 一致，否则抛出，调用方按损坏处理（权威副本没有数据源，读取失败）。
+     * 必须带摘要段，且与载荷重算的 SHA-256 一致；`Store` 读到带版本的值同样不接受。否则抛出，调用方按损坏处理（权威副本没有数据源，读取失败）。
      * 派生副本读到带摘要段的值是类型不符（D4）：计入 `typeMismatches` 并告警，照常读取。成本只在 L1 读取上，不在 L2 命中上。
      */
     private fun verifyDigest(storageKey: String, envelope: Envelope) {
@@ -605,8 +605,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 权威副本读到的值的问题（不计数，运维查看也用它）；没有问题时为 `null`。负缓存没有载荷，带版本的值不带摘要段，
-     * 两者都只在带摘要段时校验。
+     * 权威副本读到的值的问题（不计数，运维查看也用它）；没有问题时为 `null`。负缓存没有载荷，不校验；带版本的值不带摘要段，
+     * 只有带版本的类型（`VersionedStore`）读到它是正常的，`Store` 读到它说明同一 namespace 上另有带版本的类型，按读不懂处理。
      */
     private fun digestProblem(envelope: Envelope): String? {
         if (!authoritative || envelope !is Envelope.Scalar) {
@@ -614,21 +614,28 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         }
         val digest = envelope.digest
         if (digest == null) {
-            return if (envelope.version != Versioned.NO_VERSION) {
-                null
-            } else {
-                "value without a digest segment in an authoritative cache (not written by a Store)."
+            return when {
+                envelope.version == Versioned.NO_VERSION ->
+                    "value without a digest segment in an authoritative cache (not written by a Store)."
+                versionedValues -> null
+                else -> "versioned value in a Store (written by a VersionedCache or a VersionedStore)."
             }
         }
         return if (Digest.of(envelope) == digest) null else "payload does not match its digest segment."
     }
 
     private fun typeMismatch(storageKey: String) {
-        metrics.typeMismatch()
-        val message = {
+        typeMismatch {
             "Cache[$name] - key[$storageKey] - holds a value written by a Store (digest segment): " +
                 "the namespace is shared with an authoritative cache. It is read, but never reclaimed or refreshed."
         }
+    }
+
+    /**
+     * 类型不符（D4）：计入 `typeMismatches`；每个缓存只在第一次告警，之后记为 DEBUG（命名空间配置错误时每次读取或 `evict` 都会遇到它）。
+     */
+    private fun typeMismatch(message: () -> Any?) {
+        metrics.typeMismatch()
         if (typeMismatchWarned.compareAndSet(false, true)) log.warn(message) else log.debug(message)
     }
 
@@ -2248,8 +2255,9 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         L1Eviction.Evicted -> null
         is L1Eviction.Unreadable -> throw refusedFormat(storageKey, result.format)
         L1Eviction.Authoritative -> {
-            metrics.typeMismatch()
-            throw AuthoritativeContentException(name, storageKey).also { log.warn { it.message } }
+            val refused = AuthoritativeContentException(name, storageKey)
+            typeMismatch { refused.message }
+            throw refused
         }
     }
 

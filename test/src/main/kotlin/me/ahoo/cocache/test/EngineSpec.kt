@@ -497,6 +497,39 @@ abstract class EngineSpec {
     }
 
     /**
+     * `Store` 读到带版本的值（同一 namespace 上另有 `VersionedCache` 或 `VersionedStore`，带版本的值不带摘要段）：与缺摘要段相同，
+     * 按损坏失败（[CacheReadException]，cause 为本节点格式的 [ForeignFormatException]），不当作 `Store` 的值返回，不回收、不写 L2；
+     * 单 key、`lookup` 与批量都是如此。条件读取同样拒绝它，读与条件读写对同一份内容给出同一个答案。
+     */
+    @Test
+    fun storeFailsOnAVersionedValue() {
+        assumeDeclared(L1Capability.CONDITIONAL, L1Capability.VERSIONED)
+        val bytes = TestCodec.encode("v")
+        Suspending.await {
+            backend.delegate.store(Keyspace("cocache:", cacheName)).put(
+                storageKey("versioned"),
+                Envelope.Scalar(bytes, 7),
+                null,
+                InvalidationFrame.encode(NodeId.random(), emptyList())
+            )
+        }
+        val cache = nodeA.store()
+        repeat(2) {
+            val error = runCatching { cache["versioned"] }.exceptionOrNull()
+            error.assert().isInstanceOf(CacheReadException::class.java)
+            requireNotNull(error?.cause as? ForeignFormatException).format.assert().isEqualTo(backend.format)
+        }
+        runCatching { cache.lookup("versioned") }.exceptionOrNull()
+            .assert().isInstanceOf(CacheReadException::class.java)
+        runCatching { cache.getAll(listOf("versioned", "absent")) }.exceptionOrNull()
+            .assert().isInstanceOf(CacheReadException::class.java)
+        runCatching { cache.getIfChanged("versioned", null) }.exceptionOrNull()
+            .assert().isInstanceOf(CacheReadException::class.java)
+        nodeA.metrics().reclaims.assert().isEqualTo(0)
+        ((remote("versioned") as L1Read.Hit).envelope as Envelope.Scalar).version.assert().isEqualTo(7)
+    }
+
+    /**
      * 派生缓存读到带摘要段的值（同一个 namespace 上还有 `Store`，RFC 0005 §4.7，D4）：照常读取，计入 `typeMismatches`；
      * 解码失败时也不回收（`RECLAIM` 拒绝带摘要段的内容），不计入 `reclaims`，绕过 L1 回源，L1 中的唯一副本保留。单个与批量读取相同。
      */

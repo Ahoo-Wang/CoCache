@@ -6,10 +6,10 @@
 
 ## 1. 8.0 的预发布与 GA
 
-> 状态（2026-11-05）：因额度暂停，正在为 rc.1 收尾。下一步按顺序：
-> 1. 等 #809、#810 合并（已开自动合并）。
-> 2. PR C（M8c）：`unlimited()` 显式声明不生效（`CachePolicy.Builder.load`）；`Store` 解码不带摘要的版本化值（`digestProblem`）；`SetStore` 读错误未包成 `CacheReadException`（`SetEngine.onHit` / `decode`）；`HookedBackend` 不能对 `evictKeepingVersion` 注入故障；`evict` 被拒时的类型不匹配 WARN 限频。
-> 3. 用户文档会话的四个 PR：用户文档定稿（`docs: finalize the user docs for 8.0`）；12 处过期 KDoc（含 `InvalidationChannel.publish` 的 SPI 说明、`UnknownReadMode` 对 `getVersioned` 生效）；starter：`refresh-window` 接受 YAML 的 `false`、全局 `tombstone-ttl: forever` 跳过并报告；`caches-validation: fail` 时 `cocache.caches.[name]` 下的未知配置项启动失败（维护者决定，2026-11-05）。
+> 状态（2026-11-06）：为 rc.1 收尾。下一步按顺序：
+> 1. 已合并：#809、#810；PR C（M8c，#845）：审查的其余五项发现，`CachePolicy.Builder` 新增 `maxConcurrent`（`maxConcurrent = unlimited()` 才记为写出，维护者选定，2026-11-06）。
+> 2. 用户文档会话的 PR 已合并：用户文档定稿（#811）、过期 KDoc（#813）、starter 的 YAML `off` 与全局 `tombstone-ttl: forever`（#820）。
+> 3. 剩下一个：`caches-validation: fail` 时 `cocache.caches.[name]` 下的未知配置项启动失败（维护者决定，2026-11-05）。
 > 4. 全部合并后发 8.0.0-rc.1（changelog 的 `Unreleased` 改为 rc.1），通知 CoSec 与 Wow 复测。
 >
 > 已决定、不改代码：NOPERM 降级为非原子广播并告警（保持）；不检查 Redis 版本（文档改正 7.0 的理由）；自定义 `CacheRuntime` 时事务模式的报告（文档说明）；格式 2 的短 `E` 不自愈（已知限制）；`InMemoryBackend` 参数顺序（不改）。GA 之后：`sharded` 模式频道未确认时每次心跳清空 L2 而健康仍为 UP。

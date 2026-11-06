@@ -46,7 +46,7 @@ cocache:
 `cocache.defaults` 只填充声明没有写出的字段，所以“写出”的含义很重要：
 
 - **注解**：每个不是 `CoCache.UNSET` 的 `@CoCache` 属性，以及 `unknownRead = ABSENT`（默认的 `THROW` 不算）。设置了 `maximumSize` 的 `@CaffeineCache` 写出 `local-maximum-size`。
-- **spec**：`policy { … }`（Java：`updatePolicy(…)`）中赋值的每个字段，以及赋值了的 `unknownRead`。写出哨兵值也算：`ttl = forever()` 是写出的，`defaults.cache.ttl` 因此不作用于它。给嵌套的策略赋值（`lease = LeasePolicy(…)`、`load = LoadPolicy(…)`、`local = LocalPolicy(…)`）只写出值有变化的字段：`lease = LeasePolicy(ttl = Duration.ofSeconds(30))` 写出 `lease-ttl`，`lease-wait` 仍交给 `cocache.defaults`。
+- **spec**：`policy { … }`（Java：`updatePolicy(…)`）中赋值的每个字段，以及赋值了的 `unknownRead`。写出哨兵值也算：`ttl = forever()` 是写出的，`defaults.cache.ttl` 因此不作用于它。给嵌套的策略赋值（`lease = LeasePolicy(…)`、`load = LoadPolicy(…)`、`local = LocalPolicy(…)`）只写出值有变化的字段：`lease = LeasePolicy(ttl = Duration.ofSeconds(30))` 写出 `lease-ttl`，`lease-wait` 仍交给 `cocache.defaults`。因此嵌套的策略写不出与当前值相同的值，如默认值之上的 `LoadPolicy(maxConcurrent = unlimited())`：不限回源并发要写作 `maxConcurrent = unlimited()`（Java：`maxConcurrent(null)`）。
 - **整体策略**：`policy = somePolicy`（Java：`policy(CachePolicy)`）写出全部字段。`cocache.defaults` 于是不设置这个缓存的任何策略字段（两个[事务模式](./spring-cache.md#transactional-loads)仍然生效），每个被跳过的配置项都带着原因 `the declaration sets the whole policy, so defaults don't apply` 列出。
 
 除非有意固定每个字段，请用 `policy { … }` 修改类型默认值。

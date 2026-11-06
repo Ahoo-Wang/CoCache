@@ -156,7 +156,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 **现象**。`cocache.unknown.formats` 上升。查看结果显示 `UNREADABLE`，原因是 `Written by a newer format[…] than this node[…]`。
 
-**原因**。某个实例写入了本实例不认识的更新线格式，或本实例不认识的必须理解的标志位。有数据源的读取回源、不写 L1，结果以 `degraded-local-max-age` 留在 L2 中，这样新旧实例不会互相覆盖。外部来源的 `Cache` 上不带 loader 的读取把该 key 当作未填充，返回 `null`；带调用级 loader 的读取照常加载。`Store` 与 `VersionedStore` 没有数据源：读取抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），而不是回答“不存在”。在本实例上读取更新格式的 `SetStore` 集合会抛出 `ForeignFormatException`（一个 `IllegalStateException`）；不是 CoCache 写入的内容（例如遗留的原生 Redis Set）抛出 `CacheReadException`（见[损坏或无法读取的载荷](#corrupt-payloads)）。在更新格式的集合上调用 `SetStore.add` 或 `remove` 抛出 `CacheWriteException`，集合不变。
+**原因**。某个实例写入了本实例不认识的更新线格式，或本实例不认识的必须理解的标志位。有数据源的读取回源、不写 L1，结果以 `degraded-local-max-age` 留在 L2 中，这样新旧实例不会互相覆盖。外部来源的 `Cache` 上不带 loader 的读取把该 key 当作未填充，返回 `null`；带调用级 loader 的读取照常加载。`Store` 与 `VersionedStore` 没有数据源：读取抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），而不是回答“不存在”。在本实例上读取更新格式的 `SetStore` 集合会抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），与不是 CoCache 写入的内容（例如遗留的原生 Redis Set）相同（见[损坏或无法读取的载荷](#corrupt-payloads)）。在更新格式的集合上调用 `SetStore.add` 或 `remove` 抛出 `CacheWriteException`，集合不变。
 
 **处理**。格式升级滚动发布期间属于正常，所有实例升级到新版本后就会停止。非发布期间出现时，找出运行新版本的实例。见[滚动发布](./index.md#rolling-deploys)。
 
