@@ -5,6 +5,13 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: when a `FillScope.filled` hook (transactional fill recording) threw, a read kept the Redis leases it had taken, so other reads of those keys waited up to `lease-wait` and bypassed Redis until the lease expired (10 s by default). The read still fails with the hook's exception, and now releases every lease first, for a single key and for every key of a `getAll`, and fills neither layer.
+- Fixed: a sync loader that read its own key again after running longer than `load-timeout` started a second load of that key instead of failing with `IllegalStateException`, so a recursive loader could load without bound. Reentry now fails fast whether or not the load has expired, and other threads still take over an expired load.
+- Fixed: when an `AsyncCacheLoader`'s future failed with `InterruptedException` (the source was interrupted on its own thread), sync readers of the same key treated it as an interrupt of the leading caller, and each of them called the source again. They now share the failure like any other source failure: every caller gets the same exception, with no interrupt flag set, from one source call. An interrupt of the calling thread itself, including one inside `loadAsync` before it returns its future, still lets the other readers load on their own.
+- Fixed: two concurrent writes of the same key whose outcome was unknown could shorten the window in which the instance applies its own late invalidation (`localMaxAge` after the later failure), when the write that read the clock first registered last. A late write inside the later window was then filtered, and the instance kept serving its old local copy until `localMaxAge`. The window now always ends at the latest deadline registered for the key.
+
 ## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
 **Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.

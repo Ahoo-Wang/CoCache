@@ -1109,19 +1109,18 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             }
 
             is AsyncSource.Native -> {
-                val started = Futures.attempt {
-                    if (inline) {
-                        native(source.loader).toCompletableFuture()
-                    } else {
-                        flights.loading(storageKeys) { native(source.loader).toCompletableFuture() }
-                    }
+                // 同步变体在调用方线程上调用 loadAsync：它同步抛出的异常与阻塞的 loader 抛出的一样，原样传出（其中的中断即调用方线程被中断）
+                val started = if (inline) {
+                    native(source.loader).toCompletableFuture()
+                } else {
+                    Futures.attempt { flights.loading(storageKeys) { native(source.loader).toCompletableFuture() } }
                 }
                 val value = try {
                     Futures.relay<Any?>(started)
                         .completeOnTimeout(TIMED_OUT, loadTimeout.toNanos(), TimeUnit.NANOSECONDS)
                         .awaitOriginal()
                 } catch (e: InterruptedException) {
-                    // 数据源的 future 以中断失败：是数据源的失败，同步 leader 的调用方线程没有被中断（#835），照常交给跟随者
+                    // 数据源返回的 future 以中断失败：数据源在它自己的线程上被中断，调用方线程没有（#835），照常交给跟随者
                     throw SingleFlight.sourceFailure(e)
                 }
                 if (value === TIMED_OUT) {

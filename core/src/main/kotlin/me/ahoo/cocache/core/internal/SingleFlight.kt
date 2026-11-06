@@ -376,10 +376,11 @@ internal class SingleFlight<K : Any, R : Any>(
         private val SOURCE_INTERRUPT = ThreadLocal<WeakReference<Throwable>?>()
 
         /**
-         * 等待异步数据源（`AsyncCacheLoader`）的 future 时，抛出它的 [InterruptedException] 之前调用（#835）：这是数据源的失败
+         * 异步数据源（`AsyncCacheLoader`）返回的 future 以 [InterruptedException] 失败时，抛出它之前调用（#835）：这是数据源的失败
          * （数据源在它自己的线程上被中断），不说明调用方线程被中断。记下它（按身份），同步变体的 [sharedFailure] 据此把它当作普通的
-         * 回源失败交给跟随者，而不是让每个跟随者各自回源。同步变体的 leader 在调用方线程上执行（`runBlocking` 的事件循环），
-         * 记下与判断在同一个线程上；异步变体从不按异常类型判断，记下也无妨。
+         * 回源失败交给跟随者，而不是让每个跟随者各自回源。`loadAsync` 在调用方线程上同步抛出的不记下：它与阻塞的 loader 抛出的一样。
+         * 同步变体的 leader 在调用方线程上执行（`runBlocking` 的事件循环），记下与判断在同一个线程上（回源观测器把回源换到别的线程时
+         * 记不下，按原来的规则让跟随者各自回源）；异步变体从不按异常类型判断，记下也无妨。
          *
          * @return [error] 本身
          */
