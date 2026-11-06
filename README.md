@@ -41,7 +41,7 @@ Each type has only the operations that are safe for its role (a `Store` has no `
 ## Quick start
 
 ```kotlin
-implementation("me.ahoo.cocache:cocache-spring-boot-starter:8.0.0-alpha.3")
+implementation("me.ahoo.cocache:cocache-spring-boot-starter:8.0.0-alpha.4")
 implementation("org.springframework.boot:spring-boot-starter-data-redis")
 ```
 

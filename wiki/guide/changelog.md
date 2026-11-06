@@ -5,21 +5,37 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## Unreleased {#unreleased}
+## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
-- Fixed: on a backend without atomic broadcast (`sharded` channel mode, or when the atomic-broadcast probe fails), a write whose separate invalidation publish was rejected, for example while disconnected, was reported as not executed (`outcomeUnknown = false`). `Cache.put` then skipped its compensating invalidation, and other instances kept their old L2 copies until `localMaxAge`. Such a write is now outcome unknown: `put` schedules the compensating invalidation and `invalidate` retries.
-- Fixed: the suspending view of a `Cache` didn't apply the per-call TTL ceiling (`cocache.overrides.cache.ttl`) to `put(key, value, ttl)` and `putAll(entries, ttl)`. It now clamps them and counts them in `cocache.ttl.clamped`, like the sync and async views.
-- Fixed: on an externally sourced `Cache`, `getAll` without a loader capped the local copy of a key held under another instance's lease, in a newer format, or with a pending invalidation at `localMaxAge`. Like `get`, it now caps it at `degradedLocalMaxAge` and counts it in `cocache.degraded.fills`.
-- Fixed: `cocache.reclaims` counted undecodable values written by a `Store` (with a digest segment) that a derived cache read, although such values are never reclaimed. They are now counted only in `cocache.type.mismatch`.
-- Fixed: with the Redis backend, removing the last member of a set left the key behind as an empty hash when the set carried metadata besides `!f` (an explicit `!m = "0"`, or any reserved `!` field). Without a TTL it never expired. The set is now deleted once no member remains.
-- Fixed: `refresh-window: off` written without quotes in YAML failed startup with `"false" is not a duration`, because YAML reads a bare `off` as `false`. It now turns refresh-ahead off.
-- Fixed: `cocache.defaults.store.tombstone-ttl: forever` failed the creation of every `VersionedStore` that didn't set its own, whose tombstones need a finite lifetime. It is now skipped for a `VersionedStore`, like any other global-layer entry that can't apply: logged as a `WARN` and listed under the endpoint's `skippedConfiguration` with the reason `a VersionedStore needs a finite tombstone-ttl`. A `VersionedCache` still takes `cocache.defaults.cache.tombstone-ttl: forever`, and `cocache.caches.[name].tombstone-ttl: forever` on a `VersionedStore` still fails startup.
-- Fixed: `maxConcurrent = unlimited()` could not be declared. Its documented form, `load = LoadPolicy(maxConcurrent = unlimited())`, equals the default, so a nested assignment didn't record it as written and `cocache.defaults.*.load-max-concurrent` replaced it. `CachePolicy.Builder` now has `maxConcurrent` (Java: `maxConcurrent(Int?)`), which always counts as written: `policy { maxConcurrent = unlimited() }`.
-- Fixed: a `Store` read a value written by a `VersionedCache` or `VersionedStore` on the same namespace (a version segment and no digest) as its own, although its conditional reads refuse it. It now fails like a value without a digest: `CacheReadException`, the copy in Redis kept.
-- Fixed: `SetStore` reads of unreadable content didn't all fail the same way. A newer format threw `ForeignFormatException`, a scalar on a set key threw `IllegalStateException` and an undecodable element threw the codec's exception, and the last two weren't counted. Each now throws `CacheReadException` with a `ForeignFormatException` cause and counts in `cocache.unknown.formats`, like a `Store`.
-- Fixed: a `VersionedCache` logged a WARN on every `evict` refused because the key holds a value written by a `Store`. It now warns once per cache and logs later refusals at DEBUG, like reads of such values; `cocache.type.mismatch` still counts each one.
-- TCK: `HookedBackend` now passes `evictKeepingVersion` through `failWrites`, `rejectWrites`, `beforeInvalidate` and `afterInvalidate`, so `VersionedSpec` can inject faults into `evict`.
-- Changed: a key under `cocache.caches.[name]` that CoCache doesn't define, usually a typo such as `ttl-forever` or `max-concurrent` (for `load-max-concurrent`), now fails startup. Spring Boot used to ignore it, so the override silently had no effect. `cocache.caches-validation: warn` logs a warning instead. Relaxed forms that bind, such as `localMaxAge`, still work, and unknown keys in `cocache.defaults` and `cocache.overrides` are still ignored.
+**Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
+
+### Changed: unknown per-cache keys fail startup {#unknown-cache-keys}
+
+- A key under `cocache.caches.[name]` that CoCache doesn't define, usually a typo such as `ttl-forever` or `max-concurrent` (for `load-max-concurrent`), now fails startup. Spring Boot used to ignore it, so the override silently had no effect. `cocache.caches-validation: warn` logs a warning instead. Relaxed forms that bind, such as `localMaxAge`, still work, and unknown keys in `cocache.defaults` and `cocache.overrides` are still ignored ([startup validation](./configuration.md#validation)).
+
+### Fixed: consistency under faults {#consistency-fixes}
+
+- On a backend without atomic broadcast (`sharded` channel mode, or when the atomic-broadcast probe fails), a write whose separate invalidation publish was rejected, for example while disconnected, was reported as not executed (`outcomeUnknown = false`). `Cache.put` then skipped its compensating invalidation, and other instances kept their old L2 copies until `localMaxAge`. Such a write is now outcome unknown: `put` schedules the compensating invalidation and `invalidate` retries.
+- The suspending view of a `Cache` didn't apply the per-call TTL ceiling (`cocache.overrides.cache.ttl`) to `put(key, value, ttl)` and `putAll(entries, ttl)`. It now clamps them and counts them in `cocache.ttl.clamped`, like the sync and async views.
+- On an externally sourced `Cache`, `getAll` without a loader capped the local copy of a key held under another instance's lease, in a newer format, or with a pending invalidation at `localMaxAge`. Like `get`, it now caps it at `degradedLocalMaxAge` and counts it in `cocache.degraded.fills`.
+- With the Redis backend, removing the last member of a set left the key behind as an empty hash when the set carried metadata besides `!f` (an explicit `!m = "0"`, or any reserved `!` field). Without a TTL it never expired. The set is now deleted once no member remains.
+
+### Fixed: content written by another cache type {#type-mismatch-fixes}
+
+- A `Store` read a value written by a `VersionedCache` or `VersionedStore` on the same namespace (a version segment and no digest) as its own, although its conditional reads refuse it. It now fails like a value without a digest: `CacheReadException`, the copy in Redis kept.
+- `SetStore` reads of unreadable content didn't all fail the same way. A newer format threw `ForeignFormatException`, a scalar on a set key threw `IllegalStateException` and an undecodable element threw the codec's exception, and the last two weren't counted. Each now throws `CacheReadException` with a `ForeignFormatException` cause and counts in `cocache.unknown.formats`, like a `Store`.
+- `cocache.reclaims` counted undecodable values written by a `Store` (with a digest segment) that a derived cache read, although such values are never reclaimed. They are now counted only in `cocache.type.mismatch`.
+- A `VersionedCache` logged a WARN on every `evict` refused because the key holds a value written by a `Store`. It now warns once per cache and logs later refusals at DEBUG, like reads of such values; `cocache.type.mismatch` still counts each one.
+
+### Fixed: configuration {#configuration-fixes}
+
+- `maxConcurrent = unlimited()` could not be declared. Its documented form, `load = LoadPolicy(maxConcurrent = unlimited())`, equals the default, so a nested assignment didn't record it as written and `cocache.defaults.*.load-max-concurrent` replaced it. `CachePolicy.Builder` now has `maxConcurrent` (Java: `maxConcurrent(Int?)`), which always counts as written: `policy { maxConcurrent = unlimited() }`.
+- `refresh-window: off` written without quotes in YAML failed startup with `"false" is not a duration`, because YAML reads a bare `off` as `false`. It now turns refresh-ahead off.
+- `cocache.defaults.store.tombstone-ttl: forever` failed the creation of every `VersionedStore` that didn't set its own, whose tombstones need a finite lifetime. It is now skipped for a `VersionedStore`, like any other global-layer entry that can't apply: logged as a `WARN` and listed under the endpoint's `skippedConfiguration` with the reason `a VersionedStore needs a finite tombstone-ttl`. A `VersionedCache` still takes `cocache.defaults.cache.tombstone-ttl: forever`, and `cocache.caches.[name].tombstone-ttl: forever` on a `VersionedStore` still fails startup.
+
+### TCK: faults in `evict` {#tck-evict-faults}
+
+- `HookedBackend` now passes `evictKeepingVersion` through `failWrites`, `rejectWrites`, `beforeInvalidate` and `afterInvalidate`, so `VersionedSpec` can inject faults into `evict`.
 
 ## v8.0.0-alpha.3 (Pre-release) {#v8-0-0-alpha-3}
 
