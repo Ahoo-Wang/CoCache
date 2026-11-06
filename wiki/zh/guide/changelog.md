@@ -15,10 +15,9 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：事务内为空业务 key `""`（或自定义 `KeyEncoder` 编码为 `""` 的 key）加载的值，回滚与回滚到 savepoint 时现在会失效。此前这次失效被当作空的编码 key 拒绝，未提交的值留在缓存中直到 `ttl`。`VersionedCache` 保留版本栅栏。（#823）
 - 修复：其它同步的 `savepointRollback` 回调在 Spring 把数据库回滚到 savepoint 之前加载的值，不再在外层提交之后留下。回滚过 savepoint 的事务提交时现在同样失效它加载过的内容，`registered-keys` 下当时已经加载过的 key 在事务的其余部分私有加载。（#814）
 - 修复：CoCache 自己的同步执行之后，其它同步在 `afterCommit` 中做的失效或 `put(key, null)` 失败时，现在交给 `CacheErrorHandler`，不再抛进已经提交的事务、跳过后面的 `afterCommit` 回调。（#838）
-- 修复：同时含非空集合与空集合的 `SetStore.putAll`，在替换已到达 Redis 之后删除被拒绝时报告 `outcomeUnknown = false`；在没有原子广播的后端上，其它实例还保留被替换的 key 的旧副本。现在报告 `outcomeUnknown = true`，并广播整批的失效。
-- 修复：`VersionedCache` 的刷新因数据源返回更旧的版本（或不带版本的 `null`）被拒绝时，保留的本地副本沿用加载之前 Redis 报告的剩余寿命，慢加载之后它活过了 Redis 中的值。现在它随那个值到期，加载期间已在 Redis 中到期的副本不再放回 L2。
-- 修复：`Cache` 的同步、异步与挂起视图上的 `get(key, loader)` 命中 `refresh-window` 内的本地副本时不触发提前刷新。现在它同 `get` 一样经声明的 loader 安排刷新；调用级 loader 仍只用于未命中。
-- 修复：`CacheRuntime.close()` 之后发起的异步或挂起调用仍会执行：`put` 修改了 Redis、其它实例读到新值，调用方却收到 `IllegalStateException("CacheRuntime closed.")`。现在这样的调用不执行，直接失败。
+- 修复：接口式缓存可以收窄固定的返回类型，如 `Store` 中的 `override fun getAll(keys: Collection<String>): SortedMap<String, String>`（或 `suspend` 方法的结果类型），创建照常成功，第一次调用才因缓存返回的是 `LinkedHashMap` 而 `ClassCastException`。现在创建缓存时即失败，不注册任何东西。收窄值类型（`get` 返回 `User` 而不是 `V`）照常可用。（#843）
+- 修复：组合视图接口可以声明目标接收不了其参数的抽象方法，如 `getAll(keys: String)`，第一次调用才 `ClassCastException`。现在与接口式缓存一样，创建代理时即失败。（#833）
+- 修复：声明在包可见接口中的 default 方法（声明的接口本身，或 `public` 接口的包可见基接口）每次调用都以 `IllegalAccessException`（包装为 `UndeclaredThrowableException`）失败。现在接口式缓存、它们的异步与挂起视图，以及组合视图中都能正常执行。在具名模块中要把这个包开放给 CoCache，否则创建缓存失败。（#827）
 
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
