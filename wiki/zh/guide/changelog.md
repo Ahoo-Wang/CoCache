@@ -15,10 +15,6 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：事务内为空业务 key `""`（或自定义 `KeyEncoder` 编码为 `""` 的 key）加载的值，回滚与回滚到 savepoint 时现在会失效。此前这次失效被当作空的编码 key 拒绝，未提交的值留在缓存中直到 `ttl`。`VersionedCache` 保留版本栅栏。（#823）
 - 修复：其它同步的 `savepointRollback` 回调在 Spring 把数据库回滚到 savepoint 之前加载的值，不再在外层提交之后留下。回滚过 savepoint 的事务提交时现在同样失效它加载过的内容，`registered-keys` 下当时已经加载过的 key 在事务的其余部分私有加载。（#814）
 - 修复：CoCache 自己的同步执行之后，其它同步在 `afterCommit` 中做的失效或 `put(key, null)` 失败时，现在交给 `CacheErrorHandler`，不再抛进已经提交的事务、跳过后面的 `afterCommit` 回调。（#838）
-- 修复：`FillScope.filled` 钩子（记录写事务内的填充）抛出时，读取取得的 Redis lease 没有释放，这些 key 的其它读取要等满 `lease-wait`、并绕过 Redis，直到 lease 过期（默认 10 秒）。读取仍以钩子的异常失败，现在先释放全部 lease（单 key，以及 `getAll` 的每个 key），也不填入任何一层。
-- 修复：同步 loader 运行超过 `load-timeout` 之后再读自己的 key 时，开始了这个 key 的第二次加载，而不是以 `IllegalStateException` 失败，递归的 loader 因此可以无限地加载下去。现在无论加载是否已超时，重入都快速失败；别的线程仍可接管超时的加载。
-- 修复：`AsyncCacheLoader` 返回的 future 以 `InterruptedException` 失败（数据源在它自己的线程上被中断）时，同一 key 的同步读取把它当作领头调用方被中断，每个读取各自再调用一次数据源。现在它与其它回源失败一样共享：只调用一次数据源，每个调用方收到同一个异常，中断标志都不置位。调用方线程自己被中断（包括 `loadAsync` 返回 future 之前被中断）时，其它读取仍各自加载。
-- 修复：同一 key 的两次并发写入结果都未知、先读时钟的那次后登记时，会缩短本实例处理自己迟到的失效的窗口（较晚那次失败之后的 `localMaxAge`）。在较晚的窗口内迟到执行的写入因此被过滤，本实例继续返回旧的本地副本，直到 `localMaxAge`。现在窗口总是以这个 key 登记过的最晚截止时刻为准。
 
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
