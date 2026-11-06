@@ -7,6 +7,11 @@ description: CoCache 版本发布历史和重要变更。
 
 ## Unreleased {#unreleased}
 
+- 修复：alpha.4 新增的 `cocache.caches.[name]` 未知配置项检查用 Spring Boot 的默认转换器把配置再绑定一次，只有应用的 `@ConfigurationPropertiesBinding` 转换器才接受的值（如 `read-failure` 的自定义别名）因此让启动失败。检查现在在 `CoCacheProperties` 的正式绑定中进行，使用相同的转换器。
+- 修复：`CacheRuntime.create` 与 `close()` 并发时，创建可能在关闭返回之后完成，多出一个缓存并遗留它的失效订阅。现在缓存只在订阅确认之后、运行时仍开启时交给运行时；否则创建的调用关闭它已建立的部分，并以 `CacheRuntime is closed.` 失败。
+- 修复：订阅尚未确认的缓存已经出现在 `cacheNames`、`cache`、`admin` 与 `metrics` 中，Micrometer 绑定器可能绑定随后回滚的引擎；同名重试之后，指标仍读取被丢弃的引擎。现在缓存创建完成之后才对外可见。
+- 修复：存储前缀 `{keyPrefix}{namespace}:` 相等或一个是另一个开头的两个缓存（例如 `app:` + `users` 与 `app:users:` + `v2`）都能创建，在 Redis 中相互覆盖 key，也收不到彼此的失效。现在创建第二个时失败，并指出第一个。
+- 修复：经 `CoCacheFactory` 被拒绝的创建（例如重名）已经改写了已有缓存的 `fill-in-transaction` 与 `invalidate-fills-on-rollback`，已回滚的数据可能留在缓存中。现在这两个模式只在算出它们的那个缓存创建成功时生效。
 - 修复：编码后含未配对 UTF-16 代理的 key（如 `"bad-\uD800"`）被接受，而 Redis key 与失效帧按 UTF-8 编码，把它变成 `?`。这个 key 于是与另一个 key 共用同一个 Redis key，其它实例收到失效时淘汰的也是那个 key，自己的旧副本留到 `localMaxAge`。现在这样的 key 在到达 Redis 之前以 `IllegalArgumentException` 失败，读取、写入、`CacheAdmin` 与 `ExternalInvalidator` 都一样；emoji、中文等合法的 key 不受影响（见 [key](./caches.md#keys)）。
 - 修复：`CacheAdmin.inspect` 与 `cocache` 端点把本实例自己冷加载的带版本墓碑（数据源给出的 `Versioned(null, v)`）展示为本地 `VALUE`，值是内部的 `Versioned` 包装对象。现在展示为 `ABSENT`、没有值，与 `get` 及 L1 的展示一致。
 

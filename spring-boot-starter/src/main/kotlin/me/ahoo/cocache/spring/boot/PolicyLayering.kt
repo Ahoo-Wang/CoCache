@@ -94,7 +94,7 @@ internal class PolicyLayering(
             applyOverrides(overrides, "${CoCacheProperties.PREFIX}.overrides.$layer")
             val unlocked = applyCacheLayer()
             applyKeyPrefix(unlocked)
-            val fills = applyFillModes()
+            val (fills, mode) = applyFillModes()
             locks.constrain(draft).forEach { sources[it] = Source.LOCKED to "constrained by ${locks.by}" }
             clampRefreshWindow()
             adapter.applyDraft(builder, draft)
@@ -106,6 +106,8 @@ internal class PolicyLayering(
                 } + fills,
                 skipped
             )
+            // 只暂存：这份报告所属的缓存创建成功之后才生效（TransactionalFillModes.commit，#842）
+            mode?.let { fillModes?.stage(report, it) }
             return Layered(effective, report)
         }
 
@@ -314,11 +316,11 @@ internal class PolicyLayering(
         }
 
         /**
-         * 写事务内回源的两个机制：生效值登记到 [fillModes]，返回报告的条目（没有 spring-tx 时没有）。它们作用于派生副本的回源，
+         * 写事务内回源的两个机制：返回报告的条目与生效值（没有 spring-tx 时都没有），生效值由调用方按报告暂存到 [fillModes]。它们作用于派生副本的回源，
          * 包括外部来源的 `Cache` 上按调用给出 loader 的 `get(key, loader)`（Spring Cache 的 `sync = true`）；权威副本没有回源，
          * 全局层跳过这两个键，`caches.[name]` 中的按 `caches-validation` 处理。
          */
-        private fun applyFillModes(): List<PolicyReport.Entry> {
+        private fun applyFillModes(): Pair<List<PolicyReport.Entry>, TransactionalFillModes.Mode?> {
             val layer = if (store) "store" else "cache"
             val defaults = if (store) properties.defaults.store else properties.defaults.cache
             val overrides = if (store) properties.overrides.store else properties.overrides.cache
@@ -336,13 +338,14 @@ internal class PolicyLayering(
                         }
                     }
                 }
-                return emptyList()
+                return emptyList<PolicyReport.Entry>() to null
             }
             val rollback = layerFill(INVALIDATE_FILLS_ON_ROLLBACK, defaults, overrides, perCache?.second)
             val mode = layerFill(FILL_IN_TRANSACTION, defaults, overrides, perCache?.second)
-            val modes = fillModes ?: return emptyList()
-            modes.register(name, TransactionalFillModes.Mode(rollback.first, mode.first))
-            return listOf(rollback.second, mode.second)
+            if (fillModes == null) {
+                return emptyList<PolicyReport.Entry>() to null
+            }
+            return listOf(rollback.second, mode.second) to TransactionalFillModes.Mode(rollback.first, mode.first)
         }
 
         private fun <T : Any> layerFill(
