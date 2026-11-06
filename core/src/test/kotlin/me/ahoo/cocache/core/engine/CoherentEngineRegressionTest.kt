@@ -232,18 +232,43 @@ class CoherentEngineRegressionTest {
     }
 
     /**
-     * 运行时关闭之后，没有数据源的异步读取在 L1 失败时以原始异常失败，与有数据源时相同（关闭时不降级、不包装为 CacheReadException）。
+     * 关闭之前已经发起、L1 读取在运行时关闭之后才失败的异步读取（没有数据源）：以原始异常失败，与有数据源时相同
+     * （关闭时不降级、不包装为 CacheReadException）。关闭之后才发起的调用不启动（`AsyncContext.runAsync`）。
      */
     @Test
     fun loaderlessAsyncReadFailureAfterCloseFailsWithTheRemoteError() {
         val runtime = runtime()
         val cache = runtime.engine(spec { external() })
-        runtime.close()
-        backend.failAll = true
-        cache.async().get("k").handle { _, error -> error }.join()
-            .assert().isInstanceOf(RemoteUnavailableException::class.java)
-        cache.async().getAll(listOf("k")).handle { _, error -> error }.join()
-            .assert().isInstanceOf(RemoteUnavailableException::class.java)
+        val reading = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        backend.afterRead = { key, read ->
+            if (key.endsWith(":k")) {
+                reading.countDown()
+                release.awaitOrFail("release the single-key read")
+                throw RemoteUnavailableException("read")
+            }
+            read
+        }
+        backend.afterReadAll = {
+            reading.countDown()
+            release.awaitOrFail("release the batch read")
+            throw RemoteUnavailableException("readAll")
+        }
+        val single = fork("single") { cache.async().get("k").handle { _, error -> error }.join() }
+        val batch = fork("batch") { cache.async().getAll(listOf("a", "b")).handle { _, error -> error }.join() }
+        reading.awaitOrFail("both reads are in flight")
+        // close 先置关闭状态、再等在途的 L1 步骤：关闭之后发起的读取立即失败，说明状态已置
+        val closing = fork("closing") { runtime.close() }
+        // 每次探测换一个 key：关闭之前的探测把“不存在”填进 L2，同一个 key 之后命中 L2，不再进入 runAsync
+        val probes = AtomicInteger()
+        awaitCondition("the runtime is closed to new calls") {
+            val probe = "probe-${probes.incrementAndGet()}"
+            cache.async().get(probe).handle { _, error -> error }.join() is IllegalStateException
+        }
+        release.countDown()
+        single.join().assert().isInstanceOf(RemoteUnavailableException::class.java)
+        batch.join().assert().isInstanceOf(RemoteUnavailableException::class.java)
+        closing.join()
     }
 
     @Test

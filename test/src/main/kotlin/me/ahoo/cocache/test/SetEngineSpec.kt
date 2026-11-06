@@ -23,6 +23,7 @@ import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
@@ -39,6 +40,7 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 权威集合 `SetStore` 的 TCK（RFC 0003 §4.8，RFC 0005 §4.1）：L1 是唯一副本，元素增删由 L1 串行化。
@@ -217,6 +219,95 @@ abstract class SetEngineSpec {
         cacheA["d"].assert().containsExactly("w")
         elapse(Duration.ofSeconds(2))
         cacheA["d"].assert().isEmpty()
+    }
+
+    /**
+     * 混合批次（非空集合整体覆盖、空集合删除）：先整体覆盖，覆盖已写入之后删除在写出之前被拒绝（`L1RejectedException`）。整批部分执行，
+     * 以 `outcomeUnknown = true` 失败，被拒绝的原始异常留在 cause 链中；L1 中被覆盖的 key 已是新值，被拒绝删除的 key 不变。显式寿命的批次相同。
+     * 对照：整批在写出之前被拒绝（只有删除，或第一个阶段就被拒绝）仍是确定未执行，L1 不变。
+     */
+    @Test
+    fun mixedPutAllRejectedAfterItsPutStageIsOutcomeUnknown() {
+        val cache = nodeA.setStore()
+        cache.put("updated", setOf("old"))
+        cache.put("cleared", setOf("kept"))
+        backend.beforeInvalidate = { throw L1RejectedException("Rejected before it was written: invalidate.") }
+        assertPartiallyApplied(
+            runCatching { cache.putAll(mapOf("updated" to setOf("new"), "cleared" to emptySet())) }.exceptionOrNull()
+        )
+        assertPartiallyApplied(
+            runCatching {
+                cache.putAll(mapOf("timed" to setOf("t"), "cleared" to emptySet()), Duration.ofSeconds(1))
+            }.exceptionOrNull()
+        )
+        assertNotExecuted(runCatching { cache.putAll(mapOf("cleared" to emptySet())) }.exceptionOrNull())
+        backend.beforeInvalidate = null
+        cache["updated"].assert().containsExactly("new")
+        cache["cleared"].assert().containsExactly("kept")
+        cache["timed"].assert().containsExactly("t")
+        elapse(Duration.ofSeconds(2))
+        cache["timed"].assert().isEmpty()
+
+        backend.rejectWrites = true
+        assertNotExecuted(
+            runCatching { cache.putAll(mapOf("updated" to setOf("x"), "cleared" to emptySet())) }.exceptionOrNull()
+        )
+        backend.rejectWrites = false
+        cache["updated"].assert().containsExactly("new")
+        cache["cleared"].assert().containsExactly("kept")
+    }
+
+    /**
+     * 同上，非原子广播（G2）：部分执行的批次由引擎补发整批的帧（存储自己不广播），其它节点不保留被覆盖的 key 的旧副本。
+     * 对照：整批在写出之前被拒绝时不广播。
+     */
+    @Test
+    fun mixedPutAllRejectedAfterItsPutStageIsBroadcastWithoutAtomicBroadcast() {
+        backend.atomicBroadcastOverride = false
+        val cacheA = nodeA.setStore()
+        val cacheB = nodeB.setStore()
+        cacheA.put("updated", setOf("old"))
+        cacheA.put("cleared", setOf("kept"))
+        awaitCondition("B reads the old copy") { cacheB["updated"] == setOf("old") }
+        val publishes = AtomicInteger()
+        backend.beforePublish = { publishes.incrementAndGet() }
+        backend.beforeInvalidate = { throw L1RejectedException("Rejected before it was written: invalidate.") }
+        val error = runCatching {
+            cacheA.putAll(mapOf("updated" to setOf("new"), "cleared" to emptySet()))
+        }.exceptionOrNull()
+        backend.beforeInvalidate = null
+        assertPartiallyApplied(error)
+        publishes.get().assert()
+            .withFailMessage { "the batch changed L1 before its clear stage was rejected: the engine must broadcast it" }
+            .isEqualTo(1)
+        awaitCondition("B drops the old copy") { cacheB["updated"] == setOf("new") }
+        cacheB["cleared"].assert().containsExactly("kept")
+
+        backend.rejectWrites = true
+        assertNotExecuted(
+            runCatching { cacheA.putAll(mapOf("updated" to setOf("x"), "cleared" to emptySet())) }.exceptionOrNull()
+        )
+        backend.rejectWrites = false
+        backend.beforePublish = null
+        publishes.get().assert().isEqualTo(1)
+    }
+
+    private fun assertPartiallyApplied(error: Throwable?) {
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        (error as CacheWriteException).operation.assert().isEqualTo("putAll")
+        error.outcomeUnknown.assert()
+            .withFailMessage { "the put stage was applied before the clear stage was rejected: partially executed" }
+            .isTrue()
+        generateSequence(error.cause) { it.cause }.any { it is L1RejectedException }.assert()
+            .withFailMessage { "the rejection of the clear stage is kept in the cause chain: $error" }
+            .isTrue()
+    }
+
+    private fun assertNotExecuted(error: Throwable?) {
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        (error as CacheWriteException).outcomeUnknown.assert()
+            .withFailMessage { "a batch rejected before any of it was written was definitely not executed" }
+            .isFalse()
     }
 
     @Test

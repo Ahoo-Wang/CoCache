@@ -92,7 +92,7 @@ Cancelling a coroutine that is waiting on the cache ends only that wait. A load 
 
 ## Exceptions {#exceptions}
 
-The suspending methods throw the original exception, the same instance even in coroutine debug mode: your loader's exception (or `SourceLoadCancelledException`, see [Data sources](#loader)), `CacheReadException`, `CacheWriteException`, `SourceLoadRejectedException`, `SourceLoadTimeoutException` and so on. They are never wrapped in `CompletionException`.
+The suspending methods throw the original exception, the same instance even in coroutine debug mode: your loader's exception (or `SourceLoadCancelledException`, see [Data sources](#loader)), `CacheReadException`, `CacheWriteException`, `SourceLoadRejectedException`, `SourceLoadTimeoutException` and so on. They are never wrapped in `CompletionException`. After `runtime.close()`, a call that needs Redis or the loader throws `IllegalStateException("CacheRuntime closed.")` without running, as on the [async view](./async.md#exceptions).
 
 In coroutine debug mode, which is on whenever the JVM runs with `-ea`, kotlinx-coroutines does two things in your own code:
 - when an exception crosses one of its boundaries (`withContext`, `Deferred.await`), it may rethrow a copy with a recovered stack trace (the original is its `cause`); CoCache's own methods always throw the original;

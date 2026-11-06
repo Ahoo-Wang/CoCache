@@ -1328,6 +1328,73 @@ abstract class EngineSpec {
     }
 
     /**
+     * 带调用级 loader 的读取（`get(key, loader)`，如 Spring 的 `@Cacheable(sync = true)`）在 L2 命中进入刷新窗口时同普通读取触发提前刷新：
+     * 这次命中立即返回旧值，刷新用声明的数据源，调用级 loader 只用于未命中。副本由声明的数据源或调用级 loader 填入都一样。
+     * 轮询也用调用级 loader 读取（普通读取自己就会触发刷新）。
+     */
+    @Test
+    fun callLoaderHitsRefreshAheadThroughTheDeclaredSource() {
+        val cache = nodeA.cache(spec(callLoaderRefreshPolicy()))
+        val callLoads = AtomicInteger()
+        val callLoader = CacheLoader<String, String> { key ->
+            callLoads.incrementAndGet()
+            database[key]
+        }
+        database["k"] = "v0"
+        database["c"] = "c0"
+        cache["k"].assert().isEqualTo("v0")
+        cache.get("c", callLoader).assert().isEqualTo("c0")
+        loads.get().assert().isEqualTo(1)
+        callLoads.get().assert().isEqualTo(1)
+
+        database["k"] = "v1"
+        database["c"] = "c1"
+        elapse(Duration.ofSeconds(6))
+        cache.get("k", callLoader).assert().isEqualTo("v0")
+        cache.get("c", callLoader).assert().isEqualTo("c0")
+        awaitCondition("the hits refreshed through the declared source") {
+            cache.get("k", callLoader) == "v1" && cache.get("c", callLoader) == "c1"
+        }
+        loads.get().assert().isEqualTo(3)
+        callLoads.get().assert().withFailMessage { "the call-level loader only serves misses" }.isEqualTo(1)
+        nodeA.metrics().refreshes.assert().isEqualTo(2)
+    }
+
+    /**
+     * 对照：外部来源的缓存没有声明的数据源，带调用级 loader 的命中进入刷新窗口也不刷新；值照常到期，之后由调用级 loader 重新加载。
+     */
+    @Test
+    fun callLoaderHitsOfAnExternallySourcedCacheDoNotRefresh() {
+        val cache = nodeA.cache(externalSpec(callLoaderRefreshPolicy()))
+        val callLoads = AtomicInteger()
+        val callLoader = CacheLoader<String, String> { key ->
+            callLoads.incrementAndGet()
+            database[key]
+        }
+        database["k"] = "v0"
+        cache.get("k", callLoader).assert().isEqualTo("v0")
+        database["k"] = "v1"
+        elapse(Duration.ofSeconds(6))
+        repeat(HITS) { cache.get("k", callLoader).assert().isEqualTo("v0") }
+        nodeA.metrics().refreshes.assert().isEqualTo(0)
+        callLoads.get().assert().isEqualTo(1)
+        elapse(Duration.ofSeconds(5))
+        cache.get("k", callLoader).assert().isEqualTo("v1")
+        callLoads.get().assert().isEqualTo(2)
+        loads.get().assert().isZero()
+    }
+
+    /**
+     * 带调用级 loader 的读取的刷新用例的策略：寿命 10 s，窗口 5 s，L2 限龄 8 s。
+     */
+    private fun callLoaderRefreshPolicy(): CachePolicy = CachePolicy(
+        ttl = Duration.ofSeconds(10),
+        ttlJitter = Duration.ZERO,
+        localMaxAge = Duration.ofSeconds(8),
+        refreshWindow = Duration.ofSeconds(5),
+    )
+
+    /**
      * 节点上 [key] 的 L2 副本（只读快照，不影响 L2）。注意它也读一次 L1（计入 [HookedBackend.reads]）。
      */
     private fun localCopyOf(node: CacheRuntime, key: String): KeyInspection.LocalCopy? =

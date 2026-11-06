@@ -267,14 +267,21 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     /**
      * 以调用方给出的 [loader] 回源，与 [entryOf] 走同一条受 lease 与失效戳保护的路径（供 Spring `@Cacheable(sync = true)` 等使用）。
-     * 外部来源的“未填充”副本挡不住调用方给出的 loader。
+     * 外部来源的“未填充”副本挡不住调用方给出的 loader。L2 命中进入刷新窗口时同 [entryOf] 触发提前刷新：刷新用声明的数据源
+     * （[refreshAsync]，没有声明的数据源时不刷新），调用方给出的 loader 只用于这次未命中。
      */
     internal fun entryWith(key: K, loader: CacheLoader<K, V>): LocalEntry<V> {
         val localKey = localKey(key)
         val entry = local.getIfPresent(localKey)
-        if (entry != null && !entry.unfilled && entry.expiresAt > clock.nowMillis()) {
-            countLocalHit()
-            return entry
+        if (entry != null && !entry.unfilled) {
+            val now = clock.nowMillis()
+            if (entry.expiresAt > now) {
+                if (entry.refreshAt <= now) {
+                    refreshAsync(key, localKey, entry)
+                }
+                countLocalHit()
+                return entry
+            }
         }
         return miss(
             key,
@@ -771,7 +778,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 版本规则（RFC 0005 §4.7）：写回让版本前进（或填充了 `E`）是一次写入（[FillOutcome.ADVANCED]），本节点按写入处理、不填 L2；
      * 带版本的写回结果未知（[FillOutcome.UNKNOWN]）时同样处理：它可能已经或稍后让版本前进，而那一帧在本节点被过滤（TLA+ F2）；
      * 版本拒绝时，未命中路径（lease 在 `E` 上）照常返回回源值、以降级限龄写入 L2 且不设刷新点，刷新路径（[refreshed] 是取得刷新令牌的
-     * 那次读取）不写回源得到的旧版本，保留 L1 中的副本并退避（[keepRefreshedCopy]）。
+     * 那次读取与它的 L1 到期时刻）不写回源得到的旧版本，保留 L1 中的副本并退避，副本不活过 L1（[keepRefreshedCopy]）。
      */
     @Suppress("TooGenericExceptionCaught", "LongParameterList")
     private suspend fun loadAndFill(
@@ -780,7 +787,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         stamp: Long,
         token: Token?,
         source: CoreSource<K, V>?,
-        refreshed: L1Read.Hit? = null
+        refreshed: RefreshStep.LoadWithToken? = null
     ): LocalEntry<V> {
         if (source == null) {
             token?.let { releaseToken(storageKey, it) }
@@ -822,16 +829,30 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 刷新路径的版本拒绝（RFC 0005 §4.7）：L1 中仍是取得令牌时读到的那个更新的版本（脚本已清零令牌），回源得到的更旧的值不写 L2，
      * 否则它会替换掉 L2 中的新值。改为以读到的值重新填充 L2，刷新点按退避（同没取得令牌的 [refill]）。读到的值解码失败时返回 `null`，
      * 调用方按未命中路径降级。
+     *
+     * 版本拒绝不改变 L1 的到期时间，保留的副本因此以取得令牌时读到的到期时刻（[RefreshStep.LoadWithToken.expiresAt]）为界：剩余寿命扣除
+     * 回源期间消耗的时间，L2 不活过 L1（§5）。回源期间副本已经到期时不再填入 L2，读到的值只交给合并到这次刷新的调用方（到期时间为现在）。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun keepRefreshedCopy(storageKey: String, refreshed: L1Read.Hit, stamp: Long): LocalEntry<V>? {
+    private fun keepRefreshedCopy(
+        storageKey: String,
+        refreshed: RefreshStep.LoadWithToken,
+        stamp: Long
+    ): LocalEntry<V>? {
+        val read = refreshed.read
         val value = try {
-            decode(refreshed.envelope)
+            decode(read.envelope)
         } catch (e: Exception) {
             return null
         }
         metrics.fillRejected()
-        return refill(storageKey, RefreshStep.Refill(value, refreshed.ttl, refreshable(refreshed.envelope)), stamp)
+        val now = clock.nowMillis()
+        if (refreshed.expiresAt <= now) {
+            metrics.refreshSkipped()
+            return LocalEntry(value, now)
+        }
+        val remaining = if (refreshed.expiresAt == FOREVER) null else Duration.ofMillis(refreshed.expiresAt - now)
+        return refill(storageKey, RefreshStep.Refill(value, remaining, refreshable(read.envelope)), stamp)
     }
 
     /**
@@ -1732,6 +1753,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         }
         val stamp = stamps.current(storageKey)
         val token = context.nextToken()
+        // 读取之前取时刻：读到的剩余寿命从这一刻算起，算出的 L1 到期时刻不晚于实际（版本拒绝时据此保留副本，[keepRefreshedCopy]）
+        val readAt = clock.nowMillis()
         val read = try {
             readRemote(storageKey, null, RefreshRequest(window, token, policy.lease.ttl))
         } catch (e: CancellationException) {
@@ -1740,7 +1763,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             onRemoteFailure("read", storageKey, e)
             return loadThrough(key, storageKey, source)
         }
-        return when (val step = refreshStep(storageKey, read)) {
+        return when (val step = refreshStep(storageKey, read, readAt)) {
             is RefreshStep.Reload -> {
                 if (step.releaseToken) {
                     releaseToken(storageKey, token)
@@ -1749,14 +1772,16 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             }
 
             is RefreshStep.Refill -> Loaded(refill(storageKey, step, stamp), stamp)
-            is RefreshStep.LoadWithToken -> Loaded(loadAndFill(key, storageKey, stamp, token, source, step.read), stamp)
+            is RefreshStep.LoadWithToken -> Loaded(loadAndFill(key, storageKey, stamp, token, source, step), stamp)
         }
     }
 
     /**
      * 同步与异步共用的刷新判定：取得令牌才回源；没取得令牌只从 L1 重新填充 L2；L1 已无值或内容不可读时退回普通加载。
+     *
+     * @param readAt 发出读取之前的时刻：取得令牌时据此记下读到的副本在 L1 中的到期时刻
      */
-    private fun refreshStep(storageKey: String, read: L1Read): RefreshStep<V> {
+    private fun refreshStep(storageKey: String, read: L1Read, readAt: Long): RefreshStep<V> {
         if (read !is L1Read.Hit) {
             return RefreshStep.Reload(false)
         }
@@ -1770,7 +1795,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             }.getOrElse { return RefreshStep.Reload(false) }
             return RefreshStep.Refill(value, read.ttl, refreshable(read.envelope))
         }
-        return RefreshStep.LoadWithToken(read)
+        return RefreshStep.LoadWithToken(read, read.ttl?.let { readAt + it.toMillis() } ?: FOREVER)
     }
 
     /**
@@ -2304,9 +2329,15 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     ): CompletableFuture<R> = Futures.attempt {
         val localKey = localKey(key)
         val entry = local.getIfPresent(localKey)
-        if (entry != null && !entry.unfilled && entry.expiresAt > clock.nowMillis()) {
-            countLocalHit()
-            return@attempt CompletableFuture.completedFuture(map(entry))
+        if (entry != null && !entry.unfilled) {
+            val now = clock.nowMillis()
+            if (entry.expiresAt > now) {
+                if (entry.refreshAt <= now) {
+                    refreshAsync(key, localKey, entry)
+                }
+                countLocalHit()
+                return@attempt CompletableFuture.completedFuture(map(entry))
+            }
         }
         missAsync(key, storageKeyOfLocal(localKey), CoreSource(AsyncSource.Native(loader), LoadOperation.LOAD), map)
     }
@@ -2361,9 +2392,15 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     internal suspend fun <R> entryWithSuspending(key: K, loader: suspend (K) -> V?, map: (LocalEntry<V>) -> R): R {
         val localKey = localKey(key)
         val entry = local.getIfPresent(localKey)
-        if (entry != null && !entry.unfilled && entry.expiresAt > clock.nowMillis()) {
-            countLocalHit()
-            return map(entry)
+        if (entry != null && !entry.unfilled) {
+            val now = clock.nowMillis()
+            if (entry.expiresAt > now) {
+                if (entry.refreshAt <= now) {
+                    refreshAsync(key, localKey, entry)
+                }
+                countLocalHit()
+                return map(entry)
+            }
         }
         val source = CoreSource(AsyncSource.Suspending(loader), LoadOperation.LOAD)
         return missSuspending(key, storageKeyOfLocal(localKey), source, map)
@@ -2499,9 +2536,10 @@ private sealed interface RefreshStep<out V> {
     class Refill<V>(val value: V?, val ttl: Duration?, val refreshable: Boolean = true) : RefreshStep<V>
 
     /**
-     * 取得了刷新令牌：回源并凭它写回；[read] 是取得令牌的那次读取（版本拒绝时据此保留副本）。
+     * 取得了刷新令牌：回源并凭它写回；[read] 是取得令牌的那次读取，[expiresAt] 是读到的副本在 L1 中的到期时刻（纪元毫秒，
+     * [FOREVER] 为永不过期）。版本拒绝时据此保留副本：回源期间消耗的时间从它的剩余寿命中扣除。
      */
-    class LoadWithToken(val read: L1Read.Hit) : RefreshStep<Nothing>
+    class LoadWithToken(val read: L1Read.Hit, val expiresAt: Long) : RefreshStep<Nothing>
 }
 
 /**

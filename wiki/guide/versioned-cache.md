@@ -89,7 +89,7 @@ The actuator endpoint's per-key `DELETE` runs `evict` on a `VersionedCache`, and
 
 ## Refresh-ahead {#refresh-ahead}
 
-A `VersionedCache` refreshes ahead like a `Cache` when `refresh-window` is set, including from `cocache.defaults.cache.refresh-window` when the declaration doesn't write it. The refresh writes back only a version at least as new as the one in Redis, and the instance's local copy never moves back to an older version: when the source returns an older one (the writer pushed ahead of it), the instance keeps its copy and tries again after a back-off. When the writer pushes every version anyway, turn refresh-ahead off with `refreshWindow = off()` in `policy { … }` or `cocache.caches.[name].refresh-window: off`.
+A `VersionedCache` refreshes ahead like a `Cache` when `refresh-window` is set, including from `cocache.defaults.cache.refresh-window` when the declaration doesn't write it. The refresh writes back only a version at least as new as the one in Redis, and the instance's local copy never moves back to an older version: when the source returns an older one (the writer pushed ahead of it), the instance keeps its copy and tries again after a back-off. The kept copy still expires when the value in Redis does, even after a slow load. When the writer pushes every version anyway, turn refresh-ahead off with `refreshWindow = off()` in `policy { … }` or `cocache.caches.[name].refresh-window: off`.
 
 ## Defaults and configuration {#defaults}
 
