@@ -15,11 +15,6 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：事务内为空业务 key `""`（或自定义 `KeyEncoder` 编码为 `""` 的 key）加载的值，回滚与回滚到 savepoint 时现在会失效。此前这次失效被当作空的编码 key 拒绝，未提交的值留在缓存中直到 `ttl`。`VersionedCache` 保留版本栅栏。（#823）
 - 修复：其它同步的 `savepointRollback` 回调在 Spring 把数据库回滚到 savepoint 之前加载的值，不再在外层提交之后留下。回滚过 savepoint 的事务提交时现在同样失效它加载过的内容，`registered-keys` 下当时已经加载过的 key 在事务的其余部分私有加载。（#814）
 - 修复：CoCache 自己的同步执行之后，其它同步在 `afterCommit` 中做的失效或 `put(key, null)` 失败时，现在交给 `CacheErrorHandler`，不再抛进已经提交的事务、跳过后面的 `afterCommit` 回调。（#838）
-- 修复：Redis 在 Lettuce 交回命令之前就以 `NOSCRIPT` 回复脚本的 `EVALSHA` 时，命令超时之后排队中的回退 `EVAL` 仍可能稍后执行。现在超时时尚未写出的写入总是被丢弃，不会在稍后覆盖更新的值。
-- 修复：批量加载的 L1 填充部分在写出之前被拒绝时，整批被报告为确定未执行；`VersionedCache` 上确实推进了版本的填充因此跳过本节点的栅栏，同一实例上开始更早的读取者可能把旧版本留在 L2。现在结果混合的一批是结果未知，其中每个带版本的填充都按写入递增戳。
-- 修复：`!m` 字段为显式空串的 `SetStore` Hash 可以读取，写入却把它当作更高的格式拒绝。现在读取同样把它当作更高的格式：以 `CacheReadException` 失败并保留内容。
-- 修复：在中断标志已置位的线程上创建缓存时，等待 Redis 确认订阅可能以 `InterruptedException` 失败并清除中断标志。现在这段等待不响应中断：缓存照常创建，中断标志保留。
-- 修复：失效订阅者加入已有频道时其 `onReset` 抛出，`subscribe` 失败但订阅者仍被登记，照常收到失效且无法退订。现在 Redis 与内存后端记录这个失败，`subscribe` 返回可关闭的句柄。
 
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
