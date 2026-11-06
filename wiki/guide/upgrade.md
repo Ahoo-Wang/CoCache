@@ -75,7 +75,7 @@ Most of these fail to compile, which shows you where to change the code.
 | `getAll` throws on a failed read | `getAll` completes the other keys first, then throws `CacheReadException` with `unknownKeys` and `partialResult`; `lookupAll` returns a `Lookup` per key |
 | `CachePolicy.DEFAULT`, `StoreSpec.DEFAULT_POLICY` and the other spec constants | `DefaultPolicies.CACHE`, `VERSIONED_CACHE`, `STORE`, `VERSIONED_STORE`, `SET_STORE` |
 | `LoadPolicy.asyncTimeout` | `LoadPolicy.timeout` |
-| `LoadPolicy(maxConcurrent = 0)` for unlimited | `maxConcurrent = null`, or `unlimited()` inside `policy { … }` |
+| `LoadPolicy(maxConcurrent = 0)` for unlimited | `maxConcurrent = unlimited()` inside `policy { … }` (Java: `maxConcurrent(null)`), so `cocache.defaults` can't replace it |
 | `CachePolicy.foreignFormat`, `ForeignFormatMode` | Removed: a read with a source reclaims content it can't read, a read without one fails |
 | `Digest.sha1` | `Digest` is the SHA-256 of the payload and names its algorithm; 6.x digests never match |
 | `SourceLoadCancelledException` in `me.ahoo.cocache.coroutines` | In `me.ahoo.cocache.core`, for every kind of loader |

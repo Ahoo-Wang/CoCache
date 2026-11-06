@@ -252,6 +252,36 @@ class PolicyFieldTest {
     }
 
     /**
+     * 与当前值相同的“不限”：整体赋值 `load` 只记下取值改变了的字段，写不出它；经 `maxConcurrent` 赋值才写出（Kotlin 与 Java 两种写法）。
+     */
+    @Test
+    fun unlimitedConcurrencyIsWrittenThroughMaxConcurrent() {
+        val sameAsDefault = cacheSpec<String, String>("same") {
+            codec = StringCodec
+            loader = CacheLoader { it }
+            policy { load = LoadPolicy(maxConcurrent = unlimited()) }
+        }
+        sameAsDefault.declaredFields.assert().isEmpty()
+        val unlimited = cacheSpec<String, String>("unlimited") {
+            codec = StringCodec
+            loader = CacheLoader { it }
+            policy {
+                load = LoadPolicy(maxConcurrent = 8)
+                maxConcurrent = unlimited()
+            }
+        }
+        unlimited.declaredFields.assert().containsExactly(PolicyField.LOAD_MAX_CONCURRENT)
+        unlimited.policy.load.maxConcurrent.assert().isNull()
+        val java = cacheSpec<String, String>("java") {
+            codec = StringCodec
+            loader = CacheLoader { it }
+            updatePolicy { it.maxConcurrent(null) }
+        }
+        java.declaredFields.assert().containsExactly(PolicyField.LOAD_MAX_CONCURRENT)
+        CachePolicy.builder().maxConcurrent(4).maxConcurrent.assert().isEqualTo(4)
+    }
+
+    /**
      * 每种 spec 以自己的默认策略为起点（S23）：权威类型永不过期、L2 寿命更短，`VersionedStore` 的墓碑 1 天。
      */
     @Test

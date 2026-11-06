@@ -75,7 +75,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | 读取失败时 `getAll` 抛出 | `getAll` 先完成其余 key，再抛出带 `unknownKeys` 与 `partialResult` 的 `CacheReadException`；`lookupAll` 逐个 key 返回 `Lookup` |
 | `CachePolicy.DEFAULT`、`StoreSpec.DEFAULT_POLICY` 与其它 spec 上的常量 | `DefaultPolicies.CACHE`、`VERSIONED_CACHE`、`STORE`、`VERSIONED_STORE`、`SET_STORE` |
 | `LoadPolicy.asyncTimeout` | `LoadPolicy.timeout` |
-| 以 `LoadPolicy(maxConcurrent = 0)` 表示不限制 | `maxConcurrent = null`，或在 `policy { … }` 中用 `unlimited()` |
+| 以 `LoadPolicy(maxConcurrent = 0)` 表示不限制 | 在 `policy { … }` 中写 `maxConcurrent = unlimited()`（Java：`maxConcurrent(null)`），`cocache.defaults` 因此替换不了它 |
 | `CachePolicy.foreignFormat`、`ForeignFormatMode` | 删除：有数据源的读取回收读不懂的内容，没有数据源的读取失败 |
 | `Digest.sha1` | `Digest` 是载荷的 SHA-256，带算法标识；6.x 的摘要永远不会匹配 |
 | `me.ahoo.cocache.coroutines` 中的 `SourceLoadCancelledException` | 移到 `me.ahoo.cocache.core`，适用于各种 loader |
