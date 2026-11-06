@@ -5,6 +5,10 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: the unknown-key check under `cocache.caches.[name]` added in alpha.4 bound the properties a second time with Spring Boot's default converters, so a value that only an application's `@ConfigurationPropertiesBinding` converter accepts (such as a custom alias for `read-failure`) failed startup. The check now runs inside the regular binding of `CoCacheProperties` and uses the same converters.
+
 ## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
 **Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
