@@ -107,7 +107,7 @@ class CacheRuntimeTest {
             requireNotNull(runtime.admin("theirs")).inspect("k").storageKey.assert().isEqualTo("other:shared:k")
             val error = runCatching { runtime.create(spec("third", "shared")) }.exceptionOrNull()
             error.assert().isInstanceOf(IllegalArgumentException::class.java)
-                .hasMessage("Namespace[shared] with keyPrefix[cocache:] is already used by another cache.")
+                .hasMessage("Namespace[shared] with keyPrefix[cocache:] is already used by Cache[ours].")
             runtime.cache("third").assert().isNull()
         }
     }
