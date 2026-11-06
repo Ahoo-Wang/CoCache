@@ -94,10 +94,11 @@ internal class CacheEngine<K : Any, V : Any>(
         get() = CacheAdmin.KeyDeletion.INVALIDATE
 
     /**
-     * 事务内记录的填充（[me.ahoo.cocache.core.FillKey.invalidateAll]，每组至少一个 key）：一次失效写入。
+     * 事务内记录的填充（[me.ahoo.cocache.core.FillKey.invalidateAll]，每组至少一个 key）：一次失效写入。编码 key 来自业务 key 的编码，
+     * 可以是空串（`""` 是合法的业务 key，自定义 `KeyEncoder` 也可能输出空串），因此不经运维入口的输入校验（[invalidateEncoded]）。
      */
     override fun invalidateEncodedKeys(encodedKeys: List<String>) {
-        val storageKeys = encodedKeys.map { storageKeyOf(it) }
+        val storageKeys = encodedKeys.map { storageKeyOfLocal(it) }
         runSync { invalidateStorageKeys(storageKeys) }
     }
 

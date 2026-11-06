@@ -143,7 +143,7 @@ classpath 中有 `spring-tx` 时，starter 用 CoCache 的事务装饰器 `Trans
 
 同步读取还会关注它所在的事务。这包括 `@Cacheable(sync = true)`，以及在任何带数据源的 CoCache 缓存上直接调用的 `get`、`lookup`、`getAll`、`lookupAll` 与 `get(key, loader)`。只作用于 `PlatformTransactionManager` 的读写事务；只读事务、异步与挂起调用、响应式事务都不受影响。
 
-- **回滚时失效事务加载的内容**（`invalidate-fills-on-rollback`，默认开启）。事务内的加载可能读到你写入但尚未提交的行，并把它缓存到 Redis；Redis 故障时只缓存到本实例的 L2。CoCache 记录事务加载进缓存的每个 key，在事务回滚、提交结果未知，或 `NESTED` 事务回滚到 savepoint 时失效它们。提交时不动它们：那是已提交的数据。不需要登记任何东西，从不调用 `@CacheEvict` 的事务也在覆盖范围内。回滚之前，其它调用方仍可能从 Redis 读到未提交的值：回滚把这个窗口从 `ttl` 缩短到事务的时长。
+- **回滚时失效事务加载的内容**（`invalidate-fills-on-rollback`，默认开启）。事务内的加载可能读到你写入但尚未提交的行，并把它缓存到 Redis；Redis 故障时只缓存到本实例的 L2。CoCache 记录事务加载进缓存的每个 key，在事务回滚、提交结果未知，或 `NESTED` 事务回滚到 savepoint 时失效它们。提交时不动它们：那是已提交的数据。例外是回滚过 savepoint 的事务：Spring 先调用全部同步的 `savepointRollback`，再回滚数据库，其它同步在这里读取缓存时加载到的是即将回滚的行。因此这样的事务提交时同样失效它加载过的全部内容，在推迟的 `@CachePut` 写入之前执行，这些写入保留。回滚时已经加载过的 key 在事务的其余部分也与已登记的 key 一样私有加载。正常结束的嵌套事务不改变什么。不需要登记任何东西，从不调用 `@CacheEvict` 的事务也在覆盖范围内。回滚之前，其它调用方仍可能从 Redis 读到未提交的值：回滚把这个窗口从 `ttl` 缩短到事务的时长。
 - **已登记的 key 私有加载**（`fill-in-transaction`，默认 `registered-keys`）。一个 key 在事务中登记失效之后（`@CacheEvict`、`TransactionalInvalidator`），同一事务内再次加载它不碰 Redis、L2 与其它调用方：值只交给这次调用，计入 `cocache.fills.gated`。登记时还会立即丢弃本实例的副本，所以事务内的下一次读取未命中，加载到你自己的写入。这不是保证：其它线程可能先把已提交的值放回 L2。`private` 让读写事务内的全部加载都是私有的，L2 未命中的读取因此每次都调用数据源；`allow` 关闭这一机制。
 - **其它调用方不共享事务内的加载**。事务内的调用方领头加载时，同一实例上并发的调用方各自加载，而不是拿它可能永远不会提交的结果。
 
@@ -162,7 +162,7 @@ cocache:
 
 ### 提交之后的失败 {#after-commit-failures}
 
-推迟的写入或失效在提交之后失败时，交给缓存拦截器的 `CacheErrorHandler`，与事务之外的失败一样。调用方不会因为一个数据已经提交的操作收到异常，也就不会去重试它。处理器重新抛出时（Spring 默认的 `SimpleCacheErrorHandler` 就是如此），CoCache 以 `ERROR` 记录这个异常，不再抛出。处理器收到的 `cache` 参数是装饰后的缓存。开启 [`degrade-on-error`](#failures) 时，失败的写入记录为一条 `WARN`。
+推迟的写入或失效在提交之后失败时，交给缓存拦截器的 `CacheErrorHandler`，与事务之外的失败一样。在 CoCache 自己的同步执行之后、其它同步的 `afterCommit` 中做的失效也是如此：它立即执行，失败同样交给处理器，排在后面的同步照常执行。调用方不会因为一个数据已经提交的操作收到异常，也就不会去重试它。处理器重新抛出时（Spring 默认的 `SimpleCacheErrorHandler` 就是如此），CoCache 以 `ERROR` 记录这个异常，不再抛出。处理器收到的 `cache` 参数是装饰后的缓存。开启 [`degrade-on-error`](#failures) 时，失败的写入记录为一条 `WARN`。
 
 ### 事务通知在外层 {#advice-order}
 
