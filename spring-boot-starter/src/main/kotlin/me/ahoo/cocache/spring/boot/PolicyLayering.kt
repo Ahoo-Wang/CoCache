@@ -243,7 +243,7 @@ internal class PolicyLayering(
                     locks.isLocked(field) && field !in unlocked -> throw IllegalArgumentException(
                         "Cache[$name] - ${entry.key} is locked by ${locks.by}; list ${field.key} in $path.unlock to override it."
                     )
-                    locks.isLocked(field) -> set(entry, Source.UNLOCKED, "unlocked, was locked by ${locks.by}")
+                    locks.isLocked(field) -> set(entry, Source.UNLOCKED, "was locked by ${locks.by}")
                     else -> set(entry, Source.CACHES, null)
                 }
                 if (field == PolicyField.TTL) {

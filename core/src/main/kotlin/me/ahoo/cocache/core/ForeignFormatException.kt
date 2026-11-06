@@ -15,8 +15,8 @@ package me.ahoo.cocache.core
 
 /**
  * L1 中的内容本缓存读不懂。读取时作为 [me.ahoo.cocache.api.CacheReadException] 的 `cause` 抛出：没有数据源的缓存读到它（有数据源的缓存
- * 回收不是本格式写入的内容与解码失败的值，绕过更高格式的内容回源），以及条件读取与 `SetCache` 读到它；条件写入、按版本写入与
- * `SetCache` 的元素增删落在它上面时，作为 [me.ahoo.cocache.api.CacheWriteException] 的 `cause` 抛出（key 不被修改）。
+ * 回收不是本格式写入的内容与解码失败的值，绕过更高格式的内容回源），以及条件读取与 `SetStore` 读到它；条件写入、按版本写入与
+ * `SetStore` 的元素增删落在它上面时，作为 [me.ahoo.cocache.api.CacheWriteException] 的 `cause` 抛出（key 不被修改）。
  *
  * 三类内容（RFC 0005 §4.7）：
  * - [format] 低于本节点：不是本格式写入的内容（格式号低于本节点格式的内容与不是本协议写入的内容，后者为格式 `0`）；

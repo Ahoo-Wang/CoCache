@@ -334,7 +334,7 @@ logger 都在 `me.ahoo.cocache` 下。值得告警或放进看板的日志：
 | `WARN` | `Cache[…] - keyPrefix is empty: the keys and the channel of namespace[…] share no prefix, …` | 缓存的 key 前缀为空，ACL 与基于前缀的操作无法按前缀划定范围，必须逐个指明 namespace（见 [key 前缀](../guide/configuration.md#key-prefix)） |
 | `INFO` | `Cache[…] - policy: ttl=PT10M (caches), local-max-age=PT2M (overrides, tightened from PT5M), ….` | 每个已分层的缓存创建时一行：值不是来自类型默认值的字段及其来源（见[生效值与来源](../guide/configuration.md#policy-report)） |
 | `WARN` | `Cache[…] - cocache.defaults.store.ttl skipped: not allowed in cocache.defaults.` | 对这个缓存跳过的全局层条目：不适用于它的类型、该层不允许，或被库锁定。同样列在端点的 `skippedConfiguration` 中 |
-| `WARN` | `Cache[…] - refresh-window=off (clamped, turned off: …).` / `Cache[…] - … (unlocked, unlocked, was locked by …).` | 全局层引起冲突之后，校验连锁关闭了提前刷新窗口；或 `cocache.caches.[name].unlock` 覆盖了库的锁定 |
+| `WARN` | `Cache[…] - refresh-window=off (clamped, turned off: …).` / `Cache[…] - … (unlocked, was locked by …).` | 全局层引起冲突之后，校验连锁关闭了提前刷新窗口；或 `cocache.caches.[name].unlock` 覆盖了库的锁定 |
 | `WARN` | `Cache[…] - per-call ttl[…] exceeds the ceiling[…] from cocache.overrides and was clamped …` | 第一次被 `cocache.overrides.cache.ttl` 钳制的按调用寿命；之后的计入 `cocache.ttl.clamped` |
 | `WARN` | `Cache[…] - [cocache.caches.…] don't apply: the cache was created directly through CacheRuntime.create, not CoCacheFactory, …` | 按缓存的条目指向未分层的缓存，其中的设置都不生效（见 [CoCacheFactory](../guide/caches.md#factory)） |
 | `WARN` | `cocache.caches configures undeclared caches […]; declared caches: […].` | 按缓存的条目对应不上任何缓存，且 `cocache.caches-validation: warn`（默认的 `fail` 让启动失败） |

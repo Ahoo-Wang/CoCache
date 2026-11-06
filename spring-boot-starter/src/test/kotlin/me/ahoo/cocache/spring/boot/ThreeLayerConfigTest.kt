@@ -531,7 +531,7 @@ class ThreeLayerConfigTest {
             .create(loaded("tokens") { policy { ttl = Duration.ofMinutes(10) } }, locks { lock(PolicyField.TTL) })
         policy("tokens").ttl.assert().isEqualTo(Duration.ofMinutes(1))
         report("tokens").of(PolicyField.TTL).assert()
-            .isEqualTo(PolicyReport.Entry("ttl", "PT1M", Source.UNLOCKED, "unlocked, was locked by $LIBRARY"))
+            .isEqualTo(PolicyReport.Entry("ttl", "PT1M", Source.UNLOCKED, "was locked by $LIBRARY"))
         failure {
             factory("cocache.caches.other.ttl" to "1m", "cocache.caches.other.unlock" to "tll")
                 .create(loaded("other"), locks { lock(PolicyField.TTL) })

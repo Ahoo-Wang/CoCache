@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core
 
+import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.Versioned
@@ -151,7 +152,7 @@ class LocksAndCeilingTest {
     }
 
     /**
-     * `overrides.cache.ttl` 设定的上限钳制按调用给出的寿命（`put(k, v, ttl)`、`putAll(…, ttl)`、`ttlOf`，同步与异步），
+     * `overrides.cache.ttl` 设定的上限钳制按调用给出的寿命（`put(k, v, ttl)`、`putAll(…, ttl)`、`ttlOf`，同步、异步与挂起），
      * 计入 `cocache.ttl.clamped`；策略自身的寿命不经过它。
      */
     @Test
@@ -173,17 +174,21 @@ class LocksAndCeilingTest {
         cache.putAll(mapOf("batch" to "v"), Duration.ofHours(1))
         cache.async().put("async", "v", Duration.ofHours(1)).join()
         cache.async().putAll(mapOf("async-batch" to "v"), Duration.ofHours(1)).join()
+        runBlocking {
+            cache.suspending().put("suspending", "v", Duration.ofHours(1))
+            cache.suspending().putAll(mapOf("suspending-batch" to "v"), Duration.ofHours(1))
+        }
         cache["long"].assert().isEqualTo("loaded-long")
         cache.put("short", "v", Duration.ofSeconds(3))
         cache.put("policy", "v")
 
-        listOf("explicit", "batch", "async", "async-batch", "long").forEach { key ->
+        listOf("explicit", "batch", "async", "async-batch", "suspending", "suspending-batch", "long").forEach { key ->
             requireNotNull(admin.inspect(key).remote.ttl).assert()
                 .withFailMessage { "$key is clamped" }.isLessThanOrEqualTo(Duration.ofSeconds(10))
         }
         requireNotNull(admin.inspect("short").remote.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(3))
         requireNotNull(admin.inspect("policy").remote.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(5))
-        admin.metrics.ttlClamped.assert().isEqualTo(5L)
+        admin.metrics.ttlClamped.assert().isEqualTo(7L)
     }
 
     @Test

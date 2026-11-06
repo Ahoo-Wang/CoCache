@@ -680,11 +680,16 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         source: CoreSource<K, V>?,
         error: Exception
     ): LocalEntry<V> {
-        logCorrupt(storageKey, error)
         if ((read.envelope as? Envelope.Scalar)?.digest != null) {
-            // 带摘要段的内容（权威标量，D4）从不回收：不发出注定被拒绝的 RECLAIM，绕过 L1 回源，副本不设刷新点（P14：刷新只会再读到它）
+            // 带摘要段的内容（权威标量，D4）从不回收：不发出注定被拒绝的 RECLAIM，不计入 reclaims（已计入 typeMismatches），
+            // 绕过 L1 回源，副本不设刷新点（P14：刷新只会再读到它）
+            log.warn(error) {
+                "Cache[$name] - key[$storageKey] - undecodable payload written by a Store (digest segment): kept as is, " +
+                    "reload bypassing the remote store."
+            }
             return loadBypassingRemote(key, storageKey, stamp, source, refreshable = false)
         }
+        logCorrupt(storageKey, error)
         val reclaimed = try {
             reclaimRemote(storageKey, ContentFingerprint.of(read.envelope), lease)
         } catch (e: Exception) {
@@ -704,6 +709,9 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private suspend fun reclaimRemote(storageKey: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean =
         uncancellable { store.reclaim(storageKey, observed, lease) }
 
+    /**
+     * 将要回收一份损坏的载荷：告警并计入 `reclaims`（每次发出 `RECLAIM` 计一次，回收是否成功都计）。
+     */
     private fun logCorrupt(storageKey: String, error: Exception) {
         log.warn(error) { "Cache[$name] - key[$storageKey] - corrupted payload, reclaim and reload." }
         metrics.reclaim()
@@ -1374,6 +1382,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val result = LinkedHashMap<String, Loaded<V>>()
         val toLoad = LinkedHashMap<String, Token?>()
         val unrefreshable = HashSet<String>()
+        val bypassed = HashSet<String>()
         val corrupt = LinkedHashMap<String, BatchStep.Corrupt>()
         var failure: Exception? = null
         for (storageKey in led.keys) {
@@ -1382,6 +1391,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 is BatchStep.Load -> {
                     toLoad[storageKey] = step.token
                     if (!step.refreshable) unrefreshable.add(storageKey)
+                    if (!step.absent) bypassed.add(storageKey)
                 }
                 is BatchStep.Done -> result[storageKey] = Loaded(step.entry, stamp)
                 is BatchStep.Failed -> failure = failure ?: step.error
@@ -1392,7 +1402,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             }
         }
         if (toLoad.isNotEmpty()) {
-            loadAndFillBatch(led, toLoad, loadStamps, unrefreshable, result, source)
+            loadAndFillBatch(led, toLoad, loadStamps, unrefreshable, bypassed, result, source)
         }
         val reclaimFailure = reclaimAll(led, corrupt, loadStamps, leases, source, result)
         (failure ?: reclaimFailure)?.let { throw it }
@@ -1453,7 +1463,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         lease: LeaseRequest?
     ): BatchStep<V> {
         if (read !is L1Read.Hit) {
-            return BatchStep.Load((read as? L1Read.Miss)?.takeIf { it.leaseGranted }?.let { lease?.token })
+            // 同单 key 路径（[loadThrough]）：权威副本不申请 lease，读到 lease 占位就是不存在
+            val absent = read is L1Read.Miss || (read is L1Read.Leased && lease == null)
+            val token = (read as? L1Read.Miss)?.takeIf { it.leaseGranted }?.let { lease?.token }
+            return BatchStep.Load(token, absent = absent)
         }
         return when (val outcome = hitOutcome(storageKey, read)) {
             HitOutcome.Newer -> {
@@ -1473,6 +1486,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 版本前进与结果未知的带版本写回按写入处理（[afterAdvancedFill]，整批一次）。
      *
      * @param unrefreshable 读到更高格式的 key：它们的副本不设刷新点（P14）
+     * @param bypassed L1 没有确认不存在的 key（[BatchStep.Load.absent]）：没有数据源时同单 key 路径一样绕过 L1
      */
     @Suppress("TooGenericExceptionCaught", "LongParameterList")
     private suspend fun loadAndFillBatch(
@@ -1480,12 +1494,13 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         toLoad: Map<String, Token?>,
         loadStamps: Map<String, Long>,
         unrefreshable: Set<String>,
+        bypassed: Set<String>,
         result: MutableMap<String, Loaded<V>>,
         source: CoreSource<K, V>?
     ) {
         if (source == null) {
             releaseAll(toLoad)
-            completeBatchWithoutLoader(toLoad, loadStamps, result)
+            completeBatchWithoutLoader(led, toLoad, loadStamps, unrefreshable, bypassed, result)
             return
         }
         val values: Map<K, V>
@@ -1586,14 +1601,28 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         }
     }
 
+    /**
+     * 没有数据源的批量读取，规则与单 key 路径（[loadThrough]）相同：L1 确认不存在的 key 是 [absentWithoutLoader]（限龄 `localMaxAge`）；
+     * 其余 key（[bypassed]：派生副本读到其它节点的 lease、更高格式、失效重试中）绕过 L1，是 [completeBypass] 的“未填充”，
+     * 以 `degradedLocalMaxAge` 限龄并计入 `degradedFills`。
+     */
+    @Suppress("LongParameterList")
     private fun completeBatchWithoutLoader(
+        led: Map<String, K>,
         toLoad: Map<String, Token?>,
         loadStamps: Map<String, Long>,
+        unrefreshable: Set<String>,
+        bypassed: Set<String>,
         result: MutableMap<String, Loaded<V>>
     ) {
         toLoad.keys.forEach { storageKey ->
             val stamp = loadStamps.getValue(storageKey)
-            result[storageKey] = Loaded(absentWithoutLoader(storageKey, stamp), stamp)
+            val entry = if (storageKey in bypassed) {
+                completeBypass(led.getValue(storageKey), storageKey, stamp, null, false, storageKey !in unrefreshable)
+            } else {
+                absentWithoutLoader(storageKey, stamp)
+            }
+            result[storageKey] = Loaded(entry, stamp)
         }
     }
 
@@ -2428,9 +2457,11 @@ private sealed interface HitOutcome<out V> {
  */
 private sealed interface BatchStep<out V> {
     /**
-     * 回源：[token] 为取得的 lease；[refreshable] 为 `false` 时副本不设刷新点（读到更高格式，P14）。
+     * 回源：[token] 为取得的 lease；[refreshable] 为 `false` 时副本不设刷新点（读到更高格式，P14）；[absent] 为 L1 确认没有值
+     * （未命中，或权威副本读到 lease 占位）。不是确认的不存在时（派生副本读到其它节点的 lease、更高格式、失效重试中没有读 L1），
+     * 没有数据源的读取同单 key 路径一样绕过 L1（[CoherentEngine.completeBatchWithoutLoader]）。
      */
-    class Load(val token: Token?, val refreshable: Boolean = true) : BatchStep<Nothing>
+    class Load(val token: Token?, val refreshable: Boolean = true, val absent: Boolean = false) : BatchStep<Nothing>
 
     class Done<V>(val entry: LocalEntry<V>) : BatchStep<V>
 

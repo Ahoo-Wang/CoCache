@@ -19,8 +19,8 @@ import java.util.concurrent.CompletionStage
 /**
  * 异步数据源（RFC 0004）：只负责加载，寿命由缓存策略决定。
  *
- * - [loadAsync] 必须很快返回、不得阻塞：它在调用方线程（结果已同步可得时）或异步执行器上被调用，
- *   看不到调用方的线程上下文（ThreadLocal）。
+ * - [loadAsync] 必须很快返回、不得阻塞：它在调用方线程（结果已同步可得时）、运行时的执行器（`CacheRuntime.executor`），
+ *   或设置了 `LoadObserver` 时的观测线程（`cocache-observe-N`）上被调用，看不到调用方的线程上下文（ThreadLocal）。
  * - 同步抛出的异常与异常完成的 future 等价；返回的 future 可以在任何线程上完成，引擎会切换回自己的线程。
  * - 未完成的加载受 `LoadPolicy.timeout` 约束。
  * - 不要在加载中等待同一个 key 的缓存读取：`loadAsync` 的同步部分里这样做会快速失败；一次 I/O 之后再这样做会形成环，
