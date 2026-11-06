@@ -248,6 +248,8 @@ cacheSpec<TenantKey, User>("TenantUserCache") {
 
 编码结果相同的两个 key 就是同一个缓存条目，编码必须是单射的。
 
+编码后的 key 还必须是合法的 UTF-16。Redis 的 key 与失效消息都是 UTF-8，表示不了未配对的代理（surrogate）：`\uD800`–`\uDFFF` 中单独的一个 `char`，例如截断字符串时留下的半个 emoji。它会变成 `?`，与另一个 key 共用同一个 Redis key，其它实例淘汰的也会是那个条目。带这种 key 的调用在修改任何东西之前以 `IllegalArgumentException` 失败：读取、写入、`CacheAdmin` 与 [`ExternalInvalidator`](../operations/troubleshooting.md#external-invalidator) 都一样，批量调用整批拒绝。信息给出缓存名与位置，并把这个字符显示为 `\uXXXX`。emoji 等 BMP 之外的字符、中文与空串照常可用。检查只在去往 Redis 的路上进行，L2 命中的开销不变。
+
 ## 按条目决定寿命 {#ttl-of}
 
 寿命取决于值时，设置 `ttlOf`（在 spec 或定制器中）：

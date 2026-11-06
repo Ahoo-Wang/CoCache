@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.core.internal.LosslessKeys
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.uncancellable
 import java.util.concurrent.ConcurrentHashMap
@@ -54,8 +55,9 @@ class ExternalInvalidator @JvmOverloads constructor(
      * 失效一个命名空间中的若干 key。
      *
      * @param namespace 缓存的命名空间（默认等于缓存名），字符集为 `[A-Za-z0-9._-]+`
-     * @param encodedKeys 经 `KeyEncoder` 编码后的 key（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分），不得为空串
-     * @throws IllegalArgumentException 命名空间不符合字符集（[Keyspace]），或有空串的 key
+     * @param encodedKeys 经 `KeyEncoder` 编码后的 key（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分），不得为空串，
+     *   不得含未配对的 UTF-16 代理（存储 key 与失效帧按 UTF-8 编码，编不出它；缓存同样拒绝这样的 key）
+     * @throws IllegalArgumentException 命名空间不符合字符集（[Keyspace]），或有空串、含未配对 UTF-16 代理的 key（什么也不做）
      */
     fun invalidate(namespace: String, encodedKeys: Collection<String>) {
         check(!closed.get()) { "ExternalInvalidator is closed." }
@@ -63,8 +65,7 @@ class ExternalInvalidator @JvmOverloads constructor(
         if (encodedKeys.isEmpty()) {
             return
         }
-        require(encodedKeys.none { it.isEmpty() }) { "Encoded keys must not be empty." }
-        val storageKeys = encodedKeys.distinct().map { keyspace.storageKey(it) }
+        val storageKeys = storageKeysOf(keyspace, encodedKeys)
         val frame = InvalidationFrame.encode(nodeId, storageKeys)
         val store = storeOf(keyspace)
         runSync {
@@ -103,8 +104,8 @@ class ExternalInvalidator @JvmOverloads constructor(
      * 投递至多一次，与缓存自己的广播相同：帧丢失时各节点的 L2 陈旧到 `localMaxAge` 或下一次订阅重置。
      *
      * @param namespace 缓存的命名空间，字符集为 `[A-Za-z0-9._-]+`
-     * @param encodedKeys 编码后的 key（同 [invalidate]），不得为空串
-     * @throws IllegalArgumentException 命名空间不符合字符集，或有空串的 key
+     * @param encodedKeys 编码后的 key（同 [invalidate]），不得为空串，不得含未配对的 UTF-16 代理
+     * @throws IllegalArgumentException 命名空间不符合字符集，或有空串、含未配对 UTF-16 代理的 key（什么也不做）
      */
     fun broadcast(namespace: String, encodedKeys: Collection<String>) {
         check(!closed.get()) { "ExternalInvalidator is closed." }
@@ -112,9 +113,17 @@ class ExternalInvalidator @JvmOverloads constructor(
         if (encodedKeys.isEmpty()) {
             return
         }
-        require(encodedKeys.none { it.isEmpty() }) { "Encoded keys must not be empty." }
-        val frame = InvalidationFrame.encode(nodeId, encodedKeys.distinct().map { keyspace.storageKey(it) })
+        val frame = InvalidationFrame.encode(nodeId, storageKeysOf(keyspace, encodedKeys))
         runSync { uncancellable { backend.channel.publish(keyspace, frame) } }
+    }
+
+    /**
+     * 去重后的存储 key：先检查全部 key（空串、未配对的 UTF-16 代理，[LosslessKeys]），有一个不合格就在触碰 L1 与通道之前拒绝。
+     */
+    private fun storageKeysOf(keyspace: Keyspace, encodedKeys: Collection<String>): List<String> {
+        require(encodedKeys.none { it.isEmpty() }) { "Encoded keys must not be empty." }
+        val namespace = keyspace.namespace
+        return encodedKeys.distinct().map { keyspace.storageKey(LosslessKeys.require(NAMESPACE, namespace, it)) }
     }
 
     /**
@@ -131,5 +140,12 @@ class ExternalInvalidator @JvmOverloads constructor(
         if (closed.compareAndSet(false, true)) {
             stores.clear()
         }
+    }
+
+    private companion object {
+        /**
+         * 拒绝不能无损编码的 key 时信息开头的主体（[LosslessKeys.require]）：这里只知道命名空间，不知道缓存名。
+         */
+        const val NAMESPACE = "Namespace"
     }
 }

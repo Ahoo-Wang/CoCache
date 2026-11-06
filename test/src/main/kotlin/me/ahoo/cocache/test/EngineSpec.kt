@@ -716,6 +716,97 @@ abstract class EngineSpec {
         cacheA["k"].assert().isEqualTo("v1")
     }
 
+    /**
+     * 含未配对 UTF-16 代理的 key：存储 key 与失效帧按 UTF-8 编码，它被替换为 `?`，与另一个 key 撞到同一个存储 key，
+     * 其它节点收到帧时淘汰的也是那个 key，而它自己的 L2 副本陈旧到 `localMaxAge`。每个到达 L1 的入口都在读 L1、回源、
+     * 写入与广播之前以 [IllegalArgumentException] 拒绝它：信息给出缓存名与下标，未配对的代理转义为 `\uXXXX`，不原样输出 key。
+     * 被替换之后会撞上的 key 在 L1 与两个节点的 L2 中都不受影响。
+     */
+    @Test
+    fun unpairedSurrogateKeyIsRejectedBeforeReachingTheRemote() {
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        val bad = "bad-\uD800"
+        val collided = "bad-?"
+        database[bad] = "loaded"
+        database[collided] = "v1"
+        cacheA[collided].assert().isEqualTo("v1")
+        cacheB[collided].assert().isEqualTo("v1")
+        val counted = listOf(
+            backend.reads,
+            backend.readAlls,
+            backend.fills,
+            backend.puts,
+            backend.putAlls,
+            loads,
+            batchLoads
+        )
+        val counters = { counted.map { it.get() } }
+        val before = counters()
+        val received = nodeB.metrics().invalidationsReceived
+        val adminA = requireNotNull(nodeA.admin(cacheName))
+        val adminB = requireNotNull(nodeB.admin(cacheName))
+        mapOf<String, () -> Any?>(
+            "get" to { cacheA[bad] },
+            "get(loader)" to { cacheA.get(bad, loader) },
+            "getAll" to { cacheB.getAll(listOf(collided, bad)) },
+            "lookup" to { cacheA.lookup(bad) },
+            "lookupAll" to { cacheB.lookupAll(listOf(collided, bad)) },
+            "put" to { cacheA.put(bad, "v2") },
+            "putAll" to { cacheA.putAll(mapOf(collided to "v2", bad to "v2")) },
+            "invalidate" to { cacheA.invalidate(bad) },
+            "invalidateAll" to { cacheB.invalidateAll(listOf(collided, bad)) },
+            "inspect" to { adminA.inspect(bad) },
+            "invalidateEncoded" to { adminA.invalidateEncoded(bad) },
+            "broadcastEncoded" to { adminB.broadcastEncoded(bad) },
+        ).forEach { (operation, call) ->
+            val error = runCatching { call() }.exceptionOrNull()
+            error.assert().withFailMessage { "$operation: $error" }.isInstanceOf(IllegalArgumentException::class.java)
+            requireNotNull(error).message.assert().withFailMessage { "$operation: ${error.message}" }
+                .contains("Cache[$cacheName]", "index[4]", "key[bad-\\uD800]")
+                .doesNotContain(bad)
+        }
+        counters().assert().isEqualTo(before)
+        listOf(adminA, adminB).forEach { it.pendingInvalidationCount.assert().isZero() }
+        // 帧在一个频道上按序投递：标记的帧到达时，被拒绝的调用若发出过帧也已到达
+        cacheA.put("marker", "m")
+        awaitCondition("B receives the marker") { nodeB.metrics().invalidationsReceived > received }
+        nodeB.metrics().invalidationsReceived.assert().isEqualTo(received + 1)
+        val reads = backend.reads.get()
+        cacheA[collided].assert().isEqualTo("v1")
+        cacheB[collided].assert().isEqualTo("v1")
+        backend.reads.get().assert().withFailMessage { "the collided key was evicted from L2" }.isEqualTo(reads)
+        remoteValue(collided).assert().isEqualTo("v1")
+    }
+
+    /**
+     * 合法的 Unicode key 照常经失效帧往返（上一个用例的对照）：补充平面字符（正确配对的代理）、中文与空串，
+     * 写入与失效都淘汰另一个节点的 L2。
+     */
+    @Test
+    fun wellFormedUnicodeKeysInvalidateAcrossNodes() {
+        val cacheA = nodeA.cache()
+        val cacheB = nodeB.cache()
+        val keys = listOf("😀", "key-𝄞-end", "中文", "")
+        keys.forEach { key ->
+            database[key] = "v0"
+            cacheB[key].assert().isEqualTo("v0")
+            cacheA.put(key, "v1")
+            awaitCondition("B sees the put of [$key]") { cacheB[key] == "v1" }
+            database[key] = "v2"
+            cacheA.invalidate(key)
+            awaitCondition("B reloads [$key] after its invalidation") { cacheB[key] == "v2" }
+        }
+        cacheA.invalidateAll(keys)
+        keys.forEach { database[it] = "v3" }
+        awaitCondition("B reloads every key after the batch invalidation") {
+            cacheB.getAll(keys) == keys.associateWith { "v3" }
+        }
+        listOf(nodeA, nodeB).forEach { node ->
+            requireNotNull(node.admin(cacheName)).inspect("😀").remote.value.assert().isEqualTo("v3")
+        }
+    }
+
     @Test
     fun putWithExplicitTtlExpires() {
         val cache = nodeA.cache()

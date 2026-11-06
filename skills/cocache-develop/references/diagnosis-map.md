@@ -55,6 +55,7 @@ Use this map to locate the first incorrect stage before changing anything. Prefe
 | `CacheReadException` (cause `ForeignFormatException`) on a read without a source (authoritative type, externally sourced `Cache` without a loader) | Inspection `UNREADABLE` | The key holds content CoCache can't read (wire format 0 or 1, a native Redis type another program wrote, or for a `Store` a tampered digest); a read with a source reclaims and reloads it, one without leaves the key alone | Find the writer; once authorized, `put` the key (or `invalidate` a `Cache`) |
 | `cocache.unknown.formats` rising | Versions of all instances | Some instance writes a newer wire format | Expected during a format rollout; otherwise find the newer instance |
 | `IllegalArgumentException` about `toString()` at first read | The key type | Key type without a meaningful `toString()` | Data class or record, override, `keyExpression` or `KeyEncoder` |
+| `IllegalArgumentException`: key `has an unpaired UTF-16 surrogate at index[n]` | The `\uXXXX` in the message, where the key is built | The encoded key holds half a surrogate pair (often a string cut inside an emoji), which UTF-8 Redis keys and frames can't represent | Cut or build keys on code points, not `char`s; fix the `KeyEncoder` or `keyExpression` |
 | `IllegalStateException` on reentrant load | The loader | Loader reads its own cache for the same key | Remove the reentrant read |
 
 ## Startup failures
