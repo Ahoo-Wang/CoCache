@@ -110,9 +110,9 @@ public void rename(String id, String name) {
 
 - 同一事务内对同一缓存的多次失效合并为一次 `invalidateAll`，去重并保持顺序。
 - 回滚时同样失效已登记的 key。loader 在你的线程上执行并参与事务，写入之后的读取可能已经把未提交的行放进 Redis，所有实例在 `ttl` 内都会读到它。多余的失效无害。事务内的加载即使没有登记，回滚时同样失效；已登记的 key 在事务的其余部分私有加载。见 [Spring Cache](./spring-cache.md#transactional-loads)。
-- 回滚到 savepoint 时（`NESTED` 事务），立即失效到目前为止登记的全部 key，事务结束时再失效一次。Spring 不把这次回滚报告给 `afterCompletion`，否则嵌套段内加载的未提交行会在外层事务结束之前对所有实例（包括外层事务自己）可见。
+- 回滚到 savepoint 时（`NESTED` 事务），立即失效到目前为止登记的全部 key，事务结束时再失效一次。事务加载过的全部 key 同样如此，即使事务之后提交：Spring 在回滚数据库之前调用 `savepointRollback` 回调，回调中读取缓存可能加载到即将回滚的行。Spring 不把这次回滚报告给 `afterCompletion`，否则嵌套段内加载的未提交行会在外层事务结束之前对所有实例（包括外层事务自己）可见。
 - `REQUIRES_NEW` 的内层事务在它自己结束时失效。
-- 迟到的登记不会丢失。在其它同步的 `afterCommit` 中登记的失效立即执行；如果它是这个事务的第一次登记，则在 `afterCompletion` 中执行。在 `afterCompletion` 中（例如 `@TransactionalEventListener(AFTER_COMMIT)`）登记时立即失效。
+- 迟到的登记不会丢失。在其它同步的 `afterCommit` 中登记的失效立即执行；如果它是这个事务的第一次登记，则在 `afterCompletion` 中执行。立即执行的失效失败时抛给调用方（这里是那个同步）；Spring Cache 的失效则交给 [`CacheErrorHandler`](./spring-cache.md#after-commit-failures)。在 `afterCompletion` 中（例如 `@TransactionalEventListener(AFTER_COMMIT)`）登记时立即失效。
 - 一个缓存失败不影响其余缓存：全部失效之后，抛出第一个异常，其余作为它的 suppressed（只在 [`invalidate-failure: throw`](#redis-down) 时）。回滚之后的失败由 Spring 记录日志，不抛出。
 - 没有活动事务时立即失效。
 - 它只看得到线程绑定的事务（`PlatformTransactionManager`，如 JDBC、JPA）。在响应式事务中（`ReactiveTransactionManager`，如 R2DBC，包括 `@Transactional` 挂起函数），它立即失效，也就是在提交之前。这种情况请在事务结束之后、事务边界之外失效。
