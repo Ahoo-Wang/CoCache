@@ -488,8 +488,8 @@ private class CommandCall<T> : CompletableFuture<T>() {
 
     override fun cancel(mayInterruptIfRunning: Boolean): Boolean {
         val cancelled = super.cancel(mayInterruptIfRunning)
-        evalsha?.let(::abort)
-        eval?.let(::abort)
+        // 只在取消（超时）时分配；尚未登记的位置跳过
+        listOfNotNull(evalsha, eval).forEach(::abort)
         return cancelled
     }
 
