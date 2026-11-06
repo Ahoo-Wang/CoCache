@@ -8,6 +8,10 @@ description: CoCache 版本发布历史和重要变更。
 ## Unreleased {#unreleased}
 
 - 修复：alpha.4 新增的 `cocache.caches.[name]` 未知配置项检查用 Spring Boot 的默认转换器把配置再绑定一次，只有应用的 `@ConfigurationPropertiesBinding` 转换器才接受的值（如 `read-failure` 的自定义别名）因此让启动失败。检查现在在 `CoCacheProperties` 的正式绑定中进行，使用相同的转换器。
+- 修复：`CacheRuntime.create` 与 `close()` 并发时，创建可能在关闭返回之后完成，多出一个缓存并遗留它的失效订阅。现在缓存只在订阅确认之后、运行时仍开启时交给运行时；否则创建的调用关闭它已建立的部分，并以 `CacheRuntime is closed.` 失败。
+- 修复：订阅尚未确认的缓存已经出现在 `cacheNames`、`cache`、`admin` 与 `metrics` 中，Micrometer 绑定器可能绑定随后回滚的引擎；同名重试之后，指标仍读取被丢弃的引擎。现在缓存创建完成之后才对外可见。
+- 修复：存储前缀 `{keyPrefix}{namespace}:` 相等或一个是另一个开头的两个缓存（例如 `app:` + `users` 与 `app:users:` + `v2`）都能创建，在 Redis 中相互覆盖 key，也收不到彼此的失效。现在创建第二个时失败，并指出第一个。
+- 修复：经 `CoCacheFactory` 被拒绝的创建（例如重名）已经改写了已有缓存的 `fill-in-transaction` 与 `invalidate-fills-on-rollback`，已回滚的数据可能留在缓存中。现在这两个模式只在算出它们的那个缓存创建成功时生效。
 - 修复：Redis 在 Lettuce 交回命令之前就以 `NOSCRIPT` 回复脚本的 `EVALSHA` 时，命令超时之后排队中的回退 `EVAL` 仍可能稍后执行。现在超时时尚未写出的写入总是被丢弃，不会在稍后覆盖更新的值。
 - 修复：批量加载的 L1 填充部分在写出之前被拒绝时，整批被报告为确定未执行；`VersionedCache` 上确实推进了版本的填充因此跳过本节点的栅栏，同一实例上开始更早的读取者可能把旧版本留在 L2。现在结果混合的一批是结果未知，其中每个带版本的填充都按写入递增戳。
 - 修复：`!m` 字段为显式空串的 `SetStore` Hash 可以读取，写入却把它当作更高的格式拒绝。现在读取同样把它当作更高的格式：以 `CacheReadException` 失败并保留内容。
