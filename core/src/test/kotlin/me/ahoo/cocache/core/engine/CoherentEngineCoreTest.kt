@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.engine
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
@@ -42,6 +43,7 @@ import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -158,6 +160,39 @@ class CoherentEngineCoreTest {
         otherCache["a"].assert().isEqualTo("v-a")
         otherCache["b"].assert().isEqualTo("v-b")
         requireNotNull(other.metrics("core")).leaseWaits.assert().isZero()
+    }
+
+    /**
+     * 运行时关闭之后才发起的异步与挂起写入（此时没有在途的调用）：不启动，以 [IllegalStateException] 失败（异步视图经 future 交出，
+     * 不同步抛出），L1 不变、不广播：另一个运行时照常读到旧值，新的运行时从 L1 读到的也是旧值。
+     */
+    @Test
+    fun writesIssuedAfterCloseNeverReachL1() {
+        val writerRuntime = runtime()
+        val peerRuntime = runtime()
+        val spec = storeSpec<String, String>("closed-writes") { codec = StringCodec }
+        val writer = writerRuntime.create(spec)
+        val peer = peerRuntime.create(spec)
+        writer.put("async", "before")
+        writer.put("suspending", "before")
+        peer["async"].assert().isEqualTo("before")
+        peer["suspending"].assert().isEqualTo("before")
+
+        writerRuntime.close()
+        val put = writer.async().put("async", "after")
+        val failures = listOf(
+            failureOf(put),
+            runCatching { runBlocking { writer.suspending().put("suspending", "after") } }.exceptionOrNull(),
+        )
+        failures.forEach { failure ->
+            failure.assert().isInstanceOf(IllegalStateException::class.java)
+            failure?.message.assert().isEqualTo("CacheRuntime closed.")
+        }
+        peer["async"].assert().isEqualTo("before")
+        peer["suspending"].assert().isEqualTo("before")
+        val fresh = runtime().create(spec)
+        fresh["async"].assert().isEqualTo("before")
+        fresh["suspending"].assert().isEqualTo("before")
     }
 
     /**

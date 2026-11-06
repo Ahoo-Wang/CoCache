@@ -83,6 +83,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 - 唯一的例外是 loader 自己的 `CancellationException`：`CacheLoader` 抛出它，或 `AsyncCacheLoader` 的 future 以它完成（HTTP 请求被取消、其中的 `withTimeout`）。共享这次加载的每个调用方都收到 `SourceLoadCancelledException`，原始异常是它的 `cause`。原样传出的话，每个调用方的 future 都会看起来像是被取消了。
 - 异步方法从不同步抛出。key 编码器或编解码器出错、重入调用、非法的版本，都以失败的 future 返回。
 - 每次调用返回自己的 future。取消它只取消你的等待：共享的加载为其它调用方继续进行，照样写入 Redis。写入的顺序不受影响：写入的第二步失效无论是否取消都会执行。
+- `runtime.close()` 之后，需要 Redis 或 loader 的调用（未命中、任何写入）不执行，以 `IllegalStateException("CacheRuntime closed.")` 失败：`close()` 之后发起的写入从不到达 Redis。运行时关闭时已在执行的调用在下一次等待时同样失败；已经发往 Redis 的写入先完成它的失效。
 - 读取自己 key 的 loader：如果在返回 future 之前这样做，快速失败（`IllegalStateException`）；如果在一次 I/O 之后这样做，调用会一直等到 `load-timeout`。
 
 ## Spring Cache {#spring-cache}

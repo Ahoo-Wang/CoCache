@@ -5,6 +5,13 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: a `SetStore.putAll` that mixes non-empty and empty sets reported `outcomeUnknown = false` when its delete was rejected after the replacements had reached Redis, and on a backend without atomic broadcast other instances kept their old copies of the replaced keys. It now reports `outcomeUnknown = true` and broadcasts the whole batch.
+- Fixed: when a `VersionedCache` refresh was refused because the source returned an older version (or a `null` without a version), the local copy it kept got the lifetime Redis reported before the load, so after a slow load it outlived the value in Redis. It now expires with that value, and a copy that expired in Redis during the load isn't put back in L2.
+- Fixed: `get(key, loader)` on the sync, async and suspending views of a `Cache` didn't start refresh-ahead when it hit a local copy inside `refresh-window`. It now schedules the refresh through the declared loader, like `get`; the per-call loader still only serves misses.
+- Fixed: an async or suspending call issued after `CacheRuntime.close()` still ran: a `put` changed Redis and other instances read the new value, while the caller got `IllegalStateException("CacheRuntime closed.")`. Such a call now fails without running.
+
 ## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
 **Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.

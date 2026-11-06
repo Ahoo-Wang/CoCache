@@ -5,6 +5,13 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## Unreleased {#unreleased}
+
+- 修复：同时含非空集合与空集合的 `SetStore.putAll`，在替换已到达 Redis 之后删除被拒绝时报告 `outcomeUnknown = false`；在没有原子广播的后端上，其它实例还保留被替换的 key 的旧副本。现在报告 `outcomeUnknown = true`，并广播整批的失效。
+- 修复：`VersionedCache` 的刷新因数据源返回更旧的版本（或不带版本的 `null`）被拒绝时，保留的本地副本沿用加载之前 Redis 报告的剩余寿命，慢加载之后它活过了 Redis 中的值。现在它随那个值到期，加载期间已在 Redis 中到期的副本不再放回 L2。
+- 修复：`Cache` 的同步、异步与挂起视图上的 `get(key, loader)` 命中 `refresh-window` 内的本地副本时不触发提前刷新。现在它同 `get` 一样经声明的 loader 安排刷新；调用级 loader 仍只用于未命中。
+- 修复：`CacheRuntime.close()` 之后发起的异步或挂起调用仍会执行：`put` 修改了 Redis、其它实例读到新值，调用方却收到 `IllegalStateException("CacheRuntime closed.")`。现在这样的调用不执行，直接失败。
+
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
 **模块组：** `me.ahoo.cocache` · 8.0.0 的第四个预发布版本。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。

@@ -80,7 +80,7 @@ views.getVersioned(id)                            // Versioned(view, version)，
 - **顺序只在条目存活期间成立。** 值或墓碑过期之后，key 中没有版本，任何版本（包括更旧的）都能再次写入。按重复投递的时间范围设置 `ttl`（以及 `tombstoneTtl`）。把流重放到最新位置的写入方最终总会写到最新版本，所以过期之后的陈旧以那次重放为界。
 - **没有丢掉版本的写入。** 带版本的类型没有 `put`、`putIfMatch` 与普通的 `invalidate`。去掉版本的途径只有 `purge(key)`（删除 key，之后任何版本都能写入；从不重试，失败时抛出）、过期，以及 CoCache 之外的工具。
 - **`evict(key)` 保留版本。** `VersionedCache` 在每个实例上丢弃副本，并把 Redis 中带版本的值或墓碑换成一个保留版本的淘汰标记：下一次读取从数据源加载，迟到的旧版本仍被拒绝。数据源落后于 Redis 中的版本时，这次加载的结果照常返回（在 L2 中保留 `degraded-local-max-age`），但不写入 Redis，计入 `cocache.fill.rejections`，直到数据源追上。没有版本的值照常删除。标记存活 `tombstoneTtl`。失败时抛出，不在后台重试。端点的按 key `DELETE`（`CacheAdmin.invalidateEncoded`）在 `VersionedCache` 上是 `evict`，在 `VersionedStore` 上是 `purge`。
-- **提前刷新照常工作**（`VersionedCache`）。带版本的值像其它值一样取得刷新令牌，声明没有写出 `refreshWindow` 时，`cocache.defaults.cache.refresh-window` 同样作用于它。刷新只写回不低于 Redis 中版本的值。数据源返回的版本比 Redis 中的更旧时（写入方推得比数据源快），Redis 拒绝它，实例保留更新的副本，退避后再试。更一般地，本地副本从不退回更旧的版本：刷新的令牌被别的读取抢走、或写回 Redis 失败，而数据源仍返回更旧的版本时，实例保留已有的副本（计入 `cocache.stale.discards`）。结果未知的写回按写入处理：实例丢掉自己的副本，下一次读取读 Redis。写入方的推送已经足够时，在声明中设置 `refreshWindow = off()`（或 `cocache.caches.[name].refresh-window: off`）。
+- **提前刷新照常工作**（`VersionedCache`）。带版本的值像其它值一样取得刷新令牌，声明没有写出 `refreshWindow` 时，`cocache.defaults.cache.refresh-window` 同样作用于它。刷新只写回不低于 Redis 中版本的值。数据源返回的版本比 Redis 中的更旧时（写入方推得比数据源快），Redis 拒绝它，实例保留更新的副本，退避后再试。保留的副本仍随 Redis 中的值到期：慢加载耗费的时间从它的剩余寿命中扣除，加载期间已在 Redis 中到期的副本不再放回 L2。更一般地，本地副本从不退回更旧的版本：刷新的令牌被别的读取抢走、或写回 Redis 失败，而数据源仍返回更旧的版本时，实例保留已有的副本（计入 `cocache.stale.discards`）。结果未知的写回按写入处理：实例丢掉自己的副本，下一次读取读 Redis。写入方的推送已经足够时，在声明中设置 `refreshWindow = off()`（或 `cocache.caches.[name].refresh-window: off`）。
 - **失败：** Redis 故障时 `putIfNewer` 抛出 `CacheWriteException`。重试同一个版本是安全的：第一次已经生效时，重试返回 `Stale(version)` 并再次发布失效，以防第一次写入生效而单独的发布失败了。读不懂的内容的分类同[条件写入](./store.md#conditional-writes)。
 - 异步视图与挂起视图有同样的方法。指标 `cocache.versioned.stale` 统计被拒绝的版本。
 
@@ -208,7 +208,7 @@ cocache:
 - 每个 key 只有一个实例能在 Redis 中抢到刷新令牌并调用 loader。集群对每个 key 只重新加载一次。
 - 其它实例照常返回自己的副本，退避一段时间后再读一次 Redis：`lease-wait`（至少 100 ms），且不超过旧值剩余寿命的一半。所以它们在旧值过期之前取到重新加载的值；重新加载期间，无论 key 多热，它们读 Redis 的次数都有上界。
 - 寿命不长于窗口的值（来自较短的 `ttlOf` 或 `put(key, value, ttl)`）不刷新：它一出生就在窗口内，每次命中都会重新加载它。它照常过期，在下一次未命中时重新加载。同样，在值的窗口内才第一次读到它的实例，不为这份副本发起刷新；其它实例上的副本照常发起。
-- 只有带 loader 的缓存会刷新。负缓存不刷新。
+- 只有声明了 loader 的缓存会刷新，刷新总是调用声明的 loader。带调用级 loader 的读取（`get(key, loader)`、Spring Cache 的 `sync = true`）命中窗口内的副本时，同普通读取一样安排刷新；调用级 loader 只用于未命中。负缓存不刷新。
 - 刷新失败只记日志。到期却没有加载的刷新（刷新令牌在别的实例手里，或副本没有刷新点）计入 `cocache.refresh.skipped`。值照常过期，所以陈旧度上界从不依赖刷新。
 - 刷新在一个有界线程池中执行（最多 4 个线程，队列 1024）。池满时跳过刷新，计入 `cocache.refresh.rejections`。[`cocache.refresh-executor`](./configuration.md#executors) 可以指定改用另一个 `Executor` bean。
 
