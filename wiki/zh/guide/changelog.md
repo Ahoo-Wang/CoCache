@@ -5,8 +5,13 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布 {#unreleased}
+## Unreleased {#unreleased}
 
+- 修复：alpha.4 新增的 `cocache.caches.[name]` 未知配置项检查用 Spring Boot 的默认转换器把配置再绑定一次，只有应用的 `@ConfigurationPropertiesBinding` 转换器才接受的值（如 `read-failure` 的自定义别名）因此让启动失败。检查现在在 `CoCacheProperties` 的正式绑定中进行，使用相同的转换器。
+- 修复：`CacheRuntime.create` 与 `close()` 并发时，创建可能在关闭返回之后完成，多出一个缓存并遗留它的失效订阅。现在缓存只在订阅确认之后、运行时仍开启时交给运行时；否则创建的调用关闭它已建立的部分，并以 `CacheRuntime is closed.` 失败。
+- 修复：订阅尚未确认的缓存已经出现在 `cacheNames`、`cache`、`admin` 与 `metrics` 中，Micrometer 绑定器可能绑定随后回滚的引擎；同名重试之后，指标仍读取被丢弃的引擎。现在缓存创建完成之后才对外可见。
+- 修复：存储前缀 `{keyPrefix}{namespace}:` 相等或一个是另一个开头的两个缓存（例如 `app:` + `users` 与 `app:users:` + `v2`）都能创建，在 Redis 中相互覆盖 key，也收不到彼此的失效。现在创建第二个时失败，并指出第一个。
+- 修复：经 `CoCacheFactory` 被拒绝的创建（例如重名）已经改写了已有缓存的 `fill-in-transaction` 与 `invalidate-fills-on-rollback`，已回滚的数据可能留在缓存中。现在这两个模式只在算出它们的那个缓存创建成功时生效。
 - 修复：缓存接口按类型匹配时忽略父容器中声明的 `CacheLoader`、`AsyncCacheLoader`、`Codec` 与 `JoinKeyExtractor`。`Cache` 因此以“没有数据源”启动失败，没有指定编解码的缓存则静默退回 Jackson，而不是使用父容器的 `Codec<V>`。按类型匹配现在包含祖先容器；子容器中同名的 bean 仍遮蔽父容器的，两个容器各有一个匹配时是歧义。
 - 修复：声明为作用域代理（`@Scope(proxyMode = …)`）、按类型匹配到的 loader、编解码或 `JoinKeyExtractor` 注入的是它的目标，作用域因此失效（prototype 的 loader 始终是同一个实例）。现在注入代理。用 `joinKeyExtractor = "…"` 指定作用域代理的 `JoinKeyExtractor` 不再以“is not a `JoinKeyExtractor<V1, K2>`”启动失败。
 - 修复：以 `FactoryBean` 声明、写全了泛型的 spec bean（`fun recordsSpec(): FactoryBean<StoreSpec<String, String>>`）以“must declare its generic types”启动失败。`K` 与 `V` 现在取自工厂的产品类型，不创建工厂。
