@@ -482,6 +482,14 @@ class FillObserverTest {
         error?.cause.assert().isSameAs(failure)
         versioned["w"].assert().isEqualTo("W3")
         versioned[""].assert().isEqualTo("E2")
+
+        // 两个 key 都失败：抛出第一个，第二个作为它的 suppressed
+        val second = IllegalStateException("remote down again")
+        backend.beforeInvalidate = { storageKeys -> throw if (storageKeys.single().endsWith(":")) failure else second }
+        val both = runCatching { FillKey.invalidateAll(keys) }.exceptionOrNull()
+        backend.beforeInvalidate = null
+        both?.cause.assert().isSameAs(failure)
+        requireNotNull(both).suppressed.single().cause.assert().isSameAs(second)
     }
 
     /**

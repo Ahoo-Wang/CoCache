@@ -19,6 +19,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.core.CacheRuntime
@@ -335,6 +336,39 @@ class TransactionalFillObserverTest {
         }
         users.inspect("p").remote.value.assert().isEqualTo("deferred")
         users.inspect("q").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+    }
+
+    /**
+     * #814：回滚过 savepoint 的事务提交时失效填充失败（`invalidate-failure: throw`）与登记的失效一样，在 `afterCommit` 中
+     * 抛给调用方；此时数据源已经提交。
+     */
+    @Test
+    fun fillInvalidationFailureAtCommitAfterASavepointRollbackReachesTheCaller() {
+        val strict = runtime(TransactionalFillObserver()).create(
+            cacheSpec<String, String>("strict") {
+                codec = StringCodec
+                loader = CacheLoader { manager.read(it) }
+                policy = CachePolicy(invalidateFailure = InvalidateFailureMode.THROW)
+            }
+        )
+        val error = try {
+            runCatching {
+                tx.executeWithoutResult {
+                    nestedTx.executeWithoutResult { nested ->
+                        manager.write("a", "nested")
+                        strict["a"].assert().isEqualTo("nested")
+                        nested.setRollbackOnly()
+                    }
+                    manager.write("b", "outer")
+                    strict["b"].assert().isEqualTo("outer")
+                    backend.failAll = true
+                }
+            }.exceptionOrNull()
+        } finally {
+            backend.failAll = false
+        }
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        manager.read("b").assert().isEqualTo("outer")
     }
 
     /**
