@@ -69,7 +69,7 @@ val members: Set<String> = online[roomId] // empty set when absent
 
 - Writes throw `CacheWriteException`, and are never retried in the background. `outcomeUnknown` says whether the write may have reached Redis. Retrying `add` or `remove` is safe; retrying `put` is a new replacement.
 - A Redis read failure is [`Unknown`](./caches.md#unknown): `get` throws `CacheReadException`, `lookup` returns `Unknown`, and `getAll` throws with `unknownKeys` and `partialResult`. A set has no safe "absent" answer to fall back to, so there is no `unknownRead`.
-- **Unreadable content throws.** An element the codec can't decode makes the read throw, and a set written in a newer format throws `ForeignFormatException` (an `IllegalStateException`). Content in a format this version can't read (for example a native Redis Set at the same key) makes the read throw `CacheReadException`, and an `add` or `remove` on it, or on a set in a newer format, throws `CacheWriteException` and leaves the key unchanged. Only `put` replaces it. A set store never reclaims such content ([unreadable payloads](../operations/troubleshooting.md#corrupt-payloads)).
+- **Unreadable content throws `CacheReadException`.** A read throws it for an element the codec can't decode, for a set written in a newer format (with a `ForeignFormatException` cause), and for content in a format this version can't read (for example a native Redis Set at the same key). An `add` or `remove` on such content throws `CacheWriteException` and leaves the key unchanged. Only `put` replaces it. A set store never reclaims such content ([unreadable payloads](../operations/troubleshooting.md#corrupt-payloads)).
 
 ## Durability {#durability}
 

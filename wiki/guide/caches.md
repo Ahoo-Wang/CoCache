@@ -43,7 +43,7 @@ All declarations of one namespace must use the same type. The type isn't stored 
 | Mistake | Consequence | How you find out |
 |---------|-------------|------------------|
 | The only copy declared as a `Cache` with `externallySourced()` | It expires after the default `ttl` (1 h). A failed `invalidate` is retried later and may delete a value written meanwhile. The Redis eviction check skips it. | The start log names the type of every cache |
-| A rebuildable copy declared as a `Store` | After Redis loses the key, reads return "absent" until someone writes it again. A failed `delete` throws instead of retrying. | Startup warns when a matching `CacheLoader` bean exists |
+| A rebuildable copy declared as a `Store` | After Redis loses the key, reads return "absent" until someone writes it again. A failed `delete` throws instead of retrying. | Startup warns when a matching `CacheLoader` or `AsyncCacheLoader` bean exists |
 | A `Cache` whose loader isn't found | Startup fails: a `Cache` must have a loader or declare `externallySourced()` | The exception names the interface |
 
 ## Interface caches {#interface}
@@ -207,7 +207,7 @@ Every key in Redis is:
 
 | Part | Default | Set with |
 |------|---------|----------|
-| `keyPrefix` | `cocache:` | `@CoCache(keyPrefix)`, the spec's `keyPrefix`, or the [`key-prefix` property](./configuration.md#key-prefix) |
+| `keyPrefix` | `cocache:` | `@CoCache(keyPrefix)`, the spec's `keyPrefix`, or the [`key-prefix` property](./configuration.md#key-prefix). The properties win over the declaration unless a library [locked](./configuration.md#locks) the prefix. |
 | `namespace` | the cache name | `@CoCache(namespace)`, the spec's `namespace` |
 | `encodedKey` | `key.toString()` | `@CoCache(keyExpression)`, the spec's `keyEncoder` |
 
@@ -258,7 +258,7 @@ cacheSpec<String, Session>("SessionCache") {
 }
 ```
 
-A non-null result overrides the policy `ttl` and is not jittered. `null` falls back to the policy. Negative entries always use `absentTtl`, and tombstones use `tombstoneTtl`. The `ttl` property doesn't affect `ttlOf`. `StoreSpec`, `VersionedCacheSpec` and `VersionedStoreSpec` take a `ttlOf` too.
+A non-null result overrides the policy `ttl` and is not jittered. `null` falls back to the policy. Negative entries always use `absentTtl`, and tombstones use `tombstoneTtl`. The `ttl` property doesn't affect `ttlOf`, except that on a `Cache`, `cocache.overrides.cache.ttl` caps its results ([overrides](./configuration.md#field-layers)), counted in `cocache.ttl.clamped`. `StoreSpec`, `VersionedCacheSpec` and `VersionedStoreSpec` take a `ttlOf` too.
 
 ## Rejecting impossible keys {#key-filter}
 
@@ -283,7 +283,7 @@ Every type reads through L2 and Redis. `lookup(key)` tells three answers apart:
 `Unknown` is a fact about one read, not about the data: it is never cached, never broadcast, and never handed to a caller that has its own source. `lookup(key).valueOrThrow()` returns the value or `null` and throws on `Unknown`. In Java 21, switch exhaustively over the sealed type; `as? Lookup.Present` silently treats `Unknown` as absent.
 
 - **Who gets `Unknown`:** reads without a source (a `Store`, a `VersionedStore`, a `SetStore`, an externally sourced `Cache` read without a loader), and reads with a source when you set `readFailure = THROW`. By default a read with a source loads from it instead.
-- **`unknownRead`** on a `CacheSpec` (externally sourced only), `StoreSpec` or `VersionedStoreSpec` maps `Unknown` for reads without a loader: `THROW` (default) or `ABSENT`, which returns `null` (`Lookup.Absent`) and caches nothing, so the next read asks Redis again. It doesn't apply to `getIfChanged`, `getVersioned` or reads with a loader, and a `SetStore` doesn't have it. Set it in the spec, with `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)` on an interface, in a [customizer](#customizer), or with `cocache.caches.[name].unknown-read` ([configuration](./configuration.md#policy-properties)); no global layer sets it.
+- **`unknownRead`** on a `CacheSpec` (externally sourced only), `StoreSpec` or `VersionedStoreSpec` maps `Unknown` for reads without a loader: `THROW` (default) or `ABSENT`, which returns `null` (`Lookup.Absent`) and caches nothing, so the next read asks Redis again. It applies to `getVersioned` as to `get`, not to `getIfChanged` or reads with a loader, and a `SetStore` doesn't have it. Set it in the spec, with `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)` on an interface, in a [customizer](#customizer), or with `cocache.caches.[name].unknown-read` ([configuration](./configuration.md#policy-properties)); no global layer sets it.
 - **`getAll`** finishes every other key first (releasing leases, writing back loads), then throws a `CacheReadException` whose `unknownKeys` are the keys without an answer and whose `partialResult` holds the values it did get. `lookupAll(keys)` returns a `Lookup` for every key instead of throwing.
 - Load timeouts (`load-timeout`) and rejected loads (`load-max-concurrent`) are not Redis failures: they throw their own exceptions, from `lookup` too.
 - Each `Unknown` counts in `cocache.reads.unknown`, including those mapped to absent, and the Redis failure itself in `cocache.remote.failures`.
@@ -310,7 +310,7 @@ fun moneyCodec(): Codec<Money> = object : Codec<Money> {
 }
 ```
 
-If a payload can't be decoded (for example, after an incompatible change to the value class), a cache with a loader treats it as a miss and reloads it. A type without a source has nothing to reload from and throws `CacheReadException` instead, leaving the key untouched. Changes that still decode but mean something different won't be caught: change the namespace or key prefix for those.
+If a payload can't be decoded (for example, after an incompatible change to the value class), a cache with a loader treats it as a miss and reloads it. A read without a source (a `Store`, a `VersionedStore`, a `SetStore`, an externally sourced `Cache` read without a loader) has nothing to reload from and throws `CacheReadException` instead, leaving the key untouched. Changes that still decode but mean something different won't be caught: change the namespace or key prefix for those.
 
 Redis values carry a short binary header before the codec's bytes. `redis-cli GET` shows binary, and other programs must not read or write CoCache keys directly.
 
@@ -323,7 +323,7 @@ Each type starts from its own default policy in `DefaultPolicies`: `STORE`, `VER
 | `ttl` | forever | 1 h |
 | `localMaxAge` | 30 s | 5 min |
 | `absentTtl` | 10 s | 1 min |
-| `tombstoneTtl` | 1 day (`VersionedStore` only) | the value `ttl` |
+| `tombstoneTtl` | 1 day (`VersionedStore` only) | the value `ttl` (`VersionedCache` only) |
 
 The L2 lifetimes are shorter because a lost invalidation can't be corrected by a reload: the only bound left is L2's. Write them out on the declaration, or set them for every authoritative cache with `cocache.defaults.store.*`, when you need longer ones. Data whose lifetime is its meaning (a session, a one-time code, an idempotency key) needs an explicit `ttl`: on these types only the declaration and `cocache.caches.[name].ttl` set it, never a global layer ([what each layer may set](./configuration.md#field-layers)).
 
@@ -391,4 +391,4 @@ CoCache refuses to start rather than run a cache that can't behave as declared. 
 | `cocache.caches.[name]` that sets a field a library locked, without listing it in `unlock`; a customizer that changes a locked field or the data source | The library depends on that value ([locks](./configuration.md#locks)) |
 | A duration property without a unit, such as `ttl: 60` | Write `60s`, `5m` or `PT2M` ([durations](./configuration.md#durations)) |
 
-An authoritative interface for which a matching `CacheLoader` bean exists starts, but logs a warning: the data may belong in a `Cache`. The `toString()` check on key types runs on the first read of each key type, not at startup.
+A `Store` or `VersionedStore` interface for which a matching `CacheLoader` or `AsyncCacheLoader` bean exists starts, but logs a warning: the data may belong in a `Cache`. The `toString()` check on key types runs the first time a key of each type is encoded (by any read or write), not at startup.

@@ -17,7 +17,7 @@ Route away and stop: implementing a `CoherenceBackend` (a new L1 store or invali
 
 - Treat the target checkout, its tests, its resolved dependencies and its configuration as authoritative. Confirm exact signatures, property names and defaults in the resolved CoCache version (sources jar, or the matching `vX.Y.Z` tag of the CoCache repository) before relying on them; the references give stable decisions, not an API listing.
 - Protect the three guarantees: staleness stays bounded, no invalidation is lost to a concurrent load, and the hit path stays cheap. A change that weakens one is wrong however clean it looks.
-- Keep read-only requests (review, diagnosis, explanation) read-only: no file edits, commits, remote changes, actuator `DELETE`, or Redis writes without explicit authorization.
+- Keep read-only requests (review, diagnosis, explanation) read-only: no file edits, commits, remote changes, actuator `DELETE` or `POST`, or Redis writes without explicit authorization.
 - Report changed files and behavior, the exact verification commands and their results, compatibility or operational risk, and remaining evidence gaps. Never replace a test you could not run with "should pass".
 
 ## Target version

@@ -5,7 +5,7 @@ description: 在 @Cacheable、@CachePut 与 @CacheEvict 背后使用 CoCache：�
 
 # Spring Cache
 
-如果代码已经在用 Spring 的缓存注解，CoCache 可以直接放在它们背后。starter 注册 `CoCacheSpringCacheManager`，把每个 CoCache 缓存以同名的 Spring `Cache` 暴露出来。
+如果代码已经在用 Spring 的缓存注解，CoCache 可以直接放在它们背后。starter 注册 `CoCacheSpringCacheManager`，把每个 CoCache `Cache`（派生副本）以同名的 Spring `Cache` 暴露出来；其它四种类型[不暴露](#sync-check)。
 
 ## 用法 {#usage}
 
@@ -98,7 +98,7 @@ cocache:
     degrade-on-error: true
 ```
 
-starter 随后为 Spring 的缓存拦截器换上 `DegradingCacheErrorHandler`。它只对 CoCache 缓存生效：读取失败或写入失败记录为一条 `WARN`（不带堆栈，不含 key；堆栈在 `DEBUG` 级别输出），不重新抛出。Spring 随后把这次读取当作未命中、执行方法，结果不缓存。方法就是数据源，缓存的副本可以跳过。其余失败交给原来的处理器（`CachingConfigurer` 给出的，或 Spring 默认的）：
+starter 随后为 Spring 的缓存拦截器换上 `DegradingCacheErrorHandler`。它只对 CoCache 缓存生效：读取失败或写入失败记录为一条 `WARN`（不带堆栈，不含 key；该 logger 开启 `DEBUG` 时改为以 `DEBUG` 级别输出，带堆栈），不重新抛出。Spring 随后把这次读取当作未命中、执行方法，结果不缓存。方法就是数据源，缓存的副本可以跳过。其余失败交给原来的处理器（`CachingConfigurer` 给出的，或 Spring 默认的）：
 
 - 其它缓存的失败；
 - CoCache 缓存上失败的失效与清空（`@CacheEvict`，以及结果为 `null` 的 `@CachePut`）。默认的 `invalidate-failure: retry` 下它们不会失败；设置为 `throw` 就是要求看到失败。
@@ -141,13 +141,13 @@ classpath 中有 `spring-tx` 时，starter 用 CoCache 的事务装饰器 `Trans
 
 ### 事务内的回源 {#transactional-loads}
 
-同步读取还会关注它所在的事务。这包括 `@Cacheable(sync = true)`，以及在任何带数据源的 CoCache 缓存上直接调用的 `get`、`lookup`、`getAll` 与 `get(key, loader)`。只作用于 `PlatformTransactionManager` 的读写事务；只读事务、异步与挂起调用、响应式事务都不受影响。
+同步读取还会关注它所在的事务。这包括 `@Cacheable(sync = true)`，以及在任何带数据源的 CoCache 缓存上直接调用的 `get`、`lookup`、`getAll`、`lookupAll` 与 `get(key, loader)`。只作用于 `PlatformTransactionManager` 的读写事务；只读事务、异步与挂起调用、响应式事务都不受影响。
 
 - **回滚时失效事务加载的内容**（`invalidate-fills-on-rollback`，默认开启）。事务内的加载可能读到你写入但尚未提交的行，并把它缓存到 Redis；Redis 故障时只缓存到本实例的 L2。CoCache 记录事务加载进缓存的每个 key，在事务回滚、提交结果未知，或 `NESTED` 事务回滚到 savepoint 时失效它们。提交时不动它们：那是已提交的数据。不需要登记任何东西，从不调用 `@CacheEvict` 的事务也在覆盖范围内。回滚之前，其它调用方仍可能从 Redis 读到未提交的值：回滚把这个窗口从 `ttl` 缩短到事务的时长。
 - **已登记的 key 私有加载**（`fill-in-transaction`，默认 `registered-keys`）。一个 key 在事务中登记失效之后（`@CacheEvict`、`TransactionalInvalidator`），同一事务内再次加载它不碰 Redis、L2 与其它调用方：值只交给这次调用，计入 `cocache.fills.gated`。登记时还会立即丢弃本实例的副本，所以事务内的下一次读取未命中，加载到你自己的写入。这不是保证：其它线程可能先把已提交的值放回 L2。`private` 让读写事务内的全部加载都是私有的，L2 未命中的读取因此每次都调用数据源；`allow` 关闭这一机制。
 - **其它调用方不共享事务内的加载**。事务内的调用方领头加载时，同一实例上并发的调用方各自加载，而不是拿它可能永远不会提交的结果。
 
-key 按 namespace 与编码后的 key 匹配，所以经接口缓存的代理驱逐，同样覆盖经 `cacheSpec` bean 或 Spring Cache 的读取。两项配置按缓存生效，写在 `cocache.defaults.cache`、`cocache.overrides.cache`（取更严的值）与 `cocache.caches.[name]` 中（见[各层能设置什么](./configuration.md#field-layers)）。对一个缓存两项都关闭（`invalidate-fills-on-rollback: false` 与 `fill-in-transaction: allow`）时，它的加载不再关注事务：
+key 按 keyspace（key 前缀与命名空间）与编码后的 key 匹配，所以经接口缓存的代理驱逐，同样覆盖经 `cacheSpec` bean 或 Spring Cache 的读取。两项配置按缓存生效，写在 `cocache.defaults.cache`、`cocache.overrides.cache`（取更严的值）与 `cocache.caches.[name]` 中（见[各层能设置什么](./configuration.md#field-layers)）。应用自己声明的 `FillObserver` bean 会取代 starter 的，这时两项配置都不再生效。对一个缓存两项都关闭（`invalidate-fills-on-rollback: false` 与 `fill-in-transaction: allow`）时，它的加载不再关注事务：
 
 ```yaml
 cocache:
@@ -185,7 +185,7 @@ cocache:
 class App
 ```
 
-直接调用时使用 `TransactionalInvalidator`（见[保持数据新鲜](./freshness.md#transactions)）。它与装饰器共用事务的登记，所以它的失效同样取代之前同一 key 的 `@CachePut`。key 按 namespace 与编码后的 key 匹配，传入这个缓存的任何对象都可以：`cacheSpec` 声明的 bean、接口式缓存的代理，或 Spring Cache 背后的缓存。
+直接调用时使用 `TransactionalInvalidator`（见[保持数据新鲜](./freshness.md#transactions)）。它与装饰器共用事务的登记，所以它的失效同样取代之前同一 key 的 `@CachePut`。key 按 keyspace（key 前缀与命名空间）与编码后的 key 匹配，传入这个缓存的任何对象都可以：`cacheSpec` 声明的 bean、接口式缓存的代理，或 Spring Cache 背后的缓存。
 
 ## 与其它缓存管理器并存 {#other-managers}
 

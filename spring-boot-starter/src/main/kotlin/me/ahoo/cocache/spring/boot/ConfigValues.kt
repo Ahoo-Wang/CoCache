@@ -29,6 +29,12 @@ internal object ConfigValues {
     private val UNITLESS = Regex("""[+-]?\d+(\.\d+)?""")
     private const val FOREVER = "forever"
     private const val OFF = "off"
+
+    /**
+     * YAML（Spring Boot 保留 SnakeYAML 的布尔解析）把不带引号的 `off` 读作布尔 `false`，绑定到字符串属性时成为 `"false"`：
+     * 提前刷新窗口把它当作 `off`，与 Spring 对枚举的宽松转换（`false` 即 `off`）一致。
+     */
+    private const val YAML_OFF = "false"
     private const val UNLIMITED = "unlimited"
     private const val REDIS_PREFIX = "${CoCacheProperties.PREFIX}.redis."
     private const val EXAMPLES = "e.g. 500ms, 5s, 2m, PT2M"
@@ -66,7 +72,8 @@ internal object ConfigValues {
         if (raw.trim().equals(FOREVER, ignoreCase = true)) Ttl.Forever else Ttl.Finite(positiveDuration(key, raw))
 
     fun refreshWindow(key: String, raw: String): RefreshWindow {
-        if (raw.trim().equals(OFF, ignoreCase = true)) {
+        val text = raw.trim()
+        if (text.equals(OFF, ignoreCase = true) || text.equals(YAML_OFF, ignoreCase = true)) {
             return RefreshWindow.Off
         }
         return RefreshWindow.of(duration(key, raw).takeUnless { it.isZero })

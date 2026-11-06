@@ -32,7 +32,12 @@ interface InvalidationChannel {
     fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription
 
     /**
-     * 发布失效帧（挂起，在写路径上）：仅当 [CoherenceBackend.atomicBroadcast] 为 `false` 时由引擎在写入之后调用。
+     * 发布失效帧（挂起）。两类调用方：
+     * - 写路径：仅当 [CoherenceBackend.atomicBroadcast] 为 `false` 时，引擎在写入成功或结果未知之后调用；
+     * - 只广播的失效（`ExternalInvalidator.broadcast`、端点的 `POST`，即 `CacheAdmin.broadcastEncoded`）：在每个后端上调用，
+     *   与 [CoherenceBackend.atomicBroadcast] 无关。
+     *
+     * 因此每个后端都必须支持本方法，原子广播的后端也不例外。
      *
      * 限时、取消与失败的约定同 [L1Store]：引擎从不取消本调用（在 `NonCancellable` 中调用），实现必须自己限时，
      * 故障不得以 `CancellationException` 报告。

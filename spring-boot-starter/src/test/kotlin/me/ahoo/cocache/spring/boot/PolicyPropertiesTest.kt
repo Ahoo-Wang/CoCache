@@ -25,6 +25,7 @@ import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.PolicyReport
 import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.VersionedCacheSpec
 import me.ahoo.cocache.core.VersionedStoreSpec
@@ -40,9 +41,11 @@ import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.boot.autoconfigure.AutoConfigurations
+import org.springframework.boot.env.YamlPropertySourceLoader
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.io.ByteArrayResource
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 
@@ -76,12 +79,34 @@ class PolicyPropertiesTest {
 
     @Test
     fun zeroOrOffRefreshWindowTurnsRefreshOff() {
-        listOf("0s", "off", "OFF").forEach { value ->
+        // `false`：YAML 中不带引号的 `off` 绑定到字符串属性时的样子
+        listOf("0s", "off", "OFF", "false").forEach { value ->
             runner.withPropertyValues("cocache.caches.user.refresh-window=$value").run { context ->
                 assertThat(context).hasNotFailed()
                 context.getBean("user")
                 requireNotNull(context.getBean(CacheRuntime::class.java).policy("user")).refreshWindow.assert().isNull()
             }
+        }
+    }
+
+    /**
+     * YAML 把不带引号的 `off` 读作布尔 `false`（Spring Boot 保留 SnakeYAML 的布尔解析）：它照样关闭提前刷新，而不是启动失败。
+     */
+    @Test
+    fun bareYamlOffTurnsRefreshOff() {
+        val yaml = """
+            cocache:
+              caches:
+                user:
+                  refresh-window: off
+        """.trimIndent()
+        runner.withInitializer { context ->
+            YamlPropertySourceLoader().load("application.yaml", ByteArrayResource(yaml.toByteArray()))
+                .forEach { context.environment.propertySources.addFirst(it) }
+        }.run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean("user")
+            requireNotNull(context.getBean(CacheRuntime::class.java).policy("user")).refreshWindow.assert().isNull()
         }
     }
 
@@ -166,6 +191,49 @@ class PolicyPropertiesTest {
 
         @Bean
         fun ledgerSpec(): VersionedStoreSpec<String, String> = versionedStoreSpec("ledger") { codec = StringCodec }
+    }
+
+    /**
+     * `VersionedStore` 的墓碑必须有限：全局层的 `tombstone-ttl: forever` 对它跳过并报告（与其它全局层冲突相同，不让启动失败），
+     * 对 `VersionedCache` 照常生效；`cocache.caches.[name]` 中为 `VersionedStore` 写 `forever` 仍让启动失败。
+     */
+    @Test
+    fun globalForeverTombstoneTtlIsSkippedForVersionedStores() {
+        val versioned = ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+            .withUserConfiguration(VersionedConfig::class.java)
+        versioned.withPropertyValues(
+            "cocache.defaults.store.tombstone-ttl=forever",
+            "cocache.defaults.cache.tombstone-ttl=forever",
+        ).run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean("ledger")
+            context.getBean("view")
+            val runtime = context.getBean(CacheRuntime::class.java)
+            requireNotNull(runtime.policy("ledger")).tombstoneTtl.assert()
+                .isEqualTo(DefaultPolicies.VERSIONED_STORE.tombstoneTtl)
+            requireNotNull(requireNotNull(runtime.admin("ledger")).policyReport).skipped.assert().contains(
+                PolicyReport.Skipped(
+                    "cocache.defaults.store.tombstone-ttl",
+                    "cocache.defaults.store",
+                    "a VersionedStore needs a finite tombstone-ttl"
+                )
+            )
+            requireNotNull(requireNotNull(runtime.admin("view")).policyReport).entries
+                .first { it.field == "tombstone-ttl" }.assert()
+                .isEqualTo(PolicyReport.Entry("tombstone-ttl", "forever", PolicyReport.Source.DEFAULTS))
+        }
+        versioned.withPropertyValues("cocache.caches.ledger.tombstone-ttl=forever").run { context ->
+            assertThat(context).hasFailed()
+        }
+        // 有限的全局墓碑寿命照常作用于 VersionedStore
+        versioned.withPropertyValues("cocache.defaults.store.tombstone-ttl=2h").run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean("ledger")
+            val runtime = context.getBean(CacheRuntime::class.java)
+            requireNotNull(runtime.policy("ledger")).tombstoneTtl.assert().isEqualTo(Duration.ofHours(2))
+            requireNotNull(requireNotNull(runtime.admin("ledger")).policyReport).skipped.assert().isEmpty()
+        }
     }
 
     /**

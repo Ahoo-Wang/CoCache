@@ -39,7 +39,8 @@ stateDiagram-v2
     Leased --> Value: 用匹配的 lease 填充
     Leased --> Absent: 释放、lease 到期、失效
     Value --> Refreshing: 在刷新窗口内读取
-    Refreshing --> Value: 用匹配的令牌填充、释放、令牌过期
+    Refreshing --> Value: 用匹配的令牌填充、释放
+    Refreshing --> Refreshing: 签发超过 lease-ttl 的令牌被接管
     Value --> Value: put
     Value --> Absent: 失效、到期
     Refreshing --> Absent: 失效
@@ -153,13 +154,13 @@ SingleFlight 还保证：
 | 操作 | 步骤 | 往返 |
 |------|------|------|
 | `invalidate`、`invalidateAll`、`Store.delete`、`purge` | 递增、淘汰 L2 → 脚本：`DEL` + `PUBLISH` → 递增、淘汰 L2 | 1（每批 512 个 key，Cluster 中每个 slot） |
-| `put`、`putAll` | 递增、淘汰 L2 → 脚本：覆盖 + 到期时间 + `PUBLISH` → 递增、淘汰 L2。不写 L2 | 1 |
+| `put`、`putAll` | 递增、淘汰 L2 → 脚本：覆盖 + 到期时间 + `PUBLISH` → 递增、淘汰 L2。不写 L2 | 1（每批 512 个 key，Cluster 中每个 slot） |
 | `putIfMatch`、`deleteIfMatch`、`putIfNewer`、`invalidateIfNewer`、`deleteIfNewer`、`evict` | 递增、淘汰 L2 → 脚本：先比较摘要或版本，再写入 + 到期时间 + `PUBLISH`，或保持 key 不变 → 递增、淘汰 L2。见[条件写入](../guide/store.md#conditional-writes)与[按版本写入](../guide/freshness.md#versioned-writes) | 1 |
 | `SetStore.add` / `remove` / `clear` / `put` | 递增、淘汰 L2 → 脚本：成员更新 + 到期时间 + `PUBLISH` → 递增、淘汰 L2 | 1 |
 | 来自其它实例的消息 | 递增、淘汰 L2。跳过本实例 `NodeId` 发出的消息；结果未知的写入之后例外：从失败起 `local-max-age` 之内，本实例对这些 key 上自己的消息按远端消息处理（递增、淘汰 L2），迟到执行的写入的广播因此也淘汰本实例其间加载的副本。只对原子广播的后端 | — |
 | 重置（订阅得到确认、心跳失败）、`clearLocal` | 递增所有分段，清空 L2 | — |
 
-无论脚本成功与否，第二次递增都会执行。后端不能原子广播时，引擎在脚本成功之后立即发布，发布失败按写入失败处理。
+无论脚本成功与否，第二次递增都会执行。后端不能原子广播时，引擎在脚本之后发布，多一次往返：脚本成功之后，以及结果未知的失败之后；发出之前就被拒绝的写入之后从不发布。发布失败按写入失败处理。
 
 **调用方的责任：先修改数据源，再失效**。在提交之前失效本身就是那个竞态：并发的未命中可能在失效之后加载到未提交的行。事务内，`TransactionalInvalidator` 会把失效推迟到 `afterCommit`。
 
@@ -178,7 +179,7 @@ SingleFlight 还保证：
 | `pubsub`（默认） | 在写脚本内 `PUBLISH` | L1 修改与广播是同一个原子步骤，没有客户端窗口 |
 | `sharded` | 脚本之后立即 `SPUBLISH` | 两者之间的崩溃会丢失消息。其它实例最多在 `local-max-age` 内返回 L2 副本，L1 已经正确 |
 
-`pubsub` 模式下，后端启动时探测脚本能否向另一个 slot 的频道发布（`cocache:!probe:{a}` 到 `cocache:!probe:{b}`）。不能时（部分托管服务或 ACL），它像 `sharded` 一样在写入之后发布。写入失败时也会发布，因为失败的写入可能已部分生效（跨多个 slot 组的 `putAll`，或 Redis 已执行但应答丢失的写入）；多余的失效只淘汰副本。见[部署](../operations/index.md#channel-mode)。
+`pubsub` 模式下，后端启动时探测脚本能否向另一个 slot 的频道发布（`cocache:!probe:{a}` 到 `cocache:!probe:{b}`）。不能时（部分托管服务或 ACL），它像 `sharded` 一样在写入之后发布。写入失败且结果未知时也会发布，因为失败的写入可能已部分生效（跨多个 slot 组的 `putAll`，或 Redis 已执行但应答丢失的写入）；多余的失效只淘汰副本。见[部署](../operations/index.md#channel-mode)。
 
 ## 读路径 {#read-path}
 
@@ -213,9 +214,9 @@ flowchart TD
 
 ### 提前刷新 {#refresh-ahead}
 
-设置 `refresh-window` 后，L2 副本会记录其 L1 值进入窗口的时间。此后的命中照常返回当前值，并为每个实例上的每个 key 提交一次后台刷新。刷新以申请**刷新令牌**的方式读取。Redis 只把令牌授予剩余寿命在窗口内、且没有有效令牌的值，所以全集群只有一个实例回源，并用该令牌填充，其它实例只从 L1 重新填充 L2。`invalidate`、`put` 与集合更新都会销毁令牌，所以刷新像任何填充一样受栅栏保护。签发时间早于 `lease-ttl` 的令牌可以被接管。被执行器拒绝或失败的刷新只记录日志，值正常到期。
+设置 `refresh-window` 后，L2 副本会记录其 L1 值进入窗口的时间。此后的命中照常返回当前值，并为每个实例上的每个 key 提交一次后台刷新。刷新以申请**刷新令牌**的方式读取。Redis 只把令牌授予剩余寿命在窗口内、且没有有效令牌的值，所以全集群只有一个实例回源，并用该令牌填充，其它实例只从 L1 重新填充 L2。`invalidate`、`put` 与集合更新都会销毁令牌，所以刷新像任何填充一样受栅栏保护。签发时间早于 `lease-ttl` 的令牌可以被接管。失败的刷新只记录日志，被执行器拒绝的刷新计入 `cocache.refresh.rejections`。两种情况下值都正常到期。
 
-没取得令牌的实例读到的值仍在窗口内，直接重新填充的话，它的副本在每次命中时都该刷新，按命中频率轮询 Redis，直到持有者写回（持有者崩溃时，直到它的令牌签发超过 `lease-ttl`）。因此重新填充的副本把刷新点设在 `min(b, 剩余寿命 / 2)` 之后，`b` 为 `lease-wait`，下限 100 ms。下一次读取发生在持有者有时间写回之后，并且总在旧值到期之前。写回不广播（广播会让每个实例的下一次命中变成未命中），所以其它实例靠这次再读取到新值。届时令牌若已签发超过 `lease-ttl`，再读的实例接管它。
+没取得令牌的实例读到的值仍在窗口内，直接重新填充的话，它的副本在每次命中时都该刷新，按命中频率轮询 Redis，直到持有者写回（持有者崩溃时，直到它的令牌签发超过 `lease-ttl`）。因此重新填充的副本把刷新点设在 `min(b, 剩余寿命 / 2)` 之后，`b` 为 `lease-wait`，下限 100 ms。每次这样的重新填充计入 `cocache.refresh.skipped`。下一次读取发生在持有者有时间写回之后，并且总在旧值到期之前。写回不广播（广播会让每个实例的下一次命中变成未命中），所以其它实例靠这次再读取到新值。届时令牌若已签发超过 `lease-ttl`，再读的实例接管它。
 
 其它情形下（回源写回、读到 L1、降级填充）创建时剩余寿命不长于窗口的副本不设刷新点。每次写回都会清零令牌，所以寿命在窗口内的值（来自较短的 `ttlOf` 或 `put(key, value, ttl)`）否则会在每次命中时被持有令牌的实例重新加载一次。这样的值只是照常到期。见 [`docs/architecture.md`](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/architecture.md)。
 
@@ -226,7 +227,8 @@ flowchart TD
 | Redis 读取失败 | 有数据源的读取：从数据源加载，只写 L2，限龄 `degraded-local-max-age`；`read-failure: throw` 时为 `Lookup.Unknown`。没有数据源的读取：`Lookup.Unknown`（`get` 抛出 `CacheReadException`），`unknownRead = ABSENT` 时返回 `null` | 没有 lease 就不写 L1。L2 副本受戳保护且寿命很短。没有数据源时没有可降级的答案，缓存“不存在”会把 L1 中的值藏起来，因此两种情况都不缓存 |
 | 填充或释放失败、超时 | 记录日志并计数，结果照常返回 | 填充受令牌保护：如果它生效了，就一定生效在任何失效之前，因为失效会销毁令牌。没有释放的 lease 在 `lease-ttl` 后到期 |
 | `Cache.invalidate` 失败 | 本地效果先生效（两次递增与淘汰）。默认在后台重试（8 次，退避 100 ms 到 10 s，最多排队 10,000 个），不抛出。期间本实例上该 key 的未命中跳过 L1。成功后本实例再递增并淘汰一次。`invalidate-failure: throw` 时抛出 `CacheWriteException` | 本实例不会返回或重新填充旧值。其它实例以 L1 的剩余寿命为上界。放弃时计入 `invalidations.dropped` 并记录错误日志。晚一些删除派生副本无害：下一次读取会重新加载 |
-| 其它写入失败：`put`、条件写入或按版本的写入、`evict`、权威类型的删除、集合写入 | 本地效果先生效，然后抛出 `CacheWriteException`，从不重试。命令在发出之前被拒绝时 `outcomeUnknown` 为 `false`，超时时为 `true`：Redis 可能已经执行 | 尝试前后都淘汰了 L2，不会留下陈旧的本地副本。延迟地删除唯一副本可能删掉失败之后写入的值，重试的 `DEL` 会丢掉版本，因此交给调用方决定 |
+| `Cache.put` / `putAll` 失败 | 本地效果先生效。结果未知且 `invalidate-failure: retry`（默认）时：不抛出异常，而是把补偿的失效交给重试队列，期间本实例上该 key 的未命中跳过 L1。发出之前被拒绝，或 `invalidate-failure: throw` 时：抛出 `CacheWriteException` | 迟到的 `put` 仍可能执行。删除这个 key 让下一次读取从数据源重新加载；迟到的写入晚于补偿的删除执行时，它的陈旧度以它自己的 `ttl` 为上界 |
+| 其它写入失败：权威类型的 `put`、条件写入或按版本的写入、`evict`、权威类型的删除、集合写入 | 本地效果先生效，然后抛出 `CacheWriteException`，从不重试。命令在发出之前被拒绝时 `outcomeUnknown` 为 `false`，超时时为 `true`：Redis 可能已经执行 | 尝试前后都淘汰了 L2，不会留下陈旧的本地副本。延迟地删除唯一副本可能删掉失败之后写入的值，重试的 `DEL` 会丢掉版本，因此交给调用方决定 |
 | Redis 断线 | 命令被拒绝，而不是缓冲 | 否则一个已经向调用方报错的 `put` 可能稍后重放，覆盖更新的值 |
 | loader 抛出异常 | 立即释放 lease。异常抛给调用方与所有合并的等待者 | 其它实例不必等待 `lease-ttl` |
 | 实例持有 lease 时崩溃 | 其它实例最多等待 `lease-wait`，然后自行加载、不写 L1。lease 在 `lease-ttl` 后到期 | 没有有效令牌就无法填充 |

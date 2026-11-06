@@ -32,11 +32,11 @@ data class RefreshRequest(val window: Duration, val token: Token, val tokenTtl: 
  */
 data class Fill(val key: String, val token: Token, val envelope: Envelope, val ttl: Duration?) {
     /**
-     * 与内容一起保存的版本（6.8，按版本有序的写入）；[Versioned.NO_VERSION] 表示没有版本。支持版本的存储
+     * 与内容一起保存的版本（按版本有序的写入）；[Versioned.NO_VERSION] 表示没有版本。支持版本的存储
      * （[L1Store.versioned] 非 `null`）保存它：标量值带版本，[Envelope.Absent] 带版本即墓碑（同 [VersionedL1Store.putIfNewer] 写入的墓碑）。
      *
      * 四个参数的构造函数取 [Envelope.Scalar.version]（负缓存没有版本）；墓碑经带 `version` 的构造函数给出。
-     * 它不是数据类的组成部分（6.7 的构造函数、`copy`、`componentN` 不变）：`copy` 按信封重新取值，不保留墓碑的版本。
+     * 它不是数据类的组成部分（不参与四个参数的构造函数、`copy` 与 `componentN`）：`copy` 按信封重新取值，不保留墓碑的版本。
      */
     var version: Long = (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION
         private set

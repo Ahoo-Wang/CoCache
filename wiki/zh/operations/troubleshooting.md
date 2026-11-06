@@ -7,13 +7,13 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 每个条目按“现象 → 原因 → 检查 → 处理”组织。用到的工具是 [Actuator 端点](./observability.md#actuator-endpoint)、[指标](./observability.md#metrics)与 [`redis-cli`](#inspecting-redis)。
 
-**任何错误值的急救**：`DELETE /actuator/cocache/{name}/{key}` 在所有实例上失效该 key。然后再查它为什么错。
+**任何错误值的急救**：对 `Cache` 或 `VersionedCache`，`DELETE /actuator/cocache/{name}/{key}` 在所有实例上[失效该 key](./observability.md#invalidate-key)（`VersionedCache` 保留版本）。对 `Store`、`VersionedStore` 或 `SetStore`，`DELETE` 会删除唯一副本，还需要开关；请改用 `POST /actuator/cocache/{name}/{key}`，它让[所有实例丢弃本地副本](./observability.md#broadcast-key)，不动 Redis。然后再查它为什么错。
 
 ## 单个实例上的陈旧值 {#stale-one-node}
 
 **现象**。一个实例返回旧值，其它实例返回新值。
 
-**原因**。该实例的 L2 漏掉了一条失效消息。消息至多投递一次：订阅连接断开期间发布的消息、或因输出缓冲区限制被丢弃的消息都会丢失。该副本最迟在 `local-max-age`（默认 5 分钟）后自愈，连接被重置时会更早。
+**原因**。该实例的 L2 漏掉了一条失效消息。消息至多投递一次：订阅连接断开期间发布的消息、或因输出缓冲区限制被丢弃的消息都会丢失。该副本最迟在 `local-max-age`（`Cache` 与 `VersionedCache` 默认 5 分钟，权威类型默认 30 秒）后自愈，连接被重置时会更早。
 
 **检查**。
 
@@ -48,7 +48,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 
 ### 新建的记录被报告为不存在 {#negative-entry}
 
-记录创建之前的一次读取缓存了负缓存，它最多保留 `absent-ttl`（默认 1 分钟）。查看结果显示 `ABSENT`。创建记录之后失效该 key，或者调低 `absent-ttl`。
+记录创建之前的一次读取缓存了负缓存，它最多保留 `absent-ttl`（`Cache` 与 `VersionedCache` 默认 1 分钟，权威类型默认 10 秒）。查看结果显示 `ABSENT`。创建记录之后失效该 key，或者调低 `absent-ttl`。
 
 ## 命中率骤降：反复重置 {#resets}
 
@@ -64,6 +64,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 - **网络**。超时意味着代理、负载均衡或 NAT 丢弃了空闲或长连接，或者 Redis 过载。
 - **`command-timeout` 太小**。心跳等待 `PONG` 的上限是 `command-timeout`（默认 2 s）。
 - **Redis Cluster 的 `pubsub` 模式**。CoCache 无法强制集群订阅连接重连（`cannot force reconnect … rely on TCP keepalive`），半开连接会一直持续到 TCP keepalive 发现它（约 30 s）。
+- **Redis Cluster 的 `sharded` 模式**。某个频道的订阅在槽迁移或服务端退订之后没有得到 Redis 确认时，每次心跳都会清空这个频道上各缓存的 L2，直到订阅再次得到确认。期间健康检查仍是 `UP`，因为 `PING` 成功。日志：`Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` 或 `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.`
 
 **处理**。允许 `PING`，修复网络路径，或调高 `cocache.redis.command-timeout`。调高 `cocache.redis.heartbeat` 会减少重置，但会推迟发现断开的连接。发布与 Redis 故障切换期间的重置属于正常。
 
@@ -177,21 +178,25 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 | `Authoritative caches […] have a finite ttl, so maxmemory-policy {…} can evict them before they expire …` | `volatile-*` 且 `cocache.redis.store-eviction-check: fail` | 改用 `noeviction`、去掉 `ttl`，或以 `store-eviction-check: warn` 或 `off` 接受它 |
 | `Cache[x] - @CoCache.<attribute> = FOREVER is not supported; FOREVER is only allowed for @CoCache.ttl and @CaffeineCache.expireAfterAccess.` | 在 `ttl` 与 `@CaffeineCache.expireAfterAccess` 以外的属性上使用了 `FOREVER` | 改用具体时长 |
 | `Cache[x] already exists.` / `Namespace[x] with keyPrefix[p] is already used by another cache.` | 两个声明使用了相同的缓存名，或相同的前缀与命名空间，例如一个接口与一个 spec bean | 改名其中一个，或设置不同的 `namespace` 或 `keyPrefix` |
-| `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | 命名空间含 `:` 或字符集之外的字符，常见于把 key 前缀写进了命名空间 | 按信息的建议：把最后一个 `:` 及之前的部分放进 `keyPrefix` |
+| `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | 命名空间含 `:` 或字符集之外的字符，常见于把 key 前缀写进了命名空间。信息开头是缓存的类型（`Cache[x]`、`Store[x]` 等） | 按信息的建议：把最后一个 `:` 及之前的部分放进 `keyPrefix` |
 | `Redis denied publishing to the invalidation channel[…] of Keyspace(…): allow the channel pattern [&…inv:*] …` | Redis ACL 不放行该缓存的频道。创建缓存时会向它发布一个空帧，所以缺少的权限在启动时暴露，而不是在每次写入时 | 放行信息中的模式，见 [Redis ACL](./index.md#acl) |
 | `Cannot register cache interface[…]: the bean name[x] is already in use.` / `Cannot register cache bean[x] for spec bean[…]` | 缓存的 bean 名与其它 bean 冲突 | 修改缓存名（`@CoCache(name)`）或 spec bean 名 |
 | `Cache interface[…] must extend Store with concrete type arguments.`（五种类型都可能） / `Cache spec bean[…] must declare its generic types` | 无法解析泛型 | 使用具体类型，并在 spec 工厂方法的返回类型中写出，如 `CacheSpec<K, V>` 或 `StoreSpec<K, V>` |
 | `Cache interface[…] declares abstract methods that do not match any Store method: […]`（五种类型都可能） | 接口上有多余的抽象方法 | 改为 `default` 方法 |
 | `Multiple CacheLoader beans match …` / `Multiple Codec beans match …` | 一个缓存有多个候选 | `@CoCache(loader = "beanName")` / `@CoCache(codec = "beanName")` |
-| `… must extend exactly one of […]` | 接口没有继承五种[缓存类型](../guide/caches.md#types)中的任何一种，或继承了多种 | 只继承其中一种 |
+| `Both CacheLoader […] and AsyncCacheLoader […] beans match …` | `CacheLoader` 与 `AsyncCacheLoader` bean 都与缓存的 key、值类型匹配 | 用 `@CoCache(loader = "beanName")` 指定一个 |
+| `… must extend exactly one of Cache, VersionedCache, Store, VersionedStore, SetStore or one of their Async* or Suspending* views.` | 接口没有继承五种[缓存类型](../guide/caches.md#types)或它们的异步、挂起视图中的任何一种，或继承了多种 | 只继承其中一种 |
 | `Cache interface[…] has no data source: no CacheLoader or AsyncCacheLoader bean matches …` / `VersionedCache interface[…] has no versioned data source …` | 没有与缓存 key、值类型匹配的 loader bean | 声明 loader bean，用 `@CoCache(loader)` 指定一个；调用方提供值时声明 `@CoCache(source = EXTERNAL)`；数据无法重建时改为继承 `Store` / `VersionedStore` |
 | `@CoCache(loader = …) is not supported on Store interface[…]`（`VersionedStore`、`SetStore` 同理） / `@CoCache(source = EXTERNAL) is only supported on Cache interfaces …` | 权威类型没有数据源 | 去掉该属性；数据可以重建时改为继承 `Cache` / `VersionedCache` |
+| `@CoCache(unknownRead = ABSENT) is not supported on …` | 在不适用的类型上设置了 `unknownRead = ABSENT`：它只适用于 `Store`、`VersionedStore` 与 `source = EXTERNAL` 的 `Cache` | 去掉该属性 |
+| `@CoCache(source = EXTERNAL) cannot name a loader …` | 外部来源的 `Cache` 又指定了 `loader` | 去掉 `loader` 或 `source` |
 | `Cannot create cache[x] - no CoherenceBackend is available: …` | 既没有 Spring Data Redis 连接信息，也没有后端 bean | 配置 `spring.data.redis.*`，本地运行时设置 `cocache.backend: memory`，或声明 `CoherenceBackend` bean |
 | `Cannot create cache[x] - CoCache is disabled (cocache.enabled=false)` | CoCache 关闭时仍声明了缓存 | 启用它，或删除这些声明 |
 | `CoCache does not support Redis master-replica (spring.data.redis.masterreplica.*)` | 静态主从 | 使用单机、Sentinel 或 Cluster |
 | 创建 `cocacheBackend` 时出现 `RedisConnectionException` 或 `Command timed out after …` | 启动时连不上 Redis。后端在创建时就连接并探测 | 修复连通性。探测超时会故意让启动失败，而不是悄悄关闭原子广播 |
 | 创建缓存时出现 `NOPERM` | ACL 禁止了该缓存的频道或 key | 见 [ACL](./index.md#acl) |
 | `@Cacheable without sync = true on CoCache caches: …` | `cocache.spring-cache.require-sync: true` 且存在不带 sync 的 `@Cacheable` | 加上 `sync = true`，或关闭该检查 |
+| `Spring Cache operations on CoCache caches that are not a Cache: …` | Spring Cache 注解指向 `Store`、`VersionedStore`、`SetStore` 或 `VersionedCache`，CoCache 的 `CacheManager` 不提供它们。无论 `cocache.spring-cache.require-sync` 是什么都会失败 | 使用该缓存自己的 API，或把它声明为 `Cache` |
 | `Join cache[x] - …` | `@JoinCacheable` 指向不存在的缓存、类型不符，或同时指定了两种提取方式 | 按信息处理。见 [JoinCache](../guide/join-cache.md) |
 
 有一项检查发生在第一次调用而不是启动时：`Key type [...] does not override toString()` 表示缓存的 key 类型没有有意义的 `toString()`，每个 key 对象都会映射到不同的 Redis key。请使用 data class 或 record、重写 `toString()`，或者设置 `keyExpression` 或 `KeyEncoder`。
@@ -249,7 +254,7 @@ externalInvalidator.broadcast("PolicySnapshot", "tenant-1")  // 命名空间、�
 ```
 
 - varint 是无符号 LEB128：每字节 7 位，低位在前，除最后一个字节外最高位都置 1。小于 128 的值占 1 个字节。
-- key 是完整的**存储 key**，包含前缀与命名空间。一帧可以携带同一个缓存的多个 key。
+- key 是完整的**存储 key**，包含前缀与命名空间。一帧可以携带同一个缓存的多个 key。不在该缓存 `{keyPrefix}{namespace}:` 之下的 key 被忽略，不记录告警。
 - 发布者 id 必须与每个 CoCache 实例的 id 都不同：使用 16 个随机字节。实例会忽略带有自己 id 的帧。
 - CoCache 读不懂的帧（未知版本、截断、尾随字节）会清空该频道上各缓存的全部 L2 副本，并记录 `WARN`。代价是重新加载，从不漏掉失效。不带 key 的帧什么也不做。
 

@@ -20,7 +20,8 @@ package me.ahoo.cocache.api.spi
  */
 interface CoherenceBackend : AutoCloseable {
     /**
-     * 能否在写入的同一次原子操作中广播失效。`false` 时，引擎在写入成功之后调用 [InvalidationChannel.publish]。
+     * 能否在写入的同一次原子操作中广播失效。`false` 时，引擎在写入成功或结果未知之后调用 [InvalidationChannel.publish]。
+     * 只广播的失效在任何后端上都经 [InvalidationChannel.publish] 发布。
      */
     val atomicBroadcast: Boolean
 

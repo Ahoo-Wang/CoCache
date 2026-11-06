@@ -36,7 +36,7 @@ interface TokenStore : AsyncStore<String, Token>
 tokenStore.get("t").thenAccept { token -> ... }
 ```
 
-每种异步视图都可以声明：`AsyncCache`、`AsyncVersionedCache`、`AsyncStore`、`AsyncVersionedStore` 与 `AsyncSetStore`。它们声明的缓存与各自的同步类型相同（见[接口式声明](./caches.md#interface)），代理把每次调用交给缓存的异步视图，`sync()` 返回缓存本身。不用 starter 时，以 `storeSpec` 调用 `CoCacheFactory.create(TokenStore::class.java, spec)` 返回同样的代理。
+每种异步视图都可以声明：`AsyncCache`、`AsyncVersionedCache`、`AsyncStore`、`AsyncVersionedStore` 与 `AsyncSetStore`。它们声明的缓存与各自的同步类型相同（见[接口式声明](./caches.md#interface)），代理把每次调用交给缓存的异步视图，`sync()` 返回缓存本身。不用 starter 时，以 `storeSpec` 调用 `CoCacheFactory(runtime).create(TokenStore::class.java, spec)` 返回同样的代理。
 
 ## 异步数据源 {#loader}
 
@@ -74,7 +74,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 
 - 等待别的调用方加载的读取（同步与异步）最多等到这次加载进行了 `load-timeout`，然后以 `SourceLoadTimeoutException` 失败；在那之后到来的读取开始新的加载，不再合并到卡住的那次。
 - 一次 `AsyncCacheLoader` 加载最多 `load-timeout`（默认 30 秒）。超时后调用以 `SourceLoadTimeoutException` 失败，释放 lease，并计入 `cocache.load.timeouts`。CoCache 不取消你的 loader 的 future，迟到的结果被丢弃。你的 loader 自己抛出的 `TimeoutException`（例如来自 Reactor 的 `timeout`）原样传递。
-- 每条 Redis 命令受 `cocache.redis.command-timeout`（默认 2 秒）约束，失败时与同步路径一样是 `RedisException`。计时器是 Lettuce 的时间轮，异步超时最多晚一个刻度（默认 100 毫秒）触发。
+- 每条 Redis 命令受 `cocache.redis.command-timeout`（默认 2 秒）约束，与同步路径完全一样：超时的命令就是一次失败的 Redis 调用。带数据源的读取[降级](./concepts.md#failures)，没有数据源的读取得到 [`Lookup.Unknown`](./caches.md#unknown)（`get` 抛出 `CacheReadException`），写入以 `CacheWriteException` 失败，其 cause 是 `RedisException`（默认 `invalidate-failure: retry` 下的 `Cache.put` 或 `invalidate` 则改为[重试或补偿](./freshness.md#redis-down)）。两条路径都由 Lettuce 的时间轮计时，超时最多晚一个刻度（默认 100 毫秒）触发。
 - 同步 loader 没有异步超时：阻塞的线程无法被打断。
 
 ## 异常与取消 {#exceptions}
@@ -96,7 +96,7 @@ fun userSpec(repo: ReactiveUserRepository): CacheSpec<String, User> = cacheSpec(
 ## 运维 {#operations}
 
 - **Redis**：没有新的命令、脚本、key 或频道。异步视图执行的 Lua 脚本与同步 API 相同，ACL 规则与线格式都不变。
-- **指标**：与同步 API 相同的计数，另加 `cocache.load.timeouts`。开启追踪时，异步加载产生同样的 `cocache.load` 观测，引擎超时标记为 `outcome=timeout`。自定义的 `LoadObserver` 经同一个 `observe` 看到异步加载：CoCache 在自己的观测线程上调用它，从不在你的线程上，观测覆盖整个加载。
+- **指标**：与同步 API 相同的计数；`cocache.load.timeouts` 还计入超过 `load-timeout` 的异步加载。开启追踪时，异步加载产生同样的 `cocache.load` 观测，引擎超时标记为 `outcome=timeout`。自定义的 `LoadObserver` 经同一个 `observe` 看到异步加载：CoCache 在自己的观测线程上调用它，从不在你的线程上，观测覆盖整个加载。
 - **大值**：Redis 后端在运行时的执行器上读取并解码回复，从不在 Lettuce 的 I/O 线程上，但一个实例的所有命令共用一个连接。很大的值会推迟这个连接上其它回复（队头阻塞），同步 API 同样如此。请保持值较小，或拆分。
 - **性能**：一次异步 L2 命中多一次很小的分配，约为同步命中的 90%。每次都等待结果的闭环调用在负载下比同步 API 略慢，因为每个结果都要切换到运行时的执行器。收益出现在一个线程同时保持多个请求时：32 个在途请求下，一个线程完成的 Redis 读写约为一个阻塞线程的 12 倍。
 

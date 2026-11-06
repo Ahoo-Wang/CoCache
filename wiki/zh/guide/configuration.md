@@ -39,15 +39,15 @@ cocache:
 
 各层作用于经 [`CoCacheFactory`](./caches.md#factory) 创建的每个缓存：`@CoCache` 接口、spec bean，以及使用 starter 的工厂 bean 的库。直接用 `CacheRuntime.create` 创建的缓存是*未分层*的：任何一层都到不了它，启动日志与端点会标注出来。
 
-全局层从不因为某一个缓存而让启动失败。不适用于缓存类型、该层不允许或被[锁定](#locks)的配置项，对这个缓存跳过：启动日志为它记录一行 `WARN`，端点把它列在 [`skippedConfiguration`](#policy-report) 中。
+全局层中不适用于缓存类型、该层不允许或被[锁定](#locks)的配置项，对这个缓存跳过，而不是让启动失败：启动日志为它记录一行 `WARN`，端点把它列在 [`skippedConfiguration`](#policy-report) 中。全局层确实设置了的值，仍须对它作用到的每个缓存有效：`cocache.defaults.store.tombstone-ttl: forever` 让每个没有自己设置该值的 `VersionedStore` 失败，因为它的墓碑需要有限的寿命。
 
 ### 声明写出了哪些字段 {#declared-fields}
 
 `cocache.defaults` 只填充声明没有写出的字段，所以“写出”的含义很重要：
 
-- **注解**：每个不是 `CoCache.UNSET` 的 `@CoCache` 属性。设置了 `maximumSize` 的 `@CaffeineCache` 写出 `local-maximum-size`。
+- **注解**：每个不是 `CoCache.UNSET` 的 `@CoCache` 属性，以及 `unknownRead = ABSENT`（默认的 `THROW` 不算）。设置了 `maximumSize` 的 `@CaffeineCache` 写出 `local-maximum-size`。
 - **spec**：`policy { … }`（Java：`updatePolicy(…)`）中赋值的每个字段，以及赋值了的 `unknownRead`。写出哨兵值也算：`ttl = forever()` 是写出的，`defaults.cache.ttl` 因此不作用于它。给嵌套的策略赋值（`lease = LeasePolicy(…)`、`load = LoadPolicy(…)`、`local = LocalPolicy(…)`）只写出值有变化的字段：`lease = LeasePolicy(ttl = Duration.ofSeconds(30))` 写出 `lease-ttl`，`lease-wait` 仍交给 `cocache.defaults`。因此嵌套的策略写不出与当前值相同的值，如默认值之上的 `LoadPolicy(maxConcurrent = unlimited())`：不限回源并发要写作 `maxConcurrent = unlimited()`（Java：`maxConcurrent(null)`）。
-- **整体策略**：`policy = somePolicy`（Java：`policy(CachePolicy)`）写出全部字段。`cocache.defaults` 于是对这个缓存不生效，每个被跳过的配置项都带着原因 `the declaration sets the whole policy` 列出。
+- **整体策略**：`policy = somePolicy`（Java：`policy(CachePolicy)`）写出全部字段。`cocache.defaults` 于是不设置这个缓存的任何策略字段（两个[事务模式](./spring-cache.md#transactional-loads)仍然生效），每个被跳过的配置项都带着原因 `the declaration sets the whole policy, so defaults don't apply` 列出。
 
 除非有意固定每个字段，请用 `policy { … }` 修改类型默认值。
 
@@ -116,7 +116,7 @@ cocache:
 | `read-failure` | `degrade` \| `throw` | `degrade` | — | 有数据源（声明的 loader 或调用级 loader）的读取在 Redis 失败时：从数据源加载，或回答 [`Lookup.Unknown`](./caches.md#unknown)，于是 `get` 抛出 `CacheReadException` |
 | `fill-in-transaction` | `registered-keys` \| `private` \| `allow` | `registered-keys` | — | 需要 `spring-tx`。读写事务内哪些回源是私有的（不申请 lease、不写 Redis 与 L2、不共享）：本事务已登记失效的 key、全部回源，或都不是。见 [Spring Cache](./spring-cache.md#transactional-loads)。 |
 | `invalidate-fills-on-rollback` | boolean | `true` | — | 需要 `spring-tx`。读写事务内同步读取回源、写入 Redis 或 L2 的 key，在事务回滚、提交结果未知或回滚到 savepoint 时失效。它为 `false` 且 `fill-in-transaction: allow` 时，这个缓存的回源不感知事务。 |
-| `unknown-read` | `throw` \| `absent` | `throw` | — | 只能写在 `cocache.caches.[name]` 中。没有数据源的读取在 Redis 失败时：`throw` 让 `get` 抛出 `CacheReadException`；`absent` 读作不存在，且什么也不缓存。见[未知的读取](./caches.md#unknown)。 |
+| `unknown-read` | `throw` \| `absent` | `throw` | `@CoCache.unknownRead` | 只能写在 `cocache.caches.[name]` 中。没有数据源的读取在 Redis 失败时：`throw` 让 `get` 抛出 `CacheReadException`；`absent` 读作不存在，且什么也不缓存。见[未知的读取](./caches.md#unknown)。 |
 | `key-prefix` | string | `cocache.key-prefix` | `@CoCache.keyPrefix` | 只能写在 `cocache.caches.[name]` 中。这个缓存的存储 key 前缀（见[下文](#key-prefix)）。 |
 | `unlock` | 配置键的列表 | — | — | 只能写在 `cocache.caches.[name]` 中。这个条目有意覆盖的、被库[锁定](#locks)的字段。 |
 
@@ -150,10 +150,10 @@ cocache.redis.command-timeout: "1500" needs a unit, e.g. 1500ms, 5m, PT2M.
 | 哨兵值 | 配置项 | 含义 |
 |--------|--------|------|
 | `forever` | `ttl`、`tombstone-ttl` | 永不过期。取最小值时任何有限寿命都优先于它。 |
-| `off`（或 `0s`） | `refresh-window` | 不提前刷新 |
+| `off`（或 `0s`） | `refresh-window` | 不提前刷新。在 YAML 中要加引号（`"off"`）：YAML 把不带引号的 `off` 读作 `false`，让启动失败。 |
 | `unlimited` | `load-max-concurrent` | 不限制。`0` 会失败。 |
 
-- 除 `refresh-window: 0s` 之外，只有 `ttl-jitter`、`lease-wait` 与 `load-acquire-timeout` 可以为 `0s`；其它时长都必须为正。任何时长都不能为负，也不能超过 100 年。
+- 除 `refresh-window: 0s` 之外，只有 `ttl-jitter`、`lease-wait` 与 `load-acquire-timeout` 可以为 `0s`；其它时长都必须为正。任何时长都不能为负，也不能超过 100 年。100 年的上限在创建缓存时检查，所以只让这个值作用到的缓存失败。
 - `load-max-concurrent` 与 `local-maximum-size` 必须是正整数。
 - 值在配置绑定时解析，所以写错的值即使没有缓存用到它也会让启动失败。
 - **注解仍按秒**：`@CoCache(ttl = 600)` 是 10 分钟。注解属性是由编译器检查的数字，`UNSET` 与 `FOREVER` 是它们的哨兵值。
@@ -183,7 +183,7 @@ cocache:
 
 ```yaml
 cocache:
-  key-prefix: ${spring.application.name}:
+  key-prefix: "${spring.application.name}:"   # 加引号：不带引号的 YAML 值不能以 ":" 结尾
   caches:
     "[SharedIndexCache]":
       key-prefix: "shared:"
@@ -340,7 +340,7 @@ classpath 中有 `spring-boot-starter-actuator` 时：
 | `LOCKED` | 被库锁定（`locked by …`），或被它的约束改变（`constrained by …`） |
 | `UNLOCKED` | 由 `cocache.caches.[name]` 越过锁定设置，已列在 `unlock` 中 |
 
-哨兵值写作 `forever`、`off` 与 `unlimited`，模式为小写，时长用 ISO-8601（`PT10M`）。类路径上有 `spring-tx` 时，`Cache` 与 `VersionedCache` 在策略字段之后另列 `invalidate-fills-on-rollback` 与 `fill-in-transaction`：它们不是策略字段，没有声明层，但全局层与按缓存的层照同样的规则合并。未分层的缓存的 `policy` 为空，两个事务模式取类型默认值。
+哨兵值写作 `forever`、`off` 与 `unlimited`，模式为小写，时长用 ISO-8601（`PT10M`）。没有设置的 `read-timeout` 显示为 `command-timeout`。类路径上有 `spring-tx`、且应用没有声明自己的 `FillObserver` bean 时，`Cache` 与 `VersionedCache` 在策略字段之后另列 `invalidate-fills-on-rollback` 与 `fill-in-transaction`：它们不是策略字段，没有声明层，但全局层与按缓存的层照同样的规则合并。应用自己的 `FillObserver` bean 取代 starter 的那个，这时两个配置项都不起作用。未分层的缓存的 `policy` 为空，两个事务模式取类型默认值。
 
 ## 启动校验 {#validation}
 
@@ -365,7 +365,7 @@ CoCache 不会带着无法兑现的配置运行，而是让启动失败。
 - 全局层（`cocache.defaults` 或 `cocache.overrides`）设置了相关字段（`refresh-window`、`local-max-age`、`ttl`、`ttl-jitter`）之一、而 `cocache.caches.[name]` 一个也没有设置时，这个缓存的窗口被**关闭**。启动日志告警，端点把 `refresh-window` 报告为 `CLAMPED`。运维处处调短 `local-max-age` 不会让应用起不来。
 - 其余情形启动失败：冲突只由声明引起，或 `cocache.caches.[name]` 设置了相关字段之一。例如 `cocache.defaults.cache.ttl: 10m` 加上 `cocache.caches.[UserCache].refresh-window: 20m` 会失败：这个窗口是按缓存的条目要求的。
 
-`refresh-window: off` 会关掉声明中开启的窗口，所以配置项也可以为单个缓存关闭提前刷新。
+`refresh-window: "off"` 会关掉声明中开启的窗口，所以配置项也可以为单个缓存关闭提前刷新。
 
 声明层面的校验见[声明缓存](./caches.md#validation)。
 
@@ -382,15 +382,22 @@ CoCache 不会带着无法兑现的配置运行，而是让启动失败。
 | 重试策略、节点 id | 自己声明的 `CacheRuntime` bean |
 | Redis 客户端 | 自己声明的 `CoherenceBackend` bean，如 `RedisBackend.of(client, options)` |
 
-自己声明 `CacheRuntime` 或 `CoherenceBackend` bean 时，自动配置的那个会退让：
+自己声明 `CacheRuntime` 或 `CoherenceBackend` bean 时，自动配置的那个会退让。自己的运行时得不到 starter 为它自己的运行时接入的任何东西：`cocache.executor`、`cocache.refresh-executor`、`cocache.metrics.local-hits`、由 `cocache.redis.command-timeout` 推出的关闭超时、`CacheClock` bean、[链路追踪](../operations/observability.md#tracing)背后的 `LoadObserver`，以及有 `spring-tx` 时[事务模式](./spring-cache.md#transactional-loads)背后的 `FillObserver`。用到哪些就自己传入：
 
 ```kotlin
 @Bean(destroyMethod = "close")
-fun cocacheRuntime(backend: CoherenceBackend): CacheRuntime =
-    CacheRuntime.builder()
+fun cocacheRuntime(
+    backend: CoherenceBackend,
+    loadObservers: ObjectProvider<LoadObserver>,
+    fillObservers: ObjectProvider<FillObserver>,
+): CacheRuntime {
+    val builder = CacheRuntime.builder()
         .backend(backend)
         .retryPolicy(RetryPolicy(maxAttempts = 16, capacity = 50_000))
-        .build()
+    loadObservers.ifUnique?.let { builder.loadObserver(it) } // 链路追踪
+    fillObservers.ifUnique?.let { builder.fillObserver(it) } // 事务模式（spring-tx）
+    return builder.build()
+}
 ```
 
 | `RetryPolicy` 字段 | 默认值 |

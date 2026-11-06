@@ -75,7 +75,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.invalidation.retries` | counter | 失败失效的重试次数 |
 | `cocache.invalidations.dropped` | counter | 重试耗尽、重试队列已满或关闭时被放弃的失效。L1 中仍是旧值 |
 | `cocache.invalidations.received` | counter | 来自其它实例或外部写入方的失效消息（按消息计，一条消息可能包含多个 key） |
-| `cocache.resets` | counter | 因为消息可能已丢失而清空整个 L2 的次数：每次得到确认的（重新）订阅（包括启动时的第一次）与每次心跳失败 |
+| `cocache.resets` | counter | 因为消息可能已丢失而清空整个 L2 的次数：每次得到确认的（重新）订阅（包括启动时的第一次，以及缓存自己订阅本实例已订阅的频道）、每次心跳失败、其频道上每个读不懂的帧，以及 `sharded` 模式下每次因 slot 迁移而失去的订阅（并且在重新得到确认之前的每次心跳） |
 | `cocache.ttl.clamped` | counter | 长于 `cocache.overrides.cache.ttl`、改按这个覆盖值写入的按调用寿命（`ttlOf` 的结果，`put(key, value, ttl)` 与 `putAll(entries, ttl)` 的 `ttl`）。每个缓存第一次钳制时记录告警。见[各层能设置什么](../guide/configuration.md#field-layers) |
 | `cocache.local.size` | gauge | 本实例 L2 中的条目数（估计值） |
 
@@ -90,7 +90,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `increase(cocache_fill_unversioned_absent_total[10m]) > 0` | 警告 | 带版本的数据源对已删除的行返回普通 `null`，这些 key 的每次未命中都重新加载 | [带版本的数据源](../guide/versioned-cache.md#versioned-loaders) |
 | `rate(cocache_load_rejections_total[5m]) > 0` | 警告 | 调用方收到 `SourceLoadRejectedException` | [回源被拒绝](./troubleshooting.md#load-rejections) |
 | 非发布期间 `rate(cocache_resets_total[5m])` 大于 0 | 警告 | 订阅连接不稳定 | [命中率骤降](./troubleshooting.md#resets) |
-| `cocache_lease_wait_timeouts_total` / `cocache_lease_waits_total` 超过 10% | 警告 | loader 慢于 `lease-wait`，跨实例的并发未命中各自回源 | [等待 lease 超时](./troubleshooting.md#lease-wait-timeouts) |
+| `rate(cocache_lease_wait_timeouts_total[5m]) / rate(cocache_lease_waits_total[5m])` 超过 10% | 警告 | loader 慢于 `lease-wait`，跨实例的并发未命中各自回源 | [等待 lease 超时](./troubleshooting.md#lease-wait-timeouts) |
 | 非发布期间 `increase(cocache_unknown_formats_total[10m]) > 0` | 警告 | 有实例在写更新的格式 | [未知格式](./troubleshooting.md#unknown-format) |
 | `rate(cocache_reclaims_total[5m]) > 0` 持续 | 警告 | 有东西在写本实例无法解码的值 | [损坏的载荷](./troubleshooting.md#corrupt-payloads) |
 | `rate(cocache_degraded_fills_total[5m])` 上升 | 提示 | 绕过 L1 的加载增多，数据源负载上升 | [Redis 不可用](./troubleshooting.md#redis-down) |
@@ -114,7 +114,7 @@ classpath 上有 `micrometer-observation`、容器中有 `ObservationRegistry` b
 - 从不记录 key：高基数，且可能是个人信息。
 - 阻塞 API 上，loader 在调用方线程上、在 Observation 的作用域内执行，因此 loader 产生的 span（JDBC、HTTP）是 `cocache.load` 的子 span，而 `cocache.load` 又是请求 span 的子 span。提前刷新在刷新执行器上执行，只有该执行器传播上下文时它的 span 才有父 span。
 - 异步与挂起的加载在自己的虚拟线程上观测，每次被观测的加载一个（`cocache-observe-N`），从不在调用方线程上，也不在运行时的执行器上。这个线程在整个加载期间等待，观测因此持续到 loader 的 future 完成。调用 `observe` 时已装上挂起调用方协程上下文中的元素（`ThreadContextElement`，如 MDC、追踪上下文），加载的观测因此接在调用方的观测之下；异步视图（`CompletableFuture`）的调用方没有这类元素。加载从这个线程上、在 Observation 的作用域内开始，所以 `loadAsync` 的同步部分看得到当前观测，在那里捕获上下文的响应式客户端（经 Micrometer context propagation）会产生子 span。
-- 启用 Spring Boot 指标时，每个 Observation 还会产生 `cocache.load` 计时器与 `cocache.load.active` 长任务计时器，标签为 `cache`、`operation`、`outcome`（计时器上另有 Micrometer 自带的 `error` 标签）。它们与 [`cocache.loads`](#metrics-loads) 函数计时器重叠，后者仍是开销最低、始终开启的那一个。
+- 启用 Spring Boot 指标时，每个 Observation 还会产生 `cocache.load` 计时器，标签为 `cache`、`operation`、`outcome` 与 Micrometer 自带的 `error`；以及 `cocache.load.active` 长任务计时器，标签只有 `cache` 与 `operation`（加载进行期间结果尚未可知）。它们与 [`cocache.loads`](#metrics-loads) 函数计时器重叠，后者仍是开销最低、始终开启的那一个。
 
 用 `cocache.observation.enabled: false` 或 Spring Boot 的 `management.observations.enable.cocache: false` 关闭。自己声明的 `LoadObserver` bean 会取代 Micrometer 观测器；不用 Spring 时传给 `CacheRuntime.builder().loadObserver(…)`。`LoadObserver` 只有一个方法 `observe`：实现必须在调用 `observe` 的线程上同步执行 block 恰好一次，原样返回结果、原样抛出异常。异步与挂起的加载经同一个方法观测，CoCache 在上面说的观测线程上调用它。
 
@@ -216,13 +216,13 @@ management:
   "localSize": 8123,
   "loads": 5120,
   "loadNanos": 912000000,
-  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0, "typeMismatches": 0, "readsUnknown": 0, "unversionedAbsentRefusals": 0, "ttlClamped": 0 }
+  "metrics": { "remoteHits": 40211, "misses": 45342, "filtered": 0, "loadFailures": 2, "loadRejected": 0, "loadTimeouts": 0, "leaseWaits": 31, "leaseWaitTimeouts": 0, "fillRejected": 1, "degradedFills": 1, "staleFillsDiscarded": 3, "reclaims": 0, "unknownFormats": 0, "refreshes": 0, "refreshRejected": 0, "refreshSkipped": 0, "remoteFailures": 0, "invalidationsReceived": 977, "writeFailures": 0, "invalidationRetries": 0, "invalidationsDropped": 0, "resets": 1, "conditionalUnchanged": 0, "conditionalConflicts": 0, "staleVersions": 0, "typeMismatches": 0, "readsUnknown": 0, "unversionedAbsentRefusals": 0, "fillsGated": 0, "ttlClamped": 0 }
 }
 ```
 
 `type` 是缓存的 API 类型（`Cache`、`VersionedCache`、`Store`、`VersionedStore` 或 `SetStore`）。`keyPrefix` 与 `namespace` 是缓存的 keyspace（`CacheAdmin.keyspace`），已应用 [`cocache.key-prefix`](../guide/configuration.md#key-prefix) 与 `cocache.caches.[name].key-prefix`：它的 Redis key 是 `{keyPrefix}{namespace}:{key}`，`{key}` 是[编码后的 key](#encoded-key)。拼存储 key 与 [ACL](./index.md#acl) 的 key 模式时用它们，不必为每个缓存另外记录前缀。`layered: false` 表示缓存直接经 `CacheRuntime.create` 创建，配置对它不生效，`ignoredConfiguration` 列出指向它的 `cocache.caches.[name]` 条目（[CoCacheFactory](../guide/caches.md#factory)）。
 
-`policy` 按[策略配置项](../guide/configuration.md#policy-properties)的顺序列出适用于该缓存的每个字段的生效值与来源层（`source`，见[来源](../guide/configuration.md#policy-report)）。`detail` 出现时给出补充：被 `cocache.overrides` 收紧之前的值、定制器的类、约束改变了它的库，或校验连锁关闭提前刷新窗口的原因。`skippedConfiguration` 列出对这个缓存跳过的全局层条目，含 `layer` 与 `reason`：不适用于它的类型、该层不允许，或被库锁定。未分层的缓存两个列表都为空。`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，`staleVersions` 是 `cocache.versioned.stale`，`typeMismatches` 是 `cocache.type.mismatch`，`readsUnknown` 是 `cocache.reads.unknown`，`unversionedAbsentRefusals` 是 `cocache.fill.unversioned.absent`，`fillsGated` 是 `cocache.fills.gated`，`ttlClamped` 是 `cocache.ttl.clamped`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
+`policy` 按[策略配置项](../guide/configuration.md#policy-properties)的顺序列出适用于该缓存的每个字段的生效值与来源层（`source`，见[来源](../guide/configuration.md#policy-report)）。`detail` 出现时给出补充：被 `cocache.overrides` 收紧之前的值、定制器的类、约束改变了它的库，或校验连锁关闭提前刷新窗口的原因。classpath 上有 `spring-tx`（且应用没有声明 `FillObserver` bean）时，`policy` 末尾是 `invalidate-fills-on-rollback` 与 `fill-in-transaction`。`skippedConfiguration` 列出对这个缓存跳过的全局层条目，含 `layer` 与 `reason`：不适用于它的类型、该层不允许，或被库锁定。未分层的缓存两个列表都为空。`metrics` 的字段与指标一一对应：`localHits` 是 `cocache.hits{level=l2}`（只在开启 L2 命中计数时出现），`remoteHits` 是 `cocache.hits{level=l1}`，`loadRejected` 是 `cocache.load.rejections`，`fillRejected` 是 `cocache.fill.rejections`，`staleFillsDiscarded` 是 `cocache.stale.discards`，`refreshRejected` 是 `cocache.refresh.rejections`，`loadTimeouts` 是 `cocache.load.timeouts`，`staleVersions` 是 `cocache.versioned.stale`，`typeMismatches` 是 `cocache.type.mismatch`，`readsUnknown` 是 `cocache.reads.unknown`，`unversionedAbsentRefusals` 是 `cocache.fill.unversioned.absent`，`fillsGated` 是 `cocache.fills.gated`，`ttlClamped` 是 `cocache.ttl.clamped`，其余与指标名对应。`loads` 与 `loadNanos` 就是 timer `cocache.loads`。
 
 ### 编码后的 key {#encoded-key}
 
@@ -324,14 +324,17 @@ logger 都在 `me.ahoo.cocache` 下。值得告警或放进看板的日志：
 | `WARN` | `Invalidation channel[…] - subscribe acknowledgement not received in …` | Redis 没有在 `command-timeout` 内确认订阅 |
 | `WARN` | `Unreadable invalidation frame on channel[…] - reset subscribers.` | CoCache 的频道上出现了本版本读不懂的帧：有人在那里发布了非 CoCache 消息，或更新的 CoCache 发出了本版本不认识的帧类型。该频道上的每个缓存清空 L2，代价是重新加载。见[外部失效](./troubleshooting.md#external-invalidation) |
 | `WARN` | `Cache[…] - key[…] - remote … failed, degrading.` | Redis 读取、填充、释放或回收失败，本次读取改为回源 |
+| `WARN` | `Cache[…] - key[…] - remote … failed: the read has no answer (Unknown).` | Redis 读取失败，而这次读取没有可以退回的数据源，或缓存配置了 `read-failure: throw`。`get` 抛出 `CacheReadException`（`unknownRead = ABSENT` 时返回 `null`）。计入 `cocache.reads.unknown` |
+| `WARN` | `SetStore[…] - key[…] - remote read failed: the read has no answer (Unknown).` | `SetStore` 上的同一情况 |
 | `WARN` | `Cache[…] - key[…] - corrupted payload, reclaim and reload.` | 一个 L1 值无法解码 |
 | `WARN` | `Cache[…] - key[…] - refresh failed.` / `refresh rejected.` | 提前刷新没有执行或失败，值正常到期 |
 | `WARN` | `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` | 启动探测降级，见[通道模式](./index.md#channel-mode) |
 | `WARN` | `@Cacheable on … uses CoCache cache … without sync = true …` | 某个 Spring Cache 方法不受 lease 保护，见 [Spring Cache](../guide/spring-cache.md#use-sync-true) |
 | `WARN` | `CoCache uses the in-memory backend …` | 部署环境中出现 `cocache.backend=memory` 属于配置错误 |
+| `WARN` | `Cache[…] - keyPrefix is empty: the keys and the channel of namespace[…] share no prefix, …` | 缓存的 key 前缀为空，ACL 与基于前缀的操作无法按前缀划定范围，必须逐个指明 namespace（见 [key 前缀](../guide/configuration.md#key-prefix)） |
 | `INFO` | `Cache[…] - policy: ttl=PT10M (caches), local-max-age=PT2M (overrides, tightened from PT5M), ….` | 每个已分层的缓存创建时一行：值不是来自类型默认值的字段及其来源（见[生效值与来源](../guide/configuration.md#policy-report)） |
-| `WARN` | `Cache[…] - cocache.defaults.store cocache.defaults.store.ttl skipped: not allowed in cocache.defaults.` | 对这个缓存跳过的全局层条目：不适用于它的类型、该层不允许，或被库锁定。同样列在端点的 `skippedConfiguration` 中 |
-| `WARN` | `Cache[…] - refresh-window=off (clamped, turned off: …).` / `Cache[…] - … (unlocked, unlocked, was locked by …).` | 全局层引起冲突之后，校验连锁关闭了提前刷新窗口；或 `cocache.caches.[name].unlock` 覆盖了库的锁定 |
+| `WARN` | `Cache[…] - cocache.defaults.store.ttl skipped: not allowed in cocache.defaults.` | 对这个缓存跳过的全局层条目：不适用于它的类型、该层不允许，或被库锁定。同样列在端点的 `skippedConfiguration` 中 |
+| `WARN` | `Cache[…] - refresh-window=off (clamped, turned off: …).` / `Cache[…] - … (unlocked, was locked by …).` | 全局层引起冲突之后，校验连锁关闭了提前刷新窗口；或 `cocache.caches.[name].unlock` 覆盖了库的锁定 |
 | `WARN` | `Cache[…] - per-call ttl[…] exceeds the ceiling[…] from cocache.overrides and was clamped …` | 第一次被 `cocache.overrides.cache.ttl` 钳制的按调用寿命；之后的计入 `cocache.ttl.clamped` |
 | `WARN` | `Cache[…] - [cocache.caches.…] don't apply: the cache was created directly through CacheRuntime.create, not CoCacheFactory, …` | 按缓存的条目指向未分层的缓存，其中的设置都不生效（见 [CoCacheFactory](../guide/caches.md#factory)） |
 | `WARN` | `cocache.caches configures undeclared caches […]; declared caches: […].` | 按缓存的条目对应不上任何缓存，且 `cocache.caches-validation: warn`（默认的 `fail` 让启动失败） |

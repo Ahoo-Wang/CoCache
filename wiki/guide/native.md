@@ -32,11 +32,11 @@ plugins {
 
 Then run `./gradlew nativeCompile` (Maven: `mvn -Pnative native:compile`). Nothing in CoCache needs extra configuration.
 
-[`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/cocache-example) is built this way in CI ([`native.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/native.yml)). The job starts the executable against Redis and calls an interface cache, a spec cache, a JoinCache with `joinKeyExpression`, `@Cacheable(sync = true)`, and the actuator endpoint.
+[`cocache-example`](https://github.com/Ahoo-Wang/CoCache/tree/main/example) is built this way in CI ([`native.yml`](https://github.com/Ahoo-Wang/CoCache/blob/main/.github/workflows/native.yml)). The job starts the executable against Redis and calls an interface cache, a spec cache, a JoinCache with `joinKeyExpression`, `@Cacheable(sync = true)`, and the actuator endpoint.
 
 ## What AOT fixes at build time {#build-time}
 
-AOT runs the application's bean registration at build time and turns the result into generated code. The registrars behind `@EnableCoCache` and the spec-bean registrar therefore run once, during the build. At startup the generated code registers the same cache beans, and the registrars don't run.
+AOT runs the application's bean registration at build time and turns the result into generated code. The registrars behind `@EnableCoCache` and the spec-bean registrar therefore register the caches once, during the build. At startup the generated code registers the same cache beans: the registrars behind `@EnableCoCache` don't run, and the spec-bean registrar finds the spec caches already registered and leaves them alone.
 
 Fixed when you build:
 
@@ -77,15 +77,17 @@ The starter can't see inside code you write. Register hints yourself for:
   @RegisterReflectionForBinding(Product::class)
   class ProductCacheConfiguration {
       @Bean
-      fun productSpec(mapper: ObjectMapper): CacheSpec<String, Product> = cacheSpec("product") {
-          codec = jacksonCodec<Product>(mapper)
-      }
+      fun productSpec(mapper: ObjectMapper, repo: ProductRepository): CacheSpec<String, Product> =
+          cacheSpec("product") {
+              codec = jacksonCodec<Product>(mapper)
+              loader = CacheLoader { id -> repo.findById(id) }
+          }
   }
   ```
 
 - **Polymorphic values.** The binding hint covers the declared value type and the types reachable from its properties. If the value type is abstract or sealed and Jackson picks the subtype at runtime, list the subtypes in `@RegisterReflectionForBinding` too.
 - **Custom codecs.** A `Codec` that uses reflection (another serializer, for example) needs that library's hints for your value types.
-- **SpEL that leaves the root object.** The hints cover the public members of the root object only. A template such as `#{owner.address.city}` also reads `Address`, and `T(…)` calls static methods on another class: register those types with `@RegisterReflection(classes = [Address::class], memberCategories = [MemberCategory.INVOKE_PUBLIC_METHODS])` or a `RuntimeHintsRegistrar`. On a hot path, a key type with a suitable `toString()` avoids SpEL entirely ([Keys](./caches.md#keys)).
+- **SpEL that leaves the root object.** The hints cover the public members of the root object only. A template such as `#{owner.address.city}` also reads `Address`, and `T(…)` calls static methods on another class: register those types with `@RegisterReflection(classes = [Address::class], memberCategories = [MemberCategory.INVOKE_PUBLIC_METHODS])` or a `RuntimeHintsRegistrar`. In a native image the SpEL compiler is off, so `keyExpression` and `joinKeyExpression` templates are always interpreted. On a hot path, a key type with a suitable `toString()` avoids SpEL entirely ([Keys](./caches.md#keys)).
 - **Caches created without the starter.** `CacheRuntime.create` and `CoCacheFactory.create` called from your own code get no generated hints: register the proxy interface and the key type's `toString()` yourself.
 
 Loaders, `TtlFunction`s, `KeyEncoder`s, and `JoinKeyExtractor` beans are plain function calls and need nothing.

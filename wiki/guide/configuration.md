@@ -39,15 +39,15 @@ Defaults sit below the declaration because the declaration knows the data: a lib
 
 The layers reach every cache created through [`CoCacheFactory`](./caches.md#factory): `@CoCache` interfaces, spec beans, and libraries that use the starter's factory bean. A cache created directly with `CacheRuntime.create` is *unlayered*: no layer reaches it, and the start log and endpoint say so.
 
-A global layer never fails startup over one cache. A key that doesn't apply to a cache's type, isn't allowed in that layer, or is [locked](#locks) is skipped for that cache: the start log has a `WARN` line for it and the endpoint lists it under [`skippedConfiguration`](#policy-report).
+A key in a global layer that doesn't apply to a cache's type, isn't allowed in that layer, or is [locked](#locks) is skipped for that cache instead of failing startup: the start log has a `WARN` line for it and the endpoint lists it under [`skippedConfiguration`](#policy-report). A value a global layer does set must still be valid for each cache it reaches: `cocache.defaults.store.tombstone-ttl: forever` fails every `VersionedStore` that doesn't set its own, because its tombstones need a finite lifetime.
 
 ### Which fields a declaration writes {#declared-fields}
 
 `cocache.defaults` fills only the fields the declaration leaves unwritten, so it matters what counts as written:
 
-- **Annotation**: every `@CoCache` attribute that isn't `CoCache.UNSET`. An `@CaffeineCache` that sets `maximumSize` writes `local-maximum-size`.
+- **Annotation**: every `@CoCache` attribute that isn't `CoCache.UNSET`, and `unknownRead = ABSENT` (the default `THROW` doesn't count). An `@CaffeineCache` that sets `maximumSize` writes `local-maximum-size`.
 - **Spec**: every field assigned in `policy { … }` (Java: `updatePolicy(…)`), and `unknownRead` when assigned. Writing a sentinel counts: `ttl = forever()` is written, so `defaults.cache.ttl` doesn't apply. Assigning a nested policy (`lease = LeasePolicy(…)`, `load = LoadPolicy(…)`, `local = LocalPolicy(…)`) writes only the fields whose value it changes: `lease = LeasePolicy(ttl = Duration.ofSeconds(30))` writes `lease-ttl`, and `lease-wait` stays open to `cocache.defaults`. A nested policy therefore can't write a value equal to the current one, such as `LoadPolicy(maxConcurrent = unlimited())` over the default: declare an unlimited load concurrency with `maxConcurrent = unlimited()` (Java: `maxConcurrent(null)`).
-- **A whole policy**: `policy = somePolicy` (Java: `policy(CachePolicy)`) writes every field. `cocache.defaults` then has no effect on that cache; each skipped key is listed with the reason `the declaration sets the whole policy`.
+- **A whole policy**: `policy = somePolicy` (Java: `policy(CachePolicy)`) writes every field. `cocache.defaults` then sets none of its policy fields (the two [transaction modes](./spring-cache.md#transactional-loads) still apply); each skipped key is listed with the reason `the declaration sets the whole policy, so defaults don't apply`.
 
 Edit the type default with `policy { … }` unless you mean to fix every field.
 
@@ -116,7 +116,7 @@ These keys work under `cocache.defaults.cache.`, `cocache.defaults.store.`, `coc
 | `read-failure` | `degrade` \| `throw` | `degrade` | — | A failed Redis read that has a source (the declared loader or a per-call one): load from the source, or answer [`Lookup.Unknown`](./caches.md#unknown), so `get` throws `CacheReadException` |
 | `fill-in-transaction` | `registered-keys` \| `private` \| `allow` | `registered-keys` | — | Needs `spring-tx`. Which loads inside a read-write transaction stay private (no lease, no write to Redis or L2, not shared): keys already registered for invalidation in the transaction, every load, or none. See [Spring Cache](./spring-cache.md#transactional-loads). |
 | `invalidate-fills-on-rollback` | boolean | `true` | — | Needs `spring-tx`. Keys that a synchronous read loaded inside a read-write transaction and wrote to Redis or L2 are invalidated when the transaction rolls back, its commit outcome is unknown, or it rolls back to a savepoint. With this `false` and `fill-in-transaction: allow`, the cache's loads ignore transactions. |
-| `unknown-read` | `throw` \| `absent` | `throw` | — | `cocache.caches.[name]` only. A failed Redis read without a source: `throw` makes `get` throw `CacheReadException`; `absent` reads as not found and caches nothing. See [unknown reads](./caches.md#unknown). |
+| `unknown-read` | `throw` \| `absent` | `throw` | `@CoCache.unknownRead` | `cocache.caches.[name]` only. A failed Redis read without a source: `throw` makes `get` throw `CacheReadException`; `absent` reads as not found and caches nothing. See [unknown reads](./caches.md#unknown). |
 | `key-prefix` | string | `cocache.key-prefix` | `@CoCache.keyPrefix` | `cocache.caches.[name]` only. This cache's storage-key prefix ([below](#key-prefix)). |
 | `unlock` | list of keys | — | — | `cocache.caches.[name]` only. Fields a library [locked](#locks) that this entry overrides on purpose. |
 
@@ -150,10 +150,10 @@ cocache.redis.command-timeout: "1500" needs a unit, e.g. 1500ms, 5m, PT2M.
 | Sentinel | Keys | Meaning |
 |----------|------|---------|
 | `forever` | `ttl`, `tombstone-ttl` | Never expires. In a minimum, any finite lifetime wins over it. |
-| `off` (or `0s`) | `refresh-window` | No refresh-ahead |
+| `off` (or `0s`) | `refresh-window` | No refresh-ahead. In YAML, quote it (`"off"`): YAML reads a bare `off` as `false`, which fails startup. |
 | `unlimited` | `load-max-concurrent` | No limit. `0` fails. |
 
-- Apart from `refresh-window: 0s`, only `ttl-jitter`, `lease-wait` and `load-acquire-timeout` may be `0s`; every other duration must be positive. None may be negative, and none may exceed 100 years.
+- Apart from `refresh-window: 0s`, only `ttl-jitter`, `lease-wait` and `load-acquire-timeout` may be `0s`; every other duration must be positive. None may be negative, and none may exceed 100 years. The 100-year limit is checked when a cache is created, so it fails only the caches the value reaches.
 - `load-max-concurrent` and `local-maximum-size` must be positive integers.
 - Values are parsed when the properties bind, so a malformed one fails startup even if no cache uses it.
 - **Annotations stay in seconds**: `@CoCache(ttl = 600)` is 10 minutes. The attributes are numbers checked by the compiler, and `UNSET` and `FOREVER` are their sentinels.
@@ -183,7 +183,7 @@ Storage keys are `{keyPrefix}{namespace}:{encodedKey}` (see [Declaring Caches](.
 
 ```yaml
 cocache:
-  key-prefix: ${spring.application.name}:
+  key-prefix: "${spring.application.name}:"   # quoted: an unquoted YAML value can't end with ":"
   caches:
     "[SharedIndexCache]":
       key-prefix: "shared:"
@@ -340,7 +340,7 @@ Every layered cache reports where each of its fields came from:
 | `LOCKED` | Locked by a library (`locked by …`), or changed by its constraint (`constrained by …`) |
 | `UNLOCKED` | Set by `cocache.caches.[name]` over a lock, listed in `unlock` |
 
-Sentinels read `forever`, `off` and `unlimited`, modes are lowercase, and durations use ISO-8601 (`PT10M`). With `spring-tx` on the classpath, a `Cache` or `VersionedCache` also lists `invalidate-fills-on-rollback` and `fill-in-transaction` after its policy fields. They aren't policy fields and have no declaration layer, but the global and per-cache layers merge them the same way. An unlayered cache has an empty `policy` and uses the type defaults of both transaction modes.
+Sentinels read `forever`, `off` and `unlimited`, modes are lowercase, and durations use ISO-8601 (`PT10M`). An unset `read-timeout` reads `command-timeout`. With `spring-tx` on the classpath, and unless the application declares a `FillObserver` bean of its own, a `Cache` or `VersionedCache` also lists `invalidate-fills-on-rollback` and `fill-in-transaction` after its policy fields. They aren't policy fields and have no declaration layer, but the global and per-cache layers merge them the same way. An application `FillObserver` bean replaces the starter's, and then neither key has any effect. An unlayered cache has an empty `policy` and uses the type defaults of both transaction modes.
 
 ## Startup validation {#validation}
 
@@ -365,7 +365,7 @@ The third rule only warns because such a cache may be created after startup, and
 - When a global layer (`cocache.defaults` or `cocache.overrides`) set one of the fields involved (`refresh-window`, `local-max-age`, `ttl`, `ttl-jitter`) and `cocache.caches.[name]` set none of them, the window is turned **off** for that cache. The start log warns, and the endpoint reports `refresh-window` as `CLAMPED`. An operator who shortens `local-max-age` everywhere doesn't stop the application.
 - Otherwise startup fails: when only the declaration caused the conflict, or when `cocache.caches.[name]` set one of the fields involved. For example, `cocache.defaults.cache.ttl: 10m` with `cocache.caches.[UserCache].refresh-window: 20m` fails: the per-cache entry asked for that window.
 
-`refresh-window: off` removes a window the declaration enables, so a property can turn refresh-ahead off for one cache.
+`refresh-window: "off"` removes a window the declaration enables, so a property can turn refresh-ahead off for one cache.
 
 [Declaring Caches](./caches.md#validation) lists the declaration checks.
 
@@ -382,15 +382,22 @@ Some settings exist only in code, because they are functions or objects rather t
 | Retry policy, node id | Your own `CacheRuntime` bean |
 | Redis client | Your own `CoherenceBackend` bean, such as `RedisBackend.of(client, options)` |
 
-Both the `CacheRuntime` and the `CoherenceBackend` beans are replaced when you declare your own:
+Both the `CacheRuntime` and the `CoherenceBackend` beans are replaced when you declare your own. A runtime of your own gets nothing the starter wires into its own: `cocache.executor`, `cocache.refresh-executor`, `cocache.metrics.local-hits`, the close timeout derived from `cocache.redis.command-timeout`, a `CacheClock` bean, the `LoadObserver` behind [tracing](../operations/observability.md#tracing), and, with `spring-tx`, the `FillObserver` behind the [transaction modes](./spring-cache.md#transactional-loads). Pass on what you use:
 
 ```kotlin
 @Bean(destroyMethod = "close")
-fun cocacheRuntime(backend: CoherenceBackend): CacheRuntime =
-    CacheRuntime.builder()
+fun cocacheRuntime(
+    backend: CoherenceBackend,
+    loadObservers: ObjectProvider<LoadObserver>,
+    fillObservers: ObjectProvider<FillObserver>,
+): CacheRuntime {
+    val builder = CacheRuntime.builder()
         .backend(backend)
         .retryPolicy(RetryPolicy(maxAttempts = 16, capacity = 50_000))
-        .build()
+    loadObservers.ifUnique?.let { builder.loadObserver(it) } // tracing
+    fillObservers.ifUnique?.let { builder.fillObserver(it) } // transaction modes (spring-tx)
+    return builder.build()
+}
 ```
 
 | `RetryPolicy` field | Default |

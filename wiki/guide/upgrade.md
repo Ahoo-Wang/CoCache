@@ -42,7 +42,7 @@ There is no rollback tool. To return to 6.x: stop every 8.x instance, delete the
 
 | 6.x | 8.x |
 |-----|-----|
-| `Cache` with a loader | [`Cache`](./cache.md), unchanged |
+| `Cache` with a loader | [`Cache`](./cache.md), without `getIfChanged`, `putIfMatch`, `putIfNewer`, `invalidateIfNewer` and `getVersioned` (use `Store` or `VersionedCache`) |
 | `Cache` without a loader, rebuildable by its callers: Spring Cache, a per-call loader, a caller's `put` | `Cache` with `externallySourced()`; on an interface, `@CoCache(source = CoCache.Source.EXTERNAL)` ([externally sourced](./cache.md#externally-sourced)) |
 | `Cache` without a loader, whose only copy is Redis | [`Store`](./store.md): `invalidate` becomes `delete`; a cache that must read "absent" while Redis is down declares `unknownRead = ABSENT` |
 | `CacheSpec.versioned` with a versioned loader | [`VersionedCache`](./versioned-cache.md), `versionedCacheSpec`: operator deletes become `evict` (keeps the version) or `purge` (drops it) |
@@ -75,7 +75,7 @@ Most of these fail to compile, which shows you where to change the code.
 | `getAll` throws on a failed read | `getAll` completes the other keys first, then throws `CacheReadException` with `unknownKeys` and `partialResult`; `lookupAll` returns a `Lookup` per key |
 | `CachePolicy.DEFAULT`, `StoreSpec.DEFAULT_POLICY` and the other spec constants | `DefaultPolicies.CACHE`, `VERSIONED_CACHE`, `STORE`, `VERSIONED_STORE`, `SET_STORE` |
 | `LoadPolicy.asyncTimeout` | `LoadPolicy.timeout` |
-| `LoadPolicy(maxConcurrent = 0)` for unlimited | `maxConcurrent = null`, or `unlimited()` inside `policy { … }` |
+| `LoadPolicy(maxConcurrent = 0)` for unlimited | `maxConcurrent = unlimited()` inside `policy { … }` (Java: `maxConcurrent(null)`), so `cocache.defaults` can't replace it |
 | `CachePolicy.foreignFormat`, `ForeignFormatMode` | Removed: a read with a source reclaims content it can't read, a read without one fails |
 | `Digest.sha1` | `Digest` is the SHA-256 of the payload and names its algorithm; 6.x digests never match |
 | `SourceLoadCancelledException` in `me.ahoo.cocache.coroutines` | In `me.ahoo.cocache.core`, for every kind of loader |
@@ -107,18 +107,18 @@ Most of these fail to compile, which shows you where to change the code.
 | 6.x | 8.x | Note |
 |-----|-----|------|
 | `cocache.defaults.<field>` (`cocache.defaults.ttl`, …) | `cocache.defaults.cache.<field>` (`Cache`, `VersionedCache`) or `cocache.defaults.store.<field>` (`Store`, `VersionedStore`, `SetStore`) | **Meaning changed**: below the declaration, filling only fields the declaration didn't write. `defaults.store.ttl` isn't allowed |
-| — | `cocache.overrides.cache.*`, `cocache.overrides.store.*` | New: above the declaration, staleness bounds and `read-failure` only, and only tightening |
+| — | `cocache.overrides.cache.*`, `cocache.overrides.store.*` | New: above the declaration, only tightening; staleness bounds, `read-failure` and, under `cache`, `fill-in-transaction` and `invalidate-fills-on-rollback` |
 | `cocache.caches.[name].*` | Unchanged, plus `unknown-read`, `read-timeout`, `tombstone-ttl`, `unlock` | An entry that names no cache, or sets a key the cache's type doesn't have, fails startup; `cocache.caches-validation: warn` only warns |
 | `cocache.defaults.key-prefix` | `cocache.key-prefix` | Outside the layering; configuration still wins over the declaration |
 | `ttl-forever: true` | `ttl: forever` | |
 | A bare number: seconds under `cocache.defaults` and `cocache.caches` (`ttl: 600`), milliseconds under `cocache.redis` (`command-timeout: 2000`) | `ttl: 10m`, `command-timeout: 2s` | Every duration needs a unit; a bare number fails startup ([durations](./configuration.md#durations)). Annotations stay in seconds |
-| `refresh-window: 0` | `refresh-window: off` (or `0s`) | |
+| `refresh-window: 0` | `refresh-window: "off"` (or `0s`) | Quote `off`: YAML reads a bare `off` as `false` |
 | `load-max-concurrent: 0` (unlimited) | `load-max-concurrent: unlimited` | `0` fails startup |
 | `load-async-timeout` | `load-timeout` | Also bounds synchronous followers |
 | `foreign-format` | Removed | |
 | `cocache.redis.set-cache-eviction-check` | `cocache.redis.store-eviction-check` | Covers every authoritative type. `allkeys-*`, and a policy that can't be read, now always fail startup with an authoritative cache; the setting decides only `volatile-*` with a finite `ttl` |
-| — | `cocache.redis.assume-maxmemory-policy` | New: the policy to assume when `INFO memory` can't be read |
-| `cocache.spring-cache.retrieve-executor` | Removed | `retrieve` uses the async view |
+| `cocache.redis.assume-maxmemory-policy` | `cocache.redis.assume-maxmemory-policy` | Unchanged; with an authoritative cache, an unreadable `INFO memory` now fails startup unless it is set |
+| `cocache.spring-cache.retrieve-executor` | Removed | `retrieve` uses the async view. The method body of `retrieve(key, loader)` runs on `cocache.executor` |
 | `cocache.async-executor`, `cocache.blocking-executor` | `cocache.executor` | One executor for every step of the async and suspending views and their blocking loaders; it must tolerate blocking. Unset: one virtual thread per task |
 | — | `invalidate-fills-on-rollback`, `fill-in-transaction` (under `cocache.defaults.cache`, `cocache.overrides.cache` and `cocache.caches.[name]`), `cocache.spring-cache.degrade-on-error` | New Spring settings |
 | — | `management.endpoint.cocache.allow-store-delete`, `management.endpoint.cocache.allow-purge` | New endpoint switches, off by default |
@@ -130,11 +130,11 @@ The [Configuration Reference](./configuration.md) describes every 8.x key, and [
 | | 6.x | 8.x |
 |-|-----|-----|
 | Channels | `&cocache:inv:*`, whatever the key prefix | `&{keyPrefix}inv:*` for each prefix (`&cocache:inv:*` with the default prefix) |
-| Atomic-broadcast probe (`pubsub` mode) | key and channel `cocache:probe:*` | key `cocache:!probe:*` (covered by `~cocache:*`) and channel `&cocache:!probe:*` |
+| Atomic-broadcast probe (`pubsub` mode) | key and channel `cocache:probe:*` | key `cocache:!probe:*` (covered by `~cocache:*` only with the default prefix; otherwise add `~cocache:!probe:*`) and channel `&cocache:!probe:*` |
 | Commands inside scripts | … `HGET`, `HEXISTS` … | Add `+getrange +strlen +hmget`; `HGET` and `HEXISTS` are no longer used |
-| Empty `keyPrefix` | — | Keys and channels share no prefix: list each namespace (`~{namespace}:*`, `&inv:{namespace}`), plus `~!*` |
+| Empty `keyPrefix` | — | Keys and channels share no prefix: list each namespace (`~{namespace}:*`, `&inv:{namespace}`), plus `~!*`, and `~cocache:!probe:* &cocache:!probe:*` for the probe |
 
-Creating a cache now publishes one empty frame to its channel, so a missing channel permission fails at startup, naming the pattern to allow. The complete list is in [Redis ACL](../operations/index.md#acl).
+Creating a cache now publishes one empty frame to its channel, so a missing channel permission fails at startup, naming the pattern to allow. A denied probe doesn't fail startup: the backend falls back to non-atomic broadcast and logs a `WARN`. The complete list is in [Redis ACL](../operations/index.md#acl).
 
 ## Keys and values in Redis {#wire-format}
 

@@ -7,13 +7,13 @@ description: Runbooks for CoCache in production — stale values, collapsed hit 
 
 Each runbook goes from symptom to cause, check, and fix. The tools they rely on are the [actuator endpoint](./observability.md#actuator-endpoint), the [metrics](./observability.md#metrics), and [`redis-cli`](#inspecting-redis).
 
-**First aid for any wrong value:** `DELETE /actuator/cocache/{name}/{key}` invalidates the key on every instance. Then find out why it was wrong.
+**First aid for any wrong value:** for a `Cache` or `VersionedCache`, `DELETE /actuator/cocache/{name}/{key}` [invalidates the key](./observability.md#invalidate-key) on every instance (a `VersionedCache` keeps the version). For a `Store`, `VersionedStore` or `SetStore`, `DELETE` deletes the only copy and needs a switch; use `POST /actuator/cocache/{name}/{key}` instead, which [drops every instance's local copy](./observability.md#broadcast-key) and leaves Redis alone. Then find out why it was wrong.
 
 ## Stale value on one instance {#stale-one-node}
 
 **Symptom.** One instance returns an old value. Others return the new one.
 
-**Cause.** That instance's L2 missed an invalidation message. Delivery is at most once: a message published while the subscription connection was broken, or dropped by an output-buffer limit, is lost. The copy heals on its own after at most `local-max-age` (default 5 minutes), or sooner when the connection is reset.
+**Cause.** That instance's L2 missed an invalidation message. Delivery is at most once: a message published while the subscription connection was broken, or dropped by an output-buffer limit, is lost. The copy heals on its own after at most `local-max-age` (default 5 minutes for a `Cache` or `VersionedCache`, 30 seconds for the authoritative types), or sooner when the connection is reset.
 
 **Check.**
 
@@ -48,7 +48,7 @@ Each runbook goes from symptom to cause, check, and fix. The tools they rely on 
 
 ### A new record is reported as missing {#negative-entry}
 
-A read before the record existed cached a negative entry, and it lasts up to `absent-ttl` (default 1 minute). Inspection shows `ABSENT`. Invalidate the key after creating the record, or lower `absent-ttl`.
+A read before the record existed cached a negative entry, and it lasts up to `absent-ttl` (default 1 minute for a `Cache` or `VersionedCache`, 10 seconds for the authoritative types). Inspection shows `ABSENT`. Invalidate the key after creating the record, or lower `absent-ttl`.
 
 ## Hit rate collapsed: repeated resets {#resets}
 
@@ -64,6 +64,7 @@ A read before the record existed cached a negative entry, and it lasts up to `ab
 - **Network.** Timeouts point to a proxy, load balancer, or NAT that drops idle or long-lived connections, or to an overloaded Redis.
 - **`command-timeout` too low.** The heartbeat waits up to `command-timeout` (default 2 s) for the `PONG`.
 - **Redis Cluster in `pubsub` mode.** CoCache can't force the cluster subscription connection to reconnect (`cannot force reconnect … rely on TCP keepalive`), so a half-open connection lasts until TCP keepalive detects it (about 30 s).
+- **Redis Cluster in `sharded` mode.** A channel whose subscription Redis hasn't confirmed, after a slot migration or a server-side unsubscribe, clears its caches' L2 at every heartbeat until the subscription is confirmed again. Health stays `UP` meanwhile, because `PING` succeeds. Logs: `Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` or `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.`
 
 **Fix.** Allow `PING`, fix the network path, or raise `cocache.redis.command-timeout`. Raising `cocache.redis.heartbeat` makes resets rarer but delays detecting a broken connection. Resets during deploys and Redis failovers are expected.
 
@@ -177,21 +178,25 @@ CoCache fails fast on configuration it can't run safely. The message names the p
 | `Authoritative caches […] have a finite ttl, so maxmemory-policy {…} can evict them before they expire …` | `volatile-*` with `cocache.redis.store-eviction-check: fail` | Use `noeviction`, remove the `ttl`, or accept it with `store-eviction-check: warn` or `off` |
 | `Cache[x] - @CoCache.<attribute> = FOREVER is not supported; FOREVER is only allowed for @CoCache.ttl and @CaffeineCache.expireAfterAccess.` | `FOREVER` on an attribute other than `ttl` or `@CaffeineCache.expireAfterAccess` | Use a duration |
 | `Cache[x] already exists.` / `Namespace[x] with keyPrefix[p] is already used by another cache.` | Two declarations with the same cache name, or with the same prefix and namespace, for example an interface and a spec bean | Rename one, or set a distinct `namespace` or `keyPrefix` |
-| `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | A namespace with `:` or another character outside the set, often a key prefix written into the namespace | Do what the message suggests: put the part up to the last `:` into `keyPrefix` |
+| `Cache[x] - Namespace[a:b] must match [A-Za-z0-9._-]+. A namespace cannot contain ':': move the prefix into keyPrefix, for example …` | A namespace with `:` or another character outside the set, often a key prefix written into the namespace. The message starts with the cache's type (`Cache[x]`, `Store[x]`, …). | Do what the message suggests: put the part up to the last `:` into `keyPrefix` |
 | `Redis denied publishing to the invalidation channel[…] of Keyspace(…): allow the channel pattern [&…inv:*] …` | The Redis ACL doesn't allow the cache's channel. Creating a cache publishes one empty frame to it, so a missing permission fails at startup instead of at every write. | Allow the pattern in the message, see [Redis ACL](./index.md#acl) |
 | `Cannot register cache interface[…]: the bean name[x] is already in use.` / `Cannot register cache bean[x] for spec bean[…]` | The cache's bean name collides with another bean | Rename the cache (`@CoCache(name)`) or the spec bean |
 | `Cache interface[…] must extend Store with concrete type arguments.` (any of the five types) / `Cache spec bean[…] must declare its generic types` | Generics can't be resolved | Use concrete types, and declare the spec factory method's return type with them, such as `CacheSpec<K, V>` or `StoreSpec<K, V>` |
 | `Cache interface[…] declares abstract methods that do not match any Store method: […]` (any of the five types) | An extra abstract method on the interface | Make it a `default` method |
 | `Multiple CacheLoader beans match …` / `Multiple Codec beans match …` | Several candidates for one cache | `@CoCache(loader = "beanName")` / `@CoCache(codec = "beanName")` |
-| `… must extend exactly one of […]` | The interface extends none of the five [cache types](../guide/caches.md#types), or several | Extend exactly one |
+| `Both CacheLoader […] and AsyncCacheLoader […] beans match …` | A `CacheLoader` and an `AsyncCacheLoader` bean both match the cache's key and value types | Name one with `@CoCache(loader = "beanName")` |
+| `… must extend exactly one of Cache, VersionedCache, Store, VersionedStore, SetStore or one of their Async* or Suspending* views.` | The interface extends none of the five [cache types](../guide/caches.md#types) or their async or suspending views, or several | Extend exactly one |
 | `Cache interface[…] has no data source: no CacheLoader or AsyncCacheLoader bean matches …` / `VersionedCache interface[…] has no versioned data source …` | No loader bean of the cache's key and value types | Declare the loader bean, name one with `@CoCache(loader)`, declare `@CoCache(source = EXTERNAL)` when callers supply the values, or extend `Store` / `VersionedStore` when the data can't be rebuilt |
 | `@CoCache(loader = …) is not supported on Store interface[…]` (also `VersionedStore`, `SetStore`) / `@CoCache(source = EXTERNAL) is only supported on Cache interfaces …` | An authoritative type has no source | Remove the attribute, or extend `Cache` / `VersionedCache` if the data can be rebuilt |
+| `@CoCache(unknownRead = ABSENT) is not supported on …` | `unknownRead = ABSENT` on a type it doesn't apply to: it applies only to `Store`, `VersionedStore` and a `Cache` with `source = EXTERNAL` | Remove the attribute |
+| `@CoCache(source = EXTERNAL) cannot name a loader …` | An externally sourced `Cache` that also names a `loader` | Remove `loader` or `source` |
 | `Cannot create cache[x] - no CoherenceBackend is available: …` | No Spring Data Redis connection details and no backend bean | Configure `spring.data.redis.*`, set `cocache.backend: memory` for local runs, or declare a `CoherenceBackend` bean |
 | `Cannot create cache[x] - CoCache is disabled (cocache.enabled=false)` | Caches declared while CoCache is off | Enable it, or remove the declarations |
 | `CoCache does not support Redis master-replica (spring.data.redis.masterreplica.*)` | Static master-replica | Use standalone, Sentinel, or Cluster |
 | `RedisConnectionException`, or `Command timed out after …` while creating `cocacheBackend` | Redis unreachable at startup. The backend connects and probes eagerly. | Fix connectivity. A probe timeout fails startup on purpose rather than silently disabling atomic broadcast. |
 | `NOPERM` while creating a cache | The ACL denies the cache's channel or keys | See [ACL](./index.md#acl) |
 | `@Cacheable without sync = true on CoCache caches: …` | `cocache.spring-cache.require-sync: true` and a non-sync `@Cacheable` | Add `sync = true`, or turn the check off |
+| `Spring Cache operations on CoCache caches that are not a Cache: …` | A Spring Cache annotation names a `Store`, `VersionedStore`, `SetStore` or `VersionedCache`, which the CoCache `CacheManager` doesn't expose. Fails whatever `cocache.spring-cache.require-sync` says. | Use the cache's own API, or declare the cache as a `Cache` |
 | `Join cache[x] - …` | A `@JoinCacheable` names a missing cache, a wrong type, or both extractor options | Follow the message. See [JoinCache](../guide/join-cache.md). |
 
 One check runs at the first call, not at startup: `Key type [...] does not override toString()` means the cache's key type has no meaningful `toString()`, so every key object would map to a different Redis key. Use a data class or record, override `toString()`, or set a `keyExpression` or `KeyEncoder`.
@@ -249,7 +254,7 @@ repeated key count times:
 ```
 
 - Varints are unsigned LEB128: 7 bits per byte, low bits first, high bit set on every byte except the last. Values below 128 are one byte.
-- The keys are full **storage keys**, including prefix and namespace. One frame can carry many keys of the same cache.
+- The keys are full **storage keys**, including prefix and namespace. One frame can carry many keys of the same cache. A key outside the cache's `{keyPrefix}{namespace}:` is ignored without a warning.
 - The publisher id must differ from every CoCache instance's id: use 16 random bytes. An instance ignores frames that carry its own id.
 - A frame CoCache can't read (unknown version, truncated, trailing bytes) clears every L2 copy of the caches on that channel, with a `WARN`. It costs reloads, never a missed invalidation. A frame with no keys does nothing.
 

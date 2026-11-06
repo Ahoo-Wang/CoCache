@@ -97,7 +97,7 @@ sequenceDiagram
 
 | 故障点 | 默认行为 | 可选行为 |
 |--------|----------|----------|
-| 读取 Redis | 带数据源的读取直接从数据源加载，结果只在 L2 中保留 `degradedLocalMaxAge`，不写 Redis。调用方照常工作，压力落到数据库上。没有数据源的读取（`Store`、`SetStore`、外部来源的 `Cache` 上不带 loader 的读取）没有答案：结果是 `Lookup.Unknown`，`get` 抛出 `CacheReadException`，什么也不缓存。 | `read-failure: throw` 让带数据源的读取也得到 `Unknown`。spec 上的 `unknownRead = ABSENT` 让没有数据源的读取改为返回 `null`。 |
+| 读取 Redis | 带数据源的读取直接从数据源加载，结果只在 L2 中保留 `degradedLocalMaxAge`，不写 Redis。调用方照常工作，压力落到数据库上。没有数据源的读取（`Store`、`SetStore`、外部来源的 `Cache` 上不带 loader 的读取）没有答案：结果是 `Lookup.Unknown`，`get` 抛出 `CacheReadException`，什么也不缓存。 | `read-failure: throw` 让带数据源的读取也得到 `Unknown`。spec 上的 `unknownRead = ABSENT` 让没有数据源的读取改为返回 `null`（`SetStore` 上不行）。 |
 | `Cache.invalidate` | 本地效果先生效。Redis 删除交给有界的后台重试队列，调用**不抛出**（它通常在提交之后执行，抛出也于事无补，而删除派生副本在任何时刻都安全）。重试成功之前，本实例上该 key 的未命中跳过 Redis。 | `invalidate-failure: throw` 改为抛出 `CacheWriteException` |
 | `Store.delete` | 抛出 `CacheWriteException`，从不重试：Redis 是唯一副本，延迟的删除会删掉更新的值。 | — |
 | `Cache.put`、`putAll` | 结果未知时（超时），CoCache 与失败的 `invalidate` 一样登记这些 key 的失效，调用不抛出。写入确定没有发生时（发出之前就被拒绝），抛出 `CacheWriteException`。 | `invalidate-failure: throw` 让每次失败都抛出 |

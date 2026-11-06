@@ -16,9 +16,11 @@ description: 在生产环境运行 CoCache：Redis 版本与拓扑、maxmemory-p
 | 1 条命令连接 | 所有缓存操作，每次调用一个 Lua 脚本（`EVALSHA`），多路复用。Redis Cluster 中，Lettuce 会为路由到的每个主节点再建一条连接 |
 | 1 条订阅连接 | 本实例所有缓存命名空间的失效消息。每隔 `heartbeat` PING 一次 |
 | `cocache-redis-heartbeat` 线程 | 心跳与重新订阅 |
-| `cocache-clock` 线程 | 每 100 ms 更新一次缓存的时钟 |
-| `cocache-refresh-N` 线程 | 提前刷新，最多 4 个，只在有缓存使用 `refresh-window` 时工作 |
+| `cocache-clock` 线程 | 每 100 ms 更新一次缓存的时钟。设置了 `CacheClock` bean 时没有这个线程 |
+| `cocache-refresh-N` 线程 | 提前刷新，最多 4 个，只在有缓存使用 `refresh-window` 时工作。设置了 `cocache.refresh-executor` 时没有这些线程 |
 | `cocache-retry-1` 线程 | 在后台重试写入 Redis 失败的失效 |
+| `cocache-worker-N` 虚拟线程 | 异步与挂起视图的默认执行器，每个任务一个。`cocache.executor` 指定了执行器时没有这些线程 |
+| `cocache-observe-N` 虚拟线程 | 每次被观测的异步或挂起加载一个，只在设置了 `LoadObserver` 时出现（[链路追踪](./observability.md#tracing)） |
 
 CoCache 根据 `spring.data.redis.*` 自建 Lettuce 客户端，不共用应用的 Redis 连接工厂，所以它的客户端选项不会改变应用的行为。即使应用从副本读取，CoCache 的连接也只访问主节点。
 
@@ -26,7 +28,7 @@ CoCache 根据 `spring.data.redis.*` 自建 Lettuce 客户端，不共用应用�
 
 | 项 | 要求 |
 |----|------|
-| 版本 | **Redis 7.0 及以上**。脚本用到 `TIME` 与 `SETRANGE`，`sharded` 模式用到 `SPUBLISH`。Valkey 7.2+ 实现了同样的命令。CI 在单机 Valkey 8 上运行 Redis 后端与 starter 测试 |
+| 版本 | **Redis 7.0 及以上**。`sharded` 模式用到 `SPUBLISH`；下面的 [ACL](#acl) 按 Redis 7 编写，Redis 7 按调用方的权限检查脚本用到的命令与 key。Valkey 7.2+ 实现了同样的命令。CI 在单机 Valkey 8 上运行 Redis 后端与 starter 测试 |
 | 客户端 | Lettuce，由 starter 引入。不支持 Jedis；引入 Lettuce 不影响应用自己基于 Jedis 的客户端 |
 | 脚本 | 必须允许 `EVAL` / `EVALSHA`。脚本不带 shebang 标志 |
 | Pub/Sub | `SUBSCRIBE` / `PUBLISH`，`sharded` 模式下为 `SSUBSCRIBE` / `SPUBLISH` |
@@ -95,7 +97,7 @@ TLS 用 Spring Boot 的标准配置项开启。CoCache 对它连接的每个节�
 `sharded` 模式下，或探测降级之后，发布是写脚本之后单独执行的一条命令。因此：
 
 - 进程在写入与发布之间崩溃，会丢失这条消息。
-- 写入成功、随后的发布失败时，调用方看到的是写入失败：`put` 抛出 `CacheWriteException`，尽管 Redis 中已经是新值；`Cache.invalidate` 按 `invalidate-failure` 处理，重试的失效会再次发布；权威类型的删除抛出。重试 `put` 是安全的，并会再次发布。
+- 写入成功、随后的发布失败时，调用方看到的是写入失败：`Store` 或 `VersionedStore` 的 `put`，以及 `invalidate-failure: throw` 时的 `Cache.put`，抛出 `CacheWriteException`，尽管 Redis 中已经是新值；默认的 `retry` 下，发布失败的 `Cache.put` 改为补偿：在后台失效该 key，之后从数据源重新加载。`Cache.invalidate` 按 `invalidate-failure` 处理，重试的失效会再次发布；权威类型的删除抛出。重试 `put` 是安全的，并会再次发布。
 
 两种情况下 L1 都已经正确，错过这条消息的实例的 L2 副本最多保留到 `local-max-age`。写入的顺序见[一致性](../architecture/consistency.md#writer-order)。
 :::
@@ -155,7 +157,7 @@ L2 命中计数 `cocache.hits{level=l2}` 默认关闭，因为它会拖慢最热
 
 多个应用可以共用一个 Redis：
 
-- **给每个应用设置自己的 key 前缀**，例如 `cocache.key-prefix: ${spring.application.name}:`。否则两个应用中同名的缓存会读取并覆盖彼此的值。有意在应用之间共享的缓存，各处必须使用相同的前缀、命名空间、编解码器与通道模式。
+- **给每个应用设置自己的 key 前缀**，例如 `cocache.key-prefix: "${spring.application.name}:"`（YAML 中要加引号，因为不带引号的值不能以 `:` 结尾）。否则两个应用中同名的缓存会读取并覆盖彼此的值。有意在应用之间共享的缓存，各处必须使用相同的前缀、命名空间、编解码器与通道模式。
 - **频道带有前缀**。前缀不同的应用即使命名空间相同，也收不到彼此的消息。但 Redis Pub/Sub 不区分数据库编号：使用不同数据库、前缀与命名空间都相同的应用共用一个频道，对方的消息会无谓地淘汰本方的 L2 副本。请使用不同的前缀。
 
 ## 安全 {#security}
@@ -169,7 +171,7 @@ CoCache 的 Redis 用户需要以下权限：
 | key | 对你的 key 前缀可读写（默认 `~cocache:*`）。`pubsub` 模式下还需要探测 key `cocache:!probe:{a}`，`~cocache:*` 已经包含它 |
 | 频道 | 每个前缀的 `&{keyPrefix}inv:*`（默认 `&cocache:inv:*`）。`pubsub` 模式下还需要 `&cocache:!probe:*`，否则后端退回非原子广播 |
 | 直接调用的命令 | `EVALSHA`、`EVAL`（`NOSCRIPT` 后的回退）、`PING`（心跳）、`PUBLISH`、`SUBSCRIBE`、`UNSUBSCRIBE`，`sharded` 模式下为 `SPUBLISH`、`SSUBSCRIBE`、`SUNSUBSCRIBE`，以及连接命令（`HELLO`、`AUTH`、`CLIENT`、`SELECT`）。使用 `Store`、`VersionedStore` 或 `SetStore` 时还需要 `INFO`，供[启动时的驱逐检查](#maxmemory-policy)使用 |
-| 脚本内的命令 | Redis 7 同样按调用方的 ACL 检查：`GET`、`GETRANGE`、`STRLEN`、`SET`、`DEL`、`PTTL`、`TYPE`、`HGETALL`、`HKEYS`、`HMGET`、`HSET`、`HDEL`、`HLEN`、`PEXPIRE`、`PERSIST`、`SETRANGE`、`TIME` |
+| 脚本内的命令 | Redis 7 同样按调用方的 ACL 检查：`PUBLISH`（`pubsub` 模式）、`GET`、`GETRANGE`、`STRLEN`、`SET`、`DEL`、`PTTL`、`TYPE`、`HGETALL`、`HKEYS`、`HMGET`、`HSET`、`HDEL`、`HLEN`、`PEXPIRE`、`PERSIST`、`SETRANGE`、`TIME` |
 
 一个起点（已在 Redis 7.4 上以该用户执行全部 CoCache 脚本验证）：
 

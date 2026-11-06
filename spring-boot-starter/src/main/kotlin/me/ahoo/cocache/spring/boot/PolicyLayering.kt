@@ -139,6 +139,9 @@ internal class PolicyLayering(
                     entry.field in spec.declaredFields -> if (wholePolicy) {
                         skip(entry.key, path, "the declaration sets the whole policy, so defaults don't apply")
                     }
+                    // VersionedStore 的墓碑必须有限（VersionedStoreSpec 校验）：全局层的 forever 跳过并报告，而不是让每个这样的缓存创建失败
+                    entry.field == PolicyField.TOMBSTONE_TTL && entry.value == Ttl.Forever && apiType == VersionedStore::class.java ->
+                        skip(entry.key, path, "a VersionedStore needs a finite tombstone-ttl")
                     else -> set(entry, Source.DEFAULTS, null)
                 }
             }
@@ -243,7 +246,7 @@ internal class PolicyLayering(
                     locks.isLocked(field) && field !in unlocked -> throw IllegalArgumentException(
                         "Cache[$name] - ${entry.key} is locked by ${locks.by}; list ${field.key} in $path.unlock to override it."
                     )
-                    locks.isLocked(field) -> set(entry, Source.UNLOCKED, "unlocked, was locked by ${locks.by}")
+                    locks.isLocked(field) -> set(entry, Source.UNLOCKED, "was locked by ${locks.by}")
                     else -> set(entry, Source.CACHES, null)
                 }
                 if (field == PolicyField.TTL) {
