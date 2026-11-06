@@ -5,6 +5,12 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## Unreleased {#unreleased}
+
+- 修复：事务内为空业务 key `""`（或自定义 `KeyEncoder` 编码为 `""` 的 key）加载的值，回滚与回滚到 savepoint 时现在会失效。此前这次失效被当作空的编码 key 拒绝，未提交的值留在缓存中直到 `ttl`。`VersionedCache` 保留版本栅栏。（#823）
+- 修复：其它同步的 `savepointRollback` 回调在 Spring 把数据库回滚到 savepoint 之前加载的值，不再在外层提交之后留下。回滚过 savepoint 的事务提交时现在同样失效它加载过的内容，`registered-keys` 下当时已经加载过的 key 在事务的其余部分私有加载。（#814）
+- 修复：CoCache 自己的同步执行之后，其它同步在 `afterCommit` 中做的失效或 `put(key, null)` 失败时，现在交给 `CacheErrorHandler`，不再抛进已经提交的事务、跳过后面的 `afterCommit` 回调。（#838）
+
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
 **模块组：** `me.ahoo.cocache` · 8.0.0 的第四个预发布版本。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。

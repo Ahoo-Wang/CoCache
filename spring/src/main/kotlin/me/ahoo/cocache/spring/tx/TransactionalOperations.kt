@@ -59,7 +59,8 @@ internal fun interface InvalidationFailureHandler {
  * - **回滚过 savepoint 的事务**（[savepointRolledBack]）：提交时同样失效本事务的全部填充，回滚到 savepoint 时已经记录的填充
  *   （[rolledBack]）在本事务之后与登记失效的 key 一样门控（[isGated]）。Spring 先调用全部同步的 `savepointRollback`，再回滚数据库：
  *   排在本同步之后的同步在它的 `savepointRollback` 中读取时，loader 读到的仍是即将回滚的数据，这样的填充无法与之后的填充区分，
- *   所以提交时一并失效；门控让 `registered-keys` 下这样的读取对已经填充过的 key 不进入共享层。
+ *   所以提交时一并失效；门控让 `registered-keys` 下这样的读取对已经填充过的 key 不进入共享层。本同步第一次注册发生在其它同步的
+ *   `savepointRollback` 中时（Spring 对同步列表的快照调用回调），这次回滚到 savepoint 本同步收不到，那次读取的填充按普通提交保留。
  * - **机制 2**：登记失效的 key 记入 [registered]，并立即在本节点递增戳、淘汰本地副本（[FillKey.evictLocal]），
  *   `registered-keys` 下本事务之后对它们的回源是私有的（[isGated]）。
  *

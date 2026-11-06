@@ -5,6 +5,12 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: a value loaded in a transaction for the empty business key `""` (or a key a custom `KeyEncoder` encodes as `""`) is now invalidated on rollback and on a rollback to a savepoint. Before, the invalidation was rejected as an empty encoded key and the uncommitted value stayed cached until `ttl`. A `VersionedCache` keeps its version fence. (#823)
+- Fixed: a value that another synchronization's `savepointRollback` callback loads, before Spring rolls the database back to the savepoint, no longer survives the outer commit. A transaction that rolled back to a savepoint now also invalidates what it loaded when it commits, and keys it had loaded by then load privately for the rest of the transaction under `registered-keys`. (#814)
+- Fixed: an eviction or `put(key, null)` that another synchronization makes in `afterCommit`, after CoCache's own has run, now hands its failure to the `CacheErrorHandler` instead of throwing it into the committed transaction and skipping the later `afterCommit` callbacks. (#838)
+
 ## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
 **Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.

@@ -421,7 +421,8 @@ class FillObserverTest {
         loads.get().assert().isEqualTo(loaded + 2)
 
         val admin = requireNotNull(runtime.admin("tx"))
-        runCatching { admin.invalidateEncoded("") }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+        val rejected = runCatching { admin.invalidateEncoded("") }.exceptionOrNull()
+        rejected.assert().isInstanceOf(IllegalArgumentException::class.java)
         runCatching { admin.inspect("") }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 

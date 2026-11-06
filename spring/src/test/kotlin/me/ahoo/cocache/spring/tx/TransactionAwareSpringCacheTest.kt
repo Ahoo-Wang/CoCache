@@ -29,6 +29,8 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.spring.cache.CoCacheSpringCache
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.test.Concurrency.fork
@@ -405,6 +407,51 @@ class TransactionAwareSpringCacheTest {
             "put:a:1:${failing.putFailure.message}",
         )
         errors.cache.assert().isSameAs(decorated)
+    }
+
+    /**
+     * 缺陷复现（#838）：本事务已经完成之后（另一个同步的 `afterCommit` 中）登记的 `evict` 与 `put(key, null)` 立即失效，
+     * 失败与正常登记一样交给 `CacheErrorHandler`：不抛给已经提交的调用方，排在后面的同步的 `afterCommit` 照常执行。
+     */
+    @Test
+    fun lateInvalidationFailuresAfterCommitGoToTheErrorHandler() {
+        runtime.create(
+            cacheSpec<String, String>("strict") {
+                codec = StringCodec
+                externallySourced()
+                policy = CachePolicy(invalidateFailure = InvalidateFailureMode.THROW)
+            }
+        )
+        val strict = requireNotNull(manager.getCache("strict"))
+        var laterAfterCommit = false
+        backend.failWrites = true
+        val error = try {
+            runCatching {
+                tx.executeWithoutResult {
+                    transactions.write("row", "saved")
+                    strict.evict("early")
+                    TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                        override fun afterCommit() {
+                            strict.evict("target")
+                            strict.put("target2", null)
+                        }
+                    })
+                    TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                        override fun afterCommit() {
+                            laterAfterCommit = true
+                        }
+                    })
+                }
+            }.exceptionOrNull()
+        } finally {
+            backend.failWrites = false
+        }
+        error.assert().isNull()
+        transactions.read("row").assert().isEqualTo("saved")
+        laterAfterCommit.assert().isTrue()
+        errors.events.map { it.substringBefore(":Cache[") }
+            .assert().containsExactly("evict:early", "evict:target", "put:target2:null")
+        errors.cache.assert().isSameAs(strict)
     }
 
     /**

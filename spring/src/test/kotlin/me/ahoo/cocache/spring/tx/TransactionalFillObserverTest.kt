@@ -19,6 +19,8 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.CoCacheFactory
@@ -30,10 +32,14 @@ import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.proxy.CacheProxies
+import me.ahoo.cocache.core.versionedCacheSpec
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.EnumSource
+import org.junit.jupiter.params.provider.ValueSource
 import org.slf4j.LoggerFactory
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.TransactionSystemException
@@ -166,7 +172,8 @@ class TransactionalFillObserverTest {
     }
 
     /**
-     * 回滚到 savepoint 时立即失效到目前为止的填充（外层事务结束之前它们对全集群可见）；外层提交时不再失效。
+     * 回滚到 savepoint 时立即失效到目前为止的填充（外层事务结束之前它们对全集群可见）；回滚过 savepoint 的事务提交时
+     * 再失效一次本事务的全部填充（#814）。
      */
     @Test
     fun savepointRollbackInvalidatesTheFillsBeforeTheOuterCommit() {
@@ -180,7 +187,250 @@ class TransactionalFillObserverTest {
             users.inspect("5").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
             users["5"].assert().isNull()
         }
-        users.inspect("5").remote.state.assert().isEqualTo(KeyInspection.RemoteState.ABSENT)
+        users.inspect("5").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+        users["5"].assert().isNull()
+    }
+
+    /**
+     * 缺陷复现（#814）：另一个同步在它的 `savepointRollback` 中重新读取。Spring 先调用全部同步的 `savepointRollback`，
+     * 再把数据库回滚到 savepoint：排在 CoCache 的同步之后的回调读穿透时，loader 读到的仍是即将回滚的值。本事务已经填充过的
+     * key 之后门控（私有回源，不进入共享层），外层提交时再失效一次本事务的全部填充，之后读到已提交的数据。
+     */
+    @Test
+    fun savepointRollbackCallbackRefillDoesNotSurviveTheOuterCommit() {
+        val users = users()
+        manager.write0("k", "committed")
+        lateinit var seen: List<String?>
+        tx.executeWithoutResult {
+            nestedTx.executeWithoutResult { nested ->
+                manager.write("k", "rolled-back")
+                users["k"].assert().isEqualTo("rolled-back")
+                seen = readOnSavepointRollback(users, "k")
+                nested.setRollbackOnly()
+            }
+            manager.read("k").assert().isEqualTo("committed")
+            users.inspect("k").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+            users.inspect("k").local.assert().isNull()
+        }
+        seen.assert().containsExactly("rolled-back")
+        users.gated().assert().isEqualTo(1)
+        users["k"].assert().isEqualTo("committed")
+    }
+
+    /**
+     * #814：回调排在 CoCache 的同步之前或之后，读取嵌套段内读过的 key（`k`）与没有读过的 key（`j`），外层提交之后都与已提交的
+     * 数据一致。排在之后的回调对 `j` 的回源不门控（本事务没有填充过它），进入共享层，由外层提交时的失效清除。
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun savepointRollbackCallbacksInEitherOrder(callbackFirst: Boolean) {
+        val users = users()
+        manager.write0("k", "committed")
+        manager.write0("j", "committed-j")
+        lateinit var seen: List<String?>
+        tx.executeWithoutResult {
+            nestedTx.executeWithoutResult { nested ->
+                if (callbackFirst) {
+                    seen = readOnSavepointRollback(users, "k", "j")
+                }
+                manager.write("k", "rolled-back")
+                manager.write("j", "rolled-back-j")
+                users["k"].assert().isEqualTo("rolled-back")
+                if (!callbackFirst) {
+                    seen = readOnSavepointRollback(users, "k", "j")
+                }
+                TransactionSynchronizationManager.getSynchronizations().indexOfFirst { it is TransactionalOperations }
+                    .assert().isEqualTo(if (callbackFirst) 1 else 0)
+                nested.setRollbackOnly()
+            }
+        }
+        seen.assert().containsExactly("rolled-back", "rolled-back-j")
+        users["k"].assert().isEqualTo("committed")
+        users["j"].assert().isEqualTo("committed-j")
+    }
+
+    /**
+     * #814：两层 savepoint，内层回滚、外层段正常结束，之后另一个嵌套段再回滚一次；回调在每次回滚到 savepoint 时重新读取。
+     * 最外层提交与回滚之后都读到已提交的数据：提交时保留外层段提交的写入（`a`），回滚的段内写入（`b`、`c`）不留下。
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun nestedSavepointRollbacksWithOuterCommitOrRollback(rollbackOuter: Boolean) {
+        val users = users()
+        manager.write0("a", "committed-a")
+        manager.write0("b", "committed-b")
+        tx.executeWithoutResult { outer ->
+            nestedTx.executeWithoutResult {
+                manager.write("a", "nested-a")
+                users["a"].assert().isEqualTo("nested-a")
+                nestedTx.executeWithoutResult { inner ->
+                    manager.write("b", "inner-b")
+                    users["b"].assert().isEqualTo("inner-b")
+                    readOnSavepointRollback(users, "a", "b")
+                    inner.setRollbackOnly()
+                }
+                manager.read("a").assert().isEqualTo("nested-a")
+                manager.read("b").assert().isEqualTo("committed-b")
+            }
+            nestedTx.executeWithoutResult { again ->
+                manager.write("c", "again-c")
+                users["c"].assert().isEqualTo("again-c")
+                readOnSavepointRollback(users, "c")
+                again.setRollbackOnly()
+            }
+            if (rollbackOuter) {
+                outer.setRollbackOnly()
+            }
+        }
+        users["a"].assert().isEqualTo(if (rollbackOuter) "committed-a" else "nested-a")
+        users["b"].assert().isEqualTo("committed-b")
+        users["c"].assert().isNull()
+    }
+
+    /**
+     * #814：三种 `fill-in-transaction` 各自的约定不变。`private`：嵌套段内与回调中的回源都是私有的；`registered-keys` 下已登记
+     * 失效的 key 本来就门控；`allow` 不门控：回调的回源进入共享层，由外层提交时的失效清除。外层提交之后都读到已提交的数据。
+     */
+    @ParameterizedTest
+    @EnumSource(FillInTransaction::class)
+    fun savepointRollbackCallbackRefillUnderEachMode(mode: FillInTransaction) {
+        val users = users(TransactionalFillObserver(true, mode))
+        manager.write0("k", "committed")
+        tx.executeWithoutResult {
+            nestedTx.executeWithoutResult { nested ->
+                manager.write("k", "rolled-back")
+                if (mode == FillInTransaction.REGISTERED_KEYS) {
+                    invalidator.invalidate(users, "k")
+                }
+                users["k"].assert().isEqualTo("rolled-back")
+                readOnSavepointRollback(users, "k")
+                nested.setRollbackOnly()
+            }
+            val remote = users.inspect("k").remote
+            if (mode == FillInTransaction.ALLOW) {
+                remote.value.assert().isEqualTo("rolled-back")
+            } else {
+                remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+            }
+        }
+        users.gated().assert().isEqualTo(if (mode == FillInTransaction.ALLOW) 0 else 2)
+        users["k"].assert().isEqualTo("committed")
+    }
+
+    /**
+     * #814：回滚过 savepoint 的事务提交时先失效本事务的填充，再执行推迟的写入：推迟的写入是本事务提交的值，不被失效删掉。
+     */
+    @Test
+    fun deferredWriteSurvivesTheFillInvalidationAfterASavepointRollback() {
+        val users = users()
+        tx.executeWithoutResult {
+            manager.write("p", "draft")
+            users["p"].assert().isEqualTo("draft")
+            TransactionalOperations.current().afterCommit(users, "p") { users.put("p", "deferred") }
+            nestedTx.executeWithoutResult { nested ->
+                manager.write("q", "nested")
+                users["q"].assert().isEqualTo("nested")
+                nested.setRollbackOnly()
+            }
+        }
+        users.inspect("p").remote.value.assert().isEqualTo("deferred")
+        users.inspect("q").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+    }
+
+    /**
+     * 正常结束的嵌套段（释放 savepoint）不改变提交时的行为：填充保留。
+     */
+    @Test
+    fun releasedSavepointKeepsTheFills() {
+        val users = users()
+        tx.executeWithoutResult {
+            nestedTx.executeWithoutResult {
+                manager.write("n", "nested")
+                users["n"].assert().isEqualTo("nested")
+            }
+        }
+        users.inspect("n").remote.value.assert().isEqualTo("nested")
+    }
+
+    /**
+     * 缺陷复现（#823）：`""` 是合法的业务 key。事务内为它产生的填充在回滚时失效：此前被运维入口的非空校验拒绝，
+     * `afterCompletion` 记录异常之后返回，未提交的值留下。与非空 key 混在一次批量读取中同样如此。
+     */
+    @Test
+    fun rollbackInvalidatesAnEmptyBusinessKey() {
+        val users = users()
+        manager.write0("", "committed")
+        tx.executeWithoutResult { status ->
+            manager.write("", "rolled-back")
+            users[""].assert().isEqualTo("rolled-back")
+            status.setRollbackOnly()
+        }
+        users[""].assert().isEqualTo("committed")
+
+        manager.write0("a", "committed-a")
+        users.invalidate("")
+        tx.executeWithoutResult { status ->
+            manager.write("", "batch")
+            manager.write("a", "batch-a")
+            users.getAll(listOf("", "a")).assert().isEqualTo(mapOf("" to "batch", "a" to "batch-a"))
+            status.setRollbackOnly()
+        }
+        users.getAll(listOf("", "a")).assert().isEqualTo(mapOf("" to "committed", "a" to "committed-a"))
+    }
+
+    /**
+     * 缺陷复现（#823）：回滚到 savepoint 时空业务 key 的填充同样立即失效，外层提交时再失效一次。
+     */
+    @Test
+    fun savepointRollbackInvalidatesAnEmptyBusinessKey() {
+        val users = users()
+        manager.write0("", "committed")
+        tx.executeWithoutResult {
+            nestedTx.executeWithoutResult { nested ->
+                manager.write("", "nested")
+                users[""].assert().isEqualTo("nested")
+                nested.setRollbackOnly()
+            }
+            users[""].assert().isEqualTo("committed")
+        }
+        users[""].assert().isEqualTo("committed")
+    }
+
+    /**
+     * 缺陷复现（#823）：带版本的派生副本的空业务 key 同样在回滚时失效，并且保留版本栅栏（保留版本的淘汰，不是无条件删除）：
+     * 回滚的版本之后，同一版本的迟到写入仍被拒绝，回源照常返回已提交的数据。
+     */
+    @Test
+    fun versionedRollbackInvalidatesAnEmptyBusinessKeyAndKeepsTheFence() {
+        val docs = runtime(TransactionalFillObserver()).create(
+            versionedCacheSpec<String, String>("doc") {
+                codec = StringCodec
+                versionedLoader = CacheLoader { key ->
+                    manager.read(key)?.let { Versioned(it.substringBefore('@'), it.substringAfter('@').toLong()) }
+                }
+            }
+        )
+        manager.write0("", "committed@1")
+        tx.executeWithoutResult { status ->
+            manager.write("", "rolled-back@2")
+            docs[""].assert().isEqualTo("rolled-back")
+            status.setRollbackOnly()
+        }
+        docs.putIfNewer("", "late", 2).assert().isEqualTo(VersionedPut.Stale(2))
+        docs[""].assert().isEqualTo("committed")
+    }
+
+    /**
+     * 注册一个在 `savepointRollback` 中按顺序读取 [keys] 的同步，返回它读到的值。
+     */
+    private fun readOnSavepointRollback(users: Cache<String, String>, vararg keys: String): List<String?> {
+        val seen = mutableListOf<String?>()
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun savepointRollback(savepoint: Any) {
+                keys.forEach { seen += users[it] }
+            }
+        })
+        return seen
     }
 
     /**
